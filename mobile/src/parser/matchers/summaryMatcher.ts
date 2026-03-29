@@ -7,7 +7,10 @@ const VERSION_PATTERN = /\bv\d+(?:\.\d+){0,2}\b/i
 const EFFORT_PATTERN = /\b(low|medium|high) effort\b/i
 
 function cleanTerminalLine(line: string): string {
-  return line.replace(DECORATION_PREFIX, '').trim()
+  return line
+    .replace(DECORATION_PREFIX, '')
+    .replace(/^PS\s+[A-Za-z]:\\[^>]+>\s+/i, '')
+    .trim()
 }
 
 function looksLikeWorkDir(line: string): boolean {
@@ -29,7 +32,7 @@ function defaultTitleForAppType(appType: AppType): string {
 
 function isHeaderLine(line: string, appType: AppType): boolean {
   const title = defaultTitleForAppType(appType)
-  return VERSION_PATTERN.test(line) || line.includes(title)
+  return VERSION_PATTERN.test(line) || new RegExp(title, 'i').test(line)
 }
 
 function extractTitle(line: string, appType: AppType): string {

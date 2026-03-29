@@ -10,6 +10,9 @@ import { isStatusBlock } from '../parser/matchers/statusMatcher'
 import { isToolBlock } from '../parser/matchers/toolMatcher'
 
 const DIVIDER_PATTERN = /^[\s\-─━═▁▂▃▄▅▆▇█]+$/
+const OPEN_CODE_COMMAND_PATTERN = /^(?:(?:PS\s+.+?>)|(?:[A-Za-z]:\\[^>]*>)|(?:\/[^>\r\n]*>)|[$#❯›])\s*(?:opencode|claude|codex)(?:\s|$)/i
+const SLASH_COMMAND_PATTERN = /^(?:[$#❯›]\s*)\/[A-Za-z0-9][\w/-]*/i
+const TOOLISH_TEXT_PATTERN = /^(?:●|⎿|⏵|Bash\b|Read\b|Write\b|Edit\b|Task\b|Search\b|Open\b|Patch\b|read_file\b|write_file\b|edit_file\b|bash\b|list_files\b|search_files\b|grep_search\b|file_search\b|codebase_search\b|create_file\b|delete_file\b|run_command\b)/m
 
 export function isTranscriptDividerLine(line: string): boolean {
   const trimmed = line.trim()
@@ -18,7 +21,7 @@ export function isTranscriptDividerLine(line: string): boolean {
 
 export function isTranscriptCommandLine(line: string): boolean {
   const trimmed = line.trim()
-  return trimmed.startsWith('>') || />\s*(claude|opencode|codex)(\s|$)/i.test(trimmed)
+  return trimmed.startsWith('>') || OPEN_CODE_COMMAND_PATTERN.test(trimmed) || SLASH_COMMAND_PATTERN.test(trimmed)
 }
 
 function currentSectionLooksMarkdown(lines: string[]): boolean {
@@ -71,7 +74,15 @@ function currentSectionIsTool(lines: string[]): boolean {
 function isToolContinuationLine(line: string): boolean {
   const trimmed = line.trim()
   if (!trimmed) return false
-  return /^⎿/.test(trimmed) || /^[/A-Za-z]:/.test(trimmed) || /^[-+]/.test(trimmed) || /^\d+\s+(files?|dirs?|matches?)\b/i.test(trimmed) || line.startsWith('  ')
+  return /^⎿/.test(trimmed)
+    || /^[│┃└├┌╭╰]/.test(trimmed)
+    || /^[/A-Za-z]:/.test(trimmed)
+    || /^\.{1,2}[\\/]/.test(trimmed)
+    || /^(?:[\w.@-]+[\\/])+[\w.@-]+\/?$/.test(trimmed)
+    || /^[-+]/.test(trimmed)
+    || /^(?:stdout|stderr|output|result):/i.test(trimmed)
+    || /^\d+\s+(files?|dirs?|matches?|results?)\b/i.test(trimmed)
+    || line.startsWith('  ')
 }
 
 export function splitTranscriptSections(lines: string[]): string[][] {
@@ -127,9 +138,19 @@ export function splitTranscriptSections(lines: string[]): string[][] {
       continue
     }
 
+    if (!insideFence && isToolBlock([line])) {
+      flushCurrent()
+      current.push(line)
+      continue
+    }
+
     if (!insideFence && currentSectionIsTool(current) && isToolContinuationLine(line)) {
       current.push(line)
       continue
+    }
+
+    if (!insideFence && currentSectionIsTool(current)) {
+      flushCurrent()
     }
 
     current.push(line)
@@ -171,7 +192,10 @@ function shouldPromotePlainTextBlockToMarkdown(block: TerminalTextBlock, appType
   const trimmed = block.content.trim()
   if (!trimmed) return false
   if (!trimmed.includes('\n')) return false
-  if (/^(>|PS\s|●|⎿|⏵|Bash\b|Read\b|Write\b|Edit\b|Task\b|Search\b)/m.test(trimmed)) {
+  if (trimmed.split('\n').filter((line) => line.trim() !== '').slice(0, 2).some((line) => isToolBlock([line]))) {
+    return false
+  }
+  if (/^(>|PS\s)/m.test(trimmed) || OPEN_CODE_COMMAND_PATTERN.test(trimmed) || TOOLISH_TEXT_PATTERN.test(trimmed)) {
     return false
   }
 

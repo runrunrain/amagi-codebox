@@ -15,6 +15,7 @@ import type { TerminalBlock, TerminalTextBlock } from '../types/terminal-blocks'
 import { classifyDiffLine } from '../utils/classifyDiffLine'
 import { highlightCode } from '../utils/highlightCode'
 import { isPathLikeLine } from '../utils/isPathLikeLine'
+import { stripTuiChars } from '../utils/stripTuiChars'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
 
@@ -265,7 +266,7 @@ function extractTerminalTextLines(): string[] {
   if (!terminal) return []
 
   const buffer = terminal.buffer.normal
-  const lines: string[] = []
+  const extractedLines: string[] = []
 
   for (let i = 0; i < buffer.length; i++) {
     const line = buffer.getLine(i)
@@ -274,14 +275,20 @@ function extractTerminalTextLines(): string[] {
     const text = line.translateToString(true)
     const isWrapped = Boolean((line as unknown as { isWrapped?: boolean }).isWrapped)
 
-    if (isWrapped && lines.length > 0) {
-      lines[lines.length - 1] += text
+    if (isWrapped && extractedLines.length > 0) {
+      extractedLines[extractedLines.length - 1] += text
     } else {
-      lines.push(text || ' ')
+      extractedLines.push(text || ' ')
     }
   }
 
-  return lines
+  if (sessionMetadata.value?.appType === 'opencode') {
+    return extractedLines
+      .map((line) => stripTuiChars(line).replace(/\s+$/u, ''))
+      .filter((line) => line.trim() !== '')
+  }
+
+  return extractedLines
 }
 
 function scrollTextViewToBottom() {
@@ -825,7 +832,9 @@ function goBack() {
 async function loadSessionMetadata() {
   try {
     sessionMetadata.value = await fetchSessionMetadata(sessionId)
-    if (mobileTextMode.value && terminalTextLines.value.length > 0) {
+    if (mobileTextMode.value && terminal) {
+      syncTextView()
+    } else if (mobileTextMode.value && terminalTextLines.value.length > 0) {
       terminalBlocks.value = buildTranscriptBlocks(
         terminalTextLines.value,
         sessionMetadata.value?.appType ?? 'generic',
@@ -1099,6 +1108,7 @@ onUnmounted(() => {
     </div>
 
     <div class="shortcut-bar">
+      <button class="shortcut-btn" @click="sendSpecialKey('Enter')">Enter</button>
       <button class="shortcut-btn" @click="sendSpecialKey('Tab')">Tab</button>
       <button class="shortcut-btn" @click="sendSpecialKey('Ctrl+C')">^C</button>
       <button class="shortcut-btn" @click="sendSpecialKey('Ctrl+D')">^D</button>
@@ -1348,7 +1358,38 @@ onUnmounted(() => {
 }
 
 .terminal-text-block + .terminal-text-block {
-  margin-top: 10px;
+  margin-top: 12px;
+}
+
+.terminal-text-block--text {
+  border-left: 2px solid rgba(139, 148, 158, 0.2);
+  padding-left: 8px;
+}
+
+@keyframes pulse-streaming-border {
+  0% { border-color: rgba(88, 166, 255, 0.2); }
+  50% { border-color: rgba(88, 166, 255, 0.8); }
+  100% { border-color: rgba(88, 166, 255, 0.2); }
+}
+
+.terminal-text-block--streaming {
+  animation: pulse-streaming-border 2s infinite ease-in-out;
+  border-left: 2px solid rgba(88, 166, 255, 0.8);
+  background: linear-gradient(90deg, rgba(88, 166, 255, 0.05) 0%, transparent 100%);
+  padding-left: 8px;
+  border-radius: 2px;
+}
+
+.terminal-text-block--raw-terminal {
+  font-family: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 0.9em;
+  background: rgba(13, 17, 23, 0.6);
+  padding: 8px 10px;
+  border-left: 2px solid rgba(139, 148, 158, 0.4);
+  margin-left: 4px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 .terminal-text-block--status {
@@ -1416,10 +1457,23 @@ onUnmounted(() => {
 }
 
 .terminal-text-block--code {
+  position: relative;
   padding: 12px;
   border-radius: 14px;
   border: 1px solid rgba(99, 110, 123, 0.24);
   background: rgba(1, 4, 9, 0.92);
+}
+
+.terminal-text-block--code::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 24px;
+  height: 100%;
+  background: linear-gradient(to right, transparent, rgba(1, 4, 9, 0.92));
+  pointer-events: none;
+  border-radius: 0 14px 14px 0;
 }
 
 .terminal-code-meta {
@@ -1488,6 +1542,8 @@ onUnmounted(() => {
   font-size: 0.92em;
   line-height: 1.5;
   color: #e6edf3;
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
 }
 
 .terminal-diff-line {
@@ -1591,11 +1647,18 @@ onUnmounted(() => {
 }
 
 .terminal-tool-name {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.03em;
   color: #79c0ff;
   text-transform: uppercase;
+  padding: 3px 8px;
+  background: rgba(88, 166, 255, 0.12);
+  border: 1px solid rgba(88, 166, 255, 0.24);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .terminal-tool-shortcut {
@@ -1629,7 +1692,9 @@ onUnmounted(() => {
 
 .terminal-tool-file-item {
   line-height: 1.5;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .terminal-summary-card {
@@ -1740,12 +1805,17 @@ onUnmounted(() => {
 
 .terminal-code-block {
   margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  word-break: normal;
   font-family: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
   font-size: 0.95em;
   line-height: 1.55;
   color: #e6edf3;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  padding-right: 12px;
+  box-shadow: inset -15px 0 10px -10px rgba(1, 4, 9, 0.9);
 }
 
 /* --- TODO Block Card --- */
@@ -1929,6 +1999,7 @@ onUnmounted(() => {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
+  touch-action: pan-x;
 }
 
 .terminal-table-rendered :deep(table) {
@@ -1940,6 +2011,7 @@ onUnmounted(() => {
 .terminal-table-rendered :deep(th),
 .terminal-table-rendered :deep(td) {
   padding: 6px 10px;
+  min-width: 100px;
   border: 1px solid rgba(110, 118, 129, 0.3);
   white-space: normal;
   word-break: break-word;
@@ -1949,7 +2021,10 @@ onUnmounted(() => {
 .terminal-table-rendered :deep(th) {
   font-weight: 700;
   color: #f0f6fc;
-  background: rgba(110, 118, 129, 0.14);
+  background: #21262d;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .terminal-table-rendered :deep(th:nth-child(1)) { color: #79c0ff; }

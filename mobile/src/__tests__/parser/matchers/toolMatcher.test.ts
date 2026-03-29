@@ -4,6 +4,7 @@ describe('toolMatcher', () => {
   it('detects bullet-prefixed tool lines', () => {
     expect(isToolBlock(['● Bash(echo $AMAGI_WORKSPACE_ROOT)'])).toBe(true)
     expect(isToolBlock(['Read 3 files (ctrl+o to expand)'])).toBe(true)
+    expect(isToolBlock(['│ read_file src/main.ts'])).toBe(true)
   })
 
   it('rejects regular prose', () => {
@@ -46,6 +47,25 @@ describe('toolMatcher', () => {
       summary: 'hi',
       shortcutHint: undefined,
       createdAt: 13,
+    })
+  })
+
+  it('builds OpenCode snake_case tools without requiring Claude bullet prefixes', () => {
+    expect(buildToolBlock({
+      appType: 'opencode',
+      lines: ['│ read_file src/main.ts', '│  src/main.ts', '└  1 file read'],
+      raw: '│ read_file src/main.ts\n│  src/main.ts\n└  1 file read',
+      createdAt: 15,
+    })).toEqual({
+      id: 'tool-15',
+      type: 'tool',
+      appType: 'opencode',
+      raw: '│ read_file src/main.ts\n│  src/main.ts\n└  1 file read',
+      toolName: 'read_file',
+      title: 'read_file src/main.ts',
+      summary: 'src/main.ts\n1 file read',
+      shortcutHint: undefined,
+      createdAt: 15,
     })
   })
 

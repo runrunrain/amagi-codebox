@@ -48,4 +48,13 @@ describe('summaryMatcher', () => {
     expect(summaryMatcher.match(context)).toBe(true)
     expect(summaryMatcher.build(context).type).toBe('summary')
   })
+
+  it('matches OpenCode summaries with shell prompts and lowercase titles', () => {
+    expect(isSummaryBlock([
+      'PS X:\\WorkSpace> opencode',
+      '│ opencode v1.2.3',
+      '│ gpt-5 with medium effort',
+      '└ /workspace',
+    ], 'opencode')).toBe(true)
+  })
 })

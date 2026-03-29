@@ -248,6 +248,8 @@ describe('buildTranscriptBlocks', () => {
     expect(isTranscriptCommandLine('> /load-session')).toBe(true)
     expect(isTranscriptCommandLine('   > 你好')).toBe(true)
     expect(isTranscriptCommandLine('PS X:\\WorkSpace> claude')).toBe(true)
+    expect(isTranscriptCommandLine('$ opencode')).toBe(true)
+    expect(isTranscriptCommandLine('/workspace> opencode')).toBe(true)
     expect(isTranscriptCommandLine('plain text')).toBe(false)
   })
 
@@ -488,6 +490,44 @@ describe('buildTranscriptBlocks', () => {
         summary: 'src/main.ts\nsrc/app.ts',
         shortcutHint: '(ctrl+o to expand)',
         createdAt: 50,
+      },
+    ])
+  })
+
+  it('keeps OpenCode snake_case tool lines with tree-style output in one section', () => {
+    const sections = splitTranscriptSections([
+      'read_file src/main.ts',
+      '│ src/main.ts',
+      '└ 1 file read',
+      'Next paragraph',
+    ])
+
+    expect(sections).toEqual([
+      ['read_file src/main.ts', '│ src/main.ts', '└ 1 file read'],
+      ['Next paragraph'],
+    ])
+  })
+
+  it('does not promote OpenCode tool transcripts to markdown', () => {
+    const blocks = promoteTextBlocksToMarkdown([
+      {
+        id: 'text-3',
+        type: 'text',
+        appType: 'opencode',
+        raw: 'read_file src/main.ts\n1 file read',
+        content: 'read_file src/main.ts\n1 file read',
+        createdAt: 3,
+      },
+    ], 'opencode')
+
+    expect(blocks).toEqual([
+      {
+        id: 'text-3',
+        type: 'text',
+        appType: 'opencode',
+        raw: 'read_file src/main.ts\n1 file read',
+        content: 'read_file src/main.ts\n1 file read',
+        createdAt: 3,
       },
     ])
   })

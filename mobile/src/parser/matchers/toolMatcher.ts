@@ -2,17 +2,20 @@ import type { TerminalToolBlock } from '../../types/terminal-blocks'
 import { stripAnsi } from '../../utils/stripAnsi'
 import type { TerminalBlockMatcher, TerminalMatcherContext } from '../patternRegistry'
 
-const TOOL_NAME_PATTERN = /^(Bash|Read|Write|Edit|Grep|Glob|Task|Search|Open|Patch)\b/i
+const TOOL_NAME_PATTERN = /^(Bash|Read|Write|Edit|Grep|Glob|Task|Search|Open|Patch|read_file|write_file|edit_file|bash|list_files|search_files|grep_search|file_search|codebase_search|create_file|delete_file|run_command)\b/i
 const SHORTCUT_PATTERN = /\((?:ctrl|cmd|shift|alt)[^)]+\)/i
+const TOOL_PREFIX_PATTERN = /^(?:[\s●•◦▪▸▹▻▶▷◆◇■□▫│┃┆┇┊┋╎╏└├┌╭╰>]+)+/u
 
 function cleanToolLine(line: string): string {
-  return stripAnsi(line).replace(/^●\s*/, '').trim()
+  return stripAnsi(line)
+    .replace(TOOL_PREFIX_PATTERN, '')
+    .trim()
 }
 
 function cleanToolSummaryLine(line: string): string {
   return cleanToolLine(line)
-    .replace(/^⎿\s*/, '')
-    .replace(/^[│└├┌─\s]+/, '')
+    .replace(/^[⎿↳]\s*/, '')
+    .replace(/^[│┃└├┌╭╰─━\s]+/, '')
     .trim()
 }
 
