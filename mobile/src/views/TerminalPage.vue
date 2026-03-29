@@ -711,8 +711,14 @@ function sendMobileInput() {
 
   const value = mobileInput.value
   if (!value.trim()) return
-  const normalizedValue = value.replace(/\r?\n/g, '\r\n')
-  ws.sendInput(`${normalizedValue}\r\n`)
+  // 先发送文本内容（将换行符统一为 \r，匹配终端 Enter 行为）
+  const textToSend = value.replace(/\r?\n/g, '\r')
+  ws.sendInput(textToSend)
+  // 延迟发送 \r（Enter），确保 TUI 应用先处理完文本再触发执行
+  // 桌面端 xterm 的 onData 逐字符触发，Enter 只发送 \r；移动端需匹配此行为
+  setTimeout(() => {
+    ws?.sendInput('\r')
+  }, 50)
   mobileInput.value = ''
   scrollTextViewToBottom()
   focusMobileInput()
