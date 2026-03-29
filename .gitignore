@@ -1,0 +1,29 @@
+# Build artifacts
+build/bin
+*.exe
+
+# Dependencies
+node_modules
+frontend/node_modules
+mobile/node_modules
+
+# Build output
+frontend/dist
+mobile/dist
+
+# Config with secrets
+*-config.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Capacitor generated
+mobile/android/
+mobile/ios/
