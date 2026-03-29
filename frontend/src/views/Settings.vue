@@ -208,7 +208,7 @@
               <div class="status-ring"></div>
               <div class="status-info">
                 <h4>{{ remoteEnabled ? '服务运行中' : '服务已停止' }}</h4>
-                <p>{{ remoteEnabled ? `正在监听端口 ${remoteStatus.port}` : '启用以允许外部连接' }}</p>
+                <p>{{ remoteEnabled ? `正在监听 ${remoteStatus.host || '0.0.0.0'}:${remoteStatus.port}` : '启用以允许外部连接' }}</p>
               </div>
             </div>
             <button 
@@ -224,12 +224,20 @@
           <div class="setting-group">
             <h3 class="group-header">连接设置</h3>
             <div class="form-row">
-              <div class="form-group" style="width: 220px;">
+              <div class="form-group" style="flex: 1;">
+                <label>监听地址</label>
+                <div class="inline-input-group">
+                  <input type="text" class="input-field" v-model="remoteHost" placeholder="0.0.0.0" />
+                </div>
+              </div>
+              <div class="form-group" style="width: 180px;">
                 <label>监听端口</label>
                 <div class="inline-input-group">
                   <input type="number" class="input-field" v-model.number="remotePort" min="1024" max="65535" />
-                  <button class="btn primary small" @click="applyPort" :disabled="savingPort">应用</button>
                 </div>
+              </div>
+              <div class="form-group" style="align-self: flex-end;">
+                <button class="btn primary small" @click="applyHostPort" :disabled="savingPort">应用</button>
               </div>
             </div>
 
@@ -379,7 +387,7 @@
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath, RemoveShellPath, GetTerminalSettings, SetTerminalSettings, GetMobileWebRoot, SetMobileWebRoot } from '../../wailsjs/go/settings/Service'
 import { GetProviders } from '../../wailsjs/go/config/ConfigService'
-import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken } from '../../wailsjs/go/main/App'
+import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { config } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
@@ -675,9 +683,10 @@ function basename(p: string): string {
 }
 
 // --- 远程控制 ---
-const remoteStatus = ref<{ port: number; token: string; running: boolean }>({ port: 8680, token: '', running: false })
+const remoteStatus = ref<{ host: string; port: number; token: string; running: boolean }>({ host: '0.0.0.0', port: 8680, token: '', running: false })
 const remoteEnabled = ref(false)
 const remoteToken = ref('')
+const remoteHost = ref('0.0.0.0')
 const remotePort = ref(8680)
 const showToken = ref(false)
 const togglingRemote = ref(false)
@@ -693,6 +702,7 @@ async function loadRemoteStatus() {
     remoteStatus.value = status as any
     remoteEnabled.value = (status as any).running || false
     remoteToken.value = (status as any).token || ''
+    remoteHost.value = (status as any).host || '0.0.0.0'
     remotePort.value = (status as any).port || 8680
     if (remoteEnabled.value && activeTab.value === 'remote') {
       await nextTick()
@@ -777,18 +787,20 @@ async function toggleRemote() {
   }
 }
 
-async function applyPort() {
+async function applyHostPort() {
   savingPort.value = true
   try {
+    await SetRemoteHost(remoteHost.value.trim() || '0.0.0.0')
     await SetRemotePort(remotePort.value)
+    remoteStatus.value.host = remoteHost.value.trim() || '0.0.0.0'
     remoteStatus.value.port = remotePort.value
-    showSuccess('端口已更新')
+    showSuccess('监听地址已更新')
     if (remoteEnabled.value && activeTab.value === 'remote') {
       await nextTick()
       await renderQRCode()
     }
   } catch (err) {
-    showError('设置端口失败: ' + err)
+    showError('设置失败: ' + err)
   } finally {
     savingPort.value = false
   }

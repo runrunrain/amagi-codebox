@@ -79,6 +79,6 @@ func DefaultConfig() *AppConfig {
 			Enabled:      true,
 			TeammateMode: "in-process",
 		},
-		Version: "1.0.0",
+		Version: "1.0.1",
 	}
 }

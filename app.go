@@ -102,6 +102,7 @@ func (a *App) GetRemoteToken() string {
 // GetRemoteStatus 返回远程服务器状态信息。
 func (a *App) GetRemoteStatus() map[string]any {
 	return map[string]any{
+		"host":    a.Remote.GetHost(),
 		"port":    a.Remote.GetPort(),
 		"token":   a.Remote.GetToken(),
 		"running": a.Remote.IsRunning(),
@@ -150,6 +151,27 @@ func (a *App) SetRemotePort(port int) error {
 			return fmt.Errorf("restart remote server on port %d: %w", port, err)
 		}
 		a.Log.Info("remote", "远程服务器已在新端口启动", fmt.Sprintf("port=%d", port))
+	}
+	return nil
+}
+
+// SetRemoteHost 设置远程服务器监听地址（需先停止服务器，再设置地址，再启动）。
+func (a *App) SetRemoteHost(host string) error {
+	if err := a.Settings.SetRemoteHost(host); err != nil {
+		return err
+	}
+	wasRunning := a.Remote.IsRunning()
+	if wasRunning {
+		a.Remote.Stop()
+	}
+	a.Remote.SetHost(host)
+	a.Log.Info("remote", "监听地址已更新", fmt.Sprintf("host=%s", host))
+	if wasRunning {
+		if err := a.Remote.Start(a.ctx); err != nil {
+			a.Log.Error("remote", "更换地址后重启服务器失败", err.Error())
+			return fmt.Errorf("restart remote server on host %s: %w", host, err)
+		}
+		a.Log.Info("remote", "远程服务器已在新地址启动", fmt.Sprintf("host=%s", host))
 	}
 	return nil
 }
@@ -215,7 +237,10 @@ func (a *App) Startup(ctx context.Context) {
 		a.Log.Warn("app", "加载设置失败", err.Error())
 	} else {
 		a.Log.Info("app", "设置加载成功")
-		// 将持久化的远程端口同步到 Remote（如果与默认值不同）
+		// 将持久化的远程端口和地址同步到 Remote
+		if savedHost := a.Settings.GetRemoteHost(); savedHost != "" {
+			a.Remote.SetHost(savedHost)
+		}
 		if savedPort := a.Settings.GetRemotePort(); savedPort != 8680 {
 			a.Remote.SetPort(savedPort)
 			a.Log.Info("app", "远程端口已从设置恢复", fmt.Sprintf("port=%d", savedPort))

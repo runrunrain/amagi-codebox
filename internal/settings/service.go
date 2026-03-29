@@ -41,6 +41,7 @@ type AppSettings struct {
 	Dashboard     DashboardDefaults `json:"dashboard"`
 	ShellPaths    []ShellEntry      `json:"shellPaths"`
 	Terminal      TerminalSettings  `json:"terminal"`
+	RemoteHost    string            `json:"remoteHost"`
 	RemotePort    int               `json:"remotePort"`
 	MobileWebRoot string            `json:"mobileWebRoot"`
 	GitHubToken   string            `json:"githubToken"`
@@ -62,6 +63,7 @@ func defaultSettings() *AppSettings {
 		Terminal: TerminalSettings{
 			Scrollback: 100000,
 		},
+		RemoteHost: "0.0.0.0",
 		RemotePort: 8680,
 	}
 }
@@ -265,7 +267,24 @@ func (s *Service) SetTerminalSettings(t TerminalSettings) error {
 	return s.Save()
 }
 
-// --- Remote Port ---
+// --- Remote Host & Port ---
+
+func (s *Service) GetRemoteHost() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	host := s.settings.RemoteHost
+	if host == "" {
+		return "0.0.0.0"
+	}
+	return host
+}
+
+func (s *Service) SetRemoteHost(host string) error {
+	s.mu.Lock()
+	s.settings.RemoteHost = host
+	s.mu.Unlock()
+	return s.Save()
+}
 
 func (s *Service) GetRemotePort() int {
 	s.mu.RLock()

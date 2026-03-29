@@ -17,6 +17,7 @@ import (
 
 // Server 远程 API HTTP 服务器，允许移动端通过 HTTP/WebSocket 操作 Amagi CodeBox 的全部功能。
 type Server struct {
+	host    string
 	port    int
 	auth    *Auth
 	app     AppInterface
@@ -52,7 +53,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 
 	handler := s.buildHandler()
 
-	addr := fmt.Sprintf(":%d", s.port)
+	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	s.httpSrv = &http.Server{
 		Addr:         addr,
 		Handler:      handler,
@@ -114,6 +115,20 @@ func (s *Server) SetPort(port int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.port = port
+}
+
+// SetHost 设置监听地址（仅在服务器停止时有效）。
+func (s *Server) SetHost(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.host = host
+}
+
+// GetHost 返回监听地址。
+func (s *Server) GetHost() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.host
 }
 
 // SetWebRoot 设置移动端 Web 前端的 dist 目录路径。
