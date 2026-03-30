@@ -1024,7 +1024,7 @@ func (a *App) ExportConfigToFile() (string, error) {
 
 	exportProviders := make(map[string]config.ExportProvider, len(providers))
 	for name, p := range providers {
-		apiKey, _ := a.Secrets.GetAPIKeyWithFallback(name)
+		apiKey, _ := a.Secrets.GetAPIKey(name)
 		presets := p.Presets
 		if presets == nil {
 			presets = map[string]config.Preset{}
@@ -1117,6 +1117,11 @@ func (a *App) ImportConfigFromFile() (string, error) {
 		return "", fmt.Errorf("read file: %w", err)
 	}
 
+	// 剥离 UTF-8 BOM（Windows 编辑器可能在文件开头添加 BOM）
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		data = data[3:]
+	}
+
 	// 解析为 ExportConfig 结构体
 	var exportCfg config.ExportConfig
 	if err := json.Unmarshal(data, &exportCfg); err != nil {
@@ -1175,7 +1180,7 @@ func (a *App) GetProviderExportJSON(providerName string) (string, error) {
 		return "", fmt.Errorf("get provider %q: %w", providerName, err)
 	}
 
-	apiKey, _ := a.Secrets.GetAPIKeyWithFallback(providerName)
+	apiKey, _ := a.Secrets.GetAPIKey(providerName)
 
 	presets := provider.Presets
 	if presets == nil {
@@ -1385,6 +1390,11 @@ func (a *App) ImportEnvVarsFromFile() error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
+	}
+
+	// 剥离 UTF-8 BOM（Windows 编辑器可能在文件开头添加 BOM）
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		data = data[3:]
 	}
 
 	if err := a.EnvVars.Import(string(data)); err != nil {

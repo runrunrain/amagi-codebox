@@ -238,12 +238,12 @@ export function SetProxyBackendURL(arg1) {
   return window['go']['main']['App']['SetProxyBackendURL'](arg1);
 }
 
-export function SetRemotePort(arg1) {
-  return window['go']['main']['App']['SetRemotePort'](arg1);
-}
-
 export function SetRemoteHost(arg1) {
   return window['go']['main']['App']['SetRemoteHost'](arg1);
+}
+
+export function SetRemotePort(arg1) {
+  return window['go']['main']['App']['SetRemotePort'](arg1);
 }
 
 export function StopAllSessions() {

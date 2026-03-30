@@ -18,6 +18,10 @@ export function GetMobileWebRoot() {
   return window['go']['settings']['Service']['GetMobileWebRoot']();
 }
 
+export function GetRemoteHost() {
+  return window['go']['settings']['Service']['GetRemoteHost']();
+}
+
 export function GetRemotePort() {
   return window['go']['settings']['Service']['GetRemotePort']();
 }
@@ -56,6 +60,10 @@ export function SetGitHubToken(arg1) {
 
 export function SetMobileWebRoot(arg1) {
   return window['go']['settings']['Service']['SetMobileWebRoot'](arg1);
+}
+
+export function SetRemoteHost(arg1) {
+  return window['go']['settings']['Service']['SetRemoteHost'](arg1);
 }
 
 export function SetRemotePort(arg1) {

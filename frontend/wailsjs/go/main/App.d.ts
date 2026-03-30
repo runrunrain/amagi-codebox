@@ -126,9 +126,9 @@ export function SetGitHubToken(arg1:string):Promise<void>;
 
 export function SetProxyBackendURL(arg1:string):Promise<void>;
 
-export function SetRemotePort(arg1:number):Promise<void>;
-
 export function SetRemoteHost(arg1:string):Promise<void>;
+
+export function SetRemotePort(arg1:number):Promise<void>;
 
 export function StopAllSessions():Promise<void>;
 

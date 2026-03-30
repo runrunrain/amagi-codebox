@@ -686,6 +686,7 @@ export namespace settings {
 	    dashboard: DashboardDefaults;
 	    shellPaths: ShellEntry[];
 	    terminal: TerminalSettings;
+	    remoteHost: string;
 	    remotePort: number;
 	    mobileWebRoot: string;
 	    githubToken: string;
@@ -699,6 +700,7 @@ export namespace settings {
 	        this.dashboard = this.convertValues(source["dashboard"], DashboardDefaults);
 	        this.shellPaths = this.convertValues(source["shellPaths"], ShellEntry);
 	        this.terminal = this.convertValues(source["terminal"], TerminalSettings);
+	        this.remoteHost = source["remoteHost"];
 	        this.remotePort = source["remotePort"];
 	        this.mobileWebRoot = source["mobileWebRoot"];
 	        this.githubToken = source["githubToken"];
