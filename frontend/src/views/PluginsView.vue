@@ -30,16 +30,41 @@ const expandedPluginId = ref<string | null>(null)
 const pluginDetails = ref<Record<string, any>>({})
 const loadingDetails = ref<Record<string, boolean>>({})
 
+const searchQuery = ref('')
+const sortBy = ref<'installCount' | 'name'>('installCount')
+
 const availableByMarketplace = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  let filtered = availablePlugins.value
+  if (query) {
+    const tokens = query.split(/\s+/).filter(Boolean)
+    filtered = availablePlugins.value.filter((p: any) => {
+      const name = (p.name || '').toLowerCase()
+      const desc = (p.description || '').toLowerCase()
+      const text = name + ' ' + desc
+      return tokens.every(t => text.includes(t))
+    })
+  }
   const groups: Record<string, { name: string; plugins: any[] }> = {}
-  for (const p of availablePlugins.value) {
+  for (const p of filtered) {
     const mkt = p.marketplaceName || 'unknown'
     if (!groups[mkt]) {
       groups[mkt] = { name: mkt, plugins: [] }
     }
     groups[mkt].plugins.push(p)
   }
+  for (const g of Object.values(groups)) {
+    if (sortBy.value === 'installCount') {
+      g.plugins.sort((a: any, b: any) => (b.installCount || 0) - (a.installCount || 0))
+    } else {
+      g.plugins.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))
+    }
+  }
   return Object.values(groups).sort((a, b) => a.name.localeCompare(b.name))
+})
+
+const filteredAvailableCount = computed(() => {
+  return availableByMarketplace.value.reduce((sum, g) => sum + g.plugins.length, 0)
 })
 
 const installedByMarketplace = computed(() => {
@@ -503,7 +528,24 @@ onMounted(() => {
 
     <!-- Available Plugins Section (grouped by marketplace) -->
     <div class="available-section" v-if="availablePlugins.length > 0">
-      <h2 class="section-title" style="margin-bottom: 12px;">可安装插件 ({{ availablePlugins.length }})</h2>
+      <div class="available-toolbar">
+        <h2 class="section-title">可安装插件 ({{ filteredAvailableCount }})</h2>
+        <div class="available-toolbar-controls">
+          <div class="search-box">
+            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" v-model="searchQuery" placeholder="搜索插件名称..." class="search-input" />
+            <button v-if="searchQuery" class="search-clear" @click="searchQuery = ''">×</button>
+          </div>
+          <div class="sort-pills">
+            <button class="sort-pill" :class="{ active: sortBy === 'installCount' }" @click="sortBy = 'installCount'">安装量 ↓</button>
+            <button class="sort-pill" :class="{ active: sortBy === 'name' }" @click="sortBy = 'name'">名称 A-Z</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="empty-state card" v-if="filteredAvailableCount === 0 && searchQuery">
+        <p class="empty-text">未找到匹配 "{{ searchQuery }}" 的插件</p>
+      </div>
       <div class="market-group card" v-for="group in availableByMarketplace" :key="group.name">
         <div class="card-header clickable" @click="expandedMarkets[group.name] = !expandedMarkets[group.name]">
           <div class="header-left">
@@ -1172,6 +1214,106 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.available-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.available-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 10px;
+  color: #5a6a7a;
+  pointer-events: none;
+}
+
+.search-input {
+  width: 220px;
+  padding: 7px 30px 7px 32px;
+  background: #0f1219;
+  border: 1px solid #2a2f3e;
+  border-radius: 6px;
+  color: #e0e6ed;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.search-input:focus {
+  border-color: #4fc3f7;
+  box-shadow: 0 0 0 2px rgba(79, 195, 247, 0.12);
+}
+
+.search-input::placeholder {
+  color: #5a6a7a;
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: #5a6a7a;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.search-clear:hover {
+  color: #e0e6ed;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sort-pills {
+  display: flex;
+  background: #1a1f2e;
+  border: 1px solid #2a2f3e;
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.sort-pill {
+  padding: 5px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #8899aa;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.sort-pill:hover {
+  color: #e0e6ed;
+}
+
+.sort-pill.active {
+  background: #4fc3f7;
+  color: #0f1219;
 }
 
 .market-group {
