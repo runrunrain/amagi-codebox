@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	pathpkg "path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -112,8 +113,19 @@ func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 
 	currentVersion := normalizeVersion(s.currentVersion)
 	latestVersion := normalizeVersion(release.TagName)
+
+	// 使用语义版本比较：仅当远端版本 > 当前版本时才提示更新
+	hasUpdate := false
+	cmp := compareVersions(latestVersion, currentVersion)
+	if cmp > 0 {
+		hasUpdate = true
+	} else if cmp == -2 {
+		// 无法解析为语义版本号，回退到字符串比较
+		hasUpdate = latestVersion != currentVersion
+	}
+
 	info := &UpdateInfo{
-		HasUpdate:      latestVersion != currentVersion,
+		HasUpdate:      hasUpdate,
 		CurrentVersion: currentVersion,
 		LatestVersion:  latestVersion,
 		ReleaseNotes:   release.Body,
@@ -366,4 +378,59 @@ func copyFile(src string, dst string) error {
 
 func normalizeVersion(version string) string {
 	return strings.TrimPrefix(strings.TrimSpace(version), "v")
+}
+
+// compareVersions 语义比较两个版本号（major.minor.patch）。
+// 返回 1 表示 a > b，0 表示 a == b，-1 表示 a < b。
+// 返回 -2 表示无法解析为语义版本号。
+func compareVersions(a, b string) int {
+	parseVer := func(v string) (major, minor, patch int, ok bool) {
+		// 去掉预发布/构建元数据后缀（如 "1.0.0-beta" → "1.0.0"）
+		if idx := strings.IndexAny(v, "-+"); idx >= 0 {
+			v = v[:idx]
+		}
+		parts := strings.Split(v, ".")
+		if len(parts) < 2 || len(parts) > 3 {
+			return 0, 0, 0, false
+		}
+		var err error
+		if major, err = strconv.Atoi(parts[0]); err != nil {
+			return 0, 0, 0, false
+		}
+		if minor, err = strconv.Atoi(parts[1]); err != nil {
+			return 0, 0, 0, false
+		}
+		if len(parts) == 3 {
+			if patch, err = strconv.Atoi(parts[2]); err != nil {
+				return 0, 0, 0, false
+			}
+		}
+		return major, minor, patch, true
+	}
+
+	aMaj, aMin, aPat, aOk := parseVer(a)
+	bMaj, bMin, bPat, bOk := parseVer(b)
+	if !aOk || !bOk {
+		return -2
+	}
+
+	if aMaj != bMaj {
+		if aMaj > bMaj {
+			return 1
+		}
+		return -1
+	}
+	if aMin != bMin {
+		if aMin > bMin {
+			return 1
+		}
+		return -1
+	}
+	if aPat != bPat {
+		if aPat > bPat {
+			return 1
+		}
+		return -1
+	}
+	return 0
 }

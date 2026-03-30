@@ -869,8 +869,9 @@ func (a *App) SaveAllConfig() error {
 
 // GetAppInfo 返回应用基本信息。
 func (a *App) GetAppInfo() map[string]any {
+	version := strings.TrimPrefix(strings.TrimSpace(Version), "v")
 	return map[string]any{
-		"version":      Version,
+		"version":      version,
 		"configDir":    defaultConfigDir(),
 		"runningCount": a.Sessions.RunningCount(),
 		"proxyStatus":  a.Proxy.GetStatus(),

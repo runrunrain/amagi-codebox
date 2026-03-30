@@ -39,7 +39,10 @@ echo.
 
 echo [1/3] 正在构建项目...
 echo.
-wails build
+for /f "delims=" %%v in ('git describe --tags --abbrev^=0 2^>nul') do set GIT_VERSION=%%v
+if not defined GIT_VERSION set GIT_VERSION=dev
+echo [提示] 构建版本: %GIT_VERSION%
+wails build -ldflags "-X main.Version=%GIT_VERSION%"
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [错误] 构建失败!
