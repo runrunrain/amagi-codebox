@@ -836,7 +836,7 @@ async function saveMobileWebRoot() {
   savingWebRoot.value = true
   try {
     await SetMobileWebRoot(mobileWebRoot.value.trim())
-    showSuccess('移动端 Web 目录已保存（重启后生效）')
+    showSuccess('移动端 Web 目录已保存')
   } catch (err) {
     showError('保存失败: ' + err)
   } finally {

@@ -140,44 +140,43 @@ func (s *Server) SetWebRoot(path string) {
 }
 
 // buildHandler 构建最终的 HTTP handler。
-// 如果 webRoot 有效，返回复合 handler：/api/ 和 /ws/ 走认证 + API，其余走静态文件。
-// 否则只返回 API handler。
+// 始终使用复合 handler：/api/ 和 /ws/ 走认证 + API，其余动态检查 webRoot 后决定走静态文件还是回退到 API。
+// 这样 webRoot 可以在服务器运行期间随时设置或更新，无需重启。
 func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
 	apiHandler := corsMiddleware(s.auth.Middleware(mux))
 
-	s.mu.RLock()
-	webRoot := s.webRoot
-	s.mu.RUnlock()
-
-	if webRoot == "" {
-		return apiHandler
-	}
-
-	// 检查 webRoot 目录是否存在且包含 index.html
-	indexPath := webRoot + "/index.html"
-	if _, err := os.Stat(indexPath); err != nil {
-		s.log.Info("remote", "webRoot 未找到 index.html，不提供静态文件服务", fmt.Sprintf("path=%s", webRoot))
-		return apiHandler
-	}
-
-	s.log.Info("remote", "启用移动端 Web 静态文件服务", fmt.Sprintf("webRoot=%s", webRoot))
-	fileSystem := http.Dir(webRoot)
-	fileServer := http.FileServer(fileSystem)
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// API 和 WebSocket 请求走认证 handler
+		// API 和 WebSocket 请求始终走认证 handler
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
 
-		// 静态文件请求（不需要认证）
+		// 静态文件请求：从 Settings 动态读取 webRoot（保存设置后无需重启即可生效）
+		webRoot := s.app.GetSettingsService().GetMobileWebRoot()
+
+		if webRoot == "" {
+			// 未配置 webRoot，回退到 API handler（需要认证）
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+
+		// 检查 index.html 是否存在
+		if _, err := os.Stat(webRoot + "/index.html"); err != nil {
+			// webRoot 已配置但 index.html 不存在，回退到 API handler
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+
+		// 提供静态文件（不需要认证）
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		// 尝试直接提供文件
+		fileSystem := http.Dir(webRoot)
+		fileServer := http.FileServer(fileSystem)
+
 		path := r.URL.Path
 		if path == "/" {
 			fileServer.ServeHTTP(w, r)
