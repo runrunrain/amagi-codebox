@@ -77,7 +77,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { GetSessions, StopSession, RemoveSession, PtyWrite, PtyWriteLarge, PtyResize, OpenFileInEditor, SaveClipboardImage } from '../../wailsjs/go/main/App'
 import { GetTerminalSettings } from '../../wailsjs/go/settings/Service'
-import { EventsOn, EventsOff, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
+import { EventsOn, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 
 defineOptions({ name: 'TerminalsPage' })
 
@@ -99,8 +99,8 @@ interface TerminalInstance {
   term: Terminal
   fit: FitAddon
   webgl: WebglAddon | null
-  dataListener: string
-  exitListener: string
+  disposeDataListener: (() => void) | null
+  disposeExitListener: (() => void) | null
   lastCols: number
   lastRows: number
 }
@@ -159,17 +159,27 @@ function appTypeLabel(appType: string): string {
 function setTermRef(id: string, el: HTMLElement | null) {
   if (el) {
     termRefs.set(id, el)
+  } else {
+    termRefs.delete(id)
   }
 }
 
 function switchTab(id: string) {
   activeSessionId.value = id
-  nextTick(() => fitTerminal(id))
+  nextTick(() => fitTerminal(id, true))
 }
 
-function fitTerminal(id: string) {
+function fitTerminal(id: string, force = false) {
   const inst = terminals.get(id)
   if (!inst) return
+  const dims = inst.fit.proposeDimensions()
+  if (!dims || dims.cols <= 0 || dims.rows <= 0) return
+
+  const sameDims = dims.cols === inst.lastCols && dims.rows === inst.lastRows
+  // 未发生实际尺寸变化时，避免重复 fit 引发 xterm/ConPTY 的重复重绘。
+  // 仅在显式切换标签或页面重新激活这类可见性恢复场景下强制执行一次。
+  if (sameDims && !force) return
+
   try {
     // 保存当前滚动状态：判断用户是否停留在底部
     const viewport = termRefs.get(id)?.querySelector('.xterm-viewport') as HTMLElement | null
@@ -179,8 +189,7 @@ function fitTerminal(id: string) {
       : true
 
     inst.fit.fit()
-    const dims = inst.fit.proposeDimensions()
-    if (dims && (dims.cols !== inst.lastCols || dims.rows !== inst.lastRows)) {
+    if (!sameDims) {
       inst.lastCols = dims.cols
       inst.lastRows = dims.rows
       PtyResize(id, dims.cols, dims.rows).catch(() => {})
@@ -433,7 +442,7 @@ function createTerminal(sessionId: string) {
 
   // 后端 PTY 输出 → 写入 xterm
   const dataEvent = 'pty:data:' + sessionId
-  EventsOn(dataEvent, (base64Data: string) => {
+  const disposeDataListener = EventsOn(dataEvent, (base64Data: string) => {
     try {
       // base64 → Uint8Array → xterm (xterm 内部处理 UTF-8 解码)
       const bytes = base64ToUint8(base64Data)
@@ -445,7 +454,7 @@ function createTerminal(sessionId: string) {
 
   // 进程退出通知
   const exitEvent = 'pty:exit:' + sessionId
-  EventsOn(exitEvent, (info: any) => {
+  const disposeExitListener = EventsOn(exitEvent, (info: any) => {
       term.write('\r\n\x1b[33m[amagi-codebox] 进程已退出')
     if (info && info.exitCode !== undefined) {
       term.write(` (exit code: ${info.exitCode})`)
@@ -458,8 +467,8 @@ function createTerminal(sessionId: string) {
     term,
     fit,
     webgl: null,
-    dataListener: dataEvent,
-    exitListener: exitEvent,
+    disposeDataListener,
+    disposeExitListener,
     lastCols: 0,
     lastRows: 0,
   }
@@ -546,7 +555,9 @@ function createTerminal(sessionId: string) {
 
       fit.fit()
       const dims = fit.proposeDimensions()
-      if (dims) {
+      if (dims && dims.cols > 0 && dims.rows > 0) {
+        inst.lastCols = dims.cols
+        inst.lastRows = dims.rows
         PtyResize(sessionId, dims.cols, dims.rows).catch(() => {})
       }
 
@@ -597,8 +608,10 @@ function destroyTerminal(sessionId: string) {
   const inst = terminals.get(sessionId)
   if (!inst) return
 
-  EventsOff(inst.dataListener)
-  EventsOff(inst.exitListener)
+  inst.disposeDataListener?.()
+  inst.disposeDataListener = null
+  inst.disposeExitListener?.()
+  inst.disposeExitListener = null
   inst.term.dispose()
   terminals.delete(sessionId)
   termRefs.delete(sessionId)
@@ -674,7 +687,7 @@ function handleVisibilityChange() {
   if (visibilityRefitTimer) clearTimeout(visibilityRefitTimer)
   visibilityRefitTimer = window.setTimeout(() => {
     if (activeSessionId.value) {
-      fitTerminal(activeSessionId.value)
+      fitTerminal(activeSessionId.value, true)
     }
   }, 100)
 }
@@ -725,7 +738,7 @@ onActivated(() => {
     // 延迟一帧确保容器已有正确尺寸
     requestAnimationFrame(() => {
       if (activeSessionId.value) {
-        fitTerminal(activeSessionId.value)
+        fitTerminal(activeSessionId.value, true)
       }
     })
   })
