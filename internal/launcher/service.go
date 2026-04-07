@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/session"
 )
@@ -27,13 +28,22 @@ type LauncherService struct {
 	mu        sync.Mutex
 	proxyPort int
 	log       *logging.Service
+	envVars   *envvars.EnvVarsService
 }
 
-func NewLauncherService(log *logging.Service) *LauncherService {
+func NewLauncherService(log *logging.Service, envVars *envvars.EnvVarsService) *LauncherService {
 	return &LauncherService{
 		processes: make(map[string]*exec.Cmd),
 		log:       log,
+		envVars:   envVars,
 	}
+}
+
+func (s *LauncherService) baseEnv() []string {
+	if s.envVars != nil {
+		return s.envVars.MergeWithSystem()
+	}
+	return os.Environ()
 }
 
 func (s *LauncherService) SetProxyPort(port int) {
@@ -144,7 +154,7 @@ func (s *LauncherService) Launch(
 	workDir string,
 ) (*LaunchResult, error) {
 	overrides := s.BuildOverrides(provider, presetName, apiKey, agentTeams)
-	env := BuildEnv(os.Environ(), overrides)
+	env := BuildEnv(s.baseEnv(), overrides)
 
 	// ============================================================
 	// 启动策略：复刻原始验证可行的方式
@@ -206,7 +216,7 @@ func (s *LauncherService) LaunchOpenCode(
 	workDir string,
 	envOverrides map[string]string,
 ) (*LaunchResult, error) {
-	env := BuildEnv(os.Environ(), envOverrides)
+	env := BuildEnv(s.baseEnv(), envOverrides)
 
 	cmd := s.buildOpenCodeCmd(workDir, env)
 
@@ -254,7 +264,7 @@ func (s *LauncherService) LaunchCodex(
 	workDir string,
 	envOverrides map[string]string,
 ) (*LaunchResult, error) {
-	env := BuildEnv(os.Environ(), envOverrides)
+	env := BuildEnv(s.baseEnv(), envOverrides)
 
 	cmd := s.buildCodexCmd(modelName, workDir, env)
 

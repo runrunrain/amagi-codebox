@@ -3,6 +3,8 @@ package launcher
 import (
 	"strings"
 	"testing"
+
+	"amagi-codebox/internal/envvars"
 )
 
 func TestBuildEnvPriorityChain(t *testing.T) {
@@ -12,8 +14,8 @@ func TestBuildEnvPriorityChain(t *testing.T) {
 
 	base := []string{
 		"PATH=/usr/bin",
-		"MY_CUSTOM_VAR=custom_value",       // 自定义变量（来自 envvars service）
-		"ANTHROPIC_API_KEY=old_key",        // 系统中存在的 key（应被 override 覆盖）
+		"MY_CUSTOM_VAR=custom_value", // 自定义变量（来自 envvars service）
+		"ANTHROPIC_API_KEY=old_key",  // 系统中存在的 key（应被 override 覆盖）
 	}
 
 	overrides := map[string]string{
@@ -66,7 +68,7 @@ func TestBuildEnvDeleteOnEmpty(t *testing.T) {
 	}
 	overrides := map[string]string{
 		"ANTHROPIC_AUTH_TOKEN": "", // 删除
-		"ANTHROPIC_API_KEY":   "real_key",
+		"ANTHROPIC_API_KEY":    "real_key",
 	}
 
 	result := BuildEnv(base, overrides)
@@ -107,4 +109,27 @@ func TestBuildEnvNewKeyAppended(t *testing.T) {
 	if !found {
 		t.Fatal("NEW_KEY should be appended to result")
 	}
+}
+
+func TestLauncherBaseEnvUsesCustomEnvVars(t *testing.T) {
+	t.Setenv("AMAGI_CODEBOX_LAUNCHER_ENV_TEST", "system")
+
+	envSvc := envvars.NewEnvVarsService(t.TempDir())
+	if err := envSvc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := envSvc.Set("AMAGI_CODEBOX_LAUNCHER_ENV_TEST", "custom"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	svc := NewLauncherService(nil, envSvc)
+	base := svc.baseEnv()
+
+	for _, kv := range base {
+		if kv == "AMAGI_CODEBOX_LAUNCHER_ENV_TEST=custom" {
+			return
+		}
+	}
+
+	t.Fatal("expected launcher base env to contain custom env var override")
 }

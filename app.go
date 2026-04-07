@@ -58,11 +58,12 @@ type App struct {
 func NewApp() *App {
 	configDir := defaultConfigDir()
 	log := logging.NewService(configDir)
+	envVarsSvc := envvars.NewEnvVarsService(configDir)
 
 	app := &App{
 		Config:   config.NewConfigService(configDir),
 		Secrets:  secrets.NewSecretsService(configDir),
-		Launcher: launcher.NewLauncherService(log),
+		Launcher: launcher.NewLauncherService(log, envVarsSvc),
 		Proxy:    proxy.NewProxyService(),
 		Tray:     tray.NewService(),
 		Sessions: session.NewManager(),
@@ -70,7 +71,7 @@ func NewApp() *App {
 		Log:      log,
 		Pty:      pty.NewService(log),
 		Settings: settings.NewService(configDir),
-		EnvVars:  envvars.NewEnvVarsService(configDir),
+		EnvVars:  envVarsSvc,
 		Updater:  updater.NewService(Version, log),
 		Plugins:  plugin.NewService("", log),
 	}

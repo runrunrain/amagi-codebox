@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -177,6 +178,35 @@ func TestMergeWithSystemOverride(t *testing.T) {
 		}
 	}
 	t.Fatal("PATH not found in merged env")
+}
+
+func TestMergeEnvWindowsCaseInsensitiveOverride(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only path case-insensitive behavior")
+	}
+
+	merged := mergeEnv(
+		[]string{
+			"Path=C:\\Windows\\System32",
+			"ComSpec=C:\\Windows\\System32\\cmd.exe",
+		},
+		[]EnvVar{{Key: "PATH", Value: `C:\custom\bin`}},
+	)
+
+	pathCount := 0
+	for _, kv := range merged {
+		k, v := splitEnvKV(kv)
+		if k == "Path" || k == "PATH" || k == "path" {
+			pathCount++
+			if v != `C:\custom\bin` {
+				t.Fatalf("PATH should be overridden to %q, got %q", `C:\custom\bin`, v)
+			}
+		}
+	}
+
+	if pathCount != 1 {
+		t.Fatalf("expected exactly 1 PATH entry, got %d", pathCount)
+	}
 }
 
 func TestBatchSet(t *testing.T) {

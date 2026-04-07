@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -200,56 +202,69 @@ func (s *EnvVarsService) MergeWithSystem() []string {
 	copy(customVars, s.envVars)
 	s.mu.RUnlock()
 
-	// 以系统环境变量为基础
-	base := os.Environ()
+	return mergeEnv(os.Environ(), customVars)
+}
 
-	// 构建覆盖 map（自定义变量）
-	overrides := make(map[string]string, len(customVars))
-	for _, ev := range customVars {
-		if ev.Key != "" {
-			overrides[ev.Key] = ev.Value
+func mergeEnv(base []string, customVars []EnvVar) []string {
+	caseInsensitive := runtime.GOOS == "windows"
+	normalizeKey := func(key string) string {
+		if caseInsensitive {
+			return strings.ToUpper(key)
 		}
+		return key
 	}
 
-	if len(overrides) == 0 {
-		return base
-	}
-
-	// 构建结果：保留系统变量，覆盖或追加自定义变量
-	result := make([]string, 0, len(base)+len(overrides))
-	overriddenKeys := make(map[string]struct{}, len(overrides))
+	values := make(map[string]string, len(base)+len(customVars))
+	order := make([]string, 0, len(base)+len(customVars))
+	seen := make(map[string]struct{}, len(base)+len(customVars))
+	keyMap := make(map[string]string, len(base)+len(customVars))
 
 	for _, kv := range base {
-		// 找到 = 的位置分割 key
-		eq := -1
-		for i, c := range kv {
-			if c == '=' {
-				eq = i
-				break
-			}
-		}
-		if eq < 0 {
-			result = append(result, kv)
+		k, v := splitEnvKV(kv)
+		if k == "" {
 			continue
 		}
-		k := kv[:eq]
-		if newVal, ok := overrides[k]; ok {
-			result = append(result, k+"="+newVal)
-			overriddenKeys[k] = struct{}{}
-		} else {
-			result = append(result, kv)
+		nk := normalizeKey(k)
+		actualKey, ok := keyMap[nk]
+		if !ok {
+			actualKey = k
+			keyMap[nk] = actualKey
+		}
+		values[actualKey] = v
+		if _, ok := seen[actualKey]; !ok {
+			seen[actualKey] = struct{}{}
+			order = append(order, actualKey)
 		}
 	}
 
-	// 追加系统中不存在的自定义变量
 	for _, ev := range customVars {
 		if ev.Key == "" {
 			continue
 		}
-		if _, alreadySet := overriddenKeys[ev.Key]; !alreadySet {
-			result = append(result, ev.Key+"="+ev.Value)
+		nk := normalizeKey(ev.Key)
+		actualKey, ok := keyMap[nk]
+		if !ok {
+			actualKey = ev.Key
+			keyMap[nk] = actualKey
+		}
+		values[actualKey] = ev.Value
+		if _, ok := seen[actualKey]; !ok {
+			seen[actualKey] = struct{}{}
+			order = append(order, actualKey)
 		}
 	}
 
-	return result
+	out := make([]string, 0, len(order))
+	for _, k := range order {
+		out = append(out, k+"="+values[k])
+	}
+	return out
+}
+
+func splitEnvKV(kv string) (key string, val string) {
+	i := strings.IndexByte(kv, '=')
+	if i <= 0 {
+		return "", ""
+	}
+	return kv[:i], kv[i+1:]
 }
