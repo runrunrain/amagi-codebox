@@ -348,10 +348,10 @@ func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.C
 	return cmd
 }
 
-// buildAmagiCmd 构建 amagi-code 进程命令。
-// 与 buildClaudeCmd 类似，但启动的是 amagi-code 命令。
+// buildAmagiCmd 构建 amagicode 进程命令。
+// 与 buildClaudeCmd 类似，但启动的是 amagicode 命令。
 func (s *LauncherService) buildAmagiCmd(workDir string, env []string) *exec.Cmd {
-	cmd := exec.Command("amagi-code")
+	cmd := exec.Command("amagicode")
 	cmd.Dir = workDir
 	cmd.Env = env
 	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。
@@ -378,7 +378,7 @@ func (s *LauncherService) LaunchAmagiCode(
 
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "AmagiCode 进程启动失败", err.Error())
-		return nil, fmt.Errorf("start amagi-code process: %w", err)
+		return nil, fmt.Errorf("start amagicode process: %w", err)
 	}
 
 	pid := 0

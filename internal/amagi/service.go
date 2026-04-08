@@ -27,8 +27,31 @@ func NewService(configDir string) *Service {
 	}
 }
 
+// deepCopyPreset creates a deep copy of AmagiModelPreset, including reference-type fields.
+func deepCopyPreset(p AmagiModelPreset) AmagiModelPreset {
+	cp := p
+	if p.Thinking != nil {
+		t := *p.Thinking
+		cp.Thinking = &t
+	}
+	if p.ProtocolOptions != nil {
+		cp.ProtocolOptions = make(map[string]interface{}, len(p.ProtocolOptions))
+		for k, v := range p.ProtocolOptions {
+			cp.ProtocolOptions[k] = v
+		}
+	}
+	if p.ProviderOptions != nil {
+		cp.ProviderOptions = make(map[string]interface{}, len(p.ProviderOptions))
+		for k, v := range p.ProviderOptions {
+			cp.ProviderOptions[k] = v
+		}
+	}
+	return cp
+}
+
 // Load reads settings_amagi.json from disk.
 // Returns default empty config if file doesn't exist (no error).
+// Supports backward-compatible migration from flat preset structure to grouped structure.
 func (s *Service) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -43,9 +66,41 @@ func (s *Service) Load() error {
 		return fmt.Errorf("read amagi config: %w", err)
 	}
 
-	var cfg AmagiSettings
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	// First parse the full config with raw model_presets
+	type rawSettings struct {
+		Model                    string                             `json:"model"`
+		Providers                map[string]AmagiProvider           `json:"providers"`
+		AvailableModels          []string                           `json:"available_models,omitempty"`
+		ModelOverrides           map[string]string                  `json:"model_overrides,omitempty"`
+		ModelCapabilityOverrides map[string]AmagiCapabilityOverride `json:"model_capability_overrides,omitempty"`
+		RawModelPresets          json.RawMessage                    `json:"model_presets"`
+		AlwaysThinkingEnabled    *bool                              `json:"always_thinking_enabled,omitempty"`
+		EffortLevel              string                             `json:"effort_level,omitempty"`
+		AdvisorModel             string                             `json:"advisor_model,omitempty"`
+	}
+
+	var raw rawSettings
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return fmt.Errorf("parse amagi config json: %w", err)
+	}
+
+	// Migrate model_presets from old format if needed
+	modelPresets, oldModel, migrated, err := migrateModelPresets(raw.RawModelPresets, raw.Model)
+	if err != nil {
+		return fmt.Errorf("migrate model presets: %w", err)
+	}
+
+	// Build final config
+	cfg := AmagiSettings{
+		Model:                    raw.Model,
+		Providers:                raw.Providers,
+		AvailableModels:          raw.AvailableModels,
+		ModelOverrides:           raw.ModelOverrides,
+		ModelCapabilityOverrides: raw.ModelCapabilityOverrides,
+		ModelPresets:             modelPresets,
+		AlwaysThinkingEnabled:    raw.AlwaysThinkingEnabled,
+		EffortLevel:              raw.EffortLevel,
+		AdvisorModel:             raw.AdvisorModel,
 	}
 
 	// Initialize nil maps to avoid panics
@@ -62,35 +117,97 @@ func (s *Service) Load() error {
 		cfg.ModelCapabilityOverrides = map[string]AmagiCapabilityOverride{}
 	}
 	if cfg.ModelPresets == nil {
-		cfg.ModelPresets = map[string]AmagiModelPreset{}
+		cfg.ModelPresets = map[string]ModelPresetGroup{}
 	}
 
 	s.config = &cfg
-	s.dirty = false
+
+	// Persist migration immediately to avoid data loss on abnormal exit
+	if migrated {
+		if oldModel != "" {
+			if defaultGroup, ok := s.config.ModelPresets["Default"]; ok {
+				defaultGroup.DefaultPreset = oldModel
+				s.config.ModelPresets["Default"] = defaultGroup
+			}
+		}
+		s.config.Model = "Default"
+		if err := s.saveLocked(); err != nil {
+			return fmt.Errorf("persist migrated config: %w", err)
+		}
+	} else {
+		s.dirty = false
+	}
 	return nil
+}
+
+// hasValidGroupStructure checks if the groups map contains valid new-format structure.
+// Returns true if at least one group has non-empty presets, description, or default_preset.
+func hasValidGroupStructure(groups map[string]ModelPresetGroup) bool {
+	for _, g := range groups {
+		if g.Presets != nil || g.Description != "" || g.DefaultPreset != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateModelPresets attempts to parse model_presets as new format first,
+// then falls back to old flat format if needed.
+// Returns (presets, oldModelValue, wasMigrated, error).
+func migrateModelPresets(rawJSON json.RawMessage, oldModelValue string) (map[string]ModelPresetGroup, string, bool, error) {
+	if len(rawJSON) == 0 || string(rawJSON) == "null" {
+		return map[string]ModelPresetGroup{}, "", false, nil
+	}
+
+	// Try new format first
+	var groups map[string]ModelPresetGroup
+	if err := json.Unmarshal(rawJSON, &groups); err == nil {
+		// Check if it's actually new format using structure validation
+		if hasValidGroupStructure(groups) {
+			return groups, "", false, nil
+		}
+	}
+
+	// Try old format (flat presets)
+	var flat map[string]AmagiModelPreset
+	if err := json.Unmarshal(rawJSON, &flat); err != nil {
+		// Neither format worked, return empty
+		return map[string]ModelPresetGroup{}, "", false, nil
+	}
+
+	if len(flat) == 0 {
+		return map[string]ModelPresetGroup{}, "", false, nil
+	}
+
+	// Migrate: wrap all flat presets into a "Default" group
+	defaultGroup := ModelPresetGroup{
+		Description:   "从旧版格式自动迁移",
+		DefaultPreset: "", // Will be set by caller based on old "model" field
+		Presets:       flat,
+	}
+	return map[string]ModelPresetGroup{"Default": defaultGroup}, oldModelValue, true, nil
 }
 
 // Save writes settings_amagi.json to disk using atomic write.
 // Only writes if dirty flag is true.
+// Uses write lock throughout to ensure atomicity of check-write-clear cycle.
 func (s *Service) Save() error {
-	s.mu.RLock()
-	cfg := s.config
-	path := s.configPath
-	dirty := s.dirty
-	s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if cfg == nil {
+	if s.config == nil {
 		return errors.New("config not loaded")
 	}
-	if !dirty {
+	if !s.dirty {
 		return nil // No changes to save
 	}
 
+	path := s.configPath
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir amagi config dir: %w", err)
 	}
 
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	b, err := json.MarshalIndent(s.config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal amagi config: %w", err)
 	}
@@ -105,10 +222,7 @@ func (s *Service) Save() error {
 		return fmt.Errorf("replace amagi config: %w", err)
 	}
 
-	s.mu.Lock()
 	s.dirty = false
-	s.mu.Unlock()
-
 	return nil
 }
 
@@ -173,9 +287,17 @@ func (s *Service) GetSettings() *AmagiSettings {
 		}
 	}
 	if copy.ModelPresets != nil {
-		copy.ModelPresets = make(map[string]AmagiModelPreset, len(s.config.ModelPresets))
-		for k, v := range s.config.ModelPresets {
-			copy.ModelPresets[k] = v
+		copy.ModelPresets = make(map[string]ModelPresetGroup, len(s.config.ModelPresets))
+		for groupName, group := range s.config.ModelPresets {
+			groupCopy := group
+			// Deep copy the presets map within each group
+			if group.Presets != nil {
+				groupCopy.Presets = make(map[string]AmagiModelPreset, len(group.Presets))
+				for presetName, preset := range group.Presets {
+					groupCopy.Presets[presetName] = deepCopyPreset(preset)
+				}
+			}
+			copy.ModelPresets[groupName] = groupCopy
 		}
 	}
 	if copy.AvailableModels != nil {
@@ -188,39 +310,54 @@ func (s *Service) GetSettings() *AmagiSettings {
 	return &copy
 }
 
-// GetModelPresets returns all model presets.
-func (s *Service) GetModelPresets() map[string]AmagiModelPreset {
+// GetModelPresets returns all model preset groups.
+func (s *Service) GetModelPresets() map[string]ModelPresetGroup {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.config == nil || s.config.ModelPresets == nil {
-		return map[string]AmagiModelPreset{}
+		return map[string]ModelPresetGroup{}
 	}
-	out := make(map[string]AmagiModelPreset, len(s.config.ModelPresets))
+	out := make(map[string]ModelPresetGroup, len(s.config.ModelPresets))
 	for k, v := range s.config.ModelPresets {
-		out[k] = v
+		groupCopy := v
+		// Deep copy the presets map within each group
+		if v.Presets != nil {
+			groupCopy.Presets = make(map[string]AmagiModelPreset, len(v.Presets))
+			for presetName, preset := range v.Presets {
+				groupCopy.Presets[presetName] = deepCopyPreset(preset)
+			}
+		}
+		out[k] = groupCopy
 	}
 	return out
 }
 
-// GetModelPreset returns a specific preset by name.
-func (s *Service) GetModelPreset(name string) (*AmagiModelPreset, error) {
+// GetModelPreset returns a specific preset group by name.
+func (s *Service) GetModelPreset(name string) (*ModelPresetGroup, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.config == nil {
 		return nil, errors.New("config not loaded")
 	}
-	preset, ok := s.config.ModelPresets[name]
+	group, ok := s.config.ModelPresets[name]
 	if !ok {
-		return nil, fmt.Errorf("preset not found: %s", name)
+		return nil, fmt.Errorf("preset group not found: %s", name)
 	}
-	copy := preset
-	return &copy, nil
+	groupCopy := group
+	// Deep copy the presets map
+	if group.Presets != nil {
+		groupCopy.Presets = make(map[string]AmagiModelPreset, len(group.Presets))
+		for presetName, preset := range group.Presets {
+			groupCopy.Presets[presetName] = deepCopyPreset(preset)
+		}
+	}
+	return &groupCopy, nil
 }
 
-// SaveModelPreset saves or updates a model preset.
-func (s *Service) SaveModelPreset(name string, preset AmagiModelPreset) error {
+// SaveModelPreset saves or updates a model preset group.
+func (s *Service) SaveModelPreset(name string, group ModelPresetGroup) error {
 	if name == "" {
-		return errors.New("preset name is required")
+		return errors.New("preset group name is required")
 	}
 
 	s.mu.Lock()
@@ -229,16 +366,16 @@ func (s *Service) SaveModelPreset(name string, preset AmagiModelPreset) error {
 		return errors.New("config not loaded")
 	}
 	if s.config.ModelPresets == nil {
-		s.config.ModelPresets = map[string]AmagiModelPreset{}
+		s.config.ModelPresets = map[string]ModelPresetGroup{}
 	}
-	s.config.ModelPresets[name] = preset
+	s.config.ModelPresets[name] = group
 	return s.saveLocked()
 }
 
-// DeleteModelPreset deletes a model preset.
+// DeleteModelPreset deletes a model preset group.
 func (s *Service) DeleteModelPreset(name string) error {
 	if name == "" {
-		return errors.New("preset name is required")
+		return errors.New("preset group name is required")
 	}
 
 	s.mu.Lock()
@@ -253,7 +390,124 @@ func (s *Service) DeleteModelPreset(name string) error {
 	return s.saveLocked()
 }
 
-// SetModel sets the default model.
+// RenameModelPreset renames a model preset group atomically under write lock.
+// If the active model references the old name, it is updated to the new name.
+func (s *Service) RenameModelPreset(oldName, newName string) error {
+	if oldName == "" || newName == "" {
+		return errors.New("both old and new preset group names are required")
+	}
+	if oldName == newName {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+
+	group, ok := s.config.ModelPresets[oldName]
+	if !ok {
+		return fmt.Errorf("preset group not found: %s", oldName)
+	}
+	if _, exists := s.config.ModelPresets[newName]; exists {
+		return fmt.Errorf("preset group already exists: %s", newName)
+	}
+
+	s.config.ModelPresets[newName] = group
+	delete(s.config.ModelPresets, oldName)
+
+	// Update active model reference if it was pointing to the old name
+	if s.config.Model == oldName {
+		s.config.Model = newName
+	}
+
+	return s.saveLocked()
+}
+
+// GetSubPreset returns a specific sub-preset within a group.
+func (s *Service) GetSubPreset(groupName, presetName string) (*AmagiModelPreset, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return nil, errors.New("config not loaded")
+	}
+	group, ok := s.config.ModelPresets[groupName]
+	if !ok {
+		return nil, fmt.Errorf("preset group not found: %s", groupName)
+	}
+	preset, ok := group.Presets[presetName]
+	if !ok {
+		return nil, fmt.Errorf("sub-preset not found: %s in group %s", presetName, groupName)
+	}
+	copy := preset
+	return &copy, nil
+}
+
+// SaveSubPreset saves or updates a sub-preset within a group.
+func (s *Service) SaveSubPreset(groupName, presetName string, preset AmagiModelPreset) error {
+	if groupName == "" {
+		return errors.New("group name is required")
+	}
+	if presetName == "" {
+		return errors.New("preset name is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.ModelPresets == nil {
+		s.config.ModelPresets = map[string]ModelPresetGroup{}
+	}
+
+	group, ok := s.config.ModelPresets[groupName]
+	if !ok {
+		// Create new group if it doesn't exist
+		group = ModelPresetGroup{
+			Presets: map[string]AmagiModelPreset{},
+		}
+	}
+	if group.Presets == nil {
+		group.Presets = map[string]AmagiModelPreset{}
+	}
+	group.Presets[presetName] = preset
+	s.config.ModelPresets[groupName] = group
+	return s.saveLocked()
+}
+
+// DeleteSubPreset deletes a sub-preset from a group.
+func (s *Service) DeleteSubPreset(groupName, presetName string) error {
+	if groupName == "" {
+		return errors.New("group name is required")
+	}
+	if presetName == "" {
+		return errors.New("preset name is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.ModelPresets == nil {
+		return nil
+	}
+
+	group, ok := s.config.ModelPresets[groupName]
+	if !ok {
+		return nil
+	}
+	if group.Presets == nil {
+		return nil
+	}
+	delete(group.Presets, presetName)
+	s.config.ModelPresets[groupName] = group
+	return s.saveLocked()
+}
+
+// SetModel sets the default model (now: current active group name).
 func (s *Service) SetModel(model string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -272,6 +526,17 @@ func (s *Service) SetEffortLevel(level string) error {
 		return errors.New("config not loaded")
 	}
 	s.config.EffortLevel = level
+	return s.saveLocked()
+}
+
+// SetAvailableModels sets the available models list.
+func (s *Service) SetAvailableModels(models []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	s.config.AvailableModels = models
 	return s.saveLocked()
 }
 
@@ -357,7 +622,7 @@ func (s *Service) SaveSettingsJSON(jsonStr string) error {
 		s.config.ModelCapabilityOverrides = map[string]AmagiCapabilityOverride{}
 	}
 	if s.config.ModelPresets == nil {
-		s.config.ModelPresets = map[string]AmagiModelPreset{}
+		s.config.ModelPresets = map[string]ModelPresetGroup{}
 	}
 
 	return s.saveLocked()

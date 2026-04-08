@@ -28,7 +28,6 @@ type DashboardDefaults struct {
 	OpenCodeShell    string `json:"openCodeShell"`
 	CodexMode        string `json:"codexMode"`
 	CodexShell       string `json:"codexShell"`
-	AmagiCodeProvider string `json:"amagiCodeProvider"`
 	AmagiCodePreset   string `json:"amagiCodePreset"`
 	AmagiCodeMode     string `json:"amagiCodeMode"`
 	AmagiCodeShell    string `json:"amagiCodeShell"`

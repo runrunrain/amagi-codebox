@@ -497,18 +497,11 @@
         <div v-if="activeLaunchTab === 'amagicode'" class="launch-tab-content">
           <div class="form-row">
             <div class="form-group flex-1">
-              <label>服务提供商</label>
-              <select v-model="amagiCodeProvider" class="input-field">
-                <option v-for="(provider, name) in anthropicProviders" :key="name" :value="name">
-                  {{ name }}
-                </option>
-              </select>
-            </div>
-            <div class="form-group flex-1">
               <label>预设配置</label>
               <select v-model="amagiCodePreset" class="input-field" :disabled="!hasAmagiPresets">
-                <option v-for="(preset, name) in amagiAvailablePresets" :key="name" :value="name">
-                  {{ name }} ({{ preset.model }})
+                <option value="">请选择 ModelPreset...</option>
+                <option v-for="(group, name) in amagiAvailablePresets" :key="name" :value="name">
+                  {{ name }} ({{ getGroupSummary(group) }})
                 </option>
               </select>
             </div>
@@ -649,7 +642,6 @@ const codexShell = toRef(dashState, 'codexShell')
 const claudeCustomShellPath = toRef(dashState, 'claudeCustomShellPath')
 const openCodeCustomShellPath = toRef(dashState, 'openCodeCustomShellPath')
 const codexCustomShellPath = toRef(dashState, 'codexCustomShellPath')
-const amagiCodeProvider = toRef(dashState, 'amagiCodeProvider')
 const amagiCodePreset = toRef(dashState, 'amagiCodePreset')
 const amagiCodeMode = toRef(dashState, 'amagiCodeMode')
 const amagiCodeShell = toRef(dashState, 'amagiCodeShell')
@@ -706,8 +698,18 @@ const codexAvailableModels = computed(() => {
   return Object.values(presets).map(p => p.model).filter(Boolean)
 })
 
-// AmagiCode 预设（从 settings_amagi.json 的 modelPresets）
-const amagiAvailablePresets = ref<Record<string, { model: string; [key: string]: any }>>({})
+// AmagiCode 预设组（从 settings_amagi.json 的 modelPresets，现在是 ModelPresetGroup）
+const amagiAvailablePresets = ref<Record<string, any>>({})
+
+function getGroupSummary(group: any): string {
+  const presets = group?.presets || {}
+  const count = Object.keys(presets).length
+  const defaultPreset = group?.default_preset || ''
+  if (count === 0) return '空组'
+  let summary = `${count} 个预设`
+  if (defaultPreset) summary += `, 默认: ${defaultPreset}`
+  return summary
+}
 
 const hasAmagiPresets = computed(() => Object.keys(amagiAvailablePresets.value).length > 0)
 
@@ -803,8 +805,8 @@ const canLaunch = computed(() => {
     // provider 和 model 均为可选
     return true
   } else if (activeLaunchTab.value === 'amagicode') {
-    // AmagiCode 需要 provider 和 preset
-    return amagiCodeProvider.value && amagiCodePreset.value
+    // AmagiCode 只需要预设，provider 从预设中获取
+    return !!amagiCodePreset.value
   } else {
     // OpenCode 只需要工作目录，provider 可选
     return !!selectedWorkDir.value
@@ -847,10 +849,6 @@ watch(selectedCodexProvider, () => {
   }
 })
 
-watch(amagiCodeProvider, (newVal) => {
-  // AmagiCode 预设来自 settings_amagi.json，与 provider 无关
-  // 但可以在这里添加 provider 相关的预设过滤逻辑
-})
 
 const loadShellPaths = async () => {
   try {
@@ -874,6 +872,10 @@ const loadAmagiSettings = async () => {
     const settings = await GetAmagiSettings()
     if (settings && settings.model_presets) {
       amagiAvailablePresets.value = settings.model_presets
+      // 如果有激活组且当前未选择，自动选择
+      if (settings.model && !amagiCodePreset.value) {
+        amagiCodePreset.value = settings.model
+      }
     }
   } catch (err) {
     console.error('Failed to load AmagiCode settings:', err)
@@ -896,7 +898,6 @@ const initDefaults = async () => {
     dashState.openCodeShell = d.openCodeShell || d.shell || 'pwsh'
     dashState.codexShell = d.codexShell || d.shell || 'pwsh'
     dashState.amagiCodeShell = d.amagiCodeShell || d.shell || 'pwsh'
-    dashState.amagiCodeProvider = d.amagiCodeProvider || ''
     dashState.amagiCodePreset = d.amagiCodePreset || ''
     dashState.useProxy = d.useProxy || false
   } catch (err) {
@@ -925,7 +926,6 @@ const persistDashboardDefaults = async () => {
       codexShell: codexShell.value,
       amagiCodeMode: amagiCodeMode.value,
       amagiCodeShell: amagiCodeShell.value,
-      amagiCodeProvider: amagiCodeProvider.value,
       amagiCodePreset: amagiCodePreset.value,
       useProxy: useProxy.value,
     } as any)
@@ -1044,7 +1044,7 @@ const handleLaunchAmagiCode = async () => {
     const shellPath = amagiCodeMode.value === 'embedded' ? resolveAmagiCodeShellPath() : ''
     const sessionId = await LaunchAmagiCode(
       amagiCodePreset.value,
-      amagiCodeProvider.value,
+      '',
       amagiCodeMode.value,
       selectedWorkDir.value,
       shellPath,

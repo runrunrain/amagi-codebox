@@ -9,7 +9,6 @@ const state = reactive({
     claudeMode: 'embedded',
     openCodeMode: 'embedded',
     codexMode: 'embedded',
-    amagiCodeProvider: '',
     amagiCodePreset: '',
     amagiCodeMode: 'embedded',
     amagiCodeShell: 'pwsh',
