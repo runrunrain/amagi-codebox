@@ -7,6 +7,7 @@ import {logging} from '../models';
 import {paths} from '../models';
 import {session} from '../models';
 import {settings} from '../models';
+import {amagi} from '../models';
 
 export function AddProxyBackendURL(arg1:string):Promise<void>;
 
@@ -141,3 +142,19 @@ export function UnregisterExitCallback(arg1:string,arg2:string):Promise<void>;
 export function UnregisterOutputCallback(arg1:string,arg2:string):Promise<void>;
 
 export function UnregisterResizeCallback(arg1:string,arg2:string):Promise<void>;
+
+export function DeleteAmagiModelPreset(arg1:string):Promise<void>;
+
+export function GetAmagiSettings():Promise<amagi.AmagiSettings>;
+
+export function GetAmagiSettingsJSON():Promise<string>;
+
+export function LaunchAmagiCode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
+
+export function SaveAmagiModelPreset(arg1:string,arg2:amagi.AmagiModelPreset):Promise<void>;
+
+export function SaveAmagiSettingsJSON(arg1:string):Promise<void>;
+
+export function SetAmagiEffortLevel(arg1:string):Promise<void>;
+
+export function SetAmagiModel(arg1:string):Promise<void>;

@@ -660,6 +660,10 @@ export namespace settings {
 	    openCodeShell: string;
 	    codexMode: string;
 	    codexShell: string;
+	    amagiCodeMode: string;
+	    amagiCodeShell: string;
+	    amagiCodeProvider: string;
+	    amagiCodePreset: string;
 	    useProxy: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -668,18 +672,22 @@ export namespace settings {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.provider = source["provider"];
-	        this.preset = source["preset"];
-	        this.openCodeProvider = source["openCodeProvider"];
-	        this.mode = source["mode"];
-	        this.shell = source["shell"];
-	        this.claudeMode = source["claudeMode"];
-	        this.claudeShell = source["claudeShell"];
-	        this.openCodeMode = source["openCodeMode"];
-	        this.openCodeShell = source["openCodeShell"];
-	        this.codexMode = source["codexMode"];
-	        this.codexShell = source["codexShell"];
-	        this.useProxy = source["useProxy"];
+	        this.provider = source["provider"] || '';
+	        this.preset = source["preset"] || '';
+	        this.openCodeProvider = source["openCodeProvider"] || '';
+	        this.mode = source["mode"] || '';
+	        this.shell = source["shell"] || '';
+	        this.claudeMode = source["claudeMode"] || '';
+	        this.claudeShell = source["claudeShell"] || '';
+	        this.openCodeMode = source["openCodeMode"] || '';
+	        this.openCodeShell = source["openCodeShell"] || '';
+	        this.codexMode = source["codexMode"] || '';
+	        this.codexShell = source["codexShell"] || '';
+	        this.amagiCodeMode = source["amagiCodeMode"] || '';
+	        this.amagiCodeShell = source["amagiCodeShell"] || '';
+	        this.amagiCodeProvider = source["amagiCodeProvider"] || '';
+	        this.amagiCodePreset = source["amagiCodePreset"] || '';
+	        this.useProxy = source["useProxy"] || false;
 	    }
 	}
 	export class AppSettings {
@@ -765,6 +773,149 @@ export namespace updater {
 	        this.publishedAt = source["publishedAt"];
 	        this.downloadURL = source["downloadURL"];
 	        this.assetSize = source["assetSize"];
+	    }
+	}
+
+}
+
+export namespace amagi {
+
+	export class AmagiCapabilityOverride {
+	    vision?: boolean;
+	    tool_use?: boolean;
+	    tool_use_3way?: boolean;
+	    max_output_tokens?: number;
+	    thinking_budget_tokens?: number;
+	    computer_use?: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new AmagiCapabilityOverride(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vision = source["vision"];
+	        this.tool_use = source["tool_use"];
+	        this.tool_use_3way = source["tool_use_3way"];
+	        this.max_output_tokens = source["max_output_tokens"];
+	        this.thinking_budget_tokens = source["thinking_budget_tokens"];
+	        this.computer_use = source["computer_use"];
+	    }
+	}
+	export class AmagiModelPreset {
+	    provider: string;
+	    model: string;
+	    temperature?: number;
+	    max_tokens?: number;
+	    thinking?: AmagiThinking;
+	    protocol_options?: {[key: string]: any};
+	    provider_options?: {[key: string]: any};
+
+	    static createFrom(source: any = {}) {
+	        return new AmagiModelPreset(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.model = source["model"];
+	        this.temperature = source["temperature"];
+	        this.max_tokens = source["max_tokens"];
+	        this.thinking = this.convertValues(source["thinking"], AmagiThinking);
+	        this.protocol_options = source["protocol_options"];
+	        this.provider_options = source["provider_options"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => elem);
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            Object.keys(a).forEach(key => {
+		                a[key] = new classs(a[key]);
+		            });
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class AmagiProvider {
+	    protocol: string;
+	    base_url?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AmagiProvider(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.protocol = source["protocol"];
+	        this.base_url = source["base_url"];
+	    }
+	}
+	export class AmagiSettings {
+	    model: string;
+	    providers: {[key: string]: AmagiProvider};
+	    available_models?: string[];
+	    model_overrides?: {[key: string]: string};
+	    model_capability_overrides?: {[key: string]: AmagiCapabilityOverride};
+	    model_presets: {[key: string]: AmagiModelPreset};
+	    always_thinking_enabled?: boolean;
+	    effort_level?: string;
+	    advisor_model?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AmagiSettings(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.providers = this.convertValues(source["providers"], AmagiProvider, true);
+	        this.available_models = source["available_models"];
+	        this.model_overrides = source["model_overrides"];
+	        this.model_capability_overrides = this.convertValues(source["model_capability_overrides"], AmagiCapabilityOverride, true);
+	        this.model_presets = this.convertValues(source["model_presets"], AmagiModelPreset, true);
+	        this.always_thinking_enabled = source["always_thinking_enabled"];
+	        this.effort_level = source["effort_level"];
+	        this.advisor_model = source["advisor_model"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => elem);
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            Object.keys(a).forEach(key => {
+		                a[key] = new classs(a[key]);
+		            });
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class AmagiThinking {
+	    type: string;
+	    budget_tokens?: number;
+
+	    static createFrom(source: any = {}) {
+	        return new AmagiThinking(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.budget_tokens = source["budget_tokens"];
 	    }
 	}
 

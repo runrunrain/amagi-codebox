@@ -14,6 +14,7 @@ interface TabItem {
 const tabs: TabItem[] = [
   { key: 'plugins', label: '插件管理', path: '/extensions/plugins' },
   { key: 'envvars', label: '环境变量', path: '/extensions/envvars' },
+  { key: 'amagi', label: 'AmagiCode 特有功能', path: '/extensions/amagi' },
 ]
 
 const activeTab = computed(() => {

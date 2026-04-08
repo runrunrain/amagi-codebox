@@ -9,6 +9,7 @@ const (
 	AppTypeClaudeCode AppType = "claudecode" // Claude Code 应用
 	AppTypeOpenCode   AppType = "opencode"   // Open Code 应用
 	AppTypeCodex      AppType = "codex"      // Codex CLI 应用
+	AppTypeAmagiCode  AppType = "amagicode"  // AmagiCode 应用
 )
 
 // LaunchMode 启动模式

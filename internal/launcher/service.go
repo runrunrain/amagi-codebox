@@ -348,6 +348,65 @@ func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.C
 	return cmd
 }
 
+// buildAmagiCmd 构建 amagi-code 进程命令。
+// 与 buildClaudeCmd 类似，但启动的是 amagi-code 命令。
+func (s *LauncherService) buildAmagiCmd(workDir string, env []string) *exec.Cmd {
+	cmd := exec.Command("amagi-code")
+	cmd.Dir = workDir
+	cmd.Env = env
+	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+// LaunchAmagiCode 启动一个新的 AmagiCode 进程，返回启动结果。
+// 支持两种模式：terminal（独立终端）、embedded（内嵌终端）。
+// envOverrides 中的键值对会注入到进程环境变量，用于传递 AmagiCode 配置和认证信息。
+func (s *LauncherService) LaunchAmagiCode(
+	sessionID string,
+	mode session.LaunchMode,
+	workDir string,
+	envOverrides map[string]string,
+) (*LaunchResult, error) {
+	env := BuildEnv(s.baseEnv(), envOverrides)
+
+	cmd := s.buildAmagiCmd(workDir, env)
+
+	s.log.Info("launcher", "正在启动 AmagiCode 进程", fmt.Sprintf("sessionID=%s mode=%s", sessionID, mode))
+
+	if err := cmd.Start(); err != nil {
+		s.log.Error("launcher", "AmagiCode 进程启动失败", err.Error())
+		return nil, fmt.Errorf("start amagi-code process: %w", err)
+	}
+
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+
+	s.log.Info("launcher", "AmagiCode 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
+
+	s.mu.Lock()
+	s.processes[sessionID] = cmd
+	s.mu.Unlock()
+
+	// 监控进程退出
+	go func(id string, c *exec.Cmd) {
+		err := c.Wait()
+		s.log.Info("launcher", "AmagiCode 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
+		s.mu.Lock()
+		delete(s.processes, id)
+		s.mu.Unlock()
+	}(sessionID, cmd)
+
+	return &LaunchResult{
+		SessionID: sessionID,
+		PID:       pid,
+	}, nil
+}
+
 // Stop 停止指定会话的进程
 func (s *LauncherService) Stop(sessionID string) error {
 	s.log.Info("launcher", "停止进程", "sessionID="+sessionID)

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"amagi-codebox/internal/amagi"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/launcher"
@@ -53,6 +55,7 @@ type App struct {
 	EnvVars  *envvars.EnvVarsService
 	Updater  *updater.Service
 	Plugins  *plugin.Service
+	Amagi    *amagi.Service
 }
 
 func NewApp() *App {
@@ -74,6 +77,7 @@ func NewApp() *App {
 		EnvVars:  envVarsSvc,
 		Updater:  updater.NewService(Version, log),
 		Plugins:  plugin.NewService("", log),
+		Amagi:    amagi.NewService(configDir),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log)
@@ -266,6 +270,11 @@ func (a *App) Startup(ctx context.Context) {
 		a.Log.Warn("app", "加载后端URL历史记录失败", err.Error())
 	} else {
 		a.Log.Info("app", "后端URL历史记录加载成功")
+	}
+	if err := a.Amagi.Load(); err != nil {
+		a.Log.Warn("app", "加载 AmagiCode 配置失败", err.Error())
+	} else {
+		a.Log.Info("app", "AmagiCode 配置加载成功")
 	}
 
 	// 启动远程 API 服务器
@@ -824,6 +833,166 @@ func buildOpenCodeEnvOverrides(providerName string, provider config.Provider, ap
 	return overrides
 }
 
+// LaunchAmagiCode 启动 AmagiCode 终端会话。
+// presetName: modelPresets 中的预设名称
+// providerName: 服务提供商名称（可选，优先从预设的 provider 字段获取）
+// mode: 启动模式（terminal/embedded）
+// workDir: 工作目录
+// shellPath: shell 路径（内嵌模式时使用）
+func (a *App) LaunchAmagiCode(presetName string, providerName string, mode string, workDir string, shellPath string) (string, error) {
+	a.Log.Info("session", "启动 AmagiCode 会话请求", fmt.Sprintf("preset=%s provider=%s mode=%s workDir=%s shell=%s", presetName, providerName, mode, workDir, shellPath))
+
+	// 从 AmagiService 获取选定的 modelPreset
+	preset, err := a.Amagi.GetModelPreset(presetName)
+	if err != nil {
+		a.Log.Error("session", "获取 AmagiCode 预设失败", err.Error())
+		return "", fmt.Errorf("get amagi preset: %w", err)
+	}
+
+	// 确定使用的 provider 名称
+	// 优先使用预设中的 provider 字段，其次使用参数传入的 providerName
+	actualProviderName := preset.Provider
+	if actualProviderName == "" {
+		actualProviderName = providerName
+	}
+	if actualProviderName == "" {
+		a.Log.Error("session", "未指定服务提供商", "")
+		return "", errors.New("provider not specified in preset or parameter")
+	}
+
+	// 从 ConfigService 获取 Provider 配置
+	provider, err := a.Config.GetProvider(actualProviderName)
+	if err != nil {
+		a.Log.Error("session", "获取 AmagiCode 提供商失败", err.Error())
+		return "", fmt.Errorf("get provider: %w", err)
+	}
+
+	// 从 SecretsService 获取 API Key
+	apiKey, keySource := a.Secrets.GetAPIKeyWithFallback(actualProviderName)
+	if apiKey == "" {
+		a.Log.Error("session", "未找到 AmagiCode API 密钥", "provider="+actualProviderName)
+		return "", fmt.Errorf("no API key found for provider %q", actualProviderName)
+	}
+	a.Log.Info("session", "AmagiCode API 密钥已获取",
+		fmt.Sprintf("provider=%s source=%s key=%s len=%d",
+			actualProviderName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
+
+	// 构建环境变量注入
+	envOverrides := map[string]string{}
+	providerType := strings.TrimSpace(strings.ToLower(provider.Type))
+	if providerType == "" || providerType == "anthropic" {
+		envOverrides["ANTHROPIC_API_KEY"] = apiKey
+		envOverrides["ANTHROPIC_AUTH_TOKEN"] = ""
+		if provider.BaseURL != "" {
+			envOverrides["ANTHROPIC_BASE_URL"] = provider.BaseURL
+		}
+		// 从 preset 构建模型参数
+		if preset.Model != "" {
+			envOverrides["ANTHROPIC_MODEL"] = preset.Model
+		}
+		if preset.Temperature != nil {
+			envOverrides["ANTHROPIC_TEMPERATURE"] = fmt.Sprintf("%.2f", *preset.Temperature)
+		}
+		if preset.MaxTokens != nil {
+			envOverrides["ANTHROPIC_MAX_TOKENS"] = fmt.Sprintf("%d", *preset.MaxTokens)
+		}
+		if preset.Thinking != nil {
+			thinkingJSON, _ := json.Marshal(preset.Thinking)
+			envOverrides["ANTHROPIC_THINKING"] = string(thinkingJSON)
+		}
+	} else {
+		envOverrides["OPENAI_API_KEY"] = apiKey
+		if provider.BaseURL != "" {
+			envOverrides["OPENAI_BASE_URL"] = provider.BaseURL
+		}
+	}
+
+	// 确定启动模式
+	launchMode := session.LaunchMode(mode)
+	if launchMode == "" {
+		launchMode = session.ModeTerminal
+	}
+
+	// 如果未指定工作目录，使用默认路径
+	if workDir == "" {
+		workDir = a.Paths.GetDefaultPath()
+	}
+	if workDir == "" {
+		home, _ := os.UserHomeDir()
+		workDir = home
+	}
+
+	// 创建会话记录
+	sess := a.Sessions.Create(session.AppTypeAmagiCode, actualProviderName, presetName, preset.Model, launchMode, workDir, false)
+	a.Log.Info("session", "AmagiCode 会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, preset.Model, launchMode))
+
+	// 根据模式选择启动方式
+	if launchMode == session.ModeEmbedded {
+		// 内嵌终端模式：使用 ConPTY
+		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
+		baseEnv := a.EnvVars.MergeWithSystem()
+		env := launcher.BuildEnv(baseEnv, envOverrides)
+
+		actualShell := shellPath
+		autoCommand := ""
+		if actualShell != "" {
+			// 用户指定了 shell，在 shell 中自动启动 amagi-code
+			autoCommand = "amagi-code"
+		}
+		// actualShell 为空时，PTY 会直接启动 "amagi-code"
+
+		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			a.Log.Error("session", "AmagiCode PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+			return "", fmt.Errorf("start amagi-code pty: %w", err)
+		}
+		a.Sessions.SetPID(sess.ID, pid)
+		a.Log.Info("session", "AmagiCode PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
+
+		// 监控 PTY 进程退出
+		go func(id string) {
+			for a.Pty.IsRunning(id) {
+				select {
+				case <-a.ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+			a.Sessions.MarkExited(id)
+			a.Log.Info("session", "AmagiCode PTY进程已退出", "id="+id)
+		}(sess.ID)
+
+		return sess.ID, nil
+	}
+
+	// 外部终端模式：使用 Launcher
+	result, err := a.Launcher.LaunchAmagiCode(sess.ID, launchMode, workDir, envOverrides)
+	if err != nil {
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		a.Log.Error("session", "AmagiCode 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+		return "", fmt.Errorf("launch amagi-code: %w", err)
+	}
+
+	a.Sessions.SetPID(sess.ID, result.PID)
+	a.Log.Info("session", "AmagiCode 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
+
+	// 监控进程退出
+	go func(id string) {
+		for a.Launcher.IsRunning(id) {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+		a.Sessions.MarkExited(id)
+		a.Log.Info("session", "AmagiCode 进程已退出", "id="+id)
+	}(sess.ID)
+
+	return sess.ID, nil
+}
+
 // --- 路径管理（前端绑定） ---
 
 // BrowseDirectory 打开系统目录选择对话框
@@ -858,6 +1027,9 @@ func (a *App) SaveAllConfig() error {
 	}
 	if err := a.Settings.Save(); err != nil {
 		return fmt.Errorf("save settings: %w", err)
+	}
+	if err := a.Amagi.Save(); err != nil {
+		return fmt.Errorf("save amagi config: %w", err)
 	}
 	if err := a.Proxy.SaveRules(defaultConfigDir()); err != nil {
 		return fmt.Errorf("save injection rules: %w", err)
@@ -1511,3 +1683,62 @@ func removeInjectedSection(content string) string {
 	}
 	return before + "\n" + after
 }
+
+// --- AmagiCode 设置 API ---
+
+// GetAmagiSettings 返回 AmagiCode 完整设置。
+// providers 中的 apiKey 字段从 SecretsService 填充后返回，不暴露原始文件中的值。
+func (a *App) GetAmagiSettings() (*amagi.AmagiSettings, error) {
+	settings := a.Amagi.GetSettings()
+	if settings == nil {
+		return nil, errors.New("amagi settings not loaded")
+	}
+
+	// 填充 providers 中的 API Key（从 SecretsService 获取）
+	for name := range settings.Providers {
+		if apiKey, _ := a.Secrets.GetAPIKey(name); apiKey != "" {
+			if settings.Providers == nil {
+				settings.Providers = map[string]amagi.AmagiProvider{}
+			}
+			provider := settings.Providers[name]
+			provider.APIKey = apiKey
+			settings.Providers[name] = provider
+		}
+	}
+
+	return settings, nil
+}
+
+// SaveAmagiModelPreset 保存或更新 AmagiCode 模型预设。
+func (a *App) SaveAmagiModelPreset(name string, preset amagi.AmagiModelPreset) error {
+	return a.Amagi.SaveModelPreset(name, preset)
+}
+
+// DeleteAmagiModelPreset 删除 AmagiCode 模型预设。
+func (a *App) DeleteAmagiModelPreset(name string) error {
+	return a.Amagi.DeleteModelPreset(name)
+}
+
+// GetAmagiSettingsJSON 返回 AmagiCode 设置的 JSON 字符串。
+// 供前端 JSON 视图使用。
+func (a *App) GetAmagiSettingsJSON() (string, error) {
+	return a.Amagi.GetSettingsJSON()
+}
+
+// SaveAmagiSettingsJSON 从 JSON 字符串保存 AmagiCode 设置。
+// 仅写入 9 个白名单字段，过滤未知字段。
+// 供前端 JSON 视图使用。
+func (a *App) SaveAmagiSettingsJSON(jsonStr string) error {
+	return a.Amagi.SaveSettingsJSON(jsonStr)
+}
+
+// SetAmagiModel 设置 AmagiCode 默认模型。
+func (a *App) SetAmagiModel(model string) error {
+	return a.Amagi.SetModel(model)
+}
+
+// SetAmagiEffortLevel 设置 AmagiCode 努力级别。
+func (a *App) SetAmagiEffortLevel(level string) error {
+	return a.Amagi.SetEffortLevel(level)
+}
+

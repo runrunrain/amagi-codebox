@@ -28,6 +28,10 @@ type DashboardDefaults struct {
 	OpenCodeShell    string `json:"openCodeShell"`
 	CodexMode        string `json:"codexMode"`
 	CodexShell       string `json:"codexShell"`
+	AmagiCodeProvider string `json:"amagiCodeProvider"`
+	AmagiCodePreset   string `json:"amagiCodePreset"`
+	AmagiCodeMode     string `json:"amagiCodeMode"`
+	AmagiCodeShell    string `json:"amagiCodeShell"`
 	UseProxy         bool   `json:"useProxy"`
 }
 
@@ -50,14 +54,16 @@ type AppSettings struct {
 func defaultSettings() *AppSettings {
 	return &AppSettings{
 		Dashboard: DashboardDefaults{
-			Mode:          "embedded",
-			Shell:         "pwsh",
-			ClaudeMode:    "embedded",
-			ClaudeShell:   "pwsh",
-			OpenCodeMode:  "embedded",
-			OpenCodeShell: "pwsh",
-			CodexMode:     "embedded",
-			CodexShell:    "pwsh",
+			Mode:             "embedded",
+			Shell:            "pwsh",
+			ClaudeMode:        "embedded",
+			ClaudeShell:       "pwsh",
+			OpenCodeMode:      "embedded",
+			OpenCodeShell:     "pwsh",
+			CodexMode:         "embedded",
+			CodexShell:        "pwsh",
+			AmagiCodeMode:     "embedded",
+			AmagiCodeShell:    "pwsh",
 		},
 		ShellPaths: []ShellEntry{},
 		Terminal: TerminalSettings{
@@ -182,6 +188,13 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 			d.CodexMode = "embedded"
 		}
 	}
+	if d.AmagiCodeMode == "" {
+		if d.Mode != "" {
+			d.AmagiCodeMode = d.Mode
+		} else {
+			d.AmagiCodeMode = "embedded"
+		}
+	}
 
 	if d.ClaudeShell == "" {
 		if d.Shell != "" {
@@ -202,6 +215,13 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 			d.CodexShell = d.Shell
 		} else {
 			d.CodexShell = "pwsh"
+		}
+	}
+	if d.AmagiCodeShell == "" {
+		if d.Shell != "" {
+			d.AmagiCodeShell = d.Shell
+		} else {
+			d.AmagiCodeShell = "pwsh"
 		}
 	}
 

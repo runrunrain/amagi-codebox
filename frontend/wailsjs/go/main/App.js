@@ -269,3 +269,35 @@ export function UnregisterOutputCallback(arg1, arg2) {
 export function UnregisterResizeCallback(arg1, arg2) {
   return window['go']['main']['App']['UnregisterResizeCallback'](arg1, arg2);
 }
+
+export function DeleteAmagiModelPreset(arg1) {
+  return window['go']['main']['App']['DeleteAmagiModelPreset'](arg1);
+}
+
+export function GetAmagiSettings() {
+  return window['go']['main']['App']['GetAmagiSettings']();
+}
+
+export function GetAmagiSettingsJSON() {
+  return window['go']['main']['App']['GetAmagiSettingsJSON']();
+}
+
+export function LaunchAmagiCode(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['LaunchAmagiCode'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function SaveAmagiModelPreset(arg1, arg2) {
+  return window['go']['main']['App']['SaveAmagiModelPreset'](arg1, arg2);
+}
+
+export function SaveAmagiSettingsJSON(arg1) {
+  return window['go']['main']['App']['SaveAmagiSettingsJSON'](arg1);
+}
+
+export function SetAmagiEffortLevel(arg1) {
+  return window['go']['main']['App']['SetAmagiEffortLevel'](arg1);
+}
+
+export function SetAmagiModel(arg1) {
+  return window['go']['main']['App']['SetAmagiModel'](arg1);
+}

@@ -42,6 +42,11 @@ const router = createRouter({
           path: 'envvars',
           name: 'EnvVars',
           component: () => import('../views/EnvVarsView.vue')
+        },
+        {
+          path: 'amagi',
+          name: 'AmagiSettings',
+          component: () => import('../views/AmagiSettingsView.vue')
         }
       ]
     },
