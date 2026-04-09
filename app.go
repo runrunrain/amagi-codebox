@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/base64"
@@ -10,7 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,6 +38,13 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const codexSessionHomeRootDirName = "codex-sessions"
+
+type codexSessionHomeInfo struct {
+	Path         string
+	ProviderName string
+}
+
 //go:embed build/windows/icon.ico
 var trayIcon []byte
 
@@ -40,6 +52,9 @@ var trayIcon []byte
 // 通过 Wails 绑定暴露给前端。
 type App struct {
 	ctx context.Context
+
+	codexSessionHomesMu sync.Mutex
+	codexSessionHomes   map[string]codexSessionHomeInfo
 
 	Config   *config.ConfigService
 	Secrets  *secrets.SecretsService
@@ -64,20 +79,21 @@ func NewApp() *App {
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
 
 	app := &App{
-		Config:   config.NewConfigService(configDir),
-		Secrets:  secrets.NewSecretsService(configDir),
-		Launcher: launcher.NewLauncherService(log, envVarsSvc),
-		Proxy:    proxy.NewProxyService(),
-		Tray:     tray.NewService(),
-		Sessions: session.NewManager(),
-		Paths:    paths.NewPathsService(configDir),
-		Log:      log,
-		Pty:      pty.NewService(log),
-		Settings: settings.NewService(configDir),
-		EnvVars:  envVarsSvc,
-		Updater:  updater.NewService(Version, log),
-		Plugins:  plugin.NewService("", log),
-		Amagi:    amagi.NewService(configDir),
+		codexSessionHomes: map[string]codexSessionHomeInfo{},
+		Config:            config.NewConfigService(configDir),
+		Secrets:           secrets.NewSecretsService(configDir),
+		Launcher:          launcher.NewLauncherService(log, envVarsSvc),
+		Proxy:             proxy.NewProxyService(),
+		Tray:              tray.NewService(),
+		Sessions:          session.NewManager(),
+		Paths:             paths.NewPathsService(configDir),
+		Log:               log,
+		Pty:               pty.NewService(log),
+		Settings:          settings.NewService(configDir),
+		EnvVars:           envVarsSvc,
+		Updater:           updater.NewService(Version, log),
+		Plugins:           plugin.NewService("", log),
+		Amagi:             amagi.NewService(configDir),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log)
@@ -311,6 +327,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	// 停止所有终端进程
 	a.Launcher.StopAll()
 	a.Pty.CloseAll()
+	a.cleanupAllCodexSessionHomes()
 	a.Log.Info("app", "应用已关闭")
 	a.Log.Close()
 }
@@ -485,6 +502,7 @@ func (a *App) StopSession(sessionID string) error {
 			return err
 		}
 		a.Sessions.MarkStopped(sessionID)
+		a.cleanupCodexSessionHome(sessionID)
 		return nil
 	}
 
@@ -494,6 +512,7 @@ func (a *App) StopSession(sessionID string) error {
 		return err
 	}
 	a.Sessions.MarkStopped(sessionID)
+	a.cleanupCodexSessionHome(sessionID)
 	return nil
 }
 
@@ -503,6 +522,7 @@ func (a *App) StopAllSessions() {
 	for _, id := range ids {
 		_ = a.Launcher.Stop(id)
 		a.Sessions.MarkStopped(id)
+		a.cleanupCodexSessionHome(id)
 	}
 }
 
@@ -513,11 +533,16 @@ func (a *App) GetSessions() []session.SessionInfo {
 
 // RemoveSession 删除已结束的会话记录
 func (a *App) RemoveSession(sessionID string) error {
-	return a.Sessions.Remove(sessionID)
+	if err := a.Sessions.Remove(sessionID); err != nil {
+		return err
+	}
+	a.cleanupCodexSessionHome(sessionID)
+	return nil
 }
 
 // ClearStoppedSessions 清除所有已结束的会话
 func (a *App) ClearStoppedSessions() int {
+	a.cleanupCodexSessionHomesForStoppedSessions()
 	return a.Sessions.ClearStopped()
 }
 
@@ -583,26 +608,11 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	a.Log.Info("codex", "OPENAI_API_KEY present", fmt.Sprintf("%v", envOverrides["OPENAI_API_KEY"] != ""))
 	a.Log.Info("codex", "OPENAI_BASE_URL", envOverrides["OPENAI_BASE_URL"])
 
-	// 动态注入 model_provider 到 ~/.codex/config.toml：
-	// codex CLI 仅凭 OPENAI_BASE_URL/OPENAI_API_KEY 环境变量无法确定第三方服务商的认证方式，
-	// 需要 config.toml 中明确声明 model_provider 和 [model_providers.xxx] 来使用 OpenAI 兼容认证。
-	if baseURL := envOverrides["OPENAI_BASE_URL"]; baseURL != "" {
-		if err := injectCodexConfigToml(baseURL); err != nil {
-			a.Log.Warn("codex", "注入 config.toml 失败（不影响启动）", err.Error())
-		} else {
-			a.Log.Info("codex", "config.toml model_provider 已注入", fmt.Sprintf("base_url=%s", baseURL))
-		}
-	}
-
-	// 注入 API Key 到 ~/.codex/auth.json：
-	// codex CLI 不从环境变量读取 API Key，而是从 auth.json 文件读取。
-	// 写入 {"OPENAI_API_KEY": "xxx"} 覆盖现有认证状态，使 codex 使用 API Key 认证。
-	if apiKey := envOverrides["OPENAI_API_KEY"]; apiKey != "" {
-		if err := injectCodexAuthJSON(apiKey); err != nil {
-			a.Log.Warn("codex", "注入 auth.json 失败（不影响启动）", err.Error())
-		} else {
-			a.Log.Info("codex", "auth.json API Key 已注入", fmt.Sprintf("key=%s len=%d", secrets.MaskKey(apiKey), len(apiKey)))
-		}
+	if _, err := a.prepareCodexSessionHome(sess.ID, envOverrides); err != nil {
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		a.cleanupCodexSessionHome(sess.ID)
+		a.Log.Error("codex", "创建隔离 CODEX_HOME 失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+		return "", fmt.Errorf("prepare isolated codex home: %w", err)
 	}
 
 	// 内嵌终端模式：使用 ConPTY
@@ -623,6 +633,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
+			a.cleanupCodexSessionHome(sess.ID)
 			a.Log.Error("session", "Codex PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start codex pty: %w", err)
 		}
@@ -638,6 +649,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 				}
 			}
 			a.Sessions.MarkExited(id)
+			a.cleanupCodexSessionHome(id)
 			a.Log.Info("session", "Codex PTY进程已退出", "id="+id)
 		}(sess.ID)
 
@@ -648,6 +660,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	result, err := a.Launcher.LaunchCodex(sess.ID, modelName, launchMode, workDir, envOverrides)
 	if err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
+		a.cleanupCodexSessionHome(sess.ID)
 		a.Log.Error("session", "Codex 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 		return "", fmt.Errorf("launch codex: %w", err)
 	}
@@ -664,6 +677,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 			}
 		}
 		a.Sessions.MarkExited(id)
+		a.cleanupCodexSessionHome(id)
 		a.Log.Info("session", "Codex 进程已退出", "id="+id)
 	}(sess.ID)
 
@@ -1604,110 +1618,324 @@ func (a *App) ImportEnvVarsFromFile() error {
 	return nil
 }
 
-// injectCodexConfigToml 在 ~/.codex/config.toml 中注入 model_provider 和 [model_providers.xxx]。
-// codex CLI 需要这两项配置才能正确使用第三方 OpenAI 兼容服务商认证（requires_openai_auth = true）。
-// 仅当 baseURL 非空（非官方 OpenAI）时应调用。
-// 使用特殊注释标记包裹注入段，每次启动前重新写入，保证配置准确。
-func injectCodexConfigToml(baseURL string) error {
+func resolveCodexSourceHome(env []string) (string, error) {
+	if env == nil {
+		env = os.Environ()
+	}
+	if value := strings.TrimSpace(lookupEnvValue(env, "CODEX_HOME")); value != "" {
+		return value, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
+		return "", fmt.Errorf("get user home dir: %w", err)
 	}
-	configPath := filepath.Join(home, ".codex", "config.toml")
+	return filepath.Join(home, ".codex"), nil
+}
 
-	// 读取现有内容
-	existing := ""
-	if b, err := os.ReadFile(configPath); err == nil {
-		existing = string(b)
+func lookupEnvValue(env []string, key string) string {
+	caseInsensitive := runtime.GOOS == "windows"
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if caseInsensitive {
+			if strings.EqualFold(k, key) {
+				return v
+			}
+			continue
+		}
+		if k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+func (a *App) codexSessionHomesRootDir() string {
+	return filepath.Join(defaultConfigDir(), codexSessionHomeRootDirName)
+}
+
+func (a *App) registerCodexSessionHome(sessionID string, info codexSessionHomeInfo) {
+	a.codexSessionHomesMu.Lock()
+	defer a.codexSessionHomesMu.Unlock()
+	if a.codexSessionHomes == nil {
+		a.codexSessionHomes = map[string]codexSessionHomeInfo{}
+	}
+	a.codexSessionHomes[sessionID] = info
+}
+
+func (a *App) prepareCodexSessionHome(sessionID string, envOverrides map[string]string) (string, error) {
+	baseEnv := os.Environ()
+	if a.EnvVars != nil {
+		baseEnv = a.EnvVars.MergeWithSystem()
+	}
+	sourceHome, err := resolveCodexSourceHome(baseEnv)
+	if err != nil {
+		return "", err
 	}
 
-	// 移除之前由 amagi-codebox 注入的段落（如果存在）
-	cleaned := removeInjectedSection(existing)
-
-	// 构建注入段（使用固定的 provider name，避免 TOML key 冲突）
-	injected := "\n# === amagi-codebox-inject-start ===\n" +
-		"model_provider = \"amagi-codebox-provider\"\n\n" +
-		"[model_providers.amagi-codebox-provider]\n" +
-		"name = \"amagi-codebox-provider\"\n" +
-		"base_url = \"" + baseURL + "\"\n" +
-		"wire_api = \"responses\"\n" +
-		"requires_openai_auth = true\n" +
-		"# === amagi-codebox-inject-end ===\n"
-
-	newContent := cleaned + injected
-
-	// 原子写入
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir codex config dir: %w", err)
+	targetHome := filepath.Join(a.codexSessionHomesRootDir(), sessionID)
+	if err := os.MkdirAll(targetHome, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir isolated codex home: %w", err)
 	}
-	tmp := configPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(newContent), 0o644); err != nil {
-		return fmt.Errorf("write temp codex config: %w", err)
+	cleanupTarget := true
+	defer func() {
+		if cleanupTarget {
+			_ = os.RemoveAll(targetHome)
+		}
+	}()
+
+	sourceConfig, err := readCodexOptionalFile(filepath.Join(sourceHome, "config.toml"))
+	if err != nil {
+		return "", err
 	}
-	if err := os.Rename(tmp, configPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace codex config: %w", err)
+	isolatedConfig := append([]byte(nil), sourceConfig...)
+
+	providerName := ""
+	if baseURL := strings.TrimSpace(envOverrides["OPENAI_BASE_URL"]); baseURL != "" {
+		providerName = buildCodexSessionProviderName(sessionID)
+		isolatedConfig = buildCodexIsolatedConfigToml(sourceConfig, providerName, baseURL)
+		delete(envOverrides, "OPENAI_BASE_URL")
+	}
+	if err := os.WriteFile(filepath.Join(targetHome, "config.toml"), isolatedConfig, 0o644); err != nil {
+		return "", fmt.Errorf("write isolated config.toml: %w", err)
+	}
+
+	sourceAuth, err := readCodexOptionalFile(filepath.Join(sourceHome, "auth.json"))
+	if err != nil {
+		return "", err
+	}
+	isolatedAuth, err := buildCodexIsolatedAuthJSON(sourceAuth, envOverrides["OPENAI_API_KEY"])
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(targetHome, "auth.json"), isolatedAuth, 0o600); err != nil {
+		return "", fmt.Errorf("write isolated auth.json: %w", err)
+	}
+
+	if err := copyCodexSafeAsset(filepath.Join(sourceHome, "version.json"), filepath.Join(targetHome, "version.json")); err != nil {
+		return "", err
+	}
+
+	envOverrides["CODEX_HOME"] = targetHome
+	a.registerCodexSessionHome(sessionID, codexSessionHomeInfo{Path: targetHome, ProviderName: providerName})
+	cleanupTarget = false
+	return targetHome, nil
+}
+
+func readCodexOptionalFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("read %s: %w", filepath.Base(path), err)
+}
+
+func copyCodexSafeAsset(srcPath, dstPath string) error {
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read safe codex asset %s: %w", filepath.Base(srcPath), err)
+	}
+	if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+		return fmt.Errorf("write safe codex asset %s: %w", filepath.Base(dstPath), err)
 	}
 	return nil
 }
 
-// injectCodexAuthJSON 将 API Key 写入 ~/.codex/auth.json。
-// codex CLI 不从环境变量读取 API Key，而是从 auth.json 文件读取。
-// 写入格式为 {"OPENAI_API_KEY": "xxx"}，覆盖现有认证状态（如 ChatGPT OAuth token），
-// 使 codex 使用 API Key 认证而非 ChatGPT OAuth。
-// 文件权限设为 0600，仅用户可读写，保护 API Key 安全。
-func injectCodexAuthJSON(apiKey string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-	codexDir := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir codex dir: %w", err)
-	}
-	authPath := filepath.Join(codexDir, "auth.json")
-
-	// 只写 OPENAI_API_KEY，不写 auth_mode 和 tokens，
-	// 使 codex 使用 API Key 认证而非 ChatGPT OAuth。
-	authContent := fmt.Sprintf("{\n  \"OPENAI_API_KEY\": %q\n}\n", apiKey)
-
-	// 原子写入，先写临时文件再重命名，避免 codex 读到半写文件
-	tmpPath := authPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(authContent), 0o600); err != nil {
-		return fmt.Errorf("write tmp auth.json: %w", err)
-	}
-	if err := os.Rename(tmpPath, authPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename auth.json: %w", err)
-	}
-	return nil
+func buildCodexSessionProviderName(sessionID string) string {
+	return "amagi-codebox-provider-" + sessionID
 }
 
-// removeInjectedSection 从 TOML 文件内容中移除 amagi-codebox 注入的段落。
-// 段落由 "# === amagi-codebox-inject-start ===" 和 "# === amagi-codebox-inject-end ===" 标记包裹。
-func removeInjectedSection(content string) string {
-	const startMarker = "# === amagi-codebox-inject-start ==="
-	const endMarker = "# === amagi-codebox-inject-end ==="
+func buildCodexIsolatedProviderSection(providerName, baseURL string) []byte {
+	return fmt.Appendf(nil,
+		"model_provider = %q\n\n"+
+			"[model_providers.%s]\n"+
+			"name = %q\n"+
+			"base_url = %q\n"+
+			"wire_api = \"responses\"\n"+
+			"requires_openai_auth = true\n\n",
+		providerName,
+		providerName,
+		providerName,
+		baseURL,
+	)
+}
 
-	before, rest, found := strings.Cut(content, startMarker)
-	if !found {
-		return content
+func buildCodexIsolatedConfigToml(source []byte, providerName, baseURL string) []byte {
+	providerSection := buildCodexIsolatedProviderSection(providerName, baseURL)
+	firstTableIdx := findFirstCodexTableHeaderStart(source)
+	if firstTableIdx == -1 {
+		result := removeRootLevelModelProviderEntries(source)
+		if len(result) > 0 && result[len(result)-1] != '\n' {
+			result = append(result, '\n')
+		}
+		return append(result, providerSection...)
 	}
-	_, after, found := strings.Cut(rest, endMarker)
-	if !found {
-		// 只有开始标记没有结束标记，截断到开始标记前
-		return strings.TrimRight(before, "\n") + "\n"
+
+	prefix := removeRootLevelModelProviderEntries(source[:firstTableIdx])
+	suffix := source[firstTableIdx:]
+	result := append([]byte(nil), prefix...)
+	if len(result) > 0 && result[len(result)-1] != '\n' {
+		result = append(result, '\n')
 	}
-	// 去掉 endMarker 后紧跟的换行
-	after = strings.TrimLeft(after, "\n")
-	before = strings.TrimRight(before, "\n")
-	if before == "" {
-		return after
+	result = append(result, providerSection...)
+	result = append(result, suffix...)
+	return result
+}
+
+func findFirstCodexTableHeaderStart(source []byte) int {
+	lineStart := 0
+	for lineStart < len(source) {
+		lineEnd := bytes.IndexByte(source[lineStart:], '\n')
+		if lineEnd == -1 {
+			lineEnd = len(source)
+		} else {
+			lineEnd += lineStart
+		}
+		line := source[lineStart:lineEnd]
+		trimmed := bytes.TrimLeft(line, " \t")
+		if len(trimmed) > 0 && trimmed[0] == '[' {
+			return lineStart + (len(line) - len(trimmed))
+		}
+		if lineEnd == len(source) {
+			break
+		}
+		lineStart = lineEnd + 1
 	}
-	if after == "" {
-		return before + "\n"
+	return -1
+}
+
+func removeRootLevelModelProviderEntries(source []byte) []byte {
+	var result bytes.Buffer
+	lineStart := 0
+	for lineStart < len(source) {
+		lineEnd := bytes.IndexByte(source[lineStart:], '\n')
+		hasNewline := true
+		if lineEnd == -1 {
+			lineEnd = len(source)
+			hasNewline = false
+		} else {
+			lineEnd += lineStart
+		}
+		line := source[lineStart:lineEnd]
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("model_provider")) {
+			result.Write(line)
+			if hasNewline {
+				result.WriteByte('\n')
+			}
+		}
+		if !hasNewline {
+			break
+		}
+		lineStart = lineEnd + 1
 	}
-	return before + "\n" + after
+	return result.Bytes()
+}
+
+func buildCodexIsolatedAuthJSON(source []byte, apiKey string) ([]byte, error) {
+	if apiKey == "" {
+		if len(source) == 0 {
+			return []byte("{}\n"), nil
+		}
+		return append([]byte(nil), source...), nil
+	}
+
+	authDoc := map[string]json.RawMessage{}
+	trimmed := bytes.TrimSpace(source)
+	if len(trimmed) > 0 {
+		if err := json.Unmarshal(trimmed, &authDoc); err != nil {
+			authDoc = map[string]json.RawMessage{}
+		} else if authDoc == nil {
+			authDoc = map[string]json.RawMessage{}
+		}
+	}
+	if apiKey != "" {
+		apiKeyJSON, err := json.Marshal(apiKey)
+		if err != nil {
+			return nil, fmt.Errorf("marshal OPENAI_API_KEY: %w", err)
+		}
+		authDoc["OPENAI_API_KEY"] = apiKeyJSON
+	}
+	keys := make([]string, 0, len(authDoc))
+	for key := range authDoc {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	if len(keys) > 0 {
+		buf.WriteByte('\n')
+		for i, key := range keys {
+			buf.WriteString("  ")
+			buf.WriteString(strconv.Quote(key))
+			buf.WriteString(": ")
+			buf.Write(authDoc[key])
+			if i < len(keys)-1 {
+				buf.WriteByte(',')
+			}
+			buf.WriteByte('\n')
+		}
+	}
+	buf.WriteByte('}')
+	buf.WriteByte('\n')
+	return buf.Bytes(), nil
+}
+
+func (a *App) cleanupCodexSessionHome(sessionID string) {
+	a.codexSessionHomesMu.Lock()
+	info, ok := a.codexSessionHomes[sessionID]
+	if ok {
+		delete(a.codexSessionHomes, sessionID)
+	}
+	a.codexSessionHomesMu.Unlock()
+	if !ok || info.Path == "" {
+		return
+	}
+	if err := os.RemoveAll(info.Path); err != nil {
+		a.Log.Warn("codex", "清理隔离 CODEX_HOME 失败", fmt.Sprintf("id=%s path=%s err=%v", sessionID, info.Path, err))
+		return
+	}
+	if a.Log != nil {
+		a.Log.Info("codex", "隔离 CODEX_HOME 已清理", fmt.Sprintf("id=%s path=%s", sessionID, info.Path))
+	}
+}
+
+func (a *App) cleanupCodexSessionHomesForStoppedSessions() {
+	if a.Sessions == nil {
+		return
+	}
+	a.codexSessionHomesMu.Lock()
+	ids := make([]string, 0, len(a.codexSessionHomes))
+	for sessionID := range a.codexSessionHomes {
+		ids = append(ids, sessionID)
+	}
+	a.codexSessionHomesMu.Unlock()
+	for _, sessionID := range ids {
+		sess, err := a.Sessions.Get(sessionID)
+		if err != nil || sess.Status != session.StatusRunning {
+			a.cleanupCodexSessionHome(sessionID)
+		}
+	}
+}
+
+func (a *App) cleanupAllCodexSessionHomes() {
+	a.codexSessionHomesMu.Lock()
+	ids := make([]string, 0, len(a.codexSessionHomes))
+	for sessionID := range a.codexSessionHomes {
+		ids = append(ids, sessionID)
+	}
+	a.codexSessionHomesMu.Unlock()
+	for _, sessionID := range ids {
+		a.cleanupCodexSessionHome(sessionID)
+	}
 }
 
 // --- AmagiCode 设置 API ---
