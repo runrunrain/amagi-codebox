@@ -16,6 +16,7 @@ func setCodexTestHome(t *testing.T) string {
 	t.Helper()
 
 	home := t.TempDir()
+	t.Setenv("CODEX_HOME", "")
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
@@ -72,7 +73,7 @@ func TestResolveCodexSourceHomePrefersCODEXHOMEEnv(t *testing.T) {
 	}
 }
 
-func TestPrepareCodexSessionHomeUsesIsolatedCODEXHOMEAndPreservesSourceFiles(t *testing.T) {
+func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t *testing.T) {
 	home := setCodexTestHome(t)
 	sourceHome := filepath.Join(home, ".codex")
 	sourceConfigPath := filepath.Join(sourceHome, "config.toml")
@@ -96,7 +97,7 @@ func TestPrepareCodexSessionHomeUsesIsolatedCODEXHOMEAndPreservesSourceFiles(t *
 		"OPENAI_BASE_URL": "https://example.com/v1",
 	}
 
-	isolatedHome, err := app.prepareCodexSessionHome("sess-openai", envOverrides)
+	isolatedHome, err := app.prepareCodexSessionHome("sess-openai", "", envOverrides)
 	if err != nil {
 		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
 	}
@@ -115,24 +116,30 @@ func TestPrepareCodexSessionHomeUsesIsolatedCODEXHOMEAndPreservesSourceFiles(t *
 
 	isolatedConfigPath := filepath.Join(isolatedHome, "config.toml")
 	isolatedConfig := readTestFile(t, isolatedConfigPath)
-	providerName, ok := app.codexSessionHomes["sess-openai"]
+	sessionHome, ok := app.codexSessionHomes["sess-openai"]
 	if !ok {
 		t.Fatalf("codexSessionHomes missing entry for session: %#v", app.codexSessionHomes)
 	}
-	providerSection := buildCodexIsolatedProviderSection(providerName.ProviderName, "https://example.com/v1")
-	providerSectionStart := bytes.Index(isolatedConfig, providerSection)
-	if providerSectionStart == -1 {
-		t.Fatalf("isolated config missing provider section\nwant snippet:\n%s\n\ngot:\n%s", providerSection, isolatedConfig)
+	if sessionHome.HomeKey != "base-url:https://example.com/v1" {
+		t.Fatalf("HomeKey = %q, want %q", sessionHome.HomeKey, "base-url:https://example.com/v1")
+	}
+	openAIBaseURLLine := buildCodexOpenAIBaseURLLine("https://example.com/v1")
+	openAIBaseURLStart := bytes.Index(isolatedConfig, openAIBaseURLLine)
+	if openAIBaseURLStart == -1 {
+		t.Fatalf("isolated config missing openai_base_url line\nwant snippet:\n%s\n\ngot:\n%s", openAIBaseURLLine, isolatedConfig)
 	}
 	firstTable := bytes.Index(isolatedConfig, []byte("[mcp_servers.keep]"))
 	if firstTable == -1 {
 		t.Fatalf("isolated config missing source table suffix\nconfig:\n%s", isolatedConfig)
 	}
-	if providerSectionStart >= firstTable {
-		t.Fatalf("provider section must be inserted before first table\nproviderStart=%d firstTable=%d\nconfig:\n%s", providerSectionStart, firstTable, isolatedConfig)
+	if openAIBaseURLStart >= firstTable {
+		t.Fatalf("openai_base_url must be inserted before first table\nopenaiBaseURLStart=%d firstTable=%d\nconfig:\n%s", openAIBaseURLStart, firstTable, isolatedConfig)
 	}
-	if !bytes.Contains(isolatedConfig[:firstTable], []byte("model_provider = \""+providerName.ProviderName+"\"\n")) {
-		t.Fatalf("isolated config missing root-level model_provider before first table\nconfig:\n%s", isolatedConfig)
+	if !bytes.Contains(isolatedConfig[:firstTable], openAIBaseURLLine[:len(openAIBaseURLLine)-1]) {
+		t.Fatalf("isolated config missing root-level openai_base_url before first table\nconfig:\n%s", isolatedConfig)
+	}
+	if bytes.Contains(isolatedConfig, []byte("model_provider = ")) {
+		t.Fatalf("isolated config should not contain legacy model_provider entry\nconfig:\n%s", isolatedConfig)
 	}
 	if !bytes.Equal(isolatedConfig[firstTable:], []byte(mcpSuffix)) {
 		t.Fatalf("mcp/table suffix was not preserved byte-for-byte\nwant suffix:\n%s\n\ngot suffix:\n%s", mcpSuffix, isolatedConfig[firstTable:])
@@ -163,6 +170,46 @@ func TestPrepareCodexSessionHomeUsesIsolatedCODEXHOMEAndPreservesSourceFiles(t *
 	}
 }
 
+func TestPrepareCodexSessionHomeReusesPersistentHomeForSameProvider(t *testing.T) {
+	home := setCodexTestHome(t)
+	sourceHome := filepath.Join(home, ".codex")
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model = \"gpt-5\"\n"))
+	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
+
+	app := &App{Log: logging.NewService(t.TempDir())}
+	t.Cleanup(app.Log.Close)
+
+	firstOverrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-first",
+		"OPENAI_BASE_URL": "https://example.com/v1",
+	}
+	firstHome, err := app.prepareCodexSessionHome("sess-first", "provider-a", firstOverrides)
+	if err != nil {
+		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
+	}
+	writeTestFile(t, filepath.Join(firstHome, "history.jsonl"), []byte("persist me\n"))
+
+	secondOverrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-second",
+		"OPENAI_BASE_URL": "https://example.com/v1",
+	}
+	secondHome, err := app.prepareCodexSessionHome("sess-second", "provider-a", secondOverrides)
+	if err != nil {
+		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
+	}
+	if secondHome != firstHome {
+		t.Fatalf("persistent codex home should be reused\nfirst=%q\nsecond=%q", firstHome, secondHome)
+	}
+	if got := string(readTestFile(t, filepath.Join(secondHome, "history.jsonl"))); got != "persist me\n" {
+		t.Fatalf("existing session history should be preserved, got %q", got)
+	}
+
+	isolatedAuth := mustJSONUnmarshalObject(t, readTestFile(t, filepath.Join(secondHome, "auth.json")))
+	if isolatedAuth["OPENAI_API_KEY"] != "sk-second" {
+		t.Fatalf("reused persistent auth OPENAI_API_KEY = %#v, want %q", isolatedAuth["OPENAI_API_KEY"], "sk-second")
+	}
+}
+
 func TestPrepareCodexSessionHomeFallsBackToMinimalAuthOnMalformedSource(t *testing.T) {
 	home := setCodexTestHome(t)
 	sourceHome := filepath.Join(home, ".codex")
@@ -177,7 +224,7 @@ func TestPrepareCodexSessionHomeFallsBackToMinimalAuthOnMalformedSource(t *testi
 		"OPENAI_BASE_URL": "https://example.com/v1",
 	}
 
-	isolatedHome, err := app.prepareCodexSessionHome("sess-malformed-auth", envOverrides)
+	isolatedHome, err := app.prepareCodexSessionHome("sess-malformed-auth", "", envOverrides)
 	if err != nil {
 		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
 	}
@@ -207,7 +254,7 @@ func TestPrepareCodexSessionHomeWithoutOpenAIOverridesCopiesOnlySafeAssets(t *te
 
 	envOverrides := map[string]string{}
 
-	isolatedHome, err := app.prepareCodexSessionHome("sess-safe-copy", envOverrides)
+	isolatedHome, err := app.prepareCodexSessionHome("sess-safe-copy", "", envOverrides)
 	if err != nil {
 		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
 	}
@@ -222,21 +269,23 @@ func TestPrepareCodexSessionHomeWithoutOpenAIOverridesCopiesOnlySafeAssets(t *te
 	}
 }
 
-func TestBuildCodexIsolatedConfigTomlReplacesExistingRootModelProviderBeforeFirstTable(t *testing.T) {
-	source := []byte("approval_policy = \"never\"\nmodel_provider = \"user-provider\"\nmodel = \"gpt-5\"\n[mcp_servers.keep]\ncommand = \"keep\"\n")
-	providerName := "amagi-codebox-provider-sess-root"
+func TestBuildCodexIsolatedConfigTomlReplacesExistingRootOpenAIBaseURLBeforeFirstTable(t *testing.T) {
+	source := []byte("approval_policy = \"never\"\nmodel_provider = \"user-provider\"\nopenai_base_url = \"https://old.example/v1\"\nmodel = \"gpt-5\"\n[mcp_servers.keep]\ncommand = \"keep\"\n")
 	baseURL := "https://example.com/v1"
 
-	got := buildCodexIsolatedConfigToml(source, providerName, baseURL)
-	wantPrefix := "approval_policy = \"never\"\nmodel = \"gpt-5\"\nmodel_provider = \"" + providerName + "\"\n\n"
+	got := buildCodexIsolatedConfigToml(source, baseURL)
+	wantPrefix := "approval_policy = \"never\"\nmodel = \"gpt-5\"\nopenai_base_url = \"" + baseURL + "\"\n\n"
 	if !bytes.HasPrefix(got, []byte(wantPrefix)) {
 		t.Fatalf("isolated config prefix mismatch\nwant prefix:\n%s\n\ngot:\n%s", wantPrefix, got)
 	}
-	if bytes.Contains(got, []byte("model_provider = \"user-provider\"")) {
-		t.Fatalf("old root-level model_provider should be removed\nconfig:\n%s", got)
+	if bytes.Contains(got, []byte("openai_base_url = \"https://old.example/v1\"")) {
+		t.Fatalf("old root-level openai_base_url should be removed\nconfig:\n%s", got)
 	}
-	if bytes.Count(got, []byte("model_provider = ")) != 1 {
-		t.Fatalf("isolated config should contain exactly one root model_provider\nconfig:\n%s", got)
+	if bytes.Contains(got, []byte("model_provider = \"user-provider\"")) {
+		t.Fatalf("legacy root-level model_provider should be removed\nconfig:\n%s", got)
+	}
+	if bytes.Count(got, []byte("openai_base_url = ")) != 1 {
+		t.Fatalf("isolated config should contain exactly one root openai_base_url\nconfig:\n%s", got)
 	}
 	firstTable := bytes.Index(got, []byte("[mcp_servers.keep]"))
 	if firstTable == -1 {
@@ -245,10 +294,10 @@ func TestBuildCodexIsolatedConfigTomlReplacesExistingRootModelProviderBeforeFirs
 	if !bytes.Equal(got[firstTable:], []byte("[mcp_servers.keep]\ncommand = \"keep\"\n")) {
 		t.Fatalf("table suffix should remain byte-for-byte\nwant:\n%s\n\ngot:\n%s", "[mcp_servers.keep]\ncommand = \"keep\"\n", got[firstTable:])
 	}
-	providerSection := buildCodexIsolatedProviderSection(providerName, baseURL)
-	providerStart := bytes.Index(got, providerSection)
-	if providerStart == -1 || providerStart >= firstTable {
-		t.Fatalf("provider section should appear before first table\nconfig:\n%s", got)
+	openAIBaseURLLine := buildCodexOpenAIBaseURLLine(baseURL)
+	openAIBaseURLStart := bytes.Index(got, openAIBaseURLLine)
+	if openAIBaseURLStart == -1 || openAIBaseURLStart >= firstTable {
+		t.Fatalf("openai_base_url should appear before first table\nconfig:\n%s", got)
 	}
 }
 
@@ -261,15 +310,15 @@ func TestCleanupCodexSessionHomeRemovesRegisteredHome(t *testing.T) {
 
 	isolatedHome := filepath.Join(t.TempDir(), "isolated-home")
 	writeTestFile(t, filepath.Join(isolatedHome, "config.toml"), []byte("model = \"gpt-5\"\n"))
-	app.codexSessionHomes["sess-cleanup"] = codexSessionHomeInfo{Path: isolatedHome, ProviderName: "amagi-codebox-provider-test"}
+	app.codexSessionHomes["sess-cleanup"] = codexSessionHomeInfo{Path: isolatedHome, HomeKey: "provider:test"}
 
 	app.cleanupCodexSessionHome("sess-cleanup")
 
 	if _, ok := app.codexSessionHomes["sess-cleanup"]; ok {
 		t.Fatalf("codexSessionHomes still contains cleaned session: %#v", app.codexSessionHomes)
 	}
-	if _, err := os.Stat(isolatedHome); !os.IsNotExist(err) {
-		t.Fatalf("isolated home should be removed, stat err=%v", err)
+	if _, err := os.Stat(isolatedHome); err != nil {
+		t.Fatalf("persistent home should remain on disk, stat err=%v", err)
 	}
 }
 
@@ -291,16 +340,16 @@ func TestCleanupCodexSessionHomesForStoppedSessionsRemovesOnlyStoppedOnes(t *tes
 	running := app.Sessions.Create(session.AppTypeCodex, "codex", "", "", session.ModeTerminal, root, false)
 	app.Sessions.MarkStopped(stopped.ID)
 
-	app.codexSessionHomes[stopped.ID] = codexSessionHomeInfo{Path: stoppedHome, ProviderName: "amagi-codebox-provider-stopped"}
-	app.codexSessionHomes[running.ID] = codexSessionHomeInfo{Path: runningHome, ProviderName: "amagi-codebox-provider-running"}
+	app.codexSessionHomes[stopped.ID] = codexSessionHomeInfo{Path: stoppedHome, HomeKey: "provider:stopped"}
+	app.codexSessionHomes[running.ID] = codexSessionHomeInfo{Path: runningHome, HomeKey: "provider:running"}
 
 	app.cleanupCodexSessionHomesForStoppedSessions()
 
 	if _, ok := app.codexSessionHomes[stopped.ID]; ok {
 		t.Fatalf("stopped session home should be removed from registry: %#v", app.codexSessionHomes)
 	}
-	if _, err := os.Stat(stoppedHome); !os.IsNotExist(err) {
-		t.Fatalf("stopped isolated home should be removed, stat err=%v", err)
+	if _, err := os.Stat(stoppedHome); err != nil {
+		t.Fatalf("stopped persistent home should remain on disk, stat err=%v", err)
 	}
 	if _, ok := app.codexSessionHomes[running.ID]; !ok {
 		t.Fatalf("running session home should remain registered: %#v", app.codexSessionHomes)
@@ -328,18 +377,18 @@ func TestShutdownCleansAllRegisteredCodexHomes(t *testing.T) {
 	}
 	t.Cleanup(app.Log.Close)
 
-	app.codexSessionHomes["sess-a"] = codexSessionHomeInfo{Path: homeA, ProviderName: "provider-a"}
-	app.codexSessionHomes["sess-b"] = codexSessionHomeInfo{Path: homeB, ProviderName: "provider-b"}
+	app.codexSessionHomes["sess-a"] = codexSessionHomeInfo{Path: homeA, HomeKey: "provider:a"}
+	app.codexSessionHomes["sess-b"] = codexSessionHomeInfo{Path: homeB, HomeKey: "provider:b"}
 
 	app.cleanupAllCodexSessionHomes()
 
 	if len(app.codexSessionHomes) != 0 {
 		t.Fatalf("all codex session homes should be removed from registry, got %#v", app.codexSessionHomes)
 	}
-	if _, err := os.Stat(homeA); !os.IsNotExist(err) {
-		t.Fatalf("homeA should be removed, stat err=%v", err)
+	if _, err := os.Stat(homeA); err != nil {
+		t.Fatalf("homeA should remain on disk, stat err=%v", err)
 	}
-	if _, err := os.Stat(homeB); !os.IsNotExist(err) {
-		t.Fatalf("homeB should be removed, stat err=%v", err)
+	if _, err := os.Stat(homeB); err != nil {
+		t.Fatalf("homeB should remain on disk, stat err=%v", err)
 	}
 }
