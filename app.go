@@ -1816,6 +1816,9 @@ func buildCodexOpenAIBaseURLLine(baseURL string) []byte {
 }
 
 func buildCodexIsolatedConfigToml(source []byte, baseURL string) []byte {
+	if hasInjectedSection(string(source)) {
+		return []byte(updateInjectedSectionBaseURL(string(source), baseURL))
+	}
 	cleaned := []byte(removeInjectedSection(string(source)))
 	rootConfig := removeRootLevelOpenAIBaseURLEntries(removeRootLevelModelProviderEntries(cleaned))
 	openAIBaseURLLine := buildCodexOpenAIBaseURLLine(baseURL)
@@ -1837,6 +1840,10 @@ func buildCodexIsolatedConfigToml(source []byte, baseURL string) []byte {
 	result = append(result, openAIBaseURLLine...)
 	result = append(result, suffix...)
 	return result
+}
+
+func hasInjectedSection(content string) bool {
+	return strings.Contains(content, codexInjectStartMarker) && strings.Contains(content, codexInjectEndMarker)
 }
 
 func findFirstCodexTableHeaderStart(source []byte) int {
@@ -1917,20 +1924,87 @@ func removeRootLevelOpenAIBaseURLEntries(source []byte) []byte {
 	return result.Bytes()
 }
 
-func removeInjectedSection(content string) string {
-	const startMarker = "# === amagi-codebox-inject-start ==="
-	const endMarker = "# === amagi-codebox-inject-end ==="
+const (
+	codexInjectStartMarker             = "# === amagi-codebox-inject-start ==="
+	codexInjectEndMarker               = "# === amagi-codebox-inject-end ==="
+	codexInjectedProviderSectionHeader = "[model_providers.amagi-codebox-provider]"
+)
 
+func updateInjectedSectionBaseURL(content string, baseURL string) string {
+	start := strings.Index(content, codexInjectStartMarker)
+	if start == -1 {
+		return content
+	}
+	endRel := strings.Index(content[start:], codexInjectEndMarker)
+	if endRel == -1 {
+		return content
+	}
+	end := start + endRel + len(codexInjectEndMarker)
+
+	section := content[start:end]
+	updatedSection := replaceInjectedProviderBaseURL(section, baseURL)
+	return content[:start] + updatedSection + content[end:]
+}
+
+func replaceInjectedProviderBaseURL(section string, baseURL string) string {
+	lines := strings.Split(section, "\n")
+	providerHeaderIndex := -1
+	baseURLLineIndex := -1
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == codexInjectedProviderSectionHeader:
+			providerHeaderIndex = i
+		case providerHeaderIndex >= 0 && strings.HasPrefix(trimmed, "base_url = "):
+			baseURLLineIndex = i
+		case providerHeaderIndex >= 0 && strings.HasPrefix(trimmed, "[") && trimmed != codexInjectedProviderSectionHeader:
+			i = len(lines)
+		}
+	}
+
+	newLine := "base_url = " + strconv.Quote(baseURL)
+	if baseURLLineIndex >= 0 {
+		lines[baseURLLineIndex] = replaceConfigLineValue(lines[baseURLLineIndex], newLine)
+		return strings.Join(lines, "\n")
+	}
+	if providerHeaderIndex >= 0 {
+		lines = insertStringAt(lines, providerHeaderIndex+1, newLine)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func replaceConfigLineValue(originalLine, newValue string) string {
+	trimmedLeft := strings.TrimLeft(originalLine, " \t")
+	indent := originalLine[:len(originalLine)-len(trimmedLeft)]
+	return indent + newValue
+}
+
+func insertStringAt(lines []string, index int, value string) []string {
+	if index < 0 {
+		index = 0
+	}
+	if index > len(lines) {
+		index = len(lines)
+	}
+	lines = append(lines, "")
+	copy(lines[index+1:], lines[index:])
+	lines[index] = value
+	return lines
+}
+
+func removeInjectedSection(content string) string {
 	for {
-		start := strings.Index(content, startMarker)
+		start := strings.Index(content, codexInjectStartMarker)
 		if start == -1 {
 			return content
 		}
-		end := strings.Index(content[start:], endMarker)
+		end := strings.Index(content[start:], codexInjectEndMarker)
 		if end == -1 {
 			return content[:start]
 		}
-		end += start + len(endMarker)
+		end += start + len(codexInjectEndMarker)
 		for end < len(content) && (content[end] == '\r' || content[end] == '\n') {
 			end++
 		}

@@ -80,8 +80,20 @@ func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t
 	sourceAuthPath := filepath.Join(sourceHome, "auth.json")
 	sourceHistoryPath := filepath.Join(sourceHome, "history.jsonl")
 	configPrefix := "approval_policy = \"never\"\nmodel = \"gpt-5\"\n"
+	injectedSection := "# === amagi-codebox-inject-start ===\n" +
+		"model_provider = \"amagi-codebox-provider\"\n\n" +
+		"[model_providers.amagi-codebox-provider]\n" +
+		"name = \"amagi-codebox-provider\"\n" +
+		"base_url = \"https://old.example/v1\"\n" +
+		"wire_api = \"responses\"\n" +
+		"requires_openai_auth = true\n\n" +
+		"[projects.'X:\\WorkSpace']\n" +
+		"trust_level = \"trusted\"\n\n" +
+		"[windows]\n" +
+		"sandbox = \"elevated\"\n" +
+		"# === amagi-codebox-inject-end ===\n\n"
 	mcpSuffix := "[mcp_servers.keep]\ncommand = \"npx\"\nargs = [\"-y\", \"@modelcontextprotocol/server-filesystem\"]\n"
-	sourceConfig := []byte(configPrefix + mcpSuffix)
+	sourceConfig := []byte(configPrefix + injectedSection + mcpSuffix)
 	sourceAuth := []byte("{\n  \"auth_mode\": \"oauth\",\n  \"refresh_token\": \"keep-me\"\n}\n")
 	sourceHistory := []byte("volatile history that should not be copied\n")
 
@@ -123,23 +135,28 @@ func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t
 	if sessionHome.HomeKey != "base-url:https://example.com/v1" {
 		t.Fatalf("HomeKey = %q, want %q", sessionHome.HomeKey, "base-url:https://example.com/v1")
 	}
-	openAIBaseURLLine := buildCodexOpenAIBaseURLLine("https://example.com/v1")
-	openAIBaseURLStart := bytes.Index(isolatedConfig, openAIBaseURLLine)
-	if openAIBaseURLStart == -1 {
-		t.Fatalf("isolated config missing openai_base_url line\nwant snippet:\n%s\n\ngot:\n%s", openAIBaseURLLine, isolatedConfig)
+	newProviderBaseURL := []byte("base_url = \"https://example.com/v1\"")
+	if !bytes.Contains(isolatedConfig, newProviderBaseURL) {
+		t.Fatalf("isolated config missing updated provider base_url\nwant snippet:\n%s\n\ngot:\n%s", newProviderBaseURL, isolatedConfig)
+	}
+	if bytes.Contains(isolatedConfig, []byte("base_url = \"https://old.example/v1\"")) {
+		t.Fatalf("isolated config should replace old provider base_url\nconfig:\n%s", isolatedConfig)
 	}
 	firstTable := bytes.Index(isolatedConfig, []byte("[mcp_servers.keep]"))
 	if firstTable == -1 {
 		t.Fatalf("isolated config missing source table suffix\nconfig:\n%s", isolatedConfig)
 	}
-	if openAIBaseURLStart >= firstTable {
-		t.Fatalf("openai_base_url must be inserted before first table\nopenaiBaseURLStart=%d firstTable=%d\nconfig:\n%s", openAIBaseURLStart, firstTable, isolatedConfig)
+	if !bytes.Contains(isolatedConfig[:firstTable], []byte("model_provider = \"amagi-codebox-provider\"")) {
+		t.Fatalf("isolated config missing model_provider before first table\nconfig:\n%s", isolatedConfig)
 	}
-	if !bytes.Contains(isolatedConfig[:firstTable], openAIBaseURLLine[:len(openAIBaseURLLine)-1]) {
-		t.Fatalf("isolated config missing root-level openai_base_url before first table\nconfig:\n%s", isolatedConfig)
+	if !bytes.Contains(isolatedConfig[:firstTable], []byte("wire_api = \"responses\"")) {
+		t.Fatalf("isolated config missing wire_api = responses before first table\nconfig:\n%s", isolatedConfig)
 	}
-	if bytes.Contains(isolatedConfig, []byte("model_provider = ")) {
-		t.Fatalf("isolated config should not contain legacy model_provider entry\nconfig:\n%s", isolatedConfig)
+	if !bytes.Contains(isolatedConfig[:firstTable], []byte("[windows]\nsandbox = \"elevated\"")) {
+		t.Fatalf("isolated config missing windows sandbox section before first table\nconfig:\n%s", isolatedConfig)
+	}
+	if bytes.Contains(isolatedConfig, []byte("openai_base_url = ")) {
+		t.Fatalf("isolated config should keep provider-based config instead of root openai_base_url\nconfig:\n%s", isolatedConfig)
 	}
 	if !bytes.Equal(isolatedConfig[firstTable:], []byte(mcpSuffix)) {
 		t.Fatalf("mcp/table suffix was not preserved byte-for-byte\nwant suffix:\n%s\n\ngot suffix:\n%s", mcpSuffix, isolatedConfig[firstTable:])
@@ -298,6 +315,44 @@ func TestBuildCodexIsolatedConfigTomlReplacesExistingRootOpenAIBaseURLBeforeFirs
 	openAIBaseURLStart := bytes.Index(got, openAIBaseURLLine)
 	if openAIBaseURLStart == -1 || openAIBaseURLStart >= firstTable {
 		t.Fatalf("openai_base_url should appear before first table\nconfig:\n%s", got)
+	}
+}
+
+func TestBuildCodexIsolatedConfigTomlPreservesInjectedProviderSectionAndUpdatesBaseURL(t *testing.T) {
+	source := []byte(
+		"approval_policy = \"never\"\n" +
+			"# === amagi-codebox-inject-start ===\n" +
+			"model_provider = \"amagi-codebox-provider\"\n\n" +
+			"[model_providers.amagi-codebox-provider]\n" +
+			"name = \"amagi-codebox-provider\"\n" +
+			"base_url = \"https://old.example/v1\"\n" +
+			"wire_api = \"responses\"\n" +
+			"requires_openai_auth = true\n\n" +
+			"[windows]\n" +
+			"sandbox = \"elevated\"\n" +
+			"# === amagi-codebox-inject-end ===\n\n" +
+			"[mcp_servers.keep]\n" +
+			"command = \"keep\"\n",
+	)
+
+	got := buildCodexIsolatedConfigToml(source, "https://example.com/v1")
+	if !bytes.Contains(got, []byte("model_provider = \"amagi-codebox-provider\"")) {
+		t.Fatalf("injected model_provider should be preserved\nconfig:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
+		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("base_url = \"https://old.example/v1\"")) {
+		t.Fatalf("old provider base_url should be removed\nconfig:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("wire_api = \"responses\"")) {
+		t.Fatalf("wire_api should be preserved\nconfig:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("[windows]\nsandbox = \"elevated\"")) {
+		t.Fatalf("windows section should be preserved\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("openai_base_url = ")) {
+		t.Fatalf("provider-based injected config should not be downgraded to root openai_base_url\nconfig:\n%s", got)
 	}
 }
 
