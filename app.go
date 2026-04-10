@@ -46,6 +46,12 @@ type codexSessionHomeInfo struct {
 	HomeKey string
 }
 
+type codexLaunchSettings struct {
+	Model                      string
+	ModelContextWindow         int
+	ModelAutoCompactTokenLimit int
+}
+
 //go:embed build/windows/icon.ico
 var trayIcon []byte
 
@@ -567,9 +573,13 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		workDir = home
 	}
 
+	launchSettings := codexLaunchSettings{
+		Model: normalizeCodexModelName(modelName),
+	}
+
 	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeCodex, "codex", providerID, modelName, launchMode, workDir, false)
-	a.Log.Info("session", "Codex 会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, modelName, launchMode))
+	sess := a.Sessions.Create(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
+	a.Log.Info("session", "Codex 会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, launchSettings.Model, launchMode))
 
 	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
 	envOverrides := map[string]string{}
@@ -598,6 +608,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 	if providerID != "" {
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
+			launchSettings = resolveCodexLaunchSettings(*provider, launchSettings.Model)
 			injectProviderEnv(providerID, provider)
 		}
 	}
@@ -615,7 +626,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	if codexOpenAIBaseURL != "" {
 		envOverrides["AMAGI_CODEX_OPENAI_BASE_URL"] = codexOpenAIBaseURL
 	}
-	if _, err := a.prepareCodexSessionHome(sess.ID, providerID, envOverrides); err != nil {
+	if _, err := a.prepareCodexSessionHome(sess.ID, providerID, launchSettings, envOverrides); err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.cleanupCodexSessionHome(sess.ID)
 		a.Log.Error("codex", "准备持久 CODEX_HOME 失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -632,8 +643,8 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		autoCommand := ""
 		if actualShell != "" {
 			autoCommand = "codex"
-			if modelName != "" {
-				autoCommand = fmt.Sprintf("codex -m %s", modelName)
+			if launchSettings.Model != "" {
+				autoCommand = fmt.Sprintf("codex -m %s", launchSettings.Model)
 			}
 		}
 
@@ -664,7 +675,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 
 	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.LaunchCodex(sess.ID, modelName, launchMode, workDir, envOverrides)
+	result, err := a.Launcher.LaunchCodex(sess.ID, launchSettings.Model, launchMode, workDir, envOverrides)
 	if err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.cleanupCodexSessionHome(sess.ID)
@@ -689,6 +700,65 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}(sess.ID)
 
 	return sess.ID, nil
+}
+
+func normalizeCodexModelName(modelName string) string {
+	trimmed := strings.TrimSpace(modelName)
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, "[1m]") {
+		trimmed = strings.TrimSpace(trimmed[:len(trimmed)-len("[1m]")])
+	}
+	return trimmed
+}
+
+func resolveCodexLaunchSettings(provider config.Provider, requestedModel string) codexLaunchSettings {
+	normalizedModel := normalizeCodexModelName(requestedModel)
+	settings := codexLaunchSettings{
+		Model: normalizedModel,
+	}
+
+	if normalizedModel == "" {
+		normalizedModel = normalizeCodexModelName(provider.DefaultModel)
+		settings.Model = normalizedModel
+	}
+
+	var matchedPreset *config.Preset
+	requestedRaw := strings.TrimSpace(requestedModel)
+	for _, preset := range provider.Presets {
+		presetModel := strings.TrimSpace(preset.Model)
+		if requestedRaw != "" && presetModel == requestedRaw {
+			presetCopy := preset
+			matchedPreset = &presetCopy
+			break
+		}
+	}
+	if matchedPreset == nil && normalizedModel != "" {
+		for _, preset := range provider.Presets {
+			if normalizeCodexModelName(preset.Model) == normalizedModel {
+				presetCopy := preset
+				matchedPreset = &presetCopy
+				break
+			}
+		}
+	}
+
+	if matchedPreset == nil {
+		return settings
+	}
+
+	if normalizedPresetModel := normalizeCodexModelName(matchedPreset.Model); normalizedPresetModel != "" {
+		settings.Model = normalizedPresetModel
+	}
+
+	if matchedPreset.Parameters.ContextWindow != nil {
+		settings.ModelContextWindow = matchedPreset.Parameters.ContextWindow.ModelContextWindow
+		settings.ModelAutoCompactTokenLimit = matchedPreset.Parameters.ContextWindow.AutoCompactTokenLimit
+	}
+	if settings.ModelContextWindow == 0 && matchedPreset.Parameters.MaxContextLength > 0 {
+		settings.ModelContextWindow = matchedPreset.Parameters.MaxContextLength
+	}
+
+	return settings
 }
 
 // GetProvidersByType 返回指定类型的 Provider 列表（type 为 "openai" 或 "anthropic"）
@@ -1672,19 +1742,42 @@ func (a *App) registerCodexSessionHome(sessionID string, info codexSessionHomeIn
 	a.codexSessionHomes[sessionID] = info
 }
 
-func buildCodexSessionHomeKey(providerID string, envOverrides map[string]string) string {
+func buildCodexSessionHomeKey(providerID string, settings codexLaunchSettings, envOverrides map[string]string, sourceConfig []byte) string {
+	parts := make([]string, 0, 5)
 	providerID = strings.TrimSpace(providerID)
-	if providerID != "" {
-		return "provider:" + providerID
-	}
 	baseURL := strings.TrimSpace(envOverrides["AMAGI_CODEX_OPENAI_BASE_URL"])
 	if baseURL == "" {
 		baseURL = strings.TrimSpace(envOverrides["OPENAI_BASE_URL"])
 	}
-	if baseURL != "" {
-		return "base-url:" + baseURL
+
+	if providerID != "" {
+		parts = append(parts, "provider:"+providerID)
+	} else if baseURL != "" {
+		parts = append(parts, "base-url:"+baseURL)
+	} else {
+		parts = append(parts, "default")
 	}
-	return "default"
+	if providerID != "" && baseURL != "" {
+		parts = append(parts, "base-url:"+baseURL)
+	}
+	modelName := strings.TrimSpace(settings.Model)
+	if modelName != "" {
+		parts = append(parts, "model:"+modelName)
+	}
+	if settings.ModelContextWindow > 0 {
+		parts = append(parts, "model-context-window:"+strconv.Itoa(settings.ModelContextWindow))
+	}
+	if settings.ModelAutoCompactTokenLimit > 0 {
+		parts = append(parts, "auto-compact:"+strconv.Itoa(settings.ModelAutoCompactTokenLimit))
+	}
+	sourceText := string(sourceConfig)
+	if profile := strings.TrimSpace(extractRootLevelConfigValue(sourceText, "profile")); profile != "" {
+		parts = append(parts, "profile:"+profile)
+	}
+	if modelProvider := strings.TrimSpace(extractRootLevelConfigValue(sourceText, "model_provider")); modelProvider != "" {
+		parts = append(parts, "root-model-provider:"+modelProvider)
+	}
+	return strings.Join(parts, "|")
 }
 
 func buildCodexSessionHomeDirName(homeKey string) string {
@@ -1715,7 +1808,7 @@ func buildCodexSessionHomeDirName(homeKey string) string {
 	return fmt.Sprintf("%s-%x", slugText, sum[:6])
 }
 
-func (a *App) prepareCodexSessionHome(sessionID string, providerID string, envOverrides map[string]string) (string, error) {
+func (a *App) prepareCodexSessionHome(sessionID string, providerID string, settings codexLaunchSettings, envOverrides map[string]string) (string, error) {
 	baseEnv := os.Environ()
 	if a.EnvVars != nil {
 		baseEnv = a.EnvVars.MergeWithSystem()
@@ -1725,7 +1818,12 @@ func (a *App) prepareCodexSessionHome(sessionID string, providerID string, envOv
 		return "", err
 	}
 
-	homeKey := buildCodexSessionHomeKey(providerID, envOverrides)
+	sourceConfig, err := readCodexOptionalFile(filepath.Join(sourceHome, "config.toml"))
+	if err != nil {
+		return "", err
+	}
+
+	homeKey := buildCodexSessionHomeKey(providerID, settings, envOverrides, sourceConfig)
 	targetHome := filepath.Join(a.codexSessionHomesRootDir(), buildCodexSessionHomeDirName(homeKey))
 	_, statErr := os.Stat(targetHome)
 	targetAlreadyExists := statErr == nil
@@ -1742,10 +1840,6 @@ func (a *App) prepareCodexSessionHome(sessionID string, providerID string, envOv
 		}
 	}()
 
-	sourceConfig, err := readCodexOptionalFile(filepath.Join(sourceHome, "config.toml"))
-	if err != nil {
-		return "", err
-	}
 	isolatedConfig := append([]byte(nil), sourceConfig...)
 
 	baseURL := strings.TrimSpace(envOverrides["AMAGI_CODEX_OPENAI_BASE_URL"])
@@ -1754,8 +1848,12 @@ func (a *App) prepareCodexSessionHome(sessionID string, providerID string, envOv
 	}
 	delete(envOverrides, "AMAGI_CODEX_OPENAI_BASE_URL")
 	delete(envOverrides, "OPENAI_BASE_URL")
-	if baseURL != "" {
-		isolatedConfig = buildCodexIsolatedConfigToml(sourceConfig, baseURL)
+	if baseURL != "" || settings.ModelContextWindow > 0 || settings.ModelAutoCompactTokenLimit > 0 {
+		isolatedConfig = buildCodexIsolatedConfigToml(sourceConfig, codexLaunchSettings{
+			Model:                      settings.Model,
+			ModelContextWindow:         settings.ModelContextWindow,
+			ModelAutoCompactTokenLimit: settings.ModelAutoCompactTokenLimit,
+		}, baseURL)
 	}
 	if err := os.WriteFile(filepath.Join(targetHome, "config.toml"), isolatedConfig, 0o644); err != nil {
 		return "", fmt.Errorf("write persistent config.toml: %w", err)
@@ -1815,9 +1913,25 @@ func buildCodexOpenAIBaseURLLine(baseURL string) []byte {
 	return fmt.Appendf(nil, "openai_base_url = %q\n\n", baseURL)
 }
 
-func buildCodexIsolatedConfigToml(source []byte, baseURL string) []byte {
+func buildCodexModelProviderLine(provider string) []byte {
+	return fmt.Appendf(nil, "model_provider = %q\n\n", provider)
+}
+
+func buildCodexIsolatedConfigToml(source []byte, settings codexLaunchSettings, baseURL string) []byte {
+	result := append([]byte(nil), source...)
+	if baseURL != "" {
+		result = applyCodexBaseURLIsolation(result, baseURL)
+	}
+	result = applyCodexRootLevelIntSetting(result, "model_context_window", settings.ModelContextWindow)
+	result = applyCodexRootLevelIntSetting(result, "model_auto_compact_token_limit", settings.ModelAutoCompactTokenLimit)
+	return result
+}
+
+func applyCodexBaseURLIsolation(source []byte, baseURL string) []byte {
 	if hasInjectedSection(string(source)) {
-		return []byte(updateInjectedSectionBaseURL(string(source), baseURL))
+		if updated, ok := updateInjectedSectionBaseURL(string(source), baseURL); ok {
+			return []byte(updated)
+		}
 	}
 	cleaned := []byte(removeInjectedSection(string(source)))
 	rootConfig := removeRootLevelOpenAIBaseURLEntries(removeRootLevelModelProviderEntries(cleaned))
@@ -1840,6 +1954,14 @@ func buildCodexIsolatedConfigToml(source []byte, baseURL string) []byte {
 	result = append(result, openAIBaseURLLine...)
 	result = append(result, suffix...)
 	return result
+}
+
+func applyCodexRootLevelIntSetting(source []byte, key string, value int) []byte {
+	cleaned := removeRootLevelConfigEntries(source, key)
+	if value <= 0 {
+		return cleaned
+	}
+	return insertRootLevelConfigLineBeforeFirstTable(cleaned, fmt.Sprintf("%s = %d\n", key, value))
 }
 
 func hasInjectedSection(content string) bool {
@@ -1924,29 +2046,95 @@ func removeRootLevelOpenAIBaseURLEntries(source []byte) []byte {
 	return result.Bytes()
 }
 
+func removeRootLevelConfigEntries(source []byte, key string) []byte {
+	var result bytes.Buffer
+	lineStart := 0
+	for lineStart < len(source) {
+		lineEnd := bytes.IndexByte(source[lineStart:], '\n')
+		hasNewline := true
+		if lineEnd == -1 {
+			lineEnd = len(source)
+			hasNewline = false
+		} else {
+			lineEnd += lineStart
+		}
+		line := source[lineStart:lineEnd]
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte(key)) {
+			result.Write(line)
+			if hasNewline {
+				result.WriteByte('\n')
+			}
+		} else {
+			rest := bytes.TrimSpace(trimmed[len(key):])
+			if len(rest) == 0 || rest[0] != '=' {
+				result.Write(line)
+				if hasNewline {
+					result.WriteByte('\n')
+				}
+			}
+		}
+		if !hasNewline {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+	return result.Bytes()
+}
+
+func insertRootLevelConfigLineBeforeFirstTable(source []byte, line string) []byte {
+	firstTableIdx := findFirstCodexTableHeaderStart(source)
+	if firstTableIdx == -1 {
+		result := append([]byte(nil), source...)
+		if len(result) > 0 && result[len(result)-1] != '\n' {
+			result = append(result, '\n')
+		}
+		return append(result, []byte(line)...)
+	}
+
+	prefix := source[:firstTableIdx]
+	suffix := source[firstTableIdx:]
+	result := append([]byte(nil), prefix...)
+	if len(result) > 0 && result[len(result)-1] != '\n' {
+		result = append(result, '\n')
+	}
+	result = append(result, []byte(line)...)
+	result = append(result, suffix...)
+	return result
+}
+
 const (
 	codexInjectStartMarker             = "# === amagi-codebox-inject-start ==="
 	codexInjectEndMarker               = "# === amagi-codebox-inject-end ==="
 	codexInjectedProviderSectionHeader = "[model_providers.amagi-codebox-provider]"
 )
 
-func updateInjectedSectionBaseURL(content string, baseURL string) string {
+func updateInjectedSectionBaseURL(content string, baseURL string) (string, bool) {
 	start := strings.Index(content, codexInjectStartMarker)
 	if start == -1 {
-		return content
+		return "", false
 	}
 	endRel := strings.Index(content[start:], codexInjectEndMarker)
 	if endRel == -1 {
-		return content
+		return "", false
 	}
 	end := start + endRel + len(codexInjectEndMarker)
 
 	section := content[start:end]
-	updatedSection := replaceInjectedProviderBaseURL(section, baseURL)
-	return content[:start] + updatedSection + content[end:]
+	updatedSection, ok := replaceInjectedProviderBaseURL(section, baseURL)
+	if !ok {
+		return "", false
+	}
+	updatedSection = removeInjectedRootLevelConfigKey(updatedSection, "model_provider")
+	updatedContent := content[:start] + updatedSection + content[end:]
+	outerContent := content[:start] + content[end:]
+	if hasRootLevelConfigKey(outerContent, "profile") || hasRootLevelConfigKey(outerContent, "model_provider") {
+		return updatedContent, true
+	}
+	return insertRootLevelConfigBlockBeforeFirstTable(updatedContent, string(buildCodexModelProviderLine("amagi-codebox-provider"))), true
 }
 
-func replaceInjectedProviderBaseURL(section string, baseURL string) string {
+func replaceInjectedProviderBaseURL(section string, baseURL string) (string, bool) {
 	lines := strings.Split(section, "\n")
 	providerHeaderIndex := -1
 	baseURLLineIndex := -1
@@ -1964,15 +2152,83 @@ func replaceInjectedProviderBaseURL(section string, baseURL string) string {
 		}
 	}
 
+	if providerHeaderIndex < 0 {
+		return "", false
+	}
+
 	newLine := "base_url = " + strconv.Quote(baseURL)
 	if baseURLLineIndex >= 0 {
 		lines[baseURLLineIndex] = replaceConfigLineValue(lines[baseURLLineIndex], newLine)
-		return strings.Join(lines, "\n")
+		return strings.Join(lines, "\n"), true
 	}
-	if providerHeaderIndex >= 0 {
-		lines = insertStringAt(lines, providerHeaderIndex+1, newLine)
+	lines = insertStringAt(lines, providerHeaderIndex+1, newLine)
+	return strings.Join(lines, "\n"), true
+}
+
+func hasRootLevelConfigKey(content string, key string) bool {
+	_, ok := findRootLevelConfigValue(content, key)
+	return ok
+}
+
+func extractRootLevelConfigValue(content string, key string) string {
+	value, _ := findRootLevelConfigValue(content, key)
+	return value
+}
+
+func findRootLevelConfigValue(content string, key string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			return "", false
+		}
+		if value, ok := parseRootLevelConfigAssignment(trimmed, key); ok {
+			return value, true
+		}
 	}
-	return strings.Join(lines, "\n")
+	return "", false
+}
+
+func parseRootLevelConfigAssignment(trimmed string, key string) (string, bool) {
+	if !strings.HasPrefix(trimmed, key) {
+		return "", false
+	}
+	rest := strings.TrimSpace(trimmed[len(key):])
+	if rest == "" || rest[0] != '=' {
+		return "", false
+	}
+	value := strings.TrimSpace(rest[1:])
+	if value == "" {
+		return "", true
+	}
+	if commentIndex := strings.Index(value, "#"); commentIndex >= 0 {
+		value = strings.TrimSpace(value[:commentIndex])
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted, true
+	}
+	return value, true
+}
+
+func removeInjectedRootLevelConfigKey(section string, key string) string {
+	lines := strings.Split(section, "\n")
+	result := make([]string, 0, len(lines))
+	needle := key + " ="
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			result = append(result, lines[i:]...)
+			return strings.Join(result, "\n")
+		}
+		if strings.HasPrefix(trimmed, needle) {
+			continue
+		}
+		result = append(result, line)
+	}
+	return strings.Join(result, "\n")
 }
 
 func replaceConfigLineValue(originalLine, newValue string) string {
@@ -1992,6 +2248,24 @@ func insertStringAt(lines []string, index int, value string) []string {
 	copy(lines[index+1:], lines[index:])
 	lines[index] = value
 	return lines
+}
+
+func insertRootLevelConfigBlockBeforeFirstTable(content string, block string) string {
+	firstTableIdx := findFirstCodexTableHeaderStart([]byte(content))
+	if firstTableIdx == -1 {
+		result := content
+		if len(result) > 0 && result[len(result)-1] != '\n' {
+			result += "\n"
+		}
+		return result + block
+	}
+
+	prefix := content[:firstTableIdx]
+	suffix := content[firstTableIdx:]
+	if len(prefix) > 0 && prefix[len(prefix)-1] != '\n' {
+		prefix += "\n"
+	}
+	return prefix + block + suffix
 }
 
 func removeInjectedSection(content string) string {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/session"
 )
@@ -79,7 +80,7 @@ func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t
 	sourceConfigPath := filepath.Join(sourceHome, "config.toml")
 	sourceAuthPath := filepath.Join(sourceHome, "auth.json")
 	sourceHistoryPath := filepath.Join(sourceHome, "history.jsonl")
-	configPrefix := "approval_policy = \"never\"\nmodel = \"gpt-5\"\n"
+	configPrefix := "approval_policy = \"never\"\nprofile = \"custom-preset\"\nmodel = \"gpt-5\"\n"
 	injectedSection := "# === amagi-codebox-inject-start ===\n" +
 		"model_provider = \"amagi-codebox-provider\"\n\n" +
 		"[model_providers.amagi-codebox-provider]\n" +
@@ -109,7 +110,7 @@ func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t
 		"OPENAI_BASE_URL": "https://example.com/v1",
 	}
 
-	isolatedHome, err := app.prepareCodexSessionHome("sess-openai", "", envOverrides)
+	isolatedHome, err := app.prepareCodexSessionHome("sess-openai", "", codexLaunchSettings{Model: "gpt-5.4"}, envOverrides)
 	if err != nil {
 		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
 	}
@@ -132,8 +133,8 @@ func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t
 	if !ok {
 		t.Fatalf("codexSessionHomes missing entry for session: %#v", app.codexSessionHomes)
 	}
-	if sessionHome.HomeKey != "base-url:https://example.com/v1" {
-		t.Fatalf("HomeKey = %q, want %q", sessionHome.HomeKey, "base-url:https://example.com/v1")
+	if sessionHome.HomeKey != "base-url:https://example.com/v1|model:gpt-5.4|profile:custom-preset|root-model-provider:amagi-codebox-provider" {
+		t.Fatalf("HomeKey = %q, want %q", sessionHome.HomeKey, "base-url:https://example.com/v1|model:gpt-5.4|profile:custom-preset|root-model-provider:amagi-codebox-provider")
 	}
 	newProviderBaseURL := []byte("base_url = \"https://example.com/v1\"")
 	if !bytes.Contains(isolatedConfig, newProviderBaseURL) {
@@ -146,8 +147,11 @@ func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t
 	if firstTable == -1 {
 		t.Fatalf("isolated config missing source table suffix\nconfig:\n%s", isolatedConfig)
 	}
-	if !bytes.Contains(isolatedConfig[:firstTable], []byte("model_provider = \"amagi-codebox-provider\"")) {
-		t.Fatalf("isolated config missing model_provider before first table\nconfig:\n%s", isolatedConfig)
+	if !bytes.Contains(isolatedConfig[:firstTable], []byte("profile = \"custom-preset\"")) {
+		t.Fatalf("isolated config should preserve custom profile before first table\nconfig:\n%s", isolatedConfig)
+	}
+	if bytes.Contains(isolatedConfig[:firstTable], []byte("model_provider = \"amagi-codebox-provider\"")) {
+		t.Fatalf("isolated config should not force injected model_provider when custom profile exists\nconfig:\n%s", isolatedConfig)
 	}
 	if !bytes.Contains(isolatedConfig[:firstTable], []byte("wire_api = \"responses\"")) {
 		t.Fatalf("isolated config missing wire_api = responses before first table\nconfig:\n%s", isolatedConfig)
@@ -200,7 +204,7 @@ func TestPrepareCodexSessionHomeReusesPersistentHomeForSameProvider(t *testing.T
 		"OPENAI_API_KEY":  "sk-first",
 		"OPENAI_BASE_URL": "https://example.com/v1",
 	}
-	firstHome, err := app.prepareCodexSessionHome("sess-first", "provider-a", firstOverrides)
+	firstHome, err := app.prepareCodexSessionHome("sess-first", "provider-a", codexLaunchSettings{Model: "gpt-5.4"}, firstOverrides)
 	if err != nil {
 		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
 	}
@@ -210,7 +214,7 @@ func TestPrepareCodexSessionHomeReusesPersistentHomeForSameProvider(t *testing.T
 		"OPENAI_API_KEY":  "sk-second",
 		"OPENAI_BASE_URL": "https://example.com/v1",
 	}
-	secondHome, err := app.prepareCodexSessionHome("sess-second", "provider-a", secondOverrides)
+	secondHome, err := app.prepareCodexSessionHome("sess-second", "provider-a", codexLaunchSettings{Model: "gpt-5.4"}, secondOverrides)
 	if err != nil {
 		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
 	}
@@ -224,6 +228,173 @@ func TestPrepareCodexSessionHomeReusesPersistentHomeForSameProvider(t *testing.T
 	isolatedAuth := mustJSONUnmarshalObject(t, readTestFile(t, filepath.Join(secondHome, "auth.json")))
 	if isolatedAuth["OPENAI_API_KEY"] != "sk-second" {
 		t.Fatalf("reused persistent auth OPENAI_API_KEY = %#v, want %q", isolatedAuth["OPENAI_API_KEY"], "sk-second")
+	}
+}
+
+func TestPrepareCodexSessionHomeUsesDistinctPersistentHomeForDifferentRootProfiles(t *testing.T) {
+	home := setCodexTestHome(t)
+	sourceHome := filepath.Join(home, ".codex")
+	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
+
+	app := &App{Log: logging.NewService(t.TempDir())}
+	t.Cleanup(app.Log.Close)
+
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("profile = \"preset-a\"\nmodel = \"gpt-5\"\n"))
+	firstOverrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-first",
+		"OPENAI_BASE_URL": "https://example.com/v1",
+	}
+	firstHome, err := app.prepareCodexSessionHome("sess-profile-a", "", codexLaunchSettings{Model: "gpt-5.4"}, firstOverrides)
+	if err != nil {
+		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
+	}
+
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("profile = \"preset-b\"\nmodel = \"gpt-5\"\n"))
+	secondOverrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-second",
+		"OPENAI_BASE_URL": "https://example.com/v1",
+	}
+	secondHome, err := app.prepareCodexSessionHome("sess-profile-b", "", codexLaunchSettings{Model: "gpt-5.4"}, secondOverrides)
+	if err != nil {
+		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
+	}
+
+	if firstHome == secondHome {
+		t.Fatalf("different root profiles should use different persistent homes\nfirst=%q\nsecond=%q", firstHome, secondHome)
+	}
+	if !bytes.Contains(readTestFile(t, filepath.Join(secondHome, "config.toml")), []byte("profile = \"preset-b\"")) {
+		t.Fatalf("second persistent home should contain the new root profile")
+	}
+}
+
+func TestPrepareCodexSessionHomeUsesDistinctPersistentHomeForDifferentRootModelProviders(t *testing.T) {
+	home := setCodexTestHome(t)
+	sourceHome := filepath.Join(home, ".codex")
+	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
+
+	app := &App{Log: logging.NewService(t.TempDir())}
+	t.Cleanup(app.Log.Close)
+
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model_provider = \"provider-a\"\nmodel = \"gpt-5\"\n"))
+	firstHome, err := app.prepareCodexSessionHome("sess-provider-a", "", codexLaunchSettings{Model: "gpt-5.4"}, map[string]string{})
+	if err != nil {
+		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
+	}
+
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model_provider = \"provider-b\"\nmodel = \"gpt-5\"\n"))
+	secondHome, err := app.prepareCodexSessionHome("sess-provider-b", "", codexLaunchSettings{Model: "gpt-5.4"}, map[string]string{})
+	if err != nil {
+		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
+	}
+
+	if firstHome == secondHome {
+		t.Fatalf("different root model_provider values should use different persistent homes\nfirst=%q\nsecond=%q", firstHome, secondHome)
+	}
+	if !bytes.Contains(readTestFile(t, filepath.Join(secondHome, "config.toml")), []byte("model_provider = \"provider-b\"")) {
+		t.Fatalf("second persistent home should contain the new root model_provider")
+	}
+}
+
+func TestPrepareCodexSessionHomeUsesDistinctPersistentHomeForDifferentModels(t *testing.T) {
+	home := setCodexTestHome(t)
+	sourceHome := filepath.Join(home, ".codex")
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("profile = \"custom-preset\"\n"))
+	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
+
+	app := &App{Log: logging.NewService(t.TempDir())}
+	t.Cleanup(app.Log.Close)
+
+	firstHome, err := app.prepareCodexSessionHome("sess-model-a", "provider-a", codexLaunchSettings{Model: "gpt-5.4"}, map[string]string{"OPENAI_API_KEY": "sk-first", "OPENAI_BASE_URL": "https://example.com/v1"})
+	if err != nil {
+		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
+	}
+	secondHome, err := app.prepareCodexSessionHome("sess-model-b", "provider-a", codexLaunchSettings{Model: "gpt-5.4-mini"}, map[string]string{"OPENAI_API_KEY": "sk-second", "OPENAI_BASE_URL": "https://example.com/v1"})
+	if err != nil {
+		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
+	}
+
+	if firstHome == secondHome {
+		t.Fatalf("different models should use different persistent homes\nfirst=%q\nsecond=%q", firstHome, secondHome)
+	}
+}
+
+func TestPrepareCodexSessionHomeMovesInjectedModelProviderToRootBeforeFirstTable(t *testing.T) {
+	home := setCodexTestHome(t)
+	sourceHome := filepath.Join(home, ".codex")
+	sourceConfigPath := filepath.Join(sourceHome, "config.toml")
+	sourceAuthPath := filepath.Join(sourceHome, "auth.json")
+	sourceConfig := []byte(
+		"model = \"codex-mini-latest\"\n" +
+			"approval_policy = \"never\"\n\n" +
+			"[ghost_snapshot]\n" +
+			"disable_warnings = true\n\n" +
+			"# === amagi-codebox-inject-start ===\n" +
+			"model_provider = \"amagi-codebox-provider\"\n\n" +
+			"[model_providers.amagi-codebox-provider]\n" +
+			"name = \"amagi-codebox-provider\"\n" +
+			"base_url = \"https://old.example/v1\"\n" +
+			"wire_api = \"responses\"\n" +
+			"requires_openai_auth = true\n\n" +
+			"[projects.'X:\\WorkSpace']\n" +
+			"trust_level = \"trusted\"\n\n" +
+			"[windows]\n" +
+			"sandbox = \"elevated\"\n" +
+			"# === amagi-codebox-inject-end ===\n\n" +
+			"[mcp_servers.keep]\n" +
+			"command = \"keep\"\n",
+	)
+	writeTestFile(t, sourceConfigPath, sourceConfig)
+	writeTestFile(t, sourceAuthPath, []byte("{\"auth_mode\":\"oauth\"}\n"))
+
+	app := &App{Log: logging.NewService(t.TempDir())}
+	t.Cleanup(app.Log.Close)
+
+	envOverrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-session-key",
+		"OPENAI_BASE_URL": "https://example.com/v1",
+	}
+	isolateHome, err := app.prepareCodexSessionHome("sess-root-scope", "", codexLaunchSettings{Model: "gpt-5.4"}, envOverrides)
+	if err != nil {
+		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
+	}
+
+	isolatedConfig := readTestFile(t, filepath.Join(isolateHome, "config.toml"))
+	if got := extractRootLevelConfigValue(string(isolatedConfig), "model_provider"); got != "amagi-codebox-provider" {
+		t.Fatalf("root model_provider = %q, want %q\nconfig:\n%s", got, "amagi-codebox-provider", isolatedConfig)
+	}
+	if bytes.Count(isolatedConfig, []byte("model_provider = \"amagi-codebox-provider\"")) != 1 {
+		t.Fatalf("isolated config should contain exactly one injected model_provider selector\nconfig:\n%s", isolatedConfig)
+	}
+	firstTable := bytes.Index(isolatedConfig, []byte("[ghost_snapshot]"))
+	if firstTable == -1 {
+		t.Fatalf("isolated config missing ghost_snapshot table\nconfig:\n%s", isolatedConfig)
+	}
+	modelProviderIndex := bytes.Index(isolatedConfig, []byte("model_provider = \"amagi-codebox-provider\""))
+	if modelProviderIndex == -1 || modelProviderIndex >= firstTable {
+		t.Fatalf("root model_provider should appear before first table\nconfig:\n%s", isolatedConfig)
+	}
+	if !bytes.Contains(isolatedConfig, []byte("base_url = \"https://example.com/v1\"")) {
+		t.Fatalf("isolated config missing updated provider base_url\nconfig:\n%s", isolatedConfig)
+	}
+	if bytes.Contains(isolatedConfig, []byte("base_url = \"https://old.example/v1\"")) {
+		t.Fatalf("isolated config should replace old provider base_url\nconfig:\n%s", isolatedConfig)
+	}
+	for _, snippet := range []string{
+		"[model_providers.amagi-codebox-provider]",
+		"[projects.'X:\\WorkSpace']",
+		"[windows]",
+		"[ghost_snapshot]",
+		"[mcp_servers.keep]",
+	} {
+		if !bytes.Contains(isolatedConfig, []byte(snippet)) {
+			t.Fatalf("isolated config missing %s\nconfig:\n%s", snippet, isolatedConfig)
+		}
+	}
+	if bytes.Contains(isolatedConfig, []byte("openai_base_url = ")) {
+		t.Fatalf("isolated config should keep provider-based config instead of root openai_base_url\nconfig:\n%s", isolatedConfig)
+	}
+	if !bytes.Equal(readTestFile(t, sourceConfigPath), sourceConfig) {
+		t.Fatalf("source config.toml was mutated\nwant:\n%s\n\ngot:\n%s", sourceConfig, readTestFile(t, sourceConfigPath))
 	}
 }
 
@@ -241,7 +412,7 @@ func TestPrepareCodexSessionHomeFallsBackToMinimalAuthOnMalformedSource(t *testi
 		"OPENAI_BASE_URL": "https://example.com/v1",
 	}
 
-	isolatedHome, err := app.prepareCodexSessionHome("sess-malformed-auth", "", envOverrides)
+	isolatedHome, err := app.prepareCodexSessionHome("sess-malformed-auth", "", codexLaunchSettings{Model: "gpt-5.4"}, envOverrides)
 	if err != nil {
 		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
 	}
@@ -271,7 +442,7 @@ func TestPrepareCodexSessionHomeWithoutOpenAIOverridesCopiesOnlySafeAssets(t *te
 
 	envOverrides := map[string]string{}
 
-	isolatedHome, err := app.prepareCodexSessionHome("sess-safe-copy", "", envOverrides)
+	isolatedHome, err := app.prepareCodexSessionHome("sess-safe-copy", "", codexLaunchSettings{}, envOverrides)
 	if err != nil {
 		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
 	}
@@ -290,7 +461,7 @@ func TestBuildCodexIsolatedConfigTomlReplacesExistingRootOpenAIBaseURLBeforeFirs
 	source := []byte("approval_policy = \"never\"\nmodel_provider = \"user-provider\"\nopenai_base_url = \"https://old.example/v1\"\nmodel = \"gpt-5\"\n[mcp_servers.keep]\ncommand = \"keep\"\n")
 	baseURL := "https://example.com/v1"
 
-	got := buildCodexIsolatedConfigToml(source, baseURL)
+	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, baseURL)
 	wantPrefix := "approval_policy = \"never\"\nmodel = \"gpt-5\"\nopenai_base_url = \"" + baseURL + "\"\n\n"
 	if !bytes.HasPrefix(got, []byte(wantPrefix)) {
 		t.Fatalf("isolated config prefix mismatch\nwant prefix:\n%s\n\ngot:\n%s", wantPrefix, got)
@@ -318,9 +489,10 @@ func TestBuildCodexIsolatedConfigTomlReplacesExistingRootOpenAIBaseURLBeforeFirs
 	}
 }
 
-func TestBuildCodexIsolatedConfigTomlPreservesInjectedProviderSectionAndUpdatesBaseURL(t *testing.T) {
+func TestBuildCodexIsolatedConfigTomlPreservesInjectedProviderSectionAndCustomProfile(t *testing.T) {
 	source := []byte(
 		"approval_policy = \"never\"\n" +
+			"profile = \"custom-preset\"\n" +
 			"# === amagi-codebox-inject-start ===\n" +
 			"model_provider = \"amagi-codebox-provider\"\n\n" +
 			"[model_providers.amagi-codebox-provider]\n" +
@@ -335,9 +507,12 @@ func TestBuildCodexIsolatedConfigTomlPreservesInjectedProviderSectionAndUpdatesB
 			"command = \"keep\"\n",
 	)
 
-	got := buildCodexIsolatedConfigToml(source, "https://example.com/v1")
-	if !bytes.Contains(got, []byte("model_provider = \"amagi-codebox-provider\"")) {
-		t.Fatalf("injected model_provider should be preserved\nconfig:\n%s", got)
+	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
+	if !bytes.Contains(got, []byte("profile = \"custom-preset\"")) {
+		t.Fatalf("custom profile should be preserved\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("model_provider = \"amagi-codebox-provider\"")) {
+		t.Fatalf("injected model_provider should not override custom profile\nconfig:\n%s", got)
 	}
 	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
 		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
@@ -353,6 +528,216 @@ func TestBuildCodexIsolatedConfigTomlPreservesInjectedProviderSectionAndUpdatesB
 	}
 	if bytes.Contains(got, []byte("openai_base_url = ")) {
 		t.Fatalf("provider-based injected config should not be downgraded to root openai_base_url\nconfig:\n%s", got)
+	}
+}
+
+func TestBuildCodexIsolatedConfigTomlPreservesCustomRootModelProvider(t *testing.T) {
+	source := []byte(
+		"approval_policy = \"never\"\n" +
+			"model_provider = \"custom-provider\"\n" +
+			"# === amagi-codebox-inject-start ===\n" +
+			"model_provider = \"amagi-codebox-provider\"\n\n" +
+			"[model_providers.amagi-codebox-provider]\n" +
+			"name = \"amagi-codebox-provider\"\n" +
+			"base_url = \"https://old.example/v1\"\n" +
+			"wire_api = \"responses\"\n" +
+			"requires_openai_auth = true\n" +
+			"# === amagi-codebox-inject-end ===\n\n" +
+			"[mcp_servers.keep]\n" +
+			"command = \"keep\"\n",
+	)
+
+	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
+	if !bytes.Contains(got, []byte("model_provider = \"custom-provider\"")) {
+		t.Fatalf("custom root model_provider should be preserved\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("model_provider = \"amagi-codebox-provider\"")) {
+		t.Fatalf("injected model_provider should not override custom root model_provider\nconfig:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
+		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("wire_api = \"responses\"")) {
+		t.Fatalf("wire_api should be preserved\nconfig:\n%s", got)
+	}
+}
+
+func TestBuildCodexIsolatedConfigTomlMovesInjectedModelProviderToRootBeforeFirstTable(t *testing.T) {
+	source := []byte(
+		"model = \"codex-mini-latest\"\n" +
+			"approval_policy = \"never\"\n\n" +
+			"[ghost_snapshot]\n" +
+			"disable_warnings = true\n\n" +
+			"# === amagi-codebox-inject-start ===\n" +
+			"model_provider = \"amagi-codebox-provider\"\n\n" +
+			"[model_providers.amagi-codebox-provider]\n" +
+			"name = \"amagi-codebox-provider\"\n" +
+			"base_url = \"https://old.example/v1\"\n" +
+			"wire_api = \"responses\"\n" +
+			"requires_openai_auth = true\n\n" +
+			"[projects.'X:\\WorkSpace']\n" +
+			"trust_level = \"trusted\"\n\n" +
+			"[windows]\n" +
+			"sandbox = \"elevated\"\n" +
+			"# === amagi-codebox-inject-end ===\n\n" +
+			"[mcp_servers.keep]\n" +
+			"command = \"keep\"\n",
+	)
+
+	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
+	if rootModelProvider := extractRootLevelConfigValue(string(got), "model_provider"); rootModelProvider != "amagi-codebox-provider" {
+		t.Fatalf("root model_provider = %q, want %q\nconfig:\n%s", rootModelProvider, "amagi-codebox-provider", got)
+	}
+	if bytes.Count(got, []byte("model_provider = \"amagi-codebox-provider\"")) != 1 {
+		t.Fatalf("isolated config should contain exactly one injected model_provider selector\nconfig:\n%s", got)
+	}
+	firstTable := bytes.Index(got, []byte("[ghost_snapshot]"))
+	if firstTable == -1 {
+		t.Fatalf("isolated config missing ghost_snapshot table\nconfig:\n%s", got)
+	}
+	modelProviderIndex := bytes.Index(got, []byte("model_provider = \"amagi-codebox-provider\""))
+	if modelProviderIndex == -1 || modelProviderIndex >= firstTable {
+		t.Fatalf("root model_provider should appear before first table\nconfig:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
+		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("base_url = \"https://old.example/v1\"")) {
+		t.Fatalf("old provider base_url should be removed\nconfig:\n%s", got)
+	}
+	for _, snippet := range []string{
+		"[model_providers.amagi-codebox-provider]",
+		"[projects.'X:\\WorkSpace']",
+		"[windows]",
+		"[ghost_snapshot]",
+		"[mcp_servers.keep]",
+	} {
+		if !bytes.Contains(got, []byte(snippet)) {
+			t.Fatalf("config missing %s\nconfig:\n%s", snippet, got)
+		}
+	}
+	if bytes.Contains(got, []byte("openai_base_url = ")) {
+		t.Fatalf("provider-based injected config should not be downgraded to root openai_base_url\nconfig:\n%s", got)
+	}
+}
+
+func TestBuildCodexIsolatedConfigTomlFallsBackForLegacyInjectedRootOpenAIBaseURL(t *testing.T) {
+	source := []byte(
+		"approval_policy = \"never\"\n" +
+			"# === amagi-codebox-inject-start ===\n" +
+			"openai_base_url = \"https://old.example/v1\"\n" +
+			"# === amagi-codebox-inject-end ===\n\n" +
+			"[mcp_servers.keep]\n" +
+			"command = \"keep\"\n",
+	)
+
+	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
+	if !bytes.Contains(got, []byte("openai_base_url = \"https://example.com/v1\"")) {
+		t.Fatalf("legacy injected openai_base_url should be rebuilt with new value\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("openai_base_url = \"https://old.example/v1\"")) {
+		t.Fatalf("old legacy injected openai_base_url should be removed\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte(codexInjectStartMarker)) || bytes.Contains(got, []byte(codexInjectEndMarker)) {
+		t.Fatalf("legacy injected markers should be removed after fallback rebuild\nconfig:\n%s", got)
+	}
+}
+
+func TestBuildCodexIsolatedConfigTomlAppliesContextWindowSettingsWithoutBaseURL(t *testing.T) {
+	source := []byte(
+		"approval_policy = \"never\"\n" +
+			"model_context_window = 272000\n" +
+			"model_auto_compact_token_limit = 200000\n" +
+			"[mcp_servers.keep]\n" +
+			"command = \"keep\"\n",
+	)
+
+	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{
+		Model:                      "gpt-5.4",
+		ModelContextWindow:         1_047_576,
+		ModelAutoCompactTokenLimit: 400_000,
+	}, "")
+
+	if bytes.Contains(got, []byte("model_context_window = 272000")) {
+		t.Fatalf("old model_context_window should be replaced\nconfig:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("model_auto_compact_token_limit = 200000")) {
+		t.Fatalf("old model_auto_compact_token_limit should be replaced\nconfig:\n%s", got)
+	}
+	if bytes.Count(got, []byte("model_context_window = ")) != 1 {
+		t.Fatalf("config should contain exactly one model_context_window line\nconfig:\n%s", got)
+	}
+	if bytes.Count(got, []byte("model_auto_compact_token_limit = ")) != 1 {
+		t.Fatalf("config should contain exactly one model_auto_compact_token_limit line\nconfig:\n%s", got)
+	}
+	firstTable := bytes.Index(got, []byte("[mcp_servers.keep]"))
+	if firstTable == -1 {
+		t.Fatalf("config missing original table suffix\nconfig:\n%s", got)
+	}
+	windowIndex := bytes.Index(got, []byte("model_context_window = 1047576"))
+	compactIndex := bytes.Index(got, []byte("model_auto_compact_token_limit = 400000"))
+	if windowIndex == -1 || compactIndex == -1 {
+		t.Fatalf("config missing updated context window settings\nconfig:\n%s", got)
+	}
+	if windowIndex >= firstTable || compactIndex >= firstTable {
+		t.Fatalf("context window settings should appear before first table\nconfig:\n%s", got)
+	}
+}
+
+func TestPrepareCodexSessionHomeWritesContextWindowSettingsWithoutBaseURL(t *testing.T) {
+	home := setCodexTestHome(t)
+	sourceHome := filepath.Join(home, ".codex")
+	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("approval_policy = \"never\"\n[mcp_servers.keep]\ncommand = \"keep\"\n"))
+	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
+
+	app := &App{Log: logging.NewService(t.TempDir())}
+	t.Cleanup(app.Log.Close)
+
+	isolatedHome, err := app.prepareCodexSessionHome("sess-context-only", "", codexLaunchSettings{
+		Model:                      "gpt-5.4",
+		ModelContextWindow:         1_047_576,
+		ModelAutoCompactTokenLimit: 400_000,
+	}, map[string]string{})
+	if err != nil {
+		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
+	}
+
+	isolatedConfig := readTestFile(t, filepath.Join(isolatedHome, "config.toml"))
+	if !bytes.Contains(isolatedConfig, []byte("model_context_window = 1047576")) {
+		t.Fatalf("isolated config missing model_context_window\nconfig:\n%s", isolatedConfig)
+	}
+	if !bytes.Contains(isolatedConfig, []byte("model_auto_compact_token_limit = 400000")) {
+		t.Fatalf("isolated config missing model_auto_compact_token_limit\nconfig:\n%s", isolatedConfig)
+	}
+}
+
+func TestResolveCodexLaunchSettingsMatchesPresetAndNormalizesOneMillionSuffix(t *testing.T) {
+	provider := config.Provider{
+		DefaultModel: "gpt-5.4[1m]",
+		Presets: map[string]config.Preset{
+			"code": {
+				Name:  "code",
+				Model: "gpt-5.4[1m]",
+				Parameters: config.Parameters{
+					MaxContextLength: 1_000_000,
+					ContextWindow: &config.ContextWindowConfig{
+						ModelContextWindow:    1_047_576,
+						AutoCompactTokenLimit: 400_000,
+					},
+				},
+			},
+		},
+	}
+
+	settings := resolveCodexLaunchSettings(provider, "gpt-5.4[1m]")
+	if settings.Model != "gpt-5.4" {
+		t.Fatalf("normalized model = %q, want %q", settings.Model, "gpt-5.4")
+	}
+	if settings.ModelContextWindow != 1_047_576 {
+		t.Fatalf("model context window = %d, want %d", settings.ModelContextWindow, 1_047_576)
+	}
+	if settings.ModelAutoCompactTokenLimit != 400_000 {
+		t.Fatalf("auto compact token limit = %d, want %d", settings.ModelAutoCompactTokenLimit, 400_000)
 	}
 }
 
