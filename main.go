@@ -96,6 +96,7 @@ func main() {
 			app.Settings,
 			app.Updater,
 			app.Plugins,
+			app.Workspaces,
 			app.Amagi,
 		},
 	})

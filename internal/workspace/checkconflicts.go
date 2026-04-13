@@ -1,0 +1,64 @@
+package workspace
+
+import (
+	"fmt"
+	"path/filepath"
+)
+
+func (s *Service) CheckConflicts(pluginID, scope, target string) ([]Conflict, error) {
+	switch scope {
+	case string(SourceScopeGlobal):
+		tool := ToolTypeClaude
+		if target != "" {
+			tool = ToolType(target)
+		}
+		if tool != ToolTypeClaude {
+			return nil, fmt.Errorf("tool %s is not supported by backend foundation conflict checks yet", tool)
+		}
+		plan, _, err := s.buildGlobalPlan([]GlobalEnabled{{PluginID: pluginID, EnabledAll: true, Tools: []ToolType{tool}}})
+		if err != nil {
+			return nil, err
+		}
+		manifest, err := ReadManifest(s.globalManifestPath)
+		if err != nil {
+			return nil, err
+		}
+		return collectPlanConflicts(filepath.Join(s.homeDir, ".claude"), manifest, plan)
+	case string(SourceScopeWorkspace):
+		workspace, err := s.GetWorkspace(target)
+		if err != nil {
+			return nil, err
+		}
+		if !toolsOverlap(workspace.Tools, []ToolType{ToolTypeClaude}) {
+			return nil, fmt.Errorf("workspace %s has no Claude tool target to check", workspace.ID)
+		}
+		plan, _, err := s.buildWorkspacePlan(Workspace{ID: workspace.ID, Path: workspace.Path, Tools: workspace.Tools, Plugins: []WorkspacePlugin{{PluginID: pluginID, DeployScope: string(SourceScopeWorkspace)}}})
+		if err != nil {
+			return nil, err
+		}
+		manifest, err := ReadManifest(ManifestPathForWorkspace(workspace.Path))
+		if err != nil {
+			return nil, err
+		}
+		return collectPlanConflicts(workspace.Path, manifest, plan)
+	default:
+		return nil, fmt.Errorf("unsupported conflict scope: %s", scope)
+	}
+}
+
+func collectPlanConflicts(root string, manifest DeploymentManifest, plan deploymentPlan) ([]Conflict, error) {
+	activeEntries, _ := splitManifestEntriesByStatus(manifest.Entries)
+	activeManifest := defaultManifest()
+	activeManifest.Entries = activeEntries
+	conflicts := checkPlanConflicts(root, activeManifest, plan)
+	for target, entries := range groupEntriesByTarget(activeEntries) {
+		changed, err := managedTargetModified(root, target, entries)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			conflicts = append(conflicts, Conflict{Type: ConflictTypeModifiedFile, PluginID: entries[0].PluginID, TargetPath: target, Message: fmt.Sprintf("托管文件 %s 已被手动修改，当前操作不会覆盖", target), Blocking: true})
+		}
+	}
+	return conflicts, nil
+}

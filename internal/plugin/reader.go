@@ -235,33 +235,27 @@ func (s *Service) scanHooks(installPath string) ([]HookInfo, error) {
 	}
 
 	hooks := make([]HookInfo, 0)
+	seenNames := map[string]int{}
 	for event, groups := range raw.Hooks {
 		for _, group := range groups {
 			if len(group.Hooks) == 0 && group.Type != "" {
-				hooks = append(hooks, HookInfo{
-					Event:   event,
-					Type:    group.Type,
-					Command: group.Command,
-				})
+				info := HookInfo{Event: event, Type: group.Type, Command: group.Command, FilePath: path}
+				info.Name = uniqueHookName(info, seenNames)
+				hooks = append(hooks, info)
 				continue
 			}
 
 			for _, hook := range group.Hooks {
-				hooks = append(hooks, HookInfo{
-					Event:   event,
-					Type:    hook.Type,
-					Command: hook.Command,
-				})
+				info := HookInfo{Event: event, Type: hook.Type, Command: hook.Command, FilePath: path}
+				info.Name = uniqueHookName(info, seenNames)
+				hooks = append(hooks, info)
 			}
 		}
 	}
 
 	sort.Slice(hooks, func(i, j int) bool {
 		if hooks[i].Event == hooks[j].Event {
-			if hooks[i].Type == hooks[j].Type {
-				return hooks[i].Command < hooks[j].Command
-			}
-			return hooks[i].Type < hooks[j].Type
+			return hooks[i].Name < hooks[j].Name
 		}
 		return hooks[i].Event < hooks[j].Event
 	})

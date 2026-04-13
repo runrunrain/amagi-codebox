@@ -35,6 +35,7 @@ import (
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
+	"amagi-codebox/internal/workspace"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -63,27 +64,29 @@ type App struct {
 	codexSessionHomesMu sync.Mutex
 	codexSessionHomes   map[string]codexSessionHomeInfo
 
-	Config   *config.ConfigService
-	Secrets  *secrets.SecretsService
-	Launcher *launcher.LauncherService
-	Proxy    *proxy.ProxyService
-	Tray     *tray.Service
-	Sessions *session.Manager
-	Paths    *paths.PathsService
-	Log      *logging.Service
-	Pty      *pty.Service
-	Settings *settings.Service
-	Remote   *remote.Server
-	EnvVars  *envvars.EnvVarsService
-	Updater  *updater.Service
-	Plugins  *plugin.Service
-	Amagi    *amagi.Service
+	Config     *config.ConfigService
+	Secrets    *secrets.SecretsService
+	Launcher   *launcher.LauncherService
+	Proxy      *proxy.ProxyService
+	Tray       *tray.Service
+	Sessions   *session.Manager
+	Paths      *paths.PathsService
+	Log        *logging.Service
+	Pty        *pty.Service
+	Settings   *settings.Service
+	Remote     *remote.Server
+	EnvVars    *envvars.EnvVarsService
+	Updater    *updater.Service
+	Plugins    *plugin.Service
+	Workspaces *workspace.Service
+	Amagi      *amagi.Service
 }
 
 func NewApp() *App {
 	configDir := defaultConfigDir()
 	log := logging.NewService(configDir)
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
+	pluginsSvc := plugin.NewService("", log)
 
 	app := &App{
 		codexSessionHomes: map[string]codexSessionHomeInfo{},
@@ -99,7 +102,8 @@ func NewApp() *App {
 		Settings:          settings.NewService(configDir),
 		EnvVars:           envVarsSvc,
 		Updater:           updater.NewService(Version, log),
-		Plugins:           plugin.NewService("", log),
+		Plugins:           pluginsSvc,
+		Workspaces:        workspace.NewService(configDir, pluginsSvc, log),
 		Amagi:             amagi.NewService(configDir),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
@@ -298,6 +302,11 @@ func (a *App) Startup(ctx context.Context) {
 		a.Log.Warn("app", "加载 AmagiCode 配置失败", err.Error())
 	} else {
 		a.Log.Info("app", "AmagiCode 配置加载成功")
+	}
+	if err := a.Workspaces.Load(); err != nil {
+		a.Log.Warn("app", "加载工作区配置失败", err.Error())
+	} else {
+		a.Log.Info("app", "工作区配置加载成功")
 	}
 
 	// 启动远程 API 服务器
@@ -1147,6 +1156,9 @@ func (a *App) SaveAllConfig() error {
 	}
 	if err := a.Amagi.Save(); err != nil {
 		return fmt.Errorf("save amagi config: %w", err)
+	}
+	if err := a.Workspaces.Save(); err != nil {
+		return fmt.Errorf("save workspaces: %w", err)
 	}
 	if err := a.Proxy.SaveRules(defaultConfigDir()); err != nil {
 		return fmt.Errorf("save injection rules: %w", err)

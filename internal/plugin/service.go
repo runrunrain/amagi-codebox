@@ -162,6 +162,14 @@ func (s *Service) GetPluginDetail(pluginID string) (*PluginDetail, error) {
 	if err != nil {
 		return nil, err
 	}
+	claudeMdPath, hasClaudeMd, err := s.findClaudeMd(installed.InstallPath)
+	if err != nil {
+		return nil, err
+	}
+	disabledRefs, err := s.readDisabledSubItems(pluginID)
+	if err != nil {
+		return nil, err
+	}
 
 	detail := &PluginDetail{
 		InstalledPlugin: *installed,
@@ -171,8 +179,12 @@ func (s *Service) GetPluginDetail(pluginID string) (*PluginDetail, error) {
 		Commands:        commands,
 		Hooks:           hooks,
 		HasMCP:          len(mcpServers) > 0,
-		MCPServers:      mcpServers,
+		MCPServers:      cloneMap(mcpServers),
+		HasClaudeMd:     hasClaudeMd,
+		ClaudeMdPath:    claudeMdPath,
 	}
+	detail.PluginType = analyzePluginType(detail)
+	detail.SubItems = buildSubItems(detail, disabledRefs)
 
 	return detail, nil
 }
