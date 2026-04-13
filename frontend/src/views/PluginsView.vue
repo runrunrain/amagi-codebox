@@ -33,6 +33,17 @@ const loadingDetails = ref<Record<string, boolean>>({})
 const searchQuery = ref('')
 const sortBy = ref<'installCount' | 'name'>('installCount')
 
+const subItemKey = (item: { type: string; name: string }) => `${item.type}:${item.name}`
+const pluginTypeLabel = (value = 'unknown') => ({ integration: '集成', hybrid: '混合', skill: 'Skill', hook: 'Hook', command: 'Command', agent: 'Agent', mcp: 'MCP', unknown: '未知' } as Record<string, string>)[value] || value
+const pluginTypeClass = (value?: string) => `type-${value || 'unknown'}`
+const subItemTypeLabel = (value: string) => ({ skill: 'Skill', hook: 'Hook', command: 'Command', agent: 'Agent', mcp: 'MCP', claude: 'Claude' } as Record<string, string>)[value] || value
+const getMcpServerNames = (detail: any) => Object.keys(detail?.mcpServers || {})
+const hasDetailResources = (detail: any) => Boolean(detail?.skills?.length || detail?.agents?.length || detail?.commands?.length || detail?.hooks?.length || getMcpServerNames(detail).length || detail?.subItems?.length || detail?.hasClaudeMd)
+function mergeSubItemStates(items: any[], state: any) {
+  const disabled = new Set((state?.disabledSubItems || []).map((ref: any) => subItemKey(ref)))
+  return (items || []).map((item: any) => ({ ...item, enabled: !disabled.has(subItemKey(item)) }))
+}
+
 const availableByMarketplace = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   let filtered = availablePlugins.value
@@ -108,7 +119,14 @@ async function loadData() {
   loading.value = true
   try {
     marketplaces.value = await GetMarketplaces() || []
-    installedPlugins.value = await GetInstalledPlugins() || []
+    const installed = await GetInstalledPlugins() || []
+    installedPlugins.value = await Promise.all(installed.map(async (plugin: any) => {
+      try {
+        return { ...plugin, pluginType: await AnalyzePluginType(plugin.id) }
+      } catch {
+        return { ...plugin, pluginType: 'unknown' }
+      }
+    }))
     try {
       const all = await GetAvailablePlugins() || []
       const installedIds = new Set(installedPlugins.value.map((p: any) => p.id))
@@ -275,18 +293,37 @@ async function toggleDetail(pluginId: string) {
     expandedPluginId.value = null
     return
   }
-  
+
   expandedPluginId.value = pluginId
   if (!pluginDetails.value[pluginId]) {
     loadingDetails.value[pluginId] = true
     try {
-      const detail = await GetPluginDetail(pluginId)
-      pluginDetails.value[pluginId] = detail || {}
+      const [detail, subItems, state] = await Promise.all([
+        GetPluginDetail(pluginId),
+        GetPluginSubItems(pluginId),
+        GetPluginSubItemStates(pluginId)
+      ])
+      pluginDetails.value[pluginId] = {
+        ...(detail || {}),
+        subItems: mergeSubItemStates(subItems || detail?.subItems || [], state),
+      }
     } catch (err) {
       showError('加载详情失败: ' + err)
     } finally {
       loadingDetails.value[pluginId] = false
     }
+  }
+}
+
+async function toggleSubItem(pluginId: string, item: any) {
+  const nextEnabled = !item.enabled
+  item.enabled = nextEnabled
+  try {
+    await SetSubItemEnabled(pluginId, { type: item.type, name: item.name }, nextEnabled)
+    showSuccess(nextEnabled ? '子项已启用' : '子项已禁用')
+  } catch (err) {
+    item.enabled = !nextEnabled
+    showError('更新子项失败: ' + err)
   }
 }
 
@@ -414,6 +451,7 @@ onMounted(() => {
           <div class="plugin-info-main" @click="toggleDetail(p.id)">
             <div class="plugin-title-row">
               <h3 class="plugin-name">{{ p.name }}</h3>
+              <span class="badge" :class="pluginTypeClass(p.pluginType)">{{ pluginTypeLabel(p.pluginType) }}</span>
               <span class="badge version-badge">{{ p.version || 'v1.0.0' }}</span>
               <span class="badge scope-badge" v-if="p.scope">{{ p.scope }}</span>
             </div>
@@ -505,17 +543,50 @@ onMounted(() => {
               </div>
 
               <!-- MCP Servers -->
-              <div class="detail-section" v-if="pluginDetails[p.id].hasMcp && pluginDetails[p.id].mcpServers?.length">
+              <div class="detail-section" v-if="pluginDetails[p.id].hasMcp && getMcpServerNames(pluginDetails[p.id]).length">
                 <h4 class="section-title-sm">
                   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="7" y1="8" x2="7" y2="16"></line><line x1="11" y1="8" x2="11" y2="16"></line><line x1="15" y1="8" x2="15" y2="16"></line></svg>
                   MCP Servers
                 </h4>
                 <div class="detail-tags">
-                  <span class="tag" v-for="m in pluginDetails[p.id].mcpServers" :key="m.name">{{ m.name }}</span>
+                  <span class="tag" v-for="name in getMcpServerNames(pluginDetails[p.id])" :key="name">{{ name }}</span>
                 </div>
               </div>
 
-              <div class="empty-state-sm" v-if="!pluginDetails[p.id].skills?.length && !pluginDetails[p.id].agents?.length && !pluginDetails[p.id].commands?.length && !pluginDetails[p.id].hooks?.length && !pluginDetails[p.id].hasMcp">
+              <div class="detail-section" v-if="pluginDetails[p.id].hasClaudeMd">
+                <h4 class="section-title-sm">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                  Claude Baseline
+                </h4>
+                <div class="detail-item">
+                  <span class="item-name">CLAUDE.md</span>
+                  <span class="item-desc">{{ pluginDetails[p.id].claudeMdPath || '插件根目录' }}</span>
+                </div>
+              </div>
+
+              <div class="detail-section" v-if="pluginDetails[p.id].subItems?.length">
+                <h4 class="section-title-sm">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+                  子项启停
+                </h4>
+                <div class="subitem-toggle-list">
+                  <div class="subitem-toggle-item" v-for="subItem in pluginDetails[p.id].subItems" :key="subItemKey(subItem)">
+                    <div class="subitem-copy">
+                      <div class="subitem-copy-title">
+                        <span class="item-name compact">{{ subItem.name }}</span>
+                        <span class="badge subitem-kind-badge">{{ subItemTypeLabel(subItem.type) }}</span>
+                      </div>
+                      <span class="item-desc">{{ subItem.path }}</span>
+                    </div>
+                    <div class="subitem-actions">
+                      <span class="toggle-label" :class="{ 'text-enabled': subItem.enabled, 'text-disabled': !subItem.enabled }">{{ subItem.enabled ? '已启用' : '已禁用' }}</span>
+                      <button class="ios-toggle" :class="{ active: subItem.enabled }" @click="toggleSubItem(p.id, subItem)"></button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="empty-state-sm" v-if="!hasDetailResources(pluginDetails[p.id])">
                 该插件未声明任何可用资源
               </div>
             </div>
@@ -588,7 +659,7 @@ onMounted(() => {
 
     <!-- Add Marketplace Dialog -->
     <transition name="dialog-fade">
-      <div class="dialog-overlay" v-if="addMarketDialog.show" @click.self="addMarketDialog.show = false">
+      <div class="dialog-overlay" v-if="addMarketDialog.show">
         <div class="dialog">
           <h2 class="dialog-title">添加插件市场</h2>
           <div class="dialog-body">
@@ -623,7 +694,7 @@ onMounted(() => {
 
     <!-- Confirm Dialog -->
     <transition name="dialog-fade">
-      <div class="dialog-overlay" v-if="confirmDialog.show" @click.self="confirmDialog.show = false">
+      <div class="dialog-overlay" v-if="confirmDialog.show">
         <div class="dialog">
           <h2 class="dialog-title">{{ confirmDialog.title }}</h2>
           <div class="dialog-body">
@@ -920,6 +991,30 @@ onMounted(() => {
 .scope-badge {
   background: rgba(255, 167, 38, 0.1);
   color: #ffa726;
+}
+.type-integration {
+  background: rgba(79, 195, 247, 0.12);
+  color: #4fc3f7;
+}
+
+.type-hybrid {
+  background: rgba(255, 167, 38, 0.12);
+  color: #ffa726;
+}
+
+.type-skill,
+.type-hook,
+.type-command,
+.type-agent,
+.type-mcp,
+.type-unknown {
+  background: rgba(136, 153, 170, 0.12);
+  color: #ccd6e0;
+}
+
+.subitem-kind-badge {
+  background: rgba(136, 153, 170, 0.12);
+  color: #aab8c5;
 }
 
 /* Detail Panel */
@@ -1376,6 +1471,48 @@ onMounted(() => {
 
 .available-actions {
   flex-shrink: 0;
+}
+
+
+.subitem-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.subitem-toggle-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  background: #0f1219;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+}
+
+.subitem-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.subitem-copy-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.item-name.compact {
+  min-width: 0;
+}
+
+.subitem-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 /* Add Marketplace Dialog */

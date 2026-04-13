@@ -13,6 +13,7 @@ interface TabItem {
 
 const tabs: TabItem[] = [
   { key: 'plugins', label: '插件管理', path: '/extensions/plugins' },
+  { key: 'workspaces', label: '工作区管理', path: '/extensions/workspaces' },
   { key: 'envvars', label: '环境变量', path: '/extensions/envvars' },
   { key: 'amagi', label: 'AmagiCode 特有功能', path: '/extensions/amagi' },
 ]
@@ -34,7 +35,7 @@ function switchTab(tab: TabItem) {
     <div class="page-header">
       <div class="header-left">
         <h1 class="page-title">扩展管理</h1>
-        <p class="page-description">管理环境变量、自定义脚本等扩展功能</p>
+        <p class="page-description">管理插件、工作区、环境变量等扩展功能</p>
       </div>
     </div>
 

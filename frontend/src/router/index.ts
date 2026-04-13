@@ -39,6 +39,11 @@ const router = createRouter({
           component: () => import('../views/PluginsView.vue')
         },
         {
+          path: 'workspaces',
+          name: 'Workspaces',
+          component: () => import('../views/WorkspacesView.vue')
+        },
+        {
           path: 'envvars',
           name: 'EnvVars',
           component: () => import('../views/EnvVarsView.vue')

@@ -166,6 +166,16 @@
           </button>
         </div>
 
+        <div class="workspace-status-card" v-if="hasWorkspaceStatus">
+          <div class="workspace-status-copy">
+            <span class="workspace-status-label">工作区状态</span>
+            <strong class="workspace-status-title" v-if="matchedWorkspace">当前目录已登记为工作区：{{ matchedWorkspace.name || basename(matchedWorkspace.path) }}</strong>
+            <strong class="workspace-status-title" v-else>当前目录尚未登记为工作区</strong>
+            <span class="workspace-status-path">{{ selectedWorkDir }}</span>
+          </div>
+          <button class="btn secondary small" @click="goToWorkspaceManager">{{ matchedWorkspace ? '管理工作区' : '登记工作区' }}</button>
+        </div>
+
         <!-- ClaudeCode -->
         <div v-if="activeLaunchTab === 'claudecode'" class="launch-tab-content">
           <div class="form-row">
@@ -616,7 +626,8 @@ import { GetProviders } from '../../wailsjs/go/config/ConfigService'
 import { GetStatus as GetProxyStatus } from '../../wailsjs/go/proxy/ProxyService'
 import { GetPaths, AddPath, RemovePath, GetDefaultPath } from '../../wailsjs/go/paths/PathsService'
 import { GetDashboardDefaults, GetShellPaths, SetDashboardDefaults } from '../../wailsjs/go/settings/Service'
-import { config, proxy } from '../../wailsjs/go/models'
+import { ListWorkspaces } from '../../wailsjs/go/workspace/Service'
+import { config, proxy, workspace } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
 import { useDashboardState } from '../composables/useDashboardState'
 
@@ -626,6 +637,7 @@ const dashState = useDashboardState()
 const providers = ref<Record<string, config.Provider>>({})
 const proxyStatus = ref<proxy.ProxyStatus | null>(null)
 const sessions = ref<any[]>([])
+const workspaces = ref<workspace.Workspace[]>([])
 
 // 使用共享状态（跨路由保持）
 const selectedProvider = toRef(dashState, 'provider')
@@ -822,6 +834,15 @@ const selectedSessionData = computed(() => {
   return sessions.value.find(s => s.id === selectedSession.value) || null
 })
 
+const normalizeWorkspacePath = (value: string) => value.split('\').join('/').replace(/\/+$/, '').trim().toLowerCase()
+const matchedWorkspace = computed(() => {
+  if (!selectedWorkDir.value) return null
+  const currentPath = normalizeWorkspacePath(selectedWorkDir.value)
+  return workspaces.value.find(item => normalizeWorkspacePath(item.path) === currentPath) || null
+})
+const hasWorkspaceStatus = computed(() => Boolean(selectedWorkDir.value))
+
+
 watch(selectedProvider, (newVal) => {
   if (newVal && providers.value[newVal]) {
     const presets = providers.value[newVal].presets || {}
@@ -946,6 +967,14 @@ const loadPaths = async () => {
   }
 }
 
+const loadWorkspaces = async () => {
+  try {
+    workspaces.value = await ListWorkspaces()
+  } catch (err) {
+    console.error('Failed to load workspaces:', err)
+  }
+}
+
 const refreshStatus = async () => {
   try {
     proxyStatus.value = await GetProxyStatus()
@@ -953,6 +982,15 @@ const refreshStatus = async () => {
   } catch (err) {
     console.error('Failed to refresh status:', err)
   }
+}
+
+const goToWorkspaceManager = () => {
+  if (!selectedWorkDir.value) return
+  if (matchedWorkspace.value) {
+    router.push({ path: '/extensions/workspaces', query: { workspaceId: matchedWorkspace.value.id } })
+    return
+  }
+  router.push({ path: '/extensions/workspaces', query: { path: selectedWorkDir.value } })
 }
 
 const handleLaunch = async () => {
@@ -1184,6 +1222,7 @@ onMounted(async () => {
   await initDefaults()
   await loadPaths()
   await loadShellPaths()
+  await loadWorkspaces()
   await refreshStatus()
   refreshInterval = window.setInterval(refreshStatus, 2000)
 })
@@ -1329,6 +1368,45 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 20px;
   animation: fadeIn 0.2s ease;
+}
+
+.workspace-status-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+  background: rgba(15, 18, 25, 0.45);
+}
+
+.workspace-status-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.workspace-status-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8899aa;
+}
+
+.workspace-status-title {
+  font-size: 14px;
+  color: #e0e6ed;
+}
+
+.workspace-status-path {
+  font-size: 12px;
+  color: #5a6a7a;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @keyframes fadeIn {

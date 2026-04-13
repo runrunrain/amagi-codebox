@@ -474,63 +474,30 @@ export namespace plugin {
 	    name: string;
 	    description: string;
 	    filePath: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new AgentInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.filePath = source["filePath"];
-	    }
+	    static createFrom(source: any = {}) { return new AgentInfo(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.name = source["name"]; this.description = source["description"]; this.filePath = source["filePath"]; }
 	}
 	export class CommandInfo {
 	    name: string;
 	    filePath: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CommandInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.filePath = source["filePath"];
-	    }
+	    static createFrom(source: any = {}) { return new CommandInfo(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.name = source["name"]; this.filePath = source["filePath"]; }
 	}
 	export class CommandResult {
 	    success: boolean;
 	    output: string;
 	    error?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CommandResult(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.success = source["success"];
-	        this.output = source["output"];
-	        this.error = source["error"];
-	    }
+	    static createFrom(source: any = {}) { return new CommandResult(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.success = source["success"]; this.output = source["output"]; this.error = source["error"]; }
 	}
 	export class HookInfo {
+	    name: string;
 	    event: string;
 	    type: string;
 	    command?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new HookInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.event = source["event"];
-	        this.type = source["type"];
-	        this.command = source["command"];
-	    }
+	    filePath: string;
+	    static createFrom(source: any = {}) { return new HookInfo(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.name = source["name"]; this.event = source["event"]; this.type = source["type"]; this.command = source["command"]; this.filePath = source["filePath"]; }
 	}
 	export class InstalledPlugin {
 	    id: string;
@@ -543,24 +510,8 @@ export namespace plugin {
 	    installedAt: string;
 	    lastUpdated: string;
 	    gitCommitSha?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new InstalledPlugin(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.marketplace = source["marketplace"];
-	        this.version = source["version"];
-	        this.scope = source["scope"];
-	        this.enabled = source["enabled"];
-	        this.installPath = source["installPath"];
-	        this.installedAt = source["installedAt"];
-	        this.lastUpdated = source["lastUpdated"];
-	        this.gitCommitSha = source["gitCommitSha"];
-	    }
+	    static createFrom(source: any = {}) { return new InstalledPlugin(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.id = source["id"]; this.name = source["name"]; this.marketplace = source["marketplace"]; this.version = source["version"]; this.scope = source["scope"]; this.enabled = source["enabled"]; this.installPath = source["installPath"]; this.installedAt = source["installedAt"]; this.lastUpdated = source["lastUpdated"]; this.gitCommitSha = source["gitCommitSha"]; }
 	}
 	export class Marketplace {
 	    name: string;
@@ -570,37 +521,15 @@ export namespace plugin {
 	    installLocation: string;
 	    lastUpdated?: string;
 	    autoUpdate?: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new Marketplace(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.source = source["source"];
-	        this.repo = source["repo"];
-	        this.url = source["url"];
-	        this.installLocation = source["installLocation"];
-	        this.lastUpdated = source["lastUpdated"];
-	        this.autoUpdate = source["autoUpdate"];
-	    }
+	    static createFrom(source: any = {}) { return new Marketplace(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.name = source["name"]; this.source = source["source"]; this.repo = source["repo"]; this.url = source["url"]; this.installLocation = source["installLocation"]; this.lastUpdated = source["lastUpdated"]; this.autoUpdate = source["autoUpdate"]; }
 	}
 	export class SkillInfo {
 	    name: string;
 	    description: string;
 	    filePath: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SkillInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.filePath = source["filePath"];
-	    }
+	    static createFrom(source: any = {}) { return new SkillInfo(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.name = source["name"]; this.description = source["description"]; this.filePath = source["filePath"]; }
 	}
 	export class PluginManifest {
 	    name: string;
@@ -611,22 +540,31 @@ export namespace plugin {
 	    keywords?: string[];
 	    homepage?: string;
 	    repository?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new PluginManifest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.version = source["version"];
-	        this.description = source["description"];
-	        this.author = source["author"];
-	        this.license = source["license"];
-	        this.keywords = source["keywords"];
-	        this.homepage = source["homepage"];
-	        this.repository = source["repository"];
-	    }
+	    static createFrom(source: any = {}) { return new PluginManifest(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.name = source["name"]; this.version = source["version"]; this.description = source["description"]; this.author = source["author"]; this.license = source["license"]; this.keywords = source["keywords"]; this.homepage = source["homepage"]; this.repository = source["repository"]; }
+	}
+	export class SubItemRef {
+	    type: string;
+	    name: string;
+	    static createFrom(source: any = {}) { return new SubItemRef(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.type = source["type"]; this.name = source["name"]; }
+	}
+	export class SubItem {
+	    type: string;
+	    name: string;
+	    path: string;
+	    enabled: boolean;
+	    globallyEnabled?: boolean;
+	    selectable: boolean;
+	    static createFrom(source: any = {}) { return new SubItem(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.type = source["type"]; this.name = source["name"]; this.path = source["path"]; this.enabled = source["enabled"]; this.globallyEnabled = source["globallyEnabled"]; this.selectable = source["selectable"]; }
+	}
+	export class PluginSubItemState {
+	    pluginId: string;
+	    disabledSubItems: SubItemRef[];
+	    static createFrom(source: any = {}) { return new PluginSubItemState(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.pluginId = source["pluginId"]; this.disabledSubItems = this.convertValues(source["disabledSubItems"], SubItemRef); }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
 	}
 	export class PluginDetail {
 	    id: string;
@@ -646,52 +584,108 @@ export namespace plugin {
 	    hooks: HookInfo[];
 	    hasMcp: boolean;
 	    mcpServers?: Record<string, any>;
-	
-	    static createFrom(source: any = {}) {
-	        return new PluginDetail(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.marketplace = source["marketplace"];
-	        this.version = source["version"];
-	        this.scope = source["scope"];
-	        this.enabled = source["enabled"];
-	        this.installPath = source["installPath"];
-	        this.installedAt = source["installedAt"];
-	        this.lastUpdated = source["lastUpdated"];
-	        this.gitCommitSha = source["gitCommitSha"];
-	        this.manifest = this.convertValues(source["manifest"], PluginManifest);
-	        this.skills = this.convertValues(source["skills"], SkillInfo);
-	        this.agents = this.convertValues(source["agents"], AgentInfo);
-	        this.commands = this.convertValues(source["commands"], CommandInfo);
-	        this.hooks = this.convertValues(source["hooks"], HookInfo);
-	        this.hasMcp = source["hasMcp"];
-	        this.mcpServers = source["mcpServers"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
+	    pluginType: string;
+	    hasClaudeMd: boolean;
+	    claudeMdPath?: string;
+	    subItems: SubItem[];
+	    static createFrom(source: any = {}) { return new PluginDetail(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.id = source["id"]; this.name = source["name"]; this.marketplace = source["marketplace"]; this.version = source["version"]; this.scope = source["scope"]; this.enabled = source["enabled"]; this.installPath = source["installPath"]; this.installedAt = source["installedAt"]; this.lastUpdated = source["lastUpdated"]; this.gitCommitSha = source["gitCommitSha"]; this.manifest = this.convertValues(source["manifest"], PluginManifest); this.skills = this.convertValues(source["skills"], SkillInfo); this.agents = this.convertValues(source["agents"], AgentInfo); this.commands = this.convertValues(source["commands"], CommandInfo); this.hooks = this.convertValues(source["hooks"], HookInfo); this.hasMcp = source["hasMcp"]; this.mcpServers = source["mcpServers"]; this.pluginType = source["pluginType"]; this.hasClaudeMd = source["hasClaudeMd"]; this.claudeMdPath = source["claudeMdPath"]; this.subItems = this.convertValues(source["subItems"], SubItem); }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
 	}
 	
+}
 
+export namespace workspace {
+	
+	export class WorkspacePlugin {
+	    pluginId: string;
+	    enabledSubItems: plugin.SubItemRef[];
+	    deployScope: string;
+	    static createFrom(source: any = {}) { return new WorkspacePlugin(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.pluginId = source["pluginId"]; this.enabledSubItems = this.convertValues(source["enabledSubItems"], plugin.SubItemRef); this.deployScope = source["deployScope"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class Workspace {
+	    id: string;
+	    name: string;
+	    path: string;
+	    tools: string[];
+	    plugins: WorkspacePlugin[];
+	    createdAt: string;
+	    updatedAt: string;
+	    static createFrom(source: any = {}) { return new Workspace(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.id = source["id"]; this.name = source["name"]; this.path = source["path"]; this.tools = source["tools"]; this.plugins = this.convertValues(source["plugins"], WorkspacePlugin); this.createdAt = source["createdAt"]; this.updatedAt = source["updatedAt"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class GlobalEnabled {
+	    pluginId: string;
+	    enabledAll: boolean;
+	    enabledSubItems: plugin.SubItemRef[];
+	    tools: string[];
+	    deployedAt: string;
+	    static createFrom(source: any = {}) { return new GlobalEnabled(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.pluginId = source["pluginId"]; this.enabledAll = source["enabledAll"]; this.enabledSubItems = this.convertValues(source["enabledSubItems"], plugin.SubItemRef); this.tools = source["tools"]; this.deployedAt = source["deployedAt"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class DeploymentEntry {
+	    pluginId: string;
+	    pluginVersion: string;
+	    subItemRef: plugin.SubItemRef;
+	    targetPath: string;
+	    mergeType: string;
+	    status: string;
+	    checksum: string;
+	    deployedAt: string;
+	    contentMarker?: string;
+	    mergeOrder?: number;
+	    sourceScope: string;
+	    static createFrom(source: any = {}) { return new DeploymentEntry(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.pluginId = source["pluginId"]; this.pluginVersion = source["pluginVersion"]; this.subItemRef = this.convertValues(source["subItemRef"], plugin.SubItemRef); this.targetPath = source["targetPath"]; this.mergeType = source["mergeType"]; this.status = source["status"]; this.checksum = source["checksum"]; this.deployedAt = source["deployedAt"]; this.contentMarker = source["contentMarker"]; this.mergeOrder = source["mergeOrder"]; this.sourceScope = source["sourceScope"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class DeploymentManifest {
+	    version: string;
+	    generatedAt: string;
+	    entries: DeploymentEntry[];
+	    static createFrom(source: any = {}) { return new DeploymentManifest(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.version = source["version"]; this.generatedAt = source["generatedAt"]; this.entries = this.convertValues(source["entries"], DeploymentEntry); }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class Conflict {
+	    type: string;
+	    pluginId?: string;
+	    targetPath?: string;
+	    message: string;
+	    blocking: boolean;
+	    static createFrom(source: any = {}) { return new Conflict(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.type = source["type"]; this.pluginId = source["pluginId"]; this.targetPath = source["targetPath"]; this.message = source["message"]; this.blocking = source["blocking"]; }
+	}
+	export class DeployResult {
+	    targetId: string;
+	    warnings: string[];
+	    conflicts: Conflict[];
+	    manifest: DeploymentManifest;
+	    deployed: DeploymentEntry[];
+	    removed: string[];
+	    static createFrom(source: any = {}) { return new DeployResult(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.targetId = source["targetId"]; this.warnings = source["warnings"]; this.conflicts = this.convertValues(source["conflicts"], Conflict); this.manifest = this.convertValues(source["manifest"], DeploymentManifest); this.deployed = this.convertValues(source["deployed"], DeploymentEntry); this.removed = source["removed"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class CleanResult {
+	    targetId: string;
+	    warnings: string[];
+	    manifest: DeploymentManifest;
+	    removed: string[];
+	    static createFrom(source: any = {}) { return new CleanResult(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.targetId = source["targetId"]; this.warnings = source["warnings"]; this.manifest = this.convertValues(source["manifest"], DeploymentManifest); this.removed = source["removed"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; } return new classs(a); } return a; }
+	}
+	export class AvailablePlugin extends plugin.PluginDetail {
+	    globallyEnabledAll: boolean;
+	    static createFrom(source: any = {}) { return new AvailablePlugin(source); }
+	    constructor(source: any = {}) { super(source); if ('string' === typeof source) source = JSON.parse(source); this.globallyEnabledAll = source["globallyEnabledAll"]; }
+	}
+	
 }
 
 export namespace proxy {
