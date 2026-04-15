@@ -13,6 +13,7 @@ type ActionKind = 'build' | 'sync' | 'clean' | 'global'
 type ActionResult = workspace.DeployResult | workspace.CleanResult
 interface Draft { selected: boolean; mode: Mode; selectedKeys: string[] }
 interface ActionState { kind: ActionKind; label: string; result: ActionResult }
+interface SubItemGroup { type: string; label: string; items: plugin.SubItem[] }
 
 const route = useRoute()
 const { showSuccess, showError, showInfo } = useToast()
@@ -29,6 +30,7 @@ const savingSelection = ref(false)
 const actionLoading = ref(false)
 const showGlobalDialog = ref(false)
 const showDeleteDialog = ref(false)
+const expandedSubItemGroups = ref<Record<string, boolean>>({})
 const workspaces = ref<workspace.Workspace[]>([])
 const installedPlugins = ref<plugin.InstalledPlugin[]>([])
 const globalEntries = ref<workspace.GlobalEnabled[]>([])
@@ -66,6 +68,14 @@ const toolLabel = (value: string) => toolOptions.find(item => item.value === val
 const typeClass = (value?: string) => `type-${value || 'unknown'}`
 const getDraft = (pluginId: string): Draft => drafts.value[pluginId] || { selected: false, mode: 'all', selectedKeys: [] }
 const defaultPartialKeys = (detail: { subItems?: plugin.SubItem[] }) => enabledSubItems(detail).filter(item => item.selectable).map(item => keyOf(item))
+const normalizePartialKeys = (detail: { subItems?: plugin.SubItem[] }, keys: string[]) => {
+  const allowed = new Set(defaultPartialKeys(detail))
+  const filtered = keys.filter(key => allowed.has(key))
+  return filtered.length ? filtered : defaultPartialKeys(detail)
+}
+const subItemTypeOrder = ['skill', 'agent', 'command', 'hook', 'mcp', 'claude']
+const subItemGroupKey = (pluginId: string, type: string) => `${pluginId}:${type}`
+const isSubItemGroupExpanded = (pluginId: string, type: string) => expandedSubItemGroups.value[subItemGroupKey(pluginId, type)] ?? true
 
 function resetForm(path = '') {
   form.path = path
@@ -103,7 +113,7 @@ async function selectWorkspace(id: string) {
       const existing = selectedMap.get(item.id)
       const keys = (existing?.enabledSubItems || []).map(ref => keyOf(ref))
       const allMode = keys.length === 0 && canUseWhole(item)
-      map[item.id] = { selected: Boolean(existing), mode: allMode ? 'all' : 'partial', selectedKeys: allMode ? [] : (keys.length ? keys : defaultPartialKeys(item)) }
+      map[item.id] = { selected: Boolean(existing), mode: allMode ? 'all' : 'partial', selectedKeys: normalizePartialKeys(item, keys) }
     }
     drafts.value = map
   } catch (error) {
@@ -196,8 +206,11 @@ function togglePlugin(pluginId: string) {
   if (!detail || !canSelectPlugin(detail)) return
   const draft = getDraft(pluginId)
   if (draft.selected) return drafts.value = { ...drafts.value, [pluginId]: { ...draft, selected: false } }
-  const mode: Mode = canUseWhole(detail) ? 'all' : 'partial'
-  drafts.value = { ...drafts.value, [pluginId]: { selected: true, mode, selectedKeys: mode === 'partial' ? defaultPartialKeys(detail) : [] } }
+  let mode: Mode = draft.mode
+  if (mode === 'all' && !canUseWhole(detail)) mode = 'partial'
+  if (mode === 'partial' && !canUsePartial(detail)) mode = 'all'
+  if (!draft.selectedKeys.length && mode === 'all' && !canUseWhole(detail)) mode = 'partial'
+  drafts.value = { ...drafts.value, [pluginId]: { selected: true, mode, selectedKeys: normalizePartialKeys(detail, draft.selectedKeys) } }
 }
 function setMode(pluginId: string, mode: Mode) {
   const detail = availablePlugins.value.find(item => item.id === pluginId)
@@ -205,7 +218,7 @@ function setMode(pluginId: string, mode: Mode) {
   if (mode === 'all' && !canUseWhole(detail)) return
   if (mode === 'partial' && !canUsePartial(detail)) return
   const draft = getDraft(pluginId)
-  drafts.value = { ...drafts.value, [pluginId]: { ...draft, selected: true, mode, selectedKeys: mode === 'all' ? [] : (draft.selectedKeys.length ? draft.selectedKeys : defaultPartialKeys(detail)) } }
+  drafts.value = { ...drafts.value, [pluginId]: { ...draft, selected: true, mode, selectedKeys: normalizePartialKeys(detail, draft.selectedKeys) } }
 }
 function toggleSubItem(pluginId: string, item: plugin.SubItem) {
   if (!item.selectable) return
@@ -214,6 +227,45 @@ function toggleSubItem(pluginId: string, item: plugin.SubItem) {
   drafts.value = { ...drafts.value, [pluginId]: { ...draft, selected: true, mode: 'partial', selectedKeys: draft.selectedKeys.includes(key) ? draft.selectedKeys.filter(entry => entry !== key) : [...draft.selectedKeys, key] } }
 }
 function subItemSelected(pluginId: string, item: plugin.SubItem) { return getDraft(pluginId).selectedKeys.includes(keyOf(item)) }
+function toggleSubItemGroup(pluginId: string, type: string) {
+  const key = subItemGroupKey(pluginId, type)
+  expandedSubItemGroups.value[key] = !isSubItemGroupExpanded(pluginId, type)
+}
+function groupedSubItems(detail: { subItems?: plugin.SubItem[] }): SubItemGroup[] {
+  const groups = new Map<string, SubItemGroup>()
+  for (const item of enabledSubItems(detail)) {
+    let group = groups.get(item.type)
+    if (!group) {
+      group = { type: item.type, label: subItemTypeLabel(item.type), items: [] }
+      groups.set(item.type, group)
+    }
+    group.items.push(item)
+  }
+  return [...groups.values()].sort((left, right) => {
+    const leftIndex = subItemTypeOrder.indexOf(left.type)
+    const rightIndex = subItemTypeOrder.indexOf(right.type)
+    const a = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex
+    const b = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex
+    return a - b || left.label.localeCompare(right.label)
+  })
+}
+function subItemStateLabel(pluginId: string, item: plugin.SubItem) {
+  if (item.globallyEnabled) return '全局已启用'
+  if (!item.selectable) return '不可选择'
+  return subItemSelected(pluginId, item) ? '已选中' : '未选中'
+}
+function subItemToggleActive(pluginId: string, item: plugin.SubItem) {
+  if (item.globallyEnabled) return true
+  return item.selectable && subItemSelected(pluginId, item)
+}
+function toggleWorkspaceSubItem(pluginId: string, item: plugin.SubItem) {
+  if (!item.selectable) return
+  toggleSubItem(pluginId, item)
+}
+function hasEmptyPartialSelection(pluginId: string) {
+  const draft = getDraft(pluginId)
+  return draft.selected && draft.mode === 'partial' && draft.selectedKeys.length === 0
+}
 async function saveWorkspacePlugins() {
   if (!selectedWorkspaceId.value || !canSaveSelection.value) return showError('请先完成当前插件选择')
   savingSelection.value = true
@@ -221,8 +273,14 @@ async function saveWorkspacePlugins() {
     const payload = availablePlugins.value.flatMap(item => {
       const draft = getDraft(item.id)
       if (!draft.selected) return []
-      if (draft.mode === 'all') return [{ pluginId: item.id, enabledSubItems: [], deployScope: 'workspace' }]
-      return [{ pluginId: item.id, enabledSubItems: enabledSubItems(item).filter(subItem => draft.selectedKeys.includes(keyOf(subItem))).map(subItem => ({ type: subItem.type, name: subItem.name })), deployScope: 'workspace' }]
+      if (draft.mode === 'all') return [workspace.WorkspacePlugin.createFrom({ pluginId: item.id, enabledSubItems: [], deployScope: 'workspace' })]
+      return [workspace.WorkspacePlugin.createFrom({
+        pluginId: item.id,
+        enabledSubItems: enabledSubItems(item)
+          .filter(subItem => draft.selectedKeys.includes(keyOf(subItem)))
+          .map(subItem => plugin.SubItemRef.createFrom({ type: subItem.type, name: subItem.name })),
+        deployScope: 'workspace'
+      })]
     })
     await SetWorkspacePlugins(selectedWorkspaceId.value, payload)
     showSuccess('工作区插件选择已保存')
@@ -310,12 +368,39 @@ onMounted(() => { void loadAll() })
               <div class="selection-box" v-if="getDraft(item.id).selected">
                 <div class="mode-row"><button class="mode-pill" :class="{ active: getDraft(item.id).mode === 'all' }" :disabled="!canUseWhole(item)" @click="setMode(item.id, 'all')">整插件</button><button class="mode-pill" :class="{ active: getDraft(item.id).mode === 'partial' }" :disabled="!canUsePartial(item)" @click="setMode(item.id, 'partial')">指定子项</button></div>
                 <p class="section-hint" v-if="getDraft(item.id).mode === 'all'">整插件模式会部署当前可用内容；如果插件携带 CLAUDE.md，也会一起写入工作区。</p>
-                <div class="subitem-list" v-else>
-                  <button v-for="subItem in enabledSubItems(item)" :key="keyOf(subItem)" class="subitem-row" :class="{ active: subItemSelected(item.id, subItem), locked: !subItem.selectable, dim: subItem.globallyEnabled }" :disabled="!subItem.selectable" @click="toggleSubItem(item.id, subItem)">
-                    <div><div class="subitem-title">{{ subItem.name }} <span class="mini-badge">{{ subItemTypeLabel(subItem.type) }}</span> <span class="mini-badge" v-if="subItem.globallyEnabled">全局已启用</span></div><div class="section-hint">{{ subItem.path }}</div></div>
-                    <span class="mini-badge">{{ subItem.selectable ? (subItemSelected(item.id, subItem) ? '已选中' : '点击选择') : '不可选择' }}</span>
-                  </button>
-                </div>
+                <template v-else>
+                  <p class="section-hint">以下切换仅修改当前草稿，点击“保存选择”后才会真正生效。</p>
+                  <div class="subitem-groups">
+                  <div class="subitem-group" v-for="group in groupedSubItems(item)" :key="subItemGroupKey(item.id, group.type)">
+                    <button type="button" class="subitem-group-header" @click="toggleSubItemGroup(item.id, group.type)">
+                      <span class="subitem-group-meta">
+                        <span class="subitem-group-title">{{ group.label }}</span>
+                        <span class="badge subitem-count-badge">{{ group.items.length }}</span>
+                      </span>
+                      <svg :class="['chevron', { expanded: isSubItemGroupExpanded(item.id, group.type) }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="6 9 12 15 18 9"></polyline>
+                      </svg>
+                    </button>
+                    <div class="detail-list" v-if="isSubItemGroupExpanded(item.id, group.type)">
+                      <div class="detail-item with-toggle" v-for="subItem in group.items" :key="keyOf(subItem)" :class="{ locked: !subItem.selectable, dim: subItem.globallyEnabled }">
+                        <div class="detail-item-copy">
+                          <div class="item-name-line">
+                            <span class="item-name">{{ subItem.name }}</span>
+                            <span class="badge">{{ subItemTypeLabel(subItem.type) }}</span>
+                            <span class="badge" v-if="subItem.globallyEnabled">全局已启用</span>
+                          </div>
+                          <span class="item-desc">{{ subItem.path }}</span>
+                        </div>
+                        <div class="detail-item-actions">
+                          <span class="toggle-label" :class="{ 'text-enabled': subItemToggleActive(item.id, subItem), 'text-disabled': !subItemToggleActive(item.id, subItem) }">{{ subItemStateLabel(item.id, subItem) }}</span>
+                          <button class="ios-toggle" :class="{ active: subItemToggleActive(item.id, subItem) }" :disabled="!subItem.selectable" @click="toggleWorkspaceSubItem(item.id, subItem)"></button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="notice muted" v-if="hasEmptyPartialSelection(item.id)">局部模式至少保留一个子项，当前选择还不能保存。</div>
+                  </div>
+                </template>
               </div>
             </div>
           </div>
@@ -379,11 +464,32 @@ onMounted(() => { void loadAll() })
 .selection-box{padding-top:4px}
 .mode-pill,.btn{border:1px solid #2a2f3e;background:transparent;color:#e0e6ed;border-radius:6px;cursor:pointer;transition:.15s}
 .mode-pill{padding:6px 12px;border-radius:999px;color:#8899aa}
-.mode-pill:disabled,.btn:disabled,.subitem-row:disabled{opacity:.5;cursor:not-allowed}
-
-.subitem-row{width:100%;padding:12px 14px;display:flex;justify-content:space-between;gap:14px}
-.subitem-row.locked{border-style:dashed}
-.subitem-row.dim{opacity:.68}
+.mode-pill:disabled,.btn:disabled,.ios-toggle:disabled{opacity:.5;cursor:not-allowed}
+.subitem-groups{display:flex;flex-direction:column;gap:12px}
+.subitem-group{border:1px solid #2a2f3e;border-radius:8px;overflow:hidden;background:#0f1219}
+.subitem-group-header{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 14px;background:rgba(42,47,62,.32);border:none;color:#ccd6e0;cursor:pointer;text-align:left}
+.subitem-group-header:hover{background:rgba(42,47,62,.5)}
+.subitem-group-meta{display:flex;align-items:center;gap:8px;min-width:0}
+.subitem-group-title{font-size:13px;font-weight:600;color:#e0e6ed}
+.subitem-count-badge{background:rgba(136,153,170,.12);color:#8899aa;font-size:11px}
+.detail-list{display:flex;flex-direction:column;gap:0}
+.detail-item.with-toggle{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;border-top:1px solid #2a2f3e;background:#0f1219}
+.detail-item.locked{border-style:dashed}
+.detail-item.dim{opacity:.68}
+.detail-item-copy{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}
+.item-name-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.item-name{font-weight:600;color:#e0e6ed;min-width:0}
+.item-desc{margin:0;color:#8899aa;font-size:13px;line-height:1.5}
+.detail-item-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.toggle-label{font-size:13px;font-weight:600;white-space:nowrap}
+.text-enabled{color:#66bb6a}
+.text-disabled{color:#8899aa}
+.ios-toggle{position:relative;width:44px;height:24px;background:#2a2f3e;border-radius:24px;cursor:pointer;transition:background .2s ease;border:none;outline:none;flex-shrink:0}
+.ios-toggle.active{background:#66bb6a}
+.ios-toggle::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:transform .2s cubic-bezier(.25,.8,.25,1),background .2s;box-shadow:0 2px 4px rgba(0,0,0,.2)}
+.ios-toggle.active::after{transform:translateX(20px)}
+.chevron{transition:transform .18s ease}
+.chevron.expanded{transform:rotate(180deg)}
 .metrics{flex-wrap:wrap}.metric{min-width:120px;padding:12px 14px;border:1px solid #2a2f3e;border-radius:8px;background:#0f1219;display:flex;flex-direction:column;gap:6px;color:#8899aa}
 .metric strong{font-size:20px;color:#e0e6ed}.metric.danger strong,.conflict-title{color:#ef5350}
 .result-section h4{margin:0;color:#e0e6ed;font-size:14px}
@@ -398,5 +504,5 @@ onMounted(() => { void loadAll() })
 .dialog{width:min(420px,calc(100vw - 32px));padding:24px;background:#1a1f2e;border:1px solid #2a2f3e;border-radius:8px;display:flex;flex-direction:column;gap:16px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
 .dialog-fade-enter-active,.dialog-fade-leave-active{transition:opacity .15s ease}.dialog-fade-enter-from,.dialog-fade-leave-to{opacity:0}
 @media (max-width:1080px){.workspace-grid{grid-template-columns:1fr}}
-@media (max-width:720px){.toolbar,.form-row,.actions-header,.row-between,.subitem-row{flex-direction:column;align-items:stretch}.toolbar-actions,.header-buttons,.card-footer{justify-content:stretch}.toolbar-actions>*,.header-buttons>*,.card-footer>*{flex:1}}
+@media (max-width:720px){.toolbar,.form-row,.actions-header,.row-between,.detail-item.with-toggle{flex-direction:column;align-items:stretch}.toolbar-actions,.header-buttons,.card-footer{justify-content:stretch}.toolbar-actions>*,.header-buttons>*,.card-footer>*{flex:1}}
 </style>

@@ -74,6 +74,7 @@ func setupWorkspaceTestServices(t *testing.T) (*Service, *plugin.Service, string
 	mustJSONWrite(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), pluginManifest)
 	writeWorkspaceTestFile(t, filepath.Join(pluginDir, "skills", "review", "SKILL.md"), []byte("---\nname: review\n---\nReview skill\n"))
 	writeWorkspaceTestFile(t, filepath.Join(pluginDir, "commands", "run.md"), []byte("# run\n"))
+	mustJSONWrite(filepath.Join(pluginDir, ".mcp.json"), map[string]interface{}{"mcpServers": map[string]interface{}{"sample": map[string]interface{}{"command": "node", "args": []string{"server.js"}}}})
 	writeWorkspaceTestFile(t, filepath.Join(pluginDir, "CLAUDE.md"), []byte("workspace baseline\n"))
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -143,8 +144,9 @@ func TestSetGlobalEnabledMigratesWorkspaceOwnershipToOrphaned(t *testing.T) {
 	if len(updated.Plugins) != 1 {
 		t.Fatalf("expected one remaining workspace plugin, got %#v", updated.Plugins)
 	}
-	if len(updated.Plugins[0].EnabledSubItems) != 1 || updated.Plugins[0].EnabledSubItems[0].Type != plugin.SubItemTypeCommand || updated.Plugins[0].EnabledSubItems[0].Name != "run" {
-		t.Fatalf("workspace plugin selection should migrate to remaining command only, got %#v", updated.Plugins[0].EnabledSubItems)
+	expectedRefs := []plugin.SubItemRef{{Type: plugin.SubItemTypeCommand, Name: "run"}, {Type: plugin.SubItemTypeMCP, Name: "sample"}}
+	if !sameSubItemRefSet(updated.Plugins[0].EnabledSubItems, expectedRefs) {
+		t.Fatalf("workspace plugin selection should retain command+mcp after skill migration, got %#v", updated.Plugins[0].EnabledSubItems)
 	}
 	manifest, err := workspaceSvc.GetDeploymentManifest(ws.ID)
 	if err != nil {
@@ -190,5 +192,165 @@ func TestSetGlobalEnabledRejectsEmptyPartialSelection(t *testing.T) {
 	_, err := workspaceSvc.SetGlobalEnabled([]GlobalEnabled{{PluginID: pluginID, EnabledAll: false, Tools: []ToolType{ToolTypeClaude}}})
 	if err == nil {
 		t.Fatal("expected partial global selection without subitems to fail")
+	}
+}
+
+func TestGetAvailablePluginsForWorkspaceSkipsBrokenPlugin(t *testing.T) {
+	workspaceSvc, _, pluginID, pluginDir, workspaceDir := setupWorkspaceTestServices(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("get user home dir: %v", err)
+	}
+	brokenPluginID := "broken-plugin@market"
+	brokenPluginDir := filepath.Join(home, ".claude", "plugins", "broken-plugin")
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	mustJSONWrite := func(path string, value interface{}) {
+		b, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", path, err)
+		}
+		writeWorkspaceTestFile(t, path, append(b, '\n'))
+	}
+
+	installed := map[string]interface{}{
+		"version": 1,
+		"plugins": map[string][]map[string]string{
+			pluginID: {{
+				"scope":       "user",
+				"installPath": pluginDir,
+				"version":     "1.0.0",
+				"installedAt": now,
+				"lastUpdated": now,
+			}},
+			brokenPluginID: {{
+				"scope":       "user",
+				"installPath": brokenPluginDir,
+				"version":     "1.0.0",
+				"installedAt": now,
+				"lastUpdated": now,
+			}},
+		},
+	}
+	settings := map[string]interface{}{
+		"enabledPlugins": map[string]bool{
+			pluginID:       true,
+			brokenPluginID: true,
+		},
+	}
+	mustJSONWrite(filepath.Join(home, ".claude", "plugins", "installed_plugins.json"), installed)
+	mustJSONWrite(filepath.Join(home, ".claude", "settings.json"), settings)
+
+	ws, err := workspaceSvc.CreateWorkspace("test", workspaceDir, []ToolType{ToolTypeClaude})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	available, err := workspaceSvc.GetAvailablePluginsForWorkspace(ws.ID)
+	if err != nil {
+		t.Fatalf("get available plugins for workspace: %v", err)
+	}
+	if len(available) != 1 {
+		t.Fatalf("expected one available plugin after skipping broken plugin, got %#v", available)
+	}
+	if available[0].ID != pluginID {
+		t.Fatalf("expected available plugin %s, got %#v", pluginID, available[0])
+	}
+	if len(available[0].SubItems) == 0 {
+		t.Fatalf("expected surviving plugin to retain subitems, got %#v", available[0])
+	}
+}
+
+func TestSetGlobalEnabledPreflightPreventsHalfSuccessOnBrokenWorkspacePlugin(t *testing.T) {
+	workspaceSvc, _, pluginID, _, workspaceDir := setupWorkspaceTestServices(t)
+	ws, err := workspaceSvc.CreateWorkspace("test", workspaceDir, []ToolType{ToolTypeClaude})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := workspaceSvc.SetWorkspacePlugins(ws.ID, []WorkspacePlugin{{PluginID: pluginID, DeployScope: string(SourceScopeWorkspace)}}); err != nil {
+		t.Fatalf("set workspace plugins: %v", err)
+	}
+	workspaceSvc.mu.Lock()
+	for i := range workspaceSvc.workspaces {
+		if workspaceSvc.workspaces[i].ID == ws.ID {
+			workspaceSvc.workspaces[i].Plugins = append(workspaceSvc.workspaces[i].Plugins, WorkspacePlugin{PluginID: "broken-plugin@market", DeployScope: string(SourceScopeWorkspace)})
+		}
+	}
+	workspaceSvc.mu.Unlock()
+
+	_, err = workspaceSvc.SetGlobalEnabled([]GlobalEnabled{{PluginID: pluginID, EnabledAll: true, Tools: []ToolType{ToolTypeClaude}}})
+	if err == nil {
+		t.Fatal("expected global enabled preflight to fail on broken workspace plugin detail")
+	}
+
+	globalManifest, err := ReadManifest(workspaceSvc.globalManifestPath)
+	if err != nil {
+		t.Fatalf("read global manifest: %v", err)
+	}
+	if len(globalManifest.Entries) != 0 {
+		t.Fatalf("global manifest should stay empty when preflight fails, got %#v", globalManifest.Entries)
+	}
+	if _, err := os.Stat(workspaceSvc.globalEnabledPath); !os.IsNotExist(err) {
+		t.Fatalf("global enabled file should not be written on preflight failure, stat err=%v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("global CLAUDE.md should not be deployed on preflight failure, stat err=%v", err)
+	}
+}
+
+func TestBuildScaffoldCursorDeploysRulesAndMCPWithWarnings(t *testing.T) {
+	workspaceSvc, _, pluginID, _, workspaceDir := setupWorkspaceTestServices(t)
+	ws, err := workspaceSvc.CreateWorkspace("cursor", workspaceDir, []ToolType{ToolTypeCursor})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := workspaceSvc.SetWorkspacePlugins(ws.ID, []WorkspacePlugin{{PluginID: pluginID, DeployScope: string(SourceScopeWorkspace)}}); err != nil {
+		t.Fatalf("set workspace plugins: %v", err)
+	}
+	result, err := workspaceSvc.BuildScaffold(ws.ID)
+	if err != nil {
+		t.Fatalf("build scaffold: %v", err)
+	}
+	if len(result.Conflicts) != 0 {
+		t.Fatalf("unexpected conflicts: %#v", result.Conflicts)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("expected warnings for unsupported cursor resources")
+	}
+	if _, err := os.Stat(filepath.Join(workspaceDir, ".cursor", "rules", "sample-plugin.md")); err != nil {
+		t.Fatalf("expected cursor rules file, stat err=%v", err)
+	}
+	mcpPath := filepath.Join(workspaceDir, ".cursor", "mcp.json")
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("read cursor mcp file: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal cursor mcp payload: %v", err)
+	}
+	servers, ok := payload["mcpServers"].(map[string]interface{})
+	if !ok || servers["sample"] == nil {
+		t.Fatalf("cursor mcp should contain sample server, got %#v", payload)
+	}
+	manifest, err := workspaceSvc.GetDeploymentManifest(ws.ID)
+	if err != nil {
+		t.Fatalf("get manifest: %v", err)
+	}
+	foundRule := false
+	foundMCP := false
+	for _, entry := range manifest.Entries {
+		if entry.TargetPath == filepath.ToSlash(filepath.Join(".cursor", "rules", "sample-plugin.md")) {
+			foundRule = true
+		}
+		if entry.TargetPath == filepath.ToSlash(filepath.Join(".cursor", "mcp.json")) {
+			foundMCP = true
+		}
+	}
+	if !foundRule || !foundMCP {
+		t.Fatalf("expected cursor manifest entries, got %#v", manifest.Entries)
 	}
 }

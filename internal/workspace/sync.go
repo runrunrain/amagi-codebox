@@ -3,7 +3,6 @@ package workspace
 import (
 	"amagi-codebox/internal/plugin"
 	"fmt"
-	"path/filepath"
 	"time"
 )
 
@@ -36,11 +35,14 @@ func (s *Service) SetGlobalEnabled(entries []GlobalEnabled) (DeployResult, error
 	if err != nil {
 		return DeployResult{}, err
 	}
+	if err := s.preflightGlobalOwnershipMigration(normalized); err != nil {
+		return DeployResult{}, err
+	}
 	plan, warnings, err := s.buildGlobalPlan(normalized)
 	if err != nil {
 		return DeployResult{}, err
 	}
-	result, err := s.applyPlan("global", filepath.Join(s.homeDir, ".claude"), s.globalManifestPath, plan, warnings)
+	result, err := s.applyPlan("global", s.homeDir, s.globalManifestPath, plan, warnings)
 	if err != nil {
 		return result, err
 	}
@@ -71,6 +73,63 @@ func (s *Service) validateWorkspacePlugins(items []WorkspacePlugin) ([]Workspace
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+func (s *Service) preflightGlobalOwnershipMigration(entries []GlobalEnabled) error {
+	s.mu.RLock()
+	workspaces := cloneWorkspaces(s.workspaces)
+	s.mu.RUnlock()
+	for _, workspace := range workspaces {
+		if !workspaceAffectedByGlobals(workspace, entries) {
+			continue
+		}
+		if err := s.preflightWorkspaceOwnershipMigration(workspace, entries); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) preflightWorkspaceOwnershipMigration(workspace Workspace, entries []GlobalEnabled) error {
+	detailCache := map[string]*plugin.PluginDetail{}
+	for _, item := range workspace.Plugins {
+		detail, err := s.cachedPluginDetail(detailCache, item.PluginID)
+		if err != nil {
+			return err
+		}
+		if _, _, _, err := migrateWorkspacePluginSelection(workspace.Tools, item, detail, entries); err != nil {
+			return err
+		}
+	}
+	manifest, err := ReadManifest(ManifestPathForWorkspace(workspace.Path))
+	if err != nil {
+		return err
+	}
+	for _, entry := range manifest.Entries {
+		if entry.SourceScope != SourceScopeWorkspace {
+			continue
+		}
+		detail, err := s.cachedPluginDetail(detailCache, entry.PluginID)
+		if err != nil {
+			return err
+		}
+		if _, err := workspaceOwnsEntry(workspace, detail, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) cachedPluginDetail(cache map[string]*plugin.PluginDetail, pluginID string) (*plugin.PluginDetail, error) {
+	if detail, ok := cache[pluginID]; ok {
+		return detail, nil
+	}
+	detail, err := s.plugins.GetPluginDetail(pluginID)
+	if err != nil {
+		return nil, err
+	}
+	cache[pluginID] = detail
+	return detail, nil
 }
 
 func (s *Service) validateGlobalEnabled(items []GlobalEnabled) ([]GlobalEnabled, error) {

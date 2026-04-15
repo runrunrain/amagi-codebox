@@ -12,7 +12,11 @@ import {
   DisablePlugin,
   UpdatePlugin,
   UpdateMarketplace,
-  AddMarketplace
+  AddMarketplace,
+  AnalyzePluginType,
+  GetPluginSubItems,
+  GetPluginSubItemStates,
+  SetSubItemEnabled
 } from '../../wailsjs/go/plugin/Service'
 
 const { showSuccess, showError } = useToast()
@@ -25,6 +29,7 @@ const marketplacesExpanded = ref(false)
 const expandedMarkets = ref<Record<string, boolean>>({})
 const expandedInstalledGroups = ref<Record<string, boolean>>({})
 const installingPlugins = ref<Record<string, boolean>>({})
+const expandedSubItemGroups = ref<Record<string, boolean>>({})
 
 const expandedPluginId = ref<string | null>(null)
 const pluginDetails = ref<Record<string, any>>({})
@@ -39,6 +44,32 @@ const pluginTypeClass = (value?: string) => `type-${value || 'unknown'}`
 const subItemTypeLabel = (value: string) => ({ skill: 'Skill', hook: 'Hook', command: 'Command', agent: 'Agent', mcp: 'MCP', claude: 'Claude' } as Record<string, string>)[value] || value
 const getMcpServerNames = (detail: any) => Object.keys(detail?.mcpServers || {})
 const hasDetailResources = (detail: any) => Boolean(detail?.skills?.length || detail?.agents?.length || detail?.commands?.length || detail?.hooks?.length || getMcpServerNames(detail).length || detail?.subItems?.length || detail?.hasClaudeMd)
+type DetailEntry = { key: string; name: string; description?: string; badge?: string; subItem: any | null }
+const subItemGroupKey = (pluginId: string, type: string) => `${pluginId}:${type}`
+const isSubItemGroupExpanded = (pluginId: string, type: string) => expandedSubItemGroups.value[subItemGroupKey(pluginId, type)] ?? true
+function toggleSubItemGroup(pluginId: string, type: string) {
+  const key = subItemGroupKey(pluginId, type)
+  expandedSubItemGroups.value[key] = !isSubItemGroupExpanded(pluginId, type)
+}
+function findSubItem(detail: any, type: string, name: string) {
+  return (detail?.subItems || []).find((item: any) => item.type === type && item.name === name) || null
+}
+function detailEntries(detail: any, type: string): DetailEntry[] {
+  switch (type) {
+    case 'skill':
+      return (detail?.skills || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description, subItem: findSubItem(detail, 'skill', item.name) }))
+    case 'agent':
+      return (detail?.agents || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description, subItem: findSubItem(detail, 'agent', item.name) }))
+    case 'command':
+      return (detail?.commands || []).map((item: any) => ({ key: item.name, name: item.name, subItem: findSubItem(detail, 'command', item.name) }))
+    case 'hook':
+      return (detail?.hooks || []).map((item: any) => ({ key: item.name || `${item.event}:${item.type}`, name: item.event, badge: item.type, subItem: findSubItem(detail, 'hook', item.name) }))
+    case 'mcp':
+      return getMcpServerNames(detail).map((name: string) => ({ key: name, name, subItem: findSubItem(detail, 'mcp', name) }))
+    default:
+      return []
+  }
+}
 function mergeSubItemStates(items: any[], state: any) {
   const disabled = new Set((state?.disabledSubItems || []).map((ref: any) => subItemKey(ref)))
   return (items || []).map((item: any) => ({ ...item, enabled: !disabled.has(subItemKey(item)) }))
@@ -491,65 +522,152 @@ onMounted(() => {
             <div class="detail-content" v-else-if="pluginDetails[p.id]">
               <!-- Skills -->
               <div class="detail-section" v-if="pluginDetails[p.id].skills?.length">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-                  Skills
-                </h4>
-                <div class="detail-list">
-                  <div class="detail-item" v-for="s in pluginDetails[p.id].skills" :key="s.name">
-                    <span class="item-name">{{ s.name }}</span>
-                    <span class="item-desc">{{ s.description }}</span>
+                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'skill')">
+                  <span class="section-title-sm">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                    Skills
+                  </span>
+                  <span class="section-toggle-meta">
+                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].skills.length }}</span>
+                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'skill') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </span>
+                </button>
+                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'skill')">
+                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'skill')" :key="entry.key">
+                    <div class="detail-item-copy">
+                      <div class="item-name-line">
+                        <span class="item-name">{{ entry.name }}</span>
+                      </div>
+                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
+                    </div>
+                    <div class="detail-item-actions" v-if="entry.subItem">
+                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
+                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
+                    </div>
                   </div>
                 </div>
               </div>
-              
+
               <!-- Agents -->
               <div class="detail-section" v-if="pluginDetails[p.id].agents?.length">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
-                  Agents
-                </h4>
-                <div class="detail-list">
-                  <div class="detail-item" v-for="a in pluginDetails[p.id].agents" :key="a.name">
-                    <span class="item-name">{{ a.name }}</span>
-                    <span class="item-desc">{{ a.description }}</span>
+                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'agent')">
+                  <span class="section-title-sm">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+                    Agents
+                  </span>
+                  <span class="section-toggle-meta">
+                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].agents.length }}</span>
+                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'agent') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </span>
+                </button>
+                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'agent')">
+                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'agent')" :key="entry.key">
+                    <div class="detail-item-copy">
+                      <div class="item-name-line">
+                        <span class="item-name">{{ entry.name }}</span>
+                      </div>
+                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
+                    </div>
+                    <div class="detail-item-actions" v-if="entry.subItem">
+                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
+                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
+                    </div>
                   </div>
                 </div>
               </div>
 
               <!-- Commands -->
               <div class="detail-section" v-if="pluginDetails[p.id].commands?.length">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-                  Commands
-                </h4>
-                <div class="detail-tags">
-                  <span class="tag" v-for="c in pluginDetails[p.id].commands" :key="c.name">{{ c.name }}</span>
+                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'command')">
+                  <span class="section-title-sm">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                    Commands
+                  </span>
+                  <span class="section-toggle-meta">
+                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].commands.length }}</span>
+                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'command') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </span>
+                </button>
+                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'command')">
+                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'command')" :key="entry.key">
+                    <div class="detail-item-copy">
+                      <div class="item-name-line">
+                        <span class="item-name">{{ entry.name }}</span>
+                      </div>
+                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
+                    </div>
+                    <div class="detail-item-actions" v-if="entry.subItem">
+                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
+                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               <!-- Hooks -->
               <div class="detail-section" v-if="pluginDetails[p.id].hooks?.length">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                  Hooks
-                </h4>
-                <div class="detail-list">
-                  <div class="detail-item" v-for="h in pluginDetails[p.id].hooks" :key="h.event + h.type">
-                    <span class="item-name">{{ h.event }}</span>
-                    <span class="badge source-badge">{{ h.type }}</span>
+                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'hook')">
+                  <span class="section-title-sm">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+                    Hooks
+                  </span>
+                  <span class="section-toggle-meta">
+                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].hooks.length }}</span>
+                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'hook') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </span>
+                </button>
+                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'hook')">
+                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'hook')" :key="entry.key">
+                    <div class="detail-item-copy">
+                      <div class="item-name-line">
+                        <span class="item-name">{{ entry.name }}</span>
+                        <span v-if="entry.badge" class="badge source-badge">{{ entry.badge }}</span>
+                      </div>
+                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
+                    </div>
+                    <div class="detail-item-actions" v-if="entry.subItem">
+                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
+                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
+                    </div>
                   </div>
                 </div>
               </div>
 
               <!-- MCP Servers -->
               <div class="detail-section" v-if="pluginDetails[p.id].hasMcp && getMcpServerNames(pluginDetails[p.id]).length">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="7" y1="8" x2="7" y2="16"></line><line x1="11" y1="8" x2="11" y2="16"></line><line x1="15" y1="8" x2="15" y2="16"></line></svg>
-                  MCP Servers
-                </h4>
-                <div class="detail-tags">
-                  <span class="tag" v-for="name in getMcpServerNames(pluginDetails[p.id])" :key="name">{{ name }}</span>
+                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'mcp')">
+                  <span class="section-title-sm">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="7" y1="8" x2="7" y2="16"></line><line x1="11" y1="8" x2="11" y2="16"></line><line x1="15" y1="8" x2="15" y2="16"></line></svg>
+                    MCP Servers
+                  </span>
+                  <span class="section-toggle-meta">
+                    <span class="badge subitem-count-badge">{{ getMcpServerNames(pluginDetails[p.id]).length }}</span>
+                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'mcp') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </span>
+                </button>
+                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'mcp')">
+                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'mcp')" :key="entry.key">
+                    <div class="detail-item-copy">
+                      <div class="item-name-line">
+                        <span class="item-name">{{ entry.name }}</span>
+                      </div>
+                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
+                    </div>
+                    <div class="detail-item-actions" v-if="entry.subItem">
+                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
+                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -561,28 +679,6 @@ onMounted(() => {
                 <div class="detail-item">
                   <span class="item-name">CLAUDE.md</span>
                   <span class="item-desc">{{ pluginDetails[p.id].claudeMdPath || '插件根目录' }}</span>
-                </div>
-              </div>
-
-              <div class="detail-section" v-if="pluginDetails[p.id].subItems?.length">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
-                  子项启停
-                </h4>
-                <div class="subitem-toggle-list">
-                  <div class="subitem-toggle-item" v-for="subItem in pluginDetails[p.id].subItems" :key="subItemKey(subItem)">
-                    <div class="subitem-copy">
-                      <div class="subitem-copy-title">
-                        <span class="item-name compact">{{ subItem.name }}</span>
-                        <span class="badge subitem-kind-badge">{{ subItemTypeLabel(subItem.type) }}</span>
-                      </div>
-                      <span class="item-desc">{{ subItem.path }}</span>
-                    </div>
-                    <div class="subitem-actions">
-                      <span class="toggle-label" :class="{ 'text-enabled': subItem.enabled, 'text-disabled': !subItem.enabled }">{{ subItem.enabled ? '已启用' : '已禁用' }}</span>
-                      <button class="ios-toggle" :class="{ active: subItem.enabled }" @click="toggleSubItem(p.id, subItem)"></button>
-                    </div>
-                  </div>
                 </div>
               </div>
 
@@ -1474,45 +1570,76 @@ onMounted(() => {
 }
 
 
-.subitem-toggle-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.subitem-toggle-item {
+.detail-section-toggle {
+  width: 100%;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding: 12px 14px;
-  background: #0f1219;
-  border: 1px solid #2a2f3e;
-  border-radius: 8px;
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
-.subitem-copy {
+.section-toggle-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.subitem-count-badge {
+  background: rgba(136, 153, 170, 0.12);
+  color: #8899aa;
+  font-size: 11px;
+}
+
+.detail-item.with-toggle {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.detail-item-copy {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 
-.subitem-copy-title {
+.item-name-line {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.item-name.compact {
+.detail-item.with-toggle .item-name {
   min-width: 0;
 }
 
-.subitem-actions {
+.detail-item-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+}
+
+.toggle-label {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.text-enabled {
+  color: #66bb6a;
+}
+
+.text-disabled {
+  color: #8899aa;
 }
 
 /* Add Marketplace Dialog */

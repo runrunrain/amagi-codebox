@@ -834,7 +834,7 @@ const selectedSessionData = computed(() => {
   return sessions.value.find(s => s.id === selectedSession.value) || null
 })
 
-const normalizeWorkspacePath = (value: string) => value.split('\').join('/').replace(/\/+$/, '').trim().toLowerCase()
+const normalizeWorkspacePath = (value: string) => value.split('\\').join('/').replace(/\/+$/, '').trim().toLowerCase()
 const matchedWorkspace = computed(() => {
   if (!selectedWorkDir.value) return null
   const currentPath = normalizeWorkspacePath(selectedWorkDir.value)

@@ -3,19 +3,35 @@
 import {plugin} from '../models';
 
 export function AddMarketplace(arg1:string):Promise<plugin.CommandResult>;
-export function AnalyzePluginType(arg1:string):Promise<string>;
+
+export function AnalyzePluginType(arg1:string):Promise<plugin.PluginType>;
+
 export function DisablePlugin(arg1:string):Promise<plugin.CommandResult>;
+
 export function EnablePlugin(arg1:string):Promise<plugin.CommandResult>;
+
 export function GetAvailablePlugins():Promise<Array<any>>;
+
 export function GetInstalledPlugins():Promise<Array<plugin.InstalledPlugin>>;
+
 export function GetMarketplaces():Promise<Array<plugin.Marketplace>>;
+
 export function GetPluginDetail(arg1:string):Promise<plugin.PluginDetail>;
-export function GetPluginSubItems(arg1:string):Promise<Array<plugin.SubItem>>;
+
 export function GetPluginSubItemStates(arg1:string):Promise<plugin.PluginSubItemState>;
+
+export function GetPluginSubItems(arg1:string):Promise<Array<plugin.SubItem>>;
+
 export function InstallPlugin(arg1:string):Promise<plugin.CommandResult>;
+
 export function RefreshPlugins():Promise<void>;
+
 export function RemoveMarketplace(arg1:string):Promise<plugin.CommandResult>;
-export function SetSubItemEnabled(arg1:string, arg2:plugin.SubItemRef, arg3:boolean):Promise<void>;
+
+export function SetSubItemEnabled(arg1:string,arg2:plugin.SubItemRef,arg3:boolean):Promise<void>;
+
 export function UninstallPlugin(arg1:string):Promise<plugin.CommandResult>;
+
 export function UpdateMarketplace(arg1:string):Promise<plugin.CommandResult>;
+
 export function UpdatePlugin(arg1:string):Promise<plugin.CommandResult>;

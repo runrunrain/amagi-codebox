@@ -27,3 +27,7 @@ Thumbs.db
 # Capacitor generated
 mobile/android/
 mobile/ios/
+
+# QA test artifacts
+frontend/qa-*/
+frontend/qa-*.log

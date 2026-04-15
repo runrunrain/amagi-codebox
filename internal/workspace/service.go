@@ -181,7 +181,10 @@ func (s *Service) GetAvailablePluginsForWorkspace(workspaceID string) ([]Availab
 		}
 		detail, err := s.plugins.GetPluginDetail(item.ID)
 		if err != nil {
-			return nil, err
+			if s.log != nil {
+				s.log.Warn("workspace", "跳过无法读取详情的插件", fmt.Sprintf("plugin=%s err=%v", item.ID, err))
+			}
+			continue
 		}
 		visible, updated := applyGlobalDisplayContract(*detail, workspace.Tools, globalEnabled)
 		if !visible {

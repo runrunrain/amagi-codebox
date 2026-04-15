@@ -42,6 +42,14 @@ export function ListWorkspaces() {
   return window['go']['workspace']['Service']['ListWorkspaces']();
 }
 
+export function Load() {
+  return window['go']['workspace']['Service']['Load']();
+}
+
+export function Save() {
+  return window['go']['workspace']['Service']['Save']();
+}
+
 export function SetGlobalEnabled(arg1) {
   return window['go']['workspace']['Service']['SetGlobalEnabled'](arg1);
 }

@@ -1,14 +1,20 @@
 package workspace
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
 func (s *Service) applyPlan(targetID, root, manifestPath string, plan deploymentPlan, warnings []string) (DeployResult, error) {
+	normalizedPlan, err := normalizeDeploymentPlan(plan)
+	if err != nil {
+		return DeployResult{}, err
+	}
 	current, err := ReadManifest(manifestPath)
 	if err != nil {
 		return DeployResult{}, err
@@ -18,13 +24,13 @@ func (s *Service) applyPlan(targetID, root, manifestPath string, plan deployment
 	activeManifest.Entries = activeEntries
 
 	result := DeployResult{TargetID: targetID, Warnings: append([]string{}, warnings...), Manifest: current, Deployed: []DeploymentEntry{}, Removed: []string{}, Conflicts: []Conflict{}}
-	conflicts := checkPlanConflicts(root, activeManifest, plan)
+	conflicts := checkPlanConflicts(root, activeManifest, normalizedPlan)
 	currentTargets := groupEntriesByTarget(activeEntries)
 	desiredTargets := map[string]struct{}{}
-	for _, file := range plan.Files {
+	for _, file := range normalizedPlan.Files {
 		desiredTargets[file.Entry.TargetPath] = struct{}{}
 	}
-	for _, merged := range plan.Merged {
+	for _, merged := range normalizedPlan.Merged {
 		desiredTargets[merged.TargetPath] = struct{}{}
 	}
 	for target, entries := range currentTargets {
@@ -54,7 +60,7 @@ func (s *Service) applyPlan(targetID, root, manifestPath string, plan deployment
 	}
 
 	entriesByTarget := map[string][]DeploymentEntry{}
-	for _, file := range plan.Files {
+	for _, file := range normalizedPlan.Files {
 		absPath := filepath.Join(root, filepath.FromSlash(file.Entry.TargetPath))
 		content, err := plannedFileContent(file)
 		if err != nil {
@@ -68,7 +74,7 @@ func (s *Service) applyPlan(targetID, root, manifestPath string, plan deployment
 		entriesByTarget[entry.TargetPath] = append(entriesByTarget[entry.TargetPath], entry)
 		result.Deployed = append(result.Deployed, entry)
 	}
-	for _, merged := range plan.Merged {
+	for _, merged := range normalizedPlan.Merged {
 		absPath := filepath.Join(root, filepath.FromSlash(merged.TargetPath))
 		if err := writeFile(absPath, merged.Content); err != nil {
 			return DeployResult{}, err
@@ -190,4 +196,105 @@ func writeFile(path string, content []byte) error {
 func sha256Hex(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+func normalizeDeploymentPlan(plan deploymentPlan) (deploymentPlan, error) {
+	normalized := deploymentPlan{Files: append([]plannedFile{}, plan.Files...), Merged: []plannedMergedFile{}}
+	grouped := make(map[string][]plannedMergedFile)
+	order := make([]string, 0)
+	for _, merged := range plan.Merged {
+		if _, ok := grouped[merged.TargetPath]; !ok {
+			order = append(order, merged.TargetPath)
+		}
+		grouped[merged.TargetPath] = append(grouped[merged.TargetPath], merged)
+	}
+	for _, target := range order {
+		merged, err := mergePlannedMergedFiles(target, grouped[target])
+		if err != nil {
+			return deploymentPlan{}, err
+		}
+		normalized.Merged = append(normalized.Merged, merged)
+	}
+	return normalized, nil
+}
+
+func mergePlannedMergedFiles(target string, items []plannedMergedFile) (plannedMergedFile, error) {
+	merged := plannedMergedFile{TargetPath: target, Entries: []DeploymentEntry{}}
+	for _, item := range items {
+		merged.Entries = append(merged.Entries, item.Entries...)
+	}
+	if filepath.Ext(target) == ".json" {
+		content, err := mergeJSONContent(items)
+		if err != nil {
+			return plannedMergedFile{}, err
+		}
+		merged.Content = content
+		return merged, nil
+	}
+	merged.Content = mergeTextContent(items)
+	return merged, nil
+}
+
+func mergeJSONContent(items []plannedMergedFile) ([]byte, error) {
+	acc := map[string]interface{}{}
+	for _, item := range items {
+		var payload map[string]interface{}
+		if err := json.Unmarshal(item.Content, &payload); err != nil {
+			return nil, fmt.Errorf("parse merged json %s: %w", item.TargetPath, err)
+		}
+		acc = mergeJSONObject(acc, payload)
+	}
+	b, err := json.MarshalIndent(acc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal merged json: %w", err)
+	}
+	return append(b, '\n'), nil
+}
+
+func mergeJSONObject(left, right map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range left {
+		out[k] = v
+	}
+	for k, rv := range right {
+		lv, ok := out[k]
+		if !ok {
+			out[k] = rv
+			continue
+		}
+		out[k] = mergeJSONValue(lv, rv)
+	}
+	return out
+}
+
+func mergeJSONValue(left, right interface{}) interface{} {
+	leftMap, leftIsMap := left.(map[string]interface{})
+	rightMap, rightIsMap := right.(map[string]interface{})
+	if leftIsMap && rightIsMap {
+		return mergeJSONObject(leftMap, rightMap)
+	}
+	leftSlice, leftIsSlice := left.([]interface{})
+	rightSlice, rightIsSlice := right.([]interface{})
+	if leftIsSlice && rightIsSlice {
+		return append(leftSlice, rightSlice...)
+	}
+	return right
+}
+
+func mergeTextContent(items []plannedMergedFile) []byte {
+	parts := make([][]byte, 0, len(items))
+	for _, item := range items {
+		if len(item.Content) == 0 {
+			continue
+		}
+		parts = append(parts, item.Content)
+	}
+	if len(parts) == 0 {
+		return []byte{}
+	}
+	joined := bytes.Join(parts, []byte("\n"))
+	if len(joined) == 0 || joined[len(joined)-1] != '\n' {
+		joined = append(joined, '\n')
+	}
+	return joined
 }

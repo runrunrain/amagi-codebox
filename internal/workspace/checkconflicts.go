@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"fmt"
-	"path/filepath"
 )
 
 func (s *Service) CheckConflicts(pluginID, scope, target string) ([]Conflict, error) {
@@ -12,9 +11,6 @@ func (s *Service) CheckConflicts(pluginID, scope, target string) ([]Conflict, er
 		if target != "" {
 			tool = ToolType(target)
 		}
-		if tool != ToolTypeClaude {
-			return nil, fmt.Errorf("tool %s is not supported by backend foundation conflict checks yet", tool)
-		}
 		plan, _, err := s.buildGlobalPlan([]GlobalEnabled{{PluginID: pluginID, EnabledAll: true, Tools: []ToolType{tool}}})
 		if err != nil {
 			return nil, err
@@ -23,14 +19,11 @@ func (s *Service) CheckConflicts(pluginID, scope, target string) ([]Conflict, er
 		if err != nil {
 			return nil, err
 		}
-		return collectPlanConflicts(filepath.Join(s.homeDir, ".claude"), manifest, plan)
+		return collectPlanConflicts(s.homeDir, manifest, plan)
 	case string(SourceScopeWorkspace):
 		workspace, err := s.GetWorkspace(target)
 		if err != nil {
 			return nil, err
-		}
-		if !toolsOverlap(workspace.Tools, []ToolType{ToolTypeClaude}) {
-			return nil, fmt.Errorf("workspace %s has no Claude tool target to check", workspace.ID)
 		}
 		plan, _, err := s.buildWorkspacePlan(Workspace{ID: workspace.ID, Path: workspace.Path, Tools: workspace.Tools, Plugins: []WorkspacePlugin{{PluginID: pluginID, DeployScope: string(SourceScopeWorkspace)}}})
 		if err != nil {
@@ -51,7 +44,17 @@ func collectPlanConflicts(root string, manifest DeploymentManifest, plan deploym
 	activeManifest := defaultManifest()
 	activeManifest.Entries = activeEntries
 	conflicts := checkPlanConflicts(root, activeManifest, plan)
+	touchedTargets := map[string]struct{}{}
+	for _, file := range plan.Files {
+		touchedTargets[file.Entry.TargetPath] = struct{}{}
+	}
+	for _, merged := range plan.Merged {
+		touchedTargets[merged.TargetPath] = struct{}{}
+	}
 	for target, entries := range groupEntriesByTarget(activeEntries) {
+		if _, ok := touchedTargets[target]; !ok {
+			continue
+		}
 		changed, err := managedTargetModified(root, target, entries)
 		if err != nil {
 			return nil, err

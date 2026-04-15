@@ -4,11 +4,11 @@ import {workspace} from '../models';
 
 export function BuildScaffold(arg1:string):Promise<workspace.DeployResult>;
 
-export function CheckConflicts(arg1:string, arg2:string, arg3:string):Promise<Array<workspace.Conflict>>;
+export function CheckConflicts(arg1:string,arg2:string,arg3:string):Promise<Array<workspace.Conflict>>;
 
 export function CleanWorkspace(arg1:string):Promise<workspace.CleanResult>;
 
-export function CreateWorkspace(arg1:string, arg2:string, arg3:Array<string>):Promise<workspace.Workspace>;
+export function CreateWorkspace(arg1:string,arg2:string,arg3:Array<workspace.ToolType>):Promise<workspace.Workspace>;
 
 export function DeleteWorkspace(arg1:string):Promise<void>;
 
@@ -22,10 +22,14 @@ export function GetWorkspace(arg1:string):Promise<workspace.Workspace>;
 
 export function ListWorkspaces():Promise<Array<workspace.Workspace>>;
 
-export function SetGlobalEnabled(arg1:Array<any>):Promise<workspace.DeployResult>;
+export function Load():Promise<void>;
 
-export function SetWorkspacePlugins(arg1:string, arg2:Array<any>):Promise<void>;
+export function Save():Promise<void>;
+
+export function SetGlobalEnabled(arg1:Array<workspace.GlobalEnabled>):Promise<workspace.DeployResult>;
+
+export function SetWorkspacePlugins(arg1:string,arg2:Array<workspace.WorkspacePlugin>):Promise<void>;
 
 export function SyncWorkspace(arg1:string):Promise<workspace.DeployResult>;
 
-export function UpdateWorkspace(arg1:string, arg2:string, arg3:string, arg4:Array<string>):Promise<workspace.Workspace>;
+export function UpdateWorkspace(arg1:string,arg2:string,arg3:string,arg4:Array<workspace.ToolType>):Promise<workspace.Workspace>;
