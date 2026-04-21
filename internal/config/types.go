@@ -1,5 +1,10 @@
 package config
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // ThinkingConfig 思考模式配置
 // 完全兼容 models.json：thinking.type / thinking.budgetTokens
 type ThinkingConfig struct {
@@ -27,11 +32,79 @@ type Parameters struct {
 	ContextWindow    *ContextWindowConfig `json:"context_window,omitempty"` // 上下文窗口配置（Codex CLI 风格）
 }
 
+// PresetTargetType 定义 preset 目标 CLI 类型
+type PresetTargetType string
+
+const (
+	// PresetTargetCodex 表示 preset 用于 Codex CLI（默认值）
+	PresetTargetCodex PresetTargetType = "codex"
+	// PresetTargetOpenCode 表示 preset 用于 OpenCode CLI
+	PresetTargetOpenCode PresetTargetType = "opencode"
+)
+
 // Preset 预设配置
 type Preset struct {
-	Name       string     `json:"name"`
-	Model      string     `json:"model"`
-	Parameters Parameters `json:"parameters"`
+	Name           string           `json:"name"`
+	Model          string           `json:"model"`
+	Parameters     Parameters       `json:"parameters"`
+	Target         PresetTargetType `json:"target,omitempty"`           // 目标 CLI 类型：codex（默认）或 opencode
+	OpenCodeConfig json.RawMessage  `json:"opencode_config,omitempty"` // OpenCode 原始配置片段，原样保真，未知字段不丢失
+}
+
+// GetTarget 返回 preset 的目标 CLI 类型。
+// 旧 preset 没有 target 字段时，默认按 codex 处理，保持向后兼容。
+func (p Preset) GetTarget() PresetTargetType {
+	if p.Target == "" {
+		return PresetTargetCodex
+	}
+	return p.Target
+}
+
+// IsOpenCodeTarget 判断 preset 是否目标为 OpenCode CLI
+func (p Preset) IsOpenCodeTarget() bool {
+	return p.GetTarget() == PresetTargetOpenCode
+}
+
+// IsCodexTarget 判断 preset 是否目标为 Codex CLI
+func (p Preset) IsCodexTarget() bool {
+	return p.GetTarget() == PresetTargetCodex
+}
+
+// NormalizeOpenCodeConfig 确保 OpenCodeConfig 存储为原始 JSON 对象，
+// 而不是 JSON 字符串（防止前端传回时双重编码）。
+//
+// 调用时机：SavePreset 保存前、LaunchOpenCode 使用前。
+//
+// 双重编码场景：前端 Wails 把 JS string 序列化为 JSON 时，
+// json.RawMessage 收到的是带引号的 JSON 字符串如 `"\"...\""` 而非 `{...}`。
+// 此方法将这种字符串解包为原始 JSON 对象。
+func (p *Preset) NormalizeOpenCodeConfig() {
+	if len(p.OpenCodeConfig) == 0 {
+		p.OpenCodeConfig = nil
+		return
+	}
+	// 去除前后空白
+	trimmed := strings.TrimSpace(string(p.OpenCodeConfig))
+	if len(trimmed) == 0 {
+		p.OpenCodeConfig = nil
+		return
+	}
+	// 如果以引号开头，说明是双重编码的 JSON 字符串
+	if trimmed[0] == '"' {
+		var unwrapped string
+		if err := json.Unmarshal([]byte(trimmed), &unwrapped); err == nil {
+			// 递归检查：解包后可能仍然是字符串（极端多重编码）
+			unwrappedTrimmed := strings.TrimSpace(unwrapped)
+			if len(unwrappedTrimmed) > 0 && unwrappedTrimmed[0] == '"' {
+				// 递归解包
+				p.OpenCodeConfig = json.RawMessage(unwrapped)
+				p.NormalizeOpenCodeConfig()
+				return
+			}
+			p.OpenCodeConfig = json.RawMessage(unwrapped)
+		}
+		// 如果解析失败，保持原样（可能本身就是合法的纯文本值）
+	}
 }
 
 // Provider 服务商配置

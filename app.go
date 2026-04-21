@@ -788,8 +788,8 @@ func (a *App) GetProvidersByType(providerType string) map[string]config.Provider
 }
 
 // LaunchOpenCode 启动 OpenCode 终端会话
-func (a *App) LaunchOpenCode(providerName string, mode string, workDir string, shellPath string) (string, error) {
-	a.Log.Info("session", "启动 OpenCode 会话请求", fmt.Sprintf("provider=%s mode=%s workDir=%s shell=%s", providerName, mode, workDir, shellPath))
+func (a *App) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
+	a.Log.Info("session", "启动 OpenCode 会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s shell=%s", providerName, presetName, mode, workDir, shellPath))
 
 	var provider *config.Provider
 	envOverrides := map[string]string{}
@@ -807,7 +807,14 @@ func (a *App) LaunchOpenCode(providerName string, mode string, workDir string, s
 			return "", fmt.Errorf("no API key found for provider %q", providerName)
 		}
 
-		envOverrides = buildOpenCodeEnvOverrides(providerName, *provider, apiKey)
+		// 基于 Provider + Preset 生成 OPENCODE_CONFIG_CONTENT 注入
+		ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
+		if err != nil {
+			a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
+			return "", fmt.Errorf("build opencode config: %w", err)
+		}
+		envOverrides = ocOverrides
+
 		a.Log.Info("session", "OpenCode API 密钥已获取",
 			fmt.Sprintf("provider=%s source=%s key=%s len=%d",
 				providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
@@ -834,7 +841,7 @@ func (a *App) LaunchOpenCode(providerName string, mode string, workDir string, s
 	}
 
 	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeOpenCode, sessionProvider, "", "", launchMode, workDir, false)
+	sess := a.Sessions.Create(session.AppTypeOpenCode, sessionProvider, presetName, "", launchMode, workDir, false)
 	a.Log.Info("session", "OpenCode 会话已创建", fmt.Sprintf("id=%s mode=%s", sess.ID, launchMode))
 
 	// 根据模式选择启动方式
@@ -879,7 +886,12 @@ func (a *App) LaunchOpenCode(providerName string, mode string, workDir string, s
 	}
 
 	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.LaunchOpenCode(sess.ID, launchMode, workDir, envOverrides)
+	// 准备 apiKey 用于 LaunchOpenCode 的自动配置生成
+	var apiKey string
+	if providerName != "" {
+		apiKey, _ = a.Secrets.GetAPIKeyWithFallback(providerName)
+	}
+	result, err := a.Launcher.LaunchOpenCode(sess.ID, launchMode, workDir, envOverrides, providerName, provider, presetName, apiKey)
 	if err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.Log.Error("session", "OpenCode 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -903,34 +915,6 @@ func (a *App) LaunchOpenCode(providerName string, mode string, workDir string, s
 	}(sess.ID)
 
 	return sess.ID, nil
-}
-
-func buildOpenCodeEnvOverrides(providerName string, provider config.Provider, apiKey string) map[string]string {
-	if providerName == "" || apiKey == "" {
-		return map[string]string{}
-	}
-
-	overrides := map[string]string{}
-	providerType := strings.TrimSpace(strings.ToLower(provider.Type))
-	if providerType == "" {
-		providerType = "openai"
-	}
-
-	switch providerType {
-	case "anthropic":
-		overrides["ANTHROPIC_API_KEY"] = apiKey
-		overrides["ANTHROPIC_AUTH_TOKEN"] = ""
-		if provider.BaseURL != "" {
-			overrides["ANTHROPIC_BASE_URL"] = provider.BaseURL
-		}
-	default:
-		overrides["OPENAI_API_KEY"] = apiKey
-		if provider.BaseURL != "" {
-			overrides["OPENAI_BASE_URL"] = provider.BaseURL
-		}
-	}
-
-	return overrides
 }
 
 // LaunchAmagiCode 启动 AmagiCode 终端会话。

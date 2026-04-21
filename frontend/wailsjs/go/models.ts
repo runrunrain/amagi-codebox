@@ -270,6 +270,8 @@ export namespace config {
 	    name: string;
 	    model: string;
 	    parameters: Parameters;
+	    target?: string;
+	    opencode_config?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Preset(source);
@@ -280,6 +282,14 @@ export namespace config {
 	        this.name = source["name"];
 	        this.model = source["model"];
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
+	        this.target = source["target"];
+	        // opencode_config is stored as json.RawMessage on backend;
+	        // when serialized to JSON it becomes a nested JSON string.
+	        // We preserve the raw JSON string to avoid data loss.
+	        const raw = source["opencode_config"];
+	        if (raw !== undefined && raw !== null) {
+	            this.opencode_config = typeof raw === 'string' ? raw : JSON.stringify(raw);
+	        }
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -914,6 +924,7 @@ export namespace settings {
 	    provider: string;
 	    preset: string;
 	    openCodeProvider: string;
+	    openCodePreset: string;
 	    mode: string;
 	    shell: string;
 	    claudeMode: string;
@@ -936,6 +947,7 @@ export namespace settings {
 	        this.provider = source["provider"];
 	        this.preset = source["preset"];
 	        this.openCodeProvider = source["openCodeProvider"];
+	        this.openCodePreset = source["openCodePreset"];
 	        this.mode = source["mode"];
 	        this.shell = source["shell"];
 	        this.claudeMode = source["claudeMode"];

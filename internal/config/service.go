@@ -278,6 +278,9 @@ func (s *ConfigService) SavePreset(providerName, presetName string, p Preset) er
 		return errors.New("preset name is required")
 	}
 
+	// 规范化 opencode_config：防止前端传回时双重编码（字符串嵌套 JSON）
+	p.NormalizeOpenCodeConfig()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.config == nil {

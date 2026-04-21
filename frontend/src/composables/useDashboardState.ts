@@ -6,6 +6,7 @@ const state = reactive({
     provider: '',
     preset: '',
     openCodeProvider: '',
+    openCodePreset: '',
     claudeMode: 'embedded',
     openCodeMode: 'embedded',
     codexMode: 'embedded',

@@ -210,12 +210,33 @@ func (s *LauncherService) Launch(
 // LaunchOpenCode 启动一个新的 OpenCode 进程，返回启动结果。
 // 支持两种模式：terminal（独立终端）、embedded（内嵌终端）。
 // envOverrides 中的键值对会注入到进程环境变量，用于传递 OpenCode 配置和认证信息。
+// 当 providerName 非空时，自动基于 Provider + Preset 生成 OPENCODE_CONFIG_CONTENT 注入。
 func (s *LauncherService) LaunchOpenCode(
 	sessionID string,
 	mode session.LaunchMode,
 	workDir string,
 	envOverrides map[string]string,
+	// 新增参数：provider 维度信息，用于生成 OPENCODE_CONFIG_CONTENT
+	providerName string,
+	provider *config.Provider,
+	presetName string,
+	apiKey string,
 ) (*LaunchResult, error) {
+	// 如果传入了 provider 信息，自动构建 OPENCODE_CONFIG_CONTENT
+	if providerName != "" && provider != nil {
+		ocOverrides, err := BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
+		if err != nil {
+			s.log.Error("launcher", "构建 OpenCode 配置失败", err.Error())
+			return nil, fmt.Errorf("build opencode config: %w", err)
+		}
+		// 合并：调用方传入的 envOverrides 覆盖自动生成的值（调用方优先）
+		for k, v := range ocOverrides {
+			if _, exists := envOverrides[k]; !exists {
+				envOverrides[k] = v
+			}
+		}
+	}
+
 	env := BuildEnv(s.baseEnv(), envOverrides)
 
 	cmd := s.buildOpenCodeCmd(workDir, env)

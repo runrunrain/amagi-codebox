@@ -132,6 +132,7 @@ func (s *Server) handleLaunchCodex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLaunchOpenCode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProviderName string `json:"providerName"`
+		PresetName   string `json:"presetName"`
 		Mode         string `json:"mode"`
 		WorkDir      string `json:"workDir"`
 		ShellPath    string `json:"shellPath"`
@@ -140,7 +141,7 @@ func (s *Server) handleLaunchOpenCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	id, err := s.app.LaunchOpenCode(body.ProviderName, body.Mode, body.WorkDir, body.ShellPath)
+	id, err := s.app.LaunchOpenCode(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

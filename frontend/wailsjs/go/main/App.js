@@ -178,8 +178,8 @@ export function LaunchCodexSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchCodexSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function LaunchOpenCode(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['LaunchOpenCode'](arg1, arg2, arg3, arg4);
+export function LaunchOpenCode(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['LaunchOpenCode'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {

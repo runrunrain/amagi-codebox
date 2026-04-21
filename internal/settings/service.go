@@ -20,6 +20,7 @@ type DashboardDefaults struct {
 	Provider         string `json:"provider"`
 	Preset           string `json:"preset"`
 	OpenCodeProvider string `json:"openCodeProvider"`
+	OpenCodePreset   string `json:"openCodePreset"`
 	Mode             string `json:"mode"`
 	Shell            string `json:"shell"`
 	ClaudeMode       string `json:"claudeMode"`

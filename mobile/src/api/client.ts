@@ -55,6 +55,7 @@ export interface LaunchCodexRequest {
 
 export interface LaunchOpenCodeRequest {
   providerName: string
+  presetName: string
   mode: string
   workDir: string
   shellPath: string

@@ -164,6 +164,14 @@
               <span class="label">模型:</span>
               <span class="value">{{ preset.model || '继承默认' }}</span>
             </div>
+            <div class="info-row" v-if="preset.target">
+              <span class="label">目标:</span>
+              <span class="value">{{ preset.target === 'opencode' ? 'OpenCode' : preset.target === 'codex' ? 'Codex' : preset.target }}</span>
+            </div>
+            <div class="info-row" v-if="preset.opencode_config">
+              <span class="label">OC Config:</span>
+              <span class="value" style="font-family: monospace; font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ preset.opencode_config }}</span>
+            </div>
             <div class="params-summary">
               <span class="param-badge" v-if="preset.parameters?.temperature !== undefined">Temp: {{ preset.parameters.temperature }}</span>
               <span class="param-badge" v-if="preset.parameters?.top_p !== undefined">Top P: {{ preset.parameters.top_p }}</span>
@@ -306,11 +314,39 @@
             <label>思考预算 Tokens (Budget Tokens)</label>
             <input type="number" v-model.number="thinkingBudget" class="input-field" step="1" min="1024" placeholder="例如: 16384" />
           </div>
+
+          <h3 class="section-subtitle">目标平台与高级配置</h3>
+          <div class="form-group">
+            <label>目标平台 (Target)</label>
+            <select v-model="editingPresetTarget" class="input-field">
+              <option value="">Codex (默认)</option>
+              <option value="opencode">OpenCode</option>
+            </select>
+            <p class="field-hint">指定此预设用于哪个 CLI 工具。Codex 菜单仅显示 Codex 预设，OpenCode 菜单仅显示 OpenCode 预设。</p>
+          </div>
+
+          <div class="form-group" v-if="editingPresetTarget === 'opencode'">
+            <label>OpenCode 配置 (JSON)</label>
+            <textarea
+              v-model="editingOpenCodeConfig"
+              class="input-field json-config-textarea"
+              spellcheck="false"
+              rows="6"
+              placeholder='例如: { "provider": "openai", "model": "o3" }'
+              @input="validateOpenCodeConfig"
+            ></textarea>
+            <div class="json-config-status" :class="{ error: !!openCodeConfigError, success: !openCodeConfigError && editingOpenCodeConfig.trim() }">
+              <span v-if="!editingOpenCodeConfig.trim()"></span>
+              <span v-else-if="openCodeConfigError">{{ openCodeConfigError }}</span>
+              <span v-else>JSON 格式正确</span>
+            </div>
+            <p class="field-hint">原始 JSON 配置片段，用于承载 OpenCode 高级配置。会原样保存，不会丢失未知字段。</p>
+          </div>
         </div>
 
         <div class="dialog-actions">
           <button class="btn secondary" @click="showPresetDialog = false" :disabled="loading">取消</button>
-          <button class="btn primary" @click="handleSavePreset" :disabled="(!isEditingPreset && !editingPresetName) || loading">
+          <button class="btn primary" @click="handleSavePreset" :disabled="(!isEditingPreset && !editingPresetName) || !!openCodeConfigError || loading">
             {{ loading ? '保存中...' : '保存' }}
           </button>
         </div>
@@ -366,6 +402,9 @@ const editingPreset = ref(new config.Preset({
 }))
 const thinkingType = ref('')
 const thinkingBudget = ref<number | undefined>(undefined)
+const editingPresetTarget = ref('')
+const editingOpenCodeConfig = ref('')
+const openCodeConfigError = ref('')
 
 // Context Window Config State
 const contextWindowModel = ref<number | undefined>(undefined)
@@ -561,6 +600,9 @@ const openAddPresetDialog = () => {
   thinkingBudget.value = undefined
   contextWindowModel.value = undefined
   contextWindowCompact.value = undefined
+  editingPresetTarget.value = ''
+  editingOpenCodeConfig.value = ''
+  openCodeConfigError.value = ''
   showPresetDialog.value = true
 }
 
@@ -589,12 +631,30 @@ const openEditPresetDialog = (name: string, preset: config.Preset) => {
     contextWindowCompact.value = undefined
   }
 
+  // Load target and opencode_config
+  editingPresetTarget.value = presetCopy.target || ''
+  editingOpenCodeConfig.value = presetCopy.opencode_config || ''
+  openCodeConfigError.value = ''
+  // Validate initial opencode_config
+  if (editingOpenCodeConfig.value.trim()) {
+    validateOpenCodeConfig()
+  }
+
   showPresetDialog.value = true
 }
 
 const handleSavePreset = async () => {
   const nameToSave = isEditingPreset.value ? editingPresetName.value : editingPresetName.value
   if (!nameToSave) return
+
+  // Validate opencode_config JSON before saving
+  if (editingOpenCodeConfig.value.trim()) {
+    validateOpenCodeConfig()
+    if (openCodeConfigError.value) {
+      showError('opencode_config JSON 格式错误: ' + openCodeConfigError.value)
+      return
+    }
+  }
 
   // Apply thinking config
   if (!editingPreset.value.parameters) {
@@ -623,6 +683,17 @@ const handleSavePreset = async () => {
   // Ensure name is set inside preset object
   editingPreset.value.name = nameToSave
 
+  // Apply target
+  const presetAny = editingPreset.value as any
+  presetAny.target = editingPresetTarget.value || undefined
+
+  // Apply opencode_config: store the raw JSON string
+  if (editingOpenCodeConfig.value.trim()) {
+    presetAny.opencode_config = editingOpenCodeConfig.value.trim()
+  } else {
+    presetAny.opencode_config = undefined
+  }
+
   try {
     loading.value = true
     await SavePreset(providerName, nameToSave, editingPreset.value)
@@ -634,6 +705,25 @@ const handleSavePreset = async () => {
     showError('保存失败: ' + err)
   } finally {
     loading.value = false
+  }
+}
+
+// OpenCode Config validation
+const validateOpenCodeConfig = () => {
+  const val = editingOpenCodeConfig.value.trim()
+  if (!val) {
+    openCodeConfigError.value = ''
+    return
+  }
+  try {
+    const parsed = JSON.parse(val)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      openCodeConfigError.value = '必须是有效的 JSON 对象'
+      return
+    }
+    openCodeConfigError.value = ''
+  } catch (err: any) {
+    openCodeConfigError.value = err.message || '无效的 JSON'
   }
 }
 
@@ -1483,6 +1573,35 @@ onMounted(async () => {
 }
 
 .json-status.error {
+  color: #ef5350;
+}
+
+/* OpenCode Config JSON textarea in preset dialog */
+.json-config-textarea {
+  min-height: 100px;
+  resize: vertical;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.json-config-textarea:focus {
+  border-color: #4fc3f7;
+}
+
+.json-config-status {
+  font-size: 12px;
+  margin-top: 4px;
+  min-height: 18px;
+  color: #5a6a7a;
+}
+
+.json-config-status.success {
+  color: #66bb6a;
+}
+
+.json-config-status.error {
   color: #ef5350;
 }
 </style>

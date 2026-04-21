@@ -304,6 +304,15 @@
                 </option>
               </select>
             </div>
+            <div class="form-group flex-1">
+              <label>预设配置</label>
+              <select v-model="selectedOpenCodePreset" class="input-field" :disabled="!selectedOpenCodeProvider || !hasOpenCodePresets">
+                <option value="">不指定（默认配置）</option>
+                <option v-for="(preset, name) in openCodeAvailablePresets" :key="name" :value="name">
+                  {{ name }}{{ preset.model ? ` (${preset.model})` : '' }}
+                </option>
+              </select>
+            </div>
           </div>
 
           <div class="form-row">
@@ -619,8 +628,9 @@ import { LaunchSession, StopSession, StopAllSessions, GetSessions, RemoveSession
 const LaunchCodexSession = (modelName: string, providerID: string, mode: string, workDir: string, shellPath: string): Promise<string> =>
   (window as any)['go']['main']['App']['LaunchCodexSession'](modelName, providerID, mode, workDir, shellPath)
 
-const LaunchOpenCodeWithProvider = (providerID: string, mode: string, workDir: string, shellPath: string): Promise<string> =>
-  (window as any)['go']['main']['App']['LaunchOpenCode'](providerID, mode, workDir, shellPath)
+// OpenCode uses wails binding with 5 args: (providerName, presetName, mode, workDir, shellPath)
+const LaunchOpenCodeWithProvider = (providerName: string, presetName: string, mode: string, workDir: string, shellPath: string): Promise<string> =>
+  (window as any)['go']['main']['App']['LaunchOpenCode'](providerName, presetName, mode, workDir, shellPath)
 
 import { GetProviders } from '../../wailsjs/go/config/ConfigService'
 import { GetStatus as GetProxyStatus } from '../../wailsjs/go/proxy/ProxyService'
@@ -643,6 +653,7 @@ const workspaces = ref<workspace.Workspace[]>([])
 const selectedProvider = toRef(dashState, 'provider')
 const selectedPreset = toRef(dashState, 'preset')
 const selectedOpenCodeProvider = toRef(dashState, 'openCodeProvider')
+const selectedOpenCodePreset = toRef(dashState, 'openCodePreset')
 const claudeMode = toRef(dashState, 'claudeMode')
 const openCodeMode = toRef(dashState, 'openCodeMode')
 const codexMode = toRef(dashState, 'codexMode')
@@ -691,6 +702,10 @@ const openaiProviders = computed(() => {
 })
 
 const openCodeProviders = computed(() => {
+  // OpenCode only works with openai-type providers (same filter as Codex).
+  // This matches the backend behavior: openai-compatible providers derive
+  // OpenCode provider IDs correctly, while anthropic-type providers are
+  // designed for Claude Code / AmagiCode, not OpenCode.
   const result: Record<string, config.Provider> = {}
   for (const [name, provider] of Object.entries(providers.value)) {
     if (provider.type === 'openai' || provider.auth_key === 'OPENAI_API_KEY') {
@@ -700,9 +715,47 @@ const openCodeProviders = computed(() => {
   return result
 })
 
-const codexAvailablePresets = computed(() => {
+// OpenCode presets: filter to only show presets with target=opencode
+const openCodeAvailablePresets = computed(() => {
+  const prov = openCodeProviders.value[selectedOpenCodeProvider.value]
+  if (!prov || !prov.presets) return {}
+  const result: Record<string, config.Preset> = {}
+  for (const [name, preset] of Object.entries(prov.presets)) {
+    if (preset.target === 'opencode') {
+      result[name] = preset
+    }
+  }
+  return result
+})
+
+// Codex presets: filter to only show presets with target=codex or empty target
+const codexAvailablePresetsFiltered = computed(() => {
   if (!selectedCodexProvider.value || !openaiProviders.value[selectedCodexProvider.value]) return {}
-  return openaiProviders.value[selectedCodexProvider.value].presets || {}
+  const presets = openaiProviders.value[selectedCodexProvider.value].presets || {}
+  const result: Record<string, config.Preset> = {}
+  for (const [name, preset] of Object.entries(presets)) {
+    if (!preset.target || preset.target === 'codex') {
+      result[name] = preset
+    }
+  }
+  return result
+})
+
+// ClaudeCode presets: filter to only show presets with target=codex or empty target
+const claudeCodeAvailablePresets = computed(() => {
+  if (!selectedProvider.value || !providers.value[selectedProvider.value]) return {}
+  const presets = providers.value[selectedProvider.value].presets || {}
+  const result: Record<string, config.Preset> = {}
+  for (const [name, preset] of Object.entries(presets)) {
+    if (!preset.target || preset.target === 'codex') {
+      result[name] = preset
+    }
+  }
+  return result
+})
+
+const codexAvailablePresets = computed(() => {
+  return codexAvailablePresetsFiltered.value
 })
 
 const codexAvailableModels = computed(() => {
@@ -804,11 +857,12 @@ const launchModes = [
 ]
 
 const availablePresets = computed(() => {
-  if (!selectedProvider.value || !providers.value[selectedProvider.value]) return {}
-  return providers.value[selectedProvider.value].presets || {}
+  return claudeCodeAvailablePresets.value
 })
 
 const hasPresets = computed(() => Object.keys(availablePresets.value).length > 0)
+
+const hasOpenCodePresets = computed(() => Object.keys(openCodeAvailablePresets.value).length > 0)
 
 const canLaunch = computed(() => {
   if (activeLaunchTab.value === 'claudecode') {
@@ -845,7 +899,7 @@ const hasWorkspaceStatus = computed(() => Boolean(selectedWorkDir.value))
 
 watch(selectedProvider, (newVal) => {
   if (newVal && providers.value[newVal]) {
-    const presets = providers.value[newVal].presets || {}
+    const presets = claudeCodeAvailablePresets.value
     const presetKeys = Object.keys(presets)
     if (presetKeys.length > 0) {
       if (!presetKeys.includes(selectedPreset.value)) {
@@ -867,6 +921,18 @@ watch(selectedCodexProvider, () => {
     }
   } else {
     selectedCodexModel.value = ''
+  }
+})
+
+watch(selectedOpenCodeProvider, () => {
+  const presets = openCodeAvailablePresets.value
+  const keys = Object.keys(presets)
+  if (keys.length > 0) {
+    if (!keys.includes(selectedOpenCodePreset.value)) {
+      selectedOpenCodePreset.value = keys[0]
+    }
+  } else {
+    selectedOpenCodePreset.value = ''
   }
 })
 
@@ -910,6 +976,7 @@ const initDefaults = async () => {
     if (d.provider) dashState.provider = d.provider
     if (d.preset) dashState.preset = d.preset
     dashState.openCodeProvider = d.openCodeProvider || ''
+    dashState.openCodePreset = d.openCodePreset || ''
     dashState.claudeMode = d.claudeMode || d.mode || 'embedded'
     dashState.openCodeMode = d.openCodeMode || d.mode || 'embedded'
     dashState.codexMode = d.codexMode || d.mode || 'embedded'
@@ -937,6 +1004,7 @@ const persistDashboardDefaults = async () => {
       provider: selectedProvider.value,
       preset: selectedPreset.value,
       openCodeProvider: selectedOpenCodeProvider.value,
+      openCodePreset: selectedOpenCodePreset.value,
       mode: claudeMode.value,
       shell: claudeShell.value,
       claudeMode: claudeMode.value,
@@ -1028,6 +1096,7 @@ const handleLaunchOpenCode = async () => {
     const shellPath = openCodeMode.value === 'embedded' ? resolveOpenCodeShellPath() : ''
     const sessionId = await LaunchOpenCodeWithProvider(
       selectedOpenCodeProvider.value,
+      selectedOpenCodePreset.value,
       openCodeMode.value,
       selectedWorkDir.value,
       shellPath,
