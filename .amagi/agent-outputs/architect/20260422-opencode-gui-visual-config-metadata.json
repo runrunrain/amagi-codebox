@@ -1,0 +1,22 @@
+{
+  "taskId": "20260422-opencode-gui-visual-config-design",
+  "timestamp": "2026-04-22T10:00:00Z",
+  "agent": "architect",
+  "projectId": "amagi-codebox",
+  "taskBrief": "OpenCode GUI可视化配置改造架构设计",
+  "status": "completed",
+  "tags": ["opencode", "gui", "preset", "visualization", "frontend"],
+  "relatedFiles": [
+    "app.go",
+    "internal/config/types.go",
+    "internal/config/service.go",
+    "internal/launcher/opencode_config.go",
+    "frontend/src/views/ProviderDetail.vue",
+    "frontend/src/views/Dashboard.vue",
+    "frontend/src/views/Settings.vue"
+  ],
+  "nextSteps": {
+    "suggestedAgent": "coder",
+    "suggestedAction": "按设计文档第七章实施指南，在 ProviderDetail.vue 中实现 OpenCode preset 可视化配置表单"
+  }
+}

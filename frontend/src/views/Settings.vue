@@ -196,6 +196,370 @@
           </div>
         </div>
 
+        <!-- OpenCode 全局配置 -->
+        <div v-if="activeTab === 'opencode'" key="opencode" class="settings-section">
+          <div class="section-header">
+            <div class="oc-header-row">
+              <div>
+                <h2>OpenCode 全局配置</h2>
+                <p>编辑全局 opencode.json 配置文件。修改后保存立即生效。</p>
+              </div>
+              <div class="oc-mode-switch">
+                <button
+                  class="oc-mode-btn"
+                  :class="{ active: ocEditMode === 'visual' }"
+                  @click="ocSwitchToVisual"
+                >可视化</button>
+                <button
+                  class="oc-mode-btn"
+                  :class="{ active: ocEditMode === 'json' }"
+                  @click="ocSwitchToJson"
+                >JSON</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h3 class="group-header">配置文件路径</h3>
+            <div class="inline-input-group">
+              <input type="text" class="input-field monospace opencode-path flex-1" :value="ocConfigPath" readonly />
+              <button class="btn small" @click="copyConfigPath">复制路径</button>
+            </div>
+          </div>
+
+          <div class="opencode-notice" v-if="ocHasSensitiveHint">
+            <span class="notice-icon">!</span>
+            <span>此文件可能包含 API Key 等敏感信息，编辑时请留意。</span>
+          </div>
+
+          <div class="oc-status-bar">
+            <span v-if="ocHasUnsavedChanges" class="opencode-unsaved-badge">未保存的更改</span>
+            <span class="oc-validation" :class="ocValidationClass">{{ ocValidationText }}</span>
+            <span v-if="ocSwitchBlocked" class="oc-switch-warning">JSON 非法，无法切换模式</span>
+            <span v-if="ocHasSubJsonErrors && ocEditMode === 'visual'" class="oc-switch-warning">部分 JSON 字段格式有误，请修正后再保存或切换模式</span>
+          </div>
+
+          <div class="group-separator"></div>
+
+          <!-- ========== VISUAL MODE ========== -->
+          <div v-if="ocEditMode === 'visual'" class="oc-visual-mode">
+
+            <!-- $schema -->
+            <div class="oc-section" v-if="ocSchemaValue">
+              <div class="oc-section-header" @click="ocToggleSection('schema')">
+                <span class="oc-collapse-icon">{{ ocSections.schema ? '&#9660;' : '&#9654;' }}</span>
+                <span>$schema</span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.schema">
+                <div class="form-group">
+                  <label>Schema URI</label>
+                  <input type="text" v-model="ocGui.schemaValue" class="input-field monospace" placeholder="https://opencode.ai/config.json" @input="ocGuiToRaw" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Provider -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('provider')">
+                <span class="oc-collapse-icon">{{ ocSections.provider ? '&#9660;' : '&#9654;' }}</span>
+                <span>Provider <span class="oc-count-badge" v-if="ocGui.providers.length">{{ ocGui.providers.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.provider">
+                <p class="field-desc" style="margin-bottom: 12px;">每个 provider 条目可包含 options (apiKey/baseURL)、models、npm、name 等字段。</p>
+                <div v-for="(prov, idx) in ocGui.providers" :key="idx" class="oc-card">
+                  <div class="oc-card-header">
+                    <span class="oc-card-name">{{ prov.name || '(unnamed)' }}</span>
+                    <button class="oc-remove-btn" @click="ocRemoveProvider(idx)" title="删除">&#10005;</button>
+                  </div>
+                  <div class="form-group">
+                    <label>Provider ID</label>
+                    <input type="text" v-model="prov.name" class="input-field" placeholder="anthropic, openai, github-copilot..." @input="ocGuiToRaw" />
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group flex-1">
+                      <label>API Key (options.apiKey)</label>
+                      <input type="password" v-model="prov.apiKey" class="input-field monospace" placeholder="sk-..." @input="ocGuiToRaw" />
+                    </div>
+                    <div class="form-group flex-1">
+                      <label>Base URL (options.baseURL)</label>
+                      <input type="text" v-model="prov.baseURL" class="input-field monospace" placeholder="https://api.anthropic.com" @input="ocGuiToRaw" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Options 额外字段 (JSON, 不含 apiKey/baseURL)</label>
+                    <textarea v-model="prov.optionsExtraRaw" class="input-field monospace oc-mini-textarea" rows="3" placeholder='{"store": true, "thinking": {"type": "enabled", "budgetTokens": 10000}, "enable_search": true}' @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`provider.${prov.name}.optionsExtra`]">JSON 格式错误: {{ ocSubJsonErrors[`provider.${prov.name}.optionsExtra`] }}</span>
+                    <span class="field-desc">provider.options 内除 apiKey/baseURL 外的其它字段，如 store, thinking, enable_thinking 等</span>
+                  </div>
+                  <div class="form-group">
+                    <label>Models (JSON 对象)</label>
+                    <textarea v-model="prov.modelsRaw" class="input-field monospace oc-mini-textarea" rows="4" placeholder='{ "claude-opus-4-6": { "name": "Claude Opus 4.6", "variants": {} } }' @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`provider.${prov.name}.models`]">JSON 格式错误: {{ ocSubJsonErrors[`provider.${prov.name}.models`] }}</span>
+                    <span class="field-desc">每个 model 可含 name, options, variants 等子字段</span>
+                  </div>
+                  <div class="form-group">
+                    <label>额外字段 (JSON, 不含 options/models)</label>
+                    <textarea v-model="prov.extraRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"npm": "@ai-sdk/anthropic", "name": "..."}' @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`provider.${prov.name}.extra`]">JSON 格式错误: {{ ocSubJsonErrors[`provider.${prov.name}.extra`] }}</span>
+                  </div>
+                </div>
+                <button class="btn small" @click="ocAddProvider">+ 添加 Provider</button>
+              </div>
+            </div>
+
+            <!-- Agent -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('agent')">
+                <span class="oc-collapse-icon">{{ ocSections.agent ? '&#9660;' : '&#9654;' }}</span>
+                <span>Agent <span class="oc-count-badge" v-if="ocGui.agents.length">{{ ocGui.agents.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.agent">
+                <div v-for="(agent, idx) in ocGui.agents" :key="idx" class="oc-card">
+                  <div class="oc-card-header">
+                    <span class="oc-card-name" :style="{ color: agent.color || undefined }">{{ agent.name || '(unnamed)' }}</span>
+                    <button class="oc-remove-btn" @click="ocRemoveAgent(idx)" title="删除">&#10005;</button>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group flex-1">
+                      <label>名称</label>
+                      <input type="text" v-model="agent.name" class="input-field" placeholder="coder, my-agent..." @input="ocGuiToRaw" />
+                    </div>
+                    <div class="form-group" style="width: 160px;">
+                      <label>Mode</label>
+                      <div class="select-wrapper">
+                        <select v-model="agent.mode" class="input-field" @change="ocGuiToRaw">
+                          <option value="primary">primary</option>
+                          <option value="subagent">subagent</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group flex-1">
+                      <label>Model (provider/model 格式)</label>
+                      <input type="text" v-model="agent.model" class="input-field monospace" placeholder="anthropic/claude-sonnet-4-6" @input="ocGuiToRaw" />
+                    </div>
+                    <div class="form-group" style="width: 120px;">
+                      <label>Color</label>
+                      <input type="text" v-model="agent.color" class="input-field monospace" placeholder="#FF69B4" @input="ocGuiToRaw" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" v-model="agent.description" class="input-field" placeholder="Agent 的简短描述" @input="ocGuiToRaw" />
+                  </div>
+                  <div class="form-group">
+                    <label>Prompt (系统指令)</label>
+                    <textarea v-model="agent.prompt" class="input-field" rows="3" placeholder="Agent 的系统提示词" @input="ocGuiToRaw"></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label>Tools 黑名单 (JSON, true=禁用)</label>
+                    <textarea v-model="agent.toolsRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"webfetch": false, "apply_patch": false}' @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`agent.${agent.name}.tools`]">JSON 格式错误: {{ ocSubJsonErrors[`agent.${agent.name}.tools`] }}</span>
+                  </div>
+                  <div class="form-group">
+                    <label>额外字段 (JSON)</label>
+                    <textarea v-model="agent.extraRaw" class="input-field monospace oc-mini-textarea" rows="2" @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`agent.${agent.name}.extra`]">JSON 格式错误: {{ ocSubJsonErrors[`agent.${agent.name}.extra`] }}</span>
+                  </div>
+                </div>
+                <button class="btn small" @click="ocAddAgent">+ 添加 Agent</button>
+              </div>
+            </div>
+
+            <!-- MCP -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('mcp')">
+                <span class="oc-collapse-icon">{{ ocSections.mcp ? '&#9660;' : '&#9654;' }}</span>
+                <span>MCP Servers <span class="oc-count-badge" v-if="ocGui.mcpServers.length">{{ ocGui.mcpServers.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.mcp">
+                <div v-for="(mcp, idx) in ocGui.mcpServers" :key="idx" class="oc-card">
+                  <div class="oc-card-header">
+                    <span class="oc-card-name">{{ mcp.name || '(unnamed)' }}</span>
+                    <button class="oc-remove-btn" @click="ocRemoveMcp(idx)" title="删除">&#10005;</button>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group flex-1">
+                      <label>名称</label>
+                      <input type="text" v-model="mcp.name" class="input-field" placeholder="my-mcp-server" @input="ocGuiToRaw" />
+                    </div>
+                    <div class="form-group" style="width: 140px;">
+                      <label>Type</label>
+                      <div class="select-wrapper">
+                        <select v-model="mcp.type" class="input-field" @change="ocGuiToRaw">
+                          <option value="remote">remote</option>
+                          <option value="local">local</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="form-group" v-if="mcp.type === 'remote'">
+                    <label>URL</label>
+                    <input type="text" v-model="mcp.url" class="input-field" placeholder="https://..." @input="ocGuiToRaw" />
+                  </div>
+                  <div class="form-group" v-if="mcp.type === 'local'">
+                    <label>Command (JSON 数组)</label>
+                    <input type="text" v-model="mcp.commandRaw" class="input-field monospace" placeholder='["uvx", "my-mcp-server"]' @input="ocGuiToRaw" />
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.command`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.command`] }}</span>
+                  </div>
+                  <div class="form-group">
+                    <label>Headers (JSON)</label>
+                    <textarea v-model="mcp.headersRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"Authorization": "Bearer ..."}' @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.headers`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.headers`] }}</span>
+                  </div>
+                  <div class="form-group">
+                    <label>Environment (JSON)</label>
+                    <textarea v-model="mcp.environmentRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"API_KEY": "{env:MY_KEY}"}' @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.environment`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.environment`] }}</span>
+                  </div>
+                  <div class="toggle-row" style="padding: 8px 0;">
+                    <div class="toggle-info">
+                      <label>OAuth</label>
+                    </div>
+                    <button class="ios-toggle" :class="{ active: mcp.oauth }" @click="mcp.oauth = !mcp.oauth; ocGuiToRaw()"></button>
+                  </div>
+                  <div class="form-group">
+                    <label>额外字段 (JSON)</label>
+                    <textarea v-model="mcp.extraRaw" class="input-field monospace oc-mini-textarea" rows="2" @input="ocGuiToRaw"></textarea>
+                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.extra`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.extra`] }}</span>
+                  </div>
+                </div>
+                <button class="btn small" @click="ocAddMcp">+ 添加 MCP Server</button>
+              </div>
+            </div>
+
+            <!-- Permission -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('permission')">
+                <span class="oc-collapse-icon">{{ ocSections.permission ? '&#9660;' : '&#9654;' }}</span>
+                <span>Permission <span class="oc-count-badge" v-if="ocGui.permissions.length">{{ ocGui.permissions.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.permission">
+                <div v-for="(perm, idx) in ocGui.permissions" :key="idx" class="oc-kv-row">
+                  <input type="text" v-model="perm.key" class="input-field oc-kv-key" placeholder="tool 名称" @input="ocGuiToRaw" />
+                  <div class="select-wrapper">
+                    <select v-model="perm.value" class="input-field oc-kv-value" @change="ocGuiToRaw">
+                      <option value="allow">allow</option>
+                      <option value="deny">deny</option>
+                      <option value="ask">ask</option>
+                    </select>
+                  </div>
+                  <button class="oc-remove-btn" @click="ocRemovePermission(idx)" title="删除">&#10005;</button>
+                </div>
+                <button class="btn small" @click="ocAddPermission">+ 添加权限</button>
+              </div>
+            </div>
+
+            <!-- Instructions -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('instructions')">
+                <span class="oc-collapse-icon">{{ ocSections.instructions ? '&#9660;' : '&#9654;' }}</span>
+                <span>Instructions <span class="oc-count-badge" v-if="ocGui.instructions.length">{{ ocGui.instructions.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.instructions">
+                <div v-for="(instr, idx) in ocGui.instructions" :key="idx" class="oc-kv-row">
+                  <input type="text" v-model="ocGui.instructions[idx]" class="input-field" placeholder="resources/path/to/file.md" @input="ocGuiToRaw" />
+                  <button class="oc-remove-btn" @click="ocRemoveInstruction(idx)" title="删除">&#10005;</button>
+                </div>
+                <button class="btn small" @click="ocAddInstruction">+ 添加 Instruction</button>
+              </div>
+            </div>
+
+            <!-- Plugin -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('plugin')">
+                <span class="oc-collapse-icon">{{ ocSections.plugin ? '&#9660;' : '&#9654;' }}</span>
+                <span>Plugin <span class="oc-count-badge" v-if="ocGui.plugins.length">{{ ocGui.plugins.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.plugin">
+                <div v-for="(plug, idx) in ocGui.plugins" :key="idx" class="oc-kv-row">
+                  <input type="text" v-model="ocGui.plugins[idx]" class="input-field" placeholder="插件名称或路径" @input="ocGuiToRaw" />
+                  <button class="oc-remove-btn" @click="ocRemovePlugin(idx)" title="删除">&#10005;</button>
+                </div>
+                <button class="btn small" @click="ocAddPlugin">+ 添加 Plugin</button>
+              </div>
+            </div>
+
+            <!-- Experimental -->
+            <div class="oc-section">
+              <div class="oc-section-header" @click="ocToggleSection('experimental')">
+                <span class="oc-collapse-icon">{{ ocSections.experimental ? '&#9660;' : '&#9654;' }}</span>
+                <span>Experimental <span class="oc-count-badge" v-if="ocGui.experimentalKvs.length">{{ ocGui.experimentalKvs.length }}</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.experimental">
+                <div v-for="(kv, idx) in ocGui.experimentalKvs" :key="idx" class="oc-kv-row">
+                  <input type="text" v-model="kv.key" class="input-field oc-kv-key" placeholder="key" @input="ocGuiToRaw" />
+                  <input type="text" v-model="kv.valueRaw" class="input-field oc-kv-value" placeholder="true / 15000 / string" @input="ocGuiToRaw" />
+                  <button class="oc-remove-btn" @click="ocRemoveExperimental(idx)" title="删除">&#10005;</button>
+                </div>
+                <button class="btn small" @click="ocAddExperimental">+ 添加 Experimental</button>
+              </div>
+            </div>
+
+            <!-- Unknown / Extra fields -->
+            <div class="oc-section" v-if="ocGui.unknownFieldsRaw || ocShowExtraSection">
+              <div class="oc-section-header" @click="ocToggleSection('extra')">
+                <span class="oc-collapse-icon">{{ ocSections.extra ? '&#9660;' : '&#9654;' }}</span>
+                <span>高级 / 未识别字段 <span class="oc-count-badge" v-if="ocGui.unknownFieldsRaw">有</span></span>
+              </div>
+              <div class="oc-section-body" v-if="ocSections.extra">
+                <p class="field-desc" style="margin-bottom: 8px;">以下字段未被上方结构化面板覆盖，以原始 JSON 保留。直接编辑可保真所有数据。</p>
+                <textarea
+                  v-model="ocGui.unknownFieldsRaw"
+                  class="input-field monospace oc-mini-textarea"
+                  rows="6"
+                  placeholder="{}"
+                  @input="ocGuiToRaw"
+                ></textarea>
+                <span class="oc-sub-error" v-if="ocSubJsonErrors['unknownFields']">JSON 格式错误: {{ ocSubJsonErrors['unknownFields'] }}</span>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- ========== JSON MODE ========== -->
+          <div v-if="ocEditMode === 'json'" class="setting-group">
+            <div class="opencode-editor-header">
+              <h3 class="group-header" style="margin-bottom:0;">JSON 编辑器</h3>
+            </div>
+
+            <div class="opencode-editor-wrap">
+              <textarea
+                ref="ocEditorRef"
+                class="input-field monospace opencode-editor"
+                v-model="ocEditorContent"
+                spellcheck="false"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="off"
+                placeholder="{ }"
+                @keydown.tab.prevent="handleTabKey"
+              ></textarea>
+            </div>
+
+            <div v-if="ocValidationError && ocValidationError !== ''" class="oc-error-detail">
+              {{ ocValidationError }}
+            </div>
+          </div>
+
+          <div class="opencode-actions">
+            <button class="btn small" @click="ocReload" :disabled="ocReloading">
+              {{ ocReloading ? '加载中...' : '重新加载' }}
+            </button>
+            <button class="btn small" @click="ocFormat" :disabled="!ocIsParseableJson">
+              格式化
+            </button>
+            <button class="btn small danger" @click="ocRevert" :disabled="!ocHasUnsavedChanges || ocReverting">
+              {{ ocReverting ? '恢复中...' : '恢复到磁盘' }}
+            </button>
+            <div class="opencode-actions-spacer"></div>
+            <button class="btn primary" @click="ocSave" :disabled="!ocCanSave || ocSaving">
+              {{ ocSaving ? '保存中...' : '保存' }}
+            </button>
+          </div>
+        </div>
+
         <!-- 远程控制 -->
         <div v-if="activeTab === 'remote'" key="remote" class="settings-section">
           <div class="section-header">
@@ -387,7 +751,7 @@
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath, RemoveShellPath, GetTerminalSettings, SetTerminalSettings, GetMobileWebRoot, SetMobileWebRoot } from '../../wailsjs/go/settings/Service'
 import { GetProviders } from '../../wailsjs/go/config/ConfigService'
-import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken } from '../../wailsjs/go/main/App'
+import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetOpenCodeConfig, SaveOpenCodeConfig, GetOpenCodeConfigPath } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { config } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
@@ -400,6 +764,7 @@ const tabs = [
   { id: 'general', label: '常规设置', icon: '⚙' },
   { id: 'shell', label: 'Shell', icon: '⌨' },
   { id: 'terminal', label: '终端设置', icon: '🖥' },
+  { id: 'opencode', label: 'OpenCode', icon: '⊏' },
   { id: 'remote', label: '远程控制', icon: '🌐' },
   { id: 'updates', label: '软件更新', icon: '⟳' },
   { id: 'about', label: '关于', icon: 'ℹ' },
@@ -843,6 +1208,653 @@ async function saveMobileWebRoot() {
     savingWebRoot.value = false
   }
 }
+
+// --- OpenCode 全局配置 ---
+const ocConfigPath = ref('')
+const ocEditorContent = ref('')
+const ocDiskContent = ref('')    // 上次从磁盘加载/保存的内容，用于 diff
+const ocEditorRef = ref<HTMLTextAreaElement | null>(null)
+const ocLoading = ref(false)
+const ocSaving = ref(false)
+const ocReloading = ref(false)
+const ocReverting = ref(false)
+const ocEditMode = ref<'visual' | 'json'>('visual')
+const ocSwitchBlocked = ref(false)
+
+// --- OpenCode Visual GUI State (REAL schema: provider/agent/mcp/permission/instructions/plugin/experimental) ---
+
+interface OcProviderEntry {
+  name: string
+  apiKey: string
+  baseURL: string
+  modelsRaw: string
+  optionsExtraRaw: string   // unknown fields inside provider.options (store, thinking, etc.)
+  extraRaw: string
+}
+
+interface OcAgentEntry {
+  name: string
+  description: string
+  mode: 'primary' | 'subagent'
+  model: string
+  color: string
+  prompt: string
+  toolsRaw: string
+  extraRaw: string
+}
+
+interface OcMcpEntry {
+  name: string
+  type: 'remote' | 'local'
+  url: string
+  commandRaw: string
+  headersRaw: string
+  environmentRaw: string
+  oauth: boolean
+  extraRaw: string
+}
+
+interface OcPermEntry {
+  key: string
+  value: string
+}
+
+interface OcKvEntry {
+  key: string
+  valueRaw: string
+}
+
+const ocShowExtraSection = ref(false)
+
+const ocGui = reactive({
+  schemaValue: '',
+  providers: [] as OcProviderEntry[],
+  agents: [] as OcAgentEntry[],
+  mcpServers: [] as OcMcpEntry[],
+  permissions: [] as OcPermEntry[],
+  instructions: [] as string[],
+  plugins: [] as string[],
+  experimentalKvs: [] as OcKvEntry[],
+  unknownFieldsRaw: '',
+})
+
+const ocSections = reactive<Record<string, boolean>>({
+  schema: false,
+  provider: true,
+  agent: false,
+  mcp: false,
+  permission: false,
+  instructions: false,
+  plugin: false,
+  experimental: false,
+  extra: false,
+})
+
+// Known top-level keys that have structured sections
+const OC_KNOWN_KEYS = new Set([
+  '$schema', 'provider', 'agent', 'mcp', 'permission', 'instructions', 'plugin', 'experimental',
+])
+
+const ocToggleSection = (section: string) => {
+  ocSections[section] = !ocSections[section]
+}
+
+// Computed accessor for schema (avoids $ in template)
+const ocSchemaValue = computed(() => ocGui.schemaValue)
+
+// Helper: collect unknown keys from an entry object into extraRaw
+function collectExtra(entry: Record<string, any>, knownKeys: Set<string>): string {
+  const extra: Record<string, any> = {}
+  for (const [k, v] of Object.entries(entry)) {
+    if (!knownKeys.has(k)) extra[k] = v
+  }
+  return Object.keys(extra).length > 0 ? JSON.stringify(extra, null, 2) : ''
+}
+
+// Helper: parse a raw JSON value string into a JS value (best effort)
+function parseJsonValue(raw: string): any {
+  const s = raw.trim()
+  if (!s) return undefined
+  try { return JSON.parse(s) } catch { return s }
+}
+
+// Parse raw JSON string into structured GUI state
+const ocRawToGui = () => {
+  const raw = ocEditorContent.value.trim()
+  if (!raw) {
+    ocGui.schemaValue = ''
+    ocGui.providers = []
+    ocGui.agents = []
+    ocGui.mcpServers = []
+    ocGui.permissions = []
+    ocGui.instructions = []
+    ocGui.plugins = []
+    ocGui.experimentalKvs = []
+    ocGui.unknownFieldsRaw = ''
+    return
+  }
+  let obj: any
+  try {
+    obj = JSON.parse(raw)
+  } catch {
+    // Invalid JSON -- do NOT touch GUI state to prevent data loss
+    return
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return
+
+  // $schema
+  ocGui.schemaValue = typeof obj['$schema'] === 'string' ? obj['$schema'] : ''
+
+  // provider: { name: { options?, models?, npm?, name?, ... } }
+  const providers: OcProviderEntry[] = []
+  if (obj.provider && typeof obj.provider === 'object' && !Array.isArray(obj.provider)) {
+    for (const [name, entry] of Object.entries(obj.provider as Record<string, any>)) {
+      if (!entry || typeof entry !== 'object') continue
+      const PROV_KNOWN = new Set(['options', 'models'])
+      const OPTS_KNOWN = new Set(['apiKey', 'baseURL'])
+      const opts = entry.options && typeof entry.options === 'object' ? entry.options : {}
+      const optionsExtra = collectExtra(opts, OPTS_KNOWN)
+      providers.push({
+        name,
+        apiKey: opts.apiKey || '',
+        baseURL: opts.baseURL || '',
+        modelsRaw: entry.models && typeof entry.models === 'object' ? JSON.stringify(entry.models, null, 2) : '',
+        optionsExtraRaw: optionsExtra,
+        extraRaw: collectExtra(entry, PROV_KNOWN),
+      })
+    }
+  }
+  ocGui.providers = providers
+
+  // agent: { name: { description?, mode?, model?, color?, prompt?, tools? } }
+  const agents: OcAgentEntry[] = []
+  if (obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)) {
+    const AGENT_KNOWN = new Set(['description', 'mode', 'model', 'color', 'prompt', 'tools'])
+    for (const [name, entry] of Object.entries(obj.agent as Record<string, any>)) {
+      if (!entry || typeof entry !== 'object') continue
+      agents.push({
+        name,
+        description: entry.description || '',
+        mode: entry.mode === 'primary' ? 'primary' : 'subagent',
+        model: entry.model || '',
+        color: entry.color || '',
+        prompt: entry.prompt || '',
+        toolsRaw: entry.tools && typeof entry.tools === 'object' ? JSON.stringify(entry.tools, null, 2) : '',
+        extraRaw: collectExtra(entry, AGENT_KNOWN),
+      })
+    }
+  }
+  ocGui.agents = agents
+
+  // mcp: { name: { type?, url?, command?, headers?, environment?, oauth? } }
+  const mcpServers: OcMcpEntry[] = []
+  if (obj.mcp && typeof obj.mcp === 'object' && !Array.isArray(obj.mcp)) {
+    const MCP_KNOWN = new Set(['type', 'url', 'command', 'headers', 'environment', 'oauth'])
+    for (const [name, entry] of Object.entries(obj.mcp as Record<string, any>)) {
+      if (!entry || typeof entry !== 'object') continue
+      mcpServers.push({
+        name,
+        type: entry.type === 'local' ? 'local' : 'remote',
+        url: entry.url || '',
+        commandRaw: Array.isArray(entry.command) ? JSON.stringify(entry.command) : (entry.command || ''),
+        headersRaw: entry.headers && typeof entry.headers === 'object' ? JSON.stringify(entry.headers, null, 2) : '',
+        environmentRaw: entry.environment && typeof entry.environment === 'object' ? JSON.stringify(entry.environment, null, 2) : '',
+        oauth: !!entry.oauth,
+        extraRaw: collectExtra(entry, MCP_KNOWN),
+      })
+    }
+  }
+  ocGui.mcpServers = mcpServers
+
+  // permission: { toolName: "allow"|"deny"|"ask" }
+  const permissions: OcPermEntry[] = []
+  if (obj.permission && typeof obj.permission === 'object' && !Array.isArray(obj.permission)) {
+    for (const [key, val] of Object.entries(obj.permission as Record<string, any>)) {
+      permissions.push({ key, value: String(val) })
+    }
+  }
+  ocGui.permissions = permissions
+
+  // instructions: string[]
+  ocGui.instructions = Array.isArray(obj.instructions)
+    ? obj.instructions.filter((s: any) => typeof s === 'string')
+    : []
+
+  // plugin: string[]
+  ocGui.plugins = Array.isArray(obj.plugin)
+    ? obj.plugin.map((p: any) => typeof p === 'string' ? p : JSON.stringify(p))
+    : []
+
+  // experimental: { key: value }
+  const expKvs: OcKvEntry[] = []
+  if (obj.experimental && typeof obj.experimental === 'object' && !Array.isArray(obj.experimental)) {
+    for (const [key, val] of Object.entries(obj.experimental as Record<string, any>)) {
+      expKvs.push({ key, valueRaw: JSON.stringify(val) })
+    }
+  }
+  ocGui.experimentalKvs = expKvs
+
+  // Unknown fields
+  const unknownKeys = Object.keys(obj).filter(k => !OC_KNOWN_KEYS.has(k))
+  if (unknownKeys.length > 0) {
+    const unknownObj: Record<string, any> = {}
+    for (const k of unknownKeys) unknownObj[k] = obj[k]
+    ocGui.unknownFieldsRaw = JSON.stringify(unknownObj, null, 2)
+    ocShowExtraSection.value = true
+  } else {
+    ocGui.unknownFieldsRaw = ''
+  }
+}
+
+// Validate a raw JSON string; returns '' if valid (or empty), error message otherwise
+function validateSubJson(raw: string): string {
+  const s = raw.trim()
+  if (!s) return ''
+  try { JSON.parse(s); return '' } catch (e: any) { return e.message || String(e) }
+}
+
+// Parse a raw JSON string; returns parsed value or undefined.
+// If parse fails, records error into the errors map under the given key.
+function parseOrError(raw: string, errors: Record<string, string>, errorKey: string): any {
+  const s = raw.trim()
+  if (!s) return undefined
+  try { return JSON.parse(s) } catch (e: any) {
+    errors[errorKey] = e.message || String(e)
+    return undefined
+  }
+}
+
+// Like parseOrError but also requires the result to be a plain JSON object (not array/primitive/null).
+// Records a type error if parsed successfully but not an object.
+function parseObjectOrError(raw: string, errors: Record<string, string>, errorKey: string): Record<string, any> | undefined {
+  const s = raw.trim()
+  if (!s) return undefined
+  let parsed: any
+  try { parsed = JSON.parse(s) } catch (e: any) {
+    errors[errorKey] = e.message || String(e)
+    return undefined
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const typeLabel = Array.isArray(parsed) ? 'array' : parsed === null ? 'null' : typeof parsed
+    errors[errorKey] = `\u5FC5\u987B\u662F JSON \u5BF9\u8C61 {} \uFF0C\u5F53\u524D\u4E3A ${typeLabel}`
+    return undefined
+  }
+  return parsed
+}
+
+// Serialize GUI state back to raw JSON string
+// Also populates ocSubJsonErrors with per-field validation results
+const ocSubJsonErrors = reactive<Record<string, string>>({})
+
+const ocGuiToRaw = () => {
+  // Clear previous sub-JSON errors
+  for (const k of Object.keys(ocSubJsonErrors)) delete ocSubJsonErrors[k]
+
+  const result: Record<string, any> = {}
+
+  // $schema
+  if (ocGui.schemaValue.trim()) result['$schema'] = ocGui.schemaValue.trim()
+
+  // provider
+  if (ocGui.providers.length > 0) {
+    const provider: Record<string, any> = {}
+    for (const p of ocGui.providers) {
+      const name = p.name.trim()
+      if (!name) continue
+      const entry: Record<string, any> = {}
+      // options: merge apiKey + baseURL + optionsExtraRaw
+      const options: Record<string, any> = {}
+      if (p.apiKey.trim()) options.apiKey = p.apiKey.trim()
+      if (p.baseURL.trim()) options.baseURL = p.baseURL.trim()
+      // Parse optionsExtraRaw and merge into options
+      const optionsExtra = parseObjectOrError(p.optionsExtraRaw, ocSubJsonErrors, `provider.${name}.optionsExtra`)
+      if (optionsExtra !== undefined) {
+        Object.assign(options, optionsExtra)
+      }
+      if (Object.keys(options).length > 0) entry.options = options
+      // models
+      const models = parseOrError(p.modelsRaw, ocSubJsonErrors, `provider.${name}.models`)
+      if (models !== undefined) entry.models = models
+      // extra (entry-level unknowns like npm, name)
+      const provExtra = parseObjectOrError(p.extraRaw, ocSubJsonErrors, `provider.${name}.extra`)
+      if (provExtra !== undefined) Object.assign(entry, provExtra)
+      provider[name] = entry
+    }
+    if (Object.keys(provider).length > 0) result.provider = provider
+  }
+
+  // agent
+  if (ocGui.agents.length > 0) {
+    const agent: Record<string, any> = {}
+    for (const a of ocGui.agents) {
+      const name = a.name.trim()
+      if (!name) continue
+      const entry: Record<string, any> = {}
+      if (a.description.trim()) entry.description = a.description.trim()
+      if (a.mode) entry.mode = a.mode
+      if (a.model.trim()) entry.model = a.model.trim()
+      if (a.color.trim()) entry.color = a.color.trim()
+      if (a.prompt.trim()) entry.prompt = a.prompt.trim()
+      const tools = parseOrError(a.toolsRaw, ocSubJsonErrors, `agent.${name}.tools`)
+      if (tools !== undefined) entry.tools = tools
+      const agentExtra = parseObjectOrError(a.extraRaw, ocSubJsonErrors, `agent.${name}.extra`)
+      if (agentExtra !== undefined) Object.assign(entry, agentExtra)
+      agent[name] = entry
+    }
+    if (Object.keys(agent).length > 0) result.agent = agent
+  }
+
+  // mcp
+  if (ocGui.mcpServers.length > 0) {
+    const mcp: Record<string, any> = {}
+    for (const m of ocGui.mcpServers) {
+      const name = m.name.trim()
+      if (!name) continue
+      const entry: Record<string, any> = { type: m.type }
+      if (m.type === 'remote' && m.url.trim()) entry.url = m.url.trim()
+      if (m.type === 'local' && m.commandRaw.trim()) {
+        const cmd = parseOrError(m.commandRaw, ocSubJsonErrors, `mcp.${name}.command`)
+        if (cmd !== undefined) {
+          entry.command = Array.isArray(cmd) ? cmd : m.commandRaw.trim().split(/\s+/)
+        }
+      }
+      const headers = parseOrError(m.headersRaw, ocSubJsonErrors, `mcp.${name}.headers`)
+      if (headers !== undefined) entry.headers = headers
+      const env = parseOrError(m.environmentRaw, ocSubJsonErrors, `mcp.${name}.environment`)
+      if (env !== undefined) entry.environment = env
+      if (m.oauth) entry.oauth = true
+      const mcpExtra = parseObjectOrError(m.extraRaw, ocSubJsonErrors, `mcp.${name}.extra`)
+      if (mcpExtra !== undefined) Object.assign(entry, mcpExtra)
+      mcp[name] = entry
+    }
+    if (Object.keys(mcp).length > 0) result.mcp = mcp
+  }
+
+  // permission
+  if (ocGui.permissions.length > 0) {
+    const permission: Record<string, string> = {}
+    for (const p of ocGui.permissions) {
+      if (p.key.trim()) permission[p.key.trim()] = p.value
+    }
+    if (Object.keys(permission).length > 0) result.permission = permission
+  }
+
+  // instructions
+  const instrs = ocGui.instructions.filter(s => s.trim())
+  if (instrs.length > 0) result.instructions = instrs
+
+  // plugin
+  const plugins = ocGui.plugins.filter(s => s.trim())
+  if (plugins.length > 0) result.plugin = plugins
+
+  // experimental
+  if (ocGui.experimentalKvs.length > 0) {
+    const experimental: Record<string, any> = {}
+    for (const kv of ocGui.experimentalKvs) {
+      if (kv.key.trim()) {
+        const parsed = parseJsonValue(kv.valueRaw)
+        if (parsed !== undefined) experimental[kv.key.trim()] = parsed
+      }
+    }
+    if (Object.keys(experimental).length > 0) result.experimental = experimental
+  }
+
+  // Unknown fields
+  const unknowns = parseObjectOrError(ocGui.unknownFieldsRaw, ocSubJsonErrors, 'unknownFields')
+  if (unknowns !== undefined) {
+    Object.assign(result, unknowns)
+  }
+
+  ocEditorContent.value = Object.keys(result).length > 0
+    ? JSON.stringify(result, null, 2) + '\n'
+    : '{\n}\n'
+}
+
+// Section add/remove helpers
+const ocAddProvider = () => {
+  ocGui.providers.push({ name: '', apiKey: '', baseURL: '', modelsRaw: '', optionsExtraRaw: '', extraRaw: '' })
+  if (!ocSections.provider) ocSections.provider = true
+}
+const ocRemoveProvider = (idx: number) => { ocGui.providers.splice(idx, 1); ocGuiToRaw() }
+
+const ocAddAgent = () => {
+  ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', color: '', prompt: '', toolsRaw: '', extraRaw: '' })
+  if (!ocSections.agent) ocSections.agent = true
+}
+const ocRemoveAgent = (idx: number) => { ocGui.agents.splice(idx, 1); ocGuiToRaw() }
+
+const ocAddMcp = () => {
+  ocGui.mcpServers.push({ name: '', type: 'remote', url: '', commandRaw: '', headersRaw: '', environmentRaw: '', oauth: false, extraRaw: '' })
+  if (!ocSections.mcp) ocSections.mcp = true
+}
+const ocRemoveMcp = (idx: number) => { ocGui.mcpServers.splice(idx, 1); ocGuiToRaw() }
+
+const ocAddPermission = () => {
+  ocGui.permissions.push({ key: '', value: 'allow' })
+  if (!ocSections.permission) ocSections.permission = true
+}
+const ocRemovePermission = (idx: number) => { ocGui.permissions.splice(idx, 1); ocGuiToRaw() }
+
+const ocAddInstruction = () => {
+  ocGui.instructions.push('')
+  if (!ocSections.instructions) ocSections.instructions = true
+}
+const ocRemoveInstruction = (idx: number) => { ocGui.instructions.splice(idx, 1); ocGuiToRaw() }
+
+const ocAddPlugin = () => {
+  ocGui.plugins.push('')
+  if (!ocSections.plugin) ocSections.plugin = true
+}
+const ocRemovePlugin = (idx: number) => { ocGui.plugins.splice(idx, 1); ocGuiToRaw() }
+
+const ocAddExperimental = () => {
+  ocGui.experimentalKvs.push({ key: '', valueRaw: 'true' })
+  if (!ocSections.experimental) ocSections.experimental = true
+}
+const ocRemoveExperimental = (idx: number) => { ocGui.experimentalKvs.splice(idx, 1); ocGuiToRaw() }
+
+// Mode switching -- SAFE: block visual switch when JSON is invalid
+const ocSwitchToVisual = () => {
+  // If JSON is invalid, block the switch
+  if (ocValidationError.value !== '' && ocValidationError.value !== null) {
+    ocSwitchBlocked.value = true
+    return
+  }
+  ocSwitchBlocked.value = false
+  ocRawToGui()
+  ocEditMode.value = 'visual'
+}
+const ocSwitchToJson = () => {
+  // Sync visual to JSON first, then check for sub-JSON errors
+  if (ocEditMode.value === 'visual') {
+    ocGuiToRaw()
+  }
+  // Block switch if sub-JSON fields are invalid
+  if (ocHasSubJsonErrors.value) {
+    ocSwitchBlocked.value = true
+    return
+  }
+  ocSwitchBlocked.value = false
+  ocEditMode.value = 'json'
+}
+
+// Three-tier validation result:
+//   null  -> empty / nothing to validate
+//   ''    -> valid JSON object (safely saveable)
+//   string -> specific error message
+const ocValidationError = computed<string | null>(() => {
+  const text = ocEditorContent.value.trim()
+  if (!text) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (e: any) {
+    const msg = e.message || String(e)
+    // Chrome/V8 produces messages like:
+    //   "Unexpected token } in JSON at position 5"
+    //   "Expected property name or '}' in JSON at position 2"
+    // Keep the most useful part
+    const posMatch = msg.match(/(at position \d+|at line \d+ column \d+)/i)
+    if (posMatch) {
+      const before = msg.substring(0, posMatch.index).trim()
+      return before + ' ' + posMatch[0]
+    }
+    // Truncate very long messages
+    return msg.length > 140 ? msg.substring(0, 140) + '...' : msg
+  }
+  // Root must be an object
+  if (parsed === null) return '根节点不能为 null，必须为 JSON 对象 {}'
+  if (Array.isArray(parsed)) return '根节点不能为数组，必须为 JSON 对象 {}'
+  if (typeof parsed !== 'object') {
+    const type = typeof parsed
+    return `根节点不能为 ${type === 'string' ? '字符串' : type === 'number' ? '数字' : type === 'boolean' ? '布尔值' : type}，必须为 JSON 对象 {}`
+  }
+  return ''
+})
+
+const ocIsParseableJson = computed(() => {
+  const text = ocEditorContent.value.trim()
+  if (!text) return false
+  try { JSON.parse(text); return true } catch { return false }
+})
+
+const ocIsRootObject = computed(() => {
+  return ocValidationError.value === ''
+})
+
+const ocHasSubJsonErrors = computed(() => Object.keys(ocSubJsonErrors).length > 0)
+
+const ocCanSave = computed(() => ocIsRootObject.value && !ocHasSubJsonErrors.value)
+
+const ocValidationClass = computed(() => {
+  if (ocValidationError.value === null) return 'neutral'
+  if (ocValidationError.value === '') return 'valid'
+  return 'invalid'
+})
+
+const ocValidationText = computed(() => {
+  if (ocValidationError.value === null) return '空'
+  if (ocValidationError.value === '') return 'JSON 合法'
+  return 'JSON 非法'
+})
+
+const ocHasUnsavedChanges = computed(() => {
+  return ocEditorContent.value !== ocDiskContent.value
+})
+
+const ocHasSensitiveHint = computed(() => {
+  const text = ocEditorContent.value.toLowerCase()
+  return text.includes('key') || text.includes('token') || text.includes('secret') || text.includes('password')
+})
+
+async function ocLoad() {
+  ocLoading.value = true
+  try {
+    const [content, path] = await Promise.all([
+      GetOpenCodeConfig(),
+      GetOpenCodeConfigPath(),
+    ])
+    ocEditorContent.value = content
+    ocDiskContent.value = content
+    ocConfigPath.value = path
+    // Populate GUI state from loaded JSON
+    ocRawToGui()
+  } catch (err) {
+    showError('加载 OpenCode 配置失败: ' + err)
+  } finally {
+    ocLoading.value = false
+  }
+}
+
+async function ocReload() {
+  ocReloading.value = true
+  try {
+    const content = await GetOpenCodeConfig()
+    ocEditorContent.value = content
+    ocDiskContent.value = content
+    ocRawToGui()
+    showSuccess('已重新加载配置')
+  } catch (err) {
+    showError('重新加载失败: ' + err)
+  } finally {
+    ocReloading.value = false
+  }
+}
+
+async function ocSave() {
+  if (!ocCanSave.value) return
+  // Sync visual state to JSON before saving
+  if (ocEditMode.value === 'visual') {
+    ocGuiToRaw()
+  }
+  ocSaving.value = true
+  try {
+    await SaveOpenCodeConfig(ocEditorContent.value)
+    // Reload from disk to get the canonical formatted version
+    const content = await GetOpenCodeConfig()
+    ocEditorContent.value = content
+    ocDiskContent.value = content
+    ocRawToGui()
+    showSuccess('OpenCode 配置已保存')
+  } catch (err) {
+    showError('保存失败: ' + err)
+  } finally {
+    ocSaving.value = false
+  }
+}
+
+function ocFormat() {
+  if (!ocIsParseableJson.value) return
+  try {
+    const parsed = JSON.parse(ocEditorContent.value)
+    ocEditorContent.value = JSON.stringify(parsed, null, 2) + '\n'
+  } catch {
+    // Should not happen since ocIsParseableJson is true
+  }
+}
+
+async function ocRevert() {
+  ocReverting.value = true
+  try {
+    const content = await GetOpenCodeConfig()
+    ocEditorContent.value = content
+    ocDiskContent.value = content
+    ocRawToGui()
+    showSuccess('已恢复到磁盘内容')
+  } catch (err) {
+    showError('恢复失败: ' + err)
+  } finally {
+    ocReverting.value = false
+  }
+}
+
+async function copyConfigPath() {
+  try {
+    await navigator.clipboard.writeText(ocConfigPath.value)
+    showSuccess('路径已复制')
+  } catch {
+    showError('复制失败')
+  }
+}
+
+function handleTabKey(e: KeyboardEvent) {
+  const el = ocEditorRef.value
+  if (!el) return
+  const start = el.selectionStart
+  const end = el.selectionEnd
+  const val = ocEditorContent.value
+  ocEditorContent.value = val.substring(0, start) + '  ' + val.substring(end)
+  nextTick(() => {
+    el.selectionStart = el.selectionEnd = start + 2
+  })
+}
+
+// Watch tab to load OpenCode config on first visit
+watch(activeTab, (newTab) => {
+  if (newTab === 'opencode' && !ocConfigPath.value) {
+    ocLoad()
+  }
+})
 
 onMounted(async () => {
   await loadData()
@@ -1657,5 +2669,342 @@ onMounted(async () => {
   margin-top: 32px;
   display: flex;
   justify-content: flex-end;
+}
+
+/* OpenCode Config */
+.opencode-path {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.opencode-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(255, 183, 77, 0.08);
+  border: 1px solid rgba(255, 183, 77, 0.25);
+  border-radius: 8px;
+  color: #ffb74d;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notice-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 183, 77, 0.2);
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  font-style: normal;
+}
+
+.opencode-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.opencode-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.opencode-unsaved-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  background: rgba(79, 195, 247, 0.1);
+  color: var(--accent);
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.oc-validation {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.oc-validation.neutral {
+  color: var(--text-muted);
+}
+
+.oc-validation.valid {
+  color: var(--success);
+}
+
+.oc-validation.invalid {
+  color: var(--error);
+}
+
+.oc-error-detail {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(239, 83, 80, 0.08);
+  border: 1px solid rgba(239, 83, 80, 0.2);
+  border-radius: 6px;
+  color: #ef9a9a;
+  font-size: 12px;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.opencode-editor-wrap {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  transition: border-color 0.15s;
+}
+
+.opencode-editor-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.15);
+}
+
+.opencode-editor {
+  width: 100%;
+  min-height: 380px;
+  max-height: 60vh;
+  resize: vertical;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text-primary);
+  border: none;
+  outline: none;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+
+.opencode-editor::placeholder {
+  color: var(--text-muted);
+}
+
+.opencode-editor::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.opencode-editor::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.opencode-editor::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.opencode-editor::-webkit-scrollbar-thumb:hover {
+  background: var(--border-hover);
+}
+
+.opencode-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.opencode-actions-spacer {
+  flex: 1;
+}
+
+/* OpenCode Visual Mode */
+.oc-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.oc-mode-switch {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.oc-mode-btn {
+  padding: 6px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.oc-mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.oc-mode-btn.active {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.oc-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  min-height: 24px;
+}
+
+.oc-switch-warning {
+  font-size: 12px;
+  color: var(--error);
+  font-weight: 500;
+}
+
+.oc-sub-error {
+  display: block;
+  font-size: 11px;
+  color: var(--error);
+  margin-top: 2px;
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border-radius: 3px;
+}
+
+.oc-visual-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.oc-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.oc-section:hover {
+  border-color: var(--border-hover);
+}
+
+.oc-section-header {
+  padding: 12px 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: background-color 0.12s ease, color 0.12s ease;
+  user-select: none;
+  background: var(--surface);
+}
+
+.oc-section-header:hover {
+  background: rgba(79, 195, 247, 0.04);
+  color: var(--text-primary);
+}
+
+.oc-collapse-icon {
+  font-size: 10px;
+  color: var(--accent);
+  width: 14px;
+  text-align: center;
+}
+
+.oc-count-badge {
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(79, 195, 247, 0.15);
+  color: var(--accent);
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+.oc-section-body {
+  padding: 12px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oc-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oc-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.oc-card-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent);
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.oc-remove-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.oc-remove-btn:hover {
+  background: rgba(239, 83, 80, 0.1);
+  color: var(--error);
+}
+
+.oc-kv-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.oc-kv-row .input-field {
+  flex: 1;
+}
+
+.oc-mini-textarea {
+  min-height: 48px;
+  resize: vertical;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
 }
 </style>

@@ -110,6 +110,14 @@ export function GetLogs(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetLogs'](arg1, arg2, arg3, arg4);
 }
 
+export function GetOpenCodeConfig() {
+  return window['go']['main']['App']['GetOpenCodeConfig']();
+}
+
+export function GetOpenCodeConfigPath() {
+  return window['go']['main']['App']['GetOpenCodeConfigPath']();
+}
+
 export function GetOutputHistory(arg1) {
   return window['go']['main']['App']['GetOutputHistory'](arg1);
 }
@@ -260,6 +268,10 @@ export function SaveClipboardImage(arg1) {
 
 export function SaveEnvVarsJSON(arg1) {
   return window['go']['main']['App']['SaveEnvVarsJSON'](arg1);
+}
+
+export function SaveOpenCodeConfig(arg1) {
+  return window['go']['main']['App']['SaveOpenCodeConfig'](arg1);
 }
 
 export function SaveProviderFromJSON(arg1, arg2) {

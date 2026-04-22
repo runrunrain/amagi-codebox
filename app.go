@@ -25,6 +25,7 @@ import (
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/opencodeconfig"
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/plugin"
 	"amagi-codebox/internal/proxy"
@@ -64,22 +65,23 @@ type App struct {
 	codexSessionHomesMu sync.Mutex
 	codexSessionHomes   map[string]codexSessionHomeInfo
 
-	Config     *config.ConfigService
-	Secrets    *secrets.SecretsService
-	Launcher   *launcher.LauncherService
-	Proxy      *proxy.ProxyService
-	Tray       *tray.Service
-	Sessions   *session.Manager
-	Paths      *paths.PathsService
-	Log        *logging.Service
-	Pty        *pty.Service
-	Settings   *settings.Service
-	Remote     *remote.Server
-	EnvVars    *envvars.EnvVarsService
-	Updater    *updater.Service
-	Plugins    *plugin.Service
-	Workspaces *workspace.Service
-	Amagi      *amagi.Service
+	Config         *config.ConfigService
+	Secrets        *secrets.SecretsService
+	Launcher       *launcher.LauncherService
+	Proxy          *proxy.ProxyService
+	Tray           *tray.Service
+	Sessions       *session.Manager
+	Paths          *paths.PathsService
+	Log            *logging.Service
+	Pty            *pty.Service
+	Settings       *settings.Service
+	Remote         *remote.Server
+	EnvVars        *envvars.EnvVarsService
+	Updater        *updater.Service
+	Plugins        *plugin.Service
+	Workspaces     *workspace.Service
+	Amagi          *amagi.Service
+	OpenCodeConfig *opencodeconfig.Service
 }
 
 func NewApp() *App {
@@ -105,6 +107,7 @@ func NewApp() *App {
 		Plugins:           pluginsSvc,
 		Workspaces:        workspace.NewService(configDir, pluginsSvc, log),
 		Amagi:             amagi.NewService(configDir),
+		OpenCodeConfig:    opencodeconfig.NewService(),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log)
@@ -2524,4 +2527,24 @@ func (a *App) SetAmagiEffortLevel(level string) error {
 // SetAmagiAvailableModels 设置 AmagiCode 可用模型列表。
 func (a *App) SetAmagiAvailableModels(models []string) error {
 	return a.Amagi.SetAvailableModels(models)
+}
+
+// --- 全局 OpenCode 配置 API ---
+
+// GetOpenCodeConfig 读取全局 OpenCode 配置文件内容（JSON 文本）。
+// 若文件不存在则返回默认空配置；若文件内容非法 JSON 则原样返回供用户修正。
+func (a *App) GetOpenCodeConfig() (string, error) {
+	return a.OpenCodeConfig.GetOpenCodeConfig()
+}
+
+// SaveOpenCodeConfig 校验并保存全局 OpenCode 配置文件。
+// content 必须为合法 JSON，否则返回错误。
+// 保存采用原子写入（先写临时文件再 rename），避免损坏。
+func (a *App) SaveOpenCodeConfig(content string) error {
+	return a.OpenCodeConfig.SaveOpenCodeConfig(content)
+}
+
+// GetOpenCodeConfigPath 返回全局 OpenCode 配置文件的绝对路径，供前端展示。
+func (a *App) GetOpenCodeConfigPath() (string, error) {
+	return a.OpenCodeConfig.GetOpenCodeConfigPath()
 }

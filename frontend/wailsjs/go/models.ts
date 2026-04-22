@@ -271,7 +271,7 @@ export namespace config {
 	    model: string;
 	    parameters: Parameters;
 	    target?: string;
-	    opencode_config?: string;
+	    opencode_config?: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Preset(source);
@@ -283,13 +283,7 @@ export namespace config {
 	        this.model = source["model"];
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.target = source["target"];
-	        // opencode_config is stored as json.RawMessage on backend;
-	        // when serialized to JSON it becomes a nested JSON string.
-	        // We preserve the raw JSON string to avoid data loss.
-	        const raw = source["opencode_config"];
-	        if (raw !== undefined && raw !== null) {
-	            this.opencode_config = typeof raw === 'string' ? raw : JSON.stringify(raw);
-	        }
+	        this.opencode_config = source["opencode_config"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -63,6 +63,10 @@ export function GetLogSources():Promise<Array<string>>;
 
 export function GetLogs(arg1:string,arg2:string,arg3:string,arg4:number):Promise<Array<logging.Entry>>;
 
+export function GetOpenCodeConfig():Promise<string>;
+
+export function GetOpenCodeConfigPath():Promise<string>;
+
 export function GetOutputHistory(arg1:string):Promise<Array<number>>;
 
 export function GetPathsService():Promise<paths.PathsService>;
@@ -138,6 +142,8 @@ export function SaveAmagiSubPreset(arg1:string,arg2:string,arg3:amagi.AmagiModel
 export function SaveClipboardImage(arg1:string):Promise<string>;
 
 export function SaveEnvVarsJSON(arg1:string):Promise<void>;
+
+export function SaveOpenCodeConfig(arg1:string):Promise<void>;
 
 export function SaveProviderFromJSON(arg1:string,arg2:string):Promise<void>;
 

@@ -14,6 +14,7 @@
 - [PTY Service (`app.Pty`)](#pty-service-apppty)
 - [Settings Service (`app.Settings`)](#settings-service-appsettings)
 - [Updater Service (`app.Updater`)](#updater-service-appupdater)
+- [OpenCode Config Service (`app.OpenCodeConfig`)](#opencode-config-service-appopencodeconfig)
 
 ## App (`app`)
 
@@ -1150,3 +1151,25 @@
 **Parameters**: none  
 **Returns**: `void`  
 **Description**: 清理上次更新留下的旧版本备份文件。
+
+## OpenCode Config Service (`app.OpenCodeConfig`)
+
+管理全局 OpenCode 配置文件（`$HOME/.config/opencode/opencode.json`），为前端设置页提供读写能力。
+
+### GetOpenCodeConfig
+**Service**: OpenCode Config Service  
+**Parameters**: none  
+**Returns**: `string`, `error`  
+**Description**: 读取全局 OpenCode 配置文件，返回格式化后的 JSON 字符串。文件不存在时返回默认空对象 `{}`；文件存在但内容非合法 JSON 时原样返回原始内容，便于用户在编辑器中修正。
+
+### SaveOpenCodeConfig
+**Service**: OpenCode Config Service  
+**Parameters**: `content (string)` -- 必须为根节点为对象的合法 JSON  
+**Returns**: `error`  
+**Description**: 校验并保存全局 OpenCode 配置。传入内容必须是合法 JSON 且根节点为对象（`{}`），数组、字符串、数字和 null 均会被拒绝。写入采用原子方式（先写 `.tmp` 临时文件再 rename），父目录不存在时自动创建。
+
+### GetOpenCodeConfigPath
+**Service**: OpenCode Config Service  
+**Parameters**: none  
+**Returns**: `string`, `error`  
+**Description**: 返回全局 OpenCode 配置文件的绝对路径（`$HOME/.config/opencode/opencode.json`），供前端展示。
