@@ -1,730 +1,521 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/envvars"
+	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/paths"
+	"amagi-codebox/internal/pty"
+	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 )
 
-func setCodexTestHome(t *testing.T) string {
+// newTestApp creates a minimal App with all services wired for testing.
+func newTestApp(t *testing.T) *App {
+	t.Helper()
+	configDir := t.TempDir()
+	logSvc := logging.NewService(configDir)
+	t.Cleanup(logSvc.Close)
+
+	cfgSvc := config.NewConfigService(configDir)
+	if err := cfgSvc.Load(); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	secretsSvc := secrets.NewSecretsService(configDir)
+	if err := secretsSvc.Load(); err != nil {
+		t.Fatalf("load secrets: %v", err)
+	}
+
+	envVarsSvc := envvars.NewEnvVarsService(configDir)
+	if err := envVarsSvc.Load(); err != nil {
+		t.Fatalf("load envvars: %v", err)
+	}
+
+	pathsSvc := paths.NewPathsService(configDir)
+
+	return &App{
+		Log:      logSvc,
+		Config:   cfgSvc,
+		Secrets:  secretsSvc,
+		Sessions: session.NewManager(),
+		Launcher: launcher.NewLauncherService(logSvc, envVarsSvc),
+		Pty:      pty.NewService(logSvc),
+		EnvVars:  envVarsSvc,
+		Paths:    pathsSvc,
+	}
+}
+
+// envDumpKey is the env var the fake codex script uses for its output file path.
+const envDumpKey = "__AMAGI_TEST_ENV_DUMP_FILE"
+
+// setupFakeCodex creates a temporary directory containing a fake "codex.cmd" batch
+// script that writes selected environment variables to a dump file and exits
+// immediately. It prepends this directory to the current process PATH so that
+// exec.Command("codex") resolves to the fake.
+//
+// Returns:
+//   - binDir:  the directory containing codex.cmd (for cleanup)
+//   - dumpFile: the path where the fake will write KEY=VALUE lines
+//   - origPATH: the original PATH value (to restore after test)
+//
+// The caller should defer a restore function.
+func setupFakeCodex(t *testing.T) (binDir string, dumpFile string, origPATH string) {
 	t.Helper()
 
-	home := t.TempDir()
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	binDir = t.TempDir()
+	dumpFile = filepath.Join(t.TempDir(), "envdump.txt")
 
-	if volume := filepath.VolumeName(home); volume != "" {
-		t.Setenv("HOMEDRIVE", volume)
-		t.Setenv("HOMEPATH", strings.TrimPrefix(home, volume))
+	// Build the batch script content.
+	// We write a selection of env vars that we care about, one per line as KEY=VALUE.
+	// Using delayed expansion so %CODEX_HOME% etc. are resolved at runtime.
+	// We cannot use fmt.Sprintf here because batch %var% syntax conflicts with Go format verbs.
+	envDumpRef := "%" + envDumpKey + "%"
+	script := "@echo off\r\n" +
+		"setlocal enabledelayedexpansion\r\n" +
+		"> \"" + dumpFile + "\" (\r\n" +
+		"  echo CODEX_HOME=!CODEX_HOME!\r\n" +
+		"  echo OPENAI_API_KEY=!OPENAI_API_KEY!\r\n" +
+		"  echo OPENAI_BASE_URL=!OPENAI_BASE_URL!\r\n" +
+		"  echo ANTHROPIC_API_KEY=!ANTHROPIC_API_KEY!\r\n" +
+		"  echo ANTHROPIC_BASE_URL=!ANTHROPIC_BASE_URL!\r\n" +
+		"  echo " + envDumpKey + "=" + envDumpRef + "\r\n" +
+		")\r\n" +
+		"endlocal\r\n" +
+		"exit /b 0\r\n"
+
+	codexPath := filepath.Join(binDir, "codex.cmd")
+	if err := os.WriteFile(codexPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex.cmd: %v", err)
 	}
 
-	return home
+	origPATH = os.Getenv("PATH")
+	newPATH := binDir + string(os.PathListSeparator) + origPATH
+	if err := os.Setenv("PATH", newPATH); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	// Also set the dump file path into the process env so the fake script can read it.
+	if err := os.Setenv(envDumpKey, dumpFile); err != nil {
+		t.Fatalf("set %s: %v", envDumpKey, err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPATH)
+		_ = os.Unsetenv(envDumpKey)
+	})
+
+	return binDir, dumpFile, origPATH
 }
 
-func writeTestFile(t *testing.T, path string, data []byte) {
+// waitForDumpFile polls for dumpFile to exist and have non-zero content,
+// with a short timeout.
+func waitForDumpFile(t *testing.T, dumpFile string, timeout time.Duration) {
 	t.Helper()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		fi, err := os.Stat(dumpFile)
+		if err == nil && fi.Size() > 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	t.Fatalf("timed out waiting for env dump file %s", dumpFile)
 }
 
-func readTestFile(t *testing.T, path string) []byte {
+// parseEnvDump reads the dump file and returns a map of key->value.
+// Lines are in KEY=VALUE format. Missing keys (empty lines) are omitted.
+func parseEnvDump(t *testing.T, dumpFile string) map[string]string {
 	t.Helper()
-
-	data, err := os.ReadFile(path)
+	f, err := os.Open(dumpFile)
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("open dump file: %v", err)
 	}
-	return data
+	defer f.Close()
+
+	result := map[string]string{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		result[k] = v
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan dump file: %v", err)
+	}
+	return result
 }
 
-func mustJSONUnmarshalObject(t *testing.T, data []byte) map[string]any {
-	t.Helper()
-
-	var got map[string]any
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	return got
-}
-
-func TestResolveCodexSourceHomePrefersCODEXHOMEEnv(t *testing.T) {
-	home := setCodexTestHome(t)
-	custom := filepath.Join(home, "custom-codex-home")
-	t.Setenv("CODEX_HOME", custom)
-
-	got, err := resolveCodexSourceHome(nil)
-	if err != nil {
-		t.Fatalf("resolveCodexSourceHome returned error: %v", err)
-	}
-	if got != custom {
-		t.Fatalf("resolveCodexSourceHome = %q, want %q", got, custom)
-	}
-}
-
-func TestPrepareCodexSessionHomeUsesPersistentCODEXHOMEAndPreservesSourceFiles(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	sourceConfigPath := filepath.Join(sourceHome, "config.toml")
-	sourceAuthPath := filepath.Join(sourceHome, "auth.json")
-	sourceHistoryPath := filepath.Join(sourceHome, "history.jsonl")
-	configPrefix := "approval_policy = \"never\"\nprofile = \"custom-preset\"\nmodel = \"gpt-5\"\n"
-	injectedSection := "# === amagi-codebox-inject-start ===\n" +
-		"model_provider = \"amagi-codebox-provider\"\n\n" +
-		"[model_providers.amagi-codebox-provider]\n" +
-		"name = \"amagi-codebox-provider\"\n" +
-		"base_url = \"https://old.example/v1\"\n" +
-		"wire_api = \"responses\"\n" +
-		"requires_openai_auth = true\n\n" +
-		"[projects.'X:\\WorkSpace']\n" +
-		"trust_level = \"trusted\"\n\n" +
-		"[windows]\n" +
-		"sandbox = \"elevated\"\n" +
-		"# === amagi-codebox-inject-end ===\n\n"
-	mcpSuffix := "[mcp_servers.keep]\ncommand = \"npx\"\nargs = [\"-y\", \"@modelcontextprotocol/server-filesystem\"]\n"
-	sourceConfig := []byte(configPrefix + injectedSection + mcpSuffix)
-	sourceAuth := []byte("{\n  \"auth_mode\": \"oauth\",\n  \"refresh_token\": \"keep-me\"\n}\n")
-	sourceHistory := []byte("volatile history that should not be copied\n")
-
-	writeTestFile(t, sourceConfigPath, sourceConfig)
-	writeTestFile(t, sourceAuthPath, sourceAuth)
-	writeTestFile(t, sourceHistoryPath, sourceHistory)
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	envOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-session-key",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-
-	isolatedHome, err := app.prepareCodexSessionHome("sess-openai", "", codexLaunchSettings{Model: "gpt-5.4"}, envOverrides)
-	if err != nil {
-		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
-	}
-	if isolatedHome == "" {
-		t.Fatal("prepareCodexSessionHome returned empty isolated home")
-	}
-	if isolatedHome == sourceHome {
-		t.Fatalf("isolated home should differ from source home: %q", isolatedHome)
-	}
-	if envOverrides["CODEX_HOME"] != isolatedHome {
-		t.Fatalf("CODEX_HOME = %q, want %q", envOverrides["CODEX_HOME"], isolatedHome)
-	}
-	if _, ok := envOverrides["OPENAI_BASE_URL"]; ok {
-		t.Fatalf("OPENAI_BASE_URL should be removed after isolated config injection, got %q", envOverrides["OPENAI_BASE_URL"])
-	}
-
-	isolatedConfigPath := filepath.Join(isolatedHome, "config.toml")
-	isolatedConfig := readTestFile(t, isolatedConfigPath)
-	sessionHome, ok := app.codexSessionHomes["sess-openai"]
-	if !ok {
-		t.Fatalf("codexSessionHomes missing entry for session: %#v", app.codexSessionHomes)
-	}
-	if sessionHome.HomeKey != "base-url:https://example.com/v1|model:gpt-5.4|profile:custom-preset|root-model-provider:amagi-codebox-provider" {
-		t.Fatalf("HomeKey = %q, want %q", sessionHome.HomeKey, "base-url:https://example.com/v1|model:gpt-5.4|profile:custom-preset|root-model-provider:amagi-codebox-provider")
-	}
-	newProviderBaseURL := []byte("base_url = \"https://example.com/v1\"")
-	if !bytes.Contains(isolatedConfig, newProviderBaseURL) {
-		t.Fatalf("isolated config missing updated provider base_url\nwant snippet:\n%s\n\ngot:\n%s", newProviderBaseURL, isolatedConfig)
-	}
-	if bytes.Contains(isolatedConfig, []byte("base_url = \"https://old.example/v1\"")) {
-		t.Fatalf("isolated config should replace old provider base_url\nconfig:\n%s", isolatedConfig)
-	}
-	firstTable := bytes.Index(isolatedConfig, []byte("[mcp_servers.keep]"))
-	if firstTable == -1 {
-		t.Fatalf("isolated config missing source table suffix\nconfig:\n%s", isolatedConfig)
-	}
-	if !bytes.Contains(isolatedConfig[:firstTable], []byte("profile = \"custom-preset\"")) {
-		t.Fatalf("isolated config should preserve custom profile before first table\nconfig:\n%s", isolatedConfig)
-	}
-	if bytes.Contains(isolatedConfig[:firstTable], []byte("model_provider = \"amagi-codebox-provider\"")) {
-		t.Fatalf("isolated config should not force injected model_provider when custom profile exists\nconfig:\n%s", isolatedConfig)
-	}
-	if !bytes.Contains(isolatedConfig[:firstTable], []byte("wire_api = \"responses\"")) {
-		t.Fatalf("isolated config missing wire_api = responses before first table\nconfig:\n%s", isolatedConfig)
-	}
-	if !bytes.Contains(isolatedConfig[:firstTable], []byte("[windows]\nsandbox = \"elevated\"")) {
-		t.Fatalf("isolated config missing windows sandbox section before first table\nconfig:\n%s", isolatedConfig)
-	}
-	if bytes.Contains(isolatedConfig, []byte("openai_base_url = ")) {
-		t.Fatalf("isolated config should keep provider-based config instead of root openai_base_url\nconfig:\n%s", isolatedConfig)
-	}
-	if !bytes.Equal(isolatedConfig[firstTable:], []byte(mcpSuffix)) {
-		t.Fatalf("mcp/table suffix was not preserved byte-for-byte\nwant suffix:\n%s\n\ngot suffix:\n%s", mcpSuffix, isolatedConfig[firstTable:])
-	}
-	if bytes.Contains(isolatedConfig, []byte("OPENAI_API_KEY")) {
-		t.Fatalf("isolated config unexpectedly contains OPENAI_API_KEY\nconfig:\n%s", isolatedConfig)
-	}
-
-	isolatedAuth := mustJSONUnmarshalObject(t, readTestFile(t, filepath.Join(isolatedHome, "auth.json")))
-	if isolatedAuth["OPENAI_API_KEY"] != "sk-session-key" {
-		t.Fatalf("isolated auth OPENAI_API_KEY = %#v, want %q", isolatedAuth["OPENAI_API_KEY"], "sk-session-key")
-	}
-	if isolatedAuth["auth_mode"] != "oauth" {
-		t.Fatalf("isolated auth auth_mode = %#v, want %q", isolatedAuth["auth_mode"], "oauth")
-	}
-	if isolatedAuth["refresh_token"] != "keep-me" {
-		t.Fatalf("isolated auth refresh_token = %#v, want %q", isolatedAuth["refresh_token"], "keep-me")
-	}
-
-	if _, err := os.Stat(filepath.Join(isolatedHome, "history.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("volatile file should not be copied, stat err=%v", err)
-	}
-	if !bytes.Equal(readTestFile(t, sourceConfigPath), sourceConfig) {
-		t.Fatalf("source config.toml was mutated\nwant:\n%s\n\ngot:\n%s", sourceConfig, readTestFile(t, sourceConfigPath))
-	}
-	if !bytes.Equal(readTestFile(t, sourceAuthPath), sourceAuth) {
-		t.Fatalf("source auth.json was mutated\nwant:\n%s\n\ngot:\n%s", sourceAuth, readTestFile(t, sourceAuthPath))
-	}
-}
-
-func TestPrepareCodexSessionHomeReusesPersistentHomeForSameProvider(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model = \"gpt-5\"\n"))
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	firstOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-first",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-	firstHome, err := app.prepareCodexSessionHome("sess-first", "provider-a", codexLaunchSettings{Model: "gpt-5.4"}, firstOverrides)
-	if err != nil {
-		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
-	}
-	writeTestFile(t, filepath.Join(firstHome, "history.jsonl"), []byte("persist me\n"))
-
-	secondOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-second",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-	secondHome, err := app.prepareCodexSessionHome("sess-second", "provider-a", codexLaunchSettings{Model: "gpt-5.4"}, secondOverrides)
-	if err != nil {
-		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
-	}
-	if secondHome != firstHome {
-		t.Fatalf("persistent codex home should be reused\nfirst=%q\nsecond=%q", firstHome, secondHome)
-	}
-	if got := string(readTestFile(t, filepath.Join(secondHome, "history.jsonl"))); got != "persist me\n" {
-		t.Fatalf("existing session history should be preserved, got %q", got)
-	}
-
-	isolatedAuth := mustJSONUnmarshalObject(t, readTestFile(t, filepath.Join(secondHome, "auth.json")))
-	if isolatedAuth["OPENAI_API_KEY"] != "sk-second" {
-		t.Fatalf("reused persistent auth OPENAI_API_KEY = %#v, want %q", isolatedAuth["OPENAI_API_KEY"], "sk-second")
-	}
-}
-
-func TestPrepareCodexSessionHomeUsesDistinctPersistentHomeForDifferentRootProfiles(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("profile = \"preset-a\"\nmodel = \"gpt-5\"\n"))
-	firstOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-first",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-	firstHome, err := app.prepareCodexSessionHome("sess-profile-a", "", codexLaunchSettings{Model: "gpt-5.4"}, firstOverrides)
-	if err != nil {
-		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
-	}
-
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("profile = \"preset-b\"\nmodel = \"gpt-5\"\n"))
-	secondOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-second",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-	secondHome, err := app.prepareCodexSessionHome("sess-profile-b", "", codexLaunchSettings{Model: "gpt-5.4"}, secondOverrides)
-	if err != nil {
-		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
-	}
-
-	if firstHome == secondHome {
-		t.Fatalf("different root profiles should use different persistent homes\nfirst=%q\nsecond=%q", firstHome, secondHome)
-	}
-	if !bytes.Contains(readTestFile(t, filepath.Join(secondHome, "config.toml")), []byte("profile = \"preset-b\"")) {
-		t.Fatalf("second persistent home should contain the new root profile")
-	}
-}
-
-func TestPrepareCodexSessionHomeUsesDistinctPersistentHomeForDifferentRootModelProviders(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model_provider = \"provider-a\"\nmodel = \"gpt-5\"\n"))
-	firstHome, err := app.prepareCodexSessionHome("sess-provider-a", "", codexLaunchSettings{Model: "gpt-5.4"}, map[string]string{})
-	if err != nil {
-		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
-	}
-
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model_provider = \"provider-b\"\nmodel = \"gpt-5\"\n"))
-	secondHome, err := app.prepareCodexSessionHome("sess-provider-b", "", codexLaunchSettings{Model: "gpt-5.4"}, map[string]string{})
-	if err != nil {
-		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
-	}
-
-	if firstHome == secondHome {
-		t.Fatalf("different root model_provider values should use different persistent homes\nfirst=%q\nsecond=%q", firstHome, secondHome)
-	}
-	if !bytes.Contains(readTestFile(t, filepath.Join(secondHome, "config.toml")), []byte("model_provider = \"provider-b\"")) {
-		t.Fatalf("second persistent home should contain the new root model_provider")
-	}
-}
-
-func TestPrepareCodexSessionHomeUsesDistinctPersistentHomeForDifferentModels(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("profile = \"custom-preset\"\n"))
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	firstHome, err := app.prepareCodexSessionHome("sess-model-a", "provider-a", codexLaunchSettings{Model: "gpt-5.4"}, map[string]string{"OPENAI_API_KEY": "sk-first", "OPENAI_BASE_URL": "https://example.com/v1"})
-	if err != nil {
-		t.Fatalf("first prepareCodexSessionHome returned error: %v", err)
-	}
-	secondHome, err := app.prepareCodexSessionHome("sess-model-b", "provider-a", codexLaunchSettings{Model: "gpt-5.4-mini"}, map[string]string{"OPENAI_API_KEY": "sk-second", "OPENAI_BASE_URL": "https://example.com/v1"})
-	if err != nil {
-		t.Fatalf("second prepareCodexSessionHome returned error: %v", err)
-	}
-
-	if firstHome == secondHome {
-		t.Fatalf("different models should use different persistent homes\nfirst=%q\nsecond=%q", firstHome, secondHome)
-	}
-}
-
-func TestPrepareCodexSessionHomeMovesInjectedModelProviderToRootBeforeFirstTable(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	sourceConfigPath := filepath.Join(sourceHome, "config.toml")
-	sourceAuthPath := filepath.Join(sourceHome, "auth.json")
-	sourceConfig := []byte(
-		"model = \"codex-mini-latest\"\n" +
-			"approval_policy = \"never\"\n\n" +
-			"[ghost_snapshot]\n" +
-			"disable_warnings = true\n\n" +
-			"# === amagi-codebox-inject-start ===\n" +
-			"model_provider = \"amagi-codebox-provider\"\n\n" +
-			"[model_providers.amagi-codebox-provider]\n" +
-			"name = \"amagi-codebox-provider\"\n" +
-			"base_url = \"https://old.example/v1\"\n" +
-			"wire_api = \"responses\"\n" +
-			"requires_openai_auth = true\n\n" +
-			"[projects.'X:\\WorkSpace']\n" +
-			"trust_level = \"trusted\"\n\n" +
-			"[windows]\n" +
-			"sandbox = \"elevated\"\n" +
-			"# === amagi-codebox-inject-end ===\n\n" +
-			"[mcp_servers.keep]\n" +
-			"command = \"keep\"\n",
-	)
-	writeTestFile(t, sourceConfigPath, sourceConfig)
-	writeTestFile(t, sourceAuthPath, []byte("{\"auth_mode\":\"oauth\"}\n"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	envOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-session-key",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-	isolateHome, err := app.prepareCodexSessionHome("sess-root-scope", "", codexLaunchSettings{Model: "gpt-5.4"}, envOverrides)
-	if err != nil {
-		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
-	}
-
-	isolatedConfig := readTestFile(t, filepath.Join(isolateHome, "config.toml"))
-	if got := extractRootLevelConfigValue(string(isolatedConfig), "model_provider"); got != "amagi-codebox-provider" {
-		t.Fatalf("root model_provider = %q, want %q\nconfig:\n%s", got, "amagi-codebox-provider", isolatedConfig)
-	}
-	if bytes.Count(isolatedConfig, []byte("model_provider = \"amagi-codebox-provider\"")) != 1 {
-		t.Fatalf("isolated config should contain exactly one injected model_provider selector\nconfig:\n%s", isolatedConfig)
-	}
-	firstTable := bytes.Index(isolatedConfig, []byte("[ghost_snapshot]"))
-	if firstTable == -1 {
-		t.Fatalf("isolated config missing ghost_snapshot table\nconfig:\n%s", isolatedConfig)
-	}
-	modelProviderIndex := bytes.Index(isolatedConfig, []byte("model_provider = \"amagi-codebox-provider\""))
-	if modelProviderIndex == -1 || modelProviderIndex >= firstTable {
-		t.Fatalf("root model_provider should appear before first table\nconfig:\n%s", isolatedConfig)
-	}
-	if !bytes.Contains(isolatedConfig, []byte("base_url = \"https://example.com/v1\"")) {
-		t.Fatalf("isolated config missing updated provider base_url\nconfig:\n%s", isolatedConfig)
-	}
-	if bytes.Contains(isolatedConfig, []byte("base_url = \"https://old.example/v1\"")) {
-		t.Fatalf("isolated config should replace old provider base_url\nconfig:\n%s", isolatedConfig)
-	}
-	for _, snippet := range []string{
-		"[model_providers.amagi-codebox-provider]",
-		"[projects.'X:\\WorkSpace']",
-		"[windows]",
-		"[ghost_snapshot]",
-		"[mcp_servers.keep]",
-	} {
-		if !bytes.Contains(isolatedConfig, []byte(snippet)) {
-			t.Fatalf("isolated config missing %s\nconfig:\n%s", snippet, isolatedConfig)
+// envHasKey reports whether env (slice of "K=V") contains the given key with the expected value.
+func envHasKey(env []string, key, wantValue string) bool {
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		// Windows: case-insensitive key comparison
+		if strings.EqualFold(k, key) && v == wantValue {
+			return true
 		}
 	}
-	if bytes.Contains(isolatedConfig, []byte("openai_base_url = ")) {
-		t.Fatalf("isolated config should keep provider-based config instead of root openai_base_url\nconfig:\n%s", isolatedConfig)
-	}
-	if !bytes.Equal(readTestFile(t, sourceConfigPath), sourceConfig) {
-		t.Fatalf("source config.toml was mutated\nwant:\n%s\n\ngot:\n%s", sourceConfig, readTestFile(t, sourceConfigPath))
-	}
+	return false
 }
 
-func TestPrepareCodexSessionHomeFallsBackToMinimalAuthOnMalformedSource(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("model = \"gpt-5\"\n"))
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("not-json"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	envOverrides := map[string]string{
-		"OPENAI_API_KEY":  "sk-session-key",
-		"OPENAI_BASE_URL": "https://example.com/v1",
-	}
-
-	isolatedHome, err := app.prepareCodexSessionHome("sess-malformed-auth", "", codexLaunchSettings{Model: "gpt-5.4"}, envOverrides)
-	if err != nil {
-		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
-	}
-
-	isolatedAuth := mustJSONUnmarshalObject(t, readTestFile(t, filepath.Join(isolatedHome, "auth.json")))
-	if len(isolatedAuth) != 1 {
-		t.Fatalf("isolated auth should fall back to minimal object, got %#v", isolatedAuth)
-	}
-	if isolatedAuth["OPENAI_API_KEY"] != "sk-session-key" {
-		t.Fatalf("isolated auth OPENAI_API_KEY = %#v, want %q", isolatedAuth["OPENAI_API_KEY"], "sk-session-key")
-	}
-	if !bytes.Equal(readTestFile(t, filepath.Join(sourceHome, "auth.json")), []byte("not-json")) {
-		t.Fatalf("source malformed auth.json should remain unchanged")
-	}
-}
-
-func TestPrepareCodexSessionHomeWithoutOpenAIOverridesCopiesOnlySafeAssets(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	sourceConfig := []byte("approval_policy = \"never\"\n[mcp_servers.keep]\ncommand = \"keep\"\n")
-	sourceAuth := []byte("{\n  \"auth_mode\": \"oauth\"\n}\n")
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), sourceConfig)
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), sourceAuth)
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	envOverrides := map[string]string{}
-
-	isolatedHome, err := app.prepareCodexSessionHome("sess-safe-copy", "", codexLaunchSettings{}, envOverrides)
-	if err != nil {
-		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
-	}
-	if envOverrides["CODEX_HOME"] != isolatedHome {
-		t.Fatalf("CODEX_HOME = %q, want %q", envOverrides["CODEX_HOME"], isolatedHome)
-	}
-	if !bytes.Equal(readTestFile(t, filepath.Join(isolatedHome, "config.toml")), sourceConfig) {
-		t.Fatalf("isolated config should match safe source config copy")
-	}
-	if !bytes.Equal(readTestFile(t, filepath.Join(isolatedHome, "auth.json")), sourceAuth) {
-		t.Fatalf("isolated auth should match safe source auth copy")
-	}
-}
-
-func TestBuildCodexIsolatedConfigTomlReplacesExistingRootOpenAIBaseURLBeforeFirstTable(t *testing.T) {
-	source := []byte("approval_policy = \"never\"\nmodel_provider = \"user-provider\"\nopenai_base_url = \"https://old.example/v1\"\nmodel = \"gpt-5\"\n[mcp_servers.keep]\ncommand = \"keep\"\n")
-	baseURL := "https://example.com/v1"
-
-	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, baseURL)
-	wantPrefix := "approval_policy = \"never\"\nmodel = \"gpt-5\"\nopenai_base_url = \"" + baseURL + "\"\n\n"
-	if !bytes.HasPrefix(got, []byte(wantPrefix)) {
-		t.Fatalf("isolated config prefix mismatch\nwant prefix:\n%s\n\ngot:\n%s", wantPrefix, got)
-	}
-	if bytes.Contains(got, []byte("openai_base_url = \"https://old.example/v1\"")) {
-		t.Fatalf("old root-level openai_base_url should be removed\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("model_provider = \"user-provider\"")) {
-		t.Fatalf("legacy root-level model_provider should be removed\nconfig:\n%s", got)
-	}
-	if bytes.Count(got, []byte("openai_base_url = ")) != 1 {
-		t.Fatalf("isolated config should contain exactly one root openai_base_url\nconfig:\n%s", got)
-	}
-	firstTable := bytes.Index(got, []byte("[mcp_servers.keep]"))
-	if firstTable == -1 {
-		t.Fatalf("isolated config missing original table suffix\nconfig:\n%s", got)
-	}
-	if !bytes.Equal(got[firstTable:], []byte("[mcp_servers.keep]\ncommand = \"keep\"\n")) {
-		t.Fatalf("table suffix should remain byte-for-byte\nwant:\n%s\n\ngot:\n%s", "[mcp_servers.keep]\ncommand = \"keep\"\n", got[firstTable:])
-	}
-	openAIBaseURLLine := buildCodexOpenAIBaseURLLine(baseURL)
-	openAIBaseURLStart := bytes.Index(got, openAIBaseURLLine)
-	if openAIBaseURLStart == -1 || openAIBaseURLStart >= firstTable {
-		t.Fatalf("openai_base_url should appear before first table\nconfig:\n%s", got)
-	}
-}
-
-func TestBuildCodexIsolatedConfigTomlPreservesInjectedProviderSectionAndCustomProfile(t *testing.T) {
-	source := []byte(
-		"approval_policy = \"never\"\n" +
-			"profile = \"custom-preset\"\n" +
-			"# === amagi-codebox-inject-start ===\n" +
-			"model_provider = \"amagi-codebox-provider\"\n\n" +
-			"[model_providers.amagi-codebox-provider]\n" +
-			"name = \"amagi-codebox-provider\"\n" +
-			"base_url = \"https://old.example/v1\"\n" +
-			"wire_api = \"responses\"\n" +
-			"requires_openai_auth = true\n\n" +
-			"[windows]\n" +
-			"sandbox = \"elevated\"\n" +
-			"# === amagi-codebox-inject-end ===\n\n" +
-			"[mcp_servers.keep]\n" +
-			"command = \"keep\"\n",
-	)
-
-	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
-	if !bytes.Contains(got, []byte("profile = \"custom-preset\"")) {
-		t.Fatalf("custom profile should be preserved\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("model_provider = \"amagi-codebox-provider\"")) {
-		t.Fatalf("injected model_provider should not override custom profile\nconfig:\n%s", got)
-	}
-	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
-		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("base_url = \"https://old.example/v1\"")) {
-		t.Fatalf("old provider base_url should be removed\nconfig:\n%s", got)
-	}
-	if !bytes.Contains(got, []byte("wire_api = \"responses\"")) {
-		t.Fatalf("wire_api should be preserved\nconfig:\n%s", got)
-	}
-	if !bytes.Contains(got, []byte("[windows]\nsandbox = \"elevated\"")) {
-		t.Fatalf("windows section should be preserved\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("openai_base_url = ")) {
-		t.Fatalf("provider-based injected config should not be downgraded to root openai_base_url\nconfig:\n%s", got)
-	}
-}
-
-func TestBuildCodexIsolatedConfigTomlPreservesCustomRootModelProvider(t *testing.T) {
-	source := []byte(
-		"approval_policy = \"never\"\n" +
-			"model_provider = \"custom-provider\"\n" +
-			"# === amagi-codebox-inject-start ===\n" +
-			"model_provider = \"amagi-codebox-provider\"\n\n" +
-			"[model_providers.amagi-codebox-provider]\n" +
-			"name = \"amagi-codebox-provider\"\n" +
-			"base_url = \"https://old.example/v1\"\n" +
-			"wire_api = \"responses\"\n" +
-			"requires_openai_auth = true\n" +
-			"# === amagi-codebox-inject-end ===\n\n" +
-			"[mcp_servers.keep]\n" +
-			"command = \"keep\"\n",
-	)
-
-	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
-	if !bytes.Contains(got, []byte("model_provider = \"custom-provider\"")) {
-		t.Fatalf("custom root model_provider should be preserved\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("model_provider = \"amagi-codebox-provider\"")) {
-		t.Fatalf("injected model_provider should not override custom root model_provider\nconfig:\n%s", got)
-	}
-	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
-		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
-	}
-	if !bytes.Contains(got, []byte("wire_api = \"responses\"")) {
-		t.Fatalf("wire_api should be preserved\nconfig:\n%s", got)
-	}
-}
-
-func TestBuildCodexIsolatedConfigTomlMovesInjectedModelProviderToRootBeforeFirstTable(t *testing.T) {
-	source := []byte(
-		"model = \"codex-mini-latest\"\n" +
-			"approval_policy = \"never\"\n\n" +
-			"[ghost_snapshot]\n" +
-			"disable_warnings = true\n\n" +
-			"# === amagi-codebox-inject-start ===\n" +
-			"model_provider = \"amagi-codebox-provider\"\n\n" +
-			"[model_providers.amagi-codebox-provider]\n" +
-			"name = \"amagi-codebox-provider\"\n" +
-			"base_url = \"https://old.example/v1\"\n" +
-			"wire_api = \"responses\"\n" +
-			"requires_openai_auth = true\n\n" +
-			"[projects.'X:\\WorkSpace']\n" +
-			"trust_level = \"trusted\"\n\n" +
-			"[windows]\n" +
-			"sandbox = \"elevated\"\n" +
-			"# === amagi-codebox-inject-end ===\n\n" +
-			"[mcp_servers.keep]\n" +
-			"command = \"keep\"\n",
-	)
-
-	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
-	if rootModelProvider := extractRootLevelConfigValue(string(got), "model_provider"); rootModelProvider != "amagi-codebox-provider" {
-		t.Fatalf("root model_provider = %q, want %q\nconfig:\n%s", rootModelProvider, "amagi-codebox-provider", got)
-	}
-	if bytes.Count(got, []byte("model_provider = \"amagi-codebox-provider\"")) != 1 {
-		t.Fatalf("isolated config should contain exactly one injected model_provider selector\nconfig:\n%s", got)
-	}
-	firstTable := bytes.Index(got, []byte("[ghost_snapshot]"))
-	if firstTable == -1 {
-		t.Fatalf("isolated config missing ghost_snapshot table\nconfig:\n%s", got)
-	}
-	modelProviderIndex := bytes.Index(got, []byte("model_provider = \"amagi-codebox-provider\""))
-	if modelProviderIndex == -1 || modelProviderIndex >= firstTable {
-		t.Fatalf("root model_provider should appear before first table\nconfig:\n%s", got)
-	}
-	if !bytes.Contains(got, []byte("base_url = \"https://example.com/v1\"")) {
-		t.Fatalf("provider base_url should be updated\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("base_url = \"https://old.example/v1\"")) {
-		t.Fatalf("old provider base_url should be removed\nconfig:\n%s", got)
-	}
-	for _, snippet := range []string{
-		"[model_providers.amagi-codebox-provider]",
-		"[projects.'X:\\WorkSpace']",
-		"[windows]",
-		"[ghost_snapshot]",
-		"[mcp_servers.keep]",
-	} {
-		if !bytes.Contains(got, []byte(snippet)) {
-			t.Fatalf("config missing %s\nconfig:\n%s", snippet, got)
+// envHasKeySet reports whether env contains the given key (regardless of value).
+func envHasKeySet(env []string, key string) bool {
+	for _, kv := range env {
+		k, _, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(k, key) {
+			return true
 		}
 	}
-	if bytes.Contains(got, []byte("openai_base_url = ")) {
-		t.Fatalf("provider-based injected config should not be downgraded to root openai_base_url\nconfig:\n%s", got)
-	}
+	return false
 }
 
-func TestBuildCodexIsolatedConfigTomlFallsBackForLegacyInjectedRootOpenAIBaseURL(t *testing.T) {
-	source := []byte(
-		"approval_policy = \"never\"\n" +
-			"# === amagi-codebox-inject-start ===\n" +
-			"openai_base_url = \"https://old.example/v1\"\n" +
-			"# === amagi-codebox-inject-end ===\n\n" +
-			"[mcp_servers.keep]\n" +
-			"command = \"keep\"\n",
+// readEnvValue returns the value for key from a "K=V" slice, or "".
+func readEnvValue(env []string, key string) string {
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
+// ============================================================================
+// A. Terminal mode -- real LaunchCodexSession via fake codex.cmd
+// ============================================================================
+
+// TestLaunchCodexSession_Terminal_NoProvider_PreservesCODEXHOME verifies that when
+// no provider is set and the user's environment already has CODEX_HOME=<orig>,
+// LaunchCodexSession does NOT overwrite or inject a different CODEX_HOME.
+// The fake codex.cmd captures the actual environment and writes it to a file.
+func TestLaunchCodexSession_Terminal_NoProvider_PreservesCODEXHOME(t *testing.T) {
+	_, dumpFile, _ := setupFakeCodex(t)
+
+	// Set a pre-existing CODEX_HOME in the process environment.
+	const origCodexHome = `C:\Users\test\original-codex-home`
+	if err := os.Setenv("CODEX_HOME", origCodexHome); err != nil {
+		t.Fatalf("set CODEX_HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("CODEX_HOME") })
+
+	app := newTestApp(t)
+	app.ctx = t.Context()
+
+	// No provider registered. Call the real LaunchCodexSession in terminal mode.
+	sessionID, err := app.LaunchCodexSession(
+		"gpt-5",   // modelName
+		"",         // providerID -- none
+		"terminal", // mode
+		t.TempDir(), // workDir
+		"",         // shellPath -- unused in terminal mode
 	)
-
-	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{}, "https://example.com/v1")
-	if !bytes.Contains(got, []byte("openai_base_url = \"https://example.com/v1\"")) {
-		t.Fatalf("legacy injected openai_base_url should be rebuilt with new value\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("openai_base_url = \"https://old.example/v1\"")) {
-		t.Fatalf("old legacy injected openai_base_url should be removed\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte(codexInjectStartMarker)) || bytes.Contains(got, []byte(codexInjectEndMarker)) {
-		t.Fatalf("legacy injected markers should be removed after fallback rebuild\nconfig:\n%s", got)
-	}
-}
-
-func TestBuildCodexIsolatedConfigTomlAppliesContextWindowSettingsWithoutBaseURL(t *testing.T) {
-	source := []byte(
-		"approval_policy = \"never\"\n" +
-			"model_context_window = 272000\n" +
-			"model_auto_compact_token_limit = 200000\n" +
-			"[mcp_servers.keep]\n" +
-			"command = \"keep\"\n",
-	)
-
-	got := buildCodexIsolatedConfigToml(source, codexLaunchSettings{
-		Model:                      "gpt-5.4",
-		ModelContextWindow:         1_047_576,
-		ModelAutoCompactTokenLimit: 400_000,
-	}, "")
-
-	if bytes.Contains(got, []byte("model_context_window = 272000")) {
-		t.Fatalf("old model_context_window should be replaced\nconfig:\n%s", got)
-	}
-	if bytes.Contains(got, []byte("model_auto_compact_token_limit = 200000")) {
-		t.Fatalf("old model_auto_compact_token_limit should be replaced\nconfig:\n%s", got)
-	}
-	if bytes.Count(got, []byte("model_context_window = ")) != 1 {
-		t.Fatalf("config should contain exactly one model_context_window line\nconfig:\n%s", got)
-	}
-	if bytes.Count(got, []byte("model_auto_compact_token_limit = ")) != 1 {
-		t.Fatalf("config should contain exactly one model_auto_compact_token_limit line\nconfig:\n%s", got)
-	}
-	firstTable := bytes.Index(got, []byte("[mcp_servers.keep]"))
-	if firstTable == -1 {
-		t.Fatalf("config missing original table suffix\nconfig:\n%s", got)
-	}
-	windowIndex := bytes.Index(got, []byte("model_context_window = 1047576"))
-	compactIndex := bytes.Index(got, []byte("model_auto_compact_token_limit = 400000"))
-	if windowIndex == -1 || compactIndex == -1 {
-		t.Fatalf("config missing updated context window settings\nconfig:\n%s", got)
-	}
-	if windowIndex >= firstTable || compactIndex >= firstTable {
-		t.Fatalf("context window settings should appear before first table\nconfig:\n%s", got)
-	}
-}
-
-func TestPrepareCodexSessionHomeWritesContextWindowSettingsWithoutBaseURL(t *testing.T) {
-	home := setCodexTestHome(t)
-	sourceHome := filepath.Join(home, ".codex")
-	writeTestFile(t, filepath.Join(sourceHome, "config.toml"), []byte("approval_policy = \"never\"\n[mcp_servers.keep]\ncommand = \"keep\"\n"))
-	writeTestFile(t, filepath.Join(sourceHome, "auth.json"), []byte("{\"auth_mode\":\"oauth\"}\n"))
-
-	app := &App{Log: logging.NewService(t.TempDir())}
-	t.Cleanup(app.Log.Close)
-
-	isolatedHome, err := app.prepareCodexSessionHome("sess-context-only", "", codexLaunchSettings{
-		Model:                      "gpt-5.4",
-		ModelContextWindow:         1_047_576,
-		ModelAutoCompactTokenLimit: 400_000,
-	}, map[string]string{})
 	if err != nil {
-		t.Fatalf("prepareCodexSessionHome returned error: %v", err)
+		t.Fatalf("LaunchCodexSession failed: %v", err)
+	}
+	t.Logf("session created: %s", sessionID)
+
+	// Wait for the fake codex.cmd to write the dump file.
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+
+	env := parseEnvDump(t, dumpFile)
+
+	// CODEX_HOME must be the original value, not rewritten.
+	if env["CODEX_HOME"] != origCodexHome {
+		t.Fatalf("CODEX_HOME = %q, want %q (original value preserved)", env["CODEX_HOME"], origCodexHome)
 	}
 
-	isolatedConfig := readTestFile(t, filepath.Join(isolatedHome, "config.toml"))
-	if !bytes.Contains(isolatedConfig, []byte("model_context_window = 1047576")) {
-		t.Fatalf("isolated config missing model_context_window\nconfig:\n%s", isolatedConfig)
+	// No API keys should be injected via envOverrides since no provider was specified.
+	// However, keys that already exist in the system environment are inherited unchanged.
+	// We verify that LaunchCodexSession did not ADD any new API key values via overrides.
+	// The test only asserts that the launch path does not synthesize new values.
+	// (We do not assert "ANTHROPIC_API_KEY == empty" because the developer's system
+	// environment may have pre-existing keys that pass through via MergeWithSystem.)
+	if env["OPENAI_API_KEY"] == "sk-test-openai-key-123" {
+		t.Fatal("OPENAI_API_KEY should not be injected by the test override (no provider set)")
 	}
-	if !bytes.Contains(isolatedConfig, []byte("model_auto_compact_token_limit = 400000")) {
-		t.Fatalf("isolated config missing model_auto_compact_token_limit\nconfig:\n%s", isolatedConfig)
+
+	// Clean up session.
+	app.StopSession(sessionID)
+}
+
+// TestLaunchCodexSession_Terminal_OpenAI_InjectsEnvVars verifies the full launch
+// chain with an OpenAI provider: LaunchCodexSession -> Launcher.LaunchCodex ->
+// exec.Command("codex") with the correct env overrides reaching the child process.
+func TestLaunchCodexSession_Terminal_OpenAI_InjectsEnvVars(t *testing.T) {
+	_, dumpFile, _ := setupFakeCodex(t)
+
+	// Set a pre-existing CODEX_HOME.
+	const origCodexHome = `C:\Users\test\my-codex-home`
+	if err := os.Setenv("CODEX_HOME", origCodexHome); err != nil {
+		t.Fatalf("set CODEX_HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("CODEX_HOME") })
+
+	app := newTestApp(t)
+	app.ctx = t.Context()
+
+	// Register an OpenAI provider.
+	const providerID = "test-openai"
+	if err := app.Config.SaveProvider(providerID, config.Provider{
+		Type:         "openai",
+		BaseURL:      "https://api.test.example.com/v1",
+		AuthKey:      "OPENAI_API_KEY",
+		DefaultModel: "gpt-5",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID, "sk-test-openai-key-123"); err != nil {
+		t.Fatalf("SetAPIKey: %v", err)
+	}
+
+	sessionID, err := app.LaunchCodexSession(
+		"gpt-5",       // modelName
+		providerID,     // providerID
+		"terminal",     // mode
+		t.TempDir(),   // workDir
+		"",            // shellPath
+	)
+	if err != nil {
+		t.Fatalf("LaunchCodexSession failed: %v", err)
+	}
+	t.Logf("session created: %s", sessionID)
+
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+	env := parseEnvDump(t, dumpFile)
+
+	// OpenAI API key must be present.
+	if env["OPENAI_API_KEY"] != "sk-test-openai-key-123" {
+		t.Fatalf("OPENAI_API_KEY = %q, want %q", env["OPENAI_API_KEY"], "sk-test-openai-key-123")
+	}
+	// OpenAI base URL must be injected.
+	if env["OPENAI_BASE_URL"] != "https://api.test.example.com/v1" {
+		t.Fatalf("OPENAI_BASE_URL = %q, want %q", env["OPENAI_BASE_URL"], "https://api.test.example.com/v1")
+	}
+	// Anthropic key must NOT be injected by our overrides.
+	// Note: if the system environment already has ANTHROPIC_API_KEY, it passes through
+	// via MergeWithSystem. We only assert our overrides did not set it.
+	if env["ANTHROPIC_API_KEY"] == "sk-ant-test-key-456" {
+		t.Fatal("ANTHROPIC_API_KEY should not be set to the Anthropic test value by OpenAI overrides")
+	}
+	// CODEX_HOME must preserve the original value.
+	if env["CODEX_HOME"] != origCodexHome {
+		t.Fatalf("CODEX_HOME = %q, want %q (original preserved)", env["CODEX_HOME"], origCodexHome)
+	}
+
+	app.StopSession(sessionID)
+}
+
+// TestLaunchCodexSession_Terminal_Anthropic_InjectsEnvVars verifies the full launch
+// chain with an Anthropic provider.
+func TestLaunchCodexSession_Terminal_Anthropic_InjectsEnvVars(t *testing.T) {
+	_, dumpFile, _ := setupFakeCodex(t)
+
+	const origCodexHome = `C:\Users\test\anthropic-codex-home`
+	if err := os.Setenv("CODEX_HOME", origCodexHome); err != nil {
+		t.Fatalf("set CODEX_HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("CODEX_HOME") })
+
+	app := newTestApp(t)
+	app.ctx = t.Context()
+
+	const providerID = "test-anthropic"
+	if err := app.Config.SaveProvider(providerID, config.Provider{
+		Type:         "anthropic",
+		BaseURL:      "https://api.anthropic.com",
+		AuthKey:      "ANTHROPIC_API_KEY",
+		DefaultModel: "claude-sonnet-4-20250514",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID, "sk-ant-test-key-456"); err != nil {
+		t.Fatalf("SetAPIKey: %v", err)
+	}
+
+	sessionID, err := app.LaunchCodexSession(
+		"claude-sonnet-4-20250514",
+		providerID,
+		"terminal",
+		t.TempDir(),
+		"",
+	)
+	if err != nil {
+		t.Fatalf("LaunchCodexSession failed: %v", err)
+	}
+
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+	env := parseEnvDump(t, dumpFile)
+
+	if env["ANTHROPIC_API_KEY"] != "sk-ant-test-key-456" {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", env["ANTHROPIC_API_KEY"], "sk-ant-test-key-456")
+	}
+	if env["ANTHROPIC_BASE_URL"] != "https://api.anthropic.com" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want %q", env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
+	}
+	// OPENAI_API_KEY should not be injected by our overrides. It may be inherited
+	// from the system environment via MergeWithSystem, so we only check our override value.
+	if env["OPENAI_API_KEY"] == "sk-test-openai-key-123" {
+		t.Fatal("OPENAI_API_KEY should not be set to the OpenAI test value by Anthropic overrides")
+	}
+	// CODEX_HOME preserved.
+	if env["CODEX_HOME"] != origCodexHome {
+		t.Fatalf("CODEX_HOME = %q, want %q (original preserved)", env["CODEX_HOME"], origCodexHome)
+	}
+
+	app.StopSession(sessionID)
+}
+
+// TestLaunchCodexSession_Terminal_NoProvider_NoPreExistingCODEXHOME verifies that
+// when no provider is set and there is no pre-existing CODEX_HOME in the environment,
+// LaunchCodexSession does not inject one. This is the "no CODEX_HOME at all" case.
+func TestLaunchCodexSession_Terminal_NoProvider_NoPreExistingCODEXHOME(t *testing.T) {
+	_, dumpFile, _ := setupFakeCodex(t)
+
+	// Ensure CODEX_HOME is not set.
+	_ = os.Unsetenv("CODEX_HOME")
+
+	app := newTestApp(t)
+	app.ctx = t.Context()
+
+	sessionID, err := app.LaunchCodexSession(
+		"gpt-5",
+		"",
+		"terminal",
+		t.TempDir(),
+		"",
+	)
+	if err != nil {
+		t.Fatalf("LaunchCodexSession failed: %v", err)
+	}
+
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+	env := parseEnvDump(t, dumpFile)
+
+	// CODEX_HOME should remain empty -- not injected.
+	if env["CODEX_HOME"] != "" {
+		t.Fatalf("CODEX_HOME should be empty when not pre-set and no provider, got %q", env["CODEX_HOME"])
+	}
+
+	app.StopSession(sessionID)
+}
+
+// ============================================================================
+// B. Unit-level helpers (unchanged behavior, keep for fast feedback)
+// ============================================================================
+
+func TestIsOpenAIProvider_AuthKeyFallback(t *testing.T) {
+	p := config.Provider{AuthKey: "OPENAI_API_KEY"}
+	if !isOpenAIProvider(p) {
+		t.Fatal("isOpenAIProvider should return true when AuthKey=OPENAI_API_KEY even with empty Type")
+	}
+
+	p2 := config.Provider{Type: "OpenAI"}
+	if !isOpenAIProvider(p2) {
+		t.Fatal("isOpenAIProvider should match Type case-insensitively")
+	}
+
+	p3 := config.Provider{Type: "anthropic", AuthKey: "ANTHROPIC_API_KEY"}
+	if isOpenAIProvider(p3) {
+		t.Fatal("isOpenAIProvider should return false for Anthropic provider")
+	}
+
+	p4 := config.Provider{}
+	if isOpenAIProvider(p4) {
+		t.Fatal("isOpenAIProvider should return false for empty provider")
 	}
 }
 
-func TestResolveCodexLaunchSettingsMatchesPresetAndNormalizesOneMillionSuffix(t *testing.T) {
+// --- Regression: StopSession/RemoveSession/ClearStopped without isolation ---
+
+func TestStopSessionWithoutCodexHomeIsolation(t *testing.T) {
+	app := newTestApp(t)
+
+	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	app.Sessions.MarkStopped(sess.ID)
+
+	err := app.StopSession(sess.ID)
+	if err != nil {
+		t.Fatalf("StopSession on already-stopped session should not error, got: %v", err)
+	}
+}
+
+func TestRemoveSessionWithoutCodexHomeIsolation(t *testing.T) {
+	app := newTestApp(t)
+
+	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	app.Sessions.MarkStopped(sess.ID)
+
+	err := app.RemoveSession(sess.ID)
+	if err != nil {
+		t.Fatalf("RemoveSession should succeed, got: %v", err)
+	}
+}
+
+func TestClearStoppedSessionsWithoutCodexHomeIsolation(t *testing.T) {
+	app := newTestApp(t)
+
+	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	app.Sessions.MarkStopped(sess.ID)
+
+	cleared := app.ClearStoppedSessions()
+	if cleared != 1 {
+		t.Fatalf("expected 1 cleared session, got %d", cleared)
+	}
+}
+
+func TestStopAllSessionsWithoutCodexHomeIsolation(t *testing.T) {
+	app := newTestApp(t)
+	_ = app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	app.StopAllSessions()
+}
+
+// --- Model name normalization ---
+
+func TestNormalizeCodexModelName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"gpt-5.4", "gpt-5.4"},
+		{"gpt-5.4[1m]", "gpt-5.4"},
+		{"  gpt-5.4[1m]  ", "gpt-5.4"},
+		{"", ""},
+		{"  ", ""},
+	}
+	for _, tt := range tests {
+		got := normalizeCodexModelName(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeCodexModelName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// --- resolveCodexLaunchSettings only resolves model name ---
+
+func TestResolveCodexLaunchSettings_ModelOnly(t *testing.T) {
 	provider := config.Provider{
 		DefaultModel: "gpt-5.4[1m]",
 		Presets: map[string]config.Preset{
 			"code": {
 				Name:  "code",
 				Model: "gpt-5.4[1m]",
-				Parameters: config.Parameters{
-					MaxContextLength: 1_000_000,
-					ContextWindow: &config.ContextWindowConfig{
-						ModelContextWindow:    1_047_576,
-						AutoCompactTokenLimit: 400_000,
-					},
-				},
 			},
 		},
 	}
@@ -733,102 +524,91 @@ func TestResolveCodexLaunchSettingsMatchesPresetAndNormalizesOneMillionSuffix(t 
 	if settings.Model != "gpt-5.4" {
 		t.Fatalf("normalized model = %q, want %q", settings.Model, "gpt-5.4")
 	}
-	if settings.ModelContextWindow != 1_047_576 {
-		t.Fatalf("model context window = %d, want %d", settings.ModelContextWindow, 1_047_576)
+}
+
+func TestResolveCodexLaunchSettings_FallsBackToProviderDefault(t *testing.T) {
+	provider := config.Provider{
+		DefaultModel: "gpt-5.4[1m]",
 	}
-	if settings.ModelAutoCompactTokenLimit != 400_000 {
-		t.Fatalf("auto compact token limit = %d, want %d", settings.ModelAutoCompactTokenLimit, 400_000)
+
+	settings := resolveCodexLaunchSettings(provider, "")
+	if settings.Model != "gpt-5.4" {
+		t.Fatalf("normalized model = %q, want %q", settings.Model, "gpt-5.4")
 	}
 }
 
-func TestCleanupCodexSessionHomeRemovesRegisteredHome(t *testing.T) {
-	app := &App{
-		Log:               logging.NewService(t.TempDir()),
-		codexSessionHomes: map[string]codexSessionHomeInfo{},
+// --- BuildEnv unit test (kept for fast unit feedback) ---
+
+func TestBuildEnv_OpenAIOverrides_ReachFinalEnv(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "HOME=/home/test"}
+	overrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-test-key",
+		"OPENAI_BASE_URL": "https://api.test.example.com/v1",
 	}
-	t.Cleanup(app.Log.Close)
 
-	isolatedHome := filepath.Join(t.TempDir(), "isolated-home")
-	writeTestFile(t, filepath.Join(isolatedHome, "config.toml"), []byte("model = \"gpt-5\"\n"))
-	app.codexSessionHomes["sess-cleanup"] = codexSessionHomeInfo{Path: isolatedHome, HomeKey: "provider:test"}
+	result := launcher.BuildEnv(base, overrides)
 
-	app.cleanupCodexSessionHome("sess-cleanup")
-
-	if _, ok := app.codexSessionHomes["sess-cleanup"]; ok {
-		t.Fatalf("codexSessionHomes still contains cleaned session: %#v", app.codexSessionHomes)
+	if !envHasKey(result, "OPENAI_API_KEY", "sk-test-key") {
+		t.Fatal("BuildEnv result should contain OPENAI_API_KEY=sk-test-key")
 	}
-	if _, err := os.Stat(isolatedHome); err != nil {
-		t.Fatalf("persistent home should remain on disk, stat err=%v", err)
+	if !envHasKey(result, "OPENAI_BASE_URL", "https://api.test.example.com/v1") {
+		t.Fatal("BuildEnv result should contain OPENAI_BASE_URL")
 	}
-}
-
-func TestCleanupCodexSessionHomesForStoppedSessionsRemovesOnlyStoppedOnes(t *testing.T) {
-	root := t.TempDir()
-	stoppedHome := filepath.Join(root, "stopped-home")
-	runningHome := filepath.Join(root, "running-home")
-	writeTestFile(t, filepath.Join(stoppedHome, "config.toml"), []byte("stopped\n"))
-	writeTestFile(t, filepath.Join(runningHome, "config.toml"), []byte("running\n"))
-
-	app := &App{
-		Log:               logging.NewService(t.TempDir()),
-		Sessions:          session.NewManager(),
-		codexSessionHomes: map[string]codexSessionHomeInfo{},
-	}
-	t.Cleanup(app.Log.Close)
-
-	stopped := app.Sessions.Create(session.AppTypeCodex, "codex", "", "", session.ModeTerminal, root, false)
-	running := app.Sessions.Create(session.AppTypeCodex, "codex", "", "", session.ModeTerminal, root, false)
-	app.Sessions.MarkStopped(stopped.ID)
-
-	app.codexSessionHomes[stopped.ID] = codexSessionHomeInfo{Path: stoppedHome, HomeKey: "provider:stopped"}
-	app.codexSessionHomes[running.ID] = codexSessionHomeInfo{Path: runningHome, HomeKey: "provider:running"}
-
-	app.cleanupCodexSessionHomesForStoppedSessions()
-
-	if _, ok := app.codexSessionHomes[stopped.ID]; ok {
-		t.Fatalf("stopped session home should be removed from registry: %#v", app.codexSessionHomes)
-	}
-	if _, err := os.Stat(stoppedHome); err != nil {
-		t.Fatalf("stopped persistent home should remain on disk, stat err=%v", err)
-	}
-	if _, ok := app.codexSessionHomes[running.ID]; !ok {
-		t.Fatalf("running session home should remain registered: %#v", app.codexSessionHomes)
-	}
-	if _, err := os.Stat(runningHome); err != nil {
-		t.Fatalf("running isolated home should remain, stat err=%v", err)
+	if envHasKeySet(result, "CODEX_HOME") {
+		t.Fatal("BuildEnv result should not contain CODEX_HOME")
 	}
 }
 
-func TestShutdownCleansAllRegisteredCodexHomes(t *testing.T) {
-	root := t.TempDir()
-	homeA := filepath.Join(root, "home-a")
-	homeB := filepath.Join(root, "home-b")
-	writeTestFile(t, filepath.Join(homeA, "config.toml"), []byte("a\n"))
-	writeTestFile(t, filepath.Join(homeB, "config.toml"), []byte("b\n"))
+// --- BuildEnv preserves pre-existing CODEX_HOME when not overridden ---
 
-	app := &App{
-		Log:               logging.NewService(t.TempDir()),
-		Launcher:          nil,
-		Pty:               nil,
-		Proxy:             nil,
-		Remote:            nil,
-		Tray:              nil,
-		codexSessionHomes: map[string]codexSessionHomeInfo{},
+func TestBuildEnv_PreservesPreExistingCODEXHOME(t *testing.T) {
+	origValue := `C:\Users\test\original-codex-home`
+	base := []string{
+		"PATH=C:\\Windows\\system32",
+		"CODEX_HOME=" + origValue,
 	}
-	t.Cleanup(app.Log.Close)
-
-	app.codexSessionHomes["sess-a"] = codexSessionHomeInfo{Path: homeA, HomeKey: "provider:a"}
-	app.codexSessionHomes["sess-b"] = codexSessionHomeInfo{Path: homeB, HomeKey: "provider:b"}
-
-	app.cleanupAllCodexSessionHomes()
-
-	if len(app.codexSessionHomes) != 0 {
-		t.Fatalf("all codex session homes should be removed from registry, got %#v", app.codexSessionHomes)
+	overrides := map[string]string{
+		"OPENAI_API_KEY": "sk-test",
 	}
-	if _, err := os.Stat(homeA); err != nil {
-		t.Fatalf("homeA should remain on disk, stat err=%v", err)
+
+	result := launcher.BuildEnv(base, overrides)
+
+	got := readEnvValue(result, "CODEX_HOME")
+	if got != origValue {
+		t.Fatalf("CODEX_HOME = %q, want %q (preserved from base env)", got, origValue)
 	}
-	if _, err := os.Stat(homeB); err != nil {
-		t.Fatalf("homeB should remain on disk, stat err=%v", err)
+}
+
+// --- BuildEnv: overrides do NOT inject CODEX_HOME ---
+
+func TestBuildEnv_NoCODEXHOMEInOverrides(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "HOME=/home/test"}
+	// Simulate the overrides map that LaunchCodexSession builds for OpenAI.
+	overrides := map[string]string{
+		"OPENAI_API_KEY":  "sk-key",
+		"OPENAI_BASE_URL": "https://api.test.example.com/v1",
+	}
+
+	result := launcher.BuildEnv(base, overrides)
+
+	if envHasKeySet(result, "CODEX_HOME") {
+		t.Fatal("BuildEnv should not contain CODEX_HOME when overrides don't set it and base doesn't have it")
+	}
+}
+
+// --- Verify fake codex.cmd is discoverable via PATH ---
+
+func TestFakeCodexIsDiscoverable(t *testing.T) {
+	binDir, _, _ := setupFakeCodex(t)
+
+	// exec.LookPath should find our codex.cmd.
+	path, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatalf("LookPath(codex) failed: %v", err)
+	}
+	// On Windows, LookPath may return the full path or relative path.
+	// Verify it's in our binDir.
+	if !strings.EqualFold(filepath.Dir(path), binDir) {
+		t.Fatalf("found codex at %q, expected in %q", path, binDir)
 	}
 }
