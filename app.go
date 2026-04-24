@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -64,6 +65,10 @@ type App struct {
 	Workspaces     *workspace.Service
 	Amagi          *amagi.Service
 	OpenCodeConfig *opencodeconfig.Service
+
+	// startupWarnings 记录启动期间的警告信息，供前端拉取后向用户展示。
+	startupWarnings   []string
+	startupWarningsMu sync.Mutex
 }
 
 func NewApp() *App {
@@ -238,6 +243,15 @@ func (a *App) Startup(ctx context.Context) {
 		a.Log.Warn("app", "加载配置失败，使用默认值", err.Error())
 	} else {
 		a.Log.Info("app", "配置加载成功")
+
+		// 自动迁移：将旧 provider.presets 迁移到 terminal_presets（幂等，不阻断启动）
+		if count, changed, migrateErr := a.Config.MigrateProviderPresetsToTerminal(); migrateErr != nil {
+			msg := fmt.Sprintf("旧预设自动迁移失败: %s。请前往设置 > 终端预设手动处理，或查看日志了解详情。", migrateErr.Error())
+			a.Log.Warn("app", "自动迁移 provider presets 失败", migrateErr.Error())
+			a.addStartupWarning(msg)
+		} else if changed {
+			a.Log.Info("app", "自动迁移完成", fmt.Sprintf("count=%d", count))
+		}
 	}
 	if err := a.Secrets.Load(); err != nil {
 		a.Log.Warn("app", "加载密钥失败", err.Error())
@@ -337,10 +351,38 @@ func (a *App) Shutdown(ctx context.Context) {
 func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, shellPath string) (string, error) {
 	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s proxy=%v shell=%s", providerName, presetName, mode, workDir, useProxy, shellPath))
 
+	// ---- terminal_presets 桥接 ----
+	// 先尝试用 presetName 作为 terminal_preset 的 stable key 查找新体系
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("claude_code", presetName)
+	tpFound := tpErr == nil && tp != nil
+	if tpFound {
+		// 新体系中 provider 以 tp.Provider 为准，参数中传入的 providerName 作为 fallback
+		if tpProvider != "" {
+			providerName = tpProvider
+		}
+		a.Log.Info("session", "命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", presetName, tpProvider, tp.Model))
+	}
+
 	provider, err := a.Config.GetProvider(providerName)
 	if err != nil {
 		a.Log.Error("session", "获取提供商失败", err.Error())
 		return "", fmt.Errorf("get provider: %w", err)
+	}
+	// 若命中 terminal preset，将其桥接为旧 config.Preset 注入 provider 副本
+	// 这样后续 BuildOverrides / Launch 走完整旧链路，model + parameters 全部生效
+	if tpFound {
+		provCopy := *provider
+		converted := config.Preset{
+			Name:       tp.Name,
+			Model:      tp.Model,
+			Parameters: tp.Parameters,
+		}
+		if provCopy.Presets == nil {
+			provCopy.Presets = map[string]config.Preset{}
+		}
+		provCopy.Presets[presetName] = converted
+		*provider = provCopy
+		a.Log.Info("session", "已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
 	}
 	if strings.EqualFold(provider.Type, "openai") || provider.AuthKey == "OPENAI_API_KEY" {
 		a.Log.Error("session", "ClaudeCode 不支持 OpenAI 类型提供商", "provider="+providerName)
@@ -368,10 +410,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 
 	agentTeams := a.Config.GetAgentTeams()
 
-	// 确定模型名称
-	preset, ok := provider.Presets[presetName]
+	// 模型名称：由 BuildOverrides 从 provider.Presets[presetName] 中读取
+	// （旧链路或已桥接的 terminal preset 均已注入 provider.Presets）
+	preset, hasPreset := provider.Presets[presetName]
 	model := provider.DefaultModel
-	if ok && preset.Model != "" {
+	if hasPreset && preset.Model != "" {
 		model = preset.Model
 	}
 
@@ -542,6 +585,34 @@ func (a *App) ClearStoppedSessions() int {
 // Codex 进程直接继承用户原始环境中的 Codex home，不做任何隔离或改写。
 func (a *App) LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
 	a.Log.Info("session", "启动 Codex 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
+
+	// ---- terminal_presets 桥接 ----
+	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("codex", modelName)
+	tpFound := tpErr == nil && tp != nil
+	if tpFound {
+		if tpProvider != "" {
+			providerID = tpProvider
+		}
+		modelName = tp.Model
+		a.Log.Info("session", "Codex 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
+	}
+
+	// ---- legacy provider preset fallback ----
+	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
+	// 旧 key 如 "default" 不是模型名，需要从 preset.Model 中解析真实模型名。
+	if !tpFound && providerID != "" {
+		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
+			if preset, ok := provider.Presets[modelName]; ok {
+				resolvedModel := preset.Model
+				if resolvedModel == "" {
+					resolvedModel = provider.DefaultModel
+				}
+				a.Log.Info("session", "Codex 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
+				modelName = resolvedModel
+			}
+		}
+	}
 
 	// 确定启动模式
 	launchMode := session.LaunchMode(mode)
@@ -744,6 +815,17 @@ func (a *App) GetProvidersByType(providerType string) map[string]config.Provider
 func (a *App) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
 	a.Log.Info("session", "启动 OpenCode 会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s shell=%s", providerName, presetName, mode, workDir, shellPath))
 
+	// ---- terminal_presets 桥接 ----
+	// presetName 可能是 terminal_preset 的 stable key
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
+	tpFound := tpErr == nil && tp != nil
+	if tpFound {
+		if tpProvider != "" {
+			providerName = tpProvider
+		}
+		a.Log.Info("session", "OpenCode 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s hasCfg=%v", presetName, tpProvider, tp.Model, len(tp.OpenCodeCfg) > 0))
+	}
+
 	var provider *config.Provider
 	envOverrides := map[string]string{}
 	if providerName != "" {
@@ -754,13 +836,32 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 		}
 		provider = loadedProvider
 
+		// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 副本
+		// 这样 BuildOpenCodeRuntimeConfig 按"默认生成 + opencode_config 深度合并"工作
+		if tpFound {
+			provCopy := *provider
+			converted := config.Preset{
+				Name:           tp.Name,
+				Model:          tp.Model,
+				Parameters:     tp.Parameters,
+				OpenCodeConfig: tp.OpenCodeCfg,
+			}
+			if provCopy.Presets == nil {
+				provCopy.Presets = map[string]config.Preset{}
+			}
+			provCopy.Presets[presetName] = converted
+			*provider = provCopy
+			a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
+		}
+
 		apiKey, keySource := a.Secrets.GetAPIKeyWithFallback(providerName)
 		if apiKey == "" {
 			a.Log.Error("session", "未找到 OpenCode API 密钥", "provider="+providerName)
 			return "", fmt.Errorf("no API key found for provider %q", providerName)
 		}
 
-		// 基于 Provider + Preset 生成 OPENCODE_CONFIG_CONTENT 注入
+		// 基于 Provider + Preset（含桥接后的 terminal preset）生成 OPENCODE_CONFIG_CONTENT 注入
+		// BuildOpenCodeRuntimeConfig 会按"默认生成 + opencode_config 深度合并"工作
 		ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
 		if err != nil {
 			a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
@@ -1117,6 +1218,26 @@ func (a *App) GetAppInfo() map[string]any {
 	}
 }
 
+// addStartupWarning 记录一条启动期间的警告，供前端通过 GetStartupWarnings 拉取。
+func (a *App) addStartupWarning(msg string) {
+	a.startupWarningsMu.Lock()
+	a.startupWarnings = append(a.startupWarnings, msg)
+	a.startupWarningsMu.Unlock()
+}
+
+// GetStartupWarnings 返回启动期间积累的警告信息列表。
+// 前端在 onMounted 中调用一次，用 toast 展示给用户。
+func (a *App) GetStartupWarnings() []string {
+	a.startupWarningsMu.Lock()
+	defer a.startupWarningsMu.Unlock()
+	if len(a.startupWarnings) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(a.startupWarnings))
+	copy(out, a.startupWarnings)
+	return out
+}
+
 func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {
 	return a.Updater.CheckForUpdate()
 }
@@ -1261,6 +1382,7 @@ func (a *App) ExportConfigToFile() (string, error) {
 	// 构建导出数据
 	providers := a.Config.GetProviders()
 	agentTeams := a.Config.GetAgentTeams()
+	terminalPresets := a.Config.GetAllTerminalPresets()
 
 	exportProviders := make(map[string]config.ExportProvider, len(providers))
 	for name, p := range providers {
@@ -1280,11 +1402,12 @@ func (a *App) ExportConfigToFile() (string, error) {
 	}
 
 	exportCfg := config.ExportConfig{
-		Version:    "1.0",
-		ExportedAt: time.Now().Format(time.RFC3339),
-		Source:     "amagi-codebox",
-		Providers:  exportProviders,
-		AgentTeams: agentTeams,
+		Version:         "1.0",
+		ExportedAt:      time.Now().Format(time.RFC3339),
+		Source:          "amagi-codebox",
+		Providers:       exportProviders,
+		AgentTeams:      agentTeams,
+		TerminalPresets: terminalPresets,
 	}
 
 	data, err := json.MarshalIndent(exportCfg, "", "  ")
@@ -1404,6 +1527,15 @@ func (a *App) ImportConfigFromFile() (string, error) {
 	if exportCfg.AgentTeams.TeammateMode != "" || exportCfg.AgentTeams.Enabled {
 		if err := a.Config.SetAgentTeams(exportCfg.AgentTeams); err != nil {
 			a.Log.Warn("app", "导入 AgentTeams 配置失败", err.Error())
+		}
+	}
+
+	// 导入 TerminalPresets 配置（如果存在）
+	if exportCfg.TerminalPresets != nil {
+		if err := a.Config.SetAllTerminalPresets(exportCfg.TerminalPresets); err != nil {
+			a.Log.Warn("app", "导入 TerminalPresets 配置失败", err.Error())
+		} else {
+			a.Log.Info("app", "TerminalPresets 已导入")
 		}
 	}
 
@@ -1745,4 +1877,47 @@ func (a *App) SaveOpenCodeConfig(content string) error {
 // GetOpenCodeConfigPath 返回全局 OpenCode 配置文件的绝对路径，供前端展示。
 func (a *App) GetOpenCodeConfigPath() (string, error) {
 	return a.OpenCodeConfig.GetOpenCodeConfigPath()
+}
+
+// --- 终端预设 API ---
+
+// GetTerminalPresets 获取指定终端类型的所有预设。
+func (a *App) GetTerminalPresets(terminalType string) (map[string]config.TerminalPreset, error) {
+	return a.Config.GetTerminalPresets(terminalType)
+}
+
+// SaveTerminalPreset 保存指定终端类型的预设。
+func (a *App) SaveTerminalPreset(terminalType string, presetName string, preset config.TerminalPreset) error {
+	return a.Config.SaveTerminalPreset(terminalType, presetName, preset)
+}
+
+// DeleteTerminalPreset 删除指定终端类型的预设。
+func (a *App) DeleteTerminalPreset(terminalType string, presetName string) error {
+	return a.Config.DeleteTerminalPreset(terminalType, presetName)
+}
+
+// MigrateProviderPresetsToTerminal 将旧的 provider.presets 迁移到 terminal_presets。
+// 返回 (迁移数量, error)。
+func (a *App) MigrateProviderPresetsToTerminal() (int, error) {
+	count, _, err := a.Config.MigrateProviderPresetsToTerminal()
+	return count, err
+}
+
+// GetMergedTerminalPresets 返回指定终端类型的合并预设列表（新体系优先，旧体系回退）。
+func (a *App) GetMergedTerminalPresets(terminalType string) ([]config.MergedTerminalPreset, error) {
+	return a.Config.GetMergedTerminalPresets(terminalType)
+}
+
+// ResolveTerminalPreset 按 terminal type + key 解析出 terminal preset 的详情。
+// 返回值: (providerName, model, hasOpenCodeCfg, openCodeCfgJSON, found)
+func (a *App) ResolveTerminalPreset(terminalType string, key string) (string, string, string, bool) {
+	provName, tp, err := a.Config.ResolveTerminalPreset(terminalType, key)
+	if err != nil || tp == nil {
+		return "", "", "", false
+	}
+	ocCfg := ""
+	if len(tp.OpenCodeCfg) > 0 {
+		ocCfg = string(tp.OpenCodeCfg)
+	}
+	return provName, tp.Model, ocCfg, true
 }

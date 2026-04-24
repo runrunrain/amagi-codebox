@@ -612,3 +612,55 @@ func TestFakeCodexIsDiscoverable(t *testing.T) {
 		t.Fatalf("found codex at %q, expected in %q", path, binDir)
 	}
 }
+
+// ============================================================================
+// C. Startup warnings mechanism
+// ============================================================================
+
+// TestGetStartupWarnings_Empty verifies that a freshly created app returns
+// an empty slice (not nil) from GetStartupWarnings.
+func TestGetStartupWarnings_Empty(t *testing.T) {
+	app := newTestApp(t)
+	warnings := app.GetStartupWarnings()
+	if warnings == nil {
+		t.Fatal("GetStartupWarnings should return empty slice, not nil")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected 0 warnings, got %d: %v", len(warnings), warnings)
+	}
+}
+
+// TestGetStartupWarnings_AfterAdd verifies that warnings recorded via
+// addStartupWarning are returned by GetStartupWarnings.
+func TestGetStartupWarnings_AfterAdd(t *testing.T) {
+	app := newTestApp(t)
+	app.addStartupWarning("first warning")
+	app.addStartupWarning("second warning")
+
+	warnings := app.GetStartupWarnings()
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d", len(warnings))
+	}
+	if warnings[0] != "first warning" {
+		t.Fatalf("warnings[0] = %q, want %q", warnings[0], "first warning")
+	}
+	if warnings[1] != "second warning" {
+		t.Fatalf("warnings[1] = %q, want %q", warnings[1], "second warning")
+	}
+}
+
+// TestGetStartupWarnings_ReturnsCopy verifies that the returned slice is
+// a copy and not a direct reference to the internal slice.
+func TestGetStartupWarnings_ReturnsCopy(t *testing.T) {
+	app := newTestApp(t)
+	app.addStartupWarning("original")
+
+	warnings := app.GetStartupWarnings()
+	warnings[0] = "mutated"
+
+	// Internal state should not be affected
+	again := app.GetStartupWarnings()
+	if again[0] != "original" {
+		t.Fatalf("internal state was mutated: got %q, want %q", again[0], "original")
+	}
+}

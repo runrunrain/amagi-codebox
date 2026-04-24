@@ -323,6 +323,223 @@ func (s *ConfigService) DeletePreset(providerName, presetName string) error {
 	return s.saveLocked()
 }
 
+// GetTerminalPresets 获取指定终端类型的所有预设。
+// 返回预设 map 的副本。
+func (s *ConfigService) GetTerminalPresets(terminalType string) (map[string]TerminalPreset, error) {
+	if !IsValidTerminalPresetType(terminalType) {
+		return nil, fmt.Errorf("invalid terminal preset type: %s (valid: claude_code, opencode, codex)", terminalType)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return nil, errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		return map[string]TerminalPreset{}, nil
+	}
+	m := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	if m == nil {
+		return map[string]TerminalPreset{}, nil
+	}
+	out := make(map[string]TerminalPreset, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// SaveTerminalPreset 保存指定终端类型的预设。
+func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, preset TerminalPreset) error {
+	if !IsValidTerminalPresetType(terminalType) {
+		return fmt.Errorf("invalid terminal preset type: %s", terminalType)
+	}
+	if presetName == "" {
+		return errors.New("preset name is required")
+	}
+	preset.NormalizeOpenCodeCfg()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		s.config.TerminalPresets = &TerminalPresetsConfig{}
+	}
+	m := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	if m == nil {
+		m = map[string]TerminalPreset{}
+	}
+	m[presetName] = preset
+	s.config.TerminalPresets.SetMap(TerminalPresetType(terminalType), m)
+	return s.saveLocked()
+}
+
+// DeleteTerminalPreset 删除指定终端类型的预设。
+func (s *ConfigService) DeleteTerminalPreset(terminalType, presetName string) error {
+	if !IsValidTerminalPresetType(terminalType) {
+		return fmt.Errorf("invalid terminal preset type: %s", terminalType)
+	}
+	if presetName == "" {
+		return errors.New("preset name is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		return nil
+	}
+	m := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	if m == nil {
+		return nil
+	}
+	delete(m, presetName)
+	s.config.TerminalPresets.SetMap(TerminalPresetType(terminalType), m)
+	return s.saveLocked()
+}
+
+// MigrateProviderPresetsToTerminal 将旧的 provider.presets 迁移到 terminal_presets。
+// 迁移规则：
+//   - target=codex 或无 target 的 anthropic provider presets -> claude_code 终端预设
+//   - target=opencode 的 presets -> opencode 终端预设
+//   - target=codex 或无 target 的 openai provider presets -> codex 终端预设
+//
+// 已存在的同名 terminal preset 不会被覆盖。
+// 返回 (迁移数量, 是否有变更, error)。
+func (s *ConfigService) MigrateProviderPresetsToTerminal() (int, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return 0, false, errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		s.config.TerminalPresets = &TerminalPresetsConfig{}
+	}
+
+	migrated := 0
+	changed := false
+
+	for provName, prov := range s.config.Models {
+		for presetName, preset := range prov.Presets {
+			target := preset.GetTarget()
+			isOpenAI := prov.Type == "openai" || prov.AuthKey == "OPENAI_API_KEY"
+
+			var termType TerminalPresetType
+			switch {
+			case target == PresetTargetOpenCode:
+				termType = TerminalPresetOpenCode
+			case isOpenAI:
+				termType = TerminalPresetCodex
+			default:
+				// anthropic + no target or target=codex -> claude_code
+				termType = TerminalPresetClaudeCode
+			}
+
+			tpMap := s.config.TerminalPresets.GetMap(termType)
+			if tpMap == nil {
+				tpMap = map[string]TerminalPreset{}
+			}
+
+			// 使用 provider/presetName 作为稳定 key，避免不同 provider 同名 preset 碰撞
+			stableKey := provName + "/" + presetName
+
+			// 不覆盖已存在的
+			if _, exists := tpMap[stableKey]; exists {
+				continue
+			}
+
+			// 规范化 legacy OpenCodeConfig：旧数据可能因前端双重编码而存储为 JSON 字符串，
+			// 迁移时解包为原始 JSON 对象，与 TerminalPreset.NormalizeOpenCodeCfg 行为一致。
+			preset.NormalizeOpenCodeConfig()
+
+			tpMap[stableKey] = TerminalPreset{
+				Name:        preset.Name,
+				Provider:    provName,
+				Model:       preset.Model,
+				Parameters:  preset.Parameters,
+				OpenCodeCfg: preset.OpenCodeConfig,
+			}
+			s.config.TerminalPresets.SetMap(termType, tpMap)
+			migrated++
+			changed = true
+		}
+	}
+
+	if changed {
+		if err := s.saveLocked(); err != nil {
+			return migrated, changed, fmt.Errorf("save after migration: %w", err)
+		}
+	}
+	return migrated, changed, nil
+}
+
+// GetAllTerminalPresets 返回完整的终端预设配置（用于导出）。
+func (s *ConfigService) GetAllTerminalPresets() *TerminalPresetsConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil || s.config.TerminalPresets == nil {
+		return nil
+	}
+	// Deep copy
+	cp := &TerminalPresetsConfig{}
+	if s.config.TerminalPresets.ClaudeCode != nil {
+		cp.ClaudeCode = make(map[string]TerminalPreset, len(s.config.TerminalPresets.ClaudeCode))
+		for k, v := range s.config.TerminalPresets.ClaudeCode {
+			cp.ClaudeCode[k] = v
+		}
+	}
+	if s.config.TerminalPresets.OpenCode != nil {
+		cp.OpenCode = make(map[string]TerminalPreset, len(s.config.TerminalPresets.OpenCode))
+		for k, v := range s.config.TerminalPresets.OpenCode {
+			cp.OpenCode[k] = v
+		}
+	}
+	if s.config.TerminalPresets.Codex != nil {
+		cp.Codex = make(map[string]TerminalPreset, len(s.config.TerminalPresets.Codex))
+		for k, v := range s.config.TerminalPresets.Codex {
+			cp.Codex[k] = v
+		}
+	}
+	return cp
+}
+
+// SetAllTerminalPresets 批量设置终端预设配置（用于导入）。
+// 采用 merge 策略：不删除已有的 key，仅覆盖同名 key 和添加新 key。
+func (s *ConfigService) SetAllTerminalPresets(tp *TerminalPresetsConfig) error {
+	if tp == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		s.config.TerminalPresets = &TerminalPresetsConfig{}
+	}
+	for k, v := range tp.ClaudeCode {
+		if s.config.TerminalPresets.ClaudeCode == nil {
+			s.config.TerminalPresets.ClaudeCode = map[string]TerminalPreset{}
+		}
+		s.config.TerminalPresets.ClaudeCode[k] = v
+	}
+	for k, v := range tp.OpenCode {
+		if s.config.TerminalPresets.OpenCode == nil {
+			s.config.TerminalPresets.OpenCode = map[string]TerminalPreset{}
+		}
+		s.config.TerminalPresets.OpenCode[k] = v
+	}
+	for k, v := range tp.Codex {
+		if s.config.TerminalPresets.Codex == nil {
+			s.config.TerminalPresets.Codex = map[string]TerminalPreset{}
+		}
+		s.config.TerminalPresets.Codex[k] = v
+	}
+	return s.saveLocked()
+}
+
 func (s *ConfigService) GetAgentTeams() AgentTeamsConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -340,6 +557,127 @@ func (s *ConfigService) SetAgentTeams(config AgentTeamsConfig) error {
 	}
 	s.config.AgentTeams = config
 	return s.saveLocked()
+}
+
+// MergedTerminalPreset 合并后的终端预设，供 Dashboard 展示用。
+// 优先使用 terminal_presets（新体系），按 provider 分组回退到 provider.presets（旧体系）。
+type MergedTerminalPreset struct {
+	Key         string `json:"key"`         // 稳定 key（用于读写后端）
+	Label       string `json:"label"`       // 友好展示名
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Source      string `json:"source"` // "terminal_preset" 或 "provider_preset"
+}
+
+// GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
+// terminal_presets 优先；若某个 provider 在新体系中没有预设，则回退到旧 provider.presets。
+func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedTerminalPreset, error) {
+	if !IsValidTerminalPresetType(terminalType) {
+		return nil, fmt.Errorf("invalid terminal preset type: %s", terminalType)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return nil, errors.New("config not loaded")
+	}
+
+	tt := TerminalPresetType(terminalType)
+	var result []MergedTerminalPreset
+
+	// 1. 先从 terminal_presets 读取（新体系，优先）
+	if s.config.TerminalPresets != nil {
+		tpMap := s.config.TerminalPresets.GetMap(tt)
+		for key, tp := range tpMap {
+			label := tp.Name
+			if label == "" {
+				label = key
+			}
+			result = append(result, MergedTerminalPreset{
+				Key:      key,
+				Label:    label,
+				Provider: tp.Provider,
+				Model:    tp.Model,
+				Source:   "terminal_preset",
+			})
+		}
+	}
+
+	// 2. 收集已有 terminal_preset 的 (provider, key) 对
+	seen := make(map[string]bool) // "provider/key"
+	for _, mp := range result {
+		seen[mp.Provider+"/"+mp.Key] = true
+	}
+
+	// 3. 回退到 provider.presets（旧体系），补充未在新体系中出现的预设
+	for provName, prov := range s.config.Models {
+		for presetName, preset := range prov.Presets {
+			target := preset.GetTarget()
+			isOpenAI := prov.Type == "openai" || prov.AuthKey == "OPENAI_API_KEY"
+
+			var expectedType TerminalPresetType
+			switch {
+			case target == PresetTargetOpenCode:
+				expectedType = TerminalPresetOpenCode
+			case isOpenAI:
+				expectedType = TerminalPresetCodex
+			default:
+				expectedType = TerminalPresetClaudeCode
+			}
+
+			if expectedType != tt {
+				continue
+			}
+
+			stableKey := provName + "/" + presetName
+			if seen[stableKey] {
+				continue // 已在新体系中
+			}
+
+			label := preset.Name
+			if label == "" {
+				label = presetName
+			}
+			result = append(result, MergedTerminalPreset{
+				Key:      stableKey,
+				Label:    label,
+				Provider: provName,
+				Model:    preset.Model,
+				Source:   "provider_preset",
+			})
+		}
+	}
+
+	if result == nil {
+		result = []MergedTerminalPreset{}
+	}
+	return result, nil
+}
+
+// ResolveTerminalPreset 按 terminal type + stable key 解析出实际的 TerminalPreset。
+// 用于启动链：先查新体系，返回 (providerName, *TerminalPreset)。
+// 若 key 不在新体系中则返回 ("", nil)。
+func (s *ConfigService) ResolveTerminalPreset(terminalType, key string) (string, *TerminalPreset, error) {
+	if !IsValidTerminalPresetType(terminalType) {
+		return "", nil, fmt.Errorf("invalid terminal preset type: %s", terminalType)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return "", nil, errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		return "", nil, nil
+	}
+	tpMap := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	if tpMap == nil {
+		return "", nil, nil
+	}
+	tp, ok := tpMap[key]
+	if !ok {
+		return "", nil, nil
+	}
+	cp := tp // shallow copy
+	return cp.Provider, &cp, nil
 }
 
 // GetUrlHistory 获取指定Provider的URL历史

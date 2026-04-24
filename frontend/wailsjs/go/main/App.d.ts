@@ -77,6 +77,16 @@ export function GetProvidersByType(arg1:string):Promise<Record<string, config.Pr
 
 export function GetProxyBackendURLHistory():Promise<Array<string>>;
 
+export function GetTerminalPresets(arg1:string):Promise<Record<string, config.TerminalPreset>>;
+
+export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
+
+export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
+
+export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
+
+export function MigrateProviderPresetsToTerminal():Promise<number>;
+
 export function GetPtyDimensions(arg1:string):Promise<number>;
 
 export function GetRemoteStatus():Promise<Record<string, any>>;
@@ -88,6 +98,8 @@ export function GetSession(arg1:string):Promise<session.SessionInfo>;
 export function GetSessions():Promise<Array<session.SessionInfo>>;
 
 export function GetSettingsService():Promise<settings.Service>;
+
+export function GetStartupWarnings():Promise<Array<string>>;
 
 export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 

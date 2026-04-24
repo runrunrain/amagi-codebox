@@ -107,6 +107,109 @@ func (p *Preset) NormalizeOpenCodeConfig() {
 	}
 }
 
+// TerminalPresetType 定义终端预设的目标 CLI 类型
+// 与 PresetTargetType 不同，这是终端维度的独立容器标识。
+type TerminalPresetType string
+
+const (
+	// TerminalPresetClaudeCode 表示 Claude Code 终端预设
+	TerminalPresetClaudeCode TerminalPresetType = "claude_code"
+	// TerminalPresetOpenCode 表示 OpenCode 终端预设
+	TerminalPresetOpenCode TerminalPresetType = "opencode"
+	// TerminalPresetCodex 表示 Codex 终端预设
+	TerminalPresetCodex TerminalPresetType = "codex"
+)
+
+// ValidTerminalPresetTypes 返回所有合法的终端预设类型
+func ValidTerminalPresetTypes() []TerminalPresetType {
+	return []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex}
+}
+
+// IsValidTerminalPresetType 检查给定类型是否合法
+func IsValidTerminalPresetType(t string) bool {
+	for _, vt := range ValidTerminalPresetTypes() {
+		if string(vt) == t {
+			return true
+		}
+	}
+	return false
+}
+
+// TerminalPreset 终端预设配置。
+// 独立于 Provider，按终端维度管理预设。
+// 每个 TerminalPreset 关联一个 provider（而非内嵌于 provider 内部）。
+type TerminalPreset struct {
+	Name        string           `json:"name"`         // 预设显示名称
+	Provider    string           `json:"provider"`     // 关联的 provider 名称（如 "anthropic", "openai"）
+	Model       string           `json:"model"`        // 模型名称（可覆盖 provider 默认值）
+	Parameters  Parameters       `json:"parameters"`   // 模型参数
+	OpenCodeCfg json.RawMessage  `json:"opencode_cfg,omitempty"` // OpenCode 运行时 overlay（仅 opencode 类型使用）
+}
+
+// NormalizeOpenCodeCfg 确保 OpenCodeCfg 存储为原始 JSON 对象。
+func (tp *TerminalPreset) NormalizeOpenCodeCfg() {
+	if len(tp.OpenCodeCfg) == 0 {
+		tp.OpenCodeCfg = nil
+		return
+	}
+	trimmed := strings.TrimSpace(string(tp.OpenCodeCfg))
+	if len(trimmed) == 0 {
+		tp.OpenCodeCfg = nil
+		return
+	}
+	if trimmed[0] == '"' {
+		var unwrapped string
+		if err := json.Unmarshal([]byte(trimmed), &unwrapped); err == nil {
+			unwrappedTrimmed := strings.TrimSpace(unwrapped)
+			if len(unwrappedTrimmed) > 0 && unwrappedTrimmed[0] == '"' {
+				tp.OpenCodeCfg = json.RawMessage(unwrapped)
+				tp.NormalizeOpenCodeCfg()
+				return
+			}
+			tp.OpenCodeCfg = json.RawMessage(unwrapped)
+		}
+	}
+}
+
+// TerminalPresetsConfig 终端预设容器，按终端类型分组。
+// 存储于 AppConfig.TerminalPresets。
+type TerminalPresetsConfig struct {
+	ClaudeCode map[string]TerminalPreset `json:"claude_code,omitempty"`
+	OpenCode   map[string]TerminalPreset `json:"opencode,omitempty"`
+	Codex      map[string]TerminalPreset `json:"codex,omitempty"`
+}
+
+// GetMap 按 TerminalPresetType 返回对应的预设 map。
+func (tpc *TerminalPresetsConfig) GetMap(terminalType TerminalPresetType) map[string]TerminalPreset {
+	if tpc == nil {
+		return nil
+	}
+	switch terminalType {
+	case TerminalPresetClaudeCode:
+		return tpc.ClaudeCode
+	case TerminalPresetOpenCode:
+		return tpc.OpenCode
+	case TerminalPresetCodex:
+		return tpc.Codex
+	}
+	return nil
+}
+
+// SetMap 按 TerminalPresetType 设置对应的预设 map。
+func (tpc *TerminalPresetsConfig) SetMap(terminalType TerminalPresetType, m map[string]TerminalPreset) {
+	if tpc == nil {
+		return
+	}
+	switch terminalType {
+	case TerminalPresetClaudeCode:
+		tpc.ClaudeCode = m
+	case TerminalPresetOpenCode:
+		tpc.OpenCode = m
+	case TerminalPresetCodex:
+		tpc.Codex = m
+	}
+}
+
 // Provider 服务商配置
 type Provider struct {
 	Type         string            `json:"type,omitempty"` // "anthropic"（默认）或 "openai"
@@ -132,18 +235,20 @@ type AgentTeamsConfig struct {
 
 // AppConfig 应用总配置（对应 models.json 根结构）
 type AppConfig struct {
-	Models     map[string]Provider `json:"models"`
-	AgentTeams AgentTeamsConfig    `json:"agent_teams"`
-	Version    string              `json:"version"`
+	Models         map[string]Provider    `json:"models"`
+	AgentTeams     AgentTeamsConfig       `json:"agent_teams"`
+	TerminalPresets *TerminalPresetsConfig `json:"terminal_presets,omitempty"`
+	Version        string                 `json:"version"`
 }
 
 // ExportConfig 导出配置的根结构
 type ExportConfig struct {
-	Version    string                    `json:"version"`
-	ExportedAt string                    `json:"exported_at"`
-	Source     string                    `json:"source"`
-	Providers  map[string]ExportProvider `json:"providers"`
-	AgentTeams AgentTeamsConfig          `json:"agent_teams"`
+	Version         string                    `json:"version"`
+	ExportedAt      string                    `json:"exported_at"`
+	Source          string                    `json:"source"`
+	Providers       map[string]ExportProvider `json:"providers"`
+	AgentTeams      AgentTeamsConfig          `json:"agent_teams"`
+	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
 }
 
 // ExportProvider 导出时的提供商配置（含 API key 明文）

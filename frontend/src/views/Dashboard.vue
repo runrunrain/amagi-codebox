@@ -191,7 +191,7 @@
               <label>预设配置</label>
               <select v-model="selectedPreset" class="input-field" :disabled="!hasPresets">
                 <option v-for="(preset, name) in availablePresets" :key="name" :value="name">
-                  {{ name }} ({{ preset.model }})
+                  {{ preset.name || name }} ({{ preset.model }})
                 </option>
               </select>
             </div>
@@ -309,7 +309,7 @@
               <select v-model="selectedOpenCodePreset" class="input-field" :disabled="!selectedOpenCodeProvider || !hasOpenCodePresets">
                 <option value="">不指定（默认配置）</option>
                 <option v-for="(preset, name) in openCodeAvailablePresets" :key="name" :value="name">
-                  {{ name }}{{ preset.model ? ` (${preset.model})` : '' }}
+                  {{ preset.name || name }}{{ preset.model ? ` (${preset.model})` : '' }}
                 </option>
               </select>
             </div>
@@ -417,8 +417,8 @@
             <div class="form-group flex-1">
               <label>模型</label>
               <select v-model="selectedCodexModel" class="input-field" :disabled="!selectedCodexProvider">
-                <option v-for="model in codexAvailableModels" :key="model" :value="model">
-                  {{ model }}
+                <option v-for="key in codexAvailableModels" :key="key" :value="key">
+                  {{ codexAvailablePresets[key]?.name || key }}{{ codexAvailablePresets[key]?.model ? ` (${codexAvailablePresets[key].model})` : '' }}
                 </option>
               </select>
             </div>
@@ -621,16 +621,7 @@
 <script lang="ts" setup>
 import { ref, computed, onMounted, onUnmounted, watch, toRef } from 'vue'
 import { useRouter } from 'vue-router'
-import { LaunchSession, StopSession, StopAllSessions, GetSessions, RemoveSession, ClearStoppedSessions, BrowseDirectory, GetAmagiSettings, LaunchAmagiCode } from '../../wailsjs/go/main/App'
-
-// Codex API -- bindings will be auto-generated after wails build;
-// use window.go fallback for now to avoid import errors before regeneration
-const LaunchCodexSession = (modelName: string, providerID: string, mode: string, workDir: string, shellPath: string): Promise<string> =>
-  (window as any)['go']['main']['App']['LaunchCodexSession'](modelName, providerID, mode, workDir, shellPath)
-
-// OpenCode uses wails binding with 5 args: (providerName, presetName, mode, workDir, shellPath)
-const LaunchOpenCodeWithProvider = (providerName: string, presetName: string, mode: string, workDir: string, shellPath: string): Promise<string> =>
-  (window as any)['go']['main']['App']['LaunchOpenCode'](providerName, presetName, mode, workDir, shellPath)
+import { LaunchSession, StopSession, StopAllSessions, GetSessions, RemoveSession, ClearStoppedSessions, BrowseDirectory, GetAmagiSettings, LaunchAmagiCode, LaunchCodexSession, LaunchOpenCode, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
 
 import { GetProviders } from '../../wailsjs/go/config/ConfigService'
 import { GetStatus as GetProxyStatus } from '../../wailsjs/go/proxy/ProxyService'
@@ -649,6 +640,11 @@ const proxyStatus = ref<proxy.ProxyStatus | null>(null)
 const sessions = ref<any[]>([])
 const workspaces = ref<workspace.Workspace[]>([])
 
+// Merged terminal presets (new system priority + old provider.presets fallback)
+interface MergedPresetEntry { key: string; label: string; provider: string; model: string; source: string }
+const mergedClaudeCodePresets = ref<MergedPresetEntry[]>([])
+const mergedOpenCodePresets = ref<MergedPresetEntry[]>([])
+const mergedCodexPresets = ref<MergedPresetEntry[]>([])
 // 使用共享状态（跨路由保持）
 const selectedProvider = toRef(dashState, 'provider')
 const selectedPreset = toRef(dashState, 'preset')
@@ -715,42 +711,77 @@ const openCodeProviders = computed(() => {
   return result
 })
 
-// OpenCode presets: filter to only show presets with target=opencode
+// OpenCode presets: terminal_presets (new, stable key) + provider.presets (old, original name)
 const openCodeAvailablePresets = computed(() => {
+  const result: Record<string, config.Preset> = {}
+
+  // 1. Old provider.presets (保持旧 key，已在 provider.presets 中)
   const prov = openCodeProviders.value[selectedOpenCodeProvider.value]
-  if (!prov || !prov.presets) return {}
-  const result: Record<string, config.Preset> = {}
-  for (const [name, preset] of Object.entries(prov.presets)) {
-    if (preset.target === 'opencode') {
-      result[name] = preset
+  if (prov && prov.presets) {
+    for (const [name, preset] of Object.entries(prov.presets)) {
+      if (preset.target === 'opencode') {
+        result[name] = preset
+      }
     }
   }
+
+  // 2. New terminal_presets only (source=terminal_preset, stable key，优先)
+  //    不注入 source=provider_preset 的旧项，避免与步骤1重复
+  for (const mp of mergedOpenCodePresets.value) {
+    if (mp.source === 'terminal_preset' && mp.provider === selectedOpenCodeProvider.value) {
+      result[mp.key] = { name: mp.label, model: mp.model, target: 'opencode' } as config.Preset
+    }
+  }
+
   return result
 })
 
-// Codex presets: filter to only show presets with target=codex or empty target
+// Codex presets: terminal_presets (new, stable key) + provider.presets (old, original name)
 const codexAvailablePresetsFiltered = computed(() => {
-  if (!selectedCodexProvider.value || !openaiProviders.value[selectedCodexProvider.value]) return {}
-  const presets = openaiProviders.value[selectedCodexProvider.value].presets || {}
   const result: Record<string, config.Preset> = {}
-  for (const [name, preset] of Object.entries(presets)) {
-    if (!preset.target || preset.target === 'codex') {
-      result[name] = preset
+
+  // 1. Old provider.presets (保持旧 key)
+  if (selectedCodexProvider.value && openaiProviders.value[selectedCodexProvider.value]) {
+    const presets = openaiProviders.value[selectedCodexProvider.value].presets || {}
+    for (const [name, preset] of Object.entries(presets)) {
+      if (!preset.target || preset.target === 'codex') {
+        result[name] = preset
+      }
     }
   }
+
+  // 2. New terminal_presets only (source=terminal_preset, stable key，优先)
+  for (const mp of mergedCodexPresets.value) {
+    if (mp.source === 'terminal_preset' && mp.provider === selectedCodexProvider.value) {
+      result[mp.key] = { name: mp.label, model: mp.model } as config.Preset
+    }
+  }
+
   return result
 })
 
-// ClaudeCode presets: filter to only show presets with target=codex or empty target
+// ClaudeCode presets: terminal_presets (new, stable key) + provider.presets (old, original name)
 const claudeCodeAvailablePresets = computed(() => {
-  if (!selectedProvider.value || !providers.value[selectedProvider.value]) return {}
-  const presets = providers.value[selectedProvider.value].presets || {}
   const result: Record<string, config.Preset> = {}
-  for (const [name, preset] of Object.entries(presets)) {
-    if (!preset.target || preset.target === 'codex') {
-      result[name] = preset
+
+  // 1. Old provider.presets (保持旧 key -- 原 preset name)
+  if (selectedProvider.value && providers.value[selectedProvider.value]) {
+    const presets = providers.value[selectedProvider.value].presets || {}
+    for (const [name, preset] of Object.entries(presets)) {
+      if (!preset.target || preset.target === 'codex') {
+        result[name] = preset
+      }
     }
   }
+
+  // 2. New terminal_presets only (source=terminal_preset, stable key，优先)
+  //    不注入 source=provider_preset 的旧项，避免与步骤1重复
+  for (const mp of mergedClaudeCodePresets.value) {
+    if (mp.source === 'terminal_preset' && mp.provider === selectedProvider.value) {
+      result[mp.key] = { name: mp.label, model: mp.model } as config.Preset
+    }
+  }
+
   return result
 })
 
@@ -759,8 +790,8 @@ const codexAvailablePresets = computed(() => {
 })
 
 const codexAvailableModels = computed(() => {
-  const presets = codexAvailablePresets.value
-  return Object.values(presets).map(p => p.model).filter(Boolean)
+  // 返回 preset key 列表（stable key），后端用此解析 terminal_preset
+  return Object.keys(codexAvailablePresets.value)
 })
 
 // AmagiCode 预设组（从 settings_amagi.json 的 modelPresets，现在是 ModelPresetGroup）
@@ -945,6 +976,21 @@ const loadShellPaths = async () => {
   }
 }
 
+const loadTerminalPresets = async () => {
+  try {
+    const [claude, opencode, codex] = await Promise.all([
+      GetMergedTerminalPresets('claude_code'),
+      GetMergedTerminalPresets('opencode'),
+      GetMergedTerminalPresets('codex'),
+    ])
+    mergedClaudeCodePresets.value = claude || []
+    mergedOpenCodePresets.value = opencode || []
+    mergedCodexPresets.value = codex || []
+  } catch (err) {
+    console.error('Failed to load terminal presets:', err)
+  }
+}
+
 const loadProviders = async () => {
   try {
     providers.value = await GetProviders()
@@ -1094,7 +1140,7 @@ const handleLaunchOpenCode = async () => {
   loading.value = true
   try {
     const shellPath = openCodeMode.value === 'embedded' ? resolveOpenCodeShellPath() : ''
-    const sessionId = await LaunchOpenCodeWithProvider(
+    const sessionId = await LaunchOpenCode(
       selectedOpenCodeProvider.value,
       selectedOpenCodePreset.value,
       openCodeMode.value,
@@ -1287,6 +1333,7 @@ function statusLabel(status: string): string {
 
 onMounted(async () => {
   await loadProviders()
+  await loadTerminalPresets()
   await loadAmagiSettings()
   await initDefaults()
   await loadPaths()

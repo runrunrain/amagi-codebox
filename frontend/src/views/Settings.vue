@@ -46,7 +46,7 @@
                   <select v-model="defaults.preset" class="input-field" :disabled="!defaults.provider">
                     <option value="">（不指定）</option>
                     <option v-for="(preset, name) in availablePresets" :key="name" :value="name">
-                      {{ name }} ({{ preset.model }})
+                      {{ preset.name || name }} ({{ preset.model }})
                     </option>
                   </select>
                 </div>
@@ -134,6 +134,167 @@
             <button class="btn primary" @click="saveDefaults" :disabled="saving">
               {{ saving ? '保存中...' : '保存默认配置' }}
             </button>
+          </div>
+        </div>
+
+        <!-- 终端预设 -->
+        <div v-if="activeTab === 'terminal-presets'" key="terminal-presets" class="settings-section">
+          <div class="section-header">
+            <div>
+              <h2>终端预设</h2>
+              <p>按终端维度管理 Claude Code / OpenCode / Codex 的启动预设。此处预设独立于 Provider，关联具体服务商。</p>
+            </div>
+            <div>
+              <button class="btn small" @click="handleMigratePresets" :disabled="migratingPresets">
+                {{ migratingPresets ? '迁移中...' : '从旧 Provider 预设迁移' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h3 class="group-header">终端类型</h3>
+            <div class="engine-tabs">
+              <button
+                v-for="tt in tpTerminalTypes"
+                :key="tt.value"
+                class="engine-tab"
+                :class="{ active: tpActiveType === tt.value }"
+                @click="tpActiveType = tt.value"
+              >{{ tt.label }}</button>
+            </div>
+          </div>
+
+          <div class="group-separator"></div>
+
+          <div class="setting-group">
+            <div class="tp-section-header">
+              <h3 class="group-header">{{ tpActiveTypeLabel }} 预设列表</h3>
+              <button class="btn primary small" @click="tpOpenAdd">+ 添加预设</button>
+            </div>
+
+            <div class="tp-presets-list" v-if="tpCurrentPresets.length > 0">
+              <div class="card tp-preset-card" v-for="p in tpCurrentPresets" :key="p.name">
+                <div class="tp-preset-header">
+                  <div>
+                    <strong class="tp-preset-name">{{ p.label || p.name }}</strong>
+                    <span class="tp-preset-provider">Provider: {{ p.provider }}</span>
+                  </div>
+                  <div class="tp-preset-actions">
+                    <button class="btn-icon" @click="tpOpenEdit(p)" title="编辑">
+                      <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                      </svg>
+                    </button>
+                    <button class="btn-icon danger" @click="tpHandleDelete(p.name)" title="删除">
+                      <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="tp-preset-body">
+                  <span class="param-badge" v-if="p.model">Model: {{ p.model }}</span>
+                  <span class="param-badge" v-if="p.parameters?.temperature !== undefined">Temp: {{ p.parameters.temperature }}</span>
+                  <span class="param-badge" v-if="p.parameters?.top_p !== undefined">Top P: {{ p.parameters.top_p }}</span>
+                  <span class="param-badge" v-if="p.parameters?.max_tokens">Max Tokens: {{ p.parameters.max_tokens }}</span>
+                  <span class="param-badge" v-if="p.parameters?.stream !== undefined">{{ p.parameters.stream ? 'Stream' : 'No Stream' }}</span>
+                  <span class="param-badge" v-if="p.parameters?.thinking?.type === 'enabled'">Thinking{{ p.parameters.thinking.budgetTokens ? ' (' + p.parameters.thinking.budgetTokens + ')' : '' }}</span>
+                  <span class="param-badge" v-if="p.parameters?.context_window?.model_context_window">Window: {{ p.parameters.context_window.model_context_window }}</span>
+                  <span class="param-badge" v-if="p.parameters?.context_window?.model_auto_compact_token_limit">Compact@: {{ p.parameters.context_window.model_auto_compact_token_limit }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="empty-state" v-else>
+              <span>暂无 {{ tpActiveTypeLabel }} 预设。点击"添加预设"或从旧 Provider 预设迁移。</span>
+            </div>
+          </div>
+
+          <!-- Terminal Preset Dialog -->
+          <div class="dialog-overlay" v-if="tpShowDialog" @click.self="tpShowDialog = false">
+            <div class="dialog card" style="max-width: 520px;">
+              <h2>{{ tpIsEditing ? '编辑' : '添加' }} {{ tpActiveTypeLabel }} 预设</h2>
+              <div class="dialog-scroll-area">
+                <div class="form-group" v-if="!tpIsEditing">
+                  <label>预设名称</label>
+                  <input type="text" v-model="tpEditing.label" class="input-field" placeholder="例如: default, coding" />
+                </div>
+                <div class="form-group">
+                  <label>关联 Provider</label>
+                  <div class="select-wrapper">
+                    <select v-model="tpEditing.provider" class="input-field">
+                      <option v-for="(_, pName) in tpCompatibleProviders" :key="pName" :value="pName">{{ pName }}</option>
+                    </select>
+                  </div>
+                  <p v-if="Object.keys(tpCompatibleProviders).length === 0" class="tp-compat-warning">当前终端类型无可用的兼容 Provider，请先在服务提供商页面添加对应类型的 Provider。</p>
+                </div>
+                <div class="form-group">
+                  <label>模型 (留空使用 Provider 默认值)</label>
+                  <input type="text" v-model="tpEditing.model" class="input-field" placeholder="例如: claude-sonnet-4-6" />
+                </div>
+                <div class="form-grid-2">
+                  <div class="form-group">
+                    <label>Temperature</label>
+                    <input type="number" v-model.number="tpEditing.parameters.temperature" class="input-field" step="0.1" min="0" max="1" placeholder="默认" />
+                  </div>
+                  <div class="form-group">
+                    <label>Top P</label>
+                    <input type="number" v-model.number="tpEditing.parameters.top_p" class="input-field" step="0.1" min="0" max="1" placeholder="默认" />
+                  </div>
+                  <div class="form-group">
+                    <label>Max Tokens</label>
+                    <input type="number" v-model.number="tpEditing.parameters.max_tokens" class="input-field" step="1" min="1" placeholder="默认" />
+                  </div>
+                  <div class="form-group">
+                    <label>Stream</label>
+                    <div class="select-wrapper">
+                      <select v-model="tpStreamValue" class="input-field">
+                        <option value="">默认</option>
+                        <option value="true">启用</option>
+                        <option value="false">禁用</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-grid-2" style="margin-top: 12px;">
+                  <div class="form-group">
+                    <label>Thinking 模式</label>
+                    <div class="select-wrapper">
+                      <select v-model="tpThinkingType" class="input-field">
+                        <option value="">默认 (不配置)</option>
+                        <option value="disabled">禁用</option>
+                        <option value="enabled">启用</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="form-group" v-if="tpThinkingType === 'enabled'">
+                    <label>Thinking Budget Tokens</label>
+                    <input type="number" v-model.number="tpThinkingBudget" class="input-field" step="1" min="1024" placeholder="例如: 16384" />
+                  </div>
+                </div>
+
+                <div class="tp-section-divider"></div>
+
+                <div class="form-grid-2">
+                  <div class="form-group">
+                    <label>Context Window (上下文窗口大小)</label>
+                    <input type="number" v-model.number="tpContextWindow" class="input-field" step="1" min="1" placeholder="默认" />
+                  </div>
+                  <div class="form-group">
+                    <label>Auto Compact Threshold (自动压缩阈值)</label>
+                    <input type="number" v-model.number="tpCompactLimit" class="input-field" step="1" min="1" placeholder="默认" />
+                  </div>
+                </div>
+              </div>
+              <div class="dialog-actions">
+                <button class="btn secondary" @click="tpShowDialog = false">取消</button>
+                <button class="btn primary" @click="tpHandleSave" :disabled="(!tpEditing.label && !tpEditing.name) || !tpEditing.provider">
+                  保存
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -236,13 +397,24 @@
             <span v-if="ocHasUnsavedChanges" class="opencode-unsaved-badge">未保存的更改</span>
             <span class="oc-validation" :class="ocValidationClass">{{ ocValidationText }}</span>
             <span v-if="ocSwitchBlocked" class="oc-switch-warning">JSON 非法，无法切换模式</span>
-            <span v-if="ocHasSubJsonErrors && ocEditMode === 'visual'" class="oc-switch-warning">部分 JSON 字段格式有误，请修正后再保存或切换模式</span>
           </div>
 
           <div class="group-separator"></div>
 
           <!-- ========== VISUAL MODE ========== -->
           <div v-if="ocEditMode === 'visual'" class="oc-visual-mode">
+
+            <!-- Sub-JSON parse errors warning banner -->
+            <div v-if="ocHasSubJsonErrors" class="oc-sub-error-banner">
+              <span class="oc-sub-error-icon">!</span>
+              <div class="oc-sub-error-content">
+                <div class="oc-sub-error-title">存在字段解析错误，保存已被阻止</div>
+                <div v-for="(msg, field) in ocSubJsonErrors" :key="field" class="oc-sub-error-item">
+                  <span class="oc-sub-error-field">{{ field }}</span>: {{ msg }}
+                </div>
+                <div class="oc-sub-error-hint">Experimental 值的错误会在输入框下方直接显示；内部保真字段的错误请切换到 JSON 模式修复。修正所有错误后可正常保存。</div>
+              </div>
+            </div>
 
             <!-- $schema -->
             <div class="oc-section" v-if="ocSchemaValue">
@@ -285,23 +457,7 @@
                       <input type="text" v-model="prov.baseURL" class="input-field monospace" placeholder="https://api.anthropic.com" @input="ocGuiToRaw" />
                     </div>
                   </div>
-                  <div class="form-group">
-                    <label>Options 额外字段 (JSON, 不含 apiKey/baseURL)</label>
-                    <textarea v-model="prov.optionsExtraRaw" class="input-field monospace oc-mini-textarea" rows="3" placeholder='{"store": true, "thinking": {"type": "enabled", "budgetTokens": 10000}, "enable_search": true}' @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`provider.${prov.name}.optionsExtra`]">JSON 格式错误: {{ ocSubJsonErrors[`provider.${prov.name}.optionsExtra`] }}</span>
-                    <span class="field-desc">provider.options 内除 apiKey/baseURL 外的其它字段，如 store, thinking, enable_thinking 等</span>
-                  </div>
-                  <div class="form-group">
-                    <label>Models (JSON 对象)</label>
-                    <textarea v-model="prov.modelsRaw" class="input-field monospace oc-mini-textarea" rows="4" placeholder='{ "claude-opus-4-6": { "name": "Claude Opus 4.6", "variants": {} } }' @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`provider.${prov.name}.models`]">JSON 格式错误: {{ ocSubJsonErrors[`provider.${prov.name}.models`] }}</span>
-                    <span class="field-desc">每个 model 可含 name, options, variants 等子字段</span>
-                  </div>
-                  <div class="form-group">
-                    <label>额外字段 (JSON, 不含 options/models)</label>
-                    <textarea v-model="prov.extraRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"npm": "@ai-sdk/anthropic", "name": "..."}' @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`provider.${prov.name}.extra`]">JSON 格式错误: {{ ocSubJsonErrors[`provider.${prov.name}.extra`] }}</span>
-                  </div>
+                  <p class="oc-visual-hint">options/models/npm 等高级字段请在 JSON 模式中编辑</p>
                 </div>
                 <button class="btn small" @click="ocAddProvider">+ 添加 Provider</button>
               </div>
@@ -353,14 +509,18 @@
                     <textarea v-model="agent.prompt" class="input-field" rows="3" placeholder="Agent 的系统提示词" @input="ocGuiToRaw"></textarea>
                   </div>
                   <div class="form-group">
-                    <label>Tools 黑名单 (JSON, true=禁用)</label>
-                    <textarea v-model="agent.toolsRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"webfetch": false, "apply_patch": false}' @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`agent.${agent.name}.tools`]">JSON 格式错误: {{ ocSubJsonErrors[`agent.${agent.name}.tools`] }}</span>
-                  </div>
-                  <div class="form-group">
-                    <label>额外字段 (JSON)</label>
-                    <textarea v-model="agent.extraRaw" class="input-field monospace oc-mini-textarea" rows="2" @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`agent.${agent.name}.extra`]">JSON 格式错误: {{ ocSubJsonErrors[`agent.${agent.name}.extra`] }}</span>
+                    <label>Tools 权限</label>
+                    <div v-for="(tool, tidx) in agent.tools" :key="tidx" class="oc-kv-row">
+                      <input type="text" v-model="tool.name" class="input-field oc-kv-key" placeholder="tool 名称 (如 webfetch)" @input="ocGuiToRaw" />
+                      <div class="select-wrapper" style="width: 120px; flex: none;">
+                        <select v-model="tool.enabled" class="input-field" @change="ocGuiToRaw">
+                          <option :value="true">允许</option>
+                          <option :value="false">禁用</option>
+                        </select>
+                      </div>
+                      <button class="oc-remove-btn" @click="agent.tools.splice(tidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                    </div>
+                    <button class="btn small" @click="agent.tools.push({name: '', enabled: true}); ocGuiToRaw()">+ 添加 Tool</button>
                   </div>
                 </div>
                 <button class="btn small" @click="ocAddAgent">+ 添加 Agent</button>
@@ -399,30 +559,36 @@
                     <input type="text" v-model="mcp.url" class="input-field" placeholder="https://..." @input="ocGuiToRaw" />
                   </div>
                   <div class="form-group" v-if="mcp.type === 'local'">
-                    <label>Command (JSON 数组)</label>
-                    <input type="text" v-model="mcp.commandRaw" class="input-field monospace" placeholder='["uvx", "my-mcp-server"]' @input="ocGuiToRaw" />
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.command`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.command`] }}</span>
+                    <label>Command (命令参数)</label>
+                    <div v-for="(arg, aidx) in mcp.commandArgs" :key="aidx" class="oc-kv-row">
+                      <input type="text" v-model="mcp.commandArgs[aidx]" class="input-field" :placeholder="aidx === 0 ? '可执行文件 (如 uvx)' : '参数'" @input="ocGuiToRaw" />
+                      <button class="oc-remove-btn" @click="mcp.commandArgs.splice(aidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                    </div>
+                    <button class="btn small" @click="mcp.commandArgs.push(''); ocGuiToRaw()">+ 添加参数</button>
                   </div>
                   <div class="form-group">
-                    <label>Headers (JSON)</label>
-                    <textarea v-model="mcp.headersRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"Authorization": "Bearer ..."}' @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.headers`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.headers`] }}</span>
+                    <label>Headers</label>
+                    <div v-for="(h, hidx) in mcp.headers" :key="hidx" class="oc-kv-row">
+                      <input type="text" v-model="h.key" class="input-field oc-kv-key" placeholder="Header 名称" @input="ocGuiToRaw" />
+                      <input type="text" v-model="h.value" class="input-field oc-kv-value" placeholder="值" @input="ocGuiToRaw" />
+                      <button class="oc-remove-btn" @click="mcp.headers.splice(hidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                    </div>
+                    <button class="btn small" @click="mcp.headers.push({key:'', value:''}); ocGuiToRaw()">+ 添加 Header</button>
                   </div>
                   <div class="form-group">
-                    <label>Environment (JSON)</label>
-                    <textarea v-model="mcp.environmentRaw" class="input-field monospace oc-mini-textarea" rows="2" placeholder='{"API_KEY": "{env:MY_KEY}"}' @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.environment`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.environment`] }}</span>
+                    <label>Environment</label>
+                    <div v-for="(e, eidx) in mcp.environment" :key="eidx" class="oc-kv-row">
+                      <input type="text" v-model="e.key" class="input-field oc-kv-key" placeholder="变量名" @input="ocGuiToRaw" />
+                      <input type="text" v-model="e.value" class="input-field oc-kv-value" placeholder="值 (如 {env:MY_KEY})" @input="ocGuiToRaw" />
+                      <button class="oc-remove-btn" @click="mcp.environment.splice(eidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                    </div>
+                    <button class="btn small" @click="mcp.environment.push({key:'', value:''}); ocGuiToRaw()">+ 添加环境变量</button>
                   </div>
                   <div class="toggle-row" style="padding: 8px 0;">
                     <div class="toggle-info">
                       <label>OAuth</label>
                     </div>
                     <button class="ios-toggle" :class="{ active: mcp.oauth }" @click="mcp.oauth = !mcp.oauth; ocGuiToRaw()"></button>
-                  </div>
-                  <div class="form-group">
-                    <label>额外字段 (JSON)</label>
-                    <textarea v-model="mcp.extraRaw" class="input-field monospace oc-mini-textarea" rows="2" @input="ocGuiToRaw"></textarea>
-                    <span class="oc-sub-error" v-if="ocSubJsonErrors[`mcp.${mcp.name}.extra`]">JSON 格式错误: {{ ocSubJsonErrors[`mcp.${mcp.name}.extra`] }}</span>
                   </div>
                 </div>
                 <button class="btn small" @click="ocAddMcp">+ 添加 MCP Server</button>
@@ -488,33 +654,29 @@
                 <span>Experimental <span class="oc-count-badge" v-if="ocGui.experimentalKvs.length">{{ ocGui.experimentalKvs.length }}</span></span>
               </div>
               <div class="oc-section-body" v-if="ocSections.experimental">
-                <div v-for="(kv, idx) in ocGui.experimentalKvs" :key="idx" class="oc-kv-row">
-                  <input type="text" v-model="kv.key" class="input-field oc-kv-key" placeholder="key" @input="ocGuiToRaw" />
-                  <input type="text" v-model="kv.valueRaw" class="input-field oc-kv-value" placeholder="true / 15000 / string" @input="ocGuiToRaw" />
-                  <button class="oc-remove-btn" @click="ocRemoveExperimental(idx)" title="删除">&#10005;</button>
+                <p class="field-desc" style="margin-bottom: 12px;">
+                  实验性功能的键值对配置。值必须为合法 JSON 字面量 --
+                  布尔: <code class="oc-code-inline">true</code> / <code class="oc-code-inline">false</code>、
+                  数字: <code class="oc-code-inline">123</code>、
+                  字符串: <code class="oc-code-inline">"hello"</code>（需带双引号）、
+                  对象: <code class="oc-code-inline">{"a":1}</code>、
+                  数组: <code class="oc-code-inline">[1,2]</code>。
+                </p>
+                <div v-for="(kv, idx) in ocGui.experimentalKvs" :key="idx" class="oc-exp-entry">
+                  <div class="oc-kv-row">
+                    <input type="text" v-model="kv.key" class="input-field" style="width: 140px; flex: none;" placeholder="键名" @input="ocGuiToRaw" />
+                    <input type="text" v-model="kv.valueRaw" class="input-field monospace" :class="{ 'oc-input-error': ocSubJsonErrors['experimental.' + kv.key] }" placeholder='JSON 值 (如 true, "text", 123)' @input="ocGuiToRaw" />
+                    <button class="oc-remove-btn" @click="ocRemoveExperimentalKv(idx)" title="删除">&#10005;</button>
+                  </div>
+                  <span v-if="ocSubJsonErrors['experimental.' + kv.key]" class="oc-sub-error-inline">
+                    {{ ocSubJsonErrors['experimental.' + kv.key] }}
+                  </span>
                 </div>
-                <button class="btn small" @click="ocAddExperimental">+ 添加 Experimental</button>
+                <button class="btn small" @click="ocAddExperimentalKv">+ 添加 Experimental 项</button>
               </div>
             </div>
 
-            <!-- Unknown / Extra fields -->
-            <div class="oc-section" v-if="ocGui.unknownFieldsRaw || ocShowExtraSection">
-              <div class="oc-section-header" @click="ocToggleSection('extra')">
-                <span class="oc-collapse-icon">{{ ocSections.extra ? '&#9660;' : '&#9654;' }}</span>
-                <span>高级 / 未识别字段 <span class="oc-count-badge" v-if="ocGui.unknownFieldsRaw">有</span></span>
-              </div>
-              <div class="oc-section-body" v-if="ocSections.extra">
-                <p class="field-desc" style="margin-bottom: 8px;">以下字段未被上方结构化面板覆盖，以原始 JSON 保留。直接编辑可保真所有数据。</p>
-                <textarea
-                  v-model="ocGui.unknownFieldsRaw"
-                  class="input-field monospace oc-mini-textarea"
-                  rows="6"
-                  placeholder="{}"
-                  @input="ocGuiToRaw"
-                ></textarea>
-                <span class="oc-sub-error" v-if="ocSubJsonErrors['unknownFields']">JSON 格式错误: {{ ocSubJsonErrors['unknownFields'] }}</span>
-              </div>
-            </div>
+            <p class="oc-visual-hint">部分高级字段（如 provider.models、各条目的内部保真字段等）仅支持在 JSON 模式中编辑。</p>
 
           </div>
 
@@ -751,7 +913,7 @@
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath, RemoveShellPath, GetTerminalSettings, SetTerminalSettings, GetMobileWebRoot, SetMobileWebRoot } from '../../wailsjs/go/settings/Service'
 import { GetProviders } from '../../wailsjs/go/config/ConfigService'
-import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetOpenCodeConfig, SaveOpenCodeConfig, GetOpenCodeConfigPath } from '../../wailsjs/go/main/App'
+import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetOpenCodeConfig, SaveOpenCodeConfig, GetOpenCodeConfigPath, GetTerminalPresets, SaveTerminalPreset, DeleteTerminalPreset, MigrateProviderPresetsToTerminal } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { config } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
@@ -762,6 +924,7 @@ const { showSuccess, showError } = useToast()
 const activeTab = ref('general')
 const tabs = [
   { id: 'general', label: '常规设置', icon: '⚙' },
+  { id: 'terminal-presets', label: '终端预设', icon: '⊞' },
   { id: 'shell', label: 'Shell', icon: '⌨' },
   { id: 'terminal', label: '终端设置', icon: '🖥' },
   { id: 'opencode', label: 'OpenCode', icon: '⊏' },
@@ -785,6 +948,7 @@ const defaults = reactive({
   provider: '',
   preset: '',
   openCodeProvider: '',
+  openCodePreset: '',
   mode: 'embedded',
   shell: 'pwsh',
   claudeMode: 'embedded',
@@ -793,6 +957,9 @@ const defaults = reactive({
   openCodeShell: 'pwsh',
   codexMode: 'embedded',
   codexShell: 'pwsh',
+  amagiCodePreset: '',
+  amagiCodeMode: 'embedded',
+  amagiCodeShell: 'pwsh',
   useProxy: false,
 })
 
@@ -834,6 +1001,24 @@ const downloading = ref(false)
 const downloadProgress = ref({ downloaded: 0, total: 0 })
 const updateError = ref('')
 const githubToken = ref('')
+
+// Merged terminal presets for Settings default preset dropdown (same key space as Dashboard)
+interface SettingsMergedEntry { key: string; label: string; provider: string; model: string }
+const settingsMergedClaudePresets = ref<SettingsMergedEntry[]>([])
+
+const loadSettingsMergedPresets = async () => {
+  try {
+    const list = await GetTerminalPresets('claude_code') // 这里用 GetTerminalPresets 拿到 map
+    const entries: SettingsMergedEntry[] = []
+    for (const [key, p] of Object.entries(list || {})) {
+      const raw = p as any
+      entries.push({ key, label: raw.name || key, provider: raw.provider || '', model: raw.model || '' })
+    }
+    settingsMergedClaudePresets.value = entries
+  } catch {
+    settingsMergedClaudePresets.value = []
+  }
+}
 const showGHToken = ref(false)
 const savingGHToken = ref(false)
 
@@ -904,8 +1089,24 @@ const shellOptions = [
 ]
 
 const availablePresets = computed(() => {
+  // 与 Dashboard 使用同一套 key 空间：
+  // 旧 provider.presets 用原名作 key，新 terminal_presets 用 stable key
   if (!defaults.provider || !providers.value[defaults.provider]) return {}
-  return providers.value[defaults.provider].presets || {}
+  const result: Record<string, any> = {}
+  const presets = providers.value[defaults.provider].presets || {}
+  // 1. 旧 presets (原名 key)
+  for (const [name, preset] of Object.entries(presets)) {
+    if (!preset.target || preset.target === 'codex') {
+      result[name] = preset
+    }
+  }
+  // 2. 新 terminal_presets (stable key，优先)
+  for (const mp of settingsMergedClaudePresets.value) {
+    if (mp.provider === defaults.provider) {
+      result[mp.key] = { name: mp.label, model: mp.model }
+    }
+  }
+  return result
 })
 
 const anthropicProviders = computed(() => {
@@ -930,7 +1131,8 @@ const openCodeProviders = computed(() => {
 
 watch(() => defaults.provider, (newVal) => {
   if (newVal && providers.value[newVal]) {
-    const presets = providers.value[newVal].presets || {}
+    // 与 Dashboard 同一套 key 空间
+    const presets = availablePresets.value
     const presetKeys = Object.keys(presets)
     if (presetKeys.length > 0 && !presetKeys.includes(defaults.preset)) {
       defaults.preset = presetKeys[0]
@@ -946,11 +1148,13 @@ const loadData = async () => {
   } catch (err) {
     console.error('load providers:', err)
   }
+  await loadSettingsMergedPresets()
   try {
     const d = await GetDashboardDefaults()
     defaults.provider = d.provider || ''
     defaults.preset = d.preset || ''
     defaults.openCodeProvider = d.openCodeProvider || ''
+    defaults.openCodePreset = d.openCodePreset || ''
     defaults.mode = d.mode || 'embedded'
     defaults.shell = d.shell || 'pwsh'
     defaults.claudeMode = d.claudeMode || d.mode || 'embedded'
@@ -959,6 +1163,9 @@ const loadData = async () => {
     defaults.openCodeShell = d.openCodeShell || d.shell || 'pwsh'
     defaults.codexMode = d.codexMode || d.mode || 'embedded'
     defaults.codexShell = d.codexShell || d.shell || 'pwsh'
+    defaults.amagiCodePreset = d.amagiCodePreset || ''
+    defaults.amagiCodeMode = d.amagiCodeMode || d.mode || 'embedded'
+    defaults.amagiCodeShell = d.amagiCodeShell || d.shell || 'pwsh'
     defaults.useProxy = d.useProxy || false
   } catch (err) {
     console.error('load defaults:', err)
@@ -983,6 +1190,7 @@ const saveDefaults = async () => {
       provider: defaults.provider,
       preset: defaults.preset,
       openCodeProvider: defaults.openCodeProvider,
+      openCodePreset: defaults.openCodePreset,
       mode: defaults.claudeMode,
       shell: defaults.claudeShell,
       claudeMode: defaults.claudeMode,
@@ -991,6 +1199,9 @@ const saveDefaults = async () => {
       openCodeShell: defaults.openCodeShell,
       codexMode: defaults.codexMode,
       codexShell: defaults.codexShell,
+      amagiCodePreset: defaults.amagiCodePreset,
+      amagiCodeMode: defaults.amagiCodeMode,
+      amagiCodeShell: defaults.amagiCodeShell,
       useProxy: defaults.useProxy,
     } as any)
     showSuccess('默认值已保存')
@@ -1223,13 +1434,23 @@ const ocSwitchBlocked = ref(false)
 
 // --- OpenCode Visual GUI State (REAL schema: provider/agent/mcp/permission/instructions/plugin/experimental) ---
 
+interface OcToolEntry {
+  name: string
+  enabled: boolean
+}
+
+interface OcKvPair {
+  key: string
+  value: string
+}
+
 interface OcProviderEntry {
   name: string
   apiKey: string
   baseURL: string
-  modelsRaw: string
-  optionsExtraRaw: string   // unknown fields inside provider.options (store, thinking, etc.)
-  extraRaw: string
+  modelsRaw: string         // preserved internally for data fidelity, edited via JSON mode
+  optionsExtraRaw: string   // preserved internally for data fidelity, edited via JSON mode
+  extraRaw: string          // preserved internally for data fidelity, edited via JSON mode
 }
 
 interface OcAgentEntry {
@@ -1239,19 +1460,19 @@ interface OcAgentEntry {
   model: string
   color: string
   prompt: string
-  toolsRaw: string
-  extraRaw: string
+  tools: OcToolEntry[]      // structured editing in visual mode
+  extraRaw: string          // preserved internally for data fidelity, edited via JSON mode
 }
 
 interface OcMcpEntry {
   name: string
   type: 'remote' | 'local'
   url: string
-  commandRaw: string
-  headersRaw: string
-  environmentRaw: string
+  commandArgs: string[]     // structured editing in visual mode
+  headers: OcKvPair[]       // structured editing in visual mode
+  environment: OcKvPair[]   // structured editing in visual mode
   oauth: boolean
-  extraRaw: string
+  extraRaw: string          // preserved internally for data fidelity, edited via JSON mode
 }
 
 interface OcPermEntry {
@@ -1263,8 +1484,6 @@ interface OcKvEntry {
   key: string
   valueRaw: string
 }
-
-const ocShowExtraSection = ref(false)
 
 const ocGui = reactive({
   schemaValue: '',
@@ -1287,7 +1506,6 @@ const ocSections = reactive<Record<string, boolean>>({
   instructions: false,
   plugin: false,
   experimental: false,
-  extra: false,
 })
 
 // Known top-level keys that have structured sections
@@ -1320,6 +1538,8 @@ function parseJsonValue(raw: string): any {
 
 // Parse raw JSON string into structured GUI state
 const ocRawToGui = () => {
+  // Adopting raw JSON as authoritative source -- clear visual-derived errors
+  clearOcSubJsonErrors()
   const raw = ocEditorContent.value.trim()
   if (!raw) {
     ocGui.schemaValue = ''
@@ -1372,6 +1592,13 @@ const ocRawToGui = () => {
     const AGENT_KNOWN = new Set(['description', 'mode', 'model', 'color', 'prompt', 'tools'])
     for (const [name, entry] of Object.entries(obj.agent as Record<string, any>)) {
       if (!entry || typeof entry !== 'object') continue
+      // Parse tools into structured array
+      const tools: OcToolEntry[] = []
+      if (entry.tools && typeof entry.tools === 'object' && !Array.isArray(entry.tools)) {
+        for (const [toolName, toolVal] of Object.entries(entry.tools as Record<string, any>)) {
+          tools.push({ name: toolName, enabled: toolVal !== false })
+        }
+      }
       agents.push({
         name,
         description: entry.description || '',
@@ -1379,7 +1606,7 @@ const ocRawToGui = () => {
         model: entry.model || '',
         color: entry.color || '',
         prompt: entry.prompt || '',
-        toolsRaw: entry.tools && typeof entry.tools === 'object' ? JSON.stringify(entry.tools, null, 2) : '',
+        tools,
         extraRaw: collectExtra(entry, AGENT_KNOWN),
       })
     }
@@ -1392,13 +1619,34 @@ const ocRawToGui = () => {
     const MCP_KNOWN = new Set(['type', 'url', 'command', 'headers', 'environment', 'oauth'])
     for (const [name, entry] of Object.entries(obj.mcp as Record<string, any>)) {
       if (!entry || typeof entry !== 'object') continue
+      // Parse command into string array
+      let commandArgs: string[] = []
+      if (Array.isArray(entry.command)) {
+        commandArgs = entry.command.map((s: any) => String(s))
+      } else if (typeof entry.command === 'string' && entry.command.trim()) {
+        commandArgs = [entry.command]
+      }
+      // Parse headers into kv pairs
+      const headers: OcKvPair[] = []
+      if (entry.headers && typeof entry.headers === 'object' && !Array.isArray(entry.headers)) {
+        for (const [k, v] of Object.entries(entry.headers as Record<string, any>)) {
+          headers.push({ key: k, value: String(v) })
+        }
+      }
+      // Parse environment into kv pairs
+      const environment: OcKvPair[] = []
+      if (entry.environment && typeof entry.environment === 'object' && !Array.isArray(entry.environment)) {
+        for (const [k, v] of Object.entries(entry.environment as Record<string, any>)) {
+          environment.push({ key: k, value: String(v) })
+        }
+      }
       mcpServers.push({
         name,
         type: entry.type === 'local' ? 'local' : 'remote',
         url: entry.url || '',
-        commandRaw: Array.isArray(entry.command) ? JSON.stringify(entry.command) : (entry.command || ''),
-        headersRaw: entry.headers && typeof entry.headers === 'object' ? JSON.stringify(entry.headers, null, 2) : '',
-        environmentRaw: entry.environment && typeof entry.environment === 'object' ? JSON.stringify(entry.environment, null, 2) : '',
+        commandArgs,
+        headers,
+        environment,
         oauth: !!entry.oauth,
         extraRaw: collectExtra(entry, MCP_KNOWN),
       })
@@ -1434,13 +1682,12 @@ const ocRawToGui = () => {
   }
   ocGui.experimentalKvs = expKvs
 
-  // Unknown fields
+  // Unknown fields - preserved internally but not shown in visual mode
   const unknownKeys = Object.keys(obj).filter(k => !OC_KNOWN_KEYS.has(k))
   if (unknownKeys.length > 0) {
     const unknownObj: Record<string, any> = {}
     for (const k of unknownKeys) unknownObj[k] = obj[k]
     ocGui.unknownFieldsRaw = JSON.stringify(unknownObj, null, 2)
-    ocShowExtraSection.value = true
   } else {
     ocGui.unknownFieldsRaw = ''
   }
@@ -1486,9 +1733,14 @@ function parseObjectOrError(raw: string, errors: Record<string, string>, errorKe
 // Also populates ocSubJsonErrors with per-field validation results
 const ocSubJsonErrors = reactive<Record<string, string>>({})
 
-const ocGuiToRaw = () => {
-  // Clear previous sub-JSON errors
+// Clear all sub-JSON errors -- call when adopting new authoritative content
+function clearOcSubJsonErrors() {
   for (const k of Object.keys(ocSubJsonErrors)) delete ocSubJsonErrors[k]
+}
+
+const ocGuiToRaw = () => {
+  // Clear previous sub-JSON errors before re-deriving from current visual state
+  clearOcSubJsonErrors()
 
   const result: Record<string, any> = {}
 
@@ -1506,16 +1758,16 @@ const ocGuiToRaw = () => {
       const options: Record<string, any> = {}
       if (p.apiKey.trim()) options.apiKey = p.apiKey.trim()
       if (p.baseURL.trim()) options.baseURL = p.baseURL.trim()
-      // Parse optionsExtraRaw and merge into options
+      // Parse optionsExtraRaw and merge into options (internal preservation)
       const optionsExtra = parseObjectOrError(p.optionsExtraRaw, ocSubJsonErrors, `provider.${name}.optionsExtra`)
       if (optionsExtra !== undefined) {
         Object.assign(options, optionsExtra)
       }
       if (Object.keys(options).length > 0) entry.options = options
-      // models
+      // models (internal preservation)
       const models = parseOrError(p.modelsRaw, ocSubJsonErrors, `provider.${name}.models`)
       if (models !== undefined) entry.models = models
-      // extra (entry-level unknowns like npm, name)
+      // extra (entry-level unknowns like npm, name - internal preservation)
       const provExtra = parseObjectOrError(p.extraRaw, ocSubJsonErrors, `provider.${name}.extra`)
       if (provExtra !== undefined) Object.assign(entry, provExtra)
       provider[name] = entry
@@ -1535,8 +1787,16 @@ const ocGuiToRaw = () => {
       if (a.model.trim()) entry.model = a.model.trim()
       if (a.color.trim()) entry.color = a.color.trim()
       if (a.prompt.trim()) entry.prompt = a.prompt.trim()
-      const tools = parseOrError(a.toolsRaw, ocSubJsonErrors, `agent.${name}.tools`)
-      if (tools !== undefined) entry.tools = tools
+      // Serialize structured tools array
+      const toolsWithNames = a.tools.filter(t => t.name.trim())
+      if (toolsWithNames.length > 0) {
+        const toolsObj: Record<string, boolean> = {}
+        for (const t of toolsWithNames) {
+          toolsObj[t.name.trim()] = t.enabled
+        }
+        entry.tools = toolsObj
+      }
+      // extra (internal preservation)
       const agentExtra = parseObjectOrError(a.extraRaw, ocSubJsonErrors, `agent.${name}.extra`)
       if (agentExtra !== undefined) Object.assign(entry, agentExtra)
       agent[name] = entry
@@ -1552,17 +1812,30 @@ const ocGuiToRaw = () => {
       if (!name) continue
       const entry: Record<string, any> = { type: m.type }
       if (m.type === 'remote' && m.url.trim()) entry.url = m.url.trim()
-      if (m.type === 'local' && m.commandRaw.trim()) {
-        const cmd = parseOrError(m.commandRaw, ocSubJsonErrors, `mcp.${name}.command`)
-        if (cmd !== undefined) {
-          entry.command = Array.isArray(cmd) ? cmd : m.commandRaw.trim().split(/\s+/)
-        }
+      if (m.type === 'local' && m.commandArgs.length > 0) {
+        const filtered = m.commandArgs.filter(a => a.trim())
+        if (filtered.length > 0) entry.command = filtered
       }
-      const headers = parseOrError(m.headersRaw, ocSubJsonErrors, `mcp.${name}.headers`)
-      if (headers !== undefined) entry.headers = headers
-      const env = parseOrError(m.environmentRaw, ocSubJsonErrors, `mcp.${name}.environment`)
-      if (env !== undefined) entry.environment = env
+      // Serialize structured headers
+      const headersWithKeys = m.headers.filter(h => h.key.trim())
+      if (headersWithKeys.length > 0) {
+        const headersObj: Record<string, string> = {}
+        for (const h of headersWithKeys) {
+          headersObj[h.key.trim()] = h.value
+        }
+        entry.headers = headersObj
+      }
+      // Serialize structured environment
+      const envWithKeys = m.environment.filter(e => e.key.trim())
+      if (envWithKeys.length > 0) {
+        const envObj: Record<string, string> = {}
+        for (const e of envWithKeys) {
+          envObj[e.key.trim()] = e.value
+        }
+        entry.environment = envObj
+      }
       if (m.oauth) entry.oauth = true
+      // extra (internal preservation)
       const mcpExtra = parseObjectOrError(m.extraRaw, ocSubJsonErrors, `mcp.${name}.extra`)
       if (mcpExtra !== undefined) Object.assign(entry, mcpExtra)
       mcp[name] = entry
@@ -1587,19 +1860,20 @@ const ocGuiToRaw = () => {
   const plugins = ocGui.plugins.filter(s => s.trim())
   if (plugins.length > 0) result.plugin = plugins
 
-  // experimental
+  // experimental -- strict JSON literal validation (no silent fallback to string)
   if (ocGui.experimentalKvs.length > 0) {
     const experimental: Record<string, any> = {}
     for (const kv of ocGui.experimentalKvs) {
-      if (kv.key.trim()) {
-        const parsed = parseJsonValue(kv.valueRaw)
-        if (parsed !== undefined) experimental[kv.key.trim()] = parsed
-      }
+      const k = kv.key.trim()
+      if (!k) continue
+      if (!kv.valueRaw.trim()) continue
+      const parsed = parseOrError(kv.valueRaw, ocSubJsonErrors, `experimental.${k}`)
+      if (parsed !== undefined) experimental[k] = parsed
     }
     if (Object.keys(experimental).length > 0) result.experimental = experimental
   }
 
-  // Unknown fields
+  // Unknown fields (internal preservation - not editable in visual mode)
   const unknowns = parseObjectOrError(ocGui.unknownFieldsRaw, ocSubJsonErrors, 'unknownFields')
   if (unknowns !== undefined) {
     Object.assign(result, unknowns)
@@ -1618,13 +1892,13 @@ const ocAddProvider = () => {
 const ocRemoveProvider = (idx: number) => { ocGui.providers.splice(idx, 1); ocGuiToRaw() }
 
 const ocAddAgent = () => {
-  ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', color: '', prompt: '', toolsRaw: '', extraRaw: '' })
+  ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', color: '', prompt: '', tools: [], extraRaw: '' })
   if (!ocSections.agent) ocSections.agent = true
 }
 const ocRemoveAgent = (idx: number) => { ocGui.agents.splice(idx, 1); ocGuiToRaw() }
 
 const ocAddMcp = () => {
-  ocGui.mcpServers.push({ name: '', type: 'remote', url: '', commandRaw: '', headersRaw: '', environmentRaw: '', oauth: false, extraRaw: '' })
+  ocGui.mcpServers.push({ name: '', type: 'remote', url: '', commandArgs: [], headers: [], environment: [], oauth: false, extraRaw: '' })
   if (!ocSections.mcp) ocSections.mcp = true
 }
 const ocRemoveMcp = (idx: number) => { ocGui.mcpServers.splice(idx, 1); ocGuiToRaw() }
@@ -1647,11 +1921,11 @@ const ocAddPlugin = () => {
 }
 const ocRemovePlugin = (idx: number) => { ocGui.plugins.splice(idx, 1); ocGuiToRaw() }
 
-const ocAddExperimental = () => {
-  ocGui.experimentalKvs.push({ key: '', valueRaw: 'true' })
+const ocAddExperimentalKv = () => {
+  ocGui.experimentalKvs.push({ key: '', valueRaw: '' })
   if (!ocSections.experimental) ocSections.experimental = true
 }
-const ocRemoveExperimental = (idx: number) => { ocGui.experimentalKvs.splice(idx, 1); ocGuiToRaw() }
+const ocRemoveExperimentalKv = (idx: number) => { ocGui.experimentalKvs.splice(idx, 1); ocGuiToRaw() }
 
 // Mode switching -- SAFE: block visual switch when JSON is invalid
 const ocSwitchToVisual = () => {
@@ -1665,15 +1939,13 @@ const ocSwitchToVisual = () => {
   ocEditMode.value = 'visual'
 }
 const ocSwitchToJson = () => {
-  // Sync visual to JSON first, then check for sub-JSON errors
+  // Sync visual to JSON first
   if (ocEditMode.value === 'visual') {
     ocGuiToRaw()
   }
-  // Block switch if sub-JSON fields are invalid
-  if (ocHasSubJsonErrors.value) {
-    ocSwitchBlocked.value = true
-    return
-  }
+  // Clear sub-JSON errors: JSON mode uses raw text as authoritative source,
+  // visual-derived field errors are no longer relevant
+  clearOcSubJsonErrors()
   ocSwitchBlocked.value = false
   ocEditMode.value = 'json'
 }
@@ -1724,9 +1996,18 @@ const ocIsRootObject = computed(() => {
 
 const ocHasSubJsonErrors = computed(() => Object.keys(ocSubJsonErrors).length > 0)
 
-const ocCanSave = computed(() => ocIsRootObject.value && !ocHasSubJsonErrors.value)
+const ocCanSave = computed(() => {
+  if (!ocIsRootObject.value) return false
+  // In visual mode, sub-JSON errors (e.g. malformed experimental values) block saving.
+  // In JSON mode, the user edits raw text directly -- sub-JSON errors are visual-derived
+  // artifacts that were cleared on mode switch and are irrelevant here.
+  if (ocEditMode.value === 'visual' && ocHasSubJsonErrors.value) return false
+  return true
+})
 
 const ocValidationClass = computed(() => {
+  // Sub-JSON errors only matter in visual mode (cleared when entering JSON mode)
+  if (ocEditMode.value === 'visual' && ocHasSubJsonErrors.value) return 'invalid'
   if (ocValidationError.value === null) return 'neutral'
   if (ocValidationError.value === '') return 'valid'
   return 'invalid'
@@ -1734,6 +2015,8 @@ const ocValidationClass = computed(() => {
 
 const ocValidationText = computed(() => {
   if (ocValidationError.value === null) return '空'
+  // Only report sub-JSON blocking in visual mode
+  if (ocEditMode.value === 'visual' && ocHasSubJsonErrors.value) return '字段错误，保存已阻止'
   if (ocValidationError.value === '') return 'JSON 合法'
   return 'JSON 非法'
 })
@@ -1854,7 +2137,321 @@ watch(activeTab, (newTab) => {
   if (newTab === 'opencode' && !ocConfigPath.value) {
     ocLoad()
   }
+  if (newTab === 'terminal-presets') {
+    tpLoadAll()
+  }
 })
+
+// --- 终端-Provider 兼容性约束 ---
+// claude_code: 仅 Anthropic 兼容 provider
+// opencode / codex: 仅 OpenAI 兼容 provider
+// 判定规则与后端 normalizeProviderType + isOpenAI 逻辑对齐：
+//   后端 Type 字段为空时按 auth_key 推断，非空时精确匹配 "openai"。
+//   前端对 type 做小写归一化后再比较，避免大小写边缘不一致。
+const tpCompatibleProviders = computed(() => {
+  const tt = tpActiveType.value
+  const result: Record<string, config.Provider> = {}
+  for (const [name, provider] of Object.entries(providers.value)) {
+    const normalizedType = (provider.type || '').toLowerCase()
+    const isOpenAI = normalizedType === 'openai' || provider.auth_key === 'OPENAI_API_KEY'
+    if (tt === 'claude_code') {
+      // Anthropic 兼容：非 openai 且 auth_key 非 OPENAI_API_KEY
+      if (!isOpenAI) result[name] = provider
+    } else {
+      // opencode / codex：OpenAI 兼容
+      if (isOpenAI) result[name] = provider
+    }
+  }
+  return result
+})
+
+// 检查给定 provider 是否兼容当前终端类型
+function tpIsProviderCompatible(providerName: string): boolean {
+  return providerName in tpCompatibleProviders.value
+}
+
+// --- 终端预设管理 ---
+const tpTerminalTypes = [
+  { value: 'claude_code', label: 'Claude Code' },
+  { value: 'opencode', label: 'OpenCode' },
+  { value: 'codex', label: 'Codex' },
+]
+const tpActiveType = ref('claude_code')
+const tpActiveTypeLabel = computed(() => {
+  const found = tpTerminalTypes.find(t => t.value === tpActiveType.value)
+  return found ? found.label : tpActiveType.value
+})
+
+interface TerminalPresetData {
+  name: string                    // map key (stable key, e.g. "anthropic/default")
+  label: string                   // friendly display name
+  provider: string
+  model: string
+  parameters: {
+    temperature?: number
+    top_p?: number
+    max_tokens?: number
+    max_context_length?: number
+    stream?: boolean
+    thinking?: { type: string; budgetTokens?: number }
+    context_window?: { model_context_window?: number; model_auto_compact_token_limit?: number }
+  }
+  opencode_cfg?: any // OpenCode 运行时 overlay，保真 round-trip
+}
+
+const tpPresets = ref<Record<string, TerminalPresetData[]>>({
+  claude_code: [],
+  opencode: [],
+  codex: [],
+})
+
+const tpCurrentPresets = computed(() => tpPresets.value[tpActiveType.value] || [])
+
+const tpShowDialog = ref(false)
+const tpIsEditing = ref(false)
+const tpEditingOriginalName = ref('')
+const tpEditing = ref<TerminalPresetData>({
+  name: '',
+  label: '',
+  provider: '',
+  model: '',
+  parameters: {},
+  opencode_cfg: null,
+})
+
+// Thinking config helpers for the dialog
+const tpThinkingType = ref('')
+const tpThinkingBudget = ref<number | undefined>(undefined)
+const tpStreamValue = ref('')
+const tpContextWindow = ref<number | undefined>(undefined)
+const tpCompactLimit = ref<number | undefined>(undefined)
+
+const migratingPresets = ref(false)
+
+async function tpLoadAll() {
+  for (const tt of tpTerminalTypes) {
+    try {
+      const map = await GetTerminalPresets(tt.value)
+      const list: TerminalPresetData[] = []
+      for (const [key, p] of Object.entries(map || {})) {
+        const raw = p as any
+        // raw.name 是友好名（TerminalPreset.Name），key 是 map 的 stable key
+        const friendlyName = raw.name || key
+        list.push({
+          name: key,           // stable key, 用于读写后端
+          label: friendlyName, // 友好展示名
+          provider: raw.provider || '',
+          model: raw.model || '',
+          parameters: raw.parameters || {},
+          opencode_cfg: raw.opencode_cfg || null,
+        })
+      }
+      tpPresets.value[tt.value] = list
+    } catch (err) {
+      console.error(`load terminal presets ${tt.value}:`, err)
+      tpPresets.value[tt.value] = []
+    }
+  }
+}
+
+function tpOpenAdd() {
+  tpIsEditing.value = false
+  tpEditingOriginalName.value = ''
+  tpEditing.value = { name: '', label: '', provider: '', model: '', parameters: {}, opencode_cfg: null }
+  tpThinkingType.value = ''
+  tpThinkingBudget.value = undefined
+  tpStreamValue.value = ''
+  tpContextWindow.value = undefined
+  tpCompactLimit.value = undefined
+  // Auto-select first COMPATIBLE provider for current terminal type
+  const compatKeys = Object.keys(tpCompatibleProviders.value)
+  if (compatKeys.length > 0) {
+    tpEditing.value.provider = compatKeys[0]
+  }
+  tpShowDialog.value = true
+}
+
+function tpOpenEdit(preset: TerminalPresetData) {
+  tpIsEditing.value = true
+  tpEditingOriginalName.value = preset.name
+  tpEditing.value = JSON.parse(JSON.stringify(preset))
+  // Populate thinking helpers
+  if (preset.parameters?.thinking?.type) {
+    tpThinkingType.value = preset.parameters.thinking.type
+    tpThinkingBudget.value = preset.parameters.thinking.budgetTokens
+  } else {
+    tpThinkingType.value = ''
+    tpThinkingBudget.value = undefined
+  }
+  // Populate stream helper
+  if (preset.parameters?.stream !== undefined) {
+    tpStreamValue.value = preset.parameters.stream ? 'true' : 'false'
+  } else {
+    tpStreamValue.value = ''
+  }
+  // Populate context window helpers
+  if (preset.parameters?.context_window) {
+    tpContextWindow.value = preset.parameters.context_window.model_context_window
+    tpCompactLimit.value = preset.parameters.context_window.model_auto_compact_token_limit
+  } else {
+    tpContextWindow.value = undefined
+    tpCompactLimit.value = undefined
+  }
+  tpShowDialog.value = true
+}
+
+async function tpHandleSave() {
+  // tpEditingOriginalName 是编辑时的 stable key（map key）
+  // 新增时为空，此时用 provider/name 格式生成 stable key
+  let stableKey = tpEditingOriginalName.value
+  if (!stableKey) {
+    // 新增：自动生成 stable key = provider/用户输入名
+    const userLabel = (tpEditing.value.label || tpEditing.value.name || '').trim()
+    if (!userLabel || !tpEditing.value.provider) return
+    stableKey = tpEditing.value.provider + '/' + userLabel
+  }
+  // payload.name 是友好名称（用于展示）
+  const friendlyName = (tpEditing.value.label || tpEditing.value.name || '').trim()
+
+  // ---- 兼容性校验 ----
+  if (!tpIsProviderCompatible(tpEditing.value.provider)) {
+    const tt = tpActiveType.value
+    const expected = tt === 'claude_code' ? 'Anthropic 兼容' : 'OpenAI 兼容'
+    showError(`Provider "${tpEditing.value.provider}" 不兼容当前终端类型 ${tpActiveTypeLabel.value}。${tt === 'claude_code' ? 'Claude Code' : tt === 'opencode' ? 'OpenCode' : 'Codex'} 仅允许选择${expected} Provider。`)
+    return
+  }
+
+  try {
+    // ---- 参数清洗策略：基线保留 + 托管字段覆盖 ----
+    //
+    // 受本轮表单托管的字段（必须严格清洗后覆盖）：
+    //   temperature, top_p, max_tokens, max_context_length, stream,
+    //   thinking, context_window
+    //
+    // 未托管字段（如 do_sample 等）保留原值，不做任何修改。
+    //
+    // 这样保证：编辑保存不会静默丢掉后端已支持但前端对话框暂未暴露的字段。
+
+    // 1. 以当前 parameters 为深拷贝基线
+    const src = tpEditing.value.parameters || {}
+    const managed: Record<string, any> = {}
+
+    // --- 托管字段：严格清洗后写入 managed ---
+
+    // temperature: 仅保留合法有限数
+    if (typeof src.temperature === 'number' && isFinite(src.temperature)) {
+      managed.temperature = src.temperature
+    }
+
+    // top_p: 仅保留合法有限数
+    if (typeof src.top_p === 'number' && isFinite(src.top_p)) {
+      managed.top_p = src.top_p
+    }
+
+    // max_tokens: 仅保留正整数
+    if (typeof src.max_tokens === 'number' && isFinite(src.max_tokens) && src.max_tokens > 0) {
+      managed.max_tokens = Math.floor(src.max_tokens)
+    }
+
+    // max_context_length: 仅保留正整数
+    if (typeof src.max_context_length === 'number' && isFinite(src.max_context_length) && src.max_context_length > 0) {
+      managed.max_context_length = Math.floor(src.max_context_length)
+    }
+
+    // stream: 从对话框辅助变量同步（三态：true/false/不写入）
+    if (tpStreamValue.value === 'true') {
+      managed.stream = true
+    } else if (tpStreamValue.value === 'false') {
+      managed.stream = false
+    }
+
+    // thinking: 仅在有合法 type 时构建，且 budgetTokens 仅在 enabled 时可选写入
+    if (tpThinkingType.value === 'enabled' || tpThinkingType.value === 'disabled') {
+      const thinking: Record<string, any> = { type: tpThinkingType.value }
+      if (tpThinkingType.value === 'enabled' && typeof tpThinkingBudget.value === 'number' && isFinite(tpThinkingBudget.value) && tpThinkingBudget.value > 0) {
+        thinking.budgetTokens = Math.floor(tpThinkingBudget.value)
+      }
+      managed.thinking = thinking
+    }
+
+    // context_window: 仅在至少有一个有效子字段时构建
+    const hasCtxWindow = typeof tpContextWindow.value === 'number' && isFinite(tpContextWindow.value) && tpContextWindow.value > 0
+    const hasCompact = typeof tpCompactLimit.value === 'number' && isFinite(tpCompactLimit.value) && tpCompactLimit.value > 0
+    if (hasCtxWindow || hasCompact) {
+      const ctx: Record<string, any> = {}
+      if (hasCtxWindow) ctx.model_context_window = Math.floor(tpContextWindow.value!)
+      if (hasCompact) ctx.model_auto_compact_token_limit = Math.floor(tpCompactLimit.value!)
+      managed.context_window = ctx
+    }
+
+    // --- 2. 合并：基线中排除托管字段，再叠加清洗后的托管字段 ---
+
+    const MANAGED_KEYS = new Set([
+      'temperature', 'top_p', 'max_tokens', 'max_context_length',
+      'stream', 'thinking', 'context_window',
+    ])
+
+    const cleanParams: Record<string, any> = {}
+    // 保留未托管字段（如 do_sample 等）
+    for (const [k, v] of Object.entries(src)) {
+      if (!MANAGED_KEYS.has(k)) {
+        cleanParams[k] = v
+      }
+    }
+    // 叠加清洗后的托管字段
+    for (const [k, v] of Object.entries(managed)) {
+      cleanParams[k] = v
+    }
+
+    const payload: Record<string, any> = {
+      name: friendlyName,
+      provider: tpEditing.value.provider,
+      model: tpEditing.value.model,
+      parameters: cleanParams,
+    }
+    // 保真 round-trip: 保留 opencode_cfg（仅 opencode 类型有意义）
+    if (tpEditing.value.opencode_cfg) {
+      payload.opencode_cfg = tpEditing.value.opencode_cfg
+    }
+    await SaveTerminalPreset(tpActiveType.value, stableKey, payload as any)
+    tpShowDialog.value = false
+    await tpLoadAll()
+    await loadSettingsMergedPresets()
+    showSuccess('终端预设已保存')
+  } catch (err) {
+    showError('保存失败: ' + err)
+  }
+}
+
+async function tpHandleDelete(name: string) {
+  if (!confirm(`确定要删除预设 "${name}" 吗？`)) return
+  try {
+    await DeleteTerminalPreset(tpActiveType.value, name)
+    await tpLoadAll()
+    await loadSettingsMergedPresets()
+    showSuccess('已删除')
+  } catch (err) {
+    showError('删除失败: ' + err)
+  }
+}
+
+async function handleMigratePresets() {
+  migratingPresets.value = true
+  try {
+    const count = await MigrateProviderPresetsToTerminal()
+    await tpLoadAll()
+    await loadSettingsMergedPresets()
+    if (count > 0) {
+      showSuccess(`已迁移 ${count} 个预设到终端预设体系`)
+    } else {
+      showSuccess('所有预设已存在于终端预设体系中，无需迁移')
+    }
+  } catch (err) {
+    showError('迁移失败: ' + err)
+  } finally {
+    migratingPresets.value = false
+  }
+}
 
 onMounted(async () => {
   await loadData()
@@ -3006,5 +3603,218 @@ onMounted(async () => {
   font-size: 13px;
   line-height: 1.5;
   tab-size: 2;
+}
+
+.oc-visual-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 4px 0;
+  padding: 6px 10px;
+  background: rgba(90, 106, 122, 0.08);
+  border-radius: 4px;
+}
+
+.oc-sub-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(239, 83, 80, 0.06);
+  border: 1px solid rgba(239, 83, 80, 0.2);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.oc-sub-error-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(239, 83, 80, 0.15);
+  color: #ef5350;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  font-style: normal;
+  margin-top: 1px;
+}
+
+.oc-sub-error-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.oc-sub-error-title {
+  color: #ef9a9a;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.oc-sub-error-item {
+  font-size: 12px;
+  color: #ef9a9a;
+  padding: 3px 8px;
+  background: rgba(239, 83, 80, 0.08);
+  border-radius: 3px;
+  margin-bottom: 4px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  word-break: break-all;
+}
+
+.oc-sub-error-field {
+  color: #ef5350;
+  font-weight: 600;
+}
+
+.oc-sub-error-hint {
+  font-size: 12px;
+  color: #ef9a9a;
+  margin-top: 6px;
+  opacity: 0.8;
+}
+
+/* Experimental entry wrapper for inline errors */
+.oc-exp-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oc-sub-error-inline {
+  display: block;
+  font-size: 11px;
+  color: var(--error);
+  padding: 2px 8px;
+  background: rgba(239, 83, 80, 0.08);
+  border-radius: 3px;
+  margin-left: 148px;
+  margin-bottom: 4px;
+}
+
+.oc-input-error {
+  border-color: var(--error) !important;
+  box-shadow: 0 0 0 2px rgba(239, 83, 80, 0.15) !important;
+}
+
+.oc-code-inline {
+  background: rgba(79, 195, 247, 0.1);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+}
+
+/* Terminal Presets */
+.tp-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.tp-section-header .group-header {
+  margin: 0;
+}
+
+.tp-presets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tp-preset-card {
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tp-preset-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.tp-preset-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-right: 12px;
+}
+
+.tp-preset-provider {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: rgba(90, 106, 122, 0.15);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.tp-preset-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.tp-preset-actions .btn-icon {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  color: var(--text-secondary);
+}
+
+.tp-preset-actions .btn-icon:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.tp-preset-actions .btn-icon.danger:hover {
+  background: rgba(239, 83, 80, 0.1);
+  color: var(--error);
+}
+
+.tp-preset-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tp-preset-body .param-badge {
+  background: rgba(90, 106, 122, 0.2);
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+
+.tp-section-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 12px 0;
+}
+
+.tp-compat-warning {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--error);
+  line-height: 1.4;
+}
+
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
 }
 </style>

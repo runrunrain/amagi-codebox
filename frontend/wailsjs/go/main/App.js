@@ -134,6 +134,26 @@ export function GetProvidersByType(arg1) {
   return window['go']['main']['App']['GetProvidersByType'](arg1);
 }
 
+export function GetTerminalPresets(arg1) {
+  return window['go']['main']['App']['GetTerminalPresets'](arg1);
+}
+
+export function GetMergedTerminalPresets(arg1) {
+  return window['go']['main']['App']['GetMergedTerminalPresets'](arg1);
+}
+
+export function SaveTerminalPreset(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveTerminalPreset'](arg1, arg2, arg3);
+}
+
+export function DeleteTerminalPreset(arg1, arg2) {
+  return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
+}
+
+export function MigrateProviderPresetsToTerminal() {
+  return window['go']['main']['App']['MigrateProviderPresetsToTerminal']();
+}
+
 export function GetProxyBackendURLHistory() {
   return window['go']['main']['App']['GetProxyBackendURLHistory']();
 }
@@ -160,6 +180,10 @@ export function GetSessions() {
 
 export function GetSettingsService() {
   return window['go']['main']['App']['GetSettingsService']();
+}
+
+export function GetStartupWarnings() {
+  return window['go']['main']['App']['GetStartupWarnings']();
 }
 
 export function GetUrlHistory(arg1) {
