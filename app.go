@@ -384,7 +384,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		*provider = provCopy
 		a.Log.Info("session", "已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
 	}
-	if strings.EqualFold(provider.Type, "openai") || provider.AuthKey == "OPENAI_API_KEY" {
+	if provider.IsOpenAICompatible() {
 		a.Log.Error("session", "ClaudeCode 不支持 OpenAI 类型提供商", "provider="+providerName)
 		return "", fmt.Errorf("provider %q is OpenAI-compatible and cannot be used to launch ClaudeCode", providerName)
 	}
@@ -392,13 +392,13 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	// OAuth 模式（Anthropic）：白板启动，不设置任何代理环境变量
 	// 非 OAuth 模式：正常代理启动，设置 ANTHROPIC_API_KEY 和 ANTHROPIC_BASE_URL
 	var apiKey, keySource string
-	if provider.AuthKey == config.AuthTypeOAuth {
+	if provider.IsOAuthMode() {
 		// OAuth 模式不需要 API 密钥，使用 Claude Code 原生 OAuth 认证
 		apiKey = ""
 		keySource = "oauth"
 		a.Log.Info("session", "使用 OAuth 认证（白板启动）", "provider="+providerName)
 	} else {
-		apiKey, keySource = a.Secrets.GetAPIKeyWithFallback(providerName)
+		apiKey, keySource = a.getProviderAPIKey(providerName, *provider)
 		if apiKey == "" {
 			a.Log.Error("session", "未找到API密钥", "provider="+providerName)
 			return "", fmt.Errorf("no API key found for provider %q", providerName)
@@ -439,7 +439,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			if port == 0 {
 				port = 5280
 			}
-			if err := a.Proxy.Start(port, provider.BaseURL); err != nil {
+			if err := a.Proxy.Start(port, provider.EffectiveBaseURL("anthropic")); err != nil {
 				return "", fmt.Errorf("start proxy: %w", err)
 			}
 		}
@@ -640,22 +640,25 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
 	envOverrides := map[string]string{}
 	injectProviderEnv := func(pid string, provider *config.Provider) {
-		apiKey, _ := a.Secrets.GetAPIKey(pid)
-		if apiKey == "" {
-			apiKey, _ = a.Secrets.GetAPIKeyWithFallback(pid)
+		// 按实际格式精确读取 key，避免双格式 Provider 时取错 key
+		var apiKey string
+		if isOpenAIProvider(*provider) {
+			apiKey, _ = a.getProviderAPIKeyForFormat(pid, "openai")
+		} else {
+			apiKey, _ = a.getProviderAPIKeyForFormat(pid, "anthropic")
 		}
 		if apiKey == "" {
 			return
 		}
 		if isOpenAIProvider(*provider) {
 			envOverrides["OPENAI_API_KEY"] = apiKey
-			if provider.BaseURL != "" {
-				envOverrides["OPENAI_BASE_URL"] = provider.BaseURL
+			if baseURL := provider.EffectiveBaseURL("openai"); baseURL != "" {
+				envOverrides["OPENAI_BASE_URL"] = baseURL
 			}
 		} else {
 			envOverrides["ANTHROPIC_API_KEY"] = apiKey
-			if provider.BaseURL != "" {
-				envOverrides["ANTHROPIC_BASE_URL"] = provider.BaseURL
+			if baseURL := provider.EffectiveBaseURL("anthropic"); baseURL != "" {
+				envOverrides["ANTHROPIC_BASE_URL"] = baseURL
 			}
 		}
 	}
@@ -748,10 +751,40 @@ func normalizeCodexModelName(modelName string) string {
 }
 
 // isOpenAIProvider reports whether the provider uses the OpenAI-compatible API.
-// Detection is consistent with LaunchSession and BuildOverrides: matches on
-// Type (case-insensitive) or AuthKey == "OPENAI_API_KEY".
+// Delegates to the Provider's dual-format compatibility method.
 func isOpenAIProvider(p config.Provider) bool {
-	return strings.EqualFold(p.Type, "openai") || p.AuthKey == "OPENAI_API_KEY"
+	return p.IsOpenAICompatible()
+}
+
+// getProviderAPIKey 读取指定 provider 的 API key，支持双格式命名。
+// 优先尝试格式化 key（name:anthropic / name:openai），再回退到旧 key（name）。
+// 返回 (apiKey, source)。
+func (a *App) getProviderAPIKey(providerName string, provider config.Provider) (string, string) {
+	// 按照启用的格式依次尝试格式化 key
+	if provider.Anthropic != nil && provider.Anthropic.Enabled {
+		if key, err := a.Secrets.GetAPIKey(providerName + ":anthropic"); err == nil && key != "" {
+			return key, "stored:anthropic"
+		}
+	}
+	if provider.OpenAI != nil && provider.OpenAI.Enabled {
+		if key, err := a.Secrets.GetAPIKey(providerName + ":openai"); err == nil && key != "" {
+			return key, "stored:openai"
+		}
+	}
+	// 回退旧 key
+	return a.Secrets.GetAPIKeyWithFallback(providerName)
+}
+
+// getProviderAPIKeyForFormat 读取指定格式的 API key。
+// format 为 "anthropic" 或 "openai"。
+// 优先尝试格式化 key，再回退到旧 key。
+func (a *App) getProviderAPIKeyForFormat(providerName, format string) (string, string) {
+	if format != "" {
+		if key, err := a.Secrets.GetAPIKey(providerName + ":" + format); err == nil && key != "" {
+			return key, "stored:" + format
+		}
+	}
+	return a.Secrets.GetAPIKeyWithFallback(providerName)
 }
 
 func resolveCodexLaunchSettings(provider config.Provider, requestedModel string) codexLaunchSettings {
@@ -795,85 +828,131 @@ func resolveCodexLaunchSettings(provider config.Provider, requestedModel string)
 }
 
 // GetProvidersByType 返回指定类型的 Provider 列表（type 为 "openai" 或 "anthropic"）
-// 返回 map，key 为 providerID，value 为 Provider 配置
+// 使用双格式兼容方法判断 Provider 类型。
 func (a *App) GetProvidersByType(providerType string) map[string]config.Provider {
 	allProviders := a.Config.GetProviders()
 	result := make(map[string]config.Provider)
-	for id, p := range allProviders {
-		pType := p.Type
-		if pType == "" {
-			pType = "anthropic" // 默认类型
-		}
-		if pType == providerType {
-			result[id] = p
+	for name, p := range allProviders {
+		switch providerType {
+		case "openai":
+			if p.IsOpenAICompatible() {
+				result[name] = p
+			}
+		case "anthropic":
+			if p.IsAnthropicCompatible() {
+				result[name] = p
+			}
 		}
 	}
 	return result
 }
 
-// LaunchOpenCode 启动 OpenCode 终端会话
+// LaunchOpenCode 启动 OpenCode 终端会话。
+// 双轨兼容：优先查 opencode_presets（新模型），回退到 terminal_presets.opencode（旧模型）。
 func (a *App) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
 	a.Log.Info("session", "启动 OpenCode 会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s shell=%s", providerName, presetName, mode, workDir, shellPath))
 
-	// ---- terminal_presets 桥接 ----
-	// presetName 可能是 terminal_preset 的 stable key
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
-	tpFound := tpErr == nil && tp != nil
-	if tpFound {
-		if tpProvider != "" {
-			providerName = tpProvider
-		}
-		a.Log.Info("session", "OpenCode 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s hasCfg=%v", presetName, tpProvider, tp.Model, len(tp.OpenCodeCfg) > 0))
-	}
-
-	var provider *config.Provider
 	envOverrides := map[string]string{}
-	if providerName != "" {
-		loadedProvider, err := a.Config.GetProvider(providerName)
-		if err != nil {
-			a.Log.Error("session", "获取 OpenCode 提供商失败", err.Error())
-			return "", fmt.Errorf("get opencode provider: %w", err)
-		}
-		provider = loadedProvider
+	var provider *config.Provider
 
-		// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 副本
-		// 这样 BuildOpenCodeRuntimeConfig 按"默认生成 + opencode_config 深度合并"工作
-		if tpFound {
-			provCopy := *provider
-			converted := config.Preset{
-				Name:           tp.Name,
-				Model:          tp.Model,
-				Parameters:     tp.Parameters,
-				OpenCodeConfig: tp.OpenCodeCfg,
+	// ============================================================
+	// 轨道 1（新模型）：opencode_presets
+	// ============================================================
+	if presetName != "" {
+		if ocPreset, err := a.Config.GetOpenCodePreset(presetName); err == nil && ocPreset != nil {
+			a.Log.Info("session", "OpenCode 命中 opencode_preset（新模型）", fmt.Sprintf("key=%s name=%s bindings=%d", presetName, ocPreset.Name, len(ocPreset.Bindings)))
+
+			// 构建 getAPIKey 函数：按 binding 的 local_provider + format 读取 secrets
+			getAPIKey := func(localProvider, format string) (string, error) {
+				key, _ := a.getProviderAPIKeyForFormat(localProvider, format)
+				return key, nil
 			}
-			if provCopy.Presets == nil {
-				provCopy.Presets = map[string]config.Preset{}
+
+			// 用新模型构建运行时配置
+			ocOverrides, err := launcher.BuildOpenCodeEnvOverridesFromPreset(*ocPreset, getAPIKey)
+			if err != nil {
+				a.Log.Error("session", "构建 OpenCode 配置失败（新模型）", err.Error())
+				return "", fmt.Errorf("build opencode config from preset: %w", err)
 			}
-			provCopy.Presets[presetName] = converted
-			*provider = provCopy
-			a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
-		}
+			envOverrides = ocOverrides
 
-		apiKey, keySource := a.Secrets.GetAPIKeyWithFallback(providerName)
-		if apiKey == "" {
-			a.Log.Error("session", "未找到 OpenCode API 密钥", "provider="+providerName)
-			return "", fmt.Errorf("no API key found for provider %q", providerName)
-		}
+			// 新模型下 providerName 无意义，session 中记录 preset key
+			providerName = "opencode-preset:" + presetName
 
-		// 基于 Provider + Preset（含桥接后的 terminal preset）生成 OPENCODE_CONFIG_CONTENT 注入
-		// BuildOpenCodeRuntimeConfig 会按"默认生成 + opencode_config 深度合并"工作
-		ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
-		if err != nil {
-			a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
-			return "", fmt.Errorf("build opencode config: %w", err)
-		}
-		envOverrides = ocOverrides
+			// 验证 bindings 中本地 provider 是否存在
+			for ocProvID, binding := range ocPreset.Bindings {
+				if binding.LocalProvider != "" {
+					if _, pErr := a.Config.GetProvider(binding.LocalProvider); pErr != nil {
+						a.Log.Warn("session", "binding 引用的本地 provider 不存在", fmt.Sprintf("binding=%s localProvider=%s err=%v", ocProvID, binding.LocalProvider, pErr))
+						// 不直接阻断，但记录警告
+					}
+				}
+			}
 
-		a.Log.Info("session", "OpenCode API 密钥已获取",
-			fmt.Sprintf("provider=%s source=%s key=%s len=%d",
-				providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
+			goto launchCommon
+		}
 	}
 
+	// ============================================================
+	// 轨道 2（旧模型回退）：terminal_presets.opencode
+	// ============================================================
+	{
+		// presetName 可能是 terminal_preset 的 stable key
+		tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
+		tpFound := tpErr == nil && tp != nil
+		if tpFound {
+			if tpProvider != "" {
+				providerName = tpProvider
+			}
+			a.Log.Info("session", "OpenCode 命中 terminal_preset（旧模型回退）", fmt.Sprintf("key=%s provider=%s model=%s hasCfg=%v", presetName, tpProvider, tp.Model, len(tp.OpenCodeCfg) > 0))
+		}
+
+		if providerName != "" {
+			loadedProvider, err := a.Config.GetProvider(providerName)
+			if err != nil {
+				a.Log.Error("session", "获取 OpenCode 提供商失败", err.Error())
+				return "", fmt.Errorf("get opencode provider: %w", err)
+			}
+			provider = loadedProvider
+
+			// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 副本
+			if tpFound {
+				provCopy := *provider
+				converted := config.Preset{
+					Name:           tp.Name,
+					Model:          tp.Model,
+					Parameters:     tp.Parameters,
+					OpenCodeConfig: tp.OpenCodeCfg,
+				}
+				if provCopy.Presets == nil {
+					provCopy.Presets = map[string]config.Preset{}
+				}
+				provCopy.Presets[presetName] = converted
+				*provider = provCopy
+				a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
+			}
+
+			apiKey, keySource := a.getProviderAPIKeyForFormat(providerName, "openai")
+			if apiKey == "" {
+				a.Log.Error("session", "未找到 OpenCode API 密钥", "provider="+providerName)
+				return "", fmt.Errorf("no API key found for provider %q", providerName)
+			}
+
+			// 基于 Provider + Preset（含桥接后的 terminal preset）生成 OPENCODE_CONFIG_CONTENT 注入
+			ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
+			if err != nil {
+				a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
+				return "", fmt.Errorf("build opencode config: %w", err)
+			}
+			envOverrides = ocOverrides
+
+			a.Log.Info("session", "OpenCode API 密钥已获取",
+				fmt.Sprintf("provider=%s source=%s key=%s len=%d",
+					providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
+		}
+	}
+
+launchCommon:
 	// 确定启动模式
 	launchMode := session.LaunchMode(mode)
 	if launchMode == "" {
@@ -901,18 +980,14 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 	// 根据模式选择启动方式
 	if launchMode == session.ModeEmbedded {
 		// 内嵌终端模式：使用 ConPTY
-		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 
-		// 确定 shell 路径和自动命令
 		actualShell := shellPath
 		autoCommand := ""
 		if actualShell != "" {
-			// 用户指定了 shell，在 shell 中自动启动 opencode
 			autoCommand = "opencode"
 		}
-		// actualShell 为空时，PTY 会直接启动 "opencode"
 
 		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
 		if err != nil {
@@ -923,7 +998,6 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "OpenCode PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
-		// 监控 PTY 进程退出
 		go func(id string) {
 			for a.Pty.IsRunning(id) {
 				select {
@@ -940,12 +1014,11 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 	}
 
 	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	// 准备 apiKey 用于 LaunchOpenCode 的自动配置生成
 	var apiKey string
-	if providerName != "" {
-		apiKey, _ = a.Secrets.GetAPIKeyWithFallback(providerName)
+	if provider != nil {
+		apiKey, _ = a.getProviderAPIKeyForFormat(sessionProvider, "openai")
 	}
-	result, err := a.Launcher.LaunchOpenCode(sess.ID, launchMode, workDir, envOverrides, providerName, provider, presetName, apiKey)
+	result, err := a.Launcher.LaunchOpenCode(sess.ID, launchMode, workDir, envOverrides, "", provider, presetName, apiKey)
 	if err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.Log.Error("session", "OpenCode 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -955,7 +1028,6 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 	a.Sessions.SetPID(sess.ID, result.PID)
 	a.Log.Info("session", "OpenCode 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
 
-	// 监控进程退出
 	go func(id string) {
 		for a.Launcher.IsRunning(id) {
 			select {
@@ -1041,12 +1113,16 @@ func (a *App) LaunchAmagiCode(groupName string, providerName string, mode string
 
 	// 构建环境变量注入
 	envOverrides := map[string]string{}
-	providerType := strings.TrimSpace(strings.ToLower(provider.Type))
-	if providerType == "" || providerType == "anthropic" {
+	if provider.IsOpenAICompatible() {
+		envOverrides["OPENAI_API_KEY"] = apiKey
+		if baseURL := provider.EffectiveBaseURL("openai"); baseURL != "" {
+			envOverrides["OPENAI_BASE_URL"] = baseURL
+		}
+	} else {
 		envOverrides["ANTHROPIC_API_KEY"] = apiKey
 		envOverrides["ANTHROPIC_AUTH_TOKEN"] = ""
-		if provider.BaseURL != "" {
-			envOverrides["ANTHROPIC_BASE_URL"] = provider.BaseURL
+		if baseURL := provider.EffectiveBaseURL("anthropic"); baseURL != "" {
+			envOverrides["ANTHROPIC_BASE_URL"] = baseURL
 		}
 		// 从 preset 构建模型参数
 		if preset.Model != "" {
@@ -1061,11 +1137,6 @@ func (a *App) LaunchAmagiCode(groupName string, providerName string, mode string
 		if preset.Thinking != nil {
 			thinkingJSON, _ := json.Marshal(preset.Thinking)
 			envOverrides["ANTHROPIC_THINKING"] = string(thinkingJSON)
-		}
-	} else {
-		envOverrides["OPENAI_API_KEY"] = apiKey
-		if provider.BaseURL != "" {
-			envOverrides["OPENAI_BASE_URL"] = provider.BaseURL
 		}
 	}
 
@@ -1386,19 +1457,59 @@ func (a *App) ExportConfigToFile() (string, error) {
 
 	exportProviders := make(map[string]config.ExportProvider, len(providers))
 	for name, p := range providers {
-		apiKey, _ := a.Secrets.GetAPIKey(name)
-		presets := p.Presets
-		if presets == nil {
-			presets = map[string]config.Preset{}
-		}
-		exportProviders[name] = config.ExportProvider{
-			Type:         p.Type,
-			BaseURL:      p.BaseURL,
+		ep := config.ExportProvider{
 			DefaultModel: p.DefaultModel,
-			AuthKey:      p.AuthKey,
-			APIKey:       apiKey,
-			Presets:      presets,
+			Presets:      p.Presets,
+			// 旧字段回填（兼容旧版导入）
+			Type:    p.EffectiveType(),
+			BaseURL: p.EffectiveBaseURL(""),
+			AuthKey: p.EffectiveAuthKey(""),
 		}
+		if p.Presets == nil {
+			ep.Presets = map[string]config.Preset{}
+		}
+		// 双格式字段
+		if p.Anthropic != nil {
+			anthCopy := *p.Anthropic
+			ep.Anthropic = &anthCopy
+		}
+		if p.OpenAI != nil {
+			oaiCopy := *p.OpenAI
+			ep.OpenAI = &oaiCopy
+		}
+		// API key：按格式独立读取，每种格式独立 fallback 到 legacy key
+		if p.Anthropic != nil && p.Anthropic.Enabled {
+			key, _ := a.Secrets.GetAPIKey(name + ":anthropic")
+			if key == "" {
+				// fallback 到 legacy key
+				key, _ = a.Secrets.GetAPIKey(name)
+			}
+			if key != "" {
+				if ep.Anthropic == nil {
+					ep.Anthropic = &config.AnthropicFormat{Enabled: true}
+				}
+				ep.Anthropic.APIKey = key
+			}
+		}
+		if p.OpenAI != nil && p.OpenAI.Enabled {
+			key, _ := a.Secrets.GetAPIKey(name + ":openai")
+			if key == "" {
+				// fallback 到 legacy key
+				key, _ = a.Secrets.GetAPIKey(name)
+			}
+			if key != "" {
+				if ep.OpenAI == nil {
+					ep.OpenAI = &config.OpenAIFormat{Enabled: true}
+				}
+				ep.OpenAI.APIKey = key
+			}
+		}
+		// 旧 APIKey 回退：仅当无双格式字段时才填充顶层 APIKey
+		if ep.Anthropic == nil && ep.OpenAI == nil {
+			apiKey, _ := a.Secrets.GetAPIKey(name)
+			ep.APIKey = apiKey
+		}
+		exportProviders[name] = ep
 	}
 
 	exportCfg := config.ExportConfig{
@@ -1499,25 +1610,56 @@ func (a *App) ImportConfigFromFile() (string, error) {
 	// 遍历 providers 并导入
 	importCount := 0
 	for name, ep := range exportCfg.Providers {
+		// 先将 API key 保存到密钥存储（仅在 secrets 中，不进 models.json）
+		if ep.Anthropic != nil && ep.Anthropic.APIKey != "" {
+			if err := a.Secrets.SetAPIKey(name + ":anthropic", ep.Anthropic.APIKey); err != nil {
+				a.Log.Warn("app", "保存 Anthropic API key 失败", fmt.Sprintf("provider=%s err=%v", name, err))
+			}
+		}
+		if ep.OpenAI != nil && ep.OpenAI.APIKey != "" {
+			if err := a.Secrets.SetAPIKey(name + ":openai", ep.OpenAI.APIKey); err != nil {
+				a.Log.Warn("app", "保存 OpenAI API key 失败", fmt.Sprintf("provider=%s err=%v", name, err))
+			}
+		}
+		if ep.APIKey != "" {
+			if err := a.Secrets.SetAPIKey(name, ep.APIKey); err != nil {
+				a.Log.Warn("app", "保存 API key 失败", fmt.Sprintf("provider=%s err=%v", name, err))
+			}
+		}
+
+		// 构建 Provider，深拷贝格式字段并剥离 APIKey（防止明文落盘到 models.json）
+		var providerAnthropic *config.AnthropicFormat
+		var providerOpenAI *config.OpenAIFormat
+		if ep.Anthropic != nil {
+			ac := *ep.Anthropic
+			ac.APIKey = ""
+			providerAnthropic = &ac
+		}
+		if ep.OpenAI != nil {
+			oc := *ep.OpenAI
+			oc.APIKey = ""
+			providerOpenAI = &oc
+		}
+
 		provider := config.Provider{
-			Type:         ep.Type,
-			BaseURL:      ep.BaseURL,
 			DefaultModel: ep.DefaultModel,
-			AuthKey:      ep.AuthKey,
 			Presets:      ep.Presets,
+			Anthropic:    providerAnthropic,
+			OpenAI:       providerOpenAI,
 		}
 		if provider.Presets == nil {
 			provider.Presets = map[string]config.Preset{}
 		}
 
-		if err := a.Config.SaveProvider(name, provider); err != nil {
-			return "", fmt.Errorf("save provider %q: %w", name, err)
+		// 兼容旧格式：若无双格式字段，从旧字段推断
+		if ep.Anthropic == nil && ep.OpenAI == nil {
+			provider.Type = ep.Type
+			provider.BaseURL = ep.BaseURL
+			provider.AuthKey = ep.AuthKey
 		}
 
-		if ep.APIKey != "" {
-			if err := a.Secrets.SetAPIKey(name, ep.APIKey); err != nil {
-				a.Log.Warn("app", "保存 API key 失败", fmt.Sprintf("provider=%s err=%v", name, err))
-			}
+		if err := a.Config.SaveProvider(name, provider); err != nil {
+			return "", fmt.Errorf("save provider %q: %w", name, err)
 		}
 
 		importCount++
@@ -1546,13 +1688,12 @@ func (a *App) ImportConfigFromFile() (string, error) {
 
 // GetProviderExportJSON 返回指定提供商的配置（含 API key）的格式化 JSON 字符串，
 // 供前端 JSON 编辑功能使用。
+// 支持双格式结构导出，同时保留旧字段兼容。
 func (a *App) GetProviderExportJSON(providerName string) (string, error) {
 	provider, err := a.Config.GetProvider(providerName)
 	if err != nil {
 		return "", fmt.Errorf("get provider %q: %w", providerName, err)
 	}
-
-	apiKey, _ := a.Secrets.GetAPIKey(providerName)
 
 	presets := provider.Presets
 	if presets == nil {
@@ -1560,12 +1701,55 @@ func (a *App) GetProviderExportJSON(providerName string) (string, error) {
 	}
 
 	ep := config.ExportProvider{
-		Type:         provider.Type,
-		BaseURL:      provider.BaseURL,
 		DefaultModel: provider.DefaultModel,
-		AuthKey:      provider.AuthKey,
-		APIKey:       apiKey,
 		Presets:      presets,
+		// 旧字段回填
+		Type:    provider.EffectiveType(),
+		BaseURL: provider.EffectiveBaseURL(""),
+		AuthKey: provider.EffectiveAuthKey(""),
+	}
+
+	// 双格式字段
+	if provider.Anthropic != nil {
+		anthCopy := *provider.Anthropic
+		ep.Anthropic = &anthCopy
+	}
+	if provider.OpenAI != nil {
+		oaiCopy := *provider.OpenAI
+		ep.OpenAI = &oaiCopy
+	}
+
+	// API key：按格式独立读取，每种格式独立 fallback 到 legacy key
+	if provider.Anthropic != nil && provider.Anthropic.Enabled {
+		key, _ := a.Secrets.GetAPIKey(providerName + ":anthropic")
+		if key == "" {
+			// fallback 到 legacy key
+			key, _ = a.Secrets.GetAPIKey(providerName)
+		}
+		if key != "" {
+			if ep.Anthropic == nil {
+				ep.Anthropic = &config.AnthropicFormat{Enabled: true}
+			}
+			ep.Anthropic.APIKey = key
+		}
+	}
+	if provider.OpenAI != nil && provider.OpenAI.Enabled {
+		key, _ := a.Secrets.GetAPIKey(providerName + ":openai")
+		if key == "" {
+			// fallback 到 legacy key
+			key, _ = a.Secrets.GetAPIKey(providerName)
+		}
+		if key != "" {
+			if ep.OpenAI == nil {
+				ep.OpenAI = &config.OpenAIFormat{Enabled: true}
+			}
+			ep.OpenAI.APIKey = key
+		}
+	}
+	// 旧 APIKey 回退：仅当无双格式字段时才填充顶层 APIKey
+	if ep.Anthropic == nil && ep.OpenAI == nil {
+		apiKey, _ := a.Secrets.GetAPIKey(providerName)
+		ep.APIKey = apiKey
 	}
 
 	data, err := json.MarshalIndent(ep, "", "  ")
@@ -1577,31 +1761,64 @@ func (a *App) GetProviderExportJSON(providerName string) (string, error) {
 
 // SaveProviderFromJSON 将前端传入的 JSON 字符串解析后保存到指定提供商，
 // 若 APIKey 有变更则同步更新密钥存储。
+// 支持双格式结构导入，同时兼容旧 JSON 格式。
+// API key 仅写入密钥存储（secrets.enc），永远不会明文落盘到 models.json。
 func (a *App) SaveProviderFromJSON(providerName string, jsonStr string) error {
 	var ep config.ExportProvider
 	if err := json.Unmarshal([]byte(jsonStr), &ep); err != nil {
 		return fmt.Errorf("invalid JSON format: %w", err)
 	}
 
+	// 先将 API key 保存到密钥存储（仅在 secrets 中，不进 models.json）
+	if ep.Anthropic != nil && ep.Anthropic.APIKey != "" {
+		if err := a.Secrets.SetAPIKey(providerName + ":anthropic", ep.Anthropic.APIKey); err != nil {
+			return fmt.Errorf("save Anthropic API key for %q: %w", providerName, err)
+		}
+	}
+	if ep.OpenAI != nil && ep.OpenAI.APIKey != "" {
+		if err := a.Secrets.SetAPIKey(providerName + ":openai", ep.OpenAI.APIKey); err != nil {
+			return fmt.Errorf("save OpenAI API key for %q: %w", providerName, err)
+		}
+	}
+	if ep.APIKey != "" {
+		if err := a.Secrets.SetAPIKey(providerName, ep.APIKey); err != nil {
+			return fmt.Errorf("save API key for %q: %w", providerName, err)
+		}
+	}
+
+	// 构建 Provider，深拷贝格式字段并剥离 APIKey（防止明文落盘到 models.json）
+	var providerAnthropic *config.AnthropicFormat
+	var providerOpenAI *config.OpenAIFormat
+	if ep.Anthropic != nil {
+		ac := *ep.Anthropic
+		ac.APIKey = ""
+		providerAnthropic = &ac
+	}
+	if ep.OpenAI != nil {
+		oc := *ep.OpenAI
+		oc.APIKey = ""
+		providerOpenAI = &oc
+	}
+
 	provider := config.Provider{
-		Type:         ep.Type,
-		BaseURL:      ep.BaseURL,
 		DefaultModel: ep.DefaultModel,
-		AuthKey:      ep.AuthKey,
 		Presets:      ep.Presets,
+		Anthropic:    providerAnthropic,
+		OpenAI:       providerOpenAI,
 	}
 	if provider.Presets == nil {
 		provider.Presets = map[string]config.Preset{}
 	}
 
-	if err := a.Config.SaveProvider(providerName, provider); err != nil {
-		return fmt.Errorf("save provider %q: %w", providerName, err)
+	// 兼容旧格式：若无双格式字段，从旧字段推断
+	if ep.Anthropic == nil && ep.OpenAI == nil {
+		provider.Type = ep.Type
+		provider.BaseURL = ep.BaseURL
+		provider.AuthKey = ep.AuthKey
 	}
 
-	if ep.APIKey != "" {
-		if err := a.Secrets.SetAPIKey(providerName, ep.APIKey); err != nil {
-			return fmt.Errorf("save API key for %q: %w", providerName, err)
-		}
+	if err := a.Config.SaveProvider(providerName, provider); err != nil {
+		return fmt.Errorf("save provider %q: %w", providerName, err)
 	}
 
 	a.Log.Info("app", "已从 JSON 保存提供商配置", providerName)

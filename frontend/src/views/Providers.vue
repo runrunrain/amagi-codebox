@@ -131,6 +131,9 @@
 </template>
 
 <script lang="ts" setup>
+// DEPRECATED: This page has been superseded by ProviderCenter.vue.
+// The route /providers/${name} below may not exist in the current router.
+// Kept for reference only; do not add new features here.
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { GetProviders, SaveProvider, DeleteProvider } from '../../wailsjs/go/config/ConfigService'

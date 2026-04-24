@@ -79,32 +79,29 @@ func BuildOpenCodeRuntimeConfig(
 // deriveOpenCodeProviderID 从 amagi-codebox 的 provider 配置推导 OpenCode 的 provider ID。
 //
 // 映射规则：
-//   - type=openai 且 baseURL 含 api.openai.com -> "openai"
-//   - type=openai 且 baseURL 为其他 -> 使用 providerName（作为 openai-compatible provider 的 ID）
-//   - anthropic 官方 -> "anthropic"
+//   - OpenAI 兼容且 baseURL 含 api.openai.com -> "openai"
+//   - OpenAI 兼容且 baseURL 为其他 -> 使用 providerName（作为 openai-compatible provider 的 ID）
+//   - Anthropic 官方 -> "anthropic"
 //   - 其他（使用 Anthropic 兼容 API 的第三方） -> 使用 providerName
 func deriveOpenCodeProviderID(providerName string, provider config.Provider) string {
-	providerType := strings.TrimSpace(strings.ToLower(provider.Type))
-	baseURL := strings.TrimSpace(strings.ToLower(provider.BaseURL))
+	baseURL := strings.TrimSpace(strings.ToLower(provider.EffectiveBaseURL("")))
 
-	switch {
-	case providerType == "openai" || provider.AuthKey == "OPENAI_API_KEY":
+	if provider.IsOpenAICompatible() {
 		if strings.Contains(baseURL, "api.openai.com") {
 			return "openai"
 		}
 		return providerName
-	default:
-		if strings.Contains(baseURL, "api.anthropic.com") {
-			return "anthropic"
-		}
-		return providerName
 	}
+	if strings.Contains(baseURL, "api.anthropic.com") {
+		return "anthropic"
+	}
+	return providerName
 }
 
 // buildOpenCodeProviderMap 构建 OpenCode provider 配置项（使用 map[string]any 以便深度合并）。
 func buildOpenCodeProviderMap(providerName string, provider config.Provider, apiKey string) map[string]any {
-	providerType := strings.TrimSpace(strings.ToLower(provider.Type))
-	isOpenAIType := providerType == "openai" || provider.AuthKey == "OPENAI_API_KEY"
+	isOpenAIType := provider.IsOpenAICompatible()
+	effectiveBaseURL := provider.EffectiveBaseURL("")
 
 	entry := map[string]any{}
 	options := map[string]any{}
@@ -114,13 +111,13 @@ func buildOpenCodeProviderMap(providerName string, provider config.Provider, api
 	}
 
 	if isOpenAIType {
-		if provider.BaseURL != "" {
-			options["baseURL"] = provider.BaseURL
+		if effectiveBaseURL != "" {
+			options["baseURL"] = effectiveBaseURL
 		}
 	} else {
-		baseURL := strings.TrimSpace(strings.ToLower(provider.BaseURL))
-		if baseURL != "" && !strings.Contains(baseURL, "api.anthropic.com") {
-			options["baseURL"] = provider.BaseURL
+		lowerBaseURL := strings.TrimSpace(strings.ToLower(effectiveBaseURL))
+		if lowerBaseURL != "" && !strings.Contains(lowerBaseURL, "api.anthropic.com") {
+			options["baseURL"] = effectiveBaseURL
 		}
 	}
 
@@ -205,14 +202,151 @@ func BuildOpenCodeEnvOverrides(
 	overrides["OPENCODE_CONFIG_CONTENT"] = string(configJSON)
 
 	// 设置 API Key 环境变量作为备用
-	providerType := strings.TrimSpace(strings.ToLower(provider.Type))
-	switch {
-	case providerType == "openai" || provider.AuthKey == "OPENAI_API_KEY":
+	if provider.IsOpenAICompatible() {
 		if apiKey != "" {
 			overrides["OPENAI_API_KEY"] = apiKey
 		}
-	default:
+	} else {
 		if apiKey != "" {
+			overrides["ANTHROPIC_API_KEY"] = apiKey
+		}
+	}
+
+	return overrides, nil
+}
+
+// GetAPIKeyFunc 是获取指定 provider+format 的 API key 的函数签名。
+// 返回 (apiKey, error)。
+type GetAPIKeyFunc func(providerName, format string) (string, error)
+
+// BuildOpenCodeRuntimeConfigFromPreset 基于新模型 OpenCodePreset 构建运行时配置。
+// 行为：
+//   - 解析 preset.Config 为 map[string]any
+//   - 遍历 Bindings
+//   - 对于每个 binding：找到本地 provider，读取 secrets，注入到 config.provider[providerId].options
+//   - secrets 仅在运行时注入，不写回 preset.Config
+func BuildOpenCodeRuntimeConfigFromPreset(
+	preset config.OpenCodePreset,
+	getAPIKey GetAPIKeyFunc,
+) (map[string]any, error) {
+	// 1. 解析 Config
+	var result map[string]any
+	if len(preset.Config) > 0 {
+		if err := json.Unmarshal(preset.Config, &result); err != nil {
+			return nil, fmt.Errorf("parse opencode preset config: %w", err)
+		}
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+
+	// 2. 确保 provider 节点存在
+	providers, _ := result["provider"].(map[string]any)
+	if providers == nil {
+		providers = map[string]any{}
+	}
+
+	// 3. 遍历 Bindings，注入 secrets
+	for ocProviderID, binding := range preset.Bindings {
+		if binding.LocalProvider == "" {
+			continue
+		}
+
+		// 确定格式
+		format := binding.Format
+		if format == "" || format == "auto" {
+			format = "anthropic" // 默认 anthropic
+		}
+
+		// 读取 secrets
+		apiKey := ""
+		if getAPIKey != nil {
+			key, err := getAPIKey(binding.LocalProvider, format)
+			if err == nil && key != "" {
+				apiKey = key
+			}
+		}
+
+		// 确定 inject 列表
+		inject := binding.Inject
+		if len(inject) == 0 {
+			inject = []string{"apiKey", "baseURL"}
+		}
+
+		// 获取或创建 provider entry
+		provEntry, _ := providers[ocProviderID].(map[string]any)
+		if provEntry == nil {
+			provEntry = map[string]any{}
+		}
+		options, _ := provEntry["options"].(map[string]any)
+		if options == nil {
+			options = map[string]any{}
+		}
+
+		// 注入 secrets
+		for _, field := range inject {
+			switch field {
+			case "apiKey":
+				if apiKey != "" {
+					options["apiKey"] = apiKey
+				}
+			case "baseURL":
+				// baseURL 从 secrets 获取不太常见，但从 provider 配置获取
+				// 这里暂不注入，由 preset.Config 中的 provider 配置提供
+			case "organization":
+				// organization 不从 secrets 读取，由 preset.Config 提供
+			}
+		}
+
+		if len(options) > 0 {
+			provEntry["options"] = options
+		}
+		providers[ocProviderID] = provEntry
+	}
+
+	result["provider"] = providers
+
+	return result, nil
+}
+
+// BuildOpenCodeEnvOverridesFromPreset 基于新模型 OpenCodePreset 构建环境变量覆盖。
+func BuildOpenCodeEnvOverridesFromPreset(
+	preset config.OpenCodePreset,
+	getAPIKey GetAPIKeyFunc,
+) (map[string]string, error) {
+	overrides := map[string]string{}
+
+	runtimeConfig, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey)
+	if err != nil {
+		return nil, fmt.Errorf("build opencode runtime config from preset: %w", err)
+	}
+
+	configJSON, err := json.Marshal(runtimeConfig)
+	if err != nil {
+		return nil, fmt.Errorf("marshal opencode config: %w", err)
+	}
+	overrides["OPENCODE_CONFIG_CONTENT"] = string(configJSON)
+
+	// 设置环境变量备用：遍历 bindings，为每个 binding 设置对应的环境变量
+	for _, binding := range preset.Bindings {
+		if binding.LocalProvider == "" || getAPIKey == nil {
+			continue
+		}
+
+		format := binding.Format
+		if format == "" || format == "auto" {
+			format = "anthropic"
+		}
+
+		apiKey, err := getAPIKey(binding.LocalProvider, format)
+		if err != nil || apiKey == "" {
+			continue
+		}
+
+		switch format {
+		case "openai":
+			overrides["OPENAI_API_KEY"] = apiKey
+		case "anthropic":
 			overrides["ANTHROPIC_API_KEY"] = apiKey
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -513,39 +514,29 @@ func TestGetMergedTerminalPresets_FallbackToOld(t *testing.T) {
 		t.Fatalf("GetMergedTerminalPresets: %v", err)
 	}
 
-	var found *MergedTerminalPreset
-	for i := range merged {
-		if merged[i].Key == "legacy-provider/old-preset" {
-			found = &merged[i]
-			break
+	// After removing the fallback to provider.presets, only terminal_presets are returned.
+	// Since no terminal presets were created, the legacy provider preset should NOT appear.
+	for _, mp := range merged {
+		if mp.Key == "legacy-provider/old-preset" {
+			t.Fatal("legacy provider preset should NOT appear after fallback removal")
 		}
-	}
-	if found == nil {
-		t.Fatal("expected to find legacy-provider/old-preset in merged results")
-	}
-
-	if found.Source != "provider_preset" {
-		t.Fatalf("Source = %q, want %q", found.Source, "provider_preset")
-	}
-	if found.Model != "legacy-model" {
-		t.Fatalf("Model = %q, want %q", found.Model, "legacy-model")
 	}
 }
 
 func TestGetMergedTerminalPresets_Empty(t *testing.T) {
-	// With default config (no custom terminal presets), merged should still
-	// return the default provider presets via the fallback path.
+	// With default config (no custom terminal presets), merged should return
+	// only terminal_presets entries. Since default config has no terminal presets,
+	// the result should be empty (fallback to provider.presets removed).
 	svc := newTestConfigService(t)
 
 	merged, err := svc.GetMergedTerminalPresets("claude_code")
 	if err != nil {
 		t.Fatalf("GetMergedTerminalPresets: %v", err)
 	}
-	// Default config has anthropic, glm, minimax, kimi as anthropic-type providers,
-	// each with a "default" preset. So merged should not be empty.
+	// After removing the fallback, no provider_presets should appear
 	for _, mp := range merged {
-		if mp.Source != "provider_preset" {
-			t.Fatalf("without terminal presets, all entries should be provider_preset, got source=%q", mp.Source)
+		if mp.Source != "terminal_preset" {
+			t.Fatalf("all entries should be terminal_preset, got source=%q", mp.Source)
 		}
 	}
 }
@@ -721,18 +712,6 @@ func TestSaveTerminalPreset_ConfigNotLoaded(t *testing.T) {
 	err := svc.SaveTerminalPreset("claude_code", "test", TerminalPreset{})
 	if err == nil {
 		t.Fatal("expected error when config not loaded")
-	}
-}
-
-// ============================================================================
-// H. GetAllTerminalPresets / SetAllTerminalPresets
-// ============================================================================
-
-func TestGetAllTerminalPresets_Nil(t *testing.T) {
-	svc := newTestConfigService(t)
-	result := svc.GetAllTerminalPresets()
-	if result != nil {
-		t.Fatal("expected nil when no terminal presets")
 	}
 }
 
@@ -1358,5 +1337,930 @@ func TestMigrate_NormalizeDoesNotCorruptCleanJSON(t *testing.T) {
 	}
 	if result["editor"] != "vim" {
 		t.Fatalf("editor = %v, want vim", result["editor"])
+	}
+}
+
+// ============================================================================
+// L. Phase A3 -- Provider dual-format upgrade tests
+// ============================================================================
+
+// TestMigrateProviderToDualFormat_AnthropicOnly verifies that a legacy provider
+// with Type="" and AuthKey="ANTHROPIC_API_KEY" is upgraded to have
+// Anthropic.Enabled=true and OpenAI=nil.
+func TestMigrateProviderToDualFormat_AnthropicOnly(t *testing.T) {
+	models := map[string]Provider{
+		"my-anthropic": {
+			Type:         "",
+			BaseURL:      "https://api.anthropic.com",
+			DefaultModel: "claude-sonnet-4-20250514",
+			AuthKey:      "ANTHROPIC_API_KEY",
+		},
+	}
+
+	migrateProviderToDualFormat(models)
+
+	p := models["my-anthropic"]
+	if p.Anthropic == nil {
+		t.Fatal("expected Anthropic to be non-nil after migration")
+	}
+	if !p.Anthropic.Enabled {
+		t.Fatal("expected Anthropic.Enabled = true after migration")
+	}
+	if p.OpenAI != nil {
+		t.Fatal("expected OpenAI to be nil for Anthropic-only provider")
+	}
+}
+
+// TestMigrateProviderToDualFormat_OpenAIOnly verifies that a legacy provider
+// with Type="openai" is upgraded to have OpenAI.Enabled=true and Anthropic=nil.
+func TestMigrateProviderToDualFormat_OpenAIOnly(t *testing.T) {
+	models := map[string]Provider{
+		"my-openai": {
+			Type:         "openai",
+			BaseURL:      "https://api.openai.com/v1",
+			DefaultModel: "gpt-4o",
+			AuthKey:      "OPENAI_API_KEY",
+		},
+	}
+
+	migrateProviderToDualFormat(models)
+
+	p := models["my-openai"]
+	if p.OpenAI == nil {
+		t.Fatal("expected OpenAI to be non-nil after migration")
+	}
+	if !p.OpenAI.Enabled {
+		t.Fatal("expected OpenAI.Enabled = true after migration")
+	}
+	if p.Anthropic != nil {
+		t.Fatal("expected Anthropic to be nil for OpenAI-only provider")
+	}
+}
+
+// TestMigrateProviderToDualFormat_AlreadyMigrated verifies that a provider
+// that already has Anthropic/OpenAI fields set is not modified.
+func TestMigrateProviderToDualFormat_AlreadyMigrated(t *testing.T) {
+	originalAnthropic := &AnthropicFormat{
+		Enabled:  true,
+		BaseURL:  "https://custom.anthropic.com",
+		AuthKey:  "CUSTOM_KEY",
+	}
+	originalOpenAI := &OpenAIFormat{
+		Enabled:  true,
+		BaseURL:  "https://custom.openai.com",
+		AuthKey:  "CUSTOM_OPENAI_KEY",
+	}
+
+	models := map[string]Provider{
+		"dual-provider": {
+			Type:         "anthropic",
+			BaseURL:      "https://old-url.com",
+			DefaultModel: "model-v1",
+			AuthKey:      "ANTHROPIC_API_KEY",
+			Anthropic:    originalAnthropic,
+			OpenAI:       originalOpenAI,
+		},
+	}
+
+	migrateProviderToDualFormat(models)
+
+	p := models["dual-provider"]
+	// Should NOT have been overwritten
+	if p.Anthropic.BaseURL != "https://custom.anthropic.com" {
+		t.Fatalf("Anthropic.BaseURL = %q, want %q (should not be overwritten)",
+			p.Anthropic.BaseURL, "https://custom.anthropic.com")
+	}
+	if p.OpenAI.BaseURL != "https://custom.openai.com" {
+		t.Fatalf("OpenAI.BaseURL = %q, want %q (should not be overwritten)",
+			p.OpenAI.BaseURL, "https://custom.openai.com")
+	}
+}
+
+// TestMigrateProviderToDualFormat_SyncsOldFields verifies that after migration,
+// the old top-level BaseURL and AuthKey fields are synced (mirrored) from the new format,
+// not cleared. This ensures backward compatibility for code paths still reading old fields.
+func TestMigrateProviderToDualFormat_SyncsOldFields(t *testing.T) {
+	models := map[string]Provider{
+		"legacy": {
+			Type:         "",
+			BaseURL:      "https://api.anthropic.com",
+			DefaultModel: "claude-sonnet-4-20250514",
+			AuthKey:      "ANTHROPIC_API_KEY",
+		},
+	}
+
+	migrateProviderToDualFormat(models)
+
+	p := models["legacy"]
+	// 旧字段应与新格式字段同步（镜像），而非被清空
+	if p.BaseURL != "https://api.anthropic.com" {
+		t.Fatalf("BaseURL = %q, want %q (synced from new format)",
+			p.BaseURL, "https://api.anthropic.com")
+	}
+	if p.AuthKey != "ANTHROPIC_API_KEY" {
+		t.Fatalf("AuthKey = %q, want %q (synced from new format)",
+			p.AuthKey, "ANTHROPIC_API_KEY")
+	}
+	// 新字段应被填充
+	if p.Anthropic == nil || !p.Anthropic.Enabled {
+		t.Fatal("expected Anthropic.Enabled = true")
+	}
+	if p.Anthropic.BaseURL != "https://api.anthropic.com" {
+		t.Fatalf("Anthropic.BaseURL = %q, want %q",
+			p.Anthropic.BaseURL, "https://api.anthropic.com")
+	}
+	if p.Anthropic.AuthKey != "ANTHROPIC_API_KEY" {
+		t.Fatalf("Anthropic.AuthKey = %q, want %q",
+			p.Anthropic.AuthKey, "ANTHROPIC_API_KEY")
+	}
+}
+
+// TestCleanupMigratedPresets_AllMigrated verifies that when all provider presets
+// have corresponding entries in terminal_presets, the provider presets are cleaned up.
+func TestCleanupMigratedPresets_AllMigrated(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	// Set up a provider with presets
+	svc.SaveProvider("test-provider", Provider{
+		Type:    "anthropic",
+		AuthKey: "ANTHROPIC_API_KEY",
+		Presets: map[string]Preset{
+			"preset-a": {Name: "A", Model: "model-a"},
+			"preset-b": {Name: "B", Model: "model-b"},
+		},
+	})
+
+	// Migrate all presets to terminal_presets
+	svc.MigrateProviderPresetsToTerminal()
+
+	// Verify presets still exist on provider before cleanup
+	provBefore, _ := svc.GetProvider("test-provider")
+	if len(provBefore.Presets) == 0 {
+		t.Fatal("expected presets to exist before cleanup")
+	}
+
+	// Run cleanup
+	cfg := svc.GetConfig()
+	CleanupMigratedProviderPresets(cfg)
+
+	// Verify presets were cleaned up
+	provAfter := cfg.Models["test-provider"]
+	if len(provAfter.Presets) != 0 {
+		t.Fatalf("expected 0 presets after cleanup, got %d: %v",
+			len(provAfter.Presets), provAfter.Presets)
+	}
+}
+
+// TestCleanupMigratedPresets_PartialMigration verifies that when only some presets
+// have been migrated to terminal_presets, the provider presets are preserved.
+func TestCleanupMigratedPresets_PartialMigration(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	// Set up a provider with two presets
+	svc.SaveProvider("test-provider", Provider{
+		Type:    "anthropic",
+		AuthKey: "ANTHROPIC_API_KEY",
+		Presets: map[string]Preset{
+			"preset-a": {Name: "A", Model: "model-a"},
+			"preset-b": {Name: "B", Model: "model-b"},
+		},
+	})
+
+	// Manually migrate only preset-a to terminal_presets
+	svc.SaveTerminalPreset("claude_code", "test-provider/preset-a", TerminalPreset{
+		Name:     "A",
+		Provider: "test-provider",
+		Model:    "model-a",
+	})
+
+	// Run cleanup
+	cfg := svc.GetConfig()
+	CleanupMigratedProviderPresets(cfg)
+
+	// Provider presets should still contain preset-b (not fully migrated)
+	prov := cfg.Models["test-provider"]
+	if _, ok := prov.Presets["preset-b"]; !ok {
+		t.Fatal("expected preset-b to remain on provider (not fully migrated)")
+	}
+}
+
+// TestCleanupMigratedPresets_NoTerminalPresets verifies that when terminal_presets
+// is nil, no cleanup happens and provider presets remain intact.
+func TestCleanupMigratedPresets_NoTerminalPresets(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	svc.SaveProvider("test-provider", Provider{
+		Type:    "anthropic",
+		AuthKey: "ANTHROPIC_API_KEY",
+		Presets: map[string]Preset{
+			"preset-a": {Name: "A", Model: "model-a"},
+		},
+	})
+
+	cfg := svc.GetConfig()
+	// Ensure terminal_presets is nil
+	cfg.TerminalPresets = nil
+
+	CleanupMigratedProviderPresets(cfg)
+
+	// Presets should remain
+	prov := cfg.Models["test-provider"]
+	if len(prov.Presets) != 1 {
+		t.Fatalf("expected 1 preset (no cleanup when terminal_presets=nil), got %d",
+			len(prov.Presets))
+	}
+}
+
+// TestIsAnthropicCompatible_NewField verifies that IsAnthropicCompatible
+// returns true when the new Anthropic format field has Enabled=true.
+func TestIsAnthropicCompatible_NewField(t *testing.T) {
+	p := Provider{
+		Anthropic: &AnthropicFormat{Enabled: true},
+	}
+	if !p.IsAnthropicCompatible() {
+		t.Fatal("expected true when Anthropic.Enabled = true")
+	}
+}
+
+// TestIsOpenAICompatible_NewField verifies that IsOpenAICompatible
+// returns true when the new OpenAI format field has Enabled=true.
+func TestIsOpenAICompatible_NewField(t *testing.T) {
+	p := Provider{
+		OpenAI: &OpenAIFormat{Enabled: true},
+	}
+	if !p.IsOpenAICompatible() {
+		t.Fatal("expected true when OpenAI.Enabled = true")
+	}
+}
+
+// TestIsAnthropicCompatible_FallbackOldType verifies that IsAnthropicCompatible
+// falls back to checking the old Type field when the new Anthropic field is nil.
+func TestIsAnthropicCompatible_FallbackOldType(t *testing.T) {
+	p := Provider{
+		Type:      "anthropic",
+		Anthropic: nil, // no new field
+	}
+	if !p.IsAnthropicCompatible() {
+		t.Fatal("expected true when Type = anthropic (fallback)")
+	}
+}
+
+// TestIsOpenAICompatible_FallbackOldAuthKey verifies that IsOpenAICompatible
+// falls back to checking the old AuthKey field when the new OpenAI field is nil.
+func TestIsOpenAICompatible_FallbackOldAuthKey(t *testing.T) {
+	p := Provider{
+		AuthKey: "OPENAI_API_KEY",
+		OpenAI:  nil, // no new field
+	}
+	if !p.IsOpenAICompatible() {
+		t.Fatal("expected true when AuthKey = OPENAI_API_KEY (fallback)")
+	}
+}
+
+// ============================================================================
+// M. Phase -- Persistent layer API key scrub regression tests
+// ============================================================================
+
+// TestSaveProvider_ScrubsNestedAPIKeys verifies that SaveProvider strips
+// Anthropic.APIKey and OpenAI.APIKey before writing models.json, and that
+// other structural fields remain intact.
+func TestSaveProvider_ScrubsNestedAPIKeys(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Construct a Provider with sensitive API keys in both format structs
+	p := Provider{
+		DefaultModel: "test-model-v1",
+		Anthropic: &AnthropicFormat{
+			Enabled: true,
+			APIKey:  "secret-anthropic-key-abc123",
+			BaseURL: "https://api.anthropic.com",
+			AuthKey: "ANTHROPIC_API_KEY",
+		},
+		OpenAI: &OpenAIFormat{
+			Enabled:      true,
+			APIKey:       "secret-openai-key-xyz789",
+			BaseURL:      "https://api.openai.com/v1",
+			Organization: "org-test-123",
+			AuthKey:      "OPENAI_API_KEY",
+		},
+	}
+
+	if err := svc.SaveProvider("test-scrub", p); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	// Read the raw models.json file
+	data, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	content := string(data)
+
+	// Assert: secrets must NOT appear in file
+	if strings.Contains(content, "secret-anthropic-key-abc123") {
+		t.Fatal("models.json contains anthropic API key secret -- scrub failed")
+	}
+	if strings.Contains(content, "secret-openai-key-xyz789") {
+		t.Fatal("models.json contains openai API key secret -- scrub failed")
+	}
+	// Assert: the literal key name "api_key" should not appear anywhere in file
+	// (since both APIKey fields should have been cleared and have omitempty)
+	if strings.Contains(content, `"api_key"`) {
+		t.Fatalf("models.json contains \"api_key\" field -- scrub incomplete:\n%s", content)
+	}
+
+	// Assert: structural fields must survive
+	if !strings.Contains(content, `"enabled"`) {
+		t.Fatal("models.json missing 'enabled' field -- scrub was too aggressive")
+	}
+	if !strings.Contains(content, `"default_model"`) {
+		t.Fatal("models.json missing 'default_model' field -- scrub was too aggressive")
+	}
+	if !strings.Contains(content, `"test-model-v1"`) {
+		t.Fatal("models.json missing default model value -- scrub was too aggressive")
+	}
+	if !strings.Contains(content, `"base_url"`) {
+		t.Fatal("models.json missing 'base_url' field -- scrub was too aggressive")
+	}
+
+	// Verify via reload that data is consistent
+	svc2 := NewConfigService(dir)
+	if err := svc2.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got, err := svc2.GetProvider("test-scrub")
+	if err != nil {
+		t.Fatalf("GetProvider after reload: %v", err)
+	}
+	if got.DefaultModel != "test-model-v1" {
+		t.Fatalf("DefaultModel = %q, want %q", got.DefaultModel, "test-model-v1")
+	}
+	if got.Anthropic == nil || !got.Anthropic.Enabled {
+		t.Fatal("Anthropic.Enabled should be true after reload")
+	}
+	if got.OpenAI == nil || !got.OpenAI.Enabled {
+		t.Fatal("OpenAI.Enabled should be true after reload")
+	}
+	if got.Anthropic.APIKey != "" {
+		t.Fatalf("Anthropic.APIKey = %q after reload, want empty", got.Anthropic.APIKey)
+	}
+	if got.OpenAI.APIKey != "" {
+		t.Fatalf("OpenAI.APIKey = %q after reload, want empty", got.OpenAI.APIKey)
+	}
+}
+
+// TestSave_ScrubsAllProviders verifies that the Save() method (non-locked path)
+// also scrubs API keys from all providers before writing to disk.
+func TestSave_ScrubsAllProviders(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Inject providers with API keys directly into config (bypassing SaveProvider)
+	cfg := svc.GetConfig()
+	cfg.Models["leaky-provider"] = Provider{
+		DefaultModel: "leaky-model",
+		Anthropic: &AnthropicFormat{
+			Enabled: true,
+			APIKey:  "leaky-secret-key",
+			BaseURL: "https://leak.example.com",
+		},
+		OpenAI: &OpenAIFormat{
+			Enabled: true,
+			APIKey:  "leaky-openai-key",
+			BaseURL: "https://leak-openai.example.com",
+		},
+	}
+	// Save via direct SaveProvider which stores into internal config
+	svc.SaveProvider("leaky-provider", cfg.Models["leaky-provider"])
+
+	// Now also modify config directly and call Save()
+	cfg2 := svc.GetConfig()
+	// Re-inject a key to test the Save() path
+	p := cfg2.Models["leaky-provider"]
+	p.Anthropic.APIKey = "reinjected-save-key"
+	svc.mu.Lock()
+	svc.config.Models["leaky-provider"] = p
+	svc.mu.Unlock()
+
+	if err := svc.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "reinjected-save-key") {
+		t.Fatal("Save() did not scrub reinjected API key")
+	}
+	if strings.Contains(content, `"api_key"`) {
+		t.Fatalf("Save() left api_key field in file:\n%s", content)
+	}
+}
+
+// TestScrubProviderAPIKeys_PreservesOtherFields verifies the unit-level
+// behavior of scrubProviderAPIKeys: only APIKey is cleared, everything
+// else is preserved.
+func TestScrubProviderAPIKeys_PreservesOtherFields(t *testing.T) {
+	p := Provider{
+		DefaultModel: "model-x",
+		Anthropic: &AnthropicFormat{
+			Enabled: true,
+			APIKey:  "should-be-gone",
+			BaseURL: "https://keep-this.com",
+			AuthKey: "KEEP_THIS_AUTH",
+		},
+		OpenAI: &OpenAIFormat{
+			Enabled:      true,
+			APIKey:       "also-should-be-gone",
+			BaseURL:      "https://keep-this-openai.com",
+			Organization: "keep-org",
+			AuthKey:      "KEEP_OPENAI_AUTH",
+		},
+	}
+
+	scrubbed := scrubProviderAPIKeys(p)
+
+	// APIKey must be empty
+	if scrubbed.Anthropic.APIKey != "" {
+		t.Fatalf("Anthropic.APIKey = %q, want empty", scrubbed.Anthropic.APIKey)
+	}
+	if scrubbed.OpenAI.APIKey != "" {
+		t.Fatalf("OpenAI.APIKey = %q, want empty", scrubbed.OpenAI.APIKey)
+	}
+
+	// All other fields preserved
+	if !scrubbed.Anthropic.Enabled {
+		t.Fatal("Anthropic.Enabled should remain true")
+	}
+	if scrubbed.Anthropic.BaseURL != "https://keep-this.com" {
+		t.Fatalf("Anthropic.BaseURL = %q, want %q", scrubbed.Anthropic.BaseURL, "https://keep-this.com")
+	}
+	if scrubbed.Anthropic.AuthKey != "KEEP_THIS_AUTH" {
+		t.Fatalf("Anthropic.AuthKey = %q, want %q", scrubbed.Anthropic.AuthKey, "KEEP_THIS_AUTH")
+	}
+	if !scrubbed.OpenAI.Enabled {
+		t.Fatal("OpenAI.Enabled should remain true")
+	}
+	if scrubbed.OpenAI.BaseURL != "https://keep-this-openai.com" {
+		t.Fatalf("OpenAI.BaseURL = %q, want %q", scrubbed.OpenAI.BaseURL, "https://keep-this-openai.com")
+	}
+	if scrubbed.OpenAI.Organization != "keep-org" {
+		t.Fatalf("OpenAI.Organization = %q, want %q", scrubbed.OpenAI.Organization, "keep-org")
+	}
+	if scrubbed.OpenAI.AuthKey != "KEEP_OPENAI_AUTH" {
+		t.Fatalf("OpenAI.AuthKey = %q, want %q", scrubbed.OpenAI.AuthKey, "KEEP_OPENAI_AUTH")
+	}
+	if scrubbed.DefaultModel != "model-x" {
+		t.Fatalf("DefaultModel = %q, want %q", scrubbed.DefaultModel, "model-x")
+	}
+}
+
+// TestScrubProviderAPIKeys_NilFormats verifies scrub handles nil format structs.
+func TestScrubProviderAPIKeys_NilFormats(t *testing.T) {
+	p := Provider{
+		DefaultModel: "plain",
+		Anthropic:    nil,
+		OpenAI:       nil,
+	}
+
+	scrubbed := scrubProviderAPIKeys(p)
+	if scrubbed.Anthropic != nil {
+		t.Fatal("Anthropic should remain nil")
+	}
+	if scrubbed.OpenAI != nil {
+		t.Fatal("OpenAI should remain nil")
+	}
+	if scrubbed.DefaultModel != "plain" {
+		t.Fatalf("DefaultModel = %q, want %q", scrubbed.DefaultModel, "plain")
+	}
+}
+
+// ============================================================================
+// N. OpenCodePresets CRUD -- 新模型测试
+// ============================================================================
+
+func TestGetOpenCodePresets_Empty(t *testing.T) {
+	svc := newTestConfigService(t)
+	presets := svc.GetOpenCodePresets()
+	if len(presets) != 0 {
+		t.Fatalf("expected empty opencode_presets, got %d", len(presets))
+	}
+}
+
+func TestSaveOpenCodePreset_Basic(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	preset := OpenCodePreset{
+		Name: "Test Preset",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {
+					"options": {"baseURL": "https://api.openai.com/v1"}
+				}
+			}
+		}`),
+		Bindings: map[string]OpenCodeBinding{
+			"openai": {
+				LocalProvider: "openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey", "baseURL"},
+			},
+		},
+	}
+
+	if err := svc.SaveOpenCodePreset("test-preset", preset); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+
+	got, err := svc.GetOpenCodePreset("test-preset")
+	if err != nil {
+		t.Fatalf("GetOpenCodePreset: %v", err)
+	}
+	if got.Name != "Test Preset" {
+		t.Fatalf("Name = %q, want %q", got.Name, "Test Preset")
+	}
+	if got.ID != "test-preset" {
+		t.Fatalf("ID = %q, want %q (auto-filled)", got.ID, "test-preset")
+	}
+	if len(got.Bindings) != 1 {
+		t.Fatalf("Bindings count = %d, want 1", len(got.Bindings))
+	}
+}
+
+// TestSaveOpenCodePreset_ScrubsAPIKey 验证保存时 apiKey 被清除。
+func TestSaveOpenCodePreset_ScrubsAPIKey(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	preset := OpenCodePreset{
+		Name: "Leaky Preset",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {
+					"options": {
+						"apiKey": "sk-secret-key-12345",
+						"baseURL": "https://api.openai.com/v1"
+					}
+				},
+				"anthropic": {
+					"options": {
+						"apiKey": "sk-ant-secret-67890"
+					}
+				}
+			}
+		}`),
+	}
+
+	if err := svc.SaveOpenCodePreset("leaky", preset); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+
+	// 从磁盘读取验证
+	dir := filepath.Dir(svc.configPath)
+	data, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "sk-secret-key-12345") {
+		t.Fatal("models.json contains openai API key secret -- scrub failed")
+	}
+	if strings.Contains(content, "sk-ant-secret-67890") {
+		t.Fatal("models.json contains anthropic API key secret -- scrub failed")
+	}
+
+	// 验证其他字段保留
+	if !strings.Contains(content, `"baseURL"`) {
+		t.Fatal("models.json missing baseURL field -- scrub was too aggressive")
+	}
+	if !strings.Contains(content, `"openai"`) {
+		t.Fatal("models.json missing provider id 'openai' -- scrub was too aggressive")
+	}
+
+	// 验证通过 GetOpenCodePreset 读取时 Config 不含 apiKey
+	got, err := svc.GetOpenCodePreset("leaky")
+	if err != nil {
+		t.Fatalf("GetOpenCodePreset: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(got.Config, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	providers, _ := cfg["provider"].(map[string]any)
+	openaiProv, _ := providers["openai"].(map[string]any)
+	options, _ := openaiProv["options"].(map[string]any)
+	if _, hasAPIKey := options["apiKey"]; hasAPIKey {
+		t.Fatal("opencode_preset config still contains apiKey after save")
+	}
+	if options["baseURL"] != "https://api.openai.com/v1" {
+		t.Fatalf("baseURL should be preserved, got %v", options["baseURL"])
+	}
+}
+
+func TestSaveOpenCodePreset_AutoID(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	preset := OpenCodePreset{
+		Name:   "No ID",
+		Config: json.RawMessage(`{}`),
+	}
+
+	if err := svc.SaveOpenCodePreset("my-key", preset); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+
+	got, _ := svc.GetOpenCodePreset("my-key")
+	if got.ID != "my-key" {
+		t.Fatalf("ID = %q, want %q (auto-filled from key)", got.ID, "my-key")
+	}
+
+	// 明确设置了 ID 则保留
+	preset2 := OpenCodePreset{
+		ID:     "explicit-id",
+		Name:   "Has ID",
+		Config: json.RawMessage(`{}`),
+	}
+	svc.SaveOpenCodePreset("key2", preset2)
+	got2, _ := svc.GetOpenCodePreset("key2")
+	if got2.ID != "explicit-id" {
+		t.Fatalf("ID = %q, want %q (explicit)", got2.ID, "explicit-id")
+	}
+}
+
+func TestSaveOpenCodePreset_NormalizesConfig(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	// 双重编码的 Config
+	inner := `{"model":"openai/gpt-5"}`
+	doubleEncoded, _ := json.Marshal(inner)
+
+	preset := OpenCodePreset{
+		Name:   "Double Encoded",
+		Config: json.RawMessage(doubleEncoded),
+	}
+
+	if err := svc.SaveOpenCodePreset("de", preset); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+
+	got, _ := svc.GetOpenCodePreset("de")
+	if len(got.Config) == 0 || got.Config[0] != '{' {
+		t.Fatalf("Config should be normalized to start with '{', got: %s", string(got.Config))
+	}
+}
+
+func TestDeleteOpenCodePreset(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	preset := OpenCodePreset{Name: "To Delete", Config: json.RawMessage(`{}`)}
+	svc.SaveOpenCodePreset("del-me", preset)
+
+	if err := svc.DeleteOpenCodePreset("del-me"); err != nil {
+		t.Fatalf("DeleteOpenCodePreset: %v", err)
+	}
+
+	if _, err := svc.GetOpenCodePreset("del-me"); err == nil {
+		t.Fatal("expected error after delete, got nil")
+	}
+}
+
+func TestDeleteOpenCodePreset_NonExistent(t *testing.T) {
+	svc := newTestConfigService(t)
+	err := svc.DeleteOpenCodePreset("ghost")
+	if err != nil {
+		t.Fatalf("deleting non-existent should not error, got: %v", err)
+	}
+}
+
+func TestSaveOpenCodePreset_EmptyKey(t *testing.T) {
+	svc := newTestConfigService(t)
+	err := svc.SaveOpenCodePreset("", OpenCodePreset{})
+	if err == nil {
+		t.Fatal("expected error for empty key")
+	}
+}
+
+func TestOpenCodePresets_PersistAcrossLoad(t *testing.T) {
+	dir := t.TempDir()
+	svc1 := NewConfigService(dir)
+	svc1.Load()
+
+	preset := OpenCodePreset{
+		Name:   "Persistent",
+		Config: json.RawMessage(`{"model":"openai/gpt-5"}`),
+		Bindings: map[string]OpenCodeBinding{
+			"openai": {LocalProvider: "openai", Format: "openai"},
+		},
+	}
+	svc1.SaveOpenCodePreset("persist-test", preset)
+	svc1.Save()
+
+	svc2 := NewConfigService(dir)
+	svc2.Load()
+
+	got, err := svc2.GetOpenCodePreset("persist-test")
+	if err != nil {
+		t.Fatalf("GetOpenCodePreset after reload: %v", err)
+	}
+	if got.Name != "Persistent" {
+		t.Fatalf("Name = %q, want Persistent", got.Name)
+	}
+	if len(got.Bindings) != 1 {
+		t.Fatalf("Bindings count = %d, want 1", len(got.Bindings))
+	}
+}
+
+// TestMigrateTerminalPresetsToOpenCodePresets 验证 terminal_presets.opencode
+// 自动迁移到 opencode_presets。
+func TestMigrateTerminalPresetsToOpenCodePresets(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	// 创建一个 terminal_preset (opencode 类型)
+	tp := TerminalPreset{
+		Name:     "Migrated OC",
+		Provider: "openai",
+		Model:    "gpt-5",
+		OpenCodeCfg: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"theme": "dark",
+			"provider": {
+				"openai": {
+					"options": {"apiKey": "sk-secret-to-be-removed", "baseURL": "https://api.openai.com/v1"}
+				}
+			}
+		}`),
+	}
+	svc.SaveTerminalPreset("opencode", "openai/my-oc", tp)
+
+	// 重新加载触发自动迁移
+	svc.Save()
+	svc2 := NewConfigService(filepath.Dir(svc.configPath))
+	svc2.Load()
+
+	// 验证 opencode_presets 中有迁移后的条目
+	got, err := svc2.GetOpenCodePreset("openai/my-oc")
+	if err != nil {
+		t.Fatalf("expected migrated opencode_preset at 'openai/my-oc', got error: %v", err)
+	}
+
+	if got.Name != "Migrated OC" {
+		t.Fatalf("Name = %q, want %q", got.Name, "Migrated OC")
+	}
+	if got.Source == nil || got.Source.Kind != "migrated-overlay" {
+		t.Fatalf("Source.Kind should be 'migrated-overlay', got %v", got.Source)
+	}
+	if got.Source.LegacyProvider != "openai" {
+		t.Fatalf("Source.LegacyProvider = %q, want openai", got.Source.LegacyProvider)
+	}
+
+	// 验证 Config 不含 apiKey（scrubbed）
+	var cfg map[string]any
+	if err := json.Unmarshal(got.Config, &cfg); err != nil {
+		t.Fatalf("unmarshal migrated config: %v", err)
+	}
+	providers, _ := cfg["provider"].(map[string]any)
+	openaiProv, _ := providers["openai"].(map[string]any)
+	options, _ := openaiProv["options"].(map[string]any)
+	if _, hasAPIKey := options["apiKey"]; hasAPIKey {
+		t.Fatal("migrated config should NOT contain apiKey (should be scrubbed)")
+	}
+
+	// 验证 bindings
+	if len(got.Bindings) == 0 {
+		t.Fatal("migrated preset should have at least one binding")
+	}
+
+	// 验证幂等：再次 reload 不会覆盖
+	svc2.Save()
+	svc3 := NewConfigService(filepath.Dir(svc.configPath))
+	svc3.Load()
+	got2, _ := svc3.GetOpenCodePreset("openai/my-oc")
+	if got2.Source.Kind != "migrated-overlay" {
+		t.Fatalf("second reload should preserve migrated preset")
+	}
+}
+
+// TestMigrateTerminalPresetsToOpenCodePresets_NoOverwriteExisting
+// 验证迁移不会覆盖已有的 opencode_preset。
+func TestMigrateTerminalPresetsToOpenCodePresets_NoOverwriteExisting(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	// 先创建一个 opencode_preset（native）
+	svc.SaveOpenCodePreset("native-key", OpenCodePreset{
+		Name:   "Native Preset",
+		Config: json.RawMessage(`{"model":"openai/gpt-4"}`),
+		Source: &OpenCodePresetSource{Kind: "native"},
+	})
+
+	// 再创建一个同名的 terminal_preset
+	svc.SaveTerminalPreset("opencode", "native-key", TerminalPreset{
+		Name:     "Legacy Preset",
+		Provider: "openai",
+		Model:    "gpt-5",
+	})
+
+	// 重新加载触发迁移
+	svc.Save()
+	svc2 := NewConfigService(filepath.Dir(svc.configPath))
+	svc2.Load()
+
+	got, _ := svc2.GetOpenCodePreset("native-key")
+	// 不应被覆盖
+	if got.Name != "Native Preset" {
+		t.Fatalf("Name = %q, want 'Native Preset' (should not be overwritten)", got.Name)
+	}
+	if got.Source.Kind != "native" {
+		t.Fatalf("Source.Kind = %q, want 'native' (should not be overwritten)", got.Source.Kind)
+	}
+}
+
+// ============================================================================
+// O. OpenCodePreset scrub / normalize edge cases
+// ============================================================================
+
+func TestScrubOpenCodePresetConfig_NilConfig(t *testing.T) {
+	result := scrubOpenCodePresetConfig(nil)
+	if result != nil {
+		t.Fatalf("nil config should return nil, got %s", string(result))
+	}
+}
+
+func TestScrubOpenCodePresetConfig_NoProvider(t *testing.T) {
+	raw := json.RawMessage(`{"model":"openai/gpt-5","theme":"dark"}`)
+	result := scrubOpenCodePresetConfig(raw)
+	if string(result) != string(raw) {
+		t.Fatalf("config without provider should be unchanged\ngot:  %s\nwant: %s", string(result), string(raw))
+	}
+}
+
+func TestScrubOpenCodePresetConfig_InvalidJSON(t *testing.T) {
+	raw := json.RawMessage(`not valid json`)
+	result := scrubOpenCodePresetConfig(raw)
+	if string(result) != string(raw) {
+		t.Fatalf("invalid JSON should be returned as-is")
+	}
+}
+
+func TestNormalizeOpenCodePresetConfig_Empty(t *testing.T) {
+	result := normalizeOpenCodePresetConfig(nil)
+	if result != nil {
+		t.Fatal("nil should return nil")
+	}
+	result = normalizeOpenCodePresetConfig(json.RawMessage(""))
+	if result != nil {
+		t.Fatal("empty should return nil")
+	}
+	result = normalizeOpenCodePresetConfig(json.RawMessage("  "))
+	if result != nil {
+		t.Fatal("whitespace should return nil")
+	}
+}
+
+func TestNormalizeOpenCodePresetConfig_DoubleEncoded(t *testing.T) {
+	inner := `{"model":"openai/gpt-5"}`
+	doubleEncoded, _ := json.Marshal(inner)
+
+	result := normalizeOpenCodePresetConfig(json.RawMessage(doubleEncoded))
+	if result[0] != '{' {
+		t.Fatalf("should start with '{', got: %s", string(result))
+	}
+}
+
+func TestGetOpenCodePreset_NotFound(t *testing.T) {
+	svc := newTestConfigService(t)
+	_, err := svc.GetOpenCodePreset("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent preset")
+	}
+}
+
+func TestGetOpenCodePreset_ConfigNotLoaded(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	// Don't call Load()
+	_, err := svc.GetOpenCodePreset("any")
+	if err == nil {
+		t.Fatal("expected error when config not loaded")
+	}
+}
+
+func TestSaveOpenCodePreset_ConfigNotLoaded(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	err := svc.SaveOpenCodePreset("any", OpenCodePreset{})
+	if err == nil {
+		t.Fatal("expected error when config not loaded")
 	}
 }

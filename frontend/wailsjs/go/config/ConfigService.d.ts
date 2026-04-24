@@ -8,9 +8,15 @@ export function DeletePreset(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
 
+export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
+
 export function GetAgentTeams():Promise<config.AgentTeamsConfig>;
 
+export function GetAllTerminalPresets():Promise<config.TerminalPresetsConfig>;
+
 export function GetConfig():Promise<config.AppConfig>;
+
+export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
 
 export function GetPresets(arg1:string):Promise<Record<string, config.Preset>>;
 
@@ -20,11 +26,17 @@ export function GetProviderNames():Promise<Array<string>>;
 
 export function GetProviders():Promise<Record<string, config.Provider>>;
 
+export function GetTerminalPresets(arg1:string):Promise<Record<string, config.TerminalPreset>>;
+
 export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 
 export function Load():Promise<void>;
 
+export function MigrateProviderPresetsToTerminal():Promise<number>;
+
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
+
+export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
 export function Save():Promise<void>;
 
@@ -32,4 +44,8 @@ export function SavePreset(arg1:string,arg2:string,arg3:config.Preset):Promise<v
 
 export function SaveProvider(arg1:string,arg2:config.Provider):Promise<void>;
 
+export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
+
 export function SetAgentTeams(arg1:config.AgentTeamsConfig):Promise<void>;
+
+export function SetAllTerminalPresets(arg1:config.TerminalPresetsConfig):Promise<void>;

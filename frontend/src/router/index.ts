@@ -13,15 +13,17 @@ const router = createRouter({
       component: () => import('../views/Dashboard.vue')
     },
     {
+      path: '/provider-center',
+      name: 'ProviderCenter',
+      component: () => import('../views/ProviderCenter.vue')
+    },
+    {
       path: '/providers',
-      name: 'Providers',
-      component: () => import('../views/Providers.vue')
+      redirect: '/provider-center'
     },
     {
       path: '/providers/:name',
-      name: 'ProviderDetail',
-      component: () => import('../views/ProviderDetail.vue'),
-      props: true
+      redirect: to => ({ path: '/provider-center' })
     },
     {
       path: '/rules',

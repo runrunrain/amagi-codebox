@@ -1443,7 +1443,7 @@ func TestConfigServiceSavePresetNormalizesDoubleEncoded(t *testing.T) {
 
 	// 双重编码的 opencode_config
 	original := `{"theme":"dark"}`
-	doubleEncoded, _ := json.Marshal(original) // -> `"\"{\\\"theme\\\":\\\"dark\\\"}\""` -> actually `"{\"theme\":\"dark\"}"`
+	doubleEncoded, _ := json.Marshal(original)
 
 	preset := config.Preset{
 		Name:           "Test",
@@ -1480,5 +1480,311 @@ func TestConfigServiceSavePresetNormalizesDoubleEncoded(t *testing.T) {
 	}
 	if cfg["theme"] != "dark" {
 		t.Fatalf("theme = %v, want dark", cfg["theme"])
+	}
+}
+
+// ========================================================================
+// P. BuildOpenCodeRuntimeConfigFromPreset -- 新模型运行时构建测试
+// ========================================================================
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_InjectsAPIKey 验证新模型运行时构建
+// 会注入 binding 对应 provider 的 secrets（apiKey）。
+func TestBuildOpenCodeRuntimeConfigFromPreset_InjectsAPIKey(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "test-preset",
+		Name: "Test Preset",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {
+					"options": {
+						"baseURL": "https://api.openai.com/v1"
+					}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"openai": {
+				LocalProvider: "openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	// Mock getAPIKey function
+	getAPIKey := func(providerName, format string) (string, error) {
+		if providerName == "openai" {
+			return "sk-test-injected-key", nil
+		}
+		return "", nil
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	// 验证 apiKey 被注入
+	providers, _ := cfg["provider"].(map[string]any)
+	openaiProv, _ := providers["openai"].(map[string]any)
+	options, _ := openaiProv["options"].(map[string]any)
+	if options["apiKey"] != "sk-test-injected-key" {
+		t.Fatalf("apiKey = %v, want sk-test-injected-key", options["apiKey"])
+	}
+	// baseURL 保留
+	if options["baseURL"] != "https://api.openai.com/v1" {
+		t.Fatalf("baseURL = %v, want https://api.openai.com/v1", options["baseURL"])
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_DoesNotMutatePreset 验证运行时构建
+// 不修改 preset.Config 原始数据。
+func TestBuildOpenCodeRuntimeConfigFromPreset_DoesNotMutatePreset(t *testing.T) {
+	originalConfig := `{"model":"openai/gpt-5","provider":{"openai":{"options":{"baseURL":"https://api.openai.com/v1"}}}}`
+	preset := config.OpenCodePreset{
+		ID:     "test",
+		Name:   "Test",
+		Config: json.RawMessage(originalConfig),
+		Bindings: map[string]config.OpenCodeBinding{
+			"openai": {
+				LocalProvider: "openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		return "sk-runtime-key", nil
+	}
+
+	BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey)
+
+	// 验证原始 Config 未被修改（不含 apiKey）
+	var original map[string]any
+	json.Unmarshal(preset.Config, &original)
+	providers, _ := original["provider"].(map[string]any)
+	openaiProv, _ := providers["openai"].(map[string]any)
+	options, _ := openaiProv["options"].(map[string]any)
+	if _, hasKey := options["apiKey"]; hasKey {
+		t.Fatal("preset.Config should NOT be mutated by runtime builder")
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_MultipleBindings 验证多 binding 场景。
+func TestBuildOpenCodeRuntimeConfigFromPreset_MultipleBindings(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "multi-bind",
+		Name: "Multi Binding",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {
+					"options": {"baseURL": "https://api.openai.com/v1"}
+				},
+				"anthropic": {
+					"options": {"baseURL": "https://api.anthropic.com"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"openai": {
+				LocalProvider: "my-openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+			"anthropic": {
+				LocalProvider: "my-anthropic",
+				Format:        "anthropic",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		switch providerName {
+		case "my-openai":
+			return "sk-openai-123", nil
+		case "my-anthropic":
+			return "sk-ant-456", nil
+		}
+		return "", nil
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+
+	// openai binding
+	openaiProv, _ := providers["openai"].(map[string]any)
+	openaiOpts, _ := openaiProv["options"].(map[string]any)
+	if openaiOpts["apiKey"] != "sk-openai-123" {
+		t.Fatalf("openai apiKey = %v, want sk-openai-123", openaiOpts["apiKey"])
+	}
+
+	// anthropic binding
+	anthProv, _ := providers["anthropic"].(map[string]any)
+	anthOpts, _ := anthProv["options"].(map[string]any)
+	if anthOpts["apiKey"] != "sk-ant-456" {
+		t.Fatalf("anthropic apiKey = %v, want sk-ant-456", anthOpts["apiKey"])
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_EmptyConfig 验证空 Config 不崩溃。
+func TestBuildOpenCodeRuntimeConfigFromPreset_EmptyConfig(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:      "empty",
+		Name:    "Empty",
+		Config:  nil,
+		Bindings: map[string]config.OpenCodeBinding{},
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, nil)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset with empty config: %v", err)
+	}
+	// 应有 provider 空节点
+	if _, ok := cfg["provider"]; !ok {
+		t.Fatal("expected provider key in result")
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_NilGetAPIKey 验证 getAPIKey 为 nil 不崩溃。
+func TestBuildOpenCodeRuntimeConfigFromPreset_NilGetAPIKey(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "test",
+		Name: "Test",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {
+					"options": {"baseURL": "https://api.openai.com/v1"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"openai": {
+				LocalProvider: "openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, nil)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset with nil getAPIKey: %v", err)
+	}
+
+	// apiKey 不应被注入（getAPIKey 为 nil）
+	providers, _ := cfg["provider"].(map[string]any)
+	openaiProv, _ := providers["openai"].(map[string]any)
+	options, _ := openaiProv["options"].(map[string]any)
+	if _, hasKey := options["apiKey"]; hasKey {
+		t.Fatal("apiKey should not be injected when getAPIKey is nil")
+	}
+}
+
+// TestBuildOpenCodeEnvOverridesFromPreset 验证环境变量覆盖生成。
+func TestBuildOpenCodeEnvOverridesFromPreset(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "env-test",
+		Name: "Env Test",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {
+					"options": {"baseURL": "https://api.openai.com/v1"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"openai": {
+				LocalProvider: "openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		if providerName == "openai" {
+			return "sk-env-test-key", nil
+		}
+		return "", nil
+	}
+
+	overrides, err := BuildOpenCodeEnvOverridesFromPreset(preset, getAPIKey)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeEnvOverridesFromPreset: %v", err)
+	}
+
+	// OPENCODE_CONFIG_CONTENT 应存在且是合法 JSON
+	content := overrides["OPENCODE_CONFIG_CONTENT"]
+	if content == "" {
+		t.Fatal("OPENCODE_CONFIG_CONTENT should not be empty")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(content), &cfg); err != nil {
+		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v", err)
+	}
+
+	// OPENAI_API_KEY 环境变量应设置
+	if overrides["OPENAI_API_KEY"] != "sk-env-test-key" {
+		t.Fatalf("OPENAI_API_KEY = %q, want sk-env-test-key", overrides["OPENAI_API_KEY"])
+	}
+
+	// config content 中应包含注入的 apiKey
+	providers, _ := cfg["provider"].(map[string]any)
+	openaiProv, _ := providers["openai"].(map[string]any)
+	options, _ := openaiProv["options"].(map[string]any)
+	if options["apiKey"] != "sk-env-test-key" {
+		t.Fatalf("apiKey in config = %v, want sk-env-test-key", options["apiKey"])
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_AutoFormat 验证 format=auto 时默认使用 anthropic。
+func TestBuildOpenCodeRuntimeConfigFromPreset_AutoFormat(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "auto-format",
+		Name: "Auto Format",
+		Config: json.RawMessage(`{
+			"model": "glm/glm-5",
+			"provider": {
+				"glm": {
+					"options": {"baseURL": "https://open.bigmodel.cn/api/anthropic"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"glm": {
+				LocalProvider: "glm",
+				Format:        "auto",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		if providerName == "glm" {
+			return "sk-glm-key", nil
+		}
+		return "", nil
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	glmProv, _ := providers["glm"].(map[string]any)
+	options, _ := glmProv["options"].(map[string]any)
+	if options["apiKey"] != "sk-glm-key" {
+		t.Fatalf("apiKey = %v, want sk-glm-key", options["apiKey"])
 	}
 }

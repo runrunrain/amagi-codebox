@@ -38,6 +38,10 @@ export function DeleteEnvVar(arg1) {
   return window['go']['main']['App']['DeleteEnvVar'](arg1);
 }
 
+export function DeleteTerminalPreset(arg1, arg2) {
+  return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
+}
+
 export function DownloadAndApplyUpdate() {
   return window['go']['main']['App']['DownloadAndApplyUpdate']();
 }
@@ -110,6 +114,10 @@ export function GetLogs(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetLogs'](arg1, arg2, arg3, arg4);
 }
 
+export function GetMergedTerminalPresets(arg1) {
+  return window['go']['main']['App']['GetMergedTerminalPresets'](arg1);
+}
+
 export function GetOpenCodeConfig() {
   return window['go']['main']['App']['GetOpenCodeConfig']();
 }
@@ -132,26 +140,6 @@ export function GetProviderExportJSON(arg1) {
 
 export function GetProvidersByType(arg1) {
   return window['go']['main']['App']['GetProvidersByType'](arg1);
-}
-
-export function GetTerminalPresets(arg1) {
-  return window['go']['main']['App']['GetTerminalPresets'](arg1);
-}
-
-export function GetMergedTerminalPresets(arg1) {
-  return window['go']['main']['App']['GetMergedTerminalPresets'](arg1);
-}
-
-export function SaveTerminalPreset(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SaveTerminalPreset'](arg1, arg2, arg3);
-}
-
-export function DeleteTerminalPreset(arg1, arg2) {
-  return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
-}
-
-export function MigrateProviderPresetsToTerminal() {
-  return window['go']['main']['App']['MigrateProviderPresetsToTerminal']();
 }
 
 export function GetProxyBackendURLHistory() {
@@ -186,6 +174,10 @@ export function GetStartupWarnings() {
   return window['go']['main']['App']['GetStartupWarnings']();
 }
 
+export function GetTerminalPresets(arg1) {
+  return window['go']['main']['App']['GetTerminalPresets'](arg1);
+}
+
 export function GetUrlHistory(arg1) {
   return window['go']['main']['App']['GetUrlHistory'](arg1);
 }
@@ -216,6 +208,10 @@ export function LaunchOpenCode(arg1, arg2, arg3, arg4, arg5) {
 
 export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function MigrateProviderPresetsToTerminal() {
+  return window['go']['main']['App']['MigrateProviderPresetsToTerminal']();
 }
 
 export function OpenFileInEditor(arg1, arg2) {
@@ -270,6 +266,10 @@ export function RenameAmagiModelPreset(arg1, arg2) {
   return window['go']['main']['App']['RenameAmagiModelPreset'](arg1, arg2);
 }
 
+export function ResolveTerminalPreset(arg1, arg2) {
+  return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
+}
+
 export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
 }
@@ -300,6 +300,10 @@ export function SaveOpenCodeConfig(arg1) {
 
 export function SaveProviderFromJSON(arg1, arg2) {
   return window['go']['main']['App']['SaveProviderFromJSON'](arg1, arg2);
+}
+
+export function SaveTerminalPreset(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveTerminalPreset'](arg1, arg2, arg3);
 }
 
 export function SetAmagiAvailableModels(arg1) {

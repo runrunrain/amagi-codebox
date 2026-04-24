@@ -17,22 +17,23 @@ type ShellEntry struct {
 
 // DashboardDefaults 仪表盘默认值
 type DashboardDefaults struct {
-	Provider         string `json:"provider"`
-	Preset           string `json:"preset"`
-	OpenCodeProvider string `json:"openCodeProvider"`
-	OpenCodePreset   string `json:"openCodePreset"`
-	Mode             string `json:"mode"`
-	Shell            string `json:"shell"`
-	ClaudeMode       string `json:"claudeMode"`
-	ClaudeShell      string `json:"claudeShell"`
-	OpenCodeMode     string `json:"openCodeMode"`
-	OpenCodeShell    string `json:"openCodeShell"`
-	CodexMode        string `json:"codexMode"`
-	CodexShell       string `json:"codexShell"`
+	Provider          string `json:"provider"`
+	Preset            string `json:"preset"`
+	OpenCodeProvider  string `json:"openCodeProvider"`
+	OpenCodePreset    string `json:"openCodePreset"`
+	OpenCodePresetKey string `json:"openCodePresetKey"` // 新模型：直接指定 opencode_presets 的 key
+	Mode              string `json:"mode"`
+	Shell             string `json:"shell"`
+	ClaudeMode        string `json:"claudeMode"`
+	ClaudeShell       string `json:"claudeShell"`
+	OpenCodeMode      string `json:"openCodeMode"`
+	OpenCodeShell     string `json:"openCodeShell"`
+	CodexMode         string `json:"codexMode"`
+	CodexShell        string `json:"codexShell"`
 	AmagiCodePreset   string `json:"amagiCodePreset"`
 	AmagiCodeMode     string `json:"amagiCodeMode"`
 	AmagiCodeShell    string `json:"amagiCodeShell"`
-	UseProxy         bool   `json:"useProxy"`
+	UseProxy          bool   `json:"useProxy"`
 }
 
 // TerminalSettings 终端设置

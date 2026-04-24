@@ -27,6 +27,8 @@ export function DeleteAmagiSubPreset(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteEnvVar(arg1:string):Promise<void>;
 
+export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
+
 export function DownloadAndApplyUpdate():Promise<void>;
 
 export function ExportConfigToFile():Promise<string>;
@@ -63,6 +65,8 @@ export function GetLogSources():Promise<Array<string>>;
 
 export function GetLogs(arg1:string,arg2:string,arg3:string,arg4:number):Promise<Array<logging.Entry>>;
 
+export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
+
 export function GetOpenCodeConfig():Promise<string>;
 
 export function GetOpenCodeConfigPath():Promise<string>;
@@ -77,16 +81,6 @@ export function GetProvidersByType(arg1:string):Promise<Record<string, config.Pr
 
 export function GetProxyBackendURLHistory():Promise<Array<string>>;
 
-export function GetTerminalPresets(arg1:string):Promise<Record<string, config.TerminalPreset>>;
-
-export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
-
-export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
-
-export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
-
-export function MigrateProviderPresetsToTerminal():Promise<number>;
-
 export function GetPtyDimensions(arg1:string):Promise<number>;
 
 export function GetRemoteStatus():Promise<Record<string, any>>;
@@ -100,6 +94,8 @@ export function GetSessions():Promise<Array<session.SessionInfo>>;
 export function GetSettingsService():Promise<settings.Service>;
 
 export function GetStartupWarnings():Promise<Array<string>>;
+
+export function GetTerminalPresets(arg1:string):Promise<Record<string, config.TerminalPreset>>;
 
 export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 
@@ -116,6 +112,8 @@ export function LaunchCodexSession(arg1:string,arg2:string,arg3:string,arg4:stri
 export function LaunchOpenCode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
 export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<string>;
+
+export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
@@ -143,6 +141,8 @@ export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 
 export function RenameAmagiModelPreset(arg1:string,arg2:string):Promise<void>;
 
+export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
+
 export function SaveAllConfig():Promise<void>;
 
 export function SaveAmagiModelPreset(arg1:string,arg2:amagi.ModelPresetGroup):Promise<void>;
@@ -158,6 +158,8 @@ export function SaveEnvVarsJSON(arg1:string):Promise<void>;
 export function SaveOpenCodeConfig(arg1:string):Promise<void>;
 
 export function SaveProviderFromJSON(arg1:string,arg2:string):Promise<void>;
+
+export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
 
 export function SetAmagiAvailableModels(arg1:Array<string>):Promise<void>;
 

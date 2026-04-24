@@ -31,3 +31,6 @@ mobile/ios/
 # QA test artifacts
 frontend/qa-*/
 frontend/qa-*.log
+
+# Agent outputs
+.amagi/

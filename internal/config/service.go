@@ -6,8 +6,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
+
+// scrubProviderAPIKeys 清除 Provider 内嵌的双格式 APIKey 明文字段。
+// 这是持久化层硬性保障：无论调用路径如何，只要 Provider 即将被写盘，
+// Anthropic.APIKey 和 OpenAI.APIKey 都会被清空。
+// 返回清理后的 Provider（值类型，不影响原始数据的指针字段所指向的对象）。
+func scrubProviderAPIKeys(p Provider) Provider {
+	if p.Anthropic != nil {
+		p.Anthropic = &AnthropicFormat{
+			Enabled: p.Anthropic.Enabled,
+			BaseURL: p.Anthropic.BaseURL,
+			AuthKey: p.Anthropic.AuthKey,
+			// APIKey 刻意不复制
+		}
+	}
+	if p.OpenAI != nil {
+		p.OpenAI = &OpenAIFormat{
+			Enabled:      p.OpenAI.Enabled,
+			BaseURL:      p.OpenAI.BaseURL,
+			Organization: p.OpenAI.Organization,
+			AuthKey:      p.OpenAI.AuthKey,
+			// APIKey 刻意不复制
+		}
+	}
+	return p
+}
+
+// scrubConfigAPIKeys 对 AppConfig 内所有 Provider 执行敏感字段清除。
+// 在 saveLockedConfig / Save 写盘前调用，作为最终兜底保险。
+func scrubConfigAPIKeys(cfg *AppConfig) {
+	if cfg == nil || cfg.Models == nil {
+		return
+	}
+	for name, p := range cfg.Models {
+		cfg.Models[name] = scrubProviderAPIKeys(p)
+	}
+}
 
 // ConfigService 管理 models.json 配置文件。
 // 方法为 public，以便后续通过 Wails 暴露给前端。
@@ -64,6 +101,14 @@ func (s *ConfigService) Load() error {
 		}
 	}
 
+	// Provider 双格式升级
+	migrateProviderToDualFormat(cfg.Models)
+	// 清理已迁移的旧 presets（仅当 terminal_presets 已建立时）
+	CleanupMigratedProviderPresets(&cfg)
+
+	// 自动迁移：terminal_presets.opencode -> opencode_presets（新模型）
+	migrateTerminalPresetsToOpenCodePresets(&cfg)
+
 	s.config = &cfg
 	return nil
 }
@@ -77,6 +122,9 @@ func (s *ConfigService) Save() error {
 	if cfg == nil {
 		return errors.New("config not loaded")
 	}
+
+	// 最终兜底保险：写盘前清除所有 Provider 的敏感字段
+	scrubConfigAPIKeys(cfg)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir config dir: %w", err)
@@ -112,6 +160,9 @@ func (s *ConfigService) saveLockedConfig(cfg *AppConfig) error {
 	if cfg.Models == nil {
 		cfg.Models = map[string]Provider{}
 	}
+	// 最终兜底保险：写盘前对所有 Provider 执行敏感字段清除，
+	// 确保即使未来新增调用路径也不会遗漏。
+	scrubConfigAPIKeys(cfg)
 	if err := os.MkdirAll(filepath.Dir(s.configPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir config dir: %w", err)
 	}
@@ -147,12 +198,104 @@ func normalizeProviderType(provider Provider) Provider {
 	if provider.Type != "" {
 		return provider
 	}
+	// 新字段优先：从双格式结构推导类型
+	if provider.OpenAI != nil && provider.OpenAI.Enabled {
+		provider.Type = "openai"
+		return provider
+	}
+	if provider.Anthropic != nil && provider.Anthropic.Enabled {
+		provider.Type = "anthropic"
+		return provider
+	}
+	// 回退旧字段
 	if provider.AuthKey == "OPENAI_API_KEY" {
 		provider.Type = "openai"
 	} else {
 		provider.Type = "anthropic"
 	}
 	return provider
+}
+
+// migrateProviderToDualFormat 将旧单格式 Provider 升级为双格式结构。
+// - 若 Anthropic/OpenAI 均为 nil，从旧 Type/BaseURL/AuthKey 推断并填充
+// - 升级后通过 SyncLegacyFields 回填旧字段，保证旧代码路径正常工作
+func migrateProviderToDualFormat(models map[string]Provider) {
+	for name, p := range models {
+		changed := false
+
+		// 1. 推断 Anthropic 格式
+		if p.Anthropic == nil {
+			if !strings.EqualFold(p.Type, "openai") && p.AuthKey != "OPENAI_API_KEY" {
+				p.Anthropic = &AnthropicFormat{
+					Enabled: true,
+					BaseURL: p.BaseURL,
+					AuthKey: p.AuthKey,
+				}
+				changed = true
+			}
+		}
+
+		// 2. 推断 OpenAI 格式
+		if p.OpenAI == nil {
+			if strings.EqualFold(p.Type, "openai") || p.AuthKey == "OPENAI_API_KEY" {
+				p.OpenAI = &OpenAIFormat{
+					Enabled: true,
+					BaseURL: p.BaseURL,
+					AuthKey: p.AuthKey,
+				}
+				changed = true
+			}
+		}
+
+		// 3. 如果已升级，回填旧字段（而非清空），保证旧代码路径可用
+		if changed || p.Anthropic != nil || p.OpenAI != nil {
+			p = p.SyncLegacyFields()
+		}
+
+		models[name] = p
+	}
+}
+
+// CleanupMigratedProviderPresets 清理已迁移到 terminal_presets 的旧 provider.presets。
+// 仅当 terminal_presets 中存在对应条目（同 provider/presetName stable key）时才清理。
+// 幂等安全：多次调用无副作用。
+func CleanupMigratedProviderPresets(cfg *AppConfig) {
+	if cfg.TerminalPresets == nil {
+		return
+	}
+
+	for provName, prov := range cfg.Models {
+		if len(prov.Presets) == 0 {
+			continue
+		}
+
+		allCleaned := true
+		for presetName := range prov.Presets {
+			stableKey := provName + "/" + presetName
+
+			// 检查 terminal_presets 中是否存在对应条目
+			found := false
+			for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+				tpMap := cfg.TerminalPresets.GetMap(tt)
+				if tpMap != nil {
+					if _, exists := tpMap[stableKey]; exists {
+						found = true
+						break
+					}
+				}
+			}
+
+			if !found {
+				allCleaned = false
+				break
+			}
+		}
+
+		if allCleaned {
+			prov.Presets = nil
+			cfg.Models[provName] = prov
+		}
+	}
 }
 
 func (s *ConfigService) GetConfig() *AppConfig {
@@ -229,7 +372,12 @@ func (s *ConfigService) SaveProvider(name string, p Provider) error {
 	if p.Presets == nil {
 		p.Presets = map[string]Preset{}
 	}
+	// 同步：从新格式字段回填旧字段（Type/BaseURL/AuthKey），确保旧字段与新结构一致。
+	// 必须在 normalizeProviderType 之前执行，因为 normalize 依赖 Type/AuthKey 判断。
+	p = p.SyncLegacyFields()
 	p = normalizeProviderType(p)
+	// 硬性保障：清除双格式结构中的 APIKey 明文，防止落盘到 models.json。
+	p = scrubProviderAPIKeys(p)
 	s.config.Models[name] = p
 	return s.saveLocked()
 }
@@ -424,7 +572,7 @@ func (s *ConfigService) MigrateProviderPresetsToTerminal() (int, bool, error) {
 	for provName, prov := range s.config.Models {
 		for presetName, preset := range prov.Presets {
 			target := preset.GetTarget()
-			isOpenAI := prov.Type == "openai" || prov.AuthKey == "OPENAI_API_KEY"
+			isOpenAI := prov.IsOpenAICompatible()
 
 			var termType TerminalPresetType
 			switch {
@@ -570,7 +718,7 @@ type MergedTerminalPreset struct {
 }
 
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
-// terminal_presets 优先；若某个 provider 在新体系中没有预设，则回退到旧 provider.presets。
+// 仅从 terminal_presets（新体系）读取，不再回退到旧 provider.presets。
 func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedTerminalPreset, error) {
 	if !IsValidTerminalPresetType(terminalType) {
 		return nil, fmt.Errorf("invalid terminal preset type: %s", terminalType)
@@ -584,7 +732,7 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 	tt := TerminalPresetType(terminalType)
 	var result []MergedTerminalPreset
 
-	// 1. 先从 terminal_presets 读取（新体系，优先）
+	// 1. 先从 terminal_presets 读取（新体系）
 	if s.config.TerminalPresets != nil {
 		tpMap := s.config.TerminalPresets.GetMap(tt)
 		for key, tp := range tpMap {
@@ -606,45 +754,6 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 	seen := make(map[string]bool) // "provider/key"
 	for _, mp := range result {
 		seen[mp.Provider+"/"+mp.Key] = true
-	}
-
-	// 3. 回退到 provider.presets（旧体系），补充未在新体系中出现的预设
-	for provName, prov := range s.config.Models {
-		for presetName, preset := range prov.Presets {
-			target := preset.GetTarget()
-			isOpenAI := prov.Type == "openai" || prov.AuthKey == "OPENAI_API_KEY"
-
-			var expectedType TerminalPresetType
-			switch {
-			case target == PresetTargetOpenCode:
-				expectedType = TerminalPresetOpenCode
-			case isOpenAI:
-				expectedType = TerminalPresetCodex
-			default:
-				expectedType = TerminalPresetClaudeCode
-			}
-
-			if expectedType != tt {
-				continue
-			}
-
-			stableKey := provName + "/" + presetName
-			if seen[stableKey] {
-				continue // 已在新体系中
-			}
-
-			label := preset.Name
-			if label == "" {
-				label = presetName
-			}
-			result = append(result, MergedTerminalPreset{
-				Key:      stableKey,
-				Label:    label,
-				Provider: provName,
-				Model:    preset.Model,
-				Source:   "provider_preset",
-			})
-		}
 	}
 
 	if result == nil {
@@ -678,6 +787,367 @@ func (s *ConfigService) ResolveTerminalPreset(terminalType, key string) (string,
 	}
 	cp := tp // shallow copy
 	return cp.Provider, &cp, nil
+}
+
+// ============================================================================
+// OpenCodePresets CRUD -- 新模型
+// ============================================================================
+
+// scrubOpenCodePresetConfig 清除 Config 中的 provider.*.options.apiKey。
+// 遍历 config.provider 的每个 entry，删除 options 中的 apiKey 字段。
+// 返回清理后的 Config（新分配的 RawMessage）。
+func scrubOpenCodePresetConfig(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		// 无法解析则原样返回（不阻断保存）
+		return raw
+	}
+
+	providers, ok := cfg["provider"].(map[string]any)
+	if !ok {
+		return raw
+	}
+
+	scrubbed := false
+	for _, provVal := range providers {
+		provMap, ok := provVal.(map[string]any)
+		if !ok {
+			continue
+		}
+		options, ok := provMap["options"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, hasAPIKey := options["apiKey"]; hasAPIKey {
+			delete(options, "apiKey")
+			scrubbed = true
+		}
+	}
+
+	if !scrubbed {
+		return raw
+	}
+
+	cleaned, err := json.Marshal(cfg)
+	if err != nil {
+		return raw
+	}
+	return cleaned
+}
+
+// normalizeOpenCodePresetConfig 规范化 Config 为标准 RawMessage。
+// 处理双重编码（前端 JS string 场景），确保存储为 JSON 对象。
+func normalizeOpenCodePresetConfig(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if len(trimmed) == 0 {
+		return nil
+	}
+	// 双重编码检测：以引号开头说明是 JSON string
+	if trimmed[0] == '"' {
+		var unwrapped string
+		if err := json.Unmarshal([]byte(trimmed), &unwrapped); err == nil {
+			return normalizeOpenCodePresetConfig(json.RawMessage(unwrapped))
+		}
+	}
+	return json.RawMessage(trimmed)
+}
+
+// GetOpenCodePresets 返回所有 OpenCode 预设的副本。
+func (s *ConfigService) GetOpenCodePresets() map[string]OpenCodePreset {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil || s.config.OpenCodePresets == nil {
+		return map[string]OpenCodePreset{}
+	}
+	out := make(map[string]OpenCodePreset, len(s.config.OpenCodePresets))
+	for k, v := range s.config.OpenCodePresets {
+		out[k] = v
+	}
+	return out
+}
+
+// GetOpenCodePreset 返回指定 key 的 OpenCode 预设。
+func (s *ConfigService) GetOpenCodePreset(key string) (*OpenCodePreset, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return nil, errors.New("config not loaded")
+	}
+	p, ok := s.config.OpenCodePresets[key]
+	if !ok {
+		return nil, fmt.Errorf("opencode preset not found: %s", key)
+	}
+	cp := p
+	return &cp, nil
+}
+
+// SaveOpenCodePreset 保存 OpenCode 预设。
+// 保存前：规范化 Config、scrub apiKey、自动补 ID。
+func (s *ConfigService) SaveOpenCodePreset(key string, preset OpenCodePreset) error {
+	if key == "" {
+		return errors.New("opencode preset key is required")
+	}
+
+	// 规范化 Config
+	preset.Config = normalizeOpenCodePresetConfig(preset.Config)
+
+	// Scrub apiKey
+	preset.Config = scrubOpenCodePresetConfig(preset.Config)
+
+	// 自动补 ID
+	if preset.ID == "" {
+		preset.ID = key
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.OpenCodePresets == nil {
+		s.config.OpenCodePresets = map[string]OpenCodePreset{}
+	}
+	s.config.OpenCodePresets[key] = preset
+	return s.saveLocked()
+}
+
+// DeleteOpenCodePreset 删除指定的 OpenCode 预设。
+func (s *ConfigService) DeleteOpenCodePreset(key string) error {
+	if key == "" {
+		return errors.New("opencode preset key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.OpenCodePresets == nil {
+		return nil
+	}
+	delete(s.config.OpenCodePresets, key)
+	return s.saveLocked()
+}
+
+// migrateTerminalPresetsToOpenCodePresets 将 terminal_presets.opencode 中尚未迁移的条目
+// 自动迁移到 opencode_presets（新模型）。
+// 迁移策略：
+//   - 调用当前 legacy BuildOpenCodeRuntimeConfig 生成"无 secrets 的完整 JSON"作为 Config
+//   - Bindings 由旧 provider 字段推导为一个最小 binding
+//   - Source.Kind = "migrated-overlay"
+//
+// 幂等安全：已有同名 key 的 opencode_presets 不会被覆盖。
+func migrateTerminalPresetsToOpenCodePresets(cfg *AppConfig) {
+	if cfg == nil || cfg.TerminalPresets == nil {
+		return
+	}
+
+	ocTPMap := cfg.TerminalPresets.GetMap(TerminalPresetOpenCode)
+	if len(ocTPMap) == 0 {
+		return
+	}
+
+	if cfg.OpenCodePresets == nil {
+		cfg.OpenCodePresets = map[string]OpenCodePreset{}
+	}
+
+	for stableKey, tp := range ocTPMap {
+		// 不覆盖已有的 opencode_preset
+		if _, exists := cfg.OpenCodePresets[stableKey]; exists {
+			continue
+		}
+
+		// 构建完整 opencode.json（无 secrets）
+		var fullConfig json.RawMessage
+		if tp.Provider != "" {
+			if prov, ok := cfg.Models[tp.Provider]; ok {
+				// 使用 legacy builder 生成无 secrets 的配置
+				runtimeCfg, err := buildMigratedOpenCodeConfig(tp.Provider, prov, tp)
+				if err == nil {
+					if raw, mErr := json.Marshal(runtimeCfg); mErr == nil {
+						fullConfig = raw
+					}
+				}
+			}
+		}
+
+		// 若无法生成（provider 不存在等），使用 tp.OpenCodeCfg 作为 fallback
+		if len(fullConfig) == 0 && len(tp.OpenCodeCfg) > 0 {
+			tp.NormalizeOpenCodeCfg()
+			fullConfig = tp.OpenCodeCfg
+		}
+
+		// Scrub apiKey
+		fullConfig = scrubOpenCodePresetConfig(fullConfig)
+
+		// 推导最小 binding
+		bindings := map[string]OpenCodeBinding{}
+		if tp.Provider != "" {
+			// 猜测 provider ID 和 format
+			provFormat := "anthropic"
+			if prov, ok := cfg.Models[tp.Provider]; ok {
+				provFormat = prov.PreferredFormat()
+			}
+
+			ocProviderID := tp.Provider
+			if prov, ok := cfg.Models[tp.Provider]; ok {
+				ocProviderID = deriveOpenCodeProviderIDSimple(tp.Provider, prov)
+			}
+
+			bindings[ocProviderID] = OpenCodeBinding{
+				LocalProvider: tp.Provider,
+				Format:        provFormat,
+				Inject:        []string{"apiKey", "baseURL"},
+			}
+		}
+
+		cfg.OpenCodePresets[stableKey] = OpenCodePreset{
+			ID:       stableKey,
+			Name:     tp.Name,
+			Config:   fullConfig,
+			Bindings: bindings,
+			Source: &OpenCodePresetSource{
+				Kind:            "migrated-overlay",
+				LegacyProvider:  tp.Provider,
+				LegacyPresetKey: stableKey,
+			},
+		}
+	}
+}
+
+// deriveOpenCodeProviderIDSimple 是一个无外部依赖的 provider ID 推导。
+// 与 launcher 包中的 deriveOpenCodeProviderID 逻辑一致。
+func deriveOpenCodeProviderIDSimple(providerName string, provider Provider) string {
+	baseURL := strings.TrimSpace(strings.ToLower(provider.EffectiveBaseURL("")))
+	if provider.IsOpenAICompatible() {
+		if strings.Contains(baseURL, "api.openai.com") {
+			return "openai"
+		}
+		return providerName
+	}
+	if strings.Contains(baseURL, "api.anthropic.com") {
+		return "anthropic"
+	}
+	return providerName
+}
+
+// buildMigratedOpenCodeConfig 使用 legacy 逻辑生成迁移用的完整 opencode.json。
+// 不注入 secrets（apiKey 传空）。
+func buildMigratedOpenCodeConfig(providerName string, provider Provider, tp TerminalPreset) (map[string]any, error) {
+	// 构建 legacy Preset 以复用已有逻辑
+	legacyPreset := Preset{
+		Name:           tp.Name,
+		Model:          tp.Model,
+		Parameters:     tp.Parameters,
+		OpenCodeConfig: tp.OpenCodeCfg,
+	}
+	legacyPreset.NormalizeOpenCodeConfig()
+
+	// 临时注入到 provider 副本中
+	provCopy := provider
+	if provCopy.Presets == nil {
+		provCopy.Presets = map[string]Preset{}
+	}
+	provCopy.Presets["__migration__"] = legacyPreset
+
+	// 确定 ocProviderID
+	ocProviderID := deriveOpenCodeProviderIDSimple(providerName, provider)
+
+	// 确定 model
+	model := provider.DefaultModel
+	if tp.Model != "" {
+		model = tp.Model
+	}
+
+	result := map[string]any{}
+
+	if model != "" {
+		result["model"] = ocProviderID + "/" + model
+	}
+
+	// 构建 provider entry（无 apiKey）
+	isOpenAIType := provider.IsOpenAICompatible()
+	effectiveBaseURL := provider.EffectiveBaseURL("")
+	options := map[string]any{}
+	if isOpenAIType {
+		if effectiveBaseURL != "" {
+			options["baseURL"] = effectiveBaseURL
+		}
+	} else {
+		lowerBaseURL := strings.TrimSpace(strings.ToLower(effectiveBaseURL))
+		if lowerBaseURL != "" && !strings.Contains(lowerBaseURL, "api.anthropic.com") {
+			options["baseURL"] = effectiveBaseURL
+		}
+	}
+
+	providerEntry := map[string]any{}
+	if len(options) > 0 {
+		providerEntry["options"] = options
+	}
+
+	// 模型参数
+	modelOpts := map[string]any{}
+	if legacyPreset.Parameters.Thinking != nil {
+		thinking := map[string]any{"type": legacyPreset.Parameters.Thinking.Type}
+		if legacyPreset.Parameters.Thinking.BudgetTokens > 0 {
+			thinking["budgetTokens"] = legacyPreset.Parameters.Thinking.BudgetTokens
+		}
+		modelOpts["thinking"] = thinking
+	}
+	if legacyPreset.Parameters.Temperature != 0 {
+		modelOpts["temperature"] = legacyPreset.Parameters.Temperature
+	}
+	if legacyPreset.Parameters.TopP != 0 {
+		modelOpts["topP"] = legacyPreset.Parameters.TopP
+	}
+	if legacyPreset.Parameters.MaxTokens != 0 {
+		modelOpts["maxTokens"] = legacyPreset.Parameters.MaxTokens
+	}
+	if len(modelOpts) > 0 && model != "" {
+		modelsMap := map[string]any{}
+		modelsMap[model] = map[string]any{"options": modelOpts}
+		providerEntry["models"] = modelsMap
+	}
+
+	result["provider"] = map[string]any{ocProviderID: providerEntry}
+
+	// 深度合并 OpenCodeCfg（overlay）
+	if len(legacyPreset.OpenCodeConfig) > 0 {
+		var overlay map[string]any
+		if err := json.Unmarshal(legacyPreset.OpenCodeConfig, &overlay); err == nil {
+			result = deepMergeSimple(result, overlay)
+		}
+	}
+
+	return result, nil
+}
+
+// deepMergeSimple 递归合并两个 map，other 中的值覆盖 base。
+// 与 launcher 包中的 deepMerge 逻辑一致，避免循环导入。
+func deepMergeSimple(base, other map[string]any) map[string]any {
+	result := make(map[string]any, len(base)+len(other))
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range other {
+		existing, exists := result[k]
+		if exists {
+			existingMap, ok1 := existing.(map[string]any)
+			otherMap, ok2 := v.(map[string]any)
+			if ok1 && ok2 {
+				result[k] = deepMergeSimple(existingMap, otherMap)
+				continue
+			}
+		}
+		result[k] = v
+	}
+	return result
 }
 
 // GetUrlHistory 获取指定Provider的URL历史

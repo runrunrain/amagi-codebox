@@ -14,12 +14,24 @@ export function DeleteProvider(arg1) {
   return window['go']['config']['ConfigService']['DeleteProvider'](arg1);
 }
 
+export function DeleteTerminalPreset(arg1, arg2) {
+  return window['go']['config']['ConfigService']['DeleteTerminalPreset'](arg1, arg2);
+}
+
 export function GetAgentTeams() {
   return window['go']['config']['ConfigService']['GetAgentTeams']();
 }
 
+export function GetAllTerminalPresets() {
+  return window['go']['config']['ConfigService']['GetAllTerminalPresets']();
+}
+
 export function GetConfig() {
   return window['go']['config']['ConfigService']['GetConfig']();
+}
+
+export function GetMergedTerminalPresets(arg1) {
+  return window['go']['config']['ConfigService']['GetMergedTerminalPresets'](arg1);
 }
 
 export function GetPresets(arg1) {
@@ -38,6 +50,10 @@ export function GetProviders() {
   return window['go']['config']['ConfigService']['GetProviders']();
 }
 
+export function GetTerminalPresets(arg1) {
+  return window['go']['config']['ConfigService']['GetTerminalPresets'](arg1);
+}
+
 export function GetUrlHistory(arg1) {
   return window['go']['config']['ConfigService']['GetUrlHistory'](arg1);
 }
@@ -46,8 +62,16 @@ export function Load() {
   return window['go']['config']['ConfigService']['Load']();
 }
 
+export function MigrateProviderPresetsToTerminal() {
+  return window['go']['config']['ConfigService']['MigrateProviderPresetsToTerminal']();
+}
+
 export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['RemoveUrlFromHistory'](arg1, arg2);
+}
+
+export function ResolveTerminalPreset(arg1, arg2) {
+  return window['go']['config']['ConfigService']['ResolveTerminalPreset'](arg1, arg2);
 }
 
 export function Save() {
@@ -62,6 +86,14 @@ export function SaveProvider(arg1, arg2) {
   return window['go']['config']['ConfigService']['SaveProvider'](arg1, arg2);
 }
 
+export function SaveTerminalPreset(arg1, arg2, arg3) {
+  return window['go']['config']['ConfigService']['SaveTerminalPreset'](arg1, arg2, arg3);
+}
+
 export function SetAgentTeams(arg1) {
   return window['go']['config']['ConfigService']['SetAgentTeams'](arg1);
+}
+
+export function SetAllTerminalPresets(arg1) {
+  return window['go']['config']['ConfigService']['SetAllTerminalPresets'](arg1);
 }

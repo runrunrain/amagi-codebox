@@ -67,7 +67,7 @@ func (s *LauncherService) BuildOverrides(
 	preset, ok := provider.Presets[presetName]
 
 	overrides := map[string]string{}
-	if strings.EqualFold(provider.Type, "openai") || provider.AuthKey == "OPENAI_API_KEY" {
+	if provider.IsOpenAICompatible() {
 		overrides["ANTHROPIC_BASE_URL"] = ""
 		overrides["ANTHROPIC_API_KEY"] = ""
 		overrides["ANTHROPIC_AUTH_TOKEN"] = ""
@@ -75,17 +75,18 @@ func (s *LauncherService) BuildOverrides(
 	}
 
 	// Base URL
-	if provider.AuthKey == config.AuthTypeOAuth {
+	if provider.IsOAuthMode() {
 		// OAuth 模式必须直连官方端点，不能继承代理或 API Key 环境。
 		overrides["ANTHROPIC_BASE_URL"] = ""
 	} else if proxyPort > 0 {
 		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", proxyPort)
 	} else {
-		overrides["ANTHROPIC_BASE_URL"] = provider.BaseURL
+		overrides["ANTHROPIC_BASE_URL"] = provider.EffectiveBaseURL("anthropic")
 	}
 
 	// Auth key
-	switch provider.AuthKey {
+	effectiveAuthKey := provider.EffectiveAuthKey("anthropic")
+	switch effectiveAuthKey {
 	case config.AuthTypeOAuth:
 		// OAuth 模式：清除所有 API Key 环境变量，让 Claude Code 使用原生 OAuth 凭据
 		overrides["ANTHROPIC_API_KEY"] = ""

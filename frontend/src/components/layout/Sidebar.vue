@@ -7,7 +7,7 @@ const route = useRoute()
 const navItems = [
   { path: '/dashboard', label: '仪表盘', icon: '▶' },
   { path: '/terminals', label: '内嵌终端', icon: '⬛' },
-  { path: '/providers', label: '服务提供商', icon: '☁' },
+  { path: '/provider-center', label: 'Provider Center', icon: '☁' },
   { path: '/extensions', label: '扩展管理', icon: '◈' },
   { path: '/rules', label: '注入规则', icon: '⚙' },
   { path: '/logs', label: '系统日志', icon: '▣' },

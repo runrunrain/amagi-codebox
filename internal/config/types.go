@@ -210,14 +210,38 @@ func (tpc *TerminalPresetsConfig) SetMap(terminalType TerminalPresetType, m map[
 	}
 }
 
+// AnthropicFormat Anthropic 兼容格式配置
+type AnthropicFormat struct {
+	Enabled bool   `json:"enabled"`
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	AuthKey string `json:"auth_key,omitempty"`
+}
+
+// OpenAIFormat OpenAI 兼容格式配置
+type OpenAIFormat struct {
+	Enabled      bool   `json:"enabled"`
+	APIKey       string `json:"api_key,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	AuthKey      string `json:"auth_key,omitempty"`
+}
+
 // Provider 服务商配置
 type Provider struct {
-	Type         string            `json:"type,omitempty"` // "anthropic"（默认）或 "openai"
-	BaseURL      string            `json:"base_url"`
-	DefaultModel string            `json:"default_model"`
-	AuthKey      string            `json:"auth_key"` // "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN" | "OAUTH" | "OPENAI_API_KEY"
-	Presets      map[string]Preset `json:"presets"`
-	UrlHistory   []string          `json:"url_history,omitempty"` // URL历史记录，最近使用的在前
+	// 双格式支持（新字段）
+	Anthropic *AnthropicFormat `json:"anthropic,omitempty"`
+	OpenAI    *OpenAIFormat    `json:"openai,omitempty"`
+
+	// 通用信息
+	DefaultModel string `json:"default_model"`
+	UrlHistory   []string `json:"url_history,omitempty"`
+
+	// 废弃字段（保留兼容读取，新数据不再写入）
+	Type    string            `json:"type,omitempty"`
+	BaseURL string            `json:"base_url,omitempty"`
+	AuthKey string            `json:"auth_key,omitempty"`
+	Presets map[string]Preset `json:"presets,omitempty"`
 }
 
 // 认证类型常量
@@ -235,10 +259,38 @@ type AgentTeamsConfig struct {
 
 // AppConfig 应用总配置（对应 models.json 根结构）
 type AppConfig struct {
-	Models         map[string]Provider    `json:"models"`
-	AgentTeams     AgentTeamsConfig       `json:"agent_teams"`
+	Models          map[string]Provider    `json:"models"`
+	AgentTeams      AgentTeamsConfig       `json:"agent_teams"`
 	TerminalPresets *TerminalPresetsConfig `json:"terminal_presets,omitempty"`
-	Version        string                 `json:"version"`
+	OpenCodePresets map[string]OpenCodePreset `json:"opencode_presets,omitempty"`
+	Version         string                 `json:"version"`
+}
+
+// OpenCodePreset 一个预设 = 一份完整的 opencode.json。
+// Config 字段保存完整的 opencode.json 配置（不含 secrets）。
+// Bindings 描述 preset 中各 provider id 与本地 Provider 的映射关系。
+type OpenCodePreset struct {
+	ID          string                     `json:"id"`
+	Name        string                     `json:"name"`
+	Description string                     `json:"description,omitempty"`
+	Config      json.RawMessage            `json:"config"`
+	Bindings    map[string]OpenCodeBinding `json:"bindings,omitempty"`
+	Source      *OpenCodePresetSource      `json:"source,omitempty"`
+}
+
+// OpenCodeBinding 描述 preset 中某个 provider id 与本地 Provider 的绑定关系。
+type OpenCodeBinding struct {
+	LocalProvider string   `json:"local_provider"`
+	Format        string   `json:"format,omitempty"`  // openai / anthropic / auto
+	Inject        []string `json:"inject,omitempty"`  // apiKey / baseURL / organization
+	EnvFallback   bool     `json:"env_fallback,omitempty"`
+}
+
+// OpenCodePresetSource 记录 preset 的来源，用于追踪迁移。
+type OpenCodePresetSource struct {
+	Kind            string `json:"kind,omitempty"`             // native / migrated-overlay
+	LegacyProvider  string `json:"legacy_provider,omitempty"`
+	LegacyPresetKey string `json:"legacy_preset_key,omitempty"`
 }
 
 // ExportConfig 导出配置的根结构
@@ -251,12 +303,129 @@ type ExportConfig struct {
 	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
 }
 
-// ExportProvider 导出时的提供商配置（含 API key 明文）
+// ExportProvider 导出时的提供商配置（含 API key 明文）。
+// 支持双格式结构（anthropic/openai），同时保留旧字段兼容旧版导入。
 type ExportProvider struct {
-	Type         string            `json:"type,omitempty"`
-	BaseURL      string            `json:"base_url"`
+	// 双格式字段（新协议）
+	Anthropic *AnthropicFormat `json:"anthropic,omitempty"`
+	OpenAI    *OpenAIFormat    `json:"openai,omitempty"`
+
+	// 通用字段
 	DefaultModel string            `json:"default_model"`
-	AuthKey      string            `json:"auth_key"`
-	APIKey       string            `json:"api_key"`
 	Presets      map[string]Preset `json:"presets"`
+
+	// 旧字段（保留兼容旧版导入/导出）
+	Type    string `json:"type,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	AuthKey string `json:"auth_key,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+}
+
+// IsAnthropicCompatible 判断 Provider 是否兼容 Anthropic 格式。
+// 优先检查新字段 Anthropic.Enabled，回退兼容旧字段 Type/AuthKey。
+func (p Provider) IsAnthropicCompatible() bool {
+	if p.Anthropic != nil && p.Anthropic.Enabled {
+		return true
+	}
+	// 兼容旧数据：非 openai 类型且非 OPENAI_API_KEY
+	return !strings.EqualFold(p.Type, "openai") && p.AuthKey != "OPENAI_API_KEY"
+}
+
+// IsOpenAICompatible 判断 Provider 是否兼容 OpenAI 格式。
+func (p Provider) IsOpenAICompatible() bool {
+	if p.OpenAI != nil && p.OpenAI.Enabled {
+		return true
+	}
+	return strings.EqualFold(p.Type, "openai") || p.AuthKey == "OPENAI_API_KEY"
+}
+
+// PreferredFormat 返回当前 Provider 的首选格式："openai" 或 "anthropic"。
+// 新字段优先，旧字段回退。若两种新格式都启用，OpenAI 优先（双格式场景）。
+func (p Provider) PreferredFormat() string {
+	// 双格式场景：若两者都启用，优先返回有新字段的那一方
+	if p.OpenAI != nil && p.OpenAI.Enabled {
+		return "openai"
+	}
+	if p.Anthropic != nil && p.Anthropic.Enabled {
+		return "anthropic"
+	}
+	// 回退旧字段
+	if strings.EqualFold(p.Type, "openai") || p.AuthKey == "OPENAI_API_KEY" {
+		return "openai"
+	}
+	return "anthropic"
+}
+
+// EffectiveType 返回兼容旧逻辑的 Provider 类型。
+// 新字段优先推导，旧字段回退。
+func (p Provider) EffectiveType() string {
+	if p.OpenAI != nil && p.OpenAI.Enabled {
+		return "openai"
+	}
+	if p.Anthropic != nil && p.Anthropic.Enabled {
+		return "anthropic"
+	}
+	if strings.EqualFold(p.Type, "openai") || p.AuthKey == "OPENAI_API_KEY" {
+		return "openai"
+	}
+	if p.Type != "" {
+		return p.Type
+	}
+	return "anthropic"
+}
+
+// EffectiveBaseURL 返回指定格式或首选格式的有效 BaseURL。
+// format 为空时使用 PreferredFormat()。
+func (p Provider) EffectiveBaseURL(format string) string {
+	if format == "" {
+		format = p.PreferredFormat()
+	}
+	switch strings.ToLower(format) {
+	case "openai":
+		if p.OpenAI != nil && p.OpenAI.BaseURL != "" {
+			return p.OpenAI.BaseURL
+		}
+	case "anthropic":
+		if p.Anthropic != nil && p.Anthropic.BaseURL != "" {
+			return p.Anthropic.BaseURL
+		}
+	}
+	return p.BaseURL
+}
+
+// EffectiveAuthKey 返回指定格式或首选格式的有效 AuthKey（认证类型标识）。
+// format 为空时使用 PreferredFormat()。
+func (p Provider) EffectiveAuthKey(format string) string {
+	if format == "" {
+		format = p.PreferredFormat()
+	}
+	switch strings.ToLower(format) {
+	case "openai":
+		if p.OpenAI != nil && p.OpenAI.AuthKey != "" {
+			return p.OpenAI.AuthKey
+		}
+	case "anthropic":
+		if p.Anthropic != nil && p.Anthropic.AuthKey != "" {
+			return p.Anthropic.AuthKey
+		}
+	}
+	return p.AuthKey
+}
+
+// IsOAuthMode 返回 Provider 是否使用 OAuth 认证（Anthropic 官方）。
+func (p Provider) IsOAuthMode() bool {
+	return p.EffectiveAuthKey("anthropic") == AuthTypeOAuth
+}
+
+// SyncLegacyFields 将新格式字段同步回旧顶层字段 Type/BaseURL/AuthKey，
+// 以便仍依赖旧字段的代码路径能正常工作。
+// 仅在新格式字段已建立时执行回填。
+func (p Provider) SyncLegacyFields() Provider {
+	if p.Anthropic == nil && p.OpenAI == nil {
+		return p
+	}
+	p.Type = p.EffectiveType()
+	p.BaseURL = p.EffectiveBaseURL("")
+	p.AuthKey = p.EffectiveAuthKey("")
+	return p
 }

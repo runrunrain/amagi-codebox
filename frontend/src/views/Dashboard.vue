@@ -640,8 +640,8 @@ const proxyStatus = ref<proxy.ProxyStatus | null>(null)
 const sessions = ref<any[]>([])
 const workspaces = ref<workspace.Workspace[]>([])
 
-// Merged terminal presets (new system priority + old provider.presets fallback)
-interface MergedPresetEntry { key: string; label: string; provider: string; model: string; source: string }
+// Terminal presets loaded from GetMergedTerminalPresets
+interface MergedPresetEntry { key: string; label: string; provider: string; model: string }
 const mergedClaudeCodePresets = ref<MergedPresetEntry[]>([])
 const mergedOpenCodePresets = ref<MergedPresetEntry[]>([])
 const mergedCodexPresets = ref<MergedPresetEntry[]>([])
@@ -675,22 +675,30 @@ const savedShellPaths = ref<Array<{ path: string; label: string }>>([])
 const selectedCodexProvider = ref('')
 const selectedCodexModel = ref('')
 
-// ClaudeCode: filter providers excluding type="openai" (legacy providers without type are treated as anthropic)
+// Provider classification helpers (consistent with ProviderCenter/Settings)
+function isAnthropicCompatible(p: any): boolean {
+  return !!(p?.anthropic?.enabled) || ((!p?.openai?.enabled) && (p?.type || 'anthropic') !== 'openai' && p?.auth_key !== 'OPENAI_API_KEY')
+}
+function isOpenAICompatible(p: any): boolean {
+  return !!(p?.openai?.enabled) || (p?.type || '').toLowerCase() === 'openai' || p?.auth_key === 'OPENAI_API_KEY'
+}
+
+// ClaudeCode: filter anthropic-compatible providers
 const anthropicProviders = computed(() => {
   const result: Record<string, config.Provider> = {}
   for (const [name, provider] of Object.entries(providers.value)) {
-    if (!provider.type || provider.type !== 'openai') {
+    if (isAnthropicCompatible(provider)) {
       result[name] = provider
     }
   }
   return result
 })
 
-// Codex: filter providers with type="openai"
+// Codex: filter openai-compatible providers
 const openaiProviders = computed(() => {
   const result: Record<string, config.Provider> = {}
   for (const [name, provider] of Object.entries(providers.value)) {
-    if (provider.type === 'openai' || provider.auth_key === 'OPENAI_API_KEY') {
+    if (isOpenAICompatible(provider)) {
       result[name] = provider
     }
   }
@@ -698,90 +706,46 @@ const openaiProviders = computed(() => {
 })
 
 const openCodeProviders = computed(() => {
-  // OpenCode only works with openai-type providers (same filter as Codex).
-  // This matches the backend behavior: openai-compatible providers derive
-  // OpenCode provider IDs correctly, while anthropic-type providers are
-  // designed for Claude Code / AmagiCode, not OpenCode.
+  // OpenCode works with openai-compatible providers (same filter as Codex).
   const result: Record<string, config.Provider> = {}
   for (const [name, provider] of Object.entries(providers.value)) {
-    if (provider.type === 'openai' || provider.auth_key === 'OPENAI_API_KEY') {
+    if (isOpenAICompatible(provider)) {
       result[name] = provider
     }
   }
   return result
 })
 
-// OpenCode presets: terminal_presets (new, stable key) + provider.presets (old, original name)
+// OpenCode presets from terminal presets
 const openCodeAvailablePresets = computed(() => {
   const result: Record<string, config.Preset> = {}
-
-  // 1. Old provider.presets (保持旧 key，已在 provider.presets 中)
-  const prov = openCodeProviders.value[selectedOpenCodeProvider.value]
-  if (prov && prov.presets) {
-    for (const [name, preset] of Object.entries(prov.presets)) {
-      if (preset.target === 'opencode') {
-        result[name] = preset
-      }
-    }
-  }
-
-  // 2. New terminal_presets only (source=terminal_preset, stable key，优先)
-  //    不注入 source=provider_preset 的旧项，避免与步骤1重复
   for (const mp of mergedOpenCodePresets.value) {
-    if (mp.source === 'terminal_preset' && mp.provider === selectedOpenCodeProvider.value) {
+    if (mp.provider === selectedOpenCodeProvider.value) {
       result[mp.key] = { name: mp.label, model: mp.model, target: 'opencode' } as config.Preset
     }
   }
-
   return result
 })
 
-// Codex presets: terminal_presets (new, stable key) + provider.presets (old, original name)
+// Codex presets from terminal presets
 const codexAvailablePresetsFiltered = computed(() => {
   const result: Record<string, config.Preset> = {}
-
-  // 1. Old provider.presets (保持旧 key)
-  if (selectedCodexProvider.value && openaiProviders.value[selectedCodexProvider.value]) {
-    const presets = openaiProviders.value[selectedCodexProvider.value].presets || {}
-    for (const [name, preset] of Object.entries(presets)) {
-      if (!preset.target || preset.target === 'codex') {
-        result[name] = preset
-      }
-    }
-  }
-
-  // 2. New terminal_presets only (source=terminal_preset, stable key，优先)
   for (const mp of mergedCodexPresets.value) {
-    if (mp.source === 'terminal_preset' && mp.provider === selectedCodexProvider.value) {
+    if (mp.provider === selectedCodexProvider.value) {
       result[mp.key] = { name: mp.label, model: mp.model } as config.Preset
     }
   }
-
   return result
 })
 
-// ClaudeCode presets: terminal_presets (new, stable key) + provider.presets (old, original name)
+// ClaudeCode presets from terminal presets
 const claudeCodeAvailablePresets = computed(() => {
   const result: Record<string, config.Preset> = {}
-
-  // 1. Old provider.presets (保持旧 key -- 原 preset name)
-  if (selectedProvider.value && providers.value[selectedProvider.value]) {
-    const presets = providers.value[selectedProvider.value].presets || {}
-    for (const [name, preset] of Object.entries(presets)) {
-      if (!preset.target || preset.target === 'codex') {
-        result[name] = preset
-      }
-    }
-  }
-
-  // 2. New terminal_presets only (source=terminal_preset, stable key，优先)
-  //    不注入 source=provider_preset 的旧项，避免与步骤1重复
   for (const mp of mergedClaudeCodePresets.value) {
-    if (mp.source === 'terminal_preset' && mp.provider === selectedProvider.value) {
+    if (mp.provider === selectedProvider.value) {
       result[mp.key] = { name: mp.label, model: mp.model } as config.Preset
     }
   }
-
   return result
 })
 
@@ -790,7 +754,6 @@ const codexAvailablePresets = computed(() => {
 })
 
 const codexAvailableModels = computed(() => {
-  // 返回 preset key 列表（stable key），后端用此解析 terminal_preset
   return Object.keys(codexAvailablePresets.value)
 })
 
