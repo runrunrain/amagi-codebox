@@ -14,6 +14,12 @@ import (
 	"path/filepath"
 )
 
+var (
+	osWriteFile = os.WriteFile
+	osRename    = os.Rename
+	osRemove    = os.Remove
+)
+
 // defaultConfigContent is returned when the config file does not exist.
 // It is a valid empty JSON object so front-end editors can parse it immediately.
 const defaultConfigContent = "{\n}\n"
@@ -100,8 +106,9 @@ func (s *Service) GetOpenCodeConfig() (string, error) {
 // content is not valid JSON, is not a JSON object, or if the file cannot be
 // written.
 //
-// The file is written atomically (write to .tmp then rename) to avoid
-// corruption from partial writes. Parent directories are created automatically.
+// The file is written via a temp file first. If rename-based replacement fails
+// (for example on Windows when the target file is locked), it falls back to a
+// direct overwrite. Parent directories are created automatically.
 func (s *Service) SaveOpenCodeConfig(content string) error {
 	// Validate JSON before writing.
 	if !json.Valid([]byte(content)) {
@@ -137,17 +144,28 @@ func (s *Service) SaveOpenCodeConfig(content string) error {
 		return err
 	}
 
-	// Atomic write: write to temp file then rename.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, formatted, 0o644); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace config file: %w", err)
-	}
+	return writeConfigFile(path, formatted)
+}
 
-	return nil
+func writeConfigFile(path string, formatted []byte) error {
+	tmp := path + ".tmp"
+	if err := osWriteFile(tmp, formatted, 0o644); err != nil {
+		return fmt.Errorf("write temp file %s: %w", tmp, err)
+	}
+	defer func() {
+		_ = osRemove(tmp)
+	}()
+
+	if err := osRename(tmp, path); err == nil {
+		return nil
+	} else {
+		renameErr := err
+		if overwriteErr := osWriteFile(path, formatted, 0o644); overwriteErr == nil {
+			return nil
+		} else {
+			return fmt.Errorf("replace config file %s: rename temp file %s failed: %w; fallback overwrite failed: %v", path, tmp, renameErr, overwriteErr)
+		}
+	}
 }
 
 // jsonRootType returns a human-readable description of the root JSON type.

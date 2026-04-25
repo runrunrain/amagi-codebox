@@ -1,6 +1,7 @@
 package opencodeconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -330,5 +331,50 @@ func TestSaveThenGetRoundTrip(t *testing.T) {
 	expected := "{\n  \"provider\": {\n    \"openai\": {\n      \"options\": {\n        \"apiKey\": \"sk-abc\"\n      }\n    }\n  }\n}\n"
 	if got != expected {
 		t.Fatalf("round-trip mismatch\nexpected:\n%s\n\ngot:\n%s", expected, got)
+	}
+}
+
+func TestWriteConfigFileFallsBackToDirectOverwriteWhenRenameFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	formatted := []byte("{\n  \"model\": \"fallback\"\n}\n")
+
+	originalWriteFile := osWriteFile
+	originalRename := osRename
+	originalRemove := osRemove
+	t.Cleanup(func() {
+		osWriteFile = originalWriteFile
+		osRename = originalRename
+		osRemove = originalRemove
+	})
+
+	renameCalls := 0
+	osRename = func(oldPath, newPath string) error {
+		renameCalls++
+		if oldPath != path+".tmp" {
+			t.Fatalf("rename old path = %q, want %q", oldPath, path+".tmp")
+		}
+		if newPath != path {
+			t.Fatalf("rename new path = %q, want %q", newPath, path)
+		}
+		return errors.New("Access is denied")
+	}
+
+	if err := writeConfigFile(path, formatted); err != nil {
+		t.Fatalf("writeConfigFile returned error: %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("rename calls = %d, want 1", renameCalls)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read overwritten file: %v", err)
+	}
+	if string(data) != string(formatted) {
+		t.Fatalf("overwritten file content mismatch\nwant:\n%s\n\ngot:\n%s", string(formatted), string(data))
+	}
+
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp file should be cleaned up, stat err = %v", err)
 	}
 }
