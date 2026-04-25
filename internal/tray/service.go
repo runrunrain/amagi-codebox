@@ -2,23 +2,10 @@ package tray
 
 import (
 	"context"
-	"runtime"
 	"sync"
-	"syscall"
-	"time"
-	"unsafe"
 
 	"github.com/energye/systray"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
-)
-
-var (
-	user32DLL                    = syscall.NewLazyDLL("user32.dll")
-	procGetForegroundWindow      = user32DLL.NewProc("GetForegroundWindow")
-	procTraySetForegroundWindow  = user32DLL.NewProc("SetForegroundWindow")
-	procGetWindowThreadProcessId = user32DLL.NewProc("GetWindowThreadProcessId")
-	procAttachThreadInput        = user32DLL.NewProc("AttachThreadInput")
-	procTrayGetCurrentThreadId   = syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
 )
 
 //go:generate echo "Tray icons are embedded from build/windows/icon.ico via go:embed in app.go"
@@ -79,13 +66,7 @@ func (s *Service) onReady(icon []byte) {
 		wailsRuntime.WindowShow(s.ctx)
 	})
 	systray.SetOnRClick(func(menu systray.IMenu) {
-		// 右键点击：显示菜单
-		// Windows 要求弹出菜单时所属窗口必须是前台窗口，否则菜单不显示。
-		// 使用 AttachThreadInput + SetForegroundWindow 强制激活。
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		forceSetForeground()
-		time.Sleep(50 * time.Millisecond)
+		// 右键点击：显式显示菜单，使用 systray 内部默认 Win32 弹出逻辑。
 		menu.ShowMenu()
 	})
 
@@ -136,23 +117,4 @@ func (s *Service) Stop() {
 		systray.Quit()
 		s.running = false
 	}
-}
-
-// forceSetForeground 强制将当前线程关联到前台窗口所在线程，
-// 以便 TrackPopupMenu 能正确弹出菜单。
-// 这是解决 Windows 托盘菜单不显示问题的标准方案。
-func forceSetForeground() {
-	fgHwnd, _, _ := procGetForegroundWindow.Call()
-	if fgHwnd == 0 {
-		return
-	}
-	var fgThreadID uint32
-	procGetWindowThreadProcessId.Call(fgHwnd, uintptr(unsafe.Pointer(&fgThreadID)))
-	curThreadID, _, _ := procTrayGetCurrentThreadId.Call()
-
-	if uint32(curThreadID) != fgThreadID {
-		procAttachThreadInput.Call(uintptr(curThreadID), uintptr(fgThreadID), 1)       // attach
-		defer procAttachThreadInput.Call(uintptr(curThreadID), uintptr(fgThreadID), 0) // detach
-	}
-	procTraySetForegroundWindow.Call(fgHwnd)
 }

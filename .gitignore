@@ -34,3 +34,9 @@ frontend/qa-*.log
 
 # Agent outputs
 .amagi/
+
+# Release builds
+release/
+
+# Development logs
+*.log

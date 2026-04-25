@@ -159,15 +159,7 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 	}
 
 	// 确定实际启动的命令行
-	commandLine := shellPath
-	if commandLine == "" {
-		// shellPath 为空时，使用 autoCommand 作为直接启动命令（支持 "claude" 或 "opencode"）
-		if autoCommand == "" {
-			autoCommand = "claude" // 默认使用 claude
-		}
-		commandLine = autoCommand
-		autoCommand = "" // 直接启动，不需要自动发送命令
-	}
+	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
 
 	// 验证 shell 路径是否存在，如果不存在则尝试回退
 	if commandLine != "" && !isDirectCommand(commandLine) {
@@ -178,18 +170,11 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 		}
 	}
 
-	// 如果是 pwsh/powershell，添加 -NoProfile -NoLogo 防止 Profile 脚本干扰环境变量
-	if autoCommand != "" && (containsIgnoreCase(commandLine, "pwsh") || containsIgnoreCase(commandLine, "powershell")) {
-		commandLine = fmt.Sprintf(`"%s" -NoProfile -NoLogo`, commandLine)
-	} else if autoCommand != "" && containsIgnoreCase(commandLine, "cmd") {
-		// cmd.exe：使用 /K 保持打开，设置 UTF-8 代码页
-		commandLine = fmt.Sprintf(`"%s" /K chcp 65001 >nul`, commandLine)
-	} else if autoCommand != "" && commandLine != "claude" && commandLine != "opencode" {
-		// 其他 shell，直接启动
-		commandLine = fmt.Sprintf(`"%s"`, commandLine)
+	if shellPath != "" && autoCommand != "" {
+		commandLine, sendAutoCommand = buildStartupCommandLine(commandLine, autoCommand)
 	}
 
-	s.log.Info("pty", "创建 ConPTY 会话", fmt.Sprintf("id=%s cmd=%s autoCmd=%s workDir=%s size=%dx%d", sessionID, commandLine, autoCommand, workDir, cols, rows))
+	s.log.Info("pty", "创建 ConPTY 会话", fmt.Sprintf("id=%s cmd=%s autoCmd=%s workDir=%s size=%dx%d", sessionID, commandLine, redactAutoCommandForLog(sendAutoCommand), workDir, cols, rows))
 
 	opts := []conpty.ConPtyOption{
 		conpty.ConPtyDimensions(cols, rows),
@@ -229,12 +214,12 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 	go s.waitLoop(sessionID, ps, ctx)
 
 	// 如果指定了自动命令，延迟发送到 shell
-	if autoCommand != "" {
+	if sendAutoCommand != "" {
 		go func() {
 			time.Sleep(1000 * time.Millisecond) // 等待 shell 初始化完成
-			cmd := autoCommand + "\r\n"
+			cmd := sendAutoCommand + "\r\n"
 			_, _ = ps.cpty.Write([]byte(cmd))
-			s.log.Info("pty", "自动发送命令", fmt.Sprintf("id=%s cmd=%s", sessionID, autoCommand))
+			s.log.Info("pty", "自动发送命令", fmt.Sprintf("id=%s cmd=%s", sessionID, redactAutoCommandForLog(sendAutoCommand)))
 		}()
 	}
 
@@ -471,6 +456,67 @@ func (s *Service) RunningCount() int {
 
 func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+func resolveStartupPlan(shellPath, autoCommand string) (string, string) {
+	if shellPath == "" {
+		if autoCommand == "" {
+			autoCommand = "claude"
+		}
+		return autoCommand, ""
+	}
+	return shellPath, autoCommand
+}
+
+func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
+	if autoCommand == "" {
+		return commandLine, ""
+	}
+
+	quotedShell := quoteCommandPath(commandLine)
+	if containsIgnoreCase(commandLine, "pwsh") || containsIgnoreCase(commandLine, "powershell") {
+		return fmt.Sprintf(`%s -NoProfile -NoLogo -NoExit -Command "%s"`, quotedShell, escapePowerShellCommand(autoCommand)), ""
+	}
+	if containsIgnoreCase(commandLine, "cmd") {
+		return fmt.Sprintf(`%s /K "chcp 65001 >nul && %s"`, quotedShell, escapeCmdCommand(autoCommand)), ""
+	}
+	if commandLine != "claude" && commandLine != "opencode" {
+		return quotedShell, autoCommand
+	}
+	return commandLine, autoCommand
+}
+
+func quoteCommandPath(commandLine string) string {
+	if strings.HasPrefix(commandLine, `"`) || strings.ContainsRune(commandLine, ' ') {
+		return fmt.Sprintf(`"%s"`, strings.Trim(commandLine, `"`))
+	}
+	return commandLine
+}
+
+func escapePowerShellCommand(command string) string {
+	replacer := strings.NewReplacer(
+		"`", "``",
+		"\"", "`\"",
+	)
+	return replacer.Replace(command)
+}
+
+func escapeCmdCommand(command string) string {
+	replacer := strings.NewReplacer(
+		"^", "^^",
+		"&", "^&",
+		"|", "^|",
+		"<", "^<",
+		">", "^>",
+	)
+	return replacer.Replace(command)
+}
+
+func redactAutoCommandForLog(autoCommand string) string {
+	if autoCommand == "" {
+		return ""
+	}
+	return "[embedded-startup-command]"
 }
 
 // isDirectCommand 检查是否是直接命令（如 claude、opencode）而不是 shell 路径

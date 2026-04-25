@@ -377,6 +377,34 @@
                     <input type="text" v-model="prov.baseURL" class="input-field monospace" placeholder="https://api.anthropic.com" @input="ocGuiToRaw" />
                   </div>
                 </div>
+                <div class="form-group">
+                  <label>Models</label>
+                  <div v-for="(model, midx) in prov.models" :key="midx" class="oc-sub-card">
+                    <div class="oc-card-header">
+                      <span class="oc-card-name">{{ model.key || '(unnamed model)' }}</span>
+                      <button class="oc-remove-btn" @click="prov.models.splice(midx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                    </div>
+                    <div class="form-row">
+                      <div class="form-group flex-1">
+                        <label>Model Key</label>
+                        <input type="text" v-model="model.key" class="input-field monospace" placeholder="glm-5-turbo" @input="ocGuiToRaw" />
+                      </div>
+                      <div class="form-group flex-1">
+                        <label>显示名</label>
+                        <input type="text" v-model="model.name" class="input-field" placeholder="GLM 5 Turbo" @input="ocGuiToRaw" />
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label>Variants（逗号分隔）</label>
+                      <input type="text" :value="model.variants.join(', ')" class="input-field monospace" placeholder="medium, high, max" @input="ocUpdateProviderModelVariantsFromEvent(model, $event)" />
+                    </div>
+                    <div class="form-group">
+                      <label>Options JSON</label>
+                      <textarea v-model="model.optionsRaw" class="input-field monospace" rows="4" placeholder='{"reasoning":true}' @input="ocGuiToRaw"></textarea>
+                    </div>
+                  </div>
+                  <button class="btn small" @click="ocAddProviderModel(prov)">+ 添加 Model</button>
+                </div>
               </div>
               <button class="btn small" @click="ocAddProvider">+ 添加 Provider</button>
             </div>
@@ -418,6 +446,30 @@
                     <button class="oc-remove-btn" @click="mcp.commandArgs.splice(aidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
                   </div>
                   <button class="btn small" @click="mcp.commandArgs.push(''); ocGuiToRaw()">+ 添加参数</button>
+                </div>
+                <div class="form-group">
+                  <label>Headers</label>
+                  <div v-for="(header, hidx) in mcp.headers" :key="`header-${hidx}`" class="oc-kv-row">
+                    <input type="text" v-model="header.key" class="input-field oc-kv-key" placeholder="Header 名称" @input="ocGuiToRaw" />
+                    <input type="text" v-model="header.value" class="input-field oc-kv-value monospace" placeholder="Header 值" @input="ocGuiToRaw" />
+                    <button class="oc-remove-btn" @click="mcp.headers.splice(hidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                  </div>
+                  <button class="btn small" @click="mcp.headers.push({ key: '', value: '' }); ocGuiToRaw()">+ 添加 Header</button>
+                </div>
+                <div class="form-group">
+                  <label>Environment</label>
+                  <div v-for="(env, eidx) in mcp.environment" :key="`env-${eidx}`" class="oc-kv-row">
+                    <input type="text" v-model="env.key" class="input-field oc-kv-key" placeholder="环境变量名" @input="ocGuiToRaw" />
+                    <input type="text" v-model="env.value" class="input-field oc-kv-value monospace" placeholder="环境变量值" @input="ocGuiToRaw" />
+                    <button class="oc-remove-btn" @click="mcp.environment.splice(eidx, 1); ocGuiToRaw()" title="删除">&#10005;</button>
+                  </div>
+                  <button class="btn small" @click="mcp.environment.push({ key: '', value: '' }); ocGuiToRaw()">+ 添加环境变量</button>
+                </div>
+                <div class="form-group">
+                  <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" v-model="mcp.oauth" @change="ocGuiToRaw" />
+                    <span>启用 OAuth</span>
+                  </label>
                 </div>
               </div>
               <button class="btn small" @click="ocAddMcp">+ 添加 MCP Server</button>
@@ -1183,9 +1235,10 @@ const ocEditMode = ref<'visual' | 'json'>('visual')
 const ocSwitchBlocked = ref(false)
 
 interface OcKvPair { key: string; value: string }
-interface OcProviderEntry { name: string; apiKey: string; baseURL: string }
-interface OcAgentEntry { name: string; description: string; mode: 'primary' | 'subagent'; model: string; color: string; prompt: string }
-interface OcMcpEntry { name: string; type: 'remote' | 'local'; url: string; commandArgs: string[] }
+interface OcProviderModelEntry { key: string; name: string; variants: string[]; optionsRaw: string; preserved: Record<string, any> }
+interface OcProviderEntry { name: string; apiKey: string; baseURL: string; models: OcProviderModelEntry[]; preserved: Record<string, any> }
+interface OcAgentEntry { name: string; description: string; mode: 'primary' | 'subagent'; model: string; color: string; prompt: string; preserved: Record<string, any> }
+interface OcMcpEntry { name: string; type: 'remote' | 'local'; url: string; commandArgs: string[]; headers: OcKvPair[]; environment: OcKvPair[]; oauth: boolean; preserved: Record<string, any> }
 interface OcPermEntry { key: string; value: string }
 interface OcKvEntry { key: string; valueRaw: string }
 
@@ -1211,6 +1264,36 @@ const ocToggleSection = (s: string) => { ocSections[s] = !ocSections[s] }
 const ocSubJsonErrors = reactive<Record<string, string>>({})
 function clearOcSubJsonErrors() { for (const k of Object.keys(ocSubJsonErrors)) delete ocSubJsonErrors[k] }
 
+function ocClone<T>(value: T): T {
+  if (value === undefined) return value
+  return JSON.parse(JSON.stringify(value))
+}
+
+function ocToKvPairs(value: any): OcKvPair[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.entries(value as Record<string, any>).map(([key, rawValue]) => ({ key, value: rawValue == null ? '' : String(rawValue) }))
+}
+
+function ocKvPairsToRecord(pairs: OcKvPair[]): Record<string, string> | undefined {
+  const record: Record<string, string> = {}
+  for (const pair of pairs) {
+    const key = pair.key.trim()
+    if (!key) continue
+    record[key] = pair.value
+  }
+  return Object.keys(record).length > 0 ? record : undefined
+}
+
+function ocParseVariantKeys(value: any): string[] {
+  if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean)
+  if (value && typeof value === 'object') return Object.keys(value).filter(Boolean)
+  return []
+}
+
+function ocParseVariantInput(input: string): string[] {
+  return input.split(',').map(v => v.trim()).filter(Boolean)
+}
+
 const ocRawToGui = () => {
   clearOcSubJsonErrors()
   const raw = ocEditorContent.value.trim()
@@ -1218,13 +1301,30 @@ const ocRawToGui = () => {
   let obj: any
   try { obj = JSON.parse(raw) } catch { return }
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return
+  const rootUnknown: Record<string, any> = {}
+  for (const [key, value] of Object.entries(obj)) {
+    if (!OC_KNOWN_KEYS.has(key)) rootUnknown[key] = value
+  }
   ocGui.modelValue = typeof obj.model === 'string' ? obj.model : ''
   const provs: OcProviderEntry[] = []
   if (obj.provider && typeof obj.provider === 'object') {
     for (const [n, e] of Object.entries(obj.provider as Record<string, any>)) {
       if (!e || typeof e !== 'object') continue
       const opts = e.options && typeof e.options === 'object' ? e.options : {}
-      provs.push({ name: n, apiKey: opts.apiKey || '', baseURL: opts.baseURL || '' })
+      const models: OcProviderModelEntry[] = []
+      if (e.models && typeof e.models === 'object' && !Array.isArray(e.models)) {
+        for (const [modelKey, modelEntry] of Object.entries(e.models as Record<string, any>)) {
+          if (!modelEntry || typeof modelEntry !== 'object' || Array.isArray(modelEntry)) continue
+          models.push({
+            key: modelKey,
+            name: typeof modelEntry.name === 'string' ? modelEntry.name : '',
+            variants: ocParseVariantKeys(modelEntry.variants),
+            optionsRaw: modelEntry.options && typeof modelEntry.options === 'object' ? JSON.stringify(modelEntry.options, null, 2) : '',
+            preserved: ocClone(modelEntry),
+          })
+        }
+      }
+      provs.push({ name: n, apiKey: opts.apiKey || '', baseURL: opts.baseURL || '', models, preserved: ocClone(e) })
     }
   }
   ocGui.providers = provs
@@ -1232,7 +1332,7 @@ const ocRawToGui = () => {
   if (obj.agent && typeof obj.agent === 'object') {
     for (const [n, e] of Object.entries(obj.agent as Record<string, any>)) {
       if (!e || typeof e !== 'object') continue
-      agents.push({ name: n, description: e.description || '', mode: e.mode === 'primary' ? 'primary' : 'subagent', model: e.model || '', color: e.color || '', prompt: e.prompt || '' })
+      agents.push({ name: n, description: e.description || '', mode: e.mode === 'primary' ? 'primary' : 'subagent', model: e.model || '', color: e.color || '', prompt: e.prompt || '', preserved: ocClone(e) })
     }
   }
   ocGui.agents = agents
@@ -1242,7 +1342,16 @@ const ocRawToGui = () => {
       if (!e || typeof e !== 'object') continue
       let ca: string[] = []
       if (Array.isArray(e.command)) ca = e.command.map((s: any) => String(s))
-      mcps.push({ name: n, type: e.type === 'local' ? 'local' : 'remote', url: e.url || '', commandArgs: ca })
+      mcps.push({
+        name: n,
+        type: e.type === 'local' ? 'local' : 'remote',
+        url: e.url || '',
+        commandArgs: ca,
+        headers: ocToKvPairs(e.headers),
+        environment: ocToKvPairs(e.environment),
+        oauth: e.oauth === true,
+        preserved: ocClone(e),
+      })
     }
   }
   ocGui.mcpServers = mcps
@@ -1258,25 +1367,113 @@ const ocRawToGui = () => {
     for (const [k, v] of Object.entries(obj.experimental as Record<string, any>)) exps.push({ key: k, valueRaw: JSON.stringify(v) })
   }
   ocGui.experimentalKvs = exps
+  ocGui.unknownFieldsRaw = Object.keys(rootUnknown).length > 0 ? JSON.stringify(rootUnknown, null, 2) : ''
 }
 
 const ocGuiToRaw = () => {
   clearOcSubJsonErrors()
   const result: Record<string, any> = {}
+  if (ocGui.unknownFieldsRaw.trim()) {
+    try {
+      const unknown = JSON.parse(ocGui.unknownFieldsRaw)
+      if (!unknown || typeof unknown !== 'object' || Array.isArray(unknown)) ocSubJsonErrors.unknownFields = '顶层保留字段必须为 JSON 对象'
+      else Object.assign(result, unknown)
+    } catch {
+      ocSubJsonErrors.unknownFields = '顶层保留字段 JSON 非法'
+    }
+  }
   if (ocGui.modelValue.trim()) result.model = ocGui.modelValue.trim()
   if (ocGui.providers.length > 0) {
     const provider: Record<string, any> = {}
-    for (const p of ocGui.providers) { if (!p.name.trim()) continue; const opts: Record<string, any> = {}; if (p.apiKey.trim()) opts.apiKey = p.apiKey.trim(); if (p.baseURL.trim()) opts.baseURL = p.baseURL.trim(); const entry: Record<string, any> = {}; if (Object.keys(opts).length > 0) entry.options = opts; provider[p.name.trim()] = entry }
+    for (const p of ocGui.providers) {
+      const providerName = p.name.trim()
+      if (!providerName) continue
+      const entry: Record<string, any> = p.preserved && typeof p.preserved === 'object' ? ocClone(p.preserved) : {}
+      const options: Record<string, any> = entry.options && typeof entry.options === 'object' && !Array.isArray(entry.options) ? ocClone(entry.options) : {}
+      delete options.apiKey
+      delete options.baseURL
+      if (p.apiKey.trim()) options.apiKey = p.apiKey.trim()
+      if (p.baseURL.trim()) options.baseURL = p.baseURL.trim()
+      if (Object.keys(options).length > 0) entry.options = options
+      else delete entry.options
+      if (p.models.length > 0) {
+        const models: Record<string, any> = {}
+        for (const model of p.models) {
+          const modelKey = model.key.trim()
+          if (!modelKey) continue
+          const modelEntry: Record<string, any> = model.preserved && typeof model.preserved === 'object' ? ocClone(model.preserved) : {}
+          delete modelEntry.name
+          delete modelEntry.variants
+          delete modelEntry.options
+          if (model.name.trim()) modelEntry.name = model.name.trim()
+          const variantKeys = model.variants.map(v => v.trim()).filter(Boolean)
+          if (variantKeys.length > 0) {
+            modelEntry.variants = Object.fromEntries(variantKeys.map(v => [v, {}]))
+          }
+          if (model.optionsRaw.trim()) {
+            try {
+              const parsedOptions = JSON.parse(model.optionsRaw)
+              modelEntry.options = parsedOptions
+            } catch {
+              ocSubJsonErrors['provider.' + providerName + '.models.' + modelKey + '.options'] = '无效 JSON'
+            }
+          }
+          models[modelKey] = modelEntry
+        }
+        if (Object.keys(models).length > 0) entry.models = models
+        else delete entry.models
+      } else {
+        delete entry.models
+      }
+      provider[providerName] = entry
+    }
     if (Object.keys(provider).length > 0) result.provider = provider
   }
   if (ocGui.agents.length > 0) {
     const agent: Record<string, any> = {}
-    for (const a of ocGui.agents) { if (!a.name.trim()) continue; const entry: Record<string, any> = {}; if (a.description.trim()) entry.description = a.description.trim(); if (a.mode) entry.mode = a.mode; if (a.model.trim()) entry.model = a.model.trim(); if (a.color.trim()) entry.color = a.color.trim(); if (a.prompt.trim()) entry.prompt = a.prompt.trim(); agent[a.name.trim()] = entry }
+    for (const a of ocGui.agents) {
+      const agentName = a.name.trim()
+      if (!agentName) continue
+      const entry: Record<string, any> = a.preserved && typeof a.preserved === 'object' ? ocClone(a.preserved) : {}
+      delete entry.description
+      delete entry.mode
+      delete entry.model
+      delete entry.color
+      delete entry.prompt
+      if (a.description.trim()) entry.description = a.description.trim()
+      if (a.mode) entry.mode = a.mode
+      if (a.model.trim()) entry.model = a.model.trim()
+      if (a.color.trim()) entry.color = a.color.trim()
+      if (a.prompt.trim()) entry.prompt = a.prompt.trim()
+      agent[agentName] = entry
+    }
     if (Object.keys(agent).length > 0) result.agent = agent
   }
   if (ocGui.mcpServers.length > 0) {
     const mcp: Record<string, any> = {}
-    for (const m of ocGui.mcpServers) { if (!m.name.trim()) continue; const entry: Record<string, any> = { type: m.type }; if (m.type === 'remote' && m.url.trim()) entry.url = m.url.trim(); if (m.type === 'local' && m.commandArgs.length > 0) { const f = m.commandArgs.filter(a => a.trim()); if (f.length > 0) entry.command = f } mcp[m.name.trim()] = entry }
+    for (const m of ocGui.mcpServers) {
+      const mcpName = m.name.trim()
+      if (!mcpName) continue
+      const entry: Record<string, any> = m.preserved && typeof m.preserved === 'object' ? ocClone(m.preserved) : {}
+      delete entry.type
+      delete entry.url
+      delete entry.command
+      delete entry.headers
+      delete entry.environment
+      delete entry.oauth
+      entry.type = m.type
+      if (m.type === 'remote' && m.url.trim()) entry.url = m.url.trim()
+      if (m.type === 'local') {
+        const filteredArgs = m.commandArgs.filter(a => a.trim())
+        if (filteredArgs.length > 0) entry.command = filteredArgs
+      }
+      const headers = ocKvPairsToRecord(m.headers)
+      if (headers) entry.headers = headers
+      const environment = ocKvPairsToRecord(m.environment)
+      if (environment) entry.environment = environment
+      if (m.oauth) entry.oauth = true
+      mcp[mcpName] = entry
+    }
     if (Object.keys(mcp).length > 0) result.mcp = mcp
   }
   if (ocGui.permissions.length > 0) { const perm: Record<string, string> = {}; for (const p of ocGui.permissions) { if (p.key.trim()) perm[p.key.trim()] = p.value } if (Object.keys(perm).length > 0) result.permission = perm }
@@ -1308,11 +1505,14 @@ const ocSwitchToJson = () => {
 }
 
 // Section add/remove helpers
-const ocAddProvider = () => { ocGui.providers.push({ name: '', apiKey: '', baseURL: '' }); ocSections.provider = true }
+const ocAddProvider = () => { ocGui.providers.push({ name: '', apiKey: '', baseURL: '', models: [], preserved: {} }); ocSections.provider = true }
 const ocRemoveProvider = (i: number) => { ocGui.providers.splice(i, 1); ocGuiToRaw() }
-const ocAddAgent = () => { ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', color: '', prompt: '' }); ocSections.agent = true }
+const ocAddProviderModel = (provider: OcProviderEntry) => { provider.models.push({ key: '', name: '', variants: [], optionsRaw: '', preserved: {} }); ocSections.provider = true; ocGuiToRaw() }
+const ocUpdateProviderModelVariants = (model: OcProviderModelEntry, value: string) => { model.variants = ocParseVariantInput(value); ocGuiToRaw() }
+const ocUpdateProviderModelVariantsFromEvent = (model: OcProviderModelEntry, event: Event) => { ocUpdateProviderModelVariants(model, (event.target as HTMLInputElement)?.value || '') }
+const ocAddAgent = () => { ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', color: '', prompt: '', preserved: {} }); ocSections.agent = true }
 const ocRemoveAgent = (i: number) => { ocGui.agents.splice(i, 1); ocGuiToRaw() }
-const ocAddMcp = () => { ocGui.mcpServers.push({ name: '', type: 'remote', url: '', commandArgs: [] }); ocSections.mcp = true }
+const ocAddMcp = () => { ocGui.mcpServers.push({ name: '', type: 'remote', url: '', commandArgs: [], headers: [], environment: [], oauth: false, preserved: {} }); ocSections.mcp = true }
 const ocRemoveMcp = (i: number) => { ocGui.mcpServers.splice(i, 1); ocGuiToRaw() }
 const ocAddPermission = () => { ocGui.permissions.push({ key: '', value: 'allow' }); ocSections.permission = true }
 const ocRemovePermission = (i: number) => { ocGui.permissions.splice(i, 1); ocGuiToRaw() }
@@ -1647,6 +1847,7 @@ watch(activeSection, (newSection) => {
 .oc-count-badge { font-size: 11px; font-weight: 600; background: rgba(79,195,247,0.15); color: var(--accent); padding: 1px 7px; border-radius: 10px; margin-left: 4px; }
 .oc-section-body { padding: 12px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
 .oc-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.oc-sub-card { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
 .oc-card-header { display: flex; align-items: center; justify-content: space-between; }
 .oc-card-name { font-weight: 600; font-size: 13px; color: var(--accent); font-family: 'Consolas', 'Monaco', monospace; }
 .oc-remove-btn { background: transparent; border: none; cursor: pointer; padding: 4px 6px; border-radius: 4px; color: var(--text-muted); font-size: 13px; line-height: 1; transition: all 0.15s ease; }
