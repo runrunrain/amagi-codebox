@@ -135,12 +135,23 @@
           <button class="btn primary small" @click="tpOpenAdd('claude_code')">+ 添加预设</button>
         </div>
 
-        <div class="tp-presets-list" v-if="tpPresets.claude_code.length > 0">
-          <div class="card tp-preset-card" v-for="p in tpPresets.claude_code" :key="p.name">
+        <div class="provider-filter-tabs" v-if="claudeCodeProviderNames.length > 0">
+          <button class="filter-tab" :class="{ active: claudeCodeFilterProvider === '' }" @click="claudeCodeFilterProvider = ''">全部</button>
+          <button
+            v-for="name in claudeCodeProviderNames"
+            :key="name"
+            class="filter-tab"
+            :class="{ active: claudeCodeFilterProvider === name }"
+            @click="claudeCodeFilterProvider = name"
+          >{{ name }}</button>
+        </div>
+
+        <div class="pc-preset-card-grid" v-if="filteredClaudeCodePresets.length > 0">
+          <div class="card tp-preset-card" v-for="p in filteredClaudeCodePresets" :key="p.name">
             <div class="tp-preset-header">
               <div>
                 <strong class="tp-preset-name">{{ p.label || p.name }}</strong>
-                <span class="tp-preset-provider">Provider: {{ p.provider }}</span>
+                <span class="tp-preset-provider">{{ p.provider }}</span>
               </div>
               <div class="tp-preset-actions">
                 <button class="btn-icon" @click="tpOpenEdit('claude_code', p)" title="编辑">
@@ -163,7 +174,8 @@
           </div>
         </div>
         <div class="empty-state" v-else>
-          <span>暂无 Claude Code 预设。点击"+ 添加预设"创建。</span>
+          <span v-if="claudeCodeFilterProvider">该提供商下暂无预设</span>
+          <span v-else>暂无 Claude Code 预设。点击"+ 添加预设"创建。</span>
         </div>
       </div>
 
@@ -178,25 +190,33 @@
           <button class="btn primary small" @click="ocPresetOpenAdd">+ 添加预设</button>
         </div>
 
+        <div class="oc-preset-search" v-if="ocPresetList.length > 3">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" v-model="ocPresetSearchQuery" class="input-field oc-preset-search-input" placeholder="搜索预设名称或描述..." />
+        </div>
+
         <div class="tp-presets-list" v-if="ocPresetList.length > 0">
-          <div class="card tp-preset-card" v-for="p in ocPresetList" :key="p.key">
-            <div class="tp-preset-header">
-              <div>
-                <strong class="tp-preset-name">{{ p.name || p.key }}</strong>
-                <span class="tp-preset-provider" v-if="p.bindingCount > 0">{{ p.bindingCount }} 绑定</span>
+          <div class="card oc-preset-manage-card" v-for="p in filteredOcPresetList" :key="p.key">
+            <div class="oc-preset-manage-header">
+              <div class="oc-preset-manage-info">
+                <strong class="oc-preset-manage-name">{{ p.name || p.key }}</strong>
+                <span class="oc-preset-manage-desc" v-if="p.description">{{ p.description }}</span>
               </div>
-              <div class="tp-preset-actions">
-                <button class="btn-icon" @click="ocPresetOpenEdit(p)" title="编辑">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                </button>
-                <button class="btn-icon danger" @click="ocPresetHandleDelete(p.key)" title="删除">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                </button>
+              <div class="oc-preset-manage-meta">
+                <span class="oc-preset-manage-badge" v-if="p.bindingCount > 0">{{ p.bindingCount }} 绑定</span>
+                <div class="tp-preset-actions">
+                  <button class="btn-icon" @click="ocPresetOpenEdit(p)" title="编辑">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                  </button>
+                  <button class="btn-icon danger" @click="ocPresetHandleDelete(p.key)" title="删除">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  </button>
+                </div>
               </div>
             </div>
-            <div class="tp-preset-body">
-              <span class="param-badge" v-if="p.description">{{ p.description }}</span>
-            </div>
+          </div>
+          <div v-if="filteredOcPresetList.length === 0 && ocPresetSearchQuery" class="oc-preset-search-empty">
+            未找到匹配的预设
           </div>
         </div>
         <div class="empty-state" v-else>
@@ -521,12 +541,23 @@
           <button class="btn primary small" @click="tpOpenAdd('codex')">+ 添加预设</button>
         </div>
 
-        <div class="tp-presets-list" v-if="tpPresets.codex.length > 0">
-          <div class="card tp-preset-card" v-for="p in tpPresets.codex" :key="p.name">
+        <div class="provider-filter-tabs" v-if="codexProviderNames.length > 0">
+          <button class="filter-tab" :class="{ active: codexFilterProvider === '' }" @click="codexFilterProvider = ''">全部</button>
+          <button
+            v-for="name in codexProviderNames"
+            :key="name"
+            class="filter-tab"
+            :class="{ active: codexFilterProvider === name }"
+            @click="codexFilterProvider = name"
+          >{{ name }}</button>
+        </div>
+
+        <div class="pc-preset-card-grid" v-if="filteredCodexPresets.length > 0">
+          <div class="card tp-preset-card" v-for="p in filteredCodexPresets" :key="p.name">
             <div class="tp-preset-header">
               <div>
                 <strong class="tp-preset-name">{{ p.label || p.name }}</strong>
-                <span class="tp-preset-provider">Provider: {{ p.provider }}</span>
+                <span class="tp-preset-provider">{{ p.provider }}</span>
               </div>
               <div class="tp-preset-actions">
                 <button class="btn-icon" @click="tpOpenEdit('codex', p)" title="编辑">
@@ -549,7 +580,8 @@
           </div>
         </div>
         <div class="empty-state" v-else>
-          <span>暂无 Codex 预设。点击"+ 添加预设"创建。</span>
+          <span v-if="codexFilterProvider">该提供商下暂无预设</span>
+          <span v-else>暂无 Codex 预设。点击"+ 添加预设"创建。</span>
         </div>
       </div>
 
@@ -659,12 +691,10 @@ const loadProviders = async () => {
   loading.value = true
   try {
     const records = await GetProviders()
-    // Unified key check: check providerName only, fallback to legacy format-specific keys
     const statusEntries = await Promise.all(
       Object.keys(records).map(async (name) => {
         const hasMain = await HasAPIKey(name)
         if (hasMain) return [name, true] as const
-        // Legacy fallback
         const [hasLegacy] = await Promise.all([
           HasAPIKey(name + ':anthropic'),
         ])
@@ -692,7 +722,6 @@ const handleAddProvider = async () => {
       auth_key: newProviderType.value === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
       presets: {},
     } as any)
-    // Set dual-format fields
     ;(p as any)[newProviderType.value] = { enabled: true, base_url: newProviderBaseUrl.value }
     await SaveProvider(newProviderName.value, p)
     showAddDialog.value = false
@@ -769,6 +798,56 @@ const tpPresets = ref<Record<string, TerminalPresetData[]>>({
   claude_code: [],
   opencode: [],
   codex: [],
+})
+
+// Claude Code presets grouped by provider
+const claudeCodePresetsByProvider = computed(() => {
+  const groups: Record<string, TerminalPresetData[]> = {}
+  for (const p of tpPresets.value.claude_code) {
+    const key = p.provider || '(未关联)'
+    if (!groups[key]) groups[key] = []
+    groups[key].push(p)
+  }
+  return groups
+})
+
+const claudeCodeProviderNames = computed(() => Object.keys(claudeCodePresetsByProvider.value).sort())
+
+// Codex presets grouped by provider
+const codexPresetsByProvider = computed(() => {
+  const groups: Record<string, TerminalPresetData[]> = {}
+  for (const p of tpPresets.value.codex) {
+    const key = p.provider || '(未关联)'
+    if (!groups[key]) groups[key] = []
+    groups[key].push(p)
+  }
+  return groups
+})
+
+const codexProviderNames = computed(() => Object.keys(codexPresetsByProvider.value).sort())
+
+// Provider filter tabs for Claude Code / Codex
+const claudeCodeFilterProvider = ref('')
+const codexFilterProvider = ref('')
+
+const filteredClaudeCodePresets = computed(() => {
+  if (!claudeCodeFilterProvider.value) return tpPresets.value.claude_code
+  return tpPresets.value.claude_code.filter(p => p.provider === claudeCodeFilterProvider.value)
+})
+
+const filteredCodexPresets = computed(() => {
+  if (!codexFilterProvider.value) return tpPresets.value.codex
+  return tpPresets.value.codex.filter(p => p.provider === codexFilterProvider.value)
+})
+
+// OpenCode preset search
+const ocPresetSearchQuery = ref('')
+const filteredOcPresetList = computed(() => {
+  const q = ocPresetSearchQuery.value.trim().toLowerCase()
+  if (!q) return ocPresetList.value
+  return ocPresetList.value.filter(p =>
+    p.name.toLowerCase().includes(q) || (p.description && p.description.toLowerCase().includes(q))
+  )
 })
 
 // Dialog state (shared across 3 tabs)
@@ -1408,16 +1487,75 @@ watch(activeSection, (newSection) => {
 .type-btn.active { border-color: #4fc3f7; color: #4fc3f7; background: rgba(79,195,247,0.08); }
 
 /* Terminal Preset Cards */
-.tp-presets-list { display: flex; flex-direction: column; gap: 12px; }
-.tp-preset-card { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.tp-preset-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.tp-preset-name { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-right: 12px; }
-.tp-preset-provider { font-size: 12px; color: var(--text-muted); background: rgba(90,106,122,0.15); padding: 2px 8px; border-radius: 4px; }
+.pc-preset-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+.tp-presets-list { display: flex; flex-direction: column; gap: 16px; }
+.tp-provider-group { display: flex; flex-direction: column; gap: 8px; }
+.tp-provider-group-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  background: rgba(79, 195, 247, 0.06);
+  border: 1px solid rgba(79, 195, 247, 0.15);
+  border-radius: 8px;
+}
+.tp-provider-group-name {
+  font-size: 14px; font-weight: 600; color: var(--accent);
+}
+.tp-provider-group-badge {
+  font-size: 11px; font-weight: 600;
+  background: rgba(79, 195, 247, 0.15); color: var(--accent);
+  padding: 2px 8px; border-radius: 10px; min-width: 20px; text-align: center;
+}
+.tp-preset-card { padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; transition: border-color 0.15s, box-shadow 0.15s; }
+.tp-preset-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.tp-preset-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+.tp-preset-header > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.tp-preset-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.tp-preset-provider { font-size: 12px; color: var(--accent); background: rgba(79,195,247,0.1); padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
 .tp-preset-actions { display: flex; gap: 4px; }
-.tp-preset-body { display: flex; flex-wrap: wrap; gap: 8px; }
-.tp-preset-body .param-badge { background: rgba(90,106,122,0.2); color: var(--text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 12px; border: 1px solid var(--border); }
+.tp-preset-body { display: flex; flex-wrap: wrap; gap: 6px; }
+.tp-preset-body .param-badge { background: rgba(90,106,122,0.2); color: var(--text-secondary); padding: 3px 8px; border-radius: 4px; font-size: 11px; border: 1px solid var(--border); }
 .tp-section-divider { height: 1px; background: var(--border); margin: 12px 0; }
 .tp-compat-warning { margin: 8px 0 0; font-size: 12px; color: var(--error); line-height: 1.4; }
+
+/* OpenCode Preset Management Cards */
+.oc-preset-search {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 16px; padding: 0 2px; color: var(--text-muted);
+}
+.oc-preset-search-input {
+  background: transparent !important; border: none !important;
+  padding: 6px 8px !important; font-size: 13px !important; color: var(--text-primary) !important;
+}
+.oc-preset-search-input::placeholder { color: var(--text-muted); }
+.oc-preset-manage-card { padding: 16px !important; }
+.oc-preset-manage-header {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+}
+.oc-preset-manage-info {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1;
+}
+.oc-preset-manage-name {
+  font-size: 15px; font-weight: 600; color: var(--text-primary);
+}
+.oc-preset-manage-desc {
+  font-size: 13px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.oc-preset-manage-meta {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+.oc-preset-manage-badge {
+  font-size: 11px; font-weight: 600;
+  background: rgba(90,106,122,0.15); color: var(--text-secondary);
+  padding: 3px 10px; border-radius: 10px;
+}
+.oc-preset-search-empty {
+  text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px;
+}
 
 /* OpenCode Preset Binding */
 .oc-preset-binding-row {

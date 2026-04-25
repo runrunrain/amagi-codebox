@@ -181,17 +181,20 @@
           <div class="form-row">
             <div class="form-group flex-1">
               <label>服务提供商</label>
-              <select v-model="selectedProvider" class="input-field">
-                <option v-for="(provider, name) in anthropicProviders" :key="name" :value="name">
-                  {{ name }}
+              <select v-model="selectedProvider" class="input-field" :disabled="claudePresetProviderNames.length === 0">
+                <option value="" disabled v-if="claudePresetProviderNames.length === 0">暂无可用提供商</option>
+                <option v-for="providerName in claudePresetProviderNames" :key="providerName" :value="providerName">
+                  {{ providerName }}
                 </option>
               </select>
             </div>
             <div class="form-group flex-1">
               <label>预设配置</label>
-              <select v-model="selectedPreset" class="input-field" :disabled="!hasPresets">
-                <option v-for="(preset, name) in availablePresets" :key="name" :value="name">
-                  {{ preset.name || name }} ({{ preset.model }})
+              <select v-model="selectedPreset" class="input-field" :disabled="!selectedProvider || claudePresetsForSelectedProvider.length === 0">
+                <option value="" disabled v-if="!selectedProvider">请先选择提供商</option>
+                <option value="" disabled v-else-if="claudePresetsForSelectedProvider.length === 0">该提供商暂无预设</option>
+                <option v-for="mp in claudePresetsForSelectedProvider" :key="mp.key" :value="mp.key">
+                  {{ mp.label }} ({{ mp.model }})
                 </option>
               </select>
             </div>
@@ -294,15 +297,45 @@
 
         <!-- OpenCode -->
         <div v-if="activeLaunchTab === 'opencode'" class="launch-tab-content">
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label>OpenCode 预设</label>
-              <select v-model="selectedOpenCodePresetKey" class="input-field">
-                <option value="">本机默认配置（不启用受管预设）</option>
-                <option v-for="p in openCodePresetList" :key="p.key" :value="p.key">
-                  {{ p.name }}{{ p.bindingCount > 0 ? ` (${p.bindingCount} 绑定)` : '' }}
-                </option>
-              </select>
+          <div class="form-group">
+            <label>OpenCode 预设</label>
+            <div class="oc-preset-search" v-if="openCodePresetList.length > 3">
+              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <input type="text" v-model="openCodePresetSearch" class="input-field oc-search-input" placeholder="搜索预设名称或描述..." />
+            </div>
+            <div class="oc-preset-card-list" role="radiogroup" aria-label="OpenCode 预设">
+              <button
+                type="button"
+                class="oc-preset-card-item"
+                :class="{ selected: !selectedOpenCodePresetKey }"
+                role="radio"
+                :aria-checked="!selectedOpenCodePresetKey"
+                @click="selectedOpenCodePresetKey = ''"
+              >
+                <div class="oc-preset-card-row">
+                  <span class="oc-preset-card-name">本机默认配置</span>
+                </div>
+                <div class="oc-preset-card-desc">不启用受管预设，使用本地 opencode.json</div>
+              </button>
+              <button
+                v-for="p in filteredOpenCodePresets"
+                :key="p.key"
+                type="button"
+                class="oc-preset-card-item"
+                :class="{ selected: selectedOpenCodePresetKey === p.key }"
+                role="radio"
+                :aria-checked="selectedOpenCodePresetKey === p.key"
+                @click="selectedOpenCodePresetKey = p.key"
+              >
+                <div class="oc-preset-card-row">
+                  <span class="oc-preset-card-name">{{ p.name }}</span>
+                  <span class="oc-preset-card-badge" v-if="p.bindingCount > 0">{{ p.bindingCount }} 绑定</span>
+                </div>
+                <div class="oc-preset-card-desc" v-if="p.description">{{ p.description }}</div>
+              </button>
+            </div>
+            <div v-if="filteredOpenCodePresets.length === 0 && openCodePresetList.length > 0 && openCodePresetSearch" class="oc-preset-search-empty">
+              未找到匹配的预设
             </div>
           </div>
 
@@ -410,17 +443,20 @@
           <div class="form-row">
             <div class="form-group flex-1">
               <label>服务提供商</label>
-              <select v-model="selectedCodexProvider" class="input-field">
-                <option v-for="(provider, name) in openaiProviders" :key="name" :value="name">
-                  {{ name }}
+              <select v-model="selectedCodexProvider" class="input-field" :disabled="codexPresetProviderNames.length === 0">
+                <option value="" disabled v-if="codexPresetProviderNames.length === 0">暂无可用提供商</option>
+                <option v-for="providerName in codexPresetProviderNames" :key="providerName" :value="providerName">
+                  {{ providerName }}
                 </option>
               </select>
             </div>
             <div class="form-group flex-1">
-              <label>模型</label>
-              <select v-model="selectedCodexModel" class="input-field" :disabled="!selectedCodexProvider">
-                <option v-for="key in codexAvailableModels" :key="key" :value="key">
-                  {{ codexAvailablePresets[key]?.name || key }}{{ codexAvailablePresets[key]?.model ? ` (${codexAvailablePresets[key].model})` : '' }}
+              <label>预设配置</label>
+              <select v-model="selectedCodexModel" class="input-field" :disabled="!selectedCodexProvider || codexPresetsForSelectedProvider.length === 0">
+                <option value="" disabled v-if="!selectedCodexProvider">请先选择提供商</option>
+                <option value="" disabled v-else-if="codexPresetsForSelectedProvider.length === 0">该提供商暂无预设</option>
+                <option v-for="mp in codexPresetsForSelectedProvider" :key="mp.key" :value="mp.key">
+                  {{ mp.label }} ({{ mp.model }})
                 </option>
               </select>
             </div>
@@ -851,12 +887,103 @@ const availablePresets = computed(() => {
 
 const hasPresets = computed(() => Object.keys(availablePresets.value).length > 0)
 
+// Claude Code: presets grouped by provider for <optgroup>
+const claudePresetsByProvider = computed(() => {
+  const groups: Record<string, MergedPresetEntry[]> = {}
+  for (const mp of mergedClaudeCodePresets.value) {
+    if (!groups[mp.provider]) groups[mp.provider] = []
+    groups[mp.provider].push(mp)
+  }
+  return groups
+})
+
+const claudePresetProviderNames = computed(() => Object.keys(claudePresetsByProvider.value).sort())
+
+// Codex: presets grouped by provider for <optgroup>
+const codexPresetsByProvider = computed(() => {
+  const groups: Record<string, MergedPresetEntry[]> = {}
+  for (const mp of mergedCodexPresets.value) {
+    if (!groups[mp.provider]) groups[mp.provider] = []
+    groups[mp.provider].push(mp)
+  }
+  return groups
+})
+
+const codexPresetProviderNames = computed(() => Object.keys(codexPresetsByProvider.value).sort())
+
+// ClaudeCode: presets filtered for currently selected provider
+const claudePresetsForSelectedProvider = computed(() => {
+  if (!selectedProvider.value) return []
+  return mergedClaudeCodePresets.value.filter(p => p.provider === selectedProvider.value)
+})
+
+// Codex: presets filtered for currently selected provider
+const codexPresetsForSelectedProvider = computed(() => {
+  if (!selectedCodexProvider.value) return []
+  return mergedCodexPresets.value.filter(p => p.provider === selectedCodexProvider.value)
+})
+
+// OpenCode: search filter
+const openCodePresetSearch = ref('')
+const filteredOpenCodePresets = computed(() => {
+  const q = openCodePresetSearch.value.trim().toLowerCase()
+  if (!q) return openCodePresetList.value
+  return openCodePresetList.value.filter(p =>
+    p.name.toLowerCase().includes(q) || (p.description && p.description.toLowerCase().includes(q))
+  )
+})
+
+// Validate ClaudeCode preset - ensure selected key belongs to current provider
+function validateClaudePreset() {
+  if (selectedPreset.value) {
+    const entry = mergedClaudeCodePresets.value.find(p => p.key === selectedPreset.value)
+    if (entry && entry.provider === selectedProvider.value) return
+  }
+  if (mergedClaudeCodePresets.value.length > 0) {
+    const match = mergedClaudeCodePresets.value.find(p => p.provider === selectedProvider.value)
+    if (match) {
+      selectedPreset.value = match.key
+    } else {
+      const first = mergedClaudeCodePresets.value[0]
+      selectedProvider.value = first.provider
+      selectedPreset.value = first.key
+    }
+  } else {
+    selectedPreset.value = ''
+  }
+}
+
+// Validate Codex preset - ensure selected key belongs to current provider
+function validateCodexPreset() {
+  if (selectedCodexModel.value) {
+    const entry = mergedCodexPresets.value.find(p => p.key === selectedCodexModel.value)
+    if (entry && entry.provider === selectedCodexProvider.value) return
+  }
+  if (mergedCodexPresets.value.length > 0) {
+    const match = mergedCodexPresets.value.find(p => p.provider === selectedCodexProvider.value)
+    if (match) {
+      selectedCodexModel.value = match.key
+    } else {
+      const first = mergedCodexPresets.value[0]
+      selectedCodexProvider.value = first.provider
+      selectedCodexModel.value = first.key
+    }
+  } else {
+    selectedCodexModel.value = ''
+  }
+}
+
+// Re-validate when preset lists refresh (external deletion / rename)
+watch(mergedClaudeCodePresets, () => { validateClaudePreset() })
+watch(mergedCodexPresets, () => { validateCodexPreset() })
+
 const canLaunch = computed(() => {
   if (activeLaunchTab.value === 'claudecode') {
-    return selectedProvider.value && selectedPreset.value
+    if (!selectedPreset.value || !selectedProvider.value) return false
+    return claudePresetsForSelectedProvider.value.some(p => p.key === selectedPreset.value)
   } else if (activeLaunchTab.value === 'codex') {
-    // provider 和 model 均为可选
-    return true
+    if (!selectedCodexModel.value || !selectedCodexProvider.value) return false
+    return codexPresetsForSelectedProvider.value.some(p => p.key === selectedCodexModel.value)
   } else if (activeLaunchTab.value === 'amagicode') {
     // AmagiCode 只需要预设，provider 从预设中获取
     return !!amagiCodePreset.value
@@ -884,31 +1011,40 @@ const matchedWorkspace = computed(() => {
 const hasWorkspaceStatus = computed(() => Boolean(selectedWorkDir.value))
 
 
-watch(selectedProvider, (newVal) => {
-  if (newVal && providers.value[newVal]) {
-    const presets = claudeCodeAvailablePresets.value
-    const presetKeys = Object.keys(presets)
-    if (presetKeys.length > 0) {
-      if (!presetKeys.includes(selectedPreset.value)) {
-        selectedPreset.value = presetKeys[0]
-      }
-    } else {
-      selectedPreset.value = ''
-    }
-  } else {
-    selectedPreset.value = ''
+// Auto-sync provider from selected ClaudeCode preset
+watch(selectedPreset, (newKey) => {
+  if (!newKey) return
+  const entry = mergedClaudeCodePresets.value.find(p => p.key === newKey)
+  if (entry && entry.provider) {
+    selectedProvider.value = entry.provider
   }
 })
 
-watch(selectedCodexProvider, () => {
-  const models = codexAvailableModels.value
-  if (models.length > 0) {
-    if (!models.includes(selectedCodexModel.value)) {
-      selectedCodexModel.value = models[0]
-    }
-  } else {
-    selectedCodexModel.value = ''
+// Auto-sync provider from selected Codex preset
+watch(selectedCodexModel, (newKey) => {
+  if (!newKey) return
+  const entry = mergedCodexPresets.value.find(p => p.key === newKey)
+  if (entry && entry.provider) {
+    selectedCodexProvider.value = entry.provider
   }
+})
+
+// When ClaudeCode provider changes, auto-reset preset to first of that provider
+watch(selectedProvider, (newProvider) => {
+  if (!newProvider) { selectedPreset.value = ''; return }
+  const currentEntry = mergedClaudeCodePresets.value.find(p => p.key === selectedPreset.value)
+  if (currentEntry && currentEntry.provider === newProvider) return
+  const firstPreset = mergedClaudeCodePresets.value.find(p => p.provider === newProvider)
+  selectedPreset.value = firstPreset ? firstPreset.key : ''
+})
+
+// When Codex provider changes, auto-reset preset to first of that provider
+watch(selectedCodexProvider, (newProvider) => {
+  if (!newProvider) { selectedCodexModel.value = ''; return }
+  const currentEntry = mergedCodexPresets.value.find(p => p.key === selectedCodexModel.value)
+  if (currentEntry && currentEntry.provider === newProvider) return
+  const firstPreset = mergedCodexPresets.value.find(p => p.provider === newProvider)
+  selectedCodexModel.value = firstPreset ? firstPreset.key : ''
 })
 
 
@@ -1003,6 +1139,9 @@ const initDefaults = async () => {
   if (!selectedProvider.value && Object.keys(anthropicProviders.value).length > 0) {
     selectedProvider.value = Object.keys(anthropicProviders.value)[0]
   }
+  // 校验预设有效性：空值 / 已失效的 key 自动回退到第一个可用项
+  validateClaudePreset()
+  validateCodexPreset()
   dashState.initialized = true
 }
 
@@ -1995,6 +2134,129 @@ onUnmounted(() => {
   background: rgba(15, 18, 25, 0.45);
   border: 1px solid #2a2f3e;
   border-radius: 6px;
+}
+
+/* OpenCode Preset Card Selector */
+.oc-preset-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0 2px;
+  color: #5a6a7a;
+}
+
+.oc-search-input {
+  background: transparent !important;
+  border: none !important;
+  padding: 6px 8px !important;
+  font-size: 13px !important;
+  color: #e0e6ed !important;
+}
+
+.oc-search-input::placeholder {
+  color: #5a6a7a;
+}
+
+.oc-preset-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.oc-preset-card-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.oc-preset-card-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.oc-preset-card-list::-webkit-scrollbar-thumb {
+  background: #2a2f3e;
+  border-radius: 2px;
+}
+
+.oc-preset-card-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  background: #0f1219;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  outline: none;
+}
+
+.oc-preset-card-item:focus-visible {
+  border-color: #4fc3f7;
+  box-shadow: 0 0 0 2px rgba(79, 195, 247, 0.25);
+}
+
+.oc-preset-card-item:hover {
+  border-color: #3a4f5e;
+  background: rgba(15, 18, 25, 0.7);
+}
+
+.oc-preset-card-item.selected {
+  border-color: #4fc3f7;
+  background: rgba(79, 195, 247, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(79, 195, 247, 0.1);
+}
+
+.oc-preset-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.oc-preset-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e6ed;
+}
+
+.oc-preset-card-item.selected .oc-preset-card-name {
+  color: #4fc3f7;
+}
+
+.oc-preset-card-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8899aa;
+  background: rgba(90, 106, 122, 0.15);
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.oc-preset-card-desc {
+  font-size: 12px;
+  color: #5a6a7a;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-preset-card-item.selected .oc-preset-card-desc {
+  color: #8899aa;
+}
+
+.oc-preset-search-empty {
+  font-size: 13px;
+  color: #5a6a7a;
+  text-align: center;
+  padding: 12px;
 }
 
 .oc-summary-row {
