@@ -114,6 +114,9 @@ func buildOpenCodeProviderMap(providerName string, provider config.Provider, api
 		if effectiveBaseURL != "" {
 			options["baseURL"] = effectiveBaseURL
 		}
+		if provider.OpenAI != nil && provider.OpenAI.Organization != "" {
+			options["organization"] = provider.OpenAI.Organization
+		}
 	} else {
 		lowerBaseURL := strings.TrimSpace(strings.ToLower(effectiveBaseURL))
 		if lowerBaseURL != "" && !strings.Contains(lowerBaseURL, "api.anthropic.com") {
@@ -215,9 +218,51 @@ func BuildOpenCodeEnvOverrides(
 	return overrides, nil
 }
 
-// GetAPIKeyFunc 是获取指定 provider+format 的 API key 的函数签名。
+// GetAPIKeyFunc 是获取指定 provider 统一 API key 的函数签名。
+// format 参数仅为兼容旧调用约定保留，调用方应忽略它，不得用它切换 key 源。
 // 返回 (apiKey, error)。
 type GetAPIKeyFunc func(providerName, format string) (string, error)
+
+// GetProviderFunc 是获取指定 provider 配置的函数签名。
+// 返回 (*Provider, error)。
+type GetProviderFunc func(providerName string) (*config.Provider, error)
+
+// resolveBindingFormat 根据 binding.Format 和本地 Provider 的实际能力推导最终格式。
+//
+// 推导规则：
+//   - binding.Format == "openai"  -> "openai"
+//   - binding.Format == "anthropic" -> "anthropic"
+//   - binding.Format == "" 或 "auto" -> 按 provider 实际格式推导：
+//     1. 若 provider 仅 OpenAI compatible   -> "openai"
+//     2. 若 provider 仅 Anthropic compatible -> "anthropic"
+//     3. 若双格式都兼容或无法判断 -> 使用 provider.PreferredFormat()
+func resolveBindingFormat(binding config.OpenCodeBinding, provider *config.Provider) string {
+	f := strings.TrimSpace(strings.ToLower(binding.Format))
+	switch f {
+	case "openai":
+		return "openai"
+	case "anthropic":
+		return "anthropic"
+	}
+
+	// f == "" 或 "auto"：按 provider 实际格式推导
+	if provider == nil {
+		return "anthropic" // 安全回退
+	}
+
+	isOpenAI := provider.IsOpenAICompatible()
+	isAnthropic := provider.IsAnthropicCompatible()
+
+	switch {
+	case isOpenAI && !isAnthropic:
+		return "openai"
+	case isAnthropic && !isOpenAI:
+		return "anthropic"
+	default:
+		// 双格式都兼容 或 都不兼容 -> 使用 PreferredFormat
+		return provider.PreferredFormat()
+	}
+}
 
 // BuildOpenCodeRuntimeConfigFromPreset 基于新模型 OpenCodePreset 构建运行时配置。
 // 行为：
@@ -225,9 +270,13 @@ type GetAPIKeyFunc func(providerName, format string) (string, error)
 //   - 遍历 Bindings
 //   - 对于每个 binding：找到本地 provider，读取 secrets，注入到 config.provider[providerId].options
 //   - secrets 仅在运行时注入，不写回 preset.Config
+//
+// getProvider 用于读取本地 Provider 的配置（baseURL、organization 等），
+// 以便在 inject 列表中包含 baseURL/organization 时能从 Provider 真实注入。
 func BuildOpenCodeRuntimeConfigFromPreset(
 	preset config.OpenCodePreset,
 	getAPIKey GetAPIKeyFunc,
+	getProvider GetProviderFunc,
 ) (map[string]any, error) {
 	// 1. 解析 Config
 	var result map[string]any
@@ -246,34 +295,40 @@ func BuildOpenCodeRuntimeConfigFromPreset(
 		providers = map[string]any{}
 	}
 
-	// 3. 遍历 Bindings，注入 secrets
+	// 3. 遍历 Bindings，注入 secrets 和配置
 	for ocProviderID, binding := range preset.Bindings {
 		if binding.LocalProvider == "" {
 			continue
 		}
 
-		// 确定格式
-		format := binding.Format
-		if format == "" || format == "auto" {
-			format = "anthropic" // 默认 anthropic
+		// 3a. 获取本地 Provider 配置（用于推导格式和注入 baseURL/organization）
+		var localProvider *config.Provider
+		if getProvider != nil {
+			if p, err := getProvider(binding.LocalProvider); err == nil && p != nil {
+				localProvider = p
+			}
 		}
 
-		// 读取 secrets
+		// 3b. 确定格式
+		format := resolveBindingFormat(binding, localProvider)
+
+		// 3c. 读取统一 provider key
 		apiKey := ""
 		if getAPIKey != nil {
-			key, err := getAPIKey(binding.LocalProvider, format)
+			key, err := getAPIKey(binding.LocalProvider, "")
 			if err == nil && key != "" {
 				apiKey = key
 			}
 		}
 
-		// 确定 inject 列表
+		// 3d. 确定 inject 列表
+		// inject 为空时的默认策略：注入 apiKey 和 baseURL（与前端暴露的选项一致）
 		inject := binding.Inject
 		if len(inject) == 0 {
 			inject = []string{"apiKey", "baseURL"}
 		}
 
-		// 获取或创建 provider entry
+		// 3e. 获取或创建 provider entry
 		provEntry, _ := providers[ocProviderID].(map[string]any)
 		if provEntry == nil {
 			provEntry = map[string]any{}
@@ -283,7 +338,7 @@ func BuildOpenCodeRuntimeConfigFromPreset(
 			options = map[string]any{}
 		}
 
-		// 注入 secrets
+		// 3f. 按 inject 列表逐一注入
 		for _, field := range inject {
 			switch field {
 			case "apiKey":
@@ -291,10 +346,19 @@ func BuildOpenCodeRuntimeConfigFromPreset(
 					options["apiKey"] = apiKey
 				}
 			case "baseURL":
-				// baseURL 从 secrets 获取不太常见，但从 provider 配置获取
-				// 这里暂不注入，由 preset.Config 中的 provider 配置提供
+				// 从本地 Provider 的对应格式读取 EffectiveBaseURL
+				if localProvider != nil {
+					if baseURL := localProvider.EffectiveBaseURL(format); baseURL != "" {
+						options["baseURL"] = baseURL
+					}
+				}
 			case "organization":
-				// organization 不从 secrets 读取，由 preset.Config 提供
+				// 仅 openai 格式支持 organization
+				if format == "openai" && localProvider != nil && localProvider.OpenAI != nil {
+					if org := localProvider.OpenAI.Organization; org != "" {
+						options["organization"] = org
+					}
+				}
 			}
 		}
 
@@ -313,10 +377,11 @@ func BuildOpenCodeRuntimeConfigFromPreset(
 func BuildOpenCodeEnvOverridesFromPreset(
 	preset config.OpenCodePreset,
 	getAPIKey GetAPIKeyFunc,
+	getProvider GetProviderFunc,
 ) (map[string]string, error) {
 	overrides := map[string]string{}
 
-	runtimeConfig, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey)
+	runtimeConfig, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
 	if err != nil {
 		return nil, fmt.Errorf("build opencode runtime config from preset: %w", err)
 	}
@@ -333,12 +398,16 @@ func BuildOpenCodeEnvOverridesFromPreset(
 			continue
 		}
 
-		format := binding.Format
-		if format == "" || format == "auto" {
-			format = "anthropic"
+		// 解析格式（与 BuildOpenCodeRuntimeConfigFromPreset 一致）
+		var localProvider *config.Provider
+		if getProvider != nil {
+			if p, err := getProvider(binding.LocalProvider); err == nil && p != nil {
+				localProvider = p
+			}
 		}
+		format := resolveBindingFormat(binding, localProvider)
 
-		apiKey, err := getAPIKey(binding.LocalProvider, format)
+		apiKey, err := getAPIKey(binding.LocalProvider, "")
 		if err != nil || apiKey == "" {
 			continue
 		}

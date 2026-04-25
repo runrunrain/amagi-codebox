@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,11 @@ import (
 
 // newTestApp creates a minimal App with all services wired for testing.
 func newTestApp(t *testing.T) *App {
+	app, _ := newTestAppWithConfigDir(t)
+	return app
+}
+
+func newTestAppWithConfigDir(t *testing.T) (*App, string) {
 	t.Helper()
 	configDir := t.TempDir()
 	logSvc := logging.NewService(configDir)
@@ -52,7 +58,23 @@ func newTestApp(t *testing.T) *App {
 		Pty:      pty.NewService(logSvc),
 		EnvVars:  envVarsSvc,
 		Paths:    pathsSvc,
+	}, configDir
+}
+
+func newASCIIPathTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	root := filepath.Join("X:/WorkSpace/amagi-codebox", ".tmp-tests")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir temp root: %v", err)
 	}
+	dir, err := os.MkdirTemp(root, pattern)
+	if err != nil {
+		t.Fatalf("mktemp under ascii root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return dir
 }
 
 // envDumpKey is the env var the fake codex script uses for its output file path.
@@ -72,8 +94,9 @@ const envDumpKey = "__AMAGI_TEST_ENV_DUMP_FILE"
 func setupFakeCodex(t *testing.T) (binDir string, dumpFile string, origPATH string) {
 	t.Helper()
 
-	binDir = t.TempDir()
-	dumpFile = filepath.Join(t.TempDir(), "envdump.txt")
+	binDir = newASCIIPathTempDir(t, "fake-codex-bin-")
+	dumpDir := newASCIIPathTempDir(t, "fake-codex-dump-")
+	dumpFile = filepath.Join(dumpDir, "envdump.txt")
 
 	// Build the batch script content.
 	// We write a selection of env vars that we care about, one per line as KEY=VALUE.
@@ -104,6 +127,48 @@ func setupFakeCodex(t *testing.T) (binDir string, dumpFile string, origPATH stri
 		t.Fatalf("set PATH: %v", err)
 	}
 	// Also set the dump file path into the process env so the fake script can read it.
+	if err := os.Setenv(envDumpKey, dumpFile); err != nil {
+		t.Fatalf("set %s: %v", envDumpKey, err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPATH)
+		_ = os.Unsetenv(envDumpKey)
+	})
+
+	return binDir, dumpFile, origPATH
+}
+
+func setupFakeClaude(t *testing.T) (binDir string, dumpFile string, origPATH string) {
+	t.Helper()
+
+	binDir = newASCIIPathTempDir(t, "fake-claude-bin-")
+	dumpDir := newASCIIPathTempDir(t, "fake-claude-dump-")
+	dumpFile = filepath.Join(dumpDir, "claude-envdump.txt")
+
+	envDumpRef := "%" + envDumpKey + "%"
+	script := "@echo off\r\n" +
+		"setlocal enabledelayedexpansion\r\n" +
+		"> \"" + dumpFile + "\" (\r\n" +
+		"  echo ANTHROPIC_API_KEY=!ANTHROPIC_API_KEY!\r\n" +
+		"  echo ANTHROPIC_BASE_URL=!ANTHROPIC_BASE_URL!\r\n" +
+		"  echo ANTHROPIC_MODEL=!ANTHROPIC_MODEL!\r\n" +
+		"  echo ANTHROPIC_AUTH_TOKEN=!ANTHROPIC_AUTH_TOKEN!\r\n" +
+		"  echo " + envDumpKey + "=" + envDumpRef + "\r\n" +
+		")\r\n" +
+		"endlocal\r\n" +
+		"exit /b 0\r\n"
+
+	claudePath := filepath.Join(binDir, "claude.cmd")
+	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude.cmd: %v", err)
+	}
+
+	origPATH = os.Getenv("PATH")
+	newPATH := binDir + string(os.PathListSeparator) + origPATH
+	if err := os.Setenv("PATH", newPATH); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
 	if err := os.Setenv(envDumpKey, dumpFile); err != nil {
 		t.Fatalf("set %s: %v", envDumpKey, err)
 	}
@@ -220,11 +285,11 @@ func TestLaunchCodexSession_Terminal_NoProvider_PreservesCODEXHOME(t *testing.T)
 
 	// No provider registered. Call the real LaunchCodexSession in terminal mode.
 	sessionID, err := app.LaunchCodexSession(
-		"gpt-5",   // modelName
-		"",         // providerID -- none
-		"terminal", // mode
-		t.TempDir(), // workDir
-		"",         // shellPath -- unused in terminal mode
+		"gpt-5",                                  // modelName
+		"",                                       // providerID -- none
+		"terminal",                               // mode
+		newASCIIPathTempDir(t, "codex-workdir-"), // workDir
+		"",                                       // shellPath -- unused in terminal mode
 	)
 	if err != nil {
 		t.Fatalf("LaunchCodexSession failed: %v", err)
@@ -286,11 +351,11 @@ func TestLaunchCodexSession_Terminal_OpenAI_InjectsEnvVars(t *testing.T) {
 	}
 
 	sessionID, err := app.LaunchCodexSession(
-		"gpt-5",       // modelName
-		providerID,     // providerID
-		"terminal",     // mode
-		t.TempDir(),   // workDir
-		"",            // shellPath
+		"gpt-5",                                  // modelName
+		providerID,                               // providerID
+		"terminal",                               // mode
+		newASCIIPathTempDir(t, "codex-workdir-"), // workDir
+		"",                                       // shellPath
 	)
 	if err != nil {
 		t.Fatalf("LaunchCodexSession failed: %v", err)
@@ -353,7 +418,7 @@ func TestLaunchCodexSession_Terminal_Anthropic_InjectsEnvVars(t *testing.T) {
 		"claude-sonnet-4-20250514",
 		providerID,
 		"terminal",
-		t.TempDir(),
+		newASCIIPathTempDir(t, "codex-workdir-"),
 		"",
 	)
 	if err != nil {
@@ -398,7 +463,7 @@ func TestLaunchCodexSession_Terminal_NoProvider_NoPreExistingCODEXHOME(t *testin
 		"gpt-5",
 		"",
 		"terminal",
-		t.TempDir(),
+		newASCIIPathTempDir(t, "codex-workdir-"),
 		"",
 	)
 	if err != nil {
@@ -610,6 +675,206 @@ func TestFakeCodexIsDiscoverable(t *testing.T) {
 	// Verify it's in our binDir.
 	if !strings.EqualFold(filepath.Dir(path), binDir) {
 		t.Fatalf("found codex at %q, expected in %q", path, binDir)
+	}
+}
+
+func TestLaunchSession_Terminal_DualFormatProvider_UsesUnifiedProviderKey(t *testing.T) {
+	_, dumpFile, _ := setupFakeClaude(t)
+
+	app := newTestApp(t)
+	app.ctx = t.Context()
+
+	const providerID = "dual-provider"
+	if err := app.Config.SaveProvider(providerID, config.Provider{
+		Anthropic: &config.AnthropicFormat{
+			Enabled: true,
+			BaseURL: "https://anthropic.example.com",
+			AuthKey: config.AuthTypeAPIKey,
+		},
+		OpenAI: &config.OpenAIFormat{
+			Enabled: true,
+			BaseURL: "https://openai.example.com/v1",
+			AuthKey: "OPENAI_API_KEY",
+		},
+		DefaultModel: "claude-sonnet-4-5",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID, "sk-provider-level-claude"); err != nil {
+		t.Fatalf("SetAPIKey: %v", err)
+	}
+
+	sessionID, err := app.LaunchSession(providerID, "", "terminal", newASCIIPathTempDir(t, "claude-workdir-"), false, "")
+	if err != nil {
+		t.Fatalf("LaunchSession failed: %v", err)
+	}
+
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+	env := parseEnvDump(t, dumpFile)
+	if env["ANTHROPIC_API_KEY"] != "sk-provider-level-claude" {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want sk-provider-level-claude", env["ANTHROPIC_API_KEY"])
+	}
+	if env["ANTHROPIC_BASE_URL"] != "https://anthropic.example.com" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want https://anthropic.example.com", env["ANTHROPIC_BASE_URL"])
+	}
+	if env["ANTHROPIC_MODEL"] != "claude-sonnet-4-5" {
+		t.Fatalf("ANTHROPIC_MODEL = %q, want claude-sonnet-4-5", env["ANTHROPIC_MODEL"])
+	}
+
+	app.StopSession(sessionID)
+}
+
+func TestLaunchCodexSession_Terminal_DualFormatProvider_UsesUnifiedProviderKey(t *testing.T) {
+	_, dumpFile, _ := setupFakeCodex(t)
+
+	app := newTestApp(t)
+	app.ctx = t.Context()
+
+	const providerID = "dual-provider"
+	if err := app.Config.SaveProvider(providerID, config.Provider{
+		Anthropic: &config.AnthropicFormat{
+			Enabled: true,
+			BaseURL: "https://anthropic.example.com",
+			AuthKey: config.AuthTypeAPIKey,
+		},
+		OpenAI: &config.OpenAIFormat{
+			Enabled: true,
+			BaseURL: "https://openai.example.com/v1",
+			AuthKey: "OPENAI_API_KEY",
+		},
+		DefaultModel: "gpt-5",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID, "sk-provider-level-codex"); err != nil {
+		t.Fatalf("SetAPIKey: %v", err)
+	}
+
+	sessionID, err := app.LaunchCodexSession("gpt-5", providerID, "terminal", newASCIIPathTempDir(t, "codex-workdir-"), "")
+	if err != nil {
+		t.Fatalf("LaunchCodexSession failed: %v", err)
+	}
+
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+	env := parseEnvDump(t, dumpFile)
+	if env["OPENAI_API_KEY"] != "sk-provider-level-codex" {
+		t.Fatalf("OPENAI_API_KEY = %q, want sk-provider-level-codex", env["OPENAI_API_KEY"])
+	}
+	if env["OPENAI_BASE_URL"] != "https://openai.example.com/v1" {
+		t.Fatalf("OPENAI_BASE_URL = %q, want https://openai.example.com/v1", env["OPENAI_BASE_URL"])
+	}
+
+	app.StopSession(sessionID)
+}
+
+func TestGetProviderAPIKeyForFormat_LegacyFallback(t *testing.T) {
+	app := newTestApp(t)
+
+	const providerID = "legacy-provider"
+	provider := config.Provider{
+		Anthropic: &config.AnthropicFormat{Enabled: true},
+		OpenAI:    &config.OpenAIFormat{Enabled: true},
+	}
+	if err := app.Config.SaveProvider(providerID, provider); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID+":openai", "sk-legacy-openai"); err != nil {
+		t.Fatalf("SetAPIKey legacy: %v", err)
+	}
+
+	key, source := app.getProviderAPIKeyForFormat(providerID, "anthropic")
+	if key != "sk-legacy-openai" {
+		t.Fatalf("key = %q, want sk-legacy-openai", key)
+	}
+	if source != "legacy:openai" {
+		t.Fatalf("source = %q, want legacy:openai", source)
+	}
+}
+
+func TestGetProviderExportJSON_UsesSingleProviderAPIKey(t *testing.T) {
+	app := newTestApp(t)
+
+	const providerID = "export-provider"
+	if err := app.Config.SaveProvider(providerID, config.Provider{
+		Anthropic:    &config.AnthropicFormat{Enabled: true, BaseURL: "https://anthropic.example.com"},
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://openai.example.com/v1", Organization: "org-export"},
+		DefaultModel: "claude-sonnet-4-5",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID, "sk-provider-export"); err != nil {
+		t.Fatalf("SetAPIKey: %v", err)
+	}
+	if err := app.Secrets.SetAPIKey(providerID+":anthropic", "sk-legacy-should-not-export"); err != nil {
+		t.Fatalf("Set legacy API key: %v", err)
+	}
+
+	jsonStr, err := app.GetProviderExportJSON(providerID)
+	if err != nil {
+		t.Fatalf("GetProviderExportJSON: %v", err)
+	}
+	if strings.Count(jsonStr, "\"api_key\"") != 1 {
+		t.Fatalf("expected exactly one api_key in export JSON, got %d\n%s", strings.Count(jsonStr, "\"api_key\""), jsonStr)
+	}
+
+	var ep config.ExportProvider
+	if err := json.Unmarshal([]byte(jsonStr), &ep); err != nil {
+		t.Fatalf("unmarshal export JSON: %v", err)
+	}
+	if ep.APIKey != "sk-provider-export" {
+		t.Fatalf("APIKey = %q, want sk-provider-export", ep.APIKey)
+	}
+	if ep.Anthropic != nil && ep.Anthropic.APIKey != "" {
+		t.Fatal("Anthropic.APIKey should be empty in exported JSON")
+	}
+	if ep.OpenAI != nil && ep.OpenAI.APIKey != "" {
+		t.Fatal("OpenAI.APIKey should be empty in exported JSON")
+	}
+}
+
+func TestSaveProviderFromJSON_UnifiesProviderAPIKeyAndScrubsModels(t *testing.T) {
+	app, configDir := newTestAppWithConfigDir(t)
+
+	jsonStr := `{
+		"default_model": "claude-sonnet-4-5",
+		"api_key": "sk-provider-level",
+		"anthropic": {
+			"enabled": true,
+			"api_key": "sk-anthropic-legacy",
+			"base_url": "https://anthropic.example.com"
+		},
+		"openai": {
+			"enabled": true,
+			"api_key": "sk-openai-legacy",
+			"base_url": "https://openai.example.com/v1",
+			"organization": "org-import"
+		}
+	}`
+
+	if err := app.SaveProviderFromJSON("json-provider", jsonStr); err != nil {
+		t.Fatalf("SaveProviderFromJSON: %v", err)
+	}
+
+	if key, _ := app.Secrets.GetAPIKey("json-provider"); key != "sk-provider-level" {
+		t.Fatalf("provider-level key = %q, want sk-provider-level", key)
+	}
+	if key, _ := app.Secrets.GetAPIKey("json-provider:anthropic"); key != "" {
+		t.Fatalf("legacy anthropic key should be cleared, got %q", key)
+	}
+	if key, _ := app.Secrets.GetAPIKey("json-provider:openai"); key != "" {
+		t.Fatalf("legacy openai key should be cleared, got %q", key)
+	}
+
+	data, err := os.ReadFile(filepath.Join(configDir, "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "sk-provider-level") || strings.Contains(content, "sk-anthropic-legacy") || strings.Contains(content, "sk-openai-legacy") {
+		t.Fatalf("models.json should not contain any API key plaintext:\n%s", content)
+	}
+	if strings.Contains(content, "\"api_key\"") {
+		t.Fatalf("models.json should not contain api_key fields:\n%s", content)
 	}
 }
 

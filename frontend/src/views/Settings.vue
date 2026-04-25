@@ -55,11 +55,11 @@
             
             <div class="form-row" style="margin-top: 8px;">
               <div class="form-group flex-1">
-                <label>默认 OpenCode 服务提供商</label>
+                <label>默认 OpenCode 预设</label>
                 <div class="select-wrapper">
-                  <select v-model="defaults.openCodeProvider" class="input-field">
-                    <option value="">（不指定，沿用本机 OpenCode 登录）</option>
-                    <option v-for="(_, name) in openCodeProviders" :key="name" :value="name">{{ name }}</option>
+                  <select v-model="defaults.openCodePresetKey" class="input-field">
+                    <option value="">本机默认配置（不启用受管预设）</option>
+                    <option v-for="p in openCodePresetList" :key="p.key" :value="p.key">{{ p.name }}{{ p.bindingCount > 0 ? ` (${p.bindingCount} 绑定)` : '' }}</option>
                   </select>
                 </div>
               </div>
@@ -386,7 +386,7 @@
 <script lang="ts" setup>
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath, RemoveShellPath, GetTerminalSettings, SetTerminalSettings, GetMobileWebRoot, SetMobileWebRoot } from '../../wailsjs/go/settings/Service'
-import { GetProviders } from '../../wailsjs/go/config/ConfigService'
+import { GetProviders, GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { config } from '../../wailsjs/go/models'
@@ -431,8 +431,7 @@ function isOpenAICompatible(p: any): boolean {
 const defaults = reactive({
   provider: '',
   preset: '',
-  openCodeProvider: '',
-  openCodePreset: '',
+  openCodePresetKey: '',
   mode: 'embedded',
   shell: 'pwsh',
   claudeMode: 'embedded',
@@ -446,6 +445,15 @@ const defaults = reactive({
   amagiCodeShell: 'pwsh',
   useProxy: false,
 })
+
+// OpenCode preset list for dropdown
+interface OpenCodePresetSummary {
+  key: string
+  name: string
+  description: string
+  bindingCount: number
+}
+const openCodePresetList = ref<OpenCodePresetSummary[]>([])
 
 const currentEngineMode = computed({
   get: () => {
@@ -576,16 +584,6 @@ const anthropicProviders = computed(() => {
   return result
 })
 
-const openCodeProviders = computed(() => {
-  const result: Record<string, config.Provider> = {}
-  for (const [name, provider] of Object.entries(providers.value)) {
-    if (isOpenAICompatible(provider)) {
-      result[name] = provider
-    }
-  }
-  return result
-})
-
 watch(() => defaults.provider, (newVal) => {
   if (newVal) {
     const presets = availablePresets.value
@@ -611,12 +609,29 @@ const loadData = async () => {
   } catch (err) {
     console.error('load merged presets:', err)
   }
+  // Load OpenCode presets
+  try {
+    const map = await GetOpenCodePresets()
+    const list: OpenCodePresetSummary[] = []
+    for (const [key, preset] of Object.entries(map || {})) {
+      const p = preset as any
+      list.push({
+        key,
+        name: p.name || key,
+        description: p.description || '',
+        bindingCount: p.bindings ? Object.keys(p.bindings).length : 0,
+      })
+    }
+    openCodePresetList.value = list
+  } catch (err) {
+    console.error('load opencode presets:', err)
+    openCodePresetList.value = []
+  }
   try {
     const d = await GetDashboardDefaults()
     defaults.provider = d.provider || ''
     defaults.preset = d.preset || ''
-    defaults.openCodeProvider = d.openCodeProvider || ''
-    defaults.openCodePreset = d.openCodePreset || ''
+    defaults.openCodePresetKey = d.openCodePresetKey || ''
     defaults.mode = d.mode || 'embedded'
     defaults.shell = d.shell || 'pwsh'
     defaults.claudeMode = d.claudeMode || d.mode || 'embedded'
@@ -651,8 +666,7 @@ const saveDefaults = async () => {
     await SetDashboardDefaults({
       provider: defaults.provider,
       preset: defaults.preset,
-      openCodeProvider: defaults.openCodeProvider,
-      openCodePreset: defaults.openCodePreset,
+      openCodePresetKey: defaults.openCodePresetKey,
       mode: defaults.claudeMode,
       shell: defaults.claudeShell,
       claudeMode: defaults.claudeMode,

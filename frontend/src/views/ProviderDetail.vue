@@ -33,6 +33,50 @@
             </div>
           </div>
         </div>
+
+        <!-- Unified API Key Section -->
+        <div class="api-key-section">
+          <div class="key-header">
+            <label>API 密钥</label>
+            <span :class="['status-badge', apiKeyState.hasKey ? 'status-configured' : 'status-unconfigured']">
+              {{ apiKeyState.hasKey ? '已配置' : '未配置' }}
+            </span>
+          </div>
+          <div v-if="apiKeyState.hasKey && !apiKeyState.isEditing" class="key-display">
+            <span class="key-text">{{ apiKeyState.isVisible ? apiKeyState.actualKey : maskedApiKey }}</span>
+            <div class="key-actions">
+              <button class="btn secondary btn-small" @click="toggleKeyVisibility" :disabled="loading">
+                {{ apiKeyState.isVisible ? '隐藏' : '显示' }}
+              </button>
+              <button class="btn secondary btn-small" @click="apiKeyState.isEditing = true; apiKeyState.inputVisible = true" :disabled="loading">
+                编辑
+              </button>
+              <template v-if="apiKeyState.isConfirmingDelete">
+                <span class="confirm-text">确认删除？</span>
+                <button class="btn danger-outline btn-small" @click="deleteApiKey" :disabled="loading">确认</button>
+                <button class="btn secondary btn-small" @click="apiKeyState.isConfirmingDelete = false">取消</button>
+              </template>
+              <button v-else class="btn danger-outline btn-small" @click="apiKeyState.isConfirmingDelete = true" :disabled="loading">
+                删除
+              </button>
+            </div>
+          </div>
+          <div class="key-input-row" v-else>
+            <input
+              :type="apiKeyState.inputVisible ? 'text' : 'password'"
+              v-model="apiKeyState.inputValue"
+              class="input-field"
+              placeholder="输入 API 密钥"
+            />
+            <button class="btn secondary btn-small" @click="apiKeyState.inputVisible = !apiKeyState.inputVisible">
+              {{ apiKeyState.inputVisible ? '隐藏' : '明文' }}
+            </button>
+            <button class="btn primary" @click="saveApiKey" :disabled="!apiKeyState.inputValue || loading">
+              {{ loading ? '...' : '保存' }}
+            </button>
+            <button v-if="apiKeyState.isEditing" class="btn secondary" @click="resetKeyState">取消</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -49,50 +93,6 @@
         <div class="form-group">
           <label>Base URL</label>
           <input type="text" v-model="anthropicBaseUrl" class="input-field" placeholder="https://api.anthropic.com" />
-        </div>
-
-        <!-- API Key -->
-        <div class="api-key-section">
-          <div class="key-header">
-            <label>API 密钥</label>
-            <span :class="['status-badge', anthropicKeyState.hasKey ? 'status-configured' : 'status-unconfigured']">
-              {{ anthropicKeyState.hasKey ? '已配置' : '未配置' }}
-            </span>
-          </div>
-          <div v-if="anthropicKeyState.hasKey && !anthropicKeyState.isEditing" class="key-display">
-            <span class="key-text">{{ anthropicKeyState.isVisible ? anthropicKeyState.actualKey : maskedAnthropicKey }}</span>
-            <div class="key-actions">
-              <button class="btn secondary btn-small" @click="toggleAnthropicKeyVisibility" :disabled="loading">
-                {{ anthropicKeyState.isVisible ? '隐藏' : '显示' }}
-              </button>
-              <button class="btn secondary btn-small" @click="anthropicKeyState.isEditing = true; anthropicKeyState.inputVisible = true" :disabled="loading">
-                编辑
-              </button>
-              <template v-if="anthropicKeyState.isConfirmingDelete">
-                <span class="confirm-text">确认删除？</span>
-                <button class="btn danger-outline btn-small" @click="deleteAnthropicKey" :disabled="loading">确认</button>
-                <button class="btn secondary btn-small" @click="anthropicKeyState.isConfirmingDelete = false">取消</button>
-              </template>
-              <button v-else class="btn danger-outline btn-small" @click="anthropicKeyState.isConfirmingDelete = true" :disabled="loading">
-                删除
-              </button>
-            </div>
-          </div>
-          <div class="key-input-row" v-else>
-            <input
-              :type="anthropicKeyState.inputVisible ? 'text' : 'password'"
-              v-model="anthropicKeyState.inputValue"
-              class="input-field"
-              placeholder="输入 API 密钥"
-            />
-            <button class="btn secondary btn-small" @click="anthropicKeyState.inputVisible = !anthropicKeyState.inputVisible">
-              {{ anthropicKeyState.inputVisible ? '隐藏' : '明文' }}
-            </button>
-            <button class="btn primary" @click="saveAnthropicKey" :disabled="!anthropicKeyState.inputValue || loading">
-              {{ loading ? '...' : '保存' }}
-            </button>
-            <button v-if="anthropicKeyState.isEditing" class="btn secondary" @click="resetAnthropicKeyState">取消</button>
-          </div>
         </div>
       </div>
     </div>
@@ -114,50 +114,6 @@
         <div class="form-group">
           <label>Organization (可选)</label>
           <input type="text" v-model="openaiOrg" class="input-field" placeholder="org-..." />
-        </div>
-
-        <!-- API Key -->
-        <div class="api-key-section">
-          <div class="key-header">
-            <label>API 密钥</label>
-            <span :class="['status-badge', openaiKeyState.hasKey ? 'status-configured' : 'status-unconfigured']">
-              {{ openaiKeyState.hasKey ? '已配置' : '未配置' }}
-            </span>
-          </div>
-          <div v-if="openaiKeyState.hasKey && !openaiKeyState.isEditing" class="key-display">
-            <span class="key-text">{{ openaiKeyState.isVisible ? openaiKeyState.actualKey : maskedOpenAIKey }}</span>
-            <div class="key-actions">
-              <button class="btn secondary btn-small" @click="toggleOpenAIKeyVisibility" :disabled="loading">
-                {{ openaiKeyState.isVisible ? '隐藏' : '显示' }}
-              </button>
-              <button class="btn secondary btn-small" @click="openaiKeyState.isEditing = true; openaiKeyState.inputVisible = true" :disabled="loading">
-                编辑
-              </button>
-              <template v-if="openaiKeyState.isConfirmingDelete">
-                <span class="confirm-text">确认删除？</span>
-                <button class="btn danger-outline btn-small" @click="deleteOpenAIKey" :disabled="loading">确认</button>
-                <button class="btn secondary btn-small" @click="openaiKeyState.isConfirmingDelete = false">取消</button>
-              </template>
-              <button v-else class="btn danger-outline btn-small" @click="openaiKeyState.isConfirmingDelete = true" :disabled="loading">
-                删除
-              </button>
-            </div>
-          </div>
-          <div class="key-input-row" v-else>
-            <input
-              :type="openaiKeyState.inputVisible ? 'text' : 'password'"
-              v-model="openaiKeyState.inputValue"
-              class="input-field"
-              placeholder="输入 API 密钥"
-            />
-            <button class="btn secondary btn-small" @click="openaiKeyState.inputVisible = !openaiKeyState.inputVisible">
-              {{ openaiKeyState.inputVisible ? '隐藏' : '明文' }}
-            </button>
-            <button class="btn primary" @click="saveOpenAIKey" :disabled="!openaiKeyState.inputValue || loading">
-              {{ loading ? '...' : '保存' }}
-            </button>
-            <button v-if="openaiKeyState.isEditing" class="btn secondary" @click="resetOpenAIKeyState">取消</button>
-          </div>
         </div>
       </div>
     </div>
@@ -275,7 +231,7 @@ const effectiveUrlSummary = computed(() => {
   return items.length > 0 ? items : null
 })
 
-// API Key state per format
+// Unified API Key state (single key per provider)
 function makeKeyState() {
   return {
     hasKey: false,
@@ -285,18 +241,13 @@ function makeKeyState() {
     inputVisible: false,
     actualKey: '',
     inputValue: '',
-    storageKey: '', // actual key name used (e.g. "name:anthropic" or legacy "name")
+    storageKey: '', // actual key name used (providerName or legacy format)
   }
 }
-const anthropicKeyState = ref(makeKeyState())
-const openaiKeyState = ref(makeKeyState())
+const apiKeyState = ref(makeKeyState())
 
-const maskedAnthropicKey = computed(() => {
-  const k = anthropicKeyState.value.actualKey
-  return k ? `••••••••${k.slice(-4)}` : '••••'
-})
-const maskedOpenAIKey = computed(() => {
-  const k = openaiKeyState.value.actualKey
+const maskedApiKey = computed(() => {
+  const k = apiKeyState.value.actualKey
   return k ? `••••••••${k.slice(-4)}` : '••••'
 })
 
@@ -334,103 +285,72 @@ const loadProvider = async () => {
 const loadKeys = async () => {
   const name = props.providerName
 
-  // Anthropic key: explicit sequential check (no try/catch fallback)
-  const akState = makeKeyState()
-  const hasAkNew = await HasAPIKey(name + ':anthropic')
-  if (hasAkNew) {
-    akState.hasKey = true
-    akState.storageKey = name + ':anthropic'
-    akState.actualKey = await GetAPIKey(name + ':anthropic')
+  // Unified key: check providerName first, then fallback to legacy format-specific keys.
+  // The fallback is purely for display compatibility -- it shows the legacy key so the user
+  // is aware it exists, but saveApiKey/deleteApiKey will always converge to the unified key
+  // and clean up any legacy entries.
+  const kState = makeKeyState()
+  const hasMainKey = await HasAPIKey(name)
+  if (hasMainKey) {
+    kState.hasKey = true
+    kState.storageKey = name
+    kState.actualKey = await GetAPIKey(name)
   } else {
-    const hasAkLegacy = await HasAPIKey(name)
-    if (hasAkLegacy) {
-      akState.hasKey = true
-      akState.storageKey = name
-      akState.actualKey = await GetAPIKey(name)
-    }
-  }
-  anthropicKeyState.value = akState
-
-  // OpenAI key: explicit sequential check (no try/catch fallback)
-  const okState = makeKeyState()
-  const hasOkNew = await HasAPIKey(name + ':openai')
-  if (hasOkNew) {
-    okState.hasKey = true
-    okState.storageKey = name + ':openai'
-    okState.actualKey = await GetAPIKey(name + ':openai')
-  } else {
-    const hasOkLegacy = await HasAPIKey(name)
-    if (hasOkLegacy) {
-      // Only use legacy if Anthropic hasn't already claimed it
-      // (avoid both formats pointing to the same legacy key)
-      if (!akState.hasKey || akState.storageKey !== name) {
-        okState.hasKey = true
-        okState.storageKey = name
-        okState.actualKey = await GetAPIKey(name)
+    // Compatibility fallback: read legacy format-specific keys for display only.
+    // storageKey records which legacy slot was found, so the user can see/delete it.
+    const hasAk = await HasAPIKey(name + ':anthropic')
+    if (hasAk) {
+      kState.hasKey = true
+      kState.storageKey = name + ':anthropic'
+      kState.actualKey = await GetAPIKey(name + ':anthropic')
+    } else {
+      const hasOk = await HasAPIKey(name + ':openai')
+      if (hasOk) {
+        kState.hasKey = true
+        kState.storageKey = name + ':openai'
+        kState.actualKey = await GetAPIKey(name + ':openai')
       }
     }
   }
-  openaiKeyState.value = okState
+  apiKeyState.value = kState
 }
 
 // Key management helpers
-function resetAnthropicKeyState() {
-  anthropicKeyState.value.inputValue = ''
-  anthropicKeyState.value.inputVisible = false
-  anthropicKeyState.value.isEditing = false
-}
-function resetOpenAIKeyState() {
-  openaiKeyState.value.inputValue = ''
-  openaiKeyState.value.inputVisible = false
-  openaiKeyState.value.isEditing = false
+function resetKeyState() {
+  apiKeyState.value.inputValue = ''
+  apiKeyState.value.inputVisible = false
+  apiKeyState.value.isEditing = false
 }
 
-async function toggleAnthropicKeyVisibility() {
-  if (!anthropicKeyState.value.isVisible) {
-    const sk = anthropicKeyState.value.storageKey || props.providerName + ':anthropic'
-    try { anthropicKeyState.value.actualKey = await GetAPIKey(sk) } catch { /* ignore */ }
-    anthropicKeyState.value.isVisible = true
+async function toggleKeyVisibility() {
+  if (!apiKeyState.value.isVisible) {
+    const sk = apiKeyState.value.storageKey || props.providerName
+    try { apiKeyState.value.actualKey = await GetAPIKey(sk) } catch { /* ignore */ }
+    apiKeyState.value.isVisible = true
   } else {
-    anthropicKeyState.value.isVisible = false
-  }
-}
-async function toggleOpenAIKeyVisibility() {
-  if (!openaiKeyState.value.isVisible) {
-    const sk = openaiKeyState.value.storageKey || props.providerName + ':openai'
-    try { openaiKeyState.value.actualKey = await GetAPIKey(sk) } catch { /* ignore */ }
-    openaiKeyState.value.isVisible = true
-  } else {
-    openaiKeyState.value.isVisible = false
+    apiKeyState.value.isVisible = false
   }
 }
 
-async function saveAnthropicKey() {
-  if (!anthropicKeyState.value.inputValue) return
+async function saveApiKey() {
+  if (!apiKeyState.value.inputValue) return
   loading.value = true
   try {
-    await SetAPIKey(props.providerName + ':anthropic', anthropicKeyState.value.inputValue)
+    // Write unified key
+    await SetAPIKey(props.providerName, apiKeyState.value.inputValue)
     await SaveSecrets()
-    anthropicKeyState.value.hasKey = true
-    anthropicKeyState.value.actualKey = anthropicKeyState.value.inputValue
-    resetAnthropicKeyState()
-    showSuccess('Anthropic API 密钥已保存')
-    emit('saved')
-  } catch (err) {
-    showError('保存失败: ' + err)
-  } finally {
-    loading.value = false
-  }
-}
-async function saveOpenAIKey() {
-  if (!openaiKeyState.value.inputValue) return
-  loading.value = true
-  try {
-    await SetAPIKey(props.providerName + ':openai', openaiKeyState.value.inputValue)
-    await SaveSecrets()
-    openaiKeyState.value.hasKey = true
-    openaiKeyState.value.actualKey = openaiKeyState.value.inputValue
-    resetOpenAIKeyState()
-    showSuccess('OpenAI API 密钥已保存')
+
+    // Cleanup legacy format-specific keys (best-effort, do not block main flow)
+    for (const suffix of [':anthropic', ':openai']) {
+      try { await DeleteAPIKey(props.providerName + suffix) } catch { /* key may not exist */ }
+    }
+    try { await SaveSecrets() } catch { /* ignore */ }
+
+    apiKeyState.value.hasKey = true
+    apiKeyState.value.actualKey = apiKeyState.value.inputValue
+    apiKeyState.value.storageKey = props.providerName
+    resetKeyState()
+    showSuccess('API 密钥已保存')
     emit('saved')
   } catch (err) {
     showError('保存失败: ' + err)
@@ -439,29 +359,21 @@ async function saveOpenAIKey() {
   }
 }
 
-async function deleteAnthropicKey() {
+async function deleteApiKey() {
   loading.value = true
   try {
-    const sk = anthropicKeyState.value.storageKey || props.providerName + ':anthropic'
-    await DeleteAPIKey(sk)
+    // Delete unified key + all legacy format-specific keys
+    const keysToDelete = [
+      props.providerName,
+      props.providerName + ':anthropic',
+      props.providerName + ':openai',
+    ]
+    for (const key of keysToDelete) {
+      try { await DeleteAPIKey(key) } catch { /* key may not exist */ }
+    }
     await SaveSecrets()
-    anthropicKeyState.value = makeKeyState()
-    showSuccess('Anthropic API 密钥已删除')
-    emit('saved')
-  } catch (err) {
-    showError('删除失败: ' + err)
-  } finally {
-    loading.value = false
-  }
-}
-async function deleteOpenAIKey() {
-  loading.value = true
-  try {
-    const sk = openaiKeyState.value.storageKey || props.providerName + ':openai'
-    await DeleteAPIKey(sk)
-    await SaveSecrets()
-    openaiKeyState.value = makeKeyState()
-    showSuccess('OpenAI API 密钥已删除')
+    apiKeyState.value = makeKeyState()
+    showSuccess('API 密钥已删除')
     emit('saved')
   } catch (err) {
     showError('删除失败: ' + err)

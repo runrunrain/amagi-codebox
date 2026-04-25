@@ -169,41 +169,109 @@
 
       <!-- ============ OPENCODE TAB ============ -->
       <div v-if="activeSection === 'opencode'" class="pc-section">
-        <!-- Terminal Presets -->
+        <!-- OpenCode Preset Manager -->
         <div class="pc-section-header">
           <div>
-            <h2>OpenCode 终端预设</h2>
-            <p>管理 OpenCode 启动预设配置。</p>
+            <h2>OpenCode 预设</h2>
+            <p>管理 OpenCode 启动预设。每个预设包含一份完整的 opencode.json 配置及 provider 绑定。</p>
           </div>
-          <button class="btn primary small" @click="tpOpenAdd('opencode')">+ 添加预设</button>
+          <button class="btn primary small" @click="ocPresetOpenAdd">+ 添加预设</button>
         </div>
 
-        <div class="tp-presets-list" v-if="tpPresets.opencode.length > 0">
-          <div class="card tp-preset-card" v-for="p in tpPresets.opencode" :key="p.name">
+        <div class="tp-presets-list" v-if="ocPresetList.length > 0">
+          <div class="card tp-preset-card" v-for="p in ocPresetList" :key="p.key">
             <div class="tp-preset-header">
               <div>
-                <strong class="tp-preset-name">{{ p.label || p.name }}</strong>
-                <span class="tp-preset-provider">Provider: {{ p.provider }}</span>
+                <strong class="tp-preset-name">{{ p.name || p.key }}</strong>
+                <span class="tp-preset-provider" v-if="p.bindingCount > 0">{{ p.bindingCount }} 绑定</span>
               </div>
               <div class="tp-preset-actions">
-                <button class="btn-icon" @click="tpOpenEdit('opencode', p)" title="编辑">
+                <button class="btn-icon" @click="ocPresetOpenEdit(p)" title="编辑">
                   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
                 </button>
-                <button class="btn-icon danger" @click="tpHandleDelete('opencode', p.name)" title="删除">
+                <button class="btn-icon danger" @click="ocPresetHandleDelete(p.key)" title="删除">
                   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 </button>
               </div>
             </div>
             <div class="tp-preset-body">
-              <span class="param-badge" v-if="p.model">Model: {{ p.model }}</span>
-              <span class="param-badge" v-if="p.parameters?.temperature !== undefined">Temp: {{ p.parameters.temperature }}</span>
-              <span class="param-badge" v-if="p.parameters?.top_p !== undefined">Top P: {{ p.parameters.top_p }}</span>
-              <span class="param-badge" v-if="p.parameters?.max_tokens">Max Tokens: {{ p.parameters.max_tokens }}</span>
+              <span class="param-badge" v-if="p.description">{{ p.description }}</span>
             </div>
           </div>
         </div>
         <div class="empty-state" v-else>
           <span>暂无 OpenCode 预设。点击"+ 添加预设"创建。</span>
+        </div>
+
+        <!-- OpenCode Preset Dialog -->
+        <div class="dialog-overlay" v-if="ocPresetShowDialog" @click.self="ocPresetShowDialog = false">
+          <div class="dialog card" style="max-width: 640px;">
+            <h2>{{ ocPresetIsEditing ? '编辑' : '添加' }} OpenCode 预设</h2>
+            <div class="dialog-scroll-area">
+              <div class="form-group" v-if="!ocPresetIsEditing">
+                <label>预设 Key（唯一标识）</label>
+                <input type="text" v-model="ocPresetEditing.key" class="input-field" placeholder="例如: my-preset" />
+              </div>
+              <div class="form-group">
+                <label>名称</label>
+                <input type="text" v-model="ocPresetEditing.name" class="input-field" placeholder="预设显示名称" />
+              </div>
+              <div class="form-group">
+                <label>描述</label>
+                <input type="text" v-model="ocPresetEditing.description" class="input-field" placeholder="可选描述" />
+              </div>
+
+              <div class="form-group">
+                <label>opencode.json 配置（JSON）</label>
+                <textarea
+                  class="input-field monospace"
+                  v-model="ocPresetConfigJson"
+                  rows="10"
+                  spellcheck="false"
+                  placeholder='{ "model": "openai/gpt-4o" }'
+                ></textarea>
+                <span class="tp-compat-warning" v-if="ocPresetConfigError">{{ ocPresetConfigError }}</span>
+              </div>
+
+              <div class="form-group">
+                <label>Provider 绑定</label>
+                <p style="font-size: 12px; color: #5a6a7a; margin: 0 0 8px;">将 opencode.json 中的 provider ID 映射到本地已配置的 Provider。</p>
+                <div v-for="(binding, idx) in ocPresetEditing.bindings" :key="idx" class="oc-preset-binding-row">
+                  <div class="oc-kv-row">
+                    <input type="text" v-model="binding.providerId" class="input-field oc-kv-key" placeholder="OpenCode provider ID" />
+                    <select v-model="binding.localProvider" class="input-field oc-kv-value">
+                      <option value="">（无映射）</option>
+                      <option v-for="(_, pName) in providers" :key="pName" :value="pName">{{ pName }}</option>
+                    </select>
+                    <button class="oc-remove-btn" @click="ocPresetEditing.bindings.splice(idx, 1)" title="删除">&#10005;</button>
+                  </div>
+                  <div class="oc-kv-row" style="margin-top: 4px;">
+                    <select v-model="binding.format" class="input-field" style="width: 120px; flex: none;">
+                      <option value="">自动</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic</option>
+                    </select>
+                    <div class="tp-preset-body" style="flex: 1; gap: 4px;">
+                      <label style="font-size: 12px; color: #5a6a7a; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <input type="checkbox" v-model="binding.injectApiKey" /> apiKey
+                      </label>
+                      <label style="font-size: 12px; color: #5a6a7a; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <input type="checkbox" v-model="binding.injectBaseURL" /> baseURL
+                      </label>
+                      <label style="font-size: 12px; color: #5a6a7a; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <input type="checkbox" v-model="binding.injectOrganization" /> organization
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <button class="btn small" @click="ocPresetAddBinding">+ 添加绑定</button>
+              </div>
+            </div>
+            <div class="dialog-actions">
+              <button class="btn secondary" @click="ocPresetShowDialog = false">取消</button>
+              <button class="btn primary" @click="ocPresetHandleSave" :disabled="!ocPresetEditing.key || !ocPresetEditing.name || !!ocPresetConfigError">保存</button>
+            </div>
+          </div>
         </div>
 
         <!-- Divider -->
@@ -535,6 +603,7 @@
 <script lang="ts" setup>
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { GetProviders, SaveProvider, DeleteProvider } from '../../wailsjs/go/config/ConfigService'
+import { GetOpenCodePresets, SaveOpenCodePreset, DeleteOpenCodePreset } from '../../wailsjs/go/config/ConfigService'
 import { ImportConfigFromFile, ExportConfigToFile, GetTerminalPresets, SaveTerminalPreset, DeleteTerminalPreset, GetOpenCodeConfig, SaveOpenCodeConfig, GetOpenCodeConfigPath } from '../../wailsjs/go/main/App'
 import { HasAPIKey } from '../../wailsjs/go/secrets/SecretsService'
 import { config } from '../../wailsjs/go/models'
@@ -590,16 +659,18 @@ const loadProviders = async () => {
   loading.value = true
   try {
     const records = await GetProviders()
-    // Check API key status with new name:format convention, falling back to legacy name
+    // Unified key check: check providerName only, fallback to legacy format-specific keys
     const statusEntries = await Promise.all(
       Object.keys(records).map(async (name) => {
-        const [hasAnthropic, hasOpenAI, hasLegacy] = await Promise.all([
+        const hasMain = await HasAPIKey(name)
+        if (hasMain) return [name, true] as const
+        // Legacy fallback
+        const [hasLegacy] = await Promise.all([
           HasAPIKey(name + ':anthropic'),
-          HasAPIKey(name + ':openai'),
-          HasAPIKey(name),
         ])
-        // Any key present counts as "configured"
-        return [name, hasAnthropic || hasOpenAI || hasLegacy] as const
+        if (hasLegacy) return [name, true] as const
+        const hasLegacy2 = await HasAPIKey(name + ':openai')
+        return [name, hasLegacy2] as const
       })
     )
     providers.value = records
@@ -735,7 +806,7 @@ const tpCurrentCompatibleProviders = computed(() => {
 })
 
 async function tpLoadAll() {
-  const types = ['claude_code', 'opencode', 'codex']
+  const types = ['claude_code', 'codex']
   for (const tt of types) {
     try {
       const map = await GetTerminalPresets(tt)
@@ -850,6 +921,172 @@ async function tpHandleDelete(terminalType: string, name: string) {
   try {
     await DeleteTerminalPreset(terminalType, name)
     await tpLoadAll()
+    showSuccess('已删除')
+  } catch (err) {
+    showError('删除失败: ' + err)
+  }
+}
+
+// ===== OpenCode Presets (new model) =====
+interface OcPresetListEntry {
+  key: string
+  name: string
+  description: string
+  bindingCount: number
+}
+
+interface OcPresetBinding {
+  providerId: string
+  localProvider: string
+  format: string
+  injectApiKey: boolean
+  injectBaseURL: boolean
+  injectOrganization: boolean
+}
+
+const ocPresetList = ref<OcPresetListEntry[]>([])
+const ocPresetRawMap = ref<Record<string, any>>({})
+const ocPresetShowDialog = ref(false)
+const ocPresetIsEditing = ref(false)
+const ocPresetConfigJson = ref('{}')
+const ocPresetConfigError = ref('')
+const ocPresetEditing = ref<{
+  key: string
+  name: string
+  description: string
+  bindings: OcPresetBinding[]
+}>({
+  key: '',
+  name: '',
+  description: '',
+  bindings: [],
+})
+
+async function ocPresetLoadAll() {
+  try {
+    const map = await GetOpenCodePresets()
+    ocPresetRawMap.value = map || {}
+    const list: OcPresetListEntry[] = []
+    for (const [key, preset] of Object.entries(map || {})) {
+      const p = preset as any
+      list.push({
+        key,
+        name: p.name || key,
+        description: p.description || '',
+        bindingCount: p.bindings ? Object.keys(p.bindings).length : 0,
+      })
+    }
+    ocPresetList.value = list
+  } catch {
+    ocPresetList.value = []
+    ocPresetRawMap.value = {}
+  }
+}
+
+function ocPresetOpenAdd() {
+  ocPresetIsEditing.value = false
+  ocPresetEditing.value = { key: '', name: '', description: '', bindings: [] }
+  ocPresetConfigJson.value = '{\n  "model": ""\n}\n'
+  ocPresetConfigError.value = ''
+  ocPresetShowDialog.value = true
+}
+
+function ocPresetOpenEdit(entry: OcPresetListEntry) {
+  ocPresetIsEditing.value = true
+  const raw = ocPresetRawMap.value[entry.key] as any
+  const bindings: OcPresetBinding[] = []
+  if (raw && raw.bindings && typeof raw.bindings === 'object') {
+    for (const [pid, b] of Object.entries(raw.bindings as Record<string, any>)) {
+      const inject: string[] = (b && b.inject) || []
+      bindings.push({
+        providerId: pid,
+        localProvider: (b && b.local_provider) || '',
+        format: (b && b.format) || '',
+        injectApiKey: inject.includes('apiKey'),
+        injectBaseURL: inject.includes('baseURL'),
+        injectOrganization: inject.includes('organization'),
+      })
+    }
+  }
+  ocPresetEditing.value = {
+    key: entry.key,
+    name: raw?.name || entry.name,
+    description: raw?.description || '',
+    bindings,
+  }
+  ocPresetConfigJson.value = raw?.config ? JSON.stringify(raw.config, null, 2) : '{}'
+  ocPresetConfigError.value = ''
+  ocPresetShowDialog.value = true
+}
+
+function ocPresetAddBinding() {
+  ocPresetEditing.value.bindings.push({
+    providerId: '',
+    localProvider: '',
+    format: '',
+    injectApiKey: true,
+    injectBaseURL: false,
+    injectOrganization: false,
+  })
+}
+
+// Validate config JSON
+watch(ocPresetConfigJson, (val) => {
+  try {
+    JSON.parse(val)
+    ocPresetConfigError.value = ''
+  } catch (e: any) {
+    ocPresetConfigError.value = 'JSON 格式错误: ' + (e.message || '').substring(0, 80)
+  }
+})
+
+async function ocPresetHandleSave() {
+  const { key, name, description, bindings } = ocPresetEditing.value
+  if (!key || !name) return
+
+  // Parse config
+  let configObj: any
+  try {
+    configObj = JSON.parse(ocPresetConfigJson.value)
+  } catch {
+    showError('JSON 配置格式错误')
+    return
+  }
+
+  // Build bindings map
+  const bindingsMap: Record<string, any> = {}
+  for (const b of bindings) {
+    if (!b.providerId) continue
+    const inject: string[] = []
+    if (b.injectApiKey) inject.push('apiKey')
+    if (b.injectBaseURL) inject.push('baseURL')
+    if (b.injectOrganization) inject.push('organization')
+    const entry: Record<string, any> = { local_provider: b.localProvider }
+    if (b.format) entry.format = b.format
+    if (inject.length > 0) entry.inject = inject
+    bindingsMap[b.providerId] = entry
+  }
+
+  try {
+    await SaveOpenCodePreset(key, {
+      name,
+      description,
+      config: configObj,
+      bindings: Object.keys(bindingsMap).length > 0 ? bindingsMap : undefined,
+    } as any)
+    ocPresetShowDialog.value = false
+    await ocPresetLoadAll()
+    showSuccess('OpenCode 预设已保存')
+  } catch (err) {
+    showError('保存失败: ' + err)
+  }
+}
+
+async function ocPresetHandleDelete(key: string) {
+  if (!confirm(`确定要删除预设 "${key}" 吗？`)) return
+  try {
+    await DeleteOpenCodePreset(key)
+    await ocPresetLoadAll()
     showSuccess('已删除')
   } catch (err) {
     showError('删除失败: ' + err)
@@ -1040,6 +1277,7 @@ async function copyConfigPath() { try { await navigator.clipboard.writeText(ocCo
 onMounted(async () => {
   await loadProviders()
   await tpLoadAll()
+  await ocPresetLoadAll()
 })
 
 watch(activeSection, (newSection) => {
@@ -1180,6 +1418,15 @@ watch(activeSection, (newSection) => {
 .tp-preset-body .param-badge { background: rgba(90,106,122,0.2); color: var(--text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 12px; border: 1px solid var(--border); }
 .tp-section-divider { height: 1px; background: var(--border); margin: 12px 0; }
 .tp-compat-warning { margin: 8px 0 0; font-size: 12px; color: var(--error); line-height: 1.4; }
+
+/* OpenCode Preset Binding */
+.oc-preset-binding-row {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
 
 /* Buttons */
 .btn {

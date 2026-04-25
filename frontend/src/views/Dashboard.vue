@@ -296,22 +296,24 @@
         <div v-if="activeLaunchTab === 'opencode'" class="launch-tab-content">
           <div class="form-row">
             <div class="form-group flex-1">
-              <label>服务提供商</label>
-              <select v-model="selectedOpenCodeProvider" class="input-field">
-                <option value="">不指定（沿用本机 OpenCode 登录）</option>
-                <option v-for="(provider, name) in openCodeProviders" :key="name" :value="name">
-                  {{ name }}
+              <label>OpenCode 预设</label>
+              <select v-model="selectedOpenCodePresetKey" class="input-field">
+                <option value="">本机默认配置（不启用受管预设）</option>
+                <option v-for="p in openCodePresetList" :key="p.key" :value="p.key">
+                  {{ p.name }}{{ p.bindingCount > 0 ? ` (${p.bindingCount} 绑定)` : '' }}
                 </option>
               </select>
             </div>
-            <div class="form-group flex-1">
-              <label>预设配置</label>
-              <select v-model="selectedOpenCodePreset" class="input-field" :disabled="!selectedOpenCodeProvider || !hasOpenCodePresets">
-                <option value="">不指定（默认配置）</option>
-                <option v-for="(preset, name) in openCodeAvailablePresets" :key="name" :value="name">
-                  {{ preset.name || name }}{{ preset.model ? ` (${preset.model})` : '' }}
-                </option>
-              </select>
+          </div>
+
+          <div class="oc-preset-summary" v-if="selectedOpenCodePresetSummary">
+            <div class="oc-summary-row" v-if="selectedOpenCodePresetSummary.description">
+              <span class="oc-summary-label">描述</span>
+              <span class="oc-summary-value">{{ selectedOpenCodePresetSummary.description }}</span>
+            </div>
+            <div class="oc-summary-row">
+              <span class="oc-summary-label">绑定</span>
+              <span class="oc-summary-value">{{ selectedOpenCodePresetSummary.bindingCount }} 个 provider 映射</span>
             </div>
           </div>
 
@@ -623,7 +625,7 @@ import { ref, computed, onMounted, onUnmounted, watch, toRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { LaunchSession, StopSession, StopAllSessions, GetSessions, RemoveSession, ClearStoppedSessions, BrowseDirectory, GetAmagiSettings, LaunchAmagiCode, LaunchCodexSession, LaunchOpenCode, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
 
-import { GetProviders } from '../../wailsjs/go/config/ConfigService'
+import { GetProviders, GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { GetStatus as GetProxyStatus } from '../../wailsjs/go/proxy/ProxyService'
 import { GetPaths, AddPath, RemovePath, GetDefaultPath } from '../../wailsjs/go/paths/PathsService'
 import { GetDashboardDefaults, GetShellPaths, SetDashboardDefaults } from '../../wailsjs/go/settings/Service'
@@ -643,13 +645,22 @@ const workspaces = ref<workspace.Workspace[]>([])
 // Terminal presets loaded from GetMergedTerminalPresets
 interface MergedPresetEntry { key: string; label: string; provider: string; model: string }
 const mergedClaudeCodePresets = ref<MergedPresetEntry[]>([])
-const mergedOpenCodePresets = ref<MergedPresetEntry[]>([])
 const mergedCodexPresets = ref<MergedPresetEntry[]>([])
+
+// OpenCode presets (new model)
+interface OpenCodePresetSummary {
+  key: string
+  name: string
+  description: string
+  bindingCount: number
+}
+const openCodePresetList = ref<OpenCodePresetSummary[]>([])
+const openCodePresetMap = ref<Record<string, any>>({})
+
 // 使用共享状态（跨路由保持）
 const selectedProvider = toRef(dashState, 'provider')
 const selectedPreset = toRef(dashState, 'preset')
-const selectedOpenCodeProvider = toRef(dashState, 'openCodeProvider')
-const selectedOpenCodePreset = toRef(dashState, 'openCodePreset')
+const selectedOpenCodePresetKey = toRef(dashState, 'openCodePresetKey')
 const claudeMode = toRef(dashState, 'claudeMode')
 const openCodeMode = toRef(dashState, 'openCodeMode')
 const codexMode = toRef(dashState, 'codexMode')
@@ -705,26 +716,10 @@ const openaiProviders = computed(() => {
   return result
 })
 
-const openCodeProviders = computed(() => {
-  // OpenCode works with openai-compatible providers (same filter as Codex).
-  const result: Record<string, config.Provider> = {}
-  for (const [name, provider] of Object.entries(providers.value)) {
-    if (isOpenAICompatible(provider)) {
-      result[name] = provider
-    }
-  }
-  return result
-})
-
-// OpenCode presets from terminal presets
-const openCodeAvailablePresets = computed(() => {
-  const result: Record<string, config.Preset> = {}
-  for (const mp of mergedOpenCodePresets.value) {
-    if (mp.provider === selectedOpenCodeProvider.value) {
-      result[mp.key] = { name: mp.label, model: mp.model, target: 'opencode' } as config.Preset
-    }
-  }
-  return result
+// OpenCode preset summary for selected preset
+const selectedOpenCodePresetSummary = computed(() => {
+  if (!selectedOpenCodePresetKey.value) return null
+  return openCodePresetList.value.find(p => p.key === selectedOpenCodePresetKey.value) || null
 })
 
 // Codex presets from terminal presets
@@ -856,8 +851,6 @@ const availablePresets = computed(() => {
 
 const hasPresets = computed(() => Object.keys(availablePresets.value).length > 0)
 
-const hasOpenCodePresets = computed(() => Object.keys(openCodeAvailablePresets.value).length > 0)
-
 const canLaunch = computed(() => {
   if (activeLaunchTab.value === 'claudecode') {
     return selectedProvider.value && selectedPreset.value
@@ -918,18 +911,6 @@ watch(selectedCodexProvider, () => {
   }
 })
 
-watch(selectedOpenCodeProvider, () => {
-  const presets = openCodeAvailablePresets.value
-  const keys = Object.keys(presets)
-  if (keys.length > 0) {
-    if (!keys.includes(selectedOpenCodePreset.value)) {
-      selectedOpenCodePreset.value = keys[0]
-    }
-  } else {
-    selectedOpenCodePreset.value = ''
-  }
-})
-
 
 const loadShellPaths = async () => {
   try {
@@ -941,16 +922,36 @@ const loadShellPaths = async () => {
 
 const loadTerminalPresets = async () => {
   try {
-    const [claude, opencode, codex] = await Promise.all([
+    const [claude, codex] = await Promise.all([
       GetMergedTerminalPresets('claude_code'),
-      GetMergedTerminalPresets('opencode'),
       GetMergedTerminalPresets('codex'),
     ])
     mergedClaudeCodePresets.value = claude || []
-    mergedOpenCodePresets.value = opencode || []
     mergedCodexPresets.value = codex || []
   } catch (err) {
     console.error('Failed to load terminal presets:', err)
+  }
+}
+
+const loadOpenCodePresets = async () => {
+  try {
+    const map = await GetOpenCodePresets()
+    openCodePresetMap.value = map || {}
+    const list: OpenCodePresetSummary[] = []
+    for (const [key, preset] of Object.entries(map || {})) {
+      const p = preset as any
+      list.push({
+        key,
+        name: p.name || key,
+        description: p.description || '',
+        bindingCount: p.bindings ? Object.keys(p.bindings).length : 0,
+      })
+    }
+    openCodePresetList.value = list
+  } catch (err) {
+    console.error('Failed to load OpenCode presets:', err)
+    openCodePresetMap.value = {}
+    openCodePresetList.value = []
   }
 }
 
@@ -984,12 +985,10 @@ const initDefaults = async () => {
     const d = await GetDashboardDefaults()
     if (d.provider) dashState.provider = d.provider
     if (d.preset) dashState.preset = d.preset
-    dashState.openCodeProvider = d.openCodeProvider || ''
-    dashState.openCodePreset = d.openCodePreset || ''
+    dashState.openCodePresetKey = d.openCodePresetKey || ''
     dashState.claudeMode = d.claudeMode || d.mode || 'embedded'
     dashState.openCodeMode = d.openCodeMode || d.mode || 'embedded'
     dashState.codexMode = d.codexMode || d.mode || 'embedded'
-    // TODO: Add amagiCodeMode/amagiCodeShell/amagiCodeProvider/amagiCodePreset to backend DashboardDefaults
     dashState.amagiCodeMode = d.amagiCodeMode || d.mode || 'embedded'
     dashState.claudeShell = d.claudeShell || d.shell || 'pwsh'
     dashState.openCodeShell = d.openCodeShell || d.shell || 'pwsh'
@@ -1012,8 +1011,7 @@ const persistDashboardDefaults = async () => {
     await SetDashboardDefaults({
       provider: selectedProvider.value,
       preset: selectedPreset.value,
-      openCodeProvider: selectedOpenCodeProvider.value,
-      openCodePreset: selectedOpenCodePreset.value,
+      openCodePresetKey: selectedOpenCodePresetKey.value,
       mode: claudeMode.value,
       shell: claudeShell.value,
       claudeMode: claudeMode.value,
@@ -1103,9 +1101,10 @@ const handleLaunchOpenCode = async () => {
   loading.value = true
   try {
     const shellPath = openCodeMode.value === 'embedded' ? resolveOpenCodeShellPath() : ''
+    // New model: pass presetKey as presetName, providerName is empty
     const sessionId = await LaunchOpenCode(
-      selectedOpenCodeProvider.value,
-      selectedOpenCodePreset.value,
+      '',
+      selectedOpenCodePresetKey.value,
       openCodeMode.value,
       selectedWorkDir.value,
       shellPath,
@@ -1297,6 +1296,7 @@ function statusLabel(status: string): string {
 onMounted(async () => {
   await loadProviders()
   await loadTerminalPresets()
+  await loadOpenCodePresets()
   await loadAmagiSettings()
   await initDefaults()
   await loadPaths()
@@ -1985,6 +1985,43 @@ onUnmounted(() => {
 .text-stopped { color: #5a6a7a; }
 .text-exited { color: #ffa726; }
 .text-failed { color: #ef5350; }
+
+/* OC Preset Summary */
+.oc-preset-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: rgba(15, 18, 25, 0.45);
+  border: 1px solid #2a2f3e;
+  border-radius: 6px;
+}
+
+.oc-summary-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.oc-summary-label {
+  font-size: 12px;
+  color: #5a6a7a;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.oc-summary-label::after {
+  content: ':';
+}
+
+.oc-summary-value {
+  font-size: 13px;
+  color: #8899aa;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .detail-actions {
   display: flex;

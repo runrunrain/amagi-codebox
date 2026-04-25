@@ -47,7 +47,7 @@ type Preset struct {
 	Name           string           `json:"name"`
 	Model          string           `json:"model"`
 	Parameters     Parameters       `json:"parameters"`
-	Target         PresetTargetType `json:"target,omitempty"`           // 目标 CLI 类型：codex（默认）或 opencode
+	Target         PresetTargetType `json:"target,omitempty"`          // 目标 CLI 类型：codex（默认）或 opencode
 	OpenCodeConfig json.RawMessage  `json:"opencode_config,omitempty"` // OpenCode 原始配置片段，原样保真，未知字段不丢失
 }
 
@@ -139,11 +139,11 @@ func IsValidTerminalPresetType(t string) bool {
 // 独立于 Provider，按终端维度管理预设。
 // 每个 TerminalPreset 关联一个 provider（而非内嵌于 provider 内部）。
 type TerminalPreset struct {
-	Name        string           `json:"name"`         // 预设显示名称
-	Provider    string           `json:"provider"`     // 关联的 provider 名称（如 "anthropic", "openai"）
-	Model       string           `json:"model"`        // 模型名称（可覆盖 provider 默认值）
-	Parameters  Parameters       `json:"parameters"`   // 模型参数
-	OpenCodeCfg json.RawMessage  `json:"opencode_cfg,omitempty"` // OpenCode 运行时 overlay（仅 opencode 类型使用）
+	Name        string          `json:"name"`                   // 预设显示名称
+	Provider    string          `json:"provider"`               // 关联的 provider 名称（如 "anthropic", "openai"）
+	Model       string          `json:"model"`                  // 模型名称（可覆盖 provider 默认值）
+	Parameters  Parameters      `json:"parameters"`             // 模型参数
+	OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"` // OpenCode 运行时 overlay（仅 opencode 类型使用）
 }
 
 // NormalizeOpenCodeCfg 确保 OpenCodeCfg 存储为原始 JSON 对象。
@@ -210,7 +210,10 @@ func (tpc *TerminalPresetsConfig) SetMap(terminalType TerminalPresetType, m map[
 	}
 }
 
-// AnthropicFormat Anthropic 兼容格式配置
+// AnthropicFormat Anthropic 兼容格式配置。
+//
+// APIKey 仅用于导入旧 JSON / 兼容历史导出结构，
+// 运行时正式密钥来源始终是 provider 级 secrets（key = providerName）。
 type AnthropicFormat struct {
 	Enabled bool   `json:"enabled"`
 	APIKey  string `json:"api_key,omitempty"`
@@ -218,7 +221,10 @@ type AnthropicFormat struct {
 	AuthKey string `json:"auth_key,omitempty"`
 }
 
-// OpenAIFormat OpenAI 兼容格式配置
+// OpenAIFormat OpenAI 兼容格式配置。
+//
+// APIKey 仅用于导入旧 JSON / 兼容历史导出结构，
+// 运行时正式密钥来源始终是 provider 级 secrets（key = providerName）。
 type OpenAIFormat struct {
 	Enabled      bool   `json:"enabled"`
 	APIKey       string `json:"api_key,omitempty"`
@@ -234,7 +240,7 @@ type Provider struct {
 	OpenAI    *OpenAIFormat    `json:"openai,omitempty"`
 
 	// 通用信息
-	DefaultModel string `json:"default_model"`
+	DefaultModel string   `json:"default_model"`
 	UrlHistory   []string `json:"url_history,omitempty"`
 
 	// 废弃字段（保留兼容读取，新数据不再写入）
@@ -259,11 +265,11 @@ type AgentTeamsConfig struct {
 
 // AppConfig 应用总配置（对应 models.json 根结构）
 type AppConfig struct {
-	Models          map[string]Provider    `json:"models"`
-	AgentTeams      AgentTeamsConfig       `json:"agent_teams"`
-	TerminalPresets *TerminalPresetsConfig `json:"terminal_presets,omitempty"`
+	Models          map[string]Provider       `json:"models"`
+	AgentTeams      AgentTeamsConfig          `json:"agent_teams"`
+	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
 	OpenCodePresets map[string]OpenCodePreset `json:"opencode_presets,omitempty"`
-	Version         string                 `json:"version"`
+	Version         string                    `json:"version"`
 }
 
 // OpenCodePreset 一个预设 = 一份完整的 opencode.json。
@@ -281,14 +287,14 @@ type OpenCodePreset struct {
 // OpenCodeBinding 描述 preset 中某个 provider id 与本地 Provider 的绑定关系。
 type OpenCodeBinding struct {
 	LocalProvider string   `json:"local_provider"`
-	Format        string   `json:"format,omitempty"`  // openai / anthropic / auto
-	Inject        []string `json:"inject,omitempty"`  // apiKey / baseURL / organization
+	Format        string   `json:"format,omitempty"` // openai / anthropic / auto
+	Inject        []string `json:"inject,omitempty"` // apiKey / baseURL / organization
 	EnvFallback   bool     `json:"env_fallback,omitempty"`
 }
 
 // OpenCodePresetSource 记录 preset 的来源，用于追踪迁移。
 type OpenCodePresetSource struct {
-	Kind            string `json:"kind,omitempty"`             // native / migrated-overlay
+	Kind            string `json:"kind,omitempty"` // native / migrated-overlay
 	LegacyProvider  string `json:"legacy_provider,omitempty"`
 	LegacyPresetKey string `json:"legacy_preset_key,omitempty"`
 }
@@ -303,8 +309,11 @@ type ExportConfig struct {
 	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
 }
 
-// ExportProvider 导出时的提供商配置（含 API key 明文）。
-// 支持双格式结构（anthropic/openai），同时保留旧字段兼容旧版导入。
+// ExportProvider 导入/导出时的提供商配置（含 API key 明文）。
+//
+// 正式导出模型：仅顶层 APIKey 是当前规范的 provider 级统一密钥。
+// Anthropic/OpenAI 内嵌 APIKey 仅用于兼容导入旧 JSON，不应作为新导出写出。
+// 双格式结构（anthropic/openai）仍保留用于 baseURL / organization / auth_key 表达。
 type ExportProvider struct {
 	// 双格式字段（新协议）
 	Anthropic *AnthropicFormat `json:"anthropic,omitempty"`
@@ -319,6 +328,111 @@ type ExportProvider struct {
 	BaseURL string `json:"base_url,omitempty"`
 	AuthKey string `json:"auth_key,omitempty"`
 	APIKey  string `json:"api_key,omitempty"`
+}
+
+func cloneAnthropicFormat(src *AnthropicFormat) *AnthropicFormat {
+	if src == nil {
+		return nil
+	}
+	copy := *src
+	return &copy
+}
+
+func cloneOpenAIFormat(src *OpenAIFormat) *OpenAIFormat {
+	if src == nil {
+		return nil
+	}
+	copy := *src
+	return &copy
+}
+
+// BuildExportProvider 基于运行时 Provider 和统一 provider 级 API key 构建导出结构。
+// Anthropic/OpenAI 内嵌 APIKey 始终会被清空，避免新导出再次写出格式化 key。
+func BuildExportProvider(provider Provider, apiKey string) ExportProvider {
+	presets := provider.Presets
+	if presets == nil {
+		presets = map[string]Preset{}
+	}
+
+	ep := ExportProvider{
+		Anthropic:    cloneAnthropicFormat(provider.Anthropic),
+		OpenAI:       cloneOpenAIFormat(provider.OpenAI),
+		DefaultModel: provider.DefaultModel,
+		Presets:      presets,
+		Type:         provider.EffectiveType(),
+		BaseURL:      provider.EffectiveBaseURL(""),
+		AuthKey:      provider.EffectiveAuthKey(""),
+		APIKey:       strings.TrimSpace(apiKey),
+	}
+	if ep.Anthropic != nil {
+		ep.Anthropic.APIKey = ""
+	}
+	if ep.OpenAI != nil {
+		ep.OpenAI.APIKey = ""
+	}
+	return ep
+}
+
+// ToProvider 将导入/编辑用的 ExportProvider 转回运行时 Provider，
+// 并清理双格式结构中的 APIKey，避免明文进入 models.json。
+func (ep ExportProvider) ToProvider() Provider {
+	provider := Provider{
+		DefaultModel: ep.DefaultModel,
+		Presets:      ep.Presets,
+		Anthropic:    cloneAnthropicFormat(ep.Anthropic),
+		OpenAI:       cloneOpenAIFormat(ep.OpenAI),
+	}
+	if provider.Presets == nil {
+		provider.Presets = map[string]Preset{}
+	}
+	if provider.Anthropic != nil {
+		provider.Anthropic.APIKey = ""
+	}
+	if provider.OpenAI != nil {
+		provider.OpenAI.APIKey = ""
+	}
+	if ep.Anthropic == nil && ep.OpenAI == nil {
+		provider.Type = ep.Type
+		provider.BaseURL = ep.BaseURL
+		provider.AuthKey = ep.AuthKey
+	}
+	return provider
+}
+
+// UnifiedAPIKey 解析导入 JSON 中的 provider 级统一 API key。
+// 优先级：顶层 api_key > 首选格式的 legacy api_key > 另一种 legacy api_key。
+func (ep ExportProvider) UnifiedAPIKey() string {
+	if key := strings.TrimSpace(ep.APIKey); key != "" {
+		return key
+	}
+
+	provider := ep.ToProvider()
+	switch provider.PreferredFormat() {
+	case "openai":
+		if ep.OpenAI != nil {
+			if key := strings.TrimSpace(ep.OpenAI.APIKey); key != "" {
+				return key
+			}
+		}
+		if ep.Anthropic != nil {
+			if key := strings.TrimSpace(ep.Anthropic.APIKey); key != "" {
+				return key
+			}
+		}
+	default:
+		if ep.Anthropic != nil {
+			if key := strings.TrimSpace(ep.Anthropic.APIKey); key != "" {
+				return key
+			}
+		}
+		if ep.OpenAI != nil {
+			if key := strings.TrimSpace(ep.OpenAI.APIKey); key != "" {
+				return key
+			}
+		}
+	}
+
+	return ""
 }
 
 // IsAnthropicCompatible 判断 Provider 是否兼容 Anthropic 格式。

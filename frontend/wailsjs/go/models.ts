@@ -212,6 +212,80 @@ export namespace config {
 	        this.auth_key = source["auth_key"];
 	    }
 	}
+	export class OpenCodePresetSource {
+	    kind?: string;
+	    legacy_provider?: string;
+	    legacy_preset_key?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpenCodePresetSource(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.legacy_provider = source["legacy_provider"];
+	        this.legacy_preset_key = source["legacy_preset_key"];
+	    }
+	}
+	export class OpenCodeBinding {
+	    local_provider: string;
+	    format?: string;
+	    inject?: string[];
+	    env_fallback?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpenCodeBinding(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.local_provider = source["local_provider"];
+	        this.format = source["format"];
+	        this.inject = source["inject"];
+	        this.env_fallback = source["env_fallback"];
+	    }
+	}
+	export class OpenCodePreset {
+	    id: string;
+	    name: string;
+	    description?: string;
+	    config: number[];
+	    bindings?: Record<string, OpenCodeBinding>;
+	    source?: OpenCodePresetSource;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpenCodePreset(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.config = source["config"];
+	        this.bindings = this.convertValues(source["bindings"], OpenCodeBinding, true);
+	        this.source = this.convertValues(source["source"], OpenCodePresetSource);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TerminalPreset {
 	    name: string;
 	    provider: string;
@@ -462,6 +536,7 @@ export namespace config {
 	    models: Record<string, Provider>;
 	    agent_teams: AgentTeamsConfig;
 	    terminal_presets?: TerminalPresetsConfig;
+	    opencode_presets?: Record<string, OpenCodePreset>;
 	    version: string;
 	
 	    static createFrom(source: any = {}) {
@@ -473,6 +548,7 @@ export namespace config {
 	        this.models = this.convertValues(source["models"], Provider, true);
 	        this.agent_teams = this.convertValues(source["agent_teams"], AgentTeamsConfig);
 	        this.terminal_presets = this.convertValues(source["terminal_presets"], TerminalPresetsConfig);
+	        this.opencode_presets = this.convertValues(source["opencode_presets"], OpenCodePreset, true);
 	        this.version = source["version"];
 	    }
 	
@@ -527,6 +603,9 @@ export namespace config {
 	        this.source = source["source"];
 	    }
 	}
+	
+	
+	
 	
 	
 	
@@ -1058,6 +1137,7 @@ export namespace settings {
 	    preset: string;
 	    openCodeProvider: string;
 	    openCodePreset: string;
+	    openCodePresetKey: string;
 	    mode: string;
 	    shell: string;
 	    claudeMode: string;
@@ -1081,6 +1161,7 @@ export namespace settings {
 	        this.preset = source["preset"];
 	        this.openCodeProvider = source["openCodeProvider"];
 	        this.openCodePreset = source["openCodePreset"];
+	        this.openCodePresetKey = source["openCodePresetKey"];
 	        this.mode = source["mode"];
 	        this.shell = source["shell"];
 	        this.claudeMode = source["claudeMode"];

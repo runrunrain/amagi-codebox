@@ -67,7 +67,7 @@ func (s *LauncherService) BuildOverrides(
 	preset, ok := provider.Presets[presetName]
 
 	overrides := map[string]string{}
-	if provider.IsOpenAICompatible() {
+	if !provider.IsAnthropicCompatible() {
 		overrides["ANTHROPIC_BASE_URL"] = ""
 		overrides["ANTHROPIC_API_KEY"] = ""
 		overrides["ANTHROPIC_AUTH_TOKEN"] = ""

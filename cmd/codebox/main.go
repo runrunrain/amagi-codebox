@@ -611,19 +611,8 @@ func buildExportConfig(state *cliState) (*config.ExportConfig, error) {
 	providers := configSvc.GetProviders()
 	exportProviders := make(map[string]config.ExportProvider, len(providers))
 	for name, provider := range providers {
-		apiKey, _ := secretsSvc.GetAPIKeyWithFallback(name)
-		presets := provider.Presets
-		if presets == nil {
-			presets = map[string]config.Preset{}
-		}
-		exportProviders[name] = config.ExportProvider{
-			Type:         provider.Type,
-			BaseURL:      provider.BaseURL,
-			DefaultModel: provider.DefaultModel,
-			AuthKey:      provider.AuthKey,
-			APIKey:       apiKey,
-			Presets:      presets,
-		}
+		apiKey := getExportProviderAPIKey(secretsSvc, name)
+		exportProviders[name] = config.BuildExportProvider(provider, apiKey)
 	}
 
 	return &config.ExportConfig{
@@ -633,6 +622,34 @@ func buildExportConfig(state *cliState) (*config.ExportConfig, error) {
 		Providers:  exportProviders,
 		AgentTeams: configSvc.GetAgentTeams(),
 	}, nil
+}
+
+func getExportProviderAPIKey(secretsSvc *secrets.SecretsService, providerName string) string {
+	for _, candidate := range exportProviderAPIKeyCandidates(providerName) {
+		if candidate == providerName {
+			if key, _ := secretsSvc.GetAPIKeyWithFallback(candidate); key != "" {
+				return key
+			}
+			continue
+		}
+
+		key, err := secretsSvc.GetAPIKey(candidate)
+		if err != nil {
+			continue
+		}
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func exportProviderAPIKeyCandidates(providerName string) []string {
+	return []string{
+		providerName,
+		providerName + ":anthropic",
+		providerName + ":openai",
+	}
 }
 
 func importConfigFile(state *cliState, filePath string) (map[string]any, error) {
@@ -661,23 +678,16 @@ func importConfigFile(state *cliState, filePath string) (map[string]any, error) 
 	importedProviders := make([]string, 0, len(exportCfg.Providers))
 	secretsUpdated := false
 	for name, provider := range exportCfg.Providers {
-		item := config.Provider{
-			Type:         provider.Type,
-			BaseURL:      provider.BaseURL,
-			DefaultModel: provider.DefaultModel,
-			AuthKey:      provider.AuthKey,
-			Presets:      provider.Presets,
-		}
-		if item.Presets == nil {
-			item.Presets = map[string]config.Preset{}
-		}
+		item := provider.ToProvider()
 		if err := configSvc.SaveProvider(name, item); err != nil {
 			return nil, fmt.Errorf("save provider %q: %w", name, err)
 		}
-		if provider.APIKey != "" {
-			if err := secretsSvc.SetAPIKey(name, provider.APIKey); err != nil {
+		if apiKey := provider.UnifiedAPIKey(); apiKey != "" {
+			if err := secretsSvc.SetAPIKey(name, apiKey); err != nil {
 				return nil, fmt.Errorf("save provider %q api key: %w", name, err)
 			}
+			_ = secretsSvc.DeleteAPIKey(name + ":anthropic")
+			_ = secretsSvc.DeleteAPIKey(name + ":openai")
 			secretsUpdated = true
 		}
 		importedProviders = append(importedProviders, name)

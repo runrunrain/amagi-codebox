@@ -4,6 +4,8 @@ import {config} from '../models';
 
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
+export function DeleteOpenCodePreset(arg1:string):Promise<void>;
+
 export function DeletePreset(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
@@ -17,6 +19,10 @@ export function GetAllTerminalPresets():Promise<config.TerminalPresetsConfig>;
 export function GetConfig():Promise<config.AppConfig>;
 
 export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
+
+export function GetOpenCodePreset(arg1:string):Promise<config.OpenCodePreset>;
+
+export function GetOpenCodePresets():Promise<Record<string, config.OpenCodePreset>>;
 
 export function GetPresets(arg1:string):Promise<Record<string, config.Preset>>;
 
@@ -39,6 +45,8 @@ export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
 export function Save():Promise<void>;
+
+export function SaveOpenCodePreset(arg1:string,arg2:config.OpenCodePreset):Promise<void>;
 
 export function SavePreset(arg1:string,arg2:string,arg3:config.Preset):Promise<void>;
 

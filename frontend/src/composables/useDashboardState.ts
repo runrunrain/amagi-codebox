@@ -5,8 +5,7 @@ import { reactive } from 'vue'
 const state = reactive({
     provider: '',
     preset: '',
-    openCodeProvider: '',
-    openCodePreset: '',
+    openCodePresetKey: '',
     claudeMode: 'embedded',
     openCodeMode: 'embedded',
     codexMode: 'embedded',

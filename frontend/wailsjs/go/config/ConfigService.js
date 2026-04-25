@@ -6,6 +6,10 @@ export function AddUrlToHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['AddUrlToHistory'](arg1, arg2);
 }
 
+export function DeleteOpenCodePreset(arg1) {
+  return window['go']['config']['ConfigService']['DeleteOpenCodePreset'](arg1);
+}
+
 export function DeletePreset(arg1, arg2) {
   return window['go']['config']['ConfigService']['DeletePreset'](arg1, arg2);
 }
@@ -32,6 +36,14 @@ export function GetConfig() {
 
 export function GetMergedTerminalPresets(arg1) {
   return window['go']['config']['ConfigService']['GetMergedTerminalPresets'](arg1);
+}
+
+export function GetOpenCodePreset(arg1) {
+  return window['go']['config']['ConfigService']['GetOpenCodePreset'](arg1);
+}
+
+export function GetOpenCodePresets() {
+  return window['go']['config']['ConfigService']['GetOpenCodePresets']();
 }
 
 export function GetPresets(arg1) {
@@ -76,6 +88,10 @@ export function ResolveTerminalPreset(arg1, arg2) {
 
 export function Save() {
   return window['go']['config']['ConfigService']['Save']();
+}
+
+export function SaveOpenCodePreset(arg1, arg2) {
+  return window['go']['config']['ConfigService']['SaveOpenCodePreset'](arg1, arg2);
 }
 
 export function SavePreset(arg1, arg2, arg3) {
