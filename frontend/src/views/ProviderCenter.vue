@@ -658,6 +658,17 @@
 
     </div>
 
+    <div class="dialog-overlay" v-if="confirmDialog.visible" @click.self="resolveConfirmDialog(false)">
+      <div class="dialog card" style="max-width: 460px;">
+        <h2>{{ confirmDialog.title }}</h2>
+        <p class="confirm-dialog-message">{{ confirmDialog.message }}</p>
+        <div class="dialog-actions">
+          <button class="btn secondary" @click="resolveConfirmDialog(false)">取消</button>
+          <button class="btn danger" @click="resolveConfirmDialog(true)">{{ confirmDialog.confirmText }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ============ TERMINAL PRESET DIALOG (shared) ============ -->
     <div class="dialog-overlay" v-if="tpShowDialog" @click.self="tpShowDialog = false">
       <div class="dialog card" style="max-width: 520px;">
@@ -732,6 +743,14 @@ const exporting = ref(false)
 const filterType = ref<'all' | 'anthropic' | 'openai'>('all')
 const selectedProviderName = ref('')
 
+const confirmDialog = reactive({
+  visible: false,
+  title: '',
+  message: '',
+  confirmText: '确认',
+})
+let confirmDialogResolver: ((confirmed: boolean) => void) | null = null
+
 // Add dialog
 const showAddDialog = ref(false)
 const newProviderName = ref('')
@@ -788,6 +807,27 @@ function resetAddProviderForm() {
 function openAddProviderDialog() {
   resetAddProviderForm()
   showAddDialog.value = true
+}
+
+function requestConfirmation(options: { title: string; message: string; confirmText?: string }) {
+  if (confirmDialogResolver) {
+    confirmDialogResolver(false)
+    confirmDialogResolver = null
+  }
+  confirmDialog.title = options.title
+  confirmDialog.message = options.message
+  confirmDialog.confirmText = options.confirmText || '确认'
+  confirmDialog.visible = true
+  return new Promise<boolean>((resolve) => {
+    confirmDialogResolver = resolve
+  })
+}
+
+function resolveConfirmDialog(confirmed: boolean) {
+  confirmDialog.visible = false
+  const resolver = confirmDialogResolver
+  confirmDialogResolver = null
+  resolver?.(confirmed)
 }
 
 const filteredProviders = computed(() => {
@@ -865,7 +905,12 @@ const handleAddProvider = async () => {
 }
 
 const handleDeleteProvider = async (name: string) => {
-  if (!confirm(`确定要删除提供商 "${name}" 吗？`)) return
+  const confirmed = await requestConfirmation({
+    title: '删除提供商',
+    message: `确定要删除提供商 "${name}" 吗？此操作不可恢复。`,
+    confirmText: '删除',
+  })
+  if (!confirmed) return
   loading.value = true
   try {
     await DeleteProvider(name)
@@ -896,6 +941,8 @@ const handleImportConfig = async () => {
     const result = await ImportConfigFromFile()
     if (result) {
       await loadProviders()
+      await tpLoadAll()
+      await ocPresetLoadAll()
       showSuccess(result)
     }
   } catch (err) {
@@ -1122,7 +1169,12 @@ async function tpHandleSave() {
 }
 
 async function tpHandleDelete(terminalType: string, name: string) {
-  if (!confirm(`确定要删除预设 "${name}" 吗？`)) return
+  const confirmed = await requestConfirmation({
+    title: '删除终端预设',
+    message: `确定要删除预设 "${name}" 吗？此操作不可恢复。`,
+    confirmText: '删除',
+  })
+  if (!confirmed) return
   try {
     await DeleteTerminalPreset(terminalType, name)
     await tpLoadAll()
@@ -1288,7 +1340,12 @@ async function ocPresetHandleSave() {
 }
 
 async function ocPresetHandleDelete(key: string) {
-  if (!confirm(`确定要删除预设 "${key}" 吗？`)) return
+  const confirmed = await requestConfirmation({
+    title: '删除 OpenCode 预设',
+    message: `确定要删除预设 "${key}" 吗？此操作不可恢复。`,
+    confirmText: '删除',
+  })
+  if (!confirmed) return
   try {
     await DeleteOpenCodePreset(key)
     await ocPresetLoadAll()
@@ -1900,6 +1957,7 @@ watch(activeSection, (newSection) => {
 }
 .dialog { width: 100%; max-width: 480px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
 .dialog h2 { margin: 0 0 20px 0; color: #e0e6ed; }
+.confirm-dialog-message { margin: 0; color: var(--text-secondary); line-height: 1.6; }
 .form-group { margin-bottom: 16px; }
 .form-group label { display: block; margin-bottom: 8px; color: #8899aa; font-size: 14px; }
 .input-field {

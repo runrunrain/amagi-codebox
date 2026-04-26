@@ -653,8 +653,18 @@ func (s *ConfigService) GetAllTerminalPresets() *TerminalPresetsConfig {
 	return cp
 }
 
+// GetAllOpenCodePresets 返回完整的 OpenCode 预设配置副本（用于导出）。
+func (s *ConfigService) GetAllOpenCodePresets() map[string]OpenCodePreset {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil || s.config.OpenCodePresets == nil {
+		return nil
+	}
+	return cloneOpenCodePresetsMap(s.config.OpenCodePresets)
+}
+
 // SetAllTerminalPresets 批量设置终端预设配置（用于导入）。
-// 采用 merge 策略：不删除已有的 key，仅覆盖同名 key 和添加新 key。
+// 采用 replace 策略：以传入快照整体替换当前 terminal_presets。
 func (s *ConfigService) SetAllTerminalPresets(tp *TerminalPresetsConfig) error {
 	if tp == nil {
 		return nil
@@ -664,27 +674,95 @@ func (s *ConfigService) SetAllTerminalPresets(tp *TerminalPresetsConfig) error {
 	if s.config == nil {
 		return errors.New("config not loaded")
 	}
-	if s.config.TerminalPresets == nil {
-		s.config.TerminalPresets = &TerminalPresetsConfig{}
+	s.config.TerminalPresets = cloneTerminalPresetsConfig(tp)
+	return s.saveLocked()
+}
+
+func cloneTerminalPresetsConfig(src *TerminalPresetsConfig) *TerminalPresetsConfig {
+	if src == nil {
+		return nil
 	}
-	for k, v := range tp.ClaudeCode {
-		if s.config.TerminalPresets.ClaudeCode == nil {
-			s.config.TerminalPresets.ClaudeCode = map[string]TerminalPreset{}
+	dst := &TerminalPresetsConfig{}
+	if src.ClaudeCode != nil {
+		dst.ClaudeCode = make(map[string]TerminalPreset, len(src.ClaudeCode))
+		for k, v := range src.ClaudeCode {
+			dst.ClaudeCode[k] = v
 		}
-		s.config.TerminalPresets.ClaudeCode[k] = v
 	}
-	for k, v := range tp.OpenCode {
-		if s.config.TerminalPresets.OpenCode == nil {
-			s.config.TerminalPresets.OpenCode = map[string]TerminalPreset{}
+	if src.OpenCode != nil {
+		dst.OpenCode = make(map[string]TerminalPreset, len(src.OpenCode))
+		for k, v := range src.OpenCode {
+			dst.OpenCode[k] = v
 		}
-		s.config.TerminalPresets.OpenCode[k] = v
 	}
-	for k, v := range tp.Codex {
-		if s.config.TerminalPresets.Codex == nil {
-			s.config.TerminalPresets.Codex = map[string]TerminalPreset{}
+	if src.Codex != nil {
+		dst.Codex = make(map[string]TerminalPreset, len(src.Codex))
+		for k, v := range src.Codex {
+			dst.Codex[k] = v
 		}
-		s.config.TerminalPresets.Codex[k] = v
 	}
+	return dst
+}
+
+func cloneOpenCodePresetsMap(src map[string]OpenCodePreset) map[string]OpenCodePreset {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]OpenCodePreset, len(src))
+	for k, v := range src {
+		cp := v
+		cp.Config = normalizeOpenCodePresetConfig(cp.Config)
+		cp.Config = scrubOpenCodePresetConfig(cp.Config)
+		if cp.ID == "" {
+			cp.ID = k
+		}
+		if v.Bindings != nil {
+			cp.Bindings = make(map[string]OpenCodeBinding, len(v.Bindings))
+			for bindingKey, binding := range v.Bindings {
+				bindingCopy := binding
+				if binding.Inject != nil {
+					bindingCopy.Inject = append([]string(nil), binding.Inject...)
+				}
+				cp.Bindings[bindingKey] = bindingCopy
+			}
+		}
+		if v.Source != nil {
+			sourceCopy := *v.Source
+			cp.Source = &sourceCopy
+		}
+		dst[k] = cp
+	}
+	return dst
+}
+
+// ReplaceImportedPresetSnapshots 以导入快照整体替换 terminal_presets / opencode_presets。
+// 兼容旧导入文件：仅当未显式提供 opencode_presets 时，才会从 terminal_presets.opencode 快照回填新模型。
+// nil 输入表示"空快照"，不会保留本地历史残留数据。
+func (s *ConfigService) ReplaceImportedPresetSnapshots(terminal *TerminalPresetsConfig, openCode map[string]OpenCodePreset, hasExplicitOpenCodeSnapshot bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+
+	terminalSnapshot := cloneTerminalPresetsConfig(terminal)
+	openCodeSnapshot := cloneOpenCodePresetsMap(openCode)
+	if openCodeSnapshot == nil {
+		openCodeSnapshot = map[string]OpenCodePreset{}
+	}
+
+	if !hasExplicitOpenCodeSnapshot {
+		tmp := &AppConfig{
+			Models:          s.config.Models,
+			TerminalPresets: terminalSnapshot,
+			OpenCodePresets: openCodeSnapshot,
+		}
+		migrateTerminalPresetsToOpenCodePresets(tmp)
+		openCodeSnapshot = tmp.OpenCodePresets
+	}
+
+	s.config.TerminalPresets = terminalSnapshot
+	s.config.OpenCodePresets = openCodeSnapshot
 	return s.saveLocked()
 }
 
@@ -710,11 +788,11 @@ func (s *ConfigService) SetAgentTeams(config AgentTeamsConfig) error {
 // MergedTerminalPreset 合并后的终端预设，供 Dashboard 展示用。
 // 优先使用 terminal_presets（新体系），按 provider 分组回退到 provider.presets（旧体系）。
 type MergedTerminalPreset struct {
-	Key         string `json:"key"`         // 稳定 key（用于读写后端）
-	Label       string `json:"label"`       // 友好展示名
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Source      string `json:"source"` // "terminal_preset" 或 "provider_preset"
+	Key      string `json:"key"`   // 稳定 key（用于读写后端）
+	Label    string `json:"label"` // 友好展示名
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Source   string `json:"source"` // "terminal_preset" 或 "provider_preset"
 }
 
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
@@ -928,10 +1006,16 @@ func (s *ConfigService) DeleteOpenCodePreset(key string) error {
 	if s.config == nil {
 		return errors.New("config not loaded")
 	}
-	if s.config.OpenCodePresets == nil {
-		return nil
+	if s.config.OpenCodePresets != nil {
+		delete(s.config.OpenCodePresets, key)
 	}
-	delete(s.config.OpenCodePresets, key)
+	if s.config.TerminalPresets != nil {
+		legacy := s.config.TerminalPresets.GetMap(TerminalPresetOpenCode)
+		if legacy != nil {
+			delete(legacy, key)
+			s.config.TerminalPresets.SetMap(TerminalPresetOpenCode, legacy)
+		}
+	}
 	return s.saveLocked()
 }
 

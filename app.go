@@ -1675,6 +1675,7 @@ func (a *App) ExportConfigToFile() (string, error) {
 	providers := a.Config.GetProviders()
 	agentTeams := a.Config.GetAgentTeams()
 	terminalPresets := a.Config.GetAllTerminalPresets()
+	openCodePresets := a.Config.GetAllOpenCodePresets()
 
 	exportProviders := make(map[string]config.ExportProvider, len(providers))
 	for name, p := range providers {
@@ -1689,6 +1690,7 @@ func (a *App) ExportConfigToFile() (string, error) {
 		Providers:       exportProviders,
 		AgentTeams:      agentTeams,
 		TerminalPresets: terminalPresets,
+		OpenCodePresets: openCodePresets,
 	}
 
 	data, err := json.MarshalIndent(exportCfg, "", "  ")
@@ -1733,8 +1735,8 @@ func (a *App) ExportConfigToFile() (string, error) {
 	return savePath, nil
 }
 
-// ImportConfigFromFile 通过文件选择对话框导入 JSON 配置文件，
-// 将其中的 providers 和 AgentTeams 配置合并到当前配置中。
+// ImportConfigFromFile 通过文件选择对话框导入 JSON 配置文件。
+// providers / AgentTeams 按现有导入逻辑写入，terminal_presets / opencode_presets 采用快照替换语义。
 func (a *App) ImportConfigFromFile() (string, error) {
 	a.Log.Info("app", "开始导入配置")
 
@@ -1771,6 +1773,12 @@ func (a *App) ImportConfigFromFile() (string, error) {
 	if err := json.Unmarshal(data, &exportCfg); err != nil {
 		return "", fmt.Errorf("parse JSON: %w", err)
 	}
+	var exportRaw struct {
+		OpenCodePresets *json.RawMessage `json:"opencode_presets"`
+	}
+	if err := json.Unmarshal(data, &exportRaw); err != nil {
+		return "", fmt.Errorf("parse import snapshot metadata: %w", err)
+	}
 
 	// 验证基本字段
 	if exportCfg.Version == "" || exportCfg.Source == "" {
@@ -1800,13 +1808,13 @@ func (a *App) ImportConfigFromFile() (string, error) {
 		}
 	}
 
-	// 导入 TerminalPresets 配置（如果存在）
-	if exportCfg.TerminalPresets != nil {
-		if err := a.Config.SetAllTerminalPresets(exportCfg.TerminalPresets); err != nil {
-			a.Log.Warn("app", "导入 TerminalPresets 配置失败", err.Error())
-		} else {
-			a.Log.Info("app", "TerminalPresets 已导入")
-		}
+	// 导入 preset 快照。
+	// 为避免 omitempty / 字段缺失导致旧数据残留，nil 视为空快照。
+	hasExplicitOpenCodeSnapshot := exportRaw.OpenCodePresets != nil
+	if err := a.Config.ReplaceImportedPresetSnapshots(exportCfg.TerminalPresets, exportCfg.OpenCodePresets, hasExplicitOpenCodeSnapshot); err != nil {
+		a.Log.Warn("app", "导入 preset 快照失败", err.Error())
+	} else {
+		a.Log.Info("app", "preset 快照已导入")
 	}
 
 	msg := fmt.Sprintf("成功导入 %d 个提供商配置", importCount)

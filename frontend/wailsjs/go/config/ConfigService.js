@@ -26,6 +26,10 @@ export function GetAgentTeams() {
   return window['go']['config']['ConfigService']['GetAgentTeams']();
 }
 
+export function GetAllOpenCodePresets() {
+  return window['go']['config']['ConfigService']['GetAllOpenCodePresets']();
+}
+
 export function GetAllTerminalPresets() {
   return window['go']['config']['ConfigService']['GetAllTerminalPresets']();
 }
@@ -80,6 +84,10 @@ export function MigrateProviderPresetsToTerminal() {
 
 export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['RemoveUrlFromHistory'](arg1, arg2);
+}
+
+export function ReplaceImportedPresetSnapshots(arg1, arg2, arg3) {
+  return window['go']['config']['ConfigService']['ReplaceImportedPresetSnapshots'](arg1, arg2, arg3);
 }
 
 export function ResolveTerminalPreset(arg1, arg2) {

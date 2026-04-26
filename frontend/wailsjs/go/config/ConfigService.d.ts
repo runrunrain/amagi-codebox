@@ -14,6 +14,8 @@ export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
 
 export function GetAgentTeams():Promise<config.AgentTeamsConfig>;
 
+export function GetAllOpenCodePresets():Promise<Record<string, config.OpenCodePreset>>;
+
 export function GetAllTerminalPresets():Promise<config.TerminalPresetsConfig>;
 
 export function GetConfig():Promise<config.AppConfig>;
@@ -41,6 +43,8 @@ export function Load():Promise<void>;
 export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
+
+export function ReplaceImportedPresetSnapshots(arg1:config.TerminalPresetsConfig,arg2:Record<string, config.OpenCodePreset>,arg3:boolean):Promise<void>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 

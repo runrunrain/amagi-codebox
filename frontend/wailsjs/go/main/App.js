@@ -142,6 +142,10 @@ export function GetPathsService() {
   return window['go']['main']['App']['GetPathsService']();
 }
 
+export function GetPlatformCapabilities() {
+  return window['go']['main']['App']['GetPlatformCapabilities']();
+}
+
 export function GetProviderExportJSON(arg1) {
   return window['go']['main']['App']['GetProviderExportJSON'](arg1);
 }

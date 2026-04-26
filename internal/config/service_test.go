@@ -715,36 +715,46 @@ func TestSaveTerminalPreset_ConfigNotLoaded(t *testing.T) {
 	}
 }
 
-func TestSetAllTerminalPresets_Merge(t *testing.T) {
+func TestSetAllTerminalPresets_Replace(t *testing.T) {
 	svc := newTestConfigService(t)
 
-	// Pre-existing preset
-	svc.SaveTerminalPreset("claude_code", "existing", TerminalPreset{
+	if err := svc.SaveTerminalPreset("claude_code", "existing", TerminalPreset{
 		Name: "Existing", Provider: "anthropic",
-	})
+	}); err != nil {
+		t.Fatalf("SaveTerminalPreset existing claude_code: %v", err)
+	}
+	if err := svc.SaveTerminalPreset("codex", "old-codex", TerminalPreset{
+		Name: "Old Codex", Provider: "openai",
+	}); err != nil {
+		t.Fatalf("SaveTerminalPreset old codex: %v", err)
+	}
 
-	// Import new presets
-	svc.SetAllTerminalPresets(&TerminalPresetsConfig{
+	if err := svc.SetAllTerminalPresets(&TerminalPresetsConfig{
 		ClaudeCode: map[string]TerminalPreset{
 			"imported": {Name: "Imported", Provider: "openai"},
 		},
 		OpenCode: map[string]TerminalPreset{
 			"oc-imported": {Name: "OC Imported", Provider: "glm"},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("SetAllTerminalPresets: %v", err)
+	}
 
 	cc, _ := svc.GetTerminalPresets("claude_code")
 	oc, _ := svc.GetTerminalPresets("opencode")
+	codex, _ := svc.GetTerminalPresets("codex")
 
-	// Both old and new should exist (merge, not replace)
-	if _, ok := cc["existing"]; !ok {
-		t.Fatal("existing preset should still be present after merge")
+	if _, ok := cc["existing"]; ok {
+		t.Fatal("existing preset should be removed after replace")
 	}
 	if _, ok := cc["imported"]; !ok {
 		t.Fatal("imported preset should be present")
 	}
 	if _, ok := oc["oc-imported"]; !ok {
 		t.Fatal("opencode imported preset should be present")
+	}
+	if len(codex) != 0 {
+		t.Fatalf("codex presets should be cleared on replace, got %d", len(codex))
 	}
 }
 
@@ -754,6 +764,150 @@ func TestSetAllTerminalPresets_Nil(t *testing.T) {
 	err := svc.SetAllTerminalPresets(nil)
 	if err != nil {
 		t.Fatalf("SetAllTerminalPresets(nil): %v", err)
+	}
+}
+
+func TestReplaceImportedPresetSnapshots_ClearsMissingSnapshots(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	if err := svc.SaveTerminalPreset("claude_code", "existing", TerminalPreset{Name: "Existing", Provider: "anthropic"}); err != nil {
+		t.Fatalf("SaveTerminalPreset: %v", err)
+	}
+	if err := svc.SaveOpenCodePreset("existing-oc", OpenCodePreset{Name: "Existing OC", Config: json.RawMessage(`{"model":"openai/gpt-5"}`)}); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+
+	if err := svc.ReplaceImportedPresetSnapshots(nil, nil, false); err != nil {
+		t.Fatalf("ReplaceImportedPresetSnapshots: %v", err)
+	}
+
+	cc, err := svc.GetTerminalPresets("claude_code")
+	if err != nil {
+		t.Fatalf("GetTerminalPresets: %v", err)
+	}
+	if len(cc) != 0 {
+		t.Fatalf("claude_code presets should be cleared, got %d", len(cc))
+	}
+	if got := svc.GetOpenCodePresets(); len(got) != 0 {
+		t.Fatalf("opencode_presets should be cleared, got %d", len(got))
+	}
+}
+
+func TestReplaceImportedPresetSnapshots_RebuildsOpenCodeFromTerminalSnapshot(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	if err := svc.SaveOpenCodePreset("old-native", OpenCodePreset{Name: "Old Native", Config: json.RawMessage(`{"model":"openai/old"}`)}); err != nil {
+		t.Fatalf("SaveOpenCodePreset old-native: %v", err)
+	}
+
+	terminalSnapshot := &TerminalPresetsConfig{
+		OpenCode: map[string]TerminalPreset{
+			"glm/new": {
+				Name:     "GLM New",
+				Provider: "glm",
+				Model:    "glm-5",
+				OpenCodeCfg: json.RawMessage(`{
+					"model": "glm-5",
+					"provider": {
+						"glm": {
+							"options": {
+								"apiKey": "should-be-removed"
+							}
+						}
+					}
+				}`),
+			},
+		},
+	}
+
+	if err := svc.ReplaceImportedPresetSnapshots(terminalSnapshot, nil, false); err != nil {
+		t.Fatalf("ReplaceImportedPresetSnapshots: %v", err)
+	}
+
+	got := svc.GetOpenCodePresets()
+	if len(got) != 1 {
+		t.Fatalf("opencode_presets count = %d, want 1", len(got))
+	}
+	preset, ok := got["glm/new"]
+	if !ok {
+		t.Fatal("expected migrated opencode preset at glm/new")
+	}
+	if preset.Name != "GLM New" {
+		t.Fatalf("Name = %q, want %q", preset.Name, "GLM New")
+	}
+	if preset.Source == nil || preset.Source.Kind != "migrated-overlay" {
+		t.Fatalf("Source.Kind = %v, want migrated-overlay", preset.Source)
+	}
+	if strings.Contains(string(preset.Config), "should-be-removed") {
+		t.Fatal("migrated opencode config should scrub apiKey")
+	}
+	if _, exists := got["old-native"]; exists {
+		t.Fatal("old opencode preset should not survive snapshot replace")
+	}
+}
+
+func TestReplaceImportedPresetSnapshots_PreservesExplicitOpenCodeSnapshot(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	terminalSnapshot := &TerminalPresetsConfig{
+		OpenCode: map[string]TerminalPreset{
+			"shared-key": {Name: "Legacy Terminal", Provider: "openai", Model: "gpt-5"},
+		},
+	}
+	openCodeSnapshot := map[string]OpenCodePreset{
+		"shared-key": {
+			Name:   "Native Snapshot",
+			Config: json.RawMessage(`{"model":"openai/gpt-5.1"}`),
+			Source: &OpenCodePresetSource{Kind: "native"},
+		},
+	}
+
+	if err := svc.ReplaceImportedPresetSnapshots(terminalSnapshot, openCodeSnapshot, true); err != nil {
+		t.Fatalf("ReplaceImportedPresetSnapshots: %v", err)
+	}
+
+	got, err := svc.GetOpenCodePreset("shared-key")
+	if err != nil {
+		t.Fatalf("GetOpenCodePreset: %v", err)
+	}
+	if got.Name != "Native Snapshot" {
+		t.Fatalf("Name = %q, want %q", got.Name, "Native Snapshot")
+	}
+	if got.Source == nil || got.Source.Kind != "native" {
+		t.Fatalf("Source.Kind = %v, want native", got.Source)
+	}
+}
+
+func TestReplaceImportedPresetSnapshots_ExplicitOpenCodeSnapshotDoesNotReviveLegacyKeys(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	terminalSnapshot := &TerminalPresetsConfig{
+		OpenCode: map[string]TerminalPreset{
+			"keep":   {Name: "Keep Legacy", Provider: "openai", Model: "gpt-5"},
+			"revive": {Name: "Revive Legacy", Provider: "glm", Model: "glm-5"},
+		},
+	}
+	openCodeSnapshot := map[string]OpenCodePreset{
+		"keep": {
+			Name:   "Keep Native",
+			Config: json.RawMessage(`{"model":"openai/gpt-5.1"}`),
+			Source: &OpenCodePresetSource{Kind: "native"},
+		},
+	}
+
+	if err := svc.ReplaceImportedPresetSnapshots(terminalSnapshot, openCodeSnapshot, true); err != nil {
+		t.Fatalf("ReplaceImportedPresetSnapshots: %v", err)
+	}
+
+	got := svc.GetOpenCodePresets()
+	if len(got) != 1 {
+		t.Fatalf("opencode_presets count = %d, want 1", len(got))
+	}
+	if _, ok := got["keep"]; !ok {
+		t.Fatal("expected explicit opencode preset 'keep'")
+	}
+	if _, ok := got["revive"]; ok {
+		t.Fatal("legacy terminal preset key 'revive' should not be revived into opencode_presets")
 	}
 }
 
@@ -1401,14 +1555,14 @@ func TestMigrateProviderToDualFormat_OpenAIOnly(t *testing.T) {
 // that already has Anthropic/OpenAI fields set is not modified.
 func TestMigrateProviderToDualFormat_AlreadyMigrated(t *testing.T) {
 	originalAnthropic := &AnthropicFormat{
-		Enabled:  true,
-		BaseURL:  "https://custom.anthropic.com",
-		AuthKey:  "CUSTOM_KEY",
+		Enabled: true,
+		BaseURL: "https://custom.anthropic.com",
+		AuthKey: "CUSTOM_KEY",
 	}
 	originalOpenAI := &OpenAIFormat{
-		Enabled:  true,
-		BaseURL:  "https://custom.openai.com",
-		AuthKey:  "CUSTOM_OPENAI_KEY",
+		Enabled: true,
+		BaseURL: "https://custom.openai.com",
+		AuthKey: "CUSTOM_OPENAI_KEY",
 	}
 
 	models := map[string]Provider{
@@ -2025,7 +2179,12 @@ func TestDeleteOpenCodePreset(t *testing.T) {
 	svc := newTestConfigService(t)
 
 	preset := OpenCodePreset{Name: "To Delete", Config: json.RawMessage(`{}`)}
-	svc.SaveOpenCodePreset("del-me", preset)
+	if err := svc.SaveOpenCodePreset("del-me", preset); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+	if err := svc.SaveTerminalPreset("opencode", "del-me", TerminalPreset{Name: "Legacy To Delete", Provider: "openai", Model: "gpt-5"}); err != nil {
+		t.Fatalf("SaveTerminalPreset: %v", err)
+	}
 
 	if err := svc.DeleteOpenCodePreset("del-me"); err != nil {
 		t.Fatalf("DeleteOpenCodePreset: %v", err)
@@ -2033,6 +2192,13 @@ func TestDeleteOpenCodePreset(t *testing.T) {
 
 	if _, err := svc.GetOpenCodePreset("del-me"); err == nil {
 		t.Fatal("expected error after delete, got nil")
+	}
+	legacy, err := svc.GetTerminalPresets("opencode")
+	if err != nil {
+		t.Fatalf("GetTerminalPresets: %v", err)
+	}
+	if _, ok := legacy["del-me"]; ok {
+		t.Fatal("legacy terminal preset should be deleted together with opencode preset")
 	}
 }
 

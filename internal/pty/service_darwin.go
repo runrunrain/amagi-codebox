@@ -252,7 +252,7 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir
 	}
-	cmd.Env = append([]string(nil), spec.Env.Variables...)
+	cmd.Env = buildDarwinPTYEnvironment(spec.Env.Variables)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 
 	ptmx, err := creackpty.StartWithAttrs(cmd, &creackpty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}, cmd.SysProcAttr)
@@ -308,6 +308,35 @@ func buildDarwinPTYCommand(spec platform.ResolvedLaunchSpec) (*exec.Cmd, string,
 	}
 	cmd := exec.Command(shellPath, args...)
 	return cmd, platformCommandSummary(shellPath, args), nil
+}
+
+func buildDarwinPTYEnvironment(env []string) []string {
+	return buildDarwinPTYEnvironmentFromBase(env, os.Environ())
+}
+
+func buildDarwinPTYEnvironmentFromBase(env []string, inheritedEnv []string) []string {
+	base := env
+	if len(base) == 0 {
+		base = inheritedEnv
+	}
+	enriched := append([]string(nil), base...)
+	if !hasEnvKey(enriched, "TERM") {
+		enriched = append(enriched, "TERM=xterm-256color")
+	}
+	if !hasEnvKey(enriched, "COLORTERM") {
+		enriched = append(enriched, "COLORTERM=truecolor")
+	}
+	return enriched
+}
+
+func hasEnvKey(env []string, key string) bool {
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && name == key {
+			return true
+		}
+	}
+	return false
 }
 
 func platformCommandSummary(path string, args []string) string {

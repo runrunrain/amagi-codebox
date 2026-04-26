@@ -307,6 +307,7 @@ type ExportConfig struct {
 	Providers       map[string]ExportProvider `json:"providers"`
 	AgentTeams      AgentTeamsConfig          `json:"agent_teams"`
 	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
+	OpenCodePresets map[string]OpenCodePreset `json:"opencode_presets,omitempty"`
 }
 
 // ExportProvider 导入/导出时的提供商配置（含 API key 明文）。

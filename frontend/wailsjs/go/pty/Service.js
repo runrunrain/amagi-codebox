@@ -58,6 +58,10 @@ export function Start(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['pty']['Service']['Start'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
+export function StartResolved(arg1, arg2) {
+  return window['go']['pty']['Service']['StartResolved'](arg1, arg2);
+}
+
 export function UnregisterExitCallback(arg1, arg2) {
   return window['go']['pty']['Service']['UnregisterExitCallback'](arg1, arg2);
 }

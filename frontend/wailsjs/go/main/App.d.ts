@@ -6,6 +6,7 @@ import {config} from '../models';
 import {envvars} from '../models';
 import {logging} from '../models';
 import {paths} from '../models';
+import {platform} from '../models';
 import {main} from '../models';
 import {session} from '../models';
 import {settings} from '../models';
@@ -79,6 +80,8 @@ export function GetOpenCodeConfigPath():Promise<string>;
 export function GetOutputHistory(arg1:string):Promise<Array<number>>;
 
 export function GetPathsService():Promise<paths.PathsService>;
+
+export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;
 
 export function GetProviderExportJSON(arg1:string):Promise<string>;
 

@@ -737,6 +737,234 @@ export namespace paths {
 
 }
 
+export namespace platform {
+	
+	export class LaunchDiagnostics {
+	    shellSource: string;
+	    cliSource: string;
+	    pathSources: string[];
+	    warnings: string[];
+	    missingCandidates: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchDiagnostics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.shellSource = source["shellSource"];
+	        this.cliSource = source["cliSource"];
+	        this.pathSources = source["pathSources"];
+	        this.warnings = source["warnings"];
+	        this.missingCandidates = source["missingCandidates"];
+	    }
+	}
+	export class ShellDescriptor {
+	    key: string;
+	    label: string;
+	    resolvedPath: string;
+	    available: boolean;
+	    isDefault: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShellDescriptor(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.resolvedPath = source["resolvedPath"];
+	        this.available = source["available"];
+	        this.isDefault = source["isDefault"];
+	    }
+	}
+	export class PlatformCapabilities {
+	    platformId: string;
+	    os: string;
+	    arch: string;
+	    embeddedTerminalSupported: boolean;
+	    standaloneTerminalSupported: boolean;
+	    systemTraySupported: boolean;
+	    fileOpenSupported: boolean;
+	    updateCheckSupported: boolean;
+	    updateInstallSupported: boolean;
+	    autoStartSupported: boolean;
+	    singleInstanceSupported: boolean;
+	    windowActivationSupported: boolean;
+	    hideOnCloseSupported: boolean;
+	    backgroundResidentSupported: boolean;
+	    closeAction: string;
+	    secureSecretStoreKind: string;
+	    pathDiagnosticsSupported: boolean;
+	    supportedShells: ShellDescriptor[];
+	    defaultShellKey: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlatformCapabilities(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.platformId = source["platformId"];
+	        this.os = source["os"];
+	        this.arch = source["arch"];
+	        this.embeddedTerminalSupported = source["embeddedTerminalSupported"];
+	        this.standaloneTerminalSupported = source["standaloneTerminalSupported"];
+	        this.systemTraySupported = source["systemTraySupported"];
+	        this.fileOpenSupported = source["fileOpenSupported"];
+	        this.updateCheckSupported = source["updateCheckSupported"];
+	        this.updateInstallSupported = source["updateInstallSupported"];
+	        this.autoStartSupported = source["autoStartSupported"];
+	        this.singleInstanceSupported = source["singleInstanceSupported"];
+	        this.windowActivationSupported = source["windowActivationSupported"];
+	        this.hideOnCloseSupported = source["hideOnCloseSupported"];
+	        this.backgroundResidentSupported = source["backgroundResidentSupported"];
+	        this.closeAction = source["closeAction"];
+	        this.secureSecretStoreKind = source["secureSecretStoreKind"];
+	        this.pathDiagnosticsSupported = source["pathDiagnosticsSupported"];
+	        this.supportedShells = this.convertValues(source["supportedShells"], ShellDescriptor);
+	        this.defaultShellKey = source["defaultShellKey"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ProcessPolicy {
+	    hideConsoleWindow: boolean;
+	    detached: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProcessPolicy(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hideConsoleWindow = source["hideConsoleWindow"];
+	        this.detached = source["detached"];
+	    }
+	}
+	export class ResolvedCLI {
+	    name: string;
+	    path: string;
+	    args: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ResolvedCLI(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.args = source["args"];
+	    }
+	}
+	export class ResolvedEnv {
+	    variables: string[];
+	    effectivePath: string;
+	    addedPathEntries: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ResolvedEnv(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.variables = source["variables"];
+	        this.effectivePath = source["effectivePath"];
+	        this.addedPathEntries = source["addedPathEntries"];
+	    }
+	}
+	export class ResolvedShell {
+	    key: string;
+	    path: string;
+	    loginStyle: string;
+	    bootstrapArg: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResolvedShell(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.path = source["path"];
+	        this.loginStyle = source["loginStyle"];
+	        this.bootstrapArg = source["bootstrapArg"];
+	    }
+	}
+	export class ResolvedLaunchSpec {
+	    appType: string;
+	    launchMode: string;
+	    workDir: string;
+	    cli: ResolvedCLI;
+	    shell?: ResolvedShell;
+	    bootstrapMode: string;
+	    startupCommand?: string;
+	    env: ResolvedEnv;
+	    ptyCols: number;
+	    ptyRows: number;
+	    processPolicy: ProcessPolicy;
+	    diagnostics: LaunchDiagnostics;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResolvedLaunchSpec(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.appType = source["appType"];
+	        this.launchMode = source["launchMode"];
+	        this.workDir = source["workDir"];
+	        this.cli = this.convertValues(source["cli"], ResolvedCLI);
+	        this.shell = this.convertValues(source["shell"], ResolvedShell);
+	        this.bootstrapMode = source["bootstrapMode"];
+	        this.startupCommand = source["startupCommand"];
+	        this.env = this.convertValues(source["env"], ResolvedEnv);
+	        this.ptyCols = source["ptyCols"];
+	        this.ptyRows = source["ptyRows"];
+	        this.processPolicy = this.convertValues(source["processPolicy"], ProcessPolicy);
+	        this.diagnostics = this.convertValues(source["diagnostics"], LaunchDiagnostics);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+
+}
+
 export namespace plugin {
 	
 	export class AgentInfo {
@@ -1291,7 +1519,11 @@ export namespace updater {
 	    releaseNotes: string;
 	    publishedAt: string;
 	    downloadURL: string;
+	    releaseURL: string;
+	    assetName: string;
+	    assetURL: string;
 	    assetSize: number;
+	    updateAction: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateInfo(source);
@@ -1305,7 +1537,11 @@ export namespace updater {
 	        this.releaseNotes = source["releaseNotes"];
 	        this.publishedAt = source["publishedAt"];
 	        this.downloadURL = source["downloadURL"];
+	        this.releaseURL = source["releaseURL"];
+	        this.assetName = source["assetName"];
+	        this.assetURL = source["assetURL"];
 	        this.assetSize = source["assetSize"];
+	        this.updateAction = source["updateAction"];
 	    }
 	}
 
