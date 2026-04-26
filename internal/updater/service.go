@@ -17,6 +17,14 @@ import (
 
 const userAgent = "amagi-codebox-updater"
 
+const (
+	releaseRepoOwner = "runrunrain"
+	releaseRepoName  = "amagi-codebox"
+
+	updateActionInstall          = "install"
+	updateActionOpenDownloadPage = "open-download-page"
+)
+
 type UpdateInfo struct {
 	HasUpdate      bool   `json:"hasUpdate"`
 	CurrentVersion string `json:"currentVersion"`
@@ -24,7 +32,11 @@ type UpdateInfo struct {
 	ReleaseNotes   string `json:"releaseNotes"`
 	PublishedAt    string `json:"publishedAt"`
 	DownloadURL    string `json:"downloadURL"`
+	ReleaseURL     string `json:"releaseURL"`
+	AssetName      string `json:"assetName"`
+	AssetURL       string `json:"assetURL"`
 	AssetSize      int64  `json:"assetSize"`
+	UpdateAction   string `json:"updateAction"`
 }
 
 type Service struct {
@@ -41,6 +53,7 @@ type Service struct {
 
 type githubRelease struct {
 	TagName     string               `json:"tag_name"`
+	HTMLURL     string               `json:"html_url"`
 	Body        string               `json:"body"`
 	PublishedAt string               `json:"published_at"`
 	Assets      []githubReleaseAsset `json:"assets"`
@@ -60,8 +73,8 @@ type progressWriter struct {
 
 func NewService(currentVersion string, log *logging.Service) *Service {
 	return &Service{
-		repoOwner:      "runrunrain",
-		repoRepo:       "amagi-codebox",
+		repoOwner:      releaseRepoOwner,
+		repoRepo:       releaseRepoName,
 		currentVersion: normalizeVersion(currentVersion),
 		log:            log,
 		capabilities:   platform.CurrentCapabilities(),
@@ -106,32 +119,9 @@ func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 		return nil, fmt.Errorf("decode latest release: %w", err)
 	}
 
-	asset, err := findReleaseAsset(s.capabilities, release.Assets)
+	info, err := buildUpdateInfo(s.currentVersion, s.capabilities, release)
 	if err != nil {
 		return nil, err
-	}
-
-	currentVersion := normalizeVersion(s.currentVersion)
-	latestVersion := normalizeVersion(release.TagName)
-
-	// 使用语义版本比较：仅当远端版本 > 当前版本时才提示更新
-	hasUpdate := false
-	cmp := compareVersions(latestVersion, currentVersion)
-	if cmp > 0 {
-		hasUpdate = true
-	} else if cmp == -2 {
-		// 无法解析为语义版本号，回退到字符串比较
-		hasUpdate = latestVersion != currentVersion
-	}
-
-	info := &UpdateInfo{
-		HasUpdate:      hasUpdate,
-		CurrentVersion: currentVersion,
-		LatestVersion:  latestVersion,
-		ReleaseNotes:   release.Body,
-		PublishedAt:    release.PublishedAt,
-		DownloadURL:    asset.BrowserDownloadURL,
-		AssetSize:      asset.Size,
 	}
 
 	s.mu.Lock()
@@ -160,7 +150,7 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 		return fmt.Errorf("missing download url")
 	}
 	if !s.capabilities.UpdateInstallSupported {
-		return fmt.Errorf("update install is not supported on platform %s", s.capabilities.PlatformID)
+		return fmt.Errorf("platform %s only supports checking for updates and opening the download page", s.capabilities.PlatformID)
 	}
 
 	downloadPath := filepath.Join(os.TempDir(), "amagi-codebox-update.zip")
@@ -365,6 +355,77 @@ func copyFile(src string, dst string) error {
 
 func normalizeVersion(version string) string {
 	return strings.TrimPrefix(strings.TrimSpace(version), "v")
+}
+
+func buildUpdateInfo(currentVersion string, capabilities platform.PlatformCapabilities, release githubRelease) (*UpdateInfo, error) {
+	releaseURL := releasePageURL(release, releaseRepoOwner, releaseRepoName)
+	action := updateActionForCapabilities(capabilities)
+	asset, err := selectReleaseAssetForAction(capabilities, action, release.Assets)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedCurrent := normalizeVersion(currentVersion)
+	latestVersion := normalizeVersion(release.TagName)
+
+	hasUpdate := false
+	cmp := compareVersions(latestVersion, normalizedCurrent)
+	if cmp > 0 {
+		hasUpdate = true
+	} else if cmp == -2 {
+		hasUpdate = latestVersion != normalizedCurrent
+	}
+
+	info := &UpdateInfo{
+		HasUpdate:      hasUpdate,
+		CurrentVersion: normalizedCurrent,
+		LatestVersion:  latestVersion,
+		ReleaseNotes:   release.Body,
+		PublishedAt:    release.PublishedAt,
+		ReleaseURL:     releaseURL,
+		DownloadURL:    releaseURL,
+		UpdateAction:   action,
+	}
+
+	if asset != nil {
+		info.AssetName = asset.Name
+		info.AssetURL = asset.BrowserDownloadURL
+		info.AssetSize = asset.Size
+		if action == updateActionInstall {
+			info.DownloadURL = asset.BrowserDownloadURL
+		}
+	}
+
+	return info, nil
+}
+
+func updateActionForCapabilities(capabilities platform.PlatformCapabilities) string {
+	if capabilities.UpdateInstallSupported {
+		return updateActionInstall
+	}
+	return updateActionOpenDownloadPage
+}
+
+func selectReleaseAssetForAction(capabilities platform.PlatformCapabilities, action string, assets []githubReleaseAsset) (*githubReleaseAsset, error) {
+	asset, err := findReleaseAsset(capabilities, assets)
+	if err == nil {
+		return asset, nil
+	}
+	if action == updateActionOpenDownloadPage {
+		return nil, nil
+	}
+	return nil, err
+}
+
+func releasePageURL(release githubRelease, owner string, repo string) string {
+	if trimmed := strings.TrimSpace(release.HTMLURL); trimmed != "" {
+		return trimmed
+	}
+	tag := strings.TrimSpace(release.TagName)
+	if tag == "" {
+		return fmt.Sprintf("https://github.com/%s/%s/releases", owner, repo)
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 }
 
 // compareVersions 语义比较两个版本号（major.minor.patch）。

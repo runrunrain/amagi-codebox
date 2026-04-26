@@ -2,6 +2,7 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "amagi-codebox",
   "outputfilename": "amagi-codebox",
+  "frontenddir": "frontend",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
@@ -9,5 +10,10 @@
   "author": {
     "name": "Amagi CodeBox Contributors",
     "email": ""
+  },
+  "info": {
+    "productName": "Amagi CodeBox",
+    "productVersion": "0.0.0",
+    "copyright": "Copyright © Amagi CodeBox Contributors"
   }
 }

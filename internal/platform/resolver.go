@@ -86,14 +86,18 @@ func NewCLIResolver(capabilities PlatformCapabilities) CLIResolver {
 }
 
 func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec, error) {
+	resolvedEnv, effectivePATH, addedEntries, pathSources := buildEffectiveEnvForOS(r.capabilities.OS, request.Env)
 	cliName, err := cliNameForAppType(request.AppType)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
 
-	cli, diagnostics, err := r.ResolveExecutable(cliName, request.CLIArgs, request.Env)
+	cli, diagnostics, err := r.ResolveExecutable(cliName, request.CLIArgs, resolvedEnv)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
+	}
+	if len(pathSources) > 0 {
+		diagnostics.PATHSources = append([]string(nil), pathSources...)
 	}
 
 	spec := ResolvedLaunchSpec{
@@ -102,8 +106,9 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		WorkDir:    request.WorkDir,
 		CLI:        cli,
 		Env: ResolvedEnv{
-			Variables:     append([]string(nil), request.Env...),
-			EffectivePATH: envValue(request.Env, "PATH"),
+			Variables:        resolvedEnv,
+			EffectivePATH:    effectivePATH,
+			AddedPATHEntries: addedEntries,
 		},
 		PTYCols:       request.PTYCols,
 		PTYRows:       request.PTYRows,
@@ -114,19 +119,21 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 	requestedShell := strings.TrimSpace(request.RequestedShellPath)
 	if requestedShell == "" {
 		spec.BootstrapMode = BootstrapDirectCommand
+		spec.Diagnostics.ShellSource = "default"
 		return spec, nil
 	}
 
-	resolvedShell := resolveRequestedShell(requestedShell, request.Env, r.capabilities)
+	resolvedShell, shellSource, warnings := resolveRequestedShell(requestedShell, resolvedEnv, r.capabilities)
 	spec.Shell = &resolvedShell
 	spec.BootstrapMode = BootstrapShellInline
 	spec.StartupCommand = buildCommandString(cli.Path, cli.Args)
-	spec.Diagnostics.ShellSource = "explicit"
+	spec.Diagnostics.ShellSource = shellSource
+	spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, warnings...)
 	return spec, nil
 }
 
 func (r *defaultCLIResolver) ResolveExecutable(command string, args []string, env []string) (ResolvedCLI, LaunchDiagnostics, error) {
-	resolvedPath, source := resolveExecutableWithEnv(command, env)
+	resolvedPath, source := resolveExecutableWithEnvForOS(r.capabilities.OS, command, env)
 	diagnostics := LaunchDiagnostics{
 		CLISource:   source,
 		PATHSources: []string{"merged-env"},
@@ -159,32 +166,76 @@ func cliNameForAppType(appType string) (string, error) {
 	}
 }
 
-func resolveRequestedShell(requestedShell string, env []string, capabilities PlatformCapabilities) ResolvedShell {
-	resolvedPath := resolveCommandPath(requestedShell, env)
-	if resolvedPath == "" {
-		resolvedPath = requestedShell
+func resolveRequestedShell(requestedShell string, env []string, capabilities PlatformCapabilities) (ResolvedShell, string, []string) {
+	trimmed := strings.TrimSpace(requestedShell)
+	warnings := []string{}
+	if trimmed == "" {
+		resolved := defaultShellForCapabilities(env, capabilities)
+		return resolved, "default", warnings
 	}
 
-	key := strings.TrimSuffix(strings.ToLower(filepath.Base(resolvedPath)), filepath.Ext(resolvedPath))
+	for _, candidate := range shellCandidates(capabilities.OS) {
+		if strings.EqualFold(candidate.key, trimmed) || strings.EqualFold(candidate.label, trimmed) {
+			resolvedPath := resolveBinaryFromCandidates(candidate.candidates, env)
+			if resolvedPath != "" {
+				return buildResolvedShell(candidate.key, resolvedPath, capabilities), "explicit", warnings
+			}
+			break
+		}
+	}
+
+	resolvedPath := resolveCommandPathForOS(capabilities.OS, trimmed, env)
+	if resolvedPath != "" {
+		key := strings.TrimSuffix(strings.ToLower(filepath.Base(resolvedPath)), filepath.Ext(resolvedPath))
+		return buildResolvedShell(key, resolvedPath, capabilities), "explicit", warnings
+	}
+
+	defaultShell := defaultShellForCapabilities(env, capabilities)
+	if defaultShell.Path != "" {
+		warnings = append(warnings, fmt.Sprintf("requested shell %q was not found; falling back to %s", trimmed, defaultShell.Path))
+		return defaultShell, "fallback", warnings
+	}
+
+	key := strings.TrimSuffix(strings.ToLower(filepath.Base(trimmed)), filepath.Ext(trimmed))
+	return buildResolvedShell(key, trimmed, capabilities), "explicit", warnings
+}
+
+func defaultShellForCapabilities(env []string, capabilities PlatformCapabilities) ResolvedShell {
+	for _, candidate := range shellCandidates(capabilities.OS) {
+		if !strings.EqualFold(candidate.key, capabilities.DefaultShellKey) {
+			continue
+		}
+		if resolvedPath := resolveBinaryFromCandidates(candidate.candidates, env); resolvedPath != "" {
+			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
+		}
+	}
+	for _, candidate := range shellCandidates(capabilities.OS) {
+		if resolvedPath := resolveBinaryFromCandidates(candidate.candidates, env); resolvedPath != "" {
+			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
+		}
+	}
+	return ResolvedShell{}
+}
+
+func buildResolvedShell(key string, resolvedPath string, capabilities PlatformCapabilities) ResolvedShell {
 	bootstrapArg := "/K"
 	loginStyle := "interactive"
 	if capabilities.OS != "windows" {
 		bootstrapArg = "-lc"
 		loginStyle = "login"
 	}
-	if key == "pwsh" || key == "powershell" {
+	switch key {
+	case "pwsh", "powershell":
 		bootstrapArg = "-Command"
-		if capabilities.OS != "windows" {
-			bootstrapArg = "-lc"
-		}
+		loginStyle = "interactive"
+	case "cmd":
+		bootstrapArg = "/K"
+		loginStyle = "interactive"
+	case "bash", "zsh", "fish", "sh":
+		bootstrapArg = "-lc"
+		loginStyle = "login"
 	}
-
-	return ResolvedShell{
-		Key:          key,
-		Path:         resolvedPath,
-		LoginStyle:   loginStyle,
-		BootstrapArg: bootstrapArg,
-	}
+	return ResolvedShell{Key: key, Path: resolvedPath, LoginStyle: loginStyle, BootstrapArg: bootstrapArg}
 }
 
 func buildCommandString(command string, args []string) string {

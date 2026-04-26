@@ -669,9 +669,11 @@ import { ListWorkspaces } from '../../wailsjs/go/workspace/Service'
 import { config, proxy, workspace } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
 import { useDashboardState } from '../composables/useDashboardState'
+import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
 
 const router = useRouter()
 const dashState = useDashboardState()
+const platformCaps = usePlatformCapabilities()
 
 const providers = ref<Record<string, config.Provider>>({})
 const proxyStatus = ref<proxy.ProxyStatus | null>(null)
@@ -803,83 +805,45 @@ function getGroupSummary(group: any): string {
 
 const hasAmagiPresets = computed(() => Object.keys(amagiAvailablePresets.value).length > 0)
 
-// AmagiCode shell 路径解析函数
+// AmagiCode shell 路径 -- uses platform capability resolver
 function resolveAmagiCodeShellPath(): string {
-  switch (amagiCodeShell.value) {
-    case '': return ''
-    case 'pwsh': return 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
-    case 'powershell': return 'powershell.exe'
-    case 'cmd': return 'cmd.exe'
-    case '__custom__': return amagiCodeCustomShellPath.value
-    default: return amagiCodeShell.value
-  }
+  return platformCaps.resolveShellPath(amagiCodeShell.value, amagiCodeCustomShellPath.value)
 }
 
-// Codex 仅支持内嵌终端和独立窗口（无 VSCode/Zed 集成）
-const codexLaunchModes = [
-  { value: 'embedded', label: '内嵌终端', icon: '\u25A8' },
-  { value: 'terminal', label: '独立窗口', icon: '\u2B1B' },
-]
+// Codex 启动模式（由平台能力驱动）
+const codexLaunchModes = computed(() => platformCaps.launchModes.value)
 
 // 启动类型 Tabs
 const activeLaunchTab = ref<'claudecode' | 'opencode' | 'codex' | 'amagicode'>('claudecode')
 
-// Shell 路径选项（固定 + 自定义）
-const builtinShellOptions = [
-  { value: '', label: '直接 Claude' },
-  { value: 'pwsh', label: 'PowerShell 7' },
-  { value: 'powershell', label: 'Windows PowerShell' },
-  { value: 'cmd', label: 'CMD' },
-]
+// Shell 路径选项：平台能力驱动 + 用户自定义
+const builtinShellOptions = computed(() => platformCaps.builtinShellOptions.value)
 
 const shellOptions = computed(() => [
-  ...builtinShellOptions,
+  { value: '', label: '直接启动' },
+  ...builtinShellOptions.value.map(s => ({ value: s.value, label: s.label })),
   ...savedShellPaths.value.map(s => ({ value: s.path, label: s.label })),
   { value: '__custom__', label: '自定义路径' },
 ])
 
-// 获取实际 shell 路径
+// 获取实际 shell 路径（由平台能力驱动）
 function resolveShellPath(): string {
-  switch (claudeShell.value) {
-    case '': return ''
-    case 'pwsh': return 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
-    case 'powershell': return 'powershell.exe'
-    case 'cmd': return 'cmd.exe'
-    case '__custom__': return claudeCustomShellPath.value
-    default: return claudeShell.value
-  }
+  return platformCaps.resolveShellPath(claudeShell.value, claudeCustomShellPath.value)
 }
 
 function resolveOpenCodeShellPath(): string {
-  switch (openCodeShell.value) {
-    case '': return ''
-    case 'pwsh': return 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
-    case 'powershell': return 'powershell.exe'
-    case 'cmd': return 'cmd.exe'
-    case '__custom__': return openCodeCustomShellPath.value
-    default: return openCodeShell.value
-  }
+  return platformCaps.resolveShellPath(openCodeShell.value, openCodeCustomShellPath.value)
 }
 
 function resolveCodexShellPath(): string {
-  switch (codexShell.value) {
-    case '': return ''
-    case 'pwsh': return 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
-    case 'powershell': return 'powershell.exe'
-    case 'cmd': return 'cmd.exe'
-    case '__custom__': return codexCustomShellPath.value
-    default: return codexShell.value
-  }
+  return platformCaps.resolveShellPath(codexShell.value, codexCustomShellPath.value)
 }
 
 const { showSuccess, showError } = useToast()
 
 let refreshInterval: number | null = null
 
-const launchModes = [
-  { value: 'embedded', label: '内嵌终端', icon: '▨' },
-  { value: 'terminal', label: '独立窗口', icon: '⬛' },
-]
+const launchModes = computed(() => platformCaps.launchModes.value)
 
 const availablePresets = computed(() => {
   return claudeCodeAvailablePresets.value
@@ -1122,14 +1086,15 @@ const initDefaults = async () => {
     if (d.provider) dashState.provider = d.provider
     if (d.preset) dashState.preset = d.preset
     dashState.openCodePresetKey = d.openCodePresetKey || ''
+    const shellFallback = platformCaps.defaultShellKey.value || ''
     dashState.claudeMode = d.claudeMode || d.mode || 'embedded'
     dashState.openCodeMode = d.openCodeMode || d.mode || 'embedded'
     dashState.codexMode = d.codexMode || d.mode || 'embedded'
     dashState.amagiCodeMode = d.amagiCodeMode || d.mode || 'embedded'
-    dashState.claudeShell = d.claudeShell || d.shell || 'pwsh'
-    dashState.openCodeShell = d.openCodeShell || d.shell || 'pwsh'
-    dashState.codexShell = d.codexShell || d.shell || 'pwsh'
-    dashState.amagiCodeShell = d.amagiCodeShell || d.shell || 'pwsh'
+    dashState.claudeShell = d.claudeShell || d.shell || shellFallback
+    dashState.openCodeShell = d.openCodeShell || d.shell || shellFallback
+    dashState.codexShell = d.codexShell || d.shell || shellFallback
+    dashState.amagiCodeShell = d.amagiCodeShell || d.shell || shellFallback
     dashState.amagiCodePreset = d.amagiCodePreset || ''
     dashState.useProxy = d.useProxy || false
   } catch (err) {
@@ -1413,12 +1378,12 @@ function basename(p: string): string {
 }
 
 function getModeIcon(mode: string): string {
-  const m = launchModes.find(lm => lm.value === mode)
+  const m = launchModes.value.find(lm => lm.value === mode)
   return m?.icon || '⬛'
 }
 
 function getModeLabel(mode: string): string {
-  const m = launchModes.find(lm => lm.value === mode)
+  const m = launchModes.value.find(lm => lm.value === mode)
   return m?.label || mode
 }
 
@@ -1433,6 +1398,7 @@ function statusLabel(status: string): string {
 }
 
 onMounted(async () => {
+  await platformCaps.ensure()
   await loadProviders()
   await loadTerminalPresets()
   await loadOpenCodePresets()

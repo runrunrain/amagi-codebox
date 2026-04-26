@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package pty
 
@@ -16,53 +16,29 @@ type outputCallback func(data []byte)
 type exitCallback func(exitCode uint32)
 type resizeCallback func(cols, rows int)
 
-type Service struct {
-	mu sync.Mutex
-}
+type Service struct{ mu sync.Mutex }
 
-func NewService(log *logging.Service) *Service {
-	_ = log
-	return &Service{}
-}
-
+func NewService(log *logging.Service) *Service { _ = log; return &Service{} }
 func (s *Service) RegisterOutputCallback(sessionID string, id string, cb func(data []byte)) {
-	_ = s
-	_ = sessionID
-	_ = id
-	_ = cb
+	_, _, _, _ = s, sessionID, id, cb
 }
-func (s *Service) UnregisterOutputCallback(sessionID string, id string) { _ = s; _ = sessionID; _ = id }
+func (s *Service) UnregisterOutputCallback(sessionID string, id string) { _, _, _ = s, sessionID, id }
 func (s *Service) RegisterExitCallback(sessionID string, id string, cb func(exitCode uint32)) {
-	_ = s
-	_ = sessionID
-	_ = id
-	_ = cb
+	_, _, _, _ = s, sessionID, id, cb
 }
-func (s *Service) UnregisterExitCallback(sessionID string, id string) { _ = s; _ = sessionID; _ = id }
+func (s *Service) UnregisterExitCallback(sessionID string, id string) { _, _, _ = s, sessionID, id }
 func (s *Service) RegisterResizeCallback(sessionID string, id string, cb func(cols, rows int)) {
-	_ = s
-	_ = sessionID
-	_ = id
-	_ = cb
+	_, _, _, _ = s, sessionID, id, cb
 }
-func (s *Service) UnregisterResizeCallback(sessionID string, id string) { _ = s; _ = sessionID; _ = id }
+func (s *Service) UnregisterResizeCallback(sessionID string, id string) { _, _, _ = s, sessionID, id }
 func (s *Service) AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) ([]byte, int, int, error) {
-	_ = s
-	_ = sessionID
-	_ = id
-	_ = outputCB
-	_ = resizeCB
+	_, _, _, _ = sessionID, id, outputCB, resizeCB
 	return nil, 0, 0, fmt.Errorf("pty backend is not implemented on this platform yet")
 }
-func (s *Service) DetachSessionObserver(sessionID string, id string) { _ = s; _ = sessionID; _ = id }
-func (s *Service) SetContext(ctx context.Context)                    { _ = s; _ = ctx }
+func (s *Service) DetachSessionObserver(sessionID string, id string) { _, _, _ = s, sessionID, id }
+func (s *Service) SetContext(ctx context.Context)                    { _, _ = s, ctx }
 func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env []string, cols, rows int) (int, error) {
-	_ = shellPath
-	_ = autoCommand
-	_ = workDir
-	_ = env
-	_ = cols
-	_ = rows
+	_, _, _, _, _, _, _ = shellPath, autoCommand, workDir, env, cols, rows, s
 	return 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSpec) (int, error) {
@@ -70,16 +46,14 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	return 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) Write(sessionID string, data string) error {
-	_, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
+	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
 		return err
 	}
 	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) WriteLarge(sessionID string, data string) error { return s.Write(sessionID, data) }
 func (s *Service) Resize(sessionID string, cols, rows int) error {
-	_ = cols
-	_ = rows
+	_, _ = cols, rows
 	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) GetPtyDimensions(sessionID string) (cols, rows int, err error) {

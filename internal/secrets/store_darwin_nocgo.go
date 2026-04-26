@@ -1,11 +1,6 @@
-//go:build darwin
+//go:build darwin && !cgo
 
 package secrets
-
-import (
-	"errors"
-	"os"
-)
 
 type darwinSecretStore struct{}
 
@@ -14,18 +9,12 @@ func NewSecretStore() SecretStore {
 }
 
 func (darwinSecretStore) Load(path string) (map[string]string, error) {
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]string{}, nil
-		}
-		return nil, err
-	}
+	_ = path
 	return nil, ErrSecretStoreNotReady
 }
 
 func (darwinSecretStore) Save(path string, values map[string]string) error {
-	_ = path
-	_ = values
+	_, _ = path, values
 	return ErrSecretStoreNotReady
 }
 

@@ -40,3 +40,6 @@ release/
 
 # Development logs
 *.log
+
+# Go test binaries
+*.test

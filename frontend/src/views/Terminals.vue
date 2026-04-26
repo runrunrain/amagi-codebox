@@ -78,8 +78,11 @@ import '@xterm/xterm/css/xterm.css'
 import { GetSessions, StopSession, RemoveSession, PtyWrite, PtyWriteLarge, PtyResize, OpenFileInEditor, SaveClipboardImage } from '../../wailsjs/go/main/App'
 import { GetTerminalSettings } from '../../wailsjs/go/settings/Service'
 import { EventsOn, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
+import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
 
 defineOptions({ name: 'TerminalsPage' })
+
+const platformCaps = usePlatformCapabilities()
 
 interface SessionInfo {
   id: string
@@ -346,8 +349,8 @@ function createTerminal(sessionId: string) {
     fontSize: 14,
     scrollback: scrollbackLines.value,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
-    // 声明 ConPTY 后端，让 xterm.js 启用 ConPTY 专用的 VT 序列处理路径
-    windowsPty: { backend: 'conpty', buildNumber: 19041 },
+    // ConPTY hint only on Windows
+    ...(platformCaps.isWindows.value ? { windowsPty: { backend: 'conpty', buildNumber: 19041 } } : {}),
     theme: {
       background: '#1a1f2e',
       foreground: '#e0e0e0',

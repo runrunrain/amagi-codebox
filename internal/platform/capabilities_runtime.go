@@ -36,7 +36,7 @@ func capabilitiesForTarget(osName string, arch string) PlatformCapabilities {
 		capabilities.SecureSecretStoreKind = "dpapi"
 		capabilities.DefaultShellKey = "pwsh"
 	case "darwin":
-		capabilities.EmbeddedTerminalSupported = false
+		capabilities.EmbeddedTerminalSupported = true
 		capabilities.StandaloneTerminalSupported = false
 		capabilities.SystemTraySupported = false
 		capabilities.UpdateInstallSupported = false

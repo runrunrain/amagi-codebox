@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/billgraziano/dpapi v0.5.0
+	github.com/creack/pty v1.1.24
 	github.com/energye/systray v1.0.3
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3

@@ -51,3 +51,54 @@ jobs:
         with:
           files: amagi-codebox-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip
           generate_release_notes: true
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Build macOS arm64 bundle
+        run: |
+          wails build -clean -platform darwin/arm64 -ldflags "-X main.Version=${{ steps.get_version.outputs.VERSION }}"
+
+      - name: Prepare macOS arm64 artifact
+        run: |
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc --keepParent build/bin/amagi-codebox.app release-assets/amagi-codebox-${{ steps.get_version.outputs.VERSION }}-darwin-arm64.zip
+
+      - name: Codesign placeholder
+        if: ${{ false }}
+        run: |
+          echo "Reserved for Developer ID signing after certificate + entitlements are wired in."
+
+      - name: Notarization placeholder
+        if: ${{ false }}
+        run: |
+          echo "Reserved for notarization after signing credentials are available."
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/amagi-codebox-${{ steps.get_version.outputs.VERSION }}-darwin-arm64.zip

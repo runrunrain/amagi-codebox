@@ -311,8 +311,11 @@
               </div>
 
               <div class="update-actions">
-                <button class="btn primary" @click="downloadAndApply" :disabled="downloading">
+                <button v-if="platformCaps.caps.value?.updateInstallSupported" class="btn primary" @click="downloadAndApply" :disabled="downloading">
                   {{ downloading ? '下载中...' : '下载并安装' }}
+                </button>
+                <button v-else class="btn primary" @click="openReleasePage" :disabled="!updateInfo?.latestVersion">
+                  前往下载页
                 </button>
               </div>
 
@@ -389,11 +392,14 @@ import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath
 import { GetProviders, GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { config } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
+import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
 import QRCode from 'qrcode'
 
 const { showSuccess, showError } = useToast()
+const platformCaps = usePlatformCapabilities()
 
 const activeTab = ref('general')
 const tabs = [
@@ -433,16 +439,16 @@ const defaults = reactive({
   preset: '',
   openCodePresetKey: '',
   mode: 'embedded',
-  shell: 'pwsh',
+  shell: '',
   claudeMode: 'embedded',
-  claudeShell: 'pwsh',
+  claudeShell: '',
   openCodeMode: 'embedded',
-  openCodeShell: 'pwsh',
+  openCodeShell: '',
   codexMode: 'embedded',
-  codexShell: 'pwsh',
+  codexShell: '',
   amagiCodePreset: '',
   amagiCodeMode: 'embedded',
-  amagiCodeShell: 'pwsh',
+  amagiCodeShell: '',
   useProxy: false,
 })
 
@@ -539,6 +545,11 @@ async function downloadAndApply() {
   }
 }
 
+function openReleasePage() {
+  const target = updateInfo.value?.downloadURL || updateInfo.value?.releaseURL || 'https://github.com/runrunrain/amagi-codebox/releases'
+  BrowserOpenURL(target)
+}
+
 async function saveGitHubToken() {
   savingGHToken.value = true
   try {
@@ -551,17 +562,12 @@ async function saveGitHubToken() {
   }
 }
 
-const launchModes = [
-  { value: 'embedded', label: '内嵌终端', icon: '▨' },
-  { value: 'terminal', label: '独立窗口', icon: '⬛' },
-]
+const launchModes = computed(() => platformCaps.launchModes.value)
 
-const shellOptions = [
-  { value: '', label: '直接 Claude' },
-  { value: 'pwsh', label: 'PowerShell 7' },
-  { value: 'powershell', label: 'Windows PowerShell' },
-  { value: 'cmd', label: 'CMD' },
-]
+const shellOptions = computed(() => [
+  { value: '', label: '直接启动' },
+  ...platformCaps.builtinShellOptions.value.map(s => ({ value: s.value, label: s.label })),
+])
 
 const availablePresets = computed(() => {
   if (!defaults.provider) return {}
@@ -629,20 +635,21 @@ const loadData = async () => {
   }
   try {
     const d = await GetDashboardDefaults()
+    const shellFallback = platformCaps.defaultShellKey.value || ''
     defaults.provider = d.provider || ''
     defaults.preset = d.preset || ''
     defaults.openCodePresetKey = d.openCodePresetKey || ''
     defaults.mode = d.mode || 'embedded'
-    defaults.shell = d.shell || 'pwsh'
+    defaults.shell = d.shell || shellFallback
     defaults.claudeMode = d.claudeMode || d.mode || 'embedded'
-    defaults.claudeShell = d.claudeShell || d.shell || 'pwsh'
+    defaults.claudeShell = d.claudeShell || d.shell || shellFallback
     defaults.openCodeMode = d.openCodeMode || d.mode || 'embedded'
-    defaults.openCodeShell = d.openCodeShell || d.shell || 'pwsh'
+    defaults.openCodeShell = d.openCodeShell || d.shell || shellFallback
     defaults.codexMode = d.codexMode || d.mode || 'embedded'
-    defaults.codexShell = d.codexShell || d.shell || 'pwsh'
+    defaults.codexShell = d.codexShell || d.shell || shellFallback
     defaults.amagiCodePreset = d.amagiCodePreset || ''
     defaults.amagiCodeMode = d.amagiCodeMode || d.mode || 'embedded'
-    defaults.amagiCodeShell = d.amagiCodeShell || d.shell || 'pwsh'
+    defaults.amagiCodeShell = d.amagiCodeShell || d.shell || shellFallback
     defaults.useProxy = d.useProxy || false
   } catch (err) {
     console.error('load defaults:', err)
@@ -897,6 +904,7 @@ async function saveMobileWebRoot() {
 }
 
 onMounted(async () => {
+  await platformCaps.ensure()
   await loadData()
   await loadRemoteStatus()
   try {

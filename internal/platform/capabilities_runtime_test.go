@@ -2,11 +2,11 @@ package platform
 
 import "testing"
 
-func TestCapabilitiesForDarwinMatchPhase1StubReadiness(t *testing.T) {
+func TestCapabilitiesForDarwinMatchPhase2MVPReadiness(t *testing.T) {
 	capabilities := capabilitiesForTarget("darwin", "arm64")
 
-	if capabilities.EmbeddedTerminalSupported {
-		t.Fatal("expected darwin embedded terminal to remain disabled before Phase 2 PTY backend exists")
+	if !capabilities.EmbeddedTerminalSupported {
+		t.Fatal("expected darwin embedded terminal to be enabled once Phase 2 PTY backend exists")
 	}
 	if capabilities.StandaloneTerminalSupported {
 		t.Fatal("expected darwin standalone terminal to remain disabled")
