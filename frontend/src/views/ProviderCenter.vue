@@ -59,9 +59,9 @@
                 </button>
               </div>
               <div class="card-body">
-                <div class="info-row">
-                  <span class="label">Base URL:</span>
-                  <span class="value truncate" :title="pInfo.base_url">{{ pInfo.base_url || '-' }}</span>
+                <div class="info-row" v-for="entry in getUrlEntries(pInfo as any)" :key="entry.key">
+                  <span class="label" :class="entry.labelClass">{{ entry.label }}</span>
+                  <span class="value truncate" :title="entry.url">{{ entry.url }}</span>
                 </div>
                 <div class="info-row">
                   <span class="label">默认模型:</span>
@@ -746,6 +746,33 @@ function hasAnthropicFormat(p: any): boolean {
 }
 function hasOpenAIFormat(p: any): boolean {
   return !!(p?.openai?.enabled) || (p?.type || '').toLowerCase() === 'openai' || p?.auth_key === 'OPENAI_API_KEY'
+}
+
+interface UrlEntry {
+  key: string
+  label: string
+  url: string
+  labelClass: string
+}
+
+function getUrlEntries(p: any): UrlEntry[] {
+  const entries: UrlEntry[] = []
+  const aEnabled = !!(p?.anthropic?.enabled)
+  const oEnabled = !!(p?.openai?.enabled)
+  const isDual = aEnabled && oEnabled
+
+  if (isDual) {
+    // Dual-format: strictly read from each sub-format's own base_url, no cross-fallback
+    entries.push({ key: 'anthropic', label: 'A:', url: p?.anthropic?.base_url || '-', labelClass: 'label-anthropic' })
+    entries.push({ key: 'openai', label: 'O:', url: p?.openai?.base_url || '-', labelClass: 'label-openai' })
+  } else if (aEnabled) {
+    entries.push({ key: 'anthropic', label: 'Base URL:', url: p?.anthropic?.base_url || p?.base_url || '-', labelClass: '' })
+  } else if (oEnabled) {
+    entries.push({ key: 'openai', label: 'Base URL:', url: p?.openai?.base_url || p?.base_url || '-', labelClass: '' })
+  } else {
+    entries.push({ key: 'default', label: 'Base URL:', url: p?.base_url || '-', labelClass: '' })
+  }
+  return entries
 }
 
 function resetAddProviderForm() {
@@ -1744,6 +1771,8 @@ watch(activeSection, (newSection) => {
 .status-dot.unconfigured { background: #ffa726; box-shadow: 0 0 0 3px rgba(255,167,38,0.12); }
 .info-row { display: flex; margin-bottom: 8px; font-size: 14px; }
 .info-row .label { color: #8899aa; min-width: 80px; }
+.info-row .label.label-anthropic { color: #e67e22; min-width: 32px; }
+.info-row .label.label-openai { color: #10a37f; min-width: 32px; }
 .info-row .value { color: #e0e6ed; flex: 1; }
 .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .badge-row { margin-top: 16px; display: flex; gap: 6px; }
