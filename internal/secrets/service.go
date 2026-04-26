@@ -1,7 +1,6 @@
 package secrets
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,12 +8,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/billgraziano/dpapi"
 )
 
 type SecretsService struct {
 	secretsPath string
+	store       SecretStore
 	cache       map[string]string // provider -> apikey
 	mu          sync.RWMutex
 }
@@ -22,6 +20,7 @@ type SecretsService struct {
 func NewSecretsService(configDir string) *SecretsService {
 	return &SecretsService{
 		secretsPath: filepath.Join(configDir, "secrets.enc"),
+		store:       NewSecretStore(),
 		cache:       map[string]string{},
 	}
 }
@@ -30,33 +29,19 @@ func (s *SecretsService) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	b, err := os.ReadFile(s.secretsPath)
+	loaded, err := s.store.Load(s.secretsPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.cache = map[string]string{}
 			return nil
 		}
-		return fmt.Errorf("read secrets: %w", err)
+		return err
 	}
-
-	if len(b) == 0 {
+	if loaded == nil {
 		s.cache = map[string]string{}
 		return nil
 	}
-
-	plaintext, err := dpapi.Decrypt(string(b))
-	if err != nil {
-		return fmt.Errorf("dpapi decrypt: %w", err)
-	}
-
-	var m map[string]string
-	if err := json.Unmarshal([]byte(plaintext), &m); err != nil {
-		return fmt.Errorf("parse secrets json: %w", err)
-	}
-	if m == nil {
-		m = map[string]string{}
-	}
-	s.cache = m
+	s.cache = loaded
 	return nil
 }
 
@@ -69,29 +54,20 @@ func (s *SecretsService) Save() error {
 	path := s.secretsPath
 	s.mu.RUnlock()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("mkdir secrets dir: %w", err)
+	err := s.store.Save(path, m)
+	if err != nil && errors.Is(err, ErrSecretStoreNotReady) && !hasNonEmptySecrets(m) {
+		return nil
 	}
+	return err
+}
 
-	plaintext, err := json.Marshal(m)
-	if err != nil {
-		return fmt.Errorf("marshal secrets: %w", err)
+func hasNonEmptySecrets(values map[string]string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
 	}
-
-	ciphertext, err := dpapi.Encrypt(string(plaintext))
-	if err != nil {
-		return fmt.Errorf("dpapi encrypt: %w", err)
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(ciphertext), 0o600); err != nil {
-		return fmt.Errorf("write temp secrets: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace secrets: %w", err)
-	}
-	return nil
+	return false
 }
 
 func (s *SecretsService) GetAPIKey(provider string) (string, error) {
@@ -226,6 +202,10 @@ func (s *SecretsService) GetKeyDiagnostics(providerNames []string) map[string]ma
 	result := make(map[string]map[string]string, len(providerNames))
 	for _, name := range providerNames {
 		info := map[string]string{}
+		info["secure_store_kind"] = s.store.Kind()
+		if legacyPath := s.store.LegacyImportPath(s.secretsPath); legacyPath != "" {
+			info["legacy_store_path"] = legacyPath
+		}
 		key, source := s.GetAPIKeyWithFallback(name)
 		info["source"] = source
 		info["masked_key"] = MaskKey(key)

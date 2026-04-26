@@ -2,19 +2,17 @@ package updater
 
 import (
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/platform"
 	"archive/zip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 const userAgent = "amagi-codebox-updater"
@@ -34,6 +32,7 @@ type Service struct {
 	repoRepo       string
 	currentVersion string
 	log            *logging.Service
+	capabilities   platform.PlatformCapabilities
 
 	mu       sync.Mutex
 	lastInfo *UpdateInfo
@@ -65,6 +64,7 @@ func NewService(currentVersion string, log *logging.Service) *Service {
 		repoRepo:       "amagi-codebox",
 		currentVersion: normalizeVersion(currentVersion),
 		log:            log,
+		capabilities:   platform.CurrentCapabilities(),
 	}
 }
 
@@ -106,7 +106,7 @@ func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 		return nil, fmt.Errorf("decode latest release: %w", err)
 	}
 
-	asset, err := findWindowsAsset(release.Assets)
+	asset, err := findReleaseAsset(s.capabilities, release.Assets)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +159,9 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 	if info.DownloadURL == "" {
 		return fmt.Errorf("missing download url")
 	}
+	if !s.capabilities.UpdateInstallSupported {
+		return fmt.Errorf("update install is not supported on platform %s", s.capabilities.PlatformID)
+	}
 
 	downloadPath := filepath.Join(os.TempDir(), "amagi-codebox-update.zip")
 	extractedPath := filepath.Join(os.TempDir(), "amagi-codebox-update.exe")
@@ -198,10 +201,7 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 		return fmt.Errorf("replace executable: %w", err)
 	}
 
-	cmd := exec.Command(exePath)
-	cmd.Dir = filepath.Dir(exePath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000010}
-	if err := cmd.Start(); err != nil {
+	if err := startUpdatedExecutable(exePath); err != nil {
 		_ = os.Remove(exePath)
 		_ = os.Rename(oldPath, exePath)
 		return fmt.Errorf("start updated executable: %w", err)
@@ -297,19 +297,6 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 		w.onProgress(w.downloaded, w.total)
 	}
 	return n, nil
-}
-
-func findWindowsAsset(assets []githubReleaseAsset) (*githubReleaseAsset, error) {
-	for i := range assets {
-		matched, err := pathpkg.Match("amagi-codebox-*-windows-amd64.zip", assets[i].Name)
-		if err != nil {
-			return nil, fmt.Errorf("match release asset: %w", err)
-		}
-		if matched {
-			return &assets[i], nil
-		}
-	}
-	return nil, fmt.Errorf("windows release asset not found")
 }
 
 func extractExeFromZip(zipPath string, targetPath string) error {

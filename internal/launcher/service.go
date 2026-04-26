@@ -13,6 +13,7 @@ import (
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
 )
 
@@ -29,6 +30,7 @@ type LauncherService struct {
 	proxyPort int
 	log       *logging.Service
 	envVars   *envvars.EnvVarsService
+	resolver  platform.CLIResolver
 }
 
 func NewLauncherService(log *logging.Service, envVars *envvars.EnvVarsService) *LauncherService {
@@ -36,7 +38,17 @@ func NewLauncherService(log *logging.Service, envVars *envvars.EnvVarsService) *
 		processes: make(map[string]*exec.Cmd),
 		log:       log,
 		envVars:   envVars,
+		resolver:  platform.NewCLIResolver(platform.CurrentCapabilities()),
 	}
+}
+
+func (s *LauncherService) resolveCLIPath(command string, env []string) string {
+	if s.resolver != nil {
+		if cli, _, err := s.resolver.ResolveExecutable(command, nil, env); err == nil && cli.Path != "" {
+			return cli.Path
+		}
+	}
+	return command
 }
 
 func (s *LauncherService) baseEnv() []string {
@@ -330,7 +342,7 @@ func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string)
 	if modelName != "" {
 		args = append(args, "-m", modelName)
 	}
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command(s.resolveCLIPath("codex", env), args...)
 	cmd.Dir = workDir
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
@@ -343,7 +355,7 @@ func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string)
 // 复刻原始验证可行的方式：直接 exec.Command("claude")，
 // 传递 os.Stdin/Stdout/Stderr，由 Windows 自动分配新控制台。
 func (s *LauncherService) buildClaudeCmd(workDir string, env []string) *exec.Cmd {
-	cmd := exec.Command("claude")
+	cmd := exec.Command(s.resolveCLIPath("claude", env))
 	cmd.Dir = workDir
 	cmd.Env = env
 	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。
@@ -360,7 +372,7 @@ func (s *LauncherService) buildClaudeCmd(workDir string, env []string) *exec.Cmd
 // buildOpenCodeCmd 构建 opencode 进程命令。
 // 与 buildClaudeCmd 类似，但启动的是 opencode 命令。
 func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.Cmd {
-	cmd := exec.Command("opencode")
+	cmd := exec.Command(s.resolveCLIPath("opencode", env))
 	cmd.Dir = workDir
 	cmd.Env = env
 	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。
@@ -373,7 +385,7 @@ func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.C
 // buildAmagiCmd 构建 amagicode 进程命令。
 // 与 buildClaudeCmd 类似，但启动的是 amagicode 命令。
 func (s *LauncherService) buildAmagiCmd(workDir string, env []string) *exec.Cmd {
-	cmd := exec.Command("amagicode")
+	cmd := exec.Command(s.resolveCLIPath("amagicode", env))
 	cmd.Dir = workDir
 	cmd.Env = env
 	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。

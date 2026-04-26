@@ -1,3 +1,5 @@
+//go:build windows
+
 package pty
 
 import (
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/platform"
 
 	"github.com/UserExistsError/conpty"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -226,6 +229,44 @@ func (s *Service) SetContext(ctx context.Context) {
 // env: 环境变量
 // cols, rows: 终端尺寸
 func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env []string, cols, rows int) (int, error) {
+	cliPath := autoCommand
+	cliArgs := []string{}
+	if shellPath == "" {
+		parts := strings.Fields(strings.TrimSpace(autoCommand))
+		if len(parts) > 0 {
+			cliPath = parts[0]
+			cliArgs = append(cliArgs, parts[1:]...)
+		}
+	}
+	if cliPath == "" {
+		cliPath = "claude"
+	}
+	spec := platform.ResolvedLaunchSpec{
+		WorkDir: workDir,
+		CLI: platform.ResolvedCLI{
+			Path: cliPath,
+			Args: cliArgs,
+		},
+		Env:     platform.ResolvedEnv{Variables: env},
+		PTYCols: cols,
+		PTYRows: rows,
+		Shell: func() *platform.ResolvedShell {
+			if strings.TrimSpace(shellPath) == "" {
+				return nil
+			}
+			return &platform.ResolvedShell{Path: shellPath}
+		}(),
+	}
+	if strings.TrimSpace(shellPath) == "" {
+		spec.BootstrapMode = platform.BootstrapDirectCommand
+	} else {
+		spec.BootstrapMode = platform.BootstrapShellInline
+		spec.StartupCommand = autoCommand
+	}
+	return s.StartResolved(sessionID, spec)
+}
+
+func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSpec) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -233,6 +274,8 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 		return 0, fmt.Errorf("session %s already exists", sessionID)
 	}
 
+	cols := spec.PTYCols
+	rows := spec.PTYRows
 	if cols <= 0 {
 		cols = 120
 	}
@@ -240,7 +283,16 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 		rows = 40
 	}
 
-	// 确定实际启动的命令行
+	shellPath := ""
+	if spec.Shell != nil {
+		shellPath = spec.Shell.Path
+	}
+	workDir := spec.WorkDir
+	autoCommand := spec.StartupCommand
+	if spec.BootstrapMode == platform.BootstrapDirectCommand {
+		autoCommand = buildCommandLine(spec.CLI.Path, spec.CLI.Args)
+	}
+
 	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
 
 	// 验证 shell 路径是否存在，如果不存在则尝试回退
@@ -264,8 +316,8 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 	if workDir != "" {
 		opts = append(opts, conpty.ConPtyWorkDir(workDir))
 	}
-	if env != nil {
-		opts = append(opts, conpty.ConPtyEnv(env))
+	if spec.Env.Variables != nil {
+		opts = append(opts, conpty.ConPtyEnv(spec.Env.Variables))
 	}
 
 	cpty, err := conpty.Start(commandLine, opts...)
@@ -561,6 +613,15 @@ func quoteCommandPath(commandLine string) string {
 		return fmt.Sprintf(`"%s"`, strings.Trim(commandLine, `"`))
 	}
 	return commandLine
+}
+
+func buildCommandLine(command string, args []string) string {
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, quoteCommandPath(command))
+	for _, arg := range args {
+		parts = append(parts, quoteCommandPath(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 func escapePowerShellCommand(command string) string {

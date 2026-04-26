@@ -2,17 +2,14 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"amagi-codebox/internal/amagi"
@@ -22,6 +19,7 @@ import (
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/opencodeconfig"
 	"amagi-codebox/internal/paths"
+	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/plugin"
 	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/pty"
@@ -57,9 +55,6 @@ type OpenRemoteWebUIResult struct {
 	Running bool   `json:"running"`
 }
 
-//go:embed build/windows/icon.ico
-var trayIcon []byte
-
 // App 主应用结构体，负责跨服务协调和生命周期管理。
 // 通过 Wails 绑定暴露给前端。
 type App struct {
@@ -83,6 +78,10 @@ type App struct {
 	Amagi          *amagi.Service
 	OpenCodeConfig *opencodeconfig.Service
 
+	Capabilities platform.PlatformCapabilities
+	CLIResolver  platform.CLIResolver
+	FileOpener   platform.FileOpener
+
 	// startupWarnings 记录启动期间的警告信息，供前端拉取后向用户展示。
 	startupWarnings   []string
 	startupWarningsMu sync.Mutex
@@ -92,6 +91,7 @@ func NewApp() *App {
 	configDir := defaultConfigDir()
 	log := logging.NewService(configDir)
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
+	capabilities := platform.CurrentCapabilities()
 	pluginsSvc := plugin.NewService("", log)
 
 	app := &App{
@@ -111,6 +111,9 @@ func NewApp() *App {
 		Workspaces:     workspace.NewService(configDir, pluginsSvc, log),
 		Amagi:          amagi.NewService(configDir),
 		OpenCodeConfig: opencodeconfig.NewService(),
+		Capabilities:   capabilities,
+		CLIResolver:    platform.NewCLIResolver(capabilities),
+		FileOpener:     platform.NewFileOpener(platform.NewProcessRunner()),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log)
@@ -122,6 +125,31 @@ func NewApp() *App {
 func (a *App) GetSettingsService() *settings.Service   { return a.Settings }
 func (a *App) GetPathsService() *paths.PathsService    { return a.Paths }
 func (a *App) GetConfigService() *config.ConfigService { return a.Config }
+
+func (a *App) platformCapabilities() platform.PlatformCapabilities {
+	if a.Capabilities.PlatformID != "" {
+		return a.Capabilities
+	}
+	return platform.CurrentCapabilities()
+}
+
+func (a *App) cliResolver() platform.CLIResolver {
+	if a.CLIResolver != nil {
+		return a.CLIResolver
+	}
+	return platform.NewCLIResolver(a.platformCapabilities())
+}
+
+func (a *App) fileOpener() platform.FileOpener {
+	if a.FileOpener != nil {
+		return a.FileOpener
+	}
+	return platform.NewFileOpener(platform.NewProcessRunner())
+}
+
+func (a *App) GetPlatformCapabilities() platform.PlatformCapabilities {
+	return a.platformCapabilities()
+}
 
 func (a *App) GetSession(sessionID string) (session.SessionInfo, error) {
 	for _, s := range a.GetSessions() {
@@ -390,12 +418,17 @@ func (a *App) Startup(ctx context.Context) {
 		a.Log.Info("app", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
 	}
 
-	// 启动系统托盘
-	a.Tray.Start(ctx, trayIcon, func() {
-		a.Shutdown(ctx)
-		wailsRuntime.Quit(ctx)
-	})
-	a.Log.Info("app", "系统托盘已启动")
+	// 启动系统托盘（仅在平台能力允许时）
+	capabilities := a.platformCapabilities()
+	if capabilities.SystemTraySupported && len(trayIcon) > 0 {
+		a.Tray.Start(ctx, trayIcon, func() {
+			a.Shutdown(ctx)
+			wailsRuntime.Quit(ctx)
+		})
+		a.Log.Info("app", "系统托盘已启动")
+	} else {
+		a.Log.Info("app", "当前平台未启用系统托盘", fmt.Sprintf("platform=%s", capabilities.PlatformID))
+	}
 }
 
 // Shutdown Wails 生命周期钩子：应用关闭前停止代理和进程。
@@ -419,6 +452,26 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.Pty.CloseAll()
 	a.Log.Info("app", "应用已关闭")
 	a.Log.Close()
+}
+
+func (a *App) validateLaunchMode(mode string) error {
+	return platform.ValidateLaunchRequest(a.platformCapabilities(), mode)
+}
+
+func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
+	if err := a.validateLaunchMode(mode); err != nil {
+		return platform.ResolvedLaunchSpec{}, err
+	}
+	return a.cliResolver().Resolve(platform.ResolveRequest{
+		AppType:            string(appType),
+		LaunchMode:         mode,
+		RequestedShellPath: shellPath,
+		WorkDir:            workDir,
+		Env:                env,
+		CLIArgs:            args,
+		PTYCols:            120,
+		PTYRows:            40,
+	})
 }
 
 // --- 多终端会话管理 ---
@@ -499,6 +552,9 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	if launchMode == "" {
 		launchMode = session.ModeTerminal
 	}
+	if err := a.validateLaunchMode(string(launchMode)); err != nil {
+		return "", err
+	}
 
 	// 如果未指定工作目录，使用默认路径
 	if workDir == "" {
@@ -548,16 +604,13 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, overrides)
 
-		// 确定 shell 路径和自动命令
-		actualShell := shellPath
-		autoCommand := ""
-		if actualShell != "" {
-			// 用户指定了 shell，在 shell 中自动启动 claude
-			autoCommand = "claude"
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, env, nil)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", err
 		}
-		// actualShell 为空时，PTY 会直接启动 "claude"
 
-		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
+		pid, err := a.Pty.StartResolved(sess.ID, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -695,6 +748,9 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	if launchMode == "" {
 		launchMode = session.ModeTerminal
 	}
+	if err := a.validateLaunchMode(string(launchMode)); err != nil {
+		return "", err
+	}
 
 	// 如果未指定工作目录，使用默认路径
 	if workDir == "" {
@@ -752,16 +808,17 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 
-		actualShell := shellPath
-		autoCommand := ""
-		if actualShell != "" {
-			autoCommand = "codex"
-			if launchSettings.Model != "" {
-				autoCommand = fmt.Sprintf("codex -m %s", launchSettings.Model)
-			}
+		args := []string{}
+		if launchSettings.Model != "" {
+			args = append(args, "-m", launchSettings.Model)
+		}
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, env, args)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", err
 		}
 
-		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
+		pid, err := a.Pty.StartResolved(sess.ID, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Codex PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -1111,6 +1168,9 @@ launchCommon:
 	if launchMode == "" {
 		launchMode = session.ModeTerminal
 	}
+	if err := a.validateLaunchMode(string(launchMode)); err != nil {
+		return "", err
+	}
 
 	// 如果未指定工作目录，使用默认路径
 	if workDir == "" {
@@ -1136,13 +1196,13 @@ launchCommon:
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 
-		actualShell := shellPath
-		autoCommand := ""
-		if actualShell != "" {
-			autoCommand = "opencode"
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, env, nil)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", err
 		}
 
-		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
+		pid, err := a.Pty.StartResolved(sess.ID, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "OpenCode PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -1298,6 +1358,9 @@ func (a *App) LaunchAmagiCode(groupName string, providerName string, mode string
 	if launchMode == "" {
 		launchMode = session.ModeTerminal
 	}
+	if err := a.validateLaunchMode(string(launchMode)); err != nil {
+		return "", err
+	}
 
 	// 如果未指定工作目录，使用默认路径
 	if workDir == "" {
@@ -1319,17 +1382,13 @@ func (a *App) LaunchAmagiCode(groupName string, providerName string, mode string
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 
-		actualShell := shellPath
-		autoCommand := ""
-		if actualShell != "" {
-			// 用户指定了 shell，在 shell 中自动启动 amagicode
-			autoCommand = "amagicode"
-		} else {
-			// 未指定 shell 时，PTY 直接启动 amagicode 命令
-			autoCommand = "amagicode"
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeAmagiCode, string(launchMode), shellPath, workDir, env, nil)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", err
 		}
 
-		pid, err := a.Pty.Start(sess.ID, actualShell, autoCommand, workDir, env, 120, 40)
+		pid, err := a.Pty.StartResolved(sess.ID, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "AmagiCode PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -1585,14 +1644,13 @@ func (a *App) DetachSessionObserver(sessionID string, id string) {
 // OpenFileInEditor 使用系统默认程序打开指定文件。
 // filePath 可以是绝对路径或相对路径；line 参数保留兼容但不使用（系统默认程序通常不支持行号定位）。
 func (a *App) OpenFileInEditor(filePath string, line int) error {
+	_ = line
 	// 先验证文件是否存在，避免打开不存在的路径时创建空文件
 	if _, err := os.Stat(filePath); err != nil {
 		a.Log.Debug("app", "文件不存在，跳过打开", filePath)
 		return fmt.Errorf("file not found: %s", filePath)
 	}
-	shellCmd := exec.Command("cmd", "/c", "start", "", filePath)
-	shellCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if err := shellCmd.Start(); err != nil {
+	if err := a.fileOpener().Open(filePath); err != nil {
 		a.Log.Warn("app", "打开文件失败", fmt.Sprintf("file=%s err=%v", filePath, err))
 		return fmt.Errorf("open file %q: %w", filePath, err)
 	}

@@ -1,12 +1,11 @@
 package plugin
 
 import (
-	"bytes"
+	"amagi-codebox/internal/platform"
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -14,24 +13,31 @@ func (s *Service) executeClaudeCommand(args ...string) (*CommandResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	cli, _, err := resolver.ResolveExecutable("claude", args, os.Environ())
+	if err != nil {
+		return nil, err
+	}
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	runner := platform.NewProcessRunner()
 
 	joinedArgs := strings.Join(args, " ")
 	if s.log != nil {
 		s.log.Info("plugin", "执行 Claude 插件命令", joinedArgs)
 	}
 
-	err := cmd.Run()
+	resultSpec, err := runner.Run(ctx, platform.CommandSpec{
+		Path:   cli.Path,
+		Args:   cli.Args,
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if resultSpec == nil {
+		resultSpec = &platform.ProcessResult{}
+	}
 	result := &CommandResult{
 		Success: err == nil,
-		Output:  strings.TrimSpace(stdout.String()),
-		Error:   strings.TrimSpace(stderr.String()),
+		Output:  strings.TrimSpace(resultSpec.Stdout),
+		Error:   strings.TrimSpace(resultSpec.Stderr),
 	}
 
 	if ctx.Err() == context.DeadlineExceeded {
