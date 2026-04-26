@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -215,8 +216,13 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 	if shellPath == "" {
 		spec.BootstrapMode = platform.BootstrapDirectCommand
 	} else {
+		bootstrapArg := "-lc"
+		lowerShell := strings.ToLower(shellPath)
+		if strings.Contains(lowerShell, "zsh") || strings.Contains(lowerShell, "bash") {
+			bootstrapArg = "-ilc"
+		}
 		spec.BootstrapMode = platform.BootstrapShellInline
-		spec.Shell = &platform.ResolvedShell{Path: shellPath, BootstrapArg: "-lc", LoginStyle: "login"}
+		spec.Shell = &platform.ResolvedShell{Path: shellPath, BootstrapArg: bootstrapArg, LoginStyle: "login"}
 		spec.StartupCommand = autoCommand
 	}
 	return s.StartResolved(sessionID, spec)
@@ -289,7 +295,9 @@ func buildDarwinPTYCommand(spec platform.ResolvedLaunchSpec) (*exec.Cmd, string,
 	switch spec.Shell.Key {
 	case "pwsh", "powershell":
 		args = []string{"-NoLogo", "-NoProfile", "-Command", startupCommand}
-	case "fish", "bash", "zsh", "sh", "":
+	case "bash", "zsh":
+		args = []string{"-ilc", startupCommand}
+	case "fish", "sh", "":
 		args = []string{"-lc", startupCommand}
 	default:
 		bootstrapArg := spec.Shell.BootstrapArg

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var darwinBaselinePATH = []string{"/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+var darwinBaselinePATH = []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
 func resolveExecutableWithEnvForOS(osName string, command string, env []string) (string, string) {
 	if resolved := resolveCommandPathForOS(osName, command, env); resolved != "" {
@@ -18,7 +18,7 @@ func resolveExecutableWithEnvForOS(osName string, command string, env []string) 
 		return resolved, "path-search"
 	}
 	if osName == "darwin" {
-		if resolved := resolveCommandViaShellFallback(command, env); resolved != "" {
+		if resolved := resolveCommandViaShellFallback(command, env, nil); resolved != "" {
 			return resolved, "fallback"
 		}
 	}
@@ -72,10 +72,8 @@ func resolveCommandPathForOS(osName string, command string, env []string) string
 
 func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []string, []string) {
 	vars := append([]string(nil), env...)
-	pathValue := envValue(vars, "PATH")
-	if pathValue == "" {
-		pathValue = os.Getenv("PATH")
-	}
+	callerPATH := envValue(vars, "PATH")
+	inheritedPATH := os.Getenv("PATH")
 
 	pathSources := []string{}
 
@@ -83,7 +81,7 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 	callerEntries := []string{}
 	inheritedEntries := []string{}
 	seen := map[string]struct{}{}
-	for _, entry := range filepath.SplitList(pathValue) {
+	for _, entry := range filepath.SplitList(callerPATH) {
 		trimmed := strings.TrimSpace(entry)
 		if trimmed == "" {
 			continue
@@ -117,19 +115,17 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 		}
 	}
 
-	if osName != currentOS() {
-		for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
-			trimmed := strings.TrimSpace(entry)
-			if trimmed == "" {
-				continue
-			}
-			key := normalizePathKey(trimmed, osName)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			inheritedEntries = append(inheritedEntries, trimmed)
+	for _, entry := range filepath.SplitList(inheritedPATH) {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			continue
 		}
+		key := normalizePathKey(trimmed, osName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		inheritedEntries = append(inheritedEntries, trimmed)
 	}
 
 	entries = append(entries, inheritedEntries...)
@@ -173,12 +169,13 @@ func normalizePathKey(path string, osName string) string {
 	return path
 }
 
-func resolveCommandViaShellFallback(command string, env []string) string {
-	for _, shell := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
-		if !fileExists(shell) {
+func resolveCommandViaShellFallback(command string, env []string, selectedShell *ResolvedShell) string {
+	for _, shell := range shellResolutionOrder(selectedShell) {
+		if !fileExists(shell.Path) {
 			continue
 		}
-		cmd := exec.Command(shell, "-lc", "command -v -- "+quoteShellLiteral(command))
+		args := buildShellResolveArgs(shell, command)
+		cmd := exec.Command(shell.Path, args[0], args[1])
 		cmd.Env = env
 		out, err := cmd.Output()
 		if err != nil {
@@ -190,6 +187,44 @@ func resolveCommandViaShellFallback(command string, env []string) string {
 		}
 	}
 	return ""
+}
+
+func shellResolutionOrder(selectedShell *ResolvedShell) []ResolvedShell {
+	ordered := make([]ResolvedShell, 0, 4)
+	seen := map[string]struct{}{}
+	appendShell := func(shell ResolvedShell) {
+		if strings.TrimSpace(shell.Path) == "" {
+			return
+		}
+		if _, ok := seen[shell.Path]; ok {
+			return
+		}
+		seen[shell.Path] = struct{}{}
+		ordered = append(ordered, shell)
+	}
+	if selectedShell != nil {
+		appendShell(*selectedShell)
+	}
+	appendShell(ResolvedShell{Key: "zsh", Path: "/bin/zsh"})
+	appendShell(ResolvedShell{Key: "bash", Path: "/bin/bash"})
+	appendShell(ResolvedShell{Key: "sh", Path: "/bin/sh"})
+	return ordered
+}
+
+func buildShellResolveArgs(shell ResolvedShell, command string) []string {
+	probe := "command -v -- " + quoteShellLiteral(command)
+	bootstrapArg := "-lc"
+	switch shell.Key {
+	case "zsh", "bash":
+		bootstrapArg = "-ilc"
+	case "sh", "fish", "":
+		bootstrapArg = "-lc"
+	default:
+		if strings.TrimSpace(shell.BootstrapArg) != "" {
+			bootstrapArg = shell.BootstrapArg
+		}
+	}
+	return []string{bootstrapArg, probe}
 }
 
 func quoteShellLiteral(value string) string {

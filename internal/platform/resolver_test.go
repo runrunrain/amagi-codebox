@@ -84,14 +84,40 @@ func TestDarwinResolverResolvesShellKeyAndInlineCommand(t *testing.T) {
 	if spec.Shell.Path != shellPath {
 		t.Fatalf("resolved shell path = %q, want %q", spec.Shell.Path, shellPath)
 	}
-	if spec.Shell.BootstrapArg != "-lc" {
-		t.Fatalf("bootstrap arg = %q, want -lc", spec.Shell.BootstrapArg)
+	if spec.Shell.BootstrapArg != "-ilc" {
+		t.Fatalf("bootstrap arg = %q, want -ilc", spec.Shell.BootstrapArg)
 	}
 	if spec.BootstrapMode != BootstrapShellInline {
 		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellInline)
 	}
 	if !strings.Contains(spec.StartupCommand, cliPath) {
 		t.Fatalf("startup command = %q, want resolved cli path included", spec.StartupCommand)
+	}
+}
+
+func TestDarwinBaselinePATHIncludesUsrLocalBin(t *testing.T) {
+	found := false
+	for _, entry := range darwinBaselinePATH {
+		if entry == "/usr/local/bin" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected darwin baseline PATH to include /usr/local/bin")
+	}
+}
+
+func TestBuildShellResolveArgsUsesInteractiveLoginForZsh(t *testing.T) {
+	args := buildShellResolveArgs(ResolvedShell{Key: "zsh", Path: "/bin/zsh"}, "claude")
+	if len(args) != 2 {
+		t.Fatalf("unexpected arg length: %d", len(args))
+	}
+	if args[0] != "-ilc" {
+		t.Fatalf("shell resolve bootstrap = %q, want -ilc", args[0])
+	}
+	if !strings.Contains(args[1], "command -v -- 'claude'") {
+		t.Fatalf("unexpected shell resolve command: %q", args[1])
 	}
 }
 

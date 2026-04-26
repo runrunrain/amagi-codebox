@@ -87,12 +87,23 @@ func NewCLIResolver(capabilities PlatformCapabilities) CLIResolver {
 
 func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec, error) {
 	resolvedEnv, effectivePATH, addedEntries, pathSources := buildEffectiveEnvForOS(r.capabilities.OS, request.Env)
+	requestedShell := strings.TrimSpace(request.RequestedShellPath)
+	var resolvedShell *ResolvedShell
+	shellSource := "default"
+	shellWarnings := []string{}
+	if requestedShell != "" {
+		shell, source, warnings := resolveRequestedShell(requestedShell, resolvedEnv, r.capabilities)
+		resolvedShell = &shell
+		shellSource = source
+		shellWarnings = warnings
+	}
+
 	cliName, err := cliNameForAppType(request.AppType)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
 
-	cli, diagnostics, err := r.ResolveExecutable(cliName, request.CLIArgs, resolvedEnv)
+	cli, diagnostics, err := r.resolveCLIForRequest(cliName, request.CLIArgs, resolvedEnv, resolvedShell)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
@@ -116,20 +127,31 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		Diagnostics:   diagnostics,
 	}
 
-	requestedShell := strings.TrimSpace(request.RequestedShellPath)
 	if requestedShell == "" {
 		spec.BootstrapMode = BootstrapDirectCommand
-		spec.Diagnostics.ShellSource = "default"
+		spec.Diagnostics.ShellSource = shellSource
+		spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
 		return spec, nil
 	}
 
-	resolvedShell, shellSource, warnings := resolveRequestedShell(requestedShell, resolvedEnv, r.capabilities)
-	spec.Shell = &resolvedShell
+	spec.Shell = resolvedShell
 	spec.BootstrapMode = BootstrapShellInline
 	spec.StartupCommand = buildCommandString(cli.Path, cli.Args)
 	spec.Diagnostics.ShellSource = shellSource
-	spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, warnings...)
+	spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
 	return spec, nil
+}
+
+func (r *defaultCLIResolver) resolveCLIForRequest(command string, args []string, env []string, shell *ResolvedShell) (ResolvedCLI, LaunchDiagnostics, error) {
+	if r.capabilities.OS == "darwin" && shell != nil && strings.TrimSpace(shell.Path) != "" {
+		if resolvedPath := resolveCommandViaShellFallback(command, env, shell); resolvedPath != "" {
+			return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
+				CLISource:   "shell-assisted",
+				PATHSources: []string{"app-env", "controlled-additions", "inherited", "shell-fallback"},
+			}, nil
+		}
+	}
+	return r.ResolveExecutable(command, args, env)
 }
 
 func (r *defaultCLIResolver) ResolveExecutable(command string, args []string, env []string) (ResolvedCLI, LaunchDiagnostics, error) {
@@ -231,7 +253,10 @@ func buildResolvedShell(key string, resolvedPath string, capabilities PlatformCa
 	case "cmd":
 		bootstrapArg = "/K"
 		loginStyle = "interactive"
-	case "bash", "zsh", "fish", "sh":
+	case "bash", "zsh":
+		bootstrapArg = "-ilc"
+		loginStyle = "login"
+	case "fish", "sh":
 		bootstrapArg = "-lc"
 		loginStyle = "login"
 	}
