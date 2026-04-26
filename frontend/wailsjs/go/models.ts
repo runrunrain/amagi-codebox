@@ -659,6 +659,53 @@ export namespace logging {
 
 }
 
+export namespace main {
+	
+	export class OpenRemoteWebUIResult {
+	    url: string;
+	    port: number;
+	    running: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpenRemoteWebUIResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.port = source["port"];
+	        this.running = source["running"];
+	    }
+	}
+	export class RemoteWebUIStatusResult {
+	    openable: boolean;
+	    reason: string;
+	    url: string;
+	    port: number;
+	    running: boolean;
+	    mobileWebRoot: string;
+	    mobileWebRootConfigured: boolean;
+	    mobileWebRootExists: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new RemoteWebUIStatusResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.openable = source["openable"];
+	        this.reason = source["reason"];
+	        this.url = source["url"];
+	        this.port = source["port"];
+	        this.running = source["running"];
+	        this.mobileWebRoot = source["mobileWebRoot"];
+	        this.mobileWebRootConfigured = source["mobileWebRootConfigured"];
+	        this.mobileWebRootExists = source["mobileWebRootExists"];
+	    }
+	}
+
+}
+
 export namespace paths {
 	
 	export class PathEntry {

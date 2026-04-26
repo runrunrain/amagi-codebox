@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -72,7 +74,8 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.mu.Unlock()
 
 	go func() {
-		s.log.Info("remote", "远程服务器启动", fmt.Sprintf("port=%d token=%s", s.port, s.auth.GetToken()))
+		launchHost := s.desktopLaunchHost()
+		s.log.Info("remote", "远程服务器启动", fmt.Sprintf("listen_host=%s port=%d desktop_host=%s", s.GetHost(), s.GetPort(), launchHost))
 		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.log.Error("remote", "远程服务器异常退出", err.Error())
 		}
@@ -139,16 +142,87 @@ func (s *Server) SetWebRoot(path string) {
 	s.webRoot = path
 }
 
+// GetMobileWebRootStatus 返回当前生效的移动端静态资源目录状态。
+func (s *Server) GetMobileWebRootStatus() (root string, configured bool, exists bool) {
+	root = s.getEffectiveWebRoot()
+	if root == "" {
+		return "", false, false
+	}
+
+	indexPath := filepath.Join(root, "index.html")
+	if info, err := os.Stat(indexPath); err == nil && !info.IsDir() {
+		return root, true, true
+	}
+
+	return root, true, false
+}
+
+// BuildDesktopLaunchURL 返回桌面入口 Web UI 地址。
+// 本地通配/回环地址统一映射到 127.0.0.1，其余具体 host 保留原值。
+func (s *Server) BuildDesktopLaunchURL() string {
+	host := s.desktopLaunchHost()
+	query := url.Values{}
+	query.Set("autoconnect", "1")
+	query.Set("launch", s.auth.IssueLaunchGrant(host))
+	return fmt.Sprintf("http://%s/?%s", net.JoinHostPort(host, strconv.Itoa(s.GetPort())), query.Encode())
+}
+
+func (s *Server) desktopLaunchHost() string {
+	return desktopLaunchHostForListenHost(s.GetHost())
+}
+
+func desktopLaunchHostForListenHost(host string) string {
+	trimmed := strings.TrimSpace(host)
+	if trimmed == "" {
+		return "127.0.0.1"
+	}
+
+	canonical := strings.TrimPrefix(strings.TrimSuffix(trimmed, "]"), "[")
+	if strings.EqualFold(canonical, "localhost") {
+		return "127.0.0.1"
+	}
+
+	if ip := net.ParseIP(canonical); ip != nil {
+		if ip.IsLoopback() || ip.IsUnspecified() {
+			return "127.0.0.1"
+		}
+		return canonical
+	}
+
+	return trimmed
+}
+
+func (s *Server) getEffectiveWebRoot() string {
+	if s.app != nil && s.app.GetSettingsService() != nil {
+		if root := strings.TrimSpace(s.app.GetSettingsService().GetMobileWebRoot()); root != "" {
+			return root
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimSpace(s.webRoot)
+}
+
 // buildHandler 构建最终的 HTTP handler。
 // 始终使用复合 handler：/api/ 和 /ws/ 走认证 + API，其余动态检查 webRoot 后决定走静态文件还是回退到 API。
 // 这样 webRoot 可以在服务器运行期间随时设置或更新，无需重启。
 func (s *Server) buildHandler() http.Handler {
-	mux := http.NewServeMux()
-	s.registerRoutes(mux)
+	protectedMux := http.NewServeMux()
+	s.registerRoutes(protectedMux)
 
-	apiHandler := corsMiddleware(s.auth.Middleware(mux))
+	bootstrapMux := http.NewServeMux()
+	bootstrapMux.HandleFunc("POST /api/bootstrap/consume", s.handleConsumeLaunchGrant)
+
+	apiHandler := corsMiddleware(s.auth.Middleware(protectedMux))
+	bootstrapHandler := corsMiddleware(bootstrapMux)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/bootstrap/consume" {
+			bootstrapHandler.ServeHTTP(w, r)
+			return
+		}
+
 		// API 和 WebSocket 请求始终走认证 handler
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
 			apiHandler.ServeHTTP(w, r)
@@ -156,24 +230,21 @@ func (s *Server) buildHandler() http.Handler {
 		}
 
 		// 静态文件请求：从 Settings 动态读取 webRoot（保存设置后无需重启即可生效）
-		webRoot := s.app.GetSettingsService().GetMobileWebRoot()
+		webRoot, configured, exists := s.GetMobileWebRootStatus()
 
-		if webRoot == "" {
+		if !configured {
 			// 未配置 webRoot，回退到 API handler（需要认证）
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
 
-		// 检查 index.html 是否存在
-		if _, err := os.Stat(webRoot + "/index.html"); err != nil {
+		if !exists {
 			// webRoot 已配置但 index.html 不存在，回退到 API handler
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
 
 		// 提供静态文件（不需要认证）
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-
 		fileSystem := http.Dir(webRoot)
 		fileServer := http.FileServer(fileSystem)
 
@@ -212,15 +283,28 @@ func (s *Server) GetToken() string {
 
 // GetPort 返回监听端口。
 func (s *Server) GetPort() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.port
 }
 
-// corsMiddleware 添加 CORS 头，允许所有来源（移动端 WebView 需要）。
+// corsMiddleware 仅为同源浏览器请求回显 CORS 头，拒绝跨源页面借宿主浏览器访问本地 API。
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			if !isAllowedCORSOrigin(r, origin) {
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			} else {
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			}
+		}
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

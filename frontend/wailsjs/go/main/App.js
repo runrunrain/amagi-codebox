@@ -10,6 +10,10 @@ export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
 
+export function AttachSessionObserver(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AttachSessionObserver'](arg1, arg2, arg3, arg4);
+}
+
 export function BrowseDirectory() {
   return window['go']['main']['App']['BrowseDirectory']();
 }
@@ -40,6 +44,10 @@ export function DeleteEnvVar(arg1) {
 
 export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
+}
+
+export function DetachSessionObserver(arg1, arg2) {
+  return window['go']['main']['App']['DetachSessionObserver'](arg1, arg2);
 }
 
 export function DownloadAndApplyUpdate() {
@@ -158,6 +166,10 @@ export function GetRemoteToken() {
   return window['go']['main']['App']['GetRemoteToken']();
 }
 
+export function GetRemoteWebUIStatus() {
+  return window['go']['main']['App']['GetRemoteWebUIStatus']();
+}
+
 export function GetSession(arg1) {
   return window['go']['main']['App']['GetSession'](arg1);
 }
@@ -216,6 +228,10 @@ export function MigrateProviderPresetsToTerminal() {
 
 export function OpenFileInEditor(arg1, arg2) {
   return window['go']['main']['App']['OpenFileInEditor'](arg1, arg2);
+}
+
+export function OpenRemoteWebUI() {
+  return window['go']['main']['App']['OpenRemoteWebUI']();
 }
 
 export function PtyResize(arg1, arg2, arg3) {

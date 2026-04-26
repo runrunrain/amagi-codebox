@@ -2,6 +2,7 @@ package tray
 
 import (
 	"context"
+	"runtime"
 	"sync"
 
 	"github.com/energye/systray"
@@ -29,7 +30,7 @@ func NewService() *Service {
 	return &Service{}
 }
 
-// Start 在新的 goroutine 中启动系统托盘。
+// Start 在专用且锁定的 OS 线程中启动系统托盘。
 // 必须在 Wails OnStartup 中调用，传入 Wails context。
 // icon 是 ICO 文件的字节内容。
 func (s *Service) Start(ctx context.Context, icon []byte, onQuit func()) {
@@ -43,11 +44,19 @@ func (s *Service) Start(ctx context.Context, icon []byte, onQuit func()) {
 	s.running = true
 	s.mu.Unlock()
 
-	go systray.Run(func() {
-		s.onReady(icon)
-	}, func() {
-		// systray 退出时的清理
-	})
+	go func() {
+		// Wails 自身维护 GUI / 消息循环，systray 的 Win32 窗口与消息泵也要求稳定绑定到同一线程。
+		// 如果直接在未锁线程的 goroutine 中运行，Go 调度器可能在阻塞/唤醒后迁移到底层其他线程，
+		// 从而把托盘窗口、回调和消息循环拆散，继续放大右键菜单显示不稳定问题。
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		systray.Run(func() {
+			s.onReady(icon)
+		}, func() {
+			// systray 退出时的清理
+		})
+	}()
 }
 
 // onReady systray 初始化完成后的回调。
@@ -64,10 +73,6 @@ func (s *Service) onReady(icon []byte) {
 	systray.SetOnDClick(func(menu systray.IMenu) {
 		// 双击：显示窗口
 		wailsRuntime.WindowShow(s.ctx)
-	})
-	systray.SetOnRClick(func(menu systray.IMenu) {
-		// 右键点击：显式显示菜单，使用 systray 内部默认 Win32 弹出逻辑。
-		menu.ShowMenu()
 	})
 
 	// 创建菜单（必须在 SetOn*Click 之后、AddMenuItem 之前调用）

@@ -34,7 +34,7 @@
                 {{ exporting ? '导出中...' : '导出配置' }}
               </button>
               <button class="btn secondary small" @click="handleImportConfig" :disabled="loading">JSON 导入</button>
-              <button class="btn primary small" @click="showAddDialog = true">添加提供商</button>
+              <button class="btn primary small" @click="openAddProviderDialog">添加提供商</button>
             </div>
           </div>
 
@@ -82,31 +82,42 @@
           </div>
 
           <!-- Add Provider Dialog -->
-          <div class="dialog-overlay" v-if="showAddDialog" @click.self="showAddDialog = false">
+          <div class="dialog-overlay" v-if="showAddDialog" @click.self="resetAddProviderForm">
             <div class="dialog card">
               <h2>添加提供商</h2>
               <div class="form-group">
-                <label>类型</label>
-                <div class="type-selector">
-                  <button class="type-btn" :class="{ active: newProviderType === 'anthropic' }" @click="newProviderType = 'anthropic'">Anthropic</button>
-                  <button class="type-btn" :class="{ active: newProviderType === 'openai' }" @click="newProviderType = 'openai'">OpenAI</button>
+                <label>支持格式</label>
+                <div class="type-selector capability-selector">
+                  <label class="type-btn capability-toggle" :class="{ active: newProviderSupportsAnthropic }">
+                    <input type="checkbox" v-model="newProviderSupportsAnthropic" />
+                    <span>Anthropic</span>
+                  </label>
+                  <label class="type-btn capability-toggle" :class="{ active: newProviderSupportsOpenAI }">
+                    <input type="checkbox" v-model="newProviderSupportsOpenAI" />
+                    <span>OpenAI</span>
+                  </label>
                 </div>
+                <p class="tp-compat-warning" v-if="!newProviderSupportsAnthropic && !newProviderSupportsOpenAI">至少启用一种 Provider 格式。</p>
               </div>
               <div class="form-group">
                 <label>名称 (唯一标识)</label>
                 <input type="text" v-model="newProviderName" class="input-field" placeholder="例如: anthropic, openai" />
               </div>
-              <div class="form-group">
-                <label>基础 URL (Base URL)</label>
-                <input type="text" v-model="newProviderBaseUrl" class="input-field" :placeholder="newProviderType === 'openai' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'" />
+              <div class="form-group" v-if="newProviderSupportsAnthropic">
+                <label>Anthropic Base URL</label>
+                <input type="text" v-model="newProviderAnthropicBaseUrl" class="input-field" placeholder="https://api.anthropic.com" />
+              </div>
+              <div class="form-group" v-if="newProviderSupportsOpenAI">
+                <label>OpenAI Base URL</label>
+                <input type="text" v-model="newProviderOpenAIBaseUrl" class="input-field" placeholder="https://api.openai.com/v1" />
               </div>
               <div class="form-group">
                 <label>默认模型</label>
-                <input type="text" v-model="newProviderModel" class="input-field" :placeholder="newProviderType === 'openai' ? 'o3' : 'claude-3-7-sonnet-20250219'" />
+                <input type="text" v-model="newProviderModel" class="input-field" :placeholder="newProviderSupportsOpenAI && !newProviderSupportsAnthropic ? 'o3' : 'claude-3-7-sonnet-20250219'" />
               </div>
               <div class="dialog-actions">
-                <button class="btn secondary" @click="showAddDialog = false" :disabled="loading">取消</button>
-                <button class="btn primary" @click="handleAddProvider" :disabled="!newProviderName || loading">
+                <button class="btn secondary" @click="resetAddProviderForm" :disabled="loading">取消</button>
+                <button class="btn primary" @click="handleAddProvider" :disabled="!newProviderName || (!newProviderSupportsAnthropic && !newProviderSupportsOpenAI) || loading">
                   {{ loading ? '处理中...' : '保存' }}
                 </button>
               </div>
@@ -494,7 +505,15 @@
                 </div>
                 <div class="form-row">
                   <div class="form-group flex-1"><label>Model</label><input type="text" v-model="agent.model" class="input-field monospace" @input="ocGuiToRaw" /></div>
-                  <div class="form-group" style="width: 120px;"><label>Color</label><input type="text" v-model="agent.color" class="input-field" @input="ocGuiToRaw" /></div>
+                  <div class="form-group" style="width: 160px;"><label>Variant</label><select v-model="agent.variant" class="input-field" @change="ocGuiToRaw"><option value="">默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></div>
+                </div>
+                <div class="form-group">
+                  <label>Color</label>
+                  <div class="oc-color-row">
+                    <input type="text" v-model="agent.color" class="input-field monospace flex-1" placeholder="#FF69B4" @input="ocGuiToRaw" />
+                    <input type="color" class="oc-color-picker" :value="ocAgentPickerColor(agent.color)" @input="ocSetAgentColorFromPickerEvent(agent, $event)" />
+                    <span class="oc-color-preview" :class="{ invalid: !isValidHexColor(agent.color) }" :style="isValidHexColor(agent.color) ? { backgroundColor: normalizeHexColor(agent.color) } : undefined"></span>
+                  </div>
                 </div>
                 <div class="form-group"><label>Prompt</label><textarea v-model="agent.prompt" class="input-field" rows="2" @input="ocGuiToRaw"></textarea></div>
               </div>
@@ -716,8 +735,10 @@ const selectedProviderName = ref('')
 // Add dialog
 const showAddDialog = ref(false)
 const newProviderName = ref('')
-const newProviderType = ref('anthropic')
-const newProviderBaseUrl = ref('')
+const newProviderSupportsAnthropic = ref(true)
+const newProviderSupportsOpenAI = ref(false)
+const newProviderAnthropicBaseUrl = ref('')
+const newProviderOpenAIBaseUrl = ref('')
 const newProviderModel = ref('')
 
 function hasAnthropicFormat(p: any): boolean {
@@ -725,6 +746,21 @@ function hasAnthropicFormat(p: any): boolean {
 }
 function hasOpenAIFormat(p: any): boolean {
   return !!(p?.openai?.enabled) || (p?.type || '').toLowerCase() === 'openai' || p?.auth_key === 'OPENAI_API_KEY'
+}
+
+function resetAddProviderForm() {
+  showAddDialog.value = false
+  newProviderName.value = ''
+  newProviderSupportsAnthropic.value = true
+  newProviderSupportsOpenAI.value = false
+  newProviderAnthropicBaseUrl.value = ''
+  newProviderOpenAIBaseUrl.value = ''
+  newProviderModel.value = ''
+}
+
+function openAddProviderDialog() {
+  resetAddProviderForm()
+  showAddDialog.value = true
 }
 
 const filteredProviders = computed(() => {
@@ -766,20 +802,32 @@ const loadProviders = async () => {
 
 const handleAddProvider = async () => {
   if (!newProviderName.value) return
+  if (!newProviderSupportsAnthropic.value && !newProviderSupportsOpenAI.value) {
+    showError('至少启用一种 Provider 格式')
+    return
+  }
   loading.value = true
   try {
     const p = new config.Provider({
-      base_url: newProviderBaseUrl.value,
       default_model: newProviderModel.value,
-      auth_key: newProviderType.value === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
       presets: {},
     } as any)
-    ;(p as any)[newProviderType.value] = { enabled: true, base_url: newProviderBaseUrl.value }
+    if (newProviderSupportsAnthropic.value) {
+      p.anthropic = new config.AnthropicFormat({
+        enabled: true,
+        base_url: newProviderAnthropicBaseUrl.value,
+        auth_key: 'ANTHROPIC_API_KEY',
+      })
+    }
+    if (newProviderSupportsOpenAI.value) {
+      p.openai = new config.OpenAIFormat({
+        enabled: true,
+        base_url: newProviderOpenAIBaseUrl.value,
+        auth_key: 'OPENAI_API_KEY',
+      })
+    }
     await SaveProvider(newProviderName.value, p)
-    showAddDialog.value = false
-    newProviderName.value = ''
-    newProviderBaseUrl.value = ''
-    newProviderModel.value = ''
+    resetAddProviderForm()
     await loadProviders()
     showSuccess('添加提供商成功')
   } catch (err) {
@@ -926,11 +974,10 @@ const tpCurrentCompatibleProviders = computed(() => {
   const tt = tpDialogTarget.value
   const result: Record<string, config.Provider> = {}
   for (const [name, provider] of Object.entries(providers.value)) {
-    const isOpenAI = hasOpenAIFormat(provider as any)
     if (tt === 'claude_code') {
-      if (!isOpenAI) result[name] = provider
+      if (hasAnthropicFormat(provider as any)) result[name] = provider
     } else {
-      if (isOpenAI) result[name] = provider
+      if (hasOpenAIFormat(provider as any)) result[name] = provider
     }
   }
   return result
@@ -1237,7 +1284,7 @@ const ocSwitchBlocked = ref(false)
 interface OcKvPair { key: string; value: string }
 interface OcProviderModelEntry { key: string; name: string; variants: string[]; optionsRaw: string; preserved: Record<string, any> }
 interface OcProviderEntry { name: string; apiKey: string; baseURL: string; models: OcProviderModelEntry[]; preserved: Record<string, any> }
-interface OcAgentEntry { name: string; description: string; mode: 'primary' | 'subagent'; model: string; color: string; prompt: string; preserved: Record<string, any> }
+interface OcAgentEntry { name: string; description: string; mode: 'primary' | 'subagent'; model: string; variant: string; color: string; prompt: string; preserved: Record<string, any> }
 interface OcMcpEntry { name: string; type: 'remote' | 'local'; url: string; commandArgs: string[]; headers: OcKvPair[]; environment: OcKvPair[]; oauth: boolean; preserved: Record<string, any> }
 interface OcPermEntry { key: string; value: string }
 interface OcKvEntry { key: string; valueRaw: string }
@@ -1294,6 +1341,33 @@ function ocParseVariantInput(input: string): string[] {
   return input.split(',').map(v => v.trim()).filter(Boolean)
 }
 
+function isValidHexColor(value: string): boolean {
+  return /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(value.trim())
+}
+
+function normalizeHexColor(value: string): string {
+  const trimmed = value.trim()
+  if (!isValidHexColor(trimmed)) return '#808080'
+  if (trimmed.length === 4) {
+    const [, r, g, b] = trimmed
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase()
+  }
+  return trimmed.toLowerCase()
+}
+
+function ocAgentPickerColor(color: string): string {
+  return isValidHexColor(color) ? normalizeHexColor(color) : '#808080'
+}
+
+function ocSetAgentColorFromPicker(agent: OcAgentEntry, value: string) {
+  agent.color = normalizeHexColor(value)
+  ocGuiToRaw()
+}
+
+function ocSetAgentColorFromPickerEvent(agent: OcAgentEntry, event: Event) {
+  ocSetAgentColorFromPicker(agent, (event.target as HTMLInputElement)?.value || '#808080')
+}
+
 const ocRawToGui = () => {
   clearOcSubJsonErrors()
   const raw = ocEditorContent.value.trim()
@@ -1332,7 +1406,7 @@ const ocRawToGui = () => {
   if (obj.agent && typeof obj.agent === 'object') {
     for (const [n, e] of Object.entries(obj.agent as Record<string, any>)) {
       if (!e || typeof e !== 'object') continue
-      agents.push({ name: n, description: e.description || '', mode: e.mode === 'primary' ? 'primary' : 'subagent', model: e.model || '', color: e.color || '', prompt: e.prompt || '', preserved: ocClone(e) })
+      agents.push({ name: n, description: e.description || '', mode: e.mode === 'primary' ? 'primary' : 'subagent', model: e.model || '', variant: typeof e.variant === 'string' ? e.variant : '', color: e.color || '', prompt: e.prompt || '', preserved: ocClone(e) })
     }
   }
   ocGui.agents = agents
@@ -1438,11 +1512,13 @@ const ocGuiToRaw = () => {
       delete entry.description
       delete entry.mode
       delete entry.model
+      delete entry.variant
       delete entry.color
       delete entry.prompt
       if (a.description.trim()) entry.description = a.description.trim()
       if (a.mode) entry.mode = a.mode
       if (a.model.trim()) entry.model = a.model.trim()
+      if (a.variant.trim()) entry.variant = a.variant.trim()
       if (a.color.trim()) entry.color = a.color.trim()
       if (a.prompt.trim()) entry.prompt = a.prompt.trim()
       agent[agentName] = entry
@@ -1510,7 +1586,7 @@ const ocRemoveProvider = (i: number) => { ocGui.providers.splice(i, 1); ocGuiToR
 const ocAddProviderModel = (provider: OcProviderEntry) => { provider.models.push({ key: '', name: '', variants: [], optionsRaw: '', preserved: {} }); ocSections.provider = true; ocGuiToRaw() }
 const ocUpdateProviderModelVariants = (model: OcProviderModelEntry, value: string) => { model.variants = ocParseVariantInput(value); ocGuiToRaw() }
 const ocUpdateProviderModelVariantsFromEvent = (model: OcProviderModelEntry, event: Event) => { ocUpdateProviderModelVariants(model, (event.target as HTMLInputElement)?.value || '') }
-const ocAddAgent = () => { ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', color: '', prompt: '', preserved: {} }); ocSections.agent = true }
+const ocAddAgent = () => { ocGui.agents.push({ name: '', description: '', mode: 'subagent', model: '', variant: '', color: '', prompt: '', preserved: {} }); ocSections.agent = true }
 const ocRemoveAgent = (i: number) => { ocGui.agents.splice(i, 1); ocGuiToRaw() }
 const ocAddMcp = () => { ocGui.mcpServers.push({ name: '', type: 'remote', url: '', commandArgs: [], headers: [], environment: [], oauth: false, preserved: {} }); ocSections.mcp = true }
 const ocRemoveMcp = (i: number) => { ocGui.mcpServers.splice(i, 1); ocGuiToRaw() }
@@ -1678,6 +1754,7 @@ watch(activeSection, (newSection) => {
 .muted { color: #5a6a7a; }
 
 .type-selector { display: flex; gap: 8px; }
+.capability-selector { flex-wrap: wrap; }
 .type-btn {
   flex: 1; padding: 10px 16px; background: #0f1219; border: 2px solid #2a2f3e;
   border-radius: 6px; color: #8899aa; font-size: 14px; font-weight: 600;
@@ -1685,6 +1762,8 @@ watch(activeSection, (newSection) => {
 }
 .type-btn:hover { border-color: #3a4f5e; color: #ccd6e0; }
 .type-btn.active { border-color: #4fc3f7; color: #4fc3f7; background: rgba(79,195,247,0.08); }
+.capability-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.capability-toggle input { width: 16px; height: 16px; margin: 0; }
 
 /* Terminal Preset Cards */
 .pc-preset-card-grid {
@@ -1856,6 +1935,10 @@ watch(activeSection, (newSection) => {
 .oc-kv-row .input-field { flex: 1; }
 .oc-kv-key { flex: 2; }
 .oc-kv-value { flex: 1; }
+.oc-color-row { display: flex; align-items: center; gap: 10px; }
+.oc-color-picker { width: 44px; height: 36px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); cursor: pointer; }
+.oc-color-preview { width: 36px; height: 36px; border-radius: 6px; border: 1px solid var(--border); background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)); flex-shrink: 0; }
+.oc-color-preview.invalid { background: repeating-linear-gradient(45deg, rgba(255,255,255,0.04), rgba(255,255,255,0.04) 6px, rgba(255,255,255,0.1) 6px, rgba(255,255,255,0.1) 12px); }
 
 .opencode-editor {
   min-height: 380px; max-height: 60vh; resize: vertical; padding: 16px;

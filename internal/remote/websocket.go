@@ -11,15 +11,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var wsUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		// 允许所有来源（移动端 WebView 不发送 Origin 或来源不受信任域名）
-		return true
-	},
-}
-
 // clientMsg 客户端→服务端帧格式
 type clientMsg struct {
 	Type string `json:"type"` // "input" | "resize"
@@ -59,6 +50,12 @@ type DimensionsProvider interface {
 	GetPtyDimensions(sessionID string) (cols, rows int, err error)
 }
 
+// ObserverAttachProvider 提供原子 attach：先冻结快照，再注册 live output / dimensions 回调，避免 observer 丢帧窗口。
+type ObserverAttachProvider interface {
+	AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) (history []byte, cols, rows int, err error)
+	DetachSessionObserver(sessionID string, id string)
+}
+
 // serveWebSocket 处理 /ws/terminal/{sessionID} 的 WebSocket 连接
 func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionID string) {
 	ptyBridge, ok := s.app.(PtyBridge)
@@ -67,7 +64,15 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 		return
 	}
 
-	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(r *http.Request) bool {
+			return isAllowedWebSocketOrigin(r)
+		},
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.log.Error("remote", "WebSocket upgrade 失败", fmt.Sprintf("session=%s err=%v", sessionID, err))
 		return
@@ -96,41 +101,87 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 		return conn.WriteMessage(websocket.TextMessage, b)
 	}
 
-	// observer 模式：先发送当前 PTY 尺寸，让移动端在回放历史输出前就进入正确的 cols/rows
-	if isObserver {
-		if dp, ok := s.app.(DimensionsProvider); ok {
-			if cols, rows, err := dp.GetPtyDimensions(sessionID); err == nil && cols > 0 && rows > 0 {
-				dimMsg := serverMsg{Type: "dimensions", Cols: cols, Rows: rows}
-				if err := writeJSON(dimMsg, 5*time.Second); err != nil {
-					s.log.Debug("remote", "WebSocket 发送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
-				} else {
-					s.log.Info("remote", "WebSocket PTY 尺寸已发送", fmt.Sprintf("conn=%s cols=%d rows=%d", connID, cols, rows))
-				}
-			}
-		}
-	}
-
-	// 发送历史输出给新连接的客户端（重放缓冲区），让"后加入者"看到历史内容
-	if hp, ok := s.app.(HistoryProvider); ok {
-		if history, err := hp.GetOutputHistory(sessionID); err == nil && len(history) > 0 {
-			encoded := base64.StdEncoding.EncodeToString(history)
-			histMsg := serverMsg{Type: "output", Data: encoded}
-			if err := writeJSON(histMsg, 10*time.Second); err != nil {
-				s.log.Debug("remote", "WebSocket 发送历史输出失败", fmt.Sprintf("conn=%s err=%v", connID, err))
-			} else {
-				s.log.Info("remote", "WebSocket 历史输出已发送", fmt.Sprintf("conn=%s bytes=%d", connID, len(history)))
-			}
-		}
-	}
-
-	// 注册 PTY 输出回调：将 PTY 输出转发给 WebSocket 客户端
-	ptyBridge.RegisterOutputCallback(sessionID, connID, func(data []byte) {
+	outputCB := func(data []byte) {
 		encoded := base64.StdEncoding.EncodeToString(data)
 		msg := serverMsg{Type: "output", Data: encoded}
 		if err := writeJSON(msg, 10*time.Second); err != nil {
 			s.log.Debug("remote", "WebSocket write 失败（连接可能已断开）", fmt.Sprintf("conn=%s err=%v", connID, err))
 		}
-	})
+	}
+
+	resizeCB := func(cols, rows int) {
+		if cols <= 0 || rows <= 0 {
+			return
+		}
+		msg := serverMsg{Type: "dimensions", Cols: cols, Rows: rows}
+		if err := writeJSON(msg, 5*time.Second); err != nil {
+			s.log.Debug("remote", "WebSocket 推送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
+		}
+	}
+
+	if attachProvider, ok := s.app.(ObserverAttachProvider); ok {
+		history, cols, rows, err := attachProvider.AttachSessionObserver(sessionID, connID, outputCB, func(cols, rows int) {
+			if isObserver {
+				resizeCB(cols, rows)
+			}
+		})
+		if err != nil {
+			s.log.Error("remote", "WebSocket attach observer 失败", fmt.Sprintf("session=%s conn=%s err=%v", sessionID, connID, err))
+			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()), time.Now().Add(2*time.Second))
+			return
+		}
+		defer attachProvider.DetachSessionObserver(sessionID, connID)
+
+		if len(history) > 0 {
+			encoded := base64.StdEncoding.EncodeToString(history)
+			if err := writeJSON(serverMsg{Type: "output", Data: encoded}, 10*time.Second); err != nil {
+				s.log.Debug("remote", "WebSocket 发送历史输出失败", fmt.Sprintf("conn=%s err=%v", connID, err))
+			} else {
+				s.log.Info("remote", "WebSocket 历史输出已发送", fmt.Sprintf("conn=%s bytes=%d", connID, len(history)))
+			}
+		}
+
+		if isObserver && cols > 0 && rows > 0 {
+			if err := writeJSON(serverMsg{Type: "dimensions", Cols: cols, Rows: rows}, 5*time.Second); err != nil {
+				s.log.Debug("remote", "WebSocket 发送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
+			} else {
+				s.log.Info("remote", "WebSocket PTY 尺寸已发送", fmt.Sprintf("conn=%s cols=%d rows=%d", connID, cols, rows))
+			}
+		}
+	} else {
+		// 兼容旧实现：先发送 history / dimensions，再注册 live 回调。
+		if hp, ok := s.app.(HistoryProvider); ok {
+			if history, err := hp.GetOutputHistory(sessionID); err == nil && len(history) > 0 {
+				encoded := base64.StdEncoding.EncodeToString(history)
+				histMsg := serverMsg{Type: "output", Data: encoded}
+				if err := writeJSON(histMsg, 10*time.Second); err != nil {
+					s.log.Debug("remote", "WebSocket 发送历史输出失败", fmt.Sprintf("conn=%s err=%v", connID, err))
+				} else {
+					s.log.Info("remote", "WebSocket 历史输出已发送", fmt.Sprintf("conn=%s bytes=%d", connID, len(history)))
+				}
+			}
+		}
+		if isObserver {
+			if dp, ok := s.app.(DimensionsProvider); ok {
+				if cols, rows, err := dp.GetPtyDimensions(sessionID); err == nil && cols > 0 && rows > 0 {
+					dimMsg := serverMsg{Type: "dimensions", Cols: cols, Rows: rows}
+					if err := writeJSON(dimMsg, 5*time.Second); err != nil {
+						s.log.Debug("remote", "WebSocket 发送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
+					} else {
+						s.log.Info("remote", "WebSocket PTY 尺寸已发送", fmt.Sprintf("conn=%s cols=%d rows=%d", connID, cols, rows))
+					}
+				}
+			}
+		}
+		ptyBridge.RegisterOutputCallback(sessionID, connID, outputCB)
+		if isObserver {
+			ptyBridge.RegisterResizeCallback(sessionID, connID, resizeCB)
+		}
+		defer func() {
+			ptyBridge.UnregisterOutputCallback(sessionID, connID)
+			ptyBridge.UnregisterResizeCallback(sessionID, connID)
+		}()
+	}
 
 	// 注册 PTY 退出回调
 	ptyBridge.RegisterExitCallback(sessionID, connID, func(exitCode uint32) {
@@ -139,22 +190,8 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 		conn.Close()
 	})
 
-	if isObserver {
-		ptyBridge.RegisterResizeCallback(sessionID, connID, func(cols, rows int) {
-			if cols <= 0 || rows <= 0 {
-				return
-			}
-			msg := serverMsg{Type: "dimensions", Cols: cols, Rows: rows}
-			if err := writeJSON(msg, 5*time.Second); err != nil {
-				s.log.Debug("remote", "WebSocket 推送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
-			}
-		})
-	}
-
 	defer func() {
-		ptyBridge.UnregisterOutputCallback(sessionID, connID)
 		ptyBridge.UnregisterExitCallback(sessionID, connID)
-		ptyBridge.UnregisterResizeCallback(sessionID, connID)
 		s.log.Info("remote", "WebSocket 连接已断开", fmt.Sprintf("session=%s conn=%s", sessionID, connID))
 	}()
 

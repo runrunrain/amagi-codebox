@@ -61,6 +61,67 @@ export interface LaunchOpenCodeRequest {
   shellPath: string
 }
 
+export interface LaunchAmagiRequest {
+  groupName: string
+  providerName: string
+  mode: string
+  workDir: string
+  shellPath: string
+}
+
+export interface LaunchProviderOption {
+  id: string
+  name: string
+  type: string
+  defaultModel?: string
+}
+
+export interface LaunchPresetOption {
+  key: string
+  label: string
+  provider?: string
+  model?: string
+  source?: string
+}
+
+export interface LaunchOpenCodePresetOption {
+  key: string
+  label: string
+  description?: string
+  bindingCount?: number
+  source?: string
+}
+
+export interface LaunchAmagiGroupOption {
+  key: string
+  label: string
+  description?: string
+  provider?: string
+  model?: string
+  defaultPreset?: string
+  subPresetCount: number
+}
+
+export interface LaunchMetadataResponse {
+  paths: string[]
+  claude: {
+    providers: LaunchProviderOption[]
+    presets: LaunchPresetOption[]
+  }
+  opencode: {
+    providers: LaunchProviderOption[]
+    presets: LaunchOpenCodePresetOption[]
+  }
+  codex: {
+    providers: LaunchProviderOption[]
+    presets: LaunchPresetOption[]
+  }
+  amagicode: {
+    providers: LaunchProviderOption[]
+    groups: LaunchAmagiGroupOption[]
+  }
+}
+
 export interface SettingsData {
   remotePort: number
   remoteToken: string
@@ -88,12 +149,7 @@ class ApiClient {
 
   constructor() {
     const saved = localStorage.getItem('server_url')
-    const origin = window.location.origin
-    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
-      this.baseURL = saved || 'http://localhost:8680'
-    } else {
-      this.baseURL = origin
-    }
+    this.baseURL = import.meta.env.DEV ? (saved || 'http://localhost:8680') : window.location.origin
     this.token = localStorage.getItem('server_token') || ''
   }
 
@@ -127,6 +183,7 @@ class ApiClient {
 
     const response = await fetch(url, {
       ...options,
+      credentials: options.credentials ?? 'same-origin',
       headers,
     })
 
@@ -146,8 +203,19 @@ class ApiClient {
     return this.request<AppInfo>('/api/info')
   }
 
+  async consumeLaunchGrant(launch: string): Promise<void> {
+    await this.request<void>('/api/bootstrap/consume', {
+      method: 'POST',
+      body: JSON.stringify({ launch }),
+    })
+  }
+
   async getSessions(): Promise<SessionInfo[]> {
     return this.request<SessionInfo[]>('/api/sessions')
+  }
+
+  async getLaunchMetadata(): Promise<LaunchMetadataResponse> {
+    return this.request<LaunchMetadataResponse>('/api/sessions/launch-meta')
   }
 
   async launchSession(req: LaunchSessionRequest): Promise<SessionInfo> {
@@ -166,6 +234,13 @@ class ApiClient {
 
   async launchOpenCodeSession(req: LaunchOpenCodeRequest): Promise<SessionInfo> {
     return this.request<SessionInfo>('/api/sessions/launch-opencode', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    })
+  }
+
+  async launchAmagiSession(req: LaunchAmagiRequest): Promise<SessionInfo> {
+    return this.request<SessionInfo>('/api/sessions/launch-amagi', {
       method: 'POST',
       body: JSON.stringify(req),
     })

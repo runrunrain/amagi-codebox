@@ -1,8 +1,10 @@
 package remote
 
 import (
+	"amagi-codebox/internal/config"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -14,9 +16,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Sessions
 	mux.HandleFunc("GET /api/sessions", s.handleGetSessions)
+	mux.HandleFunc("GET /api/sessions/launch-meta", s.handleGetLaunchMeta)
 	mux.HandleFunc("POST /api/sessions/launch", s.handleLaunchSession)
 	mux.HandleFunc("POST /api/sessions/launch-codex", s.handleLaunchCodex)
 	mux.HandleFunc("POST /api/sessions/launch-opencode", s.handleLaunchOpenCode)
+	mux.HandleFunc("POST /api/sessions/launch-amagi", s.handleLaunchAmagi)
 	mux.HandleFunc("POST /api/sessions/clear-stopped", s.handleClearStopped)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleStopSession)
 	mux.HandleFunc("POST /api/sessions/{id}/resize", s.handleResizeSession)
@@ -74,8 +78,69 @@ func (s *Server) handleGetInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+func (s *Server) handleConsumeLaunchGrant(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Launch string `json:"launch"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	cookie, err := s.auth.ConsumeLaunchGrant(r, body.Launch)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	http.SetCookie(w, cookie)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleGetSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.app.GetSessions())
+}
+
+func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
+	pathSvc := s.app.GetPathsService()
+	paths := make([]string, 0)
+	if pathSvc != nil {
+		entries := pathSvc.GetPaths()
+		paths = make([]string, 0, len(entries)+1)
+		if dp := strings.TrimSpace(pathSvc.GetDefaultPath()); dp != "" {
+			paths = append(paths, dp)
+		}
+		for _, entry := range entries {
+			trimmed := strings.TrimSpace(entry.Path)
+			if trimmed == "" || containsString(paths, trimmed) {
+				continue
+			}
+			paths = append(paths, trimmed)
+		}
+	}
+
+	configSvc := s.app.GetConfigService()
+	response := launchMetadataResponse{
+		Paths: paths,
+		Claude: launchMetaSection{
+			Providers: buildLaunchProviderOptions(s.app.GetProvidersByType("anthropic")),
+			Presets:   buildLaunchPresetOptions(configSvc, "claude_code"),
+		},
+		OpenCode: launchMetaOpenCodeSection{
+			Providers: buildLaunchProviderOptions(s.app.GetProvidersByType("openai")),
+			Presets:   buildLaunchOpenCodePresetOptions(configSvc),
+		},
+		Codex: launchMetaSection{
+			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
+			Presets:   buildLaunchPresetOptions(configSvc, "codex"),
+		},
+		AmagiCode: launchMetaAmagiSection{
+			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
+			Groups:    buildLaunchAmagiGroups(s.app),
+		},
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleLaunchSession(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +207,25 @@ func (s *Server) handleLaunchOpenCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.app.LaunchOpenCode(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.ShellPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	info, err := s.app.GetSession(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) handleLaunchAmagi(w http.ResponseWriter, r *http.Request) {
+	var body launchAmagiRequest
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	id, err := s.app.LaunchAmagiCode(body.GroupName, body.ProviderName, body.Mode, body.WorkDir, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -344,6 +428,155 @@ func (s *Server) handleGetPaths(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, paths)
+}
+
+func buildLaunchProviderOptions(raw map[string]config.Provider) []launchProviderOption {
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	options := make([]launchProviderOption, 0, len(keys))
+	for _, key := range keys {
+		provider := raw[key]
+		options = append(options, launchProviderOption{
+			ID:           key,
+			Name:         key,
+			Type:         provider.EffectiveType(),
+			DefaultModel: provider.DefaultModel,
+		})
+	}
+	return options
+}
+
+func buildLaunchPresetOptions(configSvc *config.ConfigService, terminalType string) []launchPresetOption {
+	if configSvc == nil {
+		return []launchPresetOption{}
+	}
+
+	presets, err := configSvc.GetMergedTerminalPresets(terminalType)
+	if err != nil {
+		return []launchPresetOption{}
+	}
+
+	sort.SliceStable(presets, func(i, j int) bool {
+		if presets[i].Provider == presets[j].Provider {
+			return presets[i].Label < presets[j].Label
+		}
+		return presets[i].Provider < presets[j].Provider
+	})
+
+	options := make([]launchPresetOption, 0, len(presets))
+	for _, preset := range presets {
+		options = append(options, launchPresetOption{
+			Key:      preset.Key,
+			Label:    preset.Label,
+			Provider: preset.Provider,
+			Model:    preset.Model,
+			Source:   preset.Source,
+		})
+	}
+	return options
+}
+
+func buildLaunchOpenCodePresetOptions(configSvc *config.ConfigService) []launchOpenCodePresetOption {
+	if configSvc == nil {
+		return []launchOpenCodePresetOption{}
+	}
+
+	raw := configSvc.GetOpenCodePresets()
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	options := make([]launchOpenCodePresetOption, 0, len(keys))
+	for _, key := range keys {
+		preset := raw[key]
+		label := strings.TrimSpace(preset.Name)
+		if label == "" {
+			label = key
+		}
+		source := "native"
+		if preset.Source != nil && strings.TrimSpace(preset.Source.Kind) != "" {
+			source = preset.Source.Kind
+		}
+		options = append(options, launchOpenCodePresetOption{
+			Key:          key,
+			Label:        label,
+			Description:  strings.TrimSpace(preset.Description),
+			BindingCount: len(preset.Bindings),
+			Source:       source,
+		})
+	}
+	return options
+}
+
+func buildLaunchAmagiGroups(app AppInterface) []launchAmagiGroupOption {
+	settings, err := app.GetAmagiSettings()
+	if err != nil || settings == nil {
+		return []launchAmagiGroupOption{}
+	}
+
+	keys := make([]string, 0, len(settings.ModelPresets))
+	for key := range settings.ModelPresets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	options := make([]launchAmagiGroupOption, 0, len(keys))
+	for _, key := range keys {
+		group := settings.ModelPresets[key]
+		provider := ""
+		model := ""
+		if group.DefaultPreset != "" {
+			if preset, ok := group.Presets[group.DefaultPreset]; ok {
+				provider = strings.TrimSpace(preset.Provider)
+				model = strings.TrimSpace(preset.Model)
+			}
+		}
+		if provider == "" || model == "" {
+			fallbackPresetNames := make([]string, 0, len(group.Presets))
+			for presetName := range group.Presets {
+				fallbackPresetNames = append(fallbackPresetNames, presetName)
+			}
+			sort.Strings(fallbackPresetNames)
+			for _, presetName := range fallbackPresetNames {
+				preset := group.Presets[presetName]
+				if provider == "" {
+					provider = strings.TrimSpace(preset.Provider)
+				}
+				if model == "" {
+					model = strings.TrimSpace(preset.Model)
+				}
+				if provider != "" && model != "" {
+					break
+				}
+			}
+		}
+
+		options = append(options, launchAmagiGroupOption{
+			Key:            key,
+			Label:          key,
+			Description:    strings.TrimSpace(group.Description),
+			Provider:       provider,
+			Model:          model,
+			DefaultPreset:  strings.TrimSpace(group.DefaultPreset),
+			SubPresetCount: len(group.Presets),
+		})
+	}
+	return options
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // handleWebSocketTerminal WebSocket 端点，认证通过 URL 参数 ?token=xxx。

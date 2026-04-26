@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,5 +174,136 @@ func TestResolveStartupPlan_ShellLaunchRetainsAutoCommandForShellProcessing(t *t
 	}
 	if sendAuto != "opencode" {
 		t.Fatalf("sendAuto = %q, want %q", sendAuto, "opencode")
+	}
+}
+
+func TestAttachSessionObserverSnapshotsHistoryAndRegistersCallbacksAtomically(t *testing.T) {
+	logSvc := logging.NewService(t.TempDir())
+	defer logSvc.Close()
+
+	svc := NewService(logSvc)
+	ps := &PtySession{
+		outputHistory: []byte("history"),
+		currentCols:   120,
+		currentRows:   40,
+	}
+	svc.sessions["demo"] = ps
+
+	var outputTriggered bool
+	var resizeTriggered bool
+	history, cols, rows, err := svc.AttachSessionObserver("demo", "observer-1", func(data []byte) {
+		outputTriggered = string(data) == "live"
+	}, func(cols, rows int) {
+		resizeTriggered = cols == 80 && rows == 24
+	})
+	if err != nil {
+		t.Fatalf("AttachSessionObserver: %v", err)
+	}
+
+	if string(history) != "history" {
+		t.Fatalf("history = %q, want %q", string(history), "history")
+	}
+	if cols != 120 || rows != 40 {
+		t.Fatalf("dimensions = %dx%d, want 120x40", cols, rows)
+	}
+	if svc.outputCBs["demo"] == nil || svc.outputCBs["demo"]["observer-1"] == nil {
+		t.Fatal("expected output callback to be registered")
+	}
+	if svc.resizeCBs["demo"] == nil || svc.resizeCBs["demo"]["observer-1"] == nil {
+		t.Fatal("expected resize callback to be registered")
+	}
+
+	svc.outputCBs["demo"]["observer-1"]([]byte("live"))
+	svc.resizeCBs["demo"]["observer-1"](80, 24)
+	if !outputTriggered {
+		t.Fatal("expected registered output callback to receive live chunk")
+	}
+	if !resizeTriggered {
+		t.Fatal("expected registered resize callback to receive live dimensions")
+	}
+
+	svc.DetachSessionObserver("demo", "observer-1")
+	if _, ok := svc.outputCBs["demo"]["observer-1"]; ok {
+		t.Fatal("expected output callback to be removed after detach")
+	}
+	if _, ok := svc.resizeCBs["demo"]["observer-1"]; ok {
+		t.Fatal("expected resize callback to be removed after detach")
+	}
+}
+
+func TestCallbackSnapshotsRemainSafeDuringConcurrentAttachDetachAndDispatch(t *testing.T) {
+	logSvc := logging.NewService(t.TempDir())
+	defer logSvc.Close()
+
+	svc := NewService(logSvc)
+	ps := &PtySession{}
+	svc.sessions["demo"] = ps
+
+	var outputCalls atomic.Int64
+	var exitCalls atomic.Int64
+
+	const observers = 8
+	const iterations = 200
+
+	var wg sync.WaitGroup
+	for i := 0; i < observers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "observer-" + strconv.Itoa(i)
+			outputCB := func(data []byte) {
+				outputCalls.Add(1)
+			}
+			exitCB := func(exitCode uint32) {
+				exitCalls.Add(1)
+			}
+
+			for j := 0; j < iterations; j++ {
+				if _, _, _, err := svc.AttachSessionObserver("demo", id, outputCB, nil); err != nil {
+					t.Errorf("AttachSessionObserver(%s): %v", id, err)
+					return
+				}
+				svc.RegisterExitCallback("demo", id, exitCB)
+				svc.DetachSessionObserver("demo", id)
+				svc.UnregisterExitCallback("demo", id)
+			}
+		}(i)
+	}
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < observers*iterations; j++ {
+				for _, cb := range svc.snapshotOutputCallbacks("demo") {
+					cb([]byte("chunk"))
+				}
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < observers*iterations; j++ {
+				for _, cb := range svc.snapshotExitCallbacks("demo") {
+					cb(0)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if outputCalls.Load() == 0 {
+		t.Fatal("expected output callbacks to be invoked during concurrent dispatch")
+	}
+	if exitCalls.Load() == 0 {
+		t.Fatal("expected exit callbacks to be invoked during concurrent dispatch")
+	}
+	if len(svc.outputCBs["demo"]) != 0 {
+		t.Fatal("expected output callbacks to be fully detached")
+	}
+	if len(svc.exitCBs["demo"]) != 0 {
+		t.Fatal("expected exit callbacks to be fully detached")
 	}
 }

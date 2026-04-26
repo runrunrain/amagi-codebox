@@ -40,6 +40,23 @@ type codexLaunchSettings struct {
 	Model string
 }
 
+type RemoteWebUIStatusResult struct {
+	Openable                bool   `json:"openable"`
+	Reason                  string `json:"reason"`
+	URL                     string `json:"url"`
+	Port                    int    `json:"port"`
+	Running                 bool   `json:"running"`
+	MobileWebRoot           string `json:"mobileWebRoot"`
+	MobileWebRootConfigured bool   `json:"mobileWebRootConfigured"`
+	MobileWebRootExists     bool   `json:"mobileWebRootExists"`
+}
+
+type OpenRemoteWebUIResult struct {
+	URL     string `json:"url"`
+	Port    int    `json:"port"`
+	Running bool   `json:"running"`
+}
+
 //go:embed build/windows/icon.ico
 var trayIcon []byte
 
@@ -128,6 +145,65 @@ func (a *App) GetRemoteStatus() map[string]any {
 		"token":   a.Remote.GetToken(),
 		"running": a.Remote.IsRunning(),
 	}
+}
+
+// GetRemoteWebUIStatus 返回桌面入口 Web UI 的可打开状态。
+func (a *App) GetRemoteWebUIStatus() RemoteWebUIStatusResult {
+	status := RemoteWebUIStatusResult{
+		Port:    a.Remote.GetPort(),
+		Running: a.Remote.IsRunning(),
+	}
+
+	if a.ctx == nil {
+		status.Reason = "app context is not ready"
+		return status
+	}
+
+	webRoot, configured, exists := a.Remote.GetMobileWebRootStatus()
+	status.MobileWebRoot = webRoot
+	status.MobileWebRootConfigured = configured
+	status.MobileWebRootExists = exists
+
+	if !configured {
+		status.Reason = "mobile web root is not configured"
+		return status
+	}
+	if !exists {
+		status.Reason = "mobile web root index.html not found"
+		return status
+	}
+
+	status.Openable = true
+	status.URL = a.Remote.BuildDesktopLaunchURL()
+	return status
+}
+
+// OpenRemoteWebUI 确保远程服务可用后，在默认浏览器中打开移动端 Web UI。
+func (a *App) OpenRemoteWebUI() (OpenRemoteWebUIResult, error) {
+	status := a.GetRemoteWebUIStatus()
+	if !status.Openable {
+		if status.Reason == "" {
+			status.Reason = "remote web ui is not available"
+		}
+		return OpenRemoteWebUIResult{}, errors.New(status.Reason)
+	}
+
+	if !a.Remote.IsRunning() {
+		if err := a.Remote.Start(a.ctx); err != nil {
+			a.Log.Error("remote", "打开 Web UI 前启动远程服务器失败", err.Error())
+			return OpenRemoteWebUIResult{}, fmt.Errorf("start remote server before opening web ui: %w", err)
+		}
+	}
+
+	launchURL := a.Remote.BuildDesktopLaunchURL()
+	wailsRuntime.BrowserOpenURL(a.ctx, launchURL)
+
+	a.Log.Info("remote", "已打开桌面 Web UI", fmt.Sprintf("host=%s port=%d", a.Remote.GetHost(), a.Remote.GetPort()))
+	return OpenRemoteWebUIResult{
+		URL:     launchURL,
+		Port:    a.Remote.GetPort(),
+		Running: a.Remote.IsRunning(),
+	}, nil
 }
 
 // RegenerateRemoteToken 重新生成远程 API Token，返回新 Token。
@@ -1494,6 +1570,16 @@ func (a *App) GetOutputHistory(sessionID string) ([]byte, error) {
 // 实现 remote.DimensionsProvider 接口。
 func (a *App) GetPtyDimensions(sessionID string) (cols, rows int, err error) {
 	return a.Pty.GetPtyDimensions(sessionID)
+}
+
+// AttachSessionObserver 原子返回 history / dimensions 快照并注册 live 回调。
+func (a *App) AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) ([]byte, int, int, error) {
+	return a.Pty.AttachSessionObserver(sessionID, id, outputCB, resizeCB)
+}
+
+// DetachSessionObserver 注销通过 AttachSessionObserver 注册的 live 回调。
+func (a *App) DetachSessionObserver(sessionID string, id string) {
+	a.Pty.DetachSessionObserver(sessionID, id)
 }
 
 // OpenFileInEditor 使用系统默认程序打开指定文件。

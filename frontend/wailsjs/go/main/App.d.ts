@@ -6,12 +6,15 @@ import {config} from '../models';
 import {envvars} from '../models';
 import {logging} from '../models';
 import {paths} from '../models';
+import {main} from '../models';
 import {session} from '../models';
 import {settings} from '../models';
 
 export function AddProxyBackendURL(arg1:string):Promise<void>;
 
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
+
+export function AttachSessionObserver(arg1:string,arg2:string,arg3:any,arg4:any):Promise<Array<number>>;
 
 export function BrowseDirectory():Promise<string>;
 
@@ -28,6 +31,8 @@ export function DeleteAmagiSubPreset(arg1:string,arg2:string):Promise<void>;
 export function DeleteEnvVar(arg1:string):Promise<void>;
 
 export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
+
+export function DetachSessionObserver(arg1:string,arg2:string):Promise<void>;
 
 export function DownloadAndApplyUpdate():Promise<void>;
 
@@ -87,6 +92,8 @@ export function GetRemoteStatus():Promise<Record<string, any>>;
 
 export function GetRemoteToken():Promise<string>;
 
+export function GetRemoteWebUIStatus():Promise<main.RemoteWebUIStatusResult>;
+
 export function GetSession(arg1:string):Promise<session.SessionInfo>;
 
 export function GetSessions():Promise<Array<session.SessionInfo>>;
@@ -116,6 +123,8 @@ export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,ar
 export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
+
+export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
 export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 

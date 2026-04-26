@@ -52,7 +52,12 @@ export class TerminalWebSocket {
 
     const parsed = new URL(serverUrl)
     const protocol = parsed.protocol === 'https:' ? 'wss' : 'ws'
-    this.url = `${protocol}://${parsed.host}/ws/terminal/${sessionId}?token=${encodeURIComponent(token)}&mode=${mode}`
+    const params = new URLSearchParams()
+    if (token.trim()) {
+      params.set('token', token)
+    }
+    params.set('mode', mode)
+    this.url = `${protocol}://${parsed.host}/ws/terminal/${sessionId}?${params.toString()}`
 
     this.doConnect()
   }

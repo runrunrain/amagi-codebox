@@ -1,19 +1,20 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConnection } from '../stores/connection'
 import { Html5QrcodeScanner, Html5QrcodeScanType } from 'html5-qrcode'
 
 const router = useRouter()
-const { serverUrl, token, isConnecting, lastError, setServer, testAndConnect, isConnected } = useConnection()
+const { serverUrl, token, isConnecting, lastError, setServer, testAndConnect, isConnected, bootstrapFromLocation } = useConnection()
 
 const urlInput = ref(serverUrl.value)
 const tokenInput = ref(token.value)
 const scanning = ref(false)
+const tokenVisible = ref(false)
 let qrScanner: Html5QrcodeScanner | null = null
 
-// 远程访问时（非 localhost），Server URL 自动从 origin 获取，无需用户输入
-const isRemoteAccess = !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')
+// 生产构建下静态页与 API 同源，Server URL 自动使用 origin；开发模式保留手动输入。
+const isRemoteAccess = !import.meta.env.DEV
 
 async function handleConnect() {
   setServer(urlInput.value, tokenInput.value)
@@ -53,12 +54,12 @@ function startScan() {
 function handleQRResult(text: string) {
   try {
     const parsed = JSON.parse(text)
-    if (parsed.url && parsed.token) {
+    if (parsed.url) {
       urlInput.value = parsed.url
-      tokenInput.value = parsed.token
+      tokenInput.value = typeof parsed.token === 'string' ? parsed.token : ''
       stopScan()
     } else {
-      console.warn('QR code missing url or token fields')
+      console.warn('QR code missing url field')
     }
   } catch {
     console.warn('QR code is not valid JSON:', text)
@@ -77,9 +78,28 @@ onUnmounted(() => {
   stopScan()
 })
 
-if (isConnected.value) {
-  router.replace('/dashboard')
-}
+watch(serverUrl, (value) => {
+  urlInput.value = value
+})
+
+watch(token, (value) => {
+  tokenInput.value = value
+})
+
+onMounted(async () => {
+  if (isConnected.value) {
+    await router.replace('/dashboard')
+    return
+  }
+
+  const ok = await bootstrapFromLocation()
+  urlInput.value = serverUrl.value
+  tokenInput.value = token.value
+
+  if (ok) {
+    await router.replace('/dashboard')
+  }
+})
 </script>
 
 <template>
@@ -125,12 +145,29 @@ if (isConnected.value) {
 
       <div class="form-group">
         <label class="form-label">Token</label>
-        <input
-          v-model="tokenInput"
-          type="password"
-          class="form-input"
-          placeholder="Enter access token"
-        />
+        <div class="input-with-toggle">
+          <input
+            v-model="tokenInput"
+            :type="tokenVisible ? 'text' : 'password'"
+            class="form-input form-input--with-toggle"
+            placeholder="Desktop launch may auto-bootstrap this"
+          />
+          <button
+            type="button"
+            class="token-toggle-btn"
+            :title="tokenVisible ? 'Hide token' : 'Show token'"
+            @click="tokenVisible = !tokenVisible"
+          >
+            <svg v-if="!tokenVisible" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+              <line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div v-if="lastError" class="error-msg">
@@ -239,6 +276,40 @@ if (isConnected.value) {
   box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
 }
 
+.form-input:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: -2px;
+}
+
+.input-with-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.form-input--with-toggle {
+  padding-right: 40px;
+}
+
+.token-toggle-btn {
+  position: absolute;
+  right: 4px;
+  background: none;
+  border: none;
+  color: #484f58;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.token-toggle-btn:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: -2px;
+}
+
 .server-auto-hint {
   display: flex;
   align-items: center;
@@ -293,6 +364,11 @@ if (isConnected.value) {
   cursor: not-allowed;
 }
 
+.connect-btn:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
 .scan-btn {
   width: 100%;
   margin-top: 12px;
@@ -312,6 +388,11 @@ if (isConnected.value) {
 
 .scan-btn:active {
   background: rgba(88, 166, 255, 0.08);
+}
+
+.scan-btn:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
 }
 
 /* Scanner */
@@ -342,6 +423,11 @@ if (isConnected.value) {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.cancel-scan-btn:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
 .spinner {
   width: 16px;
   height: 16px;
@@ -353,5 +439,28 @@ if (isConnected.value) {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ===========================
+   Hover feedback (pointer devices only)
+   =========================== */
+@media (hover: hover) {
+  .token-toggle-btn:hover {
+    color: #8b949e;
+  }
+
+  .connect-btn:hover:not(:disabled) {
+    background: #2ea043;
+  }
+
+  .scan-btn:hover {
+    border-color: #484f58;
+    background: rgba(88, 166, 255, 0.04);
+  }
+
+  .cancel-scan-btn:hover {
+    border-color: #484f58;
+    color: #c9d1d9;
+  }
 }
 </style>

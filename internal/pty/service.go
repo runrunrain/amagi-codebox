@@ -132,6 +132,88 @@ func (s *Service) UnregisterResizeCallback(sessionID string, id string) {
 	}
 }
 
+// AttachSessionObserver 以原子方式完成 observer attach：
+// 先冻结 history / dimensions 快照，再注册 live output / dimensions 回调，避免 history 与 live 之间丢帧。
+func (s *Service) AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) (history []byte, cols, rows int, err error) {
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, 0, 0, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	ps.historyMu.Lock()
+	s.outputCBsMu.Lock()
+	s.resizeCBsMu.Lock()
+
+	history = make([]byte, len(ps.outputHistory))
+	copy(history, ps.outputHistory)
+	cols = ps.currentCols
+	rows = ps.currentRows
+
+	if outputCB != nil {
+		if s.outputCBs[sessionID] == nil {
+			s.outputCBs[sessionID] = make(map[string]outputCallback)
+		}
+		s.outputCBs[sessionID][id] = outputCB
+	}
+	if resizeCB != nil {
+		if s.resizeCBs[sessionID] == nil {
+			s.resizeCBs[sessionID] = make(map[string]resizeCallback)
+		}
+		s.resizeCBs[sessionID][id] = resizeCB
+	}
+
+	s.resizeCBsMu.Unlock()
+	s.outputCBsMu.Unlock()
+	ps.historyMu.Unlock()
+	s.mu.Unlock()
+
+	return history, cols, rows, nil
+}
+
+// DetachSessionObserver 注销通过 AttachSessionObserver 注册的 live 回调。
+func (s *Service) DetachSessionObserver(sessionID string, id string) {
+	s.UnregisterOutputCallback(sessionID, id)
+	s.UnregisterResizeCallback(sessionID, id)
+}
+
+func (s *Service) snapshotOutputCallbacks(sessionID string) []outputCallback {
+	s.outputCBsMu.RLock()
+	defer s.outputCBsMu.RUnlock()
+
+	callbacksByID := s.outputCBs[sessionID]
+	callbacks := make([]outputCallback, 0, len(callbacksByID))
+	for _, cb := range callbacksByID {
+		callbacks = append(callbacks, cb)
+	}
+	return callbacks
+}
+
+func (s *Service) snapshotExitCallbacks(sessionID string) []exitCallback {
+	s.exitCBsMu.RLock()
+	defer s.exitCBsMu.RUnlock()
+
+	callbacksByID := s.exitCBs[sessionID]
+	callbacks := make([]exitCallback, 0, len(callbacksByID))
+	for _, cb := range callbacksByID {
+		callbacks = append(callbacks, cb)
+	}
+	return callbacks
+}
+
+func (s *Service) snapshotResizeCallbacks(sessionID string) []resizeCallback {
+	s.resizeCBsMu.RLock()
+	defer s.resizeCBsMu.RUnlock()
+
+	callbacksByID := s.resizeCBs[sessionID]
+	callbacks := make([]resizeCallback, 0, len(callbacksByID))
+	for _, cb := range callbacksByID {
+		callbacks = append(callbacks, cb)
+	}
+	return callbacks
+}
+
 // SetContext 设置 Wails 应用上下文（Startup 时调用）
 func (s *Service) SetContext(ctx context.Context) {
 	s.ctx = ctx
@@ -256,10 +338,7 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 			}
 
 			// 远程 WebSocket 回调
-			s.outputCBsMu.RLock()
-			cbs := s.outputCBs[sessionID]
-			s.outputCBsMu.RUnlock()
-			for _, cb := range cbs {
+			for _, cb := range s.snapshotOutputCallbacks(sessionID) {
 				cb(chunk)
 			}
 		}
@@ -284,10 +363,7 @@ func (s *Service) waitLoop(sessionID string, ps *PtySession, ctx context.Context
 	}
 
 	// 远程 WebSocket 退出回调
-	s.exitCBsMu.RLock()
-	cbs := s.exitCBs[sessionID]
-	s.exitCBsMu.RUnlock()
-	for _, cb := range cbs {
+	for _, cb := range s.snapshotExitCallbacks(sessionID) {
 		cb(exitCode)
 	}
 }
@@ -364,13 +440,7 @@ func (s *Service) Resize(sessionID string, cols, rows int) error {
 	ps.currentRows = rows
 	s.mu.Unlock()
 
-	s.resizeCBsMu.RLock()
-	callbacks := make([]resizeCallback, 0, len(s.resizeCBs[sessionID]))
-	for _, cb := range s.resizeCBs[sessionID] {
-		callbacks = append(callbacks, cb)
-	}
-	s.resizeCBsMu.RUnlock()
-	for _, cb := range callbacks {
+	for _, cb := range s.snapshotResizeCallbacks(sessionID) {
 		cb(cols, rows)
 	}
 

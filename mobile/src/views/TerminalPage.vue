@@ -24,6 +24,8 @@ const FONT_SIZE_MIN = 9
 const FONT_SIZE_MAX = 18
 const FONT_SIZE_DEFAULT = 12
 
+type TerminalTransportMode = 'observer' | 'controller'
+
 function loadFontSize(): number {
   const saved = localStorage.getItem(FONT_SIZE_KEY)
   if (saved) {
@@ -58,7 +60,8 @@ const todoOverlay = useTodoOverlay(terminalBlocks)
 
 const sessionLabelTitle = computed(() => {
   if (!sessionMetadata.value) return sessionId
-  const parts = [sessionMetadata.value.appType, sessionMetadata.value.provider]
+  const label = formatAppTypeLabel(sessionMetadata.value.appType)
+  const parts = [label, sessionMetadata.value.provider]
   if (sessionMetadata.value.model) {
     parts.push(sessionMetadata.value.model)
   }
@@ -169,6 +172,8 @@ function formatAppTypeLabel(appType: SessionMetadata['appType']) {
       return 'OpenCode'
     case 'codex':
       return 'Codex'
+    case 'amagicode':
+      return 'AmagiCode'
     default:
       return 'Terminal'
   }
@@ -224,34 +229,36 @@ function onTouchEnd() {
 // --- 移动端键盘适配 ---
 const terminalPageRef = ref<HTMLDivElement>()
 let isKeyboardOpen = false
-let scaleRaf1: number | null = null
-let scaleRaf2: number | null = null
-let scaleRetryTimer: ReturnType<typeof setTimeout> | null = null
-let lastNaturalWidth = 0
-let lastNaturalHeight = 0
 
-function cancelScaleFrames() {
-  if (scaleRaf1 !== null) {
-    cancelAnimationFrame(scaleRaf1)
-    scaleRaf1 = null
-  }
-  if (scaleRaf2 !== null) {
-    cancelAnimationFrame(scaleRaf2)
-    scaleRaf2 = null
-  }
-  if (scaleRetryTimer) {
-    clearTimeout(scaleRetryTimer)
-    scaleRetryTimer = null
-  }
+function isDesktopBrowser(): boolean {
+  return window.matchMedia('(hover: hover) and (pointer: fine)').matches
+}
+
+let currentTransportMode: TerminalTransportMode = isDesktopBrowser() ? 'controller' : 'observer'
+
+function getTransportMode(): TerminalTransportMode {
+  return isDesktopBrowser() ? 'controller' : 'observer'
 }
 
 function updatePresentationMode() {
-  mobileTextMode.value = window.innerWidth <= 768
+  const nextMode = getTransportMode()
+  const modeChanged = currentTransportMode !== nextMode
+  currentTransportMode = nextMode
+  mobileTextMode.value = nextMode === 'observer'
+
   if (terminal) {
     terminal.options.disableStdin = mobileTextMode.value
     if (mobileTextMode.value) {
       terminal.blur()
+    } else {
+      requestAnimationFrame(() => {
+        terminal?.focus()
+      })
     }
+  }
+
+  if (modeChanged && ws) {
+    reconnectWebSocket()
   }
 }
 
@@ -380,17 +387,6 @@ function scheduleTextSync() {
   })
 }
 
-function scheduleApplyScale() {
-  cancelScaleFrames()
-  scaleRaf1 = requestAnimationFrame(() => {
-    scaleRaf2 = requestAnimationFrame(() => {
-      scaleRaf1 = null
-      scaleRaf2 = null
-      applyScale(0)
-    })
-  })
-}
-
 function onViewportResize() {
   updatePresentationMode()
   if (!terminalPageRef.value) return
@@ -409,17 +405,12 @@ function onViewportResize() {
   terminalPageRef.value.style.top = `${vv.offsetTop}px`
 
   // 键盘状态变化时：重新计算布局
-  if (isPtySynced) {
-    if (mobileTextMode.value) {
-      scheduleTextSync()
-    } else {
-      scheduleApplyScale()
-    }
-  } else if (!mobileTextMode.value && fitAddon && terminal) {
-    try {
-      fitAddon.fit()
-    } catch {}
+  if (mobileTextMode.value) {
+    scheduleTextSync()
+  } else {
+    debouncedControllerResize()
   }
+
   // 键盘弹起时滚动到底部，确保用户看到光标/输入位置
   if (isKeyboardOpen && terminal) {
     if (mobileTextMode.value) {
@@ -453,7 +444,6 @@ function cleanupViewportListener() {
 }
 
 // 将 xterm 适配到容器大小（仅本地显示，不改 PTY 尺寸）
-// 移动端作为 observer 永远不 resize PTY
 function fitLocal() {
   if (!fitAddon || !terminal) return
   try {
@@ -461,137 +451,34 @@ function fitLocal() {
   } catch {}
 }
 
-// PTY 真实尺寸（由桌面端控制）
-let ptyCols = 0
-let ptyRows = 0
-let isPtySynced = false
+function sendControllerResize() {
+  if (!terminal || !ws || currentTransportMode !== 'controller' || wsState.value !== 'connected') return
+  if (terminal.cols > 0 && terminal.rows > 0) {
+    ws.sendResize(terminal.cols, terminal.rows)
+  }
+}
 
-// 收到服务端 dimensions 帧时：匹配 PTY 真实尺寸 + CSS 缩放适配屏幕
+function fitControllerTerminal() {
+  if (currentTransportMode !== 'controller') return
+  fitLocal()
+  sendControllerResize()
+}
+
+// observer 模式：保持 PTY 真实尺寸，不主动发 resize。
 function syncToPtyDimensions(cols: number, rows: number) {
-  if (!terminal || !terminalRef.value) return
-
-  ptyCols = cols
-  ptyRows = rows
-  isPtySynced = true
+  if (!terminal || currentTransportMode !== 'observer') return
 
   try {
-    terminal.resize(ptyCols, ptyRows)
+    terminal.resize(cols, rows)
   } catch {}
 
-  if (mobileTextMode.value) {
-    scheduleTextSync()
-  } else {
-    scheduleApplyScale()
-  }
+  scheduleTextSync()
 }
 
-function clearScaleStyles() {
-  if (!terminalRef.value) return
-  terminalRef.value.style.transform = ''
-  terminalRef.value.style.transformOrigin = ''
-  terminalRef.value.style.width = ''
-  terminalRef.value.style.height = ''
-}
-
-function fallbackToFitLocal() {
-  clearScaleStyles()
-  isPtySynced = false
-  ptyCols = 0
-  ptyRows = 0
-  fitLocal()
-}
-
-function getNaturalTerminalSize(): { width: number; height: number } | null {
-  if (!terminalRef.value) return null
-  const xtermRoot = terminalRef.value.querySelector('.xterm') as HTMLElement | null
-  const xtermScreen = terminalRef.value.querySelector('.xterm-screen') as HTMLElement | null
-  const xtermViewport = terminalRef.value.querySelector('.xterm-viewport') as HTMLElement | null
-  if (!xtermRoot || !xtermScreen) return null
-
-  const width = Math.ceil(Math.max(
-    xtermRoot.scrollWidth,
-    xtermRoot.offsetWidth,
-    xtermScreen.scrollWidth,
-    xtermScreen.offsetWidth,
-  ))
-
-  const height = Math.ceil(Math.max(
-    xtermRoot.scrollHeight,
-    xtermRoot.offsetHeight,
-    xtermScreen.scrollHeight,
-    xtermScreen.offsetHeight,
-    xtermViewport?.offsetHeight ?? 0,
-  ))
-
-  if (width <= 0 || height <= 0) {
-    return null
-  }
-
-  return { width, height }
-}
-
-// 计算并应用 CSS transform scale，让整个终端等比缩放到稳定容器宽度内
-// 注意：wrapper 是 ResizeObserver 目标；terminal-container 是 transform 目标，二者分离避免布局反馈环
-function applyScale(retryCount: number) {
-  if (mobileTextMode.value) return
-  if (!terminalRef.value || !wrapperRef.value) return
-  const container = wrapperRef.value
-  const containerWidth = container.clientWidth
-  const containerHeight = container.clientHeight
-  if (containerWidth <= 0 || containerHeight <= 0) return
-
-  const dims = getNaturalTerminalSize()
-  if (!dims) {
-    if (retryCount < 8) {
-      scaleRetryTimer = setTimeout(() => {
-        scaleRetryTimer = null
-        applyScale(retryCount + 1)
-      }, 30)
-      return
-    }
-
-    if (lastNaturalWidth > 0 && lastNaturalHeight > 0) {
-      terminalRef.value.style.width = `${lastNaturalWidth}px`
-      terminalRef.value.style.height = `${lastNaturalHeight}px`
-      const cachedScale = Math.min(containerWidth / lastNaturalWidth, containerHeight / lastNaturalHeight)
-      if (Number.isFinite(cachedScale) && cachedScale > 0) {
-        terminalRef.value.style.transform = `scale(${cachedScale})`
-        terminalRef.value.style.transformOrigin = 'top left'
-        return
-      }
-    }
-
-    fallbackToFitLocal()
-    return
-  }
-
-  const naturalWidth = dims.width
-  const naturalHeight = dims.height
-  lastNaturalWidth = naturalWidth
-  lastNaturalHeight = naturalHeight
-
-  terminalRef.value.style.width = `${naturalWidth}px`
-  terminalRef.value.style.height = `${naturalHeight}px`
-
-  const scale = Math.min(containerWidth / naturalWidth, containerHeight / naturalHeight)
-  if (!Number.isFinite(scale) || scale <= 0) {
-    fallbackToFitLocal()
-    return
-  }
-
-  terminalRef.value.style.transformOrigin = 'top left'
-  if (Math.abs(scale - 1) < 0.01) {
-    terminalRef.value.style.transform = ''
-  } else {
-    terminalRef.value.style.transform = `scale(${scale})`
-  }
-}
-
-// 防抖版 fitLocal
-function debouncedFitLocal() {
+function debouncedControllerResize() {
   if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
   resizeDebounceTimer = setTimeout(() => {
-    fitLocal()
+    fitControllerTerminal()
   }, 100)
 }
 
@@ -616,13 +503,8 @@ function changeFontSize(delta: number) {
     terminal.options.fontSize = next
     if (mobileTextMode.value) {
       scheduleTextSync()
-    } else if (isPtySynced && ptyCols > 0 && ptyRows > 0) {
-      try {
-        terminal.resize(ptyCols, ptyRows)
-      } catch {}
-      scheduleApplyScale()
     } else {
-      fitLocal()
+      debouncedControllerResize()
     }
   }
 }
@@ -672,7 +554,7 @@ function initTerminal() {
 
   nextTick(() => {
     if (!mobileTextMode.value) {
-      fitLocal()
+      fitControllerTerminal()
     }
     scheduleTextSync()
   })
@@ -685,10 +567,8 @@ function initTerminal() {
   resizeObserver = new ResizeObserver(() => {
     if (mobileTextMode.value) {
       scheduleTextSync()
-    } else if (isPtySynced) {
-      scheduleApplyScale()
     } else {
-      debouncedFitLocal()
+      debouncedControllerResize()
     }
   })
   if (wrapperRef.value) {
@@ -754,6 +634,11 @@ function connectWebSocket() {
     wsState.value = state
     if (state === 'connected' && terminal) {
       terminal.writeln('\x1b[32mConnected to session.\x1b[0m')
+      if (currentTransportMode === 'controller') {
+        requestAnimationFrame(() => {
+          fitControllerTerminal()
+        })
+      }
     } else if (state === 'disconnected') {
       terminal?.writeln('\x1b[33mDisconnected. Reconnecting...\x1b[0m')
     } else if (state === 'error') {
@@ -770,14 +655,18 @@ function connectWebSocket() {
         terminal?.write(frame.data)
       }
     } else if (frame.type === 'dimensions' && frame.cols && frame.rows) {
-      // PTY 尺寸变化 — 重新同步并缩放
       syncToPtyDimensions(frame.cols, frame.rows)
     } else if (frame.type === 'exit') {
       terminal?.writeln(`\r\n\x1b[33mSession exited with code ${frame.exitCode}\x1b[0m`)
     }
   })
 
-  ws.connect(serverUrl.value, sessionId, token.value, 'observer')
+  ws.connect(serverUrl.value, sessionId, token.value, currentTransportMode)
+}
+
+function reconnectWebSocket() {
+  ws?.disconnect()
+  connectWebSocket()
 }
 
 function sendSpecialKey(key: string) {
@@ -860,7 +749,6 @@ onUnmounted(() => {
   resizeObserver?.disconnect()
   resetMarkdownCache()
   cleanupViewportListener()
-  cancelScaleFrames()
   cancelTextSync()
   // 清理触摸事件
   if (terminalRef.value) {
@@ -889,7 +777,7 @@ onUnmounted(() => {
           <polyline points="15 18 9 12 15 6" />
         </svg>
       </button>
-      <span class="session-label" :title="sessionLabelTitle">{{ sessionId }}</span>
+      <span class="session-label" :title="sessionId">{{ sessionLabelTitle || sessionId }}</span>
       <div class="font-controls">
         <button
           class="font-btn"
@@ -1281,8 +1169,6 @@ onUnmounted(() => {
   left: 0;
   width: 100%;
   height: 100%;
-  transform-origin: top left;
-  will-change: transform;
 }
 
 .terminal-container--hidden {
@@ -2157,6 +2043,46 @@ onUnmounted(() => {
   .shortcut-btn {
     min-width: 46px;
     min-height: 38px;
+  }
+}
+
+/* ===========================
+   Desktop Overrides (pointer + hover capable)
+   =========================== */
+@media (hover: hover) and (pointer: fine) {
+  .shortcut-bar {
+    display: none;
+  }
+
+  .mobile-input-bar {
+    display: none;
+  }
+
+  .back-btn:hover {
+    background: #21262d;
+  }
+
+  .back-btn:focus-visible {
+    outline: 2px solid #58a6ff;
+    outline-offset: -2px;
+  }
+
+  .font-btn:hover:not(:disabled) {
+    background: #30363d;
+    border-color: #58a6ff;
+  }
+
+  .font-btn:focus-visible {
+    outline: 2px solid #58a6ff;
+    outline-offset: -2px;
+  }
+
+  .ws-status {
+    cursor: default;
+  }
+
+  .session-label {
+    font-size: 13px;
   }
 }
 </style>
