@@ -155,8 +155,22 @@ func TestBuildStartupCommandLine_UsesInlineShellExecution(t *testing.T) {
 	if pwshPathSendAuto != "" {
 		t.Fatal("powershell.exe should launch quoted startup command inline without delayed autoCommand")
 	}
-	if !strings.Contains(pwshPathLine, `-NoExit -Command "& 'C:\Program Files\OpenCode\opencode.cmd' '--model' 'gpt-5'"`) {
+	if !strings.Contains(pwshPathLine, `-NoExit -Command "& 'opencode' '--model' 'gpt-5'"`) {
 		t.Fatalf("unexpected powershell quoted path startup command line: %q", pwshPathLine)
+	}
+	if strings.Contains(pwshPathLine, `C:\Program Files\OpenCode\opencode.cmd`) {
+		t.Fatalf("powershell startup command should normalize .cmd wrapper path: %q", pwshPathLine)
+	}
+
+	cmdPathLine, cmdPathSendAuto := buildStartupCommandLine("cmd.exe", pathCommand)
+	if cmdPathSendAuto != "" {
+		t.Fatal("cmd.exe should launch quoted startup command inline without delayed autoCommand")
+	}
+	if !strings.Contains(cmdPathLine, `/K "chcp 65001 >nul && opencode --model gpt-5"`) {
+		t.Fatalf("unexpected cmd quoted path startup command line: %q", cmdPathLine)
+	}
+	if strings.Contains(cmdPathLine, `C:\Program Files\OpenCode\opencode.cmd`) {
+		t.Fatalf("cmd startup command should normalize .cmd wrapper path: %q", cmdPathLine)
 	}
 
 	quotedArgLine, quotedArgSendAuto := buildStartupCommandLine("pwsh", `opencode --prompt "O'Brien"`)
@@ -165,6 +179,48 @@ func TestBuildStartupCommandLine_UsesInlineShellExecution(t *testing.T) {
 	}
 	if !strings.Contains(quotedArgLine, `-NoExit -Command "& 'opencode' '--prompt' 'O''Brien'"`) {
 		t.Fatalf("unexpected pwsh single-quote argument command line: %q", quotedArgLine)
+	}
+}
+
+func TestNormalizeWindowsShellWrapperCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "quoted full cmd path with args",
+			command: `"C:\Users\demo\AppData\Roaming\npm\opencode.cmd" --foo`,
+			want:    `opencode --foo`,
+		},
+		{
+			name:    "quoted full bat path with args",
+			command: `"C:\Users\demo\bin\codex.bat" -m gpt-5`,
+			want:    `codex -m gpt-5`,
+		},
+		{
+			name:    "quoted exe path remains unchanged",
+			command: `"C:\Program Files\Claude\claude.exe" --resume`,
+			want:    `"C:\Program Files\Claude\claude.exe" --resume`,
+		},
+		{
+			name:    "bare opencode remains unchanged",
+			command: `opencode`,
+			want:    `opencode`,
+		},
+		{
+			name:    "single quote argument remains intact",
+			command: `"C:\Users\demo\AppData\Roaming\npm\opencode.cmd" --prompt "O'Brien"`,
+			want:    `opencode --prompt "O'Brien"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeWindowsShellWrapperCommand(tt.command); got != tt.want {
+				t.Fatalf("normalizeWindowsShellWrapperCommand(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
 	}
 }
 

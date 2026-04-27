@@ -291,6 +291,8 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	autoCommand := spec.StartupCommand
 	if spec.BootstrapMode == platform.BootstrapDirectCommand {
 		autoCommand = buildCommandLine(spec.CLI.Path, spec.CLI.Args)
+	} else if spec.BootstrapMode == platform.BootstrapShellInline {
+		autoCommand = normalizeWindowsShellWrapperCommand(autoCommand)
 	}
 
 	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
@@ -594,6 +596,7 @@ func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
 	if autoCommand == "" {
 		return commandLine, ""
 	}
+	autoCommand = normalizeWindowsShellWrapperCommand(autoCommand)
 
 	quotedShell := quoteCommandPath(commandLine)
 	if containsIgnoreCase(commandLine, "pwsh") || containsIgnoreCase(commandLine, "powershell") {
@@ -622,6 +625,80 @@ func buildCommandLine(command string, args []string) string {
 		parts = append(parts, quoteCommandPath(arg))
 	}
 	return strings.Join(parts, " ")
+}
+
+func normalizeWindowsShellWrapperCommand(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return command
+	}
+
+	firstToken, rest := splitFirstStartupToken(trimmed)
+	if firstToken == "" || !isWindowsShellWrapperPath(firstToken) {
+		return command
+	}
+
+	base := windowsPathBase(firstToken)
+	name := base[:len(base)-len(wrapperExtension(base))]
+	if rest == "" {
+		return name
+	}
+	return name + " " + rest
+}
+
+func splitFirstStartupToken(command string) (string, string) {
+	if command == "" {
+		return "", ""
+	}
+	if command[0] == '"' {
+		var token strings.Builder
+		for i := 1; i < len(command); i++ {
+			if command[i] == '"' {
+				return token.String(), strings.TrimSpace(command[i+1:])
+			}
+			token.WriteByte(command[i])
+		}
+		return token.String(), ""
+	}
+
+	for i := 0; i < len(command); i++ {
+		switch command[i] {
+		case ' ', '\t', '\r', '\n':
+			return command[:i], strings.TrimSpace(command[i+1:])
+		}
+	}
+	return command, ""
+}
+
+func isWindowsShellWrapperPath(token string) bool {
+	if wrapperExtension(token) == "" {
+		return false
+	}
+	return strings.Contains(token, `\`) || strings.Contains(token, `/`)
+}
+
+func wrapperExtension(path string) string {
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".cmd") {
+		return path[len(path)-len(".cmd"):]
+	}
+	if strings.HasSuffix(lower, ".bat") {
+		return path[len(path)-len(".bat"):]
+	}
+	return ""
+}
+
+func windowsPathBase(path string) string {
+	lastBackslash := strings.LastIndex(path, `\`)
+	lastSlash := strings.LastIndex(path, `/`)
+	idx := lastBackslash
+	if lastSlash > idx {
+		idx = lastSlash
+	}
+	if idx < 0 || idx+1 >= len(path) {
+		return path
+	}
+	return path[idx+1:]
 }
 
 func buildPowerShellCallCommand(command string) string {
