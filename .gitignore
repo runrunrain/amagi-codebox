@@ -1,6 +1,7 @@
 # Build artifacts
 build/bin
 *.exe
+!vendor/github.com/wailsapp/wails/v2/internal/webview2runtime/MicrosoftEdgeWebview2Setup.exe
 
 # Dependencies
 node_modules
