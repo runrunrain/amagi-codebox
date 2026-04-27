@@ -152,7 +152,7 @@ func TestResolveExecutableDoesNotUseHostAmbientPathForForeignTargetOS(t *testing
 	}
 }
 
-func TestWindowsResolverInlinesCmdWrapperWithoutRequestedShell(t *testing.T) {
+func TestWindowsResolverOpenCodeEmbeddedAttachEvenForCmdWrapper(t *testing.T) {
 	binDir := t.TempDir()
 	cliPath := filepath.Join(binDir, "opencode.cmd")
 	shellPath := filepath.Join(binDir, "cmd.exe")
@@ -174,22 +174,29 @@ func TestWindowsResolverInlinesCmdWrapperWithoutRequestedShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if spec.BootstrapMode != BootstrapShellInline {
-		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellInline)
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
 	}
 	if spec.Shell == nil || spec.Shell.Path == "" {
 		t.Fatalf("expected non-empty resolved shell, got %+v", spec.Shell)
 	}
-	if !strings.Contains(spec.StartupCommand, "opencode.cmd") {
-		t.Fatalf("startup command = %q, want opencode.cmd included", spec.StartupCommand)
+	// Startup command: default shell resolves to cmd (pwsh not in PATH), so cmd-safe format
+	if spec.StartupCommand != "opencode" {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "opencode")
+	}
+	if strings.Contains(spec.StartupCommand, "opencode.cmd") {
+		t.Fatalf("startup command should not contain .cmd path: %q", spec.StartupCommand)
 	}
 }
 
-func TestWindowsResolverDirectLaunchesExeWithoutRequestedShell(t *testing.T) {
+func TestWindowsResolverCodexExeEmbeddedUsesShellAttach(t *testing.T) {
 	binDir := t.TempDir()
 	cliPath := filepath.Join(binDir, "codex.exe")
-	if err := os.WriteFile(cliPath, []byte("MZ"), 0o755); err != nil {
-		t.Fatalf("write fake cli: %v", err)
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("MZ"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
 	}
 
 	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
@@ -204,11 +211,16 @@ func TestWindowsResolverDirectLaunchesExeWithoutRequestedShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if spec.BootstrapMode != BootstrapDirectCommand {
-		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapDirectCommand)
+	// Codex on Windows embedded now uses BootstrapShellAttach instead of direct command
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
 	}
-	if spec.Shell != nil {
-		t.Fatalf("expected no shell for direct .exe launch, got %+v", spec.Shell)
+	if spec.Shell == nil {
+		t.Fatalf("expected shell to be auto-assigned for codex attach mode, got nil")
+	}
+	// Default Windows shell is pwsh (found in PATH), so PowerShell-safe format
+	if spec.StartupCommand != "& 'codex'" {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "& 'codex'")
 	}
 }
 
@@ -234,6 +246,758 @@ func TestBuildEffectiveEnvForWindowsAddsNPMGlobalPathWithoutDuplicates(t *testin
 	for _, entry := range addedEntries {
 		if strings.EqualFold(entry, appDataNPM) {
 			t.Fatalf("duplicate APPDATA npm path should not be recorded as added: %+v", addedEntries)
+		}
+	}
+}
+
+func TestWindowsResolverOpenCodeEmbeddedUsesShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "opencode.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "opencode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil {
+		t.Fatal("expected resolved shell for attach mode")
+	}
+	// PowerShell attach: & 'opencode'
+	if spec.StartupCommand != "& 'opencode'" {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "& 'opencode'")
+	}
+	// Even though CLI resolved to .cmd, startup command must NOT contain .cmd path
+	if strings.Contains(spec.StartupCommand, ".cmd") {
+		t.Fatalf("startup command should not contain .cmd path: %q", spec.StartupCommand)
+	}
+}
+
+func TestWindowsResolverCodexEmbeddedWithArgsUsesShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "gpt-5"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil {
+		t.Fatal("expected resolved shell for attach mode")
+	}
+	// PowerShell attach: & 'codex' '-m' 'gpt-5'
+	if spec.StartupCommand != "& 'codex' '-m' 'gpt-5'" {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "& 'codex' '-m' 'gpt-5'")
+	}
+}
+
+func TestWindowsResolverOpenCodeNoShellDefaultsToShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "opencode.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "opencode",
+		LaunchMode: "embedded",
+		WorkDir:    `C:\work`,
+		Env:        []string{"PATH=" + binDir},
+		PTYCols:    120,
+		PTYRows:    40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q (auto-assigned default shell)", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil {
+		t.Fatal("expected default shell to be auto-assigned for attach mode")
+	}
+	if spec.StartupCommand != "& 'opencode'" {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "& 'opencode'")
+	}
+}
+
+func TestWindowsResolverClaudeCodeEmbeddedDoesNotUseShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "claude.exe")
+	if err := os.WriteFile(cliPath, []byte("MZ"), 0o755); err != nil {
+		t.Fatalf("write fake: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "claudecode",
+		LaunchMode: "embedded",
+		WorkDir:    `C:\work`,
+		Env:        []string{"PATH=" + binDir},
+		PTYCols:    120,
+		PTYRows:    40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode == BootstrapShellAttach {
+		t.Fatalf("claudecode should not use shell-attach, got %q", spec.BootstrapMode)
+	}
+}
+
+func TestDarwinOpenCodeDoesNotUseShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "opencode")
+	shellPath := filepath.Join(binDir, "zsh")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "opencode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "zsh",
+		WorkDir:            "/tmp/demo",
+		Env:                []string{"PATH=" + binDir},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode == BootstrapShellAttach {
+		t.Fatalf("darwin opencode should not use shell-attach, got %q", spec.BootstrapMode)
+	}
+}
+
+func TestDarwinCodexDoesNotUseShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex")
+	shellPath := filepath.Join(binDir, "zsh")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "zsh",
+		WorkDir:            "/tmp/demo",
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "gpt-5"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode == BootstrapShellAttach {
+		t.Fatalf("darwin codex should not use shell-attach, got %q", spec.BootstrapMode)
+	}
+}
+
+func TestWindowsOpenCodeTerminalModeDoesNotUseShellAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "opencode.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "opencode",
+		LaunchMode:         "terminal",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode == BootstrapShellAttach {
+		t.Fatalf("terminal mode should not use shell-attach, got %q", spec.BootstrapMode)
+	}
+}
+
+// --- Shell-safe attach command escaping tests ---
+
+func TestBuildAttachStartupCommandForShell_PowerShell_SingleQuotesBlockExpansion(t *testing.T) {
+	shell := &ResolvedShell{Key: "pwsh", Path: "pwsh.exe"}
+
+	tests := []struct {
+		name string
+		cli  string
+		args []string
+		want string
+	}{
+		{
+			name: "bare opencode no args",
+			cli:  "opencode",
+			args: nil,
+			want: "& 'opencode'",
+		},
+		{
+			name: "codex with safe model arg",
+			cli:  "codex",
+			args: []string{"-m", "gpt-5"},
+			want: "& 'codex' '-m' 'gpt-5'",
+		},
+		{
+			name: "codex model with ampersand",
+			cli:  "codex",
+			args: []string{"-m", "gpt&5"},
+			want: "& 'codex' '-m' 'gpt&5'",
+		},
+		{
+			name: "codex model with pipe",
+			cli:  "codex",
+			args: []string{"-m", "a|b"},
+			want: "& 'codex' '-m' 'a|b'",
+		},
+		{
+			name: `codex model with angle brackets`,
+			cli:  "codex",
+			args: []string{"-m", "x>y"},
+			want: "& 'codex' '-m' 'x>y'",
+		},
+		{
+			name: "codex model with single quote",
+			cli:  "codex",
+			args: []string{"-m", "O'Brien"},
+			want: "& 'codex' '-m' 'O''Brien'",
+		},
+		{
+			name: "codex model with PowerShell subexpression",
+			cli:  "codex",
+			args: []string{"-m", "$(Get-Process)"},
+			want: "& 'codex' '-m' '$(Get-Process)'",
+		},
+		{
+			name: "codex model with dollar variable",
+			cli:  "codex",
+			args: []string{"-m", "$HOME"},
+			want: "& 'codex' '-m' '$HOME'",
+		},
+		{
+			name: "codex model with backtick",
+			cli:  "codex",
+			args: []string{"-m", "a`b"},
+			want: "& 'codex' '-m' 'a`b'",
+		},
+		{
+			name: "codex model with double quotes",
+			cli:  "codex",
+			args: []string{"-m", `he said "hello"`},
+			want: `& 'codex' '-m' 'he said "hello"'`,
+		},
+		{
+			name: "powershell allows percent sign",
+			cli:  "codex",
+			args: []string{"-m", "100%"},
+			want: "& 'codex' '-m' '100%'",
+		},
+		{
+			name: "powershell allows exclamation mark",
+			cli:  "codex",
+			args: []string{"-m", "yes!"},
+			want: "& 'codex' '-m' 'yes!'",
+		},
+		{
+			name: "powershell key alias",
+			cli:  "opencode",
+			args: []string{"-m", "test&model"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildAttachStartupCommandForShell(shell, tt.cli, tt.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.want != "" && got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+			// Verify no bare metacharacters outside single quotes for pwsh
+			assertNoBareShellMetacharsInPwshTokens(t, got)
+		})
+	}
+}
+
+// The last test case uses the "powershell" key alias instead of "pwsh".
+func TestBuildAttachStartupCommandForShell_PowerShellAlias_SameOutput(t *testing.T) {
+	pwshShell := &ResolvedShell{Key: "pwsh", Path: "pwsh.exe"}
+	psShell := &ResolvedShell{Key: "powershell", Path: "powershell.exe"}
+
+	gotPwsh, err := buildAttachStartupCommandForShell(pwshShell, "codex", []string{"-m", "gpt&5"})
+	if err != nil {
+		t.Fatalf("pwsh: %v", err)
+	}
+	gotPs, err := buildAttachStartupCommandForShell(psShell, "codex", []string{"-m", "gpt&5"})
+	if err != nil {
+		t.Fatalf("powershell: %v", err)
+	}
+
+	if gotPwsh != gotPs {
+		t.Fatalf("pwsh=%q != powershell=%q", gotPwsh, gotPs)
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_PowerShell_RejectsNewlines(t *testing.T) {
+	shell := &ResolvedShell{Key: "pwsh", Path: "pwsh.exe"}
+
+	_, err := buildAttachStartupCommandForShell(shell, "codex", []string{"-m", "line1\nline2"})
+	if err == nil {
+		t.Fatal("expected error for LF in arg, got nil")
+	}
+
+	_, err = buildAttachStartupCommandForShell(shell, "codex", []string{"-m", "line1\rline2"})
+	if err == nil {
+		t.Fatal("expected error for CR in arg, got nil")
+	}
+}
+
+func assertNoBareShellMetacharsInPwshTokens(t *testing.T, cmd string) {
+	t.Helper()
+	// The leading "& " is the PowerShell call operator -- intentionally safe.
+	// Skip it before checking for bare metacharacters.
+	rest := cmd
+	if strings.HasPrefix(rest, "& ") {
+		rest = rest[2:]
+	}
+	// Parse tokens between single quotes. Everything inside '...' is safe.
+	// Check the non-quoted parts for dangerous characters.
+	dangerous := "|<>(){};`$"
+	inQuote := false
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if ch == '\'' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && strings.ContainsRune(dangerous, rune(ch)) {
+			t.Fatalf("bare shell metachar %q outside single quotes in: %q", string(ch), cmd)
+		}
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_Cmd_SafeEscaping(t *testing.T) {
+	shell := &ResolvedShell{Key: "cmd", Path: "cmd.exe"}
+
+	tests := []struct {
+		name string
+		cli  string
+		args []string
+		want string
+	}{
+		{
+			name: "bare opencode no args",
+			cli:  "opencode",
+			args: nil,
+			want: "opencode",
+		},
+		{
+			name: "codex with safe model arg",
+			cli:  "codex",
+			args: []string{"-m", "gpt-5"},
+			want: "codex -m gpt-5",
+		},
+		{
+			name: "codex model with ampersand",
+			cli:  "codex",
+			args: []string{"-m", "gpt&5"},
+			want: `codex -m "gpt&5"`,
+		},
+		{
+			name: "codex model with pipe",
+			cli:  "codex",
+			args: []string{"-m", "a|b"},
+			want: `codex -m "a|b"`,
+		},
+		{
+			name: "codex model with redirect",
+			cli:  "codex",
+			args: []string{"-m", "x>y"},
+			want: `codex -m "x>y"`,
+		},
+		{
+			name: "codex model with multiple dangerous chars",
+			cli:  "codex",
+			args: []string{"-m", "a&b|c>d"},
+			want: `codex -m "a&b|c>d"`,
+		},
+		{
+			name: "codex model with spaces",
+			cli:  "codex",
+			args: []string{"-m", "gpt 5"},
+			want: `codex -m "gpt 5"`,
+		},
+		{
+			name: "empty arg",
+			cli:  "codex",
+			args: []string{"-m", ""},
+			want: `codex -m ""`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildAttachStartupCommandForShell(shell, tt.cli, tt.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_Cmd_RejectsPercentSign(t *testing.T) {
+	shell := &ResolvedShell{Key: "cmd", Path: "cmd.exe"}
+	_, err := buildAttachStartupCommandForShell(shell, "codex", []string{"-m", "%EVIL%"})
+	if err == nil {
+		t.Fatal("expected error for % in cmd arg, got nil")
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_Cmd_RejectsExclamationMark(t *testing.T) {
+	shell := &ResolvedShell{Key: "cmd", Path: "cmd.exe"}
+	_, err := buildAttachStartupCommandForShell(shell, "codex", []string{"-m", "!EVIL!"})
+	if err == nil {
+		t.Fatal("expected error for ! in cmd arg, got nil")
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_Cmd_RejectsNewlines(t *testing.T) {
+	shell := &ResolvedShell{Key: "cmd", Path: "cmd.exe"}
+	_, err := buildAttachStartupCommandForShell(shell, "codex", []string{"-m", "line1\nline2"})
+	if err == nil {
+		t.Fatal("expected error for LF in cmd arg, got nil")
+	}
+	_, err = buildAttachStartupCommandForShell(shell, "codex", []string{"-m", "line1\rline2"})
+	if err == nil {
+		t.Fatal("expected error for CR in cmd arg, got nil")
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_CmdQuotingPreventsCommandInjection(t *testing.T) {
+	shell := &ResolvedShell{Key: "cmd", Path: "cmd.exe"}
+
+	// Verify that dangerous characters are inside double quotes, not bare
+	dangerous := "&|<>"
+	for _, ch := range dangerous {
+		arg := "a" + string(ch) + "b"
+		got, err := buildAttachStartupCommandForShell(shell, "codex", []string{"-m", arg})
+		if err != nil {
+			t.Fatalf("unexpected error for char %q: %v", string(ch), err)
+		}
+		// The arg must be double-quoted, containing the dangerous char inside
+		expected := `codex -m "a` + string(ch) + `b"`
+		if got != expected {
+			t.Errorf("for char %q: got %q, want %q", string(ch), got, expected)
+		}
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_FallbackUsesBuildCommandString(t *testing.T) {
+	shell := &ResolvedShell{Key: "bash", Path: "/bin/bash"}
+	got, err := buildAttachStartupCommandForShell(shell, "opencode", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Fallback uses buildCommandString which just joins tokens
+	if got != "opencode" {
+		t.Fatalf("fallback for unknown shell: got %q, want %q", got, "opencode")
+	}
+}
+
+func TestBuildAttachStartupCommandForShell_NilShellFallback(t *testing.T) {
+	got, err := buildAttachStartupCommandForShell(nil, "opencode", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "opencode" {
+		t.Fatalf("nil shell fallback: got %q, want %q", got, "opencode")
+	}
+}
+
+func TestWindowsResolverAttachWithCmdShell_SafeCmdFormat(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "opencode.cmd")
+	shellPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "opencode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "cmd",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil || spec.Shell.Key != "cmd" {
+		t.Fatalf("expected cmd shell, got %+v", spec.Shell)
+	}
+	// cmd.exe attach: bare command name (safe cmd token)
+	if spec.StartupCommand != "opencode" {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "opencode")
+	}
+}
+
+func TestWindowsResolverCodexAttachWithCmdShell_SafeCmdEscaping(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "cmd",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "gpt&5"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	// cmd.exe attach: dangerous chars in double-quoted args
+	if spec.StartupCommand != `codex -m "gpt&5"` {
+		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, `codex -m "gpt&5"`)
+	}
+}
+
+func TestWindowsResolverCodexAttachWithCmdShell_RejectsPercentArg(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	_, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "cmd",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "%EVIL%"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err == nil {
+		t.Fatal("expected error for percent-EVIL-percent in cmd args, got nil")
+	}
+}
+
+func TestWindowsResolverCodexAttachWithCmdShell_RejectsExclamationArg(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	_, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "cmd",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "!EVIL!"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err == nil {
+		t.Fatal("expected error for !EVIL! in cmd args, got nil")
+	}
+}
+
+func TestWindowsResolverCodexAttachWithCmdShell_RejectsNewlineArg(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	_, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "cmd",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "line1\nline2"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err == nil {
+		t.Fatal("expected error for newline in cmd args, got nil")
+	}
+}
+
+func TestWindowsResolverCodexAttachWithPwshShell_AllowsPercentAndBang(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "%EVIL%", "-p", "!DANGER!"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err != nil {
+		t.Fatalf("pwsh should allow %% and ! in single-quoted args, got error: %v", err)
+	}
+	// PowerShell single-quoted tokens are literal
+	if spec.StartupCommand != "& 'codex' '-m' '%EVIL%' '-p' '!DANGER!'" {
+		t.Fatalf("startup command = %q, want & 'codex' '-m' '%%EVIL%%' '-p' '!DANGER!'", spec.StartupCommand)
+	}
+}
+
+func TestWindowsResolverCodexAttachWithPwshShell_RejectsNewlineArg(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	_, err := resolver.Resolve(ResolveRequest{
+		AppType:            "codex",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		CLIArgs:            []string{"-m", "line1\nline2"},
+		PTYCols:            80,
+		PTYRows:            24,
+	})
+	if err == nil {
+		t.Fatal("expected error for newline in pwsh args, got nil")
+	}
+}
+
+func TestIsSafeCmdToken(t *testing.T) {
+	tests := []struct {
+		value string
+		safe  bool
+	}{
+		{"opencode", true},
+		{"codex", true},
+		{"-m", true},
+		{"gpt-5", true},
+		{"gpt_5.4", true},
+		{"model@v2", true},
+		{"/path/to/bin", true},
+		{`\windows\path`, true},
+		{"C:", true},
+		{"gpt&5", false},
+		{"a|b", false},
+		{"x>y", false},
+		{"has space", false},
+		{`has"quote`, false},
+		{"$(cmd)", false},
+		{"", true}, // empty handled separately by escapeCmdArg
+	}
+	for _, tt := range tests {
+		got := isSafeCmdToken(tt.value)
+		if got != tt.safe {
+			t.Errorf("isSafeCmdToken(%q) = %v, want %v", tt.value, got, tt.safe)
 		}
 	}
 }

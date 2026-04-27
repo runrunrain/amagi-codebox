@@ -127,6 +127,28 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		Diagnostics:   diagnostics,
 	}
 
+	// Windows OpenCode/Codex embedded: BootstrapShellAttach for historical compatibility.
+	// ConPTY starts shell only; CLI command sent via PTY input stream (equivalent to user
+	// typing "opencode" or "codex -m gpt-5"). This avoids OpenCode/Codex detecting an
+	// inline/complete-path command line and opening an external terminal window.
+	if r.capabilities.OS == "windows" && isAttachEligible(request.LaunchMode, request.AppType) {
+		if resolvedShell == nil {
+			shell := defaultShellForCapabilities(resolvedEnv, r.capabilities)
+			resolvedShell = &shell
+			shellSource = "default-attach"
+		}
+		spec.Shell = resolvedShell
+		spec.BootstrapMode = BootstrapShellAttach
+		startupCmd, err := buildAttachStartupCommandForShell(resolvedShell, cliName, request.CLIArgs)
+		if err != nil {
+			return ResolvedLaunchSpec{}, err
+		}
+		spec.StartupCommand = startupCmd
+		spec.Diagnostics.ShellSource = shellSource
+		spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
+		return spec, nil
+	}
+
 	if requestedShell == "" && shouldInlineWindowsScriptWrapper(r.capabilities.OS, cli.Path) {
 		shell := defaultShellForCapabilities(resolvedEnv, r.capabilities)
 		resolvedShell = &shell
@@ -301,4 +323,163 @@ func quoteCommandPart(value string) string {
 		return value
 	}
 	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+}
+
+// isAttachEligible returns true when the launch should use BootstrapShellAttach:
+// Windows + embedded mode + OpenCode or Codex app type.
+func isAttachEligible(launchMode string, appType string) bool {
+	if launchMode != "" && launchMode != "embedded" {
+		return false
+	}
+	switch strings.TrimSpace(strings.ToLower(appType)) {
+	case "opencode", "codex":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildAttachStartupCommandForShell builds a shell-safe startup command for
+// BootstrapShellAttach mode. The command is typed into the interactive shell
+// via the PTY input stream, so every token must be escaped for the target
+// shell to prevent shell metacharacters from being interpreted.
+// Returns an error if args contain characters that cannot be safely escaped
+// for the target shell (e.g. % ! CR LF for cmd.exe, or CR LF for PowerShell).
+func buildAttachStartupCommandForShell(shell *ResolvedShell, cliName string, args []string) (string, error) {
+	if shell == nil {
+		return buildAttachFallback(cliName, args), nil
+	}
+	switch shell.Key {
+	case "pwsh", "powershell":
+		return buildAttachPowerShell(cliName, args)
+	case "cmd":
+		return buildAttachCmd(cliName, args)
+	default:
+		return buildAttachFallback(cliName, args), nil
+	}
+}
+
+// buildAttachPowerShell produces a command safe for interactive PowerShell input.
+// Uses the call operator & with single-quoted tokens:
+//
+//	& 'codex' '-m' 'gpt&5'
+//
+// Single quotes prevent all PowerShell expansion ($, (), [], etc.).
+// Internal single quotes are doubled ('' escape).
+// Returns an error if any arg contains CR or LF which would split the command.
+func buildAttachPowerShell(cliName string, args []string) (string, error) {
+	if err := validateNoNewlines(append(append([]string(nil), cliName), args...)...); err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, 1+len(args)+1)
+	parts = append(parts, "&")
+	parts = append(parts, "'"+escapePowerShellSingleQuote(cliName)+"'")
+	for _, arg := range args {
+		parts = append(parts, "'"+escapePowerShellSingleQuote(arg)+"'")
+	}
+	return strings.Join(parts, " "), nil
+}
+
+func escapePowerShellSingleQuote(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+// buildAttachCmd produces a command safe for interactive cmd.exe input.
+// Uses double-quoted tokens to prevent & | < > from acting as command
+// separators. Internal double quotes are escaped as "".
+// Returns an error if any arg contains %, !, CR, or LF -- these cannot be
+// safely neutralised in all cmd.exe contexts and indicate a suspicious input.
+func buildAttachCmd(cliName string, args []string) (string, error) {
+	allTokens := append(append([]string(nil), cliName), args...)
+	if err := validateSafeCmdArgs(allTokens); err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, escapeCmdArg(cliName))
+	for _, arg := range args {
+		parts = append(parts, escapeCmdArg(arg))
+	}
+	return strings.Join(parts, " "), nil
+}
+
+// validateSafeCmdArgs rejects tokens containing characters that cannot be
+// safely escaped for cmd.exe interactive input: %, !, CR, LF.
+func validateSafeCmdArgs(tokens []string) error {
+	for _, tok := range tokens {
+		for i := 0; i < len(tok); i++ {
+			switch tok[i] {
+			case '%':
+				return &CapabilityViolation{
+					Code:             "unsafe_attach_arg",
+					Message:          fmt.Sprintf("attach command arg %q contains '%%' which cannot be safely escaped for cmd.exe", tok),
+					SuggestedAction:  "ensure model names do not contain percent signs",
+					RequestedFeature: "shell-attach-cmd",
+				}
+			case '!':
+				return &CapabilityViolation{
+					Code:             "unsafe_attach_arg",
+					Message:          fmt.Sprintf("attach command arg %q contains '!' which cannot be safely escaped for cmd.exe", tok),
+					SuggestedAction:  "ensure model names do not contain exclamation marks",
+					RequestedFeature: "shell-attach-cmd",
+				}
+			case '\r', '\n':
+				return &CapabilityViolation{
+					Code:             "unsafe_attach_arg",
+					Message:          fmt.Sprintf("attach command arg %q contains a newline character which would split the command", tok),
+					SuggestedAction:  "ensure model names do not contain newline characters",
+					RequestedFeature: "shell-attach-cmd",
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateNoNewlines rejects tokens containing CR or LF characters.
+func validateNoNewlines(tokens ...string) error {
+	for _, tok := range tokens {
+		if strings.ContainsRune(tok, '\r') || strings.ContainsRune(tok, '\n') {
+			return &CapabilityViolation{
+				Code:             "unsafe_attach_arg",
+				Message:          fmt.Sprintf("attach command arg %q contains a newline character which would split the command", tok),
+				SuggestedAction:  "ensure model names do not contain newline characters",
+				RequestedFeature: "shell-attach",
+			}
+		}
+	}
+	return nil
+}
+
+// escapeCmdArg wraps a cmd.exe token in double quotes when necessary and
+// escapes internal double quotes. Bare alphanumeric tokens and safe flags
+// like -m pass through unquoted for readability.
+// Caller must have already validated via validateSafeCmdArgs.
+func escapeCmdArg(value string) string {
+	if value == "" {
+		return `""`
+	}
+	if isSafeCmdToken(value) {
+		return value
+	}
+	escaped := strings.ReplaceAll(value, `"`, `""`)
+	return `"` + escaped + `"`
+}
+
+// isSafeCmdToken returns true for tokens that contain only characters safe
+// to pass unquoted on a cmd.exe interactive command line: alphanumeric,
+// hyphens, underscores, dots, forward/back slashes, colons, equals, and @.
+func isSafeCmdToken(value string) bool {
+	for _, ch := range value {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+			ch == '-' || ch == '_' || ch == '.' || ch == '/' || ch == '\\' || ch == ':' || ch == '=' || ch == '@') {
+			return false
+		}
+	}
+	return true
+}
+
+// buildAttachFallback is a conservative fallback for unknown shells.
+// Uses the generic buildCommandString which applies basic quoting.
+func buildAttachFallback(cliName string, args []string) string {
+	return buildCommandString(cliName, args)
 }

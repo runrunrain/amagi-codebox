@@ -338,6 +338,59 @@ func TestAttachSessionObserverSnapshotsHistoryAndRegistersCallbacksAtomically(t 
 	}
 }
 
+func TestAttachModeSkipsBuildStartupCommandLine(t *testing.T) {
+	// Verify that resolveStartupPlan keeps shell and command separate (attach semantics),
+	// and that buildStartupCommandLine WOULD have inlined them.
+	// StartResolved guards buildStartupCommandLine with BootstrapShellAttach check.
+	shellPath := "pwsh.exe"
+	autoCommand := "opencode"
+
+	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
+
+	// Before buildStartupCommandLine: separate (this is what attach mode needs)
+	if commandLine != shellPath {
+		t.Fatalf("commandLine = %q, want %q", commandLine, shellPath)
+	}
+	if sendAutoCommand != autoCommand {
+		t.Fatalf("sendAutoCommand = %q, want %q", sendAutoCommand, autoCommand)
+	}
+
+	// buildStartupCommandLine WOULD inline them (proving the guard is necessary)
+	inlined, inlinedSendAuto := buildStartupCommandLine(commandLine, sendAutoCommand)
+	if inlinedSendAuto != "" {
+		t.Fatal("buildStartupCommandLine should clear sendAutoCommand after inlining")
+	}
+	if inlined == shellPath {
+		t.Fatal("buildStartupCommandLine should produce a different command line (inlined)")
+	}
+	if !strings.Contains(inlined, "-NoExit") {
+		t.Fatalf("inlined should contain -NoExit for pwsh, got: %q", inlined)
+	}
+}
+
+func TestAttachModeCodexWithArgsKeepsCommandSeparate(t *testing.T) {
+	shellPath := "cmd.exe"
+	autoCommand := "codex -m gpt-5"
+
+	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
+
+	if commandLine != shellPath {
+		t.Fatalf("commandLine = %q, want %q", commandLine, shellPath)
+	}
+	if sendAutoCommand != autoCommand {
+		t.Fatalf("sendAutoCommand = %q, want %q", sendAutoCommand, autoCommand)
+	}
+
+	// Verify buildStartupCommandLine would have inlined (so attach must skip it)
+	inlined, _ := buildStartupCommandLine(commandLine, sendAutoCommand)
+	if inlined == shellPath {
+		t.Fatal("buildStartupCommandLine should produce a different command line for cmd.exe")
+	}
+	if !strings.Contains(inlined, "/K") {
+		t.Fatalf("inlined should contain /K for cmd, got: %q", inlined)
+	}
+}
+
 func TestCallbackSnapshotsRemainSafeDuringConcurrentAttachDetachAndDispatch(t *testing.T) {
 	logSvc := logging.NewService(t.TempDir())
 	defer logSvc.Close()

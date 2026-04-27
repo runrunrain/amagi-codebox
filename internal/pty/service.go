@@ -306,7 +306,7 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 		}
 	}
 
-	if shellPath != "" && autoCommand != "" {
+	if shellPath != "" && autoCommand != "" && spec.BootstrapMode != platform.BootstrapShellAttach {
 		commandLine, sendAutoCommand = buildStartupCommandLine(commandLine, autoCommand)
 	}
 
