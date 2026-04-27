@@ -127,7 +127,13 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		Diagnostics:   diagnostics,
 	}
 
-	if requestedShell == "" {
+	if requestedShell == "" && shouldInlineWindowsScriptWrapper(r.capabilities.OS, cli.Path) {
+		shell := defaultShellForCapabilities(resolvedEnv, r.capabilities)
+		resolvedShell = &shell
+		shellSource = "default"
+	}
+
+	if resolvedShell == nil {
 		spec.BootstrapMode = BootstrapDirectCommand
 		spec.Diagnostics.ShellSource = shellSource
 		spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
@@ -140,6 +146,18 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 	spec.Diagnostics.ShellSource = shellSource
 	spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
 	return spec, nil
+}
+
+func shouldInlineWindowsScriptWrapper(osName string, cliPath string) bool {
+	if osName != "windows" {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(cliPath))) {
+	case ".cmd", ".bat":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *defaultCLIResolver) resolveCLIForRequest(command string, args []string, env []string, shell *ResolvedShell) (ResolvedCLI, LaunchDiagnostics, error) {
@@ -198,7 +216,10 @@ func resolveRequestedShell(requestedShell string, env []string, capabilities Pla
 
 	for _, candidate := range shellCandidates(capabilities.OS) {
 		if strings.EqualFold(candidate.key, trimmed) || strings.EqualFold(candidate.label, trimmed) {
-			resolvedPath := resolveBinaryFromCandidates(candidate.candidates, env)
+			if resolvedPath := resolveCommandPathForOS(capabilities.OS, trimmed, env); resolvedPath != "" {
+				return buildResolvedShell(candidate.key, resolvedPath, capabilities), "explicit", warnings
+			}
+			resolvedPath := resolveBinaryFromCandidatesForOS(capabilities.OS, candidate.candidates, env)
 			if resolvedPath != "" {
 				return buildResolvedShell(candidate.key, resolvedPath, capabilities), "explicit", warnings
 			}
@@ -227,12 +248,12 @@ func defaultShellForCapabilities(env []string, capabilities PlatformCapabilities
 		if !strings.EqualFold(candidate.key, capabilities.DefaultShellKey) {
 			continue
 		}
-		if resolvedPath := resolveBinaryFromCandidates(candidate.candidates, env); resolvedPath != "" {
+		if resolvedPath := resolveBinaryFromCandidatesForOS(capabilities.OS, candidate.candidates, env); resolvedPath != "" {
 			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
 		}
 	}
 	for _, candidate := range shellCandidates(capabilities.OS) {
-		if resolvedPath := resolveBinaryFromCandidates(candidate.candidates, env); resolvedPath != "" {
+		if resolvedPath := resolveBinaryFromCandidatesForOS(capabilities.OS, candidate.candidates, env); resolvedPath != "" {
 			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
 		}
 	}

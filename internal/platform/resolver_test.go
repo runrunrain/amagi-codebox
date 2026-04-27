@@ -143,11 +143,97 @@ func TestResolveExecutableUsesTargetOSInsteadOfHostRuntime(t *testing.T) {
 
 func TestResolveExecutableDoesNotUseHostAmbientPathForForeignTargetOS(t *testing.T) {
 	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
-	cli, diagnostics, err := resolver.ResolveExecutable("go", nil, []string{"PATH="})
+	cli, diagnostics, err := resolver.ResolveExecutable("definitely-missing-amagi-cli", nil, []string{"PATH="})
 	if err == nil {
 		t.Fatalf("expected foreign target resolution to ignore host ambient PATH, got cli=%+v diagnostics=%+v", cli, diagnostics)
 	}
 	if diagnostics.CLISource == "ambient-path" {
 		t.Fatalf("foreign target resolution should not fall back to host ambient PATH")
+	}
+}
+
+func TestWindowsResolverInlinesCmdWrapperWithoutRequestedShell(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "opencode.cmd")
+	shellPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatalf("write fake executable %s: %v", path, err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "opencode",
+		LaunchMode: "embedded",
+		WorkDir:    `C:\work`,
+		Env:        []string{"PATH=" + binDir},
+		PTYCols:    120,
+		PTYRows:    40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellInline {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellInline)
+	}
+	if spec.Shell == nil || spec.Shell.Path == "" {
+		t.Fatalf("expected non-empty resolved shell, got %+v", spec.Shell)
+	}
+	if !strings.Contains(spec.StartupCommand, "opencode.cmd") {
+		t.Fatalf("startup command = %q, want opencode.cmd included", spec.StartupCommand)
+	}
+}
+
+func TestWindowsResolverDirectLaunchesExeWithoutRequestedShell(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "codex.exe")
+	if err := os.WriteFile(cliPath, []byte("MZ"), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "codex",
+		LaunchMode: "embedded",
+		WorkDir:    `C:\work`,
+		Env:        []string{"PATH=" + binDir},
+		PTYCols:    80,
+		PTYRows:    24,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapDirectCommand {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapDirectCommand)
+	}
+	if spec.Shell != nil {
+		t.Fatalf("expected no shell for direct .exe launch, got %+v", spec.Shell)
+	}
+}
+
+func TestBuildEffectiveEnvForWindowsAddsNPMGlobalPathWithoutDuplicates(t *testing.T) {
+	appData := `C:\Users\demo\AppData\Roaming`
+	appDataNPM := appData + `\npm`
+	_, effectivePATH, addedEntries, _ := buildEffectiveEnvForOS("windows", []string{
+		"PATH=" + appDataNPM + `;C:\Tools`,
+		"APPDATA=" + appData,
+		`LOCALAPPDATA=C:\Users\demo\AppData\Local`,
+	})
+
+	entries := strings.Split(effectivePATH, ";")
+	count := 0
+	for _, entry := range entries {
+		if strings.EqualFold(entry, appDataNPM) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("APPDATA npm path count = %d, want 1 in PATH %q", count, effectivePATH)
+	}
+	for _, entry := range addedEntries {
+		if strings.EqualFold(entry, appDataNPM) {
+			t.Fatalf("duplicate APPDATA npm path should not be recorded as added: %+v", addedEntries)
+		}
 	}
 }

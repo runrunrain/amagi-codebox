@@ -10,7 +10,7 @@ func defaultShellCatalog(capabilities PlatformCapabilities) []ShellDescriptor {
 	entries := shellCandidates(capabilities.OS)
 	result := make([]ShellDescriptor, 0, len(entries))
 	for _, entry := range entries {
-		resolved := resolveBinaryFromCandidates(entry.candidates, nil)
+		resolved := resolveBinaryFromCandidatesForOS(capabilities.OS, entry.candidates, nil)
 		descriptor := ShellDescriptor{
 			Key:          entry.key,
 			Label:        entry.label,
@@ -48,11 +48,15 @@ func shellCandidates(osName string) []shellCandidate {
 }
 
 func resolveBinaryFromCandidates(candidates []string, env []string) string {
+	return resolveBinaryFromCandidatesForOS(currentOS(), candidates, env)
+}
+
+func resolveBinaryFromCandidatesForOS(osName string, candidates []string, env []string) string {
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
-		if resolved := resolveCommandPath(candidate, env); resolved != "" {
+		if resolved := resolveCommandPathForOS(osName, candidate, env); resolved != "" {
 			return resolved
 		}
 	}

@@ -51,7 +51,7 @@ func resolveCommandPathForOS(osName string, command string, env []string) string
 	}
 
 	_, pathValue, _, _ := buildEffectiveEnvForOS(osName, env)
-	for _, dir := range filepath.SplitList(pathValue) {
+	for _, dir := range splitPathListForOS(osName, pathValue) {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
@@ -73,6 +73,7 @@ func resolveCommandPathForOS(osName string, command string, env []string) string
 func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []string, []string) {
 	vars := append([]string(nil), env...)
 	callerPATH := envValue(vars, "PATH")
+	callerProvidedPATH := hasEnvValue(vars, "PATH")
 	inheritedPATH := os.Getenv("PATH")
 
 	pathSources := []string{}
@@ -81,7 +82,7 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 	callerEntries := []string{}
 	inheritedEntries := []string{}
 	seen := map[string]struct{}{}
-	for _, entry := range filepath.SplitList(callerPATH) {
+	for _, entry := range splitPathListForOS(osName, callerPATH) {
 		trimmed := strings.TrimSpace(entry)
 		if trimmed == "" {
 			continue
@@ -115,17 +116,34 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 		}
 	}
 
-	for _, entry := range filepath.SplitList(inheritedPATH) {
-		trimmed := strings.TrimSpace(entry)
-		if trimmed == "" {
-			continue
+	if osName == "windows" {
+		for _, entry := range windowsNPMGlobalPATHCandidates(vars) {
+			key := normalizePathKey(entry, osName)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			entries = append(entries, entry)
+			addedEntries = append(addedEntries, entry)
 		}
-		key := normalizePathKey(trimmed, osName)
-		if _, ok := seen[key]; ok {
-			continue
+		if len(addedEntries) > 0 {
+			pathSources = append(pathSources, "controlled-additions")
 		}
-		seen[key] = struct{}{}
-		inheritedEntries = append(inheritedEntries, trimmed)
+	}
+
+	if !callerProvidedPATH {
+		for _, entry := range splitPathListForOS(osName, inheritedPATH) {
+			trimmed := strings.TrimSpace(entry)
+			if trimmed == "" {
+				continue
+			}
+			key := normalizePathKey(trimmed, osName)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			inheritedEntries = append(inheritedEntries, trimmed)
+		}
 	}
 
 	entries = append(entries, inheritedEntries...)
@@ -133,9 +151,35 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 		pathSources = append(pathSources, "inherited")
 	}
 
-	effectivePATH := strings.Join(entries, string(os.PathListSeparator))
+	effectivePATH := strings.Join(entries, pathListSeparatorForOS(osName))
 	vars = setEnvValue(vars, "PATH", effectivePATH)
 	return vars, effectivePATH, addedEntries, pathSources
+}
+
+func windowsNPMGlobalPATHCandidates(env []string) []string {
+	candidates := []string{}
+	for _, key := range []string{"APPDATA", "LOCALAPPDATA"} {
+		base := strings.TrimSpace(envValue(env, key))
+		if base == "" {
+			continue
+		}
+		candidates = append(candidates, strings.TrimRight(base, `/\`)+`\npm`)
+	}
+	return candidates
+}
+
+func splitPathListForOS(osName string, value string) []string {
+	if osName == "windows" {
+		return strings.Split(value, ";")
+	}
+	return filepath.SplitList(value)
+}
+
+func pathListSeparatorForOS(osName string) string {
+	if osName == "windows" {
+		return ";"
+	}
+	return string(os.PathListSeparator)
 }
 
 func setEnvValue(env []string, key string, value string) []string {
@@ -245,4 +289,17 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func hasEnvValue(env []string, key string) bool {
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.EqualFold(parts[0], key) {
+			return true
+		}
+	}
+	return false
 }
