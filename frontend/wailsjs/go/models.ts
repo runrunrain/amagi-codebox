@@ -686,6 +686,8 @@ export namespace main {
 	    mobileWebRoot: string;
 	    mobileWebRootConfigured: boolean;
 	    mobileWebRootExists: boolean;
+	    mobileWebEmbedded: boolean;
+	    mobileWebAvailable: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new RemoteWebUIStatusResult(source);
@@ -701,6 +703,8 @@ export namespace main {
 	        this.mobileWebRoot = source["mobileWebRoot"];
 	        this.mobileWebRootConfigured = source["mobileWebRootConfigured"];
 	        this.mobileWebRootExists = source["mobileWebRootExists"];
+	        this.mobileWebEmbedded = source["mobileWebEmbedded"];
+	        this.mobileWebAvailable = source["mobileWebAvailable"];
 	    }
 	}
 

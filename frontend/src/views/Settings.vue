@@ -257,10 +257,10 @@
           <div class="setting-group">
             <h3 class="group-header">移动端 Web 资源</h3>
             <div class="form-group">
-              <label>前端构建目录</label>
-              <p class="field-desc" style="margin-bottom: 8px;">指向 amagi-codebox-mobile 的 dist 目录。配置后可在同一端口直接访问移动端页面。</p>
+              <label>自定义构建目录（可选）</label>
+              <p class="field-desc" style="margin-bottom: 8px;">移动端 Web 已内置到应用中，无需手动配置。如需使用自定义构建版本，可指定 amagi-codebox-mobile 的 dist 目录。</p>
               <div class="inline-input-group">
-                <input type="text" class="input-field flex-1" v-model="mobileWebRoot" placeholder="例如：C:\projects\amagi-codebox-mobile\dist" />
+                <input type="text" class="input-field flex-1" v-model="mobileWebRoot" placeholder="留空使用内置版本；自定义时填入 dist 目录路径" />
                 <button class="btn primary small" @click="saveMobileWebRoot" :disabled="savingWebRoot">保存</button>
               </div>
             </div>
@@ -894,8 +894,13 @@ async function regenerateToken() {
 async function saveMobileWebRoot() {
   savingWebRoot.value = true
   try {
-    await SetMobileWebRoot(mobileWebRoot.value.trim())
-    showSuccess('移动端 Web 目录已保存')
+    const trimmed = mobileWebRoot.value.trim()
+    await SetMobileWebRoot(trimmed)
+    if (trimmed) {
+      showSuccess('自定义移动端 Web 目录已保存')
+    } else {
+      showSuccess('已恢复使用内置移动端 Web 资源')
+    }
   } catch (err) {
     showError('保存失败: ' + err)
   } finally {

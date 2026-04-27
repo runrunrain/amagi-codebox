@@ -13,6 +13,9 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed all:mobile/dist
+var mobileFS embed.FS
+
 var Version = "dev"
 
 func main() {
@@ -21,7 +24,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	app := NewApp()
+	app := NewApp(mobileFS)
 
 	err := wails.Run(&options.App{
 		Title:             "Amagi CodeBox",

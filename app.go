@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -47,6 +48,8 @@ type RemoteWebUIStatusResult struct {
 	MobileWebRoot           string `json:"mobileWebRoot"`
 	MobileWebRootConfigured bool   `json:"mobileWebRootConfigured"`
 	MobileWebRootExists     bool   `json:"mobileWebRootExists"`
+	MobileWebEmbedded       bool   `json:"mobileWebEmbedded"`
+	MobileWebAvailable      bool   `json:"mobileWebAvailable"`
 }
 
 type OpenRemoteWebUIResult struct {
@@ -87,7 +90,7 @@ type App struct {
 	startupWarningsMu sync.Mutex
 }
 
-func NewApp() *App {
+func NewApp(mobileAssets embed.FS) *App {
 	configDir := defaultConfigDir()
 	log := logging.NewService(configDir)
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
@@ -116,7 +119,7 @@ func NewApp() *App {
 		FileOpener:     platform.NewFileOpener(platform.NewProcessRunner()),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
-	app.Remote = remote.NewServer(8680, app, log)
+	app.Remote = remote.NewServer(8680, app, log, mobileAssets)
 	return app
 }
 
@@ -188,15 +191,20 @@ func (a *App) GetRemoteWebUIStatus() RemoteWebUIStatusResult {
 	}
 
 	webRoot, configured, exists := a.Remote.GetMobileWebRootStatus()
+	embeddedAvailable := a.Remote.HasEmbeddedMobileWeb()
+
 	status.MobileWebRoot = webRoot
 	status.MobileWebRootConfigured = configured
 	status.MobileWebRootExists = exists
+	status.MobileWebEmbedded = embeddedAvailable
+	status.MobileWebAvailable = exists || embeddedAvailable
 
-	if !configured {
+	if !configured && !embeddedAvailable {
 		status.Reason = "mobile web root is not configured"
 		return status
 	}
-	if !exists {
+
+	if configured && !exists && !embeddedAvailable {
 		status.Reason = "mobile web root index.html not found"
 		return status
 	}

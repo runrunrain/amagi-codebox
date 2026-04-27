@@ -9,7 +9,7 @@ echo.
 
 cd /D "%~dp0"
 
-echo [0/3] 检查依赖环境...
+echo [1/5] 检查依赖环境...
 where wails >nul 2>&1
 if errorlevel 1 (
     echo [提示] 未检测到 wails, 尝试自动安装...
@@ -37,7 +37,34 @@ if errorlevel 1 (
 echo [提示] wails 已就绪.
 echo.
 
-echo [1/3] 正在构建项目...
+echo [2/5] 正在构建移动端前端...
+echo.
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo [错误] 未检测到 npm, 移动端前端构建为必需步骤。请安装 Node.js: https://nodejs.org/
+    pause
+    exit /b 1
+)
+pushd mobile
+call npm ci --prefer-offline
+if errorlevel 1 (
+    popd
+    echo [错误] 移动端依赖安装失败!
+    pause
+    exit /b 1
+)
+call npm run build
+if errorlevel 1 (
+    popd
+    echo [错误] 移动端前端构建失败!
+    pause
+    exit /b 1
+)
+popd
+echo [提示] 移动端前端构建完成
+echo.
+
+echo [3/5] 正在构建项目...
 echo.
 for /f "delims=" %%v in ('git describe --tags --abbrev^=0 2^>nul') do set GIT_VERSION=%%v
 if not defined GIT_VERSION set GIT_VERSION=dev
@@ -51,7 +78,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
-echo [2/3] 正在复制到项目根目录...
+echo [4/5] 正在复制到项目根目录...
 copy /Y "build\bin\amagi-codebox.exe" "amagi-codebox.exe" >nul
 if %ERRORLEVEL% neq 0 (
     echo [错误] 复制到根目录失败!
@@ -59,7 +86,7 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-echo [3/3] 正在复制到用户目录...
+echo [5/5] 正在复制到用户目录...
 if not exist "%USERPROFILE%\.amagi-codebox" mkdir "%USERPROFILE%\.amagi-codebox"
 copy /Y "build\bin\amagi-codebox.exe" "%USERPROFILE%\.amagi-codebox\amagi-codebox.exe" >nul
 if %ERRORLEVEL% neq 0 (

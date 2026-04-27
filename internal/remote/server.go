@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"io/fs"
 	"net"
@@ -19,25 +20,30 @@ import (
 
 // Server 远程 API HTTP 服务器，允许移动端通过 HTTP/WebSocket 操作 Amagi CodeBox 的全部功能。
 type Server struct {
-	host    string
-	port    int
-	auth    *Auth
-	app     AppInterface
-	log     *logging.Service
-	httpSrv *http.Server
-	cancel  context.CancelFunc
-	running bool
-	mu      sync.RWMutex
-	webRoot string // 移动端 Web 前端的 dist 目录路径，为空则不提供静态文件服务
+	host              string
+	port              int
+	auth              *Auth
+	app               AppInterface
+	log               *logging.Service
+	httpSrv           *http.Server
+	cancel            context.CancelFunc
+	running           bool
+	mu                sync.RWMutex
+	webRoot           string   // 移动端 Web 前端的 dist 目录路径，为空则不提供静态文件服务
+	mobileAssets      embed.FS // 构建时嵌入的移动端 Web 资源（mobile/dist）
+	mobileAssetsPrefix string  // mobileAssets 中的路径前缀，默认 "mobile/dist"
 }
 
 // NewServer 创建远程服务器实例，不启动监听。
-func NewServer(port int, app AppInterface, log *logging.Service) *Server {
+// mobileAssets 为构建时嵌入的移动端 Web 资源（mobile/dist），可为空 embed.FS。
+func NewServer(port int, app AppInterface, log *logging.Service, mobileAssets embed.FS) *Server {
 	return &Server{
-		port: port,
-		auth: newAuth(),
-		app:  app,
-		log:  log,
+		port:               port,
+		auth:               newAuth(),
+		app:                app,
+		log:                log,
+		mobileAssets:       mobileAssets,
+		mobileAssetsPrefix: "mobile/dist",
 	}
 }
 
@@ -142,6 +148,14 @@ func (s *Server) SetWebRoot(path string) {
 	s.webRoot = path
 }
 
+// SetMobileAssetsPrefix sets the path prefix within the embedded FS where mobile
+// assets are located. Defaults to "mobile/dist". Exported for test use.
+func (s *Server) SetMobileAssetsPrefix(prefix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mobileAssetsPrefix = prefix
+}
+
 // GetMobileWebRootStatus 返回当前生效的移动端静态资源目录状态。
 func (s *Server) GetMobileWebRootStatus() (root string, configured bool, exists bool) {
 	root = s.getEffectiveWebRoot()
@@ -155,6 +169,17 @@ func (s *Server) GetMobileWebRootStatus() (root string, configured bool, exists 
 	}
 
 	return root, true, false
+}
+
+// HasEmbeddedMobileWeb 报告是否包含内置的移动端 Web 资源。
+func (s *Server) HasEmbeddedMobileWeb() bool {
+	indexPath := s.mobileAssetsPrefix + "/index.html"
+	f, err := s.mobileAssets.Open(indexPath)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
 // BuildDesktopLaunchURL 返回桌面入口 Web UI 地址。
@@ -206,7 +231,8 @@ func (s *Server) getEffectiveWebRoot() string {
 
 // buildHandler 构建最终的 HTTP handler。
 // 始终使用复合 handler：/api/ 和 /ws/ 走认证 + API，其余动态检查 webRoot 后决定走静态文件还是回退到 API。
-// 这样 webRoot 可以在服务器运行期间随时设置或更新，无需重启。
+// 静态资源优先级：用户配置的 MobileWebRoot（index.html 存在）> 内置 embedded mobile dist > 回退 API handler。
+// webRoot 可以在服务器运行期间随时设置或更新，无需重启。
 func (s *Server) buildHandler() http.Handler {
 	protectedMux := http.NewServeMux()
 	s.registerRoutes(protectedMux)
@@ -232,43 +258,56 @@ func (s *Server) buildHandler() http.Handler {
 		// 静态文件请求：从 Settings 动态读取 webRoot（保存设置后无需重启即可生效）
 		webRoot, configured, exists := s.GetMobileWebRootStatus()
 
-		if !configured {
-			// 未配置 webRoot，回退到 API handler（需要认证）
-			apiHandler.ServeHTTP(w, r)
+		// 优先级 1：用户配置的 MobileWebRoot 且 index.html 存在
+		if configured && exists {
+			fileSystem := http.Dir(webRoot)
+			fileServer := http.FileServer(fileSystem)
+			s.serveStaticOrSPA(w, r, fileServer, func(p string) (fs.FileInfo, error) {
+				return fs.Stat(os.DirFS(webRoot), p)
+			})
 			return
 		}
 
-		if !exists {
-			// webRoot 已配置但 index.html 不存在，回退到 API handler
-			apiHandler.ServeHTTP(w, r)
-			return
+		// 优先级 2：内置 embedded mobile dist
+		if s.HasEmbeddedMobileWeb() {
+			subFS, err := fs.Sub(s.mobileAssets, s.mobileAssetsPrefix)
+			if err == nil {
+				fileServer := http.FileServer(http.FS(subFS))
+				s.serveStaticOrSPA(w, r, fileServer, func(p string) (fs.FileInfo, error) {
+					return fs.Stat(subFS, p)
+				})
+				return
+			}
 		}
 
-		// 提供静态文件（不需要认证）
-		fileSystem := http.Dir(webRoot)
-		fileServer := http.FileServer(fileSystem)
-
-		path := r.URL.Path
-		if path == "/" {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-
-		// 检查文件是否存在
-		f, err := fs.Stat(os.DirFS(webRoot), strings.TrimPrefix(path, "/"))
-		if err == nil && !f.IsDir() {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-
-		// SPA fallback：非文件路径返回 index.html
-		r2 := new(http.Request)
-		*r2 = *r
-		r2.URL = new(url.URL)
-		*r2.URL = *r.URL
-		r2.URL.Path = "/"
-		fileServer.ServeHTTP(w, r2)
+		// 优先级 3：都不可用 -> 回退 API handler（需要认证）
+		apiHandler.ServeHTTP(w, r)
 	})
+}
+
+// serveStaticOrSPA 提供静态文件服务，对未知路径执行 SPA fallback（返回 index.html）。
+func (s *Server) serveStaticOrSPA(w http.ResponseWriter, r *http.Request, fileServer http.Handler, statFunc func(string) (fs.FileInfo, error)) {
+	path := r.URL.Path
+	if path == "/" {
+		fileServer.ServeHTTP(w, r)
+		return
+	}
+
+	// 检查文件是否存在
+	cleanPath := strings.TrimPrefix(path, "/")
+	f, err := statFunc(cleanPath)
+	if err == nil && !f.IsDir() {
+		fileServer.ServeHTTP(w, r)
+		return
+	}
+
+	// SPA fallback：非文件路径返回 index.html
+	r2 := new(http.Request)
+	*r2 = *r
+	r2.URL = new(url.URL)
+	*r2.URL = *r.URL
+	r2.URL.Path = "/"
+	fileServer.ServeHTTP(w, r2)
 }
 
 // RegenerateToken 重新生成 Token 并返回新值。
