@@ -26,6 +26,15 @@ func newTestApp(t *testing.T) *App {
 	return app
 }
 
+func TestEmbeddedDefaultLaunchMode_EmptyModeDefaultsToEmbedded(t *testing.T) {
+	if got := embeddedDefaultLaunchMode(""); got != session.ModeEmbedded {
+		t.Fatalf("empty mode resolved to %q, want %q", got, session.ModeEmbedded)
+	}
+	if got := embeddedDefaultLaunchMode(string(session.ModeTerminal)); got != session.ModeTerminal {
+		t.Fatalf("explicit terminal mode resolved to %q, want %q", got, session.ModeTerminal)
+	}
+}
+
 func newTestAppWithConfigDir(t *testing.T) (*App, string) {
 	t.Helper()
 	configDir := t.TempDir()

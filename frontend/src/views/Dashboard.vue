@@ -1088,9 +1088,9 @@ const initDefaults = async () => {
     dashState.openCodePresetKey = d.openCodePresetKey || ''
     const shellFallback = platformCaps.defaultShellKey.value || ''
     dashState.claudeMode = d.claudeMode || d.mode || 'embedded'
-    dashState.openCodeMode = d.openCodeMode || d.mode || 'embedded'
-    dashState.codexMode = d.codexMode || d.mode || 'embedded'
-    dashState.amagiCodeMode = d.amagiCodeMode || d.mode || 'embedded'
+    dashState.openCodeMode = d.openCodeMode || 'embedded'
+    dashState.codexMode = d.codexMode || 'embedded'
+    dashState.amagiCodeMode = d.amagiCodeMode || 'embedded'
     dashState.claudeShell = d.claudeShell || d.shell || shellFallback
     dashState.openCodeShell = d.openCodeShell || d.shell || shellFallback
     dashState.codexShell = d.codexShell || d.shell || shellFallback

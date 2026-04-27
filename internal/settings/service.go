@@ -55,16 +55,16 @@ type AppSettings struct {
 func defaultSettings() *AppSettings {
 	return &AppSettings{
 		Dashboard: DashboardDefaults{
-			Mode:             "embedded",
-			Shell:            "pwsh",
-			ClaudeMode:        "embedded",
-			ClaudeShell:       "pwsh",
-			OpenCodeMode:      "embedded",
-			OpenCodeShell:     "pwsh",
-			CodexMode:         "embedded",
-			CodexShell:        "pwsh",
-			AmagiCodeMode:     "embedded",
-			AmagiCodeShell:    "pwsh",
+			Mode:           "embedded",
+			Shell:          "pwsh",
+			ClaudeMode:     "embedded",
+			ClaudeShell:    "pwsh",
+			OpenCodeMode:   "embedded",
+			OpenCodeShell:  "pwsh",
+			CodexMode:      "embedded",
+			CodexShell:     "pwsh",
+			AmagiCodeMode:  "embedded",
+			AmagiCodeShell: "pwsh",
 		},
 		ShellPaths: []ShellEntry{},
 		Terminal: TerminalSettings{
@@ -176,25 +176,13 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 		}
 	}
 	if d.OpenCodeMode == "" {
-		if d.Mode != "" {
-			d.OpenCodeMode = d.Mode
-		} else {
-			d.OpenCodeMode = "embedded"
-		}
+		d.OpenCodeMode = "embedded"
 	}
 	if d.CodexMode == "" {
-		if d.Mode != "" {
-			d.CodexMode = d.Mode
-		} else {
-			d.CodexMode = "embedded"
-		}
+		d.CodexMode = "embedded"
 	}
 	if d.AmagiCodeMode == "" {
-		if d.Mode != "" {
-			d.AmagiCodeMode = d.Mode
-		} else {
-			d.AmagiCodeMode = "embedded"
-		}
+		d.AmagiCodeMode = "embedded"
 	}
 
 	if d.ClaudeShell == "" {

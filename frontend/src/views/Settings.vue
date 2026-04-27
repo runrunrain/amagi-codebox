@@ -643,12 +643,12 @@ const loadData = async () => {
     defaults.shell = d.shell || shellFallback
     defaults.claudeMode = d.claudeMode || d.mode || 'embedded'
     defaults.claudeShell = d.claudeShell || d.shell || shellFallback
-    defaults.openCodeMode = d.openCodeMode || d.mode || 'embedded'
+    defaults.openCodeMode = d.openCodeMode || 'embedded'
     defaults.openCodeShell = d.openCodeShell || d.shell || shellFallback
-    defaults.codexMode = d.codexMode || d.mode || 'embedded'
+    defaults.codexMode = d.codexMode || 'embedded'
     defaults.codexShell = d.codexShell || d.shell || shellFallback
     defaults.amagiCodePreset = d.amagiCodePreset || ''
-    defaults.amagiCodeMode = d.amagiCodeMode || d.mode || 'embedded'
+    defaults.amagiCodeMode = d.amagiCodeMode || 'embedded'
     defaults.amagiCodeShell = d.amagiCodeShell || d.shell || shellFallback
     defaults.useProxy = d.useProxy || false
   } catch (err) {
@@ -1719,4 +1719,3 @@ onMounted(async () => {
   justify-content: flex-end;
 }
 </style>
-

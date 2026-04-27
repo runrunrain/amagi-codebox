@@ -146,8 +146,57 @@ func TestBuildStartupCommandLine_UsesInlineShellExecution(t *testing.T) {
 	if pwshSendAuto != "" {
 		t.Fatal("pwsh should launch startup command inline without delayed autoCommand")
 	}
-	if !strings.Contains(pwshLine, `-NoExit -Command "opencode"`) {
+	if !strings.Contains(pwshLine, `-NoExit -Command "& 'opencode'"`) {
 		t.Fatalf("unexpected pwsh startup command line: %q", pwshLine)
+	}
+
+	pathCommand := `"C:\Program Files\OpenCode\opencode.cmd" --model gpt-5`
+	pwshPathLine, pwshPathSendAuto := buildStartupCommandLine("powershell.exe", pathCommand)
+	if pwshPathSendAuto != "" {
+		t.Fatal("powershell.exe should launch quoted startup command inline without delayed autoCommand")
+	}
+	if !strings.Contains(pwshPathLine, `-NoExit -Command "& 'C:\Program Files\OpenCode\opencode.cmd' '--model' 'gpt-5'"`) {
+		t.Fatalf("unexpected powershell quoted path startup command line: %q", pwshPathLine)
+	}
+
+	quotedArgLine, quotedArgSendAuto := buildStartupCommandLine("pwsh", `opencode --prompt "O'Brien"`)
+	if quotedArgSendAuto != "" {
+		t.Fatal("pwsh should launch single-quote argument inline without delayed autoCommand")
+	}
+	if !strings.Contains(quotedArgLine, `-NoExit -Command "& 'opencode' '--prompt' 'O''Brien'"`) {
+		t.Fatalf("unexpected pwsh single-quote argument command line: %q", quotedArgLine)
+	}
+}
+
+func TestBuildPowerShellCallCommand_QuotesTokensSafely(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "bare command",
+			command: "opencode",
+			want:    `& 'opencode'`,
+		},
+		{
+			name:    "path with spaces and args",
+			command: `"C:\Program Files\OpenCode\opencode.cmd" -m gpt-5`,
+			want:    `& 'C:\Program Files\OpenCode\opencode.cmd' '-m' 'gpt-5'`,
+		},
+		{
+			name:    "single quote arg",
+			command: `opencode --prompt "O'Brien"`,
+			want:    `& 'opencode' '--prompt' 'O''Brien'`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := buildPowerShellCallCommand(tt.command); got != tt.want {
+				t.Fatalf("buildPowerShellCallCommand(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
 	}
 }
 

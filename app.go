@@ -458,6 +458,14 @@ func (a *App) validateLaunchMode(mode string) error {
 	return platform.ValidateLaunchRequest(a.platformCapabilities(), mode)
 }
 
+func embeddedDefaultLaunchMode(mode string) session.LaunchMode {
+	launchMode := session.LaunchMode(mode)
+	if launchMode == "" {
+		return session.ModeEmbedded
+	}
+	return launchMode
+}
+
 func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
 	if err := a.validateLaunchMode(mode); err != nil {
 		return platform.ResolvedLaunchSpec{}, err
@@ -744,10 +752,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 
 	// 确定启动模式
-	launchMode := session.LaunchMode(mode)
-	if launchMode == "" {
-		launchMode = session.ModeTerminal
-	}
+	launchMode := embeddedDefaultLaunchMode(mode)
 	if err := a.validateLaunchMode(string(launchMode)); err != nil {
 		return "", err
 	}
@@ -1164,10 +1169,7 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 
 launchCommon:
 	// 确定启动模式
-	launchMode := session.LaunchMode(mode)
-	if launchMode == "" {
-		launchMode = session.ModeTerminal
-	}
+	launchMode := embeddedDefaultLaunchMode(mode)
 	if err := a.validateLaunchMode(string(launchMode)); err != nil {
 		return "", err
 	}
@@ -1354,10 +1356,7 @@ func (a *App) LaunchAmagiCode(groupName string, providerName string, mode string
 	}
 
 	// 确定启动模式
-	launchMode := session.LaunchMode(mode)
-	if launchMode == "" {
-		launchMode = session.ModeTerminal
-	}
+	launchMode := embeddedDefaultLaunchMode(mode)
 	if err := a.validateLaunchMode(string(launchMode)); err != nil {
 		return "", err
 	}

@@ -597,7 +597,7 @@ func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
 
 	quotedShell := quoteCommandPath(commandLine)
 	if containsIgnoreCase(commandLine, "pwsh") || containsIgnoreCase(commandLine, "powershell") {
-		return fmt.Sprintf(`%s -NoProfile -NoLogo -NoExit -Command "%s"`, quotedShell, escapePowerShellCommand(autoCommand)), ""
+		return fmt.Sprintf(`%s -NoProfile -NoLogo -NoExit -Command "%s"`, quotedShell, buildPowerShellCallCommand(autoCommand)), ""
 	}
 	if containsIgnoreCase(commandLine, "cmd") {
 		return fmt.Sprintf(`%s /K "chcp 65001 >nul && %s"`, quotedShell, escapeCmdCommand(autoCommand)), ""
@@ -622,6 +622,56 @@ func buildCommandLine(command string, args []string) string {
 		parts = append(parts, quoteCommandPath(arg))
 	}
 	return strings.Join(parts, " ")
+}
+
+func buildPowerShellCallCommand(command string) string {
+	parts := splitStartupCommand(command)
+	quotedParts := make([]string, 0, len(parts)+1)
+	quotedParts = append(quotedParts, "&")
+	for _, part := range parts {
+		quotedParts = append(quotedParts, quotePowerShellSingleQuotedToken(part))
+	}
+	return strings.Join(quotedParts, " ")
+}
+
+func splitStartupCommand(command string) []string {
+	var parts []string
+	var current strings.Builder
+	inDoubleQuotes := false
+
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		parts = append(parts, current.String())
+		current.Reset()
+	}
+
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch ch {
+		case '"':
+			inDoubleQuotes = !inDoubleQuotes
+		case ' ', '\t', '\r', '\n':
+			if inDoubleQuotes {
+				current.WriteByte(ch)
+			} else {
+				flush()
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	flush()
+
+	if len(parts) == 0 {
+		return []string{command}
+	}
+	return parts
+}
+
+func quotePowerShellSingleQuotedToken(token string) string {
+	return "'" + strings.ReplaceAll(token, "'", "''") + "'"
 }
 
 func escapePowerShellCommand(command string) string {
