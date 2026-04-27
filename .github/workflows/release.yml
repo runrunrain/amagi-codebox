@@ -18,7 +18,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Setup Node.js
@@ -31,6 +31,14 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
       - name: Get version
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
@@ -38,7 +46,7 @@ jobs:
 
       - name: Build
         run: |
-          wails build -ldflags "-X main.Version=${{ steps.get_version.outputs.VERSION }}"
+          wails build -s -ldflags "-X main.Version=${{ steps.get_version.outputs.VERSION }}"
 
       - name: Create ZIP archive
         run: |
@@ -61,7 +69,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Setup Node.js
