@@ -22,6 +22,10 @@ export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
 
+export function CheckTool(arg1) {
+  return window['go']['main']['App']['CheckTool'](arg1);
+}
+
 export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
@@ -58,6 +62,10 @@ export function ExportConfigToFile() {
   return window['go']['main']['App']['ExportConfigToFile']();
 }
 
+export function InstallTool(arg1) {
+  return window['go']['main']['App']['InstallTool'](arg1);
+}
+
 export function ExportEnvVars() {
   return window['go']['main']['App']['ExportEnvVars']();
 }
@@ -88,6 +96,10 @@ export function GetAppInfo() {
 
 export function GetConfigService() {
   return window['go']['main']['App']['GetConfigService']();
+}
+
+export function GetEnvCheckStatus() {
+  return window['go']['main']['App']['GetEnvCheckStatus']();
 }
 
 export function GetEnvVars() {
@@ -168,6 +180,10 @@ export function GetRemoteStatus() {
 
 export function GetRemoteToken() {
   return window['go']['main']['App']['GetRemoteToken']();
+}
+
+export function RunEnvCheck() {
+  return window['go']['main']['App']['RunEnvCheck']();
 }
 
 export function GetRemoteWebUIStatus() {
@@ -356,6 +372,10 @@ export function SetRemoteHost(arg1) {
 
 export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
+}
+
+export function UpdateTool(arg1) {
+  return window['go']['main']['App']['UpdateTool'](arg1);
 }
 
 export function StopAllSessions() {

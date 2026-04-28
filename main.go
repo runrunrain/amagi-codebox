@@ -53,6 +53,7 @@ func main() {
 			app.Workspaces,
 			app.Amagi,
 			app.OpenCodeConfig,
+			app.EnvCheck,
 		},
 	})
 

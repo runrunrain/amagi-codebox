@@ -15,6 +15,7 @@ import (
 
 	"amagi-codebox/internal/amagi"
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
@@ -80,6 +81,7 @@ type App struct {
 	Workspaces     *workspace.Service
 	Amagi          *amagi.Service
 	OpenCodeConfig *opencodeconfig.Service
+	EnvCheck       *envcheck.Service
 
 	Capabilities platform.PlatformCapabilities
 	CLIResolver  platform.CLIResolver
@@ -96,6 +98,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
 	capabilities := platform.CurrentCapabilities()
 	pluginsSvc := plugin.NewService("", log)
+	processRunner := platform.NewProcessRunner()
 
 	app := &App{
 		Config:         config.NewConfigService(configDir),
@@ -114,9 +117,10 @@ func NewApp(mobileAssets embed.FS) *App {
 		Workspaces:     workspace.NewService(configDir, pluginsSvc, log),
 		Amagi:          amagi.NewService(configDir),
 		OpenCodeConfig: opencodeconfig.NewService(),
+		EnvCheck:       envcheck.NewServiceWithRunner(processRunner),
 		Capabilities:   capabilities,
 		CLIResolver:    platform.NewCLIResolver(capabilities),
-		FileOpener:     platform.NewFileOpener(platform.NewProcessRunner()),
+		FileOpener:     platform.NewFileOpener(processRunner),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log, mobileAssets)
@@ -152,6 +156,57 @@ func (a *App) fileOpener() platform.FileOpener {
 
 func (a *App) GetPlatformCapabilities() platform.PlatformCapabilities {
 	return a.platformCapabilities()
+}
+
+// GetEnvCheckStatus 获取最近一次环境检测结果（可能为缓存）。
+func (a *App) GetEnvCheckStatus() *envcheck.OverallStatus {
+	return a.EnvCheck.GetCachedStatus()
+}
+
+// RunEnvCheck 手动触发环境检测。
+func (a *App) RunEnvCheck() (*envcheck.OverallStatus, error) {
+	return a.EnvCheck.CheckAll()
+}
+
+// CheckTool 手动触发单个 CLI 工具检测。
+func (a *App) CheckTool(tool string) (*envcheck.CheckStatus, error) {
+	t, err := parseCLITool(tool)
+	if err != nil {
+		return nil, fmt.Errorf("check tool: %w", err)
+	}
+	return a.EnvCheck.CheckOne(t)
+}
+
+// InstallTool 安装指定 CLI 工具（用户确认后调用）。
+func (a *App) InstallTool(tool string) (*envcheck.InstallResult, error) {
+	t, err := parseCLITool(tool)
+	if err != nil {
+		return nil, fmt.Errorf("install tool: %w", err)
+	}
+	return a.EnvCheck.Install(t)
+}
+
+// UpdateTool 更新指定 CLI 工具。
+func (a *App) UpdateTool(tool string) (*envcheck.InstallResult, error) {
+	t, err := parseCLITool(tool)
+	if err != nil {
+		return nil, fmt.Errorf("update tool: %w", err)
+	}
+	return a.EnvCheck.Update(t)
+}
+
+// parseCLITool 将前端传入的字符串转为 CLITool 枚举。
+func parseCLITool(tool string) (envcheck.CLITool, error) {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "claude-code", "claude_code", "claude":
+		return envcheck.ToolClaudeCode, nil
+	case "opencode", "open-code", "open_code":
+		return envcheck.ToolOpenCode, nil
+	case "codex":
+		return envcheck.ToolCodex, nil
+	default:
+		return "", fmt.Errorf("unknown CLI tool: %s", tool)
+	}
 }
 
 func (a *App) GetSession(sessionID string) (session.SessionInfo, error) {
@@ -418,6 +473,22 @@ func (a *App) Startup(ctx context.Context) {
 	} else {
 		a.Log.Info("app", "工作区配置加载成功")
 	}
+
+	// 启动环境检测异步执行，不阻塞应用启动；检测结果由 EnvCheck 服务缓存。
+	go func() {
+		status, err := a.EnvCheck.CheckAll()
+		if err != nil {
+			a.Log.Warn("envcheck", "启动环境检测失败", err.Error())
+			if status == nil {
+				return
+			}
+		}
+		if !status.AllOK {
+			for _, issue := range status.Issues {
+				a.addStartupWarning("[环境检测] " + issue)
+			}
+		}
+	}()
 
 	// 启动远程 API 服务器
 	if err := a.Remote.Start(ctx); err != nil {

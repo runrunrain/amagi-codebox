@@ -381,6 +381,11 @@
           </div>
         </div>
 
+        <!-- 环境检测 -->
+        <div v-if="activeTab === 'envcheck'" key="envcheck" class="settings-section">
+          <EnvCheckView />
+        </div>
+
       </transition>
     </div>
   </div>
@@ -396,6 +401,7 @@ import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { config } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
 import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
+import EnvCheckView from './EnvCheckView.vue'
 import QRCode from 'qrcode'
 
 const { showSuccess, showError } = useToast()
@@ -408,6 +414,7 @@ const tabs = [
   { id: 'terminal', label: '终端设置', icon: '🖥' },
   { id: 'remote', label: '远程控制', icon: '🌐' },
   { id: 'updates', label: '软件更新', icon: '⟳' },
+  { id: 'envcheck', label: '环境检测', icon: '🔍' },
   { id: 'about', label: '关于', icon: 'ℹ' },
 ]
 

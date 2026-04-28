@@ -3,6 +3,7 @@
 import {updater} from '../models';
 import {amagi} from '../models';
 import {config} from '../models';
+import {envcheck} from '../models';
 import {envvars} from '../models';
 import {logging} from '../models';
 import {paths} from '../models';
@@ -20,6 +21,8 @@ export function AttachSessionObserver(arg1:string,arg2:string,arg3:any,arg4:any)
 export function BrowseDirectory():Promise<string>;
 
 export function CheckForUpdate():Promise<updater.UpdateInfo>;
+
+export function CheckTool(arg1:string):Promise<envcheck.CheckStatus>;
 
 export function ClearLogs():Promise<void>;
 
@@ -39,6 +42,8 @@ export function DownloadAndApplyUpdate():Promise<void>;
 
 export function ExportConfigToFile():Promise<string>;
 
+export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
+
 export function ExportEnvVars():Promise<string>;
 
 export function ExportEnvVarsToFile():Promise<void>;
@@ -54,6 +59,8 @@ export function GetAmagiSubPreset(arg1:string,arg2:string):Promise<amagi.AmagiMo
 export function GetAppInfo():Promise<Record<string, any>>;
 
 export function GetConfigService():Promise<config.ConfigService>;
+
+export function GetEnvCheckStatus():Promise<envcheck.OverallStatus>;
 
 export function GetEnvVars():Promise<Array<envvars.EnvVar>>;
 
@@ -139,6 +146,8 @@ export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
 
+export function RunEnvCheck():Promise<envcheck.OverallStatus>;
+
 export function RegisterExitCallback(arg1:string,arg2:string,arg3:any):Promise<void>;
 
 export function RegisterOutputCallback(arg1:string,arg2:string,arg3:any):Promise<void>;
@@ -194,6 +203,8 @@ export function StopAllSessions():Promise<void>;
 export function StopSession(arg1:string):Promise<void>;
 
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
+
+export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;
 
 export function UnregisterExitCallback(arg1:string,arg2:string):Promise<void>;
 
