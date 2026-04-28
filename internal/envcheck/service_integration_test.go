@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -638,5 +639,101 @@ func TestUpdate_PrecheckReturnsStatusWithError_ProceedsToUpdate(t *testing.T) {
 	if !result.Success {
 		t.Errorf("result.Success = false, want true; Message: %s, Error: %s",
 			result.Message, result.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Update version unchanged assertion
+// ---------------------------------------------------------------------------
+
+// TestUpdate_VersionUnchanged_ReturnsFailure verifies that when an update
+// command exits successfully but the installed version does not change,
+// installOrUpdate reports failure instead of a false success.
+func TestUpdate_VersionUnchanged_ReturnsFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil},  // pre-check version
+		{stdout: "2.0.0", err: nil},             // latest version (enrichment)
+		{stdout: "10.0.0", err: nil},            // npm available
+		{stdout: "updated", err: nil},            // install command succeeds
+		{stdout: "opencode v1.0.0", err: nil},  // post-check: SAME version!
+		// post-enrichment hits version cache (no runner call)
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.Update(ToolOpenCode)
+
+	if err == nil {
+		t.Fatal("expected error when version unchanged after update")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected Success=false when version unchanged after update")
+	}
+	if !strings.Contains(result.Error, "version was unchanged") {
+		t.Errorf("error should mention 'version was unchanged', got: %s", result.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Update success invalidates version cache
+// ---------------------------------------------------------------------------
+
+// TestUpdate_Success_InvalidatesVersionCache verifies that a successful update
+// invalidates the versionCache so that subsequent snapshot fetches reflect the
+// new latest-version state rather than a stale cached value.
+func TestUpdate_Success_InvalidatesVersionCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil},  // pre-check version
+		// enrichment uses pre-seeded cache hit (9.9.9) -- no runner call
+		{stdout: "10.0.0", err: nil},            // npm available
+		{stdout: "updated", err: nil},            // install command
+		{stdout: "opencode v2.0.0", err: nil},  // post-check: version changed!
+		// post-enrichment uses cache hit (9.9.9) -- no runner call
+		// serializedInstallOrUpdate invalidates cache and calls CheckOne:
+		{stdout: "opencode v2.0.0", err: nil},  // re-check version
+		{stdout: "2.0.0", err: nil},             // re-enrichment (cache was invalidated)
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	// Pre-seed version cache with a value that makes HasUpdate=true.
+	staleTime := time.Now().Add(-2 * time.Hour)
+	svc.mu.Lock()
+	svc.versionCache[ToolOpenCode] = latestVersionCacheEntry{
+		Version:   "9.9.9",
+		CheckedAt: staleTime,
+	}
+	svc.mu.Unlock()
+
+	result, err := svc.Update(ToolOpenCode)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Update failed: %s, %s", result.Message, result.Error)
+	}
+
+	// Verify versionCache was invalidated and re-populated (not the stale value).
+	svc.mu.RLock()
+	entry, exists := svc.versionCache[ToolOpenCode]
+	svc.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("versionCache should exist after successful update (re-populated by CheckOne)")
+	}
+	if entry.Version == "9.9.9" {
+		t.Error("versionCache was not invalidated -- still has the pre-seeded stale value")
+	}
+	if !entry.CheckedAt.After(staleTime) {
+		t.Error("versionCache CheckedAt should be newer than the stale entry")
 	}
 }

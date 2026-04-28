@@ -1,147 +1,188 @@
 <template>
-  <div class="envcheck-section">
-    <div class="section-header">
-      <h2>环境检测</h2>
-      <p>检测和管理 CLI 编码工具的安装状态与版本。</p>
-    </div>
-
-    <!-- 顶部状态栏 -->
-    <div class="envcheck-status-bar" :class="statusBarClass">
-      <div class="status-bar-left">
-        <span v-if="overallLoading" class="status-indicator loading-indicator">
-          <span class="spinner"></span>
-          <span>正在检测环境...</span>
-        </span>
-        <span v-else-if="overallStatus && overallStatus.allOk" class="status-indicator ok-indicator">
-          <span class="status-dot-dot ok-dot"></span>
-          <span>全部正常</span>
-        </span>
-        <span v-else-if="overallStatus && !overallStatus.allOk" class="status-indicator warn-indicator">
-          <span class="status-dot-dot warn-dot"></span>
-          <span>存在 {{ issueCount }} 项问题</span>
-        </span>
-        <span v-else class="status-indicator idle-indicator">
-          <span class="status-dot-dot idle-dot"></span>
-          <span>尚未检测</span>
-        </span>
+  <div class="envcheck-root">
+    <!-- Hero Banner -->
+    <div class="hero-banner" :class="heroBannerClass">
+      <div class="hero-content">
+        <h2 class="hero-title">环境检测</h2>
+        <p class="hero-desc">检测和管理 CLI 编码工具的安装状态与版本</p>
+        <div class="hero-meta" v-if="snapshot && snapshot.status">
+          <span class="meta-item" v-if="formattedCheckedAt">
+            <span class="meta-label">最后检测</span>
+            <span class="meta-value">{{ formattedCheckedAt }}</span>
+          </span>
+          <span class="meta-item">
+            <span class="meta-label">状态</span>
+            <span class="meta-value" :class="snapshot.status.allOk ? 'text-success' : 'text-warn'">
+              {{ snapshot.status.allOk ? '全部正常' : `${snapshot.status.issues?.length || 0} 项问题` }}
+            </span>
+          </span>
+        </div>
+        <div class="hero-meta" v-else>
+          <span class="meta-item">
+            <span class="meta-value text-muted">尚未执行检测</span>
+          </span>
+        </div>
       </div>
-      <div class="status-bar-right">
-        <button class="btn primary small" @click="runFullCheck" :disabled="overallLoading">
-          <span v-if="overallLoading" class="btn-spinner"></span>
-          {{ overallLoading ? '检测中...' : '一键检测全部' }}
+      <div class="hero-action">
+        <button
+          class="btn primary hero-btn"
+          @click="runFullCheck"
+          :disabled="checkingAll || !!runningOperation"
+        >
+          <span v-if="checkingAll" class="mini-spinner light"></span>
+          {{ checkingAll ? '检测中...' : '一键检测' }}
         </button>
-        <span v-if="lastCheckedAt" class="last-check-time">
-          最后检测：{{ lastCheckedAt }}
-        </span>
+      </div>
+      <!-- Global progress bar when operation running -->
+      <div class="hero-progress" v-if="runningOperation">
+        <div class="progress-track">
+          <div class="progress-fill" :style="{ width: (runningOperation.progress || 0) + '%' }"></div>
+        </div>
+        <span class="progress-label">{{ operationLabel }}</span>
       </div>
     </div>
 
-    <!-- CLI 工具卡片 -->
-    <div class="tool-cards">
+    <!-- Summary Strip -->
+    <div class="summary-strip" v-if="snapshot && snapshot.status && snapshot.status.items">
+      <div class="summary-item summary-installed">
+        <span class="summary-count">{{ installedCount }}</span>
+        <span class="summary-label">已安装</span>
+      </div>
+      <div class="summary-item summary-issues">
+        <span class="summary-count">{{ issuesCount }}</span>
+        <span class="summary-label">有问题</span>
+      </div>
+      <div class="summary-item summary-updates">
+        <span class="summary-count">{{ updatesCount }}</span>
+        <span class="summary-label">有更新</span>
+      </div>
+    </div>
+
+    <!-- Tool Cards Grid -->
+    <div class="tool-grid">
       <div
-        v-for="card in cardDataList"
+        v-for="card in cardList"
         :key="card.meta.key"
         class="tool-card"
-        :class="{ 'has-issue': card.status && !card.status.installed }"
+        :class="card.cardClass"
       >
-        <!-- 卡片头部：图标 + 名称 + 安装状态 -->
-        <div class="tool-card-header">
-          <div class="tool-icon-wrapper" :style="{ background: card.meta.bgColor }">
-            <span class="tool-icon-text">{{ card.meta.iconChar }}</span>
+        <!-- Card Header -->
+        <div class="card-header">
+          <div class="tool-icon" :style="{ background: card.meta.bgColor }">
+            <span class="icon-char">{{ card.meta.iconChar }}</span>
           </div>
-          <div class="tool-title-area">
-            <h3 class="tool-name">{{ card.meta.displayName }}</h3>
-            <span v-if="card.loading" class="install-badge loading-badge">
-              <span class="mini-spinner"></span> 检测中...
-            </span>
-            <span v-else-if="card.status && card.status.installed" class="install-badge badge-installed">
-              已安装
-            </span>
-            <span v-else-if="card.status && !card.status.installed" class="install-badge badge-missing">
-              未安装
-            </span>
-            <span v-else class="install-badge idle-badge">
-              待检测
-            </span>
+          <div class="card-title-area">
+            <h3 class="card-title">{{ card.meta.displayName }}</h3>
+            <el-tag
+              :type="card.tagType"
+              size="small"
+              :effect="card.tagEffect"
+              class="status-tag"
+            >
+              {{ card.tagLabel }}
+            </el-tag>
           </div>
         </div>
 
-        <!-- 卡片详情 -->
-        <div class="tool-card-body" v-if="card.status">
-          <!-- 安装方式 -->
-          <div class="detail-row" v-if="card.status.installed">
-            <span class="detail-label">安装方式</span>
-            <span class="detail-value install-method-tag">{{ formatInstallMethod(card.status.installMethod) }}</span>
+        <!-- Card Body -->
+        <div class="card-body" v-if="card.status">
+          <div class="info-row" v-if="card.status.installed && card.status.installMethod">
+            <span class="info-label">安装方式</span>
+            <span class="info-value">
+              <span class="method-badge">{{ formatInstallMethod(card.status.installMethod) }}</span>
+            </span>
           </div>
-
-          <!-- 版本号 -->
-          <div class="detail-row" v-if="card.status.version">
-            <span class="detail-label">版本</span>
-            <span class="detail-value monospace">{{ card.status.version }}</span>
+          <div class="info-row" v-if="card.status.version">
+            <span class="info-label">当前版本</span>
+            <span class="info-value mono">{{ card.status.version }}</span>
           </div>
-
-          <!-- PATH 状态 -->
-          <div class="detail-row" v-if="card.status.installed">
-            <span class="detail-label">PATH</span>
-            <span class="detail-value" :class="card.status.pathOk ? 'path-ok' : 'path-warn'">
+          <div class="info-row" v-if="card.status.hasUpdate && card.status.latestVersion">
+            <span class="info-label">最新版本</span>
+            <span class="info-value mono text-warn">{{ card.status.latestVersion }}</span>
+          </div>
+          <div class="info-row" v-if="card.status.installed">
+            <span class="info-label">PATH</span>
+            <span class="info-value" :class="card.status.pathOk ? 'text-success' : 'text-error'">
               {{ card.status.pathOk ? '正常' : '异常' }}
             </span>
           </div>
-
-          <!-- 可执行路径 -->
-          <div class="detail-row" v-if="card.status.executablePath">
-            <span class="detail-label">路径</span>
-            <span class="detail-value monospace path-text" :title="card.status.executablePath">
+          <div class="info-row path-row" v-if="card.status.executablePath">
+            <span class="info-label">路径</span>
+            <span class="info-value mono path-value" :title="card.status.executablePath">
               {{ card.status.executablePath }}
             </span>
           </div>
+        </div>
 
-          <!-- 更新提示 -->
-          <div class="update-hint" v-if="card.status.hasUpdate && card.status.latestVersion">
-            <span class="hint-icon">&#x2191;</span>
-            <span>有新版本 <strong>{{ card.status.latestVersion }}</strong> 可用</span>
-          </div>
+        <!-- Placeholder when no status -->
+        <div class="card-body placeholder" v-if="!card.status && !checkingAll">
+          <span class="placeholder-text">尚未检测此工具</span>
+        </div>
 
-          <!-- 错误信息 -->
-          <div class="error-hint" v-if="card.status.error">
-            {{ card.status.error }}
+        <!-- Operation overlay for this specific tool -->
+        <div class="card-operation" v-if="card.isOperating">
+          <div class="op-overlay">
+            <span class="mini-spinner accent"></span>
+            <span class="op-text">{{ card.operationLabel }}</span>
           </div>
         </div>
 
-        <!-- 未检测时的占位 -->
-        <div class="tool-card-body placeholder-body" v-if="!card.status && !card.loading">
-          <span class="placeholder-text">点击下方按钮开始检测</span>
-        </div>
+        <!-- Update hint -->
+        <el-alert
+          v-if="card.status && card.status.hasUpdate && !card.isOperating"
+          :title="'有新版本 ' + (card.status.latestVersion || '') + ' 可用'"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="card-alert"
+        />
 
-        <!-- 操作按钮 -->
-        <div class="tool-card-actions">
+        <!-- Error hint -->
+        <el-alert
+          v-if="card.status && card.status.error"
+          :title="card.status.error"
+          type="error"
+          :closable="false"
+          show-icon
+          class="card-alert"
+        />
+
+        <!-- Actions -->
+        <div class="card-actions">
           <button
-            class="btn small action-btn check-btn"
+            class="btn small action-btn check-action"
             @click="runSingleCheck(card.meta.key)"
-            :disabled="card.loading || !!card.operating"
+            :disabled="card.isOperating || checkingAll"
           >
-            <span v-if="card.loading" class="mini-spinner"></span>
-            {{ card.loading ? '检测中...' : '检测安装情况' }}
+            <span v-if="checkingAll" class="mini-spinner"></span>
+            {{ checkingAll ? '检测中...' : '检测' }}
           </button>
-
           <button
-            v-if="card.status?.installed"
-            class="btn small action-btn reinstall-btn"
-            @click="reinstallTool(card.meta.key, card.meta.displayName)"
-            :disabled="card.loading || !!card.operating"
+            v-if="card.status && !card.status.installed"
+            class="btn small action-btn install-action"
+            @click="startInstall(card.meta.key, card.meta.displayName)"
+            :disabled="card.isOperating || checkingAll || !!runningOperation"
           >
-            <span v-if="card.operating === 'install'" class="mini-spinner"></span>
-            {{ card.operating === 'install' ? '安装中...' : '重装' }}
+            <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
+            {{ (card.isOperating && card.operationKind === 'install') ? '安装中...' : '安装' }}
           </button>
-
           <button
-            v-if="card.status?.hasUpdate"
-            class="btn small action-btn update-btn"
-            @click="updateTool(card.meta.key, card.meta.displayName, card.status?.latestVersion || '')"
-            :disabled="card.loading || !!card.operating"
+            v-if="card.status && card.status.installed"
+            class="btn small action-btn reinstall-action"
+            @click="startInstall(card.meta.key, card.meta.displayName)"
+            :disabled="card.isOperating || checkingAll || !!runningOperation"
           >
-            <span v-if="card.operating === 'update'" class="mini-spinner"></span>
-            {{ card.operating === 'update' ? '更新中...' : '更新到最新' }}
+            <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
+            {{ (card.isOperating && card.operationKind === 'install') ? '安装中...' : '重装' }}
+          </button>
+          <button
+            v-if="card.status && card.status.hasUpdate"
+            class="btn small action-btn update-action"
+            @click="startUpdate(card.meta.key, card.meta.displayName, card.status.latestVersion || '')"
+            :disabled="card.isOperating || checkingAll || !!runningOperation"
+          >
+            <span v-if="card.isOperating && card.operationKind === 'update'" class="mini-spinner"></span>
+            {{ (card.isOperating && card.operationKind === 'update') ? '更新中...' : '更新' }}
           </button>
         </div>
       </div>
@@ -150,33 +191,18 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { GetEnvCheckStatus, RunEnvCheck, CheckTool, InstallTool, UpdateTool } from '../../wailsjs/go/main/App'
-import { useToast } from '../composables/useToast'
-
-const { showSuccess, showError } = useToast()
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ElTag, ElAlert, ElMessage, ElMessageBox } from 'element-plus'
+import {
+  RunEnvCheck,
+  CheckTool,
+  StartInstallToolAsync,
+  StartUpdateToolAsync,
+  GetEnvCheckSnapshot,
+} from '../../wailsjs/go/main/App'
+import type { envcheck } from '../../wailsjs/go/models'
 
 // ---------- Types ----------
-
-interface CheckStatus {
-  tool: string
-  installed: boolean
-  installMethod: string
-  version: string
-  hasUpdate: boolean
-  latestVersion: string
-  pathOk: boolean
-  executablePath: string
-  error: string
-  checkedAt: string
-}
-
-interface OverallStatus {
-  allOk: boolean
-  items: Record<string, CheckStatus>
-  issues: string[]
-  checkedAt: string
-}
 
 interface ToolMeta {
   key: string
@@ -185,52 +211,57 @@ interface ToolMeta {
   bgColor: string
 }
 
-interface CardData {
+interface CardView {
   meta: ToolMeta
-  status: CheckStatus | null
-  loading: boolean
-  operating: string | false
+  status: envcheck.CheckStatus | null
+  isOperating: boolean
+  operationKind: string
+  operationLabel: string
+  cardClass: string
+  tagType: 'success' | 'warning' | 'danger' | 'info' | 'primary'
+  tagEffect: 'dark' | 'light' | 'plain'
+  tagLabel: string
 }
 
-// ---------- Tool metadata ----------
+// ---------- Constants ----------
 
-const toolMetaList: ToolMeta[] = [
+const TOOL_METAS: ToolMeta[] = [
   { key: 'claude_code', displayName: 'Claude Code', iconChar: 'C', bgColor: 'rgba(204,120,50,0.15)' },
-  { key: 'opencode',   displayName: 'OpenCode',    iconChar: 'O', bgColor: 'rgba(79,195,247,0.15)' },
-  { key: 'codex',      displayName: 'Codex',       iconChar: 'X', bgColor: 'rgba(102,187,106,0.15)' },
+  { key: 'opencode', displayName: 'OpenCode', iconChar: 'O', bgColor: 'rgba(79,195,247,0.15)' },
+  { key: 'codex', displayName: 'Codex', iconChar: 'X', bgColor: 'rgba(102,187,106,0.15)' },
 ]
+
+const POLL_INTERVAL = 1500
 
 // ---------- State ----------
 
-const overallStatus = ref<OverallStatus | null>(null)
-const loadingTools = reactive<Record<string, boolean>>({})
-const operating = reactive<Record<string, string | false>>({
-  claude_code: false,
-  opencode: false,
-  codex: false,
-})
-const overallLoading = ref(false)
+const snapshot = ref<envcheck.EnvCheckSnapshot | null>(null)
+const checkingAll = ref(false)
+const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
+const mounted = ref(true)
 
 // ---------- Computed ----------
 
-const cardDataList = computed<CardData[]>(() => {
-  return toolMetaList.map(meta => ({
-    meta,
-    status: overallStatus.value?.items?.[meta.key] || null,
-    loading: !!loadingTools[meta.key],
-    operating: operating[meta.key] || false,
-  }))
+const runningOperation = computed<envcheck.OperationState | null>(() => {
+  const op = snapshot.value?.operation
+  if (op && op.status === 'running') return op
+  return null
 })
 
-const issueCount = computed(() => {
-  if (!overallStatus.value) return 0
-  return overallStatus.value.issues?.length || 0
+const operationLabel = computed(() => {
+  const op = runningOperation.value
+  if (!op) return ''
+  const toolName = TOOL_METAS.find(m => m.key === op.tool)?.displayName || op.tool
+  const kind = op.kind === 'install' ? '安装' : '更新'
+  const step = op.step || ''
+  return `${toolName} ${kind}中${step ? ' - ' + step : ''}${op.message ? ': ' + op.message : ''}`
 })
 
-const lastCheckedAt = computed(() => {
-  if (!overallStatus.value?.checkedAt) return ''
+const formattedCheckedAt = computed(() => {
+  const at = snapshot.value?.status?.checkedAt
+  if (!at) return ''
   try {
-    const d = new Date(overallStatus.value.checkedAt)
+    const d = new Date(at)
     if (isNaN(d.getTime())) return ''
     return d.toLocaleString('zh-CN', {
       month: '2-digit', day: '2-digit',
@@ -241,10 +272,83 @@ const lastCheckedAt = computed(() => {
   }
 })
 
-const statusBarClass = computed(() => {
-  if (overallLoading.value) return 'bar-loading'
-  if (!overallStatus.value) return 'bar-idle'
-  return overallStatus.value.allOk ? 'bar-ok' : 'bar-warn'
+const heroBannerClass = computed(() => {
+  if (runningOperation.value) return 'hero-running'
+  if (checkingAll.value) return 'hero-checking'
+  if (!snapshot.value?.status) return 'hero-idle'
+  return snapshot.value.status.allOk ? 'hero-ok' : 'hero-warn'
+})
+
+const installedCount = computed(() => {
+  const items = snapshot.value?.status?.items
+  if (!items) return 0
+  return Object.values(items).filter(s => s.installed).length
+})
+
+const issuesCount = computed(() => {
+  return snapshot.value?.status?.issues?.length || 0
+})
+
+const updatesCount = computed(() => {
+  const items = snapshot.value?.status?.items
+  if (!items) return 0
+  return Object.values(items).filter(s => s.installed && s.hasUpdate).length
+})
+
+const cardList = computed((): CardView[] => {
+  const op = runningOperation.value
+  return TOOL_METAS.map(meta => {
+    const status = snapshot.value?.status?.items?.[meta.key] || null
+    const isOperatingThis = op != null && op.tool === meta.key
+    const opKind = isOperatingThis ? (op.kind || '') : ''
+    const opLabel = isOperatingThis ? (op.kind === 'install' ? '安装中...' : '更新中...') : ''
+
+    let cardClass = ''
+    let tagType: 'success' | 'warning' | 'danger' | 'info' | 'primary' = 'info'
+    let tagEffect: 'dark' | 'light' | 'plain' = 'plain'
+    let tagLabel = '待检测'
+
+    if (isOperatingThis) {
+      cardClass = 'card-operating'
+      tagType = 'primary'
+      tagEffect = 'dark'
+      tagLabel = op.kind === 'install' ? '安装中' : '更新中'
+    } else if (status) {
+      if (!status.installed) {
+        cardClass = 'card-missing'
+        tagType = 'danger'
+        tagEffect = 'dark'
+        tagLabel = '未安装'
+      } else if (status.hasUpdate) {
+        cardClass = 'card-update'
+        tagType = 'warning'
+        tagEffect = 'dark'
+        tagLabel = '有更新'
+      } else if (status.error) {
+        cardClass = 'card-error'
+        tagType = 'danger'
+        tagEffect = 'dark'
+        tagLabel = '异常'
+      } else {
+        cardClass = 'card-installed'
+        tagType = 'success'
+        tagEffect = 'dark'
+        tagLabel = '已安装'
+      }
+    }
+
+    return {
+      meta,
+      status,
+      isOperating: isOperatingThis,
+      operationKind: opKind,
+      operationLabel: opLabel,
+      cardClass,
+      tagType,
+      tagEffect,
+      tagLabel,
+    }
+  })
 })
 
 // ---------- Helpers ----------
@@ -259,227 +363,372 @@ function formatInstallMethod(m: string): string {
   return map[m] || m
 }
 
-function issueForStatus(status: CheckStatus): string | null {
-  if (status.error?.trim()) return `${status.tool}: ${status.error}`
-  if (!status.installed) return `${status.tool}: not installed`
-  if (!status.pathOk) return `${status.tool}: executable is not available in PATH`
-  return null
+// ---------- Snapshot / Polling ----------
+
+async function fetchSnapshot(): Promise<void> {
+  try {
+    const s = await GetEnvCheckSnapshot() as unknown as envcheck.EnvCheckSnapshot
+    if (mounted.value) {
+      snapshot.value = s
+    }
+  } catch (err: any) {
+    // Log but do not show ElMessage to avoid noise during polling.
+    console.warn('[EnvCheck] fetchSnapshot failed:', err?.message || err)
+  }
 }
 
-function rebuildOverallStatus(items: Record<string, CheckStatus>, checkedAt: string): OverallStatus {
-  const issues = toolMetaList
-    .map(meta => items[meta.key])
-    .filter((status): status is CheckStatus => !!status)
-    .map(issueForStatus)
-    .filter((issue): issue is string => !!issue)
+function startPolling(): void {
+  stopPolling()
+  pollTimer.value = setInterval(async () => {
+    await fetchSnapshot()
+    // Re-evaluate polling after each snapshot fetch so we stop
+    // promptly when the operation completes.
+    ensurePollingState()
+  }, POLL_INTERVAL)
+}
 
-  return {
-    allOk: issues.length === 0 && toolMetaList.every(meta => !!items[meta.key]),
-    items,
-    issues,
-    checkedAt,
+function stopPolling(): void {
+  if (pollTimer.value !== null) {
+    clearInterval(pollTimer.value)
+    pollTimer.value = null
+  }
+}
+
+function ensurePollingState(): void {
+  if (runningOperation.value || checkingAll.value) {
+    if (pollTimer.value === null) {
+      startPolling()
+    }
+  } else {
+    stopPolling()
   }
 }
 
 // ---------- Actions ----------
 
-async function loadCachedStatus() {
+async function runFullCheck(): Promise<void> {
+  checkingAll.value = true
   try {
-    const status = await GetEnvCheckStatus()
-    if (status) {
-      overallStatus.value = status as unknown as OverallStatus
+    const status = await RunEnvCheck() as unknown as envcheck.OverallStatus
+    // Update local snapshot with the returned status
+    if (mounted.value) {
+      snapshot.value = {
+        status,
+        operation: snapshot.value?.operation || null,
+      } as envcheck.EnvCheckSnapshot
     }
+    ElMessage.success('环境检测完成')
+  } catch (err: any) {
+    ElMessage.error('检测失败: ' + (err?.message || err))
+  } finally {
+    if (mounted.value) {
+      checkingAll.value = false
+    }
+  }
+}
+
+async function runSingleCheck(key: string): Promise<void> {
+  try {
+    const status = await CheckTool(key) as unknown as envcheck.CheckStatus
+    if (!mounted.value) return
+    const currentStatus = snapshot.value?.status
+    if (currentStatus) {
+      const items = { ...(currentStatus.items || {} as Record<string, envcheck.CheckStatus>) }
+      items[key] = status
+      // Rebuild issues
+      const issues: string[] = []
+      for (const m of TOOL_METAS) {
+        const s = items[m.key]
+        if (!s) continue
+        if (s.error?.trim()) issues.push(`${s.tool}: ${s.error}`)
+        else if (!s.installed) issues.push(`${s.tool}: not installed`)
+        else if (!s.pathOk) issues.push(`${s.tool}: executable not in PATH`)
+      }
+      snapshot.value = {
+        status: {
+          allOk: issues.length === 0 && TOOL_METAS.every(m => !!items[m.key]),
+          items,
+          issues,
+          checkedAt: status.checkedAt || currentStatus.checkedAt,
+        },
+        operation: snapshot.value?.operation || null,
+      } as envcheck.EnvCheckSnapshot
+    }
+  } catch (err: any) {
+    ElMessage.error('检测失败: ' + (err?.message || err))
+  }
+}
+
+async function startInstall(key: string, displayName: string): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定要${snapshot.value?.status?.items?.[key]?.installed ? '重新' : ''}安装 ${displayName} 吗？`,
+      '确认操作',
+      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
+    )
   } catch {
-    // no cache yet, silently ignore
+    return // user cancelled
   }
-}
 
-async function runFullCheck() {
-  overallLoading.value = true
-  for (const meta of toolMetaList) {
-    loadingTools[meta.key] = true
-  }
   try {
-    const status = await RunEnvCheck()
-    overallStatus.value = status as unknown as OverallStatus
-    showSuccess('环境检测完成')
-  } catch (err) {
-    showError('检测失败: ' + err)
-  } finally {
-    overallLoading.value = false
-    for (const meta of toolMetaList) {
-      loadingTools[meta.key] = false
-    }
+    // Fire-and-forget: start async install, then poll snapshot
+    await StartInstallToolAsync(key) as any
+    // Immediately fetch to get the running operation state
+    await fetchSnapshot()
+    ensurePollingState()
+  } catch (err: any) {
+    ElMessage.error('启动安装失败: ' + (err?.message || err))
   }
 }
 
-async function runSingleCheck(key: string) {
-  loadingTools[key] = true
-  try {
-    const status = await CheckTool(key) as unknown as CheckStatus
-    const items = { ...(overallStatus.value?.items || {}) }
-    items[key] = status
-    overallStatus.value = rebuildOverallStatus(items, status.checkedAt || new Date().toISOString())
-  } catch (err) {
-    showError('检测失败: ' + err)
-  } finally {
-    loadingTools[key] = false
-  }
-}
-
-async function reinstallTool(key: string, displayName: string) {
-  const confirmed = window.confirm(`确定要重新安装 ${displayName} 吗？`)
-  if (!confirmed) return
-
-  operating[key] = 'install'
-  try {
-    const result = await InstallTool(key)
-    if ((result as any)?.success) {
-      showSuccess(`${displayName} 安装成功` + ((result as any)?.version ? ` (${(result as any).version})` : ''))
-      await runSingleCheck(key)
-    } else {
-      showError(`安装失败: ${(result as any)?.error || '未知错误'}`)
-    }
-  } catch (err) {
-    showError('安装失败: ' + err)
-  } finally {
-    operating[key] = false
-  }
-}
-
-async function updateTool(key: string, displayName: string, latestVersion: string) {
+async function startUpdate(key: string, displayName: string, latestVersion: string): Promise<void> {
   const verLabel = latestVersion ? 'v' + latestVersion : '最新版本'
-  const confirmed = window.confirm(`确定要将 ${displayName} 更新到 ${verLabel} 吗？`)
-  if (!confirmed) return
-
-  operating[key] = 'update'
   try {
-    const result = await UpdateTool(key)
-    if ((result as any)?.success) {
-      showSuccess(`${displayName} 更新成功` + ((result as any)?.version ? ` (${(result as any).version})` : ''))
-      await runSingleCheck(key)
-    } else {
-      showError(`更新失败: ${(result as any)?.error || '未知错误'}`)
-    }
-  } catch (err) {
-    showError('更新失败: ' + err)
-  } finally {
-    operating[key] = false
+    await ElMessageBox.confirm(
+      `确定要将 ${displayName} 更新到 ${verLabel} 吗？`,
+      '确认操作',
+      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch {
+    return // user cancelled
+  }
+
+  try {
+    await StartUpdateToolAsync(key) as any
+    await fetchSnapshot()
+    ensurePollingState()
+  } catch (err: any) {
+    ElMessage.error('启动更新失败: ' + (err?.message || err))
   }
 }
 
 // ---------- Lifecycle ----------
 
-onMounted(() => {
-  loadCachedStatus()
+// Watch runningOperation to stop polling as soon as no operation is running.
+// This covers edge cases where ensurePollingState in the interval callback
+// hasn't fired yet (e.g. the snapshot was updated outside polling).
+// When the operation completes (transitions from running to idle), fetch a
+// fresh snapshot so the UI reflects the final refreshed cache from the backend.
+watch(runningOperation, async (newVal, oldVal) => {
+  if (oldVal && !newVal) {
+    await fetchSnapshot()
+  }
+  ensurePollingState()
+})
+
+onMounted(async () => {
+  mounted.value = true
+  await fetchSnapshot()
+  ensurePollingState()
+})
+
+onUnmounted(() => {
+  mounted.value = false
+  stopPolling()
 })
 </script>
 
 <style scoped>
-/* Status Bar */
-.envcheck-status-bar {
+/* ===== Root ===== */
+.envcheck-root {
+  --bg: #0f1219;
+  --surface: #1a1f2e;
+  --elevated: #232a3b;
+  --border: #2a2f3e;
+  --border-hover: #3a4f5e;
+  --text-primary: #e0e6ed;
+  --text-secondary: #8899aa;
+  --text-muted: #5a6a7a;
+  --accent: #4fc3f7;
+  --accent-hover: #7bd4f9;
+  --success: #66bb6a;
+  --error: #ef5350;
+  --warn: #ffa726;
+
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-radius: 10px;
+  flex-direction: column;
+  gap: 24px;
+  color: var(--text-primary);
+}
+
+/* ===== Hero Banner ===== */
+.hero-banner {
+  position: relative;
+  padding: 28px 28px 20px;
+  border-radius: 12px;
   border: 1px solid var(--border);
-  margin-bottom: 28px;
-  transition: background 0.3s, border-color 0.3s;
-}
-
-.envcheck-status-bar.bar-ok {
-  background: rgba(102, 187, 106, 0.06);
-  border-color: rgba(102, 187, 106, 0.25);
-}
-
-.envcheck-status-bar.bar-warn {
-  background: rgba(255, 167, 38, 0.06);
-  border-color: rgba(255, 167, 38, 0.25);
-}
-
-.envcheck-status-bar.bar-loading {
-  background: rgba(79, 195, 247, 0.06);
-  border-color: rgba(79, 195, 247, 0.25);
-}
-
-.envcheck-status-bar.bar-idle {
   background: var(--surface);
+  overflow: hidden;
+  transition: border-color 0.3s, background 0.3s;
 }
 
-.status-bar-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.hero-banner.hero-ok {
+  border-color: rgba(102, 187, 106, 0.3);
+  background: linear-gradient(135deg, rgba(102, 187, 106, 0.06) 0%, var(--surface) 70%);
 }
 
-.status-indicator {
+.hero-banner.hero-warn {
+  border-color: rgba(255, 167, 38, 0.3);
+  background: linear-gradient(135deg, rgba(255, 167, 38, 0.06) 0%, var(--surface) 70%);
+}
+
+.hero-banner.hero-checking {
+  border-color: rgba(79, 195, 247, 0.3);
+  background: linear-gradient(135deg, rgba(79, 195, 247, 0.06) 0%, var(--surface) 70%);
+}
+
+.hero-banner.hero-running {
+  border-color: rgba(79, 195, 247, 0.35);
+  background: linear-gradient(135deg, rgba(79, 195, 247, 0.08) 0%, var(--surface) 70%);
+}
+
+.hero-banner.hero-idle {
+  border-color: var(--border);
+}
+
+.hero-content {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hero-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hero-desc {
+  margin: 0;
   font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.hero-meta {
+  display: flex;
+  gap: 20px;
+  margin-top: 8px;
+}
+
+.meta-item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.meta-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.meta-value {
+  font-size: 13px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 
-.ok-indicator { color: var(--success); }
-.warn-indicator { color: #ffa726; }
-.loading-indicator { color: var(--accent); }
-.idle-indicator { color: var(--text-muted); }
-
-.status-dot-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.hero-action {
+  position: absolute;
+  top: 28px;
+  right: 28px;
 }
 
-.ok-dot {
-  background: var(--success);
-  box-shadow: 0 0 6px rgba(102, 187, 106, 0.4);
+.hero-btn {
+  min-width: 110px;
 }
 
-.warn-dot {
-  background: #ffa726;
-  box-shadow: 0 0 6px rgba(255, 167, 38, 0.4);
-}
-
-.idle-dot {
-  background: var(--text-muted);
-}
-
-.status-bar-right {
+.hero-progress {
+  margin-top: 16px;
   display: flex;
   align-items: center;
+  gap: 12px;
+}
+
+.progress-track {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Summary Strip ===== */
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
 
-.last-check-time {
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color 0.2s;
 }
 
-/* Tool Cards Grid */
-.tool-cards {
+.summary-count {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+.summary-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.summary-installed .summary-count { color: var(--success); }
+.summary-issues .summary-count { color: var(--error); }
+.summary-updates .summary-count { color: var(--warn); }
+
+/* ===== Tool Grid ===== */
+.tool-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 20px;
 }
 
-@media (max-width: 960px) {
-  .tool-cards {
+@media (max-width: 1100px) {
+  .tool-grid {
     grid-template-columns: 1fr;
   }
 }
 
+/* ===== Tool Card ===== */
 .tool-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px;
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
@@ -487,20 +736,29 @@ onMounted(() => {
   border-color: var(--border-hover);
 }
 
-.tool-card.has-issue {
-  border-color: rgba(239, 83, 80, 0.3);
+.tool-card.card-missing {
+  border-color: rgba(239, 83, 80, 0.25);
+}
+
+.tool-card.card-update {
+  border-color: rgba(255, 167, 38, 0.25);
+}
+
+.tool-card.card-operating {
+  border-color: rgba(79, 195, 247, 0.35);
+  box-shadow: 0 0 0 1px rgba(79, 195, 247, 0.12);
 }
 
 /* Card Header */
-.tool-card-header {
+.card-header {
   display: flex;
   align-items: center;
   gap: 14px;
 }
 
-.tool-icon-wrapper {
-  width: 42px;
-  height: 42px;
+.tool-icon {
+  width: 44px;
+  height: 44px;
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -508,133 +766,124 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-.tool-icon-text {
+.icon-char {
   font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
-.tool-title-area {
+.card-title-area {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
-.tool-name {
+.card-title {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.install-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 500;
+.status-tag {
   width: fit-content;
 }
 
-.badge-installed { color: var(--success); }
-.badge-missing { color: var(--error); }
-.loading-badge { color: var(--accent); }
-.idle-badge { color: var(--text-muted); }
-
 /* Card Body */
-.tool-card-body {
+.card-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   flex: 1;
 }
 
-.placeholder-body {
+.card-body.placeholder {
   justify-content: center;
+  align-items: center;
+  padding: 8px 0;
 }
 
 .placeholder-text {
   color: var(--text-muted);
   font-size: 13px;
-  text-align: center;
-  padding: 12px 0;
 }
 
-.detail-row {
+.info-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-size: 13px;
+  gap: 12px;
 }
 
-.detail-label {
+.info-label {
   color: var(--text-secondary);
   flex-shrink: 0;
+  font-size: 12px;
 }
 
-.detail-value {
+.info-value {
   color: var(--text-primary);
   text-align: right;
   word-break: break-all;
+  font-size: 13px;
 }
 
-.install-method-tag {
+.method-badge {
   background: rgba(79, 195, 247, 0.1);
   color: var(--accent);
-  padding: 2px 8px;
+  padding: 2px 10px;
   border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
 }
 
-.path-ok { color: var(--success); }
-.path-warn { color: #ffa726; }
+.mono {
+  font-family: monospace;
+  font-size: 12px;
+}
 
-.path-text {
-  font-size: 11px;
-  max-width: 180px;
+.path-row .path-value {
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11px;
 }
 
-/* Update Hint */
-.update-hint {
+/* Card Alert */
+.card-alert {
+  border-radius: 6px;
+}
+
+/* Card Operation Overlay */
+.card-operation {
+  padding: 8px 0;
+}
+
+.op-overlay {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: rgba(255, 167, 38, 0.08);
-  border: 1px solid rgba(255, 167, 38, 0.2);
-  border-radius: 6px;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(79, 195, 247, 0.06);
+  border: 1px solid rgba(79, 195, 247, 0.15);
+  border-radius: 8px;
+}
+
+.op-text {
   font-size: 13px;
-  color: #ffa726;
-}
-
-.update-hint strong {
-  color: #ffb74d;
-}
-
-.hint-icon {
-  font-size: 14px;
-  font-weight: 700;
-}
-
-/* Error Hint */
-.error-hint {
-  font-size: 12px;
-  color: var(--error);
-  padding: 6px 10px;
-  background: rgba(239, 83, 80, 0.06);
-  border-radius: 4px;
+  color: var(--accent);
+  font-weight: 500;
 }
 
 /* Card Actions */
-.tool-card-actions {
+.card-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  padding-top: 4px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
 }
 
@@ -648,53 +897,93 @@ onMounted(() => {
   gap: 4px;
 }
 
-.check-btn {
+.check-action {
   background: var(--accent);
   color: var(--bg);
   border-color: transparent;
 }
 
-.check-btn:hover:not(:disabled) {
+.check-action:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
-.reinstall-btn {
-  /* default btn style */
+.install-action {
+  background: rgba(102, 187, 106, 0.12);
+  color: var(--success);
+  border-color: rgba(102, 187, 106, 0.3);
 }
 
-.update-btn {
+.install-action:hover:not(:disabled) {
+  background: rgba(102, 187, 106, 0.2);
+}
+
+.reinstall-action {
+  background: var(--elevated);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+.reinstall-action:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
+.update-action {
   background: rgba(255, 167, 38, 0.12);
-  color: #ffa726;
+  color: var(--warn);
   border-color: rgba(255, 167, 38, 0.3);
 }
 
-.update-btn:hover:not(:disabled) {
+.update-action:hover:not(:disabled) {
   background: rgba(255, 167, 38, 0.2);
 }
 
-/* Spinners */
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(79, 195, 247, 0.3);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-  flex-shrink: 0;
+/* ===== Text Helpers ===== */
+.text-success { color: var(--success); }
+.text-error { color: var(--error); }
+.text-warn { color: var(--warn); }
+.text-muted { color: var(--text-muted); }
+
+/* ===== Buttons ===== */
+.btn {
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+  border: 1px solid var(--border);
+  outline: none;
+  background: var(--surface);
+  color: var(--text-primary);
 }
 
-.btn-spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(15, 18, 25, 0.3);
-  border-top-color: var(--bg);
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-  margin-right: 4px;
-  vertical-align: middle;
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
+.btn.small {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: transparent;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(79, 195, 247, 0.2);
+}
+
+/* ===== Spinners ===== */
 .mini-spinner {
   display: inline-block;
   width: 10px;
@@ -706,7 +995,69 @@ onMounted(() => {
   opacity: 0.7;
 }
 
+.mini-spinner.light {
+  border-color: rgba(15, 18, 25, 0.3);
+  border-top-color: transparent;
+  opacity: 1;
+}
+
+.mini-spinner.accent {
+  border-color: var(--accent);
+  border-top-color: transparent;
+  opacity: 1;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ===== Element Plus overrides for dark theme ===== */
+.envcheck-root :deep(.el-tag) {
+  border-radius: 4px;
+}
+
+.envcheck-root :deep(.el-alert) {
+  padding: 8px 12px;
+}
+
+.envcheck-root :deep(.el-alert .el-alert__title) {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.envcheck-root :deep(.el-message-box) {
+  /* ensure dark theme compatibility */
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 1100px) {
+  .summary-strip {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .hero-action {
+    position: static;
+    margin-top: 16px;
+  }
+
+  .hero-banner {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .tool-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

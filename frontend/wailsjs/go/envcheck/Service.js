@@ -18,8 +18,24 @@ export function GetCachedStatus() {
   return window['go']['envcheck']['Service']['GetCachedStatus']();
 }
 
+export function GetEnvCheckSnapshot() {
+  return window['go']['envcheck']['Service']['GetEnvCheckSnapshot']();
+}
+
+export function GetOperationState() {
+  return window['go']['envcheck']['Service']['GetOperationState']();
+}
+
 export function Install(arg1) {
   return window['go']['envcheck']['Service']['Install'](arg1);
+}
+
+export function StartInstallTool(arg1) {
+  return window['go']['envcheck']['Service']['StartInstallTool'](arg1);
+}
+
+export function StartUpdateTool(arg1) {
+  return window['go']['envcheck']['Service']['StartUpdateTool'](arg1);
 }
 
 export function Update(arg1) {

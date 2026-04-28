@@ -51,3 +51,56 @@ type InstallResult struct {
 	Version string  `json:"version"`
 	Error   string  `json:"error"`
 }
+
+// ---------------------------------------------------------------------------
+// Async operation types for long-running install/update tasks
+// ---------------------------------------------------------------------------
+
+// OperationKind distinguishes install from update operations.
+type OperationKind string
+
+const (
+	OperationKindInstall OperationKind = "install"
+	OperationKindUpdate  OperationKind = "update"
+)
+
+// OperationStatus represents the lifecycle state of an async operation.
+type OperationStatus string
+
+const (
+	OperationStatusIdle      OperationStatus = "idle"
+	OperationStatusRunning   OperationStatus = "running"
+	OperationStatusSucceeded OperationStatus = "succeeded"
+	OperationStatusFailed    OperationStatus = "failed"
+	OperationStatusTimeout   OperationStatus = "timeout"
+)
+
+// OperationStep represents the current phase within a running operation.
+type OperationStep string
+
+const (
+	OperationStepPrecheck     OperationStep = "precheck"
+	OperationStepPrepare      OperationStep = "prepare"
+	OperationStepRunCommand   OperationStep = "run_command"
+	OperationStepVerify       OperationStep = "verify"
+	OperationStepRefreshCache OperationStep = "refresh_cache"
+	OperationStepCompleted    OperationStep = "completed"
+)
+
+// OperationState holds the full state of a single async install/update operation.
+// It is safe to serialize to JSON and send to the frontend.
+type OperationState struct {
+	ID           string         `json:"id"`
+	Tool         CLITool        `json:"tool"`
+	Kind         OperationKind  `json:"kind"`
+	Status       OperationStatus `json:"status"`
+	Step         OperationStep  `json:"step"`
+	Message      string         `json:"message"`
+	Progress     int            `json:"progress"`
+	StartedAt    time.Time      `json:"startedAt"`
+	UpdatedAt    time.Time      `json:"updatedAt"`
+	FinishedAt   *time.Time     `json:"finishedAt"`
+	Result       *InstallResult `json:"result"`
+	Error        string         `json:"error"`
+	CacheRefreshed bool         `json:"cacheRefreshed"`
+}

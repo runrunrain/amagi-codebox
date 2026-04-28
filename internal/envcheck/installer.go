@@ -84,6 +84,23 @@ func (s *Service) installOrUpdate(tool CLITool, operation installOperation) (*In
 		return installFailure(tool, fmt.Sprintf("%s %s completed but verification failed", displayToolName(tool), operation), err), err
 	}
 
+	// For update operations, verify the version actually changed.
+	if operation == installOperationUpdate {
+		beforeVersion := ""
+		if before != nil {
+			beforeVersion = strings.TrimSpace(before.Version)
+		}
+		afterVersion := strings.TrimSpace(after.Version)
+		if beforeVersion != "" && afterVersion == beforeVersion {
+			errMsg := fmt.Sprintf(
+				"update command ran but version was unchanged (%s) - the CLI might be running or locked",
+				afterVersion,
+			)
+			err := errors.New(errMsg)
+			return installFailure(tool, errMsg, err), err
+		}
+	}
+
 	return &InstallResult{
 		Success: true,
 		Message: fmt.Sprintf("%s %s completed successfully", displayToolName(tool), operation),
@@ -95,27 +112,81 @@ func (s *Service) installOrUpdate(tool CLITool, operation installOperation) (*In
 func (s *Service) installCommands(tool CLITool, operation installOperation, current *CheckStatus) ([]installCommand, error) {
 	switch tool {
 	case ToolClaudeCode:
-		return claudeInstallCommands(operation, current), nil
+		baseCmds := claudeInstallCommands(operation, current)
+		npmCmd := npmClaudeCommand(operation)
+
+		// If installed via NPM, prefer NPM command first.
+		if current != nil && current.InstallMethod == InstallMethodNPM {
+			if err := s.ensureNPMAvailable(); err != nil {
+				return nil, err
+			}
+			return append([]installCommand{npmCmd}, baseCmds...), nil
+		}
+		// For other install methods, try NPM as last resort (best-effort).
+		if s.ensureNPMAvailable() == nil {
+			baseCmds = append(baseCmds, npmCmd)
+		}
+		return baseCmds, nil
 	case ToolOpenCode:
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{{
-			description: "npm global install opencode-ai@latest",
-			path:        "npm",
-			args:        []string{"install", "-g", "opencode-ai@latest"},
-		}}, nil
+		return []installCommand{npmOpenCodeCommand(operation)}, nil
 	case ToolCodex:
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{{
-			description: "npm global install @openai/codex",
-			path:        "npm",
-			args:        []string{"install", "-g", "@openai/codex"},
-		}}, nil
+		return []installCommand{npmCodexCommand(operation)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
+	}
+}
+
+// npmClaudeCommand returns the npm install or update command for Claude Code.
+func npmClaudeCommand(operation installOperation) installCommand {
+	if operation == installOperationUpdate {
+		return installCommand{
+			description: "npm global update @anthropic-ai/claude-code",
+			path:        "npm",
+			args:        []string{"update", "-g", "@anthropic-ai/claude-code"},
+		}
+	}
+	return installCommand{
+		description: "npm global install @anthropic-ai/claude-code",
+		path:        "npm",
+		args:        []string{"install", "-g", "@anthropic-ai/claude-code"},
+	}
+}
+
+// npmOpenCodeCommand returns the npm install or update command for OpenCode.
+func npmOpenCodeCommand(operation installOperation) installCommand {
+	if operation == installOperationUpdate {
+		return installCommand{
+			description: "npm global update opencode-ai",
+			path:        "npm",
+			args:        []string{"update", "-g", "opencode-ai"},
+		}
+	}
+	return installCommand{
+		description: "npm global install opencode-ai@latest",
+		path:        "npm",
+		args:        []string{"install", "-g", "opencode-ai@latest"},
+	}
+}
+
+// npmCodexCommand returns the npm install or update command for Codex.
+func npmCodexCommand(operation installOperation) installCommand {
+	if operation == installOperationUpdate {
+		return installCommand{
+			description: "npm global update @openai/codex",
+			path:        "npm",
+			args:        []string{"update", "-g", "@openai/codex"},
+		}
+	}
+	return installCommand{
+		description: "npm global install @openai/codex",
+		path:        "npm",
+		args:        []string{"install", "-g", "@openai/codex"},
 	}
 }
 
@@ -125,6 +196,7 @@ func claudeInstallCommands(operation installOperation, current *CheckStatus) []i
 		path:        "powershell.exe",
 		args: []string{
 			"-NoProfile",
+			"-NonInteractive",
 			"-ExecutionPolicy", "RemoteSigned",
 			"-Command", "irm https://claude.ai/install.ps1 | iex",
 		},
@@ -139,7 +211,7 @@ func claudeInstallCommands(operation installOperation, current *CheckStatus) []i
 	winget := installCommand{
 		description: wingetDescription,
 		path:        "winget",
-		args:        []string{wingetAction, "Anthropic.ClaudeCode"},
+		args:        []string{wingetAction, "Anthropic.ClaudeCode", "--accept-source-agreements", "--accept-package-agreements"},
 	}
 
 	if operation == installOperationUpdate && current != nil && current.InstallMethod == InstallMethodWinget {

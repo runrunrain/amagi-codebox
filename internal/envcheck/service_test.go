@@ -962,3 +962,121 @@ func TestPathFragment(t *testing.T) {
 		t.Errorf("pathFragment('foo','bar') = %q", frag)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 26. NPM update commands for Claude Code
+// ---------------------------------------------------------------------------
+
+func TestInstallCommands_ClaudeUpdate_NPMInstall(t *testing.T) {
+	svc := newTestService(
+		responseFor("npm", "10.0.0", nil),
+	)
+	cmds, err := svc.installCommands(ToolClaudeCode, installOperationUpdate, &CheckStatus{
+		InstallMethod: InstallMethodNPM,
+		Installed:     true,
+		Version:       "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have at least 3 commands: npm update, native, winget
+	if len(cmds) < 3 {
+		t.Fatalf("expected at least 3 commands (npm + native + winget), got %d", len(cmds))
+	}
+	// First command should be NPM update for Claude Code
+	if cmds[0].path != "npm" {
+		t.Errorf("first command path = %q, want npm", cmds[0].path)
+	}
+	if cmds[0].args[0] != "update" {
+		t.Errorf("first command should use 'update', got args: %v", cmds[0].args)
+	}
+	foundClaudePackage := false
+	for _, arg := range cmds[0].args {
+		if arg == "@anthropic-ai/claude-code" {
+			foundClaudePackage = true
+		}
+	}
+	if !foundClaudePackage {
+		t.Errorf("first command args should contain @anthropic-ai/claude-code, got: %v", cmds[0].args)
+	}
+}
+
+func TestInstallCommands_ClaudeInstall_NPMInstall(t *testing.T) {
+	svc := newTestService(
+		responseFor("npm", "10.0.0", nil),
+	)
+	cmds, err := svc.installCommands(ToolClaudeCode, installOperationInstall, &CheckStatus{
+		InstallMethod: InstallMethodNPM,
+		Installed:     false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cmds) < 3 {
+		t.Fatalf("expected at least 3 commands, got %d", len(cmds))
+	}
+	// First command should be NPM install for Claude Code
+	if cmds[0].path != "npm" {
+		t.Errorf("first command path = %q, want npm", cmds[0].path)
+	}
+	if cmds[0].args[0] != "install" {
+		t.Errorf("first command should use 'install', got args: %v", cmds[0].args)
+	}
+}
+
+func TestInstallCommands_ClaudeUpdate_NonNPM_HasNPMFallback(t *testing.T) {
+	svc := newTestService(
+		responseFor("npm", "10.0.0", nil),
+	)
+	cmds, err := svc.installCommands(ToolClaudeCode, installOperationUpdate, &CheckStatus{
+		InstallMethod: InstallMethodNative,
+		Installed:     true,
+		Version:       "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have native first, then winget, then npm as fallback
+	if len(cmds) < 3 {
+		t.Fatalf("expected at least 3 commands (native + winget + npm), got %d", len(cmds))
+	}
+	if !strings.Contains(cmds[0].description, "native") {
+		t.Errorf("first command should be native, got: %q", cmds[0].description)
+	}
+	lastCmd := cmds[len(cmds)-1]
+	if lastCmd.path != "npm" {
+		t.Errorf("last command should be npm fallback, got path: %q", lastCmd.path)
+	}
+}
+
+func TestInstallCommands_OpenCode_UsesUpdateForUpdateOp(t *testing.T) {
+	svc := newTestService(
+		responseFor("npm", "10.0.0", nil),
+	)
+	cmds, err := svc.installCommands(ToolOpenCode, installOperationUpdate, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(cmds))
+	}
+	if cmds[0].args[0] != "update" {
+		t.Errorf("update operation should use 'npm update', got args: %v", cmds[0].args)
+	}
+}
+
+func TestInstallCommands_Codex_UsesUpdateForUpdateOp(t *testing.T) {
+	svc := newTestService(
+		responseFor("npm", "10.0.0", nil),
+	)
+	cmds, err := svc.installCommands(ToolCodex, installOperationUpdate, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(cmds))
+	}
+	if cmds[0].args[0] != "update" {
+		t.Errorf("update operation should use 'npm update', got args: %v", cmds[0].args)
+	}
+}

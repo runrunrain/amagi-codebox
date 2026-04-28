@@ -62,10 +62,6 @@ export function ExportConfigToFile() {
   return window['go']['main']['App']['ExportConfigToFile']();
 }
 
-export function InstallTool(arg1) {
-  return window['go']['main']['App']['InstallTool'](arg1);
-}
-
 export function ExportEnvVars() {
   return window['go']['main']['App']['ExportEnvVars']();
 }
@@ -96,6 +92,14 @@ export function GetAppInfo() {
 
 export function GetConfigService() {
   return window['go']['main']['App']['GetConfigService']();
+}
+
+export function GetEnvCheckOperationState() {
+  return window['go']['main']['App']['GetEnvCheckOperationState']();
+}
+
+export function GetEnvCheckSnapshot() {
+  return window['go']['main']['App']['GetEnvCheckSnapshot']();
 }
 
 export function GetEnvCheckStatus() {
@@ -182,10 +186,6 @@ export function GetRemoteToken() {
   return window['go']['main']['App']['GetRemoteToken']();
 }
 
-export function RunEnvCheck() {
-  return window['go']['main']['App']['RunEnvCheck']();
-}
-
 export function GetRemoteWebUIStatus() {
   return window['go']['main']['App']['GetRemoteWebUIStatus']();
 }
@@ -224,6 +224,10 @@ export function ImportEnvVars(arg1) {
 
 export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
+}
+
+export function InstallTool(arg1) {
+  return window['go']['main']['App']['InstallTool'](arg1);
 }
 
 export function LaunchAmagiCode(arg1, arg2, arg3, arg4, arg5) {
@@ -306,6 +310,10 @@ export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
 }
 
+export function RunEnvCheck() {
+  return window['go']['main']['App']['RunEnvCheck']();
+}
+
 export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
 }
@@ -374,8 +382,12 @@ export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
 }
 
-export function UpdateTool(arg1) {
-  return window['go']['main']['App']['UpdateTool'](arg1);
+export function StartInstallToolAsync(arg1) {
+  return window['go']['main']['App']['StartInstallToolAsync'](arg1);
+}
+
+export function StartUpdateToolAsync(arg1) {
+  return window['go']['main']['App']['StartUpdateToolAsync'](arg1);
 }
 
 export function StopAllSessions() {
@@ -400,4 +412,8 @@ export function UnregisterOutputCallback(arg1, arg2) {
 
 export function UnregisterResizeCallback(arg1, arg2) {
   return window['go']['main']['App']['UnregisterResizeCallback'](arg1, arg2);
+}
+
+export function UpdateTool(arg1) {
+  return window['go']['main']['App']['UpdateTool'](arg1);
 }

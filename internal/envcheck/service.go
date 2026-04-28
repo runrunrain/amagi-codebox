@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"amagi-codebox/internal/platform"
@@ -40,6 +41,11 @@ type Service struct {
 	cache         *OverallStatus
 	versionCache  map[CLITool]latestVersionCacheEntry
 	processRunner platform.ProcessRunner
+
+	// Async operation state
+	opMu     sync.Mutex
+	current  *OperationState
+	opSeq    atomic.Int64
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -86,6 +92,14 @@ func (s *Service) CheckAll() (*OverallStatus, error) {
 	s.cache = cloneOverallStatus(overall)
 	s.mu.Unlock()
 	return overall, firstErr
+}
+
+// invalidateVersionCache removes the cached latest-version entry for a tool
+// so that subsequent calls to CheckLatestVersion fetch a fresh value.
+func (s *Service) invalidateVersionCache(tool CLITool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.versionCache, tool)
 }
 
 // CheckOne checks a single supported CLI tool.
@@ -248,13 +262,58 @@ func (s *Service) wingetUpgradeVersion(packageID string) (string, error) {
 }
 
 // Install installs the requested CLI tool.
+// It acquires the global serialization gate so it cannot run concurrently with
+// StartInstallTool/StartUpdateTool or another synchronous Install/Update call.
 func (s *Service) Install(tool CLITool) (*InstallResult, error) {
-	return s.installOrUpdate(tool, installOperationInstall)
+	return s.serializedInstallOrUpdate(tool, installOperationInstall)
 }
 
 // Update updates the requested CLI tool.
+// Same concurrency semantics as Install.
 func (s *Service) Update(tool CLITool) (*InstallResult, error) {
-	return s.installOrUpdate(tool, installOperationUpdate)
+	return s.serializedInstallOrUpdate(tool, installOperationUpdate)
+}
+
+// serializedInstallOrUpdate acquires the global opMu gate before calling
+// installOrUpdate. This ensures synchronous Install/Update calls are serialized
+// with each other and with async StartInstallTool/StartUpdateTool, while
+// preserving the blocking (synchronous) call semantics for the caller.
+func (s *Service) serializedInstallOrUpdate(tool CLITool, operation installOperation) (*InstallResult, error) {
+	s.opMu.Lock()
+	if s.current != nil && s.current.Status == OperationStatusRunning {
+		s.opMu.Unlock()
+		return nil, ErrBusy
+	}
+	// Set a placeholder operation state so async callers see the busy state.
+	now := time.Now()
+	s.current = &OperationState{
+		ID:        fmt.Sprintf("sync-%d", s.opSeq.Add(1)),
+		Tool:      tool,
+		Kind:      OperationKind(operation),
+		Status:    OperationStatusRunning,
+		Step:      OperationStepPrecheck,
+		Message:   fmt.Sprintf("Starting %s %s...", displayToolName(tool), operation),
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	s.opMu.Unlock()
+
+	result, err := s.installOrUpdate(tool, operation)
+
+	// Best-effort: invalidate version cache and refresh tool status on success
+	// so that subsequent GetCachedStatus/GetEnvCheckSnapshot calls reflect the
+	// new version rather than a stale snapshot.
+	if err == nil && result != nil && result.Success {
+		s.invalidateVersionCache(tool)
+		_, _ = s.CheckOne(tool)
+	}
+
+	// Clear the operation state so the gate is released.
+	s.opMu.Lock()
+	s.current = nil
+	s.opMu.Unlock()
+
+	return result, err
 }
 
 // GetCachedStatus returns a defensive copy of the last known overall status.
@@ -496,4 +555,183 @@ func versionParts(version string) []int {
 		numbers = append(numbers, number)
 	}
 	return numbers
+}
+
+// ---------------------------------------------------------------------------
+// Async operation management
+// ---------------------------------------------------------------------------
+
+// ErrBusy is returned when another install/update operation is already running.
+var ErrBusy = fmt.Errorf("another install or update operation is in progress")
+
+// ErrAlreadyRunning is returned when the same tool+kind operation is already running.
+var ErrAlreadyRunning = fmt.Errorf("this operation is already running")
+
+// StartInstallTool starts an asynchronous install operation for the given tool.
+// It returns immediately with the initial OperationState. The actual work runs in
+// a background goroutine that survives frontend page navigation.
+// If the same tool+kind is already running, it returns the current state.
+// If a different operation is running, it returns ErrBusy.
+func (s *Service) StartInstallTool(tool CLITool) (*OperationState, error) {
+	return s.startOperation(tool, OperationKindInstall)
+}
+
+// StartUpdateTool starts an asynchronous update operation for the given tool.
+// Same concurrency semantics as StartInstallTool.
+func (s *Service) StartUpdateTool(tool CLITool) (*OperationState, error) {
+	return s.startOperation(tool, OperationKindUpdate)
+}
+
+// GetOperationState returns the current async operation state, or nil if idle.
+func (s *Service) GetOperationState() *OperationState {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	return cloneOperationState(s.current)
+}
+
+// GetEnvCheckSnapshot returns a combined snapshot of the current tool statuses
+// and any active operation. This is the primary polling endpoint for the frontend.
+func (s *Service) GetEnvCheckSnapshot() *EnvCheckSnapshot {
+	snapshot := &EnvCheckSnapshot{}
+	snapshot.Status = s.GetCachedStatus()
+	snapshot.Operation = s.GetOperationState()
+	return snapshot
+}
+
+// EnvCheckSnapshot combines cached tool status with the current async operation.
+type EnvCheckSnapshot struct {
+	Status    *OverallStatus  `json:"status"`
+	Operation *OperationState `json:"operation"`
+}
+
+// startOperation is the internal entry point for async install/update.
+func (s *Service) startOperation(tool CLITool, kind OperationKind) (*OperationState, error) {
+	if !IsValidCLITool(tool) {
+		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
+	}
+
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	// If same tool+kind already running, return current state
+	if s.current != nil && s.current.Status == OperationStatusRunning &&
+		s.current.Tool == tool && s.current.Kind == kind {
+		return cloneOperationState(s.current), nil
+	}
+
+	// If a different operation is running, reject
+	if s.current != nil && s.current.Status == OperationStatusRunning {
+		return nil, ErrBusy
+	}
+
+	// Create new operation
+	now := time.Now()
+	opID := fmt.Sprintf("op-%d", s.opSeq.Add(1))
+	op := &OperationState{
+		ID:        opID,
+		Tool:      tool,
+		Kind:      kind,
+		Status:    OperationStatusRunning,
+		Step:      OperationStepPrecheck,
+		Message:   fmt.Sprintf("Starting %s %s...", displayToolName(tool), kind),
+		Progress:  0,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	s.current = op
+
+	// Launch background goroutine with context.Background so it survives
+	// frontend page navigation. The goroutine updates s.current in place
+	// under opMu.
+	go s.runOperation(op)
+
+	return cloneOperationState(op), nil
+}
+
+// runOperation executes the full install/update lifecycle in a background goroutine.
+func (s *Service) runOperation(op *OperationState) {
+	// Run the synchronous installOrUpdate logic and capture result.
+	// We do NOT use the RPC caller's context here -- context.Background
+	// ensures the operation survives page navigation.
+	result, err := s.installOrUpdate(op.Tool, installOperation(op.Kind))
+
+	// Best-effort: invalidate version cache so latestVersion is re-fetched.
+	s.invalidateVersionCache(op.Tool)
+
+	// Best-effort: refresh the tool cache so the snapshot reflects the new state.
+	// Do this before taking opMu so the final state includes the refreshed cache.
+	var cacheRefreshed bool
+	if err == nil && result != nil && result.Success {
+		_, cacheErr := s.CheckOne(op.Tool)
+		cacheRefreshed = cacheErr == nil
+	}
+
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	now := time.Now()
+	op.UpdatedAt = now
+	op.FinishedAt = &now
+	op.Step = OperationStepCompleted
+	op.Progress = 100
+	op.CacheRefreshed = cacheRefreshed
+
+	if err != nil || result == nil || !result.Success {
+		// Determine whether this was a timeout rather than a generic failure.
+		errText := ""
+		if result != nil && result.Error != "" {
+			errText = result.Error
+		} else if err != nil {
+			errText = err.Error()
+		}
+		if strings.Contains(strings.ToLower(errText), "timed out") {
+			op.Status = OperationStatusTimeout
+		} else {
+			op.Status = OperationStatusFailed
+		}
+		if result != nil {
+			op.Result = result
+			op.Message = result.Message
+			op.Error = result.Error
+		} else if err != nil {
+			op.Error = err.Error()
+			op.Message = fmt.Sprintf("%s %s failed: %s", displayToolName(op.Tool), op.Kind, err.Error())
+		}
+		return
+	}
+
+	op.Status = OperationStatusSucceeded
+	op.Result = result
+	op.Message = result.Message
+}
+
+// updateOperationStep updates the current operation's step and message (called
+// from within the operation goroutine, caller must hold opMu).
+func (s *Service) updateOperationStep(step OperationStep, message string, progress int) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if s.current == nil || s.current.Status != OperationStatusRunning {
+		return
+	}
+	s.current.Step = step
+	s.current.Message = message
+	s.current.Progress = progress
+	s.current.UpdatedAt = time.Now()
+}
+
+// cloneOperationState returns a defensive copy of the operation state.
+func cloneOperationState(op *OperationState) *OperationState {
+	if op == nil {
+		return nil
+	}
+	copy := *op
+	if op.Result != nil {
+		resultCopy := *op.Result
+		copy.Result = &resultCopy
+	}
+	if op.FinishedAt != nil {
+		fa := *op.FinishedAt
+		copy.FinishedAt = &fa
+	}
+	return &copy
 }

@@ -10,6 +10,14 @@ export function CheckOne(arg1:envcheck.CLITool):Promise<envcheck.CheckStatus>;
 
 export function GetCachedStatus():Promise<envcheck.OverallStatus>;
 
+export function GetEnvCheckSnapshot():Promise<envcheck.EnvCheckSnapshot>;
+
+export function GetOperationState():Promise<envcheck.OperationState>;
+
 export function Install(arg1:envcheck.CLITool):Promise<envcheck.InstallResult>;
+
+export function StartInstallTool(arg1:envcheck.CLITool):Promise<envcheck.OperationState>;
+
+export function StartUpdateTool(arg1:envcheck.CLITool):Promise<envcheck.OperationState>;
 
 export function Update(arg1:envcheck.CLITool):Promise<envcheck.InstallResult>;

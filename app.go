@@ -195,6 +195,37 @@ func (a *App) UpdateTool(tool string) (*envcheck.InstallResult, error) {
 	return a.EnvCheck.Update(t)
 }
 
+// StartInstallToolAsync 异步安装指定 CLI 工具，立即返回操作状态。
+// 安装在后台 goroutine 中执行，不受前端页面切换影响。
+func (a *App) StartInstallToolAsync(tool string) (*envcheck.OperationState, error) {
+	t, err := parseCLITool(tool)
+	if err != nil {
+		return nil, fmt.Errorf("start install tool: %w", err)
+	}
+	return a.EnvCheck.StartInstallTool(t)
+}
+
+// StartUpdateToolAsync 异步更新指定 CLI 工具，立即返回操作状态。
+// 更新在后台 goroutine 中执行，不受前端页面切换影响。
+func (a *App) StartUpdateToolAsync(tool string) (*envcheck.OperationState, error) {
+	t, err := parseCLITool(tool)
+	if err != nil {
+		return nil, fmt.Errorf("start update tool: %w", err)
+	}
+	return a.EnvCheck.StartUpdateTool(t)
+}
+
+// GetEnvCheckOperationState 获取当前异步操作状态（无操作时返回 nil）。
+func (a *App) GetEnvCheckOperationState() *envcheck.OperationState {
+	return a.EnvCheck.GetOperationState()
+}
+
+// GetEnvCheckSnapshot 获取环境检测快照（包含工具状态和当前操作）。
+// 前端可轮询此接口以获取最新状态。
+func (a *App) GetEnvCheckSnapshot() *envcheck.EnvCheckSnapshot {
+	return a.EnvCheck.GetEnvCheckSnapshot()
+}
+
 // parseCLITool 将前端传入的字符串转为 CLITool 枚举。
 func parseCLITool(tool string) (envcheck.CLITool, error) {
 	switch strings.ToLower(strings.TrimSpace(tool)) {

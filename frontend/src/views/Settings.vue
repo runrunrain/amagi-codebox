@@ -20,9 +20,9 @@
     <!-- 右侧内容 -->
     <div class="settings-content-wrapper">
       <transition name="fade-slide" mode="out-in">
-        
+        <div :key="activeTab">
         <!-- 常规设置 -->
-        <div v-if="activeTab === 'general'" key="general" class="settings-section">
+        <div v-if="activeTab === 'general'" class="settings-section">
           <div class="section-header">
             <h2>仪表盘默认配置</h2>
             <p>配置仪表盘各选项的初始默认值，下次启动应用时生效。</p>
@@ -138,7 +138,7 @@
         </div>
 
         <!-- 自定义 Shell -->
-        <div v-if="activeTab === 'shell'" key="shell" class="settings-section">
+        <div v-if="activeTab === 'shell'" class="settings-section">
           <div class="section-header">
             <h2>自定义 Shell 路径</h2>
             <p>添加自定义 Shell 可执行文件路径，在仪表盘中可快速切换。</p>
@@ -171,7 +171,7 @@
         </div>
 
         <!-- 终端设置 -->
-        <div v-if="activeTab === 'terminal'" key="terminal" class="settings-section">
+        <div v-if="activeTab === 'terminal'" class="settings-section">
           <div class="section-header">
             <h2>终端设置</h2>
             <p>配置内嵌终端的显示参数与行为。</p>
@@ -197,7 +197,7 @@
         </div>
 
         <!-- 远程控制 -->
-        <div v-if="activeTab === 'remote'" key="remote" class="settings-section">
+        <div v-if="activeTab === 'remote'" class="settings-section">
           <div class="section-header">
             <h2>远程控制</h2>
             <p>允许移动端通过局域网连接并控制 Amagi CodeBox。</p>
@@ -279,7 +279,7 @@
         </div>
 
         <!-- 软件更新 -->
-        <div v-if="activeTab === 'updates'" key="updates" class="settings-section">
+        <div v-if="activeTab === 'updates'" class="settings-section">
           <div class="section-header">
             <h2>软件更新</h2>
             <p>检查并安装来自 GitHub Releases 的更新。</p>
@@ -364,7 +364,7 @@
         </div>
 
         <!-- 关于 -->
-        <div v-if="activeTab === 'about'" key="about" class="settings-section">
+        <div v-if="activeTab === 'about'" class="settings-section">
           <div class="about-container">
             <div class="app-logo">
               <span class="app-icon">▨</span>
@@ -382,10 +382,11 @@
         </div>
 
         <!-- 环境检测 -->
-        <div v-if="activeTab === 'envcheck'" key="envcheck" class="settings-section">
+        <div v-if="activeTab === 'envcheck'" class="settings-section">
           <EnvCheckView />
         </div>
 
+        </div>
       </transition>
     </div>
   </div>

@@ -18,7 +18,7 @@ import (
 
 func newASCIIPathTempDir(t *testing.T, pattern string) string {
 	t.Helper()
-	root := filepath.Join("X:/WorkSpace/amagi-codebox", ".tmp-tests")
+	root := filepath.Join(os.TempDir(), "amagi-codebox-tests")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir temp root: %v", err)
 	}
