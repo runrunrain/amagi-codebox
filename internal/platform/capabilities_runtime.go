@@ -39,7 +39,7 @@ func capabilitiesForTarget(osName string, arch string) PlatformCapabilities {
 		capabilities.EmbeddedTerminalSupported = true
 		capabilities.StandaloneTerminalSupported = false
 		capabilities.SystemTraySupported = false
-		capabilities.UpdateInstallSupported = false
+		capabilities.UpdateInstallSupported = arch == "arm64"
 		capabilities.SingleInstanceSupported = false
 		capabilities.WindowActivationSupported = false
 		capabilities.HideOnCloseSupported = false

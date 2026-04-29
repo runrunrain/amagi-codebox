@@ -2,10 +2,16 @@ package updater
 
 import (
 	"amagi-codebox/internal/platform"
+	"archive/zip"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestBuildUpdateInfoUsesDarwinDownloadPagePolicy(t *testing.T) {
+// --- buildUpdateInfo tests ---
+
+func TestBuildUpdateInfoDarwinArm64UsesInstallAction(t *testing.T) {
 	release := githubRelease{
 		TagName:     "v1.2.3",
 		HTMLURL:     "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
@@ -16,25 +22,54 @@ func TestBuildUpdateInfoUsesDarwinDownloadPagePolicy(t *testing.T) {
 		},
 	}
 
-	info, err := buildUpdateInfo("v1.2.2", platform.PlatformCapabilities{OS: "darwin", Arch: "arm64", PlatformID: "darwin-arm64"}, release)
+	caps := platform.PlatformCapabilities{
+		OS:                     "darwin",
+		Arch:                   "arm64",
+		PlatformID:             "darwin-arm64",
+		UpdateInstallSupported: true,
+	}
+
+	info, err := buildUpdateInfo("v1.2.2", caps, release)
 	if err != nil {
 		t.Fatalf("buildUpdateInfo returned error: %v", err)
 	}
 
 	if !info.HasUpdate {
-		t.Fatal("expected darwin update to be detected")
+		t.Fatal("expected darwin arm64 update to be detected")
 	}
-	if info.UpdateAction != updateActionOpenDownloadPage {
-		t.Fatalf("expected open-download-page action, got %q", info.UpdateAction)
+	if info.UpdateAction != updateActionInstall {
+		t.Fatalf("expected install action for darwin arm64, got %q", info.UpdateAction)
 	}
-	if info.DownloadURL != release.HTMLURL {
-		t.Fatalf("expected download url to point to release page, got %q", info.DownloadURL)
+	if info.DownloadURL != "https://example.com/darwin.zip" {
+		t.Fatalf("expected download url to use asset url, got %q", info.DownloadURL)
 	}
 	if info.AssetURL != "https://example.com/darwin.zip" {
 		t.Fatalf("expected darwin asset url to be preserved, got %q", info.AssetURL)
 	}
 	if info.AssetName != "amagi-codebox-v1.2.3-darwin-arm64.zip" {
 		t.Fatalf("expected darwin asset name to be preserved, got %q", info.AssetName)
+	}
+}
+
+func TestBuildUpdateInfoDarwinWithoutInstallSupportUsesDownloadPage(t *testing.T) {
+	release := githubRelease{
+		TagName:     "v1.2.3",
+		HTMLURL:     "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
+		Assets: []githubReleaseAsset{
+			{Name: "amagi-codebox-v1.2.3-darwin-arm64.zip", BrowserDownloadURL: "https://example.com/darwin.zip", Size: 2048},
+		},
+	}
+
+	caps := platform.PlatformCapabilities{OS: "darwin", Arch: "arm64", PlatformID: "darwin-arm64"}
+	info, err := buildUpdateInfo("v1.2.2", caps, release)
+	if err != nil {
+		t.Fatalf("buildUpdateInfo returned error: %v", err)
+	}
+	if info.UpdateAction != updateActionOpenDownloadPage {
+		t.Fatalf("expected open-download-page action, got %q", info.UpdateAction)
+	}
+	if info.DownloadURL != release.HTMLURL {
+		t.Fatalf("expected download url to point to release page, got %q", info.DownloadURL)
 	}
 }
 
@@ -53,6 +88,25 @@ func TestBuildUpdateInfoAllowsDarwinReleasePageWithoutAsset(t *testing.T) {
 	}
 	if info.AssetName != "" {
 		t.Fatalf("expected empty asset name when no darwin asset exists, got %q", info.AssetName)
+	}
+}
+
+func TestBuildUpdateInfoDarwinArm64RequiresAssetForInstall(t *testing.T) {
+	release := githubRelease{
+		TagName: "v1.2.3",
+		HTMLURL: "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
+	}
+
+	caps := platform.PlatformCapabilities{
+		OS:                     "darwin",
+		Arch:                   "arm64",
+		PlatformID:             "darwin-arm64",
+		UpdateInstallSupported: true,
+	}
+
+	_, err := buildUpdateInfo("v1.2.2", caps, release)
+	if err == nil {
+		t.Fatal("expected error when darwin arm64 install is requested but no asset exists")
 	}
 }
 
@@ -83,5 +137,498 @@ func TestBuildUpdateInfoUsesWindowsAssetForInstall(t *testing.T) {
 	}
 	if info.DownloadURL != "https://example.com/windows.zip" {
 		t.Fatalf("expected install download url to use asset url, got %q", info.DownloadURL)
+	}
+}
+
+func TestBuildUpdateInfoLinuxUsesDownloadPage(t *testing.T) {
+	release := githubRelease{
+		TagName: "v1.2.3",
+		HTMLURL: "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
+	}
+
+	caps := platform.PlatformCapabilities{OS: "linux", Arch: "amd64", PlatformID: "linux"}
+	info, err := buildUpdateInfo("v1.2.2", caps, release)
+	if err != nil {
+		t.Fatalf("buildUpdateInfo returned error: %v", err)
+	}
+	if info.UpdateAction != updateActionOpenDownloadPage {
+		t.Fatalf("expected open-download-page for linux, got %q", info.UpdateAction)
+	}
+}
+
+// --- App bundle location tests ---
+
+func TestLocateAppBundleFromPathValidBundle(t *testing.T) {
+	tmpDir := t.TempDir()
+	appDir := filepath.Join(tmpDir, "amagi-codebox.app", "Contents", "MacOS")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exePath := filepath.Join(appDir, "amagi-codebox")
+	if err := os.WriteFile(exePath, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := locateAppBundleFromPath(exePath)
+	if err != nil {
+		t.Fatalf("locateAppBundleFromPath returned error: %v", err)
+	}
+	// EvalSymlinks may resolve /var to /private/var on macOS
+	expected, err := filepath.EvalSymlinks(filepath.Join(tmpDir, "amagi-codebox.app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestLocateAppBundleFromPathRejectsNonBundle(t *testing.T) {
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "bin", "amagi-codebox")
+	if err := os.MkdirAll(filepath.Dir(exePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exePath, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := locateAppBundleFromPath(exePath)
+	if err == nil {
+		t.Fatal("expected error for non-bundle path")
+	}
+	if !strings.Contains(err.Error(), "not running from a .app bundle") {
+		t.Fatalf("expected .app bundle error, got: %v", err)
+	}
+}
+
+func TestLocateAppBundleFromPathRejectsMissingAppSuffix(t *testing.T) {
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "myapp", "Contents", "MacOS", "amagi-codebox")
+	if err := os.MkdirAll(filepath.Dir(exePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exePath, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := locateAppBundleFromPath(exePath)
+	if err == nil {
+		t.Fatal("expected error for directory without .app suffix")
+	}
+	if !strings.Contains(err.Error(), "not a .app bundle") {
+		t.Fatalf("expected .app suffix error, got: %v", err)
+	}
+}
+
+// --- Zip slip and entry filtering tests ---
+
+func TestShouldSkipZipEntry(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected bool
+	}{
+		{"__MACOSX", true},
+		{"__MACOSX/._Info.plist", true},
+		{"amagi-codebox.app/Contents/Info.plist", false},
+		{"amagi-codebox.app/Contents/Resources/.DS_Store", true},
+		{".DS_Store", true},
+		{"amagi-codebox.app/Contents/MacOS/amagi-codebox", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldSkipZipEntry(tc.name)
+			if result != tc.expected {
+				t.Fatalf("shouldSkipZipEntry(%q) = %v, want %v", tc.name, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestIsWithinDirRejectsZipSlip(t *testing.T) {
+	tests := []struct {
+		path string
+		dir  string
+		ok   bool
+	}{
+		{"/tmp/staging/amagi-codebox.app/Contents/Info.plist", "/tmp/staging", true},
+		{"/tmp/staging/amagi-codebox.app", "/tmp/staging", true},
+		{"/tmp/staging", "/tmp/staging", true},
+		{"/tmp/evil", "/tmp/staging", false},
+		{"/tmp/staging/../../etc/passwd", "/tmp/staging", false},
+		{"/tmp/staging/../evil", "/tmp/staging", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			result := isWithinDir(tc.path, tc.dir)
+			if result != tc.ok {
+				t.Fatalf("isWithinDir(%q, %q) = %v, want %v", tc.path, tc.dir, result, tc.ok)
+			}
+		})
+	}
+}
+
+func TestExtractAppBundleFromZipRejectsZipSlip(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "test.zip")
+
+	// Create a zip with a zip slip entry
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	header := &zip.FileHeader{Name: "../../etc/evil"}
+	header.SetMode(0o644)
+	writer, err := w.CreateHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Write([]byte("evil"))
+	w.Close()
+	f.Close()
+
+	stagingDir := filepath.Join(tmpDir, "staging")
+	os.MkdirAll(stagingDir, 0o755)
+
+	err = extractAppBundleFromZip(zipPath, stagingDir)
+	if err == nil {
+		t.Fatal("expected zip slip error")
+	}
+	if !strings.Contains(err.Error(), "zip slip") {
+		t.Fatalf("expected zip slip error message, got: %v", err)
+	}
+}
+
+// --- Bundle validation tests ---
+
+func TestValidateAppBundleValid(t *testing.T) {
+	tmpDir := t.TempDir()
+	appPath := filepath.Join(tmpDir, "amagi-codebox.app")
+	createValidAppBundle(t, appPath)
+
+	if err := validateAppBundle(appPath); err != nil {
+		t.Fatalf("validateAppBundle returned error for valid bundle: %v", err)
+	}
+}
+
+func TestValidateAppBundleMissingInfoPlist(t *testing.T) {
+	tmpDir := t.TempDir()
+	appPath := filepath.Join(tmpDir, "amagi-codebox.app")
+	macosDir := filepath.Join(appPath, "Contents", "MacOS")
+	if err := os.MkdirAll(macosDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exePath := filepath.Join(macosDir, "amagi-codebox")
+	if err := os.WriteFile(exePath, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateAppBundle(appPath)
+	if err == nil {
+		t.Fatal("expected error for missing Info.plist")
+	}
+	if !strings.Contains(err.Error(), "Info.plist") {
+		t.Fatalf("expected Info.plist error, got: %v", err)
+	}
+}
+
+func TestValidateAppBundleMissingExecutable(t *testing.T) {
+	tmpDir := t.TempDir()
+	appPath := filepath.Join(tmpDir, "amagi-codebox.app")
+	contentsDir := filepath.Join(appPath, "Contents")
+	if err := os.MkdirAll(contentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contentsDir, "Info.plist"), []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateAppBundle(appPath)
+	if err == nil {
+		t.Fatal("expected error for missing executable")
+	}
+	if !strings.Contains(err.Error(), "MacOS/amagi-codebox") {
+		t.Fatalf("expected executable error, got: %v", err)
+	}
+}
+
+func TestValidateAppBundleNotExecutable(t *testing.T) {
+	tmpDir := t.TempDir()
+	appPath := filepath.Join(tmpDir, "amagi-codebox.app")
+	createValidAppBundleWithPerm(t, appPath, 0o644)
+
+	err := validateAppBundle(appPath)
+	if err == nil {
+		t.Fatal("expected error for non-executable binary")
+	}
+	if !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("expected not-executable error, got: %v", err)
+	}
+}
+
+func TestValidateAppBundleNotDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	appPath := filepath.Join(tmpDir, "amagi-codebox.app")
+	if err := os.WriteFile(appPath, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateAppBundle(appPath)
+	if err == nil {
+		t.Fatal("expected error for non-directory path")
+	}
+	if !strings.Contains(err.Error(), "expected directory") {
+		t.Fatalf("expected directory error, got: %v", err)
+	}
+}
+
+func TestValidateAppBundleMissingAppSuffix(t *testing.T) {
+	tmpDir := t.TempDir()
+	appPath := filepath.Join(tmpDir, "amagi-codebox")
+	createValidAppBundle(t, appPath)
+
+	err := validateAppBundle(appPath)
+	if err == nil {
+		t.Fatal("expected error for missing .app suffix")
+	}
+	if !strings.Contains(err.Error(), ".app suffix") {
+		t.Fatalf("expected .app suffix error, got: %v", err)
+	}
+}
+
+// --- Helper script tests ---
+
+func TestHelperScriptIsStaticAndParameterized(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "helper.sh")
+
+	if err := writeHelperScript(scriptPath); err != nil {
+		t.Fatalf("writeHelperScript returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read helper script: %v", err)
+	}
+
+	script := string(content)
+
+	// The script must NOT contain any embedded real filesystem paths.
+	// Only $1/$2/$3/$4 should carry paths at runtime.
+	forbidden := []string{
+		"/Applications/",
+		"/Users/",
+		"/tmp/staged",
+		"/tmp/staging",
+		"/usr/",
+		"/var/",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(script, f) {
+			t.Errorf("helper script must not contain embedded path %q; paths should be passed as $1-$4 arguments", f)
+		}
+	}
+
+	// The script must use positional parameters for all paths
+	required := []string{
+		`"$1"`, // PID
+		`"$2"`, // CURRENT_APP
+		`"$3"`, // STAGED_APP
+		`"$4"`, // STAGING_DIR
+	}
+	for _, r := range required {
+		if !strings.Contains(script, r) {
+			t.Errorf("helper script missing positional parameter reference %s", r)
+		}
+	}
+}
+
+func TestHelperScriptContainsSafetyAssertions(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "helper.sh")
+
+	if err := writeHelperScript(scriptPath); err != nil {
+		t.Fatalf("writeHelperScript returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read helper script: %v", err)
+	}
+
+	script := string(content)
+
+	// Safety assertions that must be present
+	assertions := []struct {
+		desc, substr string
+	}{
+		{"non-empty CURRENT_APP check", `CURRENT_APP is empty`},
+		{"non-empty STAGED_APP check", `STAGED_APP is empty`},
+		{"non-empty STAGING_DIR check", `STAGING_DIR is empty`},
+		{"CURRENT_APP .app suffix check", `CURRENT_APP does not end with .app`},
+		{"OLD_APP .app.old suffix check", `OLD_APP does not end with .app.old`},
+		{"STAGED_APP .app suffix check", `STAGED_APP does not end with .app`},
+		{"STAGING_DIR prefix check", `does not have expected prefix`},
+		{".amagi-codebox-update-staging- prefix", `.amagi-codebox-update-staging-`},
+		{"parent dir check OLD vs CURRENT", `OLD_APP parent differs from CURRENT_APP parent`},
+		{"parent dir check STAGING vs CURRENT", `STAGING_DIR parent differs from CURRENT_APP parent`},
+	}
+
+	for _, a := range assertions {
+		if !strings.Contains(script, a.substr) {
+			t.Errorf("helper script missing safety assertion: %s (expected %q)", a.desc, a.substr)
+		}
+	}
+}
+
+func TestHelperScriptContainsRollbackAndOpen(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "helper.sh")
+
+	if err := writeHelperScript(scriptPath); err != nil {
+		t.Fatalf("writeHelperScript returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read helper script: %v", err)
+	}
+
+	script := string(content)
+
+	checks := []struct {
+		desc, substr string
+	}{
+		{"wait for pid", "kill -0"},
+		{"remove old backup", "rm -rf"},
+		{"move current to old", `.old`},
+		{"move staged to current", "mv"},
+		{"xattr clear quarantine", "xattr -cr"},
+		{"open new app", "open"},
+		{"rollback on failure", "rollback"},
+		{"logging", "log"},
+		{"shebang", "#!/bin/sh"},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(script, c.substr) {
+			t.Errorf("helper script missing %s (expected %q)", c.desc, c.substr)
+		}
+	}
+
+	// Verify script is executable
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Error("helper script is not executable")
+	}
+}
+
+func TestHelperScriptIsDeterministicAcrossWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	path1 := filepath.Join(tmpDir, "helper1.sh")
+	path2 := filepath.Join(tmpDir, "helper2.sh")
+
+	if err := writeHelperScript(path1); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeHelperScript(path2); err != nil {
+		t.Fatal(err)
+	}
+
+	c1, err := os.ReadFile(path1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := os.ReadFile(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(c1) != string(c2) {
+		t.Fatal("writeHelperScript must produce identical output on every call (static content)")
+	}
+}
+
+func TestHelperScriptNoSubshellOrBacktickPathEmbedding(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "helper.sh")
+
+	if err := writeHelperScript(scriptPath); err != nil {
+		t.Fatalf("writeHelperScript returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read helper script: %v", err)
+	}
+
+	script := string(content)
+
+	// Check no backtick command substitution that could embed paths
+	if idx := strings.Index(script, "`"); idx >= 0 {
+		t.Errorf("helper script contains backtick at position %d, which may indicate embedded command substitution", idx)
+	}
+
+	// Check no $() command substitution that embeds filesystem paths
+	// The only $() usage should be $(date ...) and $(basename ...) and $(dirname ...) which are safe
+	lines := strings.Split(script, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "$(") {
+			trimmed := strings.TrimSpace(line)
+			// Allowed: $(date ...), $(basename ...), $(dirname ...)
+			if !strings.Contains(trimmed, "$(date") &&
+				!strings.Contains(trimmed, "$(basename") &&
+				!strings.Contains(trimmed, "$(dirname") {
+				t.Errorf("unexpected $() usage in helper script: %s", trimmed)
+			}
+		}
+	}
+}
+
+func TestRandomHexProducesUniqueValues(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		v := randomHex(8)
+		if len(v) != 8 {
+			t.Fatalf("randomHex(8) returned %d chars, want 8", len(v))
+		}
+		if seen[v] {
+			t.Fatalf("randomHex produced duplicate value: %s", v)
+		}
+		seen[v] = true
+	}
+}
+
+func TestStagingDirPrefixConstant(t *testing.T) {
+	if !strings.HasPrefix(stagingDirPrefix, ".amagi-codebox-update-staging-") {
+		t.Fatalf("stagingDirPrefix must start with .amagi-codebox-update-staging-, got %q", stagingDirPrefix)
+	}
+}
+
+// --- Helpers ---
+
+func createValidAppBundle(t *testing.T, appPath string) {
+	t.Helper()
+	createValidAppBundleWithPerm(t, appPath, 0o755)
+}
+
+func createValidAppBundleWithPerm(t *testing.T, appPath string, exePerm os.FileMode) {
+	t.Helper()
+	contentsDir := filepath.Join(appPath, "Contents")
+	macosDir := filepath.Join(contentsDir, "MacOS")
+	if err := os.MkdirAll(macosDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contentsDir, "Info.plist"), []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(macosDir, "amagi-codebox"), []byte("#!/bin/sh"), exePerm); err != nil {
+		t.Fatal(err)
 	}
 }

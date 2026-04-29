@@ -4,11 +4,13 @@ import (
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
 	"archive/zip"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,6 +26,21 @@ const (
 	updateActionInstall          = "install"
 	updateActionOpenDownloadPage = "open-download-page"
 )
+
+// exitProcess allows tests to override os.Exit behavior.
+var exitProcess = func(code int) { os.Exit(code) }
+
+// randRead allows tests to override crypto/rand.Read for deterministic output.
+var randRead = rand.Read
+
+// launchUpdateHelper allows tests to override the helper script launch.
+// Paths are passed as positional arguments to the script.
+var launchUpdateHelper = func(scriptPath string, args ...string) error {
+	cmd := exec.Command("/bin/sh", append([]string{scriptPath}, args...)...)
+	return cmd.Start()
+}
+
+const stagingDirPrefix = ".amagi-codebox-update-staging-"
 
 type UpdateInfo struct {
 	HasUpdate      bool   `json:"hasUpdate"`
@@ -48,7 +65,7 @@ type Service struct {
 
 	mu       sync.Mutex
 	lastInfo *UpdateInfo
-	token    string // GitHub Personal Access Token（支持私有仓库）
+	token    string // GitHub Personal Access Token
 }
 
 type githubRelease struct {
@@ -81,7 +98,7 @@ func NewService(currentVersion string, log *logging.Service) *Service {
 	}
 }
 
-// SetToken 设置 GitHub Personal Access Token，用于访问私有仓库的 Releases。
+// SetToken sets the GitHub Personal Access Token for accessing private repository Releases.
 func (s *Service) SetToken(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -135,6 +152,8 @@ func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 	return info, nil
 }
 
+// DownloadAndApply downloads the update package and applies it, then exits the process.
+// It dispatches to platform-specific logic based on the OS.
 func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) error {
 	s.mu.Lock()
 	info := s.lastInfo
@@ -153,6 +172,19 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 		return fmt.Errorf("platform %s only supports checking for updates and opening the download page", s.capabilities.PlatformID)
 	}
 
+	switch s.capabilities.OS {
+	case "windows":
+		return s.downloadAndApplyWindowsExeZip(info, onProgress)
+	case "darwin":
+		return s.downloadAndApplyDarwinAppBundle(info, onProgress)
+	default:
+		return fmt.Errorf("auto-update is not supported on platform %s", s.capabilities.PlatformID)
+	}
+}
+
+// downloadAndApplyWindowsExeZip implements the Windows exe-in-zip update flow.
+// Behavior is identical to the original DownloadAndApply.
+func (s *Service) downloadAndApplyWindowsExeZip(info *UpdateInfo, onProgress func(downloaded, total int64)) error {
 	downloadPath := filepath.Join(os.TempDir(), "amagi-codebox-update.zip")
 	extractedPath := filepath.Join(os.TempDir(), "amagi-codebox-update.exe")
 	_ = os.Remove(downloadPath)
@@ -203,10 +235,93 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 
 	_ = os.Remove(downloadPath)
 	_ = os.Remove(extractedPath)
-	os.Exit(0)
+	exitProcess(0)
 	return nil
 }
 
+// downloadAndApplyDarwinAppBundle implements the macOS .app bundle update flow.
+// It downloads the darwin-arm64 zip, extracts the new .app bundle to a staging
+// directory, validates it, and launches a helper script to perform the swap.
+func (s *Service) downloadAndApplyDarwinAppBundle(info *UpdateInfo, onProgress func(downloaded, total int64)) error {
+	// Locate current .app bundle
+	currentAppPath, err := locateCurrentAppBundle()
+	if err != nil {
+		return fmt.Errorf("locate current app bundle: %w", err)
+	}
+
+	parentDir := filepath.Dir(currentAppPath)
+
+	// Verify parent directory is writable
+	if err := isDirWritable(parentDir); err != nil {
+		return fmt.Errorf("cannot write to application directory: %w", err)
+	}
+
+	// Use unique suffix to avoid multi-instance conflicts
+	uniqueSuffix := strconv.Itoa(os.Getpid()) + "-" + randomHex(8)
+
+	// Download zip to unique temp file
+	downloadPath := filepath.Join(os.TempDir(), "amagi-codebox-update-"+uniqueSuffix+".zip")
+	_ = os.Remove(downloadPath)
+	if err := s.downloadZip(info.DownloadURL, downloadPath, onProgress); err != nil {
+		return err
+	}
+
+	// Create unique staging directory next to current app
+	stagingDir := filepath.Join(parentDir, stagingDirPrefix+uniqueSuffix)
+	_ = os.RemoveAll(stagingDir)
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		os.Remove(downloadPath)
+		return fmt.Errorf("create staging directory: %w", err)
+	}
+
+	// Extract .app bundle from zip into staging
+	if err := extractAppBundleFromZip(downloadPath, stagingDir); err != nil {
+		cleanupUpdateArtifacts(downloadPath, stagingDir)
+		return fmt.Errorf("extract update: %w", err)
+	}
+
+	// Locate the staged .app bundle
+	stagedAppPath := filepath.Join(stagingDir, "amagi-codebox.app")
+	if _, err := os.Stat(stagedAppPath); err != nil {
+		cleanupUpdateArtifacts(downloadPath, stagingDir)
+		return fmt.Errorf("staged app bundle not found at %s: %w", stagedAppPath, err)
+	}
+
+	// Validate the staged bundle structure
+	if err := validateAppBundle(stagedAppPath); err != nil {
+		cleanupUpdateArtifacts(downloadPath, stagingDir)
+		return fmt.Errorf("validate staged bundle: %w", err)
+	}
+
+	// Write and launch the helper script with paths as arguments
+	pid := os.Getpid()
+	helperScriptPath := filepath.Join(os.TempDir(), "amagi-codebox-update-helper-"+uniqueSuffix+".sh")
+	if err := writeHelperScript(helperScriptPath); err != nil {
+		cleanupUpdateArtifacts(downloadPath, stagingDir)
+		return fmt.Errorf("create helper script: %w", err)
+	}
+
+	if err := launchUpdateHelper(helperScriptPath,
+		strconv.Itoa(pid),
+		currentAppPath,
+		stagedAppPath,
+		stagingDir,
+	); err != nil {
+		cleanupUpdateArtifacts(downloadPath, stagingDir)
+		return fmt.Errorf("launch update helper: %w", err)
+	}
+
+	if s.log != nil {
+		s.log.Info("updater", "macOS update helper launched, exiting main process",
+			fmt.Sprintf("pid=%d app=%s staged=%s", pid, currentAppPath, stagedAppPath))
+	}
+
+	exitProcess(0)
+	return nil
+}
+
+// CleanupOldBinary removes backup files/directories left by previous updates.
+// On macOS it cleans up the .app.old directory; on Windows it cleans the .exe.old file.
 func (s *Service) CleanupOldBinary() {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -216,6 +331,15 @@ func (s *Service) CleanupOldBinary() {
 		return
 	}
 
+	switch s.capabilities.OS {
+	case "darwin":
+		s.cleanupOldDarwinApp(exePath)
+	default:
+		s.cleanupOldExe(exePath)
+	}
+}
+
+func (s *Service) cleanupOldExe(exePath string) {
 	oldPath := exePath + ".old"
 	if _, err := os.Stat(oldPath); err != nil {
 		if !os.IsNotExist(err) && s.log != nil {
@@ -223,17 +347,328 @@ func (s *Service) CleanupOldBinary() {
 		}
 		return
 	}
-
 	if err := os.Remove(oldPath); err != nil {
 		if s.log != nil {
 			s.log.Warn("updater", "删除旧版本备份失败", err.Error())
 		}
 		return
 	}
-
 	if s.log != nil {
 		s.log.Info("updater", "旧版本备份已清理", oldPath)
 	}
+}
+
+func (s *Service) cleanupOldDarwinApp(exePath string) {
+	appPath, err := locateAppBundleFromPath(exePath)
+	if err != nil {
+		// Not running from a .app bundle; fallback to exe-based cleanup
+		s.cleanupOldExe(exePath)
+		return
+	}
+
+	oldAppPath := appPath + ".old"
+	if _, err := os.Stat(oldAppPath); err != nil {
+		if !os.IsNotExist(err) && s.log != nil {
+			s.log.Warn("updater", "检查旧版本 .app 备份失败", err.Error())
+		}
+		return
+	}
+
+	if err := os.RemoveAll(oldAppPath); err != nil {
+		if s.log != nil {
+			s.log.Warn("updater", "删除旧版本 .app 备份失败", err.Error())
+		}
+		return
+	}
+
+	if s.log != nil {
+		s.log.Info("updater", "旧版本 .app 备份已清理", oldAppPath)
+	}
+}
+
+func cleanupUpdateArtifacts(downloadPath string, stagingDir string) {
+	os.Remove(downloadPath)
+	os.RemoveAll(stagingDir)
+}
+
+// locateCurrentAppBundle locates the .app bundle containing the currently running executable.
+func locateCurrentAppBundle() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("get executable path: %w", err)
+	}
+	return locateAppBundleFromPath(exePath)
+}
+
+// locateAppBundleFromPath resolves the .app bundle root directory from an executable path.
+// The executable must be at <App>.app/Contents/MacOS/<name>.
+func locateAppBundleFromPath(exePath string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	macosDir := filepath.Dir(resolved)
+	contentsDir := filepath.Dir(macosDir)
+
+	if filepath.Base(macosDir) != "MacOS" {
+		return "", fmt.Errorf("not running from a .app bundle (expected Contents/MacOS parent, got %s)", macosDir)
+	}
+	if filepath.Base(contentsDir) != "Contents" {
+		return "", fmt.Errorf("not running from a .app bundle (expected Contents parent, got %s)", contentsDir)
+	}
+
+	appDir := filepath.Dir(contentsDir)
+	if !strings.HasSuffix(filepath.Base(appDir), ".app") {
+		return "", fmt.Errorf("parent directory is not a .app bundle: %s", appDir)
+	}
+
+	return appDir, nil
+}
+
+// extractAppBundleFromZip extracts a macOS .app bundle from a zip file into stagingDir.
+// It skips __MACOSX/ metadata and .DS_Store files, enforces zip slip protection,
+// and preserves file permissions from the zip header.
+func extractAppBundleFromZip(zipPath string, stagingDir string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open update zip: %w", err)
+	}
+	defer reader.Close()
+
+	for _, f := range reader.File {
+		if shouldSkipZipEntry(f.Name) {
+			continue
+		}
+
+		targetPath := filepath.Join(stagingDir, f.Name)
+		if !isWithinDir(targetPath, stagingDir) {
+			return fmt.Errorf("zip slip detected: entry %q escapes staging directory", f.Name)
+		}
+
+		if f.Mode().IsDir() {
+			if err := os.MkdirAll(targetPath, f.Mode()); err != nil {
+				return fmt.Errorf("create directory %q: %w", f.Name, err)
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return fmt.Errorf("create parent directory for %q: %w", f.Name, err)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("open zip entry %q: %w", f.Name, err)
+		}
+
+		out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, f.Mode())
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("create file %q: %w", targetPath, err)
+		}
+
+		_, copyErr := io.Copy(out, rc)
+		closeErr := out.Close()
+		rc.Close()
+
+		if copyErr != nil {
+			return fmt.Errorf("extract %q: %w", f.Name, copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close extracted file %q: %w", targetPath, closeErr)
+		}
+	}
+
+	return nil
+}
+
+// shouldSkipZipEntry returns true for macOS metadata entries that should be skipped.
+func shouldSkipZipEntry(name string) bool {
+	if filepath.Base(name) == ".DS_Store" {
+		return true
+	}
+	if name == "__MACOSX" || strings.HasPrefix(name, "__MACOSX/") {
+		return true
+	}
+	return false
+}
+
+// isWithinDir checks that path does not escape dir. Used for zip slip protection.
+func isWithinDir(path string, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..")
+}
+
+// validateAppBundle checks that a macOS .app bundle has the required structure and
+// executable bits for amagi-codebox.
+func validateAppBundle(appPath string) error {
+	info, err := os.Stat(appPath)
+	if err != nil {
+		return fmt.Errorf("app directory does not exist: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("expected directory, got file: %s", appPath)
+	}
+	if !strings.HasSuffix(filepath.Base(appPath), ".app") {
+		return fmt.Errorf("directory does not have .app suffix: %s", appPath)
+	}
+
+	infoPlist := filepath.Join(appPath, "Contents", "Info.plist")
+	if _, err := os.Stat(infoPlist); err != nil {
+		return fmt.Errorf("Contents/Info.plist missing or inaccessible: %w", err)
+	}
+
+	mainExePath := filepath.Join(appPath, "Contents", "MacOS", "amagi-codebox")
+	exeInfo, err := os.Stat(mainExePath)
+	if err != nil {
+		return fmt.Errorf("Contents/MacOS/amagi-codebox missing or inaccessible: %w", err)
+	}
+	if exeInfo.Mode()&0o111 == 0 {
+		return fmt.Errorf("Contents/MacOS/amagi-codebox is not executable")
+	}
+
+	return nil
+}
+
+// isDirWritable checks if a directory is writable by creating and removing a temp file.
+func isDirWritable(dir string) error {
+	testFile := filepath.Join(dir, ".amagi-codebox-write-test-"+strconv.Itoa(os.Getpid()))
+	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
+		return fmt.Errorf("directory %q is not writable: %w", dir, err)
+	}
+	os.Remove(testFile)
+	return nil
+}
+
+// writeHelperScript writes a static /bin/sh script that performs the macOS .app bundle swap.
+// All paths are passed as positional arguments at invocation time; no paths are embedded
+// in the script body. The script includes safety assertions before any destructive operation.
+//
+// Usage: /bin/sh <script> <pid> <currentApp> <stagedApp> <stagingDir>
+func writeHelperScript(scriptPath string) error {
+	const script = `#!/bin/sh
+# amagi-codebox macOS update helper
+# Arguments: $1=pid $2=currentApp $3=stagedApp $4=stagingDir
+# No paths are embedded in this script; all come from positional parameters.
+
+set -e
+
+PID="$1"
+CURRENT_APP="$2"
+STAGED_APP="$3"
+STAGING_DIR="$4"
+
+LOGFILE="/tmp/amagi-codebox-update-$PID.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOGFILE"; }
+die() { log "FATAL: $1"; exit 1; }
+
+log "Update helper started (helper PID=$$, main PID=$PID)"
+
+# --- Safety assertions: reject obviously wrong arguments ---
+
+[ -n "$CURRENT_APP" ]  || die "CURRENT_APP is empty"
+[ -n "$STAGED_APP" ]   || die "STAGED_APP is empty"
+[ -n "$STAGING_DIR" ]  || die "STAGING_DIR is empty"
+[ -n "$PID" ]          || die "PID is empty"
+
+case "$CURRENT_APP" in
+    *.app) ;;
+    *)     die "CURRENT_APP does not end with .app: $CURRENT_APP" ;;
+esac
+
+OLD_APP="${CURRENT_APP}.old"
+
+case "$OLD_APP" in
+    *.app.old) ;;
+    *)         die "OLD_APP does not end with .app.old: $OLD_APP" ;;
+esac
+
+case "$STAGED_APP" in
+    *.app) ;;
+    *)     die "STAGED_APP does not end with .app: $STAGED_APP" ;;
+esac
+
+case "$(basename "$STAGING_DIR")" in
+    .amagi-codebox-update-staging-*) ;;
+    *) die "STAGING_DIR basename does not have expected prefix: $STAGING_DIR" ;;
+esac
+
+# Parent directory relationships: staging and old must share parent with current app
+CURRENT_PARENT="$(dirname "$CURRENT_APP")"
+OLD_PARENT="$(dirname "$OLD_APP")"
+STAGING_PARENT="$(dirname "$STAGING_DIR")"
+
+[ "$OLD_PARENT" = "$CURRENT_PARENT" ]     || die "OLD_APP parent differs from CURRENT_APP parent"
+[ "$STAGING_PARENT" = "$CURRENT_PARENT" ] || die "STAGING_DIR parent differs from CURRENT_APP parent"
+
+log "Safety assertions passed"
+
+# Wait for main process to exit
+while kill -0 "$PID" 2>/dev/null; do
+    sleep 0.5
+done
+
+log "Main process $PID has exited"
+
+# Remove previous backup if it exists
+if [ -d "$OLD_APP" ]; then
+    log "Removing previous backup: $OLD_APP"
+    rm -rf "$OLD_APP"
+fi
+
+# Move current app to .old backup
+log "Backing up current app to $OLD_APP"
+if ! mv "$CURRENT_APP" "$OLD_APP"; then
+    log "FATAL: failed to move current app to backup"
+    rm -rf "$STAGING_DIR"
+    exit 1
+fi
+
+# Move staged app to current position
+log "Moving staged app to $CURRENT_APP"
+if ! mv "$STAGED_APP" "$CURRENT_APP"; then
+    log "FATAL: failed to move staged app, attempting rollback"
+    if [ -d "$OLD_APP" ]; then
+        mv "$OLD_APP" "$CURRENT_APP"
+    fi
+    rm -rf "$STAGING_DIR"
+    exit 1
+fi
+
+# Clean up staging directory
+rm -rf "$STAGING_DIR"
+
+# Clear quarantine attributes
+log "Clearing quarantine attributes on $CURRENT_APP"
+xattr -cr "$CURRENT_APP" 2>/dev/null || true
+
+# Launch new app
+log "Launching updated app"
+if ! open "$CURRENT_APP"; then
+    log "ERROR: failed to launch new app, attempting rollback"
+    rm -rf "$CURRENT_APP"
+    if [ -d "$OLD_APP" ]; then
+        mv "$OLD_APP" "$CURRENT_APP"
+        open "$CURRENT_APP"
+    fi
+    exit 1
+fi
+
+log "Update completed successfully"
+`
+	return os.WriteFile(scriptPath, []byte(script), 0o755)
+}
+
+// randomHex returns n hex characters of randomness for unique file naming.
+func randomHex(n int) string {
+	b := make([]byte, (n+1)/2)
+	_, _ = randRead(b)
+	return fmt.Sprintf("%x", b)[:n]
 }
 
 func (s *Service) downloadZip(downloadURL string, targetPath string, onProgress func(downloaded, total int64)) error {
@@ -428,12 +863,11 @@ func releasePageURL(release githubRelease, owner string, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 }
 
-// compareVersions 语义比较两个版本号（major.minor.patch）。
-// 返回 1 表示 a > b，0 表示 a == b，-1 表示 a < b。
-// 返回 -2 表示无法解析为语义版本号。
+// compareVersions semantically compares two version numbers (major.minor.patch).
+// Returns 1 if a > b, 0 if a == b, -1 if a < b.
+// Returns -2 if either version cannot be parsed as semantic version.
 func compareVersions(a, b string) int {
 	parseVer := func(v string) (major, minor, patch int, ok bool) {
-		// 去掉预发布/构建元数据后缀（如 "1.0.0-beta" → "1.0.0"）
 		if idx := strings.IndexAny(v, "-+"); idx >= 0 {
 			v = v[:idx]
 		}

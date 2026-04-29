@@ -311,12 +311,22 @@
               </div>
 
               <div class="update-actions">
-                <button v-if="platformCaps.caps.value?.updateInstallSupported" class="btn primary" @click="downloadAndApply" :disabled="downloading">
-                  {{ downloading ? '下载中...' : '下载并安装' }}
-                </button>
-                <button v-else class="btn primary" @click="openReleasePage" :disabled="!updateInfo?.latestVersion">
-                  前往下载页
-                </button>
+                <template v-if="updateInfo.updateAction === 'install'">
+                  <p class="install-hint">应用将退出并重启以完成更新</p>
+                  <div class="update-btn-row">
+                    <button class="btn primary" @click="downloadAndApply" :disabled="downloading">
+                      {{ downloading ? '下载中...' : '下载并安装' }}
+                    </button>
+                    <button class="btn" @click="openReleasePage" :disabled="downloading">
+                      手动下载
+                    </button>
+                  </div>
+                </template>
+                <template v-else>
+                  <button class="btn primary" @click="openReleasePage" :disabled="!updateInfo?.latestVersion">
+                    前往下载页
+                  </button>
+                </template>
               </div>
 
               <div v-if="downloading" class="progress-container">
@@ -393,7 +403,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath, RemoveShellPath, GetTerminalSettings, SetTerminalSettings, GetMobileWebRoot, SetMobileWebRoot } from '../../wailsjs/go/settings/Service'
 import { GetProviders, GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
@@ -507,6 +517,14 @@ const downloading = ref(false)
 const downloadProgress = ref({ downloaded: 0, total: 0 })
 const updateError = ref('')
 const githubToken = ref('')
+let removeProgressListener: (() => void) | null = null
+
+function cleanupProgressListener() {
+  if (removeProgressListener) {
+    removeProgressListener()
+    removeProgressListener = null
+  }
+}
 
 const showGHToken = ref(false)
 const savingGHToken = ref(false)
@@ -542,14 +560,17 @@ async function downloadAndApply() {
   downloading.value = true
   downloadProgress.value = { downloaded: 0, total: 0 }
   updateError.value = ''
+  cleanupProgressListener()
   try {
-    EventsOn('update:progress', (progress: any) => {
+    removeProgressListener = EventsOn('update:progress', (progress: any) => {
       downloadProgress.value = progress
     })
     await DownloadAndApplyUpdate()
   } catch (err) {
-    updateError.value = '下载失败: ' + err
+    updateError.value = '安装失败: ' + err
     downloading.value = false
+  } finally {
+    cleanupProgressListener()
   }
 }
 
@@ -927,6 +948,10 @@ onMounted(async () => {
   try {
     githubToken.value = await GetGitHubToken()
   } catch {}
+})
+
+onUnmounted(() => {
+  cleanupProgressListener()
 })
 </script>
 
@@ -1666,6 +1691,18 @@ onMounted(async () => {
   margin-top: 16px;
   color: var(--error);
   font-size: 13px;
+}
+
+.install-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin: 0 0 12px 0;
+}
+
+.update-btn-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
 }
 
 /* About */
