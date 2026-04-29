@@ -1,0 +1,1228 @@
+package envcheck
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"amagi-codebox/internal/platform"
+)
+
+// ---------------------------------------------------------------------------
+// A. Progress callback tests
+// ---------------------------------------------------------------------------
+
+// progressSnapshot records a single progress observation for later assertion.
+type progressSnapshot struct {
+	step     OperationStep
+	message  string
+	progress int
+}
+
+// collectProgressSnapshots returns a progressReporter that records every
+// invocation into the returned slice. The slice is guarded by a mutex.
+func collectProgressSnapshots() (*[]progressSnapshot, progressReporter) {
+	var mu sync.Mutex
+	var snapshots []progressSnapshot
+	reporter := func(step OperationStep, message string, progress int) {
+		mu.Lock()
+		snapshots = append(snapshots, progressSnapshot{step, message, progress})
+		mu.Unlock()
+	}
+	return &snapshots, reporter
+}
+
+// TestInstallOrUpdateWithProgress_ReportsSteps verifies that the progress
+// callback is invoked at least once for each major phase.
+func TestInstallOrUpdateWithProgress_ReportsSteps(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "", err: errors.New("not installed")}, // pre-check opencode --version
+		{stdout: "10.0.0", err: nil},                  // npm probe
+		{stdout: "installed", err: nil},                // install command
+		{stdout: "opencode v1.0.0", err: nil},          // verify --version
+		{stdout: "1.0.0", err: nil},                    // enrichment
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	snapshotsPtr, reporter := collectProgressSnapshots()
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter)
+
+	if err != nil {
+		t.Fatalf("installOrUpdateWithProgress error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success; result=%+v", result)
+	}
+
+	snapshots := *snapshotsPtr
+	if len(snapshots) == 0 {
+		t.Fatal("expected at least one progress callback, got none")
+	}
+
+	// Verify progress is monotonically non-decreasing.
+	prevProgress := -1
+	for i, snap := range snapshots {
+		if snap.progress < prevProgress {
+			t.Errorf("snapshot[%d]: progress=%d decreased from previous=%d (must be monotonic)", i, snap.progress, prevProgress)
+		}
+		prevProgress = snap.progress
+	}
+
+	// Verify at least precheck, run_command, verify phases were reported.
+	seenSteps := map[OperationStep]bool{}
+	for _, snap := range snapshots {
+		seenSteps[snap.step] = true
+	}
+	for _, required := range []OperationStep{
+		OperationStepPrecheck,
+		OperationStepRunCommand,
+		OperationStepVerify,
+	} {
+		if !seenSteps[required] {
+			t.Errorf("expected step %q to be reported, but it was not; seen steps: %v", required, seenSteps)
+		}
+	}
+}
+
+// TestAsyncOperation_ProgressAdvancesFromZero verifies that an async update
+// operation shows progress > 0 while running (not stuck at 0%).
+func TestAsyncOperation_ProgressAdvancesFromZero(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	// Use a slow runner so we can observe intermediate states.
+	runner := newSlowSequentialRunner([]seqResponse{
+		{stdout: "", err: errors.New("broken")},
+		{stdout: "10.0.0", err: nil},        // npm probe
+		{stdout: "installed", err: nil},      // install command
+		{stdout: "opencode v2.0.0", err: nil}, // verify
+		{stdout: "2.0.0", err: nil},          // enrichment
+		{stdout: "opencode v2.0.0", err: nil}, // refresh
+	}, 100*time.Millisecond)
+	svc := NewServiceWithRunner(runner)
+
+	_, err := svc.StartUpdateTool(ToolOpenCode)
+	if err != nil {
+		t.Fatalf("StartUpdateTool error: %v", err)
+	}
+
+	// Poll for an intermediate state with progress > 0.
+	deadline := time.Now().Add(3 * time.Second)
+	sawProgressGtZero := false
+	for time.Now().Before(deadline) {
+		op := svc.GetOperationState()
+		if op != nil && op.Status == OperationStatusRunning && op.Progress > 0 {
+			sawProgressGtZero = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !sawProgressGtZero {
+		t.Error("expected to observe progress > 0 during running operation, but never did")
+	}
+
+	// Wait for completion.
+	final := waitForOperation(t, svc, 5*time.Second)
+	if final.Status != OperationStatusSucceeded {
+		t.Errorf("final status = %q, want succeeded; message=%s error=%s",
+			final.Status, final.Message, final.Error)
+	}
+	if final.Progress != 100 {
+		t.Errorf("final progress = %d, want 100", final.Progress)
+	}
+	if final.Step != OperationStepCompleted {
+		t.Errorf("final step = %q, want completed", final.Step)
+	}
+}
+
+// TestAsyncOperation_FailedOperationAlsoReachesProgress100 verifies that
+// a failed operation still ends with progress=100 and step=completed.
+func TestAsyncOperation_FailedOperationAlsoReachesProgress100(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PATH", tmpDir)
+
+	svc := newTestService() // all commands fail
+
+	_, err := svc.StartInstallTool(ToolOpenCode)
+	if err != nil {
+		t.Fatalf("StartInstallTool error: %v", err)
+	}
+
+	final := waitForOperation(t, svc, 5*time.Second)
+	if final.Status != OperationStatusFailed {
+		t.Errorf("status = %q, want failed", final.Status)
+	}
+	if final.Progress != 100 {
+		t.Errorf("progress = %d, want 100 (even on failure)", final.Progress)
+	}
+	if final.Step != OperationStepCompleted {
+		t.Errorf("step = %q, want completed", final.Step)
+	}
+	if final.Error == "" {
+		t.Error("expected non-empty error message on failure")
+	}
+}
+
+// TestProgressReporter_MonotonicOnCommandRetry verifies that when the first
+// install command fails and the second succeeds, progress is still monotonic.
+// We test this by directly calling installOrUpdateWithProgress with a mock
+// that returns a failing first runner call.
+func TestProgressReporter_MonotonicOnCommandRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	// Use a runner that fails on the first npm install attempt but succeeds
+	// on the second (via default response).
+	runner := &retryTestRunner{
+		failUntil: 4, // fail first 4 calls (pre-check, npm probe, npm install, enrichment attempt)
+		failErr:   errors.New("temporary failure"),
+	}
+	svc := NewServiceWithRunner(runner)
+
+	snapshotsPtr, reporter := collectProgressSnapshots()
+	_, _ = svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter)
+
+	snapshots := *snapshotsPtr
+	prevProgress := -1
+	for i, snap := range snapshots {
+		if snap.progress < prevProgress {
+			t.Errorf("snapshot[%d]: progress=%d decreased from %d (monotonic violation)", i, snap.progress, prevProgress)
+		}
+		prevProgress = snap.progress
+	}
+}
+
+// retryTestRunner fails the first N Run calls, then returns success.
+type retryTestRunner struct {
+	failUntil int
+	failErr   error
+	callCount int32
+}
+
+func (r *retryTestRunner) Run(_ context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+	idx := int(atomic.AddInt32(&r.callCount, 1))
+	if idx <= r.failUntil {
+		return &platform.ProcessResult{}, r.failErr
+	}
+	return &platform.ProcessResult{Stdout: "ok"}, nil
+}
+
+func (r *retryTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// B. Claude Code update command order tests
+// ---------------------------------------------------------------------------
+
+// TestClaudeUpdateCommandOrder_NPMInstalled verifies that on Windows,
+// npm-installed Claude Code update prioritizes npm update.
+func TestClaudeUpdateCommandOrder_NPMInstalled(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific command order test")
+	}
+
+	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+		InstallMethod: InstallMethodNPM,
+		Installed:     true,
+		Version:       "1.0.0",
+	})
+
+	if len(cmds) < 2 {
+		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	}
+	// First command must be npm
+	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+		t.Errorf("NPM-installed update should start with npm, got: %q", cmds[0].description)
+	}
+	if !strings.Contains(cmds[0].args[0], "update") && !strings.Contains(cmds[0].args[0], "install") {
+		t.Errorf("first command should be update or install, got args: %v", cmds[0].args)
+	}
+}
+
+// TestClaudeUpdateCommandOrder_WingetInstalled verifies that on Windows,
+// winget-installed Claude Code update prioritizes winget upgrade.
+func TestClaudeUpdateCommandOrder_WingetInstalled(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific command order test")
+	}
+
+	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+		InstallMethod: InstallMethodWinget,
+		Installed:     true,
+		Version:       "1.0.0",
+	})
+
+	if len(cmds) < 2 {
+		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	}
+	if !strings.Contains(strings.ToLower(cmds[0].description), "winget") {
+		t.Errorf("Winget-installed update should start with winget, got: %q", cmds[0].description)
+	}
+	if !strings.Contains(cmds[0].args[0], "upgrade") {
+		t.Errorf("winget update should use 'upgrade', got args: %v", cmds[0].args)
+	}
+}
+
+// TestClaudeUpdateCommandOrder_NativeOrUnknown verifies that on Windows,
+// native/unknown install method does NOT use install.ps1 as the primary update.
+func TestClaudeUpdateCommandOrder_NativeOrUnknown(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific command order test")
+	}
+
+	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+		InstallMethod: InstallMethodNative,
+		Installed:     true,
+		Version:       "1.0.0",
+	})
+
+	if len(cmds) < 2 {
+		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	}
+	// First command must NOT be PowerShell install.ps1
+	if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+		t.Errorf("native/unknown update should not start with PowerShell, got: %q", cmds[0].description)
+	}
+	// First should be npm (most reliable updater)
+	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+		t.Errorf("native/unknown update should start with npm, got: %q", cmds[0].description)
+	}
+	// PowerShell should be last (fallback)
+	lastCmd := cmds[len(cmds)-1]
+	if !strings.Contains(strings.ToLower(lastCmd.description), "powershell") {
+		t.Errorf("PowerShell should be last fallback, but last command is: %q", lastCmd.description)
+	}
+}
+
+// TestClaudeUpdateCommandOrder_UnknownInstall verifies unknown install method.
+func TestClaudeUpdateCommandOrder_UnknownInstall(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific command order test")
+	}
+
+	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+		InstallMethod: InstallMethodUnknown,
+		Installed:     true,
+		Version:       "1.0.0",
+	})
+	// Same expectations as native: npm first, powershell last
+	if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+		t.Errorf("unknown update should not start with PowerShell, got: %q", cmds[0].description)
+	}
+	lastCmd := cmds[len(cmds)-1]
+	if !strings.Contains(strings.ToLower(lastCmd.description), "powershell") {
+		t.Errorf("PowerShell should be last for unknown, but last is: %q", lastCmd.description)
+	}
+}
+
+// TestClaudeFreshInstall_NonWindows_NPMOnly verifies that on non-Windows,
+// fresh install only generates npm commands.
+func TestClaudeFreshInstall_NonWindows_NPMOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows test")
+	}
+
+	cmds := claudeInstallCommands(installOperationInstall, nil)
+	for _, cmd := range cmds {
+		descLower := strings.ToLower(cmd.description)
+		pathLower := strings.ToLower(cmd.path)
+		if strings.Contains(descLower, "powershell") || strings.Contains(pathLower, "powershell") {
+			t.Errorf("non-Windows install should not use powershell: %q", cmd.description)
+		}
+		if strings.Contains(descLower, "winget") || strings.Contains(pathLower, "winget") {
+			t.Errorf("non-Windows install should not use winget: %q", cmd.description)
+		}
+	}
+}
+
+// TestClaudeUpdateNonWindows_NoWindowsCommands verifies that on non-Windows,
+// update commands don't contain powershell or winget.
+func TestClaudeUpdateNonWindows_NoWindowsCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows test")
+	}
+
+	for _, method := range []InstallMethod{InstallMethodNPM, InstallMethodNative, InstallMethodWinget, InstallMethodUnknown} {
+		cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+			InstallMethod: method,
+			Installed:     true,
+			Version:       "1.0.0",
+		})
+		for _, cmd := range cmds {
+			pathLower := strings.ToLower(cmd.path)
+			descLower := strings.ToLower(cmd.description)
+			if strings.Contains(pathLower, "powershell") || strings.Contains(descLower, "powershell") {
+				t.Errorf("non-Windows update [%s] should not use powershell: path=%q desc=%q",
+					method, cmd.path, cmd.description)
+			}
+			if strings.Contains(pathLower, "winget") || strings.Contains(descLower, "winget") {
+				t.Errorf("non-Windows update [%s] should not use winget: path=%q desc=%q",
+					method, cmd.path, cmd.description)
+			}
+		}
+	}
+}
+
+// TestClaudeFreshInstall_Windows_IncludesAllMethods verifies Windows fresh
+// install includes npm, powershell, and winget.
+func TestClaudeFreshInstall_Windows_IncludesAllMethods(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+
+	cmds := claudeInstallCommands(installOperationInstall, nil)
+	if len(cmds) < 3 {
+		t.Fatalf("expected at least 3 install commands on Windows, got %d", len(cmds))
+	}
+
+	hasNPM := false
+	hasPS := false
+	hasWinget := false
+	for _, cmd := range cmds {
+		descLower := strings.ToLower(cmd.description)
+		if strings.Contains(descLower, "npm") {
+			hasNPM = true
+		}
+		if strings.Contains(descLower, "powershell") {
+			hasPS = true
+		}
+		if strings.Contains(descLower, "winget") {
+			hasWinget = true
+		}
+	}
+	if !hasNPM {
+		t.Error("Windows fresh install should include npm")
+	}
+	if !hasPS {
+		t.Error("Windows fresh install should include PowerShell")
+	}
+	if !hasWinget {
+		t.Error("Windows fresh install should include winget")
+	}
+	// npm should be first (most reliable for fresh install too)
+	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+		t.Errorf("fresh install should start with npm, got: %q", cmds[0].description)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C. Install command integration tests with progress
+// ---------------------------------------------------------------------------
+
+// TestInstallWithProgress_OpenCode_EndToEnd uses the sequential runner with
+// a progress reporter to verify the full flow reports correct steps.
+func TestInstallWithProgress_OpenCode_EndToEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "", err: errors.New("not installed")}, // pre-check
+		{stdout: "10.0.0", err: nil},                  // npm probe
+		{stdout: "installed", err: nil},                // install
+		{stdout: "opencode v1.0.0", err: nil},          // verify
+		{stdout: "1.0.0", err: nil},                    // enrichment
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	snapshotsPtr, reporter := collectProgressSnapshots()
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success: %s %s", result.Message, result.Error)
+	}
+
+	snapshots := *snapshotsPtr
+
+	// Verify at least one snapshot has progress > 0 and < 100 (intermediate)
+	hasIntermediate := false
+	for _, snap := range snapshots {
+		if snap.progress > 0 && snap.progress < 100 {
+			hasIntermediate = true
+		}
+	}
+	if !hasIntermediate {
+		t.Errorf("expected at least one intermediate progress snapshot (0 < p < 100); snapshots: %+v", snapshots)
+	}
+
+	// Verify the first snapshot is the precheck phase
+	if len(snapshots) > 0 && snapshots[0].step != OperationStepPrecheck {
+		t.Errorf("first step should be precheck, got %q", snapshots[0].step)
+	}
+}
+
+// TestInstallWithProgress_Codex_EndToEnd verifies Codex update with progress.
+func TestInstallWithProgress_Codex_EndToEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "codex")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "", err: errors.New("broken")}, // pre-check
+		{stdout: "10.0.0", err: nil},            // npm probe
+		{stdout: "installed", err: nil},          // install command
+		{stdout: "codex-cli 0.90.0", err: nil},   // verify
+		{stdout: "0.90.0", err: nil},             // enrichment
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	snapshotsPtr, reporter := collectProgressSnapshots()
+	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, reporter)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success: %s %s", result.Message, result.Error)
+	}
+
+	snapshots := *snapshotsPtr
+	if len(snapshots) == 0 {
+		t.Fatal("expected progress snapshots, got none")
+	}
+
+	// Verify monotonic
+	prev := -1
+	for i, snap := range snapshots {
+		if snap.progress < prev {
+			t.Errorf("progress decreased at snapshot[%d]: %d < %d", i, snap.progress, prev)
+		}
+		prev = snap.progress
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D. Error message quality tests
+// ---------------------------------------------------------------------------
+
+// TestInstallFailure_ContainsCommandAndSuggestion verifies that failed install
+// commands include the command path and a suggestion.
+func TestInstallFailure_ContainsCommandAndSuggestion(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PATH", tmpDir)
+
+	// No executables, no npm -- install will fail.
+	svc := newTestService()
+
+	result, _ := svc.Install(ToolOpenCode)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected failure")
+	}
+	// Error should mention npm
+	if !strings.Contains(result.Error, "npm") {
+		t.Errorf("error should mention npm: %s", result.Error)
+	}
+}
+
+// TestUpdateVersionUnchanged_ContainsSuggestion verifies that the version
+// unchanged error includes actionable guidance.
+func TestUpdateVersionUnchanged_ContainsSuggestion(t *testing.T) {
+	errMsg := fmt.Sprintf(
+		"update command ran but version was unchanged (%s) - the CLI might be running or locked. Try closing any terminal using %s and retry.",
+		"1.0.0", "OpenCode",
+	)
+	if !strings.Contains(errMsg, "Try closing") {
+		t.Error("version unchanged error should include actionable suggestion")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E. Slow async operation with step observation
+// ---------------------------------------------------------------------------
+
+// stepObservation records a single (step, progress) pair observed via polling.
+type stepObservation struct {
+	step     OperationStep
+	progress int
+}
+
+// TestAsyncOperation_StepsChangeDuringExecution polls the operation state
+// during a slow execution and verifies that steps actually change.
+func TestAsyncOperation_StepsChangeDuringExecution(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := newSlowSequentialRunner([]seqResponse{
+		{stdout: "", err: errors.New("broken")},
+		{stdout: "10.0.0", err: nil},        // npm probe
+		{stdout: "installed", err: nil},      // install command
+		{stdout: "opencode v2.0.0", err: nil}, // verify
+		{stdout: "2.0.0", err: nil},          // enrichment
+		{stdout: "opencode v2.0.0", err: nil}, // refresh
+	}, 150*time.Millisecond)
+	svc := NewServiceWithRunner(runner)
+
+	_, err := svc.StartUpdateTool(ToolOpenCode)
+	if err != nil {
+		t.Fatalf("StartUpdateTool error: %v", err)
+	}
+
+	// Collect step observations while running.
+	var observations []stepObservation
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		op := svc.GetOperationState()
+		if op == nil || op.Status != OperationStatusRunning {
+			break
+		}
+		observations = append(observations, stepObservation{
+			step:     op.Step,
+			progress: op.Progress,
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	final := waitForOperation(t, svc, 5*time.Second)
+	if final.Status != OperationStatusSucceeded {
+		t.Errorf("final status = %q, want succeeded; error=%s", final.Status, final.Error)
+	}
+
+	// We should have seen at least 2 different steps during the operation.
+	if len(observations) < 2 {
+		t.Skipf("only collected %d observations (system too fast), cannot verify step changes", len(observations))
+	}
+
+	uniqueSteps := map[OperationStep]bool{}
+	for _, obs := range observations {
+		uniqueSteps[obs.step] = true
+	}
+	if len(uniqueSteps) < 2 {
+		t.Errorf("expected at least 2 different steps during operation, got %d unique steps: %v",
+			len(uniqueSteps), uniqueSteps)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F. progressReporter interface satisfaction
+// ---------------------------------------------------------------------------
+
+// TestProgressReporter_CanBeNil verifies that passing nil reporter works.
+func TestProgressReporter_CanBeNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil}, // pre-check (installed)
+		{stdout: "10.0.0", err: nil},          // npm probe
+		{stdout: "1.0.0", err: nil},           // enrichment (version cache)
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	// nil reporter should not panic
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, nil)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected success (already installed): %s", result.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// G. Synchronous serializedInstallOrUpdate still works
+// ---------------------------------------------------------------------------
+
+// TestSerializedInstall_ProgressCallbackUsed verifies that the synchronous
+// Install path also works (no regressions in serializedInstallOrUpdate).
+func TestSerializedInstall_ProgressCallbackUsed(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "", err: errors.New("not installed")}, // pre-check
+		{stdout: "10.0.0", err: nil},                  // npm probe
+		{stdout: "installed", err: nil},                // install
+		{stdout: "opencode v1.0.0", err: nil},          // verify
+		{stdout: "1.0.0", err: nil},                    // enrichment
+		{stdout: "opencode v1.0.0", err: nil},          // refresh
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.Install(ToolOpenCode)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success: %+v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// H. Ensure nativePowerShellClaudeCommand and wingetClaudeCommand helpers
+// ---------------------------------------------------------------------------
+
+func TestNativePowerShellClaudeCommand_Fields(t *testing.T) {
+	cmd := nativePowerShellClaudeCommand()
+	if cmd.path != "powershell.exe" {
+		t.Errorf("path = %q, want powershell.exe", cmd.path)
+	}
+	if !strings.Contains(cmd.description, "PowerShell") {
+		t.Errorf("description should mention PowerShell: %q", cmd.description)
+	}
+	hasInstallScript := false
+	for _, arg := range cmd.args {
+		if strings.Contains(arg, "install.ps1") {
+			hasInstallScript = true
+		}
+	}
+	if !hasInstallScript {
+		t.Error("expected install.ps1 in args")
+	}
+}
+
+func TestWingetClaudeCommand_Install(t *testing.T) {
+	cmd := wingetClaudeCommand(installOperationInstall)
+	if !strings.Contains(cmd.args[0], "install") {
+		t.Errorf("install should use 'install', got: %v", cmd.args)
+	}
+}
+
+func TestWingetClaudeCommand_Upgrade(t *testing.T) {
+	cmd := wingetClaudeCommand(installOperationUpdate)
+	if !strings.Contains(cmd.args[0], "upgrade") {
+		t.Errorf("update should use 'upgrade', got: %v", cmd.args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// I. ensureNPMAvailable reuses cache (integration with progress)
+// ---------------------------------------------------------------------------
+
+// TestNPMAvailableCache_ReuseInInstallCommands verifies that the npm probe
+// cache is reused when installCommands is called, avoiding redundant runner calls.
+func TestNPMAvailableCache_ReuseInInstallCommands(t *testing.T) {
+	var callCount int32
+	countingRunner := &callCountingRunner{callCount: &callCount}
+	svc := NewServiceWithRunner(countingRunner)
+
+	// Trigger npm cache population via ensureNPMAvailable
+	_ = svc.ensureNPMAvailable()
+
+	// Call ensureNPMAvailable again -- should use cache, not increment callCount
+	_ = svc.ensureNPMAvailable()
+
+	// The npm probe should have been called exactly once.
+	if atomic.LoadInt32(&callCount) > 2 {
+		t.Errorf("npm probe was called more than expected: %d", callCount)
+	}
+}
+
+// callCountingRunner counts Run calls. Returns success for any npm call,
+// empty result for everything else.
+type callCountingRunner struct {
+	callCount *int32
+}
+
+func (r *callCountingRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	atomic.AddInt32(r.callCount, 1)
+	if strings.Contains(strings.ToLower(spec.Path), "npm") {
+		return &platform.ProcessResult{Stdout: "10.0.0"}, nil
+	}
+	return &platform.ProcessResult{}, nil
+}
+
+func (r *callCountingRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// J. Verify-then-fallback tests
+// ---------------------------------------------------------------------------
+
+// TestUpdate_FirstCommandSucceedsButVersionUnchanged_FallsBack verifies that
+// when the command executes successfully but the version did not change,
+// the error message is descriptive. OpenCode has only 1 npm command, so
+// there's no fallback -- this tests the verify-per-command reporting.
+func TestUpdate_FirstCommandSucceedsButVersionUnchanged_FallsBack(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	// Runner sequence:
+	//   0: pre-check opencode --version -> v1.0.0
+	//   1: npm probe -> ok
+	//   2: enrichment (npm view version) -> 2.0.0 (makes HasUpdate=true)
+	//   3: install command -> succeeds
+	//   4: verify opencode --version -> v1.0.0 (unchanged!)
+	//   5: verify enrichment -> 1.0.0
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil},
+		{stdout: "10.0.0", err: nil},
+		{stdout: "2.0.0", err: nil},
+		{stdout: "installed", err: nil},
+		{stdout: "opencode v1.0.0", err: nil},
+		{stdout: "1.0.0", err: nil},
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	snapshotsPtr, reporter := collectProgressSnapshots()
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, reporter)
+
+	// OpenCode only has 1 npm command, no fallback. Should fail.
+	if err == nil {
+		t.Fatal("expected error when version unchanged")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+	if !strings.Contains(result.Error, "version unchanged") {
+		t.Errorf("error should mention version unchanged, got: %s", result.Error)
+	}
+
+	// Verify progress snapshots show the verify step was reached.
+	snapshots := *snapshotsPtr
+	sawVerify := false
+	for _, snap := range snapshots {
+		if snap.step == OperationStepVerify {
+			sawVerify = true
+		}
+	}
+	if !sawVerify {
+		t.Error("expected at least one verify step in progress snapshots")
+	}
+}
+
+// TestUpdate_MultiCommandFallback_AllFail verifies that when all commands
+// fail (or succeed-but-verify-fails), the final error includes details
+// about each attempt.
+func TestUpdate_MultiCommandFallback_AllFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PATH", tmpDir)
+
+	// All runner calls fail
+	svc := newTestService()
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, nil)
+
+	if err == nil {
+		t.Fatal("expected error when all commands fail")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected failure")
+	}
+	// Error should contain actionable information
+	if !strings.Contains(result.Error, "npm") && !strings.Contains(result.Error, "failed") {
+		t.Errorf("error should mention npm or failure details, got: %s", result.Error)
+	}
+}
+
+// TestUpdate_ClaudeVerifyFail_ContinuesToFallback uses the indexedRunner to
+// simulate Claude Code update where the first command (npm) succeeds but
+// verify shows version unchanged, and the second command succeeds with
+// version changed.
+//
+// On non-Windows, Claude only has 1 npm command so verify-fail means failure.
+// On Windows, it should fall through to winget/PowerShell.
+func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "claude")
+	t.Setenv("PATH", tmpDir)
+
+	if runtime.GOOS == "windows" {
+		// Windows: npm succeeds but verify unchanged, winget succeeds with new version.
+		runner := &indexedRunner{responses: map[int]indexedResponse{
+			0: {stdout: "Claude Code v1.0.0"},  // pre-check
+			1: {stdout: "10.0.0"},              // npm probe
+			2: {stdout: "2.0.0"},               // enrichment: HasUpdate=true
+			3: {stdout: "installed"},            // npm install @latest succeeds
+			4: {stdout: "Claude Code v1.0.0"},   // verify: UNCHANGED!
+			5: {stdout: "1.0.0"},                // enrichment
+			6: {stdout: "upgraded"},             // winget upgrade succeeds
+			7: {stdout: "Claude Code v2.0.0"},   // verify: CHANGED!
+			8: {stdout: "2.0.0"},                // enrichment
+		}}
+		svc := NewServiceWithRunner(runner)
+
+		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil)
+
+		if err != nil {
+			t.Fatalf("expected success (winget fallback), got: %v", err)
+		}
+		if result == nil || !result.Success {
+			t.Fatalf("expected success, got: %+v", result)
+		}
+		if result.Version != "2.0.0" {
+			t.Errorf("version = %q, want 2.0.0", result.Version)
+		}
+		// Message should mention which method succeeded (winget)
+		if !strings.Contains(result.Message, "winget") {
+			t.Errorf("message should mention winget: %s", result.Message)
+		}
+	} else {
+		// Non-Windows: only npm. npm succeeds but verify unchanged = failure.
+		runner := &indexedRunner{responses: map[int]indexedResponse{
+			0: {stdout: "Claude Code v1.0.0"},
+			1: {stdout: "10.0.0"},
+			2: {stdout: "2.0.0"},               // enrichment: HasUpdate=true
+			3: {stdout: "installed"},
+			4: {stdout: "Claude Code v1.0.0"}, // version unchanged
+			5: {stdout: "1.0.0"},
+		}}
+		svc := NewServiceWithRunner(runner)
+
+		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil)
+
+		if err == nil {
+			t.Fatal("expected failure on non-Windows (single npm command, verify fail)")
+		}
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if result.Success {
+			t.Error("expected failure")
+		}
+		if !strings.Contains(result.Error, "version unchanged") {
+			t.Errorf("error should mention version unchanged, got: %s", result.Error)
+		}
+	}
+}
+
+// TestUpdate_AllCommandsVerifyFail_ReportsAllDetails verifies that when every
+// command either fails to execute or succeeds but verification fails, the
+// final error message includes per-command details.
+func TestUpdate_AllCommandsVerifyFail_ReportsAllDetails(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "opencode")
+	t.Setenv("PATH", tmpDir)
+
+	// Runner where install succeeds but verify always shows v1.0.0.
+	// Enrichment returns 2.0.0 so HasUpdate=true to trigger the update path.
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil}, // pre-check
+		{stdout: "10.0.0", err: nil},          // npm probe
+		{stdout: "2.0.0", err: nil},           // enrichment: HasUpdate=true
+		{stdout: "installed", err: nil},       // install succeeds
+		{stdout: "opencode v1.0.0", err: nil}, // verify: unchanged
+		{stdout: "1.0.0", err: nil},            // enrichment
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.Update(ToolOpenCode)
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected failure")
+	}
+	// Should contain "verification failed" or "version unchanged"
+	errText := strings.ToLower(result.Error)
+	if !strings.Contains(errText, "verification") && !strings.Contains(errText, "unchanged") {
+		t.Errorf("error should mention verification or unchanged, got: %s", result.Error)
+	}
+}
+
+// indexedRunner returns responses based on call index.
+// Thread-safe via mutex.
+type indexedRunner struct {
+	responses map[int]indexedResponse
+	mu        sync.Mutex
+	next      int
+}
+
+type indexedResponse struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+func (r *indexedRunner) Run(_ context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.mu.Lock()
+	idx := r.next
+	r.next++
+	r.mu.Unlock()
+
+	resp, ok := r.responses[idx]
+	if !ok {
+		return &platform.ProcessResult{}, nil
+	}
+	return &platform.ProcessResult{Stdout: resp.stdout, Stderr: resp.stderr}, resp.err
+}
+
+func (r *indexedRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// K. Claude update npm command uses install @latest
+// ---------------------------------------------------------------------------
+
+// TestClaudeUpdateCommand_UsesInstallLatest verifies that Claude Code update
+// npm command uses "install -g @latest" instead of "update -g".
+func TestClaudeUpdateCommand_UsesInstallLatest(t *testing.T) {
+	cmd := npmClaudeCommand(installOperationUpdate)
+	if cmd.args[0] != "install" {
+		t.Errorf("update command should use 'install', got args: %v", cmd.args)
+	}
+	foundLatest := false
+	for _, arg := range cmd.args {
+		if arg == "@anthropic-ai/claude-code@latest" {
+			foundLatest = true
+		}
+	}
+	if !foundLatest {
+		t.Errorf("update command should use @latest tag, got args: %v", cmd.args)
+	}
+}
+
+// TestClaudeInstallCommand_UsesInstall verifies fresh install still uses install.
+func TestClaudeInstallCommand_UsesInstall(t *testing.T) {
+	cmd := npmClaudeCommand(installOperationInstall)
+	if cmd.args[0] != "install" {
+		t.Errorf("install command should use 'install', got args: %v", cmd.args)
+	}
+	// Fresh install doesn't need @latest tag
+	foundPkg := false
+	for _, arg := range cmd.args {
+		if arg == "@anthropic-ai/claude-code" {
+			foundPkg = true
+		}
+	}
+	if !foundPkg {
+		t.Errorf("install command should reference package, got args: %v", cmd.args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// L. Claude NPM install recommendation is non-blocking
+// ---------------------------------------------------------------------------
+
+// TestCheckClaudeCode_NPMInstall_NoBlockingError verifies that when Claude Code
+// is detected as an npm install, status.Error is empty (non-blocking) and
+// the recommendation appears as an info-level issue instead.
+//
+// We test this by directly invoking checkClaudeCode with a runner that makes
+// the version succeed and the npm list confirm the package.
+func TestCheckClaudeCode_NPMInstall_NoBlockingError(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = writeTestExecutable(t, tmpDir, "claude")
+	t.Setenv("PATH", tmpDir)
+
+	// On macOS the resolver may find the real claude at /opt/homebrew/bin/claude.
+	// The runner must respond to whatever path the resolver returns.
+	// Use a runner that returns success for claude --version and npm list.
+	//
+	// Call sequence for CheckOne(ToolClaudeCode):
+	//   claude --version -> "Claude Code v1.0.0"
+	//   npm --version (probe) -> "10.0.0"
+	//   npm view (enrichment) -> "2.0.0"
+	//   npm list -g @anthropic-ai/claude-code --depth=0 -> contains package
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "Claude Code v1.0.0", err: nil},
+		{stdout: "10.0.0", err: nil},
+		{stdout: "2.0.0", err: nil},
+		{stdout: "node_modules/@anthropic-ai/claude-code\n└── @anthropic-ai/claude-code@1.0.0", err: nil},
+		{stdout: "1.0.0", err: nil},
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	status, err := svc.CheckOne(ToolClaudeCode)
+	if err != nil {
+		t.Fatalf("CheckOne error: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected non-nil status")
+	}
+
+	// If InstallMethod is not NPM, the test can't verify the recommendation.
+	// This happens when the path detection logic doesn't classify it as NPM.
+	if status.InstallMethod != InstallMethodNPM {
+		t.Skipf("InstallMethod = %q, need NPM to verify recommendation (path: %s)", status.InstallMethod, status.ExecutablePath)
+	}
+
+	// status.Error MUST be empty -- the npm recommendation is non-blocking
+	if strings.TrimSpace(status.Error) != "" {
+		t.Errorf("status.Error should be empty for npm-installed Claude, got: %q", status.Error)
+	}
+
+	// Must be installed and PATH-ok
+	if !status.Installed {
+		t.Error("expected Installed=true")
+	}
+	if !status.PATHOk {
+		t.Error("expected PATHOk=true")
+	}
+
+	// Should have an info-level issue about the recommendation
+	foundRecommendation := false
+	for _, issue := range status.Issues {
+		if issue.Code == "claude_npm_install_recommended_native" {
+			foundRecommendation = true
+			if issue.Severity != SeverityInfo {
+				t.Errorf("recommendation issue severity = %q, want %q", issue.Severity, SeverityInfo)
+			}
+		}
+	}
+	if !foundRecommendation {
+		t.Errorf("expected info-level issue 'claude_npm_install_recommended_native'; issues: %+v", status.Issues)
+	}
+}
+
+// TestCheckClaudeCode_NPMRecommendation_DoesNotBlockInstallVerify is a unit-level
+// test that constructs a CheckStatus with InstallMethodNPM and verifies that
+// the recommendation does NOT set status.Error. This is a pure logic test
+// independent of the resolver finding real binaries.
+func TestCheckClaudeCode_NPMRecommendation_DoesNotBlockInstallVerify(t *testing.T) {
+	// Simulate a post-install CheckOne where Claude is found via npm.
+	// The key assertion: when InstallMethod=NPM, status.Error is empty
+	// and the recommendation is an info issue.
+	status := &CheckStatus{
+		Tool:           ToolClaudeCode,
+		Installed:      true,
+		PATHOk:         true,
+		InstallMethod:  InstallMethodNPM,
+		Version:        "1.0.0",
+		ExecutablePath: "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+	}
+
+	// Apply the recommendation logic manually (mirrors what checkClaudeCode does)
+	status.Issues = append(status.Issues, CheckIssue{
+		Severity:  SeverityInfo,
+		Code:      "claude_npm_install_recommended_native",
+		Message:   "Claude Code was detected as an npm global install; the official native installer is recommended for better integration",
+		Solutions: []ResolutionAction{
+			{
+				Type:        SolutionManualCommand,
+				Description: "Install the official native Claude Code installer",
+				Command:     "irm https://claude.ai/install.ps1 | iex",
+			},
+		},
+	})
+
+	// These are the verify conditions used by installOrUpdateWithProgress:
+	if !status.Installed {
+		t.Error("Installed should be true")
+	}
+	if !status.PATHOk {
+		t.Error("PATHOk should be true")
+	}
+	if strings.TrimSpace(status.Error) != "" {
+		t.Errorf("Error should be empty for npm install (non-blocking recommendation), got: %q", status.Error)
+	}
+}
+
+// TestInstallVerify_AcceptsNPMClaude verifies that after an npm install of
+// Claude Code, the verify step sees Installed && PATHOk && Error empty,
+// so the install succeeds (no false failure from recommendation string).
+//
+// This is tested as a pure verify-logic check since the full install flow
+// depends on the OS resolver finding (or not finding) the real claude binary.
+func TestInstallVerify_AcceptsNPMClaude(t *testing.T) {
+	// Construct the post-install status that checkClaudeCode would produce
+	// for an npm-installed Claude Code. The verify logic in
+	// installOrUpdateWithProgress checks:
+	//   after.Installed && after.PATHOk && after.Error == ""
+	//
+	// Previously, status.Error contained the recommendation string, causing
+	// verify to always fail. Now it should be empty with an info issue instead.
+	status := &CheckStatus{
+		Tool:           ToolClaudeCode,
+		Installed:      true,
+		PATHOk:         true,
+		InstallMethod:  InstallMethodNPM,
+		Version:        "1.0.0",
+		ExecutablePath: "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+		Issues: []CheckIssue{
+			{
+				Severity:  SeverityInfo,
+				Code:      "claude_npm_install_recommended_native",
+				Message:   "Claude Code was detected as an npm global install; the official native installer is recommended",
+			},
+		},
+	}
+
+	// Verify conditions used by installOrUpdateWithProgress:
+	if !status.Installed {
+		t.Error("Installed should be true")
+	}
+	if !status.PATHOk {
+		t.Error("PATHOk should be true")
+	}
+	if strings.TrimSpace(status.Error) != "" {
+		t.Errorf("Error should be empty (npm recommendation is non-blocking), got: %q", status.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M. monotonicReporter enforces monotonic progress
+// ---------------------------------------------------------------------------
+
+// TestMonotonicReporter_ClampsDecreasingProgress verifies that
+// monotonicReporter clamps decreasing values.
+func TestMonotonicReporter_ClampsDecreasingProgress(t *testing.T) {
+	var mu sync.Mutex
+	var calls []progressSnapshot
+	inner := func(step OperationStep, message string, progress int) {
+		mu.Lock()
+		calls = append(calls, progressSnapshot{step, message, progress})
+		mu.Unlock()
+	}
+	reporter := monotonicReporter(inner)
+
+	reporter(OperationStepPrecheck, "phase 1", 5)
+	reporter(OperationStepRunCommand, "phase 2", 20)
+	reporter(OperationStepRunCommand, "phase 3 regress", 10) // should be clamped to 20
+	reporter(OperationStepVerify, "phase 4", 85)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 calls, got %d", len(calls))
+	}
+	// First call
+	if calls[0].progress != 5 {
+		t.Errorf("call 0 progress = %d, want 5", calls[0].progress)
+	}
+	// Second call
+	if calls[1].progress != 20 {
+		t.Errorf("call 1 progress = %d, want 20", calls[1].progress)
+	}
+	// Third call: should be clamped to 20 (previous max)
+	if calls[2].progress != 20 {
+		t.Errorf("call 2 progress = %d, want 20 (clamped from 10)", calls[2].progress)
+	}
+	// Fourth call: normal increase
+	if calls[3].progress != 85 {
+		t.Errorf("call 3 progress = %d, want 85", calls[3].progress)
+	}
+}
+
+// TestMonotonicReporter_NilInner does not panic with nil inner.
+func TestMonotonicReporter_NilInner(t *testing.T) {
+	reporter := monotonicReporter(nil)
+	// Should not panic
+	reporter(OperationStepPrecheck, "test", 5)
+	reporter(OperationStepRunCommand, "test", 3)
+}

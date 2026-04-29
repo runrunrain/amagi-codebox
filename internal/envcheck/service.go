@@ -46,6 +46,12 @@ type Service struct {
 	opMu     sync.Mutex
 	current  *OperationState
 	opSeq    atomic.Int64
+
+	// npmAvailability caches whether npm is resolvable. Populated once per
+	// service lifetime to avoid repeated probing during CheckAll.
+	npmOnce        sync.Once
+	npmAvailable   bool
+	npmResolvedErr error // error message when npm is not available
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -128,9 +134,62 @@ func (s *Service) finishToolCheck(status *CheckStatus, err error) (*CheckStatus,
 	if err != nil && strings.TrimSpace(status.Error) == "" {
 		status.Error = err.Error()
 	}
+	s.populateCanInstall(status)
 	s.enrichWithLatestVersion(status)
 	s.cacheToolStatus(status)
 	return status, nil
+}
+
+// populateCanInstall fills the CanInstall, InstallBlockedReason, and related
+// Issue/Solution fields on the CheckStatus. It probes npm availability once
+// and caches the result for the lifetime of the Service to avoid repeated
+// lookups across CheckAll calls.
+func (s *Service) populateCanInstall(status *CheckStatus) {
+	if status == nil {
+		return
+	}
+
+	s.npmOnce.Do(func() {
+		s.probeNPMAvailability()
+	})
+
+	if s.npmAvailable {
+		status.CanInstall = true
+		// For installed tools with errors, offer a reinstall/repair solution.
+		if status.Installed && strings.TrimSpace(status.Error) != "" {
+			status.Solutions = append(status.Solutions, ResolutionAction{
+				Type:        SolutionInstallTool,
+				Description: fmt.Sprintf("Reinstall %s to repair the broken installation", displayToolName(status.Tool)),
+				Tool:        status.Tool,
+				PackageName: npmPackageName(status.Tool),
+			})
+		}
+	} else {
+		status.CanInstall = false
+		if s.npmResolvedErr != nil {
+			status.InstallBlockedReason = s.npmResolvedErr.Error()
+		}
+		// Only add npm_not_found issue when the tool is not installed or has errors.
+		if !status.Installed || strings.TrimSpace(status.Error) != "" {
+			issue := CheckIssue{
+				Severity: SeverityError,
+				Code:     "npm_not_found",
+				Message:  "npm is required but not available",
+				Detail:   status.InstallBlockedReason,
+				Solutions: []ResolutionAction{
+					{
+						Type:        SolutionInstallNode,
+						Description: "Install Node.js to get npm",
+					},
+					{
+						Type:        SolutionFixPath,
+						Description: "Ensure npm is in your PATH",
+					},
+				},
+			}
+			status.Issues = append(status.Issues, issue)
+		}
+	}
 }
 
 func (s *Service) cacheToolStatus(status *CheckStatus) {
@@ -220,11 +279,13 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 }
 
 func (s *Service) npmPackageVersion(packageName string) (string, error) {
+	npmPath := s.resolveNPMPath()
+
 	ctx, cancel := context.WithTimeout(context.Background(), latestVersionTimeout)
 	defer cancel()
 
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   "npm",
+		Path:   npmPath,
 		Args:   []string{"view", packageName, "version"},
 		Policy: platform.DefaultProcessPolicy(),
 	})
@@ -365,6 +426,11 @@ func cloneOverallStatus(status *OverallStatus) *OverallStatus {
 	return &copyStatus
 }
 
+// recomputeOverallSummary rebuilds the Issues slice and AllOK flag.
+// Tools that are usable by CodeBox (Installed && PATHOk && no error) are
+// considered healthy even if SystemPATHOk is false (resolver-only visibility).
+// A tool with only info-level issues (e.g. path_not_in_system_path) is not
+// treated as a blocking problem for AllOK.
 func recomputeOverallSummary(status *OverallStatus) {
 	if status == nil {
 		return
@@ -650,10 +716,28 @@ func (s *Service) startOperation(tool CLITool, kind OperationKind) (*OperationSt
 
 // runOperation executes the full install/update lifecycle in a background goroutine.
 func (s *Service) runOperation(op *OperationState) {
-	// Run the synchronous installOrUpdate logic and capture result.
-	// We do NOT use the RPC caller's context here -- context.Background
-	// ensures the operation survives page navigation.
-	result, err := s.installOrUpdate(op.Tool, installOperation(op.Kind))
+	// Build a progress reporter that updates the operation state in real-time.
+	// The monotonicReporter wrapper guarantees progress never decreases at the
+	// callback level, and the inner closure also clamps as defense-in-depth.
+	rawReporter := progressReporter(func(step OperationStep, message string, progress int) {
+		s.opMu.Lock()
+		defer s.opMu.Unlock()
+		if s.current == nil || s.current.Status != OperationStatusRunning {
+			return
+		}
+		// Progress must be monotonically non-decreasing.
+		if progress < s.current.Progress {
+			progress = s.current.Progress
+		}
+		s.current.Step = step
+		s.current.Message = message
+		s.current.Progress = progress
+		s.current.UpdatedAt = time.Now()
+	})
+	reporter := monotonicReporter(rawReporter)
+
+	// Run the install/update logic with progress reporting.
+	result, err := s.installOrUpdateWithProgress(op.Tool, installOperation(op.Kind), reporter)
 
 	// Best-effort: invalidate version cache so latestVersion is re-fetched.
 	s.invalidateVersionCache(op.Tool)
@@ -662,6 +746,7 @@ func (s *Service) runOperation(op *OperationState) {
 	// Do this before taking opMu so the final state includes the refreshed cache.
 	var cacheRefreshed bool
 	if err == nil && result != nil && result.Success {
+		reporter.report(OperationStepRefreshCache, fmt.Sprintf("Refreshing %s status...", displayToolName(op.Tool)), progressRefresh)
 		_, cacheErr := s.CheckOne(op.Tool)
 		cacheRefreshed = cacheErr == nil
 	}
@@ -703,20 +788,6 @@ func (s *Service) runOperation(op *OperationState) {
 	op.Status = OperationStatusSucceeded
 	op.Result = result
 	op.Message = result.Message
-}
-
-// updateOperationStep updates the current operation's step and message (called
-// from within the operation goroutine, caller must hold opMu).
-func (s *Service) updateOperationStep(step OperationStep, message string, progress int) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	if s.current == nil || s.current.Status != OperationStatusRunning {
-		return
-	}
-	s.current.Step = step
-	s.current.Message = message
-	s.current.Progress = progress
-	s.current.UpdatedAt = time.Now()
 }
 
 // cloneOperationState returns a defensive copy of the operation state.

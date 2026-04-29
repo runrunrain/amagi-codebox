@@ -40,6 +40,18 @@
         </div>
         <span class="progress-label">{{ operationLabel }}</span>
       </div>
+      <!-- Operation result banner (persisted, not transient) -->
+      <div class="hero-operation-result" v-if="lastOperationResult && !runningOperation">
+        <el-alert
+          :title="lastOperationResult.title"
+          :description="lastOperationResult.description || ''"
+          :type="lastOperationResult.type"
+          show-icon
+          :closable="true"
+          @close="lastOperationResult = null"
+          class="op-result-alert"
+        />
+      </div>
     </div>
 
     <!-- Summary Strip -->
@@ -100,10 +112,11 @@
             <span class="info-label">最新版本</span>
             <span class="info-value mono text-warn">{{ card.status.latestVersion }}</span>
           </div>
+          <!-- PATH status based on pathState -->
           <div class="info-row" v-if="card.status.installed">
             <span class="info-label">PATH</span>
-            <span class="info-value" :class="card.status.pathOk ? 'text-success' : 'text-error'">
-              {{ card.status.pathOk ? '正常' : '异常' }}
+            <span class="info-value" :class="pathStateClass(card.status)">
+              {{ pathStateLabel(card.status) }}
             </span>
           </div>
           <div class="info-row path-row" v-if="card.status.executablePath">
@@ -125,6 +138,53 @@
             <span class="mini-spinner accent"></span>
             <span class="op-text">{{ card.operationLabel }}</span>
           </div>
+          <!-- Per-card progress bar during operation -->
+          <div class="card-progress" v-if="card.isOperating && runningOperation && runningOperation.progress > 0">
+            <div class="progress-track">
+              <div class="progress-fill" :style="{ width: runningOperation.progress + '%' }"></div>
+            </div>
+            <span class="progress-step-label">{{ formatStepLabel(runningOperation) }}</span>
+          </div>
+        </div>
+
+        <!-- Issues / Solutions section -->
+        <div class="card-issues" v-if="card.status && card.status.issues && card.status.issues.length > 0 && !card.isOperating">
+          <div
+            v-for="(issue, idx) in card.status.issues.slice(0, 2)"
+            :key="'issue-' + idx"
+            class="issue-block"
+            :class="'issue-' + issue.severity"
+          >
+            <div class="issue-header">
+              <span class="issue-severity-badge" :class="'severity-' + issue.severity">
+                {{ severityLabel(issue.severity) }}
+              </span>
+              <span class="issue-message">{{ issue.message }}</span>
+            </div>
+            <div class="issue-detail" v-if="issue.detail">{{ issue.detail }}</div>
+            <!-- Solutions for this issue -->
+            <div class="issue-solutions" v-if="issue.solutions && issue.solutions.length > 0">
+              <div
+                v-for="(sol, sidx) in issue.solutions.slice(0, 2)"
+                :key="'sol-' + sidx"
+                class="solution-item"
+              >
+                <span class="solution-desc">{{ sol.description }}</span>
+                <code class="solution-cmd" v-if="sol.command">{{ sol.command }}</code>
+              </div>
+            </div>
+          </div>
+          <!-- Top-level solutions (from status.solutions) -->
+          <div class="issue-solutions" v-if="!card.status.issues?.[0]?.solutions?.length && card.status.solutions && card.status.solutions.length > 0">
+            <div
+              v-for="(sol, sidx) in card.status.solutions.slice(0, 2)"
+              :key="'topsol-' + sidx"
+              class="solution-item"
+            >
+              <span class="solution-desc">{{ sol.description }}</span>
+              <code class="solution-cmd" v-if="sol.command">{{ sol.command }}</code>
+            </div>
+          </div>
         </div>
 
         <!-- Update hint -->
@@ -137,10 +197,30 @@
           class="card-alert"
         />
 
-        <!-- Error hint -->
+        <!-- Error hint (legacy, from status.error) -->
         <el-alert
-          v-if="card.status && card.status.error"
+          v-if="card.status && card.status.error && (!card.status.issues || card.status.issues.length === 0)"
           :title="card.status.error"
+          type="error"
+          :closable="false"
+          show-icon
+          class="card-alert"
+        />
+
+        <!-- PATH info hint for codebox_path / shell_fallback -->
+        <el-alert
+          v-if="card.status && card.status.installed && (card.status.pathState === 'codebox_path' || card.status.pathState === 'shell_fallback')"
+          :title="pathStateHint(card.status)"
+          :type="card.status.pathState === 'shell_fallback' ? 'warning' : 'info'"
+          :closable="false"
+          show-icon
+          class="card-alert"
+        />
+
+        <!-- Install blocked hint -->
+        <el-alert
+          v-if="card.status && !card.status.installed && !card.status.canInstall && card.status.installBlockedReason"
+          :title="'无法安装: ' + card.status.installBlockedReason"
           type="error"
           :closable="false"
           show-icon
@@ -157,17 +237,30 @@
             <span v-if="checkingAll" class="mini-spinner"></span>
             {{ checkingAll ? '检测中...' : '检测' }}
           </button>
+          <!-- Not installed: install button -->
           <button
             v-if="card.status && !card.status.installed"
             class="btn small action-btn install-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
-            :disabled="card.isOperating || checkingAll || !!runningOperation"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || !card.status.canInstall"
+            :title="!card.status.canInstall ? card.status.installBlockedReason : ''"
           >
             <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
             {{ (card.isOperating && card.operationKind === 'install') ? '安装中...' : '安装' }}
           </button>
+          <!-- Installed but has fixable issues: repair/reinstall -->
           <button
-            v-if="card.status && card.status.installed"
+            v-if="card.status && card.status.installed && card.status.canInstall && hasFixableIssues(card.status)"
+            class="btn small action-btn repair-action"
+            @click="startInstall(card.meta.key, card.meta.displayName)"
+            :disabled="card.isOperating || checkingAll || !!runningOperation"
+          >
+            <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
+            {{ (card.isOperating && card.operationKind === 'install') ? '修复中...' : '重装修复' }}
+          </button>
+          <!-- Installed without fixable issues: normal reinstall -->
+          <button
+            v-if="card.status && card.status.installed && !hasFixableIssues(card.status)"
             class="btn small action-btn reinstall-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
             :disabled="card.isOperating || checkingAll || !!runningOperation"
@@ -175,6 +268,7 @@
             <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
             {{ (card.isOperating && card.operationKind === 'install') ? '安装中...' : '重装' }}
           </button>
+          <!-- Update button -->
           <button
             v-if="card.status && card.status.hasUpdate"
             class="btn small action-btn update-action"
@@ -223,6 +317,12 @@ interface CardView {
   tagLabel: string
 }
 
+interface OperationResult {
+  title: string
+  description?: string
+  type: 'success' | 'error' | 'warning' | 'info'
+}
+
 // ---------- Constants ----------
 
 const TOOL_METAS: ToolMeta[] = [
@@ -233,12 +333,21 @@ const TOOL_METAS: ToolMeta[] = [
 
 const POLL_INTERVAL = 1500
 
+const PATH_STATE_MAP: Record<string, { label: string; cls: string }> = {
+  system_path: { label: 'PATH 正常', cls: 'text-success' },
+  codebox_path: { label: 'CodeBox 可启动', cls: 'text-info' },
+  shell_fallback: { label: 'Shell 可解析', cls: 'text-warn' },
+  missing: { label: '未找到', cls: 'text-error' },
+  outside_path: { label: '未加入可用 PATH', cls: 'text-error' },
+}
+
 // ---------- State ----------
 
 const snapshot = ref<envcheck.EnvCheckSnapshot | null>(null)
 const checkingAll = ref(false)
 const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const mounted = ref(true)
+const lastOperationResult = ref<OperationResult | null>(null)
 
 // ---------- Computed ----------
 
@@ -253,8 +362,9 @@ const operationLabel = computed(() => {
   if (!op) return ''
   const toolName = TOOL_METAS.find(m => m.key === op.tool)?.displayName || op.tool
   const kind = op.kind === 'install' ? '安装' : '更新'
-  const step = op.step || ''
-  return `${toolName} ${kind}中${step ? ' - ' + step : ''}${op.message ? ': ' + op.message : ''}`
+  const prog = op.progress > 0 ? ` (${op.progress}%)` : ''
+  const msg = op.message ? ': ' + op.message : ''
+  return `${toolName} ${kind}中${prog}${msg}`
 })
 
 const formattedCheckedAt = computed(() => {
@@ -363,6 +473,66 @@ function formatInstallMethod(m: string): string {
   return map[m] || m
 }
 
+function pathStateLabel(status: envcheck.CheckStatus): string {
+  if (status.pathState) {
+    const mapping = PATH_STATE_MAP[status.pathState]
+    if (mapping) return mapping.label
+  }
+  // Fallback for old backend without pathState
+  return status.pathOk ? '正常' : '异常'
+}
+
+function pathStateClass(status: envcheck.CheckStatus): string {
+  if (status.pathState) {
+    const mapping = PATH_STATE_MAP[status.pathState]
+    if (mapping) return mapping.cls
+  }
+  return status.pathOk ? 'text-success' : 'text-error'
+}
+
+function pathStateHint(status: envcheck.CheckStatus): string {
+  if (status.pathState === 'codebox_path') {
+    return '该工具不在系统 PATH 中，但 CodeBox 可正常启动。如需全局可用，建议重启终端或手动同步 PATH。'
+  }
+  if (status.pathState === 'shell_fallback') {
+    return '该工具通过 Shell 环境回退找到，部分场景可能不稳定。建议检查 PATH 配置或重启应用。'
+  }
+  return ''
+}
+
+function severityLabel(sev: string): string {
+  const map: Record<string, string> = {
+    info: '信息',
+    warning: '警告',
+    error: '错误',
+    critical: '严重',
+  }
+  return map[sev] || sev
+}
+
+function hasFixableIssues(status: envcheck.CheckStatus): boolean {
+  if (!status.issues || status.issues.length === 0) return false
+  return status.issues.some(issue =>
+    issue.severity === 'warning' || issue.severity === 'error' || issue.severity === 'critical'
+  )
+}
+
+function formatStepLabel(op: envcheck.OperationState): string {
+  const stepMap: Record<string, string> = {
+    precheck: '预检查',
+    prepare: '准备中',
+    run_command: '执行命令',
+    verify: '验证中',
+    refresh_cache: '刷新缓存',
+    completed: '完成',
+  }
+  const stepLabel = stepMap[op.step] || op.step || ''
+  const parts: string[] = []
+  if (stepLabel) parts.push(stepLabel)
+  if (op.message) parts.push(op.message)
+  return parts.join(' - ')
+}
+
 // ---------- Snapshot / Polling ----------
 
 async function fetchSnapshot(): Promise<void> {
@@ -372,7 +542,6 @@ async function fetchSnapshot(): Promise<void> {
       snapshot.value = s
     }
   } catch (err: any) {
-    // Log but do not show ElMessage to avoid noise during polling.
     console.warn('[EnvCheck] fetchSnapshot failed:', err?.message || err)
   }
 }
@@ -381,8 +550,6 @@ function startPolling(): void {
   stopPolling()
   pollTimer.value = setInterval(async () => {
     await fetchSnapshot()
-    // Re-evaluate polling after each snapshot fetch so we stop
-    // promptly when the operation completes.
     ensurePollingState()
   }, POLL_INTERVAL)
 }
@@ -410,7 +577,6 @@ async function runFullCheck(): Promise<void> {
   checkingAll.value = true
   try {
     const status = await RunEnvCheck() as unknown as envcheck.OverallStatus
-    // Update local snapshot with the returned status
     if (mounted.value) {
       snapshot.value = {
         status,
@@ -435,14 +601,15 @@ async function runSingleCheck(key: string): Promise<void> {
     if (currentStatus) {
       const items = { ...(currentStatus.items || {} as Record<string, envcheck.CheckStatus>) }
       items[key] = status
-      // Rebuild issues
       const issues: string[] = []
       for (const m of TOOL_METAS) {
         const s = items[m.key]
         if (!s) continue
         if (s.error?.trim()) issues.push(`${s.tool}: ${s.error}`)
         else if (!s.installed) issues.push(`${s.tool}: not installed`)
-        else if (!s.pathOk) issues.push(`${s.tool}: executable not in PATH`)
+        else if (!s.pathOk && s.pathState !== 'codebox_path' && s.pathState !== 'shell_fallback') {
+          issues.push(`${s.tool}: executable not in PATH`)
+        }
       }
       snapshot.value = {
         status: {
@@ -471,13 +638,15 @@ async function startInstall(key: string, displayName: string): Promise<void> {
   }
 
   try {
-    // Fire-and-forget: start async install, then poll snapshot
     await StartInstallToolAsync(key) as any
-    // Immediately fetch to get the running operation state
     await fetchSnapshot()
     ensurePollingState()
   } catch (err: any) {
-    ElMessage.error('启动安装失败: ' + (err?.message || err))
+    lastOperationResult.value = {
+      title: `安装 ${displayName} 失败`,
+      description: err?.message || String(err),
+      type: 'error',
+    }
   }
 }
 
@@ -498,20 +667,47 @@ async function startUpdate(key: string, displayName: string, latestVersion: stri
     await fetchSnapshot()
     ensurePollingState()
   } catch (err: any) {
-    ElMessage.error('启动更新失败: ' + (err?.message || err))
+    lastOperationResult.value = {
+      title: `更新 ${displayName} 失败`,
+      description: err?.message || String(err),
+      type: 'error',
+    }
   }
 }
 
 // ---------- Lifecycle ----------
 
-// Watch runningOperation to stop polling as soon as no operation is running.
-// This covers edge cases where ensurePollingState in the interval callback
-// hasn't fired yet (e.g. the snapshot was updated outside polling).
-// When the operation completes (transitions from running to idle), fetch a
-// fresh snapshot so the UI reflects the final refreshed cache from the backend.
+// Watch runningOperation to detect operation completion and update the result banner.
 watch(runningOperation, async (newVal, oldVal) => {
   if (oldVal && !newVal) {
+    // Operation just completed -- fetch final snapshot
     await fetchSnapshot()
+
+    // Build result from the snapshot's operation state (now completed)
+    const completedOp = snapshot.value?.operation
+    if (completedOp && completedOp.status !== 'running') {
+      const toolName = TOOL_METAS.find(m => m.key === completedOp.tool)?.displayName || completedOp.tool
+      const kind = completedOp.kind === 'install' ? '安装' : '更新'
+
+      if (completedOp.status === 'succeeded') {
+        const ver = completedOp.result?.version ? ` (v${completedOp.result.version})` : ''
+        const msg = completedOp.result?.message || completedOp.message || ''
+        lastOperationResult.value = {
+          title: `${toolName} ${kind}成功${ver}`,
+          description: msg || undefined,
+          type: 'success',
+        }
+      } else if (completedOp.status === 'failed' || completedOp.status === 'timeout') {
+        const errMsg = completedOp.error || completedOp.result?.error || ''
+        const msg = completedOp.message || ''
+        const parts = [errMsg, msg].filter(Boolean)
+        lastOperationResult.value = {
+          title: `${toolName} ${kind}失败`,
+          description: parts.join(' - ') || undefined,
+          type: 'error',
+        }
+      }
+    }
   }
   ensurePollingState()
 })
@@ -544,6 +740,7 @@ onUnmounted(() => {
   --success: #66bb6a;
   --error: #ef5350;
   --warn: #ffa726;
+  --info: #4fc3f7;
 
   display: flex;
   flex-direction: column;
@@ -667,6 +864,14 @@ onUnmounted(() => {
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.hero-operation-result {
+  margin-top: 14px;
+}
+
+.op-result-alert {
+  border-radius: 8px;
 }
 
 /* ===== Summary Strip ===== */
@@ -878,6 +1083,121 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
+.card-progress {
+  margin-top: 10px;
+}
+
+.progress-step-label {
+  font-size: 11px;
+  color: var(--accent);
+  margin-top: 4px;
+  display: block;
+}
+
+/* ===== Issues / Solutions ===== */
+.card-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.issue-block {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.issue-block.issue-info {
+  border-color: rgba(79, 195, 247, 0.2);
+  background: rgba(79, 195, 247, 0.04);
+}
+
+.issue-block.issue-warning {
+  border-color: rgba(255, 167, 38, 0.25);
+  background: rgba(255, 167, 38, 0.04);
+}
+
+.issue-block.issue-error,
+.issue-block.issue-critical {
+  border-color: rgba(239, 83, 80, 0.25);
+  background: rgba(239, 83, 80, 0.04);
+}
+
+.issue-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.issue-severity-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  line-height: 1.6;
+}
+
+.severity-info {
+  background: rgba(79, 195, 247, 0.15);
+  color: var(--info);
+}
+
+.severity-warning {
+  background: rgba(255, 167, 38, 0.15);
+  color: var(--warn);
+}
+
+.severity-error,
+.severity-critical {
+  background: rgba(239, 83, 80, 0.15);
+  color: var(--error);
+}
+
+.issue-message {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.issue-detail {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.issue-solutions {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.solution-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+.solution-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.solution-cmd {
+  font-family: monospace;
+  font-size: 11px;
+  background: var(--elevated);
+  color: var(--accent);
+  padding: 3px 8px;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
 /* Card Actions */
 .card-actions {
   display: flex;
@@ -917,6 +1237,16 @@ onUnmounted(() => {
   background: rgba(102, 187, 106, 0.2);
 }
 
+.repair-action {
+  background: rgba(255, 167, 38, 0.12);
+  color: var(--warn);
+  border-color: rgba(255, 167, 38, 0.3);
+}
+
+.repair-action:hover:not(:disabled) {
+  background: rgba(255, 167, 38, 0.2);
+}
+
 .reinstall-action {
   background: var(--elevated);
   color: var(--text-secondary);
@@ -940,6 +1270,7 @@ onUnmounted(() => {
 
 /* ===== Text Helpers ===== */
 .text-success { color: var(--success); }
+.text-info { color: var(--info); }
 .text-error { color: var(--error); }
 .text-warn { color: var(--warn); }
 .text-muted { color: var(--text-muted); }
@@ -1025,8 +1356,10 @@ onUnmounted(() => {
   line-height: 1.4;
 }
 
-.envcheck-root :deep(.el-message-box) {
-  /* ensure dark theme compatibility */
+.envcheck-root :deep(.el-alert .el-alert__description) {
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 2px;
 }
 
 /* ===== Responsive ===== */

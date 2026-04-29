@@ -3,11 +3,8 @@ package envcheck
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -29,24 +26,16 @@ func (s *Service) checkOpenCode() (*CheckStatus, error) {
 		CheckedAt:     now,
 	}
 
-	pathFromPATH, lookErr := exec.LookPath(openCodeCommandName)
-	status.PATHOk = lookErr == nil && strings.TrimSpace(pathFromPATH) != ""
+	rr := resolveExecutable(openCodeCommandName)
+	applyPathStateToStatus(status, rr, ToolOpenCode)
 
-	executablePath := pathFromPATH
-	if strings.TrimSpace(executablePath) == "" {
-		resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-		resolved, _, err := resolver.ResolveExecutable(openCodeCommandName, nil, os.Environ())
-		if err == nil {
-			executablePath = resolved.Path
-		}
-	}
-
-	if strings.TrimSpace(executablePath) == "" {
+	if strings.TrimSpace(rr.executablePath) == "" {
 		status.Error = "OpenCode executable was not found in PATH"
+		addMissingToolIssue(status, ToolOpenCode)
 		return status, nil
 	}
 
-	realPath := resolveRealExecutablePath(executablePath)
+	realPath := resolveRealExecutablePath(rr.executablePath)
 	status.Installed = true
 	status.ExecutablePath = realPath
 	status.InstallMethod = detectOpenCodeInstallMethod(realPath)
@@ -113,10 +102,8 @@ func normalizeOpenCodePath(path string) string {
 	if trimmed == "" {
 		return ""
 	}
-	cleaned := filepath.Clean(trimmed)
-	if runtime.GOOS == "windows" {
-		cleaned = strings.ReplaceAll(cleaned, "/", `\`)
-	}
+	// Always normalize to forward slash for cross-platform substring matching.
+	cleaned := strings.ReplaceAll(filepath.Clean(trimmed), `\`, "/")
 	return strings.ToLower(cleaned)
 }
 
@@ -144,9 +131,7 @@ func isOpenCodeScoopPath(normalizedPath string) bool {
 }
 
 func pathFragment(parts ...string) string {
-	fragment := filepath.Join(parts...)
-	if runtime.GOOS == "windows" {
-		fragment = strings.ReplaceAll(fragment, "/", `\`)
-	}
-	return strings.ToLower(fragment)
+	// Always use forward slash for cross-platform substring matching,
+	// since normalizeOpenCodePath normalizes all inputs to forward slashes.
+	return strings.ToLower(strings.Join(parts, "/"))
 }

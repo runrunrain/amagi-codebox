@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"amagi-codebox/internal/platform"
@@ -18,11 +19,13 @@ import (
 
 // mockRunner is a test-double for platform.ProcessRunner. It records calls
 // and returns pre-configured results based on the command path.
+// All methods are safe for concurrent use.
 type mockRunner struct {
 	// responses maps command Path -> mockResponse. First match wins.
 	responses []mockResponse
 	// calls records every Run invocation for post-test assertions.
 	calls []platform.CommandSpec
+	mu    sync.Mutex
 }
 
 type mockResponse struct {
@@ -33,6 +36,8 @@ type mockResponse struct {
 }
 
 func (m *mockRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, spec)
 	for _, r := range m.responses {
 		if r.pathPrefix == "" || strings.Contains(spec.Path, r.pathPrefix) {
@@ -227,15 +232,13 @@ func TestNormalizeClaudePath(t *testing.T) {
 	}{
 		{"empty", "", ""},
 		{"whitespace", "   ", ""},
-		{"simple path", `C:\Tools\Claude.exe`, `c:\tools\claude.exe`},
-		{"forward slashes", "C:/Tools/Claude.exe", `c:\tools\claude.exe`},
+		{"simple path", `C:\Tools\Claude.exe`, `c:/tools/claude.exe`},
+		{"forward slashes", "C:/Tools/Claude.exe", `c:/tools/claude.exe`},
+		{"mixed slashes", `C:\Tools/Claude.exe`, `c:/tools/claude.exe`},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if runtime.GOOS != "windows" && strings.Contains(tc.expect, `\`) {
-				t.Skip("skipping Windows-specific path normalization")
-			}
 			got := normalizeClaudePath(tc.input)
 			if got != tc.expect {
 				t.Errorf("normalizeClaudePath(%q) = %q, want %q", tc.input, got, tc.expect)
@@ -258,7 +261,8 @@ func TestResolveRealExecutablePath(t *testing.T) {
 		{"whitespace returns empty", "  ", ""},
 		{"dot returns original", ".", "."},
 		{"simple path cleaned", `C:\Tools\Claude.exe`, `C:\Tools\Claude.exe`},
-		{"trailing slash cleaned", `C:\Tools\`, `C:\Tools`},
+		{"trailing backslash cleaned", `C:\Tools\`, `C:\Tools`},
+		{"trailing forward slash cleaned", `C:/Tools/`, `C:/Tools`},
 	}
 
 	for _, tc := range tests {
@@ -282,10 +286,10 @@ func TestPathHasPrefix(t *testing.T) {
 		prefix string
 		expect bool
 	}{
-		{"exact match", `c:\tools`, `c:\tools`, true},
-		{"child path", `c:\tools\bin`, `c:\tools`, true},
-		{"no match", `c:\other`, `c:\tools`, false},
-		{"empty prefix", `c:\tools`, ``, false},
+		{"exact match", `c:/tools`, `c:/tools`, true},
+		{"child path", `c:/tools/bin`, `c:/tools`, true},
+		{"no match", `c:/other`, `c:/tools`, false},
+		{"empty prefix", `c:/tools`, ``, false},
 		{"empty both", ``, ``, false},
 	}
 

@@ -3,11 +3,8 @@ package envcheck
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -29,24 +26,16 @@ func (s *Service) checkCodex() (*CheckStatus, error) {
 		CheckedAt:     now,
 	}
 
-	pathFromPATH, lookErr := exec.LookPath(codexCommandName)
-	status.PATHOk = lookErr == nil && strings.TrimSpace(pathFromPATH) != ""
+	rr := resolveExecutable(codexCommandName)
+	applyPathStateToStatus(status, rr, ToolCodex)
 
-	executablePath := pathFromPATH
-	if strings.TrimSpace(executablePath) == "" {
-		resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-		resolved, _, err := resolver.ResolveExecutable(codexCommandName, nil, os.Environ())
-		if err == nil {
-			executablePath = resolved.Path
-		}
-	}
-
-	if strings.TrimSpace(executablePath) == "" {
+	if strings.TrimSpace(rr.executablePath) == "" {
 		status.Error = "Codex executable was not found in PATH"
+		addMissingToolIssue(status, ToolCodex)
 		return status, nil
 	}
 
-	realPath := resolveRealExecutablePath(executablePath)
+	realPath := resolveRealExecutablePath(rr.executablePath)
 	status.Installed = true
 	status.ExecutablePath = realPath
 	status.InstallMethod = detectCodexInstallMethod(realPath)
@@ -115,17 +104,12 @@ func normalizeCodexPath(path string) string {
 	if trimmed == "" {
 		return ""
 	}
-	cleaned := filepath.Clean(trimmed)
-	if runtime.GOOS == "windows" {
-		cleaned = strings.ReplaceAll(cleaned, "/", `\`)
-	}
+	// Always normalize to forward slash for cross-platform substring matching.
+	cleaned := strings.ReplaceAll(filepath.Clean(trimmed), `\`, "/")
 	return strings.ToLower(cleaned)
 }
 
 func pathSegment(segment string) string {
-	separator := string(os.PathSeparator)
-	if runtime.GOOS == "windows" {
-		separator = `\`
-	}
-	return separator + strings.ToLower(segment) + separator
+	// Use forward slash to match normalizeCodexPath convention.
+	return "/" + strings.ToLower(segment) + "/"
 }

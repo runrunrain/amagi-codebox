@@ -617,6 +617,64 @@ export namespace config {
 
 export namespace envcheck {
 	
+	export class ResolutionAction {
+	    type: string;
+	    description: string;
+	    command?: string;
+	    tool?: string;
+	    packageName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResolutionAction(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.description = source["description"];
+	        this.command = source["command"];
+	        this.tool = source["tool"];
+	        this.packageName = source["packageName"];
+	    }
+	}
+	export class CheckIssue {
+	    severity: string;
+	    code: string;
+	    message: string;
+	    detail?: string;
+	    solutions?: ResolutionAction[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CheckIssue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.severity = source["severity"];
+	        this.code = source["code"];
+	        this.message = source["message"];
+	        this.detail = source["detail"];
+	        this.solutions = this.convertValues(source["solutions"], ResolutionAction);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CheckStatus {
 	    tool: string;
 	    installed: boolean;
@@ -629,6 +687,13 @@ export namespace envcheck {
 	    error: string;
 	    // Go type: time
 	    checkedAt: any;
+	    systemPathOk: boolean;
+	    pathState: string;
+	    pathSource: string;
+	    issues: CheckIssue[];
+	    solutions: ResolutionAction[];
+	    canInstall: boolean;
+	    installBlockedReason: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CheckStatus(source);
@@ -646,6 +711,13 @@ export namespace envcheck {
 	        this.executablePath = source["executablePath"];
 	        this.error = source["error"];
 	        this.checkedAt = this.convertValues(source["checkedAt"], null);
+	        this.systemPathOk = source["systemPathOk"];
+	        this.pathState = source["pathState"];
+	        this.pathSource = source["pathSource"];
+	        this.issues = this.convertValues(source["issues"], CheckIssue);
+	        this.solutions = this.convertValues(source["solutions"], ResolutionAction);
+	        this.canInstall = source["canInstall"];
+	        this.installBlockedReason = source["installBlockedReason"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

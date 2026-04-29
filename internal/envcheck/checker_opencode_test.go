@@ -171,7 +171,8 @@ func TestNormalizeOpenCodePath(t *testing.T) {
 	}{
 		{"empty", "", ""},
 		{"whitespace", "   ", ""},
-		{"upper case to lower", `C:\Tools\OpenCode.exe`, `c:\tools\opencode.exe`},
+		{"upper case to lower backslash", `C:\Tools\OpenCode.exe`, `c:/tools/opencode.exe`},
+		{"forward slash", `C:/Tools/OpenCode.exe`, `c:/tools/opencode.exe`},
 	}
 
 	for _, tc := range tests {

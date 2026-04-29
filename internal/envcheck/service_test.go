@@ -839,14 +839,43 @@ func TestGetCachedStatus_ConcurrentAccess(t *testing.T) {
 
 func TestClaudeInstallCommands_Install(t *testing.T) {
 	cmds := claudeInstallCommands(installOperationInstall, nil)
-	if len(cmds) != 2 {
-		t.Fatalf("expected 2 install commands, got %d", len(cmds))
-	}
-	if !strings.Contains(cmds[0].description, "native") {
-		t.Errorf("first command should be native installer, got %q", cmds[0].description)
-	}
-	if !strings.Contains(cmds[1].description, "winget") {
-		t.Errorf("second command should be winget, got %q", cmds[1].description)
+	if runtime.GOOS == "windows" {
+		if len(cmds) < 3 {
+			t.Fatalf("expected at least 3 install commands on Windows (npm + native + winget), got %d", len(cmds))
+		}
+		// First command should be npm (most reliable)
+		if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+			t.Errorf("first command should be npm, got %q", cmds[0].description)
+		}
+		// Should include powershell and winget
+		hasPS := false
+		hasWinget := false
+		for _, cmd := range cmds {
+			d := strings.ToLower(cmd.description)
+			if strings.Contains(d, "powershell") {
+				hasPS = true
+			}
+			if strings.Contains(d, "winget") {
+				hasWinget = true
+			}
+		}
+		if !hasPS {
+			t.Error("expected PowerShell command in install list")
+		}
+		if !hasWinget {
+			t.Error("expected winget command in install list")
+		}
+	} else {
+		// macOS/Linux: only npm
+		if len(cmds) != 1 {
+			t.Fatalf("expected 1 install command on non-Windows, got %d", len(cmds))
+		}
+		if cmds[0].path != "npm" {
+			t.Errorf("expected npm command on non-Windows, got path %q", cmds[0].path)
+		}
+		if cmds[0].args[0] != "install" {
+			t.Errorf("expected 'install' action, got args: %v", cmds[0].args)
+		}
 	}
 }
 
@@ -854,20 +883,36 @@ func TestClaudeInstallCommands_UpdateNonWinget(t *testing.T) {
 	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodNative,
 	})
-	if len(cmds) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(cmds))
-	}
-	if !strings.Contains(cmds[0].description, "native") {
-		t.Errorf("first command should be native, got %q", cmds[0].description)
+	if runtime.GOOS == "windows" {
+		if len(cmds) < 2 {
+			t.Fatalf("expected at least 2 commands on Windows, got %d", len(cmds))
+		}
+		// Native/unknown update: npm first (not PowerShell)
+		if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+			t.Errorf("native update should not start with PowerShell, got %q", cmds[0].description)
+		}
+		if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+			t.Errorf("native update should start with npm, got %q", cmds[0].description)
+		}
+	} else {
+		if len(cmds) != 1 {
+			t.Fatalf("expected 1 command on non-Windows, got %d", len(cmds))
+		}
+		if cmds[0].path != "npm" {
+			t.Errorf("expected npm command on non-Windows, got path %q", cmds[0].path)
+		}
 	}
 }
 
 func TestClaudeInstallCommands_UpdateWinget(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("winget install method only relevant on Windows")
+	}
 	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodWinget,
 	})
-	if len(cmds) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	if len(cmds) < 2 {
+		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
 	}
 	if !strings.Contains(cmds[0].description, "winget") {
 		t.Errorf("winget update should be first for winget install, got %q", cmds[0].description)
@@ -979,20 +1024,28 @@ func TestInstallCommands_ClaudeUpdate_NPMInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should have at least 3 commands: npm update, native, winget
-	if len(cmds) < 3 {
-		t.Fatalf("expected at least 3 commands (npm + native + winget), got %d", len(cmds))
+	if runtime.GOOS == "windows" {
+		// Windows: npm update, native, winget
+		if len(cmds) < 3 {
+			t.Fatalf("expected at least 3 commands on Windows (npm + native + winget), got %d", len(cmds))
+		}
+	} else {
+		// macOS/Linux: npm update + npm (base is also npm)
+		if len(cmds) < 1 {
+			t.Fatalf("expected at least 1 command on non-Windows, got %d", len(cmds))
+		}
 	}
-	// First command should be NPM update for Claude Code
-	if cmds[0].path != "npm" {
+	// First command should be npm install @latest for Claude Code (update uses
+	// install -g @latest which is more reliable than npm update).
+	if cmds[0].path != "npm" && !strings.Contains(cmds[0].path, "npm") {
 		t.Errorf("first command path = %q, want npm", cmds[0].path)
 	}
-	if cmds[0].args[0] != "update" {
-		t.Errorf("first command should use 'update', got args: %v", cmds[0].args)
+	if cmds[0].args[0] != "install" {
+		t.Errorf("first command should use 'install', got args: %v", cmds[0].args)
 	}
 	foundClaudePackage := false
 	for _, arg := range cmds[0].args {
-		if arg == "@anthropic-ai/claude-code" {
+		if arg == "@anthropic-ai/claude-code@latest" || arg == "@anthropic-ai/claude-code" {
 			foundClaudePackage = true
 		}
 	}
@@ -1012,11 +1065,17 @@ func TestInstallCommands_ClaudeInstall_NPMInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cmds) < 3 {
-		t.Fatalf("expected at least 3 commands, got %d", len(cmds))
+	if runtime.GOOS == "windows" {
+		if len(cmds) < 3 {
+			t.Fatalf("expected at least 3 commands on Windows, got %d", len(cmds))
+		}
+	} else {
+		if len(cmds) < 1 {
+			t.Fatalf("expected at least 1 command on non-Windows, got %d", len(cmds))
+		}
 	}
 	// First command should be NPM install for Claude Code
-	if cmds[0].path != "npm" {
+	if cmds[0].path != "npm" && !strings.Contains(cmds[0].path, "npm") {
 		t.Errorf("first command path = %q, want npm", cmds[0].path)
 	}
 	if cmds[0].args[0] != "install" {
@@ -1036,15 +1095,23 @@ func TestInstallCommands_ClaudeUpdate_NonNPM_HasNPMFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should have native first, then winget, then npm as fallback
-	if len(cmds) < 3 {
-		t.Fatalf("expected at least 3 commands (native + winget + npm), got %d", len(cmds))
-	}
-	if !strings.Contains(cmds[0].description, "native") {
-		t.Errorf("first command should be native, got: %q", cmds[0].description)
+	if runtime.GOOS == "windows" {
+		// Native/unknown update: npm first, then winget, then powershell as fallback
+		if len(cmds) < 3 {
+			t.Fatalf("expected at least 3 commands on Windows (npm + winget + native), got %d", len(cmds))
+		}
+		// Should NOT start with powershell for update
+		if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+			t.Errorf("native update should not start with PowerShell, got: %q", cmds[0].description)
+		}
+	} else {
+		// macOS/Linux: base is npm + npm fallback
+		if len(cmds) < 1 {
+			t.Fatalf("expected at least 1 command on non-Windows, got %d", len(cmds))
+		}
 	}
 	lastCmd := cmds[len(cmds)-1]
-	if lastCmd.path != "npm" {
+	if lastCmd.path != "npm" && !strings.Contains(lastCmd.path, "npm") {
 		t.Errorf("last command should be npm fallback, got path: %q", lastCmd.path)
 	}
 }

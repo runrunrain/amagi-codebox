@@ -428,10 +428,11 @@ func TestStartUpdateTool_CanStartAfterCompletion(t *testing.T) {
 	// First operation completes quickly
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")},
-		{stdout: "10.0.0", err: nil},
-		{stdout: "installed", err: nil},
-		{stdout: "opencode v1.0.0", err: nil},
-		{stdout: "1.0.0", err: nil},
+		{stdout: "10.0.0", err: nil},        // npm probe (populateCanInstall)
+		{stdout: "installed", err: nil},      // install command
+		{stdout: "opencode v1.0.0", err: nil}, // verify version
+		{stdout: "1.0.0", err: nil},          // enrichment (latest version)
+		{stdout: "opencode v1.0.0", err: nil}, // post-success refresh version
 	}, 10*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -442,12 +443,14 @@ func TestStartUpdateTool_CanStartAfterCompletion(t *testing.T) {
 	}
 
 	// Now start a new operation - should succeed
+	// Note: npm availability is already cached from the first operation,
+	// so no npm --version probe call goes to the runner.
 	runner2 := newSlowSequentialRunner([]seqResponse{
-		{stdout: "", err: errors.New("broken again")},
-		{stdout: "10.0.0", err: nil},
-		{stdout: "installed", err: nil},
-		{stdout: "opencode v2.0.0", err: nil},
-		{stdout: "2.0.0", err: nil},
+		{stdout: "", err: errors.New("broken again")}, // pre-check
+		{stdout: "installed", err: nil},                // install command
+		{stdout: "opencode v2.0.0", err: nil},          // verify version
+		{stdout: "2.0.0", err: nil},                    // enrichment (latest version)
+		{stdout: "opencode v2.0.0", err: nil},          // post-success refresh version
 	}, 10*time.Millisecond)
 	svc.processRunner = runner2
 

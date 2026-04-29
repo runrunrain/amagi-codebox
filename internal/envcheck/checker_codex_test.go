@@ -97,7 +97,8 @@ func TestNormalizeCodexPath(t *testing.T) {
 	}{
 		{"empty", "", ""},
 		{"whitespace", "   ", ""},
-		{"upper case to lower", `C:\Tools\Codex.exe`, `c:\tools\codex.exe`},
+		{"upper case to lower backslash", `C:\Tools\Codex.exe`, `c:/tools/codex.exe`},
+		{"forward slash", `C:/Tools/Codex.exe`, `c:/tools/codex.exe`},
 	}
 
 	for _, tc := range tests {

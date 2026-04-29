@@ -482,8 +482,12 @@ func TestInstall_AlreadyInstalledAndHealthy_SkipsInstall(t *testing.T) {
 	runner := &sequentialRunner{responses: []seqResponse{
 		// Pre-check succeeds with current version
 		{stdout: "opencode v1.0.0", err: nil},
+		// populateCanInstall: npm --version probe
+		{stdout: "10.0.0", err: nil},
 		// Latest version matches (no update needed)
 		{stdout: "1.0.0", err: nil},
+		// Post-install refresh: opencode --version
+		{stdout: "opencode v1.0.0", err: nil},
 	}}
 	svc := NewServiceWithRunner(runner)
 
@@ -500,12 +504,12 @@ func TestInstall_AlreadyInstalledAndHealthy_SkipsInstall(t *testing.T) {
 	if !result.Success {
 		t.Errorf("result.Success = false, want true; Message: %s", result.Message)
 	}
-	// Should have only called runner a few times (pre-check + maybe enrichment)
+	// Runner calls: pre-check version, npm probe, enrichment, post-refresh version
 	runner.mu.Lock()
 	callCount := runner.next
 	runner.mu.Unlock()
-	if callCount > 3 {
-		t.Errorf("expected at most 3 runner calls (pre-check + enrichment), got %d", callCount)
+	if callCount > 5 {
+		t.Errorf("expected at most 5 runner calls, got %d", callCount)
 	}
 }
 
@@ -675,8 +679,8 @@ func TestUpdate_VersionUnchanged_ReturnsFailure(t *testing.T) {
 	if result.Success {
 		t.Error("expected Success=false when version unchanged after update")
 	}
-	if !strings.Contains(result.Error, "version was unchanged") {
-		t.Errorf("error should mention 'version was unchanged', got: %s", result.Error)
+	if !strings.Contains(result.Error, "version unchanged") && !strings.Contains(result.Error, "version was unchanged") {
+		t.Errorf("error should mention version unchanged, got: %s", result.Error)
 	}
 }
 
