@@ -166,6 +166,8 @@ export function RenameAmagiModelPreset(arg1:string,arg2:string):Promise<void>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
+export function RunEnvFixAction(arg1:string,arg2:string,arg3:string):Promise<envcheck.FixActionResult>;
+
 export function RunEnvCheck():Promise<envcheck.OverallStatus>;
 
 export function SaveAllConfig():Promise<void>;

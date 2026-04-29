@@ -48,7 +48,7 @@ func TestInstallOrUpdateWithProgress_ReportsSteps(t *testing.T) {
 
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "", err: errors.New("not installed")}, // pre-check opencode --version
-		{stdout: "10.0.0", err: nil},                  // npm probe
+		{stdout: "10.0.0", err: nil},                   // npm probe
 		{stdout: "installed", err: nil},                // install command
 		{stdout: "opencode v1.0.0", err: nil},          // verify --version
 		{stdout: "1.0.0", err: nil},                    // enrichment
@@ -105,10 +105,10 @@ func TestAsyncOperation_ProgressAdvancesFromZero(t *testing.T) {
 	// Use a slow runner so we can observe intermediate states.
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")},
-		{stdout: "10.0.0", err: nil},        // npm probe
-		{stdout: "installed", err: nil},      // install command
+		{stdout: "10.0.0", err: nil},          // npm probe
+		{stdout: "installed", err: nil},       // install command
 		{stdout: "opencode v2.0.0", err: nil}, // verify
-		{stdout: "2.0.0", err: nil},          // enrichment
+		{stdout: "2.0.0", err: nil},           // enrichment
 		{stdout: "opencode v2.0.0", err: nil}, // refresh
 	}, 100*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
@@ -432,7 +432,7 @@ func TestInstallWithProgress_OpenCode_EndToEnd(t *testing.T) {
 
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "", err: errors.New("not installed")}, // pre-check
-		{stdout: "10.0.0", err: nil},                  // npm probe
+		{stdout: "10.0.0", err: nil},                   // npm probe
 		{stdout: "installed", err: nil},                // install
 		{stdout: "opencode v1.0.0", err: nil},          // verify
 		{stdout: "1.0.0", err: nil},                    // enrichment
@@ -477,9 +477,9 @@ func TestInstallWithProgress_Codex_EndToEnd(t *testing.T) {
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "", err: errors.New("broken")}, // pre-check
 		{stdout: "10.0.0", err: nil},            // npm probe
-		{stdout: "installed", err: nil},          // install command
-		{stdout: "codex-cli 0.90.0", err: nil},   // verify
-		{stdout: "0.90.0", err: nil},             // enrichment
+		{stdout: "installed", err: nil},         // install command
+		{stdout: "codex-cli 0.90.0", err: nil},  // verify
+		{stdout: "0.90.0", err: nil},            // enrichment
 	}}
 	svc := NewServiceWithRunner(runner)
 
@@ -565,10 +565,10 @@ func TestAsyncOperation_StepsChangeDuringExecution(t *testing.T) {
 
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")},
-		{stdout: "10.0.0", err: nil},        // npm probe
-		{stdout: "installed", err: nil},      // install command
+		{stdout: "10.0.0", err: nil},          // npm probe
+		{stdout: "installed", err: nil},       // install command
 		{stdout: "opencode v2.0.0", err: nil}, // verify
-		{stdout: "2.0.0", err: nil},          // enrichment
+		{stdout: "2.0.0", err: nil},           // enrichment
 		{stdout: "opencode v2.0.0", err: nil}, // refresh
 	}, 150*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
@@ -653,7 +653,7 @@ func TestSerializedInstall_ProgressCallbackUsed(t *testing.T) {
 
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "", err: errors.New("not installed")}, // pre-check
-		{stdout: "10.0.0", err: nil},                  // npm probe
+		{stdout: "10.0.0", err: nil},                   // npm probe
 		{stdout: "installed", err: nil},                // install
 		{stdout: "opencode v1.0.0", err: nil},          // verify
 		{stdout: "1.0.0", err: nil},                    // enrichment
@@ -850,15 +850,15 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Windows: npm succeeds but verify unchanged, winget succeeds with new version.
 		runner := &indexedRunner{responses: map[int]indexedResponse{
-			0: {stdout: "Claude Code v1.0.0"},  // pre-check
-			1: {stdout: "10.0.0"},              // npm probe
-			2: {stdout: "2.0.0"},               // enrichment: HasUpdate=true
-			3: {stdout: "installed"},            // npm install @latest succeeds
-			4: {stdout: "Claude Code v1.0.0"},   // verify: UNCHANGED!
-			5: {stdout: "1.0.0"},                // enrichment
-			6: {stdout: "upgraded"},             // winget upgrade succeeds
-			7: {stdout: "Claude Code v2.0.0"},   // verify: CHANGED!
-			8: {stdout: "2.0.0"},                // enrichment
+			0: {stdout: "Claude Code v1.0.0"}, // pre-check
+			1: {stdout: "10.0.0"},             // npm probe
+			2: {stdout: "2.0.0"},              // enrichment: HasUpdate=true
+			3: {stdout: "installed"},          // npm install @latest succeeds
+			4: {stdout: "Claude Code v1.0.0"}, // verify: UNCHANGED!
+			5: {stdout: "1.0.0"},              // enrichment
+			6: {stdout: "upgraded"},           // winget upgrade succeeds
+			7: {stdout: "Claude Code v2.0.0"}, // verify: CHANGED!
+			8: {stdout: "2.0.0"},              // enrichment
 		}}
 		svc := NewServiceWithRunner(runner)
 
@@ -882,7 +882,7 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 		runner := &indexedRunner{responses: map[int]indexedResponse{
 			0: {stdout: "Claude Code v1.0.0"},
 			1: {stdout: "10.0.0"},
-			2: {stdout: "2.0.0"},               // enrichment: HasUpdate=true
+			2: {stdout: "2.0.0"}, // enrichment: HasUpdate=true
 			3: {stdout: "installed"},
 			4: {stdout: "Claude Code v1.0.0"}, // version unchanged
 			5: {stdout: "1.0.0"},
@@ -922,7 +922,7 @@ func TestUpdate_AllCommandsVerifyFail_ReportsAllDetails(t *testing.T) {
 		{stdout: "2.0.0", err: nil},           // enrichment: HasUpdate=true
 		{stdout: "installed", err: nil},       // install succeeds
 		{stdout: "opencode v1.0.0", err: nil}, // verify: unchanged
-		{stdout: "1.0.0", err: nil},            // enrichment
+		{stdout: "1.0.0", err: nil},           // enrichment
 	}}
 	svc := NewServiceWithRunner(runner)
 
@@ -1109,9 +1109,9 @@ func TestCheckClaudeCode_NPMRecommendation_DoesNotBlockInstallVerify(t *testing.
 
 	// Apply the recommendation logic manually (mirrors what checkClaudeCode does)
 	status.Issues = append(status.Issues, CheckIssue{
-		Severity:  SeverityInfo,
-		Code:      "claude_npm_install_recommended_native",
-		Message:   "Claude Code was detected as an npm global install; the official native installer is recommended for better integration",
+		Severity: SeverityInfo,
+		Code:     "claude_npm_install_recommended_native",
+		Message:  "Claude Code was detected as an npm global install; the official native installer is recommended for better integration",
 		Solutions: []ResolutionAction{
 			{
 				Type:        SolutionManualCommand,
@@ -1156,9 +1156,9 @@ func TestInstallVerify_AcceptsNPMClaude(t *testing.T) {
 		ExecutablePath: "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
 		Issues: []CheckIssue{
 			{
-				Severity:  SeverityInfo,
-				Code:      "claude_npm_install_recommended_native",
-				Message:   "Claude Code was detected as an npm global install; the official native installer is recommended",
+				Severity: SeverityInfo,
+				Code:     "claude_npm_install_recommended_native",
+				Message:  "Claude Code was detected as an npm global install; the official native installer is recommended",
 			},
 		},
 	}

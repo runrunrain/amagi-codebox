@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -21,13 +20,13 @@ const (
 	installOperationUpdate  installOperation = "update"
 
 	// Progress percentages for each phase of an install/update operation.
-	progressPrecheck     = 5
-	progressPrepare     = 15
-	progressRunStart    = 20
-	progressRunEnd      = 80
-	progressVerify      = 85
-	progressRefresh     = 95
-	progressCompleted   = 100
+	progressPrecheck  = 5
+	progressPrepare   = 15
+	progressRunStart  = 20
+	progressRunEnd    = 80
+	progressVerify    = 85
+	progressRefresh   = 95
+	progressCompleted = 100
 )
 
 type installOperation string
@@ -431,12 +430,14 @@ func (s *Service) ensureNPMAvailable() error {
 	// Slow path: once block was initialized by populateCanInstall but npm
 	// was not found. Try once more through the runner.
 	npmPath := s.resolveNPMPath()
+	env := s.buildEnhancedEnv()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   npmPath,
 		Args:   []string{"--version"},
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err == nil {
@@ -454,10 +455,14 @@ func (s *Service) ensureNPMAvailable() error {
 
 // probeNPMAvailability performs the actual npm availability check and stores
 // the result in the service's cache fields. Called exactly once via npmOnce.
+// It uses an enhanced PATH (including directories from the platform resolver)
+// so that npm/node found outside the GUI process PATH can still be used.
 func (s *Service) probeNPMAvailability() {
+	env := s.buildEnhancedEnv()
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	resolved, _, resolveErr := resolver.ResolveExecutable("npm", nil, os.Environ())
+	resolved, _, resolveErr := resolver.ResolveExecutable("npm", nil, env)
 	if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
+		// Check if npm path was found but node is missing
 		s.npmAvailable = false
 		msg := "npm is not available"
 		if resolveErr != nil {
@@ -471,6 +476,7 @@ func (s *Service) probeNPMAvailability() {
 	result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   resolved.Path,
 		Args:   []string{"--version"},
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if runErr != nil {
@@ -479,7 +485,12 @@ func (s *Service) probeNPMAvailability() {
 		if detail == "" {
 			detail = runErr.Error()
 		}
-		s.npmResolvedErr = fmt.Errorf("npm found at %s but not functional: %s", resolved.Path, detail)
+		// Detect "node not found" specifically
+		if strings.Contains(detail, "node: No such file") || strings.Contains(detail, "env: node: No such file") {
+			s.npmResolvedErr = fmt.Errorf("npm found at %s but node is not in PATH: %s (install_node or fix_path recommended)", resolved.Path, detail)
+		} else {
+			s.npmResolvedErr = fmt.Errorf("npm found at %s but not functional: %s", resolved.Path, detail)
+		}
 		return
 	}
 	s.npmAvailable = true
@@ -488,8 +499,9 @@ func (s *Service) probeNPMAvailability() {
 // resolveNPMPath returns the absolute path to the npm executable found by
 // the platform resolver, falling back to a bare "npm" name.
 func (s *Service) resolveNPMPath() string {
+	env := s.buildEnhancedEnv()
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	resolved, _, err := resolver.ResolveExecutable("npm", nil, os.Environ())
+	resolved, _, err := resolver.ResolveExecutable("npm", nil, env)
 	if err == nil && strings.TrimSpace(resolved.Path) != "" {
 		return resolved.Path
 	}
@@ -501,9 +513,13 @@ func (s *Service) runInstallCommand(command installCommand) error {
 	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
 	defer cancel()
 
+	// Use enhanced env for npm commands so /usr/bin/env node can find node
+	env := s.buildEnhancedEnv()
+
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   command.path,
 		Args:   append([]string(nil), command.args...),
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err == nil {

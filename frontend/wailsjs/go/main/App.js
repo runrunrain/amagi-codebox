@@ -310,6 +310,10 @@ export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
 }
 
+export function RunEnvFixAction(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RunEnvFixAction'](arg1, arg2, arg3);
+}
+
 export function RunEnvCheck() {
   return window['go']['main']['App']['RunEnvCheck']();
 }

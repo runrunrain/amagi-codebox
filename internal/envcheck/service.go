@@ -43,9 +43,9 @@ type Service struct {
 	processRunner platform.ProcessRunner
 
 	// Async operation state
-	opMu     sync.Mutex
-	current  *OperationState
-	opSeq    atomic.Int64
+	opMu    sync.Mutex
+	current *OperationState
+	opSeq   atomic.Int64
 
 	// npmAvailability caches whether npm is resolvable. Populated once per
 	// service lifetime to avoid repeated probing during CheckAll.
@@ -171,23 +171,45 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 		}
 		// Only add npm_not_found issue when the tool is not installed or has errors.
 		if !status.Installed || strings.TrimSpace(status.Error) != "" {
+			// Determine issue code based on error content
+			issueCode := "npm_not_found"
+			errMsg := "npm is required but not available"
+			if strings.Contains(status.InstallBlockedReason, "node is not in PATH") ||
+				strings.Contains(status.InstallBlockedReason, "node: No such file") ||
+				strings.Contains(status.InstallBlockedReason, "env: node: No such file") {
+				issueCode = "node_missing_for_npm"
+				errMsg = "npm is installed but node is not in PATH"
+			}
 			issue := CheckIssue{
 				Severity: SeverityError,
-				Code:     "npm_not_found",
-				Message:  "npm is required but not available",
+				Code:     issueCode,
+				Message:  errMsg,
 				Detail:   status.InstallBlockedReason,
 				Solutions: []ResolutionAction{
+					{
+						Type:            SolutionFixPath,
+						Description:     "Fix PATH to include node and npm directories",
+						RequiresConfirm: true,
+						IsPrimary:       true,
+					},
 					{
 						Type:        SolutionInstallNode,
 						Description: "Install Node.js to get npm",
 					},
-					{
-						Type:        SolutionFixPath,
-						Description: "Ensure npm is in your PATH",
-					},
 				},
 			}
 			status.Issues = append(status.Issues, issue)
+			// Also add to top-level solutions for easy button access
+			status.Solutions = append(status.Solutions, ResolutionAction{
+				Type:            SolutionFixPath,
+				Description:     "Fix PATH to include node/npm",
+				RequiresConfirm: true,
+				IsPrimary:       true,
+			})
+			status.Solutions = append(status.Solutions, ResolutionAction{
+				Type:        SolutionInstallNode,
+				Description: "Install Node.js",
+			})
 		}
 	}
 }
@@ -280,6 +302,7 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 
 func (s *Service) npmPackageVersion(packageName string) (string, error) {
 	npmPath := s.resolveNPMPath()
+	env := s.buildEnhancedEnv()
 
 	ctx, cancel := context.WithTimeout(context.Background(), latestVersionTimeout)
 	defer cancel()
@@ -287,6 +310,7 @@ func (s *Service) npmPackageVersion(packageName string) (string, error) {
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   npmPath,
 		Args:   []string{"view", packageName, "version"},
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {

@@ -134,9 +134,9 @@ func TestStartInstallTool_ReturnsImmediately(t *testing.T) {
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("not installed")}, // pre-check
 		{stdout: "10.0.0", err: nil},                   // npm available
-		{stdout: "installed", err: nil},                 // install
-		{stdout: "opencode v1.0.0", err: nil},           // verify
-		{stdout: "1.0.0", err: nil},                     // latest version
+		{stdout: "installed", err: nil},                // install
+		{stdout: "opencode v1.0.0", err: nil},          // verify
+		{stdout: "1.0.0", err: nil},                    // latest version
 	}, 200*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -170,9 +170,9 @@ func TestStartUpdateTool_DuplicateReturnsCurrentState(t *testing.T) {
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")}, // pre-check
 		{stdout: "10.0.0", err: nil},            // npm available
-		{stdout: "installed", err: nil},          // install
-		{stdout: "opencode v2.0.0", err: nil},    // verify
-		{stdout: "2.0.0", err: nil},              // latest version
+		{stdout: "installed", err: nil},         // install
+		{stdout: "opencode v2.0.0", err: nil},   // verify
+		{stdout: "2.0.0", err: nil},             // latest version
 	}, 300*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -207,9 +207,9 @@ func TestStartUpdateTool_BusyWhenDifferentToolRunning(t *testing.T) {
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")}, // pre-check
 		{stdout: "10.0.0", err: nil},            // npm available
-		{stdout: "installed", err: nil},          // install
-		{stdout: "opencode v2.0.0", err: nil},    // verify
-		{stdout: "2.0.0", err: nil},              // latest version
+		{stdout: "installed", err: nil},         // install
+		{stdout: "opencode v2.0.0", err: nil},   // verify
+		{stdout: "2.0.0", err: nil},             // latest version
 	}, 300*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -240,9 +240,9 @@ func TestStartInstallTool_BusyWhenUpdateRunningForSameTool(t *testing.T) {
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")}, // pre-check
 		{stdout: "10.0.0", err: nil},            // npm available
-		{stdout: "installed", err: nil},          // install
-		{stdout: "opencode v2.0.0", err: nil},    // verify
-		{stdout: "2.0.0", err: nil},              // latest version
+		{stdout: "installed", err: nil},         // install
+		{stdout: "opencode v2.0.0", err: nil},   // verify
+		{stdout: "2.0.0", err: nil},             // latest version
 	}, 300*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -273,9 +273,9 @@ func TestStartUpdateTool_Succeeds_FinalStateQueryable(t *testing.T) {
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("version broken")}, // pre-check
 		{stdout: "10.0.0", err: nil},                    // npm available
-		{stdout: "installed", err: nil},                  // install
-		{stdout: "opencode v3.0.0", err: nil},            // verify
-		{stdout: "3.0.0", err: nil},                      // latest version
+		{stdout: "installed", err: nil},                 // install
+		{stdout: "opencode v3.0.0", err: nil},           // verify
+		{stdout: "3.0.0", err: nil},                     // latest version
 	}, 50*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -393,9 +393,9 @@ func TestGetEnvCheckSnapshot_WithRunningOperation(t *testing.T) {
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")}, // pre-check
 		{stdout: "10.0.0", err: nil},            // npm available
-		{stdout: "installed", err: nil},          // install
-		{stdout: "opencode v2.0.0", err: nil},    // verify
-		{stdout: "2.0.0", err: nil},              // latest version
+		{stdout: "installed", err: nil},         // install
+		{stdout: "opencode v2.0.0", err: nil},   // verify
+		{stdout: "2.0.0", err: nil},             // latest version
 	}, 200*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
 
@@ -428,10 +428,10 @@ func TestStartUpdateTool_CanStartAfterCompletion(t *testing.T) {
 	// First operation completes quickly
 	runner := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken")},
-		{stdout: "10.0.0", err: nil},        // npm probe (populateCanInstall)
-		{stdout: "installed", err: nil},      // install command
+		{stdout: "10.0.0", err: nil},          // npm probe (populateCanInstall)
+		{stdout: "installed", err: nil},       // install command
 		{stdout: "opencode v1.0.0", err: nil}, // verify version
-		{stdout: "1.0.0", err: nil},          // enrichment (latest version)
+		{stdout: "1.0.0", err: nil},           // enrichment (latest version)
 		{stdout: "opencode v1.0.0", err: nil}, // post-success refresh version
 	}, 10*time.Millisecond)
 	svc := NewServiceWithRunner(runner)
@@ -447,10 +447,10 @@ func TestStartUpdateTool_CanStartAfterCompletion(t *testing.T) {
 	// so no npm --version probe call goes to the runner.
 	runner2 := newSlowSequentialRunner([]seqResponse{
 		{stdout: "", err: errors.New("broken again")}, // pre-check
-		{stdout: "installed", err: nil},                // install command
-		{stdout: "opencode v2.0.0", err: nil},          // verify version
-		{stdout: "2.0.0", err: nil},                    // enrichment (latest version)
-		{stdout: "opencode v2.0.0", err: nil},          // post-success refresh version
+		{stdout: "installed", err: nil},               // install command
+		{stdout: "opencode v2.0.0", err: nil},         // verify version
+		{stdout: "2.0.0", err: nil},                   // enrichment (latest version)
+		{stdout: "opencode v2.0.0", err: nil},         // post-success refresh version
 	}, 10*time.Millisecond)
 	svc.processRunner = runner2
 
@@ -592,9 +592,9 @@ func TestStartUpdateTool_Timeout_StatusTimeout(t *testing.T) {
 	t.Setenv("PATH", tmpDir)
 
 	runner := newSlowSequentialRunner([]seqResponse{
-		{stdout: "opencode v1.0.0", err: nil},                        // pre-check version
-		{stdout: "2.0.0", err: nil},                                  // latest version (enrichment)
-		{stdout: "10.0.0", err: nil},                                 // npm available
+		{stdout: "opencode v1.0.0", err: nil},                         // pre-check version
+		{stdout: "2.0.0", err: nil},                                   // latest version (enrichment)
+		{stdout: "10.0.0", err: nil},                                  // npm available
 		{stdout: "", err: fmt.Errorf("command timed out after 120s")}, // timeout!
 	}, 10*time.Millisecond)
 	svc := NewServiceWithRunner(runner)

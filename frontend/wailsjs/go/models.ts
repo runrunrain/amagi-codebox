@@ -616,13 +616,43 @@ export namespace config {
 }
 
 export namespace envcheck {
-	
+
+	export class FixActionResult {
+	    success: boolean;
+	    message: string;
+	    error?: string;
+	    profilePath?: string;
+	    backupPath?: string;
+	    addedPaths?: string[];
+	    changed: boolean;
+	    requiresRestart: boolean;
+	    nextSteps?: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new FixActionResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.message = source["message"];
+	        this.error = source["error"];
+	        this.profilePath = source["profilePath"];
+	        this.backupPath = source["backupPath"];
+	        this.addedPaths = source["addedPaths"];
+	        this.changed = source["changed"];
+	        this.requiresRestart = source["requiresRestart"];
+	        this.nextSteps = source["nextSteps"];
+	    }
+	}
 	export class ResolutionAction {
 	    type: string;
 	    description: string;
 	    command?: string;
 	    tool?: string;
 	    packageName?: string;
+	    requiresConfirm?: boolean;
+	    isPrimary?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ResolutionAction(source);
@@ -635,6 +665,8 @@ export namespace envcheck {
 	        this.command = source["command"];
 	        this.tool = source["tool"];
 	        this.packageName = source["packageName"];
+	        this.requiresConfirm = source["requiresConfirm"];
+	        this.isPrimary = source["isPrimary"];
 	    }
 	}
 	export class CheckIssue {

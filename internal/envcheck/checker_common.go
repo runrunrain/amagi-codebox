@@ -14,9 +14,9 @@ import (
 // resolution used by every checker.
 type resolveResult struct {
 	executablePath string
-	systemPATHOk  bool
-	pathState     PathState
-	pathSource    string
+	systemPATHOk   bool
+	pathState      PathState
+	pathSource     string
 }
 
 // resolveExecutable performs the unified two-phase resolution:
@@ -53,9 +53,9 @@ func resolveExecutable(commandName string) resolveResult {
 		}
 		return resolveResult{
 			executablePath: resolved.Path,
-			systemPATHOk:  systemPATHOk,
-			pathState:     pathState,
-			pathSource:    source,
+			systemPATHOk:   systemPATHOk,
+			pathState:      pathState,
+			pathSource:     source,
 		}
 	}
 
@@ -64,18 +64,18 @@ func resolveExecutable(commandName string) resolveResult {
 	if systemPATHOk {
 		return resolveResult{
 			executablePath: pathFromLookPath,
-			systemPATHOk:  true,
-			pathState:     PathStateSystemPATH,
-			pathSource:    "lookpath",
+			systemPATHOk:   true,
+			pathState:      PathStateSystemPATH,
+			pathSource:     "lookpath",
 		}
 	}
 
 	// Neither phase found the executable.
 	return resolveResult{
 		executablePath: "",
-		systemPATHOk:  false,
-		pathState:     PathStateMissing,
-		pathSource:    "missing",
+		systemPATHOk:   false,
+		pathState:      PathStateMissing,
+		pathSource:     "missing",
 	}
 }
 
@@ -107,21 +107,31 @@ func applyPathStateToStatus(status *CheckStatus, rr resolveResult, tool CLITool)
 				Severity: SeverityInfo,
 				Code:     "path_not_in_system_path",
 				Message:  fmt.Sprintf("%s is reachable by CodeBox but not visible in the system PATH", displayToolName(tool)),
-				Detail:   "The tool works inside CodeBox. To make it available in your terminal, restart the terminal or sync your shell profile PATH.",
+				Detail:   "The tool works inside CodeBox. To make it available in your terminal, fix your shell profile PATH or restart the terminal.",
 				Solutions: []ResolutionAction{
+					{
+						Type:            SolutionFixPath,
+						Description:     "One-click fix: add tool directory to shell profile PATH",
+						Tool:            tool,
+						RequiresConfirm: true,
+						IsPrimary:       true,
+					},
 					{
 						Type:        SolutionRestartApp,
 						Description: "Restart CodeBox to refresh the detected PATH",
 						Tool:        tool,
 					},
-					{
-						Type:        SolutionFixPath,
-						Description: "Add the tool's directory to your shell profile PATH",
-						Tool:        tool,
-					},
 				},
 			}
 			status.Issues = append(status.Issues, issue)
+			// Also add the fix_path solution to the top-level solutions
+			status.Solutions = append(status.Solutions, ResolutionAction{
+				Type:            SolutionFixPath,
+				Description:     "Fix PATH to make " + displayToolName(tool) + " visible in system PATH",
+				Tool:            tool,
+				RequiresConfirm: true,
+				IsPrimary:       true,
+			})
 		}
 	} else {
 		status.PATHOk = false

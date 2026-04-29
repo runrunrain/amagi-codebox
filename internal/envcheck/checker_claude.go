@@ -199,6 +199,7 @@ func pathHasPrefix(path string, prefix string) bool {
 
 func (s *Service) confirmClaudeNPMInstall() error {
 	npmPath := s.resolveNPMPath()
+	env := s.buildEnhancedEnv()
 
 	ctx, cancel := context.WithTimeout(context.Background(), claudeNPMCheckTimeout)
 	defer cancel()
@@ -206,6 +207,7 @@ func (s *Service) confirmClaudeNPMInstall() error {
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   npmPath,
 		Args:   []string{"list", "-g", "@anthropic-ai/claude-code", "--depth=0"},
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {

@@ -165,25 +165,57 @@
             <!-- Solutions for this issue -->
             <div class="issue-solutions" v-if="issue.solutions && issue.solutions.length > 0">
               <div
-                v-for="(sol, sidx) in issue.solutions.slice(0, 2)"
+                v-for="(sol, sidx) in issue.solutions.slice(0, 3)"
                 :key="'sol-' + sidx"
-                class="solution-item"
+                class="solution-item solution-action-item"
               >
                 <span class="solution-desc">{{ sol.description }}</span>
                 <code class="solution-cmd" v-if="sol.command">{{ sol.command }}</code>
+                <button
+                  v-if="isExecutableSolution(sol)"
+                  class="btn small solution-btn"
+                  :class="sol.isPrimary ? 'primary-solution-btn' : ''"
+                  @click="executeSolution(sol, card.meta.key)"
+                  :disabled="card.isOperating || checkingAll || !!runningOperation || fixLoading"
+                >
+                  <span v-if="fixLoading && fixLoadingKey === solutionKey(sol, card.meta.key)" class="mini-spinner"></span>
+                  {{ solutionButtonLabel(sol) }}
+                </button>
               </div>
             </div>
           </div>
           <!-- Top-level solutions (from status.solutions) -->
           <div class="issue-solutions" v-if="!card.status.issues?.[0]?.solutions?.length && card.status.solutions && card.status.solutions.length > 0">
             <div
-              v-for="(sol, sidx) in card.status.solutions.slice(0, 2)"
+              v-for="(sol, sidx) in card.status.solutions.slice(0, 3)"
               :key="'topsol-' + sidx"
-              class="solution-item"
+              class="solution-item solution-action-item"
             >
               <span class="solution-desc">{{ sol.description }}</span>
               <code class="solution-cmd" v-if="sol.command">{{ sol.command }}</code>
+              <button
+                v-if="isExecutableSolution(sol)"
+                class="btn small solution-btn"
+                :class="sol.isPrimary ? 'primary-solution-btn' : ''"
+                @click="executeSolution(sol, card.meta.key)"
+                :disabled="card.isOperating || checkingAll || !!runningOperation || fixLoading"
+              >
+                <span v-if="fixLoading && fixLoadingKey === solutionKey(sol, card.meta.key)" class="mini-spinner"></span>
+                {{ solutionButtonLabel(sol) }}
+              </button>
             </div>
+          </div>
+          <!-- Fix result display -->
+          <div class="fix-result" v-if="cardFixResults[card.meta.key]">
+            <el-alert
+              :title="cardFixResults[card.meta.key].title"
+              :description="cardFixResults[card.meta.key].description || ''"
+              :type="cardFixResults[card.meta.key].type"
+              show-icon
+              :closable="true"
+              @close="clearFixResult(card.meta.key)"
+              class="fix-result-alert"
+            />
           </div>
         </div>
 
@@ -293,6 +325,7 @@ import {
   StartInstallToolAsync,
   StartUpdateToolAsync,
   GetEnvCheckSnapshot,
+  RunEnvFixAction,
 } from '../../wailsjs/go/main/App'
 import type { envcheck } from '../../wailsjs/go/models'
 
@@ -348,6 +381,9 @@ const checkingAll = ref(false)
 const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const mounted = ref(true)
 const lastOperationResult = ref<OperationResult | null>(null)
+const fixLoading = ref(false)
+const fixLoadingKey = ref<string>('')
+const cardFixResults = ref<Record<string, { title: string; description?: string; type: 'success' | 'error' | 'warning' | 'info' }>>({})
 
 // ---------- Computed ----------
 
@@ -531,6 +567,108 @@ function formatStepLabel(op: envcheck.OperationState): string {
   if (stepLabel) parts.push(stepLabel)
   if (op.message) parts.push(op.message)
   return parts.join(' - ')
+}
+
+// ---------- Solution / Fix Actions ----------
+
+function isExecutableSolution(sol: envcheck.ResolutionAction): boolean {
+  return ['fix_path', 'install_tool', 'install_node', 'retry'].includes(sol.type)
+}
+
+function solutionButtonLabel(sol: envcheck.ResolutionAction): string {
+  switch (sol.type) {
+    case 'fix_path': return 'Fix PATH'
+    case 'install_tool': return 'Install'
+    case 'install_node': return 'Install Node.js'
+    case 'retry': return 'Re-check'
+    default: return sol.description
+  }
+}
+
+function solutionKey(sol: envcheck.ResolutionAction, cardKey: string): string {
+  return `${cardKey}-${sol.type}`
+}
+
+async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string): Promise<void> {
+  // Confirmation for dangerous actions
+  if (sol.type === 'fix_path' || sol.type === 'install_node') {
+    try {
+      const actionLabel = solutionButtonLabel(sol)
+      const message = sol.type === 'fix_path'
+        ? 'This will back up and modify your shell profile to add necessary PATH entries. Continue?'
+        : 'This will attempt to install Node.js. Continue?'
+      await ElMessageBox.confirm(message, `Confirm: ${actionLabel}`, {
+        confirmButtonText: 'Confirm',
+        cancelButtonText: 'Cancel',
+        type: 'warning',
+      })
+    } catch {
+      return // user cancelled
+    }
+  }
+
+  const key = solutionKey(sol, cardKey)
+  fixLoading.value = true
+  fixLoadingKey.value = key
+
+  try {
+    // For retry, just re-check
+    if (sol.type === 'retry') {
+      await runFullCheck()
+      return
+    }
+
+    // For install_tool, use existing async install
+    if (sol.type === 'install_tool') {
+      const displayName = TOOL_METAS.find(m => m.key === cardKey)?.displayName || cardKey
+      await startInstall(cardKey, displayName)
+      return
+    }
+
+    // For fix_path and install_node, call RunEnvFixAction
+    const result = await RunEnvFixAction(sol.type, sol.tool || cardKey, '') as unknown as envcheck.FixActionResult
+
+    if (result) {
+      const resultType = result.success ? 'success' : 'error'
+      const title = result.success
+        ? result.message || 'Action completed'
+        : result.error || 'Action failed'
+
+      const descriptionParts: string[] = []
+      if (result.backupPath) descriptionParts.push(`Backup: ${result.backupPath}`)
+      if (result.profilePath) descriptionParts.push(`Profile: ${result.profilePath}`)
+      if (result.addedPaths && result.addedPaths.length > 0) {
+        descriptionParts.push(`Added: ${result.addedPaths.join(', ')}`)
+      }
+      if (result.nextSteps && result.nextSteps.length > 0) {
+        descriptionParts.push(result.nextSteps.join('. '))
+      }
+
+      cardFixResults.value[cardKey] = {
+        title,
+        description: descriptionParts.join('\n') || undefined,
+        type: resultType,
+      }
+
+      // Auto-refresh after successful fix
+      if (result.success && result.changed) {
+        await fetchSnapshot()
+      }
+    }
+  } catch (err: any) {
+    cardFixResults.value[cardKey] = {
+      title: 'Fix action failed',
+      description: err?.message || String(err),
+      type: 'error',
+    }
+  } finally {
+    fixLoading.value = false
+    fixLoadingKey.value = ''
+  }
+}
+
+function clearFixResult(cardKey: string): void {
+  delete cardFixResults.value[cardKey]
 }
 
 // ---------- Snapshot / Polling ----------
@@ -1099,6 +1237,45 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.solution-action-item {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.solution-btn {
+  flex-shrink: 0;
+  background: rgba(79, 195, 247, 0.12);
+  color: var(--accent);
+  border-color: rgba(79, 195, 247, 0.3);
+  min-width: auto;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.solution-btn:hover:not(:disabled) {
+  background: rgba(79, 195, 247, 0.2);
+}
+
+.primary-solution-btn {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.primary-solution-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.fix-result {
+  margin-top: 4px;
+}
+
+.fix-result-alert {
+  border-radius: 6px;
 }
 
 .issue-block {

@@ -34,9 +34,9 @@ func TestApplyPathStateToStatus_ResolverSuccess_LookPathFailure(t *testing.T) {
 	// Simulate: resolver found the tool, but exec.LookPath did not
 	rr := resolveResult{
 		executablePath: "/opt/homebrew/bin/claude",
-		systemPATHOk:  false, // exec.LookPath failed
-		pathState:     PathStateCodeboxPATH,
-		pathSource:    "path-search",
+		systemPATHOk:   false, // exec.LookPath failed
+		pathState:      PathStateCodeboxPATH,
+		pathSource:     "path-search",
 	}
 
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
@@ -73,9 +73,9 @@ func TestApplyPathStateToStatus_BothSucceed(t *testing.T) {
 
 	rr := resolveResult{
 		executablePath: "/usr/local/bin/claude",
-		systemPATHOk:  true,
-		pathState:     PathStateSystemPATH,
-		pathSource:    "path-search",
+		systemPATHOk:   true,
+		pathState:      PathStateSystemPATH,
+		pathSource:     "path-search",
 	}
 
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
@@ -104,9 +104,9 @@ func TestApplyPathStateToStatus_NeitherSucceeds(t *testing.T) {
 
 	rr := resolveResult{
 		executablePath: "",
-		systemPATHOk:  false,
-		pathState:     PathStateMissing,
-		pathSource:    "missing",
+		systemPATHOk:   false,
+		pathState:      PathStateMissing,
+		pathSource:     "missing",
 	}
 
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
@@ -128,9 +128,9 @@ func TestApplyPathStateToStatus_ShellFallback(t *testing.T) {
 
 	rr := resolveResult{
 		executablePath: "/Users/test/.nvm/versions/node/v20/bin/claude",
-		systemPATHOk:  false,
-		pathState:     PathStateShellFallback,
-		pathSource:    "fallback",
+		systemPATHOk:   false,
+		pathState:      PathStateShellFallback,
+		pathSource:     "fallback",
 	}
 
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
@@ -773,13 +773,13 @@ func TestCheckStatus_NewFields_PreservedThroughCache(t *testing.T) {
 	// Manually set a cached status with new fields
 	svc.mu.Lock()
 	svc.cache.Items["claude_code"] = CheckStatus{
-		Tool:           ToolClaudeCode,
-		Installed:      true,
-		PATHOk:         true,
-		SystemPATHOk:  false,
-		PathState:      PathStateShellFallback,
-		PathSource:     "fallback",
-		CanInstall:     true,
+		Tool:                 ToolClaudeCode,
+		Installed:            true,
+		PATHOk:               true,
+		SystemPATHOk:         false,
+		PathState:            PathStateShellFallback,
+		PathSource:           "fallback",
+		CanInstall:           true,
 		InstallBlockedReason: "",
 		Issues: []CheckIssue{
 			{Severity: SeverityInfo, Code: "path_not_in_system_path", Message: "test"},
@@ -821,7 +821,7 @@ func TestSequentialRunner_MockNPMPath(t *testing.T) {
 
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "", err: errors.New("not installed")}, // pre-check
-		{stdout: "10.0.0", err: nil},                  // npm available
+		{stdout: "10.0.0", err: nil},                   // npm available
 		{stdout: "installed", err: nil},                // install
 		{stdout: "opencode v1.0.0", err: nil},          // verify
 		{stdout: "1.0.0", err: nil},                    // latest

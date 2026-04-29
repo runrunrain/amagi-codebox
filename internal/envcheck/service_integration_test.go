@@ -659,11 +659,11 @@ func TestUpdate_VersionUnchanged_ReturnsFailure(t *testing.T) {
 	t.Setenv("PATH", tmpDir)
 
 	runner := &sequentialRunner{responses: []seqResponse{
-		{stdout: "opencode v1.0.0", err: nil},  // pre-check version
-		{stdout: "2.0.0", err: nil},             // latest version (enrichment)
-		{stdout: "10.0.0", err: nil},            // npm available
-		{stdout: "updated", err: nil},            // install command succeeds
-		{stdout: "opencode v1.0.0", err: nil},  // post-check: SAME version!
+		{stdout: "opencode v1.0.0", err: nil}, // pre-check version
+		{stdout: "2.0.0", err: nil},           // latest version (enrichment)
+		{stdout: "10.0.0", err: nil},          // npm available
+		{stdout: "updated", err: nil},         // install command succeeds
+		{stdout: "opencode v1.0.0", err: nil}, // post-check: SAME version!
 		// post-enrichment hits version cache (no runner call)
 	}}
 	svc := NewServiceWithRunner(runner)
@@ -697,15 +697,15 @@ func TestUpdate_Success_InvalidatesVersionCache(t *testing.T) {
 	t.Setenv("PATH", tmpDir)
 
 	runner := &sequentialRunner{responses: []seqResponse{
-		{stdout: "opencode v1.0.0", err: nil},  // pre-check version
+		{stdout: "opencode v1.0.0", err: nil}, // pre-check version
 		// enrichment uses pre-seeded cache hit (9.9.9) -- no runner call
-		{stdout: "10.0.0", err: nil},            // npm available
-		{stdout: "updated", err: nil},            // install command
-		{stdout: "opencode v2.0.0", err: nil},  // post-check: version changed!
+		{stdout: "10.0.0", err: nil},          // npm available
+		{stdout: "updated", err: nil},         // install command
+		{stdout: "opencode v2.0.0", err: nil}, // post-check: version changed!
 		// post-enrichment uses cache hit (9.9.9) -- no runner call
 		// serializedInstallOrUpdate invalidates cache and calls CheckOne:
-		{stdout: "opencode v2.0.0", err: nil},  // re-check version
-		{stdout: "2.0.0", err: nil},             // re-enrichment (cache was invalidated)
+		{stdout: "opencode v2.0.0", err: nil}, // re-check version
+		{stdout: "2.0.0", err: nil},           // re-enrichment (cache was invalidated)
 	}}
 	svc := NewServiceWithRunner(runner)
 

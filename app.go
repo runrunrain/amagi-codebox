@@ -226,6 +226,27 @@ func (a *App) GetEnvCheckSnapshot() *envcheck.EnvCheckSnapshot {
 	return a.EnvCheck.GetEnvCheckSnapshot()
 }
 
+// RunEnvFixAction 执行白名单化的环境修复动作。
+// 前端传入 FixActionRequest，后端验证 action 类型后执行对应修复。
+func (a *App) RunEnvFixAction(action string, tool string, extraPath string) (*envcheck.FixActionResult, error) {
+	req := envcheck.FixActionRequest{
+		Action:    envcheck.SolutionType(action),
+		Tool:      envcheck.CLITool(tool),
+		ExtraPath: extraPath,
+	}
+	result, err := a.EnvCheck.RunFixAction(req)
+	if err != nil {
+		return nil, fmt.Errorf("run fix action: %w", err)
+	}
+	// Best-effort: refresh check after successful fix
+	if result != nil && result.Success && result.Changed {
+		go func() {
+			_, _ = a.EnvCheck.CheckAll()
+		}()
+	}
+	return result, nil
+}
+
 // parseCLITool 将前端传入的字符串转为 CLITool 枚举。
 func parseCLITool(tool string) (envcheck.CLITool, error) {
 	switch strings.ToLower(strings.TrimSpace(tool)) {

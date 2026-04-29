@@ -365,7 +365,7 @@ func buildAttachStartupCommandForShell(shell *ResolvedShell, cliName string, arg
 //	& 'codex' '-m' 'gpt&5'
 //
 // Single quotes prevent all PowerShell expansion ($, (), [], etc.).
-// Internal single quotes are doubled ('' escape).
+// Internal single quotes are doubled (” escape).
 // Returns an error if any arg contains CR or LF which would split the command.
 func buildAttachPowerShell(cliName string, args []string) (string, error) {
 	if err := validateNoNewlines(append(append([]string(nil), cliName), args...)...); err != nil {

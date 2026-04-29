@@ -16,8 +16,8 @@ import (
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/secrets"
-	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/session"
+	"amagi-codebox/internal/settings"
 )
 
 // testMobileFSSource is embedded from the remote package's testdata so that
@@ -26,6 +26,47 @@ import (
 //
 //go:embed internal/remote/testdata/mobile/dist
 var appTestMobileFSSource embed.FS
+
+// newTestSecretsService creates a SecretsService backed by an in-memory
+// store, bypassing the real macOS Keychain / OS credential manager.
+// This prevents test hangs caused by Keychain authorization prompts.
+func newTestSecretsService(t *testing.T, configDir string) *secrets.SecretsService {
+	t.Helper()
+	store := &memorySecretStore{data: map[string]string{}}
+	svc := secrets.NewSecretsServiceWithStore(configDir, store)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("load secrets: %v", err)
+	}
+	return svc
+}
+
+// memorySecretStore implements secrets.SecretStore using an in-memory map.
+// It is safe for concurrent use within a single test.
+type memorySecretStore struct {
+	data map[string]string
+}
+
+func (m *memorySecretStore) Load(path string) (map[string]string, error) {
+	_ = path
+	cp := make(map[string]string, len(m.data))
+	for k, v := range m.data {
+		cp[k] = v
+	}
+	return cp, nil
+}
+
+func (m *memorySecretStore) Save(path string, values map[string]string) error {
+	_ = path
+	m.data = make(map[string]string, len(values))
+	for k, v := range values {
+		m.data[k] = v
+	}
+	return nil
+}
+
+func (m *memorySecretStore) Kind() string { return "memory" }
+
+func (m *memorySecretStore) LegacyImportPath(path string) string { return path }
 
 // newTestApp creates a minimal App with all services wired for testing.
 func newTestApp(t *testing.T) *App {
@@ -53,10 +94,10 @@ func newTestAppWithConfigDir(t *testing.T) (*App, string) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	secretsSvc := secrets.NewSecretsService(configDir)
-	if err := secretsSvc.Load(); err != nil {
-		t.Fatalf("load secrets: %v", err)
-	}
+	// Use an in-memory secret store to avoid accessing the real macOS
+	// Keychain, which may block indefinitely in test processes (e.g. when
+	// the Keychain is locked or the test runner lacks UI authorization).
+	secretsSvc := newTestSecretsService(t, configDir)
 
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
 	if err := envVarsSvc.Load(); err != nil {
@@ -423,10 +464,7 @@ func newTestAppWithRemote(t *testing.T) *App {
 	if err := cfgSvc.Load(); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	secretsSvc := secrets.NewSecretsService(configDir)
-	if err := secretsSvc.Load(); err != nil {
-		t.Fatalf("load secrets: %v", err)
-	}
+	secretsSvc := newTestSecretsService(t, configDir)
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
 	if err := envVarsSvc.Load(); err != nil {
 		t.Fatalf("load envvars: %v", err)

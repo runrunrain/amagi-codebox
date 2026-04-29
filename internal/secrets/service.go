@@ -25,6 +25,17 @@ func NewSecretsService(configDir string) *SecretsService {
 	}
 }
 
+// NewSecretsServiceWithStore creates a SecretsService with an injected
+// SecretStore implementation. This is intended for tests that need to
+// avoid hitting the real OS keychain.
+func NewSecretsServiceWithStore(configDir string, store SecretStore) *SecretsService {
+	return &SecretsService{
+		secretsPath: filepath.Join(configDir, "secrets.enc"),
+		store:       store,
+		cache:       map[string]string{},
+	}
+}
+
 func (s *SecretsService) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

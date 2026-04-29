@@ -68,31 +68,33 @@ const (
 type SolutionType string
 
 const (
-	SolutionInstallTool  SolutionType = "install_tool"
-	SolutionInstallNode  SolutionType = "install_node"
-	SolutionFixPath      SolutionType = "fix_path"
-	SolutionRestartApp   SolutionType = "restart_app"
-	SolutionRetry        SolutionType = "retry"
+	SolutionInstallTool   SolutionType = "install_tool"
+	SolutionInstallNode   SolutionType = "install_node"
+	SolutionFixPath       SolutionType = "fix_path"
+	SolutionRestartApp    SolutionType = "restart_app"
+	SolutionRetry         SolutionType = "retry"
 	SolutionManualCommand SolutionType = "manual_command"
 )
 
 // CheckIssue describes a single detected problem with a CLI tool environment.
 type CheckIssue struct {
-	Severity  IssueSeverity `json:"severity"`
-	Code      string        `json:"code"`
-	Message   string        `json:"message"`
-	Detail    string        `json:"detail,omitempty"`
+	Severity  IssueSeverity      `json:"severity"`
+	Code      string             `json:"code"`
+	Message   string             `json:"message"`
+	Detail    string             `json:"detail,omitempty"`
 	Solutions []ResolutionAction `json:"solutions,omitempty"`
 }
 
 // ResolutionAction describes an actionable step the user can take to resolve
 // an issue.
 type ResolutionAction struct {
-	Type           SolutionType `json:"type"`
-	Description    string       `json:"description"`
-	Command        string       `json:"command,omitempty"`
-	Tool           CLITool      `json:"tool,omitempty"`
-	PackageName    string       `json:"packageName,omitempty"`
+	Type            SolutionType `json:"type"`
+	Description     string       `json:"description"`
+	Command         string       `json:"command,omitempty"`
+	Tool            CLITool      `json:"tool,omitempty"`
+	PackageName     string       `json:"packageName,omitempty"`
+	RequiresConfirm bool         `json:"requiresConfirm,omitempty"`
+	IsPrimary       bool         `json:"isPrimary,omitempty"`
 }
 
 // CheckStatus is the frontend-facing status snapshot for a single CLI tool.
@@ -190,17 +192,17 @@ const (
 // OperationState holds the full state of a single async install/update operation.
 // It is safe to serialize to JSON and send to the frontend.
 type OperationState struct {
-	ID           string         `json:"id"`
-	Tool         CLITool        `json:"tool"`
-	Kind         OperationKind  `json:"kind"`
-	Status       OperationStatus `json:"status"`
-	Step         OperationStep  `json:"step"`
-	Message      string         `json:"message"`
-	Progress     int            `json:"progress"`
-	StartedAt    time.Time      `json:"startedAt"`
-	UpdatedAt    time.Time      `json:"updatedAt"`
-	FinishedAt   *time.Time     `json:"finishedAt"`
-	Result       *InstallResult `json:"result"`
-	Error        string         `json:"error"`
-	CacheRefreshed bool         `json:"cacheRefreshed"`
+	ID             string          `json:"id"`
+	Tool           CLITool         `json:"tool"`
+	Kind           OperationKind   `json:"kind"`
+	Status         OperationStatus `json:"status"`
+	Step           OperationStep   `json:"step"`
+	Message        string          `json:"message"`
+	Progress       int             `json:"progress"`
+	StartedAt      time.Time       `json:"startedAt"`
+	UpdatedAt      time.Time       `json:"updatedAt"`
+	FinishedAt     *time.Time      `json:"finishedAt"`
+	Result         *InstallResult  `json:"result"`
+	Error          string          `json:"error"`
+	CacheRefreshed bool            `json:"cacheRefreshed"`
 }
