@@ -1,7 +1,7 @@
 {
   "name": "amagi-codebox",
   "private": true,
-  "version": "1.1.18",
+  "version": "1.1.19",
   "scripts": {
     "build:mobile": "npm --prefix mobile ci && npm --prefix mobile run build",
     "build": "npm run build:mobile && npm --prefix frontend run build",
