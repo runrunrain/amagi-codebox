@@ -16,17 +16,6 @@
 
 ---
 
-## 截图
-
-<!-- TODO: 添加应用截图 -->
-
-<div align="center">
-  <img src="docs/screenshot-dashboard.png" alt="仪表盘界面" width="800"/>
-  <p>仪表盘界面</p>
-</div>
-
----
-
 ## 功能特性
 
 - **跨平台支持**：Windows 10/11 和 macOS 原生支持
