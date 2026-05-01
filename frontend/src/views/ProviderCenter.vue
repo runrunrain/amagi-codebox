@@ -1515,7 +1515,7 @@ const ocRawToGui = () => {
   ocGui.mcpServers = mcps
   const perms: OcPermEntry[] = []
   if (obj.permission && typeof obj.permission === 'object') {
-    for (const [k, v] of Object.entries(obj.permission as Record<string, any>)) perms.push({ key: k, value: String(v) })
+    for (const [k, v] of Object.entries(obj.permission as Record<string, any>)) perms.push({ key: k, value: typeof v === 'string' ? v : JSON.stringify(v) })
   }
   ocGui.permissions = perms
   ocGui.instructions = Array.isArray(obj.instructions) ? obj.instructions.filter((s: any) => typeof s === 'string') : []
@@ -1636,7 +1636,7 @@ const ocGuiToRaw = () => {
     }
     if (Object.keys(mcp).length > 0) result.mcp = mcp
   }
-  if (ocGui.permissions.length > 0) { const perm: Record<string, string> = {}; for (const p of ocGui.permissions) { if (p.key.trim()) perm[p.key.trim()] = p.value } if (Object.keys(perm).length > 0) result.permission = perm }
+  if (ocGui.permissions.length > 0) { const perm: Record<string, any> = {}; for (const p of ocGui.permissions) { if (!p.key.trim()) continue; let pv: any = p.value; try { const parsed = JSON.parse(p.value); if (typeof parsed === 'object' && parsed !== null) pv = parsed } catch {} perm[p.key.trim()] = pv } if (Object.keys(perm).length > 0) result.permission = perm }
   const instrs = ocGui.instructions.filter(s => s.trim()); if (instrs.length > 0) result.instructions = instrs
   const plugs = ocGui.plugins.filter(s => s.trim()); if (plugs.length > 0) result.plugin = plugs
   if (ocGui.experimentalKvs.length > 0) { const exp: Record<string, any> = {}; for (const kv of ocGui.experimentalKvs) { const k = kv.key.trim(); if (!k || !kv.valueRaw.trim()) continue; try { exp[k] = JSON.parse(kv.valueRaw) } catch { ocSubJsonErrors['experimental.' + k] = '无效 JSON' } } if (Object.keys(exp).length > 0) result.experimental = exp }

@@ -50,6 +50,7 @@ const envDumpKey = "__AMAGI_TEST_ENV_DUMP_FILE"
 // exec.Command("codex") resolves to the fake.
 func setupFakeCodex(t *testing.T) (binDir string, dumpFile string, origPATH string) {
 	t.Helper()
+	setupTestCodexHome(t)
 
 	binDir = newASCIIPathTempDir(t, "fake-codex-bin-")
 	dumpDir := newASCIIPathTempDir(t, "fake-codex-dump-")
@@ -89,6 +90,22 @@ func setupFakeCodex(t *testing.T) (binDir string, dumpFile string, origPATH stri
 	})
 
 	return binDir, dumpFile, origPATH
+}
+
+func setupTestCodexHome(t *testing.T) string {
+	t.Helper()
+	home := newASCIIPathTempDir(t, "fake-codex-home-")
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("mkdir test codex home: %v", err)
+	}
+	configPath := filepath.Join(codexDir, "config.toml")
+	content := "model = \"codex-mini-latest\"\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write test codex config: %v", err)
+	}
+	setTestUserHome(t, home)
+	return home
 }
 
 func setupFakeClaude(t *testing.T) (binDir string, dumpFile string, origPATH string) {

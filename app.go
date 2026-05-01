@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,8 @@ import (
 type codexLaunchSettings struct {
 	Model string
 }
+
+const codexModelProviderName = "amagi-codebox-provider"
 
 type RemoteWebUIStatusResult struct {
 	Openable                bool   `json:"openable"`
@@ -901,10 +904,6 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		Model: normalizeCodexModelName(modelName),
 	}
 
-	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
-	a.Log.Info("session", "Codex 会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, launchSettings.Model, launchMode))
-
 	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
 	envOverrides := map[string]string{}
 	injectProviderEnv := func(pid string, provider *config.Provider) {
@@ -930,6 +929,17 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 			injectProviderEnv(providerID, provider)
 		}
 	}
+
+	// 同步 Codex config.toml 的顶层 model/model_provider，确保自定义 provider 路由生效。
+	if launchSettings.Model != "" {
+		if err := syncCodexConfigModel(launchSettings.Model); err != nil {
+			a.Log.Warn("codex", "sync config.toml model failed", fmt.Sprintf("model=%s err=%v", launchSettings.Model, err))
+		}
+	}
+
+	// 创建会话记录
+	sess := a.Sessions.Create(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
+	a.Log.Info("session", "Codex 会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, launchSettings.Model, launchMode))
 
 	// 调试日志：输出 envOverrides 注入情况
 	envKeys := make([]string, 0, len(envOverrides))
@@ -1011,6 +1021,91 @@ func normalizeCodexModelName(modelName string) string {
 		trimmed = strings.TrimSpace(trimmed[:len(trimmed)-len("[1m]")])
 	}
 	return trimmed
+}
+
+// syncCodexConfigModel updates Codex config.toml so custom provider routing stays active.
+func syncCodexConfigModel(model string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	return syncCodexConfigFile(configPath, model, codexModelProviderName)
+}
+
+func syncCodexConfigFile(configPath, model, modelProvider string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config.toml: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	updated := make([]string, 0, len(lines)+1)
+	modelLineIndex := -1
+	foundModel := false
+	foundTopLevelProvider := false
+	inTopLevel := true
+	inAmagiInjectBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "# === amagi-codebox-inject-start ===" {
+			inAmagiInjectBlock = true
+		}
+
+		if key, ok := tomlAssignmentKey(trimmed); ok {
+			if inTopLevel {
+				switch key {
+				case "model":
+					line = "model = " + strconv.Quote(model)
+					modelLineIndex = len(updated)
+					foundModel = true
+				case "model_provider":
+					line = "model_provider = " + strconv.Quote(modelProvider)
+					foundTopLevelProvider = true
+				}
+			} else if inAmagiInjectBlock && key == "model_provider" {
+				continue
+			}
+		}
+
+		updated = append(updated, line)
+		if isTomlTableHeader(trimmed) {
+			inTopLevel = false
+		}
+		if trimmed == "# === amagi-codebox-inject-end ===" {
+			inAmagiInjectBlock = false
+		}
+	}
+
+	if !foundModel {
+		return fmt.Errorf("top-level model field not found in %s", configPath)
+	}
+	if modelProvider != "" && !foundTopLevelProvider {
+		providerLine := "model_provider = " + strconv.Quote(modelProvider)
+		insertAt := modelLineIndex + 1
+		updated = append(updated[:insertAt], append([]string{providerLine}, updated[insertAt:]...)...)
+	}
+
+	return os.WriteFile(configPath, []byte(strings.Join(updated, "\n")), 0644)
+}
+
+func tomlAssignmentKey(trimmedLine string) (string, bool) {
+	if trimmedLine == "" || strings.HasPrefix(trimmedLine, "#") {
+		return "", false
+	}
+	idx := strings.Index(trimmedLine, "=")
+	if idx == -1 {
+		return "", false
+	}
+	key := strings.TrimSpace(trimmedLine[:idx])
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+func isTomlTableHeader(trimmedLine string) bool {
+	return strings.HasPrefix(trimmedLine, "[")
 }
 
 // isOpenAIProvider reports whether the provider uses the OpenAI-compatible API.
