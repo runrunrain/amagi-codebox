@@ -1850,6 +1850,32 @@ func (a *App) GetOutputHistory(sessionID string) ([]byte, error) {
 	return a.Pty.GetOutputHistory(sessionID)
 }
 
+// GetOutputHistorySnapshot returns a JSON-encoded snapshot of the output history
+// along with the emitSeq at snapshot time. The JSON structure is:
+//
+//	{"data": "<base64-encoded bytes>", "seq": <uint64>}
+//
+// Frontend uses the seq to deduplicate live events: any live event with
+// seq <= the returned seq is already contained in the history snapshot.
+func (a *App) GetOutputHistorySnapshot(sessionID string) (string, error) {
+	data, seq, err := a.Pty.GetOutputHistoryWithSeq(sessionID)
+	if err != nil {
+		return "", err
+	}
+	result := struct {
+		Data string `json:"data"`
+		Seq  uint64 `json:"seq"`
+	}{
+		Data: base64.StdEncoding.EncodeToString(data),
+		Seq:  seq,
+	}
+	bytes, err := json.Marshal(result)
+	if err != nil {
+		return "", fmt.Errorf("marshal history snapshot: %w", err)
+	}
+	return string(bytes), nil
+}
+
 // GetPtyDimensions 返回指定 PTY 会话的当前尺寸。
 // 实现 remote.DimensionsProvider 接口。
 func (a *App) GetPtyDimensions(sessionID string) (cols, rows int, err error) {

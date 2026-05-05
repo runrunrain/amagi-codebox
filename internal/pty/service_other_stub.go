@@ -65,4 +65,7 @@ func (s *Service) IsRunning(sessionID string) bool { return false }
 func (s *Service) GetOutputHistory(sessionID string) ([]byte, error) {
 	return nil, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
+func (s *Service) GetOutputHistoryWithSeq(sessionID string) ([]byte, uint64, error) {
+	return nil, 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
+}
 func (s *Service) RunningCount() int { return 0 }

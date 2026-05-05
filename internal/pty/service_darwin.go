@@ -29,6 +29,7 @@ type PtySession struct {
 	done          chan struct{}
 	outputHistory []byte
 	historyMu     sync.Mutex
+	emitSeq       uint64 // monotonic counter incremented per PTY output chunk under historyMu
 	currentCols   int
 	currentRows   int
 	running       bool
@@ -326,6 +327,13 @@ func buildDarwinPTYEnvironmentFromBase(env []string, inheritedEnv []string) []st
 	if !hasEnvKey(enriched, "COLORTERM") {
 		enriched = append(enriched, "COLORTERM=truecolor")
 	}
+	// Ensure a UTF-8 locale is present for PTY child processes.
+	// When launched from Finder or certain launchers, LANG may be unset,
+	// causing CLI tools (including OpenCode) to default to C/POSIX locale
+	// and produce garbled UTF-8 output.
+	if !hasEnvKey(enriched, "LANG") && !hasEnvKey(enriched, "LC_ALL") && !hasEnvKey(enriched, "LC_CTYPE") {
+		enriched = append(enriched, "LANG=en_US.UTF-8")
+	}
 	return enriched
 }
 
@@ -374,14 +382,16 @@ func (s *Service) readLoop(sessionID string, ps *PtySession) {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 			ps.historyMu.Lock()
+			ps.emitSeq++
+			seq := ps.emitSeq
 			ps.outputHistory = append(ps.outputHistory, chunk...)
 			if len(ps.outputHistory) > maxOutputHistorySize {
-				ps.outputHistory = ps.outputHistory[len(ps.outputHistory)-maxOutputHistorySize:]
+				ps.outputHistory = trimHistoryToFrontier(ps.outputHistory, maxOutputHistorySize)
 			}
 			ps.historyMu.Unlock()
 			if s.ctx != nil {
 				data := base64.StdEncoding.EncodeToString(chunk)
-				wailsRuntime.EventsEmit(s.ctx, "pty:data:"+sessionID, data)
+				wailsRuntime.EventsEmit(s.ctx, "pty:data:"+sessionID, map[string]any{"s": seq, "d": data})
 			}
 			for _, cb := range s.snapshotOutputCallbacks(sessionID) {
 				cb(chunk)
@@ -394,6 +404,130 @@ func (s *Service) readLoop(sessionID string, ps *PtySession) {
 			return
 		}
 	}
+}
+
+// trimHistoryToFrontier trims the history buffer to at most maxSize bytes,
+// starting from a safe UTF-8 and ANSI escape boundary. This prevents
+// replaying a partial multi-byte UTF-8 character or a truncated ANSI
+// escape sequence, which would cause garbled output on history replay.
+func trimHistoryToFrontier(history []byte, maxSize int) []byte {
+	if len(history) <= maxSize {
+		return history
+	}
+	start := len(history) - maxSize
+	// Step 1: avoid splitting a multi-byte UTF-8 sequence.
+	// If the byte at `start` is a UTF-8 continuation byte (10xxxxxx),
+	// advance until we find a leading byte (0xxxxxxx or 11xxxxxx).
+	for start < len(history) && !isUTF8LeadingByte(history[start]) {
+		start++
+	}
+	// Step 2: avoid starting inside an ANSI escape sequence.
+	// Look backwards from start: if there is an ESC (0x1B) without a
+	// terminating byte (0x40..0x7E for CSI/OSC/etc.) before `start`,
+	// skip past the escape sequence.
+	if idx := findTruncatedEscape(history, start); idx > start {
+		start = idx
+	}
+	return history[start:]
+}
+
+// isUTF8LeadingByte returns true if b is the first byte of a UTF-8
+// character (ASCII byte or a multi-byte leading byte 11xxxxxx).
+func isUTF8LeadingByte(b byte) bool {
+	return b&0xC0 != 0x80
+}
+
+// findTruncatedEscape scans backwards from `start` looking for an ESC
+// byte that may be part of an unterminated escape sequence. If found,
+// returns the position after the sequence terminator (or start + scanLimit
+// if no terminator is found, to bound the search).
+func findTruncatedEscape(history []byte, start int) int {
+	// Only scan back a limited distance; escape sequences are short.
+	const scanLimit = 128
+	lower := start - scanLimit
+	if lower < 0 {
+		lower = 0
+	}
+	// Walk backwards to find the nearest ESC.
+	for i := start - 1; i >= lower; i-- {
+		if history[i] == 0x1B {
+			// Check if this is a CSI sequence (ESC [ ...).
+			// For CSI, the full form is: ESC [ <params 0x30-0x3F> <intermediate 0x20-0x2F> <final 0x40-0x7E>
+			// We need to distinguish '[' (0x5B) as a CSI introducer vs a final byte.
+			// After ESC, the next byte determines the sequence type:
+			//   '[' (0x5B) → CSI: parameters then final byte 0x40-0x7E
+			//   ']' (0x5D) → OSC: terminated by BEL (0x07) or ST (ESC \)
+			//   0x40-0x5F → 2-byte sequence (like ESC M)
+			//   0x60-0x7E → 2-byte sequence (like ESC c)
+			if i+1 < len(history) && history[i+1] == 0x5B {
+				// CSI sequence: look for a final byte 0x40-0x7E that comes
+				// after parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F).
+				// Scan from i+2 looking for the final byte.
+				foundTerminator := false
+				for j := i + 2; j < len(history); j++ {
+					b := history[j]
+					if b >= 0x40 && b <= 0x7E {
+						// This is the final byte of the CSI sequence
+						if j < start {
+							foundTerminator = true
+						}
+						break
+					}
+					// Parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F) continue
+					if !((b >= 0x30 && b <= 0x3F) || (b >= 0x20 && b <= 0x2F)) {
+						// Unexpected byte; sequence is malformed, treat as not truncated
+						foundTerminator = true
+						break
+					}
+				}
+				if !foundTerminator {
+					// CSI sequence was truncated; find the terminator after start
+					for j := start; j < len(history) && j < start+scanLimit; j++ {
+						if history[j] >= 0x40 && history[j] <= 0x7E {
+							return j + 1
+						}
+					}
+					return start + 1
+				}
+			} else if i+1 < len(history) && history[i+1] == 0x5D {
+				// OSC sequence: terminated by BEL (0x07) or ST (ESC \)
+				foundTerminator := false
+				for j := i + 2; j < len(history); j++ {
+					b := history[j]
+					if b == 0x07 {
+						if j < start {
+							foundTerminator = true
+						}
+						break
+					}
+					if b == 0x1B && j+1 < len(history) && history[j+1] == 0x5C {
+						if j+1 < start {
+							foundTerminator = true
+						}
+						break
+					}
+				}
+				if !foundTerminator {
+					for j := start; j < len(history) && j < start+scanLimit; j++ {
+						if history[j] == 0x07 {
+							return j + 1
+						}
+						if history[j] == 0x1B && j+1 < len(history) && history[j+1] == 0x5C {
+							return j + 2
+						}
+					}
+					return start + 1
+				}
+			} else if i+1 < len(history) && history[i+1] >= 0x40 && history[i+1] <= 0x7E {
+				// 2-byte escape sequence (ESC <final>): complete if i+1 < start
+				if i+1 >= start {
+					return i + 2
+				}
+			}
+			return start
+		}
+	}
+	return start
 }
 
 func (s *Service) waitLoop(sessionID string, ps *PtySession) {
@@ -550,6 +684,22 @@ func (s *Service) GetOutputHistory(sessionID string) ([]byte, error) {
 	history := make([]byte, len(ps.outputHistory))
 	copy(history, ps.outputHistory)
 	return history, nil
+}
+
+// GetOutputHistoryWithSeq returns a snapshot of the output history along with
+// the emitSeq at the time of the snapshot. This allows frontend consumers to
+// deduplicate: any live event with seq <= returned seq is already contained in
+// the history snapshot.
+func (s *Service) GetOutputHistoryWithSeq(sessionID string) ([]byte, uint64, error) {
+	ps, err := s.session(sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	ps.historyMu.Lock()
+	defer ps.historyMu.Unlock()
+	history := make([]byte, len(ps.outputHistory))
+	copy(history, ps.outputHistory)
+	return history, ps.emitSeq, nil
 }
 
 func (s *Service) RunningCount() int {

@@ -183,6 +183,16 @@ func shouldInlineWindowsScriptWrapper(osName string, cliPath string) bool {
 }
 
 func (r *defaultCLIResolver) resolveCLIForRequest(command string, args []string, env []string, shell *ResolvedShell) (ResolvedCLI, LaunchDiagnostics, error) {
+	// Try direct PATH search first. This respects the controlled environment
+	// (effective PATH with baseline entries) and avoids login shell profile
+	// interference (e.g. zsh -ilc reordering PATH via .zprofile/.zshrc).
+	cli, diagnostics, err := r.ResolveExecutable(command, args, env)
+	if err == nil {
+		return cli, diagnostics, nil
+	}
+	// On Darwin with a resolved shell, fall back to shell-assisted resolution.
+	// A login shell may know about CLIs installed via shell-specific mechanisms
+	// (nvm, rbenv, conda init, etc.) that are not on any static PATH.
 	if r.capabilities.OS == "darwin" && shell != nil && strings.TrimSpace(shell.Path) != "" {
 		if resolvedPath := resolveCommandViaShellFallback(command, env, shell); resolvedPath != "" {
 			return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
@@ -191,7 +201,7 @@ func (r *defaultCLIResolver) resolveCLIForRequest(command string, args []string,
 			}, nil
 		}
 	}
-	return r.ResolveExecutable(command, args, env)
+	return cli, diagnostics, err
 }
 
 func (r *defaultCLIResolver) ResolveExecutable(command string, args []string, env []string) (ResolvedCLI, LaunchDiagnostics, error) {

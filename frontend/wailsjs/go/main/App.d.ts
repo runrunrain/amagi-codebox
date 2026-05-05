@@ -88,6 +88,8 @@ export function GetOpenCodeConfigPath():Promise<string>;
 
 export function GetOutputHistory(arg1:string):Promise<Array<number>>;
 
+export function GetOutputHistorySnapshot(arg1:string):Promise<string>;
+
 export function GetPathsService():Promise<paths.PathsService>;
 
 export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;

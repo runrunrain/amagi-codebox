@@ -154,6 +154,10 @@ export function GetOutputHistory(arg1) {
   return window['go']['main']['App']['GetOutputHistory'](arg1);
 }
 
+export function GetOutputHistorySnapshot(arg1) {
+  return window['go']['main']['App']['GetOutputHistorySnapshot'](arg1);
+}
+
 export function GetPathsService() {
   return window['go']['main']['App']['GetPathsService']();
 }

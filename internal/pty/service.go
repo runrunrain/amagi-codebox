@@ -27,6 +27,7 @@ type PtySession struct {
 	done          chan struct{}
 	outputHistory []byte     // 最近输出的环形缓冲区，供后加入的 WebSocket 客户端重放
 	historyMu     sync.Mutex // 保护 outputHistory
+	emitSeq       uint64     // monotonic counter incremented per PTY output chunk under historyMu
 	currentCols   int        // 当前 PTY 列数
 	currentRows   int        // 当前 PTY 行数
 }
@@ -42,7 +43,7 @@ type resizeCallback func(cols, rows int)
 
 // Service 管理所有嵌入式终端的 PTY 会话。
 // 通过 Wails 事件双向传输数据：
-//   - 后端→前端: EventsEmit("pty:data:<sessionID>", base64Data)
+//   - 后端→前端: EventsEmit("pty:data:<sessionID>", {s: emitSeq, d: base64Data})
 //   - 前端→后端: PtyWrite(sessionID, base64Data)
 //
 // 同时支持注册远程回调，供 WebSocket 转发使用。
@@ -379,16 +380,18 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 
 			// 追加到输出历史缓冲区（供后加入的 WebSocket 客户端重放）
 			ps.historyMu.Lock()
+			ps.emitSeq++
+			seq := ps.emitSeq
 			ps.outputHistory = append(ps.outputHistory, chunk...)
 			if len(ps.outputHistory) > maxOutputHistorySize {
-				ps.outputHistory = ps.outputHistory[len(ps.outputHistory)-maxOutputHistorySize:]
+				ps.outputHistory = trimHistoryToFrontier(ps.outputHistory, maxOutputHistorySize)
 			}
 			ps.historyMu.Unlock()
 
 			// Wails 前端事件
 			if s.ctx != nil {
 				data := base64.StdEncoding.EncodeToString(chunk)
-				wailsRuntime.EventsEmit(s.ctx, "pty:data:"+sessionID, data)
+				wailsRuntime.EventsEmit(s.ctx, "pty:data:"+sessionID, map[string]any{"s": seq, "d": data})
 			}
 
 			// 远程 WebSocket 回调
@@ -569,6 +572,24 @@ func (s *Service) GetOutputHistory(sessionID string) ([]byte, error) {
 	history := make([]byte, len(ps.outputHistory))
 	copy(history, ps.outputHistory)
 	return history, nil
+}
+
+// GetOutputHistoryWithSeq returns a snapshot of the output history along with
+// the emitSeq at the time of the snapshot. This allows frontend consumers to
+// deduplicate: any live event with seq <= returned seq is already contained in
+// the history snapshot.
+func (s *Service) GetOutputHistoryWithSeq(sessionID string) ([]byte, uint64, error) {
+	s.mu.Lock()
+	ps, exists := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !exists {
+		return nil, 0, fmt.Errorf("session not found: %s", sessionID)
+	}
+	ps.historyMu.Lock()
+	defer ps.historyMu.Unlock()
+	history := make([]byte, len(ps.outputHistory))
+	copy(history, ps.outputHistory)
+	return history, ps.emitSeq, nil
 }
 
 // RunningCount 返回运行中的 PTY 数量
@@ -813,4 +834,100 @@ func resolveShellPath(shellPath string, log *logging.Service) string {
 
 	// 如果是其他不存在的路径，返回原路径（后续启动会失败并报错）
 	return shellPath
+}
+
+// trimHistoryToFrontier trims the history buffer to at most maxSize bytes,
+// starting from a safe UTF-8 and ANSI escape boundary. This prevents
+// replaying a partial multi-byte UTF-8 character or a truncated ANSI
+// escape sequence, which would cause garbled output on history replay.
+func trimHistoryToFrontier(history []byte, maxSize int) []byte {
+	if len(history) <= maxSize {
+		return history
+	}
+	start := len(history) - maxSize
+	// Step 1: avoid splitting a multi-byte UTF-8 sequence.
+	for start < len(history) && !isUTF8LeadingByte(history[start]) {
+		start++
+	}
+	// Step 2: avoid starting inside an ANSI escape sequence.
+	if idx := findTruncatedEscape(history, start); idx > start {
+		start = idx
+	}
+	return history[start:]
+}
+
+func isUTF8LeadingByte(b byte) bool {
+	return b&0xC0 != 0x80
+}
+
+func findTruncatedEscape(history []byte, start int) int {
+	const scanLimit = 128
+	lower := start - scanLimit
+	if lower < 0 {
+		lower = 0
+	}
+	for i := start - 1; i >= lower; i-- {
+		if history[i] == 0x1B {
+			if i+1 < len(history) && history[i+1] == 0x5B {
+				// CSI sequence
+				foundTerminator := false
+				for j := i + 2; j < len(history); j++ {
+					b := history[j]
+					if b >= 0x40 && b <= 0x7E {
+						if j < start {
+							foundTerminator = true
+						}
+						break
+					}
+					if !((b >= 0x30 && b <= 0x3F) || (b >= 0x20 && b <= 0x2F)) {
+						foundTerminator = true
+						break
+					}
+				}
+				if !foundTerminator {
+					for j := start; j < len(history) && j < start+scanLimit; j++ {
+						if history[j] >= 0x40 && history[j] <= 0x7E {
+							return j + 1
+						}
+					}
+					return start + 1
+				}
+			} else if i+1 < len(history) && history[i+1] == 0x5D {
+				// OSC sequence
+				foundTerminator := false
+				for j := i + 2; j < len(history); j++ {
+					b := history[j]
+					if b == 0x07 {
+						if j < start {
+							foundTerminator = true
+						}
+						break
+					}
+					if b == 0x1B && j+1 < len(history) && history[j+1] == 0x5C {
+						if j+1 < start {
+							foundTerminator = true
+						}
+						break
+					}
+				}
+				if !foundTerminator {
+					for j := start; j < len(history) && j < start+scanLimit; j++ {
+						if history[j] == 0x07 {
+							return j + 1
+						}
+						if history[j] == 0x1B && j+1 < len(history) && history[j+1] == 0x5C {
+							return j + 2
+						}
+					}
+					return start + 1
+				}
+			} else if i+1 < len(history) && history[i+1] >= 0x40 && history[i+1] <= 0x7E {
+				if i+1 >= start {
+					return i + 2
+				}
+			}
+			return start
+		}
+	}
+	return start
 }

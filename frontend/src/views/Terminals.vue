@@ -75,7 +75,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { GetSessions, StopSession, RemoveSession, PtyWrite, PtyWriteLarge, PtyResize, OpenFileInEditor, SaveClipboardImage } from '../../wailsjs/go/main/App'
+import { GetSessions, StopSession, RemoveSession, PtyWrite, PtyWriteLarge, PtyResize, GetOutputHistorySnapshot, OpenFileInEditor, SaveClipboardImage } from '../../wailsjs/go/main/App'
 import { GetTerminalSettings } from '../../wailsjs/go/settings/Service'
 import { EventsOn, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
@@ -125,6 +125,38 @@ function uint8ToBase64(bytes: Uint8Array): string {
     bin += String.fromCharCode(bytes[i])
   }
   return btoa(bin)
+}
+
+// Decode GetOutputHistory / GetOutputHistorySnapshot returned data into Uint8Array.
+// Handles three return shapes for maximum compatibility:
+//   - string:         base64-encoded byte stream (Wails v2 runtime binding)
+//   - Array<number>:  raw byte values (Wails-generated .d.ts declares Promise<Array<number>>)
+//   - Uint8Array:     already decoded (defensive)
+// Returns null if the data cannot be decoded, allowing the caller to fall through
+// to live-only mode rather than silently producing garbled output.
+function decodeHistoryData(data: unknown): Uint8Array | null {
+  if (data == null) return null
+  if (data instanceof Uint8Array) return data
+  if (typeof data === 'string') {
+    if (data.length === 0) return null
+    try {
+      return base64ToUint8(data)
+    } catch {
+      console.warn('[amagi-codebox] history decode: base64 decode failed')
+      return null
+    }
+  }
+  if (Array.isArray(data)) {
+    if (data.length === 0) return null
+    try {
+      return new Uint8Array(data)
+    } catch {
+      console.warn('[amagi-codebox] history decode: Array<number> conversion failed')
+      return null
+    }
+  }
+  console.warn('[amagi-codebox] history decode: unexpected type', typeof data)
+  return null
 }
 
 const sessions = ref<SessionInfo[]>([])
@@ -341,6 +373,30 @@ function loadWebglRenderer(sessionId: string, inst: TerminalInstance) {
   }
 }
 
+// Probe whether the current environment can create a WebGL context.
+// This is a capability check only -- the caller decides whether to actually
+// enable the WebglAddon. On macOS WKWebView the context may be creatable but
+// xterm.js WebGL texture atlas still produces scrollback corruption, so the
+// caller skips WebGL on macOS regardless of probe result.
+function isWebGLReliable(): boolean {
+  try {
+    const canvas = document.createElement('canvas')
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
+    if (!gl) return false
+    // Log renderer info for diagnostics; does not influence the decision.
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    if (ext) {
+      const renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+      if (renderer) {
+        console.info('[amagi-codebox] WebGL renderer:', renderer)
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 function createTerminal(sessionId: string) {
   if (terminals.has(sessionId)) return
 
@@ -444,12 +500,51 @@ function createTerminal(sessionId: string) {
   })
 
   // 后端 PTY 输出 → 写入 xterm
-  const dataEvent = 'pty:data:' + sessionId
-  const disposeDataListener = EventsOn(dataEvent, (base64Data: string) => {
+  // Buffer live data chunks until history replay completes, to prevent
+  // live output from being interleaved with or appearing before history.
+  // Each live event carries a monotonic emitSeq from the backend; after
+  // history replay, chunks with seq <= snapshot seq are discarded because
+  // they are already contained in the history snapshot (M1 dedup).
+  interface LiveChunk { seq: number; bytes: Uint8Array }
+  const liveBuffer: LiveChunk[] = []
+  let historyReplayed = false
+  let historySnapshotSeq = 0
+
+  // Unified live chunk write: deduplicates against history snapshot.
+  // Both flushLiveBuffer and the post-replay event handler direct-write
+  // path must go through here to ensure seq-based dedup is never bypassed.
+  // Safe to reference `inst` via closure: writeLiveChunk is only called after
+  // historyReplayed becomes true, which happens after inst is initialized.
+  function writeLiveChunk(seq: number, bytes: Uint8Array) {
+    if (seq > 0 && seq <= historySnapshotSeq) return
     try {
-      // base64 → Uint8Array → xterm (xterm 内部处理 UTF-8 解码)
+      inst.term.write(bytes)
+    } catch {}
+  }
+
+  const dataEvent = 'pty:data:' + sessionId
+  const disposeDataListener = EventsOn(dataEvent, (eventData: any) => {
+    try {
+      // Backend sends { s: emitSeq, d: base64Data } for each chunk.
+      let seq: number
+      let base64Data: string
+      if (eventData && typeof eventData === 'object' && 's' in eventData && 'd' in eventData) {
+        seq = eventData.s as number
+        base64Data = eventData.d as string
+      } else if (typeof eventData === 'string') {
+        // Fallback: legacy format without seq (should not happen with updated backend,
+        // but handle gracefully by using seq=0 so all chunks flush after replay)
+        seq = 0
+        base64Data = eventData
+      } else {
+        return
+      }
       const bytes = base64ToUint8(base64Data)
-      term.write(bytes)
+      if (!historyReplayed) {
+        liveBuffer.push({ seq, bytes })
+        return
+      }
+      writeLiveChunk(seq, bytes)
     } catch (err) {
       console.error('decode error:', err)
     }
@@ -553,8 +648,69 @@ function createTerminal(sessionId: string) {
         console.warn('registerLinkProvider failed', e)
       }
 
-      // 加载 WebGL 渲染器，消除默认 canvas 渲染器在滚动时的重影/残影问题
-      loadWebglRenderer(sessionId, inst)
+      // WebGL renderer: eliminates canvas ghosting/residual artifacts during scrolling.
+      //
+      // On macOS the embedded terminal runs inside WKWebView, where the xterm.js
+      // WebGL addon triggers texture atlas corruption in scrollback (characters
+      // garble, duplicate, or vanish after scrolling up). This is a correctness-
+      // priority decision for macOS: skip WebglAddon and use xterm's default
+      // canvas/dom renderer so that scrollback content is always visually correct.
+      // Windows is unaffected and keeps the WebGL path.
+      //
+      // Fail-closed: requires platform capabilities to be loaded AND the OS to be
+      // confirmed non-Darwin. If caps are still null (unexpected edge case), WebGL
+      // is NOT loaded -- this is safer than risking scrollback corruption on macOS.
+      if (platformCaps.caps.value && !platformCaps.isDarwin.value && isWebGLReliable()) {
+        loadWebglRenderer(sessionId, inst)
+      }
+
+      // Replay output history for sessions that already have accumulated output
+      // (e.g. page reload, component remount, or session restored from background).
+      // This ensures the user sees the full terminal content rather than a blank screen.
+      //
+      // Atomic boundary (M1): GetOutputHistorySnapshot returns {data, seq} where seq
+      // is the backend's monotonic emitSeq at snapshot time. Any live event with
+      // seq <= snapshot seq is already in the history bytes and must be skipped.
+      // Type compatibility (M2): decodeHistoryData handles string, Array<number>,
+      // and Uint8Array return shapes.
+      GetOutputHistorySnapshot(sessionId).then((jsonStr: string) => {
+        if (!jsonStr) {
+          historyReplayed = true
+          flushLiveBuffer()
+          return
+        }
+        try {
+          const snapshot = JSON.parse(jsonStr)
+          const decoded = decodeHistoryData(snapshot.data)
+          if (decoded && decoded.length > 0) {
+            inst.term.write(decoded)
+            // Only set the dedup boundary after successful history write,
+            // so buffered live chunks are not discarded when decode fails.
+            historySnapshotSeq = snapshot.seq || 0
+          } else if (decoded !== null && decoded.length === 0) {
+            // decodeHistoryData returned empty: data was valid but empty.
+            // The snapshot is authoritative (seq is valid), so set boundary.
+            historySnapshotSeq = snapshot.seq || 0
+          }
+          // decoded === null means decode failed; leave historySnapshotSeq at 0
+          // so all buffered live chunks flush through without being discarded.
+        } catch (e) {
+          console.warn('history replay failed:', e)
+        }
+        historyReplayed = true
+        flushLiveBuffer()
+      }).catch(() => {
+        // Session may not support history (e.g. already exited); flush buffered live data
+        historyReplayed = true
+        flushLiveBuffer()
+      })
+
+      function flushLiveBuffer() {
+        for (const chunk of liveBuffer) {
+          writeLiveChunk(chunk.seq, chunk.bytes)
+        }
+        liveBuffer.length = 0
+      }
 
       fit.fit()
       const dims = fit.proposeDimensions()
@@ -709,6 +865,12 @@ watch(terminalContentRef, (el) => {
 }, { immediate: true })
 
 onMounted(async () => {
+  // Ensure platform capabilities are loaded before any terminal creation.
+  // Without this, isDarwin/isWindows return false when the singleton cache is
+  // null (e.g. page opened directly or refreshed), causing the WebGL guard to
+  // fail-open on macOS and the windowsPty hint to be omitted on Windows.
+  await platformCaps.ensure()
+
   // 加载终端设置
   try {
     const ts = await GetTerminalSettings()
