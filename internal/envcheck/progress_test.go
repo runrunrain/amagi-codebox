@@ -56,7 +56,7 @@ func TestInstallOrUpdateWithProgress_ReportsSteps(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	snapshotsPtr, reporter := collectProgressSnapshots()
-	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter)
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter, ClaudeInstallAuto)
 
 	if err != nil {
 		t.Fatalf("installOrUpdateWithProgress error: %v", err)
@@ -193,7 +193,7 @@ func TestProgressReporter_MonotonicOnCommandRetry(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	snapshotsPtr, reporter := collectProgressSnapshots()
-	_, _ = svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter)
+	_, _ = svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter, ClaudeInstallAuto)
 
 	snapshots := *snapshotsPtr
 	prevProgress := -1
@@ -440,7 +440,7 @@ func TestInstallWithProgress_OpenCode_EndToEnd(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	snapshotsPtr, reporter := collectProgressSnapshots()
-	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter)
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, reporter, ClaudeInstallAuto)
 
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -484,7 +484,7 @@ func TestInstallWithProgress_Codex_EndToEnd(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	snapshotsPtr, reporter := collectProgressSnapshots()
-	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, reporter)
+	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, reporter, ClaudeInstallAuto)
 
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -631,7 +631,7 @@ func TestProgressReporter_CanBeNil(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	// nil reporter should not panic
-	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, nil)
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, nil, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -779,7 +779,7 @@ func TestUpdate_FirstCommandSucceedsButVersionUnchanged_FallsBack(t *testing.T) 
 	svc := NewServiceWithRunner(runner)
 
 	snapshotsPtr, reporter := collectProgressSnapshots()
-	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, reporter)
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, reporter, ClaudeInstallAuto)
 
 	// OpenCode only has 1 npm command, no fallback. Should fail.
 	if err == nil {
@@ -818,7 +818,7 @@ func TestUpdate_MultiCommandFallback_AllFail(t *testing.T) {
 	// All runner calls fail
 	svc := newTestService()
 
-	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, nil)
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationInstall, nil, ClaudeInstallAuto)
 
 	if err == nil {
 		t.Fatal("expected error when all commands fail")
@@ -862,7 +862,7 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 		}}
 		svc := NewServiceWithRunner(runner)
 
-		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil)
+		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil, ClaudeInstallAuto)
 
 		if err != nil {
 			t.Fatalf("expected success (winget fallback), got: %v", err)
@@ -889,7 +889,7 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 		}}
 		svc := NewServiceWithRunner(runner)
 
-		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil)
+		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil, ClaudeInstallAuto)
 
 		if err == nil {
 			t.Fatal("expected failure on non-Windows (single npm command, verify fail)")

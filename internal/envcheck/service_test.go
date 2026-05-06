@@ -927,15 +927,15 @@ func TestInstallCommands_OpenCode(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
-	cmds, err := svc.installCommands(ToolOpenCode, installOperationInstall, nil)
+	cmds, err := svc.installCommands(ToolOpenCode, installOperationInstall, nil, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(cmds) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(cmds))
+		t.Fatalf("expected 1 command for OpenCode install, got %d", len(cmds))
 	}
-	if !strings.Contains(cmds[0].description, "opencode") {
-		t.Errorf("expected opencode in description, got %q", cmds[0].description)
+	if cmds[0].path != "npm" {
+		t.Errorf("expected npm command, got %s", cmds[0].path)
 	}
 }
 
@@ -943,7 +943,7 @@ func TestInstallCommands_Codex(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
-	cmds, err := svc.installCommands(ToolCodex, installOperationInstall, nil)
+	cmds, err := svc.installCommands(ToolCodex, installOperationInstall, nil, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -957,7 +957,7 @@ func TestInstallCommands_Codex(t *testing.T) {
 
 func TestInstallCommands_NPMNotAvailable(t *testing.T) {
 	svc := newTestService() // no npm response
-	_, err := svc.installCommands(ToolOpenCode, installOperationInstall, nil)
+	_, err := svc.installCommands(ToolOpenCode, installOperationInstall, nil, ClaudeInstallAuto)
 	if err == nil {
 		t.Fatal("expected error when npm is not available")
 	}
@@ -1019,8 +1019,7 @@ func TestInstallCommands_ClaudeUpdate_NPMInstall(t *testing.T) {
 	cmds, err := svc.installCommands(ToolClaudeCode, installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodNPM,
 		Installed:     true,
-		Version:       "1.0.0",
-	})
+	}, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1061,7 +1060,7 @@ func TestInstallCommands_ClaudeInstall_NPMInstall(t *testing.T) {
 	cmds, err := svc.installCommands(ToolClaudeCode, installOperationInstall, &CheckStatus{
 		InstallMethod: InstallMethodNPM,
 		Installed:     false,
-	})
+	}, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1090,8 +1089,7 @@ func TestInstallCommands_ClaudeUpdate_NonNPM_HasNPMFallback(t *testing.T) {
 	cmds, err := svc.installCommands(ToolClaudeCode, installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodNative,
 		Installed:     true,
-		Version:       "1.0.0",
-	})
+	}, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1120,7 +1118,7 @@ func TestInstallCommands_OpenCode_UsesUpdateForUpdateOp(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
-	cmds, err := svc.installCommands(ToolOpenCode, installOperationUpdate, nil)
+	cmds, err := svc.installCommands(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1136,7 +1134,7 @@ func TestInstallCommands_Codex_UsesUpdateForUpdateOp(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
-	cmds, err := svc.installCommands(ToolCodex, installOperationUpdate, nil)
+	cmds, err := svc.installCommands(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1145,5 +1143,88 @@ func TestInstallCommands_Codex_UsesUpdateForUpdateOp(t *testing.T) {
 	}
 	if cmds[0].args[0] != "update" {
 		t.Errorf("update operation should use 'npm update', got args: %v", cmds[0].args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 27. claudeInstallCommandsForMethod
+// ---------------------------------------------------------------------------
+
+func TestClaudeInstallCommandsForMethod_NPM(t *testing.T) {
+	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallNPM, installOperationInstall)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.path != "npm" {
+		t.Errorf("expected npm path, got %q", cmd.path)
+	}
+	if len(cmd.args) < 3 {
+		t.Errorf("npm install command should have args, got: %v", cmd.args)
+	}
+	// Verify it uses install -g @anthropic-ai/claude-code
+	if cmd.args[0] != "install" {
+		t.Errorf("expected 'install' as first arg, got %q", cmd.args[0])
+	}
+	foundPkg := false
+	for _, arg := range cmd.args {
+		if arg == "@anthropic-ai/claude-code" {
+			foundPkg = true
+		}
+	}
+	if !foundPkg {
+		t.Errorf("expected @anthropic-ai/claude-code in args, got: %v", cmd.args)
+	}
+}
+
+func TestClaudeInstallCommandsForMethod_NPM_Update(t *testing.T) {
+	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallNPM, installOperationUpdate)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.path != "npm" {
+		t.Errorf("expected npm path, got %q", cmd.path)
+	}
+	// Update uses install -g @latest
+	if cmd.args[0] != "install" {
+		t.Errorf("expected 'install' as first arg, got %q", cmd.args[0])
+	}
+	foundLatest := false
+	for _, arg := range cmd.args {
+		if arg == "@anthropic-ai/claude-code@latest" {
+			foundLatest = true
+		}
+	}
+	if !foundLatest {
+		t.Errorf("expected @anthropic-ai/claude-code@latest in args, got: %v", cmd.args)
+	}
+}
+
+func TestClaudeInstallCommandsForMethod_Native(t *testing.T) {
+	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallNative, installOperationInstall)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.path != "powershell.exe" {
+		t.Errorf("expected powershell.exe, got %q", cmd.path)
+	}
+	// Should have PowerShell args
+	if len(cmd.args) == 0 {
+		t.Error("native install should have args")
+	}
+}
+
+func TestClaudeInstallCommandsForMethod_Unsupported(t *testing.T) {
+	_, err := claudeInstallCommandsForMethod(ClaudeInstallMethod("invalid"), installOperationInstall)
+	if err == nil {
+		t.Error("expected error for unsupported method")
+	}
+}
+
+func TestClaudeInstallCommandsForMethod_AutoIsUnsupported(t *testing.T) {
+	// ClaudeInstallAuto (empty string) is intentionally not supported
+	// by claudeInstallCommandsForMethod -- it uses the fallback chain instead.
+	_, err := claudeInstallCommandsForMethod(ClaudeInstallAuto, installOperationInstall)
+	if err == nil {
+		t.Error("expected error for auto method (empty string)")
 	}
 }

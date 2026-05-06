@@ -33,6 +33,19 @@ type EnvCheckService interface {
 	Install(tool CLITool) (*InstallResult, error)
 	Update(tool CLITool) (*InstallResult, error)
 	GetCachedStatus() *OverallStatus
+
+	// CheckClaudeConfig scans Claude Code configuration files and reports
+	// whether required configuration items are present.
+	CheckClaudeConfig() (*ClaudeConfigStatus, error)
+
+	// FixClaudeConfig writes a single configuration item to the target file.
+	// Only missing keys are written; existing keys are never overwritten.
+	FixClaudeConfig(req ConfigFixRequest) (*ConfigFixResult, error)
+
+	// CleanClaudeCode removes an existing Claude Code installation.
+	// The method parameter specifies which installation to clean (npm or native).
+	// After cleaning, it verifies that Claude Code is no longer installed.
+	CleanClaudeCode(method InstallMethod) (*InstallResult, error)
 }
 
 // Service implements EnvCheckService.
@@ -761,7 +774,7 @@ func (s *Service) runOperation(op *OperationState) {
 	reporter := monotonicReporter(rawReporter)
 
 	// Run the install/update logic with progress reporting.
-	result, err := s.installOrUpdateWithProgress(op.Tool, installOperation(op.Kind), reporter)
+	result, err := s.installOrUpdateWithProgress(op.Tool, installOperation(op.Kind), reporter, ClaudeInstallAuto)
 
 	// Best-effort: invalidate version cache so latestVersion is re-fetched.
 	s.invalidateVersionCache(op.Tool)
@@ -829,4 +842,70 @@ func cloneOperationState(op *OperationState) *OperationState {
 		copy.FinishedAt = &fa
 	}
 	return &copy
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code configuration and lifecycle management stubs
+// ---------------------------------------------------------------------------
+
+// CheckClaudeConfig scans Claude Code configuration files and reports
+// whether required configuration items are present.
+func (s *Service) CheckClaudeConfig() (*ClaudeConfigStatus, error) {
+	return s.checkClaudeConfig()
+}
+
+// FixClaudeConfig writes a single configuration item to the target file.
+// Only missing keys are written; existing keys are never overwritten.
+func (s *Service) FixClaudeConfig(req ConfigFixRequest) (*ConfigFixResult, error) {
+	return s.fixClaudeConfig(req)
+}
+
+// CleanClaudeCode removes an existing Claude Code installation.
+// The method parameter specifies which installation to clean (npm or native).
+// After cleaning, it verifies that Claude Code is no longer installed.
+func (s *Service) CleanClaudeCode(method InstallMethod) (*InstallResult, error) {
+	return s.cleanClaudeCode(method)
+}
+
+// InstallClaudeCodeWithMethod installs Claude Code using a specific method.
+// The method is passed as a parameter to the install pipeline, avoiding
+// shared mutable state and ensuring thread safety.
+func (s *Service) InstallClaudeCodeWithMethod(method ClaudeInstallMethod) (*InstallResult, error) {
+	return s.serializedInstallOrUpdateWithMethod(method)
+}
+
+// serializedInstallOrUpdateWithMethod acquires the global opMu gate and installs
+// Claude Code with a specific method. This ensures the operation is serialized
+// with async StartInstallTool/StartUpdateTool and other synchronous calls.
+func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod) (*InstallResult, error) {
+	s.opMu.Lock()
+	if s.current != nil && s.current.Status == OperationStatusRunning {
+		s.opMu.Unlock()
+		return nil, ErrBusy
+	}
+	now := time.Now()
+	s.current = &OperationState{
+		ID:        fmt.Sprintf("sync-method-%d", s.opSeq.Add(1)),
+		Tool:      ToolClaudeCode,
+		Kind:      OperationKindInstall,
+		Status:    OperationStatusRunning,
+		Step:      OperationStepPrecheck,
+		Message:   fmt.Sprintf("Starting Claude Code install via %s...", method),
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	s.opMu.Unlock()
+
+	result, err := s.installOrUpdateWithProgress(ToolClaudeCode, installOperationInstall, nil, method)
+
+	if err == nil && result != nil && result.Success {
+		s.invalidateVersionCache(ToolClaudeCode)
+		_, _ = s.CheckOne(ToolClaudeCode)
+	}
+
+	s.opMu.Lock()
+	s.current = nil
+	s.opMu.Unlock()
+
+	return result, err
 }

@@ -159,9 +159,9 @@
               <span class="issue-severity-badge" :class="'severity-' + issue.severity">
                 {{ severityLabel(issue.severity) }}
               </span>
-              <span class="issue-message">{{ issue.message }}</span>
+              <span class="issue-message" v-text="issue.message"></span>
             </div>
-            <div class="issue-detail" v-if="issue.detail">{{ issue.detail }}</div>
+            <div class="issue-detail" v-if="issue.detail" v-text="issue.detail"></div>
             <!-- Solutions for this issue -->
             <div class="issue-solutions" v-if="issue.solutions && issue.solutions.length > 0">
               <div
@@ -219,6 +219,48 @@
           </div>
         </div>
 
+        <!-- Claude Code configuration panel -->
+        <template v-if="card.status && card.meta.key === 'claude_code' && claudeConfig(card.status)">
+          <div class="claude-config-section">
+            <div class="config-header">
+              <div>
+                <span class="config-title">Claude Code 配置检测</span>
+                <span class="config-subtitle">本地 settings.json 就绪状态</span>
+              </div>
+              <el-tag :type="claudeConfig(card.status)?.allConfigured ? 'success' : 'warning'" size="small">
+                {{ configuredCount(claudeConfig(card.status)) }}/{{ claudeConfig(card.status)?.configItems?.length || 0 }} 项已配置
+              </el-tag>
+            </div>
+
+            <div
+              v-for="configItem in claudeConfig(card.status)?.configItems || []"
+              :key="configItem.key"
+              class="config-item"
+            >
+              <div class="config-copy">
+                <div class="config-key">{{ configItem.key }}</div>
+                <div class="config-desc">{{ configItem.description }}</div>
+                <div v-if="configItem.configured && configItem.currentValue" class="config-current">
+                  当前值：{{ configItem.currentValue }}
+                </div>
+              </div>
+              <div class="config-state">
+                <el-tag v-if="configItem.configured" type="success" size="small">已配置</el-tag>
+                <el-tag v-else type="danger" size="small">未配置</el-tag>
+                <el-button
+                  v-if="!configItem.configured"
+                  size="small"
+                  type="primary"
+                  :loading="!!configFixing[configItem.key]"
+                  @click="handleFixConfig(configItem)"
+                >
+                  一键配置
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </template>
+
         <!-- Update hint -->
         <el-alert
           v-if="card.status && card.status.hasUpdate && !card.isOperating"
@@ -261,6 +303,27 @@
 
         <!-- Actions -->
         <div class="card-actions">
+          <div v-if="card.meta.key === 'claude_code'" class="claude-install-row">
+            <el-select
+              v-model="claudeInstallMethod"
+              placeholder="选择安装方式"
+              size="small"
+              class="claude-install-select"
+              :disabled="card.isOperating || checkingAll || !!runningOperation || claudeInstalling"
+            >
+              <el-option label="npm 全局安装" value="npm" />
+              <el-option label="Native 安装 (PowerShell)" value="native" />
+            </el-select>
+            <el-button
+              v-if="card.status && card.status.installed"
+              size="small"
+              type="warning"
+              :disabled="card.isOperating || checkingAll || !!runningOperation || claudeInstalling"
+              @click="handleCleanClaude(card.status)"
+            >
+              清理并重装
+            </el-button>
+          </div>
           <button
             class="btn small action-btn check-action"
             @click="runSingleCheck(card.meta.key)"
@@ -274,31 +337,31 @@
             v-if="card.status && !card.status.installed"
             class="btn small action-btn install-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
-            :disabled="card.isOperating || checkingAll || !!runningOperation || !card.status.canInstall"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || !card.status.canInstall || (card.meta.key === 'claude_code' && claudeInstalling)"
             :title="!card.status.canInstall ? card.status.installBlockedReason : ''"
           >
-            <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
-            {{ (card.isOperating && card.operationKind === 'install') ? '安装中...' : '安装' }}
+            <span v-if="isInstallingCard(card)" class="mini-spinner"></span>
+            {{ isInstallingCard(card) ? '安装中...' : '安装' }}
           </button>
           <!-- Installed but has fixable issues: repair/reinstall -->
           <button
             v-if="card.status && card.status.installed && card.status.canInstall && hasFixableIssues(card.status)"
             class="btn small action-btn repair-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
-            :disabled="card.isOperating || checkingAll || !!runningOperation"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && claudeInstalling)"
           >
-            <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
-            {{ (card.isOperating && card.operationKind === 'install') ? '修复中...' : '重装修复' }}
+            <span v-if="isInstallingCard(card)" class="mini-spinner"></span>
+            {{ isInstallingCard(card) ? '修复中...' : '重装修复' }}
           </button>
           <!-- Installed without fixable issues: normal reinstall -->
           <button
             v-if="card.status && card.status.installed && !hasFixableIssues(card.status)"
             class="btn small action-btn reinstall-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
-            :disabled="card.isOperating || checkingAll || !!runningOperation"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && claudeInstalling)"
           >
-            <span v-if="card.isOperating && card.operationKind === 'install'" class="mini-spinner"></span>
-            {{ (card.isOperating && card.operationKind === 'install') ? '安装中...' : '重装' }}
+            <span v-if="isInstallingCard(card)" class="mini-spinner"></span>
+            {{ isInstallingCard(card) ? '安装中...' : '重装' }}
           </button>
           <!-- Update button -->
           <button
@@ -384,6 +447,9 @@ const lastOperationResult = ref<OperationResult | null>(null)
 const fixLoading = ref(false)
 const fixLoadingKey = ref<string>('')
 const cardFixResults = ref<Record<string, { title: string; description?: string; type: 'success' | 'error' | 'warning' | 'info' }>>({})
+const claudeInstallMethod = ref<'npm' | 'native'>('native')
+const claudeInstalling = ref(false)
+const configFixing = ref<Record<string, boolean>>({})
 
 // ---------- Computed ----------
 
@@ -501,12 +567,47 @@ const cardList = computed((): CardView[] => {
 
 function formatInstallMethod(m: string): string {
   const map: Record<string, string> = {
-    native: 'native',
-    winget: 'winget',
-    npm: 'npm',
-    unknown: 'unknown',
+    native: 'Native 安装',
+    winget: 'winget 安装',
+    npm: 'npm 全局安装',
+    unknown: '未知',
   }
   return map[m] || m
+}
+
+function claudeConfig(status: envcheck.CheckStatus | null): any | null {
+  return status ? ((status as any).config || null) : null
+}
+
+function configuredCount(config: any): number {
+  if (!config || !Array.isArray(config.configItems)) return 0
+  return config.configItems.filter((item: any) => !!item.configured).length
+}
+
+function isInstallingCard(card: CardView): boolean {
+  return (card.isOperating && card.operationKind === 'install') || (card.meta.key === 'claude_code' && claudeInstalling.value)
+}
+
+function appMethod<T extends (...args: any[]) => Promise<any>>(name: string): T {
+  const app = (window as any)?.go?.main?.App
+  const camelName = name.charAt(0).toLowerCase() + name.slice(1)
+  const method = app?.[name] || app?.[camelName]
+  if (typeof method !== 'function') {
+    throw new Error(`Wails 绑定 ${name}/${camelName} 不可用，请重新生成前端绑定后重试`)
+  }
+  return method as T
+}
+
+async function installClaudeWithMethod(method: 'npm' | 'native'): Promise<any> {
+  return appMethod<(method: string) => Promise<any>>('InstallClaudeWithMethod')(method)
+}
+
+async function cleanClaudeInstall(method: string): Promise<any> {
+  return appMethod<(method: string) => Promise<any>>('CleanClaudeInstall')(method)
+}
+
+async function fixClaudeConfig(key: string, value: string, filePath: string): Promise<any> {
+  return appMethod<(key: string, value: string, filePath: string) => Promise<any>>('FixClaudeConfig')(key, value, filePath)
 }
 
 function pathStateLabel(status: envcheck.CheckStatus): string {
@@ -577,10 +678,10 @@ function isExecutableSolution(sol: envcheck.ResolutionAction): boolean {
 
 function solutionButtonLabel(sol: envcheck.ResolutionAction): string {
   switch (sol.type) {
-    case 'fix_path': return 'Fix PATH'
-    case 'install_tool': return 'Install'
-    case 'install_node': return 'Install Node.js'
-    case 'retry': return 'Re-check'
+    case 'fix_path': return '修复 PATH'
+    case 'install_tool': return '安装工具'
+    case 'install_node': return '安装 Node.js'
+    case 'retry': return '重新检测'
     default: return sol.description
   }
 }
@@ -595,11 +696,11 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string):
     try {
       const actionLabel = solutionButtonLabel(sol)
       const message = sol.type === 'fix_path'
-        ? 'This will back up and modify your shell profile to add necessary PATH entries. Continue?'
-        : 'This will attempt to install Node.js. Continue?'
-      await ElMessageBox.confirm(message, `Confirm: ${actionLabel}`, {
-        confirmButtonText: 'Confirm',
-        cancelButtonText: 'Cancel',
+        ? '此操作将备份并修改 PATH 配置，以加入必要的工具目录。是否继续？'
+        : '此操作将尝试安装 Node.js。是否继续？'
+      await ElMessageBox.confirm(message, `确认：${actionLabel}`, {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
         type: 'warning',
       })
     } catch {
@@ -631,14 +732,14 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string):
     if (result) {
       const resultType = result.success ? 'success' : 'error'
       const title = result.success
-        ? result.message || 'Action completed'
-        : result.error || 'Action failed'
+        ? result.message || '修复操作已完成'
+        : result.error || result.message || '修复操作失败'
 
       const descriptionParts: string[] = []
-      if (result.backupPath) descriptionParts.push(`Backup: ${result.backupPath}`)
-      if (result.profilePath) descriptionParts.push(`Profile: ${result.profilePath}`)
+      if (result.backupPath) descriptionParts.push(`备份文件：${result.backupPath}`)
+      if (result.profilePath) descriptionParts.push(`配置文件：${result.profilePath}`)
       if (result.addedPaths && result.addedPaths.length > 0) {
-        descriptionParts.push(`Added: ${result.addedPaths.join(', ')}`)
+        descriptionParts.push(`已加入路径：${result.addedPaths.join(', ')}`)
       }
       if (result.nextSteps && result.nextSteps.length > 0) {
         descriptionParts.push(result.nextSteps.join('. '))
@@ -657,7 +758,7 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string):
     }
   } catch (err: any) {
     cardFixResults.value[cardKey] = {
-      title: 'Fix action failed',
+      title: '修复操作失败',
       description: err?.message || String(err),
       type: 'error',
     }
@@ -744,9 +845,9 @@ async function runSingleCheck(key: string): Promise<void> {
         const s = items[m.key]
         if (!s) continue
         if (s.error?.trim()) issues.push(`${s.tool}: ${s.error}`)
-        else if (!s.installed) issues.push(`${s.tool}: not installed`)
+        else if (!s.installed) issues.push(`${s.tool}: 未安装`)
         else if (!s.pathOk && s.pathState !== 'codebox_path' && s.pathState !== 'shell_fallback') {
-          issues.push(`${s.tool}: executable not in PATH`)
+          issues.push(`${s.tool}: 可执行文件未加入 PATH`)
         }
       }
       snapshot.value = {
@@ -766,16 +867,42 @@ async function runSingleCheck(key: string): Promise<void> {
 
 async function startInstall(key: string, displayName: string): Promise<void> {
   try {
+    const isClaude = key === 'claude_code'
+    const isNativeClaude = isClaude && claudeInstallMethod.value === 'native'
+    const message = isNativeClaude
+      ? '选择 Native 安装将执行远程 PowerShell 脚本 (https://claude.ai/install.ps1)。\n请确认你了解此操作带来的安全风险。'
+      : `确定要${snapshot.value?.status?.items?.[key]?.installed ? '重新' : ''}安装 ${displayName} 吗？`
     await ElMessageBox.confirm(
-      `确定要${snapshot.value?.status?.items?.[key]?.installed ? '重新' : ''}安装 ${displayName} 吗？`,
-      '确认操作',
-      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' }
+      message,
+      isNativeClaude ? '确认 Native 安装' : '确认操作',
+      { confirmButtonText: '确定', cancelButtonText: '取消', type: isNativeClaude ? 'warning' : 'info' }
     )
   } catch {
     return // user cancelled
   }
 
   try {
+    if (key === 'claude_code') {
+      claudeInstalling.value = true
+      const result = await installClaudeWithMethod(claudeInstallMethod.value)
+      if (result?.success) {
+        ElMessage.success(result.message || 'Claude Code 安装完成')
+        lastOperationResult.value = {
+          title: 'Claude Code 安装成功',
+          description: result.message || undefined,
+          type: 'success',
+        }
+      } else {
+        lastOperationResult.value = {
+          title: 'Claude Code 安装失败',
+          description: result?.error || result?.message || '安装失败',
+          type: 'error',
+        }
+      }
+      await runSingleCheck('claude_code')
+      return
+    }
+
     await StartInstallToolAsync(key) as any
     await fetchSnapshot()
     ensurePollingState()
@@ -785,6 +912,57 @@ async function startInstall(key: string, displayName: string): Promise<void> {
       description: err?.message || String(err),
       type: 'error',
     }
+  } finally {
+    if (key === 'claude_code') {
+      claudeInstalling.value = false
+    }
+  }
+}
+
+async function handleCleanClaude(item: envcheck.CheckStatus): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定要卸载当前 ${formatInstallMethod(item.installMethod)} 的 Claude Code 吗？卸载后需重新安装。`,
+      '确认清理',
+      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+    )
+    const result = await cleanClaudeInstall(item.installMethod)
+    if (result?.success) {
+      ElMessage.success(result.message || 'Claude Code 清理完成')
+      lastOperationResult.value = {
+        title: 'Claude Code 清理完成',
+        description: result.message || undefined,
+        type: 'success',
+      }
+      await runSingleCheck('claude_code')
+    } else {
+      ElMessage.error(result?.message || result?.error || '清理失败')
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error('清理操作失败')
+    }
+  }
+}
+
+async function handleFixConfig(configItem: any): Promise<void> {
+  configFixing.value = { ...configFixing.value, [configItem.key]: true }
+  try {
+    const result = await fixClaudeConfig(
+      configItem.key,
+      configItem.defaultValue || '',
+      configItem.filePath,
+    )
+    if (result?.success) {
+      ElMessage.success(result.message || `配置项 ${configItem.key} 已写入`)
+    } else {
+      ElMessage.warning(result?.message || result?.error || '配置写入失败')
+    }
+    await runSingleCheck('claude_code')
+  } catch (e) {
+    ElMessage.error('配置写入过程出错')
+  } finally {
+    configFixing.value = { ...configFixing.value, [configItem.key]: false }
   }
 }
 
@@ -1278,6 +1456,84 @@ onUnmounted(() => {
   border-radius: 6px;
 }
 
+/* Claude Code configuration panel */
+.claude-config-section {
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid rgba(204, 120, 50, 0.24);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, rgba(204, 120, 50, 0.08) 0%, rgba(35, 42, 59, 0.72) 100%),
+    var(--elevated);
+}
+
+.config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.config-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.config-subtitle {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.config-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(224, 230, 237, 0.08);
+}
+
+.config-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.config-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.config-key {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.config-desc,
+.config-current {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.config-current {
+  color: var(--accent);
+}
+
+.config-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .issue-block {
   padding: 10px 12px;
   border-radius: 8px;
@@ -1382,6 +1638,18 @@ onUnmounted(() => {
   flex-wrap: wrap;
   padding-top: 8px;
   border-top: 1px solid var(--border);
+}
+
+.claude-install-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.claude-install-select {
+  width: 178px;
 }
 
 .action-btn {

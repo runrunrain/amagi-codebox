@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -69,25 +71,25 @@ func monotonicReporter(inner progressReporter) progressReporter {
 }
 
 func (s *Service) installOrUpdate(tool CLITool, operation installOperation) (*InstallResult, error) {
-	return s.installOrUpdateWithProgress(tool, operation, nil)
+	return s.installOrUpdateWithProgress(tool, operation, nil, ClaudeInstallAuto)
 }
 
-func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOperation, reporter progressReporter) (*InstallResult, error) {
+func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOperation, reporter progressReporter, method ClaudeInstallMethod) (*InstallResult, error) {
 	if !IsValidCLITool(tool) {
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
 
-	reporter.report(OperationStepPrecheck, fmt.Sprintf("Checking current %s status...", displayToolName(tool)), progressPrecheck)
+	reporter.report(OperationStepPrecheck, fmt.Sprintf("正在检查 %s 当前状态...", displayToolName(tool)), progressPrecheck)
 
 	before, checkErr := s.CheckOne(tool)
 	if checkErr != nil && before == nil {
-		return installFailure(tool, fmt.Sprintf("pre-%s check failed", operation), checkErr), checkErr
+		return installFailure(tool, fmt.Sprintf("%s前检查失败", operationDisplayName(operation)), checkErr), checkErr
 	}
 
 	if operation == installOperationInstall && isHealthyAndCurrent(before) {
 		return &InstallResult{
 			Success: true,
-			Message: fmt.Sprintf("%s is already installed and up to date", displayToolName(tool)),
+			Message: fmt.Sprintf("%s 已安装且为最新版本", displayToolName(tool)),
 			Tool:    tool,
 			Version: before.Version,
 		}, nil
@@ -95,20 +97,20 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 	if operation == installOperationUpdate && isHealthyAndCurrent(before) {
 		return &InstallResult{
 			Success: true,
-			Message: fmt.Sprintf("%s is already up to date", displayToolName(tool)),
+			Message: fmt.Sprintf("%s 已是最新版本", displayToolName(tool)),
 			Tool:    tool,
 			Version: before.Version,
 		}, nil
 	}
 
-	reporter.report(OperationStepPrepare, fmt.Sprintf("Preparing %s commands...", displayToolName(tool)), progressPrepare)
+	reporter.report(OperationStepPrepare, fmt.Sprintf("正在准备 %s 命令...", displayToolName(tool)), progressPrepare)
 
-	commands, err := s.installCommands(tool, operation, before)
+	commands, err := s.installCommands(tool, operation, before, method)
 	if err != nil {
-		return installFailure(tool, fmt.Sprintf("prepare %s command failed", operation), err), err
+		return installFailure(tool, fmt.Sprintf("准备%s命令失败", operationDisplayName(operation)), err), err
 	}
 
-	reporter.report(OperationStepRunCommand, fmt.Sprintf("Running %s %s...", displayToolName(tool), operation), progressRunStart)
+	reporter.report(OperationStepRunCommand, fmt.Sprintf("正在%s %s...", operationDisplayName(operation), displayToolName(tool)), progressRunStart)
 
 	// Extract before-version for update verification.
 	beforeVersion := ""
@@ -137,7 +139,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 			cmdProgress = progressRunStart + (progressRunEnd-progressRunStart)*i/(numCommands-1)
 		}
 		if cmdProgress > lastProgress {
-			reporter.report(OperationStepRunCommand, fmt.Sprintf("Trying %s...", command.description), cmdProgress)
+			reporter.report(OperationStepRunCommand, fmt.Sprintf("正在尝试 %s...", command.description), cmdProgress)
 			lastProgress = cmdProgress
 		}
 
@@ -149,12 +151,12 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 				runErr:      runErr.Error(),
 			})
 			overallLastErr = runErr
-			reporter.report(OperationStepRunCommand, fmt.Sprintf("%s failed, trying next method...", command.description), lastProgress)
+			reporter.report(OperationStepRunCommand, fmt.Sprintf("%s 失败，正在尝试下一种方式...", command.description), lastProgress)
 			continue
 		}
 
 		// Phase 2: Immediate post-command verification.
-		reporter.report(OperationStepVerify, fmt.Sprintf("Verifying after %s...", command.description), progressVerify)
+		reporter.report(OperationStepVerify, fmt.Sprintf("正在验证 %s 后的结果...", command.description), progressVerify)
 		after, verifyErr := s.CheckOne(tool)
 
 		// Check if verification passed.
@@ -173,7 +175,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 			// Success! This command worked and verification passed.
 			return &InstallResult{
 				Success: true,
-				Message: fmt.Sprintf("%s %s completed successfully via %s", displayToolName(tool), operation, command.description),
+				Message: fmt.Sprintf("%s 已通过 %s 方式成功%s", displayToolName(tool), command.description, operationDisplayName(operation)),
 				Tool:    tool,
 				Version: after.Version,
 			}, nil
@@ -197,7 +199,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		// Continue to next fallback with clear progress message.
 		if i < numCommands-1 {
 			reporter.report(OperationStepRunCommand,
-				fmt.Sprintf("%s succeeded but verification failed (%s). Trying next fallback...", command.description, verifyReason),
+				fmt.Sprintf("%s 执行成功但验证失败 (%s)。正在尝试下一种备选方式...", command.description, verifyReason),
 				lastProgress)
 		}
 	}
@@ -213,8 +215,8 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 	}
 
 	message := fmt.Sprintf(
-		"%s %s failed after trying all methods. Details: [%s]. Suggestion: ensure Node.js and npm are installed, close any terminal using the tool, and retry.",
-		displayToolName(tool), operation, strings.Join(attemptDetails, "; "),
+		"%s%s失败：已尝试所有安装方式。详情: [%s]。建议：确保 Node.js 和 npm 已安装，关闭使用该工具的所有终端后重试。",
+		displayToolName(tool), operationDisplayName(operation), strings.Join(attemptDetails, "; "),
 	)
 	if overallLastErr == nil {
 		overallLastErr = errors.New(message)
@@ -222,9 +224,24 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 	return installFailure(tool, message, overallLastErr), overallLastErr
 }
 
-func (s *Service) installCommands(tool CLITool, operation installOperation, current *CheckStatus) ([]installCommand, error) {
+func (s *Service) installCommands(tool CLITool, operation installOperation, current *CheckStatus, method ClaudeInstallMethod) ([]installCommand, error) {
 	switch tool {
 	case ToolClaudeCode:
+		// If the user explicitly selected an install method, use only that method
+		// (no fallback chain).
+		if method != ClaudeInstallAuto {
+			cmd, err := claudeInstallCommandsForMethod(method, operation)
+			if err != nil {
+				return nil, err
+			}
+			if method == ClaudeInstallNPM {
+				if err := s.ensureNPMAvailable(); err != nil {
+					return nil, err
+				}
+				cmd = s.resolveCommandNPMPath(cmd)
+			}
+			return []installCommand{cmd}, nil
+		}
 		// claudeInstallCommands already returns a prioritized command sequence
 		// that includes npm (on all platforms). We must NOT add a duplicate npm
 		// command. Just check npm availability and resolve paths.
@@ -326,6 +343,20 @@ func (s *Service) resolveCommandNPMPath(cmd installCommand) installCommand {
 		}
 	}
 	return cmd
+}
+
+// claudeInstallCommandsForMethod returns a single install command based on
+// the user-specified method. Unlike claudeInstallCommands, it does NOT return
+// a fallback chain.
+func claudeInstallCommandsForMethod(method ClaudeInstallMethod, operation installOperation) (installCommand, error) {
+	switch method {
+	case ClaudeInstallNPM:
+		return npmClaudeCommand(operation), nil
+	case ClaudeInstallNative:
+		return nativePowerShellClaudeCommand(), nil
+	default:
+		return installCommand{}, fmt.Errorf("unsupported Claude Code install method: %s", method)
+	}
 }
 
 func claudeInstallCommands(operation installOperation, current *CheckStatus) []installCommand {
@@ -448,7 +479,7 @@ func (s *Service) ensureNPMAvailable() error {
 		message = err.Error()
 	}
 	return fmt.Errorf(
-		"npm is required to install this tool, but npm is not available in PATH (%s). Install Node.js (https://nodejs.org) or ensure npm is in PATH, then restart CodeBox.",
+		"安装此工具需要 npm，但 npm 未在 PATH 中找到 (%s)。请安装 Node.js (https://nodejs.org) 并确保 npm 在 PATH 中，然后重启 CodeBox。",
 		message,
 	)
 }
@@ -464,11 +495,11 @@ func (s *Service) probeNPMAvailability() {
 	if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
 		// Check if npm path was found but node is missing
 		s.npmAvailable = false
-		msg := "npm is not available"
+		msg := "npm 不可用"
 		if resolveErr != nil {
 			msg = resolveErr.Error()
 		}
-		s.npmResolvedErr = fmt.Errorf("%s; install Node.js (https://nodejs.org) and ensure npm is in PATH", msg)
+		s.npmResolvedErr = fmt.Errorf("%s；请安装 Node.js (https://nodejs.org) 并确保 npm 在 PATH 中", msg)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -487,9 +518,9 @@ func (s *Service) probeNPMAvailability() {
 		}
 		// Detect "node not found" specifically
 		if strings.Contains(detail, "node: No such file") || strings.Contains(detail, "env: node: No such file") {
-			s.npmResolvedErr = fmt.Errorf("npm found at %s but node is not in PATH: %s (install_node or fix_path recommended)", resolved.Path, detail)
+			s.npmResolvedErr = fmt.Errorf("在 %s 找到 npm 但 node 不在 PATH 中: %s（建议安装 Node.js 或修复 PATH）", resolved.Path, detail)
 		} else {
-			s.npmResolvedErr = fmt.Errorf("npm found at %s but not functional: %s", resolved.Path, detail)
+			s.npmResolvedErr = fmt.Errorf("在 %s 找到 npm 但无法正常运行: %s", resolved.Path, detail)
 		}
 		return
 	}
@@ -562,18 +593,152 @@ func installFailure(tool CLITool, message string, err error) *InstallResult {
 
 func verificationErrorMessage(status *CheckStatus) string {
 	if status == nil {
-		return "tool status is empty after installation"
+		return "安装后工具状态为空"
 	}
 	if strings.TrimSpace(status.Error) != "" {
 		return status.Error
 	}
 	if !status.Installed {
-		return "tool executable was not found after installation"
+		return "安装后未找到工具可执行文件"
 	}
 	if !status.PATHOk {
-		return "tool was found outside PATH; restart the application or terminal after PATH changes"
+		return "工具在 PATH 之外被找到；请在 PATH 变更后重启应用程序或终端"
 	}
-	return "tool verification did not report a usable installation"
+	return "工具验证未报告可用安装"
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code clean / uninstall operations
+// ---------------------------------------------------------------------------
+
+// cleanClaudeCode removes an existing Claude Code installation.
+// After removal, it re-checks to confirm the tool is no longer installed.
+func (s *Service) cleanClaudeCode(method InstallMethod) (*InstallResult, error) {
+	switch method {
+	case InstallMethodNPM:
+		return s.cleanClaudeCodeNPM()
+	case InstallMethodNative:
+		return s.cleanClaudeCodeNative()
+	case InstallMethodWinget:
+		return s.cleanClaudeCodeWinget()
+	default:
+		return &InstallResult{
+			Success: false,
+			Message: "无法确定当前安装方式，无法自动清理",
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+}
+
+func (s *Service) cleanClaudeCodeNPM() (*InstallResult, error) {
+	// 1. npm uninstall -g @anthropic-ai/claude-code
+	npmPath := s.resolveNPMPath()
+	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	defer cancel()
+	_, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   npmPath,
+		Args:   []string{"uninstall", "-g", "@anthropic-ai/claude-code"},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if runErr != nil {
+		return &InstallResult{
+			Success: false,
+			Message: fmt.Sprintf("npm 卸载失败: %v", runErr),
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	// 2. 清理残留文件: %USERPROFILE%\.local\bin\claude*
+	homeDir, _ := os.UserHomeDir()
+	patterns := []string{
+		filepath.Join(homeDir, ".local", "bin", "claude.cmd"),
+		filepath.Join(homeDir, ".local", "bin", "claude"),
+		filepath.Join(homeDir, ".local", "bin", "claude.exe"),
+	}
+	for _, p := range patterns {
+		os.Remove(p) // ignore errors
+	}
+	// 3. 验证
+	after, _ := s.CheckOne(ToolClaudeCode)
+	if after != nil && after.Installed {
+		return &InstallResult{
+			Success: false,
+			Message: "清理后 Claude Code 仍然可被检测到，请手动检查",
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	return &InstallResult{
+		Success: true,
+		Message: "Claude Code (npm) 已成功卸载",
+		Tool:    ToolClaudeCode,
+	}, nil
+}
+
+func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
+	homeDir, _ := os.UserHomeDir()
+	patterns := []string{
+		filepath.Join(homeDir, ".local", "bin", "claude.exe"),
+		filepath.Join(homeDir, ".local", "bin", "claude.cmd"),
+	}
+	var removed []string
+	for _, p := range patterns {
+		if _, err := os.Stat(p); err == nil {
+			if os.Remove(p) == nil {
+				removed = append(removed, p)
+			}
+		}
+	}
+	if len(removed) == 0 {
+		return &InstallResult{
+			Success: false,
+			Message: "未找到 Native 安装的 Claude Code 文件",
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	after, _ := s.CheckOne(ToolClaudeCode)
+	if after != nil && after.Installed {
+		return &InstallResult{
+			Success: false,
+			Message: fmt.Sprintf("已删除 %d 个文件，但 Claude Code 仍可被检测到", len(removed)),
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	return &InstallResult{
+		Success: true,
+		Message: fmt.Sprintf("已清理 %d 个 Native 安装文件", len(removed)),
+		Tool:    ToolClaudeCode,
+	}, nil
+}
+
+func (s *Service) cleanClaudeCodeWinget() (*InstallResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	defer cancel()
+	_, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   "winget",
+		Args:   []string{"uninstall", "Anthropic.ClaudeCode"},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if runErr != nil {
+		return &InstallResult{
+			Success: false,
+			Message: fmt.Sprintf("winget 卸载失败: %v", runErr),
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	after, _ := s.CheckOne(ToolClaudeCode)
+	if after != nil && after.Installed {
+		return &InstallResult{
+			Success: false,
+			Message: "winget 卸载后 Claude Code 仍可被检测到",
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	return &InstallResult{
+		Success: true,
+		Message: "Claude Code (winget) 已成功卸载",
+		Tool:    ToolClaudeCode,
+	}, nil
 }
 
 func displayToolName(tool CLITool) string {
@@ -586,5 +751,17 @@ func displayToolName(tool CLITool) string {
 		return "Codex"
 	default:
 		return string(tool)
+	}
+}
+
+// operationDisplayName returns the Chinese display name for an install operation.
+func operationDisplayName(op installOperation) string {
+	switch op {
+	case installOperationInstall:
+		return "安装"
+	case installOperationUpdate:
+		return "更新"
+	default:
+		return string(op)
 	}
 }

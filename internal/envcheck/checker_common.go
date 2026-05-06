@@ -106,19 +106,19 @@ func applyPathStateToStatus(status *CheckStatus, rr resolveResult, tool CLITool)
 			issue := CheckIssue{
 				Severity: SeverityInfo,
 				Code:     "path_not_in_system_path",
-				Message:  fmt.Sprintf("%s is reachable by CodeBox but not visible in the system PATH", displayToolName(tool)),
-				Detail:   "The tool works inside CodeBox. To make it available in your terminal, fix your shell profile PATH or restart the terminal.",
+				Message:  fmt.Sprintf("%s 可被 CodeBox 访问但未在系统 PATH 中显示", displayToolName(tool)),
+				Detail:   "该工具在 CodeBox 内可用。如需在终端中使用，请修复 shell 配置文件中的 PATH 或重启终端。",
 				Solutions: []ResolutionAction{
 					{
 						Type:            SolutionFixPath,
-						Description:     "One-click fix: add tool directory to shell profile PATH",
+						Description:     "一键修复: 将工具目录添加到 shell 配置文件 PATH",
 						Tool:            tool,
 						RequiresConfirm: true,
 						IsPrimary:       true,
 					},
 					{
 						Type:        SolutionRestartApp,
-						Description: "Restart CodeBox to refresh the detected PATH",
+						Description: "重启 CodeBox 以刷新检测到的 PATH",
 						Tool:        tool,
 					},
 				},
@@ -127,7 +127,7 @@ func applyPathStateToStatus(status *CheckStatus, rr resolveResult, tool CLITool)
 			// Also add the fix_path solution to the top-level solutions
 			status.Solutions = append(status.Solutions, ResolutionAction{
 				Type:            SolutionFixPath,
-				Description:     "Fix PATH to make " + displayToolName(tool) + " visible in system PATH",
+				Description:     "修复 PATH 使 " + displayToolName(tool) + " 在系统 PATH 中可见",
 				Tool:            tool,
 				RequiresConfirm: true,
 				IsPrimary:       true,
@@ -146,11 +146,11 @@ func addMissingToolIssue(status *CheckStatus, tool CLITool) {
 	issue := CheckIssue{
 		Severity: SeverityError,
 		Code:     "tool_not_installed",
-		Message:  fmt.Sprintf("%s is not installed", displayToolName(tool)),
+		Message:  fmt.Sprintf("%s 未安装", displayToolName(tool)),
 		Solutions: []ResolutionAction{
 			{
 				Type:        SolutionInstallTool,
-				Description: fmt.Sprintf("Install %s via npm", displayToolName(tool)),
+				Description: fmt.Sprintf("通过 npm 安装 %s", displayToolName(tool)),
 				Tool:        tool,
 			},
 		},

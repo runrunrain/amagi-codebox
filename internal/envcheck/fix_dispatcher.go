@@ -24,6 +24,14 @@ type FixActionRequest struct {
 	Action    SolutionType `json:"action"`
 	Tool      CLITool      `json:"tool,omitempty"`
 	ExtraPath string       `json:"extraPath,omitempty"` // optional extra dir for fix_path
+	// Method specifies the Claude Code installation method when action is install_claude_method
+	Method string `json:"method,omitempty"`
+	// Key is the configuration item key when action is fix_claude_config
+	Key string `json:"key,omitempty"`
+	// Value is the desired value when action is fix_claude_config
+	Value string `json:"value,omitempty"`
+	// FilePath is the target configuration file path when action is fix_claude_config
+	FilePath string `json:"filePath,omitempty"`
 }
 
 // FixActionResult is the synchronous result returned by RunFixAction.
@@ -44,11 +52,14 @@ type FixActionResult struct {
 // ---------------------------------------------------------------------------
 
 var allowedFixActions = map[SolutionType]bool{
-	SolutionFixPath:       true,
-	SolutionInstallTool:   true,
-	SolutionInstallNode:   true,
-	SolutionRetry:         true,
-	SolutionManualCommand: true, // display-only, never executed
+	SolutionFixPath:             true,
+	SolutionInstallTool:         true,
+	SolutionInstallNode:         true,
+	SolutionRetry:               true,
+	SolutionManualCommand:       true, // display-only, never executed
+	SolutionFixClaudeConfig:     true,
+	SolutionInstallClaudeMethod: true,
+	SolutionCleanClaudeInstall:  true,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +87,48 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 		// Never execute; just return a display-only result
 		return &FixActionResult{
 			Success: true,
-			Message: "Manual command displayed for user reference. No action was executed.",
+			Message: "命令仅供参考显示，未执行任何操作。",
+		}, nil
+	case SolutionFixClaudeConfig:
+		// Defense-in-depth: validate file path before dispatching to config writer
+		if req.FilePath != "" {
+			expanded := expandTilde(req.FilePath)
+			if !isConfigPathAllowed(expanded) {
+				return nil, fmt.Errorf("目标路径 %s 不在允许的配置文件列表中，拒绝写入", expanded)
+			}
+		}
+		result, err := s.fixClaudeConfig(ConfigFixRequest{
+			Key:      req.Key,
+			Value:    req.Value,
+			FilePath: req.FilePath,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &FixActionResult{
+			Success:    result.Success,
+			Message:    result.Message,
+			Error:      result.Error,
+			BackupPath: result.BackupPath,
+			Changed:    result.Changed,
+		}, nil
+	case SolutionInstallClaudeMethod:
+		result, err := s.serializedInstallOrUpdateWithMethod(ClaudeInstallMethod(req.Method))
+		if err != nil {
+			return nil, err
+		}
+		return &FixActionResult{
+			Success: result.Success,
+			Message: result.Message,
+		}, nil
+	case SolutionCleanClaudeInstall:
+		result, err := s.cleanClaudeCode(InstallMethod(req.Method))
+		if err != nil {
+			return nil, err
+		}
+		return &FixActionResult{
+			Success: result.Success,
+			Message: result.Message,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unimplemented fix action: %s", req.Action)
@@ -94,10 +146,7 @@ const (
 
 func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if runtime.GOOS == "windows" {
-		return &FixActionResult{
-			Success: false,
-			Error:   "fix_path is not supported on Windows; use System Properties to edit PATH",
-		}, nil
+		return s.runFixPathWindows(req)
 	}
 
 	// Determine which directories to add
@@ -105,7 +154,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if len(dirs) == 0 {
 		return &FixActionResult{
 			Success: false,
-			Message: "No additional PATH directories needed",
+			Message: "不需要添加额外的 PATH 目录",
 		}, nil
 	}
 
@@ -114,7 +163,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if err != nil {
 		return &FixActionResult{
 			Success: false,
-			Error:   fmt.Sprintf("cannot determine shell profile: %v", err),
+			Error:   fmt.Sprintf("无法确定 shell 配置文件: %v", err),
 		}, nil
 	}
 
@@ -122,7 +171,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if isSymlink(profilePath) {
 		return &FixActionResult{
 			Success: false,
-			Error:   fmt.Sprintf("shell profile %s is a symlink; refusing to modify for security", profilePath),
+			Error:   fmt.Sprintf("shell 配置文件 %s 是符号链接；出于安全考虑拒绝修改", profilePath),
 		}, nil
 	}
 
@@ -131,7 +180,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 		if info.Mode().Perm()&0002 != 0 {
 			return &FixActionResult{
 				Success: false,
-				Error:   fmt.Sprintf("shell profile %s is world-writable; refusing to modify for security", profilePath),
+				Error:   fmt.Sprintf("shell 配置文件 %s 权限过于开放（world-writable）；出于安全考虑拒绝修改", profilePath),
 			}, nil
 		}
 	}
@@ -147,7 +196,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if len(safeDirs) == 0 {
 		return &FixActionResult{
 			Success: false,
-			Message: "No safe PATH directories to add",
+			Message: "没有可安全添加的 PATH 目录",
 		}, nil
 	}
 
@@ -164,12 +213,12 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 		if strings.Contains(existing, newBlock) {
 			return &FixActionResult{
 				Success:         true,
-				Message:         "PATH is already configured correctly",
+				Message:         "PATH 已正确配置",
 				ProfilePath:     profilePath,
 				AddedPaths:      safeDirs,
 				Changed:         false,
 				RequiresRestart: true,
-				NextSteps:       []string{"Restart your terminal or run: source " + profilePath},
+				NextSteps:       []string{"请重启终端或运行: source " + profilePath},
 			}, nil
 		}
 	}
@@ -180,7 +229,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 		if err := os.WriteFile(backupPath, []byte(existing), 0o600); err != nil {
 			return &FixActionResult{
 				Success: false,
-				Error:   fmt.Sprintf("failed to backup profile: %v", err),
+				Error:   fmt.Sprintf("备份配置文件失败: %v", err),
 			}, nil
 		}
 	}
@@ -209,7 +258,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if err := atomicWriteFileWithPerm(profilePath, []byte(newContent), writePerm); err != nil {
 		return &FixActionResult{
 			Success: false,
-			Error:   fmt.Sprintf("failed to write profile: %v", err),
+			Error:   fmt.Sprintf("写入配置文件失败: %v", err),
 		}, nil
 	}
 
@@ -226,13 +275,13 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 
 	return &FixActionResult{
 		Success:         true,
-		Message:         fmt.Sprintf("Added %d directories to PATH in %s", len(safeDirs), profilePath),
+		Message:         fmt.Sprintf("已将 %d 个目录添加到 PATH（配置文件: %s）", len(safeDirs), profilePath),
 		ProfilePath:     profilePath,
 		BackupPath:      backupPath,
 		AddedPaths:      safeDirs,
 		Changed:         true,
 		RequiresRestart: true,
-		NextSteps:       []string{"Restart your terminal or run: source " + profilePath},
+		NextSteps:       []string{"请重启终端或运行: source " + profilePath},
 	}, nil
 }
 
@@ -449,14 +498,14 @@ func (s *Service) runInstallTool(req FixActionRequest) (*FixActionResult, error)
 	if err != nil {
 		return &FixActionResult{
 			Success: false,
-			Error:   fmt.Sprintf("failed to start install: %v", err),
+			Error:   fmt.Sprintf("启动安装失败: %v", err),
 		}, nil
 	}
 
 	return &FixActionResult{
 		Success:   true,
-		Message:   fmt.Sprintf("Install started for %s (package: %s)", displayToolName(req.Tool), pkgName),
-		NextSteps: []string{"Monitor install progress in the UI"},
+		Message:   fmt.Sprintf("已开始安装 %s（包: %s）", displayToolName(req.Tool), pkgName),
+		NextSteps: []string{"请在界面中监控安装进度"},
 		Error:     "",
 	}, nil
 }
@@ -475,86 +524,139 @@ func (s *Service) runInstallNode(req FixActionRequest) (*FixActionResult, error)
 	if s.npmAvailable {
 		return &FixActionResult{
 			Success:   true,
-			Message:   "npm/node runtime is now available after PATH refresh",
+			Message:   "npm/node 运行时在 PATH 刷新后已可用",
 			Changed:   true,
-			NextSteps: []string{"Retry installing your tool"},
+			NextSteps: []string{"请重试安装工具"},
 		}, nil
 	}
 
-	// On macOS, try brew install node
-	if runtime.GOOS == "darwin" {
-		resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-		resolved, _, err := resolver.ResolveExecutable("brew", nil, os.Environ())
-		if err == nil && resolved.Path != "" {
-			// Attempt brew install node with enhanced env
-			env := s.buildEnhancedEnv()
-			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-			defer cancel()
+	// Dispatch to platform-specific installer
+	switch runtime.GOOS {
+	case "darwin":
+		return s.runInstallNodeDarwin()
+	case "windows":
+		return s.runInstallNodeWindows()
+	case "linux":
+		return s.runInstallNodeLinux()
+	default:
+		return &FixActionResult{
+			Success: false,
+			Error:   fmt.Sprintf("不支持的操作系统: %s", runtime.GOOS),
+		}, nil
+	}
+}
 
-			result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
-				Path:   resolved.Path,
-				Args:   []string{"install", "node"},
-				Env:    env,
-				Policy: platform.DefaultProcessPolicy(),
-			})
-			if runErr != nil {
-				detail := strings.TrimSpace(resultText(result))
-				if detail == "" {
-					detail = runErr.Error()
-				}
-				return &FixActionResult{
-					Success: false,
-					Error:   fmt.Sprintf("brew install node failed: %s", detail),
-					NextSteps: []string{
-						"Install Node.js manually from https://nodejs.org",
-						"Or run in terminal: brew install node",
-					},
-				}, nil
+// runInstallNodeDarwin installs Node.js on macOS using Homebrew.
+func (s *Service) runInstallNodeDarwin() (*FixActionResult, error) {
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	resolved, _, err := resolver.ResolveExecutable("brew", nil, os.Environ())
+	if err == nil && resolved.Path != "" {
+		// Attempt brew install node with enhanced env
+		env := s.buildEnhancedEnv()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+			Path:   resolved.Path,
+			Args:   []string{"install", "node"},
+			Env:    env,
+			Policy: platform.DefaultProcessPolicy(),
+		})
+		if runErr != nil {
+			detail := strings.TrimSpace(resultText(result))
+			if detail == "" {
+				detail = runErr.Error()
 			}
-
-			// Verify node is now available
-			s.resetNPMCache()
-			s.npmOnce.Do(func() {
-				s.probeNPMAvailability()
-			})
-			if s.npmAvailable {
-				return &FixActionResult{
-					Success:   true,
-					Message:   "Node.js installed successfully via Homebrew",
-					Changed:   true,
-					NextSteps: []string{"Restart CodeBox for best results"},
-				}, nil
-			}
-
 			return &FixActionResult{
 				Success: false,
-				Error:   "brew install node completed but npm/node is still not functional",
+				Error:   fmt.Sprintf("brew install node 失败: %s", detail),
 				NextSteps: []string{
-					"Restart CodeBox and try again",
-					"Or install Node.js manually from https://nodejs.org",
+					"请从 https://nodejs.org 手动安装 Node.js",
+					"或在终端运行: brew install node",
 				},
 			}, nil
 		}
 
-		// brew not found
+		// Verify node is now available
+		s.resetNPMCache()
+		s.npmOnce.Do(func() {
+			s.probeNPMAvailability()
+		})
+		if s.npmAvailable {
+			return &FixActionResult{
+				Success:   true,
+				Message:   "已通过 Homebrew 成功安装 Node.js",
+				Changed:   true,
+				NextSteps: []string{"建议重启 CodeBox 以获得最佳效果"},
+			}, nil
+		}
+
 		return &FixActionResult{
 			Success: false,
-			Error:   "Homebrew not found; cannot auto-install Node.js",
+			Error:   "brew install node 已完成但 npm/node 仍不可用",
 			NextSteps: []string{
-				"Install Homebrew from https://brew.sh, then retry",
-				"Or install Node.js manually from https://nodejs.org",
+				"请重启 CodeBox 后重试",
+				"或从 https://nodejs.org 手动安装 Node.js",
 			},
 		}, nil
 	}
 
-	// Non-macOS: provide manual steps
+	// brew not found
 	return &FixActionResult{
 		Success: false,
-		Error:   "Automatic Node.js installation is not supported on this platform",
+		Error:   "未找到 Homebrew，无法自动安装 Node.js",
 		NextSteps: []string{
-			"Install Node.js from https://nodejs.org",
-			"Restart CodeBox after installing Node.js",
+			"请从 https://brew.sh 安装 Homebrew 后重试",
+			"或从 https://nodejs.org 手动安装 Node.js",
 		},
+	}, nil
+}
+
+// runInstallNodeWindows installs Node.js on Windows using winget.
+func (s *Service) runInstallNodeWindows() (*FixActionResult, error) {
+	// 优先尝试 winget
+	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	defer cancel()
+
+	_, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   "winget",
+		Args:   []string{"install", "OpenJS.NodeJS.LTS", "--accept-source-agreements", "--accept-package-agreements", "--silent"},
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if err == nil {
+		return &FixActionResult{
+			Success:         true,
+			Message:         "正在通过 winget 安装 Node.js LTS，安装完成后请重启终端",
+			RequiresRestart: true,
+			NextSteps:       []string{"安装完成后请重启终端，然后重新检测环境"},
+		}, nil
+	}
+
+	// winget 失败，降级为手动指引
+	return &FixActionResult{
+		Success: true,
+		Message: "请手动安装 Node.js",
+		NextSteps: []string{
+			"1. 访问 https://nodejs.org/ 下载 LTS 版本安装包",
+			"2. 运行安装程序，确保勾选「Add to PATH」",
+			"3. 安装完成后重启终端",
+			"4. 回到环境检测页面点击「重新检测」",
+		},
+		Changed: false,
+	}, nil
+}
+
+// runInstallNodeLinux provides manual installation guidance for Linux.
+func (s *Service) runInstallNodeLinux() (*FixActionResult, error) {
+	return &FixActionResult{
+		Success: true,
+		Message: "请手动安装 Node.js",
+		NextSteps: []string{
+			"1. 使用包管理器安装: sudo apt-get install nodejs npm (Debian/Ubuntu)",
+			"2. 或: sudo dnf install nodejs (Fedora)",
+			"3. 安装完成后重启终端",
+		},
+		Changed: false,
 	}, nil
 }
 
@@ -570,7 +672,7 @@ func (s *Service) runRetry() (*FixActionResult, error) {
 	if err != nil {
 		return &FixActionResult{
 			Success: false,
-			Error:   fmt.Sprintf("re-check failed: %v", err),
+			Error:   fmt.Sprintf("重新检测失败: %v", err),
 		}, nil
 	}
 
@@ -581,12 +683,12 @@ func (s *Service) runRetry() (*FixActionResult, error) {
 		Success: true,
 		Message: func() string {
 			if allOk {
-				return "All tools are healthy"
+				return "所有工具运行正常"
 			}
-			return fmt.Sprintf("Detection complete; %d issues remaining", len(status.Issues))
+			return fmt.Sprintf("检测完成；仍有 %d 个问题", len(status.Issues))
 		}(),
 		Changed:   true,
-		NextSteps: []string{"Review updated tool status"},
+		NextSteps: []string{"查看更新后的工具状态"},
 	}, nil
 }
 
@@ -693,4 +795,194 @@ func atomicWriteFileWithPerm(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("rename temp to target: %w", renameErr)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Windows PATH fix: registry-based user PATH modification
+// ---------------------------------------------------------------------------
+
+// runFixPathWindows adds directories to the user-level PATH on Windows
+// using registry operations (reg add HKCU\Environment).
+func (s *Service) runFixPathWindows(req FixActionRequest) (*FixActionResult, error) {
+	// 1. 收集需要加入 PATH 的目录
+	dirs := s.collectPathDirs()
+	if len(dirs) == 0 {
+		return &FixActionResult{
+			Success: false,
+			Message: "不需要添加额外的 PATH 目录",
+		}, nil
+	}
+
+	// 2. 安全校验收集的目录
+	safeDirs := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		// 检查是否为绝对路径
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		// 检查目录是否存在
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			continue
+		}
+		// 检查 PATH 值中无危险字符（分号、空字符等）
+		if strings.Contains(dir, ";") || strings.Contains(dir, "\x00") {
+			continue
+		}
+		safeDirs = append(safeDirs, dir)
+	}
+	if len(safeDirs) == 0 {
+		return &FixActionResult{
+			Success: false,
+			Message: "没有可安全添加的 PATH 目录",
+		}, nil
+	}
+
+	// 3. 读取当前用户 PATH（从注册表 HKCU\Environment\PATH）
+	currentPath, err := s.readWindowsUserPath()
+	if err != nil {
+		return &FixActionResult{
+			Success: false,
+			Error:   fmt.Sprintf("读取当前 PATH 失败: %v", err),
+		}, nil
+	}
+
+	// 4. 去重合并
+	newDirs := []string{}
+	pathSet := make(map[string]bool)
+	for _, entry := range strings.Split(currentPath, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" {
+			pathSet[strings.ToLower(entry)] = true
+		}
+	}
+	for _, dir := range safeDirs {
+		if !pathSet[strings.ToLower(dir)] {
+			newDirs = append(newDirs, dir)
+			pathSet[strings.ToLower(dir)] = true
+		}
+	}
+
+	if len(newDirs) == 0 {
+		return &FixActionResult{
+			Success: true,
+			Message: "PATH 已包含所有必要的目录，无需修改",
+			Changed: false,
+		}, nil
+	}
+
+	// 5. 构建新 PATH 值
+	sep := ";"
+	newPath := currentPath
+	for _, dir := range newDirs {
+		if !strings.HasSuffix(newPath, sep) && newPath != "" {
+			newPath += sep
+		}
+		newPath += dir
+	}
+
+	// 6. 检查新 PATH 长度是否超过系统限制
+	const maxPathLength = 2048
+	if len(newPath) > maxPathLength {
+		return &FixActionResult{
+			Success:   false,
+			Message:   fmt.Sprintf("PATH 总长度超过系统限制 (%d > %d)，请手动精简后重试", len(newPath), maxPathLength),
+			NextSteps: []string{"请手动编辑系统环境变量 PATH，删除不需要的条目"},
+		}, nil
+	}
+
+	// 7. 备份当前 PATH（写入注册表旁路值）
+	backupName := "PATH_amagi_backup_" + time.Now().Format("20060102_150405")
+	backupCmd := platform.CommandSpec{
+		Path:   "reg",
+		Args:   []string{"add", "HKCU\\Environment", "/v", backupName, "/t", "REG_EXPAND_SZ", "/d", currentPath, "/f"},
+		Policy: platform.DefaultProcessPolicy(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := s.processRunner.Run(ctx, backupCmd); err != nil {
+		return &FixActionResult{
+			Success: false,
+			Error:   fmt.Sprintf("备份 PATH 失败: %v", err),
+		}, nil
+	}
+
+	// 8. 写入新 PATH
+	setCmd := platform.CommandSpec{
+		Path:   "reg",
+		Args:   []string{"add", "HKCU\\Environment", "/v", "PATH", "/t", "REG_EXPAND_SZ", "/d", newPath, "/f"},
+		Policy: platform.DefaultProcessPolicy(),
+	}
+	{
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel2()
+		if _, err := s.processRunner.Run(ctx2, setCmd); err != nil {
+			return &FixActionResult{
+				Success: false,
+				Error:   fmt.Sprintf("写入 PATH 失败: %v。已备份原 PATH 到注册表值 %s，可手动恢复", err, backupName),
+			}, nil
+		}
+	}
+
+	// 9. 广播环境变更（通知所有窗口）
+	// 使用 SendMessageTimeout 广播 WM_SETTINGCHANGE 以通知所有窗口环境变量已变更
+	broadcastCmd := platform.CommandSpec{
+		Path: "powershell.exe",
+		Args: []string{"-NoProfile", "-NonInteractive", "-Command",
+			"Add-Type -Name Win32 -Namespace System -MemberDefinition '[DllImport(\"user32.dll\")]public static extern IntPtr SendMessageTimeout(IntPtr hWnd,uint Msg,UIntPtr wParam,string lParam,uint fuFlags,uint uTimeout,out UIntPtr lpdwResult);'; $HWND_BROADCAST=0xffff; $WM_SETTINGCHANGE=0x001a; $result=0; [System.Win32]::SendMessageTimeout($HWND_BROADCAST,$WM_SETTINGCHANGE,0,'Environment',2,5000,[ref]$result)"},
+		Policy: platform.DefaultProcessPolicy(),
+	}
+	s.processRunner.Run(context.Background(), broadcastCmd) // 忽略广播错误
+
+	return &FixActionResult{
+		Success:         true,
+		Message:         fmt.Sprintf("已将 %d 个目录添加到用户 PATH", len(newDirs)),
+		Changed:         true,
+		RequiresRestart: true,
+		NextSteps:       []string{"请重启终端或重新登录以使 PATH 修改生效"},
+		BackupPath:      fmt.Sprintf("注册表值 HKCU\\Environment\\%s", backupName),
+	}, nil
+}
+
+// readWindowsUserPath reads the current user-level PATH from the registry.
+func (s *Service) readWindowsUserPath() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   "reg",
+		Args:   []string{"query", "HKCU\\Environment", "/v", "PATH"},
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if err != nil {
+		// Check if the error is "value not found" (PATH doesn't exist for this user).
+		// This is a normal condition for new users and should not block the operation.
+		output := strings.TrimSpace(resultText(result))
+		// 区分"值不存在"和"其他错误"
+		if strings.Contains(output, "unable to find") || strings.Contains(output, "找不到") {
+			return "", nil // PATH 值不存在是正常情况（新用户）
+		}
+		return "", fmt.Errorf("读取注册表 PATH 失败: %v", err)
+	}
+
+	// 解析输出
+	output := strings.TrimSpace(resultText(result))
+	// reg query 输出格式:
+	// HKEY_CURRENT_USER\Environment
+	//     PATH    REG_EXPAND_SZ    C:\Windows;...
+	// 需要提取最后一部分
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		// 找 "REG_EXPAND_SZ" 或 "REG_SZ" 之后的空格
+		for _, typePrefix := range []string{"REG_EXPAND_SZ    ", "REG_SZ    ", "REG_EXPAND_SZ   ", "REG_SZ   "} {
+			if idx := strings.Index(line, typePrefix); idx >= 0 {
+				return strings.TrimSpace(line[idx+len(typePrefix):]), nil
+			}
+		}
+	}
+	// 输出格式不符合预期，返回错误而非静默继续
+	return "", fmt.Errorf("无法解析注册表 PATH 输出格式: %s", output)
 }

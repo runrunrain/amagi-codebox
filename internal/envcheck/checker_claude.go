@@ -32,7 +32,7 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
-		status.Error = "Claude Code executable was not found in PATH"
+		status.Error = "未在 PATH 中找到 Claude Code 可执行文件"
 		addMissingToolIssue(status, ToolClaudeCode)
 		return status, nil
 	}
@@ -52,7 +52,7 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	if status.InstallMethod == InstallMethodNPM {
 		if err := s.confirmClaudeNPMInstall(); err != nil {
 			status.InstallMethod = InstallMethodUnknown
-			status.Error = fmt.Sprintf("detected npm-like Claude Code path, but npm global package confirmation failed: %v", err)
+			status.Error = fmt.Sprintf("检测到类 npm 的 Claude Code 路径，但 npm 全局包确认失败: %v", err)
 			return status, nil
 		}
 		// The official native installer is recommended over npm, but npm is
@@ -62,15 +62,39 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 		status.Issues = append(status.Issues, CheckIssue{
 			Severity: SeverityInfo,
 			Code:     "claude_npm_install_recommended_native",
-			Message:  "Claude Code was detected as an npm global install; the official native installer is recommended for better integration",
+			Message:  "检测到 Claude Code 通过 npm 全局安装；推荐使用官方 Native 安装程序以获得更好的集成体验",
 			Solutions: []ResolutionAction{
 				{
 					Type:        SolutionManualCommand,
-					Description: "Install the official native Claude Code installer",
+					Description: "安装官方 Native Claude Code 安装程序",
 					Command:     "irm https://claude.ai/install.ps1 | iex",
 				},
 			},
 		})
+	}
+
+	// Integrate Claude Code configuration check
+	configStatus, configErr := s.checkClaudeConfig()
+	if configErr != nil {
+		// Config check failure does not block overall detection; record as info-level issue
+		status.Issues = append(status.Issues, CheckIssue{
+			Severity: SeverityInfo,
+			Code:     "claude_config_check_failed",
+			Message:  fmt.Sprintf("配置检测失败: %v", configErr),
+		})
+	} else {
+		status.Config = configStatus
+		// P1-4: Convert missing required config items to structured issues
+		if configStatus.MissingRequired > 0 {
+			status.Issues = append(status.Issues, CheckIssue{
+				Severity: SeverityWarning,
+				Code:     "claude_config_missing_required",
+				Message:  fmt.Sprintf("Claude Code 缺少 %d 项必要配置，可能影响正常使用", configStatus.MissingRequired),
+				Detail:   "请在下方配置面板中补充缺失的配置项",
+			})
+			// 不设置 status.Error -- status.Error 仅反映二进制安装问题（可执行文件找不到、版本解析失败等）
+			// 配置缺失不应导致安装验证误判安装失败
+		}
 	}
 
 	return status, nil

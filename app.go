@@ -250,6 +250,64 @@ func (a *App) RunEnvFixAction(action string, tool string, extraPath string) (*en
 	return result, nil
 }
 
+// InstallClaudeWithMethod installs Claude Code using the specified method.
+// method must be "npm" or "native". When empty, the existing fallback chain is used.
+func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, error) {
+	// Convert frontend method string to ClaudeInstallMethod
+	var m envcheck.ClaudeInstallMethod
+	switch method {
+	case "npm":
+		m = envcheck.ClaudeInstallNPM
+	case "native":
+		m = envcheck.ClaudeInstallNative
+	default:
+		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native)", method)
+	}
+
+	return a.EnvCheck.InstallClaudeCodeWithMethod(m)
+}
+
+// CleanClaudeInstall removes an existing Claude Code installation.
+// method should be the current install method ("npm", "native", or "winget").
+func (a *App) CleanClaudeInstall(method string) (*envcheck.InstallResult, error) {
+	var m envcheck.InstallMethod
+	switch method {
+	case "npm":
+		m = envcheck.InstallMethodNPM
+	case "native":
+		m = envcheck.InstallMethodNative
+	case "winget":
+		m = envcheck.InstallMethodWinget
+	default:
+		return nil, fmt.Errorf("不支持的安装方式: %s", method)
+	}
+
+	return a.EnvCheck.CleanClaudeCode(m)
+}
+
+// CheckClaudeConfig scans Claude Code configuration files and reports
+// which configuration items are present or missing.
+func (a *App) CheckClaudeConfig() (*envcheck.ClaudeConfigStatus, error) {
+	return a.EnvCheck.CheckClaudeConfig()
+}
+
+// FixClaudeConfig writes a single configuration item to Claude Code settings.
+// Only missing items are added; existing values are never overwritten.
+func (a *App) FixClaudeConfig(key string, value string, filePath string) (*envcheck.ConfigFixResult, error) {
+	// Defense-in-depth: validate file path at the binding layer too
+	if filePath != "" {
+		expanded := envcheck.ExpandTilde(filePath)
+		if !envcheck.IsConfigPathAllowed(expanded) {
+			return nil, fmt.Errorf("目标路径 %s 不在允许的配置文件列表中，拒绝写入", expanded)
+		}
+	}
+	return a.EnvCheck.FixClaudeConfig(envcheck.ConfigFixRequest{
+		Key:      key,
+		Value:    value,
+		FilePath: filePath,
+	})
+}
+
 // parseCLITool 将前端传入的字符串转为 CLITool 枚举。
 func parseCLITool(tool string) (envcheck.CLITool, error) {
 	switch strings.ToLower(strings.TrimSpace(tool)) {

@@ -33,6 +33,15 @@ const (
 	InstallMethodUnknown InstallMethod = "unknown"
 )
 
+// ClaudeInstallMethod represents a user-selected installation method for Claude Code.
+type ClaudeInstallMethod string
+
+const (
+	ClaudeInstallAuto   ClaudeInstallMethod = ""       // auto (keep existing chain fallback)
+	ClaudeInstallNPM    ClaudeInstallMethod = "npm"    // npm global install
+	ClaudeInstallNative ClaudeInstallMethod = "native" // native PowerShell install
+)
+
 // PathState describes how the CLI executable was located relative to PATH.
 type PathState string
 
@@ -74,6 +83,13 @@ const (
 	SolutionRestartApp    SolutionType = "restart_app"
 	SolutionRetry         SolutionType = "retry"
 	SolutionManualCommand SolutionType = "manual_command"
+)
+
+// Additional fix action types for Claude Code lifecycle management.
+const (
+	SolutionInstallClaudeMethod SolutionType = "install_claude_method" // install Claude Code via user-selected method
+	SolutionCleanClaudeInstall  SolutionType = "clean_claude_install"  // remove Claude Code installation
+	SolutionFixClaudeConfig     SolutionType = "fix_claude_config"     // fix a Claude Code configuration item
 )
 
 // CheckIssue describes a single detected problem with a CLI tool environment.
@@ -135,6 +151,10 @@ type CheckStatus struct {
 
 	// InstallBlockedReason is non-empty when CanInstall is false, explaining why.
 	InstallBlockedReason string `json:"installBlockedReason"`
+
+	// Config contains the Claude Code configuration check results.
+	// Only populated for ToolClaudeCode; nil for other tools.
+	Config *ClaudeConfigStatus `json:"config,omitempty"`
 }
 
 // OverallStatus aggregates all supported CLI tool checks into one response.
@@ -205,4 +225,46 @@ type OperationState struct {
 	Result         *InstallResult  `json:"result"`
 	Error          string          `json:"error"`
 	CacheRefreshed bool            `json:"cacheRefreshed"`
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code configuration detection types
+// ---------------------------------------------------------------------------
+
+// ClaudeConfigItem describes a single Claude Code configuration item that
+// can be detected and optionally configured.
+type ClaudeConfigItem struct {
+	Key          string `json:"key"`          // config item identifier, e.g. "env.ANTHROPIC_BASE_URL"
+	FilePath     string `json:"filePath"`     // owning config file path, e.g. "~/.claude/settings.json"
+	Category     string `json:"category"`     // category: "api", "network", "security", "updates", "windows", "permissions"
+	Required     bool   `json:"required"`     // whether this is a required configuration item
+	Configured   bool   `json:"configured"`   // whether it is configured with a non-empty value
+	CurrentValue string `json:"currentValue"` // sanitized current value; empty string means not configured
+	Description  string `json:"description"`  // Chinese description
+	DefaultValue string `json:"defaultValue"` // recommended default value
+}
+
+// ClaudeConfigStatus aggregates the configuration check results for Claude Code.
+type ClaudeConfigStatus struct {
+	ConfigItems     []ClaudeConfigItem `json:"configItems"`     // all detected items
+	MissingRequired int                `json:"missingRequired"` // count of missing required items
+	AllConfigured   bool               `json:"allConfigured"`   // whether all required items are configured
+	Warnings        []string           `json:"warnings"`        // non-blocking warnings (e.g. JSON parse errors)
+}
+
+// ConfigFixRequest represents a request to fix a specific configuration item.
+type ConfigFixRequest struct {
+	Key      string `json:"key"`      // target config item identifier
+	Value    string `json:"value"`    // value to set; empty string means use default
+	FilePath string `json:"filePath"` // target config file path
+}
+
+// ConfigFixResult represents the result of a configuration fix operation.
+type ConfigFixResult struct {
+	Success       bool   `json:"success"`
+	Message       string `json:"message"` // Chinese message
+	Error         string `json:"error,omitempty"`
+	BackupPath    string `json:"backupPath,omitempty"`    // backup file path
+	Changed       bool   `json:"changed"`                 // whether an actual change was made
+	PreviousValue string `json:"previousValue,omitempty"` // value before change (sanitized)
 }

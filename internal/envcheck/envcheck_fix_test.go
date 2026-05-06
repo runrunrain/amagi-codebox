@@ -237,7 +237,7 @@ func TestEnsureNPMAvailable_ErrorWhenNPMMissing(t *testing.T) {
 func TestInstallCommands_NPMNotAvailable_ReturnsError(t *testing.T) {
 	svc := newTestService() // no npm response => ensureNPMAvailable fails
 
-	_, err := svc.installCommands(ToolOpenCode, installOperationInstall, nil)
+	_, err := svc.installCommands(ToolOpenCode, installOperationInstall, nil, ClaudeInstallAuto)
 	if err == nil {
 		t.Fatal("expected error when npm is not available for OpenCode")
 	}
@@ -249,7 +249,7 @@ func TestInstallCommands_NPMNotAvailable_ReturnsError(t *testing.T) {
 func TestInstallCommands_Codex_NPMNotAvailable_ReturnsError(t *testing.T) {
 	svc := newTestService() // no npm response
 
-	_, err := svc.installCommands(ToolCodex, installOperationInstall, nil)
+	_, err := svc.installCommands(ToolCodex, installOperationInstall, nil, ClaudeInstallAuto)
 	if err == nil {
 		t.Fatal("expected error when npm is not available for Codex")
 	}
@@ -734,7 +734,7 @@ func TestInstallCommands_Claude_NoPowerShellOrWinget_Integration(t *testing.T) {
 	cmds, err := svc.installCommands(ToolClaudeCode, installOperationInstall, &CheckStatus{
 		InstallMethod: InstallMethodNPM,
 		Installed:     false,
-	})
+	}, ClaudeInstallAuto)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
