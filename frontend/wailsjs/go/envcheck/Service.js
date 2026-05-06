@@ -6,12 +6,24 @@ export function CheckAll() {
   return window['go']['envcheck']['Service']['CheckAll']();
 }
 
+export function CheckClaudeConfig() {
+  return window['go']['envcheck']['Service']['CheckClaudeConfig']();
+}
+
 export function CheckLatestVersion(arg1) {
   return window['go']['envcheck']['Service']['CheckLatestVersion'](arg1);
 }
 
 export function CheckOne(arg1) {
   return window['go']['envcheck']['Service']['CheckOne'](arg1);
+}
+
+export function CleanClaudeCode(arg1) {
+  return window['go']['envcheck']['Service']['CleanClaudeCode'](arg1);
+}
+
+export function FixClaudeConfig(arg1) {
+  return window['go']['envcheck']['Service']['FixClaudeConfig'](arg1);
 }
 
 export function GetCachedStatus() {
@@ -28,6 +40,14 @@ export function GetOperationState() {
 
 export function Install(arg1) {
   return window['go']['envcheck']['Service']['Install'](arg1);
+}
+
+export function InstallClaudeCodeWithMethod(arg1) {
+  return window['go']['envcheck']['Service']['InstallClaudeCodeWithMethod'](arg1);
+}
+
+export function RunFixAction(arg1) {
+  return window['go']['envcheck']['Service']['RunFixAction'](arg1);
 }
 
 export function StartInstallTool(arg1) {

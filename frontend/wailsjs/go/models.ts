@@ -616,35 +616,7 @@ export namespace config {
 }
 
 export namespace envcheck {
-
-	export class FixActionResult {
-	    success: boolean;
-	    message: string;
-	    error?: string;
-	    profilePath?: string;
-	    backupPath?: string;
-	    addedPaths?: string[];
-	    changed: boolean;
-	    requiresRestart: boolean;
-	    nextSteps?: string[];
-
-	    static createFrom(source: any = {}) {
-	        return new FixActionResult(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.success = source["success"];
-	        this.message = source["message"];
-	        this.error = source["error"];
-	        this.profilePath = source["profilePath"];
-	        this.backupPath = source["backupPath"];
-	        this.addedPaths = source["addedPaths"];
-	        this.changed = source["changed"];
-	        this.requiresRestart = source["requiresRestart"];
-	        this.nextSteps = source["nextSteps"];
-	    }
-	}
+	
 	export class ResolutionAction {
 	    type: string;
 	    description: string;
@@ -707,6 +679,68 @@ export namespace envcheck {
 		    return a;
 		}
 	}
+	export class ClaudeConfigItem {
+	    key: string;
+	    filePath: string;
+	    category: string;
+	    required: boolean;
+	    configured: boolean;
+	    currentValue: string;
+	    description: string;
+	    defaultValue: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeConfigItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.filePath = source["filePath"];
+	        this.category = source["category"];
+	        this.required = source["required"];
+	        this.configured = source["configured"];
+	        this.currentValue = source["currentValue"];
+	        this.description = source["description"];
+	        this.defaultValue = source["defaultValue"];
+	    }
+	}
+	export class ClaudeConfigStatus {
+	    configItems: ClaudeConfigItem[];
+	    missingRequired: number;
+	    allConfigured: boolean;
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeConfigStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.configItems = this.convertValues(source["configItems"], ClaudeConfigItem);
+	        this.missingRequired = source["missingRequired"];
+	        this.allConfigured = source["allConfigured"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CheckStatus {
 	    tool: string;
 	    installed: boolean;
@@ -725,7 +759,9 @@ export namespace envcheck {
 	    issues: CheckIssue[];
 	    solutions: ResolutionAction[];
 	    canInstall: boolean;
+	    canInstallByMethod: Record<string, boolean>;
 	    installBlockedReason: string;
+	    config?: ClaudeConfigStatus;
 	
 	    static createFrom(source: any = {}) {
 	        return new CheckStatus(source);
@@ -749,7 +785,9 @@ export namespace envcheck {
 	        this.issues = this.convertValues(source["issues"], CheckIssue);
 	        this.solutions = this.convertValues(source["solutions"], ResolutionAction);
 	        this.canInstall = source["canInstall"];
+	        this.canInstallByMethod = source["canInstallByMethod"];
 	        this.installBlockedReason = source["installBlockedReason"];
+	        this.config = this.convertValues(source["config"], ClaudeConfigStatus);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -769,6 +807,46 @@ export namespace envcheck {
 		    }
 		    return a;
 		}
+	}
+	
+	
+	export class ConfigFixRequest {
+	    key: string;
+	    value: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigFixRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class ConfigFixResult {
+	    success: boolean;
+	    message: string;
+	    error?: string;
+	    backupPath?: string;
+	    changed: boolean;
+	    previousValue?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigFixResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.message = source["message"];
+	        this.error = source["error"];
+	        this.backupPath = source["backupPath"];
+	        this.changed = source["changed"];
+	        this.previousValue = source["previousValue"];
+	    }
 	}
 	export class InstallResult {
 	    success: boolean;
@@ -916,6 +994,59 @@ export namespace envcheck {
 		    return a;
 		}
 	}
+	export class FixActionRequest {
+	    action: string;
+	    tool?: string;
+	    extraPath?: string;
+	    method?: string;
+	    key?: string;
+	    value?: string;
+	    filePath?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FixActionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.tool = source["tool"];
+	        this.extraPath = source["extraPath"];
+	        this.method = source["method"];
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class FixActionResult {
+	    success: boolean;
+	    message: string;
+	    error?: string;
+	    profilePath?: string;
+	    backupPath?: string;
+	    addedPaths?: string[];
+	    changed: boolean;
+	    requiresRestart: boolean;
+	    nextSteps?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new FixActionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.message = source["message"];
+	        this.error = source["error"];
+	        this.profilePath = source["profilePath"];
+	        this.backupPath = source["backupPath"];
+	        this.addedPaths = source["addedPaths"];
+	        this.changed = source["changed"];
+	        this.requiresRestart = source["requiresRestart"];
+	        this.nextSteps = source["nextSteps"];
+	    }
+	}
+	
 	
 	
 

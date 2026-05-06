@@ -22,6 +22,10 @@ export function GetOutputHistory(arg1) {
   return window['go']['pty']['Service']['GetOutputHistory'](arg1);
 }
 
+export function GetOutputHistoryWithSeq(arg1) {
+  return window['go']['pty']['Service']['GetOutputHistoryWithSeq'](arg1);
+}
+
 export function GetPtyDimensions(arg1) {
   return window['go']['pty']['Service']['GetPtyDimensions'](arg1);
 }

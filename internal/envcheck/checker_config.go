@@ -9,46 +9,73 @@ import (
 )
 
 // predefinedConfigItems defines all Claude Code configuration items to check.
+// Each item has a recommended default value that is written when the user
+// clicks "一键配置" on a missing item. All items are non-required (Required=false)
+// because Claude Code can run without them; they represent recommended defaults.
 var predefinedConfigItems = []ClaudeConfigItem{
 	{
-		Key:          "env.ANTHROPIC_AUTH_TOKEN",
-		FilePath:     "", // dynamically filled during check
-		Category:     "api",
-		Required:     true,
-		Description:  "API 认证令牌（与 BASE_URL 至少配置一个）",
-		DefaultValue: "",
+		Key:          "hasCompletedOnboarding",
+		FilePath:     "", // resolved to ~/.claude.json
+		Category:     "onboarding",
+		Required:     false,
+		Description:  "标记首次引导已完成，跳过新手教程（配置于 ~/.claude.json）",
+		DefaultValue: "true",
 	},
 	{
-		Key:          "env.ANTHROPIC_BASE_URL",
+		Key:          "API_TIMEOUT_MS",
 		FilePath:     "",
 		Category:     "api",
-		Required:     true,
-		Description:  "API 端点地址",
-		DefaultValue: "https://api.anthropic.com",
+		Required:     false,
+		Description:  "API 请求超时时间（毫秒），默认 50 分钟适合长时间任务",
+		DefaultValue: "3000000",
 	},
 	{
 		Key:          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 		FilePath:     "",
 		Category:     "network",
 		Required:     false,
-		Description:  "禁用非必要网络流量（遥测、更新检查等），设为 1 启用",
+		Description:  "禁用非必要网络流量（遥测、更新检查等）",
 		DefaultValue: "1",
 	},
 	{
-		Key:          "DISABLE_AUTOUPDATER",
+		Key:          "env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+		FilePath:     "",
+		Category:     "experimental",
+		Required:     false,
+		Description:  "启用实验性 Agent Teams 协作功能",
+		DefaultValue: "1",
+	},
+	{
+		Key:          "env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+		FilePath:     "",
+		Category:     "experimental",
+		Required:     false,
+		Description:  "禁用实验性 Beta 功能（设为 1 禁用 Beta，不设或设 0 启用）",
+		DefaultValue: "1",
+	},
+	{
+		Key:          "autoUpdatesChannel",
 		FilePath:     "",
 		Category:     "updates",
 		Required:     false,
-		Description:  "禁用自动更新，避免频繁升级打断工作",
-		DefaultValue: "1",
+		Description:  "自动更新通道，latest 获取最新版本",
+		DefaultValue: "latest",
 	},
 	{
-		Key:          "CLAUDE_CODE_GIT_BASH_PATH",
+		Key:          "effortLevel",
 		FilePath:     "",
-		Category:     "windows",
+		Category:     "behavior",
 		Required:     false,
-		Description:  "Git Bash 可执行文件路径（Windows 平台推荐配置）",
-		DefaultValue: `C:\Program Files\Git\bin\bash.exe`,
+		Description:  "推理深度级别，high 提供更深入的分析",
+		DefaultValue: "high",
+	},
+	{
+		Key:          "env.ENABLE_LSP_TOOL",
+		FilePath:     "",
+		Category:     "tools",
+		Required:     false,
+		Description:  "启用 LSP（语言服务器协议）工具，增强代码分析能力",
+		DefaultValue: "1",
 	},
 	{
 		Key:          "permissions.allow",
@@ -65,6 +92,22 @@ var predefinedConfigItems = []ClaudeConfigItem{
 		Required:     false,
 		Description:  "权限黑名单（拒绝的工具/命令列表）",
 		DefaultValue: "[]",
+	},
+	{
+		Key:          "permissions.ask",
+		FilePath:     "",
+		Category:     "permissions",
+		Required:     false,
+		Description:  "权限询问列表（使用前需用户确认的工具/命令）",
+		DefaultValue: "[]",
+	},
+	{
+		Key:          "permissions.defaultMode",
+		FilePath:     "",
+		Category:     "permissions",
+		Required:     false,
+		Description:  "默认权限模式，bypassPermissions 跳过权限检查",
+		DefaultValue: "bypassPermissions",
 	},
 }
 
@@ -85,7 +128,12 @@ func configFilePaths() []string {
 		paths = append(paths, filepath.Join(cwd, ".claude", "settings.json"))
 	}
 
-	// 2. Global (lowest priority)
+	// 2. Global Claude state (separate from settings, for hasCompletedOnboarding etc.)
+	if homeDir != "" {
+		paths = append(paths, filepath.Join(homeDir, ".claude.json"))
+	}
+
+	// 3. Global settings (lowest priority among settings files)
 	if homeDir != "" {
 		paths = append(paths, filepath.Join(homeDir, ".claude", "settings.json"))
 	}
@@ -119,7 +167,7 @@ func (s *Service) checkClaudeConfig() (*ClaudeConfigStatus, error) {
 			continue
 		}
 
-		// Flatten nested JSON (e.g. env.ANTHROPIC_BASE_URL)
+		// Flatten nested JSON (e.g. env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS)
 		flattenJSON(raw, "", merged)
 	}
 
@@ -161,7 +209,7 @@ func (s *Service) checkClaudeConfig() (*ClaudeConfigStatus, error) {
 }
 
 // flattenJSON recursively flattens a nested JSON object into a flat map.
-// Nested keys are joined with "." (e.g., env.ANTHROPIC_BASE_URL).
+// Nested keys are joined with "." (e.g., env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).
 func flattenJSON(data map[string]interface{}, prefix string, result map[string]string) {
 	for key, val := range data {
 		fullKey := key

@@ -40,6 +40,7 @@ const (
 	ClaudeInstallAuto   ClaudeInstallMethod = ""       // auto (keep existing chain fallback)
 	ClaudeInstallNPM    ClaudeInstallMethod = "npm"    // npm global install
 	ClaudeInstallNative ClaudeInstallMethod = "native" // native PowerShell install
+	ClaudeInstallWinget ClaudeInstallMethod = "winget" // winget package manager install
 )
 
 // PathState describes how the CLI executable was located relative to PATH.
@@ -146,8 +147,13 @@ type CheckStatus struct {
 	Solutions []ResolutionAction `json:"solutions"`
 
 	// CanInstall is true when the service believes installation is possible
-	// (e.g. npm is available).
+	// (e.g. npm is available for npm method, or winget is available on Windows).
 	CanInstall bool `json:"canInstall"`
+
+	// CanInstallByMethod reports whether each specific install method is available.
+	// Keys are "npm", "native", "winget". Values indicate whether that method can be used.
+	// Frontend should use this for per-method button enable/disable logic.
+	CanInstallByMethod map[string]bool `json:"canInstallByMethod"`
 
 	// InstallBlockedReason is non-empty when CanInstall is false, explaining why.
 	InstallBlockedReason string `json:"installBlockedReason"`
@@ -234,7 +240,7 @@ type OperationState struct {
 // ClaudeConfigItem describes a single Claude Code configuration item that
 // can be detected and optionally configured.
 type ClaudeConfigItem struct {
-	Key          string `json:"key"`          // config item identifier, e.g. "env.ANTHROPIC_BASE_URL"
+	Key          string `json:"key"`          // config item identifier, e.g. "API_TIMEOUT_MS"
 	FilePath     string `json:"filePath"`     // owning config file path, e.g. "~/.claude/settings.json"
 	Category     string `json:"category"`     // category: "api", "network", "security", "updates", "windows", "permissions"
 	Required     bool   `json:"required"`     // whether this is a required configuration item

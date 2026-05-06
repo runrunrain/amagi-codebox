@@ -229,48 +229,53 @@ func (r *retryTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 // ---------------------------------------------------------------------------
 
 // TestClaudeUpdateCommandOrder_NPMInstalled verifies that on Windows,
-// npm-installed Claude Code update prioritizes npm update.
+// npm-installed Claude Code update uses only npm (same-channel).
 func TestClaudeUpdateCommandOrder_NPMInstalled(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific command order test")
 	}
 
-	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+	svc := newTestService()
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodNPM,
 		Installed:     true,
 		Version:       "1.0.0",
 	})
-
-	if len(cmds) < 2 {
-		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// First command must be npm
+	// Strict same-channel: only npm command.
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command (npm only), got %d", len(cmds))
+	}
+	// Command must be npm
 	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
-		t.Errorf("NPM-installed update should start with npm, got: %q", cmds[0].description)
-	}
-	if !strings.Contains(cmds[0].args[0], "update") && !strings.Contains(cmds[0].args[0], "install") {
-		t.Errorf("first command should be update or install, got args: %v", cmds[0].args)
+		t.Errorf("NPM-installed update should use npm, got: %q", cmds[0].description)
 	}
 }
 
 // TestClaudeUpdateCommandOrder_WingetInstalled verifies that on Windows,
-// winget-installed Claude Code update prioritizes winget upgrade.
+// winget-installed Claude Code update uses only winget (same-channel).
 func TestClaudeUpdateCommandOrder_WingetInstalled(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific command order test")
 	}
 
-	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+	svc := newTestService()
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodWinget,
 		Installed:     true,
 		Version:       "1.0.0",
 	})
-
-	if len(cmds) < 2 {
-		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Strict same-channel: only winget command.
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command (winget only), got %d", len(cmds))
 	}
 	if !strings.Contains(strings.ToLower(cmds[0].description), "winget") {
-		t.Errorf("Winget-installed update should start with winget, got: %q", cmds[0].description)
+		t.Errorf("Winget-installed update should use winget, got: %q", cmds[0].description)
 	}
 	if !strings.Contains(cmds[0].args[0], "upgrade") {
 		t.Errorf("winget update should use 'upgrade', got args: %v", cmds[0].args)
@@ -278,33 +283,42 @@ func TestClaudeUpdateCommandOrder_WingetInstalled(t *testing.T) {
 }
 
 // TestClaudeUpdateCommandOrder_NativeOrUnknown verifies that on Windows,
-// native/unknown install method does NOT use install.ps1 as the primary update.
+// native-installed Claude Code uses strict same-channel update.
 func TestClaudeUpdateCommandOrder_NativeOrUnknown(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific command order test")
 	}
 
-	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+	svc := newTestService()
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodNative,
 		Installed:     true,
 		Version:       "1.0.0",
 	})
 
-	if len(cmds) < 2 {
-		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	if err != nil {
+		// Native blocked in test env: expected to return error.
+		if !strings.Contains(err.Error(), "Native") && !strings.Contains(err.Error(), "Cloudflare") {
+			t.Errorf("native update blocked error should mention Native/Cloudflare, got: %v", err)
+		}
+		return
 	}
-	// First command must NOT be PowerShell install.ps1
-	if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
-		t.Errorf("native/unknown update should not start with PowerShell, got: %q", cmds[0].description)
+
+	// If native was accessible: only native command, no npm/winget fallback.
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command (native only), got %d", len(cmds))
 	}
-	// First should be npm (most reliable updater)
-	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
-		t.Errorf("native/unknown update should start with npm, got: %q", cmds[0].description)
+	if !strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+		t.Errorf("native update should use PowerShell, got: %q", cmds[0].description)
 	}
-	// PowerShell should be last (fallback)
-	lastCmd := cmds[len(cmds)-1]
-	if !strings.Contains(strings.ToLower(lastCmd.description), "powershell") {
-		t.Errorf("PowerShell should be last fallback, but last command is: %q", lastCmd.description)
+	// Should NOT include npm or winget
+	for _, cmd := range cmds {
+		if strings.Contains(strings.ToLower(cmd.description), "npm") {
+			t.Errorf("native update should not include npm, got %q", cmd.description)
+		}
+		if strings.Contains(strings.ToLower(cmd.description), "winget") {
+			t.Errorf("native update should not include winget, got %q", cmd.description)
+		}
 	}
 }
 
@@ -314,18 +328,19 @@ func TestClaudeUpdateCommandOrder_UnknownInstall(t *testing.T) {
 		t.Skip("Windows-specific command order test")
 	}
 
-	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+	svc := newTestService()
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodUnknown,
 		Installed:     true,
 		Version:       "1.0.0",
 	})
-	// Same expectations as native: npm first, powershell last
-	if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
-		t.Errorf("unknown update should not start with PowerShell, got: %q", cmds[0].description)
+	if err != nil {
+		t.Fatalf("unexpected error for unknown install method: %v", err)
 	}
-	lastCmd := cmds[len(cmds)-1]
-	if !strings.Contains(strings.ToLower(lastCmd.description), "powershell") {
-		t.Errorf("PowerShell should be last for unknown, but last is: %q", lastCmd.description)
+	// Unknown method: native first if accessible, then winget, then npm.
+	// In test env native is blocked, so winget first.
+	if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+		t.Errorf("unknown update should not start with PowerShell when native is blocked, got: %q", cmds[0].description)
 	}
 }
 
@@ -336,7 +351,8 @@ func TestClaudeFreshInstall_NonWindows_NPMOnly(t *testing.T) {
 		t.Skip("non-Windows test")
 	}
 
-	cmds := claudeInstallCommands(installOperationInstall, nil)
+	svc := newTestService()
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
 	for _, cmd := range cmds {
 		descLower := strings.ToLower(cmd.description)
 		pathLower := strings.ToLower(cmd.path)
@@ -356,8 +372,9 @@ func TestClaudeUpdateNonWindows_NoWindowsCommands(t *testing.T) {
 		t.Skip("non-Windows test")
 	}
 
+	svc := newTestService()
 	for _, method := range []InstallMethod{InstallMethodNPM, InstallMethodNative, InstallMethodWinget, InstallMethodUnknown} {
-		cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+		cmds, _ := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 			InstallMethod: method,
 			Installed:     true,
 			Version:       "1.0.0",
@@ -378,27 +395,24 @@ func TestClaudeUpdateNonWindows_NoWindowsCommands(t *testing.T) {
 }
 
 // TestClaudeFreshInstall_Windows_IncludesAllMethods verifies Windows fresh
-// install includes npm, powershell, and winget.
+// install includes winget and npm (and optionally native when accessible).
 func TestClaudeFreshInstall_Windows_IncludesAllMethods(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific test")
 	}
 
-	cmds := claudeInstallCommands(installOperationInstall, nil)
-	if len(cmds) < 3 {
-		t.Fatalf("expected at least 3 install commands on Windows, got %d", len(cmds))
+	svc := newTestService()
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
+	if len(cmds) < 2 {
+		t.Fatalf("expected at least 2 install commands on Windows, got %d", len(cmds))
 	}
 
 	hasNPM := false
-	hasPS := false
 	hasWinget := false
 	for _, cmd := range cmds {
 		descLower := strings.ToLower(cmd.description)
 		if strings.Contains(descLower, "npm") {
 			hasNPM = true
-		}
-		if strings.Contains(descLower, "powershell") {
-			hasPS = true
 		}
 		if strings.Contains(descLower, "winget") {
 			hasWinget = true
@@ -407,15 +421,8 @@ func TestClaudeFreshInstall_Windows_IncludesAllMethods(t *testing.T) {
 	if !hasNPM {
 		t.Error("Windows fresh install should include npm")
 	}
-	if !hasPS {
-		t.Error("Windows fresh install should include PowerShell")
-	}
 	if !hasWinget {
 		t.Error("Windows fresh install should include winget")
-	}
-	// npm should be first (most reliable for fresh install too)
-	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
-		t.Errorf("fresh install should start with npm, got: %q", cmds[0].description)
 	}
 }
 

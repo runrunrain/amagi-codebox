@@ -733,11 +733,11 @@ func TestVerificationErrorMessage(t *testing.T) {
 		status *CheckStatus
 		expect string
 	}{
-		{"nil", nil, "tool status is empty after installation"},
+		{"nil", nil, "安装后工具状态为空"},
 		{"has error", &CheckStatus{Error: "some error"}, "some error"},
-		{"not installed", &CheckStatus{}, "tool executable was not found after installation"},
-		{"not in PATH", &CheckStatus{Installed: true, PATHOk: false}, "tool was found outside PATH; restart the application or terminal after PATH changes"},
-		{"generic", &CheckStatus{Installed: true, PATHOk: true}, "tool verification did not report a usable installation"},
+		{"not installed", &CheckStatus{}, "安装后未找到工具可执行文件"},
+		{"not in PATH", &CheckStatus{Installed: true, PATHOk: false}, "工具在 PATH 之外被找到；请在 PATH 变更后重启应用程序或终端"},
+		{"generic", &CheckStatus{Installed: true, PATHOk: true}, "工具验证未报告可用安装"},
 	}
 
 	for _, tc := range tests {
@@ -838,29 +838,26 @@ func TestGetCachedStatus_ConcurrentAccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaudeInstallCommands_Install(t *testing.T) {
-	cmds := claudeInstallCommands(installOperationInstall, nil)
+	svc := newTestService()
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
 	if runtime.GOOS == "windows" {
-		if len(cmds) < 3 {
-			t.Fatalf("expected at least 3 install commands on Windows (npm + native + winget), got %d", len(cmds))
+		if len(cmds) < 2 {
+			t.Fatalf("expected at least 2 install commands on Windows (winget + npm), got %d", len(cmds))
 		}
-		// First command should be npm (most reliable)
-		if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
-			t.Errorf("first command should be npm, got %q", cmds[0].description)
-		}
-		// Should include powershell and winget
-		hasPS := false
+		// Should include winget and npm (native may be absent if blocked)
 		hasWinget := false
+		hasNPM := false
 		for _, cmd := range cmds {
 			d := strings.ToLower(cmd.description)
-			if strings.Contains(d, "powershell") {
-				hasPS = true
-			}
 			if strings.Contains(d, "winget") {
 				hasWinget = true
 			}
+			if strings.Contains(d, "npm") {
+				hasNPM = true
+			}
 		}
-		if !hasPS {
-			t.Error("expected PowerShell command in install list")
+		if !hasNPM {
+			t.Error("expected npm command in install list")
 		}
 		if !hasWinget {
 			t.Error("expected winget command in install list")
@@ -880,19 +877,29 @@ func TestClaudeInstallCommands_Install(t *testing.T) {
 }
 
 func TestClaudeInstallCommands_UpdateNonWinget(t *testing.T) {
-	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+	svc := newTestService()
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodNative,
 	})
 	if runtime.GOOS == "windows" {
-		if len(cmds) < 2 {
-			t.Fatalf("expected at least 2 commands on Windows, got %d", len(cmds))
-		}
-		// Native/unknown update: npm first (not PowerShell)
-		if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
-			t.Errorf("native update should not start with PowerShell, got %q", cmds[0].description)
-		}
-		if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
-			t.Errorf("native update should start with npm, got %q", cmds[0].description)
+		// Native update with native blocked (test env has no real network):
+		// should return an error about Cloudflare blockage.
+		if err == nil {
+			// If somehow native was accessible, only native command allowed.
+			if len(cmds) != 1 {
+				t.Fatalf("expected exactly 1 command (native only), got %d", len(cmds))
+			}
+			// Should NOT contain npm
+			for _, cmd := range cmds {
+				if strings.Contains(strings.ToLower(cmd.description), "npm") {
+					t.Errorf("native update should not include npm fallback, got %q", cmd.description)
+				}
+			}
+		} else {
+			// Native blocked: error should mention Cloudflare or Native channel.
+			if !strings.Contains(err.Error(), "Native") && !strings.Contains(err.Error(), "Cloudflare") {
+				t.Errorf("native update blocked error should mention Native/Cloudflare, got: %v", err)
+			}
 		}
 	} else {
 		if len(cmds) != 1 {
@@ -908,14 +915,19 @@ func TestClaudeInstallCommands_UpdateWinget(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("winget install method only relevant on Windows")
 	}
-	cmds := claudeInstallCommands(installOperationUpdate, &CheckStatus{
+	svc := newTestService()
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 		InstallMethod: InstallMethodWinget,
 	})
-	if len(cmds) < 2 {
-		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Strict same-channel: only winget command, no cross-channel fallback.
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command (winget only), got %d", len(cmds))
 	}
 	if !strings.Contains(cmds[0].description, "winget") {
-		t.Errorf("winget update should be first for winget install, got %q", cmds[0].description)
+		t.Errorf("winget update should be the only command, got %q", cmds[0].description)
 	}
 }
 
@@ -1024,17 +1036,17 @@ func TestInstallCommands_ClaudeUpdate_NPMInstall(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if runtime.GOOS == "windows" {
-		// Windows: npm update, native, winget
-		if len(cmds) < 3 {
-			t.Fatalf("expected at least 3 commands on Windows (npm + native + winget), got %d", len(cmds))
+		// Strict same-channel: NPM update only, no cross-channel fallback.
+		if len(cmds) != 1 {
+			t.Fatalf("expected exactly 1 command on Windows (npm only), got %d", len(cmds))
 		}
 	} else {
-		// macOS/Linux: npm update + npm (base is also npm)
-		if len(cmds) < 1 {
-			t.Fatalf("expected at least 1 command on non-Windows, got %d", len(cmds))
+		// macOS/Linux: npm update only
+		if len(cmds) != 1 {
+			t.Fatalf("expected exactly 1 command on non-Windows, got %d", len(cmds))
 		}
 	}
-	// First command should be npm install @latest for Claude Code (update uses
+	// Command should be npm install @latest for Claude Code (update uses
 	// install -g @latest which is more reliable than npm update).
 	if cmds[0].path != "npm" && !strings.Contains(cmds[0].path, "npm") {
 		t.Errorf("first command path = %q, want npm", cmds[0].path)
@@ -1065,24 +1077,41 @@ func TestInstallCommands_ClaudeInstall_NPMInstall(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if runtime.GOOS == "windows" {
-		if len(cmds) < 3 {
-			t.Fatalf("expected at least 3 commands on Windows, got %d", len(cmds))
+		if len(cmds) < 2 {
+			t.Fatalf("expected at least 2 commands on Windows, got %d", len(cmds))
+		}
+		// Verify npm and winget are both present in the command list
+		foundNPM := false
+		foundWinget := false
+		for _, cmd := range cmds {
+			if cmd.path == "npm" || strings.Contains(cmd.path, "npm") {
+				foundNPM = true
+			}
+			if strings.Contains(strings.ToLower(cmd.path), "winget") {
+				foundWinget = true
+			}
+		}
+		if !foundNPM {
+			t.Error("expected npm command in fresh install list")
+		}
+		if !foundWinget {
+			t.Error("expected winget command in fresh install list")
 		}
 	} else {
 		if len(cmds) < 1 {
 			t.Fatalf("expected at least 1 command on non-Windows, got %d", len(cmds))
 		}
-	}
-	// First command should be NPM install for Claude Code
-	if cmds[0].path != "npm" && !strings.Contains(cmds[0].path, "npm") {
-		t.Errorf("first command path = %q, want npm", cmds[0].path)
-	}
-	if cmds[0].args[0] != "install" {
-		t.Errorf("first command should use 'install', got args: %v", cmds[0].args)
+		// First command should be NPM install for Claude Code
+		if cmds[0].path != "npm" && !strings.Contains(cmds[0].path, "npm") {
+			t.Errorf("first command path = %q, want npm", cmds[0].path)
+		}
+		if cmds[0].args[0] != "install" {
+			t.Errorf("first command should use 'install', got args: %v", cmds[0].args)
+		}
 	}
 }
 
-func TestInstallCommands_ClaudeUpdate_NonNPM_HasNPMFallback(t *testing.T) {
+func TestInstallCommands_ClaudeUpdate_NonNPM_NoCrossChannelFallback(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
@@ -1090,27 +1119,36 @@ func TestInstallCommands_ClaudeUpdate_NonNPM_HasNPMFallback(t *testing.T) {
 		InstallMethod: InstallMethodNative,
 		Installed:     true,
 	}, ClaudeInstallAuto)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if runtime.GOOS == "windows" {
-		// Native/unknown update: npm first, then winget, then powershell as fallback
-		if len(cmds) < 3 {
-			t.Fatalf("expected at least 3 commands on Windows (npm + winget + native), got %d", len(cmds))
-		}
-		// Should NOT start with powershell for update
-		if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
-			t.Errorf("native update should not start with PowerShell, got: %q", cmds[0].description)
+		// Native update: same-channel only. In test env native is blocked,
+		// so expect an error.
+		if err == nil {
+			// If native was accessible, only native command — no npm/winget fallback.
+			if len(cmds) != 1 {
+				t.Fatalf("expected exactly 1 command (native only), got %d", len(cmds))
+			}
+			for _, cmd := range cmds {
+				if strings.Contains(strings.ToLower(cmd.description), "npm") {
+					t.Errorf("native update should not include npm fallback, got %q", cmd.description)
+				}
+				if strings.Contains(strings.ToLower(cmd.description), "winget") {
+					t.Errorf("native update should not include winget fallback, got %q", cmd.description)
+				}
+			}
+		} else {
+			// Native blocked: error about Cloudflare
+			if !strings.Contains(err.Error(), "Native") && !strings.Contains(err.Error(), "Cloudflare") {
+				t.Errorf("error should mention Native/Cloudflare, got: %v", err)
+			}
 		}
 	} else {
-		// macOS/Linux: base is npm + npm fallback
-		if len(cmds) < 1 {
-			t.Fatalf("expected at least 1 command on non-Windows, got %d", len(cmds))
+		// macOS/Linux: npm only
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-	}
-	lastCmd := cmds[len(cmds)-1]
-	if lastCmd.path != "npm" && !strings.Contains(lastCmd.path, "npm") {
-		t.Errorf("last command should be npm fallback, got path: %q", lastCmd.path)
+		if len(cmds) != 1 {
+			t.Fatalf("expected exactly 1 command on non-Windows, got %d", len(cmds))
+		}
 	}
 }
 
@@ -1226,5 +1264,275 @@ func TestClaudeInstallCommandsForMethod_AutoIsUnsupported(t *testing.T) {
 	_, err := claudeInstallCommandsForMethod(ClaudeInstallAuto, installOperationInstall)
 	if err == nil {
 		t.Error("expected error for auto method (empty string)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 28. ClaudeInstallMethod Winget support
+// ---------------------------------------------------------------------------
+
+func TestClaudeInstallCommandsForMethod_Winget(t *testing.T) {
+	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallWinget, installOperationInstall)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.path != "winget" {
+		t.Errorf("expected winget path, got %q", cmd.path)
+	}
+	if len(cmd.args) < 3 {
+		t.Errorf("winget install should have args, got: %v", cmd.args)
+	}
+	if cmd.args[0] != "install" {
+		t.Errorf("expected 'install' as first arg, got %q", cmd.args[0])
+	}
+	foundPkg := false
+	for _, arg := range cmd.args {
+		if arg == "Anthropic.ClaudeCode" {
+			foundPkg = true
+		}
+	}
+	if !foundPkg {
+		t.Errorf("expected Anthropic.ClaudeCode in args, got: %v", cmd.args)
+	}
+}
+
+func TestClaudeInstallCommandsForMethod_Winget_Update(t *testing.T) {
+	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallWinget, installOperationUpdate)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.path != "winget" {
+		t.Errorf("expected winget path, got %q", cmd.path)
+	}
+	if cmd.args[0] != "upgrade" {
+		t.Errorf("expected 'upgrade' as first arg, got %q", cmd.args[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 29. verifyNativeInstallerAccessible
+// ---------------------------------------------------------------------------
+
+func TestVerifyNativeInstallerAccessible_ValidScript(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			stdout:     "param([string]$InstallDir)\nWrite-Output 'Installing...'\nfunction Install-Claude { }",
+		},
+	)
+	accessible, reason := svc.verifyNativeInstallerAccessible()
+	if !accessible {
+		t.Errorf("expected accessible, got reason: %s", reason)
+	}
+}
+
+func TestVerifyNativeInstallerAccessible_CloudflareBlocked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			stdout:     "<html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>",
+		},
+	)
+	accessible, reason := svc.verifyNativeInstallerAccessible()
+	if accessible {
+		t.Error("expected blocked (Cloudflare), got accessible")
+	}
+	if !strings.Contains(reason, "Cloudflare") {
+		t.Errorf("reason should mention Cloudflare, got: %s", reason)
+	}
+}
+
+func TestVerifyNativeInstallerAccessible_Error(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			err:        errors.New("network unreachable"),
+		},
+	)
+	accessible, reason := svc.verifyNativeInstallerAccessible()
+	if accessible {
+		t.Error("expected inaccessible due to error, got accessible")
+	}
+	if !strings.Contains(reason, "install.ps1") {
+		t.Errorf("reason should mention install.ps1, got: %s", reason)
+	}
+}
+
+func TestVerifyNativeInstallerAccessible_UnknownContent(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			stdout:     "Some random text that is not a PowerShell script",
+		},
+	)
+	accessible, reason := svc.verifyNativeInstallerAccessible()
+	if accessible {
+		t.Error("expected inaccessible for unknown content, got accessible")
+	}
+	if !strings.Contains(reason, "无法识别") {
+		t.Errorf("reason should mention unrecognized content, got: %s", reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 30. verifyWingetHealth
+// ---------------------------------------------------------------------------
+
+func TestVerifyWingetHealth_Available(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "winget",
+			stdout:     "v1.7.10661",
+		},
+	)
+	err := svc.verifyWingetHealth()
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestVerifyWingetHealth_NotAvailable(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService() // no winget response
+	err := svc.verifyWingetHealth()
+	if err == nil {
+		t.Error("expected error when winget is not available")
+	}
+	if !strings.Contains(err.Error(), "winget") {
+		t.Errorf("error should mention winget: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 31. Smart install command priority (Windows fresh install)
+// ---------------------------------------------------------------------------
+
+func TestSmartInstallPriority_NativeBlocked_WingetFirst(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	// Mock that powershell returns Cloudflare HTML (native blocked)
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			stdout:     "<html>Just a moment...</html>",
+		},
+	)
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
+	if len(cmds) < 2 {
+		t.Fatalf("expected at least 2 commands, got %d", len(cmds))
+	}
+	// When native is blocked, winget should be first
+	if !strings.Contains(strings.ToLower(cmds[0].description), "winget") {
+		t.Errorf("first command should be winget when native is blocked, got: %q", cmds[0].description)
+	}
+	// npm should be present
+	foundNPM := false
+	for _, cmd := range cmds {
+		if cmd.path == "npm" || strings.Contains(cmd.path, "npm") {
+			foundNPM = true
+		}
+	}
+	if !foundNPM {
+		t.Error("expected npm in command list")
+	}
+}
+
+func TestSmartInstallPriority_NativeAccessible_NativeFirst(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	// Mock that powershell returns valid PS script
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			stdout:     "param([string]$InstallDir)\nWrite-Output 'Installing...'\nfunction Install-Claude { }",
+		},
+	)
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
+	if len(cmds) < 3 {
+		t.Fatalf("expected at least 3 commands (native + winget + npm), got %d", len(cmds))
+	}
+	// When native is accessible, PowerShell should be first
+	if !strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
+		t.Errorf("first command should be PowerShell when native is accessible, got: %q", cmds[0].description)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 32. Install method pre-flight checks (installCommands integration)
+// ---------------------------------------------------------------------------
+
+func TestInstallCommands_NativeMethod_Blocked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	// Mock powershell returning Cloudflare HTML
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "powershell",
+			stdout:     "<html>Just a moment...</html>",
+		},
+	)
+	_, err := svc.installCommands(ToolClaudeCode, installOperationInstall, nil, ClaudeInstallNative)
+	if err == nil {
+		t.Error("expected error when native is blocked")
+	}
+	if !strings.Contains(err.Error(), "Cloudflare") && !strings.Contains(err.Error(), "Native") {
+		t.Errorf("error should mention Cloudflare or Native, got: %v", err)
+	}
+}
+
+func TestInstallCommands_WingetMethod_Check(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	// No winget response -> winget not available
+	svc := newTestService()
+	_, err := svc.installCommands(ToolClaudeCode, installOperationInstall, nil, ClaudeInstallWinget)
+	if err == nil {
+		t.Error("expected error when winget is not available")
+	}
+	if !strings.Contains(err.Error(), "winget") {
+		t.Errorf("error should mention winget, got: %v", err)
+	}
+}
+
+func TestInstallCommands_WingetMethod_Success(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	svc := newTestService(
+		mockResponse{
+			pathPrefix: "winget",
+			stdout:     "v1.7.10661",
+		},
+	)
+	cmds, err := svc.installCommands(ToolClaudeCode, installOperationInstall, nil, ClaudeInstallWinget)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command, got %d", len(cmds))
+	}
+	if cmds[0].path != "winget" {
+		t.Errorf("expected winget path, got %q", cmds[0].path)
 	}
 }

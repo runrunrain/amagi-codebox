@@ -13,6 +13,8 @@ export function DetachSessionObserver(arg1:string,arg2:string):Promise<void>;
 
 export function GetOutputHistory(arg1:string):Promise<Array<number>>;
 
+export function GetOutputHistoryWithSeq(arg1:string):Promise<Array<number>>;
+
 export function GetPtyDimensions(arg1:string):Promise<number>;
 
 export function IsRunning(arg1:string):Promise<boolean>;

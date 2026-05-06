@@ -4,9 +4,15 @@ import {envcheck} from '../models';
 
 export function CheckAll():Promise<envcheck.OverallStatus>;
 
+export function CheckClaudeConfig():Promise<envcheck.ClaudeConfigStatus>;
+
 export function CheckLatestVersion(arg1:envcheck.CLITool):Promise<string>;
 
 export function CheckOne(arg1:envcheck.CLITool):Promise<envcheck.CheckStatus>;
+
+export function CleanClaudeCode(arg1:envcheck.InstallMethod):Promise<envcheck.InstallResult>;
+
+export function FixClaudeConfig(arg1:envcheck.ConfigFixRequest):Promise<envcheck.ConfigFixResult>;
 
 export function GetCachedStatus():Promise<envcheck.OverallStatus>;
 
@@ -15,6 +21,10 @@ export function GetEnvCheckSnapshot():Promise<envcheck.EnvCheckSnapshot>;
 export function GetOperationState():Promise<envcheck.OperationState>;
 
 export function Install(arg1:envcheck.CLITool):Promise<envcheck.InstallResult>;
+
+export function InstallClaudeCodeWithMethod(arg1:envcheck.ClaudeInstallMethod):Promise<envcheck.InstallResult>;
+
+export function RunFixAction(arg1:envcheck.FixActionRequest):Promise<envcheck.FixActionResult>;
 
 export function StartInstallTool(arg1:envcheck.CLITool):Promise<envcheck.OperationState>;
 

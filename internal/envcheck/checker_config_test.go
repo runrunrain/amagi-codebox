@@ -40,10 +40,10 @@ func TestCheckClaudeConfig_WithMockConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write test config: ANTHROPIC_BASE_URL is set but AUTH_TOKEN is not
+	// Write test config: env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is set but env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is not
 	testConfig := map[string]interface{}{
 		"env": map[string]interface{}{
-			"ANTHROPIC_BASE_URL": "https://custom.api.com",
+			"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
 		},
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	}
@@ -74,25 +74,30 @@ func TestCheckClaudeConfig_WithMockConfig(t *testing.T) {
 		t.Fatal("status should not be nil")
 	}
 
-	// Verify: ANTHROPIC_BASE_URL should be configured
+	// Verify: env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS should be configured
+	// Note: global ~/.claude.json may also configure items, so we only
+	// assert POSITIVE (items that SHOULD be configured), not negative.
+	foundAgentTeams := false
+	foundNonEssential := false
 	for _, item := range status.ConfigItems {
 		switch item.Key {
-		case "env.ANTHROPIC_BASE_URL":
+		case "env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":
+			foundAgentTeams = true
 			if !item.Configured {
-				t.Error("ANTHROPIC_BASE_URL should be configured")
-			}
-			if item.CurrentValue != "https://custom.api.com" {
-				t.Errorf("ANTHROPIC_BASE_URL CurrentValue = %q, want %q", item.CurrentValue, "https://custom.api.com")
-			}
-		case "env.ANTHROPIC_AUTH_TOKEN":
-			if item.Configured {
-				t.Error("ANTHROPIC_AUTH_TOKEN should NOT be configured (not in test config)")
+				t.Error("env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS should be configured")
 			}
 		case "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":
+			foundNonEssential = true
 			if !item.Configured {
 				t.Error("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC should be configured")
 			}
 		}
+	}
+	if !foundAgentTeams {
+		t.Error("env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS not found in config items")
+	}
+	if !foundNonEssential {
+		t.Error("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC not found in config items")
 	}
 }
 

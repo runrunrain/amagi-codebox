@@ -41,7 +41,7 @@ func TestFixClaudeConfig_WriteNewKey(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: configPath,
 	})
@@ -64,16 +64,16 @@ func TestFixClaudeConfig_WriteNewKey(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed["DISABLE_AUTOUPDATER"] != "1" {
-		t.Errorf("DISABLE_AUTOUPDATER = %v, want %q", parsed["DISABLE_AUTOUPDATER"], "1")
+	if parsed["API_TIMEOUT_MS"] != "1" {
+		t.Errorf("API_TIMEOUT_MS = %v, want %q", parsed["API_TIMEOUT_MS"], "1")
 	}
 }
 
 func TestFixClaudeConfig_NoOverwrite(t *testing.T) {
 	tmpDir, configPath := makeAllowedConfigDir(t)
 
-	// Create config with existing DISABLE_AUTOUPDATER = "0"
-	initial := map[string]interface{}{"DISABLE_AUTOUPDATER": "0"}
+	// Create config with existing API_TIMEOUT_MS = "0"
+	initial := map[string]interface{}{"API_TIMEOUT_MS": "0"}
 	data, err := json.Marshal(initial)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestFixClaudeConfig_NoOverwrite(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: configPath,
 	})
@@ -108,8 +108,8 @@ func TestFixClaudeConfig_NoOverwrite(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed["DISABLE_AUTOUPDATER"] != "0" {
-		t.Errorf("DISABLE_AUTOUPDATER was incorrectly overwritten; got %v, want %q", parsed["DISABLE_AUTOUPDATER"], "0")
+	if parsed["API_TIMEOUT_MS"] != "0" {
+		t.Errorf("API_TIMEOUT_MS was incorrectly overwritten; got %v, want %q", parsed["API_TIMEOUT_MS"], "0")
 	}
 }
 
@@ -126,7 +126,7 @@ func TestFixClaudeConfig_NestedKey(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "env.ANTHROPIC_BASE_URL",
+		Key:      "env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
 		Value:    "https://api.test.com",
 		FilePath: configPath,
 	})
@@ -150,8 +150,8 @@ func TestFixClaudeConfig_NestedKey(t *testing.T) {
 	if !ok {
 		t.Fatal("env key should be a nested object")
 	}
-	if env["ANTHROPIC_BASE_URL"] != "https://api.test.com" {
-		t.Errorf("env.ANTHROPIC_BASE_URL = %v, want %q", env["ANTHROPIC_BASE_URL"], "https://api.test.com")
+	if env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] != "https://api.test.com" {
+		t.Errorf("env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = %v, want %q", env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "https://api.test.com")
 	}
 }
 
@@ -168,7 +168,7 @@ func TestFixClaudeConfig_BackupCreated(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: configPath,
 	})
@@ -197,7 +197,7 @@ func TestFixClaudeConfig_CreatesParentDir(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: configPath,
 	})
@@ -226,7 +226,7 @@ func TestFixClaudeConfig_DefaultValue(t *testing.T) {
 	svc := &Service{}
 	// Value is empty => should use default from predefinedConfigItems
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "", // use default
 		FilePath: configPath,
 	})
@@ -246,8 +246,8 @@ func TestFixClaudeConfig_DefaultValue(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed["DISABLE_AUTOUPDATER"] != "1" {
-		t.Errorf("default value not written; got %v, want %q", parsed["DISABLE_AUTOUPDATER"], "1")
+	if parsed["API_TIMEOUT_MS"] != "3000000" {
+		t.Errorf("default value not written; got %v, want %q", parsed["API_TIMEOUT_MS"], "3000000")
 	}
 }
 
@@ -264,7 +264,7 @@ func TestFixClaudeConfig_NoDefaultNoValue(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "env.ANTHROPIC_AUTH_TOKEN", // no default value
+		Key:      "unknown.custom.key", // not in predefinedConfigItems, no default
 		Value:    "",
 		FilePath: configPath,
 	})
@@ -272,7 +272,7 @@ func TestFixClaudeConfig_NoDefaultNoValue(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Success {
-		t.Error("should fail when value is empty and no default exists")
+		t.Error("should fail when key is not in predefinedConfigItems and value is empty")
 	}
 }
 
@@ -280,7 +280,7 @@ func TestFixClaudeConfig_EmptyExistingKeyOverwrites(t *testing.T) {
 	tmpDir, configPath := makeAllowedConfigDir(t)
 
 	// Create config with an empty-string value
-	if err := os.WriteFile(configPath, []byte(`{"DISABLE_AUTOUPDATER":""}`), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"API_TIMEOUT_MS":""}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,7 +290,7 @@ func TestFixClaudeConfig_EmptyExistingKeyOverwrites(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: configPath,
 	})
@@ -311,8 +311,8 @@ func TestFixClaudeConfig_EmptyExistingKeyOverwrites(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed["DISABLE_AUTOUPDATER"] != "1" {
-		t.Errorf("DISABLE_AUTOUPDATER = %v, want %q", parsed["DISABLE_AUTOUPDATER"], "1")
+	if parsed["API_TIMEOUT_MS"] != "1" {
+		t.Errorf("API_TIMEOUT_MS = %v, want %q", parsed["API_TIMEOUT_MS"], "1")
 	}
 }
 
@@ -330,7 +330,7 @@ func TestFixClaudeConfig_PreservesExistingKeys(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: configPath,
 	})
@@ -355,7 +355,7 @@ func TestFixClaudeConfig_PreservesExistingKeys(t *testing.T) {
 	if parsed["another"] != float64(42) {
 		t.Error("existing numeric keys should be preserved")
 	}
-	if parsed["DISABLE_AUTOUPDATER"] != "1" {
+	if parsed["API_TIMEOUT_MS"] != "1" {
 		t.Error("new key should be added")
 	}
 }
@@ -395,7 +395,7 @@ func TestFixClaudeConfig_RejectsArbitraryPath(t *testing.T) {
 
 	svc := &Service{}
 	result, err := svc.fixClaudeConfig(ConfigFixRequest{
-		Key:      "DISABLE_AUTOUPDATER",
+		Key:      "API_TIMEOUT_MS",
 		Value:    "1",
 		FilePath: arbitraryPath,
 	})

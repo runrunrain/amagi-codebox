@@ -155,7 +155,8 @@ func TestClaudeInstallCommands_NoPowerShellOnDarwin(t *testing.T) {
 		t.Skip("this test verifies non-Windows behavior")
 	}
 
-	cmds := claudeInstallCommands(installOperationInstall, nil)
+	svc := newTestService()
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
 
 	for _, cmd := range cmds {
 		if strings.Contains(strings.ToLower(cmd.path), "powershell") {
@@ -185,29 +186,23 @@ func TestClaudeInstallCommands_NoPowerShellOnDarwin(t *testing.T) {
 }
 
 // TestClaudeInstallCommands_WindowsHasNativeAndWinget verifies Windows still
-// generates native and winget commands.
+// generates winget commands (and optionally native when accessible).
 func TestClaudeInstallCommands_WindowsHasNativeAndWinget(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("this test verifies Windows behavior")
 	}
 
-	cmds := claudeInstallCommands(installOperationInstall, nil)
+	svc := newTestService()
+	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
 	if len(cmds) < 2 {
 		t.Fatalf("expected at least 2 commands on Windows, got %d", len(cmds))
 	}
 
-	hasNative := false
 	hasWinget := false
 	for _, cmd := range cmds {
-		if strings.Contains(cmd.path, "powershell") {
-			hasNative = true
-		}
 		if strings.Contains(strings.ToLower(cmd.path), "winget") {
 			hasWinget = true
 		}
-	}
-	if !hasNative {
-		t.Error("Windows Claude install should include native PowerShell installer")
 	}
 	if !hasWinget {
 		t.Error("Windows Claude install should include winget")

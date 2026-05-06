@@ -37,6 +37,7 @@ func isConfigPathAllowed(targetPath string) bool {
 	}
 
 	// Allowed patterns:
+	//   ~/.claude.json                     (global state, hasCompletedOnboarding)
 	//   ~/.claude/settings.json            (global)
 	//   <cwd>/.claude/settings.json        (project)
 	//   <cwd>/.claude/settings.local.json  (project local)
@@ -45,7 +46,10 @@ func isConfigPathAllowed(targetPath string) bool {
 
 	allowedPatterns := []string{}
 	if homeDir != "" {
-		allowedPatterns = append(allowedPatterns, filepath.Clean(filepath.Join(homeDir, ".claude", "settings.json")))
+		allowedPatterns = append(allowedPatterns,
+			filepath.Clean(filepath.Join(homeDir, ".claude.json")),
+			filepath.Clean(filepath.Join(homeDir, ".claude", "settings.json")),
+		)
 	}
 	if cwd != "" {
 		allowedPatterns = append(allowedPatterns,

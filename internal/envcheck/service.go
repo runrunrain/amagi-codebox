@@ -153,10 +153,14 @@ func (s *Service) finishToolCheck(status *CheckStatus, err error) (*CheckStatus,
 	return status, nil
 }
 
-// populateCanInstall fills the CanInstall, InstallBlockedReason, and related
-// Issue/Solution fields on the CheckStatus. It probes npm availability once
-// and caches the result for the lifetime of the Service to avoid repeated
+// populateCanInstall fills the CanInstall, CanInstallByMethod, InstallBlockedReason,
+// and related Issue/Solution fields on the CheckStatus. It probes npm availability
+// once and caches the result for the lifetime of the Service to avoid repeated
 // lookups across CheckAll calls.
+//
+// For Claude Code on Windows, CanInstallByMethod reports per-method availability
+// so the frontend can enable/disable install buttons based on the selected method
+// rather than gating everything on npm.
 func (s *Service) populateCanInstall(status *CheckStatus) {
 	if status == nil {
 		return
@@ -166,8 +170,23 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 		s.probeNPMAvailability()
 	})
 
-	if s.npmAvailable {
-		status.CanInstall = true
+	// Compute per-method install availability for Claude Code on Windows.
+	if status.Tool == ToolClaudeCode && runtime.GOOS == "windows" {
+		status.CanInstallByMethod = map[string]bool{
+			"npm":    s.npmAvailable,
+			"winget": s.isWingetAvailable(),
+			"native": true, // native always allows attempt; accessibility checked at install time
+		}
+		// CanInstall is true if ANY method is available
+		status.CanInstall = s.npmAvailable || status.CanInstallByMethod["winget"] || status.CanInstallByMethod["native"]
+	} else {
+		status.CanInstallByMethod = map[string]bool{
+			"npm": s.npmAvailable,
+		}
+		status.CanInstall = s.npmAvailable
+	}
+
+	if status.CanInstall {
 		// For installed tools with errors, offer a reinstall/repair solution.
 		if status.Installed && strings.TrimSpace(status.Error) != "" {
 			status.Solutions = append(status.Solutions, ResolutionAction{
@@ -178,7 +197,6 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 			})
 		}
 	} else {
-		status.CanInstall = false
 		if s.npmResolvedErr != nil {
 			status.InstallBlockedReason = s.npmResolvedErr.Error()
 		}
@@ -225,6 +243,22 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 			})
 		}
 	}
+}
+
+// isWingetAvailable checks whether winget is available on this system.
+// Unlike verifyWingetHealth, this is a lightweight check that does not produce
+// user-facing error messages -- it simply reports availability.
+func (s *Service) isWingetAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   "winget",
+		Args:   []string{"--version"},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	return err == nil
 }
 
 func (s *Service) cacheToolStatus(status *CheckStatus) {
@@ -878,6 +912,20 @@ func (s *Service) InstallClaudeCodeWithMethod(method ClaudeInstallMethod) (*Inst
 // Claude Code with a specific method. This ensures the operation is serialized
 // with async StartInstallTool/StartUpdateTool and other synchronous calls.
 func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod) (*InstallResult, error) {
+	// Validate method BEFORE acquiring the lock and setting operation state,
+	// so that an unsupported method does not leave a stale running state.
+	var targetMethod InstallMethod
+	switch method {
+	case ClaudeInstallNPM:
+		targetMethod = InstallMethodNPM
+	case ClaudeInstallNative:
+		targetMethod = InstallMethodNative
+	case ClaudeInstallWinget:
+		targetMethod = InstallMethodWinget
+	default:
+		return nil, fmt.Errorf("unsupported method: %s", method)
+	}
+
 	s.opMu.Lock()
 	if s.current != nil && s.current.Status == OperationStatusRunning {
 		s.opMu.Unlock()
@@ -895,6 +943,21 @@ func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod
 		UpdatedAt: now,
 	}
 	s.opMu.Unlock()
+
+	// Pre-install: detect and clean conflicting versions from different channels.
+	conflictResult, conflictErr := s.ensureNoConflictInstall(targetMethod)
+	if conflictErr != nil {
+		s.opMu.Lock()
+		s.current = nil
+		s.opMu.Unlock()
+		return nil, conflictErr
+	}
+	if conflictResult != nil && !conflictResult.Success {
+		s.opMu.Lock()
+		s.current = nil
+		s.opMu.Unlock()
+		return conflictResult, nil
+	}
 
 	result, err := s.installOrUpdateWithProgress(ToolClaudeCode, installOperationInstall, nil, method)
 

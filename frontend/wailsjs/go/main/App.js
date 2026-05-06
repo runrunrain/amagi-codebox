@@ -18,12 +18,20 @@ export function BrowseDirectory() {
   return window['go']['main']['App']['BrowseDirectory']();
 }
 
+export function CheckClaudeConfig() {
+  return window['go']['main']['App']['CheckClaudeConfig']();
+}
+
 export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
 
 export function CheckTool(arg1) {
   return window['go']['main']['App']['CheckTool'](arg1);
+}
+
+export function CleanClaudeInstall(arg1) {
+  return window['go']['main']['App']['CleanClaudeInstall'](arg1);
 }
 
 export function ClearLogs() {
@@ -72,6 +80,10 @@ export function ExportEnvVarsToFile() {
 
 export function ExportLogs() {
   return window['go']['main']['App']['ExportLogs']();
+}
+
+export function FixClaudeConfig(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FixClaudeConfig'](arg1, arg2, arg3);
 }
 
 export function GetAmagiSettings() {
@@ -230,6 +242,10 @@ export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
 }
 
+export function InstallClaudeWithMethod(arg1) {
+  return window['go']['main']['App']['InstallClaudeWithMethod'](arg1);
+}
+
 export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
 }
@@ -314,12 +330,12 @@ export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
 }
 
-export function RunEnvFixAction(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RunEnvFixAction'](arg1, arg2, arg3);
-}
-
 export function RunEnvCheck() {
   return window['go']['main']['App']['RunEnvCheck']();
+}
+
+export function RunEnvFixAction(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RunEnvFixAction'](arg1, arg2, arg3);
 }
 
 export function SaveAllConfig() {
@@ -408,6 +424,10 @@ export function StopSession(arg1) {
 
 export function ToggleRemoteServer(arg1) {
   return window['go']['main']['App']['ToggleRemoteServer'](arg1);
+}
+
+export function UninstallClaudeCode(arg1) {
+  return window['go']['main']['App']['UninstallClaudeCode'](arg1);
 }
 
 export function UnregisterExitCallback(arg1, arg2) {

@@ -251,7 +251,7 @@ func (a *App) RunEnvFixAction(action string, tool string, extraPath string) (*en
 }
 
 // InstallClaudeWithMethod installs Claude Code using the specified method.
-// method must be "npm" or "native". When empty, the existing fallback chain is used.
+// method must be "npm", "native", or "winget". When empty, the existing fallback chain is used.
 func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, error) {
 	// Convert frontend method string to ClaudeInstallMethod
 	var m envcheck.ClaudeInstallMethod
@@ -260,8 +260,10 @@ func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, e
 		m = envcheck.ClaudeInstallNPM
 	case "native":
 		m = envcheck.ClaudeInstallNative
+	case "winget":
+		m = envcheck.ClaudeInstallWinget
 	default:
-		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native)", method)
+		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native, winget)", method)
 	}
 
 	return a.EnvCheck.InstallClaudeCodeWithMethod(m)
@@ -283,6 +285,50 @@ func (a *App) CleanClaudeInstall(method string) (*envcheck.InstallResult, error)
 	}
 
 	return a.EnvCheck.CleanClaudeCode(m)
+}
+
+// UninstallClaudeCode removes an existing Claude Code installation without reinstalling.
+// If method is empty, it auto-detects the current install method from the latest check.
+func (a *App) UninstallClaudeCode(method string) (*envcheck.InstallResult, error) {
+	targetMethod := method
+	if targetMethod == "" {
+		// Auto-detect from cached status
+		status := a.EnvCheck.GetCachedStatus()
+		if status == nil {
+			return nil, fmt.Errorf("尚未执行环境检测，无法确定安装方式")
+		}
+		claudeStatus, ok := status.Items[string(envcheck.ToolClaudeCode)]
+		if !ok || !claudeStatus.Installed {
+			return nil, fmt.Errorf("Claude Code 未安装，无需卸载")
+		}
+		targetMethod = string(claudeStatus.InstallMethod)
+	}
+
+	var m envcheck.InstallMethod
+	switch envcheck.InstallMethod(targetMethod) {
+	case envcheck.InstallMethodNPM:
+		m = envcheck.InstallMethodNPM
+	case envcheck.InstallMethodNative:
+		m = envcheck.InstallMethodNative
+	case envcheck.InstallMethodWinget:
+		m = envcheck.InstallMethodWinget
+	default:
+		return nil, fmt.Errorf("无法确定安装方式 (%s)，请手动指定", targetMethod)
+	}
+
+	result, err := a.EnvCheck.CleanClaudeCode(m)
+	if err != nil {
+		return result, err
+	}
+
+	// Refresh status after successful uninstall
+	if result != nil && result.Success {
+		go func() {
+			_, _ = a.EnvCheck.CheckAll()
+		}()
+	}
+
+	return result, nil
 }
 
 // CheckClaudeConfig scans Claude Code configuration files and reports
