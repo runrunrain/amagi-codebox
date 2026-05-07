@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,7 +17,10 @@ import (
 )
 
 const (
-	installCommandTimeout = 120 * time.Second
+	installCommandTimeout               = 120 * time.Second
+	nativeInstallCommandTimeout         = 20 * time.Minute
+	claudeNativeBootstrapCommandTimeout = 20 * time.Minute
+	nativeDirectEvidenceTimeoutDefault  = 30 * time.Second
 
 	installOperationInstall installOperation = "install"
 	installOperationUpdate  installOperation = "update"
@@ -29,6 +33,26 @@ const (
 	progressVerify    = 85
 	progressRefresh   = 95
 	progressCompleted = 100
+
+	progressNativeFallbackSwitch        = 86
+	progressNativeFallbackNPMInstall    = 88
+	progressNativeFallbackClaudeInstall = 92
+	progressNativeFallbackVerify        = 95
+)
+
+var nativeDirectEvidenceTimeout = nativeDirectEvidenceTimeoutDefault
+
+var (
+	installerQuotedSecretPattern    = regexp.MustCompile(`(?i)((?:["']?[\w.-]*(?:token|api[_-]?key|apikey|authorization|password|passwd|secret|private[_-]?key|client[_-]?secret)[\w.-]*["']?\s*[:=]\s*)(["']))[^"']*(["'])`)
+	installerBareSecretPattern      = regexp.MustCompile(`(?i)((?:["']?[\w.-]*(?:token|api[_-]?key|apikey|authorization|password|passwd|secret|private[_-]?key|client[_-]?secret)[\w.-]*["']?\s*[:=]\s*)(?:Bearer\s+)?)([^"'\s,;}\]]+)`)
+	installerBearerTokenPattern     = regexp.MustCompile(`(?i)\b(Bearer\s+)([A-Za-z0-9._~+/=-]{8,})`)
+	claudeInstallerLocationPattern  = regexp.MustCompile(`(?im)^\s*Location:\s*(.+?)\s*$`)
+	installerSensitiveValuePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{8,}\b`),
+		regexp.MustCompile(`\bsk-[A-Za-z0-9][A-Za-z0-9_-]{10,}\b`),
+		regexp.MustCompile(`\bghp_[A-Za-z0-9_]{16,}\b`),
+		regexp.MustCompile(`\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
+	}
 )
 
 type installOperation string
@@ -37,6 +61,7 @@ type installCommand struct {
 	description string
 	path        string
 	args        []string
+	timeout     time.Duration
 }
 
 // progressReporter is a callback invoked by installOrUpdate to report
@@ -222,6 +247,385 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		overallLastErr = errors.New(message)
 	}
 	return installFailure(tool, message, overallLastErr), overallLastErr
+}
+
+func (s *Service) installClaudeCodeWithMethodProgress(method ClaudeInstallMethod, reporter progressReporter) (*InstallResult, error) {
+	targetMethod, err := targetInstallMethodForClaude(method)
+	if err != nil {
+		return nil, err
+	}
+
+	reporter.report(OperationStepPrecheck, fmt.Sprintf("正在检查 Claude Code %s 安装冲突...", claudeInstallMethodDisplayName(method)), progressPrecheck)
+	conflictResult, conflictErr := s.ensureNoConflictInstall(targetMethod)
+	if conflictErr != nil {
+		return installFailure(ToolClaudeCode, fmt.Sprintf("Claude Code %s 安装前清理冲突失败", claudeInstallMethodDisplayName(method)), conflictErr), conflictErr
+	}
+	if conflictResult != nil {
+		if !conflictResult.Success {
+			return conflictResult, nil
+		}
+		reporter.report(OperationStepPrepare, conflictResult.Message, progressPrepare)
+	}
+
+	reporter.report(OperationStepPrepare, fmt.Sprintf("正在准备 Claude Code %s 安装...", claudeInstallMethodDisplayName(method)), progressPrepare)
+	if method == ClaudeInstallNative {
+		return s.installClaudeNativeWithBootstrapFallback(reporter)
+	}
+	return s.installOrUpdateWithProgress(ToolClaudeCode, installOperationInstall, reporter, method)
+}
+
+func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressReporter) (*InstallResult, error) {
+	reporter.report(OperationStepPrecheck, "正在检查 Claude Code Native 当前状态...", progressPrecheck)
+
+	before, checkErr := s.CheckOne(ToolClaudeCode)
+	if checkErr != nil && before == nil {
+		return installFailure(ToolClaudeCode, "Claude Code Native 安装前检查失败", checkErr), checkErr
+	}
+	if isHealthyAndCurrent(before) && before.InstallMethod == InstallMethodNative {
+		return &InstallResult{
+			Success: true,
+			Message: "Claude Code Native 已安装且为最新版本",
+			Tool:    ToolClaudeCode,
+			Version: before.Version,
+		}, nil
+	}
+
+	reporter.report(OperationStepRunCommand, "Native 官方安装模式：正在启动 Claude Code direct installer...", progressRunStart)
+	directResult, directErr := s.runNativeDirectInstallerWithEvidence(reporter)
+	if directErr == nil {
+		reporter.report(OperationStepVerify, "Native 官方安装模式：正在验证 Native 直接安装结果...", progressVerify)
+		after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(directResult))
+		if verifyErr == nil {
+			return &InstallResult{
+				Success: true,
+				Message: nativeInstallSuccessMessage("Claude Code 已通过 Native 官方安装模式 direct installer 安装成功", after),
+				Tool:    ToolClaudeCode,
+				Version: after.Version,
+			}, nil
+		}
+		directErr = fmt.Errorf("Native 官方安装模式 direct installer succeeded but native verification failed: %w", verifyErr)
+	}
+
+	directSummary := installerDiagnosticSummary(directErr)
+	switchMessage := "Native 官方安装模式直接安装失败，切换保底方案：保底安装模式（npm + claude install）..."
+	if isNativeDirectEvidenceTimeout(directErr) {
+		switchMessage = "Native 官方安装模式：30 秒内未检测到响应，切换保底方案（npm + claude install）..."
+	}
+	reporter.report(OperationStepPrepare, switchMessage, progressNativeFallbackSwitch)
+
+	if err := s.ensureNPMAvailable(); err != nil {
+		fallbackErr := fmt.Errorf("npm 不可用，无法执行 Native 保底安装: %w", err)
+		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+	}
+
+	reporter.report(OperationStepRunCommand, "保底安装模式（npm + claude install）：正在安装 npm 版本 Claude Code，作为 Native 官方二进制安装引导...", progressNativeFallbackNPMInstall)
+	npmCmd := s.resolveCommandNPMPath(npmClaudeCommand(installOperationInstall))
+	if err := s.runInstallCommand(npmCmd); err != nil {
+		fallbackErr := fmt.Errorf("安装 npm 版本 Claude Code 失败: %w", err)
+		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+	}
+	if err := s.confirmClaudeNPMInstall(); err != nil {
+		fallbackErr := fmt.Errorf("npm 版本 Claude Code 安装后确认失败: %w", err)
+		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+	}
+
+	reporter.report(OperationStepRunCommand, "保底安装模式（npm + claude install）：正在执行 claude install 安装 Native 官方二进制...", progressNativeFallbackClaudeInstall)
+	bootstrapCmd := claudeNativeBootstrapCommand()
+	bootstrapResult, bootstrapErr := s.runInstallCommandResult(bootstrapCmd)
+	if bootstrapErr != nil {
+		reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：claude install 返回非零状态，正在根据成功输出验证 Native 二进制...", progressNativeFallbackVerify)
+		if after, verifyErr := s.verifyClaudeNativeInstallFromCommandOutput(resultText(bootstrapResult)); verifyErr == nil {
+			return &InstallResult{
+				Success: true,
+				Message: nativeInstallSuccessMessage("Claude Code 直接 Native 安装失败后，claude install 已完成 Native 官方二进制安装；后续 shell integration 返回非零状态，已按 Location 验证二进制可用", after),
+				Tool:    ToolClaudeCode,
+				Version: after.Version,
+			}, nil
+		}
+		fallbackErr := fmt.Errorf("执行 claude install 失败: %w", bootstrapErr)
+		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+	}
+
+	reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：正在验证 Native 官方二进制 Claude Code 可用...", progressNativeFallbackVerify)
+	after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(bootstrapResult))
+	if verifyErr != nil {
+		fallbackErr := fmt.Errorf("claude install 完成后 Native 验证失败: %w", verifyErr)
+		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+	}
+
+	return &InstallResult{
+		Success: true,
+		Message: nativeInstallSuccessMessage("Claude Code 直接 Native 安装失败后，已通过 npm 引导 claude install 保底方案安装 Native 官方二进制", after),
+		Tool:    ToolClaudeCode,
+		Version: after.Version,
+	}, nil
+}
+
+type nativeDirectEvidenceTimeoutError struct {
+	timeout time.Duration
+	detail  string
+}
+
+func (e nativeDirectEvidenceTimeoutError) Error() string {
+	message := fmt.Sprintf("Native 官方安装模式：%s 内未检测到 stdout/stderr、下载/安装进度或成功结束，已终止 direct installer", e.timeout)
+	if e.detail != "" {
+		message += ": " + e.detail
+	}
+	return message
+}
+
+func isNativeDirectEvidenceTimeout(err error) bool {
+	var gateErr nativeDirectEvidenceTimeoutError
+	return errors.As(err, &gateErr)
+}
+
+func (s *Service) runNativeDirectInstallerWithEvidence(reporter progressReporter) (*platform.ProcessResult, error) {
+	command := nativePowerShellClaudeCommand()
+	timeout := commandTimeout(command)
+	reporter.report(OperationStepRunCommand, "Native 官方安装模式：等待安装器响应/下载开始（最多 30 秒）...", progressRunStart+1)
+
+	evidenceRunner, ok := s.processRunner.(platform.EvidenceProcessRunner)
+	if !ok {
+		result, err := s.runInstallCommandResult(command)
+		if err != nil {
+			return result, fmt.Errorf("Native 官方安装模式 direct installer failed without streaming evidence support: %w", err)
+		}
+		return result, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var evidenceOnce sync.Once
+	result, err := evidenceRunner.RunWithEvidence(ctx, platform.CommandSpec{
+		Path:   command.path,
+		Args:   append([]string(nil), command.args...),
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	}, nativeDirectEvidenceTimeout, func(platform.ProcessOutputEvent) {
+		evidenceOnce.Do(func() {
+			reporter.report(OperationStepRunCommand, "Native 官方安装模式：已检测到安装器响应，继续等待官方 direct installer 完成...", progressRunStart+2)
+		})
+	})
+
+	processResult := (*platform.ProcessResult)(nil)
+	if result != nil {
+		processResult = result.Result
+	}
+	if result != nil && result.EvidenceTimedOut {
+		detail := sanitizeInstallerOutput(resultText(processResult))
+		return processResult, nativeDirectEvidenceTimeoutError{timeout: nativeDirectEvidenceTimeout, detail: detail}
+	}
+	if err == nil {
+		return processResult, nil
+	}
+
+	message := commandFailureMessage(processResult, err, timeout, errors.Is(ctx.Err(), context.DeadlineExceeded))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		message = fmt.Sprintf("command timed out after %s: %s", timeout, message)
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		message = fmt.Sprintf("command %q was not found in PATH. Install the required tool or fix PATH. Detail: %s", command.path, message)
+	}
+	return processResult, fmt.Errorf("Native 官方安装模式 direct installer failed (ran %s %s; timeout %s): %s", command.path, strings.Join(command.args, " "), timeout, message)
+}
+
+func (s *Service) nativeBootstrapFailureResult(directSummary string, fallbackErr error) *InstallResult {
+	fallbackSummary := installerDiagnosticSummary(fallbackErr)
+	message := fmt.Sprintf(
+		"Claude Code Native 安装失败：Native 官方安装模式直接安装失败，保底安装模式（npm + claude install）也未完成。Direct: [%s]。Fallback: [%s]。建议：确认 Node.js/npm 可用后重试，或手动执行 npm install -g @anthropic-ai/claude-code 后运行 claude install。",
+		directSummary,
+		fallbackSummary,
+	)
+	return installFailure(ToolClaudeCode, message, errors.New(message))
+}
+
+func installerDiagnosticSummary(err error) string {
+	if err == nil {
+		return "无错误详情"
+	}
+	text := sanitizeInstallerOutput(err.Error())
+	if text == "" {
+		return "无错误详情"
+	}
+	return text
+}
+
+func (s *Service) verifyClaudeNativeAvailable() (*CheckStatus, error) {
+	return s.verifyClaudeNativeAvailableWithHint("")
+}
+
+func (s *Service) verifyClaudeNativeAvailableWithHint(installerOutput string) (*CheckStatus, error) {
+	after, verifyErr := s.CheckOne(ToolClaudeCode)
+	if isVerifiedNativeStatus(after, verifyErr) {
+		return after, nil
+	}
+
+	if hinted, err := s.verifyClaudeNativeInstallFromCommandOutput(installerOutput); err == nil {
+		return hinted, nil
+	}
+	for _, candidate := range claudeNativeDefaultExecutableCandidates() {
+		if verified, err := s.verifyClaudeNativeExecutablePath(candidate, "native-default-location"); err == nil {
+			return verified, nil
+		}
+	}
+
+	if verifyErr != nil {
+		return after, fmt.Errorf("verification call failed: %s", installerDiagnosticSummary(verifyErr))
+	}
+	if after == nil {
+		return nil, errors.New("安装后工具状态为空")
+	}
+	if strings.TrimSpace(after.Error) != "" {
+		return after, fmt.Errorf("%s", installerDiagnosticSummary(errors.New(after.Error)))
+	}
+	if !after.Installed {
+		return after, errors.New("安装后未找到工具可执行文件")
+	}
+	if !after.PATHOk {
+		return after, errors.New("工具在 PATH 之外被找到；请在 PATH 变更后重启应用程序或终端")
+	}
+	if after.InstallMethod != InstallMethodNative {
+		return after, fmt.Errorf("安装后检测到 %s 安装方式，未检测到 Native 官方二进制", after.InstallMethod)
+	}
+	return after, nil
+}
+
+func isVerifiedNativeStatus(status *CheckStatus, err error) bool {
+	return err == nil &&
+		status != nil &&
+		status.Installed &&
+		status.PATHOk &&
+		status.InstallMethod == InstallMethodNative &&
+		strings.TrimSpace(status.Error) == ""
+}
+
+func (s *Service) verifyClaudeNativeInstallFromCommandOutput(output string) (*CheckStatus, error) {
+	if !claudeInstallerOutputHasSuccess(output) {
+		return nil, errors.New("installer output did not contain Claude Code native success marker")
+	}
+	location := parseClaudeInstallerLocation(output)
+	if location == "" {
+		return nil, errors.New("installer output did not contain Claude Code native Location")
+	}
+	return s.verifyClaudeNativeExecutablePath(location, "installer-location")
+}
+
+func claudeInstallerOutputHasSuccess(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "claude code successfully installed") ||
+		strings.Contains(lower, "successfully installed")
+}
+
+func parseClaudeInstallerLocation(output string) string {
+	matches := claudeInstallerLocationPattern.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	location := strings.TrimSpace(matches[1])
+	location = strings.Trim(location, `"'`)
+	return filepath.Clean(location)
+}
+
+func (s *Service) verifyClaudeNativeExecutablePath(executablePath string, pathSource string) (*CheckStatus, error) {
+	cleaned := strings.TrimSpace(executablePath)
+	if cleaned == "" {
+		return nil, errors.New("Native Location 为空")
+	}
+	if !fileExists(cleaned) {
+		return nil, fmt.Errorf("Native Location 文件不存在: %s", cleaned)
+	}
+	realPath := resolveRealExecutablePath(cleaned)
+	version, err := s.claudeVersion(realPath)
+	if err != nil {
+		return nil, err
+	}
+	status := &CheckStatus{
+		Tool:           ToolClaudeCode,
+		Installed:      true,
+		InstallMethod:  s.detectClaudeInstallMethod(realPath),
+		Version:        version,
+		PATHOk:         true,
+		SystemPATHOk:   pathDirInProcessPATH(filepath.Dir(realPath)),
+		PathState:      PathStateOutsidePATH,
+		PathSource:     pathSource,
+		ExecutablePath: realPath,
+		CheckedAt:      time.Now(),
+	}
+	if status.SystemPATHOk {
+		status.PathState = PathStateSystemPATH
+	}
+	if status.InstallMethod != InstallMethodNative {
+		return status, fmt.Errorf("Location 指向 %s 安装方式，未检测到 Native 官方二进制: %s", status.InstallMethod, realPath)
+	}
+	if !status.SystemPATHOk {
+		applyPathStateToStatus(status, resolveResult{
+			executablePath: realPath,
+			systemPATHOk:   false,
+			pathState:      status.PathState,
+			pathSource:     pathSource,
+		}, ToolClaudeCode)
+	}
+	return status, nil
+}
+
+func pathDirInProcessPATH(dir string) bool {
+	normalizedDir := normalizeClaudePath(dir)
+	if normalizedDir == "" {
+		return false
+	}
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		if normalizeClaudePath(entry) == normalizedDir {
+			return true
+		}
+	}
+	return false
+}
+
+func nativeInstallSuccessMessage(prefix string, status *CheckStatus) string {
+	if status == nil {
+		return prefix
+	}
+	details := []string{}
+	if strings.TrimSpace(status.ExecutablePath) != "" {
+		details = append(details, "Path: "+status.ExecutablePath)
+	}
+	if strings.TrimSpace(status.Version) != "" {
+		details = append(details, "Version: "+status.Version)
+	}
+	if !status.SystemPATHOk {
+		details = append(details, "提示：安装已成功，但当前进程 PATH 尚未包含 Native 目录；CodeBox 本次会话已使用绝对路径/增强 PATH 验证，可重启终端或修复 PATH 后在外部终端使用 claude")
+	}
+	if len(details) == 0 {
+		return prefix
+	}
+	return prefix + "（" + strings.Join(details, "；") + "）"
+}
+
+func targetInstallMethodForClaude(method ClaudeInstallMethod) (InstallMethod, error) {
+	switch method {
+	case ClaudeInstallNPM:
+		return InstallMethodNPM, nil
+	case ClaudeInstallNative:
+		return InstallMethodNative, nil
+	case ClaudeInstallWinget:
+		return InstallMethodWinget, nil
+	default:
+		return InstallMethodUnknown, fmt.Errorf("unsupported method: %s", method)
+	}
+}
+
+func claudeInstallMethodDisplayName(method ClaudeInstallMethod) string {
+	switch method {
+	case ClaudeInstallNPM:
+		return "npm"
+	case ClaudeInstallNative:
+		return "Native PowerShell"
+	case ClaudeInstallWinget:
+		return "winget"
+	default:
+		return string(method)
+	}
 }
 
 func (s *Service) installCommands(tool CLITool, operation installOperation, current *CheckStatus, method ClaudeInstallMethod) ([]installCommand, error) {
@@ -586,12 +990,22 @@ func nativePowerShellClaudeCommand() installCommand {
 	return installCommand{
 		description: "Claude Code native PowerShell installer",
 		path:        "powershell.exe",
+		timeout:     nativeInstallCommandTimeout,
 		args: []string{
 			"-NoProfile",
 			"-NonInteractive",
 			"-ExecutionPolicy", "RemoteSigned",
 			"-Command", "irm https://claude.ai/install.ps1 | iex",
 		},
+	}
+}
+
+func claudeNativeBootstrapCommand() installCommand {
+	return installCommand{
+		description: "claude install native bootstrap",
+		path:        "claude",
+		args:        []string{"install"},
+		timeout:     claudeNativeBootstrapCommandTimeout,
 	}
 }
 
@@ -640,9 +1054,9 @@ func (s *Service) ensureNPMAvailable() error {
 	if err == nil {
 		return nil
 	}
-	message := strings.TrimSpace(resultText(result))
+	message := sanitizeInstallerOutput(resultText(result))
 	if message == "" {
-		message = err.Error()
+		message = sanitizeInstallerOutput(err.Error())
 	}
 	return fmt.Errorf(
 		"安装此工具需要 npm，但 npm 未在 PATH 中找到 (%s)。请安装 Node.js (https://nodejs.org) 并确保 npm 在 PATH 中，然后重启 CodeBox。",
@@ -678,9 +1092,9 @@ func (s *Service) probeNPMAvailability() {
 	})
 	if runErr != nil {
 		s.npmAvailable = false
-		detail := strings.TrimSpace(resultText(result))
+		detail := sanitizeInstallerOutput(resultText(result))
 		if detail == "" {
-			detail = runErr.Error()
+			detail = sanitizeInstallerOutput(runErr.Error())
 		}
 		// Detect "node not found" specifically
 		if strings.Contains(detail, "node: No such file") || strings.Contains(detail, "env: node: No such file") {
@@ -707,7 +1121,13 @@ func (s *Service) resolveNPMPath() string {
 }
 
 func (s *Service) runInstallCommand(command installCommand) error {
-	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	_, err := s.runInstallCommandResult(command)
+	return err
+}
+
+func (s *Service) runInstallCommandResult(command installCommand) (*platform.ProcessResult, error) {
+	timeout := commandTimeout(command)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Use enhanced env for npm commands so /usr/bin/env node can find node
@@ -720,20 +1140,67 @@ func (s *Service) runInstallCommand(command installCommand) error {
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err == nil {
-		return nil
+		return result, nil
 	}
 
-	message := strings.TrimSpace(resultText(result))
-	if message == "" {
-		message = err.Error()
-	}
+	message := commandFailureMessage(result, err, timeout, errors.Is(ctx.Err(), context.DeadlineExceeded))
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		message = fmt.Sprintf("command timed out after %s: %s", installCommandTimeout, message)
+		message = fmt.Sprintf("command timed out after %s: %s", timeout, message)
 	}
 	if errors.Is(err, exec.ErrNotFound) {
 		message = fmt.Sprintf("command %q was not found in PATH. Install the required tool or fix PATH. Detail: %s", command.path, message)
 	}
-	return fmt.Errorf("%s (ran %s %s): %s", command.description, command.path, strings.Join(command.args, " "), message)
+	return result, fmt.Errorf("%s (ran %s %s; timeout %s): %s", command.description, command.path, strings.Join(command.args, " "), timeout, message)
+}
+
+func commandTimeout(command installCommand) time.Duration {
+	if command.timeout > 0 {
+		return command.timeout
+	}
+	return installCommandTimeout
+}
+
+func commandFailureMessage(result *platform.ProcessResult, err error, timeout time.Duration, timedOut bool) string {
+	detail := ""
+	if err != nil {
+		detail = sanitizeInstallerOutput(err.Error())
+	}
+	output := sanitizeInstallerOutput(resultText(result))
+	if output == "" {
+		output = "no stdout/stderr captured"
+	}
+	parts := []string{fmt.Sprintf("timeout=%s", timeout)}
+	if timedOut {
+		parts = append(parts, "deadline exceeded")
+	}
+	if detail != "" {
+		parts = append(parts, "process error: "+detail)
+	}
+	parts = append(parts, "output: "+output)
+	return strings.Join(parts, "; ")
+}
+
+func sanitizeInstallerOutput(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if text == "" {
+		return ""
+	}
+	text = redactInstallerSensitiveValues(text)
+	const maxDiagnosticChars = 4000
+	if len(text) > maxDiagnosticChars {
+		text = text[:maxDiagnosticChars] + "... [truncated]"
+	}
+	return text
+}
+
+func redactInstallerSensitiveValues(text string) string {
+	text = installerQuotedSecretPattern.ReplaceAllString(text, `${1}[redacted]${3}`)
+	text = installerBareSecretPattern.ReplaceAllString(text, `${1}[redacted]`)
+	text = installerBearerTokenPattern.ReplaceAllString(text, `${1}[redacted]`)
+	for _, pattern := range installerSensitiveValuePatterns {
+		text = pattern.ReplaceAllString(text, "[redacted]")
+	}
+	return strings.TrimSpace(text)
 }
 
 func isHealthyAndCurrent(status *CheckStatus) bool {

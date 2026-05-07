@@ -117,7 +117,7 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 	}
 
 	if osName == "windows" {
-		for _, entry := range windowsNPMGlobalPATHCandidates(vars) {
+		for _, entry := range windowsControlledPATHCandidates(vars) {
 			key := normalizePathKey(entry, osName)
 			if _, ok := seen[key]; ok {
 				continue
@@ -156,7 +156,7 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 	return vars, effectivePATH, addedEntries, pathSources
 }
 
-func windowsNPMGlobalPATHCandidates(env []string) []string {
+func windowsControlledPATHCandidates(env []string) []string {
 	candidates := []string{}
 	for _, key := range []string{"APPDATA", "LOCALAPPDATA"} {
 		base := strings.TrimSpace(envValue(env, key))
@@ -164,6 +164,13 @@ func windowsNPMGlobalPATHCandidates(env []string) []string {
 			continue
 		}
 		candidates = append(candidates, strings.TrimRight(base, `/\`)+`\npm`)
+	}
+	for _, key := range []string{"USERPROFILE", "HOME"} {
+		base := strings.TrimSpace(envValue(env, key))
+		if base == "" {
+			continue
+		}
+		candidates = append(candidates, strings.TrimRight(base, `/\`)+`\.local\bin`)
 	}
 	return candidates
 }

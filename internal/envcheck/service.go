@@ -32,6 +32,7 @@ type EnvCheckService interface {
 	CheckLatestVersion(tool CLITool) (latestVersion string, err error)
 	Install(tool CLITool) (*InstallResult, error)
 	Update(tool CLITool) (*InstallResult, error)
+	StartInstallClaudeCodeWithMethod(method ClaudeInstallMethod) (*OperationState, error)
 	GetCachedStatus() *OverallStatus
 
 	// CheckClaudeConfig scans Claude Code configuration files and reports
@@ -710,13 +711,24 @@ var ErrAlreadyRunning = fmt.Errorf("this operation is already running")
 // If the same tool+kind is already running, it returns the current state.
 // If a different operation is running, it returns ErrBusy.
 func (s *Service) StartInstallTool(tool CLITool) (*OperationState, error) {
-	return s.startOperation(tool, OperationKindInstall)
+	return s.startOperation(tool, OperationKindInstall, ClaudeInstallAuto)
 }
 
 // StartUpdateTool starts an asynchronous update operation for the given tool.
 // Same concurrency semantics as StartInstallTool.
 func (s *Service) StartUpdateTool(tool CLITool) (*OperationState, error) {
-	return s.startOperation(tool, OperationKindUpdate)
+	return s.startOperation(tool, OperationKindUpdate, ClaudeInstallAuto)
+}
+
+// StartInstallClaudeCodeWithMethod starts an asynchronous Claude Code install
+// using the user-selected installer channel. It mirrors StartInstallTool's
+// operation-state lifecycle, but keeps the selected method instead of falling
+// back to the automatic chain.
+func (s *Service) StartInstallClaudeCodeWithMethod(method ClaudeInstallMethod) (*OperationState, error) {
+	if _, err := targetInstallMethodForClaude(method); err != nil {
+		return nil, err
+	}
+	return s.startOperation(ToolClaudeCode, OperationKindInstall, method)
 }
 
 // GetOperationState returns the current async operation state, or nil if idle.
@@ -742,7 +754,7 @@ type EnvCheckSnapshot struct {
 }
 
 // startOperation is the internal entry point for async install/update.
-func (s *Service) startOperation(tool CLITool, kind OperationKind) (*OperationState, error) {
+func (s *Service) startOperation(tool CLITool, kind OperationKind, method ClaudeInstallMethod) (*OperationState, error) {
 	if !IsValidCLITool(tool) {
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
@@ -770,7 +782,7 @@ func (s *Service) startOperation(tool CLITool, kind OperationKind) (*OperationSt
 		Kind:      kind,
 		Status:    OperationStatusRunning,
 		Step:      OperationStepPrecheck,
-		Message:   fmt.Sprintf("Starting %s %s...", displayToolName(tool), kind),
+		Message:   initialOperationMessage(tool, kind, method),
 		Progress:  0,
 		StartedAt: now,
 		UpdatedAt: now,
@@ -780,35 +792,33 @@ func (s *Service) startOperation(tool CLITool, kind OperationKind) (*OperationSt
 	// Launch background goroutine with context.Background so it survives
 	// frontend page navigation. The goroutine updates s.current in place
 	// under opMu.
-	go s.runOperation(op)
+	go s.runOperation(op, method)
 
 	return cloneOperationState(op), nil
 }
 
+func initialOperationMessage(tool CLITool, kind OperationKind, method ClaudeInstallMethod) string {
+	if tool == ToolClaudeCode && kind == OperationKindInstall && method != ClaudeInstallAuto {
+		return fmt.Sprintf("Starting Claude Code install via %s...", claudeInstallMethodDisplayName(method))
+	}
+	return fmt.Sprintf("Starting %s %s...", displayToolName(tool), kind)
+}
+
 // runOperation executes the full install/update lifecycle in a background goroutine.
-func (s *Service) runOperation(op *OperationState) {
+func (s *Service) runOperation(op *OperationState, method ClaudeInstallMethod) {
 	// Build a progress reporter that updates the operation state in real-time.
 	// The monotonicReporter wrapper guarantees progress never decreases at the
 	// callback level, and the inner closure also clamps as defense-in-depth.
-	rawReporter := progressReporter(func(step OperationStep, message string, progress int) {
-		s.opMu.Lock()
-		defer s.opMu.Unlock()
-		if s.current == nil || s.current.Status != OperationStatusRunning {
-			return
-		}
-		// Progress must be monotonically non-decreasing.
-		if progress < s.current.Progress {
-			progress = s.current.Progress
-		}
-		s.current.Step = step
-		s.current.Message = message
-		s.current.Progress = progress
-		s.current.UpdatedAt = time.Now()
-	})
-	reporter := monotonicReporter(rawReporter)
+	reporter := s.operationStateReporter()
 
 	// Run the install/update logic with progress reporting.
-	result, err := s.installOrUpdateWithProgress(op.Tool, installOperation(op.Kind), reporter, ClaudeInstallAuto)
+	var result *InstallResult
+	var err error
+	if op.Tool == ToolClaudeCode && op.Kind == OperationKindInstall && method != ClaudeInstallAuto {
+		result, err = s.installClaudeCodeWithMethodProgress(method, reporter)
+	} else {
+		result, err = s.installOrUpdateWithProgress(op.Tool, installOperation(op.Kind), reporter, ClaudeInstallAuto)
+	}
 
 	// Best-effort: invalidate version cache so latestVersion is re-fetched.
 	s.invalidateVersionCache(op.Tool)
@@ -861,6 +871,25 @@ func (s *Service) runOperation(op *OperationState) {
 	op.Message = result.Message
 }
 
+func (s *Service) operationStateReporter() progressReporter {
+	rawReporter := progressReporter(func(step OperationStep, message string, progress int) {
+		s.opMu.Lock()
+		defer s.opMu.Unlock()
+		if s.current == nil || s.current.Status != OperationStatusRunning {
+			return
+		}
+		// Progress must be monotonically non-decreasing.
+		if progress < s.current.Progress {
+			progress = s.current.Progress
+		}
+		s.current.Step = step
+		s.current.Message = message
+		s.current.Progress = progress
+		s.current.UpdatedAt = time.Now()
+	})
+	return monotonicReporter(rawReporter)
+}
+
 // cloneOperationState returns a defensive copy of the operation state.
 func cloneOperationState(op *OperationState) *OperationState {
 	if op == nil {
@@ -898,7 +927,53 @@ func (s *Service) FixClaudeConfig(req ConfigFixRequest) (*ConfigFixResult, error
 // The method parameter specifies which installation to clean (npm or native).
 // After cleaning, it verifies that Claude Code is no longer installed.
 func (s *Service) CleanClaudeCode(method InstallMethod) (*InstallResult, error) {
-	return s.cleanClaudeCode(method)
+	return s.serializedCleanClaudeCode(method)
+}
+
+// serializedCleanClaudeCode acquires the same operation gate used by install
+// and update. This makes uninstall visible through OperationState and prevents
+// overlapping install/update/uninstall requests from racing against a stale
+// environment snapshot.
+func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResult, error) {
+	switch method {
+	case InstallMethodNPM, InstallMethodNative, InstallMethodWinget:
+		// Supported methods proceed through the serialized operation path.
+	default:
+		// Preserve the existing contract for unknown methods: return a structured
+		// failed InstallResult without occupying the operation gate.
+		return s.cleanClaudeCode(method)
+	}
+
+	s.opMu.Lock()
+	if s.current != nil && s.current.Status == OperationStatusRunning {
+		s.opMu.Unlock()
+		return nil, ErrBusy
+	}
+	now := time.Now()
+	s.current = &OperationState{
+		ID:        fmt.Sprintf("sync-uninstall-%d", s.opSeq.Add(1)),
+		Tool:      ToolClaudeCode,
+		Kind:      OperationKindUninstall,
+		Status:    OperationStatusRunning,
+		Step:      OperationStepPrecheck,
+		Message:   fmt.Sprintf("Starting Claude Code uninstall via %s...", method),
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	s.opMu.Unlock()
+
+	result, err := s.cleanClaudeCode(method)
+
+	// Refresh synchronously before releasing the operation gate so callers that
+	// immediately start a different install method read the latest Claude status.
+	s.invalidateVersionCache(ToolClaudeCode)
+	_, _ = s.CheckOne(ToolClaudeCode)
+
+	s.opMu.Lock()
+	s.current = nil
+	s.opMu.Unlock()
+
+	return result, err
 }
 
 // InstallClaudeCodeWithMethod installs Claude Code using a specific method.
@@ -914,16 +989,8 @@ func (s *Service) InstallClaudeCodeWithMethod(method ClaudeInstallMethod) (*Inst
 func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod) (*InstallResult, error) {
 	// Validate method BEFORE acquiring the lock and setting operation state,
 	// so that an unsupported method does not leave a stale running state.
-	var targetMethod InstallMethod
-	switch method {
-	case ClaudeInstallNPM:
-		targetMethod = InstallMethodNPM
-	case ClaudeInstallNative:
-		targetMethod = InstallMethodNative
-	case ClaudeInstallWinget:
-		targetMethod = InstallMethodWinget
-	default:
-		return nil, fmt.Errorf("unsupported method: %s", method)
+	if _, err := targetInstallMethodForClaude(method); err != nil {
+		return nil, err
 	}
 
 	s.opMu.Lock()
@@ -944,22 +1011,8 @@ func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod
 	}
 	s.opMu.Unlock()
 
-	// Pre-install: detect and clean conflicting versions from different channels.
-	conflictResult, conflictErr := s.ensureNoConflictInstall(targetMethod)
-	if conflictErr != nil {
-		s.opMu.Lock()
-		s.current = nil
-		s.opMu.Unlock()
-		return nil, conflictErr
-	}
-	if conflictResult != nil && !conflictResult.Success {
-		s.opMu.Lock()
-		s.current = nil
-		s.opMu.Unlock()
-		return conflictResult, nil
-	}
-
-	result, err := s.installOrUpdateWithProgress(ToolClaudeCode, installOperationInstall, nil, method)
+	reporter := s.operationStateReporter()
+	result, err := s.installClaudeCodeWithMethodProgress(method, reporter)
 
 	if err == nil && result != nil && result.Success {
 		s.invalidateVersionCache(ToolClaudeCode)

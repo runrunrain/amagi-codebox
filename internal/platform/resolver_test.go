@@ -180,9 +180,21 @@ func TestWindowsResolverOpenCodeEmbeddedAttachEvenForCmdWrapper(t *testing.T) {
 	if spec.Shell == nil || spec.Shell.Path == "" {
 		t.Fatalf("expected non-empty resolved shell, got %+v", spec.Shell)
 	}
-	// Startup command: default shell resolves to cmd (pwsh not in PATH), so cmd-safe format
-	if spec.StartupCommand != "opencode" {
-		t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "opencode")
+	// Startup command uses the resolved default shell. It must type the command
+	// name, never the .cmd path, so npm shims run inside the attached PTY shell.
+	switch spec.Shell.Key {
+	case "pwsh", "powershell":
+		if spec.StartupCommand != "& 'opencode'" {
+			t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "& 'opencode'")
+		}
+	case "cmd":
+		if spec.StartupCommand != "opencode" {
+			t.Fatalf("startup command = %q, want %q", spec.StartupCommand, "opencode")
+		}
+	default:
+		if spec.StartupCommand != "opencode" {
+			t.Fatalf("startup command for shell %q = %q, want %q", spec.Shell.Key, spec.StartupCommand, "opencode")
+		}
 	}
 	if strings.Contains(spec.StartupCommand, "opencode.cmd") {
 		t.Fatalf("startup command should not contain .cmd path: %q", spec.StartupCommand)
@@ -358,7 +370,375 @@ func TestWindowsResolverOpenCodeNoShellDefaultsToShellAttach(t *testing.T) {
 	}
 }
 
-func TestWindowsResolverClaudeCodeEmbeddedDoesNotUseShellAttach(t *testing.T) {
+func TestWindowsResolverClaudeCodeNPMCmdEmbeddedForcesCmdWhenPowerShellRequested(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "claude.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	fakeCmdPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath, fakeCmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "claudecode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir, "ComSpec=" + fakeCmdPath},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil || spec.Shell.Key != "cmd" || spec.Shell.Path != fakeCmdPath {
+		t.Fatalf("expected Claude npm shim to force trusted cmd attach shell, got %+v", spec.Shell)
+	}
+	if spec.StartupCommand != "claude" {
+		t.Fatalf("startup command = %q, want claude", spec.StartupCommand)
+	}
+	assertNoExternalTerminalLauncherTokens(t, spec.StartupCommand)
+	if strings.Contains(strings.ToLower(spec.StartupCommand), ".cmd") || strings.Contains(strings.ToLower(spec.StartupCommand), ".ps1") {
+		t.Fatalf("startup command must not contain wrapper path: %q", spec.StartupCommand)
+	}
+	if spec.Diagnostics.ShellSource != "forced-cmd-attach-comspec" {
+		t.Fatalf("shell source = %q, want forced-cmd-attach-comspec", spec.Diagnostics.ShellSource)
+	}
+	foundOverrideWarning := false
+	for _, warning := range spec.Diagnostics.Warnings {
+		if strings.Contains(warning, "overridden with cmd.exe") {
+			foundOverrideWarning = true
+			break
+		}
+	}
+	if !foundOverrideWarning {
+		t.Fatalf("expected override warning for PowerShell request, warnings=%#v", spec.Diagnostics.Warnings)
+	}
+}
+
+func TestWindowsResolverClaudeCodeNPMAliasEmbeddedUsesAliasCommandName(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "claudecode.cmd")
+	shellPath := filepath.Join(binDir, "pwsh.exe")
+	cmdPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, shellPath, cmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "claude_code",
+		LaunchMode: "embedded",
+		WorkDir:    `C:\work`,
+		Env:        []string{"PATH=" + binDir},
+		PTYCols:    120,
+		PTYRows:    40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.CLI.Name != "claudecode" {
+		t.Fatalf("CLI name = %q, want claudecode alias", spec.CLI.Name)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil || spec.Shell.Key != "cmd" || spec.Shell.Path != cmdPath {
+		t.Fatalf("expected Claude npm alias to force cmd attach shell, got %+v", spec.Shell)
+	}
+	if spec.StartupCommand != "claudecode" {
+		t.Fatalf("startup command = %q, want claudecode", spec.StartupCommand)
+	}
+	assertNoExternalTerminalLauncherTokens(t, spec.StartupCommand)
+	if strings.Contains(strings.ToLower(spec.StartupCommand), ".cmd") {
+		t.Fatalf("startup command must type command alias, not wrapper path: %q", spec.StartupCommand)
+	}
+}
+
+func TestWindowsResolverClaudeCodeCommandNameAliases(t *testing.T) {
+	for _, tt := range []struct {
+		appType string
+		file    string
+		want    string
+	}{
+		{appType: "claudecode", file: "claude.cmd", want: "claude"},
+		{appType: "claude-code", file: "claude-code.cmd", want: "claude-code"},
+		{appType: "claude", file: "claude.cmd", want: "claude"},
+	} {
+		t.Run(tt.appType+"/"+tt.file, func(t *testing.T) {
+			binDir := t.TempDir()
+			for _, path := range []string{filepath.Join(binDir, tt.file), filepath.Join(binDir, "pwsh.exe"), filepath.Join(binDir, "cmd.exe")} {
+				if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+					t.Fatalf("write fake: %v", err)
+				}
+			}
+			resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+			spec, err := resolver.Resolve(ResolveRequest{
+				AppType:    tt.appType,
+				LaunchMode: "embedded",
+				WorkDir:    `C:\work`,
+				Env:        []string{"PATH=" + binDir},
+				PTYCols:    120,
+				PTYRows:    40,
+			})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if spec.StartupCommand != tt.want {
+				t.Fatalf("startup command = %q, want %q", spec.StartupCommand, tt.want)
+			}
+			assertNoExternalTerminalLauncherTokens(t, spec.StartupCommand)
+			if strings.Contains(strings.ToLower(spec.StartupCommand), ".cmd") {
+				t.Fatalf("startup command must not contain wrapper path: %q", spec.StartupCommand)
+			}
+		})
+	}
+}
+
+func TestWindowsResolverClaudeCodeNPMCmdNoRequestedShellForcesCmdAttach(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "claude.cmd")
+	pwshPath := filepath.Join(binDir, "pwsh.exe")
+	fakeCmdPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, pwshPath, fakeCmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "claudecode",
+		LaunchMode: "embedded",
+		WorkDir:    `C:\work`,
+		Env:        []string{"PATH=" + binDir},
+		PTYCols:    120,
+		PTYRows:    40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil || spec.Shell.Key != "cmd" || spec.Shell.Path != fakeCmdPath {
+		t.Fatalf("Claude Code npm shim should force cmd attach shell, got %+v", spec.Shell)
+	}
+	if spec.StartupCommand != "claude" {
+		t.Fatalf("startup command = %q, want claude", spec.StartupCommand)
+	}
+	assertNoExternalTerminalLauncherTokens(t, spec.StartupCommand)
+}
+
+func TestWindowsResolverClaudeCodeNPMShimWithExtensionlessAndPs1ForcesCmd(t *testing.T) {
+	binDir := t.TempDir()
+	extensionlessShim := filepath.Join(binDir, "claude")
+	cmdShim := filepath.Join(binDir, "claude.cmd")
+	psShim := filepath.Join(binDir, "claude.ps1")
+	pwshPath := filepath.Join(binDir, "pwsh.exe")
+	cmdPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{extensionlessShim, cmdShim, psShim, pwshPath, cmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "claudecode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "pwsh",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir, "ComSpec=" + cmdPath},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.CLI.Path != extensionlessShim {
+		t.Fatalf("resolved cli path = %q, want current Windows lookup evidence to expose extensionless npm shim %q", spec.CLI.Path, extensionlessShim)
+	}
+	if spec.Shell == nil || spec.Shell.Key != "cmd" || spec.Shell.Path != cmdPath {
+		t.Fatalf("expected requested pwsh to be overridden by cmd for Claude npm shim, got %+v", spec.Shell)
+	}
+	if spec.StartupCommand != "claude" {
+		t.Fatalf("startup command = %q, want claude", spec.StartupCommand)
+	}
+	for _, forbidden := range []string{"& 'claude'", "claude.ps1", "claude.cmd", "Start-Process", "wt.exe", "explorer"} {
+		if strings.Contains(strings.ToLower(spec.StartupCommand), strings.ToLower(forbidden)) {
+			t.Fatalf("startup command %q contains forbidden PowerShell/external token %q", spec.StartupCommand, forbidden)
+		}
+	}
+	assertNoExternalTerminalLauncherTokens(t, spec.StartupCommand)
+}
+
+func TestWindowsResolverClaudeCodeNPMCmdExplicitCmdAttachRemainsSupported(t *testing.T) {
+	binDir := t.TempDir()
+	cliPath := filepath.Join(binDir, "claude.cmd")
+	cmdPath := filepath.Join(binDir, "cmd.exe")
+	for _, path := range []string{cliPath, cmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake: %v", err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "claudecode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "cmd",
+		WorkDir:            `C:\work`,
+		Env:                []string{"PATH=" + binDir},
+		PTYCols:            120,
+		PTYRows:            40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.BootstrapMode != BootstrapShellAttach {
+		t.Fatalf("bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapShellAttach)
+	}
+	if spec.Shell == nil || spec.Shell.Key != "cmd" || spec.Shell.Path != cmdPath {
+		t.Fatalf("expected explicit cmd attach shell, got %+v", spec.Shell)
+	}
+	if spec.StartupCommand != "claude" {
+		t.Fatalf("startup command = %q, want claude", spec.StartupCommand)
+	}
+	assertNoExternalTerminalLauncherTokens(t, spec.StartupCommand)
+}
+
+func TestResolveWindowsCmdAttachShellIgnoresPathHijackWhenSystemRootAvailable(t *testing.T) {
+	pathDir := t.TempDir()
+	fakeCmdPath := filepath.Join(pathDir, "cmd.exe")
+	systemRoot := t.TempDir()
+	trustedCmdPath := filepath.Join(systemRoot, "System32", "cmd.exe")
+	if err := os.MkdirAll(filepath.Dir(trustedCmdPath), 0o755); err != nil {
+		t.Fatalf("mkdir trusted cmd dir: %v", err)
+	}
+	for _, path := range []string{fakeCmdPath, trustedCmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake cmd %s: %v", path, err)
+		}
+	}
+
+	shell, source, warnings := resolveWindowsCmdAttachShell([]string{
+		"PATH=" + pathDir,
+		"SystemRoot=" + systemRoot,
+	})
+
+	if shell.Path != trustedCmdPath {
+		t.Fatalf("shell path = %q, want trusted SystemRoot cmd %q", shell.Path, trustedCmdPath)
+	}
+	if shell.Path == fakeCmdPath {
+		t.Fatalf("shell path selected PATH-controlled fake cmd.exe: %q", fakeCmdPath)
+	}
+	if source != "forced-cmd-attach-systemroot" {
+		t.Fatalf("source = %q, want forced-cmd-attach-systemroot", source)
+	}
+	for _, warning := range warnings {
+		if strings.Contains(warning, "PATH-resolved") {
+			t.Fatalf("trusted SystemRoot resolution should not emit PATH fallback warning: %#v", warnings)
+		}
+	}
+}
+
+func TestResolveWindowsCmdAttachShellIgnoresSuspiciousComSpec(t *testing.T) {
+	pathDir := t.TempDir()
+	fakeCmdPath := filepath.Join(pathDir, "cmd.exe")
+	systemRoot := t.TempDir()
+	trustedCmdPath := filepath.Join(systemRoot, "System32", "cmd.exe")
+	if err := os.MkdirAll(filepath.Dir(trustedCmdPath), 0o755); err != nil {
+		t.Fatalf("mkdir trusted cmd dir: %v", err)
+	}
+	for _, path := range []string{fakeCmdPath, trustedCmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake cmd %s: %v", path, err)
+		}
+	}
+
+	shell, source, warnings := resolveWindowsCmdAttachShell([]string{
+		"PATH=" + pathDir,
+		"ComSpec=" + trustedCmdPath + " /d /c calc.exe",
+		"SystemRoot=" + systemRoot,
+	})
+
+	if shell.Path != trustedCmdPath {
+		t.Fatalf("shell path = %q, want suspicious ComSpec ignored and SystemRoot cmd selected %q", shell.Path, trustedCmdPath)
+	}
+	if source != "forced-cmd-attach-systemroot" {
+		t.Fatalf("source = %q, want forced-cmd-attach-systemroot", source)
+	}
+	foundComSpecWarning := false
+	for _, warning := range warnings {
+		if strings.Contains(warning, "ComSpec was ignored") {
+			foundComSpecWarning = true
+			break
+		}
+	}
+	if !foundComSpecWarning {
+		t.Fatalf("expected suspicious ComSpec warning, got %#v", warnings)
+	}
+}
+
+func TestResolveWindowsCmdAttachShellRejectsNonCmdComSpec(t *testing.T) {
+	pathDir := t.TempDir()
+	fakeCmdPath := filepath.Join(pathDir, "cmd.exe")
+	fakeCmdShim := filepath.Join(pathDir, "cmd.cmd")
+	systemRoot := t.TempDir()
+	trustedCmdPath := filepath.Join(systemRoot, "System32", "cmd.exe")
+	if err := os.MkdirAll(filepath.Dir(trustedCmdPath), 0o755); err != nil {
+		t.Fatalf("mkdir trusted cmd dir: %v", err)
+	}
+	for _, path := range []string{fakeCmdPath, fakeCmdShim, trustedCmdPath} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake cmd %s: %v", path, err)
+		}
+	}
+
+	shell, source, warnings := resolveWindowsCmdAttachShell([]string{
+		"PATH=" + pathDir,
+		"ComSpec=" + fakeCmdShim,
+		"SystemRoot=" + systemRoot,
+	})
+
+	if shell.Path != trustedCmdPath {
+		t.Fatalf("shell path = %q, want cmd.cmd ComSpec ignored and SystemRoot cmd selected %q", shell.Path, trustedCmdPath)
+	}
+	if source != "forced-cmd-attach-systemroot" {
+		t.Fatalf("source = %q, want forced-cmd-attach-systemroot", source)
+	}
+	foundComSpecWarning := false
+	for _, warning := range warnings {
+		if strings.Contains(warning, "ComSpec was ignored") {
+			foundComSpecWarning = true
+			break
+		}
+	}
+	if !foundComSpecWarning {
+		t.Fatalf("expected non-cmd.exe ComSpec warning, got %#v", warnings)
+	}
+}
+
+func assertNoExternalTerminalLauncherTokens(t *testing.T, command string) {
+	t.Helper()
+	lower := strings.ToLower(command)
+	for _, forbidden := range []string{"cmd /c start", "cmd.exe /c start", "start-process", "wt ", "wt.exe", "explorer", "claude.cmd", "claude.bat"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("startup command %q contains external terminal launcher token %q", command, forbidden)
+		}
+	}
+}
+
+func TestWindowsResolverClaudeCodeOfficialExeEmbeddedUsesDirectCommand(t *testing.T) {
 	binDir := t.TempDir()
 	cliPath := filepath.Join(binDir, "claude.exe")
 	if err := os.WriteFile(cliPath, []byte("MZ"), 0o755); err != nil {
@@ -379,6 +759,9 @@ func TestWindowsResolverClaudeCodeEmbeddedDoesNotUseShellAttach(t *testing.T) {
 	}
 	if spec.BootstrapMode == BootstrapShellAttach {
 		t.Fatalf("claudecode should not use shell-attach, got %q", spec.BootstrapMode)
+	}
+	if spec.BootstrapMode != BootstrapDirectCommand {
+		t.Fatalf("official claude.exe bootstrap mode = %q, want %q", spec.BootstrapMode, BootstrapDirectCommand)
 	}
 }
 

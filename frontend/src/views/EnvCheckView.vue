@@ -27,7 +27,7 @@
         <button
           class="btn primary hero-btn"
           @click="runFullCheck"
-          :disabled="checkingAll || !!runningOperation"
+          :disabled="checkingAll || !!runningOperation || isClaudeBusy"
         >
           <span v-if="checkingAll" class="mini-spinner light"></span>
           {{ checkingAll ? '检测中...' : '一键检测' }}
@@ -328,7 +328,7 @@
               placeholder="选择安装方式"
               size="small"
               class="claude-install-select"
-              :disabled="card.isOperating || checkingAll || !!runningOperation || claudeInstalling"
+              :disabled="card.isOperating || checkingAll || !!runningOperation || isClaudeBusy"
             >
               <el-option label="npm 全局安装" value="npm" />
               <el-option label="WinGet 安装" value="winget" />
@@ -338,16 +338,16 @@
               v-if="card.status && card.status.installed"
               size="small"
               type="danger"
-              :disabled="card.isOperating || checkingAll || !!runningOperation || claudeInstalling"
+              :disabled="card.isOperating || checkingAll || !!runningOperation || isClaudeBusy"
               @click="handleUninstallClaude(card.status)"
             >
-              卸载
+              {{ claudeUninstalling ? '卸载中...' : '卸载' }}
             </el-button>
           </div>
           <button
             class="btn small action-btn check-action"
             @click="runSingleCheck(card.meta.key)"
-            :disabled="card.isOperating || checkingAll"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && isClaudeBusy)"
           >
             <span v-if="checkingAll" class="mini-spinner"></span>
             {{ checkingAll ? '检测中...' : '检测' }}
@@ -357,7 +357,7 @@
               v-if="card.status && !card.status.installed"
               class="btn small action-btn install-action"
               @click="startInstall(card.meta.key, card.meta.displayName)"
-              :disabled="card.isOperating || checkingAll || !!runningOperation || !canInstallClaude(card) || (card.meta.key === 'claude_code' && claudeInstalling)"
+              :disabled="card.isOperating || checkingAll || !!runningOperation || !canInstallClaude(card) || (card.meta.key === 'claude_code' && isClaudeBusy)"
               :title="!canInstallClaude(card) ? (card.status.installBlockedReason || '当前安装方式不可用') : ''"
           >
             <span v-if="isInstallingCard(card)" class="mini-spinner"></span>
@@ -368,7 +368,7 @@
             v-if="card.status && card.status.installed && card.status.canInstall && hasFixableIssues(card.status)"
             class="btn small action-btn repair-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
-            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && claudeInstalling)"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && isClaudeBusy)"
           >
             <span v-if="isInstallingCard(card)" class="mini-spinner"></span>
             {{ isInstallingCard(card) ? '修复中...' : '重装修复' }}
@@ -378,7 +378,7 @@
             v-if="card.status && card.status.installed && !hasFixableIssues(card.status)"
             class="btn small action-btn reinstall-action"
             @click="startInstall(card.meta.key, card.meta.displayName)"
-            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && claudeInstalling)"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && isClaudeBusy)"
           >
             <span v-if="isInstallingCard(card)" class="mini-spinner"></span>
             {{ isInstallingCard(card) ? '安装中...' : '重装' }}
@@ -388,7 +388,7 @@
             v-if="card.status && card.status.hasUpdate"
             class="btn small action-btn update-action"
             @click="startUpdate(card.meta.key, card.meta.displayName, card.status.latestVersion || '')"
-            :disabled="card.isOperating || checkingAll || !!runningOperation"
+            :disabled="card.isOperating || checkingAll || !!runningOperation || (card.meta.key === 'claude_code' && isClaudeBusy)"
           >
             <span v-if="card.isOperating && card.operationKind === 'update'" class="mini-spinner"></span>
             {{ (card.isOperating && card.operationKind === 'update') ? '更新中...' : '更新' }}
@@ -469,6 +469,7 @@ const fixLoadingKey = ref<string>('')
 const cardFixResults = ref<Record<string, { title: string; description?: string; type: 'success' | 'error' | 'warning' | 'info' }>>({})
 const claudeInstallMethod = ref<'npm' | 'winget' | 'native'>('winget')
 const claudeInstalling = ref(false)
+const claudeUninstalling = ref(false)
 const configFixing = ref<Record<string, boolean>>({})
 const configPanelExpanded = ref(false)
 
@@ -480,11 +481,20 @@ const runningOperation = computed<envcheck.OperationState | null>(() => {
   return null
 })
 
+const isClaudeBusy = computed(() => claudeInstalling.value || claudeUninstalling.value)
+
+function operationKindLabel(kind: string): string {
+  if (kind === 'install') return '安装'
+  if (kind === 'update') return '更新'
+  if (kind === 'uninstall') return '卸载'
+  return kind || '操作'
+}
+
 const operationLabel = computed(() => {
   const op = runningOperation.value
   if (!op) return ''
   const toolName = TOOL_METAS.find(m => m.key === op.tool)?.displayName || op.tool
-  const kind = op.kind === 'install' ? '安装' : '更新'
+  const kind = operationKindLabel(op.kind)
   const prog = op.progress > 0 ? ` (${op.progress}%)` : ''
   const msg = op.message ? ': ' + op.message : ''
   return `${toolName} ${kind}中${prog}${msg}`
@@ -534,7 +544,7 @@ const cardList = computed((): CardView[] => {
     const status = snapshot.value?.status?.items?.[meta.key] || null
     const isOperatingThis = op != null && op.tool === meta.key
     const opKind = isOperatingThis ? (op.kind || '') : ''
-    const opLabel = isOperatingThis ? (op.kind === 'install' ? '安装中...' : '更新中...') : ''
+    const opLabel = isOperatingThis ? `${operationKindLabel(op.kind)}中...` : ''
 
     let cardClass = ''
     let tagType: 'success' | 'warning' | 'danger' | 'info' | 'primary' = 'info'
@@ -545,7 +555,7 @@ const cardList = computed((): CardView[] => {
       cardClass = 'card-operating'
       tagType = 'primary'
       tagEffect = 'dark'
-      tagLabel = op.kind === 'install' ? '安装中' : '更新中'
+      tagLabel = `${operationKindLabel(op.kind)}中`
     } else if (status) {
       if (!status.installed) {
         cardClass = 'card-missing'
@@ -619,8 +629,8 @@ function appMethod<T extends (...args: any[]) => Promise<any>>(name: string): T 
   return method as T
 }
 
-async function installClaudeWithMethod(method: 'npm' | 'winget' | 'native'): Promise<any> {
-  return appMethod<(method: string) => Promise<any>>('InstallClaudeWithMethod')(method)
+async function startInstallClaudeWithMethodAsync(method: 'npm' | 'winget' | 'native'): Promise<any> {
+  return appMethod<(method: string) => Promise<any>>('StartInstallClaudeWithMethodAsync')(method)
 }
 
 async function cleanClaudeInstall(method: string): Promise<any> {
@@ -858,6 +868,10 @@ function ensurePollingState(): void {
 // ---------- Actions ----------
 
 async function runFullCheck(): Promise<void> {
+  if (checkingAll.value || runningOperation.value || isClaudeBusy.value) {
+    return
+  }
+
   checkingAll.value = true
   try {
     const status = await RunEnvCheck() as unknown as envcheck.OverallStatus
@@ -932,22 +946,9 @@ async function startInstall(key: string, displayName: string): Promise<void> {
   try {
     if (key === 'claude_code') {
       claudeInstalling.value = true
-      const result = await installClaudeWithMethod(claudeInstallMethod.value)
-      if (result?.success) {
-        ElMessage.success(result.message || 'Claude Code 安装完成')
-        lastOperationResult.value = {
-          title: 'Claude Code 安装成功',
-          description: result.message || undefined,
-          type: 'success',
-        }
-      } else {
-        lastOperationResult.value = {
-          title: 'Claude Code 安装失败',
-          description: result?.error || result?.message || '安装失败',
-          type: 'error',
-        }
-      }
-      await runSingleCheck('claude_code')
+      await startInstallClaudeWithMethodAsync(claudeInstallMethod.value)
+      await fetchSnapshot()
+      ensurePollingState()
       return
     }
 
@@ -974,6 +975,12 @@ async function handleUninstallClaude(item: envcheck.CheckStatus): Promise<void> 
       '确认卸载',
       { confirmButtonText: '确定卸载', cancelButtonText: '取消', type: 'warning' }
     )
+  } catch {
+    return
+  }
+
+  claudeUninstalling.value = true
+  try {
     const result = await uninstallClaudeCode(item.installMethod).catch((err: any) => {
       // Only fallback to CleanClaudeInstall if the Wails binding is unavailable.
       // Business errors from the backend (e.g. uninstall failure) must NOT be
@@ -994,15 +1001,26 @@ async function handleUninstallClaude(item: envcheck.CheckStatus): Promise<void> 
       }
       await runSingleCheck('claude_code')
     } else {
+      const description = result?.message || result?.error || '卸载失败'
       lastOperationResult.value = {
         title: 'Claude Code 卸载失败',
-        description: result?.message || result?.error || '卸载失败',
+        description,
         type: 'error',
       }
+      ElMessage.error(description)
     }
   } catch (e: any) {
-    if (e !== 'cancel') {
-      ElMessage.error('卸载操作失败')
+    const message = e?.message || String(e)
+    lastOperationResult.value = {
+      title: 'Claude Code 卸载失败',
+      description: message,
+      type: 'error',
+    }
+    ElMessage.error('卸载操作失败: ' + message)
+  } finally {
+    claudeUninstalling.value = false
+    if (mounted.value) {
+      await fetchSnapshot()
     }
   }
 }
@@ -1065,7 +1083,7 @@ watch(runningOperation, async (newVal, oldVal) => {
     const completedOp = snapshot.value?.operation
     if (completedOp && completedOp.status !== 'running') {
       const toolName = TOOL_METAS.find(m => m.key === completedOp.tool)?.displayName || completedOp.tool
-      const kind = completedOp.kind === 'install' ? '安装' : '更新'
+      const kind = operationKindLabel(completedOp.kind)
 
       if (completedOp.status === 'succeeded') {
         const ver = completedOp.result?.version ? ` (v${completedOp.result.version})` : ''

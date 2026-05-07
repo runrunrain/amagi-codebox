@@ -284,32 +284,8 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 		rows = 40
 	}
 
-	shellPath := ""
-	if spec.Shell != nil {
-		shellPath = spec.Shell.Path
-	}
 	workDir := spec.WorkDir
-	autoCommand := spec.StartupCommand
-	if spec.BootstrapMode == platform.BootstrapDirectCommand {
-		autoCommand = buildCommandLine(spec.CLI.Path, spec.CLI.Args)
-	} else if spec.BootstrapMode == platform.BootstrapShellInline {
-		autoCommand = normalizeWindowsShellWrapperCommand(autoCommand)
-	}
-
-	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
-
-	// 验证 shell 路径是否存在，如果不存在则尝试回退
-	if commandLine != "" && !isDirectCommand(commandLine) {
-		resolvedPath := resolveShellPath(commandLine, s.log)
-		if resolvedPath != commandLine {
-			s.log.Info("pty", "Shell 路径回退", fmt.Sprintf("原路径=%s 回退到=%s", commandLine, resolvedPath))
-			commandLine = resolvedPath
-		}
-	}
-
-	if shellPath != "" && autoCommand != "" && spec.BootstrapMode != platform.BootstrapShellAttach {
-		commandLine, sendAutoCommand = buildStartupCommandLine(commandLine, autoCommand)
-	}
+	commandLine, sendAutoCommand := buildResolvedStartupPlan(spec, s.log)
 
 	s.log.Info("pty", "创建 ConPTY 会话", fmt.Sprintf("id=%s cmd=%s autoCmd=%s workDir=%s size=%dx%d", sessionID, commandLine, redactAutoCommandForLog(sendAutoCommand), workDir, cols, rows))
 
@@ -361,6 +337,38 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	}
 
 	return pid, nil
+}
+
+func buildResolvedStartupPlan(spec platform.ResolvedLaunchSpec, log *logging.Service) (string, string) {
+	shellPath := ""
+	if spec.Shell != nil {
+		shellPath = spec.Shell.Path
+	}
+	autoCommand := spec.StartupCommand
+	if spec.BootstrapMode == platform.BootstrapDirectCommand {
+		autoCommand = buildCommandLine(spec.CLI.Path, spec.CLI.Args)
+	} else if spec.BootstrapMode == platform.BootstrapShellInline {
+		autoCommand = normalizeWindowsShellWrapperCommand(autoCommand)
+	}
+
+	commandLine, sendAutoCommand := resolveStartupPlan(shellPath, autoCommand)
+
+	// 验证 shell 路径是否存在，如果不存在则尝试回退
+	if commandLine != "" && !isDirectCommand(commandLine) {
+		resolvedPath := resolveShellPath(commandLine, log)
+		if resolvedPath != commandLine {
+			if log != nil {
+				log.Info("pty", "Shell 路径回退", fmt.Sprintf("原路径=%s 回退到=%s", commandLine, resolvedPath))
+			}
+			commandLine = resolvedPath
+		}
+	}
+
+	if shellPath != "" && autoCommand != "" && spec.BootstrapMode != platform.BootstrapShellAttach {
+		commandLine, sendAutoCommand = buildStartupCommandLine(commandLine, autoCommand)
+	}
+
+	return commandLine, sendAutoCommand
 }
 
 // readLoop 持续读取 ConPTY 输出并发送给前端及所有注册的远程回调
@@ -822,13 +830,17 @@ func resolveShellPath(shellPath string, log *logging.Service) string {
 		for _, p := range altPaths {
 			if p != shellPath {
 				if _, err := os.Stat(p); err == nil {
-					log.Info("pty", "PowerShell 7 路径回退", fmt.Sprintf("找到替代路径=%s", p))
+					if log != nil {
+						log.Info("pty", "PowerShell 7 路径回退", fmt.Sprintf("找到替代路径=%s", p))
+					}
 					return p
 				}
 			}
 		}
 		// PowerShell 7 不存在，回退到 Windows PowerShell
-		log.Warn("pty", "PowerShell 7 未安装，回退到 Windows PowerShell", "原路径="+shellPath)
+		if log != nil {
+			log.Warn("pty", "PowerShell 7 未安装，回退到 Windows PowerShell", "原路径="+shellPath)
+		}
 		return "powershell.exe"
 	}
 

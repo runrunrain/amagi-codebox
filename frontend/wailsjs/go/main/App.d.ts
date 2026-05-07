@@ -134,6 +134,8 @@ export function ImportEnvVarsFromFile():Promise<void>;
 
 export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallResult>;
 
+export function StartInstallClaudeWithMethodAsync(arg1:string):Promise<envcheck.OperationState>;
+
 export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
 
 export function LaunchAmagiCode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;

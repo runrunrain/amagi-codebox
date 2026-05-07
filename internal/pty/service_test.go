@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/platform"
 )
 
 func newASCIIPathTempDir(t *testing.T, pattern string) string {
@@ -388,6 +389,49 @@ func TestAttachModeCodexWithArgsKeepsCommandSeparate(t *testing.T) {
 	}
 	if !strings.Contains(inlined, "/K") {
 		t.Fatalf("inlined should contain /K for cmd, got: %q", inlined)
+	}
+}
+
+func TestBuildResolvedStartupPlan_ClaudeCodeNPMAttachUsesCmdWithoutInlineOrExternalLaunch(t *testing.T) {
+	spec := platform.ResolvedLaunchSpec{
+		AppType:       "claudecode",
+		LaunchMode:    "embedded",
+		BootstrapMode: platform.BootstrapShellAttach,
+		Shell:         &platform.ResolvedShell{Key: "cmd", Path: "cmd.exe"},
+		CLI: platform.ResolvedCLI{
+			Name: "claude",
+			Path: `C:\Users\demo\AppData\Roaming\npm\claude.cmd`,
+		},
+		StartupCommand: "claude",
+	}
+
+	commandLine, sendAutoCommand := buildResolvedStartupPlan(spec, nil)
+
+	if !strings.Contains(strings.ToLower(commandLine), "cmd") {
+		t.Fatalf("commandLine = %q, want cmd shell path", commandLine)
+	}
+	if sendAutoCommand != "claude" {
+		t.Fatalf("sendAutoCommand = %q, want claude", sendAutoCommand)
+	}
+	for _, forbidden := range []string{"/K", "-NoExit", "-Command", "& 'claude'", "cmd /c start", "cmd.exe /c start", "Start-Process", "wt.exe", "explorer", "claude.cmd", "claude.bat", "claude.ps1"} {
+		if strings.Contains(strings.ToLower(commandLine), strings.ToLower(forbidden)) || strings.Contains(strings.ToLower(sendAutoCommand), strings.ToLower(forbidden)) {
+			t.Fatalf("embedded attach plan must not contain external/inline launcher token %q: commandLine=%q sendAutoCommand=%q", forbidden, commandLine, sendAutoCommand)
+		}
+	}
+
+	inlinedCommandLine, inlinedSendAutoCommand := buildStartupCommandLine(commandLine, sendAutoCommand)
+	if inlinedSendAutoCommand != "" {
+		t.Fatalf("inlined sendAutoCommand = %q, want empty", inlinedSendAutoCommand)
+	}
+	if !strings.Contains(inlinedCommandLine, "/K") {
+		t.Fatalf("control check failed: buildStartupCommandLine should inline cmd shell, got %q", inlinedCommandLine)
+	}
+}
+
+func TestResolveShellPathPowerShellFallbackNilLogSafe(t *testing.T) {
+	got := resolveShellPath(`C:\definitely-missing-amagi-codebox\PowerShell\7\pwsh.exe`, nil)
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("resolveShellPath returned empty fallback for missing PowerShell 7 path with nil log")
 	}
 }
 

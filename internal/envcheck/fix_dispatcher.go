@@ -704,7 +704,9 @@ func (s *Service) buildEnhancedEnv() []string {
 
 	pathEntries := []string{}
 
-	// Try to find node and npm directories
+	// Try to find node and npm directories. Keep these ahead of the native
+	// Claude directory so the npm bootstrap command `claude install` still uses
+	// the freshly installed npm shim when both channels are present.
 	for _, cmd := range []string{"node", "npm"} {
 		resolved, _, err := resolver.ResolveExecutable(cmd, nil, baseEnv)
 		if err == nil && resolved.Path != "" {
@@ -712,6 +714,16 @@ func (s *Service) buildEnhancedEnv() []string {
 			if dir != "" && dir != "." {
 				pathEntries = append(pathEntries, dir)
 			}
+		}
+	}
+
+	for _, candidate := range claudeNativeDefaultExecutableCandidates() {
+		if !fileExists(candidate) {
+			continue
+		}
+		dir := filepath.Dir(candidate)
+		if dir != "" && dir != "." {
+			pathEntries = append(pathEntries, dir)
 		}
 	}
 

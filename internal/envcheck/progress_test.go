@@ -224,6 +224,134 @@ func (r *retryTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 	return nil, nil
 }
 
+func TestNativeInstallerCommandUsesExtendedTimeout(t *testing.T) {
+	runner := &deadlineCaptureRunner{
+		result: &platform.ProcessResult{Stdout: "installer failed"},
+		err:    errors.New("exit status 1"),
+	}
+	svc := NewServiceWithRunner(runner)
+
+	_ = svc.runInstallCommand(nativePowerShellClaudeCommand())
+
+	if runner.deadline <= installCommandTimeout {
+		t.Fatalf("native installer deadline = %v, want greater than default %v", runner.deadline, installCommandTimeout)
+	}
+	if runner.deadline < nativeInstallCommandTimeout-time.Second {
+		t.Fatalf("native installer deadline = %v, want about %v", runner.deadline, nativeInstallCommandTimeout)
+	}
+}
+
+func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  installCommand
+	}{
+		{name: "claude npm install", cmd: npmClaudeCommand(installOperationInstall)},
+		{name: "claude npm update", cmd: npmClaudeCommand(installOperationUpdate)},
+		{name: "claude winget install", cmd: wingetClaudeCommand(installOperationInstall)},
+		{name: "claude winget update", cmd: wingetClaudeCommand(installOperationUpdate)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if timeout := commandTimeout(tc.cmd); timeout != installCommandTimeout {
+				t.Fatalf("commandTimeout() = %v, want default %v", timeout, installCommandTimeout)
+			}
+		})
+	}
+}
+
+func TestRunInstallCommandTimeoutIncludesDiagnosticContext(t *testing.T) {
+	runner := timeoutDiagnosticRunner{}
+	svc := NewServiceWithRunner(runner)
+
+	err := svc.runInstallCommand(installCommand{
+		description: "diagnostic installer",
+		path:        "powershell.exe",
+		args:        []string{"-Command", "test"},
+		timeout:     time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	errText := err.Error()
+	for _, want := range []string{"command timed out after", "download started", "network still slow", "timeout 1ms", "powershell.exe -Command test"} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("timeout diagnostic missing %q: %s", want, errText)
+		}
+	}
+}
+
+func TestSanitizeInstallerOutputRedactsSensitiveValues(t *testing.T) {
+	token := "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+	openAIKey := "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	githubToken := "ghp_abcdefghijklmnopqrstuvwxyzABCDE12345"
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	bearerValue := "abcdefghijklmnopqrstuvwxyz0123456789"
+
+	output := sanitizeInstallerOutput(strings.Join([]string{
+		"download started",
+		"plain anthropic token " + token + " continued",
+		"plain openai token " + openAIKey,
+		"plain github token " + githubToken,
+		"plain jwt " + jwt,
+		"Authorization: Bearer " + bearerValue,
+		"token=bare-token-value-123456",
+		"api_key=bare-api-key-value-123456",
+		"password=plain-password-value",
+		`{"api_key":"` + token + `","authorization":"Bearer ` + bearerValue + `","secret":"json-secret-value"}`,
+		"complete",
+	}, "\n"))
+
+	for _, leaked := range []string{
+		token,
+		openAIKey,
+		githubToken,
+		jwt,
+		bearerValue,
+		"bare-token-value-123456",
+		"bare-api-key-value-123456",
+		"plain-password-value",
+		"json-secret-value",
+	} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("sensitive value %q was not redacted: %s", leaked, output)
+		}
+	}
+
+	for _, want := range []string{"download started", "Authorization: Bearer [redacted]", "token=[redacted]", `"api_key":"[redacted]"`, "complete"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("sanitized output missing readable context %q: %s", want, output)
+		}
+	}
+}
+
+type deadlineCaptureRunner struct {
+	deadline time.Duration
+	result   *platform.ProcessResult
+	err      error
+}
+
+func (r *deadlineCaptureRunner) Run(ctx context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		r.deadline = time.Until(deadline)
+	}
+	return r.result, r.err
+}
+
+func (r *deadlineCaptureRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+type timeoutDiagnosticRunner struct{}
+
+func (timeoutDiagnosticRunner) Run(ctx context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+	<-ctx.Done()
+	return &platform.ProcessResult{Stdout: "download started", Stderr: "network still slow"}, ctx.Err()
+}
+
+func (timeoutDiagnosticRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // B. Claude Code update command order tests
 // ---------------------------------------------------------------------------

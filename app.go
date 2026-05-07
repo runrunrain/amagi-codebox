@@ -269,6 +269,24 @@ func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, e
 	return a.EnvCheck.InstallClaudeCodeWithMethod(m)
 }
 
+// StartInstallClaudeWithMethodAsync asynchronously installs Claude Code using
+// the specified method and exposes progress through GetEnvCheckSnapshot.
+func (a *App) StartInstallClaudeWithMethodAsync(method string) (*envcheck.OperationState, error) {
+	var m envcheck.ClaudeInstallMethod
+	switch method {
+	case "npm":
+		m = envcheck.ClaudeInstallNPM
+	case "native":
+		m = envcheck.ClaudeInstallNative
+	case "winget":
+		m = envcheck.ClaudeInstallWinget
+	default:
+		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native, winget)", method)
+	}
+
+	return a.EnvCheck.StartInstallClaudeCodeWithMethod(m)
+}
+
 // CleanClaudeInstall removes an existing Claude Code installation.
 // method should be the current install method ("npm", "native", or "winget").
 func (a *App) CleanClaudeInstall(method string) (*envcheck.InstallResult, error) {
@@ -320,14 +338,6 @@ func (a *App) UninstallClaudeCode(method string) (*envcheck.InstallResult, error
 	if err != nil {
 		return result, err
 	}
-
-	// Refresh status after successful uninstall
-	if result != nil && result.Success {
-		go func() {
-			_, _ = a.EnvCheck.CheckAll()
-		}()
-	}
-
 	return result, nil
 }
 

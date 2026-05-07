@@ -609,3 +609,117 @@ func TestStartUpdateTool_Timeout_StatusTimeout(t *testing.T) {
 		t.Errorf("final.Status = %q, want %q; error: %s", final.Status, OperationStatusTimeout, final.Error)
 	}
 }
+
+func TestCleanClaudeCode_UsesOperationStateAndBlocksOtherOperations(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	runner := newSlowSequentialRunner([]seqResponse{
+		{stdout: "", err: nil}, // npm uninstall
+	}, 200*time.Millisecond)
+	svc := NewServiceWithRunner(runner)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.CleanClaudeCode(InstallMethodNPM)
+		done <- err
+	}()
+
+	var op *OperationState
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		op = svc.GetOperationState()
+		if op != nil && op.Status == OperationStatusRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if op == nil || op.Status != OperationStatusRunning {
+		t.Fatalf("expected running uninstall operation, got %+v", op)
+	}
+	if op.Tool != ToolClaudeCode {
+		t.Fatalf("operation tool = %q, want %q", op.Tool, ToolClaudeCode)
+	}
+	if op.Kind != OperationKindUninstall {
+		t.Fatalf("operation kind = %q, want %q", op.Kind, OperationKindUninstall)
+	}
+
+	if _, err := svc.StartInstallTool(ToolOpenCode); !errors.Is(err, ErrBusy) {
+		t.Fatalf("StartInstallTool during uninstall error = %v, want ErrBusy", err)
+	}
+	if _, err := svc.InstallClaudeCodeWithMethod(ClaudeInstallWinget); !errors.Is(err, ErrBusy) {
+		t.Fatalf("InstallClaudeCodeWithMethod during uninstall error = %v, want ErrBusy", err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("CleanClaudeCode returned unexpected error: %v", err)
+	}
+	if op := svc.GetOperationState(); op != nil {
+		t.Fatalf("expected operation state to be cleared after uninstall, got %+v", op)
+	}
+}
+
+func TestCleanClaudeCode_AllowsImmediateInstallAfterSynchronousRefresh(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	cleanRunner := newSlowSequentialRunner([]seqResponse{
+		{stdout: "", err: nil}, // npm uninstall
+	}, 1*time.Millisecond)
+	svc := NewServiceWithRunner(cleanRunner)
+
+	_, cleanErr := svc.CleanClaudeCode(InstallMethodNPM)
+	if cleanErr != nil {
+		t.Fatalf("CleanClaudeCode returned unexpected error: %v", cleanErr)
+	}
+
+	installRunner := newSlowSequentialRunner([]seqResponse{
+		{stdout: "1.8.0", err: nil},     // winget --version on Windows
+		{stdout: "installed", err: nil}, // winget install command
+	}, 1*time.Millisecond)
+	svc.processRunner = installRunner
+
+	_, installErr := svc.InstallClaudeCodeWithMethod(ClaudeInstallWinget)
+	if errors.Is(installErr, ErrBusy) {
+		t.Fatalf("immediate install after uninstall returned ErrBusy")
+	}
+}
+
+func TestStartInstallClaudeCodeWithMethod_ReportsNativeProgress(t *testing.T) {
+	runner := &nativeBootstrapTestRunner{createOnDirect: true, directWait: 80 * time.Millisecond}
+	svc := prepareNativeBootstrapTest(t, runner)
+
+	op, err := svc.StartInstallClaudeCodeWithMethod(ClaudeInstallNative)
+	if err != nil {
+		t.Fatalf("StartInstallClaudeCodeWithMethod error: %v", err)
+	}
+	if op.Status != OperationStatusRunning {
+		t.Fatalf("initial status = %q, want running", op.Status)
+	}
+	if op.Tool != ToolClaudeCode || op.Kind != OperationKindInstall {
+		t.Fatalf("operation = %+v, want Claude Code install", op)
+	}
+	if !strings.Contains(op.Message, "Native") {
+		t.Fatalf("initial message should mention Native method, got %q", op.Message)
+	}
+
+	var observed *OperationState
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		current := svc.GetOperationState()
+		if current != nil && current.Status == OperationStatusRunning && current.Progress > 0 && current.Message != "" {
+			observed = current
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if observed == nil {
+		t.Fatal("expected to observe visible native install progress")
+	}
+	if observed.Step == "" {
+		t.Fatalf("expected progress step to be populated, got %+v", observed)
+	}
+
+	final := waitForOperation(t, svc, 5*time.Second)
+	if final == nil || final.Progress != 100 || final.FinishedAt == nil {
+		t.Fatalf("expected terminal operation state with progress 100, got %+v", final)
+	}
+}

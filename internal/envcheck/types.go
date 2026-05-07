@@ -188,8 +188,9 @@ type InstallResult struct {
 type OperationKind string
 
 const (
-	OperationKindInstall OperationKind = "install"
-	OperationKindUpdate  OperationKind = "update"
+	OperationKindInstall   OperationKind = "install"
+	OperationKindUpdate    OperationKind = "update"
+	OperationKindUninstall OperationKind = "uninstall"
 )
 
 // OperationStatus represents the lifecycle state of an async operation.

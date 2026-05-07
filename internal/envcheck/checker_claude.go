@@ -32,9 +32,19 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
-		status.Error = "未在 PATH 中找到 Claude Code 可执行文件"
-		addMissingToolIssue(status, ToolClaudeCode)
-		return status, nil
+		if nativePath := firstExistingClaudeNativeDefaultPath(); nativePath != "" {
+			rr = resolveResult{
+				executablePath: nativePath,
+				systemPATHOk:   false,
+				pathState:      PathStateOutsidePATH,
+				pathSource:     "native-default-location",
+			}
+			applyPathStateToStatus(status, rr, ToolClaudeCode)
+		} else {
+			status.Error = "未在 PATH 中找到 Claude Code 可执行文件"
+			addMissingToolIssue(status, ToolClaudeCode)
+			return status, nil
+		}
 	}
 
 	realPath := resolveRealExecutablePath(rr.executablePath)
@@ -98,6 +108,50 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	}
 
 	return status, nil
+}
+
+func firstExistingClaudeNativeDefaultPath() string {
+	for _, candidate := range claudeNativeDefaultExecutableCandidates() {
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func claudeNativeDefaultExecutableCandidates() []string {
+	homes := []string{}
+	for _, key := range []string{"USERPROFILE", "HOME"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range homes {
+			if strings.EqualFold(filepath.Clean(existing), filepath.Clean(value)) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			homes = append(homes, value)
+		}
+	}
+
+	candidates := []string{}
+	for _, home := range homes {
+		dir := filepath.Join(home, ".local", "bin")
+		if isWindows() {
+			candidates = append(candidates,
+				filepath.Join(dir, "claude.exe"),
+				filepath.Join(dir, "claude.cmd"),
+				filepath.Join(dir, "claude"),
+			)
+		} else {
+			candidates = append(candidates, filepath.Join(dir, "claude"))
+		}
+	}
+	return candidates
 }
 
 func resolveRealExecutablePath(path string) string {

@@ -2,6 +2,7 @@ package platform
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -98,15 +99,17 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		shellWarnings = warnings
 	}
 
-	cliName, err := cliNameForAppType(request.AppType)
+	cliCandidates, err := cliCandidatesForAppType(request.AppType)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
+	cliName := cliCandidates[0]
 
-	cli, diagnostics, err := r.resolveCLIForRequest(cliName, request.CLIArgs, resolvedEnv, resolvedShell)
+	cli, diagnostics, err := r.resolveCLIForRequest(cliCandidates, request.CLIArgs, resolvedEnv, resolvedShell)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
+	cliName = cli.Name
 	if len(pathSources) > 0 {
 		diagnostics.PATHSources = append([]string(nil), pathSources...)
 	}
@@ -127,12 +130,28 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		Diagnostics:   diagnostics,
 	}
 
-	// Windows OpenCode/Codex embedded: BootstrapShellAttach for historical compatibility.
+	// Windows embedded shell attach is used for CLIs that misbehave when launched
+	// as an inline shell command. For Claude Code this is limited to npm/script
+	// shims (.cmd/.bat/.ps1 or the extensionless POSIX shim); official claude.exe
+	// remains a direct PTY command to avoid regressing the working native binary
+	// path. Claude npm shims are forced through cmd.exe because user testing shows
+	// cmd launches them embedded, while PowerShell resolves `claude` to claude.ps1
+	// and leaves a blank embedded shell plus an external Claude terminal.
+	//
+	// OpenCode/Codex embedded: BootstrapShellAttach for historical compatibility.
 	// ConPTY starts shell only; CLI command sent via PTY input stream (equivalent to user
 	// typing "opencode" or "codex -m gpt-5"). This avoids OpenCode/Codex detecting an
 	// inline/complete-path command line and opening an external terminal window.
-	if r.capabilities.OS == "windows" && isAttachEligible(request.LaunchMode, request.AppType) {
-		if resolvedShell == nil {
+	if r.capabilities.OS == "windows" && isAttachEligible(request.LaunchMode, request.AppType, cli.Path) {
+		if isClaudeCodeAppType(request.AppType) && isWindowsClaudeCodeNPMShimPath(cli.Path) {
+			shell, source, warnings := resolveWindowsCmdAttachShell(resolvedEnv)
+			if resolvedShell != nil && !strings.EqualFold(resolvedShell.Key, "cmd") {
+				warnings = append(warnings, fmt.Sprintf("requested shell %q was overridden with cmd.exe for Claude Code npm shim attach to avoid PowerShell resolving claude.ps1 and opening an external terminal", requestedShell))
+			}
+			resolvedShell = &shell
+			shellSource = source
+			shellWarnings = append(shellWarnings, warnings...)
+		} else if resolvedShell == nil {
 			shell := defaultShellForCapabilities(resolvedEnv, r.capabilities)
 			resolvedShell = &shell
 			shellSource = "default-attach"
@@ -175,33 +194,79 @@ func shouldInlineWindowsScriptWrapper(osName string, cliPath string) bool {
 		return false
 	}
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(cliPath))) {
-	case ".cmd", ".bat":
+	case ".cmd", ".bat", ".ps1":
 		return true
 	default:
 		return false
 	}
 }
 
-func (r *defaultCLIResolver) resolveCLIForRequest(command string, args []string, env []string, shell *ResolvedShell) (ResolvedCLI, LaunchDiagnostics, error) {
+func (r *defaultCLIResolver) resolveCLIForRequest(commands []string, args []string, env []string, shell *ResolvedShell) (ResolvedCLI, LaunchDiagnostics, error) {
 	// Try direct PATH search first. This respects the controlled environment
 	// (effective PATH with baseline entries) and avoids login shell profile
 	// interference (e.g. zsh -ilc reordering PATH via .zprofile/.zshrc).
-	cli, diagnostics, err := r.ResolveExecutable(command, args, env)
-	if err == nil {
-		return cli, diagnostics, nil
+	var firstCLI ResolvedCLI
+	var firstDiagnostics LaunchDiagnostics
+	var firstErr error
+	for _, command := range commands {
+		cli, diagnostics, ok := r.resolveExecutableFromControlledEnv(command, args, env)
+		if ok {
+			return cli, diagnostics, nil
+		}
+		if firstErr == nil {
+			firstCLI = cli
+			firstDiagnostics = diagnostics
+			firstErr = &CapabilityViolation{
+				Code:             "cli_not_found",
+				Message:          fmt.Sprintf("failed to resolve CLI %q", command),
+				PlatformID:       r.capabilities.PlatformID,
+				RequestedFeature: command,
+				SuggestedAction:  "ensure the CLI is installed or configure an absolute path",
+			}
+		}
 	}
 	// On Darwin with a resolved shell, fall back to shell-assisted resolution.
 	// A login shell may know about CLIs installed via shell-specific mechanisms
 	// (nvm, rbenv, conda init, etc.) that are not on any static PATH.
 	if r.capabilities.OS == "darwin" && shell != nil && strings.TrimSpace(shell.Path) != "" {
-		if resolvedPath := resolveCommandViaShellFallback(command, env, shell); resolvedPath != "" {
-			return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
-				CLISource:   "shell-assisted",
-				PATHSources: []string{"app-env", "controlled-additions", "inherited", "shell-fallback"},
-			}, nil
+		for _, command := range commands {
+			if resolvedPath := resolveCommandViaShellFallback(command, env, shell); resolvedPath != "" {
+				return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
+					CLISource:   "shell-assisted",
+					PATHSources: []string{"app-env", "controlled-additions", "inherited", "shell-fallback"},
+				}, nil
+			}
 		}
 	}
-	return cli, diagnostics, err
+	if r.capabilities.OS == currentOS() {
+		for _, command := range commands {
+			if resolvedPath, err := exec.LookPath(command); err == nil && strings.TrimSpace(resolvedPath) != "" {
+				return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
+					CLISource:   "ambient-path",
+					PATHSources: []string{"ambient-path"},
+				}, nil
+			}
+		}
+	}
+	return firstCLI, firstDiagnostics, firstErr
+}
+
+func (r *defaultCLIResolver) resolveExecutableFromControlledEnv(command string, args []string, env []string) (ResolvedCLI, LaunchDiagnostics, bool) {
+	resolvedPath := resolveCommandPathForOS(r.capabilities.OS, command, env)
+	diagnostics := LaunchDiagnostics{
+		CLISource:         "missing",
+		PATHSources:       []string{"merged-env"},
+		MissingCandidates: []string{command},
+	}
+	if resolvedPath == "" {
+		return ResolvedCLI{}, diagnostics, false
+	}
+	diagnostics.CLISource = "path-search"
+	diagnostics.MissingCandidates = nil
+	if isAbsoluteOrExplicitPath(command) {
+		diagnostics.CLISource = "explicit-path"
+	}
+	return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, diagnostics, true
 }
 
 func (r *defaultCLIResolver) ResolveExecutable(command string, args []string, env []string) (ResolvedCLI, LaunchDiagnostics, error) {
@@ -224,17 +289,25 @@ func (r *defaultCLIResolver) ResolveExecutable(command string, args []string, en
 }
 
 func cliNameForAppType(appType string) (string, error) {
+	candidates, err := cliCandidatesForAppType(appType)
+	if err != nil {
+		return "", err
+	}
+	return candidates[0], nil
+}
+
+func cliCandidatesForAppType(appType string) ([]string, error) {
 	switch strings.TrimSpace(strings.ToLower(appType)) {
-	case "claudecode":
-		return "claude", nil
+	case "claudecode", "claude_code", "claude-code", "claude":
+		return []string{"claude", "claudecode", "claude-code"}, nil
 	case "opencode":
-		return "opencode", nil
+		return []string{"opencode"}, nil
 	case "codex":
-		return "codex", nil
+		return []string{"codex"}, nil
 	case "amagicode":
-		return "amagicode", nil
+		return []string{"amagicode"}, nil
 	default:
-		return "", fmt.Errorf("unsupported app type: %s", appType)
+		return nil, fmt.Errorf("unsupported app type: %s", appType)
 	}
 }
 
@@ -335,18 +408,129 @@ func quoteCommandPart(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
-// isAttachEligible returns true when the launch should use BootstrapShellAttach:
-// Windows + embedded mode + OpenCode or Codex app type.
-func isAttachEligible(launchMode string, appType string) bool {
-	if launchMode != "" && launchMode != "embedded" {
+// isAttachEligible returns true when the launch should use BootstrapShellAttach.
+// OpenCode and Codex always use attach in Windows embedded mode. Claude Code
+// uses attach only for script wrappers (for example npm's claude.cmd) so the
+// wrapper is typed into an interactive shell inside ConPTY instead of being
+// launched as an inline .cmd command that may open an external terminal.
+func isAttachEligible(launchMode string, appType string, cliPath string) bool {
+	if normalizedLaunchMode(launchMode) != "" && normalizedLaunchMode(launchMode) != "embedded" {
 		return false
 	}
 	switch strings.TrimSpace(strings.ToLower(appType)) {
 	case "opencode", "codex":
 		return true
+	case "claudecode", "claude_code", "claude-code", "claude":
+		return isWindowsClaudeCodeNPMShimPath(cliPath)
 	default:
 		return false
 	}
+}
+
+func isClaudeCodeAppType(appType string) bool {
+	switch strings.TrimSpace(strings.ToLower(appType)) {
+	case "claudecode", "claude_code", "claude-code", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWindowsClaudeCodeNPMShimPath(cliPath string) bool {
+	trimmed := strings.TrimSpace(cliPath)
+	if trimmed == "" {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(trimmed))
+	switch ext {
+	case ".exe":
+		return false
+	case ".cmd", ".bat", ".ps1":
+		return true
+	}
+
+	// npm on Windows also creates an extensionless POSIX shim named `claude` next
+	// to claude.cmd and claude.ps1. PowerShell can resolve that family differently
+	// from cmd.exe, so any non-.exe Claude command name is treated as shim-backed.
+	switch strings.ToLower(windowsPathBase(trimmed)) {
+	case "claude", "claudecode", "claude-code":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedLaunchMode(launchMode string) string {
+	return strings.TrimSpace(strings.ToLower(launchMode))
+}
+
+func resolveWindowsCmdAttachShell(env []string) (ResolvedShell, string, []string) {
+	warnings := []string{}
+
+	if comspec := strings.TrimSpace(envValue(env, "ComSpec")); comspec != "" {
+		if isTrustedWindowsCmdCandidate(comspec) && fileExists(comspec) {
+			return buildResolvedShell("cmd", comspec, PlatformCapabilities{OS: "windows"}), "forced-cmd-attach-comspec", warnings
+		}
+		warnings = append(warnings, "ComSpec was ignored for Claude Code npm shim attach because it is not an absolute existing cmd.exe path")
+	}
+
+	for _, envKey := range []string{"SystemRoot", "windir"} {
+		root := strings.TrimSpace(envValue(env, envKey))
+		if root == "" || !isWindowsAbsolutePath(root) {
+			continue
+		}
+		candidate := filepath.Join(root, "System32", "cmd.exe")
+		if isTrustedWindowsCmdCandidate(candidate) && fileExists(candidate) {
+			return buildResolvedShell("cmd", candidate, PlatformCapabilities{OS: "windows"}), "forced-cmd-attach-" + strings.ToLower(envKey), warnings
+		}
+	}
+
+	if resolvedPath := resolveCommandPathForOS("windows", "cmd.exe", env); resolvedPath != "" {
+		warnings = append(warnings, "trusted cmd.exe was not resolved from ComSpec, SystemRoot, or windir; falling back to PATH-resolved cmd.exe for Claude Code npm shim attach")
+		return buildResolvedShell("cmd", resolvedPath, PlatformCapabilities{OS: "windows"}), "forced-cmd-attach-path-fallback", warnings
+	}
+
+	warnings = append(warnings, "trusted cmd.exe was not resolved from ComSpec, SystemRoot, windir, or PATH; falling back to bare cmd.exe for Claude Code npm shim attach")
+	return buildResolvedShell("cmd", "cmd.exe", PlatformCapabilities{OS: "windows"}), "forced-cmd-attach-bare-fallback", warnings
+}
+
+func isTrustedWindowsCmdCandidate(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || strings.ContainsAny(trimmed, "\r\n\"") {
+		return false
+	}
+	if !isWindowsAbsolutePath(trimmed) {
+		return false
+	}
+	return strings.EqualFold(windowsPathBase(trimmed), "cmd.exe")
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return false
+	}
+	if filepath.IsAbs(trimmed) {
+		return true
+	}
+	if len(trimmed) >= 3 && ((trimmed[0] >= 'a' && trimmed[0] <= 'z') || (trimmed[0] >= 'A' && trimmed[0] <= 'Z')) && trimmed[1] == ':' && (trimmed[2] == '\\' || trimmed[2] == '/') {
+		return true
+	}
+	return strings.HasPrefix(trimmed, `\\`) || strings.HasPrefix(trimmed, `//`)
+}
+
+func windowsPathBase(path string) string {
+	trimmed := strings.TrimSpace(path)
+	lastBackslash := strings.LastIndex(trimmed, `\`)
+	lastSlash := strings.LastIndex(trimmed, `/`)
+	idx := lastBackslash
+	if lastSlash > idx {
+		idx = lastSlash
+	}
+	if idx < 0 || idx+1 >= len(trimmed) {
+		return trimmed
+	}
+	return trimmed[idx+1:]
 }
 
 // buildAttachStartupCommandForShell builds a shell-safe startup command for
