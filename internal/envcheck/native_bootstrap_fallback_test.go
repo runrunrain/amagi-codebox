@@ -21,19 +21,21 @@ type nativeBootstrapTestRunner struct {
 	calls      []platform.CommandSpec
 	nativePath string
 
-	directErr             error
-	directStdout          string
-	directWait            time.Duration
-	npmProbeErr           error
-	npmInstallErr         error
-	npmListErr            error
-	claudeInstallErr      error
-	claudeInstallOut      string
-	claudeInstallWait     time.Duration
-	createOnDirect        bool
-	createOnClaudeInstall bool
-	directEvidenceDelay   time.Duration
-	directNoOutput        bool
+	directErr               error
+	directStdout            string
+	directWait              time.Duration
+	npmProbeErr             error
+	npmInstallErr           error
+	npmInstallOut           string
+	npmListErr              error
+	claudeInstallErr        error
+	claudeInstallOut        string
+	claudeInstallWait       time.Duration
+	createOnDirect          bool
+	createOnEvidenceTimeout bool
+	createOnClaudeInstall   bool
+	directEvidenceDelay     time.Duration
+	directNoOutput          bool
 }
 
 func (r *nativeBootstrapTestRunner) Run(ctx context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
@@ -70,7 +72,11 @@ func (r *nativeBootstrapTestRunner) Run(ctx context.Context, spec platform.Comma
 	}
 
 	if isNPMPath(pathLower) && len(args) >= 3 && args[0] == "install" && args[1] == "-g" && strings.Contains(args[2], "@anthropic-ai/claude-code") {
-		return &platform.ProcessResult{Stdout: "npm install claude"}, r.npmInstallErr
+		stdout := r.npmInstallOut
+		if stdout == "" {
+			stdout = "npm install claude"
+		}
+		return &platform.ProcessResult{Stdout: stdout}, r.npmInstallErr
 	}
 
 	if isNPMPath(pathLower) && len(args) >= 4 && args[0] == "list" && args[1] == "-g" && args[2] == "@anthropic-ai/claude-code" {
@@ -169,6 +175,9 @@ func (r *nativeBootstrapTestRunner) RunWithEvidence(ctx context.Context, spec pl
 		case <-ctx.Done():
 			return &platform.EvidenceRunResult{Result: &platform.ProcessResult{}, EvidenceObserved: false}, ctx.Err()
 		case <-time.After(evidenceTimeout):
+			if r.createOnEvidenceTimeout {
+				_ = writeCommandFile(r.nativePath)
+			}
 			return &platform.EvidenceRunResult{Result: &platform.ProcessResult{}, EvidenceObserved: false, EvidenceTimedOut: true}, context.DeadlineExceeded
 		}
 	}
@@ -323,6 +332,41 @@ func TestClaudeNativeDirectNoEvidenceCancelsAndRunsNPMBootstrapFallback(t *testi
 		if !snapshotsContainMessage(snapshots, want) {
 			t.Fatalf("expected progress message containing %q; snapshots=%+v", want, snapshots)
 		}
+	}
+}
+
+func TestClaudeNativeDirectNoEvidenceTimeoutRecheckSuccess(t *testing.T) {
+	originalTimeout := nativeDirectEvidenceTimeout
+	originalAttempts := installRecheckAttempts
+	originalDelay := installRecheckDelay
+	nativeDirectEvidenceTimeout = 20 * time.Millisecond
+	installRecheckAttempts = 2
+	installRecheckDelay = time.Millisecond
+	t.Cleanup(func() {
+		nativeDirectEvidenceTimeout = originalTimeout
+		installRecheckAttempts = originalAttempts
+		installRecheckDelay = originalDelay
+	})
+
+	runner := &nativeBootstrapTestRunner{
+		directNoOutput:          true,
+		directWait:              time.Second,
+		createOnEvidenceTimeout: true,
+	}
+	svc := prepareNativeBootstrapTest(t, runner)
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err != nil {
+		t.Fatalf("expected bounded recheck success after direct evidence timeout, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result after bounded recheck, got %+v", result)
+	}
+	if runner.sawNPMInstall() || runner.sawClaudeInstall() {
+		t.Fatalf("bounded recheck success must not run fallback; calls=%+v", runner.calls)
+	}
+	if !strings.Contains(result.Message, "bounded recheck") {
+		t.Fatalf("expected success message to preserve recheck context: %s", result.Message)
 	}
 }
 
@@ -585,6 +629,66 @@ func TestClaudeNativeFallbackNPMInstallFailureKeepsDirectAndFallbackDiagnostics(
 	}
 }
 
+func TestClaudeNativeFallbackNPMTimeoutAddedPackagesRecheckSuccess(t *testing.T) {
+	originalAttempts := installRecheckAttempts
+	originalDelay := installRecheckDelay
+	installRecheckAttempts = 2
+	installRecheckDelay = time.Millisecond
+	t.Cleanup(func() {
+		installRecheckAttempts = originalAttempts
+		installRecheckDelay = originalDelay
+	})
+
+	runner := &nativeBootstrapTestRunner{
+		directErr:             errors.New("direct failed"),
+		npmInstallErr:         context.DeadlineExceeded,
+		npmInstallOut:         "added 2 packages in 3m",
+		createOnClaudeInstall: true,
+	}
+	svc := prepareNativeBootstrapTest(t, runner)
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err != nil {
+		t.Fatalf("expected npm timeout with added packages to recover through bounded recheck, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful native bootstrap result, got %+v", result)
+	}
+	if !runner.sawClaudeInstall() {
+		t.Fatal("expected claude install to continue after npm package recheck succeeded")
+	}
+}
+
+func TestClaudeNativeFallbackNPMTimeoutWithoutRecheckRemainsFailure(t *testing.T) {
+	originalAttempts := installRecheckAttempts
+	originalDelay := installRecheckDelay
+	installRecheckAttempts = 1
+	installRecheckDelay = time.Millisecond
+	t.Cleanup(func() {
+		installRecheckAttempts = originalAttempts
+		installRecheckDelay = originalDelay
+	})
+
+	runner := &nativeBootstrapTestRunner{
+		directErr:     errors.New("direct failed"),
+		npmInstallErr: context.DeadlineExceeded,
+		npmInstallOut: "npm ERR! network failed",
+		npmListErr:    errors.New("package not installed"),
+	}
+	svc := prepareNativeBootstrapTest(t, runner)
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err == nil {
+		t.Fatal("expected true npm failure when bounded recheck cannot confirm installation")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got %+v", result)
+	}
+	if runner.sawClaudeInstall() {
+		t.Fatal("must not run claude install when npm package recheck failed")
+	}
+}
+
 func TestClaudeNativeBootstrapCommandTimeoutAndConstruction(t *testing.T) {
 	cmd := claudeNativeBootstrapCommand()
 	if cmd.path != "claude" {
@@ -628,4 +732,134 @@ func snapshotsContainMessage(snapshots []progressSnapshot, want string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// AC1/AC2 edge case: evidence detection helpers
+// ---------------------------------------------------------------------------
+
+func TestInstallerOutputHasNPMInstallSuccessEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"added packages", "added 2 packages in 3m", true},
+		{"changed packages", "changed 1 package in 10s", true},
+		{"up to date", "up to date, audited 15 packages", true},
+		{"audited packages", "audited 150 packages in 5s", true},
+		{"no evidence", "npm ERR! network failed", false},
+		{"empty output", "", false},
+		{"partial match no number", "added packages in 3m", false},
+		{"added zero packages", "added 0 packages in 1s", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := installerOutputHasNPMInstallSuccessEvidence(tc.output)
+			if got != tc.want {
+				t.Errorf("installerOutputHasNPMInstallSuccessEvidence(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstallCommandErrorLooksRecoverable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"deadline exceeded", context.DeadlineExceeded, true},
+		{"timeout message", errors.New("command timed out after 2m0s"), true},
+		{"context deadline message", errors.New("context deadline exceeded"), true},
+		{"process killed", errors.New("process killed"), true},
+		{"exit status 1", errors.New("exit status 1"), false},
+		{"generic error", errors.New("something went wrong"), false},
+		{"nil error", nil, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := installCommandErrorLooksRecoverable(tc.err)
+			if got != tc.want {
+				t.Errorf("installCommandErrorLooksRecoverable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstallCommandOutcomeNeedsRecheck(t *testing.T) {
+	tests := []struct {
+		name    string
+		command installCommand
+		result  *platform.ProcessResult
+		err     error
+		want    bool
+	}{
+		{
+			name:    "nil error means no recheck",
+			command: installCommand{description: "npm install"},
+			result:  &platform.ProcessResult{Stdout: "success"},
+			err:     nil,
+			want:    false,
+		},
+		{
+			name:    "timeout error triggers recheck",
+			command: installCommand{description: "npm install"},
+			result:  &platform.ProcessResult{},
+			err:     context.DeadlineExceeded,
+			want:    true,
+		},
+		{
+			name:    "non-recoverable error without evidence means no recheck",
+			command: installCommand{description: "npm install"},
+			result:  &platform.ProcessResult{Stderr: "npm ERR! network failed"},
+			err:     errors.New("exit status 1"),
+			want:    false,
+		},
+		{
+			name:    "non-recoverable error but output has added packages triggers recheck",
+			command: installCommand{description: "npm install"},
+			result:  &platform.ProcessResult{Stdout: "added 2 packages in 3m"},
+			err:     errors.New("exit status 1"),
+			want:    true,
+		},
+		{
+			name:    "deadline exceeded with no output triggers recheck",
+			command: installCommand{description: "claude install"},
+			result:  &platform.ProcessResult{},
+			err:     fmt.Errorf("timeout 2m0s: deadline exceeded"),
+			want:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := installCommandOutcomeNeedsRecheck(tc.command, tc.result, tc.err)
+			if got != tc.want {
+				t.Errorf("installCommandOutcomeNeedsRecheck() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoundedInstallRecheckAttempts_Default(t *testing.T) {
+	original := installRecheckAttempts
+	defer func() { installRecheckAttempts = original }()
+
+	installRecheckAttempts = 0
+	if got := boundedInstallRecheckAttempts(); got != 1 {
+		t.Errorf("boundedInstallRecheckAttempts() with 0 = %d, want 1", got)
+	}
+
+	installRecheckAttempts = -1
+	if got := boundedInstallRecheckAttempts(); got != 1 {
+		t.Errorf("boundedInstallRecheckAttempts() with -1 = %d, want 1", got)
+	}
+
+	installRecheckAttempts = 5
+	if got := boundedInstallRecheckAttempts(); got != 5 {
+		t.Errorf("boundedInstallRecheckAttempts() with 5 = %d, want 5", got)
+	}
 }

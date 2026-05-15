@@ -21,6 +21,8 @@ const (
 	nativeInstallCommandTimeout         = 20 * time.Minute
 	claudeNativeBootstrapCommandTimeout = 20 * time.Minute
 	nativeDirectEvidenceTimeoutDefault  = 30 * time.Second
+	installRecheckAttemptsDefault       = 3
+	installRecheckDelayDefault          = 300 * time.Millisecond
 
 	installOperationInstall installOperation = "install"
 	installOperationUpdate  installOperation = "update"
@@ -41,6 +43,11 @@ const (
 )
 
 var nativeDirectEvidenceTimeout = nativeDirectEvidenceTimeoutDefault
+
+var (
+	installRecheckAttempts = installRecheckAttemptsDefault
+	installRecheckDelay    = installRecheckDelayDefault
+)
 
 var (
 	installerQuotedSecretPattern    = regexp.MustCompile(`(?i)((?:["']?[\w.-]*(?:token|api[_-]?key|apikey|authorization|password|passwd|secret|private[_-]?key|client[_-]?secret)[\w.-]*["']?\s*[:=]\s*)(["']))[^"']*(["'])`)
@@ -169,8 +176,16 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		}
 
 		// Phase 1: Execute the command.
-		runErr := s.runInstallCommand(command)
+		runResult, runErr := s.runInstallCommandResult(command)
 		if runErr != nil {
+			if recovered, after, recoveryDetail := s.verifyToolAfterRecoverableInstallCommand(tool, operation, beforeVersion, command, runResult, runErr); recovered {
+				return &InstallResult{
+					Success: true,
+					Message: fmt.Sprintf("%s %s 命令返回异常，但 bounded recheck 已确认安装可用。方式：%s。诊断：%s", displayToolName(tool), operationDisplayName(operation), command.description, recoveryDetail),
+					Tool:    tool,
+					Version: after.Version,
+				}, nil
+			}
 			attempts = append(attempts, attemptResult{
 				description: command.description,
 				runErr:      runErr.Error(),
@@ -304,6 +319,16 @@ func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressRepo
 			}, nil
 		}
 		directErr = fmt.Errorf("Native 官方安装模式 direct installer succeeded but native verification failed: %w", verifyErr)
+	} else if isNativeDirectEvidenceTimeout(directErr) || installCommandErrorLooksRecoverable(directErr) {
+		reporter.report(OperationStepVerify, "Native 官方安装模式：命令超时/输出不完整，正在 bounded recheck 确认是否已安装...", progressVerify)
+		if after, verifyErr := s.verifyClaudeNativeAvailableWithRecheck(resultText(directResult)); verifyErr == nil {
+			return &InstallResult{
+				Success: true,
+				Message: nativeInstallSuccessMessage("Claude Code Native 官方安装模式命令超时/输出不完整，但 bounded recheck 已确认 Native 官方二进制可用；原始超时诊断已保留", after),
+				Tool:    ToolClaudeCode,
+				Version: after.Version,
+			}, nil
+		}
 	}
 
 	directSummary := installerDiagnosticSummary(directErr)
@@ -320,11 +345,14 @@ func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressRepo
 
 	reporter.report(OperationStepRunCommand, "保底安装模式（npm + claude install）：正在安装 npm 版本 Claude Code，作为 Native 官方二进制安装引导...", progressNativeFallbackNPMInstall)
 	npmCmd := s.resolveCommandNPMPath(npmClaudeCommand(installOperationInstall))
-	if err := s.runInstallCommand(npmCmd); err != nil {
-		fallbackErr := fmt.Errorf("安装 npm 版本 Claude Code 失败: %w", err)
-		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
-	}
-	if err := s.confirmClaudeNPMInstall(); err != nil {
+	npmResult, npmErr := s.runInstallCommandResult(npmCmd)
+	if npmErr != nil {
+		reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：npm 安装命令异常，正在 bounded recheck 确认 npm 包是否已完成安装...", progressNativeFallbackVerify)
+		if confirmErr := s.confirmClaudeNPMInstallAfterRecoverableCommand(npmCmd, npmResult, npmErr); confirmErr != nil {
+			fallbackErr := fmt.Errorf("安装 npm 版本 Claude Code 失败: %w", confirmErr)
+			return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+		}
+	} else if err := s.confirmClaudeNPMInstall(); err != nil {
 		fallbackErr := fmt.Errorf("npm 版本 Claude Code 安装后确认失败: %w", err)
 		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
 	}
@@ -1151,6 +1179,138 @@ func (s *Service) runInstallCommandResult(command installCommand) (*platform.Pro
 		message = fmt.Sprintf("command %q was not found in PATH. Install the required tool or fix PATH. Detail: %s", command.path, message)
 	}
 	return result, fmt.Errorf("%s (ran %s %s; timeout %s): %s", command.description, command.path, strings.Join(command.args, " "), timeout, message)
+}
+
+func (s *Service) verifyToolAfterRecoverableInstallCommand(tool CLITool, operation installOperation, beforeVersion string, command installCommand, result *platform.ProcessResult, runErr error) (bool, *CheckStatus, string) {
+	if !installCommandOutcomeNeedsRecheck(command, result, runErr) {
+		return false, nil, ""
+	}
+
+	var lastReason string
+	for attempt := 1; attempt <= boundedInstallRecheckAttempts(); attempt++ {
+		if attempt > 1 {
+			time.Sleep(installRecheckDelay)
+		}
+		after, verifyErr := s.CheckOne(tool)
+		verifyOk := after != nil && after.Installed && after.PATHOk && strings.TrimSpace(after.Error) == ""
+		versionChanged := true
+		if verifyOk && operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" {
+			versionChanged = strings.TrimSpace(after.Version) != strings.TrimSpace(beforeVersion)
+		}
+		if verifyOk && versionChanged {
+			return true, after, fmt.Sprintf("原始命令异常：%s；复核次数：%d/%d", installerDiagnosticSummary(runErr), attempt, boundedInstallRecheckAttempts())
+		}
+		if verifyErr != nil {
+			lastReason = verifyErr.Error()
+		} else {
+			lastReason = verificationErrorMessage(after)
+		}
+	}
+	_ = lastReason
+	return false, nil, ""
+}
+
+func (s *Service) confirmClaudeNPMInstallAfterRecoverableCommand(command installCommand, result *platform.ProcessResult, runErr error) error {
+	if !installCommandOutcomeNeedsRecheck(command, result, runErr) {
+		return runErr
+	}
+	var lastErr error
+	for attempt := 1; attempt <= boundedInstallRecheckAttempts(); attempt++ {
+		if attempt > 1 {
+			time.Sleep(installRecheckDelay)
+		}
+		if err := s.confirmClaudeNPMInstall(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("%w；bounded recheck 未确认 npm 包安装成功: %v", runErr, lastErr)
+	}
+	return runErr
+}
+
+func (s *Service) verifyClaudeNativeAvailableWithRecheck(installerOutput string) (*CheckStatus, error) {
+	var lastErr error
+	for attempt := 1; attempt <= boundedInstallRecheckAttempts(); attempt++ {
+		if attempt > 1 {
+			time.Sleep(installRecheckDelay)
+		}
+		status, err := s.verifyClaudeNativeAvailableWithHint(installerOutput)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("bounded recheck 未确认 Claude Code Native 可用")
+}
+
+func boundedInstallRecheckAttempts() int {
+	if installRecheckAttempts <= 0 {
+		return 1
+	}
+	return installRecheckAttempts
+}
+
+func installCommandOutcomeNeedsRecheck(command installCommand, result *platform.ProcessResult, err error) bool {
+	if err == nil {
+		return false
+	}
+	if installCommandErrorLooksRecoverable(err) {
+		return true
+	}
+	output := resultText(result)
+	if installerOutputHasNPMInstallSuccessEvidence(output) {
+		return true
+	}
+	return installerOutputHasGenericInstallProgressEvidence(output) && installCommandLooksLikePackageInstall(command)
+}
+
+func installCommandErrorLooksRecoverable(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "deadline exceeded") ||
+		strings.Contains(lower, "timed out") ||
+		strings.Contains(lower, "context deadline") ||
+		strings.Contains(lower, "process killed")
+}
+
+func installerOutputHasNPMInstallSuccessEvidence(output string) bool {
+	lower := strings.ToLower(output)
+	return regexp.MustCompile(`(?i)\badded\s+\d+\s+packages?\b`).MatchString(lower) ||
+		regexp.MustCompile(`(?i)\bchanged\s+\d+\s+packages?\b`).MatchString(lower) ||
+		regexp.MustCompile(`(?i)\bup\s+to\s+date\b`).MatchString(lower) ||
+		regexp.MustCompile(`(?i)\baudited\s+\d+\s+packages?\b`).MatchString(lower)
+}
+
+func installerOutputHasGenericInstallProgressEvidence(output string) bool {
+	lower := strings.ToLower(output)
+	for _, marker := range []string{"installing", "downloading", "extracting", "successfully installed", "completed"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func installCommandLooksLikePackageInstall(command installCommand) bool {
+	description := strings.ToLower(command.description)
+	if strings.Contains(description, "install") || strings.Contains(description, "update") || strings.Contains(description, "upgrade") {
+		return true
+	}
+	for _, arg := range command.args {
+		switch strings.ToLower(arg) {
+		case "install", "update", "upgrade":
+			return true
+		}
+	}
+	return false
 }
 
 func commandTimeout(command installCommand) time.Duration {

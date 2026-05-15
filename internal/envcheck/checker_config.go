@@ -121,11 +121,12 @@ func configFilePaths() []string {
 
 	var paths []string
 
-	// 1. Project local (highest priority)
-	cwd, _ := os.Getwd()
-	if cwd != "" {
-		paths = append(paths, filepath.Join(cwd, ".claude", "settings.local.json"))
-		paths = append(paths, filepath.Join(cwd, ".claude", "settings.json"))
+	// 1. Project local (highest priority). The root must be trusted and must
+	// not be a Windows system/protected directory; never use raw cwd as a write
+	// allow root when the desktop app starts from C:\Windows\System32.
+	if projectRoot := trustedClaudeProjectConfigRoot(); projectRoot != "" {
+		paths = append(paths, filepath.Join(projectRoot, ".claude", "settings.local.json"))
+		paths = append(paths, filepath.Join(projectRoot, ".claude", "settings.json"))
 	}
 
 	// 2. Global Claude state (separate from settings, for hasCompletedOnboarding etc.)

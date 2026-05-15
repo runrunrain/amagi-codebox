@@ -407,6 +407,43 @@ func TestFixClaudeConfig_RejectsArbitraryPath(t *testing.T) {
 	}
 }
 
+func TestConfigPathAllowedRejectsWindowsSystem32EvenWhenCWDThere(t *testing.T) {
+	// Do not chdir into a real system directory; the path validator must reject
+	// the canonical target regardless of the current process directory.
+	for _, target := range []string{
+		`C:\Windows\System32\claude\settings.json`,
+		`C:\Windows\System32\.claude\settings.json`,
+		`C:/Windows/System32/.claude/settings.local.json`,
+	} {
+		if isConfigPathAllowed(target) {
+			t.Fatalf("system directory target should be rejected: %s", target)
+		}
+	}
+}
+
+func TestConfigPathAllowedAllowsUserClaudeSettings(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		t.Skip("cannot resolve user home")
+	}
+
+	for _, target := range []string{
+		filepath.Join(homeDir, ".claude.json"),
+		filepath.Join(homeDir, ".claude", "settings.json"),
+	} {
+		if !isConfigPathAllowed(target) {
+			t.Fatalf("user Claude config target should be allowed: %s", target)
+		}
+	}
+}
+
+func TestConfigFilePathsDoNotUseProtectedCWD(t *testing.T) {
+	protected := `C:\Windows\System32`
+	if !isProtectedConfigPath(protected) {
+		t.Fatalf("protected cwd must be detected before it can become a trusted project config root")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // expandTilde
 // ---------------------------------------------------------------------------
@@ -579,5 +616,101 @@ func TestSetNestedValue_OverwritesNonMapIntermediate(t *testing.T) {
 	// Original data should be unchanged
 	if data["env"] != "string-value" {
 		t.Errorf("env was unexpectedly changed to %v; original value should be preserved", data["env"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Extended AC5/AC6: protected path coverage for all protected roots
+// ---------------------------------------------------------------------------
+
+func TestIsProtectedConfigPath_AllProtectedRoots(t *testing.T) {
+	protectedCases := []struct {
+		name string
+		path string
+	}{
+		{"system32 settings", `C:\Windows\System32\.claude\settings.json`},
+		{"system32 claude dir", `C:\Windows\System32\claude\settings.json`},
+		{"syswow64 settings", `C:\Windows\SysWOW64\.claude\settings.json`},
+		{"program files settings", `C:\Program Files\.claude\settings.json`},
+		{"program files nested", `C:\Program Files\Claude\settings.json`},
+		{"program files x86 settings", `C:\Program Files (x86)\.claude\settings.json`},
+		{"program files x86 nested", `C:\Program Files (x86)\SomeApp\config.json`},
+		{"windows root settings", `C:\Windows\.claude\settings.json`},
+		{"windows forward slash", `C:/Windows/System32/.claude/settings.json`},
+		{"mixed case system32", `C:\WINDOWS\SYSTEM32\.claude\settings.json`},
+	}
+
+	for _, tc := range protectedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !isProtectedConfigPath(tc.path) {
+				t.Errorf("expected path to be protected: %s", tc.path)
+			}
+		})
+	}
+}
+
+func TestIsProtectedConfigPath_NonProtectedPaths(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		t.Skip("cannot resolve user home")
+	}
+
+	nonProtectedCases := []struct {
+		name string
+		path string
+	}{
+		{"user home", homeDir},
+		{"user claude settings", filepath.Join(homeDir, ".claude", "settings.json")},
+		{"user claude json", filepath.Join(homeDir, ".claude.json")},
+		{"temp dir", os.TempDir()},
+	}
+
+	for _, tc := range nonProtectedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if isProtectedConfigPath(tc.path) {
+				t.Errorf("expected path to NOT be protected: %s", tc.path)
+			}
+		})
+	}
+}
+
+func TestIsConfigPathAllowed_RejectsAllProtectedRoots(t *testing.T) {
+	rejectedPaths := []struct {
+		name string
+		path string
+	}{
+		{"program files settings", `C:\Program Files\.claude\settings.json`},
+		{"program files x86 settings", `C:\Program Files (x86)\.claude\settings.json`},
+		{"windows system32 settings", `C:\Windows\System32\.claude\settings.json`},
+		{"windows syswow64 settings", `C:\Windows\SysWOW64\.claude\settings.json`},
+		{"windows root claude json", `C:\Windows\.claude.json`},
+	}
+
+	for _, tc := range rejectedPaths {
+		t.Run(tc.name, func(t *testing.T) {
+			if isConfigPathAllowed(tc.path) {
+				t.Errorf("expected protected path to be rejected: %s", tc.path)
+			}
+		})
+	}
+}
+
+func TestNormalizeConfigSecurityPath_Consistency(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`C:\Windows\System32`, "c:/windows/system32"},
+		{`C:/Windows/System32/`, "c:/windows/system32"},
+		{"", ""},
+		{"  ", ""},
+		{`C:\Program Files`, "c:/program files"},
+	}
+
+	for _, tc := range tests {
+		got := normalizeConfigSecurityPath(tc.input)
+		if got != tc.expected {
+			t.Errorf("normalizeConfigSecurityPath(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
 	}
 }

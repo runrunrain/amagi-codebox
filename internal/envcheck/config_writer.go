@@ -35,14 +35,17 @@ func isConfigPathAllowed(targetPath string) bool {
 	} else {
 		realPath = filepath.Clean(realPath)
 	}
+	if isProtectedConfigPath(realPath) {
+		return false
+	}
 
 	// Allowed patterns:
 	//   ~/.claude.json                     (global state, hasCompletedOnboarding)
 	//   ~/.claude/settings.json            (global)
-	//   <cwd>/.claude/settings.json        (project)
-	//   <cwd>/.claude/settings.local.json  (project local)
+	//   <trusted-project-root>/.claude/settings.json        (project)
+	//   <trusted-project-root>/.claude/settings.local.json  (project local)
 	homeDir, _ := os.UserHomeDir()
-	cwd, _ := os.Getwd()
+	projectRoot := trustedClaudeProjectConfigRoot()
 
 	allowedPatterns := []string{}
 	if homeDir != "" {
@@ -51,10 +54,10 @@ func isConfigPathAllowed(targetPath string) bool {
 			filepath.Clean(filepath.Join(homeDir, ".claude", "settings.json")),
 		)
 	}
-	if cwd != "" {
+	if projectRoot != "" {
 		allowedPatterns = append(allowedPatterns,
-			filepath.Clean(filepath.Join(cwd, ".claude", "settings.json")),
-			filepath.Clean(filepath.Join(cwd, ".claude", "settings.local.json")),
+			filepath.Clean(filepath.Join(projectRoot, ".claude", "settings.json")),
+			filepath.Clean(filepath.Join(projectRoot, ".claude", "settings.local.json")),
 		)
 	}
 
@@ -64,6 +67,103 @@ func isConfigPathAllowed(targetPath string) bool {
 		}
 	}
 	return false
+}
+
+func configPathRejectionMessage(path string) string {
+	return fmt.Sprintf("目标路径 %s 不在允许的配置文件列表中或位于系统/受保护目录，拒绝写入。请选择用户目录下的 ~/.claude/settings.json、~/.claude.json，或可信项目目录下的 .claude/settings.json", path)
+}
+
+func trustedClaudeProjectConfigRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil || strings.TrimSpace(cwd) == "" {
+		return ""
+	}
+	root, err := filepath.Abs(cwd)
+	if err != nil {
+		return ""
+	}
+	root = filepath.Clean(root)
+	if isProtectedConfigPath(root) {
+		return ""
+	}
+	if isLikelyProjectConfigRoot(root) || pathIsUnderUserHome(root) || pathIsUnderTemp(root) {
+		return root
+	}
+	return ""
+}
+
+func isLikelyProjectConfigRoot(root string) bool {
+	for _, marker := range []string{".git", ".claude", "CLAUDE.md", "go.mod", "package.json"} {
+		if _, err := os.Stat(filepath.Join(root, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func pathIsUnderUserHome(path string) bool {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		return false
+	}
+	return cleanPathHasPrefix(path, homeDir)
+}
+
+func pathIsUnderTemp(path string) bool {
+	tempDir := os.TempDir()
+	if strings.TrimSpace(tempDir) == "" {
+		return false
+	}
+	return cleanPathHasPrefix(path, tempDir)
+}
+
+func cleanPathHasPrefix(path string, root string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(root)
+	if strings.EqualFold(cleanPath, cleanRoot) {
+		return true
+	}
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return false
+	}
+	return rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
+}
+
+func isProtectedConfigPath(path string) bool {
+	normalized := normalizeConfigSecurityPath(path)
+	if normalized == "" {
+		return false
+	}
+	protectedRoots := []string{
+		normalizeConfigSecurityPath(os.Getenv("SystemRoot")),
+		normalizeConfigSecurityPath(`C:\Windows`),
+		normalizeConfigSecurityPath(`C:\Program Files`),
+		normalizeConfigSecurityPath(`C:\Program Files (x86)`),
+	}
+	for _, root := range protectedRoots {
+		if root != "" && normalizedPathHasPrefix(normalized, root) {
+			return true
+		}
+	}
+	return strings.Contains(normalized, "/windows/system32") || strings.Contains(normalized, "/windows/syswow64")
+}
+
+func normalizeConfigSecurityPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(trimmed)
+	cleaned = strings.ReplaceAll(cleaned, `\`, "/")
+	return strings.ToLower(strings.TrimRight(cleaned, "/"))
+}
+
+func normalizedPathHasPrefix(path string, root string) bool {
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, strings.TrimRight(root, "/")+"/")
 }
 
 // fixClaudeConfig writes a single configuration item to a Claude Code settings
@@ -93,7 +193,7 @@ func (s *Service) fixClaudeConfig(req ConfigFixRequest) (*ConfigFixResult, error
 	if !isConfigPathAllowed(filePath) {
 		return &ConfigFixResult{
 			Success: false,
-			Error:   fmt.Sprintf("目标路径 %s 不在允许的配置文件列表中，拒绝写入", filePath),
+			Error:   configPathRejectionMessage(filePath),
 		}, nil
 	}
 

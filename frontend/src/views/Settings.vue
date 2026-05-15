@@ -404,6 +404,7 @@
 
 <script lang="ts" setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { GetDashboardDefaults, SetDashboardDefaults, GetShellPaths, AddShellPath, RemoveShellPath, GetTerminalSettings, SetTerminalSettings, GetMobileWebRoot, SetMobileWebRoot } from '../../wailsjs/go/settings/Service'
 import { GetProviders, GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { GetRemoteStatus, GetRemoteToken, RegenerateRemoteToken, ToggleRemoteServer, SetRemoteHost, SetRemotePort, CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo, GetGitHubToken, SetGitHubToken, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
@@ -417,6 +418,8 @@ import QRCode from 'qrcode'
 
 const { showSuccess, showError } = useToast()
 const platformCaps = usePlatformCapabilities()
+const route = useRoute()
+const router = useRouter()
 
 const activeTab = ref('general')
 const tabs = [
@@ -428,6 +431,8 @@ const tabs = [
   { id: 'envcheck', label: '环境检测', icon: '🔍' },
   { id: 'about', label: '关于', icon: 'ℹ' },
 ]
+const tabIds = new Set(tabs.map(tab => tab.id))
+let lastHandledUpdateIntent = ''
 
 const activeEngineTab = ref('claude')
 const engines = [
@@ -542,13 +547,21 @@ const progressText = computed(() => {
   return `${fmt(downloaded)} / ${fmt(total)}`
 })
 
-async function checkForUpdate() {
+async function checkForUpdate(options: any = {}) {
+  const autoApply = options?.autoApply === true
   checking.value = true
   updateError.value = ''
   updateInfo.value = null
   try {
     const info = await CheckForUpdate()
     updateInfo.value = info
+    if (autoApply && (info as any)?.hasUpdate) {
+      if ((info as any)?.updateAction === 'install') {
+        await downloadAndApply()
+      } else {
+        openReleasePage()
+      }
+    }
   } catch (err) {
     updateError.value = '检查失败: ' + err
   } finally {
@@ -577,6 +590,31 @@ async function downloadAndApply() {
 function openReleasePage() {
   const target = updateInfo.value?.downloadURL || updateInfo.value?.releaseURL || 'https://github.com/runrunrain/amagi-codebox/releases'
   BrowserOpenURL(target)
+}
+
+function syncActiveTabFromRoute() {
+  const queryTab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  if (queryTab && tabIds.has(queryTab)) {
+    activeTab.value = queryTab
+  }
+}
+
+async function handleUpdateRouteIntent() {
+  syncActiveTabFromRoute()
+  if (activeTab.value !== 'updates') return
+
+  const action = typeof route.query.action === 'string' ? route.query.action : ''
+  const shouldCheck = route.query.check === '1' || action === 'check' || action === 'update'
+  if (!shouldCheck) return
+
+  const intentKey = `${action || 'check'}:${route.query.t || ''}`
+  if (lastHandledUpdateIntent === intentKey) return
+  lastHandledUpdateIntent = intentKey
+
+  await nextTick()
+  await checkForUpdate({ autoApply: action === 'update' })
+
+  router.replace({ path: '/settings', query: { tab: 'updates' } })
 }
 
 async function saveGitHubToken() {
@@ -813,6 +851,14 @@ watch(activeTab, async (newTab) => {
   }
 })
 
+watch(
+  () => [route.query.tab, route.query.action, route.query.check, route.query.t],
+  () => {
+    handleUpdateRouteIntent()
+  },
+  { immediate: true }
+)
+
 async function renderQRCode() {
   if (!qrCanvas.value) return
   const localIP = await getLocalIP()
@@ -938,6 +984,7 @@ async function saveMobileWebRoot() {
 }
 
 onMounted(async () => {
+  syncActiveTabFromRoute()
   await platformCaps.ensure()
   await loadData()
   await loadRemoteStatus()

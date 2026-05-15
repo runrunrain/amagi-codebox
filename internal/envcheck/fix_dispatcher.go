@@ -94,7 +94,7 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 		if req.FilePath != "" {
 			expanded := expandTilde(req.FilePath)
 			if !isConfigPathAllowed(expanded) {
-				return nil, fmt.Errorf("目标路径 %s 不在允许的配置文件列表中，拒绝写入", expanded)
+				return nil, fmt.Errorf("%s", configPathRejectionMessage(expanded))
 			}
 		}
 		result, err := s.fixClaudeConfig(ConfigFixRequest{
