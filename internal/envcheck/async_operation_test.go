@@ -31,9 +31,20 @@ func newSlowSequentialRunner(responses []seqResponse, delay time.Duration) *slow
 	}
 }
 
-func (r *slowSequentialRunner) Run(_ context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+func (r *slowSequentialRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	return r.RunWithSpec(spec)
+}
+
+func (r *slowSequentialRunner) RunWithSpec(spec platform.CommandSpec) (*platform.ProcessResult, error) {
 	r.mu.Lock()
 	idx := r.next
+	if sequentialRunnerShouldBypassOpenCodeFallback(spec, r.peek(idx)) {
+		r.mu.Unlock()
+		if r.delay > 0 {
+			time.Sleep(r.delay)
+		}
+		return &platform.ProcessResult{}, errors.New("opencode fallback probe not configured")
+	}
 	r.next++
 	r.mu.Unlock()
 
@@ -49,6 +60,13 @@ func (r *slowSequentialRunner) Run(_ context.Context, _ platform.CommandSpec) (*
 	}
 	resp := r.responses[idx]
 	return &platform.ProcessResult{Stdout: resp.stdout, Stderr: resp.stderr}, resp.err
+}
+
+func (r *slowSequentialRunner) peek(idx int) *seqResponse {
+	if idx < 0 || idx >= len(r.responses) {
+		return nil
+	}
+	return &r.responses[idx]
 }
 
 func (r *slowSequentialRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {

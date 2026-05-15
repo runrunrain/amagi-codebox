@@ -221,6 +221,9 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
 	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 	nativeDir := filepath.Join(tmpDir, "home", ".local", "bin")
 	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
@@ -232,7 +235,9 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 	writeTestExecutable(t, filepath.Join(tmpDir, "bin"), "npm")
 	writeTestExecutable(t, filepath.Join(tmpDir, "bin"), "node")
 
-	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
+	testHome := filepath.Join(tmpDir, "home")
+	t.Setenv("USERPROFILE", testHome)
+	t.Setenv("HOME", testHome)
 	testPATH := strings.Join([]string{nativeDir, filepath.Join(tmpDir, "bin")}, string(os.PathListSeparator))
 	t.Setenv("PATH", testPATH)
 	t.Setenv("Path", testPATH)
@@ -445,6 +450,9 @@ func TestClaudeNativeBootstrapExitOneWithSuccessLocationVerifiesNative(t *testin
 
 func TestClaudeCheckOneFindsNativeDefaultWhenSystemPATHMissing(t *testing.T) {
 	tmpDir := t.TempDir()
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
 	homeDir := filepath.Join(tmpDir, "home")
 	nativeDir := filepath.Join(homeDir, ".local", "bin")
 	nativePath := filepath.Join(nativeDir, commandFileName("claude"))
@@ -456,6 +464,7 @@ func TestClaudeCheckOneFindsNativeDefaultWhenSystemPATHMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
 	t.Setenv("Path", binDir)
 	runner := &nativeBootstrapTestRunner{nativePath: nativePath}
@@ -478,6 +487,9 @@ func TestClaudeCheckOneFindsNativeDefaultWhenSystemPATHMissing(t *testing.T) {
 
 func TestClaudeNativeDirectSuccessUsesDefaultLocationWhenPATHNotRefreshed(t *testing.T) {
 	tmpDir := t.TempDir()
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
 	homeDir := filepath.Join(tmpDir, "home")
 	nativeDir := filepath.Join(homeDir, ".local", "bin")
 	binDir := filepath.Join(tmpDir, "bin")
@@ -485,6 +497,7 @@ func TestClaudeNativeDirectSuccessUsesDefaultLocationWhenPATHNotRefreshed(t *tes
 		t.Fatal(err)
 	}
 	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
 	t.Setenv("Path", binDir)
 	runner := &nativeBootstrapTestRunner{

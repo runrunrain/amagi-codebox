@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { useRouter, useRoute } from 'vue-router'
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { OpenRemoteWebUI, GetRemoteWebUIStatus, GetAppInfo, CheckForUpdate } from '../../../wailsjs/go/main/App'
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime'
 import { useToast } from '../../composables/useToast'
@@ -35,6 +35,9 @@ const updateAvailable = ref(false)
 const updateChecking = ref(false)
 const updateCheckError = ref('')
 const updatePopoverOpen = ref(false)
+const versionEntryRef = ref<HTMLElement | null>(null)
+
+const wailsBindingUnavailableMessage = '更新服务暂不可用，请确认应用已在桌面客户端中正常启动后重试。'
 
 const displayVersion = computed(() => currentVersion.value || '检测中')
 const versionTooltip = computed(() => {
@@ -49,6 +52,26 @@ const popoverVersionHint = computed(() => {
   if (updateCheckError.value) return `更新状态检查失败：${updateCheckError.value}`
   return '当前已是最新版本。'
 })
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err || '未知错误')
+}
+
+function normalizeUpdateError(err: unknown): string {
+  const message = getErrorMessage(err)
+  const bindingUnavailablePatterns = [
+    /Cannot read properties of undefined/i,
+    /Cannot read property .* of undefined/i,
+    /undefined \(reading ['"].*['"]\)/i,
+    /window\.go/i,
+    /wails/i,
+  ]
+  if (bindingUnavailablePatterns.some(pattern => pattern.test(message))) {
+    return wailsBindingUnavailableMessage
+  }
+  return message
+}
 
 async function checkWebUIStatus() {
   try {
@@ -98,7 +121,8 @@ async function refreshUpdateStatus() {
     updateAvailable.value = !!(info as any)?.hasUpdate
   } catch (err) {
     updateAvailable.value = false
-    updateCheckError.value = err instanceof Error ? err.message : String(err || '未知错误')
+    console.warn('更新状态检查失败:', err)
+    updateCheckError.value = normalizeUpdateError(err)
   } finally {
     updateChecking.value = false
   }
@@ -106,6 +130,25 @@ async function refreshUpdateStatus() {
 
 function toggleUpdatePopover() {
   updatePopoverOpen.value = !updatePopoverOpen.value
+}
+
+function closeUpdatePopover() {
+  updatePopoverOpen.value = false
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  if (!updatePopoverOpen.value) return
+  const target = event.target
+  if (!(target instanceof Node)) return
+  if (!versionEntryRef.value || !versionEntryRef.value.contains(target)) {
+    closeUpdatePopover()
+  }
+}
+
+function handleDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && updatePopoverOpen.value) {
+    closeUpdatePopover()
+  }
 }
 
 function goToUpdatePage() {
@@ -129,6 +172,13 @@ onMounted(() => {
   checkWebUIStatus()
   loadVersionInfo()
   refreshUpdateStatus()
+  document.addEventListener('click', handleDocumentClick)
+  document.addEventListener('keydown', handleDocumentKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClick)
+  document.removeEventListener('keydown', handleDocumentKeydown)
 })
 </script>
 
@@ -136,7 +186,7 @@ onMounted(() => {
   <nav class="sidebar">
     <div class="sidebar-header">
       <h1 class="app-title">Amagi CodeBox</h1>
-      <div class="version-entry" @click.stop>
+      <div ref="versionEntryRef" class="version-entry" @click.stop>
         <button
           class="version-pill"
           :class="{ 'has-update': updateAvailable, checking: updateChecking }"

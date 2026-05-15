@@ -353,16 +353,61 @@ type seqResponse struct {
 	err    error
 }
 
-func (r *sequentialRunner) Run(_ context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+func (r *sequentialRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	return r.RunWithSpec(spec)
+}
+
+func (r *sequentialRunner) RunWithSpec(spec platform.CommandSpec) (*platform.ProcessResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	idx := r.next
+	if sequentialRunnerShouldBypassOpenCodeFallback(spec, r.peek(idx)) {
+		return &platform.ProcessResult{}, errors.New("opencode fallback probe not configured")
+	}
 	r.next++
 	if idx >= len(r.responses) {
 		return &platform.ProcessResult{}, nil
 	}
 	resp := r.responses[idx]
 	return &platform.ProcessResult{Stdout: resp.stdout, Stderr: resp.stderr}, resp.err
+}
+
+func (r *sequentialRunner) peek(idx int) *seqResponse {
+	if idx < 0 || idx >= len(r.responses) {
+		return nil
+	}
+	return &r.responses[idx]
+}
+
+func sequentialRunnerShouldBypassOpenCodeFallback(spec platform.CommandSpec, next *seqResponse) bool {
+	if !isNPMPath(strings.ToLower(spec.Path)) || len(spec.Args) < 2 {
+		return false
+	}
+	if len(spec.Args) >= 4 && spec.Args[0] == "list" && spec.Args[1] == "-g" && isOpenCodeFallbackPackage(spec.Args[2]) {
+		if next == nil {
+			return true
+		}
+		return !strings.Contains(next.stdout, "opencode-ai@") &&
+			!strings.Contains(next.stdout, "opencode@") &&
+			!strings.Contains(next.stdout, `"name"`)
+	}
+	if len(spec.Args) >= 2 && spec.Args[0] == "root" && spec.Args[1] == "-g" {
+		if next == nil {
+			return true
+		}
+		trimmed := strings.TrimSpace(next.stdout)
+		return trimmed == "" || !(strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, `:\`) || strings.Contains(trimmed, "node_modules"))
+	}
+	return false
+}
+
+func isOpenCodeFallbackPackage(pkg string) bool {
+	for _, candidate := range openCodeFallbackPackages {
+		if pkg == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *sequentialRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {

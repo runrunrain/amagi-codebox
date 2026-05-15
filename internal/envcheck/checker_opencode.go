@@ -71,18 +71,20 @@ func (s *Service) openCodeVersionWithDiagnostics(executablePath string) (string,
 	})
 	if err != nil {
 		directDiagnostic := openCodeVersionFailureDiagnostic(result, err)
-		if fallbackVersion, fallbackDiagnostic, fallbackErr := s.openCodeFallbackVersion(executablePath); fallbackErr == nil {
-			return fallbackVersion, []CheckIssue{
-				{
-					Severity: SeverityWarning,
-					Code:     "opencode_version_fallback_used",
-					Message:  "OpenCode 主入口版本检测异常，已通过 npm/package manifest 替代检测确认安装可用",
-					Detail:   fmt.Sprintf("主入口诊断：%s；替代检测：%s", directDiagnostic, fallbackDiagnostic),
-					Solutions: []ResolutionAction{
-						{Type: SolutionRetry, Description: "重新检测 OpenCode 状态", Tool: ToolOpenCode},
+		if openCodeVersionErrorAllowsFallback(directDiagnostic) {
+			if fallbackVersion, fallbackDiagnostic, fallbackErr := s.openCodeFallbackVersion(executablePath); fallbackErr == nil {
+				return fallbackVersion, []CheckIssue{
+					{
+						Severity: SeverityWarning,
+						Code:     "opencode_version_fallback_used",
+						Message:  "OpenCode 主入口版本检测异常，已通过 npm/package manifest 替代检测确认安装可用",
+						Detail:   fmt.Sprintf("主入口诊断：%s；替代检测：%s", directDiagnostic, fallbackDiagnostic),
+						Solutions: []ResolutionAction{
+							{Type: SolutionRetry, Description: "重新检测 OpenCode 状态", Tool: ToolOpenCode},
+						},
 					},
-				},
-			}, nil
+				}, nil
+			}
 		}
 		return "", nil, fmt.Errorf("run opencode --version: %s；替代检测也未确认 OpenCode 可用。可能是 npm 入口、Windows spawn 或 Node.js v24 兼容异常，请重新检测或重新安装 opencode-ai", directDiagnostic)
 	}
@@ -92,6 +94,28 @@ func (s *Service) openCodeVersionWithDiagnostics(executablePath string) (string,
 		return "", nil, fmt.Errorf("parse OpenCode version from output %q", resultText(result))
 	}
 	return version, nil, nil
+}
+
+func openCodeVersionErrorAllowsFallback(diagnostic string) bool {
+	lower := strings.ToLower(strings.TrimSpace(diagnostic))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"spawn",
+		"eftype",
+		"enoexec",
+		"exec format",
+		"cannot execute binary",
+		"bad cpu type",
+		"node.js",
+		"node v",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func openCodeVersionFailureDiagnostic(result *platform.ProcessResult, err error) string {

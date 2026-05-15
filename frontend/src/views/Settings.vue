@@ -290,7 +290,7 @@
             <div class="update-hero">
               <div class="version-info">
                 <span class="version-label">当前版本</span>
-                <span class="version-badge">v{{ currentVersion }}</span>
+                <span class="version-badge">{{ displayCurrentVersion }}</span>
               </div>
               <button class="btn primary" @click="checkForUpdate" :disabled="checking || downloading">
                 {{ checking ? '检查中...' : '检查更新' }}
@@ -516,6 +516,7 @@ const terminalScrollback = ref(100000)
 const savingTerminal = ref(false)
 
 const currentVersion = ref('')
+const displayCurrentVersion = computed(() => currentVersion.value ? `v${currentVersion.value}` : '检测中')
 const updateInfo = ref<any>(null)
 const checking = ref(false)
 const downloading = ref(false)
@@ -523,6 +524,28 @@ const downloadProgress = ref({ downloaded: 0, total: 0 })
 const updateError = ref('')
 const githubToken = ref('')
 let removeProgressListener: (() => void) | null = null
+
+const wailsBindingUnavailableMessage = '更新服务暂不可用，请确认应用已在桌面客户端中正常启动后重试。'
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err || '未知错误')
+}
+
+function normalizeUpdateError(err: unknown): string {
+  const message = getErrorMessage(err)
+  const bindingUnavailablePatterns = [
+    /Cannot read properties of undefined/i,
+    /Cannot read property .* of undefined/i,
+    /undefined \(reading ['"].*['"]\)/i,
+    /window\.go/i,
+    /wails/i,
+  ]
+  if (bindingUnavailablePatterns.some(pattern => pattern.test(message))) {
+    return wailsBindingUnavailableMessage
+  }
+  return message
+}
 
 function cleanupProgressListener() {
   if (removeProgressListener) {
@@ -563,7 +586,8 @@ async function checkForUpdate(options: any = {}) {
       }
     }
   } catch (err) {
-    updateError.value = '检查失败: ' + err
+    console.warn('更新检查失败:', err)
+    updateError.value = `检查失败: ${normalizeUpdateError(err)}`
   } finally {
     checking.value = false
   }

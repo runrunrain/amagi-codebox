@@ -946,7 +946,7 @@ func TestInstallCommands_OpenCode(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Fatalf("expected 1 command for OpenCode install, got %d", len(cmds))
 	}
-	if cmds[0].path != "npm" {
+	if !isNPMPath(strings.ToLower(cmds[0].path)) {
 		t.Errorf("expected npm command, got %s", cmds[0].path)
 	}
 }

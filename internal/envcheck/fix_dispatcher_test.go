@@ -1283,12 +1283,22 @@ func (r *envCapturingRunner) Run(_ context.Context, spec platform.CommandSpec) (
 	defer r.mu.Unlock()
 	r.envs = append(r.envs, append([]string(nil), spec.Env...))
 	idx := r.next
+	if sequentialRunnerShouldBypassOpenCodeFallback(spec, r.peek(idx)) {
+		return &platform.ProcessResult{}, errors.New("opencode fallback probe not configured")
+	}
 	r.next++
 	if idx >= len(r.responses) {
 		return &platform.ProcessResult{}, nil
 	}
 	resp := r.responses[idx]
 	return &platform.ProcessResult{Stdout: resp.stdout, Stderr: resp.stderr}, resp.err
+}
+
+func (r *envCapturingRunner) peek(idx int) *seqResponse {
+	if idx < 0 || idx >= len(r.responses) {
+		return nil
+	}
+	return &r.responses[idx]
 }
 
 func (r *envCapturingRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {

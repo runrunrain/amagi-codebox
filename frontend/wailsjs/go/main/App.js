@@ -246,10 +246,6 @@ export function InstallClaudeWithMethod(arg1) {
   return window['go']['main']['App']['InstallClaudeWithMethod'](arg1);
 }
 
-export function StartInstallClaudeWithMethodAsync(arg1) {
-  return window['go']['main']['App']['StartInstallClaudeWithMethodAsync'](arg1);
-}
-
 export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
 }
@@ -408,6 +404,10 @@ export function SetRemoteHost(arg1) {
 
 export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
+}
+
+export function StartInstallClaudeWithMethodAsync(arg1) {
+  return window['go']['main']['App']['StartInstallClaudeWithMethodAsync'](arg1);
 }
 
 export function StartInstallToolAsync(arg1) {

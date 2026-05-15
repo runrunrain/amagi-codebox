@@ -50,6 +50,10 @@ export function RunFixAction(arg1) {
   return window['go']['envcheck']['Service']['RunFixAction'](arg1);
 }
 
+export function StartInstallClaudeCodeWithMethod(arg1) {
+  return window['go']['envcheck']['Service']['StartInstallClaudeCodeWithMethod'](arg1);
+}
+
 export function StartInstallTool(arg1) {
   return window['go']['envcheck']['Service']['StartInstallTool'](arg1);
 }

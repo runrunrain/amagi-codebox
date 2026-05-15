@@ -26,6 +26,8 @@ export function InstallClaudeCodeWithMethod(arg1:envcheck.ClaudeInstallMethod):P
 
 export function RunFixAction(arg1:envcheck.FixActionRequest):Promise<envcheck.FixActionResult>;
 
+export function StartInstallClaudeCodeWithMethod(arg1:envcheck.ClaudeInstallMethod):Promise<envcheck.OperationState>;
+
 export function StartInstallTool(arg1:envcheck.CLITool):Promise<envcheck.OperationState>;
 
 export function StartUpdateTool(arg1:envcheck.CLITool):Promise<envcheck.OperationState>;

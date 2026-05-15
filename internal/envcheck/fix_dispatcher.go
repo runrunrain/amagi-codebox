@@ -87,7 +87,7 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 		// Never execute; just return a display-only result
 		return &FixActionResult{
 			Success: true,
-			Message: "命令仅供参考显示，未执行任何操作。",
+			Message: "命令仅供参考显示（display-only reference），未执行任何操作。",
 		}, nil
 	case SolutionFixClaudeConfig:
 		// Defense-in-depth: validate file path before dispatching to config writer
@@ -171,7 +171,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if isSymlink(profilePath) {
 		return &FixActionResult{
 			Success: false,
-			Error:   fmt.Sprintf("shell 配置文件 %s 是符号链接；出于安全考虑拒绝修改", profilePath),
+			Error:   fmt.Sprintf("shell 配置文件 %s 是符号链接（symlink）；出于安全考虑拒绝修改", profilePath),
 		}, nil
 	}
 
