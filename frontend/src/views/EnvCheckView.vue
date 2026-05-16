@@ -448,7 +448,7 @@ interface OperationResult {
   type: 'success' | 'error' | 'warning' | 'info'
 }
 
-type ClaudeInstallMethod = 'npm' | 'winget' | 'native'
+type ClaudeInstallMethod = 'npm' | 'native'
 
 interface ClaudeInstallMethodOption {
   value: ClaudeInstallMethod
@@ -642,8 +642,7 @@ const cardList = computed((): CardView[] => {
 
 function formatInstallMethod(m: string): string {
   const map: Record<string, string> = {
-    native: '官方 Native 安装',
-    winget: 'WinGet 安装',
+    native: 'Native 安装',
     npm: 'npm package 安装',
     unknown: '未知',
   }
@@ -660,9 +659,8 @@ function detectBrowserPlatform(): HostPlatform {
 }
 
 function supportedClaudeInstallMethodsForPlatform(platform: HostPlatform): ClaudeInstallMethod[] {
-  if (platform === 'windows') return ['winget', 'native', 'npm']
-  if (platform === 'darwin' || platform === 'linux') return ['native', 'npm']
-  return ['npm']
+  if (platform === 'windows' || platform === 'darwin' || platform === 'linux') return ['native', 'npm']
+  return ['native', 'npm']
 }
 
 function normalizedClaudeInstallCapabilities(status: envcheck.CheckStatus | null): {
@@ -675,7 +673,7 @@ function normalizedClaudeInstallCapabilities(status: envcheck.CheckStatus | null
     return { hasData: false, values }
   }
 
-  for (const method of ['native', 'npm', 'winget'] as ClaudeInstallMethod[]) {
+  for (const method of ['native', 'npm'] as ClaudeInstallMethod[]) {
     if (Object.prototype.hasOwnProperty.call(raw, method)) {
       values[method] = raw[method] === true
     }
@@ -685,11 +683,8 @@ function normalizedClaudeInstallCapabilities(status: envcheck.CheckStatus | null
 
 function claudeInstallMethodLabel(method: ClaudeInstallMethod, platform: HostPlatform): string {
   if (method === 'native') {
-    if (platform === 'windows') return '官方 Native 安装 (PowerShell)'
-    if (platform === 'darwin' || platform === 'linux') return '官方 Native 安装 (install.sh)'
-    return '官方 Native 安装'
+    return 'Native 安装 (npm + claude install)'
   }
-  if (method === 'winget') return 'WinGet 安装 (Windows)'
   return 'npm package 安装'
 }
 
@@ -707,12 +702,7 @@ function preferredClaudeInstallMethod(options: ClaudeInstallMethodOption[]): Cla
   const available = options.map(option => option.value)
   if (available.length === 0) return ''
 
-  const platform = hostPlatform.value
-  const preference: ClaudeInstallMethod[] = platform === 'windows'
-    ? ['winget', 'native', 'npm']
-    : (platform === 'darwin' || platform === 'linux')
-        ? ['native', 'npm']
-        : ['npm']
+  const preference: ClaudeInstallMethod[] = ['native', 'npm']
 
   return preference.find(method => available.includes(method)) || available[0]
 }
@@ -731,17 +721,7 @@ function showClaudeHomebrewFallbackHint(card: CardView): boolean {
 
 function claudeInstallConfirmMessage(method: ClaudeInstallMethod, displayName: string, reinstall: boolean): string {
   if (method === 'native') {
-    if (hostPlatform.value === 'windows') {
-      return '选择官方 Native 安装将执行 Claude Code 官方 PowerShell installer (https://claude.ai/install.ps1)。\n请确认你了解此操作带来的安全风险。'
-    }
-    if (hostPlatform.value === 'darwin' || hostPlatform.value === 'linux') {
-      return '选择官方 Native 安装将执行 Claude Code 官方 install.sh installer。\n如网络访问失败，可配置 HTTPS_PROXY/HTTP_PROXY，或改用 npm package；macOS 也可手动备用执行 brew install --cask claude-code。'
-    }
-    return `确定要${reinstall ? '重新' : ''}通过官方 Native installer 安装 ${displayName} 吗？`
-  }
-
-  if (method === 'winget') {
-    return '将通过 WinGet 安装 Claude Code。安装前会自动检测并清理其他渠道的旧版本。'
+    return `确定要${reinstall ? '重新' : ''}通过 Native 模式安装 ${displayName} 吗？\n该模式会先执行 npm install -g @anthropic-ai/claude-code，再执行 claude install。切换安装类型时会先清理旧类型产物。`
   }
 
   return `确定要${reinstall ? '重新' : ''}通过 npm package 安装 ${displayName} 吗？`
@@ -791,7 +771,7 @@ async function fixClaudeConfig(key: string, value: string, filePath: string): Pr
  * For non-Claude tools, falls back to the backend's canInstall.
  * For Claude Code, checks per-method availability based on the currently
  * selected install method. Missing keys in backend capability data are treated
- * as unavailable so macOS cannot fall back to an invalid winget/native action.
+  * as unavailable so the UI cannot fall back to an invalid method action.
  */
 function canInstallClaude(card: CardView): boolean {
   if (card.meta.key !== 'claude_code') {

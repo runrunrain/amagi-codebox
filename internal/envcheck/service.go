@@ -157,10 +157,8 @@ func (s *Service) finishToolCheck(status *CheckStatus, err error) (*CheckStatus,
 // and related Issue/Solution fields on the CheckStatus. It probes npm availability
 // once and caches the result for the lifetime of the Service to avoid repeated
 // lookups across CheckAll calls.
-//
-// For Claude Code on Windows, CanInstallByMethod reports per-method availability
-// so the frontend can enable/disable install buttons based on the selected method
-// rather than gating everything on npm.
+// For Claude Code, only npm and native are exposed. Native uses npm followed
+// by `claude install`, so both methods require npm availability.
 func (s *Service) populateCanInstall(status *CheckStatus) {
 	if status == nil {
 		return
@@ -171,20 +169,12 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 	})
 
 	// Compute per-method install availability for Claude Code.
-	if status.Tool == ToolClaudeCode && runtimeGOOS == "windows" {
+	if status.Tool == ToolClaudeCode {
 		status.CanInstallByMethod = map[string]bool{
 			"npm":    s.npmAvailable,
-			"winget": s.isWingetAvailable(),
-			"native": true, // native always allows attempt; accessibility checked at install time
+			"native": s.npmAvailable,
 		}
-		// CanInstall is true if ANY method is available
-		status.CanInstall = s.npmAvailable || status.CanInstallByMethod["winget"] || status.CanInstallByMethod["native"]
-	} else if status.Tool == ToolClaudeCode && (runtimeGOOS == "darwin" || runtimeGOOS == "linux") {
-		status.CanInstallByMethod = map[string]bool{
-			"native": true,
-			"npm":    s.npmAvailable,
-		}
-		status.CanInstall = status.CanInstallByMethod["native"] || s.npmAvailable
+		status.CanInstall = s.npmAvailable
 	} else {
 		status.CanInstallByMethod = map[string]bool{
 			"npm": s.npmAvailable,
@@ -249,22 +239,6 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 			})
 		}
 	}
-}
-
-// isWingetAvailable checks whether winget is available on this system.
-// Unlike verifyWingetHealth, this is a lightweight check that does not produce
-// user-facing error messages -- it simply reports availability.
-func (s *Service) isWingetAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   "winget",
-		Args:   []string{"--version"},
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	return err == nil
 }
 
 func (s *Service) cacheToolStatus(status *CheckStatus) {
@@ -338,11 +312,6 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 		if err == nil && version != "" {
 			return version, nil
 		}
-		if runtimeGOOS == "windows" {
-			if wingetVersion, wingetErr := s.wingetUpgradeVersion("Anthropic.ClaudeCode"); wingetErr == nil && wingetVersion != "" {
-				return wingetVersion, nil
-			}
-		}
 		return "", err
 	case ToolOpenCode:
 		return s.npmPackageVersion("opencode-ai")
@@ -378,25 +347,6 @@ func (s *Service) npmPackageVersion(packageName string) (string, error) {
 		return "", fmt.Errorf("npm view %s version returned no version", packageName)
 	}
 	return strings.TrimPrefix(version, "v"), nil
-}
-
-func (s *Service) wingetUpgradeVersion(packageID string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), latestVersionTimeout)
-	defer cancel()
-
-	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   "winget",
-		Args:   []string{"upgrade", "--id", packageID, "--accept-source-agreements"},
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if err != nil {
-		message := strings.TrimSpace(resultText(result))
-		if message == "" {
-			message = err.Error()
-		}
-		return "", fmt.Errorf("winget upgrade --id %s: %s", packageID, message)
-	}
-	return parseWingetLatestVersion(resultText(result), packageID)
 }
 
 // Install installs the requested CLI tool.
@@ -549,26 +499,6 @@ func firstNonEmptyLine(output string) string {
 		}
 	}
 	return ""
-}
-
-func parseWingetLatestVersion(output string, packageID string) (string, error) {
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || !strings.Contains(strings.ToLower(trimmed), strings.ToLower(packageID)) {
-			continue
-		}
-		fields := strings.Fields(trimmed)
-		for i := len(fields) - 1; i >= 0; i-- {
-			candidate := strings.TrimPrefix(fields[i], "v")
-			if codexVersionPattern.MatchString(candidate) {
-				return codexVersionPattern.FindString(candidate), nil
-			}
-		}
-	}
-	if strings.Contains(strings.ToLower(output), "no installed package found") || strings.Contains(strings.ToLower(output), "no available upgrade") {
-		return "", fmt.Errorf("winget did not report an available version for %s", packageID)
-	}
-	return "", fmt.Errorf("parse winget latest version for %s from output %q", packageID, output)
 }
 
 func compareVersionStrings(current string, latest string) int {
@@ -941,7 +871,7 @@ func (s *Service) CleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 // environment snapshot.
 func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResult, error) {
 	switch method {
-	case InstallMethodNPM, InstallMethodNative, InstallMethodWinget, InstallMethodUnknown, InstallMethod(""):
+	case InstallMethodNPM, InstallMethodNative, InstallMethodUnknown, InstallMethod(""):
 		// Supported methods proceed through the serialized operation path.
 	default:
 		// Preserve the existing contract for unknown methods: return a structured

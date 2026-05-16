@@ -108,6 +108,72 @@ func TestDarwinBaselinePATHIncludesUsrLocalBin(t *testing.T) {
 	}
 }
 
+func TestDarwinEffectivePATHIncludesHomeLocalBin(t *testing.T) {
+	homeDir := t.TempDir()
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+
+	_, effectivePATH, addedEntries, _ := buildEffectiveEnvForOS("darwin", []string{
+		"HOME=" + homeDir,
+		"PATH=",
+	})
+
+	if !pathListContains("darwin", effectivePATH, nativeDir) {
+		t.Fatalf("effective PATH %q does not include native default dir %q", effectivePATH, nativeDir)
+	}
+	if len(addedEntries) == 0 || addedEntries[0] != nativeDir {
+		t.Fatalf("added PATH entries = %#v, want native default dir first", addedEntries)
+	}
+}
+
+func TestDarwinResolverPrefersClaudeNativeDefaultOverNPMShim(t *testing.T) {
+	homeDir := t.TempDir()
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, "claude")
+	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
+		t.Fatalf("mkdir native dir: %v", err)
+	}
+	if err := os.WriteFile(nativePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write native cli: %v", err)
+	}
+
+	npmDir := t.TempDir()
+	npmShim := filepath.Join(npmDir, "claude")
+	if err := os.WriteFile(npmShim, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write npm shim: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "claudecode",
+		LaunchMode: "embedded",
+		WorkDir:    "/tmp/demo",
+		Env: []string{
+			"HOME=" + homeDir,
+			"PATH=" + npmDir,
+		},
+		PTYCols: 120,
+		PTYRows: 40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if spec.CLI.Path != nativePath {
+		t.Fatalf("resolved cli path = %q, want native default %q instead of npm shim %q", spec.CLI.Path, nativePath, npmShim)
+	}
+	if spec.Diagnostics.CLISource != "path-search" {
+		t.Fatalf("cli source = %q, want path-search", spec.Diagnostics.CLISource)
+	}
+}
+
+func pathListContains(osName string, pathValue string, want string) bool {
+	for _, entry := range splitPathListForOS(osName, pathValue) {
+		if filepath.Clean(entry) == filepath.Clean(want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildShellResolveArgsUsesInteractiveLoginForZsh(t *testing.T) {
 	args := buildShellResolveArgs(ResolvedShell{Key: "zsh", Path: "/bin/zsh"}, "claude")
 	if len(args) != 2 {

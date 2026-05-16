@@ -6,14 +6,51 @@ import (
 	"testing"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/secrets"
 )
+
+// cliMemoryStore implements secrets.SecretStore using an in-memory map.
+// This avoids hitting the real macOS Keychain CGo calls, which can block
+// indefinitely when the Keychain is locked or the test runner lacks UI
+// authorization.
+type cliMemoryStore struct {
+	data map[string]string
+}
+
+func (m *cliMemoryStore) Load(path string) (map[string]string, error) {
+	_ = path
+	cp := make(map[string]string, len(m.data))
+	for k, v := range m.data {
+		cp[k] = v
+	}
+	return cp, nil
+}
+
+func (m *cliMemoryStore) Save(path string, values map[string]string) error {
+	_ = path
+	m.data = make(map[string]string, len(values))
+	for k, v := range values {
+		m.data[k] = v
+	}
+	return nil
+}
+
+func (m *cliMemoryStore) Kind() string { return "memory" }
+
+func (m *cliMemoryStore) LegacyImportPath(path string) string { return path }
 
 func newTestCLIState(t *testing.T) *cliState {
 	t.Helper()
 	configDir := t.TempDir()
+	store := &cliMemoryStore{data: map[string]string{}}
+	secretsSvc := secrets.NewSecretsServiceWithStore(configDir, store)
+	if err := secretsSvc.Load(); err != nil {
+		t.Fatalf("load in-memory secrets: %v", err)
+	}
 	return &cliState{
-		configDir: configDir,
-		claudeDir: configDir,
+		configDir:  configDir,
+		claudeDir:  configDir,
+		secretsSvc: secretsSvc,
 	}
 }
 

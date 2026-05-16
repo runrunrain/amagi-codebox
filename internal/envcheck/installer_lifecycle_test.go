@@ -54,38 +54,29 @@ func TestCleanClaudeCodeByMethod_NPM(t *testing.T) {
 	}
 }
 
-func TestCleanClaudeCodeByMethod_Winget(t *testing.T) {
+func TestCleanClaudeCodeByMethod_RemovedLegacyMethod(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		t.Skip("winget clean test only runs on Windows")
+		t.Skip("removed legacy clean test only runs on Windows")
 	}
 
-	var sawWinget bool
-	runner := &mockRunner{
-		responses: []mockResponse{
-			{pathPrefix: "winget", stdout: "", err: nil},
-		},
-	}
-	runner2 := &trackingMockRunner{
-		mockRunner: runner,
-		onRun: func(spec platform.CommandSpec) {
-			if spec.Path == "winget" &&
-				len(spec.Args) > 0 &&
-				spec.Args[0] == "uninstall" {
-				sawWinget = true
-			}
-		},
-	}
+	// Historical removed install-method values are not supported constants. The
+	// cleanClaudeCode function should return a structured error result instead of
+	// dispatching a removed-channel uninstall command.
+	runner := &mockRunner{responses: []mockResponse{}}
+	svc := NewServiceWithRunner(runner)
 
-	svc := NewServiceWithRunner(runner2)
-	result, err := svc.cleanClaudeCode(InstallMethodWinget)
+	result, err := svc.cleanClaudeCode(InstallMethod("winget"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !sawWinget {
-		t.Error("expected winget uninstall command to be dispatched")
-	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("removed legacy method clean should report failure (unsupported method)")
+	}
+	if !strings.Contains(result.Message, "无法识别") {
+		t.Errorf("expected unsupported method message, got: %s", result.Message)
 	}
 }
 
@@ -306,7 +297,7 @@ func TestResolveConflictAction_SameMethod_NoCleanup(t *testing.T) {
 	}
 }
 
-func TestResolveConflictAction_UnknownMethod_NoCleanup(t *testing.T) {
+func TestResolveConflictAction_UnknownMethod_BestEffortCleanup(t *testing.T) {
 	status := &CheckStatus{
 		Tool:          ToolClaudeCode,
 		Installed:     true,
@@ -321,11 +312,11 @@ func TestResolveConflictAction_UnknownMethod_NoCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil result for unknown method, got: %+v", result)
+	if result == nil || !result.Success {
+		t.Errorf("expected successful best-effort cleanup result for unknown method, got: %+v", result)
 	}
-	if cleanCalled {
-		t.Error("cleaner should not be called for unknown method")
+	if !cleanCalled {
+		t.Error("cleaner should be called for unknown method best-effort cleanup")
 	}
 }
 
@@ -333,7 +324,7 @@ func TestResolveConflictAction_DifferentMethod_CleansUp(t *testing.T) {
 	status := &CheckStatus{
 		Tool:          ToolClaudeCode,
 		Installed:     true,
-		InstallMethod: InstallMethodWinget,
+		InstallMethod: InstallMethodNative,
 	}
 	var cleanedMethod InstallMethod
 	cleaner := func(m InstallMethod) (*InstallResult, error) {
@@ -354,11 +345,11 @@ func TestResolveConflictAction_DifferentMethod_CleansUp(t *testing.T) {
 	if !result.Success {
 		t.Errorf("expected success, got: %s", result.Message)
 	}
-	if cleanedMethod != InstallMethodWinget {
-		t.Errorf("expected cleaner called with winget, got: %s", cleanedMethod)
+	if cleanedMethod != InstallMethodNative {
+		t.Errorf("expected cleaner called with native, got: %s", cleanedMethod)
 	}
-	if !strings.Contains(result.Message, "winget") {
-		t.Errorf("expected message to mention winget, got: %s", result.Message)
+	if !strings.Contains(result.Message, "native") {
+		t.Errorf("expected message to mention native, got: %s", result.Message)
 	}
 	if !strings.Contains(result.Message, "npm") {
 		t.Errorf("expected message to mention npm, got: %s", result.Message)
@@ -400,17 +391,17 @@ func TestResolveConflictAction_CleanError_BlocksInstall(t *testing.T) {
 	status := &CheckStatus{
 		Tool:          ToolClaudeCode,
 		Installed:     true,
-		InstallMethod: InstallMethodWinget,
+		InstallMethod: InstallMethodNative,
 	}
 	cleaner := func(m InstallMethod) (*InstallResult, error) {
-		return nil, fmt.Errorf("winget crashed")
+		return nil, fmt.Errorf("native cleanup crashed")
 	}
 	result, err := resolveConflictAction(status, InstallMethodNPM, cleaner)
 	if err == nil {
 		t.Fatal("expected error when cleaner returns error")
 	}
-	if !strings.Contains(err.Error(), "winget crashed") {
-		t.Errorf("expected error to contain 'winget crashed', got: %v", err)
+	if !strings.Contains(err.Error(), "native cleanup crashed") {
+		t.Errorf("expected error to contain 'native cleanup crashed', got: %v", err)
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -543,19 +534,17 @@ func TestClaudeInstallCommands_Update_Unknown_UsesSafeFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unknown update should use safe fallback commands instead of failing: %v", err)
 	}
-	if len(cmds) != 2 {
-		t.Fatalf("expected npm + winget fallback commands on Windows unknown update, got %d: %+v", len(cmds), cmds)
+	// Unknown update only uses npm fallback (winget path removed)
+	if len(cmds) != 1 {
+		t.Fatalf("expected npm-only fallback command for unknown update, got %d: %+v", len(cmds), cmds)
 	}
 	if cmds[0].path != "npm" || len(cmds[0].args) < 3 || cmds[0].args[0] != "install" || cmds[0].args[1] != "-g" || cmds[0].args[2] != "@anthropic-ai/claude-code@latest" {
-		t.Fatalf("first unknown update fallback must be npm forced-latest, got: %+v", cmds[0])
-	}
-	if cmds[1].path != "winget" || len(cmds[1].args) == 0 || cmds[1].args[0] != "upgrade" {
-		t.Fatalf("second unknown update fallback must be winget upgrade, got: %+v", cmds[1])
+		t.Fatalf("unknown update fallback must be npm forced-latest, got: %+v", cmds[0])
 	}
 	for _, cmd := range cmds {
 		combined := strings.ToLower(cmd.description + " " + cmd.path + " " + strings.Join(cmd.args, " "))
-		if strings.Contains(combined, "powershell") || strings.Contains(combined, "install.ps1") || strings.Contains(combined, "native") {
-			t.Fatalf("unknown update fallback must not invoke Native direct installer, got: %+v", cmd)
+		if strings.Contains(combined, "powershell") || strings.Contains(combined, "install.ps1") || strings.Contains(combined, "native") || strings.Contains(combined, "winget") {
+			t.Fatalf("unknown update fallback must not invoke removed installer paths, got: %+v", cmd)
 		}
 	}
 }
@@ -575,7 +564,6 @@ func TestUninstallClaudeCode_DispatchByMethod(t *testing.T) {
 		wantPrefix string // expected command prefix
 	}{
 		{"npm method dispatches npm uninstall", InstallMethodNPM, "npm"},
-		{"winget method dispatches winget uninstall", InstallMethodWinget, "winget"},
 	}
 
 	for _, tc := range tests {
@@ -658,9 +646,8 @@ func TestUpdateUnknown_WindowsFallbackOrder(t *testing.T) {
 	}
 
 	// Unknown update must not stop at "无法确定安装方式". It should use
-	// non-destructive same-tool repair fallbacks: npm forced latest first, then
-	// winget upgrade. Native direct installer is intentionally excluded because it
-	// is a full installer, not a targeted updater.
+	// non-destructive npm forced-latest as fallback. Winget and native direct
+	// installer are intentionally excluded.
 	svc := newTestService()
 
 	current := &CheckStatus{
@@ -675,18 +662,16 @@ func TestUpdateUnknown_WindowsFallbackOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unknown update should not directly fail: %v", err)
 	}
-	if len(cmds) != 2 {
-		t.Fatalf("expected exactly npm + winget fallbacks, got %+v", cmds)
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly npm-only fallback for unknown update, got %+v", cmds)
 	}
 	if !strings.Contains(cmds[0].description, "@anthropic-ai/claude-code@latest") || cmds[0].args[0] != "install" {
-		t.Fatalf("unknown update first fallback should be npm install @latest, got: %+v", cmds[0])
-	}
-	if !strings.Contains(strings.ToLower(cmds[1].description), "winget") || cmds[1].args[0] != "upgrade" {
-		t.Fatalf("unknown update second fallback should be winget upgrade, got: %+v", cmds[1])
+		t.Fatalf("unknown update fallback should be npm install @latest, got: %+v", cmds[0])
 	}
 	for _, cmd := range cmds {
-		if strings.Contains(strings.ToLower(cmd.path), "powershell") || strings.Contains(strings.ToLower(cmd.description), "powershell") {
-			t.Fatalf("unknown update must not use PowerShell Native direct installer, got: %+v", cmd)
+		combined := strings.ToLower(cmd.description + " " + cmd.path + " " + strings.Join(cmd.args, " "))
+		if strings.Contains(combined, "powershell") || strings.Contains(combined, "winget") {
+			t.Fatalf("unknown update must not use removed paths (powershell/winget), got: %+v", cmd)
 		}
 	}
 }
@@ -750,7 +735,7 @@ func TestEnsureNoConflictAction_DifferentChannel_CleansUp(t *testing.T) {
 	status := &CheckStatus{
 		Tool:          ToolClaudeCode,
 		Installed:     true,
-		InstallMethod: InstallMethodWinget,
+		InstallMethod: InstallMethodNative,
 	}
 	var cleanedMethod InstallMethod
 	cleaner := func(m InstallMethod) (*InstallResult, error) {
@@ -771,8 +756,8 @@ func TestEnsureNoConflictAction_DifferentChannel_CleansUp(t *testing.T) {
 	if !result.Success {
 		t.Errorf("expected success, got: %s", result.Message)
 	}
-	if cleanedMethod != InstallMethodWinget {
-		t.Errorf("expected cleaner called with winget, got: %s", cleanedMethod)
+	if cleanedMethod != InstallMethodNative {
+		t.Errorf("expected cleaner called with native, got: %s", cleanedMethod)
 	}
 }
 
@@ -810,17 +795,17 @@ func TestEnsureNoConflictAction_CleanError_BlocksInstall(t *testing.T) {
 	status := &CheckStatus{
 		Tool:          ToolClaudeCode,
 		Installed:     true,
-		InstallMethod: InstallMethodWinget,
+		InstallMethod: InstallMethodNative,
 	}
 	cleaner := func(m InstallMethod) (*InstallResult, error) {
-		return nil, fmt.Errorf("winget crashed")
+		return nil, fmt.Errorf("native cleanup crashed")
 	}
 	result, err := resolveConflictAction(status, InstallMethodNPM, cleaner)
 	if err == nil {
 		t.Fatal("expected error when cleaner returns error")
 	}
-	if !strings.Contains(err.Error(), "winget crashed") {
-		t.Errorf("expected error to contain 'winget crashed', got: %v", err)
+	if !strings.Contains(err.Error(), "native cleanup crashed") {
+		t.Errorf("expected error to contain 'native cleanup crashed', got: %v", err)
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")

@@ -664,7 +664,7 @@ func TestCleanClaudeCode_UsesOperationStateAndBlocksOtherOperations(t *testing.T
 	if _, err := svc.StartInstallTool(ToolOpenCode); !errors.Is(err, ErrBusy) {
 		t.Fatalf("StartInstallTool during uninstall error = %v, want ErrBusy", err)
 	}
-	if _, err := svc.InstallClaudeCodeWithMethod(ClaudeInstallWinget); !errors.Is(err, ErrBusy) {
+	if _, err := svc.InstallClaudeCodeWithMethod(ClaudeInstallNPM); !errors.Is(err, ErrBusy) {
 		t.Fatalf("InstallClaudeCodeWithMethod during uninstall error = %v, want ErrBusy", err)
 	}
 
@@ -690,19 +690,19 @@ func TestCleanClaudeCode_AllowsImmediateInstallAfterSynchronousRefresh(t *testin
 	}
 
 	installRunner := newSlowSequentialRunner([]seqResponse{
-		{stdout: "1.8.0", err: nil},     // winget --version on Windows
-		{stdout: "installed", err: nil}, // winget install command
+		{stdout: "10.0.0", err: nil},    // npm availability
+		{stdout: "installed", err: nil}, // npm install command
 	}, 1*time.Millisecond)
 	svc.processRunner = installRunner
 
-	_, installErr := svc.InstallClaudeCodeWithMethod(ClaudeInstallWinget)
+	_, installErr := svc.InstallClaudeCodeWithMethod(ClaudeInstallNPM)
 	if errors.Is(installErr, ErrBusy) {
 		t.Fatalf("immediate install after uninstall returned ErrBusy")
 	}
 }
 
 func TestStartInstallClaudeCodeWithMethod_ReportsNativeProgress(t *testing.T) {
-	runner := &nativeBootstrapTestRunner{createOnDirect: true, directWait: 80 * time.Millisecond}
+	runner := &nativeBootstrapTestRunner{createOnClaudeInstall: true, claudeInstallWait: 80 * time.Millisecond}
 	svc := prepareNativeBootstrapTest(t, runner)
 
 	op, err := svc.StartInstallClaudeCodeWithMethod(ClaudeInstallNative)

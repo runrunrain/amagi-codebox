@@ -49,6 +49,9 @@ func resolveCommandPathForOS(osName string, command string, env []string) string
 		}
 		return ""
 	}
+	if resolved := resolvePreferredDefaultCommandPathForOS(osName, trimmed, env); resolved != "" {
+		return resolved
+	}
 
 	_, pathValue, _, _ := buildEffectiveEnvForOS(osName, env)
 	for _, dir := range splitPathListForOS(osName, pathValue) {
@@ -95,14 +98,14 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 		callerEntries = append(callerEntries, trimmed)
 	}
 
-	entries := make([]string, 0, len(callerEntries)+len(inheritedEntries)+len(darwinBaselinePATH))
+	entries := make([]string, 0, len(callerEntries)+len(inheritedEntries)+len(darwinBaselinePATH)+2)
 	entries = append(entries, callerEntries...)
 	if len(callerEntries) > 0 {
 		pathSources = append(pathSources, "app-env")
 	}
 
 	if osName == "darwin" {
-		for _, entry := range darwinBaselinePATH {
+		for _, entry := range darwinControlledPATHCandidates(vars) {
 			key := normalizePathKey(entry, osName)
 			if _, ok := seen[key]; ok {
 				continue
@@ -154,6 +157,44 @@ func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []st
 	effectivePATH := strings.Join(entries, pathListSeparatorForOS(osName))
 	vars = setEnvValue(vars, "PATH", effectivePATH)
 	return vars, effectivePATH, addedEntries, pathSources
+}
+
+func resolvePreferredDefaultCommandPathForOS(osName string, command string, env []string) string {
+	if osName != "darwin" || command != "claude" {
+		return ""
+	}
+	for _, dir := range userLocalBinCandidatesForOS(osName, env) {
+		candidate := filepath.Join(dir, command)
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func darwinControlledPATHCandidates(env []string) []string {
+	candidates := append([]string{}, userLocalBinCandidatesForOS("darwin", env)...)
+	candidates = append(candidates, darwinBaselinePATH...)
+	return candidates
+}
+
+func userLocalBinCandidatesForOS(osName string, env []string) []string {
+	candidates := []string{}
+	seen := map[string]struct{}{}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		base := strings.TrimSpace(envValue(env, key))
+		if base == "" {
+			continue
+		}
+		dir := filepath.Join(base, ".local", "bin")
+		normalized := normalizePathKey(filepath.Clean(dir), osName)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		candidates = append(candidates, dir)
+	}
+	return candidates
 }
 
 func windowsControlledPATHCandidates(env []string) []string {

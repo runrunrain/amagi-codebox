@@ -29,11 +29,11 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	}
 
 	rr := resolveExecutable(claudeCommandName)
-	if nativePath := firstExistingClaudeNativeDefaultPath(); nativePath != "" && !rr.systemPATHOk {
+	if nativePath := firstExistingClaudeNativeDefaultPath(); shouldPreferClaudeNativeDefaultPath(rr, nativePath) {
 		rr = resolveResult{
 			executablePath: nativePath,
 			systemPATHOk:   false,
-			pathState:      PathStateOutsidePATH,
+			pathState:      PathStateCodeboxPATH,
 			pathSource:     "native-default-location",
 		}
 	} else if strings.TrimSpace(rr.executablePath) == "" {
@@ -82,12 +82,12 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 		status.Issues = append(status.Issues, CheckIssue{
 			Severity: SeverityInfo,
 			Code:     "claude_npm_install_recommended_native",
-			Message:  "检测到 Claude Code 通过 npm 全局安装；推荐使用官方 Native 安装程序以获得更好的集成体验",
+			Message:  "检测到 Claude Code 通过 npm 全局安装；如需 Native 模式，可在 npm 安装后执行 claude install",
 			Solutions: []ResolutionAction{
 				{
 					Type:        SolutionManualCommand,
-					Description: "安装官方 Native Claude Code 安装程序",
-					Command:     "irm https://claude.ai/install.ps1 | iex",
+					Description: "切换到 Native Claude Code",
+					Command:     "npm install -g @anthropic-ai/claude-code && claude install",
 				},
 			},
 		})
@@ -118,6 +118,20 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	}
 
 	return status, nil
+}
+
+func shouldPreferClaudeNativeDefaultPath(rr resolveResult, nativePath string) bool {
+	if strings.TrimSpace(nativePath) == "" {
+		return false
+	}
+	resolvedPath := strings.TrimSpace(rr.executablePath)
+	if resolvedPath == "" {
+		return true
+	}
+	if sameNormalizedPath(resolvedPath, nativePath) {
+		return false
+	}
+	return true
 }
 
 func firstExistingClaudeNativeDefaultPath() string {
@@ -262,7 +276,7 @@ func (s *Service) detectClaudeInstallMethod(executablePath string) InstallMethod
 		return InstallMethodUnknown
 	}
 
-	if strings.Contains(normalized, "node_modules") || strings.Contains(normalized, "npm") {
+	if looksLikeClaudeNPMPath(executablePath) || s.isClaudeNPMGlobalExecutablePath(executablePath) {
 		return InstallMethodNPM
 	}
 
@@ -270,11 +284,12 @@ func (s *Service) detectClaudeInstallMethod(executablePath string) InstallMethod
 		return InstallMethodNative
 	}
 
-	if isPathUnderEnvDir(normalized, "LOCALAPPDATA", `programs\claude code`) || isWingetPath(normalized) {
-		return InstallMethodWinget
-	}
-
 	return InstallMethodUnknown
+}
+
+func looksLikeClaudeNPMPath(path string) bool {
+	normalized := normalizeClaudePath(path)
+	return strings.Contains(normalized, "/node_modules/") || strings.Contains(normalized, "/npm/")
 }
 
 func normalizeClaudePath(path string) string {
@@ -296,13 +311,6 @@ func isPathUnderEnvDir(normalizedPath string, envKey string, relativeDir string)
 	}
 	root := normalizeClaudePath(filepath.Join(base, relativeDir))
 	return pathHasPrefix(normalizedPath, root)
-}
-
-func isWingetPath(normalizedPath string) bool {
-	return strings.Contains(normalizedPath, "/winget/") ||
-		strings.Contains(normalizedPath, "/microsoft/winget/") ||
-		strings.Contains(normalizedPath, "/windowsapps/") ||
-		strings.Contains(normalizedPath, "/packages/microsoft.desktopappinstaller_")
 }
 
 func pathHasPrefix(path string, prefix string) bool {

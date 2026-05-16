@@ -185,27 +185,27 @@ func TestClaudeInstallCommands_NoPowerShellOnDarwin(t *testing.T) {
 	}
 }
 
-// TestClaudeInstallCommands_WindowsHasNativeAndWinget verifies Windows still
-// generates winget commands (and optionally native when accessible).
-func TestClaudeInstallCommands_WindowsHasNativeAndWinget(t *testing.T) {
+// TestClaudeInstallCommands_WindowsHasNPM verifies Windows still
+// generates npm commands (winget removed).
+func TestClaudeInstallCommands_WindowsHasNPM(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("this test verifies Windows behavior")
 	}
 
 	svc := newTestService()
 	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
-	if len(cmds) < 2 {
-		t.Fatalf("expected at least 2 commands on Windows, got %d", len(cmds))
+	if len(cmds) < 1 {
+		t.Fatalf("expected at least 1 command on Windows, got %d", len(cmds))
 	}
 
-	hasWinget := false
+	hasNPM := false
 	for _, cmd := range cmds {
-		if strings.Contains(strings.ToLower(cmd.path), "winget") {
-			hasWinget = true
+		if strings.Contains(strings.ToLower(cmd.path), "npm") || cmd.path == "npm" {
+			hasNPM = true
 		}
 	}
-	if !hasWinget {
-		t.Error("Windows Claude install should include winget")
+	if !hasNPM {
+		t.Error("Windows Claude install should include npm")
 	}
 }
 

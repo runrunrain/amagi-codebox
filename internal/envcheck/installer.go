@@ -17,9 +17,7 @@ import (
 
 const (
 	installCommandTimeout               = 120 * time.Second
-	nativeInstallCommandTimeout         = 20 * time.Minute
 	claudeNativeBootstrapCommandTimeout = 20 * time.Minute
-	nativeDirectEvidenceTimeoutDefault  = 30 * time.Second
 	installRecheckAttemptsDefault       = 3
 	installRecheckDelayDefault          = 300 * time.Millisecond
 
@@ -35,17 +33,10 @@ const (
 	progressRefresh   = 95
 	progressCompleted = 100
 
-	progressNativeFallbackSwitch        = 86
-	progressNativeFallbackNPMInstall    = 88
-	progressNativeFallbackClaudeInstall = 92
-	progressNativeFallbackVerify        = 95
+	progressNativeNPMInstall    = 40
+	progressNativeClaudeInstall = 70
+	progressNativeVerify        = 90
 )
-
-var nativeDirectEvidenceTimeout = nativeDirectEvidenceTimeoutDefault
-
-var nativeDirectInstallerSupported = func() bool {
-	return runtimeGOOS == "windows"
-}
 
 var (
 	installRecheckAttempts = installRecheckAttemptsDefault
@@ -287,69 +278,12 @@ func (s *Service) installClaudeCodeWithMethodProgress(method ClaudeInstallMethod
 
 	reporter.report(OperationStepPrepare, fmt.Sprintf("正在准备 Claude Code %s 安装...", claudeInstallMethodDisplayName(method)), progressPrepare)
 	if method == ClaudeInstallNative {
-		if runtimeGOOS == "darwin" || runtimeGOOS == "linux" {
-			return s.installClaudeNativeUnixOfficial(reporter)
-		}
-		if runtimeGOOS != "windows" {
-			err := fmt.Errorf("Claude Code Native 官方安装暂不支持当前平台 %s；可改用 npm install -g @anthropic-ai/claude-code", runtimeGOOS)
-			return installFailure(ToolClaudeCode, err.Error(), err), err
-		}
-		return s.installClaudeNativeWithBootstrapFallback(reporter)
+		return s.installClaudeNativeViaNPMBootstrap(reporter)
 	}
 	return s.installOrUpdateWithProgress(ToolClaudeCode, installOperationInstall, reporter, method)
 }
 
-func (s *Service) installClaudeNativeUnixOfficial(reporter progressReporter) (*InstallResult, error) {
-	reporter.report(OperationStepPrecheck, "正在检查 Claude Code 官方 Native install.sh 当前状态...", progressPrecheck)
-
-	before, checkErr := s.CheckOne(ToolClaudeCode)
-	if checkErr != nil && before == nil {
-		return installFailure(ToolClaudeCode, "Claude Code Native install.sh 安装前检查失败", checkErr), checkErr
-	}
-	if isHealthyAndCurrent(before) && before.InstallMethod == InstallMethodNative {
-		return &InstallResult{
-			Success: true,
-			Message: "Claude Code Native 已安装且为最新版本",
-			Tool:    ToolClaudeCode,
-			Version: before.Version,
-		}, nil
-	}
-
-	cmd := nativeUnixClaudeCommand()
-	reporter.report(OperationStepRunCommand, "Claude Code 官方 Native 安装：正在执行 curl install.sh", progressRunStart)
-	installOutput, installErr := s.runInstallCommandResult(cmd)
-	if installErr != nil {
-		summary := installerDiagnosticSummary(installErr)
-		message := fmt.Sprintf(
-			"Claude Code macOS/Linux Native 安装失败。已执行官方命令：%s。如网络访问失败，请配置 HTTPS_PROXY/HTTP_PROXY，或改用：npm install -g @anthropic-ai/claude-code；macOS 也可手动使用 Homebrew：brew install --cask claude-code。诊断：%s",
-			claudeNativeUnixInstallScriptCommand,
-			summary,
-		)
-		failureErr := errors.New(message)
-		return installFailure(ToolClaudeCode, message, failureErr), failureErr
-	}
-
-	reporter.report(OperationStepVerify, "Claude Code 官方 Native 安装：正在验证 install.sh 安装结果...", progressVerify)
-	after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(installOutput))
-	if verifyErr != nil {
-		message := fmt.Sprintf(
-			"Claude Code macOS/Linux Native 安装命令已完成，但验证失败。已执行官方命令：%s。可改用：npm install -g @anthropic-ai/claude-code；macOS 也可手动使用 Homebrew：brew install --cask claude-code。诊断：%s",
-			claudeNativeUnixInstallScriptCommand,
-			installerDiagnosticSummary(verifyErr),
-		)
-		failureErr := errors.New(message)
-		return installFailure(ToolClaudeCode, message, failureErr), failureErr
-	}
-
-	return &InstallResult{
-		Success: true,
-		Message: nativeInstallSuccessMessage("Claude Code 已通过官方 Native install.sh 安装成功", after),
-		Tool:    ToolClaudeCode,
-		Version: after.Version,
-	}, nil
-}
-
-func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressReporter) (*InstallResult, error) {
+func (s *Service) installClaudeNativeViaNPMBootstrap(reporter progressReporter) (*InstallResult, error) {
 	reporter.report(OperationStepPrecheck, "正在检查 Claude Code Native 当前状态...", progressPrecheck)
 
 	before, checkErr := s.CheckOne(ToolClaudeCode)
@@ -365,192 +299,65 @@ func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressRepo
 		}, nil
 	}
 
-	reporter.report(OperationStepRunCommand, "Native 官方安装模式：正在启动 Claude Code direct installer...", progressRunStart)
-	directResult, directErr := s.runNativeDirectInstallerWithEvidence(reporter)
-	if directErr == nil {
-		reporter.report(OperationStepVerify, "Native 官方安装模式：正在验证 Native 直接安装结果...", progressVerify)
-		after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(directResult))
-		if verifyErr == nil {
-			return &InstallResult{
-				Success: true,
-				Message: nativeInstallSuccessMessage("Claude Code 已通过 Native 官方安装模式 direct installer 安装成功", after),
-				Tool:    ToolClaudeCode,
-				Version: after.Version,
-			}, nil
-		}
-		directErr = fmt.Errorf("Native 官方安装模式 direct installer succeeded but native verification failed: %w", verifyErr)
-	} else if isNativeDirectEvidenceTimeout(directErr) || installCommandErrorLooksRecoverable(directErr) {
-		reporter.report(OperationStepVerify, "Native 官方安装模式：命令超时/输出不完整，正在 bounded recheck 确认是否已安装...", progressVerify)
-		if after, verifyErr := s.verifyClaudeNativeAvailableWithRecheck(resultText(directResult)); verifyErr == nil {
-			return &InstallResult{
-				Success: true,
-				Message: nativeInstallSuccessMessage("Claude Code Native 官方安装模式命令超时/输出不完整，但 bounded recheck 已确认 Native 官方二进制可用；原始超时诊断已保留", after),
-				Tool:    ToolClaudeCode,
-				Version: after.Version,
-			}, nil
-		}
-	}
-
-	directSummary := installerDiagnosticSummary(directErr)
-	switchMessage := "Native 官方安装模式直接安装失败，切换保底方案：保底安装模式（npm + claude install）..."
-	if isNativeDirectEvidenceTimeout(directErr) {
-		switchMessage = "Native 官方安装模式：30 秒内未检测到响应，切换保底方案（npm + claude install）..."
-	}
-	reporter.report(OperationStepPrepare, switchMessage, progressNativeFallbackSwitch)
-
 	if err := s.ensureNPMAvailable(); err != nil {
-		fallbackErr := fmt.Errorf("npm 不可用，无法执行 Native 保底安装: %w", err)
-		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+		installErr := fmt.Errorf("npm 不可用，无法执行 Native 安装: %w", err)
+		return s.nativeBootstrapFailureResult(installErr), installErr
 	}
 
-	reporter.report(OperationStepRunCommand, "保底安装模式（npm + claude install）：正在安装 npm 版本 Claude Code，作为 Native 官方二进制安装引导...", progressNativeFallbackNPMInstall)
+	reporter.report(OperationStepRunCommand, "Native 安装（npm + claude install）：正在安装 npm 版本 Claude Code，作为 Native 二进制安装引导...", progressNativeNPMInstall)
 	npmCmd := s.resolveCommandNPMPath(npmClaudeCommand(installOperationInstall))
 	npmResult, npmErr := s.runInstallCommandResult(npmCmd)
 	if npmErr != nil {
-		reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：npm 安装命令异常，正在 bounded recheck 确认 npm 包是否已完成安装...", progressNativeFallbackVerify)
+		reporter.report(OperationStepVerify, "Native 安装（npm + claude install）：npm 安装命令异常，正在 bounded recheck 确认 npm 包是否已完成安装...", progressNativeVerify)
 		if confirmErr := s.confirmClaudeNPMInstallAfterRecoverableCommand(npmCmd, npmResult, npmErr); confirmErr != nil {
-			fallbackErr := fmt.Errorf("安装 npm 版本 Claude Code 失败: %w", confirmErr)
-			return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+			installErr := fmt.Errorf("安装 npm 版本 Claude Code 失败: %w", confirmErr)
+			return s.nativeBootstrapFailureResult(installErr), installErr
 		}
 	} else if err := s.confirmClaudeNPMInstall(); err != nil {
-		fallbackErr := fmt.Errorf("npm 版本 Claude Code 安装后确认失败: %w", err)
-		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+		installErr := fmt.Errorf("npm 版本 Claude Code 安装后确认失败: %w", err)
+		return s.nativeBootstrapFailureResult(installErr), installErr
 	}
 
-	reporter.report(OperationStepRunCommand, "保底安装模式（npm + claude install）：正在执行 claude install 安装 Native 官方二进制...", progressNativeFallbackClaudeInstall)
+	reporter.report(OperationStepRunCommand, "Native 安装（npm + claude install）：正在执行 claude install 安装 Native 二进制...", progressNativeClaudeInstall)
 	bootstrapCmd, bootstrapResolveErr := s.claudeNativeBootstrapCommandAfterNPMInstall()
 	if bootstrapResolveErr != nil {
-		fallbackErr := fmt.Errorf("npm 版本 Claude Code 安装成功但无法定位 claude install 引导命令: %w", bootstrapResolveErr)
-		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+		installErr := fmt.Errorf("npm 版本 Claude Code 安装成功但无法定位 claude install 引导命令: %w", bootstrapResolveErr)
+		return s.nativeBootstrapFailureResult(installErr), installErr
 	}
 	bootstrapResult, bootstrapErr := s.runInstallCommandResult(bootstrapCmd)
 	if bootstrapErr != nil {
-		reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：claude install 返回非零状态，正在根据成功输出验证 Native 二进制...", progressNativeFallbackVerify)
+		reporter.report(OperationStepVerify, "Native 安装（npm + claude install）：claude install 返回非零状态，正在根据成功输出验证 Native 二进制...", progressNativeVerify)
 		if after, verifyErr := s.verifyClaudeNativeInstallFromCommandOutput(resultText(bootstrapResult)); verifyErr == nil {
 			return &InstallResult{
 				Success: true,
-				Message: nativeInstallSuccessMessage("Claude Code 直接 Native 安装失败后，claude install 已完成 Native 官方二进制安装；后续 shell integration 返回非零状态，已按 Location 验证二进制可用", after),
+				Message: nativeInstallSuccessMessage("Claude Code 已通过 npm + claude install 完成 Native 二进制安装；后续 shell integration 返回非零状态，已按 Location 验证二进制可用", after),
 				Tool:    ToolClaudeCode,
 				Version: after.Version,
 			}, nil
 		}
-		fallbackErr := fmt.Errorf("执行 claude install 失败: %w", bootstrapErr)
-		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+		installErr := fmt.Errorf("执行 claude install 失败: %w", bootstrapErr)
+		return s.nativeBootstrapFailureResult(installErr), installErr
 	}
 
-	reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：正在验证 Native 官方二进制 Claude Code 可用...", progressNativeFallbackVerify)
+	reporter.report(OperationStepVerify, "Native 安装（npm + claude install）：正在验证 Native 二进制 Claude Code 可用...", progressNativeVerify)
 	after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(bootstrapResult))
 	if verifyErr != nil {
-		fallbackErr := fmt.Errorf("claude install 完成后 Native 验证失败: %w", verifyErr)
-		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+		installErr := fmt.Errorf("claude install 完成后 Native 验证失败: %w", verifyErr)
+		return s.nativeBootstrapFailureResult(installErr), installErr
 	}
 
 	return &InstallResult{
 		Success: true,
-		Message: nativeInstallSuccessMessage("Claude Code 直接 Native 安装失败后，已通过 npm 引导 claude install 保底方案安装 Native 官方二进制", after),
+		Message: nativeInstallSuccessMessage("Claude Code 已通过 npm + claude install 安装 Native 二进制", after),
 		Tool:    ToolClaudeCode,
 		Version: after.Version,
 	}, nil
 }
-
-type nativeDirectEvidenceTimeoutError struct {
-	timeout time.Duration
-	detail  string
-}
-
-func (e nativeDirectEvidenceTimeoutError) Error() string {
-	message := fmt.Sprintf("Native 官方安装模式：%s 内未检测到 stdout/stderr、下载/安装进度或成功结束，已终止 direct installer", e.timeout)
-	if e.detail != "" {
-		message += ": " + e.detail
-	}
-	return message
-}
-
-func isNativeDirectEvidenceTimeout(err error) bool {
-	var gateErr nativeDirectEvidenceTimeoutError
-	return errors.As(err, &gateErr)
-}
-
-func (s *Service) runNativeDirectInstallerWithEvidence(reporter progressReporter) (*platform.ProcessResult, error) {
-	command, prepareErr := s.nativeDirectClaudeCommand()
-	if prepareErr != nil {
-		return nil, prepareErr
-	}
-	timeout := commandTimeout(command)
-	reporter.report(OperationStepRunCommand, "Native 官方安装模式：等待安装器响应/下载开始（最多 30 秒）...", progressRunStart+1)
-
-	evidenceRunner, ok := s.processRunner.(platform.EvidenceProcessRunner)
-	if !ok {
-		result, err := s.runInstallCommandResult(command)
-		if err != nil {
-			return result, fmt.Errorf("Native 官方安装模式 direct installer failed without streaming evidence support: %w", err)
-		}
-		return result, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	var evidenceOnce sync.Once
-	result, err := evidenceRunner.RunWithEvidence(ctx, platform.CommandSpec{
-		Path:   command.path,
-		Args:   append([]string(nil), command.args...),
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	}, nativeDirectEvidenceTimeout, func(platform.ProcessOutputEvent) {
-		evidenceOnce.Do(func() {
-			reporter.report(OperationStepRunCommand, "Native 官方安装模式：已检测到安装器响应，继续等待官方 direct installer 完成...", progressRunStart+2)
-		})
-	})
-
-	processResult := (*platform.ProcessResult)(nil)
-	if result != nil {
-		processResult = result.Result
-	}
-	if result != nil && result.EvidenceTimedOut {
-		detail := sanitizeInstallerOutput(resultText(processResult))
-		return processResult, nativeDirectEvidenceTimeoutError{timeout: nativeDirectEvidenceTimeout, detail: detail}
-	}
-	if err == nil {
-		return processResult, nil
-	}
-
-	message := commandFailureMessage(processResult, err, timeout, errors.Is(ctx.Err(), context.DeadlineExceeded))
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		message = fmt.Sprintf("command timed out after %s: %s", timeout, message)
-	}
-	if errors.Is(err, exec.ErrNotFound) {
-		message = fmt.Sprintf("command %q was not found in PATH. Install the required tool or fix PATH. Detail: %s", command.path, message)
-	}
-	return processResult, fmt.Errorf("Native 官方安装模式 direct installer failed (ran %s %s; timeout %s): %s", command.path, strings.Join(command.args, " "), timeout, message)
-}
-
-func (s *Service) nativeDirectClaudeCommand() (installCommand, error) {
-	if !nativeDirectInstallerSupported() {
-		return installCommand{}, fmt.Errorf("Native 官方安装模式 direct installer skipped: 当前平台 %s 不支持 Windows-only PowerShell direct installer", runtimeGOOS)
-	}
-
-	command := nativePowerShellClaudeCommand()
-	env := s.buildEnhancedEnv()
-	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	resolved, _, err := resolver.ResolveExecutable(command.path, nil, env)
-	if err != nil || strings.TrimSpace(resolved.Path) == "" {
-		detail := "PowerShell 不在 PATH 中"
-		if err != nil {
-			detail = sanitizeInstallerOutput(err.Error())
-		}
-		return installCommand{}, fmt.Errorf("Native 官方安装模式 direct installer skipped: %s，未执行 powershell.exe；将改用保底安装模式（npm + claude install）", detail)
-	}
-	command.path = resolved.Path
-	return command, nil
-}
-
-func (s *Service) nativeBootstrapFailureResult(directSummary string, fallbackErr error) *InstallResult {
-	fallbackSummary := installerDiagnosticSummary(fallbackErr)
+func (s *Service) nativeBootstrapFailureResult(installErr error) *InstallResult {
+	summary := installerDiagnosticSummary(installErr)
 	message := fmt.Sprintf(
-		"Claude Code Native 安装失败：Native 官方安装模式直接安装失败，保底安装模式（npm + claude install）也未完成。Direct: [%s]。Fallback: [%s]。建议：确认 Node.js/npm 可用后重试，或手动执行 npm install -g @anthropic-ai/claude-code 后运行 claude install。",
-		directSummary,
-		fallbackSummary,
+		"Claude Code Native 安装失败：npm + claude install 未完成。诊断：%s。建议：确认 Node.js/npm 可用后重试，或手动执行 npm install -g @anthropic-ai/claude-code 后运行 claude install。",
+		summary,
 	)
 	return installFailure(ToolClaudeCode, message, errors.New(message))
 }
@@ -723,8 +530,6 @@ func targetInstallMethodForClaude(method ClaudeInstallMethod) (InstallMethod, er
 		return InstallMethodNPM, nil
 	case ClaudeInstallNative:
 		return InstallMethodNative, nil
-	case ClaudeInstallWinget:
-		return InstallMethodWinget, nil
 	default:
 		return InstallMethodUnknown, fmt.Errorf("unsupported method: %s", method)
 	}
@@ -735,16 +540,7 @@ func claudeInstallMethodDisplayName(method ClaudeInstallMethod) string {
 	case ClaudeInstallNPM:
 		return "npm"
 	case ClaudeInstallNative:
-		switch runtimeGOOS {
-		case "windows":
-			return "Native PowerShell"
-		case "darwin", "linux":
-			return "Native install.sh"
-		default:
-			return "Native"
-		}
-	case ClaudeInstallWinget:
-		return "winget"
+		return "Native (npm + claude install)"
 	default:
 		return string(method)
 	}
@@ -756,39 +552,14 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		// If the user explicitly selected an install method, use only that method
 		// (no fallback chain).
 		if method != ClaudeInstallAuto {
-			// Pre-flight checks for specific methods
-			switch method {
-			case ClaudeInstallNative:
-				if runtimeGOOS == "windows" {
-					accessible, reason := s.verifyNativeInstallerAccessible()
-					if !accessible {
-						return nil, fmt.Errorf(
-							"Native 安装脚本不可达: %s。建议使用 winget 或 npm 安装方式",
-							reason,
-						)
-					}
-				}
-			case ClaudeInstallWinget:
-				if runtimeGOOS != "windows" {
-					return nil, fmt.Errorf("winget 安装方式仅支持 Windows；当前平台 %s 请使用 Native install.sh 或 npm 安装", runtimeGOOS)
-				}
-				if runtimeGOOS == "windows" {
-					if err := s.verifyWingetHealth(); err != nil {
-						return nil, err
-					}
-				}
-			}
-
 			cmd, err := claudeInstallCommandsForMethod(method, operation)
 			if err != nil {
 				return nil, err
 			}
-			if method == ClaudeInstallNPM {
-				if err := s.ensureNPMAvailable(); err != nil {
-					return nil, err
-				}
-				cmd = s.resolveCommandNPMPath(cmd)
+			if err := s.ensureNPMAvailable(); err != nil {
+				return nil, err
 			}
+			cmd = s.resolveCommandNPMPath(cmd)
 			return []installCommand{cmd}, nil
 		}
 		// claudeInstallCommands already returns a prioritized command sequence
@@ -799,19 +570,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			return nil, err
 		}
 		if err := s.ensureNPMAvailable(); err != nil {
-			// npm not available: filter out any npm commands from the sequence
-			// so only non-npm fallbacks remain (powershell, winget on Windows).
-			filtered := make([]installCommand, 0, len(baseCmds))
-			for _, cmd := range baseCmds {
-				if cmd.path == "npm" {
-					continue
-				}
-				filtered = append(filtered, cmd)
-			}
-			if len(filtered) == 0 {
-				return nil, err
-			}
-			return filtered, nil
+			return nil, err
 		}
 		// Resolve all bare "npm" paths to absolute paths.
 		for i := range baseCmds {
@@ -901,149 +660,36 @@ func (s *Service) resolveCommandNPMPath(cmd installCommand) installCommand {
 	return cmd
 }
 
-// claudeInstallCommandsForMethod returns a single install command based on
-// the user-specified method. Unlike claudeInstallCommands, it does NOT return
-// a fallback chain.
-// This is a pure function that does not have access to Service receivers.
-// Network accessibility checks for native method are handled at the call site
-// in installCommands.
+// claudeInstallCommandsForMethod returns the npm command for the user-specified
+// npm method. Native installs are intentionally handled by
+// installClaudeNativeViaNPMBootstrap because they require two ordered commands:
+// npm install followed by `claude install`.
 func claudeInstallCommandsForMethod(method ClaudeInstallMethod, operation installOperation) (installCommand, error) {
 	switch method {
 	case ClaudeInstallNPM:
 		return npmClaudeCommand(operation), nil
 	case ClaudeInstallNative:
-		if runtimeGOOS == "darwin" || runtimeGOOS == "linux" {
-			return nativeUnixClaudeCommand(), nil
-		}
-		if runtimeGOOS != "windows" {
-			return installCommand{}, fmt.Errorf("Claude Code Native install.sh 不支持当前平台: %s", runtimeGOOS)
-		}
-		return nativePowerShellClaudeCommand(), nil
-	case ClaudeInstallWinget:
-		if runtimeGOOS != "windows" {
-			return installCommand{}, fmt.Errorf("winget 安装方式仅支持 Windows；当前平台: %s", runtimeGOOS)
-		}
-		return wingetClaudeCommand(operation), nil
+		return installCommand{}, fmt.Errorf("Claude Code native installation uses ordered npm + claude install commands")
 	default:
 		return installCommand{}, fmt.Errorf("unsupported Claude Code install method: %s", method)
 	}
 }
 
 func (s *Service) claudeInstallCommands(operation installOperation, current *CheckStatus) ([]installCommand, error) {
-	// On non-Windows (macOS/Linux), Claude Code is installed exclusively via npm.
-	// Do not generate powershell.exe or winget commands.
-	if runtimeGOOS != "windows" {
-		return []installCommand{npmClaudeCommand(operation)}, nil
-	}
-
-	// Windows command construction with smart native accessibility check.
-
 	if operation == installOperationUpdate && current != nil {
 		switch current.InstallMethod {
-		case InstallMethodNPM:
-			// NPM-installed: strict same-channel update, no cross-channel fallback.
+		case InstallMethodNPM, InstallMethodNative:
 			return []installCommand{npmClaudeCommand(installOperationUpdate)}, nil
-		case InstallMethodWinget:
-			// Winget-installed: strict same-channel update, no cross-channel fallback.
-			return []installCommand{wingetClaudeCommand(installOperationUpdate)}, nil
-		case InstallMethodNative:
-			// Native-installed: strict same-channel update.
-			nativeAccessible, _ := s.verifyNativeInstallerAccessible()
-			if nativeAccessible {
-				return []installCommand{nativePowerShellClaudeCommand()}, nil
-			}
-			// Native blocked: return error so caller can inform user.
-			return nil, fmt.Errorf("Native 安装脚本被 Cloudflare 拦截，无法通过 Native 渠道更新。请使用 winget 或 npm 重新安装")
 		default:
-			// Unknown method: use a conservative, safe repair path instead of failing
-			// before doing any work. On macOS/Linux the only automatic channel is npm.
-			// On Windows, npm is also the safest non-destructive default; winget is kept
-			// as a secondary verifier-backed fallback. Native direct install is not used
-			// for unknown updates because it is a full installer, not a targeted update.
 			return unknownClaudeUpdateCommands(), nil
 		}
 	}
 
-	// Fresh install on Windows: smart priority based on network accessibility.
-	// 1. Check if native installer is accessible
-	// 2. If native blocked by Cloudflare -> winget first, then npm
-	// 3. If native accessible -> native first (official recommended), then winget, then npm
-	accessible, _ := s.verifyNativeInstallerAccessible()
-
-	if accessible {
-		// Native accessible: native first (official recommended), winget, npm
-		return []installCommand{
-			nativePowerShellClaudeCommand(),
-			wingetClaudeCommand(installOperationInstall),
-			npmClaudeCommand(installOperationInstall),
-		}, nil
-	}
-
-	// Native blocked: winget first (bypasses Cloudflare), then npm
-	return []installCommand{
-		wingetClaudeCommand(installOperationInstall),
-		npmClaudeCommand(installOperationInstall),
-	}, nil
+	return []installCommand{npmClaudeCommand(operation)}, nil
 }
 
 func unknownClaudeUpdateCommands() []installCommand {
-	commands := []installCommand{npmClaudeCommand(installOperationUpdate)}
-	if runtimeGOOS == "windows" {
-		commands = append(commands, wingetClaudeCommand(installOperationUpdate))
-	}
-	return commands
-}
-
-// ---------------------------------------------------------------------------
-// Native installer accessibility detection
-// ---------------------------------------------------------------------------
-
-// verifyNativeInstallerAccessible checks whether the official Claude Code
-// native installer URL is reachable and returns a valid PowerShell script
-// (rather than a Cloudflare challenge HTML page).
-// Returns (accessible bool, reason string).
-func (s *Service) verifyNativeInstallerAccessible() (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path: "powershell.exe",
-		Args: []string{
-			"-NoProfile", "-NonInteractive",
-			"-Command", "(irm https://claude.ai/install.ps1 2>$null) -join \"`n\"",
-		},
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if err != nil {
-		return false, fmt.Sprintf("无法访问 install.ps1: %v", err)
-	}
-
-	output := strings.TrimSpace(resultText(result))
-
-	// Cloudflare challenge HTML contains these patterns
-	blockedPatterns := []string{
-		"Just a moment",
-		"cdn-cgi/challenge-platform",
-		"Enable JavaScript",
-		"<html",
-		"<!DOCTYPE",
-	}
-	for _, pattern := range blockedPatterns {
-		if strings.Contains(output, pattern) {
-			return false, "当前网络环境被 Cloudflare 拦截，无法直接获取 Native 安装脚本"
-		}
-	}
-
-	// Valid response should contain PowerShell content markers
-	validMarkers := []string{"Write-Output", "function", "param("}
-	for _, marker := range validMarkers {
-		if strings.Contains(output, marker) {
-			return true, ""
-		}
-	}
-
-	// Unknown content -- treat as inaccessible
-	return false, "install.ps1 返回内容无法识别，可能是网络限制"
+	return []installCommand{npmClaudeCommand(installOperationUpdate)}
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,11 +725,13 @@ func resolveConflictAction(
 	if currentMethod == targetMethod {
 		return nil, nil // Same method, upgrading is fine
 	}
-	if currentMethod == InstallMethodUnknown {
-		return nil, nil // Can't determine method, don't risk auto-cleanup
+	if currentMethod == "" {
+		currentMethod = InstallMethodUnknown
 	}
 
-	// Different method installed -- clean it first
+	// Different or unknown method installed -- clean it first. Unknown cleanup is
+	// limited to safe npm/native residue handling and never invokes removed winget
+	// or direct installer paths.
 	cleanResult, cleanErr := cleaner(currentMethod)
 	if cleanErr != nil {
 		return &InstallResult{
@@ -1091,6 +739,13 @@ func resolveConflictAction(
 			Message: fmt.Sprintf("检测到已有 %s 安装的 Claude Code，自动清理失败: %v。请手动卸载后重试", currentMethod, cleanErr),
 			Tool:    ToolClaudeCode,
 		}, cleanErr
+	}
+	if cleanResult == nil {
+		return &InstallResult{
+			Success: true,
+			Message: fmt.Sprintf("已自动清理 %s 安装的 Claude Code，将继续使用 %s 安装", currentMethod, targetMethod),
+			Tool:    ToolClaudeCode,
+		}, nil
 	}
 	if !cleanResult.Success {
 		return &InstallResult{
@@ -1103,60 +758,9 @@ func resolveConflictAction(
 	// Cleanup successful, proceed
 	return &InstallResult{
 		Success: true,
-		Message: fmt.Sprintf("已自动卸载 %s 安装的 Claude Code，将继续使用 %s 安装", currentMethod, targetMethod),
+		Message: fmt.Sprintf("已自动清理 %s 安装的 Claude Code，将继续使用 %s 安装", currentMethod, targetMethod),
 		Tool:    ToolClaudeCode,
 	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Winget health check
-// ---------------------------------------------------------------------------
-
-// verifyWingetHealth checks winget availability and returns an error if
-// winget is not functional. This should be called before attempting a winget
-// install to provide a clear error message.
-func (s *Service) verifyWingetHealth() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   "winget",
-		Args:   []string{"--version"},
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if err != nil {
-		return fmt.Errorf("winget 不可用: %v。请确保已安装 App Installer (https://aka.ms/getwinget)", err)
-	}
-	return nil
-}
-
-// nativePowerShellClaudeCommand returns the PowerShell-based Claude installer.
-// This is a full install script, not a targeted updater -- prefer npm/winget
-// for update operations.
-func nativePowerShellClaudeCommand() installCommand {
-	return installCommand{
-		description: "Claude Code native PowerShell installer",
-		path:        "powershell.exe",
-		timeout:     nativeInstallCommandTimeout,
-		args: []string{
-			"-NoProfile",
-			"-NonInteractive",
-			"-ExecutionPolicy", "RemoteSigned",
-			"-Command", "irm https://claude.ai/install.ps1 | iex",
-		},
-	}
-}
-
-const claudeNativeUnixInstallScriptCommand = "curl -fsSL https://claude.ai/install.sh | bash"
-
-func nativeUnixClaudeCommand() installCommand {
-	return installCommand{
-		description: "Claude Code native install.sh installer",
-		path:        "/bin/sh",
-		timeout:     nativeInstallCommandTimeout,
-		args:        []string{"-c", claudeNativeUnixInstallScriptCommand},
-	}
 }
 
 func claudeNativeBootstrapCommand() installCommand {
@@ -1270,22 +874,6 @@ func claudeNPMGlobalExecutableCandidates(prefix string) []string {
 		}
 	}
 	return candidates
-}
-
-// wingetClaudeCommand returns the winget install or upgrade command for Claude Code.
-func wingetClaudeCommand(operation installOperation) installCommand {
-	if operation == installOperationUpdate {
-		return installCommand{
-			description: "winget upgrade Anthropic.ClaudeCode",
-			path:        "winget",
-			args:        []string{"upgrade", "Anthropic.ClaudeCode", "--accept-source-agreements", "--accept-package-agreements"},
-		}
-	}
-	return installCommand{
-		description: "winget install Anthropic.ClaudeCode",
-		path:        "winget",
-		args:        []string{"install", "Anthropic.ClaudeCode", "--accept-source-agreements", "--accept-package-agreements"},
-	}
 }
 
 func (s *Service) ensureNPMAvailable() error {
@@ -1651,14 +1239,12 @@ func (s *Service) cleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 		return s.cleanClaudeCodeNPM()
 	case InstallMethodNative:
 		return s.cleanClaudeCodeNative()
-	case InstallMethodWinget:
-		return s.cleanClaudeCodeWinget()
 	case InstallMethodUnknown, InstallMethod(""):
 		return s.cleanClaudeCodeUnknown()
 	default:
 		return &InstallResult{
 			Success: false,
-			Message: fmt.Sprintf("无法识别的 Claude Code 安装方式 %q，未执行删除。请重新检测后重试；如仍失败，请按检测到的可执行路径选择 npm/native/winget 中的对应卸载方式。", method),
+			Message: fmt.Sprintf("无法识别的 Claude Code 安装方式 %q，未执行删除。请重新检测后重试；如仍失败，请按检测到的可执行路径选择 npm/native 中的对应卸载方式。", method),
 			Tool:    ToolClaudeCode,
 		}, nil
 	}
@@ -1679,8 +1265,6 @@ func (s *Service) cleanClaudeCodeUnknown() (*InstallResult, error) {
 		return s.cleanClaudeCodeNPM()
 	case InstallMethodNative:
 		return s.cleanClaudeCodeNative()
-	case InstallMethodWinget:
-		return s.cleanClaudeCodeWinget()
 	}
 
 	path := strings.TrimSpace(status.ExecutablePath)
@@ -1716,17 +1300,7 @@ func (s *Service) inferClaudeInstallMethodForCleanup(status *CheckStatus) Instal
 }
 
 func (s *Service) cleanClaudeCodeNPM() (*InstallResult, error) {
-	// 1. npm uninstall -g @anthropic-ai/claude-code
-	npmPath := s.resolveNPMPath()
-	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
-	defer cancel()
-	_, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   npmPath,
-		Args:   []string{"uninstall", "-g", "@anthropic-ai/claude-code"},
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if runErr != nil {
+	if runErr := s.runClaudeNPMUninstall(); runErr != nil {
 		return &InstallResult{
 			Success: false,
 			Message: fmt.Sprintf("npm 卸载失败: %v", runErr),
@@ -1753,7 +1327,21 @@ func (s *Service) cleanClaudeCodeNPM() (*InstallResult, error) {
 	}, nil
 }
 
+func (s *Service) runClaudeNPMUninstall() error {
+	npmPath := s.resolveNPMPath()
+	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	defer cancel()
+	_, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   npmPath,
+		Args:   []string{"uninstall", "-g", "@anthropic-ai/claude-code"},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	return runErr
+}
+
 func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
+	npmErr := s.runClaudeNPMUninstall()
 	homeDir, _ := os.UserHomeDir()
 	patterns := []string{
 		filepath.Join(homeDir, ".local", "bin", "claude.exe"),
@@ -1771,18 +1359,21 @@ func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
 			}
 		}
 	}
-	if len(removed) == 0 && len(failed) == 0 {
+	if len(removed) == 0 && len(failed) == 0 && npmErr != nil {
 		return &InstallResult{
 			Success: false,
-			Message: "未找到 Native 安装的 Claude Code 文件",
+			Message: fmt.Sprintf("Native 清理失败：未找到 Native 安装文件，且 npm 包卸载失败: %v", npmErr),
 			Tool:    ToolClaudeCode,
 		}, nil
 	}
 	after, _ := s.CheckOne(ToolClaudeCode)
 	if after != nil && after.Installed {
-		detail := fmt.Sprintf("已删除 %d 个文件", len(removed))
+		detail := fmt.Sprintf("已执行 npm 卸载并删除 %d 个 Native 文件", len(removed))
 		if len(failed) > 0 {
 			detail += fmt.Sprintf("，%d 个文件删除失败", len(failed))
+		}
+		if npmErr != nil {
+			detail += fmt.Sprintf("，npm 卸载失败: %v", npmErr)
 		}
 		return &InstallResult{
 			Success: false,
@@ -1790,44 +1381,20 @@ func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
 			Tool:    ToolClaudeCode,
 		}, nil
 	}
-	msg := fmt.Sprintf("已清理 %d 个 Native 安装文件", len(removed))
+	if npmErr != nil {
+		return &InstallResult{
+			Success: false,
+			Message: fmt.Sprintf("已删除 %d 个 Native 文件，但 npm 包卸载失败: %v", len(removed), npmErr),
+			Tool:    ToolClaudeCode,
+		}, nil
+	}
+	msg := fmt.Sprintf("已卸载 npm 包并清理 %d 个 Native 安装文件", len(removed))
 	if len(failed) > 0 {
 		msg += fmt.Sprintf("（%d 个文件删除失败）", len(failed))
 	}
 	return &InstallResult{
 		Success: true,
 		Message: msg,
-		Tool:    ToolClaudeCode,
-	}, nil
-}
-
-func (s *Service) cleanClaudeCodeWinget() (*InstallResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
-	defer cancel()
-	_, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   "winget",
-		Args:   []string{"uninstall", "Anthropic.ClaudeCode"},
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if runErr != nil {
-		return &InstallResult{
-			Success: false,
-			Message: fmt.Sprintf("winget 卸载失败: %v", runErr),
-			Tool:    ToolClaudeCode,
-		}, nil
-	}
-	after, _ := s.CheckOne(ToolClaudeCode)
-	if after != nil && after.Installed {
-		return &InstallResult{
-			Success: false,
-			Message: "winget 卸载后 Claude Code 仍可被检测到",
-			Tool:    ToolClaudeCode,
-		}, nil
-	}
-	return &InstallResult{
-		Success: true,
-		Message: "Claude Code (winget) 已成功卸载",
 		Tool:    ToolClaudeCode,
 	}, nil
 }

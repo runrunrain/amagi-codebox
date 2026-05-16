@@ -167,12 +167,12 @@ func buildNativePath(t *testing.T) string {
 }
 
 // ---------------------------------------------------------------------------
-// detectClaudeInstallMethod - winget paths
+// detectClaudeInstallMethod - removed legacy package-manager paths
 // ---------------------------------------------------------------------------
 
-func TestDetectClaudeInstallMethod_Winget(t *testing.T) {
+func TestDetectClaudeInstallMethod_RemovedLegacyPackageManagerPathIsUnknown(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		t.Skip("skipping winget path detection on non-Windows")
+		t.Skip("skipping removed legacy path detection on non-Windows")
 	}
 
 	svc := newTestService()
@@ -182,41 +182,10 @@ func TestDetectClaudeInstallMethod_Winget(t *testing.T) {
 		t.Skip("LOCALAPPDATA not set")
 	}
 
-	wingetPath := filepath.Join(localAppData, "Programs", "Claude Code", "claude.exe")
-	got := svc.detectClaudeInstallMethod(wingetPath)
-	if got != InstallMethodWinget {
-		t.Errorf("detectClaudeInstallMethod(%q) = %q, want %q", wingetPath, got, InstallMethodWinget)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// isWingetPath
-// ---------------------------------------------------------------------------
-
-func TestIsWingetPath(t *testing.T) {
-	tests := []struct {
-		name   string
-		path   string
-		expect bool
-	}{
-		{"winget segment", `\winget\foo`, true},
-		{"microsoft winget", `\microsoft\winget\foo`, true},
-		{"windowsapps", `\windowsapps\foo`, true},
-		{"packages microsoft", `\packages\microsoft.desktopappinstaller_\foo`, true},
-		{"not winget", `\tools\`, false},
-		{"empty", ``, false},
-		{"winget without trailing", `\winget`, false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			// Normalize using the same logic the code uses
-			normalized := normalizeClaudePath(tc.path)
-			got := isWingetPath(normalized)
-			if got != tc.expect {
-				t.Errorf("isWingetPath(%q) = %v, want %v", normalized, got, tc.expect)
-			}
-		})
+	removedLegacyPath := filepath.Join(localAppData, "Programs", "Claude Code", "claude.exe")
+	got := svc.detectClaudeInstallMethod(removedLegacyPath)
+	if got != InstallMethodUnknown {
+		t.Errorf("detectClaudeInstallMethod(%q) = %q, want %q", removedLegacyPath, got, InstallMethodUnknown)
 	}
 }
 

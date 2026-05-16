@@ -251,7 +251,7 @@ func (a *App) RunEnvFixAction(action string, tool string, extraPath string) (*en
 }
 
 // InstallClaudeWithMethod installs Claude Code using the specified method.
-// method must be "npm", "native", or "winget". When empty, the existing fallback chain is used.
+// method must be "npm" or "native".
 func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, error) {
 	// Convert frontend method string to ClaudeInstallMethod
 	var m envcheck.ClaudeInstallMethod
@@ -260,10 +260,8 @@ func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, e
 		m = envcheck.ClaudeInstallNPM
 	case "native":
 		m = envcheck.ClaudeInstallNative
-	case "winget":
-		m = envcheck.ClaudeInstallWinget
 	default:
-		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native, winget)", method)
+		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native)", method)
 	}
 
 	return a.EnvCheck.InstallClaudeCodeWithMethod(m)
@@ -278,17 +276,15 @@ func (a *App) StartInstallClaudeWithMethodAsync(method string) (*envcheck.Operat
 		m = envcheck.ClaudeInstallNPM
 	case "native":
 		m = envcheck.ClaudeInstallNative
-	case "winget":
-		m = envcheck.ClaudeInstallWinget
 	default:
-		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native, winget)", method)
+		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native)", method)
 	}
 
 	return a.EnvCheck.StartInstallClaudeCodeWithMethod(m)
 }
 
 // CleanClaudeInstall removes an existing Claude Code installation.
-// method should be the current install method ("npm", "native", or "winget").
+// method should be the current install method ("npm" or "native").
 func (a *App) CleanClaudeInstall(method string) (*envcheck.InstallResult, error) {
 	var m envcheck.InstallMethod
 	switch method {
@@ -296,8 +292,6 @@ func (a *App) CleanClaudeInstall(method string) (*envcheck.InstallResult, error)
 		m = envcheck.InstallMethodNPM
 	case "native":
 		m = envcheck.InstallMethodNative
-	case "winget":
-		m = envcheck.InstallMethodWinget
 	default:
 		return nil, fmt.Errorf("不支持的安装方式: %s", method)
 	}
@@ -328,8 +322,6 @@ func (a *App) UninstallClaudeCode(method string) (*envcheck.InstallResult, error
 		m = envcheck.InstallMethodNPM
 	case envcheck.InstallMethodNative:
 		m = envcheck.InstallMethodNative
-	case envcheck.InstallMethodWinget:
-		m = envcheck.InstallMethodWinget
 	default:
 		return nil, fmt.Errorf("无法确定安装方式 (%s)，请手动指定", targetMethod)
 	}

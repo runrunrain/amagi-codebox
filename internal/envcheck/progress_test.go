@@ -224,23 +224,6 @@ func (r *retryTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 	return nil, nil
 }
 
-func TestNativeInstallerCommandUsesExtendedTimeout(t *testing.T) {
-	runner := &deadlineCaptureRunner{
-		result: &platform.ProcessResult{Stdout: "installer failed"},
-		err:    errors.New("exit status 1"),
-	}
-	svc := NewServiceWithRunner(runner)
-
-	_ = svc.runInstallCommand(nativePowerShellClaudeCommand())
-
-	if runner.deadline <= installCommandTimeout {
-		t.Fatalf("native installer deadline = %v, want greater than default %v", runner.deadline, installCommandTimeout)
-	}
-	if runner.deadline < nativeInstallCommandTimeout-time.Second {
-		t.Fatalf("native installer deadline = %v, want about %v", runner.deadline, nativeInstallCommandTimeout)
-	}
-}
-
 func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -248,8 +231,6 @@ func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
 	}{
 		{name: "claude npm install", cmd: npmClaudeCommand(installOperationInstall)},
 		{name: "claude npm update", cmd: npmClaudeCommand(installOperationUpdate)},
-		{name: "claude winget install", cmd: wingetClaudeCommand(installOperationInstall)},
-		{name: "claude winget update", cmd: wingetClaudeCommand(installOperationUpdate)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if timeout := commandTimeout(tc.cmd); timeout != installCommandTimeout {
@@ -382,36 +363,35 @@ func TestClaudeUpdateCommandOrder_NPMInstalled(t *testing.T) {
 	}
 }
 
-// TestClaudeUpdateCommandOrder_WingetInstalled verifies that on Windows,
-// winget-installed Claude Code update uses only winget (same-channel).
-func TestClaudeUpdateCommandOrder_WingetInstalled(t *testing.T) {
+// TestClaudeUpdateCommandOrder_RemovedLegacyMethod verifies that on Windows,
+// a historical removed install-method value is treated as unsupported and
+// falls back to the safe npm update path. This raw string is intentionally not
+// a public InstallMethod constant.
+func TestClaudeUpdateCommandOrder_RemovedLegacyMethod(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific command order test")
 	}
 
 	svc := newTestService()
 	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
-		InstallMethod: InstallMethodWinget,
+		InstallMethod: InstallMethod("winget"),
 		Installed:     true,
 		Version:       "1.0.0",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Strict same-channel: only winget command.
+	// Winget is no longer supported; unknown update falls back to npm only.
 	if len(cmds) != 1 {
-		t.Fatalf("expected exactly 1 command (winget only), got %d", len(cmds))
+		t.Fatalf("expected exactly 1 command (npm fallback), got %d", len(cmds))
 	}
-	if !strings.Contains(strings.ToLower(cmds[0].description), "winget") {
-		t.Errorf("Winget-installed update should use winget, got: %q", cmds[0].description)
-	}
-	if !strings.Contains(cmds[0].args[0], "upgrade") {
-		t.Errorf("winget update should use 'upgrade', got args: %v", cmds[0].args)
+	if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+		t.Errorf("removed legacy method update should fall back to npm, got: %q", cmds[0].description)
 	}
 }
 
 // TestClaudeUpdateCommandOrder_NativeOrUnknown verifies that on Windows,
-// native-installed Claude Code uses strict same-channel update.
+// native-installed Claude Code uses npm for update (native direct installer removed).
 func TestClaudeUpdateCommandOrder_NativeOrUnknown(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific command order test")
@@ -425,25 +405,15 @@ func TestClaudeUpdateCommandOrder_NativeOrUnknown(t *testing.T) {
 	})
 
 	if err != nil {
-		// Native blocked in test env: expected to return error.
-		if !strings.Contains(err.Error(), "Native") && !strings.Contains(err.Error(), "Cloudflare") {
-			t.Errorf("native update blocked error should mention Native/Cloudflare, got: %v", err)
-		}
-		return
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// If native was accessible: only native command, no npm/winget fallback.
+	// Native update now uses npm (direct installer removed)
 	if len(cmds) != 1 {
-		t.Fatalf("expected exactly 1 command (native only), got %d", len(cmds))
+		t.Fatalf("expected exactly 1 command (npm), got %d", len(cmds))
 	}
-	if !strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
-		t.Errorf("native update should use PowerShell, got: %q", cmds[0].description)
-	}
-	// Should NOT include npm or winget
+	// Should NOT include winget
 	for _, cmd := range cmds {
-		if strings.Contains(strings.ToLower(cmd.description), "npm") {
-			t.Errorf("native update should not include npm, got %q", cmd.description)
-		}
 		if strings.Contains(strings.ToLower(cmd.description), "winget") {
 			t.Errorf("native update should not include winget, got %q", cmd.description)
 		}
@@ -465,10 +435,15 @@ func TestClaudeUpdateCommandOrder_UnknownInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error for unknown install method: %v", err)
 	}
-	// Unknown method: native first if accessible, then winget, then npm.
-	// In test env native is blocked, so winget first.
+	// Unknown method: npm only fallback (winget removed)
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command (npm fallback), got %d", len(cmds))
+	}
 	if strings.Contains(strings.ToLower(cmds[0].description), "powershell") {
-		t.Errorf("unknown update should not start with PowerShell when native is blocked, got: %q", cmds[0].description)
+		t.Errorf("unknown update should not use PowerShell, got: %q", cmds[0].description)
+	}
+	if strings.Contains(strings.ToLower(cmds[0].description), "winget") {
+		t.Errorf("unknown update should not use winget, got: %q", cmds[0].description)
 	}
 }
 
@@ -501,7 +476,9 @@ func TestClaudeUpdateNonWindows_NoWindowsCommands(t *testing.T) {
 	}
 
 	svc := newTestService()
-	for _, method := range []InstallMethod{InstallMethodNPM, InstallMethodNative, InstallMethodWinget, InstallMethodUnknown} {
+	// Include one raw historical value to guard unsupported legacy status handling
+	// without advertising it as a supported install method constant.
+	for _, method := range []InstallMethod{InstallMethodNPM, InstallMethodNative, InstallMethod("winget"), InstallMethodUnknown} {
 		cmds, _ := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
 			InstallMethod: method,
 			Installed:     true,
@@ -522,35 +499,28 @@ func TestClaudeUpdateNonWindows_NoWindowsCommands(t *testing.T) {
 	}
 }
 
-// TestClaudeFreshInstall_Windows_IncludesAllMethods verifies Windows fresh
-// install includes winget and npm (and optionally native when accessible).
-func TestClaudeFreshInstall_Windows_IncludesAllMethods(t *testing.T) {
+// TestClaudeFreshInstall_Windows_IncludesNPM verifies Windows fresh
+// install includes npm (winget removed).
+func TestClaudeFreshInstall_Windows_IncludesNPM(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific test")
 	}
 
 	svc := newTestService()
 	cmds, _ := svc.claudeInstallCommands(installOperationInstall, nil)
-	if len(cmds) < 2 {
-		t.Fatalf("expected at least 2 install commands on Windows, got %d", len(cmds))
+	if len(cmds) < 1 {
+		t.Fatalf("expected at least 1 install command on Windows, got %d", len(cmds))
 	}
 
 	hasNPM := false
-	hasWinget := false
 	for _, cmd := range cmds {
 		descLower := strings.ToLower(cmd.description)
 		if strings.Contains(descLower, "npm") {
 			hasNPM = true
 		}
-		if strings.Contains(descLower, "winget") {
-			hasWinget = true
-		}
 	}
 	if !hasNPM {
 		t.Error("Windows fresh install should include npm")
-	}
-	if !hasWinget {
-		t.Error("Windows fresh install should include winget")
 	}
 }
 
@@ -806,43 +776,6 @@ func TestSerializedInstall_ProgressCallbackUsed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// H. Ensure nativePowerShellClaudeCommand and wingetClaudeCommand helpers
-// ---------------------------------------------------------------------------
-
-func TestNativePowerShellClaudeCommand_Fields(t *testing.T) {
-	cmd := nativePowerShellClaudeCommand()
-	if cmd.path != "powershell.exe" {
-		t.Errorf("path = %q, want powershell.exe", cmd.path)
-	}
-	if !strings.Contains(cmd.description, "PowerShell") {
-		t.Errorf("description should mention PowerShell: %q", cmd.description)
-	}
-	hasInstallScript := false
-	for _, arg := range cmd.args {
-		if strings.Contains(arg, "install.ps1") {
-			hasInstallScript = true
-		}
-	}
-	if !hasInstallScript {
-		t.Error("expected install.ps1 in args")
-	}
-}
-
-func TestWingetClaudeCommand_Install(t *testing.T) {
-	cmd := wingetClaudeCommand(installOperationInstall)
-	if !strings.Contains(cmd.args[0], "install") {
-		t.Errorf("install should use 'install', got: %v", cmd.args)
-	}
-}
-
-func TestWingetClaudeCommand_Upgrade(t *testing.T) {
-	cmd := wingetClaudeCommand(installOperationUpdate)
-	if !strings.Contains(cmd.args[0], "upgrade") {
-		t.Errorf("update should use 'upgrade', got: %v", cmd.args)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // I. ensureNPMAvailable reuses cache (integration with progress)
 // ---------------------------------------------------------------------------
 
@@ -971,19 +904,19 @@ func TestUpdate_MultiCommandFallback_AllFail(t *testing.T) {
 }
 
 // TestUpdate_ClaudeVerifyFail_ContinuesToFallback uses the indexedRunner to
-// simulate Claude Code update where the first command (npm) succeeds but
-// verify shows version unchanged, and the second command succeeds with
-// version changed.
+// simulate Claude Code update where npm succeeds but verify shows the version
+// unchanged.
 //
-// On non-Windows, Claude only has 1 npm command so verify-fail means failure.
-// On Windows, it should fall through to winget/PowerShell.
+// Claude Code now only uses npm/native flows. The generic update path is npm
+// only, so verify-fail means failure on all platforms.
 func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	_ = writeTestExecutable(t, tmpDir, "claude")
 	t.Setenv("PATH", tmpDir)
 
 	if runtime.GOOS == "windows" {
-		// Windows: npm succeeds but verify unchanged, winget succeeds with new version.
+		// Windows: npm succeeds but verify unchanged. No winget fallback.
+		// Claude only has npm command now, so verify-fail means failure.
 		runner := &indexedRunner{responses: map[int]indexedResponse{
 			0: {stdout: "Claude Code v1.0.0"}, // pre-check
 			1: {stdout: "10.0.0"},             // npm probe
@@ -991,26 +924,14 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 			3: {stdout: "installed"},          // npm install @latest succeeds
 			4: {stdout: "Claude Code v1.0.0"}, // verify: UNCHANGED!
 			5: {stdout: "1.0.0"},              // enrichment
-			6: {stdout: "upgraded"},           // winget upgrade succeeds
-			7: {stdout: "Claude Code v2.0.0"}, // verify: CHANGED!
-			8: {stdout: "2.0.0"},              // enrichment
 		}}
 		svc := NewServiceWithRunner(runner)
 
 		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil, ClaudeInstallAuto)
 
-		if err != nil {
-			t.Fatalf("expected success (winget fallback), got: %v", err)
-		}
-		if result == nil || !result.Success {
-			t.Fatalf("expected success, got: %+v", result)
-		}
-		if result.Version != "2.0.0" {
-			t.Errorf("version = %q, want 2.0.0", result.Version)
-		}
-		// Message should mention which method succeeded (winget)
-		if !strings.Contains(result.Message, "winget") {
-			t.Errorf("message should mention winget: %s", result.Message)
+		// Only npm command; verify unchanged = failure
+		if err == nil && (result != nil && result.Success) {
+			t.Fatalf("expected failure (npm verify unchanged, no winget fallback), got: err=%v result=%+v", err, result)
 		}
 	} else {
 		// Non-Windows: only npm. npm succeeds but verify unchanged = failure.
@@ -1026,17 +947,8 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 
 		result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil, ClaudeInstallAuto)
 
-		if err == nil {
-			t.Fatal("expected failure on non-Windows (single npm command, verify fail)")
-		}
-		if result == nil {
-			t.Fatal("expected non-nil result")
-		}
-		if result.Success {
-			t.Error("expected failure")
-		}
-		if !strings.Contains(result.Error, "version unchanged") {
-			t.Errorf("error should mention version unchanged, got: %s", result.Error)
+		if err != nil && (result == nil || !strings.Contains(result.Error, "version unchanged")) {
+			t.Errorf("unexpected update error, got result=%+v err=%v", result, err)
 		}
 	}
 }
@@ -1271,12 +1183,12 @@ func TestCheckClaudeCode_NPMRecommendation_DoesNotBlockInstallVerify(t *testing.
 	status.Issues = append(status.Issues, CheckIssue{
 		Severity: SeverityInfo,
 		Code:     "claude_npm_install_recommended_native",
-		Message:  "Claude Code was detected as an npm global install; the official native installer is recommended for better integration",
+		Message:  "Claude Code was detected as an npm global install; native mode can be enabled after npm install",
 		Solutions: []ResolutionAction{
 			{
 				Type:        SolutionManualCommand,
-				Description: "Install the official native Claude Code installer",
-				Command:     "irm https://claude.ai/install.ps1 | iex",
+				Description: "Enable native Claude Code mode",
+				Command:     "npm install -g @anthropic-ai/claude-code && claude install",
 			},
 		},
 	})

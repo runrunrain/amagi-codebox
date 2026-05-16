@@ -681,7 +681,9 @@ func TestInstall_ClaudeHealthyUnknown_ReinstallsInsteadOfNoop(t *testing.T) {
 		{stdout: "1.0.0", err: nil},              // latest version: healthy/current
 		{stdout: "added 1 package", err: nil},    // npm reinstall still runs
 		{stdout: "Claude Code v1.0.0", err: nil}, // verify
+		{stdout: "1.0.0", err: nil},              // verify enrichment
 		{stdout: "Claude Code v1.0.0", err: nil}, // post-success cache refresh
+		{stdout: "1.0.0", err: nil},              // refresh enrichment
 	}}
 	svc := NewServiceWithRunner(runner)
 

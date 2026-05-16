@@ -28,7 +28,6 @@ type InstallMethod string
 
 const (
 	InstallMethodNative  InstallMethod = "native"
-	InstallMethodWinget  InstallMethod = "winget"
 	InstallMethodNPM     InstallMethod = "npm"
 	InstallMethodUnknown InstallMethod = "unknown"
 )
@@ -37,10 +36,9 @@ const (
 type ClaudeInstallMethod string
 
 const (
-	ClaudeInstallAuto   ClaudeInstallMethod = ""       // auto (keep existing chain fallback)
+	ClaudeInstallAuto   ClaudeInstallMethod = ""       // internal default path for generic installs
 	ClaudeInstallNPM    ClaudeInstallMethod = "npm"    // npm global install
-	ClaudeInstallNative ClaudeInstallMethod = "native" // native platform installer (install.sh on macOS/Linux, PowerShell on Windows)
-	ClaudeInstallWinget ClaudeInstallMethod = "winget" // winget package manager install
+	ClaudeInstallNative ClaudeInstallMethod = "native" // npm global install followed by `claude install`
 )
 
 // PathState describes how the CLI executable was located relative to PATH.
@@ -147,11 +145,11 @@ type CheckStatus struct {
 	Solutions []ResolutionAction `json:"solutions"`
 
 	// CanInstall is true when the service believes installation is possible
-	// (e.g. npm is available for npm method, or winget is available on Windows).
+	// (e.g. npm is available for npm/native Claude Code methods).
 	CanInstall bool `json:"canInstall"`
 
 	// CanInstallByMethod reports whether each specific install method is available.
-	// Keys are "npm", "native", "winget". Values indicate whether that method can be used.
+	// Keys are "npm" and "native" for Claude Code. Values indicate whether that method can be used.
 	// Frontend should use this for per-method button enable/disable logic.
 	CanInstallByMethod map[string]bool `json:"canInstallByMethod"`
 
