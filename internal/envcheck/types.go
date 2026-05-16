@@ -39,7 +39,7 @@ type ClaudeInstallMethod string
 const (
 	ClaudeInstallAuto   ClaudeInstallMethod = ""       // auto (keep existing chain fallback)
 	ClaudeInstallNPM    ClaudeInstallMethod = "npm"    // npm global install
-	ClaudeInstallNative ClaudeInstallMethod = "native" // native PowerShell install
+	ClaudeInstallNative ClaudeInstallMethod = "native" // native platform installer (install.sh on macOS/Linux, PowerShell on Windows)
 	ClaudeInstallWinget ClaudeInstallMethod = "winget" // winget package manager install
 )
 

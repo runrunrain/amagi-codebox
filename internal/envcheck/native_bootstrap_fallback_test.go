@@ -66,6 +66,17 @@ func (r *nativeBootstrapTestRunner) Run(ctx context.Context, spec platform.Comma
 		return &platform.ProcessResult{Stdout: stdout}, r.directErr
 	}
 
+	if filepath.Clean(spec.Path) == filepath.Clean("/bin/sh") && len(args) == 2 && args[0] == "-c" && strings.Contains(args[1], "https://claude.ai/install.sh") {
+		if r.directErr == nil && r.createOnDirect {
+			_ = writeCommandFile(r.nativePath)
+		}
+		stdout := r.directStdout
+		if stdout == "" {
+			stdout = "Claude Code successfully installed\nLocation: " + r.nativePath
+		}
+		return &platform.ProcessResult{Stdout: stdout}, r.directErr
+	}
+
 	if isNPMPath(pathLower) && len(args) == 1 && args[0] == "--version" {
 		if r.npmProbeErr != nil {
 			return &platform.ProcessResult{Stderr: "npm token=probe-secret"}, r.npmProbeErr
@@ -283,8 +294,13 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 func forceNativeDirectInstallerSupportedForTest(t *testing.T) {
 	t.Helper()
 	previous := nativeDirectInstallerSupported
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "windows"
 	nativeDirectInstallerSupported = func() bool { return true }
-	t.Cleanup(func() { nativeDirectInstallerSupported = previous })
+	t.Cleanup(func() {
+		nativeDirectInstallerSupported = previous
+		runtimeGOOS = previousGOOS
+	})
 }
 
 func commandFileName(name string) string {
@@ -317,6 +333,58 @@ func argsContain(args []string, needle string) bool {
 func isNPMPath(pathLower string) bool {
 	base := strings.ToLower(filepath.Base(pathLower))
 	return strings.Contains(pathLower, "npm") || base == "npm" || base == "npm.cmd" || base == "npm.exe"
+}
+
+func TestClaudeNativeDarwinRunsOfficialInstallSHWithoutNPMBootstrap(t *testing.T) {
+	forceRuntimeGOOSForTest(t, "darwin")
+	tmpDir, err := os.MkdirTemp("", "acb-native-darwin-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
+	homeDir := filepath.Join(tmpDir, "home")
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	binDir := filepath.Join(tmpDir, "bin")
+	for _, dir := range []string{homeDir, nativeDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+
+	runner := &nativeBootstrapTestRunner{
+		nativePath:     filepath.Join(nativeDir, commandFileName("claude")),
+		createOnDirect: true,
+	}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.installClaudeNativeUnixOfficial(nil)
+	if err != nil {
+		t.Fatalf("expected official install.sh native install success, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful native install.sh result, got %+v", result)
+	}
+	if !runner.sawCall(func(spec platform.CommandSpec) bool {
+		return filepath.Clean(spec.Path) == filepath.Clean("/bin/sh") && len(spec.Args) == 2 && spec.Args[0] == "-c" && spec.Args[1] == claudeNativeUnixInstallScriptCommand
+	}) {
+		t.Fatalf("expected darwin native install to run official install.sh via /bin/sh; calls=%+v", runner.calls)
+	}
+	if runner.sawNPMInstall() || runner.sawClaudeInstall() {
+		t.Fatalf("darwin native install must not run npm bootstrap or claude install; calls=%+v", runner.calls)
+	}
+	if runner.sawCall(func(spec platform.CommandSpec) bool {
+		return strings.Contains(strings.ToLower(spec.Path), "powershell") ||
+			(strings.Contains(strings.ToLower(spec.Path), "claude.exe") && len(spec.Args) == 1 && spec.Args[0] == "install")
+	}) {
+		t.Fatalf("darwin native install must not run PowerShell or claude.exe install; calls=%+v", runner.calls)
+	}
 }
 
 func TestClaudeNativeDirectFailureRunsNPMBootstrapFallback(t *testing.T) {

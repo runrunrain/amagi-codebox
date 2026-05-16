@@ -190,7 +190,9 @@ func npmPackageName(tool CLITool) string {
 	}
 }
 
+var runtimeGOOS = runtime.GOOS
+
 // isWindows reports whether the current OS is Windows.
 func isWindows() bool {
-	return runtime.GOOS == "windows"
+	return runtimeGOOS == "windows"
 }

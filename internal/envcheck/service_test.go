@@ -67,6 +67,13 @@ func runnerSawArgs(runner *mockRunner, pathContains string, args ...string) bool
 	return false
 }
 
+func forceRuntimeGOOSForTest(t *testing.T, goos string) {
+	t.Helper()
+	previous := runtimeGOOS
+	runtimeGOOS = goos
+	t.Cleanup(func() { runtimeGOOS = previous })
+}
+
 // ---------------------------------------------------------------------------
 // 1. SupportedTools / IsValidCLITool
 // ---------------------------------------------------------------------------
@@ -1250,6 +1257,8 @@ func TestClaudeInstallCommandsForMethod_NPM_Update(t *testing.T) {
 }
 
 func TestClaudeInstallCommandsForMethod_Native(t *testing.T) {
+	forceRuntimeGOOSForTest(t, "windows")
+
 	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallNative, installOperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1260,6 +1269,32 @@ func TestClaudeInstallCommandsForMethod_Native(t *testing.T) {
 	// Should have PowerShell args
 	if len(cmd.args) == 0 {
 		t.Error("native install should have args")
+	}
+}
+
+func TestClaudeInstallMethodDisplayName_NativeIsPlatformSpecific(t *testing.T) {
+	tests := []struct {
+		goos string
+		want string
+	}{
+		{goos: "darwin", want: "Native install.sh"},
+		{goos: "linux", want: "Native install.sh"},
+		{goos: "windows", want: "Native PowerShell"},
+		{goos: "freebsd", want: "Native"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.goos, func(t *testing.T) {
+			forceRuntimeGOOSForTest(t, tc.goos)
+
+			got := claudeInstallMethodDisplayName(ClaudeInstallNative)
+			if got != tc.want {
+				t.Fatalf("claudeInstallMethodDisplayName(native) on %s = %q, want %q", tc.goos, got, tc.want)
+			}
+			if tc.goos != "windows" && strings.Contains(got, "PowerShell") {
+				t.Fatalf("non-Windows native display name must not mention PowerShell: %q", got)
+			}
+		})
 	}
 }
 
@@ -1284,6 +1319,8 @@ func TestClaudeInstallCommandsForMethod_AutoIsUnsupported(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaudeInstallCommandsForMethod_Winget(t *testing.T) {
+	forceRuntimeGOOSForTest(t, "windows")
+
 	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallWinget, installOperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1309,6 +1346,8 @@ func TestClaudeInstallCommandsForMethod_Winget(t *testing.T) {
 }
 
 func TestClaudeInstallCommandsForMethod_Winget_Update(t *testing.T) {
+	forceRuntimeGOOSForTest(t, "windows")
+
 	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallWinget, installOperationUpdate)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1509,6 +1548,78 @@ func TestInstallCommands_NativeMethod_Blocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Cloudflare") && !strings.Contains(err.Error(), "Native") {
 		t.Errorf("error should mention Cloudflare or Native, got: %v", err)
+	}
+}
+
+func TestInstallCommands_NativeMethod_DarwinUsesOfficialInstallSH(t *testing.T) {
+	forceRuntimeGOOSForTest(t, "darwin")
+	svc := newTestService()
+
+	cmds, err := svc.installCommands(ToolClaudeCode, installOperationInstall, nil, ClaudeInstallNative)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command, got %d", len(cmds))
+	}
+	cmd := cmds[0]
+	if cmd.path != "/bin/sh" {
+		t.Fatalf("darwin native path = %q, want /bin/sh", cmd.path)
+	}
+	if len(cmd.args) != 2 || cmd.args[0] != "-c" || cmd.args[1] != claudeNativeUnixInstallScriptCommand {
+		t.Fatalf("darwin native args = %v, want [-c %q]", cmd.args, claudeNativeUnixInstallScriptCommand)
+	}
+	if strings.Contains(strings.ToLower(cmd.path), "powershell") || strings.Contains(strings.Join(cmd.args, " "), "install.ps1") {
+		t.Fatalf("darwin native command must not use PowerShell: %+v", cmd)
+	}
+	if strings.Contains(strings.ToLower(cmd.path), "claude.exe") || strings.Join(cmd.args, " ") == "install" {
+		t.Fatalf("darwin native command must not use claude.exe install: %+v", cmd)
+	}
+}
+
+func TestInstallCommands_NPMInstallAndUpdateDoNotRunClaudeInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		operation installOperation
+		pkg       string
+	}{
+		{name: "install", operation: installOperationInstall, pkg: "@anthropic-ai/claude-code"},
+		{name: "update", operation: installOperationUpdate, pkg: "@anthropic-ai/claude-code@latest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := claudeInstallCommandsForMethod(ClaudeInstallNPM, tc.operation)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cmd.path != "npm" {
+				t.Fatalf("npm method path = %q, want npm", cmd.path)
+			}
+			wantArgs := []string{"install", "-g", tc.pkg}
+			if strings.Join(cmd.args, "\x00") != strings.Join(wantArgs, "\x00") {
+				t.Fatalf("npm method args = %v, want %v", cmd.args, wantArgs)
+			}
+			if strings.Contains(strings.ToLower(cmd.path), "claude") && len(cmd.args) == 1 && cmd.args[0] == "install" {
+				t.Fatalf("npm method must not execute claude install: %+v", cmd)
+			}
+		})
+	}
+}
+
+func TestClaudeInstallCommandsForMethod_WindowsNativeKeepsPowerShell(t *testing.T) {
+	forceRuntimeGOOSForTest(t, "windows")
+
+	cmd, err := claudeInstallCommandsForMethod(ClaudeInstallNative, installOperationInstall)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(cmd.path), "powershell") {
+		t.Fatalf("windows native path = %q, want PowerShell", cmd.path)
+	}
+	if !strings.Contains(strings.Join(cmd.args, " "), "install.ps1") {
+		t.Fatalf("windows native args should use install.ps1, got %v", cmd.args)
+	}
+	if strings.Contains(strings.Join(cmd.args, " "), "install.sh") {
+		t.Fatalf("windows native must not use install.sh, got %v", cmd.args)
 	}
 }
 

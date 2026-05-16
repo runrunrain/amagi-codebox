@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +44,7 @@ const (
 var nativeDirectEvidenceTimeout = nativeDirectEvidenceTimeoutDefault
 
 var nativeDirectInstallerSupported = func() bool {
-	return runtime.GOOS == "windows"
+	return runtimeGOOS == "windows"
 }
 
 var (
@@ -288,9 +287,66 @@ func (s *Service) installClaudeCodeWithMethodProgress(method ClaudeInstallMethod
 
 	reporter.report(OperationStepPrepare, fmt.Sprintf("正在准备 Claude Code %s 安装...", claudeInstallMethodDisplayName(method)), progressPrepare)
 	if method == ClaudeInstallNative {
+		if runtimeGOOS == "darwin" || runtimeGOOS == "linux" {
+			return s.installClaudeNativeUnixOfficial(reporter)
+		}
+		if runtimeGOOS != "windows" {
+			err := fmt.Errorf("Claude Code Native 官方安装暂不支持当前平台 %s；可改用 npm install -g @anthropic-ai/claude-code", runtimeGOOS)
+			return installFailure(ToolClaudeCode, err.Error(), err), err
+		}
 		return s.installClaudeNativeWithBootstrapFallback(reporter)
 	}
 	return s.installOrUpdateWithProgress(ToolClaudeCode, installOperationInstall, reporter, method)
+}
+
+func (s *Service) installClaudeNativeUnixOfficial(reporter progressReporter) (*InstallResult, error) {
+	reporter.report(OperationStepPrecheck, "正在检查 Claude Code 官方 Native install.sh 当前状态...", progressPrecheck)
+
+	before, checkErr := s.CheckOne(ToolClaudeCode)
+	if checkErr != nil && before == nil {
+		return installFailure(ToolClaudeCode, "Claude Code Native install.sh 安装前检查失败", checkErr), checkErr
+	}
+	if isHealthyAndCurrent(before) && before.InstallMethod == InstallMethodNative {
+		return &InstallResult{
+			Success: true,
+			Message: "Claude Code Native 已安装且为最新版本",
+			Tool:    ToolClaudeCode,
+			Version: before.Version,
+		}, nil
+	}
+
+	cmd := nativeUnixClaudeCommand()
+	reporter.report(OperationStepRunCommand, "Claude Code 官方 Native 安装：正在执行 curl install.sh", progressRunStart)
+	installOutput, installErr := s.runInstallCommandResult(cmd)
+	if installErr != nil {
+		summary := installerDiagnosticSummary(installErr)
+		message := fmt.Sprintf(
+			"Claude Code macOS/Linux Native 安装失败。已执行官方命令：%s。如网络访问失败，请配置 HTTPS_PROXY/HTTP_PROXY，或改用：npm install -g @anthropic-ai/claude-code；macOS 也可手动使用 Homebrew：brew install --cask claude-code。诊断：%s",
+			claudeNativeUnixInstallScriptCommand,
+			summary,
+		)
+		failureErr := errors.New(message)
+		return installFailure(ToolClaudeCode, message, failureErr), failureErr
+	}
+
+	reporter.report(OperationStepVerify, "Claude Code 官方 Native 安装：正在验证 install.sh 安装结果...", progressVerify)
+	after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(installOutput))
+	if verifyErr != nil {
+		message := fmt.Sprintf(
+			"Claude Code macOS/Linux Native 安装命令已完成，但验证失败。已执行官方命令：%s。可改用：npm install -g @anthropic-ai/claude-code；macOS 也可手动使用 Homebrew：brew install --cask claude-code。诊断：%s",
+			claudeNativeUnixInstallScriptCommand,
+			installerDiagnosticSummary(verifyErr),
+		)
+		failureErr := errors.New(message)
+		return installFailure(ToolClaudeCode, message, failureErr), failureErr
+	}
+
+	return &InstallResult{
+		Success: true,
+		Message: nativeInstallSuccessMessage("Claude Code 已通过官方 Native install.sh 安装成功", after),
+		Tool:    ToolClaudeCode,
+		Version: after.Version,
+	}, nil
 }
 
 func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressReporter) (*InstallResult, error) {
@@ -471,7 +527,7 @@ func (s *Service) runNativeDirectInstallerWithEvidence(reporter progressReporter
 
 func (s *Service) nativeDirectClaudeCommand() (installCommand, error) {
 	if !nativeDirectInstallerSupported() {
-		return installCommand{}, fmt.Errorf("Native 官方安装模式 direct installer skipped: 当前平台 %s 不支持 Windows-only PowerShell direct installer，将改用保底安装模式（npm + claude install）", runtime.GOOS)
+		return installCommand{}, fmt.Errorf("Native 官方安装模式 direct installer skipped: 当前平台 %s 不支持 Windows-only PowerShell direct installer", runtimeGOOS)
 	}
 
 	command := nativePowerShellClaudeCommand()
@@ -679,7 +735,14 @@ func claudeInstallMethodDisplayName(method ClaudeInstallMethod) string {
 	case ClaudeInstallNPM:
 		return "npm"
 	case ClaudeInstallNative:
-		return "Native PowerShell"
+		switch runtimeGOOS {
+		case "windows":
+			return "Native PowerShell"
+		case "darwin", "linux":
+			return "Native install.sh"
+		default:
+			return "Native"
+		}
 	case ClaudeInstallWinget:
 		return "winget"
 	default:
@@ -696,7 +759,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			// Pre-flight checks for specific methods
 			switch method {
 			case ClaudeInstallNative:
-				if runtime.GOOS == "windows" {
+				if runtimeGOOS == "windows" {
 					accessible, reason := s.verifyNativeInstallerAccessible()
 					if !accessible {
 						return nil, fmt.Errorf(
@@ -706,7 +769,10 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 					}
 				}
 			case ClaudeInstallWinget:
-				if runtime.GOOS == "windows" {
+				if runtimeGOOS != "windows" {
+					return nil, fmt.Errorf("winget 安装方式仅支持 Windows；当前平台 %s 请使用 Native install.sh 或 npm 安装", runtimeGOOS)
+				}
+				if runtimeGOOS == "windows" {
 					if err := s.verifyWingetHealth(); err != nil {
 						return nil, err
 					}
@@ -846,8 +912,17 @@ func claudeInstallCommandsForMethod(method ClaudeInstallMethod, operation instal
 	case ClaudeInstallNPM:
 		return npmClaudeCommand(operation), nil
 	case ClaudeInstallNative:
+		if runtimeGOOS == "darwin" || runtimeGOOS == "linux" {
+			return nativeUnixClaudeCommand(), nil
+		}
+		if runtimeGOOS != "windows" {
+			return installCommand{}, fmt.Errorf("Claude Code Native install.sh 不支持当前平台: %s", runtimeGOOS)
+		}
 		return nativePowerShellClaudeCommand(), nil
 	case ClaudeInstallWinget:
+		if runtimeGOOS != "windows" {
+			return installCommand{}, fmt.Errorf("winget 安装方式仅支持 Windows；当前平台: %s", runtimeGOOS)
+		}
 		return wingetClaudeCommand(operation), nil
 	default:
 		return installCommand{}, fmt.Errorf("unsupported Claude Code install method: %s", method)
@@ -857,7 +932,7 @@ func claudeInstallCommandsForMethod(method ClaudeInstallMethod, operation instal
 func (s *Service) claudeInstallCommands(operation installOperation, current *CheckStatus) ([]installCommand, error) {
 	// On non-Windows (macOS/Linux), Claude Code is installed exclusively via npm.
 	// Do not generate powershell.exe or winget commands.
-	if runtime.GOOS != "windows" {
+	if runtimeGOOS != "windows" {
 		return []installCommand{npmClaudeCommand(operation)}, nil
 	}
 
@@ -913,7 +988,7 @@ func (s *Service) claudeInstallCommands(operation installOperation, current *Che
 
 func unknownClaudeUpdateCommands() []installCommand {
 	commands := []installCommand{npmClaudeCommand(installOperationUpdate)}
-	if runtime.GOOS == "windows" {
+	if runtimeGOOS == "windows" {
 		commands = append(commands, wingetClaudeCommand(installOperationUpdate))
 	}
 	return commands
@@ -1070,6 +1145,17 @@ func nativePowerShellClaudeCommand() installCommand {
 			"-ExecutionPolicy", "RemoteSigned",
 			"-Command", "irm https://claude.ai/install.ps1 | iex",
 		},
+	}
+}
+
+const claudeNativeUnixInstallScriptCommand = "curl -fsSL https://claude.ai/install.sh | bash"
+
+func nativeUnixClaudeCommand() installCommand {
+	return installCommand{
+		description: "Claude Code native install.sh installer",
+		path:        "/bin/sh",
+		timeout:     nativeInstallCommandTimeout,
+		args:        []string{"-c", claudeNativeUnixInstallScriptCommand},
 	}
 }
 

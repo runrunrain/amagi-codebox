@@ -323,17 +323,25 @@
         <!-- Actions -->
         <div class="card-actions">
           <div v-if="card.meta.key === 'claude_code'" class="claude-install-row">
-            <el-select
-              v-model="claudeInstallMethod"
-              placeholder="选择安装方式"
-              size="small"
-              class="claude-install-select"
-              :disabled="card.isOperating || checkingAll || !!runningOperation || isClaudeBusy"
-            >
-              <el-option label="npm 全局安装" value="npm" />
-              <el-option label="WinGet 安装" value="winget" />
-              <el-option label="Native 安装 (PowerShell)" value="native" />
-            </el-select>
+            <div class="claude-install-control">
+              <el-select
+                v-model="claudeInstallMethod"
+                placeholder="选择安装方式"
+                size="small"
+                class="claude-install-select"
+                :disabled="card.isOperating || checkingAll || !!runningOperation || isClaudeBusy || claudeInstallMethodOptions.length === 0"
+              >
+                <el-option
+                  v-for="option in claudeInstallMethodOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <span v-if="showClaudeHomebrewFallbackHint(card)" class="claude-install-hint">
+                Homebrew 暂作为手动备用：brew install --cask claude-code
+              </span>
+            </div>
             <el-button
               v-if="card.status && card.status.installed"
               size="small"
@@ -411,6 +419,7 @@ import {
   RunEnvFixAction,
 } from '../../wailsjs/go/main/App'
 import type { envcheck } from '../../wailsjs/go/models'
+import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
 
 // ---------- Types ----------
 
@@ -439,6 +448,15 @@ interface OperationResult {
   type: 'success' | 'error' | 'warning' | 'info'
 }
 
+type ClaudeInstallMethod = 'npm' | 'winget' | 'native'
+
+interface ClaudeInstallMethodOption {
+  value: ClaudeInstallMethod
+  label: string
+}
+
+type HostPlatform = 'windows' | 'darwin' | 'linux' | 'unknown'
+
 // ---------- Constants ----------
 
 const TOOL_METAS: ToolMeta[] = [
@@ -459,6 +477,7 @@ const PATH_STATE_MAP: Record<string, { label: string; cls: string }> = {
 
 // ---------- State ----------
 
+const platformCaps = usePlatformCapabilities()
 const snapshot = ref<envcheck.EnvCheckSnapshot | null>(null)
 const checkingAll = ref(false)
 const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
@@ -467,7 +486,7 @@ const lastOperationResult = ref<OperationResult | null>(null)
 const fixLoading = ref(false)
 const fixLoadingKey = ref<string>('')
 const cardFixResults = ref<Record<string, { title: string; description?: string; type: 'success' | 'error' | 'warning' | 'info' }>>({})
-const claudeInstallMethod = ref<'npm' | 'winget' | 'native'>('winget')
+const claudeInstallMethod = ref<ClaudeInstallMethod | ''>('')
 const claudeInstalling = ref(false)
 const claudeUninstalling = ref(false)
 const configFixing = ref<Record<string, boolean>>({})
@@ -513,6 +532,31 @@ const formattedCheckedAt = computed(() => {
   } catch {
     return ''
   }
+})
+
+const hostPlatform = computed<HostPlatform>(() => {
+  const os = platformCaps.caps.value?.os
+  if (os === 'windows' || os === 'darwin' || os === 'linux') return os
+  return detectBrowserPlatform()
+})
+
+const claudeStatus = computed<envcheck.CheckStatus | null>(() => {
+  return snapshot.value?.status?.items?.claude_code || null
+})
+
+const claudeInstallMethodOptions = computed<ClaudeInstallMethodOption[]>(() => {
+  const methods = supportedClaudeInstallMethodsForPlatform(hostPlatform.value)
+  const byMethod = normalizedClaudeInstallCapabilities(claudeStatus.value)
+
+  return methods
+    .filter(method => {
+      if (!byMethod.hasData) return true
+      return byMethod.values[method] === true
+    })
+    .map(method => ({
+      value: method,
+      label: claudeInstallMethodLabel(method, hostPlatform.value),
+    }))
 })
 
 const heroBannerClass = computed(() => {
@@ -598,12 +642,109 @@ const cardList = computed((): CardView[] => {
 
 function formatInstallMethod(m: string): string {
   const map: Record<string, string> = {
-    native: 'Native 安装',
-    winget: 'winget 安装',
-    npm: 'npm 全局安装',
+    native: '官方 Native 安装',
+    winget: 'WinGet 安装',
+    npm: 'npm package 安装',
     unknown: '未知',
   }
   return map[m] || m
+}
+
+function detectBrowserPlatform(): HostPlatform {
+  const nav = window.navigator as Navigator & { userAgentData?: { platform?: string } }
+  const raw = `${nav.userAgentData?.platform || ''} ${nav.platform || ''} ${nav.userAgent || ''}`.toLowerCase()
+  if (raw.includes('win')) return 'windows'
+  if (raw.includes('mac') || raw.includes('darwin')) return 'darwin'
+  if (raw.includes('linux')) return 'linux'
+  return 'unknown'
+}
+
+function supportedClaudeInstallMethodsForPlatform(platform: HostPlatform): ClaudeInstallMethod[] {
+  if (platform === 'windows') return ['winget', 'native', 'npm']
+  if (platform === 'darwin' || platform === 'linux') return ['native', 'npm']
+  return ['npm']
+}
+
+function normalizedClaudeInstallCapabilities(status: envcheck.CheckStatus | null): {
+  hasData: boolean
+  values: Partial<Record<ClaudeInstallMethod, boolean>>
+} {
+  const raw = status?.canInstallByMethod as Record<string, boolean> | undefined
+  const values: Partial<Record<ClaudeInstallMethod, boolean>> = {}
+  if (!raw || Object.keys(raw).length === 0) {
+    return { hasData: false, values }
+  }
+
+  for (const method of ['native', 'npm', 'winget'] as ClaudeInstallMethod[]) {
+    if (Object.prototype.hasOwnProperty.call(raw, method)) {
+      values[method] = raw[method] === true
+    }
+  }
+  return { hasData: true, values }
+}
+
+function claudeInstallMethodLabel(method: ClaudeInstallMethod, platform: HostPlatform): string {
+  if (method === 'native') {
+    if (platform === 'windows') return '官方 Native 安装 (PowerShell)'
+    if (platform === 'darwin' || platform === 'linux') return '官方 Native 安装 (install.sh)'
+    return '官方 Native 安装'
+  }
+  if (method === 'winget') return 'WinGet 安装 (Windows)'
+  return 'npm package 安装'
+}
+
+function isSelectedClaudeInstallMethodAvailable(status: envcheck.CheckStatus | null): boolean {
+  const method = claudeInstallMethod.value
+  if (!method) return false
+  if (!supportedClaudeInstallMethodsForPlatform(hostPlatform.value).includes(method)) return false
+
+  const byMethod = normalizedClaudeInstallCapabilities(status)
+  if (byMethod.hasData) return byMethod.values[method] === true
+  return !!status?.canInstall
+}
+
+function preferredClaudeInstallMethod(options: ClaudeInstallMethodOption[]): ClaudeInstallMethod | '' {
+  const available = options.map(option => option.value)
+  if (available.length === 0) return ''
+
+  const platform = hostPlatform.value
+  const preference: ClaudeInstallMethod[] = platform === 'windows'
+    ? ['winget', 'native', 'npm']
+    : (platform === 'darwin' || platform === 'linux')
+        ? ['native', 'npm']
+        : ['npm']
+
+  return preference.find(method => available.includes(method)) || available[0]
+}
+
+function syncClaudeInstallMethod(): void {
+  const options = claudeInstallMethodOptions.value
+  if (claudeInstallMethod.value && options.some(option => option.value === claudeInstallMethod.value)) {
+    return
+  }
+  claudeInstallMethod.value = preferredClaudeInstallMethod(options)
+}
+
+function showClaudeHomebrewFallbackHint(card: CardView): boolean {
+  return card.meta.key === 'claude_code' && hostPlatform.value === 'darwin' && !card.isOperating
+}
+
+function claudeInstallConfirmMessage(method: ClaudeInstallMethod, displayName: string, reinstall: boolean): string {
+  if (method === 'native') {
+    if (hostPlatform.value === 'windows') {
+      return '选择官方 Native 安装将执行 Claude Code 官方 PowerShell installer (https://claude.ai/install.ps1)。\n请确认你了解此操作带来的安全风险。'
+    }
+    if (hostPlatform.value === 'darwin' || hostPlatform.value === 'linux') {
+      return '选择官方 Native 安装将执行 Claude Code 官方 install.sh installer。\n如网络访问失败，可配置 HTTPS_PROXY/HTTP_PROXY，或改用 npm package；macOS 也可手动备用执行 brew install --cask claude-code。'
+    }
+    return `确定要${reinstall ? '重新' : ''}通过官方 Native installer 安装 ${displayName} 吗？`
+  }
+
+  if (method === 'winget') {
+    return '将通过 WinGet 安装 Claude Code。安装前会自动检测并清理其他渠道的旧版本。'
+  }
+
+  return `确定要${reinstall ? '重新' : ''}通过 npm package 安装 ${displayName} 吗？`
 }
 
 function claudeConfig(status: envcheck.CheckStatus | null): any | null {
@@ -629,7 +770,7 @@ function appMethod<T extends (...args: any[]) => Promise<any>>(name: string): T 
   return method as T
 }
 
-async function startInstallClaudeWithMethodAsync(method: 'npm' | 'winget' | 'native'): Promise<any> {
+async function startInstallClaudeWithMethodAsync(method: ClaudeInstallMethod): Promise<any> {
   return appMethod<(method: string) => Promise<any>>('StartInstallClaudeWithMethodAsync')(method)
 }
 
@@ -649,20 +790,14 @@ async function fixClaudeConfig(key: string, value: string, filePath: string): Pr
  * Determines whether the install button should be enabled for a given card.
  * For non-Claude tools, falls back to the backend's canInstall.
  * For Claude Code, checks per-method availability based on the currently
- * selected install method. This prevents npm unavailability from blocking
- * winget/native installs on Windows.
+ * selected install method. Missing keys in backend capability data are treated
+ * as unavailable so macOS cannot fall back to an invalid winget/native action.
  */
 function canInstallClaude(card: CardView): boolean {
   if (card.meta.key !== 'claude_code') {
     return !!card.status?.canInstall
   }
-  // Claude Code: check per-method availability
-  const byMethod = card.status?.canInstallByMethod as Record<string, boolean> | undefined
-  if (byMethod && claudeInstallMethod.value in byMethod) {
-    return !!byMethod[claudeInstallMethod.value]
-  }
-  // Fallback: if no per-method data, use overall canInstall
-  return !!card.status?.canInstall
+  return isSelectedClaudeInstallMethodAvailable(card.status)
 }
 
 function pathStateLabel(status: envcheck.CheckStatus): string {
@@ -925,15 +1060,22 @@ async function runSingleCheck(key: string): Promise<void> {
 }
 
 async function startInstall(key: string, displayName: string): Promise<void> {
+  const selectedClaudeMethod = claudeInstallMethod.value
+  if (key === 'claude_code' && !selectedClaudeMethod) {
+    lastOperationResult.value = {
+      title: 'Claude Code 安装方式不可用',
+      description: '当前平台没有可自动执行的安装方式。macOS 可手动备用执行 brew install --cask claude-code。',
+      type: 'warning',
+    }
+    return
+  }
+
   try {
     const isClaude = key === 'claude_code'
-    const isNativeClaude = isClaude && claudeInstallMethod.value === 'native'
-    const isWingetClaude = isClaude && claudeInstallMethod.value === 'winget'
-    const message = isNativeClaude
-      ? '选择 Native 安装将执行远程 PowerShell 脚本 (https://claude.ai/install.ps1)。\n请确认你了解此操作带来的安全风险。'
-      : isWingetClaude
-        ? '将通过 winget 安装 Claude Code。安装前会自动检测并清理其他渠道的旧版本。'
-        : `确定要${snapshot.value?.status?.items?.[key]?.installed ? '重新' : ''}安装 ${displayName} 吗？`
+    const isNativeClaude = isClaude && selectedClaudeMethod === 'native'
+    const message = isClaude && selectedClaudeMethod
+      ? claudeInstallConfirmMessage(selectedClaudeMethod, displayName, !!snapshot.value?.status?.items?.[key]?.installed)
+      : `确定要${snapshot.value?.status?.items?.[key]?.installed ? '重新' : ''}安装 ${displayName} 吗？`
     await ElMessageBox.confirm(
       message,
       isNativeClaude ? '确认 Native 安装' : '确认操作',
@@ -946,7 +1088,7 @@ async function startInstall(key: string, displayName: string): Promise<void> {
   try {
     if (key === 'claude_code') {
       claudeInstalling.value = true
-      await startInstallClaudeWithMethodAsync(claudeInstallMethod.value)
+      await startInstallClaudeWithMethodAsync(selectedClaudeMethod as ClaudeInstallMethod)
       await fetchSnapshot()
       ensurePollingState()
       return
@@ -1073,6 +1215,12 @@ async function startUpdate(key: string, displayName: string, latestVersion: stri
 
 // ---------- Lifecycle ----------
 
+watch(
+  () => claudeInstallMethodOptions.value.map(option => option.value).join('|'),
+  () => syncClaudeInstallMethod(),
+  { immediate: true },
+)
+
 // Watch runningOperation to detect operation completion and update the result banner.
 watch(runningOperation, async (newVal, oldVal) => {
   if (oldVal && !newVal) {
@@ -1110,6 +1258,8 @@ watch(runningOperation, async (newVal, oldVal) => {
 
 onMounted(async () => {
   mounted.value = true
+  await platformCaps.ensure()
+  syncClaudeInstallMethod()
   await fetchSnapshot()
   ensurePollingState()
 })
@@ -1755,13 +1905,26 @@ onUnmounted(() => {
 .claude-install-row {
   width: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 2px;
 }
 
+.claude-install-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .claude-install-select {
   width: 178px;
+}
+
+.claude-install-hint {
+  max-width: 320px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .action-btn {

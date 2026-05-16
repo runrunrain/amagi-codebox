@@ -3,7 +3,6 @@ package envcheck
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,8 +170,8 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 		s.probeNPMAvailability()
 	})
 
-	// Compute per-method install availability for Claude Code on Windows.
-	if status.Tool == ToolClaudeCode && runtime.GOOS == "windows" {
+	// Compute per-method install availability for Claude Code.
+	if status.Tool == ToolClaudeCode && runtimeGOOS == "windows" {
 		status.CanInstallByMethod = map[string]bool{
 			"npm":    s.npmAvailable,
 			"winget": s.isWingetAvailable(),
@@ -180,6 +179,12 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 		}
 		// CanInstall is true if ANY method is available
 		status.CanInstall = s.npmAvailable || status.CanInstallByMethod["winget"] || status.CanInstallByMethod["native"]
+	} else if status.Tool == ToolClaudeCode && (runtimeGOOS == "darwin" || runtimeGOOS == "linux") {
+		status.CanInstallByMethod = map[string]bool{
+			"native": true,
+			"npm":    s.npmAvailable,
+		}
+		status.CanInstall = status.CanInstallByMethod["native"] || s.npmAvailable
 	} else {
 		status.CanInstallByMethod = map[string]bool{
 			"npm": s.npmAvailable,
@@ -333,7 +338,7 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 		if err == nil && version != "" {
 			return version, nil
 		}
-		if runtime.GOOS == "windows" {
+		if runtimeGOOS == "windows" {
 			if wingetVersion, wingetErr := s.wingetUpgradeVersion("Anthropic.ClaudeCode"); wingetErr == nil && wingetVersion != "" {
 				return wingetVersion, nil
 			}
