@@ -20,6 +20,8 @@ type nativeBootstrapTestRunner struct {
 	mu         sync.Mutex
 	calls      []platform.CommandSpec
 	nativePath string
+	npmPrefix  string
+	npmClaude  string
 
 	directErr               error
 	directStdout            string
@@ -71,10 +73,22 @@ func (r *nativeBootstrapTestRunner) Run(ctx context.Context, spec platform.Comma
 		return &platform.ProcessResult{Stdout: "10.0.0"}, nil
 	}
 
+	if isNPMPath(pathLower) && len(args) == 2 && args[0] == "prefix" && args[1] == "-g" {
+		if strings.TrimSpace(r.npmPrefix) == "" {
+			return &platform.ProcessResult{}, errors.New("npm prefix not configured")
+		}
+		return &platform.ProcessResult{Stdout: r.npmPrefix}, nil
+	}
+
 	if isNPMPath(pathLower) && len(args) >= 3 && args[0] == "install" && args[1] == "-g" && strings.Contains(args[2], "@anthropic-ai/claude-code") {
 		stdout := r.npmInstallOut
 		if stdout == "" {
 			stdout = "npm install claude"
+		}
+		if r.npmInstallErr == nil || installerOutputHasNPMInstallSuccessEvidence(stdout) {
+			if strings.TrimSpace(r.npmClaude) != "" {
+				_ = writeCommandFile(r.npmClaude)
+			}
 		}
 		return &platform.ProcessResult{Stdout: stdout}, r.npmInstallErr
 	}
@@ -106,6 +120,10 @@ func (r *nativeBootstrapTestRunner) Run(ctx context.Context, spec platform.Comma
 			stdout = "claude install native"
 		}
 		return &platform.ProcessResult{Stdout: stdout}, r.claudeInstallErr
+	}
+
+	if strings.Contains(pathLower, "claude") && len(args) == 1 && args[0] == "--version" {
+		return &platform.ProcessResult{Stdout: "Claude Code v2.1.110"}, nil
 	}
 
 	if strings.EqualFold(filepath.Clean(spec.Path), filepath.Clean(r.nativePath)) && len(args) == 1 && args[0] == "--version" {
@@ -204,6 +222,12 @@ func (r *nativeBootstrapTestRunner) sawClaudeInstall() bool {
 	})
 }
 
+func (r *nativeBootstrapTestRunner) sawBareClaudeInstall() bool {
+	return r.sawCall(func(spec platform.CommandSpec) bool {
+		return spec.Path == "claude" && len(spec.Args) == 1 && spec.Args[0] == "install"
+	})
+}
+
 func (r *nativeBootstrapTestRunner) sawCall(match func(platform.CommandSpec) bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -217,6 +241,7 @@ func (r *nativeBootstrapTestRunner) sawCall(match func(platform.CommandSpec) boo
 
 func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner) *Service {
 	t.Helper()
+	forceNativeDirectInstallerSupportedForTest(t)
 	tmpDir, err := os.MkdirTemp("", "acb-claude-native-")
 	if err != nil {
 		t.Fatal(err)
@@ -232,8 +257,16 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 	if err := os.MkdirAll(filepath.Join(tmpDir, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	npmPrefix := filepath.Join(tmpDir, "npm-global")
+	if err := os.MkdirAll(filepath.Join(npmPrefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeTestExecutable(t, filepath.Join(tmpDir, "bin"), "npm")
 	writeTestExecutable(t, filepath.Join(tmpDir, "bin"), "node")
+	writeTestExecutable(t, filepath.Join(tmpDir, "bin"), "claude")
+	if err := writeCommandFile(filepath.Join(tmpDir, "bin", "powershell.exe")); err != nil {
+		t.Fatal(err)
+	}
 
 	testHome := filepath.Join(tmpDir, "home")
 	t.Setenv("USERPROFILE", testHome)
@@ -242,7 +275,16 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 	t.Setenv("PATH", testPATH)
 	t.Setenv("Path", testPATH)
 	runner.nativePath = filepath.Join(nativeDir, commandFileName("claude"))
+	runner.npmPrefix = npmPrefix
+	runner.npmClaude = filepath.Join(npmPrefix, "bin", commandFileName("claude"))
 	return NewServiceWithRunner(runner)
+}
+
+func forceNativeDirectInstallerSupportedForTest(t *testing.T) {
+	t.Helper()
+	previous := nativeDirectInstallerSupported
+	nativeDirectInstallerSupported = func() bool { return true }
+	t.Cleanup(func() { nativeDirectInstallerSupported = previous })
 }
 
 func commandFileName(name string) string {
@@ -302,6 +344,65 @@ func TestClaudeNativeDirectFailureRunsNPMBootstrapFallback(t *testing.T) {
 		if !snapshotsContainMessage(snapshots, want) {
 			t.Fatalf("expected progress message containing %q; snapshots=%+v", want, snapshots)
 		}
+	}
+}
+
+func TestClaudeNativeMissingPowerShellSkipsDirectAndUsesNPMGlobalClaude(t *testing.T) {
+	forceNativeDirectInstallerSupportedForTest(t)
+	tmpDir, err := os.MkdirTemp("", "acb-claude-native-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
+	homeDir := filepath.Join(tmpDir, "home")
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	binDir := filepath.Join(tmpDir, "bin")
+	npmPrefix := filepath.Join(tmpDir, "npm-global")
+	for _, dir := range []string{nativeDir, binDir, filepath.Join(npmPrefix, "bin")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestExecutable(t, binDir, "npm")
+	writeTestExecutable(t, binDir, "node")
+	writeTestExecutable(t, binDir, "claude")
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+
+	runner := &nativeBootstrapTestRunner{
+		nativePath: filepath.Join(nativeDir, commandFileName("claude")),
+		npmPrefix:  npmPrefix,
+		npmClaude:  filepath.Join(npmPrefix, "bin", commandFileName("claude")),
+	}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err != nil {
+		t.Fatalf("expected npm bootstrap to recover when powershell is missing, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful fallback result, got %+v", result)
+	}
+	if runner.sawCall(func(spec platform.CommandSpec) bool {
+		return strings.Contains(strings.ToLower(spec.Path), "powershell")
+	}) {
+		t.Fatalf("missing powershell direct installer must be skipped before execution; calls=%+v", runner.calls)
+	}
+	if !runner.sawNPMInstall() {
+		t.Fatal("expected fallback to install npm Claude Code package before bootstrap")
+	}
+	if runner.sawBareClaudeInstall() {
+		t.Fatalf("bootstrap must not rely on stale PATH bare claude after npm install; calls=%+v", runner.calls)
+	}
+	if !runner.sawCall(func(spec platform.CommandSpec) bool {
+		return filepath.Clean(spec.Path) == filepath.Clean(runner.npmClaude) && len(spec.Args) == 1 && spec.Args[0] == "install"
+	}) {
+		t.Fatalf("expected claude install to use npm global prefix CLI %q; calls=%+v", runner.npmClaude, runner.calls)
 	}
 }
 
@@ -486,6 +587,7 @@ func TestClaudeCheckOneFindsNativeDefaultWhenSystemPATHMissing(t *testing.T) {
 }
 
 func TestClaudeNativeDirectSuccessUsesDefaultLocationWhenPATHNotRefreshed(t *testing.T) {
+	forceNativeDirectInstallerSupportedForTest(t)
 	tmpDir := t.TempDir()
 	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
 		tmpDir = realTmpDir
@@ -494,6 +596,10 @@ func TestClaudeNativeDirectSuccessUsesDefaultLocationWhenPATHNotRefreshed(t *tes
 	nativeDir := filepath.Join(homeDir, ".local", "bin")
 	binDir := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestExecutable(t, binDir, "claude")
+	if err := writeCommandFile(filepath.Join(binDir, "powershell.exe")); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("USERPROFILE", homeDir)

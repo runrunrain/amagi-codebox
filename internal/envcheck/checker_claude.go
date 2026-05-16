@@ -29,22 +29,20 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	}
 
 	rr := resolveExecutable(claudeCommandName)
+	if nativePath := firstExistingClaudeNativeDefaultPath(); nativePath != "" && !rr.systemPATHOk {
+		rr = resolveResult{
+			executablePath: nativePath,
+			systemPATHOk:   false,
+			pathState:      PathStateOutsidePATH,
+			pathSource:     "native-default-location",
+		}
+	}
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
-		if nativePath := firstExistingClaudeNativeDefaultPath(); nativePath != "" {
-			rr = resolveResult{
-				executablePath: nativePath,
-				systemPATHOk:   false,
-				pathState:      PathStateOutsidePATH,
-				pathSource:     "native-default-location",
-			}
-			applyPathStateToStatus(status, rr, ToolClaudeCode)
-		} else {
-			status.Error = "未在 PATH 中找到 Claude Code 可执行文件"
-			addMissingToolIssue(status, ToolClaudeCode)
-			return status, nil
-		}
+		status.Error = "未在 PATH 中找到 Claude Code 可执行文件"
+		addMissingToolIssue(status, ToolClaudeCode)
+		return status, nil
 	}
 
 	realPath := resolveRealExecutablePath(rr.executablePath)

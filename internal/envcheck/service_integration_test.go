@@ -468,7 +468,7 @@ func TestUpdate_RepairsBrokenInstallation(t *testing.T) {
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "", err: errors.New("segfault on version check")}, // pre-check broken
 		{stdout: "10.0.0", err: nil},                               // npm available
-		{stdout: "updated 1 package", err: nil},                    // update command
+		{stdout: "changed 1 package", err: nil},                    // npm install -g opencode-ai@latest update command
 		{stdout: "opencode v3.0.0", err: nil},                      // verify version
 		{stdout: "3.0.0", err: nil},                                // latest version
 	}}
@@ -704,11 +704,11 @@ func TestUpdate_VersionUnchanged_ReturnsFailure(t *testing.T) {
 	t.Setenv("PATH", tmpDir)
 
 	runner := &sequentialRunner{responses: []seqResponse{
-		{stdout: "opencode v1.0.0", err: nil}, // pre-check version
-		{stdout: "2.0.0", err: nil},           // latest version (enrichment)
-		{stdout: "10.0.0", err: nil},          // npm available
-		{stdout: "updated", err: nil},         // install command succeeds
-		{stdout: "opencode v1.0.0", err: nil}, // post-check: SAME version!
+		{stdout: "opencode v1.0.0", err: nil},   // pre-check version
+		{stdout: "2.0.0", err: nil},             // latest version (enrichment)
+		{stdout: "10.0.0", err: nil},            // npm available
+		{stdout: "changed 1 package", err: nil}, // npm install -g opencode-ai@latest succeeds
+		{stdout: "opencode v1.0.0", err: nil},   // post-check: SAME version!
 		// post-enrichment hits version cache (no runner call)
 	}}
 	svc := NewServiceWithRunner(runner)
@@ -727,6 +727,12 @@ func TestUpdate_VersionUnchanged_ReturnsFailure(t *testing.T) {
 	if !strings.Contains(result.Error, "version unchanged") && !strings.Contains(result.Error, "version was unchanged") {
 		t.Errorf("error should mention version unchanged, got: %s", result.Error)
 	}
+	if strings.Contains(result.Message, "npm global update opencode-ai") || strings.Contains(result.Error, "npm global update opencode-ai") {
+		t.Fatalf("OpenCode update must not use npm update no-op path, got message=%q error=%q", result.Message, result.Error)
+	}
+	if !strings.Contains(result.Message, "npm global install opencode-ai@latest") {
+		t.Fatalf("unchanged-version diagnostic should name the forced latest command, got: %s", result.Message)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -744,9 +750,9 @@ func TestUpdate_Success_InvalidatesVersionCache(t *testing.T) {
 	runner := &sequentialRunner{responses: []seqResponse{
 		{stdout: "opencode v1.0.0", err: nil}, // pre-check version
 		// enrichment uses pre-seeded cache hit (9.9.9) -- no runner call
-		{stdout: "10.0.0", err: nil},          // npm available
-		{stdout: "updated", err: nil},         // install command
-		{stdout: "opencode v2.0.0", err: nil}, // post-check: version changed!
+		{stdout: "10.0.0", err: nil},            // npm available
+		{stdout: "changed 1 package", err: nil}, // npm install -g opencode-ai@latest command
+		{stdout: "opencode v2.0.0", err: nil},   // post-check: version changed!
 		// post-enrichment uses cache hit (9.9.9) -- no runner call
 		// serializedInstallOrUpdate invalidates cache and calls CheckOne:
 		{stdout: "opencode v2.0.0", err: nil}, // re-check version

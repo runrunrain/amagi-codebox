@@ -1150,6 +1150,31 @@ func TestClaudeInstallCommand_UsesInstall(t *testing.T) {
 	}
 }
 
+// TestOpenCodeUpdateCommand_UsesInstallLatest verifies that OpenCode updates
+// force the canonical npm package to latest instead of relying on npm update,
+// which can report success while leaving the installed global package unchanged.
+func TestOpenCodeUpdateCommand_UsesInstallLatest(t *testing.T) {
+	cmd := npmOpenCodeCommand(installOperationUpdate)
+	if cmd.args[0] != "install" {
+		t.Errorf("OpenCode update command should use 'install', got args: %v", cmd.args)
+	}
+	foundLatest := false
+	for _, arg := range cmd.args {
+		if arg == "opencode-ai@latest" {
+			foundLatest = true
+		}
+		if arg == "opencode-ai" {
+			t.Errorf("OpenCode update command should not use unqualified package, got args: %v", cmd.args)
+		}
+	}
+	if !foundLatest {
+		t.Errorf("OpenCode update command should include opencode-ai@latest, got args: %v", cmd.args)
+	}
+	if strings.Contains(cmd.description, "npm global update opencode-ai") {
+		t.Errorf("OpenCode update description should not advertise npm update no-op path: %q", cmd.description)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // L. Claude NPM install recommendation is non-blocking
 // ---------------------------------------------------------------------------

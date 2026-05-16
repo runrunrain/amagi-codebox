@@ -1152,7 +1152,7 @@ func TestInstallCommands_ClaudeUpdate_NonNPM_NoCrossChannelFallback(t *testing.T
 	}
 }
 
-func TestInstallCommands_OpenCode_UsesUpdateForUpdateOp(t *testing.T) {
+func TestInstallCommands_OpenCode_UsesInstallLatestForUpdateOp(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
@@ -1163,8 +1163,20 @@ func TestInstallCommands_OpenCode_UsesUpdateForUpdateOp(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Fatalf("expected 1 command, got %d", len(cmds))
 	}
-	if cmds[0].args[0] != "update" {
-		t.Errorf("update operation should use 'npm update', got args: %v", cmds[0].args)
+	if cmds[0].args[0] != "install" {
+		t.Errorf("update operation should use 'npm install', got args: %v", cmds[0].args)
+	}
+	foundLatest := false
+	for _, arg := range cmds[0].args {
+		if arg == "opencode-ai@latest" {
+			foundLatest = true
+		}
+		if arg == "opencode-ai" {
+			t.Errorf("update operation should pin opencode-ai@latest, got unqualified package in args: %v", cmds[0].args)
+		}
+	}
+	if !foundLatest {
+		t.Errorf("update operation should force latest OpenCode package, got args: %v", cmds[0].args)
 	}
 }
 

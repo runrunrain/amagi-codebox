@@ -44,6 +44,10 @@ const (
 
 var nativeDirectEvidenceTimeout = nativeDirectEvidenceTimeoutDefault
 
+var nativeDirectInstallerSupported = func() bool {
+	return runtime.GOOS == "windows"
+}
+
 var (
 	installRecheckAttempts = installRecheckAttemptsDefault
 	installRecheckDelay    = installRecheckDelayDefault
@@ -358,7 +362,11 @@ func (s *Service) installClaudeNativeWithBootstrapFallback(reporter progressRepo
 	}
 
 	reporter.report(OperationStepRunCommand, "保底安装模式（npm + claude install）：正在执行 claude install 安装 Native 官方二进制...", progressNativeFallbackClaudeInstall)
-	bootstrapCmd := claudeNativeBootstrapCommand()
+	bootstrapCmd, bootstrapResolveErr := s.claudeNativeBootstrapCommandAfterNPMInstall()
+	if bootstrapResolveErr != nil {
+		fallbackErr := fmt.Errorf("npm 版本 Claude Code 安装成功但无法定位 claude install 引导命令: %w", bootstrapResolveErr)
+		return s.nativeBootstrapFailureResult(directSummary, fallbackErr), fallbackErr
+	}
 	bootstrapResult, bootstrapErr := s.runInstallCommandResult(bootstrapCmd)
 	if bootstrapErr != nil {
 		reporter.report(OperationStepVerify, "保底安装模式（npm + claude install）：claude install 返回非零状态，正在根据成功输出验证 Native 二进制...", progressNativeFallbackVerify)
@@ -408,7 +416,10 @@ func isNativeDirectEvidenceTimeout(err error) bool {
 }
 
 func (s *Service) runNativeDirectInstallerWithEvidence(reporter progressReporter) (*platform.ProcessResult, error) {
-	command := nativePowerShellClaudeCommand()
+	command, prepareErr := s.nativeDirectClaudeCommand()
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
 	timeout := commandTimeout(command)
 	reporter.report(OperationStepRunCommand, "Native 官方安装模式：等待安装器响应/下载开始（最多 30 秒）...", progressRunStart+1)
 
@@ -456,6 +467,26 @@ func (s *Service) runNativeDirectInstallerWithEvidence(reporter progressReporter
 		message = fmt.Sprintf("command %q was not found in PATH. Install the required tool or fix PATH. Detail: %s", command.path, message)
 	}
 	return processResult, fmt.Errorf("Native 官方安装模式 direct installer failed (ran %s %s; timeout %s): %s", command.path, strings.Join(command.args, " "), timeout, message)
+}
+
+func (s *Service) nativeDirectClaudeCommand() (installCommand, error) {
+	if !nativeDirectInstallerSupported() {
+		return installCommand{}, fmt.Errorf("Native 官方安装模式 direct installer skipped: 当前平台 %s 不支持 Windows-only PowerShell direct installer，将改用保底安装模式（npm + claude install）", runtime.GOOS)
+	}
+
+	command := nativePowerShellClaudeCommand()
+	env := s.buildEnhancedEnv()
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	resolved, _, err := resolver.ResolveExecutable(command.path, nil, env)
+	if err != nil || strings.TrimSpace(resolved.Path) == "" {
+		detail := "PowerShell 不在 PATH 中"
+		if err != nil {
+			detail = sanitizeInstallerOutput(err.Error())
+		}
+		return installCommand{}, fmt.Errorf("Native 官方安装模式 direct installer skipped: %s，未执行 powershell.exe；将改用保底安装模式（npm + claude install）", detail)
+	}
+	command.path = resolved.Path
+	return command, nil
 }
 
 func (s *Service) nativeBootstrapFailureResult(directSummary string, fallbackErr error) *InstallResult {
@@ -757,12 +788,16 @@ func npmClaudeCommand(operation installOperation) installCommand {
 }
 
 // npmOpenCodeCommand returns the npm install or update command for OpenCode.
+// For updates, use "install -g opencode-ai@latest" instead of
+// "update -g opencode-ai". npm update can be a no-op for global packages when
+// the installed package still satisfies npm's recorded range, which leaves the
+// opencode shim at the old version and causes post-update verification to fail.
 func npmOpenCodeCommand(operation installOperation) installCommand {
 	if operation == installOperationUpdate {
 		return installCommand{
-			description: "npm global update opencode-ai",
+			description: "npm global install opencode-ai@latest",
 			path:        "npm",
-			args:        []string{"update", "-g", "opencode-ai"},
+			args:        []string{"install", "-g", "opencode-ai@latest"},
 		}
 	}
 	return installCommand{
@@ -1035,6 +1070,110 @@ func claudeNativeBootstrapCommand() installCommand {
 		args:        []string{"install"},
 		timeout:     claudeNativeBootstrapCommandTimeout,
 	}
+}
+
+func (s *Service) claudeNativeBootstrapCommandAfterNPMInstall() (installCommand, error) {
+	cmd := claudeNativeBootstrapCommand()
+	resolvedPath, source, err := s.resolveClaudeNPMBootstrapPath()
+	if err != nil {
+		return installCommand{}, err
+	}
+	cmd.path = resolvedPath
+	cmd.description = fmt.Sprintf("claude install native bootstrap via %s", source)
+	return cmd, nil
+}
+
+func (s *Service) resolveClaudeNPMBootstrapPath() (string, string, error) {
+	if path, source := s.resolveClaudeFromNPMGlobalPrefix(); path != "" {
+		return path, source, nil
+	}
+
+	env := s.buildEnhancedEnv()
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	resolved, diagnostics, err := resolver.ResolveExecutable(claudeCommandName, nil, env)
+	if err == nil && strings.TrimSpace(resolved.Path) != "" {
+		realPath := resolveRealExecutablePath(resolved.Path)
+		if s.detectClaudeInstallMethod(realPath) == InstallMethodNative {
+			return "", "", fmt.Errorf("npm 全局包已安装，但解析到的 claude 为 Native 路径 %s，未找到 npm shim；请确认 npm global bin 已创建并重试", realPath)
+		}
+		source := diagnostics.CLISource
+		if strings.TrimSpace(source) == "" {
+			source = "resolver"
+		}
+		return realPath, source, nil
+	}
+
+	detail := ""
+	if err != nil {
+		detail = ": " + sanitizeInstallerOutput(err.Error())
+	}
+	return "", "", fmt.Errorf("npm 全局包已安装，但当前 PATH 未刷新且 npm global prefix/bin 下未找到 claude 可执行文件%s", detail)
+}
+
+func (s *Service) resolveClaudeFromNPMGlobalPrefix() (string, string) {
+	prefix, err := s.npmGlobalPrefix()
+	if err != nil || strings.TrimSpace(prefix) == "" {
+		return "", ""
+	}
+	for _, candidate := range claudeNPMGlobalExecutableCandidates(prefix) {
+		if fileExists(candidate) {
+			return resolveRealExecutablePath(candidate), "npm global prefix"
+		}
+	}
+	return "", ""
+}
+
+func (s *Service) npmGlobalPrefix() (string, error) {
+	npmPath := s.resolveNPMPath()
+	ctx, cancel := context.WithTimeout(context.Background(), claudeNPMCheckTimeout)
+	defer cancel()
+
+	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   npmPath,
+		Args:   []string{"prefix", "-g"},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if err != nil {
+		message := strings.TrimSpace(resultText(result))
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("npm prefix -g: %s", sanitizeInstallerOutput(message))
+	}
+	prefix := firstNonEmptyLine(resultText(result))
+	if strings.TrimSpace(prefix) == "" {
+		return "", errors.New("npm prefix -g returned empty prefix")
+	}
+	return filepath.Clean(strings.TrimSpace(prefix)), nil
+}
+
+func claudeNPMGlobalExecutableCandidates(prefix string) []string {
+	prefix = filepath.Clean(strings.TrimSpace(prefix))
+	if prefix == "" || prefix == "." {
+		return nil
+	}
+
+	dirs := []string{filepath.Join(prefix, "bin"), prefix, filepath.Join(prefix, "node_modules", ".bin")}
+	names := []string{"claude"}
+	if isWindows() {
+		names = []string{"claude.cmd", "claude.exe", "claude"}
+	}
+
+	candidates := make([]string, 0, len(dirs)*len(names))
+	seen := map[string]struct{}{}
+	for _, dir := range dirs {
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			key := normalizeClaudePath(candidate)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
 }
 
 // wingetClaudeCommand returns the winget install or upgrade command for Claude Code.
