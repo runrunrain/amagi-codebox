@@ -3,7 +3,10 @@ package envcheck
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -655,6 +658,47 @@ func TestInstall_PrecheckReturnsStatusWithError_ProceedsToInstall(t *testing.T) 
 	runner.mu.Unlock()
 	if callCount < 3 {
 		t.Errorf("expected at least 3 runner calls (precheck + npm-check + install), got %d", callCount)
+	}
+}
+
+func TestInstall_ClaudeHealthyUnknown_ReinstallsInsteadOfNoop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS/Linux unknown reinstall default is npm")
+	}
+	tmpDir := t.TempDir()
+	customDir := filepath.Join(tmpDir, "custom-bin")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = writeTestExecutable(t, customDir, "claude")
+	_ = writeTestExecutable(t, customDir, "npm")
+	_ = writeTestExecutable(t, customDir, "node")
+	t.Setenv("PATH", customDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "Claude Code v1.0.0", err: nil}, // pre-check unknown custom path
+		{stdout: "10.0.0", err: nil},             // npm probe
+		{stdout: "1.0.0", err: nil},              // latest version: healthy/current
+		{stdout: "added 1 package", err: nil},    // npm reinstall still runs
+		{stdout: "Claude Code v1.0.0", err: nil}, // verify
+		{stdout: "Claude Code v1.0.0", err: nil}, // post-success cache refresh
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.Install(ToolClaudeCode)
+	if err != nil {
+		t.Fatalf("Install returned error for healthy unknown Claude reinstall: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected reinstall success, got %+v", result)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	// sequentialRunner records only call count, so assert the flow consumed the
+	// npm reinstall and verification responses rather than stopping after the
+	// initial healthy/current pre-check.
+	if runner.next < 5 {
+		t.Fatalf("expected healthy unknown Claude install to proceed to npm reinstall, consumed calls=%d", runner.next)
 	}
 }
 

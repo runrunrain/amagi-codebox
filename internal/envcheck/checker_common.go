@@ -158,6 +158,24 @@ func addMissingToolIssue(status *CheckStatus, tool CLITool) {
 	status.Issues = append(status.Issues, issue)
 }
 
+// cliCommandNamesForTool returns the concrete executable names used by the
+// platform resolver for a managed tool. CLITool values are stable API IDs
+// (for example "claude_code"), not necessarily command names. PATH repair must
+// use these command names; otherwise Claude Code is never discovered while
+// collecting directories to add to shell profiles.
+func cliCommandNamesForTool(tool CLITool) []string {
+	switch tool {
+	case ToolClaudeCode:
+		return []string{claudeCommandName, "claudecode", "claude-code"}
+	case ToolOpenCode:
+		return []string{"opencode"}
+	case ToolCodex:
+		return []string{"codex"}
+	default:
+		return nil
+	}
+}
+
 // npmPackageName returns the npm package name for a given tool.
 func npmPackageName(tool CLITool) string {
 	switch tool {

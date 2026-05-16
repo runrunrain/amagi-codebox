@@ -150,7 +150,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	}
 
 	// Determine which directories to add
-	dirs := s.collectPathDirs()
+	dirs := s.collectPathDirs(req)
 	if len(dirs) == 0 {
 		return &FixActionResult{
 			Success: false,
@@ -211,6 +211,11 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if strings.Contains(existing, amagiMarkerBegin) {
 		// Extract existing block and compare
 		if strings.Contains(existing, newBlock) {
+			// Even when the profile is already up to date, refresh the resolver-side
+			// state synchronously. This avoids the UI continuing to display a stale
+			// "not in available PATH" status immediately after a successful fix_path.
+			s.resetNPMCache()
+			_, _ = s.CheckAll()
 			return &FixActionResult{
 				Success:         true,
 				Message:         "PATH 已正确配置",
@@ -218,7 +223,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 				AddedPaths:      safeDirs,
 				Changed:         false,
 				RequiresRestart: true,
-				NextSteps:       []string{"请重启终端或运行: source " + profilePath},
+				NextSteps:       []string{"已重新检测工具状态；外部终端如仍未生效，请重启终端或运行: source " + profilePath},
 			}, nil
 		}
 	}
@@ -281,12 +286,12 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 		AddedPaths:      safeDirs,
 		Changed:         true,
 		RequiresRestart: true,
-		NextSteps:       []string{"请重启终端或运行: source " + profilePath},
+		NextSteps:       []string{"已重新检测工具状态；外部终端如仍未生效，请重启终端或运行: source " + profilePath},
 	}, nil
 }
 
 // collectPathDirs gathers directories that should be in PATH.
-func (s *Service) collectPathDirs() []string {
+func (s *Service) collectPathDirs(req FixActionRequest) []string {
 	var dirs []string
 	seen := map[string]bool{}
 
@@ -302,22 +307,55 @@ func (s *Service) collectPathDirs() []string {
 		dirs = append(dirs, abs)
 	}
 
+	// Honor the explicit, backend-validated path supplied by the caller when a
+	// frontend action is tied to a specific executable directory.
+	if strings.TrimSpace(req.ExtraPath) != "" {
+		addIfNew(req.ExtraPath)
+	}
+
+	// Reuse the latest cached executable path for targeted fixes. This covers
+	// resolver-only and native-default detections that may not be discoverable by
+	// a fresh command-name probe until the profile has been updated.
+	if req.Tool != "" {
+		if cached := s.GetCachedStatus(); cached != nil {
+			if item, ok := cached.Items[string(req.Tool)]; ok && strings.TrimSpace(item.ExecutablePath) != "" {
+				addIfNew(filepath.Dir(item.ExecutablePath))
+			}
+		}
+	}
+
+	if req.Tool == "" || req.Tool == ToolClaudeCode {
+		for _, candidate := range claudeNativeDefaultExecutableCandidates() {
+			if fileExists(candidate) {
+				addIfNew(filepath.Dir(candidate))
+			}
+		}
+		if npmPath := s.firstExistingClaudeNPMGlobalPath(); npmPath != "" {
+			addIfNew(filepath.Dir(npmPath))
+		}
+	}
+
 	// Check what resolver's augmented PATH provides vs system PATH
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
 	for _, tool := range SupportedTools() {
-		resolved, diags, err := resolver.ResolveExecutable(string(tool), nil, os.Environ())
-		if err != nil || resolved.Path == "" {
+		if req.Tool != "" && req.Tool != tool {
 			continue
 		}
-		// If the tool is in the resolver's PATH but not in system PATH,
-		// add the tool's directory
-		toolDir := filepath.Dir(resolved.Path)
-		if toolDir != "" && toolDir != "." {
-			addIfNew(toolDir)
-		}
-		// Also add directories from resolver's PATH additions
-		for _, entry := range diags.PATHSources {
-			addIfNew(entry)
+		for _, commandName := range cliCommandNamesForTool(tool) {
+			resolved, diags, err := resolver.ResolveExecutable(commandName, nil, os.Environ())
+			if err != nil || resolved.Path == "" {
+				continue
+			}
+			// If the tool is in the resolver's PATH but not in system PATH,
+			// add the tool's directory.
+			toolDir := filepath.Dir(resolved.Path)
+			if toolDir != "" && toolDir != "." {
+				addIfNew(toolDir)
+			}
+			// Also add absolute directories from resolver diagnostics when present.
+			for _, entry := range diags.PATHSources {
+				addIfNew(entry)
+			}
 		}
 	}
 
@@ -817,7 +855,7 @@ func atomicWriteFileWithPerm(path string, data []byte, perm os.FileMode) error {
 // using registry operations (reg add HKCU\Environment).
 func (s *Service) runFixPathWindows(req FixActionRequest) (*FixActionResult, error) {
 	// 1. 收集需要加入 PATH 的目录
-	dirs := s.collectPathDirs()
+	dirs := s.collectPathDirs(req)
 	if len(dirs) == 0 {
 		return &FixActionResult{
 			Success: false,

@@ -36,6 +36,15 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 			pathState:      PathStateOutsidePATH,
 			pathSource:     "native-default-location",
 		}
+	} else if strings.TrimSpace(rr.executablePath) == "" {
+		if npmPath := s.firstExistingClaudeNPMGlobalPath(); npmPath != "" {
+			rr = resolveResult{
+				executablePath: npmPath,
+				systemPATHOk:   false,
+				pathState:      PathStateCodeboxPATH,
+				pathSource:     "npm-global-prefix",
+			}
+		}
 	}
 	applyPathStateToStatus(status, rr, ToolClaudeCode)
 
@@ -49,6 +58,9 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	status.Installed = true
 	status.ExecutablePath = realPath
 	status.InstallMethod = s.detectClaudeInstallMethod(realPath)
+	if status.InstallMethod == InstallMethodUnknown && rr.pathSource == "npm-global-prefix" {
+		status.InstallMethod = InstallMethodNPM
+	}
 
 	version, err := s.claudeVersion(realPath)
 	if err != nil {
@@ -115,6 +127,39 @@ func firstExistingClaudeNativeDefaultPath() string {
 		}
 	}
 	return ""
+}
+
+func isClaudeNativeDefaultExecutablePath(path string) bool {
+	realPath := resolveRealExecutablePath(path)
+	for _, candidate := range claudeNativeDefaultExecutableCandidates() {
+		if sameNormalizedPath(realPath, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) firstExistingClaudeNPMGlobalPath() string {
+	path, _ := s.resolveClaudeFromNPMGlobalPrefix()
+	return path
+}
+
+func (s *Service) isClaudeNPMGlobalExecutablePath(path string) bool {
+	path = resolveRealExecutablePath(path)
+	prefix, err := s.npmGlobalPrefix()
+	if err != nil || strings.TrimSpace(prefix) == "" {
+		return false
+	}
+	for _, candidate := range claudeNPMGlobalExecutableCandidates(prefix) {
+		if sameNormalizedPath(path, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameNormalizedPath(left string, right string) bool {
+	return normalizeClaudePath(resolveRealExecutablePath(left)) == normalizeClaudePath(resolveRealExecutablePath(right))
 }
 
 func claudeNativeDefaultExecutableCandidates() []string {
@@ -221,7 +266,7 @@ func (s *Service) detectClaudeInstallMethod(executablePath string) InstallMethod
 		return InstallMethodNPM
 	}
 
-	if isPathUnderEnvDir(normalized, "USERPROFILE", `.local\bin`) {
+	if isPathUnderEnvDir(normalized, "USERPROFILE", `.local\bin`) || isPathUnderEnvDir(normalized, "HOME", `.local/bin`) || isClaudeNativeDefaultExecutablePath(executablePath) {
 		return InstallMethodNative
 	}
 

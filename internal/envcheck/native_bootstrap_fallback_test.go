@@ -586,6 +586,104 @@ func TestClaudeCheckOneFindsNativeDefaultWhenSystemPATHMissing(t *testing.T) {
 	}
 }
 
+func TestClaudeCheckOneFindsNPMGlobalWhenProcessPATHMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows PATH stale scenario")
+	}
+	tmpDir := t.TempDir()
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
+	homeDir := filepath.Join(tmpDir, "home")
+	binDir := filepath.Join(tmpDir, "bin")
+	npmPrefix := filepath.Join(tmpDir, "npm-global")
+	npmClaude := filepath.Join(npmPrefix, "bin", commandFileName("claude"))
+	for _, dir := range []string{homeDir, binDir, filepath.Dir(npmClaude)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestExecutable(t, binDir, "npm")
+	writeTestExecutable(t, binDir, "node")
+	if err := writeCommandFile(npmClaude); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+
+	runner := &nativeBootstrapTestRunner{npmPrefix: npmPrefix, npmClaude: npmClaude}
+	svc := NewServiceWithRunner(runner)
+	if got := svc.firstExistingClaudeNPMGlobalPath(); filepath.Clean(got) != filepath.Clean(npmClaude) {
+		t.Fatalf("expected npm global fallback path %q, got %q", npmClaude, got)
+	}
+
+	status, err := svc.CheckOne(ToolClaudeCode)
+	if err != nil {
+		t.Fatalf("CheckOne returned error: %v", err)
+	}
+	if status == nil || !status.Installed || !status.PATHOk {
+		t.Fatalf("expected npm global claude to be usable through enhanced resolver, got %+v", status)
+	}
+	if status.SystemPATHOk {
+		t.Fatalf("expected current process PATH not to contain npm global claude, got %+v", status)
+	}
+	if status.InstallMethod != InstallMethodNPM {
+		t.Fatalf("expected NPM status for npm global or resolver-visible Claude, got method=%s status=%+v", status.InstallMethod, status)
+	}
+}
+
+func TestFixPathRefreshesCachedClaudeStatusAfterNativeDefaultAdded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell profile PATH repair is non-Windows")
+	}
+	tmpDir := t.TempDir()
+	if realTmpDir, err := filepath.EvalSymlinks(tmpDir); err == nil && strings.TrimSpace(realTmpDir) != "" {
+		tmpDir = realTmpDir
+	}
+	homeDir := filepath.Join(tmpDir, "home")
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, commandFileName("claude"))
+	binDir := filepath.Join(tmpDir, "bin")
+	for _, dir := range []string{homeDir, nativeDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+
+	runner := &nativeBootstrapTestRunner{nativePath: nativePath}
+	svc := NewServiceWithRunner(runner)
+	_, _ = svc.CheckOne(ToolClaudeCode)
+	if err := writeCommandFile(nativePath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.RunFixAction(FixActionRequest{Action: SolutionFixPath, Tool: ToolClaudeCode})
+	if err != nil {
+		t.Fatalf("RunFixAction error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful fix_path, got %+v", result)
+	}
+	profileBytes, readErr := os.ReadFile(filepath.Join(homeDir, ".zprofile"))
+	if readErr != nil {
+		t.Fatalf("read profile: %v", readErr)
+	}
+	if !strings.Contains(string(profileBytes), nativeDir) {
+		t.Fatalf("profile should include native default dir %q, content=%s", nativeDir, string(profileBytes))
+	}
+	cached := svc.GetCachedStatus()
+	claude := cached.Items[string(ToolClaudeCode)]
+	if !claude.Installed || !claude.PATHOk {
+		t.Fatalf("expected cached Claude status refreshed as CodeBox-usable, got %+v", claude)
+	}
+}
+
 func TestClaudeNativeDirectSuccessUsesDefaultLocationWhenPATHNotRefreshed(t *testing.T) {
 	forceNativeDirectInstallerSupportedForTest(t)
 	tmpDir := t.TempDir()

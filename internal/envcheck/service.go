@@ -936,7 +936,7 @@ func (s *Service) CleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 // environment snapshot.
 func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResult, error) {
 	switch method {
-	case InstallMethodNPM, InstallMethodNative, InstallMethodWinget:
+	case InstallMethodNPM, InstallMethodNative, InstallMethodWinget, InstallMethodUnknown, InstallMethod(""):
 		// Supported methods proceed through the serialized operation path.
 	default:
 		// Preserve the existing contract for unknown methods: return a structured

@@ -147,6 +147,10 @@ func TestCleanClaudeCodeByMethod_Native(t *testing.T) {
 }
 
 func TestCleanClaudeCodeByMethod_Unknown(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PATH", tmpDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
 	svc := newTestService()
 	result, err := svc.cleanClaudeCode(InstallMethodUnknown)
 	if err != nil {
@@ -155,11 +159,80 @@ func TestCleanClaudeCodeByMethod_Unknown(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if result.Success {
-		t.Error("expected failure for unknown method")
+	if strings.Contains(result.Message, "手动指定") {
+		t.Errorf("unknown uninstall should not ask user to manually specify method, got: %s", result.Message)
 	}
-	if !strings.Contains(result.Message, "无法确定") {
-		t.Errorf("expected error message about unknown method, got: %s", result.Message)
+}
+
+func TestCleanClaudeCodeUnknown_InfersNativeDefaultAndRemovesSafely(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS/Linux native default inference test")
+	}
+	tmpDir := t.TempDir()
+	home := filepath.Join(tmpDir, "home")
+	nativeDir := filepath.Join(home, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, commandFileName("claude"))
+	if err := writeCommandFile(nativePath); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+
+	runner := &nativeBootstrapTestRunner{nativePath: nativePath}
+	svc := NewServiceWithRunner(runner)
+	result, err := svc.cleanClaudeCode(InstallMethodUnknown)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if _, statErr := os.Stat(nativePath); !os.IsNotExist(statErr) {
+		t.Fatalf("native default executable should be removed safely, statErr=%v", statErr)
+	}
+	if strings.Contains(result.Message, "手动指定") {
+		t.Fatalf("unknown native cleanup should not ask to manually specify method: %s", result.Message)
+	}
+}
+
+func TestCleanClaudeCodeUnknown_ActionableFallbackDoesNotDeleteCustomPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows custom path fallback test")
+	}
+	tmpDir := t.TempDir()
+	customDir := filepath.Join(tmpDir, "custom")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customPath := writeTestExecutable(t, customDir, "claude")
+	t.Setenv("PATH", customDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
+
+	runner := &nativeBootstrapTestRunner{}
+	svc := NewServiceWithRunner(runner)
+	result, err := svc.cleanClaudeCode(InstallMethodUnknown)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil || result.Success {
+		// A custom arbitrary path must not be auto-deleted as a false success.
+		t.Fatalf("expected actionable fallback failure for custom unknown path, got %+v", result)
+	}
+	if !strings.Contains(result.Message, customPath) || !strings.Contains(result.Message, "npm uninstall -g @anthropic-ai/claude-code") {
+		t.Fatalf("fallback should include executable path and concrete npm/native guidance, got: %s", result.Message)
+	}
+	if strings.Contains(result.Message, "手动指定") {
+		t.Fatalf("fallback must not merely ask to manually specify install method: %s", result.Message)
+	}
+	if _, statErr := os.Stat(customPath); statErr != nil {
+		t.Fatalf("custom unknown executable must not be deleted, statErr=%v", statErr)
 	}
 }
 
@@ -448,21 +521,15 @@ func TestCleanClaudeCode_Native_RemovesNativeFiles(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestClaudeInstallCommands_Update_Unknown_ReturnsError
+// TestClaudeInstallCommands_Update_Unknown_UsesSafeFallbacks
 // ---------------------------------------------------------------------------
 
-func TestClaudeInstallCommands_Update_Unknown_ReturnsError(t *testing.T) {
+func TestClaudeInstallCommands_Update_Unknown_UsesSafeFallbacks(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific test")
 	}
 
-	// Mock: powershell for native accessibility check returns valid content
-	runner := &mockRunner{
-		responses: []mockResponse{
-			{pathPrefix: "powershell", stdout: "function Install-Claude { Write-Output 'ok' }", err: nil},
-		},
-	}
-	svc := NewServiceWithRunner(runner)
+	svc := newTestService()
 
 	current := &CheckStatus{
 		Tool:          ToolClaudeCode,
@@ -472,12 +539,24 @@ func TestClaudeInstallCommands_Update_Unknown_ReturnsError(t *testing.T) {
 		PATHOk:        true,
 	}
 
-	_, err := svc.claudeInstallCommands(installOperationUpdate, current)
-	if err == nil {
-		t.Fatal("expected error for unknown update method, got nil")
+	cmds, err := svc.claudeInstallCommands(installOperationUpdate, current)
+	if err != nil {
+		t.Fatalf("unknown update should use safe fallback commands instead of failing: %v", err)
 	}
-	if !strings.Contains(err.Error(), "无法确定当前 Claude Code 安装渠道") {
-		t.Errorf("expected error about unknown channel, got: %v", err)
+	if len(cmds) != 2 {
+		t.Fatalf("expected npm + winget fallback commands on Windows unknown update, got %d: %+v", len(cmds), cmds)
+	}
+	if cmds[0].path != "npm" || len(cmds[0].args) < 3 || cmds[0].args[0] != "install" || cmds[0].args[1] != "-g" || cmds[0].args[2] != "@anthropic-ai/claude-code@latest" {
+		t.Fatalf("first unknown update fallback must be npm forced-latest, got: %+v", cmds[0])
+	}
+	if cmds[1].path != "winget" || len(cmds[1].args) == 0 || cmds[1].args[0] != "upgrade" {
+		t.Fatalf("second unknown update fallback must be winget upgrade, got: %+v", cmds[1])
+	}
+	for _, cmd := range cmds {
+		combined := strings.ToLower(cmd.description + " " + cmd.path + " " + strings.Join(cmd.args, " "))
+		if strings.Contains(combined, "powershell") || strings.Contains(combined, "install.ps1") || strings.Contains(combined, "native") {
+			t.Fatalf("unknown update fallback must not invoke Native direct installer, got: %+v", cmd)
+		}
 	}
 }
 
@@ -532,19 +611,30 @@ func TestUninstallClaudeCode_DispatchByMethod(t *testing.T) {
 }
 
 func TestUninstallClaudeCode_UnknownMethod_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PATH", tmpDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
 	svc := newTestService()
 	result, err := svc.CleanClaudeCode(InstallMethodUnknown)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Success {
-		t.Error("expected failure for unknown method")
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if strings.Contains(result.Message, "手动指定") {
+		t.Errorf("unknown uninstall should not ask user to manually specify method, got: %s", result.Message)
 	}
 }
 
 func TestUninstallClaudeCode_EmptyMethod_DispatchesCorrectly(t *testing.T) {
-	// When method is empty string (InstallMethod("")), cleanClaudeCode should
-	// hit the default case and return failure (cannot determine install method).
+	// Empty method is treated like unknown: infer if possible, otherwise safe no-op
+	// when Claude Code is not installed.
+	tmpDir := t.TempDir()
+	t.Setenv("PATH", tmpDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
 	svc := newTestService()
 	result, err := svc.CleanClaudeCode(InstallMethod(""))
 	if err != nil {
@@ -553,27 +643,25 @@ func TestUninstallClaudeCode_EmptyMethod_DispatchesCorrectly(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if result.Success {
-		t.Error("expected failure for empty/unknown method")
+	if strings.Contains(result.Message, "手动指定") {
+		t.Errorf("empty/unknown uninstall should not ask user to manually specify method, got: %s", result.Message)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// TestUpdateUnknown_NoFallback
+// TestUpdateUnknown_WindowsFallbackOrder
 // ---------------------------------------------------------------------------
 
-func TestUpdateUnknown_NoFallback(t *testing.T) {
+func TestUpdateUnknown_WindowsFallbackOrder(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific test")
 	}
 
-	// Ensure that update with unknown method does NOT generate winget/npm fallback commands.
-	runner := &mockRunner{
-		responses: []mockResponse{
-			{pathPrefix: "powershell", stdout: "function Install-Claude { Write-Output 'ok' }", err: nil},
-		},
-	}
-	svc := NewServiceWithRunner(runner)
+	// Unknown update must not stop at "无法确定安装方式". It should use
+	// non-destructive same-tool repair fallbacks: npm forced latest first, then
+	// winget upgrade. Native direct installer is intentionally excluded because it
+	// is a full installer, not a targeted updater.
+	svc := newTestService()
 
 	current := &CheckStatus{
 		Tool:          ToolClaudeCode,
@@ -584,14 +672,21 @@ func TestUpdateUnknown_NoFallback(t *testing.T) {
 	}
 
 	cmds, err := svc.claudeInstallCommands(installOperationUpdate, current)
-	if err == nil {
-		t.Fatalf("expected error for unknown update, got commands: %+v", cmds)
+	if err != nil {
+		t.Fatalf("unknown update should not directly fail: %v", err)
 	}
-	// Verify the error does NOT suggest any fallback
-	errMsg := err.Error()
-	for _, forbidden := range []string{"npm", "winget", "native"} {
-		if strings.Contains(strings.ToLower(errMsg), forbidden) {
-			t.Errorf("error message should not suggest fallback to %s, got: %v", forbidden, errMsg)
+	if len(cmds) != 2 {
+		t.Fatalf("expected exactly npm + winget fallbacks, got %+v", cmds)
+	}
+	if !strings.Contains(cmds[0].description, "@anthropic-ai/claude-code@latest") || cmds[0].args[0] != "install" {
+		t.Fatalf("unknown update first fallback should be npm install @latest, got: %+v", cmds[0])
+	}
+	if !strings.Contains(strings.ToLower(cmds[1].description), "winget") || cmds[1].args[0] != "upgrade" {
+		t.Fatalf("unknown update second fallback should be winget upgrade, got: %+v", cmds[1])
+	}
+	for _, cmd := range cmds {
+		if strings.Contains(strings.ToLower(cmd.path), "powershell") || strings.Contains(strings.ToLower(cmd.description), "powershell") {
+			t.Fatalf("unknown update must not use PowerShell Native direct installer, got: %+v", cmd)
 		}
 	}
 }

@@ -122,7 +122,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		return installFailure(tool, fmt.Sprintf("%s前检查失败", operationDisplayName(operation)), checkErr), checkErr
 	}
 
-	if operation == installOperationInstall && isHealthyAndCurrent(before) {
+	if operation == installOperationInstall && isHealthyAndCurrent(before) && !shouldReinstallHealthyUnknownClaude(tool, before) {
 		return &InstallResult{
 			Success: true,
 			Message: fmt.Sprintf("%s 已安装且为最新版本", displayToolName(tool)),
@@ -880,10 +880,12 @@ func (s *Service) claudeInstallCommands(operation installOperation, current *Che
 			// Native blocked: return error so caller can inform user.
 			return nil, fmt.Errorf("Native 安装脚本被 Cloudflare 拦截，无法通过 Native 渠道更新。请使用 winget 或 npm 重新安装")
 		default:
-			// Unknown method: cannot determine the current install channel.
-			// Do NOT fallback to native/winget/npm to avoid multi-channel conflicts.
-			// Require the user to explicitly choose an install method to reinstall/switch.
-			return nil, fmt.Errorf("无法确定当前 Claude Code 安装渠道，请选择安装方式执行显式重装/切换渠道后再更新")
+			// Unknown method: use a conservative, safe repair path instead of failing
+			// before doing any work. On macOS/Linux the only automatic channel is npm.
+			// On Windows, npm is also the safest non-destructive default; winget is kept
+			// as a secondary verifier-backed fallback. Native direct install is not used
+			// for unknown updates because it is a full installer, not a targeted update.
+			return unknownClaudeUpdateCommands(), nil
 		}
 	}
 
@@ -907,6 +909,14 @@ func (s *Service) claudeInstallCommands(operation installOperation, current *Che
 		wingetClaudeCommand(installOperationInstall),
 		npmClaudeCommand(installOperationInstall),
 	}, nil
+}
+
+func unknownClaudeUpdateCommands() []installCommand {
+	commands := []installCommand{npmClaudeCommand(installOperationUpdate)}
+	if runtime.GOOS == "windows" {
+		commands = append(commands, wingetClaudeCommand(installOperationUpdate))
+	}
+	return commands
 }
 
 // ---------------------------------------------------------------------------
@@ -1510,6 +1520,10 @@ func isHealthyAndCurrent(status *CheckStatus) bool {
 		strings.TrimSpace(status.Error) == ""
 }
 
+func shouldReinstallHealthyUnknownClaude(tool CLITool, status *CheckStatus) bool {
+	return tool == ToolClaudeCode && status != nil && status.InstallMethod == InstallMethodUnknown
+}
+
 func installFailure(tool CLITool, message string, err error) *InstallResult {
 	errorMessage := ""
 	if err != nil {
@@ -1553,13 +1567,66 @@ func (s *Service) cleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 		return s.cleanClaudeCodeNative()
 	case InstallMethodWinget:
 		return s.cleanClaudeCodeWinget()
+	case InstallMethodUnknown, InstallMethod(""):
+		return s.cleanClaudeCodeUnknown()
 	default:
 		return &InstallResult{
 			Success: false,
-			Message: "无法确定当前安装方式，无法自动清理",
+			Message: fmt.Sprintf("无法识别的 Claude Code 安装方式 %q，未执行删除。请重新检测后重试；如仍失败，请按检测到的可执行路径选择 npm/native/winget 中的对应卸载方式。", method),
 			Tool:    ToolClaudeCode,
 		}, nil
 	}
+}
+
+func (s *Service) cleanClaudeCodeUnknown() (*InstallResult, error) {
+	status, checkErr := s.CheckOne(ToolClaudeCode)
+	if checkErr != nil && status == nil {
+		return installFailure(ToolClaudeCode, "卸载前检测 Claude Code 失败", checkErr), nil
+	}
+	if status == nil || !status.Installed {
+		return &InstallResult{Success: true, Message: "未检测到 Claude Code，无需卸载", Tool: ToolClaudeCode}, nil
+	}
+
+	inferred := s.inferClaudeInstallMethodForCleanup(status)
+	switch inferred {
+	case InstallMethodNPM:
+		return s.cleanClaudeCodeNPM()
+	case InstallMethodNative:
+		return s.cleanClaudeCodeNative()
+	case InstallMethodWinget:
+		return s.cleanClaudeCodeWinget()
+	}
+
+	path := strings.TrimSpace(status.ExecutablePath)
+	message := "无法安全推断 Claude Code 的安装方式，未删除任何文件。"
+	if path != "" {
+		message += fmt.Sprintf(" 检测到的可执行路径: %s。", path)
+	}
+	message += " 可执行建议：如果它来自 npm，请运行 `npm uninstall -g @anthropic-ai/claude-code`；如果它是官方 Native 默认路径 `~/.local/bin/claude`，请重新检测或选择 Native 卸载；如果它位于自定义目录，请确认该路径只属于 Claude Code 后再手动移除。"
+	return &InstallResult{Success: false, Message: message, Tool: ToolClaudeCode}, nil
+}
+
+func (s *Service) inferClaudeInstallMethodForCleanup(status *CheckStatus) InstallMethod {
+	if status == nil {
+		return InstallMethodUnknown
+	}
+	if status.InstallMethod != InstallMethodUnknown && status.InstallMethod != "" {
+		return status.InstallMethod
+	}
+	path := strings.TrimSpace(status.ExecutablePath)
+	if path == "" {
+		return InstallMethodUnknown
+	}
+	if method := s.detectClaudeInstallMethod(path); method != InstallMethodUnknown {
+		return method
+	}
+	if s.isClaudeNPMGlobalExecutablePath(path) {
+		return InstallMethodNPM
+	}
+	if isClaudeNativeDefaultExecutablePath(path) {
+		return InstallMethodNative
+	}
+	return InstallMethodUnknown
 }
 
 func (s *Service) cleanClaudeCodeNPM() (*InstallResult, error) {
