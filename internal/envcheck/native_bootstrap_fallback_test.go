@@ -119,6 +119,18 @@ func (r *nativeBootstrapTestRunner) sawBareClaudeInstall() bool {
 	})
 }
 
+func (r *nativeBootstrapTestRunner) claudeVersionCallPaths() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	paths := []string{}
+	for _, call := range r.calls {
+		if len(call.Args) == 1 && call.Args[0] == "--version" && strings.Contains(strings.ToLower(call.Path), "claude") {
+			paths = append(paths, call.Path)
+		}
+	}
+	return paths
+}
+
 func (r *nativeBootstrapTestRunner) sawCall(match func(platform.CommandSpec) bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -217,6 +229,154 @@ func TestClaudeNativeInstallRunsNPMThenClaudeInstall(t *testing.T) {
 	}
 }
 
+func TestClaudeNativeInstallSkipsBootstrapWhenNativeAlreadyAvailable(t *testing.T) {
+	runner := &nativeBootstrapTestRunner{}
+	svc := prepareNativeBootstrapTest(t, runner)
+	if err := writeCommandFile(runner.nativePath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err != nil {
+		t.Fatalf("expected existing native install to short-circuit successfully, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got %+v", result)
+	}
+	if runner.sawNPMInstall() || runner.sawClaudeInstall() {
+		t.Fatalf("existing native install must not rerun npm install or claude install; calls=%+v", runner.calls)
+	}
+	if !strings.Contains(result.Message, "已安装可用") {
+		t.Fatalf("expected installed-available message, got %q", result.Message)
+	}
+}
+
+func TestClaudeNativeBootstrapUsesDarwinShimPathInsteadOfExeSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are platform-specific")
+	}
+	forceRuntimeGOOSForTest(t, "darwin")
+	prefix := t.TempDir()
+	shimPath := filepath.Join(prefix, "bin", "claude")
+	packageExe := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+	if err := writeCommandFile(packageExe); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(shimPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(packageExe, shimPath); err != nil {
+		t.Fatalf("create npm shim symlink: %v", err)
+	}
+	runner := &nativeBootstrapTestRunner{npmPrefix: prefix}
+	svc := NewServiceWithRunner(runner)
+
+	cmd, err := svc.claudeNativeBootstrapCommandAfterNPMInstall()
+	if err != nil {
+		t.Fatalf("resolve bootstrap command: %v", err)
+	}
+	if filepath.Clean(cmd.path) != filepath.Clean(shimPath) {
+		t.Fatalf("bootstrap path = %q, want npm shim %q rather than resolved target %q", cmd.path, shimPath, packageExe)
+	}
+	if strings.HasSuffix(strings.ToLower(cmd.path), ".exe") {
+		t.Fatalf("darwin bootstrap command must not prefer .exe path: %q", cmd.path)
+	}
+}
+
+func TestClaudeNativeBootstrapResolverFallbackKeepsDarwinShimInsteadOfExeRealpath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are platform-specific")
+	}
+	forceRuntimeGOOSForTest(t, "darwin")
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "empty-npm-prefix")
+	shimDir := filepath.Join(tmpDir, "path-bin")
+	shimPath := filepath.Join(shimDir, "claude")
+	packageExe := filepath.Join(tmpDir, "lib", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+	if err := os.MkdirAll(prefix, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCommandFile(packageExe); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(packageExe, shimPath); err != nil {
+		t.Fatalf("create npm shim symlink: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
+	t.Setenv("PATH", shimDir)
+	t.Setenv("Path", shimDir)
+	runner := &nativeBootstrapTestRunner{npmPrefix: prefix}
+	svc := NewServiceWithRunner(runner)
+
+	cmd, err := svc.claudeNativeBootstrapCommandAfterNPMInstall()
+	if err != nil {
+		t.Fatalf("resolve bootstrap command through resolver fallback: %v", err)
+	}
+	if filepath.Clean(cmd.path) != filepath.Clean(shimPath) {
+		t.Fatalf("bootstrap resolver fallback path = %q, want npm shim %q rather than realpath %q", cmd.path, shimPath, packageExe)
+	}
+	if strings.HasSuffix(strings.ToLower(cmd.path), ".exe") {
+		t.Fatalf("darwin bootstrap resolver fallback must not return .exe path: %q", cmd.path)
+	}
+}
+
+func TestClaudeCheckOneDarwinNPMShimDoesNotDisplayOrExecuteExeRealpath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are platform-specific")
+	}
+	forceRuntimeGOOSForTest(t, "darwin")
+	tmpDir := t.TempDir()
+	homeDir := filepath.Join(tmpDir, "home")
+	binDir := filepath.Join(tmpDir, "bin")
+	shimPath := filepath.Join(binDir, "claude")
+	packageExe := filepath.Join(tmpDir, "lib", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+	for _, dir := range []string{homeDir, binDir, filepath.Dir(packageExe)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestExecutable(t, binDir, "npm")
+	if err := writeCommandFile(packageExe); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(packageExe, shimPath); err != nil {
+		t.Fatalf("create npm shim symlink: %v", err)
+	}
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+	runner := &nativeBootstrapTestRunner{npmPrefix: tmpDir, npmClaude: shimPath}
+	svc := NewServiceWithRunner(runner)
+
+	status, err := svc.CheckOne(ToolClaudeCode)
+	if err != nil {
+		t.Fatalf("CheckOne returned error: %v", err)
+	}
+	if status == nil || !status.Installed || status.InstallMethod != InstallMethodNPM {
+		t.Fatalf("expected npm installation through shim, got %+v", status)
+	}
+	if filepath.Clean(status.ExecutablePath) != filepath.Clean(shimPath) {
+		t.Fatalf("ExecutablePath = %q, want display/invocation shim %q rather than .exe realpath %q", status.ExecutablePath, shimPath, packageExe)
+	}
+	if strings.HasSuffix(strings.ToLower(status.ExecutablePath), ".exe") {
+		t.Fatalf("darwin CheckOne must not display .exe path: %q", status.ExecutablePath)
+	}
+	versionPaths := runner.claudeVersionCallPaths()
+	if len(versionPaths) == 0 {
+		t.Fatalf("expected claude --version call, calls=%+v", runner.calls)
+	}
+	for _, path := range versionPaths {
+		if filepath.Clean(path) == filepath.Clean(packageExe) || strings.HasSuffix(strings.ToLower(path), ".exe") {
+			t.Fatalf("darwin CheckOne must execute shim for --version, not .exe realpath; version paths=%+v", versionPaths)
+		}
+	}
+}
+
 func TestClaudeNativeBootstrapExitOneWithSuccessLocationVerifiesNative(t *testing.T) {
 	runner := &nativeBootstrapTestRunner{
 		claudeInstallErr:      errors.New("exit status 1"),
@@ -234,6 +394,51 @@ func TestClaudeNativeBootstrapExitOneWithSuccessLocationVerifiesNative(t *testin
 	}
 	if !strings.Contains(result.Message, "shell integration 返回非零状态") {
 		t.Fatalf("expected shell integration diagnostic in success message: %s", result.Message)
+	}
+}
+
+func TestClaudeNativeBootstrapLatestTimeoutSucceedsWhenNativeBecomesAvailable(t *testing.T) {
+	runner := &nativeBootstrapTestRunner{
+		claudeInstallErr:      errors.New("exit status 1"),
+		createOnClaudeInstall: true,
+		claudeInstallOut: "Checking installation status...\nInstalling Claude Code native build latest...\n✘ Installation failed\n" +
+			"Failed to fetch version from https://downloads.claude.ai/claude-code-releases/latest: timeout of 30000ms exceeded\n" +
+			"Try running with --force to override checks",
+	}
+	svc := prepareNativeBootstrapTest(t, runner)
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err != nil {
+		t.Fatalf("expected native availability fallback to succeed, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got %+v", result)
+	}
+	if !strings.Contains(result.Message, "已验证可用") {
+		t.Fatalf("expected verified-available fallback message, got %q", result.Message)
+	}
+}
+
+func TestClaudeNativeBootstrapLatestTimeoutFailureIncludesNetworkProxyForceAdvice(t *testing.T) {
+	runner := &nativeBootstrapTestRunner{
+		claudeInstallErr: errors.New("exit status 1"),
+		claudeInstallOut: "Checking installation status...\nInstalling Claude Code native build latest...\n✘ Installation failed\n" +
+			"Failed to fetch version from https://downloads.claude.ai/claude-code-releases/latest: timeout of 30000ms exceeded\n" +
+			"Try running with --force to override checks",
+	}
+	svc := prepareNativeBootstrapTest(t, runner)
+
+	result, err := svc.installClaudeCodeWithMethodProgress(ClaudeInstallNative, nil)
+	if err == nil {
+		t.Fatal("expected timeout failure without usable native binary")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got %+v", result)
+	}
+	for _, want := range []string{"npm package @anthropic-ai/claude-code 已确认安装", "失败发生在 claude install / downloads latest 检查阶段", "downloads.claude.ai", "timeout of 30000ms exceeded", "timeout 20m0s", "HTTP_PROXY", "HTTPS_PROXY", "claude install --force", "重试 Native bootstrap"} {
+		if !strings.Contains(result.Message, want) {
+			t.Fatalf("failure message missing %q: %s", want, result.Message)
+		}
 	}
 }
 
@@ -262,6 +467,43 @@ func TestClaudeCheckOneFindsNativeDefaultWhenSystemPATHMissing(t *testing.T) {
 	}
 	if status == nil || !status.Installed || status.InstallMethod != InstallMethodNative {
 		t.Fatalf("expected native installation from default path, got %+v", status)
+	}
+}
+
+func TestClaudeCheckOneFindsNativeDefaultViaUserHomeFallbackWhenEnvHomeMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS HOME fallback scenario")
+	}
+	tmpDir := t.TempDir()
+	homeDir := filepath.Join(tmpDir, "home")
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, commandFileName("claude"))
+	if err := writeCommandFile(nativePath); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previousHomeDir := claudeUserHomeDir
+	claudeUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { claudeUserHomeDir = previousHomeDir })
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOME", "")
+	t.Setenv("PATH", binDir)
+	t.Setenv("Path", binDir)
+	runner := &nativeBootstrapTestRunner{nativePath: nativePath}
+	svc := NewServiceWithRunner(runner)
+
+	status, err := svc.CheckOne(ToolClaudeCode)
+	if err != nil {
+		t.Fatalf("CheckOne returned error: %v", err)
+	}
+	if status == nil || !status.Installed || status.InstallMethod != InstallMethodNative {
+		t.Fatalf("expected native installation from user home fallback, got %+v", status)
+	}
+	if !sameNormalizedPath(status.ExecutablePath, nativePath) {
+		t.Fatalf("executable path = %q, want %q", status.ExecutablePath, nativePath)
 	}
 }
 

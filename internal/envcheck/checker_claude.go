@@ -20,6 +20,8 @@ const (
 
 var claudeVersionPattern = regexp.MustCompile(`\d+(?:\.\d+)+`)
 
+var claudeUserHomeDir = os.UserHomeDir
+
 func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	now := time.Now()
 	status := &CheckStatus{
@@ -54,15 +56,15 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 		return status, nil
 	}
 
-	realPath := resolveRealExecutablePath(rr.executablePath)
+	invocationPath, detectionPath := resolveClaudeExecutablePathsForCheck(rr.executablePath)
 	status.Installed = true
-	status.ExecutablePath = realPath
-	status.InstallMethod = s.detectClaudeInstallMethod(realPath)
+	status.ExecutablePath = invocationPath
+	status.InstallMethod = s.detectClaudeInstallMethod(detectionPath)
 	if status.InstallMethod == InstallMethodUnknown && rr.pathSource == "npm-global-prefix" {
 		status.InstallMethod = InstallMethodNPM
 	}
 
-	version, err := s.claudeVersion(realPath)
+	version, err := s.claudeVersion(invocationPath)
 	if err != nil {
 		status.Error = err.Error()
 		return status, err
@@ -177,23 +179,7 @@ func sameNormalizedPath(left string, right string) bool {
 }
 
 func claudeNativeDefaultExecutableCandidates() []string {
-	homes := []string{}
-	for _, key := range []string{"USERPROFILE", "HOME"} {
-		value := strings.TrimSpace(os.Getenv(key))
-		if value == "" {
-			continue
-		}
-		duplicate := false
-		for _, existing := range homes {
-			if strings.EqualFold(filepath.Clean(existing), filepath.Clean(value)) {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			homes = append(homes, value)
-		}
-	}
+	homes := claudeNativeHomeCandidates()
 
 	candidates := []string{}
 	for _, home := range homes {
@@ -211,6 +197,34 @@ func claudeNativeDefaultExecutableCandidates() []string {
 	return candidates
 }
 
+func claudeNativeHomeCandidates() []string {
+	homes := []string{}
+	appendHome := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		cleaned := filepath.Clean(value)
+		if cleaned == "." {
+			return
+		}
+		for _, existing := range homes {
+			if strings.EqualFold(filepath.Clean(existing), cleaned) {
+				return
+			}
+		}
+		homes = append(homes, cleaned)
+	}
+
+	for _, key := range []string{"USERPROFILE", "HOME"} {
+		appendHome(os.Getenv(key))
+	}
+	if home, err := claudeUserHomeDir(); err == nil {
+		appendHome(home)
+	}
+	return homes
+}
+
 func resolveRealExecutablePath(path string) string {
 	cleaned := filepath.Clean(strings.TrimSpace(path))
 	if cleaned == "." {
@@ -226,6 +240,43 @@ func resolveRealExecutablePath(path string) string {
 		return evaluated
 	}
 	return cleaned
+}
+
+func resolveClaudeExecutablePathsForCheck(path string) (invocationPath string, detectionPath string) {
+	invocationPath = cleanExecutableInvocationPath(path)
+	detectionPath = resolveRealExecutablePath(invocationPath)
+	if shouldPreserveDarwinClaudeShimInvocationPath(invocationPath, detectionPath) {
+		return invocationPath, detectionPath
+	}
+	return detectionPath, detectionPath
+}
+
+func cleanExecutableInvocationPath(path string) string {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "." {
+		return strings.TrimSpace(path)
+	}
+	cleaned = strings.TrimRight(cleaned, `/\`)
+	if cleaned == "" {
+		return strings.TrimSpace(path)
+	}
+	return cleaned
+}
+
+func shouldPreserveDarwinClaudeShimInvocationPath(invocationPath string, detectionPath string) bool {
+	if runtimeGOOS != "darwin" {
+		return false
+	}
+	if strings.TrimSpace(invocationPath) == "" || strings.TrimSpace(detectionPath) == "" {
+		return false
+	}
+	if normalizeClaudePath(invocationPath) == normalizeClaudePath(detectionPath) {
+		return false
+	}
+	if strings.EqualFold(filepath.Ext(invocationPath), ".exe") || !strings.EqualFold(filepath.Ext(detectionPath), ".exe") {
+		return false
+	}
+	return looksLikeClaudeNPMPath(detectionPath)
 }
 
 func (s *Service) claudeVersion(executablePath string) (string, error) {

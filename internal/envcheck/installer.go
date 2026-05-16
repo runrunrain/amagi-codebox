@@ -290,10 +290,10 @@ func (s *Service) installClaudeNativeViaNPMBootstrap(reporter progressReporter) 
 	if checkErr != nil && before == nil {
 		return installFailure(ToolClaudeCode, "Claude Code Native 安装前检查失败", checkErr), checkErr
 	}
-	if isHealthyAndCurrent(before) && before.InstallMethod == InstallMethodNative {
+	if isUsableNativeClaudeStatus(before) {
 		return &InstallResult{
 			Success: true,
-			Message: "Claude Code Native 已安装且为最新版本",
+			Message: nativeInstallSuccessMessage("Claude Code Native 已安装可用，无需重新执行 npm + claude install", before),
 			Tool:    ToolClaudeCode,
 			Version: before.Version,
 		}, nil
@@ -317,16 +317,24 @@ func (s *Service) installClaudeNativeViaNPMBootstrap(reporter progressReporter) 
 		installErr := fmt.Errorf("npm 版本 Claude Code 安装后确认失败: %w", err)
 		return s.nativeBootstrapFailureResult(installErr), installErr
 	}
+	if afterNPM, verifyErr := s.verifyClaudeNativeAvailable(); verifyErr == nil {
+		return &InstallResult{
+			Success: true,
+			Message: nativeInstallSuccessMessage("Claude Code Native 已安装可用；npm 包引导检查完成后无需继续执行 claude install", afterNPM),
+			Tool:    ToolClaudeCode,
+			Version: afterNPM.Version,
+		}, nil
+	}
 
 	reporter.report(OperationStepRunCommand, "Native 安装（npm + claude install）：正在执行 claude install 安装 Native 二进制...", progressNativeClaudeInstall)
 	bootstrapCmd, bootstrapResolveErr := s.claudeNativeBootstrapCommandAfterNPMInstall()
 	if bootstrapResolveErr != nil {
 		installErr := fmt.Errorf("npm 版本 Claude Code 安装成功但无法定位 claude install 引导命令: %w", bootstrapResolveErr)
-		return s.nativeBootstrapFailureResult(installErr), installErr
+		return s.nativeBootstrapFailureResultAfterConfirmedNPM(installErr), installErr
 	}
 	bootstrapResult, bootstrapErr := s.runInstallCommandResult(bootstrapCmd)
 	if bootstrapErr != nil {
-		reporter.report(OperationStepVerify, "Native 安装（npm + claude install）：claude install 返回非零状态，正在根据成功输出验证 Native 二进制...", progressNativeVerify)
+		reporter.report(OperationStepVerify, "Native 安装（npm + claude install）：claude install 返回非零状态，正在 bounded recheck 确认 Native 二进制是否已可用...", progressNativeVerify)
 		if after, verifyErr := s.verifyClaudeNativeInstallFromCommandOutput(resultText(bootstrapResult)); verifyErr == nil {
 			return &InstallResult{
 				Success: true,
@@ -335,15 +343,23 @@ func (s *Service) installClaudeNativeViaNPMBootstrap(reporter progressReporter) 
 				Version: after.Version,
 			}, nil
 		}
+		if after, verifyErr := s.verifyClaudeNativeAvailableWithRecheck(resultText(bootstrapResult)); verifyErr == nil {
+			return &InstallResult{
+				Success: true,
+				Message: nativeInstallSuccessMessage("Claude Code Native 在 claude install 返回异常后已验证可用；安装流程按已安装处理", after),
+				Tool:    ToolClaudeCode,
+				Version: after.Version,
+			}, nil
+		}
 		installErr := fmt.Errorf("执行 claude install 失败: %w", bootstrapErr)
-		return s.nativeBootstrapFailureResult(installErr), installErr
+		return s.nativeBootstrapFailureResultAfterConfirmedNPM(installErr), installErr
 	}
 
 	reporter.report(OperationStepVerify, "Native 安装（npm + claude install）：正在验证 Native 二进制 Claude Code 可用...", progressNativeVerify)
 	after, verifyErr := s.verifyClaudeNativeAvailableWithHint(resultText(bootstrapResult))
 	if verifyErr != nil {
 		installErr := fmt.Errorf("claude install 完成后 Native 验证失败: %w", verifyErr)
-		return s.nativeBootstrapFailureResult(installErr), installErr
+		return s.nativeBootstrapFailureResultAfterConfirmedNPM(installErr), installErr
 	}
 
 	return &InstallResult{
@@ -353,13 +369,52 @@ func (s *Service) installClaudeNativeViaNPMBootstrap(reporter progressReporter) 
 		Version: after.Version,
 	}, nil
 }
+
 func (s *Service) nativeBootstrapFailureResult(installErr error) *InstallResult {
 	summary := installerDiagnosticSummary(installErr)
+	advice := nativeBootstrapFailureAdvice(summary, false)
 	message := fmt.Sprintf(
-		"Claude Code Native 安装失败：npm + claude install 未完成。诊断：%s。建议：确认 Node.js/npm 可用后重试，或手动执行 npm install -g @anthropic-ai/claude-code 后运行 claude install。",
-		summary,
+		"Claude Code Native 安装失败：npm + claude install 未完成。诊断：%s。建议：%s",
+		summary, advice,
 	)
 	return installFailure(ToolClaudeCode, message, errors.New(message))
+}
+
+func (s *Service) nativeBootstrapFailureResultAfterConfirmedNPM(installErr error) *InstallResult {
+	summary := installerDiagnosticSummary(installErr)
+	advice := nativeBootstrapFailureAdvice(summary, true)
+	message := fmt.Sprintf(
+		"Claude Code Native 引导失败：npm package @anthropic-ai/claude-code 已确认安装，失败发生在 claude install / downloads latest 检查阶段；若 Native 已可用，CodeBox 会在 bounded recheck 后按成功处理。诊断：%s。建议：%s",
+		summary, advice,
+	)
+	return installFailure(ToolClaudeCode, message, errors.New(message))
+}
+
+func nativeBootstrapFailureAdvice(summary string, npmPackageConfirmed bool) string {
+	if npmPackageConfirmed {
+		if claudeInstallFailureLooksLikeLatestFetchTimeout(summary) {
+			return "npm package 已确认安装，无需优先重复 npm install；claude install 在访问 downloads.claude.ai/claude-code-releases/latest 时超时。请优先检查网络连通性、DNS 与 HTTP_PROXY/HTTPS_PROXY/NO_PROXY 代理配置后重试 Native bootstrap；必要时在可信终端手动执行 claude install --force 覆盖 latest 检查。"
+		}
+		if strings.Contains(strings.ToLower(summary), "timeout") {
+			return "npm package 已确认安装，无需优先重复 npm install；请优先检查网络/代理后重试 Native bootstrap，必要时在可信终端手动运行 claude install --force 重新触发 Native 引导。"
+		}
+		return "npm package 已确认安装，无需优先重复 npm install；请检查 claude install 输出、网络/代理与 PATH 后重试 Native bootstrap，必要时在可信终端手动运行 claude install --force。"
+	}
+	base := "确认 Node.js/npm 可用后重试，或手动执行 npm install -g @anthropic-ai/claude-code 后运行 claude install。"
+	if claudeInstallFailureLooksLikeLatestFetchTimeout(summary) {
+		return "claude install 在访问 downloads.claude.ai/claude-code-releases/latest 时超时；请检查网络连通性、DNS 与 HTTP_PROXY/HTTPS_PROXY/NO_PROXY 代理配置后重试；如本机已有 Native 二进制但状态检查被网络阻断，可在确认来源可信后手动执行 claude install --force 覆盖检查。" + base
+	}
+	if strings.Contains(strings.ToLower(summary), "timeout") {
+		return "安装命令超时；请检查网络/代理后重试，必要时在终端手动运行 claude install --force 重新触发 Native 引导。" + base
+	}
+	return base
+}
+
+func claudeInstallFailureLooksLikeLatestFetchTimeout(summary string) bool {
+	lower := strings.ToLower(summary)
+	return strings.Contains(lower, "downloads.claude.ai") &&
+		strings.Contains(lower, "claude-code-releases/latest") &&
+		(strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out"))
 }
 
 func installerDiagnosticSummary(err error) string {
@@ -415,7 +470,11 @@ func (s *Service) verifyClaudeNativeAvailableWithHint(installerOutput string) (*
 
 func isVerifiedNativeStatus(status *CheckStatus, err error) bool {
 	return err == nil &&
-		status != nil &&
+		isUsableNativeClaudeStatus(status)
+}
+
+func isUsableNativeClaudeStatus(status *CheckStatus) bool {
+	return status != nil &&
 		status.Installed &&
 		status.PATHOk &&
 		status.InstallMethod == InstallMethodNative &&
@@ -792,7 +851,8 @@ func (s *Service) resolveClaudeNPMBootstrapPath() (string, string, error) {
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
 	resolved, diagnostics, err := resolver.ResolveExecutable(claudeCommandName, nil, env)
 	if err == nil && strings.TrimSpace(resolved.Path) != "" {
-		realPath := resolveRealExecutablePath(resolved.Path)
+		invocationPath := cleanExecutableInvocationPath(resolved.Path)
+		realPath := resolveRealExecutablePath(invocationPath)
 		if s.detectClaudeInstallMethod(realPath) == InstallMethodNative {
 			return "", "", fmt.Errorf("npm 全局包已安装，但解析到的 claude 为 Native 路径 %s，未找到 npm shim；请确认 npm global bin 已创建并重试", realPath)
 		}
@@ -800,7 +860,7 @@ func (s *Service) resolveClaudeNPMBootstrapPath() (string, string, error) {
 		if strings.TrimSpace(source) == "" {
 			source = "resolver"
 		}
-		return realPath, source, nil
+		return preserveClaudeBootstrapInvocationPath(invocationPath, realPath), source, nil
 	}
 
 	detail := ""
@@ -810,6 +870,13 @@ func (s *Service) resolveClaudeNPMBootstrapPath() (string, string, error) {
 	return "", "", fmt.Errorf("npm 全局包已安装，但当前 PATH 未刷新且 npm global prefix/bin 下未找到 claude 可执行文件%s", detail)
 }
 
+func preserveClaudeBootstrapInvocationPath(invocationPath string, detectionPath string) string {
+	if shouldPreserveDarwinClaudeShimInvocationPath(invocationPath, detectionPath) {
+		return invocationPath
+	}
+	return detectionPath
+}
+
 func (s *Service) resolveClaudeFromNPMGlobalPrefix() (string, string) {
 	prefix, err := s.npmGlobalPrefix()
 	if err != nil || strings.TrimSpace(prefix) == "" {
@@ -817,7 +884,7 @@ func (s *Service) resolveClaudeFromNPMGlobalPrefix() (string, string) {
 	}
 	for _, candidate := range claudeNPMGlobalExecutableCandidates(prefix) {
 		if fileExists(candidate) {
-			return resolveRealExecutablePath(candidate), "npm global prefix"
+			return filepath.Clean(candidate), "npm global prefix"
 		}
 	}
 	return "", ""

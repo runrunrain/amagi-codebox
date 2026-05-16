@@ -41,13 +41,15 @@ func TestDarwinResolverAddsBaselinePATHAndResolvesCLI(t *testing.T) {
 		t.Fatal("expected darwin baseline PATH entries to be recorded as controlled additions")
 	}
 	firstEntries := strings.Split(spec.Env.EffectivePATH, string(os.PathListSeparator))
-	if len(firstEntries) < 1+len(darwinBaselinePATH) {
+	controlledEntries := append([]string{}, userLocalBinCandidatesForOS("darwin", []string{"PATH=" + binDir})...)
+	controlledEntries = append(controlledEntries, darwinBaselinePATH...)
+	if len(firstEntries) < 1+len(controlledEntries) {
 		t.Fatalf("effective PATH has too few entries: %q", spec.Env.EffectivePATH)
 	}
 	if firstEntries[0] != binDir {
 		t.Fatalf("effective PATH entry 0 = %q, want caller PATH %q", firstEntries[0], binDir)
 	}
-	for i, expected := range darwinBaselinePATH {
+	for i, expected := range controlledEntries {
 		if firstEntries[i+1] != expected {
 			t.Fatalf("effective PATH entry %d = %q, want %q (caller PATH must precede controlled additions)", i+1, firstEntries[i+1], expected)
 		}
@@ -122,6 +124,25 @@ func TestDarwinEffectivePATHIncludesHomeLocalBin(t *testing.T) {
 	}
 	if len(addedEntries) == 0 || addedEntries[0] != nativeDir {
 		t.Fatalf("added PATH entries = %#v, want native default dir first", addedEntries)
+	}
+}
+
+func TestDarwinEffectivePATHIncludesUserHomeFallbackWhenEnvHomeMissing(t *testing.T) {
+	homeDir := t.TempDir()
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	previousHomeDir := pathLookupUserHomeDir
+	pathLookupUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { pathLookupUserHomeDir = previousHomeDir })
+
+	_, effectivePATH, addedEntries, _ := buildEffectiveEnvForOS("darwin", []string{
+		"PATH=",
+	})
+
+	if !pathListContains("darwin", effectivePATH, nativeDir) {
+		t.Fatalf("effective PATH %q does not include user-home fallback native dir %q", effectivePATH, nativeDir)
+	}
+	if len(addedEntries) == 0 || addedEntries[0] != nativeDir {
+		t.Fatalf("added PATH entries = %#v, want fallback native default dir first", addedEntries)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 
 var darwinBaselinePATH = []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
+var pathLookupUserHomeDir = os.UserHomeDir
+
 func resolveExecutableWithEnvForOS(osName string, command string, env []string) (string, string) {
 	if resolved := resolveCommandPathForOS(osName, command, env); resolved != "" {
 		if isAbsoluteOrExplicitPath(command) {
@@ -181,18 +183,24 @@ func darwinControlledPATHCandidates(env []string) []string {
 func userLocalBinCandidatesForOS(osName string, env []string) []string {
 	candidates := []string{}
 	seen := map[string]struct{}{}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		base := strings.TrimSpace(envValue(env, key))
+	appendCandidate := func(base string) {
+		base = strings.TrimSpace(base)
 		if base == "" {
-			continue
+			return
 		}
 		dir := filepath.Join(base, ".local", "bin")
 		normalized := normalizePathKey(filepath.Clean(dir), osName)
 		if _, ok := seen[normalized]; ok {
-			continue
+			return
 		}
 		seen[normalized] = struct{}{}
 		candidates = append(candidates, dir)
+	}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		appendCandidate(envValue(env, key))
+	}
+	if home, err := pathLookupUserHomeDir(); err == nil {
+		appendCandidate(home)
 	}
 	return candidates
 }
