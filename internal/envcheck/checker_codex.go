@@ -141,6 +141,7 @@ func (s *Service) runCodexVersion(executablePath string, args []string) (string,
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   executablePath,
 		Args:   append([]string(nil), args...),
+		Env:    s.buildEnhancedEnv(),
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {

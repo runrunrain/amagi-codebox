@@ -1,7 +1,16 @@
 package envcheck
 
 import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+
+	"amagi-codebox/internal/platform"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,6 +45,80 @@ func TestParseCodexVersion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunCodexVersionUsesEnhancedEnvForNodeShebang(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Codex npm shebang enhanced PATH regression is specific to macOS GUI PATH behavior")
+	}
+
+	tempHome := t.TempDir()
+	nodeDir := filepath.Join(tempHome, ".local", "bin")
+	if err := os.MkdirAll(nodeDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake node dir: %v", err)
+	}
+	writeTestExecutable(t, nodeDir, "node")
+	writeTestExecutable(t, nodeDir, "npm")
+
+	t.Setenv("HOME", tempHome)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
+	runner := &codexVersionEnvRunner{requiredPathEntry: nodeDir}
+	svc := NewServiceWithRunner(runner)
+
+	version, err := svc.runCodexVersion(filepath.Join(tempHome, ".local", "node", "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), []string{"--version"})
+	if err != nil {
+		t.Fatalf("runCodexVersion error: %v", err)
+	}
+	if version != "0.132.0" {
+		t.Fatalf("runCodexVersion version = %q, want %q", version, "0.132.0")
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.calls))
+	}
+	if len(runner.calls[0].Env) == 0 {
+		t.Fatal("runCodexVersion passed empty Env; expected enhanced environment")
+	}
+	if !envPathContainsEntry(envValueFromList(runner.calls[0].Env, "PATH"), nodeDir) {
+		t.Fatalf("enhanced PATH %q does not contain node dir %q", envValueFromList(runner.calls[0].Env, "PATH"), nodeDir)
+	}
+}
+
+type codexVersionEnvRunner struct {
+	requiredPathEntry string
+	calls             []platform.CommandSpec
+}
+
+func (r *codexVersionEnvRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.calls = append(r.calls, spec)
+	pathValue := envValueFromList(spec.Env, "PATH")
+	if !envPathContainsEntry(pathValue, r.requiredPathEntry) {
+		return &platform.ProcessResult{Stderr: "env: node: No such file or directory"}, errors.New("exit status 127")
+	}
+	return &platform.ProcessResult{Stdout: "codex-cli 0.132.0"}, nil
+}
+
+func (r *codexVersionEnvRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func envValueFromList(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
+func envPathContainsEntry(pathValue string, want string) bool {
+	for _, entry := range filepath.SplitList(pathValue) {
+		if filepath.Clean(entry) == filepath.Clean(want) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
