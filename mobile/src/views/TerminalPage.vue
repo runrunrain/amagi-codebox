@@ -184,6 +184,7 @@ let fitAddon: FitAddon | null = null
 let ws: TerminalWebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
 let textSyncRaf: number | null = null
+let authoritativePtyDimensions: { cols: number; rows: number } | null = null
 
 // resize 防抖定时器
 let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -443,7 +444,10 @@ function cleanupViewportListener() {
   }
 }
 
-// 将 xterm 适配到容器大小（仅本地显示，不改 PTY 尺寸）
+// 将 xterm 适配到容器大小（仅本地显示，不改 PTY 尺寸）。
+// 仅作为尚未收到服务端 PTY dimensions 前的兜底显示路径；一旦服务端
+// dimensions 到达，远程端必须以 PTY 的真实尺寸为准，避免与桌面端争用
+// 同一个共享 PTY 的 cols/rows。
 function fitLocal() {
   if (!fitAddon || !terminal) return
   try {
@@ -451,28 +455,37 @@ function fitLocal() {
   } catch {}
 }
 
-function sendControllerResize() {
-  if (!terminal || !ws || currentTransportMode !== 'controller' || wsState.value !== 'connected') return
-  if (terminal.cols > 0 && terminal.rows > 0) {
-    ws.sendResize(terminal.cols, terminal.rows)
-  }
-}
-
 function fitControllerTerminal() {
   if (currentTransportMode !== 'controller') return
+
+  if (authoritativePtyDimensions) {
+    applyPtyDimensions(authoritativePtyDimensions.cols, authoritativePtyDimensions.rows)
+    return
+  }
+
   fitLocal()
-  sendControllerResize()
 }
 
-// observer 模式：保持 PTY 真实尺寸，不主动发 resize。
-function syncToPtyDimensions(cols: number, rows: number) {
-  if (!terminal || currentTransportMode !== 'observer') return
+function applyPtyDimensions(cols: number, rows: number) {
+  if (!terminal || cols <= 0 || rows <= 0) return
 
   try {
-    terminal.resize(cols, rows)
+    if (terminal.cols !== cols || terminal.rows !== rows) {
+      terminal.resize(cols, rows)
+    } else {
+      terminal.refresh(0, Math.max(0, rows - 1))
+    }
   } catch {}
 
   scheduleTextSync()
+}
+
+// 服务端 PTY 尺寸是所有远程显示模式的唯一权威尺寸。
+// controller 仍可发送输入，但不再通过本地 fit 抢占共享 PTY 尺寸。
+function syncToPtyDimensions(cols: number, rows: number) {
+  if (cols <= 0 || rows <= 0) return
+  authoritativePtyDimensions = { cols, rows }
+  applyPtyDimensions(cols, rows)
 }
 
 function debouncedControllerResize() {

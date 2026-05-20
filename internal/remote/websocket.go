@@ -45,7 +45,7 @@ type HistoryProvider interface {
 	GetOutputHistory(sessionID string) ([]byte, error)
 }
 
-// DimensionsProvider 可选接口：支持返回 PTY 当前尺寸，供 observer 客户端同步终端大小。
+// DimensionsProvider 可选接口：支持返回 PTY 当前尺寸，供所有远程客户端同步终端大小。
 type DimensionsProvider interface {
 	GetPtyDimensions(sessionID string) (cols, rows int, err error)
 }
@@ -79,9 +79,8 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 	}
 	defer conn.Close()
 
-	// 读取 mode 参数，observer 模式下忽略 resize 请求
-	mode := r.URL.Query().Get("mode")
-	isObserver := mode == "observer"
+	// 远程 resize 始终不作为 PTY 尺寸权威来源，避免 Web 端与桌面端争用
+	// 同一个共享 PTY。输入权限仍沿用既有前端 mode 语义，不在此处改变。
 
 	// 为此连接生成唯一 ID
 	connID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
@@ -120,11 +119,7 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 	}
 
 	if attachProvider, ok := s.app.(ObserverAttachProvider); ok {
-		history, cols, rows, err := attachProvider.AttachSessionObserver(sessionID, connID, outputCB, func(cols, rows int) {
-			if isObserver {
-				resizeCB(cols, rows)
-			}
-		})
+		history, cols, rows, err := attachProvider.AttachSessionObserver(sessionID, connID, outputCB, resizeCB)
 		if err != nil {
 			s.log.Error("remote", "WebSocket attach observer 失败", fmt.Sprintf("session=%s conn=%s err=%v", sessionID, connID, err))
 			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()), time.Now().Add(2*time.Second))
@@ -141,7 +136,7 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 			}
 		}
 
-		if isObserver && cols > 0 && rows > 0 {
+		if cols > 0 && rows > 0 {
 			if err := writeJSON(serverMsg{Type: "dimensions", Cols: cols, Rows: rows}, 5*time.Second); err != nil {
 				s.log.Debug("remote", "WebSocket 发送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
 			} else {
@@ -161,22 +156,18 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 				}
 			}
 		}
-		if isObserver {
-			if dp, ok := s.app.(DimensionsProvider); ok {
-				if cols, rows, err := dp.GetPtyDimensions(sessionID); err == nil && cols > 0 && rows > 0 {
-					dimMsg := serverMsg{Type: "dimensions", Cols: cols, Rows: rows}
-					if err := writeJSON(dimMsg, 5*time.Second); err != nil {
-						s.log.Debug("remote", "WebSocket 发送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
-					} else {
-						s.log.Info("remote", "WebSocket PTY 尺寸已发送", fmt.Sprintf("conn=%s cols=%d rows=%d", connID, cols, rows))
-					}
+		if dp, ok := s.app.(DimensionsProvider); ok {
+			if cols, rows, err := dp.GetPtyDimensions(sessionID); err == nil && cols > 0 && rows > 0 {
+				dimMsg := serverMsg{Type: "dimensions", Cols: cols, Rows: rows}
+				if err := writeJSON(dimMsg, 5*time.Second); err != nil {
+					s.log.Debug("remote", "WebSocket 发送尺寸失败", fmt.Sprintf("conn=%s err=%v", connID, err))
+				} else {
+					s.log.Info("remote", "WebSocket PTY 尺寸已发送", fmt.Sprintf("conn=%s cols=%d rows=%d", connID, cols, rows))
 				}
 			}
 		}
 		ptyBridge.RegisterOutputCallback(sessionID, connID, outputCB)
-		if isObserver {
-			ptyBridge.RegisterResizeCallback(sessionID, connID, resizeCB)
-		}
+		ptyBridge.RegisterResizeCallback(sessionID, connID, resizeCB)
 		defer func() {
 			ptyBridge.UnregisterOutputCallback(sessionID, connID)
 			ptyBridge.UnregisterResizeCallback(sessionID, connID)
@@ -217,15 +208,10 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 				s.log.Debug("remote", "PTY 写入失败", fmt.Sprintf("session=%s err=%v", sessionID, err))
 			}
 		case "resize":
-			if isObserver {
-				// Observer 模式：忽略 resize，避免影响桌面端 PTY
-				continue
-			}
-			if msg.Cols > 0 && msg.Rows > 0 {
-				if err := ptyBridge.PtyResize(sessionID, msg.Cols, msg.Rows); err != nil {
-					s.log.Debug("remote", "PTY resize 失败", fmt.Sprintf("session=%s err=%v", sessionID, err))
-				}
-			}
+			// Web/remote terminal is an input/output surface, not a PTY geometry
+			// owner. Desktop/Wails remains the authority for shared PTY dimensions;
+			// every remote client receives dimensions frames and syncs locally.
+			continue
 		default:
 			s.log.Debug("remote", "未知 WebSocket 消息类型", fmt.Sprintf("type=%s", msg.Type))
 		}
