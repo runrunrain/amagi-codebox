@@ -55,6 +55,78 @@ func (s *Service) checkOpenCode() (*CheckStatus, error) {
 	return status, nil
 }
 
+func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
+	prefix, err := s.npmGlobalPrefix()
+	if err != nil {
+		return nil, nil, err
+	}
+	candidates := openCodeNPMGlobalExecutableCandidates(prefix)
+	if len(candidates) == 0 {
+		return nil, candidates, fmt.Errorf("npm global prefix %q did not produce OpenCode executable candidates", prefix)
+	}
+
+	diagnostics := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !fileExists(candidate) {
+			continue
+		}
+		invocationPath := filepath.Clean(candidate)
+		realPath := resolveRealExecutablePath(invocationPath)
+		version, issues, err := s.openCodeVersionWithDiagnostics(invocationPath)
+		if err != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
+			continue
+		}
+		status := &CheckStatus{
+			Tool:           ToolOpenCode,
+			Installed:      true,
+			InstallMethod:  InstallMethodNPM,
+			Version:        version,
+			PATHOk:         true,
+			ExecutablePath: realPath,
+			CheckedAt:      time.Now(),
+			SystemPATHOk:   false,
+			PathState:      PathStateCodeboxPATH,
+			PathSource:     "npm global prefix",
+			Issues:         issues,
+		}
+		return status, candidates, nil
+	}
+
+	if len(diagnostics) > 0 {
+		return nil, candidates, fmt.Errorf("OpenCode npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+	}
+	return nil, candidates, fmt.Errorf("OpenCode executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
+}
+
+func openCodeNPMGlobalExecutableCandidates(prefix string) []string {
+	prefix = filepath.Clean(strings.TrimSpace(prefix))
+	if prefix == "" || prefix == "." {
+		return nil
+	}
+
+	dirs := []string{filepath.Join(prefix, "bin"), prefix, filepath.Join(prefix, "node_modules", ".bin")}
+	names := []string{openCodeCommandName}
+	if isWindows() {
+		names = []string{"opencode.cmd", "opencode.exe", openCodeCommandName}
+	}
+
+	candidates := make([]string, 0, len(dirs)*len(names))
+	seen := map[string]struct{}{}
+	for _, dir := range dirs {
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			key := normalizeOpenCodePath(candidate)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
 func (s *Service) openCodeVersion(executablePath string) (string, error) {
 	version, _, err := s.openCodeVersionWithDiagnostics(executablePath)
 	return version, err

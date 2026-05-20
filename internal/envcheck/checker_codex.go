@@ -50,6 +50,80 @@ func (s *Service) checkCodex() (*CheckStatus, error) {
 	return status, nil
 }
 
+func (s *Service) checkCodexFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
+	prefix, err := s.npmGlobalPrefix()
+	if err != nil {
+		return nil, nil, err
+	}
+	candidates := codexNPMGlobalExecutableCandidates(prefix)
+	if len(candidates) == 0 {
+		return nil, candidates, fmt.Errorf("npm global prefix %q did not produce Codex executable candidates", prefix)
+	}
+
+	diagnostics := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !fileExists(candidate) {
+			continue
+		}
+		invocationPath := filepath.Clean(candidate)
+		realPath := resolveRealExecutablePath(invocationPath)
+		version, err := s.codexVersion(realPath)
+		if err != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
+			continue
+		}
+		status := &CheckStatus{
+			Tool:           ToolCodex,
+			Installed:      true,
+			InstallMethod:  InstallMethodNPM,
+			Version:        version,
+			PATHOk:         true,
+			ExecutablePath: realPath,
+			CheckedAt:      time.Now(),
+			SystemPATHOk:   pathDirInProcessPATH(filepath.Dir(realPath)),
+			PathState:      PathStateCodeboxPATH,
+			PathSource:     "npm global prefix",
+		}
+		if status.SystemPATHOk {
+			status.PathState = PathStateSystemPATH
+		}
+		return status, candidates, nil
+	}
+
+	if len(diagnostics) > 0 {
+		return nil, candidates, fmt.Errorf("Codex npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+	}
+	return nil, candidates, fmt.Errorf("Codex executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
+}
+
+func codexNPMGlobalExecutableCandidates(prefix string) []string {
+	prefix = filepath.Clean(strings.TrimSpace(prefix))
+	if prefix == "" || prefix == "." {
+		return nil
+	}
+
+	dirs := []string{filepath.Join(prefix, "bin"), prefix, filepath.Join(prefix, "node_modules", ".bin")}
+	names := []string{codexCommandName}
+	if isWindows() {
+		names = []string{"codex.cmd", "codex.exe", codexCommandName}
+	}
+
+	candidates := make([]string, 0, len(dirs)*len(names))
+	seen := map[string]struct{}{}
+	for _, dir := range dirs {
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			key := normalizeCodexPath(candidate)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
 func (s *Service) codexVersion(executablePath string) (string, error) {
 	for _, args := range [][]string{{"--version"}, {"-V"}} {
 		version, err := s.runCodexVersion(executablePath, args)

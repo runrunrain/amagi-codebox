@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -873,6 +875,194 @@ func TestUpdate_FirstCommandSucceedsButVersionUnchanged_FallsBack(t *testing.T) 
 	}
 	if !sawVerify {
 		t.Error("expected at least one verify step in progress snapshots")
+	}
+}
+
+func TestUpdate_OpenCodeUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldBinDir := filepath.Join(tmpDir, "old-bin")
+	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
+	npmBinDir := filepath.Join(npmPrefix, "bin")
+	if err := os.MkdirAll(npmBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir npm bin: %v", err)
+	}
+	if err := os.MkdirAll(oldBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir old bin: %v", err)
+	}
+	_ = writeTestExecutable(t, oldBinDir, "opencode")
+	_ = writeTestExecutable(t, oldBinDir, "npm")
+	newOpenCodePath := writeTestExecutable(t, npmBinDir, "opencode")
+	t.Setenv("PATH", oldBinDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil},   // pre-check resolves old PATH entry
+		{stdout: "10.0.0", err: nil},            // npm availability probe
+		{stdout: "2.0.0", err: nil},             // latest version enrichment
+		{stdout: "changed 1 package", err: nil}, // npm install -g opencode-ai@latest succeeds
+		{stdout: "opencode v1.0.0", err: nil},   // default post-check still sees old PATH entry
+		{stdout: npmPrefix, err: nil},           // npm prefix -g points at the updated global prefix
+		{stdout: "opencode v2.0.0", err: nil},   // explicit npm global bin candidate reports new version
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err != nil {
+		t.Fatalf("expected npm global prefix verification to recover update, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got: %+v", result)
+	}
+	if result.Version != "2.0.0" {
+		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
+	}
+	if !strings.Contains(result.Message, "npm global prefix/bin 验证") {
+		t.Fatalf("success message should mention npm global prefix/bin verification, got: %s", result.Message)
+	}
+	if !strings.Contains(result.Message, filepath.Clean(newOpenCodePath)) {
+		t.Fatalf("success message should include verified npm global opencode path %q, got: %s", newOpenCodePath, result.Message)
+	}
+}
+
+func TestUpdate_CodexUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldBinDir := filepath.Join(tmpDir, "old-bin")
+	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
+	npmBinDir := filepath.Join(npmPrefix, "bin")
+	if err := os.MkdirAll(npmBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir npm bin: %v", err)
+	}
+	if err := os.MkdirAll(oldBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir old bin: %v", err)
+	}
+	_ = writeTestExecutable(t, oldBinDir, "codex")
+	_ = writeTestExecutable(t, oldBinDir, "npm")
+	newCodexPath := writeTestExecutable(t, npmBinDir, "codex")
+	t.Setenv("PATH", oldBinDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "codex-cli v1.0.0", err: nil},  // pre-check resolves old PATH entry
+		{stdout: "10.0.0", err: nil},            // npm availability probe
+		{stdout: "2.0.0", err: nil},             // latest version enrichment
+		{stdout: "updated 1 package", err: nil}, // npm update -g @openai/codex succeeds
+		{stdout: "codex-cli v1.0.0", err: nil},  // default post-check still sees old PATH entry
+		{stdout: npmPrefix, err: nil},           // npm prefix -g points at updated global prefix
+		{stdout: "codex-cli v2.0.0", err: nil},  // explicit npm global bin candidate reports new version
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err != nil {
+		t.Fatalf("expected Codex npm global prefix verification to recover update, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got: %+v", result)
+	}
+	if result.Version != "2.0.0" {
+		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
+	}
+	if !strings.Contains(result.Message, "Codex npm global prefix/bin 验证") {
+		t.Fatalf("success message should mention Codex npm global prefix/bin verification, got: %s", result.Message)
+	}
+	if !strings.Contains(result.Message, filepath.Clean(newCodexPath)) {
+		t.Fatalf("success message should include verified npm global codex path %q, got: %s", newCodexPath, result.Message)
+	}
+}
+
+func TestUpdate_ClaudeNPMUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldBinDir := filepath.Join(tmpDir, "old-bin")
+	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
+	npmBinDir := filepath.Join(npmPrefix, "bin")
+	homeDir := filepath.Join(tmpDir, "home")
+	if err := os.MkdirAll(npmBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir npm bin: %v", err)
+	}
+	if err := os.MkdirAll(oldBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir old bin: %v", err)
+	}
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	oldClaudePath := writeTestExecutable(t, oldBinDir, "claude")
+	_ = writeTestExecutable(t, oldBinDir, "npm")
+	newClaudePath := writeTestExecutable(t, npmBinDir, "claude")
+	t.Setenv("PATH", oldBinDir)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	runner := &npmPrefixUpdateRunner{
+		tool:        ToolClaudeCode,
+		oldToolPath: oldClaudePath,
+		newToolPath: newClaudePath,
+		npmPrefix:   npmPrefix,
+	}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err != nil {
+		t.Fatalf("expected Claude npm global prefix verification to recover update, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got: %+v", result)
+	}
+	if result.Version != "2.0.0" {
+		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
+	}
+	if !strings.Contains(result.Message, "Claude Code npm global prefix/bin 验证") {
+		t.Fatalf("success message should mention Claude Code npm global prefix/bin verification, got: %s", result.Message)
+	}
+	if !strings.Contains(result.Message, filepath.Clean(newClaudePath)) {
+		t.Fatalf("success message should include verified npm global claude path %q, got: %s", newClaudePath, result.Message)
+	}
+}
+
+type npmPrefixUpdateRunner struct {
+	tool        CLITool
+	oldToolPath string
+	newToolPath string
+	npmPrefix   string
+}
+
+func (r *npmPrefixUpdateRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	path := filepath.Clean(spec.Path)
+	if sameNormalizedPath(path, r.oldToolPath) {
+		return &platform.ProcessResult{Stdout: npmPrefixUpdateVersionOutput(r.tool, "1.0.0")}, nil
+	}
+	if sameNormalizedPath(path, r.newToolPath) {
+		return &platform.ProcessResult{Stdout: npmPrefixUpdateVersionOutput(r.tool, "2.0.0")}, nil
+	}
+	if isNPMPath(strings.ToLower(spec.Path)) || strings.EqualFold(filepath.Base(spec.Path), "npm") {
+		if len(spec.Args) >= 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
+			return &platform.ProcessResult{Stdout: r.npmPrefix}, nil
+		}
+		if len(spec.Args) >= 1 && spec.Args[0] == "--version" {
+			return &platform.ProcessResult{Stdout: "10.0.0"}, nil
+		}
+		if len(spec.Args) >= 1 && spec.Args[0] == "view" {
+			return &platform.ProcessResult{Stdout: "2.0.0"}, nil
+		}
+		if len(spec.Args) >= 1 && (spec.Args[0] == "install" || spec.Args[0] == "update") {
+			return &platform.ProcessResult{Stdout: "changed 1 package"}, nil
+		}
+		if len(spec.Args) >= 1 && spec.Args[0] == "list" {
+			return &platform.ProcessResult{Stdout: "node_modules/@anthropic-ai/claude-code\n└── @anthropic-ai/claude-code@2.0.0"}, nil
+		}
+	}
+	return &platform.ProcessResult{}, os.ErrNotExist
+}
+
+func (r *npmPrefixUpdateRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func npmPrefixUpdateVersionOutput(tool CLITool, version string) string {
+	switch tool {
+	case ToolClaudeCode:
+		return "Claude Code v" + version
+	case ToolCodex:
+		return "codex-cli v" + version
+	default:
+		return version
 	}
 }
 

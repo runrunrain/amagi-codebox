@@ -215,6 +215,42 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 			}, nil
 		}
 
+		npmVerifyDetail := ""
+		if isOpenCodeNPMGlobalInstallCommand(tool, command) {
+			if npmAfter, npmDetail, npmErr := s.verifyOpenCodeNPMGlobalBinAfterCommand(operation, beforeVersion); npmErr == nil {
+				return &InstallResult{
+					Success: true,
+					Message: fmt.Sprintf("%s 已通过 %s 方式成功%s（%s）", displayToolName(tool), command.description, operationDisplayName(operation), npmDetail),
+					Tool:    tool,
+					Version: npmAfter.Version,
+				}, nil
+			} else {
+				npmVerifyDetail = npmDetail
+			}
+		} else if isCodexNPMGlobalInstallCommand(tool, command) {
+			if npmAfter, npmDetail, npmErr := s.verifyCodexNPMGlobalBinAfterCommand(operation, beforeVersion); npmErr == nil {
+				return &InstallResult{
+					Success: true,
+					Message: fmt.Sprintf("%s 已通过 %s 方式成功%s（%s）", displayToolName(tool), command.description, operationDisplayName(operation), npmDetail),
+					Tool:    tool,
+					Version: npmAfter.Version,
+				}, nil
+			} else {
+				npmVerifyDetail = npmDetail
+			}
+		} else if isClaudeNPMGlobalInstallCommand(tool, command) {
+			if npmAfter, npmDetail, npmErr := s.verifyClaudeNPMGlobalBinAfterCommand(operation, beforeVersion); npmErr == nil {
+				return &InstallResult{
+					Success: true,
+					Message: fmt.Sprintf("%s 已通过 %s 方式成功%s（%s）", displayToolName(tool), command.description, operationDisplayName(operation), npmDetail),
+					Tool:    tool,
+					Version: npmAfter.Version,
+				}, nil
+			} else {
+				npmVerifyDetail = npmDetail
+			}
+		}
+
 		// Command ran but verification failed. Build a descriptive reason.
 		verifyReason := verificationErrorMessage(after)
 		if verifyOk && !versionChanged {
@@ -222,6 +258,9 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		}
 		if verifyErr != nil {
 			verifyReason = fmt.Sprintf("verification call failed: %v", verifyErr)
+		}
+		if npmVerifyDetail != "" {
+			verifyReason = fmt.Sprintf("%s; %s", verifyReason, npmVerifyDetail)
 		}
 
 		attempts = append(attempts, attemptResult{
@@ -256,6 +295,136 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		overallLastErr = errors.New(message)
 	}
 	return installFailure(tool, message, overallLastErr), overallLastErr
+}
+
+func isOpenCodeNPMGlobalInstallCommand(tool CLITool, command installCommand) bool {
+	if tool != ToolOpenCode {
+		return false
+	}
+	for _, arg := range command.args {
+		if strings.Contains(arg, "opencode-ai") || arg == "opencode" {
+			return true
+		}
+	}
+	return strings.Contains(command.description, "opencode-ai") || strings.Contains(command.description, "opencode")
+}
+
+func isCodexNPMGlobalInstallCommand(tool CLITool, command installCommand) bool {
+	if tool != ToolCodex {
+		return false
+	}
+	for _, arg := range command.args {
+		if strings.Contains(arg, "@openai/codex") || arg == "codex" {
+			return true
+		}
+	}
+	return strings.Contains(command.description, "@openai/codex") || strings.Contains(command.description, "codex")
+}
+
+func isClaudeNPMGlobalInstallCommand(tool CLITool, command installCommand) bool {
+	if tool != ToolClaudeCode {
+		return false
+	}
+	for _, arg := range command.args {
+		if strings.Contains(arg, "@anthropic-ai/claude-code") || strings.Contains(arg, "claude-code") {
+			return true
+		}
+	}
+	return strings.Contains(command.description, "@anthropic-ai/claude-code") || strings.Contains(command.description, "claude-code")
+}
+
+func (s *Service) verifyOpenCodeNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string) (*CheckStatus, string, error) {
+	status, candidates, err := s.checkOpenCodeFromNPMGlobalPrefix()
+	if err != nil {
+		return nil, openCodeNPMGlobalVerificationDetail(nil, candidates, err), err
+	}
+	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
+		err := fmt.Errorf("npm global prefix OpenCode status was not healthy: %s", verificationErrorMessage(status))
+		return nil, openCodeNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	version := strings.TrimSpace(status.Version)
+	if version == "" {
+		err := errors.New("npm global prefix OpenCode reported an empty version")
+		return nil, openCodeNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && version == strings.TrimSpace(beforeVersion) {
+		err := fmt.Errorf("npm global prefix OpenCode version was unchanged at %s", beforeVersion)
+		return nil, openCodeNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	return status, openCodeNPMGlobalVerificationDetail(status, candidates, nil), nil
+}
+
+func (s *Service) verifyCodexNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string) (*CheckStatus, string, error) {
+	status, candidates, err := s.checkCodexFromNPMGlobalPrefix()
+	if err != nil {
+		return nil, codexNPMGlobalVerificationDetail(nil, candidates, err), err
+	}
+	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
+		err := fmt.Errorf("npm global prefix Codex status was not healthy: %s", verificationErrorMessage(status))
+		return nil, codexNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	version := strings.TrimSpace(status.Version)
+	if version == "" {
+		err := errors.New("npm global prefix Codex reported an empty version")
+		return nil, codexNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && version == strings.TrimSpace(beforeVersion) {
+		err := fmt.Errorf("npm global prefix Codex version was unchanged at %s", beforeVersion)
+		return nil, codexNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	return status, codexNPMGlobalVerificationDetail(status, candidates, nil), nil
+}
+
+func (s *Service) verifyClaudeNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string) (*CheckStatus, string, error) {
+	status, candidates, err := s.checkClaudeFromNPMGlobalPrefix()
+	if err != nil {
+		return nil, claudeNPMGlobalVerificationDetail(nil, candidates, err), err
+	}
+	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
+		err := fmt.Errorf("npm global prefix Claude Code status was not healthy: %s", verificationErrorMessage(status))
+		return nil, claudeNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	version := strings.TrimSpace(status.Version)
+	if version == "" {
+		err := errors.New("npm global prefix Claude Code reported an empty version")
+		return nil, claudeNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && version == strings.TrimSpace(beforeVersion) {
+		err := fmt.Errorf("npm global prefix Claude Code version was unchanged at %s", beforeVersion)
+		return nil, claudeNPMGlobalVerificationDetail(status, candidates, err), err
+	}
+	return status, claudeNPMGlobalVerificationDetail(status, candidates, nil), nil
+}
+
+func openCodeNPMGlobalVerificationDetail(status *CheckStatus, candidates []string, err error) string {
+	return npmGlobalVerificationDetail("npm global prefix/bin 验证", status, candidates, err)
+}
+
+func codexNPMGlobalVerificationDetail(status *CheckStatus, candidates []string, err error) string {
+	return npmGlobalVerificationDetail("Codex npm global prefix/bin 验证", status, candidates, err)
+}
+
+func claudeNPMGlobalVerificationDetail(status *CheckStatus, candidates []string, err error) string {
+	return npmGlobalVerificationDetail("Claude Code npm global prefix/bin 验证", status, candidates, err)
+}
+
+func npmGlobalVerificationDetail(section string, status *CheckStatus, candidates []string, err error) string {
+	parts := []string{section}
+	if status != nil {
+		if strings.TrimSpace(status.ExecutablePath) != "" {
+			parts = append(parts, "path="+status.ExecutablePath)
+		}
+		if strings.TrimSpace(status.Version) != "" {
+			parts = append(parts, "version="+strings.TrimSpace(status.Version))
+		}
+	}
+	if len(candidates) > 0 {
+		parts = append(parts, "candidates="+strings.Join(candidates, ","))
+	}
+	if err != nil {
+		parts = append(parts, "error="+sanitizeInstallerOutput(err.Error()))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (s *Service) installClaudeCodeWithMethodProgress(method ClaudeInstallMethod, reporter progressReporter) (*InstallResult, error) {

@@ -160,6 +160,51 @@ func (s *Service) firstExistingClaudeNPMGlobalPath() string {
 	return path
 }
 
+func (s *Service) checkClaudeFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
+	prefix, err := s.npmGlobalPrefix()
+	if err != nil {
+		return nil, nil, err
+	}
+	candidates := claudeNPMGlobalExecutableCandidates(prefix)
+	if len(candidates) == 0 {
+		return nil, candidates, fmt.Errorf("npm global prefix %q did not produce Claude Code executable candidates", prefix)
+	}
+
+	diagnostics := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !fileExists(candidate) {
+			continue
+		}
+		invocationPath, detectionPath := resolveClaudeExecutablePathsForCheck(candidate)
+		version, err := s.claudeVersion(invocationPath)
+		if err != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
+			continue
+		}
+		status := &CheckStatus{
+			Tool:           ToolClaudeCode,
+			Installed:      true,
+			InstallMethod:  InstallMethodNPM,
+			Version:        version,
+			PATHOk:         true,
+			ExecutablePath: invocationPath,
+			CheckedAt:      time.Now(),
+			SystemPATHOk:   pathDirInProcessPATH(filepath.Dir(detectionPath)),
+			PathState:      PathStateCodeboxPATH,
+			PathSource:     "npm global prefix",
+		}
+		if status.SystemPATHOk {
+			status.PathState = PathStateSystemPATH
+		}
+		return status, candidates, nil
+	}
+
+	if len(diagnostics) > 0 {
+		return nil, candidates, fmt.Errorf("Claude Code npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+	}
+	return nil, candidates, fmt.Errorf("Claude Code executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
+}
+
 func (s *Service) isClaudeNPMGlobalExecutablePath(path string) bool {
 	path = resolveRealExecutablePath(path)
 	prefix, err := s.npmGlobalPrefix()
