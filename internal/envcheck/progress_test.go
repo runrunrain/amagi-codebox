@@ -1246,6 +1246,368 @@ func TestUpdate_CodexNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	}
 }
 
+func TestUpdate_CodexHomebrewNPMStaleEntryAutoCleanup_Succeeds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
+	}
+	fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+		packageName:        codexNPMPackageName,
+		removeOldOnCleanup: true,
+		cleanupSucceeds:    true,
+	})
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err != nil {
+		t.Fatalf("expected cleanup-assisted success, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got: %+v", result)
+	}
+	if result.Version != "2.0.0" {
+		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
+	}
+	for _, want := range []string{"旧 Homebrew npm 全局入口", "npm uninstall -g @openai/codex --prefix", "stale Homebrew npm Codex path no longer effective"} {
+		if !strings.Contains(result.Message, want) {
+			t.Fatalf("success message should contain %q, got: %s", want, result.Message)
+		}
+	}
+	uninstallSpec, ok := fixture.runner.codexUninstallCall()
+	if !ok {
+		t.Fatal("expected scoped npm uninstall @openai/codex to be called")
+	}
+	wantArgs := []string{"uninstall", "-g", codexNPMPackageName, "--prefix", fixture.stalePrefix}
+	if len(uninstallSpec.Args) != len(wantArgs) || strings.Join(uninstallSpec.Args[:4], "\x00") != strings.Join(wantArgs[:4], "\x00") || !sameNormalizedPath(uninstallSpec.Args[4], wantArgs[4]) {
+		t.Fatalf("cleanup command must stay scoped to @openai/codex and stale prefix, got args=%v want=%v", uninstallSpec.Args, wantArgs)
+	}
+	if fixture.runner.brewCalled() {
+		t.Fatal("Codex stale npm cleanup must not call brew")
+	}
+}
+
+func TestUpdate_CodexHomebrewNPMStaleEntryCleanupFails_ReportsFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
+	}
+	fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+		packageName:        codexNPMPackageName,
+		removeOldOnCleanup: true,
+		cleanupSucceeds:    false,
+	})
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err == nil {
+		t.Fatal("expected failure when scoped npm uninstall fails")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
+	}
+	for _, want := range []string{"Codex stale Homebrew npm cleanup failed", "npm uninstall -g @openai/codex --prefix", "permission denied"} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
+	}
+	if !fixture.runner.codexUninstallCalled() {
+		t.Fatal("expected scoped npm uninstall @openai/codex to be attempted")
+	}
+}
+
+func TestUpdate_CodexHomebrewNPMStaleEntryCleanupRecheckMustPass(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
+	}
+	fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+		packageName:        codexNPMPackageName,
+		removeOldOnCleanup: false,
+		cleanupSucceeds:    true,
+	})
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err == nil {
+		t.Fatal("expected failure when cleanup succeeds but recheck still resolves stale Codex entry")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
+	}
+	if !fixture.runner.codexUninstallCalled() {
+		t.Fatal("expected scoped npm uninstall @openai/codex to be called before recheck")
+	}
+	for _, want := range []string{"cleanup recheck failed", "recheck", "stale Homebrew npm Codex"} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
+	}
+}
+
+func TestTryCleanupCodexStaleNPMEntryAfterFallback_GuardsUnsafeInputs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
+	}
+	t.Run("candidate unhealthy", func(t *testing.T) {
+		fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+			packageName:        codexNPMPackageName,
+			removeOldOnCleanup: true,
+			cleanupSucceeds:    true,
+		})
+		svc := NewServiceWithRunner(fixture.runner)
+		_, detail, err := svc.tryCleanupCodexStaleNPMEntryAfterFallback(installOperationUpdate, "1.0.0", fixture.effectiveStatus(), &CheckStatus{
+			Tool:           ToolCodex,
+			Installed:      false,
+			PATHOk:         false,
+			InstallMethod:  InstallMethodNPM,
+			Version:        "2.0.0",
+			ExecutablePath: fixture.npmCodexPath,
+		})
+		if err == nil || !strings.Contains(detail, "npm candidate is not safe") {
+			t.Fatalf("expected unhealthy candidate guard, detail=%q err=%v", detail, err)
+		}
+		if fixture.runner.codexUninstallCalled() {
+			t.Fatal("cleanup must not run for unhealthy npm candidate")
+		}
+	})
+
+	t.Run("same path", func(t *testing.T) {
+		fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+			packageName:        codexNPMPackageName,
+			removeOldOnCleanup: true,
+			cleanupSucceeds:    true,
+		})
+		svc := NewServiceWithRunner(fixture.runner)
+		candidate := fixture.npmCandidateStatus()
+		effective := fixture.npmCandidateStatus()
+		_, detail, err := svc.tryCleanupCodexStaleNPMEntryAfterFallback(installOperationUpdate, "1.0.0", effective, candidate)
+		if err == nil || !strings.Contains(detail, "already matches npm candidate path") {
+			t.Fatalf("expected same-path guard, detail=%q err=%v", detail, err)
+		}
+		if fixture.runner.codexUninstallCalled() {
+			t.Fatal("cleanup must not run when effective path already matches npm candidate")
+		}
+	})
+
+	t.Run("non Homebrew prefix", func(t *testing.T) {
+		fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+			stalePrefixName:    "custom-prefix",
+			packageName:        codexNPMPackageName,
+			removeOldOnCleanup: true,
+			cleanupSucceeds:    true,
+		})
+		svc := NewServiceWithRunner(fixture.runner)
+		_, detail, err := svc.tryCleanupCodexStaleNPMEntryAfterFallback(installOperationUpdate, "1.0.0", fixture.effectiveStatus(), fixture.npmCandidateStatus())
+		if err == nil || !strings.Contains(detail, "not recognized as a Homebrew npm global prefix") {
+			t.Fatalf("expected non-Homebrew guard, detail=%q err=%v", detail, err)
+		}
+		if fixture.runner.codexUninstallCalled() {
+			t.Fatal("cleanup must not run for non-Homebrew prefix")
+		}
+	})
+
+	t.Run("non Codex package", func(t *testing.T) {
+		fixture := newCodexStaleNPMCleanupFixture(t, codexStaleNPMCleanupOptions{
+			packageName:        "@openai/not-codex",
+			removeOldOnCleanup: true,
+			cleanupSucceeds:    true,
+		})
+		svc := NewServiceWithRunner(fixture.runner)
+		_, detail, err := svc.tryCleanupCodexStaleNPMEntryAfterFallback(installOperationUpdate, "1.0.0", fixture.effectiveStatus(), fixture.npmCandidateStatus())
+		if err == nil || !strings.Contains(detail, "package.json guard failed") {
+			t.Fatalf("expected package-name guard, detail=%q err=%v", detail, err)
+		}
+		if fixture.runner.codexUninstallCalled() {
+			t.Fatal("cleanup must not run when package.json name is not @openai/codex")
+		}
+	})
+}
+
+type codexStaleNPMCleanupOptions struct {
+	stalePrefixName    string
+	packageName        string
+	removeOldOnCleanup bool
+	cleanupSucceeds    bool
+}
+
+type codexStaleNPMCleanupFixture struct {
+	runner         *codexStaleNPMCleanupRunner
+	stalePrefix    string
+	staleBinPath   string
+	staleCodexPath string
+	npmCodexPath   string
+	npmPrefix      string
+}
+
+func newCodexStaleNPMCleanupFixture(t *testing.T, opts codexStaleNPMCleanupOptions) codexStaleNPMCleanupFixture {
+	t.Helper()
+	if opts.stalePrefixName == "" {
+		opts.stalePrefixName = "homebrew"
+	}
+	if opts.packageName == "" {
+		opts.packageName = codexNPMPackageName
+	}
+	tmpDir := t.TempDir()
+	stalePrefix := filepath.Join(tmpDir, opts.stalePrefixName)
+	stalePrefixBin := filepath.Join(stalePrefix, "bin")
+	stalePackageRoot := filepath.Join(stalePrefix, "lib", "node_modules", "@openai", "codex")
+	stalePackageBin := filepath.Join(stalePackageRoot, "bin")
+	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
+	npmPrefixBin := filepath.Join(npmPrefix, "bin")
+	npmPackageRoot := filepath.Join(npmPrefix, "lib", "node_modules", "@openai", "codex")
+	npmPackageBin := filepath.Join(npmPackageRoot, "bin")
+	for _, dir := range []string{stalePrefixBin, stalePackageBin, npmPrefixBin, npmPackageBin} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	staleCodexPath := writeTestExecutable(t, stalePackageBin, "codex.js")
+	npmCodexPath := writeTestExecutable(t, npmPackageBin, "codex.js")
+	staleBinPath := filepath.Join(stalePrefixBin, "codex")
+	npmBinPath := filepath.Join(npmPrefixBin, "codex")
+	if err := os.Symlink(staleCodexPath, staleBinPath); err != nil {
+		t.Fatalf("symlink stale codex: %v", err)
+	}
+	if err := os.Symlink(npmCodexPath, npmBinPath); err != nil {
+		t.Fatalf("symlink npm codex: %v", err)
+	}
+	_ = writeTestExecutable(t, npmPrefixBin, "npm")
+	writeCodexPackageJSON(t, filepath.Join(stalePackageRoot, "package.json"), opts.packageName, "1.0.0")
+	writeCodexPackageJSON(t, filepath.Join(npmPackageRoot, "package.json"), codexNPMPackageName, "2.0.0")
+	t.Setenv("PATH", strings.Join([]string{stalePrefixBin, npmPrefixBin}, string(os.PathListSeparator)))
+
+	runner := &codexStaleNPMCleanupRunner{
+		stalePrefix:        stalePrefix,
+		staleBinPath:       staleBinPath,
+		staleCodexPath:     staleCodexPath,
+		stalePackageRoot:   stalePackageRoot,
+		npmCodexPath:       npmCodexPath,
+		npmPrefix:          npmPrefix,
+		removeOldOnCleanup: opts.removeOldOnCleanup,
+		cleanupSucceeds:    opts.cleanupSucceeds,
+	}
+	return codexStaleNPMCleanupFixture{runner: runner, stalePrefix: stalePrefix, staleBinPath: staleBinPath, staleCodexPath: staleCodexPath, npmCodexPath: npmCodexPath, npmPrefix: npmPrefix}
+}
+
+func writeCodexPackageJSON(t *testing.T, path string, name string, version string) {
+	t.Helper()
+	content := fmt.Sprintf(`{"name":%q,"version":%q}`, name, version)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write package.json %s: %v", path, err)
+	}
+}
+
+func (f codexStaleNPMCleanupFixture) effectiveStatus() *CheckStatus {
+	return &CheckStatus{
+		Tool:           ToolCodex,
+		Installed:      true,
+		PATHOk:         true,
+		InstallMethod:  InstallMethodNPM,
+		Version:        "1.0.0",
+		ExecutablePath: f.staleCodexPath,
+	}
+}
+
+func (f codexStaleNPMCleanupFixture) npmCandidateStatus() *CheckStatus {
+	return &CheckStatus{
+		Tool:           ToolCodex,
+		Installed:      true,
+		PATHOk:         true,
+		InstallMethod:  InstallMethodNPM,
+		Version:        "2.0.0",
+		ExecutablePath: f.npmCodexPath,
+	}
+}
+
+type codexStaleNPMCleanupRunner struct {
+	stalePrefix        string
+	staleBinPath       string
+	staleCodexPath     string
+	stalePackageRoot   string
+	npmCodexPath       string
+	npmPrefix          string
+	removeOldOnCleanup bool
+	cleanupSucceeds    bool
+
+	mu    sync.Mutex
+	calls []platform.CommandSpec
+}
+
+func (r *codexStaleNPMCleanupRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, spec)
+	r.mu.Unlock()
+
+	path := filepath.Clean(spec.Path)
+	if sameNormalizedPath(path, r.staleCodexPath) {
+		return &platform.ProcessResult{Stdout: "codex-cli 1.0.0"}, nil
+	}
+	if sameNormalizedPath(path, r.npmCodexPath) {
+		return &platform.ProcessResult{Stdout: "codex-cli 2.0.0"}, nil
+	}
+	if isNPMPath(strings.ToLower(spec.Path)) || strings.EqualFold(filepath.Base(spec.Path), "npm") {
+		return r.runNPM(spec)
+	}
+	if strings.EqualFold(filepath.Base(spec.Path), "brew") {
+		return &platform.ProcessResult{Stderr: "brew must not be called"}, errors.New("brew must not be called")
+	}
+	return &platform.ProcessResult{}, os.ErrNotExist
+}
+
+func (r *codexStaleNPMCleanupRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func (r *codexStaleNPMCleanupRunner) runNPM(spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	if len(spec.Args) >= 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
+		return &platform.ProcessResult{Stdout: r.npmPrefix}, nil
+	}
+	if len(spec.Args) >= 1 && spec.Args[0] == "--version" {
+		return &platform.ProcessResult{Stdout: "10.0.0"}, nil
+	}
+	if len(spec.Args) >= 1 && spec.Args[0] == "view" {
+		return &platform.ProcessResult{Stdout: "2.0.0"}, nil
+	}
+	if len(spec.Args) >= 1 && (spec.Args[0] == "install" || spec.Args[0] == "update") {
+		return &platform.ProcessResult{Stdout: "updated 1 package"}, nil
+	}
+	if len(spec.Args) == 5 && spec.Args[0] == "uninstall" && spec.Args[1] == "-g" && spec.Args[2] == codexNPMPackageName && spec.Args[3] == "--prefix" && sameNormalizedPath(spec.Args[4], r.stalePrefix) {
+		if !r.cleanupSucceeds {
+			return &platform.ProcessResult{Stderr: "permission denied while uninstalling @openai/codex"}, errors.New("permission denied")
+		}
+		if r.removeOldOnCleanup {
+			_ = os.Remove(r.staleBinPath)
+			_ = os.RemoveAll(r.stalePackageRoot)
+		}
+		return &platform.ProcessResult{Stdout: "removed 1 package"}, nil
+	}
+	return &platform.ProcessResult{}, nil
+}
+
+func (r *codexStaleNPMCleanupRunner) codexUninstallCalled() bool {
+	_, ok := r.codexUninstallCall()
+	return ok
+}
+
+func (r *codexStaleNPMCleanupRunner) codexUninstallCall() (platform.CommandSpec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, call := range r.calls {
+		if len(call.Args) == 5 && call.Args[0] == "uninstall" && call.Args[1] == "-g" && call.Args[2] == codexNPMPackageName && call.Args[3] == "--prefix" {
+			return call, true
+		}
+	}
+	return platform.CommandSpec{}, false
+}
+
+func (r *codexStaleNPMCleanupRunner) brewCalled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, call := range r.calls {
+		if strings.EqualFold(filepath.Base(call.Path), "brew") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUpdate_ClaudeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldBinDir := filepath.Join(tmpDir, "old-bin")
