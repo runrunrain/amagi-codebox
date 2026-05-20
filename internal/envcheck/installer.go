@@ -217,7 +217,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 
 		npmVerifyDetail := ""
 		if isOpenCodeNPMGlobalInstallCommand(tool, command) {
-			if npmAfter, npmDetail, npmErr := s.verifyOpenCodeNPMGlobalBinAfterCommand(operation, beforeVersion); npmErr == nil {
+			if npmAfter, npmDetail, npmErr := s.verifyOpenCodeNPMGlobalBinAfterCommand(operation, beforeVersion, after); npmErr == nil {
 				return &InstallResult{
 					Success: true,
 					Message: fmt.Sprintf("%s 已通过 %s 方式成功%s（%s）", displayToolName(tool), command.description, operationDisplayName(operation), npmDetail),
@@ -228,7 +228,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 				npmVerifyDetail = npmDetail
 			}
 		} else if isCodexNPMGlobalInstallCommand(tool, command) {
-			if npmAfter, npmDetail, npmErr := s.verifyCodexNPMGlobalBinAfterCommand(operation, beforeVersion); npmErr == nil {
+			if npmAfter, npmDetail, npmErr := s.verifyCodexNPMGlobalBinAfterCommand(operation, beforeVersion, after); npmErr == nil {
 				return &InstallResult{
 					Success: true,
 					Message: fmt.Sprintf("%s 已通过 %s 方式成功%s（%s）", displayToolName(tool), command.description, operationDisplayName(operation), npmDetail),
@@ -239,7 +239,7 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 				npmVerifyDetail = npmDetail
 			}
 		} else if isClaudeNPMGlobalInstallCommand(tool, command) {
-			if npmAfter, npmDetail, npmErr := s.verifyClaudeNPMGlobalBinAfterCommand(operation, beforeVersion); npmErr == nil {
+			if npmAfter, npmDetail, npmErr := s.verifyClaudeNPMGlobalBinAfterCommand(operation, beforeVersion, after); npmErr == nil {
 				return &InstallResult{
 					Success: true,
 					Message: fmt.Sprintf("%s 已通过 %s 方式成功%s（%s）", displayToolName(tool), command.description, operationDisplayName(operation), npmDetail),
@@ -333,67 +333,113 @@ func isClaudeNPMGlobalInstallCommand(tool CLITool, command installCommand) bool 
 	return strings.Contains(command.description, "@anthropic-ai/claude-code") || strings.Contains(command.description, "claude-code")
 }
 
-func (s *Service) verifyOpenCodeNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string) (*CheckStatus, string, error) {
-	status, candidates, err := s.checkOpenCodeFromNPMGlobalPrefix()
-	if err != nil {
-		return nil, openCodeNPMGlobalVerificationDetail(nil, candidates, err), err
-	}
-	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
-		err := fmt.Errorf("npm global prefix OpenCode status was not healthy: %s", verificationErrorMessage(status))
-		return nil, openCodeNPMGlobalVerificationDetail(status, candidates, err), err
-	}
-	version := strings.TrimSpace(status.Version)
-	if version == "" {
-		err := errors.New("npm global prefix OpenCode reported an empty version")
-		return nil, openCodeNPMGlobalVerificationDetail(status, candidates, err), err
-	}
-	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && version == strings.TrimSpace(beforeVersion) {
-		err := fmt.Errorf("npm global prefix OpenCode version was unchanged at %s", beforeVersion)
-		return nil, openCodeNPMGlobalVerificationDetail(status, candidates, err), err
-	}
-	return status, openCodeNPMGlobalVerificationDetail(status, candidates, nil), nil
+func (s *Service) verifyOpenCodeNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string, effectiveAfter *CheckStatus) (*CheckStatus, string, error) {
+	return s.verifyNPMGlobalCandidateDoesNotConflictWithEffectiveEntry(
+		operation,
+		beforeVersion,
+		effectiveAfter,
+		"OpenCode",
+		s.checkOpenCodeFromNPMGlobalPrefix,
+		openCodeNPMGlobalVerificationDetail,
+	)
 }
 
-func (s *Service) verifyCodexNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string) (*CheckStatus, string, error) {
-	status, candidates, err := s.checkCodexFromNPMGlobalPrefix()
-	if err != nil {
-		return nil, codexNPMGlobalVerificationDetail(nil, candidates, err), err
-	}
-	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
-		err := fmt.Errorf("npm global prefix Codex status was not healthy: %s", verificationErrorMessage(status))
-		return nil, codexNPMGlobalVerificationDetail(status, candidates, err), err
-	}
-	version := strings.TrimSpace(status.Version)
-	if version == "" {
-		err := errors.New("npm global prefix Codex reported an empty version")
-		return nil, codexNPMGlobalVerificationDetail(status, candidates, err), err
-	}
-	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && version == strings.TrimSpace(beforeVersion) {
-		err := fmt.Errorf("npm global prefix Codex version was unchanged at %s", beforeVersion)
-		return nil, codexNPMGlobalVerificationDetail(status, candidates, err), err
-	}
-	return status, codexNPMGlobalVerificationDetail(status, candidates, nil), nil
+func (s *Service) verifyCodexNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string, effectiveAfter *CheckStatus) (*CheckStatus, string, error) {
+	return s.verifyNPMGlobalCandidateDoesNotConflictWithEffectiveEntry(
+		operation,
+		beforeVersion,
+		effectiveAfter,
+		"Codex",
+		s.checkCodexFromNPMGlobalPrefix,
+		codexNPMGlobalVerificationDetail,
+	)
 }
 
-func (s *Service) verifyClaudeNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string) (*CheckStatus, string, error) {
-	status, candidates, err := s.checkClaudeFromNPMGlobalPrefix()
+func (s *Service) verifyClaudeNPMGlobalBinAfterCommand(operation installOperation, beforeVersion string, effectiveAfter *CheckStatus) (*CheckStatus, string, error) {
+	return s.verifyNPMGlobalCandidateDoesNotConflictWithEffectiveEntry(
+		operation,
+		beforeVersion,
+		effectiveAfter,
+		"Claude Code",
+		s.checkClaudeFromNPMGlobalPrefix,
+		claudeNPMGlobalVerificationDetail,
+	)
+}
+
+func (s *Service) verifyNPMGlobalCandidateDoesNotConflictWithEffectiveEntry(
+	operation installOperation,
+	beforeVersion string,
+	effectiveAfter *CheckStatus,
+	toolDisplayName string,
+	checkNPMCandidate func() (*CheckStatus, []string, error),
+	detail func(*CheckStatus, []string, error) string,
+) (*CheckStatus, string, error) {
+	status, candidates, err := checkNPMCandidate()
 	if err != nil {
-		return nil, claudeNPMGlobalVerificationDetail(nil, candidates, err), err
+		return nil, detail(nil, candidates, err), err
 	}
 	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
-		err := fmt.Errorf("npm global prefix Claude Code status was not healthy: %s", verificationErrorMessage(status))
-		return nil, claudeNPMGlobalVerificationDetail(status, candidates, err), err
+		err := fmt.Errorf("npm global prefix %s status was not healthy: %s", toolDisplayName, verificationErrorMessage(status))
+		return nil, detail(status, candidates, err), err
 	}
 	version := strings.TrimSpace(status.Version)
 	if version == "" {
-		err := errors.New("npm global prefix Claude Code reported an empty version")
-		return nil, claudeNPMGlobalVerificationDetail(status, candidates, err), err
+		err := fmt.Errorf("npm global prefix %s reported an empty version", toolDisplayName)
+		return nil, detail(status, candidates, err), err
 	}
 	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && version == strings.TrimSpace(beforeVersion) {
-		err := fmt.Errorf("npm global prefix Claude Code version was unchanged at %s", beforeVersion)
-		return nil, claudeNPMGlobalVerificationDetail(status, candidates, err), err
+		err := fmt.Errorf("npm global prefix %s version was unchanged at %s", toolDisplayName, beforeVersion)
+		return nil, detail(status, candidates, err), err
 	}
-	return status, claudeNPMGlobalVerificationDetail(status, candidates, nil), nil
+	if err := npmGlobalCandidateConflictWithEffectiveEntry(toolDisplayName, status, effectiveAfter); err != nil {
+		return nil, detail(status, candidates, err), err
+	}
+	return status, npmGlobalVerificationDetailWithEffectiveEntry(detail(status, candidates, nil), status, effectiveAfter), nil
+}
+
+func npmGlobalCandidateConflictWithEffectiveEntry(toolDisplayName string, npmCandidate *CheckStatus, effectiveAfter *CheckStatus) error {
+	if npmCandidate == nil {
+		return fmt.Errorf("npm global prefix %s status was empty", toolDisplayName)
+	}
+	candidatePath := strings.TrimSpace(npmCandidate.ExecutablePath)
+	candidateVersion := strings.TrimSpace(npmCandidate.Version)
+	if effectiveAfter == nil || !effectiveAfter.Installed || strings.TrimSpace(effectiveAfter.ExecutablePath) == "" {
+		return nil
+	}
+	effectivePath := strings.TrimSpace(effectiveAfter.ExecutablePath)
+	if sameNormalizedPath(effectivePath, candidatePath) {
+		return nil
+	}
+	effectiveVersion := strings.TrimSpace(effectiveAfter.Version)
+	if effectiveVersion != "" && candidateVersion != "" && effectiveVersion == candidateVersion {
+		return nil
+	}
+	if effectiveVersion == "" {
+		effectiveVersion = "unknown"
+	}
+	return fmt.Errorf(
+		"default/effective %s entry still resolves to %s version %s while npm global candidate is %s version %s; refusing to report update success because the actual command entry is not the updated npm candidate. 建议：调整 PATH 优先级、移除/更新旧安装源，或重启 shell/CodeBox 后重新检测",
+		toolDisplayName,
+		effectivePath,
+		effectiveVersion,
+		candidatePath,
+		candidateVersion,
+	)
+}
+
+func npmGlobalVerificationDetailWithEffectiveEntry(base string, npmCandidate *CheckStatus, effectiveAfter *CheckStatus) string {
+	if npmCandidate == nil {
+		return base
+	}
+	if effectiveAfter == nil || !effectiveAfter.Installed || strings.TrimSpace(effectiveAfter.ExecutablePath) == "" {
+		return base + "; default/effective entry not found after npm command; accepted npm candidate because no stale default entry shadows it"
+	}
+	effectivePath := strings.TrimSpace(effectiveAfter.ExecutablePath)
+	candidatePath := strings.TrimSpace(npmCandidate.ExecutablePath)
+	if sameNormalizedPath(effectivePath, candidatePath) {
+		return base + "; default/effective entry matches npm candidate path"
+	}
+	return fmt.Sprintf("%s; default/effective entry path=%s version=%s", base, effectivePath, strings.TrimSpace(effectiveAfter.Version))
 }
 
 func openCodeNPMGlobalVerificationDetail(status *CheckStatus, candidates []string, err error) string {

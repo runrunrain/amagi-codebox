@@ -878,7 +878,7 @@ func TestUpdate_FirstCommandSucceedsButVersionUnchanged_FallsBack(t *testing.T) 
 	}
 }
 
-func TestUpdate_OpenCodeUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
+func TestUpdate_OpenCodeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldBinDir := filepath.Join(tmpDir, "old-bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
@@ -889,7 +889,7 @@ func TestUpdate_OpenCodeUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
 	if err := os.MkdirAll(oldBinDir, 0o755); err != nil {
 		t.Fatalf("mkdir old bin: %v", err)
 	}
-	_ = writeTestExecutable(t, oldBinDir, "opencode")
+	oldOpenCodePath := writeTestExecutable(t, oldBinDir, "opencode")
 	_ = writeTestExecutable(t, oldBinDir, "npm")
 	newOpenCodePath := writeTestExecutable(t, npmBinDir, "opencode")
 	t.Setenv("PATH", oldBinDir)
@@ -906,8 +906,51 @@ func TestUpdate_OpenCodeUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err == nil {
+		t.Fatal("expected failure when npm candidate is new but default OpenCode entry still resolves to old version")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
+	}
+	for _, want := range []string{
+		"default/effective OpenCode entry",
+		filepath.Clean(oldOpenCodePath),
+		"version 1.0.0",
+		filepath.Clean(newOpenCodePath),
+		"version 2.0.0",
+		"PATH",
+	} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
+	}
+}
+
+func TestUpdate_OpenCodeNPMCandidateNewAndDefaultSamePath_Succeeds(t *testing.T) {
+	tmpDir := t.TempDir()
+	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
+	npmBinDir := filepath.Join(npmPrefix, "bin")
+	if err := os.MkdirAll(npmBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir npm bin: %v", err)
+	}
+	_ = writeTestExecutable(t, npmBinDir, "npm")
+	newOpenCodePath := writeTestExecutable(t, npmBinDir, "opencode")
+	t.Setenv("PATH", npmBinDir)
+
+	runner := &sequentialRunner{responses: []seqResponse{
+		{stdout: "opencode v1.0.0", err: nil},   // pre-check sees old version at the npm candidate path
+		{stdout: "10.0.0", err: nil},            // npm availability probe
+		{stdout: "2.0.0", err: nil},             // latest version enrichment
+		{stdout: "changed 1 package", err: nil}, // npm install -g opencode-ai@latest succeeds
+		{stdout: "opencode v1.0.0", err: nil},   // default post-check has not observed a changed version yet
+		{stdout: npmPrefix, err: nil},           // npm prefix -g points at the same default entry
+		{stdout: "opencode v2.0.0", err: nil},   // explicit npm global bin candidate reports new version
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err != nil {
-		t.Fatalf("expected npm global prefix verification to recover update, got error: %v", err)
+		t.Fatalf("expected same-path npm candidate verification to recover update, got error: %v", err)
 	}
 	if result == nil || !result.Success {
 		t.Fatalf("expected successful result, got: %+v", result)
@@ -915,15 +958,15 @@ func TestUpdate_OpenCodeUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
 	if result.Version != "2.0.0" {
 		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
 	}
-	if !strings.Contains(result.Message, "npm global prefix/bin 验证") {
-		t.Fatalf("success message should mention npm global prefix/bin verification, got: %s", result.Message)
+	if !strings.Contains(result.Message, "default/effective entry matches npm candidate path") {
+		t.Fatalf("success message should mention same-path verification, got: %s", result.Message)
 	}
 	if !strings.Contains(result.Message, filepath.Clean(newOpenCodePath)) {
 		t.Fatalf("success message should include verified npm global opencode path %q, got: %s", newOpenCodePath, result.Message)
 	}
 }
 
-func TestUpdate_CodexUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
+func TestUpdate_CodexNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldBinDir := filepath.Join(tmpDir, "old-bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
@@ -934,7 +977,7 @@ func TestUpdate_CodexUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
 	if err := os.MkdirAll(oldBinDir, 0o755); err != nil {
 		t.Fatalf("mkdir old bin: %v", err)
 	}
-	_ = writeTestExecutable(t, oldBinDir, "codex")
+	oldCodexPath := writeTestExecutable(t, oldBinDir, "codex")
 	_ = writeTestExecutable(t, oldBinDir, "npm")
 	newCodexPath := writeTestExecutable(t, npmBinDir, "codex")
 	t.Setenv("PATH", oldBinDir)
@@ -951,24 +994,26 @@ func TestUpdate_CodexUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
-	if err != nil {
-		t.Fatalf("expected Codex npm global prefix verification to recover update, got error: %v", err)
+	if err == nil {
+		t.Fatal("expected failure when npm candidate is new but default Codex entry still resolves to old version")
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful result, got: %+v", result)
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
 	}
-	if result.Version != "2.0.0" {
-		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
-	}
-	if !strings.Contains(result.Message, "Codex npm global prefix/bin 验证") {
-		t.Fatalf("success message should mention Codex npm global prefix/bin verification, got: %s", result.Message)
-	}
-	if !strings.Contains(result.Message, filepath.Clean(newCodexPath)) {
-		t.Fatalf("success message should include verified npm global codex path %q, got: %s", newCodexPath, result.Message)
+	for _, want := range []string{
+		"default/effective Codex entry",
+		filepath.Clean(oldCodexPath),
+		"version 1.0.0",
+		filepath.Clean(newCodexPath),
+		"version 2.0.0",
+	} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
 	}
 }
 
-func TestUpdate_ClaudeNPMUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
+func TestUpdate_ClaudeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldBinDir := filepath.Join(tmpDir, "old-bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
@@ -999,20 +1044,22 @@ func TestUpdate_ClaudeNPMUsesNPMGlobalPrefixWhenPATHStillOld(t *testing.T) {
 	svc := NewServiceWithRunner(runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolClaudeCode, installOperationUpdate, nil, ClaudeInstallAuto)
-	if err != nil {
-		t.Fatalf("expected Claude npm global prefix verification to recover update, got error: %v", err)
+	if err == nil {
+		t.Fatal("expected failure when npm candidate is new but default Claude entry still resolves to old version")
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful result, got: %+v", result)
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
 	}
-	if result.Version != "2.0.0" {
-		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
-	}
-	if !strings.Contains(result.Message, "Claude Code npm global prefix/bin 验证") {
-		t.Fatalf("success message should mention Claude Code npm global prefix/bin verification, got: %s", result.Message)
-	}
-	if !strings.Contains(result.Message, filepath.Clean(newClaudePath)) {
-		t.Fatalf("success message should include verified npm global claude path %q, got: %s", newClaudePath, result.Message)
+	for _, want := range []string{
+		"default/effective Claude Code entry",
+		filepath.Clean(oldClaudePath),
+		"version 1.0.0",
+		filepath.Clean(newClaudePath),
+		"version 2.0.0",
+	} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
 	}
 }
 
