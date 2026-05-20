@@ -926,6 +926,239 @@ func TestUpdate_OpenCodeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	}
 }
 
+func TestUpdate_OpenCodeHomebrewStaleEntryAutoCleanup_Succeeds(t *testing.T) {
+	fixture := newOpenCodeHomebrewCleanupFixture(t, false, true, true)
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err != nil {
+		t.Fatalf("expected cleanup-assisted success, got error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got: %+v", result)
+	}
+	if result.Version != "2.0.0" {
+		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
+	}
+	for _, want := range []string{"旧 Homebrew 入口", "brew uninstall opencode", "HOMEBREW_NO_AUTOREMOVE=1", "Homebrew autoremove disabled", "stale Homebrew path no longer effective"} {
+		if !strings.Contains(result.Message, want) {
+			t.Fatalf("success message should contain %q, got: %s", want, result.Message)
+		}
+	}
+	uninstallSpec, ok := fixture.runner.brewUninstallCall()
+	if !ok {
+		t.Fatal("expected brew uninstall opencode to be called")
+	}
+	if len(uninstallSpec.Args) != 2 || uninstallSpec.Args[0] != "uninstall" || uninstallSpec.Args[1] != "opencode" {
+		t.Fatalf("brew cleanup command must stay limited to uninstall opencode, got args=%v", uninstallSpec.Args)
+	}
+	if got := envValue(uninstallSpec.Env, homebrewNoAutoremoveEnv); got != homebrewCleanupSafetyEnvValue {
+		t.Fatalf("brew uninstall env %s = %q, want %q; env=%v", homebrewNoAutoremoveEnv, got, homebrewCleanupSafetyEnvValue, uninstallSpec.Env)
+	}
+	if got := envValue(uninstallSpec.Env, homebrewNoInstallCleanupEnv); got != homebrewCleanupSafetyEnvValue {
+		t.Fatalf("brew uninstall env %s = %q, want %q; env=%v", homebrewNoInstallCleanupEnv, got, homebrewCleanupSafetyEnvValue, uninstallSpec.Env)
+	}
+}
+
+func TestUpdate_OpenCodeHomebrewStaleEntryCleanupFails_ReportsFailure(t *testing.T) {
+	fixture := newOpenCodeHomebrewCleanupFixture(t, false, true, false)
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err == nil {
+		t.Fatal("expected failure when brew uninstall opencode fails")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
+	}
+	for _, want := range []string{"brew uninstall opencode", "permission denied", "cleanup failed"} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
+	}
+	if !fixture.runner.brewUninstallCalled() {
+		t.Fatal("expected brew uninstall opencode to be attempted")
+	}
+}
+
+func TestUpdate_OpenCodeNonHomebrewStaleEntry_NoAutoCleanup(t *testing.T) {
+	fixture := newOpenCodeHomebrewCleanupFixture(t, true, true, true)
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err == nil {
+		t.Fatal("expected failure for non-Homebrew stale entry")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
+	}
+	if fixture.runner.brewUninstallCalled() {
+		t.Fatal("brew uninstall opencode must not be called for non-Homebrew stale entry")
+	}
+	if !strings.Contains(result.Error, "not recognized as Homebrew OpenCode") {
+		t.Fatalf("failure should explain cleanup guard refusal, got: %s", result.Error)
+	}
+}
+
+func TestUpdate_OpenCodeHomebrewStaleEntryCleanupRecheckMustPass(t *testing.T) {
+	fixture := newOpenCodeHomebrewCleanupFixture(t, false, false, true)
+	svc := NewServiceWithRunner(fixture.runner)
+
+	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
+	if err == nil {
+		t.Fatal("expected failure when cleanup succeeds but recheck still resolves stale Homebrew entry")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got: %+v", result)
+	}
+	if !fixture.runner.brewUninstallCalled() {
+		t.Fatal("expected brew uninstall opencode to be called before recheck")
+	}
+	for _, want := range []string{"cleanup recheck failed", "recheck", "stale Homebrew"} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
+		}
+	}
+}
+
+type openCodeHomebrewCleanupFixture struct {
+	runner *openCodeHomebrewCleanupRunner
+}
+
+func newOpenCodeHomebrewCleanupFixture(t *testing.T, nonHomebrewStale bool, removeOldOnCleanup bool, cleanupSucceeds bool) openCodeHomebrewCleanupFixture {
+	t.Helper()
+	tmpDir := t.TempDir()
+	brewPrefix := filepath.Join(tmpDir, "homebrew")
+	brewBinDir := filepath.Join(brewPrefix, "bin")
+	staleBinDir := filepath.Join(brewPrefix, "Cellar", "opencode", "1.14.50", "bin")
+	if nonHomebrewStale {
+		staleBinDir = filepath.Join(tmpDir, "custom-old-bin")
+	}
+	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
+	npmBinDir := filepath.Join(npmPrefix, "bin")
+	for _, dir := range []string{brewBinDir, staleBinDir, npmBinDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	staleOpenCodePath := writeTestExecutable(t, staleBinDir, "opencode")
+	npmOpenCodePath := writeTestExecutable(t, npmBinDir, "opencode")
+	_ = writeTestExecutable(t, npmBinDir, "npm")
+	brewPath := writeTestExecutable(t, brewBinDir, "brew")
+
+	t.Setenv("PATH", strings.Join([]string{staleBinDir, npmBinDir, brewBinDir}, string(os.PathListSeparator)))
+
+	runner := &openCodeHomebrewCleanupRunner{
+		staleOpenCodePath:  staleOpenCodePath,
+		npmOpenCodePath:    npmOpenCodePath,
+		npmPrefix:          npmPrefix,
+		brewPath:           brewPath,
+		brewPrefix:         brewPrefix,
+		removeOldOnCleanup: removeOldOnCleanup,
+		cleanupSucceeds:    cleanupSucceeds,
+	}
+	return openCodeHomebrewCleanupFixture{runner: runner}
+}
+
+type openCodeHomebrewCleanupRunner struct {
+	staleOpenCodePath  string
+	npmOpenCodePath    string
+	npmPrefix          string
+	brewPath           string
+	brewPrefix         string
+	removeOldOnCleanup bool
+	cleanupSucceeds    bool
+
+	mu    sync.Mutex
+	calls []platform.CommandSpec
+}
+
+func (r *openCodeHomebrewCleanupRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, spec)
+	r.mu.Unlock()
+
+	path := filepath.Clean(spec.Path)
+	if sameNormalizedPath(path, r.staleOpenCodePath) {
+		return &platform.ProcessResult{Stdout: "opencode v1.0.0"}, nil
+	}
+	if sameNormalizedPath(path, r.npmOpenCodePath) {
+		return &platform.ProcessResult{Stdout: "opencode v2.0.0"}, nil
+	}
+	if isNPMPath(strings.ToLower(spec.Path)) || strings.EqualFold(filepath.Base(spec.Path), "npm") {
+		return r.runNPM(spec)
+	}
+	if sameNormalizedPath(path, r.brewPath) || strings.EqualFold(filepath.Base(spec.Path), "brew") {
+		return r.runBrew(spec)
+	}
+	return &platform.ProcessResult{}, os.ErrNotExist
+}
+
+func (r *openCodeHomebrewCleanupRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func (r *openCodeHomebrewCleanupRunner) runNPM(spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	if len(spec.Args) >= 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
+		return &platform.ProcessResult{Stdout: r.npmPrefix}, nil
+	}
+	if len(spec.Args) >= 1 && spec.Args[0] == "--version" {
+		return &platform.ProcessResult{Stdout: "10.0.0"}, nil
+	}
+	if len(spec.Args) >= 1 && spec.Args[0] == "view" {
+		return &platform.ProcessResult{Stdout: "2.0.0"}, nil
+	}
+	if len(spec.Args) >= 1 && (spec.Args[0] == "install" || spec.Args[0] == "update") {
+		return &platform.ProcessResult{Stdout: "changed 1 package"}, nil
+	}
+	return &platform.ProcessResult{}, nil
+}
+
+func (r *openCodeHomebrewCleanupRunner) runBrew(spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	if len(spec.Args) == 1 && spec.Args[0] == "--prefix" {
+		return &platform.ProcessResult{Stdout: r.brewPrefix}, nil
+	}
+	if len(spec.Args) == 3 && spec.Args[0] == "list" && spec.Args[1] == "--versions" && spec.Args[2] == "opencode" {
+		return &platform.ProcessResult{Stdout: "opencode 1.14.50"}, nil
+	}
+	if len(spec.Args) == 2 && spec.Args[0] == "uninstall" && spec.Args[1] == "opencode" {
+		if !r.cleanupSucceeds {
+			return &platform.ProcessResult{Stderr: "permission denied while uninstalling opencode"}, errors.New("permission denied")
+		}
+		if r.removeOldOnCleanup {
+			_ = os.Remove(r.staleOpenCodePath)
+		}
+		return &platform.ProcessResult{Stdout: "Uninstalling /opt/homebrew/Cellar/opencode/1.14.50..."}, nil
+	}
+	return &platform.ProcessResult{}, os.ErrNotExist
+}
+
+func (r *openCodeHomebrewCleanupRunner) brewUninstallCalled() bool {
+	_, ok := r.brewUninstallCall()
+	return ok
+}
+
+func (r *openCodeHomebrewCleanupRunner) brewUninstallCall() (platform.CommandSpec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, call := range r.calls {
+		if (sameNormalizedPath(call.Path, r.brewPath) || strings.EqualFold(filepath.Base(call.Path), "brew")) && len(call.Args) == 2 && call.Args[0] == "uninstall" && call.Args[1] == "opencode" {
+			return call, true
+		}
+	}
+	return platform.CommandSpec{}, false
+}
+
+func envValue(env []string, key string) string {
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && name == key {
+			return value
+		}
+	}
+	return ""
+}
+
 func TestUpdate_OpenCodeNPMCandidateNewAndDefaultSamePath_Succeeds(t *testing.T) {
 	tmpDir := t.TempDir()
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")

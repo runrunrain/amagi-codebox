@@ -36,6 +36,11 @@ const (
 	progressNativeNPMInstall    = 40
 	progressNativeClaudeInstall = 70
 	progressNativeVerify        = 90
+
+	homebrewNoAutoremoveEnv       = "HOMEBREW_NO_AUTOREMOVE"
+	homebrewNoInstallCleanupEnv   = "HOMEBREW_NO_INSTALL_CLEANUP"
+	homebrewCleanupSafetyEnvValue = "1"
+	homebrewCleanupSafetyDetail   = "Homebrew autoremove disabled via HOMEBREW_NO_AUTOREMOVE=1; Homebrew install cleanup also disabled via HOMEBREW_NO_INSTALL_CLEANUP=1"
 )
 
 var (
@@ -226,6 +231,16 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 				}, nil
 			} else {
 				npmVerifyDetail = npmDetail
+				if cleanupAfter, cleanupDetail, cleanupErr := s.tryCleanupOpenCodeHomebrewStaleEntryAfterNPMFallback(operation, beforeVersion, after, npmAfter); cleanupErr == nil && cleanupAfter != nil {
+					return &InstallResult{
+						Success: true,
+						Message: fmt.Sprintf("%s 已通过 %s 方式成功%s，并已自动清理旧 Homebrew 入口（%s）", displayToolName(tool), command.description, operationDisplayName(operation), cleanupDetail),
+						Tool:    tool,
+						Version: cleanupAfter.Version,
+					}, nil
+				} else if cleanupDetail != "" {
+					npmVerifyDetail = strings.Join(nonEmptyStrings(npmVerifyDetail, cleanupDetail), "; ")
+				}
 			}
 		} else if isCodexNPMGlobalInstallCommand(tool, command) {
 			if npmAfter, npmDetail, npmErr := s.verifyCodexNPMGlobalBinAfterCommand(operation, beforeVersion, after); npmErr == nil {
@@ -392,9 +407,275 @@ func (s *Service) verifyNPMGlobalCandidateDoesNotConflictWithEffectiveEntry(
 		return nil, detail(status, candidates, err), err
 	}
 	if err := npmGlobalCandidateConflictWithEffectiveEntry(toolDisplayName, status, effectiveAfter); err != nil {
-		return nil, detail(status, candidates, err), err
+		return status, detail(status, candidates, err), err
 	}
 	return status, npmGlobalVerificationDetailWithEffectiveEntry(detail(status, candidates, nil), status, effectiveAfter), nil
+}
+
+func (s *Service) tryCleanupOpenCodeHomebrewStaleEntryAfterNPMFallback(operation installOperation, beforeVersion string, effectiveAfter *CheckStatus, npmCandidate *CheckStatus) (*CheckStatus, string, error) {
+	if npmCandidate == nil {
+		return nil, "", nil
+	}
+	if err := validateHealthyOpenCodeNPMCandidateForCleanup(operation, beforeVersion, npmCandidate); err != nil {
+		return nil, fmt.Sprintf("OpenCode stale Homebrew cleanup skipped: npm candidate is not safe for cleanup: %s", sanitizeInstallerOutput(err.Error())), err
+	}
+
+	stalePath, staleVersion, staleErr := validateOpenCodeHomebrewStaleEntry(effectiveAfter, npmCandidate)
+	if staleErr != nil {
+		return nil, fmt.Sprintf("OpenCode stale Homebrew cleanup skipped: %s", sanitizeInstallerOutput(staleErr.Error())), staleErr
+	}
+
+	brewPath, resolveErr := s.resolveBrewPath()
+	if resolveErr != nil {
+		detail := fmt.Sprintf("OpenCode stale Homebrew cleanup failed before uninstall: stale=%s version=%s; %s", stalePath, staleVersion, sanitizeInstallerOutput(resolveErr.Error()))
+		return nil, detail, resolveErr
+	}
+
+	prefixOutput, prefixErr := s.runHomebrewCommand(brewPath, []string{"--prefix"})
+	if prefixErr != nil {
+		err := fmt.Errorf("brew --prefix failed: %s", sanitizeInstallerOutput(prefixErr.Error()))
+		detail := fmt.Sprintf("OpenCode stale Homebrew cleanup failed before uninstall: stale=%s version=%s; brew=%s; %s; output=%s", stalePath, staleVersion, brewPath, err.Error(), sanitizeInstallerOutput(prefixOutput))
+		return nil, detail, err
+	}
+	brewPrefix := strings.TrimSpace(firstNonEmptyLine(prefixOutput))
+	if !openCodeHomebrewPathUnderPrefix(stalePath, brewPrefix) {
+		err := fmt.Errorf("stale path %s is not under Homebrew prefix %s; refusing automatic cleanup", stalePath, brewPrefix)
+		detail := fmt.Sprintf("OpenCode stale Homebrew cleanup skipped: brew=%s; %s", brewPath, err.Error())
+		return nil, detail, err
+	}
+
+	listOutput, listErr := s.runHomebrewCommand(brewPath, []string{"list", "--versions", "opencode"})
+	if listErr != nil || !homebrewListVersionsContainsOpenCode(listOutput) {
+		errText := "brew list --versions opencode did not confirm an installed OpenCode formula"
+		if listErr != nil {
+			errText = fmt.Sprintf("brew list --versions opencode failed: %s", sanitizeInstallerOutput(listErr.Error()))
+		}
+		err := errors.New(errText)
+		detail := fmt.Sprintf("OpenCode stale Homebrew cleanup failed before uninstall: stale=%s version=%s; brew=%s; brew --prefix=%s; list output=%s", stalePath, staleVersion, brewPath, brewPrefix, sanitizeInstallerOutput(listOutput))
+		return nil, detail, err
+	}
+
+	uninstallOutput, uninstallErr := s.runHomebrewCommand(brewPath, []string{"uninstall", "opencode"})
+	if uninstallErr != nil {
+		err := fmt.Errorf("brew uninstall opencode failed: %s", sanitizeInstallerOutput(uninstallErr.Error()))
+		detail := fmt.Sprintf("OpenCode stale Homebrew cleanup failed: stale=%s version=%s; brew=%s; brew --prefix=%s; brew list --versions opencode=%s; %s; brew uninstall opencode output=%s", stalePath, staleVersion, brewPath, brewPrefix, sanitizeInstallerOutput(listOutput), homebrewCleanupSafetyDetail, sanitizeInstallerOutput(uninstallOutput))
+		return nil, detail, err
+	}
+
+	post, recheckDetail, recheckErr := s.recheckOpenCodeAfterHomebrewCleanup(npmCandidate, stalePath, staleVersion)
+	baseDetail := fmt.Sprintf("stale=%s version=%s; npm candidate=%s version=%s; brew=%s; brew --prefix=%s; brew list --versions opencode=%s; %s; brew uninstall opencode output=%s; %s", stalePath, staleVersion, strings.TrimSpace(npmCandidate.ExecutablePath), strings.TrimSpace(npmCandidate.Version), brewPath, brewPrefix, sanitizeInstallerOutput(listOutput), homebrewCleanupSafetyDetail, sanitizeInstallerOutput(uninstallOutput), recheckDetail)
+	if recheckErr != nil {
+		return nil, "OpenCode stale Homebrew cleanup recheck failed: " + baseDetail, recheckErr
+	}
+	return post, baseDetail, nil
+}
+
+func validateHealthyOpenCodeNPMCandidateForCleanup(operation installOperation, beforeVersion string, status *CheckStatus) error {
+	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
+		return fmt.Errorf("npm global candidate not healthy: %s", verificationErrorMessage(status))
+	}
+	if strings.TrimSpace(status.ExecutablePath) == "" || strings.TrimSpace(status.Version) == "" {
+		return fmt.Errorf("npm global candidate missing executable path or version")
+	}
+	if status.InstallMethod != InstallMethodNPM {
+		return fmt.Errorf("candidate install method is %s, want npm", status.InstallMethod)
+	}
+	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && strings.TrimSpace(status.Version) == strings.TrimSpace(beforeVersion) {
+		return fmt.Errorf("npm global candidate version unchanged at %s", beforeVersion)
+	}
+	return nil
+}
+
+func validateOpenCodeHomebrewStaleEntry(effectiveAfter *CheckStatus, npmCandidate *CheckStatus) (string, string, error) {
+	if effectiveAfter == nil || !effectiveAfter.Installed || strings.TrimSpace(effectiveAfter.ExecutablePath) == "" {
+		return "", "", fmt.Errorf("default/effective OpenCode entry is missing; nothing to clean")
+	}
+	stalePath := strings.TrimSpace(effectiveAfter.ExecutablePath)
+	candidatePath := strings.TrimSpace(npmCandidate.ExecutablePath)
+	if sameNormalizedPath(stalePath, candidatePath) {
+		return "", "", fmt.Errorf("default/effective OpenCode entry already matches npm candidate path")
+	}
+	staleVersion := strings.TrimSpace(effectiveAfter.Version)
+	candidateVersion := strings.TrimSpace(npmCandidate.Version)
+	if staleVersion != "" && candidateVersion != "" && staleVersion == candidateVersion {
+		return "", "", fmt.Errorf("default/effective OpenCode entry version %s already matches npm candidate", staleVersion)
+	}
+	if !isOpenCodeHomebrewPath(normalizeOpenCodePath(stalePath)) {
+		if staleVersion == "" {
+			staleVersion = "unknown"
+		}
+		return "", "", fmt.Errorf("default/effective OpenCode entry is not recognized as Homebrew OpenCode: path=%s version=%s", stalePath, staleVersion)
+	}
+	if staleVersion == "" {
+		staleVersion = "unknown"
+	}
+	return stalePath, staleVersion, nil
+}
+
+func (s *Service) resolveBrewPath() (string, error) {
+	if path, err := exec.LookPath("brew"); err == nil && strings.TrimSpace(path) != "" {
+		if abs, absErr := filepath.Abs(path); absErr == nil && filepath.IsAbs(abs) {
+			return filepath.Clean(abs), nil
+		}
+	}
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	resolved, _, err := resolver.ResolveExecutable("brew", nil, s.buildEnhancedEnv())
+	if err == nil && strings.TrimSpace(resolved.Path) != "" {
+		path := filepath.Clean(strings.TrimSpace(resolved.Path))
+		if filepath.IsAbs(path) {
+			return path, nil
+		}
+		return "", fmt.Errorf("resolved brew path is not absolute: %s", path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("brew executable not found: %w", err)
+	}
+	return "", fmt.Errorf("brew executable not found")
+}
+
+func (s *Service) runHomebrewCommand(brewPath string, args []string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	defer cancel()
+	env := s.buildEnhancedEnv()
+	if isHomebrewOpenCodeUninstallCommand(args) {
+		env = upsertEnvValue(env, homebrewNoAutoremoveEnv, homebrewCleanupSafetyEnvValue)
+		env = upsertEnvValue(env, homebrewNoInstallCleanupEnv, homebrewCleanupSafetyEnvValue)
+	}
+	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   brewPath,
+		Args:   append([]string(nil), args...),
+		Env:    env,
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	return resultText(result), err
+}
+
+func isHomebrewOpenCodeUninstallCommand(args []string) bool {
+	return len(args) == 2 && args[0] == "uninstall" && args[1] == "opencode"
+}
+
+func upsertEnvValue(env []string, key string, value string) []string {
+	assignment := key + "=" + value
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && name == key {
+			if !replaced {
+				out = append(out, assignment)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !replaced {
+		out = append(out, assignment)
+	}
+	return out
+}
+
+func openCodeHomebrewPathUnderPrefix(path string, prefix string) bool {
+	for _, normalizedPath := range normalizedPathVariants(path) {
+		for _, normalizedPrefix := range normalizedPathVariants(prefix) {
+			normalizedPrefix = strings.TrimRight(normalizedPrefix, "/")
+			if normalizedPath == "" || normalizedPrefix == "" {
+				continue
+			}
+			if normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizedPathVariants(path string) []string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return nil
+	}
+	variants := []string{normalizeOpenCodePath(trimmed)}
+	if abs, err := filepath.Abs(trimmed); err == nil {
+		variants = append(variants, normalizeOpenCodePath(abs))
+	}
+	if realPath, err := filepath.EvalSymlinks(trimmed); err == nil {
+		variants = append(variants, normalizeOpenCodePath(realPath))
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(variants))
+	for _, variant := range variants {
+		if variant == "" {
+			continue
+		}
+		if _, ok := seen[variant]; ok {
+			continue
+		}
+		seen[variant] = struct{}{}
+		out = append(out, variant)
+	}
+	return out
+}
+
+func homebrewListVersionsContainsOpenCode(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "opencode" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) recheckOpenCodeAfterHomebrewCleanup(npmCandidate *CheckStatus, stalePath string, staleVersion string) (*CheckStatus, string, error) {
+	wantVersion := strings.TrimSpace(npmCandidate.Version)
+	var lastDetail string
+	for attempt := 1; attempt <= boundedInstallRecheckAttempts(); attempt++ {
+		if attempt > 1 {
+			time.Sleep(installRecheckDelay)
+		}
+		post, err := s.CheckOne(ToolOpenCode)
+		lastDetail = openCodeCleanupRecheckDetail(attempt, post, err)
+		if err != nil || post == nil || !post.Installed || !post.PATHOk || strings.TrimSpace(post.Error) != "" {
+			continue
+		}
+		postPath := strings.TrimSpace(post.ExecutablePath)
+		postVersion := strings.TrimSpace(post.Version)
+		if sameNormalizedPath(postPath, stalePath) {
+			lastDetail = fmt.Sprintf("recheck attempt %d/%d still resolves stale Homebrew path=%s version=%s", attempt, boundedInstallRecheckAttempts(), postPath, postVersion)
+			continue
+		}
+		if isOpenCodeHomebrewPath(normalizeOpenCodePath(postPath)) {
+			lastDetail = fmt.Sprintf("recheck attempt %d/%d still resolves Homebrew OpenCode path=%s version=%s", attempt, boundedInstallRecheckAttempts(), postPath, postVersion)
+			continue
+		}
+		if postVersion != wantVersion {
+			lastDetail = fmt.Sprintf("recheck attempt %d/%d resolved path=%s version=%s, want npm candidate version=%s", attempt, boundedInstallRecheckAttempts(), postPath, postVersion, wantVersion)
+			continue
+		}
+		return post, fmt.Sprintf("recheck attempt %d/%d path=%s version=%s; stale Homebrew path no longer effective", attempt, boundedInstallRecheckAttempts(), postPath, postVersion), nil
+	}
+	return nil, lastDetail, fmt.Errorf("cleanup completed but recheck did not confirm default/effective OpenCode entry moved from stale Homebrew %s version %s to npm candidate version %s", stalePath, staleVersion, wantVersion)
+}
+
+func openCodeCleanupRecheckDetail(attempt int, status *CheckStatus, err error) string {
+	if err != nil {
+		return fmt.Sprintf("recheck attempt %d/%d failed: %s", attempt, boundedInstallRecheckAttempts(), sanitizeInstallerOutput(err.Error()))
+	}
+	if status == nil {
+		return fmt.Sprintf("recheck attempt %d/%d returned empty status", attempt, boundedInstallRecheckAttempts())
+	}
+	return fmt.Sprintf("recheck attempt %d/%d path=%s version=%s installed=%v pathOk=%v error=%s", attempt, boundedInstallRecheckAttempts(), strings.TrimSpace(status.ExecutablePath), strings.TrimSpace(status.Version), status.Installed, status.PATHOk, sanitizeInstallerOutput(status.Error))
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func npmGlobalCandidateConflictWithEffectiveEntry(toolDisplayName string, npmCandidate *CheckStatus, effectiveAfter *CheckStatus) error {

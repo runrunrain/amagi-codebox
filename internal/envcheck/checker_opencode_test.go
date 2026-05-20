@@ -134,6 +134,16 @@ func TestDetectOpenCodeInstallMethod(t *testing.T) {
 			wantMethod: InstallMethodUnknown,
 		},
 		{
+			name:       "homebrew cellar",
+			execPath:   `/opt/homebrew/Cellar/opencode/1.14.50/bin/opencode`,
+			wantMethod: InstallMethodHomebrew,
+		},
+		{
+			name:       "npm under homebrew prefix is still npm",
+			execPath:   `/opt/homebrew/lib/node_modules/opencode-ai/bin/opencode`,
+			wantMethod: InstallMethodNPM,
+		},
+		{
 			name:       "empty path",
 			execPath:   "",
 			wantMethod: InstallMethodUnknown,
@@ -230,6 +240,36 @@ func TestIsOpenCodeScoopPath(t *testing.T) {
 			got := isOpenCodeScoopPath(normalized)
 			if got != tc.expect {
 				t.Errorf("isOpenCodeScoopPath(%q) = %v, want %v", normalized, got, tc.expect)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isOpenCodeHomebrewPath
+// ---------------------------------------------------------------------------
+
+func TestIsOpenCodeHomebrewPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		expect bool
+	}{
+		{"arm homebrew cellar", `/opt/homebrew/Cellar/opencode/1.14.50/bin/opencode`, true},
+		{"linuxbrew cellar", `/home/linuxbrew/.linuxbrew/Cellar/opencode/1.14.50/bin/opencode`, true},
+		{"homebrew opt", `/opt/homebrew/opt/opencode/bin/opencode`, true},
+		{"homebrew bin symlink path", `/opt/homebrew/bin/opencode`, true},
+		{"npm under homebrew prefix", `/opt/homebrew/lib/node_modules/opencode-ai/bin/opencode`, false},
+		{"non homebrew", `/usr/local/custom/opencode`, false},
+		{"empty", ``, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized := normalizeOpenCodePath(tc.path)
+			got := isOpenCodeHomebrewPath(normalized)
+			if got != tc.expect {
+				t.Errorf("isOpenCodeHomebrewPath(%q) = %v, want %v", normalized, got, tc.expect)
 			}
 		})
 	}

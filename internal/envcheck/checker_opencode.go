@@ -336,11 +336,14 @@ func detectOpenCodeInstallMethod(executablePath string) InstallMethod {
 		return InstallMethodUnknown
 	}
 
+	if isOpenCodeNPMPath(normalized) {
+		return InstallMethodNPM
+	}
 	if isOpenCodeChocolateyPath(normalized) || isOpenCodeScoopPath(normalized) {
 		return InstallMethodNative
 	}
-	if isOpenCodeNPMPath(normalized) {
-		return InstallMethodNPM
+	if isOpenCodeHomebrewPath(normalized) {
+		return InstallMethodHomebrew
 	}
 	return InstallMethodUnknown
 }
@@ -376,6 +379,38 @@ func isOpenCodeChocolateyPath(normalizedPath string) bool {
 func isOpenCodeScoopPath(normalizedPath string) bool {
 	return strings.Contains(normalizedPath, pathFragment("scoop", "apps")) ||
 		strings.Contains(normalizedPath, pathFragment("scoop", "shims"))
+}
+
+func isOpenCodeHomebrewPath(normalizedPath string) bool {
+	if normalizedPath == "" || isOpenCodeNPMPath(normalizedPath) {
+		return false
+	}
+	return pathHasSegmentSequence(normalizedPath, "cellar", "opencode") ||
+		pathHasSegmentSequence(normalizedPath, "homebrew", "opt", "opencode") ||
+		strings.HasSuffix(normalizedPath, pathFragment("homebrew", "bin", "opencode"))
+}
+
+func pathHasSegmentSequence(normalizedPath string, sequence ...string) bool {
+	if normalizedPath == "" || len(sequence) == 0 {
+		return false
+	}
+	segments := strings.Split(strings.Trim(normalizedPath, "/"), "/")
+	if len(segments) < len(sequence) {
+		return false
+	}
+	for i := 0; i <= len(segments)-len(sequence); i++ {
+		matched := true
+		for j, want := range sequence {
+			if segments[i+j] != strings.ToLower(want) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func pathFragment(parts ...string) string {
