@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,7 +42,19 @@ type codexLaunchSettings struct {
 	Model string
 }
 
-const codexModelProviderName = "amagi-codebox-provider"
+const (
+	codexModelProviderName     = "amagi-codebox-provider"
+	codexOfficialOpenAIAPIHost = "api.openai.com"
+)
+
+type codexConfigSyncOptions struct {
+	Model                string
+	ModelProvider        string
+	ProviderBaseURL      string
+	EnsureCustomProvider bool
+	ForceAPILogin        bool
+	CleanupManagedConfig bool
+}
 
 type RemoteWebUIStatusResult struct {
 	Openable                bool   `json:"openable"`
@@ -1012,6 +1025,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 
 	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
 	envOverrides := map[string]string{}
+	codexProviderBaseURL := ""
 	injectProviderEnv := func(pid string, provider *config.Provider) {
 		apiKey, _ := a.getProviderAPIKey(pid, *provider)
 		if apiKey == "" {
@@ -1021,6 +1035,9 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 			envOverrides["OPENAI_API_KEY"] = apiKey
 			if baseURL := provider.EffectiveBaseURL("openai"); baseURL != "" {
 				envOverrides["OPENAI_BASE_URL"] = baseURL
+				if isCustomCodexOpenAIBaseURL(baseURL) {
+					codexProviderBaseURL = baseURL
+				}
 			}
 		} else {
 			envOverrides["ANTHROPIC_API_KEY"] = apiKey
@@ -1036,9 +1053,16 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		}
 	}
 
-	// 同步 Codex config.toml 的顶层 model/model_provider，确保自定义 provider 路由生效。
+	// 同步 Codex config.toml。仅当 OpenAI 兼容 provider 同时具备自定义 BaseURL 和 API key 时，
+	// 写入自定义 provider 与 api 登录约束；官方/无 BaseURL 路径会清理 amagi 托管配置，避免污染官方登录。
 	if launchSettings.Model != "" {
-		if err := syncCodexConfigModel(launchSettings.Model); err != nil {
+		var err error
+		if codexProviderBaseURL != "" {
+			err = syncCodexCustomProviderConfig(launchSettings.Model, codexProviderBaseURL)
+		} else {
+			err = syncCodexConfigModel(launchSettings.Model)
+		}
+		if err != nil {
 			a.Log.Warn("codex", "sync config.toml model failed", fmt.Sprintf("model=%s err=%v", launchSettings.Model, err))
 		}
 	}
@@ -1129,70 +1153,291 @@ func normalizeCodexModelName(modelName string) string {
 	return trimmed
 }
 
-// syncCodexConfigModel updates Codex config.toml so custom provider routing stays active.
+// syncCodexConfigModel updates the top-level model in an existing Codex config.toml
+// and removes amagi-managed provider state so official Codex login can recover.
 func syncCodexConfigModel(model string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("get home dir: %w", err)
 	}
 	configPath := filepath.Join(home, ".codex", "config.toml")
-	return syncCodexConfigFile(configPath, model, codexModelProviderName)
+	return syncCodexConfigFile(configPath, codexConfigSyncOptions{Model: model, CleanupManagedConfig: true})
 }
 
-func syncCodexConfigFile(configPath, model, modelProvider string) error {
+func syncCodexCustomProviderConfig(model, baseURL string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	return syncCodexCustomProviderConfigFile(configPath, model, baseURL)
+}
+
+func syncCodexCustomProviderConfigFile(configPath, model, baseURL string) error {
+	if strings.TrimSpace(model) == "" {
+		return fmt.Errorf("codex model is empty")
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		return fmt.Errorf("codex provider base_url is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return fmt.Errorf("create codex config dir: %w", err)
+	}
+	return syncCodexConfigFile(configPath, codexConfigSyncOptions{
+		Model:                model,
+		ModelProvider:        codexModelProviderName,
+		ProviderBaseURL:      baseURL,
+		EnsureCustomProvider: true,
+		ForceAPILogin:        true,
+	})
+}
+
+func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("read config.toml: %w", err)
+		if !errors.Is(err, os.ErrNotExist) || !opts.EnsureCustomProvider {
+			return fmt.Errorf("read config.toml: %w", err)
+		}
 	}
 
-	lines := strings.Split(string(data), "\n")
-	updated := make([]string, 0, len(lines)+1)
-	modelLineIndex := -1
-	foundModel := false
-	foundTopLevelProvider := false
+	content := string(data)
+	lines := []string{}
+	if content != "" {
+		lines = strings.Split(content, "\n")
+	}
+
+	if opts.EnsureCustomProvider {
+		lines = removeCodexManagedProviderSection(lines, opts.ModelProvider)
+		topLevelAssignments := []string{
+			"model = " + strconv.Quote(opts.Model),
+			"model_provider = " + strconv.Quote(opts.ModelProvider),
+		}
+		if opts.ForceAPILogin {
+			topLevelAssignments = append(topLevelAssignments, "forced_login_method = "+strconv.Quote("api"))
+		}
+		lines = syncCodexTopLevelAssignments(lines, topLevelAssignments, true)
+		lines = appendCodexCustomProviderSection(lines, opts.ModelProvider, opts.ProviderBaseURL)
+	} else {
+		if opts.CleanupManagedConfig {
+			lines = cleanupCodexManagedProviderConfig(lines, codexModelProviderName)
+		}
+		updated := syncCodexTopLevelAssignments(lines, []string{"model = " + strconv.Quote(opts.Model)}, false)
+		if countTopLevelAssignment(updated, "model") == 0 {
+			return fmt.Errorf("top-level model field not found in %s", configPath)
+		}
+		lines = updated
+	}
+
+	return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+func syncCodexTopLevelAssignments(lines []string, assignmentLines []string, insertMissing bool) []string {
+	wanted := make(map[string]string, len(assignmentLines))
+	order := make([]string, 0, len(assignmentLines))
+	seen := make(map[string]bool, len(assignmentLines))
+	for _, assignment := range assignmentLines {
+		key, ok := tomlAssignmentKey(strings.TrimSpace(assignment))
+		if !ok {
+			continue
+		}
+		wanted[key] = assignment
+		order = append(order, key)
+	}
+
+	updated := make([]string, 0, len(lines)+len(assignmentLines)+1)
 	inTopLevel := true
-	inAmagiInjectBlock := false
+	insertMissingBeforeSection := func() {
+		if !insertMissing {
+			return
+		}
+		for _, key := range order {
+			if !seen[key] {
+				updated = append(updated, wanted[key])
+				seen[key] = true
+			}
+		}
+	}
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "# === amagi-codebox-inject-start ===" {
-			inAmagiInjectBlock = true
+		if inTopLevel && isTomlTableHeader(trimmed) {
+			insertMissingBeforeSection()
+			inTopLevel = false
 		}
 
-		if key, ok := tomlAssignmentKey(trimmed); ok {
-			if inTopLevel {
-				switch key {
-				case "model":
-					line = "model = " + strconv.Quote(model)
-					modelLineIndex = len(updated)
-					foundModel = true
-				case "model_provider":
-					line = "model_provider = " + strconv.Quote(modelProvider)
-					foundTopLevelProvider = true
+		if inTopLevel {
+			if key, ok := tomlAssignmentKey(trimmed); ok {
+				if replacement, exists := wanted[key]; exists {
+					if seen[key] {
+						continue
+					}
+					updated = append(updated, replacement)
+					seen[key] = true
+					continue
 				}
-			} else if inAmagiInjectBlock && key == "model_provider" {
-				continue
 			}
 		}
 
 		updated = append(updated, line)
+	}
+
+	insertMissingBeforeSection()
+	return trimTrailingEmptyLines(updated)
+}
+
+func removeCodexManagedProviderSection(lines []string, modelProvider string) []string {
+	if modelProvider == "" {
+		return lines
+	}
+	providerHeader := "[model_providers." + modelProvider + "]"
+	providerSubHeaderPrefix := "[model_providers." + modelProvider + "."
+	updated := make([]string, 0, len(lines))
+	skipOwnedBlock := false
+	skipProviderSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "# === amagi-codebox-inject-start ===" {
+			skipOwnedBlock = true
+			continue
+		}
+		if skipOwnedBlock {
+			if trimmed == "# === amagi-codebox-inject-end ===" {
+				skipOwnedBlock = false
+			}
+			continue
+		}
 		if isTomlTableHeader(trimmed) {
+			if trimmed == providerHeader || strings.HasPrefix(trimmed, providerSubHeaderPrefix) {
+				skipProviderSection = true
+				continue
+			}
+			skipProviderSection = false
+		}
+		if skipProviderSection {
+			continue
+		}
+		updated = append(updated, line)
+	}
+	return trimTrailingEmptyLines(updated)
+}
+
+func cleanupCodexManagedProviderConfig(lines []string, modelProvider string) []string {
+	if modelProvider == "" {
+		return lines
+	}
+	managedTopLevelProvider := topLevelAssignmentValueEquals(lines, "model_provider", modelProvider)
+
+	lines = removeCodexManagedProviderSection(lines, modelProvider)
+	updated := make([]string, 0, len(lines))
+	inTopLevel := true
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if inTopLevel && isTomlTableHeader(trimmed) {
 			inTopLevel = false
 		}
-		if trimmed == "# === amagi-codebox-inject-end ===" {
-			inAmagiInjectBlock = false
+		if inTopLevel {
+			if key, ok := tomlAssignmentKey(trimmed); ok {
+				switch key {
+				case "model_provider":
+					if tomlAssignmentValueEquals(trimmed, modelProvider) {
+						continue
+					}
+				case "forced_login_method":
+					if managedTopLevelProvider && tomlAssignmentValueEquals(trimmed, "api") {
+						continue
+					}
+				}
+			}
+		}
+		updated = append(updated, line)
+	}
+	return trimTrailingEmptyLines(updated)
+}
+
+func topLevelAssignmentValueEquals(lines []string, key, value string) bool {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isTomlTableHeader(trimmed) {
+			return false
+		}
+		if gotKey, ok := tomlAssignmentKey(trimmed); ok && gotKey == key {
+			return tomlAssignmentValueEquals(trimmed, value)
 		}
 	}
+	return false
+}
 
-	if !foundModel {
-		return fmt.Errorf("top-level model field not found in %s", configPath)
+func tomlAssignmentValueEquals(trimmedLine, value string) bool {
+	idx := strings.Index(trimmedLine, "=")
+	if idx == -1 {
+		return false
 	}
-	if modelProvider != "" && !foundTopLevelProvider {
-		providerLine := "model_provider = " + strconv.Quote(modelProvider)
-		insertAt := modelLineIndex + 1
-		updated = append(updated[:insertAt], append([]string{providerLine}, updated[insertAt:]...)...)
+	rawValue := strings.TrimSpace(trimmedLine[idx+1:])
+	if rawValue == "" {
+		return false
 	}
+	if rawValue[0] == '"' || rawValue[0] == '\'' {
+		quote := rawValue[0]
+		for i := 1; i < len(rawValue); i++ {
+			if quote == '"' && rawValue[i] == '\\' {
+				i++
+				continue
+			}
+			if rawValue[i] == quote {
+				literal := rawValue[:i+1]
+				if quote == '\'' {
+					return literal[1:len(literal)-1] == value
+				}
+				unquoted, err := strconv.Unquote(literal)
+				return err == nil && unquoted == value
+			}
+		}
+	}
+	if commentIdx := strings.Index(rawValue, "#"); commentIdx != -1 {
+		rawValue = strings.TrimSpace(rawValue[:commentIdx])
+	}
+	if unquoted, err := strconv.Unquote(rawValue); err == nil {
+		return unquoted == value
+	}
+	return strings.Trim(rawValue, "\"'") == value
+}
 
-	return os.WriteFile(configPath, []byte(strings.Join(updated, "\n")), 0644)
+func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL string) []string {
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+		lines = append(lines, "")
+	}
+	lines = append(lines,
+		"# === amagi-codebox-inject-start ===",
+		"[model_providers."+modelProvider+"]",
+		"name = "+strconv.Quote(modelProvider),
+		"base_url = "+strconv.Quote(baseURL),
+		"env_key = "+strconv.Quote("OPENAI_API_KEY"),
+		"requires_openai_auth = false",
+		"wire_api = "+strconv.Quote("responses"),
+		"# === amagi-codebox-inject-end ===",
+	)
+	return lines
+}
+
+func countTopLevelAssignment(lines []string, key string) int {
+	count := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isTomlTableHeader(trimmed) {
+			return count
+		}
+		if got, ok := tomlAssignmentKey(trimmed); ok && got == key {
+			count++
+		}
+	}
+	return count
+}
+
+func trimTrailingEmptyLines(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 func tomlAssignmentKey(trimmedLine string) (string, bool) {
@@ -1212,6 +1457,27 @@ func tomlAssignmentKey(trimmedLine string) (string, bool) {
 
 func isTomlTableHeader(trimmedLine string) bool {
 	return strings.HasPrefix(trimmedLine, "[")
+}
+
+func isCustomCodexOpenAIBaseURL(baseURL string) bool {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return false
+	}
+	parseTarget := trimmed
+	if !strings.Contains(parseTarget, "://") {
+		parseTarget = "https://" + parseTarget
+	}
+	parsed, err := url.Parse(parseTarget)
+	if err != nil || parsed.Host == "" {
+		normalized := strings.TrimRight(strings.ToLower(trimmed), "/")
+		return normalized != "https://api.openai.com" && normalized != "https://api.openai.com/v1" && normalized != "api.openai.com" && normalized != "api.openai.com/v1"
+	}
+	if strings.ToLower(parsed.Hostname()) != codexOfficialOpenAIAPIHost {
+		return true
+	}
+	path := strings.TrimRight(strings.ToLower(parsed.EscapedPath()), "/")
+	return path != "" && path != "/v1"
 }
 
 // isOpenAIProvider reports whether the provider uses the OpenAI-compatible API.
