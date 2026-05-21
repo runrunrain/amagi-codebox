@@ -405,6 +405,11 @@ function createTerminal(sessionId: string) {
     fontSize: 14,
     scrollback: scrollbackLines.value,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    // xterm.js disables its selection layer while a TUI enables mouse reporting.
+    // Windows keeps a built-in Shift+drag escape hatch; macOS requires this
+    // option so Option+drag can force local terminal selection without globally
+    // intercepting ordinary drags that should still reach the TUI.
+    macOptionClickForcesSelection: true,
     // ConPTY hint only on Windows
     ...(platformCaps.isWindows.value ? { windowsPty: { backend: 'conpty', buildNumber: 19041 } } : {}),
     theme: {
