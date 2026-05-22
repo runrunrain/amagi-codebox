@@ -32,6 +32,7 @@ const selectedMarketplace = ref('')
 const searchQuery = ref('')
 const detailResourceGroups = ['skills', 'agents', 'commands', 'hooks', 'mcp'] as const
 const expandedDetailGroups = ref<Record<string, boolean>>({})
+const codexPluginFixtureMode = ref(isCodexPluginFixtureMode())
 
 type DetailResourceGroup = typeof detailResourceGroups[number]
 type DetailDisplayItem = {
@@ -41,6 +42,106 @@ type DetailDisplayItem = {
   badge: string
   descriptionKind: 'text' | 'path'
 }
+
+type CodexPluginServiceBridge = {
+  RefreshPlugins?: unknown
+  GetPluginDetails?: unknown
+}
+
+const fixturePluginId = 'amagi-fixture@browser-validation'
+const fixtureReadOnlyMessage = '当前为 Codex 插件浏览器验证 fixture 模式，写操作已禁用。'
+const wailsRuntimeMissingMessage = '当前页面需要 Wails 运行时；浏览器验证请使用 fixture 参数：#/extensions/plugins/codex?codexPluginFixture=1'
+
+const fixtureData = {
+  marketplaces: [
+    {
+      name: 'browser-validation',
+      source: 'fixture',
+      repo: 'amagi-codebox/codex-fixture',
+      url: 'fixture://codex-plugin-detail-browser-validation',
+      installLocation: '/tmp/amagi-codebox-fixtures/codex-marketplace',
+      snapshotPath: '/tmp/amagi-codebox-fixtures/codex-marketplace/snapshot',
+      lastUpdated: '2026-05-22T00:00:00Z',
+      rawLine: 'fixture://codex-plugin-detail-browser-validation'
+    }
+  ],
+  installed: [
+    {
+      id: fixturePluginId,
+      name: 'amagi fixture plugin',
+      marketplace: 'browser-validation',
+      version: '1.2.14-fixture',
+      enabled: true,
+      installPath: '/tmp/amagi-codebox-fixtures/plugins/amagi',
+      manifestPath: '/tmp/amagi-codebox-fixtures/plugins/amagi/.codex-plugin/plugin.json',
+      installedAt: '2026-05-22T00:00:00Z',
+      lastUpdated: '2026-05-22T00:00:00Z',
+      source: 'browser-fixture'
+    }
+  ],
+  available: [
+    {
+      pluginId: 'amagi-extra@browser-validation',
+      name: 'amagi-extra-fixture',
+      marketplaceName: 'browser-validation',
+      version: '0.1.0-fixture',
+      description: 'Fixture-only available Codex plugin used to verify marketplace rendering.',
+      author: 'Amagi fixture',
+      repository: 'https://example.invalid/amagi-extra-fixture',
+      snapshotPath: '/tmp/amagi-codebox-fixtures/codex-marketplace/snapshot',
+      manifestPath: '/tmp/amagi-codebox-fixtures/codex-marketplace/snapshot/amagi-extra/.codex-plugin/plugin.json'
+    }
+  ],
+  warnings: ['浏览器验证 fixture 模式已启用：数据来自前端内置受控 fixture，不会调用真实 Codex 或 Wails 后端。']
+} as codexplugin.CodexPluginsData
+
+const fixtureDetails = {
+  [fixturePluginId]: {
+    id: fixturePluginId,
+    name: 'amagi fixture plugin',
+    marketplace: 'browser-validation',
+    version: '1.2.14-fixture',
+    enabled: true,
+    installPath: '/tmp/amagi-codebox-fixtures/plugins/amagi',
+    manifestPath: '/tmp/amagi-codebox-fixtures/plugins/amagi/.codex-plugin/plugin.json',
+    installedAt: '2026-05-22T00:00:00Z',
+    lastUpdated: '2026-05-22T00:00:00Z',
+    source: 'browser-fixture',
+    manifest: {
+      name: 'amagi fixture plugin',
+      version: '1.2.14-fixture',
+      description: 'Controlled Codex plugin fixture for browser interaction validation.',
+      author: { name: 'Amagi fixture' },
+      license: 'MIT',
+      keywords: ['codex', 'fixture', 'browser-validation'],
+      homepage: 'https://example.invalid/amagi-fixture',
+      repository: 'https://example.invalid/amagi-fixture'
+    },
+    skills: [
+      { name: 'agent-browser', description: 'Browser automation CLI for interactive UI validation.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/skills/agent-browser/SKILL.md' },
+      { name: 'pdf-to-md', description: 'Convert PDF documents to high quality Markdown.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/skills/pdf-to-md/SKILL.md' },
+      { name: 'design-doc-writing', description: 'Write reviewable technical design documents.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/skills/design-doc-writing/SKILL.md' }
+    ],
+    agents: [
+      { name: 'baize', description: 'Explorer agent for read-only code research.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/agents/baize.md' },
+      { name: 'luban', description: 'Coder agent for production implementation and self-test.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/agents/luban.md' }
+    ],
+    commands: [
+      { name: 'github-release', description: 'Execute the GitHub release workflow.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/commands/github-release.md' },
+      { name: 'save-session', description: 'Save project state at the end of a conversation.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/commands/save-session.md' }
+    ],
+    hooks: [
+      { name: 'load-project-context', event: 'SessionStart', type: 'command', command: 'amagi load project context', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/hooks/hooks.json' },
+      { name: 'validate-permission', event: 'PreToolUse', type: 'command', command: 'amagi validate permission', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/hooks/hooks.json' }
+    ],
+    hasMcp: true,
+    mcpServers: {
+      memory: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] },
+      'web-search-prime': { command: 'uvx', args: ['web-search-prime'] }
+    },
+    pluginType: 'hybrid'
+  }
+} as unknown as Record<string, codexplugin.CodexPluginDetail>
 
 const addMarketDialog = ref({
   show: false,
@@ -89,6 +190,38 @@ const availableByMarketplace = computed(() => groupAvailable(availableFiltered.v
 const installedCount = computed(() => installedPlugins.value.length)
 const enabledCount = computed(() => installedPlugins.value.filter(plugin => plugin.enabled).length)
 const availableCount = computed(() => availablePlugins.value.length)
+
+function codexPluginFixtureFlagEnabled() {
+  const values = [window.location.search, window.location.hash]
+  return values.some(value => /(?:[?#&]|^)codexPluginFixture=(?:1|true|yes)(?:[&#]|$)/i.test(value))
+}
+
+function getCodexPluginServiceBridge(): CodexPluginServiceBridge | undefined {
+  return (window as unknown as { go?: { codexplugin?: { Service?: CodexPluginServiceBridge } } }).go?.codexplugin?.Service
+}
+
+function hasCodexPluginWailsBridge() {
+  const service = getCodexPluginServiceBridge()
+  return typeof service?.RefreshPlugins === 'function' && typeof service?.GetPluginDetails === 'function'
+}
+
+function isCodexPluginFixtureMode() {
+  return codexPluginFixtureFlagEnabled() && !hasCodexPluginWailsBridge()
+}
+
+function applyFixtureData() {
+  marketplaces.value = fixtureData.marketplaces
+  installedPlugins.value = fixtureData.installed
+  refreshWarnings.value = fixtureData.warnings || []
+  const installedIds = new Set(installedPlugins.value.map(plugin => plugin.id))
+  availablePlugins.value = fixtureData.available.filter(plugin => !installedIds.has(plugin.pluginId))
+  pluginDetails.value = { ...fixtureDetails }
+  ensureExpandedGroups()
+}
+
+function showFixtureReadOnlyError(action: string) {
+  showError(`${action}失败: ${fixtureReadOnlyMessage}`)
+}
 
 function groupInstalled(plugins: codexplugin.CodexPlugin[]) {
   const groups: Record<string, { name: string; plugins: codexplugin.CodexPlugin[] }> = {}
@@ -179,6 +312,14 @@ async function loadData() {
   loading.value = true
   operationError.value = ''
   try {
+    codexPluginFixtureMode.value = isCodexPluginFixtureMode()
+    if (codexPluginFixtureMode.value) {
+      applyFixtureData()
+      return
+    }
+    if (!hasCodexPluginWailsBridge()) {
+      throw new Error(wailsRuntimeMissingMessage)
+    }
     const data = await RefreshPlugins()
     marketplaces.value = data?.marketplaces || []
     installedPlugins.value = data?.installed || []
@@ -207,6 +348,10 @@ function ensureExpandedGroups() {
 }
 
 async function submitAddMarketplace() {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError('添加 Codex 市场')
+    return
+  }
   const source = addMarketDialog.value.source.trim()
   if (!source) return
   addMarketDialog.value.submitting = true
@@ -228,6 +373,10 @@ async function submitAddMarketplace() {
 }
 
 async function upgradeMarketplace(name: string) {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError(`更新市场 ${name}`)
+    return
+  }
   loading.value = true
   try {
     const result = await UpgradeMarketplace(name)
@@ -245,6 +394,10 @@ async function upgradeMarketplace(name: string) {
 }
 
 async function upgradeAllMarketplaces() {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError('批量更新市场')
+    return
+  }
   loading.value = true
   try {
     let failed = 0
@@ -266,6 +419,10 @@ async function upgradeAllMarketplaces() {
 }
 
 function confirmRemoveMarketplace(marketplace: codexplugin.CodexMarketplace) {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError('移除 Codex 市场')
+    return
+  }
   confirmDialog.value = {
     show: true,
     title: '移除 Codex 市场',
@@ -293,6 +450,10 @@ function confirmRemoveMarketplace(marketplace: codexplugin.CodexMarketplace) {
 }
 
 async function installAvailablePlugin(plugin: codexplugin.CodexAvailablePlugin) {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError('安装 Codex 插件')
+    return
+  }
   const pluginId = plugin.pluginId
   installingPlugins.value[pluginId] = true
   try {
@@ -311,6 +472,10 @@ async function installAvailablePlugin(plugin: codexplugin.CodexAvailablePlugin) 
 }
 
 async function togglePlugin(plugin: codexplugin.CodexPlugin) {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError('更新启用状态')
+    return
+  }
   const previous = plugin.enabled
   const next = !previous
   plugin.enabled = next
@@ -338,6 +503,10 @@ async function updatePluginViaMarketplace(plugin: codexplugin.CodexPlugin) {
 }
 
 function confirmUninstall(plugin: codexplugin.CodexPlugin) {
+  if (codexPluginFixtureMode.value) {
+    showFixtureReadOnlyError('卸载 Codex 插件')
+    return
+  }
   confirmDialog.value = {
     show: true,
     title: '卸载 Codex 插件',
@@ -372,6 +541,11 @@ async function toggleDetail(pluginId: string) {
   }
   expandedPluginId.value = pluginId
   if (pluginDetails.value[pluginId]) return
+  if (codexPluginFixtureMode.value) {
+    const detail = fixtureDetails[pluginId]
+    if (detail) pluginDetails.value[pluginId] = detail
+    return
+  }
   loadingDetails.value[pluginId] = true
   try {
     const detail = await GetPluginDetails(selector(pluginId))
@@ -441,6 +615,13 @@ onMounted(() => {
           <option v-for="name in marketplaceOptions" :key="name" :value="name">{{ name }}</option>
         </select>
         <button class="btn secondary" @click="loadData" :disabled="loading">刷新</button>
+      </div>
+    </div>
+
+    <div class="state-banner fixture" v-if="codexPluginFixtureMode">
+      <div>
+        <strong>Codex 插件浏览器验证 fixture 模式</strong>
+        <p>当前数据来自前端内置受控 fixture，仅用于 Vite/浏览器交互验证；生产 Wails 运行时不会自动启用。</p>
       </div>
     </div>
 
@@ -917,6 +1098,11 @@ onMounted(() => {
   border-color: rgba(255, 183, 77, 0.35);
 }
 
+.state-banner.fixture {
+  background: rgba(79, 195, 247, 0.08);
+  border-color: rgba(79, 195, 247, 0.35);
+}
+
 .state-banner strong {
   color: #ef9a9a;
   font-size: 14px;
@@ -924,6 +1110,10 @@ onMounted(() => {
 
 .state-banner.warning strong {
   color: #ffcc80;
+}
+
+.state-banner.fixture strong {
+  color: #81d4fa;
 }
 
 .state-banner p {
@@ -934,6 +1124,10 @@ onMounted(() => {
 
 .state-banner.warning p {
   color: #d8be91;
+}
+
+.state-banner.fixture p {
+  color: #a8cfe0;
 }
 
 .market-list,

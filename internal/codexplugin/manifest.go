@@ -223,7 +223,7 @@ func (s *Service) scanAgents(installPath string) ([]AgentInfo, error) {
 			return nil, fmt.Errorf("read agent file %s: %w", filePath, err)
 		}
 		meta := parseFrontmatter(string(content))
-		agents = append(agents, AgentInfo{Name: firstNonEmpty(meta["name"], extractFirstHeading(string(content)), strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))), Description: firstNonEmpty(meta["description"], extractFirstParagraph(string(content))), FilePath: filePath})
+		agents = append(agents, AgentInfo{Name: extractAgentName(meta, string(content), entry.Name()), Description: firstNonEmpty(meta["description"], extractFirstParagraph(string(content))), FilePath: filePath})
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	return agents, nil
@@ -344,6 +344,63 @@ func extractFirstHeading(content string) string {
 		}
 	}
 	return ""
+}
+
+func extractAgentName(meta map[string]string, content string, fileName string) string {
+	if name := strings.TrimSpace(meta["name"]); name != "" {
+		return name
+	}
+	for _, line := range bodyLines(content) {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+		if heading != "" && !isGenericAgentHeading(heading) {
+			return heading
+		}
+	}
+	return strings.TrimSuffix(fileName, filepath.Ext(fileName))
+}
+
+func isGenericAgentHeading(heading string) bool {
+	normalized := normalizeAgentHeading(heading)
+	if normalized == "" {
+		return true
+	}
+	genericHeadings := map[string]struct{}{
+		"角色定位": {},
+		"核心能力": {},
+		"思维模式": {},
+		"工作流":  {},
+		"协作规范": {},
+		"输出规范": {},
+		"自检清单": {},
+	}
+	_, ok := genericHeadings[normalized]
+	return ok
+}
+
+func normalizeAgentHeading(heading string) string {
+	value := strings.ToLower(strings.TrimSpace(heading))
+	value = strings.ReplaceAll(value, " ", "")
+	value = strings.ReplaceAll(value, "\t", "")
+	sectionPrefixes := []string{
+		"一、", "二、", "三、", "四、", "五、", "六、", "七、", "八、", "九、", "十、",
+		"1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "10.",
+		"1、", "2、", "3、", "4、", "5、", "6、", "7、", "8、", "9、", "10、",
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, prefix := range sectionPrefixes {
+			if strings.HasPrefix(value, prefix) {
+				value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
+				changed = true
+			}
+		}
+	}
+	return strings.Trim(value, "#：:.-—")
 }
 
 func extractFirstParagraph(content string) string {

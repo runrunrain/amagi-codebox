@@ -86,6 +86,56 @@ func TestScanCommandsIgnoresNonMarkdownFilesAndDirectories(t *testing.T) {
 	}
 }
 
+func TestScanAgentsFallsBackToFileNameForGenericHeading(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	agentPath := filepath.Join(agentsDir, "luban.md")
+	content := []byte("# 一、角色定位\n\n编码工匠，负责生产级代码实现。\n")
+	if err := os.WriteFile(agentPath, content, 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	agents, err := s.scanAgents(dir)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Name != "luban" || agents[0].Description != "编码工匠，负责生产级代码实现。" || agents[0].FilePath != agentPath {
+		t.Fatalf("unexpected agent info: %+v", agents[0])
+	}
+}
+
+func TestScanAgentsPreservesFrontmatterName(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	agentPath := filepath.Join(agentsDir, "baize.md")
+	content := []byte("---\nname: baize-explorer\ndescription: Explorer agent for code research\n---\n\n# 一、角色定位\n\nFallback paragraph.\n")
+	if err := os.WriteFile(agentPath, content, 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	agents, err := s.scanAgents(dir)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Name != "baize-explorer" || agents[0].Description != "Explorer agent for code research" || agents[0].FilePath != agentPath {
+		t.Fatalf("unexpected agent info: %+v", agents[0])
+	}
+}
+
 func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".codex-plugin"), 0755); err != nil {
