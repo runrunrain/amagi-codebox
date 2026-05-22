@@ -213,6 +213,21 @@ type availablePluginsEnvelope struct {
 	Available []interface{} `json:"available"`
 }
 
+// AvailablePlugin represents a normalized Claude marketplace plugin entry.
+// The Claude CLI has returned this data in both bare arrays and envelopes across versions;
+// keeping a typed normalization layer gives the UI stable marketplace linkage without a new Wails API.
+type AvailablePlugin struct {
+	PluginID        string      `json:"pluginId"`
+	Name            string      `json:"name"`
+	MarketplaceName string      `json:"marketplaceName"`
+	Version         string      `json:"version,omitempty"`
+	Description     string      `json:"description,omitempty"`
+	Author          interface{} `json:"author,omitempty"`
+	Repository      string      `json:"repository,omitempty"`
+	InstallCount    int         `json:"installCount,omitempty"`
+	Raw             interface{} `json:"raw,omitempty"`
+}
+
 type pluginSubItemStateFile struct {
 	Plugins []PluginSubItemState `json:"plugins"`
 }

@@ -6,6 +6,15 @@ import (
 	"sort"
 )
 
+var subItemTypeOrder = map[SubItemType]int{
+	SubItemTypeSkill:   0,
+	SubItemTypeAgent:   1,
+	SubItemTypeCommand: 2,
+	SubItemTypeHook:    3,
+	SubItemTypeMCP:     4,
+	SubItemTypeClaude:  5,
+}
+
 func (s *Service) AnalyzePluginType(pluginID string) (PluginType, error) {
 	detail, err := s.GetPluginDetail(pluginID)
 	if err != nil {
@@ -134,9 +143,16 @@ func buildSubItems(detail *PluginDetail, disabledRefs []SubItemRef) []SubItem {
 		if subItems[i].Type == subItems[j].Type {
 			return subItems[i].Name < subItems[j].Name
 		}
-		return subItems[i].Type < subItems[j].Type
+		return subItemTypeRank(subItems[i].Type) < subItemTypeRank(subItems[j].Type)
 	})
 	return subItems
+}
+
+func subItemTypeRank(itemType SubItemType) int {
+	if rank, ok := subItemTypeOrder[itemType]; ok {
+		return rank
+	}
+	return len(subItemTypeOrder)
 }
 
 func relativePluginPath(installPath, filePath string) string {

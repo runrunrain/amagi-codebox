@@ -25,11 +25,10 @@ const loading = ref(false)
 const marketplaces = ref<any[]>([])
 const installedPlugins = ref<any[]>([])
 const availablePlugins = ref<any[]>([])
-const marketplacesExpanded = ref(false)
-const expandedMarkets = ref<Record<string, boolean>>({})
 const expandedInstalledGroups = ref<Record<string, boolean>>({})
 const installingPlugins = ref<Record<string, boolean>>({})
-const expandedSubItemGroups = ref<Record<string, boolean>>({})
+const selectedMarketplace = ref('')
+const selectedDetailItems = ref<Record<string, string>>({})
 
 const expandedPluginId = ref<string | null>(null)
 const pluginDetails = ref<Record<string, any>>({})
@@ -44,31 +43,118 @@ const pluginTypeClass = (value?: string) => `type-${value || 'unknown'}`
 const subItemTypeLabel = (value: string) => ({ skill: 'Skill', hook: 'Hook', command: 'Command', agent: 'Agent', mcp: 'MCP', claude: 'Claude' } as Record<string, string>)[value] || value
 const getMcpServerNames = (detail: any) => Object.keys(detail?.mcpServers || {})
 const hasDetailResources = (detail: any) => Boolean(detail?.skills?.length || detail?.agents?.length || detail?.commands?.length || detail?.hooks?.length || getMcpServerNames(detail).length || detail?.subItems?.length || detail?.hasClaudeMd)
-type DetailEntry = { key: string; name: string; description?: string; badge?: string; subItem: any | null }
-const subItemGroupKey = (pluginId: string, type: string) => `${pluginId}:${type}`
-const isSubItemGroupExpanded = (pluginId: string, type: string) => expandedSubItemGroups.value[subItemGroupKey(pluginId, type)] ?? true
-function toggleSubItemGroup(pluginId: string, type: string) {
-  const key = subItemGroupKey(pluginId, type)
-  expandedSubItemGroups.value[key] = !isSubItemGroupExpanded(pluginId, type)
+type DetailResourceType = 'skill' | 'agent' | 'command' | 'hook' | 'mcp' | 'claude'
+type DetailEntry = { key: string; name: string; description?: string; badge?: string; path?: string; subItem: any | null }
+type DetailNavItem = DetailEntry & { type: DetailResourceType; typeLabel: string; path?: string }
+type McpServerSummary = {
+  name: string
+  transport: string
+  command: string
+  argsCount: number
+  hasRemoteEndpoint: boolean
+  hasEnv: boolean
+  hasHeaders: boolean
+  hasSensitiveFields: boolean
 }
+const sensitiveMcpKeyPattern = /(secret|key|token|password|authorization|cookie|env|headers)/i
+
+function hasSensitiveMcpKeys(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(item => hasSensitiveMcpKeys(item))
+  return Object.entries(value as Record<string, unknown>).some(([key, nested]) => sensitiveMcpKeyPattern.test(key) || hasSensitiveMcpKeys(nested))
+}
+
+function safeExecutableName(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return '-'
+  const normalized = value.trim().replace(/\\/g, '/')
+  return normalized.split('/').filter(Boolean).pop() || normalized
+}
+
+function summarizeMcpServer(detail: any, serverName: string): McpServerSummary {
+  const server = detail?.mcpServers?.[serverName]
+  if (!server || typeof server !== 'object' || Array.isArray(server)) {
+    return {
+      name: serverName,
+      transport: server ? typeof server : 'configured',
+      command: '-',
+      argsCount: 0,
+      hasRemoteEndpoint: false,
+      hasEnv: false,
+      hasHeaders: false,
+      hasSensitiveFields: false
+    }
+  }
+  const config = server as Record<string, any>
+  const transport = config.type || config.transport || (config.command ? 'stdio' : (config.url || config.endpoint ? 'remote' : 'configured'))
+  return {
+    name: serverName,
+    transport: String(transport),
+    command: safeExecutableName(config.command || config.executable || config.path),
+    argsCount: Array.isArray(config.args) ? config.args.length : 0,
+    hasRemoteEndpoint: Boolean(config.url || config.endpoint),
+    hasEnv: Boolean(config.env),
+    hasHeaders: Boolean(config.headers),
+    hasSensitiveFields: hasSensitiveMcpKeys(config)
+  }
+}
+
+function selectedMcpServerSummary(pluginId: string, detail: any) {
+  const selected = selectedDetailItem(pluginId, detail)
+  if (!selected || selected.type !== 'mcp') return null
+  return summarizeMcpServer(detail, selected.name)
+}
+
 function findSubItem(detail: any, type: string, name: string) {
   return (detail?.subItems || []).find((item: any) => item.type === type && item.name === name) || null
 }
 function detailEntries(detail: any, type: string): DetailEntry[] {
   switch (type) {
     case 'skill':
-      return (detail?.skills || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description, subItem: findSubItem(detail, 'skill', item.name) }))
+      return (detail?.skills || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description, path: item.filePath || item.path, subItem: findSubItem(detail, 'skill', item.name) }))
     case 'agent':
-      return (detail?.agents || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description, subItem: findSubItem(detail, 'agent', item.name) }))
+      return (detail?.agents || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description, path: item.filePath || item.path, subItem: findSubItem(detail, 'agent', item.name) }))
     case 'command':
-      return (detail?.commands || []).map((item: any) => ({ key: item.name, name: item.name, subItem: findSubItem(detail, 'command', item.name) }))
+      return (detail?.commands || []).map((item: any) => ({ key: item.name, name: item.name, description: item.description || item.filePath || item.path, path: item.filePath || item.path, subItem: findSubItem(detail, 'command', item.name) }))
     case 'hook':
-      return (detail?.hooks || []).map((item: any) => ({ key: item.name || `${item.event}:${item.type}`, name: item.event, badge: item.type, subItem: findSubItem(detail, 'hook', item.name) }))
+      return (detail?.hooks || []).map((item: any) => ({ key: item.name || `${item.event}:${item.type}`, name: item.name ? `${item.event} / ${item.name}` : item.event, description: item.command || item.filePath, path: item.filePath, badge: item.type, subItem: findSubItem(detail, 'hook', item.name) }))
     case 'mcp':
       return getMcpServerNames(detail).map((name: string) => ({ key: name, name, subItem: findSubItem(detail, 'mcp', name) }))
     default:
       return []
   }
+}
+
+function buildDetailNavItems(detail: any): DetailNavItem[] {
+  const order: DetailResourceType[] = ['skill', 'agent', 'command', 'hook', 'mcp']
+  const items = order.flatMap(type => detailEntries(detail, type).map(entry => ({
+    ...entry,
+    type,
+    typeLabel: subItemTypeLabel(type),
+    key: `${type}:${entry.key}`
+  })))
+  if (detail?.hasClaudeMd) {
+    items.push({
+      key: 'claude:CLAUDE.md',
+      type: 'claude',
+      typeLabel: 'Claude',
+      name: 'CLAUDE.md',
+      description: detail.claudeMdPath || '插件根目录',
+      path: detail.claudeMdPath,
+      subItem: null
+    })
+  }
+  return items
+}
+
+function selectedDetailItem(pluginId: string, detail: any) {
+  const items = buildDetailNavItems(detail)
+  if (items.length === 0) return null
+  const selectedKey = selectedDetailItems.value[pluginId]
+  return items.find(item => item.key === selectedKey) || items[0]
+}
+
+function selectDetailItem(pluginId: string, item: DetailNavItem) {
+  selectedDetailItems.value[pluginId] = item.key
 }
 function mergeSubItemStates(items: any[], state: any) {
   const disabled = new Set((state?.disabledSubItems || []).map((ref: any) => subItemKey(ref)))
@@ -108,6 +194,32 @@ const availableByMarketplace = computed(() => {
 const filteredAvailableCount = computed(() => {
   return availableByMarketplace.value.reduce((sum, g) => sum + g.plugins.length, 0)
 })
+
+const marketplaceConsoleItems = computed(() => {
+  const byName = new Map(availableByMarketplace.value.map(group => [group.name, group]))
+  const items = marketplaces.value.map((marketplace: any) => {
+    const name = marketplace.name || marketplace.repo || marketplace.url || 'unknown'
+    return {
+      ...marketplace,
+      name,
+      plugins: byName.get(name)?.plugins || []
+    }
+  })
+  for (const group of availableByMarketplace.value) {
+    if (!items.some((item: any) => item.name === group.name)) {
+      items.push({ name: group.name, source: 'marketplace', plugins: group.plugins })
+    }
+  }
+  return items.sort((a: any, b: any) => a.name.localeCompare(b.name))
+})
+
+const selectedMarketplaceItem = computed(() => {
+  const items = marketplaceConsoleItems.value
+  if (!items.length) return null
+  return items.find((item: any) => item.name === selectedMarketplace.value) || items[0]
+})
+
+const selectedAvailablePlugins = computed(() => selectedMarketplaceItem.value?.plugins || [])
 
 const installedByMarketplace = computed(() => {
   const groups: Record<string, { name: string; plugins: any[] }> = {}
@@ -338,6 +450,8 @@ async function toggleDetail(pluginId: string) {
         ...(detail || {}),
         subItems: mergeSubItemStates(subItems || detail?.subItems || [], state),
       }
+      const defaultItem = selectedDetailItem(pluginId, pluginDetails.value[pluginId])
+      if (defaultItem) selectedDetailItems.value[pluginId] = defaultItem.key
     } catch (err) {
       showError('加载详情失败: ' + err)
     } finally {
@@ -395,49 +509,6 @@ onMounted(() => {
           </svg>
           刷新
         </button>
-      </div>
-    </div>
-
-    <!-- Marketplace Section -->
-    <div class="marketplace-section card">
-      <div class="card-header clickable" @click="marketplacesExpanded = !marketplacesExpanded">
-        <div class="header-left">
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="section-icon">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-          </svg>
-          <h3 class="card-title">插件市场源 ({{ marketplaces.length }})</h3>
-        </div>
-        <div class="header-right">
-          <button class="btn secondary small" @click.stop="addMarketDialog.show = true" v-if="marketplacesExpanded">
-            + 添加市场
-          </button>
-          <button class="btn primary small" @click.stop="updateAllMarketplaces" :disabled="loading || marketplaces.length === 0" v-if="marketplacesExpanded">
-            全部更新
-          </button>
-          <svg :class="['chevron', { expanded: marketplacesExpanded }]" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"></polyline>
-          </svg>
-        </div>
-      </div>
-      
-      <div class="card-body" v-if="marketplacesExpanded">
-        <div class="empty-state" v-if="marketplaces.length === 0">
-          <p>暂无配置的插件市场源</p>
-        </div>
-        <div class="market-list" v-else>
-          <div class="market-item" v-for="m in marketplaces" :key="m.name">
-            <div class="market-info">
-              <span class="market-name">{{ m.name }}</span>
-              <span class="badge source-badge">{{ m.source || 'git' }}</span>
-              <span class="market-url">{{ m.url || m.repo || m.installLocation }}</span>
-            </div>
-            <div class="market-actions">
-              <button class="btn secondary small" @click="updateMarketplace(m.name)" :disabled="loading">更新</button>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
 
@@ -512,177 +583,89 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Detail Panel -->
         <transition name="slide-fade">
           <div class="plugin-detail-panel" v-if="expandedPluginId === p.id">
             <div class="detail-loading" v-if="loadingDetails[p.id]">
               <div class="spinner"></div>
               <span>加载详情中...</span>
             </div>
-            <div class="detail-content" v-else-if="pluginDetails[p.id]">
-              <!-- Skills -->
-              <div class="detail-section" v-if="pluginDetails[p.id].skills?.length">
-                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'skill')">
-                  <span class="section-title-sm">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-                    Skills
-                  </span>
-                  <span class="section-toggle-meta">
-                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].skills.length }}</span>
-                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'skill') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  </span>
+            <div class="detail-split" v-else-if="pluginDetails[p.id]">
+              <aside class="detail-nav" v-if="buildDetailNavItems(pluginDetails[p.id]).length">
+                <button
+                  type="button"
+                  v-for="item in buildDetailNavItems(pluginDetails[p.id])"
+                  :key="item.key"
+                  class="detail-nav-item"
+                  :class="{ active: selectedDetailItem(p.id, pluginDetails[p.id])?.key === item.key }"
+                  :aria-label="`查看 ${item.typeLabel} ${item.name} 详情`"
+                  :aria-pressed="selectedDetailItem(p.id, pluginDetails[p.id])?.key === item.key"
+                  :data-detail-key="item.key"
+                  @click.stop="selectDetailItem(p.id, item)"
+                >
+                  <span class="detail-nav-kind">{{ item.typeLabel }}</span>
+                  <span class="detail-nav-name">{{ item.name }}</span>
+                  <span v-if="item.badge" class="detail-nav-meta">{{ item.badge }}</span>
                 </button>
-                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'skill')">
-                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'skill')" :key="entry.key">
-                    <div class="detail-item-copy">
-                      <div class="item-name-line">
-                        <span class="item-name">{{ entry.name }}</span>
-                      </div>
-                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
+              </aside>
+
+              <section class="detail-reading-pane" v-if="selectedDetailItem(p.id, pluginDetails[p.id])">
+                <div class="detail-pane-header">
+                  <span class="badge subitem-kind-badge">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.typeLabel }}</span>
+                  <h4 class="detail-pane-title">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.name }}</h4>
+                  <div class="detail-item-actions" v-if="selectedDetailItem(p.id, pluginDetails[p.id])?.subItem">
+                    <span class="toggle-label" :class="{ 'text-enabled': selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled, 'text-disabled': !selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled }">
+                      {{ selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled ? '已启用' : '已禁用' }}
+                    </span>
+                    <button class="ios-toggle" :class="{ active: selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled }" @click="toggleSubItem(p.id, selectedDetailItem(p.id, pluginDetails[p.id])?.subItem)"></button>
+                  </div>
+                </div>
+                <p class="detail-pane-desc">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.description || '该条目未声明描述。' }}</p>
+                <div class="detail-pane-grid">
+                  <div class="detail-kv">
+                    <span>类型</span>
+                    <strong>{{ selectedDetailItem(p.id, pluginDetails[p.id])?.typeLabel }}</strong>
+                  </div>
+                  <div class="detail-kv" v-if="selectedDetailItem(p.id, pluginDetails[p.id])?.path">
+                    <span>路径</span>
+                    <strong class="path-text">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.path }}</strong>
+                  </div>
+                  <div class="detail-kv" v-if="selectedDetailItem(p.id, pluginDetails[p.id])?.badge">
+                    <span>标记</span>
+                    <strong>{{ selectedDetailItem(p.id, pluginDetails[p.id])?.badge }}</strong>
+                  </div>
+                </div>
+                <div class="mcp-summary" v-if="selectedMcpServerSummary(p.id, pluginDetails[p.id])">
+                  <div class="mcp-summary-title">MCP 安全摘要</div>
+                  <div class="detail-pane-grid">
+                    <div class="detail-kv">
+                      <span>Server</span>
+                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.name }}</strong>
                     </div>
-                    <div class="detail-item-actions" v-if="entry.subItem">
-                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
-                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
+                    <div class="detail-kv">
+                      <span>类型</span>
+                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.transport }}</strong>
+                    </div>
+                    <div class="detail-kv">
+                      <span>命令</span>
+                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.command }}</strong>
+                    </div>
+                    <div class="detail-kv">
+                      <span>参数</span>
+                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.argsCount }} 项，内容已隐藏</strong>
+                    </div>
+                    <div class="detail-kv">
+                      <span>远程端点</span>
+                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasRemoteEndpoint ? '已配置，完整地址已隐藏' : '未声明' }}</strong>
+                    </div>
+                    <div class="detail-kv">
+                      <span>敏感配置</span>
+                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasSensitiveFields || selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasEnv || selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasHeaders ? '已检测并隐藏' : '未检测到敏感字段' }}</strong>
                     </div>
                   </div>
                 </div>
-              </div>
+              </section>
 
-              <!-- Agents -->
-              <div class="detail-section" v-if="pluginDetails[p.id].agents?.length">
-                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'agent')">
-                  <span class="section-title-sm">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
-                    Agents
-                  </span>
-                  <span class="section-toggle-meta">
-                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].agents.length }}</span>
-                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'agent') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  </span>
-                </button>
-                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'agent')">
-                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'agent')" :key="entry.key">
-                    <div class="detail-item-copy">
-                      <div class="item-name-line">
-                        <span class="item-name">{{ entry.name }}</span>
-                      </div>
-                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
-                    </div>
-                    <div class="detail-item-actions" v-if="entry.subItem">
-                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
-                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Commands -->
-              <div class="detail-section" v-if="pluginDetails[p.id].commands?.length">
-                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'command')">
-                  <span class="section-title-sm">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-                    Commands
-                  </span>
-                  <span class="section-toggle-meta">
-                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].commands.length }}</span>
-                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'command') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  </span>
-                </button>
-                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'command')">
-                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'command')" :key="entry.key">
-                    <div class="detail-item-copy">
-                      <div class="item-name-line">
-                        <span class="item-name">{{ entry.name }}</span>
-                      </div>
-                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
-                    </div>
-                    <div class="detail-item-actions" v-if="entry.subItem">
-                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
-                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Hooks -->
-              <div class="detail-section" v-if="pluginDetails[p.id].hooks?.length">
-                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'hook')">
-                  <span class="section-title-sm">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                    Hooks
-                  </span>
-                  <span class="section-toggle-meta">
-                    <span class="badge subitem-count-badge">{{ pluginDetails[p.id].hooks.length }}</span>
-                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'hook') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  </span>
-                </button>
-                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'hook')">
-                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'hook')" :key="entry.key">
-                    <div class="detail-item-copy">
-                      <div class="item-name-line">
-                        <span class="item-name">{{ entry.name }}</span>
-                        <span v-if="entry.badge" class="badge source-badge">{{ entry.badge }}</span>
-                      </div>
-                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
-                    </div>
-                    <div class="detail-item-actions" v-if="entry.subItem">
-                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
-                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- MCP Servers -->
-              <div class="detail-section" v-if="pluginDetails[p.id].hasMcp && getMcpServerNames(pluginDetails[p.id]).length">
-                <button type="button" class="detail-section-toggle" @click="toggleSubItemGroup(p.id, 'mcp')">
-                  <span class="section-title-sm">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="7" y1="8" x2="7" y2="16"></line><line x1="11" y1="8" x2="11" y2="16"></line><line x1="15" y1="8" x2="15" y2="16"></line></svg>
-                    MCP Servers
-                  </span>
-                  <span class="section-toggle-meta">
-                    <span class="badge subitem-count-badge">{{ getMcpServerNames(pluginDetails[p.id]).length }}</span>
-                    <svg :class="['chevron', { expanded: isSubItemGroupExpanded(p.id, 'mcp') }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  </span>
-                </button>
-                <div class="detail-list" v-if="isSubItemGroupExpanded(p.id, 'mcp')">
-                  <div class="detail-item with-toggle" v-for="entry in detailEntries(pluginDetails[p.id], 'mcp')" :key="entry.key">
-                    <div class="detail-item-copy">
-                      <div class="item-name-line">
-                        <span class="item-name">{{ entry.name }}</span>
-                      </div>
-                      <span v-if="entry.description" class="item-desc">{{ entry.description }}</span>
-                    </div>
-                    <div class="detail-item-actions" v-if="entry.subItem">
-                      <span class="toggle-label" :class="{ 'text-enabled': entry.subItem.enabled, 'text-disabled': !entry.subItem.enabled }">{{ entry.subItem.enabled ? '已启用' : '已禁用' }}</span>
-                      <button class="ios-toggle" :class="{ active: entry.subItem.enabled }" @click="toggleSubItem(p.id, entry.subItem)"></button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="detail-section" v-if="pluginDetails[p.id].hasClaudeMd">
-                <h4 class="section-title-sm">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                  Claude Baseline
-                </h4>
-                <div class="detail-item">
-                  <span class="item-name">CLAUDE.md</span>
-                  <span class="item-desc">{{ pluginDetails[p.id].claudeMdPath || '插件根目录' }}</span>
-                </div>
-              </div>
-
-              <div class="empty-state-sm" v-if="!hasDetailResources(pluginDetails[p.id])">
+              <div class="empty-state-sm" v-else-if="!hasDetailResources(pluginDetails[p.id])">
                 该插件未声明任何可用资源
               </div>
             </div>
@@ -693,11 +676,13 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Available Plugins Section (grouped by marketplace) -->
-    <div class="available-section" v-if="availablePlugins.length > 0">
+    <!-- Available Plugins + Marketplaces -->
+    <div class="available-section">
       <div class="available-toolbar">
-        <h2 class="section-title">可安装插件 ({{ filteredAvailableCount }})</h2>
+        <h2 class="section-title">市场与可安装插件 ({{ filteredAvailableCount }})</h2>
         <div class="available-toolbar-controls">
+          <button class="btn secondary small" @click="addMarketDialog.show = true">添加市场</button>
+          <button class="btn secondary small" @click="updateAllMarketplaces" :disabled="loading || marketplaces.length === 0">全部更新</button>
           <div class="search-box">
             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             <input type="text" v-model="searchQuery" placeholder="搜索插件名称..." class="search-input" />
@@ -710,27 +695,40 @@ onMounted(() => {
         </div>
       </div>
 
-      <div class="empty-state card" v-if="filteredAvailableCount === 0 && searchQuery">
-        <p class="empty-text">未找到匹配 "{{ searchQuery }}" 的插件</p>
-      </div>
-      <div class="market-group card" v-for="group in availableByMarketplace" :key="group.name">
-        <div class="card-header clickable" @click="expandedMarkets[group.name] = !expandedMarkets[group.name]">
-          <div class="header-left">
-            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="section-icon">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            </svg>
-            <h3 class="card-title">{{ group.name }}</h3>
-            <span class="badge market-badge">{{ group.plugins.length }} 个插件</span>
+      <div class="market-console card">
+        <aside class="market-source-pane">
+          <div class="empty-state compact" v-if="marketplaceConsoleItems.length === 0 && !loading">
+            <p class="empty-text">暂无市场源</p>
           </div>
-          <div class="header-right">
-            <svg :class="['chevron', { expanded: expandedMarkets[group.name] }]" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
+          <button
+            v-for="market in marketplaceConsoleItems"
+            :key="market.name"
+            type="button"
+            class="market-source-item"
+            :class="{ active: selectedMarketplaceItem?.name === market.name }"
+            @click="selectedMarketplace = market.name"
+          >
+            <span class="market-source-title">{{ market.name }}</span>
+            <span class="market-source-meta">{{ market.plugins.length }} 个可安装</span>
+            <span class="market-url">{{ market.url || market.repo || market.installLocation || market.source || '-' }}</span>
+          </button>
+        </aside>
+        <section class="market-plugin-pane">
+          <div class="pane-toolbar" v-if="selectedMarketplaceItem">
+            <div>
+              <h3 class="pane-title">{{ selectedMarketplaceItem.name }}</h3>
+              <p class="pane-subtitle">{{ selectedAvailablePlugins.length }} 个匹配插件</p>
+            </div>
+            <button class="btn secondary small" @click="updateMarketplace(selectedMarketplaceItem.name)" :disabled="loading || !selectedMarketplaceItem.name">更新市场</button>
           </div>
-        </div>
-        <div class="card-body" v-if="expandedMarkets[group.name]">
-          <div class="available-list">
-            <div class="available-item" v-for="ap in group.plugins" :key="ap.pluginId">
+          <div class="empty-state compact" v-if="filteredAvailableCount === 0 && searchQuery">
+            <p class="empty-text">未找到匹配 "{{ searchQuery }}" 的插件</p>
+          </div>
+          <div class="empty-state compact" v-else-if="selectedAvailablePlugins.length === 0 && !loading">
+            <p class="empty-text">当前市场暂无可安装插件</p>
+          </div>
+          <div class="available-list" v-else>
+            <div class="available-item" v-for="ap in selectedAvailablePlugins" :key="ap.pluginId">
               <div class="available-info">
                 <div class="available-title-row">
                   <span class="available-name">{{ ap.name }}</span>
@@ -749,7 +747,7 @@ onMounted(() => {
               </div>
             </div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
 
@@ -813,7 +811,7 @@ onMounted(() => {
 .plugins-view {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 14px;
   position: relative;
 }
 
@@ -842,7 +840,7 @@ onMounted(() => {
 
 .section-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: #e0e6ed;
 }
@@ -860,7 +858,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
+  padding: 12px 16px;
   background: rgba(42, 47, 62, 0.3);
   border-bottom: 1px solid transparent;
 }
@@ -949,7 +947,7 @@ onMounted(() => {
 .plugins-list {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 14px;
 }
 
 .installed-group {
@@ -961,7 +959,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
+  padding: 12px;
 }
 
 .enabled-count-badge {
@@ -990,7 +988,7 @@ onMounted(() => {
 .plugin-header {
   display: flex;
   justify-content: space-between;
-  padding: 20px;
+  padding: 14px 16px;
 }
 
 .plugin-info-main {
@@ -1008,7 +1006,7 @@ onMounted(() => {
 
 .plugin-name {
   margin: 0;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
   color: #e0e6ed;
 }
@@ -1116,8 +1114,173 @@ onMounted(() => {
 /* Detail Panel */
 .plugin-detail-panel {
   border-top: 1px solid #2a2f3e;
-  background: rgba(15, 18, 25, 0.3);
-  padding: 20px;
+  background: #111722;
+  padding: 12px;
+}
+
+.detail-split {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 320px;
+  max-height: 420px;
+}
+
+.detail-nav,
+.detail-reading-pane {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #263140;
+  border-radius: 6px;
+  background: #0f1219;
+}
+
+.detail-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+.detail-nav-item,
+.market-source-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.detail-nav-item {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 4px 8px;
+  padding: 8px;
+  border-radius: 4px;
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.detail-nav-item > * {
+  pointer-events: none;
+}
+
+.detail-nav-item:hover,
+.detail-nav-item.active,
+.market-source-item:hover,
+.market-source-item.active {
+  background: #182232;
+}
+
+.detail-nav-item.active,
+.market-source-item.active {
+  box-shadow: inset 2px 0 0 #4fc3f7;
+}
+
+.detail-nav-kind,
+.detail-nav-meta,
+.market-source-meta {
+  color: #6f8090;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.detail-nav-name,
+.market-source-title {
+  overflow: hidden;
+  color: #d8e0e8;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-nav-meta {
+  grid-column: 2;
+  text-transform: none;
+}
+
+.detail-reading-pane {
+  padding: 14px;
+}
+
+.detail-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.detail-pane-title,
+.pane-title {
+  margin: 0;
+  color: #e0e6ed;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.detail-pane-desc {
+  margin: 0 0 14px;
+  color: #aab8c5;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.detail-pane-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.detail-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #263140;
+  border-radius: 4px;
+}
+
+.detail-kv span {
+  color: #6f8090;
+  font-size: 11px;
+}
+
+.detail-kv strong {
+  color: #ccd6e0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.path-text,
+.detail-json {
+  word-break: break-all;
+  font-family: monospace;
+}
+
+.detail-json {
+  margin: 12px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid #263140;
+  border-radius: 4px;
+  color: #aab8c5;
+}
+
+.mcp-summary {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #263140;
+}
+
+.mcp-summary-title {
+  margin-bottom: 8px;
+  color: #8899aa;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .detail-loading {
@@ -1219,6 +1382,10 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   gap: 16px;
+}
+
+.empty-state.compact {
+  padding: 24px 16px;
 }
 
 .empty-text {
@@ -1407,6 +1574,53 @@ onMounted(() => {
   gap: 12px;
 }
 
+.market-console {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
+  min-height: 360px;
+  max-height: 460px;
+}
+
+.market-source-pane,
+.market-plugin-pane {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.market-source-pane {
+  padding: 8px;
+  border-right: 1px solid #2a2f3e;
+  background: #141a25;
+}
+
+.market-source-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 4px;
+}
+
+.market-plugin-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #2a2f3e;
+}
+
+.pane-subtitle {
+  margin: 4px 0 0;
+  color: #6f8090;
+  font-size: 12px;
+}
+
 .available-toolbar {
   display: flex;
   justify-content: space-between;
@@ -1514,13 +1728,14 @@ onMounted(() => {
 .available-list {
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 
 .available-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
+  padding: 12px 14px;
   border-bottom: 1px solid #2a2f3e;
   gap: 20px;
 }
@@ -1544,7 +1759,7 @@ onMounted(() => {
 .available-name {
   font-weight: 600;
   color: #e0e6ed;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .install-count-badge {
@@ -1732,5 +1947,36 @@ onMounted(() => {
 .dialog-fade-enter-from,
 .dialog-fade-leave-to {
   opacity: 0;
+}
+
+@media (max-width: 900px) {
+  .detail-split,
+  .market-console {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .detail-nav,
+  .market-source-pane {
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid #2a2f3e;
+  }
+
+  .plugin-header,
+  .available-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .plugin-actions-col {
+    align-items: stretch;
+    min-width: 0;
+  }
+
+  .status-toggle,
+  .action-buttons {
+    justify-content: flex-end;
+  }
 }
 </style>

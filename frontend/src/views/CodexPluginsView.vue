@@ -21,9 +21,7 @@ const marketplaces = ref<codexplugin.CodexMarketplace[]>([])
 const installedPlugins = ref<codexplugin.CodexPlugin[]>([])
 const availablePlugins = ref<codexplugin.CodexAvailablePlugin[]>([])
 const refreshWarnings = ref<string[]>([])
-const marketplacesExpanded = ref(true)
 const expandedInstalledGroups = ref<Record<string, boolean>>({})
-const expandedAvailableGroups = ref<Record<string, boolean>>({})
 const expandedPluginId = ref<string | null>(null)
 const pluginDetails = ref<Record<string, codexplugin.CodexPluginDetail>>({})
 const loadingDetails = ref<Record<string, boolean>>({})
@@ -31,7 +29,7 @@ const installingPlugins = ref<Record<string, boolean>>({})
 const selectedMarketplace = ref('')
 const searchQuery = ref('')
 const detailResourceGroups = ['skills', 'agents', 'commands', 'hooks', 'mcp'] as const
-const expandedDetailGroups = ref<Record<string, boolean>>({})
+const selectedDetailItems = ref<Record<string, string>>({})
 const codexPluginFixtureMode = ref(isCodexPluginFixtureMode())
 
 type DetailResourceGroup = typeof detailResourceGroups[number]
@@ -41,6 +39,71 @@ type DetailDisplayItem = {
   description: string
   badge: string
   descriptionKind: 'text' | 'path'
+  path?: string
+}
+
+type DetailNavItem = DetailDisplayItem & {
+  group: DetailResourceGroup
+  groupLabel: string
+}
+
+type McpServerSummary = {
+  name: string
+  transport: string
+  command: string
+  argsCount: number
+  hasRemoteEndpoint: boolean
+  hasEnv: boolean
+  hasHeaders: boolean
+  hasSensitiveFields: boolean
+}
+
+const sensitiveMcpKeyPattern = /(secret|key|token|password|authorization|cookie|env|headers)/i
+
+function hasSensitiveMcpKeys(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(item => hasSensitiveMcpKeys(item))
+  return Object.entries(value as Record<string, unknown>).some(([key, nested]) => sensitiveMcpKeyPattern.test(key) || hasSensitiveMcpKeys(nested))
+}
+
+function safeExecutableName(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return '-'
+  const normalized = value.trim().replace(/\\/g, '/')
+  return normalized.split('/').filter(Boolean).pop() || normalized
+}
+
+function summarizeMcpServer(detail: codexplugin.CodexPluginDetail, serverName: string): McpServerSummary {
+  const server = detail?.mcpServers?.[serverName]
+  if (!server || typeof server !== 'object' || Array.isArray(server)) {
+    return {
+      name: serverName,
+      transport: server ? typeof server : 'configured',
+      command: '-',
+      argsCount: 0,
+      hasRemoteEndpoint: false,
+      hasEnv: false,
+      hasHeaders: false,
+      hasSensitiveFields: false
+    }
+  }
+  const config = server as Record<string, any>
+  const transport = config.type || config.transport || (config.command ? 'stdio' : (config.url || config.endpoint ? 'remote' : 'configured'))
+  return {
+    name: serverName,
+    transport: String(transport),
+    command: safeExecutableName(config.command || config.executable || config.path),
+    argsCount: Array.isArray(config.args) ? config.args.length : 0,
+    hasRemoteEndpoint: Boolean(config.url || config.endpoint),
+    hasEnv: Boolean(config.env),
+    hasHeaders: Boolean(config.headers),
+    hasSensitiveFields: hasSensitiveMcpKeys(config)
+  }
+}
+
+function selectedMcpServerSummary(pluginId: string, detail: codexplugin.CodexPluginDetail) {
+  const selected = selectedDetailItem(pluginId, detail)
+  if (!selected || selected.group !== 'mcp') return null
+  return summarizeMcpServer(detail, selected.name)
 }
 
 type CodexPluginServiceBridge = {
@@ -187,6 +250,32 @@ const availableFiltered = computed(() => {
 const installedByMarketplace = computed(() => groupInstalled(installedFiltered.value))
 const availableByMarketplace = computed(() => groupAvailable(availableFiltered.value))
 
+const marketplaceConsoleItems = computed(() => {
+  const byName = new Map(availableByMarketplace.value.map(group => [group.name, group]))
+  const items = marketplaces.value.map(marketplace => {
+    const name = marketplace.name || marketplace.repo || marketplace.url || 'unknown'
+    return {
+      ...marketplace,
+      name,
+      plugins: byName.get(name)?.plugins || []
+    }
+  })
+  for (const group of availableByMarketplace.value) {
+    if (!items.some(item => item.name === group.name)) {
+      items.push({ name: group.name, source: 'codex', plugins: group.plugins } as any)
+    }
+  }
+  return items.sort((a, b) => a.name.localeCompare(b.name))
+})
+
+const selectedMarketplaceItem = computed(() => {
+  const items = marketplaceConsoleItems.value
+  if (!items.length) return null
+  return items.find(item => item.name === selectedMarketplace.value) || items[0]
+})
+
+const selectedAvailablePlugins = computed(() => selectedMarketplaceItem.value?.plugins || [])
+
 const installedCount = computed(() => installedPlugins.value.length)
 const enabledCount = computed(() => installedPlugins.value.filter(plugin => plugin.enabled).length)
 const availableCount = computed(() => availablePlugins.value.length)
@@ -295,19 +384,6 @@ function hasDetailResources(detail?: codexplugin.CodexPluginDetail) {
   )
 }
 
-function detailGroupKey(pluginId: string, group: string) {
-  return `${pluginId}:${group}`
-}
-
-function isDetailGroupExpanded(pluginId: string, group: string) {
-  return expandedDetailGroups.value[detailGroupKey(pluginId, group)] ?? true
-}
-
-function toggleDetailGroup(pluginId: string, group: string) {
-  const key = detailGroupKey(pluginId, group)
-  expandedDetailGroups.value[key] = !isDetailGroupExpanded(pluginId, group)
-}
-
 async function loadData() {
   loading.value = true
   operationError.value = ''
@@ -343,7 +419,7 @@ function ensureExpandedGroups() {
   }
   for (const plugin of availablePlugins.value) {
     const group = plugin.marketplaceName || 'unknown'
-    if (expandedAvailableGroups.value[group] === undefined) expandedAvailableGroups.value[group] = true
+    if (!selectedMarketplace.value) selectedMarketplace.value = group
   }
 }
 
@@ -543,13 +619,19 @@ async function toggleDetail(pluginId: string) {
   if (pluginDetails.value[pluginId]) return
   if (codexPluginFixtureMode.value) {
     const detail = fixtureDetails[pluginId]
-    if (detail) pluginDetails.value[pluginId] = detail
+    if (detail) {
+      pluginDetails.value[pluginId] = detail
+      const defaultItem = selectedDetailItem(pluginId, detail)
+      if (defaultItem) selectedDetailItems.value[pluginId] = defaultItem.key
+    }
     return
   }
   loadingDetails.value[pluginId] = true
   try {
     const detail = await GetPluginDetails(selector(pluginId))
     if (detail) pluginDetails.value[pluginId] = detail
+    const defaultItem = selectedDetailItem(pluginId, pluginDetails.value[pluginId])
+    if (defaultItem) selectedDetailItems.value[pluginId] = defaultItem.key
   } catch (err) {
     showError('加载 Codex 插件详情失败: ' + err)
   } finally {
@@ -575,7 +657,8 @@ function detailItems(detail: codexplugin.CodexPluginDetail, group: DetailResourc
         name: item.event && item.name ? `${item.event} / ${item.name}` : item.event || item.name || 'Hook',
         description: commandOrPath.description,
         badge: item.type || '',
-        descriptionKind: commandOrPath.descriptionKind
+        descriptionKind: commandOrPath.descriptionKind,
+        path: item.filePath
       }
     }
     const copy = buildDescription(item.description, item.filePath)
@@ -584,13 +667,34 @@ function detailItems(detail: codexplugin.CodexPluginDetail, group: DetailResourc
       name: item.name || item.filePath || group,
       description: copy.description,
       badge: '',
-      descriptionKind: copy.descriptionKind
+      descriptionKind: copy.descriptionKind,
+      path: item.filePath
     }
   })
 }
 
 function detailGroupTitle(group: DetailResourceGroup) {
   return ({ skills: 'Skills', agents: 'Agents', commands: 'Commands', hooks: 'Hooks', mcp: 'MCP Servers' } as Record<string, string>)[group]
+}
+
+function detailNavItems(detail: codexplugin.CodexPluginDetail): DetailNavItem[] {
+  return detailResourceGroups.flatMap(group => detailItems(detail, group).map(item => ({
+    ...item,
+    group,
+    groupLabel: detailGroupTitle(group),
+    key: `${group}:${item.key}`
+  })))
+}
+
+function selectedDetailItem(pluginId: string, detail: codexplugin.CodexPluginDetail) {
+  const items = detailNavItems(detail)
+  if (items.length === 0) return null
+  const selectedKey = selectedDetailItems.value[pluginId]
+  return items.find(item => item.key === selectedKey) || items[0]
+}
+
+function selectDetailItem(pluginId: string, item: DetailNavItem) {
+  selectedDetailItems.value[pluginId] = item.key
 }
 
 onMounted(() => {
@@ -639,45 +743,6 @@ onMounted(() => {
         <p v-for="warning in refreshWarnings" :key="warning">{{ warning }}</p>
       </div>
       <button class="btn secondary small" @click="loadData" :disabled="loading">重试</button>
-    </div>
-
-    <div class="marketplace-section card">
-      <div class="card-header clickable" @click="marketplacesExpanded = !marketplacesExpanded">
-        <div class="header-left">
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="section-icon">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-          </svg>
-          <h3 class="card-title">Codex 插件市场源 ({{ marketplaces.length }})</h3>
-        </div>
-        <div class="header-right">
-          <button class="btn secondary small" @click.stop="addMarketDialog.show = true" v-if="marketplacesExpanded">添加市场</button>
-          <button class="btn primary small" @click.stop="upgradeAllMarketplaces" :disabled="loading || marketplaces.length === 0" v-if="marketplacesExpanded">全部更新</button>
-          <svg :class="['chevron', { expanded: marketplacesExpanded }]" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"></polyline>
-          </svg>
-        </div>
-      </div>
-
-      <div class="card-body" v-if="marketplacesExpanded">
-        <div class="empty-state compact" v-if="marketplaces.length === 0 && !loading">
-          <p class="empty-text">暂无 Codex 插件市场源。添加市场后即可发现可安装插件。</p>
-        </div>
-        <div class="market-list" v-else>
-          <div class="market-item" v-for="marketplace in marketplaces" :key="marketplace.name">
-            <div class="market-info">
-              <span class="market-name">{{ marketplace.name }}</span>
-              <span class="badge source-badge">{{ marketplace.source || marketplace.repo || 'codex' }}</span>
-              <span class="market-url">{{ marketplace.url || marketplace.installLocation || marketplace.snapshotPath || marketplace.rawLine || '-' }}</span>
-            </div>
-            <div class="market-actions">
-              <button class="btn secondary small" @click="upgradeMarketplace(marketplace.name)" :disabled="loading">更新</button>
-              <button class="btn danger small" @click="confirmRemoveMarketplace(marketplace)" :disabled="loading">删除</button>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
 
     <div class="plugins-list">
@@ -755,69 +820,87 @@ onMounted(() => {
                   <div class="spinner"></div>
                   <span>加载详情中...</span>
                 </div>
-                <div class="detail-content" v-else-if="pluginDetails[plugin.id]">
-                  <div class="detail-section detail-overview">
-                    <h4 class="section-title-sm">Manifest 与状态</h4>
-                    <div class="detail-item vertical">
-                      <span class="item-name">状态</span>
-                      <span class="item-desc">{{ pluginDetails[plugin.id].enabled ? 'enabled=true' : 'enabled=false' }}</span>
+                <div class="detail-split" v-else-if="pluginDetails[plugin.id]">
+                  <aside class="detail-nav" v-if="detailNavItems(pluginDetails[plugin.id]).length">
+                    <button
+                      type="button"
+                      v-for="item in detailNavItems(pluginDetails[plugin.id])"
+                      :key="item.key"
+                      class="detail-nav-item"
+                      :class="{ active: selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.key === item.key }"
+                      :aria-label="`查看 ${item.groupLabel} ${item.name} 详情`"
+                      :aria-pressed="selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.key === item.key"
+                      :data-detail-key="item.key"
+                      @click.stop="selectDetailItem(plugin.id, item)"
+                    >
+                      <span class="detail-nav-kind">{{ item.groupLabel }}</span>
+                      <span class="detail-nav-name">{{ item.name }}</span>
+                      <span v-if="item.badge" class="detail-nav-meta">{{ item.badge }}</span>
+                    </button>
+                  </aside>
+
+                  <section class="detail-reading-pane" v-if="selectedDetailItem(plugin.id, pluginDetails[plugin.id])">
+                    <div class="detail-pane-header">
+                      <span class="badge subitem-count-badge">{{ selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.groupLabel }}</span>
+                      <h4 class="detail-pane-title">{{ selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.name }}</h4>
                     </div>
-                    <div class="detail-item vertical">
-                      <span class="item-name">描述</span>
-                      <span class="item-desc">{{ pluginDetails[plugin.id].manifest?.description || '未声明描述' }}</span>
+                    <p class="detail-pane-desc">{{ selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.description || '该条目未声明描述。' }}</p>
+                    <div class="detail-pane-grid">
+                      <div class="detail-kv">
+                        <span>插件状态</span>
+                        <strong>{{ pluginDetails[plugin.id].enabled ? 'enabled=true' : 'enabled=false' }}</strong>
+                      </div>
+                      <div class="detail-kv">
+                        <span>类型</span>
+                        <strong>{{ selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.groupLabel }}</strong>
+                      </div>
+                      <div class="detail-kv" v-if="selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.path">
+                        <span>路径</span>
+                        <strong class="path-text">{{ selectedDetailItem(plugin.id, pluginDetails[plugin.id])?.path }}</strong>
+                      </div>
+                      <div class="detail-kv" v-if="pluginDetails[plugin.id].manifestPath">
+                        <span>Manifest</span>
+                        <strong class="path-text">{{ pluginDetails[plugin.id].manifestPath }}</strong>
+                      </div>
                     </div>
-                    <div class="detail-item vertical">
-                      <span class="item-name">Manifest</span>
-                      <span class="item-desc path-text">{{ pluginDetails[plugin.id].manifestPath || '未发现 manifest' }}</span>
-                    </div>
-                    <div class="detail-item vertical">
-                      <span class="item-name">安装路径</span>
-                      <span class="item-desc path-text">{{ pluginDetails[plugin.id].installPath || '未知' }}</span>
-                    </div>
-                    <div class="detail-tags" v-if="pluginDetails[plugin.id].manifest?.keywords?.length">
-                      <span class="tag" v-for="keyword in pluginDetails[plugin.id].manifest.keywords" :key="keyword">{{ keyword }}</span>
-                    </div>
-                    <div class="detail-meta-grid">
+                    <div class="detail-meta-grid compact-meta">
                       <span v-if="pluginDetails[plugin.id].manifest?.author">作者: {{ formatAuthor(pluginDetails[plugin.id].manifest.author) }}</span>
                       <span v-if="pluginDetails[plugin.id].manifest?.repository">仓库: {{ pluginDetails[plugin.id].manifest.repository }}</span>
                       <span v-if="pluginDetails[plugin.id].manifest?.license">许可: {{ pluginDetails[plugin.id].manifest.license }}</span>
-                      <span>类型: {{ pluginTypeLabel(pluginDetails[plugin.id].pluginType) }}</span>
+                      <span>插件类型: {{ pluginTypeLabel(pluginDetails[plugin.id].pluginType) }}</span>
                     </div>
-                  </div>
-
-                  <template v-for="groupName in detailResourceGroups" :key="groupName">
-                    <div class="detail-section" v-if="detailItems(pluginDetails[plugin.id], groupName).length">
-                      <button type="button" class="detail-section-toggle" @click="toggleDetailGroup(plugin.id, groupName)">
-                        <span class="section-title-sm">
-                          <svg v-if="groupName === 'skills'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-                          <svg v-else-if="groupName === 'agents'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
-                          <svg v-else-if="groupName === 'commands'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-                          <svg v-else-if="groupName === 'hooks'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                          <svg v-else viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="7" y1="8" x2="7" y2="16"></line><line x1="11" y1="8" x2="11" y2="16"></line><line x1="15" y1="8" x2="15" y2="16"></line></svg>
-                          {{ detailGroupTitle(groupName) }}
-                        </span>
-                        <span class="section-toggle-meta">
-                          <span class="badge subitem-count-badge">{{ detailItems(pluginDetails[plugin.id], groupName).length }}</span>
-                          <svg :class="['chevron', { expanded: isDetailGroupExpanded(plugin.id, groupName) }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                          </svg>
-                        </span>
-                      </button>
-                      <div class="detail-list" v-if="isDetailGroupExpanded(plugin.id, groupName)">
-                        <div class="detail-item" v-for="item in detailItems(pluginDetails[plugin.id], groupName)" :key="item.key">
-                          <div class="detail-item-copy">
-                            <span class="item-name-line">
-                              <span class="item-name">{{ item.name }}</span>
-                              <span class="badge source-badge" v-if="item.badge">{{ item.badge }}</span>
-                            </span>
-                            <span :class="['item-desc', { 'path-text': item.descriptionKind === 'path' }]" v-if="item.description">{{ item.description }}</span>
-                          </div>
+                    <div class="mcp-summary" v-if="selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])">
+                      <div class="mcp-summary-title">MCP 安全摘要</div>
+                      <div class="detail-pane-grid">
+                        <div class="detail-kv">
+                          <span>Server</span>
+                          <strong>{{ selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.name }}</strong>
+                        </div>
+                        <div class="detail-kv">
+                          <span>类型</span>
+                          <strong>{{ selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.transport }}</strong>
+                        </div>
+                        <div class="detail-kv">
+                          <span>命令</span>
+                          <strong>{{ selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.command }}</strong>
+                        </div>
+                        <div class="detail-kv">
+                          <span>参数</span>
+                          <strong>{{ selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.argsCount }} 项，内容已隐藏</strong>
+                        </div>
+                        <div class="detail-kv">
+                          <span>远程端点</span>
+                          <strong>{{ selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.hasRemoteEndpoint ? '已配置，完整地址已隐藏' : '未声明' }}</strong>
+                        </div>
+                        <div class="detail-kv">
+                          <span>敏感配置</span>
+                          <strong>{{ selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.hasSensitiveFields || selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.hasEnv || selectedMcpServerSummary(plugin.id, pluginDetails[plugin.id])?.hasHeaders ? '已检测并隐藏' : '未检测到敏感字段' }}</strong>
                         </div>
                       </div>
                     </div>
-                  </template>
+                  </section>
 
-                  <div class="empty-state-sm" v-if="!hasDetailResources(pluginDetails[plugin.id])">
+                  <div class="empty-state-sm" v-else-if="!hasDetailResources(pluginDetails[plugin.id])">
                     该 Codex 插件未声明 manifest 或资源清单
                   </div>
                 </div>
@@ -830,8 +913,10 @@ onMounted(() => {
 
     <div class="available-section">
       <div class="available-toolbar">
-        <h2 class="section-title">可安装 Codex 插件 ({{ availableFiltered.length }} / {{ availableCount }})</h2>
+        <h2 class="section-title">Codex 市场与可安装插件 ({{ availableFiltered.length }} / {{ availableCount }})</h2>
         <div class="available-toolbar-controls">
+          <button class="btn secondary small" @click="addMarketDialog.show = true">添加市场</button>
+          <button class="btn secondary small" @click="upgradeAllMarketplaces" :disabled="loading || marketplaces.length === 0">全部更新</button>
           <div class="search-box">
             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             <input type="text" v-model="searchQuery" placeholder="搜索 Codex 插件..." class="search-input" />
@@ -840,28 +925,43 @@ onMounted(() => {
         </div>
       </div>
 
-      <div class="empty-state card" v-if="availableFiltered.length === 0 && !loading">
-        <p class="empty-text">{{ searchQuery || selectedMarketplace ? '未找到匹配的可安装插件' : '暂无可安装 Codex 插件。请先添加或更新市场源。' }}</p>
-      </div>
-
-      <div class="market-group card" v-for="group in availableByMarketplace" :key="group.name">
-        <div class="card-header clickable" @click="expandedAvailableGroups[group.name] = !expandedAvailableGroups[group.name]">
-          <div class="header-left">
-            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="section-icon">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            </svg>
-            <h3 class="card-title">{{ group.name }}</h3>
-            <span class="badge market-badge">{{ group.plugins.length }} 个插件</span>
+      <div class="market-console card">
+        <aside class="market-source-pane">
+          <div class="empty-state compact" v-if="marketplaceConsoleItems.length === 0 && !loading">
+            <p class="empty-text">暂无 Codex 市场源</p>
           </div>
-          <div class="header-right">
-            <svg :class="['chevron', { expanded: expandedAvailableGroups[group.name] }]" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
+          <button
+            v-for="market in marketplaceConsoleItems"
+            :key="market.name"
+            type="button"
+            class="market-source-item"
+            :class="{ active: selectedMarketplaceItem?.name === market.name }"
+            @click="selectedMarketplace = market.name"
+          >
+            <span class="market-source-title">{{ market.name }}</span>
+            <span class="market-source-meta">{{ market.plugins.length }} 个可安装</span>
+            <span class="market-url">{{ market.url || market.installLocation || market.snapshotPath || market.rawLine || market.source || '-' }}</span>
+          </button>
+        </aside>
+        <section class="market-plugin-pane">
+          <div class="pane-toolbar" v-if="selectedMarketplaceItem">
+            <div>
+              <h3 class="pane-title">{{ selectedMarketplaceItem.name }}</h3>
+              <p class="pane-subtitle">{{ selectedAvailablePlugins.length }} 个匹配插件</p>
+            </div>
+            <div class="market-actions">
+              <button class="btn secondary small" @click="upgradeMarketplace(selectedMarketplaceItem.name)" :disabled="loading">更新</button>
+              <button class="btn danger small" @click="confirmRemoveMarketplace(selectedMarketplaceItem)" :disabled="loading">删除</button>
+            </div>
           </div>
-        </div>
-        <div class="card-body" v-if="expandedAvailableGroups[group.name]">
-          <div class="available-list">
-            <div class="available-item" v-for="plugin in group.plugins" :key="plugin.pluginId">
+          <div class="empty-state compact" v-if="availableFiltered.length === 0 && !loading">
+            <p class="empty-text">{{ searchQuery || selectedMarketplace ? '未找到匹配的可安装插件' : '暂无可安装 Codex 插件。请先添加或更新市场源。' }}</p>
+          </div>
+          <div class="empty-state compact" v-else-if="selectedAvailablePlugins.length === 0 && !loading">
+            <p class="empty-text">当前市场暂无可安装插件</p>
+          </div>
+          <div class="available-list" v-else>
+            <div class="available-item" v-for="plugin in selectedAvailablePlugins" :key="plugin.pluginId">
               <div class="available-info">
                 <div class="available-title-row">
                   <span class="available-name">{{ plugin.name || plugin.pluginId }}</span>
@@ -877,7 +977,7 @@ onMounted(() => {
               </div>
             </div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
 
@@ -938,7 +1038,7 @@ onMounted(() => {
 .plugins-view {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 14px;
   position: relative;
 }
 
@@ -988,7 +1088,7 @@ onMounted(() => {
 
 .section-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: #e0e6ed;
 }
@@ -1004,7 +1104,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
+  padding: 12px 16px;
   background: rgba(42, 47, 62, 0.3);
   border-bottom: 1px solid transparent;
 }
@@ -1142,12 +1242,59 @@ onMounted(() => {
 }
 
 .plugins-list {
-  gap: 24px;
+  gap: 14px;
 }
 
 .available-section,
 .detail-section {
   gap: 12px;
+}
+
+.market-console {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
+  min-height: 360px;
+  max-height: 460px;
+}
+
+.market-source-pane,
+.market-plugin-pane {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.market-source-pane {
+  padding: 8px;
+  border-right: 1px solid #2a2f3e;
+  background: #141a25;
+}
+
+.market-source-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 4px;
+}
+
+.market-plugin-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #2a2f3e;
+}
+
+.pane-subtitle {
+  margin: 4px 0 0;
+  color: #6f8090;
+  font-size: 12px;
 }
 
 .market-item,
@@ -1192,7 +1339,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
+  padding: 12px;
 }
 
 .plugin-card {
@@ -1216,7 +1363,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   gap: 20px;
-  padding: 20px;
+  padding: 14px 16px;
 }
 
 .plugin-info-main {
@@ -1228,7 +1375,7 @@ onMounted(() => {
 .plugin-name {
   margin: 0;
   color: #e0e6ed;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -1357,8 +1504,173 @@ onMounted(() => {
 
 .plugin-detail-panel {
   border-top: 1px solid #2a2f3e;
-  background: rgba(15, 18, 25, 0.3);
-  padding: 20px;
+  background: #111722;
+  padding: 12px;
+}
+
+.detail-split {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 320px;
+  max-height: 420px;
+}
+
+.detail-nav,
+.detail-reading-pane {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #263140;
+  border-radius: 6px;
+  background: #0f1219;
+}
+
+.detail-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+.detail-nav-item,
+.market-source-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.detail-nav-item {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 4px 8px;
+  padding: 8px;
+  border-radius: 4px;
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.detail-nav-item > * {
+  pointer-events: none;
+}
+
+.detail-nav-item:hover,
+.detail-nav-item.active,
+.market-source-item:hover,
+.market-source-item.active {
+  background: #182232;
+}
+
+.detail-nav-item.active,
+.market-source-item.active {
+  box-shadow: inset 2px 0 0 #4fc3f7;
+}
+
+.detail-nav-kind,
+.detail-nav-meta,
+.market-source-meta {
+  color: #6f8090;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.detail-nav-name,
+.market-source-title {
+  overflow: hidden;
+  color: #d8e0e8;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-nav-meta {
+  grid-column: 2;
+  text-transform: none;
+}
+
+.detail-reading-pane {
+  padding: 14px;
+}
+
+.detail-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.detail-pane-title,
+.pane-title {
+  margin: 0;
+  color: #e0e6ed;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.detail-pane-desc {
+  margin: 0 0 14px;
+  color: #aab8c5;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.detail-pane-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.detail-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #263140;
+  border-radius: 4px;
+}
+
+.detail-kv span {
+  color: #6f8090;
+  font-size: 11px;
+}
+
+.detail-kv strong {
+  color: #ccd6e0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.detail-json {
+  margin: 12px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid #263140;
+  border-radius: 4px;
+  color: #aab8c5;
+  font-family: monospace;
+  word-break: break-all;
+}
+
+.mcp-summary {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #263140;
+}
+
+.mcp-summary-title {
+  margin-bottom: 8px;
+  color: #8899aa;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.compact-meta {
+  margin-top: 12px;
 }
 
 .detail-loading {
@@ -1520,9 +1832,13 @@ onMounted(() => {
   min-width: 0;
 }
 
+.available-list {
+  overflow-y: auto;
+}
+
 .available-name {
   color: #e0e6ed;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -1796,6 +2112,19 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
+  .detail-split,
+  .market-console {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .detail-nav,
+  .market-source-pane {
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid #2a2f3e;
+  }
+
   .plugin-header,
   .market-item,
   .available-item {

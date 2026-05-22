@@ -240,7 +240,7 @@ func (s *Service) GetAvailablePlugins() ([]interface{}, error) {
 
 	var direct []interface{}
 	if err := parseCommandJSON(commandResult, &direct); err == nil {
-		return direct, nil
+		return normalizeAvailablePlugins(direct), nil
 	}
 
 	var envelope availablePluginsEnvelope
@@ -252,7 +252,7 @@ func (s *Service) GetAvailablePlugins() ([]interface{}, error) {
 		return []interface{}{}, nil
 	}
 
-	return envelope.Available, nil
+	return normalizeAvailablePlugins(envelope.Available), nil
 }
 
 func (s *Service) RefreshPlugins() error {
@@ -313,4 +313,114 @@ func parseCommandJSON(result *CommandResult, target interface{}) error {
 		return fmt.Errorf("parse command output json: %w", err)
 	}
 	return nil
+}
+
+func normalizeAvailablePlugins(raw []interface{}) []interface{} {
+	plugins := make([]AvailablePlugin, 0, len(raw))
+	for _, item := range raw {
+		plugin := normalizeAvailablePlugin(item)
+		if plugin.PluginID == "" && plugin.Name == "" {
+			continue
+		}
+		plugins = append(plugins, plugin)
+	}
+	sort.Slice(plugins, func(i, j int) bool {
+		left := firstNonEmpty(plugins[i].PluginID, plugins[i].MarketplaceName+"/"+plugins[i].Name, plugins[i].Name)
+		right := firstNonEmpty(plugins[j].PluginID, plugins[j].MarketplaceName+"/"+plugins[j].Name, plugins[j].Name)
+		return left < right
+	})
+	out := make([]interface{}, 0, len(plugins))
+	for _, plugin := range plugins {
+		out = append(out, plugin)
+	}
+	return out
+}
+
+func normalizeAvailablePlugin(raw interface{}) AvailablePlugin {
+	if text, ok := raw.(string); ok {
+		return availablePluginFromID(text, raw)
+	}
+	object, ok := raw.(map[string]interface{})
+	if !ok {
+		return AvailablePlugin{Raw: raw}
+	}
+
+	pluginID := firstStringField(object, "pluginId", "pluginID", "id")
+	name := firstStringField(object, "name", "pluginName")
+	marketplace := firstStringField(object, "marketplaceName", "marketplace", "sourceMarketplace")
+	if pluginID == "" {
+		pluginID = firstStringField(object, "selector", "package")
+	}
+	if name == "" || marketplace == "" {
+		idName, idMarketplace := splitPluginID(pluginID)
+		if name == "" {
+			name = idName
+		}
+		if marketplace == "" {
+			marketplace = idMarketplace
+		}
+	}
+	if pluginID == "" && name != "" && marketplace != "" {
+		pluginID = name + "@" + marketplace
+	}
+
+	return AvailablePlugin{
+		PluginID:        pluginID,
+		Name:            name,
+		MarketplaceName: marketplace,
+		Version:         firstStringField(object, "version"),
+		Description:     firstStringField(object, "description", "summary"),
+		Author:          object["author"],
+		Repository:      firstStringField(object, "repository", "repo", "homepage"),
+		InstallCount:    firstIntField(object, "installCount", "installs", "downloads"),
+		Raw:             raw,
+	}
+}
+
+func availablePluginFromID(pluginID string, raw interface{}) AvailablePlugin {
+	pluginID = strings.TrimSpace(pluginID)
+	name, marketplace := splitPluginID(pluginID)
+	return AvailablePlugin{PluginID: pluginID, Name: name, MarketplaceName: marketplace, Raw: raw}
+}
+
+func firstStringField(object map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		value, ok := object[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return strings.TrimSpace(typed)
+			}
+		case fmt.Stringer:
+			if text := strings.TrimSpace(typed.String()); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func firstIntField(object map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		value, ok := object[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case int:
+			return typed
+		case int64:
+			return int(typed)
+		case float64:
+			return int(typed)
+		case json.Number:
+			if parsed, err := typed.Int64(); err == nil {
+				return int(parsed)
+			}
+		}
+	}
+	return 0
 }
