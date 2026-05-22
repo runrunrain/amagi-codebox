@@ -25,12 +25,11 @@ const loading = ref(false)
 const marketplaces = ref<any[]>([])
 const installedPlugins = ref<any[]>([])
 const availablePlugins = ref<any[]>([])
-const expandedInstalledGroups = ref<Record<string, boolean>>({})
 const installingPlugins = ref<Record<string, boolean>>({})
 const selectedMarketplace = ref('')
 const selectedDetailItems = ref<Record<string, string>>({})
 
-const expandedPluginId = ref<string | null>(null)
+const selectedInstalledPluginId = ref<string | null>(null)
 const pluginDetails = ref<Record<string, any>>({})
 const loadingDetails = ref<Record<string, boolean>>({})
 
@@ -238,6 +237,31 @@ const installedByMarketplace = computed(() => {
   }
   return Object.values(groups).sort((a, b) => a.name.localeCompare(b.name))
 })
+
+const installedPluginList = computed(() => installedByMarketplace.value.flatMap(group => group.plugins))
+
+const selectedInstalledPlugin = computed(() => {
+  const plugins = installedPluginList.value
+  if (plugins.length === 0) return null
+  return plugins.find((plugin: any) => plugin.id === selectedInstalledPluginId.value) || plugins[0]
+})
+
+function ensureSelectedInstalledPlugin() {
+  const plugins = installedPluginList.value
+  if (plugins.length === 0) {
+    selectedInstalledPluginId.value = null
+    return null
+  }
+  const current = plugins.find((plugin: any) => plugin.id === selectedInstalledPluginId.value)
+  if (current) return current.id
+  selectedInstalledPluginId.value = plugins[0].id
+  return plugins[0].id
+}
+
+async function preloadSelectedInstalledPlugin() {
+  const pluginId = ensureSelectedInstalledPlugin()
+  if (pluginId) await loadPluginDetail(pluginId)
+}
 // Add marketplace dialog
 const addMarketDialog = ref({
   show: false,
@@ -277,6 +301,7 @@ async function loadData() {
     } catch {
       availablePlugins.value = []
     }
+    await preloadSelectedInstalledPlugin()
   } catch (err) {
     showError('加载数据失败: ' + err)
   } finally {
@@ -431,13 +456,12 @@ function confirmUninstall(plugin: any) {
   }
 }
 
-async function toggleDetail(pluginId: string) {
-  if (expandedPluginId.value === pluginId) {
-    expandedPluginId.value = null
-    return
-  }
+async function selectInstalledPlugin(pluginId: string) {
+  selectedInstalledPluginId.value = pluginId
+  await loadPluginDetail(pluginId)
+}
 
-  expandedPluginId.value = pluginId
+async function loadPluginDetail(pluginId: string) {
   if (!pluginDetails.value[pluginId]) {
     loadingDetails.value[pluginId] = true
     try {
@@ -512,8 +536,8 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Installed Plugins List (grouped by marketplace) -->
-    <div class="plugins-list">
+    <!-- Installed Plugins master-detail workspace -->
+    <div class="installed-master-detail card">
       <div class="empty-state card" v-if="installedPlugins.length === 0">
         <svg viewBox="0 0 24 24" width="48" height="48" stroke="#3a4f5e" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
           <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
@@ -530,150 +554,150 @@ onMounted(() => {
         <p class="empty-text">暂未安装任何插件</p>
       </div>
 
-      <div class="installed-group card" v-for="group in installedByMarketplace" :key="group.name">
-        <div class="card-header clickable" @click="expandedInstalledGroups[group.name] = !expandedInstalledGroups[group.name]">
-          <div class="header-left">
-            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="section-icon">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            </svg>
-            <h3 class="card-title">{{ group.name }}</h3>
-            <span class="badge market-badge">{{ group.plugins.length }} 个插件</span>
-            <span class="badge enabled-count-badge">{{ group.plugins.filter((p: any) => p.enabled).length }} 已启用</span>
-          </div>
-          <div class="header-right">
-            <svg :class="['chevron', { expanded: expandedInstalledGroups[group.name] }]" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </div>
-        </div>
-
-        <div class="card-body installed-group-body" v-if="expandedInstalledGroups[group.name]">
-        <div class="plugin-card" v-for="p in group.plugins" :key="p.id" :class="{ 'plugin-disabled': !p.enabled }">
-          <div class="plugin-header">
-          <div class="plugin-info-main" @click="toggleDetail(p.id)">
-            <div class="plugin-title-row">
-              <h3 class="plugin-name">{{ p.name }}</h3>
-              <span class="badge" :class="pluginTypeClass(p.pluginType)">{{ pluginTypeLabel(p.pluginType) }}</span>
-              <span class="badge version-badge">{{ p.version || 'v1.0.0' }}</span>
-              <span class="badge scope-badge" v-if="p.scope">{{ p.scope }}</span>
+      <template v-else>
+        <aside class="installed-plugin-pane">
+          <template v-for="group in installedByMarketplace" :key="group.name">
+            <div class="installed-group-label">
+              <span>{{ group.name }}</span>
+              <span>{{ group.plugins.length }} 个</span>
             </div>
-            <p class="plugin-desc">{{ p.manifest?.description || '无描述信息' }}</p>
-            <div class="plugin-meta">
-              <span class="meta-item">安装于: {{ formatDate(p.installedAt) }}</span>
-              <span class="meta-item" v-if="p.lastUpdated">更新于: {{ formatDate(p.lastUpdated) }}</span>
-            </div>
-          </div>
-          
-          <div class="plugin-actions-col">
-            <div class="status-toggle">
-              <span class="toggle-label" :class="{ 'text-enabled': p.enabled, 'text-disabled': !p.enabled }">
-                {{ p.enabled ? '已启用' : '已禁用' }}
+            <button
+              v-for="p in group.plugins"
+              :key="p.id"
+              type="button"
+              class="installed-plugin-item"
+              :class="{ active: selectedInstalledPlugin?.id === p.id, 'plugin-disabled': !p.enabled }"
+              @click="selectInstalledPlugin(p.id)"
+            >
+              <span class="installed-plugin-title-row">
+                <span class="installed-plugin-name">{{ p.name }}</span>
+                <span class="badge" :class="pluginTypeClass(p.pluginType)">{{ pluginTypeLabel(p.pluginType) }}</span>
               </span>
-              <button class="ios-toggle" :class="{ active: p.enabled }" @click="togglePlugin(p)"></button>
-            </div>
-            <div class="action-buttons">
-              <button class="btn secondary small" @click="updatePlugin(p.id)" :disabled="loading">更新</button>
-              <button class="btn danger small" @click="confirmUninstall(p)" :disabled="loading">卸载</button>
-              <button class="btn-icon expand-btn" @click="toggleDetail(p.id)">
-                <svg :class="['chevron', { expanded: expandedPluginId === p.id }]" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+              <span class="installed-plugin-desc">{{ p.manifest?.description || '无描述信息' }}</span>
+              <span class="installed-plugin-meta-row">
+                <span class="badge version-badge">{{ p.version || 'v1.0.0' }}</span>
+                <span class="badge scope-badge" v-if="p.scope">{{ p.scope }}</span>
+                <span class="installed-status" :class="{ enabled: p.enabled }">{{ p.enabled ? '已启用' : '已禁用' }}</span>
+              </span>
+            </button>
+          </template>
+        </aside>
 
-        <transition name="slide-fade">
-          <div class="plugin-detail-panel" v-if="expandedPluginId === p.id">
-            <div class="detail-loading" v-if="loadingDetails[p.id]">
-              <div class="spinner"></div>
-              <span>加载详情中...</span>
+        <section class="installed-detail-pane" v-if="selectedInstalledPlugin">
+          <div class="selected-plugin-toolbar">
+            <div class="selected-plugin-copy">
+              <div class="plugin-title-row">
+                <h3 class="plugin-name">{{ selectedInstalledPlugin.name }}</h3>
+                <span class="badge" :class="pluginTypeClass(selectedInstalledPlugin.pluginType)">{{ pluginTypeLabel(selectedInstalledPlugin.pluginType) }}</span>
+                <span class="badge version-badge">{{ selectedInstalledPlugin.version || 'v1.0.0' }}</span>
+                <span class="badge scope-badge" v-if="selectedInstalledPlugin.scope">{{ selectedInstalledPlugin.scope }}</span>
+              </div>
+              <p class="plugin-desc">{{ selectedInstalledPlugin.manifest?.description || '无描述信息' }}</p>
+              <div class="plugin-meta">
+                <span class="meta-item">安装于: {{ formatDate(selectedInstalledPlugin.installedAt) }}</span>
+                <span class="meta-item" v-if="selectedInstalledPlugin.lastUpdated">更新于: {{ formatDate(selectedInstalledPlugin.lastUpdated) }}</span>
+              </div>
             </div>
-            <div class="detail-split" v-else-if="pluginDetails[p.id]">
-              <aside class="detail-nav" v-if="buildDetailNavItems(pluginDetails[p.id]).length">
-                <button
-                  type="button"
-                  v-for="item in buildDetailNavItems(pluginDetails[p.id])"
-                  :key="item.key"
-                  class="detail-nav-item"
-                  :class="{ active: selectedDetailItem(p.id, pluginDetails[p.id])?.key === item.key }"
-                  :aria-label="`查看 ${item.typeLabel} ${item.name} 详情`"
-                  :aria-pressed="selectedDetailItem(p.id, pluginDetails[p.id])?.key === item.key"
-                  :data-detail-key="item.key"
-                  @click.stop="selectDetailItem(p.id, item)"
-                >
-                  <span class="detail-nav-kind">{{ item.typeLabel }}</span>
-                  <span class="detail-nav-name">{{ item.name }}</span>
-                  <span v-if="item.badge" class="detail-nav-meta">{{ item.badge }}</span>
-                </button>
-              </aside>
-
-              <section class="detail-reading-pane" v-if="selectedDetailItem(p.id, pluginDetails[p.id])">
-                <div class="detail-pane-header">
-                  <span class="badge subitem-kind-badge">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.typeLabel }}</span>
-                  <h4 class="detail-pane-title">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.name }}</h4>
-                  <div class="detail-item-actions" v-if="selectedDetailItem(p.id, pluginDetails[p.id])?.subItem">
-                    <span class="toggle-label" :class="{ 'text-enabled': selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled, 'text-disabled': !selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled }">
-                      {{ selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled ? '已启用' : '已禁用' }}
-                    </span>
-                    <button class="ios-toggle" :class="{ active: selectedDetailItem(p.id, pluginDetails[p.id])?.subItem?.enabled }" @click="toggleSubItem(p.id, selectedDetailItem(p.id, pluginDetails[p.id])?.subItem)"></button>
-                  </div>
-                </div>
-                <p class="detail-pane-desc">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.description || '该条目未声明描述。' }}</p>
-                <div class="detail-pane-grid">
-                  <div class="detail-kv">
-                    <span>类型</span>
-                    <strong>{{ selectedDetailItem(p.id, pluginDetails[p.id])?.typeLabel }}</strong>
-                  </div>
-                  <div class="detail-kv" v-if="selectedDetailItem(p.id, pluginDetails[p.id])?.path">
-                    <span>路径</span>
-                    <strong class="path-text">{{ selectedDetailItem(p.id, pluginDetails[p.id])?.path }}</strong>
-                  </div>
-                  <div class="detail-kv" v-if="selectedDetailItem(p.id, pluginDetails[p.id])?.badge">
-                    <span>标记</span>
-                    <strong>{{ selectedDetailItem(p.id, pluginDetails[p.id])?.badge }}</strong>
-                  </div>
-                </div>
-                <div class="mcp-summary" v-if="selectedMcpServerSummary(p.id, pluginDetails[p.id])">
-                  <div class="mcp-summary-title">MCP 安全摘要</div>
-                  <div class="detail-pane-grid">
-                    <div class="detail-kv">
-                      <span>Server</span>
-                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.name }}</strong>
-                    </div>
-                    <div class="detail-kv">
-                      <span>类型</span>
-                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.transport }}</strong>
-                    </div>
-                    <div class="detail-kv">
-                      <span>命令</span>
-                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.command }}</strong>
-                    </div>
-                    <div class="detail-kv">
-                      <span>参数</span>
-                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.argsCount }} 项，内容已隐藏</strong>
-                    </div>
-                    <div class="detail-kv">
-                      <span>远程端点</span>
-                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasRemoteEndpoint ? '已配置，完整地址已隐藏' : '未声明' }}</strong>
-                    </div>
-                    <div class="detail-kv">
-                      <span>敏感配置</span>
-                      <strong>{{ selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasSensitiveFields || selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasEnv || selectedMcpServerSummary(p.id, pluginDetails[p.id])?.hasHeaders ? '已检测并隐藏' : '未检测到敏感字段' }}</strong>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <div class="empty-state-sm" v-else-if="!hasDetailResources(pluginDetails[p.id])">
-                该插件未声明任何可用资源
+            <div class="plugin-actions-col selected-actions">
+              <div class="status-toggle">
+                <span class="toggle-label" :class="{ 'text-enabled': selectedInstalledPlugin.enabled, 'text-disabled': !selectedInstalledPlugin.enabled }">
+                  {{ selectedInstalledPlugin.enabled ? '已启用' : '已禁用' }}
+                </span>
+                <button class="ios-toggle" :class="{ active: selectedInstalledPlugin.enabled }" @click="togglePlugin(selectedInstalledPlugin)"></button>
+              </div>
+              <div class="action-buttons">
+                <button class="btn secondary small" @click="updatePlugin(selectedInstalledPlugin.id)" :disabled="loading">更新</button>
+                <button class="btn danger small" @click="confirmUninstall(selectedInstalledPlugin)" :disabled="loading">卸载</button>
               </div>
             </div>
           </div>
-        </transition>
-      </div>
-      </div>
-      </div>
+
+          <div class="detail-loading" v-if="loadingDetails[selectedInstalledPlugin.id]">
+            <div class="spinner"></div>
+            <span>加载详情中...</span>
+          </div>
+          <div class="detail-split" v-else-if="pluginDetails[selectedInstalledPlugin.id]">
+            <aside class="detail-nav" v-if="buildDetailNavItems(pluginDetails[selectedInstalledPlugin.id]).length">
+              <button
+                type="button"
+                v-for="item in buildDetailNavItems(pluginDetails[selectedInstalledPlugin.id])"
+                :key="item.key"
+                class="detail-nav-item"
+                :class="{ active: selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.key === item.key }"
+                :aria-label="`查看 ${item.typeLabel} ${item.name} 详情`"
+                :aria-pressed="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.key === item.key"
+                :data-detail-key="item.key"
+                @click.stop="selectDetailItem(selectedInstalledPlugin.id, item)"
+              >
+                <span class="detail-nav-kind">{{ item.typeLabel }}</span>
+                <span class="detail-nav-name">{{ item.name }}</span>
+                <span v-if="item.badge" class="detail-nav-meta">{{ item.badge }}</span>
+              </button>
+            </aside>
+
+            <section class="detail-reading-pane" v-if="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])">
+              <div class="detail-pane-header">
+                <span class="badge subitem-kind-badge">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.typeLabel }}</span>
+                <h4 class="detail-pane-title">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.name }}</h4>
+                <div class="detail-item-actions" v-if="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.subItem">
+                  <span class="toggle-label" :class="{ 'text-enabled': selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.subItem?.enabled, 'text-disabled': !selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.subItem?.enabled }">
+                    {{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.subItem?.enabled ? '已启用' : '已禁用' }}
+                  </span>
+                  <button class="ios-toggle" :class="{ active: selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.subItem?.enabled }" @click="toggleSubItem(selectedInstalledPlugin.id, selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.subItem)"></button>
+                </div>
+              </div>
+              <p class="detail-pane-desc">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.description || '该条目未声明描述。' }}</p>
+              <div class="detail-pane-grid">
+                <div class="detail-kv">
+                  <span>类型</span>
+                  <strong>{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.typeLabel }}</strong>
+                </div>
+                <div class="detail-kv" v-if="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.path">
+                  <span>路径</span>
+                  <strong class="path-text">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.path }}</strong>
+                </div>
+                <div class="detail-kv" v-if="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.badge">
+                  <span>标记</span>
+                  <strong>{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.badge }}</strong>
+                </div>
+              </div>
+              <div class="mcp-summary" v-if="selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])">
+                <div class="mcp-summary-title">MCP 安全摘要</div>
+                <div class="detail-pane-grid">
+                  <div class="detail-kv">
+                    <span>Server</span>
+                    <strong>{{ selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.name }}</strong>
+                  </div>
+                  <div class="detail-kv">
+                    <span>类型</span>
+                    <strong>{{ selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.transport }}</strong>
+                  </div>
+                  <div class="detail-kv">
+                    <span>命令</span>
+                    <strong>{{ selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.command }}</strong>
+                  </div>
+                  <div class="detail-kv">
+                    <span>参数</span>
+                    <strong>{{ selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.argsCount }} 项，内容已隐藏</strong>
+                  </div>
+                  <div class="detail-kv">
+                    <span>远程端点</span>
+                    <strong>{{ selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.hasRemoteEndpoint ? '已配置，完整地址已隐藏' : '未声明' }}</strong>
+                  </div>
+                  <div class="detail-kv">
+                    <span>敏感配置</span>
+                    <strong>{{ selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.hasSensitiveFields || selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.hasEnv || selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.hasHeaders ? '已检测并隐藏' : '未检测到敏感字段' }}</strong>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="empty-state-sm" v-else-if="!hasDetailResources(pluginDetails[selectedInstalledPlugin.id])">
+              该插件未声明任何可用资源
+            </div>
+          </div>
+        </section>
+      </template>
     </div>
 
     <!-- Available Plugins + Marketplaces -->
@@ -943,23 +967,138 @@ onMounted(() => {
   font-family: monospace;
 }
 
-/* Plugins List */
-.plugins-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+/* Installed master-detail */
+.installed-master-detail {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
+  height: clamp(520px, 62vh, 760px);
+  min-height: 520px;
+  overflow: hidden;
 }
 
-.installed-group {
-  display: flex;
-  flex-direction: column;
+.installed-master-detail > .empty-state {
+  grid-column: 1 / -1;
+  align-self: center;
+  border: 0;
 }
 
-.installed-group-body {
+.installed-plugin-pane,
+.installed-detail-pane {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.installed-plugin-pane {
+  padding: 8px;
+  border-right: 1px solid #2a2f3e;
+  background: #141a25;
+}
+
+.installed-detail-pane {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px;
+  overflow-x: hidden;
+}
+
+.installed-group-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 8px 6px;
+  color: #6f8090;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.installed-plugin-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.installed-plugin-item:hover,
+.installed-plugin-item.active {
+  background: #182232;
+}
+
+.installed-plugin-item.active {
+  box-shadow: inset 2px 0 0 #4fc3f7;
+}
+
+.installed-plugin-item.plugin-disabled {
+  opacity: 0.68;
+}
+
+.installed-plugin-title-row,
+.installed-plugin-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.installed-plugin-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #d8e0e8;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installed-plugin-desc {
+  overflow: hidden;
+  color: #8899aa;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.installed-status {
+  margin-left: auto;
+  color: #8899aa;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.installed-status.enabled {
+  color: #66bb6a;
+}
+
+.selected-plugin-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 12px 14px;
+  border: 1px solid #263140;
+  border-radius: 8px;
+  background: #111722;
+}
+
+.selected-plugin-copy {
+  min-width: 0;
+}
+
+.selected-actions {
+  min-width: 180px;
 }
 
 .enabled-count-badge {
@@ -1122,14 +1261,20 @@ onMounted(() => {
   display: grid;
   grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr);
   gap: 12px;
+  height: clamp(320px, 42vh, 520px);
   min-height: 320px;
-  max-height: 420px;
+  overflow: hidden;
+  flex: 1 1 auto;
 }
 
 .detail-nav,
 .detail-reading-pane {
+  height: 100%;
   min-height: 0;
+  box-sizing: border-box;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 1px solid #263140;
   border-radius: 6px;
   background: #0f1219;
@@ -1203,6 +1348,8 @@ onMounted(() => {
 
 .detail-reading-pane {
   padding: 14px;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .detail-pane-header {
@@ -1950,7 +2097,28 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .detail-split,
+  .installed-master-detail {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(180px, 0.34fr) minmax(0, 1fr);
+    height: clamp(620px, 78vh, 860px);
+  }
+
+  .installed-plugin-pane {
+    border-right: 0;
+    border-bottom: 1px solid #2a2f3e;
+  }
+
+  .selected-plugin-toolbar {
+    flex-direction: column;
+  }
+
+  .detail-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: auto;
+    min-height: 0;
+  }
+
   .market-console {
     grid-template-columns: 1fr;
     max-height: none;
@@ -1961,6 +2129,10 @@ onMounted(() => {
     max-height: 180px;
     border-right: 0;
     border-bottom: 1px solid #2a2f3e;
+  }
+
+  .detail-reading-pane {
+    min-height: 0;
   }
 
   .plugin-header,
