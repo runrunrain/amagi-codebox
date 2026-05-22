@@ -10,7 +10,7 @@ func TestParsePluginListOutputTableAndAnsi(t *testing.T) {
 	if len(plugins) != 1 {
 		t.Fatalf("expected 1 plugin, got %d", len(plugins))
 	}
-	if plugins[0].ID != "github@openai-curated" || !plugins[0].Enabled || plugins[0].Version != "v1.2.3" || plugins[0].InstallPath != "/tmp/github" {
+	if plugins[0].ID != "github@openai-curated" || !plugins[0].Enabled || plugins[0].Version != "v1.2.3" || plugins[0].InstallPath != "/tmp/github" || plugins[0].ManifestPath != "" {
 		t.Fatalf("unexpected plugin parse: %+v", plugins[0])
 	}
 }
@@ -35,5 +35,59 @@ Last Updated: 2026-05-22`})
 	}
 	if len(marketplaces) != 1 || marketplaces[0].Name != "openai-curated" || marketplaces[0].SnapshotPath != "/tmp/snapshot" {
 		t.Fatalf("unexpected marketplaces: %+v", marketplaces)
+	}
+}
+
+func TestParseMarketplaceListOutputCodexV0132TSV(t *testing.T) {
+	path := "/Users/maorun/.codex/.tmp/marketplaces/amagi-codex-marketplace"
+	marketplaces, err := parseMarketplaceListOutput(&CommandResult{Output: "amagi-codex-marketplace\t" + path})
+	if err != nil {
+		t.Fatalf("parse codex v0.132 marketplace list: %v", err)
+	}
+	if len(marketplaces) != 1 {
+		t.Fatalf("expected 1 marketplace, got %d", len(marketplaces))
+	}
+	if marketplaces[0].Name != "amagi-codex-marketplace" || marketplaces[0].SnapshotPath != path || marketplaces[0].InstallLocation != path {
+		t.Fatalf("unexpected marketplace parse: %+v", marketplaces[0])
+	}
+}
+
+func TestParsePluginListOutputCodexV0132Grouped(t *testing.T) {
+	output := "Marketplace `amagi-codex-marketplace`\n" +
+		"Path: /Users/maorun/.codex/.tmp/marketplaces/amagi-codex-marketplace/.agents/plugins/marketplace.json\n" +
+		"  amagi@amagi-codex-marketplace (installed, enabled)\n" +
+		"  preview@amagi-codex-marketplace (not installed)\n" +
+		"Marketplace `openai-curated`\n" +
+		"Path: /Users/maorun/.codex/.tmp/plugins/.agents/plugins/marketplace.json\n" +
+		"  linear@openai-curated (not installed)"
+	plugins, err := parsePluginListOutput(&CommandResult{Output: output})
+	if err != nil {
+		t.Fatalf("parse codex v0.132 plugin list: %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("expected only installed plugin, got %d: %+v", len(plugins), plugins)
+	}
+	plugin := plugins[0]
+	if plugin.ID != "amagi@amagi-codex-marketplace" || plugin.Name != "amagi" || plugin.Marketplace != "amagi-codex-marketplace" || !plugin.Enabled {
+		t.Fatalf("unexpected plugin parse: %+v", plugin)
+	}
+	if plugin.ManifestPath == "" {
+		t.Fatalf("expected grouped Path line to populate ManifestPath: %+v", plugin)
+	}
+}
+
+func TestParsePluginListOutputCodexV0132GroupedNameOnly(t *testing.T) {
+	output := "Marketplace `amagi-codex-marketplace`\n" +
+		"Path: /Users/maorun/.codex/.tmp/marketplaces/amagi-codex-marketplace/.agents/plugins/marketplace.json\n" +
+		"  amagi (installed, disabled)"
+	plugins, err := parsePluginListOutput(&CommandResult{Output: output})
+	if err != nil {
+		t.Fatalf("parse grouped name-only plugin list: %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("expected 1 plugin, got %d: %+v", len(plugins), plugins)
+	}
+	if plugins[0].ID != "amagi@amagi-codex-marketplace" || plugins[0].Enabled {
+		t.Fatalf("unexpected plugin parse: %+v", plugins[0])
 	}
 }

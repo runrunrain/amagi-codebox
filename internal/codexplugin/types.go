@@ -96,6 +96,7 @@ type CodexPluginsData struct {
 	Marketplaces []CodexMarketplace     `json:"marketplaces"`
 	Installed    []CodexPlugin          `json:"installed"`
 	Available    []CodexAvailablePlugin `json:"available"`
+	Warnings     []string               `json:"warnings,omitempty"`
 }
 
 type SkillInfo struct {

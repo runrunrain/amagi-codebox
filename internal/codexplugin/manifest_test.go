@@ -29,3 +29,28 @@ func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 		t.Fatalf("unexpected manifest=%+v path=%s", manifest, path)
 	}
 }
+
+func TestFindAvailablePluginsFallsBackToDefaultMarketplaceSnapshotPath(t *testing.T) {
+	codexDir := t.TempDir()
+	manifestDir := filepath.Join(codexDir, ".tmp", "marketplaces", "amagi-codex-marketplace", "plugins", "amagi", ".codex-plugin")
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		t.Fatalf("mkdir marketplace manifest dir: %v", err)
+	}
+	manifestPath := filepath.Join(manifestDir, "plugin.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"name":"amagi","version":"1.2.3","description":"Amagi Codex plugin"}`), 0644); err != nil {
+		t.Fatalf("write marketplace manifest: %v", err)
+	}
+
+	s := NewServiceWithDeps(codexDir, nil, nil, nil)
+	available, err := s.findAvailablePlugins([]CodexMarketplace{{Name: "amagi-codex-marketplace"}})
+	if err != nil {
+		t.Fatalf("find available plugins: %v", err)
+	}
+	if len(available) != 1 {
+		t.Fatalf("expected 1 available plugin, got %d: %+v", len(available), available)
+	}
+	plugin := available[0]
+	if plugin.PluginID != "amagi@amagi-codex-marketplace" || plugin.SnapshotPath != filepath.Join(codexDir, ".tmp", "marketplaces", "amagi-codex-marketplace") || plugin.ManifestPath != manifestPath {
+		t.Fatalf("unexpected available plugin: %+v", plugin)
+	}
+}

@@ -21,6 +21,9 @@ func (s *Service) findAvailablePlugins(marketplaces []CodexMarketplace) ([]Codex
 	for _, marketplace := range marketplaces {
 		root := firstNonEmpty(marketplace.SnapshotPath, marketplace.InstallLocation)
 		if strings.TrimSpace(root) == "" {
+			root = s.defaultMarketplaceSnapshotPath(marketplace.Name)
+		}
+		if strings.TrimSpace(root) == "" {
 			continue
 		}
 		items, err := scanMarketplaceSnapshot(root, marketplace.Name)
@@ -40,6 +43,22 @@ func (s *Service) findAvailablePlugins(marketplaces []CodexMarketplace) ([]Codex
 	}
 	sort.Slice(available, func(i, j int) bool { return available[i].PluginID < available[j].PluginID })
 	return available, nil
+}
+
+func (s *Service) defaultMarketplaceSnapshotPath(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	base := strings.TrimSpace(s.codexDir)
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return ""
+		}
+		base = filepath.Join(home, ".codex")
+	}
+	return filepath.Join(base, ".tmp", "marketplaces", name)
 }
 
 func scanMarketplaceSnapshot(root string, marketplace string) ([]CodexAvailablePlugin, error) {

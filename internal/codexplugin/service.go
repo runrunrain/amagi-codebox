@@ -275,7 +275,38 @@ func (s *Service) RefreshPlugins() (*CodexPluginsData, error) {
 	marketplaces, marketErr := s.listMarketplaces(ctx)
 	installed, installedErr := s.listPlugins(ctx, "")
 	available, availableErr := s.findAvailablePlugins(marketplaces)
-	return &CodexPluginsData{Marketplaces: marketplaces, Installed: installed, Available: available}, errors.Join(marketErr, installedErr, availableErr)
+	warnings := codexPluginWarnings(marketErr, installedErr, availableErr)
+	data := &CodexPluginsData{Marketplaces: marketplaces, Installed: installed, Available: available, Warnings: warnings}
+	if marketErr != nil && len(marketplaces) == 0 {
+		return data, marketErr
+	}
+	if installedErr != nil && len(installed) == 0 && len(available) == 0 {
+		return data, installedErr
+	}
+	if availableErr != nil && len(available) == 0 && len(marketplaces) == 0 {
+		return data, availableErr
+	}
+	return data, nil
+}
+
+func codexPluginWarnings(errs ...error) []string {
+	warnings := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		message := strings.TrimSpace(err.Error())
+		if message == "" {
+			continue
+		}
+		if _, ok := seen[message]; ok {
+			continue
+		}
+		seen[message] = struct{}{}
+		warnings = append(warnings, message)
+	}
+	return warnings
 }
 
 func filterPluginsByMarketplace(plugins []CodexPlugin, marketplace string) []CodexPlugin {

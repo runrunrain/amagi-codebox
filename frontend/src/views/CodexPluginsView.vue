@@ -20,6 +20,7 @@ const operationError = ref('')
 const marketplaces = ref<codexplugin.CodexMarketplace[]>([])
 const installedPlugins = ref<codexplugin.CodexPlugin[]>([])
 const availablePlugins = ref<codexplugin.CodexAvailablePlugin[]>([])
+const refreshWarnings = ref<string[]>([])
 const marketplacesExpanded = ref(true)
 const expandedInstalledGroups = ref<Record<string, boolean>>({})
 const expandedAvailableGroups = ref<Record<string, boolean>>({})
@@ -172,6 +173,7 @@ async function loadData() {
     const data = await RefreshPlugins()
     marketplaces.value = data?.marketplaces || []
     installedPlugins.value = data?.installed || []
+    refreshWarnings.value = data?.warnings || []
     const installedIds = new Set(installedPlugins.value.map(plugin => plugin.id))
     availablePlugins.value = (data?.available || []).filter(plugin => !installedIds.has(plugin.pluginId))
     ensureExpandedGroups()
@@ -417,6 +419,14 @@ onMounted(() => {
       <div>
         <strong>Codex 插件数据加载失败</strong>
         <p>{{ operationError }}</p>
+      </div>
+      <button class="btn secondary small" @click="loadData" :disabled="loading">重试</button>
+    </div>
+
+    <div class="state-banner warning" v-if="refreshWarnings.length > 0 && !operationError">
+      <div>
+        <strong>Codex 插件数据部分加载</strong>
+        <p v-for="warning in refreshWarnings" :key="warning">{{ warning }}</p>
       </div>
       <button class="btn secondary small" @click="loadData" :disabled="loading">重试</button>
     </div>
@@ -864,15 +874,28 @@ onMounted(() => {
   border-color: rgba(239, 83, 80, 0.35);
 }
 
+.state-banner.warning {
+  background: rgba(255, 183, 77, 0.08);
+  border-color: rgba(255, 183, 77, 0.35);
+}
+
 .state-banner strong {
   color: #ef9a9a;
   font-size: 14px;
+}
+
+.state-banner.warning strong {
+  color: #ffcc80;
 }
 
 .state-banner p {
   margin: 4px 0 0;
   color: #c7a0a0;
   font-size: 13px;
+}
+
+.state-banner.warning p {
+  color: #d8be91;
 }
 
 .market-list,

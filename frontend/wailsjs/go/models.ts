@@ -437,6 +437,7 @@ export namespace codexplugin {
 	    marketplaces: CodexMarketplace[];
 	    installed: CodexPlugin[];
 	    available: CodexAvailablePlugin[];
+	    warnings?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new CodexPluginsData(source);
@@ -447,6 +448,7 @@ export namespace codexplugin {
 	        this.marketplaces = this.convertValues(source["marketplaces"], CodexMarketplace);
 	        this.installed = this.convertValues(source["installed"], CodexPlugin);
 	        this.available = this.convertValues(source["available"], CodexAvailablePlugin);
+	        this.warnings = source["warnings"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

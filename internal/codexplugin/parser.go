@@ -11,6 +11,7 @@ var (
 	ansiPattern    = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	versionPattern = regexp.MustCompile(`^v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9._-]+)?$`)
 	pluginIDToken  = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$`)
+	localPathToken = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 )
 
 func parsePluginListOutput(result *CommandResult) ([]CodexPlugin, error) {
@@ -29,19 +30,41 @@ func parsePluginListOutput(result *CommandResult) ([]CodexPlugin, error) {
 
 	plugins := make([]CodexPlugin, 0)
 	seen := map[string]struct{}{}
+	currentMarketplace := ""
+	currentMarketplacePath := ""
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
+		if marketplace, ok := parsePluginMarketplaceHeader(line); ok {
+			currentMarketplace = marketplace
+			currentMarketplacePath = ""
+			continue
+		}
+		if path, ok := parsePluginMarketplacePath(line); ok {
+			if currentMarketplace == "" || strings.Contains(path, "/.agents/plugins/") || strings.Contains(path, `\.agents\plugins\`) || strings.Contains(path, `.agents\plugins\`) {
+				currentMarketplacePath = path
+			}
+			continue
+		}
 		if shouldSkipTableLine(line) {
 			continue
 		}
+		if isNotInstalledPluginLine(line) {
+			continue
+		}
 		fields := strings.Fields(strings.NewReplacer("|", " ", "•", " ").Replace(line))
-		var id string
+		var id, rawName string
 		for _, field := range fields {
 			token := strings.Trim(field, " ,;()[]{}<>")
 			if pluginIDToken.MatchString(token) {
 				id = token
 				break
 			}
+			if rawName == "" && currentMarketplace != "" && isPluginNameToken(token) {
+				rawName = token
+			}
+		}
+		if id == "" && rawName != "" {
+			id = rawName + "@" + currentMarketplace
 		}
 		if id == "" {
 			continue
@@ -61,9 +84,12 @@ func parsePluginListOutput(result *CommandResult) ([]CodexPlugin, error) {
 			if versionPattern.MatchString(token) {
 				plugin.Version = token
 			}
-			if strings.HasPrefix(token, "/") || regexp.MustCompile(`^[A-Za-z]:[\\/]`).MatchString(token) {
+			if isLocalPath(token) {
 				plugin.InstallPath = token
 			}
+		}
+		if plugin.InstallPath == "" && currentMarketplacePath != "" && plugin.Marketplace == currentMarketplace {
+			plugin.ManifestPath = currentMarketplacePath
 		}
 		plugins = append(plugins, plugin)
 	}
@@ -150,6 +176,10 @@ func parseMarketplaceListOutput(result *CommandResult) ([]CodexMarketplace, erro
 		if marketplaces := parseMarketplaceBlocks(output); len(marketplaces) > 0 {
 			return normalizeMarketplaces(marketplaces), nil
 		}
+	}
+
+	if marketplaces := parseMarketplaceTSV(output); len(marketplaces) > 0 {
+		return normalizeMarketplaces(marketplaces), nil
 	}
 
 	marketplaces := make([]CodexMarketplace, 0)
@@ -251,7 +281,7 @@ func assignMarketplaceField(mp *CodexMarketplace, value string) {
 		}
 		return
 	}
-	if strings.HasPrefix(trimmed, "/") || regexp.MustCompile(`^[A-Za-z]:[\\/]`).MatchString(trimmed) {
+	if isLocalPath(trimmed) {
 		if strings.Contains(strings.ToLower(trimmed), "snapshot") {
 			mp.SnapshotPath = trimmed
 		} else if mp.InstallLocation == "" {
@@ -262,6 +292,73 @@ func assignMarketplaceField(mp *CodexMarketplace, value string) {
 	if strings.Contains(trimmed, "/") && mp.Repo == "" {
 		mp.Repo = trimmed
 	}
+}
+
+func parseMarketplaceTSV(output string) []CodexMarketplace {
+	marketplaces := make([]CodexMarketplace, 0)
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || !strings.Contains(line, "\t") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		path := strings.TrimSpace(parts[1])
+		if name == "" || strings.Contains(name, "@") || !isLocalPath(path) {
+			continue
+		}
+		marketplaces = append(marketplaces, CodexMarketplace{
+			Name:            name,
+			InstallLocation: path,
+			SnapshotPath:    path,
+			RawLine:         trimmed,
+		})
+	}
+	return marketplaces
+}
+
+func parsePluginMarketplaceHeader(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "Marketplace ") {
+		return "", false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(trimmed, "Marketplace "))
+	value = strings.Trim(value, " `\"'")
+	if value == "" {
+		return "", false
+	}
+	return value, true
+}
+
+func parsePluginMarketplacePath(line string) (string, bool) {
+	key, value, ok := splitKeyValue(strings.TrimSpace(line))
+	if !ok || !strings.EqualFold(key, "path") || !isLocalPath(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func isNotInstalledPluginLine(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "not installed") || strings.Contains(lower, "not-installed")
+}
+
+func isPluginNameToken(token string) bool {
+	if token == "" || strings.Contains(token, "@") || strings.Contains(token, "/") || strings.Contains(token, "\\") {
+		return false
+	}
+	if strings.ContainsAny(token, "()[]{}<>,;:|") {
+		return false
+	}
+	return regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString(token)
+}
+
+func isLocalPath(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return strings.HasPrefix(trimmed, "/") || localPathToken.MatchString(trimmed)
 }
 
 func normalizeMarketplaces(input []CodexMarketplace) []CodexMarketplace {
