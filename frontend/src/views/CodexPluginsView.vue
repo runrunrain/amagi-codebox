@@ -29,9 +29,12 @@ const selectedMarketplace = ref('')
 const searchQuery = ref('')
 const detailResourceGroups = ['skills', 'agents', 'commands', 'hooks', 'mcp'] as const
 const selectedDetailItems = ref<Record<string, string>>({})
+const activePluginMainTab = ref<'installed' | 'marketplace'>('installed')
+const selectedResourceFilters = ref<Record<string, DetailResourceFilter>>({})
 const codexPluginFixtureMode = ref(isCodexPluginFixtureMode())
 
 type DetailResourceGroup = typeof detailResourceGroups[number]
+type DetailResourceFilter = 'all' | DetailResourceGroup
 type DetailDisplayItem = {
   key: string
   name: string
@@ -58,6 +61,23 @@ type McpServerSummary = {
 }
 
 const sensitiveMcpKeyPattern = /(secret|key|token|password|authorization|cookie|env|headers)/i
+const pluginMainTabs = [
+  { key: 'installed' as const, label: '已安装插件' },
+  { key: 'marketplace' as const, label: '市场可安装插件' }
+]
+const detailResourceFilterOptions = [
+  { key: 'all' as const, label: '全部' },
+  { key: 'skills' as const, label: 'Skills' },
+  { key: 'agents' as const, label: 'Agents' },
+  { key: 'commands' as const, label: 'Commands' },
+  { key: 'hooks' as const, label: 'Hooks' },
+  { key: 'mcp' as const, label: 'MCP' }
+]
+
+function resourceDescription(item: any) {
+  const value = item?.description || item?.Description || item?.summary || item?.Summary || item?.shortDescription || item?.short_description
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
 
 function hasSensitiveMcpKeys(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
@@ -662,7 +682,6 @@ async function loadPluginDetail(pluginId: string) {
 
 function buildDescription(primary?: string, fallbackPath?: string) {
   if (primary) return { description: primary, descriptionKind: 'text' as const }
-  if (fallbackPath) return { description: fallbackPath, descriptionKind: 'path' as const }
   return { description: '', descriptionKind: 'text' as const }
 }
 
@@ -672,17 +691,17 @@ function detailItems(detail: codexplugin.CodexPluginDetail, group: DetailResourc
   }
   return ((detail[group] || []) as Array<any>).map((item, index) => {
     if (group === 'hooks') {
-      const commandOrPath = buildDescription(item.command, item.filePath)
+      const hookDescription = buildDescription(resourceDescription(item), item.filePath)
       return {
         key: item.name || `${item.event}:${item.type}:${item.command || item.filePath || ''}`,
         name: item.event && item.name ? `${item.event} / ${item.name}` : item.event || item.name || 'Hook',
-        description: commandOrPath.description,
+        description: hookDescription.description,
         badge: item.type || '',
-        descriptionKind: commandOrPath.descriptionKind,
+        descriptionKind: hookDescription.descriptionKind,
         path: item.filePath
       }
     }
-    const copy = buildDescription(item.description, item.filePath)
+    const copy = buildDescription(resourceDescription(item), item.filePath)
     return {
       key: item.name || item.filePath || `${group}:${index}`,
       name: item.name || item.filePath || group,
@@ -707,11 +726,38 @@ function detailNavItems(detail: codexplugin.CodexPluginDetail): DetailNavItem[] 
   })))
 }
 
-function selectedDetailItem(pluginId: string, detail: codexplugin.CodexPluginDetail) {
+function selectedResourceFilter(pluginId: string): DetailResourceFilter {
+  return selectedResourceFilters.value[pluginId] || 'all'
+}
+
+function detailNavItemsForFilter(detail: codexplugin.CodexPluginDetail, filter: DetailResourceFilter) {
   const items = detailNavItems(detail)
+  return filter === 'all' ? items : items.filter(item => item.group === filter)
+}
+
+function filteredDetailNavItems(pluginId: string, detail: codexplugin.CodexPluginDetail) {
+  return detailNavItemsForFilter(detail, selectedResourceFilter(pluginId))
+}
+
+function detailResourceFilterCount(detail: codexplugin.CodexPluginDetail, filter: DetailResourceFilter) {
+  return detailNavItemsForFilter(detail, filter).length
+}
+
+function selectedDetailItem(pluginId: string, detail: codexplugin.CodexPluginDetail) {
+  const items = filteredDetailNavItems(pluginId, detail)
   if (items.length === 0) return null
   const selectedKey = selectedDetailItems.value[pluginId]
   return items.find(item => item.key === selectedKey) || items[0]
+}
+
+function selectResourceFilter(pluginId: string, filter: DetailResourceFilter, detail: codexplugin.CodexPluginDetail) {
+  selectedResourceFilters.value[pluginId] = filter
+  const items = detailNavItemsForFilter(detail, filter)
+  if (items.length > 0) {
+    selectedDetailItems.value[pluginId] = items[0].key
+  } else {
+    delete selectedDetailItems.value[pluginId]
+  }
 }
 
 function selectDetailItem(pluginId: string, item: DetailNavItem) {
@@ -766,7 +812,23 @@ onMounted(() => {
       <button class="btn secondary small" @click="loadData" :disabled="loading">重试</button>
     </div>
 
-    <div class="installed-master-detail card">
+    <div class="main-tabs" role="tablist" aria-label="Codex 插件管理主内容切换">
+      <button
+        v-for="tab in pluginMainTabs"
+        :key="tab.key"
+        type="button"
+        class="main-tab"
+        :class="{ active: activePluginMainTab === tab.key }"
+        role="tab"
+        :aria-selected="activePluginMainTab === tab.key"
+        @click="activePluginMainTab = tab.key"
+      >
+        <span>{{ tab.label }}</span>
+        <span class="tab-count">{{ tab.key === 'installed' ? installedFiltered.length : availableFiltered.length }}</span>
+      </button>
+    </div>
+
+    <div v-if="activePluginMainTab === 'installed'" class="installed-master-detail card">
       <div class="empty-state card" v-if="installedFiltered.length === 0 && !loading">
         <svg viewBox="0 0 24 24" width="48" height="48" stroke="#3a4f5e" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
           <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
@@ -845,10 +907,24 @@ onMounted(() => {
             <span>加载详情中...</span>
           </div>
           <div class="detail-split" v-else-if="pluginDetails[selectedInstalledPlugin.id]">
-            <aside class="detail-nav" v-if="detailNavItems(pluginDetails[selectedInstalledPlugin.id]).length">
+            <div class="resource-filter-bar" v-if="detailNavItems(pluginDetails[selectedInstalledPlugin.id]).length">
+              <button
+                v-for="filter in detailResourceFilterOptions"
+                :key="filter.key"
+                type="button"
+                class="resource-filter-chip"
+                :class="{ active: selectedResourceFilter(selectedInstalledPlugin.id) === filter.key }"
+                :aria-pressed="selectedResourceFilter(selectedInstalledPlugin.id) === filter.key"
+                @click="selectResourceFilter(selectedInstalledPlugin.id, filter.key, pluginDetails[selectedInstalledPlugin.id])"
+              >
+                <span>{{ filter.label }}</span>
+                <span class="filter-count">{{ detailResourceFilterCount(pluginDetails[selectedInstalledPlugin.id], filter.key) }}</span>
+              </button>
+            </div>
+            <aside class="detail-nav" v-if="filteredDetailNavItems(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id]).length">
               <button
                 type="button"
-                v-for="item in detailNavItems(pluginDetails[selectedInstalledPlugin.id])"
+                v-for="item in filteredDetailNavItems(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])"
                 :key="item.key"
                 class="detail-nav-item"
                 :class="{ active: selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.key === item.key }"
@@ -863,12 +939,19 @@ onMounted(() => {
               </button>
             </aside>
 
+            <div class="empty-state-sm resource-empty" v-else-if="detailNavItems(pluginDetails[selectedInstalledPlugin.id]).length">
+              当前筛选下暂无资源
+            </div>
+
             <section class="detail-reading-pane" v-if="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])">
               <div class="detail-pane-header">
                 <span class="badge subitem-count-badge">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.groupLabel }}</span>
                 <h4 class="detail-pane-title">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.name }}</h4>
               </div>
-              <p class="detail-pane-desc">{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.description || '该条目未声明描述。' }}</p>
+              <div class="description-callout" :class="{ empty: !selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.description || selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.group === 'mcp' }">
+                <span class="description-label">说明</span>
+                <p>{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.group === 'mcp' ? '暂无说明' : (selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.description || '暂无说明') }}</p>
+              </div>
               <div class="detail-pane-grid">
                 <div class="detail-kv">
                   <span>插件状态</span>
@@ -932,7 +1015,7 @@ onMounted(() => {
       </template>
     </div>
 
-    <div class="available-section">
+    <div v-if="activePluginMainTab === 'marketplace'" class="available-section">
       <div class="available-toolbar">
         <h2 class="section-title">Codex 市场与可安装插件 ({{ availableFiltered.length }} / {{ availableCount }})</h2>
         <div class="available-toolbar-controls">
@@ -1105,6 +1188,58 @@ onMounted(() => {
   margin: 0;
   color: #6f8090;
   font-size: 13px;
+}
+
+.main-tabs {
+  display: inline-flex;
+  width: fit-content;
+  padding: 3px;
+  gap: 3px;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+  background: #101722;
+}
+
+.main-tab,
+.resource-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  color: #8899aa;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 700;
+  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.main-tab {
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+}
+
+.main-tab:hover,
+.main-tab.active {
+  color: #d8e0e8;
+  background: #182232;
+}
+
+.main-tab.active {
+  box-shadow: inset 0 -2px 0 #4fc3f7;
+}
+
+.tab-count,
+.filter-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(136, 153, 170, 0.14);
+  color: #aab8c5;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .section-title {
@@ -1658,11 +1793,42 @@ onMounted(() => {
 .detail-split {
   display: grid;
   grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   height: clamp(320px, 42vh, 520px);
   min-height: 320px;
   overflow: hidden;
   flex: 1 1 auto;
+}
+
+.resource-filter-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #263140;
+  border-radius: 6px;
+  background: #0f1219;
+}
+
+.resource-filter-chip {
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #141a25;
+  font-size: 12px;
+}
+
+.resource-filter-chip:hover,
+.resource-filter-chip.active {
+  color: #e0e6ed;
+  background: #1d2a3b;
+}
+
+.resource-filter-chip.active {
+  box-shadow: inset 0 0 0 1px rgba(79, 195, 247, 0.55);
 }
 
 .detail-nav,
@@ -1750,6 +1916,12 @@ onMounted(() => {
   -webkit-overflow-scrolling: touch;
 }
 
+.resource-empty {
+  grid-column: 1;
+  min-height: 100%;
+  justify-content: center;
+}
+
 .detail-pane-header {
   display: flex;
   align-items: center;
@@ -1770,6 +1942,46 @@ onMounted(() => {
   color: #aab8c5;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.description-callout {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(79, 195, 247, 0.25);
+  border-left: 3px solid #4fc3f7;
+  border-radius: 6px;
+  background: rgba(79, 195, 247, 0.07);
+}
+
+.description-callout.empty {
+  border-color: #263140;
+  border-left-color: #5a6a7a;
+  background: #101722;
+}
+
+.description-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #81d4fa;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.description-callout.empty .description-label {
+  color: #6f8090;
+}
+
+.description-callout p {
+  margin: 0;
+  color: #c9d7e2;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.description-callout.empty p {
+  color: #8899aa;
 }
 
 .detail-pane-grid {
