@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/amagi"
+	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
@@ -94,6 +95,7 @@ type App struct {
 	EnvVars        *envvars.EnvVarsService
 	Updater        *updater.Service
 	Plugins        *plugin.Service
+	CodexPlugins   *codexplugin.Service
 	Workspaces     *workspace.Service
 	Amagi          *amagi.Service
 	OpenCodeConfig *opencodeconfig.Service
@@ -114,6 +116,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
 	capabilities := platform.CurrentCapabilities()
 	pluginsSvc := plugin.NewService("", log)
+	codexPluginsSvc := codexplugin.NewService("", log)
 	processRunner := platform.NewProcessRunner()
 
 	app := &App{
@@ -130,6 +133,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		EnvVars:        envVarsSvc,
 		Updater:        updater.NewService(Version, log),
 		Plugins:        pluginsSvc,
+		CodexPlugins:   codexPluginsSvc,
 		Workspaces:     workspace.NewService(configDir, pluginsSvc, log),
 		Amagi:          amagi.NewService(configDir),
 		OpenCodeConfig: opencodeconfig.NewService(),

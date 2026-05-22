@@ -33,12 +33,24 @@ const router = createRouter({
     {
       path: '/extensions',
       component: () => import('../views/ExtensionsLayout.vue'),
-      redirect: '/extensions/plugins',
+      redirect: '/extensions/plugins/claude',
       children: [
         {
           path: 'plugins',
-          name: 'Plugins',
-          component: () => import('../views/PluginsView.vue')
+          component: () => import('../views/PluginManagementLayout.vue'),
+          redirect: '/extensions/plugins/claude',
+          children: [
+            {
+              path: 'claude',
+              name: 'ClaudePlugins',
+              component: () => import('../views/PluginsView.vue')
+            },
+            {
+              path: 'codex',
+              name: 'CodexPlugins',
+              component: () => import('../views/CodexPluginsView.vue')
+            }
+          ]
         },
         {
           path: 'workspaces',

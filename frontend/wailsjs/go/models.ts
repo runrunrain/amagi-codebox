@@ -178,6 +178,334 @@ export namespace amagi {
 
 }
 
+export namespace codexplugin {
+	
+	export class AddMarketplaceRequest {
+	    source: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AddMarketplaceRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	    }
+	}
+	export class AgentInfo {
+	    name: string;
+	    description: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class CodexAvailablePlugin {
+	    pluginId: string;
+	    name: string;
+	    marketplaceName: string;
+	    version?: string;
+	    description?: string;
+	    author?: string;
+	    repository?: string;
+	    snapshotPath?: string;
+	    manifestPath?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexAvailablePlugin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pluginId = source["pluginId"];
+	        this.name = source["name"];
+	        this.marketplaceName = source["marketplaceName"];
+	        this.version = source["version"];
+	        this.description = source["description"];
+	        this.author = source["author"];
+	        this.repository = source["repository"];
+	        this.snapshotPath = source["snapshotPath"];
+	        this.manifestPath = source["manifestPath"];
+	    }
+	}
+	export class CodexMarketplace {
+	    name: string;
+	    source?: string;
+	    repo?: string;
+	    url?: string;
+	    installLocation?: string;
+	    snapshotPath?: string;
+	    lastUpdated?: string;
+	    rawLine?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexMarketplace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.repo = source["repo"];
+	        this.url = source["url"];
+	        this.installLocation = source["installLocation"];
+	        this.snapshotPath = source["snapshotPath"];
+	        this.lastUpdated = source["lastUpdated"];
+	        this.rawLine = source["rawLine"];
+	    }
+	}
+	export class CodexPlugin {
+	    id: string;
+	    name: string;
+	    marketplace: string;
+	    version?: string;
+	    enabled: boolean;
+	    installPath?: string;
+	    manifestPath?: string;
+	    installedAt?: string;
+	    lastUpdated?: string;
+	    source?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexPlugin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.marketplace = source["marketplace"];
+	        this.version = source["version"];
+	        this.enabled = source["enabled"];
+	        this.installPath = source["installPath"];
+	        this.manifestPath = source["manifestPath"];
+	        this.installedAt = source["installedAt"];
+	        this.lastUpdated = source["lastUpdated"];
+	        this.source = source["source"];
+	    }
+	}
+	export class HookInfo {
+	    name: string;
+	    event: string;
+	    type: string;
+	    command?: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HookInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.event = source["event"];
+	        this.type = source["type"];
+	        this.command = source["command"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class CommandInfo {
+	    name: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommandInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class SkillInfo {
+	    name: string;
+	    description: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SkillInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class CodexPluginManifest {
+	    name: string;
+	    version: string;
+	    description: string;
+	    author?: Record<string, string>;
+	    license?: string;
+	    keywords?: string[];
+	    homepage?: string;
+	    repository?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexPluginManifest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.description = source["description"];
+	        this.author = source["author"];
+	        this.license = source["license"];
+	        this.keywords = source["keywords"];
+	        this.homepage = source["homepage"];
+	        this.repository = source["repository"];
+	    }
+	}
+	export class CodexPluginDetail {
+	    id: string;
+	    name: string;
+	    marketplace: string;
+	    version?: string;
+	    enabled: boolean;
+	    installPath?: string;
+	    manifestPath?: string;
+	    installedAt?: string;
+	    lastUpdated?: string;
+	    source?: string;
+	    manifest: CodexPluginManifest;
+	    skills: SkillInfo[];
+	    agents: AgentInfo[];
+	    commands: CommandInfo[];
+	    hooks: HookInfo[];
+	    hasMcp: boolean;
+	    mcpServers?: Record<string, any>;
+	    pluginType: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexPluginDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.marketplace = source["marketplace"];
+	        this.version = source["version"];
+	        this.enabled = source["enabled"];
+	        this.installPath = source["installPath"];
+	        this.manifestPath = source["manifestPath"];
+	        this.installedAt = source["installedAt"];
+	        this.lastUpdated = source["lastUpdated"];
+	        this.source = source["source"];
+	        this.manifest = this.convertValues(source["manifest"], CodexPluginManifest);
+	        this.skills = this.convertValues(source["skills"], SkillInfo);
+	        this.agents = this.convertValues(source["agents"], AgentInfo);
+	        this.commands = this.convertValues(source["commands"], CommandInfo);
+	        this.hooks = this.convertValues(source["hooks"], HookInfo);
+	        this.hasMcp = source["hasMcp"];
+	        this.mcpServers = source["mcpServers"];
+	        this.pluginType = source["pluginType"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class CodexPluginsData {
+	    marketplaces: CodexMarketplace[];
+	    installed: CodexPlugin[];
+	    available: CodexAvailablePlugin[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexPluginsData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.marketplaces = this.convertValues(source["marketplaces"], CodexMarketplace);
+	        this.installed = this.convertValues(source["installed"], CodexPlugin);
+	        this.available = this.convertValues(source["available"], CodexAvailablePlugin);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class CommandResult {
+	    success: boolean;
+	    output: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommandResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.output = source["output"];
+	        this.error = source["error"];
+	    }
+	}
+	
+	export class PluginSelector {
+	    pluginId: string;
+	    id?: string;
+	    name?: string;
+	    marketplace?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginSelector(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pluginId = source["pluginId"];
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.marketplace = source["marketplace"];
+	    }
+	}
+
+}
+
 export namespace config {
 	
 	export class AgentTeamsConfig {

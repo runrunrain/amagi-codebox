@@ -50,6 +50,7 @@ func main() {
 			app.Settings,
 			app.Updater,
 			app.Plugins,
+			app.CodexPlugins,
 			app.Workspaces,
 			app.Amagi,
 			app.OpenCodeConfig,
