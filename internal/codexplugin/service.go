@@ -43,14 +43,18 @@ func (s *Service) runtimeContext() context.Context {
 }
 
 func (s *Service) ListMarketplaces() ([]CodexMarketplace, error) {
-	return s.listMarketplaces(s.runtimeContext())
+	marketplaces, err := s.listMarketplaces(s.runtimeContext())
+	if err != nil && len(marketplaces) > 0 {
+		return marketplaces, nil
+	}
+	return marketplaces, err
 }
 
 func (s *Service) listMarketplaces(ctx context.Context) ([]CodexMarketplace, error) {
 	configMarketplaces, configErr := s.readConfigMarketplaces()
 	result := make(map[string]CodexMarketplace, len(configMarketplaces))
 	for _, mp := range configMarketplaces {
-		result[mp.Name] = mp
+		upsertMarketplace(result, mp, false)
 	}
 
 	commandResult, cmdErr := s.executeCodexCommand(ctx, "plugin", "marketplace", "list")
@@ -60,29 +64,19 @@ func (s *Service) listMarketplaces(ctx context.Context) ([]CodexMarketplace, err
 			cmdErr = err
 		} else {
 			for _, mp := range cliMarketplaces {
-				merged := mp
-				if existing, ok := result[mp.Name]; ok {
-					if merged.Source == "" {
-						merged.Source = existing.Source
-					}
-					if merged.Repo == "" {
-						merged.Repo = existing.Repo
-					}
-					if merged.URL == "" {
-						merged.URL = existing.URL
-					}
-					if merged.InstallLocation == "" {
-						merged.InstallLocation = existing.InstallLocation
-					}
-					if merged.SnapshotPath == "" {
-						merged.SnapshotPath = existing.SnapshotPath
-					}
-					if merged.LastUpdated == "" {
-						merged.LastUpdated = existing.LastUpdated
-					}
-				}
-				result[merged.Name] = merged
+				upsertMarketplace(result, mp, true)
 			}
+		}
+	}
+	if cmdErr != nil {
+		for _, mp := range s.inferMarketplacesFromConfigPlugins() {
+			upsertMarketplace(result, mp, false)
+		}
+		for _, mp := range s.inferMarketplacesFromInstalledPlugins(ctx) {
+			upsertMarketplace(result, mp, false)
+		}
+		for _, mp := range s.inferMarketplacesFromCache() {
+			upsertMarketplace(result, mp, false)
 		}
 	}
 	if cmdErr != nil && len(result) == 0 {
@@ -96,7 +90,135 @@ func (s *Service) listMarketplaces(ctx context.Context) ([]CodexMarketplace, err
 		out = append(out, mp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	return out, cmdErr
+}
+
+func upsertMarketplace(result map[string]CodexMarketplace, incoming CodexMarketplace, preferIncoming bool) {
+	incoming.Name = strings.TrimSpace(incoming.Name)
+	if incoming.Name == "" {
+		return
+	}
+	existing, ok := result[incoming.Name]
+	if !ok {
+		result[incoming.Name] = incoming
+		return
+	}
+	merged := existing
+	if preferIncoming {
+		merged = incoming
+		fillMarketplaceEmptyFields(&merged, existing)
+	} else {
+		fillMarketplaceEmptyFields(&merged, incoming)
+	}
+	result[incoming.Name] = merged
+}
+
+func fillMarketplaceEmptyFields(target *CodexMarketplace, fallback CodexMarketplace) {
+	if target.Source == "" {
+		target.Source = fallback.Source
+	}
+	if target.Repo == "" {
+		target.Repo = fallback.Repo
+	}
+	if target.URL == "" {
+		target.URL = fallback.URL
+	}
+	if target.InstallLocation == "" {
+		target.InstallLocation = fallback.InstallLocation
+	}
+	if target.SnapshotPath == "" {
+		target.SnapshotPath = fallback.SnapshotPath
+	}
+	if target.LastUpdated == "" {
+		target.LastUpdated = fallback.LastUpdated
+	}
+	if target.RawLine == "" {
+		target.RawLine = fallback.RawLine
+	}
+}
+
+func (s *Service) inferMarketplacesFromConfigPlugins() []CodexMarketplace {
+	states, err := s.readPluginStates()
+	if err != nil {
+		return []CodexMarketplace{}
+	}
+	ids := make([]string, 0, len(states))
+	for id := range states {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	marketplaces := make([]CodexMarketplace, 0)
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		_, marketplace := splitPluginID(id)
+		if marketplace == "" {
+			continue
+		}
+		if _, ok := seen[marketplace]; ok {
+			continue
+		}
+		seen[marketplace] = struct{}{}
+		marketplaces = append(marketplaces, s.inferredMarketplace(marketplace, "inferred from config plugins"))
+	}
+	return marketplaces
+}
+
+func (s *Service) inferMarketplacesFromInstalledPlugins(ctx context.Context) []CodexMarketplace {
+	plugins, err := s.listPlugins(ctx, "")
+	if err != nil {
+		return []CodexMarketplace{}
+	}
+	marketplaces := make([]CodexMarketplace, 0)
+	seen := map[string]struct{}{}
+	for _, plugin := range plugins {
+		marketplace := strings.TrimSpace(plugin.Marketplace)
+		if marketplace == "" {
+			continue
+		}
+		if _, ok := seen[marketplace]; ok {
+			continue
+		}
+		seen[marketplace] = struct{}{}
+		marketplaces = append(marketplaces, s.inferredMarketplace(marketplace, "inferred from installed plugins"))
+	}
+	sort.Slice(marketplaces, func(i, j int) bool { return marketplaces[i].Name < marketplaces[j].Name })
+	return marketplaces
+}
+
+func (s *Service) inferMarketplacesFromCache() []CodexMarketplace {
+	cacheDir := filepath.Join(s.codexDir, "plugins", "cache")
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		return []CodexMarketplace{}
+	}
+	marketplaces := make([]CodexMarketplace, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "" || validateMarketplaceName(name) != nil {
+			continue
+		}
+		marketplaces = append(marketplaces, s.inferredMarketplace(name, "inferred from plugin cache"))
+	}
+	sort.Slice(marketplaces, func(i, j int) bool { return marketplaces[i].Name < marketplaces[j].Name })
+	return marketplaces
+}
+
+func (s *Service) inferredMarketplace(name string, rawLine string) CodexMarketplace {
+	name = strings.TrimSpace(name)
+	mp := CodexMarketplace{Name: name, RawLine: rawLine}
+	cachePath := filepath.Join(s.codexDir, "plugins", "cache", name)
+	if info, err := os.Stat(cachePath); err == nil && info.IsDir() {
+		mp.InstallLocation = cachePath
+	}
+	if snapshotPath := s.defaultMarketplaceSnapshotPath(name); snapshotPath != "" {
+		if info, err := os.Stat(snapshotPath); err == nil && info.IsDir() {
+			mp.SnapshotPath = snapshotPath
+		}
+	}
+	return mp
 }
 
 func (s *Service) AddMarketplace(req AddMarketplaceRequest) (*CommandResult, error) {
@@ -271,7 +393,7 @@ func (s *Service) GetPluginDetails(selector PluginSelector) (*CodexPluginDetail,
 
 func (s *Service) ListAvailablePlugins() ([]CodexAvailablePlugin, error) {
 	marketplaces, err := s.listMarketplaces(s.runtimeContext())
-	if err != nil {
+	if err != nil && len(marketplaces) == 0 {
 		return nil, err
 	}
 	return s.findAvailablePlugins(marketplaces)
@@ -284,7 +406,7 @@ func (s *Service) RefreshPlugins() (*CodexPluginsData, error) {
 	available, availableErr := s.findAvailablePlugins(marketplaces)
 	warnings := codexPluginWarnings(marketErr, installedErr, availableErr)
 	data := &CodexPluginsData{Marketplaces: marketplaces, Installed: installed, Available: available, Warnings: warnings}
-	if marketErr != nil && len(marketplaces) == 0 {
+	if marketErr != nil && len(marketplaces) == 0 && len(installed) == 0 && len(available) == 0 {
 		return data, marketErr
 	}
 	if installedErr != nil && len(installed) == 0 && len(available) == 0 {

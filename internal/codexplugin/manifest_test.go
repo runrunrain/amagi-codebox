@@ -237,3 +237,17 @@ func TestFindAvailablePluginsFallsBackToDefaultMarketplaceSnapshotPath(t *testin
 		t.Fatalf("unexpected available plugin: %+v", plugin)
 	}
 }
+
+func TestFindAvailablePluginsEmptyMarketplacesReturnsEmptyNil(t *testing.T) {
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	available, err := s.findAvailablePlugins(nil)
+	if err != nil {
+		t.Fatalf("find available plugins with empty marketplaces: %v", err)
+	}
+	if available == nil {
+		t.Fatalf("expected non-nil empty available slice")
+	}
+	if len(available) != 0 {
+		t.Fatalf("expected empty available plugins, got %+v", available)
+	}
+}
