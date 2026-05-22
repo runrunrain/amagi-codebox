@@ -20,7 +20,8 @@ func (s *Service) executeCodexCommand(ctx context.Context, args ...string) (*Com
 	if resolver == nil {
 		resolver = platform.NewCLIResolver(platform.CurrentCapabilities())
 	}
-	cli, _, err := resolver.ResolveExecutable("codex", append([]string(nil), args...), os.Environ())
+	env := platform.BuildEffectiveEnv(os.Environ())
+	cli, _, err := resolver.ResolveExecutable("codex", append([]string(nil), args...), env)
 	if err != nil {
 		return nil, fmt.Errorf("未找到 Codex CLI，请先安装或检查 PATH: %w", err)
 	}
@@ -38,6 +39,7 @@ func (s *Service) executeCodexCommand(ctx context.Context, args ...string) (*Com
 	processResult, err := runner.Run(runCtx, platform.CommandSpec{
 		Path:   cli.Path,
 		Args:   cli.Args,
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if processResult == nil {

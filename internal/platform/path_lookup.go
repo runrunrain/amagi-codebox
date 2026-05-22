@@ -36,6 +36,11 @@ func resolveCommandPath(command string, env []string) string {
 	return resolveCommandPathForOS(currentOS(), command, env)
 }
 
+func BuildEffectiveEnv(env []string) []string {
+	vars, _, _, _ := buildEffectiveEnvForOS(currentOS(), env)
+	return vars
+}
+
 func currentOS() string {
 	return runtime.GOOS
 }
@@ -165,7 +170,7 @@ func resolvePreferredDefaultCommandPathForOS(osName string, command string, env 
 	if osName != "darwin" || command != "claude" {
 		return ""
 	}
-	for _, dir := range userLocalBinCandidatesForOS(osName, env) {
+	for _, dir := range userNativeBinCandidatesForOS(osName, env) {
 		candidate := filepath.Join(dir, command)
 		if fileExists(candidate) {
 			return candidate
@@ -181,6 +186,18 @@ func darwinControlledPATHCandidates(env []string) []string {
 }
 
 func userLocalBinCandidatesForOS(osName string, env []string) []string {
+	return userBinCandidatesForOS(osName, env, [][]string{
+		{".local", "bin"},
+		{".local", "node", "bin"},
+		{".npm-global", "bin"},
+	})
+}
+
+func userNativeBinCandidatesForOS(osName string, env []string) []string {
+	return userBinCandidatesForOS(osName, env, [][]string{{".local", "bin"}})
+}
+
+func userBinCandidatesForOS(osName string, env []string, suffixes [][]string) []string {
 	candidates := []string{}
 	seen := map[string]struct{}{}
 	appendCandidate := func(base string) {
@@ -188,13 +205,16 @@ func userLocalBinCandidatesForOS(osName string, env []string) []string {
 		if base == "" {
 			return
 		}
-		dir := filepath.Join(base, ".local", "bin")
-		normalized := normalizePathKey(filepath.Clean(dir), osName)
-		if _, ok := seen[normalized]; ok {
-			return
+		for _, suffix := range suffixes {
+			dirParts := append([]string{base}, suffix...)
+			dir := filepath.Join(dirParts...)
+			normalized := normalizePathKey(filepath.Clean(dir), osName)
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			candidates = append(candidates, dir)
 		}
-		seen[normalized] = struct{}{}
-		candidates = append(candidates, dir)
 	}
 	for _, key := range []string{"HOME", "USERPROFILE"} {
 		appendCandidate(envValue(env, key))

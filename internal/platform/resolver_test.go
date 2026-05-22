@@ -113,6 +113,8 @@ func TestDarwinBaselinePATHIncludesUsrLocalBin(t *testing.T) {
 func TestDarwinEffectivePATHIncludesHomeLocalBin(t *testing.T) {
 	homeDir := t.TempDir()
 	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
+	npmGlobalDir := filepath.Join(homeDir, ".npm-global", "bin")
 
 	_, effectivePATH, addedEntries, _ := buildEffectiveEnvForOS("darwin", []string{
 		"HOME=" + homeDir,
@@ -124,6 +126,58 @@ func TestDarwinEffectivePATHIncludesHomeLocalBin(t *testing.T) {
 	}
 	if len(addedEntries) == 0 || addedEntries[0] != nativeDir {
 		t.Fatalf("added PATH entries = %#v, want native default dir first", addedEntries)
+	}
+	for _, required := range []string{npmLocalNodeDir, npmGlobalDir} {
+		if !pathListContains("darwin", effectivePATH, required) {
+			t.Fatalf("effective PATH %q does not include npm global bin candidate %q", effectivePATH, required)
+		}
+	}
+}
+
+func TestDarwinResolveExecutableFindsCodexInLocalNodeBin(t *testing.T) {
+	homeDir := t.TempDir()
+	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
+	codexPath := filepath.Join(npmLocalNodeDir, "codex")
+	if err := os.MkdirAll(npmLocalNodeDir, 0o755); err != nil {
+		t.Fatalf("mkdir npm local node dir: %v", err)
+	}
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex cli: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	cli, diagnostics, err := resolver.ResolveExecutable("codex", []string{"plugin", "list"}, []string{
+		"HOME=" + homeDir,
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	})
+	if err != nil {
+		t.Fatalf("ResolveExecutable: %v", err)
+	}
+	if cli.Path != codexPath {
+		t.Fatalf("resolved codex path = %q, want %q", cli.Path, codexPath)
+	}
+	if diagnostics.CLISource != "path-search" {
+		t.Fatalf("cli source = %q, want path-search", diagnostics.CLISource)
+	}
+}
+
+func TestBuildEffectiveEnvAddsLocalNodeBinToProcessPATH(t *testing.T) {
+	if currentOS() != "darwin" {
+		t.Skip("current process effective PATH assertion is only defined for darwin")
+	}
+	homeDir := t.TempDir()
+	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
+
+	previousHomeDir := pathLookupUserHomeDir
+	pathLookupUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { pathLookupUserHomeDir = previousHomeDir })
+
+	vars := BuildEffectiveEnv([]string{
+		"HOME=" + homeDir,
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	})
+	if !pathListContains(currentOS(), envValue(vars, "PATH"), npmLocalNodeDir) {
+		t.Fatalf("effective process PATH %q does not include npm local node dir %q", envValue(vars, "PATH"), npmLocalNodeDir)
 	}
 }
 
