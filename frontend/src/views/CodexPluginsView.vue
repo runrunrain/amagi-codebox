@@ -33,6 +33,15 @@ const searchQuery = ref('')
 const detailResourceGroups = ['skills', 'agents', 'commands', 'hooks', 'mcp'] as const
 const expandedDetailGroups = ref<Record<string, boolean>>({})
 
+type DetailResourceGroup = typeof detailResourceGroups[number]
+type DetailDisplayItem = {
+  key: string
+  name: string
+  description: string
+  badge: string
+  descriptionKind: 'text' | 'path'
+}
+
 const addMarketDialog = ref({
   show: false,
   source: '',
@@ -374,19 +383,39 @@ async function toggleDetail(pluginId: string) {
   }
 }
 
-function detailItems(detail: codexplugin.CodexPluginDetail, group: typeof detailResourceGroups[number]) {
-  if (group === 'mcp') {
-    return getMcpServerNames(detail).map(name => ({ key: name, name, description: 'MCP Server', badge: '' }))
-  }
-  return ((detail[group] || []) as Array<any>).map(item => ({
-    key: item.name || `${item.event}:${item.type}`,
-    name: item.name || item.event,
-    description: item.description || item.filePath || item.command || '',
-    badge: item.type || ''
-  }))
+function buildDescription(primary?: string, fallbackPath?: string) {
+  if (primary) return { description: primary, descriptionKind: 'text' as const }
+  if (fallbackPath) return { description: fallbackPath, descriptionKind: 'path' as const }
+  return { description: '', descriptionKind: 'text' as const }
 }
 
-function detailGroupTitle(group: typeof detailResourceGroups[number]) {
+function detailItems(detail: codexplugin.CodexPluginDetail, group: DetailResourceGroup): DetailDisplayItem[] {
+  if (group === 'mcp') {
+    return getMcpServerNames(detail).map(name => ({ key: name, name, description: 'MCP Server', badge: '', descriptionKind: 'text' }))
+  }
+  return ((detail[group] || []) as Array<any>).map((item, index) => {
+    if (group === 'hooks') {
+      const commandOrPath = buildDescription(item.command, item.filePath)
+      return {
+        key: item.name || `${item.event}:${item.type}:${item.command || item.filePath || ''}`,
+        name: item.event && item.name ? `${item.event} / ${item.name}` : item.event || item.name || 'Hook',
+        description: commandOrPath.description,
+        badge: item.type || '',
+        descriptionKind: commandOrPath.descriptionKind
+      }
+    }
+    const copy = buildDescription(item.description, item.filePath)
+    return {
+      key: item.name || item.filePath || `${group}:${index}`,
+      name: item.name || item.filePath || group,
+      description: copy.description,
+      badge: '',
+      descriptionKind: copy.descriptionKind
+    }
+  })
+}
+
+function detailGroupTitle(group: DetailResourceGroup) {
   return ({ skills: 'Skills', agents: 'Agents', commands: 'Commands', hooks: 'Hooks', mcp: 'MCP Servers' } as Record<string, string>)[group]
 }
 
@@ -578,7 +607,14 @@ onMounted(() => {
                   <template v-for="groupName in detailResourceGroups" :key="groupName">
                     <div class="detail-section" v-if="detailItems(pluginDetails[plugin.id], groupName).length">
                       <button type="button" class="detail-section-toggle" @click="toggleDetailGroup(plugin.id, groupName)">
-                        <span class="section-title-sm">{{ detailGroupTitle(groupName) }}</span>
+                        <span class="section-title-sm">
+                          <svg v-if="groupName === 'skills'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                          <svg v-else-if="groupName === 'agents'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+                          <svg v-else-if="groupName === 'commands'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                          <svg v-else-if="groupName === 'hooks'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+                          <svg v-else viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="7" y1="8" x2="7" y2="16"></line><line x1="11" y1="8" x2="11" y2="16"></line><line x1="15" y1="8" x2="15" y2="16"></line></svg>
+                          {{ detailGroupTitle(groupName) }}
+                        </span>
                         <span class="section-toggle-meta">
                           <span class="badge subitem-count-badge">{{ detailItems(pluginDetails[plugin.id], groupName).length }}</span>
                           <svg :class="['chevron', { expanded: isDetailGroupExpanded(plugin.id, groupName) }]" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -587,12 +623,14 @@ onMounted(() => {
                         </span>
                       </button>
                       <div class="detail-list" v-if="isDetailGroupExpanded(plugin.id, groupName)">
-                        <div class="detail-item vertical" v-for="item in detailItems(pluginDetails[plugin.id], groupName)" :key="item.key">
-                          <span class="item-name-line">
-                            <span class="item-name">{{ item.name }}</span>
-                            <span class="badge source-badge" v-if="item.badge">{{ item.badge }}</span>
-                          </span>
-                          <span class="item-desc path-text" v-if="item.description">{{ item.description }}</span>
+                        <div class="detail-item" v-for="item in detailItems(pluginDetails[plugin.id], groupName)" :key="item.key">
+                          <div class="detail-item-copy">
+                            <span class="item-name-line">
+                              <span class="item-name">{{ item.name }}</span>
+                              <span class="badge source-badge" v-if="item.badge">{{ item.badge }}</span>
+                            </span>
+                            <span :class="['item-desc', { 'path-text': item.descriptionKind === 'path' }]" v-if="item.description">{{ item.description }}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1165,6 +1203,13 @@ onMounted(() => {
   color: #e0e6ed;
   font-size: 14px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-title-sm .icon {
+  flex-shrink: 0;
 }
 
 .detail-section-toggle {
@@ -1194,6 +1239,18 @@ onMounted(() => {
 .detail-item.vertical {
   flex-direction: column;
   gap: 6px;
+}
+
+.detail-item-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-item-copy .item-name {
+  min-width: 0;
 }
 
 .item-name {

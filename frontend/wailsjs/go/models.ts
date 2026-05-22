@@ -314,6 +314,7 @@ export namespace codexplugin {
 	}
 	export class CommandInfo {
 	    name: string;
+	    description: string;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -323,6 +324,7 @@ export namespace codexplugin {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
+	        this.description = source["description"];
 	        this.filePath = source["filePath"];
 	    }
 	}

@@ -243,7 +243,13 @@ func (s *Service) scanCommands(installPath string) ([]CommandInfo, error) {
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
 			continue
 		}
-		commands = append(commands, CommandInfo{Name: strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())), FilePath: filepath.Join(commandsDir, entry.Name())})
+		filePath := filepath.Join(commandsDir, entry.Name())
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("read command file %s: %w", filePath, err)
+		}
+		meta := parseFrontmatter(string(content))
+		commands = append(commands, CommandInfo{Name: strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())), Description: firstNonEmpty(meta["description"], extractFirstParagraph(string(content))), FilePath: filePath})
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	return commands, nil

@@ -112,8 +112,9 @@ type AgentInfo struct {
 }
 
 type CommandInfo struct {
-	Name     string `json:"name"`
-	FilePath string `json:"filePath"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	FilePath    string `json:"filePath"`
 }
 
 type HookInfo struct {

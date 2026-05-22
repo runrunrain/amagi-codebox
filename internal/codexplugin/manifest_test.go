@@ -6,6 +6,86 @@ import (
 	"testing"
 )
 
+func TestScanCommandsParsesFrontmatterDescription(t *testing.T) {
+	dir := t.TempDir()
+	commandsDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatalf("mkdir commands dir: %v", err)
+	}
+	commandPath := filepath.Join(commandsDir, "deploy.md")
+	content := []byte("---\ndescription: Deploy the plugin to Codex\n---\n\n# Deploy\n\nRuns deployment.\n")
+	if err := os.WriteFile(commandPath, content, 0644); err != nil {
+		t.Fatalf("write command file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	commands, err := s.scanCommands(dir)
+	if err != nil {
+		t.Fatalf("scan commands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 command, got %d: %+v", len(commands), commands)
+	}
+	if commands[0].Name != "deploy" || commands[0].Description != "Deploy the plugin to Codex" || commands[0].FilePath != commandPath {
+		t.Fatalf("unexpected command info: %+v", commands[0])
+	}
+}
+
+func TestScanCommandsFallsBackToFirstParagraph(t *testing.T) {
+	dir := t.TempDir()
+	commandsDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatalf("mkdir commands dir: %v", err)
+	}
+	commandPath := filepath.Join(commandsDir, "inspect.md")
+	content := []byte("# Inspect\n\nInspect the plugin configuration.\nContinue with normalized details.\n\nSecond paragraph is ignored.\n")
+	if err := os.WriteFile(commandPath, content, 0644); err != nil {
+		t.Fatalf("write command file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	commands, err := s.scanCommands(dir)
+	if err != nil {
+		t.Fatalf("scan commands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 command, got %d: %+v", len(commands), commands)
+	}
+	expectedDescription := "Inspect the plugin configuration. Continue with normalized details."
+	if commands[0].Name != "inspect" || commands[0].Description != expectedDescription || commands[0].FilePath != commandPath {
+		t.Fatalf("unexpected command info: %+v", commands[0])
+	}
+}
+
+func TestScanCommandsIgnoresNonMarkdownFilesAndDirectories(t *testing.T) {
+	dir := t.TempDir()
+	commandsDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(filepath.Join(commandsDir, "nested"), 0755); err != nil {
+		t.Fatalf("mkdir commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "valid.md"), []byte("Valid command description.\n"), 0644); err != nil {
+		t.Fatalf("write valid command: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "ignored.txt"), []byte("Ignored command description.\n"), 0644); err != nil {
+		t.Fatalf("write ignored command: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "nested", "ignored.md"), []byte("Nested command description.\n"), 0644); err != nil {
+		t.Fatalf("write nested command: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	commands, err := s.scanCommands(dir)
+	if err != nil {
+		t.Fatalf("scan commands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected only 1 command, got %d: %+v", len(commands), commands)
+	}
+	if commands[0].Name != "valid" || commands[0].Description != "Valid command description." {
+		t.Fatalf("unexpected command info: %+v", commands[0])
+	}
+}
+
 func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".codex-plugin"), 0755); err != nil {
