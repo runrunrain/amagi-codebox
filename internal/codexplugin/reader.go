@@ -12,9 +12,28 @@ import (
 )
 
 type codexPluginConfig struct {
-	Enabled bool
-	Line    int
+	Enabled     bool
+	Line        int
+	SectionLine int
+	EndLine     int
+	Format      string
+	HasEnabled  bool
+	Locations   []codexPluginConfigLocation
 }
+
+type codexPluginConfigLocation struct {
+	Enabled     bool
+	Line        int
+	SectionLine int
+	EndLine     int
+	Format      string
+	HasEnabled  bool
+}
+
+const (
+	codexPluginConfigInline  = "inline"
+	codexPluginConfigSection = "section"
+)
 
 func (s *Service) configPath() string {
 	return filepath.Join(s.codexDir, "config.toml")
@@ -44,7 +63,12 @@ func (s *Service) readConfigPluginsFallback() ([]CodexPlugin, error) {
 	plugins := make([]CodexPlugin, 0, len(states))
 	for id, enabled := range states {
 		name, marketplace := splitPluginID(id)
-		plugins = append(plugins, CodexPlugin{ID: id, Name: name, Marketplace: marketplace, Enabled: enabled, Source: "configFallback"})
+		plugin := CodexPlugin{ID: id, Name: name, Marketplace: marketplace, Enabled: enabled, Source: "configFallback"}
+		if root, manifestPath := s.resolvePluginRoot("", "", name, marketplace); root != "" {
+			plugin.InstallPath = root
+			plugin.ManifestPath = manifestPath
+		}
+		plugins = append(plugins, plugin)
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].ID < plugins[j].ID })
 	return plugins, nil
@@ -102,30 +126,83 @@ func (s *Service) removePluginConfig(pluginID string) error {
 
 func parsePluginEntries(content string) (map[string]codexPluginConfig, error) {
 	lines := splitTomlLines(content)
-	start, end := findSectionRange(lines, "plugins")
 	entries := map[string]codexPluginConfig{}
-	if start < 0 {
-		return entries, nil
+	start, end := findSectionRange(lines, "plugins")
+	if start >= 0 {
+		for i := start + 1; i < end; i++ {
+			trimmed := strings.TrimSpace(stripTomlComment(lines[i]))
+			if trimmed == "" {
+				continue
+			}
+			key, value, ok := parseQuotedAssignment(trimmed)
+			if !ok {
+				continue
+			}
+			enabled, ok := parseInlineEnabled(value)
+			if !ok {
+				enabled = true
+			}
+			addPluginConfigLocation(entries, key, codexPluginConfigLocation{Enabled: enabled, Line: i, SectionLine: start, EndLine: end, Format: codexPluginConfigInline, HasEnabled: ok})
+		}
 	}
-	for i := start + 1; i < end; i++ {
-		trimmed := strings.TrimSpace(stripTomlComment(lines[i]))
-		if trimmed == "" {
-			continue
-		}
-		key, value, ok := parseQuotedAssignment(trimmed)
+	for i := 0; i < len(lines); i++ {
+		pluginID, ok := parsePluginDottedSectionHeader(strings.TrimSpace(stripTomlComment(lines[i])))
 		if !ok {
 			continue
 		}
-		if _, exists := entries[key]; exists {
-			return nil, fmt.Errorf("Codex config.toml 中插件 %q 存在重复配置，请先手动整理", key)
+		_, sectionEnd := findSectionRange(lines[i:], strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(stripTomlComment(lines[i])), "]"), "["))
+		if sectionEnd <= 0 {
+			sectionEnd = len(lines) - i
 		}
-		enabled, ok := parseInlineEnabled(value)
-		if !ok {
-			enabled = true
+		enabled := true
+		enabledLine := -1
+		hasEnabled := false
+		for j := i + 1; j < i+sectionEnd && j < len(lines); j++ {
+			key, value, ok := parseBareAssignment(strings.TrimSpace(stripTomlComment(lines[j])))
+			if !ok || !strings.EqualFold(key, "enabled") {
+				continue
+			}
+			parsed := strings.EqualFold(strings.TrimSpace(value), "true")
+			if parsed || strings.EqualFold(strings.TrimSpace(value), "false") {
+				enabled = parsed
+				enabledLine = j
+				hasEnabled = true
+			}
 		}
-		entries[key] = codexPluginConfig{Enabled: enabled, Line: i}
+		line := enabledLine
+		if line < 0 {
+			line = i
+		}
+		addPluginConfigLocation(entries, pluginID, codexPluginConfigLocation{Enabled: enabled, Line: line, SectionLine: i, EndLine: i + sectionEnd, Format: codexPluginConfigSection, HasEnabled: hasEnabled})
 	}
 	return entries, nil
+}
+
+func addPluginConfigLocation(entries map[string]codexPluginConfig, pluginID string, loc codexPluginConfigLocation) {
+	entry := entries[pluginID]
+	entry.Locations = append(entry.Locations, loc)
+	if shouldPreferPluginConfigLocation(loc, codexPluginConfigLocation{Enabled: entry.Enabled, Line: entry.Line, SectionLine: entry.SectionLine, EndLine: entry.EndLine, Format: entry.Format, HasEnabled: entry.HasEnabled}) {
+		entry.Enabled = loc.Enabled
+		entry.Line = loc.Line
+		entry.SectionLine = loc.SectionLine
+		entry.EndLine = loc.EndLine
+		entry.Format = loc.Format
+		entry.HasEnabled = loc.HasEnabled
+	}
+	entries[pluginID] = entry
+}
+
+func shouldPreferPluginConfigLocation(candidate codexPluginConfigLocation, current codexPluginConfigLocation) bool {
+	if current.Format == "" {
+		return true
+	}
+	if candidate.Format == codexPluginConfigSection && current.Format != codexPluginConfigSection {
+		return true
+	}
+	if candidate.Format != codexPluginConfigSection && current.Format == codexPluginConfigSection {
+		return false
+	}
+	return candidate.Line >= current.Line
 }
 
 func updatePluginEnabledInToml(content, pluginID string, enabled bool) (string, error) {
@@ -140,6 +217,23 @@ func updatePluginEnabledInToml(content, pluginID string, enabled bool) (string, 
 		enabledText = "true"
 	}
 	if entry, ok := entries[pluginID]; ok {
+		if len(entry.Locations) > 1 {
+			lines = removePluginConfigLocations(lines, nonSelectedPluginConfigLocations(entry))
+			entries, err = parsePluginEntries(joinTomlLines(lines))
+			if err != nil {
+				return "", err
+			}
+			entry = entries[pluginID]
+		}
+		if entry.Format == codexPluginConfigSection {
+			if entry.HasEnabled {
+				lines[entry.Line] = replaceBareEnabled(lines[entry.Line], enabledText)
+			} else {
+				insertAt := entry.SectionLine + 1
+				lines = append(lines[:insertAt], append([]string{"enabled = " + enabledText}, lines[insertAt:]...)...)
+			}
+			return joinTomlLines(lines), nil
+		}
 		lines[entry.Line] = replaceInlineEnabled(lines[entry.Line], enabledText)
 		return joinTomlLines(lines), nil
 	}
@@ -166,8 +260,75 @@ func removePluginEntryFromToml(content, pluginID string) (string, error) {
 	if !ok {
 		return joinTomlLines(lines), nil
 	}
-	lines = append(lines[:entry.Line], lines[entry.Line+1:]...)
+	lines = removePluginConfigLocations(lines, entry.Locations)
 	return joinTomlLines(lines), nil
+}
+
+func nonSelectedPluginConfigLocations(entry codexPluginConfig) []codexPluginConfigLocation {
+	locations := make([]codexPluginConfigLocation, 0, len(entry.Locations))
+	for _, loc := range entry.Locations {
+		if loc.Format == entry.Format && loc.Line == entry.Line && loc.SectionLine == entry.SectionLine {
+			continue
+		}
+		locations = append(locations, loc)
+	}
+	return locations
+}
+
+func removePluginConfigLocations(lines []string, locations []codexPluginConfigLocation) []string {
+	type interval struct {
+		start int
+		end   int
+	}
+	intervals := make([]interval, 0, len(locations))
+	for _, loc := range locations {
+		start := loc.Line
+		end := loc.Line + 1
+		if loc.Format == codexPluginConfigSection {
+			start = loc.SectionLine
+			end = loc.EndLine
+		}
+		if start < 0 || start >= len(lines) {
+			continue
+		}
+		if end <= start || end > len(lines) {
+			end = start + 1
+		}
+		intervals = append(intervals, interval{start: start, end: end})
+	}
+	sort.Slice(intervals, func(i, j int) bool {
+		if intervals[i].start == intervals[j].start {
+			return intervals[i].end > intervals[j].end
+		}
+		return intervals[i].start > intervals[j].start
+	})
+	lastStart := len(lines) + 1
+	for _, item := range intervals {
+		if item.end > lastStart {
+			item.end = lastStart
+		}
+		if item.start >= item.end {
+			continue
+		}
+		lines = append(lines[:item.start], lines[item.end:]...)
+		lastStart = item.start
+	}
+	return lines
+}
+
+func parsePluginDottedSectionHeader(line string) (string, bool) {
+	if !strings.HasPrefix(line, "[plugins.") || !strings.HasSuffix(line, "]") {
+		return "", false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "[plugins."), "]"))
+	if len(inner) < 2 || inner[0] != '"' || inner[len(inner)-1] != '"' {
+		return "", false
+	}
+	pluginID := strings.TrimSpace(inner[1 : len(inner)-1])
+	if validatePluginID(pluginID) != nil {
+		return "", false
+	}
+	return pluginID, true
 }
 
 func parseMarketplaceEntries(content string) []CodexMarketplace {
@@ -373,4 +534,12 @@ func replaceInlineEnabled(line string, enabledText string) string {
 		return prefix + ", enabled = " + enabledText + " }" + line[idx+1:]
 	}
 	return line + " # unsupported plugin entry format"
+}
+
+func replaceBareEnabled(line string, enabledText string) string {
+	re := regexp.MustCompile(`(?i)^(\s*enabled\s*=\s*)(true|false)(.*)$`)
+	if re.MatchString(line) {
+		return re.ReplaceAllString(line, `${1}`+enabledText+`${3}`)
+	}
+	return "enabled = " + enabledText
 }

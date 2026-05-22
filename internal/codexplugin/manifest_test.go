@@ -160,6 +160,59 @@ func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 	}
 }
 
+func TestResolvePluginRootFromParentDir(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "amagi-codex-marketplace", "amagi", "1.5.116")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0755); err != nil {
+		t.Fatalf("mkdir plugin root: %v", err)
+	}
+	manifestPath := filepath.Join(pluginRoot, ".codex-plugin", "plugin.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"name":"amagi","version":"1.5.116"}`), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "skills", "demo"), 0755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+
+	s := NewServiceWithDeps(codexDir, nil, nil, nil)
+	root, resolvedManifestPath := s.resolvePluginRoot(filepath.Dir(pluginRoot), "", "amagi", "amagi-codex-marketplace")
+	if root != pluginRoot || resolvedManifestPath != manifestPath {
+		t.Fatalf("resolvePluginRoot did not select version root, root=%s manifest=%s", root, resolvedManifestPath)
+	}
+}
+
+func TestResolvePluginRootFromManifestPath(t *testing.T) {
+	dir := t.TempDir()
+	pluginRoot := filepath.Join(dir, "amagi", "1.5.116")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0755); err != nil {
+		t.Fatalf("mkdir manifest dir: %v", err)
+	}
+	manifestPath := filepath.Join(pluginRoot, ".codex-plugin", "plugin.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"name":"amagi"}`), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	root, resolvedManifestPath := s.resolvePluginRoot("", manifestPath, "amagi", "amagi-codex-marketplace")
+	if root != pluginRoot || resolvedManifestPath != manifestPath {
+		t.Fatalf("resolvePluginRoot did not normalize manifest path, root=%s manifest=%s", root, resolvedManifestPath)
+	}
+}
+
+func TestReadMCPConfigSupportsTopLevelServerMap(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(`{"memory":{"type":"stdio"},"web":{"type":"http"}}`), 0644); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	servers, err := s.readMCPConfig(dir)
+	if err != nil {
+		t.Fatalf("read mcp config: %v", err)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("expected top-level mcp server map, got %+v", servers)
+	}
+}
+
 func TestFindAvailablePluginsFallsBackToDefaultMarketplaceSnapshotPath(t *testing.T) {
 	codexDir := t.TempDir()
 	manifestDir := filepath.Join(codexDir, ".tmp", "marketplaces", "amagi-codex-marketplace", "plugins", "amagi", ".codex-plugin")

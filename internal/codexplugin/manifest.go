@@ -147,6 +147,137 @@ func (s *Service) readPluginManifest(installPath string) (CodexPluginManifest, s
 	return CodexPluginManifest{}, "", os.ErrNotExist
 }
 
+func (s *Service) resolvePluginRoot(installPath, manifestPath, name, marketplace string) (string, string) {
+	candidates := make([]string, 0, 8)
+	if strings.TrimSpace(manifestPath) != "" {
+		candidates = append(candidates, pluginRootFromManifestPath(manifestPath))
+	}
+	if strings.TrimSpace(installPath) != "" {
+		clean := filepath.Clean(installPath)
+		candidates = append(candidates, clean)
+		if resolved := s.resolveInstallPathFromCache(clean, name, marketplace); resolved != "" {
+			candidates = append(candidates, resolved)
+		}
+	}
+	if resolved := s.resolveInstallPathFromCache("", name, marketplace); resolved != "" {
+		candidates = append(candidates, resolved)
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(strings.TrimSpace(candidate))
+		if candidate == "" || candidate == "." {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if isPluginRoot(candidate) {
+			return candidate, firstExistingManifestPath(candidate)
+		}
+	}
+	return "", ""
+}
+
+func (s *Service) resolveInstallPathFromCache(base, name, marketplace string) string {
+	name = strings.TrimSpace(name)
+	marketplace = strings.TrimSpace(marketplace)
+	candidates := make([]string, 0, 3)
+	if strings.TrimSpace(base) != "" {
+		candidates = append(candidates, filepath.Clean(base))
+	}
+	if marketplace != "" && name != "" {
+		candidates = append(candidates, filepath.Join(s.codexDir, "plugins", "cache", marketplace, name))
+	}
+	if marketplace != "" {
+		candidates = append(candidates, filepath.Join(s.codexDir, "plugins", "cache", marketplace))
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if root := newestPluginRootUnder(candidate); root != "" {
+			return root
+		}
+	}
+	return ""
+}
+
+func newestPluginRootUnder(root string) string {
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	if isPluginRoot(root) {
+		return root
+	}
+	var matches []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err == nil && rel != "." && strings.Count(rel, string(os.PathSeparator)) > 2 {
+			return filepath.SkipDir
+		}
+		if path != root && isPluginRoot(path) {
+			matches = append(matches, path)
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	return matches[len(matches)-1]
+}
+
+func isPluginRoot(root string) bool {
+	if strings.TrimSpace(root) == "" {
+		return false
+	}
+	if firstExistingManifestPath(root) != "" {
+		return true
+	}
+	for _, rel := range []string{"skills", "agents", "commands", "hooks", ".mcp.json"} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func firstExistingManifestPath(root string) string {
+	for _, path := range []string{
+		filepath.Join(root, ".codex-plugin", "plugin.json"),
+		filepath.Join(root, ".claude-plugin", "plugin.json"),
+		filepath.Join(root, "plugin.json"),
+	} {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func pluginRootFromManifestPath(manifestPath string) string {
+	if strings.TrimSpace(manifestPath) == "" {
+		return ""
+	}
+	root := filepath.Dir(filepath.Clean(manifestPath))
+	if strings.EqualFold(filepath.Base(root), ".codex-plugin") || strings.EqualFold(filepath.Base(root), ".claude-plugin") {
+		root = filepath.Dir(root)
+	}
+	return root
+}
+
 func readManifestFile(path string) (CodexPluginManifest, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -308,7 +439,11 @@ func (s *Service) readMCPConfig(installPath string) (map[string]interface{}, err
 		return nil, fmt.Errorf("parse mcp config: %w", err)
 	}
 	if raw.MCPServers == nil {
-		return map[string]interface{}{}, nil
+		var servers map[string]interface{}
+		if err := json.Unmarshal(b, &servers); err != nil {
+			return nil, fmt.Errorf("parse mcp config: %w", err)
+		}
+		return servers, nil
 	}
 	return raw.MCPServers, nil
 }

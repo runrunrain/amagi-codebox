@@ -137,8 +137,9 @@ func (s *Service) listPlugins(ctx context.Context, marketplace string) ([]CodexP
 				if enabled, ok := states[plugins[i].ID]; ok {
 					plugins[i].Enabled = enabled
 				}
-				if plugins[i].ManifestPath == "" && plugins[i].InstallPath != "" {
-					_, manifestPath, _ := s.readPluginManifest(plugins[i].InstallPath)
+				root, manifestPath := s.resolvePluginRoot(plugins[i].InstallPath, plugins[i].ManifestPath, plugins[i].Name, plugins[i].Marketplace)
+				if root != "" {
+					plugins[i].InstallPath = root
 					plugins[i].ManifestPath = manifestPath
 				}
 			}
@@ -229,11 +230,17 @@ func (s *Service) GetPluginDetails(selector PluginSelector) (*CodexPluginDetail,
 		return nil, fmt.Errorf("未找到 Codex 插件：%s", pluginID)
 	}
 
+	root, resolvedManifestPath := s.resolvePluginRoot(installed.InstallPath, installed.ManifestPath, installed.Name, installed.Marketplace)
+	if root != "" {
+		installed.InstallPath = root
+		installed.ManifestPath = resolvedManifestPath
+	}
+
 	manifest, manifestPath, manifestErr := s.readPluginManifest(installed.InstallPath)
 	if manifestErr != nil && !errors.Is(manifestErr, os.ErrNotExist) {
 		return nil, manifestErr
 	}
-	installed.ManifestPath = manifestPath
+	installed.ManifestPath = firstNonEmpty(manifestPath, installed.ManifestPath)
 	if installed.InstallPath == "" {
 		return &CodexPluginDetail{CodexPlugin: *installed, Manifest: manifest, Skills: []SkillInfo{}, Agents: []AgentInfo{}, Commands: []CommandInfo{}, Hooks: []HookInfo{}, PluginType: PluginTypeUnknown}, nil
 	}
