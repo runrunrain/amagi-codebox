@@ -499,7 +499,7 @@ func diagnoseAndDedupeCodexPlugins(plugins []CodexPlugin) ([]CodexPlugin, []stri
 			item.Warning = codexDuplicateWarning(item, canonical)
 			duplicates = append(duplicates, item)
 		}
-		if len(duplicates) > 0 {
+		if len(duplicates) > 0 && shouldWarnCodexDuplicateGroup(canonical, duplicates) {
 			canonical.Warning = codexDuplicateGroupWarning(canonical, duplicates)
 			warnings = appendUniqueWarnings(warnings, canonical.Warning)
 		}
@@ -573,6 +573,29 @@ func codexPluginCanonicalScore(plugin CodexPlugin) int {
 		score += 5
 	}
 	return score
+}
+
+func shouldWarnCodexDuplicateGroup(canonical CodexPlugin, duplicates []CodexPlugin) bool {
+	if len(duplicates) == 0 {
+		return false
+	}
+	if !isCodexPluginCacheRecord(canonical) {
+		return true
+	}
+	for _, duplicate := range duplicates {
+		if !isCodexTemporaryMarketplaceRecord(duplicate) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexPluginCacheRecord(plugin CodexPlugin) bool {
+	return isCodexPluginCachePath(plugin.InstallPath) || isCodexPluginCachePath(plugin.ManifestPath)
+}
+
+func isCodexTemporaryMarketplaceRecord(plugin CodexPlugin) bool {
+	return isCodexTemporaryMarketplacePath(plugin.InstallPath) || isCodexTemporaryMarketplacePath(plugin.ManifestPath)
 }
 
 func isCodexPluginCachePath(path string) bool {

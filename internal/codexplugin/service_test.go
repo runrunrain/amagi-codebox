@@ -149,11 +149,39 @@ func TestDiagnoseAndDedupeCodexPluginsMergesTmpMarketplaceAndCachePaths(t *testi
 	if canonical.InstallPath != cacheRoot {
 		t.Fatalf("expected canonical install path to prefer cache path %q, got %+v", cacheRoot, canonical)
 	}
-	if canonical.Warning == "" || !strings.Contains(canonical.Warning, tmpMarketplaceRoot) || !strings.Contains(canonical.Warning, cacheRoot) {
-		t.Fatalf("expected duplicate warning to explain tmp/cache paths, got %q", canonical.Warning)
+	if canonical.Warning != "" {
+		t.Fatalf("expected tmp marketplace source duplicate to be merged without user-visible warning, got %q", canonical.Warning)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "PLUGIN@amagi-codex-marketplace") || !strings.Contains(warnings[0], "未删除任何用户文件") {
-		t.Fatalf("expected non-destructive duplicate warning mentioning placeholder duplicate, got %+v", warnings)
+	if len(warnings) != 0 {
+		t.Fatalf("expected refresh warnings to ignore tmp marketplace source duplicate, got %+v", warnings)
+	}
+}
+
+func TestDiagnoseAndDedupeCodexPluginsWarnsForRealDuplicateOutsideTmpMarketplace(t *testing.T) {
+	codexDir := t.TempDir()
+	cacheRoot := filepath.Join(codexDir, "plugins", "cache", "market", "sample", "1.0.0")
+	duplicateRoot := filepath.Join(codexDir, "plugins", "cache", "market", "sample", "0.9.0")
+
+	plugins, warnings := diagnoseAndDedupeCodexPlugins([]CodexPlugin{
+		{ID: "sample@market", Name: "sample", Marketplace: "market", InstallPath: cacheRoot, ManifestPath: filepath.Join(cacheRoot, ".codex-plugin", "plugin.json"), Source: "cli"},
+		{ID: "PLUGIN@market", Name: "PLUGIN", Marketplace: "market", InstallPath: duplicateRoot, ManifestPath: filepath.Join(duplicateRoot, ".codex-plugin", "plugin.json"), Source: "cli"},
+	})
+
+	if len(plugins) != 1 {
+		t.Fatalf("expected real duplicate records to merge into one canonical plugin, got %+v", plugins)
+	}
+	canonical := plugins[0]
+	if canonical.ID != "sample@market" {
+		t.Fatalf("expected real plugin ID to remain canonical, got %+v", canonical)
+	}
+	if canonical.InstallPath != cacheRoot {
+		t.Fatalf("expected canonical install path to prefer cache path %q, got %+v", cacheRoot, canonical)
+	}
+	if canonical.Warning == "" || !strings.Contains(canonical.Warning, duplicateRoot) || !strings.Contains(canonical.Warning, cacheRoot) {
+		t.Fatalf("expected real duplicate warning to explain duplicate/cache paths, got %q", canonical.Warning)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "PLUGIN@market") || !strings.Contains(warnings[0], "未删除任何用户文件") {
+		t.Fatalf("expected non-destructive duplicate warning for real duplicate, got %+v", warnings)
 	}
 }
 
