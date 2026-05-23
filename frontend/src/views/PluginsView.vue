@@ -1138,9 +1138,9 @@ onMounted(() => {
 /* Installed master-detail */
 .installed-master-detail {
   display: grid;
-  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
-  height: clamp(520px, 62vh, 760px);
-  min-height: 520px;
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+  height: clamp(640px, 74vh, 920px);
+  min-height: 640px;
   overflow: hidden;
 }
 
@@ -1450,11 +1450,11 @@ onMounted(() => {
 
 .detail-split {
   display: grid;
-  grid-template-columns: minmax(230px, 0.36fr) minmax(0, 1fr);
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  height: clamp(320px, 42vh, 520px);
-  min-height: 320px;
+  gap: 10px;
+  height: clamp(440px, 58vh, 760px);
+  min-height: 440px;
   overflow: hidden;
   flex: 1 1 auto;
 }
@@ -2452,7 +2452,7 @@ onMounted(() => {
   .installed-master-detail {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(180px, 0.34fr) minmax(0, 1fr);
-    height: clamp(620px, 78vh, 860px);
+    height: clamp(680px, 82vh, 920px);
   }
 
   .installed-plugin-pane {
@@ -2466,9 +2466,10 @@ onMounted(() => {
 
   .detail-split {
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(120px, 160px) minmax(300px, 1fr);
     height: auto;
-    min-height: 0;
+    min-height: 490px;
+    overflow: visible;
   }
 
   .market-console {
@@ -2477,15 +2478,23 @@ onMounted(() => {
     height: clamp(620px, 78vh, 860px);
   }
 
-  .detail-nav,
+  .detail-nav {
+    height: auto;
+    min-height: 120px;
+    max-height: 160px;
+    border-right: 0;
+    border-bottom: 1px solid #2a2f3e;
+  }
+
   .market-source-pane {
-    max-height: 180px;
+    max-height: 160px;
     border-right: 0;
     border-bottom: 1px solid #2a2f3e;
   }
 
   .detail-reading-pane {
-    min-height: 0;
+    height: auto;
+    min-height: 300px;
   }
 
   .plugin-header,
