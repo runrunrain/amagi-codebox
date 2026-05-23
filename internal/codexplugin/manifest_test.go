@@ -111,6 +111,94 @@ func TestScanAgentsFallsBackToFileNameForGenericHeading(t *testing.T) {
 	}
 }
 
+func TestScanAgentsUsesFirstMeaningfulHeadingAsName(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	agentPath := filepath.Join(agentsDir, "reviewer.md")
+	content := []byte("# 谛听 Reviewer\n\n负责代码审核、安全审计与质量守门。\n")
+	if err := os.WriteFile(agentPath, content, 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	agents, err := s.scanAgents(dir)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Name != "谛听 Reviewer" || agents[0].Description != "负责代码审核、安全审计与质量守门。" || agents[0].FilePath != agentPath {
+		t.Fatalf("unexpected agent info: %+v", agents[0])
+	}
+}
+
+func TestScanAgentsDescriptionSkipsMarkdownScaffolding(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	agentPath := filepath.Join(agentsDir, "baize.md")
+	content := []byte(`---
+name: baize
+---
+
+# 白泽 Explorer
+
+| 项目 | 说明 |
+|------|------|
+---
+-
+
+白泽负责代码探索、依赖分析与信息收集。
+
+第二段忽略。
+`)
+	if err := os.WriteFile(agentPath, content, 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	agents, err := s.scanAgents(dir)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Description != "白泽负责代码探索、依赖分析与信息收集。" || agents[0].FilePath != agentPath {
+		t.Fatalf("unexpected agent info: %+v", agents[0])
+	}
+}
+
+func TestScanAgentsDescriptionEmptyWhenNoNaturalParagraph(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	content := []byte("# 角色定位\n\n| 项目 | 说明 |\n|------|------|\n---\n-\n```\nnot a description\n```\n")
+	if err := os.WriteFile(filepath.Join(agentsDir, "empty.md"), content, 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	agents, err := s.scanAgents(dir)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Name != "empty" || agents[0].Description != "" {
+		t.Fatalf("unexpected agent info: %+v", agents[0])
+	}
+}
+
 func TestScanAgentsPreservesFrontmatterName(t *testing.T) {
 	dir := t.TempDir()
 	agentsDir := filepath.Join(dir, "agents")

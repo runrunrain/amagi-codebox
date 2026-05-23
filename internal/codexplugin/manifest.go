@@ -485,15 +485,8 @@ func extractAgentName(meta map[string]string, content string, fileName string) s
 	if name := strings.TrimSpace(meta["name"]); name != "" {
 		return name
 	}
-	for _, line := range bodyLines(content) {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-		if heading != "" && !isGenericAgentHeading(heading) {
-			return heading
-		}
+	if heading := extractFirstHeading(content); heading != "" && !isGenericAgentHeading(heading) {
+		return heading
 	}
 	return strings.TrimSuffix(fileName, filepath.Ext(fileName))
 }
@@ -543,7 +536,7 @@ func extractFirstParagraph(content string) string {
 	inCodeBlock := false
 	for _, line := range bodyLines(content) {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inCodeBlock = !inCodeBlock
 			continue
 		}
@@ -562,9 +555,66 @@ func extractFirstParagraph(content string) string {
 			}
 			continue
 		}
+		if isMarkdownNonParagraphLine(trimmed) {
+			if len(paragraph) > 0 {
+				break
+			}
+			continue
+		}
 		paragraph = append(paragraph, trimmed)
 	}
 	return strings.Join(paragraph, " ")
+}
+
+func isMarkdownNonParagraphLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "|") {
+		return true
+	}
+	if isMarkdownRule(trimmed) || isPureListMarker(trimmed) {
+		return true
+	}
+	return false
+}
+
+func isMarkdownRule(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 {
+		return false
+	}
+	marker := rune(trimmed[0])
+	if marker != '-' && marker != '*' && marker != '_' && marker != '=' {
+		return false
+	}
+	for _, r := range trimmed {
+		if r != marker && r != ' ' && r != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+func isPureListMarker(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "-" || trimmed == "*" || trimmed == "+" {
+		return true
+	}
+	if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, ")") {
+		number := strings.TrimSuffix(strings.TrimSuffix(trimmed, "."), ")")
+		if number == "" {
+			return false
+		}
+		for _, r := range number {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func bodyLines(content string) []string {

@@ -43,7 +43,7 @@ const pluginTypeLabel = (value = 'unknown') => ({ integration: '集成', hybrid:
 const pluginTypeClass = (value?: string) => `type-${value || 'unknown'}`
 const subItemTypeLabel = (value: string) => ({ skill: 'Skill', hook: 'Hook', command: 'Command', agent: 'Agent', mcp: 'MCP', claude: 'Claude' } as Record<string, string>)[value] || value
 const getMcpServerNames = (detail: any) => Object.keys(detail?.mcpServers || {})
-const hasDetailResources = (detail: any) => Boolean(detail?.skills?.length || detail?.agents?.length || detail?.commands?.length || detail?.hooks?.length || getMcpServerNames(detail).length || detail?.subItems?.length || detail?.hasClaudeMd)
+const hasDetailResources = (detail: any) => Boolean(detail?.manifest?.description || detail?.manifestPath || detail?.installPath || detail?.skills?.length || detail?.agents?.length || detail?.commands?.length || detail?.hooks?.length || getMcpServerNames(detail).length || detail?.subItems?.length || detail?.hasClaudeMd)
 type DetailResourceType = 'skill' | 'agent' | 'command' | 'hook' | 'mcp' | 'claude'
 type DetailResourceFilter = 'all' | Exclude<DetailResourceType, 'claude'>
 type DetailEntry = { key: string; name: string; description?: string; badge?: string; path?: string; subItem: any | null }
@@ -75,6 +75,18 @@ const detailResourceFilterOptions = [
 function resourceDescription(item: any) {
   const value = item?.description || item?.Description || item?.summary || item?.Summary || item?.shortDescription || item?.short_description
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function pluginDescription(plugin: any) {
+  if (!plugin?.id) return ''
+  const detail = pluginDetails.value[plugin.id]
+  return resourceDescription(detail?.manifest) || resourceDescription(detail) || resourceDescription(plugin?.manifest) || resourceDescription(plugin) || ''
+}
+
+function formatAuthor(author?: string | Record<string, string>) {
+  if (!author) return ''
+  if (typeof author === 'string') return author
+  return author.name || author.email || Object.values(author).filter(Boolean).join(' / ')
 }
 
 function hasSensitiveMcpKeys(value: unknown): boolean {
@@ -449,6 +461,7 @@ async function togglePlugin(p: any) {
       showError(`操作失败: ` + res.error)
     } else {
       showSuccess(isEnabled ? '已禁用' : '已启用')
+      if (pluginDetails.value[p.id]) pluginDetails.value[p.id].enabled = !isEnabled
     }
   } catch (err) {
     p.enabled = isEnabled // rollback
@@ -633,12 +646,12 @@ onMounted(() => {
               @click="selectInstalledPlugin(p.id)"
             >
               <span class="installed-plugin-title-row">
-                <span class="installed-plugin-name">{{ p.name }}</span>
+                <span class="installed-plugin-name">{{ p.name || p.id }}</span>
                 <span class="badge" :class="pluginTypeClass(p.pluginType)">{{ pluginTypeLabel(p.pluginType) }}</span>
               </span>
-              <span class="installed-plugin-desc">{{ p.manifest?.description || '无描述信息' }}</span>
+              <span class="installed-plugin-desc">{{ pluginDescription(p) || '暂无描述' }}</span>
               <span class="installed-plugin-meta-row">
-                <span class="badge version-badge">{{ p.version || 'v1.0.0' }}</span>
+                <span class="badge version-badge">{{ p.version || 'version unknown' }}</span>
                 <span class="badge scope-badge" v-if="p.scope">{{ p.scope }}</span>
                 <span class="installed-status" :class="{ enabled: p.enabled }">{{ p.enabled ? '已启用' : '已禁用' }}</span>
               </span>
@@ -650,14 +663,15 @@ onMounted(() => {
           <div class="selected-plugin-toolbar">
             <div class="selected-plugin-copy">
               <div class="plugin-title-row">
-                <h3 class="plugin-name">{{ selectedInstalledPlugin.name }}</h3>
+                <h3 class="plugin-name">{{ selectedInstalledPlugin.name || selectedInstalledPlugin.id }}</h3>
                 <span class="badge" :class="pluginTypeClass(selectedInstalledPlugin.pluginType)">{{ pluginTypeLabel(selectedInstalledPlugin.pluginType) }}</span>
-                <span class="badge version-badge">{{ selectedInstalledPlugin.version || 'v1.0.0' }}</span>
+                <span class="badge version-badge">{{ selectedInstalledPlugin.version || 'version unknown' }}</span>
                 <span class="badge scope-badge" v-if="selectedInstalledPlugin.scope">{{ selectedInstalledPlugin.scope }}</span>
               </div>
-              <p class="plugin-desc">{{ selectedInstalledPlugin.manifest?.description || '无描述信息' }}</p>
+              <p class="plugin-desc">{{ pluginDescription(selectedInstalledPlugin) || '暂无描述' }}</p>
               <div class="plugin-meta">
-                <span class="meta-item">安装于: {{ formatDate(selectedInstalledPlugin.installedAt) }}</span>
+                <span class="meta-item">安装路径: {{ selectedInstalledPlugin.installPath || '-' }}</span>
+                <span class="meta-item" v-if="selectedInstalledPlugin.installedAt">安装于: {{ formatDate(selectedInstalledPlugin.installedAt) }}</span>
                 <span class="meta-item" v-if="selectedInstalledPlugin.lastUpdated">更新于: {{ formatDate(selectedInstalledPlugin.lastUpdated) }}</span>
               </div>
             </div>
@@ -733,6 +747,10 @@ onMounted(() => {
               </div>
               <div class="detail-pane-grid">
                 <div class="detail-kv">
+                  <span>插件状态</span>
+                  <strong>{{ pluginDetails[selectedInstalledPlugin.id].enabled ? 'enabled=true' : 'enabled=false' }}</strong>
+                </div>
+                <div class="detail-kv">
                   <span>类型</span>
                   <strong>{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.typeLabel }}</strong>
                 </div>
@@ -744,6 +762,20 @@ onMounted(() => {
                   <span>标记</span>
                   <strong>{{ selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.badge }}</strong>
                 </div>
+                <div class="detail-kv" v-if="pluginDetails[selectedInstalledPlugin.id].manifestPath">
+                  <span>Manifest</span>
+                  <strong class="path-text">{{ pluginDetails[selectedInstalledPlugin.id].manifestPath }}</strong>
+                </div>
+                <div class="detail-kv" v-if="pluginDetails[selectedInstalledPlugin.id].installPath">
+                  <span>安装路径</span>
+                  <strong class="path-text">{{ pluginDetails[selectedInstalledPlugin.id].installPath }}</strong>
+                </div>
+              </div>
+              <div class="detail-meta-grid compact-meta">
+                <span v-if="pluginDetails[selectedInstalledPlugin.id].manifest?.author || pluginDetails[selectedInstalledPlugin.id].author">作者: {{ formatAuthor(pluginDetails[selectedInstalledPlugin.id].manifest?.author || pluginDetails[selectedInstalledPlugin.id].author) }}</span>
+                <span v-if="pluginDetails[selectedInstalledPlugin.id].manifest?.repository || pluginDetails[selectedInstalledPlugin.id].repository">仓库: {{ pluginDetails[selectedInstalledPlugin.id].manifest?.repository || pluginDetails[selectedInstalledPlugin.id].repository }}</span>
+                <span v-if="pluginDetails[selectedInstalledPlugin.id].manifest?.license || pluginDetails[selectedInstalledPlugin.id].license">许可: {{ pluginDetails[selectedInstalledPlugin.id].manifest?.license || pluginDetails[selectedInstalledPlugin.id].license }}</span>
+                <span>插件类型: {{ pluginTypeLabel(pluginDetails[selectedInstalledPlugin.id].pluginType || selectedInstalledPlugin.pluginType) }}</span>
               </div>
               <div class="mcp-summary" v-if="selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])">
                 <div class="mcp-summary-title">MCP 安全摘要</div>
@@ -1641,6 +1673,18 @@ onMounted(() => {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.compact-meta {
+  margin-top: 12px;
+}
+
+.detail-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  color: #8899aa;
+  font-size: 13px;
 }
 
 .detail-loading {

@@ -248,8 +248,7 @@ const confirmDialog = ref<{
 const marketplaceOptions = computed(() => marketplaces.value.map(item => item.name).filter(Boolean).sort())
 
 const installedFiltered = computed(() => {
-  const selected = selectedMarketplace.value
-  return selected ? installedPlugins.value.filter(plugin => plugin.marketplace === selected) : installedPlugins.value
+  return installedPlugins.value
 })
 
 const availableFiltered = computed(() => {
@@ -842,7 +841,7 @@ onMounted(() => {
           <line x1="1" y1="9" x2="4" y2="9"></line>
           <line x1="1" y1="14" x2="4" y2="14"></line>
         </svg>
-        <p class="empty-text">{{ selectedMarketplace ? '当前市场暂无已安装插件' : '暂未安装任何 Codex 插件' }}</p>
+        <p class="empty-text">暂未安装任何 Codex 插件</p>
       </div>
 
       <template v-else>
