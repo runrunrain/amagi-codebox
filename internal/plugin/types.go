@@ -48,6 +48,7 @@ type InstalledPlugin struct {
 	Name         string `json:"name"`
 	Marketplace  string `json:"marketplace"`
 	Version      string `json:"version"`
+	Description  string `json:"description,omitempty"`
 	Scope        string `json:"scope"`
 	Enabled      bool   `json:"enabled"`
 	InstallPath  string `json:"installPath"`
@@ -165,6 +166,27 @@ type marketplaceFileEntry struct {
 	InstallLocation string            `json:"installLocation"`
 	LastUpdated     string            `json:"lastUpdated,omitempty"`
 	AutoUpdate      bool              `json:"autoUpdate,omitempty"`
+}
+
+type marketplaceCatalogFile struct {
+	Metadata marketplaceCatalogMetadata `json:"metadata"`
+	Plugins  []marketplacePluginEntry   `json:"plugins"`
+}
+
+type marketplaceCatalogMetadata struct {
+	PluginRoot string `json:"pluginRoot"`
+}
+
+type marketplacePluginEntry struct {
+	Name        string            `json:"name"`
+	Source      string            `json:"source"`
+	Version     string            `json:"version"`
+	Description string            `json:"description"`
+	Author      map[string]string `json:"author,omitempty"`
+	License     string            `json:"license,omitempty"`
+	Keywords    []string          `json:"keywords,omitempty"`
+	Homepage    string            `json:"homepage,omitempty"`
+	Repository  string            `json:"repository,omitempty"`
 }
 
 type marketplaceSource struct {

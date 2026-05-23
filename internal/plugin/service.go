@@ -100,6 +100,7 @@ func (s *Service) GetInstalledPlugins() ([]InstalledPlugin, error) {
 	if cmdErr == nil {
 		plugins, err := parseInstalledPluginsOutput(commandResult)
 		if err == nil {
+			s.enrichInstalledPluginDescriptions(plugins)
 			return plugins, nil
 		}
 		cmdErr = err
@@ -111,6 +112,7 @@ func (s *Service) GetInstalledPlugins() ([]InstalledPlugin, error) {
 
 	plugins, fileErr := s.readInstalledPluginsFile()
 	if fileErr == nil {
+		s.enrichInstalledPluginDescriptions(plugins)
 		return plugins, nil
 	}
 
@@ -118,6 +120,18 @@ func (s *Service) GetInstalledPlugins() ([]InstalledPlugin, error) {
 		return nil, errors.Join(cmdErr, fileErr)
 	}
 	return nil, fileErr
+}
+
+func (s *Service) enrichInstalledPluginDescriptions(plugins []InstalledPlugin) {
+	for i := range plugins {
+		if strings.TrimSpace(plugins[i].Description) != "" {
+			continue
+		}
+		manifest, err := s.readPluginManifestForInstalled(plugins[i])
+		if err == nil {
+			plugins[i].Description = manifest.Description
+		}
+	}
 }
 
 func (s *Service) GetPluginDetail(pluginID string) (*PluginDetail, error) {
@@ -138,10 +152,11 @@ func (s *Service) GetPluginDetail(pluginID string) (*PluginDetail, error) {
 		return nil, fmt.Errorf("plugin not found: %s", pluginID)
 	}
 
-	manifest, err := s.readPluginManifest(installed.InstallPath)
+	manifest, err := s.readPluginManifestForInstalled(*installed)
 	if err != nil {
 		return nil, err
 	}
+	installed.Description = manifest.Description
 	skills, err := s.scanSkills(installed.InstallPath)
 	if err != nil {
 		return nil, err
@@ -278,7 +293,7 @@ func parseInstalledPluginsOutput(result *CommandResult) ([]InstalledPlugin, erro
 	plugins := make([]InstalledPlugin, 0, len(raw))
 	for _, item := range raw {
 		name, marketplace := splitPluginID(item.ID)
-		plugins = append(plugins, InstalledPlugin{
+		plugin := InstalledPlugin{
 			ID:           item.ID,
 			Name:         name,
 			Marketplace:  marketplace,
@@ -289,7 +304,8 @@ func parseInstalledPluginsOutput(result *CommandResult) ([]InstalledPlugin, erro
 			InstalledAt:  item.InstalledAt,
 			LastUpdated:  item.LastUpdated,
 			GitCommitSha: item.GitCommitSha,
-		})
+		}
+		plugins = append(plugins, plugin)
 	}
 
 	sort.Slice(plugins, func(i, j int) bool {

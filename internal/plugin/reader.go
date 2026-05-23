@@ -39,7 +39,7 @@ func (s *Service) readInstalledPluginsFile() ([]InstalledPlugin, error) {
 		}
 
 		name, marketplace := splitPluginID(id)
-		plugins = append(plugins, InstalledPlugin{
+		plugin := InstalledPlugin{
 			ID:           id,
 			Name:         name,
 			Marketplace:  marketplace,
@@ -50,7 +50,11 @@ func (s *Service) readInstalledPluginsFile() ([]InstalledPlugin, error) {
 			InstalledAt:  entry.InstalledAt,
 			LastUpdated:  entry.LastUpdated,
 			GitCommitSha: entry.GitCommitSha,
-		})
+		}
+		if manifest, err := s.readPluginManifestForInstalled(plugin); err == nil {
+			plugin.Description = manifest.Description
+		}
+		plugins = append(plugins, plugin)
 	}
 
 	sort.Slice(plugins, func(i, j int) bool {
@@ -105,6 +109,139 @@ func (s *Service) readPluginManifest(installPath string) (PluginManifest, error)
 	}
 
 	return manifest, nil
+}
+
+func (s *Service) readPluginManifestForInstalled(installed InstalledPlugin) (PluginManifest, error) {
+	manifest, err := s.readPluginManifest(installed.InstallPath)
+	if err == nil {
+		return manifest, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return PluginManifest{}, err
+	}
+
+	marketplaceEntry, marketplaceErr := s.readMarketplacePluginEntry(installed)
+	if marketplaceErr != nil {
+		return PluginManifest{}, errors.Join(err, marketplaceErr)
+	}
+	if marketplaceEntry.Description == "" && marketplaceEntry.Name == "" && marketplaceEntry.Version == "" {
+		return PluginManifest{}, err
+	}
+
+	manifest = PluginManifest{
+		Name:        firstNonEmpty(marketplaceEntry.Name, installed.Name),
+		Version:     firstNonEmpty(marketplaceEntry.Version, installed.Version),
+		Description: marketplaceEntry.Description,
+		Author:      marketplaceEntry.Author,
+		License:     marketplaceEntry.License,
+		Keywords:    marketplaceEntry.Keywords,
+		Homepage:    marketplaceEntry.Homepage,
+		Repository:  marketplaceEntry.Repository,
+	}
+	return manifest, nil
+}
+
+func (s *Service) readMarketplacePluginEntry(installed InstalledPlugin) (marketplacePluginEntry, error) {
+	if strings.TrimSpace(installed.Marketplace) == "" || strings.TrimSpace(installed.Name) == "" {
+		return marketplacePluginEntry{}, os.ErrNotExist
+	}
+
+	marketplaces, err := s.readMarketplacesFile()
+	if err != nil {
+		return marketplacePluginEntry{}, err
+	}
+
+	for _, marketplace := range marketplaces {
+		if marketplace.Name != installed.Marketplace || strings.TrimSpace(marketplace.InstallLocation) == "" {
+			continue
+		}
+		entry, err := readMarketplacePluginEntryFromLocation(marketplace.InstallLocation, installed.Name)
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			return entry, err
+		}
+	}
+
+	return marketplacePluginEntry{}, os.ErrNotExist
+}
+
+func readMarketplacePluginEntryFromLocation(installLocation, pluginName string) (marketplacePluginEntry, error) {
+	catalogPath := filepath.Join(installLocation, ".claude-plugin", "marketplace.json")
+	b, err := os.ReadFile(catalogPath)
+	if err != nil {
+		return marketplacePluginEntry{}, err
+	}
+
+	var catalog marketplaceCatalogFile
+	if err := json.Unmarshal(b, &catalog); err != nil {
+		return marketplacePluginEntry{}, fmt.Errorf("parse marketplace catalog: %w", err)
+	}
+
+	for _, entry := range catalog.Plugins {
+		if entry.Name != pluginName {
+			continue
+		}
+		if manifest, err := readMarketplaceSourceManifest(installLocation, catalog.Metadata.PluginRoot, entry); err == nil {
+			return marketplacePluginEntryFromManifest(entry, manifest), nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return marketplacePluginEntry{}, err
+		}
+		return entry, nil
+	}
+
+	return marketplacePluginEntry{}, os.ErrNotExist
+}
+
+func readMarketplaceSourceManifest(installLocation, pluginRoot string, entry marketplacePluginEntry) (PluginManifest, error) {
+	if strings.TrimSpace(entry.Source) == "" && strings.TrimSpace(pluginRoot) == "" && strings.TrimSpace(entry.Name) == "" {
+		return PluginManifest{}, os.ErrNotExist
+	}
+
+	pluginDir := marketplacePluginDir(installLocation, pluginRoot, entry)
+	path := filepath.Join(pluginDir, ".claude-plugin", "plugin.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return PluginManifest{}, err
+	}
+
+	var manifest PluginManifest
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		return PluginManifest{}, fmt.Errorf("parse marketplace plugin manifest: %w", err)
+	}
+	return manifest, nil
+}
+
+func marketplacePluginDir(installLocation, pluginRoot string, entry marketplacePluginEntry) string {
+	if strings.TrimSpace(entry.Source) != "" {
+		return cleanMarketplacePath(installLocation, entry.Source)
+	}
+	if strings.TrimSpace(pluginRoot) != "" && strings.TrimSpace(entry.Name) != "" {
+		return cleanMarketplacePath(installLocation, filepath.Join(pluginRoot, entry.Name))
+	}
+	return cleanMarketplacePath(installLocation, entry.Name)
+}
+
+func cleanMarketplacePath(base, value string) string {
+	value = strings.TrimSpace(value)
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(base, value))
+}
+
+func marketplacePluginEntryFromManifest(entry marketplacePluginEntry, manifest PluginManifest) marketplacePluginEntry {
+	entry.Name = firstNonEmpty(manifest.Name, entry.Name)
+	entry.Version = firstNonEmpty(manifest.Version, entry.Version)
+	entry.Description = firstNonEmpty(manifest.Description, entry.Description)
+	if len(entry.Author) == 0 {
+		entry.Author = manifest.Author
+	}
+	entry.License = firstNonEmpty(manifest.License, entry.License)
+	if len(entry.Keywords) == 0 {
+		entry.Keywords = manifest.Keywords
+	}
+	entry.Homepage = firstNonEmpty(manifest.Homepage, entry.Homepage)
+	entry.Repository = firstNonEmpty(manifest.Repository, entry.Repository)
+	return entry
 }
 
 func (s *Service) scanSkills(installPath string) ([]SkillInfo, error) {
