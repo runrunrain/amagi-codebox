@@ -29,7 +29,6 @@ func parsePluginListOutput(result *CommandResult) ([]CodexPlugin, error) {
 	}
 
 	plugins := make([]CodexPlugin, 0)
-	seen := map[string]struct{}{}
 	currentMarketplace := ""
 	currentMarketplacePath := ""
 	for _, line := range strings.Split(output, "\n") {
@@ -69,10 +68,6 @@ func parsePluginListOutput(result *CommandResult) ([]CodexPlugin, error) {
 		if id == "" {
 			continue
 		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
 		name, marketplace := splitPluginID(id)
 		plugin := CodexPlugin{ID: id, Name: name, Marketplace: marketplace, Enabled: true, Source: "cli"}
 		lowerLine := strings.ToLower(line)

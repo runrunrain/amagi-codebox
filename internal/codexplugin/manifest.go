@@ -115,7 +115,7 @@ func scanMarketplaceSnapshot(root string, marketplace string) ([]CodexAvailableP
 			Name:            name,
 			MarketplaceName: marketplace,
 			Version:         manifest.Version,
-			Description:     manifest.Description,
+			Description:     manifestSummary(manifest),
 			Author:          manifestAuthor(manifest.Author),
 			Repository:      manifest.Repository,
 			SnapshotPath:    root,
@@ -303,6 +303,27 @@ func manifestAuthor(author map[string]string) string {
 		return ""
 	}
 	return firstNonEmpty(author["name"], author["email"], author["url"])
+}
+
+func manifestDisplayName(manifest CodexPluginManifest, fallback string) string {
+	if manifest.Interface != nil {
+		return firstNonEmpty(manifest.Interface.DisplayName, manifest.Name, fallback)
+	}
+	return firstNonEmpty(manifest.Name, fallback)
+}
+
+func manifestSummary(manifest CodexPluginManifest) string {
+	if manifest.Interface != nil {
+		return firstNonEmpty(manifest.Interface.ShortDescription, manifest.Description, manifest.Interface.LongDescription)
+	}
+	return manifest.Description
+}
+
+func manifestLongDescription(manifest CodexPluginManifest) string {
+	if manifest.Interface != nil {
+		return firstNonEmpty(manifest.Interface.LongDescription, manifest.Interface.ShortDescription, manifest.Description)
+	}
+	return manifest.Description
 }
 
 func (s *Service) scanSkills(installPath string) ([]SkillInfo, error) {

@@ -23,7 +23,8 @@ func (codexPluginTestResolver) ResolveExecutable(command string, args []string, 
 }
 
 type codexPluginTestRunner struct {
-	calls []platform.CommandSpec
+	calls            []platform.CommandSpec
+	pluginListOutput string
 }
 
 func (r *codexPluginTestRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
@@ -32,9 +33,99 @@ func (r *codexPluginTestRunner) Run(_ context.Context, spec platform.CommandSpec
 	case "plugin marketplace list":
 		return &platform.ProcessResult{Stderr: "error: unrecognized subcommand 'list'\n\nUsage: codex plugin marketplace [OPTIONS] <COMMAND>"}, fmt.Errorf("exit status 2")
 	case "plugin list":
-		return &platform.ProcessResult{Stdout: "Marketplace `amagi-codex-marketplace`\n  amagi@amagi-codex-marketplace (installed, enabled)"}, nil
+		output := r.pluginListOutput
+		if output == "" {
+			output = "Marketplace `amagi-codex-marketplace`\n  amagi@amagi-codex-marketplace (installed, enabled)"
+		}
+		return &platform.ProcessResult{Stdout: output}, nil
 	default:
 		return &platform.ProcessResult{Stderr: "unexpected command: " + strings.Join(spec.Args, " ")}, fmt.Errorf("unexpected command")
+	}
+}
+
+func TestRefreshPluginsDeduplicatesPlaceholderPluginRecordWithoutDeletingFiles(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "amagi-codex-marketplace", "amagi", "1.5.116")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0755); err != nil {
+		t.Fatalf("mkdir plugin root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"), []byte(`{"name":"amagi","version":"1.5.116"}`), 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	runner := &codexPluginTestRunner{pluginListOutput: strings.Join([]string{
+		"amagi@amagi-codex-marketplace installed enabled 1.5.116 " + pluginRoot,
+		"PLUGIN@amagi-codex-marketplace installed enabled 1.5.116 " + pluginRoot,
+	}, "\n")}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+
+	data, err := s.RefreshPlugins()
+	if err != nil {
+		t.Fatalf("RefreshPlugins: %v", err)
+	}
+	if len(data.Installed) != 1 {
+		t.Fatalf("expected duplicate records to be deduplicated, got %+v", data.Installed)
+	}
+	installed := data.Installed[0]
+	if installed.ID != "amagi@amagi-codex-marketplace" || installed.Warning == "" {
+		t.Fatalf("expected canonical amagi plugin with duplicate warning, got %+v", installed)
+	}
+	if !containsWarning(data.Warnings, "PLUGIN@amagi-codex-marketplace") || !containsWarning(data.Warnings, "未删除任何用户文件") {
+		t.Fatalf("expected duplicate warning without destructive cleanup, got %+v", data.Warnings)
+	}
+	if _, err := os.Stat(pluginRoot); err != nil {
+		t.Fatalf("plugin root should not be deleted by duplicate diagnosis: %v", err)
+	}
+}
+
+func TestGetPluginDetailsExposesCodexInterfaceDescriptions(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "amagi-codex-marketplace", "amagi", "1.5.116")
+	manifestDir := filepath.Join(pluginRoot, ".codex-plugin")
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		t.Fatalf("mkdir plugin root: %v", err)
+	}
+	manifest := []byte(`{
+  "name": "amagi",
+  "version": "1.5.116",
+  "description": "Top-level fallback description",
+  "interface": {
+    "displayName": "Amagi Display",
+    "shortDescription": "Short detail description",
+    "longDescription": "Long detail description"
+  }
+}`)
+	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), manifest, 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	runner := &codexPluginTestRunner{pluginListOutput: "amagi@amagi-codex-marketplace installed enabled 1.5.116 " + pluginRoot}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+
+	detail, err := s.GetPluginDetails(PluginSelector{PluginID: "amagi@amagi-codex-marketplace"})
+	if err != nil {
+		t.Fatalf("GetPluginDetails: %v", err)
+	}
+	if detail.Manifest.Interface == nil {
+		t.Fatalf("expected manifest interface metadata in detail: %+v", detail.Manifest)
+	}
+	if detail.DisplayName != "Amagi Display" || detail.ShortDescription != "Short detail description" || detail.LongDescription != "Long detail description" {
+		t.Fatalf("detail did not expose interface descriptions: %+v", detail)
+	}
+}
+
+func TestDiagnoseAndDedupeCodexPluginsMarksSameInstallPathDuplicate(t *testing.T) {
+	pluginRoot := filepath.Join("tmp", "codex", "plugins", "cache", "market", "amagi", "1.0.0")
+	plugins, warnings := diagnoseAndDedupeCodexPlugins([]CodexPlugin{
+		{ID: "PLUGIN@market", Name: "PLUGIN", Marketplace: "market", InstallPath: pluginRoot, Source: "cli"},
+		{ID: "amagi@market", Name: "amagi", Marketplace: "market", InstallPath: pluginRoot, Source: "cli"},
+	})
+	if len(plugins) != 1 {
+		t.Fatalf("expected one canonical plugin, got %+v", plugins)
+	}
+	if plugins[0].ID != "amagi@market" || plugins[0].Warning == "" {
+		t.Fatalf("expected non-placeholder plugin to be canonical and warned, got %+v", plugins[0])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "PLUGIN@market") {
+		t.Fatalf("expected duplicate warning mentioning placeholder record, got %+v", warnings)
 	}
 }
 

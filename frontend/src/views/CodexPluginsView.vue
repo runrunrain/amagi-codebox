@@ -158,7 +158,8 @@ const fixtureData = {
       manifestPath: '/tmp/amagi-codebox-fixtures/plugins/amagi/.codex-plugin/plugin.json',
       installedAt: '2026-05-22T00:00:00Z',
       lastUpdated: '2026-05-22T00:00:00Z',
-      source: 'browser-fixture'
+      source: 'browser-fixture',
+      warning: '检测到重复安装记录，已归并到 amagi-fixture@browser-validation 显示。'
     }
   ],
   available: [
@@ -174,8 +175,11 @@ const fixtureData = {
       manifestPath: '/tmp/amagi-codebox-fixtures/codex-marketplace/snapshot/amagi-extra/.codex-plugin/plugin.json'
     }
   ],
-  warnings: ['浏览器验证 fixture 模式已启用：数据来自前端内置受控 fixture，不会调用真实 Codex 或 Wails 后端。']
-} as codexplugin.CodexPluginsData
+  warnings: [
+    '浏览器验证 fixture 模式已启用：数据来自前端内置受控 fixture，不会调用真实 Codex 或 Wails 后端。',
+    '检测到重复 Codex 插件记录，已归并到 amagi-fixture@browser-validation 显示。'
+  ]
+} as unknown as codexplugin.CodexPluginsData
 
 const fixtureDetails = {
   [fixturePluginId]: {
@@ -193,12 +197,26 @@ const fixtureDetails = {
       name: 'amagi fixture plugin',
       version: '1.2.14-fixture',
       description: 'Controlled Codex plugin fixture for browser interaction validation.',
+      interface: {
+        displayName: 'Amagi Codex 助手',
+        shortDescription: '面向 Codex 的 Amagi Agent 与技能集合。',
+        longDescription: '提供 Agent、Skill、Command、Hook 与 MCP 能力摘要，帮助用户在 Codex 中安全安装、审阅和更新 Amagi 插件。',
+        developerName: 'Amagi',
+        category: 'Productivity',
+        capabilities: ['agents', 'skills', 'commands', 'hooks', 'mcp'],
+        websiteURL: 'https://example.invalid/amagi-fixture'
+      },
       author: { name: 'Amagi fixture' },
       license: 'MIT',
       keywords: ['codex', 'fixture', 'browser-validation'],
       homepage: 'https://example.invalid/amagi-fixture',
       repository: 'https://example.invalid/amagi-fixture'
     },
+    displayName: 'Amagi Codex 助手',
+    shortDescription: '面向 Codex 的 Amagi Agent 与技能集合。',
+    longDescription: '提供 Agent、Skill、Command、Hook 与 MCP 能力摘要，帮助用户在 Codex 中安全安装、审阅和更新 Amagi 插件。',
+    warning: '检测到重复安装记录，已归并到 amagi-fixture@browser-validation 显示。',
+    duplicateOf: 'amagi-fixture@browser-validation',
     skills: [
       { name: 'agent-browser', description: 'Browser automation CLI for interactive UI validation.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/skills/agent-browser/SKILL.md' },
       { name: 'pdf-to-md', description: 'Convert PDF documents to high quality Markdown.', filePath: '/tmp/amagi-codebox-fixtures/plugins/amagi/skills/pdf-to-md/SKILL.md' },
@@ -409,12 +427,89 @@ function formatAuthor(author?: string | Record<string, string>) {
   return author.name || author.email || Object.values(author).filter(Boolean).join(' / ')
 }
 
+function firstNonEmpty(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function codexInterface(detail?: codexplugin.CodexPluginDetail): Record<string, any> {
+  const manifest = (detail as any)?.manifest
+  const manifestInterface = manifest?.interface || manifest?.Interface
+  return manifestInterface && typeof manifestInterface === 'object' ? manifestInterface : {}
+}
+
+function codexPluginWarning(plugin?: codexplugin.CodexPlugin | codexplugin.CodexPluginDetail | null) {
+  const raw = firstNonEmpty((plugin as any)?.warning, (plugin as any)?.Warning)
+  if (!raw) return ''
+  const canonical = firstNonEmpty((plugin as any)?.duplicateOf, (plugin as any)?.DuplicateOf)
+  const mergedText = /归并|duplicate|重复/i.test(raw) ? raw : `检测到重复安装记录：${raw}`
+  const mergeSuffix = /归并|merged/i.test(raw) ? '' : (canonical ? ` 已归并显示到 ${canonical}。` : ' 已归并显示。')
+  return `${mergedText}${mergeSuffix}建议如需清理历史重复项，请使用 codex plugin remove 检查并处理；本页面不提供直接删除重复项。`
+}
+
+function detailDisplayName(detail?: codexplugin.CodexPluginDetail | null, fallback?: codexplugin.CodexPlugin | null) {
+  const iface = codexInterface(detail || undefined)
+  return firstNonEmpty(
+    (detail as any)?.displayName,
+    (detail as any)?.DisplayName,
+    iface.displayName,
+    iface.DisplayName,
+    detail?.manifest?.name,
+    detail?.name,
+    fallback?.name,
+    fallback?.id
+  )
+}
+
+function detailShortDescription(detail?: codexplugin.CodexPluginDetail | null) {
+  const iface = codexInterface(detail || undefined)
+  return firstNonEmpty(
+    (detail as any)?.shortDescription,
+    (detail as any)?.ShortDescription,
+    iface.shortDescription,
+    iface.ShortDescription,
+    detail?.manifest?.description
+  )
+}
+
+function detailLongDescription(detail?: codexplugin.CodexPluginDetail | null) {
+  const iface = codexInterface(detail || undefined)
+  return firstNonEmpty(
+    (detail as any)?.longDescription,
+    (detail as any)?.LongDescription,
+    iface.longDescription,
+    iface.LongDescription,
+    detailShortDescription(detail),
+    detail?.manifest?.description
+  )
+}
+
+function detailDeveloperName(detail?: codexplugin.CodexPluginDetail | null) {
+  const iface = codexInterface(detail || undefined)
+  return firstNonEmpty(iface.developerName, iface.DeveloperName, formatAuthor(detail?.manifest?.author))
+}
+
+function detailCategory(detail?: codexplugin.CodexPluginDetail | null) {
+  const iface = codexInterface(detail || undefined)
+  return firstNonEmpty(iface.category, iface.Category)
+}
+
+function detailCapabilities(detail?: codexplugin.CodexPluginDetail | null): string[] {
+  const iface = codexInterface(detail || undefined)
+  const raw = iface.capabilities || iface.Capabilities
+  return Array.isArray(raw) ? raw.filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()) : []
+}
+
 function getMcpServerNames(detail?: codexplugin.CodexPluginDetail) {
   return Object.keys(detail?.mcpServers || {})
 }
 
 function hasDetailResources(detail?: codexplugin.CodexPluginDetail) {
   return Boolean(
+    detailShortDescription(detail) ||
+    detailLongDescription(detail) ||
     detail?.manifest?.description ||
     detail?.manifestPath ||
     detail?.installPath ||
@@ -866,8 +961,10 @@ onMounted(() => {
               <span class="installed-plugin-desc">{{ plugin.id }}</span>
               <span class="installed-plugin-meta-row">
                 <span class="badge source-badge" v-if="plugin.source">{{ plugin.source }}</span>
+                <span class="badge warning-badge" v-if="codexPluginWarning(plugin)">重复诊断</span>
                 <span class="installed-status" :class="{ enabled: plugin.enabled }">{{ plugin.enabled ? '已启用' : '已禁用' }}</span>
               </span>
+              <span class="inline-diagnostic" v-if="codexPluginWarning(plugin)">{{ codexPluginWarning(plugin) }}</span>
             </button>
           </template>
         </aside>
@@ -876,14 +973,26 @@ onMounted(() => {
           <div class="selected-plugin-toolbar">
             <div class="selected-plugin-copy">
               <div class="plugin-title-row">
-                <h3 class="plugin-name">{{ selectedInstalledPlugin.name || selectedInstalledPlugin.id }}</h3>
+                <h3 class="plugin-name">{{ detailDisplayName(pluginDetails[selectedInstalledPlugin.id], selectedInstalledPlugin) }}</h3>
                 <span class="badge version-badge">{{ selectedInstalledPlugin.version || 'version unknown' }}</span>
                 <span class="badge source-badge" v-if="selectedInstalledPlugin.source">{{ selectedInstalledPlugin.source }}</span>
+                <span class="badge warning-badge" v-if="codexPluginWarning(pluginDetails[selectedInstalledPlugin.id] || selectedInstalledPlugin)">重复诊断</span>
               </div>
-              <p class="plugin-desc">{{ selectedInstalledPlugin.id }}</p>
+              <p class="plugin-desc primary-copy" v-if="detailShortDescription(pluginDetails[selectedInstalledPlugin.id])">{{ detailShortDescription(pluginDetails[selectedInstalledPlugin.id]) }}</p>
+              <p class="plugin-desc long-copy" v-if="detailLongDescription(pluginDetails[selectedInstalledPlugin.id]) && detailLongDescription(pluginDetails[selectedInstalledPlugin.id]) !== detailShortDescription(pluginDetails[selectedInstalledPlugin.id])">{{ detailLongDescription(pluginDetails[selectedInstalledPlugin.id]) }}</p>
+              <p class="plugin-id-line">{{ selectedInstalledPlugin.id }}</p>
+              <div class="duplicate-diagnostic-card" v-if="codexPluginWarning(pluginDetails[selectedInstalledPlugin.id] || selectedInstalledPlugin)">
+                <strong>重复安装诊断</strong>
+                <p>{{ codexPluginWarning(pluginDetails[selectedInstalledPlugin.id] || selectedInstalledPlugin) }}</p>
+              </div>
               <div class="plugin-meta">
                 <span class="meta-item">安装路径: {{ selectedInstalledPlugin.installPath || '-' }}</span>
                 <span class="meta-item" v-if="selectedInstalledPlugin.lastUpdated">更新于: {{ formatDate(selectedInstalledPlugin.lastUpdated) }}</span>
+                <span class="meta-item" v-if="detailDeveloperName(pluginDetails[selectedInstalledPlugin.id])">开发者: {{ detailDeveloperName(pluginDetails[selectedInstalledPlugin.id]) }}</span>
+                <span class="meta-item" v-if="detailCategory(pluginDetails[selectedInstalledPlugin.id])">分类: {{ detailCategory(pluginDetails[selectedInstalledPlugin.id]) }}</span>
+              </div>
+              <div class="capability-row" v-if="detailCapabilities(pluginDetails[selectedInstalledPlugin.id]).length">
+                <span class="badge capability-badge" v-for="capability in detailCapabilities(pluginDetails[selectedInstalledPlugin.id])" :key="capability">{{ capability }}</span>
               </div>
             </div>
 
@@ -968,11 +1077,16 @@ onMounted(() => {
                   <span>Manifest</span>
                   <strong class="path-text">{{ pluginDetails[selectedInstalledPlugin.id].manifestPath }}</strong>
                 </div>
+                <div class="detail-kv" v-if="detailDisplayName(pluginDetails[selectedInstalledPlugin.id], selectedInstalledPlugin)">
+                  <span>展示名称</span>
+                  <strong>{{ detailDisplayName(pluginDetails[selectedInstalledPlugin.id], selectedInstalledPlugin) }}</strong>
+                </div>
               </div>
               <div class="detail-meta-grid compact-meta">
-                <span v-if="pluginDetails[selectedInstalledPlugin.id].manifest?.author">作者: {{ formatAuthor(pluginDetails[selectedInstalledPlugin.id].manifest.author) }}</span>
+                <span v-if="detailDeveloperName(pluginDetails[selectedInstalledPlugin.id])">作者: {{ detailDeveloperName(pluginDetails[selectedInstalledPlugin.id]) }}</span>
                 <span v-if="pluginDetails[selectedInstalledPlugin.id].manifest?.repository">仓库: {{ pluginDetails[selectedInstalledPlugin.id].manifest.repository }}</span>
                 <span v-if="pluginDetails[selectedInstalledPlugin.id].manifest?.license">许可: {{ pluginDetails[selectedInstalledPlugin.id].manifest.license }}</span>
+                <span v-if="detailCategory(pluginDetails[selectedInstalledPlugin.id])">分类: {{ detailCategory(pluginDetails[selectedInstalledPlugin.id]) }}</span>
                 <span>插件类型: {{ pluginTypeLabel(pluginDetails[selectedInstalledPlugin.id].pluginType) }}</span>
               </div>
               <div class="mcp-summary" v-if="selectedMcpServerSummary(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])">
@@ -1407,20 +1521,23 @@ onMounted(() => {
 .market-console {
   display: grid;
   grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
-  min-height: 360px;
-  max-height: 460px;
+  height: clamp(520px, 62vh, 760px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .market-source-pane,
 .market-plugin-pane {
   min-height: 0;
-  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .market-source-pane {
   padding: 8px;
   border-right: 1px solid #2a2f3e;
   background: #141a25;
+  overflow-y: auto;
 }
 
 .market-source-item {
@@ -1434,6 +1551,7 @@ onMounted(() => {
 .market-plugin-pane {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .pane-toolbar {
@@ -1594,6 +1712,18 @@ onMounted(() => {
   -webkit-box-orient: vertical;
 }
 
+.inline-diagnostic {
+  display: block;
+  overflow: hidden;
+  color: #d8be91;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .installed-status {
   margin-left: auto;
   color: #8899aa;
@@ -1673,6 +1803,55 @@ onMounted(() => {
   font-family: monospace;
 }
 
+.plugin-desc.primary-copy,
+.plugin-desc.long-copy {
+  font-family: inherit;
+}
+
+.plugin-desc.primary-copy {
+  margin-bottom: 6px;
+  color: #c9d7e2;
+  font-size: 14px;
+}
+
+.plugin-desc.long-copy {
+  max-width: 780px;
+  margin-bottom: 10px;
+  color: #9fb0be;
+  font-size: 13px;
+}
+
+.plugin-id-line {
+  margin: 0 0 10px;
+  color: #5a6a7a;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.duplicate-diagnostic-card {
+  max-width: 780px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 183, 77, 0.3);
+  border-left: 3px solid #ffb74d;
+  border-radius: 6px;
+  background: rgba(255, 183, 77, 0.07);
+}
+
+.duplicate-diagnostic-card strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #ffcc80;
+  font-size: 12px;
+}
+
+.duplicate-diagnostic-card p {
+  margin: 0;
+  color: #d8be91;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .plugin-meta {
   gap: 16px;
   flex-wrap: wrap;
@@ -1727,6 +1906,23 @@ onMounted(() => {
 .source-badge {
   background: rgba(102, 187, 106, 0.1);
   color: #66bb6a;
+}
+
+.warning-badge {
+  background: rgba(255, 183, 77, 0.12);
+  color: #ffcc80;
+}
+
+.capability-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.capability-badge {
+  background: rgba(129, 212, 250, 0.1);
+  color: #81d4fa;
 }
 
 .type-integration {
@@ -2199,7 +2395,11 @@ onMounted(() => {
 }
 
 .available-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .available-name {
@@ -2502,7 +2702,8 @@ onMounted(() => {
 
   .market-console {
     grid-template-columns: 1fr;
-    max-height: none;
+    grid-template-rows: minmax(180px, 0.34fr) minmax(0, 1fr);
+    height: clamp(620px, 78vh, 860px);
   }
 
   .detail-nav,

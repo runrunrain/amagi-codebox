@@ -248,6 +248,70 @@ func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 	}
 }
 
+func TestReadPluginManifestParsesCodexInterfaceMetadata(t *testing.T) {
+	dir := t.TempDir()
+	manifestDir := filepath.Join(dir, ".codex-plugin")
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		t.Fatalf("mkdir codex manifest dir: %v", err)
+	}
+	content := []byte(`{
+  "name": "amagi",
+  "version": "1.5.116",
+  "description": "Top-level fallback description",
+  "interface": {
+    "displayName": "Amagi",
+    "shortDescription": "Short Codex description",
+    "longDescription": "Long Codex description",
+    "developerName": "Amagi Framework",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://example.test/amagi",
+    "defaultPrompt": ["Use Amagi"]
+  }
+}`)
+	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), content, 0644); err != nil {
+		t.Fatalf("write codex manifest: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	manifest, _, err := s.readPluginManifest(dir)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if manifest.Interface == nil {
+		t.Fatalf("expected interface metadata to be parsed: %+v", manifest)
+	}
+	if manifest.Interface.DisplayName != "Amagi" || manifest.Interface.ShortDescription != "Short Codex description" || manifest.Interface.LongDescription != "Long Codex description" {
+		t.Fatalf("unexpected interface descriptions: %+v", manifest.Interface)
+	}
+	if manifestSummary(manifest) != "Short Codex description" || manifestLongDescription(manifest) != "Long Codex description" || manifestDisplayName(manifest, "fallback") != "Amagi" {
+		t.Fatalf("interface helper output mismatch: summary=%q long=%q display=%q", manifestSummary(manifest), manifestLongDescription(manifest), manifestDisplayName(manifest, "fallback"))
+	}
+}
+
+func TestReadPluginManifestClaudeFallbackAllowsMissingInterface(t *testing.T) {
+	dir := t.TempDir()
+	manifestDir := filepath.Join(dir, ".claude-plugin")
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		t.Fatalf("mkdir claude manifest dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(`{"name":"legacy","description":"Legacy Claude description"}`), 0644); err != nil {
+		t.Fatalf("write claude manifest: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	manifest, path, err := s.readPluginManifest(dir)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if manifest.Interface != nil {
+		t.Fatalf("Claude fallback manifest should not require interface metadata: %+v", manifest.Interface)
+	}
+	if manifestSummary(manifest) != "Legacy Claude description" || filepath.Base(filepath.Dir(path)) != ".claude-plugin" {
+		t.Fatalf("unexpected Claude fallback manifest=%+v path=%s", manifest, path)
+	}
+}
+
 func TestResolvePluginRootFromParentDir(t *testing.T) {
 	codexDir := t.TempDir()
 	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "amagi-codex-marketplace", "amagi", "1.5.116")

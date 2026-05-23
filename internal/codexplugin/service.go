@@ -250,6 +250,16 @@ func (s *Service) ListPlugins(marketplace string) ([]CodexPlugin, error) {
 }
 
 func (s *Service) listPlugins(ctx context.Context, marketplace string) ([]CodexPlugin, error) {
+	plugins, warnings, err := s.listPluginsWithDiagnostics(ctx, marketplace)
+	if s.log != nil {
+		for _, warning := range warnings {
+			s.log.Warn("codexplugin", "Codex 插件重复安装诊断", warning)
+		}
+	}
+	return plugins, err
+}
+
+func (s *Service) listPluginsWithDiagnostics(ctx context.Context, marketplace string) ([]CodexPlugin, []string, error) {
 	states, stateErr := s.readPluginStates()
 	commandResult, cmdErr := s.executeCodexCommand(ctx, "plugin", "list")
 	if cmdErr == nil {
@@ -265,7 +275,8 @@ func (s *Service) listPlugins(ctx context.Context, marketplace string) ([]CodexP
 					plugins[i].ManifestPath = manifestPath
 				}
 			}
-			return filterPluginsByMarketplace(plugins, marketplace), nil
+			plugins, duplicateWarnings := diagnoseAndDedupeCodexPlugins(plugins)
+			return filterPluginsByMarketplace(plugins, marketplace), duplicateWarnings, nil
 		}
 		cmdErr = err
 	}
@@ -274,15 +285,16 @@ func (s *Service) listPlugins(ctx context.Context, marketplace string) ([]CodexP
 	}
 	if stateErr != nil {
 		if cmdErr != nil {
-			return nil, errors.Join(cmdErr, stateErr)
+			return nil, nil, errors.Join(cmdErr, stateErr)
 		}
-		return nil, stateErr
+		return nil, nil, stateErr
 	}
 	plugins, err := s.readConfigPluginsFallback()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return filterPluginsByMarketplace(plugins, marketplace), nil
+	plugins, duplicateWarnings := diagnoseAndDedupeCodexPlugins(plugins)
+	return filterPluginsByMarketplace(plugins, marketplace), duplicateWarnings, nil
 }
 
 func (s *Service) InstallPlugin(selector PluginSelector) (*CommandResult, error) {
@@ -364,7 +376,7 @@ func (s *Service) GetPluginDetails(selector PluginSelector) (*CodexPluginDetail,
 	}
 	installed.ManifestPath = firstNonEmpty(manifestPath, installed.ManifestPath)
 	if installed.InstallPath == "" {
-		return &CodexPluginDetail{CodexPlugin: *installed, Manifest: manifest, Skills: []SkillInfo{}, Agents: []AgentInfo{}, Commands: []CommandInfo{}, Hooks: []HookInfo{}, PluginType: PluginTypeUnknown}, nil
+		return &CodexPluginDetail{CodexPlugin: *installed, Manifest: manifest, DisplayName: manifestDisplayName(manifest, installed.Name), ShortDescription: manifestSummary(manifest), LongDescription: manifestLongDescription(manifest), Skills: []SkillInfo{}, Agents: []AgentInfo{}, Commands: []CommandInfo{}, Hooks: []HookInfo{}, PluginType: PluginTypeUnknown}, nil
 	}
 	skills, err := s.scanSkills(installed.InstallPath)
 	if err != nil {
@@ -386,7 +398,7 @@ func (s *Service) GetPluginDetails(selector PluginSelector) (*CodexPluginDetail,
 	if err != nil {
 		return nil, err
 	}
-	detail := &CodexPluginDetail{CodexPlugin: *installed, Manifest: manifest, Skills: skills, Agents: agents, Commands: commands, Hooks: hooks, HasMCP: len(mcpServers) > 0, MCPServers: mcpServers}
+	detail := &CodexPluginDetail{CodexPlugin: *installed, Manifest: manifest, DisplayName: manifestDisplayName(manifest, installed.Name), ShortDescription: manifestSummary(manifest), LongDescription: manifestLongDescription(manifest), Skills: skills, Agents: agents, Commands: commands, Hooks: hooks, HasMCP: len(mcpServers) > 0, MCPServers: mcpServers}
 	detail.PluginType = analyzePluginType(detail)
 	return detail, nil
 }
@@ -402,9 +414,10 @@ func (s *Service) ListAvailablePlugins() ([]CodexAvailablePlugin, error) {
 func (s *Service) RefreshPlugins() (*CodexPluginsData, error) {
 	ctx := s.runtimeContext()
 	marketplaces, marketErr := s.listMarketplaces(ctx)
-	installed, installedErr := s.listPlugins(ctx, "")
+	installed, duplicateWarnings, installedErr := s.listPluginsWithDiagnostics(ctx, "")
 	available, availableErr := s.findAvailablePlugins(marketplaces)
 	warnings := codexPluginWarnings(marketErr, installedErr, availableErr)
+	warnings = appendUniqueWarnings(warnings, duplicateWarnings...)
 	data := &CodexPluginsData{Marketplaces: marketplaces, Installed: installed, Available: available, Warnings: warnings}
 	if marketErr != nil && len(marketplaces) == 0 && len(installed) == 0 && len(available) == 0 {
 		return data, marketErr
@@ -420,12 +433,26 @@ func (s *Service) RefreshPlugins() (*CodexPluginsData, error) {
 
 func codexPluginWarnings(errs ...error) []string {
 	warnings := make([]string, 0)
-	seen := map[string]struct{}{}
 	for _, err := range errs {
 		if err == nil {
 			continue
 		}
 		message := strings.TrimSpace(err.Error())
+		if message == "" {
+			continue
+		}
+		warnings = appendUniqueWarnings(warnings, message)
+	}
+	return warnings
+}
+
+func appendUniqueWarnings(warnings []string, messages ...string) []string {
+	seen := make(map[string]struct{}, len(warnings)+len(messages))
+	for _, warning := range warnings {
+		seen[warning] = struct{}{}
+	}
+	for _, message := range messages {
+		message = strings.TrimSpace(message)
 		if message == "" {
 			continue
 		}
@@ -436,6 +463,168 @@ func codexPluginWarnings(errs ...error) []string {
 		warnings = append(warnings, message)
 	}
 	return warnings
+}
+
+func diagnoseAndDedupeCodexPlugins(plugins []CodexPlugin) ([]CodexPlugin, []string) {
+	if len(plugins) <= 1 {
+		return plugins, nil
+	}
+	groups := map[string][]CodexPlugin{}
+	order := make([]string, 0)
+	for _, plugin := range plugins {
+		key := codexDuplicateGroupKey(plugin)
+		if key == "" {
+			key = plugin.ID
+		}
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], plugin)
+	}
+	result := make([]CodexPlugin, 0, len(groups))
+	warnings := make([]string, 0)
+	for _, key := range order {
+		items := groups[key]
+		if len(items) == 0 {
+			continue
+		}
+		canonicalIndex := preferredCodexPluginIndex(items)
+		canonical := items[canonicalIndex]
+		duplicates := make([]CodexPlugin, 0, len(items)-1)
+		for i, item := range items {
+			if i == canonicalIndex {
+				continue
+			}
+			item.DuplicateOf = canonical.ID
+			item.Warning = codexDuplicateWarning(item, canonical)
+			duplicates = append(duplicates, item)
+		}
+		if len(duplicates) > 0 {
+			canonical.Warning = codexDuplicateGroupWarning(canonical, duplicates)
+			warnings = appendUniqueWarnings(warnings, canonical.Warning)
+		}
+		result = append(result, canonical)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, warnings
+}
+
+func codexDuplicateGroupKey(plugin CodexPlugin) string {
+	name := strings.TrimSpace(plugin.Name)
+	marketplace := strings.TrimSpace(plugin.Marketplace)
+	if path := normalizedPluginInstallPath(plugin.InstallPath); path != "" && marketplace != "" {
+		return strings.ToLower(path + "@" + marketplace)
+	}
+	if isPlaceholderPluginName(name) {
+		if pathName := pluginNameFromInstallPath(plugin.InstallPath); pathName != "" {
+			name = pathName
+		}
+	}
+	if name != "" && marketplace != "" && !isPlaceholderPluginName(name) {
+		return strings.ToLower(name + "@" + marketplace)
+	}
+	return strings.ToLower(strings.TrimSpace(plugin.ID))
+}
+
+func preferredCodexPluginIndex(plugins []CodexPlugin) int {
+	best := 0
+	bestScore := codexPluginCanonicalScore(plugins[0])
+	for i := 1; i < len(plugins); i++ {
+		score := codexPluginCanonicalScore(plugins[i])
+		if score > bestScore || (score == bestScore && plugins[i].ID < plugins[best].ID) {
+			best = i
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func codexPluginCanonicalScore(plugin CodexPlugin) int {
+	score := 0
+	if strings.EqualFold(plugin.Source, "cli") {
+		score += 100
+	}
+	if !isPlaceholderPluginName(plugin.Name) {
+		score += 50
+	}
+	nameFromID, marketplaceFromID := splitPluginID(plugin.ID)
+	if plugin.Name != "" && plugin.Marketplace != "" && strings.EqualFold(plugin.Name, nameFromID) && strings.EqualFold(plugin.Marketplace, marketplaceFromID) {
+		score += 25
+	}
+	if plugin.ManifestPath != "" {
+		score += 10
+	}
+	if plugin.InstallPath != "" {
+		score += 5
+	}
+	return score
+}
+
+func isPlaceholderPluginName(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	return strings.EqualFold(trimmed, "PLUGIN")
+}
+
+func normalizedPluginInstallPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
+}
+
+func pluginNameFromInstallPath(path string) string {
+	path = normalizedPluginInstallPath(path)
+	if path == "" {
+		return ""
+	}
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) || base == "" || isVersionDirectoryName(base) {
+		parent := filepath.Dir(path)
+		if parent == path || parent == "." {
+			return ""
+		}
+		base = filepath.Base(parent)
+	}
+	if validatePluginID(base+"@placeholder") != nil {
+		return ""
+	}
+	return base
+}
+
+func isVersionDirectoryName(name string) bool {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "v")
+	if name == "" {
+		return false
+	}
+	parts := strings.Split(name, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func codexDuplicateWarning(duplicate CodexPlugin, canonical CodexPlugin) string {
+	return fmt.Sprintf("检测到 Codex 插件重复记录 %s，已归并到 canonical 记录 %s；未删除任何用户文件", duplicate.ID, canonical.ID)
+}
+
+func codexDuplicateGroupWarning(canonical CodexPlugin, duplicates []CodexPlugin) string {
+	duplicateIDs := make([]string, 0, len(duplicates))
+	for _, duplicate := range duplicates {
+		duplicateIDs = append(duplicateIDs, duplicate.ID)
+	}
+	sort.Strings(duplicateIDs)
+	return fmt.Sprintf("检测到 Codex 插件重复记录：canonical=%s duplicates=%s；已在刷新结果中按 canonical 归并，未删除任何用户文件", canonical.ID, strings.Join(duplicateIDs, ","))
 }
 
 func filterPluginsByMarketplace(plugins []CodexPlugin, marketplace string) []CodexPlugin {

@@ -51,6 +51,8 @@ type CodexPlugin struct {
 	InstalledAt  string `json:"installedAt,omitempty"`
 	LastUpdated  string `json:"lastUpdated,omitempty"`
 	Source       string `json:"source,omitempty"`
+	Warning      string `json:"warning,omitempty"`
+	DuplicateOf  string `json:"duplicateOf,omitempty"`
 }
 
 // CodexAvailablePlugin represents a plugin discovered from a marketplace snapshot.
@@ -68,27 +70,43 @@ type CodexAvailablePlugin struct {
 
 // CodexPluginManifest describes a Codex plugin manifest.
 type CodexPluginManifest struct {
-	Name        string            `json:"name"`
-	Version     string            `json:"version"`
-	Description string            `json:"description"`
-	Author      map[string]string `json:"author,omitempty"`
-	License     string            `json:"license,omitempty"`
-	Keywords    []string          `json:"keywords,omitempty"`
-	Homepage    string            `json:"homepage,omitempty"`
-	Repository  string            `json:"repository,omitempty"`
+	Name        string                `json:"name"`
+	Version     string                `json:"version"`
+	Description string                `json:"description"`
+	Author      map[string]string     `json:"author,omitempty"`
+	License     string                `json:"license,omitempty"`
+	Keywords    []string              `json:"keywords,omitempty"`
+	Homepage    string                `json:"homepage,omitempty"`
+	Repository  string                `json:"repository,omitempty"`
+	Interface   *CodexPluginInterface `json:"interface,omitempty"`
+}
+
+// CodexPluginInterface describes the Codex-specific plugin UI metadata block.
+type CodexPluginInterface struct {
+	DisplayName      string   `json:"displayName,omitempty"`
+	ShortDescription string   `json:"shortDescription,omitempty"`
+	LongDescription  string   `json:"longDescription,omitempty"`
+	DeveloperName    string   `json:"developerName,omitempty"`
+	Category         string   `json:"category,omitempty"`
+	Capabilities     []string `json:"capabilities,omitempty"`
+	WebsiteURL       string   `json:"websiteURL,omitempty"`
+	DefaultPrompt    []string `json:"defaultPrompt,omitempty"`
 }
 
 // CodexPluginDetail contains full plugin info including local components.
 type CodexPluginDetail struct {
 	CodexPlugin
-	Manifest   CodexPluginManifest    `json:"manifest"`
-	Skills     []SkillInfo            `json:"skills"`
-	Agents     []AgentInfo            `json:"agents"`
-	Commands   []CommandInfo          `json:"commands"`
-	Hooks      []HookInfo             `json:"hooks"`
-	HasMCP     bool                   `json:"hasMcp"`
-	MCPServers map[string]interface{} `json:"mcpServers,omitempty"`
-	PluginType PluginType             `json:"pluginType"`
+	Manifest         CodexPluginManifest    `json:"manifest"`
+	DisplayName      string                 `json:"displayName,omitempty"`
+	ShortDescription string                 `json:"shortDescription,omitempty"`
+	LongDescription  string                 `json:"longDescription,omitempty"`
+	Skills           []SkillInfo            `json:"skills"`
+	Agents           []AgentInfo            `json:"agents"`
+	Commands         []CommandInfo          `json:"commands"`
+	Hooks            []HookInfo             `json:"hooks"`
+	HasMCP           bool                   `json:"hasMcp"`
+	MCPServers       map[string]interface{} `json:"mcpServers,omitempty"`
+	PluginType       PluginType             `json:"pluginType"`
 }
 
 // CodexPluginsData is an aggregate response for refresh operations.

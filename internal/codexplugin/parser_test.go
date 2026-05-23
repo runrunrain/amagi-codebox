@@ -91,3 +91,13 @@ func TestParsePluginListOutputCodexV0132GroupedNameOnly(t *testing.T) {
 		t.Fatalf("unexpected plugin parse: %+v", plugins[0])
 	}
 }
+
+func TestParsePluginListOutputPreservesDuplicateRowsForServiceDiagnosis(t *testing.T) {
+	plugins, err := parsePluginListOutput(&CommandResult{Output: "amagi@market installed enabled /tmp/amagi\namagi@market installed disabled /tmp/amagi"})
+	if err != nil {
+		t.Fatalf("parse duplicate plugin list: %v", err)
+	}
+	if len(plugins) != 2 {
+		t.Fatalf("parser should preserve duplicate rows for service-level diagnosis, got %+v", plugins)
+	}
+}

@@ -1981,20 +1981,23 @@ onMounted(() => {
 .market-console {
   display: grid;
   grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
-  min-height: 360px;
-  max-height: 460px;
+  height: clamp(520px, 62vh, 760px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .market-source-pane,
 .market-plugin-pane {
   min-height: 0;
-  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .market-source-pane {
   padding: 8px;
   border-right: 1px solid #2a2f3e;
   background: #141a25;
+  overflow-y: auto;
 }
 
 .market-source-item {
@@ -2008,6 +2011,7 @@ onMounted(() => {
 .market-plugin-pane {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .pane-toolbar {
@@ -2132,7 +2136,11 @@ onMounted(() => {
 .available-list {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .available-item {
@@ -2378,7 +2386,8 @@ onMounted(() => {
 
   .market-console {
     grid-template-columns: 1fr;
-    max-height: none;
+    grid-template-rows: minmax(180px, 0.34fr) minmax(0, 1fr);
+    height: clamp(620px, 78vh, 860px);
   }
 
   .detail-nav,
