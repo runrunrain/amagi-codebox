@@ -127,8 +127,9 @@ type AgentInfo struct {
 
 // CommandInfo represents a plugin command.
 type CommandInfo struct {
-	Name     string `json:"name"`
-	FilePath string `json:"filePath"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	FilePath    string `json:"filePath"`
 }
 
 // HookInfo represents a hook event.

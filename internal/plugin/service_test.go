@@ -190,6 +190,135 @@ func TestReadPluginManifestForInstalledFallsBackToMarketplaceEntryDescription(t 
 	}
 }
 
+func TestParseFrontmatterSupportsLiteralBlockDescription(t *testing.T) {
+	meta := parseFrontmatter(`---
+name: literal-skill
+description: |
+  First description line.
+  Second description line.
+---
+# Body
+Body text.`)
+
+	expected := "First description line.\nSecond description line."
+	if meta["description"] != expected {
+		t.Fatalf("expected literal block description %q, got %q", expected, meta["description"])
+	}
+}
+
+func TestParseFrontmatterSupportsFoldedBlockDescription(t *testing.T) {
+	meta := parseFrontmatter(`---
+name: folded-skill
+description: >
+  First folded line.
+  Second folded line.
+---
+# Body
+Body text.`)
+
+	expected := "First folded line. Second folded line."
+	if meta["description"] != expected {
+		t.Fatalf("expected folded block description %q, got %q", expected, meta["description"])
+	}
+}
+
+func TestParseFrontmatterRequiresClosingDelimiter(t *testing.T) {
+	meta := parseFrontmatter(`---
+name: unclosed
+description: |
+  Frontmatter-like text.
+# Body
+description: body must not be parsed`)
+
+	if len(meta) != 0 {
+		t.Fatalf("expected unclosed frontmatter to be ignored, got %+v", meta)
+	}
+}
+
+func TestScanSkillsAndAgentsUseBlockDescriptionText(t *testing.T) {
+	installPath := t.TempDir()
+	skillDir := filepath.Join(installPath, "skills", "amagi-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: amagi-skill
+description: |
+  Skill block description.
+---
+# Skill Body
+Body paragraph.`), 0644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	agentsDir := filepath.Join(installPath, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "amagi-agent.md"), []byte(`---
+name: amagi-agent
+description: |
+  Agent block description.
+---
+# Agent Body
+Body paragraph.`), 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	s := NewService(filepath.Join(t.TempDir(), ".claude"), nil)
+	skills, err := s.scanSkills(installPath)
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	agents, err := s.scanAgents(installPath)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+
+	if len(skills) != 1 || skills[0].Description != "Skill block description." || skills[0].Description == "|" {
+		t.Fatalf("skill block description was not parsed correctly: %+v", skills)
+	}
+	if len(agents) != 1 || agents[0].Description != "Agent block description." || agents[0].Description == "|" {
+		t.Fatalf("agent block description was not parsed correctly: %+v", agents)
+	}
+}
+
+func TestScanCommandsReturnsDescription(t *testing.T) {
+	installPath := t.TempDir()
+	commandsDir := filepath.Join(installPath, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatalf("mkdir commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "deploy.md"), []byte(`---
+description: |
+  Deploy the current plugin safely.
+---
+# Deploy
+Fallback paragraph.`), 0644); err != nil {
+		t.Fatalf("write command file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "fallback.md"), []byte("Fallback command paragraph.\n\nAdditional details."), 0644); err != nil {
+		t.Fatalf("write fallback command file: %v", err)
+	}
+
+	s := NewService(filepath.Join(t.TempDir(), ".claude"), nil)
+	commands, err := s.scanCommands(installPath)
+	if err != nil {
+		t.Fatalf("scan commands: %v", err)
+	}
+
+	byName := make(map[string]CommandInfo, len(commands))
+	for _, command := range commands {
+		byName[command.Name] = command
+	}
+	if byName["deploy"].Description != "Deploy the current plugin safely." {
+		t.Fatalf("expected frontmatter command description, got %+v", byName["deploy"])
+	}
+	if byName["fallback"].Description != "Fallback command paragraph." {
+		t.Fatalf("expected command fallback paragraph, got %+v", byName["fallback"])
+	}
+}
+
 func quoteJSON(value string) string {
 	b, err := json.Marshal(value)
 	if err != nil {

@@ -343,9 +343,17 @@ func (s *Service) scanCommands(installPath string) ([]CommandInfo, error) {
 			continue
 		}
 
+		filePath := filepath.Join(commandsDir, entry.Name())
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("read command file %s: %w", filePath, err)
+		}
+
+		meta := parseFrontmatter(string(content))
 		commands = append(commands, CommandInfo{
-			Name:     strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())),
-			FilePath: filepath.Join(commandsDir, entry.Name()),
+			Name:        strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())),
+			Description: firstNonEmpty(meta["description"], extractFirstParagraph(string(content))),
+			FilePath:    filePath,
 		})
 	}
 
@@ -491,10 +499,21 @@ func parseFrontmatter(content string) map[string]string {
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return map[string]string{}
 	}
+	frontmatterEnd := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			frontmatterEnd = i
+			break
+		}
+	}
+	if frontmatterEnd == -1 {
+		return map[string]string{}
+	}
 
 	meta := map[string]string{}
-	for i := 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
+	frontmatterLines := lines[:frontmatterEnd]
+	for i := 1; i < len(frontmatterLines); i++ {
+		line := strings.TrimSpace(frontmatterLines[i])
 		if line == "---" {
 			return meta
 		}
@@ -509,11 +528,116 @@ func parseFrontmatter(content string) map[string]string {
 
 		key := strings.ToLower(strings.TrimSpace(parts[0]))
 		value := strings.TrimSpace(parts[1])
+		if isYAMLBlockScalar(value) {
+			block, next := collectYAMLBlockScalar(frontmatterLines, i+1, blockScalarFolded(value))
+			meta[key] = block
+			i = next - 1
+			continue
+		}
 		value = strings.Trim(value, `"'`)
 		meta[key] = value
 	}
 
 	return meta
+}
+
+func isYAMLBlockScalar(value string) bool {
+	return strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">")
+}
+
+func blockScalarFolded(value string) bool {
+	return strings.HasPrefix(value, ">")
+}
+
+func collectYAMLBlockScalar(lines []string, start int, folded bool) (string, int) {
+	blockLines := make([]string, 0)
+	blockIndent := -1
+	i := start
+
+	for ; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+
+		if strings.TrimSpace(line) == "" {
+			if blockIndent >= 0 {
+				blockLines = append(blockLines, "")
+			}
+			continue
+		}
+
+		indent := leadingWhitespaceWidth(line)
+		if blockIndent < 0 {
+			if indent == 0 {
+				break
+			}
+			blockIndent = indent
+		}
+
+		if indent < blockIndent {
+			break
+		}
+
+		blockLines = append(blockLines, trimBlockIndent(line, blockIndent))
+	}
+
+	if folded {
+		return foldYAMLBlockScalar(blockLines), i
+	}
+	return strings.TrimSpace(strings.Join(blockLines, "\n")), i
+}
+
+func leadingWhitespaceWidth(line string) int {
+	width := 0
+	for _, r := range line {
+		if r != ' ' && r != '\t' {
+			break
+		}
+		width++
+	}
+	return width
+}
+
+func trimBlockIndent(line string, indent int) string {
+	if indent <= 0 {
+		return line
+	}
+	removed := 0
+	idx := 0
+	for idx < len(line) && removed < indent {
+		if line[idx] != ' ' && line[idx] != '\t' {
+			break
+		}
+		idx++
+		removed++
+	}
+	return line[idx:]
+}
+
+func foldYAMLBlockScalar(lines []string) string {
+	paragraphs := make([]string, 0)
+	current := make([]string, 0)
+
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		paragraphs = append(paragraphs, strings.Join(current, " "))
+		current = current[:0]
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			flush()
+			continue
+		}
+		current = append(current, trimmed)
+	}
+	flush()
+
+	return strings.TrimSpace(strings.Join(paragraphs, "\n\n"))
 }
 
 func extractFirstHeading(content string) string {
