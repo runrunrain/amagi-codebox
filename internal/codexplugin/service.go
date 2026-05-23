@@ -510,20 +510,29 @@ func diagnoseAndDedupeCodexPlugins(plugins []CodexPlugin) ([]CodexPlugin, []stri
 }
 
 func codexDuplicateGroupKey(plugin CodexPlugin) string {
-	name := strings.TrimSpace(plugin.Name)
+	name := codexDuplicatePluginName(plugin)
 	marketplace := strings.TrimSpace(plugin.Marketplace)
-	if path := normalizedPluginInstallPath(plugin.InstallPath); path != "" && marketplace != "" {
-		return strings.ToLower(path + "@" + marketplace)
-	}
-	if isPlaceholderPluginName(name) {
-		if pathName := pluginNameFromInstallPath(plugin.InstallPath); pathName != "" {
-			name = pathName
-		}
-	}
 	if name != "" && marketplace != "" && !isPlaceholderPluginName(name) {
 		return strings.ToLower(name + "@" + marketplace)
 	}
 	return strings.ToLower(strings.TrimSpace(plugin.ID))
+}
+
+func codexDuplicatePluginName(plugin CodexPlugin) string {
+	name := strings.TrimSpace(plugin.Name)
+	if name != "" && !isPlaceholderPluginName(name) {
+		return name
+	}
+	if idName, _ := splitPluginID(strings.TrimSpace(plugin.ID)); idName != "" && !isPlaceholderPluginName(idName) {
+		return idName
+	}
+	if pathName := pluginNameFromInstallPath(plugin.InstallPath); pathName != "" {
+		return pathName
+	}
+	if pathName := pluginNameFromInstallPath(pluginRootFromManifestPath(plugin.ManifestPath)); pathName != "" {
+		return pathName
+	}
+	return name
 }
 
 func preferredCodexPluginIndex(plugins []CodexPlugin) int {
@@ -541,6 +550,12 @@ func preferredCodexPluginIndex(plugins []CodexPlugin) int {
 
 func codexPluginCanonicalScore(plugin CodexPlugin) int {
 	score := 0
+	if isCodexPluginCachePath(plugin.InstallPath) || isCodexPluginCachePath(plugin.ManifestPath) {
+		score += 200
+	}
+	if isCodexTemporaryMarketplacePath(plugin.InstallPath) || isCodexTemporaryMarketplacePath(plugin.ManifestPath) {
+		score -= 150
+	}
 	if strings.EqualFold(plugin.Source, "cli") {
 		score += 100
 	}
@@ -558,6 +573,29 @@ func codexPluginCanonicalScore(plugin CodexPlugin) int {
 		score += 5
 	}
 	return score
+}
+
+func isCodexPluginCachePath(path string) bool {
+	path = normalizedCodexPathForMatch(path)
+	return strings.Contains(path, "/plugins/cache/") || strings.HasSuffix(path, "/plugins/cache")
+}
+
+func isCodexTemporaryMarketplacePath(path string) bool {
+	path = normalizedCodexPathForMatch(path)
+	return strings.Contains(path, "/.tmp/marketplaces/") || strings.HasSuffix(path, "/.tmp/marketplaces")
+}
+
+func normalizedCodexPathForMatch(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.ReplaceAll(path, "\\", "/")
+	path = strings.ToLower(path)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
 }
 
 func isPlaceholderPluginName(name string) bool {
@@ -615,16 +653,26 @@ func isVersionDirectoryName(name string) bool {
 }
 
 func codexDuplicateWarning(duplicate CodexPlugin, canonical CodexPlugin) string {
-	return fmt.Sprintf("检测到 Codex 插件重复记录 %s，已归并到 canonical 记录 %s；未删除任何用户文件", duplicate.ID, canonical.ID)
+	return fmt.Sprintf("检测到 Codex 插件重复记录 %s(path=%s)，已归并到 canonical 记录 %s(path=%s)；未删除任何用户文件", duplicate.ID, codexPluginPathSummary(duplicate), canonical.ID, codexPluginPathSummary(canonical))
 }
 
 func codexDuplicateGroupWarning(canonical CodexPlugin, duplicates []CodexPlugin) string {
 	duplicateIDs := make([]string, 0, len(duplicates))
 	for _, duplicate := range duplicates {
-		duplicateIDs = append(duplicateIDs, duplicate.ID)
+		duplicateIDs = append(duplicateIDs, fmt.Sprintf("%s(path=%s)", duplicate.ID, codexPluginPathSummary(duplicate)))
 	}
 	sort.Strings(duplicateIDs)
-	return fmt.Sprintf("检测到 Codex 插件重复记录：canonical=%s duplicates=%s；已在刷新结果中按 canonical 归并，未删除任何用户文件", canonical.ID, strings.Join(duplicateIDs, ","))
+	return fmt.Sprintf("检测到 Codex 插件重复记录：canonical=%s(path=%s) duplicates=%s；已在刷新结果中按 canonical 归并，未删除任何用户文件", canonical.ID, codexPluginPathSummary(canonical), strings.Join(duplicateIDs, ","))
+}
+
+func codexPluginPathSummary(plugin CodexPlugin) string {
+	if path := strings.TrimSpace(plugin.InstallPath); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(plugin.ManifestPath); path != "" {
+		return path
+	}
+	return "unknown"
 }
 
 func filterPluginsByMarketplace(plugins []CodexPlugin, marketplace string) []CodexPlugin {

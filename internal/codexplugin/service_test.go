@@ -129,6 +129,34 @@ func TestDiagnoseAndDedupeCodexPluginsMarksSameInstallPathDuplicate(t *testing.T
 	}
 }
 
+func TestDiagnoseAndDedupeCodexPluginsMergesTmpMarketplaceAndCachePaths(t *testing.T) {
+	codexDir := t.TempDir()
+	tmpMarketplaceRoot := filepath.Join(codexDir, ".tmp", "marketplaces", "amagi-codex-marketplace", "plugins", "amagi")
+	cacheRoot := filepath.Join(codexDir, "plugins", "cache", "amagi-codex-marketplace", "amagi", "1.5.116")
+
+	plugins, warnings := diagnoseAndDedupeCodexPlugins([]CodexPlugin{
+		{ID: "PLUGIN@amagi-codex-marketplace", Name: "PLUGIN", Marketplace: "amagi-codex-marketplace", InstallPath: tmpMarketplaceRoot, ManifestPath: filepath.Join(tmpMarketplaceRoot, ".codex-plugin", "plugin.json"), Source: "cli"},
+		{ID: "amagi@amagi-codex-marketplace", Name: "amagi", Marketplace: "amagi-codex-marketplace", InstallPath: cacheRoot, ManifestPath: filepath.Join(cacheRoot, ".codex-plugin", "plugin.json"), Source: "configFallback"},
+	})
+
+	if len(plugins) != 1 {
+		t.Fatalf("expected tmp marketplace and cache records to merge into one canonical plugin, got %+v", plugins)
+	}
+	canonical := plugins[0]
+	if canonical.ID != "amagi@amagi-codex-marketplace" {
+		t.Fatalf("expected real plugin ID to be canonical, got %+v", canonical)
+	}
+	if canonical.InstallPath != cacheRoot {
+		t.Fatalf("expected canonical install path to prefer cache path %q, got %+v", cacheRoot, canonical)
+	}
+	if canonical.Warning == "" || !strings.Contains(canonical.Warning, tmpMarketplaceRoot) || !strings.Contains(canonical.Warning, cacheRoot) {
+		t.Fatalf("expected duplicate warning to explain tmp/cache paths, got %q", canonical.Warning)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "PLUGIN@amagi-codex-marketplace") || !strings.Contains(warnings[0], "未删除任何用户文件") {
+		t.Fatalf("expected non-destructive duplicate warning mentioning placeholder duplicate, got %+v", warnings)
+	}
+}
+
 func (r *codexPluginTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("not used")
 }

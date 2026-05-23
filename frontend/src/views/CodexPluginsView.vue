@@ -1035,7 +1035,7 @@ onMounted(() => {
                 v-for="item in filteredDetailNavItems(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])"
                 :key="item.key"
                 class="detail-nav-item"
-                :class="{ active: selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.key === item.key }"
+                :class="[{ active: selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.key === item.key }, `kind-${item.group}`]"
                 :aria-label="`查看 ${item.groupLabel} ${item.name} 详情`"
                 :aria-pressed="selectedDetailItem(selectedInstalledPlugin.id, pluginDetails[selectedInstalledPlugin.id])?.key === item.key"
                 :data-detail-key="item.key"
@@ -1645,14 +1645,37 @@ onMounted(() => {
 
 .installed-group-label {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 8px 6px;
-  color: #6f8090;
+  margin: 10px 0 6px;
+  padding: 8px 10px 8px 12px;
+  border-top: 1px solid rgba(79, 195, 247, 0.28);
+  border-left: 3px solid #4fc3f7;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(79, 195, 247, 0.12), rgba(20, 26, 37, 0.88));
+  color: #c4d4e2;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.installed-group-label:first-child {
+  margin-top: 0;
+}
+
+.installed-group-label span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installed-group-label span:last-child {
+  flex-shrink: 0;
+  color: #81d4fa;
+  font-size: 10px;
 }
 
 .installed-plugin-item {
@@ -1987,7 +2010,7 @@ onMounted(() => {
 
 .detail-split {
   display: grid;
-  grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr);
+  grid-template-columns: minmax(230px, 0.36fr) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   height: clamp(320px, 42vh, 520px);
@@ -2056,10 +2079,12 @@ onMounted(() => {
 }
 
 .detail-nav-item {
-  display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  gap: 4px 8px;
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px 10px;
   border-radius: 4px;
   position: relative;
   z-index: 1;
@@ -2086,8 +2111,59 @@ onMounted(() => {
 .detail-nav-meta,
 .market-source-meta {
   color: #6f8090;
-  font-size: 11px;
   text-transform: uppercase;
+}
+
+.detail-nav-kind {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid rgba(136, 153, 170, 0.18);
+  border-radius: 999px;
+  background: rgba(136, 153, 170, 0.08);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+}
+
+.detail-nav-meta,
+.market-source-meta {
+  font-size: 11px;
+}
+
+.detail-nav-item.kind-skill .detail-nav-kind,
+.detail-nav-item.kind-skills .detail-nav-kind {
+  border-color: rgba(77, 208, 225, 0.32);
+  background: rgba(77, 208, 225, 0.12);
+  color: #80deea;
+}
+
+.detail-nav-item.kind-agent .detail-nav-kind,
+.detail-nav-item.kind-agents .detail-nav-kind {
+  border-color: rgba(179, 157, 219, 0.34);
+  background: rgba(179, 157, 219, 0.12);
+  color: #d1c4e9;
+}
+
+.detail-nav-item.kind-command .detail-nav-kind,
+.detail-nav-item.kind-commands .detail-nav-kind {
+  border-color: rgba(255, 204, 128, 0.34);
+  background: rgba(255, 204, 128, 0.12);
+  color: #ffcc80;
+}
+
+.detail-nav-item.kind-hook .detail-nav-kind,
+.detail-nav-item.kind-hooks .detail-nav-kind {
+  border-color: rgba(239, 154, 154, 0.34);
+  background: rgba(239, 154, 154, 0.12);
+  color: #ef9a9a;
+}
+
+.detail-nav-item.kind-mcp .detail-nav-kind {
+  border-color: rgba(129, 199, 132, 0.34);
+  background: rgba(129, 199, 132, 0.12);
+  color: #a5d6a7;
 }
 
 .detail-nav-name,
@@ -2096,12 +2172,23 @@ onMounted(() => {
   color: #d8e0e8;
   font-size: 13px;
   font-weight: 600;
+}
+
+.market-source-title {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.detail-nav-name {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .detail-nav-meta {
-  grid-column: 2;
+  align-self: flex-start;
   text-transform: none;
 }
 
