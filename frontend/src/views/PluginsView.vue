@@ -63,6 +63,13 @@ const pluginMainTabs = [
   { key: 'installed' as const, label: '已安装插件' },
   { key: 'marketplace' as const, label: '市场可安装插件' }
 ]
+const localPluginScrollPaneSelector = [
+  '.installed-plugin-pane',
+  '.detail-nav',
+  '.detail-reading-pane',
+  '.market-source-pane',
+  '.available-list'
+].join(',')
 const detailResourceFilterOptions = [
   { key: 'all' as const, label: '全部' },
   { key: 'skill' as const, label: 'Skills' },
@@ -569,13 +576,35 @@ function formatDate(dateStr: string) {
   }
 }
 
+function canPaneScrollWithWheel(pane: HTMLElement, deltaY: number) {
+  if (deltaY === 0 || pane.scrollHeight <= pane.clientHeight + 1) return false
+  return deltaY > 0
+    ? pane.scrollTop + pane.clientHeight < pane.scrollHeight - 1
+    : pane.scrollTop > 1
+}
+
+function handlePluginWheel(event: WheelEvent) {
+  if (event.ctrlKey || event.defaultPrevented || event.deltaY === 0) return
+
+  const target = event.target instanceof Element ? event.target : null
+  const localPane = target?.closest(localPluginScrollPaneSelector) as HTMLElement | null
+  if (localPane && canPaneScrollWithWheel(localPane, event.deltaY)) return
+
+  const mainContent = (event.currentTarget as HTMLElement | null)?.closest('.main-content') as HTMLElement | null
+  if (!mainContent) return
+
+  const before = mainContent.scrollTop
+  mainContent.scrollTop += event.deltaY
+  if (mainContent.scrollTop !== before) event.preventDefault()
+}
+
 onMounted(() => {
   loadData()
 })
 </script>
 
 <template>
-  <div class="plugins-view">
+  <div class="plugins-view" @wheel.capture="handlePluginWheel">
     <!-- Loading bar -->
     <div class="loading-bar" v-if="loading"></div>
 
@@ -1136,12 +1165,18 @@ onMounted(() => {
 }
 
 /* Installed master-detail */
+/*
+ * Scroll contract for plugin workspaces:
+ * - Dedicated content panes keep their own vertical scroll.
+ * - Layout shells, toolbars and card gutters stay non-scrollable so wheel events
+ *   bubble to AppLayout .main-content for page-level scrolling.
+ */
 .installed-master-detail {
   display: grid;
   grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
   height: clamp(640px, 74vh, 920px);
   min-height: 640px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .installed-master-detail > .empty-state {
@@ -1153,15 +1188,16 @@ onMounted(() => {
 .installed-plugin-pane,
 .installed-detail-pane {
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   scrollbar-gutter: stable;
 }
 
 .installed-plugin-pane {
   padding: 8px;
   border-right: 1px solid #2a2f3e;
+  border-radius: 8px 0 0 8px;
   background: #141a25;
+  overflow-y: auto;
 }
 
 .installed-detail-pane {
@@ -1169,7 +1205,8 @@ onMounted(() => {
   flex-direction: column;
   gap: 12px;
   padding: 12px;
-  overflow-x: hidden;
+  border-radius: 0 8px 8px 0;
+  overflow: visible;
 }
 
 .installed-group-label {
@@ -1455,7 +1492,7 @@ onMounted(() => {
   gap: 10px;
   height: clamp(440px, 58vh, 760px);
   min-height: 440px;
-  overflow: hidden;
+  overflow: visible;
   flex: 1 1 auto;
 }
 
@@ -1495,7 +1532,7 @@ onMounted(() => {
   min-height: 0;
   box-sizing: border-box;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   scrollbar-gutter: stable;
   border: 1px solid #263140;
   border-radius: 6px;
@@ -2070,19 +2107,20 @@ onMounted(() => {
   grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
   height: clamp(520px, 62vh, 760px);
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .market-source-pane,
 .market-plugin-pane {
   min-height: 0;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   scrollbar-gutter: stable;
 }
 
 .market-source-pane {
   padding: 8px;
   border-right: 1px solid #2a2f3e;
+  border-radius: 8px 0 0 8px;
   background: #141a25;
   overflow-y: auto;
 }
@@ -2098,7 +2136,8 @@ onMounted(() => {
 .market-plugin-pane {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  border-radius: 0 8px 8px 0;
+  overflow: visible;
 }
 
 .pane-toolbar {
@@ -2226,7 +2265,7 @@ onMounted(() => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   scrollbar-gutter: stable;
 }
 
@@ -2458,6 +2497,11 @@ onMounted(() => {
   .installed-plugin-pane {
     border-right: 0;
     border-bottom: 1px solid #2a2f3e;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .installed-detail-pane {
+    border-radius: 0 0 8px 8px;
   }
 
   .selected-plugin-toolbar {
@@ -2490,6 +2534,11 @@ onMounted(() => {
     max-height: 160px;
     border-right: 0;
     border-bottom: 1px solid #2a2f3e;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .market-plugin-pane {
+    border-radius: 0 0 8px 8px;
   }
 
   .detail-reading-pane {
