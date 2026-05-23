@@ -583,11 +583,50 @@ func shouldWarnCodexDuplicateGroup(canonical CodexPlugin, duplicates []CodexPlug
 		return true
 	}
 	for _, duplicate := range duplicates {
-		if !isCodexTemporaryMarketplaceRecord(duplicate) {
-			return true
+		if isCodexTemporaryMarketplaceRecord(duplicate) {
+			continue
 		}
+		if isSameInstallPathPlaceholderDuplicate(canonical, duplicate) {
+			continue
+		}
+		return true
 	}
 	return false
+}
+
+func isSameInstallPathPlaceholderDuplicate(canonical CodexPlugin, duplicate CodexPlugin) bool {
+	if !isPlaceholderCodexPluginRecord(duplicate) {
+		return false
+	}
+	canonicalPath := normalizedCodexEffectivePathForMatch(canonical)
+	duplicatePath := normalizedCodexEffectivePathForMatch(duplicate)
+	if canonicalPath == "" || duplicatePath == "" {
+		return false
+	}
+	return canonicalPath == duplicatePath
+}
+
+func isPlaceholderCodexPluginRecord(plugin CodexPlugin) bool {
+	if isPlaceholderPluginName(plugin.Name) {
+		return true
+	}
+	nameFromID, _ := splitPluginID(strings.TrimSpace(plugin.ID))
+	return isPlaceholderPluginName(nameFromID)
+}
+
+func normalizedCodexEffectivePathForMatch(plugin CodexPlugin) string {
+	path := strings.TrimSpace(plugin.InstallPath)
+	if path == "" {
+		path = pluginRootFromManifestPath(plugin.ManifestPath)
+	}
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	if clean == "." {
+		return ""
+	}
+	return normalizedCodexPathForMatch(clean)
 }
 
 func isCodexPluginCacheRecord(plugin CodexPlugin) bool {

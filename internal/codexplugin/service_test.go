@@ -66,11 +66,11 @@ func TestRefreshPluginsDeduplicatesPlaceholderPluginRecordWithoutDeletingFiles(t
 		t.Fatalf("expected duplicate records to be deduplicated, got %+v", data.Installed)
 	}
 	installed := data.Installed[0]
-	if installed.ID != "amagi@amagi-codex-marketplace" || installed.Warning == "" {
-		t.Fatalf("expected canonical amagi plugin with duplicate warning, got %+v", installed)
+	if installed.ID != "amagi@amagi-codex-marketplace" || installed.Warning != "" {
+		t.Fatalf("expected canonical amagi plugin without user-visible duplicate warning, got %+v", installed)
 	}
-	if !containsWarning(data.Warnings, "PLUGIN@amagi-codex-marketplace") || !containsWarning(data.Warnings, "未删除任何用户文件") {
-		t.Fatalf("expected duplicate warning without destructive cleanup, got %+v", data.Warnings)
+	if containsWarning(data.Warnings, "PLUGIN@amagi-codex-marketplace") || containsWarning(data.Warnings, "未删除任何用户文件") {
+		t.Fatalf("expected same-path placeholder duplicate to be merged without refresh warning, got %+v", data.Warnings)
 	}
 	if _, err := os.Stat(pluginRoot); err != nil {
 		t.Fatalf("plugin root should not be deleted by duplicate diagnosis: %v", err)
@@ -121,11 +121,11 @@ func TestDiagnoseAndDedupeCodexPluginsMarksSameInstallPathDuplicate(t *testing.T
 	if len(plugins) != 1 {
 		t.Fatalf("expected one canonical plugin, got %+v", plugins)
 	}
-	if plugins[0].ID != "amagi@market" || plugins[0].Warning == "" {
-		t.Fatalf("expected non-placeholder plugin to be canonical and warned, got %+v", plugins[0])
+	if plugins[0].ID != "amagi@market" || plugins[0].Warning != "" {
+		t.Fatalf("expected non-placeholder plugin to be canonical without user-visible duplicate warning, got %+v", plugins[0])
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "PLUGIN@market") {
-		t.Fatalf("expected duplicate warning mentioning placeholder record, got %+v", warnings)
+	if len(warnings) != 0 {
+		t.Fatalf("expected same-path placeholder duplicate to be merged without warning, got %+v", warnings)
 	}
 }
 
