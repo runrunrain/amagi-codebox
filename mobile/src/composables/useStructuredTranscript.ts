@@ -1,6 +1,6 @@
 import { computed, ref, type Ref } from 'vue'
 import { looksLikeMarkdown } from '../utils/renderMarkdown'
-import { createDiagnosticRecord, normalizeTranscriptChunk, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
+import { createDiagnosticRecord, normalizeTranscriptChunk, resetTranscriptNormalizerState, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
 import type { AppType } from '../types/terminal'
 import type { DiagnosticRefPart, TranscriptPart, TranscriptTurn } from '../types/transcript'
 import type { StructuredPartFramePayload } from '../api/websocket'
@@ -30,6 +30,7 @@ export interface StructuredTranscriptDebugStats {
   pendingChars: number
   retainedParts: number
   structuredParts: number
+  transientStatusUpdates: number
 }
 
 const DEFAULT_MAX_PARTS = 160
@@ -37,6 +38,7 @@ const DEFAULT_MAX_RAW_CHARS = 160_000
 const DEFAULT_MAX_LINES = 4000
 const MAX_SEGMENT_LENGTH = 8000
 const SEGMENT_DELIMITER_PATTERN = /\n{2,}/g
+const MARKDOWN_FENCE_PATTERN = /^```[\s\S]*```$/i
 
 export function normalizeTranscriptLine(line: string): string {
   return line.replace(/^[^\p{L}\p{N}/\\]+/u, '').replace(/^PS\s+[A-Za-z]:\\[^>]+>\s+/i, '').trim()
@@ -59,6 +61,23 @@ function isToolLike(line: string): boolean {
     || /^[•*]\s*(Read|Write|Edit|Bash|Grep|Glob|TodoWrite)\b/i.test(line)
 }
 
+function isLikelyProtocolObject(text: string): boolean {
+  const trimmed = text.trim()
+  if (/^\[object\s+/i.test(trimmed)) return true
+  if (!((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']')))) {
+    return false
+  }
+  if (MARKDOWN_FENCE_PATTERN.test(trimmed)) return false
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!parsed || typeof parsed !== 'object') return false
+    const keys = Object.keys(parsed as Record<string, unknown>)
+    return keys.some((key) => ['type', 'seq', 'part', 'raw', 'source', 'event', 'data'].includes(key)) || keys.length <= 3
+  } catch {
+    return false
+  }
+}
+
 function classifySegment(rawSegment: string, index: number, timestamp: string): TranscriptPart {
   const text = rawSegment.trim()
   const id = `part-${index}`
@@ -79,6 +98,10 @@ function classifySegment(rawSegment: string, index: number, timestamp: string): 
       deletions: stats.deletions,
       createdAt: timestamp,
     }
+  }
+
+  if (isLikelyProtocolObject(text)) {
+    return { id, type: 'raw-terminal', text: rawSegment, reason: 'unsupported-pattern', createdAt: timestamp }
   }
 
   if (/^```/.test(text) || looksLikeMarkdown(text)) {
@@ -150,6 +173,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     pendingChars: 0,
     retainedParts: 0,
     structuredParts: 0,
+    transientStatusUpdates: 0,
   })
 
   function recordDiagnostic(input: TranscriptDiagnosticInput, timestamp = nowIso()): DiagnosticRefPart {
@@ -182,6 +206,33 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     for (const input of inputs) {
       completedParts.push(recordDiagnostic(input, timestamp))
       partSequence += 1
+    }
+  }
+
+  function appendRawTextToStableBuffer(normalized: string) {
+    rawText.value = boundRawText(rawText.value + normalized, maxRawChars, maxLines)
+  }
+
+  function ingestNormalizedText(normalized: string, timestamp: string, statsPatch: Partial<StructuredTranscriptDebugStats>) {
+    if (!normalized) return
+    appendRawTextToStableBuffer(normalized)
+
+    pendingSegment += normalized
+    if (pendingSegment.length > maxRawChars) {
+      pendingSegment = pendingSegment.slice(pendingSegment.length - maxRawChars)
+    }
+
+    if (hasCompletedSegmentBoundary(pendingSegment)) {
+      const segments = pendingSegment.split(/\n{2,}/)
+      pendingSegment = segments.pop() || ''
+
+      for (const segment of segments) {
+        if (!segment.trim()) continue
+        completedParts.push(classifySegment(segment, partSequence, timestamp))
+        partSequence += 1
+        statsPatch.classifiedSegments = (statsPatch.classifiedSegments ?? debugStats.value.classifiedSegments) + 1
+      }
+      trimCompletedParts()
     }
   }
 
@@ -244,13 +295,11 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       case 'raw-terminal': {
         const text = part.raw?.text ?? ''
         if (!text) return null
-        return recordDiagnostic({
-          reason: part.raw?.reason ?? 'unsupported-pattern',
-          summary: `终端诊断输出已隔离（${part.raw?.reason ?? 'unsupported-pattern'}），未作为会话正文展示。`,
-          text,
-          seq: part.source?.seqStart,
-          severity: 'warning',
-        }, createdAt)
+        const { cleanText } = normalizeTranscriptChunk(text)
+        if (cleanText.trim()) {
+          return replacePartId(classifySegment(cleanText, partSequence, createdAt), part.id)
+        }
+        return null
       }
       default:
         return null
@@ -326,62 +375,35 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     try {
       const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(chunk)
       appendDiagnostics(chunkDiagnostics.filter((diagnostic) => diagnostic.severity !== 'info'), timestamp)
-      if (!normalized) {
-        trimCompletedParts()
-        updateTurn(timestamp)
-        refreshDebugStats({
-          appendCalls: debugStats.value.appendCalls + 1,
-          lastAppendChars: chunk.length,
-        })
-        error.value = null
-        return
-      }
       const statsPatch: Partial<StructuredTranscriptDebugStats> = {
         appendCalls: debugStats.value.appendCalls + 1,
         lastAppendChars: normalized.length,
       }
-      rawText.value = boundRawText(rawText.value + normalized, maxRawChars, maxLines)
-
-      pendingSegment += normalized
-      if (pendingSegment.length > maxRawChars) {
-        pendingSegment = pendingSegment.slice(pendingSegment.length - maxRawChars)
+      if (chunkDiagnostics.some((diagnostic) => diagnostic.severity === 'info') && !normalized) {
+        statsPatch.transientStatusUpdates = debugStats.value.transientStatusUpdates + 1
       }
-
-      if (hasCompletedSegmentBoundary(pendingSegment)) {
-        const segments = pendingSegment.split(/\n{2,}/)
-        pendingSegment = segments.pop() || ''
-
-        for (const segment of segments) {
-          if (!segment.trim()) continue
-          completedParts.push(classifySegment(segment, partSequence, timestamp))
-          partSequence += 1
-          statsPatch.classifiedSegments = (statsPatch.classifiedSegments ?? debugStats.value.classifiedSegments) + 1
-        }
+      if (!normalized) {
         trimCompletedParts()
+        updateTurn(timestamp)
+        refreshDebugStats(statsPatch)
+        error.value = null
+        return
       }
+      ingestNormalizedText(normalized, timestamp, statsPatch)
 
       updateTurn(timestamp)
       refreshDebugStats(statsPatch)
       error.value = null
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Transcript parser failed'
-      const fallbackText = rawText.value || chunk
-      turns.value = [{
-        id: `${options.sessionId}-fallback-turn`,
-        sessionId: options.sessionId,
-        role: 'assistant',
-        appType: options.appType.value,
-        parts: [{
-          id: 'part-parser-error',
-          type: 'raw-terminal',
-          text: fallbackText,
-          reason: 'parser-error',
-          createdAt: timestamp,
-        }],
-        status: 'error',
-        createdAt: turnCreatedAt || timestamp,
-        updatedAt: timestamp,
-      }]
+      completedParts.push(recordDiagnostic({
+        reason: 'parser-error',
+        summary: '会话正文解析失败，异常内容已隔离，未回退为原始终端正文。',
+        text: rawText.value || chunk,
+        severity: 'error',
+      }, timestamp))
+      trimCompletedParts()
+      updateTurn(timestamp)
     }
   }
 
@@ -412,7 +434,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       if (rawChunk) {
         const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(rawChunk)
         appendDiagnostics(chunkDiagnostics.filter((diagnostic) => diagnostic.severity !== 'info'), timestamp)
-        rawText.value = boundRawText(rawText.value + normalized, maxRawChars, maxLines)
+        appendRawTextToStableBuffer(normalized)
       }
 
       const flushedPendingSegment = flushPendingSegment(timestamp)
@@ -441,6 +463,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     const timestamp = nowIso()
     rawText.value = ''
     diagnostics.value = []
+    resetTranscriptNormalizerState()
     pendingSegment = ''
     completedParts = []
     partSequence = 0
@@ -453,6 +476,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       appendCalls: 0,
       classifiedSegments: 0,
       structuredParts: 0,
+      transientStatusUpdates: 0,
       snapshotResets: rawInitialText ? debugStats.value.snapshotResets + 1 : 0,
       lastAppendChars: 0,
     })

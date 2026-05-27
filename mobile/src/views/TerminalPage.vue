@@ -14,6 +14,7 @@ import SessionTimeline from '../components/transcript/SessionTimeline.vue'
 import { StructuredFrameFallbacks } from '../utils/structuredFrameFallback'
 import { stripTuiChars } from '../utils/stripTuiChars'
 import { decodeBase64ToUint8 } from '../utils/terminalFrameDecode'
+import { createFrameBatcher } from '../utils/frameBatcher'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
 
@@ -148,13 +149,30 @@ let resizeObserver: ResizeObserver | null = null
 let textSyncRaf: number | null = null
 let transcriptDecoder = new TextDecoder()
 let authoritativePtyDimensions: { cols: number; rows: number } | null = null
+let rawTextViewBuffer = ''
+const batchedRawTerminalText = ref('')
+let rawTextViewRaf: number | null = null
 const structuredFallbacks = new StructuredFrameFallbacks(
   STRUCTURED_FALLBACK_TIMEOUT_MS,
   (_seq, text) => {
     transcript.appendRawChunk(text, { source: 'fallback' })
+    rawTextViewBuffer = transcript.rawText.value
+    scheduleRawTextViewSync()
     scrollTextViewToBottom()
   },
 )
+
+const transcriptFrameBatcher = createFrameBatcher<string>({
+  flushInterval: 50,
+  onFlush: (chunks) => {
+    const merged = chunks.join('')
+    if (!merged) return
+    transcript.appendRawChunk(merged, { source: 'websocket' })
+    rawTextViewBuffer = transcript.rawText.value
+    scheduleRawTextViewSync()
+    scrollTextViewToBottom()
+  },
+})
 
 // resize 防抖定时器
 let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -238,6 +256,24 @@ function cancelTextSync() {
     cancelAnimationFrame(textSyncRaf)
     textSyncRaf = null
   }
+  if (rawTextViewRaf !== null) {
+    cancelAnimationFrame(rawTextViewRaf)
+    rawTextViewRaf = null
+  }
+}
+
+function scheduleRawTextViewSync() {
+  if (rawTextViewRaf !== null) return
+  rawTextViewRaf = requestAnimationFrame(() => {
+    rawTextViewRaf = null
+    if (!rawTextViewBuffer) return
+    batchedRawTerminalText.value = rawTextViewBuffer
+  })
+}
+
+function appendRawTextViewChunk(chunk: string) {
+  rawTextViewBuffer = transcript.rawText.value || chunk
+  scheduleRawTextViewSync()
 }
 
 function extractTerminalTextLines(): string[] {
@@ -274,6 +310,8 @@ function initializeTranscriptFromTerminalSnapshot(reason: string) {
   const snapshot = extractTerminalTextLines().join('\n')
   if (!snapshot.trim()) return
   transcript.ingestRawSnapshot(snapshot)
+  rawTextViewBuffer = transcript.rawText.value
+  batchedRawTerminalText.value = rawTextViewBuffer
   console.info(`[TerminalPage] one-time transcript snapshot fallback: ${reason}`)
 }
 
@@ -606,7 +644,8 @@ function connectWebSocket() {
         if (frame.structuredExpected === true && typeof frame.seq === 'number') {
           scheduleStructuredFallback(frame.seq, decodedOutput)
         } else {
-          transcript.appendRawChunk(decodedOutput, { source: 'websocket' })
+          transcriptFrameBatcher.enqueue(decodedOutput)
+          appendRawTextViewChunk(decodedOutput)
         }
       } catch (decodeError) {
         transcript.appendDiagnostic({
@@ -641,6 +680,7 @@ function connectWebSocket() {
 
 function reconnectWebSocket() {
   flushPendingStructuredFallbacks()
+  transcriptFrameBatcher.flushNow()
   ws?.disconnect()
   transcriptDecoder = new TextDecoder()
   connectWebSocket()
@@ -715,10 +755,16 @@ onMounted(() => {
 
 onUnmounted(() => {
   flushPendingStructuredFallbacks()
+  transcriptFrameBatcher.flushNow()
+  transcriptFrameBatcher.dispose()
   ws?.disconnect()
   resizeObserver?.disconnect()
   cleanupViewportListener()
   cancelTextSync()
+  if (rawTextViewRaf !== null) {
+    cancelAnimationFrame(rawTextViewRaf)
+    rawTextViewRaf = null
+  }
   // 清理触摸事件
   if (terminalRef.value) {
     const xtermViewport = terminalRef.value.querySelector('.xterm-screen')
@@ -805,7 +851,7 @@ onUnmounted(() => {
           :loading="wsState === 'connecting' && rawTerminalText.length === 0"
           :error="transcript.error.value"
         />
-        <pre v-else class="raw-terminal-fallback">{{ stripTuiChars(rawTerminalText || '') || '等待终端输出...' }}</pre>
+        <pre v-else class="raw-terminal-fallback">{{ stripTuiChars(batchedRawTerminalText || rawTerminalText || '') || '等待终端输出...' }}</pre>
       </div>
       <div
         ref="terminalRef"

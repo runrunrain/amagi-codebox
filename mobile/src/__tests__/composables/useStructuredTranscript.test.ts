@@ -75,6 +75,27 @@ describe('useStructuredTranscript', () => {
     expect(transcript.rawText.value).not.toContain('\u001B[32m')
   })
 
+  it('suppresses terminal spinner redraws instead of rendering text noise', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-spinner', appType: computed(() => 'opencode') })
+
+    for (let i = 0; i < 50; i += 1) {
+      transcript.appendRawChunk('\r\u001B[2KThinking...')
+    }
+
+    expect(transcript.rawText.value).toBe('')
+    expect(transcript.partCount.value).toBe(0)
+    expect(transcript.debugStats.value.transientStatusUpdates).toBe(50)
+  })
+
+  it('keeps fenced JSON markdown visible while isolating bare protocol objects', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-json-fence', appType: computed(() => 'generic') })
+
+    transcript.appendRawChunk('```json\n{"file":"index.ts","size":256}\n```')
+
+    expect(firstPart(transcript)).toMatchObject({ type: 'markdown' })
+    expect(transcript.diagnostics.value).toHaveLength(0)
+  })
+
   it('handles repeated snapshots by appending only the delta', () => {
     const transcript = useStructuredTranscript({ sessionId: 's-snapshot', appType: computed(() => 'generic') })
 
@@ -167,7 +188,7 @@ describe('useStructuredTranscript', () => {
     expect(transcript.debugStats.value).toMatchObject({ appendCalls: 2, classifiedSegments: 1, structuredParts: 1 })
   })
 
-  it('maps backend raw terminal reason into transcript parts', () => {
+  it('recovers backend raw-terminal ANSI text into readable text parts', () => {
     const transcript = useStructuredTranscript({ sessionId: 's-structured-raw', appType: computed(() => 'opencode') })
 
     transcript.appendStructuredPart({
@@ -178,7 +199,7 @@ describe('useStructuredTranscript', () => {
       createdAt: '2026-05-27T00:00:00.000Z',
     })
 
-    expect(firstPart(transcript)).toMatchObject({ type: 'diagnostic-ref', reason: 'ansi' })
+    expect(firstPart(transcript)).toMatchObject({ type: 'text', text: 'green' })
     expect(transcript.rawText.value).toBe('green')
   })
 

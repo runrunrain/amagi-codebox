@@ -1,9 +1,12 @@
 import { stripTuiChars } from './stripTuiChars'
+import { createTerminalEffectNormalizer } from './terminalEffectNormalizer'
 
 export type DiagnosticReason =
   | 'ansi'
   | 'tui'
   | 'unsupported-pattern'
+  | 'fallback'
+  | 'parser-error'
   | 'classifier-overflow'
   | 'schema-invalid'
   | 'unknown-frame'
@@ -31,6 +34,7 @@ export interface TranscriptDiagnosticRecord extends Required<Omit<TranscriptDiag
 export interface NormalizedTranscriptChunk {
   cleanText: string
   diagnostics: TranscriptDiagnosticInput[]
+  transientStatus?: string | null
 }
 
 const MAX_DIAGNOSTIC_PREVIEW_CHARS = 800
@@ -43,6 +47,7 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b((?:api[_-]?key|token|secret|password)\s*[:=]\s*)([^\s&"']+)/gi, '$1[REDACTED]'],
   [/\b([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, '[REDACTED_EMAIL]'],
 ]
+const terminalEffectNormalizer = createTerminalEffectNormalizer()
 
 function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
@@ -98,20 +103,28 @@ function isJsonObjectLike(value: string): boolean {
   }
 }
 
+function isFencedCodeOrMarkdownJson(value: string): boolean {
+  const trimmed = value.trim()
+  return /^```(?:json|jsonc|javascript|typescript|ts|js|\w+)?\s*[\r\n][\s\S]*[\r\n]```$/i.test(trimmed)
+}
+
 export function normalizeTranscriptChunk(chunk: string): NormalizedTranscriptChunk {
-  const normalized = normalizeLineEndings(chunk)
+  const effectResult = terminalEffectNormalizer.normalize(chunk)
+  const normalized = normalizeLineEndings(effectResult.cleanText)
   const diagnostics: TranscriptDiagnosticInput[] = []
   const cleanText = cleanPtyText(normalized)
   const controlMatches = normalized.match(CONTROL_CHARACTER_PATTERN) ?? []
 
-  if (isJsonObjectLike(normalized) || SUSPICIOUS_OBJECT_PATTERN.test(normalized)) {
+  diagnostics.push(...effectResult.diagnostics)
+
+  if (!isFencedCodeOrMarkdownJson(normalized) && (isJsonObjectLike(normalized) || SUSPICIOUS_OBJECT_PATTERN.test(normalized))) {
     diagnostics.push({
       reason: 'object-payload',
       summary: '收到疑似对象或 JSON 负载，已隔离，未作为会话正文展示。',
       text: normalized,
       severity: 'warning',
     })
-    return { cleanText: '', diagnostics }
+    return { cleanText: '', diagnostics, transientStatus: effectResult.transientStatus }
   }
 
   if (controlMatches.length > 0 && controlMatches.length / Math.max(normalized.length, 1) > 0.05) {
@@ -121,7 +134,7 @@ export function normalizeTranscriptChunk(chunk: string): NormalizedTranscriptChu
       text: normalized,
       severity: 'warning',
     })
-    return { cleanText: '', diagnostics }
+    return { cleanText: '', diagnostics, transientStatus: effectResult.transientStatus }
   }
 
   if (ANSI_OR_OSC_PATTERN.test(normalized)) {
@@ -141,5 +154,9 @@ export function normalizeTranscriptChunk(chunk: string): NormalizedTranscriptChu
     })
   }
 
-  return { cleanText, diagnostics }
+  return { cleanText, diagnostics, transientStatus: effectResult.transientStatus }
+}
+
+export function resetTranscriptNormalizerState() {
+  terminalEffectNormalizer.reset()
 }

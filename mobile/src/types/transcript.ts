@@ -102,4 +102,5 @@ export interface DiagnosticRefPart extends TranscriptPartBase {
   summary: string
   preview?: string
   redacted: boolean
+  count?: number
 }
