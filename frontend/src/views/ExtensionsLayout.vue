@@ -15,7 +15,6 @@ const tabs: TabItem[] = [
   { key: 'plugins', label: '插件管理', path: '/extensions/plugins' },
   { key: 'workspaces', label: '工作区管理', path: '/extensions/workspaces' },
   { key: 'envvars', label: '环境变量', path: '/extensions/envvars' },
-  { key: 'amagi', label: 'AmagiCode 特有功能', path: '/extensions/amagi' },
 ]
 
 const activeTab = computed(() => {

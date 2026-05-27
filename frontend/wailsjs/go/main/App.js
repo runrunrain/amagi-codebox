@@ -42,14 +42,6 @@ export function ClearStoppedSessions() {
   return window['go']['main']['App']['ClearStoppedSessions']();
 }
 
-export function DeleteAmagiModelPreset(arg1) {
-  return window['go']['main']['App']['DeleteAmagiModelPreset'](arg1);
-}
-
-export function DeleteAmagiSubPreset(arg1, arg2) {
-  return window['go']['main']['App']['DeleteAmagiSubPreset'](arg1, arg2);
-}
-
 export function DeleteEnvVar(arg1) {
   return window['go']['main']['App']['DeleteEnvVar'](arg1);
 }
@@ -84,18 +76,6 @@ export function ExportLogs() {
 
 export function FixClaudeConfig(arg1, arg2, arg3) {
   return window['go']['main']['App']['FixClaudeConfig'](arg1, arg2, arg3);
-}
-
-export function GetAmagiSettings() {
-  return window['go']['main']['App']['GetAmagiSettings']();
-}
-
-export function GetAmagiSettingsJSON() {
-  return window['go']['main']['App']['GetAmagiSettingsJSON']();
-}
-
-export function GetAmagiSubPreset(arg1, arg2) {
-  return window['go']['main']['App']['GetAmagiSubPreset'](arg1, arg2);
 }
 
 export function GetAppInfo() {
@@ -250,10 +230,6 @@ export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
 }
 
-export function LaunchAmagiCode(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['LaunchAmagiCode'](arg1, arg2, arg3, arg4, arg5);
-}
-
 export function LaunchCodexSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchCodexSession'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -322,10 +298,6 @@ export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['main']['App']['RemoveUrlFromHistory'](arg1, arg2);
 }
 
-export function RenameAmagiModelPreset(arg1, arg2) {
-  return window['go']['main']['App']['RenameAmagiModelPreset'](arg1, arg2);
-}
-
 export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
 }
@@ -340,18 +312,6 @@ export function RunEnvFixAction(arg1, arg2, arg3) {
 
 export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
-}
-
-export function SaveAmagiModelPreset(arg1, arg2) {
-  return window['go']['main']['App']['SaveAmagiModelPreset'](arg1, arg2);
-}
-
-export function SaveAmagiSettingsJSON(arg1) {
-  return window['go']['main']['App']['SaveAmagiSettingsJSON'](arg1);
-}
-
-export function SaveAmagiSubPreset(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SaveAmagiSubPreset'](arg1, arg2, arg3);
 }
 
 export function SaveClipboardImage(arg1) {
@@ -372,18 +332,6 @@ export function SaveProviderFromJSON(arg1, arg2) {
 
 export function SaveTerminalPreset(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveTerminalPreset'](arg1, arg2, arg3);
-}
-
-export function SetAmagiAvailableModels(arg1) {
-  return window['go']['main']['App']['SetAmagiAvailableModels'](arg1);
-}
-
-export function SetAmagiEffortLevel(arg1) {
-  return window['go']['main']['App']['SetAmagiEffortLevel'](arg1);
-}
-
-export function SetAmagiModel(arg1) {
-  return window['go']['main']['App']['SetAmagiModel'](arg1);
 }
 
 export function SetEnvVar(arg1, arg2) {

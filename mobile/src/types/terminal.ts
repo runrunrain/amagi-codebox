@@ -1,11 +1,10 @@
-export type AppType = 'claudecode' | 'opencode' | 'codex' | 'amagicode' | 'generic'
+export type AppType = 'claudecode' | 'opencode' | 'codex' | 'generic'
 
 const APP_TYPE_ALIASES: Record<string, AppType> = {
   claude: 'claudecode',
   claudecode: 'claudecode',
   opencode: 'opencode',
   codex: 'codex',
-  amagicode: 'amagicode',
 }
 
 export function resolveAppType(value?: string | null): AppType {

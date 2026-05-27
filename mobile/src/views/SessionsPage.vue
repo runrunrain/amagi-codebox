@@ -18,7 +18,7 @@ const loading = ref(false)
 const showLaunchDialog = ref(false)
 
 const launchForm = ref({
-  mode: 'claude' as 'claude' | 'opencode' | 'codex' | 'amagicode',
+  mode: 'claude' as 'claude' | 'opencode' | 'codex',
   providerName: '',
   presetName: '',
   workDir: '',
@@ -26,7 +26,6 @@ const launchForm = ref({
   shellPath: '',
   modelName: '',
   providerID: '',
-  groupName: '',
 })
 
 const availablePaths = computed(() => launchMeta.value?.paths || [])
@@ -36,12 +35,9 @@ const openCodeProviders = computed(() => launchMeta.value?.opencode.providers ||
 const openCodePresets = computed(() => launchMeta.value?.opencode.presets || [])
 const codexProviders = computed(() => launchMeta.value?.codex.providers || [])
 const codexPresets = computed(() => launchMeta.value?.codex.presets || [])
-const amagiProviders = computed(() => launchMeta.value?.amagicode.providers || [])
-const amagiGroups = computed(() => launchMeta.value?.amagicode.groups || [])
 
 const selectedClaudePreset = computed(() => claudePresets.value.find((item) => item.key === launchForm.value.presetName) || null)
 const selectedCodexPreset = computed(() => codexPresets.value.find((item) => item.key === launchForm.value.modelName) || null)
-const selectedAmagiGroup = computed(() => amagiGroups.value.find((item) => item.key === launchForm.value.groupName) || null)
 
 // --- Grouped sessions: running first, then stopped ---
 const runningSessions = computed(() =>
@@ -68,7 +64,6 @@ const appTypeMap: Record<string, AppTypeConfig> = {
   claude:    { label: 'Claude',    color: '#d4a574', bg: 'rgba(212, 165, 116, 0.12)', border: 'rgba(212, 165, 116, 0.25)' },
   opencode:  { label: 'OpenCode',  color: '#7ee787', bg: 'rgba(126, 231, 135, 0.10)', border: 'rgba(126, 231, 135, 0.22)' },
   codex:     { label: 'Codex',     color: '#79c0ff', bg: 'rgba(121, 192, 255, 0.10)', border: 'rgba(121, 192, 255, 0.22)' },
-  amagicode: { label: 'AmagiCode', color: '#d2a8ff', bg: 'rgba(210, 168, 255, 0.10)', border: 'rgba(210, 168, 255, 0.22)' },
 }
 
 function getAppType(appType: string): AppTypeConfig {
@@ -97,7 +92,6 @@ const modeOptions = [
   { key: 'claude' as const, label: 'Claude',    color: '#d4a574', bg: 'rgba(212, 165, 116, 0.12)', border: 'rgba(212, 165, 116, 0.25)', icon: 'M12 2a5 5 0 0 1 5 5v3a5 5 0 0 1-10 0V7a5 5 0 0 1 5-5zm-8 8h2m12 0h2m-12 4a6 6 0 0 0 6 0' },
   { key: 'opencode' as const, label: 'OpenCode',  color: '#7ee787', bg: 'rgba(126, 231, 135, 0.10)', border: 'rgba(126, 231, 135, 0.22)', icon: 'M16 18l6-6-6-6M8 6l-6 6 6 6' },
   { key: 'codex' as const, label: 'Codex',     color: '#79c0ff', bg: 'rgba(121, 192, 255, 0.10)', border: 'rgba(121, 192, 255, 0.22)', icon: 'M4 4h16v16H4zM9 9h6M9 13h4' },
-  { key: 'amagicode' as const, label: 'AmagiCode', color: '#d2a8ff', bg: 'rgba(210, 168, 255, 0.10)', border: 'rgba(210, 168, 255, 0.22)', icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
 ]
 
 function ensureDefaultWorkDir() {
@@ -129,7 +123,6 @@ function onModeChange() {
   launchForm.value.providerID = ''
   launchForm.value.presetName = ''
   launchForm.value.modelName = ''
-  launchForm.value.groupName = ''
 }
 
 function presetLabel(option: LaunchPresetOption): string {
@@ -157,14 +150,6 @@ async function launchSession() {
       session = await apiClient.launchOpenCodeSession({
         providerName: launchForm.value.providerName,
         presetName: launchForm.value.presetName,
-        mode: launchMode,
-        workDir: launchForm.value.workDir,
-        shellPath: launchForm.value.shellPath,
-      })
-    } else if (mode === 'amagicode') {
-      session = await apiClient.launchAmagiSession({
-        groupName: launchForm.value.groupName,
-        providerName: launchForm.value.providerName || selectedAmagiGroup.value?.provider || '',
         mode: launchMode,
         workDir: launchForm.value.workDir,
         shellPath: launchForm.value.shellPath,
@@ -550,27 +535,6 @@ onMounted(() => {
                 <select v-model="launchForm.providerID" class="form-select">
                   <option value="">Auto</option>
                   <option v-for="p in codexProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
-                </select>
-              </div>
-            </template>
-
-            <!-- AmagiCode mode fields -->
-            <template v-if="launchForm.mode === 'amagicode'">
-              <div class="section-header">Configuration</div>
-              <div class="form-group">
-                <label class="form-label">Preset Group</label>
-                <select v-model="launchForm.groupName" class="form-select">
-                  <option value="">Select group...</option>
-                  <option v-for="group in amagiGroups" :key="group.key" :value="group.key">
-                    {{ group.label }}{{ group.model ? ` - ${group.model}` : '' }}
-                  </option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Provider Override</label>
-                <select v-model="launchForm.providerName" class="form-select">
-                  <option value="">Auto</option>
-                  <option v-for="p in amagiProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
                 </select>
               </div>
             </template>

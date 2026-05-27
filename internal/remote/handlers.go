@@ -20,7 +20,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/launch", s.handleLaunchSession)
 	mux.HandleFunc("POST /api/sessions/launch-codex", s.handleLaunchCodex)
 	mux.HandleFunc("POST /api/sessions/launch-opencode", s.handleLaunchOpenCode)
-	mux.HandleFunc("POST /api/sessions/launch-amagi", s.handleLaunchAmagi)
 	mux.HandleFunc("POST /api/sessions/clear-stopped", s.handleClearStopped)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleStopSession)
 	mux.HandleFunc("POST /api/sessions/{id}/resize", s.handleResizeSession)
@@ -134,10 +133,6 @@ func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
 			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
 			Presets:   buildLaunchPresetOptions(configSvc, "codex"),
 		},
-		AmagiCode: launchMetaAmagiSection{
-			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
-			Groups:    buildLaunchAmagiGroups(s.app),
-		},
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -207,25 +202,6 @@ func (s *Server) handleLaunchOpenCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.app.LaunchOpenCode(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.ShellPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	info, err := s.app.GetSession(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, info)
-}
-
-func (s *Server) handleLaunchAmagi(w http.ResponseWriter, r *http.Request) {
-	var body launchAmagiRequest
-	if err := readJSON(r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	id, err := s.app.LaunchAmagiCode(body.GroupName, body.ProviderName, body.Mode, body.WorkDir, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -509,62 +485,6 @@ func buildLaunchOpenCodePresetOptions(configSvc *config.ConfigService) []launchO
 			Description:  strings.TrimSpace(preset.Description),
 			BindingCount: len(preset.Bindings),
 			Source:       source,
-		})
-	}
-	return options
-}
-
-func buildLaunchAmagiGroups(app AppInterface) []launchAmagiGroupOption {
-	settings, err := app.GetAmagiSettings()
-	if err != nil || settings == nil {
-		return []launchAmagiGroupOption{}
-	}
-
-	keys := make([]string, 0, len(settings.ModelPresets))
-	for key := range settings.ModelPresets {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	options := make([]launchAmagiGroupOption, 0, len(keys))
-	for _, key := range keys {
-		group := settings.ModelPresets[key]
-		provider := ""
-		model := ""
-		if group.DefaultPreset != "" {
-			if preset, ok := group.Presets[group.DefaultPreset]; ok {
-				provider = strings.TrimSpace(preset.Provider)
-				model = strings.TrimSpace(preset.Model)
-			}
-		}
-		if provider == "" || model == "" {
-			fallbackPresetNames := make([]string, 0, len(group.Presets))
-			for presetName := range group.Presets {
-				fallbackPresetNames = append(fallbackPresetNames, presetName)
-			}
-			sort.Strings(fallbackPresetNames)
-			for _, presetName := range fallbackPresetNames {
-				preset := group.Presets[presetName]
-				if provider == "" {
-					provider = strings.TrimSpace(preset.Provider)
-				}
-				if model == "" {
-					model = strings.TrimSpace(preset.Model)
-				}
-				if provider != "" && model != "" {
-					break
-				}
-			}
-		}
-
-		options = append(options, launchAmagiGroupOption{
-			Key:            key,
-			Label:          key,
-			Description:    strings.TrimSpace(group.Description),
-			Provider:       provider,
-			Model:          model,
-			DefaultPreset:  strings.TrimSpace(group.DefaultPreset),
-			SubPresetCount: len(group.Presets),
 		})
 	}
 	return options

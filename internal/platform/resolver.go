@@ -304,8 +304,6 @@ func cliCandidatesForAppType(appType string) ([]string, error) {
 		return []string{"opencode"}, nil
 	case "codex":
 		return []string{"codex"}, nil
-	case "amagicode":
-		return []string{"amagicode"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported app type: %s", appType)
 	}

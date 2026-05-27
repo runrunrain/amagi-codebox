@@ -61,14 +61,6 @@ export interface LaunchOpenCodeRequest {
   shellPath: string
 }
 
-export interface LaunchAmagiRequest {
-  groupName: string
-  providerName: string
-  mode: string
-  workDir: string
-  shellPath: string
-}
-
 export interface LaunchProviderOption {
   id: string
   name: string
@@ -92,16 +84,6 @@ export interface LaunchOpenCodePresetOption {
   source?: string
 }
 
-export interface LaunchAmagiGroupOption {
-  key: string
-  label: string
-  description?: string
-  provider?: string
-  model?: string
-  defaultPreset?: string
-  subPresetCount: number
-}
-
 export interface LaunchMetadataResponse {
   paths: string[]
   claude: {
@@ -115,10 +97,6 @@ export interface LaunchMetadataResponse {
   codex: {
     providers: LaunchProviderOption[]
     presets: LaunchPresetOption[]
-  }
-  amagicode: {
-    providers: LaunchProviderOption[]
-    groups: LaunchAmagiGroupOption[]
   }
 }
 
@@ -234,13 +212,6 @@ class ApiClient {
 
   async launchOpenCodeSession(req: LaunchOpenCodeRequest): Promise<SessionInfo> {
     return this.request<SessionInfo>('/api/sessions/launch-opencode', {
-      method: 'POST',
-      body: JSON.stringify(req),
-    })
-  }
-
-  async launchAmagiSession(req: LaunchAmagiRequest): Promise<SessionInfo> {
-    return this.request<SessionInfo>('/api/sessions/launch-amagi', {
       method: 'POST',
       body: JSON.stringify(req),
     })

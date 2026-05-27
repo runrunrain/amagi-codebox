@@ -355,9 +355,10 @@ func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string)
 // 复刻原始验证可行的方式：直接 exec.Command("claude")，
 // 传递 os.Stdin/Stdout/Stderr，由 Windows 自动分配新控制台。
 func (s *LauncherService) buildClaudeCmd(workDir string, env []string) *exec.Cmd {
-	cmd := exec.Command(s.resolveCLIPath("claude", env))
+	launchEnv := platform.BuildEffectiveEnv(env)
+	cmd := exec.Command(s.resolveCLIPath("claude", launchEnv))
 	cmd.Dir = workDir
-	cmd.Env = env
+	cmd.Env = launchEnv
 	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。
 	// 在 Wails GUI 应用中这些是无效句柄（0x0），
 	// 但 Windows 为子控制台进程分配新控制台后，
@@ -380,65 +381,6 @@ func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.C
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd
-}
-
-// buildAmagiCmd 构建 amagicode 进程命令。
-// 与 buildClaudeCmd 类似，但启动的是 amagicode 命令。
-func (s *LauncherService) buildAmagiCmd(workDir string, env []string) *exec.Cmd {
-	cmd := exec.Command(s.resolveCLIPath("amagicode", env))
-	cmd.Dir = workDir
-	cmd.Env = env
-	// 关键：必须设置 Stdin/Stdout/Stderr 为 os 句柄。
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd
-}
-
-// LaunchAmagiCode 启动一个新的 AmagiCode 进程，返回启动结果。
-// 支持两种模式：terminal（独立终端）、embedded（内嵌终端）。
-// envOverrides 中的键值对会注入到进程环境变量，用于传递 AmagiCode 配置和认证信息。
-func (s *LauncherService) LaunchAmagiCode(
-	sessionID string,
-	mode session.LaunchMode,
-	workDir string,
-	envOverrides map[string]string,
-) (*LaunchResult, error) {
-	env := BuildEnv(s.baseEnv(), envOverrides)
-
-	cmd := s.buildAmagiCmd(workDir, env)
-
-	s.log.Info("launcher", "正在启动 AmagiCode 进程", fmt.Sprintf("sessionID=%s mode=%s", sessionID, mode))
-
-	if err := cmd.Start(); err != nil {
-		s.log.Error("launcher", "AmagiCode 进程启动失败", err.Error())
-		return nil, fmt.Errorf("start amagicode process: %w", err)
-	}
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-
-	s.log.Info("launcher", "AmagiCode 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
-
-	s.mu.Lock()
-	s.processes[sessionID] = cmd
-	s.mu.Unlock()
-
-	// 监控进程退出
-	go func(id string, c *exec.Cmd) {
-		err := c.Wait()
-		s.log.Info("launcher", "AmagiCode 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
-		s.mu.Lock()
-		delete(s.processes, id)
-		s.mu.Unlock()
-	}(sessionID, cmd)
-
-	return &LaunchResult{
-		SessionID: sessionID,
-		PID:       pid,
-	}, nil
 }
 
 // Stop 停止指定会话的进程

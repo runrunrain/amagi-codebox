@@ -56,7 +56,7 @@ func resolveBinaryFromCandidatesForOS(osName string, candidates []string, env []
 		if candidate == "" {
 			continue
 		}
-		if resolved := resolveCommandPathForOS(osName, candidate, env); resolved != "" {
+		if resolved := resolveCommandPathWithoutPreferredDefaultForOS(osName, candidate, env); resolved != "" {
 			return resolved
 		}
 	}

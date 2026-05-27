@@ -52,7 +52,6 @@ func main() {
 			app.Plugins,
 			app.CodexPlugins,
 			app.Workspaces,
-			app.Amagi,
 			app.OpenCodeConfig,
 			app.EnvCheck,
 		},

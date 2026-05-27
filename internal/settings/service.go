@@ -30,10 +30,13 @@ type DashboardDefaults struct {
 	OpenCodeShell     string `json:"openCodeShell"`
 	CodexMode         string `json:"codexMode"`
 	CodexShell        string `json:"codexShell"`
-	AmagiCodePreset   string `json:"amagiCodePreset"`
-	AmagiCodeMode     string `json:"amagiCodeMode"`
-	AmagiCodeShell    string `json:"amagiCodeShell"`
-	UseProxy          bool   `json:"useProxy"`
+	// Deprecated: retained only so legacy settings.json files can still be decoded.
+	AmagiCodePreset string `json:"amagiCodePreset"`
+	// Deprecated: retained only so legacy settings.json files can still be decoded.
+	AmagiCodeMode string `json:"amagiCodeMode"`
+	// Deprecated: retained only so legacy settings.json files can still be decoded.
+	AmagiCodeShell string `json:"amagiCodeShell"`
+	UseProxy       bool   `json:"useProxy"`
 }
 
 // TerminalSettings 终端设置

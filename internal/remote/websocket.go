@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"amagi-codebox/internal/structured"
 
 	"github.com/gorilla/websocket"
 )
@@ -21,12 +24,22 @@ type clientMsg struct {
 
 // serverMsg 服务端→客户端帧格式
 type serverMsg struct {
-	Type     string `json:"type"`               // "output" | "exit" | "dimensions"
-	Data     string `json:"data,omitempty"`     // base64（output 类型）
-	ExitCode int    `json:"exitCode,omitempty"` // exit 类型
-	Cols     int    `json:"cols,omitempty"`     // dimensions 类型
-	Rows     int    `json:"rows,omitempty"`     // dimensions 类型
+	Type               string           `json:"type"`                         // "output" | "structured-part" | "exit" | "dimensions"
+	Data               string           `json:"data,omitempty"`               // base64（output 类型）
+	Seq                uint64           `json:"seq,omitempty"`                // output / structured-part 关联序号
+	StructuredExpected bool             `json:"structuredExpected,omitempty"` // 新客户端用于延迟 raw fallback
+	Part               *structured.Part `json:"part,omitempty"`               // structured-part 类型
+	ExitCode           int              `json:"exitCode,omitempty"`           // exit 类型
+	Cols               int              `json:"cols,omitempty"`               // dimensions 类型
+	Rows               int              `json:"rows,omitempty"`               // dimensions 类型
 }
+
+type structuredWorkItem struct {
+	seq  uint64
+	data []byte
+}
+
+const structuredQueueSize = 32
 
 // PtyBridge PTY 输入/输出桥接接口，由 App 实现（委托给 pty.Service）
 type PtyBridge interface {
@@ -100,11 +113,50 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 		return conn.WriteMessage(websocket.TextMessage, b)
 	}
 
+	structuredQueue := make(chan structuredWorkItem, structuredQueueSize)
+	structuredDone := make(chan struct{})
+	defer close(structuredDone)
+
+	go func() {
+		for {
+			select {
+			case <-structuredDone:
+				return
+			case item := <-structuredQueue:
+				func() {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							s.log.Debug("remote", "structured 分类失败，raw output 已保留", fmt.Sprintf("conn=%s err=%v", connID, recovered))
+						}
+					}()
+					part := structured.Classify(item.data, item.seq)
+					if err := writeJSON(serverMsg{Type: "structured-part", Seq: item.seq, Part: &part}, 5*time.Second); err != nil {
+						s.log.Debug("remote", "WebSocket structured-part write 失败（连接可能已断开）", fmt.Sprintf("conn=%s err=%v", connID, err))
+					}
+				}()
+			}
+		}
+	}()
+
+	var outputSeq uint64
+
 	outputCB := func(data []byte) {
+		seq := atomic.AddUint64(&outputSeq, 1)
 		encoded := base64.StdEncoding.EncodeToString(data)
-		msg := serverMsg{Type: "output", Data: encoded}
+		msg := serverMsg{Type: "output", Data: encoded, Seq: seq, StructuredExpected: len(data) > 0}
 		if err := writeJSON(msg, 10*time.Second); err != nil {
 			s.log.Debug("remote", "WebSocket write 失败（连接可能已断开）", fmt.Sprintf("conn=%s err=%v", connID, err))
+			return
+		}
+		if len(data) == 0 {
+			return
+		}
+		structuredData := make([]byte, len(data))
+		copy(structuredData, data)
+		select {
+		case structuredQueue <- structuredWorkItem{seq: seq, data: structuredData}:
+		default:
+			s.log.Debug("remote", "structured 队列已满，客户端将按 raw fallback", fmt.Sprintf("conn=%s seq=%d", connID, seq))
 		}
 	}
 

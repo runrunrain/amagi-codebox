@@ -1,7 +1,6 @@
 package remote
 
 import (
-	"amagi-codebox/internal/amagi"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/paths"
@@ -21,7 +20,6 @@ type AppInterface interface {
 	LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, shellPath string) (string, error)
 	LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
 	LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error)
-	LaunchAmagiCode(groupName string, providerName string, mode string, workDir string, shellPath string) (string, error)
 	StopSession(sessionID string) error
 	RemoveSession(sessionID string) error
 	ClearStoppedSessions() int
@@ -45,7 +43,6 @@ type AppInterface interface {
 	GetSettingsService() *settings.Service
 	GetPathsService() *paths.PathsService
 	GetConfigService() *config.ConfigService
-	GetAmagiSettings() (*amagi.AmagiSettings, error)
 
 	// Remote port management
 	SetRemotePort(port int) error

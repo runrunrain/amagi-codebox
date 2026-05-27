@@ -5,16 +5,13 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { TerminalWebSocket, type ConnectionState } from '../api/websocket'
-import { useMarkdownHtmlCache } from '../composables/useMarkdownHtmlCache'
+import type { StructuredPartFramePayload } from '../api/websocket'
 import { useOutputBuffer } from '../composables/useOutputBuffer'
-import { useTodoOverlay } from '../composables/useTodoOverlay'
+import { useStructuredTranscript } from '../composables/useStructuredTranscript'
 import { fetchSessionMetadata, type SessionMetadata } from '../composables/useSessionMetadata'
-import { buildTranscriptBlocks } from '../composables/useTerminalTranscript'
 import { useConnection } from '../stores/connection'
-import type { TerminalBlock, TerminalTextBlock } from '../types/terminal-blocks'
-import { classifyDiffLine } from '../utils/classifyDiffLine'
-import { highlightCode } from '../utils/highlightCode'
-import { isPathLikeLine } from '../utils/isPathLikeLine'
+import SessionTimeline from '../components/transcript/SessionTimeline.vue'
+import { StructuredFrameFallbacks } from '../utils/structuredFrameFallback'
 import { stripTuiChars } from '../utils/stripTuiChars'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
@@ -47,16 +44,15 @@ const wsState = ref<ConnectionState>('disconnected')
 const sessionId = route.params.sessionId as string
 const fontSize = ref(loadFontSize())
 const mobileTextMode = ref(false)
-const terminalTextLines = ref<string[]>([])
-const terminalBlocks = ref<TerminalBlock[]>([])
+const structuredViewEnabled = ref(true)
 const mobileInput = ref('')
 const sessionMetadata = ref<SessionMetadata | null>(null)
-const {
-  markdownHtmlById,
-  refreshMarkdownBlocks,
-  resetMarkdownCache,
-} = useMarkdownHtmlCache()
-const todoOverlay = useTodoOverlay(terminalBlocks)
+const transcript = useStructuredTranscript({
+  sessionId,
+  appType: computed(() => sessionMetadata.value?.appType ?? 'generic'),
+})
+const rawTerminalText = transcript.rawText
+const STRUCTURED_FALLBACK_TIMEOUT_MS = 350
 
 const sessionLabelTitle = computed(() => {
   if (!sessionMetadata.value) return sessionId
@@ -99,25 +95,17 @@ function extractEffortFromText(text: string): string | undefined {
   return text.match(/\b(low|medium|high) effort\b/i)?.[0]
 }
 
-function stripDecorativePrefix(text: string): string {
-  return text.replace(/^[^\p{L}\p{N}/\\]+/u, '').trim()
-}
-
-function normalizeTranscriptLine(line: string): string {
-  return stripDecorativePrefix(line).replace(/^PS\s+[A-Za-z]:\\[^>]+>\s+/i, '').trim()
-}
-
 function extractReadableSubtitle(text: string): string | undefined {
   const line = text.split('\n').find((value: string) => /context|effort|billing/i.test(value))
   if (!line) return undefined
 
-  const normalized = normalizeTranscriptLine(line)
+  const normalized = transcript.normalizeTranscriptLine(line)
   const match = normalized.match(/(Opus|Sonnet|Haiku|gpt-[^\s]+|o\d[^\s]*|Claude [^\s]+|Gemini[^\s]*).*/i)
   return match?.[0]?.trim() || normalized || undefined
 }
 
 function extractWorkDirFromText(text: string): string | undefined {
-  const lines = text.split('\n').map((line) => normalizeTranscriptLine(line)).filter(Boolean)
+  const lines = text.split('\n').map((line) => transcript.normalizeTranscriptLine(line)).filter(Boolean)
   const candidates: string[] = []
 
   for (const line of lines) {
@@ -133,36 +121,11 @@ function extractWorkDirFromText(text: string): string | undefined {
   return candidates.sort((a, b) => a.length - b.length)[0]
 }
 
-function isTextualTerminalBlock(block: TerminalBlock): block is TerminalTextBlock {
-  return block.type === 'text' || block.type === 'prompt' || block.type === 'action' || block.type === 'markdown' || block.type === 'thinking' || block.type === 'status' || block.type === 'streaming'
-}
-
-const transcriptHead = computed(() => terminalTextLines.value.slice(0, 8).join('\n'))
+const transcriptHead = computed(() => rawTerminalText.value.split('\n').slice(0, 8).join('\n'))
 const summaryVersion = computed(() => extractVersionFromText(transcriptHead.value))
 const summarySubtitle = computed(() => extractReadableSubtitle(transcriptHead.value))
 const summaryWorkDir = computed(() => extractWorkDirFromText(transcriptHead.value))
 const summaryEffort = computed(() => extractEffortFromText(transcriptHead.value))
-
-const displayedTerminalBlocks = computed(() => {
-  if (!sessionMetadata.value) return terminalBlocks.value
-
-  let summaryStripped = false
-  return terminalBlocks.value.filter((block) => {
-    if (block.type === 'summary') {
-      return false
-    }
-    if (
-      !summaryStripped
-      && block.type === 'text'
-      && isTextualTerminalBlock(block)
-      && (Boolean(extractVersionFromText(block.content)) || Boolean(extractWorkDirFromText(block.content)))
-    ) {
-      summaryStripped = true
-      return false
-    }
-    return true
-  })
-})
 
 function formatAppTypeLabel(appType: SessionMetadata['appType']) {
   switch (appType) {
@@ -172,8 +135,6 @@ function formatAppTypeLabel(appType: SessionMetadata['appType']) {
       return 'OpenCode'
     case 'codex':
       return 'Codex'
-    case 'amagicode':
-      return 'AmagiCode'
     default:
       return 'Terminal'
   }
@@ -184,7 +145,15 @@ let fitAddon: FitAddon | null = null
 let ws: TerminalWebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
 let textSyncRaf: number | null = null
+let transcriptDecoder = new TextDecoder()
 let authoritativePtyDimensions: { cols: number; rows: number } | null = null
+const structuredFallbacks = new StructuredFrameFallbacks(
+  STRUCTURED_FALLBACK_TIMEOUT_MS,
+  (_seq, text) => {
+    transcript.appendRawChunk(text, { source: 'fallback' })
+    scrollTextViewToBottom()
+  },
+)
 
 // resize 防抖定时器
 let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -299,6 +268,14 @@ function extractTerminalTextLines(): string[] {
   return extractedLines
 }
 
+function initializeTranscriptFromTerminalSnapshot(reason: string) {
+  if (rawTerminalText.value || !terminal) return
+  const snapshot = extractTerminalTextLines().join('\n')
+  if (!snapshot.trim()) return
+  transcript.ingestRawSnapshot(snapshot)
+  console.info(`[TerminalPage] one-time transcript snapshot fallback: ${reason}`)
+}
+
 function scrollTextViewToBottom() {
   if (!mobileTextMode.value || !textViewRef.value) return
   requestAnimationFrame(() => {
@@ -308,83 +285,10 @@ function scrollTextViewToBottom() {
   })
 }
 
-function isTextViewNearBottom(): boolean {
-  if (!textViewRef.value) return true
-  const el = textViewRef.value
-  return (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
-}
-
 function focusMobileInput() {
   if (!mobileTextMode.value) return
   requestAnimationFrame(() => {
     mobileInputRef.value?.focus()
-  })
-}
-
-function syncTextView() {
-  if (!mobileTextMode.value) return
-  const textView = textViewRef.value
-  const wasAtBottom = isTextViewNearBottom()
-  const distanceFromBottom = textView
-    ? textView.scrollHeight - textView.scrollTop
-    : 0
-
-  terminalTextLines.value = extractTerminalTextLines()
-  terminalBlocks.value = buildTranscriptBlocks(
-    terminalTextLines.value,
-    sessionMetadata.value?.appType ?? 'generic',
-  )
-  void refreshMarkdownBlocks(terminalBlocks.value)
-  void nextTick(() => {
-    if (!textViewRef.value) return
-    if (wasAtBottom) {
-      scrollTextViewToBottom()
-      return
-    }
-
-    textViewRef.value.scrollTop = Math.max(
-      0,
-      textViewRef.value.scrollHeight - distanceFromBottom,
-    )
-  })
-}
-
-function getTerminalBlockText(block: TerminalBlock): string {
-  if (block.type === 'summary') {
-    return [block.title, block.subtitle, block.workDir].filter(Boolean).join('\n')
-  }
-  if (block.type === 'code') return block.code
-  if (block.type === 'tool') return block.summary || block.title
-  if (block.type === 'diff') return block.diff
-  if (block.type === 'raw-terminal') return block.lines.join('\n')
-  return block.content
-}
-
-function getPromptActionText(block: TerminalTextBlock): string | undefined {
-  if (block.primaryAction) return block.primaryAction
-  const normalized = block.content.replace(/^>\s*/u, '').trim()
-  const quoted = normalized.match(/"([^"]+)"/)
-  if (quoted?.[1]) return quoted[1]
-  const trimmedTry = normalized.replace(/^try\s+/i, '').trim()
-  return trimmedTry || undefined
-}
-
-function getToolSummaryLines(block: TerminalBlock): string[] {
-  if (block.type !== 'tool' || !block.summary) return []
-  return block.summary.split('\n').map((line) => line.trim()).filter(Boolean)
-}
-
-function shouldRenderToolSummaryAsFileList(block: TerminalBlock): boolean {
-  const lines = getToolSummaryLines(block)
-  return lines.length > 0 && lines.every(isPathLikeLine)
-}
-
-function scheduleTextSync() {
-  if (!mobileTextMode.value) return
-  cancelTextSync()
-  textSyncRaf = requestAnimationFrame(() => {
-    textSyncRaf = null
-    syncTextView()
   })
 }
 
@@ -405,9 +309,10 @@ function onViewportResize() {
   // 确保页面顶部对齐（某些浏览器会自动滚动页面）
   terminalPageRef.value.style.top = `${vv.offsetTop}px`
 
-  // 键盘状态变化时：重新计算布局
+  // 键盘状态变化时只调整阅读视图滚动位置；结构化 transcript 由 WebSocket
+  // output chunk 增量维护，resize/scroll 不触发 xterm buffer 全量重解析。
   if (mobileTextMode.value) {
-    scheduleTextSync()
+    scrollTextViewToBottom()
   } else {
     debouncedControllerResize()
   }
@@ -477,7 +382,7 @@ function applyPtyDimensions(cols: number, rows: number) {
     }
   } catch {}
 
-  scheduleTextSync()
+  scrollTextViewToBottom()
 }
 
 // 服务端 PTY 尺寸是所有远程显示模式的唯一权威尺寸。
@@ -502,10 +407,31 @@ const {
 } = useOutputBuffer({
   onFlush: (merged) => {
     terminal?.write(merged, () => {
-      scheduleTextSync()
+      scrollTextViewToBottom()
     })
   },
 })
+
+function scheduleStructuredFallback(seq: number, text: string) {
+  structuredFallbacks.schedule(seq, text)
+}
+
+function consumeStructuredPart(seq: number | undefined, part: StructuredPartFramePayload | undefined) {
+  if (!part) return
+  let rawChunk: string | undefined
+  if (typeof seq === 'number') {
+    rawChunk = structuredFallbacks.consume(seq)
+    if (rawChunk === undefined && structuredFallbacks.hasResolved(seq)) {
+      return
+    }
+  }
+  transcript.appendStructuredPart(part, { rawChunk })
+  scrollTextViewToBottom()
+}
+
+function flushPendingStructuredFallbacks() {
+  structuredFallbacks.flush()
+}
 
 function changeFontSize(delta: number) {
   const next = fontSize.value + delta
@@ -515,7 +441,7 @@ function changeFontSize(delta: number) {
   if (terminal) {
     terminal.options.fontSize = next
     if (mobileTextMode.value) {
-      scheduleTextSync()
+      scrollTextViewToBottom()
     } else {
       debouncedControllerResize()
     }
@@ -569,7 +495,7 @@ function initTerminal() {
     if (!mobileTextMode.value) {
       fitControllerTerminal()
     }
-    scheduleTextSync()
+    initializeTranscriptFromTerminalSnapshot('initial terminal mount')
   })
 
   terminal.onData((data: string) => {
@@ -579,7 +505,7 @@ function initTerminal() {
 
   resizeObserver = new ResizeObserver(() => {
     if (mobileTextMode.value) {
-      scheduleTextSync()
+      scrollTextViewToBottom()
     } else {
       debouncedControllerResize()
     }
@@ -660,11 +586,20 @@ function connectWebSocket() {
   })
 
   ws.onMessage((frame) => {
-    if (frame.type === 'output' && frame.data) {
+    if (frame.type === 'structured-part') {
+      consumeStructuredPart(frame.seq, frame.part)
+    } else if (frame.type === 'output' && frame.data) {
       try {
         const bytes = base64ToUint8(frame.data)
+        const decodedOutput = transcriptDecoder.decode(bytes, { stream: true })
         bufferOutput(bytes)
+        if (frame.structuredExpected === true && typeof frame.seq === 'number') {
+          scheduleStructuredFallback(frame.seq, decodedOutput)
+        } else {
+          transcript.appendRawChunk(decodedOutput, { source: 'websocket' })
+        }
       } catch {
+        transcript.appendRawChunk(frame.data, { source: 'fallback' })
         terminal?.write(frame.data)
       }
     } else if (frame.type === 'dimensions' && frame.cols && frame.rows) {
@@ -678,7 +613,9 @@ function connectWebSocket() {
 }
 
 function reconnectWebSocket() {
+  flushPendingStructuredFallbacks()
   ws?.disconnect()
+  transcriptDecoder = new TextDecoder()
   connectWebSocket()
 }
 
@@ -734,15 +671,7 @@ function goBack() {
 async function loadSessionMetadata() {
   try {
     sessionMetadata.value = await fetchSessionMetadata(sessionId)
-    if (mobileTextMode.value && terminal) {
-      syncTextView()
-    } else if (mobileTextMode.value && terminalTextLines.value.length > 0) {
-      terminalBlocks.value = buildTranscriptBlocks(
-        terminalTextLines.value,
-        sessionMetadata.value?.appType ?? 'generic',
-      )
-      void refreshMarkdownBlocks(terminalBlocks.value)
-    }
+    transcript.refreshAppType()
   } catch {
     sessionMetadata.value = null
   }
@@ -758,9 +687,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  flushPendingStructuredFallbacks()
   ws?.disconnect()
   resizeObserver?.disconnect()
-  resetMarkdownCache()
   cleanupViewportListener()
   cancelTextSync()
   // 清理触摸事件
@@ -817,7 +746,11 @@ onUnmounted(() => {
         :style="{ fontSize: `${Math.max(fontSize + 4, 16)}px` }"
       >
         <div class="terminal-text-mode-header">
-          <div class="terminal-text-mode-badge">文本模式</div>
+          <button
+            type="button"
+            class="terminal-text-mode-badge terminal-text-mode-toggle"
+            @click="structuredViewEnabled = !structuredViewEnabled"
+          >{{ structuredViewEnabled ? '结构化视图' : '原始终端' }}</button>
           <div class="terminal-text-mode-caption">移动端优化阅读视图</div>
         </div>
         <div v-if="sessionMetadata" class="terminal-summary-card terminal-summary-card--hero">
@@ -839,151 +772,13 @@ onUnmounted(() => {
             class="terminal-meta-chip terminal-meta-button"
           >{{ chip }}</button>
         </div>
-        <div
-          v-for="block in displayedTerminalBlocks"
-          :key="block.id"
-          class="terminal-text-block"
-          :class="`terminal-text-block--${block.type}`"
-        >
-          <template v-if="block.type === 'summary'">
-            <div class="terminal-summary-card">
-              <div class="terminal-summary-topline">
-                <div class="terminal-summary-title-row">
-                  <h2 class="terminal-summary-title">{{ block.title }}</h2>
-                  <span v-if="block.version" class="terminal-summary-version">{{ block.version }}</span>
-                </div>
-                <span v-if="block.effort" class="terminal-summary-effort">{{ block.effort }}</span>
-              </div>
-              <p v-if="block.subtitle" class="terminal-summary-subtitle">{{ block.subtitle }}</p>
-              <div v-if="block.workDir" class="terminal-summary-workdir">{{ block.workDir }}</div>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'tool'">
-            <div class="terminal-tool-card">
-              <div class="terminal-tool-head">
-                <span class="terminal-tool-name">{{ block.toolName }}</span>
-                <button v-if="block.shortcutHint" type="button" class="terminal-tool-shortcut">{{ block.shortcutHint }}</button>
-              </div>
-              <div class="terminal-tool-title">{{ block.title }}</div>
-              <ul v-if="shouldRenderToolSummaryAsFileList(block)" class="terminal-tool-file-list">
-                <li v-for="line in getToolSummaryLines(block)" :key="line" class="terminal-tool-file-item">{{ line }}</li>
-              </ul>
-              <div v-else-if="block.summary" class="terminal-tool-summary">{{ block.summary }}</div>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'action'">
-            <div class="terminal-action-card">
-              <div class="terminal-action-content">{{ block.content }}</div>
-              <button v-if="block.shortcutHint" type="button" class="terminal-tool-shortcut">{{ block.shortcutHint }}</button>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'prompt'">
-            <div class="terminal-prompt-card">
-              <div class="terminal-text-line">{{ block.content }}</div>
-              <button v-if="getPromptActionText(block)" type="button" class="terminal-prompt-button">{{ getPromptActionText(block) }}</button>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'code'">
-            <div class="terminal-code-meta">
-              <span v-if="block.language" class="terminal-code-chip">{{ block.language }}</span>
-              <span v-if="block.filename" class="terminal-code-file">{{ block.filename }}</span>
-            </div>
-            <pre class="terminal-code-block hljs" v-html="highlightCode(block.code, block.language)"></pre>
-          </template>
-          <template v-else-if="block.type === 'diff'">
-            <div class="terminal-diff-card">
-              <div class="terminal-diff-head">
-                <span class="terminal-diff-file">{{ block.filename }}</span>
-                <div class="terminal-diff-stats">
-                  <span class="terminal-diff-additions">+{{ block.additions }}</span>
-                  <span class="terminal-diff-deletions">-{{ block.deletions }}</span>
-                </div>
-              </div>
-              <pre class="terminal-diff-block"><div
-                v-for="(line, index) in block.diff.split('\n')"
-                :key="`${block.id}-${index}`"
-                class="terminal-diff-line"
-                :class="`terminal-diff-line--${classifyDiffLine(line)}`"
-              >{{ line || ' ' }}</div></pre>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'todo'">
-            <div class="terminal-todo-card">
-              <div class="terminal-todo-header">
-                <span class="terminal-todo-label">TODO</span>
-                <span class="terminal-todo-count">
-                  {{ block.items.filter(i => i.completed).length }}/{{ block.items.length }}
-                </span>
-              </div>
-              <ul class="terminal-todo-list">
-                <li
-                  v-for="(item, idx) in block.items"
-                  :key="idx"
-                  class="terminal-todo-item"
-                  :class="{ 'terminal-todo-item--done': item.completed }"
-                >
-                  <span class="terminal-todo-check">{{ item.completed ? '[x]' : '[ ]' }}</span>
-                  <span class="terminal-todo-text">{{ item.text }}</span>
-                </li>
-              </ul>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'table'">
-            <div class="terminal-table-card">
-              <div class="terminal-table-meta">
-                <span class="terminal-table-label">TABLE</span>
-                <span class="terminal-table-dims">
-                  {{ block.headers.length }} cols / {{ block.rows.length }} rows
-                </span>
-              </div>
-              <div class="terminal-table-scroll">
-                <div
-                  v-if="markdownHtmlById[block.id]"
-                  class="terminal-table-rendered"
-                  v-html="markdownHtmlById[block.id]"
-                >
-                </div>
-                <pre v-else class="terminal-text-line">{{ block.content }}</pre>
-              </div>
-            </div>
-          </template>
-          <template v-else-if="block.type === 'markdown'">
-            <div class="terminal-markdown-card">
-              <div v-if="markdownHtmlById[block.id]" class="terminal-markdown-block" v-html="markdownHtmlById[block.id]"></div>
-              <div v-else class="terminal-text-line">{{ block.content }}</div>
-            </div>
-          </template>
-          <template v-else>
-            <div class="terminal-text-line">{{ getTerminalBlockText(block) }}</div>
-          </template>
-        </div>
-        <div
-          v-if="todoOverlay.hasItems.value"
-          class="terminal-todo-overlay"
-          :class="{ 'terminal-todo-overlay--expanded': todoOverlay.expanded.value }"
-          @click="todoOverlay.toggle()"
-        >
-          <div class="terminal-todo-overlay-compact">
-            <span class="terminal-todo-overlay-label">TODO</span>
-            <span class="terminal-todo-overlay-progress">
-              {{ todoOverlay.completedCount.value }}/{{ todoOverlay.totalCount.value }}
-            </span>
-            <svg class="terminal-todo-overlay-chevron" :class="{ 'terminal-todo-overlay-chevron--up': todoOverlay.expanded.value }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
-          <ul v-if="todoOverlay.expanded.value" class="terminal-todo-overlay-list">
-            <li
-              v-for="(item, idx) in todoOverlay.items.value"
-              :key="idx"
-              class="terminal-todo-overlay-item"
-              :class="{ 'terminal-todo-overlay-item--done': item.completed }"
-            >
-              <span class="terminal-todo-overlay-check">{{ item.completed ? '[x]' : '[ ]' }}</span>
-              <span>{{ item.text }}</span>
-            </li>
-          </ul>
-        </div>
+        <SessionTimeline
+          v-if="structuredViewEnabled"
+          :turns="transcript.turns.value"
+          :loading="wsState === 'connecting' && rawTerminalText.length === 0"
+          :error="transcript.error.value"
+        />
+        <pre v-else class="raw-terminal-fallback">{{ rawTerminalText || '等待终端输出...' }}</pre>
       </div>
       <div
         ref="terminalRef"
@@ -1237,6 +1032,23 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.terminal-text-mode-toggle {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.raw-terminal-fallback {
+  margin: 0;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(139, 148, 158, 0.24);
+  background: rgba(13, 17, 23, 0.92);
+  color: #c9d1d9;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
 }
 
 .terminal-text-mode-caption {

@@ -469,9 +469,6 @@ const defaults = reactive({
   openCodeShell: '',
   codexMode: 'embedded',
   codexShell: '',
-  amagiCodePreset: '',
-  amagiCodeMode: 'embedded',
-  amagiCodeShell: '',
   useProxy: false,
 })
 
@@ -738,9 +735,6 @@ const loadData = async () => {
     defaults.openCodeShell = d.openCodeShell || d.shell || shellFallback
     defaults.codexMode = d.codexMode || 'embedded'
     defaults.codexShell = d.codexShell || d.shell || shellFallback
-    defaults.amagiCodePreset = d.amagiCodePreset || ''
-    defaults.amagiCodeMode = d.amagiCodeMode || 'embedded'
-    defaults.amagiCodeShell = d.amagiCodeShell || d.shell || shellFallback
     defaults.useProxy = d.useProxy || false
   } catch (err) {
     console.error('load defaults:', err)
@@ -773,9 +767,6 @@ const saveDefaults = async () => {
       openCodeShell: defaults.openCodeShell,
       codexMode: defaults.codexMode,
       codexShell: defaults.codexShell,
-      amagiCodePreset: defaults.amagiCodePreset,
-      amagiCodeMode: defaults.amagiCodeMode,
-      amagiCodeShell: defaults.amagiCodeShell,
       useProxy: defaults.useProxy,
     } as any)
     showSuccess('默认值已保存')

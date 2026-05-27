@@ -189,6 +189,49 @@ func TestDetectClaudeInstallMethod_RemovedLegacyPackageManagerPathIsUnknown(t *t
 	}
 }
 
+func TestCheckClaudeCodePrefersNativeDefaultOverPATHShimOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin native Claude default path resolution is only defined on macOS")
+	}
+
+	homeDir := t.TempDir()
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, "claude")
+	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
+		t.Fatalf("mkdir native dir: %v", err)
+	}
+	if err := os.WriteFile(nativePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write native claude: %v", err)
+	}
+
+	npmDir := t.TempDir()
+	npmShim := filepath.Join(npmDir, "claude")
+	if err := os.WriteFile(npmShim, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write npm shim: %v", err)
+	}
+
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", npmDir)
+	previousHomeDir := claudeUserHomeDir
+	claudeUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { claudeUserHomeDir = previousHomeDir })
+
+	svc := newTestService(mockResponse{pathPrefix: nativePath, stdout: "Claude Code v2.1.132"})
+	status, err := svc.checkClaudeCode()
+	if err != nil {
+		t.Fatalf("checkClaudeCode: %v", err)
+	}
+	if !status.Installed {
+		t.Fatalf("expected installed status, got %+v", status)
+	}
+	if !sameNormalizedPath(status.ExecutablePath, nativePath) {
+		t.Fatalf("executable path = %q, want native path %q instead of PATH shim %q", status.ExecutablePath, nativePath, npmShim)
+	}
+	if status.InstallMethod != InstallMethodNative {
+		t.Fatalf("install method = %q, want %q", status.InstallMethod, InstallMethodNative)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // normalizeClaudePath
 // ---------------------------------------------------------------------------

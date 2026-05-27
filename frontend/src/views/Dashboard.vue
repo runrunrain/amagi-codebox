@@ -141,13 +141,6 @@
         >
           Codex
         </button>
-        <button
-          class="launch-tab"
-          :class="{ active: activeLaunchTab === 'amagicode' }"
-          @click="activeLaunchTab = 'amagicode'"
-        >
-          AmagiCode
-        </button>
       </div>
 
       <div class="launch-content">
@@ -549,108 +542,6 @@
             </div>
           </div>
         </div>
-
-        <!-- AmagiCode -->
-        <div v-if="activeLaunchTab === 'amagicode'" class="launch-tab-content">
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label>预设配置</label>
-              <select v-model="amagiCodePreset" class="input-field" :disabled="!hasAmagiPresets">
-                <option value="">请选择 ModelPreset...</option>
-                <option v-for="(group, name) in amagiAvailablePresets" :key="name" :value="name">
-                  {{ name }} ({{ getGroupSummary(group) }})
-                </option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label>启动模式</label>
-              <div class="mode-selector">
-                <button
-                  v-for="m in launchModes"
-                  :key="m.value"
-                  class="mode-btn"
-                  :class="{ active: amagiCodeMode === m.value }"
-                  @click="amagiCodeMode = m.value"
-                >
-                  <span class="mode-icon">
-                    <svg v-if="m.value === 'embedded'" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-                    <svg v-else viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><polyline points="9 9 15 12 9 15"></polyline></svg>
-                  </span>
-                  <span class="mode-label">{{ m.label }}</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="form-group flex-1" v-if="amagiCodeMode === 'embedded'">
-              <label>终端 Shell 路径</label>
-              <div class="shell-selector">
-                <div class="shell-tabs">
-                  <button
-                    v-for="s in shellOptions"
-                    :key="s.value"
-                    class="shell-tab"
-                    :class="{ active: amagiCodeShell === s.value }"
-                    @click="amagiCodeShell = s.value"
-                    :title="s.value || '直接启动 AmagiCode（不经过 shell）'"
-                  >
-                    {{ s.label }}
-                  </button>
-                </div>
-                <div class="shell-input-row" v-if="amagiCodeShell === '__custom__'">
-                  <input
-                    type="text"
-                    class="input-field"
-                    v-model="amagiCodeCustomShellPath"
-                    placeholder="输入 shell 可执行文件路径"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>工作目录</label>
-            <div class="path-selector">
-              <div class="path-tabs" v-if="savedPaths.length > 0">
-                <button
-                  v-for="p in savedPaths"
-                  :key="p.path"
-                  class="path-tab"
-                  :class="{ active: selectedWorkDir === p.path }"
-                  @click="selectedWorkDir = p.path"
-                  :title="p.path"
-                >
-                  {{ p.label || basename(p.path) }}
-                  <span class="path-tab-remove" @click.stop="removeSavedPath(p.path)">
-                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                  </span>
-                </button>
-              </div>
-              <div class="path-input-row">
-                <input
-                  type="text"
-                  class="input-field"
-                  v-model="selectedWorkDir"
-                  placeholder="输入或选择工作目录..."
-                />
-                <button class="btn icon-btn" @click="browseDirectory" title="浏览目录">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                </button>
-                <button
-                  class="btn icon-btn"
-                  @click="saveCurrentPath"
-                  :disabled="!selectedWorkDir"
-                  title="保存当前路径"
-                >
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </div>
@@ -659,7 +550,7 @@
 <script lang="ts" setup>
 import { ref, computed, onMounted, onUnmounted, watch, toRef } from 'vue'
 import { useRouter } from 'vue-router'
-import { LaunchSession, StopSession, StopAllSessions, GetSessions, RemoveSession, ClearStoppedSessions, BrowseDirectory, GetAmagiSettings, LaunchAmagiCode, LaunchCodexSession, LaunchOpenCode, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
+import { LaunchSession, StopSession, StopAllSessions, GetSessions, RemoveSession, ClearStoppedSessions, BrowseDirectory, LaunchCodexSession, LaunchOpenCode, GetMergedTerminalPresets } from '../../wailsjs/go/main/App'
 
 import { GetProviders, GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { GetStatus as GetProxyStatus } from '../../wailsjs/go/proxy/ProxyService'
@@ -710,10 +601,6 @@ const codexShell = toRef(dashState, 'codexShell')
 const claudeCustomShellPath = toRef(dashState, 'claudeCustomShellPath')
 const openCodeCustomShellPath = toRef(dashState, 'openCodeCustomShellPath')
 const codexCustomShellPath = toRef(dashState, 'codexCustomShellPath')
-const amagiCodePreset = toRef(dashState, 'amagiCodePreset')
-const amagiCodeMode = toRef(dashState, 'amagiCodeMode')
-const amagiCodeShell = toRef(dashState, 'amagiCodeShell')
-const amagiCodeCustomShellPath = toRef(dashState, 'amagiCodeCustomShellPath')
 
 const loading = ref(false)
 const selectedSession = ref('')
@@ -790,31 +677,11 @@ const codexAvailableModels = computed(() => {
   return Object.keys(codexAvailablePresets.value)
 })
 
-// AmagiCode 预设组（从 settings_amagi.json 的 modelPresets，现在是 ModelPresetGroup）
-const amagiAvailablePresets = ref<Record<string, any>>({})
-
-function getGroupSummary(group: any): string {
-  const presets = group?.presets || {}
-  const count = Object.keys(presets).length
-  const defaultPreset = group?.default_preset || ''
-  if (count === 0) return '空组'
-  let summary = `${count} 个预设`
-  if (defaultPreset) summary += `, 默认: ${defaultPreset}`
-  return summary
-}
-
-const hasAmagiPresets = computed(() => Object.keys(amagiAvailablePresets.value).length > 0)
-
-// AmagiCode shell 路径 -- uses platform capability resolver
-function resolveAmagiCodeShellPath(): string {
-  return platformCaps.resolveShellPath(amagiCodeShell.value, amagiCodeCustomShellPath.value)
-}
-
 // Codex 启动模式（由平台能力驱动）
 const codexLaunchModes = computed(() => platformCaps.launchModes.value)
 
 // 启动类型 Tabs
-const activeLaunchTab = ref<'claudecode' | 'opencode' | 'codex' | 'amagicode'>('claudecode')
+const activeLaunchTab = ref<'claudecode' | 'opencode' | 'codex'>('claudecode')
 
 // Shell 路径选项：平台能力驱动 + 用户自定义
 const builtinShellOptions = computed(() => platformCaps.builtinShellOptions.value)
@@ -948,9 +815,6 @@ const canLaunch = computed(() => {
   } else if (activeLaunchTab.value === 'codex') {
     if (!selectedCodexModel.value || !selectedCodexProvider.value) return false
     return codexPresetsForSelectedProvider.value.some(p => p.key === selectedCodexModel.value)
-  } else if (activeLaunchTab.value === 'amagicode') {
-    // AmagiCode 只需要预设，provider 从预设中获取
-    return !!amagiCodePreset.value
   } else {
     // OpenCode 只需要工作目录，provider 可选
     return !!selectedWorkDir.value
@@ -1064,21 +928,6 @@ const loadProviders = async () => {
   }
 }
 
-const loadAmagiSettings = async () => {
-  try {
-    const settings = await GetAmagiSettings()
-    if (settings && settings.model_presets) {
-      amagiAvailablePresets.value = settings.model_presets
-      // 如果有激活组且当前未选择，自动选择
-      if (settings.model && !amagiCodePreset.value) {
-        amagiCodePreset.value = settings.model
-      }
-    }
-  } catch (err) {
-    console.error('Failed to load AmagiCode settings:', err)
-  }
-}
-
 const initDefaults = async () => {
   if (dashState.initialized) return
   try {
@@ -1090,12 +939,9 @@ const initDefaults = async () => {
     dashState.claudeMode = d.claudeMode || d.mode || 'embedded'
     dashState.openCodeMode = d.openCodeMode || 'embedded'
     dashState.codexMode = d.codexMode || 'embedded'
-    dashState.amagiCodeMode = d.amagiCodeMode || 'embedded'
     dashState.claudeShell = d.claudeShell || d.shell || shellFallback
     dashState.openCodeShell = d.openCodeShell || d.shell || shellFallback
     dashState.codexShell = d.codexShell || d.shell || shellFallback
-    dashState.amagiCodeShell = d.amagiCodeShell || d.shell || shellFallback
-    dashState.amagiCodePreset = d.amagiCodePreset || ''
     dashState.useProxy = d.useProxy || false
   } catch (err) {
     console.error('Failed to load defaults:', err)
@@ -1124,9 +970,6 @@ const persistDashboardDefaults = async () => {
       openCodeShell: openCodeShell.value,
       codexMode: codexMode.value,
       codexShell: codexShell.value,
-      amagiCodeMode: amagiCodeMode.value,
-      amagiCodeShell: amagiCodeShell.value,
-      amagiCodePreset: amagiCodePreset.value,
       useProxy: useProxy.value,
     } as any)
   } catch (err) {
@@ -1256,40 +1099,11 @@ const handleLaunchCodex = async () => {
   }
 }
 
-const handleLaunchAmagiCode = async () => {
-  if (!canLaunch.value || activeLaunchTab.value !== 'amagicode') return
-  loading.value = true
-  try {
-    const shellPath = amagiCodeMode.value === 'embedded' ? resolveAmagiCodeShellPath() : ''
-    const sessionId = await LaunchAmagiCode(
-      amagiCodePreset.value,
-      '',
-      amagiCodeMode.value,
-      selectedWorkDir.value,
-      shellPath,
-    )
-    await persistDashboardDefaults()
-    await refreshStatus()
-    selectedSession.value = sessionId
-    showSuccess('AmagiCode 启动成功')
-    if (amagiCodeMode.value === 'embedded') {
-      router.push('/terminals')
-    }
-  } catch (err) {
-    console.error('Launch AmagiCode failed:', err)
-    showError('启动 AmagiCode 失败: ' + err)
-  } finally {
-    loading.value = false
-  }
-}
-
 const handleLaunchByTab = () => {
   if (activeLaunchTab.value === 'claudecode') {
     handleLaunch()
   } else if (activeLaunchTab.value === 'codex') {
     handleLaunchCodex()
-  } else if (activeLaunchTab.value === 'amagicode') {
-    handleLaunchAmagiCode()
   } else {
     handleLaunchOpenCode()
   }
@@ -1402,7 +1216,6 @@ onMounted(async () => {
   await loadProviders()
   await loadTerminalPresets()
   await loadOpenCodePresets()
-  await loadAmagiSettings()
   await initDefaults()
   await loadPaths()
   await loadShellPaths()

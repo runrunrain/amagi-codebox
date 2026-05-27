@@ -240,6 +240,42 @@ func TestDarwinResolverPrefersClaudeNativeDefaultOverNPMShim(t *testing.T) {
 	}
 }
 
+func TestDarwinResolverUsesUserHomeFallbackForClaudeNativeDefault(t *testing.T) {
+	homeDir := t.TempDir()
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, "claude")
+	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
+		t.Fatalf("mkdir native dir: %v", err)
+	}
+	if err := os.WriteFile(nativePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write native cli: %v", err)
+	}
+
+	npmDir := t.TempDir()
+	npmShim := filepath.Join(npmDir, "claude")
+	if err := os.WriteFile(npmShim, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write npm shim: %v", err)
+	}
+
+	previousHomeDir := pathLookupUserHomeDir
+	pathLookupUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { pathLookupUserHomeDir = previousHomeDir })
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	cli, diagnostics, err := resolver.ResolveExecutable("claude", nil, []string{
+		"PATH=" + npmDir,
+	})
+	if err != nil {
+		t.Fatalf("ResolveExecutable: %v", err)
+	}
+	if cli.Path != nativePath {
+		t.Fatalf("resolved cli path = %q, want native default %q instead of npm shim %q", cli.Path, nativePath, npmShim)
+	}
+	if diagnostics.CLISource != "path-search" {
+		t.Fatalf("cli source = %q, want path-search", diagnostics.CLISource)
+	}
+}
+
 func pathListContains(osName string, pathValue string, want string) bool {
 	for _, entry := range splitPathListForOS(osName, pathValue) {
 		if filepath.Clean(entry) == filepath.Clean(want) {

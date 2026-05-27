@@ -2,6 +2,7 @@ package remote
 
 import (
 	"embed"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"net/url"
@@ -10,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/amagi"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
+	"amagi-codebox/internal/structured"
 
 	"github.com/gorilla/websocket"
 )
@@ -109,9 +110,6 @@ func (a *websocketTestApp) LaunchCodexSession(modelName string, providerID strin
 func (a *websocketTestApp) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
 	return "", errors.New("not implemented")
 }
-func (a *websocketTestApp) LaunchAmagiCode(groupName string, providerName string, mode string, workDir string, shellPath string) (string, error) {
-	return "", errors.New("not implemented")
-}
 func (a *websocketTestApp) StopSession(sessionID string) error   { return nil }
 func (a *websocketTestApp) RemoveSession(sessionID string) error { return nil }
 func (a *websocketTestApp) ClearStoppedSessions() int            { return 0 }
@@ -129,11 +127,10 @@ func (a *websocketTestApp) GetKeyDiagnostics() map[string]map[string]string { re
 func (a *websocketTestApp) GetLogs(level string, source string, keyword string, limit int) []logging.Entry {
 	return nil
 }
-func (a *websocketTestApp) GetSettingsService() *settings.Service           { return nil }
-func (a *websocketTestApp) GetPathsService() *paths.PathsService            { return nil }
-func (a *websocketTestApp) GetConfigService() *config.ConfigService         { return nil }
-func (a *websocketTestApp) GetAmagiSettings() (*amagi.AmagiSettings, error) { return nil, nil }
-func (a *websocketTestApp) SetRemotePort(port int) error                    { return nil }
+func (a *websocketTestApp) GetSettingsService() *settings.Service   { return nil }
+func (a *websocketTestApp) GetPathsService() *paths.PathsService    { return nil }
+func (a *websocketTestApp) GetConfigService() *config.ConfigService { return nil }
+func (a *websocketTestApp) SetRemotePort(port int) error            { return nil }
 
 func TestWebSocketControllerReceivesDimensionsWithoutOwningResize(t *testing.T) {
 	app := newWebsocketTestApp()
@@ -176,6 +173,45 @@ func TestWebSocketControllerReceivesDimensionsWithoutOwningResize(t *testing.T) 
 
 	if got := app.resizeCallCount(); got != 0 {
 		t.Fatalf("remote resize should not call PtyResize, got %d calls", got)
+	}
+}
+
+func TestServerMsgSerializesStructuredPartFrame(t *testing.T) {
+	part := structured.Classify([]byte("# Plan\n\n- inspect"), 7)
+	raw, err := json.Marshal(serverMsg{Type: "structured-part", Seq: 7, Part: &part})
+	if err != nil {
+		t.Fatalf("marshal structured-part frame: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal structured-part frame: %v", err)
+	}
+	if decoded["type"] != "structured-part" {
+		t.Fatalf("type = %v, want structured-part", decoded["type"])
+	}
+	if decoded["seq"] != float64(7) {
+		t.Fatalf("seq = %v, want 7", decoded["seq"])
+	}
+	partValue, ok := decoded["part"].(map[string]any)
+	if !ok {
+		t.Fatalf("part missing or wrong type: %#v", decoded["part"])
+	}
+	if partValue["type"] != "markdown" {
+		t.Fatalf("part.type = %v, want markdown", partValue["type"])
+	}
+}
+
+func TestServerMsgSerializesOutputCompatibilityFields(t *testing.T) {
+	raw, err := json.Marshal(serverMsg{Type: "output", Data: "YWJj", Seq: 11, StructuredExpected: true})
+	if err != nil {
+		t.Fatalf("marshal output frame: %v", err)
+	}
+	jsonText := string(raw)
+	for _, fragment := range []string{`"type":"output"`, `"data":"YWJj"`, `"seq":11`, `"structuredExpected":true`} {
+		if !strings.Contains(jsonText, fragment) {
+			t.Fatalf("output frame %s missing fragment %s", jsonText, fragment)
+		}
 	}
 }
 

@@ -46,6 +46,10 @@ func currentOS() string {
 }
 
 func resolveCommandPathForOS(osName string, command string, env []string) string {
+	return resolveCommandPathForOSWithOptions(osName, command, env, true)
+}
+
+func resolveCommandPathForOSWithOptions(osName string, command string, env []string, preferDefault bool) string {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
 		return ""
@@ -56,8 +60,10 @@ func resolveCommandPathForOS(osName string, command string, env []string) string
 		}
 		return ""
 	}
-	if resolved := resolvePreferredDefaultCommandPathForOS(osName, trimmed, env); resolved != "" {
-		return resolved
+	if preferDefault {
+		if resolved := resolvePreferredDefaultCommandPathForOS(osName, trimmed, env); resolved != "" {
+			return resolved
+		}
 	}
 
 	_, pathValue, _, _ := buildEffectiveEnvForOS(osName, env)
@@ -78,6 +84,10 @@ func resolveCommandPathForOS(osName string, command string, env []string) string
 		}
 	}
 	return ""
+}
+
+func resolveCommandPathWithoutPreferredDefaultForOS(osName string, command string, env []string) string {
+	return resolveCommandPathForOSWithOptions(osName, command, env, false)
 }
 
 func buildEffectiveEnvForOS(osName string, env []string) ([]string, string, []string, []string) {

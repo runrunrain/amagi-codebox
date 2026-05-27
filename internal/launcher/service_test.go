@@ -1,6 +1,10 @@
 package launcher
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"amagi-codebox/internal/config"
@@ -32,4 +36,57 @@ func TestBuildOverrides_DualFormatProviderUsesAnthropicForClaude(t *testing.T) {
 	if overrides["ANTHROPIC_MODEL"] != "claude-sonnet-4-5" {
 		t.Fatalf("ANTHROPIC_MODEL = %q, want claude-sonnet-4-5", overrides["ANTHROPIC_MODEL"])
 	}
+}
+
+func TestBuildClaudeCmdUsesEffectivePATHWithNativeDefaultAfterPathOverride(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin controlled PATH assertions are only defined on macOS")
+	}
+
+	homeDir := t.TempDir()
+	nativeDir := filepath.Join(homeDir, ".local", "bin")
+	nativePath := filepath.Join(nativeDir, "claude")
+	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
+		t.Fatalf("mkdir native dir: %v", err)
+	}
+	if err := os.WriteFile(nativePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write native claude: %v", err)
+	}
+
+	overriddenPathDir := t.TempDir()
+	svc := NewLauncherService(nil, nil)
+	cmd := svc.buildClaudeCmd(t.TempDir(), []string{
+		"HOME=" + homeDir,
+		"PATH=" + overriddenPathDir,
+	})
+
+	if cmd.Path != nativePath {
+		t.Fatalf("cmd path = %q, want native Claude path %q", cmd.Path, nativePath)
+	}
+	pathValue := envValueForTest(cmd.Env, "PATH")
+	if !pathListContainsForTest(pathValue, nativeDir) {
+		t.Fatalf("launcher PATH %q does not include native dir %q", pathValue, nativeDir)
+	}
+	if !pathListContainsForTest(pathValue, overriddenPathDir) {
+		t.Fatalf("launcher PATH %q does not preserve caller override dir %q", pathValue, overriddenPathDir)
+	}
+}
+
+func envValueForTest(env []string, key string) string {
+	for _, kv := range env {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) == 2 && parts[0] == key {
+			return parts[1]
+		}
+	}
+	return ""
+}
+
+func pathListContainsForTest(pathValue string, want string) bool {
+	for _, entry := range filepath.SplitList(pathValue) {
+		if filepath.Clean(entry) == filepath.Clean(want) {
+			return true
+		}
+	}
+	return false
 }

@@ -14,14 +14,11 @@ describe('resolveAppType', () => {
     expect(resolveAppType('codex')).toBe('codex')
   })
 
-  it('maps amagicode to amagicode', () => {
-    expect(resolveAppType('amagicode')).toBe('amagicode')
-  })
-
   it('maps missing and unknown values to generic', () => {
     expect(resolveAppType(undefined)).toBe('generic')
     expect(resolveAppType(null)).toBe('generic')
     expect(resolveAppType('something-new')).toBe('generic')
+    expect(resolveAppType('amagicode')).toBe('generic')
   })
 })
 
