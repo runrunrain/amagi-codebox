@@ -66,7 +66,7 @@ describe('RawTerminalBlock', () => {
     expect(wrapper.find('.raw-header').text()).toContain('Raw fallback')
   })
 
-  it('renders ANSI content faithfully', () => {
+  it('renders ANSI content as clean diagnostic text', () => {
     // Arrange
     const part = makeRawPart({
       text: '\u001B[32mgreen\u001B[0m text',
@@ -77,7 +77,8 @@ describe('RawTerminalBlock', () => {
     const wrapper = mount(RawTerminalBlock, { props: { part } })
 
     // Assert
-    expect(wrapper.find('.raw-content').text()).toContain('\u001B[32mgreen\u001B[0m text')
+    expect(wrapper.find('.raw-content').text()).toContain('green text')
+    expect(wrapper.find('.raw-content').text()).not.toContain('\u001B[32m')
     expect(wrapper.find('.raw-header').text()).toContain('ansi')
   })
 

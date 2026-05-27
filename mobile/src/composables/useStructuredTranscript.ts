@@ -1,7 +1,8 @@
 import { computed, ref, type Ref } from 'vue'
 import { looksLikeMarkdown } from '../utils/renderMarkdown'
+import { createDiagnosticRecord, normalizeTranscriptChunk, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
 import type { AppType } from '../types/terminal'
-import type { TranscriptPart, TranscriptTurn } from '../types/transcript'
+import type { DiagnosticRefPart, TranscriptPart, TranscriptTurn } from '../types/transcript'
 import type { StructuredPartFramePayload } from '../api/websocket'
 
 interface UseStructuredTranscriptOptions {
@@ -106,10 +107,6 @@ function classifySegment(rawSegment: string, index: number, timestamp: string): 
   return { id, type: 'text', text, createdAt: timestamp }
 }
 
-function normalizeChunk(chunk: string): string {
-  return chunk.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-}
-
 function hasCompletedSegmentBoundary(text: string): boolean {
   SEGMENT_DELIMITER_PATTERN.lastIndex = 0
   return SEGMENT_DELIMITER_PATTERN.test(text)
@@ -134,6 +131,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   const turns = ref<TranscriptTurn[]>([])
   const error = ref<string | null>(null)
   const rawText = ref('')
+  const diagnostics = ref<TranscriptDiagnosticRecord[]>([])
   const maxRawChars = options.maxRawChars ?? DEFAULT_MAX_RAW_CHARS
   const maxParts = options.maxParts ?? DEFAULT_MAX_PARTS
   const maxLines = options.maxLines ?? DEFAULT_MAX_LINES
@@ -141,6 +139,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   let pendingSegment = ''
   let completedParts: TranscriptPart[] = []
   let partSequence = 0
+  let diagnosticSequence = 0
   let turnCreatedAt: string | null = null
   const debugStats = ref<StructuredTranscriptDebugStats>({
     appendCalls: 0,
@@ -152,6 +151,39 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     retainedParts: 0,
     structuredParts: 0,
   })
+
+  function recordDiagnostic(input: TranscriptDiagnosticInput, timestamp = nowIso()): DiagnosticRefPart {
+    const id = `diagnostic-${diagnosticSequence}`
+    diagnosticSequence += 1
+    const record = createDiagnosticRecord(input, id, timestamp)
+    diagnostics.value = [...diagnostics.value, record].slice(-50)
+    return {
+      id: `${id}-ref`,
+      type: 'diagnostic-ref',
+      reason: record.reason,
+      summary: record.summary,
+      preview: record.preview,
+      redacted: record.redacted,
+      createdAt: timestamp,
+    }
+  }
+
+  function appendDiagnostic(input: TranscriptDiagnosticInput) {
+    const timestamp = nowIso()
+    ensureTurnCreatedAt(timestamp)
+    completedParts.push(recordDiagnostic(input, timestamp))
+    partSequence += 1
+    trimCompletedParts()
+    updateTurn(timestamp)
+    refreshDebugStats({ appendCalls: debugStats.value.appendCalls + 1, lastAppendChars: input.text?.length ?? 0 })
+  }
+
+  function appendDiagnostics(inputs: TranscriptDiagnosticInput[], timestamp: string) {
+    for (const input of inputs) {
+      completedParts.push(recordDiagnostic(input, timestamp))
+      partSequence += 1
+    }
+  }
 
   function structuredPartText(part: StructuredPartFramePayload): string {
     switch (part.type) {
@@ -211,7 +243,14 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       }
       case 'raw-terminal': {
         const text = part.raw?.text ?? ''
-        return text ? { id: part.id, type: 'raw-terminal', text, reason: part.raw?.reason ?? 'unsupported-pattern', createdAt } : null
+        if (!text) return null
+        return recordDiagnostic({
+          reason: part.raw?.reason ?? 'unsupported-pattern',
+          summary: `终端诊断输出已隔离（${part.raw?.reason ?? 'unsupported-pattern'}），未作为会话正文展示。`,
+          text,
+          seq: part.source?.seqStart,
+          severity: 'warning',
+        }, createdAt)
       }
       default:
         return null
@@ -285,7 +324,18 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     ensureTurnCreatedAt(timestamp)
 
     try {
-      const normalized = normalizeChunk(chunk)
+      const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(chunk)
+      appendDiagnostics(chunkDiagnostics.filter((diagnostic) => diagnostic.severity !== 'info'), timestamp)
+      if (!normalized) {
+        trimCompletedParts()
+        updateTurn(timestamp)
+        refreshDebugStats({
+          appendCalls: debugStats.value.appendCalls + 1,
+          lastAppendChars: chunk.length,
+        })
+        error.value = null
+        return
+      }
       const statsPatch: Partial<StructuredTranscriptDebugStats> = {
         appendCalls: debugStats.value.appendCalls + 1,
         lastAppendChars: normalized.length,
@@ -342,18 +392,37 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     try {
       const transcriptPart = toTranscriptPart(part)
       if (!transcriptPart) {
+        appendDiagnostics([{
+          reason: 'invalid-part',
+          summary: '收到无法渲染的结构化片段，已隔离，未作为会话正文展示。',
+          text: JSON.stringify({ id: part.id, type: part.type }),
+          seq: part.source?.seqStart,
+          severity: 'warning',
+        }], timestamp)
+        trimCompletedParts()
+        updateTurn(timestamp)
+        refreshDebugStats({
+          appendCalls: debugStats.value.appendCalls + 1,
+          lastAppendChars: 0,
+        })
         return
       }
 
       const rawChunk = metadata.rawChunk ?? structuredPartText(part)
       if (rawChunk) {
-        const normalized = normalizeChunk(rawChunk)
+        const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(rawChunk)
+        appendDiagnostics(chunkDiagnostics.filter((diagnostic) => diagnostic.severity !== 'info'), timestamp)
         rawText.value = boundRawText(rawText.value + normalized, maxRawChars, maxLines)
       }
 
       const flushedPendingSegment = flushPendingSegment(timestamp)
-      completedParts.push(transcriptPart)
-      partSequence += 1
+      const existingIndex = completedParts.findIndex((item) => item.id === transcriptPart.id)
+      if (existingIndex >= 0) {
+        completedParts[existingIndex] = transcriptPart
+      } else {
+        completedParts.push(transcriptPart)
+        partSequence += 1
+      }
       trimCompletedParts()
       updateTurn(timestamp)
       refreshDebugStats({
@@ -371,9 +440,11 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   function reset(rawInitialText = '', snapshotCacheValue = '') {
     const timestamp = nowIso()
     rawText.value = ''
+    diagnostics.value = []
     pendingSegment = ''
     completedParts = []
     partSequence = 0
+    diagnosticSequence = 0
     turnCreatedAt = null
     lastSnapshot = snapshotCacheValue
     error.value = null
@@ -417,10 +488,12 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     turns,
     error,
     rawText,
+    diagnostics,
     partCount,
     debugStats,
     appendStructuredPart,
     appendRawChunk,
+    appendDiagnostic,
     ingestRawSnapshot,
     refreshAppType,
     reset,

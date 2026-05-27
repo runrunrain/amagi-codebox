@@ -2,11 +2,18 @@ package structured
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
 
 const MaxClassifiableBytes = 32 * 1024
+
+var (
+	ansiPattern        = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)|[\x1b\x9b][[\]()#;?]*(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~])|\x1b[()#][A-Za-z0-9]`)
+	tuiPattern         = regexp.MustCompile(`[─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋╔╗╚╝╠╣╦╩╬╭╮╰╯▁▂▃▄▅▆▇█▀▐▌░▒▓]`)
+	controlCharPattern = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F]`)
+)
 
 func Classify(data []byte, seq uint64) Part {
 	createdAt := nowRFC3339Nano()
@@ -75,13 +82,21 @@ func partID(seq uint64, partType PartType) string {
 }
 
 func rawPart(seq uint64, text string, reason RawReason, source SourceRef, createdAt string) Part {
+	cleaned := stripAnsiAndTUI(text)
 	return Part{
 		ID:        partID(seq, PartTypeRawTerminal),
 		Type:      PartTypeRawTerminal,
-		Raw:       &RawPayload{Text: text, Reason: reason},
+		Raw:       &RawPayload{Text: cleaned, Reason: reason},
 		Source:    source,
 		CreatedAt: createdAt,
 	}
+}
+
+func stripAnsiAndTUI(text string) string {
+	cleaned := ansiPattern.ReplaceAllString(text, "")
+	cleaned = tuiPattern.ReplaceAllString(cleaned, " ")
+	cleaned = controlCharPattern.ReplaceAllString(cleaned, "")
+	return cleaned
 }
 
 func normalizeChunk(text string) string {

@@ -33,8 +33,10 @@ export interface StructuredPartFramePayload {
   createdAt: string
 }
 
+export type KnownTerminalFrameType = 'output' | 'exit' | 'input' | 'resize' | 'dimensions' | 'structured-part'
+
 export interface TerminalFrame {
-  type: 'output' | 'exit' | 'input' | 'resize' | 'dimensions' | 'structured-part'
+  type: KnownTerminalFrameType | string
   data?: string
   seq?: number
   structuredExpected?: boolean

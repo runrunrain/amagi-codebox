@@ -4,6 +4,7 @@ export type TranscriptRole = 'user' | 'assistant' | 'system'
 export type TranscriptStatus = 'streaming' | 'completed' | 'error'
 export type ToolPartState = 'pending' | 'running' | 'completed' | 'error'
 export type RawTerminalReason = 'fallback' | 'unsupported-pattern' | 'parser-error' | 'ansi' | 'tui' | 'classifier-overflow'
+export type DiagnosticReason = RawTerminalReason | 'schema-invalid' | 'unknown-frame' | 'decode-error' | 'control-characters' | 'object-payload' | 'invalid-part'
 
 export interface TranscriptTurn {
   id: string
@@ -26,6 +27,7 @@ export type TranscriptPart =
   | StepPart
   | ErrorPart
   | RawTerminalPart
+  | DiagnosticRefPart
 
 export interface TranscriptPartBase {
   id: string
@@ -92,4 +94,12 @@ export interface RawTerminalPart extends TranscriptPartBase {
   text: string
   ansi?: string
   reason: RawTerminalReason
+}
+
+export interface DiagnosticRefPart extends TranscriptPartBase {
+  type: 'diagnostic-ref'
+  reason: DiagnosticReason
+  summary: string
+  preview?: string
+  redacted: boolean
 }

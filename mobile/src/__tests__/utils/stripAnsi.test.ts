@@ -14,6 +14,14 @@ describe('stripAnsi', () => {
     expect(stripAnsi(value)).toBe('docs')
   })
 
+  it('removes charset selection escape sequences', () => {
+    expect(stripAnsi('\u001B(Bplain\u001B)0')).toBe('plain')
+  })
+
+  it('removes 8-bit CSI sequences', () => {
+    expect(stripAnsi('\u009B31mred\u009B0m')).toBe('red')
+  })
+
   it('leaves plain text untouched', () => {
     expect(stripAnsi('plain text')).toBe('plain text')
   })

@@ -1,13 +1,16 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { cleanPtyText } from '../../utils/transcriptNormalizer'
 import type { RawTerminalPart } from '../../types/transcript'
 
-defineProps<{ part: RawTerminalPart }>()
+const props = defineProps<{ part: RawTerminalPart }>()
+const safeText = computed(() => cleanPtyText(props.part.text || ' '))
 </script>
 
 <template>
   <article class="raw-block">
     <header class="raw-header">Raw fallback · {{ part.reason }}</header>
-    <pre class="raw-content">{{ part.text || ' ' }}</pre>
+    <pre class="raw-content">{{ safeText || ' ' }}</pre>
   </article>
 </template>
 

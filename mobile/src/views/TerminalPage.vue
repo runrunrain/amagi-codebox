@@ -13,6 +13,7 @@ import { useConnection } from '../stores/connection'
 import SessionTimeline from '../components/transcript/SessionTimeline.vue'
 import { StructuredFrameFallbacks } from '../utils/structuredFrameFallback'
 import { stripTuiChars } from '../utils/stripTuiChars'
+import { decodeBase64ToUint8 } from '../utils/terminalFrameDecode'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
 
@@ -417,7 +418,25 @@ function scheduleStructuredFallback(seq: number, text: string) {
 }
 
 function consumeStructuredPart(seq: number | undefined, part: StructuredPartFramePayload | undefined) {
-  if (!part) return
+  if (!part) {
+    transcript.appendDiagnostic({
+      reason: 'invalid-part',
+      summary: '收到缺少 part 负载的结构化帧，已隔离。',
+      seq,
+      severity: 'warning',
+    })
+    return
+  }
+  if (!['text', 'markdown', 'tool', 'diff', 'raw-terminal'].includes(part.type)) {
+    transcript.appendDiagnostic({
+      reason: 'unknown-frame',
+      summary: '收到当前客户端不支持的结构化片段类型，已隔离。',
+      text: JSON.stringify({ id: part.id, type: part.type }),
+      seq,
+      severity: 'warning',
+    })
+    return
+  }
   let rawChunk: string | undefined
   if (typeof seq === 'number') {
     rawChunk = structuredFallbacks.consume(seq)
@@ -557,15 +576,6 @@ function handleMobileInputEnter(event: KeyboardEvent) {
   sendMobileInput()
 }
 
-function base64ToUint8(base64: string): Uint8Array {
-  const bin = atob(base64)
-  const bytes = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) {
-    bytes[i] = bin.charCodeAt(i)
-  }
-  return bytes
-}
-
 function connectWebSocket() {
   ws = new TerminalWebSocket()
 
@@ -590,7 +600,7 @@ function connectWebSocket() {
       consumeStructuredPart(frame.seq, frame.part)
     } else if (frame.type === 'output' && frame.data) {
       try {
-        const bytes = base64ToUint8(frame.data)
+        const bytes = decodeBase64ToUint8(frame.data)
         const decodedOutput = transcriptDecoder.decode(bytes, { stream: true })
         bufferOutput(bytes)
         if (frame.structuredExpected === true && typeof frame.seq === 'number') {
@@ -598,14 +608,31 @@ function connectWebSocket() {
         } else {
           transcript.appendRawChunk(decodedOutput, { source: 'websocket' })
         }
-      } catch {
-        transcript.appendRawChunk(frame.data, { source: 'fallback' })
-        terminal?.write(frame.data)
+      } catch (decodeError) {
+        transcript.appendDiagnostic({
+          reason: 'decode-error',
+          summary: '收到无法解码的终端输出帧，已隔离，未写入原始终端或会话正文。',
+          text: frame.data,
+          seq: frame.seq,
+          severity: 'error',
+        })
+        console.warn('[TerminalPage] terminal frame decode failed', {
+          seq: frame.seq,
+          error: decodeError instanceof Error ? decodeError.message : String(decodeError),
+        })
       }
     } else if (frame.type === 'dimensions' && frame.cols && frame.rows) {
       syncToPtyDimensions(frame.cols, frame.rows)
     } else if (frame.type === 'exit') {
       terminal?.writeln(`\r\n\x1b[33mSession exited with code ${frame.exitCode}\x1b[0m`)
+    } else {
+      transcript.appendDiagnostic({
+        reason: 'unknown-frame',
+        summary: '收到未知 WebSocket 帧类型，已隔离，未进入会话正文。',
+        text: JSON.stringify({ type: frame.type, seq: frame.seq }),
+        seq: frame.seq,
+        severity: 'warning',
+      })
     }
   })
 
@@ -778,7 +805,7 @@ onUnmounted(() => {
           :loading="wsState === 'connecting' && rawTerminalText.length === 0"
           :error="transcript.error.value"
         />
-        <pre v-else class="raw-terminal-fallback">{{ rawTerminalText || '等待终端输出...' }}</pre>
+        <pre v-else class="raw-terminal-fallback">{{ stripTuiChars(rawTerminalText || '') || '等待终端输出...' }}</pre>
       </div>
       <div
         ref="terminalRef"

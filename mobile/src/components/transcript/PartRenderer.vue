@@ -2,6 +2,7 @@
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ToolCard from './ToolCard.vue'
 import RawTerminalBlock from './RawTerminalBlock.vue'
+import DiagnosticRefCard from './DiagnosticRefCard.vue'
 import type { TranscriptPart } from '../../types/transcript'
 
 defineProps<{ part: TranscriptPart }>()
@@ -10,6 +11,7 @@ defineProps<{ part: TranscriptPart }>()
 <template>
   <MarkdownRenderer v-if="part.type === 'markdown'" :markdown="part.markdown" :streaming="part.streaming" />
   <ToolCard v-else-if="part.type === 'tool'" :part="part" />
+  <DiagnosticRefCard v-else-if="part.type === 'diagnostic-ref'" :part="part" />
   <RawTerminalBlock v-else-if="part.type === 'raw-terminal'" :part="part" />
   <pre v-else-if="part.type === 'diff'" class="part part--diff">{{ part.diff }}</pre>
   <div v-else-if="part.type === 'error'" class="part part--error">{{ part.message }}</div>

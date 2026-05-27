@@ -12,6 +12,38 @@ describe('renderMarkdownToHtml', () => {
     expect(html).toContain('<p>hello</p>')
     expect(html).not.toContain('<script>')
   })
+
+  it('removes image event handlers', async () => {
+    const html = await renderMarkdownToHtml('<img src=x onerror=alert(1)>')
+    expect(html).not.toContain('onerror')
+    expect(html).not.toContain('alert(1)')
+  })
+
+  it('removes svg onload payloads', async () => {
+    const html = await renderMarkdownToHtml('<svg onload=alert(1)><circle /></svg>')
+    expect(html).not.toContain('<svg')
+    expect(html).not.toContain('onload')
+  })
+
+  it('removes javascript link protocols', async () => {
+    const html = await renderMarkdownToHtml('[click](javascript:alert(1))')
+    expect(html).not.toContain('javascript:')
+    expect(html).not.toContain('alert(1)')
+  })
+
+  it('adds safe rel attributes to external links', async () => {
+    const html = await renderMarkdownToHtml('[docs](https://example.com)')
+    expect(html).toContain('rel="noopener noreferrer"')
+    expect(html).toContain('target="_blank"')
+  })
+
+  it('removes style and mutation-xss payload surfaces', async () => {
+    const payload = '<math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>'
+    const html = await renderMarkdownToHtml(payload)
+    expect(html).not.toContain('<style')
+    expect(html).not.toContain('<math')
+    expect(html).not.toContain('onerror')
+  })
 })
 
 describe('looksLikeMarkdown', () => {

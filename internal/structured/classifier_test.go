@@ -56,3 +56,16 @@ func TestClassifyInvalidUTF8DoesNotPanic(t *testing.T) {
 		t.Fatalf("raw reason = %+v, want unsupported-pattern", part.Raw)
 	}
 }
+
+func TestRawPartStripsAnsiTUIAndControlCharacters(t *testing.T) {
+	part := Classify([]byte("\x1b[31mred\x1b[0m\n\x1b]0;title\x07\x1b(B╭─ panel\x00"), 4)
+	if part.Type != PartTypeRawTerminal || part.Raw == nil {
+		t.Fatalf("type = %s raw = %+v, want raw-terminal", part.Type, part.Raw)
+	}
+	if strings.ContainsAny(part.Raw.Text, "\x1b\x00") || strings.Contains(part.Raw.Text, "╭") {
+		t.Fatalf("raw text was not cleaned: %q", part.Raw.Text)
+	}
+	if !strings.Contains(part.Raw.Text, "red") || !strings.Contains(part.Raw.Text, "panel") {
+		t.Fatalf("clean raw text lost readable content: %q", part.Raw.Text)
+	}
+}

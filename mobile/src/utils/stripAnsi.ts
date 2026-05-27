@@ -1,4 +1,8 @@
-const ANSI_PATTERN_SOURCE = '(?:\\u001B\\][^\\u0007]*(?:\\u0007|\\u001B\\\\))|(?:[\\u001B\\u009B][[\\]()#;?]*(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]))'
+const ANSI_PATTERN_SOURCE = [
+  '(?:\\u001B\\][^\\u0007]*(?:\\u0007|\\u001B\\\\))',
+  '(?:[\\u001B\\u009B][[\\]()#;?]*(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]))',
+  '(?:\\u001B[()#][A-Za-z0-9])',
+].join('|')
 
 function createAnsiPattern() {
   return new RegExp(ANSI_PATTERN_SOURCE, 'g')

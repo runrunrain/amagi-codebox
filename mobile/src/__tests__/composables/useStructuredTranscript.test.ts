@@ -66,15 +66,13 @@ describe('useStructuredTranscript', () => {
     })
   })
 
-  it('falls back to raw terminal for ANSI/TUI chunks', () => {
+  it('keeps raw text clean for ANSI/TUI chunks', () => {
     const transcript = useStructuredTranscript({ sessionId: 's-raw', appType: computed(() => 'opencode') })
 
     transcript.appendRawChunk('\u001B[32mgreen\u001B[0m\n╭─ panel')
 
-    expect(firstPart(transcript)).toMatchObject({
-      type: 'raw-terminal',
-      reason: 'unsupported-pattern',
-    })
+    expect(transcript.rawText.value).toBe('green\n   panel')
+    expect(transcript.rawText.value).not.toContain('\u001B[32m')
   })
 
   it('handles repeated snapshots by appending only the delta', () => {
@@ -180,6 +178,42 @@ describe('useStructuredTranscript', () => {
       createdAt: '2026-05-27T00:00:00.000Z',
     })
 
-    expect(firstPart(transcript)).toMatchObject({ type: 'raw-terminal', reason: 'ansi' })
+    expect(firstPart(transcript)).toMatchObject({ type: 'diagnostic-ref', reason: 'ansi' })
+    expect(transcript.rawText.value).toBe('green')
+  })
+
+  it('updates duplicate structured part ids instead of appending duplicate cards', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-dedup', appType: computed(() => 'generic') })
+    const base = {
+      id: 'dup-part-001',
+      type: 'tool' as const,
+      source: { kind: 'pty' as const, seqStart: 1, seqEnd: 1 },
+      createdAt: '2026-05-27T00:00:00.000Z',
+    }
+
+    transcript.appendStructuredPart({
+      ...base,
+      tool: { name: 'Read', state: 'running', title: 'Read old.ts' },
+    })
+    transcript.appendStructuredPart({
+      ...base,
+      tool: { name: 'Read', state: 'completed', title: 'Read new.ts' },
+    })
+
+    const parts = transcript.turns.value[0]?.parts ?? []
+    expect(parts.filter((part) => part.id === 'dup-part-001')).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ type: 'tool', title: 'Read new.ts', state: 'completed' })
+  })
+
+  it('isolates object-like raw chunks into bounded diagnostics', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-object', appType: computed(() => 'generic') })
+    const payload = JSON.stringify({ token: 'sk-1234567890abcdef', nested: { key: 'value' } })
+
+    transcript.appendRawChunk(payload)
+
+    expect(transcript.rawText.value).toBe('')
+    expect(firstPart(transcript)).toMatchObject({ type: 'diagnostic-ref', reason: 'object-payload' })
+    expect(transcript.diagnostics.value[0]?.preview).toContain('sk-[REDACTED]')
+    expect(transcript.diagnostics.value[0]?.preview.length).toBeLessThanOrEqual(801)
   })
 })
