@@ -14,6 +14,9 @@ export type DiagnosticReason =
   | 'control-characters'
   | 'object-payload'
   | 'invalid-part'
+  | 'unrecoverable-raw-terminal'
+  | 'orphan-delta'
+  | 'history-truncated'
 
 export interface TranscriptDiagnosticInput {
   reason: DiagnosticReason

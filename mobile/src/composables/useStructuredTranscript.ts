@@ -1,8 +1,9 @@
 import { computed, ref, type Ref } from 'vue'
 import { looksLikeMarkdown } from '../utils/renderMarkdown'
-import { createDiagnosticRecord, normalizeTranscriptChunk, resetTranscriptNormalizerState, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
+import { normalizeTranscriptChunk, resetTranscriptNormalizerState, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
+import { useDiagnosticStore } from './useDiagnosticStore'
 import type { AppType } from '../types/terminal'
-import type { DiagnosticRefPart, TranscriptPart, TranscriptTurn } from '../types/transcript'
+import type { DiagnosticRefPart, KeyedTranscriptTurn, TranscriptPart, TranscriptTurn } from '../types/transcript'
 import type { StructuredPartFramePayload } from '../api/websocket'
 
 interface UseStructuredTranscriptOptions {
@@ -31,6 +32,8 @@ export interface StructuredTranscriptDebugStats {
   retainedParts: number
   structuredParts: number
   transientStatusUpdates: number
+  storePatchCount: number
+  turnArrayRebuildCount: number
 }
 
 const DEFAULT_MAX_PARTS = 160
@@ -151,10 +154,32 @@ function boundRawText(rawText: string, maxRawChars: number, maxLines: number): s
 }
 
 export function useStructuredTranscript(options: UseStructuredTranscriptOptions) {
-  const turns = ref<TranscriptTurn[]>([])
+  const turnsById = ref<Record<string, KeyedTranscriptTurn>>({})
+  const turnOrder = ref<string[]>([])
+  const partsById = ref<Record<string, TranscriptPart>>({})
+  const partOrderByTurnId = ref<Record<string, string[]>>({})
+  const activeTurnId = `${options.sessionId}-raw-turn`
+  const turns = computed<TranscriptTurn[]>(() => turnOrder.value.map((turnId) => {
+    const turn = turnsById.value[turnId]
+    if (!turn) return null
+    return {
+      ...turn,
+      parts: (partOrderByTurnId.value[turnId] ?? []).map((partId) => partsById.value[partId]).filter(Boolean),
+    } as TranscriptTurn
+  }).filter(Boolean) as TranscriptTurn[])
   const error = ref<string | null>(null)
   const rawText = ref('')
-  const diagnostics = ref<TranscriptDiagnosticRecord[]>([])
+  const diagnosticStore = useDiagnosticStore({ maxDiagnostics: 80 })
+  const diagnostics = computed<TranscriptDiagnosticRecord[]>(() => diagnosticStore.diagnostics.value.map((record) => ({
+    id: record.id,
+    reason: record.reason,
+    summary: record.summary,
+    severity: record.severity,
+    preview: record.preview,
+    redacted: record.redacted,
+    seq: record.seq,
+    createdAt: record.createdAt,
+  })))
   const maxRawChars = options.maxRawChars ?? DEFAULT_MAX_RAW_CHARS
   const maxParts = options.maxParts ?? DEFAULT_MAX_PARTS
   const maxLines = options.maxLines ?? DEFAULT_MAX_LINES
@@ -174,28 +199,96 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     retainedParts: 0,
     structuredParts: 0,
     transientStatusUpdates: 0,
+    storePatchCount: 0,
+    turnArrayRebuildCount: 0,
   })
+
+  function patchStoreStats() {
+    debugStats.value = { ...debugStats.value, storePatchCount: debugStats.value.storePatchCount + 1 }
+  }
+
+  function ensureTurn(timestamp: string) {
+    ensureTurnCreatedAt(timestamp)
+    if (!turnsById.value[activeTurnId]) {
+      turnsById.value = {
+        ...turnsById.value,
+        [activeTurnId]: {
+          id: activeTurnId,
+          sessionId: options.sessionId,
+          role: 'assistant',
+          appType: options.appType.value,
+          status: 'streaming',
+          createdAt: turnCreatedAt || timestamp,
+          updatedAt: timestamp,
+        },
+      }
+      turnOrder.value = [...turnOrder.value, activeTurnId]
+      partOrderByTurnId.value = { ...partOrderByTurnId.value, [activeTurnId]: [] }
+      patchStoreStats()
+      return
+    }
+    turnsById.value = {
+      ...turnsById.value,
+      [activeTurnId]: {
+        ...turnsById.value[activeTurnId],
+        appType: options.appType.value,
+        updatedAt: timestamp,
+      },
+    }
+  }
+
+  function trimVisibleParts() {
+    const order = partOrderByTurnId.value[activeTurnId] ?? []
+    if (order.length <= maxParts) return
+    const nextOrder = order.slice(order.length - maxParts)
+    const keep = new Set(nextOrder)
+    const nextPartsById = { ...partsById.value }
+    for (const partId of order) {
+      if (!keep.has(partId) && partId !== 'part-current') delete nextPartsById[partId]
+    }
+    partsById.value = nextPartsById
+    partOrderByTurnId.value = { ...partOrderByTurnId.value, [activeTurnId]: nextOrder }
+    patchStoreStats()
+  }
+
+  function upsertPart(part: TranscriptPart, timestamp: string) {
+    ensureTurn(timestamp)
+    const order = partOrderByTurnId.value[activeTurnId] ?? []
+    const nextOrder = order.includes(part.id) ? order : [...order, part.id]
+    partsById.value = { ...partsById.value, [part.id]: part }
+    partOrderByTurnId.value = { ...partOrderByTurnId.value, [activeTurnId]: nextOrder }
+    turnsById.value = {
+      ...turnsById.value,
+      [activeTurnId]: { ...turnsById.value[activeTurnId], updatedAt: timestamp, appType: options.appType.value },
+    }
+    trimVisibleParts()
+    patchStoreStats()
+  }
+
+  function removePart(partId: string) {
+    if (!partsById.value[partId]) return
+    const nextPartsById = { ...partsById.value }
+    delete nextPartsById[partId]
+    partsById.value = nextPartsById
+    const order = partOrderByTurnId.value[activeTurnId] ?? []
+    partOrderByTurnId.value = { ...partOrderByTurnId.value, [activeTurnId]: order.filter((id) => id !== partId) }
+    patchStoreStats()
+  }
 
   function recordDiagnostic(input: TranscriptDiagnosticInput, timestamp = nowIso()): DiagnosticRefPart {
     const id = `diagnostic-${diagnosticSequence}`
     diagnosticSequence += 1
-    const record = createDiagnosticRecord(input, id, timestamp)
-    diagnostics.value = [...diagnostics.value, record].slice(-50)
-    return {
-      id: `${id}-ref`,
-      type: 'diagnostic-ref',
-      reason: record.reason,
-      summary: record.summary,
-      preview: record.preview,
-      redacted: record.redacted,
-      createdAt: timestamp,
-    }
+    const record = diagnosticStore.recordDiagnostic(input, { id, timestamp })
+    return diagnosticStore.toDiagnosticRef(record)
   }
 
   function appendDiagnostic(input: TranscriptDiagnosticInput) {
     const timestamp = nowIso()
     ensureTurnCreatedAt(timestamp)
-    completedParts.push(recordDiagnostic(input, timestamp))
+    const diagnosticRef = recordDiagnostic(input, timestamp)
+    if (diagnosticRef.visibility !== 'hidden-info') {
+      completedParts.push(diagnosticRef)
+    }
     partSequence += 1
     trimCompletedParts()
     updateTurn(timestamp)
@@ -204,7 +297,10 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
 
   function appendDiagnostics(inputs: TranscriptDiagnosticInput[], timestamp: string) {
     for (const input of inputs) {
-      completedParts.push(recordDiagnostic(input, timestamp))
+      const diagnosticRef = recordDiagnostic(input, timestamp)
+      if (diagnosticRef.visibility !== 'hidden-info') {
+        completedParts.push(diagnosticRef)
+      }
       partSequence += 1
     }
   }
@@ -335,35 +431,42 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     }
   }
 
+  function syncCompletedPartsToStore(timestamp: string) {
+    const currentIds = new Set(completedParts.map((part) => part.id))
+    const existingOrder = partOrderByTurnId.value[activeTurnId] ?? []
+    for (const partId of existingOrder) {
+      if (partId !== 'part-current' && !currentIds.has(partId)) {
+        removePart(partId)
+      }
+    }
+    for (const part of completedParts.slice(-maxParts)) {
+      upsertPart(part, timestamp)
+    }
+  }
+
   function flushPendingSegment(timestamp: string): boolean {
     if (!pendingSegment.trim()) return false
 
-    completedParts.push(classifySegment(pendingSegment, partSequence, timestamp))
+    const part = classifySegment(pendingSegment, partSequence, timestamp)
+    completedParts.push(part)
+    upsertPart(part, timestamp)
     partSequence += 1
     pendingSegment = ''
+    removePart('part-current')
     return true
   }
 
   function updateTurn(timestamp: string) {
     ensureTurnCreatedAt(timestamp)
 
+    syncCompletedPartsToStore(timestamp)
     const currentText = pendingSegment.trim()
-    const visibleParts = completedParts.slice(-maxParts)
     if (currentText) {
       const currentPart = classifySegment(pendingSegment, partSequence, timestamp)
-      visibleParts.push(replacePartId(currentPart, 'part-current', true))
+      upsertPart(replacePartId(currentPart, 'part-current', true), timestamp)
+    } else {
+      removePart('part-current')
     }
-
-    turns.value = visibleParts.length > 0 ? [{
-      id: `${options.sessionId}-raw-turn`,
-      sessionId: options.sessionId,
-      role: 'assistant',
-      appType: options.appType.value,
-      parts: visibleParts.slice(-maxParts),
-      status: 'streaming',
-      createdAt: turnCreatedAt || timestamp,
-      updatedAt: timestamp,
-    }] : []
   }
 
   function appendRawChunk(chunk: string, _metadata: AppendRawChunkMetadata = {}) {
@@ -374,7 +477,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
 
     try {
       const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(chunk)
-      appendDiagnostics(chunkDiagnostics.filter((diagnostic) => diagnostic.severity !== 'info'), timestamp)
+      appendDiagnostics(chunkDiagnostics, timestamp)
       const statsPatch: Partial<StructuredTranscriptDebugStats> = {
         appendCalls: debugStats.value.appendCalls + 1,
         lastAppendChars: normalized.length,
@@ -414,9 +517,10 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     try {
       const transcriptPart = toTranscriptPart(part)
       if (!transcriptPart) {
+        const isEmptyRawTerminal = part.type === 'raw-terminal' && !(part.raw?.text ?? '').trim()
         appendDiagnostics([{
-          reason: 'invalid-part',
-          summary: '收到无法渲染的结构化片段，已隔离，未作为会话正文展示。',
+          reason: isEmptyRawTerminal ? 'unrecoverable-raw-terminal' : 'invalid-part',
+          summary: isEmptyRawTerminal ? '收到不可恢复的原始终端片段，已记录到诊断详情。' : '收到无法渲染的结构化片段，已隔离，未作为会话正文展示。',
           text: JSON.stringify({ id: part.id, type: part.type }),
           seq: part.source?.seqStart,
           severity: 'warning',
@@ -433,7 +537,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       const rawChunk = metadata.rawChunk ?? structuredPartText(part)
       if (rawChunk) {
         const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(rawChunk)
-        appendDiagnostics(chunkDiagnostics.filter((diagnostic) => diagnostic.severity !== 'info'), timestamp)
+        appendDiagnostics(chunkDiagnostics, timestamp)
         appendRawTextToStableBuffer(normalized)
       }
 
@@ -445,6 +549,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
         completedParts.push(transcriptPart)
         partSequence += 1
       }
+      upsertPart(transcriptPart, timestamp)
       trimCompletedParts()
       updateTurn(timestamp)
       refreshDebugStats({
@@ -462,7 +567,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   function reset(rawInitialText = '', snapshotCacheValue = '') {
     const timestamp = nowIso()
     rawText.value = ''
-    diagnostics.value = []
+    diagnosticStore.reset()
     resetTranscriptNormalizerState()
     pendingSegment = ''
     completedParts = []
@@ -471,12 +576,17 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     turnCreatedAt = null
     lastSnapshot = snapshotCacheValue
     error.value = null
-    turns.value = []
+    turnsById.value = {}
+    turnOrder.value = []
+    partsById.value = {}
+    partOrderByTurnId.value = {}
     refreshDebugStats({
       appendCalls: 0,
       classifiedSegments: 0,
       structuredParts: 0,
       transientStatusUpdates: 0,
+      storePatchCount: 0,
+      turnArrayRebuildCount: 0,
       snapshotResets: rawInitialText ? debugStats.value.snapshotResets + 1 : 0,
       lastAppendChars: 0,
     })
@@ -502,17 +612,29 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   }
 
   function refreshAppType() {
-    if (turns.value.length === 0) return
-    turns.value = turns.value.map((turn) => ({ ...turn, appType: options.appType.value, updatedAt: nowIso() }))
+    if (turnOrder.value.length === 0) return
+    const timestamp = nowIso()
+    const nextTurnsById = { ...turnsById.value }
+    for (const turnId of turnOrder.value) {
+      nextTurnsById[turnId] = { ...nextTurnsById[turnId], appType: options.appType.value, updatedAt: timestamp }
+    }
+    turnsById.value = nextTurnsById
+    patchStoreStats()
   }
 
-  const partCount = computed(() => turns.value.reduce((sum, turn) => sum + turn.parts.length, 0))
+  const partCount = computed(() => turnOrder.value.reduce((sum, turnId) => sum + (partOrderByTurnId.value[turnId]?.length ?? 0), 0))
 
   return {
     turns,
+    turnsById,
+    turnOrder,
+    partsById,
+    partOrderByTurnId,
     error,
     rawText,
     diagnostics,
+    diagnosticDrawerCount: diagnosticStore.drawerCount,
+    diagnosticDrawerRecords: diagnosticStore.drawerDiagnostics,
     partCount,
     debugStats,
     appendStructuredPart,

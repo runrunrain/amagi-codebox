@@ -1,23 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import type { DiagnosticRefPart } from '../../types/transcript'
 
 defineProps<{ part: DiagnosticRefPart }>()
-
-const expanded = ref(false)
 </script>
 
 <template>
   <article class="diagnostic-card" :data-reason="part.reason">
     <header class="diagnostic-header">诊断输出已隔离 · {{ part.reason }}</header>
     <p class="diagnostic-summary">{{ part.summary }}</p>
-    <button
-      v-if="part.preview"
-      type="button"
-      class="diagnostic-toggle"
-      @click="expanded = !expanded"
-    >{{ expanded ? '隐藏预览' : '展开预览' }}</button>
-    <pre v-if="part.preview && expanded" class="diagnostic-preview">{{ part.preview }}</pre>
+    <p class="diagnostic-count">{{ part.visibility || 'summary-card' }} · ×{{ part.count || 1 }}，详情请打开诊断抽屉查看。</p>
     <p v-if="part.redacted" class="diagnostic-redacted">预览中已隐藏敏感片段</p>
   </article>
 </template>
@@ -43,26 +34,7 @@ const expanded = ref(false)
   color: #c9d1d9;
 }
 
-.diagnostic-toggle {
-  margin: 10px 0 0;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(210, 153, 34, 0.28);
-  background: rgba(210, 153, 34, 0.1);
-  color: #ffd866;
-  font-size: 12px;
-}
-
-.diagnostic-preview {
-  margin: 10px 0 0;
-  max-height: 140px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #8b949e;
-  font-size: 12px;
-}
-
+.diagnostic-count,
 .diagnostic-redacted {
   margin: 8px 0 0;
   color: #8b949e;

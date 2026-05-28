@@ -7,14 +7,18 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { TerminalWebSocket, type ConnectionState } from '../api/websocket'
 import type { StructuredPartFramePayload } from '../api/websocket'
 import { useOutputBuffer } from '../composables/useOutputBuffer'
+import { useRawTerminalSink } from '../composables/useRawTerminalSink'
 import { useStructuredTranscript } from '../composables/useStructuredTranscript'
 import { fetchSessionMetadata, type SessionMetadata } from '../composables/useSessionMetadata'
 import { useConnection } from '../stores/connection'
 import SessionTimeline from '../components/transcript/SessionTimeline.vue'
+import RawTerminalPanel from '../components/transcript/RawTerminalPanel.vue'
+import DiagnosticDrawer from '../components/transcript/DiagnosticDrawer.vue'
 import { StructuredFrameFallbacks } from '../utils/structuredFrameFallback'
 import { stripTuiChars } from '../utils/stripTuiChars'
 import { decodeBase64ToUint8 } from '../utils/terminalFrameDecode'
 import { createFrameBatcher } from '../utils/frameBatcher'
+import { routeDecodedTerminalOutput } from '../utils/terminalOutputRouting'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
 
@@ -53,7 +57,10 @@ const transcript = useStructuredTranscript({
   sessionId,
   appType: computed(() => sessionMetadata.value?.appType ?? 'generic'),
 })
+const rawTerminalSink = useRawTerminalSink()
 const rawTerminalText = transcript.rawText
+const diagnosticDrawerOpen = ref(false)
+const diagnosticDrawerTriggerRef = ref<HTMLButtonElement>()
 const STRUCTURED_FALLBACK_TIMEOUT_MS = 350
 
 const sessionLabelTitle = computed(() => {
@@ -168,8 +175,6 @@ const transcriptFrameBatcher = createFrameBatcher<string>({
     const merged = chunks.join('')
     if (!merged) return
     transcript.appendRawChunk(merged, { source: 'websocket' })
-    rawTextViewBuffer = transcript.rawText.value
-    scheduleRawTextViewSync()
     scrollTextViewToBottom()
   },
 })
@@ -271,7 +276,7 @@ function scheduleRawTextViewSync() {
   })
 }
 
-function appendRawTextViewChunk(chunk: string) {
+function scheduleRawTextViewAfterChunk(chunk: string) {
   rawTextViewBuffer = transcript.rawText.value || chunk
   scheduleRawTextViewSync()
 }
@@ -310,6 +315,7 @@ function initializeTranscriptFromTerminalSnapshot(reason: string) {
   const snapshot = extractTerminalTextLines().join('\n')
   if (!snapshot.trim()) return
   transcript.ingestRawSnapshot(snapshot)
+  rawTerminalSink.replace(transcript.rawText.value)
   rawTextViewBuffer = transcript.rawText.value
   batchedRawTerminalText.value = rawTextViewBuffer
   console.info(`[TerminalPage] one-time transcript snapshot fallback: ${reason}`)
@@ -641,12 +647,12 @@ function connectWebSocket() {
         const bytes = decodeBase64ToUint8(frame.data)
         const decodedOutput = transcriptDecoder.decode(bytes, { stream: true })
         bufferOutput(bytes)
-        if (frame.structuredExpected === true && typeof frame.seq === 'number') {
-          scheduleStructuredFallback(frame.seq, decodedOutput)
-        } else {
-          transcriptFrameBatcher.enqueue(decodedOutput)
-          appendRawTextViewChunk(decodedOutput)
-        }
+        routeDecodedTerminalOutput(frame, decodedOutput, {
+          writeRawOutput: rawTerminalSink.write,
+          scheduleStructuredFallback,
+          enqueueTranscriptChunk: transcriptFrameBatcher.enqueue,
+          scheduleRawTextViewSync: scheduleRawTextViewAfterChunk,
+        })
       } catch (decodeError) {
         transcript.appendDiagnostic({
           reason: 'decode-error',
@@ -730,6 +736,14 @@ function sendSpecialKey(key: string) {
   }
 }
 
+function openDiagnosticDrawer() {
+  diagnosticDrawerOpen.value = true
+}
+
+function closeDiagnosticDrawer() {
+  diagnosticDrawerOpen.value = false
+}
+
 function goBack() {
   ws?.disconnect()
   router.back()
@@ -754,9 +768,11 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  diagnosticDrawerOpen.value = false
   flushPendingStructuredFallbacks()
   transcriptFrameBatcher.flushNow()
   transcriptFrameBatcher.dispose()
+  rawTerminalSink.dispose()
   ws?.disconnect()
   resizeObserver?.disconnect()
   cleanupViewportListener()
@@ -825,6 +841,13 @@ onUnmounted(() => {
             @click="structuredViewEnabled = !structuredViewEnabled"
           >{{ structuredViewEnabled ? '结构化视图' : '原始终端' }}</button>
           <div class="terminal-text-mode-caption">移动端优化阅读视图</div>
+          <button
+            v-if="transcript.diagnosticDrawerCount.value > 0"
+            ref="diagnosticDrawerTriggerRef"
+            type="button"
+            class="terminal-diagnostic-button"
+            @click="openDiagnosticDrawer"
+          >诊断 {{ transcript.diagnosticDrawerCount.value }}</button>
         </div>
         <div v-if="sessionMetadata" class="terminal-summary-card terminal-summary-card--hero">
           <div class="terminal-summary-topline">
@@ -847,11 +870,26 @@ onUnmounted(() => {
         </div>
         <SessionTimeline
           v-if="structuredViewEnabled"
-          :turns="transcript.turns.value"
+          :turn-order="transcript.turnOrder.value"
+          :turns-by-id="transcript.turnsById.value"
+          :part-order-by-turn-id="transcript.partOrderByTurnId.value"
+          :parts-by-id="transcript.partsById.value"
           :loading="wsState === 'connecting' && rawTerminalText.length === 0"
           :error="transcript.error.value"
         />
-        <pre v-else class="raw-terminal-fallback">{{ stripTuiChars(batchedRawTerminalText || rawTerminalText || '') || '等待终端输出...' }}</pre>
+        <RawTerminalPanel
+          v-else
+          :sink="rawTerminalSink"
+          :visible="mobileTextMode && !structuredViewEnabled"
+          :font-size="Math.max(fontSize + 2, 14)"
+        />
+        <DiagnosticDrawer
+          :open="diagnosticDrawerOpen"
+          :records="transcript.diagnosticDrawerRecords.value"
+          :count="transcript.diagnosticDrawerCount.value"
+          :return-focus-to="diagnosticDrawerTriggerRef ?? null"
+          @close="closeDiagnosticDrawer"
+        />
       </div>
       <div
         ref="terminalRef"
@@ -1112,16 +1150,14 @@ onUnmounted(() => {
   font-family: inherit;
 }
 
-.raw-terminal-fallback {
-  margin: 0;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(139, 148, 158, 0.24);
-  background: rgba(13, 17, 23, 0.92);
-  color: #c9d1d9;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
+.terminal-diagnostic-button {
+  border: 1px solid rgba(210, 153, 34, 0.28);
+  background: rgba(210, 153, 34, 0.1);
+  color: #ffd866;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
 }
 
 .terminal-text-mode-caption {

@@ -16,14 +16,12 @@ function makePart(): DiagnosticRefPart {
 }
 
 describe('DiagnosticRefCard', () => {
-  it('keeps preview collapsed by default and expands on demand', async () => {
+  it('keeps preview out of the card and points users to the drawer', () => {
     const wrapper = mount(DiagnosticRefCard, { props: { part: makePart() } })
 
     expect(wrapper.find('.diagnostic-preview').exists()).toBe(false)
-    expect(wrapper.find('.diagnostic-toggle').exists()).toBe(true)
-
-    await wrapper.find('.diagnostic-toggle').trigger('click')
-
-    expect(wrapper.find('.diagnostic-preview').text()).toContain('payload')
+    expect(wrapper.find('.diagnostic-toggle').exists()).toBe(false)
+    expect(wrapper.text()).toContain('诊断抽屉')
+    expect(wrapper.text()).not.toContain('{"large"')
   })
 })

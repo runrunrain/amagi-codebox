@@ -1,21 +1,40 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import PartRenderer from './PartRenderer.vue'
-import type { TranscriptTurn } from '../../types/transcript'
+import type { KeyedTranscriptTurn, TranscriptPart, TranscriptTurn } from '../../types/transcript'
 
-defineProps<{
-  turns: TranscriptTurn[]
+const props = defineProps<{
+  turns?: TranscriptTurn[]
+  turnOrder?: string[]
+  turnsById?: Record<string, KeyedTranscriptTurn>
+  partOrderByTurnId?: Record<string, string[]>
+  partsById?: Record<string, TranscriptPart>
   loading?: boolean
   error?: string | null
 }>()
+
+const renderedTurns = computed<TranscriptTurn[]>(() => {
+  if (props.turnOrder && props.turnsById && props.partOrderByTurnId && props.partsById) {
+    return props.turnOrder.map((turnId) => {
+      const turn = props.turnsById?.[turnId]
+      if (!turn) return null
+      return {
+        ...turn,
+        parts: (props.partOrderByTurnId?.[turnId] ?? []).map((partId) => props.partsById?.[partId]).filter(Boolean),
+      } as TranscriptTurn
+    }).filter(Boolean) as TranscriptTurn[]
+  }
+  return props.turns ?? []
+})
 </script>
 
 <template>
   <section class="session-timeline" aria-label="Session transcript">
     <div v-if="loading" class="timeline-state timeline-state--loading">正在建立结构化输出...</div>
     <div v-else-if="error" class="timeline-state timeline-state--error">结构化解析失败，已切换 raw fallback：{{ error }}</div>
-    <div v-else-if="turns.length === 0" class="timeline-state">暂无输出，等待终端数据。</div>
+    <div v-else-if="renderedTurns.length === 0" class="timeline-state">暂无输出，等待终端数据。</div>
 
-    <article v-for="turn in turns" :key="turn.id" class="timeline-turn" :class="`timeline-turn--${turn.role}`">
+    <article v-for="turn in renderedTurns" :key="turn.id" class="timeline-turn" :class="`timeline-turn--${turn.role}`">
       <header class="turn-header">
         <span class="turn-role">{{ turn.role }}</span>
         <span class="turn-meta">{{ turn.appType }} · {{ turn.status }}</span>

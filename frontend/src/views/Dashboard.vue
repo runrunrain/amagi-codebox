@@ -99,6 +99,14 @@
 
           <div class="detail-actions">
             <button
+              class="btn primary small"
+              type="button"
+              :aria-label="`查看会话 ${selectedSessionData.id} 详情`"
+              @click="openSessionDetail(selectedSessionData.id)"
+            >
+              查看详情
+            </button>
+            <button
               class="btn danger small"
               v-if="selectedSessionData.status === 'running'"
               @click="handleStopSession(selectedSessionData.id)"
@@ -116,6 +124,13 @@
         </div>
       </div>
     </div>
+
+    <SessionDetailModal
+      :visible="detailModalVisible"
+      :session-id="detailModalSessionId"
+      :session="detailModalSessionData"
+      @close="closeSessionDetail"
+    />
 
     <!-- Quick Launch -->
     <div class="card launch-card">
@@ -561,6 +576,7 @@ import { config, proxy, workspace } from '../../wailsjs/go/models'
 import { useToast } from '../composables/useToast'
 import { useDashboardState } from '../composables/useDashboardState'
 import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
+import SessionDetailModal from '../components/session/SessionDetailModal.vue'
 
 const router = useRouter()
 const dashState = useDashboardState()
@@ -604,6 +620,8 @@ const codexCustomShellPath = toRef(dashState, 'codexCustomShellPath')
 
 const loading = ref(false)
 const selectedSession = ref('')
+const detailModalVisible = ref(false)
+const detailModalSessionId = ref('')
 const savedPaths = ref<Array<{ path: string; label: string }>>([])
 const savedShellPaths = ref<Array<{ path: string; label: string }>>([])
 
@@ -830,6 +848,11 @@ const selectedSessionData = computed(() => {
   return sessions.value.find(s => s.id === selectedSession.value) || null
 })
 
+const detailModalSessionData = computed(() => {
+  if (!detailModalSessionId.value) return null
+  return sessions.value.find(s => s.id === detailModalSessionId.value) || null
+})
+
 const normalizeWorkspacePath = (value: string) => value.split('\\').join('/').replace(/\/+$/, '').trim().toLowerCase()
 const matchedWorkspace = computed(() => {
   if (!selectedWorkDir.value) return null
@@ -1013,6 +1036,16 @@ const goToWorkspaceManager = () => {
     return
   }
   router.push({ path: '/extensions/workspaces', query: { path: selectedWorkDir.value } })
+}
+
+const openSessionDetail = (id: string) => {
+  detailModalSessionId.value = id
+  detailModalVisible.value = true
+}
+
+const closeSessionDetail = () => {
+  detailModalVisible.value = false
+  detailModalSessionId.value = ''
 }
 
 const handleLaunch = async () => {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { collectMarkdownForRender } from '../../composables/useMarkdownStreamCollector'
 import { renderMarkdownToHtml } from '../../utils/renderMarkdown'
 
 const props = defineProps<{
@@ -9,10 +10,12 @@ const props = defineProps<{
 
 const html = ref('')
 const failed = ref(false)
+const committedMarkdown = ref('')
+const liveTail = ref('')
 
-async function render() {
+async function render(markdown = props.markdown) {
   try {
-    html.value = await renderMarkdownToHtml(props.markdown)
+    html.value = await renderMarkdownToHtml(markdown)
     failed.value = false
   } catch {
     html.value = ''
@@ -20,14 +23,34 @@ async function render() {
   }
 }
 
-onMounted(render)
-watch(() => props.markdown, render)
+onMounted(async () => {
+  committedMarkdown.value = props.markdown
+  liveTail.value = ''
+  await render(committedMarkdown.value)
+})
+
+watch(() => props.markdown, async (next) => {
+  if (!props.streaming) {
+    committedMarkdown.value = next
+    liveTail.value = ''
+    await render(next)
+    return
+  }
+
+  const result = collectMarkdownForRender(committedMarkdown.value, next)
+  liveTail.value = result.liveTail
+  if (result.shouldRender) {
+    committedMarkdown.value = result.committedSource
+    await render(result.committedSource)
+  }
+})
 </script>
 
 <template>
   <article class="markdown-card" :class="{ 'markdown-card--streaming': streaming }">
     <div v-if="html" class="markdown-body" v-html="html"></div>
-    <pre v-else class="markdown-raw">{{ markdown }}</pre>
+    <pre v-if="streaming && liveTail" class="markdown-live-tail">{{ liveTail }}</pre>
+    <pre v-else-if="!html" class="markdown-raw">{{ markdown }}</pre>
     <div v-if="failed" class="markdown-error">Markdown 渲染失败，已显示原文。</div>
   </article>
 </template>
@@ -49,10 +72,16 @@ watch(() => props.markdown, render)
 }
 
 .markdown-body :deep(pre),
-.markdown-raw {
+.markdown-raw,
+.markdown-live-tail {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.markdown-live-tail {
+  margin-top: 8px;
+  color: #8b949e;
 }
 
 .markdown-error {
