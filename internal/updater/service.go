@@ -6,9 +6,12 @@ import (
 	"archive/zip"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,8 @@ import (
 )
 
 const userAgent = "amagi-codebox-updater"
+
+const maxDownloadAttempts = 3
 
 const (
 	releaseRepoOwner = "runrunrain"
@@ -62,10 +67,15 @@ type Service struct {
 	currentVersion string
 	log            *logging.Service
 	capabilities   platform.PlatformCapabilities
+	httpClient     httpDoer
 
 	mu       sync.Mutex
 	lastInfo *UpdateInfo
 	token    string // GitHub Personal Access Token
+}
+
+type httpDoer interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
 type githubRelease struct {
@@ -95,6 +105,7 @@ func NewService(currentVersion string, log *logging.Service) *Service {
 		currentVersion: normalizeVersion(currentVersion),
 		log:            log,
 		capabilities:   platform.CurrentCapabilities(),
+		httpClient:     http.DefaultClient,
 	}
 }
 
@@ -107,22 +118,17 @@ func (s *Service) SetToken(token string) {
 
 func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", s.repoOwner, s.repoRepo)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create update request: %w", err)
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	s.mu.Lock()
-	token := s.token
-	s.mu.Unlock()
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
+	token := s.getToken()
+	resp, err := s.doLatestReleaseRequest(url, token, token != "")
 	if err != nil {
 		return nil, fmt.Errorf("request latest release: %w", err)
+	}
+	if token != "" && isAuthFallbackStatus(resp.StatusCode) {
+		discardAndClose(resp.Body)
+		resp, err = s.doLatestReleaseRequest(url, "", false)
+		if err != nil {
+			return nil, fmt.Errorf("request latest release without auth after auth failure: %w", err)
+		}
 	}
 	defer resp.Body.Close()
 
@@ -150,6 +156,20 @@ func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 	}
 
 	return info, nil
+}
+
+func (s *Service) doLatestReleaseRequest(requestURL string, token string, useAuth bool) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create update request: %w", err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if useAuth && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	return s.client().Do(req)
 }
 
 // DownloadAndApply downloads the update package and applies it, then exits the process.
@@ -672,28 +692,63 @@ func randomHex(n int) string {
 }
 
 func (s *Service) downloadZip(downloadURL string, targetPath string, onProgress func(downloaded, total int64)) error {
+	if _, err := url.ParseRequestURI(downloadURL); err != nil {
+		return fmt.Errorf("create download request: %w", err)
+	}
+
+	token := s.getToken()
+	useAuth := shouldAuthorizeDownloadURL(downloadURL) && token != ""
+	var lastErr error
+	for attempt := 1; attempt <= maxDownloadAttempts; attempt++ {
+		if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove partial update package: %w", err)
+		}
+
+		if onProgress != nil {
+			onProgress(0, 0)
+		}
+
+		retry, retryNoAuth, err := s.downloadZipOnce(downloadURL, targetPath, onProgress, token, useAuth)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if removeErr := os.Remove(targetPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("remove partial update package after failed attempt: %w", removeErr)
+		}
+		if retryNoAuth {
+			useAuth = false
+		}
+		if !retry || attempt == maxDownloadAttempts {
+			break
+		}
+	}
+
+	return fmt.Errorf("download update package failed after retries: %w", lastErr)
+}
+
+func (s *Service) downloadZipOnce(downloadURL string, targetPath string, onProgress func(downloaded, total int64), token string, useAuth bool) (retry bool, retryNoAuth bool, err error) {
 	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return fmt.Errorf("create download request: %w", err)
+		return false, false, fmt.Errorf("create download request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/octet-stream")
-	s.mu.Lock()
-	token := s.token
-	s.mu.Unlock()
-	if token != "" {
+	if useAuth && token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.client().Do(req)
 	if err != nil {
-		return fmt.Errorf("download update package: %w", err)
+		return isRetryableNetworkError(err), false, fmt.Errorf("download update package: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		retryNoAuth = useAuth && isAuthFallbackStatus(resp.StatusCode)
+		retry = retryNoAuth || isRetryableStatus(resp.StatusCode)
+		return retry, retryNoAuth, fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	total := max(resp.ContentLength, 0)
@@ -703,16 +758,16 @@ func (s *Service) downloadZip(downloadURL string, targetPath string, onProgress 
 
 	file, err := os.Create(targetPath)
 	if err != nil {
-		return fmt.Errorf("create temp zip: %w", err)
+		return false, false, fmt.Errorf("create temp zip: %w", err)
 	}
 	defer file.Close()
 
 	writer := &progressWriter{total: total, onProgress: onProgress}
 	if _, err := io.Copy(file, io.TeeReader(resp.Body, writer)); err != nil {
-		return fmt.Errorf("write temp zip: %w", err)
+		return isRetryableNetworkError(err), false, fmt.Errorf("write temp zip: %w", err)
 	}
 
-	return nil
+	return false, false, nil
 }
 
 func (w *progressWriter) Write(p []byte) (int, error) {
@@ -722,6 +777,62 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 		w.onProgress(w.downloaded, w.total)
 	}
 	return n, nil
+}
+
+func (s *Service) client() httpDoer {
+	if s.httpClient != nil {
+		return s.httpClient
+	}
+	return http.DefaultClient
+}
+
+func (s *Service) getToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.token
+}
+
+func discardAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 4096))
+	_ = body.Close()
+}
+
+func isAuthFallbackStatus(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
+}
+
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+}
+
+func shouldAuthorizeDownloadURL(downloadURL string) bool {
+	parsed, err := url.Parse(downloadURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, "api.github.com") && strings.Contains(parsed.Path, "/releases/assets/")
+}
+
+func isRetryableNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connection aborted") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "unexpected eof")
 }
 
 func extractExeFromZip(zipPath string, targetPath string) error {

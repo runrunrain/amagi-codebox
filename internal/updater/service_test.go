@@ -3,11 +3,47 @@ package updater
 import (
 	"amagi-codebox/internal/platform"
 	"archive/zip"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type failingReadCloser struct {
+	data []byte
+	done bool
+	err  error
+}
+
+func (r *failingReadCloser) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, r.err
+}
+
+func (r *failingReadCloser) Close() error {
+	return nil
+}
+
+func testHTTPResponse(statusCode int, body string) *http.Response {
+	return &http.Response{
+		StatusCode:    statusCode,
+		ContentLength: int64(len(body)),
+		Body:          io.NopCloser(strings.NewReader(body)),
+		Header:        make(http.Header),
+	}
+}
 
 // --- buildUpdateInfo tests ---
 
@@ -53,8 +89,8 @@ func TestBuildUpdateInfoDarwinArm64UsesInstallAction(t *testing.T) {
 
 func TestBuildUpdateInfoDarwinWithoutInstallSupportUsesDownloadPage(t *testing.T) {
 	release := githubRelease{
-		TagName:     "v1.2.3",
-		HTMLURL:     "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
+		TagName: "v1.2.3",
+		HTMLURL: "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
 		Assets: []githubReleaseAsset{
 			{Name: "amagi-codebox-v1.2.3-darwin-arm64.zip", BrowserDownloadURL: "https://example.com/darwin.zip", Size: 2048},
 		},
@@ -153,6 +189,172 @@ func TestBuildUpdateInfoLinuxUsesDownloadPage(t *testing.T) {
 	}
 	if info.UpdateAction != updateActionOpenDownloadPage {
 		t.Fatalf("expected open-download-page for linux, got %q", info.UpdateAction)
+	}
+}
+
+// --- HTTP fallback and retry tests ---
+
+func TestCheckForUpdateToken403FallbackNoAuth(t *testing.T) {
+	var authHeaders []string
+	service := NewService("v1.2.2", nil)
+	service.capabilities = platform.PlatformCapabilities{OS: "windows", Arch: "amd64", PlatformID: "windows", UpdateInstallSupported: true}
+	service.SetToken("invalid-token")
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		authHeaders = append(authHeaders, req.Header.Get("Authorization"))
+		if len(authHeaders) == 1 {
+			return testHTTPResponse(http.StatusForbidden, `{"message":"bad credentials"}`), nil
+		}
+		return testHTTPResponse(http.StatusOK, `{"tag_name":"v1.2.3","html_url":"https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3","assets":[{"name":"amagi-codebox-v1.2.3-windows-amd64.zip","browser_download_url":"https://example.com/windows.zip","size":7}]}`), nil
+	})
+
+	info, err := service.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("CheckForUpdate returned error: %v", err)
+	}
+	if !info.HasUpdate || info.LatestVersion != "1.2.3" {
+		t.Fatalf("unexpected update info: %+v", info)
+	}
+	if len(authHeaders) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(authHeaders))
+	}
+	if authHeaders[0] == "" {
+		t.Fatal("expected first request to include Authorization")
+	}
+	if authHeaders[1] != "" {
+		t.Fatal("expected fallback request to omit Authorization")
+	}
+}
+
+func TestDownloadZipInitialEOFRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "update.zip")
+	var requests int
+	service := NewService("v1.2.2", nil)
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return nil, io.EOF
+		}
+		return testHTTPResponse(http.StatusOK, "zip-content"), nil
+	})
+
+	if err := service.downloadZip("https://github.com/runrunrain/amagi-codebox/releases/download/v1.2.3/amagi-codebox-v1.2.3-windows-amd64.zip", targetPath, nil); err != nil {
+		t.Fatalf("downloadZip returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 requests, got %d", requests)
+	}
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "zip-content" {
+		t.Fatalf("unexpected file content: %q", string(content))
+	}
+}
+
+func TestDownloadZipBodyEOFRetryCleansPartialFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "update.zip")
+	var requests int
+	service := NewService("v1.2.2", nil)
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: int64(len("partial-final")),
+				Body:          &failingReadCloser{data: []byte("partial"), err: io.ErrUnexpectedEOF},
+				Header:        make(http.Header),
+			}, nil
+		}
+		return testHTTPResponse(http.StatusOK, "final"), nil
+	})
+
+	if err := service.downloadZip("https://github.com/runrunrain/amagi-codebox/releases/download/v1.2.3/amagi-codebox-v1.2.3-windows-amd64.zip", targetPath, nil); err != nil {
+		t.Fatalf("downloadZip returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 requests, got %d", requests)
+	}
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "final" {
+		t.Fatalf("expected partial file to be overwritten, got %q", string(content))
+	}
+}
+
+func TestDownloadZip403FallbackNoAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "update.zip")
+	var authHeaders []string
+	service := NewService("v1.2.2", nil)
+	service.SetToken("invalid-token")
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		authHeaders = append(authHeaders, req.Header.Get("Authorization"))
+		if len(authHeaders) == 1 {
+			return testHTTPResponse(http.StatusForbidden, "forbidden"), nil
+		}
+		return testHTTPResponse(http.StatusOK, "zip-content"), nil
+	})
+
+	if err := service.downloadZip("https://api.github.com/repos/runrunrain/amagi-codebox/releases/assets/123", targetPath, nil); err != nil {
+		t.Fatalf("downloadZip returned error: %v", err)
+	}
+	if len(authHeaders) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(authHeaders))
+	}
+	if authHeaders[0] == "" {
+		t.Fatal("expected first asset API request to include Authorization")
+	}
+	if authHeaders[1] != "" {
+		t.Fatal("expected fallback request to omit Authorization")
+	}
+}
+
+func TestDownloadZipPublicBrowserURLDoesNotSendAuthorization(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "update.zip")
+	var authHeader string
+	service := NewService("v1.2.2", nil)
+	service.SetToken("configured-token")
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		authHeader = req.Header.Get("Authorization")
+		return testHTTPResponse(http.StatusOK, "zip-content"), nil
+	})
+
+	if err := service.downloadZip("https://github.com/runrunrain/amagi-codebox/releases/download/v1.2.3/amagi-codebox-v1.2.3-windows-amd64.zip", targetPath, nil); err != nil {
+		t.Fatalf("downloadZip returned error: %v", err)
+	}
+	if authHeader != "" {
+		t.Fatal("expected public browser download URL to omit Authorization")
+	}
+}
+
+func TestDownloadZipRemovesPartialFileAfterExhaustedBodyEOF(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "update.zip")
+	service := NewService("v1.2.2", nil)
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: int64(len("partial")),
+			Body:          &failingReadCloser{data: []byte("partial"), err: io.ErrUnexpectedEOF},
+			Header:        make(http.Header),
+		}, nil
+	})
+
+	err := service.downloadZip("https://github.com/runrunrain/amagi-codebox/releases/download/v1.2.3/amagi-codebox-v1.2.3-windows-amd64.zip", targetPath, nil)
+	if err == nil {
+		t.Fatal("expected downloadZip to fail after retry exhaustion")
+	}
+	if !strings.Contains(err.Error(), "failed after retries") {
+		t.Fatalf("expected retry exhaustion context, got: %v", err)
+	}
+	if _, statErr := os.Stat(targetPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected partial file to be removed, stat error: %v", statErr)
 	}
 }
 
