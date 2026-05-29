@@ -26,7 +26,7 @@ describe('SessionTimeline', () => {
     })
 
     // Assert
-    expect(wrapper.text()).toContain('暂无输出')
+    expect(wrapper.text()).toContain('暂无会话输出')
     expect(wrapper.find('.timeline-state').exists()).toBe(true)
     expect(wrapper.find('.timeline-state--loading').exists()).toBe(false)
     expect(wrapper.find('.timeline-state--error').exists()).toBe(false)
@@ -40,10 +40,10 @@ describe('SessionTimeline', () => {
     })
 
     // Assert
-    expect(wrapper.text()).toContain('正在建立结构化输出')
+    expect(wrapper.text()).toContain('正在连接会话')
     expect(wrapper.find('.timeline-state--loading').exists()).toBe(true)
     // Loading takes priority over empty turns
-    expect(wrapper.text()).not.toContain('暂无输出')
+    expect(wrapper.text()).not.toContain('暂无会话输出')
   })
 
   it('renders error state when error is provided', () => {
@@ -54,7 +54,7 @@ describe('SessionTimeline', () => {
     })
 
     // Assert
-    expect(wrapper.text()).toContain('结构化解析失败')
+    expect(wrapper.text()).toContain('会话解析遇到问题')
     expect(wrapper.text()).toContain('connection lost')
     expect(wrapper.find('.timeline-state--error').exists()).toBe(true)
   })
@@ -69,11 +69,11 @@ describe('SessionTimeline', () => {
     })
 
     // Assert - error takes priority over turns display
-    expect(wrapper.text()).toContain('结构化解析失败')
+    expect(wrapper.text()).toContain('会话解析遇到问题')
     expect(wrapper.find('.timeline-state--error').exists()).toBe(true)
   })
 
-  it('renders turns with role and metadata headers', () => {
+  it('renders assistant turns with weak metadata line', () => {
     // Arrange
     const turns = [
       makeTurn({
@@ -91,10 +91,9 @@ describe('SessionTimeline', () => {
 
     // Assert
     expect(wrapper.find('.timeline-turn').exists()).toBe(true)
-    expect(wrapper.find('.turn-header').exists()).toBe(true)
-    expect(wrapper.find('.turn-role').text()).toBe('assistant')
-    expect(wrapper.find('.turn-meta').text()).toContain('opencode')
-    expect(wrapper.find('.turn-meta').text()).toContain('completed')
+    expect(wrapper.find('.assistant-meta').exists()).toBe(true)
+    expect(wrapper.find('.assistant-meta').text()).toContain('OpenCode')
+    expect(wrapper.find('.assistant-meta').text()).toContain('完成')
   })
 
   it('renders multiple turns with correct keys', () => {
@@ -116,7 +115,7 @@ describe('SessionTimeline', () => {
     expect(articles[1].classes()).toContain('timeline-turn--assistant')
   })
 
-  it('renders turn header metadata for system role', () => {
+  it('renders assistant-style metadata for system role', () => {
     // Arrange
     const turns = [
       makeTurn({ id: 'turn-sys', role: 'system', appType: 'claudecode', status: 'streaming' }),
@@ -128,9 +127,34 @@ describe('SessionTimeline', () => {
     })
 
     // Assert
-    expect(wrapper.find('.turn-role').text()).toBe('system')
-    expect(wrapper.find('.turn-meta').text()).toContain('claudecode')
-    expect(wrapper.find('.turn-meta').text()).toContain('streaming')
+    expect(wrapper.find('.assistant-meta').text()).toContain('Claude Code')
+    expect(wrapper.find('.assistant-meta').text()).toContain('正在处理')
+  })
+
+  it('renders user role as right-aligned bubble', () => {
+    const turns = [makeTurn({
+      id: 'turn-user',
+      role: 'user',
+      parts: [{ id: 'p1', type: 'text', text: 'hello agent', createdAt: '2026-05-27T00:00:00.000Z' }],
+    })]
+
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    expect(wrapper.find('.timeline-turn--user').exists()).toBe(true)
+    expect(wrapper.find('.user-bubble').text()).toContain('hello agent')
+    expect(wrapper.find('.assistant-meta').exists()).toBe(false)
+  })
+
+  it('does not render raw-terminal parts in assistant flow', () => {
+    const turns = [makeTurn({
+      parts: [
+        { id: 'raw-1', type: 'raw-terminal', text: 'raw tui', reason: 'tui', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    expect(wrapper.text()).not.toContain('raw tui')
   })
 
   it('renders section with correct aria-label', () => {
@@ -141,5 +165,86 @@ describe('SessionTimeline', () => {
 
     // Assert
     expect(wrapper.find('section[aria-label="Session transcript"]').exists()).toBe(true)
+  })
+
+  it('filters diagnostic-ref with drawer-only visibility out of timeline', () => {
+    // Arrange - drawer-only diagnostic-ref should NOT appear in the assistant flow
+    const turns = [makeTurn({
+      parts: [
+        { id: 'text-1', type: 'text', text: 'visible text', createdAt: '2026-05-27T00:00:00.000Z' },
+        { id: 'diag-1', type: 'diagnostic-ref', reason: 'ansi', summary: 'ANSI noise', preview: '', redacted: false, visibility: 'drawer-only', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    // Act
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    // Assert - only the text part should be visible
+    expect(wrapper.text()).toContain('visible text')
+    expect(wrapper.text()).not.toContain('ANSI noise')
+  })
+
+  it('renders diagnostic-ref with summary-card visibility in timeline', () => {
+    // Arrange - summary-card diagnostic-ref SHOULD appear
+    const turns = [makeTurn({
+      parts: [
+        { id: 'diag-sc', type: 'diagnostic-ref', reason: 'fallback', summary: 'summary card content', preview: '', redacted: false, visibility: 'summary-card', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    // Act
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    // Assert - summary-card should pass through to PartRenderer
+    expect(wrapper.text()).toContain('诊断抽屉')
+  })
+
+  it('renders diagnostic-ref with error-card visibility in timeline', () => {
+    // Arrange - error-card diagnostic-ref SHOULD appear
+    const turns = [makeTurn({
+      parts: [
+        { id: 'diag-ec', type: 'diagnostic-ref', reason: 'parser-error', summary: 'error card content', preview: '', redacted: false, visibility: 'error-card', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    // Act
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    // Assert - error-card should pass through to PartRenderer
+    expect(wrapper.text()).toContain('诊断抽屉')
+  })
+
+  it('filters diagnostic-ref with hidden-info visibility out of timeline', () => {
+    // Arrange - hidden-info diagnostic-ref should NOT appear
+    const turns = [makeTurn({
+      parts: [
+        { id: 'diag-hi', type: 'diagnostic-ref', reason: 'tui', summary: 'hidden info', preview: '', redacted: false, visibility: 'hidden-info', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    // Act
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    // Assert - hidden-info should be filtered out
+    expect(wrapper.text()).not.toContain('hidden info')
+  })
+
+  it('renders user turn with mixed parts extracting only readable text', () => {
+    // Arrange - user turn with raw-terminal (filtered) + text (visible)
+    const turns = [makeTurn({
+      id: 'turn-mixed',
+      role: 'user',
+      parts: [
+        { id: 'text-u', type: 'text', text: 'user question', createdAt: '2026-05-27T00:00:00.000Z' },
+        { id: 'raw-u', type: 'raw-terminal', text: 'raw noise', reason: 'tui', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    // Act
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    // Assert
+    expect(wrapper.find('.user-bubble').text()).toContain('user question')
+    expect(wrapper.text()).not.toContain('raw noise')
   })
 })

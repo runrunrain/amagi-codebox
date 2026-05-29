@@ -23,7 +23,7 @@ export function resolveDiagnosticVisibility(input: TranscriptDiagnosticInput): D
   if ((input.severity ?? 'warning') === 'error') return 'error-card'
   if (input.severity === 'info') return 'hidden-info'
   if (input.reason === 'classifier-overflow') return 'summary-card'
-  if (['object-payload', 'control-characters', 'unrecoverable-raw-terminal', 'invalid-part', 'unknown-frame', 'ansi', 'tui'].includes(input.reason)) {
+  if (['object-payload', 'control-characters', 'unrecoverable-raw-terminal', 'invalid-part', 'unknown-frame', 'ansi', 'tui', 'unsupported-pattern', 'fallback'].includes(input.reason)) {
     return 'drawer-only'
   }
   return 'summary-card'

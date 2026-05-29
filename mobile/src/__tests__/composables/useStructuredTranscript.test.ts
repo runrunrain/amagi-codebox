@@ -188,7 +188,7 @@ describe('useStructuredTranscript', () => {
     expect(transcript.debugStats.value).toMatchObject({ appendCalls: 2, classifiedSegments: 1, structuredParts: 1 })
   })
 
-  it('recovers backend raw-terminal ANSI text into readable text parts', () => {
+  it('isolates backend raw-terminal ANSI text into diagnostics without body parts', () => {
     const transcript = useStructuredTranscript({ sessionId: 's-structured-raw', appType: computed(() => 'opencode') })
 
     transcript.appendStructuredPart({
@@ -199,8 +199,60 @@ describe('useStructuredTranscript', () => {
       createdAt: '2026-05-27T00:00:00.000Z',
     })
 
-    expect(firstPart(transcript)).toMatchObject({ type: 'text', text: 'green' })
+    expect(firstPart(transcript)).toMatchObject({ type: 'diagnostic-ref', visibility: 'drawer-only' })
     expect(transcript.rawText.value).toBe('green')
+    expect(transcript.diagnosticDrawerCount.value).toBeGreaterThan(0)
+    expect(transcript.diagnostics.value.some((item) => item.reason === 'ansi')).toBe(true)
+  })
+
+  it('isolates structured raw-terminal readable text instead of reclassifying it into timeline body', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-structured-readable-raw', appType: computed(() => 'opencode') })
+
+    transcript.appendStructuredPart({
+      id: 'pty-readable-raw-terminal',
+      type: 'raw-terminal',
+      raw: { text: 'This line looks readable but arrived as raw terminal.', reason: 'unsupported-pattern' },
+      source: { kind: 'pty', seqStart: 20, seqEnd: 20 },
+      createdAt: '2026-05-27T00:00:00.000Z',
+    })
+
+    expect(transcript.turns.value[0]?.parts ?? []).toHaveLength(1)
+    expect(firstPart(transcript)).toMatchObject({ type: 'diagnostic-ref', visibility: 'drawer-only' })
+    expect(transcript.rawText.value).toBe('This line looks readable but arrived as raw terminal.')
+    expect(transcript.diagnosticDrawerCount.value).toBe(1)
+    expect(transcript.diagnostics.value[0]).toMatchObject({ reason: 'unsupported-pattern' })
+  })
+
+  it('keeps readable legacy fallback text visible as body content', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-readable-legacy', appType: computed(() => 'generic') })
+
+    transcript.appendRawChunk('Build completed successfully. 3 files changed.', { source: 'fallback' })
+
+    expect(firstPart(transcript)).toMatchObject({ type: 'text', text: 'Build completed successfully. 3 files changed.' })
+    expect(transcript.diagnosticDrawerCount.value).toBe(0)
+  })
+
+  it('isolates standalone numeric legacy fallback into diagnostics', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-numeric-legacy', appType: computed(() => 'generic') })
+
+    transcript.appendRawChunk('20', { source: 'fallback' })
+
+    expect(transcript.turns.value[0]?.parts ?? []).toHaveLength(1)
+    expect(firstPart(transcript)).toMatchObject({ type: 'diagnostic-ref', visibility: 'drawer-only' })
+    expect(transcript.diagnosticDrawerCount.value).toBe(1)
+    expect(transcript.diagnostics.value[0]).toMatchObject({ reason: 'unsupported-pattern' })
+  })
+
+  it('isolates TUI menus and unsupported ANSI-heavy fallback from timeline body', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-tui-legacy', appType: computed(() => 'opencode') })
+
+    transcript.appendRawChunk('╭─ Menu\n│ ❯ Continue\n╰──────', { source: 'fallback' })
+    transcript.appendRawChunk('\n\n\u001B[31m20\u001B[0m', { source: 'fallback' })
+
+    const parts = transcript.turns.value[0]?.parts ?? []
+    expect(parts.filter((part) => part.type === 'text' || part.type === 'markdown' || part.type === 'tool')).toHaveLength(0)
+    expect(transcript.diagnosticDrawerCount.value).toBeGreaterThanOrEqual(1)
+    expect(transcript.diagnostics.value.some((item) => item.reason === 'tui' || item.reason === 'unsupported-pattern')).toBe(true)
   })
 
   it('updates duplicate structured part ids instead of appending duplicate cards', () => {

@@ -93,6 +93,8 @@ export namespace codexplugin {
 	    installedAt?: string;
 	    lastUpdated?: string;
 	    source?: string;
+	    warning?: string;
+	    duplicateOf?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CodexPlugin(source);
@@ -110,6 +112,8 @@ export namespace codexplugin {
 	        this.installedAt = source["installedAt"];
 	        this.lastUpdated = source["lastUpdated"];
 	        this.source = source["source"];
+	        this.warning = source["warning"];
+	        this.duplicateOf = source["duplicateOf"];
 	    }
 	}
 	export class HookInfo {
@@ -164,6 +168,32 @@ export namespace codexplugin {
 	        this.filePath = source["filePath"];
 	    }
 	}
+	export class CodexPluginInterface {
+	    displayName?: string;
+	    shortDescription?: string;
+	    longDescription?: string;
+	    developerName?: string;
+	    category?: string;
+	    capabilities?: string[];
+	    websiteURL?: string;
+	    defaultPrompt?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexPluginInterface(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.displayName = source["displayName"];
+	        this.shortDescription = source["shortDescription"];
+	        this.longDescription = source["longDescription"];
+	        this.developerName = source["developerName"];
+	        this.category = source["category"];
+	        this.capabilities = source["capabilities"];
+	        this.websiteURL = source["websiteURL"];
+	        this.defaultPrompt = source["defaultPrompt"];
+	    }
+	}
 	export class CodexPluginManifest {
 	    name: string;
 	    version: string;
@@ -173,6 +203,7 @@ export namespace codexplugin {
 	    keywords?: string[];
 	    homepage?: string;
 	    repository?: string;
+	    interface?: CodexPluginInterface;
 	
 	    static createFrom(source: any = {}) {
 	        return new CodexPluginManifest(source);
@@ -188,7 +219,26 @@ export namespace codexplugin {
 	        this.keywords = source["keywords"];
 	        this.homepage = source["homepage"];
 	        this.repository = source["repository"];
+	        this.interface = this.convertValues(source["interface"], CodexPluginInterface);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class CodexPluginDetail {
 	    id: string;
@@ -201,7 +251,12 @@ export namespace codexplugin {
 	    installedAt?: string;
 	    lastUpdated?: string;
 	    source?: string;
+	    warning?: string;
+	    duplicateOf?: string;
 	    manifest: CodexPluginManifest;
+	    displayName?: string;
+	    shortDescription?: string;
+	    longDescription?: string;
 	    skills: SkillInfo[];
 	    agents: AgentInfo[];
 	    commands: CommandInfo[];
@@ -226,7 +281,12 @@ export namespace codexplugin {
 	        this.installedAt = source["installedAt"];
 	        this.lastUpdated = source["lastUpdated"];
 	        this.source = source["source"];
+	        this.warning = source["warning"];
+	        this.duplicateOf = source["duplicateOf"];
 	        this.manifest = this.convertValues(source["manifest"], CodexPluginManifest);
+	        this.displayName = source["displayName"];
+	        this.shortDescription = source["shortDescription"];
+	        this.longDescription = source["longDescription"];
 	        this.skills = this.convertValues(source["skills"], SkillInfo);
 	        this.agents = this.convertValues(source["agents"], AgentInfo);
 	        this.commands = this.convertValues(source["commands"], CommandInfo);
@@ -254,6 +314,7 @@ export namespace codexplugin {
 		    return a;
 		}
 	}
+	
 	
 	export class CodexPluginsData {
 	    marketplaces: CodexMarketplace[];
@@ -1633,6 +1694,7 @@ export namespace plugin {
 	    name: string;
 	    marketplace: string;
 	    version: string;
+	    description?: string;
 	    scope: string;
 	    enabled: boolean;
 	    installPath: string;
@@ -1650,6 +1712,7 @@ export namespace plugin {
 	        this.name = source["name"];
 	        this.marketplace = source["marketplace"];
 	        this.version = source["version"];
+	        this.description = source["description"];
 	        this.scope = source["scope"];
 	        this.enabled = source["enabled"];
 	        this.installPath = source["installPath"];
@@ -1751,6 +1814,7 @@ export namespace plugin {
 	    name: string;
 	    marketplace: string;
 	    version: string;
+	    description?: string;
 	    scope: string;
 	    enabled: boolean;
 	    installPath: string;
@@ -1779,6 +1843,7 @@ export namespace plugin {
 	        this.name = source["name"];
 	        this.marketplace = source["marketplace"];
 	        this.version = source["version"];
+	        this.description = source["description"];
 	        this.scope = source["scope"];
 	        this.enabled = source["enabled"];
 	        this.installPath = source["installPath"];
@@ -2149,6 +2214,7 @@ export namespace workspace {
 	    name: string;
 	    marketplace: string;
 	    version: string;
+	    description?: string;
 	    scope: string;
 	    enabled: boolean;
 	    installPath: string;
@@ -2178,6 +2244,7 @@ export namespace workspace {
 	        this.name = source["name"];
 	        this.marketplace = source["marketplace"];
 	        this.version = source["version"];
+	        this.description = source["description"];
 	        this.scope = source["scope"];
 	        this.enabled = source["enabled"];
 	        this.installPath = source["installPath"];

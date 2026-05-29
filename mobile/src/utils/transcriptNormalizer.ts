@@ -45,6 +45,10 @@ const SUSPICIOUS_OBJECT_PATTERN = /^\s*(?:\{[\s\S]*\}|\[[\s\S]*\]|\[object\s+(?:
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F\u0080-\u009A\u009C-\u009F]/gu
 const TUI_DECORATION_PATTERN = /[─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋╔╗╚╝╠╣╦╩╬╭╮╰╯▁▂▃▄▅▆▇█▀▐▌░▒▓]/u
 const ANSI_OR_OSC_PATTERN = /\u001B\[|\u001B\]|\u001B[()#]|\u009B/u
+const SPINNER_ONLY_PATTERN = /^[\s\-\\|/⠁-⣿•·*]+$/u
+const TRANSIENT_STATUS_TEXT_PATTERN = /^(?:[\-\\|/⠁-⣿•·*]\s*)?(?:thinking|writing|reading(?:\s+file)?|processing|loading|running|waiting|working|analyzing|generating|compiling|building|installing|ionizing)(?:[\s.:…-]*\d*)?$/i
+const TUI_HINT_PATTERN = /(?:press\s+(?:enter|esc)|[↑↓←→]\s*(?:navigate|select)|(?:esc|ctrl\+[a-z]|tab)\s*(?:to|:)|^\s*[❯›>]\s*\S)/i
+const READABLE_MARKDOWN_PATTERN = /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|```|\|.+\|)|\[[^\]]+\]\([^\)]+\)|\*\*[^*]+\*\*/m
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b(sk-[A-Za-z0-9_-]{12,})\b/g, 'sk-[REDACTED]'],
   [/\b((?:api[_-]?key|token|secret|password)\s*[:=]\s*)([^\s&"']+)/gi, '$1[REDACTED]'],
@@ -109,6 +113,22 @@ function isJsonObjectLike(value: string): boolean {
 function isFencedCodeOrMarkdownJson(value: string): boolean {
   const trimmed = value.trim()
   return /^```(?:json|jsonc|javascript|typescript|ts|js|\w+)?\s*[\r\n][\s\S]*[\r\n]```$/i.test(trimmed)
+}
+
+export function isReadableLegacyText(value: string): boolean {
+  const trimmed = cleanPtyText(value).trim()
+  if (!trimmed) return false
+  if (ANSI_OR_OSC_PATTERN.test(value) || CONTROL_CHARACTER_PATTERN.test(value)) return false
+  if (TUI_DECORATION_PATTERN.test(value) || TUI_DECORATION_PATTERN.test(trimmed)) return false
+  if (isJsonObjectLike(trimmed) || SUSPICIOUS_OBJECT_PATTERN.test(trimmed)) return false
+  if (SPINNER_ONLY_PATTERN.test(trimmed)) return false
+  if (TRANSIENT_STATUS_TEXT_PATTERN.test(trimmed)) return false
+  if (TUI_HINT_PATTERN.test(trimmed)) return false
+  if (/^[\d\s.,:%/\\|+-]+$/.test(trimmed)) return false
+  if (/^[A-Za-z][\w -]{0,40}\.\.\.\d*$/.test(trimmed)) return false
+  if (READABLE_MARKDOWN_PATTERN.test(trimmed)) return true
+  if (/(?:error|warning|success|done|created|updated|deleted|changed|files?|lines?|passed|failed|installed|running|read|write|edit|diff|git|npm|pnpm|yarn|build|test)\b/i.test(trimmed)) return true
+  return /\p{L}/u.test(trimmed) && trimmed.length >= 3
 }
 
 export function normalizeTranscriptChunk(chunk: string): NormalizedTranscriptChunk {

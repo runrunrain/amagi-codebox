@@ -61,6 +61,7 @@ const rawTerminalSink = useRawTerminalSink()
 const rawTerminalText = transcript.rawText
 const diagnosticDrawerOpen = ref(false)
 const diagnosticDrawerTriggerRef = ref<HTMLButtonElement>()
+const terminalKeysOpen = ref(false)
 const STRUCTURED_FALLBACK_TIMEOUT_MS = 350
 
 const sessionLabelTitle = computed(() => {
@@ -94,6 +95,19 @@ const sessionMetaChips = computed(() => {
   }
 
   return chips.filter(Boolean)
+})
+
+const sessionConnectionLabel = computed(() => {
+  switch (wsState.value) {
+    case 'connected':
+      return structuredViewEnabled.value ? '已连接 · 结构化会话' : '已连接 · 原始终端诊断'
+    case 'connecting':
+      return '正在连接会话'
+    case 'error':
+      return '连接异常 · 可查看诊断'
+    default:
+      return '连接断开，等待重连'
+  }
 })
 
 function extractVersionFromText(text: string): string | undefined {
@@ -609,6 +623,7 @@ function sendMobileInput() {
     ws?.sendInput('\r')
   }, 50)
   mobileInput.value = ''
+  terminalKeysOpen.value = false
   scrollTextViewToBottom()
   focusMobileInput()
 }
@@ -802,28 +817,30 @@ onUnmounted(() => {
 
 <template>
   <div ref="terminalPageRef" class="terminal-page">
-    <div class="terminal-header">
-      <button class="back-btn" @click="goBack">
+    <div class="terminal-header session-mobile-header">
+      <button class="back-btn session-icon-button" aria-label="返回" @click="goBack">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="15 18 9 12 15 6" />
         </svg>
       </button>
-      <span class="session-label" :title="sessionId">{{ sessionLabelTitle || sessionId }}</span>
-      <div class="font-controls">
-        <button
-          class="font-btn"
-          :disabled="fontSize <= FONT_SIZE_MIN"
-          @click="changeFontSize(-1)"
-        >A-</button>
-        <span class="font-size-label">{{ fontSize }}</span>
-        <button
-          class="font-btn"
-          :disabled="fontSize >= FONT_SIZE_MAX"
-          @click="changeFontSize(1)"
-        >A+</button>
+      <div class="session-title-block">
+        <span class="session-label" :title="sessionId">{{ sessionLabelTitle || sessionId }}</span>
+        <span class="session-subtitle"><span class="session-status-dot" :class="`session-status-dot--${wsState}`"></span>{{ sessionConnectionLabel }}</span>
       </div>
-      <div class="ws-status" :class="`ws-status--${wsState}`">
-        {{ wsState }}
+      <div class="session-header-actions">
+        <button
+          v-if="transcript.diagnosticDrawerCount.value > 0"
+          ref="diagnosticDrawerTriggerRef"
+          type="button"
+          class="terminal-diagnostic-button"
+          :aria-expanded="diagnosticDrawerOpen"
+          @click="openDiagnosticDrawer"
+        >诊断 {{ transcript.diagnosticDrawerCount.value }}</button>
+        <button
+          type="button"
+          class="terminal-text-mode-badge terminal-text-mode-toggle session-view-toggle"
+          @click="structuredViewEnabled = !structuredViewEnabled"
+        >{{ structuredViewEnabled ? '会话' : '原始' }}</button>
       </div>
     </div>
 
@@ -835,19 +852,20 @@ onUnmounted(() => {
         :style="{ fontSize: `${Math.max(fontSize + 4, 16)}px` }"
       >
         <div class="terminal-text-mode-header">
-          <button
-            type="button"
-            class="terminal-text-mode-badge terminal-text-mode-toggle"
-            @click="structuredViewEnabled = !structuredViewEnabled"
-          >{{ structuredViewEnabled ? '结构化视图' : '原始终端' }}</button>
-          <div class="terminal-text-mode-caption">移动端优化阅读视图</div>
-          <button
-            v-if="transcript.diagnosticDrawerCount.value > 0"
-            ref="diagnosticDrawerTriggerRef"
-            type="button"
-            class="terminal-diagnostic-button"
-            @click="openDiagnosticDrawer"
-          >诊断 {{ transcript.diagnosticDrawerCount.value }}</button>
+          <div class="terminal-text-mode-caption">{{ structuredViewEnabled ? '移动端会话阅读视图' : '原始终端仅用于诊断' }}</div>
+          <div class="font-controls diagnostic-font-controls" aria-label="原始终端字号">
+            <button
+              class="font-btn"
+              :disabled="fontSize <= FONT_SIZE_MIN"
+              @click="changeFontSize(-1)"
+            >A-</button>
+            <span class="font-size-label">{{ fontSize }}</span>
+            <button
+              class="font-btn"
+              :disabled="fontSize >= FONT_SIZE_MAX"
+              @click="changeFontSize(1)"
+            >A+</button>
+          </div>
         </div>
         <div v-if="sessionMetadata" class="terminal-summary-card terminal-summary-card--hero">
           <div class="terminal-summary-topline">
@@ -898,23 +916,36 @@ onUnmounted(() => {
       ></div>
     </div>
 
-    <div v-if="mobileTextMode" class="mobile-input-bar">
+    <div v-if="mobileTextMode" class="mobile-input-bar mobile-composer-dock">
       <textarea
         ref="mobileInputRef"
         v-model="mobileInput"
         class="mobile-input"
         rows="2"
-        placeholder="输入命令或文本，回车发送"
+        aria-label="输入 follow-up"
+        placeholder="随便问点什么..."
         @keydown.enter="handleMobileInputEnter"
       ></textarea>
-      <button
-        type="button"
-        class="mobile-send-btn"
-        @click="sendMobileInput"
-      >发送</button>
+      <div class="mobile-composer-controls">
+        <button
+          type="button"
+          class="composer-chip composer-chip--button"
+          :aria-expanded="terminalKeysOpen"
+          @click="terminalKeysOpen = !terminalKeysOpen"
+        >终端键</button>
+        <span v-if="sessionMetaChips[0]" class="composer-chip">{{ sessionMetaChips[0] }}</span>
+        <span v-if="sessionMetaChips[2]" class="composer-chip composer-chip--optional">{{ sessionMetaChips[2] }}</span>
+        <button
+          type="button"
+          class="mobile-send-btn"
+          :disabled="!mobileInput.trim() || wsState !== 'connected'"
+          aria-label="发送 follow-up"
+          @click="sendMobileInput"
+        >↑</button>
+      </div>
     </div>
 
-    <div class="shortcut-bar">
+    <div v-if="mobileTextMode && terminalKeysOpen" class="shortcut-bar terminal-key-tray">
       <button class="shortcut-btn" @click="sendSpecialKey('Enter')">Enter</button>
       <button class="shortcut-btn" @click="sendSpecialKey('Tab')">Tab</button>
       <button class="shortcut-btn" @click="sendSpecialKey('Ctrl+C')">^C</button>
@@ -1959,14 +1990,381 @@ onUnmounted(() => {
   min-width: 38px;
 }
 
+/* ===========================
+   Mobile session semantic tokens and composer layout
+   =========================== */
+.terminal-page {
+  color-scheme: dark;
+  --session-bg: #09090d;
+  --session-canvas: #0d0d12;
+  --session-surface: #17171d;
+  --session-surface-subtle: #121217;
+  --session-surface-raised: #1c1c24;
+  --session-border: rgba(255, 255, 255, .12);
+  --session-border-weak: rgba(255, 255, 255, .08);
+  --session-text: #f4f4f5;
+  --session-text-soft: #dedee4;
+  --session-text-muted: #a1a1aa;
+  --session-text-faint: #71717a;
+  --session-accent: #7aa2ff;
+  --session-success: #56d364;
+  --session-warning: #fbbf24;
+  --session-danger: #f87171;
+  --session-header-bg: rgba(9, 9, 13, .88);
+  --session-composer-shadow: 0 -18px 34px rgba(0, 0, 0, .36), 0 0 0 1px rgba(255, 255, 255, .04);
+  background: var(--session-bg);
+}
+
+@media (prefers-color-scheme: light) {
+  .terminal-page {
+    color-scheme: light;
+    --session-bg: #ffffff;
+    --session-canvas: #fbfbfa;
+    --session-surface: #f5f5f4;
+    --session-surface-subtle: #fafafa;
+    --session-surface-raised: #ffffff;
+    --session-border: rgba(24, 24, 27, .10);
+    --session-border-weak: rgba(24, 24, 27, .06);
+    --session-text: #18181b;
+    --session-text-soft: #303036;
+    --session-text-muted: #71717a;
+    --session-text-faint: #a1a1aa;
+    --session-accent: #2563eb;
+    --session-success: #15803d;
+    --session-warning: #b45309;
+    --session-danger: #dc2626;
+    --session-header-bg: rgba(255, 255, 255, .88);
+    --session-composer-shadow: 0 -18px 38px rgba(39, 39, 42, .08), 0 14px 40px rgba(39, 39, 42, .12);
+  }
+}
+
+.session-mobile-header {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 58px;
+  height: auto;
+  padding: 8px 10px 6px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0));
+  border-bottom: 1px solid var(--session-border-weak);
+  background: var(--session-header-bg);
+  color: var(--session-text);
+  backdrop-filter: blur(18px);
+  gap: 4px;
+}
+
+.session-icon-button,
+.back-btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 14px;
+  color: var(--session-text-muted);
+}
+
+.session-title-block {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-label {
+  color: var(--session-text);
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.session-subtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--session-text-muted);
+  font-size: 11.5px;
+  font-weight: 560;
+}
+
+.session-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--session-text-faint);
+}
+
+.session-status-dot--connected {
+  background: var(--session-success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--session-success) 18%, transparent);
+}
+
+.session-status-dot--connecting {
+  background: var(--session-warning);
+}
+
+.session-status-dot--error {
+  background: var(--session-danger);
+}
+
+.session-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.session-view-toggle,
+.terminal-diagnostic-button {
+  min-height: 32px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-view-toggle {
+  border-color: var(--session-border-weak);
+  background: var(--session-surface-subtle);
+  color: var(--session-text-muted);
+}
+
+.terminal-diagnostic-button {
+  border-color: color-mix(in srgb, var(--session-warning) 28%, transparent);
+  background: color-mix(in srgb, var(--session-warning) 10%, var(--session-surface-subtle));
+  color: var(--session-warning);
+}
+
+.terminal-scroll-wrapper {
+  padding: 0;
+  background: var(--session-canvas);
+}
+
+.terminal-text-view {
+  border: 0;
+  border-radius: 0;
+  padding: 12px 15px 174px;
+  background: var(--session-canvas);
+  box-shadow: none;
+  color: var(--session-text);
+  font-size: 15px !important;
+  letter-spacing: 0;
+}
+
+.terminal-text-mode-header {
+  position: sticky;
+  top: -12px;
+  z-index: 2;
+  margin: 0 -15px 12px;
+  padding: 8px 15px 10px;
+  background: linear-gradient(180deg, var(--session-canvas) 0%, color-mix(in srgb, var(--session-canvas) 88%, transparent) 80%, transparent 100%);
+  border-bottom: 1px solid var(--session-border-weak);
+}
+
+.terminal-text-mode-caption {
+  color: var(--session-text-faint);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.diagnostic-font-controls {
+  opacity: .78;
+}
+
+.font-btn,
+.font-size-label {
+  border-color: var(--session-border-weak);
+  background: var(--session-surface-subtle);
+  color: var(--session-text-muted);
+}
+
+.terminal-summary-card--hero {
+  margin-bottom: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--session-border-weak);
+  border-radius: 12px;
+  background: var(--session-surface-subtle);
+}
+
+.terminal-summary-title,
+.terminal-summary-subtitle {
+  color: var(--session-text-soft);
+}
+
+.terminal-summary-version,
+.terminal-summary-workdir,
+.terminal-meta-chip {
+  border-color: var(--session-border-weak);
+  background: var(--session-surface-subtle);
+  color: var(--session-text-muted);
+}
+
+.terminal-meta-chip-row {
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.mobile-composer-dock,
+.mobile-input-bar {
+  position: absolute;
+  z-index: 6;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  display: grid;
+  gap: 0;
+  padding: 0 0 calc(10px + env(safe-area-inset-bottom, 0));
+  border: 0;
+  background: transparent;
+}
+
+.mobile-composer-dock::before {
+  content: "";
+  position: absolute;
+  inset: -18px -10px 0;
+  z-index: -1;
+  background: linear-gradient(180deg, transparent, var(--session-canvas) 56%);
+  pointer-events: none;
+}
+
+.mobile-input {
+  min-height: 64px;
+  max-height: 160px;
+  padding: 13px 14px 6px;
+  border-radius: 16px 16px 0 0;
+  border: 1px solid var(--session-border);
+  border-bottom: 0;
+  background: color-mix(in srgb, var(--session-surface-raised) 94%, transparent);
+  color: var(--session-text);
+  font-size: 15px;
+  line-height: 1.45;
+  box-shadow: var(--session-composer-shadow);
+  backdrop-filter: blur(16px);
+}
+
+.mobile-input::placeholder {
+  color: var(--session-text-faint);
+}
+
+.mobile-input:focus {
+  border-color: color-mix(in srgb, var(--session-accent) 45%, var(--session-border));
+  box-shadow: var(--session-composer-shadow), 0 0 0 3px color-mix(in srgb, var(--session-accent) 14%, transparent);
+}
+
+.mobile-composer-controls {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 8px 10px;
+  border: 1px solid var(--session-border);
+  border-top: 0;
+  border-radius: 0 0 16px 16px;
+  background: color-mix(in srgb, var(--session-surface-raised) 94%, transparent);
+  box-shadow: var(--session-composer-shadow);
+  backdrop-filter: blur(16px);
+}
+
+.composer-chip {
+  min-width: 0;
+  max-width: 112px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--session-text-muted);
+  font-size: 12px;
+  font-weight: 680;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-chip--button {
+  border-color: var(--session-border-weak);
+  background: var(--session-surface-subtle);
+  font-family: inherit;
+}
+
+.composer-chip--optional {
+  display: none;
+}
+
+.mobile-send-btn {
+  margin-left: auto;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--session-accent);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 850;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--session-accent) 35%, transparent);
+}
+
+.mobile-send-btn:disabled {
+  opacity: .5;
+  box-shadow: none;
+}
+
+.terminal-key-tray,
+.shortcut-bar {
+  position: absolute;
+  z-index: 7;
+  left: 10px;
+  right: 10px;
+  bottom: calc(126px + env(safe-area-inset-bottom, 0));
+  padding: 6px;
+  border: 1px solid var(--session-border-weak);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--session-surface-raised) 92%, transparent);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, .16);
+  backdrop-filter: blur(16px);
+}
+
+.shortcut-btn {
+  border-color: var(--session-border-weak);
+  border-radius: 10px;
+  background: var(--session-surface-subtle);
+  color: var(--session-text-muted);
+}
+
+@media (min-width: 421px) {
+  .terminal-text-view {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .mobile-input-bar,
+  .terminal-key-tray,
+  .shortcut-bar {
+    left: 12px;
+    right: 12px;
+  }
+
+  .composer-chip--optional {
+    display: inline-flex;
+  }
+}
+
 @media (max-width: 768px) {
   .terminal-header {
-    height: 48px;
-    padding: 0 10px;
+    min-height: 58px;
+    height: auto;
+    padding: 8px 10px 6px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0));
   }
 
   .session-label {
-    font-size: 13px;
+    font-size: 15px;
   }
 
   .font-btn {
@@ -1984,14 +2382,6 @@ onUnmounted(() => {
    Desktop Overrides (pointer + hover capable)
    =========================== */
 @media (hover: hover) and (pointer: fine) {
-  .shortcut-bar {
-    display: none;
-  }
-
-  .mobile-input-bar {
-    display: none;
-  }
-
   .back-btn:hover {
     background: #21262d;
   }

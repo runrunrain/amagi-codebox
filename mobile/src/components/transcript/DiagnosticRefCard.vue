@@ -6,38 +6,40 @@ defineProps<{ part: DiagnosticRefPart }>()
 
 <template>
   <article class="diagnostic-card" :data-reason="part.reason">
-    <header class="diagnostic-header">诊断输出已隔离 · {{ part.reason }}</header>
+    <header class="diagnostic-header">有一段终端输出已放入诊断详情</header>
     <p class="diagnostic-summary">{{ part.summary }}</p>
-    <p class="diagnostic-count">{{ part.visibility || 'summary-card' }} · ×{{ part.count || 1 }}，详情请打开诊断抽屉查看。</p>
+    <p class="diagnostic-count">共 {{ part.count || 1 }} 条，详情请点顶部“诊断”打开诊断抽屉查看。</p>
     <p v-if="part.redacted" class="diagnostic-redacted">预览中已隐藏敏感片段</p>
   </article>
 </template>
 
 <style scoped>
 .diagnostic-card {
-  border-radius: 14px;
-  border: 1px solid rgba(210, 153, 34, 0.28);
-  background: rgba(210, 153, 34, 0.08);
-  color: #e6edf3;
-  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--session-warning, #fbbf24) 28%, transparent);
+  background: color-mix(in srgb, var(--session-warning, #fbbf24) 8%, var(--session-surface-subtle, #121217));
+  color: var(--session-text-soft, #dedee4);
+  padding: 10px 12px;
 }
 
 .diagnostic-header {
-  color: #ffd866;
+  color: var(--session-warning, #fbbf24);
   font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 8px;
+  font-weight: 700;
+  margin-bottom: 6px;
 }
 
 .diagnostic-summary {
   margin: 0;
-  color: #c9d1d9;
+  color: var(--session-text-muted, #a1a1aa);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .diagnostic-count,
 .diagnostic-redacted {
   margin: 8px 0 0;
-  color: #8b949e;
+  color: var(--session-text-faint, #71717a);
   font-size: 12px;
 }
 </style>

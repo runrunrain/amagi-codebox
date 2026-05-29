@@ -1,6 +1,6 @@
 import { computed, ref, type Ref } from 'vue'
 import { looksLikeMarkdown } from '../utils/renderMarkdown'
-import { normalizeTranscriptChunk, resetTranscriptNormalizerState, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
+import { isReadableLegacyText, normalizeTranscriptChunk, resetTranscriptNormalizerState, type DiagnosticReason, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
 import { useDiagnosticStore } from './useDiagnosticStore'
 import type { AppType } from '../types/terminal'
 import type { DiagnosticRefPart, KeyedTranscriptTurn, TranscriptPart, TranscriptTurn } from '../types/transcript'
@@ -130,7 +130,32 @@ function classifySegment(rawSegment: string, index: number, timestamp: string): 
     return { id, type: 'raw-terminal', text: rawSegment, reason: 'unsupported-pattern', createdAt: timestamp }
   }
 
+  if (!isReadableLegacyText(rawSegment)) {
+    return { id, type: 'raw-terminal', text: rawSegment, reason: 'unsupported-pattern', createdAt: timestamp }
+  }
+
   return { id, type: 'text', text, createdAt: timestamp }
+}
+
+function isolatedRawSummary(reason: DiagnosticReason): string {
+  switch (reason) {
+    case 'ansi':
+      return '收到带终端控制序列的输出，已隔离到诊断详情，未作为会话正文展示。'
+    case 'tui':
+      return '收到 TUI 或菜单式终端片段，已隔离到诊断详情，未作为会话正文展示。'
+    case 'classifier-overflow':
+      return '收到超长终端片段，已隔离到诊断详情，避免移动端正文卡顿。'
+    case 'fallback':
+      return '收到不可读的 legacy fallback 片段，已隔离到诊断详情。'
+    case 'unsupported-pattern':
+      return '收到不适合作为正文展示的终端片段，已隔离到诊断详情。'
+    default:
+      return '收到不可恢复的原始终端片段，已记录到诊断详情。'
+  }
+}
+
+function diagnosticReasonFromRawPart(part: TranscriptPart): DiagnosticReason {
+  return part.type === 'raw-terminal' ? part.reason : 'unsupported-pattern'
 }
 
 function hasCompletedSegmentBoundary(text: string): boolean {
@@ -309,6 +334,31 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     rawText.value = boundRawText(rawText.value + normalized, maxRawChars, maxLines)
   }
 
+  function appendClassifiedSegment(segment: string, timestamp: string) {
+    const part = classifySegment(segment, partSequence, timestamp)
+    partSequence += 1
+    if (part.type === 'raw-terminal') {
+      const diagnosticRef = recordDiagnostic({
+        reason: diagnosticReasonFromRawPart(part),
+        summary: isolatedRawSummary(diagnosticReasonFromRawPart(part)),
+        text: part.text,
+        severity: 'warning',
+      }, timestamp)
+      if (diagnosticRef.visibility !== 'hidden-info') {
+        completedParts.push(diagnosticRef)
+      }
+      return null
+    }
+    completedParts.push(part)
+    return part
+  }
+
+  function classifyVisibleSegment(segment: string, timestamp: string, id = `part-${partSequence}`, streaming = false): TranscriptPart | null {
+    const part = classifySegment(segment, partSequence, timestamp)
+    if (part.type === 'raw-terminal') return null
+    return replacePartId(part, id, streaming)
+  }
+
   function ingestNormalizedText(normalized: string, timestamp: string, statsPatch: Partial<StructuredTranscriptDebugStats>) {
     if (!normalized) return
     appendRawTextToStableBuffer(normalized)
@@ -324,8 +374,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
 
       for (const segment of segments) {
         if (!segment.trim()) continue
-        completedParts.push(classifySegment(segment, partSequence, timestamp))
-        partSequence += 1
+        appendClassifiedSegment(segment, timestamp)
         statsPatch.classifiedSegments = (statsPatch.classifiedSegments ?? debugStats.value.classifiedSegments) + 1
       }
       trimCompletedParts()
@@ -391,10 +440,6 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       case 'raw-terminal': {
         const text = part.raw?.text ?? ''
         if (!text) return null
-        const { cleanText } = normalizeTranscriptChunk(text)
-        if (cleanText.trim()) {
-          return replacePartId(classifySegment(cleanText, partSequence, createdAt), part.id)
-        }
         return null
       }
       default:
@@ -447,10 +492,10 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   function flushPendingSegment(timestamp: string): boolean {
     if (!pendingSegment.trim()) return false
 
-    const part = classifySegment(pendingSegment, partSequence, timestamp)
-    completedParts.push(part)
-    upsertPart(part, timestamp)
-    partSequence += 1
+    const part = appendClassifiedSegment(pendingSegment, timestamp)
+    if (part) {
+      upsertPart(part, timestamp)
+    }
     pendingSegment = ''
     removePart('part-current')
     return true
@@ -462,14 +507,18 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     syncCompletedPartsToStore(timestamp)
     const currentText = pendingSegment.trim()
     if (currentText) {
-      const currentPart = classifySegment(pendingSegment, partSequence, timestamp)
-      upsertPart(replacePartId(currentPart, 'part-current', true), timestamp)
+      const currentPart = classifyVisibleSegment(pendingSegment, timestamp, 'part-current', true)
+      if (currentPart) {
+        upsertPart(currentPart, timestamp)
+      } else {
+        removePart('part-current')
+      }
     } else {
       removePart('part-current')
     }
   }
 
-  function appendRawChunk(chunk: string, _metadata: AppendRawChunkMetadata = {}) {
+  function appendRawChunk(chunk: string, metadata: AppendRawChunkMetadata = {}) {
     if (!chunk) return
 
     const timestamp = nowIso()
@@ -486,6 +535,25 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
         statsPatch.transientStatusUpdates = debugStats.value.transientStatusUpdates + 1
       }
       if (!normalized) {
+        trimCompletedParts()
+        updateTurn(timestamp)
+        refreshDebugStats(statsPatch)
+        error.value = null
+        return
+      }
+      const rawDiagnosticOnly = chunkDiagnostics.some((diagnostic) => diagnostic.reason === 'ansi' || diagnostic.reason === 'tui')
+        || (metadata.source === 'fallback' && !isReadableLegacyText(chunk))
+      if (rawDiagnosticOnly) {
+        appendRawTextToStableBuffer(normalized)
+        const diagnosticRef = recordDiagnostic({
+          reason: 'unsupported-pattern',
+          summary: isolatedRawSummary('unsupported-pattern'),
+          text: chunk,
+          severity: 'warning',
+        }, timestamp)
+        if (diagnosticRef.visibility !== 'hidden-info') {
+          completedParts.push(diagnosticRef)
+        }
         trimCompletedParts()
         updateTurn(timestamp)
         refreshDebugStats(statsPatch)
@@ -515,12 +583,36 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     ensureTurnCreatedAt(timestamp)
 
     try {
+      if (part.type === 'raw-terminal') {
+        const text = part.raw?.text ?? ''
+        appendDiagnostics([{
+          reason: part.raw?.reason ?? 'unrecoverable-raw-terminal',
+          summary: isolatedRawSummary(part.raw?.reason ?? 'unrecoverable-raw-terminal'),
+          text: text || JSON.stringify({ id: part.id, type: part.type }),
+          seq: part.source?.seqStart,
+          severity: text.trim() ? 'warning' : 'info',
+        }], timestamp)
+        if (text) {
+          const { cleanText: normalized, diagnostics: chunkDiagnostics } = normalizeTranscriptChunk(text)
+          appendDiagnostics(chunkDiagnostics, timestamp)
+          appendRawTextToStableBuffer(normalized)
+        }
+        trimCompletedParts()
+        updateTurn(timestamp)
+        refreshDebugStats({
+          appendCalls: debugStats.value.appendCalls + 1,
+          lastAppendChars: text.length,
+          structuredParts: debugStats.value.structuredParts + 1,
+        })
+        error.value = null
+        return
+      }
+
       const transcriptPart = toTranscriptPart(part)
       if (!transcriptPart) {
-        const isEmptyRawTerminal = part.type === 'raw-terminal' && !(part.raw?.text ?? '').trim()
         appendDiagnostics([{
-          reason: isEmptyRawTerminal ? 'unrecoverable-raw-terminal' : 'invalid-part',
-          summary: isEmptyRawTerminal ? '收到不可恢复的原始终端片段，已记录到诊断详情。' : '收到无法渲染的结构化片段，已隔离，未作为会话正文展示。',
+          reason: 'invalid-part',
+          summary: '收到无法渲染的结构化片段，已隔离，未作为会话正文展示。',
           text: JSON.stringify({ id: part.id, type: part.type }),
           seq: part.source?.seqStart,
           severity: 'warning',

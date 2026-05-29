@@ -33,7 +33,7 @@ describe('PartRenderer', () => {
 
     // Assert
     expect(wrapper.findComponent({ name: 'MarkdownRenderer' }).exists()).toBe(true)
-    expect(wrapper.find('.markdown-card').exists()).toBe(true)
+    expect(wrapper.find('.markdown-flow').exists()).toBe(true)
   })
 
   it('renders tool type via ToolCard', () => {
@@ -52,10 +52,10 @@ describe('PartRenderer', () => {
     // Assert
     expect(wrapper.find('.tool-card').exists()).toBe(true)
     expect(wrapper.text()).toContain('Read')
-    expect(wrapper.text()).toContain('completed')
+    expect(wrapper.text()).toContain('完成')
   })
 
-  it('renders raw-terminal type via RawTerminalBlock', () => {
+  it('does not render raw-terminal type in the main timeline', () => {
     // Arrange
     const part: RawTerminalPart = {
       ...basePart(),
@@ -68,9 +68,8 @@ describe('PartRenderer', () => {
     const wrapper = mount(PartRenderer, { props: { part } })
 
     // Assert
-    expect(wrapper.find('.raw-block').exists()).toBe(true)
-    expect(wrapper.text()).toContain('Raw fallback')
-    expect(wrapper.text()).toContain('ansi')
+    expect(wrapper.find('.raw-block').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('ansi output here')
   })
 
   it('renders diff type in a pre element with diff class', () => {
@@ -87,7 +86,7 @@ describe('PartRenderer', () => {
     const wrapper = mount(PartRenderer, { props: { part } })
 
     // Assert
-    expect(wrapper.find('pre.part--diff').exists()).toBe(true)
+    expect(wrapper.find('.part--diff-card').exists()).toBe(true)
     expect(wrapper.find('pre.part--diff').text()).toContain('diff --git')
   })
 
@@ -119,7 +118,7 @@ describe('PartRenderer', () => {
     const wrapper = mount(PartRenderer, { props: { part } })
 
     // Assert
-    expect(wrapper.find('.part--text').exists()).toBe(true)
+    expect(wrapper.find('.part-text').exists()).toBe(true)
     expect(wrapper.text()).toContain('plain text content')
   })
 
@@ -204,7 +203,7 @@ describe('PartRenderer', () => {
     const wrapper = mount(PartRenderer, { props: { part } })
 
     // Assert - falls through all v-if/v-else-if to the final v-else (text fallback)
-    expect(wrapper.find('.part--text').exists()).toBe(true)
+    expect(wrapper.find('.part-text').exists()).toBe(true)
     expect(wrapper.text()).toContain('some fallback text')
   })
 
@@ -220,6 +219,6 @@ describe('PartRenderer', () => {
     const wrapper = mount(PartRenderer, { props: { part } })
 
     // Assert - renders without crashing, empty text is fine
-    expect(wrapper.find('.part--text').exists()).toBe(true)
+    expect(wrapper.find('.part-text').exists()).toBe(true)
   })
 })
