@@ -75,6 +75,17 @@ type OpenRemoteWebUIResult struct {
 	Running bool   `json:"running"`
 }
 
+type persistentLoadState struct {
+	initialized        bool
+	configLoaded       bool
+	secretsLoaded      bool
+	pathsLoaded        bool
+	settingsLoaded     bool
+	workspacesLoaded   bool
+	proxyRulesLoaded   bool
+	proxyHistoryLoaded bool
+}
+
 // App 主应用结构体，负责跨服务协调和生命周期管理。
 // 通过 Wails 绑定暴露给前端。
 type App struct {
@@ -106,6 +117,9 @@ type App struct {
 	// startupWarnings 记录启动期间的警告信息，供前端拉取后向用户展示。
 	startupWarnings   []string
 	startupWarningsMu sync.Mutex
+
+	persistenceMu       sync.RWMutex
+	persistentLoadState persistentLoadState
 }
 
 func NewApp(mobileAssets embed.FS) *App {
@@ -142,6 +156,30 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log, mobileAssets)
 	return app
+}
+
+func (a *App) setPersistentLoadState(state persistentLoadState) {
+	a.persistenceMu.Lock()
+	a.persistentLoadState = state
+	a.persistenceMu.Unlock()
+}
+
+func (a *App) getPersistentLoadState() persistentLoadState {
+	a.persistenceMu.RLock()
+	defer a.persistenceMu.RUnlock()
+	return a.persistentLoadState
+}
+
+func shouldSaveLoadedState(state persistentLoadState, loaded bool) bool {
+	return !state.initialized || loaded
+}
+
+func (a *App) skipPersistentSaveError(name string) error {
+	msg := fmt.Sprintf("跳过保存 %s：启动时加载失败，避免用默认空配置覆盖原文件", name)
+	if a.Log != nil {
+		a.Log.Warn("app", msg)
+	}
+	return errors.New(msg)
 }
 
 // --- remote.AppInterface 实现 ---
@@ -572,42 +610,13 @@ func (a *App) Startup(ctx context.Context) {
 	a.Updater.CleanupOldBinary()
 
 	a.Log.Info("app", "应用启动")
+	loadState := persistentLoadState{initialized: true}
 
 	// 加载设置并同步 GitHub Token 到 Updater
 	if err := a.Settings.Load(); err != nil {
 		a.Log.Warn("app", "加载设置失败", err.Error())
-	}
-	if token := a.Settings.GetGitHubToken(); token != "" {
-		a.Updater.SetToken(token)
-	}
-
-	if err := a.Config.Load(); err != nil {
-		a.Log.Warn("app", "加载配置失败，使用默认值", err.Error())
 	} else {
-		a.Log.Info("app", "配置加载成功")
-
-		// 自动迁移：将旧 provider.presets 迁移到 terminal_presets（幂等，不阻断启动）
-		if count, changed, migrateErr := a.Config.MigrateProviderPresetsToTerminal(); migrateErr != nil {
-			msg := fmt.Sprintf("旧预设自动迁移失败: %s。请前往设置 > 终端预设手动处理，或查看日志了解详情。", migrateErr.Error())
-			a.Log.Warn("app", "自动迁移 provider presets 失败", migrateErr.Error())
-			a.addStartupWarning(msg)
-		} else if changed {
-			a.Log.Info("app", "自动迁移完成", fmt.Sprintf("count=%d", count))
-		}
-	}
-	if err := a.Secrets.Load(); err != nil {
-		a.Log.Warn("app", "加载密钥失败", err.Error())
-	} else {
-		a.Log.Info("app", "密钥加载成功")
-	}
-	if err := a.Paths.Load(); err != nil {
-		a.Log.Warn("app", "加载路径失败", err.Error())
-	} else {
-		a.Log.Info("app", "路径加载成功")
-	}
-	if err := a.Settings.Load(); err != nil {
-		a.Log.Warn("app", "加载设置失败", err.Error())
-	} else {
+		loadState.settingsLoaded = true
 		a.Log.Info("app", "设置加载成功")
 		// 将持久化的远程端口和地址同步到 Remote
 		if savedHost := a.Settings.GetRemoteHost(); savedHost != "" {
@@ -622,6 +631,37 @@ func (a *App) Startup(ctx context.Context) {
 			a.Remote.SetWebRoot(webRoot)
 			a.Log.Info("app", "移动端 Web 根目录已设置", fmt.Sprintf("path=%s", webRoot))
 		}
+		if token := a.Settings.GetGitHubToken(); token != "" {
+			a.Updater.SetToken(token)
+		}
+	}
+
+	if err := a.Config.Load(); err != nil {
+		a.Log.Warn("app", "加载配置失败，使用默认值", err.Error())
+	} else {
+		loadState.configLoaded = true
+		a.Log.Info("app", "配置加载成功")
+
+		// 自动迁移：将旧 provider.presets 迁移到 terminal_presets（幂等，不阻断启动）
+		if count, changed, migrateErr := a.Config.MigrateProviderPresetsToTerminal(); migrateErr != nil {
+			msg := fmt.Sprintf("旧预设自动迁移失败: %s。请前往设置 > 终端预设手动处理，或查看日志了解详情。", migrateErr.Error())
+			a.Log.Warn("app", "自动迁移 provider presets 失败", migrateErr.Error())
+			a.addStartupWarning(msg)
+		} else if changed {
+			a.Log.Info("app", "自动迁移完成", fmt.Sprintf("count=%d", count))
+		}
+	}
+	if err := a.Secrets.Load(); err != nil {
+		a.Log.Warn("app", "加载密钥失败", err.Error())
+	} else {
+		loadState.secretsLoaded = true
+		a.Log.Info("app", "密钥加载成功")
+	}
+	if err := a.Paths.Load(); err != nil {
+		a.Log.Warn("app", "加载路径失败", err.Error())
+	} else {
+		loadState.pathsLoaded = true
+		a.Log.Info("app", "路径加载成功")
 	}
 	if err := a.EnvVars.Load(); err != nil {
 		a.Log.Warn("app", "加载自定义环境变量失败", err.Error())
@@ -631,18 +671,22 @@ func (a *App) Startup(ctx context.Context) {
 	if err := a.Proxy.LoadRules(defaultConfigDir()); err != nil {
 		a.Log.Warn("app", "加载注入规则失败", err.Error())
 	} else {
+		loadState.proxyRulesLoaded = true
 		a.Log.Info("app", "注入规则加载成功")
 	}
 	if err := a.Proxy.LoadBackendURLHistory(defaultConfigDir()); err != nil {
 		a.Log.Warn("app", "加载后端URL历史记录失败", err.Error())
 	} else {
+		loadState.proxyHistoryLoaded = true
 		a.Log.Info("app", "后端URL历史记录加载成功")
 	}
 	if err := a.Workspaces.Load(); err != nil {
 		a.Log.Warn("app", "加载工作区配置失败", err.Error())
 	} else {
+		loadState.workspacesLoaded = true
 		a.Log.Info("app", "工作区配置加载成功")
 	}
+	a.setPersistentLoadState(loadState)
 
 	// 启动环境检测异步执行，不阻塞应用启动；检测结果由 EnvCheck 服务缓存。
 	go func() {
@@ -1875,28 +1919,66 @@ func (a *App) QuickLaunch(providerName, presetName string, useProxy bool) error 
 
 // SaveAllConfig 保存配置和密钥到磁盘。
 func (a *App) SaveAllConfig() error {
-	if err := a.Config.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	state := a.getPersistentLoadState()
+	var saveErrs []error
+
+	if shouldSaveLoadedState(state, state.configLoaded) {
+		if err := a.Config.Save(); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save config: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("models.json"))
 	}
-	if err := a.Secrets.Save(); err != nil {
-		return fmt.Errorf("save secrets: %w", err)
+
+	if shouldSaveLoadedState(state, state.secretsLoaded) {
+		if err := a.Secrets.Save(); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save secrets: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("secrets.enc"))
 	}
-	if err := a.Paths.Save(); err != nil {
-		return fmt.Errorf("save paths: %w", err)
+
+	if shouldSaveLoadedState(state, state.pathsLoaded) {
+		if err := a.Paths.Save(); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save paths: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("paths.json"))
 	}
-	if err := a.Settings.Save(); err != nil {
-		return fmt.Errorf("save settings: %w", err)
+
+	if shouldSaveLoadedState(state, state.settingsLoaded) {
+		if err := a.Settings.Save(); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save settings: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("settings.json"))
 	}
-	if err := a.Workspaces.Save(); err != nil {
-		return fmt.Errorf("save workspaces: %w", err)
+
+	if shouldSaveLoadedState(state, state.workspacesLoaded) {
+		if err := a.Workspaces.Save(); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save workspaces: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("workspaces.json/global-enabled.json"))
 	}
-	if err := a.Proxy.SaveRules(defaultConfigDir()); err != nil {
-		return fmt.Errorf("save injection rules: %w", err)
+
+	if shouldSaveLoadedState(state, state.proxyRulesLoaded) {
+		if err := a.Proxy.SaveRules(defaultConfigDir()); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save injection rules: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("injection-rules.json"))
 	}
-	if err := a.Proxy.SaveBackendURLHistory(defaultConfigDir()); err != nil {
-		return fmt.Errorf("save backend URL history: %w", err)
+
+	if shouldSaveLoadedState(state, state.proxyHistoryLoaded) {
+		if err := a.Proxy.SaveBackendURLHistory(defaultConfigDir()); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("save backend URL history: %w", err))
+		}
+	} else {
+		saveErrs = append(saveErrs, a.skipPersistentSaveError("proxy-backend-url-history.json"))
 	}
-	return nil
+
+	return errors.Join(saveErrs...)
 }
 
 // GetAppInfo 返回应用基本信息。
