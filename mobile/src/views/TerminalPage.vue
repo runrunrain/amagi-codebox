@@ -26,6 +26,7 @@ const FONT_SIZE_KEY = 'terminal-font-size'
 const FONT_SIZE_MIN = 9
 const FONT_SIZE_MAX = 18
 const FONT_SIZE_DEFAULT = 12
+const MOBILE_TEXT_VIEWPORT_MAX_WIDTH = 768
 
 type TerminalTransportMode = 'observer' | 'controller'
 
@@ -239,7 +240,12 @@ const terminalPageRef = ref<HTMLDivElement>()
 let isKeyboardOpen = false
 
 function isDesktopBrowser(): boolean {
-  return window.matchMedia('(hover: hover) and (pointer: fine)').matches
+  const viewportWidth = Math.min(
+    window.innerWidth || Number.POSITIVE_INFINITY,
+    window.visualViewport?.width || Number.POSITIVE_INFINITY,
+  )
+  const isNarrowViewport = viewportWidth <= MOBILE_TEXT_VIEWPORT_MAX_WIDTH
+  return !isNarrowViewport && window.matchMedia('(hover: hover) and (pointer: fine)').matches
 }
 
 let currentTransportMode: TerminalTransportMode = isDesktopBrowser() ? 'controller' : 'observer'

@@ -75,6 +75,49 @@ describe('useStructuredTranscript', () => {
     expect(transcript.rawText.value).not.toContain('\u001B[32m')
   })
 
+  it('recovers readable markdown from ANSI history chunks instead of isolating the whole chunk', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-ansi-history', appType: computed(() => 'codex') })
+
+    transcript.appendRawChunk('\u001B[32m# Investigation Plan\u001B[0m\n\n- inspect TerminalPage\n- recover transcript content')
+
+    const part = firstPart(transcript)
+    expect(part).toMatchObject({ type: 'markdown' })
+    expect(part && part.type === 'markdown' ? part.markdown : '').toContain('# Investigation Plan')
+    expect(transcript.diagnostics.value.some((item) => item.reason === 'ansi')).toBe(true)
+  })
+
+  it('recovers readable history around an isolated TUI menu segment', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-mixed-history', appType: computed(() => 'codex') })
+
+    transcript.appendRawChunk('\u001B[32m# Mobile Session Proof\u001B[0m\n\n- inspect TerminalPage\n- recover transcript content\n\n╭─ Menu\n│ ❯ Continue\n╰──────\n\nAssistant response line with enough readable words for mobile recovery.')
+
+    const parts = transcript.turns.value[0]?.parts ?? []
+    const visibleText = parts.map((part) => {
+      if (part.type === 'markdown') return part.markdown
+      if (part.type === 'text') return part.text
+      return ''
+    }).join('\n')
+
+    expect(visibleText).toContain('Mobile Session Proof')
+    expect(visibleText).toContain('recover transcript content')
+    expect(visibleText).toContain('Assistant response line with enough readable words')
+    expect(visibleText).not.toContain('Continue')
+    expect(transcript.diagnostics.value.some((item) => item.reason === 'tui')).toBe(true)
+  })
+
+  it('splits long history chunks so readable content is not hidden as one oversized raw segment', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-long-history', appType: computed(() => 'generic') })
+    const readableLine = 'Assistant response line with enough readable words for mobile recovery.'
+    const longHistory = Array.from({ length: 180 }, (_, index) => `${readableLine} ${index}`).join('\n')
+
+    transcript.appendRawChunk(longHistory)
+
+    const parts = transcript.turns.value[0]?.parts ?? []
+    expect(parts.some((part) => part.type === 'text')).toBe(true)
+    expect(transcript.rawText.value).toContain(readableLine)
+    expect(transcript.debugStats.value.classifiedSegments).toBeGreaterThan(0)
+  })
+
   it('suppresses terminal spinner redraws instead of rendering text noise', () => {
     const transcript = useStructuredTranscript({ sessionId: 's-spinner', appType: computed(() => 'opencode') })
 

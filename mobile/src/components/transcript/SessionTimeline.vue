@@ -65,6 +65,9 @@ function visibleParts(turn: TranscriptTurn) {
   return turn.parts.filter(isTimelinePart)
 }
 
+const hasVisibleTimelineContent = computed(() => renderedTurns.value.some((turn) => visibleParts(turn).length > 0))
+const hasOnlyHiddenContent = computed(() => renderedTurns.value.length > 0 && !hasVisibleTimelineContent.value)
+
 function partToUserText(part: TranscriptPart) {
   switch (part.type) {
     case 'text':
@@ -98,8 +101,11 @@ function assistantMeta(turn: TranscriptTurn) {
     <div v-if="loading" class="timeline-state timeline-state--loading">正在连接会话，等待 Agent 输出...</div>
     <div v-else-if="error" class="timeline-state timeline-state--error">会话解析遇到问题，详情已放入诊断：{{ error }}</div>
     <div v-else-if="renderedTurns.length === 0" class="timeline-state">暂无会话输出，等待 Agent 响应。</div>
+    <div v-else-if="hasOnlyHiddenContent" class="timeline-state timeline-state--diagnostic">
+      已收到终端输出，但当前片段被归入诊断或原始视图。请打开诊断或切换“原始”查看详情。
+    </div>
 
-    <article v-for="turn in renderedTurns" :key="turn.id" class="timeline-turn" :class="`timeline-turn--${turn.role}`">
+    <article v-for="turn in renderedTurns" v-show="!hasOnlyHiddenContent" :key="turn.id" class="timeline-turn" :class="`timeline-turn--${turn.role}`">
       <template v-if="turn.role === 'user'">
         <div v-if="userTurnText(turn)" class="user-bubble">{{ userTurnText(turn) }}</div>
       </template>
@@ -145,6 +151,11 @@ function assistantMeta(turn: TranscriptTurn) {
 .timeline-state--error {
   border-color: color-mix(in srgb, var(--session-danger, #f87171) 30%, transparent);
   color: var(--session-danger, #f87171);
+}
+
+.timeline-state--diagnostic {
+  border-color: color-mix(in srgb, var(--session-warning, #fbbf24) 30%, transparent);
+  color: var(--session-warning, #fbbf24);
 }
 
 .timeline-turn {

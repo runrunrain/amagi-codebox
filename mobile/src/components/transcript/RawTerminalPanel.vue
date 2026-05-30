@@ -85,7 +85,7 @@ onBeforeUnmount(() => {
       <span class="raw-terminal-counter">flush {{ sink.flushCount.value }} · write {{ sink.writeCount.value }}</span>
     </div>
     <div v-show="xtermAvailable" ref="terminalHost" class="raw-terminal-xterm"></div>
-    <pre v-if="!xtermAvailable" class="raw-terminal-line-buffer">{{ sink.displayText.value || '等待终端输出...' }}</pre>
+    <pre class="raw-terminal-line-buffer" :class="{ 'raw-terminal-line-buffer--fallback': xtermAvailable }">{{ sink.displayText.value || '等待终端输出...' }}</pre>
   </section>
 </template>
 
@@ -125,5 +125,12 @@ onBeforeUnmount(() => {
   color: #c9d1d9;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.raw-terminal-line-buffer--fallback {
+  min-height: 120px;
+  max-height: 32vh;
+  border-top: 1px solid rgba(139, 148, 158, 0.18);
+  background: rgba(1, 4, 9, 0.72);
 }
 </style>

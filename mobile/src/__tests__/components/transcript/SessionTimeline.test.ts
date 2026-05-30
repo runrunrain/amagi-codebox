@@ -184,6 +184,21 @@ describe('SessionTimeline', () => {
     expect(wrapper.text()).not.toContain('ANSI noise')
   })
 
+  it('shows a diagnostic state when turns contain only hidden raw or drawer-only parts', () => {
+    const turns = [makeTurn({
+      parts: [
+        { id: 'raw-1', type: 'raw-terminal', text: 'raw tui', reason: 'tui', createdAt: '2026-05-27T00:00:00.000Z' },
+        { id: 'diag-1', type: 'diagnostic-ref', reason: 'ansi', summary: 'ANSI noise', preview: '', redacted: false, visibility: 'drawer-only', createdAt: '2026-05-27T00:00:00.000Z' },
+      ],
+    })]
+
+    const wrapper = mount(SessionTimeline, { props: { turns } })
+
+    expect(wrapper.find('.timeline-state--diagnostic').exists()).toBe(true)
+    expect(wrapper.text()).toContain('已收到终端输出')
+    expect(wrapper.find('.assistant-meta').isVisible()).toBe(false)
+  })
+
   it('renders diagnostic-ref with summary-card visibility in timeline', () => {
     // Arrange - summary-card diagnostic-ref SHOULD appear
     const turns = [makeTurn({

@@ -1,6 +1,7 @@
 package structured
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,47 @@ func TestClassifyCoversStructuredTypes(t *testing.T) {
 			}
 			if part.ID == "" || part.CreatedAt == "" {
 				t.Fatalf("part should include id and createdAt: %+v", part)
+			}
+		})
+	}
+}
+
+func TestClassifyRecoversReadableAnsiContent(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want PartType
+	}{
+		{name: "ansi markdown", in: "\x1b[32m# Plan\x1b[0m\n\n- inspect\n- implement", want: PartTypeMarkdown},
+		{name: "ansi readable text", in: "\x1b[32mBuild completed successfully with 3 files changed.\x1b[0m", want: PartTypeText},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			part := Classify([]byte(tt.in), uint64(40+i))
+			if part.Type != tt.want {
+				t.Fatalf("Classify() type = %s, want %s; part = %+v", part.Type, tt.want, part)
+			}
+		})
+	}
+}
+
+func TestClassifyKeepsTUIOnlyMenusRaw(t *testing.T) {
+	tests := []string{
+		"╭─ Menu\n│ ❯ Continue\n╰──────",
+		"╭─ Menu\n│ - Continue\n╰──────",
+		"╭─ Menu\n│ * Continue\n╰──────",
+		"╭─ Menu\n│ > Continue\n╰──────",
+	}
+
+	for i, input := range tests {
+		t.Run(fmt.Sprintf("menu-%d", i), func(t *testing.T) {
+			part := Classify([]byte(input), uint64(44+i))
+			if part.Type != PartTypeRawTerminal {
+				t.Fatalf("type = %s, want raw-terminal", part.Type)
+			}
+			if part.Raw == nil || part.Raw.Reason != RawReasonTUI {
+				t.Fatalf("raw reason = %+v, want tui", part.Raw)
 			}
 		})
 	}

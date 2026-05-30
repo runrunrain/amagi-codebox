@@ -40,8 +40,10 @@ const DEFAULT_MAX_PARTS = 160
 const DEFAULT_MAX_RAW_CHARS = 160_000
 const DEFAULT_MAX_LINES = 4000
 const MAX_SEGMENT_LENGTH = 8000
+const SEGMENT_SOFT_SPLIT_RATIO = 0.35
 const SEGMENT_DELIMITER_PATTERN = /\n{2,}/g
 const MARKDOWN_FENCE_PATTERN = /^```[\s\S]*```$/i
+const TUI_MENU_TEXT_PATTERN = /(?:^\s*(?:menu|continue|select|navigate|cancel|confirm)\s*$|press\s+(?:enter|esc)|ctrl\+[a-z]|^\s*[❯›>]\s*\S)/im
 
 export function normalizeTranscriptLine(line: string): string {
   return line.replace(/^[^\p{L}\p{N}/\\]+/u, '').replace(/^PS\s+[A-Za-z]:\\[^>]+>\s+/i, '').trim()
@@ -107,6 +109,10 @@ function classifySegment(rawSegment: string, index: number, timestamp: string): 
     return { id, type: 'raw-terminal', text: rawSegment, reason: 'unsupported-pattern', createdAt: timestamp }
   }
 
+  if (isLikelyTuiMenuText(text)) {
+    return { id, type: 'raw-terminal', text: rawSegment, reason: 'tui', createdAt: timestamp }
+  }
+
   if (/^```/.test(text) || looksLikeMarkdown(text)) {
     return { id, type: 'markdown', markdown: text, createdAt: timestamp }
   }
@@ -135,6 +141,67 @@ function classifySegment(rawSegment: string, index: number, timestamp: string): 
   }
 
   return { id, type: 'text', text, createdAt: timestamp }
+}
+
+function isLikelyTuiMenuText(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  const lines = trimmed.split('\n').map((line) => normalizeTranscriptLine(line)).filter(Boolean)
+  if (lines.length > 8) return false
+  return TUI_MENU_TEXT_PATTERN.test(trimmed)
+}
+
+function shouldIsolateNormalizedChunk(
+  normalized: string,
+  diagnostics: TranscriptDiagnosticInput[],
+  metadata: AppendRawChunkMetadata,
+): boolean {
+  if (!normalized.trim()) return false
+  if (metadata.source === 'fallback' && !isReadableLegacyText(normalized)) return true
+  if (diagnostics.some((diagnostic) => diagnostic.reason === 'tui') && isLikelyTuiMenuText(normalized)) {
+    const segments = normalized.split(/\n{2,}/).map((segment) => segment.trim()).filter(Boolean)
+    return segments.length > 0 && segments.every((segment) => isLikelyTuiMenuText(segment) || !isReadableLegacyText(segment))
+  }
+  return false
+}
+
+function chooseSplitIndex(text: string, maxLength: number): number {
+  if (text.length <= maxLength) return text.length
+
+  const search = text.slice(0, maxLength)
+  const minSplit = Math.floor(maxLength * SEGMENT_SOFT_SPLIT_RATIO)
+  const candidates = [
+    search.lastIndexOf('\n\n'),
+    search.lastIndexOf('\n'),
+    search.lastIndexOf('. '),
+    search.lastIndexOf('。'),
+  ].filter((index) => index >= minSplit)
+
+  if (candidates.length > 0) {
+    const best = Math.max(...candidates)
+    return best + (search[best] === '\n' ? 1 : 2)
+  }
+
+  return maxLength
+}
+
+function extractCompletedSegments(buffer: string): { completed: string[]; pending: string } {
+  const completed: string[] = []
+  let pending = buffer
+
+  if (hasCompletedSegmentBoundary(pending)) {
+    const segments = pending.split(/\n{2,}/)
+    pending = segments.pop() || ''
+    completed.push(...segments)
+  }
+
+  while (pending.length > MAX_SEGMENT_LENGTH) {
+    const splitIndex = chooseSplitIndex(pending, MAX_SEGMENT_LENGTH)
+    completed.push(pending.slice(0, splitIndex))
+    pending = pending.slice(splitIndex).replace(/^\n+/, '')
+  }
+
+  return { completed, pending }
 }
 
 function isolatedRawSummary(reason: DiagnosticReason): string {
@@ -368,11 +435,11 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
       pendingSegment = pendingSegment.slice(pendingSegment.length - maxRawChars)
     }
 
-    if (hasCompletedSegmentBoundary(pendingSegment)) {
-      const segments = pendingSegment.split(/\n{2,}/)
-      pendingSegment = segments.pop() || ''
+    const { completed, pending } = extractCompletedSegments(pendingSegment)
+    pendingSegment = pending
 
-      for (const segment of segments) {
+    if (completed.length > 0) {
+      for (const segment of completed) {
         if (!segment.trim()) continue
         appendClassifiedSegment(segment, timestamp)
         statsPatch.classifiedSegments = (statsPatch.classifiedSegments ?? debugStats.value.classifiedSegments) + 1
@@ -541,9 +608,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
         error.value = null
         return
       }
-      const rawDiagnosticOnly = chunkDiagnostics.some((diagnostic) => diagnostic.reason === 'ansi' || diagnostic.reason === 'tui')
-        || (metadata.source === 'fallback' && !isReadableLegacyText(chunk))
-      if (rawDiagnosticOnly) {
+      if (shouldIsolateNormalizedChunk(normalized, chunkDiagnostics, metadata)) {
         appendRawTextToStableBuffer(normalized)
         const diagnosticRef = recordDiagnostic({
           reason: 'unsupported-pattern',

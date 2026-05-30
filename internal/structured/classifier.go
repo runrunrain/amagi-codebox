@@ -11,8 +11,9 @@ const MaxClassifiableBytes = 32 * 1024
 
 var (
 	ansiPattern        = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)|[\x1b\x9b][[\]()#;?]*(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~])|\x1b[()#][A-Za-z0-9]`)
-	tuiPattern         = regexp.MustCompile(`[─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋╔╗╚╝╠╣╦╩╬╭╮╰╯▁▂▃▄▅▆▇█▀▐▌░▒▓]`)
+	tuiPattern         = regexp.MustCompile(`[─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋╔╗╚╝╠╣╦╩╬╭╮╰╯▁▂▃▄▅▆▇█▀▐▌░▒▓❯›]`)
 	controlCharPattern = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F]`)
+	letterPattern      = regexp.MustCompile(`[\p{L}]`)
 )
 
 func Classify(data []byte, seq uint64) Part {
@@ -29,15 +30,15 @@ func Classify(data []byte, seq uint64) Part {
 	}
 
 	normalized := normalizeChunk(text)
-	trimmed := strings.TrimSpace(normalized)
+	hadANSI := containsANSIOrCursorControl(normalized)
+	hadTUI := containsTUIRunes(normalized)
+	cleaned := stripAnsiAndTUI(normalized)
+	trimmed := strings.TrimSpace(cleaned)
 	if trimmed == "" {
 		return rawPart(seq, normalized, RawReasonUnsupportedPattern, source, createdAt)
 	}
 
-	if containsANSIOrCursorControl(text) {
-		return rawPart(seq, normalized, RawReasonANSI, source, createdAt)
-	}
-	if containsTUIRunes(trimmed) {
+	if hadTUI && looksLikeTerminalWidgetText(strings.ToLower(trimmed)) {
 		return rawPart(seq, normalized, RawReasonTUI, source, createdAt)
 	}
 	if looksLikeDiff(trimmed) {
@@ -65,6 +66,15 @@ func Classify(data []byte, seq uint64) Part {
 			Markdown:  trimmed,
 			Source:    source,
 			CreatedAt: createdAt,
+		}
+	}
+	if hadANSI || hadTUI {
+		reason := RawReasonANSI
+		if hadTUI {
+			reason = RawReasonTUI
+		}
+		if !looksLikeReadableTranscriptText(trimmed) {
+			return rawPart(seq, normalized, reason, source, createdAt)
 		}
 	}
 
@@ -108,7 +118,7 @@ func containsANSIOrCursorControl(text string) bool {
 }
 
 func containsTUIRunes(text string) bool {
-	return strings.ContainsAny(text, "╭╮╯╰│─┌┐└┘├┤┬┴┼█▌▐░▒▓")
+	return strings.ContainsAny(text, "╭╮╯╰│─┌┐└┘├┤┬┴┼█▌▐░▒▓❯›")
 }
 
 func looksLikeDiff(text string) bool {
@@ -182,6 +192,44 @@ func looksLikeMarkdown(text string) bool {
 			return true
 		}
 		if strings.Contains(trimmed, "|") && strings.Count(trimmed, "|") >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeReadableTranscriptText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	fields := strings.Fields(trimmed)
+	if len(trimmed) < 12 || len(fields) < 4 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if looksLikeTerminalWidgetText(lower) {
+		return false
+	}
+	if strings.Contains(lower, "press enter") || strings.Contains(lower, "press esc") || strings.Contains(lower, "ctrl+") {
+		return false
+	}
+	if strings.ContainsAny(trimmed, "❯›") {
+		return false
+	}
+	return letterPattern.MatchString(trimmed)
+}
+
+func looksLikeTerminalWidgetText(lower string) bool {
+	lines := nonEmptyLines(lower)
+	if len(lines) == 0 || len(lines) > 8 {
+		return false
+	}
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "continue") && len(lines) <= 6 {
+		return true
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch trimmed {
+		case "menu", "continue", "- continue", "* continue", "> continue":
 			return true
 		}
 	}

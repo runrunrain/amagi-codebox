@@ -36,4 +36,11 @@ describe('TerminalPage mobile text mode visibility CSS', () => {
     // Assert
     expect(containsForbiddenOverride).toBe(false)
   })
+
+  it('uses viewport width as a mobile text mode guard for Chrome DevTools device emulation', () => {
+    expect(terminalPageSource).toContain('MOBILE_TEXT_VIEWPORT_MAX_WIDTH')
+    expect(terminalPageSource).toContain('window.visualViewport?.width')
+    expect(terminalPageSource).toContain('viewportWidth <= MOBILE_TEXT_VIEWPORT_MAX_WIDTH')
+    expect(terminalPageSource).toContain('!isNarrowViewport')
+  })
 })
