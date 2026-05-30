@@ -923,6 +923,9 @@ func TestFixPath_NewProfileGets0600(t *testing.T) {
 }
 
 func TestAtomicWriteFileWithPerm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not enforced on Windows")
+	}
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "testfile")
 

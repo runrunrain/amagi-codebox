@@ -439,6 +439,34 @@ func TestBuildEffectiveEnvForWindowsAddsNPMGlobalPathWithoutDuplicates(t *testin
 	}
 }
 
+func TestWindowsResolverFindsClaudePackageBinaryFallback(t *testing.T) {
+	appData := filepath.Join(t.TempDir(), "AppData", "Roaming")
+	npmPrefix := strings.TrimRight(appData, `/\`) + `\npm`
+	fallbackPath := filepath.Join(npmPrefix, "node_modules", "@anthropic-ai", ".claude-code-nDGSeslo", "node_modules", "@anthropic-ai", "claude-code-win32-x64", "claude.exe")
+	if err := os.MkdirAll(filepath.Dir(fallbackPath), 0o755); err != nil {
+		t.Fatalf("mkdir fallback dir: %v", err)
+	}
+	if err := os.WriteFile(fallbackPath, []byte("MZ"), 0o755); err != nil {
+		t.Fatalf("write fallback claude exe: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	cli, diagnostics, err := resolver.ResolveExecutable("claude", nil, []string{
+		"PATH=",
+		"APPDATA=" + appData,
+		"LOCALAPPDATA=",
+	})
+	if err != nil {
+		t.Fatalf("ResolveExecutable: %v", err)
+	}
+	if filepath.Clean(cli.Path) != filepath.Clean(fallbackPath) {
+		t.Fatalf("resolved claude path = %q, want package binary fallback %q", cli.Path, fallbackPath)
+	}
+	if diagnostics.CLISource != "path-search" {
+		t.Fatalf("cli source = %q, want path-search", diagnostics.CLISource)
+	}
+}
+
 func TestWindowsResolverOpenCodeEmbeddedUsesShellAttach(t *testing.T) {
 	binDir := t.TempDir()
 	cliPath := filepath.Join(binDir, "opencode.cmd")

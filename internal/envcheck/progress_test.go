@@ -1745,17 +1745,22 @@ func TestUpdate_ClaudeVerifyFail_ContinuesToFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	_ = writeTestExecutable(t, tmpDir, "claude")
 	t.Setenv("PATH", tmpDir)
+	t.Setenv("APPDATA", filepath.Join(tmpDir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "AppData", "Local"))
+	t.Setenv("NPM_CONFIG_PREFIX", filepath.Join(tmpDir, "npm-prefix"))
 
 	if runtime.GOOS == "windows" {
 		// Windows: npm succeeds but verify unchanged. No winget fallback.
 		// Claude only has npm command now, so verify-fail means failure.
 		runner := &indexedRunner{responses: map[int]indexedResponse{
-			0: {stdout: "Claude Code v1.0.0"}, // pre-check
-			1: {stdout: "10.0.0"},             // npm probe
-			2: {stdout: "2.0.0"},              // enrichment: HasUpdate=true
-			3: {stdout: "installed"},          // npm install @latest succeeds
-			4: {stdout: "Claude Code v1.0.0"}, // verify: UNCHANGED!
-			5: {stdout: "1.0.0"},              // enrichment
+			0: {stdout: "Claude Code v1.0.0"},                        // pre-check
+			1: {stdout: "@anthropic-ai/claude-code@1.0.0"},           // pre-check npm confirmation
+			2: {stdout: "10.0.0"},                                    // npm probe
+			3: {stdout: "2.0.0"},                                     // enrichment: HasUpdate=true
+			4: {stdout: "installed"},                                 // npm install @latest succeeds
+			5: {stdout: "Claude Code v1.0.0"},                        // verify: UNCHANGED!
+			6: {stdout: "@anthropic-ai/claude-code@1.0.0"},           // verify npm confirmation
+			7: {stdout: filepath.Join(tmpDir, "missing-npm-prefix")}, // npm prefix -g: no fallback candidate
 		}}
 		svc := NewServiceWithRunner(runner)
 
@@ -1838,8 +1843,16 @@ type indexedResponse struct {
 }
 
 func (r *indexedRunner) Run(_ context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
+	return r.RunWithSpec(platform.CommandSpec{})
+}
+
+func (r *indexedRunner) RunWithSpec(spec platform.CommandSpec) (*platform.ProcessResult, error) {
 	r.mu.Lock()
 	idx := r.next
+	if sequentialRunnerShouldBypassOpenCodeFallback(spec, r.peek(idx)) {
+		r.mu.Unlock()
+		return &platform.ProcessResult{}, errors.New("npm fallback probe not configured")
+	}
 	r.next++
 	r.mu.Unlock()
 
@@ -1848,6 +1861,14 @@ func (r *indexedRunner) Run(_ context.Context, _ platform.CommandSpec) (*platfor
 		return &platform.ProcessResult{}, nil
 	}
 	return &platform.ProcessResult{Stdout: resp.stdout, Stderr: resp.stderr}, resp.err
+}
+
+func (r *indexedRunner) peek(idx int) *seqResponse {
+	resp, ok := r.responses[idx]
+	if !ok {
+		return nil
+	}
+	return &seqResponse{stdout: resp.stdout, stderr: resp.stderr, err: resp.err}
 }
 
 func (r *indexedRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {

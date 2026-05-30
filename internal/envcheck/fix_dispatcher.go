@@ -499,8 +499,11 @@ func validatePathDir(dir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", dir)
 	}
-	// Must not be world-writable
-	if info.Mode().Perm()&0002 != 0 {
+	// Must not be world-writable on platforms where POSIX permission bits are
+	// authoritative. Windows reports synthetic mode bits that do not reflect ACL
+	// write access, so rejecting 0002 there would incorrectly block safe temp and
+	// user directories.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0002 != 0 {
 		return fmt.Errorf("world-writable directory rejected: %s", dir)
 	}
 	return nil

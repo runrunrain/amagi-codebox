@@ -161,8 +161,14 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 	writeTestExecutable(t, binDir, "node")
 	t.Setenv("USERPROFILE", homeDir)
 	t.Setenv("HOME", homeDir)
+	t.Setenv("APPDATA", filepath.Join(tmpDir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "AppData", "Local"))
+	t.Setenv("NPM_CONFIG_PREFIX", npmPrefix)
 	t.Setenv("PATH", binDir)
 	t.Setenv("Path", binDir)
+	previousHomeDir := claudeUserHomeDir
+	claudeUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { claudeUserHomeDir = previousHomeDir })
 	runner.nativePath = filepath.Join(nativeDir, commandFileName("claude"))
 	runner.npmPrefix = npmPrefix
 	runner.npmClaude = filepath.Join(npmPrefix, "bin", commandFileName("claude"))

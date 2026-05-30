@@ -21,6 +21,9 @@ func setWorkspaceTestHome(t *testing.T) string {
 	t.Setenv("PATH", binDir)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("NPM_CONFIG_PREFIX", filepath.Join(home, "npm-prefix"))
 	if volume := filepath.VolumeName(home); volume != "" {
 		t.Setenv("HOMEDRIVE", volume)
 		t.Setenv("HOMEPATH", strings.TrimPrefix(home, volume))
@@ -80,7 +83,7 @@ func setupWorkspaceTestServices(t *testing.T) (*Service, *plugin.Service, string
 		t.Fatalf("mkdir workspace: %v", err)
 	}
 
-	pluginSvc := plugin.NewService("", nil)
+	pluginSvc := plugin.NewService(filepath.Join(home, ".claude"), nil)
 	workspaceSvc := NewService(configDir, pluginSvc, nil)
 	if err := workspaceSvc.Load(); err != nil {
 		t.Fatalf("load workspace service: %v", err)

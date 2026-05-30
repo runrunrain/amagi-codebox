@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -235,7 +236,9 @@ func newestPluginRootUnder(root string) string {
 	if len(matches) == 0 {
 		return ""
 	}
-	sort.Strings(matches)
+	sort.Slice(matches, func(i, j int) bool {
+		return comparePluginRootVersions(matches[i], matches[j]) < 0
+	})
 	return matches[len(matches)-1]
 }
 
@@ -246,7 +249,7 @@ func isPluginRoot(root string) bool {
 	if firstExistingManifestPath(root) != "" {
 		return true
 	}
-	for _, rel := range []string{"skills", "agents", "commands", "hooks", ".mcp.json"} {
+	for _, rel := range []string{"skills", "agents", "codex-agents", "commands", "hooks", ".mcp.json"} {
 		if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
 			return true
 		}
@@ -356,6 +359,43 @@ func (s *Service) scanSkills(installPath string) ([]SkillInfo, error) {
 }
 
 func (s *Service) scanAgents(installPath string) ([]AgentInfo, error) {
+	customAgents, err := s.scanCodexCustomAgents(installPath)
+	if err != nil {
+		return nil, err
+	}
+	markdownAgents, err := s.scanMarkdownAgents(installPath)
+	if err != nil {
+		return nil, err
+	}
+	agents := make([]AgentInfo, 0, len(customAgents)+len(markdownAgents))
+	seen := map[string]struct{}{}
+	for _, agent := range customAgents {
+		agents = append(agents, agent)
+		for _, key := range agentInfoKeys(agent) {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, agent := range markdownAgents {
+		duplicate := false
+		for _, key := range agentInfoKeys(agent) {
+			if _, ok := seen[key]; ok {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		agents = append(agents, agent)
+		for _, key := range agentInfoKeys(agent) {
+			seen[key] = struct{}{}
+		}
+	}
+	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
+	return agents, nil
+}
+
+func (s *Service) scanMarkdownAgents(installPath string) ([]AgentInfo, error) {
 	agentsDir := filepath.Join(installPath, "agents")
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
@@ -376,6 +416,40 @@ func (s *Service) scanAgents(installPath string) ([]AgentInfo, error) {
 		}
 		meta := parseFrontmatter(string(content))
 		agents = append(agents, AgentInfo{Name: extractAgentName(meta, string(content), entry.Name()), Description: firstNonEmpty(meta["description"], extractFirstParagraph(string(content))), FilePath: filePath})
+	}
+	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
+	return agents, nil
+}
+
+func (s *Service) scanCodexCustomAgents(installPath string) ([]AgentInfo, error) {
+	agentsDir := filepath.Join(installPath, "codex-agents")
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []AgentInfo{}, nil
+		}
+		return nil, fmt.Errorf("read codex custom agents dir: %w", err)
+	}
+	agents := make([]AgentInfo, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".toml") {
+			continue
+		}
+		filePath := filepath.Join(agentsDir, entry.Name())
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("read codex custom agent file %s: %w", filePath, err)
+		}
+		fields := parseSimpleTomlStringFields(string(content))
+		description := strings.TrimSpace(fields["description"])
+		if summary := codexAgentModelSummary(fields); summary != "" && !strings.Contains(strings.ToLower(description), "model") && !strings.Contains(description, "模型") {
+			description = strings.TrimSpace(description + " " + summary)
+		}
+		agents = append(agents, AgentInfo{
+			Name:        firstNonEmpty(fields["name"], strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))),
+			Description: description,
+			FilePath:    filePath,
+		})
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	return agents, nil
@@ -688,4 +762,132 @@ func analyzePluginType(detail *CodexPluginDetail) PluginType {
 		return single
 	}
 	return PluginTypeUnknown
+}
+
+func comparePluginRootVersions(a, b string) int {
+	aBase := filepath.Base(filepath.Clean(a))
+	bBase := filepath.Base(filepath.Clean(b))
+	aParts, aOK := parseVersionDirectoryParts(aBase)
+	bParts, bOK := parseVersionDirectoryParts(bBase)
+	if aOK && bOK {
+		maxLen := len(aParts)
+		if len(bParts) > maxLen {
+			maxLen = len(bParts)
+		}
+		for i := 0; i < maxLen; i++ {
+			var av, bv int
+			if i < len(aParts) {
+				av = aParts[i]
+			}
+			if i < len(bParts) {
+				bv = bParts[i]
+			}
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+		}
+		return strings.Compare(aBase, bBase)
+	}
+	if aOK {
+		return 1
+	}
+	if bOK {
+		return -1
+	}
+	return strings.Compare(filepath.Clean(a), filepath.Clean(b))
+}
+
+func parseVersionDirectoryParts(name string) ([]int, bool) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "v")
+	if name == "" {
+		return nil, false
+	}
+	rawParts := strings.Split(name, ".")
+	if len(rawParts) < 2 {
+		return nil, false
+	}
+	parts := make([]int, 0, len(rawParts))
+	for _, raw := range rawParts {
+		if raw == "" {
+			return nil, false
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, false
+		}
+		parts = append(parts, value)
+	}
+	return parts, true
+}
+
+func agentInfoKeys(info AgentInfo) []string {
+	keys := make([]string, 0, 2)
+	if name := normalizedAgentInfoKey(info.Name); name != "" {
+		keys = append(keys, name)
+	}
+	if base := normalizedAgentInfoKey(strings.TrimSuffix(filepath.Base(info.FilePath), filepath.Ext(info.FilePath))); base != "" {
+		keys = append(keys, base)
+	}
+	return keys
+}
+
+func normalizedAgentInfoKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func parseSimpleTomlStringFields(content string) map[string]string {
+	fields := map[string]string{}
+	for _, line := range splitTomlLines(content) {
+		key, value, ok := parseBareAssignment(strings.TrimSpace(stripTomlComment(line)))
+		if !ok {
+			continue
+		}
+		fields[strings.ToLower(strings.TrimSpace(key))] = parseTomlStringValue(value)
+	}
+	return fields
+}
+
+func parseTomlStringValue(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, `"""`) {
+		value = strings.TrimPrefix(value, `"""`)
+		value = strings.TrimSuffix(value, `"""`)
+		if strings.TrimSpace(value) == "" {
+			return "<multiline>"
+		}
+		return strings.TrimSpace(value)
+	}
+	if strings.HasPrefix(value, "'''") {
+		value = strings.TrimPrefix(value, "'''")
+		value = strings.TrimSuffix(value, "'''")
+		if strings.TrimSpace(value) == "" {
+			return "<multiline>"
+		}
+		return strings.TrimSpace(value)
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return strings.TrimSpace(unquoted)
+	}
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return strings.TrimSpace(value[1 : len(value)-1])
+	}
+	return strings.Trim(value, `"'`)
+}
+
+func codexAgentModelSummary(fields map[string]string) string {
+	model := strings.TrimSpace(fields["model"])
+	reasoning := strings.TrimSpace(fields["model_reasoning_effort"])
+	if model == "" && reasoning == "" {
+		return ""
+	}
+	if model == "" {
+		return "reasoning: " + reasoning
+	}
+	if reasoning == "" {
+		return "model: " + model
+	}
+	return fmt.Sprintf("model: %s; reasoning: %s", model, reasoning)
 }

@@ -73,26 +73,52 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 
 	if status.InstallMethod == InstallMethodNPM {
 		if err := s.confirmClaudeNPMInstall(); err != nil {
-			status.InstallMethod = InstallMethodUnknown
-			status.Error = fmt.Sprintf("检测到类 npm 的 Claude Code 路径，但 npm 全局包确认失败: %v", err)
-			return status, nil
-		}
-		// The official native installer is recommended over npm, but npm is
-		// still a valid installation. Record as a non-blocking info issue so
-		// the frontend can display the recommendation without treating the
-		// tool as broken.
-		status.Issues = append(status.Issues, CheckIssue{
-			Severity: SeverityInfo,
-			Code:     "claude_npm_install_recommended_native",
-			Message:  "检测到 Claude Code 通过 npm 全局安装；如需 Native 模式，可在 npm 安装后执行 claude install",
-			Solutions: []ResolutionAction{
-				{
-					Type:        SolutionManualCommand,
-					Description: "切换到 Native Claude Code",
-					Command:     "npm install -g @anthropic-ai/claude-code && claude install",
+			if isClaudeNPMPackageBinaryFallbackPath(detectionPath) {
+				status.Issues = append(status.Issues, CheckIssue{
+					Severity: SeverityWarning,
+					Code:     "claude_npm_package_binary_fallback",
+					Message:  "检测到可运行的 Claude Code，但 npm 全局入口确认失败",
+					Detail:   fmt.Sprintf("CodeBox 已直接通过 npm 包内二进制验证 Claude Code 可用；建议重装或更新以修复 npm shim。确认失败: %v", err),
+					Solutions: []ResolutionAction{
+						{
+							Type:            SolutionInstallTool,
+							Description:     "重装 Claude Code 以修复 npm 全局入口",
+							Tool:            ToolClaudeCode,
+							PackageName:     "@anthropic-ai/claude-code",
+							RequiresConfirm: true,
+							IsPrimary:       true,
+						},
+						{
+							Type:        SolutionManualCommand,
+							Description: "手动修复 npm 全局安装",
+							Command:     "npm install -g @anthropic-ai/claude-code@latest",
+							Tool:        ToolClaudeCode,
+						},
+					},
+				})
+			} else {
+				status.InstallMethod = InstallMethodUnknown
+				status.Error = fmt.Sprintf("检测到类 npm 的 Claude Code 路径，但 npm 全局包确认失败: %v", err)
+				return status, nil
+			}
+		} else {
+			// The official native installer is recommended over npm, but npm is
+			// still a valid installation. Record as a non-blocking info issue so
+			// the frontend can display the recommendation without treating the
+			// tool as broken.
+			status.Issues = append(status.Issues, CheckIssue{
+				Severity: SeverityInfo,
+				Code:     "claude_npm_install_recommended_native",
+				Message:  "检测到 Claude Code 通过 npm 全局安装；如需 Native 模式，可在 npm 安装后执行 claude install",
+				Solutions: []ResolutionAction{
+					{
+						Type:        SolutionManualCommand,
+						Description: "切换到 Native Claude Code",
+						Command:     "npm install -g @anthropic-ai/claude-code && claude install",
+					},
 				},
-			},
-		})
+			})
+		}
 	}
 
 	// Integrate Claude Code configuration check
@@ -386,6 +412,32 @@ func (s *Service) detectClaudeInstallMethod(executablePath string) InstallMethod
 func looksLikeClaudeNPMPath(path string) bool {
 	normalized := normalizeClaudePath(path)
 	return strings.Contains(normalized, "/node_modules/") || strings.Contains(normalized, "/npm/")
+}
+
+func isClaudeNPMPackageBinaryFallbackPath(path string) bool {
+	normalized := normalizeClaudePath(path)
+	if normalized == "" {
+		return false
+	}
+	if !strings.Contains(normalized, "/node_modules/@anthropic-ai/") {
+		return false
+	}
+	if !(strings.HasSuffix(normalized, "/claude.exe") || strings.HasSuffix(normalized, "/claude")) {
+		return false
+	}
+	for _, marker := range []string{
+		"/claude-code-win32-arm64/",
+		"/claude-code-win32-x64/",
+		"/claude-code-darwin-arm64/",
+		"/claude-code-darwin-x64/",
+		"/claude-code-linux-arm64/",
+		"/claude-code-linux-x64/",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeClaudePath(path string) string {

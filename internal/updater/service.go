@@ -547,7 +547,7 @@ func validateAppBundle(appPath string) error {
 	if err != nil {
 		return fmt.Errorf("Contents/MacOS/amagi-codebox missing or inaccessible: %w", err)
 	}
-	if exeInfo.Mode()&0o111 == 0 {
+	if enforcesPOSIXExecutableBits() && exeInfo.Mode()&0o111 == 0 {
 		return fmt.Errorf("Contents/MacOS/amagi-codebox is not executable")
 	}
 
@@ -681,7 +681,17 @@ fi
 
 log "Update completed successfully"
 `
-	return os.WriteFile(scriptPath, []byte(script), 0o755)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		return err
+	}
+	if enforcesPOSIXExecutableBits() {
+		return os.Chmod(scriptPath, 0o755)
+	}
+	return nil
+}
+
+func enforcesPOSIXExecutableBits() bool {
+	return platform.CurrentCapabilities().OS != "windows"
 }
 
 // randomHex returns n hex characters of randomness for unique file naming.

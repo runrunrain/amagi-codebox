@@ -83,6 +83,11 @@ func resolveCommandPathForOSWithOptions(osName string, command string, env []str
 			}
 		}
 	}
+	if osName == "windows" && strings.EqualFold(trimmed, "claude") {
+		if resolved := firstExistingWindowsClaudePackageBinaryFallback(env); resolved != "" {
+			return resolved
+		}
+	}
 	return ""
 }
 
@@ -252,6 +257,113 @@ func windowsControlledPATHCandidates(env []string) []string {
 		candidates = append(candidates, strings.TrimRight(base, `/\`)+`\.local\bin`)
 	}
 	return candidates
+}
+
+func firstExistingWindowsClaudePackageBinaryFallback(env []string) string {
+	for _, candidate := range windowsClaudePackageBinaryFallbackCandidates(env) {
+		if fileExists(candidate) {
+			return filepath.Clean(candidate)
+		}
+	}
+	return ""
+}
+
+func windowsClaudePackageBinaryFallbackCandidates(env []string) []string {
+	prefixes := windowsNPMGlobalPrefixCandidates(env)
+	candidates := []string{}
+	seen := map[string]struct{}{}
+	for _, prefix := range prefixes {
+		for _, candidate := range claudePackageBinaryFallbackCandidatesForPrefix(prefix, "windows") {
+			key := normalizePathKey(filepath.Clean(candidate), "windows")
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func windowsNPMGlobalPrefixCandidates(env []string) []string {
+	candidates := []string{}
+	seen := map[string]struct{}{}
+	appendPrefix := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		cleaned := filepath.Clean(trimmed)
+		if cleaned == "." {
+			return
+		}
+		key := normalizePathKey(cleaned, "windows")
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, cleaned)
+	}
+
+	appendPrefix(envValue(env, "NPM_CONFIG_PREFIX"))
+	for _, key := range []string{"APPDATA", "LOCALAPPDATA"} {
+		base := strings.TrimSpace(envValue(env, key))
+		if base == "" {
+			continue
+		}
+		appendPrefix(strings.TrimRight(base, `/\`) + `\npm`)
+	}
+	return candidates
+}
+
+func claudePackageBinaryFallbackCandidatesForPrefix(prefix string, osName string) []string {
+	prefix = filepath.Clean(strings.TrimSpace(prefix))
+	if prefix == "" || prefix == "." {
+		return nil
+	}
+
+	packageNames, executableNames := claudePackageBinaryNamesForOS(osName)
+	if len(packageNames) == 0 || len(executableNames) == 0 {
+		return nil
+	}
+
+	roots := []string{
+		filepath.Join(prefix, "node_modules", "@anthropic-ai"),
+		filepath.Join(prefix, "node_modules", "@anthropic-ai", "claude-code", "node_modules", "@anthropic-ai"),
+	}
+	if matches, err := filepath.Glob(filepath.Join(prefix, "node_modules", "@anthropic-ai", ".claude-code-*", "node_modules", "@anthropic-ai")); err == nil {
+		roots = append(roots, matches...)
+	}
+
+	candidates := []string{}
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		for _, packageName := range packageNames {
+			for _, executableName := range executableNames {
+				candidate := filepath.Join(root, packageName, executableName)
+				key := normalizePathKey(filepath.Clean(candidate), osName)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
+	return candidates
+}
+
+func claudePackageBinaryNamesForOS(osName string) ([]string, []string) {
+	switch osName {
+	case "windows":
+		return []string{"claude-code-win32-arm64", "claude-code-win32-x64"}, []string{"claude.exe"}
+	case "darwin":
+		return []string{"claude-code-darwin-arm64", "claude-code-darwin-x64"}, []string{"claude"}
+	case "linux":
+		return []string{"claude-code-linux-arm64", "claude-code-linux-x64"}, []string{"claude"}
+	default:
+		return nil, nil
+	}
 }
 
 func splitPathListForOS(osName string, value string) []string {

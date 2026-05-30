@@ -309,6 +309,12 @@ func (s *Service) InstallPlugin(selector PluginSelector) (*CommandResult, error)
 	if err := s.setPluginEnabled(pluginID, true); err != nil {
 		return &CommandResult{Success: false, Output: result.Output, Error: "插件已安装，但同步启用状态失败：" + err.Error()}, err
 	}
+	verification, err := s.verifyPluginInstall(s.runtimeContext(), pluginID)
+	if err != nil {
+		message := "插件命令已完成，但安装后校验失败：" + err.Error()
+		return &CommandResult{Success: false, Output: strings.TrimSpace(result.Output + "\n" + message), Error: message}, err
+	}
+	appendInstallVerificationOutput(result, verification)
 	return result, nil
 }
 

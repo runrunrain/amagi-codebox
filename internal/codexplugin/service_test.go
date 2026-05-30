@@ -29,7 +29,14 @@ type codexPluginTestRunner struct {
 
 func (r *codexPluginTestRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
 	r.calls = append(r.calls, spec)
-	switch strings.Join(spec.Args, " ") {
+	joinedArgs := strings.Join(spec.Args, " ")
+	switch {
+	case strings.HasPrefix(joinedArgs, "plugin add "):
+		return &platform.ProcessResult{Stdout: "plugin installed"}, nil
+	case strings.HasPrefix(joinedArgs, "plugin remove "):
+		return &platform.ProcessResult{Stdout: "plugin removed"}, nil
+	}
+	switch joinedArgs {
 	case "plugin marketplace list":
 		return &platform.ProcessResult{Stderr: "error: unrecognized subcommand 'list'\n\nUsage: codex plugin marketplace [OPTIONS] <COMMAND>"}, fmt.Errorf("exit status 2")
 	case "plugin list":
@@ -39,7 +46,7 @@ func (r *codexPluginTestRunner) Run(_ context.Context, spec platform.CommandSpec
 		}
 		return &platform.ProcessResult{Stdout: output}, nil
 	default:
-		return &platform.ProcessResult{Stderr: "unexpected command: " + strings.Join(spec.Args, " ")}, fmt.Errorf("unexpected command")
+		return &platform.ProcessResult{Stderr: "unexpected command: " + joinedArgs}, fmt.Errorf("unexpected command")
 	}
 }
 
@@ -109,6 +116,91 @@ func TestGetPluginDetailsExposesCodexInterfaceDescriptions(t *testing.T) {
 	}
 	if detail.DisplayName != "Amagi Display" || detail.ShortDescription != "Short detail description" || detail.LongDescription != "Long detail description" {
 		t.Fatalf("detail did not expose interface descriptions: %+v", detail)
+	}
+}
+
+func TestInstallPluginVerifiesInstallAndSyncsCodexCustomAgents(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "market", "amagi", "1.10.0")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0755); err != nil {
+		t.Fatalf("mkdir plugin manifest: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "codex-agents"), 0755); err != nil {
+		t.Fatalf("mkdir codex agents: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"), []byte(`{"name":"amagi","version":"1.10.0"}`), 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	agentContent := []byte(`name = "baize"
+description = "Read-only explorer."
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+developer_instructions = "Explore only."
+`)
+	sourceAgentPath := filepath.Join(pluginRoot, "codex-agents", "baize.toml")
+	if err := os.WriteFile(sourceAgentPath, agentContent, 0644); err != nil {
+		t.Fatalf("write custom agent: %v", err)
+	}
+	runner := &codexPluginTestRunner{pluginListOutput: "amagi@market installed enabled 1.10.0 " + pluginRoot}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+
+	result, err := s.InstallPlugin(PluginSelector{PluginID: "amagi@market"})
+	if err != nil {
+		t.Fatalf("InstallPlugin: %v result=%+v", err, result)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got %+v", result)
+	}
+	if !strings.Contains(result.Output, "安装后校验通过") || !strings.Contains(result.Output, "baize.toml") {
+		t.Fatalf("expected verification and custom agent sync in output, got %q", result.Output)
+	}
+	targetAgentPath := filepath.Join(codexDir, "agents", "baize.toml")
+	written, err := os.ReadFile(targetAgentPath)
+	if err != nil {
+		t.Fatalf("read synced custom agent: %v", err)
+	}
+	if string(written) != string(agentContent) {
+		t.Fatalf("synced custom agent mismatch:\n%s", string(written))
+	}
+	states, err := s.readPluginStates()
+	if err != nil {
+		t.Fatalf("read plugin states: %v", err)
+	}
+	if !states["amagi@market"] {
+		t.Fatalf("expected installed plugin to be enabled in config.toml: %+v", states)
+	}
+	if !runnerCalled(runner.calls, "plugin", "add", "amagi@market") || !runnerCalled(runner.calls, "plugin", "list") {
+		t.Fatalf("expected add and post-install list calls, got %+v", runner.calls)
+	}
+}
+
+func TestInstallPluginFailsPostInstallVerificationWhenCustomAgentInvalid(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "market", "amagi", "1.10.0")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0755); err != nil {
+		t.Fatalf("mkdir plugin manifest: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "codex-agents"), 0755); err != nil {
+		t.Fatalf("mkdir codex agents: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"), []byte(`{"name":"amagi","version":"1.10.0"}`), 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "codex-agents", "baize.toml"), []byte(`name = "baize"`), 0644); err != nil {
+		t.Fatalf("write invalid custom agent: %v", err)
+	}
+	runner := &codexPluginTestRunner{pluginListOutput: "amagi@market installed enabled 1.10.0 " + pluginRoot}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+
+	result, err := s.InstallPlugin(PluginSelector{PluginID: "amagi@market"})
+	if err == nil {
+		t.Fatalf("expected invalid custom agent to fail post-install verification, result=%+v", result)
+	}
+	if result == nil || result.Success || !strings.Contains(result.Error, "安装后校验失败") || !strings.Contains(result.Error, "description") {
+		t.Fatalf("expected failed verification result mentioning missing description, got %+v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(codexDir, "agents", "baize.toml")); !os.IsNotExist(err) {
+		t.Fatalf("invalid custom agent should not be synced, stat err=%v", err)
 	}
 }
 

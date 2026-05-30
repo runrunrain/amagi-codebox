@@ -819,24 +819,15 @@ func TestClaudeInstallCommands_UpdateNonWinget(t *testing.T) {
 		InstallMethod: InstallMethodNative,
 	})
 	if runtime.GOOS == "windows" {
-		// Native update with native blocked (test env has no real network):
-		// should return an error about Cloudflare blockage.
 		if err == nil {
-			// If somehow native was accessible, only native command allowed.
 			if len(cmds) != 1 {
-				t.Fatalf("expected exactly 1 command (native only), got %d", len(cmds))
+				t.Fatalf("expected exactly 1 command, got %d", len(cmds))
 			}
-			// Should NOT contain npm
-			for _, cmd := range cmds {
-				if strings.Contains(strings.ToLower(cmd.description), "npm") {
-					t.Errorf("native update should not include npm fallback, got %q", cmd.description)
-				}
+			if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+				t.Errorf("native update uses canonical npm update command after native direct updater removal, got %q", cmds[0].description)
 			}
 		} else {
-			// Native blocked: error should mention Cloudflare or Native channel.
-			if !strings.Contains(err.Error(), "Native") && !strings.Contains(err.Error(), "Cloudflare") {
-				t.Errorf("native update blocked error should mention Native/Cloudflare, got: %v", err)
-			}
+			t.Fatalf("unexpected error: %v", err)
 		}
 	} else {
 		if len(cmds) != 1 {
@@ -1050,26 +1041,18 @@ func TestInstallCommands_ClaudeUpdate_NonNPM_NoCrossChannelFallback(t *testing.T
 		Installed:     true,
 	}, ClaudeInstallAuto)
 	if runtime.GOOS == "windows" {
-		// Native update: same-channel only. In test env native is blocked,
-		// so expect an error.
 		if err == nil {
-			// If native was accessible, only native command — no npm/winget fallback.
 			if len(cmds) != 1 {
-				t.Fatalf("expected exactly 1 command (native only), got %d", len(cmds))
+				t.Fatalf("expected exactly 1 command, got %d", len(cmds))
 			}
-			for _, cmd := range cmds {
-				if strings.Contains(strings.ToLower(cmd.description), "npm") {
-					t.Errorf("native update should not include npm fallback, got %q", cmd.description)
-				}
-				if strings.Contains(strings.ToLower(cmd.description), "winget") {
-					t.Errorf("native update should not include winget fallback, got %q", cmd.description)
-				}
+			if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
+				t.Errorf("native update uses canonical npm update command after native direct updater removal, got %q", cmds[0].description)
+			}
+			if strings.Contains(strings.ToLower(cmds[0].description), "winget") {
+				t.Errorf("native update should not include winget fallback, got %q", cmds[0].description)
 			}
 		} else {
-			// Native blocked: error about Cloudflare
-			if !strings.Contains(err.Error(), "Native") && !strings.Contains(err.Error(), "Cloudflare") {
-				t.Errorf("error should mention Native/Cloudflare, got: %v", err)
-			}
+			t.Fatalf("unexpected error: %v", err)
 		}
 	} else {
 		// macOS/Linux: npm only

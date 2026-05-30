@@ -2,6 +2,7 @@ package envcheck
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,6 +233,108 @@ func TestCheckClaudeCodePrefersNativeDefaultOverPATHShimOnDarwin(t *testing.T) {
 	}
 }
 
+func TestCheckClaudeCodeDetectsNPMPackageBinaryFallback(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = previousGOOS })
+
+	homeDir := t.TempDir()
+	appData := filepath.Join(t.TempDir(), "AppData", "Roaming")
+	npmPrefix := strings.TrimRight(appData, `/\`) + `\npm`
+	fallbackPath := filepath.Join(npmPrefix, "node_modules", "@anthropic-ai", ".claude-code-nDGSeslo", "node_modules", "@anthropic-ai", "claude-code-win32-x64", "claude.exe")
+	if err := os.MkdirAll(filepath.Dir(fallbackPath), 0o755); err != nil {
+		t.Fatalf("mkdir fallback dir: %v", err)
+	}
+	if err := os.WriteFile(fallbackPath, []byte("MZ"), 0o755); err != nil {
+		t.Fatalf("write fallback claude exe: %v", err)
+	}
+
+	t.Setenv("PATH", "")
+	t.Setenv("APPDATA", appData)
+	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOME", homeDir)
+	previousHomeDir := claudeUserHomeDir
+	claudeUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { claudeUserHomeDir = previousHomeDir })
+
+	runner := &claudePackageFallbackRunner{
+		npmPrefix:    npmPrefix,
+		fallbackPath: fallbackPath,
+	}
+	svc := NewServiceWithRunner(runner)
+	status, err := svc.checkClaudeCode()
+	if err != nil {
+		t.Fatalf("checkClaudeCode returned error: %v", err)
+	}
+	if !status.Installed {
+		t.Fatalf("expected installed status, got %+v", status)
+	}
+	if !status.PATHOk {
+		t.Fatalf("expected PATHOk because CodeBox can launch fallback path, got %+v", status)
+	}
+	if status.Error != "" {
+		t.Fatalf("expected npm confirmation failure to be non-blocking for package binary fallback, got error %q", status.Error)
+	}
+	if status.Version != "2.1.150" {
+		t.Fatalf("version = %q, want 2.1.150", status.Version)
+	}
+	if !sameNormalizedPath(status.ExecutablePath, fallbackPath) {
+		t.Fatalf("executable path = %q, want fallback path %q", status.ExecutablePath, fallbackPath)
+	}
+	if status.InstallMethod != InstallMethodNPM {
+		t.Fatalf("install method = %q, want %q", status.InstallMethod, InstallMethodNPM)
+	}
+	if !hasIssueCode(status, "claude_npm_package_binary_fallback") {
+		t.Fatalf("expected package fallback warning issue, got %+v", status.Issues)
+	}
+	if hasIssueCode(status, "tool_not_installed") {
+		t.Fatalf("fallback executable must not be reported as missing, got %+v", status.Issues)
+	}
+}
+
+type claudePackageFallbackRunner struct {
+	npmPrefix    string
+	fallbackPath string
+	calls        []platform.CommandSpec
+	mu           sync.Mutex
+}
+
+func (r *claudePackageFallbackRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, spec)
+
+	pathLower := strings.ToLower(spec.Path)
+	args := append([]string(nil), spec.Args...)
+	if isNPMPath(pathLower) && len(args) == 2 && args[0] == "prefix" && args[1] == "-g" {
+		return &platform.ProcessResult{Stdout: r.npmPrefix}, nil
+	}
+	if isNPMPath(pathLower) && len(args) >= 4 && args[0] == "list" && args[1] == "-g" && args[2] == "@anthropic-ai/claude-code" {
+		return &platform.ProcessResult{Stdout: r.npmPrefix + "\n`-- (empty)"}, errors.New("not installed")
+	}
+	if sameNormalizedPath(spec.Path, r.fallbackPath) && len(args) == 1 && args[0] == "--version" {
+		return &platform.ProcessResult{Stdout: "2.1.150 (Claude Code)"}, nil
+	}
+	return &platform.ProcessResult{}, os.ErrNotExist
+}
+
+func (r *claudePackageFallbackRunner) Start(spec platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func hasIssueCode(status *CheckStatus, code string) bool {
+	if status == nil {
+		return false
+	}
+	for _, issue := range status.Issues {
+		if issue.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // normalizeClaudePath
 // ---------------------------------------------------------------------------
@@ -274,7 +377,7 @@ func TestResolveRealExecutablePath(t *testing.T) {
 		{"dot returns original", ".", "."},
 		{"simple path cleaned", `C:\Tools\Claude.exe`, `C:\Tools\Claude.exe`},
 		{"trailing backslash cleaned", `C:\Tools\`, `C:\Tools`},
-		{"trailing forward slash cleaned", `C:/Tools/`, `C:/Tools`},
+		{"trailing forward slash cleaned", `C:/Tools/`, filepath.Clean(`C:/Tools`)},
 	}
 
 	for _, tc := range tests {

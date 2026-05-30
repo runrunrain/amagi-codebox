@@ -3,6 +3,7 @@ package codexplugin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -224,6 +225,43 @@ func TestScanAgentsPreservesFrontmatterName(t *testing.T) {
 	}
 }
 
+func TestScanAgentsIncludesCodexCustomAgentsAndPrefersTomlOverLegacyMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	customAgentsDir := filepath.Join(dir, "codex-agents")
+	if err := os.MkdirAll(customAgentsDir, 0755); err != nil {
+		t.Fatalf("mkdir codex agents dir: %v", err)
+	}
+	customAgentPath := filepath.Join(customAgentsDir, "baize.toml")
+	customAgent := []byte(`name = "baize"
+description = "Read-only explorer."
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+developer_instructions = "Explore only."
+`)
+	if err := os.WriteFile(customAgentPath, customAgent, 0644); err != nil {
+		t.Fatalf("write custom agent: %v", err)
+	}
+	legacyAgentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(legacyAgentsDir, 0755); err != nil {
+		t.Fatalf("mkdir legacy agents dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyAgentsDir, "baize.md"), []byte("# 白泽 Explorer\n\nLegacy description.\n"), 0644); err != nil {
+		t.Fatalf("write legacy agent: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	agents, err := s.scanAgents(dir)
+	if err != nil {
+		t.Fatalf("scan agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected custom TOML to replace duplicate legacy markdown agent, got %+v", agents)
+	}
+	if agents[0].Name != "baize" || agents[0].FilePath != customAgentPath || !strings.Contains(agents[0].Description, "gpt-5.5") {
+		t.Fatalf("unexpected custom agent info: %+v", agents[0])
+	}
+}
+
 func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".codex-plugin"), 0755); err != nil {
@@ -330,6 +368,26 @@ func TestResolvePluginRootFromParentDir(t *testing.T) {
 	root, resolvedManifestPath := s.resolvePluginRoot(filepath.Dir(pluginRoot), "", "amagi", "amagi-codex-marketplace")
 	if root != pluginRoot || resolvedManifestPath != manifestPath {
 		t.Fatalf("resolvePluginRoot did not select version root, root=%s manifest=%s", root, resolvedManifestPath)
+	}
+}
+
+func TestResolvePluginRootPrefersHighestSemanticVersion(t *testing.T) {
+	codexDir := t.TempDir()
+	root19 := filepath.Join(codexDir, "plugins", "cache", "market", "amagi", "1.9.0")
+	root110 := filepath.Join(codexDir, "plugins", "cache", "market", "amagi", "1.10.0")
+	for _, root := range []string{root19, root110} {
+		if err := os.MkdirAll(filepath.Join(root, ".codex-plugin"), 0755); err != nil {
+			t.Fatalf("mkdir plugin root %s: %v", root, err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".codex-plugin", "plugin.json"), []byte(`{"name":"amagi","version":"`+filepath.Base(root)+`"}`), 0644); err != nil {
+			t.Fatalf("write manifest %s: %v", root, err)
+		}
+	}
+
+	s := NewServiceWithDeps(codexDir, nil, nil, nil)
+	root, _ := s.resolvePluginRoot("", "", "amagi", "market")
+	if root != root110 {
+		t.Fatalf("expected semantic newest root %s, got %s", root110, root)
 	}
 }
 

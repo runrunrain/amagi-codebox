@@ -558,6 +558,9 @@ func TestValidateAppBundleMissingExecutable(t *testing.T) {
 }
 
 func TestValidateAppBundleNotExecutable(t *testing.T) {
+	if !enforcesPOSIXExecutableBits() {
+		t.Skip("POSIX executable bits are not enforced on this platform")
+	}
 	tmpDir := t.TempDir()
 	appPath := filepath.Join(tmpDir, "amagi-codebox.app")
 	createValidAppBundleWithPerm(t, appPath, 0o644)
@@ -726,7 +729,7 @@ func TestHelperScriptContainsRollbackAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&0o111 == 0 {
+	if enforcesPOSIXExecutableBits() && info.Mode()&0o111 == 0 {
 		t.Error("helper script is not executable")
 	}
 }

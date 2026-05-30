@@ -1605,9 +1605,9 @@ func (s *Service) resolveClaudeFromNPMGlobalPrefix() (string, string) {
 	if err != nil || strings.TrimSpace(prefix) == "" {
 		return "", ""
 	}
-	for _, candidate := range claudeNPMGlobalExecutableCandidates(prefix) {
-		if fileExists(candidate) {
-			return filepath.Clean(candidate), "npm global prefix"
+	for _, candidate := range claudeNPMGlobalExecutableCandidateInfos(prefix) {
+		if fileExists(candidate.path) {
+			return filepath.Clean(candidate.path), candidate.source
 		}
 	}
 	return "", ""
@@ -1638,7 +1638,21 @@ func (s *Service) npmGlobalPrefix() (string, error) {
 	return filepath.Clean(strings.TrimSpace(prefix)), nil
 }
 
+type claudeNPMGlobalExecutableCandidate struct {
+	path   string
+	source string
+}
+
 func claudeNPMGlobalExecutableCandidates(prefix string) []string {
+	infos := claudeNPMGlobalExecutableCandidateInfos(prefix)
+	candidates := make([]string, 0, len(infos))
+	for _, info := range infos {
+		candidates = append(candidates, info.path)
+	}
+	return candidates
+}
+
+func claudeNPMGlobalExecutableCandidateInfos(prefix string) []claudeNPMGlobalExecutableCandidate {
 	prefix = filepath.Clean(strings.TrimSpace(prefix))
 	if prefix == "" || prefix == "." {
 		return nil
@@ -1650,20 +1664,87 @@ func claudeNPMGlobalExecutableCandidates(prefix string) []string {
 		names = []string{"claude.cmd", "claude.exe", "claude"}
 	}
 
-	candidates := make([]string, 0, len(dirs)*len(names))
+	candidates := make([]claudeNPMGlobalExecutableCandidate, 0, len(dirs)*len(names))
 	seen := map[string]struct{}{}
+
+	appendCandidate := func(path string, source string) {
+		key := normalizeClaudePath(path)
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, claudeNPMGlobalExecutableCandidate{
+			path:   path,
+			source: source,
+		})
+	}
+
 	for _, dir := range dirs {
 		for _, name := range names {
-			candidate := filepath.Join(dir, name)
-			key := normalizeClaudePath(candidate)
-			if _, ok := seen[key]; ok {
-				continue
+			appendCandidate(filepath.Join(dir, name), "npm global prefix")
+		}
+	}
+	for _, candidate := range claudeNPMPackageBinaryFallbackCandidates(prefix) {
+		appendCandidate(candidate, "npm package binary fallback")
+	}
+	return candidates
+}
+
+func claudeNPMPackageBinaryFallbackCandidates(prefix string) []string {
+	prefix = filepath.Clean(strings.TrimSpace(prefix))
+	if prefix == "" || prefix == "." {
+		return nil
+	}
+
+	packageNames, executableNames := claudeNPMPackageBinaryNames()
+	if len(packageNames) == 0 || len(executableNames) == 0 {
+		return nil
+	}
+
+	roots := []string{
+		filepath.Join(prefix, "node_modules", "@anthropic-ai"),
+		filepath.Join(prefix, "node_modules", "@anthropic-ai", "claude-code", "node_modules", "@anthropic-ai"),
+	}
+	if matches, err := filepath.Glob(filepath.Join(prefix, "node_modules", "@anthropic-ai", ".claude-code-*", "node_modules", "@anthropic-ai")); err == nil {
+		roots = append(roots, matches...)
+	}
+
+	candidates := []string{}
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		for _, packageName := range packageNames {
+			for _, executableName := range executableNames {
+				candidate := filepath.Join(root, packageName, executableName)
+				key := normalizeClaudePath(candidate)
+				if key == "" {
+					continue
+				}
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				candidates = append(candidates, candidate)
 			}
-			seen[key] = struct{}{}
-			candidates = append(candidates, candidate)
 		}
 	}
 	return candidates
+}
+
+func claudeNPMPackageBinaryNames() ([]string, []string) {
+	if isWindows() {
+		return []string{"claude-code-win32-arm64", "claude-code-win32-x64"}, []string{"claude.exe"}
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		return []string{"claude-code-darwin-arm64", "claude-code-darwin-x64"}, []string{"claude"}
+	case "linux":
+		return []string{"claude-code-linux-arm64", "claude-code-linux-x64"}, []string{"claude"}
+	default:
+		return nil, nil
+	}
 }
 
 func (s *Service) ensureNPMAvailable() error {
@@ -1713,20 +1794,22 @@ func (s *Service) probeNPMAvailability() {
 	env := s.buildEnhancedEnv()
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
 	resolved, _, resolveErr := resolver.ResolveExecutable("npm", nil, env)
+	npmPath := "npm"
 	if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
-		// Check if npm path was found but node is missing
-		s.npmAvailable = false
-		msg := "npm 不可用"
+		// The platform resolver is intentionally conservative. Fall through to a
+		// runner probe with the bare command so OS-level command resolution and
+		// injected test runners can still prove npm availability without requiring
+		// resolver-visible filesystem evidence.
 		if resolveErr != nil {
-			msg = resolveErr.Error()
+			s.npmResolvedErr = fmt.Errorf("%s；请安装 Node.js (https://nodejs.org) 并确保 npm 在 PATH 中", resolveErr.Error())
 		}
-		s.npmResolvedErr = fmt.Errorf("%s；请安装 Node.js (https://nodejs.org) 并确保 npm 在 PATH 中", msg)
-		return
+	} else {
+		npmPath = resolved.Path
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   resolved.Path,
+		Path:   npmPath,
 		Args:   []string{"--version"},
 		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
@@ -1739,13 +1822,17 @@ func (s *Service) probeNPMAvailability() {
 		}
 		// Detect "node not found" specifically
 		if strings.Contains(detail, "node: No such file") || strings.Contains(detail, "env: node: No such file") {
-			s.npmResolvedErr = fmt.Errorf("在 %s 找到 npm 但 node 不在 PATH 中: %s（建议安装 Node.js 或修复 PATH）", resolved.Path, detail)
+			s.npmResolvedErr = fmt.Errorf("在 %s 找到 npm 但 node 不在 PATH 中: %s（建议安装 Node.js 或修复 PATH）", npmPath, detail)
 		} else {
-			s.npmResolvedErr = fmt.Errorf("在 %s 找到 npm 但无法正常运行: %s", resolved.Path, detail)
+			if strings.TrimSpace(detail) == "" && resolveErr != nil {
+				detail = resolveErr.Error()
+			}
+			s.npmResolvedErr = fmt.Errorf("在 %s 找到 npm 但无法正常运行: %s", npmPath, detail)
 		}
 		return
 	}
 	s.npmAvailable = true
+	s.npmResolvedErr = nil
 }
 
 // resolveNPMPath returns the absolute path to the npm executable found by
