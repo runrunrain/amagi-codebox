@@ -27,7 +27,7 @@ const isTerminalView = () => route.name === 'terminal'
     <DrawerNav v-model:open="drawerOpen" />
 
     <main class="content" :class="{ 'content--terminal': isTerminalView() }">
-      <router-view />
+      <router-view :key="route.fullPath" />
     </main>
 
     <nav v-if="!isTerminalView()" class="bottom-nav">
