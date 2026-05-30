@@ -26,6 +26,48 @@ const TUI_DECORATION_PATTERN = /[─│┌┐└┘├┤┬┴┼━┃┏┓�
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F\u0080-\u009A\u009C-\u009F]/gu
 const TRANSIENT_STATUS_PATTERN = /^(?:[⠁-⣿\-\\|/•·*\s]*)?(?:(?:status|progress)\s*:|(?:thinking|writing|reading(?:\s+file)?|processing|loading|running|waiting|working|analyzing|generating|compiling|building|installing)\b)[\s\S]{0,160}$/i
 
+// Known Claude status words for fragment detection (subset reused from
+// transcriptNormalizer to avoid circular dependency; keep in sync).
+const STATUS_WORDS_FOR_FRAGMENT_CHECK = [
+  'thinking', 'writing', 'reading', 'processing',
+  'loading', 'running', 'waiting', 'working',
+  'analyzing', 'generating', 'compiling', 'building',
+  'installing', 'ionizing',
+] as const
+
+/**
+ * Lightweight check for garbled status-word fragments.
+ * Used as a safety net before returning cleanText from terminal-rewrite paths.
+ */
+function isStatusFragment(candidate: string): boolean {
+  const trimmed = candidate.trim()
+  if (trimmed.length > 20 || trimmed.length < 4) return false
+  if (trimmed.includes(' ')) return false
+  const lower = trimmed.toLowerCase()
+  // Exact matches are not fragments; they are handled by isTransientStatusLine
+  for (const word of STATUS_WORDS_FOR_FRAGMENT_CHECK) {
+    if (lower === word) return false
+  }
+  for (const word of STATUS_WORDS_FOR_FRAGMENT_CHECK) {
+    // Quick check: must share significant characters with the word
+    let shared = 0
+    const wChars = [...word]
+    const cChars = [...lower]
+    const wCounts = new Map<string, number>()
+    for (const ch of wChars) wCounts.set(ch, (wCounts.get(ch) ?? 0) + 1)
+    for (const ch of cChars) {
+      const c = wCounts.get(ch)
+      if (c && c > 0) {
+        shared++
+        wCounts.set(ch, c - 1)
+      }
+    }
+    const ratio = shared / Math.max(lower.length, word.length)
+    if (ratio >= 0.72) return true
+  }
+  return false
+}
+
 function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n/g, '\n')
 }
@@ -119,6 +161,11 @@ export class TerminalEffectNormalizer {
       }
 
       if (isTransientStatusLine(lastLine)) {
+        return { cleanText: '', diagnostics, transientStatus: lastLine }
+      }
+
+      // Safety net: discard the last line if it's a garbled status fragment
+      if (isStatusFragment(lastLine)) {
         return { cleanText: '', diagnostics, transientStatus: lastLine }
       }
 

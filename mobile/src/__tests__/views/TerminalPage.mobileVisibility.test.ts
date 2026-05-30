@@ -44,3 +44,29 @@ describe('TerminalPage mobile text mode visibility CSS', () => {
     expect(terminalPageSource).toContain('!isNarrowViewport')
   })
 })
+
+describe('TerminalPage composer spacer layout', () => {
+  it('uses a dynamic CSS variable for composer spacer on text-view padding-bottom', () => {
+    // The .terminal-text-view should use --session-composer-spacer var for bottom padding
+    expect(terminalPageSource).toContain('--session-composer-spacer')
+    // The inline style binding should set the CSS variable from reactive state
+    expect(terminalPageSource).toContain('composerSpacerVar')
+  })
+
+  it('has an input event handler on the textarea that updates spacer', () => {
+    expect(terminalPageSource).toContain('onMobileInputChange')
+    expect(terminalPageSource).toContain('@input="onMobileInputChange"')
+  })
+
+  it('provides a spacer measurement function that accounts for textarea growth', () => {
+    expect(terminalPageSource).toContain('updateComposerSpacer')
+    // Must clamp textarea measurement to max-height (160px)
+    expect(terminalPageSource).toMatch(/Math\.min.*160/)
+  })
+
+  it('has a fallback spacer value of at least 156px (SessionTimeline default)', () => {
+    // The default value should cover the maximum composer dock height:
+    // textarea max 160 + controls 48 + dock padding 10 + breathing room > 156
+    expect(terminalPageSource).toMatch(/156px/)
+  })
+})

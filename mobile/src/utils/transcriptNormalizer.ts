@@ -53,6 +53,80 @@ const CLAUDE_STATUS_LINE_PATTERN = /^(?:[↓↑]\s*)?(?:\d+\s+tokens?\s*[·.]\s*
 const CLAUDE_TUI_HINT_LINE_PATTERN = /\b(?:bypass permissions|shift\+tab|esc to interrupt|for agents)\b/i
 const CLAUDE_STARTUP_TIP_PATTERN = /^Tip:\s*Running multiple Claude sessions\?/i
 const CLAUDE_NOISE_SHORT_LINE_PATTERN = /^(?:Waddling\.{3}|\*?Cooked for \d+s|[>›❯]+)$/i
+
+// Known Claude status words that produce garbled fragments when ANSI cursor
+// moves partially redraw the status line.  These fragments lack the typical
+// "with X effort" suffix and are short enough to be mistaken for real words.
+const CLAUDE_STATUS_BASE_WORDS = [
+  'thinking', 'writing', 'reading', 'processing',
+  'loading', 'running', 'waiting', 'working',
+  'analyzing', 'generating', 'compiling', 'building',
+  'installing', 'ionizing',
+] as const
+
+const MAX_FRAGMENT_LENGTH = 20
+
+/**
+ * Compute the character-overlap ratio between a candidate fragment and a
+ * known status word.  Returns the ratio of shared characters (0-1).
+ * Uses multiset intersection: for each unique character, count how many
+ * times it appears in both strings, take the minimum, and sum.
+ */
+function characterOverlapRatio(fragment: string, word: string): number {
+  const f = fragment.toLowerCase()
+  const w = word.toLowerCase()
+  if (f === w) return 1
+
+  const fLen = f.length
+  const wLen = w.length
+  // Fragment must be reasonably close in length (at least 55% of the word)
+  if (fLen < Math.ceil(wLen * 0.55)) return 0
+
+  let shared = 0
+  const fCounts = new Map<string, number>()
+  for (const ch of f) {
+    fCounts.set(ch, (fCounts.get(ch) ?? 0) + 1)
+  }
+  for (const ch of w) {
+    const count = fCounts.get(ch)
+    if (count && count > 0) {
+      shared += 1
+      fCounts.set(ch, count - 1)
+    }
+  }
+  // Ratio against the shorter of the two strings so partial matches score high
+  return shared / Math.max(fLen, wLen)
+}
+
+/**
+ * Detect whether a short text string is a garbled fragment of a known Claude
+ * status word.  A match requires:
+ *  1. The candidate is short (<= MAX_FRAGMENT_LENGTH chars)
+ *  2. It consists mostly of word characters (letters + digits)
+ *  3. It does NOT exactly match a known status word (those are handled by
+ *     TRANSIENT_STATUS_TEXT_PATTERN)
+ *  4. Its character overlap with at least one known status word >= 0.72
+ *  5. It does NOT contain spaces that would make it look like a real sentence
+ */
+function isClaudeStatusFragment(candidate: string): boolean {
+  if (candidate.length > MAX_FRAGMENT_LENGTH) return false
+  if (candidate.length < 4) return false
+  // Must be predominantly word characters (no spaces, no real sentences)
+  const wordCharCount = (candidate.match(/[a-zA-Z0-9]/g) ?? []).length
+  if (wordCharCount / candidate.length < 0.85) return false
+  // Reject anything that looks like a real multi-word phrase
+  if (candidate.includes(' ') || candidate.includes('\t')) return false
+  const lower = candidate.toLowerCase()
+  // Exact matches are handled by TRANSIENT_STATUS_TEXT_PATTERN, not here
+  for (const word of CLAUDE_STATUS_BASE_WORDS) {
+    if (lower === word) return false
+  }
+
+  for (const word of CLAUDE_STATUS_BASE_WORDS) {
+    if (characterOverlapRatio(candidate, word) >= 0.72) return true
+  }
+  return false
+}
 const READABLE_MARKDOWN_PATTERN = /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|```|\|.+\|)|\[[^\]]+\]\([^\)]+\)|\*\*[^*]+\*\*/m
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b(sk-[A-Za-z0-9_-]{12,})\b/g, 'sk-[REDACTED]'],
@@ -136,6 +210,9 @@ export function isTerminalTranscriptNoiseLine(line: string): boolean {
   if (CLAUDE_TUI_HINT_LINE_PATTERN.test(candidate)) return true
   if (CLAUDE_STARTUP_TIP_PATTERN.test(candidate)) return true
   if (CLAUDE_NOISE_SHORT_LINE_PATTERN.test(candidate)) return true
+  // Detect garbled fragments of Claude status words (e.g. "dnthinking",
+  // "ditihinking", "tinking", "tnking") that lack the "with X effort" suffix.
+  if (isClaudeStatusFragment(candidate)) return true
   return false
 }
 
@@ -166,6 +243,7 @@ export function isReadableLegacyText(value: string): boolean {
   if (isJsonObjectLike(trimmed) || SUSPICIOUS_OBJECT_PATTERN.test(trimmed)) return false
   if (SPINNER_ONLY_PATTERN.test(trimmed)) return false
   if (TRANSIENT_STATUS_TEXT_PATTERN.test(trimmed)) return false
+  if (isClaudeStatusFragment(trimmed)) return false
   if (isTerminalTranscriptNoiseLine(trimmed)) return false
   if (TUI_HINT_PATTERN.test(trimmed)) return false
   if (/^[\d\s.,:%/\\|+-]+$/.test(trimmed)) return false

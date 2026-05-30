@@ -66,6 +66,20 @@ const diagnosticDrawerOpen = ref(false)
 const diagnosticDrawerTriggerRef = ref<HTMLButtonElement>()
 const terminalKeysOpen = ref(false)
 const STRUCTURED_FALLBACK_TIMEOUT_MS = 350
+const composerSpacerVar = ref('156px')
+
+function updateComposerSpacer() {
+  if (!mobileInputRef.value) return
+  // Measure the actual textarea height and compute the full composer dock height
+  const taHeight = mobileInputRef.value.scrollHeight || 64
+  const controlsHeight = 48 // min-height of .mobile-composer-controls
+  const dockPadding = 10    // bottom padding of dock
+  const safeArea = parseInt(getComputedStyle(document.documentElement).getPropertyValue('env(safe-area-inset-bottom)') || '0', 10)
+  const totalDockHeight = Math.min(Math.max(taHeight, 64), 160) + controlsHeight + dockPadding + safeArea
+  // Add 24px breathing room so content doesn't kiss the composer edge
+  const spacer = Math.max(totalDockHeight + 24, 156)
+  composerSpacerVar.value = `${spacer}px`
+}
 
 const sessionLabelTitle = computed(() => {
   if (!sessionMetadata.value) return sessionId
@@ -763,6 +777,10 @@ function handleMobileInputEnter(event: KeyboardEvent) {
   sendMobileInput()
 }
 
+function onMobileInputChange() {
+  nextTick(updateComposerSpacer)
+}
+
 function connectWebSocket() {
   ws = new TerminalWebSocket()
 
@@ -986,7 +1004,7 @@ onUnmounted(() => {
         v-if="mobileTextMode"
         ref="textViewRef"
         class="terminal-text-view"
-        :style="{ fontSize: `${Math.max(fontSize + 4, 16)}px` }"
+        :style="{ fontSize: `${Math.max(fontSize + 4, 16)}px`, '--session-composer-spacer': composerSpacerVar }"
       >
         <div class="terminal-text-mode-header">
           <div class="terminal-text-mode-caption">{{ structuredViewEnabled ? '移动端会话阅读视图' : '原始终端仅用于诊断' }}</div>
@@ -1062,6 +1080,7 @@ onUnmounted(() => {
         aria-label="输入 follow-up"
         placeholder="随便问点什么..."
         @keydown.enter="handleMobileInputEnter"
+        @input="onMobileInputChange"
       ></textarea>
       <div class="mobile-composer-controls">
         <button
@@ -2281,7 +2300,7 @@ onUnmounted(() => {
 .terminal-text-view {
   border: 0;
   border-radius: 0;
-  padding: 12px 15px 174px;
+  padding: 12px 15px var(--session-composer-spacer, 174px);
   background: var(--session-canvas);
   box-shadow: none;
   color: var(--session-text);

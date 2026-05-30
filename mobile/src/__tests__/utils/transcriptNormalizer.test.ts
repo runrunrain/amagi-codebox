@@ -1,5 +1,55 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { isReadableLegacyText, normalizeTranscriptChunk, resetTranscriptNormalizerState } from '../../utils/transcriptNormalizer'
+import { isReadableLegacyText, isTerminalTranscriptNoiseLine, normalizeTranscriptChunk, resetTranscriptNormalizerState } from '../../utils/transcriptNormalizer'
+
+describe('isTerminalTranscriptNoiseLine - garbled status fragments', () => {
+  it('detects dnthinking as a garbled thinking fragment', () => {
+    expect(isTerminalTranscriptNoiseLine('dnthinking')).toBe(true)
+  })
+
+  it('detects ditihinking as a garbled thinking fragment', () => {
+    expect(isTerminalTranscriptNoiseLine('ditihinking')).toBe(true)
+  })
+
+  it('detects tinking as a garbled thinking fragment', () => {
+    expect(isTerminalTranscriptNoiseLine('tinking')).toBe(true)
+  })
+
+  it('detects tnking as a garbled thinking fragment', () => {
+    expect(isTerminalTranscriptNoiseLine('tnking')).toBe(true)
+  })
+
+  it('detects garbled writing fragments', () => {
+    expect(isTerminalTranscriptNoiseLine('writng')).toBe(true)
+    expect(isTerminalTranscriptNoiseLine('wrting')).toBe(true)
+  })
+
+  it('detects garbled running fragments', () => {
+    expect(isTerminalTranscriptNoiseLine('runing')).toBe(true)
+  })
+
+  it('does not flag real English words as noise', () => {
+    expect(isTerminalTranscriptNoiseLine('think')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('reader')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('builder')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('runner')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('writes')).toBe(false)
+  })
+
+  it('does not flag Chinese text as noise', () => {
+    expect(isTerminalTranscriptNoiseLine('正在处理')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('你好世界')).toBe(false)
+  })
+
+  it('does not flag multi-word phrases as fragments', () => {
+    expect(isTerminalTranscriptNoiseLine('thinking about code')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('running tests')).toBe(false)
+  })
+
+  it('does not flag very short strings', () => {
+    expect(isTerminalTranscriptNoiseLine('ab')).toBe(false)
+    expect(isTerminalTranscriptNoiseLine('abc')).toBe(false)
+  })
+})
 
 describe('isReadableLegacyText', () => {
   it('returns true for natural language with action verbs', () => {
@@ -69,6 +119,26 @@ describe('isReadableLegacyText', () => {
     expect(isReadableLegacyText('↓ 1 tokens · tnking with high effort)')).toBe(false)
     expect(isReadableLegacyText('processing')).toBe(false)
     expect(isReadableLegacyText('loading')).toBe(false)
+  })
+
+  it('returns false for garbled Claude status fragments', () => {
+    // These are ANSI cursor-move artifacts that should not appear in timeline
+    expect(isReadableLegacyText('dnthinking')).toBe(false)
+    expect(isReadableLegacyText('ditihinking')).toBe(false)
+    expect(isReadableLegacyText('tinking')).toBe(false)
+    expect(isReadableLegacyText('tnking')).toBe(false)
+    expect(isReadableLegacyText('runing')).toBe(false)
+    expect(isReadableLegacyText('writng')).toBe(false)
+  })
+
+  it('returns true for real words that contain status-word substrings', () => {
+    // These are legitimate words that happen to overlap with status words
+    // but are NOT exact status words (so they should not be filtered)
+    expect(isReadableLegacyText('think')).toBe(true)
+    expect(isReadableLegacyText('reader')).toBe(true)
+    expect(isReadableLegacyText('builder')).toBe(true)
+    expect(isReadableLegacyText('runner')).toBe(true)
+    expect(isReadableLegacyText('writes')).toBe(true)
   })
 
   it('returns false for TUI menu and hint text', () => {
@@ -193,5 +263,40 @@ describe('normalizeTranscriptChunk (diagnostic isolation)', () => {
     expect(result.cleanText).not.toContain('bypass permissions')
     expect(result.cleanText).not.toContain('Running multiple Claude sessions')
     expect(result.diagnostics.some((d) => d.reason === 'tui' && d.severity === 'info')).toBe(true)
+  })
+
+  it('filters standalone garbled status fragments that appear as independent lines', () => {
+    // Arrange - these fragments come through as independent chunks without
+    // the "with X effort" suffix, simulating ANSI cursor-move residue
+    const fragments = ['dnthinking', 'ditihinking', 'tinking', 'tnking']
+
+    for (const fragment of fragments) {
+      // Act
+      const result = normalizeTranscriptChunk(fragment)
+
+      // Assert - each fragment should be filtered out completely
+      expect(result.cleanText).toBe('')
+    }
+  })
+
+  it('preserves real Chinese and English content alongside status fragments', () => {
+    // Arrange
+    const chunk = [
+      'dnthinking',
+      '用户提出的需求已经完成',
+      'I have implemented the feature as requested',
+      'runing',
+      'build',
+    ].join('\n')
+
+    // Act
+    const result = normalizeTranscriptChunk(chunk)
+
+    // Assert
+    expect(result.cleanText).toContain('用户提出的需求已经完成')
+    expect(result.cleanText).toContain('I have implemented the feature as requested')
+    expect(result.cleanText).toContain('build')
+    expect(result.cleanText).not.toContain('dnthinking')
+    expect(result.cleanText).not.toContain('runing')
   })
 })
