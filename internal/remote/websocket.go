@@ -27,6 +27,7 @@ type serverMsg struct {
 	Type               string           `json:"type"`                         // "output" | "structured-part" | "exit" | "dimensions"
 	Data               string           `json:"data,omitempty"`               // base64（output 类型）
 	Seq                uint64           `json:"seq,omitempty"`                // output / structured-part 关联序号
+	History            bool             `json:"history,omitempty"`            // output 是否为连接建立时的历史快照
 	StructuredExpected bool             `json:"structuredExpected,omitempty"` // 新客户端用于延迟 raw fallback
 	Part               *structured.Part `json:"part,omitempty"`               // structured-part 类型
 	ExitCode           int              `json:"exitCode,omitempty"`           // exit 类型
@@ -140,7 +141,7 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 
 	var outputSeq uint64
 
-	outputCB := func(data []byte) {
+	sendLiveOutput := func(data []byte) {
 		seq := atomic.AddUint64(&outputSeq, 1)
 		encoded := base64.StdEncoding.EncodeToString(data)
 		msg := serverMsg{Type: "output", Data: encoded, Seq: seq, StructuredExpected: len(data) > 0}
@@ -157,6 +158,35 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 		case structuredQueue <- structuredWorkItem{seq: seq, data: structuredData}:
 		default:
 			s.log.Debug("remote", "structured 队列已满，客户端将按 raw fallback", fmt.Sprintf("conn=%s seq=%d", connID, seq))
+		}
+	}
+
+	var historyReplayMu sync.Mutex
+	historyReplayDone := false
+	pendingLiveOutputs := make([][]byte, 0)
+
+	outputCB := func(data []byte) {
+		historyReplayMu.Lock()
+		if !historyReplayDone {
+			copied := make([]byte, len(data))
+			copy(copied, data)
+			pendingLiveOutputs = append(pendingLiveOutputs, copied)
+			historyReplayMu.Unlock()
+			return
+		}
+		historyReplayMu.Unlock()
+		sendLiveOutput(data)
+	}
+
+	flushPendingLiveOutputs := func() {
+		historyReplayMu.Lock()
+		historyReplayDone = true
+		buffered := pendingLiveOutputs
+		pendingLiveOutputs = nil
+		historyReplayMu.Unlock()
+
+		for _, data := range buffered {
+			sendLiveOutput(data)
 		}
 	}
 
@@ -181,7 +211,7 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 
 		if len(history) > 0 {
 			encoded := base64.StdEncoding.EncodeToString(history)
-			if err := writeJSON(serverMsg{Type: "output", Data: encoded}, 10*time.Second); err != nil {
+			if err := writeJSON(serverMsg{Type: "output", Data: encoded, History: true}, 10*time.Second); err != nil {
 				s.log.Debug("remote", "WebSocket 发送历史输出失败", fmt.Sprintf("conn=%s err=%v", connID, err))
 			} else {
 				s.log.Info("remote", "WebSocket 历史输出已发送", fmt.Sprintf("conn=%s bytes=%d", connID, len(history)))
@@ -195,12 +225,18 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 				s.log.Info("remote", "WebSocket PTY 尺寸已发送", fmt.Sprintf("conn=%s cols=%d rows=%d", connID, cols, rows))
 			}
 		}
+
+		flushPendingLiveOutputs()
 	} else {
+		historyReplayMu.Lock()
+		historyReplayDone = true
+		historyReplayMu.Unlock()
+
 		// 兼容旧实现：先发送 history / dimensions，再注册 live 回调。
 		if hp, ok := s.app.(HistoryProvider); ok {
 			if history, err := hp.GetOutputHistory(sessionID); err == nil && len(history) > 0 {
 				encoded := base64.StdEncoding.EncodeToString(history)
-				histMsg := serverMsg{Type: "output", Data: encoded}
+				histMsg := serverMsg{Type: "output", Data: encoded, History: true}
 				if err := writeJSON(histMsg, 10*time.Second); err != nil {
 					s.log.Debug("remote", "WebSocket 发送历史输出失败", fmt.Sprintf("conn=%s err=%v", connID, err))
 				} else {

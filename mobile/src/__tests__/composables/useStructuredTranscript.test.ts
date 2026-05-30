@@ -28,6 +28,19 @@ describe('useStructuredTranscript', () => {
     expect(transcript.debugStats.value).toMatchObject({ appendCalls: 2, classifiedSegments: 0 })
   })
 
+  it('places mobile input as a user turn before the next assistant response', () => {
+    const transcript = useStructuredTranscript({ sessionId: 's-mobile-input', appType: computed(() => 'claudecode') })
+
+    transcript.appendRawChunk('Initial assistant answer.\n\n')
+    transcript.appendUserText('继续说明移动端显示')
+    transcript.appendRawChunk('Follow-up assistant answer.')
+
+    expect(transcript.turns.value.map((turn) => turn.role)).toEqual(['assistant', 'user', 'assistant'])
+    expect(transcript.turns.value[0]?.parts[0]).toMatchObject({ type: 'text', text: 'Initial assistant answer.' })
+    expect(transcript.turns.value[1]?.parts[0]).toMatchObject({ type: 'text', text: '继续说明移动端显示' })
+    expect(transcript.turns.value[2]?.parts[0]).toMatchObject({ type: 'text', text: 'Follow-up assistant answer.' })
+  })
+
   it('classifies markdown chunks', () => {
     const transcript = useStructuredTranscript({ sessionId: 's-markdown', appType: computed(() => 'claudecode') })
 

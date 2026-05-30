@@ -250,7 +250,9 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
   const turnOrder = ref<string[]>([])
   const partsById = ref<Record<string, TranscriptPart>>({})
   const partOrderByTurnId = ref<Record<string, string[]>>({})
-  const activeTurnId = `${options.sessionId}-raw-turn`
+  let assistantTurnSequence = 0
+  let userTurnSequence = 0
+  let activeTurnId = `${options.sessionId}-assistant-${assistantTurnSequence}`
   const turns = computed<TranscriptTurn[]>(() => turnOrder.value.map((turnId) => {
     const turn = turnsById.value[turnId]
     if (!turn) return null
@@ -643,6 +645,63 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     }
   }
 
+  function appendUserText(text: string) {
+    const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+    if (!normalized) return
+
+    const timestamp = nowIso()
+    flushPendingSegment(timestamp)
+    updateTurn(timestamp)
+
+    if (turnsById.value[activeTurnId]) {
+      turnsById.value = {
+        ...turnsById.value,
+        [activeTurnId]: {
+          ...turnsById.value[activeTurnId],
+          status: 'completed',
+          updatedAt: timestamp,
+        },
+      }
+    }
+
+    const userTurnId = `${options.sessionId}-user-${userTurnSequence}`
+    userTurnSequence += 1
+    const userPartId = `${userTurnId}-text`
+    const userPart: TranscriptPart = {
+      id: userPartId,
+      type: 'text',
+      text: normalized,
+      createdAt: timestamp,
+    }
+
+    turnsById.value = {
+      ...turnsById.value,
+      [userTurnId]: {
+        id: userTurnId,
+        sessionId: options.sessionId,
+        role: 'user',
+        appType: options.appType.value,
+        status: 'completed',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    }
+    turnOrder.value = [...turnOrder.value, userTurnId]
+    partsById.value = { ...partsById.value, [userPartId]: userPart }
+    partOrderByTurnId.value = { ...partOrderByTurnId.value, [userTurnId]: [userPartId] }
+
+    assistantTurnSequence += 1
+    activeTurnId = `${options.sessionId}-assistant-${assistantTurnSequence}`
+    completedParts = []
+    pendingSegment = ''
+    turnCreatedAt = null
+    patchStoreStats()
+    refreshDebugStats({
+      appendCalls: debugStats.value.appendCalls + 1,
+      lastAppendChars: normalized.length,
+    })
+  }
+
   function appendStructuredPart(part: StructuredPartFramePayload, metadata: AppendStructuredPartMetadata = {}) {
     const timestamp = nowIso()
     ensureTurnCreatedAt(timestamp)
@@ -730,6 +789,9 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     completedParts = []
     partSequence = 0
     diagnosticSequence = 0
+    assistantTurnSequence = 0
+    userTurnSequence = 0
+    activeTurnId = `${options.sessionId}-assistant-${assistantTurnSequence}`
     turnCreatedAt = null
     lastSnapshot = snapshotCacheValue
     error.value = null
@@ -797,6 +859,7 @@ export function useStructuredTranscript(options: UseStructuredTranscriptOptions)
     appendStructuredPart,
     appendRawChunk,
     appendDiagnostic,
+    appendUserText,
     ingestRawSnapshot,
     refreshAppType,
     reset,

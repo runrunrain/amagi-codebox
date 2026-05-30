@@ -27,8 +27,10 @@ const FONT_SIZE_MIN = 9
 const FONT_SIZE_MAX = 18
 const FONT_SIZE_DEFAULT = 12
 const MOBILE_TEXT_VIEWPORT_MAX_WIDTH = 768
+const RECENT_INPUT_ECHO_TTL_MS = 15_000
 
 type TerminalTransportMode = 'observer' | 'controller'
+type RecentMobileInputEcho = { text: string; expiresAt: number }
 
 function loadFontSize(): number {
   const saved = localStorage.getItem(FONT_SIZE_KEY)
@@ -174,10 +176,14 @@ let authoritativePtyDimensions: { cols: number; rows: number } | null = null
 let rawTextViewBuffer = ''
 const batchedRawTerminalText = ref('')
 let rawTextViewRaf: number | null = null
+const recentMobileInputEchoes: RecentMobileInputEcho[] = []
 const structuredFallbacks = new StructuredFrameFallbacks(
   STRUCTURED_FALLBACK_TIMEOUT_MS,
   (_seq, text) => {
-    transcript.appendRawChunk(text, { source: 'fallback' })
+    const transcriptText = filterRecentMobileInputEcho(text)
+    if (transcriptText) {
+      transcript.appendRawChunk(transcriptText, { source: 'fallback' })
+    }
     rawTextViewBuffer = transcript.rawText.value
     scheduleRawTextViewSync()
     scrollTextViewToBottom()
@@ -481,6 +487,113 @@ function scheduleStructuredFallback(seq: number, text: string) {
   structuredFallbacks.schedule(seq, text)
 }
 
+function normalizeMobileInputEcho(value: string): string {
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => transcript.normalizeTranscriptLine(line))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+function rememberMobileInputEcho(value: string) {
+  const text = normalizeMobileInputEcho(value)
+  if (!text) return
+  recentMobileInputEchoes.push({ text, expiresAt: Date.now() + RECENT_INPUT_ECHO_TTL_MS })
+  if (recentMobileInputEchoes.length > 8) {
+    recentMobileInputEchoes.splice(0, recentMobileInputEchoes.length - 8)
+  }
+}
+
+function pruneMobileInputEchoes() {
+  const now = Date.now()
+  for (let index = recentMobileInputEchoes.length - 1; index >= 0; index -= 1) {
+    if (recentMobileInputEchoes[index].expiresAt <= now) {
+      recentMobileInputEchoes.splice(index, 1)
+    }
+  }
+}
+
+function consumeRecentMobileInputEcho(value: string): boolean {
+  pruneMobileInputEchoes()
+  const normalized = normalizeMobileInputEcho(value)
+  if (!normalized) return false
+
+  const lines = normalized.split('\n').filter(Boolean)
+  const index = recentMobileInputEchoes.findIndex((echo) => {
+    if (echo.text === normalized) return true
+    return lines.length === 1 && echo.text === lines[0]
+  })
+  if (index < 0) return false
+  recentMobileInputEchoes.splice(index, 1)
+  return true
+}
+
+function filterRecentMobileInputEcho(value: string): string {
+  pruneMobileInputEchoes()
+  if (recentMobileInputEchoes.length === 0 || !value) return value
+
+  const lines = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  let consumed = false
+  const filtered = lines.filter((line) => {
+    if (!consumed && consumeRecentMobileInputEcho(line)) {
+      consumed = true
+      return false
+    }
+    return true
+  })
+  return filtered.join('\n')
+}
+
+function structuredPartVisibleText(part: StructuredPartFramePayload): string {
+  switch (part.type) {
+    case 'text':
+      return part.text ?? ''
+    case 'markdown':
+      return part.markdown ?? ''
+    case 'tool':
+      return [part.tool?.title, part.tool?.inputPreview, part.tool?.outputPreview].filter(Boolean).join('\n')
+    case 'diff':
+      return part.diff?.text ?? ''
+    case 'raw-terminal':
+      return part.raw?.text ?? ''
+    default:
+      return ''
+  }
+}
+
+function filterStructuredPartEcho(part: StructuredPartFramePayload): StructuredPartFramePayload | null {
+  const visibleText = structuredPartVisibleText(part)
+  if (!visibleText) return part
+  const filteredText = filterRecentMobileInputEcho(visibleText)
+  if (filteredText === visibleText) return part
+  if (!filteredText.trim()) return null
+
+  if (part.type === 'text') {
+    return { ...part, text: filteredText }
+  }
+  if (part.type === 'markdown') {
+    return { ...part, markdown: filteredText }
+  }
+  if (part.type === 'raw-terminal' && part.raw) {
+    return { ...part, raw: { ...part.raw, text: filteredText } }
+  }
+  return part
+}
+
+function consumeHistoryOutput(bytes: Uint8Array, decodedOutput: string) {
+  flushPendingStructuredFallbacks()
+  transcriptFrameBatcher.flushNow()
+  rawTerminalSink.replace(decodedOutput)
+  transcript.ingestRawSnapshot(decodedOutput)
+  rawTextViewBuffer = transcript.rawText.value
+  batchedRawTerminalText.value = rawTextViewBuffer
+  bufferOutput(bytes)
+  scrollTextViewToBottom()
+}
+
 function consumeStructuredPart(seq: number | undefined, part: StructuredPartFramePayload | undefined) {
   if (!part) {
     transcript.appendDiagnostic({
@@ -489,6 +602,13 @@ function consumeStructuredPart(seq: number | undefined, part: StructuredPartFram
       seq,
       severity: 'warning',
     })
+    return
+  }
+  const filteredPart = filterStructuredPartEcho(part)
+  if (!filteredPart) {
+    if (typeof seq === 'number') {
+      structuredFallbacks.consume(seq)
+    }
     return
   }
   if (!['text', 'markdown', 'tool', 'diff', 'raw-terminal'].includes(part.type)) {
@@ -508,7 +628,7 @@ function consumeStructuredPart(seq: number | undefined, part: StructuredPartFram
       return
     }
   }
-  transcript.appendStructuredPart(part, { rawChunk })
+  transcript.appendStructuredPart(filteredPart, { rawChunk })
   scrollTextViewToBottom()
 }
 
@@ -622,6 +742,8 @@ function sendMobileInput() {
   if (!value.trim()) return
   // 先发送文本内容（将换行符统一为 \r，匹配终端 Enter 行为）
   const textToSend = value.replace(/\r?\n/g, '\r')
+  transcript.appendUserText(value)
+  rememberMobileInputEcho(value)
   ws.sendInput(textToSend)
   // 延迟发送 \r（Enter），确保 TUI 应用先处理完文本再触发执行
   // 桌面端 xterm 的 onData 逐字符触发，Enter 只发送 \r；移动端需匹配此行为
@@ -667,11 +789,20 @@ function connectWebSocket() {
       try {
         const bytes = decodeBase64ToUint8(frame.data)
         const decodedOutput = transcriptDecoder.decode(bytes, { stream: true })
+        if (frame.history === true) {
+          consumeHistoryOutput(bytes, decodedOutput)
+          return
+        }
         bufferOutput(bytes)
         routeDecodedTerminalOutput(frame, decodedOutput, {
           writeRawOutput: rawTerminalSink.write,
           scheduleStructuredFallback,
-          enqueueTranscriptChunk: transcriptFrameBatcher.enqueue,
+          enqueueTranscriptChunk: (text) => {
+            const transcriptText = filterRecentMobileInputEcho(text)
+            if (transcriptText) {
+              transcriptFrameBatcher.enqueue(transcriptText)
+            }
+          },
           scheduleRawTextViewSync: scheduleRawTextViewAfterChunk,
         })
       } catch (decodeError) {

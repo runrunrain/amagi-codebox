@@ -39,6 +39,7 @@ export interface TerminalFrame {
   type: KnownTerminalFrameType | string
   data?: string
   seq?: number
+  history?: boolean
   structuredExpected?: boolean
   part?: StructuredPartFramePayload
   exitCode?: number

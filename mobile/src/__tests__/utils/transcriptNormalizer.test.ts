@@ -65,6 +65,8 @@ describe('isReadableLegacyText', () => {
     // Arrange & Act & Assert
     expect(isReadableLegacyText('thinking')).toBe(false)
     expect(isReadableLegacyText('Thinking...')).toBe(false)
+    expect(isReadableLegacyText('thinking with high effort')).toBe(false)
+    expect(isReadableLegacyText('↓ 1 tokens · tnking with high effort)')).toBe(false)
     expect(isReadableLegacyText('processing')).toBe(false)
     expect(isReadableLegacyText('loading')).toBe(false)
   })
@@ -167,5 +169,29 @@ describe('normalizeTranscriptChunk (diagnostic isolation)', () => {
 
     // Assert
     expect(result.diagnostics.some((d) => d.reason === 'tui')).toBe(true)
+  })
+
+  it('filters Claude Code status redraw residue while preserving answer text', () => {
+    // Arrange
+    const chunk = [
+      'Waddling...',
+      'Tip: Running multiple Claude sessions? Use /color and /rename to tell them apart at a glance.',
+      'thinking with high effort',
+      'dnthinking with high effort',
+      '↓ 1 tokens · tnking with high effort)',
+      '▸ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+      '*Cooked for 3s',
+      '实际回答内容会保留在移动端会话正文。',
+    ].join('\n')
+
+    // Act
+    const result = normalizeTranscriptChunk(chunk)
+
+    // Assert
+    expect(result.cleanText).toBe('实际回答内容会保留在移动端会话正文。')
+    expect(result.cleanText).not.toContain('thinking with high effort')
+    expect(result.cleanText).not.toContain('bypass permissions')
+    expect(result.cleanText).not.toContain('Running multiple Claude sessions')
+    expect(result.diagnostics.some((d) => d.reason === 'tui' && d.severity === 'info')).toBe(true)
   })
 })

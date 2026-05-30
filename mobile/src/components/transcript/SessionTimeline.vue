@@ -129,7 +129,7 @@ function assistantMeta(turn: TranscriptTurn) {
 .session-timeline {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 20px;
   color: var(--session-text, #f4f4f5);
 }
 
@@ -165,6 +165,22 @@ function assistantMeta(turn: TranscriptTurn) {
   min-width: 0;
 }
 
+.timeline-turn--assistant {
+  position: relative;
+  padding-left: 14px;
+}
+
+.timeline-turn--assistant::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--session-accent, #7aa2ff) 32%, var(--session-border-weak, rgba(255, 255, 255, 0.08)));
+}
+
 .timeline-turn--user {
   align-items: flex-end;
 }
@@ -173,14 +189,14 @@ function assistantMeta(turn: TranscriptTurn) {
   width: fit-content;
   max-width: min(82%, 64ch);
   margin-left: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--session-border, rgba(255, 255, 255, 0.12));
-  border-radius: 9px;
-  background: var(--session-surface, #17171d);
+  padding: 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--session-accent, #7aa2ff) 34%, var(--session-border, rgba(255, 255, 255, 0.12)));
+  border-radius: 15px 15px 5px 15px;
+  background: color-mix(in srgb, var(--session-accent, #7aa2ff) 16%, var(--session-surface-raised, #1c1c24));
   color: var(--session-text, #f4f4f5);
   font-size: 15px;
   line-height: 1.55;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -206,11 +222,11 @@ function assistantMeta(turn: TranscriptTurn) {
 
 .assistant-flow {
   display: grid;
-  gap: 10px;
+  gap: 9px;
   min-width: 0;
   color: var(--session-text-soft, #dedee4);
   font-size: 15px;
-  line-height: 1.68;
+  line-height: 1.66;
   overflow-wrap: anywhere;
 }
 

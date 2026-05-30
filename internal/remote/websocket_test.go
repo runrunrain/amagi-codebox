@@ -2,6 +2,7 @@ package remote
 
 import (
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
@@ -22,28 +23,39 @@ import (
 )
 
 type websocketTestApp struct {
-	mu              sync.Mutex
-	resizeCallbacks map[string]func(int, int)
-	ptyResizeCalls  int
-	inputWrites     chan string
+	mu               sync.Mutex
+	outputCallbacks  map[string]func([]byte)
+	resizeCallbacks  map[string]func(int, int)
+	ptyResizeCalls   int
+	inputWrites      chan string
+	history          []byte
+	liveDuringAttach []byte
 }
 
 func newWebsocketTestApp() *websocketTestApp {
 	return &websocketTestApp{
+		outputCallbacks: make(map[string]func([]byte)),
 		resizeCallbacks: make(map[string]func(int, int)),
 		inputWrites:     make(chan string, 4),
+		history:         []byte("history"),
 	}
 }
 
 func (a *websocketTestApp) AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) ([]byte, int, int, error) {
 	a.mu.Lock()
+	a.outputCallbacks[id] = outputCB
 	a.resizeCallbacks[id] = resizeCB
+	liveDuringAttach := append([]byte(nil), a.liveDuringAttach...)
 	a.mu.Unlock()
-	return []byte("history"), 132, 43, nil
+	if len(liveDuringAttach) > 0 {
+		outputCB(liveDuringAttach)
+	}
+	return append([]byte(nil), a.history...), 132, 43, nil
 }
 
 func (a *websocketTestApp) DetachSessionObserver(sessionID string, id string) {
 	a.mu.Lock()
+	delete(a.outputCallbacks, id)
 	delete(a.resizeCallbacks, id)
 	a.mu.Unlock()
 }
@@ -80,8 +92,15 @@ func (a *websocketTestApp) PtyResize(sessionID string, cols, rows int) error {
 }
 
 func (a *websocketTestApp) RegisterOutputCallback(sessionID string, id string, cb func(data []byte)) {
+	a.mu.Lock()
+	a.outputCallbacks[id] = cb
+	a.mu.Unlock()
 }
-func (a *websocketTestApp) UnregisterOutputCallback(sessionID string, id string) {}
+func (a *websocketTestApp) UnregisterOutputCallback(sessionID string, id string) {
+	a.mu.Lock()
+	delete(a.outputCallbacks, id)
+	a.mu.Unlock()
+}
 func (a *websocketTestApp) RegisterExitCallback(sessionID string, id string, cb func(exitCode uint32)) {
 }
 func (a *websocketTestApp) UnregisterExitCallback(sessionID string, id string) {}
@@ -176,6 +195,45 @@ func TestWebSocketControllerReceivesDimensionsWithoutOwningResize(t *testing.T) 
 	}
 }
 
+func TestWebSocketReplaysHistoryBeforeBufferedLiveOutput(t *testing.T) {
+	app := newWebsocketTestApp()
+	app.history = []byte("existing transcript")
+	app.liveDuringAttach = []byte("live after attach")
+	srv := NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
+	t.Cleanup(srv.log.Close)
+
+	httpServer := httptest.NewServer(srv.buildHandler())
+	t.Cleanup(httpServer.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/terminal/session-1?token=" + url.QueryEscape(srv.GetToken()) + "&mode=observer"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	first := readNextFrame(t, conn)
+	if first.Type != "output" || !first.History {
+		t.Fatalf("first frame = type %q history=%v, want history output", first.Type, first.History)
+	}
+	if got := decodeServerMsgData(t, first); got != "existing transcript" {
+		t.Fatalf("history data = %q, want existing transcript", got)
+	}
+
+	second := readNextFrame(t, conn)
+	if second.Type != "dimensions" {
+		t.Fatalf("second frame type = %q, want dimensions before live output", second.Type)
+	}
+
+	third := readNextFrame(t, conn)
+	if third.Type != "output" || third.History {
+		t.Fatalf("third frame = type %q history=%v, want live output", third.Type, third.History)
+	}
+	if got := decodeServerMsgData(t, third); got != "live after attach" {
+		t.Fatalf("live data = %q, want live after attach", got)
+	}
+}
+
 func TestServerMsgSerializesStructuredPartFrame(t *testing.T) {
 	part := structured.Classify([]byte("# Plan\n\n- inspect"), 7)
 	raw, err := json.Marshal(serverMsg{Type: "structured-part", Seq: 7, Part: &part})
@@ -233,4 +291,25 @@ func readDimensionsFrame(t *testing.T, conn *websocket.Conn) serverMsg {
 	}
 	t.Fatal("timed out waiting for dimensions frame")
 	return serverMsg{}
+}
+
+func readNextFrame(t *testing.T, conn *websocket.Conn) serverMsg {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var msg serverMsg
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read websocket frame: %v", err)
+	}
+	return msg
+}
+
+func decodeServerMsgData(t *testing.T, msg serverMsg) string {
+	t.Helper()
+	decoded, err := base64.StdEncoding.DecodeString(msg.Data)
+	if err != nil {
+		t.Fatalf("decode message data: %v", err)
+	}
+	return string(decoded)
 }

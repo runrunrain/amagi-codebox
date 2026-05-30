@@ -46,8 +46,13 @@ const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C
 const TUI_DECORATION_PATTERN = /[─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋╔╗╚╝╠╣╦╩╬╭╮╰╯▁▂▃▄▅▆▇█▀▐▌░▒▓]/u
 const ANSI_OR_OSC_PATTERN = /\u001B\[|\u001B\]|\u001B[()#]|\u009B/u
 const SPINNER_ONLY_PATTERN = /^[\s\-\\|/⠁-⣿•·*]+$/u
-const TRANSIENT_STATUS_TEXT_PATTERN = /^(?:[\-\\|/⠁-⣿•·*]\s*)?(?:thinking|writing|reading(?:\s+file)?|processing|loading|running|waiting|working|analyzing|generating|compiling|building|installing|ionizing)(?:[\s.:…-]*\d*)?$/i
+const TRANSIENT_STATUS_TEXT_PATTERN = /^(?:[\-\\|/⠁-⣿•·*]\s*)?(?:thinking|writing|reading(?:\s+file)?|processing|loading|running|waiting|working|analyzing|generating|compiling|building|installing|ionizing)(?:[\s.:…-]*\d*)?(?:\s+with\s+(?:low|medium|high)\s+effort)?$/i
 const TUI_HINT_PATTERN = /(?:press\s+(?:enter|esc)|[↑↓←→]\s*(?:navigate|select)|(?:esc|ctrl\+[a-z]|tab)\s*(?:to|:)|^\s*[❯›>]\s*\S)/i
+const CLAUDE_STATUS_WORD_PATTERN = /(?:thinking|[a-z]{0,6}hinking|tnking|tinking)\s+with\s+(?:low|medium|high)\s+effort/i
+const CLAUDE_STATUS_LINE_PATTERN = /^(?:[↓↑]\s*)?(?:\d+\s+tokens?\s*[·.]\s*)?(?:\(?\d+s\s*[·.]\s*)?(?:thinking|[a-z]{0,6}hinking|tnking|tinking)\s+with\s+(?:low|medium|high)\s+effort\)?$/i
+const CLAUDE_TUI_HINT_LINE_PATTERN = /\b(?:bypass permissions|shift\+tab|esc to interrupt|for agents)\b/i
+const CLAUDE_STARTUP_TIP_PATTERN = /^Tip:\s*Running multiple Claude sessions\?/i
+const CLAUDE_NOISE_SHORT_LINE_PATTERN = /^(?:Waddling\.{3}|\*?Cooked for \d+s|[>›❯]+)$/i
 const READABLE_MARKDOWN_PATTERN = /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|```|\|.+\|)|\[[^\]]+\]\([^\)]+\)|\*\*[^*]+\*\*/m
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b(sk-[A-Za-z0-9_-]{12,})\b/g, 'sk-[REDACTED]'],
@@ -115,6 +120,44 @@ function isFencedCodeOrMarkdownJson(value: string): boolean {
   return /^```(?:json|jsonc|javascript|typescript|ts|js|\w+)?\s*[\r\n][\s\S]*[\r\n]```$/i.test(trimmed)
 }
 
+function normalizeNoiseCandidate(line: string): string {
+  return cleanPtyText(line)
+    .replace(/\s+/gu, ' ')
+    .replace(/^[^\p{L}\p{N}(>›❯↓↑←→*]+/u, '')
+    .trim()
+}
+
+export function isTerminalTranscriptNoiseLine(line: string): boolean {
+  const candidate = normalizeNoiseCandidate(line)
+  if (!candidate) return false
+  if (candidate.length > 220) return false
+  if (CLAUDE_STATUS_LINE_PATTERN.test(candidate)) return true
+  if (CLAUDE_STATUS_WORD_PATTERN.test(candidate) && /^(?:[↓↑]\s*)?(?:\d+\s+tokens?\s*[·.]\s*)?\(?[\w\s·.()-]+\)?$/i.test(candidate)) return true
+  if (CLAUDE_TUI_HINT_LINE_PATTERN.test(candidate)) return true
+  if (CLAUDE_STARTUP_TIP_PATTERN.test(candidate)) return true
+  if (CLAUDE_NOISE_SHORT_LINE_PATTERN.test(candidate)) return true
+  return false
+}
+
+function filterTerminalTranscriptNoise(value: string): { text: string; removed: string[] } {
+  if (!value) return { text: value, removed: [] }
+
+  const removed: string[] = []
+  const kept = value.split('\n').filter((line) => {
+    if (isTerminalTranscriptNoiseLine(line)) {
+      removed.push(line)
+      return false
+    }
+    return true
+  })
+
+  if (removed.length === 0) return { text: value, removed }
+  return {
+    text: kept.join('\n').replace(/\n{3,}/g, '\n\n'),
+    removed,
+  }
+}
+
 export function isReadableLegacyText(value: string): boolean {
   const trimmed = cleanPtyText(value).trim()
   if (!trimmed) return false
@@ -123,6 +166,7 @@ export function isReadableLegacyText(value: string): boolean {
   if (isJsonObjectLike(trimmed) || SUSPICIOUS_OBJECT_PATTERN.test(trimmed)) return false
   if (SPINNER_ONLY_PATTERN.test(trimmed)) return false
   if (TRANSIENT_STATUS_TEXT_PATTERN.test(trimmed)) return false
+  if (isTerminalTranscriptNoiseLine(trimmed)) return false
   if (TUI_HINT_PATTERN.test(trimmed)) return false
   if (/^[\d\s.,:%/\\|+-]+$/.test(trimmed)) return false
   if (/^[A-Za-z][\w -]{0,40}\.\.\.\d*$/.test(trimmed)) return false
@@ -135,10 +179,20 @@ export function normalizeTranscriptChunk(chunk: string): NormalizedTranscriptChu
   const effectResult = terminalEffectNormalizer.normalize(chunk)
   const normalized = normalizeLineEndings(effectResult.cleanText)
   const diagnostics: TranscriptDiagnosticInput[] = []
-  const cleanText = cleanPtyText(normalized)
+  const initialCleanText = cleanPtyText(normalized)
+  const filtered = filterTerminalTranscriptNoise(initialCleanText)
+  const cleanText = filtered.text
   const controlMatches = normalized.match(CONTROL_CHARACTER_PATTERN) ?? []
 
   diagnostics.push(...effectResult.diagnostics)
+  if (filtered.removed.length > 0) {
+    diagnostics.push({
+      reason: 'tui',
+      summary: 'Claude Code 终端状态刷新与快捷键提示已隐藏，避免污染移动端会话正文。',
+      text: filtered.removed.join('\n'),
+      severity: 'info',
+    })
+  }
 
   if (!isFencedCodeOrMarkdownJson(normalized) && (isJsonObjectLike(normalized) || SUSPICIOUS_OBJECT_PATTERN.test(normalized))) {
     diagnostics.push({
