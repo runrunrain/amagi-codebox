@@ -2550,6 +2550,16 @@ func (a *App) ImportEnvVarsFromFile() error {
 	return nil
 }
 
+// GetEnvVarsGlobalSyncStatus 返回环境变量全局同步状态
+func (a *App) GetEnvVarsGlobalSyncStatus() envvars.GlobalSyncStatus {
+	return a.EnvVars.GetGlobalSyncStatus()
+}
+
+// SetEnvVarsGlobalSyncEnabled 开启或关闭环境变量全局同步
+func (a *App) SetEnvVarsGlobalSyncEnabled(enabled bool) (envvars.GlobalSyncStatus, error) {
+	return a.EnvVars.SetGlobalSyncEnabled(enabled)
+}
+
 // --- 全局 OpenCode 配置 API ---
 
 // GetOpenCodeConfig 读取全局 OpenCode 配置文件内容（JSON 文本）。

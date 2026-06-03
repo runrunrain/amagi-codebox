@@ -1,7 +1,19 @@
 <script lang="ts" setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useToast } from '../composables/useToast'
-import { GetEnvVars, SetEnvVar, DeleteEnvVar, ExportEnvVars, ImportEnvVars, ExportEnvVarsToFile, ImportEnvVarsFromFile, GetEnvVarsJSON, SaveEnvVarsJSON } from '../../wailsjs/go/main/App'
+import {
+  GetEnvVars,
+  SetEnvVar,
+  DeleteEnvVar,
+  ExportEnvVars,
+  ImportEnvVars,
+  ExportEnvVarsToFile,
+  ImportEnvVarsFromFile,
+  GetEnvVarsJSON,
+  SaveEnvVarsJSON,
+  GetEnvVarsGlobalSyncStatus,
+  SetEnvVarsGlobalSyncEnabled,
+} from '../../wailsjs/go/main/App'
 import { envvars } from '../../wailsjs/go/models'
 
 const { showSuccess, showError } = useToast()
@@ -12,6 +24,12 @@ const currentPage = ref(1)
 const pageSize = 15
 
 const envVarsList = ref<envvars.EnvVar[]>([])
+
+// --- Global sync state ---
+const globalSyncStatus = ref<envvars.GlobalSyncStatus | null>(null)
+const globalSyncLoading = ref(false)
+const globalSyncInitialized = ref(false)
+const globalSyncError = ref('')
 
 // View mode: 'table' or 'json'
 const viewMode = ref<'table' | 'json'>('table')
@@ -110,6 +128,7 @@ async function saveDialog() {
     }
     await SetEnvVar(key, value)
     await loadEnvVars()
+    await loadGlobalSyncStatus()
     closeDialog()
     showSuccess(dialogMode.value === 'add' ? '环境变量已添加' : '环境变量已更新')
   } catch (err) {
@@ -133,6 +152,7 @@ async function confirmDelete(key: string) {
   try {
     await DeleteEnvVar(key)
     await loadEnvVars()
+    await loadGlobalSyncStatus()
     confirmingDeleteKey.value = null
     showSuccess('环境变量已删除')
   } catch (err) {
@@ -181,6 +201,7 @@ async function handleImport() {
   try {
     await ImportEnvVarsFromFile()
     await loadEnvVars()
+    await loadGlobalSyncStatus()
     showSuccess('导入成功')
   } catch (err) {
     const msg = String(err)
@@ -233,6 +254,7 @@ async function saveJson() {
   loading.value = true
   try {
     await SaveEnvVarsJSON(jsonContent.value)
+    await loadGlobalSyncStatus()
     jsonDirty.value = false
     showSuccess('JSON 保存成功')
   } catch (err) {
@@ -265,7 +287,119 @@ function nextPage() {
   if (currentPage.value < totalPages.value) currentPage.value++
 }
 
-onMounted(() => { loadEnvVars() })
+onMounted(() => {
+  loadEnvVars()
+  loadGlobalSyncStatus()
+})
+
+// --- Global sync: load ---
+async function loadGlobalSyncStatus() {
+  globalSyncLoading.value = true
+  globalSyncError.value = ''
+  try {
+    const result = await GetEnvVarsGlobalSyncStatus()
+    globalSyncStatus.value = result
+    globalSyncInitialized.value = true
+  } catch (err) {
+    globalSyncError.value = String(err)
+  } finally {
+    globalSyncLoading.value = false
+  }
+}
+
+// --- Global sync: UI computed ---
+const canToggleGlobalSync = computed(() => {
+  const s = globalSyncStatus.value
+  return !!s && s.supported === true && !globalSyncLoading.value
+})
+
+const globalSyncCardState = computed(() => {
+  const s = globalSyncStatus.value
+  if (!s) return 'state-loading'
+  if (!s.supported) return 'state-unsupported'
+  return s.enabled ? 'state-enabled' : 'state-disabled'
+})
+
+const gscDotClass = computed(() => {
+  const s = globalSyncStatus.value
+  if (!s) return 'dot-loading'
+  if (!s.supported) return 'dot-unsupported'
+  return s.enabled ? 'dot-enabled' : 'dot-disabled'
+})
+
+const gscBadgeClass = computed(() => {
+  const s = globalSyncStatus.value
+  if (!s) return 'badge-loading'
+  if (!s.supported) return 'badge-unsupported'
+  return s.enabled ? 'badge-enabled' : 'badge-disabled'
+})
+
+const gscBadgeText = computed(() => {
+  const s = globalSyncStatus.value
+  if (!s) return '加载中'
+  if (!s.supported) return '当前平台不支持'
+  return s.enabled ? '已开启' : '已关闭'
+})
+
+const gscMetaText = computed(() => {
+  const s = globalSyncStatus.value
+  if (globalSyncLoading.value && !s) return '正在加载全局同步状态…'
+  if (globalSyncError.value) return `状态加载失败：${globalSyncError.value}`
+  if (!s) return '尚未加载全局同步状态'
+  if (!s.supported) return s.message || '当前平台不支持全局环境变量同步，仅 amagi-codebox 内部终端注入仍生效。'
+  if (s.enabled) {
+    const n = s.managedCount
+    return `正在将 ${n} 个变量同步到当前用户级全局环境（已广播变更通知）。`
+  }
+  return '关闭状态 · 变量仅注入 amagi-codebox 内部终端，不影响系统环境。'
+})
+
+// --- Global sync: toggle with confirm ---
+async function requestToggleGlobalSync(event: Event) {
+  const target = event.target as HTMLInputElement
+  const desired = !!target.checked
+  const current = globalSyncStatus.value?.enabled === true
+  // Optimistic UI: revert the checkbox; real state will be applied after backend response
+  target.checked = current
+  if (desired === current) return
+  if (!canToggleGlobalSync.value) {
+    showError('当前平台不支持全局环境变量同步')
+    return
+  }
+  if (!desired) {
+    const ok = window.confirm(
+      '关闭后，将恢复开启前已存在的系统环境变量，或删除由 amagi-codebox 创建的全局变量。\n' +
+      'amagi-codebox 内部终端注入仍会继续生效，外部桌面端是否受影响由其自身读取时机决定。\n\n' +
+      '确定要关闭全局同步吗？'
+    )
+    if (!ok) return
+  }
+  await performToggleGlobalSync(desired)
+}
+
+async function performToggleGlobalSync(enabled: boolean) {
+  globalSyncLoading.value = true
+  globalSyncError.value = ''
+  try {
+    const result = await SetEnvVarsGlobalSyncEnabled(enabled)
+    globalSyncStatus.value = result
+    if (enabled) {
+      showSuccess(
+        result.managedCount > 0
+          ? `已开启全局同步，当前共管理 ${result.managedCount} 个变量`
+          : '已开启全局同步（暂无变量需要同步）'
+      )
+    } else {
+      showSuccess('已关闭全局同步，托管变量已恢复或清理')
+    }
+  } catch (err) {
+    const msg = String(err)
+    globalSyncError.value = msg
+    showError('操作失败: ' + msg)
+  } finally {
+    globalSyncLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -305,6 +439,59 @@ onMounted(() => { loadEnvVars() })
           </button>
           <button class="btn secondary" @click="switchToTableMode" :disabled="loading">表格模式</button>
         </template>
+      </div>
+    </div>
+
+    <!-- Global Sync Card -->
+    <div class="gsc" :class="globalSyncCardState" :data-state="globalSyncCardState">
+      <div class="gsc-stripe" aria-hidden="true"></div>
+      <div class="gsc-body">
+        <div class="gsc-head">
+          <div class="gsc-title-block">
+            <div class="gsc-title">
+              <span class="gsc-dot" :class="gscDotClass" aria-hidden="true"></span>
+              <span class="gsc-name">同步到设备全局环境</span>
+              <span class="gsc-platform-tag">{{ globalSyncStatus?.platform || '—' }}</span>
+              <span class="gsc-badge" :class="gscBadgeClass">{{ gscBadgeText }}</span>
+            </div>
+            <p class="gsc-meta">{{ gscMetaText }}</p>
+          </div>
+          <div class="gsc-control">
+            <label
+              class="switch gsc-switch"
+              :class="{ 'is-disabled': !canToggleGlobalSync, 'is-busy': globalSyncLoading && canToggleGlobalSync }"
+              :title="canToggleGlobalSync ? '点击切换全局同步' : '当前平台不支持全局同步'"
+            >
+              <input
+                type="checkbox"
+                :checked="globalSyncStatus?.enabled === true"
+                :disabled="!canToggleGlobalSync"
+                @change="requestToggleGlobalSync"
+                aria-label="同步到设备全局环境"
+              />
+              <span class="slider"></span>
+            </label>
+            <span class="gsc-control-hint" v-if="globalSyncLoading">处理中…</span>
+          </div>
+        </div>
+        <ul class="gsc-notes">
+          <li>
+            <span class="gsc-num">1</span>
+            作用于当前用户级全局环境（<code>HKCU\Environment</code>），不会写入机器级系统环境变量，也无需管理员权限。
+          </li>
+          <li>
+            <span class="gsc-num">2</span>
+            开启后，配置的环境变量会同步到后续启动的 Codex / OpenCode 等独立桌面端进程。
+          </li>
+          <li>
+            <span class="gsc-num">3</span>
+            已运行的外部桌面端通常需要重启后才能读取到新值；个别进程可能仍使用启动时缓存。
+          </li>
+          <li>
+            <span class="gsc-num">4</span>
+            关闭后，仅恢复 / 清理本应用曾经管理过的全局变量，<strong>amagi-codebox 内部终端注入仍会继续生效</strong>。
+          </li>
+        </ul>
       </div>
     </div>
 
@@ -1026,6 +1213,257 @@ onMounted(() => { loadEnvVars() })
   .dialog {
     margin: 16px;
     max-width: none;
+  }
+}
+
+/* === Global Sync Card === */
+.gsc {
+  position: relative;
+  background: #1a1f2e;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.18s ease;
+}
+.gsc:hover {
+  border-color: #3a4156;
+}
+.gsc-stripe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #5a6a7a;
+  transition: background 0.18s ease;
+}
+.gsc.state-enabled .gsc-stripe { background: #4caf50; }
+.gsc.state-disabled .gsc-stripe { background: #5a6a7a; }
+.gsc.state-unsupported .gsc-stripe { background: #ef5350; }
+.gsc.state-loading .gsc-stripe { background: #ffa726; }
+
+.gsc-body {
+  padding: 16px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gsc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.gsc-title-block {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gsc-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gsc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5a6a7a;
+  display: inline-block;
+  flex-shrink: 0;
+  transition: background 0.18s ease;
+}
+.gsc-dot.dot-enabled { background: #4caf50; box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.15); }
+.gsc-dot.dot-disabled { background: #5a6a7a; }
+.gsc-dot.dot-unsupported { background: #ef5350; box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.15); }
+.gsc-dot.dot-loading { background: #ffa726; animation: gsc-pulse 1.2s ease-in-out infinite; }
+
+@keyframes gsc-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.gsc-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e6ed;
+  letter-spacing: 0.01em;
+}
+
+.gsc-platform-tag {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #5a6a7a;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #2a2f3e;
+  padding: 1px 7px;
+  border-radius: 4px;
+  text-transform: lowercase;
+}
+
+.gsc-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #2a2f3e;
+  background: rgba(255, 255, 255, 0.02);
+  color: #8899aa;
+  letter-spacing: 0.02em;
+}
+.gsc-badge.badge-enabled { color: #4caf50; border-color: rgba(76, 175, 80, 0.35); background: rgba(76, 175, 80, 0.08); }
+.gsc-badge.badge-disabled { color: #8899aa; }
+.gsc-badge.badge-unsupported { color: #ef5350; border-color: rgba(239, 83, 80, 0.35); background: rgba(239, 83, 80, 0.08); }
+.gsc-badge.badge-loading { color: #ffa726; border-color: rgba(255, 167, 38, 0.35); background: rgba(255, 167, 38, 0.08); }
+
+.gsc-meta {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #8899aa;
+}
+
+.gsc-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.gsc-control-hint {
+  font-size: 12px;
+  color: #ffa726;
+  font-weight: 600;
+}
+
+.gsc-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.gsc-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.gsc-switch .slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #2a2f3e;
+  border: 1px solid #2a2f3e;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  border-radius: 22px;
+}
+.gsc-switch .slider::before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background-color: #8899aa;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+  border-radius: 50%;
+}
+.gsc-switch input:checked + .slider {
+  background-color: rgba(79, 195, 247, 0.15);
+  border-color: #4fc3f7;
+}
+.gsc-switch input:checked + .slider::before {
+  transform: translateX(22px);
+  background-color: #4fc3f7;
+}
+.gsc-switch.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.gsc-switch.is-disabled .slider {
+  cursor: not-allowed;
+}
+.gsc-switch.is-busy .slider {
+  cursor: wait;
+}
+.gsc-switch.state-enabled input:checked + .slider {
+  background-color: rgba(76, 175, 80, 0.18);
+  border-color: #4caf50;
+}
+.gsc-switch.state-enabled input:checked + .slider::before {
+  background-color: #4caf50;
+}
+
+.gsc-notes {
+  list-style: none;
+  margin: 0;
+  padding: 12px 14px 4px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid #2a2f3e;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gsc-notes li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #8899aa;
+}
+.gsc-notes li code {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  color: #4fc3f7;
+  background: rgba(79, 195, 247, 0.08);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.gsc-notes li strong {
+  color: #e0e6ed;
+  font-weight: 600;
+}
+.gsc-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(79, 195, 247, 0.1);
+  color: #4fc3f7;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+.gsc.state-enabled .gsc-num { background: rgba(76, 175, 80, 0.12); color: #4caf50; }
+.gsc.state-unsupported .gsc-num { background: rgba(239, 83, 80, 0.12); color: #ef5350; }
+
+@media (max-width: 640px) {
+  .gsc-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .gsc-control {
+    align-self: flex-end;
+  }
+  .gsc-notes {
+    padding: 10px 12px 2px;
   }
 }
 </style>

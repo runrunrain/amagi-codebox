@@ -1281,6 +1281,28 @@ export namespace envvars {
 	        this.value = source["value"];
 	    }
 	}
+	export class GlobalSyncStatus {
+	    supported: boolean;
+	    platform: string;
+	    enabled: boolean;
+	    managedKeys: string[];
+	    managedCount: number;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GlobalSyncStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supported = source["supported"];
+	        this.platform = source["platform"];
+	        this.enabled = source["enabled"];
+	        this.managedKeys = source["managedKeys"];
+	        this.managedCount = source["managedCount"];
+	        this.message = source["message"];
+	    }
+	}
 
 }
 

@@ -61,6 +61,8 @@ export function GetEnvCheckStatus():Promise<envcheck.OverallStatus>;
 
 export function GetEnvVars():Promise<Array<envvars.EnvVar>>;
 
+export function GetEnvVarsGlobalSyncStatus():Promise<envvars.GlobalSyncStatus>;
+
 export function GetEnvVarsJSON():Promise<string>;
 
 export function GetGitHubToken():Promise<string>;
@@ -178,6 +180,8 @@ export function SaveProviderFromJSON(arg1:string,arg2:string):Promise<void>;
 export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
 
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
+
+export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.GlobalSyncStatus>;
 
 export function SetGitHubToken(arg1:string):Promise<void>;
 

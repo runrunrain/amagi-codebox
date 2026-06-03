@@ -102,6 +102,10 @@ export function GetEnvVars() {
   return window['go']['main']['App']['GetEnvVars']();
 }
 
+export function GetEnvVarsGlobalSyncStatus() {
+  return window['go']['main']['App']['GetEnvVarsGlobalSyncStatus']();
+}
+
 export function GetEnvVarsJSON() {
   return window['go']['main']['App']['GetEnvVarsJSON']();
 }
@@ -336,6 +340,10 @@ export function SaveTerminalPreset(arg1, arg2, arg3) {
 
 export function SetEnvVar(arg1, arg2) {
   return window['go']['main']['App']['SetEnvVar'](arg1, arg2);
+}
+
+export function SetEnvVarsGlobalSyncEnabled(arg1) {
+  return window['go']['main']['App']['SetEnvVarsGlobalSyncEnabled'](arg1);
 }
 
 export function SetGitHubToken(arg1) {
