@@ -63,6 +63,7 @@ func (processRunner) Start(spec CommandSpec) (*exec.Cmd, error) {
 	if strings.TrimSpace(spec.Path) == "" {
 		return nil, fmt.Errorf("process path is required")
 	}
+	spec = wrapWindowsScript(spec)
 	cmd := exec.Command(spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
 	if len(spec.Env) > 0 {
@@ -88,6 +89,7 @@ func (processRunner) Run(ctx context.Context, spec CommandSpec) (*ProcessResult,
 	if strings.TrimSpace(spec.Path) == "" {
 		return nil, fmt.Errorf("process path is required")
 	}
+	spec = wrapWindowsScript(spec)
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
 	if len(spec.Env) > 0 {
@@ -119,6 +121,7 @@ func (processRunner) RunWithEvidence(ctx context.Context, spec CommandSpec, evid
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	spec = wrapWindowsScript(spec)
 	cmd := exec.CommandContext(runCtx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
 	if len(spec.Env) > 0 {
