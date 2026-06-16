@@ -2430,3 +2430,73 @@ func TestSaveOpenCodePreset_ConfigNotLoaded(t *testing.T) {
 		t.Fatal("expected error when config not loaded")
 	}
 }
+
+// ============================================================================
+// P. Phase 6 -- Reasoning Effort 字段测试
+// ============================================================================
+
+func TestSaveTerminalPreset_ValidReasoningEffort(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	validEfforts := []string{"", "low", "medium", "high", "xhigh", "max"}
+	for _, effort := range validEfforts {
+		tp := TerminalPreset{
+			Name:     "Valid Effort",
+			Provider: "anthropic",
+			Model:    "claude-sonnet-4-20250514",
+			Parameters: Parameters{
+				ReasoningEffort: effort,
+			},
+		}
+		err := svc.SaveTerminalPreset("claude_code", "valid-"+effort, tp)
+		if err != nil {
+			t.Fatalf("SaveTerminalPreset with valid reasoning_effort=%q failed: %v", effort, err)
+		}
+	}
+}
+
+func TestSaveTerminalPreset_InvalidReasoningEffort(t *testing.T) {
+	svc := newTestConfigService(t)
+
+	invalidEfforts := []string{"invalid", "none", "ultra", "LOW", "Medium", "HIGH"}
+	for _, effort := range invalidEfforts {
+		tp := TerminalPreset{
+			Name:     "Invalid Effort",
+			Provider: "anthropic",
+			Model:    "claude-sonnet-4-20250514",
+			Parameters: Parameters{
+				ReasoningEffort: effort,
+			},
+		}
+		err := svc.SaveTerminalPreset("claude_code", "invalid-"+effort, tp)
+		if err == nil {
+			t.Fatalf("SaveTerminalPreset with invalid reasoning_effort=%q should fail, but got nil", effort)
+		}
+	}
+}
+
+func TestIsValidClaudeReasoningEffort(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"", true},
+		{"low", true},
+		{"medium", true},
+		{"high", true},
+		{"xhigh", true},
+		{"max", true},
+		{"invalid", false},
+		{"none", false},
+		{"ultra", false},
+		{"LOW", false},    // 大小写敏感
+		{"Medium", false}, // 大小写敏感
+	}
+
+	for _, tt := range tests {
+		got := IsValidClaudeReasoningEffort(tt.input)
+		if got != tt.want {
+			t.Errorf("IsValidClaudeReasoningEffort(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}

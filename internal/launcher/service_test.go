@@ -90,3 +90,123 @@ func pathListContainsForTest(pathValue string, want string) bool {
 	}
 	return false
 }
+
+// TestBuildOverrides_ReasoningEffort 测试 reasoning_effort 字段正确映射到 CLAUDE_CODE_EFFORT_LEVEL
+func TestBuildOverrides_ReasoningEffort(t *testing.T) {
+	svc := NewLauncherService(nil, nil)
+
+	provider := config.Provider{
+		Anthropic: &config.AnthropicFormat{
+			Enabled: true,
+		},
+		DefaultModel: "claude-sonnet-4-20250514",
+		Presets: map[string]config.Preset{
+			"test-preset": {
+				Name: "Test Preset",
+				Model: "claude-sonnet-4-20250514",
+				Parameters: config.Parameters{
+					ReasoningEffort: "high",
+				},
+			},
+		},
+	}
+
+	overrides := svc.BuildOverrides(provider, "test-preset", "sk-test-key", config.AgentTeamsConfig{})
+
+	effort, ok := overrides["CLAUDE_CODE_EFFORT_LEVEL"]
+	if !ok {
+		t.Fatal("CLAUDE_CODE_EFFORT_LEVEL not found in overrides")
+	}
+	if effort != "high" {
+		t.Fatalf("CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", effort, "high")
+	}
+}
+
+// TestBuildOverrides_ReasoningEffort_Empty 测试空 reasoning_effort 不设置环境变量
+func TestBuildOverrides_ReasoningEffort_Empty(t *testing.T) {
+	svc := NewLauncherService(nil, nil)
+
+	provider := config.Provider{
+		Anthropic: &config.AnthropicFormat{
+			Enabled: true,
+		},
+		DefaultModel: "claude-sonnet-4-20250514",
+		Presets: map[string]config.Preset{
+			"test-preset": {
+				Name: "Test Preset",
+				Model: "claude-sonnet-4-20250514",
+				Parameters: config.Parameters{
+					ReasoningEffort: "", // 空值不设置环境变量
+				},
+			},
+		},
+	}
+
+	overrides := svc.BuildOverrides(provider, "test-preset", "sk-test-key", config.AgentTeamsConfig{})
+
+	if _, ok := overrides["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
+		t.Fatal("CLAUDE_CODE_EFFORT_LEVEL should not be set when reasoning_effort is empty")
+	}
+}
+
+// TestBuildOverrides_ReasoningEffort_Whitespace 测试纯空白 reasoning_effort 不设置环境变量
+func TestBuildOverrides_ReasoningEffort_Whitespace(t *testing.T) {
+	svc := NewLauncherService(nil, nil)
+
+	provider := config.Provider{
+		Anthropic: &config.AnthropicFormat{
+			Enabled: true,
+		},
+		DefaultModel: "claude-sonnet-4-20250514",
+		Presets: map[string]config.Preset{
+			"test-preset": {
+				Name: "Test Preset",
+				Model: "claude-sonnet-4-20250514",
+				Parameters: config.Parameters{
+					ReasoningEffort: "   ", // 纯空白
+				},
+			},
+		},
+	}
+
+	overrides := svc.BuildOverrides(provider, "test-preset", "sk-test-key", config.AgentTeamsConfig{})
+
+	if _, ok := overrides["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
+		t.Fatal("CLAUDE_CODE_EFFORT_LEVEL should not be set when reasoning_effort is whitespace-only")
+	}
+}
+
+// TestBuildOverrides_ReasoningEffort_AllLevels 测试所有合法的 reasoning_effort 级别
+func TestBuildOverrides_ReasoningEffort_AllLevels(t *testing.T) {
+	svc := NewLauncherService(nil, nil)
+
+	levels := []string{"low", "medium", "high", "xhigh", "max"}
+
+	for _, level := range levels {
+		provider := config.Provider{
+			Anthropic: &config.AnthropicFormat{
+				Enabled: true,
+			},
+			DefaultModel: "claude-sonnet-4-20250514",
+			Presets: map[string]config.Preset{
+				"test-preset": {
+					Name: "Test Preset",
+					Model: "claude-sonnet-4-20250514",
+					Parameters: config.Parameters{
+						ReasoningEffort: level,
+					},
+				},
+			},
+		}
+
+		overrides := svc.BuildOverrides(provider, "test-preset", "sk-test-key", config.AgentTeamsConfig{})
+
+		effort, ok := overrides["CLAUDE_CODE_EFFORT_LEVEL"]
+		if !ok {
+			t.Fatalf("CLAUDE_CODE_EFFORT_LEVEL not found in overrides for level %q", level)
+		}
+		if effort != level {
+			t.Fatalf("CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", effort, level)
+		}
+	}
+}

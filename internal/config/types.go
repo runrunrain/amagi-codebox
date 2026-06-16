@@ -30,6 +30,7 @@ type Parameters struct {
 	Thinking         *ThinkingConfig      `json:"thinking,omitempty"`
 	Stream           *bool                `json:"stream,omitempty"`
 	ContextWindow    *ContextWindowConfig `json:"context_window,omitempty"` // 上下文窗口配置（Codex CLI 风格）
+	ReasoningEffort  string               `json:"reasoning_effort,omitempty"` // Claude Code 推理强度（low/medium/high/xhigh/max）
 }
 
 // PresetTargetType 定义 preset 目标 CLI 类型
@@ -543,4 +544,22 @@ func (p Provider) SyncLegacyFields() Provider {
 	p.BaseURL = p.EffectiveBaseURL("")
 	p.AuthKey = p.EffectiveAuthKey("")
 	return p
+}
+
+
+// IsValidClaudeReasoningEffort 检查给定的 reasoning effort 值是否合法。
+// Claude Code 支持的推理强度：""（未设置/默认）| low | medium | high | xhigh | max
+// 此为 Claude 划分（含 max），区别于 codexplugin 的 OpenAI 划分（none/low/medium/high/xhigh，无 max）。
+// 不要与 codexplugin 的 isSupportedReasoningEffort 混淆。
+func IsValidClaudeReasoningEffort(v string) bool {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
+		return true // 空值视为合法（未设置）
+	}
+	switch trimmed {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }

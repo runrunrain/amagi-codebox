@@ -504,6 +504,10 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 	if presetName == "" {
 		return errors.New("preset name is required")
 	}
+	// 校验 reasoning_effort 字段
+	if !IsValidClaudeReasoningEffort(preset.Parameters.ReasoningEffort) {
+		return fmt.Errorf("invalid reasoning_effort value: %s (valid: empty, low, medium, high, xhigh, max)", preset.Parameters.ReasoningEffort)
+	}
 	preset.NormalizeOpenCodeCfg()
 
 	s.mu.Lock()

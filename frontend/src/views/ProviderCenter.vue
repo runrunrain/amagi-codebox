@@ -180,6 +180,7 @@
               <span class="param-badge" v-if="p.parameters?.max_tokens">Max Tokens: {{ p.parameters.max_tokens }}</span>
               <span class="param-badge" v-if="p.parameters?.stream !== undefined">{{ p.parameters.stream ? 'Stream' : 'No Stream' }}</span>
               <span class="param-badge" v-if="p.parameters?.thinking?.type === 'enabled'">Thinking{{ p.parameters.thinking.budgetTokens ? ' (' + p.parameters.thinking.budgetTokens + ')' : '' }}</span>
+              <span class="param-badge" v-if="p.parameters?.reasoning_effort">Effort: {{ p.parameters.reasoning_effort }}</span>
               <span class="param-badge" v-if="p.parameters?.context_window?.model_context_window">Window: {{ p.parameters.context_window.model_context_window }}</span>
             </div>
           </div>
@@ -699,6 +700,10 @@
             <div class="form-group"><label>Thinking 模式</label><select v-model="tpThinkingType" class="input-field"><option value="">默认</option><option value="disabled">禁用</option><option value="enabled">启用</option></select></div>
             <div class="form-group" v-if="tpThinkingType === 'enabled'"><label>Budget Tokens</label><input type="number" v-model.number="tpThinkingBudget" class="input-field" step="1" min="1024" placeholder="16384" /></div>
           </div>
+          <div class="form-grid-2" style="margin-top: 12px;">
+            <div class="form-group"><label>推理强度</label><select v-model="tpReasoningEffort" class="input-field"><option value="">默认</option><option value="low">low — 最快</option><option value="medium">medium — 平衡</option><option value="high">high — 深度</option><option value="xhigh">xhigh — 更深</option><option value="max">max — 最深</option></select></div>
+            <div class="form-group"></div>
+          </div>
           <div class="tp-section-divider"></div>
           <div class="form-grid-2">
             <div class="form-group"><label>Context Window</label><input type="number" v-model.number="tpContextWindow" class="input-field" step="1" min="1" placeholder="默认" /></div>
@@ -964,6 +969,7 @@ interface TerminalPresetData {
     max_tokens?: number
     stream?: boolean
     thinking?: { type: string; budgetTokens?: number }
+    reasoning_effort?: string
     context_window?: { model_context_window?: number; model_auto_compact_token_limit?: number }
   }
 }
@@ -1034,6 +1040,7 @@ const tpEditing = ref<TerminalPresetData>({
 })
 const tpThinkingType = ref('')
 const tpThinkingBudget = ref<number | undefined>(undefined)
+const tpReasoningEffort = ref('')
 const tpStreamValue = ref('')
 const tpContextWindow = ref<number | undefined>(undefined)
 const tpCompactLimit = ref<number | undefined>(undefined)
@@ -1087,6 +1094,7 @@ function tpOpenAdd(terminalType: string) {
   tpEditing.value = { name: '', label: '', provider: '', model: '', parameters: {} }
   tpThinkingType.value = ''
   tpThinkingBudget.value = undefined
+  tpReasoningEffort.value = ''
   tpStreamValue.value = ''
   tpContextWindow.value = undefined
   tpCompactLimit.value = undefined
@@ -1107,6 +1115,7 @@ function tpOpenEdit(terminalType: string, preset: TerminalPresetData) {
     tpThinkingType.value = ''
     tpThinkingBudget.value = undefined
   }
+  tpReasoningEffort.value = preset.parameters?.reasoning_effort || ''
   tpStreamValue.value = preset.parameters?.stream !== undefined ? (preset.parameters.stream ? 'true' : 'false') : ''
   if (preset.parameters?.context_window) {
     tpContextWindow.value = preset.parameters.context_window.model_context_window
@@ -1140,6 +1149,7 @@ async function tpHandleSave() {
       if (tpThinkingType.value === 'enabled' && typeof tpThinkingBudget.value === 'number' && tpThinkingBudget.value > 0) thinking.budgetTokens = Math.floor(tpThinkingBudget.value)
       managed.thinking = thinking
     }
+    if (tpReasoningEffort.value) managed.reasoning_effort = tpReasoningEffort.value
     const hasCtxWindow = typeof tpContextWindow.value === 'number' && tpContextWindow.value > 0
     const hasCompact = typeof tpCompactLimit.value === 'number' && tpCompactLimit.value > 0
     if (hasCtxWindow || hasCompact) {
@@ -1148,7 +1158,7 @@ async function tpHandleSave() {
       if (hasCompact) ctx.model_auto_compact_token_limit = Math.floor(tpCompactLimit.value!)
       managed.context_window = ctx
     }
-    const MANAGED_KEYS = new Set(['temperature', 'top_p', 'max_tokens', 'stream', 'thinking', 'context_window'])
+    const MANAGED_KEYS = new Set(['temperature', 'top_p', 'max_tokens', 'stream', 'thinking', 'reasoning_effort', 'context_window'])
     const cleanParams: Record<string, any> = {}
     for (const [k, v] of Object.entries(src)) { if (!MANAGED_KEYS.has(k)) cleanParams[k] = v }
     for (const [k, v] of Object.entries(managed)) cleanParams[k] = v

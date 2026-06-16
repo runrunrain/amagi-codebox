@@ -145,6 +145,10 @@ func (s *LauncherService) BuildOverrides(
 				overrides["ANTHROPIC_THINKING"] = string(b)
 			}
 		}
+		// Claude Code 推理强度映射到环境变量 CLAUDE_CODE_EFFORT_LEVEL
+		if strings.TrimSpace(p.ReasoningEffort) != "" {
+			overrides["CLAUDE_CODE_EFFORT_LEVEL"] = strings.TrimSpace(p.ReasoningEffort)
+		}
 	}
 
 	if agentTeams.Enabled {
