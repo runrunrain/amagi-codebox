@@ -769,8 +769,11 @@ func TestWindowsResolverClaudeCodeNPMShimWithExtensionlessAndPs1ForcesCmd(t *tes
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if spec.CLI.Path != extensionlessShim {
-		t.Fatalf("resolved cli path = %q, want current Windows lookup evidence to expose extensionless npm shim %q", spec.CLI.Path, extensionlessShim)
+	// Windows path resolution must prefer .exe/.cmd/.bat over the extensionless
+	// POSIX shell script that npm creates alongside the .cmd wrapper. The
+	// extensionless file is not a valid Win32 executable.
+	if spec.CLI.Path != cmdShim {
+		t.Fatalf("resolved cli path = %q, want .cmd shim %q (extensionless npm POSIX shim %q must not shadow it)", spec.CLI.Path, cmdShim, extensionlessShim)
 	}
 	if spec.Shell == nil || spec.Shell.Key != "cmd" || spec.Shell.Path != cmdPath {
 		t.Fatalf("expected requested pwsh to be overridden by cmd for Claude npm shim, got %+v", spec.Shell)

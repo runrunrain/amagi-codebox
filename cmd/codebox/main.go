@@ -337,6 +337,24 @@ func handlePluginMarketplace(pluginSvc *plugin.Service, args []string, pretty bo
 			return err
 		}
 		return writeJSON(map[string]any{"marketplaces": items}, pretty)
+	case "add":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: codebox plugin marketplace add <source>")
+		}
+		result, err := pluginSvc.AddMarketplace(args[1])
+		if err != nil {
+			return err
+		}
+		return writeJSON(result, pretty)
+	case "remove":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: codebox plugin marketplace remove <name>")
+		}
+		result, err := pluginSvc.RemoveMarketplace(args[1])
+		if err != nil {
+			return err
+		}
+		return writeJSON(result, pretty)
 	case "update":
 		if len(args) == 2 {
 			result, err := pluginSvc.UpdateMarketplace(args[1])

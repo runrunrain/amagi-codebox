@@ -14,9 +14,10 @@ func (s *Service) executeClaudeCommand(args ...string) (*CommandResult, error) {
 	defer cancel()
 
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	cli, _, err := resolver.ResolveExecutable("claude", args, os.Environ())
+	env := platform.BuildEffectiveEnv(os.Environ())
+	cli, _, err := resolver.ResolveExecutable("claude", append([]string(nil), args...), env)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("未找到 Claude CLI，请先安装或检查 PATH: %w", err)
 	}
 
 	runner := platform.NewProcessRunner()
@@ -29,6 +30,7 @@ func (s *Service) executeClaudeCommand(args ...string) (*CommandResult, error) {
 	resultSpec, err := runner.Run(ctx, platform.CommandSpec{
 		Path:   cli.Path,
 		Args:   cli.Args,
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if resultSpec == nil {
@@ -59,7 +61,7 @@ func (s *Service) executeClaudeCommand(args ...string) (*CommandResult, error) {
 		if s.log != nil {
 			s.log.Error("plugin", "Claude 插件命令执行失败", fmt.Sprintf("args=%s error=%s", joinedArgs, result.Error))
 		}
-		return result, fmt.Errorf("run claude %s: %w", joinedArgs, err)
+		return result, fmt.Errorf("Claude 插件命令执行失败：%s", result.Error)
 	}
 
 	if s.log != nil {

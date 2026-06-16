@@ -72,15 +72,19 @@ func resolveCommandPathForOSWithOptions(osName string, command string, env []str
 			continue
 		}
 		candidate := filepath.Join(dir, trimmed)
-		if fileExists(candidate) {
-			return candidate
-		}
 		if osName == "windows" && filepath.Ext(candidate) == "" {
+			// On Windows, check executable extensions first (.exe, .cmd, .bat)
+			// before the bare filename. npm creates extensionless POSIX shell
+			// shims alongside .cmd wrappers; the extensionless file is not a
+			// valid Win32 executable and must not shadow the real wrapper.
 			for _, ext := range []string{".exe", ".cmd", ".bat"} {
 				if fileExists(candidate + ext) {
 					return candidate + ext
 				}
 			}
+		}
+		if fileExists(candidate) {
+			return candidate
 		}
 	}
 	if osName == "windows" && strings.EqualFold(trimmed, "claude") {
