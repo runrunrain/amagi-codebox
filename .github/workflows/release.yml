@@ -54,6 +54,21 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         shell: bash
 
+      - name: Sync wails.json version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          v = "${{ steps.get_version.outputs.VERSION }}".lstrip("v")
+          with open("wails.json", encoding="utf-8") as f:
+              d = json.load(f)
+          d.setdefault("info", {})["productVersion"] = v
+          with open("wails.json", "w", encoding="utf-8") as f:
+              json.dump(d, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          print("synced wails.json info.productVersion ->", v)
+          PY
+
       - name: Build
         run: |
           wails build -s -ldflags "-X main.Version=${{ steps.get_version.outputs.VERSION }}"
@@ -114,6 +129,21 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         shell: bash
+
+      - name: Sync wails.json version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          v = "${{ steps.get_version.outputs.VERSION }}".lstrip("v")
+          with open("wails.json", encoding="utf-8") as f:
+              d = json.load(f)
+          d.setdefault("info", {})["productVersion"] = v
+          with open("wails.json", "w", encoding="utf-8") as f:
+              json.dump(d, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          print("synced wails.json info.productVersion ->", v)
+          PY
 
       - name: Build macOS arm64 bundle
         run: |
