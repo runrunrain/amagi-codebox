@@ -175,6 +175,9 @@
             </div>
             <div class="tp-preset-body">
               <span class="param-badge" v-if="p.model">Model: {{ p.model }}</span>
+              <span class="param-badge" v-if="p.modelHaiku">Haiku: {{ p.modelHaiku }}</span>
+              <span class="param-badge" v-if="p.modelSonnet">Sonnet: {{ p.modelSonnet }}</span>
+              <span class="param-badge" v-if="p.modelOpus">Opus: {{ p.modelOpus }}</span>
               <span class="param-badge" v-if="p.parameters?.temperature !== undefined">Temp: {{ p.parameters.temperature }}</span>
               <span class="param-badge" v-if="p.parameters?.top_p !== undefined">Top P: {{ p.parameters.top_p }}</span>
               <span class="param-badge" v-if="p.parameters?.max_tokens">Max Tokens: {{ p.parameters.max_tokens }}</span>
@@ -690,6 +693,24 @@
             <label>模型 (留空使用 Provider 默认值)</label>
             <input type="text" v-model="tpEditing.model" class="input-field" placeholder="例如: claude-sonnet-4-6" />
           </div>
+          <div class="tp-section-divider"></div>
+          <div class="form-group">
+            <label style="font-weight: 600; color: #4a5568;">Claude Code 模型档位（可选，留空表示不覆盖该档）</label>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label>Haiku</label>
+                <input type="text" v-model="tpEditing.modelHaiku" class="input-field" placeholder="例如: glm-5-turbo" />
+              </div>
+              <div class="form-group">
+                <label>Sonnet</label>
+                <input type="text" v-model="tpEditing.modelSonnet" class="input-field" placeholder="例如: glm-5.2" />
+              </div>
+              <div class="form-group">
+                <label>Opus</label>
+                <input type="text" v-model="tpEditing.modelOpus" class="input-field" placeholder="例如: glm-5.2" />
+              </div>
+            </div>
+          </div>
           <div class="form-grid-2">
             <div class="form-group"><label>Temperature</label><input type="number" v-model.number="tpEditing.parameters.temperature" class="input-field" step="0.1" min="0" max="1" placeholder="默认" /></div>
             <div class="form-group"><label>Top P</label><input type="number" v-model.number="tpEditing.parameters.top_p" class="input-field" step="0.1" min="0" max="1" placeholder="默认" /></div>
@@ -963,6 +984,9 @@ interface TerminalPresetData {
   label: string
   provider: string
   model: string
+  modelHaiku?: string
+  modelSonnet?: string
+  modelOpus?: string
   parameters: {
     temperature?: number
     top_p?: number
@@ -1036,7 +1060,7 @@ const tpIsEditing = ref(false)
 const tpDialogTarget = ref('') // 'claude_code' | 'opencode' | 'codex'
 const tpEditingOriginalName = ref('')
 const tpEditing = ref<TerminalPresetData>({
-  name: '', label: '', provider: '', model: '', parameters: {},
+  name: '', label: '', provider: '', model: '', modelHaiku: '', modelSonnet: '', modelOpus: '', parameters: {},
 })
 const tpThinkingType = ref('')
 const tpThinkingBudget = ref<number | undefined>(undefined)
@@ -1077,6 +1101,9 @@ async function tpLoadAll() {
           label: raw.name || key,
           provider: raw.provider || '',
           model: raw.model || '',
+          modelHaiku: raw.model_haiku || '',
+          modelSonnet: raw.model_sonnet || '',
+          modelOpus: raw.model_opus || '',
           parameters: raw.parameters || {},
         })
       }
@@ -1091,7 +1118,7 @@ function tpOpenAdd(terminalType: string) {
   tpDialogTarget.value = terminalType
   tpIsEditing.value = false
   tpEditingOriginalName.value = ''
-  tpEditing.value = { name: '', label: '', provider: '', model: '', parameters: {} }
+  tpEditing.value = { name: '', label: '', provider: '', model: '', modelHaiku: '', modelSonnet: '', modelOpus: '', parameters: {} }
   tpThinkingType.value = ''
   tpThinkingBudget.value = undefined
   tpReasoningEffort.value = ''
@@ -1167,6 +1194,9 @@ async function tpHandleSave() {
       name: friendlyName,
       provider: tpEditing.value.provider,
       model: tpEditing.value.model,
+      model_haiku: tpEditing.value.modelHaiku || undefined,
+      model_sonnet: tpEditing.value.modelSonnet || undefined,
+      model_opus: tpEditing.value.modelOpus || undefined,
       parameters: cleanParams,
     }
     await SaveTerminalPreset(tpDialogTarget.value, stableKey, payload as any)

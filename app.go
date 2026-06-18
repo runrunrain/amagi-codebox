@@ -803,9 +803,12 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	if tpFound {
 		provCopy := *provider
 		converted := config.Preset{
-			Name:       tp.Name,
-			Model:      tp.Model,
-			Parameters: tp.Parameters,
+			Name:        tp.Name,
+			Model:       tp.Model,
+			ModelHaiku:  tp.ModelHaiku,
+			ModelSonnet: tp.ModelSonnet,
+			ModelOpus:   tp.ModelOpus,
+			Parameters:  tp.Parameters,
 		}
 		if provCopy.Presets == nil {
 			provCopy.Presets = map[string]config.Preset{}

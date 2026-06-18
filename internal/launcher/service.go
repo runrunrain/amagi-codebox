@@ -118,6 +118,19 @@ func (s *LauncherService) BuildOverrides(
 	}
 	overrides["ANTHROPIC_MODEL"] = model
 
+	// 三档模型槽位（Claude Code 专用）
+	if ok {
+		if trimmed := strings.TrimSpace(preset.ModelHaiku); trimmed != "" {
+			overrides["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = trimmed
+		}
+		if trimmed := strings.TrimSpace(preset.ModelSonnet); trimmed != "" {
+			overrides["ANTHROPIC_DEFAULT_SONNET_MODEL"] = trimmed
+		}
+		if trimmed := strings.TrimSpace(preset.ModelOpus); trimmed != "" {
+			overrides["ANTHROPIC_DEFAULT_OPUS_MODEL"] = trimmed
+		}
+	}
+
 	// Preset parameters
 	if ok {
 		p := preset.Parameters

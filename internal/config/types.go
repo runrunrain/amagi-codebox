@@ -47,6 +47,9 @@ const (
 type Preset struct {
 	Name           string           `json:"name"`
 	Model          string           `json:"model"`
+	ModelHaiku     string           `json:"model_haiku,omitempty"`     // Haiku 档位模型（Claude Code 专用）
+	ModelSonnet    string           `json:"model_sonnet,omitempty"`    // Sonnet 档位模型（Claude Code 专用）
+	ModelOpus      string           `json:"model_opus,omitempty"`      // Opus 档位模型（Claude Code 专用）
 	Parameters     Parameters       `json:"parameters"`
 	Target         PresetTargetType `json:"target,omitempty"`          // 目标 CLI 类型：codex（默认）或 opencode
 	OpenCodeConfig json.RawMessage  `json:"opencode_config,omitempty"` // OpenCode 原始配置片段，原样保真，未知字段不丢失
@@ -143,6 +146,9 @@ type TerminalPreset struct {
 	Name        string          `json:"name"`                   // 预设显示名称
 	Provider    string          `json:"provider"`               // 关联的 provider 名称（如 "anthropic", "openai"）
 	Model       string          `json:"model"`                  // 模型名称（可覆盖 provider 默认值）
+	ModelHaiku  string          `json:"model_haiku,omitempty"`  // Haiku 档位模型（Claude Code 专用）
+	ModelSonnet string          `json:"model_sonnet,omitempty"` // Sonnet 档位模型（Claude Code 专用）
+	ModelOpus   string          `json:"model_opus,omitempty"`   // Opus 档位模型（Claude Code 专用）
 	Parameters  Parameters      `json:"parameters"`             // 模型参数
 	OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"` // OpenCode 运行时 overlay（仅 opencode 类型使用）
 }
