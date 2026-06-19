@@ -56,6 +56,7 @@
         :session="session"
         :active="activeSessionId === session.id"
         @click="handleSessionClick(session)"
+        @close="handleSessionClose(session)"
       />
       <div v-if="runningSessions.length === 0" class="sess-empty">
         无运行中会话
@@ -277,6 +278,34 @@ async function launchFromSettings() {
 function handleSessionClick(session: any) {
   sessionStore.setActiveSession(session.id)
   router.push('/terminal')
+}
+
+async function handleSessionClose(session: any) {
+  const sessionId = session.id
+  const isCurrentSession = activeSessionId.value === sessionId
+  const remainingCount = runningSessions.value.length - 1
+
+  try {
+    await sessionApi.stopSession(sessionId)
+    await refresh()
+
+    if (isCurrentSession) {
+      sessionStore.setActiveSession(null)
+
+      if (remainingCount > 0) {
+        const firstSession = runningSessions.value[0]
+        if (firstSession) {
+          sessionStore.setActiveSession(firstSession.id)
+          router.push('/terminal')
+        }
+      } else {
+        router.push('/')
+      }
+    }
+  } catch (err) {
+    console.error('Failed to close session:', err)
+    showError('关闭会话失败: ' + err)
+  }
 }
 
 function handleEnterSettings() {

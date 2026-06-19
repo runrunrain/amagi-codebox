@@ -389,6 +389,13 @@ func shouldSkipTableLine(line string) bool {
 	if strings.Contains(lower, "name") && (strings.Contains(lower, "marketplace") || strings.Contains(lower, "source") || strings.Contains(lower, "plugin")) {
 		return true
 	}
+	// Skip table headers like "MARKETPLACE ROOT"
+	if strings.Contains(lower, "marketplace") && strings.Contains(lower, "root") {
+		return true
+	}
+	if strings.Contains(lower, "plugin") && strings.Contains(lower, "status") {
+		return true
+	}
 	return strings.Trim(trimmed, "-+| ") == ""
 }
 

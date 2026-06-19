@@ -18,13 +18,13 @@
         :class="['seg-btn', { active: localView === 'installed' }]"
         @click="setView('installed')"
       >
-        已安装 <span class="res-count">{{ installedCount }}</span>
+        已安装插件 <span class="res-count">{{ installedCount }}</span>
       </button>
       <button
         :class="['seg-btn', { active: localView === 'market' }]"
         @click="setView('market')"
       >
-        市场 <span class="res-count">{{ marketCount }}</span>
+        市场可安装插件 <span class="res-count">{{ marketCount }}</span>
       </button>
     </div>
 

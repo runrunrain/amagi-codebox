@@ -13,6 +13,18 @@
         <span class="sess-sub">{{ session.model || '—' }} · {{ statusText }}</span>
       </div>
     </div>
+
+    <!-- Close Button (hover only) -->
+    <button
+      class="close-btn"
+      @click.stop="handleClose"
+      title="关闭会话"
+    >
+      <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/>
+        <line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
   </div>
 </template>
 
@@ -35,7 +47,10 @@ const props = withDefaults(defineProps<Props>(), {
   active: false,
 })
 
-const emit = defineEmits(['click'])
+const emit = defineEmits<{
+  click: []
+  close: [sessionId: string]
+}>()
 
 const statusColor = computed(() => {
   return props.session.status === 'running' ? 'var(--success)' : 'var(--tertiary)'
@@ -64,6 +79,10 @@ const fullTitle = computed(() => {
 
 function handleClick() {
   emit('click')
+}
+
+function handleClose() {
+  emit('close', props.session.id)
 }
 </script>
 
@@ -132,5 +151,40 @@ function handleClick() {
 .sess-sub {
   font-size: 11px;
   color: var(--tertiary);
+}
+
+.close-btn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, background .15s;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.sess-item:hover .close-btn {
+  opacity: 1;
+}
+
+.close-btn:hover {
+  background: rgba(255, 59, 48, 0.15);
+}
+
+.close-btn:hover .close-icon {
+  stroke: #FF3B30;
+}
+
+.close-icon {
+  width: 14px;
+  height: 14px;
+  stroke: var(--tertiary);
+  transition: stroke .15s;
 }
 </style>
