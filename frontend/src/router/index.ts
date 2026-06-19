@@ -26,14 +26,12 @@ const router = createRouter({
     {
       path: '/rules',
       name: 'Rules',
-      // TODO: P2 实现注入规则页
-      component: () => import('../views/SessionSettingsView.vue')
+      component: () => import('../views/RulesView.vue')
     },
     {
       path: '/logs',
       name: 'Logs',
-      // TODO: P2 实现系统日志页
-      component: () => import('../views/SessionSettingsView.vue')
+      component: () => import('../views/LogsView.vue')
     },
     {
       path: '/:pathMatch(.*)*',
