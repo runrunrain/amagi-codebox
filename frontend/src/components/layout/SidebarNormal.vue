@@ -29,6 +29,21 @@
       </router-link>
     </nav>
 
+    <!-- Web UI Entry (conditional) -->
+    <button
+      v-if="webUIAvailable"
+      class="webui-btn"
+      @click="handleOpenWebUI"
+      title="打开 Web 界面"
+    >
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="2" y1="12" x2="22" y2="12"/>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </svg>
+      打开 Web 界面
+    </button>
+
     <!-- Running Sessions Section -->
     <div class="section-label">
       <span>运行中</span>
@@ -74,7 +89,7 @@ import { useSessionStore } from '../../stores/session'
 import { useSessionList } from '../../composables/useSessionList'
 import SessionListItem from './SessionListItem.vue'
 import UpdateDialog from '../common/UpdateDialog.vue'
-import { GetAppInfo } from '../../../wailsjs/go/main/App'
+import { GetAppInfo, GetRemoteWebUIStatus, OpenRemoteWebUI } from '../../../wailsjs/go/main/App'
 
 const route = useRoute()
 const router = useRouter()
@@ -83,6 +98,11 @@ const sessionStore = useSessionStore()
 const { refresh, startPolling, stopPolling } = useSessionList()
 
 const navItems = [
+  {
+    path: '/remote-web',
+    label: '远程控制',
+    icon: '<path d="M12 2a5 5 0 0 1 5 5v1h1a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h1V7a5 5 0 0 1 5-5zm0 2a3 3 0 0 0-3 3v1h6V7a3 3 0 0 0-3-3zm0 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/>'
+  },
   {
     path: '/',
     label: '会话设置',
@@ -115,6 +135,8 @@ const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
 const showUpdateDialog = ref(false)
 const appVersion = ref('v1.0.0') // Fallback until loaded
+const webUIAvailable = ref(false)
+const webUIUrl = ref('')
 
 onMounted(async () => {
   refresh()
@@ -127,6 +149,14 @@ onMounted(async () => {
     }
   } catch (error) {
     console.error('[SidebarNormal] Failed to get app info:', error)
+  }
+  // Check Web UI availability
+  try {
+    const status = await GetRemoteWebUIStatus()
+    webUIAvailable.value = status?.openable || false
+    webUIUrl.value = status?.url || ''
+  } catch (error) {
+    console.error('[SidebarNormal] Failed to get Web UI status:', error)
   }
 })
 
@@ -146,6 +176,17 @@ function handleSessionClick(session: any) {
 
 function handleEnterSettings() {
   uiStore.enterSettingsMode()
+}
+
+async function handleOpenWebUI() {
+  try {
+    const result = await OpenRemoteWebUI()
+    if (result?.url) {
+      webUIUrl.value = result.url
+    }
+  } catch (error) {
+    console.error('[SidebarNormal] Failed to open Web UI:', error)
+  }
 }
 
 onUnmounted(() => {
@@ -254,6 +295,32 @@ onUnmounted(() => {
   width: 17px;
   height: 17px;
   stroke: var(--tertiary);
+  flex-shrink: 0;
+}
+
+.webui-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  background: var(--control);
+  color: var(--label);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background .15s;
+}
+
+.webui-btn:hover {
+  background: var(--controlHover);
+}
+
+.webui-btn .ic {
+  width: 16px;
+  height: 16px;
+  stroke: var(--accent);
   flex-shrink: 0;
 }
 

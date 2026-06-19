@@ -31,6 +31,12 @@
         </div>
       </div>
       <div class="setting-row">
+        <label>系统托盘</label>
+        <div class="row-value">
+          <span :class="{ 'status-unsupported': !systemTraySupported }">{{ systemTrayStatusLabel }}</span>
+        </div>
+      </div>
+      <div class="setting-row">
         <label>许可证</label>
         <div class="row-value">
           <span>MIT</span>
@@ -41,13 +47,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { GetAppInfo } from '../../../wailsjs/go/main/App'
+import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 
 const currentVersion = ref('')
 const configDir = ref('')
+const { caps, ensure } = usePlatformCapabilities()
 
 onMounted(async () => {
+  // Load platform capabilities
+  await ensure()
+
   try {
     const info: any = await GetAppInfo()
     currentVersion.value = info?.version || ''
@@ -56,6 +67,9 @@ onMounted(async () => {
     console.error('load app info:', err)
   }
 })
+
+const systemTraySupported = computed(() => caps.value?.systemTraySupported || false)
+const systemTrayStatusLabel = computed(() => systemTraySupported.value ? '支持' : '不支持')
 </script>
 
 <style scoped>
@@ -146,5 +160,10 @@ onMounted(async () => {
   background: var(--control);
   border: 1px solid var(--separator);
   border-radius: 999px;
+}
+
+.status-unsupported {
+  color: var(--tertiary);
+  opacity: 0.6;
 }
 </style>
