@@ -46,6 +46,7 @@
               v-for="opt in presetOptions"
               :key="opt.value"
               :value="opt.value"
+              :title="opt.title"
             >{{ opt.label }}</option>
           </select>
         </div>
@@ -100,16 +101,52 @@
         <!-- 工作目录 -->
         <div class="setting-row">
           <label>工作目录</label>
-          <div class="input-group">
-            <TextInput
-              :model-value="dashState.workDir"
-              placeholder="选择或输入工作目录"
-              mono
-              @update:model-value="dashState.workDir = $event"
-            />
-            <button class="btn btn-ghost browse-btn" @click="handleBrowse" :disabled="browsing">
-              {{ browsing ? '…' : '浏览' }}
-            </button>
+          <div class="workdir-container">
+            <div class="input-group">
+              <TextInput
+                :model-value="dashState.workDir"
+                placeholder="选择或输入工作目录"
+                mono
+                :list="savedWorkDirs.length > 0 ? 'saved-workdirs-list' : undefined"
+                @update:model-value="dashState.workDir = $event"
+              />
+              <datalist v-if="savedWorkDirs.length > 0" id="saved-workdirs-list">
+                <option v-for="entry in savedWorkDirs" :key="entry.path" :value="entry.path">
+                  {{ entry.label || entry.path }}
+                </option>
+              </datalist>
+              <button class="btn btn-ghost browse-btn" @click="handleBrowse" :disabled="browsing">
+                {{ browsing ? '…' : '浏览' }}
+              </button>
+            </div>
+            <div class="saved-dirs-row" v-if="savedWorkDirs.length > 0">
+              <span class="saved-dirs-label">已保存</span>
+              <div class="saved-dirs-list">
+                <button
+                  v-for="entry in savedWorkDirs"
+                  :key="entry.path"
+                  class="saved-dir-chip"
+                  :class="{ active: dashState.workDir === entry.path }"
+                  @click="dashState.workDir = entry.path"
+                  :title="entry.path"
+                >
+                  <span class="chip-text">{{ entry.label || entry.path }}</span>
+                  <span
+                    class="chip-remove"
+                    @click.stop="handleRemoveSavedDir(entry.path)"
+                    title="删除"
+                  >×</span>
+                </button>
+              </div>
+              <button
+                class="btn btn-ghost save-btn"
+                @click="handleSaveCurrentDir"
+                :disabled="savingDir || !dashState.workDir"
+                :title="'保存当前目录'"
+              >
+                {{ savingDir ? '…' : '+' }}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -143,9 +180,11 @@ import { useSessionStore } from '../stores/session'
 
 import * as providerApi from '../api/provider'
 import * as sessionApi from '../api/session'
-import { BrowseDirectory } from '../../wailsjs/go/main/App'
+import { BrowseDirectory, GetSavedWorkDirs, AddSavedWorkDir, RemoveSavedWorkDir } from '../../wailsjs/go/main/App'
 import { GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { config } from '../../wailsjs/go/models'
+
+type WorkDirEntry = { path: string; label: string }
 
 type Provider = config.Provider
 type MergedTerminalPreset = config.MergedTerminalPreset
@@ -158,6 +197,8 @@ const sessionStore = useSessionStore()
 const { refresh } = useSessionList()
 
 const browsing = ref(false)
+const savedWorkDirs = ref<WorkDirEntry[]>([])
+const savingDir = ref(false)
 
 // --- 数据源 ---
 // 后端 GetProvidersByType 已按 IsAnthropicCompatible / IsOpenAICompatible 过滤，
@@ -229,10 +270,11 @@ const providerOptions = computed(() => {
 const presetOptions = computed(() => {
   if (dashState.engine === 'opencode') {
     // 开头添加"使用全局配置"选项
-    const globalOption = { value: '', label: '使用全局配置' }
+    const globalOption = { value: '', label: '使用全局配置', title: '' }
     const presetOptions = openCodePresetList.value.map(p => ({
       value: p.key,
       label: p.bindingCount > 0 ? `${p.name} (${p.bindingCount})` : p.name,
+      title: extractOpenCodeModelName(p),
     }))
     return [globalOption, ...presetOptions]
   }
@@ -240,8 +282,19 @@ const presetOptions = computed(() => {
   const targetProvider = currentProvider.value
   return list
     .filter(p => !targetProvider || p.provider === targetProvider)
-    .map(p => ({ value: p.key, label: p.label || p.key }))
+    .map(p => ({ value: p.key, label: p.label || p.key, title: p.model || '' }))
 })
+
+// 从 OpenCodePreset 提取模型名用于 hover 显示
+function extractOpenCodeModelName(p: { key: string; name: string; description: string }): string {
+  // 尝试从 description 解析模型名（常见格式：Model: xxx）
+  const modelMatch = p.description.match(/model[:\s]+([^\n,]+)/i)
+  if (modelMatch) {
+    return modelMatch[1].trim()
+  }
+  // 兜底：返回描述（若不为空）
+  return p.description || ''
+}
 
 const launchModes = computed(() => platformCaps.launchModes.value)
 const builtinShellOptions = computed(() => platformCaps.builtinShellOptions.value)
@@ -353,6 +406,43 @@ async function handleBrowse() {
     showError('选择目录失败: ' + err)
   } finally {
     browsing.value = false
+  }
+}
+
+async function loadSavedWorkDirs() {
+  try {
+    savedWorkDirs.value = await GetSavedWorkDirs()
+  } catch (err) {
+    console.error('Failed to load saved work dirs:', err)
+  }
+}
+
+async function handleSaveCurrentDir() {
+  if (!dashState.workDir) {
+    showError('请先输入或选择工作目录')
+    return
+  }
+  savingDir.value = true
+  try {
+    savedWorkDirs.value = await AddSavedWorkDir(dashState.workDir, '')
+    showSuccess('已保存当前工作目录')
+  } catch (err) {
+    showError('保存失败: ' + err)
+  } finally {
+    savingDir.value = false
+  }
+}
+
+async function handleRemoveSavedDir(path: string) {
+  try {
+    savedWorkDirs.value = await RemoveSavedWorkDir(path)
+    // 若删除的正是当前工作目录，立即清空，避免界面仍显示已不存在的目录
+    if (dashState.workDir === path) {
+      dashState.workDir = ''
+    }
+    showSuccess('已删除保存的目录')
+  } catch (err) {
+    showError('删除失败: ' + err)
   }
 }
 
@@ -474,6 +564,7 @@ onMounted(async () => {
     loadProviders(),
     loadTerminalPresets(),
     loadOpenCodePresets(),
+    loadSavedWorkDirs(),
   ])
   await initDefaults()
 
@@ -579,6 +670,97 @@ onMounted(async () => {
 .browse-btn {
   padding: 6px 12px;
   font-size: 12px;
+  flex-shrink: 0;
+}
+
+.workdir-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.saved-dirs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.saved-dirs-label {
+  font-size: 11px;
+  color: var(--secondary);
+  flex-shrink: 0;
+}
+
+.saved-dirs-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+}
+
+.saved-dir-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: var(--control);
+  color: var(--secondary);
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  max-width: 140px;
+}
+
+.saved-dir-chip:hover {
+  background: var(--controlHover);
+  border-color: var(--separator);
+}
+
+.saved-dir-chip.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 110px;
+}
+
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.chip-remove:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.saved-dir-chip.active .chip-remove:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.save-btn {
+  padding: 4px 8px;
+  font-size: 14px;
+  min-width: 28px;
+  height: 24px;
   flex-shrink: 0;
 }
 

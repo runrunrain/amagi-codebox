@@ -2647,3 +2647,26 @@ func (a *App) ResolveTerminalPreset(terminalType string, key string) (string, st
 	}
 	return provName, tp.Model, ocCfg, true
 }
+
+// --- 已保存工作目录 API ---
+
+// GetSavedWorkDirs 获取已保存的工作目录列表。
+func (a *App) GetSavedWorkDirs() ([]settings.WorkDirEntry, error) {
+	return a.Settings.GetSavedWorkDirs(), nil
+}
+
+// AddSavedWorkDir 添加工作目录（去重，按 path 去重；label 空则用路径末段），返回最新列表。
+func (a *App) AddSavedWorkDir(path string, label string) ([]settings.WorkDirEntry, error) {
+	if err := a.Settings.AddSavedWorkDir(path, label); err != nil {
+		return nil, err
+	}
+	return a.Settings.GetSavedWorkDirs(), nil
+}
+
+// RemoveSavedWorkDir 移除工作目录，返回最新列表。
+func (a *App) RemoveSavedWorkDir(path string) ([]settings.WorkDirEntry, error) {
+	if err := a.Settings.RemoveSavedWorkDir(path); err != nil {
+		return nil, err
+	}
+	return a.Settings.GetSavedWorkDirs(), nil
+}

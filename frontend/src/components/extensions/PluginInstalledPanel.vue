@@ -79,34 +79,42 @@
 
       <!-- Split view: list + detail -->
       <div v-if="filteredPlugins.length > 0" class="ex-split">
-        <!-- Plugin list -->
+        <!-- Plugin list (grouped by marketplace) -->
         <div class="plugin-list">
-          <div
-            v-for="plugin in filteredPlugins"
-            :key="(plugin as any).id || (plugin as any).pluginId"
-            :class="['plg-item', { active: activePluginId === ((plugin as any).id || (plugin as any).pluginId) }]"
-            @click="selectPlugin(plugin)"
-          >
-            <div class="plg-item-main">
-              <div class="plg-name-row">
-                <span class="plg-name">{{ plugin.name }}</span>
-                <Switch
-                  :model-value="plugin.enabled"
-                  @update:model-value="(val) => handleToggle(plugin, val)"
-                />
-              </div>
-              <div class="plg-meta-row">
-                <Badge type="type" :text="pluginTypeLabel(plugin)" :color="pluginTypeColor(plugin)" />
-                <Badge v-if="plugin.version" type="ver" :text="'v' + plugin.version" />
-                <Badge v-if="engine === 'claude' && (plugin as any).scope" type="scope" :text="(plugin as any).scope === 'global' ? '全局' : '项目'" />
-                <!-- Codex source badge -->
-                <Badge v-if="engine === 'codex' && (plugin as any).source" type="source" :text="(plugin as any).source" variant="muted" />
-                <!-- Codex duplicate warning badge -->
-                <Badge v-if="engine === 'codex' && hasDuplicateWarning(plugin)" type="warning" text="重复诊断" color="warning" />
-              </div>
-              <p v-if="(plugin as any).description" class="plg-desc">{{ truncate((plugin as any).description, 80) }}</p>
+          <template v-for="group in groupedPlugins" :key="group.marketplace">
+            <!-- Group header -->
+            <div class="plg-group-header">
+              <span class="gh-market">{{ group.marketplace }}</span>
+              <span class="gh-count">{{ group.plugins.length }}</span>
             </div>
-          </div>
+            <!-- Plugins in this group -->
+            <div
+              v-for="plugin in group.plugins"
+              :key="(plugin as any).id || (plugin as any).pluginId"
+              :class="['plg-item', { active: activePluginId === ((plugin as any).id || (plugin as any).pluginId) }]"
+              @click="selectPlugin(plugin)"
+            >
+              <div class="plg-item-main">
+                <div class="plg-name-row">
+                  <span class="plg-name">{{ plugin.name }}</span>
+                  <Switch
+                    :model-value="plugin.enabled"
+                    @update:model-value="(val) => handleToggle(plugin, val)"
+                  />
+                </div>
+                <div class="plg-meta-row">
+                  <Badge type="type" :text="pluginTypeLabel(plugin)" :color="pluginTypeColor(plugin)" />
+                  <Badge v-if="plugin.version" type="ver" :text="'v' + plugin.version" />
+                  <Badge v-if="engine === 'claude' && (plugin as any).scope" type="scope" :text="(plugin as any).scope === 'global' ? '全局' : '项目'" />
+                  <!-- Codex source badge -->
+                  <Badge v-if="engine === 'codex' && (plugin as any).source" type="source" :text="(plugin as any).source" variant="muted" />
+                  <!-- Codex duplicate warning badge -->
+                  <Badge v-if="engine === 'codex' && hasDuplicateWarning(plugin)" type="warning" text="重复诊断" color="warning" />
+                </div>
+                <p v-if="(plugin as any).description" class="plg-desc">{{ truncate((plugin as any).description, 80) }}</p>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- Plugin detail -->
@@ -267,6 +275,7 @@ const {
   uninstallPlugin,
   updatePlugin,
   loadCcInstalled,
+  loadCcAllData,
   loadCxPlugins,
   toggleCxPlugin,
   uninstallCxPlugin,
@@ -292,7 +301,7 @@ const handleRetry = async () => {
   initialError.value = ''
   try {
     if (props.engine === 'claude') {
-      await loadCcInstalled()
+      await loadCcAllData()
     } else {
       await loadCxPlugins()
     }
@@ -339,6 +348,25 @@ const filteredPlugins = computed(() => {
     // For now, return all
     return true;
   });
+});
+
+// Grouped plugins by marketplace
+const groupedPlugins = computed(() => {
+  const plugins = filteredPlugins.value;
+  const groups = new Map<string, any[]>();
+
+  plugins.forEach((plugin: any) => {
+    const marketplace = plugin.marketplace || 'Unknown';
+    if (!groups.has(marketplace)) {
+      groups.set(marketplace, []);
+    }
+    groups.get(marketplace)!.push(plugin);
+  });
+
+  // Convert to array and sort by marketplace name
+  return Array.from(groups.entries())
+    .map(([marketplace, plugins]) => ({ marketplace, plugins }))
+    .sort((a, b) => a.marketplace.localeCompare(b.marketplace));
 });
 
 // Current active plugin (engine-aware)
@@ -642,8 +670,10 @@ onMounted(async () => {
   initialError.value = '';
   try {
     if (props.engine === 'claude') {
-      await loadCcInstalled();
+      // Load all Claude data (installed + markets + available) in parallel with cache
+      await loadCcAllData();
     } else {
+      // Codex loads all data in one call with cache check
       await loadCxPlugins();
     }
   } catch (err) {
@@ -887,6 +917,42 @@ onMounted(async () => {
   gap: 8px;
   max-height: calc(100vh - 320px);
   overflow-y: auto;
+}
+
+.plg-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 13px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+  background: var(--background);
+  z-index: 1;
+  margin-top: 8px;
+}
+
+.plg-group-header:first-child {
+  margin-top: 0;
+}
+
+.gh-market {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tertiary);
+}
+
+.gh-count {
+  font-size: 10px;
+  color: var(--tertiary);
+  opacity: 0.7;
+  background: var(--control);
+  padding: 2px 6px;
+  border-radius: 10px;
 }
 
 .plg-item {

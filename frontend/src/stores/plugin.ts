@@ -88,6 +88,12 @@ export const usePluginStore = defineStore('plugin', () => {
   const loadingDetail = ref(false);
   const loadingMarket = ref(false);
 
+  // Cache state to prevent redundant loads
+  const ccDataLoaded = ref(false);
+  const cxDataLoaded = ref(false);
+  const ccDataLoadedAt = ref<number | null>(null);
+  const cxDataLoadedAt = ref<number | null>(null);
+
   // Computed
   const ccInstalledCount = computed(() => ccInstalled.value.length);
   const cxInstalledCount = computed(() => cxInstalled.value.length);
@@ -320,6 +326,98 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  // Load Claude marketplaces
+  async function loadCcMarkets() {
+    try {
+      const markets = await pluginApi.getMarketplaces();
+      setCCMarkets(markets as unknown as ClaudeMarketplace[]);
+    } catch (error) {
+      console.error('[plugin.store.loadCcMarkets]', error);
+      throw error;
+    }
+  }
+
+  // Load Claude available plugins
+  async function loadCcAvailable() {
+    try {
+      const plugins = await pluginApi.getAvailablePlugins();
+      setCCAvailable(plugins);
+    } catch (error) {
+      console.error('[plugin.store.loadCcAvailable]', error);
+      throw error;
+    }
+  }
+
+  // Load all Claude plugin data in parallel (installed + markets + available)
+  async function loadCcAllData() {
+    // Check cache: if loaded within last 5 minutes, skip
+    const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
+    if (ccDataLoaded.value && ccDataLoadedAt.value && (now - ccDataLoadedAt.value) < CACHE_TTL) {
+      console.log('[plugin.store] Using cached Claude data');
+      return;
+    }
+
+    setLoadingCC(true);
+    try {
+      // 子任务状态标记：失败时置 false，最终仅当全部成功才更新缓存标志，
+      // 避免失败后误用"已加载"缓存而跳过下次重试
+      let allSuccess = true;
+      const track = (label: string) => (err: unknown) => {
+        allSuccess = false;
+        console.error(`[plugin.store] Failed to load ${label}:`, err);
+      };
+      await Promise.all([
+        loadCcInstalled().catch(track('installed')),
+        loadCcMarkets().catch(track('markets')),
+        loadCcAvailable().catch(track('available')),
+      ]);
+      if (allSuccess) {
+        ccDataLoaded.value = true;
+        ccDataLoadedAt.value = Date.now();
+      } else {
+        // 加载失败时确保不留下陈旧"已加载"缓存
+        ccDataLoaded.value = false;
+      }
+    } catch (error) {
+      // 非预期异常同样不更新"成功"缓存
+      ccDataLoaded.value = false;
+      console.error('[plugin.store.loadCcAllData]', error);
+      throw error;
+    } finally {
+      setLoadingCC(false);
+    }
+  }
+
+  // --- Codex plugin operations ---
+
+  // Load all Codex plugin data (with cache check)
+  async function loadCxPlugins(forceLoad = false) {
+    // Check cache: if loaded within last 5 minutes, skip (unless forceLoad)
+    const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
+    if (!forceLoad && cxDataLoaded.value && cxDataLoadedAt.value && (now - cxDataLoadedAt.value) < CACHE_TTL) {
+      console.log('[plugin.store] Using cached Codex data');
+      return;
+    }
+
+    setLoadingCX(true);
+    try {
+      const data = await codexPluginApi.refreshCodexPlugins();
+      setCXInstalled(data.installed || []);
+      setCXMarkets(data.marketplaces || []);
+      setCXAvailable(data.available || []);
+      setCXWarnings(data.warnings);
+      cxDataLoaded.value = true;
+      cxDataLoadedAt.value = Date.now();
+    } catch (error) {
+      console.error('[plugin.store.loadCxPlugins]', error);
+      throw error;
+    } finally {
+      setLoadingCX(false);
+    }
+  }
+
   // Toggle plugin enabled state
   async function togglePlugin(pluginId: string, currentState: boolean) {
     try {
@@ -395,28 +493,6 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
-  // Load Claude marketplaces
-  async function loadCcMarkets() {
-    try {
-      const markets = await pluginApi.getMarketplaces();
-      setCCMarkets(markets as unknown as ClaudeMarketplace[]);
-    } catch (error) {
-      console.error('[plugin.store.loadCcMarkets]', error);
-      throw error;
-    }
-  }
-
-  // Load Claude available plugins
-  async function loadCcAvailable() {
-    try {
-      const plugins = await pluginApi.getAvailablePlugins();
-      setCCAvailable(plugins);
-    } catch (error) {
-      console.error('[plugin.store.loadCcAvailable]', error);
-      throw error;
-    }
-  }
-
   // Add Claude marketplace
   async function addCcMarketplace(source: string) {
     try {
@@ -434,31 +510,15 @@ export const usePluginStore = defineStore('plugin', () => {
   async function installCcPlugin(pluginName: string) {
     try {
       const result = await pluginApi.installPlugin(pluginName);
-      // Refresh after install
+      // Refresh after install - invalidate cache and reload
+      ccDataLoaded.value = false;
       await Promise.all([loadCcInstalled(), loadCcAvailable()]);
+      ccDataLoaded.value = true;
+      ccDataLoadedAt.value = Date.now();
       return result;
     } catch (error) {
       console.error('[plugin.store.installCcPlugin]', error);
       throw error;
-    }
-  }
-
-  // --- Codex plugin operations ---
-
-  // Load all Codex plugin data
-  async function loadCxPlugins() {
-    setLoadingCX(true);
-    try {
-      const data = await codexPluginApi.refreshCodexPlugins();
-      setCXInstalled(data.installed || []);
-      setCXMarkets(data.marketplaces || []);
-      setCXAvailable(data.available || []);
-      setCXWarnings(data.warnings);
-    } catch (error) {
-      console.error('[plugin.store.loadCxPlugins]', error);
-      throw error;
-    } finally {
-      setLoadingCX(false);
     }
   }
 
@@ -467,8 +527,8 @@ export const usePluginStore = defineStore('plugin', () => {
     try {
       const selector = { pluginId };
       await codexPluginApi.setCodexPluginEnabled(selector, enabled);
-      // Refresh after toggle
-      await loadCxPlugins();
+      // Refresh after toggle (force bypass cache)
+      await loadCxPlugins(true);
     } catch (error) {
       console.error('[plugin.store.toggleCxPlugin]', error);
       throw error;
@@ -480,8 +540,8 @@ export const usePluginStore = defineStore('plugin', () => {
     try {
       const selector = { pluginId, marketplace: marketplaceName };
       const result = await codexPluginApi.installCodexPlugin(selector);
-      // Refresh after install
-      await loadCxPlugins();
+      // Refresh after install (force bypass cache)
+      await loadCxPlugins(true);
       return result;
     } catch (error) {
       console.error('[plugin.store.installCxPlugin]', error);
@@ -494,8 +554,8 @@ export const usePluginStore = defineStore('plugin', () => {
     try {
       const selector = { pluginId, marketplace };
       const result = await codexPluginApi.uninstallCodexPlugin(selector);
-      // Refresh after uninstall
-      await loadCxPlugins();
+      // Refresh after uninstall (force bypass cache)
+      await loadCxPlugins(true);
       // Clear active if it was the uninstalled plugin
       if (activePluginId.value === pluginId) {
         activePluginId.value = null;
@@ -512,8 +572,8 @@ export const usePluginStore = defineStore('plugin', () => {
     try {
       const req = { source };
       const result = await codexPluginApi.addCodexMarketplace(req);
-      // Refresh after add
-      await loadCxPlugins();
+      // Refresh after add (force bypass cache)
+      await loadCxPlugins(true);
       return result;
     } catch (error) {
       console.error('[plugin.store.addCxMarketplace]', error);
@@ -525,8 +585,8 @@ export const usePluginStore = defineStore('plugin', () => {
   async function removeCxMarketplace(name: string) {
     try {
       const result = await codexPluginApi.removeCodexMarketplace(name);
-      // Refresh after remove
-      await loadCxPlugins();
+      // Refresh after remove (force bypass cache)
+      await loadCxPlugins(true);
       // Clear active market if it was removed
       if (activeMarketId.value === name) {
         activeMarketId.value = null;
@@ -542,8 +602,8 @@ export const usePluginStore = defineStore('plugin', () => {
   async function upgradeCxMarketplace(name: string) {
     try {
       const result = await codexPluginApi.upgradeCodexMarketplace(name);
-      // Refresh after upgrade
-      await loadCxPlugins();
+      // Refresh after upgrade (force bypass cache)
+      await loadCxPlugins(true);
       return result;
     } catch (error) {
       console.error('[plugin.store.upgradeCxMarketplace]', error);
@@ -591,6 +651,10 @@ export const usePluginStore = defineStore('plugin', () => {
     loadingCX,
     loadingDetail,
     loadingMarket,
+    ccDataLoaded,
+    cxDataLoaded,
+    ccDataLoadedAt,
+    cxDataLoadedAt,
 
     // Computed
     ccInstalledCount,
@@ -631,6 +695,7 @@ export const usePluginStore = defineStore('plugin', () => {
     loadCcInstalled,
     loadCcMarkets,
     loadCcAvailable,
+    loadCcAllData,
     addCcMarketplace,
     installCcPlugin,
     togglePlugin,

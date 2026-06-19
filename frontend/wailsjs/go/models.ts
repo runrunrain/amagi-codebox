@@ -2103,6 +2103,20 @@ export namespace settings {
 	        this.label = source["label"];
 	    }
 	}
+	export class WorkDirEntry {
+	    path: string;
+	    label: string;
+
+	    static createFrom(source: any = {}) {
+	        return new WorkDirEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.label = source["label"];
+	    }
+	}
 	export class DashboardDefaults {
 	    provider: string;
 	    preset: string;
@@ -2150,6 +2164,7 @@ export namespace settings {
 	export class AppSettings {
 	    dashboard: DashboardDefaults;
 	    shellPaths: ShellEntry[];
+	    savedWorkDirs: WorkDirEntry[];
 	    terminal: TerminalSettings;
 	    remoteHost: string;
 	    remotePort: number;
@@ -2164,6 +2179,7 @@ export namespace settings {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.dashboard = this.convertValues(source["dashboard"], DashboardDefaults);
 	        this.shellPaths = this.convertValues(source["shellPaths"], ShellEntry);
+	        this.savedWorkDirs = this.convertValues(source["savedWorkDirs"], WorkDirEntry);
 	        this.terminal = this.convertValues(source["terminal"], TerminalSettings);
 	        this.remoteHost = source["remoteHost"];
 	        this.remotePort = source["remotePort"];

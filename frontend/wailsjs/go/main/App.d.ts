@@ -214,3 +214,9 @@ export function UnregisterOutputCallback(arg1:string,arg2:string):Promise<void>;
 export function UnregisterResizeCallback(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;
+
+export function GetSavedWorkDirs():Promise<Array<settings.WorkDirEntry>>;
+
+export function AddSavedWorkDir(arg1:string,arg2:string):Promise<Array<settings.WorkDirEntry>>;
+
+export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;

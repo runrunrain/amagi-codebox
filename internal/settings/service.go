@@ -15,6 +15,12 @@ type ShellEntry struct {
 	Label string `json:"label"`
 }
 
+// WorkDirEntry 保存的工作目录
+type WorkDirEntry struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
+}
+
 // DashboardDefaults 仪表盘默认值
 type DashboardDefaults struct {
 	Provider          string `json:"provider"`
@@ -46,13 +52,14 @@ type TerminalSettings struct {
 
 // AppSettings 应用设置
 type AppSettings struct {
-	Dashboard     DashboardDefaults `json:"dashboard"`
-	ShellPaths    []ShellEntry      `json:"shellPaths"`
-	Terminal      TerminalSettings  `json:"terminal"`
-	RemoteHost    string            `json:"remoteHost"`
-	RemotePort    int               `json:"remotePort"`
-	MobileWebRoot string            `json:"mobileWebRoot"`
-	GitHubToken   string            `json:"githubToken"`
+	Dashboard      DashboardDefaults `json:"dashboard"`
+	ShellPaths     []ShellEntry      `json:"shellPaths"`
+	SavedWorkDirs  []WorkDirEntry    `json:"savedWorkDirs"`
+	Terminal       TerminalSettings  `json:"terminal"`
+	RemoteHost     string            `json:"remoteHost"`
+	RemotePort     int               `json:"remotePort"`
+	MobileWebRoot  string            `json:"mobileWebRoot"`
+	GitHubToken    string            `json:"githubToken"`
 }
 
 func defaultSettings() *AppSettings {
@@ -69,7 +76,8 @@ func defaultSettings() *AppSettings {
 			AmagiCodeMode:  "embedded",
 			AmagiCodeShell: "pwsh",
 		},
-		ShellPaths: []ShellEntry{},
+		ShellPaths:    []ShellEntry{},
+		SavedWorkDirs: []WorkDirEntry{},
 		Terminal: TerminalSettings{
 			Scrollback: 100000,
 		},
@@ -111,6 +119,9 @@ func (s *Service) Load() error {
 	}
 	if cfg.ShellPaths == nil {
 		cfg.ShellPaths = []ShellEntry{}
+	}
+	if cfg.SavedWorkDirs == nil {
+		cfg.SavedWorkDirs = []WorkDirEntry{}
 	}
 	if cfg.Terminal.Scrollback <= 0 {
 		cfg.Terminal.Scrollback = 100000
@@ -346,6 +357,63 @@ func (s *Service) SetGitHubToken(token string) error {
 	s.settings.GitHubToken = token
 	s.mu.Unlock()
 	return s.Save()
+}
+
+// --- Saved Work Directories ---
+
+func (s *Service) GetSavedWorkDirs() []WorkDirEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]WorkDirEntry, len(s.settings.SavedWorkDirs))
+	copy(out, s.settings.SavedWorkDirs)
+	return out
+}
+
+func (s *Service) AddSavedWorkDir(path string, label string) error {
+	if path == "" {
+		return errors.New("path is required")
+	}
+	// Label 为空时使用路径末段
+	if label == "" {
+		label = filepath.Base(path)
+	}
+	s.mu.Lock()
+	// 去重：按 path 去重
+	for _, e := range s.settings.SavedWorkDirs {
+		if e.Path == path {
+			// 更新 label 并返回现有列表
+			for i := range s.settings.SavedWorkDirs {
+				if s.settings.SavedWorkDirs[i].Path == path {
+					s.settings.SavedWorkDirs[i].Label = label
+					break
+				}
+			}
+			// 显式释放写锁后再 Save，避免 Save 内取 RLock 造成死锁
+			s.mu.Unlock()
+			return s.Save()
+		}
+	}
+	s.settings.SavedWorkDirs = append(s.settings.SavedWorkDirs, WorkDirEntry{
+		Path:  path,
+		Label: label,
+	})
+	// 显式释放写锁后再 Save，避免 Save 内取 RLock 造成死锁
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *Service) RemoveSavedWorkDir(path string) error {
+	s.mu.Lock()
+	paths := s.settings.SavedWorkDirs
+	for i, e := range paths {
+		if e.Path == path {
+			s.settings.SavedWorkDirs = append(paths[:i], paths[i+1:]...)
+			s.mu.Unlock()
+			return s.Save()
+		}
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // --- Full Settings ---
