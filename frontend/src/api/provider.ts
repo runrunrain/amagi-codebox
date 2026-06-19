@@ -16,6 +16,9 @@ import {
   DeleteTerminalPreset,
   GetMergedTerminalPresets,
   ResolveTerminalPreset,
+  GetOpenCodeConfig,
+  GetOpenCodeConfigPath,
+  SaveOpenCodeConfig,
   GetConfigService,
 } from '../../wailsjs/go/main/App';
 
@@ -158,6 +161,42 @@ export async function getMergedTerminalPresets(terminalType: string): Promise<Me
     return await GetMergedTerminalPresets(terminalType);
   } catch (error) {
     console.error('[api.provider.getMergedTerminalPresets]', error);
+    throw error;
+  }
+}
+
+/**
+ * Get OpenCode global config.json content
+ */
+export async function getOpenCodeConfig(): Promise<string> {
+  try {
+    return await GetOpenCodeConfig();
+  } catch (error) {
+    console.error('[api.provider.getOpenCodeConfig]', error);
+    throw error;
+  }
+}
+
+/**
+ * Get OpenCode global config.json file path
+ */
+export async function getOpenCodeConfigPath(): Promise<string> {
+  try {
+    return await GetOpenCodeConfigPath();
+  } catch (error) {
+    console.error('[api.provider.getOpenCodeConfigPath]', error);
+    throw error;
+  }
+}
+
+/**
+ * Save OpenCode global config.json content
+ */
+export async function saveOpenCodeConfig(content: string): Promise<void> {
+  try {
+    await SaveOpenCodeConfig(content);
+  } catch (error) {
+    console.error('[api.provider.saveOpenCodeConfig]', error);
     throw error;
   }
 }
