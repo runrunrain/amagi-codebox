@@ -169,6 +169,8 @@ export function RunEnvFixAction(arg1:string,arg2:string,arg3:string):Promise<env
 
 export function SaveAllConfig():Promise<void>;
 
+export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+
 export function SaveClipboardImage(arg1:string):Promise<string>;
 
 export function SaveEnvVarsJSON(arg1:string):Promise<void>;

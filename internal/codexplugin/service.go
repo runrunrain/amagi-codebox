@@ -756,3 +756,13 @@ func filterPluginsByMarketplace(plugins []CodexPlugin, marketplace string) []Cod
 	}
 	return out
 }
+
+// SetPluginSubItemEnabled 设置 Codex 插件子项启用/禁用状态
+// 注意：Codex 插件目前不支持子项级禁用，此方法为兼容接口保留
+func (s *Service) SetPluginSubItemEnabled(pluginId string, subItemType string, subItemId string, enabled bool) error {
+	// Codex 插件暂不支持子项禁用，记录日志但不报错
+	if s.log != nil {
+		s.log.Info("codexplugin", "Codex 插件暂不支持子项禁用", fmt.Sprintf("plugin=%s type=%s id=%s enabled=%v", pluginId, subItemType, subItemId, enabled))
+	}
+	return nil
+}

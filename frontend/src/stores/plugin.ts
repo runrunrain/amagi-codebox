@@ -76,6 +76,9 @@ export const usePluginStore = defineStore('plugin', () => {
   // Codex active plugin detail
   const cxActivePluginDetail = ref<Record<string, CodexPluginDetail>>({});
 
+  // Claude active plugin detail
+  const ccActivePluginDetail = ref<Record<string, PluginDetail>>({});
+
   // Resource filter
   const resFilter = ref<ResourceFilter['value']>('all');
 
@@ -97,6 +100,10 @@ export const usePluginStore = defineStore('plugin', () => {
   // Active plugin detail (Claude)
   const activePlugin = computed(() => {
     if (!activePluginId.value) return null;
+    // Prioritize cached detail (contains subItems)
+    const cached = ccActivePluginDetail.value[activePluginId.value];
+    if (cached) return cached;
+    // Fallback to lightweight list item
     return ccInstalled.value.find(p => p.id === activePluginId.value) || null;
   });
 
@@ -335,6 +342,10 @@ export const usePluginStore = defineStore('plugin', () => {
     setLoadingDetail(true);
     try {
       const detail = await pluginApi.getPluginDetail(pluginId);
+      // Cache detail for subItems access
+      if (detail) {
+        ccActivePluginDetail.value[pluginId] = detail;
+      }
       return detail;
     } catch (error) {
       console.error('[plugin.store.loadPluginDetail]', error);
@@ -592,6 +603,7 @@ export const usePluginStore = defineStore('plugin', () => {
     activePlugin,
     activeCxPlugin,
     activeCxPluginDetail,
+    ccActivePluginDetail,
     resourceFilters,
     filteredCcPlugins,
     filteredCxAvailable,

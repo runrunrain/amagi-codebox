@@ -87,15 +87,24 @@ import { useRoute, useRouter } from 'vue-router'
 import { useUIStore } from '../../stores/ui'
 import { useSessionStore } from '../../stores/session'
 import { useSessionList } from '../../composables/useSessionList'
+import { useDashboardState } from '../../composables/useDashboardState'
+import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
+import { useToast } from '../../composables/useToast'
 import SessionListItem from './SessionListItem.vue'
 import UpdateDialog from '../common/UpdateDialog.vue'
 import { GetAppInfo, GetRemoteWebUIStatus, OpenRemoteWebUI } from '../../../wailsjs/go/main/App'
+import * as sessionApi from '../../api/session'
 
 const route = useRoute()
 const router = useRouter()
 const uiStore = useUIStore()
 const sessionStore = useSessionStore()
 const { refresh, startPolling, stopPolling } = useSessionList()
+const { state: dashState, persistDefaults } = useDashboardState()
+const platformCaps = usePlatformCapabilities()
+const { showSuccess, showError } = useToast()
+
+const launching = ref(false)
 
 const navItems = [
   {
@@ -134,6 +143,7 @@ const webUIAvailable = ref(false)
 const webUIUrl = ref('')
 
 onMounted(async () => {
+  await platformCaps.ensure()
   refresh()
   startPolling(2000)
   // Fetch real version from backend
@@ -160,8 +170,108 @@ function isActive(path: string): boolean {
 }
 
 function handleNewSession() {
-  // 跳转到会话设置页配置并启动新会话
-  router.push('/')
+  // 如果已经在会话设置页，尝试直接启动
+  if (route.path === '/' && canLaunchFromSettings()) {
+    launchFromSettings()
+  } else {
+    // 否则跳转到会话设置页
+    router.push('/')
+  }
+}
+
+// 检查当前配置是否足够启动会话
+function canLaunchFromSettings(): boolean {
+  if (dashState.engine === 'claudecode') {
+    return !!(dashState.provider && dashState.preset)
+  }
+  if (dashState.engine === 'codex') {
+    return !!(dashState.codexProvider && dashState.codexModel)
+  }
+  // OpenCode: "使用全局配置"时 preset 为空（openCodePresetKey），仍可启动
+  // 只要有工作目录即可启动（provider 可为空，用全局配置）
+  return !!dashState.workDir
+}
+
+// 解析 Shell 路径
+function resolveShellPath(): string {
+  const shell = dashState.engine === 'claudecode' ? dashState.claudeShell
+    : dashState.engine === 'opencode' ? dashState.openCodeShell
+    : dashState.codexShell
+  const custom = dashState.engine === 'claudecode' ? dashState.claudeCustomShellPath
+    : dashState.engine === 'opencode' ? dashState.openCodeCustomShellPath
+    : dashState.codexCustomShellPath
+
+  if (shell === '') return ''
+  if (shell === '__custom__') return custom
+  return platformCaps.resolveShellPath(shell, custom)
+}
+
+// 从会话设置启动会话
+async function launchFromSettings() {
+  if (!canLaunchFromSettings() || launching.value) return
+
+  // OpenCode 必须有工作目录
+  if (dashState.engine === 'opencode' && !dashState.workDir) {
+    showError('请先设置工作目录')
+    return
+  }
+
+  launching.value = true
+  try {
+    let sessionId = ''
+    if (dashState.engine === 'claudecode') {
+      sessionId = await sessionApi.launchClaudeSession({
+        providerName: dashState.provider,
+        presetName: dashState.preset,
+        mode: dashState.claudeMode,
+        workDir: dashState.workDir,
+        useProxy: dashState.useProxy,
+        shellPath: dashState.claudeMode === 'embedded' ? resolveShellPath() : '',
+      })
+    } else if (dashState.engine === 'opencode') {
+      // 空预设表示使用全局配置，给予友好提示
+      if (!dashState.openCodePresetKey) {
+        showSuccess('使用全局 opencode.json 配置启动')
+      }
+      sessionId = await sessionApi.launchOpenCodeSession({
+        providerName: '',
+        presetName: dashState.openCodePresetKey || '',
+        mode: dashState.openCodeMode,
+        workDir: dashState.workDir,
+        shellPath: dashState.openCodeMode === 'embedded' ? resolveShellPath() : '',
+      })
+    } else {
+      sessionId = await sessionApi.launchCodexSession({
+        modelName: dashState.codexModel,
+        providerID: dashState.codexProvider,
+        mode: dashState.codexMode,
+        workDir: dashState.workDir,
+        shellPath: dashState.codexMode === 'embedded' ? resolveShellPath() : '',
+      })
+    }
+
+    await persistDefaults()
+    await refresh()
+
+    sessionStore.setActiveSession(sessionId)
+
+    const engineLabel = dashState.engine === 'claudecode' ? 'ClaudeCode'
+      : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
+    showSuccess(`${engineLabel} 会话启动成功`)
+
+    // 内嵌模式自动跳转终端页
+    const mode = dashState.engine === 'claudecode' ? dashState.claudeMode
+      : dashState.engine === 'opencode' ? dashState.openCodeMode
+      : dashState.codexMode
+    if (mode === 'embedded') {
+      router.push('/terminal')
+    }
+  } catch (err) {
+    console.error('Launch failed:', err)
+    showError('启动失败: ' + err)
+  } finally {
+    launching.value = false
+  }
 }
 
 function handleSessionClick(session: any) {
@@ -183,10 +293,6 @@ async function handleOpenWebUI() {
     console.error('[SidebarNormal] Failed to open Web UI:', error)
   }
 }
-
-onUnmounted(() => {
-  stopPolling()
-})
 
 onUnmounted(() => {
   stopPolling()

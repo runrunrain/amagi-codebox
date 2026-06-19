@@ -318,6 +318,10 @@ export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
 }
 
+export function SetPluginSubItemEnabled(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetPluginSubItemEnabled'](arg1, arg2, arg3, arg4);
+}
+
 export function SaveClipboardImage(arg1) {
   return window['go']['main']['App']['SaveClipboardImage'](arg1);
 }

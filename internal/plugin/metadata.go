@@ -72,6 +72,12 @@ func (s *Service) SetSubItemEnabled(pluginID string, subItemRef SubItemRef, enab
 	return s.writeSubItemStateFile(states)
 }
 
+// SetPluginSubItemEnabled 设置插件子项启用/禁用状态（字符串参数版本，供 Wails 绑定）
+func (s *Service) SetPluginSubItemEnabled(pluginId string, subItemType string, subItemId string, enabled bool) error {
+	ref := SubItemRef{Type: SubItemType(subItemType), Name: subItemId}
+	return s.SetSubItemEnabled(pluginId, ref, enabled)
+}
+
 func analyzePluginType(detail *PluginDetail) PluginType {
 	nonZeroTypes := 0
 	singleType := PluginTypeUnknown

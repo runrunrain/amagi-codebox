@@ -5,16 +5,6 @@
     <ConfigCard>
       <div class="card-head">
         <h2>快速启动</h2>
-        <button
-          class="btn btn-primary launch-btn"
-          :disabled="!canLaunch || loading"
-          @click="handleLaunch"
-        >
-          <svg v-if="loading" class="spin" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-          </svg>
-          {{ loading ? '启动中…' : '启动会话' }}
-        </button>
       </div>
 
       <Segmented
@@ -167,7 +157,6 @@ const { showSuccess, showError } = useToast()
 const sessionStore = useSessionStore()
 const { refresh } = useSessionList()
 
-const loading = ref(false)
 const browsing = ref(false)
 
 // --- 数据源 ---
@@ -239,10 +228,13 @@ const providerOptions = computed(() => {
 
 const presetOptions = computed(() => {
   if (dashState.engine === 'opencode') {
-    return openCodePresetList.value.map(p => ({
+    // 开头添加"使用全局配置"选项
+    const globalOption = { value: '', label: '使用全局配置' }
+    const presetOptions = openCodePresetList.value.map(p => ({
       value: p.key,
       label: p.bindingCount > 0 ? `${p.name} (${p.bindingCount})` : p.name,
     }))
+    return [globalOption, ...presetOptions]
   }
   const list = dashState.engine === 'codex' ? codexPresets.value : claudePresets.value
   const targetProvider = currentProvider.value
@@ -374,8 +366,7 @@ function resolveShellPath(): string {
 
 // --- 启动逻辑（3 引擎分支，对齐 wailsjs LaunchSession 签名） ---
 async function handleLaunch() {
-  if (!canLaunch.value || loading.value) return
-  loading.value = true
+  if (!canLaunch.value) return
   try {
     let sessionId = ''
     if (dashState.engine === 'claudecode') {
@@ -423,8 +414,6 @@ async function handleLaunch() {
   } catch (err) {
     console.error('Launch failed:', err)
     showError('启动失败: ' + err)
-  } finally {
-    loading.value = false
   }
 }
 

@@ -221,6 +221,7 @@ const {
   installCcPlugin,
   loadCcMarkets,
   loadCcAvailable,
+  loadCxPlugins,
 } = pluginStore;
 
 // Local search state (synced with store)
@@ -443,6 +444,8 @@ onMounted(async () => {
   try {
     if (props.engine === 'claude') {
       await Promise.all([loadCcMarkets(), loadCcAvailable()]);
+    } else if (props.engine === 'codex') {
+      await loadCxPlugins();
     }
   } catch (error) {
     initialError.value = String(error);

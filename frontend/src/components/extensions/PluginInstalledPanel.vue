@@ -171,64 +171,14 @@
             </div>
           </div>
 
-          <!-- Resource counts / Capabilities (Codex) -->
-          <div v-if="engine === 'codex'" class="plg-detail-resources">
-            <h4>能力</h4>
-            <div class="res-grid">
-              <div v-if="hasSkills" class="res-item">
-                <Badge type="type" text="Skill" color="skill" />
-                <span class="res-count">{{ skillsCount }}</span>
-              </div>
-              <div v-if="hasAgents" class="res-item">
-                <Badge type="type" text="Agent" color="agent" />
-                <span class="res-count">{{ agentsCount }}</span>
-              </div>
-              <div v-if="hasCommands" class="res-item">
-                <Badge type="type" text="Command" color="command" />
-                <span class="res-count">{{ commandsCount }}</span>
-              </div>
-              <div v-if="hasHooks" class="res-item">
-                <Badge type="type" text="Hook" color="hook" />
-                <span class="res-count">{{ hooksCount }}</span>
-              </div>
-              <div v-if="hasMcp" class="res-item">
-                <Badge type="type" text="MCP" color="mcp" />
-                <span class="res-count">1</span>
-              </div>
-              <!-- Codex capabilities from interface -->
-              <template v-if="activeCxDetail?.manifest?.interface?.capabilities">
-                <div v-for="cap in activeCxDetail.manifest.interface.capabilities" :key="cap" class="res-item">
-                  <Badge type="type" :text="cap" color="capability" />
-                </div>
-              </template>
-            </div>
-          </div>
-
-          <!-- Claude resource counts -->
-          <div v-else class="plg-detail-resources">
-            <h4>资源</h4>
-            <div class="res-grid">
-              <div v-if="hasSkills" class="res-item">
-                <Badge type="type" text="Skill" color="skill" />
-                <span class="res-count">{{ skillsCount }}</span>
-              </div>
-              <div v-if="hasAgents" class="res-item">
-                <Badge type="type" text="Agent" color="agent" />
-                <span class="res-count">{{ agentsCount }}</span>
-              </div>
-              <div v-if="hasCommands" class="res-item">
-                <Badge type="type" text="Command" color="command" />
-                <span class="res-count">{{ commandsCount }}</span>
-              </div>
-              <div v-if="hasHooks" class="res-item">
-                <Badge type="type" text="Hook" color="hook" />
-                <span class="res-count">{{ hooksCount }}</span>
-              </div>
-              <div v-if="hasMcp" class="res-item">
-                <Badge type="type" text="MCP" color="mcp" />
-                <span class="res-count">1</span>
-              </div>
-            </div>
+          <!-- Sub-items panel with tabbed list -->
+          <div class="plg-detail-subitems">
+            <PluginSubItemsPanel
+              :engine="engine"
+              :plugin-detail="activeCxDetail || activePlugin"
+              :disabled-sub-items="disabledSubItems"
+              @toggle-sub-item="handleToggleSubItem"
+            />
           </div>
         </div>
 
@@ -274,6 +224,7 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import PluginMarketPanel from './PluginMarketPanel.vue';
+import PluginSubItemsPanel from './PluginSubItemsPanel.vue';
 import { truncate } from '../../utils/format';
 
 interface Props {
@@ -320,6 +271,7 @@ const {
   toggleCxPlugin,
   uninstallCxPlugin,
   loadCxPluginDetail,
+  loadPluginDetail,
   setPluginView,
 } = pluginStore;
 
@@ -565,12 +517,16 @@ function formatDate(dateStr: string): string {
 }
 
 // Actions
-function selectPlugin(plugin: any) {
+async function selectPlugin(plugin: any) {
   const id = plugin.id || plugin.pluginId;
   setActivePlugin(id);
   // Load Codex detail if needed
   if (props.engine === 'codex' && plugin.marketplace) {
-    loadCxPluginDetail(plugin.pluginId || id, plugin.marketplace);
+    await loadCxPluginDetail(plugin.pluginId || id, plugin.marketplace);
+  }
+  // Load Claude detail if needed
+  if (props.engine === 'claude') {
+    await loadPluginDetail(id);
   }
 }
 
@@ -630,6 +586,49 @@ async function handleUpdate() {
     } catch (error) {
       console.error('Update plugin failed:', error);
     }
+  }
+}
+
+// Disabled sub-items for the active plugin
+const disabledSubItems = computed(() => {
+  const plugin = currentActivePlugin.value;
+  if (!plugin) return [];
+  // Use activeCxDetail for Codex (contains subItems with Enabled field from backend)
+  if (props.engine === 'codex' && activeCxDetail.value?.subItems) {
+    return activeCxDetail.value.subItems
+      .filter((s: any) => !s.Enabled)
+      .map((s: any) => {
+        // Backend SubItem has Type and Name; build key as "type/name"
+        return `${s.Type}/${s.Name}`;
+      });
+  }
+  // For Claude plugins, subItems are available in plugin detail (from cache)
+  if (props.engine === 'claude' && (plugin as any).subItems) {
+    return (plugin as any).subItems
+      .filter((s: any) => !s.Enabled)
+      .map((s: any) => `${s.Type}/${s.Name}`);
+  }
+  return [];
+});
+
+async function handleToggleSubItem(itemType: string, itemId: string, enabled: boolean) {
+  const plugin = currentActivePlugin.value;
+  if (!plugin) return;
+
+  const pid = (plugin as any).pluginId || plugin.id;
+  try {
+    // Call backend API to persist the state
+    await window.go.main.App.SetPluginSubItemEnabled(pid, itemType, itemId, enabled);
+    // After successful toggle, reload plugin detail to reflect changes
+    if (props.engine === 'codex' && plugin.marketplace) {
+      await loadCxPluginDetail((plugin as any).pluginId || plugin.id, plugin.marketplace);
+    } else if (props.engine === 'claude') {
+      // Reload Claude plugin detail
+      await loadPluginDetail(plugin.id);
+    }
+  } catch (error) {
+    console.error('[PluginInstalledPanel] Toggle sub-item failed:', error);
+    // Optionally show error toast to user
   }
 }
 
@@ -1068,6 +1067,12 @@ onMounted(async () => {
 .res-item .res-count {
   font-size: 12px;
   color: var(--secondary);
+}
+
+.plg-detail-subitems {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--separator);
 }
 
 /* Scrollbar styling */

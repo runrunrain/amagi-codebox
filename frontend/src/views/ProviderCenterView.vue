@@ -64,10 +64,22 @@
           @add="handlePresetAdd"
         />
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
-        <OpenCodePresets
-          v-else-if="store.presetEngine === 'opencode'"
-          @add="handlePresetAdd"
-        />
+        <template v-else-if="store.presetEngine === 'opencode'">
+          <!-- 三级 Segmented：预设管理 | 全局配置 -->
+          <Segmented
+            v-model="openCodeMode"
+            :options="OPENCODE_MODES"
+            variant="pill"
+            class="oc-mode-tabs"
+          />
+          <!-- OpenCode 预设管理 -->
+          <OpenCodePresets
+            v-if="openCodeMode === 'presets'"
+            @add="handlePresetAdd"
+          />
+          <!-- OpenCode 全局配置 -->
+          <OpenCodeGlobalConfig v-else />
+        </template>
       </div>
     </ConfigCard>
   </section>
@@ -81,6 +93,7 @@ import Segmented from '../components/ui/Segmented.vue';
 import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import OpenCodePresets from '../components/provider/OpenCodePresets.vue';
+import OpenCodeGlobalConfig from '../components/provider/OpenCodeGlobalConfig.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
@@ -100,7 +113,13 @@ const ENGINE_TABS = [
   { value: 'opencode', label: 'OpenCode' },
 ];
 
+const OPENCODE_MODES = [
+  { value: 'presets', label: '预设管理' },
+  { value: 'global', label: '全局配置' },
+];
+
 const mainTab = ref<'providers' | 'presets'>('providers');
+const openCodeMode = ref<'presets' | 'global'>('presets');
 
 // 二级 engine 双向绑定（写入 store + 触发按需加载）
 const engineModel = computed<string>({
@@ -224,6 +243,16 @@ function handlePresetAdd() {
 }
 
 .pc-engine-tabs :deep(.segmented) {
+  display: inline-flex;
+}
+
+/* OpenCode 三级 Tab */
+.oc-mode-tabs {
+  align-self: flex-start;
+  margin-top: 10px;
+}
+
+.oc-mode-tabs :deep(.segmented) {
   display: inline-flex;
 }
 </style>

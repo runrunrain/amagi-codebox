@@ -1694,6 +1694,23 @@ func (a *App) GetProvidersByType(providerType string) map[string]config.Provider
 	return result
 }
 
+// SetPluginSubItemEnabled 设置插件子项启用/禁用状态
+// pluginId: 插件 ID
+// subItemType: 子项类型（skill/hook/command/agent/mcp）
+// subItemId: 子项名称
+// enabled: 是否启用
+func (a *App) SetPluginSubItemEnabled(pluginId string, subItemType string, subItemId string, enabled bool) error {
+	a.Log.Info("plugin", "设置插件子项状态", fmt.Sprintf("plugin=%s type=%s id=%s enabled=%v", pluginId, subItemType, subItemId, enabled))
+
+	// 根据 ID 前缀判断插件类型（Claude 插件不带 @ 或来自已知市场，Codex 插件带 @marketplace）
+	if strings.Contains(pluginId, "@") {
+		// Codex 插件格式：name@marketplace
+		return a.CodexPlugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
+	}
+	// Claude 插件
+	return a.Plugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
+}
+
 // LaunchOpenCode 启动 OpenCode 终端会话。
 // 双轨兼容：优先查 opencode_presets（新模型），回退到 terminal_presets.opencode（旧模型）。
 func (a *App) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
@@ -1753,6 +1770,10 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 	// 轨道 2（旧模型回退）：terminal_presets.opencode
 	// ============================================================
 	{
+		// 当 presetName 为空时，不注入任何 preset 配置，让 OpenCode 读取全局配置
+		if presetName == "" {
+			a.Log.Info("session", "OpenCode 使用全局配置（preset 为空）", fmt.Sprintf("provider=%s", providerName))
+		} else {
 		// presetName 可能是 terminal_preset 的 stable key
 		tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
 		tpFound := tpErr == nil && tp != nil
@@ -1805,8 +1826,9 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 			a.Log.Info("session", "OpenCode API 密钥已获取",
 				fmt.Sprintf("provider=%s source=%s key=%s len=%d",
 					providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
-		}
-	}
+			}
+			} // else 结束：presetName != "" 的情况
+		} // 轨道2 结束
 
 launchCommon:
 	// 确定启动模式
