@@ -1,5 +1,17 @@
 <template>
   <div class="plugin-installed-panel">
+    <!-- Initial loading state -->
+    <LoadingState v-if="initialLoading" message="加载插件中..." />
+
+    <!-- Initial error state -->
+    <ErrorState
+      v-else-if="initialError"
+      :message="initialError"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- Top segmented control: Installed | Market -->
     <div class="view-segmented">
       <button
@@ -246,6 +258,7 @@
       confirm-text="卸载"
       @confirm="confirmUninstall"
     />
+    </template>
   </div>
 </template>
 
@@ -257,6 +270,8 @@ import Switch from '../ui/Switch.vue';
 import Badge from '../ui/Badge.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import PluginMarketPanel from './PluginMarketPanel.vue';
 import { truncate } from '../../utils/format';
@@ -311,9 +326,30 @@ const {
 // Local view state (synced with store)
 const localView = ref<'installed' | 'market'>(props.engine === 'claude' ? 'installed' : 'installed');
 
+// Initial loading and error states
+const initialLoading = ref(true);
+const initialError = ref('');
+
 // Uninstall confirmation
 const showUninstallDialog = ref(false);
 const pluginToUninstall = ref<any>(null);
+
+// Retry function for ErrorState
+const handleRetry = async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    if (props.engine === 'claude') {
+      await loadCcInstalled()
+    } else {
+      await loadCxPlugins()
+    }
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
+}
 
 // Sync with store
 watch(pluginView, (val) => {
@@ -597,22 +633,24 @@ async function handleUpdate() {
   }
 }
 
-function handleRetry() {
-  if (props.engine === 'codex') {
-    loadCxPlugins();
-  }
-}
-
 function handleAddMarket(engine: 'claude' | 'codex') {
   emit('addMarket', engine);
 }
 
 // Load plugins on mount
-onMounted(() => {
-  if (props.engine === 'claude' && ccInstalled.value.length === 0) {
-    loadCcInstalled();
-  } else if (props.engine === 'codex' && cxInstalled.value.length === 0) {
-    loadCxPlugins();
+onMounted(async () => {
+  initialLoading.value = true;
+  initialError.value = '';
+  try {
+    if (props.engine === 'claude') {
+      await loadCcInstalled();
+    } else {
+      await loadCxPlugins();
+    }
+  } catch (err) {
+    initialError.value = String(err);
+  } finally {
+    initialLoading.value = false;
   }
 });
 </script>

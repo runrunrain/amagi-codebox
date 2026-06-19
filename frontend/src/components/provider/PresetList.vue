@@ -7,6 +7,18 @@
 -->
 <template>
   <div class="preset-panel">
+    <!-- Loading state -->
+    <LoadingState v-if="loading" message="加载预设中..." />
+
+    <!-- Error state -->
+    <ErrorState
+      v-else-if="error"
+      :message="error"
+      :on-retry="initialLoad"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- 工具栏：Provider 筛选 Chip + 添加预设按钮 -->
     <div class="pc-toolbar">
       <div class="pc-filter">
@@ -45,6 +57,7 @@
       :title="emptyTitle"
       :description="emptyDescription"
     />
+    </template>
   </div>
 
   <!-- 预设弹窗 -->
@@ -57,12 +70,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import { useProviderStore } from '../../stores/provider';
 import Chip from '../ui/Chip.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import PresetDialog from './PresetDialog.vue';
 
 type MergedTerminalPreset = config.MergedTerminalPreset;
@@ -72,6 +87,10 @@ const props = defineProps<{ engine: 'claude' | 'codex' }>();
 const store = useProviderStore();
 const showPresetDialog = ref(false);
 const editingPreset = ref<config.MergedTerminalPreset | null>(null);
+
+// Loading and error states
+const loading = ref(true);
+const error = ref('');
 
 const engineLabel = computed(() => (props.engine === 'claude' ? 'Claude Code' : 'Codex'));
 
@@ -117,8 +136,34 @@ function handleAdd() {
 }
 
 async function handlePresetSaved() {
-  await store.loadPresets(props.engine, true);
+  loading.value = true;
+  error.value = '';
+  try {
+    await store.loadPresets(props.engine, true);
+  } catch (err) {
+    error.value = String(err);
+  } finally {
+    loading.value = false;
+  }
 }
+
+// Initial load
+async function initialLoad() {
+  loading.value = true;
+  error.value = '';
+  try {
+    await store.loadPresets(props.engine, false);
+  } catch (err) {
+    error.value = String(err);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Load on mount
+onMounted(() => {
+  initialLoad();
+});
 </script>
 
 <style scoped>

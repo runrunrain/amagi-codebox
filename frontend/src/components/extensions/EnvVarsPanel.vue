@@ -1,5 +1,17 @@
 <template>
   <div class="env-vars-panel">
+    <!-- Initial loading state -->
+    <LoadingState v-if="initialLoading" message="加载环境变量中..." />
+
+    <!-- Initial error state -->
+    <ErrorState
+      v-else-if="initialError"
+      :message="initialError"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- Global Sync Status Card -->
     <div class="env-sync">
       <div class="env-sync-head">
@@ -238,6 +250,7 @@
       confirm-text="删除"
       @confirm="confirmDelete"
     />
+    </template>
   </div>
 </template>
 
@@ -249,8 +262,13 @@ import Switch from '../ui/Switch.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import Segmented from '../ui/Segmented.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import Dialog from '../ui/Dialog.vue';
+import { useToast } from '../../composables/useToast';
+
+const { showSuccess, showError } = useToast();
 
 // Define types inline to avoid import issues
 interface EnvVar {
@@ -270,6 +288,10 @@ interface GlobalSyncStatus {
 // State
 const loading = ref(false);
 const globalSyncLoading = ref(false);
+
+// Initial loading and error states
+const initialLoading = ref(true);
+const initialError = ref('');
 const globalSyncStatus = ref<GlobalSyncStatus>({
   supported: false,
   platform: '',
@@ -291,6 +313,19 @@ const showEditDialog = ref(false);
 const showImportDialog = ref(false);
 const saving = ref(false);
 const importing = ref(false);
+
+// Retry function for ErrorState
+const handleRetry = async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    await Promise.all([loadGlobalSyncStatus(), loadEnvVars()])
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
+}
 
 // Delete confirmation
 const showDeleteDialog = ref(false);
@@ -331,7 +366,7 @@ async function loadGlobalSyncStatus() {
     const status = await envvarsApi.getEnvVarsGlobalSyncStatus();
     globalSyncStatus.value = status;
   } catch (error) {
-    console.error('[EnvVarsPanel] Failed to load global sync status:', error);
+    throw error;
   } finally {
     globalSyncLoading.value = false;
   }
@@ -343,7 +378,7 @@ async function loadEnvVars() {
     const vars = await envvarsApi.getEnvVars();
     envVars.value = vars;
   } catch (error) {
-    console.error('[EnvVarsPanel] Failed to load env vars:', error);
+    throw error;
   } finally {
     loading.value = false;
   }
@@ -365,8 +400,10 @@ async function handleToggleGlobalSync(enabled: boolean) {
   try {
     const result = await envvarsApi.setEnvVarsGlobalSyncEnabled(enabled);
     globalSyncStatus.value = result;
+    showSuccess(enabled ? '全局同步已启用' : '全局同步已禁用');
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to toggle global sync:', error);
+    showError('切换失败: ' + error);
   }
 }
 
@@ -403,8 +440,10 @@ async function handleSave() {
 
     showEditDialog.value = false;
     editForm.value = { key: '', value: '' };
+    showSuccess('环境变量已保存');
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to save env var:', error);
+    showError('保存失败: ' + error);
   } finally {
     saving.value = false;
   }
@@ -421,8 +460,10 @@ async function confirmDelete() {
   try {
     await envvarsApi.deleteEnvVar(keyToDelete.value);
     await Promise.all([loadEnvVars(), loadJsonContent()]);
+    showSuccess('环境变量已删除');
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to delete env var:', error);
+    showError('删除失败: ' + error);
   } finally {
     showDeleteDialog.value = false;
     keyToDelete.value = '';
@@ -440,8 +481,10 @@ async function handleDoImport() {
     await envvarsApi.importEnvVars(importJson.value.trim());
     await Promise.all([loadEnvVars(), loadJsonContent()]);
     showImportDialog.value = false;
+    showSuccess('环境变量已导入');
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to import:', error);
+    showError('导入失败: ' + error);
   } finally {
     importing.value = false;
   }
@@ -450,8 +493,10 @@ async function handleDoImport() {
 async function handleExport() {
   try {
     await envvarsApi.exportEnvVarsToFile();
+    showSuccess('环境变量已导出');
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to export:', error);
+    showError('导出失败: ' + error);
   }
 }
 
@@ -473,9 +518,11 @@ async function handleSaveJson() {
 
     // Refresh visual view
     await loadEnvVars();
+    showSuccess('JSON 已保存');
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to save JSON:', error);
     jsonError.value = '保存失败';
+    showError('保存失败: ' + error);
   } finally {
     jsonSaving.value = false;
   }
@@ -495,7 +542,15 @@ watch(viewMode, async (newMode) => {
 
 // Load data on mount
 onMounted(async () => {
-  await Promise.all([loadGlobalSyncStatus(), loadEnvVars()]);
+  initialLoading.value = true;
+  initialError.value = '';
+  try {
+    await Promise.all([loadGlobalSyncStatus(), loadEnvVars()]);
+  } catch (error) {
+    initialError.value = String(error);
+  } finally {
+    initialLoading.value = false;
+  }
 });
 </script>
 

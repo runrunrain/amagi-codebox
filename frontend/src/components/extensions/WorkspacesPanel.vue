@@ -1,5 +1,17 @@
 <template>
   <div class="workspaces-panel">
+    <!-- Initial loading state -->
+    <LoadingState v-if="initialLoading" message="加载工作区中..." />
+
+    <!-- Initial error state -->
+    <ErrorState
+      v-else-if="initialError"
+      :message="initialError"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- Toolbar -->
     <div class="ws-toolbar">
       <div class="ws-zone-label">
@@ -204,6 +216,7 @@
       @close="showGlobalDialog = false"
       @saved="handleGlobalSaved"
     />
+    </template>
   </div>
 </template>
 
@@ -213,14 +226,18 @@ import { storeToRefs } from 'pinia';
 import { BrowseDirectory } from '../../../wailsjs/go/main/App';
 import { useWorkspaceStore } from '../../stores/workspace';
 import { usePluginStore } from '../../stores/plugin';
+import { useToast } from '../../composables/useToast';
 import AppButton from '../ui/AppButton.vue';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import Dialog from '../ui/Dialog.vue';
 import GlobalEnabledDialog from './GlobalEnabledDialog.vue';
 
 const workspaceStore = useWorkspaceStore();
 const pluginStore = usePluginStore();
+const { showSuccess, showError } = useToast();
 
 const {
   workspaces,
@@ -253,6 +270,26 @@ const showDeleteDialog = ref(false);
 const showGlobalDialog = ref(false);
 const workspaceToDelete = ref<string | null>(null);
 
+// Initial loading and error states
+const initialLoading = ref(true);
+const initialError = ref('');
+
+// Retry function for ErrorState
+const handleRetry = async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    await Promise.all([
+      workspaceStore.loadWorkspaces(),
+      workspaceStore.loadGlobalEnabled()
+    ])
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
+}
+
 // Installed plugins for global dialog
 const installedPlugins = computed(() => ccInstalled.value);
 
@@ -280,13 +317,17 @@ watch(activeWorkspace, (ws) => {
 
 // Load data on mount
 onMounted(async () => {
+  initialLoading.value = true;
+  initialError.value = '';
   try {
     await Promise.all([
       workspaceStore.loadWorkspaces(),
       workspaceStore.loadGlobalEnabled(),
     ]);
   } catch (error) {
-    console.error('[WorkspacesPanel] Failed to load workspaces:', error);
+    initialError.value = String(error);
+  } finally {
+    initialLoading.value = false;
   }
 });
 
@@ -343,6 +384,7 @@ async function handleSave() {
         path: editForm.value.path,
         tools: editForm.value.tools,
       });
+      showSuccess('工作区已更新');
     } else {
       // Create new
       const result = await workspaceStore.createWorkspace({
@@ -351,9 +393,11 @@ async function handleSave() {
         tools: editForm.value.tools,
       });
       activeWorkspaceId.value = result.id;
+      showSuccess('工作区已创建');
     }
   } catch (error) {
     console.error('[WorkspacesPanel] Failed to save workspace:', error);
+    showError('保存失败: ' + error);
   }
 }
 
@@ -361,8 +405,10 @@ async function handleBuild() {
   if (!activeWorkspaceId.value) return;
   try {
     await workspaceStore.buildScaffold(activeWorkspaceId.value);
+    showSuccess('部署完成');
   } catch (error) {
     console.error('[WorkspacesPanel] Failed to build scaffold:', error);
+    showError('部署失败: ' + error);
   }
 }
 
@@ -370,8 +416,10 @@ async function handleSync() {
   if (!activeWorkspaceId.value) return;
   try {
     await workspaceStore.syncWorkspace(activeWorkspaceId.value);
+    showSuccess('同步完成');
   } catch (error) {
     console.error('[WorkspacesPanel] Failed to sync workspace:', error);
+    showError('同步失败: ' + error);
   }
 }
 
@@ -379,8 +427,10 @@ async function handleClean() {
   if (!activeWorkspaceId.value) return;
   try {
     await workspaceStore.cleanWorkspace(activeWorkspaceId.value);
+    showSuccess('清理完成');
   } catch (error) {
     console.error('[WorkspacesPanel] Failed to clean workspace:', error);
+    showError('清理失败: ' + error);
   }
 }
 
@@ -402,11 +452,13 @@ function confirmDelete() {
   if (workspaceToDelete.value) {
     workspaceStore.deleteWorkspace(workspaceToDelete.value)
       .then(() => {
+        showSuccess('工作区已删除');
         showDeleteDialog.value = false;
         workspaceToDelete.value = null;
       })
       .catch((error) => {
         console.error('[WorkspacesPanel] Failed to delete workspace:', error);
+        showError('删除失败: ' + error);
       });
   }
 }

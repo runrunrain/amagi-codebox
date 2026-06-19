@@ -73,7 +73,7 @@ const props = defineProps<{ sessionId: string }>()
 
 const sessionStore = useSessionStore()
 const { stopAndRefresh, refresh } = useSessionList()
-const { showSuccess, showError } = useToast()
+const { showSuccess, showError, showInfo } = useToast()
 const platformCaps = usePlatformCapabilities()
 
 // one engine instance per TerminalView; the whole tree below shares it.
@@ -115,10 +115,14 @@ onMounted(async () => {
   if (!el) return
 
   engine.mountTerm(props.sessionId, el, {
-    onExit: () => {
+    onExit: (info) => {
       // exit also surfaces via the 2s poll in useSessionList, but refresh
       // immediately so the dot turns grey without a perceptible delay.
       refresh()
+      // Toast notification for session exit
+      const s = session.value
+      const title = s?.workDir ? s.workDir.split(/[/\\]/).pop() || '会话' : '会话'
+      showInfo(`会话 #${props.sessionId} ${title} 已退出`)
     },
   })
 

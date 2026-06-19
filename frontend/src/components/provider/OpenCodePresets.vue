@@ -9,6 +9,18 @@
 -->
 <template>
   <div class="oc-panel">
+    <!-- Loading state -->
+    <LoadingState v-if="loading" message="加载 OpenCode 配置中..." />
+
+    <!-- Error state -->
+    <ErrorState
+      v-else-if="error"
+      :message="error"
+      :on-retry="initialLoad"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- 工具栏：搜索 + 可视化/JSON 双模式 Segmented + 添加预设按钮 -->
     <div class="pc-toolbar">
       <div class="pc-search">
@@ -93,7 +105,8 @@
         <span class="oc-path-label">配置文件：</span>
         <code class="oc-path-value">{{ store.ocConfigPath }}</code>
       </div>
-    </div>
+      </div>
+    </template>
   </div>
 
   <!-- OpenCode 预设弹窗 -->
@@ -105,12 +118,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import { useProviderStore } from '../../stores/provider';
 import Segmented from '../ui/Segmented.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 
 const emit = defineEmits<{ (e: 'add'): void }>();
@@ -118,6 +133,10 @@ const emit = defineEmits<{ (e: 'add'): void }>();
 const store = useProviderStore();
 const showPresetDialog = ref(false);
 const editingPreset = ref<config.OpenCodePreset | null>(null);
+
+// Loading and error states
+const loading = ref(true);
+const error = ref('');
 
 const MODE_OPTIONS = [
   { value: 'visual', label: '可视化' },
@@ -216,8 +235,34 @@ function handleAdd() {
 }
 
 async function handlePresetSaved() {
-  await store.loadPresets('opencode', true);
+  loading.value = true;
+  error.value = '';
+  try {
+    await store.loadPresets('opencode', true);
+  } catch (err) {
+    error.value = String(err);
+  } finally {
+    loading.value = false;
+  }
 }
+
+// Initial load
+async function initialLoad() {
+  loading.value = true;
+  error.value = '';
+  try {
+    await store.loadPresets('opencode', false);
+  } catch (err) {
+    error.value = String(err);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Load on mount
+onMounted(() => {
+  initialLoad();
+});
 </script>
 
 <style scoped>

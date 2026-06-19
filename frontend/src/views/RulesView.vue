@@ -1,5 +1,17 @@
 <template>
   <section class="view-rules">
+    <!-- Initial loading state -->
+    <LoadingState v-if="initialLoading" message="加载规则配置中..." />
+
+    <!-- Initial error state -->
+    <ErrorState
+      v-else-if="initialError"
+      :message="initialError"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <PageHead title="注入规则" description="管理 API 注入规则与代理状态" />
 
     <!-- Proxy Control Card -->
@@ -144,6 +156,7 @@
       confirm-text="删除"
       @confirm="confirmDeleteRule"
     />
+    </template>
   </section>
 </template>
 
@@ -156,6 +169,8 @@ import TextInput from '../components/ui/TextInput.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import Badge from '../components/ui/Badge.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
+import LoadingState from '../components/ui/LoadingState.vue'
+import ErrorState from '../components/ui/ErrorState.vue'
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import RuleDialog from '../components/rules/RuleDialog.vue'
 
@@ -177,6 +192,10 @@ const { showSuccess, showError } = useToast()
 
 const loading = ref(false)
 const isRunning = ref(false)
+
+// Loading and error states for initial data
+const initialLoading = ref(true)
+const initialError = ref('')
 const port = ref(5280)
 const backendURL = ref('https://api.anthropic.com')
 const backendURLHistory = ref<string[]>([])
@@ -191,6 +210,24 @@ const ruleToDelete = ref<string | null>(null)
 const showDeleteDialog = ref(false)
 
 let statusInterval: number | null = null
+
+// Retry function for ErrorState
+const handleRetry = async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    await Promise.all([
+      fetchStatus(),
+      fetchRules(),
+      fetchLogs(),
+      fetchBackendURLHistory()
+    ])
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
+}
 
 const fetchBackendURLHistory = async () => {
   try {
@@ -227,7 +264,7 @@ const fetchStatus = async () => {
       ruleCount.value = status.ruleCount || 0
     }
   } catch (err) {
-    console.error('Failed to fetch status:', err)
+    throw err
   }
 }
 
@@ -236,7 +273,7 @@ const fetchRules = async () => {
     const fetchedRules = await GetRules()
     rules.value = fetchedRules || []
   } catch (err) {
-    console.error('Failed to fetch rules:', err)
+    throw err
   }
 }
 
@@ -245,7 +282,7 @@ const fetchLogs = async () => {
     const fetchedLogs = await GetLogs()
     logs.value = fetchedLogs || []
   } catch (err) {
-    console.error('Failed to fetch logs:', err)
+    throw err
   }
 }
 
@@ -327,14 +364,24 @@ const confirmDeleteRule = async () => {
   }
 }
 
-onMounted(() => {
-  fetchStatus()
-  fetchRules()
-  fetchLogs()
-  fetchBackendURLHistory()
+onMounted(async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    await Promise.all([
+      fetchStatus(),
+      fetchRules(),
+      fetchLogs(),
+      fetchBackendURLHistory()
+    ])
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
 
   statusInterval = window.setInterval(() => {
-    fetchStatus()
+    fetchStatus().catch(console.error)
   }, 3000)
 })
 

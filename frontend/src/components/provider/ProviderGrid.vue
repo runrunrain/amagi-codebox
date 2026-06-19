@@ -1,5 +1,17 @@
 <template>
   <div class="provider-grid-panel">
+    <!-- Loading state -->
+    <LoadingState v-if="loading" message="加载提供商中..." />
+
+    <!-- Error state -->
+    <ErrorState
+      v-else-if="error"
+      :message="error"
+      :on-retry="initialLoad"
+    />
+
+    <!-- Main content (show when local loading/error done and store has content) -->
+    <template v-else>
     <!-- 区域标签（对照 demo .pc-zone-label）-->
     <div class="pc-zone-label">
       <span>底层资源</span>
@@ -21,12 +33,12 @@
       <div class="pc-actions">
         <AppButton variant="ghost" size="small" :disabled="loading" @click="$emit('export')">导出配置</AppButton>
         <AppButton variant="ghost" size="small" :disabled="loading" @click="$emit('import')">JSON 导入</AppButton>
-        <AppButton variant="primary" size="small" :disabled="loading" @click="showAddDialog = true">添加提供商</AppButton>
+        <AppButton variant="primary" size="small" :disabled="storeLoading" @click="showAddDialog = true">添加提供商</AppButton>
       </div>
     </div>
 
     <!-- 提供商卡片网格 -->
-    <div v-if="loading && filteredProviders.length === 0" class="pc-empty">加载中…</div>
+    <div v-if="storeLoading && filteredProviders.length === 0" class="pc-empty">加载中…</div>
     <div v-else-if="filteredProviders.length === 0" class="pc-empty">
       <template v-if="providerEntries.length === 0">暂无服务提供商，请点击右上角添加</template>
       <template v-else>当前筛选条件下无匹配的服务提供商</template>
@@ -78,6 +90,7 @@
       v-model:open="showAddDialog"
       @saved="handleProviderSaved"
     />
+    </template>
   </div>
 </template>
 
@@ -86,6 +99,8 @@ import { computed, ref } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import Chip from '../ui/Chip.vue';
 import AppButton from '../ui/AppButton.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import AddProviderDialog from './AddProviderDialog.vue';
 import { useProviderStore, type ProviderFilter } from '../../stores/provider';
 
@@ -99,9 +114,34 @@ const emit = defineEmits<{
 const store = useProviderStore();
 const showAddDialog = ref(false);
 
+// Loading and error states
+const loading = ref(true);
+const error = ref('');
+
 // 添加提供商成功后刷新列表
 async function handleProviderSaved() {
-  await store.loadProviders();
+  loading.value = true;
+  error.value = '';
+  try {
+    await store.loadProviders();
+  } catch (err) {
+    error.value = String(err);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Initial load
+async function initialLoad() {
+  loading.value = true;
+  error.value = '';
+  try {
+    await store.loadProviders();
+  } catch (err) {
+    error.value = String(err);
+  } finally {
+    loading.value = false;
+  }
 }
 
 const FILTER_OPTIONS: { value: ProviderFilter; label: string }[] = [
@@ -113,7 +153,7 @@ const FILTER_OPTIONS: { value: ProviderFilter; label: string }[] = [
 const filter = computed(() => store.filter);
 const providerEntries = computed(() => store.providerEntries);
 const filteredProviders = computed(() => store.filteredProviders);
-const loading = computed(() => store.loading);
+const storeLoading = computed(() => store.loading);
 
 function setFilter(next: ProviderFilter) {
   store.setFilter(next);
@@ -145,6 +185,12 @@ function typeInitial(p: Provider): string {
   const t = ((p && (p as any).type) || 'anthropic').toLowerCase();
   return t === 'openai' ? 'O' : 'A';
 }
+
+// Trigger initial load on mount
+import { onMounted } from 'vue';
+onMounted(() => {
+  initialLoad();
+});
 </script>
 
 <style scoped>

@@ -1,5 +1,17 @@
 <template>
   <div class="plugin-market-panel">
+    <!-- Initial loading state -->
+    <LoadingState v-if="initialLoading" message="加载市场中..." />
+
+    <!-- Initial error state -->
+    <ErrorState
+      v-else-if="initialError"
+      :message="initialError"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- Header with title and actions -->
     <div class="panel-header">
       <div class="header-title">
@@ -158,6 +170,7 @@
       confirm-text="删除"
       @confirm="confirmRemoveMarket"
     />
+    </template>
   </div>
 </template>
 
@@ -167,6 +180,8 @@ import { storeToRefs } from 'pinia';
 import { usePluginStore } from '../../stores/plugin';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import ErrorState from '../ui/ErrorState.vue';
 import AddMarketDialog from './AddMarketDialog.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import { RemoveMarketplace } from '../../../wailsjs/go/codexplugin/Service';
@@ -215,6 +230,21 @@ const showAddMarketDialog = ref(false);
 const showRemoveMarketDialog = ref(false);
 const marketToRemove = ref<any>(null);
 
+// Retry function for ErrorState
+const handleRetry = async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    if (props.engine === 'claude') {
+      await Promise.all([loadCcMarkets(), loadCcAvailable()])
+    }
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
+}
+
 // Sync local search with store
 watch(searchQuery, (val) => {
   setMarketSearchQuery(val);
@@ -223,6 +253,10 @@ watch(searchQuery, (val) => {
 watch(sortBy, (val) => {
   setMarketSortBy(val);
 });
+
+// Initial loading and error states
+const initialLoading = ref(true);
+const initialError = ref('');
 
 // Markets based on engine
 const markets = computed(() => {
@@ -401,15 +435,16 @@ async function handleInstall(plugin: any) {
 
 // Load markets on mount
 onMounted(async () => {
-  loading.value = true;
+  initialLoading.value = true;
+  initialError.value = '';
   try {
     if (props.engine === 'claude') {
       await Promise.all([loadCcMarkets(), loadCcAvailable()]);
     }
   } catch (error) {
-    console.error('[PluginMarketPanel] Load failed:', error);
+    initialError.value = String(error);
   } finally {
-    loading.value = false;
+    initialLoading.value = false;
   }
 });
 </script>

@@ -7,6 +7,18 @@
     - API 格式：按 provider formats 动态显示 Anthropic 块(A紫)/OpenAI 块(O绿)
   -->
   <ConfigCard class="pc-detail">
+    <!-- Initial loading state -->
+    <LoadingState v-if="initialLoading" message="加载提供商详情中..." />
+
+    <!-- Initial error state -->
+    <ErrorState
+      v-else-if="initialError"
+      :message="initialError"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <!-- 返回按钮 -->
     <button class="pc-back" @click="onBack">
       <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -142,6 +154,7 @@
     <section v-if="!hasAnthropic && !hasOpenAI" class="detail-section">
       <p class="compat-hint">该提供商未启用 Anthropic / OpenAI 双格式配置，可能为 legacy 单类型（{{ typeLabel }}）。完整编辑能力将在 P7 批次补齐。</p>
     </section>
+    </template>
   </ConfigCard>
 </template>
 
@@ -149,6 +162,8 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import Switch from '../components/ui/Switch.vue';
+import LoadingState from '../components/ui/LoadingState.vue';
+import ErrorState from '../components/ui/ErrorState.vue';
 import { useProviderStore } from '../stores/provider';
 import { useToast } from '../composables/useToast';
 import {
@@ -169,13 +184,33 @@ const { showSuccess, showError } = useToast();
 
 const loading = ref(false);
 
+// Initial loading and error states
+const initialLoading = ref(true);
+const initialError = ref('');
+
 // 密钥状态
-const actualKey = ref('');
+const actualKey = ref('')
+
+// Remove loadProviderDetail since it doesn't exist in API
+// We'll just load the key
 const keyVisible = ref(false);
 const editing = ref(false);
 const inputValue = ref('');
 const inputVisible = ref(false);
 const confirmDelete = ref(false);
+
+// Retry function for ErrorState
+const handleRetry = async () => {
+  initialLoading.value = true
+  initialError.value = ''
+  try {
+    await loadKey()
+  } catch (err) {
+    initialError.value = String(err)
+  } finally {
+    initialLoading.value = false
+  }
+}
 
 const entry = computed(() => store.activeProvider);
 
@@ -343,8 +378,16 @@ function onBack() {
   emit('back');
 }
 
-onMounted(() => {
-  loadKey();
+onMounted(async () => {
+  initialLoading.value = true;
+  initialError.value = '';
+  try {
+    await loadKey();
+  } catch (err) {
+    initialError.value = String(err);
+  } finally {
+    initialLoading.value = false;
+  }
 });
 
 watch(

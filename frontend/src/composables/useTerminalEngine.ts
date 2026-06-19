@@ -55,6 +55,10 @@ interface TerminalInstance {
   lastRows: number
   /** highest emitSeq covered by the loaded history snapshot */
   historySnapshotSeq: number
+  /** whether the user has manually scrolled up (disables auto-follow) */
+  userScrolledUp: boolean
+  /** container element for scroll detection */
+  containerEl: HTMLElement | null
 }
 
 interface LiveChunk {
@@ -472,6 +476,8 @@ export function useTerminalEngine() {
       lastCols: 0,
       lastRows: 0,
       historySnapshotSeq: 0,
+      userScrolledUp: false,
+      containerEl: null,
     }
     terminals.set(sessionId, inst)
 
@@ -482,9 +488,29 @@ export function useTerminalEngine() {
       if (seq > 0 && seq <= inst.historySnapshotSeq) return
       try {
         inst.term.write(bytes)
+        // Auto-scroll to bottom unless user manually scrolled up
+        requestAnimationFrame(() => {
+          if (!inst.userScrolledUp && inst.term.element) {
+            inst.term.scrollToBottom()
+          }
+        })
       } catch {
         /* term may be mid-teardown */
       }
+    }
+
+    // Track user scroll position to disable auto-follow when scrolled up
+    function setupScrollTracking() {
+      if (!containerEl) return
+      inst.containerEl = containerEl
+
+      const viewport = containerEl.querySelector('.xterm-viewport') as HTMLElement
+      if (!viewport) return
+
+      viewport.addEventListener('scroll', () => {
+        const isAtBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 10
+        inst.userScrolledUp = !isAtBottom
+      })
     }
 
     const dataEvent = 'pty:data:' + sessionId
@@ -534,6 +560,7 @@ export function useTerminalEngine() {
     // open into DOM then attach addons + replay history + wire paste.
     try {
       term.open(containerEl)
+      setupScrollTracking()
     } catch (err) {
       console.error('[amagi-codebox] xterm open failed:', err)
     }

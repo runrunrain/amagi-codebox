@@ -105,9 +105,11 @@ import WorkspacesPanel from '../components/extensions/WorkspacesPanel.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import { usePluginStore } from '../stores/plugin';
+import { useToast } from '../composables/useToast';
 
 const pluginStore = usePluginStore();
 const { extMainTab, pluginEngine } = storeToRefs(pluginStore);
+const { showError, showSuccess } = useToast();
 
 const {
   addCcMarketplace,
@@ -153,11 +155,13 @@ async function submitAddMarket() {
     } else {
       await addCxMarketplace(source);
     }
+    showSuccess('市场已添加');
     // Close dialog on success
     showAddMarketDialog.value = false;
     marketSource.value = '';
   } catch (error) {
     console.error('[ExtensionsView] Add marketplace failed:', error);
+    showError('添加市场失败: ' + error);
     // Keep dialog open on error so user can see what went wrong
   } finally {
     addMarketSubmitting.value = false;

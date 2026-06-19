@@ -1,5 +1,17 @@
 <template>
   <section class="view-logs">
+    <!-- Loading state -->
+    <LoadingState v-if="loading" message="加载日志中..." />
+
+    <!-- Error state -->
+    <ErrorState
+      v-else-if="error"
+      :message="error"
+      :on-retry="handleRetry"
+    />
+
+    <!-- Main content -->
+    <template v-else>
     <PageHead title="系统日志" description="查看应用运行日志与调试信息" />
 
     <!-- Filters Card -->
@@ -134,6 +146,7 @@
         </div>
       </div>
     </ConfigCard>
+    </template>
   </section>
 </template>
 
@@ -144,6 +157,8 @@ import ConfigCard from '../components/ui/ConfigCard.vue'
 import TextInput from '../components/ui/TextInput.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
+import LoadingState from '../components/ui/LoadingState.vue'
+import ErrorState from '../components/ui/ErrorState.vue'
 import { useToast } from '../composables/useToast'
 import {
   GetLogs,
@@ -168,6 +183,10 @@ const logFiles = ref<string[]>([])
 const fileContent = ref('')
 const selectedFile = ref('')
 
+// Loading and error states
+const loading = ref(true)
+const error = ref('')
+
 const filterLevel = ref('')
 const filterSource = ref('')
 const filterKeyword = ref('')
@@ -179,6 +198,19 @@ const { showSuccess, showError } = useToast()
 let refreshTimer: number | null = null
 let debounceTimer: number | null = null
 
+// Retry function for ErrorState
+const handleRetry = async () => {
+  loading.value = true
+  error.value = ''
+  try {
+    await Promise.all([refreshLogs(), refreshSources(), refreshFiles()])
+  } catch (err) {
+    error.value = String(err)
+  } finally {
+    loading.value = false
+  }
+}
+
 const refreshLogs = async () => {
   try {
     entries.value = await GetLogs(
@@ -188,7 +220,7 @@ const refreshLogs = async () => {
       filterLimit.value
     )
   } catch (err) {
-    console.error('Failed to load logs:', err)
+    error.value = String(err)
   }
 }
 
@@ -196,7 +228,7 @@ const refreshSources = async () => {
   try {
     sources.value = await GetLogSources()
   } catch (err) {
-    console.error('Failed to load sources:', err)
+    error.value = String(err)
   }
 }
 
@@ -204,7 +236,7 @@ const refreshFiles = async () => {
   try {
     logFiles.value = await GetLogFiles()
   } catch (err) {
-    console.error('Failed to load log files:', err)
+    error.value = String(err)
   }
 }
 
@@ -273,9 +305,13 @@ watch(autoRefresh, (val) => {
 })
 
 onMounted(async () => {
-  await refreshLogs()
-  await refreshSources()
-  await refreshFiles()
+  loading.value = true
+  error.value = ''
+  try {
+    await Promise.all([refreshLogs(), refreshSources(), refreshFiles()])
+  } finally {
+    loading.value = false
+  }
   if (autoRefresh.value) {
     refreshTimer = window.setInterval(() => {
       refreshLogs()
