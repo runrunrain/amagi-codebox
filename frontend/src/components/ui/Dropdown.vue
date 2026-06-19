@@ -26,7 +26,9 @@
           @click="choose(opt)"
         >
           <span class="item-label">{{ opt.label }}</span>
-          <span v-if="opt.value === modelValue" class="item-check">✓</span>
+          <svg v-if="opt.value === modelValue" class="item-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+  <polyline points="20 6 9 17 4 12"/>
+</svg>
         </li>
       </ul>
     </transition>
@@ -225,7 +227,9 @@ watch(
 
 .item-check {
   color: var(--accent);
-  font-size: 12px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .dropdown-fade-enter-active,

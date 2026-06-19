@@ -173,7 +173,9 @@ async function handleDownloadAndApply() {
 }
 
 function handleOpenReleasePage() {
-  const url = `https://github.com/yourusername/amagi-codebox/releases/tag/${updateInfo.value.latestVersion}`;
+  // GitHub repository URL: https://github.com/runrunrain/amagi-codebox
+  // Can be made configurable via build flag if needed
+  const url = `https://github.com/runrunrain/amagi-codebox/releases/tag/${updateInfo.value.latestVersion}`;
   BrowserOpenURL(url);
 }
 

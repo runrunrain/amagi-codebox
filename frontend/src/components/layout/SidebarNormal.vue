@@ -57,7 +57,7 @@
         </svg>
       </button>
       <button class="version" @click="showUpdateDialog = true" title="检查更新">
-        <span class="sess-dot"></span>v1.0.0
+        <span class="sess-dot"></span>{{ appVersion }}
       </button>
     </div>
 
@@ -74,6 +74,7 @@ import { useSessionStore } from '../../stores/session'
 import { useSessionList } from '../../composables/useSessionList'
 import SessionListItem from './SessionListItem.vue'
 import UpdateDialog from '../common/UpdateDialog.vue'
+import { GetAppInfo } from '../../../wailsjs/go/main/App'
 
 const route = useRoute()
 const router = useRouter()
@@ -113,6 +114,21 @@ const runningSessions = computed(() => sessionStore.runningSessions)
 const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
 const showUpdateDialog = ref(false)
+const appVersion = ref('v1.0.0') // Fallback until loaded
+
+onMounted(async () => {
+  refresh()
+  startPolling(2000)
+  // Fetch real version from backend
+  try {
+    const info = await GetAppInfo()
+    if (info?.version) {
+      appVersion.value = `v${info.version}`
+    }
+  } catch (error) {
+    console.error('[SidebarNormal] Failed to get app info:', error)
+  }
+})
 
 function isActive(path: string): boolean {
   return route.path === path
@@ -132,9 +148,8 @@ function handleEnterSettings() {
   uiStore.enterSettingsMode()
 }
 
-onMounted(() => {
-  refresh()
-  startPolling(2000)
+onUnmounted(() => {
+  stopPolling()
 })
 
 onUnmounted(() => {

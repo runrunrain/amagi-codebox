@@ -116,7 +116,10 @@
                   title="显示/隐藏"
                   @click="toggleValueVisibility(envVar.key)"
                 >
-                  👁
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+  <circle cx="12" cy="12" r="3"/>
+</svg>
                 </AppButton>
                 <AppButton
                   variant="icon"
@@ -124,7 +127,10 @@
                   title="编辑"
                   @click="handleEdit(envVar)"
                 >
-                  ✎
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+</svg>
                 </AppButton>
                 <AppButton
                   variant="icon"
@@ -133,7 +139,10 @@
                   class="danger"
                   @click="handleDelete(envVar.key)"
                 >
-                  ✕
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <line x1="18" y1="6" x2="6" y2="18"/>
+  <line x1="6" y1="6" x2="18" y2="18"/>
+</svg>
                 </AppButton>
               </td>
             </tr>
@@ -748,6 +757,13 @@ onMounted(async () => {
 
 .env-actions .icon-btn.danger:hover {
   background: rgba(255, 59, 48, 0.1);
+}
+
+/* SVG Icon styling for EnvVarsPanel */
+.env-actions button svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
 }
 
 /* JSON Mode */

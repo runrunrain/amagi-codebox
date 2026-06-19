@@ -92,9 +92,10 @@ export function usePlatformCapabilities() {
    * On macOS, 'terminal' (standalone) is excluded.
    */
   const launchModes = computed(() => {
+    // Icon field is optional visual hint; plain characters work fine
     const modes = [{ value: 'embedded', label: '内嵌终端', icon: '▨' }]
     if (cached.value?.standaloneTerminalSupported) {
-      modes.push({ value: 'terminal', label: '独立窗口', icon: '⬛' })
+      modes.push({ value: 'terminal', label: '独立窗口', icon: '◆' })
     }
     return modes
   })

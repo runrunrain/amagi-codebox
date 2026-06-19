@@ -27,15 +27,30 @@
 
     <!-- Version at Bottom -->
     <div class="version" style="margin-top: auto; padding: 0 5px">
-      <span class="sess-dot"></span>v1.0.0
+      <span class="sess-dot"></span>{{ appVersion }}
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useUIStore } from '../../stores/ui'
+import { GetAppInfo } from '../../../wailsjs/go/main/App'
 
 const uiStore = useUIStore()
+const appVersion = ref('v1.0.0') // Fallback until loaded
+
+onMounted(async () => {
+  // Fetch real version from backend
+  try {
+    const info = await GetAppInfo()
+    if (info?.version) {
+      appVersion.value = `v${info.version}`
+    }
+  } catch (error) {
+    console.error('[SidebarSettings] Failed to get app info:', error)
+  }
+})
 
 const settingItems = [
   {

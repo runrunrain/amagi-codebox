@@ -47,7 +47,10 @@
           placeholder="搜索插件名称、描述或作者"
           class="search-input"
         />
-        <span class="search-icon">🔍</span>
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="11" cy="11" r="8"/>
+  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+</svg>
       </div>
       <div class="sort-options">
         <button
@@ -61,7 +64,7 @@
           :class="['sort-btn', { active: sortBy === 'installs' }]"
           @click="setSortBy('installs')"
         >
-          安装量 ↓
+          安装量
         </button>
       </div>
     </div>
@@ -523,8 +526,9 @@ onMounted(async () => {
   left: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 12px;
-  opacity: 0.5;
+  width: 14px;
+  height: 14px;
+  stroke: var(--tertiary);
   pointer-events: none;
 }
 
