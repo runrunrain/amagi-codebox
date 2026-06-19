@@ -282,7 +282,7 @@ const filteredPlugins = computed(() => {
   // Filter by active marketplace
   if (activeMarketId.value) {
     if (props.engine === 'claude') {
-      plugins = plugins.filter((p: any) => p.marketplace === activeMarketId.value);
+      plugins = plugins.filter((p: any) => p.marketplaceName === activeMarketId.value);
     } else {
       plugins = plugins.filter((p: any) => p.marketplaceName === activeMarketId.value);
     }
@@ -333,7 +333,7 @@ function getMarketDesc(market: any): string {
 function getPluginCountForMarket(market: any): number {
   const marketName = getMarketName(market);
   if (props.engine === 'claude') {
-    return (allPlugins.value as any[]).filter((p: any) => p.marketplace === marketName).length;
+    return (allPlugins.value as any[]).filter((p: any) => p.marketplaceName === marketName).length;
   }
   return (allPlugins.value as any[]).filter((p: any) => p.marketplaceName === marketName).length;
 }
