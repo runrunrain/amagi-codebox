@@ -1,0 +1,1344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>Amagi CodeBox</title>
+<style>
+:root{
+  --window:#FBFBFD; --card:#FFFFFF; --sidebar:#F5F5F7; --control:#F2F2F5; --controlHover:#E5E5EA;
+  --accent:#007AFF; --accentHover:#0066CC;
+  --label:#1D1D1F; --secondary:#6E6E73; --tertiary:#8E8E93; --separator:#D2D2D7;
+  --success:#34C759; --warning:#FF9500; --purple:#AF52DE;
+  --termBg:#1B1B1F; --termText:#E6E6E6; --termGreen:#3BC260; --termBlue:#5EA6FF; --termGray:#8E8E93;
+  --shadow:0 1px 2px rgba(0,0,0,.05), 0 6px 18px rgba(0,0,0,.05);
+  --mono:'SF Mono','JetBrains Mono','Roboto Mono',Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text','Inter','PingFang SC',sans-serif;
+  background:var(--window); color:var(--label); overflow:hidden;
+  -webkit-font-smoothing:antialiased; font-size:14px;
+}
+.app{display:flex;height:100vh}
+
+/* ===== Sidebar ===== */
+.sidebar{
+  width:264px; flex-shrink:0; background:var(--sidebar); border-right:1px solid var(--separator);
+  display:flex; flex-direction:column; padding:18px 14px 14px; gap:16px;
+}
+.logo-row{display:flex;align-items:center;gap:9px;padding-left:5px}
+.logo-mark{
+  width:24px;height:24px;border-radius:6px;background:var(--accent);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:14px;
+}
+.brand{font-size:16px;font-weight:600;color:var(--label)}
+.new-btn{
+  display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  padding:10px 14px;border:none;border-radius:10px;cursor:pointer;
+  background:var(--accent);color:#fff;font-size:13px;font-weight:500;
+  transition:background .15s;
+}
+.new-btn:hover{background:var(--accentHover)}
+.new-btn .ic{width:16px;height:16px}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav-item{
+  display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:8px;cursor:pointer;
+  color:var(--secondary);font-size:14px;transition:background .12s;
+}
+.nav-item:hover{background:var(--control)}
+.nav-item.active{background:var(--control);color:var(--label)}
+.nav-item.active .ic{stroke:var(--accent)}
+.nav-item .ic{width:17px;height:17px;stroke:var(--tertiary);flex-shrink:0}
+.nav-item.active .ic{stroke:var(--accent)}
+.section-label{display:flex;align-items:center;justify-content:space-between;padding:0 5px;color:var(--tertiary);font-size:11px;font-weight:500}
+.count-pill{background:var(--control);border-radius:999px;padding:1px 7px;font-size:11px;color:var(--secondary)}
+.sess-list{display:flex;flex-direction:column;gap:3px}
+.sess-item{
+  display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;cursor:pointer;transition:background .12s;
+}
+.sess-item:hover{background:var(--control)}
+.sess-item.active{background:var(--control)}
+.sess-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.sess-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.sess-title{font-size:13px;font-weight:500;color:var(--label);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess-item:not(.active) .sess-title{color:var(--secondary)}
+.sess-meta{display:flex;align-items:center;gap:6px}
+.tag{font-size:10px;font-weight:600;color:#fff;padding:1px 5px;border-radius:4px;line-height:1.4}
+.sess-sub{font-size:11px;color:var(--tertiary)}
+.sidebar-footer{margin-top:auto;display:flex;align-items:center;justify-content:space-between;padding:4px 5px 0}
+.icon-btn{width:26px;height:26px;border:none;background:transparent;border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s}
+.icon-btn:hover{background:var(--control)}
+.icon-btn .ic{width:17px;height:17px;stroke:var(--tertiary)}
+.version{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tertiary)}
+.version .sess-dot{width:6px;height:6px;background:var(--success)}
+
+/* ===== Main ===== */
+.main{flex:1;display:flex;flex-direction:column;background:var(--card);position:relative;min-width:0}
+.view{flex:1;display:none;flex-direction:column;min-height:0}
+.view.show{display:flex}
+
+/* settings view */
+.view-settings{padding:32px 36px;gap:22px;overflow:auto}
+.page-head h1{font-size:28px;font-weight:600;letter-spacing:-.4px}
+.page-head p{font-size:13px;color:var(--secondary);margin-top:4px}
+.config-card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:20px 24px 10px;display:flex;flex-direction:column;gap:16px}
+.card-head{display:flex;align-items:center;justify-content:space-between}
+.card-head h2{font-size:17px;font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;padding:9px 16px;transition:background .15s, box-shadow .15s;font-family:inherit}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accentHover)}
+.btn-ghost{background:var(--control);color:var(--secondary)}
+.btn-ghost:hover{background:var(--controlHover)}
+.segmented{display:flex;gap:2px;background:var(--control);border-radius:9px;padding:3px}
+.seg{flex:1;padding:7px 0;border:none;background:transparent;border-radius:7px;cursor:pointer;font-size:13px;color:var(--secondary);font-family:inherit;transition:all .12s}
+.seg.active{background:var(--card);color:var(--label);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.setting-list{display:flex;flex-direction:column}
+.setting-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid var(--separator)}
+.setting-row:first-child{border-top:none}
+.setting-row label{font-size:14px;color:var(--secondary)}
+.dropdown{display:inline-flex;align-items:center;gap:6px;background:var(--control);border-radius:7px;padding:6px 10px;cursor:pointer;font-size:14px;color:var(--label)}
+.dropdown .caret{color:var(--tertiary)}
+.input-group{display:flex;align-items:center;gap:6px}
+.text-input{display:flex;align-items:center;gap:8px;background:var(--control);border-radius:8px;padding:6px 10px}
+.text-input input{border:none;background:transparent;font-size:14px;color:var(--label);font-family:inherit;min-width:240px}
+.switch{width:44px;height:26px;border-radius:999px;background:var(--accent);position:relative;cursor:pointer;transition:background .15s}
+.switch.off{background:#D2D2D7}
+.switch .knob{position:absolute;top:2px;left:calc(100% - 24px);width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:left .15s}
+.switch.off .knob{left:2px}
+
+/* terminal view */
+.view-terminal{display:none;flex-direction:column}
+.term-toolbar{display:flex;align-items:center;justify-content:space-between;padding:14px 26px;border-bottom:1px solid var(--separator)}
+.term-tb-left{display:flex;align-items:center;gap:10px;min-width:0}
+.term-title{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.term-sep{color:var(--tertiary)}
+.term-dir{font-size:13px;color:var(--secondary)}
+.model-pill{background:var(--control);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--secondary)}
+.term-tb-right{display:flex;gap:8px}
+.term-body{flex:1;background:var(--termBg);padding:22px 26px;overflow:auto;font-family:var(--mono);font-size:13px;line-height:1.7;color:var(--termText);min-height:0}
+.term-body .prompt{color:var(--termGreen)}
+.term-body .cmd{color:#fff}
+.term-body .ai{color:var(--termBlue)}
+.term-body .muted{color:var(--termGray)}
+.term-body .ok{color:var(--termGreen)}
+.term-input-line{display:flex;align-items:center;gap:8px}
+.term-input-line .prompt{color:var(--termGreen)}
+.cursor{display:inline-block;width:8px;height:16px;background:var(--termText);animation:blink 1s steps(2) infinite;vertical-align:middle}
+@keyframes blink{50%{opacity:0}}
+
+/* placeholder view */
+.view-placeholder{padding:32px 36px;overflow:auto}
+.placeholder-card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:28px}
+.placeholder-card h2{font-size:17px;font-weight:600;margin-bottom:8px}
+.placeholder-card p{color:var(--secondary);font-size:14px;line-height:1.6}
+
+/* provider center */
+.pc-card{padding:0}
+.pc-tabs{margin:14px 14px 0}
+.pc-panel{display:none;flex-direction:column;padding:16px 14px}
+.pc-panel.show{display:flex}
+.pc-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.pc-filter{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-size:12px;font-weight:500;color:var(--secondary);background:var(--control);border-radius:999px;padding:5px 12px;cursor:pointer;transition:background .12s,color .12s;user-select:none}
+.chip:hover{background:var(--controlHover)}
+.chip.active{background:var(--label);color:#fff}
+.pc-actions{display:flex;gap:8px;align-items:center}
+.pc-search{display:flex;align-items:center;gap:7px;background:var(--control);border-radius:8px;padding:6px 12px;min-width:210px}
+.pc-search input{border:none;background:transparent;outline:none;font-family:inherit;font-size:13px;color:var(--label);flex:1}
+.pc-search .ic{width:14px;height:14px;stroke:var(--tertiary)}
+.prov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(286px,1fr));gap:14px}
+.prov-card{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:16px;cursor:pointer;transition:box-shadow .15s,transform .15s,border-color .15s}
+.prov-card:hover{box-shadow:var(--shadow);transform:translateY(-1px);border-color:#c5c5cc}
+.prov-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:14px}
+.prov-name{font-size:15px;font-weight:600;color:var(--label)}
+.prov-formats{display:flex;gap:4px;flex-shrink:0}
+.fmt{width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff}
+.fmt.A{background:var(--purple)}
+.fmt.O{background:var(--success)}
+.prov-row{display:flex;flex-direction:column;gap:2px;padding:8px 0;border-top:1px solid var(--separator)}
+.prov-row:first-of-type{border-top:none;padding-top:0}
+.prov-row-label{font-size:11px;color:var(--tertiary)}
+.prov-row-value{font-size:13px;color:var(--label);word-break:break-all;line-height:1.4}
+.prov-row-value.mono{font-family:var(--mono);font-size:12px}
+.prov-row-value.placeholder{color:var(--tertiary)}
+.key-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--secondary)}
+.key-status .sess-dot{width:6px;height:6px}
+.preset-list{display:flex;flex-direction:column;gap:10px}
+.preset-card{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:14px 16px}
+.preset-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.preset-name{font-size:14px;font-weight:600;color:var(--label)}
+.preset-prov{font-size:11px;color:var(--secondary);background:var(--control);border-radius:5px;padding:2px 8px;white-space:nowrap}
+.preset-desc{font-size:12px;color:var(--secondary);margin-bottom:9px;line-height:1.5}
+.preset-badges{display:flex;flex-wrap:wrap;gap:6px}
+.param{font-size:11px;color:var(--secondary);background:var(--control);border-radius:5px;padding:2px 8px;font-weight:500}
+.param.model{color:var(--accent);background:rgba(0,122,255,.1)}
+.pc-empty{text-align:center;padding:44px 20px;color:var(--tertiary);font-size:13px;line-height:1.6}
+.pc-detail{display:none;flex-direction:column;padding:0 0 18px}
+.pc-detail.show{display:flex}
+.pc-back{display:inline-flex;align-items:center;gap:5px;background:none;border:none;cursor:pointer;color:var(--secondary);font-size:13px;padding:16px 4px 6px;font-family:inherit;align-self:flex-start;margin-left:14px}
+.pc-back:hover{color:var(--accent)}
+.pc-back .ic{width:16px;height:16px;stroke:currentColor}
+.detail-title-row{display:flex;align-items:center;gap:10px;padding:8px 18px 16px}
+.detail-title-row .prov-name{font-size:20px;font-weight:600}
+.detail-section{margin:0 18px 14px;background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:0 18px}
+.detail-section h3{font-size:12px;font-weight:600;color:var(--tertiary);padding:14px 0 8px;letter-spacing:.2px}
+.detail-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--separator);flex-wrap:wrap}
+.detail-row:first-of-type{border-top:none}
+.dr-label{font-size:14px;color:var(--secondary)}
+.dr-value{font-size:14px;color:var(--label);display:flex;align-items:center;gap:8px;text-align:right}
+.dr-value.mono{font-family:var(--mono);font-size:13px;word-break:break-all}
+.key-mask{font-family:var(--mono);font-size:13px;color:var(--secondary);letter-spacing:.5px}
+.fmt-block{padding:13px 0;border-top:1px solid var(--separator)}
+.fmt-block:first-of-type{border-top:none}
+.fmt-block-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.fmt-block-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--label)}
+.fmt-field{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:13px}
+.fmt-field .ff-label{color:var(--tertiary);font-size:12px}
+.fmt-field .ff-value{font-family:var(--mono);font-size:12px;color:var(--secondary);word-break:break-all}
+.danger{color:#FF3B30}
+/* provider center · 层级区分与 OpenCode */
+.pc-main-tabs{margin:14px 14px 0}
+.pc-zone-label{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;color:var(--tertiary);padding:0 2px;margin:4px 2px 14px;letter-spacing:.3px}
+.pc-zone-label .zn-count{color:var(--secondary);font-weight:500}
+.pc-zone-label .zn-sep{color:var(--separator)}
+.pc-engine-bar{margin:0 2px 14px}
+.pc-engine-tabs{display:flex;gap:24px;background:transparent;border-radius:0;padding:0;border-bottom:1px solid var(--separator)}
+.pc-engine-tabs .seg{flex:0 0 auto;background:transparent;border-radius:0;padding:9px 2px;font-size:13px;color:var(--secondary);border-bottom:2px solid transparent;margin-bottom:-1px;box-shadow:none}
+.pc-engine-tabs .seg:hover{color:var(--label);background:transparent}
+.pc-engine-tabs .seg.active{color:var(--label);border-bottom-color:var(--accent);background:transparent;font-weight:600;box-shadow:none}
+.pc-engine{display:none}
+.pc-engine.show{display:block}
+.oc-card{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:14px 16px}
+.oc-card.default{border-style:dashed;border-color:#c5c5cc;background:var(--sidebar)}
+.oc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px}
+.oc-name{font-size:14px;font-weight:600;color:var(--label);display:flex;align-items:center;gap:7px}
+.oc-default-tag{font-size:10px;font-weight:600;color:var(--accent);background:rgba(0,122,255,.1);border-radius:4px;padding:1px 6px}
+.oc-key{font-family:var(--mono);font-size:11px;color:var(--tertiary);margin-bottom:8px}
+.oc-desc{font-size:12px;color:var(--secondary);line-height:1.5;margin-bottom:10px}
+.oc-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.oc-bind{font-size:11px;color:var(--secondary);background:var(--control);border-radius:5px;padding:2px 8px;display:inline-flex;align-items:center;gap:4px}
+.oc-prov-tag{font-size:11px;color:var(--success);background:rgba(52,199,89,.12);border-radius:5px;padding:2px 8px}
+.oc-view{display:none}
+.oc-view.show{display:block}
+.oc-json{font-family:var(--mono);font-size:11.5px;line-height:1.7;color:#c7c7cc;background:#1B1B1F;border-radius:10px;padding:14px 16px;white-space:pre;overflow:auto;max-height:360px;margin:0}
+.oc-json .k{color:#5EA6FF}
+.oc-json .s{color:#3BC260}
+.oc-json .c{color:#6E6E73}
+.oc-mode-tabs{padding:2px}
+.oc-mode-tabs .seg{font-size:11px;padding:4px 11px}
+
+/* ===== Extensions ===== */
+.ex-card{padding:0}
+.ex-main-tabs{margin:14px 14px 0}
+.ex-panel{display:none;flex-direction:column;padding:16px 14px}
+.ex-panel.show{display:flex}
+.ex-engine-bar{margin:0 0 14px}
+.ex-engine-tabs{display:flex;gap:24px;background:transparent;border-radius:0;padding:0;border-bottom:1px solid var(--separator)}
+.ex-engine-tabs .seg{flex:0 0 auto;background:transparent;border-radius:0;padding:9px 2px;font-size:13px;color:var(--secondary);border-bottom:2px solid transparent;margin-bottom:-1px;box-shadow:none}
+.ex-engine-tabs .seg:hover{color:var(--label);background:transparent}
+.ex-engine-tabs .seg.active{color:var(--label);border-bottom-color:var(--accent);background:transparent;font-weight:600;box-shadow:none}
+.ex-engine{display:none}
+.ex-engine.show{display:block}
+.ex-plgview{display:none}
+.ex-plgview.show{display:block}
+.ex-split{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:start}
+.ex-col{display:flex;flex-direction:column;gap:8px}
+.plg-item{background:var(--card);border:1px solid var(--separator);border-radius:10px;padding:11px 13px;cursor:pointer;transition:border-color .15s,background .12s}
+.plg-item:hover{border-color:#c5c5cc}
+.plg-item.active{border-color:var(--accent);background:rgba(0,122,255,.04)}
+.plg-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px}
+.plg-name{font-size:13px;font-weight:600;color:var(--label)}
+.plg-row{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tertiary);flex-wrap:wrap}
+.type-badge{font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;line-height:1.5}
+.type-badge.integration{color:#fff;background:var(--accent)}
+.type-badge.hybrid{color:#fff;background:var(--purple)}
+.type-badge.skill{color:var(--accent);background:rgba(0,122,255,.1)}
+.type-badge.hook{color:var(--warning);background:rgba(255,149,0,.14)}
+.type-badge.command{color:var(--success);background:rgba(52,199,89,.14)}
+.type-badge.agent{color:#fff;background:#FF2D55}
+.type-badge.mcp{color:#0a3d62;background:#5AC8FA}
+.type-badge.unknown{color:var(--secondary);background:var(--control)}
+.ver-badge{font-family:var(--mono);font-size:10px;color:var(--secondary);background:var(--control);border-radius:4px;padding:1px 6px}
+.scope-chip{font-size:10px;color:var(--secondary);background:var(--control);border-radius:4px;padding:1px 6px}
+.source-badge{font-size:10px;color:var(--secondary);background:var(--control);border-radius:4px;padding:1px 6px;font-family:var(--mono)}
+.dup-badge{font-size:10px;font-weight:600;color:var(--warning);background:rgba(255,149,0,.14);border-radius:4px;padding:1px 6px}
+.plg-detail{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:16px 18px}
+.plg-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.plg-detail h3{font-size:16px;font-weight:600}
+.plg-desc{font-size:13px;color:var(--secondary);line-height:1.6;margin-bottom:14px}
+.res-title{font-size:12px;font-weight:600;color:var(--tertiary);margin-bottom:8px}
+.res-filter{display:flex;gap:6px;flex-wrap:wrap}
+.res-chip{font-size:11px;color:var(--secondary);background:var(--control);border-radius:6px;padding:3px 9px}
+.res-chip .res-count{font-size:10px;color:var(--tertiary);margin-left:3px}
+.market-card{background:var(--card);border:1px solid var(--separator);border-radius:10px;padding:13px 15px}
+.market-card.active{border-color:var(--accent);background:rgba(0,122,255,.04)}
+.mk-name{font-size:13px;font-weight:600;margin-bottom:4px}
+.mk-desc{font-size:11px;color:var(--secondary);line-height:1.5}
+.mk-install{background:var(--card);border:1px solid var(--separator);border-radius:10px;padding:12px 14px}
+.mk-install .mki-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.mk-install .mki-name{font-size:13px;font-weight:600}
+.mk-install .mki-desc{font-size:11px;color:var(--secondary);line-height:1.5}
+.installs-badge{font-size:10px;color:var(--secondary);background:var(--control);border-radius:4px;padding:1px 6px;font-family:var(--mono)}
+.stat-strip{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.stat-cell{flex:1;min-width:110px;background:var(--card);border:1px solid var(--separator);border-radius:10px;padding:11px 14px}
+.stat-cell .sv{font-size:20px;font-weight:600;color:var(--label)}
+.stat-cell .sl{font-size:11px;color:var(--tertiary);margin-top:2px}
+.diag-card{background:rgba(255,149,0,.06);border:1px solid rgba(255,149,0,.3);border-radius:12px;padding:13px 16px;margin-bottom:14px}
+.diag-card h4{font-size:13px;font-weight:600;color:var(--warning);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.diag-card p{font-size:12px;color:var(--secondary);line-height:1.6}
+.ws-item{background:var(--card);border:1px solid var(--separator);border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .15s}
+.ws-item:hover{border-color:#c5c5cc}
+.ws-item.active{border-color:var(--accent);background:rgba(0,122,255,.04)}
+.ws-name{font-size:13px;font-weight:600;color:var(--label);display:flex;align-items:center;justify-content:space-between;gap:7px;margin-bottom:4px}
+.ws-path{font-family:var(--mono);font-size:11px;color:var(--tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-tools{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+.tool-tag{font-size:10px;font-weight:600;color:var(--secondary);background:var(--control);border-radius:4px;padding:1px 6px}
+.tool-tag.on{color:#fff;background:var(--accent)}
+.ex-form{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:0 18px}
+.ex-form h3{font-size:12px;font-weight:600;color:var(--tertiary);padding:14px 0 8px;letter-spacing:.2px}
+.frow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--separator)}
+.frow:first-of-type{border-top:none}
+.frow .fl{font-size:14px;color:var(--secondary)}
+.frow .fv{display:flex;align-items:center;gap:8px}
+.result-card{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:0 18px;margin-top:14px}
+.result-card h3{font-size:12px;font-weight:600;color:var(--tertiary);padding:14px 0 8px;letter-spacing:.2px}
+.result-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--separator);border-radius:8px;overflow:hidden;margin:6px 0 14px}
+.result-cell{background:var(--card);padding:11px 8px;text-align:center}
+.result-cell .rv{font-size:18px;font-weight:600}
+.result-cell .rl{font-size:10px;color:var(--tertiary);margin-top:2px}
+.rv.deploy{color:var(--success)}.rv.remove{color:var(--tertiary)}.rv.warn{color:var(--warning)}.rv.conflict{color:#FF3B30}
+.env-sync{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:14px 18px;margin-bottom:14px}
+.env-sync-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.env-sync-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
+.env-note{font-size:12px;color:var(--secondary);line-height:1.8}
+.env-note li{list-style:none;padding-left:14px;position:relative}
+.env-note li::before{content:'·';position:absolute;left:4px;color:var(--tertiary)}
+.env-table{background:var(--card);border:1px solid var(--separator);border-radius:12px;overflow:hidden}
+.env-row{display:grid;grid-template-columns:1.1fr 1.4fr auto;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--separator);font-size:13px}
+.env-row:first-child{border-top:none}
+.env-row .ek{font-family:var(--mono);color:var(--label)}
+.env-row .ev{font-family:var(--mono);color:var(--secondary);letter-spacing:.5px;word-break:break-all}
+.env-row .eo{display:flex;gap:4px}
+.env-ic{width:26px;height:26px;border:none;background:transparent;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--tertiary);transition:background .12s,color .12s}
+.env-ic:hover{background:var(--control);color:var(--label)}
+.env-ic .ic{width:14px;height:14px;stroke:currentColor}
+.plg-desc-2{font-size:11.5px;color:var(--secondary);line-height:1.5;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pid-line{font-family:var(--mono);font-size:10px;color:var(--tertiary)}
+.plg-meta-row{display:flex;align-items:center;gap:8px;padding:9px 0;border-top:1px solid var(--separator);font-size:13px;flex-wrap:wrap}
+.plg-meta-row:first-of-type{border-top:none}
+.plg-meta-row .pm-label{color:var(--tertiary);font-size:12px;min-width:48px}
+.plg-meta-row .pm-value{color:var(--label)}
+.plg-meta-row .pm-sep{color:var(--separator)}
+.cap-badge{font-size:10px;font-weight:600;color:var(--purple);background:rgba(175,82,222,.12);border-radius:4px;padding:1px 7px}
+.res-filter-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.res-filter-bar .rf-label{font-size:11px;color:var(--tertiary);margin-right:2px}
+.res-filter-bar .res-chip{cursor:pointer;user-select:none}
+.res-filter-bar .res-chip.active{background:var(--label);color:#fff}
+.res-filter-bar .res-chip.active .res-count{color:rgba(255,255,255,.7)}
+.status-banner{display:flex;align-items:center;gap:12px;border-radius:10px;padding:10px 14px;font-size:12px;margin-bottom:12px}
+.status-banner.warning{background:rgba(255,149,0,.08);border:1px solid rgba(255,149,0,.3);color:#9a6200}
+.status-banner.error{background:rgba(255,59,48,.08);border:1px solid rgba(255,59,48,.3);color:#a02620}
+.status-banner .sb-text{flex:1;line-height:1.5}
+.status-banner .sb-btn{font-size:11px;color:var(--accent);background:none;border:none;cursor:pointer;text-decoration:underline;font-family:inherit}
+/* sidebar 设置模式 */
+.sb-normal{display:flex;flex-direction:column;flex:1;gap:16px;min-height:0}
+.sb-settings{display:none;flex-direction:column;flex:1;gap:14px;min-height:0}
+.sidebar.settings-mode .sb-normal{display:none}
+.sidebar.settings-mode .sb-settings{display:flex}
+.sb-back{display:flex;align-items:center;gap:6px;background:none;border:none;cursor:pointer;color:var(--secondary);font-size:13px;font-family:inherit;padding:2px 5px}
+.sb-back:hover{color:var(--accent)}
+.sb-back .ic{width:16px;height:16px;stroke:currentColor}
+.sb-settings-title{font-size:20px;font-weight:600;color:var(--label);padding:0 5px;letter-spacing:-.3px}
+.sb-settings-nav{display:flex;flex-direction:column;gap:2px}
+.sb-set-item{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:8px;cursor:pointer;color:var(--secondary);font-size:14px;transition:background .12s}
+.sb-set-item:hover{background:var(--control)}
+.sb-set-item.active{background:var(--control);color:var(--label)}
+.sb-set-item .ic{width:17px;height:17px;stroke:var(--tertiary);flex-shrink:0}
+.sb-set-item.active .ic{stroke:var(--accent)}
+/* 设置内容页 */
+.view-settings-page{padding:32px 36px;gap:22px;overflow:auto}
+.settings-page{display:flex;flex-direction:column;gap:18px;max-width:760px}
+.set-card{background:var(--card);border:1px solid var(--separator);border-radius:14px;padding:20px 24px;box-shadow:var(--shadow)}
+.set-card h2{font-size:17px;font-weight:600;margin-bottom:4px}
+.set-card .set-sub{font-size:12px;color:var(--tertiary);margin-bottom:14px}
+.range-row{display:flex;align-items:center;gap:14px}
+.range-row input[type=range]{flex:1;accent-color:var(--accent)}
+.range-num{font-family:var(--mono);font-size:13px;color:var(--label);background:var(--control);border-radius:7px;padding:5px 10px;min-width:96px;text-align:center}
+.qr-area{width:152px;height:152px;background:var(--control);border-radius:12px;display:flex;align-items:center;justify-content:center;color:var(--tertiary);font-size:11px;background-image:linear-gradient(45deg,#e5e5ea 25%,transparent 25%),linear-gradient(-45deg,#e5e5ea 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e5e5ea 75%),linear-gradient(-45deg,transparent 75%,#e5e5ea 75%);background-size:12px 12px;background-position:0 0,0 6px,6px -6px,-6px 0}
+.token-row{display:flex;align-items:center;gap:8px}
+.token-field{font-family:var(--mono);font-size:13px;color:var(--secondary);background:var(--control);border-radius:8px;padding:7px 12px;letter-spacing:1px;flex:1}
+.update-card{background:rgba(0,122,255,.05);border:1px solid rgba(0,122,255,.25);border-radius:12px;padding:14px 16px}
+.progress-bar{height:6px;background:var(--control);border-radius:999px;overflow:hidden;margin:10px 0}
+.progress-bar .pb-fill{height:100%;width:64%;background:var(--accent);border-radius:999px}
+.envcheck-card{background:var(--card);border:1px solid var(--separator);border-radius:12px;padding:16px}
+.envcheck-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.envcheck-name{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+.env-info{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--secondary)}
+.env-info .ei-line{display:flex;gap:8px;align-items:center}
+.env-info .ei-label{color:var(--tertiary);min-width:70px}
+.env-info .ei-val.mono{font-family:var(--mono);font-size:11px}
+.about-block{display:flex;align-items:center;gap:16px}
+.about-icon{width:64px;height:64px;border-radius:14px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-size:30px;font-weight:600;flex-shrink:0}
+.about-info h2{font-size:22px;font-weight:600}
+.about-info p{font-size:13px;color:var(--secondary);margin-top:4px}
+
+/* settings popover */
+.settings-pop{
+  position:absolute;bottom:48px;left:230px;width:300px;background:var(--card);
+  border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.12);border:1px solid var(--separator);
+  padding:6px;display:none;flex-direction:column;z-index:50;
+}
+.settings-pop.show{display:flex}
+.pop-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:9px;font-size:14px;color:var(--label);cursor:pointer}
+.pop-item:hover{background:var(--control)}
+.pop-item .muted{color:var(--tertiary);font-size:12px}
+
+/* scrollbar */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#d8d8de;border-radius:8px}
+.term-body::-webkit-scrollbar-thumb{background:#3a3a42}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sb-normal">
+      <div class="logo-row">
+        <div class="logo-mark">A</div>
+        <div class="brand">CodeBox</div>
+      </div>
+      <button class="new-btn" onclick="newSession()">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        新建会话
+      </button>
+      <nav class="nav" id="nav">
+        <div class="nav-item active" data-view="settings">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          会话设置
+        </div>
+        <div class="nav-item" data-view="provider">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></svg>
+          Provider Center
+        </div>
+        <div class="nav-item" data-view="extensions">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4h4"/><rect x="3" y="3" width="11" height="11" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+          扩展管理
+        </div>
+        <div class="nav-item" data-view="rules">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>
+          注入规则
+        </div>
+        <div class="nav-item" data-view="logs">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+          系统日志
+        </div>
+      </nav>
+      <div class="section-label"><span>运行中</span><span class="count-pill" id="sessCount">3</span></div>
+      <div class="sess-list" id="sessList"></div>
+      <div class="sidebar-footer">
+        <button class="icon-btn" onclick="enterSettings()" title="设置">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <div class="version"><span class="sess-dot"></span>v1.0.0</div>
+      </div>
+    </div>
+    <div class="sb-settings">
+      <button class="sb-back" onclick="exitSettings()">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        返回
+      </button>
+      <div class="sb-settings-title">设置</div>
+      <nav class="sb-settings-nav" id="settingsNav">
+        <div class="sb-set-item active" data-set="general"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>常规设置</div>
+        <div class="sb-set-item" data-set="shell"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>Shell</div>
+        <div class="sb-set-item" data-set="terminal"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><polyline points="7 9 11 12 7 15"/></svg>终端设置</div>
+        <div class="sb-set-item" data-set="remote"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>远程控制</div>
+        <div class="sb-set-item" data-set="update"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>软件更新</div>
+        <div class="sb-set-item" data-set="envcheck"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>环境检测</div>
+        <div class="sb-set-item" data-set="about"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>关于</div>
+      </nav>
+      <div class="version" style="margin-top:auto;padding:0 5px"><span class="sess-dot"></span>v1.0.0</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <!-- 会话设置态 -->
+    <section class="view view-settings show" id="view-settings">
+      <div class="page-head">
+        <h1>会话设置</h1>
+        <p>配置并启动一个新的 AI 编程会话</p>
+      </div>
+      <div class="config-card">
+        <div class="card-head">
+          <h2>快速启动</h2>
+        </div>
+        <div class="segmented" id="seg">
+          <button class="seg active" data-engine="claude">ClaudeCode</button>
+          <button class="seg" data-engine="opencode">OpenCode</button>
+          <button class="seg" data-engine="codex">Codex</button>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row"><label>服务提供商</label><div class="dropdown">Anthropic <span class="caret">▾</span></div></div>
+          <div class="setting-row"><label>预设配置</label><div class="dropdown">默认编码 <span class="caret">▾</span></div></div>
+          <div class="setting-row"><label>启动模式</label><div class="dropdown">内嵌终端 <span class="caret">▾</span></div></div>
+          <div class="setting-row"><label>终端 Shell</label><div class="dropdown">直接启动 <span class="caret">▾</span></div></div>
+          <div class="setting-row"><label>工作目录</label>
+            <div class="input-group">
+              <div class="text-input"><input value="/Users/maorun/projects/demo" id="dirInput"></div>
+              <button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">浏览</button>
+            </div>
+          </div>
+          <div class="setting-row"><label>启用注入代理</label><div class="switch" id="proxySwitch" onclick="this.classList.toggle('off')"><div class="knob"></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 终端态 -->
+    <section class="view view-terminal" id="view-terminal">
+      <div class="term-toolbar">
+        <div class="term-tb-left">
+          <span class="sess-dot" id="termDot" style="background:var(--success)"></span>
+          <span class="term-title" id="termTitle">重构 Dashboard 组件</span>
+          <span class="term-sep">/</span>
+          <span class="term-dir" id="termDir">~/projects/demo</span>
+          <span class="model-pill" id="termModel">claude-sonnet-4.5</span>
+        </div>
+        <div class="term-tb-right">
+          <button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">会话详情</button>
+          <button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">停止</button>
+        </div>
+      </div>
+      <div class="term-body" id="termBody"></div>
+    </section>
+
+    <!-- 占位态 -->
+    <section class="view view-placeholder" id="view-placeholder">
+      <div class="placeholder-card">
+        <h2 id="phTitle">Provider Center</h2>
+        <p>该模块为演示占位。实际产品中此处为对应功能的管理界面，沿用同样的苹果风格卡片与分组列表。</p>
+      </div>
+    </section>
+
+    <!-- Provider Center -->
+    <section class="view view-provider" id="view-provider">
+      <div class="page-head">
+        <h1>Provider Center</h1>
+        <p>统一管理服务提供商与各引擎预设</p>
+      </div>
+      <div class="config-card pc-card" id="pcList">
+        <div class="segmented pc-main-tabs" id="pcMainTabs">
+          <button class="seg active" data-main="providers">服务提供商</button>
+          <button class="seg" data-main="presets">预设</button>
+        </div>
+        <!-- 一级：服务提供商（底层资源）-->
+        <div class="pc-panel show" data-panel="providers">
+          <div class="pc-zone-label">底层资源 <span class="zn-sep">·</span> API 凭证与端点 <span class="zn-count" id="provZoneCount"></span></div>
+          <div class="pc-toolbar">
+            <div class="pc-filter" id="provFilter">
+              <span class="chip active" data-filter="all">全部</span>
+              <span class="chip" data-filter="anthropic">Anthropic</span>
+              <span class="chip" data-filter="openai">OpenAI</span>
+            </div>
+            <div class="pc-actions">
+              <button class="btn btn-ghost" style="padding:7px 13px">导出配置</button>
+              <button class="btn btn-ghost" style="padding:7px 13px">JSON 导入</button>
+              <button class="btn btn-primary">添加提供商</button>
+            </div>
+          </div>
+          <div class="prov-grid" id="provGrid"></div>
+        </div>
+        <!-- 一级：预设（基于提供商的启动配置）-->
+        <div class="pc-panel" data-panel="presets">
+          <div class="pc-zone-label">启动配置 <span class="zn-sep">·</span> 绑定提供商与模型参数</div>
+          <div class="pc-engine-bar">
+            <div class="segmented pc-engine-tabs" id="pcEngineTabs">
+              <button class="seg active" data-engine="claude">Claude Code</button>
+              <button class="seg" data-engine="codex">Codex</button>
+              <button class="seg" data-engine="opencode">OpenCode</button>
+            </div>
+          </div>
+          <!-- Claude Code 预设 -->
+          <div class="pc-engine show" data-engine-panel="claude">
+            <div class="pc-toolbar">
+              <div class="pc-filter" id="claudeFilter">
+                <span class="chip active" data-pfilter="all">全部</span>
+                <span class="chip" data-pfilter="Anthropic">Anthropic</span>
+                <span class="chip" data-pfilter="GLM 智谱">GLM 智谱</span>
+              </div>
+              <div class="pc-actions"><button class="btn btn-primary">添加预设</button></div>
+            </div>
+            <div class="preset-list" id="claudePresets"></div>
+          </div>
+          <!-- Codex 预设（与 Claude Code 统一范式）-->
+          <div class="pc-engine" data-engine-panel="codex">
+            <div class="pc-toolbar">
+              <div class="pc-filter" id="codexFilter">
+                <span class="chip active" data-pfilter="all">全部</span>
+                <span class="chip" data-pfilter="OpenAI">OpenAI</span>
+                <span class="chip" data-pfilter="GLM 智谱">GLM 智谱</span>
+              </div>
+              <div class="pc-actions"><button class="btn btn-primary">添加预设</button></div>
+            </div>
+            <div class="preset-list" id="codexPresets"></div>
+          </div>
+          <!-- OpenCode 预设（配置文件管理 · 可视化/JSON 双模式）-->
+          <div class="pc-engine" data-engine-panel="opencode">
+            <div class="pc-toolbar">
+              <div class="pc-search">
+                <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input placeholder="搜索 OpenCode 预设" id="ocSearch">
+              </div>
+              <div class="pc-actions">
+                <div class="segmented oc-mode-tabs" id="ocModeTabs">
+                  <button class="seg active" data-mode="visual">可视化</button>
+                  <button class="seg" data-mode="json">JSON</button>
+                </div>
+                <button class="btn btn-primary">添加预设</button>
+              </div>
+            </div>
+            <div class="oc-view show" id="ocVisual">
+              <div class="preset-list" id="opencodePresets"></div>
+            </div>
+            <div class="oc-view" id="ocJson">
+              <pre class="oc-json" id="ocJsonBlock"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Provider 详情 -->
+      <div class="config-card pc-detail" id="pcDetail">
+        <button class="pc-back" onclick="closeProvider()">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          返回列表
+        </button>
+        <div class="detail-title-row">
+          <span class="prov-name" id="detailName">Anthropic</span>
+          <span class="prov-formats" id="detailFormats"></span>
+        </div>
+        <div class="detail-section">
+          <h3>基本信息</h3>
+          <div class="detail-row"><span class="dr-label">默认模型</span><span class="dr-value" id="detailModel">—</span></div>
+          <div class="detail-row"><span class="dr-label">当前有效 Base URL</span><span class="dr-value mono" id="detailBase">—</span></div>
+        </div>
+        <div class="detail-section">
+          <h3>API 密钥</h3>
+          <div class="detail-row"><span class="dr-label">密钥状态</span><span class="dr-value" id="detailKeyStatus"></span></div>
+          <div class="detail-row">
+            <span class="dr-label">密钥</span>
+            <span class="dr-value">
+              <span class="key-mask" id="detailKeyMask"></span>
+              <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" id="keyToggle" onclick="toggleKey()">显示</button>
+              <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px">编辑</button>
+              <button class="btn btn-ghost danger" style="padding:4px 10px;font-size:12px">删除</button>
+            </span>
+          </div>
+        </div>
+        <div class="detail-section">
+          <h3>API 格式</h3>
+          <div class="fmt-block" id="fmtAnthropic">
+            <div class="fmt-block-head">
+              <div class="fmt-block-title"><span class="fmt A">A</span>Anthropic 格式</div>
+              <div class="switch" onclick="this.classList.toggle('off')"><div class="knob"></div></div>
+            </div>
+            <div class="fmt-field"><span class="ff-label">Base URL</span><span class="ff-value" id="fmtAnthBase">—</span></div>
+          </div>
+          <div class="fmt-block" id="fmtOpenai">
+            <div class="fmt-block-head">
+              <div class="fmt-block-title"><span class="fmt O">O</span>OpenAI 格式</div>
+              <div class="switch" onclick="this.classList.toggle('off')"><div class="knob"></div></div>
+            </div>
+            <div class="fmt-field"><span class="ff-label">Base URL</span><span class="ff-value" id="fmtOaiBase">—</span></div>
+            <div class="fmt-field"><span class="ff-label">Organization</span><span class="ff-value" id="fmtOaiOrg">（可选，未设置）</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 扩展管理 -->
+    <section class="view view-extensions" id="view-extensions">
+      <div class="page-head">
+        <h1>扩展管理</h1>
+        <p>插件市场、工作区部署与环境变量的统一管理</p>
+      </div>
+      <div class="config-card ex-card">
+        <div class="segmented ex-main-tabs" id="exMainTabs">
+          <button class="seg active" data-exmain="plugins">插件管理</button>
+          <button class="seg" data-exmain="workspaces">工作区管理</button>
+          <button class="seg" data-exmain="envvars">环境变量</button>
+        </div>
+
+        <!-- 插件管理 -->
+        <div class="ex-panel show" data-expanel="plugins">
+          <div class="ex-engine-bar">
+            <div class="segmented ex-engine-tabs" id="exEngineTabs">
+              <button class="seg active" data-exeng="claude">ClaudeCode 插件</button>
+              <button class="seg" data-exeng="codex">Codex 插件</button>
+            </div>
+          </div>
+          <!-- ClaudeCode 插件 -->
+          <div class="ex-engine show" data-exeng-panel="claude">
+            <div class="pc-toolbar">
+              <div class="segmented" id="plgViewTabs" style="padding:2px">
+                <button class="seg active" data-plgview="installed" style="font-size:12px;padding:5px 14px">已安装 <span class="res-count" id="ccInstalledCount"></span></button>
+                <button class="seg" data-plgview="market" style="font-size:12px;padding:5px 14px">市场 <span class="res-count" id="ccMarketCount"></span></button>
+              </div>
+              <div class="pc-actions">
+                <button class="btn btn-ghost" style="padding:7px 13px">刷新</button>
+                <button class="btn btn-ghost" style="padding:7px 13px">全部更新</button>
+              </div>
+            </div>
+            <div class="ex-plgview show" data-plgview-panel="installed">
+              <div class="res-filter-bar" id="ccResFilter">
+                <span class="rf-label">资源筛选</span>
+                <span class="res-chip active" data-resfilter="all">全部</span>
+                <span class="res-chip" data-resfilter="Skills">Skills</span>
+                <span class="res-chip" data-resfilter="Agents">Agents</span>
+                <span class="res-chip" data-resfilter="Commands">Commands</span>
+                <span class="res-chip" data-resfilter="Hooks">Hooks</span>
+                <span class="res-chip" data-resfilter="MCP">MCP</span>
+              </div>
+              <div class="ex-split">
+                <div class="ex-col" id="ccPluginList"></div>
+                <div id="ccPluginDetail"></div>
+              </div>
+            </div>
+            <div class="ex-plgview" data-plgview-panel="market">
+              <div class="pc-toolbar" style="margin-bottom:12px">
+                <div class="pc-search">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <input placeholder="搜索插件名称或描述" oninput="ccSearch=this.value;renderCcMarket()">
+                </div>
+                <div class="pc-actions">
+                  <div class="segmented" id="ccSortTabs" style="padding:2px">
+                    <button class="seg active" data-sort="installs" style="font-size:11px;padding:4px 10px">安装量</button>
+                    <button class="seg" data-sort="name" style="font-size:11px;padding:4px 10px">名称</button>
+                  </div>
+                  <button class="btn btn-ghost" style="padding:7px 13px">添加市场</button>
+                </div>
+              </div>
+              <div class="ex-split">
+                <div class="ex-col" id="ccMarketList"></div>
+                <div class="ex-col" id="ccMarketPlugins"></div>
+              </div>
+            </div>
+          </div>
+          <!-- Codex 插件（与 ClaudeCode 统一范式）-->
+          <div class="ex-engine" data-exeng-panel="codex">
+            <div class="pc-toolbar">
+              <div class="segmented" id="cxPlgViewTabs" style="padding:2px">
+                <button class="seg active" data-cxplgview="installed" style="font-size:12px;padding:5px 14px">已安装 <span class="res-count" id="cxInstalledCount"></span></button>
+                <button class="seg" data-cxplgview="market" style="font-size:12px;padding:5px 14px">市场 <span class="res-count" id="cxMarketCount"></span></button>
+              </div>
+              <div class="pc-actions">
+                <button class="btn btn-ghost" style="padding:7px 13px">刷新</button>
+                <button class="btn btn-ghost" style="padding:7px 13px">全部更新</button>
+              </div>
+            </div>
+            <div class="ex-plgview show" data-cxplgview-panel="installed">
+              <div class="status-banner warning"><span class="sb-text">Codex 插件数据部分加载 · 1 个市场源响应超时，已使用本地缓存。重复插件已自动归并。</span><button class="sb-btn">重试</button></div>
+              <div class="stat-strip">
+                <div class="stat-cell"><div class="sv" id="cxStatInstalled">5</div><div class="sl">已安装</div></div>
+                <div class="stat-cell"><div class="sv" id="cxStatEnabled">3</div><div class="sl">已启用</div></div>
+                <div class="stat-cell"><div class="sv" id="cxStatMarket">2</div><div class="sl">市场源</div></div>
+              </div>
+              <div class="diag-card">
+                <h4>重复安装诊断</h4>
+                <p>检测到 1 组重复插件：「pdf-utils」在 2 个市场中重复定义，已自动归并。建议清理冗余市场源以避免子项级开关冲突。</p>
+              </div>
+              <div class="res-filter-bar" id="cxResFilter">
+                <span class="rf-label">资源筛选</span>
+                <span class="res-chip active" data-resfilter="all">全部</span>
+                <span class="res-chip" data-resfilter="Skills">Skills</span>
+                <span class="res-chip" data-resfilter="Agents">Agents</span>
+                <span class="res-chip" data-resfilter="Commands">Commands</span>
+                <span class="res-chip" data-resfilter="Hooks">Hooks</span>
+                <span class="res-chip" data-resfilter="MCP">MCP</span>
+              </div>
+              <div class="ex-split">
+                <div class="ex-col" id="cxPluginList"></div>
+                <div id="cxPluginDetail"></div>
+              </div>
+            </div>
+            <div class="ex-plgview" data-cxplgview-panel="market">
+              <div class="pc-toolbar" style="margin-bottom:12px">
+                <div class="pc-search">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <input placeholder="搜索插件名称或描述" oninput="cxSearch=this.value;renderCxMarket()">
+                </div>
+                <div class="pc-actions">
+                  <div class="segmented" id="cxSortTabs" style="padding:2px">
+                    <button class="seg active" data-sort="installs" style="font-size:11px;padding:4px 10px">安装量</button>
+                    <button class="seg" data-sort="name" style="font-size:11px;padding:4px 10px">名称</button>
+                  </div>
+                  <button class="btn btn-ghost" style="padding:7px 13px">添加市场</button>
+                  <button class="btn btn-ghost danger" style="padding:7px 13px">删除市场</button>
+                </div>
+              </div>
+              <div class="ex-split">
+                <div class="ex-col" id="cxMarketList"></div>
+                <div class="ex-col" id="cxMarketPlugins"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 工作区管理 -->
+        <div class="ex-panel" data-expanel="workspaces">
+          <div class="pc-toolbar">
+            <div class="pc-zone-label" style="margin:0">工作区 <span class="zn-sep">·</span> 插件部署与冲突检测 <span class="zn-count" id="wsCount"></span></div>
+            <div class="pc-actions">
+              <button class="btn btn-ghost" style="padding:7px 13px">刷新</button>
+              <button class="btn btn-ghost" style="padding:7px 13px">全局启用</button>
+              <button class="btn btn-primary">新建工作区</button>
+            </div>
+          </div>
+          <div class="ex-split">
+            <div class="ex-col" id="wsList"></div>
+            <div id="wsEditor"></div>
+          </div>
+        </div>
+
+        <!-- 环境变量 -->
+        <div class="ex-panel" data-expanel="envvars">
+          <div class="env-sync">
+            <div class="env-sync-head">
+              <div class="env-sync-title"><span class="sess-dot" style="background:var(--success)"></span>全局同步 <span class="ver-badge">macOS</span></div>
+              <div class="switch" onclick="this.classList.toggle('off')"><div class="knob"></div></div>
+            </div>
+            <div style="font-size:12px;color:var(--secondary);margin-bottom:8px">已开启 · 管理 4 个环境变量 · 写入 Shell 启动脚本（~/.zshrc）</div>
+            <ul class="env-note">
+              <li>启用后变量将同步到系统 Shell 环境，新终端即时生效</li>
+              <li>关闭同步仅移除 Shell 写入，不删除已保存变量</li>
+              <li>修改变量需重开终端窗口或手动 source 生效</li>
+            </ul>
+          </div>
+          <div class="pc-toolbar">
+            <div class="pc-search">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input placeholder="搜索变量名或值" id="envSearch">
+            </div>
+            <div class="pc-actions">
+              <button class="btn btn-ghost" style="padding:7px 13px">导入</button>
+              <button class="btn btn-ghost" style="padding:7px 13px">导出</button>
+              <button class="btn btn-primary">新增</button>
+            </div>
+          </div>
+          <div class="env-table" id="envTable"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置页（设置模式右侧内容）-->
+    <section class="view view-settings-page" id="view-settings-page">
+      <div class="page-head">
+        <h1 id="setPageTitle">常规设置</h1>
+        <p id="setPageDesc">配置应用启动默认项</p>
+      </div>
+      <div class="settings-page" id="settingsPage"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const TAG_COLOR={CC:'#007AFF',OC:'#FF9500',CX:'#AF52DE'};
+const PROMPT={CC:'claude',OC:'opencode',CX:'codex'};
+let nextId=13;
+let sessions=[
+  {id:12,title:'重构 Dashboard 组件',tag:'CC',model:'claude-sonnet-4.5',dir:'~/projects/demo',status:'running'},
+  {id:11,title:'修复终端滚动',tag:'OC',model:'glm-4.6',dir:'~/proj/term-fix',status:'running'},
+  {id:10,title:'排查内存泄漏',tag:'CX',model:'gpt-5.1',dir:'~/work/leak',status:'exited'},
+];
+let activeSessId=null;
+
+function renderSessions(){
+  const list=document.getElementById('sessList');
+  list.innerHTML='';
+  const running=sessions.filter(s=>s.status==='running');
+  document.getElementById('sessCount').textContent=sessions.length;
+  sessions.forEach(s=>{
+    const el=document.createElement('div');
+    el.className='sess-item'+(s.id===activeSessId?' active':'');
+    el.onclick=()=>openTerminal(s.id);
+    const dotColor=s.status==='running'?(s.tag==='CC'?'#34C759':s.tag==='OC'?'#34C759':'#8E8E93'):'#8E8E93';
+    el.innerHTML=`
+      <span class="sess-dot" style="background:${dotColor}"></span>
+      <div class="sess-info">
+        <div class="sess-title">#${s.id} ${s.title}</div>
+        <div class="sess-meta">
+          <span class="tag" style="background:${TAG_COLOR[s.tag]}">${s.tag}</span>
+          <span class="sess-sub">${s.model} · ${s.status==='running'?'运行中':'已退出'}</span>
+        </div>
+      </div>`;
+    list.appendChild(el);
+  });
+}
+
+function showView(id){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('show'));
+  document.getElementById('view-'+id).classList.add('show');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.view===id));
+}
+
+document.getElementById('nav').addEventListener('click',e=>{
+  const item=e.target.closest('.nav-item');
+  if(!item)return;
+  const v=item.dataset.view;
+  activeSessId=null; renderSessions();
+  if(v==='settings') showView('settings');
+  else if(v==='provider') showView('provider');
+  else if(v==='extensions') showView('extensions');
+  else{ document.getElementById('phTitle').textContent=item.textContent.trim(); showView('placeholder'); }
+});
+document.querySelectorAll('#seg .seg').forEach(s=>s.onclick=()=>{
+  document.querySelectorAll('#seg .seg').forEach(x=>x.classList.remove('active'));
+  s.classList.add('active');
+});
+
+function termOutput(s){
+  const p=PROMPT[s.tag];
+  const lines=[
+    `<span class="prompt">$</span> <span class="cmd">${p}</span>`,
+    `<span class="muted">Welcome to ${p==='claude'?'Claude Code':p==='opencode'?'OpenCode':'Codex'} · 会话 #${s.id}</span>`,
+    `<span class="prompt">&gt;</span> <span class="cmd">${s.title}</span>`,
+    `<span class="ai">●</span> 读取项目结构，分析依赖关系`,
+    `<span class="ai">●</span> 已定位问题：${s.title}`,
+    `<span class="ai">●</span> 应用修改并验证`,
+    `<span class="ok">⏺ 已完成 · 等待下一步指令</span>`,
+    `<span class="term-input-line"><span class="prompt">&gt;</span><span class="cursor"></span></span>`,
+  ];
+  return lines.join('<br>');
+}
+
+function openTerminal(id){
+  const s=sessions.find(x=>x.id===id);
+  if(!s)return;
+  activeSessId=id;
+  renderSessions();
+  document.getElementById('termTitle').textContent=`#${s.id} ${s.title}`;
+  document.getElementById('termDir').textContent=s.dir;
+  document.getElementById('termModel').textContent=s.model;
+  document.getElementById('termDot').style.background=s.status==='running'?'#34C759':'#8E8E93';
+  document.getElementById('termBody').innerHTML=termOutput(s);
+  showView('terminal');
+}
+
+function newSession(){
+  const engine=document.querySelector('#seg .seg.active')?.dataset.engine||'claude';
+  const tag=engine==='claude'?'CC':engine==='opencode'?'OC':'CX';
+  const model=tag==='CC'?'claude-sonnet-4.5':tag==='OC'?'glm-4.6':'gpt-5.1';
+  const dir=document.getElementById('dirInput').value||'~/projects/demo';
+  const s={id:nextId++,title:'新会话',tag,model,dir,status:'running'};
+  sessions.unshift(s);
+  openTerminal(s.id);
+}
+
+let activeSetting='general',remoteTokenVisible=false;
+const SET_TITLES={
+  general:['常规设置','配置应用启动默认项'],
+  shell:['Shell','自定义终端 Shell 路径'],
+  terminal:['终端设置','终端渲染与滚动缓冲'],
+  remote:['远程控制','HTTP/WebSocket 远程访问与移动端连接'],
+  update:['软件更新','检查并安装新版本'],
+  envcheck:['环境检测','CLI 工具安装状态与修复'],
+  about:['关于','应用信息'],
+};
+const ENV_TOOLS=[
+  {name:'Claude Code',status:'ok',version:'1.2.38',latest:'',method:'Native 安装',path:'/usr/local/bin/claude',pathStatus:'PATH 正常'},
+  {name:'OpenCode',status:'update',version:'0.8.2',latest:'0.9.0',method:'npm package',path:'/usr/local/bin/opencode',pathStatus:'CodeBox 可启动'},
+  {name:'Codex',status:'missing',version:'—',latest:'latest',method:'—',path:'未找到',pathStatus:'未找到'},
+];
+const SETTING_PAGES={
+  general(){return '<div class="set-card"><h2>仪表盘默认配置</h2><div class="set-sub">应用启动时的默认引擎、提供商与启动参数</div>'+
+    '<div class="setting-list">'+
+    '<div class="setting-row"><label>默认服务提供商</label><div class="dropdown">（不指定）<span class="caret">▾</span></div></div>'+
+    '<div class="setting-row"><label>默认预设配置</label><div class="dropdown">（不指定）<span class="caret">▾</span></div></div>'+
+    '<div class="setting-row"><label>默认 OpenCode 预设</label><div class="dropdown">本机默认（不启用受管预设）<span class="caret">▾</span></div></div>'+
+    '<div class="setting-row"><label>引擎 Tab</label><div class="segmented" style="max-width:300px;padding:2px"><button class="seg active" style="font-size:12px;padding:5px 0">ClaudeCode</button><button class="seg" style="font-size:12px;padding:5px 0">OpenCode</button><button class="seg" style="font-size:12px;padding:5px 0">Codex</button></div></div>'+
+    '<div class="setting-row"><label>启动模式</label><div class="segmented" style="max-width:300px;padding:2px"><button class="seg active" style="font-size:12px;padding:5px 0">内嵌</button><button class="seg" style="font-size:12px;padding:5px 0">独立窗口</button><button class="seg" style="font-size:12px;padding:5px 0">会话</button></div></div>'+
+    '<div class="setting-row"><label>默认 Shell</label><div class="dropdown">直接启动 <span class="caret">▾</span></div></div>'+
+    '<div class="setting-row"><label>默认启用注入代理</label><div class="switch off" onclick="this.classList.toggle(\'off\')"><div class="knob"></div></div></div>'+
+    '</div>'+
+    '<div style="margin-top:14px"><button class="btn btn-primary">保存默认配置</button><span style="font-size:11px;color:var(--tertiary);margin-left:10px">需重启应用生效</span></div></div>';},
+  shell(){return '<div class="set-card"><h2>自定义 Shell</h2><div class="set-sub">添加额外的终端 Shell 可执行文件</div>'+
+    '<div class="setting-list">'+
+    '<div class="setting-row"><label>名称</label><div class="text-input"><input placeholder="如 Git Bash" style="min-width:200px"></div></div>'+
+    '<div class="setting-row"><label>Shell 路径</label><div class="input-group"><div class="text-input"><input placeholder="/usr/local/bin/bash" style="min-width:220px"></div><button class="btn btn-primary" style="padding:7px 14px">添加</button></div></div>'+
+    '</div></div>'+
+    '<div class="set-card"><h2>已保存的 Shell</h2><div class="setting-list">'+
+    '<div class="setting-row"><label>Git Bash</label><div class="dr-value mono">/usr/local/bin/bash</div></div>'+
+    '<div class="setting-row"><label>Zsh</label><div class="dr-value mono">/bin/zsh</div></div>'+
+    '</div></div>';},
+  terminal(){return '<div class="set-card"><h2>滚动缓冲</h2><div class="set-sub">终端输出保留的最大行数，影响内存占用（1000 ~ 10,000,000）</div>'+
+    '<div class="range-row"><input type="range" min="1000" max="10000000" step="1000" value="100000" oninput="document.getElementById(\'rangeNum\').textContent=Number(this.value).toLocaleString()"><span class="range-num" id="rangeNum">100,000</span></div>'+
+    '<div style="margin-top:14px"><button class="btn btn-primary">保存终端设置</button><span style="font-size:11px;color:var(--tertiary);margin-left:10px">重新打开终端后生效</span></div></div>';},
+  remote(){return '<div class="set-card"><h2>服务状态</h2><div class="setting-list">'+
+    '<div class="setting-row"><label>远程控制服务</label><div class="dr-value"><span class="sess-dot" style="background:var(--success);margin-right:6px"></span>运行中 · 0.0.0.0:8680<div class="switch" style="margin-left:12px" onclick="this.classList.toggle(\'off\')"><div class="knob"></div></div></div></div>'+
+    '</div></div>'+
+    '<div class="set-card"><h2>连接设置</h2><div class="setting-list">'+
+    '<div class="setting-row"><label>监听地址</label><div class="text-input"><input value="0.0.0.0" style="min-width:200px"></div></div>'+
+    '<div class="setting-row"><label>监听端口</label><div class="text-input"><input value="8680" style="min-width:100px"></div></div>'+
+    '<div class="setting-row"><label></label><button class="btn btn-primary" style="padding:7px 14px">应用</button></div>'+
+    '</div></div>'+
+    '<div class="set-card"><h2>访问 Token</h2><div class="set-sub">移动端连接时需携带的鉴权令牌</div>'+
+    '<div class="token-row"><span class="token-field" id="remoteToken">••••••••••••••••••••</span><button class="btn btn-ghost" style="padding:7px 13px" id="remoteTokenToggle" onclick="toggleRemoteToken()">显示</button><button class="btn btn-ghost" style="padding:7px 13px">复制</button><button class="btn btn-ghost danger" style="padding:7px 13px">刷新</button></div></div>'+
+    '<div class="set-card"><h2>快速连接</h2><div class="set-sub">移动端扫描二维码快速连接（启用远程控制后显示）</div><div class="qr-area">二维码</div></div>';},
+  update(){return '<div class="set-card"><h2>版本信息</h2><div class="setting-list">'+
+    '<div class="setting-row"><label>当前版本</label><div class="dr-value"><span class="ver-badge">v1.0.0</span></div></div>'+
+    '<div class="setting-row"><label>检查更新</label><button class="btn btn-primary" style="padding:7px 14px">检查更新</button></div>'+
+    '</div></div>'+
+    '<div class="update-card"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div style="font-size:14px;font-weight:600">发现新版本 v1.1.0</div><span style="font-size:11px;color:var(--tertiary)">2026-06-10</span></div>'+
+    '<div style="font-size:12px;color:var(--secondary);line-height:1.6;margin-bottom:10px">新增 Codex 插件重复诊断、OpenCode 预设可视化编辑、环境检测 Native 安装支持。</div>'+
+    '<div class="progress-bar"><div class="pb-fill"></div></div>'+
+    '<div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--tertiary)">64% · 12.8 / 20.0 MB</span><button class="btn btn-primary" style="padding:6px 14px;font-size:12px">下载并安装</button></div></div>'+
+    '<div class="set-card"><h2>GitHub 授权</h2><div class="set-sub">用于获取私有仓库的 Releases</div>'+
+    '<div class="token-row"><span class="token-field">ghp_••••••••••••••••</span><button class="btn btn-ghost" style="padding:7px 13px">显示</button><button class="btn btn-primary" style="padding:7px 13px">保存</button></div></div>';},
+  envcheck(){return '<div class="set-card"><h2>环境检测</h2><div class="set-sub">CLI 工具安装状态、版本与 PATH 校验</div></div><div id="envcheckList"></div>';},
+  about(){return '<div class="set-card"><div class="about-block"><div class="about-icon">A</div><div class="about-info"><h2>Amagi CodeBox</h2><p>Version 1.0.0 · 跨平台多提供商 AI CLI 工作台</p></div></div></div>'+
+    '<div class="set-card"><h2>详细信息</h2><div class="setting-list">'+
+    '<div class="setting-row"><label>配置目录</label><div class="dr-value mono">~/.amagi-codebox/</div></div>'+
+    '<div class="setting-row"><label>技术栈</label><div class="dr-value">Wails v2.11.0 · Go 1.24.0 · Vue 3 · Element Plus</div></div>'+
+    '<div class="setting-row"><label>许可证</label><div class="dr-value">MIT</div></div>'+
+    '</div></div>';},
+};
+function renderEnvcheck(){
+  const m={ok:['#34C759','已安装'],update:['#FF9500','有更新'],missing:['#8E8E93','未安装']};
+  document.getElementById('envcheckList').innerHTML=ENV_TOOLS.map(t=>{
+    const [c,lbl]=m[t.status];
+    return '<div class="envcheck-card"><div class="envcheck-head"><div class="envcheck-name"><span class="sess-dot" style="background:'+c+'"></span>'+t.name+'</div><span class="scope-chip">'+lbl+'</span></div>'+
+      '<div class="env-info">'+
+      '<div class="ei-line"><span class="ei-label">安装方式</span><span class="ei-val">'+t.method+'</span></div>'+
+      '<div class="ei-line"><span class="ei-label">当前版本</span><span class="ei-val mono">'+t.version+'</span>'+(t.latest?'<span class="ei-val" style="color:var(--warning)">→ '+t.latest+'</span>':'')+'</div>'+
+      '<div class="ei-line"><span class="ei-label">PATH</span><span class="ei-val">'+t.pathStatus+'</span></div>'+
+      '<div class="ei-line"><span class="ei-label">路径</span><span class="ei-val mono">'+t.path+'</span></div></div>'+
+      '<div style="margin-top:11px;display:flex;gap:8px">'+(t.status==='missing'?'<button class="btn btn-primary" style="padding:5px 12px;font-size:12px">安装</button>':'<button class="btn btn-ghost" style="padding:5px 12px;font-size:12px">检测</button>')+(t.status==='update'?'<button class="btn btn-ghost" style="padding:5px 12px;font-size:12px">更新</button>':'')+'</div></div>';
+  }).join('');
+}
+function renderSettingPage(){
+  const t=SET_TITLES[activeSetting];
+  document.getElementById('setPageTitle').textContent=t[0];
+  document.getElementById('setPageDesc').textContent=t[1];
+  document.getElementById('settingsPage').innerHTML=SETTING_PAGES[activeSetting]();
+  if(activeSetting==='envcheck')renderEnvcheck();
+}
+function selectSetting(key){activeSetting=key;document.querySelectorAll('.sb-set-item').forEach(x=>x.classList.toggle('active',x.dataset.set===key));renderSettingPage();}
+function enterSettings(){
+  document.getElementById('sidebar').classList.add('settings-mode');
+  activeSetting='general';
+  document.querySelectorAll('.sb-set-item').forEach(x=>x.classList.toggle('active',x.dataset.set==='general'));
+  renderSettingPage();
+  showView('settings-page');
+}
+function exitSettings(){
+  document.getElementById('sidebar').classList.remove('settings-mode');
+  showView('settings');
+}
+function toggleRemoteToken(){
+  remoteTokenVisible=!remoteTokenVisible;
+  document.getElementById('remoteToken').textContent=remoteTokenVisible?'cbx-9f3a7c2e1b8d4a6f0c5e9aFk':'••••••••••••••••••••';
+  document.getElementById('remoteTokenToggle').textContent=remoteTokenVisible?'隐藏':'显示';
+}
+document.getElementById('settingsNav').addEventListener('click',e=>{const item=e.target.closest('.sb-set-item');if(item)selectSetting(item.dataset.set);});
+
+/* ===== Provider Center ===== */
+const PROVIDERS=[
+  {id:'anthropic',name:'Anthropic',formats:['A'],keyConfigured:true,baseUrl:'https://api.anthropic.com',defaultModel:'claude-sonnet-4.5',filter:'anthropic',org:''},
+  {id:'glm',name:'GLM 智谱',formats:['A','O'],keyConfigured:true,baseUrl:'https://open.bigmodel.cn/api/paas/v4',defaultModel:'glm-4.6',filter:'openai',org:''},
+  {id:'openai',name:'OpenAI',formats:['O'],keyConfigured:false,baseUrl:'https://api.openai.com/v1',defaultModel:'gpt-5.1',filter:'openai',org:'org-7Hk2-demo'},
+  {id:'kimi',name:'Kimi 月之暗面',formats:['O'],keyConfigured:true,baseUrl:'https://api.moonshot.cn/v1',defaultModel:'-',filter:'openai',org:''},
+];
+const PRESETS={
+  claude:[
+    {name:'Sonnet 默认',provider:'Anthropic',badges:[{t:'claude-sonnet-4.5',m:1},{t:'Temp 1.0'},{t:'Stream'},{t:'Thinking 8k'}]},
+    {name:'Haiku 快速',provider:'Anthropic',badges:[{t:'claude-haiku-4.5',m:1},{t:'Temp 0.7'},{t:'Stream'}]},
+    {name:'GLM 长上下文',provider:'GLM 智谱',badges:[{t:'glm-4.6',m:1},{t:'Temp 0.9'},{t:'Compact@'}]},
+  ],
+  codex:[
+    {name:'GPT-5 标准预设',provider:'OpenAI',badges:[{t:'gpt-5.1',m:1},{t:'Effort high'},{t:'Stream'}]},
+    {name:'o4-mini 经济',provider:'OpenAI',badges:[{t:'o4-mini',m:1},{t:'Effort medium'}]},
+    {name:'GLM 经济预设',provider:'GLM 智谱',badges:[{t:'glm-4.6',m:1},{t:'Effort low'}]},
+  ],
+};
+const OPENCODE_PRESETS=[
+  {key:'(本机)',name:'本机默认配置',isDefault:true,desc:'读取本地 ~/.config/opencode 配置，未启用受管预设。启动时若未指定预设即使用此项。',bindCount:0,provider:null},
+  {key:'team-glm-sonnet',name:'团队共享 · GLM Sonnet',desc:'团队统一的编码助手预设，Sonnet 级模型 + 中等温度，适合日常开发。',bindCount:3,provider:'GLM 智谱'},
+  {key:'personal-kimi',name:'个人 · Kimi 长文',desc:'长上下文阅读与总结专用，128k 上下文窗口，绑定 Kimi endpoint。',bindCount:1,provider:'Kimi 月之暗面'},
+  {key:'research-opus',name:'研究 · Opus 深度',desc:'复杂架构与深度推理场景，已绑定到研究工作区。',bindCount:2,provider:'Anthropic'},
+];
+let provFilter='all',currentProvider=null,keyVisible=false;
+let claudePresetFilter='all',codexPresetFilter='all',ocMode='visual';
+
+function fmtBadges(arr){return arr.map(f=>'<span class="fmt '+f+'">'+f+'</span>').join('');}
+function renderProviders(){
+  const grid=document.getElementById('provGrid');
+  const cnt=document.getElementById('provZoneCount');
+  const list=PROVIDERS.filter(p=>provFilter==='all'||p.filter===provFilter);
+  if(cnt)cnt.textContent='· '+PROVIDERS.length+' 个提供商';
+  if(!list.length){grid.innerHTML='<div class="pc-empty">当前筛选条件下无匹配的服务提供商</div>';return;}
+  grid.innerHTML=list.map(p=>{
+    const dot=p.keyConfigured?'#34C759':'#8E8E93';
+    return '<div class="prov-card" onclick="openProvider(\''+p.id+'\')">'+
+      '<div class="prov-card-head"><div class="prov-name">'+p.name+'</div><div class="prov-formats">'+fmtBadges(p.formats)+'</div></div>'+
+      '<div class="prov-row"><span class="prov-row-label">Base URL</span><span class="prov-row-value mono">'+p.baseUrl+'</span></div>'+
+      '<div class="prov-row"><span class="prov-row-label">默认模型</span><span class="prov-row-value '+(p.defaultModel==='-'?'placeholder':'')+'">'+p.defaultModel+'</span></div>'+
+      '<div class="prov-row"><span class="prov-row-label">密钥</span><span class="key-status"><span class="sess-dot" style="background:'+dot+'"></span>'+(p.keyConfigured?'已配置':'未配置')+'</span></div>'+
+    '</div>';
+  }).join('');
+}
+function renderPresets(engine,filter){
+  const el=document.getElementById(engine+'Presets');
+  let list=PRESETS[engine]||[];
+  if(filter&&filter!=='all')list=list.filter(p=>p.provider===filter);
+  const label=engine==='claude'?'Claude Code':'Codex';
+  if(!list.length){el.innerHTML='<div class="pc-empty">'+(filter&&filter!=='all'?'该提供商下暂无 '+label+' 预设':'暂无 '+label+' 预设')+'</div>';return;}
+  el.innerHTML=list.map(p=>{
+    const badges=(p.badges||[]).map(b=>'<span class="param '+(b.m?'model':'')+'">'+b.t+'</span>').join('');
+    return '<div class="preset-card"><div class="preset-head"><div class="preset-name">'+p.name+'</div><span class="preset-prov">'+p.provider+'</span></div><div class="preset-badges">'+badges+'</div></div>';
+  }).join('');
+}
+function renderOpenCode(mode){
+  if(mode==='json'){document.getElementById('ocJsonBlock').innerHTML=openCodeJsonText();return;}
+  const el=document.getElementById('opencodePresets');
+  el.innerHTML=OPENCODE_PRESETS.map(p=>{
+    if(p.isDefault){
+      return '<div class="oc-card default"><div class="oc-head"><div class="oc-name">'+p.name+'<span class="oc-default-tag">默认</span></div></div><div class="oc-key">key: '+p.key+'</div><div class="oc-desc">'+p.desc+'</div></div>';
+    }
+    return '<div class="oc-card"><div class="oc-head"><div class="oc-name">'+p.name+'</div></div>'+
+      '<div class="oc-key">key: '+p.key+'</div>'+
+      '<div class="oc-desc">'+p.desc+'</div>'+
+      '<div class="oc-meta"><span class="oc-bind">绑定 '+p.bindCount+' 个工作区</span>'+(p.provider?'<span class="oc-prov-tag">'+p.provider+'</span>':'')+'</div></div>';
+  }).join('');
+}
+function openCodeJsonText(){
+  return '<span class="c">// ~/.config/opencode/config.json</span>\n'+
+'{\n'+
+'  <span class="k">"$schema"</span>: <span class="s">"https://opencode.ai/config.json"</span>,\n'+
+'  <span class="k">"provider"</span>: {\n'+
+'    <span class="k">"glm"</span>:      { <span class="k">"npm"</span>: <span class="s">"@ai-sdk/glm"</span>, <span class="k">"models"</span>: [<span class="s">"glm-4.6"</span>] },\n'+
+'    <span class="k">"moonshot"</span>: { <span class="k">"npm"</span>: <span class="s">"@ai-sdk/moonshot"</span> },\n'+
+'    <span class="k">"anthropic"</span>: { <span class="k">"npm"</span>: <span class="s">"@ai-sdk/anthropic"</span> }\n'+
+'  },\n'+
+'  <span class="k">"preset"</span>: {\n'+
+'    <span class="c">// 团队共享 · GLM Sonnet</span>\n'+
+'    <span class="k">"team-glm-sonnet"</span>: { <span class="k">"model"</span>: <span class="s">"glm-4.6"</span>, <span class="k">"provider"</span>: <span class="s">"glm"</span>, <span class="k">"temperature"</span>: 0.6 },\n'+
+'    <span class="c">// 个人 · Kimi 长文</span>\n'+
+'    <span class="k">"personal-kimi"</span>:  { <span class="k">"model"</span>: <span class="s">"moonshot-v1-128k"</span>, <span class="k">"provider"</span>: <span class="s">"moonshot"</span> },\n'+
+'    <span class="k">"research-opus"</span>:  { <span class="k">"model"</span>: <span class="s">"claude-opus-4.6"</span>, <span class="k">"provider"</span>: <span class="s">"anthropic"</span> }\n'+
+'  }\n'+
+'}';
+}
+function setPcMain(main){
+  document.querySelectorAll('#pcMainTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.main===main));
+  document.querySelectorAll('.pc-panel').forEach(p=>p.classList.toggle('show',p.dataset.panel===main));
+}
+function setPcEngine(engine){
+  document.querySelectorAll('#pcEngineTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.engine===engine));
+  document.querySelectorAll('.pc-engine').forEach(p=>p.classList.toggle('show',p.dataset.enginePanel===engine));
+  if(engine==='claude')renderPresets('claude',claudePresetFilter);
+  else if(engine==='codex')renderPresets('codex',codexPresetFilter);
+  else renderOpenCode(ocMode);
+}
+function setOcMode(mode){
+  ocMode=mode;
+  document.querySelectorAll('#ocModeTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.mode===mode));
+  document.getElementById('ocVisual').classList.toggle('show',mode==='visual');
+  document.getElementById('ocJson').classList.toggle('show',mode==='json');
+  renderOpenCode(mode);
+}
+function openProvider(id){
+  const p=PROVIDERS.find(x=>x.id===id);if(!p)return;
+  currentProvider=p;keyVisible=false;
+  document.getElementById('detailName').textContent=p.name;
+  document.getElementById('detailFormats').innerHTML=fmtBadges(p.formats);
+  document.getElementById('detailModel').textContent=p.defaultModel==='-'?'未设置':p.defaultModel;
+  document.getElementById('detailBase').textContent=p.baseUrl;
+  document.getElementById('detailKeyStatus').innerHTML='<span class="sess-dot" style="background:'+(p.keyConfigured?'#34C759':'#8E8E93')+'"></span>'+(p.keyConfigured?'已配置':'未配置');
+  applyKeyMask();
+  document.getElementById('fmtAnthropic').style.display=p.formats.includes('A')?'block':'none';
+  document.getElementById('fmtOpenai').style.display=p.formats.includes('O')?'block':'none';
+  document.getElementById('fmtAnthBase').textContent=p.baseUrl;
+  document.getElementById('fmtOaiBase').textContent=p.baseUrl;
+  document.getElementById('fmtOaiOrg').textContent=p.org||'（可选，未设置）';
+  document.getElementById('pcList').style.display='none';
+  document.getElementById('pcDetail').classList.add('show');
+}
+function closeProvider(){
+  document.getElementById('pcDetail').classList.remove('show');
+  document.getElementById('pcList').style.display='';
+}
+function applyKeyMask(){
+  const p=currentProvider,mask=document.getElementById('detailKeyMask'),toggle=document.getElementById('keyToggle');
+  if(!p||!p.keyConfigured){mask.textContent='—';toggle.style.display='none';return;}
+  toggle.style.display='';
+  if(keyVisible){mask.textContent='sk-'+p.id+'-demo-9f3a7c2e1b8d4a6f0c5e2a9b7d1f3c8e';toggle.textContent='隐藏';}
+  else{mask.textContent='sk-'+p.id+'-••••••••••••••••••••••••';toggle.textContent='显示';}
+}
+function toggleKey(){keyVisible=!keyVisible;applyKeyMask();}
+document.getElementById('pcMainTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setPcMain(s.dataset.main);});
+document.getElementById('pcEngineTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setPcEngine(s.dataset.engine);});
+document.getElementById('ocModeTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setOcMode(s.dataset.mode);});
+document.getElementById('provFilter').addEventListener('click',e=>{const c=e.target.closest('.chip');if(!c)return;provFilter=c.dataset.filter;document.querySelectorAll('#provFilter .chip').forEach(x=>x.classList.toggle('active',x===c));renderProviders();});
+document.getElementById('claudeFilter').addEventListener('click',e=>{const c=e.target.closest('.chip');if(!c)return;claudePresetFilter=c.dataset.pfilter;document.querySelectorAll('#claudeFilter .chip').forEach(x=>x.classList.toggle('active',x===c));renderPresets('claude',claudePresetFilter);});
+document.getElementById('codexFilter').addEventListener('click',e=>{const c=e.target.closest('.chip');if(!c)return;codexPresetFilter=c.dataset.pfilter;document.querySelectorAll('#codexFilter .chip').forEach(x=>x.classList.toggle('active',x===c));renderPresets('codex',codexPresetFilter);});
+renderProviders();renderPresets('claude','all');renderPresets('codex','all');renderOpenCode('visual');
+
+/* ===== Extensions ===== */
+const CC_PLUGINS=[
+  {id:'amagi',name:'Amagi CodeBox 插件',type:'integration',ver:'1.2.38',enabled:true,scope:'global',developer:'Amagi Team',category:'协作框架',desc:'天城协作框架：多 Agent 分派、强制质量门控、知识体系与战术手册。集成 Skill/Hook/Command/Agent/MCP 全部子项类型。',res:{Skills:8,Agents:12,Commands:6,Hooks:4,MCP:3}},
+  {id:'serena',name:'Serena 符号引擎',type:'hybrid',ver:'2.1.0',enabled:true,scope:'project',developer:'Oracle',category:'代码导航',desc:'基于 LSP 的符号级代码导航与编辑，提供精准的引用查找、重命名与重构能力。',res:{Skills:5,Agents:2,Commands:3,Hooks:1,MCP:1}},
+  {id:'doc-skills',name:'文档处理技能包',type:'skill',ver:'0.9.4',enabled:false,scope:'project',developer:'Community',category:'文档处理',desc:'PDF / Word / Excel 解析与格式转换技能集合，支持表格抽取与 OCR。',res:{Skills:9,Agents:0,Commands:0,Hooks:0,MCP:0}},
+  {id:'git-hooks',name:'Git 提交守护',type:'hook',ver:'1.0.2',enabled:true,scope:'global',developer:'Amagi Team',category:'版本控制',desc:'提交前自动运行测试门控、代码审核提醒与提交信息规范校验。',res:{Skills:0,Agents:0,Commands:0,Hooks:3,MCP:0}},
+];
+const CC_MARKETS=[
+  {id:'official',name:'官方市场',desc:'Anthropic 官方维护，质量有保障。',plugins:[
+    {name:'Context7 文档检索',installs:12400,desc:'实时获取任意库的最新文档与代码示例，避免训练数据过时。'},
+    {name:'Playwright 自动化',installs:8900,desc:'浏览器自动化与端到端测试，支持快照与无头模式。'},
+    {name:'数据库专家',installs:5600,desc:'多数据库 SQL 生成、执行计划分析与迁移。'},
+  ]},
+  {id:'community',name:'社区市场',desc:'社区贡献的高质量插件集合。',plugins:[
+    {name:'Mermaid 图表',installs:3200,desc:'自然语言生成流程图、时序图与架构图。'},
+    {name:'正则助手',installs:2100,desc:'正则表达式编写、解释与性能分析。'},
+  ]},
+];
+const CX_PLUGINS=[
+  {id:'cx-amagi',name:'Amagi Codex 适配',type:'integration',ver:'1.2.0',enabled:true,scope:'global',developer:'Amagi Team',category:'协作框架',source:'official',dup:false,pid:'codex.amagi',capabilities:['agent-routing','config-fallback','subitem-control'],desc:'为 Codex CLI 注入天城协作框架：Agent 路由、config.toml 自定义 provider 回退、子项级开关控制。',res:{Skills:6,Agents:10,Commands:4,Hooks:3,MCP:2}},
+  {id:'cx-pdf',name:'pdf-utils',type:'skill',ver:'0.3.1',enabled:true,scope:'project',developer:'Community',category:'文档处理',source:'community',dup:true,pid:'codex.pdf-utils',capabilities:['pdf-parse','ocr','table-extract'],desc:'PDF 解析、抽取与格式转换技能，支持表格与图文混排识别。',res:{Skills:5,Agents:0,Commands:0,Hooks:0,MCP:0}},
+  {id:'cx-term',name:'终端增强',type:'command',ver:'2.0.0',enabled:false,scope:'project',developer:'OpenAI',category:'终端工具',source:'official',dup:false,pid:'codex.term',capabilities:['history-search','output-export'],desc:'终端会话增强命令：历史搜索、输出导出、快捷片段管理。',res:{Skills:0,Agents:0,Commands:4,Hooks:0,MCP:0}},
+  {id:'cx-mcp-db',name:'数据库 MCP',type:'mcp',ver:'1.1.0',enabled:true,scope:'global',developer:'Amagi Team',category:'数据库',source:'official',dup:false,pid:'codex.mcp-db',capabilities:['query','schema-introspect','readonly'],desc:'数据库 MCP 服务，支持查询、Schema 内省与只读分析。',res:{Skills:0,Agents:0,Commands:0,Hooks:0,MCP:1}},
+  {id:'cx-pdf2',name:'pdf-utils',type:'skill',ver:'0.3.0',enabled:false,scope:'project',developer:'Community',category:'文档处理',source:'community-bak',dup:true,pid:'codex.pdf-utils.bak',capabilities:['pdf-parse'],desc:'pdf-utils 的旧版本备份（与社区版重复），建议清理归并。',res:{Skills:5,Agents:0,Commands:0,Hooks:0,MCP:0}},
+];
+const CX_MARKETS=[
+  {id:'cx-official',name:'Codex 官方市场',desc:'OpenAI 官方维护的 Codex 插件市场。',plugins:[
+    {name:'代码评审官',installs:6800,desc:'自动审核 Codex 生成的补丁，标注风险与改进建议。'},
+    {name:'测试生成器',installs:4500,desc:'根据函数签名与类型自动生成单元测试骨架。'},
+  ]},
+  {id:'cx-community',name:'Codex 社区市场',desc:'社区贡献的 Codex 插件集合。',plugins:[
+    {name:'Shell 专家',installs:1900,desc:'跨平台 Shell 脚本编写、移植与调试建议。'},
+  ]},
+];
+const WORKSPACES=[
+  {id:'demo',name:'demo 项目',path:'/Users/maorun/projects/demo',plugins:6,tools:{Claude:true,OpenCode:true,Cursor:false,VSCode:true},result:{deploy:6,remove:0,warn:1,conflict:0}},
+  {id:'web',name:'公司官网',path:'/Users/maorun/work/company-web',plugins:3,tools:{Claude:true,OpenCode:false,Cursor:true,VSCode:false},result:{deploy:3,remove:1,warn:0,conflict:0}},
+  {id:'api',name:'后端 API 服务',path:'/Users/maorun/work/api-server',plugins:4,tools:{Claude:false,OpenCode:true,Cursor:false,VSCode:true},result:{deploy:4,remove:0,warn:0,conflict:2}},
+];
+const ENV_VARS=[
+  {key:'ANTHROPIC_API_KEY',value:'sk-ant-api03-9f3a7c2e1b8d4a6f0c5e9aFk',masked:true},
+  {key:'OPENAI_API_KEY',value:'sk-proj-2xQp8Hk4Mn6Rt1Vw5ZyBn',masked:true},
+  {key:'GLM_API_KEY',value:'abcd1234efgh5678ijkl90mn',masked:true},
+  {key:'HTTP_PROXY',value:'http://127.0.0.1:7890',masked:false},
+];
+let exEngine='claude',plgView='installed',ccActivePlg=0,ccActiveMarket=0,wsActive=0,cxActivePlg=0,cxActiveMarket=0,cxPlgView='installed',ccResFilter='all',cxResFilter='all',ccSort='installs',cxSort='installs',ccSearch='',cxSearch='';
+
+function typeBadge(t){const m={integration:'集成',hybrid:'混合',skill:'Skill',hook:'Hook',command:'Command',agent:'Agent',mcp:'MCP',unknown:'未知'};return '<span class="type-badge '+t+'">'+(m[t]||t)+'</span>';}
+function pluginCard(p,i,engine,activeIdx,selectFn){
+  const cx=engine==='codex';
+  return '<div class="plg-item'+(i===activeIdx?' active':'')+'" onclick="'+selectFn+'('+i+')">'+
+    '<div class="plg-top"><div class="plg-name">'+p.name+'</div><div class="switch'+(p.enabled?'':' off')+'" onclick="event.stopPropagation();this.classList.toggle(\'off\')"><div class="knob"></div></div></div>'+
+    '<div class="plg-row">'+typeBadge(p.type)+'<span class="ver-badge">v'+p.ver+'</span><span class="scope-chip">'+(p.scope==='global'?'全局':'项目')+'</span>'+(cx?'<span class="source-badge">'+p.source+'</span>'+(p.dup?'<span class="dup-badge">重复诊断</span>':''):'')+(p.enabled?'':'<span style="color:var(--tertiary)">已禁用</span>')+'</div>'+
+    '<div class="plg-desc-2">'+p.desc+'</div>'+
+    (cx?'<div class="plg-row" style="margin-top:5px"><span class="pid-line">'+p.pid+'</span></div>':'')+
+    '</div>';
+}
+function pluginDetail(p,engine){
+  const cx=engine==='codex',total=Object.values(p.res).reduce((a,b)=>a+b,0);
+  return '<div class="plg-detail">'+
+    '<div class="plg-detail-head"><div><h3>'+p.name+'</h3><div class="plg-row" style="margin-top:5px">'+typeBadge(p.type)+'<span class="ver-badge">v'+p.ver+'</span><span class="scope-chip">'+(p.scope==='global'?'全局':'项目')+'</span>'+(cx?'<span class="source-badge">'+p.source+'</span>'+(p.dup?'<span class="dup-badge">重复诊断</span>':''):'')+'</div></div>'+
+      '<div class="pc-actions"><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">更新</button><button class="btn btn-ghost danger" style="padding:6px 12px;font-size:12px">卸载</button></div></div>'+
+    '<div class="plg-desc">'+p.desc+'</div>'+
+    '<div class="plg-meta-row"><span class="pm-label">开发者</span><span class="pm-value">'+p.developer+'</span><span class="pm-sep">·</span><span class="pm-label">分类</span><span class="pm-value">'+p.category+'</span></div>'+
+    (cx?'<div class="plg-meta-row"><span class="pm-label">能力</span>'+p.capabilities.map(c=>'<span class="cap-badge">'+c+'</span>').join('')+'</div><div class="plg-meta-row"><span class="pm-label">插件 ID</span><span class="pid-line">'+p.pid+'</span></div>':'')+
+    '<div class="res-title">资源 ('+total+')</div>'+
+    '<div class="res-filter">'+['Skills','Agents','Commands','Hooks','MCP'].map(r=>'<span class="res-chip">'+r+'<span class="res-count">'+(p.res[r]||0)+'</span></span>').join('')+'</div>'+
+    '</div>';
+}
+function marketSrcCard(mk,i,activeIdx,selectFn){return '<div class="market-card'+(i===activeIdx?' active':'')+'" onclick="'+selectFn+'('+i+')"><div class="mk-name">'+mk.name+'</div><div class="mk-desc">'+mk.desc+'<br><span style="color:var(--tertiary)">'+mk.plugins.length+' 个可安装</span></div></div>';}
+function marketPluginCard(pp){return '<div class="mk-install"><div class="mki-top"><div class="mki-name">'+pp.name+'</div><span class="installs-badge">'+pp.installs.toLocaleString()+' installs</span></div><div class="mki-desc" style="margin-bottom:9px">'+pp.desc+'</div><button class="btn btn-primary" style="padding:5px 14px;font-size:12px">安装</button></div>';}
+function applyResFilter(list,filter){const a=list.map((p,i)=>({p,i}));return filter==='all'?a:a.filter(x=>(x.p.res[filter]||0)>0);}
+function applyMarketQuery(plugins,sort,q){let a=plugins.slice();if(q)a=a.filter(p=>p.name.toLowerCase().includes(q.toLowerCase())||p.desc.toLowerCase().includes(q.toLowerCase()));if(sort==='name')a.sort((x,y)=>x.name.localeCompare(y.name));else a.sort((x,y)=>y.installs-x.installs);return a;}
+function renderCcInstalled(){
+  document.getElementById('ccInstalledCount').textContent='('+CC_PLUGINS.length+')';
+  const items=applyResFilter(CC_PLUGINS,ccResFilter);
+  document.getElementById('ccPluginList').innerHTML=items.length?items.map(x=>pluginCard(x.p,x.i,'claude',ccActivePlg,'selectCcPlugin')).join(''):'<div class="pc-empty">'+(ccResFilter!=='all'?'该资源类型下暂无插件':'暂无插件')+'</div>';
+  document.getElementById('ccPluginDetail').innerHTML=pluginDetail(CC_PLUGINS[ccActivePlg],'claude');
+}
+function selectCcPlugin(i){ccActivePlg=i;renderCcInstalled();}
+function renderCcMarket(){
+  document.getElementById('ccMarketCount').textContent='('+CC_MARKETS.reduce((a,m)=>a+m.plugins.length,0)+')';
+  document.getElementById('ccMarketList').innerHTML=CC_MARKETS.map((mk,i)=>marketSrcCard(mk,i,ccActiveMarket,'selectCcMarket')).join('');
+  const plugins=applyMarketQuery(CC_MARKETS[ccActiveMarket].plugins,ccSort,ccSearch);
+  document.getElementById('ccMarketPlugins').innerHTML=plugins.length?plugins.map(marketPluginCard).join(''):'<div class="pc-empty">无匹配插件</div>';
+}
+function selectCcMarket(i){ccActiveMarket=i;renderCcMarket();}
+function renderCxInstalled(){
+  document.getElementById('cxInstalledCount').textContent='('+CX_PLUGINS.length+')';
+  const items=applyResFilter(CX_PLUGINS,cxResFilter);
+  document.getElementById('cxPluginList').innerHTML=items.length?items.map(x=>pluginCard(x.p,x.i,'codex',cxActivePlg,'selectCxPlugin')).join(''):'<div class="pc-empty">'+(cxResFilter!=='all'?'该资源类型下暂无插件':'暂无插件')+'</div>';
+  document.getElementById('cxPluginDetail').innerHTML=pluginDetail(CX_PLUGINS[cxActivePlg],'codex');
+}
+function selectCxPlugin(i){cxActivePlg=i;renderCxInstalled();}
+function renderCxMarket(){
+  document.getElementById('cxMarketCount').textContent='('+CX_MARKETS.reduce((a,m)=>a+m.plugins.length,0)+')';
+  document.getElementById('cxMarketList').innerHTML=CX_MARKETS.map((mk,i)=>marketSrcCard(mk,i,cxActiveMarket,'selectCxMarket')).join('');
+  const plugins=applyMarketQuery(CX_MARKETS[cxActiveMarket].plugins,cxSort,cxSearch);
+  document.getElementById('cxMarketPlugins').innerHTML=plugins.length?plugins.map(marketPluginCard).join(''):'<div class="pc-empty">无匹配插件</div>';
+}
+function selectCxMarket(i){cxActiveMarket=i;renderCxMarket();}
+function setCxPlgView(v){cxPlgView=v;document.querySelectorAll('#cxPlgViewTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.cxplgview===v));document.querySelectorAll('[data-cxplgview-panel]').forEach(p=>p.classList.toggle('show',p.dataset.cxplgviewPanel===v));}
+function setResFilter(engine,filter){
+  if(engine==='claude'){ccResFilter=filter;document.querySelectorAll('#ccResFilter .res-chip').forEach(c=>c.classList.toggle('active',c.dataset.resfilter===filter));renderCcInstalled();}
+  else{cxResFilter=filter;document.querySelectorAll('#cxResFilter .res-chip').forEach(c=>c.classList.toggle('active',c.dataset.resfilter===filter));renderCxInstalled();}
+}
+function setSort(engine,sort){
+  if(engine==='claude'){ccSort=sort;document.querySelectorAll('#ccSortTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.sort===sort));renderCcMarket();}
+  else{cxSort=sort;document.querySelectorAll('#cxSortTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.sort===sort));renderCxMarket();}
+}
+function renderWorkspaces(){
+  document.getElementById('wsCount').textContent='· '+WORKSPACES.length+' 个工作区';
+  document.getElementById('wsList').innerHTML=WORKSPACES.map((w,i)=>
+    '<div class="ws-item'+(i===wsActive?' active':'')+'" onclick="selectWorkspace('+i+')"><div class="ws-name">'+w.name+'<span class="scope-chip">'+w.plugins+' 插件</span></div><div class="ws-path">'+w.path+'</div>'+
+    '<div class="ws-tools">'+Object.keys(w.tools).map(t=>'<span class="tool-tag'+(w.tools[t]?' on':'')+'">'+t+'</span>').join('')+'</div></div>').join('');
+}
+function selectWorkspace(i){wsActive=i;renderWorkspaces();renderWsEditor();}
+function renderWsEditor(){
+  const w=WORKSPACES[wsActive],r=w.result;
+  document.getElementById('wsEditor').innerHTML=
+    '<div class="ex-form"><h3>编辑工作区</h3>'+
+    '<div class="frow"><span class="fl">工作区名称</span><div class="text-input"><input value="'+w.name+'" style="min-width:200px"></div></div>'+
+    '<div class="frow"><span class="fl">工作目录</span><div class="input-group"><div class="text-input"><input value="'+w.path+'" style="min-width:220px"></div><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">浏览</button></div></div>'+
+    '<div class="frow"><span class="fl">部署目标</span><div class="fv">'+Object.keys(w.tools).map(t=>'<span class="tool-tag'+(w.tools[t]?' on':'')+'" style="cursor:pointer">'+t+'</span>').join('')+'</div></div>'+
+    '<div class="frow"><span class="fl">操作</span><div class="pc-actions"><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">部署</button><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px">同步</button><button class="btn btn-primary" style="padding:6px 12px;font-size:12px">保存</button></div></div>'+
+    '</div>'+
+    '<div class="result-card"><h3>最近一次执行结果</h3>'+
+    '<div class="result-grid">'+
+      '<div class="result-cell"><div class="rv deploy">'+r.deploy+'</div><div class="rl">部署条目</div></div>'+
+      '<div class="result-cell"><div class="rv remove">'+r.remove+'</div><div class="rl">移除条目</div></div>'+
+      '<div class="result-cell"><div class="rv warn">'+r.warn+'</div><div class="rl">警告</div></div>'+
+      '<div class="result-cell"><div class="rv conflict">'+r.conflict+'</div><div class="rl">冲突</div></div>'+
+    '</div></div>';
+}
+function renderEnvVars(){
+  document.getElementById('envTable').innerHTML=ENV_VARS.map((v,i)=>
+    '<div class="env-row"><span class="ek">'+v.key+'</span><span class="ev">'+(v.masked?v.value.slice(0,4)+'••••••••••••'+v.value.slice(-4):v.value)+'</span>'+
+    '<span class="eo"><button class="env-ic" onclick="toggleEnvMask('+i+')" title="显示/隐藏"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button><button class="env-ic" title="编辑"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button><button class="env-ic" title="删除"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></span></div>').join('');
+}
+function toggleEnvMask(i){ENV_VARS[i].masked=!ENV_VARS[i].masked;renderEnvVars();}
+function setExMain(m){document.querySelectorAll('#exMainTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.exmain===m));document.querySelectorAll('.ex-panel').forEach(p=>p.classList.toggle('show',p.dataset.expanel===m));}
+function setExEngine(e){exEngine=e;document.querySelectorAll('#exEngineTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.exeng===e));document.querySelectorAll('.ex-engine').forEach(p=>p.classList.toggle('show',p.dataset.exengPanel===e));}
+function setPlgView(v){plgView=v;document.querySelectorAll('#plgViewTabs .seg').forEach(s=>s.classList.toggle('active',s.dataset.plgview===v));document.querySelectorAll('.ex-plgview').forEach(p=>p.classList.toggle('show',p.dataset.plgviewPanel===v));}
+document.getElementById('exMainTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setExMain(s.dataset.exmain);});
+document.getElementById('exEngineTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setExEngine(s.dataset.exeng);});
+document.getElementById('plgViewTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setPlgView(s.dataset.plgview);});
+document.getElementById('cxPlgViewTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setCxPlgView(s.dataset.cxplgview);});
+document.getElementById('ccResFilter').addEventListener('click',e=>{const c=e.target.closest('.res-chip');if(!c)return;setResFilter('claude',c.dataset.resfilter);});
+document.getElementById('cxResFilter').addEventListener('click',e=>{const c=e.target.closest('.res-chip');if(!c)return;setResFilter('codex',c.dataset.resfilter);});
+document.getElementById('ccSortTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setSort('claude',s.dataset.sort);});
+document.getElementById('cxSortTabs').addEventListener('click',e=>{const s=e.target.closest('.seg');if(s)setSort('codex',s.dataset.sort);});
+renderCcInstalled();renderCcMarket();renderCxInstalled();renderCxMarket();renderWorkspaces();renderWsEditor();renderEnvVars();
+
+renderSessions();
+</script>
+</body>
+</html>
