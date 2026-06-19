@@ -171,6 +171,7 @@ const {
   setMarketSearchQuery,
   setMarketSortBy,
   installCxPlugin,
+  installCcPlugin,
   loadCcMarkets,
   loadCcAvailable,
 } = pluginStore;
@@ -311,8 +312,13 @@ function handleAddMarket() {
 
 async function handleInstall(plugin: any) {
   if (props.engine === 'claude') {
-    // TODO: Implement Claude plugin install
-    console.log('[PluginMarketPanel] Install Claude plugin:', plugin.name);
+    // Install Claude plugin using plugin name
+    try {
+      const pluginName = plugin.name || plugin.id;
+      await installCcPlugin(pluginName);
+    } catch (error) {
+      console.error('[PluginMarketPanel] Install Claude plugin failed:', error);
+    }
   } else {
     try {
       await installCxPlugin(plugin.pluginId, plugin.marketplaceName);

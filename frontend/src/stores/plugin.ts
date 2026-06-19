@@ -419,6 +419,19 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  // Install Claude plugin
+  async function installCcPlugin(pluginName: string) {
+    try {
+      const result = await pluginApi.installPlugin(pluginName);
+      // Refresh after install
+      await Promise.all([loadCcInstalled(), loadCcAvailable()]);
+      return result;
+    } catch (error) {
+      console.error('[plugin.store.installCcPlugin]', error);
+      throw error;
+    }
+  }
+
   // --- Codex plugin operations ---
 
   // Load all Codex plugin data
@@ -607,6 +620,7 @@ export const usePluginStore = defineStore('plugin', () => {
     loadCcMarkets,
     loadCcAvailable,
     addCcMarketplace,
+    installCcPlugin,
     togglePlugin,
     loadPluginDetail,
     loadPluginSubItems,

@@ -44,14 +44,14 @@
         </div>
       </div>
 
-      <!-- Workspaces tab (placeholder for P5) -->
+      <!-- Workspaces tab -->
       <div v-else-if="extMainTab === 'workspaces'" class="tab-pane">
-        <EmptyState icon="◫" title="工作区管理" description="工作区管理将在 P5 阶段实现"/>
+        <WorkspacesPanel />
       </div>
 
-      <!-- Environment variables tab (placeholder for P5) -->
+      <!-- Environment variables tab -->
       <div v-else-if="extMainTab === 'env'" class="tab-pane">
-        <EmptyState icon="⌘" title="环境变量" description="环境变量管理将在 P5 阶段实现"/>
+        <EnvVarsPanel />
       </div>
     </div>
 
@@ -101,6 +101,8 @@ import PageHead from '../components/ui/PageHead.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import EmptyState from '../components/ui/EmptyState.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
+import WorkspacesPanel from '../components/extensions/WorkspacesPanel.vue';
+import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import { usePluginStore } from '../stores/plugin';
 
