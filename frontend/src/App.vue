@@ -2,7 +2,6 @@
 import { onMounted } from 'vue'
 import { usePlatformCapabilities } from './composables/usePlatformCapabilities'
 import AppShell from './components/layout/AppShell.vue'
-import Sidebar from './components/layout/Sidebar.vue'
 import Toast from './components/common/Toast.vue'
 
 const { ensure } = usePlatformCapabilities()
@@ -14,12 +13,9 @@ onMounted(() => {
 
 <template>
   <AppShell>
-    <Sidebar/>
-    <main class="main">
-      <router-view/>
-    </main>
+    <router-view />
   </AppShell>
-  <Toast/>
+  <Toast />
 </template>
 
 <style>

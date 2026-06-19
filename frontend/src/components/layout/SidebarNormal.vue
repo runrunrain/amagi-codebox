@@ -7,7 +7,7 @@
     </div>
 
     <!-- New Session Button -->
-    <button class="new-btn" @click="handleNewSession">
+    <button class="new-btn" @click="handleNewSession" title="新建会话">
       <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round">
         <line x1="12" y1="5" x2="12" y2="19"/>
         <line x1="5" y1="12" x2="19" y2="12"/>
@@ -42,12 +42,10 @@
         :active="activeSessionId === session.id"
         @click="handleSessionClick(session)"
       />
-      <EmptyState
-        v-if="runningSessions.length === 0"
-        icon="—"
-        title="无运行中会话"
-        description="点击上方「新建会话」开始"
-      />
+      <div v-if="runningSessions.length === 0" class="sess-empty">
+        无运行中会话
+        <span class="sess-empty-hint">点击上方「新建会话」开始</span>
+      </div>
     </div>
 
     <!-- Sidebar Footer: Gear + Version -->
@@ -66,16 +64,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useUIStore } from '../../stores/ui'
 import { useSessionStore } from '../../stores/session'
+import { useSessionList } from '../../composables/useSessionList'
 import SessionListItem from './SessionListItem.vue'
-import EmptyState from '../ui/EmptyState.vue'
 
 const route = useRoute()
+const router = useRouter()
 const uiStore = useUIStore()
 const sessionStore = useSessionStore()
+const { refresh, startPolling, stopPolling } = useSessionList()
 
 const navItems = [
   {
@@ -114,19 +114,27 @@ function isActive(path: string): boolean {
 }
 
 function handleNewSession() {
-  console.log('newSession: 占位，P1 实现真实会话创建')
-  // TODO: P1 实现真实会话创建逻辑
+  // 跳转到会话设置页配置并启动新会话
+  router.push('/')
 }
 
 function handleSessionClick(session: any) {
-  console.log('openTerminal:', session.id)
   sessionStore.setActiveSession(session.id)
-  // TODO: P1 跳转到终端页面
+  router.push('/terminal')
 }
 
 function handleEnterSettings() {
   uiStore.enterSettingsMode()
 }
+
+onMounted(() => {
+  refresh()
+  startPolling(2000)
+})
+
+onUnmounted(() => {
+  stopPolling()
+})
 </script>
 
 <style scoped>
@@ -251,6 +259,23 @@ function handleEnterSettings() {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sess-empty {
+  padding: 14px 9px;
+  font-size: 12px;
+  color: var(--tertiary);
+  text-align: center;
+  line-height: 1.7;
+}
+
+.sess-empty-hint {
+  display: block;
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 2px;
 }
 
 .sidebar-footer {

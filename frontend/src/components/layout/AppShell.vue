@@ -2,13 +2,13 @@
   <div class="app">
     <Sidebar />
     <main class="main">
-      <router-view />
+      <slot />
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import Sidebar from './Sidebar.vue';
+import Sidebar from './Sidebar.vue'
 </script>
 
 <style scoped>

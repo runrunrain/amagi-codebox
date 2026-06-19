@@ -1,89 +1,95 @@
 /**
- * Session List Composable (P0 Skeleton)
- * P1 will integrate GetSessions polling and active session tracking
+ * Session List Composable
+ * P1: 真实轮询 GetSessions，写入 session store；管理 activeSessionId。
+ *
+ * 使用方式：
+ *   const { startPolling, stopPolling, refresh, removeAndRefresh, stopAndRefresh } = useSessionList()
+ *   onMounted(() => { refresh(); startPolling() })
+ *   onUnmounted(() => stopPolling())
+ *
+ * 数据真相源：useSessionStore.sessions / activeSessionId。
  */
 
-import { ref, computed, onUnmounted } from 'vue';
-import { session } from '../../wailsjs/go/models';
-
-type SessionInfo = session.SessionInfo;
+import { onUnmounted } from 'vue'
+import { useSessionStore } from '../stores/session'
+import * as sessionApi from '../api/session'
 
 export function useSessionList() {
-  const sessions = ref<SessionInfo[]>([]);
-  const activeSessionId = ref<string | null>(null);
-  const polling = ref(false);
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const store = useSessionStore()
 
-  // Running sessions only
-  const runningSessions = computed(() => {
-    return sessions.value.filter(s => s.status === 'running');
-  });
-
-  // Active session
-  const activeSession = computed(() => {
-    if (!activeSessionId.value) return null;
-    return sessions.value.find(s => s.id === activeSessionId.value) || null;
-  });
+  let pollTimer: ReturnType<typeof setInterval> | null = null
 
   /**
-   * Start polling for sessions (P1: actual GetSessions call)
+   * 立即从后端拉取会话列表并写入 store。
+   * 静默处理错误（runtime 缺失等），仅在控制台记录。
    */
-  function startPolling(intervalMs: number = 2000) {
-    if (polling.value) return;
-    polling.value = true;
-
-    // P1: Replace with actual GetSessions call from api
-    pollTimer = setInterval(async () => {
-      try {
-        // const newSessions = await getSessions();
-        // sessions.value = newSessions;
-        console.log('[P1 Skeleton] Polling sessions...');
-      } catch (error) {
-        console.error('Failed to poll sessions:', error);
-      }
-    }, intervalMs);
-  }
-
-  /**
-   * Stop polling
-   */
-  function stopPolling() {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+  async function refresh(): Promise<void> {
+    try {
+      const list = await sessionApi.getSessions()
+      store.setSessions(list || [])
+    } catch (err) {
+      console.error('[useSessionList] refresh failed:', err)
     }
-    polling.value = false;
   }
 
   /**
-   * Set active session
+   * 启动周期性轮询（默认 2000ms）。
+   * 重复调用安全：已运行则忽略。
    */
-  function setActiveSession(sessionId: string | null) {
-    activeSessionId.value = sessionId;
+  function startPolling(intervalMs = 2000): void {
+    if (pollTimer) return
+    store.setPolling(true)
+    pollTimer = setInterval(() => {
+      refresh()
+    }, intervalMs)
   }
 
   /**
-   * Refresh sessions immediately
+   * 停止轮询。
    */
-  async function refresh() {
-    // P1: await getSessions()
-    console.log('[P1 Skeleton] Refreshing sessions...');
+  function stopPolling(): void {
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+    store.setPolling(false)
   }
 
-  // Cleanup on unmount
+  /** 选中会话 */
+  function selectSession(sessionId: string | null): void {
+    store.setActiveSession(sessionId)
+  }
+
+  /** 清除当前选中 */
+  function clearActive(): void {
+    store.setActiveSession(null)
+  }
+
+  /** 停止单个会话后刷新 */
+  async function stopAndRefresh(sessionId: string): Promise<void> {
+    await sessionApi.stopSession(sessionId)
+    await refresh()
+  }
+
+  /** 移除单个会话后刷新（并清理 activeSessionId 关联） */
+  async function removeAndRefresh(sessionId: string): Promise<void> {
+    await sessionApi.removeSession(sessionId)
+    store.removeSession(sessionId)
+    await refresh()
+  }
+
+  // 默认在组件卸载时停止轮询
   onUnmounted(() => {
-    stopPolling();
-  });
+    stopPolling()
+  })
 
   return {
-    sessions,
-    runningSessions,
-    activeSessionId,
-    activeSession,
-    polling,
+    refresh,
     startPolling,
     stopPolling,
-    setActiveSession,
-    refresh,
-  };
+    selectSession,
+    clearActive,
+    stopAndRefresh,
+    removeAndRefresh,
+  }
 }

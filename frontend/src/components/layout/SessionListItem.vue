@@ -5,12 +5,12 @@
 
     <!-- Session Info -->
     <div class="sess-info">
-      <div class="sess-title">#{{ session.id }} {{ displayTitle }}</div>
+      <div class="sess-title" :title="fullTitle">{{ displayTitle }}</div>
       <div class="sess-meta">
         <!-- Tag Badge -->
-        <span class="tag" :style="{ background: tagColorValue }">{{ session.appType }}</span>
+        <span class="tag" :style="{ background: tagColorValue }">{{ appTypeLabelValue }}</span>
         <!-- Model + Status Text -->
-        <span class="sess-sub">{{ session.model }} · {{ statusText }}</span>
+        <span class="sess-sub">{{ session.model || '—' }} · {{ statusText }}</span>
       </div>
     </div>
   </div>
@@ -18,7 +18,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { tagColor as getTagColor, appTypeLabel } from '../../utils/format'
+import { tagColor as getTagColor, appTypeLabel as getAppTypeLabel } from '../../utils/format'
 
 interface Props {
   session: {
@@ -49,9 +49,17 @@ const tagColorValue = computed(() => {
   return getTagColor(props.session.appType)
 })
 
+const appTypeLabelValue = computed(() => {
+  return getAppTypeLabel(props.session.appType)
+})
+
 const displayTitle = computed(() => {
   const dir = props.session.workDir || ''
   return dir ? dir.split(/[/\\]/).pop() || '新会话' : '新会话'
+})
+
+const fullTitle = computed(() => {
+  return `#${props.session.id} ${displayTitle.value}`
 })
 
 function handleClick() {
