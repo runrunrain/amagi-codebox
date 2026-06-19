@@ -5,83 +5,38 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/dashboard'
+      name: 'SessionSettings',
+      component: () => import('../views/SessionSettingsView.vue')
     },
     {
-      path: '/dashboard',
-      name: 'Dashboard',
-      component: () => import('../views/Dashboard.vue')
+      path: '/terminal',
+      name: 'TerminalPage',
+      component: () => import('../views/TerminalPageView.vue')
     },
     {
-      path: '/provider-center',
+      path: '/provider',
       name: 'ProviderCenter',
-      component: () => import('../views/ProviderCenter.vue')
+      component: () => import('../views/ProviderCenterView.vue')
     },
     {
-      path: '/providers',
-      redirect: '/provider-center'
-    },
-    {
-      path: '/providers/:name',
-      redirect: to => ({ path: '/provider-center' })
+      path: '/extensions',
+      name: 'Extensions',
+      component: () => import('../views/ExtensionsView.vue')
     },
     {
       path: '/rules',
       name: 'Rules',
-      component: () => import('../views/Rules.vue')
-    },
-    {
-      path: '/extensions',
-      component: () => import('../views/ExtensionsLayout.vue'),
-      redirect: '/extensions/plugins/claude',
-      children: [
-        {
-          path: 'plugins',
-          component: () => import('../views/PluginManagementLayout.vue'),
-          redirect: '/extensions/plugins/claude',
-          children: [
-            {
-              path: 'claude',
-              name: 'ClaudePlugins',
-              component: () => import('../views/PluginsView.vue')
-            },
-            {
-              path: 'codex',
-              name: 'CodexPlugins',
-              component: () => import('../views/CodexPluginsView.vue')
-            }
-          ]
-        },
-        {
-          path: 'workspaces',
-          name: 'Workspaces',
-          component: () => import('../views/WorkspacesView.vue')
-        },
-        {
-          path: 'envvars',
-          name: 'EnvVars',
-          component: () => import('../views/EnvVarsView.vue')
-        }
-      ]
+      // TODO: P2 实现注入规则页
+      component: () => import('../views/SessionSettingsView.vue')
     },
     {
       path: '/logs',
       name: 'Logs',
-      component: () => import('../views/Logs.vue')
-    },
-    {
-      path: '/terminals',
-      name: 'Terminals',
-      component: () => import('../views/Terminals.vue')
-    },
-    {
-      path: '/settings',
-      name: 'Settings',
-      component: () => import('../views/Settings.vue')
+      // TODO: P2 实现系统日志页
+      component: () => import('../views/SessionSettingsView.vue')
     },
     {
       path: '/:pathMatch(.*)*',
-      name: 'NotFound',
       redirect: '/'
     }
   ]

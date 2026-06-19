@@ -1,0 +1,300 @@
+<template>
+  <div class="sb-normal">
+    <!-- Logo + Brand -->
+    <div class="logo-row">
+      <div class="logo-mark">A</div>
+      <div class="brand">CodeBox</div>
+    </div>
+
+    <!-- New Session Button -->
+    <button class="new-btn" @click="handleNewSession">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round">
+        <line x1="12" y1="5" x2="12" y2="19"/>
+        <line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+      新建会话
+    </button>
+
+    <!-- Navigation -->
+    <nav class="nav">
+      <router-link
+        v-for="item in navItems"
+        :key="item.path"
+        :to="item.path"
+        class="nav-item"
+        :class="{ active: isActive(item.path) }"
+      >
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" v-html="item.icon"/>
+        {{ item.label }}
+      </router-link>
+    </nav>
+
+    <!-- Running Sessions Section -->
+    <div class="section-label">
+      <span>运行中</span>
+      <span class="count-pill">{{ sessionCount }}</span>
+    </div>
+    <div class="sess-list">
+      <SessionListItem
+        v-for="session in runningSessions"
+        :key="session.id"
+        :session="session"
+        :active="activeSessionId === session.id"
+        @click="handleSessionClick(session)"
+      />
+      <EmptyState
+        v-if="runningSessions.length === 0"
+        icon="—"
+        title="无运行中会话"
+        description="点击上方「新建会话」开始"
+      />
+    </div>
+
+    <!-- Sidebar Footer: Gear + Version -->
+    <div class="sidebar-footer">
+      <button class="icon-btn" @click="handleEnterSettings" title="设置">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <div class="version">
+        <span class="sess-dot"></span>v1.0.0
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+import { useUIStore } from '../../stores/ui'
+import { useSessionStore } from '../../stores/session'
+import SessionListItem from './SessionListItem.vue'
+import EmptyState from '../ui/EmptyState.vue'
+
+const route = useRoute()
+const uiStore = useUIStore()
+const sessionStore = useSessionStore()
+
+const navItems = [
+  {
+    path: '/',
+    label: '会话设置',
+    icon: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>'
+  },
+  {
+    path: '/provider',
+    label: 'Provider Center',
+    icon: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/>'
+  },
+  {
+    path: '/extensions',
+    label: '扩展管理',
+    icon: '<path d="M14 3v4h4"/><rect x="3" y="3" width="11" height="11" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>'
+  },
+  {
+    path: '/rules',
+    label: '注入规则',
+    icon: '<line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'
+  },
+  {
+    path: '/logs',
+    label: '系统日志',
+    icon: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/>'
+  },
+]
+
+const runningSessions = computed(() => sessionStore.runningSessions)
+const activeSessionId = computed(() => sessionStore.activeSessionId)
+const sessionCount = computed(() => runningSessions.value.length)
+
+function isActive(path: string): boolean {
+  return route.path === path
+}
+
+function handleNewSession() {
+  console.log('newSession: 占位，P1 实现真实会话创建')
+  // TODO: P1 实现真实会话创建逻辑
+}
+
+function handleSessionClick(session: any) {
+  console.log('openTerminal:', session.id)
+  sessionStore.setActiveSession(session.id)
+  // TODO: P1 跳转到终端页面
+}
+
+function handleEnterSettings() {
+  uiStore.enterSettingsMode()
+}
+</script>
+
+<style scoped>
+.sb-normal {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 16px;
+  min-height: 0;
+}
+
+.logo-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 5px;
+}
+
+.logo-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.new-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background .15s;
+}
+
+.new-btn:hover {
+  background: var(--accentHover);
+}
+
+.new-btn .ic {
+  width: 16px;
+  height: 16px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--secondary);
+  font-size: 14px;
+  transition: background .12s;
+  text-decoration: none;
+}
+
+.nav-item:hover {
+  background: var(--control);
+}
+
+.nav-item.active {
+  background: var(--control);
+  color: var(--label);
+}
+
+.nav-item.active .ic {
+  stroke: var(--accent);
+}
+
+.nav-item .ic {
+  width: 17px;
+  height: 17px;
+  stroke: var(--tertiary);
+  flex-shrink: 0;
+}
+
+.section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 5px;
+  color: var(--tertiary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.count-pill {
+  background: var(--control);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px;
+  color: var(--secondary);
+}
+
+.sess-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 5px 0;
+}
+
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .12s;
+}
+
+.icon-btn:hover {
+  background: var(--control);
+}
+
+.icon-btn .ic {
+  width: 17px;
+  height: 17px;
+  stroke: var(--tertiary);
+}
+
+.version {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--tertiary);
+}
+
+.version .sess-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--success);
+}
+</style>

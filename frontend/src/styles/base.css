@@ -1,0 +1,74 @@
+/**
+ * Base Styles
+ * Reset, typography baseline, and global utilities.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html,
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  background: var(--window);
+  color: var(--label);
+  margin: 0;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accentHover);
+}
+
+/* Mono utility */
+.mono {
+  font-family: var(--mono);
+}
+
+/* Custom scrollbar (WebKit) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--separator);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--tertiary);
+}
+
+/* Terminal surface scrollbar (dark) */
+.term-body ::-webkit-scrollbar-thumb {
+  background: #3a3a42;
+}
+
+.term-body ::-webkit-scrollbar-thumb:hover {
+  background: #4a4a52;
+}

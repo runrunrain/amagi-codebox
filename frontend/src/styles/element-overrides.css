@@ -1,0 +1,129 @@
+/**
+ * Element Plus Theme Overrides
+ * Maps Element Plus CSS variables onto the Apple HIG design system tokens.
+ */
+
+:root {
+  /* Primary */
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: #4d9bff;
+  --el-color-primary-light-5: #80baff;
+  --el-color-primary-light-7: #b3d7ff;
+  --el-color-primary-light-8: #cce4ff;
+  --el-color-primary-light-9: #e6f1ff;
+  --el-color-primary-dark-2: var(--accentHover);
+
+  /* Semantic aliases */
+  --el-color-success: var(--success);
+  --el-color-warning: var(--warning);
+  --el-color-danger: var(--danger);
+  --el-color-error: var(--danger);
+  --el-color-info: var(--secondary);
+
+  /* Radius */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+
+  /* Backgrounds */
+  --el-bg-color: var(--card);
+  --el-bg-color-page: var(--window);
+  --el-bg-color-overlay: var(--card);
+
+  /* Text */
+  --el-text-color-primary: var(--label);
+  --el-text-color-regular: var(--secondary);
+  --el-text-color-secondary: var(--tertiary);
+  --el-text-color-placeholder: var(--tertiary);
+
+  /* Borders */
+  --el-border-color: var(--separator);
+  --el-border-color-light: var(--separator);
+  --el-border-color-lighter: var(--separator);
+  --el-border-color-dark: var(--separator);
+
+  /* Fill */
+  --el-fill-color: var(--control);
+  --el-fill-color-light: var(--control);
+  --el-fill-color-lighter: var(--control);
+  --el-fill-color-blank: var(--card);
+  --el-fill-color-dark: var(--controlHover);
+  --el-fill-color-darker: var(--controlHover);
+
+  /* Elevation */
+  --el-box-shadow: var(--shadow);
+  --el-box-shadow-light: var(--shadow-sm);
+  --el-box-shadow-lighter: var(--shadow-sm);
+  --el-box-shadow-dark: var(--shadow);
+
+  /* Font */
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  --el-font-size-base: 14px;
+
+  /* Disabled */
+  --el-disabled-bg-color: var(--control);
+  --el-disabled-border-color: var(--separator);
+  --el-disabled-text-color: var(--tertiary);
+}
+
+/* Component-level refinements */
+
+.el-dialog,
+.el-message-box {
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow);
+}
+
+.el-dialog__header {
+  border-bottom: 1px solid var(--separator);
+  padding: 18px 20px;
+  margin: 0;
+}
+
+.el-dialog__title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.el-dialog__footer {
+  border-top: 1px solid var(--separator);
+  padding: 16px 20px;
+}
+
+.el-input__wrapper {
+  background: var(--control);
+  box-shadow: none !important;
+  border-radius: var(--radius-sm);
+}
+
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.25) !important;
+}
+
+.el-select__wrapper {
+  background: var(--control);
+  box-shadow: none !important;
+  border-radius: var(--radius-sm);
+}
+
+.el-button {
+  border-radius: 8px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.el-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.el-button--primary:hover {
+  background: var(--accentHover);
+  border-color: var(--accentHover);
+}
+
+.el-tooltip__popper,
+.el-select__popper,
+.el-dropdown__popper {
+  box-shadow: var(--shadow);
+}

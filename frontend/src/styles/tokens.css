@@ -1,0 +1,43 @@
+/**
+ * Design System Tokens
+ * Values are 1:1 from the design spec. Do not alter without a spec change.
+ */
+
+:root {
+  /* Surface Colors */
+  --window: #FBFBFD;
+  --card: #FFFFFF;
+  --sidebar: #F5F5F7;
+  --control: #F2F2F5;
+  --controlHover: #E5E5EA;
+
+  /* Semantic Colors */
+  --accent: #007AFF;
+  --accentHover: #0066CC;
+  --label: #1D1D1F;
+  --secondary: #6E6E73;
+  --tertiary: #8E8E93;
+  --separator: #D2D2D7;
+  --success: #34C759;
+  --warning: #FF9500;
+  --purple: #AF52DE;
+  --danger: #FF3B30;
+
+  /* Terminal Theme */
+  --termBg: #1B1B1F;
+  --termGreen: #3BC260;
+  --termBlue: #5EA6FF;
+  --termGray: #8E8E93;
+
+  /* Typography */
+  --mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  /* Border Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-card: 14px;
+
+  /* Elevation */
+  --shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 6px 18px rgba(0, 0, 0, .05);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+}

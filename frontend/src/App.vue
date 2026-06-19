@@ -1,27 +1,25 @@
-<script lang="ts" setup>
+<script setup lang="ts">
 import { onMounted } from 'vue'
-import AppLayout from './components/layout/AppLayout.vue'
+import { usePlatformCapabilities } from './composables/usePlatformCapabilities'
+import AppShell from './components/layout/AppShell.vue'
+import Sidebar from './components/layout/Sidebar.vue'
 import Toast from './components/common/Toast.vue'
-import { useToast } from './composables/useToast'
-import { GetStartupWarnings } from '../wailsjs/go/main/App'
 
-const { showError } = useToast()
+const { ensure } = usePlatformCapabilities()
 
-onMounted(async () => {
-  try {
-    const warnings = await GetStartupWarnings()
-    for (const w of warnings) {
-      showError(w, 8000)
-    }
-  } catch {
-    // If the backend call fails, do not block app rendering.
-  }
+onMounted(() => {
+  ensure()
 })
 </script>
 
 <template>
-  <AppLayout />
-  <Toast />
+  <AppShell>
+    <Sidebar/>
+    <main class="main">
+      <router-view/>
+    </main>
+  </AppShell>
+  <Toast/>
 </template>
 
 <style>
