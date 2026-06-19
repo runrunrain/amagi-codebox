@@ -21,7 +21,7 @@
           @click="store.setPresetFilter(name)"
         >{{ name }}</Chip>
       </div>
-      <AppButton variant="primary" size="small" @click="emit('add')">+ 添加预设</AppButton>
+      <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
     </div>
 
     <!-- 预设列表 -->
@@ -46,22 +46,32 @@
       :description="emptyDescription"
     />
   </div>
+
+  <!-- 预设弹窗 -->
+  <PresetDialog
+    v-model:open="showPresetDialog"
+    :engine="engine"
+    :preset="editingPreset"
+    @saved="handlePresetSaved"
+  />
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import { useProviderStore } from '../../stores/provider';
 import Chip from '../ui/Chip.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import PresetDialog from './PresetDialog.vue';
 
 type MergedTerminalPreset = config.MergedTerminalPreset;
 
 const props = defineProps<{ engine: 'claude' | 'codex' }>();
-const emit = defineEmits<{ (e: 'add'): void }>();
 
 const store = useProviderStore();
+const showPresetDialog = ref(false);
+const editingPreset = ref<config.MergedTerminalPreset | null>(null);
 
 const engineLabel = computed(() => (props.engine === 'claude' ? 'Claude Code' : 'Codex'));
 
@@ -99,6 +109,15 @@ function sourceLabel(source: string): string {
   if (source === 'builtin' || source === 'default') return '内置默认';
   if (source === 'managed') return '受管';
   return source;
+}
+
+function handleAdd() {
+  editingPreset.value = null;
+  showPresetDialog.value = true;
+}
+
+async function handlePresetSaved() {
+  await store.loadPresets(props.engine, true);
 }
 </script>
 

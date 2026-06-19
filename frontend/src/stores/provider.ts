@@ -164,9 +164,29 @@ export const useProviderStore = defineStore('provider', () => {
     }
   }
 
+  /**
+   * 安全检查密钥是否存在，包含 legacy 回退逻辑。
+   * 与 ProviderDetailView loadKey 对称：主 key 失败时查 `{provider}:anthropic`/`{provider}:openai`。
+   * 确保 ProviderGrid 列表密钥状态与 ProviderDetail 详情一致（P3 高问题修复）。
+   */
   async function safeHasKey(id: string): Promise<boolean> {
     try {
-      return await HasAPIKey(id);
+      // 先查主 key
+      const hasMain = await HasAPIKey(id);
+      if (hasMain) return true;
+
+      // Legacy 回退：查 `{provider}:anthropic` 和 `{provider}:openai`
+      // 与 ProviderDetailView loadKey 逻辑对称
+      const legacyKeys = [`${id}:anthropic`, `${id}:openai`];
+      for (const key of legacyKeys) {
+        try {
+          const hasLegacy = await HasAPIKey(key);
+          if (hasLegacy) return true;
+        } catch {
+          // 忽略单个 legacy key 查询失败
+        }
+      }
+      return false;
     } catch {
       return false;
     }

@@ -236,6 +236,16 @@
       :engine="engine"
       @add-market="handleAddMarket"
     />
+
+    <!-- Uninstall Confirmation Dialog -->
+    <ConfirmDialog
+      v-model:open="showUninstallDialog"
+      title="确认卸载"
+      :message="pluginToUninstall ? `确定要卸载插件「${pluginToUninstall.name}」吗？此操作不可恢复。` : ''"
+      danger
+      confirm-text="卸载"
+      @confirm="confirmUninstall"
+    />
   </div>
 </template>
 
@@ -247,6 +257,7 @@ import Switch from '../ui/Switch.vue';
 import Badge from '../ui/Badge.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import PluginMarketPanel from './PluginMarketPanel.vue';
 import { truncate } from '../../utils/format';
 
@@ -299,6 +310,10 @@ const {
 
 // Local view state (synced with store)
 const localView = ref<'installed' | 'market'>(props.engine === 'claude' ? 'installed' : 'installed');
+
+// Uninstall confirmation
+const showUninstallDialog = ref(false);
+const pluginToUninstall = ref<any>(null);
 
 // Sync with store
 watch(pluginView, (val) => {
@@ -542,6 +557,14 @@ async function handleToggle(plugin: any, value: boolean) {
 async function handleUninstall() {
   const plugin = currentActivePlugin.value;
   if (!plugin) return;
+  pluginToUninstall.value = plugin;
+  showUninstallDialog.value = true;
+}
+
+async function confirmUninstall() {
+  const plugin = pluginToUninstall.value;
+  if (!plugin) return;
+
   if (props.engine === 'codex') {
     try {
       await uninstallCxPlugin((plugin as any).pluginId || (plugin as any).id, (plugin as any).marketplace);
@@ -555,6 +578,8 @@ async function handleUninstall() {
       console.error('Uninstall plugin failed:', error);
     }
   }
+  showUninstallDialog.value = false;
+  pluginToUninstall.value = null;
 }
 
 async function handleUpdate() {

@@ -30,7 +30,7 @@
           variant="pill"
           class="oc-mode-tabs"
         />
-        <AppButton variant="primary" size="small" @click="emit('add')">+ 添加预设</AppButton>
+        <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
       </div>
     </div>
 
@@ -95,18 +95,29 @@
       </div>
     </div>
   </div>
+
+  <!-- OpenCode 预设弹窗 -->
+  <OpenCodePresetDialog
+    v-model:open="showPresetDialog"
+    :preset="editingPreset"
+    @saved="handlePresetSaved"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { config } from '../../../wailsjs/go/models';
 import { useProviderStore } from '../../stores/provider';
 import Segmented from '../ui/Segmented.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 
 const emit = defineEmits<{ (e: 'add'): void }>();
 
 const store = useProviderStore();
+const showPresetDialog = ref(false);
+const editingPreset = ref<config.OpenCodePreset | null>(null);
 
 const MODE_OPTIONS = [
   { value: 'visual', label: '可视化' },
@@ -198,6 +209,15 @@ const highlightedJson = computed<string>(() => {
     })
     .replace(/(^|[^:])\/\/(.*)$/gm, '<span class="c">//$2</span>');
 });
+
+function handleAdd() {
+  editingPreset.value = null;
+  showPresetDialog.value = true;
+}
+
+async function handlePresetSaved() {
+  await store.loadPresets('opencode', true);
+}
 </script>
 
 <style scoped>

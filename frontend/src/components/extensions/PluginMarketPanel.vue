@@ -62,14 +62,23 @@
           v-for="(market, idx) in markets"
           :key="getSourceKey(market)"
           :class="['market-card', { active: isSourceActive(market) }]"
-          @click="selectMarket(market)"
         >
-          <div class="mk-name">{{ getMarketName(market) }}</div>
-          <div class="mk-desc">
-            {{ getMarketDesc(market) }}
-            <br />
-            <span class="mk-meta">{{ getPluginCountForMarket(market) }} 个可安装</span>
+          <div class="mk-main" @click="selectMarket(market)">
+            <div class="mk-name">{{ getMarketName(market) }}</div>
+            <div class="mk-desc">
+              {{ getMarketDesc(market) }}
+              <br />
+              <span class="mk-meta">{{ getPluginCountForMarket(market) }} 个可安装</span>
+            </div>
           </div>
+          <button
+            v-if="engine === 'codex'"
+            class="mk-delete-btn"
+            title="删除市场"
+            @click.stop="handleRemoveMarket(market)"
+          >
+            ×
+          </button>
         </div>
         <div v-if="activeMarketId === null" class="market-card active">
           <div class="mk-name">全部市场</div>
@@ -132,6 +141,23 @@
       <div class="spinner"></div>
       <p>加载市场数据...</p>
     </div>
+
+    <!-- Add Market Dialog -->
+    <AddMarketDialog
+      v-model:open="showAddMarketDialog"
+      :engine="engine"
+      @success="handleMarketAdded"
+    />
+
+    <!-- Remove Market Confirmation (Codex only) -->
+    <ConfirmDialog
+      v-model:open="showRemoveMarketDialog"
+      title="删除市场"
+      :message="marketToRemove ? `确定要删除市场「${getMarketName(marketToRemove)}」吗？已安装插件不会自动卸载，但可安装列表将随之变化。` : ''"
+      danger
+      confirm-text="删除"
+      @confirm="confirmRemoveMarket"
+    />
   </div>
 </template>
 
@@ -141,6 +167,9 @@ import { storeToRefs } from 'pinia';
 import { usePluginStore } from '../../stores/plugin';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import AddMarketDialog from './AddMarketDialog.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
+import { RemoveMarketplace } from '../../../wailsjs/go/codexplugin/Service';
 
 interface Props {
   engine?: 'claude' | 'codex';
@@ -180,6 +209,11 @@ const {
 const searchQuery = ref('');
 const sortBy = ref<'installs' | 'name'>('installs');
 const loading = ref(false);
+const showAddMarketDialog = ref(false);
+
+// Remove market confirmation
+const showRemoveMarketDialog = ref(false);
+const marketToRemove = ref<any>(null);
 
 // Sync local search with store
 watch(searchQuery, (val) => {
@@ -307,7 +341,44 @@ function setSortBy(sort: 'installs' | 'name') {
 
 // Actions
 function handleAddMarket() {
-  emit('addMarket', props.engine);
+  showAddMarketDialog.value = true;
+}
+
+async function handleMarketAdded() {
+  // Refresh markets after adding
+  try {
+    if (props.engine === 'claude') {
+      await Promise.all([loadCcMarkets(), loadCcAvailable()]);
+    }
+  } catch (error) {
+    console.error('[PluginMarketPanel] Load failed:', error);
+  }
+}
+
+function handleRemoveMarket(market: any) {
+  marketToRemove.value = market;
+  showRemoveMarketDialog.value = true;
+}
+
+async function confirmRemoveMarket() {
+  if (!marketToRemove.value) return;
+
+  try {
+    const result = await RemoveMarketplace(marketToRemove.value.name);
+    if (result && !result.success) {
+      console.error('[PluginMarketPanel] Remove market failed:', result.error);
+    } else {
+      if (activeMarketId.value === getMarketName(marketToRemove.value)) {
+        setActiveMarketId(null);
+      }
+      // Refresh would happen via store
+    }
+  } catch (error) {
+    console.error('[PluginMarketPanel] Remove market error:', error);
+  } finally {
+    showRemoveMarketDialog.value = false;
+    marketToRemove.value = null;
+  }
 }
 
 async function handleInstall(plugin: any) {
@@ -464,12 +535,16 @@ onMounted(async () => {
 }
 
 .market-card {
+  position: relative;
   background: var(--card);
   border: 1px solid var(--separator);
   border-radius: 10px;
   padding: 12px 14px;
-  cursor: pointer;
   transition: border-color 0.15s, background 0.12s;
+}
+
+.mk-main {
+  cursor: pointer;
 }
 
 .market-card:hover {
@@ -479,6 +554,29 @@ onMounted(async () => {
 .market-card.active {
   border-color: var(--accent);
   background: rgba(0, 122, 255, 0.04);
+}
+
+.mk-delete-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+}
+
+.mk-delete-btn:hover {
+  color: var(--danger);
+  background: rgba(255, 59, 48, 0.1);
 }
 
 .mk-name {

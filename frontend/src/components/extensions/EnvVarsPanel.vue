@@ -228,6 +228,16 @@
         </AppButton>
       </template>
     </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <ConfirmDialog
+      v-model:open="showDeleteDialog"
+      title="删除环境变量"
+      :message="keyToDelete ? `确定要删除环境变量「${keyToDelete}」吗？` : ''"
+      danger
+      confirm-text="删除"
+      @confirm="confirmDelete"
+    />
   </div>
 </template>
 
@@ -239,6 +249,7 @@ import Switch from '../ui/Switch.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import Segmented from '../ui/Segmented.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import Dialog from '../ui/Dialog.vue';
 
 // Define types inline to avoid import issues
@@ -280,6 +291,10 @@ const showEditDialog = ref(false);
 const showImportDialog = ref(false);
 const saving = ref(false);
 const importing = ref(false);
+
+// Delete confirmation
+const showDeleteDialog = ref(false);
+const keyToDelete = ref('');
 
 const editingVar = ref<EnvVar>({ key: '', value: '' });
 const editForm = ref({ key: '', value: '' });
@@ -396,13 +411,21 @@ async function handleSave() {
 }
 
 async function handleDelete(key: string) {
-  if (!confirm(`确定要删除环境变量「${key}」吗？`)) return;
+  keyToDelete.value = key;
+  showDeleteDialog.value = true;
+}
+
+async function confirmDelete() {
+  if (!keyToDelete.value) return;
 
   try {
-    await envvarsApi.deleteEnvVar(key);
+    await envvarsApi.deleteEnvVar(keyToDelete.value);
     await Promise.all([loadEnvVars(), loadJsonContent()]);
   } catch (error) {
     console.error('[EnvVarsPanel] Failed to delete env var:', error);
+  } finally {
+    showDeleteDialog.value = false;
+    keyToDelete.value = '';
   }
 }
 

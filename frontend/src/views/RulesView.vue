@@ -128,71 +128,22 @@
       </div>
     </ConfigCard>
 
-    <!-- Edit Modal (simplified for P6) -->
-    <div v-if="showModal" class="modal-overlay" @click.self="closeModal">
-      <div class="modal-content">
-        <h2>{{ isEditing ? '编辑规则' : '新建规则' }}</h2>
+    <!-- Rule Dialog -->
+    <RuleDialog
+      v-model:open="showModal"
+      :rule="currentRule"
+      @success="fetchRules"
+    />
 
-        <div class="form-group">
-          <label>规则名称</label>
-          <TextInput
-            v-model="currentRule.name"
-            placeholder="输入规则名称"
-          />
-        </div>
-
-        <div class="form-group">
-          <label>优先级 (数字越大优先级越高)</label>
-          <TextInput
-            :model-value="String(currentRule.priority || 0)"
-            type="number"
-            placeholder="0"
-            @update:model-value="currentRule.priority = Number($event)"
-          />
-        </div>
-
-        <div class="form-group">
-          <label>触发关键词 (输入后按回车添加)</label>
-          <div class="keyword-input-group">
-            <div class="keyword-chips">
-              <span v-for="(kw, idx) in currentRule.keywords" :key="kw" class="keyword-chip">
-                {{ kw }}
-                <span class="remove-btn" @click="removeKeyword(idx)">&times;</span>
-              </span>
-            </div>
-            <TextInput
-              v-model="newKeyword"
-              placeholder="输入关键词..."
-              @keydown.enter.prevent="addKeyword"
-            />
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label>注入内容 (Prompt)</label>
-          <textarea
-            v-model="currentRule.prompt"
-            class="textarea-field"
-            rows="5"
-            placeholder="输入要注入的提示词内容..."
-          />
-        </div>
-
-        <div class="form-group checkbox-group">
-          <label>
-            <input type="checkbox" v-model="currentRule.enabled" />
-            启用此规则
-          </label>
-        </div>
-
-        <div class="modal-actions">
-          <AppButton variant="ghost" @click="closeModal" :disabled="loading">取消</AppButton>
-          <AppButton variant="primary" @click="saveRule" :disabled="loading">
-            {{ loading ? '保存中...' : '保存' }}
-          </AppButton>
-        </div>
-      </div>
-    </div>
+    <!-- Delete Confirmation Dialog -->
+    <ConfirmDialog
+      v-model:open="showDeleteDialog"
+      title="删除规则"
+      message="确定要删除此规则吗？"
+      danger
+      confirm-text="删除"
+      @confirm="confirmDeleteRule"
+    />
   </section>
 </template>
 
@@ -205,6 +156,8 @@ import TextInput from '../components/ui/TextInput.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import Badge from '../components/ui/Badge.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
+import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
+import RuleDialog from '../components/rules/RuleDialog.vue'
 
 import { useToast } from '../composables/useToast'
 import { proxy } from '../../wailsjs/go/models'
@@ -233,9 +186,9 @@ const rules = ref<proxy.InjectionRule[]>([])
 const logs = ref<proxy.InjectionLog[]>([])
 
 const showModal = ref(false)
-const isEditing = ref(false)
-const newKeyword = ref('')
-const currentRule = ref<proxy.InjectionRule>(new proxy.InjectionRule())
+const currentRule = ref<proxy.InjectionRule | null>(null)
+const ruleToDelete = ref<string | null>(null)
+const showDeleteDialog = ref(false)
 
 let statusInterval: number | null = null
 
@@ -342,79 +295,26 @@ const toggleRuleEnabled = async (rule: proxy.InjectionRule) => {
 }
 
 const openAddModal = () => {
-  isEditing.value = false
-  currentRule.value = new proxy.InjectionRule({
-    id: crypto.randomUUID(),
-    name: '',
-    keywords: [],
-    prompt: '',
-    enabled: true,
-    priority: 0,
-  })
-  newKeyword.value = ''
+  currentRule.value = null
   showModal.value = true
 }
 
 const editRule = (rule: proxy.InjectionRule) => {
-  isEditing.value = true
-  currentRule.value = new proxy.InjectionRule({
-    id: rule.id,
-    name: rule.name,
-    keywords: [...(rule.keywords || [])],
-    prompt: rule.prompt,
-    enabled: rule.enabled,
-    priority: rule.priority || 0,
-  })
-  newKeyword.value = ''
+  currentRule.value = rule
   showModal.value = true
 }
 
-const closeModal = () => {
-  showModal.value = false
-}
-
-const addKeyword = () => {
-  const kw = newKeyword.value.trim()
-  if (kw && !currentRule.value.keywords?.includes(kw)) {
-    currentRule.value.keywords.push(kw)
-  }
-  newKeyword.value = ''
-}
-
-const removeKeyword = (index: number) => {
-  currentRule.value.keywords?.splice(index, 1)
-}
-
-const saveRule = async () => {
-  if (!currentRule.value.name || !currentRule.value.prompt) {
-    showError('规则名称和注入内容不能为空')
-    return
-  }
-
-  loading.value = true
-  try {
-    if (isEditing.value) {
-      await UpdateRule(currentRule.value)
-    } else {
-      await AddRule(currentRule.value)
-    }
-    await fetchRules()
-    closeModal()
-    showSuccess('保存规则成功')
-  } catch (err) {
-    console.error('Failed to save rule:', err)
-    showError('保存规则失败: ' + err)
-  } finally {
-    loading.value = false
-  }
-}
-
 const deleteRule = async (id: string) => {
-  if (!confirm('确定要删除此规则吗？')) return
+  ruleToDelete.value = id
+  showDeleteDialog.value = true
+}
+
+const confirmDeleteRule = async () => {
+  if (!ruleToDelete.value) return
 
   loading.value = true
   try {
-    await DeleteRule(id)
+    await DeleteRule(ruleToDelete.value)
     await fetchRules()
     showSuccess('删除规则成功')
   } catch (err) {
@@ -422,6 +322,8 @@ const deleteRule = async (id: string) => {
     showError('删除规则失败: ' + err)
   } finally {
     loading.value = false
+    showDeleteDialog.value = false
+    ruleToDelete.value = null
   }
 }
 
@@ -793,33 +695,6 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-
-.checkbox-group {
-  flex-direction: row;
-  align-items: center;
-}
-
-.checkbox-group label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  color: var(--label);
-  cursor: pointer;
-}
-
-.checkbox-group input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 4px;
 }
 
 .btn-sm {

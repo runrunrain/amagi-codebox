@@ -56,20 +56,24 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
       </button>
-      <div class="version">
+      <button class="version" @click="showUpdateDialog = true" title="检查更新">
         <span class="sess-dot"></span>v1.0.0
-      </div>
+      </button>
     </div>
+
+    <!-- Update Dialog -->
+    <UpdateDialog v-model:open="showUpdateDialog" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUIStore } from '../../stores/ui'
 import { useSessionStore } from '../../stores/session'
 import { useSessionList } from '../../composables/useSessionList'
 import SessionListItem from './SessionListItem.vue'
+import UpdateDialog from '../common/UpdateDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -108,6 +112,7 @@ const navItems = [
 const runningSessions = computed(() => sessionStore.runningSessions)
 const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
+const showUpdateDialog = ref(false)
 
 function isActive(path: string): boolean {
   return route.path === path
@@ -315,6 +320,16 @@ onUnmounted(() => {
   gap: 6px;
   font-size: 11px;
   color: var(--tertiary);
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background .12s;
+}
+
+.version:hover {
+  background: var(--control);
 }
 
 .version .sess-dot {

@@ -19,9 +19,9 @@
         >{{ opt.label }}</Chip>
       </div>
       <div class="pc-actions">
-        <button class="btn-ghost" :disabled="loading" @click="$emit('export')">导出配置</button>
-        <button class="btn-ghost" :disabled="loading" @click="$emit('import')">JSON 导入</button>
-        <button class="btn-primary" :disabled="loading" @click="$emit('add')">添加提供商</button>
+        <AppButton variant="ghost" size="small" :disabled="loading" @click="$emit('export')">导出配置</AppButton>
+        <AppButton variant="ghost" size="small" :disabled="loading" @click="$emit('import')">JSON 导入</AppButton>
+        <AppButton variant="primary" size="small" :disabled="loading" @click="showAddDialog = true">添加提供商</AppButton>
       </div>
     </div>
 
@@ -72,24 +72,37 @@
         </div>
       </article>
     </div>
+
+    <!-- 添加提供商弹窗 -->
+    <AddProviderDialog
+      v-model:open="showAddDialog"
+      @saved="handleProviderSaved"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import Chip from '../ui/Chip.vue';
+import AppButton from '../ui/AppButton.vue';
+import AddProviderDialog from './AddProviderDialog.vue';
 import { useProviderStore, type ProviderFilter } from '../../stores/provider';
 
 type Provider = config.Provider;
 
-defineEmits<{
+const emit = defineEmits<{
   export: [];
   import: [];
-  add: [];
 }>();
 
 const store = useProviderStore();
+const showAddDialog = ref(false);
+
+// 添加提供商成功后刷新列表
+async function handleProviderSaved() {
+  await store.loadProviders();
+}
 
 const FILTER_OPTIONS: { value: ProviderFilter; label: string }[] = [
   { value: 'all', label: '全部' },
