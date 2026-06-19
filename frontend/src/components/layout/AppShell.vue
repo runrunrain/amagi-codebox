@@ -2,13 +2,18 @@
   <div class="app">
     <Sidebar />
     <main class="main">
-      <slot />
+      <SettingsView v-if="uiStore.isInSettingsMode" />
+      <slot v-else />
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
 import Sidebar from './Sidebar.vue'
+import SettingsView from '../../views/settings/SettingsView.vue'
+import { useUIStore } from '../../stores/ui'
+
+const uiStore = useUIStore()
 </script>
 
 <style scoped>

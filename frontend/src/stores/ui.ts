@@ -10,6 +10,9 @@ export const useUIStore = defineStore('ui', () => {
   // Settings mode state
   const settingsMode = ref(false);
 
+  // Active setting page key (general/shell/terminal/remote/update/envcheck/about)
+  const activeSettingKey = ref<string>('general');
+
   // Current view ID
   const currentViewId = ref('settings');
 
@@ -29,10 +32,19 @@ export const useUIStore = defineStore('ui', () => {
   // Actions
   function enterSettingsMode() {
     settingsMode.value = true;
+    // Reset to general when entering settings mode (unless already set)
+    if (!activeSettingKey.value) {
+      activeSettingKey.value = 'general';
+    }
   }
 
   function exitSettingsMode() {
     settingsMode.value = false;
+    // Keep activeSettingKey so re-entering resumes last page; reset optional.
+  }
+
+  function setActiveSettingKey(key: string) {
+    activeSettingKey.value = key;
   }
 
   function setCurrentView(viewId: string) {
@@ -55,6 +67,7 @@ export const useUIStore = defineStore('ui', () => {
   return {
     // State
     settingsMode,
+    activeSettingKey,
     currentViewId,
     globalLoading,
     globalLoadingMessage,
@@ -67,6 +80,7 @@ export const useUIStore = defineStore('ui', () => {
     // Actions
     enterSettingsMode,
     exitSettingsMode,
+    setActiveSettingKey,
     setCurrentView,
     setGlobalLoading,
     toggleSidebar,

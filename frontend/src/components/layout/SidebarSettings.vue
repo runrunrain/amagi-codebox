@@ -17,7 +17,7 @@
         v-for="item in settingItems"
         :key="item.key"
         class="sb-set-item"
-        :class="{ active: activeSetting === item.key }"
+        :class="{ active: uiStore.activeSettingKey === item.key }"
         @click="handleSettingClick(item.key)"
       >
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" v-html="item.icon"/>
@@ -33,11 +33,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useUIStore } from '../../stores/ui'
 
 const uiStore = useUIStore()
-const activeSetting = ref('general')
 
 const settingItems = [
   {
@@ -82,9 +80,7 @@ function handleExitSettings() {
 }
 
 function handleSettingClick(key: string) {
-  activeSetting.value = key
-  console.log('selectSetting:', key)
-  // TODO: P2 实现设置内容页切换
+  uiStore.setActiveSettingKey(key)
 }
 </script>
 
