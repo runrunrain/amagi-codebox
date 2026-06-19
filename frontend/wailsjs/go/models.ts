@@ -503,6 +503,9 @@ export namespace config {
 	    name: string;
 	    provider: string;
 	    model: string;
+	    model_haiku?: string;
+	    model_sonnet?: string;
+	    model_opus?: string;
 	    parameters: Parameters;
 	    opencode_cfg?: number[];
 	
@@ -515,6 +518,9 @@ export namespace config {
 	        this.name = source["name"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
+	        this.model_haiku = source["model_haiku"];
+	        this.model_sonnet = source["model_sonnet"];
+	        this.model_opus = source["model_opus"];
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.opencode_cfg = source["opencode_cfg"];
 	    }
@@ -608,6 +614,7 @@ export namespace config {
 	    thinking?: ThinkingConfig;
 	    stream?: boolean;
 	    context_window?: ContextWindowConfig;
+	    reasoning_effort?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Parameters(source);
@@ -623,6 +630,7 @@ export namespace config {
 	        this.thinking = this.convertValues(source["thinking"], ThinkingConfig);
 	        this.stream = source["stream"];
 	        this.context_window = this.convertValues(source["context_window"], ContextWindowConfig);
+	        this.reasoning_effort = source["reasoning_effort"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -646,6 +654,9 @@ export namespace config {
 	export class Preset {
 	    name: string;
 	    model: string;
+	    model_haiku?: string;
+	    model_sonnet?: string;
+	    model_opus?: string;
 	    parameters: Parameters;
 	    target?: string;
 	    opencode_config?: number[];
@@ -658,6 +669,9 @@ export namespace config {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.model = source["model"];
+	        this.model_haiku = source["model_haiku"];
+	        this.model_sonnet = source["model_sonnet"];
+	        this.model_opus = source["model_opus"];
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.target = source["target"];
 	        this.opencode_config = source["opencode_config"];
