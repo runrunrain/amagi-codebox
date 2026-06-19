@@ -6,9 +6,10 @@
 import { computed } from 'vue';
 
 interface Props {
-  type?: 'type' | 'ver' | 'tag' | 'scope' | 'source' | 'dup';
+  type?: 'type' | 'ver' | 'tag' | 'scope' | 'source' | 'dup' | 'warning' | 'pid';
   text: string;
-  color?: string; // For type badges: integration, hybrid, skill, hook, command, agent, mcp
+  color?: string; // For type badges: integration, hybrid, skill, hook, command, agent, mcp, capability, warning, plugin
+  variant?: 'muted' | 'mono';
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -17,9 +18,17 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const classes = computed(() => {
-  const base = props.type === 'type' ? 'type-badge' : props.type === 'ver' ? 'ver-badge' : 'tag';
+  let base = 'tag';
+  if (props.type === 'ver') base = 'ver-badge';
+  else if (props.type === 'scope') base = 'scope-badge';
+  else if (props.type === 'source') base = 'source-badge';
+  else if (props.type === 'dup' || props.type === 'warning') base = 'warning-badge';
+  else if (props.type === 'pid') base = 'pid-badge';
+  else if (props.type === 'type') base = 'type-badge';
+
   const color = props.type === 'type' && props.color ? `type-badge-${props.color}` : '';
-  return [base, color].filter(Boolean);
+  const variant = props.variant ? `badge-${props.variant}` : '';
+  return [base, color, variant].filter(Boolean);
 });
 </script>
 
@@ -115,5 +124,54 @@ const classes = computed(() => {
 .type-badge.unknown {
   color: var(--secondary);
   background: var(--control);
+}
+
+.type-badge.capability {
+  color: var(--secondary);
+  background: var(--control);
+}
+
+.type-badge.warning {
+  color: var(--warning);
+  background: rgba(255, 149, 0, 0.14);
+}
+
+.type-badge.plugin {
+  color: var(--secondary);
+  background: var(--control);
+}
+
+.scope-badge {
+  font-size: 10px;
+  color: var(--secondary);
+  background: var(--control);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.warning-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--warning);
+  background: rgba(255, 149, 0, 0.14);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.pid-badge {
+  font-size: 10px;
+  color: var(--secondary);
+  background: var(--control);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+}
+
+.badge-muted {
+  opacity: 0.8;
+}
+
+.badge-mono {
+  font-family: var(--mono);
 }
 </style>
