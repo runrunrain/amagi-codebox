@@ -99,11 +99,6 @@ const { refresh, startPolling, stopPolling } = useSessionList()
 
 const navItems = [
   {
-    path: '/remote-web',
-    label: '远程控制',
-    icon: '<path d="M12 2a5 5 0 0 1 5 5v1h1a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h1V7a5 5 0 0 1 5-5zm0 2a3 3 0 0 0-3 3v1h6V7a3 3 0 0 0-3-3zm0 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/>'
-  },
-  {
     path: '/',
     label: '会话设置',
     icon: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>'

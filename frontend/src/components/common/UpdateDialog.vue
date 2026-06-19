@@ -13,11 +13,11 @@
       <div class="version-section">
         <div class="version-row">
           <span class="version-label">当前版本</span>
-          <span class="version-value">v{{ currentVersion }}</span>
+          <span class="version-value">{{ currentVersion }}</span>
         </div>
         <div v-if="updateInfo.hasUpdate" class="version-row">
           <span class="version-label">最新版本</span>
-          <span class="version-value highlight">v{{ updateInfo.latestVersion }}</span>
+          <span class="version-value highlight">{{ updateInfo.latestVersion }}</span>
         </div>
         <div v-if="updateInfo.publishedAt" class="version-meta">
           发布于：{{ updateInfo.publishedAt }}
