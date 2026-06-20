@@ -6,23 +6,55 @@
 <template>
   <div class="perm-editor">
     <div v-if="!entries.length" class="pe-empty">暂无权限条目</div>
-    <div v-for="entry in entries" :key="entry.id" class="pe-row">
-      <TextInput
-        :model-value="entry.key"
-        placeholder="工具名（如 bash/edit）"
-        class="pe-key"
-        @update:model-value="updateKey(entry.id, $event)"
-      />
-      <Dropdown
-        :model-value="entry.value"
-        :options="PERM_OPTIONS"
-        placeholder="选择权限"
-        class="pe-value"
-        @update:model-value="updateValue(entry.id, $event)"
-      />
-      <AppButton variant="icon" size="small" @click="removeEntry(entry.id)" aria-label="删除">
-        <span class="pe-remove">×</span>
-      </AppButton>
+    <div v-for="entry in entries" :key="entry.id" :class="['pe-card', { collapsed: !isExpanded(entry.id) }]">
+      <button
+        type="button"
+        class="pe-thumb-head"
+        :aria-expanded="isExpanded(entry.id)"
+        @click="toggleExpanded(entry.id)"
+      >
+        <span class="pe-thumb" :class="`pe-thumb-${entry.value || 'unknown'}`">
+          <span class="pe-thumb-icon" v-html="PERM_ICON" />
+        </span>
+        <span class="pe-thumb-meta">
+          <span class="pe-thumb-name" :title="entry.key || '(未命名)'">{{ entry.key || '(未命名)' }}</span>
+        </span>
+        <span class="pe-thumb-pill" :class="`pe-pill-${entry.value || 'unknown'}`">{{ entry.value || '—' }}</span>
+        <svg
+          class="pe-thumb-chevron"
+          :class="{ expanded: isExpanded(entry.id) }"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="3 4.5 6 7.5 9 4.5" />
+        </svg>
+      </button>
+
+      <div v-if="isExpanded(entry.id)" class="pe-expanded">
+        <div class="pe-row">
+          <TextInput
+            :model-value="entry.key"
+            placeholder="工具名（如 bash/edit）"
+            class="pe-key"
+            @update:model-value="updateKey(entry.id, $event)"
+          />
+          <Dropdown
+            :model-value="entry.value"
+            :options="PERM_OPTIONS"
+            placeholder="选择权限"
+            class="pe-value"
+            @update:model-value="updateValue(entry.id, $event)"
+          />
+          <AppButton variant="icon" size="small" @click="removeEntry(entry.id)" aria-label="删除">
+            <span class="pe-remove">×</span>
+          </AppButton>
+        </div>
+      </div>
     </div>
     <div class="pe-actions">
       <AppButton variant="ghost" size="small" @click="addEntry">+ 添加权限</AppButton>
@@ -69,6 +101,23 @@ function genId(): string {
 
 const entries = ref<Entry[]>([]);
 
+// 第二层折叠：每个 permission 项默认收起
+const expandedKeys = ref<Record<string, boolean>>({});
+
+const PERM_ICON = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3l7 3v5c0 4.2-2.8 7.8-7 9-4.2-1.2-7-4.8-7-9V6l7-3z"/>
+    <rect x="9.5" y="10.5" width="5" height="3.6" rx="0.6"/>
+    <path d="M10.4 10.5V9.2a1.6 1.6 0 0 1 3.2 0v1.3"/>
+  </svg>`;
+
+function isExpanded(id: string): boolean {
+  return !!expandedKeys.value[id];
+}
+function toggleExpanded(id: string) {
+  expandedKeys.value[id] = !expandedKeys.value[id];
+}
+
 function syncFromModel() {
   const obj = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {};
   entries.value = Object.entries(obj).map(([k, v]) => {
@@ -109,6 +158,8 @@ function addEntry() {
   let i = 1;
   while (entries.value.some((e) => e.key === k)) k = 'new_tool_' + i++;
   entries.value.push({ id: genId(), key: k, value: 'allow' });
+  // 新增项默认展开
+  expandedKeys.value[entries.value[entries.value.length - 1].id] = true;
   emitAll();
 }
 
@@ -140,6 +191,155 @@ watch(
   color: var(--tertiary);
   font-size: 12px;
   padding: 6px 0;
+}
+
+/* 第二层略缩图卡片 */
+.pe-card {
+  background: var(--control);
+  border: 1px solid var(--separator);
+  border-radius: 9px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pe-card:hover {
+  border-color: rgba(0, 122, 255, 0.25);
+}
+.pe-card.collapsed {
+  box-shadow: none;
+}
+
+.pe-thumb-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background 0.15s ease;
+}
+.pe-thumb-head:hover {
+  background: var(--card);
+}
+.pe-thumb-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.pe-thumb {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease;
+}
+.pe-thumb-allow {
+  color: #34C759;
+  background: rgba(52, 199, 89, 0.12);
+}
+.pe-thumb-ask {
+  color: #FF9500;
+  background: rgba(255, 149, 0, 0.12);
+}
+.pe-thumb-deny {
+  color: #FF3B30;
+  background: rgba(255, 59, 48, 0.12);
+}
+.pe-thumb-unknown {
+  color: #8E8E93;
+  background: rgba(142, 142, 147, 0.12);
+}
+.pe-thumb-head:hover .pe-thumb {
+  transform: translateY(-1px);
+}
+.pe-thumb-icon {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+}
+.pe-thumb-icon :deep(svg) {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.pe-thumb-meta {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pe-thumb-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pe-thumb-pill {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+}
+.pe-pill-allow {
+  color: #1d8a3f;
+  background: rgba(52, 199, 89, 0.14);
+  border-color: rgba(52, 199, 89, 0.28);
+}
+.pe-pill-ask {
+  color: #b56400;
+  background: rgba(255, 149, 0, 0.14);
+  border-color: rgba(255, 149, 0, 0.28);
+}
+.pe-pill-deny {
+  color: #c4281f;
+  background: rgba(255, 59, 48, 0.14);
+  border-color: rgba(255, 59, 48, 0.28);
+}
+.pe-pill-unknown {
+  color: var(--secondary);
+  background: var(--bg);
+  border-color: var(--separator);
+}
+.pe-thumb-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--tertiary);
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.pe-thumb-chevron.expanded {
+  transform: rotate(0deg);
+  color: var(--accent);
+}
+.pe-thumb-head:hover .pe-thumb-chevron {
+  color: var(--secondary);
+}
+.pe-thumb-head:hover .pe-thumb-chevron.expanded {
+  color: var(--accentHover);
+}
+
+.pe-expanded {
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--separator);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .pe-row {
   display: flex;

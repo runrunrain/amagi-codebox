@@ -15,21 +15,51 @@
   <div class="provider-editor">
     <div v-if="!providers.length" class="pe-empty">暂无 provider</div>
 
-    <div v-for="entry in providers" :key="entry.id" class="pe-card">
-      <div class="pe-card-head">
-        <TextInput
-          :model-value="entry.key"
-          placeholder="provider 名（如 openai）"
-          class="pe-name"
-          mono
-          @update:model-value="updateKey(entry.id, $event)"
-        />
-        <AppButton variant="icon" size="small" @click="removeProvider(entry.id)" aria-label="删除">
-          <span class="pe-remove">×</span>
-        </AppButton>
-      </div>
+    <div v-for="entry in providers" :key="entry.id" :class="['pe-card', { collapsed: !isExpanded(entry.id) }]">
+      <button
+        type="button"
+        class="pe-thumb-head"
+        :aria-expanded="isExpanded(entry.id)"
+        @click="toggleExpanded(entry.id)"
+      >
+        <span class="pe-thumb">
+          <span class="pe-thumb-icon" v-html="PROVIDER_ICON" />
+        </span>
+        <span class="pe-thumb-meta">
+          <span class="pe-thumb-name" :title="entry.key || '(未命名)'">{{ entry.key || '(未命名)' }}</span>
+          <span v-if="entry.value.name" class="pe-thumb-display" :title="entry.value.name">{{ entry.value.name }}</span>
+        </span>
+        <span class="pe-thumb-badge">{{ getModelEntries(entry).length }} models</span>
+        <svg
+          class="pe-thumb-chevron"
+          :class="{ expanded: isExpanded(entry.id) }"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="3 4.5 6 7.5 9 4.5" />
+        </svg>
+      </button>
 
-      <div class="pe-fields">
+      <div v-if="isExpanded(entry.id)" class="pe-expanded">
+        <div class="pe-card-head">
+          <TextInput
+            :model-value="entry.key"
+            placeholder="provider 名（如 openai）"
+            class="pe-name"
+            mono
+            @update:model-value="updateKey(entry.id, $event)"
+          />
+          <AppButton variant="icon" size="small" @click="removeProvider(entry.id)" aria-label="删除">
+            <span class="pe-remove">×</span>
+          </AppButton>
+        </div>
+
+        <div class="pe-fields">
         <div class="pe-field">
           <label class="pe-label">name（可选显示名）</label>
           <TextInput
@@ -124,6 +154,7 @@
           </div>
         </div>
       </div>
+      </div>
     </div>
 
     <div class="pe-actions">
@@ -175,6 +206,23 @@ interface ProviderEntry {
 
 const providers = ref<ProviderEntry[]>([]);
 const revealed = reactive<Record<string, boolean>>({});
+
+// 第二层折叠：每个 provider 项默认收起
+const expandedKeys = ref<Record<string, boolean>>({});
+
+const PROVIDER_ICON = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 15a4 4 0 0 1 .8-7.9 5.5 5.5 0 0 1 10.6 1.4A3.75 3.75 0 0 1 17.5 15"/>
+    <path d="M9 13.5l3-3 3 3"/>
+    <path d="M12 10.5V18"/>
+  </svg>`;
+
+function isExpanded(id: string): boolean {
+  return !!expandedKeys.value[id];
+}
+function toggleExpanded(id: string) {
+  expandedKeys.value[id] = !expandedKeys.value[id];
+}
 
 function revealKey(entryId: string, field: string) {
   return `${entryId}:${field}`;
@@ -335,6 +383,8 @@ function addProvider() {
     key: k,
     value: { options: {}, models: {} },
   });
+  // 新增项默认展开
+  expandedKeys.value[providers.value[providers.value.length - 1].id] = true;
   emitAll();
 }
 
@@ -371,10 +421,125 @@ watch(
   background: var(--control);
   border: 1px solid var(--separator);
   border-radius: 10px;
-  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pe-card:hover {
+  border-color: rgba(0, 122, 255, 0.25);
+}
+.pe-card.collapsed {
+  box-shadow: none;
+}
+
+/* 第二层略缩图 header */
+.pe-thumb-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background 0.15s ease;
+}
+.pe-thumb-head:hover {
+  background: var(--card);
+}
+.pe-thumb-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.pe-thumb {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #007AFF;
+  background: rgba(0, 122, 255, 0.12);
+  transition: transform 0.18s ease;
+}
+.pe-thumb-head:hover .pe-thumb {
+  transform: translateY(-1px);
+}
+.pe-thumb-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+}
+.pe-thumb-icon :deep(svg) {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.pe-thumb-meta {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pe-thumb-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pe-thumb-display {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pe-thumb-badge {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--secondary);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.pe-thumb-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--tertiary);
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.pe-thumb-chevron.expanded {
+  transform: rotate(0deg);
+  color: var(--accent);
+}
+.pe-thumb-head:hover .pe-thumb-chevron {
+  color: var(--secondary);
+}
+.pe-thumb-head:hover .pe-thumb-chevron.expanded {
+  color: var(--accentHover);
+}
+.pe-expanded {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--separator);
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.pe-card.collapsed .pe-thumb-head {
+  padding: 7px 12px;
 }
 .pe-card-head {
   display: flex;

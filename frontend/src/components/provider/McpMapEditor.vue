@@ -8,21 +8,53 @@
   <div class="mcp-editor">
     <div v-if="!servers.length" class="me-empty">暂无 MCP server</div>
 
-    <div v-for="entry in servers" :key="entry.id" class="me-card">
-      <div class="me-card-head">
-        <TextInput
-          :model-value="entry.key"
-          placeholder="server 名（如 zhipu-web-reader）"
-          class="me-name"
-          mono
-          @update:model-value="updateKey(entry.id, $event)"
-        />
-        <AppButton variant="icon" size="small" @click="removeServer(entry.id)" aria-label="删除">
-          <span class="me-remove">×</span>
-        </AppButton>
-      </div>
+    <div v-for="entry in servers" :key="entry.id" :class="['me-card', { collapsed: !isExpanded(entry.id) }]">
+      <button
+        type="button"
+        class="me-thumb-head"
+        :aria-expanded="isExpanded(entry.id)"
+        @click="toggleExpanded(entry.id)"
+      >
+        <span class="me-thumb" :class="`me-thumb-${entry.value.type || 'remote'}`">
+          <span class="me-thumb-icon" v-html="MCP_ICON" />
+        </span>
+        <span class="me-thumb-meta">
+          <span class="me-thumb-name" :title="entry.key || '(未命名)'">{{ entry.key || '(未命名)' }}</span>
+          <span class="me-thumb-type">{{ entry.value.type || 'remote' }}</span>
+          <span v-if="(entry.value.type || 'remote') === 'remote' && entry.value.url" class="me-thumb-url" :title="entry.value.url">{{ entry.value.url }}</span>
+          <span v-else-if="entry.value.command" class="me-thumb-url" :title="entry.value.command">{{ entry.value.command }}</span>
+        </span>
+        <span class="me-thumb-badge">{{ fieldCount(entry) }}</span>
+        <svg
+          class="me-thumb-chevron"
+          :class="{ expanded: isExpanded(entry.id) }"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="3 4.5 6 7.5 9 4.5" />
+        </svg>
+      </button>
 
-      <div class="me-fields">
+      <div v-if="isExpanded(entry.id)" class="me-expanded">
+        <div class="me-card-head">
+          <TextInput
+            :model-value="entry.key"
+            placeholder="server 名（如 zhipu-web-reader）"
+            class="me-name"
+            mono
+            @update:model-value="updateKey(entry.id, $event)"
+          />
+          <AppButton variant="icon" size="small" @click="removeServer(entry.id)" aria-label="删除">
+            <span class="me-remove">×</span>
+          </AppButton>
+        </div>
+
+        <div class="me-fields">
         <div class="me-field">
           <label class="me-label">type</label>
           <Dropdown
@@ -118,6 +150,7 @@
           </div>
         </template>
       </div>
+      </div>
     </div>
 
     <div class="me-actions">
@@ -186,6 +219,40 @@ interface ServerEntry {
 
 const servers = ref<ServerEntry[]>([]);
 const revealed = reactive<Record<string, boolean>>({});
+
+// 第二层折叠：每个 mcp 项默认收起
+const expandedKeys = ref<Record<string, boolean>>({});
+
+const MCP_ICON = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 4v3.5L5 9.5V14"/>
+    <path d="M15 4v3.5l4 2V14"/>
+    <path d="M9 20v-3.5l-4-2"/>
+    <path d="M15 20v-3.5l4-2"/>
+    <rect x="9" y="3" width="6" height="2.4" rx="0.6"/>
+    <rect x="3.6" y="8.4" width="2.8" height="2.4" rx="0.6" transform="rotate(-90 5 9.6)"/>
+    <rect x="17.6" y="8.4" width="2.8" height="2.4" rx="0.6" transform="rotate(-90 19 9.6)"/>
+  </svg>`;
+
+function isExpanded(id: string): boolean {
+  return !!expandedKeys.value[id];
+}
+function toggleExpanded(id: string) {
+  expandedKeys.value[id] = !expandedKeys.value[id];
+}
+
+// 字段计数徽章
+function fieldCount(entry: ServerEntry): string {
+  const v = entry.value;
+  const type = v.type || 'remote';
+  if (type === 'local') {
+    const argCount = Array.isArray(v.args) ? v.args.length : 0;
+    return `${argCount} args`;
+  }
+  // remote
+  const headerCount = entry.headerEntries.length;
+  return `${headerCount} headers`;
+}
 
 function headerEntriesFrom(headers: any): HeaderEntry[] {
   if (!headers || typeof headers !== 'object') return [];
@@ -313,6 +380,8 @@ function addServer(type: 'remote' | 'local') {
     value: { type },
     headerEntries: [],
   });
+  // 新增项默认展开
+  expandedKeys.value[servers.value[servers.value.length - 1].id] = true;
   emitAll();
 }
 
@@ -349,10 +418,145 @@ watch(
   background: var(--control);
   border: 1px solid var(--separator);
   border-radius: 10px;
-  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.me-card:hover {
+  border-color: rgba(0, 122, 255, 0.25);
+}
+.me-card.collapsed {
+  box-shadow: none;
+}
+
+/* 第二层略缩图 header */
+.me-thumb-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background 0.15s ease;
+}
+.me-thumb-head:hover {
+  background: var(--card);
+}
+.me-thumb-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.me-thumb {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease;
+}
+.me-thumb-remote,
+.me-thumb-me-thumb-remote {
+  color: #FF9500;
+  background: rgba(255, 149, 0, 0.12);
+}
+.me-thumb-local {
+  color: #34C759;
+  background: rgba(52, 199, 89, 0.12);
+}
+.me-thumb-head:hover .me-thumb {
+  transform: translateY(-1px);
+}
+.me-thumb-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+}
+.me-thumb-icon :deep(svg) {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.me-thumb-meta {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.me-thumb-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.me-thumb-type {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--secondary);
+  background: var(--bg);
+  border: 1px solid var(--separator);
+  border-radius: 4px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.me-thumb-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--tertiary);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.me-thumb-badge {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--secondary);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.me-thumb-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--tertiary);
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.me-thumb-chevron.expanded {
+  transform: rotate(0deg);
+  color: var(--accent);
+}
+.me-thumb-head:hover .me-thumb-chevron {
+  color: var(--secondary);
+}
+.me-thumb-head:hover .me-thumb-chevron.expanded {
+  color: var(--accentHover);
+}
+.me-expanded {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--separator);
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.me-card.collapsed .me-thumb-head {
+  padding: 7px 12px;
 }
 .me-card-head {
   display: flex;

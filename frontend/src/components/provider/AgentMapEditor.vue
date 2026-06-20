@@ -8,20 +8,51 @@
   <div class="agent-editor">
     <div v-if="!agents.length" class="ae-empty">暂无 agent，点击下方添加</div>
 
-    <div v-for="entry in agents" :key="entry.id" class="ae-card">
-      <div class="ae-card-head">
-        <TextInput
-          :model-value="entry.key"
-          placeholder="agent 名（如 luban）"
-          class="ae-name"
-          mono
-          @update:model-value="updateKey(entry.id, $event)"
-        />
-        <AppButton variant="icon" size="small" @click="removeAgent(entry.id)" aria-label="删除">
-          <span class="ae-remove">×</span>
-        </AppButton>
-      </div>
-      <div class="ae-fields">
+    <div v-for="entry in agents" :key="entry.id" :class="['ae-card', { collapsed: !isExpanded(entry.id) }]">
+      <button
+        type="button"
+        class="ae-thumb-head"
+        :aria-expanded="isExpanded(entry.id)"
+        @click="toggleExpanded(entry.id)"
+      >
+        <span class="ae-thumb" :style="thumbStyle(entry.value.color)">
+          <span class="ae-thumb-icon" v-html="AGENT_ICON" />
+        </span>
+        <span class="ae-thumb-meta">
+          <span class="ae-thumb-name" :title="entry.key || '(未命名)'">{{ entry.key || '(未命名)' }}</span>
+          <span v-if="entry.value.mode" class="ae-thumb-mode">{{ entry.value.mode }}</span>
+          <span v-if="entry.value.model" class="ae-thumb-model" :title="entry.value.model">{{ entry.value.model }}</span>
+        </span>
+        <span class="ae-thumb-badge">{{ entry.toolEntries.length }} tools</span>
+        <svg
+          class="ae-thumb-chevron"
+          :class="{ expanded: isExpanded(entry.id) }"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="3 4.5 6 7.5 9 4.5" />
+        </svg>
+      </button>
+
+      <div v-if="isExpanded(entry.id)" class="ae-expanded">
+        <div class="ae-card-head">
+          <TextInput
+            :model-value="entry.key"
+            placeholder="agent 名（如 luban）"
+            class="ae-name"
+            mono
+            @update:model-value="updateKey(entry.id, $event)"
+          />
+          <AppButton variant="icon" size="small" @click="removeAgent(entry.id)" aria-label="删除">
+            <span class="ae-remove">×</span>
+          </AppButton>
+        </div>
+        <div class="ae-fields">
         <div class="ae-field">
           <label class="ae-label">color</label>
           <div class="ae-color-row">
@@ -118,6 +149,7 @@
           </div>
         </div>
       </div>
+      </div>
     </div>
 
     <div class="ae-actions">
@@ -189,6 +221,52 @@ interface AgentEntry {
 }
 
 const agents = ref<AgentEntry[]>([]);
+
+// 第二层折叠：每个 agent 项默认收起（略缩图），点击展开
+const expandedKeys = ref<Record<string, boolean>>({});
+
+const AGENT_ICON = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="8" width="14" height="11" rx="3"/>
+    <path d="M12 4v4"/>
+    <circle cx="12" cy="3.5" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="9.5" cy="13" r="1.1" fill="currentColor" stroke="none"/>
+    <circle cx="14.5" cy="13" r="1.1" fill="currentColor" stroke="none"/>
+    <path d="M9.8 16h4.4"/>
+  </svg>`;
+
+function isExpanded(id: string): boolean {
+  return !!expandedKeys.value[id];
+}
+function toggleExpanded(id: string) {
+  expandedKeys.value[id] = !expandedKeys.value[id];
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return null;
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16),
+  };
+}
+
+// 略缩图色调：优先使用 agent 自定义 color（透明度 0.16），否则 systemGreen
+function thumbStyle(color?: string): Record<string, string> {
+  const fallback = '#34C759';
+  const rgb = color ? hexToRgb(color) : null;
+  if (rgb) {
+    return {
+      color: color as string,
+      background: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.16)`,
+    };
+  }
+  return {
+    color: fallback,
+    background: 'rgba(52, 199, 89, 0.12)',
+  };
+}
 
 function normalizeColor(c: string | undefined): string {
   if (!c) return '#000000';
@@ -305,6 +383,8 @@ function addAgent() {
     value: { mode: 'subagent' },
     toolEntries: [],
   });
+  // 新增项默认展开，方便立即编辑
+  expandedKeys.value[agents.value[agents.value.length - 1].id] = true;
   emitAll();
 }
 
@@ -341,10 +421,136 @@ watch(
   background: var(--control);
   border: 1px solid var(--separator);
   border-radius: 10px;
-  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ae-card.collapsed {
+  /* 收起态更扁平 */
+  box-shadow: none;
+}
+.ae-card:hover {
+  border-color: rgba(0, 122, 255, 0.25);
+}
+
+/* 第二层略缩图 header（与第一层 ConfigCategoryCard 风格统一） */
+.ae-thumb-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background 0.15s ease;
+}
+.ae-thumb-head:hover {
+  background: var(--card);
+}
+.ae-thumb-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.ae-thumb {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease;
+}
+.ae-thumb-head:hover .ae-thumb {
+  transform: translateY(-1px);
+}
+.ae-thumb-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+}
+.ae-thumb-icon :deep(svg) {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.ae-thumb-meta {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ae-thumb-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ae-thumb-mode {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--secondary);
+  background: var(--bg);
+  border: 1px solid var(--separator);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.ae-thumb-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--tertiary);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ae-thumb-badge {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--secondary);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.ae-thumb-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--tertiary);
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.ae-thumb-chevron.expanded {
+  transform: rotate(0deg);
+  color: var(--accent);
+}
+.ae-thumb-head:hover .ae-thumb-chevron {
+  color: var(--secondary);
+}
+.ae-thumb-head:hover .ae-thumb-chevron.expanded {
+  color: var(--accentHover);
+}
+
+.ae-expanded {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--separator);
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.ae-card.collapsed .ae-thumb-head {
+  padding: 7px 12px;
 }
 .ae-card-head {
   display: flex;
