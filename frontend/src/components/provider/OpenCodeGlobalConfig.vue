@@ -2,13 +2,14 @@
   OpenCodeGlobalConfig - OpenCode 全局配置(opencode.json)可视化编辑组件
   与 OpenCodePresets 预设管理独立，作为 Provider Center 中的"全局配置"区块
 
-  功能特性：
-  - 可视化/JSON 双模式切换
-  - 可折叠配置类别卡片（8类：Model/Provider/MCP/Agent/Permission/Instructions/Plugin/Experimental）
-  - 配置文件路径展示与复制
-  - JSON 合法性实时验证
-  - 真实 API 集成（GetOpenCodeConfig/SaveOpenCodeConfig）
-  - 苹果 HIG 风格
+  设计依据：fuxi/20260620-opencode-config-editor-redesign/design.md
+  关键点：
+  - 真实结构：mcp（非 mcp_servers）、provider/agent/mcp/permission 是 object map、instructions 是 array
+  - 顶层无 model 键（OpenCode 用 agent-level model）
+  - 所有顶层键完整加载 + 可视化可编辑
+  - 统一 v-model（modelValue + update:modelValue）双向绑定
+  - 类型保持：boolean/number/object/array 不退化为 string
+  - 安全：apiKey/Authorization 用 MaskedValue，env 占位符原样保留
 -->
 <template>
   <div class="oc-global">
@@ -31,178 +32,205 @@
 
     <!-- Main content -->
     <template v-else>
-    <!-- 工具栏：可视化/JSON 切换 + 保存按钮 -->
-    <div class="ocg-toolbar">
-      <Segmented
-        v-model="mode"
-        :options="MODE_OPTIONS"
-        variant="pill"
-        class="ocg-mode-tabs"
-      />
-      <AppButton
-        variant="primary"
-        size="small"
-        :disabled="saving"
-        @click="handleSave"
-      >
-        {{ saving ? '保存中...' : '保存配置' }}
-      </AppButton>
-    </div>
+      <!-- 工具栏：可视化/JSON 切换 + 保存按钮 -->
+      <div class="ocg-toolbar">
+        <Segmented
+          v-model="modeModel"
+          :options="MODE_OPTIONS"
+          variant="pill"
+          class="ocg-mode-tabs"
+        />
+        <AppButton
+          variant="primary"
+          size="small"
+          :disabled="saving"
+          @click="handleSave"
+        >
+          {{ saving ? '保存中...' : '保存配置' }}
+        </AppButton>
+      </div>
 
-    <!-- 配置文件路径区 -->
-    <div class="ocg-path-row">
-      <span class="ocg-path-label">配置文件：</span>
-      <code class="ocg-path-value">{{ configPath || '加载中...' }}</code>
-      <AppButton
-        v-if="configPath"
-        variant="ghost"
-        size="small"
-        @click="copyPath"
-        class="ocg-copy-btn"
-      >
-        复制路径
-      </AppButton>
-    </div>
+      <!-- 配置文件路径区 -->
+      <div class="ocg-path-row">
+        <span class="ocg-path-label">配置文件：</span>
+        <code class="ocg-path-value">{{ configPath || '加载中...' }}</code>
+        <AppButton
+          v-if="configPath"
+          variant="ghost"
+          size="small"
+          @click="copyPath"
+          class="ocg-copy-btn"
+        >
+          复制路径
+        </AppButton>
+      </div>
 
-    <!-- JSON 合法性提示 -->
-    <div v-if="jsonError" class="ocg-json-error">
-      {{ jsonError }}
-    </div>
-    <div v-else-if="!saving && mode === 'json'" class="ocg-json-valid">
-      JSON 合法
-    </div>
+      <!-- JSON 合法性提示 -->
+      <div v-if="jsonError" class="ocg-json-error">
+        {{ jsonError }}
+      </div>
+      <div v-else-if="!saving && mode === 'json'" class="ocg-json-valid">
+        JSON 合法
+      </div>
 
-    <!-- 可视化模式 -->
-    <div v-if="mode === 'visual'" class="ocg-visual">
-      <!-- 空配置友好提示：区分"加载成功但配置为空"与"加载失败" -->
-      <div v-if="isConfigEmpty" class="ocg-empty-hint">
-        <EmptyState
-          icon=" "
-          title="全局配置为空"
-          description="当前 opencode.json 暂无可视化配置项，可切换到 JSON 模式直接编辑。"
+      <!-- 可视化模式 -->
+      <div v-if="mode === 'visual'" class="ocg-visual">
+        <!-- 空配置友好提示 -->
+        <div v-if="isConfigEmpty" class="ocg-empty-hint">
+          <EmptyState
+            icon=" "
+            title="全局配置为空"
+            description="当前 opencode.json 暂无可视化配置项，可切换到 JSON 模式直接编辑。"
+          />
+        </div>
+        <div class="ocg-cards">
+          <!-- Model 说明卡片（OpenCode 无顶层 model，仅真实存在时才显示输入框） -->
+          <ConfigCategoryCard
+            title="Model（顶层）"
+            :expanded="expandedCategories.model"
+            :badge="hasTopLevelModel ? 1 : null"
+            @toggle="expandedCategories.model = !expandedCategories.model"
+          >
+            <div class="ocg-info-text">
+              OpenCode 模型在 agent 级配置（如 <code>agent.luban.model</code>），顶层通常无 <code>model</code> 字段。
+            </div>
+            <div v-if="hasTopLevelModel" class="ocg-field">
+              <label class="ocg-label">顶层 model</label>
+              <TextInput
+                :model-value="String(configData.model ?? '')"
+                placeholder="未设置"
+                @update:model-value="updateField('model', $event)"
+              />
+            </div>
+          </ConfigCategoryCard>
+
+          <!-- Provider 配置（object map） -->
+          <ConfigCategoryCard
+            title="Provider"
+            :expanded="expandedCategories.provider"
+            :badge="providerCount"
+            @toggle="expandedCategories.provider = !expandedCategories.provider"
+          >
+            <ProviderMapEditor
+              :model-value="providerMap"
+              @update:model-value="updateProvider($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- Agent 配置（object map） -->
+          <ConfigCategoryCard
+            title="Agent"
+            :expanded="expandedCategories.agent"
+            :badge="agentCount"
+            @toggle="expandedCategories.agent = !expandedCategories.agent"
+          >
+            <AgentMapEditor
+              :model-value="agentMap"
+              @update:model-value="updateAgent($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- MCP 配置（object map，真实键 mcp） -->
+          <ConfigCategoryCard
+            title="MCP Servers"
+            :expanded="expandedCategories.mcp"
+            :badge="mcpCount"
+            @toggle="expandedCategories.mcp = !expandedCategories.mcp"
+          >
+            <McpMapEditor
+              :model-value="mcpMap"
+              @update:model-value="updateMcp($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- Permission 配置（object map，值 enum） -->
+          <ConfigCategoryCard
+            title="Permission"
+            :expanded="expandedCategories.permission"
+            :badge="permissionCount"
+            @toggle="expandedCategories.permission = !expandedCategories.permission"
+          >
+            <PermissionMapEditor
+              :model-value="permissionMap"
+              @update:model-value="updatePermission($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- Instructions 配置（array<string>） -->
+          <ConfigCategoryCard
+            title="Instructions"
+            :expanded="expandedCategories.instructions"
+            :badge="instructionsCount"
+            @toggle="expandedCategories.instructions = !expandedCategories.instructions"
+          >
+            <StringListEditor
+              :model-value="instructionsArray"
+              item-placeholder="文件路径（如 resources/core/common/persona.md）"
+              add-label="添加文件"
+              empty-text="暂无 instructions"
+              mono
+              @update:model-value="updateInstructions($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- Plugin 配置（object，类型保持） -->
+          <ConfigCategoryCard
+            title="Plugin"
+            :expanded="expandedCategories.plugin"
+            :badge="pluginCount"
+            @toggle="expandedCategories.plugin = !expandedCategories.plugin"
+          >
+            <TypedKeyValueEditor
+              :model-value="pluginMap"
+              empty-text="暂无 plugin"
+              @update:model-value="updatePlugin($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- Experimental 配置（object，类型保持 boolean/number） -->
+          <ConfigCategoryCard
+            title="Experimental"
+            :expanded="expandedCategories.experimental"
+            :badge="experimentalCount"
+            @toggle="expandedCategories.experimental = !expandedCategories.experimental"
+          >
+            <TypedKeyValueEditor
+              :model-value="experimentalMap"
+              empty-text="暂无 experimental"
+              @update:model-value="updateExperimental($event)"
+            />
+          </ConfigCategoryCard>
+
+          <!-- 未识别键（$schema 等，兜底 RawJsonEditor） -->
+          <ConfigCategoryCard
+            v-if="unknownKeys.length > 0"
+            title="其他键（兜底 JSON）"
+            :expanded="expandedCategories.unknown"
+            :badge="unknownKeys.length"
+            @toggle="expandedCategories.unknown = !expandedCategories.unknown"
+          >
+            <div class="ocg-unknown-list">
+              <div v-for="k in unknownKeys" :key="k" class="ocg-unknown-item">
+                <div class="ocg-unknown-key">{{ k }}</div>
+                <RawJsonEditor
+                  :model-value="configData[k]"
+                  @update:model-value="updateField(k, $event)"
+                />
+              </div>
+            </div>
+          </ConfigCategoryCard>
+        </div>
+      </div>
+
+      <!-- JSON 模式 -->
+      <div v-else class="ocg-json">
+        <textarea
+          v-model="jsonContent"
+          class="ocg-json-editor"
+          spellcheck="false"
+          @input="validateJson"
         />
       </div>
-      <div class="ocg-cards">
-        <!-- Model 配置（单项） -->
-        <ConfigCategoryCard
-          title="Model"
-          :expanded="expandedCategories.model"
-          :badge="null"
-          @toggle="expandedCategories.model = !expandedCategories.model"
-        >
-          <div v-if="configData.model !== undefined" class="ocg-field">
-            <label class="ocg-label">默认模型</label>
-            <TextInput
-              :model-value="String(configData.model || '')"
-              placeholder="未设置"
-              @update:model-value="updateField('model', $event)"
-            />
-          </div>
-          <EmptyState v-else icon="—" title="未配置 Model 字段" description="当前 opencode.json 中无 model 配置" />
-        </ConfigCategoryCard>
-
-        <!-- Provider 配置（数组） -->
-        <ConfigCategoryCard
-          title="Provider"
-          :expanded="expandedCategories.provider"
-          :badge="providerCount"
-          @toggle="expandedCategories.provider = !expandedCategories.provider"
-        >
-          <ProviderListEditor
-            :providers="configData.provider || []"
-            @update="updateProvider"
-          />
-        </ConfigCategoryCard>
-
-        <!-- MCP Servers 配置（对象/数组） -->
-        <ConfigCategoryCard
-          title="MCP Servers"
-          :expanded="expandedCategories.mcp"
-          :badge="mcpCount"
-          @toggle="expandedCategories.mcp = !expandedCategories.mcp"
-        >
-          <MCPListEditor
-            :mcp-servers="configData.mcp_servers || configData.mcpServers || {}"
-            @update="updateMcpServers"
-          />
-        </ConfigCategoryCard>
-
-        <!-- Agent 配置（对象/数组） -->
-        <ConfigCategoryCard
-          title="Agent"
-          :expanded="expandedCategories.agent"
-          :badge="agentCount"
-          @toggle="expandedCategories.agent = !expandedCategories.agent"
-        >
-          <AgentListEditor
-            :agents="configData.agent || []"
-            @update="updateAgent"
-          />
-        </ConfigCategoryCard>
-
-        <!-- Permission 配置（对象/数组） -->
-        <ConfigCategoryCard
-          title="Permission"
-          :expanded="expandedCategories.permission"
-          :badge="permissionCount"
-          @toggle="expandedCategories.permission = !expandedCategories.permission"
-        >
-          <PermissionListEditor
-            :permissions="configData.permission || []"
-            @update="updatePermission"
-          />
-        </ConfigCategoryCard>
-
-        <!-- Instructions 配置（对象/键值对） -->
-        <ConfigCategoryCard
-          title="Instructions"
-          :expanded="expandedCategories.instructions"
-          :badge="instructionsCount"
-          @toggle="expandedCategories.instructions = !expandedCategories.instructions"
-        >
-          <KeyValueEditor
-            :data="configData.instructions || {}"
-            @update="updateInstructions"
-          />
-        </ConfigCategoryCard>
-
-        <!-- Plugin 配置（对象/键值对） -->
-        <ConfigCategoryCard
-          title="Plugin"
-          :expanded="expandedCategories.plugin"
-          :badge="pluginCount"
-          @toggle="expandedCategories.plugin = !expandedCategories.plugin"
-        >
-          <KeyValueEditor
-            :data="configData.plugin || {}"
-            @update="updatePlugin"
-          />
-        </ConfigCategoryCard>
-
-        <!-- Experimental 配置（对象/键值对） -->
-        <ConfigCategoryCard
-          title="Experimental"
-          :expanded="expandedCategories.experimental"
-          :badge="experimentalCount"
-          @toggle="expandedCategories.experimental = !expandedCategories.experimental"
-        >
-          <KeyValueEditor
-            :data="configData.experimental || {}"
-            @update="updateExperimental"
-          />
-        </ConfigCategoryCard>
-      </div>
-    </div>
-
-    <!-- JSON 模式 -->
-    <div v-else class="ocg-json">
-      <textarea
-        v-model="jsonContent"
-        class="ocg-json-editor"
-        spellcheck="false"
-        @input="validateJson"
-      />
-    </div>
     </template>
   </div>
 </template>
@@ -220,19 +248,36 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import ConfigCategoryCard from './ConfigCategoryCard.vue';
-import ProviderListEditor from './ProviderListEditor.vue';
-import MCPListEditor from './MCPListEditor.vue';
-import AgentListEditor from './AgentListEditor.vue';
-import PermissionListEditor from './PermissionListEditor.vue';
-import KeyValueEditor from './KeyValueEditor.vue';
+import ProviderMapEditor from './ProviderMapEditor.vue';
+import AgentMapEditor from './AgentMapEditor.vue';
+import McpMapEditor from './McpMapEditor.vue';
+import PermissionMapEditor from './PermissionMapEditor.vue';
+import StringListEditor from './StringListEditor.vue';
+import TypedKeyValueEditor from './TypedKeyValueEditor.vue';
+import RawJsonEditor from './RawJsonEditor.vue';
 
-const { showSuccess, showError, showInfo } = useToast();
+const { showSuccess, showError } = useToast();
 const store = useProviderStore();
 
 const MODE_OPTIONS = [
   { value: 'visual', label: '可视化' },
   { value: 'json', label: 'JSON' },
 ];
+
+// 真实键名常量（消除别名魔法字符串，无 fallback）
+const CONFIG_KEYS = {
+  schema: '$schema',
+  agent: 'agent',
+  provider: 'provider',
+  mcp: 'mcp',
+  permission: 'permission',
+  instructions: 'instructions',
+  plugin: 'plugin',
+  experimental: 'experimental',
+  model: 'model',
+} as const;
+
+const KNOWN_KEYS = new Set<string>(Object.values(CONFIG_KEYS));
 
 // 状态
 const loading = ref(true);
@@ -256,46 +301,73 @@ const expandedCategories = ref<Record<string, boolean>>({
   instructions: false,
   plugin: false,
   experimental: false,
+  unknown: false,
+});
+
+// ===== 计算属性：各顶层键的强类型视图（直接映射，无别名 fallback） =====
+
+// provider object map
+const providerMap = computed<Record<string, any>>(() => {
+  const v = configData.value[CONFIG_KEYS.provider];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+});
+
+// agent object map
+const agentMap = computed<Record<string, any>>(() => {
+  const v = configData.value[CONFIG_KEYS.agent];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+});
+
+// mcp object map（真实键，无 mcp_servers fallback）
+const mcpMap = computed<Record<string, any>>(() => {
+  const v = configData.value[CONFIG_KEYS.mcp];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+});
+
+// permission object map
+const permissionMap = computed<Record<string, string>>(() => {
+  const v = configData.value[CONFIG_KEYS.permission];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+});
+
+// instructions array<string>
+const instructionsArray = computed<string[]>(() => {
+  const v = configData.value[CONFIG_KEYS.instructions];
+  return Array.isArray(v) ? v : [];
+});
+
+// plugin object（类型保持）
+const pluginMap = computed<Record<string, any>>(() => {
+  const v = configData.value[CONFIG_KEYS.plugin];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+});
+
+// experimental object（类型保持）
+const experimentalMap = computed<Record<string, any>>(() => {
+  const v = configData.value[CONFIG_KEYS.experimental];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+});
+
+// 顶层 model 是否真实存在
+const hasTopLevelModel = computed(() => {
+  return Object.prototype.hasOwnProperty.call(configData.value, CONFIG_KEYS.model);
+});
+
+// 未识别键清单
+const unknownKeys = computed<string[]>(() => {
+  return Object.keys(configData.value).filter((k) => !KNOWN_KEYS.has(k));
 });
 
 // 计算数量徽章
-const providerCount = computed(() => {
-  const providers = configData.value.provider || configData.value.providers || [];
-  return Array.isArray(providers) ? providers.length : Object.keys(providers).length;
-});
+const providerCount = computed(() => Object.keys(providerMap.value).length);
+const agentCount = computed(() => Object.keys(agentMap.value).length);
+const mcpCount = computed(() => Object.keys(mcpMap.value).length);
+const permissionCount = computed(() => Object.keys(permissionMap.value).length);
+const instructionsCount = computed(() => instructionsArray.value.length);
+const pluginCount = computed(() => Object.keys(pluginMap.value).length);
+const experimentalCount = computed(() => Object.keys(experimentalMap.value).length);
 
-const mcpCount = computed(() => {
-  const mcp = configData.value.mcp_servers || configData.value.mcpServers || {};
-  if (Array.isArray(mcp)) return mcp.length;
-  return Object.keys(mcp).length;
-});
-
-const agentCount = computed(() => {
-  const agent = configData.value.agent || [];
-  return Array.isArray(agent) ? agent.length : Object.keys(agent).length;
-});
-
-const permissionCount = computed(() => {
-  const perm = configData.value.permission || [];
-  return Array.isArray(perm) ? perm.length : Object.keys(perm).length;
-});
-
-const instructionsCount = computed(() => {
-  const inst = configData.value.instructions || {};
-  return Object.keys(inst).length;
-});
-
-const pluginCount = computed(() => {
-  const plugin = configData.value.plugin || {};
-  return Object.keys(plugin).length;
-});
-
-const experimentalCount = computed(() => {
-  const exp = configData.value.experimental || {};
-  return Object.keys(exp).length;
-});
-
-// 空配置判定：用于区分"加载成功但配置为空"与"加载失败"
+// 空配置判定
 const isConfigEmpty = computed(() => {
   return (
     !jsonContent.value ||
@@ -326,7 +398,6 @@ async function initialLoad() {
 
 // 将 JSON 解析为配置对象
 function parseJsonToConfig() {
-  // 空配置：视为合法的空对象，不报 JSON 错误
   const trimmed = (jsonContent.value || '').trim();
   if (!trimmed) {
     configData.value = {};
@@ -342,7 +413,6 @@ function parseJsonToConfig() {
   }
 }
 
-// 验证 JSON
 function validateJson() {
   parseJsonToConfig();
 }
@@ -357,51 +427,45 @@ function serializeConfigToJson() {
   }
 }
 
-// 更新字段
+// ===== 各顶层键的更新函数（直接写回 configData[key]，保持类型） =====
+
 function updateField(key: string, value: any) {
   configData.value[key] = value;
   serializeConfigToJson();
 }
 
-// 更新 Provider
-function updateProvider(providers: any[]) {
-  configData.value.provider = providers;
+function updateProvider(v: Record<string, any>) {
+  configData.value[CONFIG_KEYS.provider] = v;
   serializeConfigToJson();
 }
 
-// 更新 MCP Servers
-function updateMcpServers(mcp: Record<string, any> | any[]) {
-  configData.value.mcp_servers = mcp;
+function updateAgent(v: Record<string, any>) {
+  configData.value[CONFIG_KEYS.agent] = v;
   serializeConfigToJson();
 }
 
-// 更新 Agent
-function updateAgent(agents: any[]) {
-  configData.value.agent = agents;
+function updateMcp(v: Record<string, any>) {
+  configData.value[CONFIG_KEYS.mcp] = v;
   serializeConfigToJson();
 }
 
-// 更新 Permission
-function updatePermission(permissions: any[] | Record<string, any>) {
-  configData.value.permission = permissions;
+function updatePermission(v: Record<string, string>) {
+  configData.value[CONFIG_KEYS.permission] = v;
   serializeConfigToJson();
 }
 
-// 更新 Instructions
-function updateInstructions(instructions: Record<string, any>) {
-  configData.value.instructions = instructions;
+function updateInstructions(v: string[]) {
+  configData.value[CONFIG_KEYS.instructions] = v;
   serializeConfigToJson();
 }
 
-// 更新 Plugin
-function updatePlugin(plugin: Record<string, any>) {
-  configData.value.plugin = plugin;
+function updatePlugin(v: Record<string, any>) {
+  configData.value[CONFIG_KEYS.plugin] = v;
   serializeConfigToJson();
 }
 
-// 更新 Experimental
-function updateExperimental(experimental: Record<string, any>) {
-  configData.value.experimental = experimental;
+function updateExperimental(v: Record<string, any>) {
+  configData.value[CONFIG_KEYS.experimental] = v;
   serializeConfigToJson();
 }
 
@@ -411,7 +475,6 @@ async function handleSave() {
     showError('JSON 格式错误，无法保存');
     return;
   }
-
   saving.value = true;
   try {
     await SaveOpenCodeConfig(jsonContent.value);
@@ -430,7 +493,6 @@ async function copyPath() {
     await navigator.clipboard.writeText(configPath.value);
     showSuccess('路径已复制到剪贴板');
   } catch {
-    // 回退方案
     const textarea = document.createElement('textarea');
     textarea.value = configPath.value;
     document.body.appendChild(textarea);
@@ -445,7 +507,7 @@ async function copyPath() {
   }
 }
 
-// 切换模式时同步数据
+// 模式切换时同步数据
 function handleModeChange(newMode: 'visual' | 'json') {
   if (newMode === 'visual' && jsonContent.value) {
     parseJsonToConfig();
@@ -454,7 +516,6 @@ function handleModeChange(newMode: 'visual' | 'json') {
   }
 }
 
-// 监听模式切换
 const modeModel = computed({
   get: () => mode.value,
   set: (v: string) => {
@@ -466,6 +527,9 @@ const modeModel = computed({
 onMounted(() => {
   initialLoad();
 });
+
+// 避免 store 未使用告警（保留兼容性，未来可能用于其他用途）
+void store;
 </script>
 
 <style scoped>
@@ -570,16 +634,49 @@ onMounted(() => {
   gap: 10px;
 }
 
+.ocg-info-text {
+  font-size: 12px;
+  color: var(--secondary);
+  background: var(--control);
+  border-radius: 8px;
+  padding: 10px 12px;
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+
+.ocg-info-text code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--termBg);
+  color: var(--termText);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
 .ocg-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 8px;
 }
 
 .ocg-label {
   font-size: 12px;
   font-weight: 500;
   color: var(--secondary);
+}
+
+.ocg-unknown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ocg-unknown-key {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--secondary);
+  margin-bottom: 4px;
 }
 
 .ocg-json {
