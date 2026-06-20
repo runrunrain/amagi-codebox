@@ -236,25 +236,24 @@ function handleSessionClick(session: any) {
 
 async function handleSessionClose(session: any) {
   const sessionId = session.id
-  const isCurrentSession = activeSessionId.value === sessionId
-  const remainingCount = runningSessions.value.length - 1
 
   try {
     await sessionApi.stopSession(sessionId)
+    // refresh 后基于真实剩余会话数决策，不依赖"被关闭会话是否当前 active"
+    // 否则最后一个会话关闭（或关闭非 active 会话）时 if(isCurrentSession) 守卫会跳过返回会话设置逻辑
     await refresh()
 
-    if (isCurrentSession) {
-      sessionStore.setActiveSession(null)
-
-      if (remainingCount > 0) {
-        const firstSession = runningSessions.value[0]
-        if (firstSession) {
-          sessionStore.setActiveSession(firstSession.id)
-          router.push('/terminal')
-        }
-      } else {
-        router.push('/')
+    const remaining = runningSessions.value
+    if (remaining.length > 0) {
+      // 仅在 active 失效或为 null 时才自动切换，保留"关闭非 active 不切 active"UX
+      if (!activeSessionId.value || !remaining.find(s => s.id === activeSessionId.value)) {
+        sessionStore.setActiveSession(remaining[0].id)
       }
+      router.push('/terminal')
+    } else {
+      // 最后一个会话关闭：必返回会话设置
+      sessionStore.setActiveSession(null)
+      router.push('/')
     }
   } catch (err) {
     console.error('Failed to close session:', err)

@@ -792,11 +792,15 @@ func (s *ConfigService) SetAgentTeams(config AgentTeamsConfig) error {
 // MergedTerminalPreset 合并后的终端预设，供 Dashboard 展示用。
 // 优先使用 terminal_presets（新体系），按 provider 分组回退到 provider.presets（旧体系）。
 type MergedTerminalPreset struct {
-	Key      string `json:"key"`   // 稳定 key（用于读写后端）
-	Label    string `json:"label"` // 友好展示名
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Source   string `json:"source"` // "terminal_preset" 或 "provider_preset"
+	Key         string     `json:"key"`                   // 稳定 key（用于读写后端）
+	Label       string     `json:"label"`                 // 友好展示名
+	Provider    string     `json:"provider"`
+	Model       string     `json:"model"`
+	ModelHaiku  string     `json:"model_haiku,omitempty"`  // Haiku 档位模型（Claude Code 专用）
+	ModelSonnet string     `json:"model_sonnet,omitempty"` // Sonnet 档位模型（Claude Code 专用）
+	ModelOpus   string     `json:"model_opus,omitempty"`   // Opus 档位模型（Claude Code 专用）
+	Parameters  Parameters `json:"parameters"`              // 模型参数
+	Source      string     `json:"source"`                 // "terminal_preset" 或 "provider_preset"
 }
 
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
@@ -823,11 +827,15 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 				label = key
 			}
 			result = append(result, MergedTerminalPreset{
-				Key:      key,
-				Label:    label,
-				Provider: tp.Provider,
-				Model:    tp.Model,
-				Source:   "terminal_preset",
+				Key:         key,
+				Label:       label,
+				Provider:    tp.Provider,
+				Model:       tp.Model,
+				ModelHaiku:  tp.ModelHaiku,
+				ModelSonnet: tp.ModelSonnet,
+				ModelOpus:   tp.ModelOpus,
+				Parameters:  tp.Parameters,
+				Source:      "terminal_preset",
 			})
 		}
 	}

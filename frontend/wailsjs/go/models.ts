@@ -815,20 +815,46 @@ export namespace config {
 	    label: string;
 	    provider: string;
 	    model: string;
+	    model_haiku?: string;
+	    model_sonnet?: string;
+	    model_opus?: string;
+	    parameters: Parameters;
 	    source: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MergedTerminalPreset(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
 	        this.label = source["label"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
+	        this.model_haiku = source["model_haiku"];
+	        this.model_sonnet = source["model_sonnet"];
+	        this.model_opus = source["model_opus"];
+	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.source = source["source"];
 	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	

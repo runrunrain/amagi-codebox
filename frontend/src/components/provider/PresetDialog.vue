@@ -274,30 +274,35 @@ const canSave = computed(() => {
   return (form.name || form.label) && form.provider;
 });
 
-// 初始化表单（编辑时）
-// 注意：MergedTerminalPreset 是简化类型，编辑时只加载 key/label/provider/model 等基本字段
-// 参数字段在编辑模式下需要从后端重新获取完整的 TerminalPreset（此处简化处理，仅加载显示字段）
+// 初始化表单（编辑时完整读取 MergedTerminalPreset 扩展字段）
+// MergedTerminalPreset 已含 model_haiku/sonnet/opus + parameters（temperature/top_p/max_tokens/
+// thinking/context_window/reasoning_effort/stream），编辑时必须完整回填，避免保存后擦除用户配置。
 function initForm() {
   if (props.preset) {
     const p = props.preset;
+    const params = p.parameters;
+    const ctx = params?.context_window;
     form.name = p.key || '';
     form.label = p.label || '';
     form.provider = p.provider || '';
     form.model = p.model || '';
-    // MergedTerminalPreset 不包含参数字段，编辑时参数字段为空
-    // 实际使用中应该通过 GetTerminalPresets 获取完整预设后再编辑
-    form.modelHaiku = '';
-    form.modelSonnet = '';
-    form.modelOpus = '';
-    form.temperature = undefined;
-    form.topP = undefined;
-    form.maxTokens = undefined;
-    form.streamValue = '';
-    form.thinkingType = '';
-    form.thinkingBudget = undefined;
-    form.reasoningEffort = '';
-    form.contextWindow = undefined;
-    form.compactLimit = undefined;
+    // 模型档位（Claude Code）
+    form.modelHaiku = p.model_haiku || '';
+    form.modelSonnet = p.model_sonnet || '';
+    form.modelOpus = p.model_opus || '';
+    // 基础参数
+    form.temperature = params?.temperature;
+    form.topP = params?.top_p;
+    form.maxTokens = params?.max_tokens;
+    form.streamValue = params?.stream === undefined ? '' : (params.stream ? 'true' : 'false');
+    // Thinking（Claude Code）
+    form.thinkingType = params?.thinking?.type || '';
+    form.thinkingBudget = params?.thinking?.budgetTokens;
+    // 推理强度（Codex）
+    form.reasoningEffort = params?.reasoning_effort || '';
+    // Context Window / Auto Compact
+    form.contextWindow = ctx?.model_context_window;
+    form.compactLimit = ctx?.model_auto_compact_token_limit;
   } else {
     resetForm();
   }
@@ -363,7 +368,7 @@ async function handleSave() {
     if (props.engine === 'claude' && form.thinkingType) {
       parameters.thinking = {
         type: form.thinkingType,
-        budget_tokens: form.thinkingBudget,
+        budgetTokens: form.thinkingBudget,
       };
     }
     if (props.engine === 'codex' && form.reasoningEffort) {

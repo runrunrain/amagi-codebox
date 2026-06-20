@@ -50,7 +50,17 @@
         </div>
         <div class="preset-badges">
           <span v-if="p.model" class="param model">{{ p.model }}</span>
-          <span v-if="p.source && p.source !== 'user'" class="param">{{ sourceLabel(p.source) }}</span>
+          <!-- Claude Code：模型档位（非空才显示） -->
+          <template v-if="engine === 'claude'">
+            <span v-if="p.model_haiku" class="param tier">H: {{ p.model_haiku }}</span>
+            <span v-if="p.model_sonnet" class="param tier">S: {{ p.model_sonnet }}</span>
+            <span v-if="p.model_opus" class="param tier">O: {{ p.model_opus }}</span>
+          </template>
+          <!-- 关键 Parameters（最关键的 2-4 个） -->
+          <span v-if="thinkingType(p)" class="param key">thinking·{{ thinkingType(p) }}</span>
+          <span v-if="reasoningEffort(p)" class="param key">effort·{{ reasoningEffort(p) }}</span>
+          <span v-if="tempOf(p) !== undefined" class="param">T={{ tempOf(p) }}</span>
+          <span v-if="sourceLabel(p.source)" class="param">{{ sourceLabel(p.source) }}</span>
         </div>
       </div>
     </div>
@@ -129,10 +139,27 @@ const emptyDescription = computed(() =>
     : '点击右上角「添加预设」创建第一个启动配置'
 );
 
-function sourceLabel(source: string): string {
+function sourceLabel(source?: string): string {
+  if (!source) return '';
+  if (source === 'user') return '';
   if (source === 'builtin' || source === 'default') return '内置默认';
   if (source === 'managed') return '受管';
   return source;
+}
+
+/** 提取关键参数（防御性：后端字段可能为空） */
+function thinkingType(p: MergedTerminalPreset): string {
+  const t = p.parameters?.thinking?.type;
+  return t || '';
+}
+
+function reasoningEffort(p: MergedTerminalPreset): string {
+  const r = p.parameters?.reasoning_effort;
+  return r || '';
+}
+
+function tempOf(p: MergedTerminalPreset): number | undefined {
+  return p.parameters?.temperature;
 }
 
 function handleAdd() {
@@ -267,5 +294,18 @@ onMounted(() => {
   color: var(--accent);
   background: rgba(0, 122, 255, 0.1);
   font-family: var(--mono);
+}
+
+/* Claude 档位：中等权重 mono，与 model 同族但更弱 */
+.param.tier {
+  font-family: var(--mono);
+  color: var(--secondary);
+  background: var(--control);
+}
+
+/* 关键参数 thinking/effort：弱强调，便于一眼识别开关状态 */
+.param.key {
+  color: #AF52DE;
+  background: rgba(175, 82, 222, 0.08);
 }
 </style>
