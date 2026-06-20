@@ -165,7 +165,6 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import PageHead from '../components/ui/PageHead.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
 import Segmented from '../components/ui/Segmented.vue'
@@ -175,11 +174,8 @@ import TextInput from '../components/ui/TextInput.vue'
 import { useDashboardState } from '../composables/useDashboardState'
 import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
 import { useToast } from '../composables/useToast'
-import { useSessionList } from '../composables/useSessionList'
-import { useSessionStore } from '../stores/session'
 
 import * as providerApi from '../api/provider'
-import * as sessionApi from '../api/session'
 import { BrowseDirectory, GetSavedWorkDirs, AddSavedWorkDir, RemoveSavedWorkDir } from '../../wailsjs/go/main/App'
 import { GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { config } from '../../wailsjs/go/models'
@@ -189,12 +185,9 @@ type WorkDirEntry = { path: string; label: string }
 type Provider = config.Provider
 type MergedTerminalPreset = config.MergedTerminalPreset
 
-const router = useRouter()
-const { state: dashState, initDefaults, persistDefaults } = useDashboardState()
+const { state: dashState, initDefaults } = useDashboardState()
 const platformCaps = usePlatformCapabilities()
 const { showSuccess, showError } = useToast()
-const sessionStore = useSessionStore()
-const { refresh } = useSessionList()
 
 const browsing = ref(false)
 const savedWorkDirs = ref<WorkDirEntry[]>([])
@@ -340,19 +333,6 @@ function validateCodexPreset() {
   }
 }
 
-const canLaunch = computed(() => {
-  if (dashState.engine === 'claudecode') {
-    if (!dashState.preset || !dashState.provider) return false
-    return claudePresets.value.some(p => p.key === dashState.preset && p.provider === dashState.provider)
-  }
-  if (dashState.engine === 'codex') {
-    if (!dashState.codexModel || !dashState.codexProvider) return false
-    return codexPresets.value.some(p => p.key === dashState.codexModel && p.provider === dashState.codexProvider)
-  }
-  // OpenCode 只需要工作目录
-  return !!dashState.workDir
-})
-
 // --- 事件处理 ---
 function handleEngineChange(v: string) {
   dashState.engine = v as any
@@ -443,66 +423,6 @@ async function handleRemoveSavedDir(path: string) {
     showSuccess('已删除保存的目录')
   } catch (err) {
     showError('删除失败: ' + err)
-  }
-}
-
-function resolveShellPath(): string {
-  const shell = currentShell.value
-  const custom = currentCustomShellPath.value
-  if (shell === '') return ''
-  if (shell === '__custom__') return custom
-  return platformCaps.resolveShellPath(shell, custom)
-}
-
-// --- 启动逻辑（3 引擎分支，对齐 wailsjs LaunchSession 签名） ---
-async function handleLaunch() {
-  if (!canLaunch.value) return
-  try {
-    let sessionId = ''
-    if (dashState.engine === 'claudecode') {
-      sessionId = await sessionApi.launchClaudeSession({
-        providerName: dashState.provider,
-        presetName: dashState.preset,
-        mode: dashState.claudeMode,
-        workDir: dashState.workDir,
-        useProxy: dashState.useProxy,
-        shellPath: dashState.claudeMode === 'embedded' ? resolveShellPath() : '',
-      })
-    } else if (dashState.engine === 'opencode') {
-      sessionId = await sessionApi.launchOpenCodeSession({
-        // 新模型：providerName 为空，presetName 传 presetKey
-        providerName: '',
-        presetName: dashState.openCodePresetKey,
-        mode: dashState.openCodeMode,
-        workDir: dashState.workDir,
-        shellPath: dashState.openCodeMode === 'embedded' ? resolveShellPath() : '',
-      })
-    } else {
-      sessionId = await sessionApi.launchCodexSession({
-        modelName: dashState.codexModel,
-        providerID: dashState.codexProvider,
-        mode: dashState.codexMode,
-        workDir: dashState.workDir,
-        shellPath: dashState.codexMode === 'embedded' ? resolveShellPath() : '',
-      })
-    }
-
-    await persistDefaults()
-    await refresh()
-
-    // 设为活动会话
-    sessionStore.setActiveSession(sessionId)
-
-    const engineLabel = dashState.engine === 'claudecode' ? 'ClaudeCode'
-      : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
-    showSuccess(`${engineLabel} 会话启动成功`)
-
-    // 启动成功后统一跳转终端页（所有 mode 均跳）
-    // 与 SidebarNormal.launchFromSettings 行为保持一致
-    router.push('/terminal')
-  } catch (err) {
-    console.error('Launch failed:', err)
-    showError('启动失败: ' + err)
   }
 }
 

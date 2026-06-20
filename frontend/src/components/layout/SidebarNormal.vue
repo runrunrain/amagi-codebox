@@ -103,6 +103,7 @@ import { useSessionList } from '../../composables/useSessionList'
 import { useDashboardState } from '../../composables/useDashboardState'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import { useToast } from '../../composables/useToast'
+import { useSessionLaunch } from '../../composables/useSessionLaunch'
 import SessionListItem from './SessionListItem.vue'
 import UpdateDialog from '../common/UpdateDialog.vue'
 import { GetAppInfo, GetRemoteWebUIStatus, OpenRemoteWebUI } from '../../../wailsjs/go/main/App'
@@ -116,6 +117,8 @@ const { refresh, startPolling, stopPolling } = useSessionList()
 const { state: dashState, persistDefaults } = useDashboardState()
 const platformCaps = usePlatformCapabilities()
 const { showSuccess, showError } = useToast()
+// 共用会话启动逻辑（与 SessionSettingsView 共享，消除重复）
+const { canLaunchFromSettings, launchFromSettings: launchSession } = useSessionLaunch()
 
 const launching = ref(false)
 
@@ -210,100 +213,19 @@ function isActive(path: string): boolean {
 
 function handleNewSession() {
   // 配置足够直接启动 + 跳 /terminal；配置不全才跳会话设置页补全
-  if (canLaunchFromSettings()) {
-    launchFromSettings()
+  if (canLaunchFromSettings(dashState)) {
+    launchSession(dashState, {
+      launchingRef: launching,
+      platformCaps,
+      sessionStore,
+      refresh,
+      router,
+      persistDefaults,
+      showSuccess,
+      showError,
+    })
   } else {
     router.push('/')
-  }
-}
-
-// 检查当前配置是否足够启动会话
-function canLaunchFromSettings(): boolean {
-  if (dashState.engine === 'claudecode') {
-    return !!(dashState.provider && dashState.preset)
-  }
-  if (dashState.engine === 'codex') {
-    return !!(dashState.codexProvider && dashState.codexModel)
-  }
-  // OpenCode: "使用全局配置"时 preset 为空（openCodePresetKey），仍可启动
-  // 只要有工作目录即可启动（provider 可为空，用全局配置）
-  return !!dashState.workDir
-}
-
-// 解析 Shell 路径
-function resolveShellPath(): string {
-  const shell = dashState.engine === 'claudecode' ? dashState.claudeShell
-    : dashState.engine === 'opencode' ? dashState.openCodeShell
-    : dashState.codexShell
-  const custom = dashState.engine === 'claudecode' ? dashState.claudeCustomShellPath
-    : dashState.engine === 'opencode' ? dashState.openCodeCustomShellPath
-    : dashState.codexCustomShellPath
-
-  if (shell === '') return ''
-  if (shell === '__custom__') return custom
-  return platformCaps.resolveShellPath(shell, custom)
-}
-
-// 从会话设置启动会话
-async function launchFromSettings() {
-  if (!canLaunchFromSettings() || launching.value) return
-
-  // OpenCode 必须有工作目录
-  if (dashState.engine === 'opencode' && !dashState.workDir) {
-    showError('请先设置工作目录')
-    return
-  }
-
-  launching.value = true
-  try {
-    let sessionId = ''
-    if (dashState.engine === 'claudecode') {
-      sessionId = await sessionApi.launchClaudeSession({
-        providerName: dashState.provider,
-        presetName: dashState.preset,
-        mode: dashState.claudeMode,
-        workDir: dashState.workDir,
-        useProxy: dashState.useProxy,
-        shellPath: dashState.claudeMode === 'embedded' ? resolveShellPath() : '',
-      })
-    } else if (dashState.engine === 'opencode') {
-      // 空预设表示使用全局配置，给予友好提示
-      if (!dashState.openCodePresetKey) {
-        showSuccess('使用全局 opencode.json 配置启动')
-      }
-      sessionId = await sessionApi.launchOpenCodeSession({
-        providerName: '',
-        presetName: dashState.openCodePresetKey || '',
-        mode: dashState.openCodeMode,
-        workDir: dashState.workDir,
-        shellPath: dashState.openCodeMode === 'embedded' ? resolveShellPath() : '',
-      })
-    } else {
-      sessionId = await sessionApi.launchCodexSession({
-        modelName: dashState.codexModel,
-        providerID: dashState.codexProvider,
-        mode: dashState.codexMode,
-        workDir: dashState.workDir,
-        shellPath: dashState.codexMode === 'embedded' ? resolveShellPath() : '',
-      })
-    }
-
-    await persistDefaults()
-    await refresh()
-
-    sessionStore.setActiveSession(sessionId)
-
-    const engineLabel = dashState.engine === 'claudecode' ? 'ClaudeCode'
-      : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
-    showSuccess(`${engineLabel} 会话启动成功`)
-
-    // 启动成功后统一跳转终端页（所有 mode 均跳）
-    router.push('/terminal')
-  } catch (err) {
-    console.error('Launch failed:', err)
-    showError('启动失败: ' + err)
-  } finally {
-    launching.value = false
   }
 }
 
