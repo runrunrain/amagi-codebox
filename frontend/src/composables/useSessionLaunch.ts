@@ -6,11 +6,14 @@
  *
  * 职责：
  *   - canLaunchFromSettings(dashState)：宽松启动前置校验（仅字段非空）
- *   - launchFromSettings(dashState, opts)：三引擎统一启动 + 跳 /terminal
+ *   - launchFromSettings(dashState, opts)：三引擎统一启动 + 按 mode 决定是否跳 /terminal
  *   - resolveShellPath(dashState, platformCaps)：按当前引擎解析 Shell 路径
  *
- * 行为契约（与重构前两处对齐）：
- *   1. 启动成功后统一 router.push('/terminal')，所有 mode（embedded/terminal/...）均跳
+ * 行为契约：
+ *   1. 启动成功后按 mode 决定跳转：
+ *      - embedded 模式 → router.push('/terminal')（内嵌终端显示该会话）
+ *      - external/webui/newWindow 等外部模式 → 不跳转，留在当前页（外部窗口/web 已开，
+ *        跳 /terminal 会显示空终端，造成 UX 困惑）
  *   2. 启动失败仅 showError，不跳转
  *   3. OpenCode 必须有 workDir；preset 为空表示用全局 opencode.json 配置，给予友好提示
  *   4. 启动锁（launching）可选：调用方通过 opts.launchingRef 传入响应式 ref 即启用防重入
@@ -116,8 +119,8 @@ export function useSessionLaunch() {
    *   2. OpenCode workDir 必填校验
    *   3. 按 engine 调对应 sessionApi.launch*Session，embedded mode 传 shellPath
    *   4. persistDefaults + refresh + setActiveSession
-   *   5. showSuccess（OpenCode 用全局配置时额外提示）
-   *   6. router.push('/terminal')（所有 mode 均跳）
+   *   5. showSuccess（OpenCode 用全局配置时额外提示；外部 mode 额外提示会话已在外部启动）
+   *   6. 按 mode 决定跳转：embedded 跳 /terminal；外部模式（external/webui/newWindow 等）留在当前页
    *   7. 异常仅 showError 不跳转；finally 释放锁
    */
   async function launchFromSettings(
@@ -186,10 +189,22 @@ export function useSessionLaunch() {
 
       const engineLabel = dashState.engine === 'claudecode' ? 'ClaudeCode'
         : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
-      showSuccess(`${engineLabel} 会话启动成功`)
 
-      // 启动成功后统一跳转终端页（所有 mode 均跳）
-      router.push('/terminal')
+      // 按当前引擎取对应 mode，决定是否跳 /terminal：
+      //   - embedded：内嵌终端显示该会话，跳 /terminal
+      //   - external/webui/newWindow 等外部模式：外部窗口或 web 界面已开，
+      //     跳 /terminal 会显示空终端，UX 困惑，故留在当前页并给提示
+      const launchMode = dashState.engine === 'claudecode' ? dashState.claudeMode
+        : dashState.engine === 'opencode' ? dashState.openCodeMode
+        : dashState.codexMode
+
+      if (launchMode === 'embedded') {
+        showSuccess(`${engineLabel} 会话启动成功`)
+        router.push('/terminal')
+      } else {
+        // 外部模式：外部窗口/web 已开，不跳终端页
+        showSuccess(`${engineLabel} 会话已在外部启动`)
+      }
     } catch (err) {
       console.error('Launch failed:', err)
       showError('启动失败: ' + err)
