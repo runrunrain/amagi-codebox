@@ -2500,3 +2500,64 @@ func TestIsValidClaudeReasoningEffort(t *testing.T) {
 		}
 	}
 }
+
+// TestCompressDuplicatedPrefixPresetKey 验证 terminal_preset key 的重复前缀压缩逻辑。
+// 覆盖：2 段纯重复、3/4 层含 tail、正常 key 不变、幂等性、边界。
+func TestCompressDuplicatedPrefixPresetKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantKey string
+		want    bool
+	}{
+		// 2 段纯重复（M1 新增覆盖）
+		{"2段纯重复压缩", "glm/glm", "glm", true},
+		{"2段纯重复其他前缀", "agent/agent", "agent", true},
+		// 3+ 层含 tail（现有逻辑）
+		{"3层含tail压缩", "glm/glm/glm/max", "glm/max", true},
+		{"4层含tail压缩", "glm/glm/glm/glm/max", "glm/max", true},
+		// 正常 key 不变（幂等保证）
+		{"prefix+name正常key不变", "glm/max", "glm/max", false},
+		{"prefix+其他name不变", "glm/code", "glm/code", false},
+		{"单段不变", "agent", "agent", false},
+		// 幂等性：已压缩结果再跑不变
+		{"压缩后glm不变", "glm", "glm", false},
+		// 边界
+		{"空串不变", "", "", false},
+		{"前缀段不同不压缩", "glm/max/glm", "glm/max/glm", false},
+		{"含空段不误压缩", "glm//max", "glm//max", false},
+		{"尾段空保持压缩", "glm/glm/", "glm/", true},
+		{"仅2段但非纯重复不压缩", "glm/max", "glm/max", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotKey, got := compressDuplicatedPrefixPresetKey(tt.input)
+			if gotKey != tt.wantKey || got != tt.want {
+				t.Errorf("compressDuplicatedPrefixPresetKey(%q) = (%q, %v), want (%q, %v)",
+					tt.input, gotKey, got, tt.wantKey, tt.want)
+			}
+		})
+	}
+}
+
+// TestCompressDuplicatedPrefixPresetKey_Idempotent 验证二次压缩结果稳定。
+func TestCompressDuplicatedPrefixPresetKey_Idempotent(t *testing.T) {
+	inputs := []string{
+		"glm/glm",
+		"glm/glm/glm/max",
+		"glm/glm/glm/glm/max",
+		"glm/max",
+		"agent",
+	}
+	for _, in := range inputs {
+		first, changed1 := compressDuplicatedPrefixPresetKey(in)
+		second, changed2 := compressDuplicatedPrefixPresetKey(first)
+		if second != first {
+			t.Errorf("idempotent failed: %q -> %q -> %q", in, first, second)
+		}
+		if changed1 && changed2 {
+			t.Errorf("idempotent failed: second pass still changed for %q (first=%q)", in, first)
+		}
+	}
+}

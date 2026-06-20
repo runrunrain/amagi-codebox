@@ -282,7 +282,9 @@ function initForm() {
     const p = props.preset;
     const params = p.parameters;
     const ctx = params?.context_window;
-    form.name = p.key || '';
+    // 编辑回填：用 label（人类可读名，如 "max"）而非 key（含 provider 前缀的稳定 ID，如 "glm/max"）。
+    // 避免 form.name 被 key 污染，导致保存时把含前缀的 key 再次作为 name 写回，每编辑一次叠一层 provider 前缀。
+    form.name = p.label || '';
     form.label = p.label || '';
     form.provider = p.provider || '';
     form.model = p.model || '';
@@ -343,7 +345,17 @@ async function handleSave() {
     const presetName = form.name || form.label;
     const terminalPreset: any = new config.TerminalPreset();
 
-    // 基本信息
+    // key 生成策略（防止编辑循环污染）：
+    // - 编辑模式：key 锁定为原 props.preset.key（稳定 ID），只更新 name + 其他字段；
+    //   禁止用 form.name 当 key，否则会把含 provider 前缀的旧 key 与可读 name 错位，
+    //   并在后续编辑中把已含前缀的 name 再次叠前缀（glm/glm/glm/max）。
+    // - 新增模式：key = provider + "/" + name，对齐后端 internal/config/service.go
+    //   MigrateProviderPresetsToTerminal 中 stableKey = provName + "/" + presetName 的规则。
+    const key = isEditing.value
+      ? (props.preset?.key || presetName)
+      : `${form.provider}/${presetName}`;
+
+    // 基本信息：name 始终为人类可读名（不含 provider 前缀）
     terminalPreset.name = presetName;
 
     // Provider 和模型
@@ -387,8 +399,7 @@ async function handleSave() {
       terminalPreset.parameters = parameters;
     }
 
-    // 保存
-    const key = presetName;
+    // 保存：编辑模式用原 key（不生成新 key 导致重复条目），新增模式用 provider/name
     await SaveTerminalPreset(terminalType.value, key, terminalPreset);
 
     emit('saved');

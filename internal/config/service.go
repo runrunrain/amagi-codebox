@@ -106,8 +106,18 @@ func (s *ConfigService) Load() error {
 	// 清理已迁移的旧 presets（仅当 terminal_presets 已建立时）
 	CleanupMigratedProviderPresets(&cfg)
 
+	// 清洗 terminal_presets 中被前端 bug 污染的重复前缀 key/name（幂等）
+	presetKeyCleaned := CleanupDuplicatedPrefixPresetKeys(&cfg)
+
 	// 自动迁移：terminal_presets.opencode -> opencode_presets（新模型）
 	migrateTerminalPresetsToOpenCodePresets(&cfg)
+
+	// 若 terminal_preset key 被清洗，持久化幂等结果
+	if presetKeyCleaned {
+		if err := s.saveLockedConfig(&cfg); err != nil {
+			return fmt.Errorf("cleanup duplicated preset keys: %w", err)
+		}
+	}
 
 	s.config = &cfg
 	return nil
@@ -296,6 +306,125 @@ func CleanupMigratedProviderPresets(cfg *AppConfig) {
 			cfg.Models[provName] = prov
 		}
 	}
+}
+
+// compressDuplicatedPrefixPresetKey 检测并压缩 terminal_preset key 中重复堆叠的前缀。
+// 例：glm/glm/glm/max -> glm/max；glm/glm/glm/glm/max -> glm/max；glm/glm -> glm。
+// 规则：以第一段为前缀，若其后续若干连续段都等于该前缀，则只保留一份前缀 + 剩余部分。
+// 支持 2 段纯重复（glm/glm -> glm）到 N 段重复（含剩余 tail）。
+// 幂等保证：无重复前缀的 key（如 glm/code、agent、glm/max）返回原值不压缩。
+// 返回 (压缩后 key, 是否检测到污染)。
+func compressDuplicatedPrefixPresetKey(key string) (string, bool) {
+	if key == "" {
+		return key, false
+	}
+	parts := strings.Split(key, "/")
+	// 至少需要 2 段才可能形成重复前缀：
+	//   - 2 段纯重复：glm/glm -> glm
+	//   - 3+ 段含 tail：glm/glm/glm/max -> glm/max
+	if len(parts) < 2 {
+		return key, false
+	}
+	prefix := parts[0]
+	if prefix == "" {
+		return key, false
+	}
+	i := 1
+	for i < len(parts) && parts[i] == prefix {
+		i++
+	}
+	// i 表示连续 prefix 段的结束位置（不含）。至少 2 段 prefix 才算污染。
+	if i < 2 {
+		return key, false
+	}
+	// 剩余段数必须 >= 1（否则 key = "glm/glm" 这种纯重复，属于异常，但仍按规则压缩为 "glm"）
+	if i == len(parts) {
+		// 整串都是 prefix 重复：glm/glm -> glm；glm/glm/glm -> glm
+		return prefix, true
+	}
+	compressed := prefix + "/" + strings.Join(parts[i:], "/")
+	if compressed == key {
+		return key, false
+	}
+	return compressed, true
+}
+
+// CleanupDuplicatedPrefixPresetKeys 清洗 terminal_presets 中被前端 bug 污染的 key/name。
+//
+// 背景：前端某 bug 导致 terminal_preset key 重复堆叠 provider 前缀，
+// 例如正常 `glm/max` 被写为 `glm/glm/glm/max`（claude_code 3 层）或
+// `glm/glm/glm/glm/max`（codex 4 层）。
+//
+// 清洗规则（幂等）：
+//  1. 检测首段重复 N（>=2）次后跟剩余部分（compressDuplicatedPrefixPresetKey）
+//  2. 压缩为 `prefix + 剩余`，如 `glm/glm/glm/max` -> `glm/max`
+//  3. name 同步：若 name 等于旧污染 key（含重复前缀），恢复为压缩后的 key；
+//     否则保留原 name（不破坏用户自定义 label）
+//  4. 冲突合并：若压缩后的 key 已存在（用户已显式设置的预设或已清洗条目），
+//     保留现有条目，不覆盖，保证幂等安全
+//  5. 其他字段（Provider/Model/Model*/Parameters/OpenCodeCfg 等）原样保留
+//
+// 返回是否发生变更（用于决定是否需要写盘）。
+func CleanupDuplicatedPrefixPresetKeys(cfg *AppConfig) bool {
+	if cfg == nil || cfg.TerminalPresets == nil {
+		return false
+	}
+
+	changed := false
+	for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+		original := cfg.TerminalPresets.GetMap(tt)
+		if len(original) == 0 {
+			continue
+		}
+
+		// 先识别无重复前缀的"正常 key"集合（清洗后不允许覆盖它们）
+		cleanKeys := make(map[string]bool, len(original))
+		for k := range original {
+			if _, polluted := compressDuplicatedPrefixPresetKey(k); !polluted {
+				cleanKeys[k] = true
+			}
+		}
+
+		compressed := make(map[string]TerminalPreset, len(original))
+		// 第一遍：放入所有"正常 key"的条目
+		for k, v := range original {
+			if cleanKeys[k] {
+				compressed[k] = v
+			}
+		}
+
+		anyChangeInType := false
+		// 第二遍：处理污染 key
+		for oldKey, tp := range original {
+			newKey, polluted := compressDuplicatedPrefixPresetKey(oldKey)
+			if !polluted {
+				// 已在第一遍放入
+				continue
+			}
+
+			// 标记变更（至少有一个污染 key 被处理）
+			anyChangeInType = true
+
+			// name 处理：若 name 等于旧污染 key 则恢复为压缩 key
+			tpCopy := tp
+			if tpCopy.Name == oldKey {
+				tpCopy.Name = newKey
+			}
+
+			// 冲突合并：若 newKey 已存在（正常 key 或先处理的污染条目），不覆盖
+			if _, exists := compressed[newKey]; exists {
+				continue
+			}
+			compressed[newKey] = tpCopy
+		}
+
+		if anyChangeInType {
+			cfg.TerminalPresets.SetMap(tt, compressed)
+			changed = true
+		}
+	}
+
+	return changed
 }
 
 func (s *ConfigService) GetConfig() *AppConfig {
