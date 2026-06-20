@@ -13,13 +13,13 @@
         :aria-expanded="isExpanded(entry.id)"
         @click="toggleExpanded(entry.id)"
       >
-        <span class="pe-thumb" :class="`pe-thumb-${entry.value || 'unknown'}`">
+        <span class="pe-thumb" :style="thumbStyle(entry.value)">
           <span class="pe-thumb-icon" v-html="PERM_ICON" />
         </span>
         <span class="pe-thumb-meta">
           <span class="pe-thumb-name" :title="entry.key || '(未命名)'">{{ entry.key || '(未命名)' }}</span>
         </span>
-        <span class="pe-thumb-pill" :class="`pe-pill-${entry.value || 'unknown'}`">{{ entry.value || '—' }}</span>
+        <span class="pe-thumb-pill" :style="pillStyle(entry.value)">{{ entry.value || '—' }}</span>
         <svg
           class="pe-thumb-chevron"
           :class="{ expanded: isExpanded(entry.id) }"
@@ -63,11 +63,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, nextTick } from 'vue';
 import TextInput from '../ui/TextInput.vue';
 import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
-import { ICONS } from './icons';
+import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
 
 const { showError } = useToast();
@@ -110,6 +110,70 @@ const expandedKeys = ref<Record<string, boolean>>({});
 
 const PERM_ICON = ICONS.permission;
 
+// 略缩图 + pill 配色走 ACCENTS 单一来源（Min-4）：
+// allow -> agent(绿), ask -> mcp(橙), deny -> permission(红), unknown -> unknown(灰)
+// ACCENTS 数值与原硬编码完全一致，视觉零漂移
+const PERM_ACCENTS: Record<string, string> = {
+  allow: ACCENTS.agent,
+  ask: ACCENTS.mcp,
+  deny: ACCENTS.permission,
+  unknown: ACCENTS.unknown,
+};
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return null;
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16),
+  };
+}
+function permAccent(value?: string): string {
+  if (!value) return PERM_ACCENTS.unknown;
+  return PERM_ACCENTS[value] || PERM_ACCENTS.unknown;
+}
+// 略缩图（thumb）：弱背景 0.12
+function thumbStyle(value?: string): Record<string, string> {
+  const hex = permAccent(value);
+  const rgb = hexToRgb(hex);
+  if (!rgb) return {};
+  return {
+    color: hex,
+    background: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.12)`,
+  };
+}
+// 状态 pill：稍强背景 0.14 + 边框 0.28；文字色单独映射以维持对比度
+// 文字色与原 .pe-pill-allow/ask/deny 硬编码完全一致（视觉零漂移）
+const PERM_TEXT_COLORS: Record<string, string> = {
+  [PERM_ACCENTS.allow]: '#1d8a3f',
+  [PERM_ACCENTS.ask]: '#b56400',
+  [PERM_ACCENTS.deny]: '#c4281f',
+  [PERM_ACCENTS.unknown]: 'var(--secondary)',
+};
+function pillStyle(value?: string): Record<string, string> {
+  const hex = permAccent(value);
+  // unknown 态特殊处理：保持与原始 .pe-pill-unknown 完全一致，
+  // 使用主题色变量 var(--bg) / var(--separator) 而非 rgba 灰，
+  // 兑现"视觉零漂移"承诺（rgba(142,142,147,*) 在深浅色主题下与 var(--bg)/var(--separator) 表现不同）
+  if (hex === PERM_ACCENTS.unknown) {
+    return {
+      color: PERM_TEXT_COLORS[hex],
+      background: 'var(--bg)',
+      borderColor: 'var(--separator)',
+    };
+  }
+  const rgb = hexToRgb(hex);
+  if (!rgb) {
+    return { color: PERM_TEXT_COLORS[hex] || 'var(--secondary)' };
+  }
+  return {
+    color: PERM_TEXT_COLORS[hex] || 'var(--secondary)',
+    background: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.14)`,
+    borderColor: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.28)`,
+  };
+}
+
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
 }
@@ -140,6 +204,12 @@ function updateKey(id: string, key: string) {
   // 重名校验：新 key 已被其他 permission 条目占用则阻止（避免 emitAll 覆盖）
   if (key !== '' && key !== e.key && entries.value.some((x) => x.id !== id && x.key === key)) {
     showError(`工具名「${key}」已存在，请换一个`);
+    // 受控组件 DOM 回滚（Min-2）
+    const oldKey = e.key;
+    e.key = key;
+    nextTick(() => {
+      e.key = oldKey;
+    });
     return;
   }
   e.key = key;
@@ -242,23 +312,8 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 配色通过 :style="thumbStyle(value)" 注入（Min-4，走 ACCENTS） */
   transition: transform 0.18s ease;
-}
-.pe-thumb-allow {
-  color: #34C759;
-  background: rgba(52, 199, 89, 0.12);
-}
-.pe-thumb-ask {
-  color: #FF9500;
-  background: rgba(255, 149, 0, 0.12);
-}
-.pe-thumb-deny {
-  color: #FF3B30;
-  background: rgba(255, 59, 48, 0.12);
-}
-.pe-thumb-unknown {
-  color: #8E8E93;
-  background: rgba(142, 142, 147, 0.12);
 }
 .pe-thumb-head:hover .pe-thumb {
   transform: translateY(-1px);
@@ -299,26 +354,7 @@ watch(
   text-transform: uppercase;
   letter-spacing: 0.04em;
   border: 1px solid transparent;
-}
-.pe-pill-allow {
-  color: #1d8a3f;
-  background: rgba(52, 199, 89, 0.14);
-  border-color: rgba(52, 199, 89, 0.28);
-}
-.pe-pill-ask {
-  color: #b56400;
-  background: rgba(255, 149, 0, 0.14);
-  border-color: rgba(255, 149, 0, 0.28);
-}
-.pe-pill-deny {
-  color: #c4281f;
-  background: rgba(255, 59, 48, 0.14);
-  border-color: rgba(255, 59, 48, 0.28);
-}
-.pe-pill-unknown {
-  color: var(--secondary);
-  background: var(--bg);
-  border-color: var(--separator);
+  /* 配色通过 :style="pillStyle(value)" 注入（Min-4，走 ACCENTS） */
 }
 .pe-thumb-chevron {
   flex: 0 0 12px;

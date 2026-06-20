@@ -22,7 +22,7 @@
         :aria-expanded="isExpanded(entry.id)"
         @click="toggleExpanded(entry.id)"
       >
-        <span class="pe-thumb">
+        <span class="pe-thumb" :style="thumbStyle">
           <span class="pe-thumb-icon" v-html="PROVIDER_ICON" />
         </span>
         <span class="pe-thumb-meta">
@@ -131,14 +131,14 @@
           <div v-if="!getModelEntries(entry).length" class="pe-models-empty">
             该 provider 暂无 model
           </div>
-          <div v-for="m in getModelEntries(entry)" :key="m.key" class="pe-model-card">
+          <div v-for="m in getModelEntries(entry)" :key="m.id" class="pe-model-card">
             <div class="pe-model-head">
               <TextInput
                 :model-value="m.key"
                 placeholder="model id（如 gpt-5.5）"
                 class="pe-model-id"
                 mono
-                @update:model-value="updateModelKey(entry.id, m.key, $event)"
+                @update:model-value="updateModelKey(entry.id, m.id, $event)"
               />
               <AppButton variant="icon" size="small" @click="removeModel(entry.id, m.key)" aria-label="删除">
                 <span class="pe-remove">×</span>
@@ -164,13 +164,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { ref, reactive, watch, nextTick, computed } from 'vue';
 import TextInput from '../ui/TextInput.vue';
 import AppButton from '../ui/AppButton.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
 import ModelSubEditor from './ModelSubEditor.vue';
-import { ICONS } from './icons';
+import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
 
 const { showError } = useToast();
@@ -206,6 +206,8 @@ interface ProviderEntry {
   id: string;
   key: string;
   value: ProviderConfig;
+  // model key -> 稳定 id 映射（Min-3）：重命名 model 时复用 id 避免 v-for 重建失焦
+  modelIds?: Record<string, string>;
 }
 
 const providers = ref<ProviderEntry[]>([]);
@@ -215,6 +217,28 @@ const revealed = reactive<Record<string, boolean>>({});
 const expandedKeys = ref<Record<string, boolean>>({});
 
 const PROVIDER_ICON = ICONS.provider;
+const PROVIDER_ACCENT = ACCENTS.provider;
+
+// 略缩图配色走 ACCENTS 单一来源（Min-4），与 ConfigCategoryCard 同源，避免硬编码漂移
+const thumbStyle = computed(() => {
+  const hex = PROVIDER_ACCENT;
+  const rgb = hexToRgb(hex);
+  if (!rgb) return {};
+  return {
+    color: hex,
+    background: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.12)`,
+  };
+});
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return null;
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16),
+  };
+}
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
@@ -256,7 +280,13 @@ function syncFromModel() {
   providers.value = Object.entries(obj).map(([k, v]) => {
     const exist = providers.value.find((p) => p.key === k);
     const valueCopy: ProviderConfig = v && typeof v === 'object' ? { ...(v as object) } : {};
-    return { id: exist ? exist.id : genId(), key: k, value: valueCopy };
+    // 复用既有 id（provider id + 各 model id），保证重命名/modelValue 变更时组件稳定
+    return {
+      id: exist ? exist.id : genId(),
+      key: k,
+      value: valueCopy,
+      modelIds: exist ? { ...(exist.modelIds || {}) } : {},
+    };
   });
 }
 
@@ -275,6 +305,12 @@ function updateKey(id: string, key: string) {
   // 重名校验：新 key 已被其他 provider 占用则阻止（避免 emitAll 覆盖）
   if (key !== '' && key !== p.key && providers.value.some((x) => x.id !== id && x.key === key)) {
     showError(`provider 名「${key}」已存在，请换一个`);
+    // 受控组件 DOM 回滚（Min-2）
+    const oldKey = p.key;
+    p.key = key;
+    nextTick(() => {
+      p.key = oldKey;
+    });
     return;
   }
   p.key = key;
@@ -320,14 +356,20 @@ function removeProvider(id: string) {
 }
 
 // === models object map 处理（P1：用 ModelSubEditor 替代 RawJsonEditor 兜底）===
+// ModelEntry.id 是稳定标识（Min-3）：重命名 model key 时 v-for :key 用 id 而非 key，
+// 避免组件因 key 变化重建导致 TextInput 失焦。modelIds 在 ProviderEntry 上维护，
+// syncFromModel 复用既有 id，保证外部 modelValue 变更时仍稳定。
 interface ModelEntry {
+  id: string;
   key: string;
   value: any;
 }
 function getModelEntries(entry: ProviderEntry): ModelEntry[] {
   const models = entry.value.models;
   if (!models || typeof models !== 'object' || Array.isArray(models)) return [];
+  const idMap = entry.modelIds || {};
   return Object.entries(models).map(([k, v]) => ({
+    id: idMap[k] || genId(),
     key: k,
     value: v && typeof v === 'object' ? v : { _raw: v },
   }));
@@ -338,23 +380,43 @@ function ensureModels(entry: ProviderEntry): Record<string, any> {
   }
   return entry.value.models as Record<string, any>;
 }
-function updateModelKey(entryId: string, oldKey: string, newKey: string) {
+function updateModelKey(entryId: string, modelId: string, newKey: string) {
   const entry = providers.value.find((x) => x.id === entryId);
   if (!entry) return;
-  if (newKey === '' || newKey === oldKey) return;
-  const models = ensureModels(entry);
-  // 重名校验：新 model id 已存在则阻止，避免覆盖
-  if (Object.prototype.hasOwnProperty.call(models, newKey)) {
-    showError(`model「${newKey}」已存在，请换一个`);
+  const entries = getModelEntries(entry);
+  const target = entries.find((m) => m.id === modelId);
+  if (!target) return;
+  const oldKey = target.key;
+  if (newKey === '' || newKey === oldKey) {
+    // 空值或未变化：故意不处理。空值依赖受控组件 DOM 回写（TextInput props.modelValue 直读），
+    // target.key 仍为 oldKey，无需维护 modelIds；未变化则无需任何操作。
     return;
   }
-  // 重命名：保持插入顺序（先构建新对象）
+  // 重名校验：新 model id 已存在则阻止（Min-2 受控 DOM 回滚 + Min-3 id 稳定）
+  if (Object.prototype.hasOwnProperty.call(entry.value.models, newKey)) {
+    showError(`model「${newKey}」已存在，请换一个`);
+    // 先在 entries 层面回滚 DOM：把 target.key 临时改成 newKey 再恢复 oldKey
+    target.key = newKey;
+    nextTick(() => {
+      target.key = oldKey;
+    });
+    return;
+  }
+  // 重命名：保持插入顺序（先构建新对象）+ 同步 modelIds
+  const models = ensureModels(entry);
   const reordered: Record<string, any> = {};
   for (const [k, v] of Object.entries(models)) {
     if (k === oldKey) reordered[newKey] = v;
     else reordered[k] = v;
   }
   entry.value.models = reordered;
+  // 更新 id 映射（id 复用）
+  if (entry.modelIds) {
+    const updated = { ...entry.modelIds };
+    delete updated[oldKey];
+    updated[newKey] = modelId;
+    entry.modelIds = updated;
+  }
   emitAll();
 }
 function updateModelValue(entryId: string, key: string, value: any) {
@@ -371,6 +433,12 @@ function removeModel(entryId: string, key: string) {
   const models = { ...(entry.value.models as Record<string, any>) };
   delete models[key];
   entry.value.models = models;
+  // 清理 modelIds 孤儿映射
+  if (entry.modelIds) {
+    const updated = { ...entry.modelIds };
+    delete updated[key];
+    entry.modelIds = updated;
+  }
   emitAll();
 }
 function addModel(entryId: string) {
@@ -382,6 +450,9 @@ function addModel(entryId: string) {
   while (Object.prototype.hasOwnProperty.call(models, k)) k = `model-${i++}`;
   models[k] = { name: k, variants: {} };
   entry.value.models = { ...models };
+  // 分配新 id
+  if (!entry.modelIds) entry.modelIds = {};
+  entry.modelIds[k] = genId();
   emitAll();
 }
 function addProvider() {
@@ -392,6 +463,7 @@ function addProvider() {
     id: genId(),
     key: k,
     value: { options: {}, models: {} },
+    modelIds: {},
   });
   // 新增项默认展开
   expandedKeys.value[providers.value[providers.value.length - 1].id] = true;
@@ -471,8 +543,7 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #007AFF;
-  background: rgba(0, 122, 255, 0.12);
+  /* 配色通过 :style="thumbStyle" 注入（Min-4，走 ACCENTS） */
   transition: transform 0.18s ease;
 }
 .pe-thumb-head:hover .pe-thumb {
