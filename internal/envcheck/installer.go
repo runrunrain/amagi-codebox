@@ -18,6 +18,15 @@ import (
 
 const (
 	installCommandTimeout               = 120 * time.Second
+	// claudeNPMInstallTimeout is the timeout used for `npm install -g
+	// @anthropic-ai/claude-code` specifically. Claude Code distributes a ~206MB
+	// native binary via the platform subpackage (claude-code-darwin-arm64 etc.),
+	// which takes much longer to download/extract than a typical npm package.
+	// The generic 120s timeout was identified as a P0 root cause of interrupted
+	// installs that leave behind staging directories and truncated binaries
+	// (see Claude-Code-安装异常说明.md). 10 minutes leaves headroom for slow
+	// networks and postinstall hardlinking while still bounding the operation.
+	claudeNPMInstallTimeout             = 10 * time.Minute
 	claudeNativeBootstrapCommandTimeout = 20 * time.Minute
 	installRecheckAttemptsDefault       = 3
 	installRecheckDelayDefault          = 300 * time.Millisecond
@@ -987,6 +996,20 @@ func (s *Service) installClaudeCodeWithMethodProgress(method ClaudeInstallMethod
 		return nil, err
 	}
 
+	// Self-heal pre-check: if a previous npm install was interrupted, npm
+	// leaves behind @anthropic-ai/.claude-code-XXXXXX staging directories
+	// that deadlock subsequent install attempts with ENOTEMPTY (errno -66).
+	// Clear them BEFORE the conflict check so the new install can proceed.
+	// This is a hard requirement for the "install self-heal" P0 capability.
+	if cleaned, cleanErr := s.cleanClaudeNPMResidueIfPresent(); cleanErr != nil {
+		// Surface but do not abort: the install itself may still succeed if
+		// the conflict check / npm operation can proceed without hitting the
+		// stale staging directory.
+		reporter.report(OperationStepPrecheck, fmt.Sprintf("安装前清理 staging 残留时出错（已忽略，继续尝试安装）: %v", cleanErr), progressPrecheck)
+	} else if cleaned != nil {
+		reporter.report(OperationStepPrecheck, fmt.Sprintf("检测到上次 npm 安装中断的 staging 残留，已自动清理 %d 项", cleaned.Total()), progressPrecheck)
+	}
+
 	reporter.report(OperationStepPrecheck, fmt.Sprintf("正在检查 Claude Code %s 安装冲突...", claudeInstallMethodDisplayName(method)), progressPrecheck)
 	conflictResult, conflictErr := s.ensureNoConflictInstall(targetMethod)
 	if conflictErr != nil {
@@ -1085,12 +1108,44 @@ func (s *Service) installClaudeNativeViaNPMBootstrap(reporter progressReporter) 
 		return s.nativeBootstrapFailureResultAfterConfirmedNPM(installErr), installErr
 	}
 
+	// 5.11.F: once Native is verified, remove the npm channel residue so the
+	// next detection run cannot accidentally prefer an npm shim over the
+	// Native versions/ binary. This is best-effort -- failure here is logged
+	// and surfaced in the success message but does not flip Success=false,
+	// because the Native install itself has already succeeded.
+	cleanupNote := s.cleanupNPMBinResidueAfterNativeInstall(reporter)
+
 	return &InstallResult{
 		Success: true,
-		Message: nativeInstallSuccessMessage("Claude Code 已通过 npm + claude install 安装 Native 二进制", after),
+		Message: nativeInstallSuccessMessage(nativeInstallSuccessWithNPMCleanup("Claude Code 已通过 npm + claude install 安装 Native 二进制", cleanupNote), after),
 		Tool:    ToolClaudeCode,
 		Version: after.Version,
 	}, nil
+}
+
+// cleanupNPMBinResidueAfterNativeInstall removes the npm global bin entry for
+// claude after a successful Native install. It is a best-effort cleanup: any
+// error is logged and surfaced in the returned note but does NOT fail the
+// overall install (Native has already been verified). Returns a short
+// human-readable note; "" when no cleanup was needed.
+func (s *Service) cleanupNPMBinResidueAfterNativeInstall(reporter progressReporter) string {
+	cleaned, cleanErr := s.cleanClaudeNPMResidue()
+	if cleanErr != nil {
+		reporter.report(OperationStepVerify, fmt.Sprintf("Native 安装完成；清理 npm 残留时出错（已忽略）: %v", cleanErr), progressNativeVerify)
+		return fmt.Sprintf("npm 残留清理失败（可稍后手动执行 npm uninstall -g @anthropic-ai/claude-code）: %v", cleanErr)
+	}
+	if cleaned == nil || cleaned.Total() == 0 {
+		return ""
+	}
+	reporter.report(OperationStepVerify, fmt.Sprintf("Native 安装完成；已清理 npm 残留 %d 项以避免遮蔽 Native 二进制", cleaned.Total()), progressNativeVerify)
+	return fmt.Sprintf("已清理 npm 残留 %d 项以避免遮蔽 Native 二进制", cleaned.Total())
+}
+
+func nativeInstallSuccessWithNPMCleanup(base string, cleanupNote string) string {
+	if strings.TrimSpace(cleanupNote) == "" {
+		return base
+	}
+	return base + "；" + cleanupNote
 }
 
 func (s *Service) nativeBootstrapFailureResult(installErr error) *InstallResult {
@@ -1166,6 +1221,18 @@ func (s *Service) verifyClaudeNativeAvailableWithHint(installerOutput string) (*
 	}
 	for _, candidate := range claudeNativeDefaultExecutableCandidates() {
 		if verified, err := s.verifyClaudeNativeExecutablePath(candidate, "native-default-location"); err == nil {
+			return verified, nil
+		}
+	}
+
+	// 5.11.B versions/ truth source fallback: claude install may write the
+	// binary into versions/ before (or without) updating the shim. The
+	// previous logic only verified via the shim or installer-output Location,
+	// causing "claude install 完成后 Native 验证失败" while the install had
+	// actually succeeded. Treat any healthy versions/ binary as a successful
+	// install by verifying its version directly.
+	for _, candidate := range healthyClaudeNativeVersionCandidates(0) {
+		if verified, err := s.verifyClaudeNativeExecutablePath(candidate.Path, "native-versions-truth"); err == nil {
 			return verified, nil
 		}
 	}
@@ -1379,18 +1446,28 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 // "update -g": npm update respects version ranges in package.json and may
 // not actually upgrade to the latest version, whereas install @latest
 // forces the newest release.
+//
+// Self-heal (P0-4): Claude Code distributes a ~206MB native binary via the
+// platform subpackage. The default 120s install timeout was identified as
+// a P0 root cause of interrupted installs (the install gets killed mid-
+// extract, leaving staging directories and truncated binaries that trigger
+// the ENOTEMPTY / AMFI SIGKILL cascade). The command therefore pins a
+// longer claudeNPMInstallTimeout that gives slow networks enough headroom
+// to download and hardlink the binary without being killed.
 func npmClaudeCommand(operation installOperation) installCommand {
 	if operation == installOperationUpdate {
 		return installCommand{
 			description: "npm install @anthropic-ai/claude-code@latest",
 			path:        "npm",
 			args:        []string{"install", "-g", "@anthropic-ai/claude-code@latest"},
+			timeout:     claudeNPMInstallTimeout,
 		}
 	}
 	return installCommand{
 		description: "npm global install @anthropic-ai/claude-code",
 		path:        "npm",
 		args:        []string{"install", "-g", "@anthropic-ai/claude-code"},
+		timeout:     claudeNPMInstallTimeout,
 	}
 }
 
@@ -1554,6 +1631,25 @@ func claudeNativeBootstrapCommand() installCommand {
 	}
 }
 
+// claudeBootstrapShimRetryDelay is the pause between attempts to locate the
+// npm shim after `npm install -g` returns. The value is intentionally short
+// -- npm typically finishes flushing the shim within tens of milliseconds,
+// and we cap the total retry window at a few hundred ms. Declared as a
+// variable so tests can zero it out to keep the test runtime bounded.
+var claudeBootstrapShimRetryDelay = 200 * time.Millisecond
+
+// claudeBootstrapShimMaxAttempts bounds the number of times
+// resolveClaudeNPMBootstrapPath retries scanning prefix/bin/claude after npm
+// install. Declared as a variable so tests can shrink it.
+var claudeBootstrapShimMaxAttempts = 3
+
+func claudeBootstrapShimRetryAttempts() int {
+	if claudeBootstrapShimMaxAttempts <= 0 {
+		return 1
+	}
+	return claudeBootstrapShimMaxAttempts
+}
+
 func (s *Service) claudeNativeBootstrapCommandAfterNPMInstall() (installCommand, error) {
 	cmd := claudeNativeBootstrapCommand()
 	resolvedPath, source, err := s.resolveClaudeNPMBootstrapPath()
@@ -1566,8 +1662,20 @@ func (s *Service) claudeNativeBootstrapCommandAfterNPMInstall() (installCommand,
 }
 
 func (s *Service) resolveClaudeNPMBootstrapPath() (string, string, error) {
-	if path, source := s.resolveClaudeFromNPMGlobalPrefix(); path != "" {
-		return path, source, nil
+	// 5.11.J fsync race: npm returns from "install -g" before the new bin
+	// shim is fully flushed to disk. The first scan of prefix/bin/claude can
+	// therefore see "file does not exist" even though the install genuinely
+	// succeeded. Retry a bounded number of times with a short sleep so the
+	// shim has time to appear. Total wait is bounded by
+	// claudeBootstrapShimRetryAttempts * claudeBootstrapShimRetryDelay and
+	// stays well under the user-visible "claude install" latency.
+	for attempt := 1; attempt <= claudeBootstrapShimRetryAttempts(); attempt++ {
+		if attempt > 1 {
+			time.Sleep(claudeBootstrapShimRetryDelay)
+		}
+		if path, source := s.resolveClaudeFromNPMGlobalPrefix(); path != "" {
+			return path, source, nil
+		}
 	}
 
 	env := s.buildEnhancedEnv()
@@ -1687,10 +1795,40 @@ func claudeNPMGlobalExecutableCandidateInfos(prefix string) []claudeNPMGlobalExe
 			appendCandidate(filepath.Join(dir, name), "npm global prefix")
 		}
 	}
+	// Self-heal: gate the npm package-binary fallback by an on-disk integrity
+	// check. If a previous install was interrupted mid-extract, npm may leave
+	// a truncated unsigned shard under .claude-code-*/node_modules/@anthropic-ai/
+	// that is hardlinked into bin/claude. Without this filter the checker would
+	// happily report the shard as a working Claude Code binary and mask the
+	// corruption from the user (and from the install pre-check).
 	for _, candidate := range claudeNPMPackageBinaryFallbackCandidates(prefix) {
+		if !claudeBinaryCandidateLooksHealthy(candidate) {
+			continue
+		}
 		appendCandidate(candidate, "npm package binary fallback")
 	}
 	return candidates
+}
+
+// claudeBinaryCandidateLooksHealthy returns true when the candidate either
+// does not exist (callers will handle absence elsewhere) or passes the
+// integrity inspection (size threshold + macOS codesign). Truncated shards
+	// from interrupted installs are rejected here.
+func claudeBinaryCandidateLooksHealthy(candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		// Missing file is acceptable -- the caller iterates many candidates.
+		return true
+	}
+	if info.IsDir() {
+		return false
+	}
+	report := InspectClaudeBinaryIntegrity(candidate)
+	return report.Exists && !report.Corrupted
 }
 
 func claudeNPMPackageBinaryFallbackCandidates(prefix string) []string {
@@ -2177,10 +2315,54 @@ func (s *Service) inferClaudeInstallMethodForCleanup(status *CheckStatus) Instal
 }
 
 func (s *Service) cleanClaudeCodeNPM() (*InstallResult, error) {
-	if runErr := s.runClaudeNPMUninstall(); runErr != nil {
+	_, initialErr := s.runClaudeNPMUninstall()
+	if initialErr != nil {
+		// npm uninstall hit the well-known staging-directory deadlock
+		// (ENOTEMPTY while renaming @anthropic-ai/claude-code ->
+		// @anthropic-ai/.claude-code-XXXXXX, errno -66). This happens when a
+		// previous install was interrupted mid-extract and left a stale staging
+		// directory behind. Recover by manually removing the staging residue,
+		// the main package directory, and any orphan npm bin links, then retry
+		// the uninstall once. See Claude-Code-安装异常说明.md section 四.2 for
+		// the manually-verified recovery sequence this code automates.
+		if !looksLikeClaudeNPMStagingConflict(initialErr) {
+			return &InstallResult{
+				Success: false,
+				Message: fmt.Sprintf("npm 卸载失败: %v", initialErr),
+				Tool:    ToolClaudeCode,
+			}, nil
+		}
+		cleaned, cleanErr := s.cleanClaudeNPMResidue()
+		if cleanErr != nil {
+			return &InstallResult{
+				Success: false,
+				Message: fmt.Sprintf("npm 卸载失败且自动清理 staging 残留时出错: %v (原始 npm 错误: %v)", cleanErr, initialErr),
+				Tool:    ToolClaudeCode,
+			}, nil
+		}
+		// Retry the uninstall once after cleanup. If npm had already removed
+		// everything it could, the retry is expected to be a no-op success or
+		// a benign "not installed" error.
+		if retryErr := s.runClaudeNPMUninstallSilent(); retryErr != nil {
+			// Retry failed but cleanup succeeded -- only fail if Claude Code
+			// can still be detected afterwards.
+			_ = retryErr
+		}
+		message := "npm 卸载遇到 staging 目录冲突 (ENOTEMPTY / errno -66)，已自动清理残留 staging 目录、主包目录与孤儿 bin 链接"
+		if cleaned != nil && cleaned.Total() > 0 {
+			message += fmt.Sprintf("（共清理 %d 项）", cleaned.Total())
+		}
+		after, _ := s.CheckOne(ToolClaudeCode)
+		if after != nil && after.Installed {
+			return &InstallResult{
+				Success: false,
+				Message: message + "，但清理后 Claude Code 仍然可被检测到，请手动检查",
+				Tool:    ToolClaudeCode,
+			}, nil
+		}
 		return &InstallResult{
-			Success: false,
-			Message: fmt.Sprintf("npm 卸载失败: %v", runErr),
+			Success: true,
+			Message: message + "，Claude Code (npm) 已成功卸载",
 			Tool:    ToolClaudeCode,
 		}, nil
 	}
@@ -2204,21 +2386,53 @@ func (s *Service) cleanClaudeCodeNPM() (*InstallResult, error) {
 	}, nil
 }
 
-func (s *Service) runClaudeNPMUninstall() error {
+func (s *Service) runClaudeNPMUninstall() (*platform.ProcessResult, error) {
 	npmPath := s.resolveNPMPath()
 	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
 	defer cancel()
-	_, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+	return s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   npmPath,
 		Args:   []string{"uninstall", "-g", "@anthropic-ai/claude-code"},
 		Env:    s.buildEnhancedEnv(),
 		Policy: platform.DefaultProcessPolicy(),
 	})
-	return runErr
+}
+
+// runClaudeNPMUninstallSilent runs the npm uninstall command but swallows the
+// result/error. It is used as a best-effort retry after manual staging cleanup
+// -- by that point the package directory has already been removed by
+// cleanClaudeNPMResidue, so npm's job is essentially a no-op.
+func (s *Service) runClaudeNPMUninstallSilent() error {
+	_, err := s.runClaudeNPMUninstall()
+	return err
+}
+
+// looksLikeClaudeNPMStagingConflict reports whether err looks like the npm
+// staging-directory deadlock: ENOTEMPTY, errno -66, or a message referencing
+// the .claude-code-XXXXXX staging rename target.
+func looksLikeClaudeNPMStagingConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "enotempty") {
+		return true
+	}
+	if strings.Contains(lower, "errno -66") || strings.Contains(lower, "errno=-66") {
+		return true
+	}
+	// npm formats the failing rename as "... .claude-code-XXXXXX" in its output.
+	if strings.Contains(lower, ".claude-code-") && strings.Contains(lower, "rename") {
+		return true
+	}
+	if strings.Contains(lower, "directory not empty") {
+		return true
+	}
+	return false
 }
 
 func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
-	npmErr := s.runClaudeNPMUninstall()
+	_, npmErr := s.runClaudeNPMUninstall()
 	homeDir, _ := os.UserHomeDir()
 	patterns := []string{
 		filepath.Join(homeDir, ".local", "bin", "claude.exe"),
@@ -2236,7 +2450,15 @@ func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
 			}
 		}
 	}
-	if len(removed) == 0 && len(failed) == 0 && npmErr != nil {
+	// R7 transparency: cleanClaudeCodeNative only removes the shim. The
+	// versions/ directory holds the real native binaries and is preserved
+	// intentionally so a future reinstall can reuse the signed binaries
+	// without re-downloading. With the versions/-aware detection from this
+	// change, CheckOne will still report Native Installed when versions/
+	// has healthy binaries -- we surface that explicitly rather than letting
+	// the user think uninstall failed.
+	versionsKept := listClaudeNativeVersionsPathsForUninstallReport()
+	if len(removed) == 0 && len(failed) == 0 && len(versionsKept) == 0 && npmErr != nil {
 		return &InstallResult{
 			Success: false,
 			Message: fmt.Sprintf("Native 清理失败：未找到 Native 安装文件，且 npm 包卸载失败: %v", npmErr),
@@ -2245,9 +2467,12 @@ func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
 	}
 	after, _ := s.CheckOne(ToolClaudeCode)
 	if after != nil && after.Installed {
-		detail := fmt.Sprintf("已执行 npm 卸载并删除 %d 个 Native 文件", len(removed))
+		detail := fmt.Sprintf("已执行 npm 卸载并删除 %d 个 Native shim 文件", len(removed))
 		if len(failed) > 0 {
 			detail += fmt.Sprintf("，%d 个文件删除失败", len(failed))
+		}
+		if len(versionsKept) > 0 {
+			detail += fmt.Sprintf("；versions/ 目录下仍保留 %d 个 Native 二进制（CodeBox 检测仍能识别），如需彻底卸载请手动删除 %s", len(versionsKept), claudeNativeVersionsDir())
 		}
 		if npmErr != nil {
 			detail += fmt.Sprintf("，npm 卸载失败: %v", npmErr)
@@ -2261,13 +2486,16 @@ func (s *Service) cleanClaudeCodeNative() (*InstallResult, error) {
 	if npmErr != nil {
 		return &InstallResult{
 			Success: false,
-			Message: fmt.Sprintf("已删除 %d 个 Native 文件，但 npm 包卸载失败: %v", len(removed), npmErr),
+			Message: fmt.Sprintf("已删除 %d 个 Native shim 文件，但 npm 包卸载失败: %v", len(removed), npmErr),
 			Tool:    ToolClaudeCode,
 		}, nil
 	}
-	msg := fmt.Sprintf("已卸载 npm 包并清理 %d 个 Native 安装文件", len(removed))
+	msg := fmt.Sprintf("已卸载 npm 包并清理 %d 个 Native shim 文件", len(removed))
 	if len(failed) > 0 {
 		msg += fmt.Sprintf("（%d 个文件删除失败）", len(failed))
+	}
+	if len(versionsKept) > 0 {
+		msg += fmt.Sprintf("；versions/ 仍保留 %d 个 Native 二进制（重装时可复用，无需重新下载）", len(versionsKept))
 	}
 	return &InstallResult{
 		Success: true,

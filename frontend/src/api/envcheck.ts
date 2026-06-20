@@ -4,14 +4,12 @@
  */
 
 import {
-  GetEnvCheckStatus,
   RunEnvCheck,
   CheckTool,
   InstallTool,
   UpdateTool,
   StartInstallToolAsync,
   StartUpdateToolAsync,
-  GetEnvCheckOperationState,
   GetEnvCheckSnapshot,
   RunEnvFixAction,
   InstallClaudeWithMethod,
@@ -31,18 +29,6 @@ type OperationState = envcheck.OperationState;
 type EnvCheckSnapshot = envcheck.EnvCheckSnapshot;
 type FixActionResult = envcheck.FixActionResult;
 type InstallResult = envcheck.InstallResult;
-
-/**
- * Get environment check status
- */
-export async function getEnvCheckStatus(): Promise<OverallStatus> {
-  try {
-    return await GetEnvCheckStatus();
-  } catch (error) {
-    console.error('Failed to get env check status:', error);
-    throw error;
-  }
-}
 
 /**
  * Run environment check
@@ -112,18 +98,6 @@ export async function startUpdateToolAsync(tool: string): Promise<OperationState
     return await StartUpdateToolAsync(tool);
   } catch (error) {
     console.error('Failed to start async update:', error);
-    throw error;
-  }
-}
-
-/**
- * Get operation state
- */
-export async function getEnvCheckOperationState(): Promise<OperationState> {
-  try {
-    return await GetEnvCheckOperationState();
-  } catch (error) {
-    console.error('Failed to get operation state:', error);
     throw error;
   }
 }

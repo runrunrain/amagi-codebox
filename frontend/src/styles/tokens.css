@@ -23,6 +23,18 @@
   --purple: #AF52DE;
   --danger: #FF3B30;
 
+  /*
+   * Strong semantic colors for text on tinted backgrounds.
+   * Apple HIG accessibility: when a semantic color is used as a light tinted
+   * background (e.g. severity tag, status pill), the foreground text needs a
+   * darker shade of the same hue to meet contrast ratios. These tokens are the
+   * canonical source for such text colors; do not hardcode hex in components.
+   */
+  --success-strong: #1d6a3a;
+  --warning-strong: #b25000;
+  --danger-strong: #b3261e;
+  --accent-strong: #0a5cb8;
+
   /* Terminal Theme */
   --termBg: #1B1B1F;
   --termText: #E6E6E6;

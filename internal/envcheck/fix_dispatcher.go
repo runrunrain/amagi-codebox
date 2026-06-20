@@ -758,14 +758,26 @@ func (s *Service) buildEnhancedEnv() []string {
 		}
 	}
 
+	// R1 (chicken-and-egg): historically we only injected ~/.local/bin into
+	// enhanced PATH when the native shim already existed there. That meant
+	// the very first detection right after a clean Native install (or right
+	// after cleanClaudeCodeNative removed the shim mid-way through an
+	// upgrade) could not find claude at all -- the PATH had no entry
+	// pointing at the Native dir. We now inject the Native bin dir
+	// UNCONDITIONALLY when a healthy versions/ binary exists OR the shim
+	// is present. versions/ is the truth source; the shim is a hint.
+	nativeBinDirs := claudeNativeBinDirectoriesForPATH()
 	for _, candidate := range claudeNativeDefaultExecutableCandidates() {
-		if !fileExists(candidate) {
-			continue
-		}
 		dir := filepath.Dir(candidate)
 		if dir != "" && dir != "." {
-			pathEntries = append(pathEntries, dir)
+			nativeBinDirs = append(nativeBinDirs, dir)
 		}
+	}
+	for _, dir := range nativeBinDirs {
+		if dir == "" || dir == "." {
+			continue
+		}
+		pathEntries = append(pathEntries, dir)
 	}
 
 	if len(pathEntries) == 0 {

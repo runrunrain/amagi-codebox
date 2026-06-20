@@ -55,10 +55,6 @@ interface TerminalInstance {
   lastRows: number
   /** highest emitSeq covered by the loaded history snapshot */
   historySnapshotSeq: number
-  /** whether the user has manually scrolled up (disables auto-follow) */
-  userScrolledUp: boolean
-  /** container element for scroll detection */
-  containerEl: HTMLElement | null
 }
 
 interface LiveChunk {
@@ -476,41 +472,27 @@ export function useTerminalEngine() {
       lastCols: 0,
       lastRows: 0,
       historySnapshotSeq: 0,
-      userScrolledUp: false,
-      containerEl: null,
     }
     terminals.set(sessionId, inst)
 
     // seq-based dedup: any live chunk with seq <= snapshot seq is already in
     // the history bytes -> skip it. Both the flush path and the direct path
     // go through here so dedup is never bypassed.
+    //
+    // Scroll handling: rely on xterm's default behavior. When the cursor is
+    // at the buffer bottom, new writes auto-follow; when the user has scrolled
+    // up to read history, xterm preserves the viewport position. The previous
+    // hand-rolled scrollToBottom + userScrolledUp flag was buggy (flag never
+    // became true because setupScrollTracking queried the wrong element) and
+    // forcibly yanked users back to the bottom on every frame. Mirrors the
+    // vetted legacy Terminals.vue which never called scrollToBottom.
     function writeLiveChunk(seq: number, bytes: Uint8Array) {
       if (seq > 0 && seq <= inst.historySnapshotSeq) return
       try {
         inst.term.write(bytes)
-        // Auto-scroll to bottom unless user manually scrolled up
-        requestAnimationFrame(() => {
-          if (!inst.userScrolledUp && inst.term.element) {
-            inst.term.scrollToBottom()
-          }
-        })
       } catch {
         /* term may be mid-teardown */
       }
-    }
-
-    // Track user scroll position to disable auto-follow when scrolled up
-    function setupScrollTracking() {
-      if (!containerEl) return
-      inst.containerEl = containerEl
-
-      const viewport = containerEl.querySelector('.xterm-viewport') as HTMLElement
-      if (!viewport) return
-
-      viewport.addEventListener('scroll', () => {
-        const isAtBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 10
-        inst.userScrolledUp = !isAtBottom
-      })
     }
 
     const dataEvent = 'pty:data:' + sessionId
@@ -560,7 +542,6 @@ export function useTerminalEngine() {
     // open into DOM then attach addons + replay history + wire paste.
     try {
       term.open(containerEl)
-      setupScrollTracking()
     } catch (err) {
       console.error('[amagi-codebox] xterm open failed:', err)
     }

@@ -227,6 +227,28 @@ func (r *retryTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 }
 
 func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
+	// Claude npm commands are intentionally exempted from the default 120s
+	// timeout: Claude Code distributes a ~206MB native binary via npm and
+	// needs a longer claudeNPMInstallTimeout to avoid mid-extract interrupts.
+	// Self-heal coverage lives in TestClaudeNPMCommandsUseExtendedTimeout.
+	for _, tc := range []struct {
+		name string
+		cmd  installCommand
+	}{
+		{name: "opencode install", cmd: npmOpenCodeCommand(installOperationInstall)},
+		{name: "opencode update", cmd: npmOpenCodeCommand(installOperationUpdate)},
+		{name: "codex install", cmd: npmCodexCommand(installOperationInstall)},
+		{name: "codex update", cmd: npmCodexCommand(installOperationUpdate)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if timeout := commandTimeout(tc.cmd); timeout != installCommandTimeout {
+				t.Fatalf("commandTimeout() = %v, want default %v", timeout, installCommandTimeout)
+			}
+		})
+	}
+}
+
+func TestClaudeNPMCommandsUseExtendedTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cmd  installCommand
@@ -235,8 +257,11 @@ func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
 		{name: "claude npm update", cmd: npmClaudeCommand(installOperationUpdate)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if timeout := commandTimeout(tc.cmd); timeout != installCommandTimeout {
-				t.Fatalf("commandTimeout() = %v, want default %v", timeout, installCommandTimeout)
+			if timeout := commandTimeout(tc.cmd); timeout != claudeNPMInstallTimeout {
+				t.Fatalf("commandTimeout() = %v, want claude-specific %v", timeout, claudeNPMInstallTimeout)
+			}
+			if claudeNPMInstallTimeout <= installCommandTimeout {
+				t.Fatalf("claudeNPMInstallTimeout %v must exceed default %v", claudeNPMInstallTimeout, installCommandTimeout)
 			}
 		})
 	}

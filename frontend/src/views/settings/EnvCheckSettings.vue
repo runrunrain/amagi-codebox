@@ -21,6 +21,22 @@
     </div>
   </div>
 
+  <!--
+    R5 首屏竞态 loading 占位（必做）。
+    app.go Startup goroutine 异步跑 CheckAll，前端 onMounted 可能在 CheckAll
+    写 cache 之前拉到空 snapshot，此时渲染卡片会误显示「未安装/损坏」。
+    解决：在首次 snapshot 拿到但 checkedAt 仍为空（表示 CheckAll 尚未跑完）
+    时，显示克制的 loading 占位而非卡片列表。轮询会持续拉 snapshot，
+    一旦 checkedAt 出现（或超时兜底）即切换到正常视图。
+  -->
+  <div v-if="initialLoading" class="set-card envcheck-initial-loading">
+    <div class="initial-loading-copy">
+      <span class="initial-loading-title">正在检测环境</span>
+      <span class="initial-loading-sub">首次启动需要一点时间扫描 CLI 工具与 PATH，请稍候...</span>
+    </div>
+    <ProgressBar :percent="initialLoadingPercent" />
+  </div>
+
   <div v-if="runningOperation" class="set-card op-progress-card">
     <ProgressBar :percent="runningOperation.progress || 0" />
     <div class="op-progress-meta">
@@ -34,6 +50,7 @@
     <AppButton variant="ghost" size="small" @click="lastResult = null">关闭</AppButton>
   </div>
 
+  <template v-if="!initialLoading">
   <div v-for="card in cardList" :key="card.key" class="set-card envcheck-card" :class="card.cardClass">
     <div class="card-head">
       <div class="card-title-wrap">
@@ -72,6 +89,98 @@
       </div>
 
       <div v-if="card.status?.error" class="card-error">{{ card.status.error }}</div>
+
+      <!--
+        Structured issue + solution entries.
+        The backend attaches Issues[] and Solutions[] to CheckStatus. Each
+        Solution has a type (fix_path / install_tool / install_node / retry)
+        that maps to a RunEnvFixAction handler on the backend. Rendering them
+        here restores the "通用环境修复" entry that was dropped during the HIG
+        redesign without introducing new decorative cards.
+      -->
+      <div
+        v-if="card.status?.issues && card.status.issues.length > 0"
+        class="issue-list"
+      >
+        <div
+          v-for="(issue, idx) in card.status.issues"
+          :key="card.key + '-issue-' + idx"
+          class="issue-row"
+        >
+          <div class="issue-copy">
+            <span class="issue-sev" :class="issueSeverityClass(issue.severity)">{{ issueSeverityLabel(issue.severity) }}</span>
+            <span class="issue-msg">{{ issue.message || '' }}</span>
+          </div>
+          <div v-if="issue.detail" class="issue-detail">{{ issue.detail }}</div>
+          <div v-if="issue.solutions && issue.solutions.length" class="issue-solutions">
+            <AppButton
+              v-for="(sol, sIdx) in issue.solutions"
+              :key="solutionKey(sol, card.key, sIdx)"
+              variant="ghost"
+              size="small"
+              :disabled="card.isOperating || checking || !!runningOperation || fixLoadingKey === solutionKey(sol, card.key, sIdx)"
+              @click="executeSolution(sol, card.key, card.displayName)"
+            >
+              {{ fixLoadingKey === solutionKey(sol, card.key, sIdx) ? '处理中...' : solutionLabel(sol.type) }}
+            </AppButton>
+          </div>
+        </div>
+      </div>
+
+      <!--
+        Claude Code configuration panel.
+        CheckStatus.config is populated by the backend for claude_code only;
+        we render it inline (HIG: keep related info inside the owning card
+        instead of spawning a sibling card). Each unconfigured item shows a
+        "一键配置" button that calls FixClaudeConfig(key, defaultValue, filePath).
+      -->
+      <div
+        v-if="card.key === 'claude_code' && claudeConfigItems(card.status).length > 0"
+        class="claude-config"
+      >
+        <div class="claude-config-head">
+          <span class="claude-config-title">Claude Code 配置检测</span>
+          <span class="claude-config-summary" :class="claudeConfigAllConfigured(card.status) ? 'tag-success' : 'tag-warn'">
+            {{ claudeConfigConfiguredCount(card.status) }}/{{ claudeConfigItems(card.status).length }} 项已配置
+          </span>
+          <button
+            type="button"
+            class="claude-config-toggle"
+            :aria-expanded="claudeConfigExpanded[card.key] || false"
+            @click="toggleClaudeConfig(card.key)"
+          >
+            {{ claudeConfigExpanded[card.key] ? '收起' : '展开' }}
+          </button>
+        </div>
+        <div v-show="claudeConfigExpanded[card.key]" class="claude-config-list">
+          <div
+            v-for="item in claudeConfigItems(card.status)"
+            :key="card.key + '-cfg-' + item.key"
+            class="claude-config-item"
+          >
+            <div class="claude-config-copy">
+              <div class="claude-config-key mono">{{ item.key }}</div>
+              <div v-if="item.description" class="claude-config-desc">{{ item.description }}</div>
+              <div v-if="item.configured && item.currentValue" class="claude-config-current">
+                当前值：<span class="mono">{{ item.currentValue }}</span>
+              </div>
+            </div>
+            <div class="claude-config-state">
+              <span v-if="item.configured" class="mini-tag tag-success">已配置</span>
+              <span v-else class="mini-tag tag-danger">未配置</span>
+              <AppButton
+                v-if="!item.configured"
+                variant="primary"
+                size="small"
+                :disabled="!!configFixing[item.key] || card.isOperating || checking || !!runningOperation"
+                @click="handleFixClaudeConfig(card.key, item)"
+              >
+                {{ configFixing[item.key] ? '写入中...' : '一键配置' }}
+              </AppButton>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="card-actions">
@@ -83,26 +192,82 @@
       >
         检测
       </AppButton>
-      <AppButton
-        v-if="!card.status?.installed"
-        variant="primary"
-        size="small"
-        :disabled="card.isOperating || checking || !!runningOperation"
-        @click="startInstall(card.key, card.displayName)"
-      >
-        {{ card.isInstalling ? '安装中...' : '安装' }}
-      </AppButton>
-      <AppButton
-        v-else-if="card.status?.hasUpdate"
-        variant="primary"
-        size="small"
-        :disabled="card.isOperating || checking || !!runningOperation"
-        @click="startUpdate(card.key, card.displayName, card.status?.latestVersion || '')"
-      >
-        {{ card.isUpdating ? '更新中...' : '更新' }}
-      </AppButton>
+
+      <!--
+        Claude Code: explicit native / npm method picker.
+        Backend supports both methods (StartInstallClaudeWithMethodAsync);
+        the generic StartInstallToolAsync would silently pick one via
+        ClaudeInstallAuto, hiding the choice from the user.
+      -->
+      <template v-if="card.key === 'claude_code'">
+        <select
+          class="method-select"
+          :value="claudeInstallMethod"
+          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy"
+          @change="onClaudeMethodChange(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="" disabled>选择安装方式</option>
+          <option
+            v-for="opt in claudeInstallMethodOptions"
+            :key="opt.value"
+            :value="opt.value"
+          >
+            {{ opt.label }}
+          </option>
+        </select>
+        <AppButton
+          v-if="!card.status?.installed"
+          variant="primary"
+          size="small"
+          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
+          @click="startClaudeInstallWithMethod(card.displayName, false)"
+        >
+          {{ card.isInstalling || claudeInstalling ? '安装中...' : '安装' }}
+        </AppButton>
+        <AppButton
+          v-else
+          variant="ghost"
+          size="small"
+          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
+          @click="startClaudeInstallWithMethod(card.displayName, true)"
+        >
+          {{ card.isInstalling || claudeInstalling ? '重装中...' : '重装' }}
+        </AppButton>
+        <AppButton
+          v-if="card.status?.installed"
+          variant="ghost"
+          size="small"
+          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy"
+          @click="handleUninstallClaude(card.status)"
+        >
+          {{ claudeUninstalling ? '卸载中...' : '卸载' }}
+        </AppButton>
+      </template>
+
+      <!-- Non-Claude tools: keep the generic install / update flow. -->
+      <template v-else>
+        <AppButton
+          v-if="!card.status?.installed"
+          variant="primary"
+          size="small"
+          :disabled="card.isOperating || checking || !!runningOperation"
+          @click="startInstall(card.key, card.displayName)"
+        >
+          {{ card.isInstalling ? '安装中...' : '安装' }}
+        </AppButton>
+        <AppButton
+          v-else-if="card.status?.hasUpdate"
+          variant="primary"
+          size="small"
+          :disabled="card.isOperating || checking || !!runningOperation"
+          @click="startUpdate(card.key, card.displayName, card.status?.latestVersion || '')"
+        >
+          {{ card.isUpdating ? '更新中...' : '更新' }}
+        </AppButton>
+      </template>
     </div>
   </div>
+  </template>
 </template>
 
 <script setup lang="ts">
@@ -114,12 +279,17 @@ import {
   startInstallToolAsync,
   startUpdateToolAsync,
   getEnvCheckSnapshot,
+  startInstallClaudeWithMethodAsync,
+  uninstallClaudeCode,
+  cleanClaudeInstall,
+  fixClaudeConfig,
+  runEnvFixAction,
 } from '../../api/envcheck'
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
 
-const { showSuccess, showError } = useToast()
+const { showSuccess, showError, showInfo } = useToast()
 
 interface ToolMeta {
   key: string
@@ -148,6 +318,8 @@ interface CardView {
   tagLabel: string
 }
 
+type ClaudeInstallMethod = 'native' | 'npm'
+
 const TOOL_METAS: ToolMeta[] = [
   { key: 'claude_code', displayName: 'Claude Code', iconChar: 'C', bgColor: 'rgba(204,120,50,0.15)' },
   { key: 'opencode', displayName: 'OpenCode', iconChar: 'O', bgColor: 'rgba(79,195,247,0.15)' },
@@ -169,6 +341,17 @@ const checking = ref(false)
 const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const mounted = ref(true)
 const lastResult = ref<OperationResult | null>(null)
+
+// R5 首屏竞态 loading：首次 snapshot 尚未带 checkedAt 时为 true。
+// 期间显示 loading 占位，避免渲染「未安装/损坏」误导卡片。
+// 超时兜底（INITIAL_LOADING_TIMEOUT_MS）强制切到正常视图，防止后端
+// CheckAll 卡住时用户永远看不到任何内容。
+const INITIAL_LOADING_TIMEOUT_MS = 8000
+const INITIAL_LOADING_TICK_MS = 100
+const initialLoading = ref(true)
+const initialLoadingPercent = ref(8)
+const initialLoadingStartedAt = ref(0)
+const initialLoadingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 const runningOperation = computed<envcheck.OperationState | null>(() => {
   const op = snapshot.value?.operation
@@ -304,14 +487,69 @@ function pathStateClass(status: envcheck.CheckStatus): string {
 
 // ---------- Snapshot / Polling ----------
 
+// CheckAll 是否已经写完 cache。后端 OverallStatus 没有「检测中」标志，
+// 只能靠 checkedAt 是否存在判断。Startup goroutine 跑完 CheckAll 才会写
+// checkedAt（service.go:110-112），在此之前 snapshot.status 可能为 null
+// 或 checkedAt 缺失。这是 R5 首屏竞态的根因探测点。
+function hasInitialCheckCompleted(s: envcheck.EnvCheckSnapshot | null): boolean {
+  if (!s?.status) return false
+  const at = (s.status as any).checkedAt
+  if (!at) return false
+  try {
+    const d = new Date(at as any)
+    return !isNaN(d.getTime())
+  } catch {
+    return false
+  }
+}
+
+function stopInitialLoadingTimer(): void {
+  if (initialLoadingTimer.value !== null) {
+    clearInterval(initialLoadingTimer.value)
+    initialLoadingTimer.value = null
+  }
+}
+
+function startInitialLoadingTimer(): void {
+  stopInitialLoadingTimer()
+  initialLoadingStartedAt.value = Date.now()
+  initialLoadingPercent.value = 8
+  initialLoadingTimer.value = setInterval(() => {
+    if (!mounted.value) {
+      stopInitialLoadingTimer()
+      return
+    }
+    const elapsed = Date.now() - initialLoadingStartedAt.value
+    // 在 8s 内从 8% 平滑推进到 92%，避免在 100% 卡死（完成靠事件驱动）。
+    // 超过 timeout 强制切到正常视图，让用户至少能看到「全部检测」按钮自救。
+    const ratio = Math.min(elapsed / INITIAL_LOADING_TIMEOUT_MS, 1)
+    initialLoadingPercent.value = Math.round(8 + ratio * 84)
+    if (elapsed >= INITIAL_LOADING_TIMEOUT_MS) {
+      stopInitialLoadingTimer()
+      initialLoading.value = false
+    }
+  }, INITIAL_LOADING_TICK_MS)
+}
+
 async function fetchSnapshot(): Promise<void> {
   try {
     const s = await getEnvCheckSnapshot()
     if (mounted.value) {
       snapshot.value = s
+      // R5：首次 CheckAll 完成（checkedAt 出现）即收尾 loading。
+      // 已收尾后再 fetch 不影响（initialLoading 已是 false）。
+      if (initialLoading.value && hasInitialCheckCompleted(s)) {
+        initialLoading.value = false
+        stopInitialLoadingTimer()
+      }
     }
   } catch (err: any) {
     console.warn('[EnvCheck] fetchSnapshot failed:', err?.message || err)
+    // 拉取失败时不能让用户卡在 loading；切到正常视图让其看到错误态/重试按钮。
+    if (initialLoading.value) {
+      initialLoading.value = false
+      stopInitialLoadingTimer()
+    }
   }
 }
 
@@ -331,7 +569,7 @@ function stopPolling(): void {
 }
 
 function ensurePollingState(): void {
-  if (runningOperation.value || checking.value) {
+  if (runningOperation.value || checking.value || initialLoading.value) {
     if (pollTimer.value === null) {
       startPolling()
     }
@@ -423,6 +661,300 @@ async function startUpdate(key: string, displayName: string, latestVersion: stri
   }
 }
 
+// ---------- Claude Code: explicit native / npm install ----------
+
+const claudeInstallMethod = ref<ClaudeInstallMethod | ''>('')
+const claudeInstalling = ref(false)
+const claudeUninstalling = ref(false)
+const configFixing = ref<Record<string, boolean>>({})
+const claudeConfigExpanded = ref<Record<string, boolean>>({})
+const fixLoadingKey = ref<string>('')
+
+const claudeBusy = computed(() => claudeInstalling.value || claudeUninstalling.value)
+
+const claudeInstallMethodOptions = computed<{ value: ClaudeInstallMethod; label: string }[]>(() => {
+  const claudeStatus = snapshot.value?.status?.items?.claude_code || null
+  const raw = (claudeStatus as any)?.canInstallByMethod as Record<string, boolean> | undefined
+  const methods: ClaudeInstallMethod[] = ['native', 'npm']
+  return methods
+    .filter((method) => {
+      // If the backend has not provided per-method capability data, surface
+      // both options and let the backend reject at runtime if it must.
+      if (!raw || Object.keys(raw).length === 0) return true
+      return raw[method] === true
+    })
+    .map((method) => ({
+      value: method,
+      label: method === 'native' ? 'Native 安装 (npm + claude install)' : 'npm package 安装',
+    }))
+})
+
+function onClaudeMethodChange(value: string): void {
+  if (value === 'native' || value === 'npm') {
+    claudeInstallMethod.value = value
+  }
+}
+
+function syncClaudeInstallMethod(): void {
+  const options = claudeInstallMethodOptions.value
+  if (!claudeInstallMethod.value || !options.some((opt) => opt.value === claudeInstallMethod.value)) {
+    claudeInstallMethod.value = options.length > 0 ? options[0].value : ''
+  }
+}
+
+async function startClaudeInstallWithMethod(displayName: string, reinstall: boolean): Promise<void> {
+  const method = claudeInstallMethod.value
+  if (!method) {
+    showError('请先选择安装方式（Native 或 npm）')
+    return
+  }
+  if (reinstall) {
+    // Clean previous install artifacts before reinstall so switching methods
+    // does not leave stale binaries behind. Mirrors the legacy flow.
+    try {
+      await cleanClaudeInstall(method)
+    } catch (err: any) {
+      lastResult.value = {
+        title: `清理旧版 ${displayName} 失败`,
+        description: err?.message || String(err),
+        type: 'error',
+      }
+      return
+    }
+  }
+  claudeInstalling.value = true
+  try {
+    await startInstallClaudeWithMethodAsync(method)
+    await fetchSnapshot()
+    ensurePollingState()
+  } catch (err: any) {
+    lastResult.value = {
+      title: `${reinstall ? '重装' : '安装'} ${displayName} 失败`,
+      description: err?.message || String(err),
+      type: 'error',
+    }
+  } finally {
+    claudeInstalling.value = false
+  }
+}
+
+async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void> {
+  const method = (status.installMethod as string) || claudeInstallMethod.value || 'native'
+  const confirmed = window.confirm(
+    `确定要卸载当前 ${method === 'native' ? 'Native' : 'npm'} 安装的 Claude Code 吗？卸载后不会自动重新安装。`,
+  )
+  if (!confirmed) return
+  claudeUninstalling.value = true
+  try {
+    let result: envcheck.InstallResult | envcheck.FixActionResult | null = null
+    try {
+      result = await uninstallClaudeCode(method)
+    } catch (err: any) {
+      // Only fall back to CleanClaudeInstall when the Wails binding itself is
+      // missing; surface business errors instead of swallowing them.
+      const msg = err?.message || String(err)
+      if (msg.includes('not a function') || msg.includes('不可用')) {
+        result = await cleanClaudeInstall(method)
+      } else {
+        throw err
+      }
+    }
+    const ok = !!(result as any)?.success
+    if (ok) {
+      showSuccess((result as any)?.message || 'Claude Code 已卸载')
+      lastResult.value = {
+        title: 'Claude Code 已卸载',
+        description: (result as any)?.message || undefined,
+        type: 'success',
+      }
+      await runSingleCheck('claude_code')
+    } else {
+      const desc = (result as any)?.message || (result as any)?.error || '卸载失败'
+      showError(desc)
+      lastResult.value = { title: 'Claude Code 卸载失败', description: desc, type: 'error' }
+    }
+  } catch (err: any) {
+    showError('卸载操作失败: ' + (err?.message || String(err)))
+    lastResult.value = {
+      title: 'Claude Code 卸载失败',
+      description: err?.message || String(err),
+      type: 'error',
+    }
+  } finally {
+    claudeUninstalling.value = false
+    if (mounted.value) await fetchSnapshot()
+  }
+}
+
+// ---------- Claude Code: configuration items ----------
+
+function claudeConfigItems(status: envcheck.CheckStatus | null): envcheck.ClaudeConfigItem[] {
+  const cfg = (status as any)?.config as envcheck.ClaudeConfigStatus | null | undefined
+  return cfg?.configItems || []
+}
+
+function claudeConfigConfiguredCount(status: envcheck.CheckStatus | null): number {
+  return claudeConfigItems(status).filter((item) => !!item.configured).length
+}
+
+function claudeConfigAllConfigured(status: envcheck.CheckStatus | null): boolean {
+  const items = claudeConfigItems(status)
+  return items.length > 0 && items.every((item) => !!item.configured)
+}
+
+function toggleClaudeConfig(cardKey: string): void {
+  claudeConfigExpanded.value = {
+    ...claudeConfigExpanded.value,
+    [cardKey]: !claudeConfigExpanded.value[cardKey],
+  }
+}
+
+async function handleFixClaudeConfig(_cardKey: string, item: envcheck.ClaudeConfigItem): Promise<void> {
+  configFixing.value = { ...configFixing.value, [item.key]: true }
+  try {
+    const result: any = await fixClaudeConfig(item.key, item.defaultValue || '', item.filePath || '')
+    if (result?.success) {
+      showSuccess(result.message || `配置项 ${item.key} 已写入`)
+    } else {
+      showInfo(result?.message || result?.error || '配置写入失败')
+    }
+    await runSingleCheck('claude_code')
+  } catch (err: any) {
+    showError('配置写入失败: ' + (err?.message || String(err)))
+  } finally {
+    configFixing.value = { ...configFixing.value, [item.key]: false }
+  }
+}
+
+// ---------- Generic issue / solution runner ----------
+
+function solutionKey(sol: envcheck.ResolutionAction, cardKey: string, idx: number): string {
+  return `${cardKey}-${sol.type}-${idx}`
+}
+
+function solutionLabel(type: string): string {
+  switch (type) {
+    case 'fix_path': return '修复 PATH'
+    case 'install_tool': return '安装工具'
+    case 'install_node': return '安装 Node.js'
+    case 'retry': return '重新检测'
+    case 'clean_claude_install': return '清理 Claude 安装'
+    case 'manual_command': return '查看手动命令'
+    case 'restart_app': return '重启应用'
+    case 'install_claude_method': return '重装 Claude Code'
+    case 'fix_claude_config': return '修复 Claude 配置'
+    default: return '解决方案'
+  }
+}
+
+function issueSeverityLabel(sev: string): string {
+  return ({ info: '信息', warning: '警告', error: '错误', critical: '严重' } as Record<string, string>)[sev] || sev
+}
+
+function issueSeverityClass(sev: string): string {
+  return `sev-${sev || 'info'}`
+}
+
+async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, displayName: string): Promise<void> {
+  // R6 manual_command：纯展示命令文案，不触发后端 action。后端在 solution
+  // 的 description/command 字段承载建议命令，用户参考执行。HIG 克制：用
+  // toast 展示而非弹窗，避免打断流程。
+  if (sol.type === 'manual_command') {
+    const cmd = sol.command || sol.description || ''
+    const desc = sol.description && sol.command && sol.description !== sol.command
+      ? `${sol.description}\n命令：${sol.command}`
+      : cmd || '请参考 Claude Code 官方文档执行手动命令'
+    showInfo(desc)
+    lastResult.value = {
+      title: `${displayName} 手动命令`,
+      description: desc,
+      type: 'info',
+    }
+    return
+  }
+
+  // Destructive operations require confirmation (HIG: never destroy user data
+  // without explicit opt-in).
+  if (sol.type === 'fix_path' || sol.type === 'install_node' || sol.type === 'clean_claude_install') {
+    const msg = sol.type === 'fix_path'
+      ? '此操作将备份并修改 PATH 配置，以加入必要的工具目录。是否继续？'
+      : sol.type === 'install_node'
+        ? '此操作将尝试安装 Node.js。是否继续？'
+        : `此操作将清理当前 ${displayName} 安装产物（保留 versions/ 二进制可复用）。是否继续？`
+    if (!window.confirm(msg)) return
+  }
+
+  const key = solutionKey(sol, cardKey, 0)
+  fixLoadingKey.value = key
+  try {
+    if (sol.type === 'retry') {
+      await runFullCheck()
+      return
+    }
+    if (sol.type === 'install_tool') {
+      await startInstall(cardKey, displayName)
+      return
+    }
+    // R6 clean_claude_install：直接走 CleanClaudeInstall binding（已有 API），
+    // 避免 RunEnvFixAction 后端分支不识别该 type。
+    if (sol.type === 'clean_claude_install') {
+      const method = (snapshot.value?.status?.items?.claude_code?.installMethod as string) || 'native'
+      const result: any = await cleanClaudeInstall(method)
+      const ok = !!result?.success
+      const title = ok
+        ? result.message || `${displayName} 安装已清理`
+        : result.error || result.message || `${displayName} 清理失败`
+      lastResult.value = {
+        title,
+        description: result?.message || undefined,
+        type: ok ? 'success' : 'error',
+      }
+      if (ok) {
+        showSuccess(title)
+        await runSingleCheck('claude_code')
+      } else {
+        showError(title)
+      }
+      return
+    }
+    const result: any = await runEnvFixAction(sol.type, sol.tool || cardKey, '')
+    const ok = !!result?.success
+    const title = ok
+      ? result.message || '修复操作已完成'
+      : result.error || result.message || '修复操作失败'
+    const parts: string[] = []
+    if (result?.backupPath) parts.push(`备份文件：${result.backupPath}`)
+    if (result?.profilePath) parts.push(`配置文件：${result.profilePath}`)
+    if (Array.isArray(result?.addedPaths) && result.addedPaths.length) {
+      parts.push('已加入路径：' + result.addedPaths.join(', '))
+    }
+    if (Array.isArray(result?.nextSteps) && result.nextSteps.length) {
+      parts.push(result.nextSteps.join('. '))
+    }
+    lastResult.value = {
+      title,
+      description: parts.join('\n') || undefined,
+      type: ok ? 'success' : 'error',
+    }
+    if (ok) showSuccess(title)
+    else showError(title)
+    if (ok && result?.changed) await fetchSnapshot()
+  } catch (err: any) {
+    showError('修复操作失败: ' + (err?.message || String(err)))
+  } finally {
+    fixLoadingKey.value = ''
+  }
+}
+
+// Keep the method picker in sync once backend snapshot arrives.
+watch(
+  claudeInstallMethodOptions,
+  () => {
+    syncClaudeInstallMethod()
+  },
+  { immediate: true },
+)
+
 // Watch runningOperation to detect completion and surface a result banner.
 watch(runningOperation, async (newVal, oldVal) => {
   if (oldVal && !newVal) {
@@ -457,13 +989,25 @@ watch(runningOperation, async (newVal, oldVal) => {
 
 onMounted(async () => {
   mounted.value = true
+  // R5：在首次 snapshot 到达前进入 loading 占位，避免渲染过期 missing 态。
+  // 即使 Startup goroutine 已完成（老进程复用 cache），首次 fetchSnapshot
+  // 也会很快切到正常视图；首次启动场景则由轮询持续拉取直到 checkedAt 出现。
+  initialLoading.value = true
+  startInitialLoadingTimer()
   await fetchSnapshot()
-  ensurePollingState()
+  // CheckAll 未完成时启动短轮询（比常规 POLL_INTERVAL 更密），让用户
+  // 在检测完成的瞬间就能看到真实状态，而不是等下次常规轮询。
+  if (initialLoading.value && mounted.value) {
+    startPolling()
+  } else {
+    ensurePollingState()
+  }
 })
 
 onUnmounted(() => {
   mounted.value = false
   stopPolling()
+  stopInitialLoadingTimer()
 })
 </script>
 
@@ -521,7 +1065,7 @@ onUnmounted(() => {
 }
 
 .dot-warn {
-  background: #ff9f0a;
+  background: var(--warning);
 }
 
 .dot-running {
@@ -539,6 +1083,31 @@ onUnmounted(() => {
 /* operation progress */
 .op-progress-card {
   padding: 14px 24px;
+}
+
+/* R5 首屏竞态 loading 占位（HIG 克制：单卡 + 文案 + 低饱和进度条） */
+.envcheck-initial-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.initial-loading-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.initial-loading-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.initial-loading-sub {
+  font-size: 12px;
+  color: var(--tertiary);
+  line-height: 1.45;
 }
 
 .op-progress-meta {
@@ -597,7 +1166,7 @@ onUnmounted(() => {
 }
 
 .envcheck-card.card-update {
-  border-left: 3px solid #ff9f0a;
+  border-left: 3px solid var(--warning);
 }
 
 .envcheck-card.card-error {
@@ -649,22 +1218,22 @@ onUnmounted(() => {
 }
 
 .tag-success {
-  color: #1d6a3a;
+  color: var(--success-strong);
   background: rgba(52, 199, 89, 0.16);
 }
 
 .tag-warn {
-  color: #b25000;
+  color: var(--warning-strong);
   background: rgba(255, 159, 10, 0.16);
 }
 
 .tag-danger {
-  color: #b3261e;
+  color: var(--danger-strong);
   background: rgba(255, 59, 48, 0.14);
 }
 
 .tag-primary {
-  color: #0a5cb8;
+  color: var(--accent-strong);
   background: rgba(0, 122, 255, 0.14);
 }
 
@@ -713,7 +1282,7 @@ onUnmounted(() => {
 }
 
 .info-value.text-warn {
-  color: #b25000;
+  color: var(--warning-strong);
 }
 
 .info-value.text-info {
@@ -756,5 +1325,190 @@ onUnmounted(() => {
 
 .mono {
   font-family: var(--mono);
+}
+
+/* ---------- issue + solution entries ---------- */
+.issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--separator);
+}
+
+.issue-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.issue-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.issue-sev {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.issue-sev.sev-info {
+  color: var(--secondary);
+  background: var(--control);
+}
+
+.issue-sev.sev-warning {
+  color: var(--warning-strong);
+  background: rgba(255, 159, 10, 0.16);
+}
+
+.issue-sev.sev-error,
+.issue-sev.sev-critical {
+  color: var(--danger-strong);
+  background: rgba(255, 59, 48, 0.14);
+}
+
+.issue-msg {
+  flex: 1;
+}
+
+.issue-detail {
+  font-size: 11px;
+  color: var(--tertiary);
+  line-height: 1.45;
+  padding-left: 4px;
+}
+
+.issue-solutions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 4px;
+}
+
+/* ---------- Claude Code configuration panel ---------- */
+.claude-config {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--separator);
+}
+
+.claude-config-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.claude-config-title {
+  font-weight: 600;
+  color: var(--label);
+}
+
+.claude-config-summary {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.claude-config-toggle {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--accent, #007aff);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.claude-config-toggle:hover {
+  text-decoration: underline;
+}
+
+.claude-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.claude-config-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--control);
+  border-radius: 8px;
+}
+
+.claude-config-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.claude-config-key {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--label);
+  word-break: break-all;
+}
+
+.claude-config-desc {
+  font-size: 11px;
+  color: var(--secondary);
+  line-height: 1.4;
+}
+
+.claude-config-current {
+  font-size: 11px;
+  color: var(--tertiary);
+}
+
+.claude-config-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mini-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* ---------- native / npm method picker ---------- */
+.method-select {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--label);
+  background: var(--control);
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  outline: none;
+  cursor: pointer;
+  flex: 1;
+  min-width: 160px;
+}
+
+.method-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.method-select:focus {
+  border-color: var(--accent, #007aff);
 }
 </style>

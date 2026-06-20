@@ -1,6 +1,7 @@
 package envcheck
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -238,14 +239,34 @@ func TestCheckClaudeCodeDetectsNPMPackageBinaryFallback(t *testing.T) {
 	runtimeGOOS = "windows"
 	t.Cleanup(func() { runtimeGOOS = previousGOOS })
 
+	// Self-heal (P0-3): the package-binary fallback is now gated by an
+	// on-disk integrity check that rejects truncated shards. Lower the
+	// threshold for this test so the small fixture still qualifies as
+	// healthy; production threshold is 100MB.
+	previousMin := claudeNPMIntegrityMinBytes
+	claudeNPMIntegrityMinBytes = 1
+	t.Cleanup(func() { claudeNPMIntegrityMinBytes = previousMin })
+
 	homeDir := t.TempDir()
 	appData := filepath.Join(t.TempDir(), "AppData", "Roaming")
-	npmPrefix := strings.TrimRight(appData, `/\`) + `\npm`
+	// npmPrefix emulates what `npm prefix -g` would return on Windows
+	// (e.g. C:\Users\alice\AppData\Roaming\npm). We construct it with
+	// filepath.Join so the fixture path on disk uses the host platform's
+	// native separator. This keeps the test meaningful on every platform:
+	//   - runtimeGOOS stub drives business code (claudeNPMPackageBinaryNames)
+	//     to look up Windows package names (claude-code-win32-x64).
+	//   - filepath.Join on the host makes the on-disk fixture and the glob
+	//     pattern agree on separators, so filepath.Glob in
+	//     claudeNPMPackageBinaryFallbackCandidates actually hits the fixture.
+	// The original hard-coded `\npm` suffix produced a literal backslash in
+	// the path on non-Windows hosts, which filepath.Glob treats as an escape
+	// (not a separator), so the fallback directory was never matched.
+	npmPrefix := filepath.Join(appData, "npm")
 	fallbackPath := filepath.Join(npmPrefix, "node_modules", "@anthropic-ai", ".claude-code-nDGSeslo", "node_modules", "@anthropic-ai", "claude-code-win32-x64", "claude.exe")
 	if err := os.MkdirAll(filepath.Dir(fallbackPath), 0o755); err != nil {
 		t.Fatalf("mkdir fallback dir: %v", err)
 	}
-	if err := os.WriteFile(fallbackPath, []byte("MZ"), 0o755); err != nil {
+	if err := os.WriteFile(fallbackPath, bytes.Repeat([]byte{0x4d, 0x5a}, 16), 0o755); err != nil {
 		t.Fatalf("write fallback claude exe: %v", err)
 	}
 
@@ -416,4 +437,292 @@ func TestPathHasPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// M-1: buildClaudeCorruptionSelfHealIssue (detect-path self-heal rendering)
+// ---------------------------------------------------------------------------
+
+func TestBuildClaudeCorruptionSelfHealIssue_SuccessRendersResinstallSolutions(t *testing.T) {
+	issue := buildClaudeCorruptionSelfHealIssue(
+		errors.New("claude binary corrupted at /x/claude: binary size below healthy"),
+		claudeNPMResidueSelfHealOutcome{
+			Triggered: true,
+			Integrity: ClaudeBinaryIntegrity{
+				Exists:    true,
+				Corrupted: true,
+				Reason:    "binary size below healthy minimum",
+			},
+			Cleanup: &claudeNPMResidueCleanupResult{
+				StagingDirs:    []string{"/x/.claude-code-AAA"},
+				PackageDirs:    []string{"/x/claude-code"},
+				OrphanBinLinks: []string{"/x/bin/claude"},
+			},
+		},
+	)
+	if issue.Severity != SeverityWarning {
+		t.Fatalf("severity = %v, want %v", issue.Severity, SeverityWarning)
+	}
+	if issue.Code != "claude_install_interrupted_residue_cleaned" {
+		t.Fatalf("code = %q", issue.Code)
+	}
+	if !strings.Contains(issue.Message, "已自动清理") {
+		t.Fatalf("message should mention auto-cleanup: %q", issue.Message)
+	}
+	if !strings.Contains(issue.Detail, "诊断") {
+		t.Fatalf("detail should include diagnosis: %q", issue.Detail)
+	}
+	if !strings.Contains(issue.Detail, "已清理") {
+		t.Fatalf("detail should include cleanup summary: %q", issue.Detail)
+	}
+	// Must expose SolutionInstallClaudeMethod (frontend's primary reinstall
+	// entry), SolutionCleanClaudeInstall (one-click cleanup), and
+	// SolutionManualCommand (terminal fallback).
+	seen := map[SolutionType]bool{}
+	for _, sol := range issue.Solutions {
+		seen[sol.Type] = true
+	}
+	if !seen[SolutionInstallClaudeMethod] || !seen[SolutionCleanClaudeInstall] || !seen[SolutionManualCommand] {
+		t.Fatalf("missing required solutions, got %v", seen)
+	}
+	// The primary action must be SolutionInstallClaudeMethod so the frontend
+	// highlights the reinstall button.
+	var primary *ResolutionAction
+	for i := range issue.Solutions {
+		if issue.Solutions[i].IsPrimary {
+			primary = &issue.Solutions[i]
+		}
+	}
+	if primary == nil || primary.Type != SolutionInstallClaudeMethod {
+		t.Fatalf("primary solution must be SolutionInstallClaudeMethod, got %+v", primary)
+	}
+}
+
+func TestBuildClaudeCorruptionSelfHealIssue_CleanupFailureChangesCodeAndMessage(t *testing.T) {
+	issue := buildClaudeCorruptionSelfHealIssue(
+		errors.New("claude binary likely corrupted (AMFI SIGKILL / exit code 137): signal: killed"),
+		claudeNPMResidueSelfHealOutcome{
+			Triggered:  true,
+			CleanupErr: errors.New("npm prefix -g: file does not exist"),
+		},
+	)
+	if issue.Code != "claude_install_interrupted_residue_cleanup_failed" {
+		t.Fatalf("code = %q, want claude_install_interrupted_residue_cleanup_failed", issue.Code)
+	}
+	if !strings.Contains(issue.Message, "自动清理未完成") {
+		t.Fatalf("message should warn cleanup failed: %q", issue.Message)
+	}
+	if !strings.Contains(issue.Detail, "npm prefix -g") {
+		t.Fatalf("detail should expose cleanup failure cause: %q", issue.Detail)
+	}
+}
+
+func TestBuildClaudeCorruptionSelfHealIssue_EmptyOutcomeAdaptsDetail(t *testing.T) {
+	issue := buildClaudeCorruptionSelfHealIssue(
+		errors.New("claude binary likely corrupted (AMFI SIGKILL / exit code 137): signal: killed"),
+		claudeNPMResidueSelfHealOutcome{
+			Triggered: true,
+			Cleanup:   &claudeNPMResidueCleanupResult{},
+		},
+	)
+	if !strings.Contains(issue.Detail, "未发现可清理") {
+		t.Fatalf("detail should note that no residue was found: %q", issue.Detail)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-1: end-to-end detect-path self-heal via checkClaudeCode
+// ---------------------------------------------------------------------------
+
+// corruptBinaryRunner is a ProcessRunner double that emulates a corrupted
+// Claude Code binary on disk:
+//   - When invoked with a path containing the marker "/claude", it mimics
+//     macOS AMFI SIGKILL by returning an error with stderr "signal: killed"
+//     (so classifyClaudeVersionError identifies it via isClaudeSIGKILLSignal).
+//   - When invoked with args ["prefix", "-g"] (npm prefix -g), it returns
+//     the configured npm prefix so cleanClaudeNPMResidue can find the scoped
+//     directory and clean it.
+//
+// This lets the test drive checkClaudeCode end-to-end and assert that
+// detect-path self-heal was triggered as part of the check.
+type corruptBinaryRunner struct {
+	prefix string
+	mu     sync.Mutex
+	calls  []platform.CommandSpec
+}
+
+func (r *corruptBinaryRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, spec)
+
+	if len(spec.Args) == 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
+		return &platform.ProcessResult{Stdout: r.prefix}, nil
+	}
+	if strings.HasSuffix(spec.Path, "/claude") || strings.HasSuffix(spec.Path, "claude") {
+		// Emulate macOS AMFI SIGKILL: stderr carries "signal: killed" so
+		// isClaudeSIGKILLSignal fires.
+		return &platform.ProcessResult{Stderr: "signal: killed"}, errors.New("signal: killed")
+	}
+	return &platform.ProcessResult{}, nil
+}
+
+func (r *corruptBinaryRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+// TestCheckClaudeCode_DetectPathSelfHealOnCorruptedBinary verifies the M-1
+// detect-path integration: when claudeVersion fails with a corruption-class
+// error, checkClaudeCode automatically runs cleanClaudeNPMResidue and
+// surfaces a structured issue with reinstall solutions to the frontend.
+func TestCheckClaudeCode_DetectPathSelfHealOnCorruptedBinary(t *testing.T) {
+	withSimulatedGOOS(t, "linux")
+	withIntegrityThreshold(t, 100 * 1024 * 1024)
+
+	root := t.TempDir()
+	prefix := filepath.Join(root, "npm-global")
+	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatalf("mkdir staging: %v", err)
+	}
+	writeFixture(t, filepath.Join(staging, "leftover"), []byte("x"))
+
+	// Place a (truncated) binary on disk so resolveExecutable can find it via
+	// an explicit PATH entry.
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	claudePath := filepath.Join(binDir, "claude")
+	writeFixture(t, claudePath, bytes_30MB()) // below 100MB threshold
+	if err := os.Chmod(claudePath, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	// Force the PATH-based resolver to find our fixture. We point PATH at the
+	// freshly created bin directory.
+	t.Setenv("PATH", binDir)
+
+	runner := &corruptBinaryRunner{prefix: prefix}
+	svc := NewServiceWithRunner(runner)
+
+	status, err := svc.checkClaudeCode()
+	if err == nil {
+		t.Fatal("expected error from claudeVersion (SIGKILL on corrupted binary)")
+	}
+	if status == nil {
+		t.Fatal("expected non-nil status even when claudeVersion fails")
+	}
+	// Installed stays true because the binary file exists on disk (resolveExecutable
+	// found it via PATH); the corruption surfaces through status.Error and the
+	// self-heal issue. This is the same Installed=true + Error!="" signal the
+	// frontend uses to distinguish "broken binary" from "not installed".
+	if !status.Installed {
+		t.Fatalf("Installed should remain true (binary exists on disk); got %+v", status)
+	}
+	if status.Error == "" {
+		t.Fatalf("status.Error should carry the classified corruption message; got %+v", status)
+	}
+
+	// Find the self-heal issue.
+	var issue *CheckIssue
+	for i := range status.Issues {
+		if status.Issues[i].Code == "claude_install_interrupted_residue_cleaned" ||
+			status.Issues[i].Code == "claude_install_interrupted_residue_cleanup_failed" {
+			issue = &status.Issues[i]
+			break
+		}
+	}
+	if issue == nil {
+		t.Fatalf("expected self-heal issue on status, got %+v", status.Issues)
+	}
+	if !strings.Contains(issue.Message, "已自动清理") && !strings.Contains(issue.Message, "自动清理未完成") {
+		t.Fatalf("issue message should describe self-heal outcome: %q", issue.Message)
+	}
+	if !strings.Contains(issue.Detail, "诊断") {
+		t.Fatalf("detail should include diagnosis: %q", issue.Detail)
+	}
+
+	// Staging residue MUST have been removed by detect-path self-heal.
+	if _, statErr := os.Stat(staging); !os.IsNotExist(statErr) {
+		t.Fatalf("staging dir should be removed after detect-path self-heal: %v", statErr)
+	}
+}
+
+// TestCheckClaudeCode_NoSelfHealOnHealthyBinary documents the inverse: when
+// claudeVersion returns a version successfully, no self-heal issue is
+// attached and no staging directory is touched.
+func TestCheckClaudeCode_NoSelfHealOnHealthyBinary(t *testing.T) {
+	withSimulatedGOOS(t, "linux")
+	withIntegrityThreshold(t, 1)
+
+	root := t.TempDir()
+	prefix := filepath.Join(root, "npm-global")
+	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	staging := filepath.Join(scopedDir, ".claude-code-ShouldNotBeTouched")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatalf("mkdir staging: %v", err)
+	}
+	writeFixture(t, filepath.Join(staging, "canary"), []byte("must-survive"))
+
+	// healthyRunner returns a valid version output for `claude --version`
+	// and the configured prefix for `npm prefix -g`.
+	healthy := &healthyClaudeRunner{prefix: prefix, version: "2.1.183 (Claude Code)"}
+	svc := NewServiceWithRunner(healthy)
+
+	// Place the claude binary on disk so resolveExecutable can find it.
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	claudePath := filepath.Join(binDir, "claude")
+	writeFixture(t, claudePath, []byte("#!/bin/sh\necho ok\n"))
+	if err := os.Chmod(claudePath, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	status, err := svc.checkClaudeCode()
+	if err != nil {
+		t.Fatalf("healthy check should not error: %v", err)
+	}
+	if status == nil || !status.Installed {
+		t.Fatalf("expected Installed=true, got %+v", status)
+	}
+	for _, issue := range status.Issues {
+		if strings.Contains(issue.Code, "claude_install_interrupted_residue") {
+			t.Fatalf("self-heal issue must not appear on healthy binary: %+v", issue)
+		}
+	}
+	// Staging residue must survive untouched on healthy path.
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("staging canary must survive on healthy path: %v", err)
+	}
+}
+
+// healthyClaudeRunner is the ProcessRunner double for the healthy-binary
+// checkClaudeCode path: returns a valid version string for `claude` and the
+// configured prefix for `npm prefix -g`.
+type healthyClaudeRunner struct {
+	prefix  string
+	version string
+}
+
+func (r *healthyClaudeRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	if len(spec.Args) == 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
+		return &platform.ProcessResult{Stdout: r.prefix}, nil
+	}
+	if len(spec.Args) == 3 && spec.Args[0] == "list" && spec.Args[1] == "-g" {
+		// confirmClaudeNPMInstall probe -- return a listing that mentions the package.
+		return &platform.ProcessResult{Stdout: r.prefix + "/node_modules/@anthropic-ai/claude-code\n"}, nil
+	}
+	if len(spec.Args) == 1 && spec.Args[0] == "--version" {
+		return &platform.ProcessResult{Stdout: r.version}, nil
+	}
+	return &platform.ProcessResult{}, nil
+}
+
+func (r *healthyClaudeRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
 }

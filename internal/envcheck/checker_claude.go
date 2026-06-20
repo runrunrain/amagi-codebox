@@ -31,7 +31,16 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 	}
 
 	rr := resolveExecutable(claudeCommandName)
-	if nativePath := firstExistingClaudeNativeDefaultPath(); shouldPreferClaudeNativeDefaultPath(rr, nativePath) {
+	// versions/ truth source: the newest healthy native binary under
+	// ~/.local/share/claude/versions/ is the authoritative native install
+	// signal. It ALWAYS wins over the shim and over npm residuals, breaking
+	// the historical chicken-and-egg where a missing shim hid native.
+	// See native_versions.go for the cross-platform layout and integrity
+	// gating; we deliberately do not require the shim to exist.
+	nativeVersionsPath := firstHealthyClaudeNativeVersion()
+	if nativeVersionsPath != "" {
+		rr = applyClaudeNativeVersionsResolution(rr, nativeVersionsPath)
+	} else if nativePath := firstExistingClaudeNativeDefaultPath(); shouldPreferClaudeNativeDefaultPath(rr, nativePath) {
 		rr = resolveResult{
 			executablePath: nativePath,
 			systemPATHOk:   false,
@@ -66,10 +75,32 @@ func (s *Service) checkClaudeCode() (*CheckStatus, error) {
 
 	version, err := s.claudeVersion(invocationPath)
 	if err != nil {
+		// M-1 detect-path self-heal: if the failure is corruption (truncated
+		// shard / macOS AMFI SIGKILL), automatically clean up the npm staging
+		// residue + orphan bin links so the user's next install attempt does
+		// not deadlock on ENOTEMPTY or pick up the same shard. Then surface a
+		// structured issue that drives the user to reinstall.
+		if looksLikeClaudeCorruptionError(err) {
+			outcome := s.selfHealClaudeNPMResidueForDetection(invocationPath)
+			status.Issues = append(status.Issues, buildClaudeCorruptionSelfHealIssue(err, outcome))
+		}
 		status.Error = err.Error()
 		return status, err
 	}
 	status.Version = version
+
+	// R6 coexistence hint: when the resolved binary is an npm shim but a
+	// healthy native binary also exists under versions/, npm residuals could
+	// shadow native in shells where ~/.local/node/bin precedes ~/.local/bin.
+	// Surface an info-level issue so the frontend can prompt the user to
+	// clean up npm residue and switch to the Native path. We do not force
+	// rewrite InstallMethod here -- the user may intentionally keep both
+	// channels and CodeBox should reflect what is currently on PATH.
+	if status.InstallMethod == InstallMethodNPM {
+		if nativeHint := buildClaudeNativeAvailableAlongsideNPMHint(detectionPath); nativeHint != nil {
+			status.Issues = append(status.Issues, *nativeHint)
+		}
+	}
 
 	if status.InstallMethod == InstallMethodNPM {
 		if err := s.confirmClaudeNPMInstall(); err != nil {
@@ -204,6 +235,16 @@ func (s *Service) checkClaudeFromNPMGlobalPrefix() (*CheckStatus, []string, erro
 		invocationPath, detectionPath := resolveClaudeExecutablePathsForCheck(candidate)
 		version, err := s.claudeVersion(invocationPath)
 		if err != nil {
+			// M-1 detect-path self-heal (npm-global-prefix fallback): when a
+			// corrupted shard is identified here, run the same self-heal as
+			// the primary check path so the next install attempt is not
+			// poisoned by the same staging residue. We deliberately do not
+			// surface the issue from this branch -- issues are owned by
+			// checkClaudeCode to avoid duplicates -- but we DO trigger the
+			// cleanup so the residue never survives the check.
+			if looksLikeClaudeCorruptionError(err) {
+				s.selfHealClaudeNPMResidueForDetection(invocationPath)
+			}
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
 			continue
 		}
@@ -360,11 +401,12 @@ func (s *Service) claudeVersion(executablePath string) (string, error) {
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {
-		message := strings.TrimSpace(resultText(result))
-		if message == "" {
-			message = err.Error()
-		}
-		return "", fmt.Errorf("run claude --version: %s", message)
+		// Self-heal (P0-3): classify the failure instead of collapsing every
+		// error into "run claude --version: ...". This lets the frontend
+		// distinguish "not installed" from "installed but corrupted" (truncated
+		// shard / macOS AMFI SIGKILL on an unsigned binary) and trigger the
+		// appropriate fix flow.
+		return "", classifyClaudeVersionError(executablePath, result, err)
 	}
 
 	version := parseClaudeVersion(resultText(result))
@@ -372,6 +414,79 @@ func (s *Service) claudeVersion(executablePath string) (string, error) {
 		return "", fmt.Errorf("parse Claude Code version from output %q", resultText(result))
 	}
 	return version, nil
+}
+
+// buildClaudeCorruptionSelfHealIssue renders the user-facing CheckIssue for
+// the M-1 detect-path self-heal. It always carries the reinstall + clean
+// solutions so the frontend (EnvCheckSettings.vue) can offer a one-click
+// recovery flow even when automatic cleanup succeeded only partially.
+//
+// outcome.Triggered is always true when this function is called (it is only
+// invoked from the corruption branch of checkClaudeCode). The issue severity
+// stays SeverityWarning rather than SeverityError so that an otherwise-
+// healthy check does not flip the overall status to critical when the
+// reinstall has already been made safe by the cleanup.
+func buildClaudeCorruptionSelfHealIssue(classifiedErr error, outcome claudeNPMResidueSelfHealOutcome) CheckIssue {
+	issue := CheckIssue{
+		Severity: SeverityWarning,
+		Code:     "claude_install_interrupted_residue_cleaned",
+		Message:  "检测到 Claude Code 安装中断残留（残缺二进制 + staging 冲突），已自动清理，建议重新安装",
+		Detail:   detailTextForClaudeSelfHeal(classifiedErr, outcome),
+		Solutions: []ResolutionAction{
+			{
+				Type:            SolutionInstallClaudeMethod,
+				Description:     "重新安装 Claude Code（npm / Native）",
+				Tool:            ToolClaudeCode,
+				PackageName:     "@anthropic-ai/claude-code",
+				RequiresConfirm: true,
+				IsPrimary:       true,
+			},
+			{
+				Type:            SolutionCleanClaudeInstall,
+				Description:     "再次清理 Claude Code 安装残留",
+				Tool:            ToolClaudeCode,
+				RequiresConfirm: true,
+			},
+			{
+				Type:        SolutionManualCommand,
+				Description: "手动重装（终端）",
+				Command:     "npm install -g @anthropic-ai/claude-code@latest",
+				Tool:        ToolClaudeCode,
+			},
+		},
+	}
+	if !outcome.Triggered {
+		return issue
+	}
+	if outcome.CleanupErr != nil {
+		issue.Code = "claude_install_interrupted_residue_cleanup_failed"
+		issue.Message = "检测到 Claude Code 安装中断残留，自动清理未完成，请手动清理后重装"
+		issue.Detail = fmt.Sprintf("%s\n清理失败原因: %v", issue.Detail, outcome.CleanupErr)
+	}
+	return issue
+}
+
+// detailTextForClaudeSelfHeal composes the human-readable detail block for
+// the self-heal issue. It surfaces the original classified error, the
+// integrity finding, and the entries removed during cleanup so the frontend
+// can render a precise diagnosis without re-deriving it.
+func detailTextForClaudeSelfHeal(classifiedErr error, outcome claudeNPMResidueSelfHealOutcome) string {
+	parts := make([]string, 0, 4)
+	if errText := strings.TrimSpace(classifiedErr.Error()); errText != "" {
+		parts = append(parts, fmt.Sprintf("诊断: %s", errText))
+	}
+	if outcome.Integrity.Exists {
+		parts = append(parts, fmt.Sprintf("二进制完整性: %s", outcome.Integrity.Reason))
+	}
+	if outcome.Cleanup != nil && outcome.Cleanup.Total() > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"已清理: staging 目录 %d 个, 主包目录 %d 个, 孤儿 bin 链接 %d 个",
+			len(outcome.Cleanup.StagingDirs), len(outcome.Cleanup.PackageDirs), len(outcome.Cleanup.OrphanBinLinks),
+		))
+	} else if outcome.Cleanup != nil {
+		parts = append(parts, "未发现可清理的 npm 残留（可能是 Native 通道或用户外部路径损坏）")
+	}
+	return strings.Join(parts, "\n")
 }
 
 func parseClaudeVersion(output string) string {
@@ -392,6 +507,40 @@ func resultText(result *platform.ProcessResult) string {
 	return combined
 }
 
+// applyClaudeNativeVersionsResolution merges a versions/-discovered native
+// binary with the resolveResult obtained from the regular PATH/shim lookup.
+//
+// Priority policy (versions/ truth source):
+//  1. When the PATH resolver already pointed at the same binary (via shim
+//     symlink resolution), keep systemPATHOk so the frontend still knows
+//     the tool is reachable from the user's shell.
+//  2. Otherwise prefer the versions/ binary directly; the shim is demoted
+//     to a PATH-entry hint and never gates native detection.
+//
+// pathSource is set explicitly so debugging traces distinguish the
+// versions/ source from the legacy shim source.
+func applyClaudeNativeVersionsResolution(rr resolveResult, versionsPath string) resolveResult {
+	versionsPath = strings.TrimSpace(versionsPath)
+	if versionsPath == "" {
+		return rr
+	}
+	if existing := strings.TrimSpace(rr.executablePath); existing != "" {
+		if sameNormalizedPath(existing, versionsPath) {
+			// Resolver already saw this binary (possibly through the shim
+			// symlink). Preserve the PATH-level metadata so SystemPATHOk
+			// is not lost -- this is the "PATH already correct" case.
+			rr.pathSource = "native-versions-and-shim"
+			return rr
+		}
+	}
+	return resolveResult{
+		executablePath: versionsPath,
+		systemPATHOk:   rr.systemPATHOk,
+		pathState:      PathStateCodeboxPATH,
+		pathSource:     "native-versions-truth",
+	}
+}
+
 func (s *Service) detectClaudeInstallMethod(executablePath string) InstallMethod {
 	normalized := normalizeClaudePath(executablePath)
 	if normalized == "" {
@@ -400,6 +549,14 @@ func (s *Service) detectClaudeInstallMethod(executablePath string) InstallMethod
 
 	if looksLikeClaudeNPMPath(executablePath) || s.isClaudeNPMGlobalExecutablePath(executablePath) {
 		return InstallMethodNPM
+	}
+
+	// versions/ truth source: any path inside ~/.local/share/claude/versions/
+	// is unambiguously a native binary regardless of shim presence or PATH
+	// ordering. This must be checked BEFORE the shim-only probe so a healthy
+	// versions/ binary is not misclassified when the shim has been removed.
+	if isClaudeNativeVersionsBinaryPath(executablePath) {
+		return InstallMethodNative
 	}
 
 	if isPathUnderEnvDir(normalized, "USERPROFILE", `.local\bin`) || isPathUnderEnvDir(normalized, "HOME", `.local/bin`) || isClaudeNativeDefaultExecutablePath(executablePath) {
@@ -472,6 +629,53 @@ func pathHasPrefix(path string, prefix string) bool {
 	// normalizes all paths to forward slashes.
 	separator := "/"
 	return strings.HasPrefix(path, strings.TrimRight(prefix, `/\`)+separator)
+}
+
+// buildClaudeNativeAvailableAlongsideNPMHint returns a non-blocking info
+// issue when the active claude resolves to an npm path but a healthy native
+// binary is also available under versions/. This addresses R6 from the baize
+// exploration report: when PATH ordering puts an npm residual shim ahead of
+// the native shim, CodeBox should still surface the existence of a healthy
+// Native install and offer the user a way to clean up the npm residue. The
+// hint is purely informational -- it never mutates status.InstallMethod.
+//
+// Returns nil when no versions/ native binary exists, or when the active
+// detection path already IS the versions/ binary (no ambiguity).
+func buildClaudeNativeAvailableAlongsideNPMHint(activeDetectionPath string) *CheckIssue {
+	if activeDetectionPath == "" {
+		return nil
+	}
+	nativePath, err := resolveClaudeNativeVersionsBinary()
+	if err != nil || nativePath == "" {
+		return nil
+	}
+	if sameNormalizedPath(activeDetectionPath, nativePath) {
+		return nil
+	}
+	return &CheckIssue{
+		Severity: SeverityInfo,
+		Code:     "claude_native_available_alongside_npm",
+		Message:  "检测到 Native Claude Code 二进制可用，但当前 PATH 命中的是 npm 安装；如需切换到 Native 模式可清理 npm 残留后重新检测",
+		Detail: fmt.Sprintf(
+			"Native 二进制: %s\n当前 PATH 命中: %s",
+			nativePath, activeDetectionPath,
+		),
+		Solutions: []ResolutionAction{
+			{
+				Type:            SolutionCleanClaudeInstall,
+				Description:     "清理 npm 安装残留并切换到 Native",
+				Tool:            ToolClaudeCode,
+				RequiresConfirm: true,
+				IsPrimary:       true,
+			},
+			{
+				Type:        SolutionManualCommand,
+				Description: "手动清理 npm Claude Code 残留",
+				Command:     "npm uninstall -g @anthropic-ai/claude-code",
+				Tool:        ToolClaudeCode,
+			},
+		},
+	}
 }
 
 func (s *Service) confirmClaudeNPMInstall() error {
