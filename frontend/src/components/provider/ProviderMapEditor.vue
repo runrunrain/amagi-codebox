@@ -170,6 +170,10 @@ import AppButton from '../ui/AppButton.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
 import ModelSubEditor from './ModelSubEditor.vue';
+import { ICONS } from './icons';
+import { useToast } from '../../composables/useToast';
+
+const { showError } = useToast();
 
 interface ProviderConfig {
   models?: Record<string, any>;
@@ -210,12 +214,7 @@ const revealed = reactive<Record<string, boolean>>({});
 // 第二层折叠：每个 provider 项默认收起
 const expandedKeys = ref<Record<string, boolean>>({});
 
-const PROVIDER_ICON = `
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M6 15a4 4 0 0 1 .8-7.9 5.5 5.5 0 0 1 10.6 1.4A3.75 3.75 0 0 1 17.5 15"/>
-    <path d="M9 13.5l3-3 3 3"/>
-    <path d="M12 10.5V18"/>
-  </svg>`;
+const PROVIDER_ICON = ICONS.provider;
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
@@ -272,10 +271,14 @@ function emitAll() {
 
 function updateKey(id: string, key: string) {
   const p = providers.value.find((x) => x.id === id);
-  if (p) {
-    p.key = key;
-    emitAll();
+  if (!p) return;
+  // 重名校验：新 key 已被其他 provider 占用则阻止（避免 emitAll 覆盖）
+  if (key !== '' && key !== p.key && providers.value.some((x) => x.id !== id && x.key === key)) {
+    showError(`provider 名「${key}」已存在，请换一个`);
+    return;
   }
+  p.key = key;
+  emitAll();
 }
 function updateProp(id: string, prop: string, value: any) {
   const p = providers.value.find((x) => x.id === id);
@@ -311,6 +314,8 @@ function updateOptionsExtra(id: string, extra: any) {
 }
 function removeProvider(id: string) {
   providers.value = providers.value.filter((x) => x.id !== id);
+  // 清理 expandedKeys 孤儿键（M2）
+  delete expandedKeys.value[id];
   emitAll();
 }
 
@@ -338,6 +343,11 @@ function updateModelKey(entryId: string, oldKey: string, newKey: string) {
   if (!entry) return;
   if (newKey === '' || newKey === oldKey) return;
   const models = ensureModels(entry);
+  // 重名校验：新 model id 已存在则阻止，避免覆盖
+  if (Object.prototype.hasOwnProperty.call(models, newKey)) {
+    showError(`model「${newKey}」已存在，请换一个`);
+    return;
+  }
   // 重命名：保持插入顺序（先构建新对象）
   const reordered: Record<string, any> = {};
   for (const [k, v] of Object.entries(models)) {

@@ -67,6 +67,10 @@ import { ref, watch } from 'vue';
 import TextInput from '../ui/TextInput.vue';
 import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
+import { ICONS } from './icons';
+import { useToast } from '../../composables/useToast';
+
+const { showError } = useToast();
 
 interface Props {
   modelValue: Record<string, string>;
@@ -104,12 +108,7 @@ const entries = ref<Entry[]>([]);
 // 第二层折叠：每个 permission 项默认收起
 const expandedKeys = ref<Record<string, boolean>>({});
 
-const PERM_ICON = `
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 3l7 3v5c0 4.2-2.8 7.8-7 9-4.2-1.2-7-4.8-7-9V6l7-3z"/>
-    <rect x="9.5" y="10.5" width="5" height="3.6" rx="0.6"/>
-    <path d="M10.4 10.5V9.2a1.6 1.6 0 0 1 3.2 0v1.3"/>
-  </svg>`;
+const PERM_ICON = ICONS.permission;
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
@@ -137,10 +136,14 @@ function emitAll() {
 
 function updateKey(id: string, key: string) {
   const e = entries.value.find((x) => x.id === id);
-  if (e) {
-    e.key = key;
-    emitAll();
+  if (!e) return;
+  // 重名校验：新 key 已被其他 permission 条目占用则阻止（避免 emitAll 覆盖）
+  if (key !== '' && key !== e.key && entries.value.some((x) => x.id !== id && x.key === key)) {
+    showError(`工具名「${key}」已存在，请换一个`);
+    return;
   }
+  e.key = key;
+  emitAll();
 }
 function updateValue(id: string, value: string) {
   const e = entries.value.find((x) => x.id === id);
@@ -151,6 +154,8 @@ function updateValue(id: string, value: string) {
 }
 function removeEntry(id: string) {
   entries.value = entries.value.filter((x) => x.id !== id);
+  // 清理 expandedKeys 孤儿键（M2）
+  delete expandedKeys.value[id];
   emitAll();
 }
 function addEntry() {

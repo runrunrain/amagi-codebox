@@ -167,6 +167,10 @@ import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import StringListEditor from './StringListEditor.vue';
+import { ICONS } from './icons';
+import { useToast } from '../../composables/useToast';
+
+const { showError } = useToast();
 
 interface McpServerConfig {
   type?: string;
@@ -223,16 +227,7 @@ const revealed = reactive<Record<string, boolean>>({});
 // 第二层折叠：每个 mcp 项默认收起
 const expandedKeys = ref<Record<string, boolean>>({});
 
-const MCP_ICON = `
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M9 4v3.5L5 9.5V14"/>
-    <path d="M15 4v3.5l4 2V14"/>
-    <path d="M9 20v-3.5l-4-2"/>
-    <path d="M15 20v-3.5l4-2"/>
-    <rect x="9" y="3" width="6" height="2.4" rx="0.6"/>
-    <rect x="3.6" y="8.4" width="2.8" height="2.4" rx="0.6" transform="rotate(-90 5 9.6)"/>
-    <rect x="17.6" y="8.4" width="2.8" height="2.4" rx="0.6" transform="rotate(-90 19 9.6)"/>
-  </svg>`;
+const MCP_ICON = ICONS.mcp;
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
@@ -311,10 +306,14 @@ function emitAll() {
 
 function updateKey(id: string, key: string) {
   const s = servers.value.find((x) => x.id === id);
-  if (s) {
-    s.key = key;
-    emitAll();
+  if (!s) return;
+  // 重名校验：新 key 已被其他 server 占用则阻止（避免 emitAll 覆盖）
+  if (key !== '' && key !== s.key && servers.value.some((x) => x.id !== id && x.key === key)) {
+    showError(`MCP server 名「${key}」已存在，请换一个`);
+    return;
   }
+  s.key = key;
+  emitAll();
 }
 function updateProp(id: string, prop: string, value: any) {
   const s = servers.value.find((x) => x.id === id);
@@ -337,10 +336,14 @@ function updateHeaderKey(serverId: string, headerId: string, key: string) {
   const s = servers.value.find((x) => x.id === serverId);
   if (!s) return;
   const h = s.headerEntries.find((x) => x.id === headerId);
-  if (h) {
-    h.key = key;
-    emitAll();
+  if (!h) return;
+  // 重名校验：避免同名 header 互相覆盖
+  if (key !== '' && key !== h.key && s.headerEntries.some((x) => x.id !== headerId && x.key === key)) {
+    showError(`header「${key}」已存在，请换一个`);
+    return;
   }
+  h.key = key;
+  emitAll();
 }
 function updateHeaderValue(serverId: string, headerId: string, value: string) {
   const s = servers.value.find((x) => x.id === serverId);
@@ -368,6 +371,8 @@ function addHeader(serverId: string) {
 }
 function removeServer(id: string) {
   servers.value = servers.value.filter((x) => x.id !== id);
+  // 清理 expandedKeys 孤儿键（M2）
+  delete expandedKeys.value[id];
   emitAll();
 }
 function addServer(type: 'remote' | 'local') {
@@ -460,8 +465,7 @@ watch(
   justify-content: center;
   transition: transform 0.18s ease;
 }
-.me-thumb-remote,
-.me-thumb-me-thumb-remote {
+.me-thumb-remote {
   color: #FF9500;
   background: rgba(255, 149, 0, 0.12);
 }

@@ -164,6 +164,10 @@ import TextInput from '../ui/TextInput.vue';
 import Switch from '../ui/Switch.vue';
 import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
+import { ICONS } from './icons';
+import { useToast } from '../../composables/useToast';
+
+const { showError } = useToast();
 
 interface AgentConfig {
   color?: string;
@@ -225,15 +229,7 @@ const agents = ref<AgentEntry[]>([]);
 // 第二层折叠：每个 agent 项默认收起（略缩图），点击展开
 const expandedKeys = ref<Record<string, boolean>>({});
 
-const AGENT_ICON = `
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="5" y="8" width="14" height="11" rx="3"/>
-    <path d="M12 4v4"/>
-    <circle cx="12" cy="3.5" r="1" fill="currentColor" stroke="none"/>
-    <circle cx="9.5" cy="13" r="1.1" fill="currentColor" stroke="none"/>
-    <circle cx="14.5" cy="13" r="1.1" fill="currentColor" stroke="none"/>
-    <path d="M9.8 16h4.4"/>
-  </svg>`;
+const AGENT_ICON = ICONS.agent;
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
@@ -321,10 +317,14 @@ function emitAll() {
 
 function updateKey(id: string, key: string) {
   const a = agents.value.find((x) => x.id === id);
-  if (a) {
-    a.key = key;
-    emitAll();
+  if (!a) return;
+  // 重名校验：新 key 已被其他 agent 占用则阻止（避免 emitAll 覆盖）
+  if (key !== '' && key !== a.key && agents.value.some((x) => x.id !== id && x.key === key)) {
+    showError(`agent 名「${key}」已存在，请换一个`);
+    return;
   }
+  a.key = key;
+  emitAll();
 }
 function updateProp(id: string, prop: string, value: any) {
   const a = agents.value.find((x) => x.id === id);
@@ -371,6 +371,8 @@ function addTool(agentId: string) {
 }
 function removeAgent(id: string) {
   agents.value = agents.value.filter((x) => x.id !== id);
+  // 清理 expandedKeys 孤儿键（M2），避免长期增删后小内存泄漏
+  delete expandedKeys.value[id];
   emitAll();
 }
 function addAgent() {
