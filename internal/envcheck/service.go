@@ -87,6 +87,30 @@ func NewServiceWithRunner(runner platform.ProcessRunner) *Service {
 
 // CheckAll checks every supported CLI tool and updates the in-memory cache.
 func (s *Service) CheckAll() (*OverallStatus, error) {
+	// F-4: publish Checking=true on the cached snapshot before any per-tool
+	// work starts, so the frontend can render an accurate "checking" state
+	// instead of relying on CheckedAt presence + a timeout. Set under s.mu
+	// together with the cache write to give GetCachedStatus a consistent view
+	// (Checking flag + the in-progress status snapshot are observed atomically
+	// by readers holding s.mu.RLock()).
+	s.mu.Lock()
+	if s.cache == nil {
+		s.cache = emptyOverallStatus()
+	}
+	s.cache.Checking = true
+	s.mu.Unlock()
+
+	// Mark Checking=false whenever CheckAll returns, regardless of success
+	// or failure. The status snapshot returned to the caller carries the
+	// post-check state with Checking=false.
+	defer func() {
+		s.mu.Lock()
+		if s.cache != nil {
+			s.cache.Checking = false
+		}
+		s.mu.Unlock()
+	}()
+
 	overall := emptyOverallStatus()
 	var firstErr error
 	for _, tool := range SupportedTools() {
@@ -109,6 +133,9 @@ func (s *Service) CheckAll() (*OverallStatus, error) {
 
 	s.mu.Lock()
 	s.cache = cloneOverallStatus(overall)
+	// overall.Checking is left at its zero value (false) because the loop has
+	// completed. The defer above also resets s.cache.Checking defensively in
+	// case a future caller mutates the returned snapshot.
 	s.mu.Unlock()
 	return overall, firstErr
 }

@@ -3,6 +3,7 @@ package envcheck
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -650,16 +651,32 @@ func TestLooksLikeOrphanClaudeBinLink_UnrelatedSymlinkRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLooksLikeClaudeCorruptionError(t *testing.T) {
+	// After the structured-error refactor, looksLikeClaudeCorruptionError
+	// keys off the *claudeVersionError.Kind carried on the error rather than
+	// substring-matching the rendered message. The corruption-positive cases
+	// therefore construct errors via classifyClaudeVersionError (the only
+	// producer of *claudeVersionError) to exercise the real classifier path,
+	// while the corruption-negative cases confirm that other errors --
+	// including hand-crafted strings that USED to match by substring --
+	// correctly miss the gate now that the gate is type-driven.
 	cases := []struct {
 		name string
 		err  error
 		want bool
 	}{
 		{name: "nil", err: nil, want: false},
-		{name: "amfi sigkill", err: errors.New("claude binary likely corrupted (AMFI SIGKILL / exit code 137): signal: killed"), want: true},
-		{name: "corrupted at path", err: errors.New("claude binary corrupted at /x/claude: binary size 19MB below healthy"), want: true},
-		{name: "exit code 137 plain", err: errors.New("run failed: exit code 137"), want: true},
-		{name: "amfi sigkill upper", err: errors.New("claude: AMFI SIGKILL"), want: true},
+		{name: "classified SIGKILL",
+			err: classifyClaudeVersionError("", &platform.ProcessResult{Stderr: "signal: killed"}, errors.New("signal: killed")),
+			want: true},
+		{name: "classified exit code 137",
+			err: classifyClaudeVersionError("", &platform.ProcessResult{Stdout: "exit code 137"}, errors.New("exit status 137")),
+			want: true},
+		{name: "classified corrupted on disk", err: buildClassifiedCorruptedErrorForTest(t), want: true},
+		{name: "classified generic not corruption",
+			err: classifyClaudeVersionError("", &platform.ProcessResult{}, errors.New("exec: file not found")),
+			want: false},
+		{name: "plain error string no longer matches (legacy substring)", err: errors.New("claude binary likely corrupted (AMFI SIGKILL / exit code 137): signal: killed"), want: false},
+		{name: "plain exit code 137 string no longer matches (legacy substring)", err: errors.New("run failed: exit code 137"), want: false},
 		{name: "not installed", err: errors.New("run claude --version: exec: file not found"), want: false},
 		{name: "parse version error", err: errors.New(`parse Claude Code version from output "foo"`), want: false},
 		{name: "empty", err: errors.New(""), want: false},
@@ -671,6 +688,77 @@ func TestLooksLikeClaudeCorruptionError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// buildClassifiedCorruptedErrorForTest drives the real
+// classifyClaudeVersionError through its integrity-inspection branch by
+// placing a truncated shard on disk under a Linux-simulated environment.
+// It exists so TestLooksLikeClaudeCorruptionError can assert corruption-class
+// detection on the structured path rather than relying on substring
+// matching of the rendered error string.
+func buildClassifiedCorruptedErrorForTest(t *testing.T) error {
+	t.Helper()
+	withSimulatedGOOS(t, "linux")
+	withIntegrityThreshold(t, 100*1024*1024)
+
+	shard := filepath.Join(t.TempDir(), "claude")
+	writeFixture(t, shard, bytes_30MB()) // 30MB < 100MB threshold
+	err := classifyClaudeVersionError(shard, &platform.ProcessResult{}, errors.New("exec format error"))
+	if err == nil {
+		t.Fatal("expected classifyClaudeVersionError to return a non-nil error for a corrupted shard")
+	}
+	return err
+}
+
+// TestClaudeVersionError_StructuredKind ensures the structured error type
+// carries the expected Kind for each classifyClaudeVersionError branch. This
+// is the contract that decouples corruption detection from the rendered
+// error string.
+func TestClaudeVersionError_StructuredKind(t *testing.T) {
+	withSimulatedGOOS(t, "linux")
+	withIntegrityThreshold(t, 1)
+
+	t.Run("SIGKILL branch yields SIGKILL kind", func(t *testing.T) {
+		err := classifyClaudeVersionError("", &platform.ProcessResult{Stderr: "signal: killed"}, errors.New("signal: killed"))
+		classified := asClaudeVersionError(err)
+		if classified == nil {
+			t.Fatalf("expected *claudeVersionError, got %T", err)
+		}
+		if classified.Kind() != claudeVersionErrorSIGKILL {
+			t.Fatalf("kind = %v, want %v", classified.Kind(), claudeVersionErrorSIGKILL)
+		}
+		if !classified.Kind().isCorruption() {
+			t.Fatalf("SIGKILL kind must be corruption-class")
+		}
+		if !strings.Contains(classified.Error(), "AMFI SIGKILL") {
+			t.Fatalf("error message lost diagnostic: %q", classified.Error())
+		}
+	})
+
+	t.Run("generic branch yields Generic kind", func(t *testing.T) {
+		err := classifyClaudeVersionError("", &platform.ProcessResult{}, errors.New("exec: file not found"))
+		classified := asClaudeVersionError(err)
+		if classified == nil {
+			t.Fatalf("expected *claudeVersionError, got %T", err)
+		}
+		if classified.Kind() != claudeVersionErrorGeneric {
+			t.Fatalf("kind = %v, want %v", classified.Kind(), claudeVersionErrorGeneric)
+		}
+		if classified.Kind().isCorruption() {
+			t.Fatalf("Generic kind must NOT be corruption-class")
+		}
+		if !strings.Contains(classified.Error(), "run claude --version") {
+			t.Fatalf("generic message lost prefix: %q", classified.Error())
+		}
+	})
+
+	t.Run("errors.As unwraps wrapped structured error", func(t *testing.T) {
+		inner := classifyClaudeVersionError("", &platform.ProcessResult{Stderr: "exit code 137"}, errors.New("exit status 137"))
+		wrapped := fmt.Errorf("check failed: %w", inner)
+		if !looksLikeClaudeCorruptionError(wrapped) {
+			t.Fatal("wrapped *claudeVersionError must still be recognized as corruption via errors.As")
+		}
+	})
 }
 
 // TestSelfHealClaudeNPMResidueForDetection_TriggersCleanupOnCorruption lays

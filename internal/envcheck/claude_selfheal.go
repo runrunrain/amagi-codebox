@@ -426,6 +426,82 @@ func verifyClaudeDarwinSignature(path string) (string, bool) {
 	return combined, true
 }
 
+// claudeVersionErrorKind enumerates the failure modes classifyClaudeVersionError
+// can identify. It is the single source of truth for corruption-class errors:
+// callers compare against Kind instead of substring-matching the rendered
+// error string, so future message changes (e.g. i18n) cannot desync the
+// corruption gate from the classifier.
+type claudeVersionErrorKind int
+
+const (
+	// claudeVersionErrorUnknown is the zero value and must never be emitted
+	// by classifyClaudeVersionError. It exists only to make zero-value
+	// detection explicit.
+	claudeVersionErrorUnknown claudeVersionErrorKind = iota
+	// claudeVersionErrorSIGKILL indicates macOS AMFI rejected an unsigned or
+	// malformed Mach-O at exec time. The exec failure surfaces as
+	// "signal: killed" / exit code 137 / errno -88, and the underlying binary
+	// is effectively corrupted even if its size/signature look fine on disk.
+	claudeVersionErrorSIGKILL
+	// claudeVersionErrorCorrupted indicates the on-disk integrity inspection
+	// confirmed the binary is a truncated / unsigned shard left behind by an
+	// interrupted npm install.
+	claudeVersionErrorCorrupted
+	// claudeVersionErrorGeneric indicates a run-of-the-mill
+	// `claude --version` failure (PATH missing, network error, version parse
+	// failure, exec format error on a non-Claude file, ...). It is NOT a
+	// corruption signal and must not trigger detect-path self-heal.
+	claudeVersionErrorGeneric
+)
+
+// isCorruption reports whether this kind represents a corruption-class error
+// (truncated shard / macOS AMFI SIGKILL on an unsigned binary). It is the
+// single predicate the detect-path self-heal keys off, replacing the legacy
+// sentinel-substring matching against the rendered error string.
+func (k claudeVersionErrorKind) isCorruption() bool {
+	return k == claudeVersionErrorSIGKILL || k == claudeVersionErrorCorrupted
+}
+
+// claudeVersionError is the structured error type returned by
+// classifyClaudeVersionError. Carrying a Kind decouples the corruption gate
+// from the rendered error message: callers call AsClaudeVersionError(err) to
+// inspect Kind rather than substring-matching err.Error().
+//
+// The rendered Error() string is preserved verbatim for backward
+// compatibility with existing tests and frontend diagnostics.
+type claudeVersionError struct {
+	kind    claudeVersionErrorKind
+	message string
+}
+
+// Error implements error. The message format is identical to the pre-refactor
+// implementation so existing diagnostic surfaces (status.Error, frontend
+// detail text, log lines) keep working unchanged.
+func (e *claudeVersionError) Error() string {
+	return e.message
+}
+
+// Kind returns the structured classification of the error. Callers that need
+// to distinguish corruption from generic failures should use this rather than
+// substring-matching Error().
+func (e *claudeVersionError) Kind() claudeVersionErrorKind {
+	return e.kind
+}
+
+// asClaudeVersionError extracts the *claudeVersionError from err, returning
+// nil when err is not a structured classifier error. The non-nil return is
+// guaranteed to have a non-Unknown Kind.
+func asClaudeVersionError(err error) *claudeVersionError {
+	if err == nil {
+		return nil
+	}
+	var target *claudeVersionError
+	if errors.As(err, &target) {
+		return target
+	}
+	return nil
+}
+
 // classifyClaudeVersionError inspects the error and process result from a
 // failed `claude --version` invocation and returns a structured error that
 // distinguishes three states:
@@ -436,6 +512,10 @@ func verifyClaudeDarwinSignature(path string) (string, bool) {
 // When the invocation path is provided and integrity inspection confirms
 // corruption, the returned error carries the corruption reason so the
 // frontend can surface a targeted fix action.
+//
+// The returned error is always a *claudeVersionError, so callers can inspect
+// Kind via asClaudeVersionError to make corruption decisions without relying
+// on the rendered error string.
 func classifyClaudeVersionError(executablePath string, result *platform.ProcessResult, err error) error {
 	if err == nil {
 		return nil
@@ -450,7 +530,10 @@ func classifyClaudeVersionError(executablePath string, result *platform.ProcessR
 	// Mach-O. Go's exec package surfaces this as "signal: killed" and the
 	// process exit code is 137 (=128+SIGKILL=9).
 	if isClaudeSIGKILLSignal(lower, err) {
-		return fmt.Errorf("claude binary likely corrupted (AMFI SIGKILL / exit code 137): %s", rawMessage)
+		return &claudeVersionError{
+			kind:    claudeVersionErrorSIGKILL,
+			message: fmt.Sprintf("claude binary likely corrupted (AMFI SIGKILL / exit code 137): %s", rawMessage),
+		}
 	}
 
 	// Integrity check on disk -- authoritative for "truncated shard" cases
@@ -458,11 +541,17 @@ func classifyClaudeVersionError(executablePath string, result *platform.ProcessR
 	// surfaced as something else (e.g. exec format error).
 	if executablePath != "" {
 		if report := InspectClaudeBinaryIntegrity(executablePath); report.Exists && report.Corrupted {
-			return fmt.Errorf("claude binary corrupted at %s: %s", executablePath, report.Reason)
+			return &claudeVersionError{
+				kind:    claudeVersionErrorCorrupted,
+				message: fmt.Sprintf("claude binary corrupted at %s: %s", executablePath, report.Reason),
+			}
 		}
 	}
 
-	return fmt.Errorf("run claude --version: %s", rawMessage)
+	return &claudeVersionError{
+		kind:    claudeVersionErrorGeneric,
+		message: fmt.Sprintf("run claude --version: %s", rawMessage),
+	}
 }
 
 // isClaudeSIGKILLSignal matches the various ways Go's os/exec surfaces a
@@ -557,33 +646,28 @@ func healthyClaudeBinaryCandidates(candidates []string) []string {
 // deadlock on ENOTEMPTY staging residue or pick up the same shard via the
 // npm package-binary fallback.
 
-// corruptionSentinels are the substring markers classifyClaudeVersionError
-// emits when it identifies a corrupted Claude Code binary. Detection-path
-// self-heal keys off these markers so it triggers only for genuine corruption
-// -- not for "not installed", "PATH missing", or transient network errors.
-var corruptionSentinels = []string{
-	"claude binary likely corrupted",
-	"claude binary corrupted",
-	"amfi sigkill",
-	"exit code 137",
-}
-
 // looksLikeClaudeCorruptionError reports whether err carries a corruption
 // signal produced by classifyClaudeVersionError. It is the gate for
 // detect-path self-heal: only these errors justify automatic staging +
 // shard cleanup.
+//
+// Implementation: corruption is determined by the structured Kind carried on
+// the *claudeVersionError returned by classifyClaudeVersionError, NOT by
+// substring-matching the rendered error message. This decouples the
+// corruption gate from the error wording, so future message changes (e.g.
+// i18n, additional diagnostics) cannot accidentally desync the gate from the
+// classifier.
+//
+// For non-classifier errors (e.g. errors constructed by other code paths
+// inside checkClaudeCode, or wrapped errors that are not *claudeVersionError),
+// this returns false -- only the structured classifier output can authorize
+// detect-path self-heal.
 func looksLikeClaudeCorruptionError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	if msg == "" {
-		return false
-	}
-	for _, sentinel := range corruptionSentinels {
-		if strings.Contains(msg, sentinel) {
-			return true
-		}
+	if classified := asClaudeVersionError(err); classified != nil {
+		return classified.Kind().isCorruption()
 	}
 	return false
 }

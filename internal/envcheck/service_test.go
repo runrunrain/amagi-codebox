@@ -213,6 +213,143 @@ func TestCheckAll_DoesNotReturnErrorForToolStatusError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 4b. CheckAll Checking flag (F-4: explicit checking bool)
+// ---------------------------------------------------------------------------
+
+// TestCheckAll_ReportingSnapshotHasCheckingFalseAfterCompletion verifies that
+// the snapshot returned by CheckAll carries Checking=false once the loop has
+// finished. The frontend relies on this for R5 precise state judgement.
+func TestCheckAll_ReportingSnapshotHasCheckingFalseAfterCompletion(t *testing.T) {
+	svc := newTestService()
+	overall, _ := svc.CheckAll()
+	if overall == nil {
+		t.Fatal("expected non-nil OverallStatus")
+	}
+	if overall.Checking {
+		t.Fatal("overall.Checking should be false after CheckAll returns")
+	}
+}
+
+// TestCheckAll_CachedSnapshotHasCheckingFalseAfterCompletion verifies that the
+// in-memory cache snapshot has Checking=false after CheckAll completes. The
+// frontend polls GetCachedStatus during/after a check and must not see a
+// stale Checking=true once the run is over.
+func TestCheckAll_CachedSnapshotHasCheckingFalseAfterCompletion(t *testing.T) {
+	svc := newTestService()
+	_, _ = svc.CheckAll()
+	cached := svc.GetCachedStatus()
+	if cached == nil {
+		t.Fatal("expected cached status after CheckAll")
+	}
+	if cached.Checking {
+		t.Fatal("cached.Checking should be false after CheckAll completes")
+	}
+}
+
+// TestCheckAll_SetsCheckingTrueInCacheDuringRun uses a mock runner that blocks
+// until released, allowing us to observe Checking=true on the cached snapshot
+// while the loop is still in progress. This is the core F-4 contract: the
+// frontend can read status.checking to detect an in-flight run instead of
+// relying on CheckedAt presence + a timeout fallback.
+func TestCheckAll_SetsCheckingTrueInCacheDuringRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestExecutable(t, tmpDir, "claude")
+	writeTestExecutable(t, tmpDir, "opencode")
+	writeTestExecutable(t, tmpDir, "codex")
+	t.Setenv("PATH", tmpDir)
+
+	// Block the claude version probe until the test has observed the
+	// in-progress state. opencode/codex return instantly.
+	release := make(chan struct{})
+	started := make(chan struct{})
+
+	m := &mockRunner{responses: nil}
+	m.responses = []mockResponse{
+		{
+			pathPrefix: "claude",
+			stdout:     "",
+			err:        nil,
+			// custom hook is not supported by plain mockResponse; emulate
+			// blocking via a goroutine here would require runner refactor,
+			// so instead use a stub that calls Run indirectly below.
+		},
+	}
+	_ = m
+	_ = started
+	_ = release
+
+	// Simpler approach: spawn CheckAll, race-free observe via GetCachedStatus.
+	// Use a slow claude version probe by pointing it at a command that blocks.
+	// The simplest portable approach is to use the mockRunner's Run hook: we
+	// wrap the existing mockRunner to gate one call.
+	gated := &gatedRunner{
+		release: release,
+		started: started,
+		inner:   &mockRunner{},
+	}
+	svc := NewServiceWithRunner(gated)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = svc.CheckAll()
+		close(done)
+	}()
+
+	// Wait for the gated runner to enter the blocked call, then observe the
+	// cache while CheckAll is still running.
+	<-started
+	cached := svc.GetCachedStatus()
+	if cached == nil {
+		t.Fatal("expected non-nil cached status during CheckAll")
+	}
+	if !cached.Checking {
+		t.Fatalf("cached.Checking should be true while CheckAll is in progress (F-4 contract)")
+	}
+
+	// Release the runner and ensure CheckAll completes cleanly.
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("CheckAll did not complete within 10s after release")
+	}
+
+	// After completion the cache MUST show Checking=false.
+	cached = svc.GetCachedStatus()
+	if cached.Checking {
+		t.Fatal("cached.Checking should be false after CheckAll completes")
+	}
+}
+
+// gatedRunner wraps a mockRunner and blocks the FIRST Run call until release
+// is closed, signalling on started when the block begins. Subsequent calls
+// pass through to the inner runner. This lets us deterministically observe
+// the in-progress state of CheckAll.
+type gatedRunner struct {
+	inner   *mockRunner
+	release chan struct{}
+	started chan<- struct{}
+	once    sync.Once
+}
+
+func (g *gatedRunner) Run(ctx context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	g.once.Do(func() {
+		if g.started != nil {
+			close(g.started)
+		}
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+		}
+	})
+	return g.inner.Run(ctx, spec)
+}
+
+func (g *gatedRunner) Start(spec platform.CommandSpec) (*exec.Cmd, error) {
+	return g.inner.Start(spec)
+}
+
+// ---------------------------------------------------------------------------
 // 5. GetCachedStatus - empty before first check
 // ---------------------------------------------------------------------------
 

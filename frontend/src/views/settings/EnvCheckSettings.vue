@@ -342,10 +342,12 @@ const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const mounted = ref(true)
 const lastResult = ref<OperationResult | null>(null)
 
-// R5 首屏竞态 loading：首次 snapshot 尚未带 checkedAt 时为 true。
+// R5 首屏竞态 loading：首次 snapshot 的 status.checking===true 时为 true。
+// F-4：后端 OverallStatus.checking 是精确的"检测中"标志，CheckAll 进入即 true、
+// 完成即 false。loading 收尾不再依赖 checkedAt 存在性 + 8s 超时的模糊判断。
 // 期间显示 loading 占位，避免渲染「未安装/损坏」误导卡片。
-// 超时兜底（INITIAL_LOADING_TIMEOUT_MS）强制切到正常视图，防止后端
-// CheckAll 卡住时用户永远看不到任何内容。
+// 超时兜底（INITIAL_LOADING_TIMEOUT_MS）保留为防御：极端慢盘或 checking 字段
+// 异常时强制切到正常视图，让用户至少能看到「全部检测」按钮自救。
 const INITIAL_LOADING_TIMEOUT_MS = 8000
 const INITIAL_LOADING_TICK_MS = 100
 const initialLoading = ref(true)
@@ -487,12 +489,41 @@ function pathStateClass(status: envcheck.CheckStatus): string {
 
 // ---------- Snapshot / Polling ----------
 
-// CheckAll 是否已经写完 cache。后端 OverallStatus 没有「检测中」标志，
-// 只能靠 checkedAt 是否存在判断。Startup goroutine 跑完 CheckAll 才会写
-// checkedAt（service.go:110-112），在此之前 snapshot.status 可能为 null
-// 或 checkedAt 缺失。这是 R5 首屏竞态的根因探测点。
+// F-2: 解析 cleanClaudeCodeNative / uninstallClaudeCode 返回 message 中的
+// "versions/ 仍保留 N 个 Native 二进制"段落。后端语义是部分卸载成功：
+// shim 已卸载 + native 二进制保留可复用（重装无需重新下载）。前端需要识别
+// 这一段落把 banner 升级为 info/warning 态，避免误显"卸载失败"。
+// 匹配两种后端文案：
+//   - installer.go:2475 "...；versions/ 目录下仍保留 N 个 Native 二进制（...）"
+//   - installer.go:2498 "...；versions/ 仍保留 N 个 Native 二进制（...）"
+const NATIVE_KEPT_PATTERNS: ReadonlyArray<RegExp> = [
+  /versions\/\s*(?:目录下)?\s*仍保留\s*(\d+)\s*个\s*Native\s*二进制[^。；]*[。；]?/i,
+  /versions\/\s*(?:目录下)?\s*仍保留[^。；]*Native[^。；]*[。；]?/i,
+]
+
+function parseNativeKeptSegments(message: string): { preserved: boolean; preservedLine: string } {
+  if (!message) return { preserved: false, preservedLine: '' }
+  for (const pattern of NATIVE_KEPT_PATTERNS) {
+    const match = message.match(pattern)
+    if (match) {
+      const line = match[0].replace(/[。；]$/, '').trim()
+      return { preserved: true, preservedLine: line }
+    }
+  }
+  return { preserved: false, preservedLine: '' }
+}
+
+// CheckAll 是否已经写完 cache。F-4：后端 OverallStatus 已新增显式 `checking`
+// bool 字段（CheckAll 进入即 true、完成即 false），优先据此精确判断；
+// checkedAt 存在性保留为兼容兜底（后端某些历史分支可能仍只写 checkedAt）。
 function hasInitialCheckCompleted(s: envcheck.EnvCheckSnapshot | null): boolean {
   if (!s?.status) return false
+  // F-4 主路径：checking === false 即检测已完成（非 in-progress）
+  const checkingFlag = (s.status as any).checking
+  if (typeof checkingFlag === 'boolean') {
+    return !checkingFlag
+  }
+  // 兼容兜底：旧后端无 checking 字段时，靠 checkedAt 存在性判断。
   const at = (s.status as any).checkedAt
   if (!at) return false
   try {
@@ -536,7 +567,8 @@ async function fetchSnapshot(): Promise<void> {
     const s = await getEnvCheckSnapshot()
     if (mounted.value) {
       snapshot.value = s
-      // R5：首次 CheckAll 完成（checkedAt 出现）即收尾 loading。
+      // R5：首次 CheckAll 完成（status.checking===false 或旧后端 checkedAt 出现）
+      // 即收尾 loading。F-4 字段让极端慢盘 >8s 也能精确判断，无需等 8s 超时兜底。
       // 已收尾后再 fetch 不影响（initialLoading 已是 false）。
       if (initialLoading.value && hasInitialCheckCompleted(s)) {
         initialLoading.value = false
@@ -760,16 +792,32 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
       }
     }
     const ok = !!(result as any)?.success
-    if (ok) {
-      showSuccess((result as any)?.message || 'Claude Code 已卸载')
+    // F-2: success=false 时 message 可能含"versions/ 仍保留 N 个 Native 二进制"段落，
+    // 实际语义是"shim 已卸载 + native 保留可复用"，并非真正失败。用 warning 态
+    // 展示双段语义，避免用户误读为"卸载失败"。
+    const rawMsg = (result as any)?.message || (result as any)?.error || ''
+    const nativeKept = parseNativeKeptSegments(rawMsg)
+    if (ok && !nativeKept.preserved) {
+      showSuccess(rawMsg || 'Claude Code 已卸载')
       lastResult.value = {
         title: 'Claude Code 已卸载',
-        description: (result as any)?.message || undefined,
+        description: rawMsg || undefined,
         type: 'success',
       }
       await runSingleCheck('claude_code')
+    } else if (nativeKept.preserved) {
+      // 双段状态：shim 已卸载（成功）+ native 二进制保留可复用（信息）
+      const shimLine = ok ? 'shim 已卸载' : 'shim 已卸载（部分成功）'
+      const composed = `${shimLine}；${nativeKept.preservedLine}`
+      showInfo(composed)
+      lastResult.value = {
+        title: 'Claude Code 已部分卸载',
+        description: composed,
+        type: ok ? 'info' : 'warning',
+      }
+      if (ok) await runSingleCheck('claude_code')
     } else {
-      const desc = (result as any)?.message || (result as any)?.error || '卸载失败'
+      const desc = rawMsg || '卸载失败'
       showError(desc)
       lastResult.value = { title: 'Claude Code 卸载失败', description: desc, type: 'error' }
     }
@@ -898,23 +946,35 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
     // R6 clean_claude_install：直接走 CleanClaudeInstall binding（已有 API），
     // 避免 RunEnvFixAction 后端分支不识别该 type。
     if (sol.type === 'clean_claude_install') {
-      const method = (snapshot.value?.status?.items?.claude_code?.installMethod as string) || 'native'
+      // F-1: 优先读后端在 issue.solution 上挂的显式 method（消除 installMethod
+      // 缺失时 fallback 'native' 误清 npm 的理论风险）。缺失时按顺序回退到
+      // snapshot.installMethod 和 'native'，保留防御。
+      const method = (sol.method as string)
+        || (snapshot.value?.status?.items?.claude_code?.installMethod as string)
+        || 'native'
       const result: any = await cleanClaudeInstall(method)
       const ok = !!result?.success
+      // F-2: 即使 success=true 也可能含"versions/ 仍保留"段落（部分卸载语义）；
+      // success=false 时不一定是真失败，而是"shim 已卸载 + native 保留"。
+      // 用 info/warning 态让用户读到双段语义，避免误显"卸载失败"。
+      const nativeKept = parseNativeKeptSegments(result?.message || result?.error || '')
       const title = ok
         ? result.message || `${displayName} 安装已清理`
         : result.error || result.message || `${displayName} 清理失败`
       lastResult.value = {
         title,
-        description: result?.message || undefined,
-        type: ok ? 'success' : 'error',
+        description: nativeKept.preservedLine || result?.message || undefined,
+        type: nativeKept.preserved ? (ok ? 'info' : 'warning') : (ok ? 'success' : 'error'),
       }
-      if (ok) {
+      if (ok && !nativeKept.preserved) {
         showSuccess(title)
-        await runSingleCheck('claude_code')
+      } else if (nativeKept.preserved) {
+        // 双段语义：shim 已卸载（成功）+ native 二进制保留可复用（信息）。
+        showInfo(nativeKept.preservedLine || title)
       } else {
         showError(title)
       }
+      if (ok) await runSingleCheck('claude_code')
       return
     }
     const result: any = await runEnvFixAction(sol.type, sol.tool || cardKey, '')

@@ -878,6 +878,7 @@ export namespace envcheck {
 	    packageName?: string;
 	    requiresConfirm?: boolean;
 	    isPrimary?: boolean;
+	    method?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ResolutionAction(source);
@@ -892,6 +893,7 @@ export namespace envcheck {
 	        this.packageName = source["packageName"];
 	        this.requiresConfirm = source["requiresConfirm"];
 	        this.isPrimary = source["isPrimary"];
+	        this.method = source["method"];
 	    }
 	}
 	export class CheckIssue {
@@ -1184,6 +1186,7 @@ export namespace envcheck {
 	    issues: string[];
 	    // Go type: time
 	    checkedAt: any;
+	    checking: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new OverallStatus(source);
@@ -1195,6 +1198,7 @@ export namespace envcheck {
 	        this.items = this.convertValues(source["items"], CheckStatus, true);
 	        this.issues = source["issues"];
 	        this.checkedAt = this.convertValues(source["checkedAt"], null);
+	        this.checking = source["checking"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -111,6 +111,15 @@ type ResolutionAction struct {
 	PackageName     string       `json:"packageName,omitempty"`
 	RequiresConfirm bool         `json:"requiresConfirm,omitempty"`
 	IsPrimary       bool         `json:"isPrimary,omitempty"`
+
+	// Method carries an explicit InstallMethod (e.g. "npm"/"native") that the
+	// frontend should target when executing the action. When set, the frontend
+	// MUST use this field instead of inferring the method from
+	// CheckStatus.InstallMethod (which may be empty or stale). This eliminates
+	// the risk of cleaning the wrong installation channel (e.g. wiping a
+	// native install when only the npm residue was intended). See F-1 in the
+	// 20260621 final review.
+	Method InstallMethod `json:"method,omitempty"`
 }
 
 // CheckStatus is the frontend-facing status snapshot for a single CLI tool.
@@ -168,6 +177,13 @@ type OverallStatus struct {
 	Items     map[string]CheckStatus `json:"items"`
 	Issues    []string               `json:"issues"`
 	CheckedAt time.Time              `json:"checkedAt"`
+
+	// Checking is true while a CheckAll run is in progress. The frontend uses
+	// this to render an accurate "checking" state instead of relying on
+	// CheckedAt presence + a timeout fallback, which can break on slow disks
+	// where CheckAll exceeds the timeout. Set by Service.CheckAll around the
+	// detection loop under s.mu. See F-4 in the 20260621 final review.
+	Checking bool `json:"checking"`
 }
 
 // InstallResult is returned by install and update operations.

@@ -299,6 +299,37 @@ func TestBuildClaudeNativeAvailableAlongsideNPMHint_SurfacesIssueWhenNativeExist
 	if len(issue.Solutions) == 0 {
 		t.Fatalf("expected at least one solution")
 	}
+
+	// F-1: the SolutionCleanClaudeInstall action must carry an explicit
+	// Method field so the frontend calls CleanClaudeCode("npm") directly
+	// instead of inferring from CheckStatus.InstallMethod (which could be
+	// empty/stale and accidentally wipe a native install).
+	var cleanAction *ResolutionAction
+	for i := range issue.Solutions {
+		if issue.Solutions[i].Type == SolutionCleanClaudeInstall {
+			cleanAction = &issue.Solutions[i]
+		}
+	}
+	if cleanAction == nil {
+		t.Fatalf("expected SolutionCleanClaudeInstall action, got %+v", issue.Solutions)
+	}
+	if cleanAction.Method != InstallMethodNPM {
+		t.Fatalf("SolutionCleanClaudeInstall.Method = %q, want %q (F-1 explicit method)",
+			cleanAction.Method, InstallMethodNPM)
+	}
+	if !cleanAction.IsPrimary {
+		t.Fatalf("SolutionCleanClaudeInstall should remain primary, got IsPrimary=false")
+	}
+
+	// The manual_command fallback should NOT carry a Method (it is a
+	// reference-only action; the user reads the command verbatim). This
+	// guards against accidentally pinning a method on read-only solutions.
+	for i := range issue.Solutions {
+		if issue.Solutions[i].Type == SolutionManualCommand && issue.Solutions[i].Method != "" {
+			t.Fatalf("SolutionManualCommand should not carry a Method, got %q",
+				issue.Solutions[i].Method)
+		}
+	}
 }
 
 func TestBuildClaudeNativeAvailableAlongsideNPMHint_NoHintWhenAlreadyOnVersions(t *testing.T) {

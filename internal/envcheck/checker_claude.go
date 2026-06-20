@@ -667,6 +667,14 @@ func buildClaudeNativeAvailableAlongsideNPMHint(activeDetectionPath string) *Che
 				Tool:            ToolClaudeCode,
 				RequiresConfirm: true,
 				IsPrimary:       true,
+				// F-1: pin the explicit install method so the frontend calls
+				// CleanClaudeCode("npm") without inferring from
+				// CheckStatus.InstallMethod (which could be empty or stale and
+				// accidentally wipe a native install). This issue only fires
+				// when the active claude resolves to an npm path while a
+				// healthy native binary exists in versions/, so the residue to
+				// clean is always the npm channel.
+				Method: InstallMethodNPM,
 			},
 			{
 				Type:        SolutionManualCommand,
