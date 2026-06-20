@@ -159,7 +159,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, nextTick } from 'vue';
 import TextInput from '../ui/TextInput.vue';
 import Switch from '../ui/Switch.vue';
 import Dropdown from '../ui/Dropdown.vue';
@@ -321,6 +321,12 @@ function updateKey(id: string, key: string) {
   // 重名校验：新 key 已被其他 agent 占用则阻止（避免 emitAll 覆盖）
   if (key !== '' && key !== a.key && agents.value.some((x) => x.id !== id && x.key === key)) {
     showError(`agent 名「${key}」已存在，请换一个`);
+    // 受控组件 DOM 回滚（Min-2）：用户输入已显示重名，强制同步回旧值
+    const oldKey = a.key;
+    a.key = key;
+    nextTick(() => {
+      a.key = oldKey;
+    });
     return;
   }
   a.key = key;
@@ -340,10 +346,20 @@ function updateToolKey(agentId: string, toolId: string, key: string) {
   const a = agents.value.find((x) => x.id === agentId);
   if (!a) return;
   const t = a.toolEntries.find((x) => x.id === toolId);
-  if (t) {
+  if (!t) return;
+  // 重名校验（M4 一致性补齐 Min-1）：同名 tool 会触发 emitAll 覆盖
+  if (key !== '' && key !== t.key && a.toolEntries.some((x) => x.id !== toolId && x.key === key)) {
+    showError(`tool 名「${key}」已存在，请换一个`);
+    // 受控组件 DOM 回滚（Min-2）：先设新值触发 v-model patch，nextTick 恢复旧值
+    const oldKey = t.key;
     t.key = key;
-    emitAll();
+    nextTick(() => {
+      t.key = oldKey;
+    });
+    return;
   }
+  t.key = key;
+  emitAll();
 }
 function updateToolValue(agentId: string, toolId: string, value: boolean) {
   const a = agents.value.find((x) => x.id === agentId);

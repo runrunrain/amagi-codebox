@@ -15,7 +15,7 @@
         :aria-expanded="isExpanded(entry.id)"
         @click="toggleExpanded(entry.id)"
       >
-        <span class="me-thumb" :class="`me-thumb-${entry.value.type || 'remote'}`">
+        <span class="me-thumb" :style="thumbStyle(entry.value.type)">
           <span class="me-thumb-icon" v-html="MCP_ICON" />
         </span>
         <span class="me-thumb-meta">
@@ -161,13 +161,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { ref, reactive, watch, nextTick } from 'vue';
 import TextInput from '../ui/TextInput.vue';
 import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import StringListEditor from './StringListEditor.vue';
-import { ICONS } from './icons';
+import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
 
 const { showError } = useToast();
@@ -228,6 +228,28 @@ const revealed = reactive<Record<string, boolean>>({});
 const expandedKeys = ref<Record<string, boolean>>({});
 
 const MCP_ICON = ICONS.mcp;
+
+// 略缩图配色走 ACCENTS 单一来源（Min-4）：
+// remote -> ACCENTS.mcp（systemOrange），local -> ACCENTS.agent（systemGreen）
+// 配色数值与原硬编码一致，视觉零漂移
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return null;
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16),
+  };
+}
+function thumbStyle(type?: string): Record<string, string> {
+  const hex = type === 'local' ? ACCENTS.agent : ACCENTS.mcp;
+  const rgb = hexToRgb(hex);
+  if (!rgb) return {};
+  return {
+    color: hex,
+    background: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.12)`,
+  };
+}
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];
@@ -310,6 +332,12 @@ function updateKey(id: string, key: string) {
   // 重名校验：新 key 已被其他 server 占用则阻止（避免 emitAll 覆盖）
   if (key !== '' && key !== s.key && servers.value.some((x) => x.id !== id && x.key === key)) {
     showError(`MCP server 名「${key}」已存在，请换一个`);
+    // 受控组件 DOM 回滚（Min-2）
+    const oldKey = s.key;
+    s.key = key;
+    nextTick(() => {
+      s.key = oldKey;
+    });
     return;
   }
   s.key = key;
@@ -340,6 +368,12 @@ function updateHeaderKey(serverId: string, headerId: string, key: string) {
   // 重名校验：避免同名 header 互相覆盖
   if (key !== '' && key !== h.key && s.headerEntries.some((x) => x.id !== headerId && x.key === key)) {
     showError(`header「${key}」已存在，请换一个`);
+    // 受控组件 DOM 回滚（Min-2）
+    const oldKey = h.key;
+    h.key = key;
+    nextTick(() => {
+      h.key = oldKey;
+    });
     return;
   }
   h.key = key;
@@ -463,15 +497,8 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 配色通过 :style="thumbStyle(type)" 注入（Min-4，走 ACCENTS） */
   transition: transform 0.18s ease;
-}
-.me-thumb-remote {
-  color: #FF9500;
-  background: rgba(255, 149, 0, 0.12);
-}
-.me-thumb-local {
-  color: #34C759;
-  background: rgba(52, 199, 89, 0.12);
 }
 .me-thumb-head:hover .me-thumb {
   transform: translateY(-1px);
