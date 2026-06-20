@@ -151,9 +151,9 @@
         </div>
       </div>
 
-      <!-- 推理强度（Codex） -->
-      <div v-if="engine === 'codex'" class="form-section">
-        <div class="form-section-title">推理强度</div>
+      <!-- 推理强度（Claude Code Effort Level） -->
+      <div v-if="engine === 'claude'" class="form-section">
+        <div class="form-section-title">推理强度（Claude Code Effort Level）</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">推理强度</label>
@@ -300,7 +300,7 @@ function initForm() {
     // Thinking（Claude Code）
     form.thinkingType = params?.thinking?.type || '';
     form.thinkingBudget = params?.thinking?.budgetTokens;
-    // 推理强度（Codex）
+    // 推理强度（Claude Code Effort Level：注入 CLAUDE_CODE_EFFORT_LEVEL，仅 Claude Code 生效）
     form.reasoningEffort = params?.reasoning_effort || '';
     // Context Window / Auto Compact
     form.contextWindow = ctx?.model_context_window;
@@ -383,7 +383,10 @@ async function handleSave() {
         budgetTokens: form.thinkingBudget,
       };
     }
-    if (props.engine === 'codex' && form.reasoningEffort) {
+    // 推理强度：Claude Code 专用（后端 launcher 通过 CLAUDE_CODE_EFFORT_LEVEL 环境变量注入）。
+    // Codex 的 reasoning 走 codexplugin agents.toml 的 model_reasoning_effort 独立路径，
+    // 不在 PresetDialog 配置；OpenCode 路径不消费 reasoning_effort 字段。
+    if (props.engine === 'claude' && form.reasoningEffort) {
       parameters.reasoning_effort = form.reasoningEffort;
     }
     if (form.contextWindow !== undefined || form.compactLimit !== undefined) {
