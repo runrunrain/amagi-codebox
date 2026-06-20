@@ -820,11 +820,11 @@ export namespace config {
 	    model_opus?: string;
 	    parameters: Parameters;
 	    source: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MergedTerminalPreset(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
@@ -837,7 +837,7 @@ export namespace config {
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.source = source["source"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
