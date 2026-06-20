@@ -16,7 +16,14 @@ var assets embed.FS
 //go:embed all:mobile/dist
 var mobileFS embed.FS
 
-var Version = "dev"
+// 版本信息：默认 dev/unknown，由构建脚本通过 -ldflags "-X main.Version=..." 注入。
+// 当未注入（go run / 无 tag 构建）时保持 dev，由 GetAppInfo 在运行时回退到 wails.json productVersion。
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+	GitCommit = "unknown"
+	GoVersion = "unknown"
+)
 
 func main() {
 	capabilities := platform.CurrentCapabilities()

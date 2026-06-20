@@ -18,19 +18,23 @@
 
     <!-- 列表模式 -->
     <ConfigCard v-else class="pc-card">
-      <!-- 一级 pill 导航 -->
-      <Segmented
-        v-model="mainTab"
-        :options="MAIN_TABS"
-        variant="pill"
-        class="pc-main-tabs"
-      />
+      <!-- 一级 pill 导航 + center 级导出/导入（作用于整个 config，两个 tab 下均可见）-->
+      <div class="pc-head">
+        <Segmented
+          v-model="mainTab"
+          :options="MAIN_TABS"
+          variant="pill"
+          class="pc-main-tabs"
+        />
+        <div class="pc-head-actions">
+          <AppButton variant="ghost" size="small" @click="handleExport">导出配置</AppButton>
+          <AppButton variant="ghost" size="small" @click="handleImport">JSON 导入</AppButton>
+        </div>
+      </div>
 
       <!-- 服务提供商区 -->
       <div v-if="mainTab === 'providers'" class="pc-panel">
         <ProviderGrid
-          @export="handleExport"
-          @import="handleImport"
           @add="handleAdd"
         />
       </div>
@@ -90,6 +94,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import Segmented from '../components/ui/Segmented.vue';
+import AppButton from '../components/ui/AppButton.vue';
 import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import OpenCodePresets from '../components/provider/OpenCodePresets.vue';
@@ -200,6 +205,21 @@ function handlePresetAdd() {
 .pc-main-tabs {
   align-self: flex-start;
   max-width: 320px;
+}
+
+/* center 级头部：一级 pill + 导出/导入按钮同行 */
+.pc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pc-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* override segmented 内部 seg flex:1，让 pill 收缩为内容宽 */

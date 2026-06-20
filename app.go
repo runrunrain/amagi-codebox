@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -2007,14 +2008,72 @@ func (a *App) SaveAllConfig() error {
 }
 
 // GetAppInfo 返回应用基本信息。
+//
+// 版本来源优先级：
+//  1. main.Version 由构建脚本 ldflags 注入（git tag）；为空或 dev 表示未注入。
+//  2. 回退到 wails.json 的 info.productVersion（确保至少显示 1.2.57，不依赖 git tag）。
+//  3. 最终回退 "dev"。
+//
+// GoVersion 优先用 runtime.Version()（权威编译器版本），仅当 ldflags 注入了非 unknown 值时才用注入值。
 func (a *App) GetAppInfo() map[string]any {
-	version := strings.TrimPrefix(strings.TrimSpace(Version), "v")
+	version := resolveAppVersion()
+	goVer := GoVersion
+	if goVer == "" || goVer == "unknown" {
+		goVer = runtime.Version()
+	}
 	return map[string]any{
+		"productName":  "Amagi CodeBox",
 		"version":      version,
+		"buildTime":    BuildTime,
+		"gitCommit":    GitCommit,
+		"goVersion":    goVer,
 		"configDir":    defaultConfigDir(),
 		"runningCount": a.Sessions.RunningCount(),
 		"proxyStatus":  a.Proxy.GetStatus(),
 	}
+}
+
+// resolveAppVersion 解析最终展示版本号。
+// ldflags 注入值优先；为 dev/空时回退到 wails.json productVersion；最终回退 dev。
+func resolveAppVersion() string {
+	raw := strings.TrimSpace(Version)
+	v := strings.TrimPrefix(raw, "v")
+	if v != "" && v != "dev" {
+		return v
+	}
+	if pv := readWailsProductVersion(); pv != "" {
+		return strings.TrimPrefix(pv, "v")
+	}
+	return "dev"
+}
+
+// readWailsProductVersion 从 wails.json 的 info.productVersion 读取版本号。
+// 依次在可执行文件目录、当前工作目录、源码根目录（开发模式）查找，找不到返回空。
+func readWailsProductVersion() string {
+	candidates := make([]string, 0, 3)
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "wails.json"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "wails.json"))
+	}
+	for _, p := range candidates {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cfg struct {
+			Info struct {
+				ProductVersion string `json:"productVersion"`
+			} `json:"info"`
+		}
+		if err := json.Unmarshal(data, &cfg); err == nil {
+			if pv := strings.TrimSpace(cfg.Info.ProductVersion); pv != "" {
+				return pv
+			}
+		}
+	}
+	return ""
 }
 
 // addStartupWarning 记录一条启动期间的警告，供前端通过 GetStartupWarnings 拉取。

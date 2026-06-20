@@ -1,27 +1,53 @@
 <!--
-  UpdateDialog - 版本更新弹窗（§8.2 项13）
-  版本胶囊点击触发，显示当前版本、检查更新、新版本信息、Release Notes、下载安装
+  UpdateDialog - 「关于」弹窗（§8.2 项13）
+  版本胶囊点击触发，采用苹果 HIG 关于面板风格：
+  应用图标 + 名称 + 版本行（粗体）+ 构建元信息小字 + 操作区（检查更新/关闭）
+  保留检查更新、Release Notes、下载安装流程。
 -->
 <template>
   <Dialog
     :open="open"
-    title="软件更新"
+    title="关于"
     @update:open="handleClose"
   >
-    <div class="update-content">
-      <!-- Current Version -->
-      <div class="version-section">
-        <div class="version-row">
-          <span class="version-label">当前版本</span>
-          <span class="version-value">{{ currentVersion }}</span>
+    <div class="about-content">
+      <!-- 应用信息区（苹果 HIG 关于面板风格）-->
+      <div class="app-hero">
+        <div class="app-icon">A</div>
+        <div class="app-meta">
+          <h2 class="app-name">{{ productName }}</h2>
+          <p class="app-tagline">跨平台多提供商 AI CLI 工作台</p>
+          <p class="app-version">版本 {{ currentVersion }}</p>
         </div>
-        <div v-if="updateInfo.hasUpdate" class="version-row">
-          <span class="version-label">最新版本</span>
-          <span class="version-value highlight">{{ updateInfo.latestVersion }}</span>
+      </div>
+
+      <!-- 构建元信息 -->
+      <div class="build-info">
+        <div v-if="buildTime" class="meta-row">
+          <span class="meta-label">构建时间</span>
+          <span class="meta-value">{{ buildTime }}</span>
         </div>
-        <div v-if="updateInfo.publishedAt" class="version-meta">
-          发布于：{{ updateInfo.publishedAt }}
+        <div v-if="gitCommit" class="meta-row">
+          <span class="meta-label">Git Commit</span>
+          <span class="meta-value mono">{{ gitCommit }}</span>
         </div>
+        <div v-if="goVersion" class="meta-row">
+          <span class="meta-label">Go 版本</span>
+          <span class="meta-value">{{ goVersion }}</span>
+        </div>
+        <div v-if="platform" class="meta-row">
+          <span class="meta-label">平台</span>
+          <span class="meta-value">{{ platform }}</span>
+        </div>
+      </div>
+
+      <!-- 更新检查结果 -->
+      <div v-if="updateInfo.hasUpdate" class="version-row">
+        <span class="version-label">最新版本</span>
+        <span class="version-value highlight">{{ updateInfo.latestVersion }}</span>
+      </div>
+      <div v-if="updateInfo.publishedAt" class="version-meta">
+        发布于：{{ updateInfo.publishedAt }}
       </div>
 
       <!-- Release Notes -->
@@ -115,6 +141,11 @@ const emit = defineEmits<{
 }>();
 
 const currentVersion = ref('v1.0.0');
+const productName = ref('Amagi CodeBox');
+const buildTime = ref('');
+const gitCommit = ref('');
+const goVersion = ref('');
+const platform = ref('');
 const updateInfo = ref<UpdateInfo>({
   hasUpdate: false,
   latestVersion: '',
@@ -129,9 +160,16 @@ const updateError = ref('');
 onMounted(async () => {
   try {
     const info = await GetAppInfo();
+    // GetAppInfo 当前仅返回 version；buildTime/gitCommit/goVersion/platform/productName
+    // 待鲁班扩展后端后填充，前端按字段存在性防御读取，缺失则隐藏对应行。
     if (info?.version) {
       currentVersion.value = `v${info.version}`;
     }
+    if (info?.productName) productName.value = String(info.productName);
+    if (info?.buildTime) buildTime.value = String(info.buildTime);
+    if (info?.gitCommit) gitCommit.value = String(info.gitCommit);
+    if (info?.goVersion) goVersion.value = String(info.goVersion);
+    if (info?.platform) platform.value = String(info.platform);
   } catch (error) {
     console.error('[UpdateDialog] Failed to get app info:', error);
   }
@@ -185,16 +223,92 @@ function handleClose() {
 </script>
 
 <style scoped>
-.update-content {
+.about-content {
   display: flex;
   flex-direction: column;
+  gap: 18px;
+}
+
+/* 应用信息区：苹果 HIG 关于面板风格 */
+.app-hero {
+  display: flex;
+  align-items: center;
   gap: 16px;
 }
 
-.version-section {
+.app-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 32px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.app-meta {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--label);
+  letter-spacing: -0.2px;
+}
+
+.app-tagline {
+  margin: 0;
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.app-version {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label);
+  font-family: var(--mono);
+}
+
+/* 构建元信息：等宽对齐的小字行 */
+.build-info {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--separator);
+}
+
+.meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+
+.meta-label {
+  color: var(--tertiary);
+  flex-shrink: 0;
+}
+
+.meta-value {
+  color: var(--secondary);
+  text-align: right;
+  word-break: break-all;
+}
+
+.meta-value.mono {
+  font-family: var(--mono);
 }
 
 .version-row {

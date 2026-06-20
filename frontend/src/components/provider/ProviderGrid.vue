@@ -31,8 +31,6 @@
         >{{ opt.label }}</Chip>
       </div>
       <div class="pc-actions">
-        <AppButton variant="ghost" size="small" :disabled="loading" @click="$emit('export')">导出配置</AppButton>
-        <AppButton variant="ghost" size="small" :disabled="loading" @click="$emit('import')">JSON 导入</AppButton>
         <AppButton variant="primary" size="small" :disabled="storeLoading" @click="showAddDialog = true">添加提供商</AppButton>
       </div>
     </div>
@@ -105,11 +103,6 @@ import AddProviderDialog from './AddProviderDialog.vue';
 import { useProviderStore, type ProviderFilter } from '../../stores/provider';
 
 type Provider = config.Provider;
-
-const emit = defineEmits<{
-  export: [];
-  import: [];
-}>();
 
 const store = useProviderStore();
 const showAddDialog = ref(false);

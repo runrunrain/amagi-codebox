@@ -331,11 +331,14 @@ function onCtxSelectAll() {
   overflow: hidden;
 }
 
-/* let xterm fill the host */
+/* let xterm fill the host.
+   padding:0 让终端文字贴合容器边缘——内部行列已由 fitTerminal 基于
+   实际尺寸计算，去掉 padding 不会破坏 fit；此前 14px 18px 的留白会
+   让 xterm 外圈露出一圈 --termBg #1B1B1F 黑色边框。 */
 .term-body :deep(.xterm) {
   height: 100%;
   width: 100%;
-  padding: 14px 18px;
+  padding: 0;
   box-sizing: border-box;
   text-align: left;
 }

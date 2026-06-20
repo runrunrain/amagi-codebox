@@ -66,10 +66,24 @@ echo.
 
 echo [3/5] 正在构建项目...
 echo.
+set GIT_VERSION=
 for /f "delims=" %%v in ('git describe --tags --abbrev^=0 2^>nul') do set GIT_VERSION=%%v
+if not defined GIT_VERSION (
+    rem 无 git tag 时回退到 wails.json productVersion，确保不显示 dev
+    for /f "delims=" %%p in ('powershell -NoProfile -Command "(Get-Content wails.json ^| ConvertFrom-Json).info.productVersion" 2^>nul') do set GIT_VERSION=%%p
+)
 if not defined GIT_VERSION set GIT_VERSION=dev
-echo [提示] 构建版本: %GIT_VERSION%
-wails build -ldflags "-X main.Version=%GIT_VERSION%"
+set GIT_COMMIT=
+for /f "delims=" %%c in ('git rev-parse --short HEAD 2^>nul') do set GIT_COMMIT=%%c
+if not defined GIT_COMMIT set GIT_COMMIT=unknown
+set BUILD_TIME=
+for /f "delims=" %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-ddTHH:mm:ssZ" 2^>nul') do set BUILD_TIME=%%t
+if not defined BUILD_TIME set BUILD_TIME=unknown
+set GO_VER=
+for /f "delims=" %%g in ('go version 2^>nul') do set GO_VER=%%g
+if not defined GO_VER set GO_VER=unknown
+echo [提示] 构建版本: %GIT_VERSION% (commit %GIT_COMMIT%, go: %GO_VER%)
+wails build -ldflags "-X main.Version=%GIT_VERSION% -X main.GitCommit=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME% -X main.GoVersion=%GO_VER%"
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [错误] 构建失败!
