@@ -6,6 +6,10 @@ export function AddProxyBackendURL(arg1) {
   return window['go']['main']['App']['AddProxyBackendURL'](arg1);
 }
 
+export function AddSavedWorkDir(arg1, arg2) {
+  return window['go']['main']['App']['AddSavedWorkDir'](arg1, arg2);
+}
+
 export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
@@ -190,6 +194,10 @@ export function GetRemoteWebUIStatus() {
   return window['go']['main']['App']['GetRemoteWebUIStatus']();
 }
 
+export function GetSavedWorkDirs() {
+  return window['go']['main']['App']['GetSavedWorkDirs']();
+}
+
 export function GetSession(arg1) {
   return window['go']['main']['App']['GetSession'](arg1);
 }
@@ -294,6 +302,10 @@ export function RemoveProxyBackendURL(arg1) {
   return window['go']['main']['App']['RemoveProxyBackendURL'](arg1);
 }
 
+export function RemoveSavedWorkDir(arg1) {
+  return window['go']['main']['App']['RemoveSavedWorkDir'](arg1);
+}
+
 export function RemoveSession(arg1) {
   return window['go']['main']['App']['RemoveSession'](arg1);
 }
@@ -316,10 +328,6 @@ export function RunEnvFixAction(arg1, arg2, arg3) {
 
 export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
-}
-
-export function SetPluginSubItemEnabled(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['SetPluginSubItemEnabled'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveClipboardImage(arg1) {
@@ -352,6 +360,10 @@ export function SetEnvVarsGlobalSyncEnabled(arg1) {
 
 export function SetGitHubToken(arg1) {
   return window['go']['main']['App']['SetGitHubToken'](arg1);
+}
+
+export function SetPluginSubItemEnabled(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetPluginSubItemEnabled'](arg1, arg2, arg3, arg4);
 }
 
 export function SetProxyBackendURL(arg1) {
@@ -408,16 +420,4 @@ export function UnregisterResizeCallback(arg1, arg2) {
 
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
-}
-
-export function GetSavedWorkDirs() {
-  return window['go']['main']['App']['GetSavedWorkDirs']();
-}
-
-export function AddSavedWorkDir(arg1, arg2) {
-  return window['go']['main']['App']['AddSavedWorkDir'](arg1, arg2);
-}
-
-export function RemoveSavedWorkDir(arg1) {
-  return window['go']['main']['App']['RemoveSavedWorkDir'](arg1);
 }

@@ -20,6 +20,8 @@ export function RemoveMarketplace(arg1:string):Promise<codexplugin.CommandResult
 
 export function SetPluginEnabled(arg1:codexplugin.PluginSelector,arg2:boolean):Promise<codexplugin.CommandResult>;
 
+export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+
 export function UninstallPlugin(arg1:codexplugin.PluginSelector):Promise<codexplugin.CommandResult>;
 
 export function UpgradeMarketplace(arg1:string):Promise<codexplugin.CommandResult>;

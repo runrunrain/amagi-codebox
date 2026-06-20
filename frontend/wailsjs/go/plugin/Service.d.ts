@@ -28,6 +28,8 @@ export function RefreshPlugins():Promise<void>;
 
 export function RemoveMarketplace(arg1:string):Promise<plugin.CommandResult>;
 
+export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+
 export function SetSubItemEnabled(arg1:string,arg2:plugin.SubItemRef,arg3:boolean):Promise<void>;
 
 export function UninstallPlugin(arg1:string):Promise<plugin.CommandResult>;

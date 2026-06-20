@@ -38,6 +38,10 @@ export function SetPluginEnabled(arg1, arg2) {
   return window['go']['codexplugin']['Service']['SetPluginEnabled'](arg1, arg2);
 }
 
+export function SetPluginSubItemEnabled(arg1, arg2, arg3, arg4) {
+  return window['go']['codexplugin']['Service']['SetPluginSubItemEnabled'](arg1, arg2, arg3, arg4);
+}
+
 export function UninstallPlugin(arg1) {
   return window['go']['codexplugin']['Service']['UninstallPlugin'](arg1);
 }

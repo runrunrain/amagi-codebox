@@ -2089,12 +2089,12 @@ export namespace settings {
 	        this.scrollback = source["scrollback"];
 	    }
 	}
-	export class ShellEntry {
+	export class WorkDirEntry {
 	    path: string;
 	    label: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new ShellEntry(source);
+	        return new WorkDirEntry(source);
 	    }
 	
 	    constructor(source: any = {}) {
@@ -2103,14 +2103,14 @@ export namespace settings {
 	        this.label = source["label"];
 	    }
 	}
-	export class WorkDirEntry {
+	export class ShellEntry {
 	    path: string;
 	    label: string;
-
+	
 	    static createFrom(source: any = {}) {
-	        return new WorkDirEntry(source);
+	        return new ShellEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
@@ -2218,6 +2218,7 @@ export namespace settings {
 	
 	    }
 	}
+	
 	
 
 }

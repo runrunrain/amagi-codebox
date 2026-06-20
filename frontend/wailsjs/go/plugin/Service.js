@@ -54,6 +54,10 @@ export function RemoveMarketplace(arg1) {
   return window['go']['plugin']['Service']['RemoveMarketplace'](arg1);
 }
 
+export function SetPluginSubItemEnabled(arg1, arg2, arg3, arg4) {
+  return window['go']['plugin']['Service']['SetPluginSubItemEnabled'](arg1, arg2, arg3, arg4);
+}
+
 export function SetSubItemEnabled(arg1, arg2, arg3) {
   return window['go']['plugin']['Service']['SetSubItemEnabled'](arg1, arg2, arg3);
 }
