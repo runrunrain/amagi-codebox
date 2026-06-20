@@ -87,6 +87,7 @@
           <!-- Model 说明卡片（OpenCode 无顶层 model，仅真实存在时才显示输入框） -->
           <ConfigCategoryCard
             title="Model（顶层）"
+            category="model"
             :expanded="expandedCategories.model"
             :badge="hasTopLevelModel ? 1 : null"
             @toggle="expandedCategories.model = !expandedCategories.model"
@@ -107,6 +108,7 @@
           <!-- Provider 配置（object map） -->
           <ConfigCategoryCard
             title="Provider"
+            category="provider"
             :expanded="expandedCategories.provider"
             :badge="providerCount"
             @toggle="expandedCategories.provider = !expandedCategories.provider"
@@ -120,6 +122,7 @@
           <!-- Agent 配置（object map） -->
           <ConfigCategoryCard
             title="Agent"
+            category="agent"
             :expanded="expandedCategories.agent"
             :badge="agentCount"
             @toggle="expandedCategories.agent = !expandedCategories.agent"
@@ -133,6 +136,7 @@
           <!-- MCP 配置（object map，真实键 mcp） -->
           <ConfigCategoryCard
             title="MCP Servers"
+            category="mcp"
             :expanded="expandedCategories.mcp"
             :badge="mcpCount"
             @toggle="expandedCategories.mcp = !expandedCategories.mcp"
@@ -146,6 +150,7 @@
           <!-- Permission 配置（object map，值 enum） -->
           <ConfigCategoryCard
             title="Permission"
+            category="permission"
             :expanded="expandedCategories.permission"
             :badge="permissionCount"
             @toggle="expandedCategories.permission = !expandedCategories.permission"
@@ -159,6 +164,7 @@
           <!-- Instructions 配置（array<string>） -->
           <ConfigCategoryCard
             title="Instructions"
+            category="instructions"
             :expanded="expandedCategories.instructions"
             :badge="instructionsCount"
             @toggle="expandedCategories.instructions = !expandedCategories.instructions"
@@ -176,6 +182,7 @@
           <!-- Plugin 配置（object，类型保持） -->
           <ConfigCategoryCard
             title="Plugin"
+            category="plugin"
             :expanded="expandedCategories.plugin"
             :badge="pluginCount"
             @toggle="expandedCategories.plugin = !expandedCategories.plugin"
@@ -190,6 +197,7 @@
           <!-- Experimental 配置（object，类型保持 boolean/number） -->
           <ConfigCategoryCard
             title="Experimental"
+            category="experimental"
             :expanded="expandedCategories.experimental"
             :badge="experimentalCount"
             @toggle="expandedCategories.experimental = !expandedCategories.experimental"
@@ -205,6 +213,7 @@
           <ConfigCategoryCard
             v-if="unknownKeys.length > 0"
             title="其他键（兜底 JSON）"
+            category="unknown"
             :expanded="expandedCategories.unknown"
             :badge="unknownKeys.length"
             @toggle="expandedCategories.unknown = !expandedCategories.unknown"
@@ -291,10 +300,10 @@ const configPath = ref('');
 // 配置数据（可视化模式使用）
 const configData = ref<Record<string, any>>({});
 
-// 展开状态
+// 展开状态：默认全部收起（主上要求"不要默认完全展开"）
 const expandedCategories = ref<Record<string, boolean>>({
   model: false,
-  provider: true,
+  provider: false,
   mcp: false,
   agent: false,
   permission: false,
