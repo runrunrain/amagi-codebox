@@ -21,6 +21,8 @@ const isInSettingsMode = computed(() => uiStore.isInSettingsMode)
 .sidebar {
   width: 264px;
   flex-shrink: 0;
+  height: 100vh;
+  overflow: hidden;
   background: var(--sidebar);
   border-right: 1px solid var(--separator);
   display: flex;

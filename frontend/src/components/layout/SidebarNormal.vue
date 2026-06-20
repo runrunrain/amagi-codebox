@@ -136,9 +136,9 @@ const navItems = [
     icon: '<path d="M14 3v4h4"/><rect x="3" y="3" width="11" height="11" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>'
   },
   {
-    path: '/rules',
-    label: '注入规则',
-    icon: '<line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'
+    path: '/envcheck',
+    label: '环境检测',
+    icon: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'
   },
   {
     path: '/logs',
@@ -209,11 +209,10 @@ function isActive(path: string): boolean {
 }
 
 function handleNewSession() {
-  // 如果已经在会话设置页，尝试直接启动
-  if (route.path === '/' && canLaunchFromSettings()) {
+  // 配置足够直接启动 + 跳 /terminal；配置不全才跳会话设置页补全
+  if (canLaunchFromSettings()) {
     launchFromSettings()
   } else {
-    // 否则跳转到会话设置页
     router.push('/')
   }
 }
@@ -298,13 +297,8 @@ async function launchFromSettings() {
       : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
     showSuccess(`${engineLabel} 会话启动成功`)
 
-    // 内嵌模式自动跳转终端页
-    const mode = dashState.engine === 'claudecode' ? dashState.claudeMode
-      : dashState.engine === 'opencode' ? dashState.openCodeMode
-      : dashState.codexMode
-    if (mode === 'embedded') {
-      router.push('/terminal')
-    }
+    // 启动成功后统一跳转终端页（所有 mode 均跳）
+    router.push('/terminal')
   } catch (err) {
     console.error('Launch failed:', err)
     showError('启动失败: ' + err)
@@ -373,6 +367,7 @@ onUnmounted(() => {
   flex: 1;
   gap: 16px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .logo-row {

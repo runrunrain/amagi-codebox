@@ -20,6 +20,7 @@ const uiStore = useUIStore()
 .app {
   display: flex;
   height: 100vh;
+  overflow: hidden;
 }
 
 .main {
@@ -29,5 +30,7 @@ const uiStore = useUIStore()
   background: var(--card);
   position: relative;
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 </style>

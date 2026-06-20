@@ -497,10 +497,9 @@ async function handleLaunch() {
       : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
     showSuccess(`${engineLabel} 会话启动成功`)
 
-    // 内嵌模式自动跳转终端页
-    if (currentMode.value === 'embedded') {
-      router.push('/terminal')
-    }
+    // 启动成功后统一跳转终端页（所有 mode 均跳）
+    // 与 SidebarNormal.launchFromSettings 行为保持一致
+    router.push('/terminal')
   } catch (err) {
     console.error('Launch failed:', err)
     showError('启动失败: ' + err)

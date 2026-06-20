@@ -411,8 +411,9 @@ async function handleSave() {
 
 .form-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 .form-section {
@@ -439,6 +440,9 @@ async function handleSave() {
 }
 
 .form-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   height: 34px;
   padding: 0 10px;
   font-size: 13px;
