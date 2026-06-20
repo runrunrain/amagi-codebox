@@ -3,7 +3,7 @@
     <!-- Initial loading state -->
     <LoadingState v-if="initialLoading" message="加载插件中..." />
 
-    <!-- Initial error state -->
+    <!-- Initial error state (致命错误：完全无数据且无法降级，仅 Claude 多源全失败时触发) -->
     <ErrorState
       v-else-if="initialError"
       :message="initialError"
@@ -12,6 +12,12 @@
 
     <!-- Main content -->
     <template v-else>
+    <!-- Codex CLI 错误降级 banner：loadCxPlugins 失败时不吞整页，仅展示顶部错误提示 + 重试 -->
+    <div v-if="loadErrorMessage" class="status-banner error">
+      <span class="sb-text">{{ loadErrorMessage }}</span>
+      <button class="sb-btn" @click="handleRetry">重试</button>
+    </div>
+
     <!-- Top segmented control: Installed | Market -->
     <div class="view-segmented">
       <button
@@ -291,14 +297,18 @@ const localView = ref<'installed' | 'market'>(props.engine === 'claude' ? 'insta
 const initialLoading = ref(true);
 const initialError = ref('');
 
+// 降级错误信息：Codex CLI 调用失败时不吞整页，仅在此 banner 中显示
+const loadErrorMessage = ref('');
+
 // Uninstall confirmation
 const showUninstallDialog = ref(false);
 const pluginToUninstall = ref<any>(null);
 
-// Retry function for ErrorState
+// Retry function for ErrorState / 降级 banner
 const handleRetry = async () => {
   initialLoading.value = true
   initialError.value = ''
+  loadErrorMessage.value = ''
   try {
     if (props.engine === 'claude') {
       await loadCcAllData()
@@ -306,7 +316,13 @@ const handleRetry = async () => {
       await loadCxPlugins()
     }
   } catch (err) {
-    initialError.value = String(err)
+    // Codex: 不吞整页，降级为顶部 banner，保留主框架（已安装/市场/warnings 区仍可见）
+    if (props.engine === 'codex') {
+      loadErrorMessage.value = `Codex 插件加载失败：${err instanceof Error ? err.message : String(err)}。可查看下方已有的安装/市场信息，或点击重试。`
+    } else {
+      // Claude: loadCcAllData 已对子任务容错；此处仅致命异常才走整页错误态
+      initialError.value = String(err)
+    }
   } finally {
     initialLoading.value = false
   }
@@ -668,6 +684,7 @@ function handleAddMarket(engine: 'claude' | 'codex') {
 onMounted(async () => {
   initialLoading.value = true;
   initialError.value = '';
+  loadErrorMessage.value = '';
   try {
     if (props.engine === 'claude') {
       // Load all Claude data (installed + markets + available) in parallel with cache
@@ -677,7 +694,15 @@ onMounted(async () => {
       await loadCxPlugins();
     }
   } catch (err) {
-    initialError.value = String(err);
+    // Codex: CLI 错误不应吞掉整页主内容（主框架已安装/市场 tab/warnings 区仍可访问）。
+    // 降级为"空列表 + 顶部 error banner + 重试按钮"，避免用户看到整页 ErrorState。
+    if (props.engine === 'codex') {
+      loadErrorMessage.value = `Codex 插件加载失败：${err instanceof Error ? err.message : String(err)}。可查看下方已有的安装/市场信息，或点击重试。`
+    } else {
+      // Claude: loadCcAllData 已对 installed/markets/available 子任务分别容错，
+      // 走到这里说明发生非预期致命异常，整页错误态仍合理。
+      initialError.value = String(err);
+    }
   } finally {
     initialLoading.value = false;
   }
@@ -744,6 +769,13 @@ onMounted(async () => {
   background: rgba(255, 149, 0, 0.08);
   border: 1px solid rgba(255, 149, 0, 0.3);
   color: #9a6200;
+}
+
+/* 降级错误 banner：CLI 失败时显示，复用 warning 布局，仅色调改为红色 */
+.status-banner.error {
+  background: rgba(255, 59, 48, 0.08);
+  border: 1px solid rgba(255, 59, 48, 0.3);
+  color: #a82820;
 }
 
 .sb-text {

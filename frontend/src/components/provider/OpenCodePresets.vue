@@ -64,7 +64,12 @@
         </div>
 
         <!-- 用户预设卡片（来自真实 config.json 的 preset 段） -->
-        <div v-for="item in visualItems" :key="item.key" class="oc-card">
+        <div
+          v-for="item in visualItems"
+          :key="item.key"
+          class="oc-card clickable"
+          @click="handleEdit(item)"
+        >
           <div class="oc-head">
             <div class="oc-name">{{ item.name }}</div>
           </div>
@@ -234,6 +239,55 @@ function handleAdd() {
   showPresetDialog.value = true;
 }
 
+/**
+ * 点击用户预设卡片进入编辑：把 VisualItem 还原回 config.OpenCodePreset。
+ * 从 parsedConfig 取回该 key 的完整原始结构，整体作为可编辑 JSON 写入 preset.config；
+ * bindings 字段尝试从 val.bindings 还原，保持弹窗内绑定列表与原配置一致。
+ */
+function handleEdit(item: VisualItem) {
+  const cfg = parsedConfig.value;
+  const presetMap = cfg && typeof cfg === 'object' ? (cfg as any).preset : null;
+  const raw = presetMap && typeof presetMap === 'object' ? presetMap[item.key] : null;
+
+  const preset = new config.OpenCodePreset();
+  preset.id = item.key;
+  preset.name = item.name;
+  preset.description = item.desc || undefined;
+
+  // 将原始 preset 对象（剥除 OpenCodePresets.vue 本地展示用的派生字段）整体作为可编辑 JSON
+  if (raw && typeof raw === 'object') {
+    const editable: Record<string, any> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      // 跳过本组件用于展示的派生字段，避免污染编辑器中的 JSON
+      if (k === 'bindingCount' || k === 'bindCount') continue;
+      editable[k] = v;
+    }
+    try {
+      const str = JSON.stringify(editable, null, 2);
+      preset.config = Array.from(new TextEncoder().encode(str));
+    } catch {
+      preset.config = [];
+    }
+
+    // 还原 bindings（OpenCodeBinding 结构）
+    if (raw.bindings && typeof raw.bindings === 'object') {
+      const bindingMap: Record<string, config.OpenCodeBinding> = {};
+      for (const [providerId, bRaw] of Object.entries(raw.bindings as Record<string, any>)) {
+        if (!bRaw || typeof bRaw !== 'object') continue;
+        const binding = new config.OpenCodeBinding();
+        binding.local_provider = bRaw.local_provider || bRaw.localProvider || '';
+        binding.format = bRaw.format || undefined;
+        binding.inject = Array.isArray(bRaw.inject) ? bRaw.inject : undefined;
+        bindingMap[providerId] = binding;
+      }
+      preset.bindings = Object.keys(bindingMap).length > 0 ? bindingMap : undefined;
+    }
+  }
+
+  editingPreset.value = preset;
+  showPresetDialog.value = true;
+}
+
 async function handlePresetSaved() {
   loading.value = true;
   error.value = '';
@@ -342,6 +396,20 @@ onMounted(() => {
   border: 1px solid var(--separator);
   border-radius: 12px;
   padding: 14px 16px;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+
+.oc-card.clickable {
+  cursor: pointer;
+}
+
+.oc-card.clickable:hover {
+  border-color: var(--accent, #007aff);
+  background: var(--hover, rgba(0, 122, 255, 0.04));
+}
+
+.oc-card.clickable:active {
+  transform: scale(0.997);
 }
 
 .oc-card.default {

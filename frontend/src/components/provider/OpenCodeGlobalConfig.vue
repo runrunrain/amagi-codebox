@@ -25,7 +25,7 @@
     <ErrorState
       v-else-if="error"
       title="加载失败"
-      :description="error"
+      :message="error"
       :on-retry="initialLoad"
     />
 
@@ -74,6 +74,14 @@
 
     <!-- 可视化模式 -->
     <div v-if="mode === 'visual'" class="ocg-visual">
+      <!-- 空配置友好提示：区分"加载成功但配置为空"与"加载失败" -->
+      <div v-if="isConfigEmpty" class="ocg-empty-hint">
+        <EmptyState
+          icon=" "
+          title="全局配置为空"
+          description="当前 opencode.json 暂无可视化配置项，可切换到 JSON 模式直接编辑。"
+        />
+      </div>
       <div class="ocg-cards">
         <!-- Model 配置（单项） -->
         <ConfigCategoryCard
@@ -209,7 +217,7 @@ import Segmented from '../ui/Segmented.vue';
 import AppButton from '../ui/AppButton.vue';
 import TextInput from '../ui/TextInput.vue';
 import LoadingState from '../ui/LoadingState.vue';
-import ErrorState from '../ui/EmptyState.vue'; // 复用 EmptyState 作为 ErrorState
+import ErrorState from '../ui/ErrorState.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import ConfigCategoryCard from './ConfigCategoryCard.vue';
 import ProviderListEditor from './ProviderListEditor.vue';
@@ -287,6 +295,16 @@ const experimentalCount = computed(() => {
   return Object.keys(exp).length;
 });
 
+// 空配置判定：用于区分"加载成功但配置为空"与"加载失败"
+const isConfigEmpty = computed(() => {
+  return (
+    !jsonContent.value ||
+    !jsonContent.value.trim() ||
+    !configData.value ||
+    Object.keys(configData.value).length === 0
+  );
+});
+
 // 初始化加载
 async function initialLoad() {
   loading.value = true;
@@ -308,8 +326,16 @@ async function initialLoad() {
 
 // 将 JSON 解析为配置对象
 function parseJsonToConfig() {
+  // 空配置：视为合法的空对象，不报 JSON 错误
+  const trimmed = (jsonContent.value || '').trim();
+  if (!trimmed) {
+    configData.value = {};
+    jsonError.value = '';
+    return;
+  }
   try {
-    configData.value = JSON.parse(jsonContent.value);
+    const parsed = JSON.parse(trimmed);
+    configData.value = parsed && typeof parsed === 'object' ? parsed : {};
     jsonError.value = '';
   } catch (e) {
     jsonError.value = 'JSON 格式错误：' + (e as Error).message;
@@ -524,6 +550,18 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.ocg-empty-hint {
+  background: var(--control);
+  border: 1px dashed var(--separator);
+  border-radius: 12px;
+  padding: 8px 16px;
+  margin-bottom: 4px;
+}
+
+.ocg-empty-hint :deep(.empty-state) {
+  padding: 28px 16px;
 }
 
 .ocg-cards {

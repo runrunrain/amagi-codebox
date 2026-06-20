@@ -119,7 +119,7 @@ const OPENCODE_MODES = [
 ];
 
 const mainTab = ref<'providers' | 'presets'>('providers');
-const openCodeMode = ref<'presets' | 'global'>('presets');
+const openCodeMode = ref<'presets' | 'global'>('global');
 
 // 二级 engine 双向绑定（写入 store + 触发按需加载）
 const engineModel = computed<string>({

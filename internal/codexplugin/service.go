@@ -422,17 +422,23 @@ func (s *Service) RefreshPlugins() (*CodexPluginsData, error) {
 	marketplaces, marketErr := s.listMarketplaces(ctx)
 	installed, duplicateWarnings, installedErr := s.listPluginsWithDiagnostics(ctx, "")
 	available, availableErr := s.findAvailablePlugins(marketplaces)
+	// 所有的 CLI 错误都收纳进 warnings 字段，让前端始终能拿到 data 结构展示，
+	// 仅在完全无数据且全部失败时才向上抛错，避免 PluginInstalledPanel 整页 error 态。
 	warnings := codexPluginWarnings(marketErr, installedErr, availableErr)
 	warnings = appendUniqueWarnings(warnings, duplicateWarnings...)
 	data := &CodexPluginsData{Marketplaces: marketplaces, Installed: installed, Available: available, Warnings: warnings}
-	if marketErr != nil && len(marketplaces) == 0 && len(installed) == 0 && len(available) == 0 {
-		return data, marketErr
-	}
-	if installedErr != nil && len(installed) == 0 && len(available) == 0 {
-		return data, installedErr
-	}
-	if availableErr != nil && len(available) == 0 && len(marketplaces) == 0 {
-		return data, availableErr
+	hasAnyData := len(marketplaces) > 0 || len(installed) > 0 || len(available) > 0 || len(warnings) > 0
+	if !hasAnyData {
+		// 完全无数据且全失败：向上抛聚合错误，便于前端展示致命错误态。
+		if marketErr != nil {
+			return data, marketErr
+		}
+		if installedErr != nil {
+			return data, installedErr
+		}
+		if availableErr != nil {
+			return data, availableErr
+		}
 	}
 	return data, nil
 }

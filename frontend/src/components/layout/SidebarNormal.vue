@@ -50,15 +50,27 @@
       <span class="count-pill">{{ sessionCount }}</span>
     </div>
     <div class="sess-list">
-      <SessionListItem
-        v-for="session in runningSessions"
-        :key="session.id"
-        :session="session"
-        :active="activeSessionId === session.id"
-        @click="handleSessionClick(session)"
-        @close="handleSessionClose(session)"
-      />
-      <div v-if="runningSessions.length === 0" class="sess-empty">
+      <template v-if="runningSessions.length > 0">
+        <div
+          v-for="group in groupedSessionsByWorkDir"
+          :key="group.key"
+          class="sess-group"
+        >
+          <div class="sess-group-header" :title="group.workDir">
+            <span class="sg-label">{{ group.label }}</span>
+            <span class="sg-count">{{ group.sessions.length }}</span>
+          </div>
+          <SessionListItem
+            v-for="session in group.sessions"
+            :key="session.id"
+            :session="session"
+            :active="activeSessionId === session.id"
+            @click="handleSessionClick(session)"
+            @close="handleSessionClose(session)"
+          />
+        </div>
+      </template>
+      <div v-else class="sess-empty">
         无运行中会话
         <span class="sess-empty-hint">点击上方「新建会话」开始</span>
       </div>
@@ -138,6 +150,32 @@ const navItems = [
 const runningSessions = computed(() => sessionStore.runningSessions)
 const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
+
+// Group running sessions by workDir (Apple HIG: restrained group headers, no card stacks)
+// Empty workDir falls back to "默认". Label uses last path segment of workDir.
+const groupedSessionsByWorkDir = computed(() => {
+  const sessions = runningSessions.value
+  const groups = new Map<string, { key: string; workDir: string; label: string; sessions: typeof sessions }>()
+
+  sessions.forEach((session: any) => {
+    const workDir: string = (session?.workDir as string) || ''
+    const key = workDir || '__default__'
+    if (!groups.has(key)) {
+      const label = workDir
+        ? workDir.split(/[/\\]/).filter(Boolean).pop() || workDir
+        : '默认'
+      groups.set(key, { key, workDir, label, sessions: [] })
+    }
+    groups.get(key)!.sessions.push(session)
+  })
+
+  // 默认组排到最后，便于先看到真实工作目录
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.key === '__default__') return 1
+    if (b.key === '__default__') return -1
+    return a.label.localeCompare(b.label)
+  })
+})
 const showUpdateDialog = ref(false)
 const appVersion = ref('v1.0.0') // Fallback until loaded
 const webUIAvailable = ref(false)
@@ -478,6 +516,45 @@ onUnmounted(() => {
   gap: 3px;
   min-height: 0;
   overflow-y: auto;
+}
+
+.sess-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 6px;
+}
+
+.sess-group:not(:last-child) {
+  border-bottom: 1px solid var(--separator);
+  margin-bottom: 6px;
+}
+
+.sess-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 5px;
+  color: var(--tertiary);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sess-group-header .sg-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sess-group-header .sg-count {
+  flex-shrink: 0;
+  background: var(--control);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--secondary);
 }
 
 .sess-empty {

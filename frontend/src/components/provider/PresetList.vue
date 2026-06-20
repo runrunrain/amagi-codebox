@@ -38,7 +38,12 @@
 
     <!-- 预设列表 -->
     <div v-if="filteredPresets.length > 0" class="preset-list">
-      <div v-for="p in filteredPresets" :key="p.key" class="preset-card">
+      <div
+        v-for="p in filteredPresets"
+        :key="p.key"
+        class="preset-card clickable"
+        @click="handleEdit(p)"
+      >
         <div class="preset-head">
           <div class="preset-name">{{ p.label || p.key }}</div>
           <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
@@ -135,6 +140,11 @@ function handleAdd() {
   showPresetDialog.value = true;
 }
 
+function handleEdit(preset: MergedTerminalPreset) {
+  editingPreset.value = preset;
+  showPresetDialog.value = true;
+}
+
 async function handlePresetSaved() {
   loading.value = true;
   error.value = '';
@@ -199,11 +209,20 @@ onMounted(() => {
   border: 1px solid var(--separator);
   border-radius: 12px;
   padding: 14px 16px;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }
 
-.preset-card:hover {
-  border-color: var(--separator-strong, #c5c5cc);
+.preset-card.clickable {
+  cursor: pointer;
+}
+
+.preset-card.clickable:hover {
+  border-color: var(--accent, #007aff);
+  background: var(--hover, rgba(0, 122, 255, 0.04));
+}
+
+.preset-card.clickable:active {
+  transform: scale(0.997);
 }
 
 .preset-head {

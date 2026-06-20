@@ -138,15 +138,15 @@
                   >×</span>
                 </button>
               </div>
-              <button
-                class="btn btn-ghost save-btn"
-                @click="handleSaveCurrentDir"
-                :disabled="savingDir || !dashState.workDir"
-                :title="'保存当前目录'"
-              >
-                {{ savingDir ? '…' : '+' }}
-              </button>
             </div>
+            <button
+              class="btn btn-ghost save-btn"
+              @click="handleSaveCurrentDir"
+              :disabled="savingDir || !dashState.workDir"
+              :title="'保存当前目录'"
+            >
+              {{ savingDir ? '…' : '+' }}
+            </button>
           </div>
         </div>
 
