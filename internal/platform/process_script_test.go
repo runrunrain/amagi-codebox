@@ -89,11 +89,12 @@ func TestWrapWindowsScript(t *testing.T) {
 					if !strings.Contains(strings.ToLower(got.Path), "cmd.exe") {
 						t.Errorf("wrapWindowsScript() Path = %v, want contain cmd.exe", got.Path)
 					}
-					// Check args prefix (skip first arg which is the resolved cmd.exe path)
+					// Check args prefix from the very start: cmd.exe lives in Path,
+					// so Args[0] is "/c" and there is nothing to skip.
 					if len(got.Args) < 2 {
 						t.Fatalf("wrapWindowsScript() Args len = %v, want >= 2", len(got.Args))
 					}
-					gotArgsStart := got.Args[1:] // Skip cmd.exe path
+					gotArgsStart := got.Args
 					if !argsMatchPrefix(gotArgsStart, tt.wantArgsStart) {
 						t.Errorf("wrapWindowsScript() Args = %v, want args starting with %v", gotArgsStart, tt.wantArgsStart)
 					}
