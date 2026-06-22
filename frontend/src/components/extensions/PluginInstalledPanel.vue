@@ -141,10 +141,10 @@
               </div>
             </div>
             <div class="plg-detail-actions">
-              <AppButton variant="ghost" size="small" @click="handleUpdate">
-                更新
+              <AppButton variant="ghost" size="small" :disabled="updating" @click="handleUpdate">
+                {{ updating ? '更新中…' : '更新' }}
               </AppButton>
-              <AppButton variant="danger" size="small" @click="handleUninstall">
+              <AppButton variant="danger" size="small" :disabled="updating" @click="handleUninstall">
                 卸载
               </AppButton>
             </div>
@@ -185,8 +185,71 @@
             </div>
           </div>
 
+          <!-- Codex capabilities overview -->
+          <div v-if="engine === 'codex'" class="plg-detail-resources">
+            <h4>能力</h4>
+            <div class="res-grid">
+              <div v-if="hasSkills" class="res-item">
+                <Badge type="type" text="Skill" color="skill" />
+                <span class="res-count">{{ skillsCount }}</span>
+              </div>
+              <div v-if="hasAgents" class="res-item">
+                <Badge type="type" text="Agent" color="agent" />
+                <span class="res-count">{{ agentsCount }}</span>
+              </div>
+              <div v-if="hasCommands" class="res-item">
+                <Badge type="type" text="Command" color="command" />
+                <span class="res-count">{{ commandsCount }}</span>
+              </div>
+              <div v-if="hasHooks" class="res-item">
+                <Badge type="type" text="Hook" color="hook" />
+                <span class="res-count">{{ hooksCount }}</span>
+              </div>
+              <div v-if="hasMcp" class="res-item">
+                <Badge type="type" text="MCP" color="mcp" />
+                <span class="res-count">1</span>
+              </div>
+              <template v-if="activeCxDetail?.manifest?.interface?.capabilities">
+                <div
+                  v-for="cap in activeCxDetail.manifest.interface.capabilities"
+                  :key="cap"
+                  class="res-item"
+                >
+                  <Badge type="type" :text="cap" color="capability" />
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Claude resource overview -->
+          <div v-else class="plg-detail-resources">
+            <h4>资源</h4>
+            <div class="res-grid">
+              <div v-if="hasSkills" class="res-item">
+                <Badge type="type" text="Skill" color="skill" />
+                <span class="res-count">{{ skillsCount }}</span>
+              </div>
+              <div v-if="hasAgents" class="res-item">
+                <Badge type="type" text="Agent" color="agent" />
+                <span class="res-count">{{ agentsCount }}</span>
+              </div>
+              <div v-if="hasCommands" class="res-item">
+                <Badge type="type" text="Command" color="command" />
+                <span class="res-count">{{ commandsCount }}</span>
+              </div>
+              <div v-if="hasHooks" class="res-item">
+                <Badge type="type" text="Hook" color="hook" />
+                <span class="res-count">{{ hooksCount }}</span>
+              </div>
+              <div v-if="hasMcp" class="res-item">
+                <Badge type="type" text="MCP" color="mcp" />
+                <span class="res-count">1</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Sub-items panel with tabbed list -->
-          <div class="plg-detail-subitems">
+          <div v-if="hasManageableSubItems" class="plg-detail-subitems">
             <PluginSubItemsPanel
               :engine="engine"
               :plugin-detail="activeCxDetail || activePlugin"
@@ -240,6 +303,7 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import PluginMarketPanel from './PluginMarketPanel.vue';
 import PluginSubItemsPanel from './PluginSubItemsPanel.vue';
 import { truncate } from '../../utils/format';
+import { useToast } from '../../composables/useToast';
 
 interface Props {
   engine?: 'claude' | 'codex';
@@ -280,6 +344,7 @@ const {
   togglePlugin,
   uninstallPlugin,
   updatePlugin,
+  upgradeCxMarketplace,
   loadCcInstalled,
   loadCcAllData,
   loadCxPlugins,
@@ -289,6 +354,9 @@ const {
   loadPluginDetail,
   setPluginView,
 } = pluginStore;
+
+// Toast for user feedback
+const { showSuccess, showError, showInfo } = useToast();
 
 // Local view state (synced with store)
 const localView = ref<'installed' | 'market'>(props.engine === 'claude' ? 'installed' : 'installed');
@@ -303,6 +371,9 @@ const loadErrorMessage = ref('');
 // Uninstall confirmation
 const showUninstallDialog = ref(false);
 const pluginToUninstall = ref<any>(null);
+
+// Update loading state (for visual feedback on update button)
+const updating = ref(false);
 
 // Retry function for ErrorState / 降级 banner
 const handleRetry = async () => {
@@ -494,6 +565,26 @@ const hooksCount = computed(() => {
   return hasHooks.value ? 1 : 0;
 });
 
+// 当前选中插件是否含有可管理的子项（用于隐藏无意义子项面板，消除误导 UI）
+// - Codex: detail 的 skills/agents/commands/hooks 任一非空，或 hasMcp 为真
+// - Claude: 插件本身的 subItems（大写字段，与 disabledSubItems 取值方式一致）为非空数组
+const hasManageableSubItems = computed(() => {
+  if (props.engine === 'codex') {
+    const detail = activeCxDetail.value;
+    if (!detail) return false;
+    return (
+      (detail.skills?.length || 0) > 0 ||
+      (detail.agents?.length || 0) > 0 ||
+      (detail.commands?.length || 0) > 0 ||
+      (detail.hooks?.length || 0) > 0 ||
+      detail.hasMcp === true
+    );
+  }
+  // Claude 引擎：插件后端返回的子项数组
+  const subItems = (currentActivePlugin.value as any)?.subItems;
+  return Array.isArray(subItems) && subItems.length > 0;
+});
+
 // Empty state texts
 const emptyTitle = computed(() => {
   return props.engine === 'claude' ? '暂无已安装插件' : '暂无已安装 Codex 插件';
@@ -621,15 +712,37 @@ async function confirmUninstall() {
 async function handleUpdate() {
   const plugin = currentActivePlugin.value;
   if (!plugin) return;
-  if (props.engine === 'codex') {
-    // Codex update via marketplace upgrade
-    console.log('Update Codex plugin:', plugin.name);
-  } else {
-    try {
+  if (updating.value) return;
+
+  updating.value = true;
+  try {
+    if (props.engine === 'codex') {
+      // Codex 没有单插件更新接口，更新机制是整个市场源 upgrade
+      const marketplace = (plugin as any).marketplace;
+      if (!marketplace) {
+        showError('该插件缺少市场来源信息，无法更新');
+        return;
+      }
+      showInfo(`正在更新市场源「${marketplace}」…`);
+      await upgradeCxMarketplace(marketplace);
+      // 重载选中插件详情，让 UI 即时反映升级后的内容
+      const pid = (plugin as any).pluginId || plugin.id;
+      if (pid) {
+        await loadCxPluginDetail(pid, marketplace);
+      }
+      showSuccess(`插件「${plugin.name}」更新成功`);
+    } else {
+      showInfo(`正在更新插件「${plugin.name}」…`);
       await updatePlugin(plugin.id);
-    } catch (error) {
-      console.error('Update plugin failed:', error);
+      // updatePlugin 内部已 loadCcInstalled，再补一次 detail 以刷新子项
+      await loadPluginDetail(plugin.id);
+      showSuccess(`插件「${plugin.name}」更新成功`);
     }
+  } catch (error) {
+    console.error('[PluginInstalledPanel] Update plugin failed:', error);
+    showError(`更新失败: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    updating.value = false;
   }
 }
 

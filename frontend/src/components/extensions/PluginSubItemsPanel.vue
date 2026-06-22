@@ -40,11 +40,21 @@
         </div>
       </div>
     </div>
+    <!-- Fallback empty state when 'all' tab is active (no content available) -->
+    <div v-else class="sub-items-list">
+      <div class="empty-sub-items">
+        <EmptyState
+          icon="○"
+          title="暂无内容"
+          description="此插件未提供任何可管理的子项"
+        />
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import Switch from '../ui/Switch.vue';
 import EmptyState from '../ui/EmptyState.vue';
 
@@ -91,6 +101,22 @@ const availableTabs = computed(() => {
 
   return tabs;
 });
+
+// 默认选中第一个有内容的 tab（非 'all'）。
+// - 切换插件 / pluginDetail 变化时自动重算
+// - 若所有 tab 都没有内容，保持 'all'（交给下方 empty 区块提示）
+watch(
+  () => availableTabs.value,
+  (tabs) => {
+    const firstWithContent = tabs.find((t) => t.value !== 'all' && t.count > 0);
+    if (firstWithContent) {
+      activeTab.value = firstWithContent.value;
+    } else {
+      activeTab.value = 'all';
+    }
+  },
+  { immediate: true }
+);
 
 // Items for current tab
 const items = computed(() => {
