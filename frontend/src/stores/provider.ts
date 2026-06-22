@@ -20,6 +20,7 @@ import {
   getMergedTerminalPresets,
   getOpenCodeConfig,
   getOpenCodeConfigPath,
+  deleteTerminalPreset,
 } from '../api/provider';
 
 type Provider = config.Provider;
@@ -258,6 +259,22 @@ export const useProviderStore = defineStore('provider', () => {
     }
   }
 
+  /**
+   * 删除指定引擎的预设（仅支持 claude/codex；opencode 走 config.json，不在此路径）。
+   * engine → terminalType 映射与 loadPresets 一致；调用方传 MergedTerminalPreset.key。
+   * 后端 DeleteTerminalPreset 仅对用户 map 生效：内置/managed 项 key 不在 map 里会 no-op，
+   * 因此调用方必须先在前端按 source='user' 过滤，禁止对内置项调用此 action。
+   */
+  async function deletePreset(engine: PresetEngine, key: string) {
+    if (engine === 'opencode') {
+      throw new Error('opencode presets are managed via config.json, not deletable here');
+    }
+    const terminalType = ENGINE_TO_TERMINAL_TYPE[engine];
+    await deleteTerminalPreset(terminalType, key);
+    // 删除后强制刷新该引擎列表，确保 UI 与后端一致
+    await loadPresets(engine, true);
+  }
+
   /** 切换二级 Tab 引擎，并按需加载该引擎数据 */
   function setPresetEngine(engine: PresetEngine) {
     if (presetEngine.value === engine) return;
@@ -316,6 +333,7 @@ export const useProviderStore = defineStore('provider', () => {
 
     // Actions (P3-B)
     loadPresets,
+    deletePreset,
     setPresetEngine,
     setPresetFilter,
     setPresetSearch,

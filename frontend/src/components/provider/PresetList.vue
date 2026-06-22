@@ -46,7 +46,18 @@
       >
         <div class="preset-head">
           <div class="preset-name">{{ p.label || p.key }}</div>
-          <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
+          <div class="preset-head-right">
+            <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
+            <!-- 删除入口：仅用户自定义预设可删；内置/managed 项不渲染按钮（后端对内置 key 是 no-op，前端必须先过滤） -->
+            <button
+              v-if="p.source === 'user'"
+              class="preset-delete"
+              type="button"
+              :title="`删除预设 ${p.label || p.key}`"
+              aria-label="删除预设"
+              @click.stop="handleDelete(p)"
+            >删除</button>
+          </div>
         </div>
         <div class="preset-badges">
           <span v-if="p.model" class="param model">{{ p.model }}</span>
@@ -82,17 +93,30 @@
     :preset="editingPreset"
     @saved="handlePresetSaved"
   />
+
+  <!-- 删除确认弹窗 -->
+  <ConfirmDialog
+    v-model:open="showDeleteDialog"
+    :danger="true"
+    title="删除预设"
+    :message="deleteMessage"
+    confirm-text="删除"
+    cancel-text="取消"
+    @confirm="confirmDelete"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import { useProviderStore } from '../../stores/provider';
+import { useToast } from '../../composables/useToast';
 import Chip from '../ui/Chip.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import PresetDialog from './PresetDialog.vue';
 
 type MergedTerminalPreset = config.MergedTerminalPreset;
@@ -100,8 +124,19 @@ type MergedTerminalPreset = config.MergedTerminalPreset;
 const props = defineProps<{ engine: 'claude' | 'codex' }>();
 
 const store = useProviderStore();
+const { showSuccess, showError } = useToast();
 const showPresetDialog = ref(false);
 const editingPreset = ref<config.MergedTerminalPreset | null>(null);
+
+// 删除流程状态：showDeleteDialog 控制确认弹窗，deletingPreset 记录待删预设，deleting 防重复点击
+const showDeleteDialog = ref(false);
+const deletingPreset = ref<config.MergedTerminalPreset | null>(null);
+const deleting = ref(false);
+
+const deleteMessage = computed(() => {
+  const name = deletingPreset.value?.label || deletingPreset.value?.key || '';
+  return `确定删除预设「${name}」吗？此操作不可恢复。`;
+});
 
 // Loading and error states
 const loading = ref(true);
@@ -184,6 +219,35 @@ async function handlePresetSaved() {
   }
 }
 
+/**
+ * 打开删除确认弹窗。
+ * 仅 source='user' 的预设会渲染删除按钮（模板层 v-if 已过滤），这里二次防御。
+ * store.deletePreset 内部已映射 terminalType 与刷新列表。
+ */
+function handleDelete(preset: MergedTerminalPreset) {
+  if (preset.source !== 'user') return;
+  deletingPreset.value = preset;
+  deleting.value = false;
+  showDeleteDialog.value = true;
+}
+
+async function confirmDelete() {
+  const target = deletingPreset.value;
+  if (!target || deleting.value) return;
+  deleting.value = true;
+  try {
+    await store.deletePreset(props.engine, target.key);
+    showSuccess('已删除预设');
+  } catch (err) {
+    console.error('[PresetList] 删除失败:', err);
+    showError('删除失败: ' + String(err));
+  } finally {
+    deleting.value = false;
+    deletingPreset.value = null;
+    showDeleteDialog.value = false;
+  }
+}
+
 // Initial load
 async function initialLoad() {
   loading.value = true;
@@ -260,6 +324,13 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 
+.preset-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .preset-name {
   font-size: 14px;
   font-weight: 600;
@@ -273,6 +344,25 @@ onMounted(() => {
   border-radius: 5px;
   padding: 2px 8px;
   white-space: nowrap;
+}
+
+/* 删除按钮：克制小巧，hover 才显危险色，避免破坏卡片视觉节奏 */
+.preset-delete {
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: color 0.15s ease, background 0.15s ease;
+  font-family: inherit;
+}
+
+.preset-delete:hover {
+  color: #FF3B30;
+  background: rgba(255, 59, 48, 0.08);
 }
 
 .preset-badges {

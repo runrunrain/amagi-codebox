@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="dialog">
-      <div v-if="open" class="dialog-overlay" @click="handleOverlayClick">
+      <div v-if="open" class="dialog-overlay" @click="handleOverlayClick" @contextmenu.self.prevent>
         <div class="dialog-container" @click.stop>
           <div class="dialog-header">
             <h3 v-if="title" class="dialog-title">{{ title }}</h3>
@@ -34,7 +34,9 @@ const props = withDefaults(defineProps<Props>(), {
   open: false,
   title: '',
   description: '',
-  closeOnOverlay: true,
+  // 默认改为 false：遮罩点击不再关闭弹窗，只能通过 × / 取消 / 确认等按钮关闭。
+  // 避免用户在弹窗外误点（含右键）意外丢失输入或关闭重要确认框。prop 保留以兼容已有传参。
+  closeOnOverlay: false,
 });
 
 const emit = defineEmits<{
