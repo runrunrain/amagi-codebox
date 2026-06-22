@@ -611,7 +611,11 @@ func TestCheckClaudeCode_PrefersVersionsOverShimAbsence(t *testing.T) {
 	if status.Version != "2.1.181" {
 		t.Fatalf("version = %q, want 2.1.181", status.Version)
 	}
-	if !strings.Contains(status.ExecutablePath, "versions/2.1.181/claude") {
+	// Compare using forward slashes so the assertion holds on both POSIX
+	// (versions/2.1.181/claude) and Windows (versions\2.1.181\claude) -- the
+	// implementation returns an absolute path with the OS-native separator,
+	// which is correct; only this assertion was hardcoded to POSIX.
+	if !strings.Contains(filepath.ToSlash(status.ExecutablePath), "versions/2.1.181/claude") {
 		t.Fatalf("executable path = %q, expected versions/2.1.181/claude", status.ExecutablePath)
 	}
 }
