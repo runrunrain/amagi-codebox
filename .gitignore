@@ -36,6 +36,9 @@ frontend/qa-*.log
 # Agent outputs
 .amagi/
 
+# Amagi 审核运行时状态，不应纳入版本控制
+.claude/review-status.json
+
 # Release builds
 release/
 
