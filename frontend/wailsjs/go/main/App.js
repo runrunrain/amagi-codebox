@@ -50,6 +50,10 @@ export function DeleteEnvVar(arg1) {
   return window['go']['main']['App']['DeleteEnvVar'](arg1);
 }
 
+export function DeleteProvider(arg1) {
+  return window['go']['main']['App']['DeleteProvider'](arg1);
+}
+
 export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
 }

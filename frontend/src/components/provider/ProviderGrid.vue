@@ -50,14 +50,25 @@
       >
         <header class="prov-card-head">
           <h3 class="prov-name">{{ entry.id }}</h3>
-          <div class="prov-formats">
-            <span v-if="hasAnthropic(entry.provider)" class="fmt A" title="Anthropic 格式">A</span>
-            <span v-if="hasOpenAI(entry.provider)" class="fmt O" title="OpenAI 格式">O</span>
-            <span
-              v-if="!hasAnthropic(entry.provider) && !hasOpenAI(entry.provider)"
-              class="fmt legacy"
-              :title="typeLabel(entry.provider)"
-            >{{ typeInitial(entry.provider) }}</span>
+          <div class="prov-card-head-right">
+            <div class="prov-formats">
+              <span v-if="hasAnthropic(entry.provider)" class="fmt A" title="Anthropic 格式">A</span>
+              <span v-if="hasOpenAI(entry.provider)" class="fmt O" title="OpenAI 格式">O</span>
+              <span
+                v-if="!hasAnthropic(entry.provider) && !hasOpenAI(entry.provider)"
+                class="fmt legacy"
+                :title="typeLabel(entry.provider)"
+              >{{ typeInitial(entry.provider) }}</span>
+            </div>
+            <!-- 删除入口：必须 @click.stop 阻止冒泡到卡片 onCardClick（否则点删除会进详情）。
+                 克制透明背景，hover 显危险色 #FF3B30，与 PresetList 删除按钮风格一致。 -->
+            <button
+              class="prov-delete"
+              type="button"
+              :title="`删除服务商 ${entry.id}`"
+              aria-label="删除服务商"
+              @click.stop="handleDeleteProvider(entry)"
+            >删除</button>
           </div>
         </header>
         <div class="prov-row">
@@ -89,6 +100,17 @@
       @saved="handleProviderSaved"
     />
     </template>
+
+    <!-- 删除服务商确认弹窗 -->
+    <ConfirmDialog
+      v-model:open="showDeleteDialog"
+      :danger="true"
+      title="删除服务商"
+      :message="deleteMessage"
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmDeleteProvider"
+    />
   </div>
 </template>
 
@@ -99,13 +121,26 @@ import Chip from '../ui/Chip.vue';
 import AppButton from '../ui/AppButton.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import AddProviderDialog from './AddProviderDialog.vue';
-import { useProviderStore, type ProviderFilter } from '../../stores/provider';
+import { useProviderStore, type ProviderFilter, type ProviderEntry } from '../../stores/provider';
+import { useToast } from '../../composables/useToast';
 
 type Provider = config.Provider;
 
 const store = useProviderStore();
+const { showSuccess, showError } = useToast();
 const showAddDialog = ref(false);
+
+// 删除流程状态：showDeleteDialog 控制确认弹窗，deletingProvider 记录待删服务商，deleting 防重复点击
+const showDeleteDialog = ref(false);
+const deletingProvider = ref<ProviderEntry | null>(null);
+const deleting = ref(false);
+
+const deleteMessage = computed(() => {
+  const name = deletingProvider.value?.id || '';
+  return `确定删除服务商「${name}」吗？该服务商配置将被移除（其关联预设不会自动删除），此操作不可恢复。`;
+});
 
 // Loading and error states
 const loading = ref(true);
@@ -154,6 +189,34 @@ function setFilter(next: ProviderFilter) {
 
 function onCardClick(id: string) {
   store.openProvider(id);
+}
+
+/**
+ * 打开删除服务商确认弹窗。
+ * 模板层删除按钮已 @click.stop，不会触发卡片 onCardClick（避免误进详情）。
+ * store.deleteProvider 内部会调用 DeleteProvider + loadProviders 刷新列表。
+ */
+function handleDeleteProvider(entry: ProviderEntry) {
+  deletingProvider.value = entry;
+  deleting.value = false;
+  showDeleteDialog.value = true;
+}
+
+async function confirmDeleteProvider() {
+  const target = deletingProvider.value;
+  if (!target || deleting.value) return;
+  deleting.value = true;
+  try {
+    await store.deleteProvider(target.id);
+    showSuccess('已删除服务商');
+  } catch (err) {
+    console.error('[ProviderGrid] 删除服务商失败:', err);
+    showError('删除失败: ' + String(err));
+  } finally {
+    deleting.value = false;
+    deletingProvider.value = null;
+    showDeleteDialog.value = false;
+  }
 }
 
 function hasAnthropic(p: Provider): boolean {
@@ -308,6 +371,13 @@ onMounted(() => {
   gap: 10px;
 }
 
+.prov-card-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .prov-name {
   margin: 0;
   font-size: 16px;
@@ -319,6 +389,25 @@ onMounted(() => {
 .prov-formats {
   display: flex;
   gap: 5px;
+}
+
+/* 删除按钮：克制小巧，hover 才显危险色，与 PresetList .preset-delete 风格一致 */
+.prov-delete {
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: color 0.15s ease, background 0.15s ease;
+  font-family: inherit;
+}
+
+.prov-delete:hover {
+  color: #FF3B30;
+  background: rgba(255, 59, 48, 0.08);
 }
 
 /* A/O 格式徽章：按类型着色（A 紫 / O 绿），非品牌色 */

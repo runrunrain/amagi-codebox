@@ -48,9 +48,10 @@
           <div class="preset-name">{{ p.label || p.key }}</div>
           <div class="preset-head-right">
             <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
-            <!-- 删除入口：仅用户自定义预设可删；内置/managed 项不渲染按钮（后端对内置 key 是 no-op，前端必须先过滤） -->
+            <!-- 删除入口：后端 GetMergedTerminalPresets 仅从 terminal_presets（用户配置）读取，
+                 所有返回的 merged 预设都可被 DeleteTerminalPreset 删除，无"内置不可删"项，
+                 因此对所有预设始终显示删除按钮（source 实际值为 'terminal_preset'）。 -->
             <button
-              v-if="p.source === 'user'"
               class="preset-delete"
               type="button"
               :title="`删除预设 ${p.label || p.key}`"
@@ -176,6 +177,9 @@ const emptyDescription = computed(() =>
 
 function sourceLabel(source?: string): string {
   if (!source) return '';
+  // 后端 MergedTerminalPreset.source 实际值为 'terminal_preset'（全部来自用户 terminal_presets 配置），
+  // 该值对用户无意义且会造成困惑，统一不显示来源 badge。保留对其他未知值的兜底返回。
+  if (source === 'terminal_preset') return '';
   if (source === 'user') return '';
   if (source === 'builtin' || source === 'default') return '内置默认';
   if (source === 'managed') return '受管';
@@ -221,11 +225,11 @@ async function handlePresetSaved() {
 
 /**
  * 打开删除确认弹窗。
- * 仅 source='user' 的预设会渲染删除按钮（模板层 v-if 已过滤），这里二次防御。
+ * 后端所有 merged 预设都来自用户 terminal_presets 配置、均可被 DeleteTerminalPreset 删除，
+ * 因此无需按 source 过滤（source 实际值为 'terminal_preset'，不再做 'user' 判断）。
  * store.deletePreset 内部已映射 terminalType 与刷新列表。
  */
 function handleDelete(preset: MergedTerminalPreset) {
-  if (preset.source !== 'user') return;
   deletingPreset.value = preset;
   deleting.value = false;
   showDeleteDialog.value = true;

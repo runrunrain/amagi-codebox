@@ -2466,6 +2466,14 @@ func (a *App) SaveProviderFromJSON(providerName string, jsonStr string) error {
 	return nil
 }
 
+// DeleteProvider 删除指定服务商配置。
+func (a *App) DeleteProvider(name string) error {
+	if name == "" {
+		return errors.New("provider name is required")
+	}
+	return a.Config.DeleteProvider(name)
+}
+
 // atomicWriteFile 原子写入文件（先写 .tmp 再 rename）。
 func atomicWriteFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

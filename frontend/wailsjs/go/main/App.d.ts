@@ -35,6 +35,8 @@ export function ClearStoppedSessions():Promise<number>;
 
 export function DeleteEnvVar(arg1:string):Promise<void>;
 
+export function DeleteProvider(arg1:string):Promise<void>;
+
 export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
 
 export function DetachSessionObserver(arg1:string,arg2:string):Promise<void>;

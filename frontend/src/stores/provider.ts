@@ -16,6 +16,7 @@ import { ref, computed } from 'vue';
 import { config } from '../../wailsjs/go/models';
 import { GetProviders } from '../../wailsjs/go/config/ConfigService';
 import { HasAPIKey } from '../../wailsjs/go/secrets/SecretsService';
+import { DeleteProvider } from '../../wailsjs/go/main/App';
 import {
   getMergedTerminalPresets,
   getOpenCodeConfig,
@@ -275,6 +276,16 @@ export const useProviderStore = defineStore('provider', () => {
     await loadPresets(engine, true);
   }
 
+  /**
+   * 删除指定服务商（直接调用后端 App.DeleteProvider）。
+   * 与 deletePreset 对称：删除成功后强制刷新 providers 列表，确保 UI 与后端一致。
+   * 注意：仅删除服务商本身，其关联的预设不会自动清理（需用户另行处理）。
+   */
+  async function deleteProvider(name: string) {
+    await DeleteProvider(name);
+    await loadProviders();
+  }
+
   /** 切换二级 Tab 引擎，并按需加载该引擎数据 */
   function setPresetEngine(engine: PresetEngine) {
     if (presetEngine.value === engine) return;
@@ -334,6 +345,7 @@ export const useProviderStore = defineStore('provider', () => {
     // Actions (P3-B)
     loadPresets,
     deletePreset,
+    deleteProvider,
     setPresetEngine,
     setPresetFilter,
     setPresetSearch,
