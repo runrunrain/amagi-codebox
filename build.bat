@@ -80,7 +80,7 @@ set BUILD_TIME=
 for /f "delims=" %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-ddTHH:mm:ssZ" 2^>nul') do set BUILD_TIME=%%t
 if not defined BUILD_TIME set BUILD_TIME=unknown
 set GO_VER=
-for /f "delims=" %%g in ('go version 2^>nul') do set GO_VER=%%g
+for /f "delims=" %%g in ('go env GOVERSION 2^>nul') do set GO_VER=%%g
 if not defined GO_VER set GO_VER=unknown
 echo [提示] 构建版本: %GIT_VERSION% (commit %GIT_COMMIT%, go: %GO_VER%)
 wails build -ldflags "-X main.Version=%GIT_VERSION% -X main.GitCommit=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME% -X main.GoVersion=%GO_VER%"
