@@ -224,15 +224,29 @@
         >
           {{ card.isInstalling || claudeInstalling ? '安装中...' : '安装' }}
         </AppButton>
-        <AppButton
-          v-else
-          variant="ghost"
-          size="small"
-          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
-          @click="startClaudeInstallWithMethod(card.displayName, true)"
-        >
-          {{ card.isInstalling || claudeInstalling ? '重装中...' : '重装' }}
-        </AppButton>
+        <template v-else>
+          <!--
+            已安装且有更新：显示「更新」按钮（首要操作）。
+            后端 StartUpdateTool(claude_code) 现成支持，复用 startUpdate 函数，不改 API 层。
+          -->
+          <AppButton
+            v-if="card.status?.hasUpdate"
+            variant="primary"
+            size="small"
+            :disabled="card.isOperating || checking || !!runningOperation || claudeBusy"
+            @click="startUpdate(card.key, card.displayName, card.status?.latestVersion || '')"
+          >
+            {{ card.isUpdating ? '更新中...' : '更新' }}
+          </AppButton>
+          <AppButton
+            variant="ghost"
+            size="small"
+            :disabled="card.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
+            @click="startClaudeInstallWithMethod(card.displayName, true)"
+          >
+            {{ card.isInstalling || claudeInstalling ? '重装中...' : '重装' }}
+          </AppButton>
+        </template>
         <AppButton
           v-if="card.status?.installed"
           variant="ghost"
