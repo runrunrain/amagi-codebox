@@ -147,7 +147,7 @@ func TestBuildStartupCommandLine_UsesInlineShellExecution(t *testing.T) {
 	if pwshSendAuto != "" {
 		t.Fatal("pwsh should launch startup command inline without delayed autoCommand")
 	}
-	if !strings.Contains(pwshLine, `-NoExit -Command "& 'opencode'"`) {
+	if !strings.Contains(pwshLine, `-NoExit -ExecutionPolicy Bypass -Command "& 'opencode'"`) {
 		t.Fatalf("unexpected pwsh startup command line: %q", pwshLine)
 	}
 
@@ -156,7 +156,7 @@ func TestBuildStartupCommandLine_UsesInlineShellExecution(t *testing.T) {
 	if pwshPathSendAuto != "" {
 		t.Fatal("powershell.exe should launch quoted startup command inline without delayed autoCommand")
 	}
-	if !strings.Contains(pwshPathLine, `-NoExit -Command "& 'opencode' '--model' 'gpt-5'"`) {
+	if !strings.Contains(pwshPathLine, `-NoExit -ExecutionPolicy Bypass -Command "& 'opencode' '--model' 'gpt-5'"`) {
 		t.Fatalf("unexpected powershell quoted path startup command line: %q", pwshPathLine)
 	}
 	if strings.Contains(pwshPathLine, `C:\Program Files\OpenCode\opencode.cmd`) {
@@ -178,7 +178,7 @@ func TestBuildStartupCommandLine_UsesInlineShellExecution(t *testing.T) {
 	if quotedArgSendAuto != "" {
 		t.Fatal("pwsh should launch single-quote argument inline without delayed autoCommand")
 	}
-	if !strings.Contains(quotedArgLine, `-NoExit -Command "& 'opencode' '--prompt' 'O''Brien'"`) {
+	if !strings.Contains(quotedArgLine, `-NoExit -ExecutionPolicy Bypass -Command "& 'opencode' '--prompt' 'O''Brien'"`) {
 		t.Fatalf("unexpected pwsh single-quote argument command line: %q", quotedArgLine)
 	}
 }

@@ -629,7 +629,10 @@ func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
 
 	quotedShell := quoteCommandPath(commandLine)
 	if containsIgnoreCase(commandLine, "pwsh") || containsIgnoreCase(commandLine, "powershell") {
-		return fmt.Sprintf(`%s -NoProfile -NoLogo -NoExit -Command "%s"`, quotedShell, buildPowerShellCallCommand(autoCommand)), ""
+		// -ExecutionPolicy Bypass 是进程级参数，仅对当前 PowerShell 会话生效，
+		// 不改变系统执行策略。让 npm 全局安装的 .ps1 shim（如 opencode.ps1）
+		// 在系统执行策略为 Restricted 的机器上也能正常运行。
+		return fmt.Sprintf(`%s -NoProfile -NoLogo -NoExit -ExecutionPolicy Bypass -Command "%s"`, quotedShell, buildPowerShellCallCommand(autoCommand)), ""
 	}
 	if containsIgnoreCase(commandLine, "cmd") {
 		return fmt.Sprintf(`%s /K "chcp 65001 >nul && %s"`, quotedShell, escapeCmdCommand(autoCommand)), ""
