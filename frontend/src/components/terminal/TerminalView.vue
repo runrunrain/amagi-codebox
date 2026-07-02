@@ -53,8 +53,17 @@
  * TerminalView — single-session terminal surface.
  *
  * Owns the xterm mount lifecycle for one session via useTerminalEngine.
- * Switching sessions in the sidebar replaces this component (keyed by id) so
- * each mount/dispose pair is clean.
+ * Switching sessions in the sidebar replaces this component (keyed by id),
+ * so each mount/dispose pair is clean. Buffer state is preserved across
+ * switches by replaying the backend's 1MB output-history snapshot on the
+ * next mount; the engine forces a scrollToBottom() once the replay finishes
+ * so the viewport always lands on the latest output.
+ *
+ * Selection:
+ *   - macOS: hold Option and drag (native xterm escape hatch).
+ *   - Windows/Linux: hold Shift and drag (engine attaches a capture-phase
+ *     mousedown interceptor that synthesizes a selection via term.select()).
+ *   - Once selected, Ctrl+Shift+C copies and Delete/Backspace bulk-erases.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { session as sessionModels } from '../../../wailsjs/go/models'
@@ -343,9 +352,14 @@ function onCtxSelectAll() {
   text-align: left;
 }
 
-.term-body :deep(.xterm-screen) {
-  width: 100% !important;
-}
+/* NOTE: the previous `width: 100% !important` on .xterm-screen was removed
+   because it forced the canvas/WebGL renderer's <canvas> element to be
+   stretched by the browser after xterm sized it to cols*cellWidth. That
+   sub-pixel mismatch was a contributing cause of the tearing symptom on
+   macOS. With canvas renderer + addon-fit's natural sizing, .xterm-screen
+   already matches the host width and the rule is unnecessary. If a black
+   border reappears, investigate fit timing rather than re-adding this
+   override. */
 
 /* match demo scrollbar thumb so the terminal area reads as one surface */
 .term-body :deep(.xterm-viewport::-webkit-scrollbar-thumb) {

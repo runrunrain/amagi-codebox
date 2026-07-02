@@ -23,6 +23,7 @@ import { ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
@@ -45,16 +46,35 @@ interface TerminalInstance {
   term: Terminal
   fit: FitAddon
   webgl: WebglAddon | null
+  /** canvas renderer addon (macOS middle-tier between WebGL and DOM) */
+  canvas: CanvasAddon | null
   /** dispose fn returned by EventsOn for the pty:data:<id> stream */
   disposeDataListener: (() => void) | null
   /** dispose fn returned by EventsOn for the pty:exit:<id> stream */
   disposeExitListener: (() => void) | null
   /** capture-phase paste listener removal on the xterm textarea */
   disposePasteListener: (() => void) | null
+  /** detach handler for the xterm-viewport scroll listener (auto-follow) */
+  disposeScrollListener: (() => void) | null
+  /** detach handler for the Shift+drag forced-selection interceptor */
+  disposeForcedSelection: (() => void) | null
+  /**
+   * Active Shift+drag cleanup. Set when a drag is in progress (window-level
+   * mousemove/mouseup are attached); cleared on mouseup. If the component is
+   * disposed mid-drag, disposeTerm invokes this to remove the dangling window
+   * listeners rather than leaving them attached until the next mouseup.
+   */
+  activeDragCleanup: (() => void) | null
   lastCols: number
   lastRows: number
   /** highest emitSeq covered by the loaded history snapshot */
   historySnapshotSeq: number
+  /** true once the user has manually scrolled up; suspends auto-follow. */
+  userScrolledUp: boolean
+  /** micro-batch scheduler token for writeLiveChunk (rAF coalesce). */
+  liveBatchRaf: number | null
+  /** accumulated chunks awaiting the next animation frame. */
+  liveBatchQueue: LiveChunk[]
 }
 
 interface LiveChunk {
@@ -306,6 +326,31 @@ export function useTerminalEngine() {
     }
   }
 
+  /**
+   * Load the canvas renderer as a middle-tier between WebGL and the default
+   * DOM renderer. Used on macOS where the WebGL texture-atlas still
+   * corrupts scrollback in WKWebView; canvas avoids the GPU texture path
+   * while still rendering into a single <canvas> (far cheaper than reflowing
+   * the DOM on every ANSI redraw from opencode TUI).
+   *
+   * Failures fall through silently — xterm keeps its default renderer.
+   */
+  function loadCanvasRenderer(sessionId: string, inst: TerminalInstance) {
+    try {
+      // CanvasAddon (0.8.0-beta.48) does not expose onContextLoss like
+      // WebglAddon; if the underlying canvas context is lost, xterm's
+      // renderer registry will fall back to its default DOM renderer on
+      // the next render pass. We rely on the try/catch around loadAddon
+      // to swallow constructor-time failures.
+      const canvas = new CanvasAddon()
+      inst.term.loadAddon(canvas)
+      inst.canvas = canvas
+    } catch (e) {
+      console.warn('[amagi-codebox] canvas renderer load failed:', e)
+      inst.canvas = null
+    }
+  }
+
   // ---- fit + resize ------------------------------------------------------
 
   function fitTerminal(sessionId: string, force = false, containerEl?: HTMLElement) {
@@ -466,12 +511,19 @@ export function useTerminalEngine() {
       term,
       fit,
       webgl: null,
+      canvas: null,
       disposeDataListener: null,
       disposeExitListener: null,
       disposePasteListener: null,
+      disposeScrollListener: null,
+      disposeForcedSelection: null,
+      activeDragCleanup: null,
       lastCols: 0,
       lastRows: 0,
       historySnapshotSeq: 0,
+      userScrolledUp: false,
+      liveBatchRaf: null,
+      liveBatchQueue: [],
     }
     terminals.set(sessionId, inst)
 
@@ -479,20 +531,64 @@ export function useTerminalEngine() {
     // the history bytes -> skip it. Both the flush path and the direct path
     // go through here so dedup is never bypassed.
     //
-    // Scroll handling: rely on xterm's default behavior. When the cursor is
-    // at the buffer bottom, new writes auto-follow; when the user has scrolled
-    // up to read history, xterm preserves the viewport position. The previous
-    // hand-rolled scrollToBottom + userScrolledUp flag was buggy (flag never
-    // became true because setupScrollTracking queried the wrong element) and
-    // forcibly yanked users back to the bottom on every frame. Mirrors the
-    // vetted legacy Terminals.vue which never called scrollToBottom.
+    // Micro-batch: PTY data events arrive in bursts (a single opencode TUI
+    // redraw splits into dozens of base64 chunks within ~16ms). Writing each
+    // chunk synchronously forces the renderer to schedule a paint per chunk,
+    // which is the dominant cause of tearing under the DOM/canvas renderer.
+    // Coalesce all chunks arriving inside one animation frame into a single
+    // term.write() call, preserving order and never dropping bytes.
     function writeLiveChunk(seq: number, bytes: Uint8Array) {
       if (seq > 0 && seq <= inst.historySnapshotSeq) return
-      try {
-        inst.term.write(bytes)
-      } catch {
-        /* term may be mid-teardown */
-      }
+      // If a flush is already scheduled, just append; otherwise seed + rAF.
+      inst.liveBatchQueue.push({ seq, bytes })
+      if (inst.liveBatchRaf !== null) return
+      inst.liveBatchRaf = requestAnimationFrame(() => {
+        inst.liveBatchRaf = null
+        // Instance-identity guard: if the session was disposed (or switched
+        // to a new instance) between scheduling and firing, accessing
+        // inst.term would hit a disposed terminal. Mirrors the guard already
+        // present in writeHistoryInChunks. try/catch below still backs us up,
+        // but this avoids touching a dead term entirely.
+        if (terminals.get(sessionId) !== inst) {
+          inst.liveBatchQueue.length = 0
+          return
+        }
+        const queue = inst.liveBatchQueue
+        if (queue.length === 0) return
+        inst.liveBatchQueue = []
+        // Merge queued chunks into one Uint8Array so the renderer sees a
+        // single write (one paint, one reflow). Order is preserved.
+        let total = 0
+        for (const c of queue) total += c.bytes.length
+        const merged = new Uint8Array(total)
+        let offset = 0
+        for (const c of queue) {
+          merged.set(c.bytes, offset)
+          offset += c.bytes.length
+        }
+        try {
+          inst.term.write(merged)
+          // Auto-follow: when the user has not manually scrolled up, keep
+          // the viewport pinned to the latest output. xterm's default only
+          // auto-follows when the cursor is already at the buffer bottom,
+          // which is unreliable across resize/refit cycles.
+          if (!inst.userScrolledUp && inst.term.element) {
+            // Defer to the next frame so xterm has finished processing the
+            // write before we reposition the viewport.
+            requestAnimationFrame(() => {
+              if (!inst.userScrolledUp) {
+                try {
+                  inst.term.scrollToBottom()
+                } catch {
+                  /* viewport may not exist during teardown */
+                }
+              }
+            })
+          }
+        } catch {
+          /* term may be mid-teardown */
+        }
+      })
     }
 
     const dataEvent = 'pty:data:' + sessionId
@@ -613,11 +709,19 @@ export function useTerminalEngine() {
       console.warn('registerLinkProvider failed', e)
     }
 
-    // WebGL renderer. macOS WKWebView triggers texture-atlas scrollback
-    // corruption with the WebglAddon, so fail-closed: require caps loaded AND
-    // non-Darwin. If caps are still null (edge case), do NOT load WebGL --
-    // safer than risking corruption on macOS.
-    if (platformCaps.caps.value && !platformCaps.isDarwin.value && isWebGLReliable()) {
+    // Renderer selection.
+    // - macOS WKWebView: WebGL addon historically corrupts the texture atlas
+    //   on scrollback. We load the Canvas addon instead — it draws into a
+    //   single <canvas> (no GPU texture path) and is dramatically faster
+    //   than xterm's default DOM renderer under opencode TUI's high-frequency
+    //   full-screen redraws.
+    // - non-Darwin (Windows/Linux): keep the WebGL path when the probe
+    //   succeeds; WebGL remains the fastest renderer on those platforms.
+    // - any canvas/WebGL load failure fails open: xterm falls back to its
+    //   built-in DOM renderer rather than bricking the terminal.
+    if (platformCaps.caps.value && platformCaps.isDarwin.value) {
+      loadCanvasRenderer(sessionId, inst)
+    } else if (platformCaps.caps.value && !platformCaps.isDarwin.value && isWebGLReliable()) {
       loadWebglRenderer(sessionId, inst)
     }
 
@@ -627,6 +731,45 @@ export function useTerminalEngine() {
     // seq <= snapshot seq is already in the history bytes.
     // M2 type compatibility: decodeHistoryData handles string / Array<number>
     // / Uint8Array return shapes.
+    //
+    // Chunked write: a 1MB snapshot written in a single term.write() call
+    // blocks the main thread for hundreds of milliseconds on the DOM/canvas
+    // renderer (parser + layout + paint all synchronous). Under opencode TUI
+    // that means a perceptible "frozen" terminal right after switching
+    // sessions. Slice the snapshot into ~64KB chunks and yield one frame
+    // between them so the renderer can paint progressively. After the final
+    // chunk, force a single scrollToBottom() so the viewport lands on the
+    // latest output — this is the regression introduced by v1.2.59 which
+    // removed the auto-follow call and left the viewport parked at buffer
+    // row 0 after a snapshot replay, presenting the user with a blank / old
+    // screen on every session switch.
+    const HISTORY_CHUNK_SIZE = 64 * 1024
+    function writeHistoryInChunks(decoded: Uint8Array, done: () => void) {
+      let offset = 0
+      const total = decoded.length
+      function writeNextChunk() {
+        // term may have been disposed mid-replay (rapid session switching).
+        if (terminals.get(sessionId) !== inst) return
+        const end = Math.min(offset + HISTORY_CHUNK_SIZE, total)
+        try {
+          inst.term.write(decoded.subarray(offset, end))
+        } catch {
+          /* term mid-teardown */
+          return
+        }
+        offset = end
+        if (offset < total) {
+          // Yield one frame between chunks so paint/cursor blink don't pile
+          // up. setTimeout(0) would also work but rAF aligns with the
+          // display refresh and avoids extra layout passes.
+          requestAnimationFrame(writeNextChunk)
+        } else {
+          done()
+        }
+      }
+      writeNextChunk()
+    }
+
     GetOutputHistorySnapshot(sessionId)
       .then((jsonStr: string) => {
         if (!jsonStr) {
@@ -638,10 +781,21 @@ export function useTerminalEngine() {
           const snapshot = JSON.parse(jsonStr)
           const decoded = decodeHistoryData(snapshot.data)
           if (decoded && decoded.length > 0) {
-            inst.term.write(decoded)
-            // Only set the dedup boundary after a successful history write,
-            // so buffered live chunks are not discarded when decode fails.
+            // Reset userScrolledUp: this is the initial load of a freshly
+            // mounted terminal, so we always want to land at the bottom.
+            inst.userScrolledUp = false
             inst.historySnapshotSeq = snapshot.seq || 0
+            writeHistoryInChunks(decoded, () => {
+              // Final chunk done — pin the viewport to the latest output.
+              try {
+                inst.term.scrollToBottom()
+              } catch {
+                /* viewport not ready */
+              }
+              historyReplayed = true
+              flushLiveBuffer()
+            })
+            return
           } else if (decoded !== null && decoded.length === 0) {
             // decodeHistoryData returned empty: data valid but empty.
             // Snapshot is authoritative (seq valid) -> set boundary.
@@ -730,6 +884,38 @@ export function useTerminalEngine() {
       }
     }
 
+    // Track user scroll position so auto-follow (in writeLiveChunk and the
+    // history-replay completion handler) can be suspended when the user has
+    // intentionally scrolled up to read history. The previous v1.2.59
+    // implementation queried the wrong element and the flag never became
+    // true, which is why it was deleted; this version reads .xterm-viewport
+    // (xterm.js's actual scroll container) and only marks "scrolled up" when
+    // the viewport is more than 2px away from the bottom. The 2px threshold
+    // absorbs sub-pixel rounding from fit/resize.
+    //
+    // Attach is deferred via requestAnimationFrame because .xterm-viewport
+    // is created lazily by xterm during the first render, which happens
+    // after term.open() returns.
+    requestAnimationFrame(() => {
+      if (terminals.get(sessionId) !== inst) return
+      const viewport = containerEl.querySelector('.xterm-viewport') as HTMLElement | null
+      if (!viewport) return
+      const onScroll = () => {
+        const isAtBottom =
+          viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2
+        inst.userScrolledUp = !isAtBottom
+      }
+      viewport.addEventListener('scroll', onScroll, { passive: true })
+      inst.disposeScrollListener = () => {
+        viewport.removeEventListener('scroll', onScroll)
+      }
+    })
+
+    // Windows/Linux: Shift+drag forced selection (macOS uses native
+    // Option+drag via macOptionClickForcesSelection). Attached inside the
+    // composable so it's wired up the same way for every mount point.
+    inst.disposeForcedSelection = attachForcedSelection(sessionId, containerEl)
+
     return inst
   }
 
@@ -753,6 +939,30 @@ export function useTerminalEngine() {
     inst.disposeExitListener = null
     inst.disposePasteListener?.()
     inst.disposePasteListener = null
+    inst.disposeScrollListener?.()
+    inst.disposeScrollListener = null
+    inst.disposeForcedSelection?.()
+    inst.disposeForcedSelection = null
+
+    // If a Shift+drag is in-flight (window mousemove/mouseup attached),
+    // detach those listeners now — otherwise they would linger on window
+    // until the next mouseup, holding a reference to this disposed inst.
+    inst.activeDragCleanup?.()
+    inst.activeDragCleanup = null
+
+    // Cancel any pending micro-batch so it doesn't fire after dispose.
+    if (inst.liveBatchRaf !== null) {
+      cancelAnimationFrame(inst.liveBatchRaf)
+      inst.liveBatchRaf = null
+    }
+    inst.liveBatchQueue.length = 0
+
+    try {
+      inst.canvas?.dispose()
+    } catch {
+      /* already disposed */
+    }
+    inst.canvas = null
 
     try {
       inst.term.dispose()
@@ -774,6 +984,121 @@ export function useTerminalEngine() {
     }
   }
 
+  // ---- forced selection (Shift+drag on Windows/Linux) -------------------
+  //
+  // opencode TUI enables SGR/1006 mouse reporting, which makes xterm forward
+  // mouse events to the PTY and disables its own selection layer. macOS has
+  // a built-in escape hatch via `macOptionClickForcesSelection: true`
+  // (Option+drag); Windows/Linux need an equivalent. xterm.js 6 doesn't
+  // expose a public API to force selection under TUI mouse mode, so we
+  // synthesize one with term.select() and pure-DOM geometry:
+  //
+  //   1. On Shift+mousedown inside the xterm viewport, prevent the event
+  //      from reaching xterm (capture phase + stopImmediatePropagation) so
+  //      the TUI never sees the drag.
+  //   2. Convert the mouse coordinates to {col, row} using the rendered
+  //      .xterm-screen pixel size and term.cols / term.rows (cell width and
+  //      height derived from the live layout, not from private APIs).
+  //   3. On mousemove, recompute the end {col, row} and call term.select()
+  //      with the length between start and end in the buffer's flat row
+  //      coordinate space.
+  //   4. On mouseup, release the capture and let the existing Delete/
+  //      Ctrl+C copy path observe term.getSelection().
+  //
+  // Bound on the container (not the textarea) so it works regardless of
+  // focus. Only triggers when the Shift modifier is held on non-Darwin
+  // platforms; macOS keeps using the native Option+drag path.
+  function attachForcedSelection(
+    sessionId: string,
+    containerEl: HTMLElement,
+  ): () => void {
+    if (platformCaps.isDarwin.value) {
+      // macOS already has Option+drag via macOptionClickForcesSelection.
+      return () => {}
+    }
+
+    const onMouseDown = (ev: MouseEvent) => {
+      if (!ev.shiftKey) return
+      const inst = terminals.get(sessionId)
+      if (!inst) return
+      const viewport = containerEl.querySelector('.xterm-viewport') as HTMLElement | null
+      const screen = containerEl.querySelector('.xterm-screen') as HTMLElement | null
+      if (!viewport || !screen) return
+
+      // Stop the event before xterm's mouse service sees it. Capture-phase
+      // listener + stopImmediatePropagation is the only reliable way to
+      // preempt xterm's own listeners (which sit on the same element).
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+
+      const rect = screen.getBoundingClientRect()
+      const cols = inst.term.cols || 80
+      const rows = inst.term.rows || 24
+      const cellWidth = rect.width / cols
+      const cellHeight = rect.height / rows
+      if (cellWidth <= 0 || cellHeight <= 0) return
+
+      // Account for the viewport's current scroll offset so dragging on a
+      // scrolled-up view still maps to the correct buffer row.
+      const scrollTop = viewport.scrollTop
+      const startCol = Math.max(0, Math.min(cols - 1, Math.floor((ev.clientX - rect.left) / cellWidth)))
+      const startRow = Math.max(0, Math.floor((ev.clientY - rect.top + scrollTop) / cellHeight))
+
+      let endCol = startCol
+      let endRow = startRow
+
+      const applySelection = () => {
+        const buffer = inst.term.buffer.active
+        const startRowBase = buffer.baseY - (inst.term.rows - 1) + startRow
+        const endRowBase = buffer.baseY - (inst.term.rows - 1) + endRow
+        // Normalise so the smaller coordinate is always the anchor.
+        const lo = { row: Math.min(startRowBase, endRowBase), col: Math.min(startCol, endCol) }
+        const hi = { row: Math.max(startRowBase, endRowBase), col: endRow === startRow && endCol < startCol ? startCol : Math.max(startCol, endCol) }
+        // term.select(column, row, length) — length spans the flat
+        // col/row rectangle, including trailing cells on shorter lines.
+        const length = (hi.row - lo.row) * cols + (hi.col - lo.col) + 1
+        try {
+          inst.term.select(lo.col, lo.row, Math.max(1, length))
+        } catch {
+          /* selection out of bounds during rapid drag — ignore */
+        }
+      }
+      applySelection()
+
+      const onMouseMove = (moveEv: MouseEvent) => {
+        endCol = Math.max(0, Math.min(cols - 1, Math.floor((moveEv.clientX - rect.left) / cellWidth)))
+        endRow = Math.max(0, Math.floor((moveEv.clientY - rect.top + scrollTop) / cellHeight))
+        applySelection()
+      }
+      const onMouseUp = () => {
+        window.removeEventListener('mousemove', onMouseMove)
+        window.removeEventListener('mouseup', onMouseUp)
+        // Drag finished normally — drop the cleanup reference so disposeTerm
+        // doesn't try to remove listeners that are already gone.
+        inst.activeDragCleanup = null
+      }
+      window.addEventListener('mousemove', onMouseMove)
+      window.addEventListener('mouseup', onMouseUp)
+      // Track the active drag's window listeners on the instance so that
+      // disposeTerm can tear them down if the component unmounts mid-drag
+      // (e.g. user switches session while dragging). Without this, the
+      // window mousemove/mouseup would linger until the next mouseup
+      // somewhere, keeping a disposed inst alive in closure.
+      inst.activeDragCleanup = () => {
+        window.removeEventListener('mousemove', onMouseMove)
+        window.removeEventListener('mouseup', onMouseUp)
+        inst.activeDragCleanup = null
+      }
+    }
+
+    // Capture phase is essential: xterm registers its own mousedown listener
+    // on the same element in bubble phase, so we must intercept first.
+    containerEl.addEventListener('mousedown', onMouseDown, true)
+    return () => {
+      containerEl.removeEventListener('mousedown', onMouseDown, true)
+    }
+  }
+
   return {
     activeSessionId,
     terminals,
@@ -785,6 +1110,7 @@ export function useTerminalEngine() {
     disposeAll,
     getTerm,
     switchSession,
+    attachForcedSelection,
     // exposed for the right-click menu component (TerminalContextMenu)
     copySelection,
     pasteToTerminal,
