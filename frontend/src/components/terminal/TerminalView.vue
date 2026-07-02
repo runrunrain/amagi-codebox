@@ -20,9 +20,15 @@
     </div>
 
     <!-- 终端主体：xterm 挂载点 -->
+    <!-- @wheel.stop 阻止 wheel 冒泡到 .main(overflow:auto)：opencode TUI 启用
+         SGR/1006 鼠标上报后，xterm 把 wheel 编码为按钮事件发给 PTY，PTY 不消费
+         时事件继续冒泡，触发 .main 整体视图滚动。stopPropagation 在冒泡阶段
+         拦截，不影响子元素 .xterm-viewport 自身的 wheel→scrollback 处理。
+         绝不加 .prevent：会阻止 xterm 自身的 scrollback 滚动。 -->
     <div
       ref="bodyRef"
       class="term-body"
+      @wheel.stop
       @contextmenu.prevent="handleContextMenu"
     >
       <!-- TerminalContextMenu 渲染在 term-body 上方 -->
@@ -137,11 +143,23 @@ onMounted(async () => {
 
   // initial fit deferred one frame so the container has a measured size
   requestAnimationFrame(() => engine.fitTerminal(props.sessionId, true, el))
+
+  // P1 兜底：mount 后 200ms 再 force fit 一次。覆盖 canvas/WebGL renderer
+  // activate 与容器 layout 的最坏时序——切会话回来重走 mount 时，renderer
+  // 在 mountTerm 内同步 activate（早于末尾 fit 与本 rAF），可能用 0/中间
+  // 尺寸构建 texture atlas 导致撕裂黑屏；engine 内部已追加 renderer 加载后
+  // 的 rAF force fit + clearTextureAtlas，这里再加一层时间维度兜底，吸收
+  // ResizeObserver 首次回调与 history replay 期间的尺寸抖动。
+  mountFallbackFitTimer = setTimeout(() => {
+    if (bodyRef.value === el) engine.fitTerminal(props.sessionId, true, el)
+  }, 200)
 })
 
 // when the container resizes (sidebar collapse, window resize), refit.
 let resizeObserver: ResizeObserver | null = null
 let resizeDebounce: ReturnType<typeof setTimeout> | null = null
+// mount 后 200ms force fit 兜底句柄（见 onMounted），卸载时清理避免触发。
+let mountFallbackFitTimer: ReturnType<typeof setTimeout> | null = null
 onMounted(() => {
   const el = bodyRef.value
   if (!el || typeof ResizeObserver === 'undefined') return
@@ -164,6 +182,10 @@ onMounted(() => document.addEventListener('visibilitychange', onVisibility))
 
 onBeforeUnmount(() => {
   if (resizeDebounce) clearTimeout(resizeDebounce)
+  if (mountFallbackFitTimer) {
+    clearTimeout(mountFallbackFitTimer)
+    mountFallbackFitTimer = null
+  }
   resizeObserver?.disconnect()
   resizeObserver = null
   document.removeEventListener('visibilitychange', onVisibility)

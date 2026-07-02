@@ -54,8 +54,6 @@ interface TerminalInstance {
   disposeExitListener: (() => void) | null
   /** capture-phase paste listener removal on the xterm textarea */
   disposePasteListener: (() => void) | null
-  /** detach handler for the xterm-viewport scroll listener (auto-follow) */
-  disposeScrollListener: (() => void) | null
   /** detach handler for the Shift+drag forced-selection interceptor */
   disposeForcedSelection: (() => void) | null
   /**
@@ -69,8 +67,6 @@ interface TerminalInstance {
   lastRows: number
   /** highest emitSeq covered by the loaded history snapshot */
   historySnapshotSeq: number
-  /** true once the user has manually scrolled up; suspends auto-follow. */
-  userScrolledUp: boolean
   /** micro-batch scheduler token for writeLiveChunk (rAF coalesce). */
   liveBatchRaf: number | null
   /** accumulated chunks awaiting the next animation frame. */
@@ -515,13 +511,11 @@ export function useTerminalEngine() {
       disposeDataListener: null,
       disposeExitListener: null,
       disposePasteListener: null,
-      disposeScrollListener: null,
       disposeForcedSelection: null,
       activeDragCleanup: null,
       lastCols: 0,
       lastRows: 0,
       historySnapshotSeq: 0,
-      userScrolledUp: false,
       liveBatchRaf: null,
       liveBatchQueue: [],
     }
@@ -567,24 +561,14 @@ export function useTerminalEngine() {
           offset += c.bytes.length
         }
         try {
+          // 写入即可，不手动 scrollToBottom：xterm 默认的 isUserScrolling
+          // 保护已经实现"用户在底部时跟随新输出、用户上翻时不跟随"。
+          // v1.2.67 在此显式 scrollToBottom，绕过了 isUserScrolling，
+          // 在 TUI(opencode/Claude Code)启用鼠标 SGR 模式后 wheel 被转发给
+          // PTY、.xterm-viewport.scrollTop 不变、userScrolledUp 永远 false，
+          // 导致每个流式 chunk 都把视口拽回底部、用户无法上翻查看历史。
+          // 与 legacy Terminals.vue:523-528 的 writeLiveChunk 行为对齐。
           inst.term.write(merged)
-          // Auto-follow: when the user has not manually scrolled up, keep
-          // the viewport pinned to the latest output. xterm's default only
-          // auto-follows when the cursor is already at the buffer bottom,
-          // which is unreliable across resize/refit cycles.
-          if (!inst.userScrolledUp && inst.term.element) {
-            // Defer to the next frame so xterm has finished processing the
-            // write before we reposition the viewport.
-            requestAnimationFrame(() => {
-              if (!inst.userScrolledUp) {
-                try {
-                  inst.term.scrollToBottom()
-                } catch {
-                  /* viewport may not exist during teardown */
-                }
-              }
-            })
-          }
         } catch {
           /* term may be mid-teardown */
         }
@@ -725,6 +709,35 @@ export function useTerminalEngine() {
       loadWebglRenderer(sessionId, inst)
     }
 
+    // Renderer activate-time size refresh (regression fix for v1.2.68 切会话撕裂黑屏).
+    // Canvas/WebGL addon 的 activate 在 BaseRenderLayer 构造瞬间即
+    // createElement+appendChild+_initCanvas+_refreshCharAtlas，device 像素与
+    // texture atlas 在这一刻定型。而此处分枝紧跟 term.open(containerEl) 同步
+    // 执行，早于下方 mountTerm 末尾的 fit.fit() 与外层 TerminalView.vue 的
+    // rAF force fit——activate 时 term dimensions 仍是默认/中间态，atlas 用
+    // 错误 cell 度量构建，后续 fit 即便触发 renderer.onResize 也未必纠正 atlas，
+    // 表现为切会话回来撕裂近黑屏，需"窗口最大化→ResizeObserver→完整 onResize"
+    // 才恢复。修复：renderer 加载后下一帧强制 force fit（让 fit.fit() 重算
+    // cols/rows 并 term.resize → renderer.onResize），并对 canvas 显式调用
+    // clearTextureAtlas 强制下一次渲染重建 atlas。WebGL 无 clearTextureAtlas，
+    // 但 force fit 同样能触发其 dimensions change → atlas 重建。这一帧延迟
+    // 用户感知不到，但能消除 activate 时序险境。force=true 绕过 sameDims bail。
+    requestAnimationFrame(() => {
+      if (terminals.get(sessionId) !== inst) return
+      // force fit 让 proposeDimensions 即使与 lastCols/lastRows 相同也重跑 fit
+      fitTerminal(sessionId, true, containerEl)
+      // canvas renderer 的 texture atlas 可能已在错误尺寸下构建；CanvasAddon
+      // typings 不暴露 clearTextureAtlas，用类型断言安全调用，缺失则 noop。
+      const canvas = inst.canvas as unknown as {
+        clearTextureAtlas?: () => void
+      } | null
+      try {
+        canvas?.clearTextureAtlas?.()
+      } catch {
+        /* mid-teardown or addon mismatch: noop */
+      }
+    })
+
     // ----- history replay -----
     // M1 atomic boundary: snapshot returns {data, seq} where seq is the
     // backend's monotonic emitSeq at snapshot time; any live event with
@@ -781,12 +794,20 @@ export function useTerminalEngine() {
           const snapshot = JSON.parse(jsonStr)
           const decoded = decodeHistoryData(snapshot.data)
           if (decoded && decoded.length > 0) {
-            // Reset userScrolledUp: this is the initial load of a freshly
-            // mounted terminal, so we always want to land at the bottom.
-            inst.userScrolledUp = false
             inst.historySnapshotSeq = snapshot.seq || 0
             writeHistoryInChunks(decoded, () => {
               // Final chunk done — pin the viewport to the latest output.
+              // 切会话 replay 写入大量历史数据期间 dimensions 可能抖动，
+              // texture atlas 或基于中间状态构建；done 时清理一次让最终
+              // 渲染基于干净 atlas，与上方 renderer 加载后的清理同源。
+              const canvas = inst.canvas as unknown as {
+                clearTextureAtlas?: () => void
+              } | null
+              try {
+                canvas?.clearTextureAtlas?.()
+              } catch {
+                /* mid-teardown or addon mismatch: noop */
+              }
               try {
                 inst.term.scrollToBottom()
               } catch {
@@ -884,33 +905,6 @@ export function useTerminalEngine() {
       }
     }
 
-    // Track user scroll position so auto-follow (in writeLiveChunk and the
-    // history-replay completion handler) can be suspended when the user has
-    // intentionally scrolled up to read history. The previous v1.2.59
-    // implementation queried the wrong element and the flag never became
-    // true, which is why it was deleted; this version reads .xterm-viewport
-    // (xterm.js's actual scroll container) and only marks "scrolled up" when
-    // the viewport is more than 2px away from the bottom. The 2px threshold
-    // absorbs sub-pixel rounding from fit/resize.
-    //
-    // Attach is deferred via requestAnimationFrame because .xterm-viewport
-    // is created lazily by xterm during the first render, which happens
-    // after term.open() returns.
-    requestAnimationFrame(() => {
-      if (terminals.get(sessionId) !== inst) return
-      const viewport = containerEl.querySelector('.xterm-viewport') as HTMLElement | null
-      if (!viewport) return
-      const onScroll = () => {
-        const isAtBottom =
-          viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2
-        inst.userScrolledUp = !isAtBottom
-      }
-      viewport.addEventListener('scroll', onScroll, { passive: true })
-      inst.disposeScrollListener = () => {
-        viewport.removeEventListener('scroll', onScroll)
-      }
-    })
-
     // Windows/Linux: Shift+drag forced selection (macOS uses native
     // Option+drag via macOptionClickForcesSelection). Attached inside the
     // composable so it's wired up the same way for every mount point.
@@ -939,8 +933,6 @@ export function useTerminalEngine() {
     inst.disposeExitListener = null
     inst.disposePasteListener?.()
     inst.disposePasteListener = null
-    inst.disposeScrollListener?.()
-    inst.disposeScrollListener = null
     inst.disposeForcedSelection?.()
     inst.disposeForcedSelection = null
 
