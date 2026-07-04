@@ -56,21 +56,46 @@ func TestTruncateFirstLine(t *testing.T) {
 		name    string
 		content string
 		max     int
+		workDir string
 		want    string
 	}{
-		{"single_line", "hello world", 60, "hello world"},
-		{"multiline_first_line", "first\nsecond\nthird", 60, "first"},
-		{"truncate_long", strings.Repeat("a", 100), 10, "aaaaaaaaa…"},
-		{"truncate_multiline_first", "0123456789012\nignored", 5, "0123…"},
-		{"crlf_only", "abc\r\nrest", 60, "abc"},
-		{"empty", "", 60, ""},
-		{"max_zero", "abc", 0, ""},
+		{"plain_first_line", "hello world", 60, "", "hello world"},
+		{"multiline_first", "line1\nline2", 60, "", "line1"},
+		{"truncate_long", strings.Repeat("a", 100), 10, "", "aaaaaaaaa…"},
+		{"truncate_multiline_first", "0123456789012\nignored", 5, "", "0123…"},
+		{"crlf_only", "abc\r\nrest", 60, "", "abc"},
+		{"empty", "", 60, "", ""},
+		{"max_zero", "abc", 0, "", ""},
+		// 核心修复：首行是 workDir 路径 → 跳过取次行（主上看到的 Bug 现场）
+		{"workdir_first_line_skipped", "X:\\WorkSpace\\amagi-codebox\n该项目有部分未提交修改", 60, "X:\\WorkSpace\\amagi-codebox", "该项目有部分未提交修改"},
+		// 归一化比较：workDir 用反斜杠、content 用正斜杠也应跳过
+		{"workdir_backslash_vs_forward", "X:/WorkSpace/foo\n内容描述", 60, "X:\\WorkSpace\\foo", "内容描述"},
+		// 首行是别的纯路径（非 workDir）也跳过
+		{"pure_path_skipped", "C:\\Users\\test\\project\n描述文本", 60, "X:\\other", "描述文本"},
+		// 首行是 UNIX 绝对路径也跳过
+		{"unix_path_skipped", "/home/user/project\n描述文本", 60, "X:\\other", "描述文本"},
+		// 整行 XML 标签跳过（slash command 内部表示）
+		{"xml_tag_skipped", "<command-message>amagi:pull-all-repos</command-message>\n真实指令描述", 60, "", "真实指令描述"},
+		// 系统注入标签整行跳过
+		{"xml_system_tag_skipped", "<system-reminder>notice</system-reminder>\n真实描述", 60, "", "真实描述"},
+		// markdown 标题行不跳过（视为有意义，保留）
+		{"markdown_header_kept", "## Task Contract\n详情内容", 60, "", "## Task Contract"},
+		// 正常自然语言首行不跳过（不以 < 开头，不是路径）
+		{"normal_text_kept", "帮我重构 bridge.go\n下一行", 60, "", "帮我重构 bridge.go"},
+		// 全部行都是纯路径：兜底取首个非空行（避免空标题）
+		{"all_skipped_fallback", "X:\\foo\nY:\\bar", 60, "", "X:\\foo"},
+		// 全部行都是 workDir：兜底取首个非空行
+		{"all_workdir_fallback", "X:\\foo\nX:\\foo", 60, "X:\\foo", "X:\\foo"},
+		// 多行混合：空行 + workDir + 纯路径 + XML + 真实内容 → 取首个有意义行
+		{"mixed_noise_skipped", "\nX:\\WorkSpace\n<command-message>x</command-message>\nC:\\other\n真实首条消息", 60, "X:\\WorkSpace", "真实首条消息"},
+		// 超长首条有意义行截断
+		{"truncate_meaningful_after_skip", "X:\\foo\n" + strings.Repeat("好", 100), 10, "X:\\foo", "好好好好好好好好好…"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := truncateFirstLine(c.content, c.max)
+			got := truncateFirstLine(c.content, c.max, c.workDir)
 			if got != c.want {
-				t.Errorf("truncateFirstLine(%q, %d):\n got=%q\nwant=%q", c.content, c.max, got, c.want)
+				t.Errorf("truncateFirstLine(%q, %d, %q):\n got=%q\nwant=%q", c.content, c.max, c.workDir, got, c.want)
 			}
 		})
 	}

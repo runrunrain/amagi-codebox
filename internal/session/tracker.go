@@ -2,12 +2,37 @@ package session
 
 import (
 	"context"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"amagi-codebox/internal/appmeta/claude"
 )
+
+var (
+	// pathLineRe 匹配"纯路径行"：整行是一个不带空格描述的绝对路径。
+	// - Windows 盘符路径：X:\WorkSpace\foo 或 X:/WorkSpace/foo（盘符冒号 + 分隔符起始）
+	// - UNIX 绝对路径：/home/user/foo
+	// 整行不含空格（路径段字符之外没有描述性文字），匹配即视为无意义噪音行跳过。
+	pathLineRe = regexp.MustCompile(`^(?:[A-Za-z]:[\\/][\w\\/.+-]*|/[\w/.+-]+)$`)
+
+	// xmlTagLineRe 匹配"整行 XML/HTML 标签"：<tag>...</tag> 或 <tag/>。
+	// 用于跳过 Claude Code 内部的 slash command 表示（如 <command-message>amagi:pull</command-message>）
+	// 和系统注入的整行标签（如 <system-reminder>...</system-reminder>）。
+	// 不误伤正常文本（正常消息不以 <tag> 开头）；markdown 标题（## Task Contract）也不匹配。
+	xmlTagLineRe = regexp.MustCompile(`^<[A-Za-z/][^<>]*>.*$`)
+)
+
+// normalizePath 归一化路径用于比较：Clean + ToSlash + ToLower。
+// 容忍 X:\ 与 X:/、大小写差异、尾部分隔符差异，用于 workDir 行匹配。
+func normalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.ToSlash(filepath.Clean(p)))
+}
 
 // titleMaxRunes 是会话标题的 rune 上限（侧栏单行展示）。
 // 与 internal/pty/ansi.go 的 firstOutputMaxRunes 保持一致，确保两侧展示长度对齐。
@@ -100,7 +125,7 @@ func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *s
 		return true
 	}
 
-	title := truncateFirstLine(content, titleMaxRunes)
+	title := truncateFirstLine(content, titleMaxRunes, workDir)
 	mgr.SetTitle(amagiSessionID, title)
 	mgr.SetClaudeSessionID(amagiSessionID, sid)
 	*lastPath = path
@@ -111,17 +136,46 @@ func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *s
 	return true
 }
 
-// truncateFirstLine 取 content 的首个 \n 前的内容，再按 rune 截断到 max。
+// truncateFirstLine 取 content 的首个有意义行（跳过空行、workDir 路径行、纯路径行、整行 XML 标签行），
+// 再按 rune 截断到 max。全部行被跳过时兜底取首个非空行（避免空标题）。
 //
-// 实测 Claude Code jsonl 的 user content 可能含多行（如粘贴的代码块、路径前缀等），
-// 会话标题只用首行；超过 max rune 时末尾追加省略号。
-func truncateFirstLine(content string, max int) string {
-	// 取首个 \n 前的内容（content 可能不含 \n，那 whole string 即首行）。
-	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-		content = content[:idx]
+// 背景：实测 Claude Code jsonl 的首条 user message content 首行常是无意义噪音——
+//   - workDir 路径（"X:\WorkSpace\amagi-codebox"）
+//   - slash command 的 XML 标签（"<command-message>amagi:pull</command-message>"）
+//   - 其他纯路径行
+// 直接取首行会把这些噪音设为标题。本函数跳过它们，找到首条描述性内容作标题。
+//
+// 不跳过的内容：markdown 标题（## Task Contract）、正常自然语言消息等。
+func truncateFirstLine(content string, max int, workDir string) string {
+	normWD := normalizePath(workDir)
+	var fallback string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if trimmed == "" {
+			continue
+		}
+		if fallback == "" {
+			// 记录首个非空行作兜底（全部有意义行被跳过时使用，避免空标题）。
+			fallback = trimmed
+		}
+		// 跳过 workDir 行（归一化比较，容忍 X:\ 与 X:/、大小写差异）。
+		if normWD != "" && normalizePath(trimmed) == normWD {
+			continue
+		}
+		// 跳过纯路径行（Windows 盘符路径 / UNIX 绝对路径，整行无描述性文字）。
+		if pathLineRe.MatchString(trimmed) {
+			continue
+		}
+		// 跳过整行 XML/HTML 标签（slash command 内部表示、系统注入标签等）。
+		if xmlTagLineRe.MatchString(trimmed) {
+			continue
+		}
+		return truncateRunes(trimmed, max)
 	}
-	content = strings.TrimRight(content, "\r")
-	return truncateRunes(content, max)
+	if fallback != "" {
+		return truncateRunes(fallback, max)
+	}
+	return ""
 }
 
 // truncateRunes 按 rune 截断字符串到 max；超出部分以省略号结尾。

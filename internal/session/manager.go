@@ -227,7 +227,7 @@ func readTitleFromJSONL(homeDir, workDir, claudeSessionID string) (string, bool)
 	if err != nil || !found {
 		return "", false
 	}
-	return truncateFirstLine(content, titleMaxRunes), true
+	return truncateFirstLine(content, titleMaxRunes, workDir), true
 }
 
 // RunningCount 返回运行中的会话数量
