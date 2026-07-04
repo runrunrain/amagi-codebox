@@ -36,6 +36,7 @@ import (
 	"amagi-codebox/internal/updater"
 	"amagi-codebox/internal/workspace"
 
+	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -916,7 +917,14 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, overrides)
 
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, env, nil)
+		// 方案 R：为 embedded claudecode 会话注入 --session-id <uuid>，
+		// 让 Claude Code 用 amagi-codebox 指定的 uuid 写 jsonl（与同 workDir 其他会话区分），
+		// tracker 优先读"自己锁定的 jsonl"消除串扰，仅当锁定 jsonl 停滞才检测同目录最新跟随。
+		claudeSID := uuid.NewString()
+		a.Sessions.SetClaudeSessionID(sess.ID, claudeSID)
+		a.Log.Info("session", "注入 Claude session-id", fmt.Sprintf("id=%s sid=%s", sess.ID, claudeSID))
+
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, env, []string{"--session-id", claudeSID})
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", err
@@ -931,7 +939,8 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
-		// 方案 P：动态跟踪 Claude Code 会话 jsonl，自动捕获标题与 ClaudeSessionID。
+		// 方案 R：tracker 优先读"自己锁定的 jsonl"（上面注入的 --session-id），
+		// 锁定 jsonl 停滞（用户 /resume 切走）超 60s 才检测同目录最新跟随。
 		// 仅 claudecode 启动（opencode/codex 不写 ~/.claude/projects jsonl）。
 		a.startTitleTracker(sess.ID, workDir)
 
@@ -962,8 +971,9 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	a.Sessions.SetPID(sess.ID, result.PID)
 	a.Log.Info("session", "进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
 
-	// 方案 P：外部终端模式下同样跟踪 jsonl（Claude 在外部窗口运行，
-	// 但 jsonl 仍落到 ~/.claude/projects/<encoded-cwd>/）。
+	// 方案 R 降级（external 模式）：Launcher.Launch 不支持注入 --session-id，
+	// ClaudeSessionID 留空，tracker 走方案 P（FindLatestActiveJSONL 取最新 mtime）。
+	// 副作用：external 模式下同 workDir 多会话仍会指向同一最新 jsonl（边缘场景，主上已知）。
 	a.startTitleTracker(sess.ID, workDir)
 
 	// 监控进程退出

@@ -99,6 +99,23 @@ func (m *Manager) SetClaudeSessionID(id string, sessionID string) {
 	}
 }
 
+// GetClaudeSessionID 返回会话当前锁定的 Claude session uuid。
+//
+// 方案 R 下：
+//   - embedded 启动时由 app.go 注入的 --session-id 值（锁定值）；
+//   - tracker 跟随 /resume 切换后写入的最新值。
+//
+// 空串表示未锁定（external 模式 / 注入失败 / 会话不存在），tracker 应降级方案 P
+// （FindLatestActiveJSONL 取最新 mtime）。
+func (m *Manager) GetClaudeSessionID(id string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.sessions[id]; ok {
+		return s.ClaudeSessionID
+	}
+	return ""
+}
+
 // GetStatus 返回会话当前状态；会话不存在时返回空串。
 // 供轮询 goroutine 在不持锁的情况下感知会话是否已停止（兜底退出信号）。
 func (m *Manager) GetStatus(id string) SessionStatus {
