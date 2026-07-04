@@ -40,7 +40,7 @@ interface Props {
     model: string
     status: string
     workDir?: string
-    firstOutput?: string
+    title?: string
   }
   active?: boolean
 }
@@ -70,12 +70,10 @@ const appTypeLabelValue = computed(() => {
   return getAppTypeLabel(props.session.appType)
 })
 
-// First output summary line.
-// Backend (internal/pty/ansi.go ExtractFirstMeaningfulLine) has already stripped
-// ANSI sequences and filtered shell prompts; the front-end only needs to truncate.
-// Renders only when firstOutput is non-empty -> keeps exited sessions visually stable.
+// 会话标题（后端 tracker 从 Claude Code jsonl 首条 user message 提取，方案 P 动态跟踪）。
+// 仅非空时渲染，保持已退出会话视觉稳定。
 const summaryText = computed(() => {
-  const raw = (props.session.firstOutput || '').trim()
+  const raw = (props.session.title || '').trim()
   if (!raw) return ''
   return truncate(raw, 60)
 })

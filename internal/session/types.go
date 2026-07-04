@@ -47,7 +47,15 @@ type Session struct {
 	StoppedAt    *time.Time    `json:"stoppedAt,omitempty"`
 	UseProxy     bool          `json:"useProxy"`
 	ErrorMessage string        `json:"errorMessage,omitempty"`
-	FirstOutput  string        `json:"firstOutput,omitempty"`
+	// Title 是会话标题（首条 user message 摘要），由方案 P 的轮询写入。
+	// 方案 P 下可被多次覆盖：用户 /resume 切到历史会话并继续输入，
+	// 标题会跟随切换后的会话；会话停止后冻结于最后跟踪值。
+	Title string `json:"title,omitempty"`
+	// ClaudeSessionID 是 tracker 动态跟踪到的 Claude session uuid
+	// （方案 P：不通过启动命令注入 --session-id，靠 mtime 最新 jsonl 跟踪；
+	// 会话停止时冻结于最后跟踪值）。
+	// 用于拼 ~/.claude/projects/<encoded-cwd>/<sessionID>.jsonl 路径。
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
 }
 
 // SessionInfo 返回给前端的会话摘要
@@ -64,7 +72,13 @@ type SessionInfo struct {
 	StartedAt   string        `json:"startedAt"`
 	Duration    string        `json:"duration"`
 	UseProxy    bool          `json:"useProxy"`
-	FirstOutput string        `json:"firstOutput"`
+	// Title 为前端展示用会话标题（首条 user message 摘要）。
+	Title string `json:"title"`
+	// ClaudeSessionID 是 tracker 动态跟踪到的 Claude session uuid
+	// （方案 P：不通过启动命令注入 --session-id，靠 mtime 最新 jsonl 跟踪；
+	// 会话停止时冻结于最后跟踪值）。
+	// 用于关联 jsonl 文件。
+	ClaudeSessionID string `json:"claudeSessionId"`
 }
 
 // LaunchRequest 启动请求参数

@@ -156,8 +156,13 @@ func NewApp(mobileAssets embed.FS) *App {
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log, mobileAssets)
-	// 注入首输出回调：pty 包通过 sink 解耦对 session 包的反向依赖。
-	app.Pty.SetFirstOutputSink(app.Sessions.SetFirstOutput)
+	// 方案 P：注入用户主目录，供 List 回填已退出 claudecode 会话的标题（直读历史 jsonl）。
+	// 获取失败时记日志但不阻塞启动（标题功能降级，不影响会话启动主流程）。
+	if home, homeErr := os.UserHomeDir(); homeErr != nil {
+		log.Warn("session", "注入 homeDir 失败：已退出会话标题回填将跳过", "err="+homeErr.Error())
+	} else {
+		app.Sessions.SetHomeDir(home)
+	}
 	return app
 }
 
@@ -926,6 +931,10 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
+		// 方案 P：动态跟踪 Claude Code 会话 jsonl，自动捕获标题与 ClaudeSessionID。
+		// 仅 claudecode 启动（opencode/codex 不写 ~/.claude/projects jsonl）。
+		a.startTitleTracker(sess.ID, workDir)
+
 		// 监控 PTY 进程退出
 		go func(id string) {
 			for a.Pty.IsRunning(id) {
@@ -952,6 +961,10 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 
 	a.Sessions.SetPID(sess.ID, result.PID)
 	a.Log.Info("session", "进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
+
+	// 方案 P：外部终端模式下同样跟踪 jsonl（Claude 在外部窗口运行，
+	// 但 jsonl 仍落到 ~/.claude/projects/<encoded-cwd>/）。
+	a.startTitleTracker(sess.ID, workDir)
 
 	// 监控进程退出
 	go func(id string) {
@@ -990,6 +1003,24 @@ func (a *App) StopSession(sessionID string) error {
 	}
 	a.Sessions.MarkStopped(sessionID)
 	return nil
+}
+
+// startTitleTracker 启动方案 P 的标题跟踪 goroutine。
+//
+// 仅用于 claudecode 会话（opencode/codex 不写 ~/.claude/projects jsonl）。
+// tracker 退出条件双重保险：
+//  1. a.ctx.Done()（app 关闭）；
+//  2. mgr.GetStatus != Running（会话已被 MarkStopped/MarkExited/MarkFailed）。
+//
+// 不持有外部 cancel 句柄：依赖条件 2 在最多一个轮询周期内自动退出，避免泄漏。
+// homeDir 由 os.UserHomeDir 获取；获取失败时记录日志但不启动 tracker（功能降级，非崩溃）。
+func (a *App) startTitleTracker(amagiSessionID, workDir string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		a.Log.Warn("session", "标题跟踪跳过：无法获取用户主目录", "err="+err.Error())
+		return
+	}
+	go session.TrackTitle(a.ctx, a.Sessions, amagiSessionID, homeDir, workDir, a.Log)
 }
 
 // StopAllSessions 停止所有运行中的会话

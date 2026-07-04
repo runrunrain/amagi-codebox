@@ -2081,7 +2081,8 @@ export namespace session {
 	    startedAt: string;
 	    duration: string;
 	    useProxy: boolean;
-	    firstOutput: string;
+	    title: string;
+	    claudeSessionId: string;
 
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -2101,7 +2102,8 @@ export namespace session {
 	        this.startedAt = source["startedAt"];
 	        this.duration = source["duration"];
 	        this.useProxy = source["useProxy"];
-	        this.firstOutput = source["firstOutput"];
+	        this.title = source["title"];
+	        this.claudeSessionId = source["claudeSessionId"];
 	    }
 	}
 
