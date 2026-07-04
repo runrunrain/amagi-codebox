@@ -2081,11 +2081,12 @@ export namespace session {
 	    startedAt: string;
 	    duration: string;
 	    useProxy: boolean;
-	
+	    firstOutput: string;
+
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2100,6 +2101,7 @@ export namespace session {
 	        this.startedAt = source["startedAt"];
 	        this.duration = source["duration"];
 	        this.useProxy = source["useProxy"];
+	        this.firstOutput = source["firstOutput"];
 	    }
 	}
 

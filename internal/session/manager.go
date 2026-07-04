@@ -51,6 +51,24 @@ func (m *Manager) SetPID(id string, pid int) {
 	}
 }
 
+// SetFirstOutput 设置会话首输出摘要（由 PTY 服务回调）
+// 仅在首次设置时生效；空文本或会话不存在时无操作；已存在非空值时不覆盖。
+func (m *Manager) SetFirstOutput(id string, text string) {
+	if text == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return
+	}
+	if s.FirstOutput != "" {
+		return
+	}
+	s.FirstOutput = text
+}
+
 // MarkStopped 标记会话为已停止
 func (m *Manager) MarkStopped(id string) {
 	m.mu.Lock()
@@ -118,6 +136,8 @@ func (m *Manager) List() []SessionInfo {
 			PID:       s.PID,
 			StartedAt: s.StartedAt.Format(time.RFC3339),
 			UseProxy:  s.UseProxy,
+
+			FirstOutput: s.FirstOutput,
 		}
 
 		if s.Status == StatusRunning {

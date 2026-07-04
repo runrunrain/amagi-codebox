@@ -30,6 +30,11 @@ type PtySession struct {
 	emitSeq       uint64     // monotonic counter incremented per PTY output chunk under historyMu
 	currentCols   int        // 当前 PTY 列数
 	currentRows   int        // 当前 PTY 行数
+
+	// 首输出提取（readLoop goroutine 独占访问，无需额外锁）
+	firstOutputBuf       []byte    // 累积的原始输出，达到阈值后提取首输出
+	firstOutputDone      bool      // 是否已触发提取（仅触发一次）
+	firstOutputStartedAt time.Time // 会话启动时刻，用于超时阈值判定
 }
 
 // outputCallback PTY 输出回调，供远程服务器的 WebSocket 使用
@@ -58,6 +63,11 @@ type Service struct {
 	exitCBs     map[string]map[string]exitCallback // sessionID → {connID → cb}
 	resizeCBsMu sync.RWMutex
 	resizeCBs   map[string]map[string]resizeCallback // sessionID → {connID → cb}
+
+	// firstOutputSink 在 readLoop goroutine 中读取、主 goroutine 中通过 SetFirstOutputSink 写入，
+	// 用 sinkMu 保护读写，确保并发安全。
+	firstOutputSink func(sessionID, text string)
+	sinkMu          sync.RWMutex
 }
 
 func NewService(log *logging.Service) *Service {
@@ -67,6 +77,39 @@ func NewService(log *logging.Service) *Service {
 		outputCBs: make(map[string]map[string]outputCallback),
 		exitCBs:   make(map[string]map[string]exitCallback),
 		resizeCBs: make(map[string]map[string]resizeCallback),
+	}
+}
+
+// SetFirstOutputSink 注入首输出回调，由 App 层在 NewApp 中调用以解耦 pty 包对 session 包的依赖。
+// 回调签名为 (sessionID, text string)；nil 回调合法，readLoop 会安全跳过提取。
+func (s *Service) SetFirstOutputSink(fn func(sessionID, text string)) {
+	s.sinkMu.Lock()
+	defer s.sinkMu.Unlock()
+	s.firstOutputSink = fn
+}
+
+// deliverFirstOutput 在 readLoop 内累积 chunk，达到阈值后一次性提取首输出并投递给 sink。
+// 调用方必须保证：本方法由 readLoop goroutine 独占调用（firstOutputBuf / firstOutputDone 无需额外锁），
+// 且必须在 historyMu.Unlock() 之后、EventsEmit 之前调用，避免阻塞读取循环。
+func (s *Service) deliverFirstOutput(sessionID string, ps *PtySession, chunk []byte) {
+	if ps == nil || ps.firstOutputDone {
+		return
+	}
+	ps.firstOutputBuf = append(ps.firstOutputBuf, chunk...)
+	if len(ps.firstOutputBuf) < firstOutputByteThreshold &&
+		time.Since(ps.firstOutputStartedAt) < firstOutputTimeout {
+		return
+	}
+	text := ExtractFirstMeaningfulLine(ps.firstOutputBuf)
+	ps.firstOutputDone = true
+	if text == "" {
+		return
+	}
+	s.sinkMu.RLock()
+	sink := s.firstOutputSink
+	s.sinkMu.RUnlock()
+	if sink != nil {
+		sink(sessionID, text)
 	}
 }
 
@@ -312,11 +355,12 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	done := make(chan struct{})
 
 	ps := &PtySession{
-		cpty:        cpty,
-		cancel:      cancel,
-		done:        done,
-		currentCols: cols,
-		currentRows: rows,
+		cpty:                cpty,
+		cancel:              cancel,
+		done:                done,
+		currentCols:         cols,
+		currentRows:         rows,
+		firstOutputStartedAt: time.Now(),
 	}
 	s.sessions[sessionID] = ps
 
@@ -395,6 +439,9 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 				ps.outputHistory = trimHistoryToFrontier(ps.outputHistory, maxOutputHistorySize)
 			}
 			ps.historyMu.Unlock()
+
+			// 首输出提取（在 historyMu 锁外执行，避免阻塞读取循环）。
+			s.deliverFirstOutput(sessionID, ps, chunk)
 
 			// Wails 前端事件
 			if s.ctx != nil {

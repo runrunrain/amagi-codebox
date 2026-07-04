@@ -156,6 +156,8 @@ func NewApp(mobileAssets embed.FS) *App {
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log, mobileAssets)
+	// 注入首输出回调：pty 包通过 sink 解耦对 session 包的反向依赖。
+	app.Pty.SetFirstOutputSink(app.Sessions.SetFirstOutput)
 	return app
 }
 

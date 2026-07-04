@@ -12,6 +12,7 @@
         <!-- Model + Status Text -->
         <span class="sess-sub">{{ session.model || '—' }} · {{ statusText }}</span>
       </div>
+      <div v-if="summaryText" class="sess-summary" :title="summaryText">{{ summaryText }}</div>
     </div>
 
     <!-- Close Button (hover only) -->
@@ -30,7 +31,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { tagColor as getTagColor, appTypeLabel as getAppTypeLabel } from '../../utils/format'
+import { tagColor as getTagColor, appTypeLabel as getAppTypeLabel, truncate } from '../../utils/format'
 
 interface Props {
   session: {
@@ -39,6 +40,7 @@ interface Props {
     model: string
     status: string
     workDir?: string
+    firstOutput?: string
   }
   active?: boolean
 }
@@ -66,6 +68,16 @@ const tagColorValue = computed(() => {
 
 const appTypeLabelValue = computed(() => {
   return getAppTypeLabel(props.session.appType)
+})
+
+// First output summary line.
+// Backend (internal/pty/ansi.go ExtractFirstMeaningfulLine) has already stripped
+// ANSI sequences and filtered shell prompts; the front-end only needs to truncate.
+// Renders only when firstOutput is non-empty -> keeps exited sessions visually stable.
+const summaryText = computed(() => {
+  const raw = (props.session.firstOutput || '').trim()
+  if (!raw) return ''
+  return truncate(raw, 60)
 })
 
 const displayTitle = computed(() => {
@@ -151,6 +163,15 @@ function handleClose() {
 .sess-sub {
   font-size: 11px;
   color: var(--tertiary);
+}
+
+.sess-summary {
+  font-size: 11px;
+  color: var(--tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
 }
 
 .close-btn {

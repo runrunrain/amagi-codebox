@@ -47,6 +47,7 @@ type Session struct {
 	StoppedAt    *time.Time    `json:"stoppedAt,omitempty"`
 	UseProxy     bool          `json:"useProxy"`
 	ErrorMessage string        `json:"errorMessage,omitempty"`
+	FirstOutput  string        `json:"firstOutput,omitempty"`
 }
 
 // SessionInfo 返回给前端的会话摘要
@@ -60,9 +61,10 @@ type SessionInfo struct {
 	WorkDir   string        `json:"workDir"`
 	Status    SessionStatus `json:"status"`
 	PID       int           `json:"pid"`
-	StartedAt string        `json:"startedAt"`
-	Duration  string        `json:"duration"`
-	UseProxy  bool          `json:"useProxy"`
+	StartedAt   string        `json:"startedAt"`
+	Duration    string        `json:"duration"`
+	UseProxy    bool          `json:"useProxy"`
+	FirstOutput string        `json:"firstOutput"`
 }
 
 // LaunchRequest 启动请求参数
