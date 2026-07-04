@@ -52,12 +52,15 @@
     <div class="sess-list">
       <template v-if="runningSessions.length > 0">
         <div
-          v-for="group in groupedSessionsByWorkDir"
+          v-for="group in groupedSessionsByAppType"
           :key="group.key"
           class="sess-group"
         >
-          <div class="sess-group-header" :title="group.workDir">
-            <span class="sg-label">{{ group.label }}</span>
+          <div class="sess-group-header" :title="group.label">
+            <span class="sg-label">
+              <span class="sg-dot" :style="{ background: group.color }"/>
+              {{ group.label }}
+            </span>
             <span class="sg-count">{{ group.sessions.length }}</span>
           </div>
           <SessionListItem
@@ -108,6 +111,7 @@ import SessionListItem from './SessionListItem.vue'
 import UpdateDialog from '../common/UpdateDialog.vue'
 import { GetAppInfo, GetRemoteWebUIStatus, OpenRemoteWebUI } from '../../../wailsjs/go/main/App'
 import * as sessionApi from '../../api/session'
+import { appTypeLabel, tagColor } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -154,28 +158,37 @@ const runningSessions = computed(() => sessionStore.runningSessions)
 const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
 
-// Group running sessions by workDir (Apple HIG: restrained group headers, no card stacks)
-// Empty workDir falls back to "默认". Label uses last path segment of workDir.
-const groupedSessionsByWorkDir = computed(() => {
+// Group running sessions by appType (Apple HIG: restrained group headers).
+// Truth source of appType value: internal/session/types.go AppType const.
+// Fixed group order: claudecode -> opencode -> codex -> amagicode (legacy last).
+// Empty groups are not rendered. Within-group order follows backend List (倒序).
+const APP_TYPE_ORDER: readonly string[] = ['claudecode', 'opencode', 'codex', 'amagicode']
+
+const groupedSessionsByAppType = computed(() => {
   const sessions = runningSessions.value
-  const groups = new Map<string, { key: string; workDir: string; label: string; sessions: typeof sessions }>()
+  const groups = new Map<string, { key: string; label: string; color: string; sessions: typeof sessions }>()
 
   sessions.forEach((session: any) => {
-    const workDir: string = (session?.workDir as string) || ''
-    const key = workDir || '__default__'
-    if (!groups.has(key)) {
-      const label = workDir
-        ? workDir.split(/[/\\]/).filter(Boolean).pop() || workDir
-        : '默认'
-      groups.set(key, { key, workDir, label, sessions: [] })
+    const appType: string = (session?.appType as string) || ''
+    if (!appType) return
+    if (!groups.has(appType)) {
+      groups.set(appType, {
+        key: appType,
+        label: appTypeLabel(appType),
+        color: tagColor(appType),
+        sessions: [],
+      })
     }
-    groups.get(key)!.sessions.push(session)
+    groups.get(appType)!.sessions.push(session)
   })
 
-  // 默认组排到最后，便于先看到真实工作目录
+  // 固定顺序：已知类型按 APP_TYPE_ORDER 排；未知类型按字母序追加到末尾
   return Array.from(groups.values()).sort((a, b) => {
-    if (a.key === '__default__') return 1
-    if (b.key === '__default__') return -1
+    const ia = APP_TYPE_ORDER.indexOf(a.key)
+    const ib = APP_TYPE_ORDER.indexOf(b.key)
+    if (ia !== -1 && ib !== -1) return ia - ib
+    if (ia !== -1) return -1
+    if (ib !== -1) return 1
     return a.label.localeCompare(b.label)
   })
 })
@@ -460,8 +473,18 @@ onUnmounted(() => {
 }
 
 .sess-group-header .sg-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sess-group-header .sg-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .sess-group-header .sg-count {

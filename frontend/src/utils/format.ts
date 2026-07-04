@@ -13,27 +13,35 @@ export function basename(path: string): string {
 
 /**
  * Application type label for a session/app tag.
- * Mapping: CC -> ClaudeCode, OC -> OpenCode, CX -> Codex.
+ * Truth source: internal/session/types.go AppType const
+ *   claudecode / opencode / codex (+ amagicode legacy)
  * Falls back to the raw tag when unknown.
  */
 export function appTypeLabel(tag: string): string {
   const labels: Record<string, string> = {
-    CC: 'ClaudeCode',
-    OC: 'OpenCode',
-    CX: 'Codex',
+    claudecode: 'Claude Code',
+    opencode: 'OpenCode',
+    codex: 'Codex',
+    amagicode: 'AmagiCode',
   };
   return labels[tag] || tag;
 }
 
 /**
- * Session tag color.
- * CC -> accent blue, OC -> warning orange, CX -> purple.
+ * Session tag color (Apple HIG system tones).
+ * Truth source: internal/session/types.go AppType const.
+ *   claudecode -> accent blue (#007AFF)
+ *   opencode   -> warning orange (#FF9500)
+ *   codex      -> purple (#AF52DE)
+ *   amagicode  -> tertiary gray (legacy)
+ * Unknown falls back to tertiary gray.
  */
 export function tagColor(tag: string): string {
   const colors: Record<string, string> = {
-    CC: '#007AFF',
-    OC: '#FF9500',
-    CX: '#AF52DE',
+    claudecode: '#007AFF',
+    opencode: '#FF9500',
+    codex: '#AF52DE',
+    amagicode: '#8E8E93',
   };
   return colors[tag] || '#8E8E93';
 }
