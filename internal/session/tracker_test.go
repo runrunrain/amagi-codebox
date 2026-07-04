@@ -161,49 +161,6 @@ func TestTrackTitle_CapturesTitleAndSessionID(t *testing.T) {
 	}
 }
 
-func TestTrackTitle_FollowsResumeSwitch(t *testing.T) {
-	homeDir := t.TempDir()
-	const workDir = "X:/WorkSpace/demo"
-
-	mgr := NewManager()
-	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "model", ModeEmbedded, workDir, false)
-
-	// 初始：第一个会话
-	const sid1 = "session-one"
-	writeJSONLFixture(t, homeDir, workDir, sid1, "原始会话首条")
-	// 方案 R：embedded 启动注入 ClaudeSessionID 锁定到 sid1
-	mgr.SetClaudeSessionID(sess.ID, sid1)
-
-	log := &fakeTitleLogger{}
-	ctx := t.Context()
-
-	go TrackTitle(ctx, mgr, sess.ID, homeDir, workDir, log)
-
-	// 等首轮捕获
-	waitFor(t, mgr, sess.ID, "原始会话首条", 2*time.Second)
-
-	// 模拟 /resume：写入第二个 jsonl，并 backdate 锁定的 sid1 jsonl 让其停滞 > threshold
-	const sid2 = "session-two-resumed"
-	writeJSONLFixture(t, homeDir, workDir, sid2, "切换后的会话首条")
-	encoded := encodeWorkDirForTest(workDir)
-	stale := time.Now().Add(-titleStaleThreshold - 30*time.Second) // 锁定 jsonl 停滞超过阈值
-	if err := os.Chtimes(filepath.Join(homeDir, ".claude", "projects", encoded, sid1+".jsonl"), stale, stale); err != nil {
-		t.Fatalf("chtimes sid1: %v", err)
-	}
-	newer := time.Now().Add(time.Hour) // sid2 远在未来，保证最新
-	if err := os.Chtimes(filepath.Join(homeDir, ".claude", "projects", encoded, sid2+".jsonl"), newer, newer); err != nil {
-		t.Fatalf("chtimes sid2: %v", err)
-	}
-
-	// 等下一个 tick（≤ pollInterval）后标题应切换
-	waitFor(t, mgr, sess.ID, "切换后的会话首条", titlePollInterval+2*time.Second)
-
-	info, _ := mgr.Get(sess.ID)
-	if info.ClaudeSessionID != sid2 {
-		t.Errorf("ClaudeSessionID should follow resume switch:\n got=%q\nwant=%q", info.ClaudeSessionID, sid2)
-	}
-}
-
 // TestTrackTitle_PlanR_LockedNoCrosstalk 方案 R 核心测试：
 // 两个 amagi session（sid-A / sid-B）在同 workDir 但各自锁定不同 jsonl，
 // tracker 必须分别读各自的 lockedPath，标题不串扰。
@@ -250,49 +207,68 @@ func TestTrackTitle_PlanR_LockedNoCrosstalk(t *testing.T) {
 	}
 }
 
-// TestTrackTitle_ActiveLockedNoFollow 多会话都活跃（锁定 jsonl 新）不应误跟随：
-// 锁定 sid-A 的 jsonl mtime 新（<threshold），即便同目录另一 jsonl mtime 也新，
-// tracker 仍读 lockedPath，不串扰。
-func TestTrackTitle_ActiveLockedNoFollow(t *testing.T) {
+// TestTrackTitle_PausedLockedNoCrosstalk 验证"暂停输入不串扰"：
+// 锁定的 jsonl 存在但 mtime 很老（用户暂停输入 8 分钟，本会话无新写入），
+// 同目录另一 jsonl mtime 新（别的活跃会话）→ tracker 仍读 lockedPath，不跟随到别的会话。
+//
+// 这是修复主上反馈"438a5ca1.jsonl mtime 距今 480s，停滞检测误判 /resume 切走，
+// 跟随到 d3d7a466 活跃会话导致标题串扰"Bug 的关键回归测试。
+func TestTrackTitle_PausedLockedNoCrosstalk(t *testing.T) {
 	homeDir := t.TempDir()
 	const workDir = "X:/WorkSpace/demo"
 
 	mgr := NewManager()
 	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
 
-	const sidLocked = "locked-active"
-	const sidOther = "other-active-newer-mtime"
-	writeJSONLFixture(t, homeDir, workDir, sidLocked, "锁定会话的标题")
-	writeJSONLFixture(t, homeDir, workDir, sidOther, "另一个会话的标题")
+	// 构造：lockedPath（用户已暂停输入，mtime backdate 到 10 分钟前）+ 同目录另一 jsonl（mtime 新）
+	const sidLocked = "paused-session-uuid"
+	const sidOther = "another-active-session-uuid"
+	const lockedTitle = "本会话首条消息（用户暂停输入中）"
+	const otherTitle = "另一活跃会话正在写入的最新内容"
+	writeJSONLFixture(t, homeDir, workDir, sidLocked, lockedTitle)
+	writeJSONLFixture(t, homeDir, workDir, sidOther, otherTitle)
 	mgr.SetClaudeSessionID(sess.ID, sidLocked)
 
 	encoded := encodeWorkDirForTest(workDir)
-	now := time.Now()
-	// 锁定 jsonl mtime 新（刚刚），另一 jsonl 故意更新（远在未来），
-	// 但因为锁定未停滞，tracker 不应跟随
-	if err := os.Chtimes(filepath.Join(homeDir, ".claude", "projects", encoded, sidLocked+".jsonl"), now, now); err != nil {
+	// 锁定 jsonl mtime = 10 分钟前（远超早期 titleStaleThreshold=60s，模拟用户暂停 8 分钟）
+	paused := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(filepath.Join(homeDir, ".claude", "projects", encoded, sidLocked+".jsonl"), paused, paused); err != nil {
 		t.Fatalf("chtimes locked: %v", err)
 	}
-	future := now.Add(time.Hour)
+	// 另一会话 jsonl mtime = 远在未来，保证 FindLatestActiveJSONL 会选它
+	future := time.Now().Add(time.Hour)
 	if err := os.Chtimes(filepath.Join(homeDir, ".claude", "projects", encoded, sidOther+".jsonl"), future, future); err != nil {
 		t.Fatalf("chtimes other: %v", err)
 	}
 
 	log := &fakeTitleLogger{}
-	ctx := t.Context()
-	go TrackTitle(ctx, mgr, sess.ID, homeDir, workDir, log)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		TrackTitle(ctx, mgr, sess.ID, homeDir, workDir, log)
+		close(done)
+	}()
 
-	waitFor(t, mgr, sess.ID, "锁定会话的标题", 2*time.Second)
+	// 等首轮捕获（应取 lockedPath，标题 == lockedTitle）
+	waitFor(t, mgr, sess.ID, lockedTitle, 2*time.Second)
 
-	// 等一个额外 tick 确认无跟随
-	time.Sleep(titlePollInterval + 500*time.Millisecond)
+	// 多跑两个 tick 确认持续不跟随（即便锁定 jsonl mtime 持续落后 10 分钟）
+	time.Sleep(2*titlePollInterval + 500*time.Millisecond)
 
 	info, _ := mgr.Get(sess.ID)
-	if info.Title != "锁定会话的标题" {
-		t.Errorf("活跃锁定 jsonl 被误跟随:\n got=%q\nwant=%q", info.Title, "锁定会话的标题")
+	if info.Title != lockedTitle {
+		t.Errorf("暂停输入时 tracker 误跟随到别的活跃会话:\n got=%q\nwant=%q", info.Title, lockedTitle)
 	}
 	if info.ClaudeSessionID != sidLocked {
-		t.Errorf("活跃锁定 jsonl 的 ClaudeSessionID 漂移:\n got=%q\nwant=%q", info.ClaudeSessionID, sidLocked)
+		t.Errorf("暂停输入期间 ClaudeSessionID 不应漂移:\n got=%q\nwant=%q", info.ClaudeSessionID, sidLocked)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Errorf("tracker did not exit after cancel (leak)")
 	}
 }
 

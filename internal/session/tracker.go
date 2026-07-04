@@ -44,14 +44,6 @@ const titleMaxRunes = 60
 // 实测 Claude Code 在用户输入瞬间即追加 jsonl，10s 内必能捕获。
 const titlePollInterval = 10 * time.Second
 
-// titleStaleThreshold：锁定的 jsonl 停滞超过此时长，认为用户已 /resume 切走，
-// 检测同目录最新跟随。
-// 60s 是权衡：
-//   - 过短（<30s）易误判用户思考间隙为"已切走"，造成多会话活跃时误跟随串扰；
-//   - 过长（>120s）/resume 跟随感知延迟大。
-//   - 60s = 6 个 pollInterval，覆盖常规思考与工具执行间隙。
-const titleStaleThreshold = 60 * time.Second
-
 // titleLogger 是 Tracker 依赖的最小日志接口（避免直接依赖具体 logging 包，便于测试）。
 // 签名与 internal/logging.Service.Info 对齐（source, message string, detail ...string）。
 type titleLogger interface {
@@ -60,13 +52,14 @@ type titleLogger interface {
 
 // TrackTitle 动态跟踪 Claude Code 会话的 jsonl，自动设置会话标题与 ClaudeSessionID。
 //
-// 方案 R（锁定 + 停滞跟随）：
+// 方案 R（锁定 jsonl，不跟随 /resume）：
 //   - app.go 启动 embedded claudecode 时注入 --session-id <uuid>，让 Claude Code
 //     用 amagi-codebox 指定的 uuid 写 jsonl；
-//   - tracker 优先读"自己锁定的 jsonl"（GetClaudeSessionID → SessionJSONLPath），
+//   - tracker 只读"自己锁定的 jsonl"（GetClaudeSessionID → SessionJSONLPath），
 //     同 workDir 多会话各自读各自 jsonl，消除串扰；
-//   - 仅当锁定 jsonl 停滞（mtime > titleStaleThreshold 未更新）才检测同目录最新跟随，
-//     覆盖用户 /resume 切到历史会话并继续输入的场景。
+//   - 标题固定为本会话首条 user message，不因用户暂停输入或 /resume 切换而改变
+//     （早期实现的停滞检测会误把"用户暂停输入"判定为"已 /resume 切走"，
+//     跟随到同 workDir 下别的活跃会话 jsonl，导致标题串扰，故彻底放弃跟随）。
 //
 // 方案 P 降级（external 模式 / 注入失败）：ClaudeSessionID 空 → 用 FindLatestActiveJSONL
 // 取同目录最新 mtime jsonl（同 workDir 多会话会指向同一 jsonl，已接受为边缘场景）。
@@ -109,8 +102,8 @@ func TrackTitle(ctx context.Context, mgr *Manager, amagiSessionID, homeDir, work
 // pollOnce 执行一轮 jsonl 跟踪。返回 false 表示会话已停止，调用方应退出 goroutine。
 //
 // 方案 R 路径选择（消串扰核心）：
-//  1. ClaudeSessionID 非空（embedded 注入）：读 SessionJSONLPath(homeDir, workDir, sid) 锁定文件；
-//     若锁定文件停滞 > titleStaleThreshold（用户 /resume 切走）→ 检测同目录最新跟随。
+//  1. ClaudeSessionID 非空（embedded 注入）：只读 SessionJSONLPath(homeDir, workDir, sid) 锁定文件，
+//     不检测同目录其他 jsonl，不跟随 /resume（避免暂停输入误判串扰）；
 //  2. ClaudeSessionID 空（external / 注入失败）：降级方案 P，用 FindLatestActiveJSONL 取最新。
 //
 // 状态检查放在每次 tick 开头：保证 MarkStopped/MarkExited/MarkFailed 触发后，
@@ -125,9 +118,9 @@ func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *s
 
 	var choosePath, chooseSid string
 	if sid != "" {
-		// 方案 R：优先锁定 jsonl（消串扰）
+		// 方案 R：只读锁定 jsonl（消串扰，不跟随 /resume）
 		lockedPath := claude.SessionJSONLPath(homeDir, workDir, sid)
-		info, err := os.Stat(lockedPath)
+		_, err := os.Stat(lockedPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// claude 刚启动，jsonl 尚未创建，等下一轮
@@ -141,14 +134,6 @@ func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *s
 		}
 		choosePath = lockedPath
 		chooseSid = sid
-		// 停滞检测：锁定 jsonl 超 threshold 无更新 → 用户可能 /resume 切走 → 检测同目录最新跟随
-		if time.Since(info.ModTime()) > titleStaleThreshold {
-			if latestPath, latestSid, latErr := claude.FindLatestActiveJSONL(homeDir, workDir); latErr == nil &&
-				latestPath != "" && latestPath != lockedPath {
-				choosePath = latestPath
-				chooseSid = latestSid
-			}
-		}
 	} else {
 		// 方案 P 降级（external 模式 / 注入失败）：无锁定，用最新 mtime
 		latestPath, latestSid, err := claude.FindLatestActiveJSONL(homeDir, workDir)
@@ -181,7 +166,8 @@ func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *s
 	title := truncateFirstLine(content, titleMaxRunes, workDir)
 	mgr.SetTitle(amagiSessionID, title)
 	if chooseSid != sid && chooseSid != "" {
-		// /resume 跟随：更新锁定的 sid（下一轮读最新 sid 的 jsonl）
+		// 方案 P 降级路径捕获到 ClaudeSessionID（external 模式下首次未注入）：
+		// 回写到 Session，下一轮直接走方案 R 锁定路径。
 		mgr.SetClaudeSessionID(amagiSessionID, chooseSid)
 	}
 	*lastPath = choosePath
