@@ -70,10 +70,11 @@
       <div class="detail-row">
         <span class="dr-label">密钥</span>
         <span class="dr-value key-value-cell">
-          <template v-if="entryView.keyConfigured">
+          <template v-if="entryView.keyConfigured && !editing">
             <!--
               显隐完全由 ProviderDetailView 控制：
               未显示时给掩码（applyKeyMask 风格），显示时拉取并显示真实密钥。
+              注意：已配置且正在编辑(editing)时本分支不渲染，改由下方 v-else-if="editing" 输入框分支接管。
             -->
             <span class="key-mask mono">{{ keyMasked }}</span>
             <div class="key-actions">

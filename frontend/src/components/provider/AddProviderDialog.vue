@@ -97,7 +97,7 @@
 import { ref, reactive, computed } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import { SaveProvider } from '../../../wailsjs/go/config/ConfigService';
-import { SetAPIKey } from '../../../wailsjs/go/secrets/SecretsService';
+import { SetAPIKey, Save as SaveSecrets } from '../../../wailsjs/go/secrets/SecretsService';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
 
@@ -171,9 +171,10 @@ async function handleSave() {
     // 保存 Provider
     await SaveProvider(form.name, provider);
 
-    // 保存 API Key（如果提供）
+    // 保存 API Key（如果提供）—— SetAPIKey 仅写入内存 cache，必须追加 Save() 持久化
     if (form.apiKey.trim()) {
       await SetAPIKey(form.name, form.apiKey.trim());
+      await SaveSecrets();
     }
 
     // 刷新列表
