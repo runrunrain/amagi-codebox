@@ -58,6 +58,10 @@ import { ref, computed, watch } from 'vue';
 import Switch from '../ui/Switch.vue';
 import EmptyState from '../ui/EmptyState.vue';
 
+// 子项类型：与后端 internal/plugin/types.go SubItemType 单数保持一致
+// （skill / agent / command / hook / mcp；claude 为 baseline，不在面板展示）
+type SubItemType = 'skill' | 'agent' | 'command' | 'hook' | 'mcp';
+
 interface Props {
   engine?: 'claude' | 'codex';
   pluginDetail?: any;
@@ -76,29 +80,121 @@ const emit = defineEmits<{
 
 const activeTab = ref<string>('all');
 
-// Available tabs based on engine and plugin detail
-const availableTabs = computed(() => {
-  const tabs = [{ value: 'all', label: '全部', count: 0 }];
+// 归一化的子项列表：把任意形态的 pluginDetail 统一成 SubItem[] 形态
+// - Claude 引擎：plugin.PluginDetail 自带 subItems（后端聚合好，含 enabled 标记）→ 直接用
+// - Codex 引擎：CodexPluginDetail 没有 subItems 字段 → 从 skills/agents/commands/hooks/mcpServers 合成
+// - 兜底：若 subItems 为空数组且 detail 没有原始字段，返回空
+// 合成时为每个条目补充 type 字段（单数），与后端 SubItemType 一致
+const normalizedSubItems = computed(() => {
+  const detail = props.pluginDetail;
+  if (!detail) return [];
 
-  if (props.engine === 'codex' && props.pluginDetail) {
-    const detail = props.pluginDetail;
-    if (detail.skills?.length > 0) {
-      tabs.push({ value: 'skills', label: 'Skills', count: detail.skills.length });
-    }
-    if (detail.agents?.length > 0) {
-      tabs.push({ value: 'agents', label: 'Agents', count: detail.agents.length });
-    }
-    if (detail.commands?.length > 0) {
-      tabs.push({ value: 'commands', label: 'Commands', count: detail.commands.length });
-    }
-    if (detail.hooks?.length > 0) {
-      tabs.push({ value: 'hooks', label: 'Hooks', count: detail.hooks.length });
-    }
-    if (detail.hasMcp) {
-      tabs.push({ value: 'mcp', label: 'MCP', count: 1 });
-    }
+  // 优先用后端聚合好的 subItems（Claude 路径）
+  if (Array.isArray(detail.subItems) && detail.subItems.length > 0) {
+    return detail.subItems;
   }
 
+  // 降级合成：从原始 skills/agents/commands/hooks/mcpServers 构建（Codex 路径）
+  const items: any[] = [];
+  (detail.skills || []).forEach((s: any) => {
+    items.push({
+      type: 'skill',
+      name: s.name,
+      description: s.description || '',
+      filePath: s.filePath,
+      enabled: true,
+    });
+  });
+  (detail.agents || []).forEach((s: any) => {
+    items.push({
+      type: 'agent',
+      name: s.name,
+      description: s.description || '',
+      filePath: s.filePath,
+      enabled: true,
+    });
+  });
+  (detail.commands || []).forEach((s: any) => {
+    items.push({
+      type: 'command',
+      name: s.name,
+      description: s.description || '',
+      filePath: s.filePath,
+      enabled: true,
+    });
+  });
+  (detail.hooks || []).forEach((s: any) => {
+    items.push({
+      type: 'hook',
+      name: s.name || s.event,
+      description: s.description || '',
+      event: s.event,
+      enabled: true,
+    });
+  });
+  if (detail.hasMcp) {
+    // 多个 MCP server 各成一项（顺带解决 G5）；mcpServers 为空时回退单项展示
+    const servers = detail.mcpServers || {};
+    const serverNames = Object.keys(servers);
+    if (serverNames.length > 0) {
+      serverNames.forEach((name) => {
+        items.push({
+          type: 'mcp',
+          name,
+          description: 'Model Context Protocol 服务器',
+          enabled: true,
+        });
+      });
+    } else {
+      items.push({
+        type: 'mcp',
+        name: 'MCP Servers',
+        description: 'Model Context Protocol 服务器',
+        enabled: true,
+      });
+    }
+  }
+  return items;
+});
+
+// 按 type 分组：{ skill: [], agent: [], command: [], hook: [], mcp: [] }
+const groupedSubItems = computed(() => {
+  const groups: Record<SubItemType, any[]> = {
+    skill: [],
+    agent: [],
+    command: [],
+    hook: [],
+    mcp: [],
+  };
+  normalizedSubItems.value.forEach((item: any) => {
+    const t = item.type as SubItemType;
+    if (groups[t]) groups[t].push(item);
+  });
+  return groups;
+});
+
+// 子项类型展示顺序与标签（tab 值统一为单数，与后端 SubItemType 一致）
+const TAB_ORDER: { value: SubItemType; label: string }[] = [
+  { value: 'skill', label: 'Skills' },
+  { value: 'agent', label: 'Agents' },
+  { value: 'command', label: 'Commands' },
+  { value: 'hook', label: 'Hooks' },
+  { value: 'mcp', label: 'MCP' },
+];
+
+// Available tabs：双引擎统一构建（去掉 engine === 'codex' 守卫）
+// - 从 groupedSubItems 按类型顺序聚合，仅展示有内容的 tab
+const availableTabs = computed(() => {
+  const tabs: { value: string; label: string; count: number }[] = [
+    { value: 'all', label: '全部', count: 0 },
+  ];
+  const groups = groupedSubItems.value;
+  TAB_ORDER.forEach(({ value, label }) => {
+    const count = groups[value].length;
+    if (count > 0) {
+      tabs.push({ value, label, count });
+    }
+  });
   return tabs;
 });
 
@@ -118,37 +214,22 @@ watch(
   { immediate: true }
 );
 
-// Items for current tab
+// Items for current tab：直接从分组结果取
 const items = computed(() => {
-  if (!props.pluginDetail || activeTab.value === 'all') return [];
-
-  const detail = props.pluginDetail;
-  switch (activeTab.value) {
-    case 'skills':
-      return detail.skills || [];
-    case 'agents':
-      return detail.agents || [];
-    case 'commands':
-      return detail.commands || [];
-    case 'hooks':
-      return detail.hooks || [];
-    case 'mcp':
-      // MCP is a boolean flag, return a pseudo item for display
-      return detail.hasMcp ? [{ name: 'MCP Servers', type: 'mcp', enabled: true }] : [];
-    default:
-      return [];
-  }
+  if (activeTab.value === 'all') return [];
+  const t = activeTab.value as SubItemType;
+  return groupedSubItems.value[t] || [];
 });
 
 const emptyTitle = computed(() => {
   switch (activeTab.value) {
-    case 'skills':
+    case 'skill':
       return '暂无 Skills';
-    case 'agents':
+    case 'agent':
       return '暂无 Agents';
-    case 'commands':
+    case 'command':
       return '暂无 Commands';
-    case 'hooks':
+    case 'hook':
       return '暂无 Hooks';
     case 'mcp':
       return '未配置 MCP';
@@ -159,13 +240,13 @@ const emptyTitle = computed(() => {
 
 const emptyDesc = computed(() => {
   switch (activeTab.value) {
-    case 'skills':
+    case 'skill':
       return '此插件未提供 Skills';
-    case 'agents':
+    case 'agent':
       return '此插件未提供 Agents';
-    case 'commands':
+    case 'command':
       return '此插件未提供 Commands';
-    case 'hooks':
+    case 'hook':
       return '此插件未提供 Hooks';
     case 'mcp':
       return '此插件未配置 MCP 服务器';
@@ -179,43 +260,33 @@ function setActiveTab(tab: string) {
 }
 
 function getItemKey(item: any): string {
-  if (item.type === 'mcp') return 'mcp';
-  return item.name || item.filePath || Math.random().toString(36);
+  // type+name 唯一标识；MCP 多 server 场景 name 即 server 名
+  return `${item.type}:${item.name || item.filePath || Math.random().toString(36)}`;
 }
 
 function getItemName(item: any): string {
-  if (item.type === 'mcp') return 'MCP Servers';
   return item.name || 'Unknown';
 }
 
 function getItemDesc(item: any): string {
-  if (item.type === 'mcp') return 'Model Context Protocol 服务器';
   return item.description || '';
 }
 
 function getItemMeta(item: any): string {
-  if (item.type === 'mcp') return '';
   if (item.event) return `Event: ${item.event}`;
   if (item.type) return `Type: ${item.type}`;
   return '';
 }
 
+// 判断子项是否被禁用：disabledSubItems 是 "type/name" 字符串数组（type 单数）
 function isItemDisabled(item: any): boolean {
-  if (item.type === 'mcp') {
-    // For MCP, check if plugin-level MCP is disabled
-    const key = `mcp`;
-    return props.disabledSubItems?.includes(key) || false;
-  }
-  const key = `${activeTab.value}/${item.name}`;
+  const key = `${item.type}/${item.name}`;
   return props.disabledSubItems?.includes(key) || false;
 }
 
+// 开关切换：emit 的 itemType 用 item.type（单数），与后端 SubItemType 一致
 function handleToggleItem(item: any, value: boolean) {
-  if (item.type === 'mcp') {
-    emit('toggleSubItem', 'mcp', 'mcp', value);
-  } else {
-    emit('toggleSubItem', activeTab.value, item.name, value);
-  }
+  emit('toggleSubItem', item.type, item.name, value);
 }
 
 // Expose handler for parent to call directly

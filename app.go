@@ -1746,13 +1746,38 @@ func (a *App) GetProvidersByType(providerType string) map[string]config.Provider
 func (a *App) SetPluginSubItemEnabled(pluginId string, subItemType string, subItemId string, enabled bool) error {
 	a.Log.Info("plugin", "设置插件子项状态", fmt.Sprintf("plugin=%s type=%s id=%s enabled=%v", pluginId, subItemType, subItemId, enabled))
 
-	// 根据 ID 前缀判断插件类型（Claude 插件不带 @ 或来自已知市场，Codex 插件带 @marketplace）
-	if strings.Contains(pluginId, "@") {
-		// Codex 插件格式：name@marketplace
-		return a.CodexPlugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
+	// Claude 与 Codex 插件 ID 都使用 `name@marketplace` 格式（见 plugin/service.go 与
+	// codexplugin/helpers.go 的 splitPluginID），不能用 strings.Contains(@) 区分。
+	// 改为查询 Claude 已安装插件注册表：命中则派 Claude service，否则派 Codex service。
+	if a.isClaudePlugin(pluginId) {
+		return a.Plugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
 	}
-	// Claude 插件
-	return a.Plugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
+	return a.CodexPlugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
+}
+
+// isClaudePlugin 判断 pluginId 是否为 Claude 引擎下已安装的插件。
+// 以 Claude 注册表（~/.claude/plugins/installed_plugins.json，经 plugin.Service 抽象）
+// 为单一真相源，避免基于字符串启发式误判。
+func (a *App) isClaudePlugin(pluginId string) bool {
+	if a.Plugins == nil {
+		return false
+	}
+	plugins, err := a.Plugins.GetInstalledPlugins()
+	if err != nil {
+		// 读注册表失败时保守按非 Claude 处理（落到 Codex 分派），并告警暴露。
+		// 注意：Codex SetPluginSubItemEnabled 当前只记日志返回 nil，若实际为 Claude
+		// 插件而注册表读取失败，开关会静默不生效，故必须记日志可观测。
+		if a.Log != nil {
+			a.Log.Warn("plugin", "读取 Claude 已安装插件列表失败，按 Codex 引擎分派", fmt.Sprintf("pluginId=%s err=%v", pluginId, err))
+		}
+		return false
+	}
+	for i := range plugins {
+		if plugins[i].ID == pluginId {
+			return true
+		}
+	}
+	return false
 }
 
 // LaunchOpenCode 启动 OpenCode 终端会话。

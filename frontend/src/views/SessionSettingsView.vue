@@ -99,54 +99,82 @@
         </div>
 
         <!-- 工作目录 -->
-        <div class="setting-row">
+        <div class="setting-row workdir-row">
           <label>工作目录</label>
           <div class="workdir-container">
-            <div class="input-group">
-              <TextInput
-                :model-value="dashState.workDir"
-                placeholder="选择或输入工作目录"
-                mono
-                :list="savedWorkDirs.length > 0 ? 'saved-workdirs-list' : undefined"
-                @update:model-value="dashState.workDir = $event"
-              />
-              <datalist v-if="savedWorkDirs.length > 0" id="saved-workdirs-list">
-                <option v-for="entry in savedWorkDirs" :key="entry.path" :value="entry.path">
-                  {{ entry.label || entry.path }}
-                </option>
-              </datalist>
-              <button class="btn btn-ghost browse-btn" @click="handleBrowse" :disabled="browsing">
-                {{ browsing ? '…' : '浏览' }}
-              </button>
-            </div>
-            <div class="saved-dirs-row" v-if="savedWorkDirs.length > 0">
-              <span class="saved-dirs-label">已保存</span>
-              <div class="saved-dirs-list">
-                <button
-                  v-for="entry in savedWorkDirs"
-                  :key="entry.path"
-                  class="saved-dir-chip"
-                  :class="{ active: dashState.workDir === entry.path }"
-                  @click="dashState.workDir = entry.path"
-                  :title="entry.path"
-                >
-                  <span class="chip-text">{{ entry.label || entry.path }}</span>
-                  <span
-                    class="chip-remove"
-                    @click.stop="handleRemoveSavedDir(entry.path)"
-                    title="删除"
-                  >×</span>
+            <!-- 当前启动目录：本次会话的实际 cwd（单值，OS 进程本质只能单值） -->
+            <div class="current-workdir">
+              <div class="input-group">
+                <TextInput
+                  :model-value="dashState.workDir"
+                  placeholder="选择或输入工作目录"
+                  mono
+                  @update:model-value="dashState.workDir = $event"
+                />
+                <button class="btn btn-ghost browse-btn" @click="handleBrowse" :disabled="browsing">
+                  {{ browsing ? '…' : '浏览' }}
                 </button>
               </div>
+              <div class="current-workdir-hint">
+                <span v-if="dashState.workDir" class="hint-static">本次会话启动时使用的目录</span>
+                <span v-else class="hint-warn">尚未选择启动目录，OpenCode 引擎要求必填</span>
+              </div>
             </div>
-            <button
-              class="btn btn-ghost save-btn"
-              @click="handleSaveCurrentDir"
-              :disabled="savingDir || !dashState.workDir"
-              :title="'保存当前目录'"
-            >
-              {{ savingDir ? '…' : '+' }}
-            </button>
+
+            <!-- 目录收藏夹：可保存任意多个目录，点击行即选用为启动目录 -->
+            <div class="workdir-favorites" role="group" aria-label="目录收藏夹">
+              <div class="favorites-header">
+                <div class="favorites-title">
+                  <span>目录收藏夹</span>
+                  <span class="favorites-count" v-if="savedWorkDirs.length > 0">{{ savedWorkDirs.length }}</span>
+                </div>
+                <button
+                  class="btn btn-ghost add-btn"
+                  @click="handleBrowseAndAdd"
+                  :disabled="browsing || addingDir || addDialogOpen"
+                  :title="'浏览并添加到收藏夹'"
+                >
+                  {{ browsing ? '处理中…' : '浏览并添加' }}
+                </button>
+              </div>
+
+              <!-- 空态 -->
+              <div class="favorites-empty" v-if="savedWorkDirs.length === 0">
+                <p>还没有保存的工作目录。</p>
+                <p class="empty-hint">点击右上「浏览并添加」收藏你的第一个工作目录，下次启动可一键选用。</p>
+              </div>
+
+              <!-- 列表 -->
+              <ul class="favorites-list" v-else>
+                <li
+                  v-for="entry in savedWorkDirs"
+                  :key="entry.path"
+                  class="favorite-item"
+                  :class="{ active: dashState.workDir === entry.path }"
+                  @click="selectWorkDir(entry.path)"
+                  :title="dashState.workDir === entry.path ? `当前启动目录：${entry.path}` : `点击选用 ${entry.path}`"
+                >
+                  <div class="favorite-radio" aria-hidden="true">
+                    <span class="radio-dot" v-if="dashState.workDir === entry.path"></span>
+                  </div>
+                  <div class="favorite-info">
+                    <div class="favorite-label">{{ entry.label || fileNameOf(entry.path) }}</div>
+                    <div class="favorite-path">{{ entry.path }}</div>
+                  </div>
+                  <button
+                    class="favorite-remove"
+                    @click.stop="handleRemoveSavedDir(entry.path)"
+                    title="从收藏夹删除"
+                    aria-label="从收藏夹删除"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
 
@@ -160,6 +188,35 @@
         </div>
       </div>
     </ConfigCard>
+
+    <!-- 添加目录到收藏夹 Dialog -->
+    <Dialog
+      :open="addDialogOpen"
+      @update:open="addDialogOpen = $event"
+      title="添加到目录收藏夹"
+      :description="pendingDirPath ? `路径：${pendingDirPath}` : '已选择目录'"
+    >
+      <div class="add-form">
+        <label class="add-form-label">标签（可选）</label>
+        <TextInput
+          :model-value="pendingDirLabel"
+          @update:model-value="pendingDirLabel = $event"
+          placeholder="留空则使用目录名"
+          @keydown.enter="confirmAddDir"
+        />
+        <p class="add-form-hint">为这个目录起一个易记的名字（例如「主项目」「试验场」），便于在多个项目间区分。</p>
+      </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="cancelAddDir">取消</button>
+        <button
+          class="btn btn-primary"
+          @click="confirmAddDir"
+          :disabled="addingDir || !pendingDirPath"
+        >
+          {{ addingDir ? '添加中…' : '添加' }}
+        </button>
+      </template>
+    </Dialog>
   </section>
 </template>
 
@@ -170,6 +227,7 @@ import ConfigCard from '../components/ui/ConfigCard.vue'
 import Segmented from '../components/ui/Segmented.vue'
 import Switch from '../components/ui/Switch.vue'
 import TextInput from '../components/ui/TextInput.vue'
+import Dialog from '../components/ui/Dialog.vue'
 
 import { useDashboardState } from '../composables/useDashboardState'
 import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
@@ -178,20 +236,26 @@ import { useToast } from '../composables/useToast'
 import * as providerApi from '../api/provider'
 import { BrowseDirectory, GetSavedWorkDirs, AddSavedWorkDir, RemoveSavedWorkDir } from '../../wailsjs/go/main/App'
 import { GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
-import { config } from '../../wailsjs/go/models'
+import { config, settings } from '../../wailsjs/go/models'
 
-type WorkDirEntry = { path: string; label: string }
+// 复用 wailsjs 已生成的类型（单一真相源）：后端 schema 变更时会随 wails generate 同步
+type WorkDirEntry = settings.WorkDirEntry
 
 type Provider = config.Provider
 type MergedTerminalPreset = config.MergedTerminalPreset
 
 const { state: dashState, initDefaults } = useDashboardState()
 const platformCaps = usePlatformCapabilities()
-const { showSuccess, showError } = useToast()
+const { showSuccess, showError, showInfo } = useToast()
 
 const browsing = ref(false)
 const savedWorkDirs = ref<WorkDirEntry[]>([])
-const savingDir = ref(false)
+
+// 添加目录到收藏夹相关状态
+const addDialogOpen = ref(false)
+const pendingDirPath = ref('')
+const pendingDirLabel = ref('')
+const addingDir = ref(false)
 
 // --- 数据源 ---
 // 后端 GetProvidersByType 已按 IsAnthropicCompatible / IsOpenAICompatible 过滤，
@@ -393,37 +457,92 @@ async function loadSavedWorkDirs() {
   try {
     savedWorkDirs.value = await GetSavedWorkDirs()
   } catch (err) {
-    console.error('Failed to load saved work dirs:', err)
+    // 保留 console.error 用于调试，同时给用户明确反馈（不阻断：后续添加/删除会重新拉取刷新）
+    console.error('[SessionSettingsView.loadSavedWorkDirs]', err)
+    showError('加载工作目录收藏夹失败: ' + err)
   }
 }
 
-async function handleSaveCurrentDir() {
-  if (!dashState.workDir) {
-    showError('请先输入或选择工作目录')
+// 浏览并添加：选定目录后弹出 label 输入对话框，确认后调用后端 AddSavedWorkDir
+async function handleBrowseAndAdd() {
+  // 防御性守卫：Dialog 已打开 / 正在浏览 / 正在添加时禁止再次触发，避免重复弹原生对话框覆盖 pendingDirPath
+  if (addDialogOpen.value || browsing.value || addingDir.value) return
+  browsing.value = true
+  try {
+    const dir = await BrowseDirectory()
+    if (!dir) return
+    pendingDirPath.value = dir
+    // 预填 label：若该目录已在收藏夹中，回填现有 label 便于参考编辑；否则留空（后端会用 base 名）
+    const existed = savedWorkDirs.value.find(e => e.path === dir)
+    pendingDirLabel.value = existed ? existed.label : ''
+    addDialogOpen.value = true
+  } catch (err) {
+    showError('选择目录失败: ' + err)
+  } finally {
+    browsing.value = false
+  }
+}
+
+function cancelAddDir() {
+  addDialogOpen.value = false
+  pendingDirPath.value = ''
+  pendingDirLabel.value = ''
+}
+
+async function confirmAddDir() {
+  if (!pendingDirPath.value) {
+    showError('目录路径为空')
     return
   }
-  savingDir.value = true
+  const beforeLen = savedWorkDirs.value.length
+  const targetPath = pendingDirPath.value
+  addingDir.value = true
   try {
-    savedWorkDirs.value = await AddSavedWorkDir(dashState.workDir, '')
-    showSuccess('已保存当前工作目录')
+    const next = await AddSavedWorkDir(targetPath, pendingDirLabel.value.trim())
+    savedWorkDirs.value = next
+    if (next.length === beforeLen) {
+      // 后端按 path 去重，长度未增说明已存在
+      showInfo('该目录已在收藏夹中')
+    } else {
+      showSuccess('已添加到收藏夹')
+      // 添加成功后自动选用为启动目录（用户刚刚收藏的目录通常就是想立即使用的）
+      dashState.workDir = targetPath
+    }
+    addDialogOpen.value = false
+    pendingDirPath.value = ''
+    pendingDirLabel.value = ''
   } catch (err) {
-    showError('保存失败: ' + err)
+    showError('添加失败: ' + err)
   } finally {
-    savingDir.value = false
+    addingDir.value = false
   }
 }
 
 async function handleRemoveSavedDir(path: string) {
   try {
-    savedWorkDirs.value = await RemoveSavedWorkDir(path)
-    // 若删除的正是当前工作目录，立即清空，避免界面仍显示已不存在的目录
+    const next = await RemoveSavedWorkDir(path)
+    savedWorkDirs.value = next
+    // 若删除的正是当前启动目录，立即清空，避免界面仍显示已不存在的目录
     if (dashState.workDir === path) {
       dashState.workDir = ''
     }
-    showSuccess('已删除保存的目录')
+    showSuccess('已从收藏夹移除')
   } catch (err) {
     showError('删除失败: ' + err)
   }
+}
+
+// 选用某已保存目录作为本次启动目录（写入单值 dashState.workDir）
+function selectWorkDir(path: string) {
+  dashState.workDir = path
+}
+
+// 从路径取末段（与后端 filepath.Base 一致），用于 label 缺省时的展示
+function fileNameOf(path: string): string {
+  if (!path) return ''
+  const normalized = path.replace(/\\/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : path
 }
 
 // --- 数据加载 ---
@@ -595,92 +714,223 @@ onMounted(async () => {
 .workdir-container {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  align-items: flex-end;
+  gap: 12px;
+  width: 100%;
+  max-width: 520px;
 }
 
-.saved-dirs-row {
+.workdir-row {
+  align-items: flex-start;
+}
+
+.workdir-row > label {
+  padding-top: 6px;
+}
+
+.current-workdir {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.current-workdir-hint {
+  font-size: 11px;
+  color: var(--tertiary);
+  padding-left: 2px;
+  min-height: 14px;
+}
+
+.current-workdir-hint .hint-warn {
+  color: var(--secondary);
+}
+
+/* 目录收藏夹 */
+.workdir-favorites {
+  border-top: 1px dashed var(--separator);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.favorites-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  width: 100%;
-  max-width: 420px;
 }
 
-.saved-dirs-label {
-  font-size: 11px;
-  color: var(--secondary);
-  flex-shrink: 0;
-}
-
-.saved-dirs-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  flex: 1;
-}
-
-.saved-dir-chip {
+.favorites-title {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 12px;
-  background: var(--control);
+  gap: 6px;
+  font-size: 12px;
   color: var(--secondary);
-  font-size: 11px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-  max-width: 140px;
+  font-weight: 500;
 }
 
-.saved-dir-chip:hover {
-  background: var(--controlHover);
-  border-color: var(--separator);
-}
-
-.saved-dir-chip.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-
-.chip-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 110px;
-}
-
-.chip-remove {
+.favorites-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--control);
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.add-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  height: 24px;
+}
+
+.favorites-empty {
+  padding: 14px 12px;
+  border: 1px dashed var(--separator);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.favorites-empty p {
+  margin: 0;
+}
+
+.favorites-empty .empty-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--tertiary);
+}
+
+.favorites-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.favorite-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.favorite-item:hover {
+  background: var(--control);
+}
+
+.favorite-item.active {
+  background: var(--controlHover, var(--control));
+  border-color: var(--accent);
+}
+
+.favorite-radio {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.6;
-  transition: opacity 0.15s, background 0.15s;
-}
-
-.chip-remove:hover {
-  opacity: 1;
-  background: rgba(0, 0, 0, 0.1);
-}
-
-.saved-dir-chip.active .chip-remove:hover {
-  background: rgba(255, 255, 255, 0.2);
-}
-
-.save-btn {
-  padding: 4px 8px;
-  font-size: 14px;
-  min-width: 28px;
-  height: 24px;
+  border: 1.5px solid var(--separator);
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s;
+}
+
+.favorite-item.active .favorite-radio {
+  border-color: var(--accent);
+}
+
+.radio-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.favorite-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.favorite-label {
+  font-size: 13px;
+  color: var(--label);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.favorite-item.active .favorite-label {
+  color: var(--accent);
+}
+
+.favorite-path {
+  font-size: 11px;
+  color: var(--tertiary);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.favorite-remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.favorite-remove:hover {
+  background: var(--controlHover, var(--separator));
+  color: var(--label);
+}
+
+/* 添加目录 Dialog 表单 */
+.add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.add-form-label {
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.add-form-hint {
+  font-size: 11px;
+  color: var(--tertiary);
+  line-height: 1.5;
+  margin: 4px 0 0 0;
 }
 
 .btn {

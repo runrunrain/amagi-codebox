@@ -463,6 +463,24 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  // 设置插件子项启用/禁用状态（统一入口，Codex/Claude 都走此 action）
+  // - 内部调 main.App.SetPluginSubItemEnabled，按 pluginId 自动分派
+  // - subItemType 取后端 SubItemType 单数：skill / agent / command / hook / mcp
+  // - 不在此处自动 reload 详情，由调用方根据 engine 决定调 loadPluginDetail / loadCxPluginDetail
+  async function setPluginSubItemEnabled(
+    pluginId: string,
+    subItemType: string,
+    subItemId: string,
+    enabled: boolean
+  ): Promise<void> {
+    try {
+      await pluginApi.setPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled);
+    } catch (error) {
+      console.error('[plugin.store.setPluginSubItemEnabled]', error);
+      throw error;
+    }
+  }
+
   // Uninstall plugin
   async function uninstallPlugin(pluginId: string) {
     try {
@@ -701,6 +719,7 @@ export const usePluginStore = defineStore('plugin', () => {
     togglePlugin,
     loadPluginDetail,
     loadPluginSubItems,
+    setPluginSubItemEnabled,
     uninstallPlugin,
     updatePlugin,
     loadCxPlugins,

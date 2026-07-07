@@ -352,6 +352,7 @@ const {
   uninstallCxPlugin,
   loadCxPluginDetail,
   loadPluginDetail,
+  setPluginSubItemEnabled,
   setPluginView,
 } = pluginStore;
 
@@ -463,7 +464,10 @@ const currentActivePlugin = computed(() => {
 
 const activeCxDetail = computed(() => {
   if (!activePluginId.value || props.engine !== 'codex') return null;
-  return (activeCxPluginDetail.value as Record<string, any>)[activePluginId.value] || null;
+  // activeCxPluginDetail（store computed）在 pluginId 未加载详情时为 null，解引用前必须防护
+  const detail = activeCxPluginDetail.value as Record<string, any> | null;
+  if (!detail) return null;
+  return detail[activePluginId.value] || null;
 });
 
 // Codex warnings
@@ -747,45 +751,47 @@ async function handleUpdate() {
 }
 
 // Disabled sub-items for the active plugin
+// disabledSubItems: "type/name" 字符串数组（type 单数，与后端 SubItemType 一致）
+// 字段访问统一为小写（enabled/type/name），与 wailsjs/go/models.ts 中 plugin.SubItem 的 JSON tag 一致
 const disabledSubItems = computed(() => {
   const plugin = currentActivePlugin.value;
   if (!plugin) return [];
-  // Use activeCxDetail for Codex (contains subItems with Enabled field from backend)
+  // Codex: activeCxDetail 为 CodexPluginDetail（当前未携带 subItems 字段，此分支保持兜底兼容）
   if (props.engine === 'codex' && activeCxDetail.value?.subItems) {
     return activeCxDetail.value.subItems
-      .filter((s: any) => !s.Enabled)
-      .map((s: any) => {
-        // Backend SubItem has Type and Name; build key as "type/name"
-        return `${s.Type}/${s.Name}`;
-      });
+      .filter((s: any) => !s.enabled)
+      .map((s: any) => `${s.type}/${s.name}`);
   }
-  // For Claude plugins, subItems are available in plugin detail (from cache)
+  // Claude: 插件详情中的 subItems（后端聚合好，含 enabled 标记）
   if (props.engine === 'claude' && (plugin as any).subItems) {
     return (plugin as any).subItems
-      .filter((s: any) => !s.Enabled)
-      .map((s: any) => `${s.Type}/${s.Name}`);
+      .filter((s: any) => !s.enabled)
+      .map((s: any) => `${s.type}/${s.name}`);
   }
   return [];
 });
 
+// 子项开关切换：统一走 store action（内部调 main.App 统一入口，按 pluginId 自动分派 Codex/Claude）
+// - itemType 为后端 SubItemType 单数（skill/agent/command/hook/mcp），由 PluginSubItemsPanel 保证
+// - 切换成功后 reload 详情以即时反映新状态；失败时通过 toast 反馈
 async function handleToggleSubItem(itemType: string, itemId: string, enabled: boolean) {
   const plugin = currentActivePlugin.value;
   if (!plugin) return;
 
   const pid = (plugin as any).pluginId || plugin.id;
   try {
-    // Call backend API to persist the state
-    await window.go.main.App.SetPluginSubItemEnabled(pid, itemType, itemId, enabled);
-    // After successful toggle, reload plugin detail to reflect changes
+    await setPluginSubItemEnabled(pid, itemType, itemId, enabled);
+    // 切换成功后 reload 详情以反映新状态
     if (props.engine === 'codex' && plugin.marketplace) {
       await loadCxPluginDetail((plugin as any).pluginId || plugin.id, plugin.marketplace);
     } else if (props.engine === 'claude') {
-      // Reload Claude plugin detail
       await loadPluginDetail(plugin.id);
     }
   } catch (error) {
     console.error('[PluginInstalledPanel] Toggle sub-item failed:', error);
-    // Optionally show error toast to user
+    showError(
+      `子项状态切换失败：${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
