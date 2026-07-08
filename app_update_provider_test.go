@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/secrets"
 )
 
 // buildExportProviderJSON 构造完整的 ExportProvider JSON 字符串，供 UpdateProvider 使用。
@@ -332,5 +334,157 @@ func TestUpdateProvider_RenameCleansLegacySecretKeys(t *testing.T) {
 	}
 	if k, _ := app.Secrets.GetAPIKey("glm:anthropic"); k != "" {
 		t.Fatalf("glm:anthropic legacy key should be deleted, got %q", k)
+	}
+}
+
+// ============================================================================
+// App.UpdateProvider -- 失败降级（设计 4.6）
+// ============================================================================
+
+// failingSaveSecretStore implements secrets.SecretStore but always fails on
+// Save. Load succeeds (returns an empty map) so the SecretsService initializes
+// cleanly; Save records that it was called and returns an injected error,
+// simulating an OS keychain write failure.
+//
+// This is intentionally distinct from app_persistence_test.go's failingSecretStore
+// (which fails on Load). It exists to exercise UpdateProvider's secrets.Save
+// degrade path (design 4.6): config already persisted, secrets.Save fails, do
+// NOT roll back config, return a friendly "please re-enter API key" error.
+type failingSaveSecretStore struct {
+	saveErr    error
+	saveCalled bool
+}
+
+func (s *failingSaveSecretStore) Load(path string) (map[string]string, error) {
+	_ = path
+	return map[string]string{}, nil
+}
+
+func (s *failingSaveSecretStore) Save(path string, values map[string]string) error {
+	_ = path
+	_ = values
+	s.saveCalled = true
+	return s.saveErr
+}
+
+func (s *failingSaveSecretStore) Kind() string { return "failing-save" }
+
+func (s *failingSaveSecretStore) LegacyImportPath(path string) string { return path }
+
+// swapToFailingSaveSecrets replaces app.Secrets with a SecretsService backed by
+// a failing-on-Save store, returning the store so the caller can assert
+// saveCalled. The new service is pre-loaded with an empty cache so SetAPIKey
+// works normally during Arrange.
+func swapToFailingSaveSecrets(t *testing.T, app *App, configDir string) *failingSaveSecretStore {
+	t.Helper()
+	store := &failingSaveSecretStore{saveErr: errors.New("simulated keychain write failure")}
+	svc := secrets.NewSecretsServiceWithStore(configDir, store)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("load failing-save secrets: %v", err)
+	}
+	app.Secrets = svc
+	return store
+}
+
+// TestUpdateProvider_RenameDegradesWhenSecretsSaveFails 验证设计 4.6 的失败降级路径：
+// config 原子写盘成功后 secrets.Save 失败时，不回滚 config，返回带友好提示的 error。
+//
+// 覆盖 secrets 迁移的两个触发分支（两个 subtest）：
+//   - migrate_old_key：JSON 未填新密钥 → 走"迁移旧密钥到 newName"分支；
+//   - write_new_key  ：JSON 填了新密钥 → 走"写入新密钥 + 删旧"分支。
+//
+// 每个 subtest 断言：
+//  1. 返回 error 且文案含 "config renamed but secrets save failed" 与
+//     "please re-enter API key for zhipu"（与 app.go 实际降级文案对齐）；
+//  2. config 保持一致（不回滚）：newName=zhipu 存在、oldName=glm 已删除、
+//     TerminalPresets stable key 已迁移到新前缀 zhipu/max（含 Provider 字段）；
+//  3. secrets.Save 真实被调用（store.saveCalled=true，证明降级路径被触发，
+//     而非 secrets 被跳过）；
+//  4. secrets 内存 cache 已按迁移语义变更（newName 持有目标密钥、oldName 已清），
+//     与 app.go 注释一致——持久化失败但 cache 已 mutate（下次 Load 会丢弃）；
+//  5. 调用正常返回 error，不 panic。
+func TestUpdateProvider_RenameDegradesWhenSecretsSaveFails(t *testing.T) {
+	cases := []struct {
+		name    string
+		newKey  string // JSON 中是否带新密钥："" → 迁移旧密钥；非空 → 写新删旧
+		wantKey string // 迁移后 newName 在 cache 中应持有的密钥
+	}{
+		{name: "migrate_old_key", newKey: "", wantKey: "old-secret"},
+		{name: "write_new_key", newKey: "brand-new-secret", wantKey: "brand-new-secret"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: 构造 App 并把 Secrets 换成"Save 注定失败"的实现
+			app, configDir := newTestAppWithConfigDir(t)
+			store := swapToFailingSaveSecrets(t, app, configDir)
+
+			// 准备 provider glm + 旧密钥 + 一个 TerminalPreset（用于验证 stable key 迁移）
+			if err := app.Config.SaveProvider("glm", config.Provider{
+				DefaultModel: "glm-4",
+				Anthropic:    &config.AnthropicFormat{Enabled: true},
+			}); err != nil {
+				t.Fatalf("SaveProvider(glm): %v", err)
+			}
+			if err := app.Secrets.SetAPIKey("glm", "old-secret"); err != nil {
+				t.Fatalf("SetAPIKey(glm): %v", err)
+			}
+			if err := app.Config.SaveTerminalPreset("claude_code", "glm/max", config.TerminalPreset{
+				Name: "Max", Provider: "glm", Model: "glm-4-max",
+			}); err != nil {
+				t.Fatalf("SaveTerminalPreset: %v", err)
+			}
+
+			// Act: 改名 glm→zhipu，触发 secrets 迁移（store.Save 注定失败）
+			jsonStr := buildExportProviderJSON(t, "glm-4", "https://a.glm.com", tc.newKey)
+			err := app.UpdateProvider("glm", "zhipu", jsonStr)
+
+			// Assert 1: 返回带友好提示的 error（不 panic、不 nil）
+			if err == nil {
+				t.Fatal("expected degrade error, got nil")
+			}
+			if !strings.Contains(err.Error(), "config renamed but secrets save failed") {
+				t.Fatalf("error should mention 'config renamed but secrets save failed', got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "please re-enter API key for zhipu") {
+				t.Fatalf("error should mention 'please re-enter API key for zhipu', got: %v", err)
+			}
+
+			// Assert 3: secrets.Save 真实被调用（证明走的是降级路径，而非 secrets 被跳过）
+			if !store.saveCalled {
+				t.Fatal("failing store Save() was not invoked; degrade path not exercised")
+			}
+
+			// Assert 2a: config 未回滚——newName 存在
+			if _, err := app.Config.GetProvider("zhipu"); err != nil {
+				t.Fatalf("config rolled back: 'zhipu' should exist after degrade, got: %v", err)
+			}
+			// Assert 2b: config 未回滚——oldName 已删
+			if _, err := app.Config.GetProvider("glm"); err == nil {
+				t.Fatal("config rolled back: 'glm' should be removed after degrade")
+			}
+			// Assert 2c: TerminalPresets stable key 已迁移到新前缀（策略 B 未被回滚）
+			provName, tp, err := app.Config.ResolveTerminalPreset("claude_code", "zhipu/max")
+			if err != nil {
+				t.Fatalf("ResolveTerminalPreset(zhipu/max) after degrade: %v", err)
+			}
+			if provName != "zhipu" {
+				t.Fatalf("preset should resolve to 'zhipu' under new prefix, got provName=%q", provName)
+			}
+			if tp == nil {
+				t.Fatal("config rolled back: TerminalPreset under 'zhipu/max' should resolve")
+			}
+			if tp.Provider != "zhipu" {
+				t.Fatalf("TerminalPreset.Provider = %q, want 'zhipu' (field not migrated / rolled back)", tp.Provider)
+			}
+
+			// Assert 4: secrets 内存 cache 已按迁移语义变更（持久化失败但 cache 已 mutate）
+			// 设计 4.6 明确语义：cache 已改、Save 失败、下次 Load 会丢弃，启动链走环境变量 fallback。
+			if k, _ := app.Secrets.GetAPIKey("zhipu"); k != tc.wantKey {
+				t.Fatalf("cache: zhipu key = %q, want %q (cache should be mutated by migrate)", k, tc.wantKey)
+			}
+			if k, _ := app.Secrets.GetAPIKey("glm"); k != "" {
+				t.Fatalf("cache: glm key should be cleared after migrate, got %q", k)
+			}
+		})
 	}
 }

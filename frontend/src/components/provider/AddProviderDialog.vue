@@ -105,6 +105,7 @@ import { SaveProvider } from '../../../wailsjs/go/config/ConfigService';
 import { SetAPIKey, Save as SaveSecrets } from '../../../wailsjs/go/secrets/SecretsService';
 import { getProviderExportJSON } from '../../api/provider';
 import { useProviderStore } from '../../stores/provider';
+import { useToast } from '../../composables/useToast';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
 
@@ -132,6 +133,7 @@ const emit = defineEmits<{
 }>();
 
 const store = useProviderStore();
+const { showError } = useToast();
 const loading = ref(false);
 
 const form = reactive({
@@ -377,8 +379,9 @@ async function handleSave() {
     // 刷新列表（编辑模式由 store.updateProvider 内部处理刷新 + activeProviderId 切换）
     emit('saved');
     handleClose();
-  } catch (err) {
+  } catch (err: any) {
     console.error('[AddProviderDialog] 保存失败:', err);
+    showError('保存失败: ' + (err?.message || err));
   } finally {
     loading.value = false;
   }
