@@ -7,8 +7,8 @@
 <template>
   <Dialog :open="open" :title="title" @update:open="handleClose">
     <div class="preset-form">
-      <!-- 预设名称（仅新增时显示） -->
-      <div v-if="!isEditing" class="form-group">
+      <!-- 预设名称（新增 / 编辑模式均显示；编辑模式仅改 label，key 锁定不变，见 handleSave） -->
+      <div class="form-group">
         <label class="form-label">预设名称</label>
         <input
           v-model="form.name"

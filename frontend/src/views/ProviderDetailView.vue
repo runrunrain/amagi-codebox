@@ -27,7 +27,7 @@
       返回列表
     </button>
 
-    <!-- 标题行：名称 + 格式徽章 -->
+    <!-- 标题行：名称 + 格式徽章 + 编辑按钮 -->
     <div class="detail-title-row">
       <span class="prov-name">{{ entryView.id }}</span>
       <span class="prov-formats">
@@ -38,6 +38,12 @@
           class="fmt legacy"
         >{{ typeInitial }}</span>
       </span>
+      <button
+        class="btn-ghost sm edit-btn"
+        type="button"
+        title="编辑提供商"
+        @click="openEditDialog"
+      >编辑</button>
     </div>
 
     <!-- 基本信息 -->
@@ -156,6 +162,13 @@
       <p class="compat-hint">该提供商未启用 Anthropic / OpenAI 双格式配置，可能为 legacy 单类型（{{ typeLabel }}）。完整编辑能力将在 P7 批次补齐。</p>
     </section>
     </template>
+
+    <!-- 编辑提供商弹窗（复用改造后的 AddProviderDialog，双模式） -->
+    <AddProviderDialog
+      v-model:open="editDialogOpen"
+      :edit-target="editTarget"
+      @saved="handleEditSaved"
+    />
   </ConfigCard>
 </template>
 
@@ -165,6 +178,7 @@ import ConfigCard from '../components/ui/ConfigCard.vue';
 import Switch from '../components/ui/Switch.vue';
 import LoadingState from '../components/ui/LoadingState.vue';
 import ErrorState from '../components/ui/ErrorState.vue';
+import AddProviderDialog from '../components/provider/AddProviderDialog.vue';
 import { useProviderStore } from '../stores/provider';
 import { useToast } from '../composables/useToast';
 import {
@@ -200,6 +214,9 @@ const inputValue = ref('');
 const inputVisible = ref(false);
 const confirmDelete = ref(false);
 
+// 编辑提供商弹窗状态（自身管理，对照设计 7.2）
+const editDialogOpen = ref(false);
+
 // Retry function for ErrorState
 const handleRetry = async () => {
   initialLoading.value = true
@@ -226,6 +243,32 @@ const entryView = computed(() => {
     }
   );
 });
+
+/**
+ * 编辑弹窗目标：当前详情页打开的 provider。
+ * AddProviderDialog 在 editTarget 非空时进入编辑模式（设计 6.1 / 7.2）。
+ * entry 为空时返回 null，弹窗退化为新增模式（实际不会触发，因详情页仅在 activeProvider 存在时渲染）。
+ */
+const editTarget = computed(() => {
+  const e = entry.value;
+  if (!e) return null;
+  return { id: e.id, provider: e.provider };
+});
+
+function openEditDialog() {
+  editDialogOpen.value = true;
+}
+
+/**
+ * 编辑保存后回调：store.updateProvider 内部已处理 providers 列表刷新 +
+ * activeProviderId 切换（改名时）+ 各引擎 presets 刷新（改名时）。
+ * 这里仅补刷当前密钥显示（密钥可能已更新）+ 提示。
+ */
+async function handleEditSaved() {
+  await loadKey();
+  showSuccess('提供商已更新');
+  emit('saved');
+}
 
 const hasAnthropic = computed(() => {
   const p = entry.value?.provider as any;
@@ -445,6 +488,11 @@ watch(
 .prov-formats {
   display: flex;
   gap: 5px;
+}
+
+/* 编辑按钮：推到标题行最右侧，与格式徽章保持呼吸距离 */
+.edit-btn {
+  margin-left: auto;
 }
 
 /* A/O 格式徽章：A 紫 O 绿（非品牌色）*/

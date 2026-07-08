@@ -2561,3 +2561,355 @@ func TestCompressDuplicatedPrefixPresetKey_Idempotent(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// RenameProvider -- provider 改名跨模块联动（设计 10.1）
+// ============================================================================
+
+// seedProviderForRename 构造一个带三 map TerminalPreset + OpenCodePreset binding + legacy Preset 的 provider，
+// 用于 RenameProvider 测试。返回 provider name（即 oldName）。
+func seedProviderForRename(t *testing.T, svc *ConfigService, name string) {
+	t.Helper()
+	if err := svc.SaveProvider(name, Provider{
+		Anthropic:    &AnthropicFormat{Enabled: true, BaseURL: "https://a." + name + ".com"},
+		DefaultModel: name + "-4",
+		Presets: map[string]Preset{
+			"legacy": {Name: "legacy", Model: name + "-4"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveProvider(%s): %v", name, err)
+	}
+	for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+		tp := TerminalPreset{Name: "Max", Provider: name, Model: name + "-4-max"}
+		if err := svc.SaveTerminalPreset(string(tt), name+"/max", tp); err != nil {
+			t.Fatalf("SaveTerminalPreset(%s, %s/max): %v", tt, name, err)
+		}
+	}
+	if err := svc.SaveOpenCodePreset("oc1", OpenCodePreset{
+		ID:       "oc1",
+		Name:     "OC1",
+		Config:   json.RawMessage(`{}`),
+		Bindings: map[string]OpenCodeBinding{name + "-local": {LocalProvider: name, Format: "anthropic"}},
+	}); err != nil {
+		t.Fatalf("SaveOpenCodePreset: %v", err)
+	}
+}
+
+// TestRenameProvider_BasicRenameMigratesAllReferences 验证基本改名：Models key 迁移、
+// 三 map TerminalPresets stable key 同步 + Provider 字段更新、OpenCode bindings 更新、legacy Presets 随迁。
+func TestRenameProvider_BasicRenameMigratesAllReferences(t *testing.T) {
+	svc := newTestConfigService(t)
+	seedProviderForRename(t, svc, "glm")
+
+	if err := svc.RenameProvider("glm", "zhipu"); err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+
+	// Models key 迁移
+	if _, err := svc.GetProvider("glm"); err == nil {
+		t.Fatal("old provider 'glm' should be removed")
+	}
+	newProv, err := svc.GetProvider("zhipu")
+	if err != nil {
+		t.Fatalf("GetProvider(zhipu): %v", err)
+	}
+	if newProv.DefaultModel != "glm-4" {
+		t.Fatalf("DefaultModel = %q, want 'glm-4'", newProv.DefaultModel)
+	}
+	// legacy Presets 随 Provider 结构整体迁移
+	if len(newProv.Presets) != 1 {
+		t.Fatalf("legacy Presets len = %d, want 1", len(newProv.Presets))
+	}
+	if _, ok := newProv.Presets["legacy"]; !ok {
+		t.Fatal("legacy preset 'legacy' not migrated to new name")
+	}
+
+	// 三 map TerminalPresets stable key 同步 + Provider 字段更新
+	for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+		presets, err := svc.GetTerminalPresets(string(tt))
+		if err != nil {
+			t.Fatalf("GetTerminalPresets(%s): %v", tt, err)
+		}
+		if _, ok := presets["glm/max"]; ok {
+			t.Fatalf("%s: old stable key 'glm/max' still exists", tt)
+		}
+		tp, ok := presets["zhipu/max"]
+		if !ok {
+			t.Fatalf("%s: new stable key 'zhipu/max' not found", tt)
+		}
+		if tp.Provider != "zhipu" {
+			t.Fatalf("%s: Provider = %q, want 'zhipu'", tt, tp.Provider)
+		}
+		if tp.Model != "glm-4-max" {
+			t.Fatalf("%s: Model = %q, want 'glm-4-max'", tt, tp.Model)
+		}
+	}
+
+	// OpenCodePreset bindings LocalProvider 更新，binding key 不变
+	ocPresets := svc.GetOpenCodePresets()
+	oc1, ok := ocPresets["oc1"]
+	if !ok {
+		t.Fatal("OpenCodePreset 'oc1' missing after rename")
+	}
+	binding, ok := oc1.Bindings["glm-local"]
+	if !ok {
+		t.Fatal("binding key 'glm-local' should remain unchanged (only LocalProvider field updates)")
+	}
+	if binding.LocalProvider != "zhipu" {
+		t.Fatalf("binding LocalProvider = %q, want 'zhipu'", binding.LocalProvider)
+	}
+}
+
+// TestRenameProvider_PrefixMatchPrecision 验证精确前缀匹配：
+// glm 改名时，glm-pro 的 preset 不应受影响（HasPrefix(k, "glm/") 带斜杠）。
+func TestRenameProvider_PrefixMatchPrecision(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+	if err := svc.SaveProvider("glm-pro", Provider{DefaultModel: "glm-pro-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm-pro): %v", err)
+	}
+	// 两个 provider 各自的 preset，stable key 前缀分别为 glm/ 和 glm-pro/
+	if err := svc.SaveTerminalPreset("claude_code", "glm/max", TerminalPreset{Name: "Max", Provider: "glm"}); err != nil {
+		t.Fatalf("SaveTerminalPreset glm/max: %v", err)
+	}
+	if err := svc.SaveTerminalPreset("claude_code", "glm-pro/max", TerminalPreset{Name: "ProMax", Provider: "glm-pro"}); err != nil {
+		t.Fatalf("SaveTerminalPreset glm-pro/max: %v", err)
+	}
+
+	if err := svc.RenameProvider("glm", "zhipu"); err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+
+	presets, err := svc.GetTerminalPresets("claude_code")
+	if err != nil {
+		t.Fatalf("GetTerminalPresets: %v", err)
+	}
+	// glm 的 preset 应迁移
+	if _, ok := presets["glm/max"]; ok {
+		t.Fatal("glm/max should be renamed")
+	}
+	if tp, ok := presets["zhipu/max"]; !ok {
+		t.Fatal("zhipu/max should exist")
+	} else if tp.Provider != "zhipu" {
+		t.Fatalf("zhipu/max Provider = %q, want zhipu", tp.Provider)
+	}
+	// glm-pro 的 preset 不应受影响（精确前缀匹配带斜杠）
+	if tp, ok := presets["glm-pro/max"]; !ok {
+		t.Fatal("glm-pro/max should NOT be affected by glm rename (prefix match must include '/')")
+	} else if tp.Provider != "glm-pro" {
+		t.Fatalf("glm-pro/max Provider = %q, want glm-pro (unchanged)", tp.Provider)
+	}
+
+	// glm-pro provider 本身不应被删
+	if _, err := svc.GetProvider("glm-pro"); err != nil {
+		t.Fatalf("glm-pro provider should still exist: %v", err)
+	}
+}
+
+// TestRenameProvider_NoChangeShortCircuit 验证 oldName == newName 短路返回 nil，不执行迁移。
+func TestRenameProvider_NoChangeShortCircuit(t *testing.T) {
+	svc := newTestConfigService(t)
+	seedProviderForRename(t, svc, "glm")
+
+	if err := svc.RenameProvider("glm", "glm"); err != nil {
+		t.Fatalf("RenameProvider(glm, glm) should short-circuit, got: %v", err)
+	}
+	// 状态完全不变：provider 仍在，stable key 仍是 glm/max
+	if _, err := svc.GetProvider("glm"); err != nil {
+		t.Fatalf("glm should still exist after no-op rename: %v", err)
+	}
+	presets, _ := svc.GetTerminalPresets("claude_code")
+	if _, ok := presets["glm/max"]; !ok {
+		t.Fatal("glm/max should still exist after no-op rename")
+	}
+}
+
+// TestRenameProvider_NewNameExists 验证 newName 与其他 provider 重名时报错。
+func TestRenameProvider_NewNameExists(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+	if err := svc.SaveProvider("zhipu", Provider{DefaultModel: "zhipu-4"}); err != nil {
+		t.Fatalf("SaveProvider(zhipu): %v", err)
+	}
+
+	err := svc.RenameProvider("glm", "zhipu")
+	if err == nil {
+		t.Fatal("expected error when newName already exists, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("error should mention 'already exists', got: %v", err)
+	}
+	// 校验失败不写盘：原状态不变
+	if _, err := svc.GetProvider("glm"); err != nil {
+		t.Fatal("glm should still exist after failed rename (validation must not mutate state)")
+	}
+}
+
+// TestRenameProvider_OldNameNotFound 验证 oldName 不存在时报错。
+func TestRenameProvider_OldNameNotFound(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+
+	err := svc.RenameProvider("nonexistent", "new")
+	if err == nil {
+		t.Fatal("expected error when oldName not found, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error should mention 'not found', got: %v", err)
+	}
+}
+
+// TestRenameProvider_InvalidNameSlash 验证 newName 含 "/" 时报错（破坏 stable key 结构）。
+func TestRenameProvider_InvalidNameSlash(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+
+	err := svc.RenameProvider("glm", "zhi/pu")
+	if err == nil {
+		t.Fatal("expected error for newName containing '/', got nil")
+	}
+	if !strings.Contains(err.Error(), "must not contain '/'") {
+		t.Fatalf("error should mention '/' restriction, got: %v", err)
+	}
+}
+
+// TestRenameProvider_InvalidNameWhitespace 验证 newName 含前后空白时报错。
+func TestRenameProvider_InvalidNameWhitespace(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+
+	err := svc.RenameProvider("glm", " zhipu")
+	if err == nil {
+		t.Fatal("expected error for newName with leading whitespace, got nil")
+	}
+	if !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("error should mention whitespace restriction, got: %v", err)
+	}
+}
+
+// TestRenameProvider_NameRequired 验证 oldName/newName 为空时报错。
+func TestRenameProvider_NameRequired(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+
+	if err := svc.RenameProvider("", "new"); err == nil {
+		t.Fatal("expected error for empty oldName")
+	}
+	if err := svc.RenameProvider("glm", ""); err == nil {
+		t.Fatal("expected error for empty newName")
+	}
+}
+
+// TestRenameProvider_PersistsAcrossReload 验证改名后单次原子写盘生效：
+// 重新 Load 后状态与改名后一致（无中间态、无丢失）。
+// 使用非默认 provider 名，避免 Load 时默认 provider 合并逻辑干扰。
+func TestRenameProvider_PersistsAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const oldN = "customapi"
+	const newN = "renamedapi"
+	if err := svc.SaveProvider(oldN, Provider{
+		DefaultModel: oldN + "-4",
+		Presets:      map[string]Preset{"legacy": {Name: "legacy", Model: oldN + "-4"}},
+	}); err != nil {
+		t.Fatalf("SaveProvider(%s): %v", oldN, err)
+	}
+	if err := svc.SaveTerminalPreset("claude_code", oldN+"/max", TerminalPreset{Name: "Max", Provider: oldN}); err != nil {
+		t.Fatalf("SaveTerminalPreset: %v", err)
+	}
+
+	if err := svc.RenameProvider(oldN, newN); err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+
+	// 重新 Load 验证持久化
+	svc2 := NewConfigService(dir)
+	if err := svc2.Load(); err != nil {
+		t.Fatalf("re-Load: %v", err)
+	}
+	if _, err := svc2.GetProvider(oldN); err == nil {
+		t.Fatalf("%s should not exist after reload", oldN)
+	}
+	if _, err := svc2.GetProvider(newN); err != nil {
+		t.Fatalf("%s should exist after reload: %v", newN, err)
+	}
+	presets, err := svc2.GetTerminalPresets("claude_code")
+	if err != nil {
+		t.Fatalf("GetTerminalPresets after reload: %v", err)
+	}
+	if _, ok := presets[newN+"/max"]; !ok {
+		t.Fatalf("%s/max should persist across reload", newN)
+	}
+	if _, ok := presets[oldN+"/max"]; ok {
+		t.Fatalf("%s/max should NOT persist across reload (must be renamed)", oldN)
+	}
+}
+
+// TestRenameProvider_OpenCodeBindingsMultiplePresets 验证多个 OpenCodePreset 的 bindings 均被更新，
+// 且未引用 oldName 的 binding 保持不变。
+func TestRenameProvider_OpenCodeBindingsMultiplePresets(t *testing.T) {
+	svc := newTestConfigService(t)
+	if err := svc.SaveProvider("glm", Provider{DefaultModel: "glm-4"}); err != nil {
+		t.Fatalf("SaveProvider(glm): %v", err)
+	}
+	if err := svc.SaveProvider("other", Provider{DefaultModel: "other-4"}); err != nil {
+		t.Fatalf("SaveProvider(other): %v", err)
+	}
+
+	// 两个 OpenCodePreset，bindings 分别引用 glm 与 other
+	if err := svc.SaveOpenCodePreset("oc-a", OpenCodePreset{
+		ID:     "oc-a",
+		Config: json.RawMessage(`{}`),
+		Bindings: map[string]OpenCodeBinding{
+			"b1": {LocalProvider: "glm"},
+			"b2": {LocalProvider: "other"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveOpenCodePreset(oc-a): %v", err)
+	}
+	if err := svc.SaveOpenCodePreset("oc-b", OpenCodePreset{
+		ID:     "oc-b",
+		Config: json.RawMessage(`{}`),
+		Bindings: map[string]OpenCodeBinding{
+			"x": {LocalProvider: "glm", Inject: []string{"apiKey", "baseURL"}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveOpenCodePreset(oc-b): %v", err)
+	}
+
+	if err := svc.RenameProvider("glm", "zhipu"); err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+
+	oc := svc.GetOpenCodePresets()
+	// oc-a: b1 -> zhipu, b2 -> other (unchanged)
+	if oc["oc-a"].Bindings["b1"].LocalProvider != "zhipu" {
+		t.Fatalf("oc-a.b1 LocalProvider = %q, want zhipu", oc["oc-a"].Bindings["b1"].LocalProvider)
+	}
+	if oc["oc-a"].Bindings["b2"].LocalProvider != "other" {
+		t.Fatalf("oc-a.b2 LocalProvider = %q, want other (unchanged)", oc["oc-a"].Bindings["b2"].LocalProvider)
+	}
+	// oc-b: x -> zhipu, Inject 字段保持不变
+	binding := oc["oc-b"].Bindings["x"]
+	if binding.LocalProvider != "zhipu" {
+		t.Fatalf("oc-b.x LocalProvider = %q, want zhipu", binding.LocalProvider)
+	}
+	if len(binding.Inject) != 2 || binding.Inject[0] != "apiKey" || binding.Inject[1] != "baseURL" {
+		t.Fatalf("oc-b.x Inject should be preserved, got %v", binding.Inject)
+	}
+}

@@ -221,4 +221,6 @@ export function UnregisterOutputCallback(arg1:string,arg2:string):Promise<void>;
 
 export function UnregisterResizeCallback(arg1:string,arg2:string):Promise<void>;
 
+export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;

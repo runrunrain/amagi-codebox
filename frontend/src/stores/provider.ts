@@ -22,6 +22,7 @@ import {
   getOpenCodeConfig,
   getOpenCodeConfigPath,
   deleteTerminalPreset,
+  updateProvider as updateProviderAPI,
 } from '../api/provider';
 
 type Provider = config.Provider;
@@ -286,6 +287,40 @@ export const useProviderStore = defineStore('provider', () => {
     await loadProviders();
   }
 
+  /**
+   * 更新指定服务商（统一编辑入口：支持改名 + 属性更新 + 密钥更新）。
+   *
+   * 行为（对照设计文档第九节 / 鲁班后端实现报告）：
+   * - 调用 api.updateProvider（后端 App.UpdateProvider）完成 config 迁移 + secrets 迁移。
+   * - 强制 loadProviders() 刷新列表（与 deleteProvider 范式对称）。
+   * - 若当前详情页打开的就是被改名的 provider（activeProviderId === oldId），
+   *   必须把 activeProviderId 切到 newName，否则 activeProvider getter 找不到、详情页空白。
+   * - 改名时（oldId !== newName）后端策略 B 会重命名 stable key（如 glm/max → zhipu/max），
+   *   前端 mergedPresets 记录的旧 key 已失效，必须强制刷新 claude/codex 预设列表；
+   *   OpenCode bindings.LocalProvider 也可能变，一并刷新 opencode。
+   * - 未改名（oldId === newName）不影响 preset，无需刷新预设。
+   *
+   * providerJSON 由调用方（AddProviderDialog 编辑模式）构造，须保证：
+   *   api_key 空 = 保持不变；presets 从 getProviderExportJSON 原样保留。
+   */
+  async function updateProvider(oldId: string, newName: string, providerJSON: string) {
+    await updateProviderAPI(oldId, newName, providerJSON);
+    // 强制刷新 providers 列表 + 密钥状态
+    await loadProviders();
+    // 若当前打开的就是被改名的 provider，切换 activeProviderId 指向新 name
+    if (activeProviderId.value === oldId && oldId !== newName) {
+      activeProviderId.value = newName;
+    }
+    // 改名时 stable key 已重命名（策略 B），强制刷新各引擎 presets
+    if (oldId !== newName) {
+      await Promise.all([
+        loadPresets('claude', true),
+        loadPresets('codex', true),
+        loadPresets('opencode', true),
+      ]);
+    }
+  }
+
   /** 切换二级 Tab 引擎，并按需加载该引擎数据 */
   function setPresetEngine(engine: PresetEngine) {
     if (presetEngine.value === engine) return;
@@ -346,6 +381,7 @@ export const useProviderStore = defineStore('provider', () => {
     loadPresets,
     deletePreset,
     deleteProvider,
+    updateProvider,
     setPresetEngine,
     setPresetFilter,
     setPresetSearch,

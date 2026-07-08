@@ -330,6 +330,29 @@
 **Returns**: `error`  
 **Description**: 从 JSON 字符串解析并保存指定 provider 配置，同时更新 API Key。
 
+### UpdateProvider
+**Service**: App  
+**Parameters**: `oldName (string)`, `newName (string)`, `providerJSON (string)`  
+**Returns**: `error`  
+**Description**: 统一编辑提供商入口，支持改名与属性更新。
+
+  - `oldName == newName`：复用 `SaveProviderFromJSON` 路径（属性覆盖 + API Key 同步），零副作用。
+  - `oldName != newName`（改名）：
+    1. 迁移 config 内所有引用（Models key、TerminalPresets 的 stable key + Provider 字段、OpenCodePresets 的 bindings LocalProvider）。
+    2. 覆盖新属性。
+    3. secrets 密钥迁移：JSON 含新 API Key 则写入新 name + 删旧；不含则迁移旧密钥到新 name + 删旧；都没有则跳过。
+
+  **校验**：`newName` 非空、不含 `/`（会破坏 stable key）；`oldName` 必须存在；`newName` 不得与其他 provider 重名（oldName 自身除外）。
+
+  **错误**：
+  - `provider name is required`
+  - `invalid provider name: must not contain '/'`
+  - `provider not found: {oldName}`
+  - `provider already exists: {newName}`
+  - `config renamed but secrets save failed: ...; please re-enter API key for {newName}`（降级提示）
+
+  **原子性**：config 单文件原子写（.tmp + rename）；secrets 迁移在 config 写盘成功后进行，失败不回滚 config（降级为提示用户重填密钥）。
+
 ### GetUrlHistory
 **Service**: App  
 **Parameters**: `providerID (string)`  
@@ -555,6 +578,12 @@
 **Parameters**: `name (string)`  
 **Returns**: `error`  
 **Description**: 删除指定 provider，并立即持久化。
+
+### RenameProvider
+**Service**: Config Service  
+**Parameters**: `oldName (string)`, `newName (string)`  
+**Returns**: `error`  
+**Description**: [内部方法] 重命名 provider，迁移 config 内所有引用（Models key、TerminalPresets stable key + Provider 字段、OpenCodePresets bindings LocalProvider），单次原子写盘。不含 secrets（由 `App.UpdateProvider` 在 App 层编排）。此方法主要供 `App.UpdateProvider` 内部调用，前端不直接通过 ConfigService 调用。
 
 ### GetPresets
 **Service**: Config Service  

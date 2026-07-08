@@ -527,6 +527,119 @@ func (s *ConfigService) DeleteProvider(name string) error {
 	return s.saveLocked()
 }
 
+// RenameProvider 重命名 provider，同步迁移 config 内的所有引用：
+//   - Models map key（含 legacy Presets，随 Provider 结构整体迁移）
+//   - TerminalPresets 三个 engine map 的 stable key（策略 B：前缀同步重命名）+ Provider 字段
+//   - OpenCodePresets.*.Bindings.*.LocalProvider
+//
+// 不含 secrets 迁移（由 App.UpdateProvider 在 App 层编排）。
+// 校验在持锁后、改数据前完成；所有迁移完成后单次 saveLocked() 原子写盘。
+// oldName == newName 时短路返回 nil（双保险，App 层已分流）。
+func (s *ConfigService) RenameProvider(oldName, newName string) error {
+	// —— 持锁前校验（不依赖 config 状态）——
+	if oldName == "" || newName == "" {
+		return errors.New("provider name is required")
+	}
+	if oldName == newName {
+		return nil
+	}
+	// "/" 会破坏 stable key 结构（stable key = provider/presetName）；
+	// 前后空白会造成 UI 显示与存储不一致。两者均拒绝。
+	if strings.Contains(newName, "/") {
+		return fmt.Errorf("invalid provider name %q: must not contain '/'", newName)
+	}
+	if strings.TrimSpace(newName) != newName {
+		return fmt.Errorf("invalid provider name %q: must not have leading or trailing whitespace", newName)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// —— 持锁后校验（依赖 config 状态）——
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	prov, ok := s.config.Models[oldName]
+	if !ok {
+		return fmt.Errorf("provider not found: %s", oldName)
+	}
+	// newName 不得与"其他" provider 重名（oldName 自身除外，但此处 oldName != newName 已保证）。
+	if _, exists := s.config.Models[newName]; exists {
+		return fmt.Errorf("provider already exists: %s", newName)
+	}
+
+	// —— 1. Models map 改名（legacy Presets 随 Provider 结构整体迁移，无需单独处理）——
+	delete(s.config.Models, oldName)
+	s.config.Models[newName] = prov
+
+	// —— 2. TerminalPresets 三个 map：stable key 同步重命名（策略 B）——
+	// 精确前缀匹配 oldName+"/"，避免 glm 误伤 glm-pro。
+	// 收集待迁移项到 slice 再批量 delete+写入，绝不边遍历边改 map。
+	if s.config.TerminalPresets != nil {
+		prefix := oldName + "/"
+		for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+			tpMap := s.config.TerminalPresets.GetMap(tt)
+			if tpMap == nil {
+				continue
+			}
+			type pendingRename struct {
+				oldKey string
+				newKey string
+				tp     TerminalPreset
+			}
+			var pending []pendingRename
+			for k, tp := range tpMap {
+				if !strings.HasPrefix(k, prefix) {
+					continue
+				}
+				// shortName 从旧 key 的 "/" 后部分提取（系统派生，非用户输入），不会堆叠。
+				shortName := strings.TrimPrefix(k, prefix)
+				pending = append(pending, pendingRename{
+					oldKey: k,
+					newKey: newName + "/" + shortName,
+					tp:     tp,
+				})
+			}
+			for _, item := range pending {
+				delete(tpMap, item.oldKey)
+				item.tp.Provider = newName // 同步更新 Provider 字段
+				tpMap[item.newKey] = item.tp
+			}
+			if len(pending) > 0 {
+				s.config.TerminalPresets.SetMap(tt, tpMap)
+			}
+		}
+	}
+
+	// —— 3. OpenCodePresets.*.Bindings.*.LocalProvider 更新 ——
+	// OpenCodeBinding 是值类型，修改后必须写回 bindings map；
+	// OpenCodePreset 同样是值类型，改完 bindings 后写回 OpenCodePresets map。
+	if s.config.OpenCodePresets != nil {
+		for ocKey, ocPreset := range s.config.OpenCodePresets {
+			if ocPreset.Bindings == nil {
+				continue
+			}
+			changed := false
+			for bKey, binding := range ocPreset.Bindings {
+				if binding.LocalProvider == oldName {
+					binding.LocalProvider = newName
+					ocPreset.Bindings[bKey] = binding
+					changed = true
+				}
+			}
+			if changed {
+				s.config.OpenCodePresets[ocKey] = ocPreset
+			}
+		}
+	}
+
+	// —— 4. legacy provider.Presets ——
+	// 无需处理：legacy Presets 嵌在 Provider 结构内，第 1 步整体迁移到 newName 时已带走。
+
+	// —— 5. 单次原子写盘（所有 map 改完后一次性写）——
+	return s.saveLocked()
+}
+
 func (s *ConfigService) GetPresets(providerName string) (map[string]Preset, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

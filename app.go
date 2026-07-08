@@ -2534,6 +2534,125 @@ func (a *App) SaveProviderFromJSON(providerName string, jsonStr string) error {
 	return nil
 }
 
+// UpdateProvider 统一编辑提供商入口：支持改名 + 属性更新 + 密钥更新。
+//   - oldName == newName：仅更新属性，复用 SaveProviderFromJSON 路径（零副作用）。
+//   - oldName != newName（改名）：先 config 迁移（RenameProvider 原子写盘），
+//     再覆盖新属性（SaveProvider），最后 secrets 密钥迁移并显式落盘。
+//
+// providerJSON 为完整的 ExportProvider JSON（含可编辑属性与可选 API Key）。
+// API Key 为空表示"保持不变"——后端会迁移旧密钥到新 name。
+//
+// 失败降级（设计 4.6）：config 已原子写成功后 secrets.Save 失败时，不回滚 config，
+// 返回带友好提示的 error，用户重新填写密钥即可。
+func (a *App) UpdateProvider(oldName, newName string, providerJSON string) error {
+	// —— 1. 校验（持锁前，不依赖 config 状态）——
+	if oldName == "" {
+		return errors.New("provider name is required")
+	}
+	trimmedNew := strings.TrimSpace(newName)
+	if trimmedNew == "" {
+		return errors.New("provider name is required")
+	}
+	if strings.Contains(trimmedNew, "/") {
+		return fmt.Errorf("invalid provider name %q: must not contain '/'", trimmedNew)
+	}
+	newName = trimmedNew
+
+	// —— 2. 解析 ExportProvider JSON ——
+	var ep config.ExportProvider
+	if err := json.Unmarshal([]byte(providerJSON), &ep); err != nil {
+		return fmt.Errorf("invalid JSON format: %w", err)
+	}
+
+	// —— 3. 分流：未改名走现成路径 ——
+	if oldName == newName {
+		return a.SaveProviderFromJSON(newName, providerJSON)
+	}
+
+	// —— 改名分支 ——
+	// 3a. 预读旧密钥（config 改动前读取，确保可读）。
+	// 只读 secrets cache（统一 key + legacy 回退），不查环境变量——环境变量不可迁移。
+	oldKey := ""
+	if oldProv, err := a.Config.GetProvider(oldName); err == nil && oldProv != nil {
+		oldKey = a.readStoredProviderAPIKey(oldName, *oldProv)
+	}
+
+	// 3b. config 迁移（原子写盘）
+	if err := a.Config.RenameProvider(oldName, newName); err != nil {
+		return err
+	}
+
+	// 3c. 覆盖新属性（此时 newName 已存在，upsert）。
+	// 复用 buildProviderFromExportProvider，保持 JSON 结构与现有路径一致。
+	newProvider := buildProviderFromExportProvider(ep)
+	if err := a.Config.SaveProvider(newName, newProvider); err != nil {
+		// config 已改名（步骤 3b 成功），属性未更新——不回滚，前端可重试。
+		a.Log.Warn("app", "provider 改名后属性覆盖失败，可重试", oldName+" -> "+newName+": "+err.Error())
+		return fmt.Errorf("rename succeeded but save new properties failed: %w", err)
+	}
+
+	// 3d. secrets 迁移（三分支）
+	newKey := selectImportedProviderAPIKey(ep)
+	secretsChanged := false
+	switch {
+	case newKey != "":
+		// 用户填了新密钥：写入 newName 的统一 key。
+		if err := a.Secrets.SetAPIKey(newName, newKey); err != nil {
+			return fmt.Errorf("set new API key for %q: %w", newName, err)
+		}
+		secretsChanged = true
+		// 删除 oldName 的所有密钥条目（统一 key + legacy）。
+		a.deleteProviderAPIKeys(oldName)
+	case oldKey != "":
+		// 用户未填新密钥（保持不变）：迁移旧密钥到 newName。
+		if err := a.Secrets.SetAPIKey(newName, oldKey); err != nil {
+			return fmt.Errorf("migrate API key to %q: %w", newName, err)
+		}
+		a.deleteProviderAPIKeys(oldName)
+		secretsChanged = true
+	}
+	// newKey 空 且 oldKey 空：无密钥可迁，跳过。
+
+	// 3e. secrets 落盘（仅在发生变更时）
+	if secretsChanged {
+		if err := a.Secrets.Save(); err != nil {
+			// 设计 4.6：config 已一致，secrets 内存 cache 已改但 Save 失败。
+			// 不回滚 config（反向操作风险更高）。降级为提示用户重填密钥。
+			a.Log.Warn("app", "provider 改名后密钥落盘失败，请重新填写密钥",
+				oldName+" -> "+newName+": "+err.Error())
+			return fmt.Errorf("config renamed but secrets save failed: %w; please re-enter API key for %s", err, newName)
+		}
+	}
+
+	a.Log.Info("app", "provider 已改名", oldName+" -> "+newName)
+	return nil
+}
+
+// readStoredProviderAPIKey 读取 provider 在 secrets cache 中的统一密钥，
+// 回退到 legacy providerName:format 命名。不查询环境变量（环境变量不可迁移）。
+func (a *App) readStoredProviderAPIKey(providerName string, provider config.Provider) string {
+	if key, _ := a.Secrets.GetAPIKey(providerName); strings.TrimSpace(key) != "" {
+		return strings.TrimSpace(key)
+	}
+	for _, format := range legacyProviderAPIKeyCandidates(provider) {
+		if key, err := a.Secrets.GetAPIKey(providerName + ":" + format); err == nil {
+			if trimmed := strings.TrimSpace(key); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+// deleteProviderAPIKeys 删除指定 provider 在 secrets cache 中的所有密钥条目，
+// 包含统一 key（providerName）与 legacy 命名（providerName:anthropic / providerName:openai）。
+// 用于改名后清理旧 name 的残留，避免 secrets.enc 出现指向已不存在 provider 的孤儿条目。
+func (a *App) deleteProviderAPIKeys(providerName string) {
+	_ = a.Secrets.DeleteAPIKey(providerName)
+	_ = a.Secrets.DeleteAPIKey(providerName + ":anthropic")
+	_ = a.Secrets.DeleteAPIKey(providerName + ":openai")
+}
+
 // DeleteProvider 删除指定服务商配置。
 func (a *App) DeleteProvider(name string) error {
 	if name == "" {

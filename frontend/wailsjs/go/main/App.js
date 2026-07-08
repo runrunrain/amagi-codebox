@@ -422,6 +422,10 @@ export function UnregisterResizeCallback(arg1, arg2) {
   return window['go']['main']['App']['UnregisterResizeCallback'](arg1, arg2);
 }
 
+export function UpdateProvider(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateProvider'](arg1, arg2, arg3);
+}
+
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
 }
