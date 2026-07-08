@@ -744,7 +744,6 @@ func (t *winTray) ShowMenu() error {
 	const (
 		TPM_BOTTOMALIGN = 0x0020
 		TPM_LEFTALIGN   = 0x0000
-		WM_NULL         = 0x0000
 	)
 	p := point{}
 	res, _, err := pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
@@ -762,12 +761,6 @@ func (t *winTray) ShowMenu() error {
 		uintptr(t.window),
 		0,
 	)
-	if res == 0 {
-		return err
-	}
-	// Win32 要求通知区菜单在 TrackPopupMenu 返回后向拥有者窗口补发 WM_NULL，
-	// 否则后续高频弹出时菜单可能立即消失或不再稳定显示。
-	res, _, err = pPostMessage.Call(uintptr(t.window), WM_NULL, 0, 0)
 	if res == 0 {
 		return err
 	}
