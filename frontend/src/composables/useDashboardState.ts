@@ -20,6 +20,7 @@ const state = reactive({
   codexMode: 'embedded',
   workDir: '',
   useProxy: false,
+  useHeadroom: false,
   claudeShell: '',
   openCodeShell: '',
   codexShell: '',
@@ -53,6 +54,7 @@ export function useDashboardState() {
       state.openCodeShell = d.openCodeShell || d.shell || shellFallback
       state.codexShell = d.codexShell || d.shell || shellFallback
       state.useProxy = d.useProxy || false
+      state.useHeadroom = d.useHeadroom || false
     } catch (err) {
       console.error('Failed to load dashboard defaults:', err)
     }
@@ -82,6 +84,7 @@ export function useDashboardState() {
         amagiCodeMode: '',
         amagiCodeShell: '',
         useProxy: state.useProxy,
+        useHeadroom: state.useHeadroom,
       })
     } catch (err) {
       console.error('Failed to persist dashboard defaults:', err)
@@ -97,6 +100,7 @@ export function useDashboardState() {
     state.codexModel = ''
     state.workDir = ''
     state.useProxy = false
+    state.useHeadroom = false
     state.initialized = false
   }
 

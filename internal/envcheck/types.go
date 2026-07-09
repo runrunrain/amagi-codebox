@@ -21,6 +21,7 @@ const (
 	ToolClaudeCode CLITool = "claude_code"
 	ToolOpenCode   CLITool = "opencode"
 	ToolCodex      CLITool = "codex"
+	ToolHeadroom   CLITool = "headroom"
 )
 
 // InstallMethod describes how a CLI tool was installed on the host.
@@ -29,6 +30,7 @@ type InstallMethod string
 const (
 	InstallMethodNative   InstallMethod = "native"
 	InstallMethodNPM      InstallMethod = "npm"
+	InstallMethodPip      InstallMethod = "pip"
 	InstallMethodHomebrew InstallMethod = "homebrew"
 	InstallMethodUnknown  InstallMethod = "unknown"
 )

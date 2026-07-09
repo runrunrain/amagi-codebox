@@ -409,7 +409,7 @@ func TestLaunchSession_Terminal_DualFormatProvider_UsesUnifiedProviderKey(t *tes
 		t.Fatalf("SetAPIKey: %v", err)
 	}
 
-	sessionID, err := app.LaunchSession(providerID, "", "terminal", newASCIIPathTempDir(t, "claude-workdir-"), false, "")
+	sessionID, err := app.LaunchSession(providerID, "", "terminal", newASCIIPathTempDir(t, "claude-workdir-"), false, false, "")
 	if err != nil {
 		t.Fatalf("LaunchSession failed: %v", err)
 	}

@@ -812,11 +812,16 @@ func (s *Service) buildEnhancedEnv() []string {
 	return env
 }
 
-// resetNPMCache allows re-probing npm availability.
+// resetNPMCache allows re-probing npm availability. It also resets the pip
+// availability cache so that Headroom install eligibility is recomputed after
+// a PATH fix (pip and node commonly live in directories that the fix adds).
 func (s *Service) resetNPMCache() {
 	s.npmOnce = sync.Once{}
 	s.npmAvailable = false
 	s.npmResolvedErr = nil
+	s.pipOnce = sync.Once{}
+	s.pipAvailable = false
+	s.pipResolvedErr = nil
 }
 
 // atomicWriteFileWithPerm writes data to path atomically using a temp file

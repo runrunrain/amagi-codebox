@@ -171,6 +171,8 @@ func cliCommandNamesForTool(tool CLITool) []string {
 		return []string{"opencode"}
 	case ToolCodex:
 		return []string{"codex"}
+	case ToolHeadroom:
+		return []string{"headroom"}
 	default:
 		return nil
 	}

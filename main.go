@@ -51,6 +51,7 @@ func main() {
 			app.Config,
 			app.Secrets,
 			app.Proxy,
+			app.Headroom,
 			app.Paths,
 			app.Log,
 			app.Pty,

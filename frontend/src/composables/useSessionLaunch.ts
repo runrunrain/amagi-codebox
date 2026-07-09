@@ -158,6 +158,7 @@ export function useSessionLaunch() {
           mode: dashState.claudeMode,
           workDir: dashState.workDir,
           useProxy: dashState.useProxy,
+          useHeadroom: dashState.useHeadroom,
           shellPath: dashState.claudeMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })
       } else if (dashState.engine === 'opencode') {

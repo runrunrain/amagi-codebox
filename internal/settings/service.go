@@ -43,6 +43,7 @@ type DashboardDefaults struct {
 	// Deprecated: retained only so legacy settings.json files can still be decoded.
 	AmagiCodeShell string `json:"amagiCodeShell"`
 	UseProxy       bool   `json:"useProxy"`
+	UseHeadroom    bool   `json:"useHeadroom"`
 }
 
 // TerminalSettings 终端设置

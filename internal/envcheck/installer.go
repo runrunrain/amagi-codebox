@@ -53,6 +53,10 @@ const (
 	homebrewCleanupSafetyDetail   = "Homebrew autoremove disabled via HOMEBREW_NO_AUTOREMOVE=1; Homebrew install cleanup also disabled via HOMEBREW_NO_INSTALL_CLEANUP=1"
 
 	codexNPMPackageName = "@openai/codex"
+
+	// headroomPackageName is the pip distribution name for Headroom. It is the
+	// PyPI package, not an npm package; the name reflects the install channel.
+	headroomPackageName = "headroom-ai"
 )
 
 var (
@@ -1436,6 +1440,14 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			return nil, err
 		}
 		return []installCommand{s.resolveCommandNPMPath(npmCodexCommand(operation))}, nil
+	case ToolHeadroom:
+		// Headroom is a Python package distributed via pip; it does NOT depend
+		// on npm. Resolve pip up front so a missing pip is reported as a clear
+		// error before attempting the install.
+		if err := s.ensurePipAvailable(); err != nil {
+			return nil, err
+		}
+		return []installCommand{s.resolveCommandPipPath(pipHeadroomCommand(operation))}, nil
 	default:
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
@@ -1986,6 +1998,103 @@ func (s *Service) resolveNPMPath() string {
 	return "npm"
 }
 
+// pipHeadroomCommand returns the pip command for Headroom. Installs use
+// `pip install headroom-ai[all]`; updates use `pip install -U` which is the
+// reliable way to force an upgrade (pip does not have a separate update verb).
+func pipHeadroomCommand(operation installOperation) installCommand {
+	if operation == installOperationUpdate {
+		return installCommand{
+			description: "pip install --upgrade headroom-ai[all]",
+			path:        "pip",
+			args:        []string{"install", "-U", "headroom-ai[all]"},
+			timeout:     installCommandTimeout,
+		}
+	}
+	return installCommand{
+		description: "pip install headroom-ai[all]",
+		path:        "pip",
+		args:        []string{"install", "headroom-ai[all]"},
+		timeout:     installCommandTimeout,
+	}
+}
+
+// resolvePipPath returns the absolute path to pip, preferring "pip" then
+// "pip3", falling back to the bare "pip" name so the OS can resolve it.
+// Mirrors resolveNPMPath.
+func (s *Service) resolvePipPath() string {
+	env := s.buildEnhancedEnv()
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	for _, name := range []string{"pip", "pip3"} {
+		resolved, _, err := resolver.ResolveExecutable(name, nil, env)
+		if err == nil && strings.TrimSpace(resolved.Path) != "" {
+			return resolved.Path
+		}
+	}
+	return "pip"
+}
+
+// resolveCommandPipPath replaces a bare "pip" command path with the resolved
+// absolute path to pip, ensuring install commands work even when the GUI
+// process has a minimal PATH. Mirrors resolveCommandNPMPath.
+func (s *Service) resolveCommandPipPath(cmd installCommand) installCommand {
+	if cmd.path == "pip" {
+		if resolved := s.resolvePipPath(); resolved != "" && resolved != "pip" {
+			cmd.path = resolved
+		}
+	}
+	return cmd
+}
+
+// ensurePipAvailable probes pip availability (cached once per service lifetime
+// via pipOnce). Returns an error explaining how to remediate when pip is not
+// found. Mirrors ensureNPMAvailable.
+func (s *Service) ensurePipAvailable() error {
+	s.pipOnce.Do(func() {
+		s.probePipAvailability()
+	})
+	if s.pipAvailable {
+		return nil
+	}
+	if s.pipResolvedErr != nil {
+		return s.pipResolvedErr
+	}
+	return fmt.Errorf("pip 未在 PATH 中找到。请安装 Python 3 (https://www.python.org) 并确保 pip 可用，然后重启 CodeBox。")
+}
+
+// probePipAvailability performs the actual pip availability check and stores
+// the result in the service's cache fields. Called exactly once via pipOnce.
+// It prefers "pip" then "pip3" and verifies the binary actually runs.
+func (s *Service) probePipAvailability() {
+	env := s.buildEnhancedEnv()
+	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
+	for _, name := range []string{"pip", "pip3"} {
+		resolved, _, resolveErr := resolver.ResolveExecutable(name, nil, env)
+		if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+			Path:   resolved.Path,
+			Args:   []string{"--version"},
+			Env:    env,
+			Policy: platform.DefaultProcessPolicy(),
+		})
+		cancel()
+		if runErr == nil {
+			s.pipAvailable = true
+			s.pipResolvedErr = nil
+			return
+		}
+		detail := sanitizeInstallerOutput(resultText(result))
+		if detail == "" {
+			detail = sanitizeInstallerOutput(runErr.Error())
+		}
+		s.pipResolvedErr = fmt.Errorf("在 %s 找到 %s 但无法正常运行: %s", resolved.Path, name, detail)
+		return
+	}
+	s.pipResolvedErr = fmt.Errorf("pip/pip3 未在 PATH 中找到；请安装 Python 3 (https://www.python.org) 并确保 pip 可用")
+}
+
 func (s *Service) runInstallCommand(command installCommand) error {
 	_, err := s.runInstallCommandResult(command)
 	return err
@@ -2265,6 +2374,53 @@ func (s *Service) cleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 	}
 }
 
+// cleanHeadroom removes an existing Headroom installation by running
+// `pip uninstall -y headroom-ai`. It first verifies headroom is installed,
+// then runs the uninstall through ProcessRunner with the default policy, and
+// finally re-checks the tool status to report the outcome. The pip path is
+// resolved via resolvePipPath so the command works under the minimal GUI PATH.
+func (s *Service) cleanHeadroom() (*InstallResult, error) {
+	status, checkErr := s.CheckOne(ToolHeadroom)
+	if checkErr != nil && status == nil {
+		return installFailure(ToolHeadroom, "卸载前检测 Headroom 失败", checkErr), nil
+	}
+	if status == nil || !status.Installed {
+		return &InstallResult{Success: true, Message: "未检测到 Headroom，无需卸载", Tool: ToolHeadroom}, nil
+	}
+
+	pipPath := s.resolvePipPath()
+	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	defer cancel()
+	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   pipPath,
+		Args:   []string{"uninstall", "-y", headroomPackageName},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if err != nil {
+		message := strings.TrimSpace(resultText(result))
+		if message == "" {
+			message = err.Error()
+		}
+		return installFailure(ToolHeadroom, fmt.Sprintf("pip uninstall %s 失败: %s", headroomPackageName, sanitizeInstallerOutput(message)), err), err
+	}
+
+	after, _ := s.CheckOne(ToolHeadroom)
+	if after != nil && !after.Installed {
+		return &InstallResult{Success: true, Message: "Headroom 已通过 pip uninstall 成功卸载", Tool: ToolHeadroom}, nil
+	}
+	version := ""
+	if after != nil {
+		version = after.Version
+	}
+	return &InstallResult{
+		Success: true,
+		Message: fmt.Sprintf("pip uninstall %s 已执行；请重新检测确认卸载结果", headroomPackageName),
+		Tool:    ToolHeadroom,
+		Version: version,
+	}, nil
+}
+
 func (s *Service) cleanClaudeCodeUnknown() (*InstallResult, error) {
 	status, checkErr := s.CheckOne(ToolClaudeCode)
 	if checkErr != nil && status == nil {
@@ -2512,6 +2668,8 @@ func displayToolName(tool CLITool) string {
 		return "OpenCode"
 	case ToolCodex:
 		return "Codex"
+	case ToolHeadroom:
+		return "Headroom"
 	default:
 		return string(tool)
 	}

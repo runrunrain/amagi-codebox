@@ -278,6 +278,20 @@
         >
           {{ card.isUpdating ? '更新中...' : '更新' }}
         </AppButton>
+        <!--
+          Headroom: pip-distributed, uninstall via envcheck.Service.CleanHeadroom
+          (no App-level wrapper). Gated to headroom only; other non-Claude tools
+          have no managed uninstall path.
+        -->
+        <AppButton
+          v-if="card.key === 'headroom' && card.status?.installed"
+          variant="ghost"
+          size="small"
+          :disabled="card.isOperating || checking || !!runningOperation || headroomUninstalling"
+          @click="handleUninstallHeadroom"
+        >
+          {{ headroomUninstalling ? '卸载中...' : '卸载' }}
+        </AppButton>
       </template>
     </div>
   </div>
@@ -296,6 +310,7 @@ import {
   startInstallClaudeWithMethodAsync,
   uninstallClaudeCode,
   cleanClaudeInstall,
+  cleanHeadroom,
   fixClaudeConfig,
   runEnvFixAction,
 } from '../../api/envcheck'
@@ -338,6 +353,7 @@ const TOOL_METAS: ToolMeta[] = [
   { key: 'claude_code', displayName: 'Claude Code', iconChar: 'C', bgColor: 'rgba(204,120,50,0.15)' },
   { key: 'opencode', displayName: 'OpenCode', iconChar: 'O', bgColor: 'rgba(79,195,247,0.15)' },
   { key: 'codex', displayName: 'Codex', iconChar: 'X', bgColor: 'rgba(102,187,106,0.15)' },
+  { key: 'headroom', displayName: 'Headroom', iconChar: 'H', bgColor: 'rgba(149,117,205,0.15)' },
 ]
 
 const POLL_INTERVAL = 1500
@@ -844,6 +860,50 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
     }
   } finally {
     claudeUninstalling.value = false
+    if (mounted.value) await fetchSnapshot()
+  }
+}
+
+// ---------- Headroom: pip uninstall via envcheck.Service.CleanHeadroom ----------
+
+const headroomUninstalling = ref(false)
+
+async function handleUninstallHeadroom(): Promise<void> {
+  if (!confirm('确定要卸载 Headroom 吗？将通过 pip uninstall -y headroom-ai 移除，卸载后不会自动重新安装。')) {
+    return
+  }
+  headroomUninstalling.value = true
+  try {
+    const result = await cleanHeadroom()
+    const ok = !!result?.success
+    const rawMsg = result?.message || ''
+    if (ok) {
+      showSuccess(rawMsg || 'Headroom 已卸载')
+      lastResult.value = {
+        title: 'Headroom 已卸载',
+        description: rawMsg || undefined,
+        type: 'success',
+      }
+    } else {
+      // pip uninstall 已执行但未确认成功：用 info 态提示重新检测
+      showInfo(rawMsg || result?.error || '卸载未确认')
+      lastResult.value = {
+        title: 'Headroom 卸载未确认',
+        description: rawMsg || result?.error || undefined,
+        type: 'info',
+      }
+    }
+    await runSingleCheck('headroom')
+  } catch (err: any) {
+    console.error('Headroom uninstall failed:', err)
+    showError('Headroom 卸载失败: ' + (err?.message || String(err)))
+    lastResult.value = {
+      title: 'Headroom 卸载失败',
+      description: err?.message || String(err),
+      type: 'error',
+    }
+  } finally {
+    headroomUninstalling.value = false
     if (mounted.value) await fetchSnapshot()
   }
 }

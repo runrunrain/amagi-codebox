@@ -20,6 +20,8 @@ import {
   FixClaudeConfig,
 } from '../../wailsjs/go/main/App';
 
+import { CleanHeadroom } from '../../wailsjs/go/envcheck/Service';
+
 import { envcheck } from '../../wailsjs/go/models';
 
 // Type aliases
@@ -182,6 +184,19 @@ export async function checkClaudeConfig(): Promise<any> {
     return await CheckClaudeConfig();
   } catch (error) {
     console.error('Failed to check Claude config:', error);
+    throw error;
+  }
+}
+
+/**
+ * Clean (uninstall) Headroom via pip.
+ * Calls envcheck.Service.CleanHeadroom directly (no App-level wrapper exists).
+ */
+export async function cleanHeadroom(): Promise<InstallResult> {
+  try {
+    return await CleanHeadroom();
+  } catch (error) {
+    console.error('Failed to clean Headroom:', error);
     throw error;
   }
 }

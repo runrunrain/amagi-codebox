@@ -137,7 +137,7 @@ export function LaunchCodexSession(arg1:string,arg2:string,arg3:string,arg4:stri
 
 export function LaunchOpenCode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
-export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<string>;
+export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:boolean,arg7:string):Promise<string>;
 
 export function MigrateProviderPresetsToTerminal():Promise<number>;
 
@@ -151,7 +151,7 @@ export function PtyWrite(arg1:string,arg2:string):Promise<void>;
 
 export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 
-export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+export function QuickLaunch(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
 

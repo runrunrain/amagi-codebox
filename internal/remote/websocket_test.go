@@ -120,7 +120,7 @@ func (a *websocketTestApp) GetSessions() []session.SessionInfo { return nil }
 func (a *websocketTestApp) GetSession(sessionID string) (session.SessionInfo, error) {
 	return session.SessionInfo{}, errors.New("not implemented")
 }
-func (a *websocketTestApp) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, shellPath string) (string, error) {
+func (a *websocketTestApp) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, useHeadroom bool, shellPath string) (string, error) {
 	return "", errors.New("not implemented")
 }
 func (a *websocketTestApp) LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {

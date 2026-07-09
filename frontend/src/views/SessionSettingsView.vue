@@ -186,6 +186,15 @@
             @update:model-value="dashState.useProxy = $event"
           />
         </div>
+
+        <!-- 启用 Headroom 上下文压缩 -->
+        <div class="setting-row">
+          <label>启用 Headroom 上下文压缩</label>
+          <Switch
+            :model-value="dashState.useHeadroom"
+            @update:model-value="dashState.useHeadroom = $event"
+          />
+        </div>
       </div>
     </ConfigCard>
 

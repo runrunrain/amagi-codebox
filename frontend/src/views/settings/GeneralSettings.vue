@@ -120,6 +120,7 @@ const defaults = reactive({
   codexMode: 'embedded',
   codexShell: '',
   useProxy: false,
+  useHeadroom: false,
 })
 
 function isAnthropicCompatible(p: any): boolean {
@@ -233,6 +234,7 @@ async function loadData() {
     defaults.codexMode = d.codexMode || 'embedded'
     defaults.codexShell = d.codexShell || d.shell || shellFallback
     defaults.useProxy = d.useProxy || false
+    defaults.useHeadroom = d.useHeadroom || false
   } catch (err) {
     console.error('load defaults:', err)
   }
@@ -254,6 +256,7 @@ async function saveDefaults() {
       codexMode: defaults.codexMode,
       codexShell: defaults.codexShell,
       useProxy: defaults.useProxy,
+      useHeadroom: defaults.useHeadroom,
     } as any)
     showSuccess('默认值已保存')
   } catch (err: any) {

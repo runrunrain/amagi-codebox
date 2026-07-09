@@ -20,6 +20,7 @@ import (
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
+	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/opencodeconfig"
@@ -97,6 +98,7 @@ type App struct {
 	Secrets        *secrets.SecretsService
 	Launcher       *launcher.LauncherService
 	Proxy          *proxy.ProxyService
+	Headroom       *headroom.HeadroomService
 	Tray           *tray.Service
 	Sessions       *session.Manager
 	Paths          *paths.PathsService
@@ -138,6 +140,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		Secrets:        secrets.NewSecretsService(configDir),
 		Launcher:       launcher.NewLauncherService(log, envVarsSvc),
 		Proxy:          proxy.NewProxyService(),
+		Headroom:       headroom.NewHeadroomService(processRunner, log),
 		Tray:           tray.NewService(),
 		Sessions:       session.NewManager(),
 		Paths:          paths.NewPathsService(configDir),
@@ -426,6 +429,8 @@ func parseCLITool(tool string) (envcheck.CLITool, error) {
 		return envcheck.ToolOpenCode, nil
 	case "codex":
 		return envcheck.ToolCodex, nil
+	case "headroom":
+		return envcheck.ToolHeadroom, nil
 	default:
 		return "", fmt.Errorf("unknown CLI tool: %s", tool)
 	}
@@ -744,6 +749,11 @@ func (a *App) Shutdown(ctx context.Context) {
 
 	a.Tray.Stop()
 	a.Remote.Stop()
+	if a.Headroom != nil && a.Headroom.IsRunning() {
+		if err := a.Headroom.Stop(); err != nil {
+			a.Log.Error("app", "关闭 Headroom 失败", err.Error())
+		}
+	}
 	if a.Proxy.IsRunning() {
 		if err := a.Proxy.Stop(); err != nil {
 			a.Log.Error("app", "关闭代理失败", err.Error())
@@ -787,8 +797,8 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 // --- 多终端会话管理 ---
 
 // LaunchSession 启动一个新的终端会话
-func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, shellPath string) (string, error) {
-	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s proxy=%v shell=%s", providerName, presetName, mode, workDir, useProxy, shellPath))
+func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, useHeadroom bool, shellPath string) (string, error) {
+	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s proxy=%v headroom=%v shell=%s", providerName, presetName, mode, workDir, useProxy, useHeadroom, shellPath))
 
 	// ---- terminal_presets 桥接 ----
 	// 先尝试用 presetName 作为 terminal_preset 的 stable key 查找新体系
@@ -878,18 +888,59 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		workDir = home
 	}
 
-	if useProxy {
+	// realBackend 是真实 upstream 的 base URL（如 api.anthropic.com）。
+	// headroom 与注入代理都需要它：headroom 据此转发，注入代理在非串联模式下据此转发。
+	realBackend := provider.EffectiveBaseURL("anthropic")
+	switch {
+	case useHeadroom && useProxy:
+		// 串联叠加: CLI → 注入代理(:5280) → headroom 压缩(:8787) → 真实 API
+		// 注入代理的 backendURL 指向 headroom，headroom 再转发到真实 API。
+		// 注入代理的 proxyHandler 已透传全部请求头(含 Authorization / x-api-key)，
+		// 因此 API key 链路完整，headroom 能拿到认证信息继续转发。
+		if !a.Headroom.IsRunning() {
+			if err := a.Headroom.Start(realBackend); err != nil {
+				return "", fmt.Errorf("start headroom: %w", err)
+			}
+		}
+		if !a.Proxy.IsRunning() {
+			codeboxPort := a.Proxy.GetPort()
+			if codeboxPort == 0 {
+				codeboxPort = 5280
+			}
+			headroomUpstream := fmt.Sprintf("http://127.0.0.1:%d", headroom.DefaultPort)
+			if err := a.Proxy.Start(codeboxPort, headroomUpstream); err != nil {
+				return "", fmt.Errorf("start proxy: %w", err)
+			}
+		}
+		a.Launcher.SetProxyPort(a.Proxy.GetPort())
+	case useHeadroom && !useProxy:
+		// 只开 headroom: CLI → headroom 压缩(:8787) → 真实 API
+		if !a.Headroom.IsRunning() {
+			if err := a.Headroom.Start(realBackend); err != nil {
+				return "", fmt.Errorf("start headroom: %w", err)
+			}
+		}
+		a.Launcher.SetProxyPort(headroom.DefaultPort)
+	case !useHeadroom && useProxy:
+		// 只开注入代理(现有逻辑): CLI → 注入代理(:5280) → 真实 API
+		if a.Headroom.IsRunning() {
+			_ = a.Headroom.Stop()
+		}
 		if !a.Proxy.IsRunning() {
 			port := a.Proxy.GetPort()
 			if port == 0 {
 				port = 5280
 			}
-			if err := a.Proxy.Start(port, provider.EffectiveBaseURL("anthropic")); err != nil {
+			if err := a.Proxy.Start(port, realBackend); err != nil {
 				return "", fmt.Errorf("start proxy: %w", err)
 			}
 		}
 		a.Launcher.SetProxyPort(a.Proxy.GetPort())
-	} else {
+	default:
+		// 都关: CLI → 真实 API
+		if a.Headroom.IsRunning() {
+			_ = a.Headroom.Stop()
+		}
 		a.Launcher.SetProxyPort(0)
 	}
 
@@ -2006,8 +2057,8 @@ func (a *App) BrowseDirectory() (string, error) {
 // --- 原有兼容方法 ---
 
 // QuickLaunch 兼容原有接口（使用终端模式）
-func (a *App) QuickLaunch(providerName, presetName string, useProxy bool) error {
-	_, err := a.LaunchSession(providerName, presetName, "terminal", "", useProxy, "")
+func (a *App) QuickLaunch(providerName, presetName string, useProxy bool, useHeadroom bool) error {
+	_, err := a.LaunchSession(providerName, presetName, "terminal", "", useProxy, useHeadroom, "")
 	return err
 }
 

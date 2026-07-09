@@ -17,7 +17,7 @@ type AppInterface interface {
 	// Session management
 	GetSessions() []session.SessionInfo
 	GetSession(sessionID string) (session.SessionInfo, error)
-	LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, shellPath string) (string, error)
+	LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, useHeadroom bool, shellPath string) (string, error)
 	LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
 	LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error)
 	StopSession(sessionID string) error

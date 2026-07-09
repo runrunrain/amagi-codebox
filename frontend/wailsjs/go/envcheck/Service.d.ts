@@ -12,6 +12,8 @@ export function CheckOne(arg1:envcheck.CLITool):Promise<envcheck.CheckStatus>;
 
 export function CleanClaudeCode(arg1:envcheck.InstallMethod):Promise<envcheck.InstallResult>;
 
+export function CleanHeadroom():Promise<envcheck.InstallResult>;
+
 export function FixClaudeConfig(arg1:envcheck.ConfigFixRequest):Promise<envcheck.ConfigFixResult>;
 
 export function GetCachedStatus():Promise<envcheck.OverallStatus>;

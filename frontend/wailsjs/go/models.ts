@@ -1350,19 +1350,40 @@ export namespace envvars {
 
 }
 
+export namespace headroom {
+
+	export class HeadroomStatus {
+	    running: boolean;
+	    port: number;
+	    backendUrl: string;
+
+	    static createFrom(source: any = {}) {
+	        return new HeadroomStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.running = source["running"];
+	        this.port = source["port"];
+	        this.backendUrl = source["backendUrl"];
+	    }
+	}
+
+}
+
 export namespace logging {
-	
+
 	export class Entry {
 	    time: string;
 	    level: string;
 	    source: string;
 	    message: string;
 	    detail?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Entry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.time = source["time"];
@@ -2169,7 +2190,8 @@ export namespace settings {
 	    amagiCodeMode: string;
 	    amagiCodeShell: string;
 	    useProxy: boolean;
-	
+	    useHeadroom: boolean;
+
 	    static createFrom(source: any = {}) {
 	        return new DashboardDefaults(source);
 	    }
@@ -2193,6 +2215,7 @@ export namespace settings {
 	        this.amagiCodeMode = source["amagiCodeMode"];
 	        this.amagiCodeShell = source["amagiCodeShell"];
 	        this.useProxy = source["useProxy"];
+	        this.useHeadroom = source["useHeadroom"];
 	    }
 	}
 	export class AppSettings {

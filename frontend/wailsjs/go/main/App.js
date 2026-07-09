@@ -254,8 +254,8 @@ export function LaunchOpenCode(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchOpenCode'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
+export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function MigrateProviderPresetsToTerminal() {
@@ -282,8 +282,8 @@ export function PtyWriteLarge(arg1, arg2) {
   return window['go']['main']['App']['PtyWriteLarge'](arg1, arg2);
 }
 
-export function QuickLaunch(arg1, arg2, arg3) {
-  return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
+export function QuickLaunch(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3, arg4);
 }
 
 export function RegenerateRemoteToken() {

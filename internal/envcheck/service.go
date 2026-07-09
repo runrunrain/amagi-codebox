@@ -46,6 +46,11 @@ type EnvCheckService interface {
 	// The method parameter specifies which installation to clean (npm or native).
 	// After cleaning, it verifies that Claude Code is no longer installed.
 	CleanClaudeCode(method InstallMethod) (*InstallResult, error)
+
+	// CleanHeadroom removes an existing Headroom installation via
+	// `pip uninstall -y headroom-ai`. After cleaning, it re-checks the tool
+	// status so the cached snapshot reflects the removal.
+	CleanHeadroom() (*InstallResult, error)
 }
 
 // Service implements EnvCheckService.
@@ -65,6 +70,13 @@ type Service struct {
 	npmOnce        sync.Once
 	npmAvailable   bool
 	npmResolvedErr error // error message when npm is not available
+
+	// pipAvailability caches whether pip is resolvable. Populated once per
+	// service lifetime; used by the Headroom install path so it does not gate
+	// on npm (headroom is a Python package distributed via pip).
+	pipOnce        sync.Once
+	pipAvailable   bool
+	pipResolvedErr error // error message when pip is not available
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -163,6 +175,9 @@ func (s *Service) CheckOne(tool CLITool) (*CheckStatus, error) {
 	case ToolCodex:
 		status, err := s.checkCodex()
 		return s.finishToolCheck(status, err)
+	case ToolHeadroom:
+		status, err := s.checkHeadroom()
+		return s.finishToolCheck(status, err)
 	}
 	return nil, fmt.Errorf("envcheck CheckOne not implemented for tool: %s", tool)
 }
@@ -194,6 +209,12 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 	s.npmOnce.Do(func() {
 		s.probeNPMAvailability()
 	})
+
+	// Headroom is a pip-distributed Python package; it does not depend on npm.
+	if status.Tool == ToolHeadroom {
+		s.populateHeadroomCanInstall(status)
+		return
+	}
 
 	// Compute per-method install availability for Claude Code.
 	if status.Tool == ToolClaudeCode {
@@ -265,6 +286,64 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 				Description: "Install Node.js",
 			})
 		}
+	}
+}
+
+// populateHeadroomCanInstall fills CanInstall / CanInstallByMethod /
+// InstallBlockedReason for the Headroom tool. Headroom is installed via pip,
+// so availability is probed through resolvePipPath rather than the npm cache.
+func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
+	if status == nil {
+		return
+	}
+	s.pipOnce.Do(func() {
+		s.probePipAvailability()
+	})
+
+	status.CanInstallByMethod = map[string]bool{
+		"pip": s.pipAvailable,
+	}
+	status.CanInstall = s.pipAvailable
+
+	if status.CanInstall {
+		// For installed tools with errors, offer a reinstall/repair solution.
+		if status.Installed && strings.TrimSpace(status.Error) != "" {
+			status.Solutions = append(status.Solutions, ResolutionAction{
+				Type:        SolutionInstallTool,
+				Description: fmt.Sprintf("Reinstall %s to repair the broken installation", displayToolName(status.Tool)),
+				Tool:        status.Tool,
+				PackageName: headroomPackageName,
+			})
+		}
+		return
+	}
+
+	if s.pipResolvedErr != nil {
+		status.InstallBlockedReason = s.pipResolvedErr.Error()
+	}
+	if !status.Installed || strings.TrimSpace(status.Error) != "" {
+		status.Issues = append(status.Issues, CheckIssue{
+			Severity: SeverityError,
+			Code:     "pip_not_found",
+			Message:  "pip is required but not available",
+			Detail:   status.InstallBlockedReason,
+			Solutions: []ResolutionAction{
+				{
+					Type:            SolutionFixPath,
+					Description:     "Fix PATH to include the Python/pip directory",
+					Tool:            status.Tool,
+					RequiresConfirm: true,
+					IsPrimary:       true,
+				},
+			},
+		})
+		status.Solutions = append(status.Solutions, ResolutionAction{
+			Type:            SolutionFixPath,
+			Description:     "Fix PATH to include Python/pip",
+			Tool:            status.Tool,
+			RequiresConfirm: true,
+			IsPrimary:       true,
+		})
 	}
 }
 
@@ -344,6 +423,13 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 		return s.npmPackageVersion("opencode-ai")
 	case ToolCodex:
 		return s.npmPackageVersion("@openai/codex")
+	case ToolHeadroom:
+		// Headroom is distributed via pip, and there is no reliable single
+		// pip command that returns the latest published version across pip
+		// versions. Rather than fabricate a value or make a flaky network
+		// call, report that latest-version detection is unsupported; callers
+		// (enrichWithLatestVersion) treat this as "no update info available".
+		return "", fmt.Errorf("latest version check is not supported for %s", tool)
 	default:
 		return "", fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
@@ -440,13 +526,13 @@ func (s *Service) GetCachedStatus() *OverallStatus {
 
 // SupportedTools returns the stable checking order for all managed CLI tools.
 func SupportedTools() []CLITool {
-	return []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex}
+	return []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolHeadroom}
 }
 
 // IsValidCLITool reports whether tool is supported by EnvCheck.
 func IsValidCLITool(tool CLITool) bool {
 	switch tool {
-	case ToolClaudeCode, ToolOpenCode, ToolCodex:
+	case ToolClaudeCode, ToolOpenCode, ToolCodex, ToolHeadroom:
 		return true
 	default:
 		return false
@@ -930,6 +1016,43 @@ func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResul
 	// immediately start a different install method read the latest Claude status.
 	s.invalidateVersionCache(ToolClaudeCode)
 	_, _ = s.CheckOne(ToolClaudeCode)
+
+	s.opMu.Lock()
+	s.current = nil
+	s.opMu.Unlock()
+
+	return result, err
+}
+
+// CleanHeadroom removes an existing Headroom installation. It acquires the
+// same operation gate used by install/update so that overlapping operations
+// cannot race against a stale environment snapshot, then runs
+// `pip uninstall -y headroom-ai` and refreshes the cached Headroom status.
+func (s *Service) CleanHeadroom() (*InstallResult, error) {
+	s.opMu.Lock()
+	if s.current != nil && s.current.Status == OperationStatusRunning {
+		s.opMu.Unlock()
+		return nil, ErrBusy
+	}
+	now := time.Now()
+	s.current = &OperationState{
+		ID:        fmt.Sprintf("sync-uninstall-headroom-%d", s.opSeq.Add(1)),
+		Tool:      ToolHeadroom,
+		Kind:      OperationKindUninstall,
+		Status:    OperationStatusRunning,
+		Step:      OperationStepPrecheck,
+		Message:   "Starting Headroom uninstall...",
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	s.opMu.Unlock()
+
+	result, err := s.cleanHeadroom()
+
+	// Refresh synchronously before releasing the operation gate so callers see
+	// the post-uninstall status.
+	s.invalidateVersionCache(ToolHeadroom)
+	_, _ = s.CheckOne(ToolHeadroom)
 
 	s.opMu.Lock()
 	s.current = nil

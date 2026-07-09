@@ -145,13 +145,14 @@ func (s *Server) handleLaunchSession(w http.ResponseWriter, r *http.Request) {
 		Mode         string `json:"mode"`
 		WorkDir      string `json:"workDir"`
 		UseProxy     bool   `json:"useProxy"`
+		UseHeadroom  bool   `json:"useHeadroom"`
 		ShellPath    string `json:"shellPath"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	id, err := s.app.LaunchSession(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.UseProxy, body.ShellPath)
+	id, err := s.app.LaunchSession(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.UseProxy, body.UseHeadroom, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

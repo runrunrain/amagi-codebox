@@ -22,6 +22,10 @@ export function CleanClaudeCode(arg1) {
   return window['go']['envcheck']['Service']['CleanClaudeCode'](arg1);
 }
 
+export function CleanHeadroom() {
+  return window['go']['envcheck']['Service']['CleanHeadroom']();
+}
+
 export function FixClaudeConfig(arg1) {
   return window['go']['envcheck']['Service']['FixClaudeConfig'](arg1);
 }
