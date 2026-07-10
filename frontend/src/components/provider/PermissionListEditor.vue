@@ -39,7 +39,7 @@
           class="ple-item"
         >
           <div class="ple-header">
-            <span class="ple-index">#{{ index + 1 }}</span>
+            <span class="ple-index">#{{ Number(index) + 1 }}</span>
             <button class="ple-remove" @click="removePermission(index)" title="删除">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
