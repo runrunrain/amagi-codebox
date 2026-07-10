@@ -156,7 +156,7 @@ func (s *HeadroomService) Stop() error {
 
 	err := cmd.Process.Kill()
 	if s.log != nil {
-		s.log.Info("headroom", "代理子进程已停止", fmt.Sprintf("err=%v", err))
+		s.log.Info("headroom", "上下文压缩已停用", fmt.Sprintf("port=%d err=%v", s.port, err))
 	}
 	return err
 }

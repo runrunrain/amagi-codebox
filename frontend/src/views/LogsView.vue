@@ -14,6 +14,73 @@
     <template v-else>
     <PageHead title="系统日志" description="查看应用运行日志与调试信息" />
 
+    <!-- Headroom 压缩统计（累计 · 全局 ledger） -->
+    <ConfigCard class="headroom-card">
+      <div class="headroom-head">
+        <div class="headroom-title">
+          <h2>Headroom 上下文压缩统计</h2>
+          <span class="headroom-sub">累计统计 · 全局 ledger · 每 10 秒自动刷新</span>
+        </div>
+        <span
+          v-if="!headroomLoading && !headroomError && headroomReport && headroomReport.lifetime.calls > 0"
+          class="headroom-live"
+        >
+          <span class="live-dot" />数据已同步
+        </span>
+      </div>
+
+      <!-- 加载态：仅首次拉取显示，避免每 10s 闪烁 -->
+      <div v-if="headroomLoading" class="headroom-inline-state">
+        <div class="spinner-sm" />
+        <span>正在读取压缩统计...</span>
+      </div>
+
+      <!-- 空态 / 错误态：友好提示，绝不刷屏弹 toast -->
+      <div
+        v-else-if="headroomError || !headroomReport || headroomReport.lifetime.calls === 0"
+        class="headroom-inline-state"
+      >
+        <span class="state-dot" />
+        <span>{{ headroomEmptyMessage }}</span>
+      </div>
+
+      <!-- 成功态 -->
+      <div v-else class="headroom-stats">
+        <div class="metric metric-primary">
+          <span class="metric-label">累计压缩次数</span>
+          <span class="metric-value mono">{{ formatNumber(headroomReport.lifetime.calls) }}</span>
+        </div>
+        <div class="metric metric-primary">
+          <span class="metric-label">累计节省 Token</span>
+          <span class="metric-value mono accent">{{ formatNumber(headroomReport.lifetime.tokens_saved) }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">累计节省比例</span>
+          <span class="metric-value mono">{{ formatPercent(headroomReport.lifetime.savings_percent) }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">累计避免成本</span>
+          <span class="metric-value mono">{{ formatCost(headroomReport.lifetime.cost_usd) }}</span>
+        </div>
+
+        <div
+          v-if="headroomReport.by_client && headroomReport.by_client.length"
+          class="client-breakdown"
+        >
+          <span class="client-label">来源客户端</span>
+          <span
+            v-for="c in headroomReport.by_client"
+            :key="c.client"
+            class="client-chip"
+            :title="`${c.client}：${formatNumber(c.calls)} 次压缩，节省 ${formatNumber(c.tokens_saved)} token`"
+          >
+            <span class="client-name mono">{{ c.client }}</span>
+            <span class="client-calls">{{ formatNumber(c.calls) }} 次</span>
+          </span>
+        </div>
+      </div>
+    </ConfigCard>
+
     <!-- Filters Card -->
     <ConfigCard>
       <div class="filter-row">
@@ -156,7 +223,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
 import TextInput from '../components/ui/TextInput.vue'
@@ -173,6 +240,8 @@ import {
   ClearLogs,
   ExportLogs,
 } from '../../wailsjs/go/main/App'
+import { headroom } from '../../wailsjs/go/models'
+import { getHeadroomSavings } from '../api/headroom'
 
 interface LogEntry {
   time: string
@@ -202,6 +271,61 @@ const { showSuccess, showError } = useToast()
 
 let refreshTimer: number | null = null
 let debounceTimer: number | null = null
+
+// --- Headroom 压缩统计（独立 10s 定时器，与日志 2s 刷新解耦） ---
+// 每次拉取会触发 headroom 子进程，故降频至 10s；autoRefresh 开关与日志共享。
+const HEADROOM_REFRESH_INTERVAL = 10000
+let headroomTimer: number | null = null
+
+const headroomLoading = ref(true)
+const headroomReport = ref<headroom.SavingsReport | null>(null)
+const headroomError = ref(false)
+
+const headroomEmptyMessage = computed(() => {
+  // 区分两种空态文案：调用失败（未安装/未启用） vs 已就绪但无数据（calls===0）
+  if (headroomError.value) return 'Headroom 未安装或未启用，暂无压缩数据'
+  return 'Headroom 已就绪，暂无压缩数据'
+})
+
+function formatNumber(n: number): string {
+  // 千分位格式化（en-US 逗号分组，与 mono 字体一致）
+  return Number(n || 0).toLocaleString('en-US')
+}
+
+function formatPercent(p: number): string {
+  return `${Number(p || 0).toFixed(1)}%`
+}
+
+function formatCost(usd: number): string {
+  return `$${Number(usd || 0).toFixed(2)}`
+}
+
+/**
+ * 拉取 Headroom 压缩统计。
+ * @param showLoading 是否显示加载态（仅首次拉取传 true，10s 定时刷新传 false 避免闪烁）。
+ * 错误处理：GetHeadroomSavings 在 headroom 未安装/子进程失败/JSON 解析失败时 reject。
+ * 静默置空态，绝不每 10s 弹 toast 刷屏；瞬时失败时保留已有数据，避免数字闪烁清空。
+ */
+const refreshHeadroomSavings = async (showLoading = false) => {
+  if (showLoading) headroomLoading.value = true
+  try {
+    const report = await getHeadroomSavings()
+    headroomReport.value = report
+    headroomError.value = false
+  } catch (err) {
+    // 仅在从未拿到过数据时进入空态；已有数据则保留（略陈旧但有信息量），避免瞬时失败清空。
+    if (!headroomReport.value) {
+      headroomError.value = true
+    }
+    if (showLoading) {
+      // 仅首次加载打印一次诊断日志，便于排查；后续失败静默
+      console.warn('[LogsView] GetHeadroomSavings failed:', err)
+    }
+  } finally {
+    if (showLoading) headroomLoading.value = false
+  }
+}
+
 
 // Retry function for ErrorState
 const handleRetry = async () => {
@@ -303,9 +427,21 @@ watch(autoRefresh, (val) => {
       refreshLogs()
       refreshSources()
     }, 2000)
-  } else if (refreshTimer) {
-    clearInterval(refreshTimer)
-    refreshTimer = null
+    // Headroom 统计独立 10s 定时器（每次调用会起子进程，不能跟日志共用 2s）
+    if (!headroomTimer) {
+      headroomTimer = window.setInterval(() => {
+        refreshHeadroomSavings(false)
+      }, HEADROOM_REFRESH_INTERVAL)
+    }
+  } else {
+    if (refreshTimer) {
+      clearInterval(refreshTimer)
+      refreshTimer = null
+    }
+    if (headroomTimer) {
+      clearInterval(headroomTimer)
+      headroomTimer = null
+    }
   }
 })
 
@@ -323,11 +459,19 @@ onMounted(async () => {
       refreshSources()
     }, 2000)
   }
+  // Headroom 统计：首拉 + 启动独立 10s 定时器（autoRefresh 关时不启）
+  refreshHeadroomSavings(true)
+  if (autoRefresh.value && !headroomTimer) {
+    headroomTimer = window.setInterval(() => {
+      refreshHeadroomSavings(false)
+    }, HEADROOM_REFRESH_INTERVAL)
+  }
 })
 
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
   if (debounceTimer) clearTimeout(debounceTimer)
+  if (headroomTimer) clearInterval(headroomTimer)
 })
 </script>
 
@@ -601,5 +745,191 @@ onUnmounted(() => {
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;
+}
+
+/* --- Headroom 压缩统计卡片 --- */
+.headroom-card {
+  /* 复用 ConfigCard 容器，仅追加内部布局样式 */
+  gap: 14px;
+}
+
+.headroom-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.headroom-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.headroom-title h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--label);
+  margin: 0;
+  letter-spacing: -0.2px;
+}
+
+.headroom-sub {
+  font-size: 12px;
+  color: var(--tertiary);
+}
+
+.headroom-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* 加载 / 空态 / 错误态共用内联条（紧凑，避免占据过多纵向空间） */
+.headroom-inline-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 4px;
+  font-size: 13px;
+  color: var(--secondary);
+}
+
+.state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tertiary);
+  flex-shrink: 0;
+}
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--separator);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: headroom-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes headroom-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 成功态：指标仪表盘布局 */
+.headroom-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.metric-label {
+  font-size: 12px;
+  color: var(--tertiary);
+  letter-spacing: 0.2px;
+}
+
+.metric-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--label);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-primary .metric-value {
+  font-size: 26px;
+}
+
+.metric-value.accent {
+  color: var(--accent);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* 客户端来源明细 */
+.client-breakdown {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--separator);
+}
+
+.client-label {
+  font-size: 12px;
+  color: var(--tertiary);
+  margin-right: 4px;
+}
+
+.client-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+  border: 1px solid var(--separator);
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.client-name {
+  color: var(--label);
+  font-weight: 600;
+}
+
+.client-calls {
+  color: var(--tertiary);
+}
+
+/* 响应式：桌面 4 列指标仪表盘，平板 2 列，移动端单列 */
+@media (min-width: 720px) {
+  .headroom-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    align-items: start;
+    gap: 14px 20px;
+  }
+
+  /* 指标列之间加细分隔线，强化"仪表盘"感而非堆叠卡片 */
+  .metric + .metric {
+    border-left: 1px solid var(--separator);
+    padding-left: 20px;
+  }
+
+  /* client-breakdown 跨满 4 列 */
+  .client-breakdown {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 719px) {
+  .metric-value,
+  .metric-primary .metric-value {
+    font-size: 22px;
+  }
 }
 </style>

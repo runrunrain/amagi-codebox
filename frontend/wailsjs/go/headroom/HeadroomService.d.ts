@@ -4,6 +4,8 @@ import {headroom} from '../models';
 
 export function GetPort():Promise<number>;
 
+export function GetSavings():Promise<headroom.SavingsReport>;
+
 export function GetStatus():Promise<headroom.HeadroomStatus>;
 
 export function IsRunning():Promise<boolean>;

@@ -1368,6 +1368,146 @@ export namespace headroom {
 	        this.backendUrl = source["backendUrl"];
 	    }
 	}
+	export class SavingsBucket {
+	    tokens_saved: number;
+	    tokens_before: number;
+	    cost_usd: number;
+	    calls: number;
+	    savings_percent: number;
+
+	    static createFrom(source: any = {}) {
+	        return new SavingsBucket(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tokens_saved = source["tokens_saved"];
+	        this.tokens_before = source["tokens_before"];
+	        this.cost_usd = source["cost_usd"];
+	        this.calls = source["calls"];
+	        this.savings_percent = source["savings_percent"];
+	    }
+	}
+	export class SavingsWindows {
+	    today: SavingsBucket;
+	    last_7_days: SavingsBucket;
+	    all_time: SavingsBucket;
+
+	    static createFrom(source: any = {}) {
+	        return new SavingsWindows(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.today = this.convertValues(source["today"], SavingsBucket);
+	        this.last_7_days = this.convertValues(source["last_7_days"], SavingsBucket);
+	        this.all_time = this.convertValues(source["all_time"], SavingsBucket);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ModelSavings {
+	    model: string;
+	    tokens_saved: number;
+	    tokens_before: number;
+	    cost_usd: number;
+	    calls: number;
+	    savings_percent: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ModelSavings(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.tokens_saved = source["tokens_saved"];
+	        this.tokens_before = source["tokens_before"];
+	        this.cost_usd = source["cost_usd"];
+	        this.calls = source["calls"];
+	        this.savings_percent = source["savings_percent"];
+	    }
+	}
+	export class ClientSavings {
+	    client: string;
+	    tokens_saved: number;
+	    tokens_before: number;
+	    cost_usd: number;
+	    calls: number;
+	    savings_percent: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ClientSavings(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.client = source["client"];
+	        this.tokens_saved = source["tokens_saved"];
+	        this.tokens_before = source["tokens_before"];
+	        this.cost_usd = source["cost_usd"];
+	        this.calls = source["calls"];
+	        this.savings_percent = source["savings_percent"];
+	    }
+	}
+	export class SavingsReport {
+	    schema_version: number;
+	    path: string;
+	    top_model: string;
+	    lifetime: SavingsBucket;
+	    windows: SavingsWindows;
+	    by_model: ModelSavings[];
+	    by_client: ClientSavings[];
+
+	    static createFrom(source: any = {}) {
+	        return new SavingsReport(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema_version = source["schema_version"];
+	        this.path = source["path"];
+	        this.top_model = source["top_model"];
+	        this.lifetime = this.convertValues(source["lifetime"], SavingsBucket);
+	        this.windows = this.convertValues(source["windows"], SavingsWindows);
+	        this.by_model = this.convertValues(source["by_model"], ModelSavings);
+	        this.by_client = this.convertValues(source["by_client"], ClientSavings);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

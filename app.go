@@ -436,6 +436,14 @@ func parseCLITool(tool string) (envcheck.CLITool, error) {
 	}
 }
 
+// GetHeadroomSavings 查询 headroom 上下文压缩节省统计（压缩次数、节省 token 等）。
+// headroom 未安装或查询失败时返回 error，前端据此显示空态；绝不返回伪造零值报告冒充"有数据"。
+func (a *App) GetHeadroomSavings() (*headroom.SavingsReport, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), headroom.SavingsTimeout)
+	defer cancel()
+	return a.Headroom.GetSavings(ctx)
+}
+
 func (a *App) GetSession(sessionID string) (session.SessionInfo, error) {
 	for _, s := range a.GetSessions() {
 		if s.ID == sessionID {
@@ -899,8 +907,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		// 因此 API key 链路完整，headroom 能拿到认证信息继续转发。
 		if !a.Headroom.IsRunning() {
 			if err := a.Headroom.Start(realBackend); err != nil {
+				a.Log.Error("headroom", "上下文压缩启动失败", err.Error())
 				return "", fmt.Errorf("start headroom: %w", err)
 			}
+			a.Log.Info("headroom", "上下文压缩已启用并生效",
+				fmt.Sprintf("CLI → 注入代理:5280 → headroom:127.0.0.1:8787 → %s", realBackend))
 		}
 		if !a.Proxy.IsRunning() {
 			codeboxPort := a.Proxy.GetPort()
@@ -917,8 +928,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		// 只开 headroom: CLI → headroom 压缩(:8787) → 真实 API
 		if !a.Headroom.IsRunning() {
 			if err := a.Headroom.Start(realBackend); err != nil {
+				a.Log.Error("headroom", "上下文压缩启动失败", err.Error())
 				return "", fmt.Errorf("start headroom: %w", err)
 			}
+			a.Log.Info("headroom", "上下文压缩已启用并生效",
+				fmt.Sprintf("CLI → headroom:127.0.0.1:8787 → %s", realBackend))
 		}
 		a.Launcher.SetProxyPort(headroom.DefaultPort)
 	case !useHeadroom && useProxy:

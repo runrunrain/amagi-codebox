@@ -6,6 +6,10 @@ export function GetPort() {
   return window['go']['headroom']['HeadroomService']['GetPort']();
 }
 
+export function GetSavings() {
+  return window['go']['headroom']['HeadroomService']['GetSavings']();
+}
+
 export function GetStatus() {
   return window['go']['headroom']['HeadroomService']['GetStatus']();
 }

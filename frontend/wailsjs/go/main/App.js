@@ -122,6 +122,10 @@ export function GetGitHubToken() {
   return window['go']['main']['App']['GetGitHubToken']();
 }
 
+export function GetHeadroomSavings() {
+  return window['go']['main']['App']['GetHeadroomSavings']();
+}
+
 export function GetKeyDiagnostics() {
   return window['go']['main']['App']['GetKeyDiagnostics']();
 }

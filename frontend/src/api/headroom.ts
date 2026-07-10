@@ -11,11 +11,13 @@ import {
   GetStatus,
   GetPort,
 } from '../../wailsjs/go/headroom/HeadroomService';
+import { GetHeadroomSavings } from '../../wailsjs/go/main/App';
 
 import { headroom } from '../../wailsjs/go/models';
 
-// Type alias
+// Type aliases
 type HeadroomStatus = headroom.HeadroomStatus;
+type SavingsReport = headroom.SavingsReport;
 
 /**
  * Start the Headroom proxy subprocess.
@@ -75,6 +77,20 @@ export async function getHeadroomPort(): Promise<number> {
     return await GetPort();
   } catch (error) {
     console.error('[api.headroom.getHeadroomPort]', error);
+    throw error;
+  }
+}
+
+/**
+ * Get the Headroom savings report (global cumulative ledger).
+ * Reads the lifetime compression statistics persisted by the Headroom proxy.
+ * Rejects when Headroom is not installed / not enabled / has no data file.
+ */
+export async function getHeadroomSavings(): Promise<SavingsReport> {
+  try {
+    return await GetHeadroomSavings();
+  } catch (error) {
+    console.error('[api.headroom.getHeadroomSavings]', error);
     throw error;
   }
 }
