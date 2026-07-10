@@ -172,11 +172,15 @@ onMounted(() => {
   resizeObserver.observe(el)
 })
 
-// refit when the tab regains visibility (keep-alive reactivation, alt-tab).
+// refit when the tab regains visibility (alt-tab 切回 / 窗口最小化后还原 / 页面可见性恢复，visibilitychange 触发).
+// 注意：此处用 force=false。alt-tab 切回时容器尺寸通常未变，force=true 会
+// 强制执行 fit.fit() 触发 xterm resize→重排，视觉上表现为内容刷屏滚动到
+// 最底部（回归）。force=false 时仅当尺寸真正变化才 fit，避免不必要的重排；
+// 真实尺寸变化（窗口拉伸/DPI 切换）由上方 ResizeObserver 兜底捕获。
 function onVisibility() {
   if (document.visibilityState !== 'visible') return
   const el = bodyRef.value
-  if (el) engine.fitTerminal(props.sessionId, true, el)
+  if (el) engine.fitTerminal(props.sessionId, false, el)
 }
 onMounted(() => document.addEventListener('visibilitychange', onVisibility))
 

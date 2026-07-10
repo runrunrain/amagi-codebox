@@ -35,7 +35,12 @@ import {
   OpenFileInEditor,
   SaveClipboardImage,
 } from '../../wailsjs/go/main/App'
-import { EventsOn, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
+import {
+  EventsOn,
+  BrowserOpenURL,
+  ClipboardSetText,
+  ClipboardGetText,
+} from '../../wailsjs/runtime/runtime'
 import { usePlatformCapabilities } from './usePlatformCapabilities'
 
 // ---------------------------------------------------------------------------
@@ -224,23 +229,64 @@ export function useTerminalEngine() {
   // ---- clipboard helpers -------------------------------------------------
 
   async function copyToClipboard(text: string) {
+    // 三级降级剪贴板写入：Wails 原生 → WebView 异步 API → execCommand。
+    // 必须优先 Wails 原生：WebView2 中 navigator.clipboard.writeText 在焦点
+    // 落在 xterm canvas/WebGL 元素、或用户激活(activation)上下文已丢失时
+    // 会抛 NotAllowedError 静默失败，导致选中文字后复制不走；Wails 走
+    // Windows 原生剪贴板 API，不依赖 WebView 权限/焦点，最可靠。
+
+    // 一级：Wails 原生 ClipboardSetText（走 Windows API）。
+    try {
+      const ok = await ClipboardSetText(text)
+      if (ok) return
+    } catch {
+      /* Wails runtime 不可用（非桌面环境）时降级 */
+    }
+
+    // 二级：WebView 异步剪贴板 API。
     try {
       await navigator.clipboard.writeText(text)
+      return
     } catch {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
+      /* NotAllowedError 或权限拒绝：再降级 execCommand */
+    }
+
+    // 三级：同步 execCommand。textarea 必须先 focus 再 select 才能可靠复制，
+    // 否则焦点仍在 xterm canvas 上会导致 execCommand('copy') 失败。
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    try {
+      ta.focus()
       ta.select()
       document.execCommand('copy')
-      document.body.removeChild(ta)
+    } catch {
+      /* execCommand 已废弃且可能不可用：忽略 */
     }
+    document.body.removeChild(ta)
   }
 
   async function pasteToTerminal(sessionId: string) {
+    // 此函数仅服务于右键粘贴这条主动读取路径；Ctrl+V 走 xterm textarea 的
+    // paste 事件钩子（见 mountTerm 内 onPaste capture 监听），不经此函数，
+    // 改动不应影响它。读剪贴板权限比写更严格，在 WebView2 里更易失败，故
+    // 优先用 Wails 原生 ClipboardGetText（走 Windows API）。
+    let text = ''
     try {
-      const text = await navigator.clipboard.readText()
+      text = await ClipboardGetText()
+    } catch {
+      /* Wails runtime 不可用（非桌面环境）时降级 */
+    }
+    if (!text) {
+      try {
+        text = await navigator.clipboard.readText()
+      } catch {
+        /* 读权限拒绝：text 保持空，后续尝试图片路径 */
+      }
+    }
+    try {
       if (text) {
         const bytes = new TextEncoder().encode(text)
         const encoded = uint8ToBase64(bytes)
