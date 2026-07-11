@@ -95,10 +95,15 @@ func (s *HeadroomService) Start(realBackendURL string) error {
 		s.port = port
 	}
 
-	env := buildChildEnv(realBackendURL, port)
+	// Resolve headroom with an augmented PATH and reuse that same environment
+	// for the child process. On macOS, GUI apps launched from Dock inherit a
+	// minimal PATH; without augmentation the child cannot locate headroom (or
+	// the interpreter a script shim depends on) even when the resolver can.
+	binPath, enhancedEnv := resolveHeadroomBinWithEnv()
+	env := buildChildEnvWithBase(realBackendURL, port, enhancedEnv)
 
 	spec := platform.CommandSpec{
-		Path:   resolveHeadroomBin(),
+		Path:   binPath,
 		Args:   []string{"proxy", "--port", strconv.Itoa(port)},
 		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
@@ -186,16 +191,28 @@ func (s *HeadroomService) GetPort() int {
 	return s.port
 }
 
-// buildChildEnv constructs the environment for the headroom child process.
+// buildChildEnv constructs the environment for the headroom child process from
+// the process environment. It is a convenience wrapper around
+// buildChildEnvWithBase for callers that have not pre-augmented PATH.
+func buildChildEnv(realBackendURL string, port int) []string {
+	return buildChildEnvWithBase(realBackendURL, port, os.Environ())
+}
+
+// buildChildEnvWithBase constructs the environment for the headroom child
+// process from the given base environment.
 //
-// It starts from the process environment, strips any inherited
-// ANTHROPIC_BASE_URL (death-loop prevention), and injects the variables
-// headroom needs to locate its listen port and real upstream:
+// It strips any inherited ANTHROPIC_BASE_URL (death-loop prevention), and
+// injects the variables headroom needs to locate its listen port and real
+// upstream:
 //   - ANTHROPIC_TARGET_API_URL: the real upstream base URL
 //   - HEADROOM_PORT: the listen port
 //   - HEADROOM_HOST: the bind address (always loopback)
-func buildChildEnv(realBackendURL string, port int) []string {
-	base := os.Environ()
+//
+// baseEnv is expected to carry the augmented PATH produced by
+// resolveHeadroomBinWithEnv so the child process can locate headroom (and any
+// interpreter it depends on) even when the GUI process inherited a minimal PATH.
+func buildChildEnvWithBase(realBackendURL string, port int, baseEnv []string) []string {
+	base := append([]string(nil), baseEnv...)
 	out := make([]string, 0, len(base)+3)
 	for _, kv := range base {
 		key, _, ok := strings.Cut(kv, "=")
@@ -219,15 +236,32 @@ func buildChildEnv(realBackendURL string, port int) []string {
 	return out
 }
 
-// resolveHeadroomBin resolves the absolute path to the headroom executable
-// using the platform CLI resolver (which augments PATH with common install
-// locations), falling back to the bare "headroom" name so the OS can resolve
-// it. Mirrors installer.go resolveNPMPath.
-func resolveHeadroomBin() string {
+// resolveHeadroomBinWithEnv resolves the absolute path to the headroom
+// executable AND returns the enhanced environment used for resolution.
+//
+// Why both: the resolver augments PATH with common install locations
+// (~/.local/bin, /opt/homebrew/bin, login-shell discovery, ...) so it can find
+// headroom even when the GUI process inherited a minimal PATH. But the headroom
+// child process must run with that SAME augmented PATH, otherwise two failure
+// modes arise on macOS (where GUI apps launched from Dock get a PATH of little
+// more than /usr/bin:/bin):
+//
+//  1. When resolution falls back to the bare "headroom" name, exec.Command
+//     looks it up in the child PATH -- which is the minimal GUI PATH, not the
+//     augmented one -- and fails with "executable file not found in $PATH".
+//  2. Even when resolution succeeds with an absolute path, headroom may be a
+//     Python/script shim that itself needs the augmented PATH (e.g. to locate
+//     its interpreter).
+//
+// Returning the enhanced env alongside the path lets Start() pass it through to
+// the child process so resolution and execution share one consistent PATH.
+// Mirrors the buildEnhancedEnv() pattern used throughout the envcheck package.
+func resolveHeadroomBinWithEnv() (binPath string, enhancedEnv []string) {
+	enhancedEnv = platform.BuildEffectiveEnv(os.Environ())
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	resolved, _, err := resolver.ResolveExecutable("headroom", nil, os.Environ())
+	resolved, _, err := resolver.ResolveExecutable("headroom", nil, enhancedEnv)
 	if err == nil && strings.TrimSpace(resolved.Path) != "" {
-		return resolved.Path
+		return resolved.Path, enhancedEnv
 	}
-	return "headroom"
+	return "headroom", enhancedEnv
 }

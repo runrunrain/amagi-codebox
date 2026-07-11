@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -71,10 +70,14 @@ func (s *HeadroomService) GetSavings(ctx context.Context) (*SavingsReport, error
 		return nil, fmt.Errorf("headroom process runner is not configured")
 	}
 
+	// Resolve headroom with an augmented PATH and reuse that environment for the
+	// child process so savings works under the same minimal-GUI-PATH conditions
+	// as Start(). See resolveHeadroomBinWithEnv for the rationale.
+	binPath, enhancedEnv := resolveHeadroomBinWithEnv()
 	spec := platform.CommandSpec{
-		Path:   resolveHeadroomBin(),
+		Path:   binPath,
 		Args:   []string{"savings", "--json"},
-		Env:    os.Environ(),
+		Env:    enhancedEnv,
 		Policy: platform.DefaultProcessPolicy(),
 	}
 
