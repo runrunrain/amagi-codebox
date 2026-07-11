@@ -92,15 +92,23 @@ func (r claudeNPMResidueCleanupResult) Flattened() []string {
 }
 
 // npmGlobalNodeModulesScopedDir resolves the absolute path to the
-// `<npm prefix>/node_modules/@anthropic-ai` directory. It uses the same
-// npm-prefix resolver as the rest of envcheck to avoid hardcoding any
-// host-specific path.
+// `<npm root -g>/@anthropic-ai` directory -- i.e. the scoped package directory
+// where npm places @anthropic-ai/claude-code and its staging directories.
+//
+// The global node_modules location is resolved via `npm root -g` (the
+// authoritative source). On standard Unix layouts this differs from
+// `<npm prefix -g>/node_modules` (it is `<prefix>/lib/node_modules`), so
+// deriving it from the prefix -- as this function previously did -- caused the
+// staging-residue self-heal to look in the wrong directory and silently no-op,
+// leaving the ENOTEMPTY deadlock in place. When `npm root -g` is unavailable
+// we fall back to inferring the layout from the npm prefix.
 func (s *Service) npmGlobalNodeModulesScopedDir() (string, error) {
-	prefix, err := s.npmGlobalPrefix()
-	if err != nil {
-		return "", err
+	root, _ := s.npmGlobalRootWithPrefixFallback()
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" || root == "." {
+		return "", errors.New("could not resolve npm global node_modules root")
 	}
-	scoped := filepath.Join(prefix, "node_modules", claudeNPMScopedDirName)
+	scoped := filepath.Join(root, claudeNPMScopedDirName)
 	return scoped, nil
 }
 

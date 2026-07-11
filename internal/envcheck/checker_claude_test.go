@@ -581,7 +581,7 @@ func TestCheckClaudeCode_DetectPathSelfHealOnCorruptedBinary(t *testing.T) {
 
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		t.Fatalf("mkdir staging: %v", err)
@@ -659,7 +659,7 @@ func TestCheckClaudeCode_NoSelfHealOnHealthyBinary(t *testing.T) {
 
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-ShouldNotBeTouched")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		t.Fatalf("mkdir staging: %v", err)

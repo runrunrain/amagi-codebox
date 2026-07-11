@@ -402,6 +402,16 @@ func sequentialRunnerShouldBypassOpenCodeFallback(spec platform.CommandSpec, nex
 		trimmed := strings.TrimSpace(next.stdout)
 		return trimmed == "" || !(strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, `:\`) || strings.Contains(trimmed, "node_modules"))
 	}
+	// npm prefix -g is a metadata probe (like npm root -g). When the next queued
+	// response is not a plausible filesystem path, bypass it so it does not
+	// consume a response meant for a different command and desync the sequence.
+	if len(spec.Args) >= 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
+		if next == nil {
+			return true
+		}
+		trimmed := strings.TrimSpace(next.stdout)
+		return trimmed == "" || !(strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, `:\`) || strings.Contains(trimmed, "node_modules"))
+	}
 	return false
 }
 

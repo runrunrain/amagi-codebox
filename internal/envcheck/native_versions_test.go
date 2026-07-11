@@ -537,7 +537,7 @@ func TestCleanupNPMBinResidueAfterNativeInstall_RemovesNPMPackageDir(t *testing.
 	withClaudeUserHome(t, home)
 
 	prefix := filepath.Join(home, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	packageDir := filepath.Join(scopedDir, "claude-code")
 	if err := os.MkdirAll(packageDir, 0o755); err != nil {
 		t.Fatalf("mkdir package dir: %v", err)

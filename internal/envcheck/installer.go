@@ -1725,7 +1725,8 @@ func (s *Service) resolveClaudeFromNPMGlobalPrefix() (string, string) {
 	if err != nil || strings.TrimSpace(prefix) == "" {
 		return "", ""
 	}
-	for _, candidate := range claudeNPMGlobalExecutableCandidateInfos(prefix) {
+	npmRoot, _ := s.npmGlobalRootWithPrefixFallback()
+	for _, candidate := range claudeNPMGlobalExecutableCandidateInfos(prefix, npmRoot) {
 		if fileExists(candidate.path) {
 			return filepath.Clean(candidate.path), candidate.source
 		}
@@ -1758,13 +1759,88 @@ func (s *Service) npmGlobalPrefix() (string, error) {
 	return filepath.Clean(strings.TrimSpace(prefix)), nil
 }
 
+// npmGlobalRoot runs `npm root -g` and returns the absolute path of the global
+// node_modules directory. This is the authoritative location where npm places
+// globally-installed packages; on standard Unix layouts it differs from
+// `<prefix>/node_modules` (it is `<prefix>/lib/node_modules`), so callers that
+// need to locate a scoped package directory under node_modules MUST use this
+// resolver rather than deriving the path from npmGlobalPrefix().
+//
+// See https://docs.npmjs.com/cli/v10/configuring-npm/folders for the layout.
+func (s *Service) npmGlobalRoot() (string, error) {
+	npmPath := s.resolveNPMPath()
+	ctx, cancel := context.WithTimeout(context.Background(), claudeNPMCheckTimeout)
+	defer cancel()
+
+	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   npmPath,
+		Args:   []string{"root", "-g"},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if err != nil {
+		message := strings.TrimSpace(resultText(result))
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("npm root -g: %s", sanitizeInstallerOutput(message))
+	}
+	root := firstNonEmptyLine(resultText(result))
+	if strings.TrimSpace(root) == "" {
+		return "", errors.New("npm root -g returned empty root")
+	}
+	return filepath.Clean(strings.TrimSpace(root)), nil
+}
+
+// npmGlobalRootWithPrefixFallback resolves the global node_modules directory.
+// It prefers the authoritative `npm root -g` result; when that fails it falls
+// back to inferring the layout from the npm prefix (which is almost always
+// resolvable even in degraded environments). Returns the directory path and a
+// flag indicating whether the value came from the authoritative source.
+//
+// Callers should use this whenever they previously derived node_modules by
+// joining the npm prefix with "node_modules" -- that join is wrong on standard
+// Unix layouts where the real location is <prefix>/lib/node_modules.
+func (s *Service) npmGlobalRootWithPrefixFallback() (root string, authoritative bool) {
+	if resolved, err := s.npmGlobalRoot(); err == nil && strings.TrimSpace(resolved) != "" {
+		return resolved, true
+	}
+	prefix, err := s.npmGlobalPrefix()
+	if err != nil || strings.TrimSpace(prefix) == "" {
+		return "", false
+	}
+	return inferNPMNodeModulesFromPrefix(prefix), false
+}
+
+// inferNPMNodeModulesFromPrefix derives the global node_modules directory from
+// an npm prefix using the platform's standard npm layout. On Unix this is
+// <prefix>/lib/node_modules; on Windows it is <prefix>/node_modules. This is
+// only a fallback for when `npm root -g` cannot be invoked.
+func inferNPMNodeModulesFromPrefix(prefix string) string {
+	prefix = filepath.Clean(strings.TrimSpace(prefix))
+	if prefix == "" || prefix == "." {
+		return ""
+	}
+	if isWindows() {
+		return filepath.Join(prefix, "node_modules")
+	}
+	return filepath.Join(prefix, "lib", "node_modules")
+}
+
 type claudeNPMGlobalExecutableCandidate struct {
 	path   string
 	source string
 }
 
-func claudeNPMGlobalExecutableCandidates(prefix string) []string {
-	infos := claudeNPMGlobalExecutableCandidateInfos(prefix)
+// claudeNPMGlobalExecutableCandidates enumerates the plausible claude
+// executable paths for a given npm prefix and global node_modules root.
+// npmRoot is the directory reported by `npm root -g` (or inferred from the
+// prefix when empty); prefix is the result of `npm prefix -g`. The two are
+// distinct on standard Unix layouts (<prefix>/lib/node_modules vs
+// <prefix>/node_modules), so passing only the prefix used to silently miss the
+// real install location.
+func claudeNPMGlobalExecutableCandidates(prefix string, npmRoot string) []string {
+	infos := claudeNPMGlobalExecutableCandidateInfos(prefix, npmRoot)
 	candidates := make([]string, 0, len(infos))
 	for _, info := range infos {
 		candidates = append(candidates, info.path)
@@ -1772,13 +1848,23 @@ func claudeNPMGlobalExecutableCandidates(prefix string) []string {
 	return candidates
 }
 
-func claudeNPMGlobalExecutableCandidateInfos(prefix string) []claudeNPMGlobalExecutableCandidate {
+func claudeNPMGlobalExecutableCandidateInfos(prefix string, npmRoot string) []claudeNPMGlobalExecutableCandidate {
 	prefix = filepath.Clean(strings.TrimSpace(prefix))
 	if prefix == "" || prefix == "." {
 		return nil
 	}
+	npmRoot = filepath.Clean(strings.TrimSpace(npmRoot))
 
-	dirs := []string{filepath.Join(prefix, "bin"), prefix, filepath.Join(prefix, "node_modules", ".bin")}
+	// bin stays under prefix (it is <prefix>/bin, not under node_modules).
+	// The .bin shim directory, however, lives inside the global node_modules
+	// root, so it must be derived from npmRoot -- not prefix/node_modules.
+	dotBin := ""
+	if npmRoot != "" && npmRoot != "." {
+		dotBin = filepath.Join(npmRoot, ".bin")
+	} else {
+		dotBin = filepath.Join(inferNPMNodeModulesFromPrefix(prefix), ".bin")
+	}
+	dirs := []string{filepath.Join(prefix, "bin"), prefix, dotBin}
 	names := []string{"claude"}
 	if isWindows() {
 		names = []string{"claude.cmd", "claude.exe", "claude"}
@@ -1813,7 +1899,7 @@ func claudeNPMGlobalExecutableCandidateInfos(prefix string) []claudeNPMGlobalExe
 	// that is hardlinked into bin/claude. Without this filter the checker would
 	// happily report the shard as a working Claude Code binary and mask the
 	// corruption from the user (and from the install pre-check).
-	for _, candidate := range claudeNPMPackageBinaryFallbackCandidates(prefix) {
+	for _, candidate := range claudeNPMPackageBinaryFallbackCandidates(npmRoot) {
 		if !claudeBinaryCandidateLooksHealthy(candidate) {
 			continue
 		}
@@ -1843,9 +1929,14 @@ func claudeBinaryCandidateLooksHealthy(candidate string) bool {
 	return report.Exists && !report.Corrupted
 }
 
-func claudeNPMPackageBinaryFallbackCandidates(prefix string) []string {
-	prefix = filepath.Clean(strings.TrimSpace(prefix))
-	if prefix == "" || prefix == "." {
+// claudeNPMPackageBinaryFallbackCandidates enumerates the platform-specific
+// claude binaries that ship inside the @anthropic-ai npm packages under the
+// global node_modules root. npmRoot is the directory reported by `npm root -g`
+// (or inferred from the prefix by callers); the scoped package directory lives
+// directly under it as <npmRoot>/@anthropic-ai.
+func claudeNPMPackageBinaryFallbackCandidates(npmRoot string) []string {
+	npmRoot = filepath.Clean(strings.TrimSpace(npmRoot))
+	if npmRoot == "" || npmRoot == "." {
 		return nil
 	}
 
@@ -1854,11 +1945,12 @@ func claudeNPMPackageBinaryFallbackCandidates(prefix string) []string {
 		return nil
 	}
 
+	scoped := filepath.Join(npmRoot, "@anthropic-ai")
 	roots := []string{
-		filepath.Join(prefix, "node_modules", "@anthropic-ai"),
-		filepath.Join(prefix, "node_modules", "@anthropic-ai", "claude-code", "node_modules", "@anthropic-ai"),
+		scoped,
+		filepath.Join(scoped, "claude-code", "node_modules", "@anthropic-ai"),
 	}
-	if matches, err := filepath.Glob(filepath.Join(prefix, "node_modules", "@anthropic-ai", ".claude-code-*", "node_modules", "@anthropic-ai")); err == nil {
+	if matches, err := filepath.Glob(filepath.Join(scoped, ".claude-code-*", "node_modules", "@anthropic-ai")); err == nil {
 		roots = append(roots, matches...)
 	}
 

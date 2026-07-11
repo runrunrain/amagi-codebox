@@ -222,7 +222,8 @@ func (s *Service) checkClaudeFromNPMGlobalPrefix() (*CheckStatus, []string, erro
 	if err != nil {
 		return nil, nil, err
 	}
-	candidates := claudeNPMGlobalExecutableCandidates(prefix)
+	npmRoot, _ := s.npmGlobalRootWithPrefixFallback()
+	candidates := claudeNPMGlobalExecutableCandidates(prefix, npmRoot)
 	if len(candidates) == 0 {
 		return nil, candidates, fmt.Errorf("npm global prefix %q did not produce Claude Code executable candidates", prefix)
 	}
@@ -278,7 +279,8 @@ func (s *Service) isClaudeNPMGlobalExecutablePath(path string) bool {
 	if err != nil || strings.TrimSpace(prefix) == "" {
 		return false
 	}
-	for _, candidate := range claudeNPMGlobalExecutableCandidates(prefix) {
+	npmRoot, _ := s.npmGlobalRootWithPrefixFallback()
+	for _, candidate := range claudeNPMGlobalExecutableCandidates(prefix, npmRoot) {
 		if sameNormalizedPath(path, candidate) {
 			return true
 		}

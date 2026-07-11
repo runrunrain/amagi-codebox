@@ -106,11 +106,17 @@ func TestGlobClaudeStagingDirs_EmptyAndDotPrefix(t *testing.T) {
 }
 
 // fakeNpmPrefixRunner is a mock ProcessRunner that returns a fixed npm prefix
-// for `npm prefix -g` calls. It is the dependency-injection seam for testing
+// for `npm prefix -g` calls and a matching global node_modules root for
+// `npm root -g` calls. It is the dependency-injection seam for testing
 // cleanClaudeNPMResidue / detectClaudeNPMStagingResidue without hardcoding
 // host paths.
+//
+// root defaults to the standard Unix layout <prefix>/lib/node_modules when
+// unset, mirroring real npm behavior on Linux/macOS. Tests that need a custom
+// root (or need to simulate a failing `npm root -g`) can set root explicitly.
 type fakeNpmPrefixRunner struct {
 	prefix string
+	root   string // optional; defaults to <prefix>/lib/node_modules
 	mu     sync.Mutex
 	calls  []platform.CommandSpec
 }
@@ -122,6 +128,13 @@ func (r *fakeNpmPrefixRunner) Run(_ context.Context, spec platform.CommandSpec) 
 	if len(spec.Args) == 2 && spec.Args[0] == "prefix" && spec.Args[1] == "-g" {
 		return &platform.ProcessResult{Stdout: r.prefix}, nil
 	}
+	if len(spec.Args) == 2 && spec.Args[0] == "root" && spec.Args[1] == "-g" {
+		root := r.root
+		if strings.TrimSpace(root) == "" {
+			root = filepath.Join(r.prefix, "lib", "node_modules")
+		}
+		return &platform.ProcessResult{Stdout: root}, nil
+	}
 	return &platform.ProcessResult{}, nil
 }
 
@@ -132,7 +145,7 @@ func (r *fakeNpmPrefixRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 func TestDetectClaudeNPMStagingResidue_FindsLeftover(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		t.Fatalf("mkdir staging: %v", err)
@@ -158,7 +171,7 @@ func TestDetectClaudeNPMStagingResidue_FindsLeftover(t *testing.T) {
 func TestDetectClaudeNPMStagingResidue_EmptyWhenClean(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	if err := os.MkdirAll(filepath.Join(prefix, "node_modules", "@anthropic-ai"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai"), 0o755); err != nil {
 		t.Fatalf("mkdir scoped: %v", err)
 	}
 	runner := &fakeNpmPrefixRunner{prefix: prefix}
@@ -176,7 +189,7 @@ func TestDetectClaudeNPMStagingResidue_EmptyWhenClean(t *testing.T) {
 func TestCleanClaudeNPMResidue_RemovesStagingPackageAndBinLink(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
 	mainPkg := filepath.Join(scopedDir, "claude-code")
 	packageBinTarget := filepath.Join(mainPkg, "bin", "claude")
@@ -242,7 +255,7 @@ func TestCleanClaudeNPMResidue_RemovesStagingPackageAndBinLink(t *testing.T) {
 func TestCleanClaudeNPMResidueIfPresent_NoOpWhenClean(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	if err := os.MkdirAll(filepath.Join(prefix, "node_modules", "@anthropic-ai"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai"), 0o755); err != nil {
 		t.Fatalf("mkdir scoped: %v", err)
 	}
 	runner := &fakeNpmPrefixRunner{prefix: prefix}
@@ -260,7 +273,7 @@ func TestCleanClaudeNPMResidueIfPresent_NoOpWhenClean(t *testing.T) {
 func TestCleanClaudeNPMResidue_DoesNotTouchUserConfig(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		t.Fatalf("mkdir staging: %v", err)
@@ -288,6 +301,72 @@ func TestCleanClaudeNPMResidue_DoesNotTouchUserConfig(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanClaudeNPMResidue_StagingUnderLibNodeModules_Regression is the
+// regression test for the ENOTEMPTY deadlock reported in the field.
+//
+// Background: npmGlobalNodeModulesScopedDir previously derived the scoped
+// package directory as <npm prefix>/node_modules/@anthropic-ai, but on the
+// standard Unix layout the global node_modules root reported by `npm root -g`
+// is <prefix>/lib/node_modules (NOT <prefix>/node_modules). As a result the
+// staging-residue self-heal globbed the wrong directory, found nothing, and
+// silently no-op'd -- so every subsequent `npm install -g @anthropic-ai/
+// claude-code` collided with the leftover staging dir and failed with
+// ENOTEMPTY (errno -66), deadlocking the package.
+//
+// This test reproduces that exact layout: `npm root -g` returns
+// <prefix>/lib/node_modules while <prefix>/node_modules does NOT exist, and
+// the staging residue lives under <prefix>/lib/node_modules/@anthropic-ai.
+// detectClaudeNPMStagingResidue + cleanClaudeNPMResidue must find and remove
+// it, proving the self-heal now hits the real npm global location.
+func TestCleanClaudeNPMResidue_StagingUnderLibNodeModules_Regression(t *testing.T) {
+	withSimulatedGOOS(t, "linux")
+
+	root := t.TempDir()
+	prefix := filepath.Join(root, "npm-global")
+	// Real global node_modules root, as reported by `npm root -g` on Unix.
+	npmRoot := filepath.Join(prefix, "lib", "node_modules")
+	scopedDir := filepath.Join(npmRoot, "@anthropic-ai")
+	staging := filepath.Join(scopedDir, ".claude-code-XDWIThDw")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatalf("mkdir staging: %v", err)
+	}
+	writeFixture(t, filepath.Join(staging, "package.json"), []byte("{}"))
+
+	// Sanity: the OLD (buggy) derivation <prefix>/node_modules must NOT exist,
+	// so a prefix-only derivation would find nothing. This is the crux of the
+	// regression -- the lookup must go through `npm root -g`.
+	if _, err := os.Stat(filepath.Join(prefix, "node_modules")); !os.IsNotExist(err) {
+		t.Fatalf("test precondition violated: <prefix>/node_modules should not exist, got err=%v", err)
+	}
+
+	// fakeNpmPrefixRunner answers both `npm prefix -g` (-> prefix) and
+	// `npm root -g` (-> npmRoot) because root is set explicitly.
+	runner := &fakeNpmPrefixRunner{prefix: prefix, root: npmRoot}
+	svc := NewServiceWithRunner(runner)
+
+	// detect must find the staging dir at the lib/node_modules location.
+	found, err := svc.detectClaudeNPMStagingResidue()
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if len(found) != 1 || filepath.Clean(found[0]) != filepath.Clean(staging) {
+		t.Fatalf("detect found %v, want [%s]", found, staging)
+	}
+
+	// clean must remove it.
+	result, err := svc.cleanClaudeNPMResidue()
+	if err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+	if result == nil || len(result.StagingDirs) != 1 {
+		t.Fatalf("expected 1 staging dir removed, got %+v", result)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging dir should be removed after clean, got err=%v", err)
+	}
+}
+
 
 // ---------------------------------------------------------------------------
 // P0-3: InspectClaudeBinaryIntegrity
@@ -771,7 +850,7 @@ func TestSelfHealClaudeNPMResidueForDetection_TriggersCleanupOnCorruption(t *tes
 
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
 	mainPkg := filepath.Join(scopedDir, "claude-code")
 	for _, d := range []string{staging, mainPkg} {
@@ -872,7 +951,7 @@ func TestSelfHealClaudeNPMResidueForDetection_EmptyBinaryPathStillRunsCleanup(t 
 
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
-	scopedDir := filepath.Join(prefix, "node_modules", "@anthropic-ai")
+	scopedDir := filepath.Join(prefix, "lib", "node_modules", "@anthropic-ai")
 	staging := filepath.Join(scopedDir, ".claude-code-DeadBeef")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		t.Fatalf("mkdir staging: %v", err)
