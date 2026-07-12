@@ -524,6 +524,26 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  // Update Claude marketplace（拉取指定市场源的最新内容）
+  // 后端 plugin.Service.UpdateMarketplace 已存在，此处补齐 store 层入口，
+  // 供「已安装插件」视图的市场分组头部「更新市场」按钮调用。
+  async function updateCcMarketplace(name: string) {
+    try {
+      const result = await pluginApi.updateMarketplace(name);
+      // 更新市场源可能影响 available 与 installed（版本/内容变化），失效缓存后全量 reload
+      ccDataLoaded.value = false;
+      await Promise.all([loadCcMarkets(), loadCcInstalled(), loadCcAvailable()]);
+      ccDataLoaded.value = true;
+      ccDataLoadedAt.value = Date.now();
+      return result;
+    } catch (error) {
+      // 失败时确保不留下陈旧"已加载"缓存
+      ccDataLoaded.value = false;
+      console.error('[plugin.store.updateCcMarketplace]', error);
+      throw error;
+    }
+  }
+
   // Install Claude plugin
   async function installCcPlugin(pluginName: string) {
     try {
@@ -715,6 +735,7 @@ export const usePluginStore = defineStore('plugin', () => {
     loadCcAvailable,
     loadCcAllData,
     addCcMarketplace,
+    updateCcMarketplace,
     installCcPlugin,
     togglePlugin,
     loadPluginDetail,

@@ -91,7 +91,18 @@
             <!-- Group header -->
             <div class="plg-group-header">
               <span class="gh-market">{{ group.marketplace }}</span>
-              <span class="gh-count">{{ group.plugins.length }}</span>
+              <div class="gh-actions">
+                <AppButton
+                  v-if="group.marketplace && group.marketplace !== 'Unknown'"
+                  variant="ghost"
+                  size="small"
+                  :disabled="isMarketUpdating(group.marketplace)"
+                  @click.stop="handleUpdateMarket(group.marketplace)"
+                >
+                  {{ isMarketUpdating(group.marketplace) ? '更新中…' : '更新市场' }}
+                </AppButton>
+                <span class="gh-count">{{ group.plugins.length }}</span>
+              </div>
             </div>
             <!-- Plugins in this group -->
             <div
@@ -345,6 +356,7 @@ const {
   uninstallPlugin,
   updatePlugin,
   upgradeCxMarketplace,
+  updateCcMarketplace,
   loadCcInstalled,
   loadCcAllData,
   loadCxPlugins,
@@ -375,6 +387,14 @@ const pluginToUninstall = ref<any>(null);
 
 // Update loading state (for visual feedback on update button)
 const updating = ref(false);
+
+// 市场分组头部「更新市场」按钮的 per-market loading 状态
+// 按市场名隔离，避免一个市场更新时禁用所有分组的按钮
+const updatingMarkets = ref<Record<string, boolean>>({});
+
+function isMarketUpdating(market: string): boolean {
+  return !!updatingMarkets.value[market];
+}
 
 // Retry function for ErrorState / 降级 banner
 const handleRetry = async () => {
@@ -734,7 +754,7 @@ async function handleUpdate() {
       if (pid) {
         await loadCxPluginDetail(pid, marketplace);
       }
-      showSuccess(`插件「${plugin.name}」更新成功`);
+      showSuccess(`市场「${marketplace}」已更新，插件「${plugin.name}」内容已刷新`);
     } else {
       showInfo(`正在更新插件「${plugin.name}」…`);
       await updatePlugin(plugin.id);
@@ -747,6 +767,31 @@ async function handleUpdate() {
     showError(`更新失败: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     updating.value = false;
+  }
+}
+
+// 更新整个市场源（市场分组头部「更新市场」入口）
+// - Codex: 后端无单插件更新接口，市场源 upgrade 即为其更新机制
+// - Claude: 调 plugin.Service.UpdateMarketplace 拉取指定市场源最新内容
+// store action 内部已 force reload，UI 会随 ccInstalled/cxInstalled 响应式刷新
+async function handleUpdateMarket(market: string) {
+  if (!market || market === 'Unknown') return;
+  if (isMarketUpdating(market)) return;
+
+  updatingMarkets.value = { ...updatingMarkets.value, [market]: true };
+  try {
+    showInfo(`正在更新市场「${market}」…`);
+    if (props.engine === 'codex') {
+      await upgradeCxMarketplace(market);
+    } else {
+      await updateCcMarketplace(market);
+    }
+    showSuccess(`市场「${market}」更新成功`);
+  } catch (error) {
+    console.error('[PluginInstalledPanel] Update marketplace failed:', error);
+    showError(`市场更新失败: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    updatingMarkets.value = { ...updatingMarkets.value, [market]: false };
   }
 }
 
@@ -1095,6 +1140,22 @@ onMounted(async () => {
   font-size: 11px;
   font-weight: 600;
   color: var(--tertiary);
+}
+
+.gh-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 分组头部更新按钮：缩小内边距以匹配紧凑的分组标题行高。
+   提升特异性（.plg-group-header 前缀 + button 元素选择器）避免被 AppButton
+   内部 scoped 的 .btn-sm 反向覆盖；重置 letter-spacing 避免继承
+   .plg-group-header 的 0.5px 导致按钮文字字间距异常 */
+.plg-group-header .gh-actions :deep(button.btn-sm) {
+  padding: 2px 8px;
+  font-size: 11px;
+  letter-spacing: normal;
 }
 
 .gh-count {
