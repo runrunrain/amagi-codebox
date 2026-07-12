@@ -279,8 +279,9 @@
           {{ card.isUpdating ? '更新中...' : '更新' }}
         </AppButton>
         <!--
-          Headroom: pip-distributed, uninstall via envcheck.Service.CleanHeadroom
-          (no App-level wrapper). Gated to headroom only; other non-Claude tools
+          Headroom: installed into a CodeBox-managed venv; uninstall via
+          envcheck.Service.CleanHeadroom (no App-level wrapper), which removes
+          the venv directory. Gated to headroom only; other non-Claude tools
           have no managed uninstall path.
         -->
         <AppButton
@@ -864,12 +865,12 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
   }
 }
 
-// ---------- Headroom: pip uninstall via envcheck.Service.CleanHeadroom ----------
+// ---------- Headroom: remove CodeBox-managed venv via envcheck.Service.CleanHeadroom ----------
 
 const headroomUninstalling = ref(false)
 
 async function handleUninstallHeadroom(): Promise<void> {
-  if (!confirm('确定要卸载 Headroom 吗？将通过 pip uninstall -y headroom-ai 移除，卸载后不会自动重新安装。')) {
+  if (!confirm('确定要卸载 Headroom 吗？将删除 CodeBox 管理的 headroom venv 目录（包含 headroom-ai 及其依赖），卸载后不会自动重新安装。')) {
     return
   }
   headroomUninstalling.value = true
@@ -885,7 +886,7 @@ async function handleUninstallHeadroom(): Promise<void> {
         type: 'success',
       }
     } else {
-      // pip uninstall 已执行但未确认成功：用 info 态提示重新检测
+      // venv 目录已删除但未确认成功：用 info 态提示重新检测
       showInfo(rawMsg || result?.error || '卸载未确认')
       lastResult.value = {
         title: 'Headroom 卸载未确认',

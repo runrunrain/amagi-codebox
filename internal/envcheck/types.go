@@ -28,11 +28,12 @@ const (
 type InstallMethod string
 
 const (
-	InstallMethodNative   InstallMethod = "native"
-	InstallMethodNPM      InstallMethod = "npm"
-	InstallMethodPip      InstallMethod = "pip"
-	InstallMethodHomebrew InstallMethod = "homebrew"
-	InstallMethodUnknown  InstallMethod = "unknown"
+	InstallMethodNative      InstallMethod = "native"
+	InstallMethodNPM         InstallMethod = "npm"
+	InstallMethodPip         InstallMethod = "pip"
+	InstallMethodHomebrew    InstallMethod = "homebrew"
+	InstallMethodCodeboxVenv InstallMethod = "codebox-venv"
+	InstallMethodUnknown     InstallMethod = "unknown"
 )
 
 // ClaudeInstallMethod represents a user-selected installation method for Claude Code.

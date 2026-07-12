@@ -47,9 +47,9 @@ type EnvCheckService interface {
 	// After cleaning, it verifies that Claude Code is no longer installed.
 	CleanClaudeCode(method InstallMethod) (*InstallResult, error)
 
-	// CleanHeadroom removes an existing Headroom installation via
-	// `pip uninstall -y headroom-ai`. After cleaning, it re-checks the tool
-	// status so the cached snapshot reflects the removal.
+	// CleanHeadroom removes the CodeBox-managed Headroom venv directory.
+	// After cleaning, it re-checks the tool status so the cached snapshot
+	// reflects the removal.
 	CleanHeadroom() (*InstallResult, error)
 }
 
@@ -59,6 +59,22 @@ type Service struct {
 	cache         *OverallStatus
 	versionCache  map[CLITool]latestVersionCacheEntry
 	processRunner platform.ProcessRunner
+
+	// headroomVenvDir is the absolute path to the CodeBox-managed Python
+	// virtual environment used to install and run headroom-ai. Injected at
+	// construction time (see SetHeadroomVenvDir). When empty, headroom
+	// detection/install falls back to PATH-only behaviour.
+	headroomVenvDir string
+
+	// headroomStopper, when set via SetHeadroomStopper, is invoked by the
+	// CleanHeadroom public entry before the venv directory is removed. It
+	// terminates the headroom proxy child process so Windows can release the
+	// locked headroom.exe inside the venv (RemoveAll would otherwise fail).
+	// The callback error is non-fatal: a stopped-or-not-running proxy must not
+	// block uninstall. Nil (the zero value) means no stopper is wired and
+	// CleanHeadroom skips the stop step (backwards compatible with tests and
+	// any caller that does not inject a stopper).
+	headroomStopper func() error
 
 	// Async operation state
 	opMu    sync.Mutex
@@ -71,12 +87,12 @@ type Service struct {
 	npmAvailable   bool
 	npmResolvedErr error // error message when npm is not available
 
-	// pipAvailability caches whether pip is resolvable. Populated once per
-	// service lifetime; used by the Headroom install path so it does not gate
-	// on npm (headroom is a Python package distributed via pip).
-	pipOnce        sync.Once
-	pipAvailable   bool
-	pipResolvedErr error // error message when pip is not available
+	// pythonAvailability caches whether python3 is resolvable. Populated once
+	// per service lifetime; used by the Headroom install path (venv creation
+	// capability) so it does not gate on npm or pip.
+	pythonOnce        sync.Once
+	pythonAvailable   bool
+	pythonResolvedErr error // error message when python3 is not available
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -95,6 +111,34 @@ func NewServiceWithRunner(runner platform.ProcessRunner) *Service {
 		versionCache:  map[CLITool]latestVersionCacheEntry{},
 		processRunner: runner,
 	}
+}
+
+// SetHeadroomVenvDir injects the CodeBox-managed headroom venv directory. The
+// directory is derived from defaultConfigDir() at app wiring time and shared
+// with the headroom.HeadroomService so detection, install, launch and uninstall
+// all target the same venv. Must be called before the first CheckOne/Install.
+func (s *Service) SetHeadroomVenvDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.headroomVenvDir = strings.TrimSpace(dir)
+}
+
+// SetHeadroomStopper injects the callback used to stop the headroom proxy
+// child process before CleanHeadroom removes the venv directory. This is
+// required on Windows where a running headroom.exe inside the venv is locked
+// by the OS and os.RemoveAll would fail. Wiring (app.go) injects
+// HeadroomService.Stop here so CleanHeadroom is self-protecting: the stop
+// happens inside the clean entry regardless of which caller invoked it, so
+// the frontend does not need to remember to stop the proxy first.
+//
+// The injected callback's error is treated as best-effort by CleanHeadroom
+// (a not-running proxy is a valid state); pass a function that tolerates
+// being called when the proxy is already stopped. Must be called before
+// CleanHeadroom.
+func (s *Service) SetHeadroomStopper(fn func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.headroomStopper = fn
 }
 
 // CheckAll checks every supported CLI tool and updates the in-memory cache.
@@ -290,20 +334,21 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 }
 
 // populateHeadroomCanInstall fills CanInstall / CanInstallByMethod /
-// InstallBlockedReason for the Headroom tool. Headroom is installed via pip,
-// so availability is probed through resolvePipPath rather than the npm cache.
+// InstallBlockedReason for the Headroom tool. Headroom is installed into a
+// CodeBox-managed venv, so availability is probed through python3 (the ability
+// to create a venv) rather than the npm or pip cache.
 func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 	if status == nil {
 		return
 	}
-	s.pipOnce.Do(func() {
-		s.probePipAvailability()
+	s.pythonOnce.Do(func() {
+		s.probePythonAvailability()
 	})
 
 	status.CanInstallByMethod = map[string]bool{
-		"pip": s.pipAvailable,
+		"venv": s.pythonAvailable,
 	}
-	status.CanInstall = s.pipAvailable
+	status.CanInstall = s.pythonAvailable
 
 	if status.CanInstall {
 		// For installed tools with errors, offer a reinstall/repair solution.
@@ -318,19 +363,19 @@ func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 		return
 	}
 
-	if s.pipResolvedErr != nil {
-		status.InstallBlockedReason = s.pipResolvedErr.Error()
+	if s.pythonResolvedErr != nil {
+		status.InstallBlockedReason = s.pythonResolvedErr.Error()
 	}
 	if !status.Installed || strings.TrimSpace(status.Error) != "" {
 		status.Issues = append(status.Issues, CheckIssue{
 			Severity: SeverityError,
-			Code:     "pip_not_found",
-			Message:  "pip is required but not available",
+			Code:     "python_not_found",
+			Message:  "python3 is required to install Headroom but is not available",
 			Detail:   status.InstallBlockedReason,
 			Solutions: []ResolutionAction{
 				{
 					Type:            SolutionFixPath,
-					Description:     "Fix PATH to include the Python/pip directory",
+					Description:     "Fix PATH to include the Python directory",
 					Tool:            status.Tool,
 					RequiresConfirm: true,
 					IsPrimary:       true,
@@ -339,7 +384,7 @@ func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 		})
 		status.Solutions = append(status.Solutions, ResolutionAction{
 			Type:            SolutionFixPath,
-			Description:     "Fix PATH to include Python/pip",
+			Description:     "Fix PATH to include Python",
 			Tool:            status.Tool,
 			RequiresConfirm: true,
 			IsPrimary:       true,
@@ -1024,10 +1069,15 @@ func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResul
 	return result, err
 }
 
-// CleanHeadroom removes an existing Headroom installation. It acquires the
-// same operation gate used by install/update so that overlapping operations
-// cannot race against a stale environment snapshot, then runs
-// `pip uninstall -y headroom-ai` and refreshes the cached Headroom status.
+// CleanHeadroom removes the CodeBox-managed Headroom venv directory. It
+// acquires the same operation gate used by install/update so that overlapping
+// operations cannot race against a stale environment snapshot. Before the
+// venv directory is removed, it invokes the injected headroom stopper (see
+// SetHeadroomStopper) so the headroom proxy child process is terminated first
+// -- this is required on Windows where a running headroom.exe inside the venv
+// is locked by the OS and os.RemoveAll would fail. The stopper is best-effort
+// and its error is non-fatal (a not-running proxy is a valid pre-state for
+// uninstall). After removal, it refreshes the cached Headroom status.
 func (s *Service) CleanHeadroom() (*InstallResult, error) {
 	s.opMu.Lock()
 	if s.current != nil && s.current.Status == OperationStatusRunning {
@@ -1046,6 +1096,20 @@ func (s *Service) CleanHeadroom() (*InstallResult, error) {
 		UpdatedAt: now,
 	}
 	s.opMu.Unlock()
+
+	// Stop the headroom proxy before removing the venv. On Windows the running
+	// headroom.exe lives inside the venv and is locked by the OS, so
+	// os.RemoveAll would fail with "Access is denied" if the proxy were still
+	// running. The stop is best-effort: a not-running proxy returns nil from
+	// HeadroomService.Stop, and even a non-nil error here must not block
+	// uninstall (the proxy may have died independently). We deliberately do
+	// not return on stopErr so the venv removal still proceeds; the venv
+	// removal itself is the authoritative uninstall step and surfaces its own
+	// error if it fails.
+	stopFn := s.headroomStopper
+	if stopFn != nil {
+		_ = stopFn()
+	}
 
 	result, err := s.cleanHeadroom()
 

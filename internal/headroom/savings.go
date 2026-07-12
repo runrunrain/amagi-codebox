@@ -73,7 +73,7 @@ func (s *HeadroomService) GetSavings(ctx context.Context) (*SavingsReport, error
 	// Resolve headroom with an augmented PATH and reuse that environment for the
 	// child process so savings works under the same minimal-GUI-PATH conditions
 	// as Start(). See resolveHeadroomBinWithEnv for the rationale.
-	binPath, enhancedEnv := resolveHeadroomBinWithEnv()
+	binPath, enhancedEnv := s.resolveHeadroomBinWithEnv()
 	spec := platform.CommandSpec{
 		Path:   binPath,
 		Args:   []string{"savings", "--json"},

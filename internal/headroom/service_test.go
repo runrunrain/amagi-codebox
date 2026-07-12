@@ -139,7 +139,8 @@ func TestResolveHeadroomBinWithEnv_AugmentsPATH(t *testing.T) {
 	processPathValue := os.Getenv("PATH")
 	processEntries := pathEntries(processPathValue)
 
-	_, enhancedEnv := resolveHeadroomBinWithEnv()
+	svc := NewHeadroomService(nil, nil)
+	_, enhancedEnv := svc.resolveHeadroomBinWithEnv()
 	m := envMap(enhancedEnv)
 	enhancedEntries := pathEntries(m["PATH"])
 
@@ -170,11 +171,36 @@ func TestResolveHeadroomBinWithEnv_AugmentsPATH(t *testing.T) {
 // returns a non-empty bin path (absolute when resolved, bare "headroom" as
 // fallback), so callers can always construct a CommandSpec.
 func TestResolveHeadroomBinWithEnv_ReturnsBinPath(t *testing.T) {
-	binPath, enhancedEnv := resolveHeadroomBinWithEnv()
+	svc := NewHeadroomService(nil, nil)
+	binPath, enhancedEnv := svc.resolveHeadroomBinWithEnv()
 	if strings.TrimSpace(binPath) == "" {
 		t.Fatal("binPath should never be empty")
 	}
 	if len(enhancedEnv) == 0 {
 		t.Fatal("enhancedEnv should never be empty")
+	}
+}
+
+// TestResolveHeadroomBinWithEnv_PrependsVenvBin verifies the venv bin
+// directory is prepended to the enhanced PATH so the venv-installed headroom
+// wins over any system headroom. This injection is independent of envcheck's
+// buildEnhancedEnv and must stay in sync with it.
+func TestResolveHeadroomBinWithEnv_PrependsVenvBin(t *testing.T) {
+	venvBin := filepath.Join(t.TempDir(), "venv-bin")
+	if err := os.MkdirAll(venvBin, 0o755); err != nil {
+		t.Fatalf("mkdir venv bin: %v", err)
+	}
+	svc := NewHeadroomService(nil, nil)
+	svc.SetVenvBinDir(venvBin)
+	_, enhancedEnv := svc.resolveHeadroomBinWithEnv()
+	m := envMap(enhancedEnv)
+	entries := pathEntries(m["PATH"])
+	if _, ok := entries[filepath.Clean(venvBin)]; !ok {
+		t.Fatalf("venv bin %q missing from enhanced PATH=%q", venvBin, m["PATH"])
+	}
+	// venv bin must be the FIRST entry so it takes priority.
+	first := strings.Split(m["PATH"], string(os.PathListSeparator))[0]
+	if filepath.Clean(first) != filepath.Clean(venvBin) {
+		t.Fatalf("venv bin %q should be the first PATH entry, got %q", venvBin, first)
 	}
 }

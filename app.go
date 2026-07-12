@@ -135,12 +135,30 @@ func NewApp(mobileAssets embed.FS) *App {
 	codexPluginsSvc := codexplugin.NewService("", log)
 	processRunner := platform.NewProcessRunner()
 
+	// headroom-venv lives under the CodeBox config directory. It is shared by
+	// envcheck (install/detect/uninstall) and headroom (proxy launch) so both
+	// target the same venv. The bin subdir is platform-specific.
+	headroomVenvDir := filepath.Join(configDir, "headroom-venv")
+	headroomVenvBinDir := headroomVenvBinSubdir(headroomVenvDir)
+
+	headroomSvc := headroom.NewHeadroomService(processRunner, log)
+	headroomSvc.SetVenvBinDir(headroomVenvBinDir)
+
+	envCheckSvc := envcheck.NewServiceWithRunner(processRunner)
+	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
+	// Inject the headroom stopper so CleanHeadroom terminates the proxy child
+	// process before removing the venv directory. Required on Windows where a
+	// running headroom.exe inside the venv is locked and os.RemoveAll fails.
+	// HeadroomService.Stop is a no-op (returns nil) when the proxy is not
+	// running, so this is safe to call unconditionally during uninstall.
+	envCheckSvc.SetHeadroomStopper(headroomSvc.Stop)
+
 	app := &App{
 		Config:         config.NewConfigService(configDir),
 		Secrets:        secrets.NewSecretsService(configDir),
 		Launcher:       launcher.NewLauncherService(log, envVarsSvc),
 		Proxy:          proxy.NewProxyService(),
-		Headroom:       headroom.NewHeadroomService(processRunner, log),
+		Headroom:       headroomSvc,
 		Tray:           tray.NewService(),
 		Sessions:       session.NewManager(),
 		Paths:          paths.NewPathsService(configDir),
@@ -153,7 +171,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		CodexPlugins:   codexPluginsSvc,
 		Workspaces:     workspace.NewService(configDir, pluginsSvc, log),
 		OpenCodeConfig: opencodeconfig.NewService(),
-		EnvCheck:       envcheck.NewServiceWithRunner(processRunner),
+		EnvCheck:       envCheckSvc,
 		Capabilities:   capabilities,
 		CLIResolver:    platform.NewCLIResolver(capabilities),
 		FileOpener:     platform.NewFileOpener(processRunner),
@@ -2748,6 +2766,16 @@ func defaultConfigDir() string {
 		return ".amagi-codebox"
 	}
 	return filepath.Join(home, ".amagi-codebox")
+}
+
+// headroomVenvBinSubdir returns the platform-specific bin directory inside
+// the CodeBox-managed headroom venv. Used at wiring time to inject the same
+// directory into both envcheck.Service and headroom.HeadroomService.
+func headroomVenvBinSubdir(venvDir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(venvDir, "Scripts")
+	}
+	return filepath.Join(venvDir, "bin")
 }
 
 // --- URL 历史 API ---

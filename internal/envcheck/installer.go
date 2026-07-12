@@ -34,6 +34,16 @@ const (
 	installOperationInstall installOperation = "install"
 	installOperationUpdate  installOperation = "update"
 
+	// headroomPipInstallTimeout bounds `venv/bin/python -m pip install
+	// headroom-ai[proxy]`. The [proxy] extra still pulls in transformers and
+	// onnxruntime (large wheels), so the generic 120s timeout is too tight on
+	// slow networks. Mirrors claudeNPMInstallTimeout rationale.
+	headroomPipInstallTimeout = 10 * time.Minute
+
+	// headroomVenvCreateTimeout bounds `python3 -m venv <dir>`. venv creation
+	// with ensurepip is usually fast but can download wheels on first run.
+	headroomVenvCreateTimeout = 120 * time.Second
+
 	// Progress percentages for each phase of an install/update operation.
 	progressPrecheck  = 5
 	progressPrepare   = 15
@@ -1441,13 +1451,17 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		}
 		return []installCommand{s.resolveCommandNPMPath(npmCodexCommand(operation))}, nil
 	case ToolHeadroom:
-		// Headroom is a Python package distributed via pip; it does NOT depend
-		// on npm. Resolve pip up front so a missing pip is reported as a clear
-		// error before attempting the install.
-		if err := s.ensurePipAvailable(); err != nil {
+		// Headroom is installed into a CodeBox-managed venv to avoid PEP 668
+		// (externally-managed-environment) which blocks bare `pip install` on
+		// Homebrew/system Python. Require python3 (for venv creation), ensure
+		// the venv exists, then install headroom-ai[proxy] via the venv's pip.
+		if err := s.ensurePythonAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{s.resolveCommandPipPath(pipHeadroomCommand(operation))}, nil
+		if err := s.ensureHeadroomVenv(); err != nil {
+			return nil, err
+		}
+		return []installCommand{s.headroomVenvInstallCommand(operation)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
@@ -2090,76 +2104,100 @@ func (s *Service) resolveNPMPath() string {
 	return "npm"
 }
 
-// pipHeadroomCommand returns the pip command for Headroom. Installs use
-// `pip install headroom-ai[all]`; updates use `pip install -U` which is the
-// reliable way to force an upgrade (pip does not have a separate update verb).
-func pipHeadroomCommand(operation installOperation) installCommand {
+// headroomVenvInstallCommand returns the venv-pip command for Headroom. Uses
+// the venv's python -m pip so the install is immune to PEP 668. Installs
+// `headroom-ai[proxy]` (only the proxy extra CodeBox needs, not [all]);
+// updates use `-U` to force an upgrade.
+func (s *Service) headroomVenvInstallCommand(operation installOperation) installCommand {
+	pythonPath := headroomVenvPythonPath(s.headroomVenvDir)
 	if operation == installOperationUpdate {
 		return installCommand{
-			description: "pip install --upgrade headroom-ai[all]",
-			path:        "pip",
-			args:        []string{"install", "-U", "headroom-ai[all]"},
-			timeout:     installCommandTimeout,
+			description: "venv pip install --upgrade headroom-ai[proxy]",
+			path:        pythonPath,
+			args:        []string{"-m", "pip", "install", "-U", "headroom-ai[proxy]"},
+			timeout:     headroomPipInstallTimeout,
 		}
 	}
 	return installCommand{
-		description: "pip install headroom-ai[all]",
-		path:        "pip",
-		args:        []string{"install", "headroom-ai[all]"},
-		timeout:     installCommandTimeout,
+		description: "venv pip install headroom-ai[proxy]",
+		path:        pythonPath,
+		args:        []string{"-m", "pip", "install", "headroom-ai[proxy]"},
+		timeout:     headroomPipInstallTimeout,
 	}
 }
 
-// resolvePipPath returns the absolute path to pip, preferring "pip" then
-// "pip3", falling back to the bare "pip" name so the OS can resolve it.
-// Mirrors resolveNPMPath.
-func (s *Service) resolvePipPath() string {
+// headroomVenvBinDir returns the platform-specific bin directory inside the
+// venv ("<dir>/bin" on POSIX, "<dir>/Scripts" on Windows). Returns "" when
+// venvDir is empty.
+func headroomVenvBinDir(venvDir string) string {
+	venvDir = strings.TrimSpace(venvDir)
+	if venvDir == "" {
+		return ""
+	}
+	if isWindows() {
+		return filepath.Join(venvDir, "Scripts")
+	}
+	return filepath.Join(venvDir, "bin")
+}
+
+// headroomVenvPythonPath returns the absolute path to the venv's python
+// executable.
+func headroomVenvPythonPath(venvDir string) string {
+	binDir := headroomVenvBinDir(venvDir)
+	if binDir == "" {
+		return ""
+	}
+	if isWindows() {
+		return filepath.Join(binDir, "python.exe")
+	}
+	return filepath.Join(binDir, "python")
+}
+
+// headroomVenvBinDir is the Service-level helper used by buildEnhancedEnv and
+// detection to derive the venv bin directory from the injected root.
+func (s *Service) headroomVenvBinDir() string {
+	return headroomVenvBinDir(s.headroomVenvDir)
+}
+
+// resolvePythonPath returns the absolute path to python3, preferring "python3"
+// then "python", falling back to the bare "python3" name. Mirrors resolveNPMPath.
+func (s *Service) resolvePythonPath() string {
 	env := s.buildEnhancedEnv()
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	for _, name := range []string{"pip", "pip3"} {
+	for _, name := range []string{"python3", "python"} {
 		resolved, _, err := resolver.ResolveExecutable(name, nil, env)
 		if err == nil && strings.TrimSpace(resolved.Path) != "" {
 			return resolved.Path
 		}
 	}
-	return "pip"
+	return "python3"
 }
 
-// resolveCommandPipPath replaces a bare "pip" command path with the resolved
-// absolute path to pip, ensuring install commands work even when the GUI
-// process has a minimal PATH. Mirrors resolveCommandNPMPath.
-func (s *Service) resolveCommandPipPath(cmd installCommand) installCommand {
-	if cmd.path == "pip" {
-		if resolved := s.resolvePipPath(); resolved != "" && resolved != "pip" {
-			cmd.path = resolved
-		}
-	}
-	return cmd
-}
-
-// ensurePipAvailable probes pip availability (cached once per service lifetime
-// via pipOnce). Returns an error explaining how to remediate when pip is not
-// found. Mirrors ensureNPMAvailable.
-func (s *Service) ensurePipAvailable() error {
-	s.pipOnce.Do(func() {
-		s.probePipAvailability()
+// ensurePythonAvailable probes python3 availability (cached once per service
+// lifetime via pythonOnce). Returns an error explaining how to remediate when
+// python3 is not found. Mirrors ensureNPMAvailable.
+func (s *Service) ensurePythonAvailable() error {
+	s.pythonOnce.Do(func() {
+		s.probePythonAvailability()
 	})
-	if s.pipAvailable {
+	if s.pythonAvailable {
 		return nil
 	}
-	if s.pipResolvedErr != nil {
-		return s.pipResolvedErr
+	if s.pythonResolvedErr != nil {
+		return s.pythonResolvedErr
 	}
-	return fmt.Errorf("pip 未在 PATH 中找到。请安装 Python 3 (https://www.python.org) 并确保 pip 可用，然后重启 CodeBox。")
+	return fmt.Errorf("python3 未在 PATH 中找到。请安装 Python 3 (https://www.python.org) 并确保 python3 可用，然后重启 CodeBox。")
 }
 
-// probePipAvailability performs the actual pip availability check and stores
-// the result in the service's cache fields. Called exactly once via pipOnce.
-// It prefers "pip" then "pip3" and verifies the binary actually runs.
-func (s *Service) probePipAvailability() {
+// probePythonAvailability performs the actual python3 availability check and
+// stores the result in the service's cache fields. Called exactly once via
+// pythonOnce. It prefers "python3" then "python" and verifies the binary
+// actually runs. python3 availability implies venv-creation capability (the
+// venv module ships with the standard library).
+func (s *Service) probePythonAvailability() {
 	env := s.buildEnhancedEnv()
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	for _, name := range []string{"pip", "pip3"} {
+	for _, name := range []string{"python3", "python"} {
 		resolved, _, resolveErr := resolver.ResolveExecutable(name, nil, env)
 		if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
 			continue
@@ -2173,18 +2211,57 @@ func (s *Service) probePipAvailability() {
 		})
 		cancel()
 		if runErr == nil {
-			s.pipAvailable = true
-			s.pipResolvedErr = nil
+			s.pythonAvailable = true
+			s.pythonResolvedErr = nil
 			return
 		}
 		detail := sanitizeInstallerOutput(resultText(result))
 		if detail == "" {
 			detail = sanitizeInstallerOutput(runErr.Error())
 		}
-		s.pipResolvedErr = fmt.Errorf("在 %s 找到 %s 但无法正常运行: %s", resolved.Path, name, detail)
+		s.pythonResolvedErr = fmt.Errorf("在 %s 找到 %s 但无法正常运行: %s", resolved.Path, name, detail)
 		return
 	}
-	s.pipResolvedErr = fmt.Errorf("pip/pip3 未在 PATH 中找到；请安装 Python 3 (https://www.python.org) 并确保 pip 可用")
+	s.pythonResolvedErr = fmt.Errorf("python3/python 未在 PATH 中找到；请安装 Python 3 (https://www.python.org) 并确保 python3 可用")
+}
+
+// ensureHeadroomVenv creates the CodeBox-managed headroom venv if it does not
+// already exist. Idempotent: when the venv directory already contains a
+// runnable python executable, creation is skipped. This is a prepare-phase
+// side effect (precedent: ensurePythonAvailable / ensureNPMAvailable running
+// probes during installCommands).
+func (s *Service) ensureHeadroomVenv() error {
+	venvDir := strings.TrimSpace(s.headroomVenvDir)
+	if venvDir == "" {
+		return fmt.Errorf("headroom venv 目录未配置")
+	}
+	if headroomVenvPythonExists(venvDir) {
+		return nil
+	}
+	pythonPath := s.resolvePythonPath()
+	ctx, cancel := context.WithTimeout(context.Background(), headroomVenvCreateTimeout)
+	defer cancel()
+	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   pythonPath,
+		Args:   []string{"-m", "venv", venvDir},
+		Env:    s.buildEnhancedEnv(),
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if err != nil {
+		message := strings.TrimSpace(resultText(result))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("创建 headroom venv 失败 (%s -m venv %s): %s", pythonPath, venvDir, sanitizeInstallerOutput(message))
+	}
+	return nil
+}
+
+// headroomVenvPythonExists reports whether the venv directory already contains
+// a runnable python executable. Used by ensureHeadroomVenv for idempotency.
+func headroomVenvPythonExists(venvDir string) bool {
+	pythonPath := headroomVenvPythonPath(venvDir)
+	return pythonPath != "" && fileExists(pythonPath)
 }
 
 func (s *Service) runInstallCommand(command installCommand) error {
@@ -2466,11 +2543,13 @@ func (s *Service) cleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 	}
 }
 
-// cleanHeadroom removes an existing Headroom installation by running
-// `pip uninstall -y headroom-ai`. It first verifies headroom is installed,
-// then runs the uninstall through ProcessRunner with the default policy, and
-// finally re-checks the tool status to report the outcome. The pip path is
-// resolved via resolvePipPath so the command works under the minimal GUI PATH.
+// cleanHeadroom removes the CodeBox-managed Headroom venv directory. Headroom
+// is installed entirely inside this venv, so deleting the directory fully
+// uninstalls it without touching the system Python. The public CleanHeadroom
+// entry (service.go) is responsible for stopping a running proxy first via the
+// injected headroomStopper callback before this method runs, so the venv
+// directory is safe to RemoveAll even on Windows where a running headroom.exe
+// would otherwise be locked.
 func (s *Service) cleanHeadroom() (*InstallResult, error) {
 	status, checkErr := s.CheckOne(ToolHeadroom)
 	if checkErr != nil && status == nil {
@@ -2480,26 +2559,18 @@ func (s *Service) cleanHeadroom() (*InstallResult, error) {
 		return &InstallResult{Success: true, Message: "未检测到 Headroom，无需卸载", Tool: ToolHeadroom}, nil
 	}
 
-	pipPath := s.resolvePipPath()
-	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
-	defer cancel()
-	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   pipPath,
-		Args:   []string{"uninstall", "-y", headroomPackageName},
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if err != nil {
-		message := strings.TrimSpace(resultText(result))
-		if message == "" {
-			message = err.Error()
-		}
-		return installFailure(ToolHeadroom, fmt.Sprintf("pip uninstall %s 失败: %s", headroomPackageName, sanitizeInstallerOutput(message)), err), err
+	venvDir := strings.TrimSpace(s.headroomVenvDir)
+	if venvDir == "" {
+		err := fmt.Errorf("headroom venv 目录未配置，无法卸载")
+		return installFailure(ToolHeadroom, err.Error(), err), err
+	}
+	if err := os.RemoveAll(venvDir); err != nil {
+		return installFailure(ToolHeadroom, fmt.Sprintf("删除 Headroom venv 目录失败: %s", sanitizeInstallerOutput(err.Error())), err), err
 	}
 
 	after, _ := s.CheckOne(ToolHeadroom)
 	if after != nil && !after.Installed {
-		return &InstallResult{Success: true, Message: "Headroom 已通过 pip uninstall 成功卸载", Tool: ToolHeadroom}, nil
+		return &InstallResult{Success: true, Message: "Headroom 已通过删除 venv 目录成功卸载", Tool: ToolHeadroom}, nil
 	}
 	version := ""
 	if after != nil {
@@ -2507,7 +2578,7 @@ func (s *Service) cleanHeadroom() (*InstallResult, error) {
 	}
 	return &InstallResult{
 		Success: true,
-		Message: fmt.Sprintf("pip uninstall %s 已执行；请重新检测确认卸载结果", headroomPackageName),
+		Message: fmt.Sprintf("已删除 Headroom venv 目录 %s；请重新检测确认卸载结果", venvDir),
 		Tool:    ToolHeadroom,
 		Version: version,
 	}, nil

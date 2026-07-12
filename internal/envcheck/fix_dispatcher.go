@@ -745,6 +745,16 @@ func (s *Service) buildEnhancedEnv() []string {
 
 	pathEntries := []string{}
 
+	// Prepend the CodeBox-managed headroom venv bin directory so that
+	// headroom subprocess invocations (runHeadroomVersion, post-install
+	// CheckOne verification) resolve the venv-installed headroom binary.
+	// This is independent of the headroom.HeadroomService PATH injection
+	// (platform.BuildEffectiveEnv), which covers the `headroom proxy` launch
+	// path; both must inject the venv bin or detection and launch diverge.
+	if venvBin := s.headroomVenvBinDir(); venvBin != "" {
+		pathEntries = append(pathEntries, venvBin)
+	}
+
 	// Try to find node and npm directories. Keep these ahead of the native
 	// Claude directory so the npm bootstrap command `claude install` still uses
 	// the freshly installed npm shim when both channels are present.
@@ -812,16 +822,16 @@ func (s *Service) buildEnhancedEnv() []string {
 	return env
 }
 
-// resetNPMCache allows re-probing npm availability. It also resets the pip
+// resetNPMCache allows re-probing npm availability. It also resets the python3
 // availability cache so that Headroom install eligibility is recomputed after
-// a PATH fix (pip and node commonly live in directories that the fix adds).
+// a PATH fix (python and node commonly live in directories that the fix adds).
 func (s *Service) resetNPMCache() {
 	s.npmOnce = sync.Once{}
 	s.npmAvailable = false
 	s.npmResolvedErr = nil
-	s.pipOnce = sync.Once{}
-	s.pipAvailable = false
-	s.pipResolvedErr = nil
+	s.pythonOnce = sync.Once{}
+	s.pythonAvailable = false
+	s.pythonResolvedErr = nil
 }
 
 // atomicWriteFileWithPerm writes data to path atomically using a temp file

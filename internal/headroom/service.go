@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +52,11 @@ type HeadroomService struct {
 	backendURL string
 	runner     platform.ProcessRunner
 	log        *logging.Service
+	// venvBinDir is the CodeBox-managed headroom venv bin directory
+	// ("<venv>/bin" POSIX / "<venv>/Scripts" Windows). Injected via
+	// SetVenvBinDir so the proxy launch resolves the venv-installed headroom
+	// binary. When empty, resolution falls back to the platform resolver only.
+	venvBinDir string
 }
 
 // NewHeadroomService creates a HeadroomService backed by the given process
@@ -61,6 +68,16 @@ func NewHeadroomService(runner platform.ProcessRunner, log *logging.Service) *He
 		runner: runner,
 		log:    log,
 	}
+}
+
+// SetVenvBinDir injects the CodeBox-managed headroom venv bin directory. Must
+// be called before Start so the proxy launch resolves the venv headroom. The
+// directory is the platform-specific bin subdir ("<venv>/bin" or
+// "<venv>/Scripts").
+func (s *HeadroomService) SetVenvBinDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.venvBinDir = strings.TrimSpace(dir)
 }
 
 // Start launches the headroom proxy child process. realBackendURL is the
@@ -99,7 +116,7 @@ func (s *HeadroomService) Start(realBackendURL string) error {
 	// for the child process. On macOS, GUI apps launched from Dock inherit a
 	// minimal PATH; without augmentation the child cannot locate headroom (or
 	// the interpreter a script shim depends on) even when the resolver can.
-	binPath, enhancedEnv := resolveHeadroomBinWithEnv()
+	binPath, enhancedEnv := s.resolveHeadroomBinWithEnv()
 	env := buildChildEnvWithBase(realBackendURL, port, enhancedEnv)
 
 	spec := platform.CommandSpec{
@@ -253,15 +270,82 @@ func buildChildEnvWithBase(realBackendURL string, port int, baseEnv []string) []
 //     Python/script shim that itself needs the augmented PATH (e.g. to locate
 //     its interpreter).
 //
+// On top of platform.BuildEffectiveEnv, the CodeBox-managed venv bin directory
+// is prepended so the venv-installed headroom wins over any system headroom.
+// This injection is independent of envcheck's buildEnhancedEnv (which covers
+// detection); both must inject the venv bin or detection and launch diverge.
+//
 // Returning the enhanced env alongside the path lets Start() pass it through to
 // the child process so resolution and execution share one consistent PATH.
 // Mirrors the buildEnhancedEnv() pattern used throughout the envcheck package.
-func resolveHeadroomBinWithEnv() (binPath string, enhancedEnv []string) {
+func (s *HeadroomService) resolveHeadroomBinWithEnv() (binPath string, enhancedEnv []string) {
 	enhancedEnv = platform.BuildEffectiveEnv(os.Environ())
+	if venvBin := strings.TrimSpace(s.venvBinDir); venvBin != "" {
+		enhancedEnv = prependEnvPATH(enhancedEnv, venvBin)
+	}
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
 	resolved, _, err := resolver.ResolveExecutable("headroom", nil, enhancedEnv)
 	if err == nil && strings.TrimSpace(resolved.Path) != "" {
 		return resolved.Path, enhancedEnv
 	}
+	// Direct fallback: if the venv headroom binary exists on disk, use it
+	// even when the resolver could not locate it (e.g. venv dir is outside
+	// every PATH source the resolver inspects).
+	if venvBin := strings.TrimSpace(s.venvBinDir); venvBin != "" {
+		if candidate := headroomVenvBinaryCandidate(venvBin); candidate != "" && fileExists(candidate) {
+			return candidate, enhancedEnv
+		}
+	}
 	return "headroom", enhancedEnv
+}
+
+// headroomVenvBinaryCandidate returns the platform-specific headroom executable
+// path inside the venv bin directory.
+func headroomVenvBinaryCandidate(venvBinDir string) string {
+	venvBinDir = strings.TrimSpace(venvBinDir)
+	if venvBinDir == "" {
+		return ""
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Join(venvBinDir, "headroom.exe")
+	}
+	return filepath.Join(venvBinDir, "headroom")
+}
+
+// fileExists reports whether the named file exists and is not a directory.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// prependEnvPATH returns a copy of env with dir prepended to the PATH entry
+// (or a new PATH entry added when absent). dir is placed first so it takes
+// priority over every existing entry.
+func prependEnvPATH(env []string, dir string) []string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	found := false
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(key, "PATH") {
+			found = true
+			newValue := dir
+			if strings.TrimSpace(value) != "" {
+				newValue += string(os.PathListSeparator) + value
+			}
+			out = append(out, "PATH="+newValue)
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !found {
+		out = append(out, "PATH="+dir)
+	}
+	return out
 }
