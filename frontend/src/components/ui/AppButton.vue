@@ -93,6 +93,14 @@ const classes = computed(() => {
   background: var(--control);
 }
 
+/* Icon buttons keep zero padding at every size; size modifiers (.btn-sm/.btn-lg)
+   only apply to text buttons. Without this override, .btn-sm's `padding: 6px 12px`
+   (declared later, equal specificity) wins and squeezes the 26px border-box
+   content area to ~2px, collapsing the slotted SVG icon to an invisible sliver. */
+.btn.icon-btn {
+  padding: 0;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

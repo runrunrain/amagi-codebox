@@ -179,7 +179,7 @@
             />
           </ConfigCategoryCard>
 
-          <!-- Plugin 配置（object，类型保持） -->
+          <!-- Plugin 配置（array<string>，OpenCode v1.17+ 标准格式） -->
           <ConfigCategoryCard
             title="Plugin"
             category="plugin"
@@ -187,9 +187,12 @@
             :badge="pluginCount"
             @toggle="expandedCategories.plugin = !expandedCategories.plugin"
           >
-            <TypedKeyValueEditor
-              :model-value="pluginMap"
+            <StringListEditor
+              :model-value="pluginArray"
+              item-placeholder="github:owner/repo 或本地路径"
+              add-label="添加插件"
               empty-text="暂无 plugin"
+              mono
               @update:model-value="updatePlugin($event)"
             />
           </ConfigCategoryCard>
@@ -345,10 +348,10 @@ const instructionsArray = computed<string[]>(() => {
   return Array.isArray(v) ? v : [];
 });
 
-// plugin object（类型保持）
-const pluginMap = computed<Record<string, any>>(() => {
+// plugin array<string>（OpenCode v1.17+ 标准格式，元素如 github:owner/repo）
+const pluginArray = computed<string[]>(() => {
   const v = configData.value[CONFIG_KEYS.plugin];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  return Array.isArray(v) ? v : [];
 });
 
 // experimental object（类型保持）
@@ -373,7 +376,7 @@ const agentCount = computed(() => Object.keys(agentMap.value).length);
 const mcpCount = computed(() => Object.keys(mcpMap.value).length);
 const permissionCount = computed(() => Object.keys(permissionMap.value).length);
 const instructionsCount = computed(() => instructionsArray.value.length);
-const pluginCount = computed(() => Object.keys(pluginMap.value).length);
+const pluginCount = computed(() => pluginArray.value.length);
 const experimentalCount = computed(() => Object.keys(experimentalMap.value).length);
 
 // 空配置判定
@@ -468,7 +471,7 @@ function updateInstructions(v: string[]) {
   serializeConfigToJson();
 }
 
-function updatePlugin(v: Record<string, any>) {
+function updatePlugin(v: string[]) {
   configData.value[CONFIG_KEYS.plugin] = v;
   serializeConfigToJson();
 }
