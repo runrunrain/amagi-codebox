@@ -75,3 +75,6 @@ export * from './updater';
 
 // Paths
 export * from './paths';
+
+// Usage Statistics (AI model usage & cost)
+export * from './usage';

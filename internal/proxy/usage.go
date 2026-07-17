@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/tidwall/gjson"
 )
@@ -342,4 +343,24 @@ func (a *SSEUsageAccumulator) GetUsage() *UsageData {
 	debugUsageLog("GetUsage: source=sse-final input=%d output=%d cacheRead=%d cacheCreation=%d",
 		a.inputTokens, a.outputTokens, a.cacheReadInputTokens, a.cacheCreationInputTokens)
 	return result
+}
+
+// UsageEvent 是 proxy 包向 usage 包传递的事件结构（设计 9.1）。
+//
+// proxy 包不 import usage 包（解耦）；app.go 在 Startup 时把 usage.Service.Record
+// 适配成接受 UsageEvent 的闭包，注入 ProxyService.SetUsageSink。
+//
+// 字段对齐 usage.UsageEvent 同名字段（但定义在 proxy 包内）。
+type UsageEvent struct {
+	AppType       string // claudecode / codex / opencode（由 LaunchSession 注入）
+	Provider      string // inferProviderFromURL 或 LaunchSession 注入
+	Model         string // extractModelFromRequest
+	SessionID     string // LaunchSession 注入
+	Preset        string // LaunchSession 注入
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	OccurredAt    time.Time // 一般用响应时间
+	RequestID     string
 }

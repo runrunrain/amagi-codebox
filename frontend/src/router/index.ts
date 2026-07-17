@@ -39,6 +39,12 @@ const router = createRouter({
       component: () => import('../views/LogsView.vue')
     },
     {
+      // 使用统计：AI 模型用量与成本 / Usage statistics: AI model usage & cost
+      path: '/usage',
+      name: 'Usage',
+      component: () => import('../views/UsageView.vue')
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/'
     }

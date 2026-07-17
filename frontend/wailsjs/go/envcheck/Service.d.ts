@@ -28,6 +28,10 @@ export function InstallClaudeCodeWithMethod(arg1:envcheck.ClaudeInstallMethod):P
 
 export function RunFixAction(arg1:envcheck.FixActionRequest):Promise<envcheck.FixActionResult>;
 
+export function SetHeadroomStopper(arg1:any):Promise<void>;
+
+export function SetHeadroomVenvDir(arg1:string):Promise<void>;
+
 export function StartInstallClaudeCodeWithMethod(arg1:envcheck.ClaudeInstallMethod):Promise<envcheck.OperationState>;
 
 export function StartInstallTool(arg1:envcheck.CLITool):Promise<envcheck.OperationState>;

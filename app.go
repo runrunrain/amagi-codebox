@@ -35,6 +35,7 @@ import (
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
+	"amagi-codebox/internal/usage"
 	"amagi-codebox/internal/workspace"
 
 	"github.com/google/uuid"
@@ -113,6 +114,7 @@ type App struct {
 	Workspaces     *workspace.Service
 	OpenCodeConfig *opencodeconfig.Service
 	EnvCheck       *envcheck.Service
+	Usage          *usage.Service
 
 	Capabilities platform.PlatformCapabilities
 	CLIResolver  platform.CLIResolver
@@ -172,6 +174,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		Workspaces:     workspace.NewService(configDir, pluginsSvc, log),
 		OpenCodeConfig: opencodeconfig.NewService(),
 		EnvCheck:       envCheckSvc,
+		Usage:          usage.NewService(configDir, log),
 		Capabilities:   capabilities,
 		CLIResolver:    platform.NewCLIResolver(capabilities),
 		FileOpener:     platform.NewFileOpener(processRunner),
@@ -728,6 +731,46 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.setPersistentLoadState(loadState)
 
+	// 使用统计：加载 usage.db + 注入 proxy sink + 异步触发首次同步 + 后台定时同步。
+	// 失败不阻塞启动；sync_session_log 路径仍可工作，仅 proxy 实时路径降级。
+	if a.Usage != nil {
+		if err := a.Usage.Load(); err != nil {
+			a.Log.Warn("usage", "使用统计加载失败", err.Error())
+		} else {
+			a.Log.Info("usage", "使用统计加载成功")
+			// 注入应用级 ctx 给 usage.Service（M1：StartBackgroundSync 不再接受 ctx 参数）。
+			// Wails v2 仅绑定"方法"，结构体字段（即使导出）不进入 wailsjs 生成路径。
+			a.Usage.Ctx = ctx
+			// 适配闭包：把 proxy.UsageEvent 转 usage.UsageEvent 并入库。
+			// 设计 9.1 / 9.3：proxy 包不 import usage 包；app.go 作为适配器在边界层做类型转换。
+			a.Proxy.SetUsageSink(func(pevt proxy.UsageEvent) {
+				if a.Usage == nil {
+					return
+				}
+				_, _ = a.Usage.Record(usage.UsageEvent{
+					AppType:                  pevt.AppType,
+					Source:                   usage.SourceProxy,
+					Provider:                 pevt.Provider,
+					Model:                    pevt.Model,
+					SessionID:                pevt.SessionID,
+					Preset:                   pevt.Preset,
+					InputTokens:              pevt.InputTokens,
+					OutputTokens:             pevt.OutputTokens,
+					CacheReadInputTokens:     pevt.CacheReadInputTokens,
+					CacheCreationInputTokens: pevt.CacheCreationInputTokens,
+					OccurredAt:               pevt.OccurredAt,
+					RequestID:                pevt.RequestID,
+				})
+			})
+			go func() {
+				if err := a.Usage.SyncAll(); err != nil {
+					a.Log.Warn("usage", "首次同步失败", err.Error())
+				}
+				a.Usage.StartBackgroundSync(5 * time.Minute)
+			}()
+		}
+	}
+
 	// 启动环境检测异步执行，不阻塞应用启动；检测结果由 EnvCheck 服务缓存。
 	go func() {
 		status, err := a.EnvCheck.CheckAll()
@@ -775,6 +818,11 @@ func (a *App) Shutdown(ctx context.Context) {
 
 	a.Tray.Stop()
 	a.Remote.Stop()
+	if a.Usage != nil {
+		if err := a.Usage.Close(); err != nil {
+			a.Log.Error("usage", "关闭使用统计失败", err.Error())
+		}
+	}
 	if a.Headroom != nil && a.Headroom.IsRunning() {
 		if err := a.Headroom.Stop(); err != nil {
 			a.Log.Error("app", "关闭 Headroom 失败", err.Error())
@@ -979,6 +1027,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	// 创建会话记录
 	sess := a.Sessions.Create(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir, useProxy)
 	a.Log.Info("session", "会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, model, launchMode))
+
+	// === usage：仅 useProxy 时注入 proxy 上下文，让实时钩子关联到本会话（设计 9.4）===
+	if useProxy && a.Usage != nil {
+		a.Proxy.SetCurrentSession(sess.ID, providerName, presetName, string(session.AppTypeClaudeCode))
+	}
 
 	// 根据模式选择启动方式
 	if launchMode == session.ModeEmbedded {

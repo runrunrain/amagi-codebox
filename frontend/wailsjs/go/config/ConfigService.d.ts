@@ -44,6 +44,8 @@ export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 
+export function RenameProvider(arg1:string,arg2:string):Promise<void>;
+
 export function ReplaceImportedPresetSnapshots(arg1:config.TerminalPresetsConfig,arg2:Record<string, config.OpenCodePreset>,arg3:boolean):Promise<void>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;

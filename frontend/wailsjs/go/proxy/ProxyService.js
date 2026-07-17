@@ -10,6 +10,10 @@ export function AddRule(arg1) {
   return window['go']['proxy']['ProxyService']['AddRule'](arg1);
 }
 
+export function ClearCurrentSession() {
+  return window['go']['proxy']['ProxyService']['ClearCurrentSession']();
+}
+
 export function DeleteRule(arg1) {
   return window['go']['proxy']['ProxyService']['DeleteRule'](arg1);
 }
@@ -62,8 +66,16 @@ export function SetBackendURL(arg1) {
   return window['go']['proxy']['ProxyService']['SetBackendURL'](arg1);
 }
 
+export function SetCurrentSession(arg1, arg2, arg3, arg4) {
+  return window['go']['proxy']['ProxyService']['SetCurrentSession'](arg1, arg2, arg3, arg4);
+}
+
 export function SetRules(arg1) {
   return window['go']['proxy']['ProxyService']['SetRules'](arg1);
+}
+
+export function SetUsageSink(arg1) {
+  return window['go']['proxy']['ProxyService']['SetUsageSink'](arg1);
 }
 
 export function Start(arg1, arg2) {

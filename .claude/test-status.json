@@ -1,0 +1,7 @@
+{
+  "last_test_run": "2026-07-17T06:40:23.621Z",
+  "result": "pass",
+  "test_command": "cd /Users/maorun/maorun-workpace/amagi-codebox && go test -mod=vendor -count=1 -race ./internal/usag...",
+  "details": "ok  \tamagi-codebox/internal/usage",
+  "exit_code": 0
+}

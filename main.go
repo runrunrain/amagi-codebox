@@ -62,6 +62,7 @@ func main() {
 			app.Workspaces,
 			app.OpenCodeConfig,
 			app.EnvCheck,
+			app.Usage,
 		},
 	})
 

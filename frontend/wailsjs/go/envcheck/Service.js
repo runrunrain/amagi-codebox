@@ -54,6 +54,14 @@ export function RunFixAction(arg1) {
   return window['go']['envcheck']['Service']['RunFixAction'](arg1);
 }
 
+export function SetHeadroomStopper(arg1) {
+  return window['go']['envcheck']['Service']['SetHeadroomStopper'](arg1);
+}
+
+export function SetHeadroomVenvDir(arg1) {
+  return window['go']['envcheck']['Service']['SetHeadroomVenvDir'](arg1);
+}
+
 export function StartInstallClaudeCodeWithMethod(arg1) {
   return window['go']['envcheck']['Service']['StartInstallClaudeCodeWithMethod'](arg1);
 }

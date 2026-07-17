@@ -235,3 +235,183 @@ func ExtractFirstUserMessage(jsonlPath string) (content string, found bool, err 
 	// 文件读完无合格记录（含空文件）：found=false, err=nil。
 	return "", false, nil
 }
+
+// UsageEventStub 是 appmeta 层产出的中立事件结构（避免 appmeta 反向依赖 usage 包）。
+//
+// usage.Service 内部把 Stub 转换为自身的 UsageEvent。
+type UsageEventStub struct {
+	DedupKey                  string
+	Model                     string
+	Provider                  string
+	ProjectDir                string
+	SessionID                 string
+	RawMessageID              string
+	InputTokens               int
+	OutputTokens              int
+	CacheReadInputTokens      int
+	CacheCreationInputTokens  int
+	OccurredAt                time.Time
+
+	// OpenCode 专用：CostProvided=true 时跳过价格表计算，直接用 NativeCost。
+	CostProvided bool
+	NativeCost   int64
+	CurrencyCode string
+	TimeUpdated  int64 // OpenCode 增量游标（毫秒）
+}
+
+// usageAssistantMessage 是 type=="assistant" 行的 message 二次解析结构。
+//
+// 仅提取用量统计所需字段（id / model / usage），content 用 RawMessage 延迟解码（不需要其内容）。
+type usageAssistantMessage struct {
+	ID    string          `json:"id"`
+	Model string          `json:"model"`
+	Usage usageMessageUse `json:"usage"`
+}
+
+// usageMessageUse 对应 Anthropic 的 message.usage 对象。
+type usageMessageUse struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// usageRecord 是 type=="assistant" 行的根级结构（只取统计需要的字段）。
+type usageRecord struct {
+	Type      string                 `json:"type"`
+	Message   usageAssistantMessage  `json:"message"`
+	Timestamp string                 `json:"timestamp"`
+	SessionID string                 `json:"session_id"` // 部分 schema 有根级 session_id
+	Cwd       string                 `json:"cwd"`
+}
+
+// ExtractUsageRecords 解析单个 Claude jsonl 文件，提取用量记录（断点续传）。
+//
+// 路径：<homeDir>/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
+//
+// 解析规则（设计 5.1）：
+//   - 从 startOffset 字节偏移开始读取（断点续传）；startOffset=0 全量
+//   - 逐行 JSON 解码（bufio.Scanner，缓冲扩到 1MiB）
+//   - 仅处理 type=="assistant" 的行
+//   - 从 message.usage 取四维 token：input_tokens / output_tokens /
+//     cache_read_input_tokens / cache_creation_input_tokens
+//   - 从 message.model 取模型名
+//   - 从 message.id 取去重键（DedupKey = "cc:msg_" + message.id，天然全局唯一）
+//   - 从根级 timestamp 取 ISO8601 时间
+//
+// Anthropic 语义：input_tokens 是 fresh input，不含 cache_read。
+// 调用方（usage.Service）按 AppType=claudecode 不做扣减。
+//
+// 返回值：
+//   - records：解析出的 UsageEventStub（已设置 DedupKey/AppType/Source/OccurredAt 等）
+//   - lastOffset：已读到的字节偏移（含换行符），供 sync_state 断点续传
+//   - err：文件级 IO 错误；单行解析失败 continue 不中断
+//
+// 注：第一期不扫 subagent/workflow 嵌套 jsonl（仅扫根级 type=="assistant" 行）。
+func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEventStub, lastOffset int64, err error) {
+	f, openErr := os.Open(jsonlPath)
+	if openErr != nil {
+		return nil, 0, fmt.Errorf("open jsonl %q: %w", jsonlPath, openErr)
+	}
+	defer f.Close()
+
+	// 断点续传：Seek 到上次偏移（必落在行边界 \n 之后）
+	if startOffset > 0 {
+		if _, seekErr := f.Seek(startOffset, 0); seekErr != nil {
+			return nil, startOffset, fmt.Errorf("seek jsonl %q to %d: %w", jsonlPath, startOffset, seekErr)
+		}
+	}
+
+	// SessionID 与 ProjectDir 从文件路径推断（避免每行重复解析）
+	sessionID, projectDirEncoded := inferSessionAndProjectFromPath(jsonlPath)
+
+	scanner := bufio.NewScanner(f)
+	// 实测：含 base64 图片或大 tool_result 的单行可达数 MB；扩到 16MiB 防 token too long。
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
+	currentOffset := startOffset
+	for scanner.Scan() {
+		lineBytes := scanner.Bytes()
+		// 累计字节偏移：len(lineBytes) + 1（\n 换行符）
+		// 注意：bufio.Scanner 在 EOF 无 \n 时返回最后一行但不增加 +1，
+		// 但 Claude jsonl 每行必以 \n 结尾（追加写），此假设成立。
+		currentOffset += int64(len(lineBytes)) + 1
+
+		if len(lineBytes) == 0 {
+			continue
+		}
+
+		var rec usageRecord
+		if jsonErr := json.Unmarshal(lineBytes, &rec); jsonErr != nil {
+			// 单行解析失败不中断：兼容 schema 演进
+			continue
+		}
+		if rec.Type != "assistant" {
+			continue
+		}
+		if rec.Message.ID == "" {
+			// 无 message.id 无法去重，跳过（保守）
+			continue
+		}
+
+		var occurredAt time.Time
+		if rec.Timestamp != "" {
+			// ISO8601（如 "2026-07-17T02:42:42.807Z"）
+			if t, parseErr := time.Parse(time.RFC3339Nano, rec.Timestamp); parseErr == nil {
+				occurredAt = t.UTC()
+			}
+		}
+		if occurredAt.IsZero() {
+			// timestamp 缺失或解析失败：用文件 mtime 兜底（避免零值污染时间分布）
+			if info, statErr := os.Stat(jsonlPath); statErr == nil {
+				occurredAt = info.ModTime().UTC()
+			} else {
+				occurredAt = time.Now().UTC()
+			}
+		}
+
+		// 优先用根级 cwd（更准确），其次从路径推断
+		projectDir := rec.Cwd
+		if projectDir == "" {
+			projectDir = projectDirEncoded
+		}
+		sessID := sessionID
+		if rec.SessionID != "" {
+			sessID = rec.SessionID
+		}
+
+		records = append(records, UsageEventStub{
+			DedupKey:                 dedupPrefixClaudeSession + rec.Message.ID,
+			Model:                    rec.Message.Model,
+			ProjectDir:               projectDir,
+			SessionID:                sessID,
+			RawMessageID:             rec.Message.ID,
+			InputTokens:              rec.Message.Usage.InputTokens,
+			OutputTokens:             rec.Message.Usage.OutputTokens,
+			CacheReadInputTokens:     rec.Message.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: rec.Message.Usage.CacheCreationInputTokens,
+			OccurredAt:               occurredAt,
+		})
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		return records, currentOffset, fmt.Errorf("scan jsonl %q: %w", jsonlPath, scanErr)
+	}
+
+	return records, currentOffset, nil
+}
+
+// dedupPrefixClaudeSession 是 Claude 行的 dedup_key 前缀（与 usage 包常量保持一致）。
+// 这里独立定义避免反向依赖 usage 包。
+const dedupPrefixClaudeSession = "cc:msg_"
+
+// inferSessionAndProjectFromPath 从 jsonl 路径推断 SessionID 与 ProjectDir（encoded）。
+//
+// 路径形如：.../<home>/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
+// SessionID = 文件主名（去 .jsonl）；ProjectDir = 父目录名（encoded）。
+func inferSessionAndProjectFromPath(jsonlPath string) (sessionID, projectDirEncoded string) {
+	base := filepath.Base(jsonlPath)
+	sessionID = strings.TrimSuffix(base, ".jsonl")
+	projectDirEncoded = filepath.Base(filepath.Dir(jsonlPath))
+	return sessionID, projectDirEncoded
+}

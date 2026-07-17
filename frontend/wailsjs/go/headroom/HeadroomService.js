@@ -6,8 +6,8 @@ export function GetPort() {
   return window['go']['headroom']['HeadroomService']['GetPort']();
 }
 
-export function GetSavings() {
-  return window['go']['headroom']['HeadroomService']['GetSavings']();
+export function GetSavings(arg1) {
+  return window['go']['headroom']['HeadroomService']['GetSavings'](arg1);
 }
 
 export function GetStatus() {
@@ -16,6 +16,10 @@ export function GetStatus() {
 
 export function IsRunning() {
   return window['go']['headroom']['HeadroomService']['IsRunning']();
+}
+
+export function SetVenvBinDir(arg1) {
+  return window['go']['headroom']['HeadroomService']['SetVenvBinDir'](arg1);
 }
 
 export function Start(arg1) {

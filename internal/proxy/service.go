@@ -34,6 +34,51 @@ type ProxyService struct {
 	logs              []InjectionLog
 	mu                sync.RWMutex
 	logsMu            sync.Mutex
+
+	// === 新增：usage 钩子（设计 9.1） ===
+	// onUsage 是注入的 usage sink；nil 时跳过（解耦，proxy 包不 import usage 包）。
+	onUsage func(UsageEvent)
+	// currentSession 是 LaunchSession 注入的当前会话上下文（用于把 usage 关联到 amagi session）。
+	currentSession *currentSessionCtx
+	sessMu         sync.RWMutex
+}
+
+// currentSessionCtx 携带当前活跃会话的关联信息。
+type currentSessionCtx struct {
+	SessionID string
+	Provider  string
+	Preset    string
+	AppType   string // claudecode / codex / opencode
+}
+
+// SetUsageSink 由 app.go 在 Startup 注入。
+//
+// 接受一个 func(UsageEvent) 回调；nil 时禁用 usage 钩子。
+// 设计要求 proxy 包不 import usage 包，故此回调由 app.go 适配
+// usage.Service.Record(UsageEvent) → 接受 proxy.UsageEvent 的闭包实现。
+func (s *ProxyService) SetUsageSink(fn func(UsageEvent)) {
+	s.mu.Lock()
+	s.onUsage = fn
+	s.mu.Unlock()
+}
+
+// SetCurrentSession 由 LaunchSession 在创建会话后注入（仅 useProxy 时）。
+func (s *ProxyService) SetCurrentSession(sessionID, provider, preset, appType string) {
+	s.sessMu.Lock()
+	s.currentSession = &currentSessionCtx{
+		SessionID: sessionID,
+		Provider:  provider,
+		Preset:    preset,
+		AppType:   appType,
+	}
+	s.sessMu.Unlock()
+}
+
+// ClearCurrentSession 在会话停止时调用（第一期可选，新会话启动会覆盖）。
+func (s *ProxyService) ClearCurrentSession() {
+	s.sessMu.Lock()
+	s.currentSession = nil
+	s.sessMu.Unlock()
 }
 
 func NewProxyService() *ProxyService {
@@ -637,6 +682,10 @@ func (s *ProxyService) proxyHandler(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 			}
 		}
+		// === usage 钩子：SSE 流结束后取累积 usage（设计 9.2，原 640 行）===
+		if u := accumulator.GetUsage(); u != nil {
+			s.emitUsageEvent(u, body, r)
+		}
 	} else {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -647,7 +696,61 @@ func (s *ProxyService) proxyHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
+		// === usage 钩子：非 SSE 从 body 提取 usage（设计 9.2，原 650 行）===
+		if u := parseUsageFromJSON(respBody); u != nil {
+			s.emitUsageEvent(u, body, r)
+		}
 	}
+}
+
+// emitUsageEvent 把 ProxyService.UsageData 转换为 UsageEvent 并调用 sink（设计 9.2）。
+//
+// 调用方：service.go proxyHandler 的 SSE 与非 SSE 分支。
+// 行为：
+//   - 若 onUsage 未注入（nil）则跳过（解耦）
+//   - model 从请求 body 提取；provider 优先用 LaunchSession 注入的，否则从 backendURL 推断
+//   - sessionID/preset/appType 从 currentSession 读取
+//   - 在独立 goroutine 中调用 sink，避免阻塞响应链
+func (s *ProxyService) emitUsageEvent(data *UsageData, reqBody []byte, r *http.Request) {
+	s.mu.RLock()
+	sink := s.onUsage
+	s.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+
+	s.sessMu.RLock()
+	ctx := s.currentSession
+	s.sessMu.RUnlock()
+
+	s.mu.RLock()
+	backendURL := s.backendURL
+	s.mu.RUnlock()
+
+	model := extractModelFromRequest(reqBody)
+	provider := inferProviderFromURL(backendURL)
+	if ctx != nil && ctx.Provider != "" {
+		provider = ctx.Provider
+	}
+
+	evt := UsageEvent{
+		Provider:                 provider,
+		Model:                    model,
+		OccurredAt:               time.Now(),
+		RequestID:                r.Header.Get("x-request-id"),
+		InputTokens:              data.InputTokens,
+		OutputTokens:             data.OutputTokens,
+		CacheReadInputTokens:     data.CacheReadInputTokens,
+		CacheCreationInputTokens: data.CacheCreationInputTokens,
+	}
+	if ctx != nil {
+		evt.SessionID = ctx.SessionID
+		evt.Preset = ctx.Preset
+		evt.AppType = ctx.AppType
+	}
+
+	// 在 goroutine 里跑避免阻塞响应链（设计 9.2 末尾）
+	go sink(evt)
 }
 
 // ========== 关键字注入引擎 ==========

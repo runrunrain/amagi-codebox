@@ -6,6 +6,8 @@ export function AddBackendURL(arg1:string):Promise<void>;
 
 export function AddRule(arg1:proxy.InjectionRule):Promise<void>;
 
+export function ClearCurrentSession():Promise<void>;
+
 export function DeleteRule(arg1:string):Promise<void>;
 
 export function GetBackendURLHistory():Promise<Array<string>>;
@@ -32,7 +34,11 @@ export function SaveRules(arg1:string):Promise<void>;
 
 export function SetBackendURL(arg1:string):Promise<void>;
 
+export function SetCurrentSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
 export function SetRules(arg1:Array<proxy.InjectionRule>):Promise<void>;
+
+export function SetUsageSink(arg1:any):Promise<void>;
 
 export function Start(arg1:number,arg2:string):Promise<void>;
 

@@ -1351,21 +1351,65 @@ export namespace envvars {
 }
 
 export namespace headroom {
-
+	
+	export class ClientSavings {
+	    client: string;
+	    tokens_saved: number;
+	    tokens_before: number;
+	    cost_usd: number;
+	    calls: number;
+	    savings_percent: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClientSavings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.client = source["client"];
+	        this.tokens_saved = source["tokens_saved"];
+	        this.tokens_before = source["tokens_before"];
+	        this.cost_usd = source["cost_usd"];
+	        this.calls = source["calls"];
+	        this.savings_percent = source["savings_percent"];
+	    }
+	}
 	export class HeadroomStatus {
 	    running: boolean;
 	    port: number;
 	    backendUrl: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new HeadroomStatus(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.running = source["running"];
 	        this.port = source["port"];
 	        this.backendUrl = source["backendUrl"];
+	    }
+	}
+	export class ModelSavings {
+	    model: string;
+	    tokens_saved: number;
+	    tokens_before: number;
+	    cost_usd: number;
+	    calls: number;
+	    savings_percent: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelSavings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.tokens_saved = source["tokens_saved"];
+	        this.tokens_before = source["tokens_before"];
+	        this.cost_usd = source["cost_usd"];
+	        this.calls = source["calls"];
+	        this.savings_percent = source["savings_percent"];
 	    }
 	}
 	export class SavingsBucket {
@@ -1374,11 +1418,11 @@ export namespace headroom {
 	    cost_usd: number;
 	    calls: number;
 	    savings_percent: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SavingsBucket(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tokens_saved = source["tokens_saved"];
@@ -1392,18 +1436,18 @@ export namespace headroom {
 	    today: SavingsBucket;
 	    last_7_days: SavingsBucket;
 	    all_time: SavingsBucket;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SavingsWindows(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.today = this.convertValues(source["today"], SavingsBucket);
 	        this.last_7_days = this.convertValues(source["last_7_days"], SavingsBucket);
 	        this.all_time = this.convertValues(source["all_time"], SavingsBucket);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1422,50 +1466,6 @@ export namespace headroom {
 		    return a;
 		}
 	}
-	export class ModelSavings {
-	    model: string;
-	    tokens_saved: number;
-	    tokens_before: number;
-	    cost_usd: number;
-	    calls: number;
-	    savings_percent: number;
-
-	    static createFrom(source: any = {}) {
-	        return new ModelSavings(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.model = source["model"];
-	        this.tokens_saved = source["tokens_saved"];
-	        this.tokens_before = source["tokens_before"];
-	        this.cost_usd = source["cost_usd"];
-	        this.calls = source["calls"];
-	        this.savings_percent = source["savings_percent"];
-	    }
-	}
-	export class ClientSavings {
-	    client: string;
-	    tokens_saved: number;
-	    tokens_before: number;
-	    cost_usd: number;
-	    calls: number;
-	    savings_percent: number;
-
-	    static createFrom(source: any = {}) {
-	        return new ClientSavings(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.client = source["client"];
-	        this.tokens_saved = source["tokens_saved"];
-	        this.tokens_before = source["tokens_before"];
-	        this.cost_usd = source["cost_usd"];
-	        this.calls = source["calls"];
-	        this.savings_percent = source["savings_percent"];
-	    }
-	}
 	export class SavingsReport {
 	    schema_version: number;
 	    path: string;
@@ -1474,11 +1474,11 @@ export namespace headroom {
 	    windows: SavingsWindows;
 	    by_model: ModelSavings[];
 	    by_client: ClientSavings[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SavingsReport(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.schema_version = source["schema_version"];
@@ -1489,7 +1489,7 @@ export namespace headroom {
 	        this.by_model = this.convertValues(source["by_model"], ModelSavings);
 	        this.by_client = this.convertValues(source["by_client"], ClientSavings);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1512,18 +1512,18 @@ export namespace headroom {
 }
 
 export namespace logging {
-
+	
 	export class Entry {
 	    time: string;
 	    level: string;
 	    source: string;
 	    message: string;
 	    detail?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Entry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.time = source["time"];
@@ -2244,11 +2244,11 @@ export namespace session {
 	    useProxy: boolean;
 	    title: string;
 	    claudeSessionId: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2331,7 +2331,7 @@ export namespace settings {
 	    amagiCodeShell: string;
 	    useProxy: boolean;
 	    useHeadroom: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DashboardDefaults(source);
 	    }
@@ -2453,6 +2453,561 @@ export namespace updater {
 	        this.assetSize = source["assetSize"];
 	        this.updateAction = source["updateAction"];
 	    }
+	}
+
+}
+
+export namespace usage {
+	
+	export class DailyTrendPoint {
+	    day: string;
+	    totalCostUSD: number;
+	    costByCurrency: Record<string, number>;
+	    inputTokens: number;
+	    outputTokens: number;
+	    requests: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DailyTrendPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.day = source["day"];
+	        this.totalCostUSD = source["totalCostUSD"];
+	        this.costByCurrency = source["costByCurrency"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.requests = source["requests"];
+	    }
+	}
+	export class LogFilter {
+	    startDate: string;
+	    endDate: string;
+	    appType: string;
+	    source: string;
+	    provider: string;
+	    model: string;
+	    page: number;
+	    pageSize: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startDate = source["startDate"];
+	        this.endDate = source["endDate"];
+	        this.appType = source["appType"];
+	        this.source = source["source"];
+	        this.provider = source["provider"];
+	        this.model = source["model"];
+	        this.page = source["page"];
+	        this.pageSize = source["pageSize"];
+	    }
+	}
+	export class ModelPricing {
+	    id: string;
+	    modelPattern: string;
+	    displayName: string;
+	    provider: string;
+	    currencyCode: string;
+	    inputPerMillion: number;
+	    outputPerMillion: number;
+	    cacheReadPerMillion: number;
+	    cacheCreationPerMillion: number;
+	    isBuiltin: boolean;
+	    notes?: string;
+	    // Go type: time
+	    updatedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelPricing(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.modelPattern = source["modelPattern"];
+	        this.displayName = source["displayName"];
+	        this.provider = source["provider"];
+	        this.currencyCode = source["currencyCode"];
+	        this.inputPerMillion = source["inputPerMillion"];
+	        this.outputPerMillion = source["outputPerMillion"];
+	        this.cacheReadPerMillion = source["cacheReadPerMillion"];
+	        this.cacheCreationPerMillion = source["cacheCreationPerMillion"];
+	        this.isBuiltin = source["isBuiltin"];
+	        this.notes = source["notes"];
+	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ModelStat {
+	    normalizedModel: string;
+	    displayName: string;
+	    provider: string;
+	    currencyCode: string;
+	    appType: string;
+	    requests: number;
+	    inputTokens: number;
+	    outputTokens: number;
+	    cacheRead: number;
+	    cacheCreation: number;
+	    inputCost: number;
+	    outputCost: number;
+	    cacheReadCost: number;
+	    cacheCreationCost: number;
+	    totalCost: number;
+	    hasPrice: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.normalizedModel = source["normalizedModel"];
+	        this.displayName = source["displayName"];
+	        this.provider = source["provider"];
+	        this.currencyCode = source["currencyCode"];
+	        this.appType = source["appType"];
+	        this.requests = source["requests"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.cacheRead = source["cacheRead"];
+	        this.cacheCreation = source["cacheCreation"];
+	        this.inputCost = source["inputCost"];
+	        this.outputCost = source["outputCost"];
+	        this.cacheReadCost = source["cacheReadCost"];
+	        this.cacheCreationCost = source["cacheCreationCost"];
+	        this.totalCost = source["totalCost"];
+	        this.hasPrice = source["hasPrice"];
+	    }
+	}
+	export class PricingService {
+	
+	
+	    static createFrom(source: any = {}) {
+	        return new PricingService(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	
+	    }
+	}
+	export class ProviderStat {
+	    provider: string;
+	    requests: number;
+	    totalCostUSD: number;
+	    costByCurrency: Record<string, number>;
+	    totalTokens: number;
+	    modelCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.requests = source["requests"];
+	        this.totalCostUSD = source["totalCostUSD"];
+	        this.costByCurrency = source["costByCurrency"];
+	        this.totalTokens = source["totalTokens"];
+	        this.modelCount = source["modelCount"];
+	    }
+	}
+	export class StatFilter {
+	    startDate: string;
+	    endDate: string;
+	    appType: string;
+	    source: string;
+	    provider: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StatFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startDate = source["startDate"];
+	        this.endDate = source["endDate"];
+	        this.appType = source["appType"];
+	        this.source = source["source"];
+	        this.provider = source["provider"];
+	    }
+	}
+	export class SummaryDateRange {
+	    start: string;
+	    end: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SummaryDateRange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.start = source["start"];
+	        this.end = source["end"];
+	    }
+	}
+	export class Summary {
+	    totalRequests: number;
+	    totalInputTokens: number;
+	    totalOutputTokens: number;
+	    totalCacheRead: number;
+	    totalCacheCreation: number;
+	    totalBillableInput: number;
+	    totalCostByCurrency: Record<string, number>;
+	    totalCostUSD: number;
+	    dateRange: SummaryDateRange;
+	
+	    static createFrom(source: any = {}) {
+	        return new Summary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalRequests = source["totalRequests"];
+	        this.totalInputTokens = source["totalInputTokens"];
+	        this.totalOutputTokens = source["totalOutputTokens"];
+	        this.totalCacheRead = source["totalCacheRead"];
+	        this.totalCacheCreation = source["totalCacheCreation"];
+	        this.totalBillableInput = source["totalBillableInput"];
+	        this.totalCostByCurrency = source["totalCostByCurrency"];
+	        this.totalCostUSD = source["totalCostUSD"];
+	        this.dateRange = this.convertValues(source["dateRange"], SummaryDateRange);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class SummaryFilter {
+	    startDate: string;
+	    endDate: string;
+	    appType: string;
+	    source: string;
+	    provider: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SummaryFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startDate = source["startDate"];
+	        this.endDate = source["endDate"];
+	        this.appType = source["appType"];
+	        this.source = source["source"];
+	        this.provider = source["provider"];
+	    }
+	}
+	export class SyncResult {
+	    // Go type: time
+	    startedAt: any;
+	    // Go type: time
+	    finishedAt: any;
+	    duration: string;
+	    recordsAdded: number;
+	    processedCount: number;
+	    filesScanned: number;
+	    errors: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.finishedAt = this.convertValues(source["finishedAt"], null);
+	        this.duration = source["duration"];
+	        this.recordsAdded = source["recordsAdded"];
+	        this.processedCount = source["processedCount"];
+	        this.filesScanned = source["filesScanned"];
+	        this.errors = source["errors"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SyncState {
+	    sourceType: string;
+	    sourceKey: string;
+	    appType: string;
+	    lastMTime: number;
+	    lastLineOffset: number;
+	    lastTimeUpdated: number;
+	    // Go type: time
+	    lastSyncedAt: any;
+	    lastError?: string;
+	    recordsAdded: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceType = source["sourceType"];
+	        this.sourceKey = source["sourceKey"];
+	        this.appType = source["appType"];
+	        this.lastMTime = source["lastMTime"];
+	        this.lastLineOffset = source["lastLineOffset"];
+	        this.lastTimeUpdated = source["lastTimeUpdated"];
+	        this.lastSyncedAt = this.convertValues(source["lastSyncedAt"], null);
+	        this.lastError = source["lastError"];
+	        this.recordsAdded = source["recordsAdded"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TrendFilter {
+	    startDate: string;
+	    endDate: string;
+	    appType: string;
+	    source: string;
+	    provider: string;
+	    granularity: string;
+	    days: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TrendFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startDate = source["startDate"];
+	        this.endDate = source["endDate"];
+	        this.appType = source["appType"];
+	        this.source = source["source"];
+	        this.provider = source["provider"];
+	        this.granularity = source["granularity"];
+	        this.days = source["days"];
+	    }
+	}
+	export class UnknownModel {
+	    normalizedModel: string;
+	    sampleRaw: string;
+	    requests: number;
+	    lastSeen: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UnknownModel(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.normalizedModel = source["normalizedModel"];
+	        this.sampleRaw = source["sampleRaw"];
+	        this.requests = source["requests"];
+	        this.lastSeen = source["lastSeen"];
+	    }
+	}
+	export class UsageEvent {
+	    AppType: string;
+	    Source: string;
+	    Provider: string;
+	    Model: string;
+	    SessionID: string;
+	    ProjectDir: string;
+	    Preset: string;
+	    InputTokens: number;
+	    OutputTokens: number;
+	    CacheReadInputTokens: number;
+	    CacheCreationInputTokens: number;
+	    // Go type: time
+	    OccurredAt: any;
+	    RequestID: string;
+	    DedupKey: string;
+	    CostProvided: boolean;
+	    NativeCost: number;
+	    CurrencyCode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageEvent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.AppType = source["AppType"];
+	        this.Source = source["Source"];
+	        this.Provider = source["Provider"];
+	        this.Model = source["Model"];
+	        this.SessionID = source["SessionID"];
+	        this.ProjectDir = source["ProjectDir"];
+	        this.Preset = source["Preset"];
+	        this.InputTokens = source["InputTokens"];
+	        this.OutputTokens = source["OutputTokens"];
+	        this.CacheReadInputTokens = source["CacheReadInputTokens"];
+	        this.CacheCreationInputTokens = source["CacheCreationInputTokens"];
+	        this.OccurredAt = this.convertValues(source["OccurredAt"], null);
+	        this.RequestID = source["RequestID"];
+	        this.DedupKey = source["DedupKey"];
+	        this.CostProvided = source["CostProvided"];
+	        this.NativeCost = source["NativeCost"];
+	        this.CurrencyCode = source["CurrencyCode"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class UsageRecord {
+	    dedupKey: string;
+	    appType: string;
+	    source: string;
+	    provider: string;
+	    model: string;
+	    normalizedModel: string;
+	    sessionId: string;
+	    projectDir: string;
+	    preset?: string;
+	    inputTokens: number;
+	    outputTokens: number;
+	    cacheReadInputTokens: number;
+	    cacheCreationInputTokens: number;
+	    billableInputTokens: number;
+	    inputCost: number;
+	    outputCost: number;
+	    cacheReadCost: number;
+	    cacheCreationCost: number;
+	    totalCost: number;
+	    currencyCode: string;
+	    // Go type: time
+	    occurredAt: any;
+	    // Go type: time
+	    recordedAt: any;
+	    requestId?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dedupKey = source["dedupKey"];
+	        this.appType = source["appType"];
+	        this.source = source["source"];
+	        this.provider = source["provider"];
+	        this.model = source["model"];
+	        this.normalizedModel = source["normalizedModel"];
+	        this.sessionId = source["sessionId"];
+	        this.projectDir = source["projectDir"];
+	        this.preset = source["preset"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.cacheReadInputTokens = source["cacheReadInputTokens"];
+	        this.cacheCreationInputTokens = source["cacheCreationInputTokens"];
+	        this.billableInputTokens = source["billableInputTokens"];
+	        this.inputCost = source["inputCost"];
+	        this.outputCost = source["outputCost"];
+	        this.cacheReadCost = source["cacheReadCost"];
+	        this.cacheCreationCost = source["cacheCreationCost"];
+	        this.totalCost = source["totalCost"];
+	        this.currencyCode = source["currencyCode"];
+	        this.occurredAt = this.convertValues(source["occurredAt"], null);
+	        this.recordedAt = this.convertValues(source["recordedAt"], null);
+	        this.requestId = source["requestId"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

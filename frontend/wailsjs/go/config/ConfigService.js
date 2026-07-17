@@ -86,6 +86,10 @@ export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['RemoveUrlFromHistory'](arg1, arg2);
 }
 
+export function RenameProvider(arg1, arg2) {
+  return window['go']['config']['ConfigService']['RenameProvider'](arg1, arg2);
+}
+
 export function ReplaceImportedPresetSnapshots(arg1, arg2, arg3) {
   return window['go']['config']['ConfigService']['ReplaceImportedPresetSnapshots'](arg1, arg2, arg3);
 }
