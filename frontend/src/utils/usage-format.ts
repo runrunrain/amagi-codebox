@@ -88,13 +88,15 @@ export function formatPerMillion(microPerMillion: number, currencyCode = 'USD'):
 }
 
 /**
- * 完整显示 token 数值，保留千分位而不使用 K/M/G 缩写。
- * Token quantities are an audit value, so the dashboard always renders their
- * full integer form; the price table keeps the conventional lower-case / m.
+ * 以 m（百万 Token）显示用量，固定保留两位小数，避免大数值挤占仪表盘、表格和图表。
+ * Format token quantities as millions with exactly two decimals.
  */
 export function formatTokens(n: number): string {
-  if (!Number.isFinite(n) || n === 0) return '0';
-  return Math.trunc(n).toLocaleString('en-US');
+  const millions = Number.isFinite(n) ? n / 1_000_000 : 0;
+  return `${millions.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}m`;
 }
 
 /**

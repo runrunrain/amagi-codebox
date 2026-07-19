@@ -55,24 +55,24 @@
               <span class="metric-value mono">{{ formatCount(summary?.totalRequests ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label" title="Total Tokens">完整 Token</span>
+              <span class="metric-label" title="Total Tokens">总用量</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalTokens ?? 0) }}</span>
               <span class="metric-sub">新输入、输出及缓存读写去重合并</span>
             </div>
             <div class="metric">
-              <span class="metric-label" title="Input Tokens">新输入 Token</span>
+              <span class="metric-label" title="Input Tokens">新输入用量</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalBillableInput ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label" title="Output Tokens">输出 Token</span>
+              <span class="metric-label" title="Output Tokens">输出用量</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalOutputTokens ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label" title="Cache Read Tokens">缓存读取 Token</span>
+              <span class="metric-label" title="Cache Read Tokens">缓存读取用量</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalCacheRead ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label" title="Cache Write Tokens">缓存写入 Token</span>
+              <span class="metric-label" title="Cache Write Tokens">缓存写入用量</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalCacheCreation ?? 0) }}</span>
             </div>
             <div class="metric">
@@ -80,7 +80,7 @@
               <span class="metric-value mono">{{ formatPercent(summaryCacheHitRate) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label" title="Cache-adjusted Tokens">缓存折算 Token</span>
+              <span class="metric-label" title="Cache-adjusted Tokens">缓存折算用量</span>
               <span class="metric-value mono">{{ formatTokens(cacheAdjustedTotal) }}</span>
               <span class="metric-sub">按各模型缓存单价折算</span>
             </div>
@@ -152,7 +152,7 @@
         <ConfigCard>
           <div class="card-head trend-head">
             <div>
-              <h2>{{ trendMode === 'cost' ? '模型成本趋势' : '模型 Token 趋势' }}</h2>
+              <h2>{{ trendMode === 'cost' ? '模型成本趋势' : '模型用量趋势' }}</h2>
               <span class="card-sub">每条曲线对应一个模型，不再混合为总数据</span>
             </div>
             <div class="trend-tabs" role="tablist" aria-label="趋势指标">
@@ -168,7 +168,7 @@
                 <option v-for="series in trendSeries" :key="series.key" :value="series.key">{{ series.label }}</option>
               </select>
             </label>
-            <span class="trend-hint">{{ trendMode === 'cost' ? '按 USD 折算比较' : '显示完整 Token 数' }}</span>
+            <span class="trend-hint">{{ trendMode === 'cost' ? '按 USD 折算比较' : '以 m 显示（百万 Token）' }}</span>
           </div>
           <div v-if="visibleTrendSeries.length === 0" class="chart-empty">当前筛选下暂无趋势数据</div>
           <div v-else class="chart-box"><Line :data="trendChartData" :options="trendChartOptions" /></div>
@@ -195,8 +195,8 @@
 
         <ConfigCard>
           <div class="card-head">
-            <h2 title="Token Distribution">Token 分布（按模型）</h2>
-            <span class="card-sub">完整 Token 四维拆分</span>
+            <h2 title="Token Distribution">用量分布（按模型）</h2>
+            <span class="card-sub">以 m 显示的四维拆分</span>
           </div>
           <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
           <div v-else class="chart-box"><Bar :data="tokenStackData" :options="stackedBarOptions" /></div>
@@ -215,12 +215,12 @@
                   <th title="Model">模型</th>
                   <th title="Provider">供应商</th>
                   <th class="num" title="Requests">请求</th>
-                  <th class="num" title="Total Tokens">完整 Token</th>
-                  <th class="num" title="Input Tokens">新输入</th>
-                  <th class="num" title="Output Tokens">输出</th>
-                  <th class="num" title="Cache Read Tokens">缓存读取</th>
+                  <th class="num" title="Total Tokens">总用量（m）</th>
+                  <th class="num" title="Input Tokens">新输入（m）</th>
+                  <th class="num" title="Output Tokens">输出（m）</th>
+                  <th class="num" title="Cache Read Tokens">缓存读取（m）</th>
                   <th class="num" title="Cache Hit Rate">命中率</th>
-                  <th class="num" title="Cache-adjusted Tokens">缓存折算 Token</th>
+                  <th class="num" title="Cache-adjusted Tokens">缓存折算（m）</th>
                   <th class="num" title="Cache Hit Cost">命中成本</th>
                   <th class="num" title="Cache Savings">缓存节省</th>
                   <th class="num" title="Total Cost">成本（原生币种）</th>
@@ -508,7 +508,7 @@ const trendChartOptions = computed<ChartOptions<'line'>>(() => ({
           ? formatCost(Math.round(Number(value) * 1_000_000), 'USD')
           : formatTokens(Number(value)),
       },
-      title: { display: true, text: trendMode.value === 'cost' ? '成本（USD）' : '完整 Token', color: chartTheme.value.text },
+      title: { display: true, text: trendMode.value === 'cost' ? '成本（USD）' : '用量（m）', color: chartTheme.value.text },
       grid: { color: chartTheme.value.grid },
     },
   },
