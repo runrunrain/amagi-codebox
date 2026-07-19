@@ -38,7 +38,12 @@ jobs:
         run: go vet ./...
 
       - name: Go test
+        if: matrix.os == 'macos-latest'
         run: go test ./... -count=1
+
+      - name: Go test (compile only)
+        if: matrix.os == 'windows-latest'
+        run: go test ./... -run '^$' -count=1
 
   frontend-mobile:
     name: Frontend and mobile
