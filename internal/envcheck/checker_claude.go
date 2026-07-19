@@ -400,6 +400,7 @@ func (s *Service) claudeVersion(executablePath string) (string, error) {
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   executablePath,
 		Args:   []string{"--version"},
+		Env:    s.buildEnhancedEnv(),
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {

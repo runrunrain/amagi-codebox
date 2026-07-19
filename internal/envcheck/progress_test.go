@@ -226,11 +226,10 @@ func (r *retryTestRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 	return nil, nil
 }
 
-func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
-	// Claude npm commands are intentionally exempted from the default 120s
-	// timeout: Claude Code distributes a ~206MB native binary via npm and
-	// needs a longer claudeNPMInstallTimeout to avoid mid-extract interrupts.
-	// Self-heal coverage lives in TestClaudeNPMCommandsUseExtendedTimeout.
+func TestNPMCLIInstallerCommandsUseExtendedTimeout(t *testing.T) {
+	// All three npm-distributed CLIs may download platform packages. Keep the
+	// bounded extended timeout so a slow macOS install does not leave a partial
+	// global npm tree behind.
 	for _, tc := range []struct {
 		name string
 		cmd  installCommand
@@ -241,8 +240,8 @@ func TestNonNativeInstallerCommandsUseDefaultTimeout(t *testing.T) {
 		{name: "codex update", cmd: npmCodexCommand(installOperationUpdate)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if timeout := commandTimeout(tc.cmd); timeout != installCommandTimeout {
-				t.Fatalf("commandTimeout() = %v, want default %v", timeout, installCommandTimeout)
+			if timeout := commandTimeout(tc.cmd); timeout != npmCLIToolInstallTimeout {
+				t.Fatalf("commandTimeout() = %v, want npm CLI timeout %v", timeout, npmCLIToolInstallTimeout)
 			}
 		})
 	}
@@ -951,58 +950,35 @@ func TestUpdate_OpenCodeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	}
 }
 
-func TestUpdate_OpenCodeHomebrewStaleEntryAutoCleanup_Succeeds(t *testing.T) {
+func TestUpdate_OpenCodeHomebrewStaleEntryNeverAutoCleanup(t *testing.T) {
 	fixture := newOpenCodeHomebrewCleanupFixture(t, false, true, true)
 	svc := NewServiceWithRunner(fixture.runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
-	if err != nil {
-		t.Fatalf("expected cleanup-assisted success, got error: %v", err)
+	if err == nil || result == nil || result.Success {
+		t.Fatalf("expected source-aware update to fail safely when fixture keeps the old version, got err=%v result=%+v", err, result)
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful result, got: %+v", result)
+	if fixture.runner.brewUninstallCalled() {
+		t.Fatal("update must never uninstall a user-managed Homebrew OpenCode installation")
 	}
-	if result.Version != "2.0.0" {
-		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
-	}
-	for _, want := range []string{"旧 Homebrew 入口", "brew uninstall opencode", "HOMEBREW_NO_AUTOREMOVE=1", "Homebrew autoremove disabled", "stale Homebrew path no longer effective"} {
-		if !strings.Contains(result.Message, want) {
-			t.Fatalf("success message should contain %q, got: %s", want, result.Message)
-		}
-	}
-	uninstallSpec, ok := fixture.runner.brewUninstallCall()
-	if !ok {
-		t.Fatal("expected brew uninstall opencode to be called")
-	}
-	if len(uninstallSpec.Args) != 2 || uninstallSpec.Args[0] != "uninstall" || uninstallSpec.Args[1] != "opencode" {
-		t.Fatalf("brew cleanup command must stay limited to uninstall opencode, got args=%v", uninstallSpec.Args)
-	}
-	if got := envValue(uninstallSpec.Env, homebrewNoAutoremoveEnv); got != homebrewCleanupSafetyEnvValue {
-		t.Fatalf("brew uninstall env %s = %q, want %q; env=%v", homebrewNoAutoremoveEnv, got, homebrewCleanupSafetyEnvValue, uninstallSpec.Env)
-	}
-	if got := envValue(uninstallSpec.Env, homebrewNoInstallCleanupEnv); got != homebrewCleanupSafetyEnvValue {
-		t.Fatalf("brew uninstall env %s = %q, want %q; env=%v", homebrewNoInstallCleanupEnv, got, homebrewCleanupSafetyEnvValue, uninstallSpec.Env)
+	if !strings.Contains(result.Error, "OpenCode self update") {
+		t.Fatalf("expected source-aware self-update diagnostic, got: %s", result.Error)
 	}
 }
 
-func TestUpdate_OpenCodeHomebrewStaleEntryCleanupFails_ReportsFailure(t *testing.T) {
+func TestUpdate_OpenCodeHomebrewStaleEntryDoesNotAttemptCleanupOnUpdaterFailure(t *testing.T) {
 	fixture := newOpenCodeHomebrewCleanupFixture(t, false, true, false)
 	svc := NewServiceWithRunner(fixture.runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err == nil {
-		t.Fatal("expected failure when brew uninstall opencode fails")
+		t.Fatal("expected failure when the source updater cannot advance the version")
 	}
 	if result == nil || result.Success {
 		t.Fatalf("expected failed result, got: %+v", result)
 	}
-	for _, want := range []string{"brew uninstall opencode", "permission denied", "cleanup failed"} {
-		if !strings.Contains(result.Error, want) {
-			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
-		}
-	}
-	if !fixture.runner.brewUninstallCalled() {
-		t.Fatal("expected brew uninstall opencode to be attempted")
+	if fixture.runner.brewUninstallCalled() {
+		t.Fatal("update must not fall back to brew uninstall after a source updater failure")
 	}
 }
 
@@ -1020,29 +996,27 @@ func TestUpdate_OpenCodeNonHomebrewStaleEntry_NoAutoCleanup(t *testing.T) {
 	if fixture.runner.brewUninstallCalled() {
 		t.Fatal("brew uninstall opencode must not be called for non-Homebrew stale entry")
 	}
-	if !strings.Contains(result.Error, "not recognized as Homebrew OpenCode") {
-		t.Fatalf("failure should explain cleanup guard refusal, got: %s", result.Error)
+	if !strings.Contains(result.Error, "default/effective OpenCode entry") {
+		t.Fatalf("failure should report the unresolved source collision, got: %s", result.Error)
 	}
 }
 
-func TestUpdate_OpenCodeHomebrewStaleEntryCleanupRecheckMustPass(t *testing.T) {
+func TestUpdate_OpenCodeHomebrewStaleEntryDoesNotCleanupBeforeRecheck(t *testing.T) {
 	fixture := newOpenCodeHomebrewCleanupFixture(t, false, false, true)
 	svc := NewServiceWithRunner(fixture.runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolOpenCode, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err == nil {
-		t.Fatal("expected failure when cleanup succeeds but recheck still resolves stale Homebrew entry")
+		t.Fatal("expected failure when the source updater leaves the version unchanged")
 	}
 	if result == nil || result.Success {
 		t.Fatalf("expected failed result, got: %+v", result)
 	}
-	if !fixture.runner.brewUninstallCalled() {
-		t.Fatal("expected brew uninstall opencode to be called before recheck")
+	if fixture.runner.brewUninstallCalled() {
+		t.Fatal("source-aware update must not uninstall Homebrew before recheck")
 	}
-	for _, want := range []string{"cleanup recheck failed", "recheck", "stale Homebrew"} {
-		if !strings.Contains(result.Error, want) {
-			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
-		}
+	if !strings.Contains(result.Error, "OpenCode self update") {
+		t.Fatalf("failure should name the source-aware updater, got: %s", result.Error)
 	}
 }
 
@@ -1226,7 +1200,7 @@ func TestUpdate_OpenCodeNPMCandidateNewAndDefaultSamePath_Succeeds(t *testing.T)
 
 func TestUpdate_CodexNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldBinDir := filepath.Join(tmpDir, "old-bin")
+	oldBinDir := filepath.Join(tmpDir, "old-bin", "node_modules", "@openai", "codex", "bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
 	npmBinDir := filepath.Join(npmPrefix, "bin")
 	if err := os.MkdirAll(npmBinDir, 0o755); err != nil {
@@ -1271,7 +1245,7 @@ func TestUpdate_CodexNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	}
 }
 
-func TestUpdate_CodexHomebrewNPMStaleEntryAutoCleanup_Succeeds(t *testing.T) {
+func TestUpdate_CodexHomebrewNPMStaleEntryNeverAutoCleanup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
 	}
@@ -1283,34 +1257,15 @@ func TestUpdate_CodexHomebrewNPMStaleEntryAutoCleanup_Succeeds(t *testing.T) {
 	svc := NewServiceWithRunner(fixture.runner)
 
 	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
-	if err != nil {
-		t.Fatalf("expected cleanup-assisted success, got error: %v", err)
+	if err == nil || result == nil || result.Success {
+		t.Fatalf("expected unresolved stale npm source to fail safely, got err=%v result=%+v", err, result)
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful result, got: %+v", result)
-	}
-	if result.Version != "2.0.0" {
-		t.Fatalf("result.Version = %q, want 2.0.0", result.Version)
-	}
-	for _, want := range []string{"旧 Homebrew npm 全局入口", "npm uninstall -g @openai/codex --prefix", "stale Homebrew npm Codex path no longer effective"} {
-		if !strings.Contains(result.Message, want) {
-			t.Fatalf("success message should contain %q, got: %s", want, result.Message)
-		}
-	}
-	uninstallSpec, ok := fixture.runner.codexUninstallCall()
-	if !ok {
-		t.Fatal("expected scoped npm uninstall @openai/codex to be called")
-	}
-	wantArgs := []string{"uninstall", "-g", codexNPMPackageName, "--prefix", fixture.stalePrefix}
-	if len(uninstallSpec.Args) != len(wantArgs) || strings.Join(uninstallSpec.Args[:4], "\x00") != strings.Join(wantArgs[:4], "\x00") || !sameNormalizedPath(uninstallSpec.Args[4], wantArgs[4]) {
-		t.Fatalf("cleanup command must stay scoped to @openai/codex and stale prefix, got args=%v want=%v", uninstallSpec.Args, wantArgs)
-	}
-	if fixture.runner.brewCalled() {
-		t.Fatal("Codex stale npm cleanup must not call brew")
+	if fixture.runner.codexUninstallCalled() {
+		t.Fatal("update must never uninstall another npm prefix automatically")
 	}
 }
 
-func TestUpdate_CodexHomebrewNPMStaleEntryCleanupFails_ReportsFailure(t *testing.T) {
+func TestUpdate_CodexHomebrewNPMStaleEntryDoesNotAttemptCleanupOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
 	}
@@ -1323,22 +1278,17 @@ func TestUpdate_CodexHomebrewNPMStaleEntryCleanupFails_ReportsFailure(t *testing
 
 	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err == nil {
-		t.Fatal("expected failure when scoped npm uninstall fails")
+		t.Fatal("expected failure when the effective entry still shadows npm")
 	}
 	if result == nil || result.Success {
 		t.Fatalf("expected failed result, got: %+v", result)
 	}
-	for _, want := range []string{"Codex stale Homebrew npm cleanup failed", "npm uninstall -g @openai/codex --prefix", "permission denied"} {
-		if !strings.Contains(result.Error, want) {
-			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
-		}
-	}
-	if !fixture.runner.codexUninstallCalled() {
-		t.Fatal("expected scoped npm uninstall @openai/codex to be attempted")
+	if fixture.runner.codexUninstallCalled() {
+		t.Fatal("update must not attempt npm uninstall after verification failure")
 	}
 }
 
-func TestUpdate_CodexHomebrewNPMStaleEntryCleanupRecheckMustPass(t *testing.T) {
+func TestUpdate_CodexHomebrewNPMStaleEntryDoesNotCleanupBeforeRecheck(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Homebrew npm stale Codex cleanup is a POSIX/macOS path scenario")
 	}
@@ -1351,18 +1301,16 @@ func TestUpdate_CodexHomebrewNPMStaleEntryCleanupRecheckMustPass(t *testing.T) {
 
 	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
 	if err == nil {
-		t.Fatal("expected failure when cleanup succeeds but recheck still resolves stale Codex entry")
+		t.Fatal("expected failure when the effective entry remains stale")
 	}
 	if result == nil || result.Success {
 		t.Fatalf("expected failed result, got: %+v", result)
 	}
-	if !fixture.runner.codexUninstallCalled() {
-		t.Fatal("expected scoped npm uninstall @openai/codex to be called before recheck")
+	if fixture.runner.codexUninstallCalled() {
+		t.Fatal("source collision handling must not uninstall another npm prefix")
 	}
-	for _, want := range []string{"cleanup recheck failed", "recheck", "stale Homebrew npm Codex"} {
-		if !strings.Contains(result.Error, want) {
-			t.Fatalf("failure should contain %q, got: %s", want, result.Error)
-		}
+	if !strings.Contains(result.Error, "default/effective Codex entry") {
+		t.Fatalf("failure should retain the source collision diagnostic, got: %s", result.Error)
 	}
 }
 
@@ -1635,7 +1583,7 @@ func (r *codexStaleNPMCleanupRunner) brewCalled() bool {
 
 func TestUpdate_ClaudeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldBinDir := filepath.Join(tmpDir, "old-bin")
+	oldBinDir := filepath.Join(tmpDir, "old-bin", "node_modules", "@anthropic-ai", "claude-code", "bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
 	npmBinDir := filepath.Join(npmPrefix, "bin")
 	homeDir := filepath.Join(tmpDir, "home")

@@ -10,8 +10,13 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
+  go-quality:
+    name: Go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,10 +27,23 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./... -count=1
+
+  frontend-mobile:
+    name: Frontend and mobile
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '20.19.0'
           cache: 'npm'
           cache-dependency-path: |
             frontend/package-lock.json
@@ -47,5 +65,6 @@ jobs:
         run: npm run build
         working-directory: mobile
 
-      - name: Go vet
-        run: go vet ./...
+      - name: Test mobile
+        run: npm run test
+        working-directory: mobile

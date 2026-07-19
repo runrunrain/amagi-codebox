@@ -443,10 +443,10 @@ func TestOpenCodeNPMGlobalExecutableCandidates_Deduplicates(t *testing.T) {
 	}
 }
 
-func TestOpenCodeNPMGlobalExecutableCandidates_IncludesPrefixAndNodeModulesBin(t *testing.T) {
+func TestOpenCodeNPMGlobalExecutableCandidates_IncludesPrefixAndResolvedNodeModulesBin(t *testing.T) {
 	candidates := openCodeNPMGlobalExecutableCandidates("/opt/npm")
 	prefixDirect := filepath.Join("/opt/npm", "opencode")
-	nodeModulesBin := filepath.Join("/opt/npm", "node_modules", ".bin", "opencode")
+	nodeModulesBin := filepath.Join("/opt/npm", "lib", "node_modules", ".bin", "opencode")
 	binDir := filepath.Join("/opt/npm", "bin", "opencode")
 
 	hasPrefix := false
@@ -467,7 +467,7 @@ func TestOpenCodeNPMGlobalExecutableCandidates_IncludesPrefixAndNodeModulesBin(t
 		t.Errorf("candidates should include prefix/opencode, got: %v", candidates)
 	}
 	if !hasNodeModulesBin {
-		t.Errorf("candidates should include prefix/node_modules/.bin/opencode, got: %v", candidates)
+		t.Errorf("candidates should include prefix/lib/node_modules/.bin/opencode, got: %v", candidates)
 	}
 	if !hasBin {
 		t.Errorf("candidates should include prefix/bin/opencode, got: %v", candidates)
@@ -665,35 +665,21 @@ func TestUpdate_OpenCodeNPMPrefixCommandFails_StillFails(t *testing.T) {
 // Cross-tool guard: Codex update uses its own npm prefix diagnostics, not OpenCode-specific logic.
 // ---------------------------------------------------------------------------
 
-func TestUpdate_CodexUnchangedVersion_UsesCodexNPMPrefixDiagnostics(t *testing.T) {
-	tmpDir := t.TempDir()
-	_ = writeTestExecutable(t, tmpDir, "codex")
-	t.Setenv("PATH", tmpDir)
-
-	runner := &sequentialRunner{responses: []seqResponse{
-		{stdout: "codex-cli v1.0.0", err: nil}, // pre-check
-		{stdout: "10.0.0", err: nil},           // npm probe
-		{stdout: "2.0.0", err: nil},            // latest version enrichment
-		{stdout: "installed", err: nil},        // npm install succeeds
-		{stdout: "codex-cli v1.0.0", err: nil}, // verify: unchanged
-		{stdout: "1.0.0", err: nil},            // enrichment
-	}}
-	svc := NewServiceWithRunner(runner)
-
-	result, err := svc.installOrUpdateWithProgress(ToolCodex, installOperationUpdate, nil, ClaudeInstallAuto)
-	if err == nil {
-		t.Fatal("expected error when Codex version unchanged")
+func TestUpdate_CodexNative_UsesSelfUpdater(t *testing.T) {
+	svc := newTestService()
+	path := "/Applications/ChatGPT.app/Contents/Resources/codex"
+	cmds, err := svc.installCommands(ToolCodex, installOperationUpdate, &CheckStatus{
+		Installed:      true,
+		InstallMethod:  InstallMethodNative,
+		ExecutablePath: path,
+	}, ClaudeInstallAuto)
+	if err != nil {
+		t.Fatalf("installCommands: %v", err)
 	}
-	if result == nil {
-		t.Fatal("expected non-nil result")
+	if len(cmds) != 1 {
+		t.Fatalf("commands = %d, want 1", len(cmds))
 	}
-	if result.Success {
-		t.Error("expected failure")
-	}
-	if strings.Contains(result.Message, "OpenCode") {
-		t.Errorf("Codex update should not mention OpenCode-specific npm global prefix logic, got: %s", result.Message)
-	}
-	if !strings.Contains(result.Message, "Codex npm global prefix/bin") {
-		t.Errorf("Codex update should include Codex-specific npm global prefix diagnostics, got: %s", result.Message)
+	if cmds[0].path != path || len(cmds[0].args) != 1 || cmds[0].args[0] != "update" {
+		t.Fatalf("native Codex update must use the detected executable, got path=%q args=%v", cmds[0].path, cmds[0].args)
 	}
 }

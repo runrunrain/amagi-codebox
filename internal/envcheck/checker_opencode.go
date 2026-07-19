@@ -34,6 +34,9 @@ func (s *Service) checkOpenCode() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolOpenCode)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
+		if npmStatus, _, npmErr := s.checkOpenCodeFromNPMGlobalPrefix(); npmErr == nil {
+			return npmStatus, nil
+		}
 		status.Error = "OpenCode executable was not found in PATH"
 		addMissingToolIssue(status, ToolOpenCode)
 		return status, nil
@@ -60,7 +63,11 @@ func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, er
 	if err != nil {
 		return nil, nil, err
 	}
-	candidates := openCodeNPMGlobalExecutableCandidates(prefix)
+	npmRoot, rootErr := s.npmGlobalRoot()
+	if rootErr != nil {
+		npmRoot = inferNPMNodeModulesFromPrefix(prefix)
+	}
+	candidates := openCodeNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot)
 	if len(candidates) == 0 {
 		return nil, candidates, fmt.Errorf("npm global prefix %q did not produce OpenCode executable candidates", prefix)
 	}
@@ -100,31 +107,11 @@ func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, er
 }
 
 func openCodeNPMGlobalExecutableCandidates(prefix string) []string {
-	prefix = filepath.Clean(strings.TrimSpace(prefix))
-	if prefix == "" || prefix == "." {
-		return nil
-	}
+	return openCodeNPMGlobalExecutableCandidatesWithRoot(prefix, "")
+}
 
-	dirs := []string{filepath.Join(prefix, "bin"), prefix, filepath.Join(prefix, "node_modules", ".bin")}
-	names := []string{openCodeCommandName}
-	if isWindows() {
-		names = []string{"opencode.cmd", "opencode.exe", openCodeCommandName}
-	}
-
-	candidates := make([]string, 0, len(dirs)*len(names))
-	seen := map[string]struct{}{}
-	for _, dir := range dirs {
-		for _, name := range names {
-			candidate := filepath.Join(dir, name)
-			key := normalizeOpenCodePath(candidate)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			candidates = append(candidates, candidate)
-		}
-	}
-	return candidates
+func openCodeNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot string) []string {
+	return npmGlobalCommandCandidates(prefix, npmRoot, openCodeCommandName, "opencode-ai")
 }
 
 func (s *Service) openCodeVersion(executablePath string) (string, error) {
@@ -139,6 +126,7 @@ func (s *Service) openCodeVersionWithDiagnostics(executablePath string) (string,
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   executablePath,
 		Args:   []string{"--version"},
+		Env:    s.buildEnhancedEnv(),
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {

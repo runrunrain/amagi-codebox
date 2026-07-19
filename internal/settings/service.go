@@ -53,14 +53,15 @@ type TerminalSettings struct {
 
 // AppSettings 应用设置
 type AppSettings struct {
-	Dashboard      DashboardDefaults `json:"dashboard"`
-	ShellPaths     []ShellEntry      `json:"shellPaths"`
-	SavedWorkDirs  []WorkDirEntry    `json:"savedWorkDirs"`
-	Terminal       TerminalSettings  `json:"terminal"`
-	RemoteHost     string            `json:"remoteHost"`
-	RemotePort     int               `json:"remotePort"`
-	MobileWebRoot  string            `json:"mobileWebRoot"`
-	GitHubToken    string            `json:"githubToken"`
+	Dashboard     DashboardDefaults `json:"dashboard"`
+	ShellPaths    []ShellEntry      `json:"shellPaths"`
+	SavedWorkDirs []WorkDirEntry    `json:"savedWorkDirs"`
+	Terminal      TerminalSettings  `json:"terminal"`
+	RemoteHost    string            `json:"remoteHost"`
+	RemotePort    int               `json:"remotePort"`
+	RemoteEnabled bool              `json:"remoteEnabled"`
+	MobileWebRoot string            `json:"mobileWebRoot"`
+	GitHubToken   string            `json:"githubToken"`
 }
 
 func defaultSettings() *AppSettings {
@@ -82,7 +83,7 @@ func defaultSettings() *AppSettings {
 		Terminal: TerminalSettings{
 			Scrollback: 100000,
 		},
-		RemoteHost: "0.0.0.0",
+		RemoteHost: "127.0.0.1",
 		RemotePort: 8680,
 	}
 }
@@ -145,8 +146,12 @@ func (s *Service) Save() error {
 		return errors.New("settings not loaded")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir settings dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("set settings dir permissions: %w", err)
 	}
 
 	b, err := json.MarshalIndent(cfg, "", "  ")
@@ -156,12 +161,18 @@ func (s *Service) Save() error {
 	b = append(b, '\n')
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return fmt.Errorf("write temp settings: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return fmt.Errorf("set temp settings permissions: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace settings: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("set settings permissions: %w", err)
 	}
 	return nil
 }
@@ -298,9 +309,22 @@ func (s *Service) GetRemoteHost() string {
 	defer s.mu.RUnlock()
 	host := s.settings.RemoteHost
 	if host == "" {
-		return "0.0.0.0"
+		return "127.0.0.1"
 	}
 	return host
+}
+
+func (s *Service) GetRemoteEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings.RemoteEnabled
+}
+
+func (s *Service) SetRemoteEnabled(enabled bool) error {
+	s.mu.Lock()
+	s.settings.RemoteEnabled = enabled
+	s.mu.Unlock()
+	return s.Save()
 }
 
 func (s *Service) SetRemoteHost(host string) error {

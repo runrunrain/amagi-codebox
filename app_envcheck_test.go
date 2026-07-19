@@ -38,6 +38,9 @@ func (r *appEnvCheckRunner) Run(_ context.Context, spec platform.CommandSpec) (*
 	if strings.Contains(path, "codex") {
 		return &platform.ProcessResult{Stdout: "codex-cli 1.0.0"}, nil
 	}
+	if strings.Contains(path, "headroom") {
+		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
+	}
 
 	// npm commands (version check, package view)
 	if strings.Contains(path, "npm") {
@@ -74,6 +77,9 @@ func (r *appEnvCheckRunnerWithFailure) Run(_ context.Context, spec platform.Comm
 	if strings.Contains(path, "codex") {
 		return &platform.ProcessResult{Stdout: "codex-cli 1.0.0"}, nil
 	}
+	if strings.Contains(path, "headroom") {
+		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
+	}
 	if strings.Contains(path, "npm") {
 		if len(spec.Args) > 0 && spec.Args[0] == "view" {
 			return &platform.ProcessResult{Stdout: "1.0.0"}, nil
@@ -96,7 +102,7 @@ func newTestAppWithEnvCheck(t *testing.T, runner platform.ProcessRunner) *App {
 
 	// Create temp executables so exec.LookPath finds them
 	tmpDir := t.TempDir()
-	for _, name := range []string{"claude", "opencode", "codex"} {
+	for _, name := range []string{"claude", "opencode", "codex", "headroom"} {
 		ext := ""
 		content := "#!/bin/sh\nexit 0\n"
 		if runtime.GOOS == "windows" {
@@ -199,8 +205,8 @@ func TestGetEnvCheckStatus_ReturnsCachedStatus(t *testing.T) {
 	if cached == nil {
 		t.Fatal("GetEnvCheckStatus() returned nil")
 	}
-	if len(cached.Items) != 3 {
-		t.Errorf("cached Items count = %d, want 3", len(cached.Items))
+	if len(cached.Items) != len(envcheck.SupportedTools()) {
+		t.Errorf("cached Items count = %d, want %d", len(cached.Items), len(envcheck.SupportedTools()))
 	}
 	for _, tool := range envcheck.SupportedTools() {
 		if _, ok := cached.Items[string(tool)]; !ok {
@@ -245,8 +251,8 @@ func TestRunEnvCheck_WithMockService_AllToolsHealthy(t *testing.T) {
 	if overall == nil {
 		t.Fatal("RunEnvCheck() returned nil")
 	}
-	if len(overall.Items) != 3 {
-		t.Errorf("overall.Items count = %d, want 3", len(overall.Items))
+	if len(overall.Items) != len(envcheck.SupportedTools()) {
+		t.Errorf("overall.Items count = %d, want %d", len(overall.Items), len(envcheck.SupportedTools()))
 	}
 
 	// Assert: all tools should be installed

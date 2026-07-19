@@ -35,6 +35,7 @@ type GlobalSyncStatus struct {
 
 // globalEnvPlatform 平台操作接口，用于可测试性
 type globalEnvPlatform interface {
+	supportsGlobalSync() bool
 	readUserEnvVar(key string) (string, bool, error)
 	writeUserEnvVar(key, value string) error
 	deleteUserEnvVar(key string) error
@@ -128,15 +129,19 @@ func (s *EnvVarsService) Load() error {
 
 // save 持久化到磁盘（调用方必须持有写锁）
 func (s *EnvVarsService) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.configPath), 0o755); err != nil {
+	dir := filepath.Dir(s.configPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir envvars dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("set envvars dir permissions: %w", err)
 	}
 
 	f := envVarsFile{
 		EnvVars:               s.envVars,
 		GlobalSyncEnabled:     s.globalSyncEnabled,
-		GlobalSyncManagedKeys:  s.globalSyncManagedKeys,
-		GlobalSyncBackups:      s.globalSyncBackups,
+		GlobalSyncManagedKeys: s.globalSyncManagedKeys,
+		GlobalSyncBackups:     s.globalSyncBackups,
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -145,12 +150,18 @@ func (s *EnvVarsService) save() error {
 	b = append(b, '\n')
 
 	tmp := s.configPath + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return fmt.Errorf("write temp envvars: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return fmt.Errorf("set temp envvars permissions: %w", err)
 	}
 	if err := os.Rename(tmp, s.configPath); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace envvars: %w", err)
+	}
+	if err := os.Chmod(s.configPath, 0o600); err != nil {
+		return fmt.Errorf("set envvars permissions: %w", err)
 	}
 	return nil
 }
@@ -393,7 +404,7 @@ func (s *EnvVarsService) GetGlobalSyncStatus() GlobalSyncStatus {
 		ManagedCount: len(s.globalSyncManagedKeys),
 	}
 
-	if !isPlatformSupported() {
+	if !s.supportsGlobalSync() {
 		status.Supported = false
 		status.Message = "global env sync is only supported on Windows"
 	} else {
@@ -404,7 +415,7 @@ func (s *EnvVarsService) GetGlobalSyncStatus() GlobalSyncStatus {
 
 // SetGlobalSyncEnabled 开启或关闭全局环境变量同步
 func (s *EnvVarsService) SetGlobalSyncEnabled(enabled bool) (GlobalSyncStatus, error) {
-	if enabled && !isPlatformSupported() {
+	if enabled && !s.supportsGlobalSync() {
 		return s.GetGlobalSyncStatus(), fmt.Errorf("global env sync is only supported on Windows, current platform: %s", runtime.GOOS)
 	}
 
@@ -449,13 +460,21 @@ func (s *EnvVarsService) buildStatusLocked() GlobalSyncStatus {
 		ManagedKeys:  managed,
 		ManagedCount: len(s.globalSyncManagedKeys),
 	}
-	if !isPlatformSupported() {
+	if !s.supportsGlobalSync() {
 		status.Supported = false
 		status.Message = "global env sync is only supported on Windows"
 	} else {
 		status.Supported = true
 	}
 	return status
+}
+
+// supportsGlobalSync asks the injected platform implementation rather than
+// consulting runtime.GOOS directly. This keeps production behavior unchanged
+// while allowing the Windows registry reconciliation logic to be tested with
+// a fake platform on macOS/Linux CI.
+func (s *EnvVarsService) supportsGlobalSync() bool {
+	return s.platform != nil && s.platform.supportsGlobalSync()
 }
 
 // enableGlobalSyncLocked 开启全局同步（调用方必须持有写锁）
@@ -739,11 +758,6 @@ func normalizeKey(key string) string {
 // keysEqual 比较两个 key 是否相等（Windows 下大小写不敏感）
 func keysEqual(a, b string) bool {
 	return normalizeKey(a) == normalizeKey(b)
-}
-
-// isPlatformSupported 返回当前平台是否支持全局环境变量同步
-func isPlatformSupported() bool {
-	return runtime.GOOS == "windows"
 }
 
 func mergeEnv(base []string, customVars []EnvVar) []string {

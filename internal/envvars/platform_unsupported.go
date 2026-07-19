@@ -11,6 +11,10 @@ func newPlatformImpl() globalEnvPlatform {
 	return &unsupportedPlatform{}
 }
 
+func (p *unsupportedPlatform) supportsGlobalSync() bool {
+	return false
+}
+
 func (p *unsupportedPlatform) readUserEnvVar(key string) (string, bool, error) {
 	return "", false, fmt.Errorf("global env sync is not supported on this platform")
 }

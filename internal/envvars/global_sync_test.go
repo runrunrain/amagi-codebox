@@ -12,20 +12,24 @@ import (
 
 // fakePlatform 用于测试的全局环境变量操作 mock
 type fakePlatform struct {
-	vars     map[string]string // 模拟的 OS 用户级环境变量
-	writes   []string          // 记录写入操作的 key
-	deletes  []string          // 记录删除操作的 key
-	broadcasts int32           // 广播次数
-	writeErr error             // 模拟写入错误
-	deleteErr error            // 模拟删除错误
-	readErr  error             // 模拟读取错误
-	broadcastErr error         // 模拟广播错误
+	vars         map[string]string // 模拟的 OS 用户级环境变量
+	writes       []string          // 记录写入操作的 key
+	deletes      []string          // 记录删除操作的 key
+	broadcasts   int32             // 广播次数
+	writeErr     error             // 模拟写入错误
+	deleteErr    error             // 模拟删除错误
+	readErr      error             // 模拟读取错误
+	broadcastErr error             // 模拟广播错误
 }
 
 func newFakePlatform() *fakePlatform {
 	return &fakePlatform{
 		vars: make(map[string]string),
 	}
+}
+
+func (f *fakePlatform) supportsGlobalSync() bool {
+	return true
 }
 
 func (f *fakePlatform) readUserEnvVar(key string) (string, bool, error) {
@@ -984,8 +988,7 @@ func TestGlobalSync_NonWindowsUnsupported(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	fp := newFakePlatform()
-	svc := NewEnvVarsServiceWithPlatform(dir, fp)
+	svc := NewEnvVarsService(dir)
 	if err := svc.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}

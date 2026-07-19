@@ -22,6 +22,10 @@ func newPlatformImpl() globalEnvPlatform {
 	}
 }
 
+func (p *windowsPlatform) supportsGlobalSync() bool {
+	return true
+}
+
 // readUserEnvVar 读取当前用户级环境变量
 // 返回 (值, 是否存在, 错误)
 func (p *windowsPlatform) readUserEnvVar(key string) (string, bool, error) {

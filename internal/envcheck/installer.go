@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	installCommandTimeout               = 120 * time.Second
+	installCommandTimeout = 120 * time.Second
 	// claudeNPMInstallTimeout is the timeout used for `npm install -g
 	// @anthropic-ai/claude-code` specifically. Claude Code distributes a ~206MB
 	// native binary via the platform subpackage (claude-code-darwin-arm64 etc.),
@@ -28,8 +28,12 @@ const (
 	// networks and postinstall hardlinking while still bounding the operation.
 	claudeNPMInstallTimeout             = 10 * time.Minute
 	claudeNativeBootstrapCommandTimeout = 20 * time.Minute
-	installRecheckAttemptsDefault       = 3
-	installRecheckDelayDefault          = 300 * time.Millisecond
+	// npmCLIToolInstallTimeout gives OpenCode and Codex enough time to fetch
+	// their platform packages on slower macOS networks. Their old generic
+	// 120-second timeout could turn a healthy install into a partial npm tree.
+	npmCLIToolInstallTimeout      = 10 * time.Minute
+	installRecheckAttemptsDefault = 3
+	installRecheckDelayDefault    = 300 * time.Millisecond
 
 	installOperationInstall installOperation = "install"
 	installOperationUpdate  installOperation = "update"
@@ -257,16 +261,6 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 				}, nil
 			} else {
 				npmVerifyDetail = npmDetail
-				if cleanupAfter, cleanupDetail, cleanupErr := s.tryCleanupOpenCodeHomebrewStaleEntryAfterNPMFallback(operation, beforeVersion, after, npmAfter); cleanupErr == nil && cleanupAfter != nil {
-					return &InstallResult{
-						Success: true,
-						Message: fmt.Sprintf("%s 已通过 %s 方式成功%s，并已自动清理旧 Homebrew 入口（%s）", displayToolName(tool), command.description, operationDisplayName(operation), cleanupDetail),
-						Tool:    tool,
-						Version: cleanupAfter.Version,
-					}, nil
-				} else if cleanupDetail != "" {
-					npmVerifyDetail = strings.Join(nonEmptyStrings(npmVerifyDetail, cleanupDetail), "; ")
-				}
 			}
 		} else if isCodexNPMGlobalInstallCommand(tool, command) {
 			if npmAfter, npmDetail, npmErr := s.verifyCodexNPMGlobalBinAfterCommand(operation, beforeVersion, after); npmErr == nil {
@@ -278,16 +272,6 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 				}, nil
 			} else {
 				npmVerifyDetail = npmDetail
-				if cleanupAfter, cleanupDetail, cleanupErr := s.tryCleanupCodexStaleNPMEntryAfterFallback(operation, beforeVersion, after, npmAfter); cleanupErr == nil && cleanupAfter != nil {
-					return &InstallResult{
-						Success: true,
-						Message: fmt.Sprintf("%s 已通过 %s 方式成功%s，并已自动清理旧 Homebrew npm 全局入口（%s）", displayToolName(tool), command.description, operationDisplayName(operation), cleanupDetail),
-						Tool:    tool,
-						Version: cleanupAfter.Version,
-					}, nil
-				} else if cleanupDetail != "" {
-					npmVerifyDetail = strings.Join(nonEmptyStrings(npmVerifyDetail, cleanupDetail), "; ")
-				}
 			}
 		} else if isClaudeNPMGlobalInstallCommand(tool, command) {
 			if npmAfter, npmDetail, npmErr := s.verifyClaudeNPMGlobalBinAfterCommand(operation, beforeVersion, after); npmErr == nil {
@@ -1425,15 +1409,24 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			cmd = s.resolveCommandNPMPath(cmd)
 			return []installCommand{cmd}, nil
 		}
-		// claudeInstallCommands already returns a prioritized command sequence
-		// that includes npm (on all platforms). We must NOT add a duplicate npm
-		// command. Just check npm availability and resolve paths.
+		// claudeInstallCommands chooses the installed source for updates. Native
+		// Claude uses `claude update`, so npm is only required when the selected
+		// command actually uses the npm channel.
 		baseCmds, err := s.claudeInstallCommands(operation, current)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.ensureNPMAvailable(); err != nil {
-			return nil, err
+		requiresNPM := false
+		for _, cmd := range baseCmds {
+			if cmd.path == "npm" {
+				requiresNPM = true
+				break
+			}
+		}
+		if requiresNPM {
+			if err := s.ensureNPMAvailable(); err != nil {
+				return nil, err
+			}
 		}
 		// Resolve all bare "npm" paths to absolute paths.
 		for i := range baseCmds {
@@ -1441,11 +1434,17 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		}
 		return baseCmds, nil
 	case ToolOpenCode:
+		if operation == installOperationUpdate && isExternalManagedInstall(current) {
+			return []installCommand{openCodeSelfUpdateCommand(current)}, nil
+		}
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
 		return []installCommand{s.resolveCommandNPMPath(npmOpenCodeCommand(operation))}, nil
 	case ToolCodex:
+		if operation == installOperationUpdate && isExternalManagedInstall(current) {
+			return []installCommand{codexSelfUpdateCommand(current)}, nil
+		}
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
@@ -1508,12 +1507,14 @@ func npmOpenCodeCommand(operation installOperation) installCommand {
 			description: "npm global install opencode-ai@latest",
 			path:        "npm",
 			args:        []string{"install", "-g", "opencode-ai@latest"},
+			timeout:     npmCLIToolInstallTimeout,
 		}
 	}
 	return installCommand{
 		description: "npm global install opencode-ai@latest",
 		path:        "npm",
 		args:        []string{"install", "-g", "opencode-ai@latest"},
+		timeout:     npmCLIToolInstallTimeout,
 	}
 }
 
@@ -1521,15 +1522,57 @@ func npmOpenCodeCommand(operation installOperation) installCommand {
 func npmCodexCommand(operation installOperation) installCommand {
 	if operation == installOperationUpdate {
 		return installCommand{
-			description: "npm global update @openai/codex",
+			description: "npm global install @openai/codex@latest",
 			path:        "npm",
-			args:        []string{"update", "-g", "@openai/codex"},
+			args:        []string{"install", "-g", "@openai/codex@latest"},
+			timeout:     npmCLIToolInstallTimeout,
 		}
 	}
 	return installCommand{
 		description: "npm global install @openai/codex",
 		path:        "npm",
 		args:        []string{"install", "-g", "@openai/codex"},
+		timeout:     npmCLIToolInstallTimeout,
+	}
+}
+
+// isExternalManagedInstall identifies a healthy existing installation that is
+// not the npm package CodeBox would otherwise install. Updates must stay on
+// that source; installing a second npm copy cannot update a Homebrew, native
+// or app-bundled executable that remains earlier in PATH.
+func isExternalManagedInstall(current *CheckStatus) bool {
+	if current == nil || !current.Installed || strings.TrimSpace(current.ExecutablePath) == "" {
+		return false
+	}
+	return current.InstallMethod == InstallMethodNative || current.InstallMethod == InstallMethodHomebrew
+}
+
+func claudeSelfUpdateCommand(current *CheckStatus) installCommand {
+	return sourceSelfUpdateCommand("Claude Code", current, []string{"update"}, claudeNPMInstallTimeout)
+}
+
+func openCodeSelfUpdateCommand(current *CheckStatus) installCommand {
+	args := []string{"upgrade"}
+	if current != nil && current.InstallMethod == InstallMethodHomebrew {
+		args = append(args, "--method", "brew")
+	}
+	return sourceSelfUpdateCommand("OpenCode", current, args, npmCLIToolInstallTimeout)
+}
+
+func codexSelfUpdateCommand(current *CheckStatus) installCommand {
+	return sourceSelfUpdateCommand("Codex", current, []string{"update"}, npmCLIToolInstallTimeout)
+}
+
+func sourceSelfUpdateCommand(tool string, current *CheckStatus, args []string, timeout time.Duration) installCommand {
+	path := ""
+	if current != nil {
+		path = strings.TrimSpace(current.ExecutablePath)
+	}
+	return installCommand{
+		description: tool + " self update",
+		path:        path,
+		args:        append([]string(nil), args...),
+		timeout:     timeout,
 	}
 }
 
@@ -1562,12 +1605,10 @@ func claudeInstallCommandsForMethod(method ClaudeInstallMethod, operation instal
 
 func (s *Service) claudeInstallCommands(operation installOperation, current *CheckStatus) ([]installCommand, error) {
 	if operation == installOperationUpdate && current != nil {
-		switch current.InstallMethod {
-		case InstallMethodNPM, InstallMethodNative:
-			return []installCommand{npmClaudeCommand(installOperationUpdate)}, nil
-		default:
-			return unknownClaudeUpdateCommands(), nil
+		if current.InstallMethod != InstallMethodNPM && strings.TrimSpace(current.ExecutablePath) != "" {
+			return []installCommand{claudeSelfUpdateCommand(current)}, nil
 		}
+		return []installCommand{npmClaudeCommand(installOperationUpdate)}, nil
 	}
 
 	return []installCommand{npmClaudeCommand(operation)}, nil
@@ -1925,7 +1966,7 @@ func claudeNPMGlobalExecutableCandidateInfos(prefix string, npmRoot string) []cl
 // claudeBinaryCandidateLooksHealthy returns true when the candidate either
 // does not exist (callers will handle absence elsewhere) or passes the
 // integrity inspection (size threshold + macOS codesign). Truncated shards
-	// from interrupted installs are rejected here.
+// from interrupted installs are rejected here.
 func claudeBinaryCandidateLooksHealthy(candidate string) bool {
 	candidate = strings.TrimSpace(candidate)
 	if candidate == "" {

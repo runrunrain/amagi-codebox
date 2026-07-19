@@ -3,6 +3,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -440,6 +441,9 @@ func TestBuildEffectiveEnvForWindowsAddsNPMGlobalPathWithoutDuplicates(t *testin
 }
 
 func TestWindowsResolverFindsClaudePackageBinaryFallback(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("uses Windows filepath semantics; covered on the Windows CI job")
+	}
 	appData := filepath.Join(t.TempDir(), "AppData", "Roaming")
 	npmPrefix := strings.TrimRight(appData, `/\`) + `\npm`
 	fallbackPath := filepath.Join(npmPrefix, "node_modules", "@anthropic-ai", ".claude-code-nDGSeslo", "node_modules", "@anthropic-ai", "claude-code-win32-x64", "claude.exe")

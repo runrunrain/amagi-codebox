@@ -953,28 +953,23 @@ func TestClaudeInstallCommands_Install(t *testing.T) {
 }
 
 func TestClaudeInstallCommands_UpdateNonWinget(t *testing.T) {
+	path := "/opt/claude/bin/claude"
+	if runtime.GOOS == "windows" {
+		path = `C:\\Tools\\claude.exe`
+	}
 	svc := newTestService()
 	cmds, err := svc.claudeInstallCommands(installOperationUpdate, &CheckStatus{
-		InstallMethod: InstallMethodNative,
+		InstallMethod:  InstallMethodNative,
+		ExecutablePath: path,
 	})
-	if runtime.GOOS == "windows" {
-		if err == nil {
-			if len(cmds) != 1 {
-				t.Fatalf("expected exactly 1 command, got %d", len(cmds))
-			}
-			if !strings.Contains(strings.ToLower(cmds[0].description), "npm") {
-				t.Errorf("native update uses canonical npm update command after native direct updater removal, got %q", cmds[0].description)
-			}
-		} else {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	} else {
-		if len(cmds) != 1 {
-			t.Fatalf("expected 1 command on non-Windows, got %d", len(cmds))
-		}
-		if cmds[0].path != "npm" {
-			t.Errorf("expected npm command on non-Windows, got path %q", cmds[0].path)
-		}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly 1 command, got %d", len(cmds))
+	}
+	if cmds[0].path != path || len(cmds[0].args) != 1 || cmds[0].args[0] != "update" {
+		t.Errorf("native update must use the detected Claude executable, got path=%q args=%v", cmds[0].path, cmds[0].args)
 	}
 }
 
@@ -1232,7 +1227,7 @@ func TestInstallCommands_OpenCode_UsesInstallLatestForUpdateOp(t *testing.T) {
 	}
 }
 
-func TestInstallCommands_Codex_UsesUpdateForUpdateOp(t *testing.T) {
+func TestInstallCommands_Codex_UsesInstallLatestForNPMUpdateOp(t *testing.T) {
 	svc := newTestService(
 		responseFor("npm", "10.0.0", nil),
 	)
@@ -1243,8 +1238,8 @@ func TestInstallCommands_Codex_UsesUpdateForUpdateOp(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Fatalf("expected 1 command, got %d", len(cmds))
 	}
-	if cmds[0].args[0] != "update" {
-		t.Errorf("update operation should use 'npm update', got args: %v", cmds[0].args)
+	if cmds[0].args[0] != "install" || !strings.Contains(strings.Join(cmds[0].args, " "), "@openai/codex@latest") {
+		t.Errorf("npm update operation should use 'npm install -g @openai/codex@latest', got args: %v", cmds[0].args)
 	}
 }
 

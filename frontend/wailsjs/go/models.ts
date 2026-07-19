@@ -2365,6 +2365,7 @@ export namespace settings {
 	    terminal: TerminalSettings;
 	    remoteHost: string;
 	    remotePort: number;
+	    remoteEnabled: boolean;
 	    mobileWebRoot: string;
 	    githubToken: string;
 	
@@ -2380,6 +2381,7 @@ export namespace settings {
 	        this.terminal = this.convertValues(source["terminal"], TerminalSettings);
 	        this.remoteHost = source["remoteHost"];
 	        this.remotePort = source["remotePort"];
+	        this.remoteEnabled = source["remoteEnabled"];
 	        this.mobileWebRoot = source["mobileWebRoot"];
 	        this.githubToken = source["githubToken"];
 	    }

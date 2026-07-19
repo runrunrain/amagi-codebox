@@ -22,7 +22,7 @@ fi
 
 if [ -d frontend ]; then
     echo "[1/3] 安装前端依赖并构建..."
-    (cd frontend && npm install && npm run build)
+    (cd frontend && npm ci && npm run build)
 fi
 
 if [ -d mobile ]; then

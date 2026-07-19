@@ -22,6 +22,10 @@ export function GetMobileWebRoot() {
   return window['go']['settings']['Service']['GetMobileWebRoot']();
 }
 
+export function GetRemoteEnabled() {
+  return window['go']['settings']['Service']['GetRemoteEnabled']();
+}
+
 export function GetRemoteHost() {
   return window['go']['settings']['Service']['GetRemoteHost']();
 }
@@ -72,6 +76,10 @@ export function SetGitHubToken(arg1) {
 
 export function SetMobileWebRoot(arg1) {
   return window['go']['settings']['Service']['SetMobileWebRoot'](arg1);
+}
+
+export function SetRemoteEnabled(arg1) {
+  return window['go']['settings']['Service']['SetRemoteEnabled'](arg1);
 }
 
 export function SetRemoteHost(arg1) {

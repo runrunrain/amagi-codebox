@@ -72,6 +72,10 @@
           <span class="info-label">最新版本</span>
           <span class="info-value mono">{{ card.status.latestVersion || '—' }}</span>
         </div>
+        <div v-if="card.status.installed" class="info-item">
+          <span class="info-label">来源</span>
+          <span class="info-value">{{ installMethodLabel(card.status.installMethod) }}</span>
+        </div>
         <div class="info-item">
           <span class="info-label">PATH</span>
           <span class="info-value" :class="pathStateClass(card.status)">{{ pathStateLabel(card.status) }}</span>
@@ -509,6 +513,18 @@ function pathStateLabel(status: envcheck.CheckStatus): string {
     return PATH_STATE_MAP[status.pathState].label
   }
   return status.pathOk ? 'PATH 正常' : '未加入 PATH'
+}
+
+function installMethodLabel(method: string): string {
+  const labels: Record<string, string> = {
+    npm: 'npm 全局安装',
+    native: '原生 / 应用内置',
+    homebrew: 'Homebrew',
+    pip: 'pip',
+    'codebox-venv': 'CodeBox 虚拟环境',
+    unknown: '外部 / 未知',
+  }
+  return labels[method] || '外部 / 未知'
 }
 
 function pathStateClass(status: envcheck.CheckStatus): string {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/base64"
@@ -49,7 +50,10 @@ type codexLaunchSettings struct {
 const (
 	codexModelProviderName     = "amagi-codebox-provider"
 	codexOfficialOpenAIAPIHost = "api.openai.com"
+	maxClipboardImageBytes     = 20 * 1024 * 1024
 )
+
+var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
 type codexConfigSyncOptions struct {
 	Model                string
@@ -540,6 +544,9 @@ func (a *App) OpenRemoteWebUI() (OpenRemoteWebUIResult, error) {
 			a.Log.Error("remote", "打开 Web UI 前启动远程服务器失败", err.Error())
 			return OpenRemoteWebUIResult{}, fmt.Errorf("start remote server before opening web ui: %w", err)
 		}
+		if err := a.Settings.SetRemoteEnabled(true); err != nil {
+			a.Log.Warn("remote", "远程服务已启动，但无法保存启用状态", err.Error())
+		}
 	}
 
 	launchURL := a.Remote.BuildDesktopLaunchURL()
@@ -567,9 +574,16 @@ func (a *App) ToggleRemoteServer(enabled bool) error {
 			a.Log.Error("remote", "启动远程服务器失败", err.Error())
 			return fmt.Errorf("start remote server: %w", err)
 		}
+		if err := a.Settings.SetRemoteEnabled(true); err != nil {
+			a.Remote.Stop()
+			return fmt.Errorf("persist remote enabled state: %w", err)
+		}
 		a.Log.Info("remote", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
 	} else {
 		a.Remote.Stop()
+		if err := a.Settings.SetRemoteEnabled(false); err != nil {
+			return fmt.Errorf("persist remote disabled state: %w", err)
+		}
 		a.Log.Info("remote", "远程服务器已停止")
 	}
 	return nil
@@ -656,6 +670,7 @@ func (a *App) Startup(ctx context.Context) {
 	loadState := persistentLoadState{initialized: true}
 
 	// 加载设置并同步 GitHub Token 到 Updater
+	remoteEnabled := false
 	if err := a.Settings.Load(); err != nil {
 		a.Log.Warn("app", "加载设置失败", err.Error())
 	} else {
@@ -677,6 +692,7 @@ func (a *App) Startup(ctx context.Context) {
 		if token := a.Settings.GetGitHubToken(); token != "" {
 			a.Updater.SetToken(token)
 		}
+		remoteEnabled = a.Settings.GetRemoteEnabled()
 	}
 
 	if err := a.Config.Load(); err != nil {
@@ -787,11 +803,16 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}()
 
-	// 启动远程 API 服务器
-	if err := a.Remote.Start(ctx); err != nil {
-		a.Log.Warn("app", "远程服务器启动失败（不影响主功能）", err.Error())
+	// 远程 API 仅在用户显式启用后恢复。新安装和没有该设置的旧配置
+	// 默认保持 loopback 且不监听，避免无意暴露到局域网。
+	if remoteEnabled {
+		if err := a.Remote.Start(ctx); err != nil {
+			a.Log.Warn("app", "远程服务器启动失败（不影响主功能）", err.Error())
+		} else {
+			a.Log.Info("app", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
+		}
 	} else {
-		a.Log.Info("app", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
+		a.Log.Info("app", "远程服务器未启用；可在设置中显式启动")
 	}
 
 	// 启动系统托盘（仅在平台能力允许时）
@@ -1979,61 +2000,61 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 		if presetName == "" {
 			a.Log.Info("session", "OpenCode 使用全局配置（preset 为空）", fmt.Sprintf("provider=%s", providerName))
 		} else {
-		// presetName 可能是 terminal_preset 的 stable key
-		tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
-		tpFound := tpErr == nil && tp != nil
-		if tpFound {
-			if tpProvider != "" {
-				providerName = tpProvider
-			}
-			a.Log.Info("session", "OpenCode 命中 terminal_preset（旧模型回退）", fmt.Sprintf("key=%s provider=%s model=%s hasCfg=%v", presetName, tpProvider, tp.Model, len(tp.OpenCodeCfg) > 0))
-		}
-
-		if providerName != "" {
-			loadedProvider, err := a.Config.GetProvider(providerName)
-			if err != nil {
-				a.Log.Error("session", "获取 OpenCode 提供商失败", err.Error())
-				return "", fmt.Errorf("get opencode provider: %w", err)
-			}
-			provider = loadedProvider
-
-			// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 副本
+			// presetName 可能是 terminal_preset 的 stable key
+			tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
+			tpFound := tpErr == nil && tp != nil
 			if tpFound {
-				provCopy := *provider
-				converted := config.Preset{
-					Name:           tp.Name,
-					Model:          tp.Model,
-					Parameters:     tp.Parameters,
-					OpenCodeConfig: tp.OpenCodeCfg,
+				if tpProvider != "" {
+					providerName = tpProvider
 				}
-				if provCopy.Presets == nil {
-					provCopy.Presets = map[string]config.Preset{}
+				a.Log.Info("session", "OpenCode 命中 terminal_preset（旧模型回退）", fmt.Sprintf("key=%s provider=%s model=%s hasCfg=%v", presetName, tpProvider, tp.Model, len(tp.OpenCodeCfg) > 0))
+			}
+
+			if providerName != "" {
+				loadedProvider, err := a.Config.GetProvider(providerName)
+				if err != nil {
+					a.Log.Error("session", "获取 OpenCode 提供商失败", err.Error())
+					return "", fmt.Errorf("get opencode provider: %w", err)
 				}
-				provCopy.Presets[presetName] = converted
-				*provider = provCopy
-				a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
-			}
+				provider = loadedProvider
 
-			apiKey, keySource := a.getProviderAPIKey(providerName, *provider)
-			if apiKey == "" {
-				a.Log.Error("session", "未找到 OpenCode API 密钥", "provider="+providerName)
-				return "", fmt.Errorf("no API key found for provider %q", providerName)
-			}
+				// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 副本
+				if tpFound {
+					provCopy := *provider
+					converted := config.Preset{
+						Name:           tp.Name,
+						Model:          tp.Model,
+						Parameters:     tp.Parameters,
+						OpenCodeConfig: tp.OpenCodeCfg,
+					}
+					if provCopy.Presets == nil {
+						provCopy.Presets = map[string]config.Preset{}
+					}
+					provCopy.Presets[presetName] = converted
+					*provider = provCopy
+					a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
+				}
 
-			// 基于 Provider + Preset（含桥接后的 terminal preset）生成 OPENCODE_CONFIG_CONTENT 注入
-			ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
-			if err != nil {
-				a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
-				return "", fmt.Errorf("build opencode config: %w", err)
-			}
-			envOverrides = ocOverrides
+				apiKey, keySource := a.getProviderAPIKey(providerName, *provider)
+				if apiKey == "" {
+					a.Log.Error("session", "未找到 OpenCode API 密钥", "provider="+providerName)
+					return "", fmt.Errorf("no API key found for provider %q", providerName)
+				}
 
-			a.Log.Info("session", "OpenCode API 密钥已获取",
-				fmt.Sprintf("provider=%s source=%s key=%s len=%d",
-					providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
+				// 基于 Provider + Preset（含桥接后的 terminal preset）生成 OPENCODE_CONFIG_CONTENT 注入
+				ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
+				if err != nil {
+					a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
+					return "", fmt.Errorf("build opencode config: %w", err)
+				}
+				envOverrides = ocOverrides
+
+				a.Log.Info("session", "OpenCode API 密钥已获取",
+					fmt.Sprintf("provider=%s source=%s key=%s len=%d",
+						providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
 			}
-			} // else 结束：presetName != "" 的情况
-		} // 轨道2 结束
+		} // else 结束：presetName != "" 的情况
+	} // 轨道2 结束
 
 launchCommon:
 	// 确定启动模式
@@ -2373,23 +2394,54 @@ func (a *App) PtyWriteLarge(sessionID string, data string) error {
 	return a.Pty.WriteLarge(sessionID, data)
 }
 
-// SaveClipboardImage 将 base64 编码的图片数据保存为临时 PNG 文件，返回文件绝对路径。
+// SaveClipboardImage 将 base64 编码的 PNG 保存为私有临时文件，返回文件绝对路径。
 // 用于处理 Windows 截图工具截图后粘贴到终端的场景。
 func (a *App) SaveClipboardImage(base64Data string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return "", fmt.Errorf("decode base64: %w", err)
 	}
-
-	// 使用时间戳生成唯一文件名
-	tmpDir := os.TempDir()
-	filename := fmt.Sprintf("amagi-codebox-clipboard-%d.png", time.Now().UnixMilli())
-	filePath := filepath.Join(tmpDir, filename)
-
-	if err := os.WriteFile(filePath, raw, 0o644); err != nil {
-		return "", fmt.Errorf("write temp image: %w", err)
+	filePath, err := writeClipboardImage(raw)
+	if err != nil {
+		return "", err
 	}
 	a.Log.Info("app", "剪贴板图片已保存", filePath)
+	return filePath, nil
+}
+
+func writeClipboardImage(raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("clipboard image is empty")
+	}
+	if len(raw) > maxClipboardImageBytes {
+		return "", fmt.Errorf("clipboard image exceeds %d MiB limit", maxClipboardImageBytes/(1024*1024))
+	}
+	if len(raw) < len(pngSignature) || !bytes.Equal(raw[:len(pngSignature)], pngSignature) {
+		return "", errors.New("clipboard image must be a PNG")
+	}
+
+	file, err := os.CreateTemp("", "amagi-codebox-clipboard-*.png")
+	if err != nil {
+		return "", fmt.Errorf("create temp image: %w", err)
+	}
+	filePath := file.Name()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			_ = file.Close()
+			_ = os.Remove(filePath)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return "", fmt.Errorf("set temp image permissions: %w", err)
+	}
+	if _, err := file.Write(raw); err != nil {
+		return "", fmt.Errorf("write temp image: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close temp image: %w", err)
+	}
+	succeeded = true
 	return filePath, nil
 }
 
@@ -2472,7 +2524,7 @@ func (a *App) GetKeyDiagnostics() map[string]map[string]string {
 }
 
 // ExportConfigToFile 将所有 providers、presets 和 API keys 合并导出为 JSON 文件。
-// 通过系统对话框让用户选择保存位置，同时在项目目录保存一份副本。
+// 通过系统对话框让用户选择保存位置；导出文件仅对当前用户可读。
 func (a *App) ExportConfigToFile() (string, error) {
 	a.Log.Info("app", "开始导出配置")
 
@@ -2527,15 +2579,6 @@ func (a *App) ExportConfigToFile() (string, error) {
 		return "", fmt.Errorf("write export file: %w", err)
 	}
 	a.Log.Info("app", "配置已导出", savePath)
-
-	// 同时保存一份副本到配置目录
-	backupPath := filepath.Join(defaultConfigDir(), "amagi-codebox-config.json")
-	if err := atomicWriteFile(backupPath, data); err != nil {
-		// 副本写入失败不影响主导出结果，仅记录警告
-		a.Log.Warn("app", "副本保存失败", err.Error())
-	} else {
-		a.Log.Info("app", "配置副本已保存", backupPath)
-	}
 
 	return savePath, nil
 }
@@ -2797,18 +2840,36 @@ func (a *App) DeleteProvider(name string) error {
 	return a.Config.DeleteProvider(name)
 }
 
-// atomicWriteFile 原子写入文件（先写 .tmp 再 rename）。
+// atomicWriteFile atomically writes a user-private export. It uses an
+// exclusive temporary file instead of a predictable .tmp path and preserves
+// 0600 permissions after replacement because exports can contain API keys.
 func atomicWriteFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write tmp: %w", err)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-")
+	if err != nil {
+		return fmt.Errorf("create temp export: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set temp export permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp export: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp export: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("set export permissions: %w", err)
 	}
 	return nil
 }

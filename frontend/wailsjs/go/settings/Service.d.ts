@@ -12,6 +12,8 @@ export function GetGitHubToken():Promise<string>;
 
 export function GetMobileWebRoot():Promise<string>;
 
+export function GetRemoteEnabled():Promise<boolean>;
+
 export function GetRemoteHost():Promise<string>;
 
 export function GetRemotePort():Promise<number>;
@@ -37,6 +39,8 @@ export function SetDashboardDefaults(arg1:settings.DashboardDefaults):Promise<vo
 export function SetGitHubToken(arg1:string):Promise<void>;
 
 export function SetMobileWebRoot(arg1:string):Promise<void>;
+
+export function SetRemoteEnabled(arg1:boolean):Promise<void>;
 
 export function SetRemoteHost(arg1:string):Promise<void>;
 

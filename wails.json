@@ -3,7 +3,7 @@
   "name": "amagi-codebox",
   "outputfilename": "amagi-codebox",
   "frontenddir": "frontend",
-  "frontend:install": "npm install",
+  "frontend:install": "npm ci",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
@@ -16,7 +16,7 @@
   },
   "info": {
     "productName": "Amagi CodeBox",
-    "productVersion": "1.2.81",
+    "productVersion": "1.2.82",
     "copyright": "Copyright © Amagi CodeBox Contributors"
   }
 }

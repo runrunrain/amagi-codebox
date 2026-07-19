@@ -30,6 +30,9 @@ func (s *Service) checkCodex() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolCodex)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
+		if npmStatus, _, npmErr := s.checkCodexFromNPMGlobalPrefix(); npmErr == nil {
+			return npmStatus, nil
+		}
 		status.Error = "Codex executable was not found in PATH"
 		addMissingToolIssue(status, ToolCodex)
 		return status, nil
@@ -55,7 +58,11 @@ func (s *Service) checkCodexFromNPMGlobalPrefix() (*CheckStatus, []string, error
 	if err != nil {
 		return nil, nil, err
 	}
-	candidates := codexNPMGlobalExecutableCandidates(prefix)
+	npmRoot, rootErr := s.npmGlobalRoot()
+	if rootErr != nil {
+		npmRoot = inferNPMNodeModulesFromPrefix(prefix)
+	}
+	candidates := codexNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot)
 	if len(candidates) == 0 {
 		return nil, candidates, fmt.Errorf("npm global prefix %q did not produce Codex executable candidates", prefix)
 	}
@@ -67,7 +74,7 @@ func (s *Service) checkCodexFromNPMGlobalPrefix() (*CheckStatus, []string, error
 		}
 		invocationPath := filepath.Clean(candidate)
 		realPath := resolveRealExecutablePath(invocationPath)
-		version, err := s.codexVersion(realPath)
+		version, err := s.codexVersion(invocationPath)
 		if err != nil {
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
 			continue
@@ -97,31 +104,11 @@ func (s *Service) checkCodexFromNPMGlobalPrefix() (*CheckStatus, []string, error
 }
 
 func codexNPMGlobalExecutableCandidates(prefix string) []string {
-	prefix = filepath.Clean(strings.TrimSpace(prefix))
-	if prefix == "" || prefix == "." {
-		return nil
-	}
+	return codexNPMGlobalExecutableCandidatesWithRoot(prefix, "")
+}
 
-	dirs := []string{filepath.Join(prefix, "bin"), prefix, filepath.Join(prefix, "node_modules", ".bin")}
-	names := []string{codexCommandName}
-	if isWindows() {
-		names = []string{"codex.cmd", "codex.exe", codexCommandName}
-	}
-
-	candidates := make([]string, 0, len(dirs)*len(names))
-	seen := map[string]struct{}{}
-	for _, dir := range dirs {
-		for _, name := range names {
-			candidate := filepath.Join(dir, name)
-			key := normalizeCodexPath(candidate)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			candidates = append(candidates, candidate)
-		}
-	}
-	return candidates
+func codexNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot string) []string {
+	return npmGlobalCommandCandidates(prefix, npmRoot, codexCommandName, codexNPMPackageName)
 }
 
 func (s *Service) codexVersion(executablePath string) (string, error) {
