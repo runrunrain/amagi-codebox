@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -41,6 +42,10 @@ type ProxyService struct {
 	// currentSession 是 LaunchSession 注入的当前会话上下文（用于把 usage 关联到 amagi session）。
 	currentSession *currentSessionCtx
 	sessMu         sync.RWMutex
+	// usageSequence makes a local dedup ID unique when an upstream client does
+	// not send x-request-id. Without this fallback, every request in one session
+	// collapsed into the same usage record.
+	usageSequence atomic.Uint64
 }
 
 // currentSessionCtx 携带当前活跃会话的关联信息。
@@ -652,7 +657,11 @@ func (s *ProxyService) proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 响应处理：若有工具名映射，需要恢复原名
 	if !toolMapping.isEmpty() {
-		writeResponseWithRestore(w, resp, toolMapping, nil)
+		writeResponseWithRestore(w, resp, toolMapping, func(data *UsageData) {
+			if data != nil {
+				s.emitUsageEvent(data, body, r)
+			}
+		})
 		return
 	}
 
@@ -737,7 +746,7 @@ func (s *ProxyService) emitUsageEvent(data *UsageData, reqBody []byte, r *http.R
 		Provider:                 provider,
 		Model:                    model,
 		OccurredAt:               time.Now(),
-		RequestID:                r.Header.Get("x-request-id"),
+		RequestID:                s.usageRequestID(r),
 		InputTokens:              data.InputTokens,
 		OutputTokens:             data.OutputTokens,
 		CacheReadInputTokens:     data.CacheReadInputTokens,
@@ -751,6 +760,20 @@ func (s *ProxyService) emitUsageEvent(data *UsageData, reqBody []byte, r *http.R
 
 	// 在 goroutine 里跑避免阻塞响应链（设计 9.2 末尾）
 	go sink(evt)
+}
+
+// usageRequestID returns an upstream request ID when one is available and a
+// process-local unique ID otherwise. Proxy events are deduplicated by session
+// and request ID, so an empty fallback would silently discard later requests.
+func (s *ProxyService) usageRequestID(r *http.Request) string {
+	if r != nil {
+		for _, header := range []string{"X-Request-ID", "X-Amzn-RequestId", "X-Request-Id"} {
+			if requestID := strings.TrimSpace(r.Header.Get(header)); requestID != "" {
+				return requestID
+			}
+		}
+	}
+	return fmt.Sprintf("local-%d-%d", time.Now().UnixNano(), s.usageSequence.Add(1))
 }
 
 // ========== 关键字注入引擎 ==========

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -22,6 +23,7 @@ func (s *Service) querySummary(ctx context.Context, filter SummaryFilter) (Summa
 
 	q := fmt.Sprintf(`SELECT
 		COUNT(*),
+		COALESCE(SUM(billable_input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens),0),
 		COALESCE(SUM(input_tokens),0),
 		COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_read_input_tokens),0),
@@ -35,6 +37,7 @@ func (s *Service) querySummary(ctx context.Context, filter SummaryFilter) (Summa
 	var dateStart, dateEnd string
 	err := s.db.QueryRowContext(ctx, q, args...).Scan(
 		&sum.TotalRequests,
+		&sum.TotalTokens,
 		&sum.TotalInputTokens,
 		&sum.TotalOutputTokens,
 		&sum.TotalCacheRead,
@@ -247,11 +250,23 @@ func (s *Service) queryDailyTrendsFromMain(ctx context.Context, filter TrendFilt
 // 优先级：StartDate+EndDate > Days > 默认最近 30 天。
 func resolveTrendRange(filter TrendFilter, now time.Time) (string, string) {
 	if filter.StartDate != "" && filter.EndDate != "" {
+		if filter.StartDate > filter.EndDate {
+			return filter.EndDate, filter.StartDate
+		}
 		return filter.StartDate, filter.EndDate
 	}
 	days := filter.Days
 	if days <= 0 {
 		days = 30
+	}
+	if filter.StartDate != "" {
+		return filter.StartDate, now.UTC().Format("2006-01-02")
+	}
+	if filter.EndDate != "" {
+		if endDate, err := time.Parse("2006-01-02", filter.EndDate); err == nil {
+			return endDate.AddDate(0, 0, -days+1).Format("2006-01-02"), filter.EndDate
+		}
+		return now.UTC().AddDate(0, 0, -days+1).Format("2006-01-02"), filter.EndDate
 	}
 	end := now.UTC().Format("2006-01-02")
 	start := now.UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
@@ -287,14 +302,15 @@ func (s *Service) queryModelStats(ctx context.Context, filter StatFilter) ([]Mod
 		COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_read_input_tokens),0),
 		COALESCE(SUM(cache_creation_input_tokens),0),
+		COALESCE(SUM(billable_input_tokens),0),
 		COALESCE(SUM(input_cost),0),
 		COALESCE(SUM(output_cost),0),
 		COALESCE(SUM(cache_read_cost),0),
 		COALESCE(SUM(cache_creation_cost),0),
 		COALESCE(SUM(total_cost),0)
 		FROM usage_records %s
-		GROUP BY normalized_model
-		ORDER BY SUM(total_cost) DESC`, where.String())
+		GROUP BY normalized_model, provider, currency_code, app_type
+		ORDER BY SUM(total_cost) DESC, normalized_model ASC`, where.String())
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -308,7 +324,7 @@ func (s *Service) queryModelStats(ctx context.Context, filter StatFilter) ([]Mod
 		if err := rows.Scan(
 			&m.NormalizedModel, &m.Provider, &m.CurrencyCode, &m.AppType,
 			&m.Requests, &m.InputTokens, &m.OutputTokens,
-			&m.CacheRead, &m.CacheCreation,
+			&m.CacheRead, &m.CacheCreation, &m.BillableInput,
 			&m.InputCost, &m.OutputCost, &m.CacheReadCost, &m.CacheCreationCost,
 			&m.TotalCost,
 		); err != nil {
@@ -318,9 +334,11 @@ func (s *Service) queryModelStats(ctx context.Context, filter StatFilter) ([]Mod
 		if mp, ok := s.pricing.Resolve(m.NormalizedModel); ok {
 			m.DisplayName = mp.DisplayName
 			m.HasPrice = true
+			applyModelPricingMetrics(&m, mp)
 		} else {
 			m.DisplayName = m.NormalizedModel
 			m.HasPrice = false
+			applyModelPricingMetrics(&m, ModelPricing{})
 		}
 		out = append(out, m)
 	}
@@ -340,12 +358,10 @@ func (s *Service) queryProviderStats(ctx context.Context, filter StatFilter) ([]
 	q := fmt.Sprintf(`SELECT
 		provider,
 		COUNT(*),
-		currency_code,
-		COALESCE(SUM(total_cost),0),
-		COALESCE(SUM(input_tokens+output_tokens+cache_read_input_tokens+cache_creation_input_tokens),0),
+		COALESCE(SUM(billable_input_tokens+output_tokens+cache_read_input_tokens+cache_creation_input_tokens),0),
 		COUNT(DISTINCT normalized_model)
 		FROM usage_records %s
-		GROUP BY provider, currency_code
+		GROUP BY provider
 		ORDER BY provider ASC`, where.String())
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -356,10 +372,10 @@ func (s *Service) queryProviderStats(ctx context.Context, filter StatFilter) ([]
 
 	byProvider := map[string]*ProviderStat{}
 	for rows.Next() {
-		var provider, cur string
-		var req, cost, tokens int64
+		var provider string
+		var req, tokens int64
 		var modelCount int
-		if err := rows.Scan(&provider, &req, &cur, &cost, &tokens, &modelCount); err != nil {
+		if err := rows.Scan(&provider, &req, &tokens, &modelCount); err != nil {
 			return nil, err
 		}
 		p, ok := byProvider[provider]
@@ -367,14 +383,39 @@ func (s *Service) queryProviderStats(ctx context.Context, filter StatFilter) ([]
 			p = &ProviderStat{Provider: provider, CostByCurrency: map[string]int64{}}
 			byProvider[provider] = p
 		}
-		p.Requests += req
-		p.TotalTokens += tokens
-		p.CostByCurrency[cur] += cost
-		if modelCount > p.ModelCount {
-			p.ModelCount = modelCount
-		}
+		p.Requests = req
+		p.TotalTokens = tokens
+		p.ModelCount = modelCount
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Cost needs a second grouping by currency. Keeping it separate from the
+	// provider aggregate makes modelCount a true distinct count even when the
+	// same provider has records in multiple native currencies.
+	costQ := fmt.Sprintf(`SELECT provider, currency_code, COALESCE(SUM(total_cost),0)
+		FROM usage_records %s
+		GROUP BY provider, currency_code`, where.String())
+	costRows, err := s.db.QueryContext(ctx, costQ, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query provider costs by currency: %w", err)
+	}
+	defer costRows.Close()
+	for costRows.Next() {
+		var provider, currency string
+		var cost int64
+		if err := costRows.Scan(&provider, &currency, &cost); err != nil {
+			return nil, err
+		}
+		p, ok := byProvider[provider]
+		if !ok {
+			p = &ProviderStat{Provider: provider, CostByCurrency: map[string]int64{}}
+			byProvider[provider] = p
+		}
+		p.CostByCurrency[currency] += cost
+	}
+	if err := costRows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -384,6 +425,12 @@ func (s *Service) queryProviderStats(ctx context.Context, filter StatFilter) ([]
 		p.TotalCostUSD = convertToUSD(p.CostByCurrency, cnyRate)
 		out = append(out, *p)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalCostUSD == out[j].TotalCostUSD {
+			return out[i].Provider < out[j].Provider
+		}
+		return out[i].TotalCostUSD > out[j].TotalCostUSD
+	})
 	return out, nil
 }
 
@@ -415,7 +462,7 @@ func (s *Service) queryRequestLogs(ctx context.Context, filter LogFilter) ([]Usa
 		session_id, project_dir, preset,
 		input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, billable_input_tokens,
 		input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost, currency_code,
-		occurred_at, recorded_at, request_id
+		cost_provided, occurred_at, recorded_at, request_id
 		FROM usage_records %s
 		ORDER BY occurred_at DESC
 		LIMIT ? OFFSET ?`, where.String())
@@ -437,7 +484,7 @@ func (s *Service) queryRequestLogs(ctx context.Context, filter LogFilter) ([]Usa
 			&r.SessionID, &r.ProjectDir, &r.Preset,
 			&r.InputTokens, &r.OutputTokens, &r.CacheReadInputTokens, &r.CacheCreationInputTokens, &r.BillableInputTokens,
 			&r.InputCost, &r.OutputCost, &r.CacheReadCost, &r.CacheCreationCost, &r.TotalCost, &r.CurrencyCode,
-			&occurredNano, &recordedNano, &r.RequestID,
+			&r.CostProvided, &occurredNano, &recordedNano, &r.RequestID,
 		); err != nil {
 			return nil, err
 		}

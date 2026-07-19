@@ -37,6 +37,17 @@ func (s *Service) GetDailyTrends(filter TrendFilter) ([]DailyTrendPoint, error) 
 	return s.queryDailyTrends(ctx, filter)
 }
 
+// GetModelDailyTrends returns separate daily curves for each model rather than
+// mixing unrelated model prices and token volumes into one aggregate line.
+func (s *Service) GetModelDailyTrends(filter TrendFilter) ([]ModelDailyTrendPoint, error) {
+	if s.db == nil {
+		return []ModelDailyTrendPoint{}, fmt.Errorf("usage service not loaded")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.queryModelDailyTrends(ctx, filter)
+}
+
 // GetModelStats 返回按模型聚合的统计（设计 11.3）。
 func (s *Service) GetModelStats(filter StatFilter) ([]ModelStat, error) {
 	if s.db == nil {
@@ -121,7 +132,17 @@ func (s *Service) UpsertModelPricing(mp ModelPricing) error {
 	if s.pricing == nil {
 		return fmt.Errorf("pricing not initialized")
 	}
-	return s.pricing.Upsert(mp)
+	if err := s.pricing.Upsert(mp); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if updated, err := s.repriceEstimatedUsageForPattern(ctx, mp.ModelPattern); err != nil {
+		return err
+	} else if updated > 0 {
+		s.logInfo("usage", "价格表更新后已重算历史成本", fmt.Sprintf("model=%s records=%d", mp.ModelPattern, updated))
+	}
+	return nil
 }
 
 // DeleteModelPricing 删除自定义价格条目（内置不可删，设计 11.7）。
@@ -137,7 +158,17 @@ func (s *Service) ResetModelPricing() error {
 	if s.pricing == nil {
 		return fmt.Errorf("pricing not initialized")
 	}
-	return s.pricing.ResetBuiltin()
+	if err := s.pricing.ResetBuiltin(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if updated, err := s.repriceAllEstimatedUsage(ctx); err != nil {
+		return err
+	} else if updated > 0 {
+		s.logInfo("usage", "价格表重置后已重算历史成本", fmt.Sprintf("records=%d", updated))
+	}
+	return nil
 }
 
 // GetUnknownModels 返回价格表未匹配的模型列表（设计 11.8）。

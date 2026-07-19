@@ -75,8 +75,8 @@ export function formatCost(micro: number, currencyCode = 'USD'): string {
 }
 
 /**
- * 把价格表 *_per_million（micro/M token）换算为 "X.XX / M" 形式的人类可读价。
- * Convert a micro-per-million price to human-readable "X.XX / M" form.
+ * 把价格表 *_per_million（micro/m token）换算为 "X.XX / m" 形式的人类可读价。
+ * Convert a micro-per-million price to human-readable "X.XX / m" form.
  */
 export function formatPerMillion(microPerMillion: number, currencyCode = 'USD'): string {
   const perMillion = microToCurrency(microPerMillion);
@@ -84,28 +84,17 @@ export function formatPerMillion(microPerMillion: number, currencyCode = 'USD'):
   return `${symbol}${perMillion.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
-  })} / M`;
+  })} / m`;
 }
 
 /**
- * 格式化 token 数值：小于 1000 显示原值；否则使用 K/M/G 后缀并保留 1-2 位小数。
- * Format a token count: raw under 1k, otherwise K/M/G suffix with adaptive precision.
+ * 完整显示 token 数值，保留千分位而不使用 K/M/G 缩写。
+ * Token quantities are an audit value, so the dashboard always renders their
+ * full integer form; the price table keeps the conventional lower-case / m.
  */
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n === 0) return '0';
-  const abs = Math.abs(n);
-  if (abs < 1000) return String(n);
-  if (abs < 1_000_000) {
-    // < 1M：用 K；整数倍不带小数 / Use K suffix; drop decimals on exact multiples.
-    const v = n / 1000;
-    return v % 1 === 0 ? `${v}K` : `${v.toFixed(1)}K`;
-  }
-  if (abs < 1_000_000_000) {
-    const v = n / 1_000_000;
-    return v % 1 === 0 ? `${v}M` : `${v.toFixed(2)}M`;
-  }
-  const v = n / 1_000_000_000;
-  return v % 1 === 0 ? `${v}G` : `${v.toFixed(2)}G`;
+  return Math.trunc(n).toLocaleString('en-US');
 }
 
 /**

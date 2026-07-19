@@ -321,9 +321,26 @@ func (s *Service) syncCodexJSONL(ctx context.Context, path string) syncOutcome {
 		startOffset = 0
 	}
 
-	stubs, lastOffset, provider, parseErr := codex.ExtractUsageRecords(path, startOffset)
+	parseContext := codex.UsageContext{
+		Provider:   state.LastProvider,
+		Model:      state.LastModel,
+		SessionID:  state.LastSessionID,
+		ProjectDir: state.LastProjectDir,
+	}
+	// Sync state created before context persistence has an offset but no
+	// session_meta / turn_context information. Recover that prefix once without
+	// re-inserting its token events.
+	if startOffset > 0 && (parseContext.Provider == "" || parseContext.Model == "") {
+		if recovered, contextErr := codex.ReadUsageContext(path, startOffset); contextErr == nil {
+			parseContext = recovered
+		} else {
+			s.logWarn("usage", "codex 增量上下文恢复失败", contextErr.Error())
+		}
+	}
+
+	stubs, lastOffset, nextContext, parseErr := codex.ExtractUsageRecordsWithContext(path, startOffset, parseContext)
 	if parseErr != nil {
-		_ = s.updateSyncStateCodex(ctx, path, info.ModTime().UnixNano(), startOffset, 0, parseErr.Error())
+		_ = s.updateSyncStateCodex(ctx, path, info.ModTime().UnixNano(), startOffset, parseContext, 0, parseErr.Error())
 		return syncOutcome{err: parseErr}
 	}
 
@@ -338,7 +355,7 @@ func (s *Service) syncCodexJSONL(ctx context.Context, path string) syncOutcome {
 		evt := UsageEvent{
 			AppType:                  appCodex,
 			Source:                   SourceSessionLog,
-			Provider:                 provider,
+			Provider:                 st.Provider,
 			Model:                    st.Model,
 			ProjectDir:               st.ProjectDir,
 			SessionID:                st.SessionID,
@@ -361,19 +378,23 @@ func (s *Service) syncCodexJSONL(ctx context.Context, path string) syncOutcome {
 		}
 	}
 
-	if err := s.updateSyncStateCodex(ctx, path, info.ModTime().UnixNano(), lastOffset, out.added, ""); err != nil {
+	if err := s.updateSyncStateCodex(ctx, path, info.ModTime().UnixNano(), lastOffset, nextContext, out.added, ""); err != nil {
 		s.logWarn("usage", "codex sync_state 写入失败", err.Error())
 	}
 	return out
 }
 
-func (s *Service) updateSyncStateCodex(ctx context.Context, path string, mtime, offset int64, added int64, lastErr string) error {
+func (s *Service) updateSyncStateCodex(ctx context.Context, path string, mtime, offset int64, usageContext codex.UsageContext, added int64, lastErr string) error {
 	state := SyncState{
 		SourceType:     "codex_jsonl",
 		SourceKey:      path,
 		AppType:        appCodex,
 		LastMTime:      mtime,
 		LastLineOffset: offset,
+		LastProvider:   usageContext.Provider,
+		LastModel:      usageContext.Model,
+		LastSessionID:  usageContext.SessionID,
+		LastProjectDir: usageContext.ProjectDir,
 		LastSyncedAt:   time.Now().UTC(),
 		LastError:      lastErr,
 		RecordsAdded:   added,

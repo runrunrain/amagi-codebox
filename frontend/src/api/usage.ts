@@ -10,6 +10,7 @@
 import {
   GetUsageSummary,
   GetDailyTrends,
+  GetModelDailyTrends,
   GetModelStats,
   GetProviderStats,
   GetRequestLogs,
@@ -31,6 +32,7 @@ export type StatFilter = usage.StatFilter;
 export type LogFilter = usage.LogFilter;
 export type Summary = usage.Summary;
 export type DailyTrendPoint = usage.DailyTrendPoint;
+export type ModelDailyTrendPoint = usage.ModelDailyTrendPoint;
 export type ModelStat = usage.ModelStat;
 export type ProviderStat = usage.ProviderStat;
 export type UsageRecord = usage.UsageRecord;
@@ -40,14 +42,46 @@ export type ModelPricing = usage.ModelPricing;
 export type UnknownModel = usage.UnknownModel;
 
 /**
- * 构造一个空 SummaryFilter 的工厂，避免分散默认值。
+ * 构造带默认筛选条件的 SummaryFilter，避免分散默认值。
  * Factory for a fresh SummaryFilter with safe defaults.
  * 默认 source=session_log：避免与 proxy 实时拦截双计（设计 §7.2）。
  */
+export type UsageRangePreset = 'today' | '7d' | '30d' | 'month' | 'custom';
+
+export interface UsageDateRange {
+  startDate: string;
+  endDate: string;
+}
+
+function toUTCDateString(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+/** Resolve a named dashboard period into an inclusive UTC date range. */
+export function resolveUsageRange(preset: Exclude<UsageRangePreset, 'custom'>, now = new Date()): UsageDateRange {
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const start = new Date(end);
+  switch (preset) {
+    case 'today':
+      break;
+    case '7d':
+      start.setUTCDate(start.getUTCDate() - 6);
+      break;
+    case '30d':
+      start.setUTCDate(start.getUTCDate() - 29);
+      break;
+    case 'month':
+      start.setUTCDate(1);
+      break;
+  }
+  return { startDate: toUTCDateString(start), endDate: toUTCDateString(end) };
+}
+
 export function createSummaryFilter(overrides: Partial<SummaryFilter> = {}): SummaryFilter {
+  const defaultRange = resolveUsageRange('30d');
   return {
-    startDate: '',
-    endDate: '',
+    startDate: defaultRange.startDate,
+    endDate: defaultRange.endDate,
     appType: '',
     // 默认仅 session_log：proxy 路径与 session_log 路径会重复入库，前端默认只看主路径。
     // Default to session_log only: proxy + session_log double-count by design, main path wins.
@@ -103,6 +137,16 @@ export async function getDailyTrends(filter: TrendFilter): Promise<DailyTrendPoi
     return await GetDailyTrends(filter);
   } catch (error) {
     console.error('[api.usage.getDailyTrends]', error);
+    throw error;
+  }
+}
+
+/** Per-model daily trends. Each model remains an independent curve. */
+export async function getModelDailyTrends(filter: TrendFilter): Promise<ModelDailyTrendPoint[]> {
+  try {
+    return await GetModelDailyTrends(filter);
+  } catch (error) {
+    console.error('[api.usage.getModelDailyTrends]', error);
     throw error;
   }
 }

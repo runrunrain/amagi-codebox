@@ -142,6 +142,11 @@ func defaultPricingData() *PricingData {
 		4_000_000, 16_000_000, 400_000, 0, "DeepSeek 参考价；含 reasoning")
 	add("deepseek-coder", "DeepSeek Coder", "deepseek", "CNY",
 		1_000_000, 2_000_000, 100_000, 0, "DeepSeek 参考价")
+	// DeepSeek-V4-Pro official API pricing (2026-07): cache miss $0.435/m,
+	// cache hit $0.003625/m, output $0.87/m. The cache-hit line is kept
+	// separate so cache economics and actual estimated cost stay accurate.
+	add("deepseek-v4-pro", "DeepSeek V4 Pro", "deepseek", "USD",
+		435_000, 870_000, 3_625, 0, "DeepSeek API 官方价（2026-07，缓存命中已折扣）")
 
 	// === Kimi / Moonshot（月之暗面，CNY） ===
 	add("moonshot-v1-8k", "Moonshot v1 8K", "moonshot", "CNY",
@@ -190,7 +195,7 @@ func defaultPricingData() *PricingData {
 		2_000_000, 6_000_000, 0, 0, "阿里参考价")
 
 	return &PricingData{
-		Version: 1,
+		Version: 2,
 		Models:  models,
 		FallbackPolicy: FallbackPolicy{
 			UnknownModelStrategy: "zero_cost",

@@ -14,6 +14,10 @@ export function GetDailyTrends(arg1) {
   return window['go']['usage']['Service']['GetDailyTrends'](arg1);
 }
 
+export function GetModelDailyTrends(arg1) {
+  return window['go']['usage']['Service']['GetModelDailyTrends'](arg1);
+}
+
 export function GetModelPricing() {
   return window['go']['usage']['Service']['GetModelPricing']();
 }

@@ -1,29 +1,21 @@
 <template>
   <section class="view-usage">
-    <!-- Loading：首次 fetchAll 进行时（summary 为空时才全屏 loading） -->
     <LoadingState v-if="loading && !summary" message="加载使用统计中..." />
 
-    <!-- Error：首次失败且 summary 仍为 null -->
     <ErrorState
       v-else-if="error && !summary"
       :message="error"
       :on-retry="handleRetry"
     />
 
-    <!-- 主内容 / Main content -->
     <template v-else>
-      <PageHead title="使用统计" description="AI 模型用量与成本统计 · 默认仅展示 session_log 数据源">
+      <PageHead title="使用统计" description="模型用量、缓存经济性与成本趋势；默认只统计会话日志">
         <template #actions>
           <div class="head-actions">
             <span v-if="lastSyncedAt" class="last-synced" :title="`上次同步：${lastSyncedAt}`">
               已同步 · {{ formatRelative(lastSyncedAt) }}
             </span>
-            <AppButton
-              variant="ghost"
-              size="small"
-              :disabled="syncing"
-              @click="handleSync"
-            >
+            <AppButton variant="ghost" size="small" :disabled="syncing" @click="handleSync">
               <span class="sync-icon" :class="{ spinning: syncing }" />
               {{ syncing ? '同步中...' : '立即同步' }}
             </AppButton>
@@ -31,207 +23,232 @@
         </template>
       </PageHead>
 
-      <!-- Empty：有 summary 但完全无数据 -->
       <EmptyState
         v-if="summary && summary.totalRequests === 0"
         title="暂无使用数据"
-        description="从 ~/.claude / ~/.codex / ~/.local/share/opencode 拉取历史会话用量"
+        description="可从 ~/.claude / ~/.codex / ~/.local/share/opencode 拉取历史会话用量"
       >
         <template #action>
-          <AppButton
-            variant="primary"
-            :disabled="syncing"
-            @click="handleSync"
-          >
+          <AppButton variant="primary" :disabled="syncing" @click="handleSync">
             {{ syncing ? '同步中...' : '立即同步' }}
           </AppButton>
         </template>
       </EmptyState>
 
-      <!-- Success：完整仪表盘 -->
       <template v-else>
-        <!-- 1. 仪表盘汇总卡片 / Summary dashboard card -->
         <ConfigCard class="summary-card">
           <div class="summary-head">
             <div class="summary-title">
-              <h2>累计统计</h2>
-              <span class="summary-sub">
-                {{ dateRangeLabel }} · {{ sourceLabel }}
-              </span>
+              <h2>使用概览</h2>
+              <span class="summary-sub">{{ dateRangeLabel }} · {{ sourceLabel }}</span>
             </div>
-            <span v-if="!loading && summary" class="summary-live">
-              <span class="live-dot" />数据已就绪
-            </span>
+            <span v-if="!loading && summary" class="summary-live"><span class="live-dot" />数据已就绪</span>
           </div>
           <div class="summary-grid">
             <div class="metric metric-primary">
-              <span class="metric-label">累计成本</span>
+              <span class="metric-label" title="Total Cost">累计成本</span>
               <span class="metric-value mono accent">{{ formatCost(summary?.totalCostUSD ?? 0, 'USD') }}</span>
               <span v-if="multiCurrencyText" class="metric-sub mono">{{ multiCurrencyText }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">累计请求</span>
+              <span class="metric-label" title="Requests">累计请求</span>
               <span class="metric-value mono">{{ formatCount(summary?.totalRequests ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Input Tokens</span>
-              <span class="metric-value mono">{{ formatTokens(summary?.totalInputTokens ?? 0) }}</span>
+              <span class="metric-label" title="Total Tokens">完整 Token</span>
+              <span class="metric-value mono">{{ formatTokens(summary?.totalTokens ?? 0) }}</span>
+              <span class="metric-sub">新输入、输出及缓存读写去重合并</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Output Tokens</span>
+              <span class="metric-label" title="Input Tokens">新输入 Token</span>
+              <span class="metric-value mono">{{ formatTokens(summary?.totalBillableInput ?? 0) }}</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label" title="Output Tokens">输出 Token</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalOutputTokens ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Cache Read</span>
+              <span class="metric-label" title="Cache Read Tokens">缓存读取 Token</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalCacheRead ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Cache Creation</span>
+              <span class="metric-label" title="Cache Write Tokens">缓存写入 Token</span>
               <span class="metric-value mono">{{ formatTokens(summary?.totalCacheCreation ?? 0) }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Billable Input</span>
-              <span class="metric-value mono">{{ formatTokens(summary?.totalBillableInput ?? 0) }}</span>
+              <span class="metric-label" title="Cache Hit Rate">缓存命中率</span>
+              <span class="metric-value mono">{{ formatPercent(summaryCacheHitRate) }}</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label" title="Cache-adjusted Tokens">缓存折算 Token</span>
+              <span class="metric-value mono">{{ formatTokens(cacheAdjustedTotal) }}</span>
+              <span class="metric-sub">按各模型缓存单价折算</span>
             </div>
           </div>
         </ConfigCard>
 
-        <!-- 2. 筛选器卡片 / Filter card -->
         <ConfigCard>
+          <div class="range-row">
+            <span class="range-label" title="Date Range">统计区间</span>
+            <div class="range-presets" role="group" aria-label="统计区间快捷选择">
+              <button
+                v-for="preset in rangePresets"
+                :key="preset.id"
+                class="range-btn"
+                :class="{ active: activeRange === preset.id }"
+                @click="selectRange(preset.id)"
+              >
+                {{ preset.label }}
+              </button>
+              <button class="range-btn" :class="{ active: activeRange === 'custom' }" @click="selectRange('custom')">自定义</button>
+            </div>
+            <span class="range-detail mono">{{ dateRangeLabel }}</span>
+          </div>
+          <div v-if="activeRange === 'custom'" class="custom-range">
+            <label class="filter-group">
+              <span>开始日期</span>
+              <input v-model="customStartDate" type="date" class="filter-input" />
+            </label>
+            <label class="filter-group">
+              <span>结束日期</span>
+              <input v-model="customEndDate" type="date" class="filter-input" />
+            </label>
+            <AppButton variant="primary" size="small" @click="applyCustomRange">应用区间</AppButton>
+          </div>
           <div class="filter-row">
-            <div class="filter-group">
-              <label>开始日期</label>
-              <input v-model="filterStartDate" type="date" class="filter-input" />
-            </div>
-            <div class="filter-group">
-              <label>结束日期</label>
-              <input v-model="filterEndDate" type="date" class="filter-input" />
-            </div>
-            <div class="filter-group">
-              <label>客户端</label>
+            <label class="filter-group">
+              <span title="Client">客户端</span>
               <select v-model="filterAppType" class="filter-select">
                 <option value="">全部</option>
                 <option value="claudecode">Claude Code</option>
                 <option value="opencode">OpenCode</option>
                 <option value="codex">Codex</option>
               </select>
-            </div>
-            <div class="filter-group">
-              <label>数据源</label>
+            </label>
+            <label class="filter-group">
+              <span title="Data Source">数据源</span>
               <select v-model="filterSource" class="filter-select">
-                <option value="">全部（含 proxy 实时）</option>
-                <option value="session_log">仅 session_log（推荐）</option>
-                <option value="proxy">仅 proxy 实时</option>
+                <option value="">全部（含实时代理）</option>
+                <option value="session_log">仅会话日志（推荐）</option>
+                <option value="proxy">仅实时代理</option>
               </select>
-            </div>
-            <div class="filter-group">
-              <label>供应商</label>
+            </label>
+            <label class="filter-group">
+              <span title="Provider">供应商</span>
               <select v-model="filterProvider" class="filter-select">
                 <option value="">全部</option>
-                <option v-for="p in knownProviders" :key="p" :value="p">{{ p }}</option>
+                <option v-for="provider in knownProviders" :key="provider" :value="provider">{{ provider }}</option>
               </select>
-            </div>
-            <div class="filter-group filter-actions">
-              <label>&nbsp;</label>
-              <AppButton variant="ghost" size="small" @click="handleResetFilter">重置</AppButton>
+            </label>
+            <div class="filter-actions">
+              <AppButton variant="ghost" size="small" @click="handleResetFilter">重置筛选</AppButton>
             </div>
           </div>
           <div v-if="filterSource === ''" class="filter-warn">
-            提示：「全部」会把 session_log 与 proxy 实时记录合并，可能产生双计；默认仅看 session_log 更准确。
+            提示：同时统计会话日志和实时代理，可能会包含同一请求的两个来源；默认只看会话日志更准确。
           </div>
         </ConfigCard>
 
-        <!-- 3. 日趋势折线图（双轴：成本 + Token） -->
         <ConfigCard>
-          <div class="card-head">
-            <h2>成本与 Token 趋势</h2>
-            <span class="card-sub">最近 {{ trendDays }} 天</span>
+          <div class="card-head trend-head">
+            <div>
+              <h2>{{ trendMode === 'cost' ? '模型成本趋势' : '模型 Token 趋势' }}</h2>
+              <span class="card-sub">每条曲线对应一个模型，不再混合为总数据</span>
+            </div>
+            <div class="trend-tabs" role="tablist" aria-label="趋势指标">
+              <button class="trend-tab" :class="{ active: trendMode === 'cost' }" @click="trendMode = 'cost'">成本</button>
+              <button class="trend-tab" :class="{ active: trendMode === 'tokens' }" @click="trendMode = 'tokens'">Token</button>
+            </div>
           </div>
-          <div v-if="trends.length === 0" class="chart-empty">暂无趋势数据</div>
-          <div v-else class="chart-box">
-            <Line :data="trendChartData" :options="trendChartOptions" />
+          <div class="trend-toolbar">
+            <label class="trend-select-label">
+              <span title="Model Curves">模型曲线</span>
+              <select v-model="selectedTrendSeries" class="filter-select">
+                <option value="all">全部模型（分别绘制，最多 8 条）</option>
+                <option v-for="series in trendSeries" :key="series.key" :value="series.key">{{ series.label }}</option>
+              </select>
+            </label>
+            <span class="trend-hint">{{ trendMode === 'cost' ? '按 USD 折算比较' : '显示完整 Token 数' }}</span>
           </div>
+          <div v-if="visibleTrendSeries.length === 0" class="chart-empty">当前筛选下暂无趋势数据</div>
+          <div v-else class="chart-box"><Line :data="trendChartData" :options="trendChartOptions" /></div>
         </ConfigCard>
 
-        <!-- 4. 双列：模型占比 + 供应商对比 -->
         <div class="grid-2">
           <ConfigCard>
             <div class="card-head">
-              <h2>模型成本占比</h2>
+              <h2 title="Model Cost Share">模型成本占比</h2>
               <span class="card-sub">USD 折算</span>
             </div>
             <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
-            <div v-else class="chart-box chart-box-short">
-              <Doughnut :data="modelPieData" :options="doughnutOptions" />
-            </div>
+            <div v-else class="chart-box chart-box-short"><Doughnut :data="modelPieData" :options="doughnutOptions" /></div>
           </ConfigCard>
           <ConfigCard>
             <div class="card-head">
-              <h2>供应商对比</h2>
+              <h2 title="Provider Comparison">供应商对比</h2>
               <span class="card-sub">USD 折算</span>
             </div>
             <div v-if="providerStats.length === 0" class="chart-empty">暂无供应商数据</div>
-            <div v-else class="chart-box chart-box-short">
-              <Bar :data="providerBarData" :options="barOptions" />
-            </div>
+            <div v-else class="chart-box chart-box-short"><Bar :data="providerBarData" :options="barOptions" /></div>
           </ConfigCard>
         </div>
 
-        <!-- 5. Token 四维堆叠柱 / Token four-dimension stacked bar -->
         <ConfigCard>
           <div class="card-head">
-            <h2>Token 分布（按模型）</h2>
-            <span class="card-sub">四维 token 堆叠</span>
+            <h2 title="Token Distribution">Token 分布（按模型）</h2>
+            <span class="card-sub">完整 Token 四维拆分</span>
           </div>
           <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
-          <div v-else class="chart-box">
-            <Bar :data="tokenStackData" :options="stackedBarOptions" />
-          </div>
+          <div v-else class="chart-box"><Bar :data="tokenStackData" :options="stackedBarOptions" /></div>
         </ConfigCard>
 
-        <!-- 6. 模型明细表 / Model detail table -->
         <ConfigCard>
           <div class="card-head">
-            <h2>模型明细</h2>
-            <span class="card-sub">{{ modelStats.length }} 个模型</span>
+            <h2>模型缓存与成本明细</h2>
+            <span class="card-sub">{{ modelStats.length }} 个模型 / 提供商组合</span>
           </div>
           <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
           <div v-else class="table-wrap">
             <table class="usage-table">
               <thead>
                 <tr>
-                  <th>模型</th>
-                  <th>供应商</th>
-                  <th class="num">请求</th>
-                  <th class="num">Input</th>
-                  <th class="num">Output</th>
-                  <th class="num">Cache R</th>
-                  <th class="num">Cache W</th>
-                  <th class="num">成本（原生币种）</th>
-                  <th>状态</th>
+                  <th title="Model">模型</th>
+                  <th title="Provider">供应商</th>
+                  <th class="num" title="Requests">请求</th>
+                  <th class="num" title="Total Tokens">完整 Token</th>
+                  <th class="num" title="Input Tokens">新输入</th>
+                  <th class="num" title="Output Tokens">输出</th>
+                  <th class="num" title="Cache Read Tokens">缓存读取</th>
+                  <th class="num" title="Cache Hit Rate">命中率</th>
+                  <th class="num" title="Cache-adjusted Tokens">缓存折算 Token</th>
+                  <th class="num" title="Cache Hit Cost">命中成本</th>
+                  <th class="num" title="Cache Savings">缓存节省</th>
+                  <th class="num" title="Total Cost">成本（原生币种）</th>
+                  <th title="Pricing Status">状态</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="m in modelStatsSorted" :key="m.normalizedModel">
-                  <td class="mono" :title="m.normalizedModel">{{ m.displayName || m.normalizedModel }}</td>
-                  <td>{{ m.provider || '—' }}</td>
-                  <td class="num mono">{{ formatCount(m.requests) }}</td>
-                  <td class="num mono">{{ formatTokens(m.inputTokens) }}</td>
-                  <td class="num mono">{{ formatTokens(m.outputTokens) }}</td>
-                  <td class="num mono">{{ formatTokens(m.cacheRead) }}</td>
-                  <td class="num mono">{{ formatTokens(m.cacheCreation) }}</td>
-                  <td class="num mono">{{ formatCost(m.totalCost, m.currencyCode) }}</td>
-                  <td>
-                    <span v-if="!m.hasPrice" class="badge-warn">无价格</span>
-                    <span v-else class="badge-ok">已定价</span>
-                  </td>
+                <tr v-for="model in modelStatsSorted" :key="modelRowKey(model)">
+                  <td class="mono" :title="model.normalizedModel">{{ model.displayName || model.normalizedModel }}</td>
+                  <td>{{ model.provider || '未知' }}</td>
+                  <td class="num mono">{{ formatCount(model.requests) }}</td>
+                  <td class="num mono">{{ formatTokens(model.totalTokens) }}</td>
+                  <td class="num mono">{{ formatTokens(model.billableInput) }}</td>
+                  <td class="num mono">{{ formatTokens(model.outputTokens) }}</td>
+                  <td class="num mono">{{ formatTokens(model.cacheRead) }}</td>
+                  <td class="num mono">{{ formatPercent(model.cacheHitRate) }}</td>
+                  <td class="num mono">{{ model.hasPrice ? formatTokens(model.cacheAdjustedTokens) : '—' }}</td>
+                  <td class="num mono">{{ model.hasPrice ? formatCost(model.cacheReadEstimatedCost, model.currencyCode) : '—' }}</td>
+                  <td class="num mono">{{ model.hasPrice ? formatCost(model.cacheHitSavings, model.currencyCode) : '—' }}</td>
+                  <td class="num mono">{{ formatCost(model.totalCost, model.currencyCode) }}</td>
+                  <td><span v-if="!model.hasPrice" class="badge-warn">无价格</span><span v-else class="badge-ok">已定价</span></td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <p class="table-note">缓存命中成本与节省按当前价格表中的缓存命中单价计算；来源直接提供的总账单仍保留为总成本。</p>
         </ConfigCard>
 
-        <!-- 7. 价格表管理 / Pricing management -->
         <ConfigCard>
           <div class="card-head">
             <h2>价格表</h2>
@@ -250,7 +267,6 @@
       </template>
     </template>
 
-    <!-- 价格编辑对话框 / Pricing editor dialog -->
     <PricingDialog
       v-model:open="pricingDialogOpen"
       :editing="editingPricing"
@@ -261,20 +277,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import { Line, Bar, Doughnut } from 'vue-chartjs';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { Bar, Doughnut, Line } from 'vue-chartjs';
 import {
-  Chart as ChartJS,
+  ArcElement,
+  BarElement,
   CategoryScale,
+  Chart as ChartJS,
+  Filler,
+  Legend,
+  LineElement,
   LinearScale,
   PointElement,
-  LineElement,
-  BarElement,
-  ArcElement,
   Title,
   Tooltip,
-  Legend,
-  Filler,
 } from 'chart.js';
 import type { ChartData, ChartOptions, TooltipItem } from 'chart.js';
 import PageHead from '../components/ui/PageHead.vue';
@@ -287,15 +303,10 @@ import ModelPricingTable from '../components/usage/ModelPricingTable.vue';
 import PricingDialog from '../components/usage/PricingDialog.vue';
 import { useUsageStore } from '../stores/usage';
 import { useToast } from '../composables/useToast';
-import {
-  formatCost,
-  formatCount,
-  formatTokens,
-  nativeMicroToUsdMicro,
-} from '../utils/usage-format';
-import type { ModelPricing } from '../api/usage';
+import { resolveUsageRange } from '../api/usage';
+import type { ModelDailyTrendPoint, ModelPricing } from '../api/usage';
+import { formatCost, formatCount, formatTokens, nativeMicroToUsdMicro } from '../utils/usage-format';
 
-// 单次注册 Chart.js 组件 / Register Chart.js components once.
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -310,52 +321,27 @@ ChartJS.register(
 );
 
 const store = useUsageStore();
-const { showSuccess, showError } = useToast();
-
-// 30 秒后台刷新：仿 LogsView 2s/Headroom 10s 模式，usage 数据较静态故放宽到 30s。
+const { showError, showSuccess } = useToast();
 const REFRESH_INTERVAL = 30000;
 let refreshTimer: number | null = null;
 
-// === 颜色与主题 / Palette & theme ===
-// 8 色分类色板，与 tokens.css 系统色调对齐（accent/success/warning/purple 等）。
-const PALETTE: string[] = [
-  '#007AFF', // accent blue
-  '#34C759', // success green
-  '#FF9500', // warning orange
-  '#AF52DE', // purple
-  '#FF3B30', // danger red
-  '#5AC8FA', // cyan
-  '#FF2D55', // pink
-  '#FFD60A', // yellow
-];
-
-// 灰色用于"其他"桶 / Gray for the "other" bucket.
+const PALETTE = ['#007AFF', '#34C759', '#FF9500', '#AF52DE', '#FF3B30', '#5AC8FA', '#FF2D55', '#FFD60A'];
 const OTHER_COLOR = '#8E8E93';
 
 function readToken(name: string, fallback: string): string {
   if (typeof window === 'undefined') return fallback;
-  try {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    return v || fallback;
-  } catch {
-    return fallback;
-  }
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
-const chartTheme = computed(() => {
-  // 在每次图表数据变化时刷新主题色，便于后续支持 dark mode 自动切换。
-  return {
-    text: readToken('--secondary', '#6E6E73'),
-    label: readToken('--label', '#1D1D1F'),
-    grid: readToken('--separator', '#D2D2D7'),
-    accent: readToken('--accent', '#007AFF'),
-    success: readToken('--success', '#34C759'),
-  };
-});
+const chartTheme = computed(() => ({
+  text: readToken('--secondary', '#6E6E73'),
+  grid: readToken('--separator', '#D2D2D7'),
+  accent: readToken('--accent', '#007AFF'),
+  success: readToken('--success', '#34C759'),
+}));
 
-// === Store-derived refs (便于模板直接引用) ===
 const summary = computed(() => store.summary);
-const trends = computed(() => store.trends);
+const modelTrends = computed(() => store.modelTrends);
 const modelStats = computed(() => store.modelStats);
 const providerStats = computed(() => store.providerStats);
 const pricing = computed(() => store.pricing);
@@ -366,194 +352,181 @@ const syncing = computed(() => store.syncing);
 const lastSyncedAt = computed(() => store.lastSyncedAt);
 const knownProviders = computed(() => store.knownProviders);
 
-const modelStatsSorted = computed(() =>
-  [...modelStats.value]
-    .map((m) => ({
-      ...m,
-      _usd: nativeMicroToUsdMicro(m.totalCost, m.currencyCode),
-    }))
-    .sort((a, b) => b._usd - a._usd),
-);
+const filterAppType = computed({ get: () => store.filter.appType, set: (value: string) => store.patchFilter({ appType: value }) });
+const filterSource = computed({ get: () => store.filter.source, set: (value: string) => store.patchFilter({ source: value }) });
+const filterProvider = computed({ get: () => store.filter.provider, set: (value: string) => store.patchFilter({ provider: value }) });
 
-// === 筛选器双向绑定 / Filter bindings ===
-const filterStartDate = computed({
-  get: () => store.filter.startDate,
-  set: (v: string) => store.patchFilter({ startDate: v }),
-});
-const filterEndDate = computed({
-  get: () => store.filter.endDate,
-  set: (v: string) => store.patchFilter({ endDate: v }),
-});
-const filterAppType = computed({
-  get: () => store.filter.appType,
-  set: (v: string) => store.patchFilter({ appType: v }),
-});
-const filterSource = computed({
-  get: () => store.filter.source,
-  set: (v: string) => store.patchFilter({ source: v }),
-});
-const filterProvider = computed({
-  get: () => store.filter.provider,
-  set: (v: string) => store.patchFilter({ provider: v }),
-});
-const trendDays = computed(() => store.trendDays);
+const rangePresets = [
+  { id: 'today', label: '今日' },
+  { id: '7d', label: '近 7 天' },
+  { id: '30d', label: '近 30 天' },
+  { id: 'month', label: '本月' },
+] as const;
+type RangePreset = (typeof rangePresets)[number]['id'] | 'custom';
+const activeRange = ref<RangePreset>('30d');
+const customStartDate = ref(store.filter.startDate);
+const customEndDate = ref(store.filter.endDate);
 
-// === 展示用派生 / Display-only derived ===
 const multiCurrencyText = computed(() => {
-  const byCurrency = summary.value?.totalCostByCurrency;
-  if (!byCurrency) return '';
-  const entries = Object.entries(byCurrency).filter(([c, v]) => c && v > 0);
-  if (entries.length <= 1) return ''; // 单币种不显示子文本
-  return '含 ' + entries.map(([c, v]) => `${formatCost(v, c)}`).join(' · ');
+  const entries = Object.entries(summary.value?.totalCostByCurrency ?? {}).filter(([currency, amount]) => currency && amount > 0);
+  return entries.length > 1 ? `含 ${entries.map(([currency, amount]) => formatCost(amount, currency)).join(' · ')}` : '';
 });
 
 const dateRangeLabel = computed(() => {
-  const dr = summary.value?.dateRange;
-  if (!dr || (!dr.start && !dr.end)) return '全部时间';
-  if (dr.start && dr.end) return `${dr.start} ~ ${dr.end}`;
-  return dr.start || dr.end;
+  if (store.filter.startDate && store.filter.endDate) return `${store.filter.startDate} ~ ${store.filter.endDate}`;
+  const actual = summary.value?.dateRange;
+  if (actual?.start && actual?.end) return `${actual.start} ~ ${actual.end}`;
+  return '全部时间';
 });
 
 const sourceLabel = computed(() => {
-  const s = store.filter.source;
-  if (!s) return '全部数据源';
-  if (s === 'session_log') return 'session_log';
-  if (s === 'proxy') return 'proxy';
-  return s;
+  if (store.filter.source === 'session_log') return '会话日志';
+  if (store.filter.source === 'proxy') return '实时代理';
+  return '全部数据源';
 });
 
-// === 图表 1：日趋势折线（双轴）===
-const trendChartData = computed<ChartData<'line'>>(() => {
-  const labels = trends.value.map((p) => p.day);
-  const costUsd = trends.value.map((p) => (p.totalCostUSD ?? 0) / 1e6);
-  const tokens = trends.value.map((p) => (p.inputTokens ?? 0) + (p.outputTokens ?? 0));
-  return {
-    labels,
-    datasets: [
-      {
-        label: '成本 (USD)',
-        data: costUsd,
-        borderColor: chartTheme.value.accent,
-        backgroundColor: 'rgba(0, 122, 255, 0.1)',
-        borderWidth: 2,
-        tension: 0.25,
-        fill: true,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-        yAxisID: 'y',
-      },
-      {
-        label: 'Token 总量',
-        data: tokens,
-        borderColor: chartTheme.value.success,
-        backgroundColor: 'rgba(52, 199, 89, 0.1)',
-        borderWidth: 2,
-        tension: 0.25,
-        fill: false,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-        yAxisID: 'y1',
-      },
-    ],
-  };
+const summaryCacheHitRate = computed(() => {
+  const fresh = summary.value?.totalBillableInput ?? 0;
+  const cached = summary.value?.totalCacheRead ?? 0;
+  return fresh + cached > 0 ? cached / (fresh + cached) : 0;
 });
+
+const cacheAdjustedTotal = computed(() => modelStats.value.reduce((total, model) => total + (model.cacheAdjustedTokens ?? 0), 0));
+
+const modelStatsSorted = computed(() => [...modelStats.value]
+  .map((model) => ({ ...model, _usd: nativeMicroToUsdMicro(model.totalCost, model.currencyCode) }))
+  .sort((a, b) => b._usd - a._usd));
+
+function selectRange(preset: RangePreset): void {
+  activeRange.value = preset;
+  if (preset === 'custom') return;
+  const range = resolveUsageRange(preset);
+  customStartDate.value = range.startDate;
+  customEndDate.value = range.endDate;
+  store.patchFilter(range);
+}
+
+function applyCustomRange(): void {
+  if (!customStartDate.value || !customEndDate.value) {
+    showError('请选择完整的开始和结束日期');
+    return;
+  }
+  if (customStartDate.value > customEndDate.value) {
+    showError('开始日期不能晚于结束日期');
+    return;
+  }
+  activeRange.value = 'custom';
+  store.patchFilter({ startDate: customStartDate.value, endDate: customEndDate.value });
+}
+
+type TrendMode = 'cost' | 'tokens';
+interface TrendSeries {
+  key: string;
+  label: string;
+  points: Map<string, ModelDailyTrendPoint>;
+  totalCostUSD: number;
+  totalTokens: number;
+}
+
+const trendMode = ref<TrendMode>('cost');
+const selectedTrendSeries = ref('all');
+const trendLabels = computed(() => Array.from(new Set(modelTrends.value.map((point) => point.day))).sort());
+const trendSeries = computed<TrendSeries[]>(() => {
+  const bySeries = new Map<string, TrendSeries>();
+  for (const point of modelTrends.value) {
+    const key = `${point.normalizedModel}\u0000${point.provider}\u0000${point.currencyCode}`;
+    let series = bySeries.get(key);
+    if (!series) {
+      const name = point.displayName || point.normalizedModel;
+      series = {
+        key,
+        label: point.provider ? `${name} · ${point.provider}` : name,
+        points: new Map(),
+        totalCostUSD: 0,
+        totalTokens: 0,
+      };
+      bySeries.set(key, series);
+    }
+    series.points.set(point.day, point);
+    series.totalCostUSD += point.totalCostUSD ?? 0;
+    series.totalTokens += point.totalTokens ?? 0;
+  }
+  return Array.from(bySeries.values()).sort((a, b) => a.label.localeCompare(b.label));
+});
+
+const visibleTrendSeries = computed(() => {
+  if (selectedTrendSeries.value !== 'all') {
+    const selected = trendSeries.value.find((series) => series.key === selectedTrendSeries.value);
+    return selected ? [selected] : [];
+  }
+  const value = (series: TrendSeries) => (trendMode.value === 'cost' ? series.totalCostUSD : series.totalTokens);
+  return [...trendSeries.value].sort((a, b) => value(b) - value(a)).slice(0, 8);
+});
+
+const trendChartData = computed<ChartData<'line'>>(() => ({
+  labels: trendLabels.value,
+  datasets: visibleTrendSeries.value.map((series, index) => ({
+    label: series.label,
+    data: trendLabels.value.map((day) => {
+      const point = series.points.get(day);
+      return trendMode.value === 'cost' ? (point?.totalCostUSD ?? 0) / 1_000_000 : point?.totalTokens ?? 0;
+    }),
+    borderColor: PALETTE[index % PALETTE.length],
+    backgroundColor: PALETTE[index % PALETTE.length],
+    borderWidth: 2,
+    tension: 0.25,
+    fill: false,
+    pointRadius: 2,
+    pointHoverRadius: 4,
+  })),
+}));
 
 const trendChartOptions = computed<ChartOptions<'line'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
-  interaction: {
-    mode: 'index',
-    intersect: false,
-  },
+  interaction: { mode: 'index', intersect: false },
   plugins: {
-    legend: {
-      position: 'top',
-      labels: {
-        color: chartTheme.value.text,
-        font: { size: 12 },
-        boxWidth: 14,
-        boxHeight: 8,
-        usePointStyle: true,
-      },
-    },
+    legend: { position: 'top', labels: { color: chartTheme.value.text, font: { size: 11 }, boxWidth: 12, usePointStyle: true } },
     tooltip: {
       callbacks: {
-        label: (ctx: TooltipItem<'line'>) => {
-          const label = ctx.dataset.label || '';
-          const v = typeof ctx.parsed.y === 'number' ? ctx.parsed.y : 0;
-          if (label.includes('USD')) {
-            return `${label}: $${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
-          }
-          return `${label}: ${formatTokens(v)}`;
+        label: (context: TooltipItem<'line'>) => {
+          const value = typeof context.parsed.y === 'number' ? context.parsed.y : 0;
+          return trendMode.value === 'cost'
+            ? `${context.dataset.label}: ${formatCost(Math.round(value * 1_000_000), 'USD')}`
+            : `${context.dataset.label}: ${formatTokens(value)}`;
         },
       },
     },
   },
   scales: {
-    x: {
-      ticks: { color: chartTheme.value.text, font: { size: 11 } },
-      grid: { color: chartTheme.value.grid, display: false },
-    },
+    x: { ticks: { color: chartTheme.value.text, font: { size: 11 } }, grid: { color: chartTheme.value.grid, display: false } },
     y: {
-      type: 'linear',
-      position: 'left',
-      title: { display: true, text: '成本 (USD)', color: chartTheme.value.text },
       ticks: {
         color: chartTheme.value.text,
         font: { size: 11 },
-        callback: (v) => `$${Number(v).toFixed(2)}`,
+        callback: (value) => trendMode.value === 'cost'
+          ? formatCost(Math.round(Number(value) * 1_000_000), 'USD')
+          : formatTokens(Number(value)),
       },
+      title: { display: true, text: trendMode.value === 'cost' ? '成本（USD）' : '完整 Token', color: chartTheme.value.text },
       grid: { color: chartTheme.value.grid },
-    },
-    y1: {
-      type: 'linear',
-      position: 'right',
-      title: { display: true, text: 'Token 总量', color: chartTheme.value.text },
-      ticks: {
-        color: chartTheme.value.text,
-        font: { size: 11 },
-        callback: (v) => formatTokens(Number(v)),
-      },
-      grid: { drawOnChartArea: false },
     },
   },
 }));
 
-// === 图表 2：模型占比饼（按 USD 折算）===
 const modelPieData = computed<ChartData<'doughnut'>>(() => {
-  const usdStats = modelStats.value
-    .map((m) => ({
-      name: m.displayName || m.normalizedModel,
-      usd: nativeMicroToUsdMicro(m.totalCost, m.currencyCode),
-    }))
-    .filter((m) => m.usd > 0)
+  const stats = modelStats.value
+    .map((model) => ({ name: modelSeriesLabel(model), usd: nativeMicroToUsdMicro(model.totalCost, model.currencyCode) }))
+    .filter((model) => model.usd > 0)
     .sort((a, b) => b.usd - a.usd);
-
-  const TOP_N = 7;
-  const top = usdStats.slice(0, TOP_N);
-  const restSum = usdStats.slice(TOP_N).reduce((s, m) => s + m.usd, 0);
-
-  const labels = top.map((m) => m.name);
-  const data = top.map((m) => m.usd);
-  if (restSum > 0) {
-    labels.push('其他');
-    data.push(restSum);
-  }
-
-  const colors = top.map((_, i) => PALETTE[i % PALETTE.length]);
-  if (restSum > 0) colors.push(OTHER_COLOR);
-
+  const top = stats.slice(0, 7);
+  const rest = stats.slice(7).reduce((total, model) => total + model.usd, 0);
+  const labels = top.map((model) => model.name);
+  const data = top.map((model) => model.usd);
+  if (rest > 0) { labels.push('其他'); data.push(rest); }
   return {
     labels,
-    datasets: [
-      {
-        data,
-        backgroundColor: colors,
-        borderColor: readToken('--card', '#FFFFFF'),
-        borderWidth: 2,
-        hoverOffset: 8,
-      },
-    ],
+    datasets: [{ data, backgroundColor: [...top.map((_, index) => PALETTE[index % PALETTE.length]), ...(rest > 0 ? [OTHER_COLOR] : [])], borderColor: readToken('--card', '#FFFFFF'), borderWidth: 2, hoverOffset: 8 }],
   };
 });
 
@@ -562,99 +535,49 @@ const doughnutOptions = computed<ChartOptions<'doughnut'>>(() => ({
   maintainAspectRatio: false,
   cutout: '60%',
   plugins: {
-    legend: {
-      position: 'right',
-      labels: {
-        color: chartTheme.value.text,
-        font: { size: 11 },
-        boxWidth: 12,
-        boxHeight: 12,
-        usePointStyle: true,
-      },
-    },
-    tooltip: {
-      callbacks: {
-        label: (ctx: TooltipItem<'doughnut'>) => {
-          const label = ctx.label || '';
-          const v = typeof ctx.parsed === 'number' ? ctx.parsed : 0;
-          return `${label}: ${formatCost(v, 'USD')}`;
-        },
-      },
-    },
+    legend: { position: 'right', labels: { color: chartTheme.value.text, font: { size: 11 }, boxWidth: 12, usePointStyle: true } },
+    tooltip: { callbacks: { label: (context: TooltipItem<'doughnut'>) => `${context.label}: ${formatCost(Number(context.parsed) || 0, 'USD')}` } },
   },
 }));
 
-// === 图表 3：供应商对比柱（USD 折算）===
 const providerBarData = computed<ChartData<'bar'>>(() => {
-  const stats = providerStats.value
-    .filter((p) => (p.totalCostUSD ?? 0) > 0)
-    .sort((a, b) => (b.totalCostUSD ?? 0) - (a.totalCostUSD ?? 0));
+  const stats = [...providerStats.value].filter((provider) => provider.totalCostUSD > 0).sort((a, b) => b.totalCostUSD - a.totalCostUSD);
   return {
-    labels: stats.map((p) => p.provider || '未知'),
-    datasets: [
-      {
-        label: '成本 (USD)',
-        data: stats.map((p) => (p.totalCostUSD ?? 0) / 1e6),
-        backgroundColor: chartTheme.value.accent,
-        borderRadius: 4,
-        maxBarThickness: 40,
-      },
-    ],
+    labels: stats.map((provider) => provider.provider || '未知'),
+    datasets: [{ label: '成本（USD）', data: stats.map((provider) => provider.totalCostUSD / 1_000_000), backgroundColor: chartTheme.value.accent, borderRadius: 4, maxBarThickness: 40 }],
   };
 });
 
 const barOptions = computed<ChartOptions<'bar'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      callbacks: {
-        label: (ctx: TooltipItem<'bar'>) => {
-          const v = typeof ctx.parsed.y === 'number' ? ctx.parsed.y : 0;
-          return `成本: $${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
-        },
-      },
-    },
-  },
+  plugins: { legend: { display: false }, tooltip: { callbacks: { label: (context: TooltipItem<'bar'>) => `成本：${formatCost(Math.round((context.parsed.y || 0) * 1_000_000), 'USD')}` } } },
   scales: {
-    x: {
-      ticks: { color: chartTheme.value.text, font: { size: 11 } },
-      grid: { display: false },
-    },
-    y: {
-      ticks: {
-        color: chartTheme.value.text,
-        font: { size: 11 },
-        callback: (v) => `$${Number(v).toFixed(2)}`,
-      },
-      grid: { color: chartTheme.value.grid },
-    },
+    x: { ticks: { color: chartTheme.value.text, font: { size: 11 } }, grid: { display: false } },
+    y: { ticks: { color: chartTheme.value.text, font: { size: 11 }, callback: (value) => formatCost(Math.round(Number(value) * 1_000_000), 'USD') }, grid: { color: chartTheme.value.grid } },
   },
 }));
 
-// === 图表 4：Token 四维堆叠柱 / Token four-dimension stacked bar ===
 const tokenStackData = computed<ChartData<'bar'>>(() => {
   const top = [...modelStats.value]
-    .map((m) => ({
-      name: m.displayName || m.normalizedModel,
-      input: m.inputTokens ?? 0,
-      output: m.outputTokens ?? 0,
-      cacheRead: m.cacheRead ?? 0,
-      cacheCreation: m.cacheCreation ?? 0,
-      total: (m.inputTokens ?? 0) + (m.outputTokens ?? 0) + (m.cacheRead ?? 0) + (m.cacheCreation ?? 0),
+    .map((model) => ({
+      name: modelSeriesLabel(model),
+      input: model.billableInput ?? 0,
+      output: model.outputTokens ?? 0,
+      cacheRead: model.cacheRead ?? 0,
+      cacheCreation: model.cacheCreation ?? 0,
+      total: model.totalTokens ?? 0,
     }))
-    .filter((m) => m.total > 0)
+    .filter((model) => model.total > 0)
     .sort((a, b) => b.total - a.total)
     .slice(0, 8);
-
   return {
-    labels: top.map((m) => m.name),
+    labels: top.map((model) => model.name),
     datasets: [
-      { label: 'Input', data: top.map((m) => m.input), backgroundColor: PALETTE[0] },
-      { label: 'Output', data: top.map((m) => m.output), backgroundColor: PALETTE[1] },
-      { label: 'Cache Read', data: top.map((m) => m.cacheRead), backgroundColor: PALETTE[2] },
-      { label: 'Cache Creation', data: top.map((m) => m.cacheCreation), backgroundColor: PALETTE[3] },
+      { label: '新输入', data: top.map((model) => model.input), backgroundColor: PALETTE[0] },
+      { label: '输出', data: top.map((model) => model.output), backgroundColor: PALETTE[1] },
+      { label: '缓存读取', data: top.map((model) => model.cacheRead), backgroundColor: PALETTE[2] },
+      { label: '缓存写入', data: top.map((model) => model.cacheCreation), backgroundColor: PALETTE[3] },
     ],
   };
 });
@@ -663,69 +586,49 @@ const stackedBarOptions = computed<ChartOptions<'bar'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
-    legend: {
-      position: 'top',
-      labels: {
-        color: chartTheme.value.text,
-        font: { size: 11 },
-        boxWidth: 12,
-        boxHeight: 8,
-        usePointStyle: true,
-      },
-    },
-    tooltip: {
-      callbacks: {
-        label: (ctx: TooltipItem<'bar'>) => {
-          const label = ctx.dataset.label || '';
-          const v = typeof ctx.parsed.y === 'number' ? ctx.parsed.y : 0;
-          return `${label}: ${formatTokens(v)}`;
-        },
-      },
-    },
+    legend: { position: 'top', labels: { color: chartTheme.value.text, font: { size: 11 }, boxWidth: 12, usePointStyle: true } },
+    tooltip: { callbacks: { label: (context: TooltipItem<'bar'>) => `${context.dataset.label}: ${formatTokens(context.parsed.y || 0)}` } },
   },
   scales: {
-    x: {
-      stacked: true,
-      ticks: { color: chartTheme.value.text, font: { size: 11 } },
-      grid: { display: false },
-    },
-    y: {
-      stacked: true,
-      ticks: {
-        color: chartTheme.value.text,
-        font: { size: 11 },
-        callback: (v) => formatTokens(Number(v)),
-      },
-      grid: { color: chartTheme.value.grid },
-    },
+    x: { stacked: true, ticks: { color: chartTheme.value.text, font: { size: 11 } }, grid: { display: false } },
+    y: { stacked: true, ticks: { color: chartTheme.value.text, font: { size: 11 }, callback: (value) => formatTokens(Number(value)) }, grid: { color: chartTheme.value.grid } },
   },
 }));
 
-// === 事件处理 / Handlers ===
-
-async function handleRetry(): Promise<void> {
-  await store.retry();
+function modelSeriesLabel(model: { displayName?: string; normalizedModel: string; provider?: string }): string {
+  const name = model.displayName || model.normalizedModel;
+  return model.provider ? `${name} · ${model.provider}` : name;
 }
+
+function modelRowKey(model: { normalizedModel: string; provider?: string; currencyCode?: string; appType?: string }): string {
+  return [model.normalizedModel, model.provider, model.currencyCode, model.appType].join(':');
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0.0%';
+  return `${(value * 100).toFixed(value * 100 >= 10 ? 1 : 2)}%`;
+}
+
+async function handleRetry(): Promise<void> { await store.retry(); }
 
 async function handleSync(): Promise<void> {
   try {
     const result = await store.syncNow();
-    const added = result?.recordsAdded ?? 0;
-    if (result?.errors && result.errors.length > 0) {
-      showSuccess(`同步完成：新增 ${added} 条；${result.errors.length} 个源失败`);
-    } else {
-      showSuccess(`同步完成：新增 ${added} 条记录`);
-    }
+    if (result.errors?.length) showSuccess(`同步完成：新增 ${result.recordsAdded ?? 0} 条；${result.errors.length} 个源失败`);
+    else showSuccess(`同步完成：新增 ${result.recordsAdded ?? 0} 条记录`);
   } catch (err) {
-    showError('同步失败：' + errToString(err));
+    showError(`同步失败：${errToString(err)}`);
   }
 }
 
 function handleResetFilter(): void {
   store.resetFilter();
+  activeRange.value = '30d';
+  customStartDate.value = store.filter.startDate;
+  customEndDate.value = store.filter.endDate;
+  selectedTrendSeries.value = 'all';
 }
 
-// === 价格对话框 / Pricing dialog ===
 const pricingDialogOpen = ref(false);
 const editingPricing = ref<ModelPricing | null>(null);
 const presetPattern = ref('');
@@ -757,32 +660,28 @@ async function handleDeletePricing(entry: ModelPricing): Promise<void> {
     await store.removePricing(entry.id);
     showSuccess(`已删除：${entry.displayName || entry.modelPattern}`);
   } catch (err) {
-    showError('删除失败：' + errToString(err));
+    showError(`删除失败：${errToString(err)}`);
   }
 }
 
 async function handleResetPricing(): Promise<void> {
-  if (!confirm('确认恢复全部内置价格？自定义条目会保留，内置条目的单价会被重置为默认值。')) return;
+  if (!confirm('确认恢复全部内置价格？自定义条目会被移除，历史的本地估算成本会按默认价格重算。')) return;
   try {
     await store.resetPricing();
-    showSuccess('内置价格已恢复');
+    showSuccess('内置价格已恢复，历史估算成本已重算');
   } catch (err) {
-    showError('恢复失败：' + errToString(err));
+    showError(`恢复失败：${errToString(err)}`);
   }
 }
 
-// === 时间格式 / Time formatting ===
-
 function formatRelative(iso: string): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const diffMs = Date.now() - d.getTime();
-  const sec = Math.floor(diffMs / 1000);
-  if (sec < 60) return '刚刚';
-  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`;
-  return `${Math.floor(sec / 86400)} 天前`;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return '刚刚';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  return `${Math.floor(seconds / 86400)} 天前`;
 }
 
 function errToString(err: unknown): string {
@@ -790,412 +689,101 @@ function errToString(err: unknown): string {
   if (typeof err === 'string') return err;
   if (err instanceof Error) return err.message;
   if (Array.isArray(err)) return err.map(String).join('; ');
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
+  try { return JSON.stringify(err); } catch { return String(err); }
 }
 
-// === 生命周期与监听 / Lifecycle & watchers ===
-
-// filter 变化时（用户操作）触发完整刷新；后台 30s 走 silent。
 watch(
   () => store.filter,
-  () => {
-    store.fetchAll({ silent: false });
-  },
+  () => { void store.fetchAll({ silent: false }); },
   { deep: true },
 );
 
+watch(trendMode, () => { selectedTrendSeries.value = 'all'; });
+
 onMounted(async () => {
-  // 首次加载：拉取主数据 + 价格表 + 未知模型 + 同步状态
   await store.fetchAll({ silent: false });
-  // 这些是次要数据，失败不影响四态，静默拉取
-  await Promise.all([
-    store.fetchPricing(),
-    store.fetchUnknownModels(),
-    store.fetchSyncState({ silent: true }),
-  ]);
-  // 后台 30s 静默刷新主数据（保留旧数据，失败不刷屏）
-  refreshTimer = window.setInterval(() => {
-    store.fetchAll({ silent: true });
-  }, REFRESH_INTERVAL);
+  await Promise.all([store.fetchPricing(), store.fetchUnknownModels(), store.fetchSyncState({ silent: true })]);
+  refreshTimer = window.setInterval(() => { void store.fetchAll({ silent: true }); }, REFRESH_INTERVAL);
 });
 
 onUnmounted(() => {
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null;
 });
 </script>
 
 <style scoped>
-.view-usage {
-  padding: 32px 36px;
-  gap: 22px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-}
+.view-usage { display: flex; flex-direction: column; gap: 22px; overflow: auto; padding: 32px 36px; }
+.head-actions, .range-row, .range-presets, .trend-tabs, .trend-toolbar { display: flex; align-items: center; gap: 10px; }
+.last-synced, .summary-sub, .card-sub, .trend-hint, .metric-sub, .range-detail { color: var(--tertiary); font-size: 12px; }
+.last-synced, .mono { font-family: var(--mono); }
+.sync-icon { display: inline-block; width: 12px; height: 12px; margin-right: 4px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; vertical-align: -2px; }
+.sync-icon.spinning { animation: sync-spin .8s linear infinite; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
 
-.head-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+.summary-card { gap: 14px; }
+.summary-head, .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.summary-title { display: flex; flex-direction: column; gap: 2px; }
+.summary-title h2, .card-head h2 { margin: 0; color: var(--label); font-size: 16px; font-weight: 600; }
+.summary-live { display: inline-flex; align-items: center; gap: 6px; color: var(--secondary); font-size: 12px; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent); }
+.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px 20px; }
+.metric { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 2px 0; }
+.metric + .metric { border-left: 1px solid var(--separator); padding-left: 20px; }
+.metric-label { color: var(--tertiary); font-size: 12px; letter-spacing: .2px; cursor: help; }
+.metric-value { overflow: hidden; color: var(--label); font-size: 20px; font-weight: 600; line-height: 1.2; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.metric-primary .metric-value { font-size: 26px; }
+.metric-value.accent { color: var(--accent); }
 
-.last-synced {
-  font-size: 12px;
-  color: var(--tertiary);
-  font-family: var(--mono);
-}
+.range-row { flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--separator); }
+.range-label { color: var(--secondary); font-size: 12px; font-weight: 600; }
+.range-presets { flex-wrap: wrap; }
+.range-btn, .trend-tab { border: 1px solid var(--separator); border-radius: 999px; padding: 5px 10px; background: var(--control); color: var(--secondary); font: inherit; font-size: 12px; cursor: pointer; transition: .15s ease; }
+.range-btn:hover, .trend-tab:hover { border-color: var(--accent); color: var(--accent); }
+.range-btn.active, .trend-tab.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--control)); color: var(--accent); font-weight: 600; }
+.range-detail { margin-left: auto; }
+.custom-range, .filter-row { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.custom-range { padding-top: 12px; }
+.filter-row { padding-top: 12px; }
+.filter-group { display: flex; flex-direction: column; gap: 6px; }
+.filter-group > span { color: var(--secondary); font-size: 12px; font-weight: 500; }
+.filter-actions { margin-left: auto; }
+.filter-input, .filter-select { min-width: 138px; border: 1px solid transparent; border-radius: 7px; outline: none; padding: 6px 10px; background: var(--control); color: var(--label); font: inherit; font-size: 13px; transition: background-color .12s, box-shadow .12s; }
+.filter-select { padding-right: 28px; cursor: pointer; }
+.filter-input:focus, .filter-select:focus { background: var(--card); box-shadow: 0 0 0 2px rgba(0, 122, 255, .25); }
+.filter-warn { margin-top: 12px; border-radius: 7px; padding: 8px 10px; background: rgba(255,149,0,.08); color: var(--warning-strong); font-size: 12px; line-height: 1.5; }
 
-.sync-icon {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  margin-right: 4px;
-  vertical-align: -2px;
-}
+.trend-head { align-items: center; }
+.trend-toolbar { justify-content: space-between; margin: 12px 0 6px; flex-wrap: wrap; }
+.trend-select-label { display: flex; align-items: center; gap: 8px; color: var(--secondary); font-size: 12px; }
+.chart-box { position: relative; width: 100%; height: 320px; }
+.chart-box-short { height: 260px; }
+.chart-empty { padding: 40px 20px; color: var(--tertiary); text-align: center; font-size: 13px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
 
-.sync-icon.spinning {
-  animation: sync-spin 0.8s linear infinite;
-}
-
-@keyframes sync-spin {
-  to { transform: rotate(360deg); }
-}
-
-/* === 仪表盘汇总卡片 / Summary dashboard === */
-.summary-card {
-  gap: 14px;
-}
-
-.summary-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.summary-title {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.summary-title h2 {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-  letter-spacing: -0.2px;
-}
-
-.summary-sub {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.summary-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--secondary);
-}
-
-.live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px 20px;
-}
-
-.metric {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 2px 0;
-}
-
-.metric + .metric {
-  border-left: 1px solid var(--separator);
-  padding-left: 20px;
-}
-
-.metric-label {
-  font-size: 12px;
-  color: var(--tertiary);
-  letter-spacing: 0.2px;
-}
-
-.metric-value {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--label);
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-
-.metric-primary .metric-value {
-  font-size: 26px;
-}
-
-.metric-value.accent {
-  color: var(--accent);
-}
-
-.metric-sub {
-  font-size: 11px;
-  color: var(--tertiary);
-  margin-top: 2px;
-}
+.table-wrap { max-height: 520px; overflow: auto; border: 1px solid var(--separator); border-radius: 10px; }
+.usage-table { width: 100%; min-width: 1360px; border-collapse: collapse; font-size: 13px; }
+.usage-table thead { position: sticky; top: 0; z-index: 1; }
+.usage-table th { border-bottom: 1px solid var(--separator); padding: 9px 12px; background: var(--sidebar); color: var(--secondary); text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .35px; cursor: help; }
+.usage-table th.num, .usage-table td.num { text-align: right; }
+.usage-table td { border-bottom: 1px solid var(--separator); padding: 8px 12px; color: var(--label); vertical-align: top; }
+.usage-table tr:last-child td { border-bottom: 0; }
+.usage-table tr:hover td { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.badge-warn, .badge-ok { display: inline-block; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+.badge-warn { background: rgba(255,149,0,.12); color: var(--warning-strong); }
+.badge-ok { background: rgba(52,199,89,.12); color: var(--success-strong); }
+.table-note { margin: 10px 0 0; color: var(--tertiary); font-size: 12px; line-height: 1.5; }
 
 @media (max-width: 1100px) {
-  .summary-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .metric:nth-child(3) { border-left: none; padding-left: 0; }
+  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric:nth-child(3), .metric:nth-child(5), .metric:nth-child(7), .metric:nth-child(9) { border-left: 0; padding-left: 0; }
 }
-
-@media (max-width: 600px) {
-  .summary-grid {
-    grid-template-columns: 1fr;
-  }
-  .metric + .metric {
-    border-left: none;
-    padding-left: 0;
-    border-top: 1px solid var(--separator);
-    padding-top: 10px;
-  }
-}
-
-/* === 筛选器 / Filters === */
-.filter-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-}
-
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.filter-group label {
-  font-size: 12px;
-  color: var(--secondary);
-  font-weight: 500;
-}
-
-.filter-actions {
-  margin-left: auto;
-}
-
-.filter-input,
-.filter-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--control);
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 6px 10px;
-  font-size: 13px;
-  color: var(--label);
-  font-family: inherit;
-  cursor: pointer;
-  min-width: 130px;
-  transition: background-color 0.12s;
-  outline: none;
-}
-
-.filter-input {
-  cursor: text;
-}
-
-.filter-select {
-  padding-right: 28px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238E8E93' stroke-width='2.5' stroke-linecap='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 9px center;
-}
-
-.filter-input:focus,
-.filter-select:focus {
-  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.25);
-  background-color: var(--card);
-}
-
-.filter-input:hover,
-.filter-select:hover {
-  background-color: var(--controlHover);
-}
-
-.filter-warn {
-  font-size: 12px;
-  color: var(--warning-strong);
-  background: rgba(255, 149, 0, 0.08);
-  padding: 8px 10px;
-  border-radius: 7px;
-  line-height: 1.5;
-}
-
-/* === 图表卡片 / Chart cards === */
-.card-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.card-head h2 {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--label);
-}
-
-.card-sub {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.chart-box {
-  position: relative;
-  height: 320px;
-  width: 100%;
-}
-
-.chart-box-short {
-  height: 260px;
-}
-
-.chart-empty {
-  padding: 40px 20px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--tertiary);
-}
-
-.grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 22px;
-}
-
-@media (max-width: 960px) {
-  .grid-2 {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* === 明细表 / Detail table === */
-.table-wrap {
-  max-height: 500px;
-  overflow-y: auto;
-  border: 1px solid var(--separator);
-  border-radius: 10px;
-}
-
-.usage-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.usage-table thead {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.usage-table th {
-  background: var(--sidebar);
-  color: var(--secondary);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 9px 12px;
-  text-align: left;
-  border-bottom: 1px solid var(--separator);
-}
-
-.usage-table th.num {
-  text-align: right;
-}
-
-.usage-table td {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--separator);
-  color: var(--label);
-  vertical-align: top;
-}
-
-.usage-table tr:last-child td {
-  border-bottom: none;
-}
-
-.usage-table tr:hover td {
-  background: color-mix(in srgb, var(--accent) 4%, transparent);
-}
-
-.usage-table td.num {
-  text-align: right;
-}
-
-.usage-table td.mono,
-.mono {
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.badge-warn {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(255, 149, 0, 0.12);
-  color: var(--warning-strong);
-}
-
-.badge-ok {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(52, 199, 89, 0.12);
-  color: var(--success-strong);
-}
-
-/* 响应式：小屏水平滚动表格 / Responsive: scroll table horizontally on narrow screens. */
+@media (max-width: 960px) { .grid-2 { grid-template-columns: 1fr; } }
 @media (max-width: 720px) {
-  .view-usage {
-    padding: 22px 18px;
-  }
-  .table-wrap {
-    overflow-x: auto;
-    max-height: none;
-  }
-  .usage-table {
-    min-width: 720px;
-  }
+  .view-usage { padding: 22px 18px; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .metric + .metric { border-top: 1px solid var(--separator); border-left: 0; padding-top: 10px; padding-left: 0; }
+  .range-detail { width: 100%; margin-left: 0; }
+  .filter-actions { margin-left: 0; }
 }
 </style>

@@ -9,6 +9,8 @@ export function DeleteModelPricing(arg1:string):Promise<void>;
 
 export function GetDailyTrends(arg1:usage.TrendFilter):Promise<Array<usage.DailyTrendPoint>>;
 
+export function GetModelDailyTrends(arg1:usage.TrendFilter):Promise<Array<usage.ModelDailyTrendPoint>>;
+
 export function GetModelPricing():Promise<Array<usage.ModelPricing>>;
 
 export function GetModelStats(arg1:usage.StatFilter):Promise<Array<usage.ModelStat>>;

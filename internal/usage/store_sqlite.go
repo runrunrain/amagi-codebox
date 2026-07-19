@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     cache_creation_cost     INTEGER NOT NULL DEFAULT 0,
     total_cost              INTEGER NOT NULL DEFAULT 0,
     currency_code           TEXT NOT NULL DEFAULT 'USD',
+    cost_provided           INTEGER NOT NULL DEFAULT 0,
     occurred_at             INTEGER NOT NULL,
     recorded_at             INTEGER NOT NULL,
     request_id              TEXT NOT NULL DEFAULT ''
@@ -57,6 +58,10 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_mtime       INTEGER NOT NULL DEFAULT 0,
     last_line_offset INTEGER NOT NULL DEFAULT 0,
     last_time_updated INTEGER NOT NULL DEFAULT 0,
+	last_provider    TEXT NOT NULL DEFAULT '',
+	last_model       TEXT NOT NULL DEFAULT '',
+	last_session_id  TEXT NOT NULL DEFAULT '',
+	last_project_dir TEXT NOT NULL DEFAULT '',
     last_synced_at   INTEGER NOT NULL DEFAULT 0,
     last_error       TEXT NOT NULL DEFAULT '',
     records_added    INTEGER NOT NULL DEFAULT 0,
@@ -106,9 +111,70 @@ func openDB(dbPath string) (*sql.DB, error) {
 
 // initSchema 执行建表 DDL（幂等）。
 func initSchema(db *sql.DB) error {
-	_, err := db.Exec(schemaDDL)
-	if err != nil {
+	if _, err := db.Exec(schemaDDL); err != nil {
 		return fmt.Errorf("init schema: %w", err)
+	}
+	// CREATE TABLE IF NOT EXISTS does not add columns to existing databases.
+	// Keep the migration local and idempotent so previously collected Codex
+	// records can retain their parsing context on the next incremental sync.
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"last_provider", "TEXT NOT NULL DEFAULT ''"},
+		{"last_model", "TEXT NOT NULL DEFAULT ''"},
+		{"last_session_id", "TEXT NOT NULL DEFAULT ''"},
+		{"last_project_dir", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := ensureColumn(db, "sync_state", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if err := ensureColumn(db, "usage_records", "cost_provided", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// The old schema did not persist whether a cost came directly from
+	// OpenCode. Preserve those source-of-truth totals before any local price
+	// table repricing is introduced.
+	if _, err := db.Exec(`UPDATE usage_records
+		SET cost_provided=1
+		WHERE cost_provided=0 AND app_type=? AND source=?`, appOpenCode, string(SourceSessionLog)); err != nil {
+		return fmt.Errorf("mark legacy OpenCode costs as provided: %w", err)
+	}
+	return nil
+}
+
+// ensureColumn adds a missing SQLite column without relying on an error string
+// from ALTER TABLE. The table and column names are fixed call-site constants.
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal any
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey); err != nil {
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+
+	if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -121,15 +187,15 @@ func insertRecord(ctx context.Context, db *sql.DB, r UsageRecord) (bool, error) 
 		 session_id, project_dir, preset,
 		 input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
 		 billable_input_tokens,
-		 input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost, currency_code,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost, currency_code, cost_provided,
 		 occurred_at, recorded_at, request_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	res, err := db.ExecContext(ctx, q,
 		r.DedupKey, r.AppType, string(r.Source), r.Provider, r.Model, r.NormalizedModel,
 		r.SessionID, r.ProjectDir, r.Preset,
 		r.InputTokens, r.OutputTokens, r.CacheReadInputTokens, r.CacheCreationInputTokens,
 		r.BillableInputTokens,
-		r.InputCost, r.OutputCost, r.CacheReadCost, r.CacheCreationCost, r.TotalCost, r.CurrencyCode,
+		r.InputCost, r.OutputCost, r.CacheReadCost, r.CacheCreationCost, r.TotalCost, r.CurrencyCode, r.CostProvided,
 		r.OccurredAt.UnixNano(), r.RecordedAt.UnixNano(), r.RequestID,
 	)
 	if err != nil {
@@ -163,15 +229,15 @@ func upsertRecord(ctx context.Context, db *sql.DB, r UsageRecord) (bool, error) 
 		 session_id, project_dir, preset,
 		 input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
 		 billable_input_tokens,
-		 input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost, currency_code,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost, currency_code, cost_provided,
 		 occurred_at, recorded_at, request_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	_, err := db.ExecContext(ctx, q,
 		r.DedupKey, r.AppType, string(r.Source), r.Provider, r.Model, r.NormalizedModel,
 		r.SessionID, r.ProjectDir, r.Preset,
 		r.InputTokens, r.OutputTokens, r.CacheReadInputTokens, r.CacheCreationInputTokens,
 		r.BillableInputTokens,
-		r.InputCost, r.OutputCost, r.CacheReadCost, r.CacheCreationCost, r.TotalCost, r.CurrencyCode,
+		r.InputCost, r.OutputCost, r.CacheReadCost, r.CacheCreationCost, r.TotalCost, r.CurrencyCode, r.CostProvided,
 		r.OccurredAt.UnixNano(), r.RecordedAt.UnixNano(), r.RequestID,
 	)
 	if err != nil {
@@ -197,11 +263,13 @@ func getSyncState(ctx context.Context, db *sql.DB, sourceType, sourceKey string)
 	var s SyncState
 	var lastSynced int64
 	q := `SELECT source_type, source_key, app_type, last_mtime, last_line_offset,
-	      last_time_updated, last_synced_at, last_error, records_added
+	      last_time_updated, last_provider, last_model, last_session_id, last_project_dir,
+	      last_synced_at, last_error, records_added
 	      FROM sync_state WHERE source_type=? AND source_key=?`
 	err := db.QueryRowContext(ctx, q, sourceType, sourceKey).Scan(
 		&s.SourceType, &s.SourceKey, &s.AppType, &s.LastMTime, &s.LastLineOffset,
-		&s.LastTimeUpdated, &lastSynced, &s.LastError, &s.RecordsAdded,
+		&s.LastTimeUpdated, &s.LastProvider, &s.LastModel, &s.LastSessionID, &s.LastProjectDir,
+		&lastSynced, &s.LastError, &s.RecordsAdded,
 	)
 	if err == nil {
 		s.LastSyncedAt = time.Unix(0, lastSynced).UTC()
@@ -217,11 +285,13 @@ func getSyncState(ctx context.Context, db *sql.DB, sourceType, sourceKey string)
 func upsertSyncState(ctx context.Context, db *sql.DB, s SyncState) error {
 	const q = `INSERT OR REPLACE INTO sync_state
 		(source_type, source_key, app_type, last_mtime, last_line_offset,
-		 last_time_updated, last_synced_at, last_error, records_added)
-		VALUES (?,?,?,?,?,?,?,?,?)`
+		 last_time_updated, last_provider, last_model, last_session_id, last_project_dir,
+		 last_synced_at, last_error, records_added)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	_, err := db.ExecContext(ctx, q,
 		s.SourceType, s.SourceKey, s.AppType, s.LastMTime, s.LastLineOffset,
-		s.LastTimeUpdated, s.LastSyncedAt.UnixNano(), s.LastError, s.RecordsAdded,
+		s.LastTimeUpdated, s.LastProvider, s.LastModel, s.LastSessionID, s.LastProjectDir,
+		s.LastSyncedAt.UnixNano(), s.LastError, s.RecordsAdded,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert sync_state: %w", err)
@@ -232,7 +302,8 @@ func upsertSyncState(ctx context.Context, db *sql.DB, s SyncState) error {
 // listSyncStates 返回全部同步游标（前端调试用）。
 func listSyncStates(ctx context.Context, db *sql.DB) ([]SyncState, error) {
 	q := `SELECT source_type, source_key, app_type, last_mtime, last_line_offset,
-	      last_time_updated, last_synced_at, last_error, records_added
+	      last_time_updated, last_provider, last_model, last_session_id, last_project_dir,
+	      last_synced_at, last_error, records_added
 	      FROM sync_state ORDER BY source_type, source_key`
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -244,7 +315,8 @@ func listSyncStates(ctx context.Context, db *sql.DB) ([]SyncState, error) {
 		var s SyncState
 		var lastSynced int64
 		if err := rows.Scan(&s.SourceType, &s.SourceKey, &s.AppType, &s.LastMTime,
-			&s.LastLineOffset, &s.LastTimeUpdated, &lastSynced, &s.LastError, &s.RecordsAdded); err != nil {
+			&s.LastLineOffset, &s.LastTimeUpdated, &s.LastProvider, &s.LastModel, &s.LastSessionID, &s.LastProjectDir,
+			&lastSynced, &s.LastError, &s.RecordsAdded); err != nil {
 			return nil, err
 		}
 		s.LastSyncedAt = time.Unix(0, lastSynced).UTC()

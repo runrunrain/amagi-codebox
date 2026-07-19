@@ -19,7 +19,7 @@ import type {
   StatFilter,
   LogFilter,
   Summary,
-  DailyTrendPoint,
+  ModelDailyTrendPoint,
   ModelStat,
   ProviderStat,
   UsageRecord,
@@ -32,7 +32,7 @@ import type {
 export const useUsageStore = defineStore('usage', () => {
   // === State: 业务数据 / Business data ===
   const summary = ref<Summary | null>(null);
-  const trends = ref<DailyTrendPoint[]>([]);
+  const modelTrends = ref<ModelDailyTrendPoint[]>([]);
   const modelStats = ref<ModelStat[]>([]);
   const providerStats = ref<ProviderStat[]>([]);
   const pricing = ref<ModelPricing[]>([]);
@@ -67,7 +67,7 @@ export const useUsageStore = defineStore('usage', () => {
   // === Actions ===
 
   /**
-   * 并发拉取汇总/趋势/模型/供应商四类聚合数据。
+   * 并发拉取汇总/模型曲线/模型/供应商聚合数据。
    * @param opts.silent 后台静默刷新：失败时保留旧数据 + console.warn，不设 error、不设 loading。
    *                    首次/重试传 false（默认）。
    *
@@ -85,12 +85,12 @@ export const useUsageStore = defineStore('usage', () => {
       const statFilter: StatFilter = usageApi.createStatFilter(filter.value);
       const [s, t, m, p] = await Promise.all([
         usageApi.getUsageSummary(filter.value),
-        usageApi.getDailyTrends(trendFilter),
+        usageApi.getModelDailyTrends(trendFilter),
         usageApi.getModelStats(statFilter),
         usageApi.getProviderStats(statFilter),
       ]);
       summary.value = s;
-      trends.value = Array.isArray(t) ? t : [];
+      modelTrends.value = Array.isArray(t) ? t : [];
       modelStats.value = Array.isArray(m) ? m : [];
       providerStats.value = Array.isArray(p) ? p : [];
       if (!silent) error.value = '';
@@ -212,7 +212,7 @@ export const useUsageStore = defineStore('usage', () => {
 
   function $reset(): void {
     summary.value = null;
-    trends.value = [];
+    modelTrends.value = [];
     modelStats.value = [];
     providerStats.value = [];
     pricing.value = [];
@@ -230,7 +230,7 @@ export const useUsageStore = defineStore('usage', () => {
   return {
     // State
     summary,
-    trends,
+    modelTrends,
     modelStats,
     providerStats,
     pricing,

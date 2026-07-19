@@ -43,17 +43,27 @@ import (
 // UsageEventStub 是 codex 包产出的中立事件结构（与 claude/opencode 子包字段一致，
 // 但定义在各自包内避免反向依赖 usage 包）。
 type UsageEventStub struct {
-	DedupKey                  string
-	Model                     string
-	Provider                  string
-	ProjectDir                string
-	SessionID                 string
-	RawMessageID              string
-	InputTokens               int
-	OutputTokens              int
-	CacheReadInputTokens      int
-	CacheCreationInputTokens  int
-	OccurredAt                time.Time
+	DedupKey                 string
+	Model                    string
+	Provider                 string
+	ProjectDir               string
+	SessionID                string
+	RawMessageID             string
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	OccurredAt               time.Time
+}
+
+// UsageContext is the metadata required to continue parsing a rollout from a
+// byte offset. Codex writes session_meta / turn_context before token_count
+// events, so an incremental reader must retain this state between syncs.
+type UsageContext struct {
+	Provider   string
+	Model      string
+	ProjectDir string
+	SessionID  string
 }
 
 // codexRecord 是 jsonl 单行根级结构（用 json.RawMessage 延迟解码 payload）。
@@ -82,8 +92,8 @@ type turnContextPayload struct {
 
 // eventMsgPayload 对应 type=="event_msg" 的 payload（只关心 token_count 子类型）。
 type eventMsgPayload struct {
-	Type string          `json:"type"`
-	Info tokenCountInfo  `json:"info"`
+	Type string         `json:"type"`
+	Info tokenCountInfo `json:"info"`
 }
 
 // tokenCountInfo 包含 total 与 last（增量）。
@@ -102,11 +112,11 @@ type tokenCountInfo struct {
 //   - output_tokens
 //   - reasoning_output_tokens（推理输出，第一期归 output）
 type tokenUsage struct {
-	InputTokens            int `json:"input_tokens"`
-	CachedInputTokens      int `json:"cached_input_tokens"`
-	OutputTokens           int `json:"output_tokens"`
-	ReasoningOutputTokens  int `json:"reasoning_output_tokens"`
-	TotalTokens            int `json:"total_tokens"`
+	InputTokens           int `json:"input_tokens"`
+	CachedInputTokens     int `json:"cached_input_tokens"`
+	OutputTokens          int `json:"output_tokens"`
+	ReasoningOutputTokens int `json:"reasoning_output_tokens"`
+	TotalTokens           int `json:"total_tokens"`
 }
 
 // ExtractUsageRecords 解析单个 Codex rollout jsonl 文件（断点续传）。
@@ -121,26 +131,34 @@ type tokenUsage struct {
 //   - provider：从 session_meta 提取的 model_provider（全文件共享，传递给调用方）
 //   - err：文件级 IO 错误；单行解析失败 continue 不中断
 func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEventStub, lastOffset int64, provider string, err error) {
+	records, lastOffset, context, err := ExtractUsageRecordsWithContext(jsonlPath, startOffset, UsageContext{})
+	return records, lastOffset, context.Provider, err
+}
+
+// ExtractUsageRecordsWithContext is the incremental-aware variant of
+// ExtractUsageRecords. It returns the metadata context that should be persisted
+// alongside lastOffset for the next append-only read.
+func ExtractUsageRecordsWithContext(jsonlPath string, startOffset int64, context UsageContext) (records []UsageEventStub, lastOffset int64, nextContext UsageContext, err error) {
 	f, openErr := os.Open(jsonlPath)
 	if openErr != nil {
-		return nil, 0, "", fmt.Errorf("open codex jsonl %q: %w", jsonlPath, openErr)
+		return nil, 0, context, fmt.Errorf("open codex jsonl %q: %w", jsonlPath, openErr)
 	}
 	defer f.Close()
 
 	if startOffset > 0 {
 		if _, seekErr := f.Seek(startOffset, 0); seekErr != nil {
-			return nil, startOffset, "", fmt.Errorf("seek codex jsonl %q to %d: %w", jsonlPath, startOffset, seekErr)
+			return nil, startOffset, context, fmt.Errorf("seek codex jsonl %q to %d: %w", jsonlPath, startOffset, seekErr)
 		}
 	}
 
 	// SessionID 与 ProjectDir 兜底（从文件路径与首行 session_meta 推断）
 	fileSessionID := inferSessionIDFromPath(jsonlPath)
 	var (
-		sessionMetaCwd     string
-		sessionMetaModel   string
-		turnCtxModel       string
-		sessionMetaID      string
-		fileProjectDir     string
+		sessionMetaModel = context.Model
+		turnCtxModel     = context.Model
+		sessionMetaID    = context.SessionID
+		fileProjectDir   = context.ProjectDir
+		provider         = context.Provider
 	)
 
 	scanner := bufio.NewScanner(f)
@@ -164,14 +182,15 @@ func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEv
 		if rec.Type == "session_meta" && len(rec.Payload) > 0 {
 			var sm sessionMetaPayload
 			if jsonErr := json.Unmarshal(rec.Payload, &sm); jsonErr == nil {
-				if sessionMetaCwd == "" {
-					sessionMetaCwd = sm.Cwd
+				if sm.Cwd != "" {
 					fileProjectDir = sm.Cwd
 				}
-				if provider == "" {
+				if sm.ModelProvider != "" {
 					provider = sm.ModelProvider
 				}
-				sessionMetaModel = sm.Model
+				if sm.Model != "" {
+					sessionMetaModel = sm.Model
+				}
 				if sm.ID != "" {
 					sessionMetaID = sm.ID
 				}
@@ -181,10 +200,12 @@ func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEv
 		if rec.Type == "turn_context" && len(rec.Payload) > 0 {
 			var tc turnContextPayload
 			if jsonErr := json.Unmarshal(rec.Payload, &tc); jsonErr == nil {
-				if turnCtxModel == "" && tc.Model != "" {
+				// A rollout can switch models between turns. Keep the latest
+				// context so each subsequent token_count gets the right model.
+				if tc.Model != "" {
 					turnCtxModel = tc.Model
 				}
-				if fileProjectDir == "" && tc.Cwd != "" {
+				if tc.Cwd != "" {
 					fileProjectDir = tc.Cwd
 				}
 			}
@@ -253,11 +274,91 @@ func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEv
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
-		return records, currentOffset, provider, fmt.Errorf("scan codex jsonl %q: %w", jsonlPath, scanErr)
+		return records, currentOffset, context, fmt.Errorf("scan codex jsonl %q: %w", jsonlPath, scanErr)
 	}
 
-	_ = sessionMetaCwd // 保留供调试
-	return records, currentOffset, provider, nil
+	nextContext = UsageContext{
+		Provider:   provider,
+		Model:      turnCtxModel,
+		ProjectDir: fileProjectDir,
+		SessionID:  sessionMetaID,
+	}
+	if nextContext.Model == "" {
+		nextContext.Model = sessionMetaModel
+	}
+	if nextContext.SessionID == "" {
+		nextContext.SessionID = fileSessionID
+	}
+	return records, currentOffset, nextContext, nil
+}
+
+// ReadUsageContext scans only metadata records before an incremental offset.
+// It is used once for existing sync_state rows created before UsageContext was
+// persisted; no usage records are returned or inserted from this pass.
+func ReadUsageContext(jsonlPath string, endOffset int64) (UsageContext, error) {
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return UsageContext{}, fmt.Errorf("open codex jsonl %q: %w", jsonlPath, err)
+	}
+	defer f.Close()
+
+	context := UsageContext{SessionID: inferSessionIDFromPath(jsonlPath)}
+	if endOffset <= 0 {
+		return context, nil
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	var offset int64
+	for scanner.Scan() {
+		lineBytes := scanner.Bytes()
+		offset += int64(len(lineBytes)) + 1
+		if len(lineBytes) == 0 {
+			if offset >= endOffset {
+				break
+			}
+			continue
+		}
+
+		var rec codexRecord
+		if json.Unmarshal(lineBytes, &rec) == nil && len(rec.Payload) > 0 {
+			switch rec.Type {
+			case "session_meta":
+				var sm sessionMetaPayload
+				if json.Unmarshal(rec.Payload, &sm) == nil {
+					if sm.ModelProvider != "" {
+						context.Provider = sm.ModelProvider
+					}
+					if sm.Model != "" && context.Model == "" {
+						context.Model = sm.Model
+					}
+					if sm.Cwd != "" {
+						context.ProjectDir = sm.Cwd
+					}
+					if sm.ID != "" {
+						context.SessionID = sm.ID
+					}
+				}
+			case "turn_context":
+				var tc turnContextPayload
+				if json.Unmarshal(rec.Payload, &tc) == nil {
+					if tc.Model != "" {
+						context.Model = tc.Model
+					}
+					if tc.Cwd != "" {
+						context.ProjectDir = tc.Cwd
+					}
+				}
+			}
+		}
+		if offset >= endOffset {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return context, fmt.Errorf("scan codex context %q: %w", jsonlPath, err)
+	}
+	return context, nil
 }
 
 // inferSessionIDFromPath 从 rollout-<ts>-<uuid>.jsonl 提取 session 标识。

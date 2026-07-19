@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestNormalizeModelID(t *testing.T) {
 		{"glm-4.6", "glm-4.6"},
 		{"deepseek-chat", "deepseek-chat"},
 		{"moonshot-v1-128k", "moonshot-v1-128k"},
-		{"Claude-Sonnet-4", "claude-sonnet-4"},   // 全小写
+		{"Claude-Sonnet-4", "claude-sonnet-4"},      // 全小写
 		{"claude-sonnet-4:free", "claude-sonnet-4"}, // 字母标签去除
 		{"GLM-5-Turbo", "glm-5-turbo"},
 		{"", ""},
@@ -211,15 +212,15 @@ func TestEventToRecordOpenCodeCostDirect(t *testing.T) {
 	defer s.Close()
 
 	evt := UsageEvent{
-		AppType:       appOpenCode,
-		Source:        SourceSessionLog,
-		Model:         "glm-5.2",
-		InputTokens:   1000,
-		OutputTokens:  200,
-		OccurredAt:    time.Now().UTC(),
-		CostProvided:  true,
-		NativeCost:    193251, // 0.193251 CNY → micro-CNY
-		CurrencyCode:  "CNY",
+		AppType:      appOpenCode,
+		Source:       SourceSessionLog,
+		Model:        "glm-5.2",
+		InputTokens:  1000,
+		OutputTokens: 200,
+		OccurredAt:   time.Now().UTC(),
+		CostProvided: true,
+		NativeCost:   193251, // 0.193251 CNY → micro-CNY
+		CurrencyCode: "CNY",
 	}
 	rec := s.eventToRecord(evt)
 	if rec.TotalCost != 193251 {
@@ -518,6 +519,212 @@ func TestPricingSeedOpenAIGPT56(t *testing.T) {
 	}
 	if len(want) > 0 {
 		t.Errorf("missing OpenAI GPT-5.x models in seed: %v", want)
+	}
+}
+
+func TestDeepSeekV4ProCachePricingAndMetrics(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	pricing, ok := s.pricing.Resolve("deepseek-v4-pro")
+	if !ok {
+		t.Fatal("deepseek-v4-pro should be a built-in price")
+	}
+	if pricing.CurrencyCode != "USD" || pricing.InputPerMillion != 435_000 ||
+		pricing.OutputPerMillion != 870_000 || pricing.CacheReadPerMillion != 3_625 {
+		t.Fatalf("unexpected DeepSeek V4 Pro pricing: %#v", pricing)
+	}
+
+	event := UsageEvent{
+		AppType:              appClaudeCode,
+		Source:               SourceSessionLog,
+		Provider:             "deepseek",
+		Model:                "deepseek-v4-pro",
+		InputTokens:          1_000_000,
+		CacheReadInputTokens: 1_000_000,
+		OccurredAt:           time.Now().UTC(),
+		DedupKey:             "test:deepseek-v4-pro-cache",
+	}
+	record := s.eventToRecord(event)
+	if record.TotalCost != 438_625 || record.CacheReadCost != 3_625 || record.CurrencyCode != "USD" {
+		t.Fatalf("DeepSeek V4 Pro cost = total=%d cache=%d currency=%s, want 438625/3625/USD", record.TotalCost, record.CacheReadCost, record.CurrencyCode)
+	}
+	if _, err := s.Record(event); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	stats, err := s.queryModelStats(context.Background(), StatFilter{})
+	if err != nil {
+		t.Fatalf("queryModelStats: %v", err)
+	}
+	for _, stat := range stats {
+		if stat.NormalizedModel != "deepseek-v4-pro" {
+			continue
+		}
+		if stat.TotalTokens != 2_000_000 || stat.CacheHitRate != 0.5 {
+			t.Fatalf("cache totals = tokens=%d hitRate=%f, want 2000000/0.5", stat.TotalTokens, stat.CacheHitRate)
+		}
+		if stat.CacheAdjustedTokens != 1_008_333 || stat.CacheReadEstimatedCost != 3_625 || stat.CacheHitSavings != 431_375 {
+			t.Fatalf("cache economics = adjusted=%d cost=%d savings=%d", stat.CacheAdjustedTokens, stat.CacheReadEstimatedCost, stat.CacheHitSavings)
+		}
+		return
+	}
+	t.Fatal("DeepSeek V4 Pro stats were not returned")
+}
+
+func TestRepriceEstimatedUsagePreservesSourceProvidedCosts(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	event := UsageEvent{
+		AppType:              appClaudeCode,
+		Source:               SourceSessionLog,
+		Model:                "deepseek-v4-pro",
+		InputTokens:          1_000_000,
+		CacheReadInputTokens: 1_000_000,
+		OccurredAt:           time.Now().UTC(),
+		DedupKey:             "test:reprice-deepseek-v4-pro",
+	}
+	if _, err := s.Record(event); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if _, err := s.db.Exec(`UPDATE usage_records SET input_cost=0, output_cost=0,
+		cache_read_cost=0, cache_creation_cost=0, total_cost=0, currency_code='CNY'
+		WHERE dedup_key=?`, event.DedupKey); err != nil {
+		t.Fatalf("clear estimated cost: %v", err)
+	}
+	updated, err := s.repriceEstimatedUsageForPattern(context.Background(), "deepseek-v4-pro")
+	if err != nil {
+		t.Fatalf("repriceEstimatedUsageForPattern: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("repriced records = %d, want 1", updated)
+	}
+	var total int64
+	var currency string
+	if err := s.db.QueryRow(`SELECT total_cost, currency_code FROM usage_records WHERE dedup_key=?`, event.DedupKey).Scan(&total, &currency); err != nil {
+		t.Fatalf("query repriced record: %v", err)
+	}
+	if total != 438_625 || currency != "USD" {
+		t.Fatalf("repriced record = total=%d currency=%s, want 438625/USD", total, currency)
+	}
+
+	provided := UsageEvent{
+		AppType: appOpenCode, Source: SourceSessionLog, Model: "deepseek-v4-pro",
+		OccurredAt: time.Now().UTC(), DedupKey: "test:provided-deepseek-v4-pro",
+		CostProvided: true, NativeCost: 7_253, CurrencyCode: "USD",
+	}
+	if _, err := s.Record(provided); err != nil {
+		t.Fatalf("Record source-provided: %v", err)
+	}
+	if updated, err := s.repriceEstimatedUsageForPattern(context.Background(), "deepseek-v4-pro"); err != nil || updated != 0 {
+		t.Fatalf("source-provided record should not reprice: updated=%d err=%v", updated, err)
+	}
+}
+
+func TestCorrectLegacyDeepSeekV4ProCurrency(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	occurredAt := time.Now().UTC()
+	event := UsageEvent{
+		AppType: appOpenCode, Source: SourceSessionLog,
+		Provider: "deepseek", Model: "deepseek-v4-pro",
+		OccurredAt: occurredAt, DedupKey: "test:legacy-deepseek-v4-pro-currency",
+		CostProvided: true, NativeCost: 7_253, CurrencyCode: "CNY",
+	}
+	if _, err := s.Record(event); err != nil {
+		t.Fatalf("Record legacy DeepSeek V4 Pro: %v", err)
+	}
+	day := occurredAt.Format("2006-01-02")
+	if err := refreshDailyRollup(context.Background(), s.db, []string{day}); err != nil {
+		t.Fatalf("refresh legacy rollup: %v", err)
+	}
+
+	updated, err := s.correctLegacyDeepSeekV4ProCurrency(context.Background())
+	if err != nil {
+		t.Fatalf("correctLegacyDeepSeekV4ProCurrency: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("corrected records = %d, want 1", updated)
+	}
+	var currency string
+	if err := s.db.QueryRow(`SELECT currency_code FROM usage_records WHERE dedup_key=?`, event.DedupKey).Scan(&currency); err != nil {
+		t.Fatalf("query corrected record: %v", err)
+	}
+	if currency != "USD" {
+		t.Fatalf("corrected record currency = %s, want USD", currency)
+	}
+	if err := s.db.QueryRow(`SELECT currency_code FROM daily_rollup
+		WHERE day=? AND normalized_model='deepseek-v4-pro'`, day).Scan(&currency); err != nil {
+		t.Fatalf("query corrected rollup: %v", err)
+	}
+	if currency != "USD" {
+		t.Fatalf("corrected rollup currency = %s, want USD", currency)
+	}
+}
+
+func TestModelDailyTrendsRemainSeparate(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	dayOne := time.Now().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour)
+	dayTwo := dayOne.AddDate(0, 0, 1)
+	for _, event := range []UsageEvent{
+		{AppType: appClaudeCode, Source: SourceSessionLog, Model: "claude-sonnet-4", InputTokens: 100, OccurredAt: dayOne, DedupKey: "test:trend:claude:one"},
+		{AppType: appClaudeCode, Source: SourceSessionLog, Model: "claude-sonnet-4", InputTokens: 200, OccurredAt: dayTwo, DedupKey: "test:trend:claude:two"},
+		{AppType: appClaudeCode, Source: SourceSessionLog, Model: "deepseek-v4-pro", InputTokens: 300, OccurredAt: dayOne, DedupKey: "test:trend:deepseek:one"},
+	} {
+		if _, err := s.Record(event); err != nil {
+			t.Fatalf("Record trend fixture: %v", err)
+		}
+	}
+	if err := refreshDailyRollup(context.Background(), s.db, []string{dayOne.Format("2006-01-02"), dayTwo.Format("2006-01-02")}); err != nil {
+		t.Fatalf("refreshDailyRollup: %v", err)
+	}
+	points, err := s.queryModelDailyTrends(context.Background(), TrendFilter{
+		SummaryFilter: SummaryFilter{StartDate: dayOne.Format("2006-01-02"), EndDate: dayTwo.Format("2006-01-02")},
+	})
+	if err != nil {
+		t.Fatalf("queryModelDailyTrends: %v", err)
+	}
+	byModel := map[string][]ModelDailyTrendPoint{}
+	for _, point := range points {
+		byModel[point.NormalizedModel] = append(byModel[point.NormalizedModel], point)
+	}
+	if len(byModel["claude-sonnet-4"]) != 2 || len(byModel["deepseek-v4-pro"]) != 2 {
+		t.Fatalf("expected a complete two-day series per model, got %#v", byModel)
+	}
+	if byModel["claude-sonnet-4"][0].TotalTokens == byModel["deepseek-v4-pro"][0].TotalTokens {
+		t.Fatal("model curves were unexpectedly aggregated together")
+	}
+}
+
+func TestResolveTrendRangeWithOneSidedDate(t *testing.T) {
+	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	start, end := resolveTrendRange(TrendFilter{SummaryFilter: SummaryFilter{StartDate: "2026-07-01"}, Days: 7}, now)
+	if start != "2026-07-01" || end != "2026-07-20" {
+		t.Fatalf("start-only range = %s..%s, want 2026-07-01..2026-07-20", start, end)
+	}
+	start, end = resolveTrendRange(TrendFilter{SummaryFilter: SummaryFilter{EndDate: "2026-07-10"}, Days: 7}, now)
+	if start != "2026-07-04" || end != "2026-07-10" {
+		t.Fatalf("end-only range = %s..%s, want 2026-07-04..2026-07-10", start, end)
 	}
 }
 

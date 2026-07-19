@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,29 @@ func (s *Service) Load() error {
 			s.log.Warn("usage", "价格表加载失败，使用内置 seed", err.Error())
 		}
 		// 不返回错误：seed 已就绪，服务仍可用
+	}
+	// Repair incomplete provider/model attribution from older collectors before
+	// the first dashboard query. A failed repair must never prevent usage data
+	// from loading; the next startup can retry it safely.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if updated, err := s.backfillUsageMetadata(ctx); err != nil {
+		s.logWarn("usage", "历史用量元数据回填失败", err.Error())
+	} else if updated > 0 {
+		s.logInfo("usage", "历史用量元数据已回填", fmt.Sprintf("records=%d", updated))
+	}
+	// v1.2.83 adds an official DeepSeek V4 Pro cache-hit price. Reprice only
+	// locally estimated records for this new model; OpenCode-supplied totals are
+	// marked cost_provided and remain untouched.
+	if updated, err := s.repriceEstimatedUsageForPattern(ctx, "deepseek-v4-pro"); err != nil {
+		s.logWarn("usage", "DeepSeek V4 Pro 历史成本重算失败", err.Error())
+	} else if updated > 0 {
+		s.logInfo("usage", "DeepSeek V4 Pro 历史成本已重算", fmt.Sprintf("records=%d", updated))
+	}
+	if updated, err := s.correctLegacyDeepSeekV4ProCurrency(ctx); err != nil {
+		s.logWarn("usage", "DeepSeek V4 Pro 历史币种修正失败", err.Error())
+	} else if updated > 0 {
+		s.logInfo("usage", "DeepSeek V4 Pro 历史币种已修正", fmt.Sprintf("records=%d", updated))
 	}
 	return nil
 }
@@ -151,7 +175,14 @@ func (s *Service) recordForceInternal(evt UsageEvent) (bool, error) {
 
 // eventToRecord 把 UsageEvent 转为 UsageRecord（含成本计算与 dedup_key 生成）。
 func (s *Service) eventToRecord(evt UsageEvent) UsageRecord {
-	normalized := NormalizeModelID(evt.Model)
+	model := strings.TrimSpace(evt.Model)
+	if model == "" {
+		// Keep incomplete upstream events visible and groupable instead of
+		// storing empty strings that collapse unrelated records together.
+		model = "unknown"
+	}
+	normalized := NormalizeModelID(model)
+	provider := s.resolveProvider(evt.Provider, normalized)
 	billableInput := ComputeBillableInput(evt.AppType, evt.InputTokens, evt.CacheReadInputTokens)
 
 	var (
@@ -162,14 +193,17 @@ func (s *Service) eventToRecord(evt UsageEvent) UsageRecord {
 	if evt.CostProvided {
 		// OpenCode 路径：直接使用 session.cost（已聚合，无法拆分四维）
 		total = evt.NativeCost
-		currency = evt.CurrencyCode
+		currency = strings.ToUpper(strings.TrimSpace(evt.CurrencyCode))
 		if currency == "" {
-			currency = "USD"
+			currency = currencyForProvider(provider)
 		}
 	} else {
-		mp, _ := s.pricing.Resolve(normalized)
+		mp, hasPrice := s.pricing.Resolve(normalized)
 		in, out, cr, cc, total = ComputeCost(mp, billableInput, evt.OutputTokens, evt.CacheReadInputTokens, evt.CacheCreationInputTokens)
 		currency = mp.CurrencyCode
+		if !hasPrice || currency == "" {
+			currency = currencyForProvider(provider)
+		}
 	}
 
 	dedupKey := evt.DedupKey
@@ -178,29 +212,30 @@ func (s *Service) eventToRecord(evt UsageEvent) UsageRecord {
 	}
 
 	return UsageRecord{
-		DedupKey:                dedupKey,
-		AppType:                 evt.AppType,
-		Source:                  evt.Source,
-		Provider:                evt.Provider,
-		Model:                   evt.Model,
-		NormalizedModel:         normalized,
-		SessionID:               evt.SessionID,
-		ProjectDir:              evt.ProjectDir,
-		Preset:                  evt.Preset,
-		InputTokens:             evt.InputTokens,
-		OutputTokens:            evt.OutputTokens,
-		CacheReadInputTokens:    evt.CacheReadInputTokens,
+		DedupKey:                 dedupKey,
+		AppType:                  evt.AppType,
+		Source:                   evt.Source,
+		Provider:                 provider,
+		Model:                    model,
+		NormalizedModel:          normalized,
+		SessionID:                evt.SessionID,
+		ProjectDir:               evt.ProjectDir,
+		Preset:                   evt.Preset,
+		InputTokens:              evt.InputTokens,
+		OutputTokens:             evt.OutputTokens,
+		CacheReadInputTokens:     evt.CacheReadInputTokens,
 		CacheCreationInputTokens: evt.CacheCreationInputTokens,
-		BillableInputTokens:     billableInput,
-		InputCost:               in,
-		OutputCost:              out,
-		CacheReadCost:           cr,
-		CacheCreationCost:       cc,
-		TotalCost:               total,
-		CurrencyCode:            currency,
-		OccurredAt:              evt.OccurredAt.UTC(),
-		RecordedAt:              time.Now().UTC(),
-		RequestID:               evt.RequestID,
+		BillableInputTokens:      billableInput,
+		InputCost:                in,
+		OutputCost:               out,
+		CacheReadCost:            cr,
+		CacheCreationCost:        cc,
+		TotalCost:                total,
+		CurrencyCode:             currency,
+		CostProvided:             evt.CostProvided,
+		OccurredAt:               evt.OccurredAt.UTC(),
+		RecordedAt:               time.Now().UTC(),
+		RequestID:                evt.RequestID,
 	}
 }
 

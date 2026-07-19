@@ -2509,6 +2509,44 @@ export namespace usage {
 	        this.pageSize = source["pageSize"];
 	    }
 	}
+	export class ModelDailyTrendPoint {
+	    day: string;
+	    normalizedModel: string;
+	    displayName: string;
+	    provider: string;
+	    currencyCode: string;
+	    inputTokens: number;
+	    outputTokens: number;
+	    cacheRead: number;
+	    cacheCreation: number;
+	    billableInput: number;
+	    totalTokens: number;
+	    cacheAdjustedTokens: number;
+	    totalCost: number;
+	    totalCostUSD: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelDailyTrendPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.day = source["day"];
+	        this.normalizedModel = source["normalizedModel"];
+	        this.displayName = source["displayName"];
+	        this.provider = source["provider"];
+	        this.currencyCode = source["currencyCode"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.cacheRead = source["cacheRead"];
+	        this.cacheCreation = source["cacheCreation"];
+	        this.billableInput = source["billableInput"];
+	        this.totalTokens = source["totalTokens"];
+	        this.cacheAdjustedTokens = source["cacheAdjustedTokens"];
+	        this.totalCost = source["totalCost"];
+	        this.totalCostUSD = source["totalCostUSD"];
+	    }
+	}
 	export class ModelPricing {
 	    id: string;
 	    modelPattern: string;
@@ -2573,11 +2611,17 @@ export namespace usage {
 	    outputTokens: number;
 	    cacheRead: number;
 	    cacheCreation: number;
+	    billableInput: number;
+	    totalTokens: number;
+	    cacheHitRate: number;
+	    cacheAdjustedTokens: number;
 	    inputCost: number;
 	    outputCost: number;
 	    cacheReadCost: number;
 	    cacheCreationCost: number;
 	    totalCost: number;
+	    cacheReadEstimatedCost: number;
+	    cacheHitSavings: number;
 	    hasPrice: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -2596,11 +2640,17 @@ export namespace usage {
 	        this.outputTokens = source["outputTokens"];
 	        this.cacheRead = source["cacheRead"];
 	        this.cacheCreation = source["cacheCreation"];
+	        this.billableInput = source["billableInput"];
+	        this.totalTokens = source["totalTokens"];
+	        this.cacheHitRate = source["cacheHitRate"];
+	        this.cacheAdjustedTokens = source["cacheAdjustedTokens"];
 	        this.inputCost = source["inputCost"];
 	        this.outputCost = source["outputCost"];
 	        this.cacheReadCost = source["cacheReadCost"];
 	        this.cacheCreationCost = source["cacheCreationCost"];
 	        this.totalCost = source["totalCost"];
+	        this.cacheReadEstimatedCost = source["cacheReadEstimatedCost"];
+	        this.cacheHitSavings = source["cacheHitSavings"];
 	        this.hasPrice = source["hasPrice"];
 	    }
 	}
@@ -2674,6 +2724,7 @@ export namespace usage {
 	}
 	export class Summary {
 	    totalRequests: number;
+	    totalTokens: number;
 	    totalInputTokens: number;
 	    totalOutputTokens: number;
 	    totalCacheRead: number;
@@ -2690,6 +2741,7 @@ export namespace usage {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.totalRequests = source["totalRequests"];
+	        this.totalTokens = source["totalTokens"];
 	        this.totalInputTokens = source["totalInputTokens"];
 	        this.totalOutputTokens = source["totalOutputTokens"];
 	        this.totalCacheRead = source["totalCacheRead"];
@@ -2790,6 +2842,10 @@ export namespace usage {
 	    lastMTime: number;
 	    lastLineOffset: number;
 	    lastTimeUpdated: number;
+	    lastProvider?: string;
+	    lastModel?: string;
+	    lastSessionId?: string;
+	    lastProjectDir?: string;
 	    // Go type: time
 	    lastSyncedAt: any;
 	    lastError?: string;
@@ -2807,6 +2863,10 @@ export namespace usage {
 	        this.lastMTime = source["lastMTime"];
 	        this.lastLineOffset = source["lastLineOffset"];
 	        this.lastTimeUpdated = source["lastTimeUpdated"];
+	        this.lastProvider = source["lastProvider"];
+	        this.lastModel = source["lastModel"];
+	        this.lastSessionId = source["lastSessionId"];
+	        this.lastProjectDir = source["lastProjectDir"];
 	        this.lastSyncedAt = this.convertValues(source["lastSyncedAt"], null);
 	        this.lastError = source["lastError"];
 	        this.recordsAdded = source["recordsAdded"];
@@ -2956,6 +3016,7 @@ export namespace usage {
 	    cacheCreationCost: number;
 	    totalCost: number;
 	    currencyCode: string;
+	    costProvided: boolean;
 	    // Go type: time
 	    occurredAt: any;
 	    // Go type: time
@@ -2988,6 +3049,7 @@ export namespace usage {
 	        this.cacheCreationCost = source["cacheCreationCost"];
 	        this.totalCost = source["totalCost"];
 	        this.currencyCode = source["currencyCode"];
+	        this.costProvided = source["costProvided"];
 	        this.occurredAt = this.convertValues(source["occurredAt"], null);
 	        this.recordedAt = this.convertValues(source["recordedAt"], null);
 	        this.requestId = source["requestId"];

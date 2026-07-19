@@ -47,10 +47,10 @@
             <th class="col-name">显示名</th>
             <th class="col-provider">供应商</th>
             <th class="col-currency">币种</th>
-            <th class="col-price">Input</th>
-            <th class="col-price">Output</th>
-            <th class="col-price">Cache R</th>
-            <th class="col-price">Cache W</th>
+            <th class="col-price" title="Input Price">输入</th>
+            <th class="col-price" title="Output Price">输出</th>
+            <th class="col-price" title="Cache Read Price">缓存读取</th>
+            <th class="col-price" title="Cache Write Price">缓存写入</th>
             <th class="col-tag">标记</th>
             <th class="col-actions">操作</th>
           </tr>

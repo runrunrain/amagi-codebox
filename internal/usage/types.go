@@ -41,14 +41,14 @@ type UsageRecord struct {
 	DedupKey string `json:"dedupKey"`
 
 	// 来源与归属。
-	AppType          string `json:"appType"`          // claudecode / codex / opencode
-	Source           Source `json:"source"`           // session_log / proxy
-	Provider         string `json:"provider"`         // inferProviderFromURL 或 model_provider
-	Model            string `json:"model"`            // 原始模型名（未标准化）
-	NormalizedModel  string `json:"normalizedModel"`  // 标准化后用于匹配价格表
-	SessionID        string `json:"sessionId"`        // amagi session id 或外部 session 标识
-	ProjectDir       string `json:"projectDir"`       // 工作目录（若可识别）
-	Preset           string `json:"preset,omitempty"` // proxy 路径才有
+	AppType         string `json:"appType"`          // claudecode / codex / opencode
+	Source          Source `json:"source"`           // session_log / proxy
+	Provider        string `json:"provider"`         // inferProviderFromURL 或 model_provider
+	Model           string `json:"model"`            // 原始模型名（未标准化）
+	NormalizedModel string `json:"normalizedModel"`  // 标准化后用于匹配价格表
+	SessionID       string `json:"sessionId"`        // amagi session id 或外部 session 标识
+	ProjectDir      string `json:"projectDir"`       // 工作目录（若可识别）
+	Preset          string `json:"preset,omitempty"` // proxy 路径才有
 
 	// 四维 token。
 	InputTokens              int `json:"inputTokens"`
@@ -60,12 +60,16 @@ type UsageRecord struct {
 	BillableInputTokens int `json:"billableInputTokens"`
 
 	// 成本（int64 micro-native-currency，按 CurrencyCode 决定币种）。
-	InputCost         int64 `json:"inputCost"`
-	OutputCost        int64 `json:"outputCost"`
-	CacheReadCost     int64 `json:"cacheReadCost"`
-	CacheCreationCost int64 `json:"cacheCreationCost"`
-	TotalCost         int64 `json:"totalCost"`
+	InputCost         int64  `json:"inputCost"`
+	OutputCost        int64  `json:"outputCost"`
+	CacheReadCost     int64  `json:"cacheReadCost"`
+	CacheCreationCost int64  `json:"cacheCreationCost"`
+	TotalCost         int64  `json:"totalCost"`
 	CurrencyCode      string `json:"currencyCode"` // "USD" / "CNY"
+	// CostProvided is true when the source supplied its own aggregate cost
+	// (currently OpenCode session logs). Those records must never be overwritten
+	// by a locally configured price table during a later repricing pass.
+	CostProvided bool `json:"costProvided"`
 
 	// 时间。
 	OccurredAt time.Time `json:"occurredAt"` // CLI 事件时间
@@ -85,13 +89,13 @@ type UsageRecord struct {
 //  5. 生成 DedupKey（若调用方未提供）
 //  6. INSERT OR IGNORE 入库
 type UsageEvent struct {
-	AppType       string
-	Source        Source
-	Provider      string
-	Model         string
-	SessionID     string
-	ProjectDir    string
-	Preset        string
+	AppType    string
+	Source     Source
+	Provider   string
+	Model      string
+	SessionID  string
+	ProjectDir string
+	Preset     string
 
 	InputTokens              int
 	OutputTokens             int
@@ -104,9 +108,9 @@ type UsageEvent struct {
 
 	// OpenCode 专用：若 CostProvided=true，跳过价格表计算，直接用 NativeCost 作为 TotalCost
 	// （其余四维 Cost 置 0，无法拆分；OpenCode 自身已聚合）。
-	CostProvided  bool
-	NativeCost    int64  // OpenCode session.cost 转换而来的 micro-native-currency
-	CurrencyCode  string // OpenCode 路径按 providerID 推断；其他路径由价格表决定
+	CostProvided bool
+	NativeCost   int64  // OpenCode session.cost 转换而来的 micro-native-currency
+	CurrencyCode string // OpenCode 路径按 providerID 推断；其他路径由价格表决定
 }
 
 // ModelPricing 是单个模型（或模型 pattern）的四维单价。
@@ -115,12 +119,12 @@ type UsageEvent struct {
 //   - USD 模型：1.0 USD/M = 1_000_000 micro-USD/M
 //   - CNY 模型：1.0 CNY/M = 1_000_000 micro-CNY/M
 type ModelPricing struct {
-	ID                      string    `json:"id"`                      // uuid 或 model_key
-	ModelPattern            string    `json:"modelPattern"`            // 标准化后的模型 ID（精确匹配）
-	DisplayName             string    `json:"displayName"`             // 展示名
-	Provider                string    `json:"provider"`                // anthropic / openai / glm / ...
-	CurrencyCode            string    `json:"currencyCode"`            // "USD" / "CNY"
-	InputPerMillion         int64     `json:"inputPerMillion"`         // micro-currency per 1M input tokens
+	ID                      string    `json:"id"`              // uuid 或 model_key
+	ModelPattern            string    `json:"modelPattern"`    // 标准化后的模型 ID（精确匹配）
+	DisplayName             string    `json:"displayName"`     // 展示名
+	Provider                string    `json:"provider"`        // anthropic / openai / glm / ...
+	CurrencyCode            string    `json:"currencyCode"`    // "USD" / "CNY"
+	InputPerMillion         int64     `json:"inputPerMillion"` // micro-currency per 1M input tokens
 	OutputPerMillion        int64     `json:"outputPerMillion"`
 	CacheReadPerMillion     int64     `json:"cacheReadPerMillion"`
 	CacheCreationPerMillion int64     `json:"cacheCreationPerMillion"`
@@ -131,9 +135,9 @@ type ModelPricing struct {
 
 // PricingData 是价格表持久化结构（usage-pricing.json）。
 type PricingData struct {
-	Version         int            `json:"version"`
-	Models          []ModelPricing `json:"models"`
-	FallbackPolicy  FallbackPolicy `json:"fallbackPolicy"`
+	Version        int            `json:"version"`
+	Models         []ModelPricing `json:"models"`
+	FallbackPolicy FallbackPolicy `json:"fallbackPolicy"`
 }
 
 // FallbackPolicy 控制价格表失配时的兜底行为。
@@ -146,13 +150,19 @@ type FallbackPolicy struct {
 
 // SyncState 记录每个被追踪的源文件/源数据库的增量同步游标。
 type SyncState struct {
-	SourceType      string    `json:"sourceType"` // claude_jsonl / codex_jsonl / opencode_db
-	SourceKey       string    `json:"sourceKey"`  // 文件路径 或 "opencode_default"
-	AppType         string    `json:"appType"`
-	LastMTime       int64     `json:"lastMTime"`         // Unix nano（文件类源）
-	LastLineOffset  int64     `json:"lastLineOffset"`    // 已处理字节偏移（文件断点续传）
-	LastTimeUpdated int64     `json:"lastTimeUpdated"`   // sessions.time_updated 最大值（opencode 增量）
-	LastSyncedAt    time.Time `json:"lastSyncedAt"`
-	LastError       string    `json:"lastError,omitempty"`
-	RecordsAdded    int64     `json:"recordsAdded"`
+	SourceType      string `json:"sourceType"` // claude_jsonl / codex_jsonl / opencode_db
+	SourceKey       string `json:"sourceKey"`  // 文件路径 或 "opencode_default"
+	AppType         string `json:"appType"`
+	LastMTime       int64  `json:"lastMTime"`       // Unix nano（文件类源）
+	LastLineOffset  int64  `json:"lastLineOffset"`  // 已处理字节偏移（文件断点续传）
+	LastTimeUpdated int64  `json:"lastTimeUpdated"` // sessions.time_updated 最大值（opencode 增量）
+	// Codex 增量读取从上次偏移续传时，session_meta / turn_context 通常已经
+	// 位于偏移前。持久化上下文可避免后续 token_count 被写成空模型/空供应商。
+	LastProvider   string    `json:"lastProvider,omitempty"`
+	LastModel      string    `json:"lastModel,omitempty"`
+	LastSessionID  string    `json:"lastSessionId,omitempty"`
+	LastProjectDir string    `json:"lastProjectDir,omitempty"`
+	LastSyncedAt   time.Time `json:"lastSyncedAt"`
+	LastError      string    `json:"lastError,omitempty"`
+	RecordsAdded   int64     `json:"recordsAdded"`
 }

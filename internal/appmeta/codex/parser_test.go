@@ -80,15 +80,21 @@ func TestExtractUsageRecordsCodexSample(t *testing.T) {
 func TestExtractUsageRecordsCodexResume(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rollout-test.jsonl")
-	// 第一行（含换行符）的长度
+	// 前两行（含换行符）位于增量 offset 前，模拟已同步过的 rollout 元数据。
 	line1 := `{"timestamp":"2026-07-16T10:27:44.327Z","type":"session_meta","payload":{"cwd":"/w","model_provider":"openai","model":null}}` + "\n"
-	line2 := `{"timestamp":"2026-07-16T10:27:55.240Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10,"reasoning_output_tokens":5}}}}` + "\n"
-	content := []byte(line1 + line2)
-	os.WriteFile(path, content, 0o600)
+	line2 := `{"timestamp":"2026-07-16T10:27:50Z","type":"turn_context","payload":{"cwd":"/w","model":"gpt-5.6-sol"}}` + "\n"
+	line3 := `{"timestamp":"2026-07-16T10:27:55.240Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10,"reasoning_output_tokens":5}}}}` + "\n"
+	content := []byte(line1 + line2 + line3)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
 
-	// 从 line1 末尾续传：仅能读到 line2，且 provider/model 从已扫过的 session_meta 状态会丢失
-	// （因为我们从头扫才能拿到 session_meta）。验证：续传模式下 records 数正确。
-	records, _, _, err := ExtractUsageRecords(path, int64(len(line1)))
+	offset := int64(len(line1) + len(line2))
+	context, err := ReadUsageContext(path, offset)
+	if err != nil {
+		t.Fatalf("ReadUsageContext: %v", err)
+	}
+	records, _, nextContext, err := ExtractUsageRecordsWithContext(path, offset, context)
 	if err != nil {
 		t.Fatalf("resume Extract: %v", err)
 	}
@@ -97,5 +103,11 @@ func TestExtractUsageRecordsCodexResume(t *testing.T) {
 	}
 	if records[0].InputTokens != 100 {
 		t.Errorf("resume input = %d, want 100", records[0].InputTokens)
+	}
+	if records[0].Provider != "openai" || records[0].Model != "gpt-5.6-sol" {
+		t.Errorf("resume context = %s/%s, want openai/gpt-5.6-sol", records[0].Provider, records[0].Model)
+	}
+	if nextContext.Provider != "openai" || nextContext.Model != "gpt-5.6-sol" {
+		t.Errorf("next context = %s/%s, want openai/gpt-5.6-sol", nextContext.Provider, nextContext.Model)
 	}
 }

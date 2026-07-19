@@ -32,20 +32,22 @@ func NewPricingService(configDir string) *PricingService {
 // Load 从磁盘加载价格表；文件不存在或解析失败时回退到 seed（不返回错误）。
 func (p *PricingService) Load() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	b, err := os.ReadFile(p.configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// 首次启动：使用 seed 并尝试持久化（失败仅日志，不阻塞）。
 			p.data = defaultPricingData()
+			p.mu.Unlock()
 			return nil
 		}
+		p.mu.Unlock()
 		return fmt.Errorf("read pricing file: %w", err)
 	}
 
 	var cfg PricingData
 	if err := json.Unmarshal(b, &cfg); err != nil {
+		p.mu.Unlock()
 		return fmt.Errorf("parse pricing file: %w", err)
 	}
 	if cfg.Models == nil {
@@ -60,8 +62,45 @@ func (p *PricingService) Load() error {
 	if cfg.FallbackPolicy.CNYToUSDFixedRate == 0 {
 		cfg.FallbackPolicy.CNYToUSDFixedRate = 0.14
 	}
+	changed := mergeMissingBuiltinPricing(&cfg, defaultPricingData())
 	p.data = &cfg
+	p.mu.Unlock()
+	if changed {
+		return p.Save()
+	}
 	return nil
+}
+
+// mergeMissingBuiltinPricing lets existing user pricing files receive new
+// built-in models without overwriting prices the user explicitly customized.
+// It is intentionally keyed by model pattern, the same key used by Resolve.
+func mergeMissingBuiltinPricing(cfg, builtin *PricingData) bool {
+	if cfg == nil || builtin == nil {
+		return false
+	}
+	seen := make(map[string]struct{}, len(cfg.Models))
+	for _, model := range cfg.Models {
+		if model.ModelPattern != "" {
+			seen[model.ModelPattern] = struct{}{}
+		}
+	}
+	changed := false
+	for _, model := range builtin.Models {
+		if !model.IsBuiltin || model.ModelPattern == "" {
+			continue
+		}
+		if _, exists := seen[model.ModelPattern]; exists {
+			continue
+		}
+		cfg.Models = append(cfg.Models, model)
+		seen[model.ModelPattern] = struct{}{}
+		changed = true
+	}
+	if cfg.Version < builtin.Version {
+		cfg.Version = builtin.Version
+		changed = true
+	}
+	return changed
 }
 
 // Save 持久化价格表（原子写：.tmp + Rename）。
@@ -129,7 +168,7 @@ func (p *PricingService) Resolve(normalizedModel string) (ModelPricing, bool) {
 
 	// 2. 前缀匹配（最长 ModelPattern 优先）
 	type cand struct {
-		mp    ModelPricing
+		mp     ModelPricing
 		length int
 	}
 	var cands []cand

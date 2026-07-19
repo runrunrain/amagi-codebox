@@ -14,7 +14,7 @@ import (
 // TestQuerySessionsOpenCodeSchema 用真实 OpenCode schema 构造临时 db。
 //
 // 实测真相：表名是单数 session；time_* 是 13 位毫秒；model 是 JSON 字符串；
-// cost 是 real；币种按 providerID 推断（zhipuai → CNY）。
+// cost 是 real；币种按 providerID 推断（zhipuai → CNY，DeepSeek → USD）。
 func TestQuerySessionsOpenCodeSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "opencode.db")
 	createOpenCodeTestDB(t, dbPath)
@@ -99,7 +99,7 @@ func TestInferCurrency(t *testing.T) {
 	cases := map[string]string{
 		"zhipuai":    "CNY",
 		"ZHIPU":      "CNY",
-		"deepseek":   "CNY",
+		"deepseek":   "USD",
 		"moonshot":   "CNY",
 		"kimi":       "CNY",
 		"minimax":    "CNY",
@@ -119,6 +119,58 @@ func TestInferCurrency(t *testing.T) {
 			t.Errorf("inferCurrencyByProvider(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// TestQuerySessionsUsesAssistantMessageMetadata covers newer OpenCode schemas
+// where session.model is NULL and model/provider live on the newest assistant
+// message instead.
+func TestQuerySessionsUsesAssistantMessageMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	createOpenCodeTestDB(t, dbPath)
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?", dbPath))
+	if err != nil {
+		t.Fatalf("open fixture db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE message (
+		id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL,
+		time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create message table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO session
+		(id, project_id, slug, directory, title, version, time_created, time_updated, model, cost,
+		 tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"ses_message", "proj1", "slug3", "/work3", "title3", "1",
+		1783051800000, 1783051900000, nil, 0.042081436,
+		59430, 13548, 0, 618112, 0); err != nil {
+		t.Fatalf("insert NULL-model session: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO message (id, session_id, data, time_created, time_updated) VALUES
+		(?,?,?,?,?), (?,?,?,?,?)`,
+		"msg_old", "ses_message", `{"role":"assistant","providerID":"openai","modelID":"gpt-4o"}`, 1, 1,
+		"msg_new", "ses_message", `{"role":"assistant","providerID":"deepseek","modelID":"deepseek-v4-pro"}`, 2, 2); err != nil {
+		t.Fatalf("insert assistant messages: %v", err)
+	}
+
+	stubs, _, err := QuerySessions(dbPath, 0)
+	if err != nil {
+		t.Fatalf("QuerySessions: %v", err)
+	}
+	for _, stub := range stubs {
+		if stub.SessionID != "ses_message" {
+			continue
+		}
+		if stub.Model != "deepseek-v4-pro" || stub.Provider != "deepseek" {
+			t.Fatalf("assistant metadata = %s/%s, want deepseek-v4-pro/deepseek", stub.Model, stub.Provider)
+		}
+		if stub.CurrencyCode != "USD" {
+			t.Fatalf("DeepSeek V4 Pro currency = %s, want USD", stub.CurrencyCode)
+		}
+		return
+	}
+	t.Fatal("NULL-model session was not returned")
 }
 
 // createOpenCodeTestDB 用真实 schema 构造测试 db（两条 session 数据）。

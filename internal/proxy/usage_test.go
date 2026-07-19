@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net/http/httptest"
 	"testing"
 )
 
@@ -111,6 +112,46 @@ func TestParseUsageFromJSON_RootLevelTokens(t *testing.T) {
 	}
 	if result.CacheCreationInputTokens != 10 {
 		t.Errorf("Expected CacheCreationInputTokens=10, got %d", result.CacheCreationInputTokens)
+	}
+}
+
+// Mixed gateways often combine Anthropic's input_tokens with OpenAI's
+// completion_tokens. Each dimension must fall back independently.
+func TestParseUsageFromJSON_MixedAndTotalSchemas(t *testing.T) {
+	mixed := parseUsageFromJSON([]byte(`{"usage":{"input_tokens":120,"completion_tokens":30}}`))
+	if mixed == nil || mixed.InputTokens != 120 || mixed.OutputTokens != 30 {
+		t.Fatalf("mixed usage = %#v, want input=120 output=30", mixed)
+	}
+
+	derived := parseUsageFromJSON([]byte(`{"usage":{"prompt_tokens":80,"total_tokens":100}}`))
+	if derived == nil || derived.InputTokens != 80 || derived.OutputTokens != 20 {
+		t.Fatalf("derived usage = %#v, want input=80 output=20", derived)
+	}
+
+	choice := parseUsageFromJSON([]byte(`{"choices":[{"usage":{"prompt_tokens":50,"completion_tokens":10}}]}`))
+	if choice == nil || choice.InputTokens != 50 || choice.OutputTokens != 10 {
+		t.Fatalf("choice usage = %#v, want input=50 output=10", choice)
+	}
+}
+
+func TestParseUsageFromJSON_CacheOnly(t *testing.T) {
+	result := parseUsageFromJSON([]byte(`{"usage":{"cache_read_input_tokens":42}}`))
+	if result == nil || result.CacheReadInputTokens != 42 {
+		t.Fatalf("cache-only usage = %#v, want cache_read=42", result)
+	}
+}
+
+func TestUsageRequestIDFallbackIsUnique(t *testing.T) {
+	service := NewProxyService()
+	request := httptest.NewRequest("POST", "http://localhost/v1/messages", nil)
+	first := service.usageRequestID(request)
+	second := service.usageRequestID(request)
+	if first == "" || second == "" || first == second {
+		t.Fatalf("fallback request IDs must be non-empty and unique: %q / %q", first, second)
+	}
+	request.Header.Set("X-Request-ID", "upstream-request")
+	if got := service.usageRequestID(request); got != "upstream-request" {
+		t.Fatalf("upstream request ID = %q, want upstream-request", got)
 	}
 }
 
