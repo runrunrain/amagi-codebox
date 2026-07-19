@@ -12,6 +12,7 @@ permissions:
 jobs:
   go-quality:
     name: Go (${{ matrix.os }})
+    needs: frontend-mobile
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,6 +21,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Download embedded web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: embedded-web-assets
+          path: .
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -68,3 +75,12 @@ jobs:
       - name: Test mobile
         run: npm run test
         working-directory: mobile
+
+      - name: Upload embedded web assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedded-web-assets
+          path: |
+            frontend/dist
+            mobile/dist
+          if-no-files-found: error
