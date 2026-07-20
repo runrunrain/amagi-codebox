@@ -229,13 +229,47 @@ export function useTerminalEngine() {
   // ---- clipboard helpers -------------------------------------------------
 
   async function copyToClipboard(text: string) {
-    // 三级降级剪贴板写入：Wails 原生 → WebView 异步 API → execCommand。
-    // 必须优先 Wails 原生：WebView2 中 navigator.clipboard.writeText 在焦点
-    // 落在 xterm canvas/WebGL 元素、或用户激活(activation)上下文已丢失时
-    // 会抛 NotAllowedError 静默失败，导致选中文字后复制不走；Wails 走
-    // Windows 原生剪贴板 API，不依赖 WebView 权限/焦点，最可靠。
+    if (!text) return
+    // 降级链：execCommand 同步优先 → Wails 原生 → WebView 异步 API。
+    //
+    // execCommand('copy') 必须放在所有 await 之前：async 函数在首个 await
+    // 之前的语句与调用者（keydown 回调）同步执行，处于按键手势的同步
+    // 上下文内，WebView2 / WKWebView 都允许同步复制，这是最可靠的路径。
+    // 注意：transient user activation 本身约有 5 秒有效期，并非「await
+    // 一发生就失效」；但在异步降级链末端再调 execCommand 时，往往已因
+    // IPC 往返耗时与激活窗口推移，不再被 WebView2 视为有效用户手势，
+    // 复制会被静默拒绝。
+    //
+    // 这正是 Windows「选中后 Ctrl+C 复制不走」的根因：旧顺序把 Wails
+    // ClipboardSetText 放在第一级，而它在 WebView2 下走 OpenClipboard(0)，
+    // 常被输入法 / 剪贴板工具 / WebView2 自身占用而失败（IPC 返回 false）；
+    // 随即降级到 navigator.clipboard.writeText（焦点在 xterm canvas 上抛
+    // NotAllowedError），再到 execCommand——此时已在异步链末端，脱离了
+    // 按键的同步手势上下文，整条降级链断裂。Mac 不受影响是因为 Cmd+C
+    // 走浏览器原生 copy 事件，根本不进入此 Ctrl+C handler。
 
-    // 一级：Wails 原生 ClipboardSetText（走 Windows API）。
+    // 一级（同步，user activation 有效）：临时 textarea + execCommand('copy')。
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    ta.style.top = '0'
+    document.body.appendChild(ta)
+    let copied = false
+    try {
+      // 必须先 focus 再 select，否则焦点仍在 xterm canvas 上会导致
+      // execCommand('copy') 复制不到内容。
+      ta.focus()
+      ta.select()
+      copied = document.execCommand('copy')
+    } catch {
+      /* execCommand 已废弃或不可用：降级 */
+    }
+    document.body.removeChild(ta)
+    if (copied) return
+
+    // 二级：Wails 原生 ClipboardSetText（走系统剪贴板 API，不依赖 WebView
+    // 焦点 / user activation）。execCommand 失败时的兜底。
     try {
       const ok = await ClipboardSetText(text)
       if (ok) return
@@ -243,29 +277,12 @@ export function useTerminalEngine() {
       /* Wails runtime 不可用（非桌面环境）时降级 */
     }
 
-    // 二级：WebView 异步剪贴板 API。
+    // 三级：WebView 异步剪贴板 API（前两级均失败时的最后兜底）。
     try {
       await navigator.clipboard.writeText(text)
-      return
     } catch {
-      /* NotAllowedError 或权限拒绝：再降级 execCommand */
+      /* NotAllowedError 或权限拒绝：全部降级失败，忽略 */
     }
-
-    // 三级：同步 execCommand。textarea 必须先 focus 再 select 才能可靠复制，
-    // 否则焦点仍在 xterm canvas 上会导致 execCommand('copy') 失败。
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.left = '-9999px'
-    document.body.appendChild(ta)
-    try {
-      ta.focus()
-      ta.select()
-      document.execCommand('copy')
-    } catch {
-      /* execCommand 已废弃且可能不可用：忽略 */
-    }
-    document.body.removeChild(ta)
   }
 
   async function pasteToTerminal(sessionId: string) {
