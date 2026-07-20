@@ -23,6 +23,15 @@ func resolveExecutableWithEnvForOS(osName string, command string, env []string) 
 		if resolved := resolveCommandViaShellFallback(command, env, nil); resolved != "" {
 			return resolved, "fallback"
 		}
+		// The ChatGPT and Codex macOS apps bundle a supported Codex CLI under
+		// their application resources. Finder-launched desktop apps generally
+		// inherit the minimal launchd PATH, so that bundle directory is absent
+		// even when `codex` works in an interactive terminal. Treat the known
+		// app bundle locations as a final controlled fallback, after the caller
+		// PATH and shell-specific resolution have had precedence.
+		if resolved := resolveDarwinCodexAppBundle(command, env); resolved != "" {
+			return resolved, "app-bundle"
+		}
 	}
 	if osName == currentOS() {
 		if resolved, err := exec.LookPath(command); err == nil {
@@ -214,6 +223,57 @@ func userLocalBinCandidatesForOS(osName string, env []string) []string {
 
 func userNativeBinCandidatesForOS(osName string, env []string) []string {
 	return userBinCandidatesForOS(osName, env, [][]string{{".local", "bin"}})
+}
+
+// resolveDarwinCodexAppBundle resolves the Codex binary embedded by the
+// ChatGPT and standalone Codex applications. It intentionally accepts only a
+// bare `codex` command: explicit paths and arbitrary command names must remain
+// governed by the normal resolver rules.
+//
+// Both /Applications and ~/Applications are supported. The latter matters for
+// users without administrator rights who drag an app into their own Applications
+// directory. The user-home fallback mirrors userBinCandidatesForOS so detection
+// still works when the application environment omits HOME.
+func resolveDarwinCodexAppBundle(command string, env []string) string {
+	if !strings.EqualFold(strings.TrimSpace(command), "codex") {
+		return ""
+	}
+
+	applicationDirs := make([]string, 0, 4)
+	seenDirs := map[string]struct{}{}
+	appendApplicationDir := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		dir = filepath.Clean(dir)
+		key := normalizePathKey(dir, "darwin")
+		if _, ok := seenDirs[key]; ok {
+			return
+		}
+		seenDirs[key] = struct{}{}
+		applicationDirs = append(applicationDirs, dir)
+	}
+
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if home := strings.TrimSpace(envValue(env, key)); home != "" {
+			appendApplicationDir(filepath.Join(home, "Applications"))
+		}
+	}
+	if home, err := pathLookupUserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		appendApplicationDir(filepath.Join(home, "Applications"))
+	}
+	appendApplicationDir("/Applications")
+
+	for _, appDir := range applicationDirs {
+		for _, appName := range []string{"ChatGPT.app", "Codex.app"} {
+			candidate := filepath.Join(appDir, appName, "Contents", "Resources", "codex")
+			if fileExists(candidate) {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 func userBinCandidatesForOS(osName string, env []string, suffixes [][]string) []string {

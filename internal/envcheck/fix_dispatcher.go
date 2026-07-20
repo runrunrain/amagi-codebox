@@ -831,6 +831,9 @@ func (s *Service) resetNPMCache() {
 	s.npmResolvedErr = nil
 	s.pythonOnce = sync.Once{}
 	s.pythonAvailable = false
+	s.pythonPath = ""
+	s.pythonVersion = ""
+	s.pythonVersionUnsupported = false
 	s.pythonResolvedErr = nil
 }
 

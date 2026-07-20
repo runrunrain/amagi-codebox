@@ -162,6 +162,52 @@ func TestDarwinResolveExecutableFindsCodexInLocalNodeBin(t *testing.T) {
 	}
 }
 
+func TestDarwinResolveExecutableFindsCodexInChatGPTAppBundle(t *testing.T) {
+	homeDir := t.TempDir()
+	codexPath := filepath.Join(homeDir, "Applications", "ChatGPT.app", "Contents", "Resources", "codex")
+	if err := os.MkdirAll(filepath.Dir(codexPath), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle resources: %v", err)
+	}
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write bundled codex: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	env := []string{
+		"HOME=" + homeDir,
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	}
+
+	cli, diagnostics, err := resolver.ResolveExecutable("codex", []string{"--version"}, env)
+	if err != nil {
+		t.Fatalf("ResolveExecutable: %v", err)
+	}
+	if cli.Path != codexPath {
+		t.Fatalf("resolved Codex path = %q, want bundled path %q", cli.Path, codexPath)
+	}
+	if diagnostics.CLISource != "app-bundle" {
+		t.Fatalf("CLI source = %q, want app-bundle", diagnostics.CLISource)
+	}
+
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:    "codex",
+		LaunchMode: "embedded",
+		WorkDir:    t.TempDir(),
+		Env:        env,
+		PTYCols:    120,
+		PTYRows:    40,
+	})
+	if err != nil {
+		t.Fatalf("Resolve launch spec: %v", err)
+	}
+	if spec.CLI.Path != codexPath {
+		t.Fatalf("launch Codex path = %q, want bundled path %q", spec.CLI.Path, codexPath)
+	}
+	if spec.Diagnostics.CLISource != "app-bundle" {
+		t.Fatalf("launch CLI source = %q, want app-bundle", spec.Diagnostics.CLISource)
+	}
+}
+
 func TestBuildEffectiveEnvAddsLocalNodeBinToProcessPATH(t *testing.T) {
 	if currentOS() != "darwin" {
 		t.Skip("current process effective PATH assertion is only defined for darwin")

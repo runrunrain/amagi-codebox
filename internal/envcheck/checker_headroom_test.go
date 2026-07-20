@@ -210,9 +210,79 @@ func TestHeadroomVenvInstall_EnsureVenvIsIdempotent(t *testing.T) {
 
 	// The venv creation command must NOT have been invoked.
 	for _, call := range runner.calls {
-		if len(call.Args) == 3 && call.Args[0] == "-m" && call.Args[1] == "venv" {
+		if len(call.Args) >= 2 && call.Args[0] == "-m" && call.Args[1] == "venv" {
 			t.Fatalf("ensureHeadroomVenv should skip creation when venv python exists; got venv command: %+v", call)
 		}
+	}
+}
+
+// headroomVenvRebuildRunner emulates an existing old venv that reports Python
+// 3.9 until CodeBox recreates it. The selected external runtime reports 3.12.
+type headroomVenvRebuildRunner struct {
+	venvPythonPath string
+	rebuilt        bool
+	calls          []platform.CommandSpec
+}
+
+func (r *headroomVenvRebuildRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
+	r.calls = append(r.calls, spec)
+	if len(spec.Args) == 1 && spec.Args[0] == "--version" {
+		if sameNormalizedPath(spec.Path, r.venvPythonPath) && !r.rebuilt {
+			return &platform.ProcessResult{Stdout: "Python 3.9.6"}, nil
+		}
+		return &platform.ProcessResult{Stdout: "Python 3.12.13"}, nil
+	}
+	if len(spec.Args) >= 3 && spec.Args[0] == "-m" && spec.Args[1] == "venv" {
+		r.rebuilt = true
+		return &platform.ProcessResult{}, nil
+	}
+	return &platform.ProcessResult{}, os.ErrNotExist
+}
+
+func (r *headroomVenvRebuildRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func TestHeadroomVenvInstall_RebuildsUnsupportedManagedVenv(t *testing.T) {
+	pathDir := t.TempDir()
+	compatiblePythonPath := writeTestExecutable(t, pathDir, "python3.12")
+	t.Setenv("PATH", pathDir)
+
+	venvDir := filepath.Join(t.TempDir(), "headroom-venv")
+	venvBinDir := filepath.Dir(headroomVenvPythonPath(venvDir))
+	venvPythonPath := headroomVenvPythonPath(venvDir)
+	if err := os.MkdirAll(venvBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir old venv bin: %v", err)
+	}
+	if err := os.WriteFile(venvPythonPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write old venv Python: %v", err)
+	}
+
+	runner := &headroomVenvRebuildRunner{venvPythonPath: venvPythonPath}
+	svc := NewServiceWithRunner(runner)
+	svc.SetHeadroomVenvDir(venvDir)
+
+	if err := svc.ensureHeadroomVenv(); err != nil {
+		t.Fatalf("ensureHeadroomVenv: %v", err)
+	}
+	if !sameNormalizedPath(svc.pythonPath, compatiblePythonPath) {
+		t.Fatalf("selected runtime = %q, want %q", svc.pythonPath, compatiblePythonPath)
+	}
+
+	var rebuildCall *platform.CommandSpec
+	for i := range runner.calls {
+		call := &runner.calls[i]
+		if len(call.Args) >= 2 && call.Args[0] == "-m" && call.Args[1] == "venv" {
+			rebuildCall = call
+			break
+		}
+	}
+	if rebuildCall == nil {
+		t.Fatal("expected old CodeBox venv to be rebuilt")
+	}
+	wantArgs := []string{"-m", "venv", "--clear", venvDir}
+	if strings.Join(rebuildCall.Args, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("rebuild args = %v, want %v", rebuildCall.Args, wantArgs)
 	}
 }
 
@@ -527,6 +597,59 @@ func TestPopulateHeadroomCanInstall_ProbesPython(t *testing.T) {
 	}
 	if !status.CanInstallByMethod["venv"] {
 		t.Errorf("CanInstallByMethod[venv] = false, want true")
+	}
+}
+
+// TestHeadroomPythonProbePrefersSupportedVersionedRuntime protects the macOS
+// regression where /usr/bin/python3 (3.9) shadowed an installed Homebrew
+// python3.12. Headroom requires Python 3.10+, so discovery must prefer the
+// versioned compatible candidate rather than stop at the generic name.
+func TestHeadroomPythonProbePrefersSupportedVersionedRuntime(t *testing.T) {
+	pathDir := t.TempDir()
+	python39Path := writeTestExecutable(t, pathDir, "python3")
+	python312Path := writeTestExecutable(t, pathDir, "python3.12")
+	t.Setenv("PATH", pathDir)
+
+	runner := &mockRunner{responses: []mockResponse{
+		{pathPrefix: "python3.12", stdout: "Python 3.12.13"},
+		{pathPrefix: "python", stdout: "Python 3.9.6"},
+	}}
+	svc := NewServiceWithRunner(runner)
+
+	if err := svc.ensurePythonAvailable(); err != nil {
+		t.Fatalf("ensurePythonAvailable: %v", err)
+	}
+	if !svc.pythonAvailable {
+		t.Fatal("pythonAvailable = false, want true")
+	}
+	if !sameNormalizedPath(svc.pythonPath, python312Path) {
+		t.Fatalf("selected Python path = %q, want compatible Python %q (not %q)", svc.pythonPath, python312Path, python39Path)
+	}
+	if svc.pythonVersion != "3.12.13" {
+		t.Fatalf("selected Python version = %q, want 3.12.13", svc.pythonVersion)
+	}
+}
+
+func TestPopulateHeadroomCanInstall_RejectsUnsupportedPythonVersion(t *testing.T) {
+	pathDir := t.TempDir()
+	writeTestExecutable(t, pathDir, "python3")
+	t.Setenv("PATH", pathDir)
+
+	runner := &mockRunner{responses: []mockResponse{
+		{pathPrefix: "python", stdout: "Python 3.9.6"},
+	}}
+	svc := NewServiceWithRunner(runner)
+	status := &CheckStatus{Tool: ToolHeadroom}
+	svc.populateHeadroomCanInstall(status)
+
+	if status.CanInstall {
+		t.Fatal("CanInstall = true, want false for Python 3.9")
+	}
+	if !hasIssueCode(status, "python_version_unsupported") {
+		t.Fatalf("expected python_version_unsupported issue, got %+v", status.Issues)
+	}
+	if !strings.Contains(status.InstallBlockedReason, "Python 3.10+") {
+		t.Fatalf("blocked reason should explain the minimum version, got %q", status.InstallBlockedReason)
 	}
 }
 

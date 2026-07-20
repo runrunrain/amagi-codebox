@@ -4,7 +4,7 @@
 
 **管理 Claude Code / OpenCode / Codex 多服务提供商配置的跨平台桌面应用**
 
-[![Version](https://img.shields.io/badge/version-1.2.84-blue)](https://github.com/runrunrain/amagi-codebox)
+[![Version](https://img.shields.io/badge/version-1.2.85-blue)](https://github.com/runrunrain/amagi-codebox)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)](https://go.dev)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)

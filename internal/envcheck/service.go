@@ -87,12 +87,16 @@ type Service struct {
 	npmAvailable   bool
 	npmResolvedErr error // error message when npm is not available
 
-	// pythonAvailability caches whether python3 is resolvable. Populated once
-	// per service lifetime; used by the Headroom install path (venv creation
-	// capability) so it does not gate on npm or pip.
-	pythonOnce        sync.Once
-	pythonAvailable   bool
-	pythonResolvedErr error // error message when python3 is not available
+	// pythonAvailability caches a runnable Python 3.10+ runtime for Headroom.
+	// It is populated once per service lifetime and records the selected path so
+	// venv creation cannot accidentally fall back to macOS's unsupported system
+	// Python 3.9 after a compatible Homebrew/pyenv runtime was found.
+	pythonOnce               sync.Once
+	pythonAvailable          bool
+	pythonPath               string
+	pythonVersion            string
+	pythonVersionUnsupported bool
+	pythonResolvedErr        error // error message when no supported Python is available
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -367,10 +371,16 @@ func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 		status.InstallBlockedReason = s.pythonResolvedErr.Error()
 	}
 	if !status.Installed || strings.TrimSpace(status.Error) != "" {
+		issueCode := "python_not_found"
+		message := "python3 is required to install Headroom but is not available"
+		if s.pythonVersionUnsupported {
+			issueCode = "python_version_unsupported"
+			message = "Headroom requires Python 3.10 or newer"
+		}
 		status.Issues = append(status.Issues, CheckIssue{
 			Severity: SeverityError,
-			Code:     "python_not_found",
-			Message:  "python3 is required to install Headroom but is not available",
+			Code:     issueCode,
+			Message:  message,
 			Detail:   status.InstallBlockedReason,
 			Solutions: []ResolutionAction{
 				{

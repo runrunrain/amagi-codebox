@@ -238,6 +238,21 @@ func (r *defaultCLIResolver) resolveCLIForRequest(commands []string, args []stri
 			}
 		}
 	}
+	// Finder-launched macOS apps normally inherit only launchd's minimal PATH.
+	// The Codex CLI embedded in ChatGPT.app/Codex.app is therefore invisible to
+	// ordinary PATH resolution even though it is a valid launch target. Keep the
+	// bundle fallback after the caller PATH and shell fallback so explicit user
+	// installations continue to take precedence.
+	if r.capabilities.OS == "darwin" {
+		for _, command := range commands {
+			if resolvedPath := resolveDarwinCodexAppBundle(command, env); resolvedPath != "" {
+				return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
+					CLISource:   "app-bundle",
+					PATHSources: []string{"app-env", "controlled-additions", "app-bundle"},
+				}, nil
+			}
+		}
+	}
 	if r.capabilities.OS == currentOS() {
 		for _, command := range commands {
 			if resolvedPath, err := exec.LookPath(command); err == nil && strings.TrimSpace(resolvedPath) != "" {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2200,23 +2201,55 @@ func (s *Service) headroomVenvBinDir() string {
 	return headroomVenvBinDir(s.headroomVenvDir)
 }
 
-// resolvePythonPath returns the absolute path to python3, preferring "python3"
-// then "python", falling back to the bare "python3" name. Mirrors resolveNPMPath.
+const (
+	headroomMinimumPythonMajor = 3
+	headroomMinimumPythonMinor = 10
+)
+
+var headroomPythonVersionPattern = regexp.MustCompile(`(?i)\bpython\s+(\d+)\.(\d+)(?:\.(\d+))?`)
+
+// headroomPythonCandidateNames is deliberately ordered by preferred supported
+// interpreter. macOS's /usr/bin/python3 is still Python 3.9 on many systems,
+// while Homebrew commonly exposes a compatible interpreter as python3.12 or
+// python3.13. Probing only the generic name made CodeBox select the unsupported
+// system runtime even when a supported one was already installed.
+var headroomPythonCandidateNames = []string{
+	"python3.14",
+	"python3.13",
+	"python3.12",
+	"python3.11",
+	"python3.10",
+	"python3",
+	"python",
+}
+
+type pythonRuntime struct {
+	Path    string
+	Version string
+	Major   int
+	Minor   int
+}
+
+func (runtime pythonRuntime) supportsHeadroom() bool {
+	return runtime.Major == headroomMinimumPythonMajor && runtime.Minor >= headroomMinimumPythonMinor
+}
+
+// resolvePythonPath returns the compatible interpreter selected by the cached
+// probe. The bare fallback is retained only for callers that request the path
+// before probing; installer paths always call ensurePythonAvailable first.
 func (s *Service) resolvePythonPath() string {
-	env := s.buildEnhancedEnv()
-	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	for _, name := range []string{"python3", "python"} {
-		resolved, _, err := resolver.ResolveExecutable(name, nil, env)
-		if err == nil && strings.TrimSpace(resolved.Path) != "" {
-			return resolved.Path
-		}
+	s.pythonOnce.Do(func() {
+		s.probePythonAvailability()
+	})
+	if s.pythonAvailable && strings.TrimSpace(s.pythonPath) != "" {
+		return s.pythonPath
 	}
 	return "python3"
 }
 
-// ensurePythonAvailable probes python3 availability (cached once per service
-// lifetime via pythonOnce). Returns an error explaining how to remediate when
-// python3 is not found. Mirrors ensureNPMAvailable.
+// ensurePythonAvailable probes a runnable Python 3.10+ interpreter once per
+// service lifetime. Headroom's published package requires Python 3.10 or
+// newer, so merely finding a `python3` executable is not sufficient.
 func (s *Service) ensurePythonAvailable() error {
 	s.pythonOnce.Do(func() {
 		s.probePythonAvailability()
@@ -2227,65 +2260,151 @@ func (s *Service) ensurePythonAvailable() error {
 	if s.pythonResolvedErr != nil {
 		return s.pythonResolvedErr
 	}
-	return fmt.Errorf("python3 未在 PATH 中找到。请安装 Python 3 (https://www.python.org) 并确保 python3 可用，然后重启 CodeBox。")
+	return fmt.Errorf("未找到 Headroom 所需的 Python 3.10+。请安装兼容的 Python 后重新检测。")
 }
 
-// probePythonAvailability performs the actual python3 availability check and
-// stores the result in the service's cache fields. Called exactly once via
-// pythonOnce. It prefers "python3" then "python" and verifies the binary
-// actually runs. python3 availability implies venv-creation capability (the
-// venv module ships with the standard library).
+// probePythonAvailability discovers a runnable, Headroom-compatible Python
+// interpreter and stores it for both install eligibility and venv creation.
 func (s *Service) probePythonAvailability() {
+	s.pythonAvailable = false
+	s.pythonPath = ""
+	s.pythonVersion = ""
+	s.pythonVersionUnsupported = false
+	s.pythonResolvedErr = nil
+
+	runtime, foundUnsupported, err := s.findSupportedPythonRuntime()
+	if err != nil {
+		s.pythonVersionUnsupported = foundUnsupported
+		s.pythonResolvedErr = err
+		return
+	}
+	s.pythonAvailable = true
+	s.pythonPath = runtime.Path
+	s.pythonVersion = runtime.Version
+}
+
+// findSupportedPythonRuntime resolves the preferred Python candidates, verifies
+// that they run, and returns the first Python 3.10+ runtime. The bool result is
+// true when at least one runnable but unsupported Python was found, allowing the
+// UI to distinguish a version problem from a missing executable.
+func (s *Service) findSupportedPythonRuntime() (pythonRuntime, bool, error) {
 	env := s.buildEnhancedEnv()
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	for _, name := range []string{"python3", "python"} {
+	seenPaths := map[string]struct{}{}
+	unsupported := make([]string, 0, 2)
+	unusable := make([]string, 0, 2)
+
+	for _, name := range headroomPythonCandidateNames {
 		resolved, _, resolveErr := resolver.ResolveExecutable(name, nil, env)
 		if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
-			Path:   resolved.Path,
-			Args:   []string{"--version"},
-			Env:    env,
-			Policy: platform.DefaultProcessPolicy(),
-		})
-		cancel()
-		if runErr == nil {
-			s.pythonAvailable = true
-			s.pythonResolvedErr = nil
-			return
+		path := filepath.Clean(strings.TrimSpace(resolved.Path))
+		pathKey := strings.ToLower(strings.ReplaceAll(path, `\\`, "/"))
+		if _, seen := seenPaths[pathKey]; seen {
+			continue
 		}
+		seenPaths[pathKey] = struct{}{}
+
+		runtime, probeErr := s.probePythonRuntime(path, env)
+		if probeErr != nil {
+			unusable = append(unusable, fmt.Sprintf("%s: %s", path, sanitizeInstallerOutput(probeErr.Error())))
+			continue
+		}
+		if runtime.supportsHeadroom() {
+			return runtime, false, nil
+		}
+		unsupported = append(unsupported, fmt.Sprintf("Python %s (%s)", runtime.Version, runtime.Path))
+	}
+
+	if len(unsupported) > 0 {
+		return pythonRuntime{}, true, fmt.Errorf(
+			"Headroom requires Python %d.%d+; found unsupported runtime(s): %s. 请安装 Python 3.10 或更高版本后重新检测。",
+			headroomMinimumPythonMajor,
+			headroomMinimumPythonMinor,
+			strings.Join(unsupported, "; "),
+		)
+	}
+	if len(unusable) > 0 {
+		return pythonRuntime{}, false, fmt.Errorf("找到 Python 但无法运行: %s", strings.Join(unusable, "; "))
+	}
+	return pythonRuntime{}, false, fmt.Errorf("python3/python 未在 PATH 中找到；Headroom requires Python %d.%d+", headroomMinimumPythonMajor, headroomMinimumPythonMinor)
+}
+
+// probePythonRuntime runs `<python> --version` and parses a concrete version.
+// Python writes this output to either stdout or stderr across distributions, so
+// resultText is intentionally used rather than checking one stream only.
+func (s *Service) probePythonRuntime(path string, env []string) (pythonRuntime, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
+		Path:   path,
+		Args:   []string{"--version"},
+		Env:    env,
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if runErr != nil {
 		detail := sanitizeInstallerOutput(resultText(result))
 		if detail == "" {
 			detail = sanitizeInstallerOutput(runErr.Error())
 		}
-		s.pythonResolvedErr = fmt.Errorf("在 %s 找到 %s 但无法正常运行: %s", resolved.Path, name, detail)
-		return
+		return pythonRuntime{}, fmt.Errorf("运行 Python 版本检测失败: %s", detail)
 	}
-	s.pythonResolvedErr = fmt.Errorf("python3/python 未在 PATH 中找到；请安装 Python 3 (https://www.python.org) 并确保 python3 可用")
+
+	output := strings.TrimSpace(resultText(result))
+	matches := headroomPythonVersionPattern.FindStringSubmatch(output)
+	if len(matches) < 3 {
+		return pythonRuntime{}, fmt.Errorf("无法解析 Python 版本输出 %q", output)
+	}
+	major, majorErr := strconv.Atoi(matches[1])
+	minor, minorErr := strconv.Atoi(matches[2])
+	if majorErr != nil || minorErr != nil {
+		return pythonRuntime{}, fmt.Errorf("无法解析 Python 版本输出 %q", output)
+	}
+	version := matches[1] + "." + matches[2]
+	if len(matches) > 3 && matches[3] != "" {
+		version += "." + matches[3]
+	}
+	return pythonRuntime{Path: path, Version: version, Major: major, Minor: minor}, nil
 }
 
-// ensureHeadroomVenv creates the CodeBox-managed headroom venv if it does not
-// already exist. Idempotent: when the venv directory already contains a
-// runnable python executable, creation is skipped. This is a prepare-phase
-// side effect (precedent: ensurePythonAvailable / ensureNPMAvailable running
-// probes during installCommands).
+// ensureHeadroomVenv creates the CodeBox-managed Headroom venv with the
+// selected supported interpreter. If an older CodeBox venv exists (for example
+// one created with macOS Python 3.9), rebuild it in place using --clear; the
+// directory is CodeBox-owned and cannot contain a user-managed environment.
 func (s *Service) ensureHeadroomVenv() error {
 	venvDir := strings.TrimSpace(s.headroomVenvDir)
 	if venvDir == "" {
 		return fmt.Errorf("headroom venv 目录未配置")
 	}
-	if headroomVenvPythonExists(venvDir) {
-		return nil
+	if err := s.ensurePythonAvailable(); err != nil {
+		return err
 	}
+
+	env := s.buildEnhancedEnv()
+	venvPythonPath := headroomVenvPythonPath(venvDir)
+	rebuildVenv := false
+	if headroomVenvPythonExists(venvDir) {
+		existingRuntime, probeErr := s.probePythonRuntime(venvPythonPath, env)
+		if probeErr == nil && existingRuntime.supportsHeadroom() {
+			return nil
+		}
+		rebuildVenv = true
+	}
+
 	pythonPath := s.resolvePythonPath()
+	args := []string{"-m", "venv"}
+	if rebuildVenv {
+		args = append(args, "--clear")
+	}
+	args = append(args, venvDir)
 	ctx, cancel := context.WithTimeout(context.Background(), headroomVenvCreateTimeout)
 	defer cancel()
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   pythonPath,
-		Args:   []string{"-m", "venv", venvDir},
-		Env:    s.buildEnhancedEnv(),
+		Args:   args,
+		Env:    env,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err != nil {
@@ -2293,13 +2412,22 @@ func (s *Service) ensureHeadroomVenv() error {
 		if message == "" {
 			message = err.Error()
 		}
-		return fmt.Errorf("创建 headroom venv 失败 (%s -m venv %s): %s", pythonPath, venvDir, sanitizeInstallerOutput(message))
+		return fmt.Errorf("创建 Headroom venv 失败 (%s %s): %s", pythonPath, strings.Join(args, " "), sanitizeInstallerOutput(message))
+	}
+
+	createdRuntime, probeErr := s.probePythonRuntime(venvPythonPath, env)
+	if probeErr != nil {
+		return fmt.Errorf("Headroom venv 创建后无法运行 Python: %w", probeErr)
+	}
+	if !createdRuntime.supportsHeadroom() {
+		return fmt.Errorf("Headroom venv 使用了不受支持的 Python %s（%s）；需要 Python %d.%d+", createdRuntime.Version, createdRuntime.Path, headroomMinimumPythonMajor, headroomMinimumPythonMinor)
 	}
 	return nil
 }
 
-// headroomVenvPythonExists reports whether the venv directory already contains
-// a runnable python executable. Used by ensureHeadroomVenv for idempotency.
+// headroomVenvPythonExists reports whether the venv directory contains a
+// Python executable. Compatibility is intentionally checked by
+// ensureHeadroomVenv rather than this filesystem-only helper.
 func headroomVenvPythonExists(venvDir string) bool {
 	pythonPath := headroomVenvPythonPath(venvDir)
 	return pythonPath != "" && fileExists(pythonPath)
