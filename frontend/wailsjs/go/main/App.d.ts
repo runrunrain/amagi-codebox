@@ -56,6 +56,8 @@ export function FixClaudeConfig(arg1:string,arg2:string,arg3:string):Promise<env
 
 export function GetAppInfo():Promise<Record<string, any>>;
 
+export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>;
+
 export function GetConfigService():Promise<config.ConfigService>;
 
 export function GetEnvCheckOperationState():Promise<envcheck.OperationState>;
@@ -189,6 +191,8 @@ export function SaveOpenCodeConfig(arg1:string):Promise<void>;
 export function SaveProviderFromJSON(arg1:string,arg2:string):Promise<void>;
 
 export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
+
+export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<main.CodexGlobalHeadroomStatus>;
 
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
 

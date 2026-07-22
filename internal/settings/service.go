@@ -44,6 +44,25 @@ type DashboardDefaults struct {
 	AmagiCodeShell string `json:"amagiCodeShell"`
 	UseProxy       bool   `json:"useProxy"`
 	UseHeadroom    bool   `json:"useHeadroom"`
+	// CodexGlobalHeadroom enables a second, independent headroom instance that
+	// compresses Codex desktop traffic globally. Unlike UseHeadroom (which is a
+	// per-claude-session toggle on port 8787 with an Anthropic target), this
+	// toggle drives a persistent 8788 instance with an OpenAI target and rewrites
+	// ~/.codex/config.toml's top-level openai_base_url. defaultSettings leaves
+	// these zero so a fresh install starts with the feature off.
+	CodexGlobalHeadroom       bool   `json:"codexGlobalHeadroom"`
+	CodexGlobalHeadroomTarget string `json:"codexGlobalHeadroomTarget"`
+	CodexGlobalHeadroomPort   int    `json:"codexGlobalHeadroomPort"`
+}
+
+// CodexGlobalHeadroomState is the frontend-facing snapshot of the Codex global
+// headroom toggle. It bundles the three persisted DashboardDefaults fields so
+// callers (the App bound method) can read/return them atomically without
+// touching the full DashboardDefaults struct.
+type CodexGlobalHeadroomState struct {
+	Enabled bool   `json:"enabled"`
+	Target  string `json:"target"`
+	Port    int    `json:"port"`
 }
 
 // TerminalSettings 终端设置
@@ -185,10 +204,69 @@ func (s *Service) GetDashboardDefaults() DashboardDefaults {
 	return s.settings.Dashboard
 }
 
+// SetDashboardDefaults replaces the persisted dashboard defaults. The three
+// CodexGlobal* fields (CodexGlobalHeadroom / CodexGlobalHeadroomTarget /
+// CodexGlobalHeadroomPort) are owned exclusively by SetCodexGlobalHeadroom and
+// MUST NOT be touched here: the frontend persistDefaults path (useDashboardState
+// + useSessionLaunch) only reads the cached value once at init and would
+// otherwise replay a stale (typically false) value back through this method on
+// every session launch or dashboard save, silently disabling the codex-global
+// headroom and leaving config.toml pointing at a dead 8788 proxy. We therefore
+// ignore whatever the caller supplied for those three fields and re-pin them to
+// the currently persisted values before swapping DashboardDefaults in.
 func (s *Service) SetDashboardDefaults(d DashboardDefaults) error {
 	s.mu.Lock()
 	normalizeDashboardDefaults(&d)
+	// Preserve the codex-global headroom fields owned by SetCodexGlobalHeadroom.
+	// 不信任入参中的这三个字段：它们由 SetCodexGlobalHeadroom 独占管理。
+	d.CodexGlobalHeadroom = s.settings.Dashboard.CodexGlobalHeadroom
+	d.CodexGlobalHeadroomTarget = s.settings.Dashboard.CodexGlobalHeadroomTarget
+	d.CodexGlobalHeadroomPort = s.settings.Dashboard.CodexGlobalHeadroomPort
 	s.settings.Dashboard = d
+	s.mu.Unlock()
+	return s.Save()
+}
+
+// --- Codex Global Headroom ---
+//
+// These accessors read/write the three CodexGlobal* fields that live on
+// DashboardDefaults. They mirror the Get/SetDashboardDefaults lock+Save
+// pattern so the App bound method can toggle the feature without round-tripping
+// the full DashboardDefaults struct (which would risk clobbering unrelated
+// dashboard state).
+
+// GetCodexGlobalHeadroom returns the persisted Codex global headroom toggle.
+// A zero-value state (Enabled=false) means the feature is off.
+//
+// Footgun warning / 调用约束：本方法只读持久化，不反映运行态，也不读 config.toml。
+// 前端应通过 App.GetCodexGlobalHeadroom（含 running 状态）获取快照，不要直接绑定本方法。
+func (s *Service) GetCodexGlobalHeadroom() CodexGlobalHeadroomState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return CodexGlobalHeadroomState{
+		Enabled: s.settings.Dashboard.CodexGlobalHeadroom,
+		Target:  s.settings.Dashboard.CodexGlobalHeadroomTarget,
+		Port:    s.settings.Dashboard.CodexGlobalHeadroomPort,
+	}
+}
+
+// SetCodexGlobalHeadroom persists the Codex global headroom toggle. When
+// disabling, target/port are cleared so no stale configuration survives.
+//
+// Footgun warning / 调用约束：本方法只写持久化，不启动/停止代理，也不写 ~/.codex/config.toml。
+// 直接调用会导致持久化与运行态/config 不一致。前端必须通过 App.SetCodexGlobalHeadroom，
+// 由 App 层完成 StartForOpenAI/Stop + syncCodexGlobalHeadroomConfig + 持久化的原子编排。
+// 本方法导出仅因 App 跨包调用需要；wails 会把它暴露给前端生成绑定，但前端不应直接调用。
+func (s *Service) SetCodexGlobalHeadroom(enabled bool, target string, port int) error {
+	s.mu.Lock()
+	s.settings.Dashboard.CodexGlobalHeadroom = enabled
+	if enabled {
+		s.settings.Dashboard.CodexGlobalHeadroomTarget = target
+		s.settings.Dashboard.CodexGlobalHeadroomPort = port
+	} else {
+		s.settings.Dashboard.CodexGlobalHeadroomTarget = ""
+		s.settings.Dashboard.CodexGlobalHeadroomPort = 0
+	}
 	s.mu.Unlock()
 	return s.Save()
 }

@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +53,21 @@ const (
 	codexModelProviderName     = "amagi-codebox-provider"
 	codexOfficialOpenAIAPIHost = "api.openai.com"
 	maxClipboardImageBytes     = 20 * 1024 * 1024
+	// CodexGlobalHeadroomDefaultPort is the dedicated port for the independent
+	// codex-global headroom instance (8788). It must differ from the claude
+	// session headroom DefaultPort (8787) so the two proxies never collide.
+	CodexGlobalHeadroomDefaultPort = 8788
+	// codexGlobalHeadroomDefaultTarget is the fallback OpenAI-compatible
+	// upstream used when the caller does not specify a target. headroom forwards
+	// compressed codex traffic here via OPENAI_TARGET_API_URL.
+	codexGlobalHeadroomDefaultTarget = "https://api.openai.com/v1"
+	// codexGlobalHeadroomMarkerStart / End delimit the amagi-managed
+	// openai_base_url block in ~/.codex/config.toml. They are intentionally
+	// distinct from the amagi-codebox-inject markers so the provider-section
+	// cleanup (removeCodexManagedProviderSection / cleanupCodexManagedProviderConfig)
+	// never touches this block.
+	codexGlobalHeadroomMarkerStart = "# === amagi-headroom-global-start ==="
+	codexGlobalHeadroomMarkerEnd   = "# === amagi-headroom-global-end ==="
 )
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
@@ -104,6 +121,13 @@ type App struct {
 	Launcher       *launcher.LauncherService
 	Proxy          *proxy.ProxyService
 	Headroom       *headroom.HeadroomService
+	// CodexHeadroom is a second, independent headroom instance that compresses
+	// Codex desktop traffic globally (port 8788, OpenAI target). It is fully
+	// separate from Headroom (claude-session, 8787, Anthropic target): each has
+	// its own port, lifecycle and target kind, so toggling one never touches the
+	// other. Only one Codex-global instance exists app-wide (it is not per
+	// session); Start/Stop are idempotent.
+	CodexHeadroom  *headroom.HeadroomService
 	Tray           *tray.Service
 	Sessions       *session.Manager
 	Paths          *paths.PathsService
@@ -130,6 +154,17 @@ type App struct {
 
 	persistenceMu       sync.RWMutex
 	persistentLoadState persistentLoadState
+
+	// codexGlobalMu serializes the codex-global headroom orchestration between
+	// the async startup restore goroutine (restoreCodexGlobalHeadroomOnStartup)
+	// and the synchronous UI toggle (SetCodexGlobalHeadroom). Without it, a user
+	// disabling the feature in the narrow startup window could race the restore
+	// goroutine and end with Enabled=false but the proxy running and config.toml
+	// still carrying the marker block. The lock is taken for the full
+	// Start/Stop + config-sync + persistence sequence; inner service locks
+	// (HeadroomService.mu / settings.Service.mu) are always acquired AFTER this
+	// one, so lock ordering stays codexGlobalMu -> inner.
+	codexGlobalMu sync.Mutex
 }
 
 func NewApp(mobileAssets embed.FS) *App {
@@ -150,14 +185,19 @@ func NewApp(mobileAssets embed.FS) *App {
 	headroomSvc := headroom.NewHeadroomService(processRunner, log)
 	headroomSvc.SetVenvBinDir(headroomVenvBinDir)
 
+	// Second, independent headroom instance for the Codex desktop global
+	// compression path. It reuses the SAME venv (headroom-venv) as the claude
+	// headroom but listens on a dedicated port (CodexGlobalHeadroomDefaultPort,
+	// 8788) and targets an OpenAI-compatible upstream. Port is set here once;
+	// the App-level SetCodexGlobalHeadroom toggle only starts/stops it.
+	codexHeadroomSvc := headroom.NewHeadroomService(processRunner, log)
+	codexHeadroomSvc.SetVenvBinDir(headroomVenvBinDir)
+	if err := codexHeadroomSvc.SetPort(CodexGlobalHeadroomDefaultPort); err != nil {
+		log.Warn("headroom", "设置 codex 全局 headroom 端口失败", err.Error())
+	}
+
 	envCheckSvc := envcheck.NewServiceWithRunner(processRunner)
 	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
-	// Inject the headroom stopper so CleanHeadroom terminates the proxy child
-	// process before removing the venv directory. Required on Windows where a
-	// running headroom.exe inside the venv is locked and os.RemoveAll fails.
-	// HeadroomService.Stop is a no-op (returns nil) when the proxy is not
-	// running, so this is safe to call unconditionally during uninstall.
-	envCheckSvc.SetHeadroomStopper(headroomSvc.Stop)
 
 	app := &App{
 		Config:         config.NewConfigService(configDir),
@@ -165,6 +205,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		Launcher:       launcher.NewLauncherService(log, envVarsSvc),
 		Proxy:          proxy.NewProxyService(),
 		Headroom:       headroomSvc,
+		CodexHeadroom:  codexHeadroomSvc,
 		Tray:           tray.NewService(),
 		Sessions:       session.NewManager(),
 		Paths:          paths.NewPathsService(configDir),
@@ -192,6 +233,15 @@ func NewApp(mobileAssets embed.FS) *App {
 	} else {
 		app.Sessions.SetHomeDir(home)
 	}
+	// Inject the headroom stopper so CleanHeadroom terminates BOTH headroom
+	// proxy child processes (claude 8787 + codex-global 8788) before the shared
+	// venv directory is removed. Required on Windows where a running
+	// headroom.exe inside the venv is locked and os.RemoveAll fails. When the
+	// codex-global switch was on, the stopper also clears the openai_base_url
+	// marker block and persistence so no dead config points at the removed
+	// proxy. The callback is best-effort: CleanHeadroom ignores its error.
+	// Wired after `app` exists so the closure can reference both services.
+	envCheckSvc.SetHeadroomStopper(app.stopAllHeadroomForUninstall)
 	return app
 }
 
@@ -463,10 +513,176 @@ func parseCLITool(tool string) (envcheck.CLITool, error) {
 
 // GetHeadroomSavings 查询 headroom 上下文压缩节省统计（压缩次数、节省 token 等）。
 // headroom 未安装或查询失败时返回 error，前端据此显示空态；绝不返回伪造零值报告冒充"有数据"。
+//
+// 注意：savings 读取的是 headroom 共享 ledger（~/.headroom/savings_events.jsonl），
+// claude 会话级（8787）与 codex 全局（8788）实例的节省数据均写入同一文件，靠
+// SavingsReport.ByClient（client 维度，如 "claude-code" / "codex"）区分来源。
+// 前端按 by_client 分项展示即可，后端无需为第二实例改动 savings 逻辑。
 func (a *App) GetHeadroomSavings() (*headroom.SavingsReport, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), headroom.SavingsTimeout)
 	defer cancel()
 	return a.Headroom.GetSavings(ctx)
+}
+
+// CodexGlobalHeadroomStatus is the frontend-facing snapshot of the codex-global
+// headroom toggle. It augments the persisted settings state with the live
+// running flag so the UI can render the actual proxy state in one round-trip.
+type CodexGlobalHeadroomStatus struct {
+	Enabled bool   `json:"enabled"`
+	Target  string `json:"target"`
+	Port    int    `json:"port"`
+	Running bool   `json:"running"`
+}
+
+// GetCodexGlobalHeadroom returns the persisted codex-global headroom toggle plus
+// the live running state of the second headroom instance (port 8788).
+func (a *App) GetCodexGlobalHeadroom() CodexGlobalHeadroomStatus {
+	state := a.Settings.GetCodexGlobalHeadroom()
+	running := false
+	if a.CodexHeadroom != nil {
+		running = a.CodexHeadroom.IsRunning()
+	}
+	return CodexGlobalHeadroomStatus{
+		Enabled: state.Enabled,
+		Target:  state.Target,
+		Port:    state.Port,
+		Running: running,
+	}
+}
+
+// SetCodexGlobalHeadroom toggles the codex-global headroom (independent 8788
+// instance with an OpenAI target). It is fully orthogonal to the claude
+// session-level headroom (a.Headroom, 8787): this method never starts, stops or
+// reconfigures the claude headroom.
+//
+// enabled=true:
+//   - Starts the second headroom instance (StartForOpenAI) if it is not already
+//     running. target falls back to codexGlobalHeadroomDefaultTarget when empty;
+//     port falls back to CodexGlobalHeadroomDefaultPort when <= 0.
+//   - Writes the openai_base_url marker block into ~/.codex/config.toml so codex
+//     routes its traffic through the local proxy (with backup + idempotency).
+//   - Persists the toggle so Startup can restore it on next launch.
+//
+// enabled=false:
+//   - Removes the openai_base_url marker block first (so codex stops routing
+//     through the proxy before the proxy goes away), then stops the instance.
+//   - Clears the persisted toggle.
+//
+// Returns the resulting status. Errors from the proxy start are returned, but
+// config/persistence cleanup on disable is best-effort: a failure to rewrite
+// config.toml is surfaced as an error so the user knows codex may still point at
+// a stopping proxy.
+func (a *App) SetCodexGlobalHeadroom(enabled bool, target string, port int) (CodexGlobalHeadroomStatus, error) {
+	if a.CodexHeadroom == nil {
+		return CodexGlobalHeadroomStatus{}, fmt.Errorf("codex global headroom service is not initialized")
+	}
+	if a.Settings == nil {
+		return CodexGlobalHeadroomStatus{}, fmt.Errorf("settings service is not initialized")
+	}
+
+	// Serialize against the startup restore goroutine: the Start/Stop +
+	// config-sync + persistence sequence must be atomic with respect to
+	// restoreCodexGlobalHeadroomOnStartup, otherwise a UI disable racing the
+	// restore can leave Enabled=false with the proxy running and config.toml
+	// still carrying the marker block.
+	a.codexGlobalMu.Lock()
+	defer a.codexGlobalMu.Unlock()
+
+	if enabled {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			target = codexGlobalHeadroomDefaultTarget
+		}
+		if port <= 0 {
+			port = CodexGlobalHeadroomDefaultPort
+		}
+
+		// Start the proxy first; if it fails, do not rewrite config.toml to point
+		// codex at a dead proxy. StartForOpenAI is a no-op when already running
+		// on this instance.
+		if !a.CodexHeadroom.IsRunning() {
+			if err := a.CodexHeadroom.StartForOpenAI(target); err != nil {
+				return CodexGlobalHeadroomStatus{}, fmt.Errorf("start codex global headroom: %w", err)
+			}
+			a.Log.Info("headroom", "codex 全局上下文压缩已启用",
+				fmt.Sprintf("codex → headroom:127.0.0.1:%d → %s", a.CodexHeadroom.GetPort(), target))
+		}
+
+		if err := syncCodexGlobalHeadroomConfig(true, port); err != nil {
+			a.Log.Warn("headroom", "写入 codex 全局 openai_base_url 失败", err.Error())
+			return CodexGlobalHeadroomStatus{}, fmt.Errorf("write codex openai_base_url: %w", err)
+		}
+
+		if err := a.Settings.SetCodexGlobalHeadroom(true, target, port); err != nil {
+			a.Log.Warn("headroom", "持久化 codex 全局 headroom 开关失败", err.Error())
+			return CodexGlobalHeadroomStatus{}, fmt.Errorf("persist codex global headroom: %w", err)
+		}
+		return a.GetCodexGlobalHeadroom(), nil
+	}
+
+	// Disable path: remove the config marker first (so codex stops targeting the
+	// proxy before it stops), then stop the proxy, then clear persistence.
+	if err := syncCodexGlobalHeadroomConfig(false, 0); err != nil {
+		a.Log.Warn("headroom", "移除 codex 全局 openai_base_url 失败", err.Error())
+		return CodexGlobalHeadroomStatus{}, fmt.Errorf("remove codex openai_base_url: %w", err)
+	}
+	if a.CodexHeadroom.IsRunning() {
+		if err := a.CodexHeadroom.Stop(); err != nil {
+			a.Log.Warn("headroom", "停止 codex 全局 headroom 失败", err.Error())
+		}
+	}
+	if err := a.Settings.SetCodexGlobalHeadroom(false, "", 0); err != nil {
+		a.Log.Warn("headroom", "清除 codex 全局 headroom 持久化失败", err.Error())
+		return CodexGlobalHeadroomStatus{}, fmt.Errorf("clear codex global headroom persistence: %w", err)
+	}
+	return a.GetCodexGlobalHeadroom(), nil
+}
+
+// restoreCodexGlobalHeadroomOnStartup re-establishes the codex-global headroom
+// proxy (8788) when it was enabled at last shutdown. It must run AFTER
+// Settings.Load has completed (Startup calls it asynchronously, well after the
+// synchronous settings load). Every failure is best-effort: a broken proxy or
+// config write only downgrades compression, it never blocks app startup or
+// affects the claude session headroom. The marker block is re-synced so a config
+// rewrite by another tool (or a prior crash mid-write) cannot leave codex
+// pointing at the wrong URL.
+func (a *App) restoreCodexGlobalHeadroomOnStartup() {
+	if a.Settings == nil || a.CodexHeadroom == nil {
+		return
+	}
+	// Hold codexGlobalMu across the read + orchestration so a concurrent UI
+	// SetCodexGlobalHeadroom(false) cannot slip in between the Enabled read and
+	// the StartForOpenAI / config-sync below (which would otherwise re-enable a
+	// proxy the user just disabled). SetCodexGlobalHeadroom takes the same lock,
+	// so the two paths are fully serialized.
+	a.codexGlobalMu.Lock()
+	defer a.codexGlobalMu.Unlock()
+
+	state := a.Settings.GetCodexGlobalHeadroom()
+	if !state.Enabled {
+		return
+	}
+	target := strings.TrimSpace(state.Target)
+	if target == "" {
+		target = codexGlobalHeadroomDefaultTarget
+	}
+	port := state.Port
+	if port <= 0 {
+		port = CodexGlobalHeadroomDefaultPort
+	}
+
+	if !a.CodexHeadroom.IsRunning() {
+		if err := a.CodexHeadroom.StartForOpenAI(target); err != nil {
+			a.Log.Warn("headroom", "启动时恢复 codex 全局 headroom 失败", err.Error())
+			return
+		}
+	}
+	if err := syncCodexGlobalHeadroomConfig(true, port); err != nil {
+		a.Log.Warn("headroom", "启动时校验 codex 全局 openai_base_url 失败", err.Error())
+		return
+	}
+	a.Log.Info("headroom", "codex 全局 headroom 已在启动时恢复",
+		fmt.Sprintf("port=%d target=%s", port, target))
 }
 
 func (a *App) GetSession(sessionID string) (session.SessionInfo, error) {
@@ -803,6 +1019,11 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}()
 
+	// 异步恢复 codex 全局 headroom（独立第二实例，8788 + OpenAI 目标）。
+	// 仅当上次退出前开关为开启时才重建；失败仅 Warn 不阻断启动（主功能不依赖它）。
+	// 重建会同时校验/补写 config.toml 的 openai_base_url 标记块，保证 codex 路由一致。
+	go a.restoreCodexGlobalHeadroomOnStartup()
+
 	// 远程 API 仅在用户显式启用后恢复。新安装和没有该设置的旧配置
 	// 默认保持 loopback 且不监听，避免无意暴露到局域网。
 	if remoteEnabled {
@@ -847,6 +1068,14 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.Headroom != nil && a.Headroom.IsRunning() {
 		if err := a.Headroom.Stop(); err != nil {
 			a.Log.Error("app", "关闭 Headroom 失败", err.Error())
+		}
+	}
+	// Stop the independent codex-global headroom (8788) too. Its enabled state is
+	// persisted, so Startup restores it on next launch; we only stop the live
+	// process here. This never touches the claude headroom above.
+	if a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning() {
+		if err := a.CodexHeadroom.Stop(); err != nil {
+			a.Log.Error("app", "关闭 codex 全局 Headroom 失败", err.Error())
 		}
 	}
 	if a.Proxy.IsRunning() {
@@ -1661,6 +1890,280 @@ func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL str
 		"# === amagi-codebox-inject-end ===",
 	)
 	return lines
+}
+
+// --- Codex global headroom openai_base_url marker block ---
+//
+// syncCodexGlobalHeadroomConfig writes or removes the top-level openai_base_url
+// assignment that routes codex desktop traffic through the independent
+// codex-global headroom proxy (port 8788). It is intentionally separate from
+// syncCodexConfigFile / syncCodexCustomProviderConfigFile:
+//
+//   - It uses a distinct marker pair (amagi-headroom-global-start/-end) so the
+//     provider-section cleanup (removeCodexManagedProviderSection /
+//     cleanupCodexManagedProviderConfig) never strips it, and so a model-only
+//     sync (syncCodexConfigModel) leaves the openai_base_url intact.
+//   - It edits the file surgically (line-based) to preserve every other config
+//     key (plugins / marketplaces / mcp_servers / profiles / ...).
+//   - It backs up the previous content to config.toml.bak.<ts> before writing.
+//
+// enabled=true inserts/refreshes the block; enabled=false removes it. Both paths
+// are idempotent: re-running with the same state is a no-op (apart from a fresh
+// backup when content actually changes).
+func syncCodexGlobalHeadroomConfig(enabled bool, port int) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+
+	previous, err := os.ReadFile(configPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read codex config.toml: %w", err)
+		}
+		// No config yet. Only create one when enabling; disabling is a no-op.
+		if !enabled {
+			return nil
+		}
+		previous = nil
+	}
+
+	content := string(previous)
+	lines := splitTomlLinesSafe(content)
+	originalJoined := strings.Join(lines, "\n")
+
+	lines = removeCodexGlobalHeadroomBlock(lines)
+	if enabled {
+		if port <= 0 {
+			port = CodexGlobalHeadroomDefaultPort
+		}
+		lines = insertCodexGlobalHeadroomBlock(lines, port)
+	}
+
+	updatedJoined := strings.Join(lines, "\n")
+	if updatedJoined == originalJoined {
+		// Idempotent no-op: avoid touching mtimes / writing a backup when the
+		// desired state is already present.
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return fmt.Errorf("create codex config dir: %w", err)
+	}
+	return writeCodexConfigWithBackup(configPath, []byte(updatedJoined), previous)
+}
+
+// removeCodexGlobalHeadroomBlock strips the amagi-headroom-global marker block
+// (inclusive of both marker lines and any lines between them). It is a no-op
+// when the block is absent and is safe to run on config that also contains the
+// amagi-codebox-inject block (the markers are distinct).
+func removeCodexGlobalHeadroomBlock(lines []string) []string {
+	updated := make([]string, 0, len(lines))
+	skip := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == codexGlobalHeadroomMarkerStart {
+			skip = true
+			continue
+		}
+		if skip {
+			if trimmed == codexGlobalHeadroomMarkerEnd {
+				skip = false
+			}
+			continue
+		}
+		updated = append(updated, line)
+	}
+	// A removed block often leaves a doubled blank line behind; collapse only
+	// runs of 2+ blanks introduced around the removed region without touching
+	// intentional spacing elsewhere is overkill -- trimTrailingEmptyLines keeps
+	// the tail tidy which is the only place a dangling blank survives.
+	return trimTrailingEmptyLines(updated)
+}
+
+// insertCodexGlobalHeadroomBlock inserts a fresh marker block containing the
+// top-level openai_base_url assignment. The block is placed at the end of the
+// top-level region (immediately before the first [section] header) so the
+// assignment stays top-level in TOML terms; when the file has no section it is
+// appended at the end. An existing stray top-level openai_base_url outside any
+// marker block is removed first to avoid a duplicate key (TOML forbids
+// duplicate top-level keys).
+func insertCodexGlobalHeadroomBlock(lines []string, port int) []string {
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+	block := []string{
+		codexGlobalHeadroomMarkerStart,
+		"openai_base_url = " + strconv.Quote(baseURL),
+		codexGlobalHeadroomMarkerEnd,
+	}
+
+	// Drop any pre-existing top-level openai_base_url so we never emit a
+	// duplicate top-level key (which would make the TOML invalid).
+	cleaned := make([]string, 0, len(lines))
+	inTopLevel := true
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if inTopLevel && isTomlTableHeader(trimmed) {
+			inTopLevel = false
+		}
+		if inTopLevel {
+			if key, ok := tomlAssignmentKey(trimmed); ok && key == "openai_base_url" {
+				continue
+			}
+		}
+		cleaned = append(cleaned, line)
+	}
+
+	// Find the index of the first section header and insert the block just
+	// before it; fall back to appending at the end when there is no section.
+	insertAt := len(cleaned)
+	inTopLevel = true
+	for i, line := range cleaned {
+		trimmed := strings.TrimSpace(line)
+		if inTopLevel && isTomlTableHeader(trimmed) {
+			insertAt = i
+			break
+		}
+		if isTomlTableHeader(trimmed) {
+			inTopLevel = false
+		}
+	}
+
+	out := make([]string, 0, len(cleaned)+len(block)+2)
+	out = append(out, cleaned[:insertAt]...)
+	// Separate the block from preceding top-level content with a blank line when
+	// there is content above and it is not already blank.
+	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+		out = append(out, "")
+	}
+	out = append(out, block...)
+	out = append(out, cleaned[insertAt:]...)
+	return out
+}
+
+// splitTomlLinesSafe normalizes CR/CRLF to LF and splits into lines. Unlike the
+// codexplugin variant it never returns nil for empty input (returns an empty
+// slice) so downstream join logic is uniform.
+func splitTomlLinesSafe(content string) []string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.Split(content, "\n")
+}
+
+// writeCodexConfigWithBackup writes next to path, backing up previous to
+// path.bak.<YYYYMMDDHHMMSS_msec>_<rand4> first (only when previous is non-empty).
+// The timestamp carries millisecond precision plus a short random suffix so two
+// writes within the same second (or even same millisecond) do not silently
+// overwrite each other's backup. It matches the codexplugin.writeConfigWithBackup
+// contract but lives in package main so the global-headroom config layer does
+// not depend on internal/codexplugin internals. Mode preserves the existing file
+// mode (default 0600).
+func writeCodexConfigWithBackup(path string, next []byte, previous []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create codex config dir: %w", err)
+	}
+	if len(previous) > 0 {
+		backupPath := fmt.Sprintf("%s.bak.%s.%s", path, time.Now().Format("20060102150405.000"), randHexSuffix(4))
+		if err := os.WriteFile(backupPath, previous, 0600); err != nil {
+			return fmt.Errorf("backup codex config.toml: %w", err)
+		}
+	}
+	mode := os.FileMode(0600)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config.toml.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary codex config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(next); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temporary codex config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temporary codex config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary codex config: %w", err)
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return fmt.Errorf("chmod temporary codex config: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace codex config.toml: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
+// randHexSuffix returns a short random hex string of byteLen*2 hex characters
+// (e.g. byteLen=4 -> 8 hex chars). It is used to disambiguate config backups
+// that land within the same clock millisecond. On any read error it falls back
+// to a fixed string so the caller never fails solely because the suffix could
+// not be generated.
+func randHexSuffix(byteLen int) string {
+	if byteLen <= 0 {
+		byteLen = 4
+	}
+	b := make([]byte, byteLen)
+	if _, err := rand.Read(b); err != nil {
+		return "00000000"[:byteLen*2]
+	}
+	return hex.EncodeToString(b)
+}
+
+// removeCodexGlobalHeadroomConfig is the package-level disable entry used by the
+// envcheck uninstall hook (stopAllHeadroomForUninstall) which does not have
+// access to the App-bound wrapper. It removes the marker block best-effort and
+// is idempotent.
+func removeCodexGlobalHeadroomConfig() error {
+	return syncCodexGlobalHeadroomConfig(false, 0)
+}
+
+// stopAllHeadroomForUninstall is the headroom stopper injected into envcheck so
+// CleanHeadroom terminates BOTH proxy child processes before the shared venv is
+// removed. On Windows a running headroom.exe inside the venv is locked by the OS
+// and os.RemoveAll would fail; stopping both instances first avoids that. When
+// the codex-global switch was persisted on, it also clears the openai_base_url
+// marker block and persistence so codex does not keep pointing at the removed
+// proxy (a dead openai_base_url would break codex until manually fixed).
+//
+// The returned error is best-effort: CleanHeadroom ignores it (mirroring the
+// original single-instance Stop contract). Individual failures are logged.
+func (a *App) stopAllHeadroomForUninstall() error {
+	var firstErr error
+	logErr := func(scope string, err error) {
+		if err == nil {
+			return
+		}
+		if a.Log != nil {
+			a.Log.Warn("headroom", scope, err.Error())
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if a.Headroom != nil {
+		logErr("卸载联动：停止 claude 会话级 headroom 失败", a.Headroom.Stop())
+	}
+	if a.CodexHeadroom != nil {
+		logErr("卸载联动：停止 codex 全局 headroom 失败", a.CodexHeadroom.Stop())
+	}
+	// Only tear down the codex-global config/persistence when the toggle was on;
+	// otherwise this is a plain uninstall of the claude-side headroom.
+	if a.Settings != nil && a.Settings.GetCodexGlobalHeadroom().Enabled {
+		logErr("卸载联动：清理 codex 全局 openai_base_url 失败", removeCodexGlobalHeadroomConfig())
+		logErr("卸载联动：清除 codex 全局 headroom 持久化失败", a.Settings.SetCodexGlobalHeadroom(false, "", 0))
+	}
+	return firstErr
 }
 
 func countTopLevelAssignment(lines []string, key string) int {

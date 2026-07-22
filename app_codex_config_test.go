@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSyncCodexConfigModel(t *testing.T) {
@@ -380,4 +381,391 @@ func setTestUserHome(t *testing.T, home string) {
 			}
 		})
 	}
+}
+
+// --- Codex global headroom openai_base_url marker block tests ---
+
+// newCodexTestConfig writes the given content to <tmpHome>/.codex/config.toml
+// and points HOME at tmpHome. Returns the config path.
+func newCodexTestConfig(t *testing.T, content string) (configPath string) {
+	t.Helper()
+	codexDir := filepath.Join(t.TempDir(), ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath = filepath.Join(codexDir, "config.toml")
+	if content != "" {
+		if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setTestUserHome(t, filepath.Dir(codexDir))
+	return configPath
+}
+
+// readCodexTestConfig reads the config file back; fails the test on error.
+func readCodexTestConfig(t *testing.T, configPath string) string {
+	t.Helper()
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestSyncCodexGlobalHeadroomConfig_AddInsertsBlock verifies enabling writes the
+// openai_base_url marker block pointing at the given port.
+func TestSyncCodexGlobalHeadroomConfig_AddInsertsBlock(t *testing.T) {
+	configPath := newCodexTestConfig(t, "model = \"gpt-5.6-sol\"\n"+
+		"model_reasoning_effort = \"high\"\n"+
+		"\n"+
+		"[profiles.minimal]\n"+
+		"model = \"mini\"\n")
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("syncCodexGlobalHeadroomConfig(true): %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+
+	// The marker block must be present with the correct base URL.
+	if !strings.Contains(got, "# === amagi-headroom-global-start ===") {
+		t.Fatalf("missing start marker:\n%s", got)
+	}
+	if !strings.Contains(got, "# === amagi-headroom-global-end ===") {
+		t.Fatalf("missing end marker:\n%s", got)
+	}
+	if !strings.Contains(got, "openai_base_url = \"http://127.0.0.1:8788/v1\"") {
+		t.Fatalf("missing openai_base_url line:\n%s", got)
+	}
+	// Exactly one top-level openai_base_url (no duplicate key).
+	if c := countExactLine(got, "openai_base_url = \"http://127.0.0.1:8788/v1\""); c != 1 {
+		t.Fatalf("expected exactly one openai_base_url line, got %d:\n%s", c, got)
+	}
+	// Existing user config must be preserved.
+	for _, want := range []string{
+		"model = \"gpt-5.6-sol\"",
+		"model_reasoning_effort = \"high\"",
+		"[profiles.minimal]",
+		"model = \"mini\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q preserved:\n%s", want, got)
+		}
+	}
+	// The marker block must live BEFORE the first section header so the
+	// openai_base_url stays a top-level key in TOML.
+	startIdx := strings.Index(got, "# === amagi-headroom-global-start ===")
+	sectionIdx := strings.Index(got, "[profiles.minimal]")
+	if startIdx == -1 || sectionIdx == -1 || startIdx > sectionIdx {
+		t.Fatalf("marker block must precede the first section header:\n%s", got)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_CreatesMissingConfig verifies enabling on a
+// missing config.toml creates it with the marker block.
+func TestSyncCodexGlobalHeadroomConfig_CreatesMissingConfig(t *testing.T) {
+	configPath := newCodexTestConfig(t, "")
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("syncCodexGlobalHeadroomConfig(true): %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+	if !strings.Contains(got, "openai_base_url = \"http://127.0.0.1:8788/v1\"") {
+		t.Fatalf("missing openai_base_url line in created config:\n%s", got)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_RemoveDeletesBlock verifies disabling
+// removes the entire marker block (inclusive) while preserving everything else.
+func TestSyncCodexGlobalHeadroomConfig_RemoveDeletesBlock(t *testing.T) {
+	original := "model = \"gpt-5.6-sol\"\n" +
+		"\n" +
+		"# === amagi-headroom-global-start ===\n" +
+		"openai_base_url = \"http://127.0.0.1:8788/v1\"\n" +
+		"# === amagi-headroom-global-end ===\n" +
+		"\n" +
+		"[profiles.minimal]\n" +
+		"model = \"mini\"\n"
+	configPath := newCodexTestConfig(t, original)
+
+	if err := syncCodexGlobalHeadroomConfig(false, 0); err != nil {
+		t.Fatalf("syncCodexGlobalHeadroomConfig(false): %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+
+	for _, forbidden := range []string{
+		"# === amagi-headroom-global-start ===",
+		"# === amagi-headroom-global-end ===",
+		"openai_base_url",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("disable should remove %q:\n%s", forbidden, got)
+		}
+	}
+	for _, want := range []string{
+		"model = \"gpt-5.6-sol\"",
+		"[profiles.minimal]",
+		"model = \"mini\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q preserved after disable:\n%s", want, got)
+		}
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_DisableOnMissingConfigIsNoop verifies the
+// disable path is idempotent and does not error/fabricate a file when none
+// exists.
+func TestSyncCodexGlobalHeadroomConfig_DisableOnMissingConfigIsNoop(t *testing.T) {
+	configPath := newCodexTestConfig(t, "")
+	if err := syncCodexGlobalHeadroomConfig(false, 0); err != nil {
+		t.Fatalf("syncCodexGlobalHeadroomConfig(false) on missing file: %v", err)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("disable must not create a file, got stat err=%v", err)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_AddIsIdempotent verifies enabling twice
+// produces a single marker block (no duplication) and does not rewrite the
+// file on the second pass (no needless backup churn).
+func TestSyncCodexGlobalHeadroomConfig_AddIsIdempotent(t *testing.T) {
+	configPath := newCodexTestConfig(t, "model = \"gpt-5.6-sol\"\n")
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("first enable: %v", err)
+	}
+	first := readCodexTestConfig(t, configPath)
+	mtimeFirst, _ := os.Stat(configPath)
+
+	// Small delay so an accidental rewrite would observably change mtime.
+	time.Sleep(15 * time.Millisecond)
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("second enable: %v", err)
+	}
+	second := readCodexTestConfig(t, configPath)
+	mtimeSecond, _ := os.Stat(configPath)
+
+	if first != second {
+		t.Fatalf("second enable changed content when it should be idempotent:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	if c := countExactLine(second, "openai_base_url = \"http://127.0.0.1:8788/v1\""); c != 1 {
+		t.Fatalf("expected exactly one openai_base_url after double-enable, got %d:\n%s", c, second)
+	}
+	// The second pass must be a true no-op (no write): mtime unchanged.
+	if !mtimeFirst.ModTime().Equal(mtimeSecond.ModTime()) {
+		t.Fatalf("second enable rewrote the file (mtime %s -> %s); expected no-op", mtimeFirst.ModTime(), mtimeSecond.ModTime())
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_PortUpdateRefreshesBlock verifies that
+// re-enabling with a different port refreshes the base URL in place.
+func TestSyncCodexGlobalHeadroomConfig_PortUpdateRefreshesBlock(t *testing.T) {
+	configPath := newCodexTestConfig(t, "model = \"gpt-5.6-sol\"\n")
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("enable 8788: %v", err)
+	}
+	if err := syncCodexGlobalHeadroomConfig(true, 8789); err != nil {
+		t.Fatalf("enable 8789: %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+	if strings.Contains(got, "http://127.0.0.1:8788/v1") {
+		t.Fatalf("stale 8788 base URL should have been replaced:\n%s", got)
+	}
+	if c := countExactLine(got, "openai_base_url = \"http://127.0.0.1:8789/v1\""); c != 1 {
+		t.Fatalf("expected exactly one refreshed 8789 base URL, got %d:\n%s", c, got)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_SurvivesModelOnlySync verifies the marker
+// block survives a subsequent syncCodexConfigModel rewrite (model-only sync
+// must not touch the openai_base_url block).
+func TestSyncCodexGlobalHeadroomConfig_SurvivesModelOnlySync(t *testing.T) {
+	original := "model = \"gpt-5.6-sol\"\n" +
+		"approval_policy = \"never\"\n" +
+		"\n" +
+		"[mcp_servers.foo]\n" +
+		"command = \"foo\"\n"
+	configPath := newCodexTestConfig(t, original)
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := syncCodexConfigModel("gpt-5.7"); err != nil {
+		t.Fatalf("syncCodexConfigModel: %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+
+	// model updated, block intact, other config preserved.
+	if !strings.Contains(got, "model = \"gpt-5.7\"") {
+		t.Fatalf("model not updated:\n%s", got)
+	}
+	if !strings.Contains(got, "# === amagi-headroom-global-start ===") ||
+		!strings.Contains(got, "openai_base_url = \"http://127.0.0.1:8788/v1\"") ||
+		!strings.Contains(got, "# === amagi-headroom-global-end ===") {
+		t.Fatalf("global headroom marker block should survive model sync:\n%s", got)
+	}
+	if !strings.Contains(got, "approval_policy = \"never\"") {
+		t.Fatalf("approval_policy not preserved:\n%s", got)
+	}
+	if !strings.Contains(got, "[mcp_servers.foo]") || !strings.Contains(got, "command = \"foo\"") {
+		t.Fatalf("mcp_servers block not preserved:\n%s", got)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_NotCrossDeletedByCustomProvider verifies
+// the openai_base_url marker block is NOT removed by
+// syncCodexCustomProviderConfig (distinct markers => orthogonal blocks).
+func TestSyncCodexGlobalHeadroomConfig_NotCrossDeletedByCustomProvider(t *testing.T) {
+	original := "model = \"gpt-5.6-sol\"\n" +
+		"\n" +
+		"# === amagi-headroom-global-start ===\n" +
+		"openai_base_url = \"http://127.0.0.1:8788/v1\"\n" +
+		"# === amagi-headroom-global-end ===\n" +
+		"\n" +
+		"[model_providers.other]\n" +
+		"base_url = \"https://other.example.com/v1\"\n"
+	configPath := newCodexTestConfig(t, original)
+
+	if err := syncCodexCustomProviderConfig("gpt-5.7", "https://proxy.example.com/v1"); err != nil {
+		t.Fatalf("syncCodexCustomProviderConfig: %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+
+	// The amagi-codebox-inject provider block should be created...
+	if !strings.Contains(got, "[model_providers.amagi-codebox-provider]") {
+		t.Fatalf("custom provider section not created:\n%s", got)
+	}
+	// ...but the global headroom openai_base_url block must survive untouched.
+	if !strings.Contains(got, "# === amagi-headroom-global-start ===") ||
+		!strings.Contains(got, "openai_base_url = \"http://127.0.0.1:8788/v1\"") ||
+		!strings.Contains(got, "# === amagi-headroom-global-end ===") {
+		t.Fatalf("global headroom marker block must NOT be removed by custom provider sync:\n%s", got)
+	}
+	// And the unrelated other-provider section must survive too.
+	if !strings.Contains(got, "[model_providers.other]") {
+		t.Fatalf("other provider section not preserved:\n%s", got)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_PreservesRichCodexConfig verifies the
+// surgical edit leaves heavy real-world config (plugins / marketplaces /
+// mcp_servers / profiles / nested tables) fully intact, mirroring the shape of
+// the user's actual ~/.codex/config.toml.
+func TestSyncCodexGlobalHeadroomConfig_PreservesRichCodexConfig(t *testing.T) {
+	original := "model = \"gpt-5.6-sol\"\n" +
+		"service_tier = \"priority\"\n" +
+		"\n" +
+		"[plugins]\n" +
+		"enabled = [\"amagi\", \"foo\"]\n" +
+		"\n" +
+		"[marketplaces.amagi]\n" +
+		"url = \"https://example.com/marketplace.json\"\n" +
+		"\n" +
+		"[mcp_servers.weather]\n" +
+		"command = \"uvx\"\n" +
+		"args = [\"-y\", \"weather\"]\n" +
+		"\n" +
+		"[profiles.research]\n" +
+		"model = \"gpt-5.7\"\n"
+	configPath := newCodexTestConfig(t, original)
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+
+	// Every line of the original rich config must survive.
+	for _, want := range []string{
+		"model = \"gpt-5.6-sol\"",
+		"service_tier = \"priority\"",
+		"[plugins]",
+		"enabled = [\"amagi\", \"foo\"]",
+		"[marketplaces.amagi]",
+		"url = \"https://example.com/marketplace.json\"",
+		"[mcp_servers.weather]",
+		"command = \"uvx\"",
+		"args = [\"-y\", \"weather\"]",
+		"[profiles.research]",
+		"model = \"gpt-5.7\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rich config line %q not preserved:\n%s", want, got)
+		}
+	}
+	// Marker block present and before the first section header.
+	if !strings.Contains(got, "openai_base_url = \"http://127.0.0.1:8788/v1\"") {
+		t.Fatalf("openai_base_url not written:\n%s", got)
+	}
+	startIdx := strings.Index(got, "# === amagi-headroom-global-start ===")
+	pluginsIdx := strings.Index(got, "[plugins]")
+	if startIdx == -1 || pluginsIdx == -1 || startIdx > pluginsIdx {
+		t.Fatalf("marker block must precede [plugins]:\n%s", got)
+	}
+	// Round-trip disable restores the original content (apart from a trailing
+	// newline difference which we tolerate by trimming).
+	if err := syncCodexGlobalHeadroomConfig(false, 0); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	after := readCodexTestConfig(t, configPath)
+	for _, want := range []string{
+		"model = \"gpt-5.6-sol\"",
+		"service_tier = \"priority\"",
+		"[plugins]",
+		"enabled = [\"amagi\", \"foo\"]",
+		"[marketplaces.amagi]",
+		"[mcp_servers.weather]",
+		"args = [\"-y\", \"weather\"]",
+		"[profiles.research]",
+	} {
+		if !strings.Contains(after, want) {
+			t.Fatalf("after disable, line %q not preserved:\n%s", want, after)
+		}
+	}
+	if strings.Contains(after, "openai_base_url") {
+		t.Fatalf("after disable, openai_base_url should be gone:\n%s", after)
+	}
+}
+
+// TestSyncCodexGlobalHeadroomConfig_BackupCreated verifies enabling writes a
+// config.toml.bak.<ts> backup of the previous content before mutating.
+func TestSyncCodexGlobalHeadroomConfig_BackupCreated(t *testing.T) {
+	original := "model = \"gpt-5.6-sol\"\n"
+	configPath := newCodexTestConfig(t, original)
+
+	if err := syncCodexGlobalHeadroomConfig(true, 8788); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(configPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backup string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "config.toml.bak.") {
+			backup = filepath.Join(filepath.Dir(configPath), e.Name())
+			break
+		}
+	}
+	if backup == "" {
+		t.Fatalf("expected a config.toml.bak.<ts> backup:\n%s", gotDirListing(filepath.Dir(configPath)))
+	}
+	bk, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(bk) != original {
+		t.Fatalf("backup should hold the pre-write content.\nwant:\n%s\ngot:\n%s", original, string(bk))
+	}
+}
+
+func gotDirListing(dir string) string {
+	entries, _ := os.ReadDir(dir)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, ", ")
 }

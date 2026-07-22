@@ -42,7 +42,8 @@ interface ResourceFilter {
 
 export const usePluginStore = defineStore('plugin', () => {
   // Extension main tab state
-  const extMainTab = ref<'plugins' | 'workspaces' | 'env'>('plugins');
+  // 'tools' = 其他工具（Headroom 全局压缩等），与 plugins/workspaces/env 平级
+  const extMainTab = ref<'plugins' | 'workspaces' | 'env' | 'tools'>('plugins');
 
   // Plugin engine selection
   const pluginEngine = ref<'claude' | 'codex'>('claude');
@@ -227,7 +228,7 @@ export const usePluginStore = defineStore('plugin', () => {
   });
 
   // Actions
-  function setExtMainTab(tab: 'plugins' | 'workspaces' | 'env') {
+  function setExtMainTab(tab: 'plugins' | 'workspaces' | 'env' | 'tools') {
     extMainTab.value = tab;
   }
 

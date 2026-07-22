@@ -14,6 +14,10 @@ export function GetDashboardDefaults() {
   return window['go']['settings']['Service']['GetDashboardDefaults']();
 }
 
+export function GetCodexGlobalHeadroom() {
+  return window['go']['settings']['Service']['GetCodexGlobalHeadroom']();
+}
+
 export function GetGitHubToken() {
   return window['go']['settings']['Service']['GetGitHubToken']();
 }
@@ -68,6 +72,10 @@ export function Save() {
 
 export function SetDashboardDefaults(arg1) {
   return window['go']['settings']['Service']['SetDashboardDefaults'](arg1);
+}
+
+export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
+  return window['go']['settings']['Service']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
 }
 
 export function SetGitHubToken(arg1) {

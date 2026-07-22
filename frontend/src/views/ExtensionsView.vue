@@ -53,6 +53,11 @@
       <div v-else-if="extMainTab === 'env'" class="tab-pane">
         <EnvVarsPanel />
       </div>
+
+      <!-- Other tools tab -->
+      <div v-else-if="extMainTab === 'tools'" class="tab-pane">
+        <OtherToolsPanel />
+      </div>
     </div>
 
     <!-- Add Marketplace Dialog -->
@@ -103,6 +108,7 @@ import EmptyState from '../components/ui/EmptyState.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
 import WorkspacesPanel from '../components/extensions/WorkspacesPanel.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
+import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import { usePluginStore } from '../stores/plugin';
 import { useToast } from '../composables/useToast';
@@ -122,6 +128,7 @@ const mainTabOptions = ref([
   { value: 'plugins', label: '插件管理' },
   { value: 'workspaces', label: '工作区管理' },
   { value: 'env', label: '环境变量' },
+  { value: 'tools', label: '其他工具' },
 ]);
 
 // Engine options

@@ -90,6 +90,10 @@ export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
 
+export function GetCodexGlobalHeadroom() {
+  return window['go']['main']['App']['GetCodexGlobalHeadroom']();
+}
+
 export function GetConfigService() {
   return window['go']['main']['App']['GetConfigService']();
 }
@@ -356,6 +360,10 @@ export function SaveProviderFromJSON(arg1, arg2) {
 
 export function SaveTerminalPreset(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveTerminalPreset'](arg1, arg2, arg3);
+}
+
+export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
 }
 
 export function SetEnvVar(arg1, arg2) {

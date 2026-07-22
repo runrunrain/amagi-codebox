@@ -1537,7 +1537,25 @@ export namespace logging {
 }
 
 export namespace main {
-	
+
+	export class CodexGlobalHeadroomStatus {
+	    enabled: boolean;
+	    target: string;
+	    port: number;
+	    running: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CodexGlobalHeadroomStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.target = source["target"];
+	        this.port = source["port"];
+	        this.running = source["running"];
+	    }
+	}
 	export class OpenRemoteWebUIResult {
 	    url: string;
 	    port: number;
@@ -2331,11 +2349,14 @@ export namespace settings {
 	    amagiCodeShell: string;
 	    useProxy: boolean;
 	    useHeadroom: boolean;
-	
+	    codexGlobalHeadroom: boolean;
+	    codexGlobalHeadroomTarget: string;
+	    codexGlobalHeadroomPort: number;
+
 	    static createFrom(source: any = {}) {
 	        return new DashboardDefaults(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.provider = source["provider"];
@@ -2356,6 +2377,25 @@ export namespace settings {
 	        this.amagiCodeShell = source["amagiCodeShell"];
 	        this.useProxy = source["useProxy"];
 	        this.useHeadroom = source["useHeadroom"];
+	        this.codexGlobalHeadroom = source["codexGlobalHeadroom"];
+	        this.codexGlobalHeadroomTarget = source["codexGlobalHeadroomTarget"];
+	        this.codexGlobalHeadroomPort = source["codexGlobalHeadroomPort"];
+	    }
+	}
+	export class CodexGlobalHeadroomState {
+	    enabled: boolean;
+	    target: string;
+	    port: number;
+
+	    static createFrom(source: any = {}) {
+	        return new CodexGlobalHeadroomState(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.target = source["target"];
+	        this.port = source["port"];
 	    }
 	}
 	export class AppSettings {
