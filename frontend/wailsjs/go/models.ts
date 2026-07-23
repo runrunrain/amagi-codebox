@@ -1351,7 +1351,31 @@ export namespace envvars {
 }
 
 export namespace headroom {
-	
+
+	export class ClientPerfStat {
+	    client: string;
+	    requests: number;
+	    avg_cache_hit_pct: number;
+	    tokens_saved: number;
+	    cache_read_tokens: number;
+	    tokens_before: number;
+	    savings_percent: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ClientPerfStat(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.client = source["client"];
+	        this.requests = source["requests"];
+	        this.avg_cache_hit_pct = source["avg_cache_hit_pct"];
+	        this.tokens_saved = source["tokens_saved"];
+	        this.cache_read_tokens = source["cache_read_tokens"];
+	        this.tokens_before = source["tokens_before"];
+	        this.savings_percent = source["savings_percent"];
+	    }
+	}
 	export class ClientSavings {
 	    client: string;
 	    tokens_saved: number;

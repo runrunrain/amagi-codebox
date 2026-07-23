@@ -524,6 +524,22 @@ func (a *App) GetHeadroomSavings() (*headroom.SavingsReport, error) {
 	return a.Headroom.GetSavings(ctx)
 }
 
+// GetHeadroomPerfByClient 查询 headroom perf 按 client 聚合的性能统计
+// （请求数、平均 cache 命中率、累计节省/读取 token 数、节省百分比），供前端
+// codex 卡片突出 cache 命中率。实测（headroom 0.32.x）codex 经 headroom 的
+// 实际收益是 prefix cache 稳定（cache 命中率高 → cached token 计费约为新的 1/5），
+// 而非输入体积压缩（OpenAI responses 协议 tok_saved 多为 0）；故前端 codex 卡片
+// 应突出 AvgCacheHitPct，而非 tokens_saved。
+//
+// headroom 未安装或查询失败时返回 error，前端据此显示空态；绝不返回伪造数据冒充"有数据"。
+// 与 GetHeadroomSavings 一样读取共享 ledger（`headroom perf --format json --raw`），
+// 按 record.client 区分来源（codex / claude-code 等），后端无需为第二实例改动 perf 逻辑。
+func (a *App) GetHeadroomPerfByClient() ([]headroom.ClientPerfStat, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), headroom.PerfTimeout)
+	defer cancel()
+	return a.Headroom.GetPerfByClient(ctx)
+}
+
 // CodexGlobalHeadroomStatus is the frontend-facing snapshot of the codex-global
 // headroom toggle. It augments the persisted settings state with the live
 // running flag so the UI can render the actual proxy state in one round-trip.

@@ -126,6 +126,10 @@ export function GetGitHubToken() {
   return window['go']['main']['App']['GetGitHubToken']();
 }
 
+export function GetHeadroomPerfByClient() {
+  return window['go']['main']['App']['GetHeadroomPerfByClient']();
+}
+
 export function GetHeadroomSavings() {
   return window['go']['main']['App']['GetHeadroomSavings']();
 }

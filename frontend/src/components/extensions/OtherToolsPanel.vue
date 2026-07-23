@@ -28,7 +28,7 @@
               <span v-else class="badge badge-muted">已关闭</span>
             </div>
             <p class="hr-sub">
-              对独立 Codex 桌面版 / CLI / IDE 同时生效；代理仅在 CodeBox 运行时可用，端口 {{ status.port || fallbackPort }} / 目标 OpenAI upstream。
+              对独立 Codex 桌面版 / CLI / IDE 同时生效；代理仅在 CodeBox 运行时可用，端口 {{ status.port || fallbackPort }} / 目标 OpenAI upstream。codex 流量经 headroom，体积压缩主要对工具调用输出 / 大请求生效（长时间使用累计可观），同时 prefix cache 命中稳定、响应更快。
             </p>
           </div>
           <Switch
@@ -89,8 +89,7 @@
                 autocomplete="off"
               />
               <p class="adv-hint">
-                ChatGPT 账号登录时压缩是否生效需主上实测确认；target 可按需调整（留空回退默认）。
-                端口固定为 {{ fallbackPort }}（与会话级 8787 完全隔离）。
+                codex 流量经 headroom，体积压缩对工具调用输出 / 大请求生效，prefix cache 命中稳定、响应更快。target 可按需调整（留空回退默认）。端口固定为 {{ fallbackPort }}（与会话级 8787 完全隔离）。
               </p>
               <div class="adv-actions">
                 <AppButton
@@ -118,44 +117,44 @@
         <div class="hr-clients">
           <div class="clients-head">
             <div class="clients-title">
-              <h3>压缩统计（按客户端区分）</h3>
-              <span class="clients-sub">来源 ~/.headroom/savings_events.jsonl · 全局共享 ledger</span>
+              <h3>Headroom 统计（按客户端区分）</h3>
+              <span class="clients-sub">来源 headroom perf · 按 client 聚合 cache 命中率与压缩量</span>
             </div>
             <AppButton
               variant="ghost"
               size="small"
-              :disabled="savingsRefreshing"
-              @click="refreshSavings(true)"
+              :disabled="perfRefreshing"
+              @click="refreshPerf(true)"
             >
-              {{ savingsRefreshing ? '刷新中...' : '刷新' }}
+              {{ perfRefreshing ? '刷新中...' : '刷新' }}
             </AppButton>
           </div>
 
           <!-- 统计加载态 -->
-          <div v-if="savingsRefreshing && !savingsReport" class="hr-inline-state">
+          <div v-if="perfRefreshing && !perfStats" class="hr-inline-state">
             <div class="spinner-sm" />
-            <span>正在读取压缩统计...</span>
+            <span>正在读取 perf 统计...</span>
           </div>
 
           <!-- 统计空态 / 错误态：不刷屏弹 toast，仅在卡片内静默提示 -->
           <div
-            v-else-if="savingsError || !savingsReport || !hasClientData"
+            v-else-if="perfError || !perfStats || !hasClientData"
             class="hr-inline-state hr-inline-state-muted"
           >
-            <span class="state-dot" :class="savingsError ? 'err' : 'muted'"></span>
-            <span>{{ savingsEmptyMessage }}</span>
+            <span class="state-dot" :class="perfError ? 'err' : 'muted'"></span>
+            <span>{{ perfEmptyMessage }}</span>
           </div>
 
           <!-- 成功态：客户端分项卡片 -->
           <div v-else class="clients-grid">
             <article
-              v-for="c in savingsReport.by_client"
+              v-for="c in perfStats"
               :key="c.client"
               class="client-card"
               :class="{ 'client-card-codex': isCodexClient(c.client) }"
             >
               <header class="client-card-head">
-                <span class="client-name mono">{{ c.client }}</span>
+                <span class="client-name mono">{{ c.client || '(unknown)' }}</span>
                 <span
                   v-if="isCodexClient(c.client)"
                   class="tag tag-codex"
@@ -168,43 +167,57 @@
                 >claude 会话</span>
                 <span v-else class="tag tag-other">其他</span>
               </header>
-              <dl class="client-metrics">
-                <div class="metric">
-                  <dt>节省 Token</dt>
-                  <dd class="mono accent">{{ formatNumber(c.tokens_saved) }}</dd>
+
+              <!-- 主指标（对称布局）：体积压缩节省 tokens_saved 对所有 client 均为真实收益，
+                   作为主指标；cache 命中率为次指标。codex 与 claude 使用同一结构，
+                   isCodexClient/isClaudeClient 仅用于标签友好化，不影响指标权重 -->
+              <div class="metric-hero">
+                <div class="hero-label">体积压缩节省</div>
+                <div class="hero-value mono accent">
+                  {{ formatNumber(c.tokens_saved) }}<span class="hero-unit">token</span>
                 </div>
+                <div class="hero-hint">{{ clientHeroHint(c.client) }}</div>
+              </div>
+
+              <dl class="client-metrics">
+                <!-- 次指标：请求次数 / 节省比例 / cache 命中率 / cache 读取量（与 claude 完全对称） -->
                 <div class="metric">
-                  <dt>压缩次数</dt>
-                  <dd class="mono">{{ formatNumber(c.calls) }}</dd>
+                  <dt>请求次数</dt>
+                  <dd class="mono">{{ formatNumber(c.requests) }}</dd>
                 </div>
                 <div class="metric">
                   <dt>节省比例</dt>
                   <dd class="mono">{{ formatPercent(c.savings_percent) }}</dd>
                 </div>
                 <div class="metric">
-                  <dt>避免成本</dt>
-                  <dd class="mono">{{ formatCost(c.cost_usd) }}</dd>
+                  <dt>cache 命中率</dt>
+                  <dd class="mono">{{ formatPercent(c.avg_cache_hit_pct) }}</dd>
+                </div>
+                <div class="metric">
+                  <dt>cache 读取量</dt>
+                  <dd class="mono">{{ formatNumber(c.cache_read_tokens) }}</dd>
                 </div>
               </dl>
             </article>
           </div>
 
-          <!-- ledger 汇总：所有 client 合计，便于横向对比 -->
+          <!-- perf 汇总：所有 client 合计，便于横向对比 -->
           <div v-if="hasClientData && aggregated" class="clients-total">
             <span class="total-label">全部客户端合计</span>
             <span class="total-item">
-              <span class="total-k">节省</span>
-              <span class="mono accent">{{ formatNumber(aggregated.tokens_saved) }}</span>
-              <span class="total-unit">token</span>
-            </span>
-            <span class="total-item">
-              <span class="total-k">压缩</span>
-              <span class="mono">{{ formatNumber(aggregated.calls) }}</span>
+              <span class="total-k">请求</span>
+              <span class="mono accent">{{ formatNumber(aggregated.requests) }}</span>
               <span class="total-unit">次</span>
             </span>
             <span class="total-item">
-              <span class="total-k">避免成本</span>
-              <span class="mono">{{ formatCost(aggregated.cost_usd) }}</span>
+              <span class="total-k">体积压缩节省</span>
+              <span class="mono">{{ formatNumber(aggregated.tokens_saved) }}</span>
+              <span class="total-unit">token</span>
+            </span>
+            <span class="total-item">
+              <span class="total-k">cache 读取</span>
+              <span class="mono">{{ formatNumber(aggregated.cache_read_tokens) }}</span>
+              <span class="total-unit">token</span>
             </span>
           </div>
         </div>
@@ -213,7 +226,8 @@
         <ul class="hr-notes">
           <li>全局开关对独立 Codex 桌面版 / CLI / IDE 同时生效；会话级 Claude 压缩（端口 8787）不受影响。</li>
           <li>代理仅在 CodeBox 运行时可用；退出 CodeBox 后 Codex 流量将直连 target。</li>
-          <li>统计 ledger 全局共享（~/.headroom/savings_events.jsonl），按 client 字段区分来源。</li>
+          <li>codex 与 claude 压缩特性不同：claude 会话级主要靠 tool_schema_compaction 压缩工具 schema；codex 经 headroom 主要压缩工具调用输出（对长上下文 / 大请求生效，长时间使用累计可观）；两者都靠 prefix cache 命中稳定带来额外收益。</li>
+          <li>统计由 headroom perf 读取共享 ledger，按 client 字段区分来源（claude 会话 8787 与 codex 全局 8788 写入同一文件）。</li>
         </ul>
       </ConfigCard>
     </template>
@@ -230,12 +244,11 @@ import ErrorState from '../ui/ErrorState.vue';
 import { useToast } from '../../composables/useToast';
 
 import * as headroomGlobalApi from '../../api/headroomGlobal';
-import { getHeadroomSavings } from '../../api/headroom';
+import { getHeadroomPerfByClient } from '../../api/headroom';
 import { main, headroom } from '../../../wailsjs/go/models';
 
 type CodexGlobalHeadroomStatus = main.CodexGlobalHeadroomStatus;
-type SavingsReport = headroom.SavingsReport;
-type ClientSavings = headroom.ClientSavings;
+type ClientPerfStat = headroom.ClientPerfStat;
 
 const { showSuccess, showError } = useToast();
 
@@ -260,14 +273,14 @@ const toggling = ref(false);
 const targetDraft = ref('');
 const savingTarget = ref(false);
 
-// by_client 统计
-const savingsReport = ref<SavingsReport | null>(null);
-const savingsRefreshing = ref(false);
-const savingsError = ref(false);
+// by_client perf 统计（cache 命中率 + 压缩量，按 client 聚合）
+const perfStats = ref<ClientPerfStat[] | null>(null);
+const perfRefreshing = ref(false);
+const perfError = ref(false);
 
 // 定时刷新：10s，与 LogsView 的 headroom 轮询对齐
-const SAVINGS_REFRESH_INTERVAL = 10000;
-let savingsTimer: number | null = null;
+const PERF_REFRESH_INTERVAL = 10000;
+let perfTimer: number | null = null;
 
 // --- computed ---
 
@@ -284,33 +297,33 @@ const targetDirty = computed(() => {
 
 // by_client 是否有可用数据
 const hasClientData = computed(() => {
-  return !!(savingsReport.value?.by_client && savingsReport.value.by_client.length > 0);
+  return !!(perfStats.value && perfStats.value.length > 0);
 });
 
 // 空态文案：区分"调用失败"与"已就绪但无数据"
-const savingsEmptyMessage = computed(() => {
-  if (savingsError.value) {
-    return 'Headroom 未安装或统计文件不可读，暂无压缩数据';
+const perfEmptyMessage = computed(() => {
+  if (perfError.value) {
+    return 'Headroom 未安装或 perf 数据不可读，暂无统计';
   }
-  return 'Headroom 已就绪，暂无压缩数据（Codex 接入后此处会出现 codex 条目）';
+  return 'Headroom 已就绪，暂无 perf 数据（Codex/Claude 接入后此处会出现条目）';
 });
 
-// 所有 client 合计（横向对比用）
+// 所有 client 合计（横向对比用）。perf 无 cost_usd，合计聚焦请求/压缩/cache 读取
 const aggregated = computed(() => {
-  const list = savingsReport.value?.by_client;
+  const list = perfStats.value;
   if (!list || list.length === 0) return null;
-  return list.reduce<{ tokens_saved: number; calls: number; cost_usd: number }>(
-    (acc, c: ClientSavings) => {
+  return list.reduce<{ requests: number; tokens_saved: number; cache_read_tokens: number }>(
+    (acc, c: ClientPerfStat) => {
+      acc.requests += c.requests || 0;
       acc.tokens_saved += c.tokens_saved || 0;
-      acc.calls += c.calls || 0;
-      acc.cost_usd += c.cost_usd || 0;
+      acc.cache_read_tokens += c.cache_read_tokens || 0;
       return acc;
     },
-    { tokens_saved: 0, calls: 0, cost_usd: 0 },
+    { requests: 0, tokens_saved: 0, cache_read_tokens: 0 },
   );
 });
 
-// --- client 分类：不硬编码业务判定，仅做标签友好化 ---
+// --- client 分类：仅做标签友好化（codex 全局 / claude 会话），不参与指标权重 ---
 function isCodexClient(client: string): boolean {
   const name = (client || '').toLowerCase();
   // headroom 的 client 字段通常为 "codex" / "codex-cli" / "codex-cli-rs" 等
@@ -322,15 +335,24 @@ function isClaudeClient(client: string): boolean {
   return name === 'claude-code' || name.startsWith('claude');
 }
 
+// 主指标 hint：如实描述各 client 的压缩机制，结构对称、位置一致，不绑定计费倍数
+// （ChatGPT 订阅不按 token 计费，cache 价值统一表述为「命中稳定、响应更快」）
+function clientHeroHint(client: string): string {
+  if (isCodexClient(client)) {
+    return '对工具调用输出 / 大请求生效；prefix cache 命中稳定、响应更快';
+  }
+  if (isClaudeClient(client)) {
+    return 'tool_schema_compaction 等转换器生效；prefix cache 命中稳定、响应更快';
+  }
+  return 'prefix cache 命中稳定、响应更快';
+}
+
 // --- 格式化（与 LogsView 保持一致） ---
 function formatNumber(n: number): string {
   return Number(n || 0).toLocaleString('en-US');
 }
 function formatPercent(p: number): string {
   return `${Number(p || 0).toFixed(1)}%`;
-}
-function formatCost(usd: number): string {
-  return `$${Number(usd || 0).toFixed(2)}`;
 }
 
 // --- 加载 ---
@@ -342,22 +364,22 @@ async function loadStatus() {
   targetDraft.value = s.target || '';
 }
 
-async function refreshSavings(showLoading = false) {
-  if (showLoading) savingsRefreshing.value = true;
+async function refreshPerf(showLoading = false) {
+  if (showLoading) perfRefreshing.value = true;
   try {
-    const report = await getHeadroomSavings();
-    savingsReport.value = report;
-    savingsError.value = false;
+    const stats = await getHeadroomPerfByClient();
+    perfStats.value = stats;
+    perfError.value = false;
   } catch (err) {
     // 已有数据则保留（略陈旧但有信息量），仅在从未拿到过数据时进入错误空态
-    if (!savingsReport.value) {
-      savingsError.value = true;
+    if (!perfStats.value) {
+      perfError.value = true;
     }
     if (showLoading) {
-      console.warn('[OtherToolsPanel] getHeadroomSavings failed:', err);
+      console.warn('[OtherToolsPanel] getHeadroomPerfByClient failed:', err);
     }
   } finally {
-    if (showLoading) savingsRefreshing.value = false;
+    if (showLoading) perfRefreshing.value = false;
   }
 }
 
@@ -365,7 +387,7 @@ async function handleRetry() {
   initialLoading.value = true;
   initialError.value = '';
   try {
-    await Promise.all([loadStatus(), refreshSavings(false)]);
+    await Promise.all([loadStatus(), refreshPerf(false)]);
   } catch (err) {
     initialError.value = String(err);
   } finally {
@@ -395,7 +417,7 @@ async function handleToggleEnabled(nextEnabled: boolean) {
         : '已关闭 Codex 全局压缩',
     );
     // 切换后立即刷新统计，便于观察 codex 条目变化
-    refreshSavings(false);
+    refreshPerf(false);
   } catch (err) {
     status.value = { ...status.value, enabled: prev };
     showError('切换全局压缩失败: ' + err);
@@ -435,22 +457,22 @@ onMounted(async () => {
   initialLoading.value = true;
   initialError.value = '';
   try {
-    await Promise.all([loadStatus(), refreshSavings(false)]);
+    await Promise.all([loadStatus(), refreshPerf(false)]);
   } catch (err) {
     initialError.value = String(err);
   } finally {
     initialLoading.value = false;
   }
   // 定时刷新统计（不显示 loading 避免闪烁）
-  savingsTimer = window.setInterval(() => {
-    refreshSavings(false);
-  }, SAVINGS_REFRESH_INTERVAL);
+  perfTimer = window.setInterval(() => {
+    refreshPerf(false);
+  }, PERF_REFRESH_INTERVAL);
 });
 
 onBeforeUnmount(() => {
-  if (savingsTimer !== null) {
-    clearInterval(savingsTimer);
-    savingsTimer = null;
+  if (perfTimer !== null) {
+    clearInterval(perfTimer);
+    perfTimer = null;
   }
 });
 </script>
@@ -804,6 +826,46 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--label);
   word-break: break-all;
+}
+
+/* 主指标块：所有 client 对称——统一以体积压缩节省 (tokens_saved) 为主指标 */
+.metric-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.hero-label {
+  font-size: 11px;
+  color: var(--secondary);
+  letter-spacing: 0.2px;
+}
+
+.hero-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.hero-unit {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tertiary);
+  margin-left: 5px;
+  letter-spacing: 0;
+}
+
+.hero-hint {
+  font-size: 11px;
+  color: var(--tertiary);
+  line-height: 1.4;
+  margin-top: 1px;
 }
 
 .tag {

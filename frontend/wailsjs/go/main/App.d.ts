@@ -74,6 +74,8 @@ export function GetEnvVarsJSON():Promise<string>;
 
 export function GetGitHubToken():Promise<string>;
 
+export function GetHeadroomPerfByClient():Promise<Array<headroom.ClientPerfStat>>;
+
 export function GetHeadroomSavings():Promise<headroom.SavingsReport>;
 
 export function GetKeyDiagnostics():Promise<Record<string, Record<string, string>>>;

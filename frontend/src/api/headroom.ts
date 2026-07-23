@@ -11,13 +11,14 @@ import {
   GetStatus,
   GetPort,
 } from '../../wailsjs/go/headroom/HeadroomService';
-import { GetHeadroomSavings } from '../../wailsjs/go/main/App';
+import { GetHeadroomSavings, GetHeadroomPerfByClient } from '../../wailsjs/go/main/App';
 
 import { headroom } from '../../wailsjs/go/models';
 
 // Type aliases
 type HeadroomStatus = headroom.HeadroomStatus;
 type SavingsReport = headroom.SavingsReport;
+type ClientPerfStat = headroom.ClientPerfStat;
 
 /**
  * Start the Headroom proxy subprocess.
@@ -91,6 +92,32 @@ export async function getHeadroomSavings(): Promise<SavingsReport> {
     return await GetHeadroomSavings();
   } catch (error) {
     console.error('[api.headroom.getHeadroomSavings]', error);
+    throw error;
+  }
+}
+
+/**
+ * Get Headroom perf stats aggregated by client.
+ *
+ * Runs `headroom perf --format json --raw` and aggregates per-record data into
+ * one stat per client: request count, average prefix-cache hit rate, cumulative
+ * tokens_saved, cache_read_tokens, tokens_before and savings_percent.
+ *
+ * This is the honest data source for the codex card: codex traffic flowing
+ * through headroom yields near-zero tokens_saved (headroom's compression of the
+ * OpenAI responses protocol is still early), but a stable, high prefix-cache
+ * hit rate — which is the real saving (cached tokens are billed at roughly 1/5
+ * of fresh tokens). Claude traffic, by contrast, gets real body compression
+ * (tool_schema_compaction etc.) so tokens_saved is its primary metric.
+ *
+ * Rejects when Headroom is not installed / perf subcommand fails / JSON parse
+ * fails; never returns fabricated data.
+ */
+export async function getHeadroomPerfByClient(): Promise<ClientPerfStat[]> {
+  try {
+    return await GetHeadroomPerfByClient();
+  } catch (error) {
+    console.error('[api.headroom.getHeadroomPerfByClient]', error);
     throw error;
   }
 }
