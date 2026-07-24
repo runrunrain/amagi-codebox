@@ -1697,14 +1697,46 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		Model: strings.TrimSpace(modelName),
 	}
 
-	// 构建环境变量注入：根据 Provider 双格式映射到 Pi 内置 provider，注入对应 API Key。
-	// 与 Codex 不同，Pi 不接受 base_url，因此不注入 *_BASE_URL。
+	// 构建环境变量注入 + pi models.json 配置写入。
+	//
+	// Pi 通过 PI_CODING_AGENT_DIR 指定 agent 目录，从中读取 models.json 的 providers 配置。
+	// amagi 把当前选中的 provider 翻译成 pi 的一个自定义命名 provider（"amagi-<name>"），
+	// 写入隔离目录 <configDir>/pi-runtime/models.json，再通过 PI_CODING_AGENT_DIR 让 pi 读取。
+	// 这样 baseURL/api/apiKey 都正确注入，第三方 Anthropic/OpenAI 兼容 provider（如 GLM）
+	// 会正确路由到其真实 endpoint，不再误打 pi 内置 anthropic/openai 的官方地址。
+	//
+	// 与 Claude Code（ANTHROPIC_BASE_URL env）/ Codex（config.toml）/ OpenCode
+	//（OPENCODE_CONFIG_CONTENT env）同构：amagi 的 provider 配置作为通用底层，
+	// 各引擎各自翻译消费。
 	envOverrides := map[string]string{}
 	if providerID != "" {
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
 			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model)
-			if piProvider, apiKeyEnv := piProviderMapping(*provider); piProvider != "" {
-				if apiKey, _ := a.getProviderAPIKey(providerID, *provider); apiKey != "" {
+			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
+
+			// 写入 pi 隔离 agent 目录的 models.json，并注入 PI_CODING_AGENT_DIR。
+			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
+			// 失败则回退到 piProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
+			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey); cfgErr == nil {
+				agentDir := filepath.Join(defaultConfigDir(), "pi-runtime")
+				if writeErr := launcher.WritePiAgentConfig(agentDir, piCfg); writeErr == nil {
+					envOverrides["PI_CODING_AGENT_DIR"] = agentDir
+					launchSettings.Provider = launcher.PiProviderID(providerID)
+					a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
+						launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+				} else {
+					a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
+					launchSettings.Provider, _ = piProviderMapping(*provider)
+				}
+			} else {
+				a.Log.Warn("pi", "生成 pi models.json 失败，回退内置 provider", cfgErr.Error())
+				launchSettings.Provider, _ = piProviderMapping(*provider)
+			}
+
+			// 冗余兜底：注入对应 API Key env var（与 OpenCode 的双路注入一致）。
+			// pi 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
+			if apiKey != "" {
+				if _, apiKeyEnv := piProviderMapping(*provider); apiKeyEnv != "" {
 					envOverrides[apiKeyEnv] = apiKey
 				}
 			}
@@ -2552,19 +2584,16 @@ func resolveCodexLaunchSettings(provider config.Provider, requestedModel string)
 	return settings
 }
 
-// piProviderMapping 把 amagi Provider 映射成 Pi 能识别的内置 provider 名，
-// 并返回该 provider 对应的 API Key 环境变量名。
+// piProviderMapping 把 amagi Provider 映射成 Pi 的内置 provider 名 + 对应 API Key env var。
 //
-// Pi 不支持任意自定义 base_url（仅有 Azure 专用 AZURE_OPENAI_BASE_URL），
-// 而是按"命名 provider + 对应 env var"接入模型。amagi 的双格式 Provider 可
-// 天然映射到 Pi 的 anthropic / openai 两个内置 provider：
-//   - Anthropic 兼容 → pi provider "anthropic"，env ANTHROPIC_API_KEY
-//   - OpenAI 兼容   → pi provider "openai"，env OPENAI_API_KEY
+// 注意：这是**回退路径**，仅当 LaunchPiSession 未能生成 pi models.json 时使用。
+// 主路径是 launcher.BuildPiModelsConfig + WritePiAgentConfig，会把 amagi provider
+// 翻译成 pi 的自定义命名 provider（"amagi-<name>"，含完整 baseURL/api/apiKey），
+// 通过 PI_CODING_AGENT_DIR 隔离加载。
 //
-// 第三方订阅型 provider（zai/kimi/qwen 等）Pi 同样提供了对应的命名 env var
-// （ZAI_API_KEY/KIMI_API_KEY/QWEN_TOKEN_PLAN_API_KEY 等）。v1 通过格式兜底覆盖
-// 绝大多数 Anthropic/OpenAI 兼容场景；如需精确路由到命名订阅 provider，
-// 可扩展本函数按 baseURL host 识别。
+// 此回退映射把第三方 Anthropic/OpenAI 兼容 provider 粗略归到 pi 内置的
+// anthropic/openai，会丢失自定义 baseURL（导致第三方 provider 误打官方 endpoint），
+// 因此仅作兜底，不应作为常态路径。
 func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
 	if p.IsAnthropicCompatible() {
 		return "anthropic", "ANTHROPIC_API_KEY"
@@ -2577,6 +2606,9 @@ func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
 
 // resolvePiLaunchSettings 解析 Pi 会话启动参数：确定 provider 与 model。
 // requestedModel 为空时回退到 provider.DefaultModel。
+//
+// 返回的 Provider 是初始猜测（piProviderMapping 的内置 provider 名）；
+// LaunchPiSession 在成功写入 pi models.json 后会用 "amagi-<name>" 覆盖它。
 func resolvePiLaunchSettings(provider config.Provider, requestedModel string) piLaunchSettings {
 	model := strings.TrimSpace(requestedModel)
 	piProvider, _ := piProviderMapping(provider)
