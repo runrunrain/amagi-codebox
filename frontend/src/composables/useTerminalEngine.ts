@@ -940,6 +940,32 @@ export function useTerminalEngine() {
               }
               historyReplayed = true
               flushLiveBuffer()
+
+              // 大体量历史 replay 后重建 renderer（修路由切走再切回的
+              // 显示异常/无法交互/无法选中复制）。
+              //
+              // 根因：mountTerm 在 replay 之前就加载了 canvas/WebGL
+              // renderer，随后 writeHistoryInChunks 把最多 1MB 的历史
+              // 拆成 ~64KB 跨十几帧 term.write 进去。renderer 在这十几
+              // 帧里被迫绘制 opencode TUI 的大量整屏 ANSI 重绘，texture
+              // atlas 与 cell 度量被写脏/写错；而本回调此前只对 *canvas*
+              // 调 clearTextureAtlas，**WebGL（Windows）的图集从不被清
+              // 理**，也没有任何「replay 后重建 renderer」的动作。结果
+              // buffer 数据正确（故输入框仍可输入、PTY 仍活），但绘制层
+              // 脏了——显示花屏错位、视觉上无法交互；且 attachForcedSelection
+              // 依赖 .xterm-screen 像素尺寸算 cellWidth，尺寸错乱时
+              // cellWidth<=0 直接放弃选区 → 无法选中复制。首次启动历史小、
+              // 不触发；用一段时间历史变大后，切到其他路由（会话设置/
+              // 环境拓展）再切回 /terminal 必现。
+              //
+              // 修法：对超过单块阈值的大 replay，用经过验证的 refreshRenderer
+              // （DPR 变化时同款路径）dispose+reload renderer 并 force-fit，
+              // 让 renderer 基于最终 buffer 与正确尺寸重建图集。小历史/
+              // 首次挂载路径不受影响（decoded.length <= 单块阈值时跳过），
+              // 回归风险低。WebGL reload 同时重新注册 onContextLoss。
+              if (decoded.length > HISTORY_CHUNK_SIZE) {
+                refreshRenderer(sessionId, containerEl)
+              }
             })
             return
           } else if (decoded !== null && decoded.length === 0) {
