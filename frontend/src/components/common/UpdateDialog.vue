@@ -204,10 +204,20 @@ async function handleDownloadAndApply() {
     await DownloadAndApplyUpdate();
   } catch (error) {
     console.error('[UpdateDialog] Download failed:', error);
-    updateError.value = '下载更新失败';
+    // 展示后端返回的真实错误（如 App Translocation 引导），而非固定文案。
+    // Wails 把 Go error.Error() 作为字符串/对象抛出，此处统一提取可读消息。
+    updateError.value = normalizeUpdateError(error);
   } finally {
     downloading.value = false;
   }
+}
+
+// normalizeUpdateError 从 Wails 抛出的错误中提取可读消息。
+// 兼容 string / Error / 普通对象三种形态。
+function normalizeUpdateError(err: any): string {
+  if (!err) return '下载更新失败';
+  if (typeof err === 'string') return err;
+  return err?.message || String(err);
 }
 
 function handleOpenReleasePage() {

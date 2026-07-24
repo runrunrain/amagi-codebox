@@ -837,3 +837,54 @@ func createValidAppBundleWithPerm(t *testing.T, appPath string, exePerm os.FileM
 		t.Fatal(err)
 	}
 }
+
+func TestIsAppTranslocated(t *testing.T) {
+	tests := []struct {
+		name    string
+		appPath string
+		want    bool
+	}{
+		{
+			name:    "normal /Applications path not translocated",
+			appPath: "/Applications/amagi-codebox.app",
+			want:    false,
+		},
+		{
+			name:    "user Applications path not translocated",
+			appPath: "/Users/alice/Applications/amagi-codebox.app",
+			want:    false,
+		},
+		{
+			name:    "Downloads path not translocated (translocation only happens at runtime)",
+			appPath: "/Users/alice/Downloads/amagi-codebox.app",
+			want:    false,
+		},
+		{
+			name:    "AppTranslocation runtime path detected",
+			appPath: "/private/var/folders/xx/yy/T/AppTranslocation/AC8A3CC9-946E-4F53-910C-54FE098EA0E6/d/amagi-codebox.app",
+			want:    true,
+		},
+		{
+			name:    "AppTranslocation without /private prefix detected",
+			appPath: "/var/folders/xx/yy/T/AppTranslocation/UUID/d/amagi-codebox.app",
+			want:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isAppTranslocated(tt.appPath); got != tt.want {
+				t.Errorf("isAppTranslocated(%q) = %v, want %v", tt.appPath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTranslocationErrorGuide(t *testing.T) {
+	// 确保引导文案包含关键操作步骤，避免误删或改空。
+	guide := errTranslocated.Guide
+	for _, want := range []string{"应用程序", "xattr", "com.apple.quarantine"} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("translocation guide missing %q: %s", want, guide)
+		}
+	}
+}

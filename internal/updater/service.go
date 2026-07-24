@@ -269,6 +269,14 @@ func (s *Service) downloadAndApplyDarwinAppBundle(info *UpdateInfo, onProgress f
 		return fmt.Errorf("locate current app bundle: %w", err)
 	}
 
+	// 检测 App Translocation：带 quarantine 且未签名/未公证的 app 从 Downloads 等目录
+	// 启动时，macOS Gatekeeper 会把它复制到只读的 /private/var/folders/.../T/AppTranslocation/<UUID>/d/
+	// 临时路径运行。在此路径下原地替换无效（只读 + 每次启动 UUID 随机），
+	// 必须让用户把 app 移出 Downloads 并清除隔离属性后才能正常自动升级。
+	if isAppTranslocated(currentAppPath) {
+		return fmt.Errorf("%s: %s", errTranslocated.Title, errTranslocated.Guide)
+	}
+
 	parentDir := filepath.Dir(currentAppPath)
 
 	// Verify parent directory is writable
@@ -418,6 +426,34 @@ func locateCurrentAppBundle() (string, error) {
 		return "", fmt.Errorf("get executable path: %w", err)
 	}
 	return locateAppBundleFromPath(exePath)
+}
+
+// appTranslocationPathFragment 是 macOS Gatekeeper App Translocation 临时目录的路径片段。
+// 被 translocate 的 app 运行在 /private/var/folders/.../T/AppTranslocation/<UUID>/d/<App>.app。
+const appTranslocationPathFragment = "AppTranslocation"
+
+// isAppTranslocated 判断当前 app 是否运行在 macOS App Translocation 临时路径。
+// translocation 发生在：app 带 quarantine 隔离属性（从浏览器/AirDrop 下载）且未签名/未公证，
+// 且位于 Downloads 等受 Gatekeeper 监控的目录时，macOS 会把它复制到只读随机路径运行。
+// 在此路径下自动升级无效（只读 + 每次启动 UUID 随机，替换不持久）。
+func isAppTranslocated(appPath string) bool {
+	return strings.Contains(appPath, appTranslocationPathFragment)
+}
+
+// translocationError 描述 App Translocation 场景下的升级阻断错误，
+// 提供用户可操作的引导（移出 Downloads + 清除隔离属性）。
+type translocationError struct {
+	Title string
+	Guide string
+}
+
+// errTranslocated 是 App Translocation 检测命中时返回的固定引导文案。
+// 前端会原样展示（Title 作为错误摘要已包含在 error 字符串里，Guide 是详细步骤）。
+var errTranslocated = translocationError{
+	Title: "无法自动更新：应用正在 macOS 隔离临时路径中运行",
+	Guide: "请将 amagi-codebox.app 从「下载」文件夹移动到「访达 > 应用程序」（/Applications），" +
+		"然后在终端执行 xattr -dr com.apple.quarantine /Applications/amagi-codebox.app 清除隔离属性，" +
+		"重新打开应用后即可正常自动更新",
 }
 
 // locateAppBundleFromPath resolves the .app bundle root directory from an executable path.
