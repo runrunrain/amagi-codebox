@@ -126,7 +126,7 @@
       </div>
 
       <!-- Thinking 模式 -->
-      <div v-if="engine === 'claude'" class="form-section">
+      <div v-if="engine === 'claude' || engine === 'pi'" class="form-section">
         <div class="form-section-title">Thinking 模式</div>
         <div class="form-row">
           <div class="form-group">
@@ -151,9 +151,9 @@
         </div>
       </div>
 
-      <!-- 推理强度（Claude Code Effort Level） -->
-      <div v-if="engine === 'claude'" class="form-section">
-        <div class="form-section-title">推理强度（Claude Code Effort Level）</div>
+      <!-- 推理强度 / 思考强度（Claude Code Effort Level / Pi --thinking） -->
+      <div v-if="engine === 'claude' || engine === 'pi'" class="form-section">
+        <div class="form-section-title">推理强度（{{ engine === 'pi' ? 'Pi Thinking Level' : 'Claude Code Effort Level' }}）</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">推理强度</label>
@@ -386,16 +386,16 @@ async function handleSave() {
     if (form.streamValue !== '') {
       parameters.stream = form.streamValue === 'true';
     }
-    if (props.engine === 'claude' && form.thinkingType) {
+    if ((props.engine === 'claude' || props.engine === 'pi') && form.thinkingType) {
       parameters.thinking = {
         type: form.thinkingType,
         budgetTokens: form.thinkingBudget,
       };
     }
-    // 推理强度：Claude Code 专用（后端 launcher 通过 CLAUDE_CODE_EFFORT_LEVEL 环境变量注入）。
-    // Codex 的 reasoning 走 codexplugin agents.toml 的 model_reasoning_effort 独立路径，
-    // 不在 PresetDialog 配置；OpenCode 路径不消费 reasoning_effort 字段。
-    if (props.engine === 'claude' && form.reasoningEffort) {
+    // 推理强度：Claude Code 通过 CLAUDE_CODE_EFFORT_LEVEL env 注入；
+    // Pi 通过 --thinking CLI flag 注入（后端 resolvePiLaunchSettings 映射）。
+    // 值域 low/medium/high/xhigh/max 两者完全兼容。Codex/OpenCode 不消费此字段。
+    if ((props.engine === 'claude' || props.engine === 'pi') && form.reasoningEffort) {
       parameters.reasoning_effort = form.reasoningEffort;
     }
     if (form.contextWindow !== undefined || form.compactLimit !== undefined) {

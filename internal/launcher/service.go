@@ -370,21 +370,23 @@ func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string)
 
 // LaunchPi 启动一个新的 Pi coding agent 进程，返回启动结果。
 // 支持两种模式：terminal（独立终端）、embedded（内嵌终端）。
-// providerName 非空时附加 --provider providerName；modelName 非空时附加 --model modelName。
+// providerName 非空时附加 --provider providerName；modelName 非空时附加 --model modelName；
+// thinkingLevel 非空时附加 --thinking thinkingLevel（值域 off/minimal/low/medium/high/xhigh/max）。
 // envOverrides 中的键值对（如 OPENAI_API_KEY/ANTHROPIC_API_KEY）会注入到进程环境变量。
 func (s *LauncherService) LaunchPi(
 	sessionID string,
 	providerName string,
 	modelName string,
+	thinkingLevel string,
 	mode session.LaunchMode,
 	workDir string,
 	envOverrides map[string]string,
 ) (*LaunchResult, error) {
 	env := BuildEnv(s.baseEnv(), envOverrides)
 
-	cmd := s.buildPiCmd(providerName, modelName, workDir, env)
+	cmd := s.buildPiCmd(providerName, modelName, thinkingLevel, workDir, env)
 
-	s.log.Info("launcher", "正在启动 Pi 进程", fmt.Sprintf("sessionID=%s mode=%s provider=%s model=%s", sessionID, mode, providerName, modelName))
+	s.log.Info("launcher", "正在启动 Pi 进程", fmt.Sprintf("sessionID=%s mode=%s provider=%s model=%s thinking=%s", sessionID, mode, providerName, modelName, thinkingLevel))
 
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "Pi 进程启动失败", err.Error())
@@ -419,14 +421,18 @@ func (s *LauncherService) LaunchPi(
 
 // buildPiCmd 构建 pi 进程命令。
 // providerName 非空时附加 --provider providerName；
-// modelName 非空时附加 --model modelName。
-func (s *LauncherService) buildPiCmd(providerName, modelName, workDir string, env []string) *exec.Cmd {
+// modelName 非空时附加 --model modelName；
+// thinkingLevel 非空时附加 --thinking thinkingLevel。
+func (s *LauncherService) buildPiCmd(providerName, modelName, thinkingLevel, workDir string, env []string) *exec.Cmd {
 	args := []string{}
 	if providerName != "" {
 		args = append(args, "--provider", providerName)
 	}
 	if modelName != "" {
 		args = append(args, "--model", modelName)
+	}
+	if thinkingLevel != "" {
+		args = append(args, "--thinking", thinkingLevel)
 	}
 	cmd := exec.Command(s.resolveCLIPath("pi", env), args...)
 	cmd.Dir = workDir

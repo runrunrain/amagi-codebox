@@ -51,10 +51,11 @@ type codexLaunchSettings struct {
 
 // piLaunchSettings 是 Pi 会话的启动参数。
 // Provider 对应 pi 的 --provider 参数（anthropic/openai 等 Pi 内置 provider 名）；
-// Model 对应 --model 参数。
+// piLaunchSettings 是 Pi 会话的启动参数。
 type piLaunchSettings struct {
-	Provider string
-	Model    string
+	Provider string // --provider arg（amagi-<name> 或内置 anthropic/openai）
+	Model    string // --model arg
+	Thinking string // --thinking arg（off/minimal/low/medium/high/xhigh/max），来自预设 ReasoningEffort
 }
 
 const (
@@ -1655,11 +1656,15 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
 	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("pi", modelName)
 	tpFound := tpErr == nil && tp != nil
+	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
+	// 供后续写入 pi models.json 的 model 配置与解析 --thinking 级别。
+	var presetParams config.Parameters
 	if tpFound {
 		if tpProvider != "" {
 			providerID = tpProvider
 		}
 		modelName = tp.Model
+		presetParams = tp.Parameters
 		a.Log.Info("session", "Pi 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
 	}
 
@@ -1674,6 +1679,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				}
 				a.Log.Info("session", "Pi 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
 				modelName = resolvedModel
+				presetParams = preset.Parameters
 			}
 		}
 	}
@@ -1711,13 +1717,14 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	envOverrides := map[string]string{}
 	if providerID != "" {
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
-			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model)
+			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model, presetParams)
 			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
 
 			// 写入 pi 隔离 agent 目录的 models.json，并注入 PI_CODING_AGENT_DIR。
 			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
 			// 失败则回退到 piProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
-			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey); cfgErr == nil {
+			// presetParams 透传 contextWindow/maxTokens/thinking 到 pi model 配置。
+			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams); cfgErr == nil {
 				agentDir := filepath.Join(defaultConfigDir(), "pi-runtime")
 				if writeErr := launcher.WritePiAgentConfig(agentDir, piCfg); writeErr == nil {
 					envOverrides["PI_CODING_AGENT_DIR"] = agentDir
@@ -1767,6 +1774,9 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		if launchSettings.Model != "" {
 			args = append(args, "--model", launchSettings.Model)
 		}
+		if launchSettings.Thinking != "" {
+			args = append(args, "--thinking", launchSettings.Thinking)
+		}
 		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, env, args)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -1798,7 +1808,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	}
 
 	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.LaunchPi(sess.ID, launchSettings.Provider, launchSettings.Model, launchMode, workDir, envOverrides)
+	result, err := a.Launcher.LaunchPi(sess.ID, launchSettings.Provider, launchSettings.Model, launchSettings.Thinking, launchMode, workDir, envOverrides)
 	if err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.Log.Error("session", "Pi 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -2604,20 +2614,30 @@ func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
 	return "", ""
 }
 
-// resolvePiLaunchSettings 解析 Pi 会话启动参数：确定 provider 与 model。
+// resolvePiLaunchSettings 解析 Pi 会话启动参数：确定 provider / model / thinking。
 // requestedModel 为空时回退到 provider.DefaultModel。
+// params.ReasoningEffort（low/medium/high/xhigh/max）直接作为 pi 的 --thinking 级别，
+// 两者值域兼容；若 Thinking.Type=="disabled" 则强制 off。
 //
 // 返回的 Provider 是初始猜测（piProviderMapping 的内置 provider 名）；
 // LaunchPiSession 在成功写入 pi models.json 后会用 "amagi-<name>" 覆盖它。
-func resolvePiLaunchSettings(provider config.Provider, requestedModel string) piLaunchSettings {
+func resolvePiLaunchSettings(provider config.Provider, requestedModel string, params config.Parameters) piLaunchSettings {
 	model := strings.TrimSpace(requestedModel)
 	piProvider, _ := piProviderMapping(provider)
 	if model == "" {
 		model = strings.TrimSpace(provider.DefaultModel)
 	}
+	thinking := strings.TrimSpace(params.ReasoningEffort)
+	// Thinking.Type=disabled 显式关闭思考（pi 用 off）。
+	// 注意：只有 ReasoningEffort 为空且 Thinking 显式 disabled 时才映射 off，
+	// 避免 disabled + 某个 effort 值的歧义（effort 优先）。
+	if thinking == "" && params.Thinking != nil && params.Thinking.Type == "disabled" {
+		thinking = "off"
+	}
 	return piLaunchSettings{
 		Provider: piProvider,
 		Model:    model,
+		Thinking: thinking,
 	}
 }
 

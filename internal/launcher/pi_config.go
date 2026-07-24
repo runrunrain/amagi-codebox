@@ -41,13 +41,13 @@ func piAPIType(provider config.Provider) string {
 	return "anthropic-messages"
 }
 
-// BuildPiModelsConfig 依据 amagi Provider 生成 pi models.json 配置（map 形式）。
+// BuildPiModelsConfig 依据 amagi Provider + Preset 参数生成 pi models.json 配置（map 形式）。
 //
 // 生成逻辑：
 //  1. provider id = "amagi-<providerName>"（隔离命名，不碰 pi 内置 provider）
 //  2. baseUrl/api/apiKey 从 Provider 双格式推导
 //  3. models 注册当前选中的 model（来自 preset 或 provider.DefaultModel），
-//     使其在 pi 的 /model 与 --model 中可用
+//     并透传 Parameters 中的 contextWindow/maxTokens/reasoning（pi Model Configuration 字段）
 //
 // 返回的 map 可直接 json.Marshal 后写入 PI_CODING_AGENT_DIR/models.json。
 func BuildPiModelsConfig(
@@ -55,6 +55,7 @@ func BuildPiModelsConfig(
 	provider config.Provider,
 	modelName string,
 	apiKey string,
+	params config.Parameters,
 ) (map[string]any, error) {
 	piID := PiProviderID(providerName)
 	format := "anthropic"
@@ -77,14 +78,30 @@ func BuildPiModelsConfig(
 
 	// 注册 model，使 pi 识别该模型并允许 --model 引用。
 	// pi 要求自定义 provider 至少声明其提供的 model id。
+	// 同时透传预设参数：contextWindow（最大上下文）/ maxTokens / reasoning（思考开关）。
 	model := strings.TrimSpace(modelName)
 	if model == "" {
 		model = strings.TrimSpace(provider.DefaultModel)
 	}
 	if model != "" {
-		entry["models"] = []map[string]any{
-			{"id": model, "name": model},
+		m := map[string]any{
+			"id":   model,
+			"name": model,
 		}
+		// 最大上下文窗口：amagi ContextWindow.ModelContextWindow -> pi contextWindow
+		if params.ContextWindow != nil && params.ContextWindow.ModelContextWindow > 0 {
+			m["contextWindow"] = params.ContextWindow.ModelContextWindow
+		}
+		// 最大输出 token
+		if params.MaxTokens > 0 {
+			m["maxTokens"] = params.MaxTokens
+		}
+		// 思考开关：amagi Thinking.Type=="enabled" -> pi reasoning=true
+		// （pi 的思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchPiSession）
+		if params.Thinking != nil && params.Thinking.Type == "enabled" {
+			m["reasoning"] = true
+		}
+		entry["models"] = []map[string]any{m}
 	}
 
 	return map[string]any{
@@ -93,6 +110,7 @@ func BuildPiModelsConfig(
 		},
 	}, nil
 }
+
 
 // WritePiAgentConfig 将 pi models.json 配置原子写入 agentDir/models.json。
 //
