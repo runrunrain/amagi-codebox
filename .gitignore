@@ -1,5 +1,6 @@
 # Build artifacts
 build/bin
+/amagi-codebox
 *.exe
 !vendor/github.com/wailsapp/wails/v2/internal/webview2runtime/MicrosoftEdgeWebview2Setup.exe
 

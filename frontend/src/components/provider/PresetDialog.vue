@@ -222,7 +222,7 @@ import AppButton from '../ui/AppButton.vue';
 
 interface Props {
   open?: boolean;
-  engine: 'claude' | 'codex';
+  engine: 'claude' | 'codex' | 'pi';
   preset?: config.MergedTerminalPreset | null;
 }
 
@@ -240,7 +240,11 @@ const store = useProviderStore();
 const loading = ref(false);
 
 // terminalType 映射
-const terminalType = computed(() => props.engine === 'claude' ? 'claude_code' : 'codex');
+const terminalType = computed(() => {
+  if (props.engine === 'claude') return 'claude_code';
+  if (props.engine === 'pi') return 'pi';
+  return 'codex';
+});
 
 // 可用的 Provider 名称
 const providerNames = computed(() => Object.keys(store.providers));
@@ -249,7 +253,12 @@ const providerNames = computed(() => Object.keys(store.providers));
 const isEditing = computed(() => !!props.preset);
 
 // 标题
-const title = computed(() => (isEditing.value ? '编辑' : '添加') + ' ' + (props.engine === 'claude' ? 'Claude Code' : 'Codex') + ' 预设');
+const engineTitle = computed(() => {
+  if (props.engine === 'claude') return 'Claude Code';
+  if (props.engine === 'pi') return 'Pi';
+  return 'Codex';
+});
+const title = computed(() => (isEditing.value ? '编辑' : '添加') + ' ' + engineTitle.value + ' 预设');
 
 const form = reactive({
   name: '',

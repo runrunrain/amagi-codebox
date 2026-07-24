@@ -41,6 +41,8 @@ const (
 	PresetTargetCodex PresetTargetType = "codex"
 	// PresetTargetOpenCode 表示 preset 用于 OpenCode CLI
 	PresetTargetOpenCode PresetTargetType = "opencode"
+	// PresetTargetPi 表示 preset 用于 Pi coding agent
+	PresetTargetPi PresetTargetType = "pi"
 )
 
 // Preset 预设配置
@@ -72,6 +74,11 @@ func (p Preset) IsOpenCodeTarget() bool {
 // IsCodexTarget 判断 preset 是否目标为 Codex CLI
 func (p Preset) IsCodexTarget() bool {
 	return p.GetTarget() == PresetTargetCodex
+}
+
+// IsPiTarget 判断 preset 是否目标为 Pi coding agent
+func (p Preset) IsPiTarget() bool {
+	return p.GetTarget() == PresetTargetPi
 }
 
 // NormalizeOpenCodeConfig 确保 OpenCodeConfig 存储为原始 JSON 对象，

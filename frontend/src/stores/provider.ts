@@ -32,13 +32,14 @@ type MergedTerminalPreset = config.MergedTerminalPreset;
 export type ProviderFilter = 'all' | 'anthropic' | 'openai';
 
 /** 预设引擎（二级 Tab） */
-export type PresetEngine = 'claude' | 'codex' | 'opencode';
+export type PresetEngine = 'claude' | 'codex' | 'opencode' | 'pi';
 
 /** engine -> wailsjs terminalType 映射（opencode 走 config.json，不调 merged） */
 const ENGINE_TO_TERMINAL_TYPE: Record<PresetEngine, string> = {
   claude: 'claude_code',
   codex: 'codex',
   opencode: 'opencode',
+  pi: 'pi',
 };
 
 /** 带元数据的提供商视图模型（id + 密钥配置状态） */
@@ -73,11 +74,13 @@ export const useProviderStore = defineStore('provider', () => {
     claude: {},
     codex: {},
     opencode: {},
+    pi: {},
   });
   const mergedPresets = ref<Record<string, MergedTerminalPreset[]>>({
     claude: [],
     codex: [],
     opencode: [],
+    pi: [],
   });
   const loadingProviders = ref(false);
   const loadingPresets = ref(false);
@@ -91,6 +94,7 @@ export const useProviderStore = defineStore('provider', () => {
     claude: false,
     codex: false,
     opencode: false,
+    pi: false,
   });
   const presetLoadError = ref<string>('');
 
@@ -317,6 +321,7 @@ export const useProviderStore = defineStore('provider', () => {
         loadPresets('claude', true),
         loadPresets('codex', true),
         loadPresets('opencode', true),
+        loadPresets('pi', true),
       ]);
     }
   }

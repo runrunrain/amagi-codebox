@@ -112,10 +112,13 @@ func (s *ConfigService) Load() error {
 	// 自动迁移：terminal_presets.opencode -> opencode_presets（新模型）
 	migrateTerminalPresetsToOpenCodePresets(&cfg)
 
-	// 若 terminal_preset key 被清洗，持久化幂等结果
-	if presetKeyCleaned {
+	// 幂等补齐 Pi 引擎内置默认终端预设（仅补缺失项，不覆盖用户配置）
+	piSeeded := seedDefaultPiPresets(&cfg)
+
+	// 若 terminal_preset key 被清洗或 Pi 预设被补齐，持久化幂等结果
+	if presetKeyCleaned || piSeeded {
 		if err := s.saveLockedConfig(&cfg); err != nil {
-			return fmt.Errorf("cleanup duplicated preset keys: %w", err)
+			return fmt.Errorf("persist terminal preset maintenance: %w", err)
 		}
 	}
 
@@ -266,6 +269,31 @@ func migrateProviderToDualFormat(models map[string]Provider) {
 	}
 }
 
+// seedDefaultPiPresets 幂等地补齐 Pi 引擎的内置默认终端预设。
+//
+// 仅补齐「内置 provider 且 Pi 桶中缺失」的条目；已存在（含用户自定义或已删除后留空）
+// 的 key 不被覆盖，保证幂等与用户操作优先。
+// 返回是否发生变更（用于决定是否需要写盘）。
+func seedDefaultPiPresets(cfg *AppConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.TerminalPresets == nil {
+		cfg.TerminalPresets = &TerminalPresetsConfig{}
+	}
+	if cfg.TerminalPresets.Pi == nil {
+		cfg.TerminalPresets.Pi = map[string]TerminalPreset{}
+	}
+	changed := false
+	for key, tp := range DefaultPiPresets() {
+		if _, exists := cfg.TerminalPresets.Pi[key]; !exists {
+			cfg.TerminalPresets.Pi[key] = tp
+			changed = true
+		}
+	}
+	return changed
+}
+
 // CleanupMigratedProviderPresets 清理已迁移到 terminal_presets 的旧 provider.presets。
 // 仅当 terminal_presets 中存在对应条目（同 provider/presetName stable key）时才清理。
 // 幂等安全：多次调用无副作用。
@@ -285,7 +313,7 @@ func CleanupMigratedProviderPresets(cfg *AppConfig) {
 
 			// 检查 terminal_presets 中是否存在对应条目
 			found := false
-			for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+			for _, tt := range ValidTerminalPresetTypes() {
 				tpMap := cfg.TerminalPresets.GetMap(tt)
 				if tpMap != nil {
 					if _, exists := tpMap[stableKey]; exists {
@@ -371,7 +399,7 @@ func CleanupDuplicatedPrefixPresetKeys(cfg *AppConfig) bool {
 	}
 
 	changed := false
-	for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+	for _, tt := range ValidTerminalPresetTypes() {
 		original := cfg.TerminalPresets.GetMap(tt)
 		if len(original) == 0 {
 			continue
@@ -577,7 +605,7 @@ func (s *ConfigService) RenameProvider(oldName, newName string) error {
 	// 收集待迁移项到 slice 再批量 delete+写入，绝不边遍历边改 map。
 	if s.config.TerminalPresets != nil {
 		prefix := oldName + "/"
-		for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+		for _, tt := range ValidTerminalPresetTypes() {
 			tpMap := s.config.TerminalPresets.GetMap(tt)
 			if tpMap == nil {
 				continue
@@ -824,6 +852,8 @@ func (s *ConfigService) MigrateProviderPresetsToTerminal() (int, bool, error) {
 			switch {
 			case target == PresetTargetOpenCode:
 				termType = TerminalPresetOpenCode
+			case target == PresetTargetPi:
+				termType = TerminalPresetPi
 			case isOpenAI:
 				termType = TerminalPresetCodex
 			default:
@@ -896,6 +926,12 @@ func (s *ConfigService) GetAllTerminalPresets() *TerminalPresetsConfig {
 			cp.Codex[k] = v
 		}
 	}
+	if s.config.TerminalPresets.Pi != nil {
+		cp.Pi = make(map[string]TerminalPreset, len(s.config.TerminalPresets.Pi))
+		for k, v := range s.config.TerminalPresets.Pi {
+			cp.Pi[k] = v
+		}
+	}
 	return cp
 }
 
@@ -945,6 +981,12 @@ func cloneTerminalPresetsConfig(src *TerminalPresetsConfig) *TerminalPresetsConf
 		dst.Codex = make(map[string]TerminalPreset, len(src.Codex))
 		for k, v := range src.Codex {
 			dst.Codex[k] = v
+		}
+	}
+	if src.Pi != nil {
+		dst.Pi = make(map[string]TerminalPreset, len(src.Pi))
+		for k, v := range src.Pi {
+			dst.Pi[k] = v
 		}
 	}
 	return dst

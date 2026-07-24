@@ -122,7 +122,7 @@ import PresetDialog from './PresetDialog.vue';
 
 type MergedTerminalPreset = config.MergedTerminalPreset;
 
-const props = defineProps<{ engine: 'claude' | 'codex' }>();
+const props = defineProps<{ engine: 'claude' | 'codex' | 'pi' }>();
 
 const store = useProviderStore();
 const { showSuccess, showError } = useToast();
@@ -143,7 +143,11 @@ const deleteMessage = computed(() => {
 const loading = ref(true);
 const error = ref('');
 
-const engineLabel = computed(() => (props.engine === 'claude' ? 'Claude Code' : 'Codex'));
+const engineLabel = computed(() => {
+  if (props.engine === 'claude') return 'Claude Code';
+  if (props.engine === 'pi') return 'Pi';
+  return 'Codex';
+});
 
 const allPresets = computed<MergedTerminalPreset[]>(() => store.mergedPresets[props.engine] || []);
 

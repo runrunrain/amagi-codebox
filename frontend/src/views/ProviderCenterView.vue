@@ -67,6 +67,12 @@
           engine="codex"
           @add="handlePresetAdd"
         />
+        <!-- Pi 预设（与 Claude Code/Codex 统一范式）-->
+        <PresetList
+          v-else-if="store.presetEngine === 'pi'"
+          engine="pi"
+          @add="handlePresetAdd"
+        />
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
         <template v-else-if="store.presetEngine === 'opencode'">
           <!-- 三级 Segmented：预设管理 | 全局配置 -->
@@ -116,6 +122,7 @@ const ENGINE_TABS = [
   { value: 'claude', label: 'Claude Code' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
+  { value: 'pi', label: 'Pi' },
 ];
 
 const OPENCODE_MODES = [
@@ -184,6 +191,8 @@ function handlePresetAdd() {
       ? 'Claude Code'
       : store.presetEngine === 'codex'
       ? 'Codex'
+      : store.presetEngine === 'pi'
+      ? 'Pi'
       : 'OpenCode';
   showInfo(`${label} 添加预设功能将在 P7 弹窗批次实现`);
 }

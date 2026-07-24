@@ -82,3 +82,49 @@ func DefaultConfig() *AppConfig {
 		Version: "1.0.1",
 	}
 }
+
+// DefaultPiPresets 返回 Pi 引擎的内置默认终端预设。
+//
+// Pi coding agent 无配置文件，纯靠进程环境变量 + CLI 参数驱动（--provider/--model），
+// 因此每条 Pi 预设仅描述「关联 provider + 默认模型」。
+// 覆盖全部内置 provider（anthropic/openai/glm/minimax/kimi），
+// 启动时经 piProviderMapping 映射到 Pi 内置的 anthropic/openai provider。
+//
+// stable key = provider + "/default"，与各 provider 的 default 预设模型保持一致。
+func DefaultPiPresets() map[string]TerminalPreset {
+	return map[string]TerminalPreset{
+		"anthropic/default": {
+			Name:     "default",
+			Provider: "anthropic",
+			Model:    "", // 走 anthropic provider 默认（OAuth）
+		},
+		"openai/default": {
+			Name:     "default",
+			Provider: "openai",
+			Model:    "codex-mini-latest",
+		},
+		"glm/default": {
+			Name:     "default",
+			Provider: "glm",
+			Model:    "glm-5",
+		},
+		"minimax/default": {
+			Name:     "default",
+			Provider: "minimax",
+			Model:    "MiniMax-M2.5",
+		},
+		"kimi/default": {
+			Name:     "default",
+			Provider: "kimi",
+			Model:    "kimi-k2.5",
+		},
+	}
+}
+
+// DefaultTerminalPresets 返回内置默认终端预设容器。
+// 当前仅 Pi 引擎有内置种子；ClaudeCode/OpenCode/Codex 保持 nil（由迁移或用户填充）。
+func DefaultTerminalPresets() *TerminalPresetsConfig {
+	return &TerminalPresetsConfig{
+		Pi: DefaultPiPresets(),
+	}
+}
