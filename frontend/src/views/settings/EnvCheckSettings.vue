@@ -51,48 +51,67 @@
   </div>
 
   <template v-if="!initialLoading">
-  <div v-for="card in cardList" :key="card.key" class="set-card envcheck-card" :class="card.cardClass">
+  <div class="envcheck-layout">
+    <!-- 左侧栏：工具列表 -->
+    <aside class="envcheck-sidebar">
+      <button
+        v-for="card in cardList"
+        :key="card.key"
+        type="button"
+        class="envcheck-tool-item"
+        :class="[card.cardClass, { 'tool-active': card.key === activeToolKey }]"
+        @click="activeToolKey = card.key"
+      >
+        <span class="tool-icon" :style="{ background: card.bgColor }">{{ card.iconChar }}</span>
+        <span class="tool-name">{{ card.displayName }}</span>
+        <span class="tool-status-dot" :class="card.tagClass" :title="card.tagLabel" />
+        <span class="tool-tag" :class="card.tagClass">{{ card.tagLabel }}</span>
+      </button>
+    </aside>
+
+    <!-- 右侧详情：当前选中工具 -->
+    <div v-if="activeCard" class="set-card envcheck-card" :class="activeCard.cardClass">
     <div class="card-head">
       <div class="card-title-wrap">
-        <span class="card-icon" :style="{ background: card.bgColor }">{{ card.iconChar }}</span>
+        <span class="card-icon" :style="{ background: activeCard.bgColor }">{{ activeCard.iconChar }}</span>
         <div class="card-title-text">
-          <div class="card-title">{{ card.displayName }}</div>
-          <div class="card-tag" :class="card.tagClass">{{ card.tagLabel }}</div>
+          <div class="card-title">{{ activeCard.displayName }}</div>
+          <div class="card-tag" :class="activeCard.tagClass">{{ activeCard.tagLabel }}</div>
         </div>
       </div>
     </div>
 
     <div class="card-body">
-      <div v-if="card.status" class="info-grid">
+      <div v-if="activeCard.status" class="info-grid">
         <div class="info-item">
           <span class="info-label">版本</span>
-          <span class="info-value mono">{{ card.status.version || '—' }}</span>
+          <span class="info-value mono">{{ activeCard.status.version || '—' }}</span>
         </div>
-        <div v-if="card.status.hasUpdate" class="info-item">
+        <div v-if="activeCard.status.hasUpdate" class="info-item">
           <span class="info-label">最新版本</span>
-          <span class="info-value mono">{{ card.status.latestVersion || '—' }}</span>
+          <span class="info-value mono">{{ activeCard.status.latestVersion || '—' }}</span>
         </div>
-        <div v-if="card.status.installed" class="info-item">
+        <div v-if="activeCard.status.installed" class="info-item">
           <span class="info-label">来源</span>
-          <span class="info-value">{{ installMethodLabel(card.status.installMethod) }}</span>
+          <span class="info-value">{{ installMethodLabel(activeCard.status.installMethod) }}</span>
         </div>
         <div class="info-item">
           <span class="info-label">PATH</span>
-          <span class="info-value" :class="pathStateClass(card.status)">{{ pathStateLabel(card.status) }}</span>
+          <span class="info-value" :class="pathStateClass(activeCard.status)">{{ pathStateLabel(activeCard.status) }}</span>
         </div>
-        <div v-if="card.status.executablePath" class="info-item info-item-path">
+        <div v-if="activeCard.status.executablePath" class="info-item info-item-path">
           <span class="info-label">路径</span>
-          <span class="info-value mono path-text">{{ card.status.executablePath }}</span>
+          <span class="info-value mono path-text">{{ activeCard.status.executablePath }}</span>
         </div>
       </div>
       <div v-else class="info-empty">尚未检测</div>
 
-      <div v-if="card.isOperating" class="card-progress">
+      <div v-if="activeCard.isOperating" class="card-progress">
         <ProgressBar :percent="runningOperation?.progress || 0" />
         <span class="card-progress-step">{{ formatStepLabel(runningOperation) }}</span>
       </div>
 
-      <div v-if="card.status?.error" class="card-error">{{ card.status.error }}</div>
+      <div v-if="activeCard.status?.error" class="card-error">{{ activeCard.status.error }}</div>
 
       <!--
         Structured issue + solution entries.
@@ -103,12 +122,12 @@
         redesign without introducing new decorative cards.
       -->
       <div
-        v-if="card.status?.issues && card.status.issues.length > 0"
+        v-if="activeCard.status?.issues && activeCard.status.issues.length > 0"
         class="issue-list"
       >
         <div
-          v-for="(issue, idx) in card.status.issues"
-          :key="card.key + '-issue-' + idx"
+          v-for="(issue, idx) in activeCard.status.issues"
+          :key="activeCard.key + '-issue-' + idx"
           class="issue-row"
         >
           <div class="issue-copy">
@@ -119,13 +138,13 @@
           <div v-if="issue.solutions && issue.solutions.length" class="issue-solutions">
             <AppButton
               v-for="(sol, sIdx) in issue.solutions"
-              :key="solutionKey(sol, card.key, sIdx)"
+              :key="solutionKey(sol, activeCard.key, sIdx)"
               variant="ghost"
               size="small"
-              :disabled="card.isOperating || checking || !!runningOperation || fixLoadingKey === solutionKey(sol, card.key, sIdx)"
-              @click="executeSolution(sol, card.key, card.displayName)"
+              :disabled="activeCard.isOperating || checking || !!runningOperation || fixLoadingKey === solutionKey(sol, activeCard.key, sIdx)"
+              @click="executeSolution(sol, activeCard.key, activeCard.displayName)"
             >
-              {{ fixLoadingKey === solutionKey(sol, card.key, sIdx) ? '处理中...' : solutionLabel(sol.type) }}
+              {{ fixLoadingKey === solutionKey(sol, activeCard.key, sIdx) ? '处理中...' : solutionLabel(sol.type) }}
             </AppButton>
           </div>
         </div>
@@ -139,27 +158,27 @@
         "一键配置" button that calls FixClaudeConfig(key, defaultValue, filePath).
       -->
       <div
-        v-if="card.key === 'claude_code' && claudeConfigItems(card.status).length > 0"
+        v-if="activeCard.key === 'claude_code' && claudeConfigItems(activeCard.status).length > 0"
         class="claude-config"
       >
         <div class="claude-config-head">
           <span class="claude-config-title">Claude Code 配置检测</span>
-          <span class="claude-config-summary" :class="claudeConfigAllConfigured(card.status) ? 'tag-success' : 'tag-warn'">
-            {{ claudeConfigConfiguredCount(card.status) }}/{{ claudeConfigItems(card.status).length }} 项已配置
+          <span class="claude-config-summary" :class="claudeConfigAllConfigured(activeCard.status) ? 'tag-success' : 'tag-warn'">
+            {{ claudeConfigConfiguredCount(activeCard.status) }}/{{ claudeConfigItems(activeCard.status).length }} 项已配置
           </span>
           <button
             type="button"
             class="claude-config-toggle"
-            :aria-expanded="claudeConfigExpanded[card.key] || false"
-            @click="toggleClaudeConfig(card.key)"
+            :aria-expanded="claudeConfigExpanded[activeCard.key] || false"
+            @click="toggleClaudeConfig(activeCard.key)"
           >
-            {{ claudeConfigExpanded[card.key] ? '收起' : '展开' }}
+            {{ claudeConfigExpanded[activeCard.key] ? '收起' : '展开' }}
           </button>
         </div>
-        <div v-show="claudeConfigExpanded[card.key]" class="claude-config-list">
+        <div v-show="claudeConfigExpanded[activeCard.key]" class="claude-config-list">
           <div
-            v-for="item in claudeConfigItems(card.status)"
-            :key="card.key + '-cfg-' + item.key"
+            v-for="item in claudeConfigItems(activeCard.status)"
+            :key="activeCard.key + '-cfg-' + item.key"
             class="claude-config-item"
           >
             <div class="claude-config-copy">
@@ -176,8 +195,8 @@
                 v-if="!item.configured"
                 variant="primary"
                 size="small"
-                :disabled="!!configFixing[item.key] || card.isOperating || checking || !!runningOperation"
-                @click="handleFixClaudeConfig(card.key, item)"
+                :disabled="!!configFixing[item.key] || activeCard.isOperating || checking || !!runningOperation"
+                @click="handleFixClaudeConfig(activeCard.key, item)"
               >
                 {{ configFixing[item.key] ? '写入中...' : '一键配置' }}
               </AppButton>
@@ -191,8 +210,8 @@
       <AppButton
         variant="ghost"
         size="small"
-        :disabled="card.isOperating || checking || !!runningOperation"
-        @click="runSingleCheck(card.key)"
+        :disabled="activeCard.isOperating || checking || !!runningOperation"
+        @click="runSingleCheck(activeCard.key)"
       >
         检测
       </AppButton>
@@ -203,11 +222,11 @@
         the generic StartInstallToolAsync would silently pick one via
         ClaudeInstallAuto, hiding the choice from the user.
       -->
-      <template v-if="card.key === 'claude_code'">
+      <template v-if="activeCard.key === 'claude_code'">
         <select
           class="method-select"
           :value="claudeInstallMethod"
-          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy"
           @change="onClaudeMethodChange(($event.target as HTMLSelectElement).value)"
         >
           <option value="" disabled>选择安装方式</option>
@@ -220,13 +239,13 @@
           </option>
         </select>
         <AppButton
-          v-if="!card.status?.installed"
+          v-if="!activeCard.status?.installed"
           variant="primary"
           size="small"
-          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
-          @click="startClaudeInstallWithMethod(card.displayName, false)"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
+          @click="startClaudeInstallWithMethod(activeCard.displayName, false)"
         >
-          {{ card.isInstalling || claudeInstalling ? '安装中...' : '安装' }}
+          {{ activeCard.isInstalling || claudeInstalling ? '安装中...' : '安装' }}
         </AppButton>
         <template v-else>
           <!--
@@ -234,29 +253,29 @@
             后端 StartUpdateTool(claude_code) 现成支持，复用 startUpdate 函数，不改 API 层。
           -->
           <AppButton
-            v-if="card.status?.hasUpdate"
+            v-if="activeCard.status?.hasUpdate"
             variant="primary"
             size="small"
-            :disabled="card.isOperating || checking || !!runningOperation || claudeBusy"
-            @click="startUpdate(card.key, card.displayName, card.status?.latestVersion || '')"
+            :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy"
+            @click="startUpdate(activeCard.key, activeCard.displayName, activeCard.status?.latestVersion || '')"
           >
-            {{ card.isUpdating ? '更新中...' : '更新' }}
+            {{ activeCard.isUpdating ? '更新中...' : '更新' }}
           </AppButton>
           <AppButton
             variant="ghost"
             size="small"
-            :disabled="card.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
-            @click="startClaudeInstallWithMethod(card.displayName, true)"
+            :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
+            @click="startClaudeInstallWithMethod(activeCard.displayName, true)"
           >
-            {{ card.isInstalling || claudeInstalling ? '重装中...' : '重装' }}
+            {{ activeCard.isInstalling || claudeInstalling ? '重装中...' : '重装' }}
           </AppButton>
         </template>
         <AppButton
-          v-if="card.status?.installed"
+          v-if="activeCard.status?.installed"
           variant="ghost"
           size="small"
-          :disabled="card.isOperating || checking || !!runningOperation || claudeBusy"
-          @click="handleUninstallClaude(card.status)"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy"
+          @click="handleUninstallClaude(activeCard.status)"
         >
           {{ claudeUninstalling ? '卸载中...' : '卸载' }}
         </AppButton>
@@ -265,22 +284,22 @@
       <!-- Non-Claude tools: keep the generic install / update flow. -->
       <template v-else>
         <AppButton
-          v-if="!card.status?.installed"
+          v-if="!activeCard.status?.installed"
           variant="primary"
           size="small"
-          :disabled="card.isOperating || checking || !!runningOperation"
-          @click="startInstall(card.key, card.displayName)"
+          :disabled="activeCard.isOperating || checking || !!runningOperation"
+          @click="startInstall(activeCard.key, activeCard.displayName)"
         >
-          {{ card.isInstalling ? '安装中...' : '安装' }}
+          {{ activeCard.isInstalling ? '安装中...' : '安装' }}
         </AppButton>
         <AppButton
-          v-else-if="card.status?.hasUpdate"
+          v-else-if="activeCard.status?.hasUpdate"
           variant="primary"
           size="small"
-          :disabled="card.isOperating || checking || !!runningOperation"
-          @click="startUpdate(card.key, card.displayName, card.status?.latestVersion || '')"
+          :disabled="activeCard.isOperating || checking || !!runningOperation"
+          @click="startUpdate(activeCard.key, activeCard.displayName, activeCard.status?.latestVersion || '')"
         >
-          {{ card.isUpdating ? '更新中...' : '更新' }}
+          {{ activeCard.isUpdating ? '更新中...' : '更新' }}
         </AppButton>
         <!--
           Headroom: installed into a CodeBox-managed venv; uninstall via
@@ -289,16 +308,17 @@
           have no managed uninstall path.
         -->
         <AppButton
-          v-if="card.key === 'headroom' && card.status?.installed"
+          v-if="activeCard.key === 'headroom' && activeCard.status?.installed"
           variant="ghost"
           size="small"
-          :disabled="card.isOperating || checking || !!runningOperation || headroomUninstalling"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || headroomUninstalling"
           @click="handleUninstallHeadroom"
         >
           {{ headroomUninstalling ? '卸载中...' : '卸载' }}
         </AppButton>
       </template>
     </div>
+  </div>
   </div>
   </template>
 </template>
@@ -358,6 +378,7 @@ const TOOL_METAS: ToolMeta[] = [
   { key: 'claude_code', displayName: 'Claude Code', iconChar: 'C', bgColor: 'rgba(204,120,50,0.15)' },
   { key: 'opencode', displayName: 'OpenCode', iconChar: 'O', bgColor: 'rgba(79,195,247,0.15)' },
   { key: 'codex', displayName: 'Codex', iconChar: 'X', bgColor: 'rgba(102,187,106,0.15)' },
+  { key: 'pi', displayName: 'Pi', iconChar: 'P', bgColor: 'rgba(52,199,89,0.15)' },
   { key: 'headroom', displayName: 'Headroom', iconChar: 'H', bgColor: 'rgba(149,117,205,0.15)' },
 ]
 
@@ -506,6 +527,15 @@ const cardList = computed<CardView[]>(() => {
       tagLabel,
     }
   })
+})
+
+// 侧边栏当前选中的工具 key。默认首个工具（claude_code）。
+// 若选中的工具从列表中消失（理论上不会，TOOL_METAS 静态），兜底回首个。
+const activeToolKey = ref<string>(TOOL_METAS[0]?.key || '')
+const activeCard = computed<CardView | null>(() => {
+  const list = cardList.value
+  const found = list.find((c) => c.key === activeToolKey.value)
+  return found || list[0] || null
 })
 
 function pathStateLabel(status: envcheck.CheckStatus): string {
@@ -1299,6 +1329,102 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--secondary);
   line-height: 1.5;
+}
+
+/* sidebar + detail layout */
+.envcheck-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.envcheck-sidebar {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  position: sticky;
+  top: 0;
+}
+
+.envcheck-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.envcheck-tool-item:hover {
+  background: var(--control);
+}
+
+.envcheck-tool-item.tool-active {
+  background: var(--control);
+  border-color: var(--accent, #007aff);
+}
+
+/* 侧边栏卡片沿用 detail 卡片的状态左边框提示（更克制：仅 active 项显示） */
+.envcheck-tool-item.tool-active.card-missing {
+  border-color: var(--error, #ff3b30);
+}
+
+.envcheck-tool-item.tool-active.card-update {
+  border-color: var(--warning);
+}
+
+.tool-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label);
+  flex-shrink: 0;
+}
+
+.tool-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tool-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+/* 右侧详情区填满剩余宽度 */
+.envcheck-layout > .envcheck-card {
+  flex: 1;
+  min-width: 0;
 }
 
 /* cards */

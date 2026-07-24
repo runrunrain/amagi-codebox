@@ -223,6 +223,9 @@ func (s *Service) CheckOne(tool CLITool) (*CheckStatus, error) {
 	case ToolCodex:
 		status, err := s.checkCodex()
 		return s.finishToolCheck(status, err)
+	case ToolPi:
+		status, err := s.checkPi()
+		return s.finishToolCheck(status, err)
 	case ToolHeadroom:
 		status, err := s.checkHeadroom()
 		return s.finishToolCheck(status, err)
@@ -581,13 +584,13 @@ func (s *Service) GetCachedStatus() *OverallStatus {
 
 // SupportedTools returns the stable checking order for all managed CLI tools.
 func SupportedTools() []CLITool {
-	return []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolHeadroom}
+	return []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolHeadroom}
 }
 
 // IsValidCLITool reports whether tool is supported by EnvCheck.
 func IsValidCLITool(tool CLITool) bool {
 	switch tool {
-	case ToolClaudeCode, ToolOpenCode, ToolCodex, ToolHeadroom:
+	case ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolHeadroom:
 		return true
 	default:
 		return false

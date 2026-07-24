@@ -69,6 +69,10 @@ const (
 
 	codexNPMPackageName = "@openai/codex"
 
+	// piNPMPackageName 是 Pi coding agent 的 npm 包名。
+	// Pi 通过 npm 全局安装：npm install -g @earendil-works/pi-coding-agent
+	piNPMPackageName = "@earendil-works/pi-coding-agent"
+
 	// headroomPackageName is the pip distribution name for Headroom. It is the
 	// PyPI package, not an npm package; the name reflects the install channel.
 	headroomPackageName = "headroom-ai"
@@ -1450,6 +1454,14 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			return nil, err
 		}
 		return []installCommand{s.resolveCommandNPMPath(npmCodexCommand(operation))}, nil
+	case ToolPi:
+		if operation == installOperationUpdate && isExternalManagedInstall(current) {
+			return []installCommand{piSelfUpdateCommand(current)}, nil
+		}
+		if err := s.ensureNPMAvailable(); err != nil {
+			return nil, err
+		}
+		return []installCommand{s.resolveCommandNPMPath(npmPiCommand(operation))}, nil
 	case ToolHeadroom:
 		// Headroom is installed into a CodeBox-managed venv to avoid PEP 668
 		// (externally-managed-environment) which blocks bare `pip install` on
@@ -1535,6 +1547,29 @@ func npmCodexCommand(operation installOperation) installCommand {
 		args:        []string{"install", "-g", "@openai/codex"},
 		timeout:     npmCLIToolInstallTimeout,
 	}
+}
+
+// npmPiCommand returns the npm install or update command for Pi coding agent.
+func npmPiCommand(operation installOperation) installCommand {
+	if operation == installOperationUpdate {
+		return installCommand{
+			description: "npm global install @earendil-works/pi-coding-agent@latest",
+			path:        "npm",
+			args:        []string{"install", "-g", "@earendil-works/pi-coding-agent@latest"},
+			timeout:     npmCLIToolInstallTimeout,
+		}
+	}
+	return installCommand{
+		description: "npm global install @earendil-works/pi-coding-agent",
+		path:        "npm",
+		args:        []string{"install", "-g", "@earendil-works/pi-coding-agent"},
+		timeout:     npmCLIToolInstallTimeout,
+	}
+}
+
+func piSelfUpdateCommand(current *CheckStatus) installCommand {
+	// Pi 的自更新命令为 "pi update self"（见 pi --help）。
+	return sourceSelfUpdateCommand("Pi", current, []string{"update", "self"}, npmCLIToolInstallTimeout)
 }
 
 // isExternalManagedInstall identifies a healthy existing installation that is
@@ -3000,6 +3035,8 @@ func displayToolName(tool CLITool) string {
 		return "OpenCode"
 	case ToolCodex:
 		return "Codex"
+	case ToolPi:
+		return "Pi"
 	case ToolHeadroom:
 		return "Headroom"
 	default:

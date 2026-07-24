@@ -319,6 +319,8 @@ func cliCandidatesForAppType(appType string) ([]string, error) {
 		return []string{"opencode"}, nil
 	case "codex":
 		return []string{"codex"}, nil
+	case "pi":
+		return []string{"pi"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported app type: %s", appType)
 	}
@@ -422,7 +424,7 @@ func quoteCommandPart(value string) string {
 }
 
 // isAttachEligible returns true when the launch should use BootstrapShellAttach.
-// OpenCode and Codex always use attach in Windows embedded mode. Claude Code
+// OpenCode, Codex and Pi always use attach in Windows embedded mode. Claude Code
 // uses attach only for script wrappers (for example npm's claude.cmd) so the
 // wrapper is typed into an interactive shell inside ConPTY instead of being
 // launched as an inline .cmd command that may open an external terminal.
@@ -431,7 +433,7 @@ func isAttachEligible(launchMode string, appType string, cliPath string) bool {
 		return false
 	}
 	switch strings.TrimSpace(strings.ToLower(appType)) {
-	case "opencode", "codex":
+	case "opencode", "codex", "pi":
 		return true
 	case "claudecode", "claude_code", "claude-code", "claude":
 		return isWindowsClaudeCodeNPMShimPath(cliPath)

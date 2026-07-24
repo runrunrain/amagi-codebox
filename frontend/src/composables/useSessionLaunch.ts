@@ -82,6 +82,9 @@ export function useSessionLaunch() {
     if (dashState.engine === 'codex') {
       return !!(dashState.codexProvider && dashState.codexModel)
     }
+    if (dashState.engine === 'pi') {
+      return !!(dashState.piProvider && dashState.piModel)
+    }
     // OpenCode: "使用全局配置"时 preset 为空（openCodePresetKey），仍可启动
     // 只要有工作目录即可启动（provider 可为空，用全局配置）
     return !!dashState.workDir
@@ -101,9 +104,11 @@ export function useSessionLaunch() {
   ): string {
     const shell = dashState.engine === 'claudecode' ? dashState.claudeShell
       : dashState.engine === 'opencode' ? dashState.openCodeShell
+      : dashState.engine === 'pi' ? dashState.piShell
       : dashState.codexShell
     const custom = dashState.engine === 'claudecode' ? dashState.claudeCustomShellPath
       : dashState.engine === 'opencode' ? dashState.openCodeCustomShellPath
+      : dashState.engine === 'pi' ? dashState.piCustomShellPath
       : dashState.codexCustomShellPath
 
     if (shell === '') return ''
@@ -173,13 +178,21 @@ export function useSessionLaunch() {
           workDir: dashState.workDir,
           shellPath: dashState.openCodeMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })
-      } else {
+      } else if (dashState.engine === 'codex') {
         sessionId = await sessionApi.launchCodexSession({
           modelName: dashState.codexModel,
           providerID: dashState.codexProvider,
           mode: dashState.codexMode,
           workDir: dashState.workDir,
           shellPath: dashState.codexMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
+        })
+      } else if (dashState.engine === 'pi') {
+        sessionId = await sessionApi.launchPiSession({
+          modelName: dashState.piModel,
+          providerID: dashState.piProvider,
+          mode: dashState.piMode,
+          workDir: dashState.workDir,
+          shellPath: dashState.piMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })
       }
 
@@ -189,7 +202,8 @@ export function useSessionLaunch() {
       sessionStore.setActiveSession(sessionId)
 
       const engineLabel = dashState.engine === 'claudecode' ? 'ClaudeCode'
-        : dashState.engine === 'opencode' ? 'OpenCode' : 'Codex'
+        : dashState.engine === 'opencode' ? 'OpenCode'
+        : dashState.engine === 'pi' ? 'Pi' : 'Codex'
 
       // 按当前引擎取对应 mode，决定是否跳 /terminal：
       //   - embedded：内嵌终端显示该会话，跳 /terminal
@@ -197,6 +211,7 @@ export function useSessionLaunch() {
       //     跳 /terminal 会显示空终端，UX 困惑，故留在当前页并给提示
       const launchMode = dashState.engine === 'claudecode' ? dashState.claudeMode
         : dashState.engine === 'opencode' ? dashState.openCodeMode
+        : dashState.engine === 'pi' ? dashState.piMode
         : dashState.codexMode
 
       if (launchMode === 'embedded') {

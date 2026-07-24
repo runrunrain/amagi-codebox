@@ -36,6 +36,8 @@ type DashboardDefaults struct {
 	OpenCodeShell     string `json:"openCodeShell"`
 	CodexMode         string `json:"codexMode"`
 	CodexShell        string `json:"codexShell"`
+	PiMode            string `json:"piMode"`
+	PiShell           string `json:"piShell"`
 	// Deprecated: retained only so legacy settings.json files can still be decoded.
 	AmagiCodePreset string `json:"amagiCodePreset"`
 	// Deprecated: retained only so legacy settings.json files can still be decoded.
@@ -94,6 +96,8 @@ func defaultSettings() *AppSettings {
 			OpenCodeShell:  "pwsh",
 			CodexMode:      "embedded",
 			CodexShell:     "pwsh",
+			PiMode:         "embedded",
+			PiShell:        "pwsh",
 			AmagiCodeMode:  "embedded",
 			AmagiCodeShell: "pwsh",
 		},
@@ -285,6 +289,9 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 	if d.CodexMode == "" {
 		d.CodexMode = "embedded"
 	}
+	if d.PiMode == "" {
+		d.PiMode = "embedded"
+	}
 	if d.AmagiCodeMode == "" {
 		d.AmagiCodeMode = "embedded"
 	}
@@ -308,6 +315,13 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 			d.CodexShell = d.Shell
 		} else {
 			d.CodexShell = "pwsh"
+		}
+	}
+	if d.PiShell == "" {
+		if d.Shell != "" {
+			d.PiShell = d.Shell
+		} else {
+			d.PiShell = "pwsh"
 		}
 	}
 	if d.AmagiCodeShell == "" {

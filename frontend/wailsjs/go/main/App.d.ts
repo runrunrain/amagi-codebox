@@ -144,6 +144,8 @@ export function LaunchCodexSession(arg1:string,arg2:string,arg3:string,arg4:stri
 
 export function LaunchOpenCode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
+export function LaunchPiSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
+
 export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:boolean,arg7:string):Promise<string>;
 
 export function MigrateProviderPresetsToTerminal():Promise<number>;

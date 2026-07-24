@@ -368,6 +368,75 @@ func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string)
 	return cmd
 }
 
+// LaunchPi 启动一个新的 Pi coding agent 进程，返回启动结果。
+// 支持两种模式：terminal（独立终端）、embedded（内嵌终端）。
+// providerName 非空时附加 --provider providerName；modelName 非空时附加 --model modelName。
+// envOverrides 中的键值对（如 OPENAI_API_KEY/ANTHROPIC_API_KEY）会注入到进程环境变量。
+func (s *LauncherService) LaunchPi(
+	sessionID string,
+	providerName string,
+	modelName string,
+	mode session.LaunchMode,
+	workDir string,
+	envOverrides map[string]string,
+) (*LaunchResult, error) {
+	env := BuildEnv(s.baseEnv(), envOverrides)
+
+	cmd := s.buildPiCmd(providerName, modelName, workDir, env)
+
+	s.log.Info("launcher", "正在启动 Pi 进程", fmt.Sprintf("sessionID=%s mode=%s provider=%s model=%s", sessionID, mode, providerName, modelName))
+
+	if err := cmd.Start(); err != nil {
+		s.log.Error("launcher", "Pi 进程启动失败", err.Error())
+		return nil, fmt.Errorf("start pi process: %w", err)
+	}
+
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+
+	s.log.Info("launcher", "Pi 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
+
+	s.mu.Lock()
+	s.processes[sessionID] = cmd
+	s.mu.Unlock()
+
+	// 监控进程退出
+	go func(id string, c *exec.Cmd) {
+		err := c.Wait()
+		s.log.Info("launcher", "Pi 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
+		s.mu.Lock()
+		delete(s.processes, id)
+		s.mu.Unlock()
+	}(sessionID, cmd)
+
+	return &LaunchResult{
+		SessionID: sessionID,
+		PID:       pid,
+	}, nil
+}
+
+// buildPiCmd 构建 pi 进程命令。
+// providerName 非空时附加 --provider providerName；
+// modelName 非空时附加 --model modelName。
+func (s *LauncherService) buildPiCmd(providerName, modelName, workDir string, env []string) *exec.Cmd {
+	args := []string{}
+	if providerName != "" {
+		args = append(args, "--provider", providerName)
+	}
+	if modelName != "" {
+		args = append(args, "--model", modelName)
+	}
+	cmd := exec.Command(s.resolveCLIPath("pi", env), args...)
+	cmd.Dir = workDir
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
 // buildClaudeCmd 构建 claude 进程命令。
 // 复刻原始验证可行的方式：直接 exec.Command("claude")，
 // 传递 os.Stdin/Stdout/Stderr，由 Windows 自动分配新控制台。

@@ -266,6 +266,10 @@ export function LaunchOpenCode(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchOpenCode'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function LaunchPiSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['LaunchPiSession'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }

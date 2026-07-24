@@ -38,6 +38,9 @@ func (r *appEnvCheckRunner) Run(_ context.Context, spec platform.CommandSpec) (*
 	if strings.Contains(path, "codex") {
 		return &platform.ProcessResult{Stdout: "codex-cli 1.0.0"}, nil
 	}
+	if strings.Contains(path, "pi") {
+		return &platform.ProcessResult{Stdout: "0.81.1"}, nil
+	}
 	if strings.Contains(path, "headroom") {
 		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
 	}
@@ -77,6 +80,9 @@ func (r *appEnvCheckRunnerWithFailure) Run(_ context.Context, spec platform.Comm
 	if strings.Contains(path, "codex") {
 		return &platform.ProcessResult{Stdout: "codex-cli 1.0.0"}, nil
 	}
+	if strings.Contains(path, "pi") {
+		return &platform.ProcessResult{Stdout: "0.81.1"}, nil
+	}
 	if strings.Contains(path, "headroom") {
 		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
 	}
@@ -102,7 +108,7 @@ func newTestAppWithEnvCheck(t *testing.T, runner platform.ProcessRunner) *App {
 
 	// Create temp executables so exec.LookPath finds them
 	tmpDir := t.TempDir()
-	for _, name := range []string{"claude", "opencode", "codex", "headroom"} {
+	for _, name := range []string{"claude", "opencode", "codex", "pi", "headroom"} {
 		ext := ""
 		content := "#!/bin/sh\nexit 0\n"
 		if runtime.GOOS == "windows" {

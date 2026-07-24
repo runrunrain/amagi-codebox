@@ -273,6 +273,7 @@ const anthropicProviders = ref<Record<string, Provider>>({})
 const openaiProviders = ref<Record<string, Provider>>({})
 const claudePresets = ref<MergedTerminalPreset[]>([])
 const codexPresets = ref<MergedTerminalPreset[]>([])
+const piPresets = ref<MergedTerminalPreset[]>([])
 const openCodePresetList = ref<Array<{ key: string; name: string; description: string; bindingCount: number }>>([])
 
 // --- 引擎选项 ---
@@ -280,56 +281,65 @@ const engineOptions = [
   { value: 'claudecode', label: 'ClaudeCode' },
   { value: 'opencode', label: 'OpenCode' },
   { value: 'codex', label: 'Codex' },
+  { value: 'pi', label: 'Pi' },
 ]
 
 // --- 引擎相关计算属性 ---
 const currentMode = computed(() => {
   if (dashState.engine === 'claudecode') return dashState.claudeMode
   if (dashState.engine === 'opencode') return dashState.openCodeMode
+  if (dashState.engine === 'pi') return dashState.piMode
   return dashState.codexMode
 })
 function setMode(v: string) {
   if (dashState.engine === 'claudecode') dashState.claudeMode = v
   else if (dashState.engine === 'opencode') dashState.openCodeMode = v
+  else if (dashState.engine === 'pi') dashState.piMode = v
   else dashState.codexMode = v
 }
 
 const currentShell = computed(() => {
   if (dashState.engine === 'claudecode') return dashState.claudeShell
   if (dashState.engine === 'opencode') return dashState.openCodeShell
+  if (dashState.engine === 'pi') return dashState.piShell
   return dashState.codexShell
 })
 function setShell(v: string) {
   if (dashState.engine === 'claudecode') dashState.claudeShell = v
   else if (dashState.engine === 'opencode') dashState.openCodeShell = v
+  else if (dashState.engine === 'pi') dashState.piShell = v
   else dashState.codexShell = v
 }
 
 const currentCustomShellPath = computed(() => {
   if (dashState.engine === 'claudecode') return dashState.claudeCustomShellPath
   if (dashState.engine === 'opencode') return dashState.openCodeCustomShellPath
+  if (dashState.engine === 'pi') return dashState.piCustomShellPath
   return dashState.codexCustomShellPath
 })
 function setCustomShellPath(v: string) {
   if (dashState.engine === 'claudecode') dashState.claudeCustomShellPath = v
   else if (dashState.engine === 'opencode') dashState.openCodeCustomShellPath = v
+  else if (dashState.engine === 'pi') dashState.piCustomShellPath = v
   else dashState.codexCustomShellPath = v
 }
 
 const currentProvider = computed(() => {
   if (dashState.engine === 'codex') return dashState.codexProvider
+  if (dashState.engine === 'pi') return dashState.piProvider
   return dashState.provider
 })
 
 const currentPreset = computed(() => {
   if (dashState.engine === 'codex') return dashState.codexModel
+  if (dashState.engine === 'pi') return dashState.piModel
   if (dashState.engine === 'opencode') return dashState.openCodePresetKey
   return dashState.preset
 })
 
 // --- 下拉选项 ---
 const providerOptions = computed(() => {
-  const map = dashState.engine === 'codex' ? openaiProviders.value : anthropicProviders.value
+  const map = (dashState.engine === 'codex' || dashState.engine === 'pi') ? openaiProviders.value : anthropicProviders.value
   return Object.keys(map).sort().map(name => ({ value: name, label: name }))
 })
 
@@ -344,7 +354,9 @@ const presetOptions = computed(() => {
     }))
     return [globalOption, ...presetOptions]
   }
-  const list = dashState.engine === 'codex' ? codexPresets.value : claudePresets.value
+  const list = dashState.engine === 'codex' ? codexPresets.value
+    : dashState.engine === 'pi' ? piPresets.value
+    : claudePresets.value
   const targetProvider = currentProvider.value
   return list
     .filter(p => !targetProvider || p.provider === targetProvider)
@@ -406,6 +418,26 @@ function validateCodexPreset() {
   }
 }
 
+function validatePiPreset() {
+  if (dashState.engine !== 'pi') return
+  if (dashState.piModel) {
+    const entry = piPresets.value.find(p => p.key === dashState.piModel)
+    if (entry && entry.provider === dashState.piProvider) return
+  }
+  if (piPresets.value.length > 0) {
+    const match = piPresets.value.find(p => p.provider === dashState.piProvider)
+    if (match) {
+      dashState.piModel = match.key
+    } else {
+      const first = piPresets.value[0]
+      dashState.piProvider = first.provider
+      dashState.piModel = first.key
+    }
+  } else {
+    dashState.piModel = ''
+  }
+}
+
 // --- 事件处理 ---
 function handleEngineChange(v: string) {
   dashState.engine = v as any
@@ -417,6 +449,10 @@ function handleProviderChange(v: string) {
     // 自动重置预设到该 provider 的第一个
     const first = codexPresets.value.find(p => p.provider === v)
     dashState.codexModel = first ? first.key : ''
+  } else if (dashState.engine === 'pi') {
+    dashState.piProvider = v
+    const first = piPresets.value.find(p => p.provider === v)
+    dashState.piModel = first ? first.key : ''
   } else {
     dashState.provider = v
     const first = claudePresets.value.find(p => p.provider === v)
@@ -429,6 +465,10 @@ function handlePresetChange(v: string) {
     dashState.codexModel = v
     const entry = codexPresets.value.find(p => p.key === v)
     if (entry && entry.provider) dashState.codexProvider = entry.provider
+  } else if (dashState.engine === 'pi') {
+    dashState.piModel = v
+    const entry = piPresets.value.find(p => p.key === v)
+    if (entry && entry.provider) dashState.piProvider = entry.provider
   } else if (dashState.engine === 'opencode') {
     dashState.openCodePresetKey = v
   } else {
@@ -570,12 +610,14 @@ async function loadProviders() {
 
 async function loadTerminalPresets() {
   try {
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, pi] = await Promise.all([
       providerApi.getMergedTerminalPresets('claude_code'),
       providerApi.getMergedTerminalPresets('codex'),
+      providerApi.getMergedTerminalPresets('pi'),
     ])
     claudePresets.value = claude || []
     codexPresets.value = codex || []
+    piPresets.value = pi || []
   } catch (err) {
     console.error('Failed to load terminal presets:', err)
   }
@@ -604,6 +646,7 @@ async function loadOpenCodePresets() {
 // --- 监听 preset 列表变化时重新校验 ---
 watch(claudePresets, () => { if (dashState.engine === 'claudecode') validateClaudePreset() })
 watch(codexPresets, () => { if (dashState.engine === 'codex') validateCodexPreset() })
+watch(piPresets, () => { if (dashState.engine === 'pi') validatePiPreset() })
 
 onMounted(async () => {
   await platformCaps.ensure()
@@ -622,8 +665,12 @@ onMounted(async () => {
   if (!dashState.codexProvider && Object.keys(openaiProviders.value).length > 0) {
     dashState.codexProvider = Object.keys(openaiProviders.value)[0]
   }
+  if (!dashState.piProvider && Object.keys(openaiProviders.value).length > 0) {
+    dashState.piProvider = Object.keys(openaiProviders.value)[0]
+  }
   validateClaudePreset()
   validateCodexPreset()
+  validatePiPreset()
 })
 </script>
 

@@ -317,6 +317,7 @@ function appTypeLongLabel(appType: string): string {
     claudecode: 'Claude Code',
     opencode: 'OpenCode',
     codex: 'Codex',
+    pi: 'Pi',
   }
   return map[appType] || appType || '-'
 }

@@ -21,6 +21,7 @@ const (
 	ToolClaudeCode CLITool = "claude_code"
 	ToolOpenCode   CLITool = "opencode"
 	ToolCodex      CLITool = "codex"
+	ToolPi         CLITool = "pi"
 	ToolHeadroom   CLITool = "headroom"
 )
 

@@ -184,6 +184,40 @@ function onVisibility() {
 }
 onMounted(() => document.addEventListener('visibilitychange', onVisibility))
 
+// Detect devicePixelRatio changes (moving the window between monitors with
+// different DPI, or the OS zoom level changing). When DPR changes, the
+// canvas/WebGL renderer's backing store is still sized for the old DPR,
+// producing blurry / torn output. term.resize() with unchanged cols/rows
+// is a no-op in xterm's bufferService, so we must dispose and reload the
+// renderer addon to rebuild the canvas at the new DPR.
+let dprMql: MediaQueryList | null = null
+function watchDpr() {
+  const dpr = window.devicePixelRatio || 1
+  dprMql = window.matchMedia(`(resolution: ${dpr}dppx)`)
+  const handler = () => {
+    const el = bodyRef.value
+    engine.refreshRenderer(props.sessionId, el ?? undefined)
+    // Re-arm: create a new MQL for the new DPR value.
+    if (dprMql) dprMql.removeEventListener('change', handler)
+    watchDpr()
+  }
+  if (dprMql.addEventListener) {
+    dprMql.addEventListener('change', handler)
+  } else {
+    // Safari < 14 fallback
+    dprMql.addListener(handler)
+  }
+  // Store cleanup ref on the component for onBeforeUnmount.
+  dprCleanup = () => {
+    if (dprMql) {
+      if (dprMql.removeEventListener) dprMql.removeEventListener('change', handler)
+      else dprMql.removeListener(handler)
+    }
+  }
+}
+let dprCleanup: (() => void) | null = null
+onMounted(() => watchDpr())
+
 onBeforeUnmount(() => {
   if (resizeDebounce) clearTimeout(resizeDebounce)
   if (mountFallbackFitTimer) {
@@ -193,6 +227,9 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
   document.removeEventListener('visibilitychange', onVisibility)
+  dprCleanup?.()
+  dprCleanup = null
+  dprMql = null
   engine.disposeTerm(props.sessionId)
 })
 
@@ -390,5 +427,15 @@ function onCtxSelectAll() {
 /* match demo scrollbar thumb so the terminal area reads as one surface */
 .term-body :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
   background: #3a3a42;
+}
+
+/* xterm.css sets .xterm-viewport background to #000, but our terminal theme
+   uses #1B1B1F. During scroll / repaint the viewport background can flash
+   through behind the canvas (the canvas has transparency at the edges or
+   during partial redraws), producing a brief black flash perceived as
+   tearing. Override to match the theme background so the viewport, host
+   and canvas all share the same base color. */
+.term-body :deep(.xterm-viewport) {
+  background-color: var(--termBg, #1b1b1f);
 }
 </style>

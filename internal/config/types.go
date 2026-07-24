@@ -122,11 +122,13 @@ const (
 	TerminalPresetOpenCode TerminalPresetType = "opencode"
 	// TerminalPresetCodex 表示 Codex 终端预设
 	TerminalPresetCodex TerminalPresetType = "codex"
+	// TerminalPresetPi 表示 Pi coding agent 终端预设
+	TerminalPresetPi TerminalPresetType = "pi"
 )
 
 // ValidTerminalPresetTypes 返回所有合法的终端预设类型
 func ValidTerminalPresetTypes() []TerminalPresetType {
-	return []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex}
+	return []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex, TerminalPresetPi}
 }
 
 // IsValidTerminalPresetType 检查给定类型是否合法
@@ -184,6 +186,7 @@ type TerminalPresetsConfig struct {
 	ClaudeCode map[string]TerminalPreset `json:"claude_code,omitempty"`
 	OpenCode   map[string]TerminalPreset `json:"opencode,omitempty"`
 	Codex      map[string]TerminalPreset `json:"codex,omitempty"`
+	Pi         map[string]TerminalPreset `json:"pi,omitempty"`
 }
 
 // GetMap 按 TerminalPresetType 返回对应的预设 map。
@@ -198,6 +201,8 @@ func (tpc *TerminalPresetsConfig) GetMap(terminalType TerminalPresetType) map[st
 		return tpc.OpenCode
 	case TerminalPresetCodex:
 		return tpc.Codex
+	case TerminalPresetPi:
+		return tpc.Pi
 	}
 	return nil
 }
@@ -214,6 +219,8 @@ func (tpc *TerminalPresetsConfig) SetMap(terminalType TerminalPresetType, m map[
 		tpc.OpenCode = m
 	case TerminalPresetCodex:
 		tpc.Codex = m
+	case TerminalPresetPi:
+		tpc.Pi = m
 	}
 }
 

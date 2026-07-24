@@ -14,7 +14,7 @@ export function basename(path: string): string {
 /**
  * Application type label for a session/app tag.
  * Truth source: internal/session/types.go AppType const
- *   claudecode / opencode / codex (+ amagicode legacy)
+ *   claudecode / opencode / codex / pi (+ amagicode legacy)
  * Falls back to the raw tag when unknown.
  */
 export function appTypeLabel(tag: string): string {
@@ -22,6 +22,7 @@ export function appTypeLabel(tag: string): string {
     claudecode: 'Claude Code',
     opencode: 'OpenCode',
     codex: 'Codex',
+    pi: 'Pi',
     amagicode: 'AmagiCode',
   };
   return labels[tag] || tag;
@@ -33,6 +34,7 @@ export function appTypeLabel(tag: string): string {
  *   claudecode -> accent blue (#007AFF)
  *   opencode   -> warning orange (#FF9500)
  *   codex      -> purple (#AF52DE)
+ *   pi         -> system green (#34C759)
  *   amagicode  -> tertiary gray (legacy)
  * Unknown falls back to tertiary gray.
  */
@@ -41,6 +43,7 @@ export function tagColor(tag: string): string {
     claudecode: '#007AFF',
     opencode: '#FF9500',
     codex: '#AF52DE',
+    pi: '#34C759',
     amagicode: '#8E8E93',
   };
   return colors[tag] || '#8E8E93';

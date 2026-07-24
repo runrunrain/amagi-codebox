@@ -49,6 +49,14 @@ type codexLaunchSettings struct {
 	Model string
 }
 
+// piLaunchSettings 是 Pi 会话的启动参数。
+// Provider 对应 pi 的 --provider 参数（anthropic/openai 等 Pi 内置 provider 名）；
+// Model 对应 --model 参数。
+type piLaunchSettings struct {
+	Provider string
+	Model    string
+}
+
 const (
 	codexModelProviderName     = "amagi-codebox-provider"
 	codexOfficialOpenAIAPIHost = "api.openai.com"
@@ -504,6 +512,8 @@ func parseCLITool(tool string) (envcheck.CLITool, error) {
 		return envcheck.ToolOpenCode, nil
 	case "codex":
 		return envcheck.ToolCodex, nil
+	case "pi":
+		return envcheck.ToolPi, nil
 	case "headroom":
 		return envcheck.ToolHeadroom, nil
 	default:
@@ -1633,6 +1643,154 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	return sess.ID, nil
 }
 
+// LaunchPiSession 启动一个新的 Pi coding agent 会话。
+// providerID 非空时根据 Provider 双格式映射到 Pi 内置 provider（anthropic/openai），
+// 注入对应 API Key 环境变量，并通过 --provider 参数指定；
+// modelName 非空时通过 --model 参数指定模型。
+// 与 Codex 不同，Pi 无配置文件，纯靠进程环境变量 + CLI 参数驱动。
+func (a *App) LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
+	a.Log.Info("session", "启动 Pi 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
+
+	// ---- terminal_presets 桥接 ----
+	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("pi", modelName)
+	tpFound := tpErr == nil && tp != nil
+	if tpFound {
+		if tpProvider != "" {
+			providerID = tpProvider
+		}
+		modelName = tp.Model
+		a.Log.Info("session", "Pi 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
+	}
+
+	// ---- legacy provider preset fallback ----
+	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
+	if !tpFound && providerID != "" {
+		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
+			if preset, ok := provider.Presets[modelName]; ok {
+				resolvedModel := preset.Model
+				if resolvedModel == "" {
+					resolvedModel = provider.DefaultModel
+				}
+				a.Log.Info("session", "Pi 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
+				modelName = resolvedModel
+			}
+		}
+	}
+
+	// 确定启动模式
+	launchMode := embeddedDefaultLaunchMode(mode)
+	if err := a.validateLaunchMode(string(launchMode)); err != nil {
+		return "", err
+	}
+
+	// 如果未指定工作目录，使用默认路径
+	if workDir == "" {
+		workDir = a.Paths.GetDefaultPath()
+	}
+	if workDir == "" {
+		home, _ := os.UserHomeDir()
+		workDir = home
+	}
+
+	launchSettings := piLaunchSettings{
+		Model: strings.TrimSpace(modelName),
+	}
+
+	// 构建环境变量注入：根据 Provider 双格式映射到 Pi 内置 provider，注入对应 API Key。
+	// 与 Codex 不同，Pi 不接受 base_url，因此不注入 *_BASE_URL。
+	envOverrides := map[string]string{}
+	if providerID != "" {
+		if provider, err := a.Config.GetProvider(providerID); err == nil {
+			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model)
+			if piProvider, apiKeyEnv := piProviderMapping(*provider); piProvider != "" {
+				if apiKey, _ := a.getProviderAPIKey(providerID, *provider); apiKey != "" {
+					envOverrides[apiKeyEnv] = apiKey
+				}
+			}
+		}
+	}
+
+	// 创建会话记录
+	sess := a.Sessions.Create(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir, false)
+	a.Log.Info("session", "Pi 会话已创建", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
+
+	// 调试日志：输出 envOverrides 注入情况
+	envKeys := make([]string, 0, len(envOverrides))
+	for k := range envOverrides {
+		envKeys = append(envKeys, k)
+	}
+	a.Log.Info("pi", "envOverrides keys", fmt.Sprintf("%v", envKeys))
+
+	// 内嵌终端模式：使用 ConPTY
+	if launchMode == session.ModeEmbedded {
+		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
+		baseEnv := a.EnvVars.MergeWithSystem()
+		env := launcher.BuildEnv(baseEnv, envOverrides)
+
+		args := []string{}
+		if launchSettings.Provider != "" {
+			args = append(args, "--provider", launchSettings.Provider)
+		}
+		if launchSettings.Model != "" {
+			args = append(args, "--model", launchSettings.Model)
+		}
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, env, args)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", err
+		}
+
+		pid, err := a.Pty.StartResolved(sess.ID, spec)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			a.Log.Error("session", "Pi PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+			return "", fmt.Errorf("start pi pty: %w", err)
+		}
+		a.Sessions.SetPID(sess.ID, pid)
+		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
+
+		go func(id string) {
+			for a.Pty.IsRunning(id) {
+				select {
+				case <-a.ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+			a.Sessions.MarkExited(id)
+			a.Log.Info("session", "Pi PTY进程已退出", "id="+id)
+		}(sess.ID)
+
+		return sess.ID, nil
+	}
+
+	// 外部终端/VSCode/Zed 模式：使用 Launcher
+	result, err := a.Launcher.LaunchPi(sess.ID, launchSettings.Provider, launchSettings.Model, launchMode, workDir, envOverrides)
+	if err != nil {
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		a.Log.Error("session", "Pi 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+		return "", fmt.Errorf("launch pi: %w", err)
+	}
+
+	a.Sessions.SetPID(sess.ID, result.PID)
+	a.Log.Info("session", "Pi 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
+
+	go func(id string) {
+		for a.Launcher.IsRunning(id) {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+		a.Sessions.MarkExited(id)
+		a.Log.Info("session", "Pi 进程已退出", "id="+id)
+	}(sess.ID)
+
+	return sess.ID, nil
+}
+
 func normalizeCodexModelName(modelName string) string {
 	trimmed := strings.TrimSpace(modelName)
 	lower := strings.ToLower(trimmed)
@@ -2392,6 +2550,43 @@ func resolveCodexLaunchSettings(provider config.Provider, requestedModel string)
 	}
 
 	return settings
+}
+
+// piProviderMapping 把 amagi Provider 映射成 Pi 能识别的内置 provider 名，
+// 并返回该 provider 对应的 API Key 环境变量名。
+//
+// Pi 不支持任意自定义 base_url（仅有 Azure 专用 AZURE_OPENAI_BASE_URL），
+// 而是按"命名 provider + 对应 env var"接入模型。amagi 的双格式 Provider 可
+// 天然映射到 Pi 的 anthropic / openai 两个内置 provider：
+//   - Anthropic 兼容 → pi provider "anthropic"，env ANTHROPIC_API_KEY
+//   - OpenAI 兼容   → pi provider "openai"，env OPENAI_API_KEY
+//
+// 第三方订阅型 provider（zai/kimi/qwen 等）Pi 同样提供了对应的命名 env var
+// （ZAI_API_KEY/KIMI_API_KEY/QWEN_TOKEN_PLAN_API_KEY 等）。v1 通过格式兜底覆盖
+// 绝大多数 Anthropic/OpenAI 兼容场景；如需精确路由到命名订阅 provider，
+// 可扩展本函数按 baseURL host 识别。
+func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
+	if p.IsAnthropicCompatible() {
+		return "anthropic", "ANTHROPIC_API_KEY"
+	}
+	if p.IsOpenAICompatible() {
+		return "openai", "OPENAI_API_KEY"
+	}
+	return "", ""
+}
+
+// resolvePiLaunchSettings 解析 Pi 会话启动参数：确定 provider 与 model。
+// requestedModel 为空时回退到 provider.DefaultModel。
+func resolvePiLaunchSettings(provider config.Provider, requestedModel string) piLaunchSettings {
+	model := strings.TrimSpace(requestedModel)
+	piProvider, _ := piProviderMapping(provider)
+	if model == "" {
+		model = strings.TrimSpace(provider.DefaultModel)
+	}
+	return piLaunchSettings{
+		Provider: piProvider,
+		Model:    model,
+	}
 }
 
 // GetProvidersByType 返回指定类型的 Provider 列表（type 为 "openai" 或 "anthropic"）

@@ -8,16 +8,20 @@ import { usePlatformCapabilities } from './usePlatformCapabilities'
  * 注意：shell 默认值 '' 会在 initDefaults 中由平台能力 defaultShellKey 覆盖
  */
 const state = reactive({
-  engine: 'claudecode' as 'claudecode' | 'opencode' | 'codex',
+  engine: 'claudecode' as 'claudecode' | 'opencode' | 'codex' | 'pi',
   provider: '',
   preset: '',
   openCodePresetKey: '',
   // Codex 独立选择（OpenAI 兼容 provider）
   codexProvider: '',
   codexModel: '',
+  // Pi 独立选择（复用 amagi provider，映射到 Pi 内置 provider）
+  piProvider: '',
+  piModel: '',
   claudeMode: 'embedded',
   openCodeMode: 'embedded',
   codexMode: 'embedded',
+  piMode: 'embedded',
   workDir: '',
   useProxy: false,
   useHeadroom: false,
@@ -30,9 +34,11 @@ const state = reactive({
   claudeShell: '',
   openCodeShell: '',
   codexShell: '',
+  piShell: '',
   claudeCustomShellPath: '',
   openCodeCustomShellPath: '',
   codexCustomShellPath: '',
+  piCustomShellPath: '',
   initialized: false,
 })
 
@@ -53,12 +59,16 @@ export function useDashboardState() {
       state.openCodePresetKey = d.openCodePresetKey || ''
       state.codexProvider = state.codexProvider || ''
       state.codexModel = state.codexModel || ''
+      state.piProvider = state.piProvider || ''
+      state.piModel = state.piModel || ''
       state.claudeMode = d.claudeMode || d.mode || 'embedded'
       state.openCodeMode = d.openCodeMode || 'embedded'
       state.codexMode = d.codexMode || 'embedded'
+      state.piMode = d.piMode || 'embedded'
       state.claudeShell = d.claudeShell || d.shell || shellFallback
       state.openCodeShell = d.openCodeShell || d.shell || shellFallback
       state.codexShell = d.codexShell || d.shell || shellFallback
+      state.piShell = d.piShell || d.shell || shellFallback
       state.useProxy = d.useProxy || false
       state.useHeadroom = d.useHeadroom || false
       state.codexGlobalHeadroom = d.codexGlobalHeadroom || false
@@ -101,6 +111,8 @@ export function useDashboardState() {
         openCodeShell: state.openCodeShell,
         codexMode: state.codexMode,
         codexShell: state.codexShell,
+        piMode: state.piMode,
+        piShell: state.piShell,
         amagiCodePreset: '',
         amagiCodeMode: '',
         amagiCodeShell: '',
@@ -123,6 +135,8 @@ export function useDashboardState() {
     state.openCodePresetKey = ''
     state.codexProvider = ''
     state.codexModel = ''
+    state.piProvider = ''
+    state.piModel = ''
     state.workDir = ''
     state.useProxy = false
     state.useHeadroom = false

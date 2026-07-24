@@ -432,7 +432,15 @@ export function useTerminalEngine() {
         : true
 
       inst.fit.fit()
-      if (!sameDims) {
+      // Always sync PtyResize when force=true, even if dimensions appear
+      // unchanged. This recovers from a missed initial resize: if the very
+      // first PtyResize during mountTerm silently failed (caught by the
+      // .catch below), the PTY stays at its default 120×40 while xterm
+      // renders at the correct dimensions. The TUI then draws at the PTY's
+      // stale columns, producing tearing, misaligned clicks and broken
+      // scroll. The backend's Resize() deduplicates by currentCols/Rows, so
+      // calling this on every force-fit has zero cost when truly unchanged.
+      if (!sameDims || force) {
         inst.lastCols = dims.cols
         inst.lastRows = dims.rows
         PtyResize(sessionId, dims.cols, dims.rows).catch(() => {})
@@ -454,6 +462,60 @@ export function useTerminalEngine() {
     inst.lastCols = cols
     inst.lastRows = rows
     PtyResize(sessionId, cols, rows).catch(() => {})
+  }
+
+  /**
+   * Dispose the current renderer (canvas/WebGL) and reload it, then
+   * force-fit. Used when devicePixelRatio changes (window moved between
+   * monitors with different DPI): the renderer's canvas backing store is
+   * sized for the old DPR, and term.resize() with unchanged cols/rows is
+   * a no-op in xterm's bufferService — so the backing store never updates.
+   * Reloading the addon is the only reliable way to rebuild the canvas at
+   * the new DPR without tearing.
+   */
+  function refreshRenderer(sessionId: string, containerEl?: HTMLElement) {
+    const inst = terminals.get(sessionId)
+    if (!inst || !inst.term.element) return
+
+    // Tear down existing renderer addon(s).
+    try {
+      inst.canvas?.dispose()
+    } catch {
+      /* already disposed */
+    }
+    inst.canvas = null
+    try {
+      inst.webgl?.dispose()
+    } catch {
+      /* already disposed */
+    }
+    inst.webgl = null
+
+    // Reload the platform-appropriate renderer.
+    if (platformCaps.caps.value && platformCaps.isDarwin.value) {
+      loadCanvasRenderer(sessionId, inst)
+    } else if (
+      platformCaps.caps.value &&
+      !platformCaps.isDarwin.value &&
+      isWebGLReliable()
+    ) {
+      loadWebglRenderer(sessionId, inst)
+    }
+
+    // Force-fit on next frame so the new renderer's canvas and texture
+    // atlas are built at the correct (possibly new DPR) dimensions.
+    requestAnimationFrame(() => {
+      if (terminals.get(sessionId) !== inst) return
+      fitTerminal(sessionId, true, containerEl)
+      const canvas = inst.canvas as unknown as {
+        clearTextureAtlas?: () => void
+      } | null
+      try {
+        canvas?.clearTextureAtlas?.()
+      } catch {
+        /* noop */
+      }
+    })
   }
 
   // ---- core mount --------------------------------------------------------
@@ -919,6 +981,34 @@ export function useTerminalEngine() {
       /* container may not have layout yet */
     }
 
+    // Refit once all web fonts have loaded. The initial cell measurement
+    // (done synchronously during term.open) may use a fallback font if the
+    // primary font ('SF Mono' etc.) hasn't finished loading yet. When the
+    // real font renders at a different width, the canvas cells no longer
+    // align with the renderer's stored cell dimensions — causing visual
+    // tearing, mouse→cell coordinate misalignment (clicks miss TUI items)
+    // and scroll position drift. document.fonts.ready resolves when the
+    // font set is stable; we force-fit + clearTextureAtlas to rebuild the
+    // atlas at the correct cell metrics.
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready
+        .then(() => {
+          if (terminals.get(sessionId) !== inst) return
+          fitTerminal(sessionId, true, containerEl)
+          const canvas = inst.canvas as unknown as {
+            clearTextureAtlas?: () => void
+          } | null
+          try {
+            canvas?.clearTextureAtlas?.()
+          } catch {
+            /* mid-teardown or addon mismatch: noop */
+          }
+        })
+        .catch(() => {
+          /* fonts.ready rejected (rare): ignore */
+        })
+    }
+
     // ----- xterm textarea paste interception (capture phase) -----
     // Ensures Ctrl+V / right-click paste take a single path, avoiding the
     // double-write that xterm's built-in onData would otherwise cause.
@@ -1161,6 +1251,7 @@ export function useTerminalEngine() {
     writeInput,
     resizeTerm,
     fitTerminal,
+    refreshRenderer,
     disposeTerm,
     disposeAll,
     getTerm,

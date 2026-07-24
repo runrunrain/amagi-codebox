@@ -7,6 +7,7 @@ import {
   LaunchSession,
   LaunchOpenCode,
   LaunchCodexSession,
+  LaunchPiSession,
   StopSession,
   StopAllSessions,
   GetSessions,
@@ -105,6 +106,30 @@ export async function launchCodexSession(params: {
     );
   } catch (error) {
     console.error('Failed to launch Codex session:', error);
+    throw error;
+  }
+}
+
+/**
+ * Launch a Pi coding agent session
+ */
+export async function launchPiSession(params: {
+  modelName: string;
+  providerID: string;
+  mode: string;
+  workDir: string;
+  shellPath?: string;
+}): Promise<string> {
+  try {
+    return await LaunchPiSession(
+      params.modelName,
+      params.providerID,
+      params.mode,
+      params.workDir,
+      params.shellPath || ''
+    );
+  } catch (error) {
+    console.error('Failed to launch Pi session:', error);
     throw error;
   }
 }
