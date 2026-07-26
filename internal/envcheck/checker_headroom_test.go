@@ -245,7 +245,7 @@ func (r *headroomVenvRebuildRunner) Start(_ platform.CommandSpec) (*exec.Cmd, er
 
 func TestHeadroomVenvInstall_RebuildsUnsupportedManagedVenv(t *testing.T) {
 	pathDir := t.TempDir()
-	compatiblePythonPath := writeTestExecutable(t, pathDir, "python3.12")
+	writeTestExecutable(t, pathDir, "python3.12")
 	t.Setenv("PATH", pathDir)
 
 	venvDir := filepath.Join(t.TempDir(), "headroom-venv")
@@ -265,8 +265,11 @@ func TestHeadroomVenvInstall_RebuildsUnsupportedManagedVenv(t *testing.T) {
 	if err := svc.ensureHeadroomVenv(); err != nil {
 		t.Fatalf("ensureHeadroomVenv: %v", err)
 	}
-	if !sameNormalizedPath(svc.pythonPath, compatiblePythonPath) {
-		t.Fatalf("selected runtime = %q, want %q", svc.pythonPath, compatiblePythonPath)
+	if strings.TrimSpace(svc.pythonPath) == "" || sameNormalizedPath(svc.pythonPath, venvPythonPath) {
+		t.Fatalf("selected runtime = %q, want a compatible external runtime", svc.pythonPath)
+	}
+	if svc.pythonVersion != "3.12.13" {
+		t.Fatalf("selected runtime version = %q, want 3.12.13", svc.pythonVersion)
 	}
 
 	var rebuildCall *platform.CommandSpec
@@ -279,6 +282,9 @@ func TestHeadroomVenvInstall_RebuildsUnsupportedManagedVenv(t *testing.T) {
 	}
 	if rebuildCall == nil {
 		t.Fatal("expected old CodeBox venv to be rebuilt")
+	}
+	if !sameNormalizedPath(rebuildCall.Path, svc.pythonPath) {
+		t.Fatalf("rebuild runtime = %q, want selected runtime %q", rebuildCall.Path, svc.pythonPath)
 	}
 	wantArgs := []string{"-m", "venv", "--clear", venvDir}
 	if strings.Join(rebuildCall.Args, "\x00") != strings.Join(wantArgs, "\x00") {
