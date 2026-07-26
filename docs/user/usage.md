@@ -19,7 +19,7 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
 | `/` | `SessionSettingsView.vue` | 会话设置 | 配置并启动一个新的 AI 编程会话（应用默认页） |
 | `/terminal` | `TerminalPageView.vue` | 终端 | 显示当前选中会话的内嵌 xterm 终端 |
 | `/provider` | `ProviderCenterView.vue` | Provider Center | 统一管理服务提供商与各引擎预设 |
-| `/extensions` | `ExtensionsView.vue` | 扩展管理 | 管理 Claude / Codex 插件、工作区、环境变量 |
+| `/extensions` | `ExtensionsView.vue` | 扩展管理 | 管理 Claude / OpenCode / Codex 插件、工作区、环境变量 |
 | `/rules` | `RulesView.vue` | 注入规则 | 管理 API 注入规则与代理状态 |
 | `/envcheck` | `EnvCheckView.vue` | 环境检测 | CLI 工具安装状态、版本与 PATH 校验 |
 | `/logs` | `LogsView.vue` | 系统日志 | 查看应用运行日志与 Headroom 压缩统计 |
@@ -83,16 +83,16 @@ Provider 与 Preset 的概念、字段含义与 `config.json` 结构详见 [./pr
 
 ## 扩展管理 `/extensions`（ExtensionsView）
 
-管理 Claude 与 Codex 插件、工作区与环境变量。顶部页面描述："管理 Claude 与 Codex 插件、工作区与环境变量"。
+管理 Claude、OpenCode 与 Codex 插件、工作区与环境变量。顶部页面描述："管理 Claude、OpenCode 与 Codex 插件、工作区与环境变量"。
 
 页面结构：
 
 - **一级 Pill 导航**：
-    - **Plugins**：下方再有 ClaudeCode / Codex 二级下划线 Tab，分别展示已安装插件，支持添加市场（"Add Marketplace"对话框）。
+    - **Plugins**：下方再有 ClaudeCode / OpenCode / Codex 二级下划线 Tab。Claude 与 Codex 支持 marketplace；OpenCode 直接按模块地址安装，并展示全局配置中的插件。
     - **Workspaces**：工作区面板（多工作空间创建、插件部署、冲突检测）。
     - **Environment**：环境变量面板（用户自定义环境变量，写入 `~/.amagi-codebox/envvars.json`）。
 
-插件系统对应后端 `internal/plugin` 与 `internal/codexplugin`；工作区对应 `internal/workspace`。
+插件系统对应后端 `internal/plugin`、`internal/opencodeplugin` 与 `internal/codexplugin`；工作区对应 `internal/workspace`。
 
 ---
 

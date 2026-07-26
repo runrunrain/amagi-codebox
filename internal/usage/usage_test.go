@@ -273,6 +273,9 @@ func TestDailyRollupRefresh(t *testing.T) {
 	}
 	defer s.Close()
 
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	todayKey := today.Format("2006-01-02")
+
 	// 插入 2 条同一天不同模型的记录
 	for _, m := range []string{"claude-sonnet-4", "gpt-4o"} {
 		_, err := s.Record(UsageEvent{
@@ -281,7 +284,7 @@ func TestDailyRollupRefresh(t *testing.T) {
 			Model:        m,
 			InputTokens:  100,
 			OutputTokens: 50,
-			OccurredAt:   time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC),
+			OccurredAt:   today.Add(10 * time.Hour),
 			DedupKey:     "test:" + m,
 		})
 		if err != nil {
@@ -301,13 +304,13 @@ func TestDailyRollupRefresh(t *testing.T) {
 	}
 	found := false
 	for _, p := range points {
-		if p.Day == "2026-07-17" && p.Requests == 2 {
+		if p.Day == todayKey && p.Requests == 2 {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected 2026-07-17 with 2 requests in trend; got %v", points)
+		t.Errorf("expected %s with 2 requests in trend; got %v", todayKey, points)
 	}
 }
 
@@ -322,11 +325,16 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	}
 	defer s.Close()
 
+	day2 := time.Now().UTC().Truncate(24 * time.Hour)
+	day1 := day2.AddDate(0, 0, -1)
+	day1Key := day1.Format("2006-01-02")
+	day2Key := day2.Format("2006-01-02")
+
 	// 插入跨两天的记录：day1（claude）+ day2（gpt-4o）。
 	if _, err := s.Record(UsageEvent{
 		AppType: appClaudeCode, Source: SourceSessionLog,
 		Model: "claude-sonnet-4", InputTokens: 100, OutputTokens: 50,
-		OccurredAt: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC),
+		OccurredAt: day1.Add(10 * time.Hour),
 		DedupKey:   "p1",
 	}); err != nil {
 		t.Fatalf("Record day1: %v", err)
@@ -334,7 +342,7 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	if _, err := s.Record(UsageEvent{
 		AppType: appClaudeCode, Source: SourceSessionLog,
 		Model: "gpt-4o", InputTokens: 200, OutputTokens: 80,
-		OccurredAt: time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC),
+		OccurredAt: day2.Add(10 * time.Hour),
 		DedupKey:   "p2",
 	}); err != nil {
 		t.Fatalf("Record day2: %v", err)
@@ -349,12 +357,12 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	if _, err := s.Record(UsageEvent{
 		AppType: appClaudeCode, Source: SourceSessionLog,
 		Model: "gpt-4o", InputTokens: 50, OutputTokens: 20,
-		OccurredAt: time.Date(2026, 7, 17, 22, 0, 0, 0, time.UTC),
+		OccurredAt: day2.Add(22 * time.Hour),
 		DedupKey:   "p3",
 	}); err != nil {
 		t.Fatalf("Record day2 add: %v", err)
 	}
-	if err := refreshDailyRollup(nil, s.db, []string{"2026-07-17"}); err != nil {
+	if err := refreshDailyRollup(nil, s.db, []string{day2Key}); err != nil {
 		t.Fatalf("partition refresh: %v", err)
 	}
 
@@ -363,7 +371,7 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queryDailyTrends: %v", err)
 	}
-	want := map[string]int64{"2026-07-16": 1, "2026-07-17": 2}
+	want := map[string]int64{day1Key: 1, day2Key: 2}
 	got := map[string]int64{}
 	for _, p := range points {
 		if _, ok := want[p.Day]; ok {

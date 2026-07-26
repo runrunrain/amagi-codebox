@@ -6,6 +6,7 @@
 
 - [App (`app`)](#app-app)
 - [Plugin Service (`app.Plugins`)](#plugin-service-appplugins)
+- [OpenCode Plugin Service (`app.OpenCodePlugins`)](#opencode-plugin-service-appopencodeplugins)
 - [Config Service (`app.Config`)](#config-service-appconfig)
 - [Secrets Service (`app.Secrets`)](#secrets-service-appsecrets)
 - [Proxy Service (`app.Proxy`)](#proxy-service-appproxy)
@@ -528,6 +529,44 @@
 **Parameters**: none  
 **Returns**: `error`  
 **Description**: 刷新市场、已安装插件和可用插件缓存。
+
+## OpenCode Plugin Service (`app.OpenCodePlugins`)
+
+### ListInstalledPlugins
+**Service**: OpenCode Plugin Service
+**Parameters**: none
+**Returns**: `[]opencodeplugin.Plugin`, `error`
+**Description**: 从 OpenCode 全局 JSON/JSONC 配置读取已启用插件，并补充本地缓存中的包元数据。
+
+### RefreshPlugins
+**Service**: OpenCode Plugin Service
+**Parameters**: none
+**Returns**: `*opencodeplugin.PluginsData`, `error`
+**Description**: 返回已安装插件和缓存缺失警告。
+
+### GetPluginDetails
+**Service**: OpenCode Plugin Service
+**Parameters**: `spec (string)`
+**Returns**: `*opencodeplugin.PluginDetail`, `error`
+**Description**: 返回包信息、server / tui target 与可发现的 skills、agents、commands、hooks 和 MCP 资源。
+
+### InstallPlugin
+**Service**: OpenCode Plugin Service
+**Parameters**: `spec (string)`
+**Returns**: `*opencodeplugin.CommandResult`, `error`
+**Description**: 执行 `opencode plugin <spec> --global`。
+
+### UpdatePlugin
+**Service**: OpenCode Plugin Service
+**Parameters**: `spec (string)`
+**Returns**: `*opencodeplugin.CommandResult`, `error`
+**Description**: GitHub 插件查询远端稳定 SemVer tags，npm 插件查询 registry `latest`，生成不可变 `#tag` 或精确 `@version` spec 后执行 `opencode plugin <target> --global --force`；随后校验全局配置、缓存路径和包版本。`file://` 本地插件直接从源路径加载，不执行远端更新。
+
+### UninstallPlugin
+**Service**: OpenCode Plugin Service
+**Parameters**: `spec (string)`
+**Returns**: `*opencodeplugin.CommandResult`, `error`
+**Description**: 从严格 JSON 全局配置的 `plugin` 数组移除指定项并保留缓存；JSONC 配置不会自动改写。
 
 ## Config Service (`app.Config`)
 

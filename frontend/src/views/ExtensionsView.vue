@@ -1,6 +1,6 @@
 <template>
   <section class="view-extensions">
-    <PageHead title="扩展管理" description="管理 Claude 与 Codex 插件、工作区与环境变量"/>
+    <PageHead title="扩展管理" description="管理 Claude、OpenCode 与 Codex 插件、工作区与环境变量"/>
 
     <!-- Main segmented control: Plugins | Workspaces | Environment -->
     <div class="ex-main-tabs">
@@ -15,7 +15,7 @@
     <div class="ex-content">
       <!-- Plugins tab -->
       <div v-if="extMainTab === 'plugins'" class="tab-pane">
-        <!-- Engine segmented: ClaudeCode | Codex -->
+        <!-- Engine segmented: ClaudeCode | OpenCode | Codex -->
         <div class="ex-engine-tabs">
           <Segmented
             v-model="pluginEngine"
@@ -32,6 +32,11 @@
               engine="claude"
               @add_market="handleAddMarket"
             />
+          </div>
+
+          <!-- OpenCode plugins -->
+          <div v-else-if="pluginEngine === 'opencode'" class="engine-pane">
+            <OpenCodePluginPanel />
           </div>
 
           <!-- Codex plugins -->
@@ -106,6 +111,7 @@ import PageHead from '../components/ui/PageHead.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import EmptyState from '../components/ui/EmptyState.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
+import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';
 import WorkspacesPanel from '../components/extensions/WorkspacesPanel.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
@@ -134,6 +140,7 @@ const mainTabOptions = ref([
 // Engine options
 const engineOptions = ref([
   { value: 'claude', label: 'ClaudeCode' },
+  { value: 'opencode', label: 'OpenCode' },
   { value: 'codex', label: 'Codex' },
 ]);
 

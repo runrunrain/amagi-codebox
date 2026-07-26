@@ -1,6 +1,6 @@
 /**
  * Plugin Store
- * Manages Claude and Codex plugin cache
+ * Manages Claude and Codex plugin cache. OpenCode uses its dedicated store.
  */
 
 import { defineStore } from 'pinia';
@@ -46,7 +46,7 @@ export const usePluginStore = defineStore('plugin', () => {
   const extMainTab = ref<'plugins' | 'workspaces' | 'env' | 'tools'>('plugins');
 
   // Plugin engine selection
-  const pluginEngine = ref<'claude' | 'codex'>('claude');
+  const pluginEngine = ref<'claude' | 'opencode' | 'codex'>('claude');
 
   // Plugin view state: installed | market
   const pluginView = ref<'installed' | 'market'>('installed');
@@ -232,7 +232,7 @@ export const usePluginStore = defineStore('plugin', () => {
     extMainTab.value = tab;
   }
 
-  function setPluginEngine(engine: 'claude' | 'codex') {
+  function setPluginEngine(engine: 'claude' | 'opencode' | 'codex') {
     pluginEngine.value = engine;
     // Reset active plugin when switching engines
     activePluginId.value = null;

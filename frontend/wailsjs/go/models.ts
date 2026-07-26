@@ -547,6 +547,7 @@ export namespace config {
 	    claude_code?: Record<string, TerminalPreset>;
 	    opencode?: Record<string, TerminalPreset>;
 	    codex?: Record<string, TerminalPreset>;
+	    pi?: Record<string, TerminalPreset>;
 	
 	    static createFrom(source: any = {}) {
 	        return new TerminalPresetsConfig(source);
@@ -557,6 +558,7 @@ export namespace config {
 	        this.claude_code = this.convertValues(source["claude_code"], TerminalPreset, true);
 	        this.opencode = this.convertValues(source["opencode"], TerminalPreset, true);
 	        this.codex = this.convertValues(source["codex"], TerminalPreset, true);
+	        this.pi = this.convertValues(source["pi"], TerminalPreset, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1351,7 +1353,7 @@ export namespace envvars {
 }
 
 export namespace headroom {
-
+	
 	export class ClientPerfStat {
 	    client: string;
 	    requests: number;
@@ -1360,11 +1362,11 @@ export namespace headroom {
 	    cache_read_tokens: number;
 	    tokens_before: number;
 	    savings_percent: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ClientPerfStat(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.client = source["client"];
@@ -1561,17 +1563,17 @@ export namespace logging {
 }
 
 export namespace main {
-
+	
 	export class CodexGlobalHeadroomStatus {
 	    enabled: boolean;
 	    target: string;
 	    port: number;
 	    running: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CodexGlobalHeadroomStatus(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
@@ -1625,6 +1627,177 @@ export namespace main {
 	        this.mobileWebEmbedded = source["mobileWebEmbedded"];
 	        this.mobileWebAvailable = source["mobileWebAvailable"];
 	    }
+	}
+
+}
+
+export namespace opencodeplugin {
+	
+	export class CommandResult {
+	    success: boolean;
+	    output: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommandResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.output = source["output"];
+	        this.error = source["error"];
+	    }
+	}
+	export class Plugin {
+	    id: string;
+	    spec: string;
+	    name: string;
+	    version?: string;
+	    description?: string;
+	    author?: string;
+	    repository?: string;
+	    source: string;
+	    scope: string;
+	    enabled: boolean;
+	    installPath?: string;
+	    manifestPath?: string;
+	    lastUpdated?: string;
+	    targets: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Plugin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.spec = source["spec"];
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.description = source["description"];
+	        this.author = source["author"];
+	        this.repository = source["repository"];
+	        this.source = source["source"];
+	        this.scope = source["scope"];
+	        this.enabled = source["enabled"];
+	        this.installPath = source["installPath"];
+	        this.manifestPath = source["manifestPath"];
+	        this.lastUpdated = source["lastUpdated"];
+	        this.targets = source["targets"];
+	    }
+	}
+	export class ResourceInfo {
+	    name: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class PluginDetail {
+	    id: string;
+	    spec: string;
+	    name: string;
+	    version?: string;
+	    description?: string;
+	    author?: string;
+	    repository?: string;
+	    source: string;
+	    scope: string;
+	    enabled: boolean;
+	    installPath?: string;
+	    manifestPath?: string;
+	    lastUpdated?: string;
+	    targets: string[];
+	    skills: ResourceInfo[];
+	    agents: ResourceInfo[];
+	    commands: ResourceInfo[];
+	    hooks: ResourceInfo[];
+	    hasMcp: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.spec = source["spec"];
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.description = source["description"];
+	        this.author = source["author"];
+	        this.repository = source["repository"];
+	        this.source = source["source"];
+	        this.scope = source["scope"];
+	        this.enabled = source["enabled"];
+	        this.installPath = source["installPath"];
+	        this.manifestPath = source["manifestPath"];
+	        this.lastUpdated = source["lastUpdated"];
+	        this.targets = source["targets"];
+	        this.skills = this.convertValues(source["skills"], ResourceInfo);
+	        this.agents = this.convertValues(source["agents"], ResourceInfo);
+	        this.commands = this.convertValues(source["commands"], ResourceInfo);
+	        this.hooks = this.convertValues(source["hooks"], ResourceInfo);
+	        this.hasMcp = source["hasMcp"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PluginsData {
+	    installed: Plugin[];
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginsData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.installed = this.convertValues(source["installed"], Plugin);
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -2366,11 +2539,11 @@ export namespace settings {
 	    claudeShell: string;
 	    openCodeMode: string;
 	    openCodeShell: string;
-		    codexMode: string;
-		    codexShell: string;
-		    piMode: string;
-		    piShell: string;
-		    amagiCodePreset: string;
+	    codexMode: string;
+	    codexShell: string;
+	    piMode: string;
+	    piShell: string;
+	    amagiCodePreset: string;
 	    amagiCodeMode: string;
 	    amagiCodeShell: string;
 	    useProxy: boolean;
@@ -2378,11 +2551,11 @@ export namespace settings {
 	    codexGlobalHeadroom: boolean;
 	    codexGlobalHeadroomTarget: string;
 	    codexGlobalHeadroomPort: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DashboardDefaults(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.provider = source["provider"];
@@ -2396,11 +2569,11 @@ export namespace settings {
 	        this.claudeShell = source["claudeShell"];
 	        this.openCodeMode = source["openCodeMode"];
 	        this.openCodeShell = source["openCodeShell"];
-		        this.codexMode = source["codexMode"];
-		        this.codexShell = source["codexShell"];
-		        this.piMode = source["piMode"];
-		        this.piShell = source["piShell"];
-		        this.amagiCodePreset = source["amagiCodePreset"];
+	        this.codexMode = source["codexMode"];
+	        this.codexShell = source["codexShell"];
+	        this.piMode = source["piMode"];
+	        this.piShell = source["piShell"];
+	        this.amagiCodePreset = source["amagiCodePreset"];
 	        this.amagiCodeMode = source["amagiCodeMode"];
 	        this.amagiCodeShell = source["amagiCodeShell"];
 	        this.useProxy = source["useProxy"];
@@ -2408,22 +2581,6 @@ export namespace settings {
 	        this.codexGlobalHeadroom = source["codexGlobalHeadroom"];
 	        this.codexGlobalHeadroomTarget = source["codexGlobalHeadroomTarget"];
 	        this.codexGlobalHeadroomPort = source["codexGlobalHeadroomPort"];
-	    }
-	}
-	export class CodexGlobalHeadroomState {
-	    enabled: boolean;
-	    target: string;
-	    port: number;
-
-	    static createFrom(source: any = {}) {
-	        return new CodexGlobalHeadroomState(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.target = source["target"];
-	        this.port = source["port"];
 	    }
 	}
 	export class AppSettings {
@@ -2471,6 +2628,22 @@ export namespace settings {
 		    }
 		    return a;
 		}
+	}
+	export class CodexGlobalHeadroomState {
+	    enabled: boolean;
+	    target: string;
+	    port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodexGlobalHeadroomState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.target = source["target"];
+	        this.port = source["port"];
+	    }
 	}
 	
 	export class Service {

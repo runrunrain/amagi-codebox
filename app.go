@@ -27,6 +27,7 @@ import (
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/opencodeconfig"
+	"amagi-codebox/internal/opencodeplugin"
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/plugin"
@@ -125,33 +126,34 @@ type persistentLoadState struct {
 type App struct {
 	ctx context.Context
 
-	Config         *config.ConfigService
-	Secrets        *secrets.SecretsService
-	Launcher       *launcher.LauncherService
-	Proxy          *proxy.ProxyService
-	Headroom       *headroom.HeadroomService
+	Config   *config.ConfigService
+	Secrets  *secrets.SecretsService
+	Launcher *launcher.LauncherService
+	Proxy    *proxy.ProxyService
+	Headroom *headroom.HeadroomService
 	// CodexHeadroom is a second, independent headroom instance that compresses
 	// Codex desktop traffic globally (port 8788, OpenAI target). It is fully
 	// separate from Headroom (claude-session, 8787, Anthropic target): each has
 	// its own port, lifecycle and target kind, so toggling one never touches the
 	// other. Only one Codex-global instance exists app-wide (it is not per
 	// session); Start/Stop are idempotent.
-	CodexHeadroom  *headroom.HeadroomService
-	Tray           *tray.Service
-	Sessions       *session.Manager
-	Paths          *paths.PathsService
-	Log            *logging.Service
-	Pty            *pty.Service
-	Settings       *settings.Service
-	Remote         *remote.Server
-	EnvVars        *envvars.EnvVarsService
-	Updater        *updater.Service
-	Plugins        *plugin.Service
-	CodexPlugins   *codexplugin.Service
-	Workspaces     *workspace.Service
-	OpenCodeConfig *opencodeconfig.Service
-	EnvCheck       *envcheck.Service
-	Usage          *usage.Service
+	CodexHeadroom   *headroom.HeadroomService
+	Tray            *tray.Service
+	Sessions        *session.Manager
+	Paths           *paths.PathsService
+	Log             *logging.Service
+	Pty             *pty.Service
+	Settings        *settings.Service
+	Remote          *remote.Server
+	EnvVars         *envvars.EnvVarsService
+	Updater         *updater.Service
+	Plugins         *plugin.Service
+	CodexPlugins    *codexplugin.Service
+	OpenCodePlugins *opencodeplugin.Service
+	Workspaces      *workspace.Service
+	OpenCodeConfig  *opencodeconfig.Service
+	EnvCheck        *envcheck.Service
+	Usage           *usage.Service
 
 	Capabilities platform.PlatformCapabilities
 	CLIResolver  platform.CLIResolver
@@ -183,6 +185,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	capabilities := platform.CurrentCapabilities()
 	pluginsSvc := plugin.NewService("", log)
 	codexPluginsSvc := codexplugin.NewService("", log)
+	openCodePluginsSvc := opencodeplugin.NewService("", "", log)
 	processRunner := platform.NewProcessRunner()
 
 	// headroom-venv lives under the CodeBox config directory. It is shared by
@@ -209,29 +212,30 @@ func NewApp(mobileAssets embed.FS) *App {
 	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
 	app := &App{
-		Config:         config.NewConfigService(configDir),
-		Secrets:        secrets.NewSecretsService(configDir),
-		Launcher:       launcher.NewLauncherService(log, envVarsSvc),
-		Proxy:          proxy.NewProxyService(),
-		Headroom:       headroomSvc,
-		CodexHeadroom:  codexHeadroomSvc,
-		Tray:           tray.NewService(),
-		Sessions:       session.NewManager(),
-		Paths:          paths.NewPathsService(configDir),
-		Log:            log,
-		Pty:            pty.NewService(log),
-		Settings:       settings.NewService(configDir),
-		EnvVars:        envVarsSvc,
-		Updater:        updater.NewService(Version, log),
-		Plugins:        pluginsSvc,
-		CodexPlugins:   codexPluginsSvc,
-		Workspaces:     workspace.NewService(configDir, pluginsSvc, log),
-		OpenCodeConfig: opencodeconfig.NewService(),
-		EnvCheck:       envCheckSvc,
-		Usage:          usage.NewService(configDir, log),
-		Capabilities:   capabilities,
-		CLIResolver:    platform.NewCLIResolver(capabilities),
-		FileOpener:     platform.NewFileOpener(processRunner),
+		Config:          config.NewConfigService(configDir),
+		Secrets:         secrets.NewSecretsService(configDir),
+		Launcher:        launcher.NewLauncherService(log, envVarsSvc),
+		Proxy:           proxy.NewProxyService(),
+		Headroom:        headroomSvc,
+		CodexHeadroom:   codexHeadroomSvc,
+		Tray:            tray.NewService(),
+		Sessions:        session.NewManager(),
+		Paths:           paths.NewPathsService(configDir),
+		Log:             log,
+		Pty:             pty.NewService(log),
+		Settings:        settings.NewService(configDir),
+		EnvVars:         envVarsSvc,
+		Updater:         updater.NewService(Version, log),
+		Plugins:         pluginsSvc,
+		CodexPlugins:    codexPluginsSvc,
+		OpenCodePlugins: openCodePluginsSvc,
+		Workspaces:      workspace.NewService(configDir, pluginsSvc, log),
+		OpenCodeConfig:  opencodeconfig.NewService(),
+		EnvCheck:        envCheckSvc,
+		Usage:           usage.NewService(configDir, log),
+		Capabilities:    capabilities,
+		CLIResolver:     platform.NewCLIResolver(capabilities),
+		FileOpener:      platform.NewFileOpener(processRunner),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	app.Remote = remote.NewServer(8680, app, log, mobileAssets)

@@ -3,6 +3,8 @@
 import {context} from '../models';
 import {headroom} from '../models';
 
+export function GetPerfByClient(arg1:context.Context):Promise<Array<headroom.ClientPerfStat>>;
+
 export function GetPort():Promise<number>;
 
 export function GetSavings(arg1:context.Context):Promise<headroom.SavingsReport>;
@@ -11,8 +13,12 @@ export function GetStatus():Promise<headroom.HeadroomStatus>;
 
 export function IsRunning():Promise<boolean>;
 
+export function SetPort(arg1:number):Promise<void>;
+
 export function SetVenvBinDir(arg1:string):Promise<void>;
 
 export function Start(arg1:string):Promise<void>;
+
+export function StartForOpenAI(arg1:string):Promise<void>;
 
 export function Stop():Promise<void>;

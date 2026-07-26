@@ -51,7 +51,7 @@ var mobileFS embed.FS
                                      v
                         +---------------------------+
                         |  app.go: App 枢纽         |
-                        |  持有 14 个被绑定服务指针 |
+                        |  持有 16 个被绑定服务指针 |
                         |  + 5 个内部服务           |
                         +------------+--------------+
                                      |
@@ -60,7 +60,7 @@ var mobileFS embed.FS
 +-----------------------+ +--------------------+ +-------------------+
 | 桌面前端 Vue 3        | | Wails 绑定桥       | | internal/* 服务包 |
 | (frontend/dist)       | | (wailsjs 自动生成) | | config / secrets  |
-| Pinia + composables   | |  - App + 14 服务   | | session / pty     |
+| Pinia + composables   | |  - App + 16 服务   | | session / pty     |
 | Element Plus          | |  方法 → TS 绑定    | | proxy / headroom  |
 +-----------+-----------+ +---------+----------+ | plugin / workspace|
             ^                       |            | remote / updater  |
@@ -118,13 +118,15 @@ Bind: []any{
     app.Updater,       // *updater.Service
     app.Plugins,       // *plugin.Service
     app.CodexPlugins,  // *codexplugin.Service
+    app.OpenCodePlugins,// *opencodeplugin.Service
     app.Workspaces,    // *workspace.Service
     app.OpenCodeConfig,// *opencodeconfig.Service
     app.EnvCheck,      // *envcheck.Service
+    app.Usage,         // *usage.Service
 },
 ```
 
-实际绑定数量为 **1 个 `App` + 14 个服务 struct = 15 个绑定**。
+实际绑定数量为 **1 个 `App` + 16 个服务 struct = 17 个绑定**。
 
 以下 `App` 字段对应的服务**不直接绑定**，仅通过 `App` 上的方法间接暴露给前端：`Launcher`、`Tray`、`Sessions`、`Remote`、`EnvVars`。
 
@@ -185,6 +187,7 @@ type App struct {
 | `internal/launcher` | `LauncherService` | `NewLauncherService(log, envVarsSvc)` | 进程启动 + env override |
 | `internal/plugin` | `Service` | `NewService("", log)` | Claude Code 插件 |
 | `internal/codexplugin` | `Service` | `NewService("", log)` | Codex 插件 |
+| `internal/opencodeplugin` | `Service` | `NewService("", "", log)` | OpenCode 全局插件 |
 | `internal/workspace` | `Service` | `NewService(configDir, pluginsSvc, log)` | 多工作空间管理 |
 | `internal/envcheck` | `Service` | `NewServiceWithRunner(...)` | CLI 工具检测与一键修复 |
 | `internal/envvars` | `EnvVarsService` | `NewEnvVarsService(configDir)` | 自定义环境变量 |

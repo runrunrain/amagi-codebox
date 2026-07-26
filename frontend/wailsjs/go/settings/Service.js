@@ -10,12 +10,12 @@ export function AddShellPath(arg1) {
   return window['go']['settings']['Service']['AddShellPath'](arg1);
 }
 
-export function GetDashboardDefaults() {
-  return window['go']['settings']['Service']['GetDashboardDefaults']();
-}
-
 export function GetCodexGlobalHeadroom() {
   return window['go']['settings']['Service']['GetCodexGlobalHeadroom']();
+}
+
+export function GetDashboardDefaults() {
+  return window['go']['settings']['Service']['GetDashboardDefaults']();
 }
 
 export function GetGitHubToken() {
@@ -70,12 +70,12 @@ export function Save() {
   return window['go']['settings']['Service']['Save']();
 }
 
-export function SetDashboardDefaults(arg1) {
-  return window['go']['settings']['Service']['SetDashboardDefaults'](arg1);
-}
-
 export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
   return window['go']['settings']['Service']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
+}
+
+export function SetDashboardDefaults(arg1) {
+  return window['go']['settings']['Service']['SetDashboardDefaults'](arg1);
 }
 
 export function SetGitHubToken(arg1) {

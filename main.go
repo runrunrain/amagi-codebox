@@ -59,6 +59,7 @@ func main() {
 			app.Updater,
 			app.Plugins,
 			app.CodexPlugins,
+			app.OpenCodePlugins,
 			app.Workspaces,
 			app.OpenCodeConfig,
 			app.EnvCheck,

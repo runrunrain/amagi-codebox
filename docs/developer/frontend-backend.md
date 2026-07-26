@@ -105,6 +105,7 @@ frontend/src/api/
 ├── session.ts        # 会话/PTY 启停与回调注册
 ├── provider.ts       # 提供商/预设/terminal_presets/OpenCode config
 ├── plugin.ts         # Claude Code 插件
+├── opencodePlugin.ts # OpenCode 插件
 ├── codexPlugin.ts    # Codex 插件
 ├── workspace.ts      # 工作空间
 ├── proxy.ts          # Prompt 注入代理

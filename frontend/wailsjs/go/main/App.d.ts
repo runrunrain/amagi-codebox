@@ -3,13 +3,13 @@
 import {settings} from '../models';
 import {envcheck} from '../models';
 import {updater} from '../models';
+import {main} from '../models';
 import {config} from '../models';
 import {envvars} from '../models';
 import {headroom} from '../models';
 import {logging} from '../models';
 import {paths} from '../models';
 import {platform} from '../models';
-import {main} from '../models';
 import {session} from '../models';
 
 export function AddProxyBackendURL(arg1:string):Promise<void>;

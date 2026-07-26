@@ -6,9 +6,9 @@ export function AddSavedWorkDir(arg1:string,arg2:string):Promise<void>;
 
 export function AddShellPath(arg1:settings.ShellEntry):Promise<void>;
 
-export function GetDashboardDefaults():Promise<settings.DashboardDefaults>;
-
 export function GetCodexGlobalHeadroom():Promise<settings.CodexGlobalHeadroomState>;
+
+export function GetDashboardDefaults():Promise<settings.DashboardDefaults>;
 
 export function GetGitHubToken():Promise<string>;
 
@@ -36,9 +36,9 @@ export function RemoveShellPath(arg1:string):Promise<void>;
 
 export function Save():Promise<void>;
 
-export function SetDashboardDefaults(arg1:settings.DashboardDefaults):Promise<void>;
-
 export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<void>;
+
+export function SetDashboardDefaults(arg1:settings.DashboardDefaults):Promise<void>;
 
 export function SetGitHubToken(arg1:string):Promise<void>;
 
