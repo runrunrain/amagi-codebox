@@ -71,6 +71,11 @@ func syncPiGlobalStateFrom(agentDir, globalDir string, logf func(format string, 
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir pi agent dir: %w", err)
 	}
+	// 与 WritePiAgentConfig 对齐：MkdirAll 不收紧已存在目录的权限（如旧版本/手动创建的 0755），
+	// 显式 Chmod 覆盖升级场景（diting-quick 快审 FINDING-1）。
+	if err := os.Chmod(agentDir, 0o700); err != nil {
+		return fmt.Errorf("chmod pi agent dir: %w", err)
+	}
 
 	if changed, err := mergePiAuthFile(agentDir, globalDir); err != nil {
 		warn("继承 pi auth.json 失败: %v", err)
@@ -237,11 +242,18 @@ func unionPiPackages(local, global any) ([]any, bool) {
 }
 
 // linkPiEntityDir 在 agentDir 缺失实体目录（git/npm）时建符号链接指向全局目录。
-// 已存在（真实目录或符号链接）时不触碰——保证幂等，也不覆盖 pi 自行安装的实体。
+// 已存在真实目录时不触碰；符号链接完好时幂等跳过；断链（Lstat 在但目标不可达，
+// 如全局目录被移动）时移除重建——自愈（diting-quick 快审 FINDING-2）。
 func linkPiEntityDir(agentDir, globalDir, name string) error {
 	localPath := filepath.Join(agentDir, name)
-	if _, err := os.Lstat(localPath); err == nil {
-		return nil // 已存在（含符号链接），幂等跳过
+	if info, err := os.Lstat(localPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil // 真实目录，幂等跳过
+		}
+		if _, statErr := os.Stat(localPath); statErr == nil {
+			return nil // 链接完好，幂等跳过
+		}
+		_ = os.Remove(localPath) // 断链：移除后重建
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

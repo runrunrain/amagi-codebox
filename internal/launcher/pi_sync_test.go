@@ -322,3 +322,51 @@ func TestUnionPiPackages(t *testing.T) {
 		t.Errorf("nil global: added=%v out=%v", added2, out2)
 	}
 }
+
+// 快审 FINDING-1 回归：已存在的 0755 agentDir 被收紧为 0700。
+func TestSyncPiGlobalStateTightensExistingDirPerms(t *testing.T) {
+	agentDir, globalDir := setupPiSyncDirs(t)
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncPiGlobalStateFrom(agentDir, globalDir, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	info, err := os.Stat(agentDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("agentDir perm = %o, want 0700", info.Mode().Perm())
+	}
+}
+
+// 快审 FINDING-2 回归：断链符号链接自愈重建；完好链接幂等不动。
+func TestSyncPiGlobalStateHealsBrokenEntityLink(t *testing.T) {
+	agentDir, globalDir := setupPiSyncDirs(t)
+	globalGit := filepath.Join(globalDir, "git")
+	if err := os.MkdirAll(globalGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(agentDir, "git")
+	// 断链：指向不存在的目标
+	if err := os.Symlink(filepath.Join(t.TempDir(), "moved-away"), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncPiGlobalStateFrom(agentDir, globalDir, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("link missing after heal: %v", err)
+	}
+	if target != globalGit {
+		t.Errorf("healed link target = %s, want %s", target, globalGit)
+	}
+	if _, err := os.Stat(link); err != nil {
+		t.Errorf("healed link still broken: %v", err)
+	}
+}
