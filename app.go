@@ -189,6 +189,15 @@ func NewApp(mobileAssets embed.FS) *App {
 	codexPluginsSvc := codexplugin.NewService("", log)
 	openCodePluginsSvc := opencodeplugin.NewService("", "", log)
 	piPluginsSvc := piplugin.NewService(filepath.Join(configDir, "pi-runtime"), log)
+	// 继承全局 pi agent 状态（~/.pi/agent -> pi-runtime）：账号认证 auth.json、
+	// settings.json 的 packages 插件注册、git/npm 包实体符号链接。否则 CodeBox
+	// 隔离启动的 pi 与插件面板都看不到用户已有的登录态与已装插件。
+	// best-effort：失败仅告警，不影响装配。
+	if err := launcher.SyncPiGlobalState(filepath.Join(configDir, "pi-runtime"), func(format string, args ...any) {
+		log.Warn("pi", "全局状态继承", fmt.Sprintf(format, args...))
+	}); err != nil {
+		log.Warn("pi", "全局状态继承失败", err.Error())
+	}
 	processRunner := platform.NewProcessRunner()
 
 	// headroom-venv lives under the CodeBox config directory. It is shared by
@@ -1734,6 +1743,13 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			// presetParams 透传 contextWindow/maxTokens/thinking 到 pi model 配置。
 			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams); cfgErr == nil {
 				agentDir := filepath.Join(defaultConfigDir(), "pi-runtime")
+				// 启动前再同步一次全局继承（用户可能在装配后新登录/新装插件），
+				// 并把全局 models.json 的自定义 providers 并入待写配置（amagi 条目优先），
+				// 使 CodeBox 启动的 pi 同时可见全部已有服务商。
+				if syncErr := launcher.SyncPiGlobalState(agentDir, nil); syncErr != nil {
+					a.Log.Warn("pi", "全局状态继承失败", syncErr.Error())
+				}
+				piCfg = launcher.MergeGlobalPiProviders(piCfg, agentDir)
 				if writeErr := launcher.WritePiAgentConfig(agentDir, piCfg); writeErr == nil {
 					envOverrides["PI_CODING_AGENT_DIR"] = agentDir
 					launchSettings.Provider = launcher.PiProviderID(providerID)
