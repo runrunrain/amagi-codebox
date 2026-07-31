@@ -29,8 +29,12 @@ type Parameters struct {
 	DoSample         *bool                `json:"do_sample,omitempty"`
 	Thinking         *ThinkingConfig      `json:"thinking,omitempty"`
 	Stream           *bool                `json:"stream,omitempty"`
-	ContextWindow    *ContextWindowConfig `json:"context_window,omitempty"` // 上下文窗口配置（Codex CLI 风格）
+	ContextWindow    *ContextWindowConfig `json:"context_window,omitempty"`   // 上下文窗口配置（Codex CLI 风格）
 	ReasoningEffort  string               `json:"reasoning_effort,omitempty"` // Claude Code 推理强度（low/medium/high/xhigh/max）
+	// PiCompat 是 pi 专属的 model 级兼容标志（supportsDeveloperRole/supportsReasoningEffort/
+	// forceAdaptiveThinking/allowEmptySignature 等），原样透传给 pi models.json model.compat。
+	// 仅在配置中存在时透传，不设置时 pi 行为不变。键名必须与 pi 文档一致。
+	PiCompat map[string]any `json:"pi_compat,omitempty"`
 }
 
 // PresetTargetType 定义 preset 目标 CLI 类型
@@ -49,9 +53,9 @@ const (
 type Preset struct {
 	Name           string           `json:"name"`
 	Model          string           `json:"model"`
-	ModelHaiku     string           `json:"model_haiku,omitempty"`     // Haiku 档位模型（Claude Code 专用）
-	ModelSonnet    string           `json:"model_sonnet,omitempty"`    // Sonnet 档位模型（Claude Code 专用）
-	ModelOpus      string           `json:"model_opus,omitempty"`      // Opus 档位模型（Claude Code 专用）
+	ModelHaiku     string           `json:"model_haiku,omitempty"`  // Haiku 档位模型（Claude Code 专用）
+	ModelSonnet    string           `json:"model_sonnet,omitempty"` // Sonnet 档位模型（Claude Code 专用）
+	ModelOpus      string           `json:"model_opus,omitempty"`   // Opus 档位模型（Claude Code 专用）
 	Parameters     Parameters       `json:"parameters"`
 	Target         PresetTargetType `json:"target,omitempty"`          // 目标 CLI 类型：codex（默认）或 opencode
 	OpenCodeConfig json.RawMessage  `json:"opencode_config,omitempty"` // OpenCode 原始配置片段，原样保真，未知字段不丢失
@@ -240,6 +244,10 @@ type AnthropicFormat struct {
 	APIKey  string `json:"api_key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
 	AuthKey string `json:"auth_key,omitempty"`
+	// Headers 是注入到该格式请求的自定义头（可选，透传给 pi models.json provider.headers）。
+	Headers map[string]string `json:"headers,omitempty"`
+	// AuthHeader 为 true 时强制携带 Authorization: Bearer（可选，透传给 pi authHeader）。
+	AuthHeader *bool `json:"auth_header,omitempty"`
 }
 
 // OpenAIFormat OpenAI 兼容格式配置。
@@ -252,6 +260,10 @@ type OpenAIFormat struct {
 	BaseURL      string `json:"base_url,omitempty"`
 	Organization string `json:"organization,omitempty"`
 	AuthKey      string `json:"auth_key,omitempty"`
+	// Headers 是注入到该格式请求的自定义头（可选，透传给 pi models.json provider.headers）。
+	Headers map[string]string `json:"headers,omitempty"`
+	// AuthHeader 为 true 时强制携带 Authorization: Bearer（可选，透传给 pi authHeader）。
+	AuthHeader *bool `json:"auth_header,omitempty"`
 }
 
 // Provider 服务商配置
@@ -548,6 +560,44 @@ func (p Provider) EffectiveAuthKey(format string) string {
 	return p.AuthKey
 }
 
+// EffectiveHeaders 返回指定格式或首选格式的自定义请求头（透传给 pi headers）。
+// format 为空时使用 PreferredFormat()。未配置时返回 nil。
+func (p Provider) EffectiveHeaders(format string) map[string]string {
+	if format == "" {
+		format = p.PreferredFormat()
+	}
+	switch strings.ToLower(format) {
+	case "openai":
+		if p.OpenAI != nil && len(p.OpenAI.Headers) > 0 {
+			return p.OpenAI.Headers
+		}
+	case "anthropic":
+		if p.Anthropic != nil && len(p.Anthropic.Headers) > 0 {
+			return p.Anthropic.Headers
+		}
+	}
+	return nil
+}
+
+// EffectiveAuthHeader 返回指定格式或首选格式的 authHeader 开关（透传给 pi authHeader）。
+// format 为空时使用 PreferredFormat()。未配置时返回 nil（表示不覆盖 pi 默认行为）。
+func (p Provider) EffectiveAuthHeader(format string) *bool {
+	if format == "" {
+		format = p.PreferredFormat()
+	}
+	switch strings.ToLower(format) {
+	case "openai":
+		if p.OpenAI != nil && p.OpenAI.AuthHeader != nil {
+			return p.OpenAI.AuthHeader
+		}
+	case "anthropic":
+		if p.Anthropic != nil && p.Anthropic.AuthHeader != nil {
+			return p.Anthropic.AuthHeader
+		}
+	}
+	return nil
+}
+
 // IsOAuthMode 返回 Provider 是否使用 OAuth 认证（Anthropic 官方）。
 func (p Provider) IsOAuthMode() bool {
 	return p.EffectiveAuthKey("anthropic") == AuthTypeOAuth
@@ -565,7 +615,6 @@ func (p Provider) SyncLegacyFields() Provider {
 	p.AuthKey = p.EffectiveAuthKey("")
 	return p
 }
-
 
 // IsValidClaudeReasoningEffort 检查给定的 reasoning effort 值是否合法。
 // Claude Code 支持的推理强度：""（未设置/默认）| low | medium | high | xhigh | max

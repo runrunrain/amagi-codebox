@@ -29,6 +29,7 @@ import (
 	"amagi-codebox/internal/opencodeconfig"
 	"amagi-codebox/internal/opencodeplugin"
 	"amagi-codebox/internal/paths"
+	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/plugin"
 	"amagi-codebox/internal/proxy"
@@ -150,6 +151,7 @@ type App struct {
 	Plugins         *plugin.Service
 	CodexPlugins    *codexplugin.Service
 	OpenCodePlugins *opencodeplugin.Service
+	PiPlugins       *piplugin.Service
 	Workspaces      *workspace.Service
 	OpenCodeConfig  *opencodeconfig.Service
 	EnvCheck        *envcheck.Service
@@ -186,6 +188,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	pluginsSvc := plugin.NewService("", log)
 	codexPluginsSvc := codexplugin.NewService("", log)
 	openCodePluginsSvc := opencodeplugin.NewService("", "", log)
+	piPluginsSvc := piplugin.NewService(filepath.Join(configDir, "pi-runtime"), log)
 	processRunner := platform.NewProcessRunner()
 
 	// headroom-venv lives under the CodeBox config directory. It is shared by
@@ -229,6 +232,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		Plugins:         pluginsSvc,
 		CodexPlugins:    codexPluginsSvc,
 		OpenCodePlugins: openCodePluginsSvc,
+		PiPlugins:       piPluginsSvc,
 		Workspaces:      workspace.NewService(configDir, pluginsSvc, log),
 		OpenCodeConfig:  opencodeconfig.NewService(),
 		EnvCheck:        envCheckSvc,

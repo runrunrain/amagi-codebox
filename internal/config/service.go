@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,10 @@ func scrubProviderAPIKeys(p Provider) Provider {
 			BaseURL: p.Anthropic.BaseURL,
 			AuthKey: p.Anthropic.AuthKey,
 			// APIKey 刻意不复制
+			// Headers/AuthHeader 必须保留：二者是 pi models.json 透传配置，
+			// 丢失会导致正常 SaveProvider 后自定义头静默失效（审核 Major-2）。
+			Headers:    p.Anthropic.Headers,
+			AuthHeader: p.Anthropic.AuthHeader,
 		}
 	}
 	if p.OpenAI != nil {
@@ -30,6 +35,9 @@ func scrubProviderAPIKeys(p Provider) Provider {
 			Organization: p.OpenAI.Organization,
 			AuthKey:      p.OpenAI.AuthKey,
 			// APIKey 刻意不复制
+			// Headers/AuthHeader 必须保留，原因同上。
+			Headers:      p.OpenAI.Headers,
+			AuthHeader:   p.OpenAI.AuthHeader,
 		}
 	}
 	return p
@@ -150,13 +158,17 @@ func (s *ConfigService) Save() error {
 	b = append(b, '\n')
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return fmt.Errorf("write temp config: %w", err)
 	}
+	// 覆盖残留的旧权限 tmp（WriteFile 不改变已存在文件的权限位）。
+	_ = os.Chmod(tmp, 0o600)
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace config: %w", err)
 	}
+	// 配置可能携带 header 值（含敏感 literal），收紧到属主可读（R3 复审）。
+	_ = os.Chmod(path, 0o600)
 	return nil
 }
 
@@ -185,13 +197,15 @@ func (s *ConfigService) saveLockedConfig(cfg *AppConfig) error {
 	}
 	b = append(b, '\n')
 	tmp := s.configPath + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return fmt.Errorf("write temp config: %w", err)
 	}
+	_ = os.Chmod(tmp, 0o600)
 	if err := os.Rename(tmp, s.configPath); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace config: %w", err)
 	}
+	_ = os.Chmod(s.configPath, 0o600)
 	return nil
 }
 
@@ -535,8 +549,47 @@ func (s *ConfigService) SaveProvider(name string, p Provider) error {
 	p = normalizeProviderType(p)
 	// 硬性保障：清除双格式结构中的 APIKey 明文，防止落盘到 models.json。
 	p = scrubProviderAPIKeys(p)
+	warnSensitiveLiteralHeaders(name, p)
 	s.config.Models[name] = p
 	return s.saveLocked()
+}
+
+// sensitiveHeaderNames 是通常携带凭据的 header 名（小写比较）。
+// 这些 header 的值若以明文（非 `$ENV:` 引用）保存，会落盘到 0644 的 models.json，
+// 存在本机其他账号可读的风险（审核 Major-2）。
+var sensitiveHeaderNames = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"x-api-key":           true,
+	"api-key":             true,
+}
+
+// envHeaderRefFullMatch 与 launcher 的 envHeaderRefPattern 同义（config 不能
+// import launcher，后者反向依赖 config）。必须全串匹配：前缀匹配会把
+// `$ENV:1bad`、`${ENV:KEY}suffix` 等无效引用误判为安全引用而免警告，但运行时
+// resolver 不会解析它们，最终按明文落盘（R3 复审）。
+var envHeaderRefFullMatch = regexp.MustCompile(`^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$|^\$ENV:([A-Za-z_][A-Za-z0-9_]*)$`)
+
+// warnSensitiveLiteralHeaders 对敏感 header 的明文值打印安全警告，引导改用
+// `$ENV:VAR_NAME` 引用（运行时才解析，不落盘明文）。不强制拒绝以兼容既有配置。
+func warnSensitiveLiteralHeaders(providerName string, p Provider) {
+	warn := func(h map[string]string) {
+		for k, v := range h {
+			if !sensitiveHeaderNames[strings.ToLower(strings.TrimSpace(k))] {
+				continue
+			}
+			if envHeaderRefFullMatch.MatchString(strings.TrimSpace(v)) {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[config] warning: provider %q 的敏感 header %q 以明文保存，建议改用 $ENV:VAR_NAME 引用环境变量 / sensitive header %q of provider %q is stored in plaintext; prefer $ENV:VAR_NAME reference\n", providerName, k, k, providerName)
+		}
+	}
+	if p.Anthropic != nil {
+		warn(p.Anthropic.Headers)
+	}
+	if p.OpenAI != nil {
+		warn(p.OpenAI.Headers)
+	}
 }
 
 func (s *ConfigService) DeleteProvider(name string) error {

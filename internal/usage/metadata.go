@@ -151,6 +151,14 @@ func (s *Service) backfillGenericMetadata(ctx context.Context) (int, []string, e
 			// session; this is more useful than a blank dashboard bucket.
 			row.provider = "openai"
 		}
+		// Note (pi): unlike Codex, Pi records always carry provider+model parsed
+		// from the assistant message's usage object, so they don't need a
+		// hard-coded unknown-provider default (Pi is multi-provider — guessing
+		// one would mislabel). Any residual gap is filled by
+		// inferProviderFromModel above. Codebox's "amagi-<provider>" namespace
+		// is stripped at sync time (normalizePiProvider in sync.go), so stored
+		// Pi providers are already canonical and no Pi-specific backfill branch
+		// is required here (it would be unreachable / dead code).
 		if strings.TrimSpace(row.currencyCode) == "" {
 			row.currencyCode = currencyForProvider(row.provider)
 		} else if row.totalCost == 0 {

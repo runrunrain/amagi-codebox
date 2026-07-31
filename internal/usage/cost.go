@@ -56,6 +56,7 @@ func isAllDigits(s string) bool {
 //   - claudecode (Anthropic 语义)：input_tokens 是 fresh input，不含 cache_read，不扣减。
 //   - codex (OpenAI 语义)：input_tokens 包含 cache_read，必须 saturating_sub 扣减。
 //   - opencode：直接用 session.cost，不参与计算（返回原值）。
+//   - pi：usage.input 已是 fresh input（与 Anthropic 语义一致），不扣减。
 //   - proxy 实时路径：调用方按 provider 反推 AppType 后传入。
 func ComputeBillableInput(appType string, inputTokens, cacheReadTokens int) int {
 	switch appType {
@@ -64,6 +65,10 @@ func ComputeBillableInput(appType string, inputTokens, cacheReadTokens int) int 
 	case appCodex:
 		return saturatingSub(inputTokens, cacheReadTokens)
 	case appOpenCode:
+		return inputTokens
+	case appPi:
+		// pi 归一化的 Usage.input 不含 cache_read（与 claudecode/opencode 一致），
+		// cacheRead 仅作为独立维度计费，不参与 input 扣减。
 		return inputTokens
 	default:
 		// proxy 路径若未显式传 AppType，保守按不扣减处理

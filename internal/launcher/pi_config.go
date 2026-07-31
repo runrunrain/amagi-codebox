@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"amagi-codebox/internal/config"
@@ -75,6 +76,24 @@ func BuildPiModelsConfig(
 	if apiKey != "" {
 		entry["apiKey"] = apiKey
 	}
+	// 可选透传（仅配置存在时写入，不改变现有默认行为）：
+	//   - headers     ：provider 级自定义请求头（pi provider.headers）
+	//   - authHeader  ：provider 级是否强制携带 Authorization: Bearer（pi authHeader）
+	//
+	// 敏感值保护（P1-7）：header 值可写成 `$ENV:VAR_NAME` 或 `${ENV:VAR_NAME}`
+	// 引用环境变量。amagi 的配置文件仅保存引用字面量（不含明文密钥，可安全导
+	// 出/备份）；BuildPiModelsConfig 在启动时解析为 os.Getenv(VAR_NAME) 的实际值，
+	// 只写入锁定的运行时 models.json（0600，位于 0700 的 pi-runtime 目录）。未设
+	// 环境变量时解析为空字符串（该 header 被省略），避免落盘空占位。
+	if headers := provider.EffectiveHeaders(format); len(headers) > 0 {
+		resolved := resolveEnvHeaders(headers)
+		if len(resolved) > 0 {
+			entry["headers"] = resolved
+		}
+	}
+	if authHeader := provider.EffectiveAuthHeader(format); authHeader != nil {
+		entry["authHeader"] = *authHeader
+	}
 
 	// 注册 model，使 pi 识别该模型并允许 --model 引用。
 	// pi 要求自定义 provider 至少声明其提供的 model id。
@@ -101,6 +120,11 @@ func BuildPiModelsConfig(
 		if params.Thinking != nil && params.Thinking.Type == "enabled" {
 			m["reasoning"] = true
 		}
+		// 可选透传 model 级 compat（supportsDeveloperRole/supportsReasoningEffort 等）。
+		// 仅在 params.PiCompat 非空时写入，不设置时 pi 行为不变。
+		if len(params.PiCompat) > 0 {
+			m["compat"] = params.PiCompat
+		}
 		entry["models"] = []map[string]any{m}
 	}
 
@@ -111,11 +135,14 @@ func BuildPiModelsConfig(
 	}, nil
 }
 
-
 // WritePiAgentConfig 将 pi models.json 配置原子写入 agentDir/models.json。
 //
 // agentDir 由调用方提供（amagi 使用 <configDir>/pi-runtime 隔离目录，
 // 通过 PI_CODING_AGENT_DIR 环境变量让 pi 读取，完全不碰用户 ~/.pi/agent/）。
+//
+// 权限收紧（P1-7）：agentDir 以 0700 创建，models.json 以 0600 写入——该文件可能
+// 携带解析后的敏感 header 值（见 BuildPiModelsConfig 的 `$ENV:` 约定），收紧权限
+// 避免本机其他账号读取。
 //
 // 写入采用全代码库统一的原子范式：MkdirAll -> MarshalIndent -> tmp 文件 -> Rename。
 // 每次启动覆盖写（幂等，无累积）。
@@ -123,8 +150,12 @@ func WritePiAgentConfig(agentDir string, cfg map[string]any) error {
 	if agentDir == "" {
 		return fmt.Errorf("agentDir is required")
 	}
-	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir pi agent dir: %w", err)
+	}
+	// MkdirAll 不会收紧已存在目录的权限（如旧版本创建的 0755），显式 Chmod 覆盖升级场景。
+	if err := os.Chmod(agentDir, 0o700); err != nil {
+		return fmt.Errorf("chmod pi agent dir: %w", err)
 	}
 
 	b, err := json.MarshalIndent(cfg, "", "  ")
@@ -135,12 +166,61 @@ func WritePiAgentConfig(agentDir string, cfg map[string]any) error {
 
 	modelsPath := filepath.Join(agentDir, "models.json")
 	tmp := modelsPath + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return fmt.Errorf("write pi models.json tmp: %w", err)
+	}
+	// 覆盖残留的旧权限 tmp（WriteFile 不改变已存在文件的权限位，R3 复审 Minor-2）。
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod pi models.json tmp: %w", err)
 	}
 	if err := os.Rename(tmp, modelsPath); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace pi models.json: %w", err)
 	}
+	// Rename 后显式收紧（某些文件系统 Rename 不保留 tmp 权限位）。
+	if err := os.Chmod(modelsPath, 0o600); err != nil {
+		return fmt.Errorf("chmod pi models.json: %w", err)
+	}
 	return nil
+}
+
+// envHeaderRefPattern 匹配 header 值中对环境变量的引用：`$ENV:VAR_NAME` 或
+// `${ENV:VAR_NAME}`。VAR_NAME 允许字母/数字/下划线。整个值必须就是该引用（不支持
+// 部分插值），以避免把明文密钥与引用混在同一值里。
+var envHeaderRefPattern = regexp.MustCompile(`^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$|^\$ENV:([A-Za-z_][A-Za-z0-9_]*)$`)
+
+// resolveEnvHeaderValue 解析单个 header 值中的 `$ENV:VAR` / `${ENV:VAR}` 引用。
+// 返回 (解析值, 是否为引用)。非引用值原样返回；引用但环境变量未设时返回
+// ("", true)（调用方据此省略该 header，避免落盘空占位）。
+func resolveEnvHeaderValue(value string) (string, bool) {
+	m := envHeaderRefPattern.FindStringSubmatch(value)
+	if m == nil {
+		return value, false
+	}
+	name := m[1]
+	if name == "" {
+		name = m[2]
+	}
+	return os.Getenv(name), true
+}
+
+// resolveEnvHeaders 对一组 header 值逐项解析 `$ENV:VAR` 引用；解析后为空的项（含
+// 未设环境变量的引用）被省略，避免在运行时配置里落盘空占位。
+func resolveEnvHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		resolved, _ := resolveEnvHeaderValue(v)
+		if strings.TrimSpace(resolved) == "" {
+			continue
+		}
+		out[k] = resolved
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

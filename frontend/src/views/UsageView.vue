@@ -123,6 +123,7 @@
                 <option value="claudecode">Claude Code</option>
                 <option value="opencode">OpenCode</option>
                 <option value="codex">Codex</option>
+                <option value="pi">Pi</option>
               </select>
             </label>
             <label class="filter-group">

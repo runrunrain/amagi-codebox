@@ -2913,3 +2913,60 @@ func TestRenameProvider_OpenCodeBindingsMultiplePresets(t *testing.T) {
 		t.Fatalf("oc-b.x Inject should be preserved, got %v", binding.Inject)
 	}
 }
+
+// ============================================================================
+// SaveProvider must retain Headers/AuthHeader through the scrub (审核 Major-2)
+// ============================================================================
+
+// TestSaveProviderRetainsHeadersAndAuthHeader verifies the full
+// SaveProvider -> reload -> GetProvider roundtrip preserves the pi-facing
+// Headers/AuthHeader fields, while APIKey plaintext is still scrubbed.
+func TestSaveProviderRetainsHeadersAndAuthHeader(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	authHeader := true
+	p := Provider{
+		OpenAI: &OpenAIFormat{
+			Enabled: true,
+			BaseURL: "https://example.com/v1",
+			APIKey:  "sk-should-be-scrubbed",
+			Headers: map[string]string{
+				"X-Api-Key":  "$ENV:AMAGI_TEST_HEADER_KEY",
+				"X-Trace-Id": "literal-ok",
+			},
+			AuthHeader: &authHeader,
+		},
+	}
+	if err := svc.SaveProvider("p1", p); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	// Reload from disk to prove persistence (not just in-memory state).
+	svc2 := NewConfigService(dir)
+	if err := svc2.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got, err := svc2.GetProvider("p1")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if got.OpenAI == nil {
+		t.Fatal("OpenAI format lost after save/reload")
+	}
+	if got.OpenAI.APIKey != "" {
+		t.Errorf("APIKey must stay scrubbed, got %q", got.OpenAI.APIKey)
+	}
+	if got.OpenAI.Headers["X-Api-Key"] != "$ENV:AMAGI_TEST_HEADER_KEY" {
+		t.Errorf("Headers lost through scrub: %+v", got.OpenAI.Headers)
+	}
+	if got.OpenAI.Headers["X-Trace-Id"] != "literal-ok" {
+		t.Errorf("non-sensitive header lost: %+v", got.OpenAI.Headers)
+	}
+	if got.OpenAI.AuthHeader == nil || !*got.OpenAI.AuthHeader {
+		t.Errorf("AuthHeader lost through scrub: %+v", got.OpenAI.AuthHeader)
+	}
+}

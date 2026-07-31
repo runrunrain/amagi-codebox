@@ -20,6 +20,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/launch", s.handleLaunchSession)
 	mux.HandleFunc("POST /api/sessions/launch-codex", s.handleLaunchCodex)
 	mux.HandleFunc("POST /api/sessions/launch-opencode", s.handleLaunchOpenCode)
+	mux.HandleFunc("POST /api/sessions/launch-pi", s.handleLaunchPi)
 	mux.HandleFunc("POST /api/sessions/clear-stopped", s.handleClearStopped)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleStopSession)
 	mux.HandleFunc("POST /api/sessions/{id}/resize", s.handleResizeSession)
@@ -133,6 +134,12 @@ func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
 			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
 			Presets:   buildLaunchPresetOptions(configSvc, "codex"),
 		},
+		Pi: launchMetaSection{
+			// Pi 通过 terminal_preset 驱动（DefaultPiPresets + 用户 type="pi" 预设），
+			// 预设内含 provider+model 映射；providers 取全集以便手动选择。
+			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
+			Presets:   buildLaunchPresetOptions(configSvc, "pi"),
+		},
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -203,6 +210,34 @@ func (s *Server) handleLaunchOpenCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.app.LaunchOpenCode(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.ShellPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	info, err := s.app.GetSession(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// handleLaunchPi 远程启动 Pi 会话（对标 handleLaunchCodex）。
+// 调用 app.LaunchPiSession(modelName, providerID, mode, workDir, shellPath)，
+// 签名与 Codex 一致（modelName 可为 terminal_preset 的 stable key）。
+func (s *Server) handleLaunchPi(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ModelName  string `json:"modelName"`
+		ProviderID string `json:"providerID"`
+		Mode       string `json:"mode"`
+		WorkDir    string `json:"workDir"`
+		ShellPath  string `json:"shellPath"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	id, err := s.app.LaunchPiSession(body.ModelName, body.ProviderID, body.Mode, body.WorkDir, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

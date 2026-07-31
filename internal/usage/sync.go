@@ -12,18 +12,20 @@ import (
 	"amagi-codebox/internal/appmeta/claude"
 	"amagi-codebox/internal/appmeta/codex"
 	"amagi-codebox/internal/appmeta/opencode"
+	"amagi-codebox/internal/appmeta/pi"
 )
 
 // 并发同步上限（设计 8.4：限制 4 并发文件处理）。
 const syncConcurrency = 4
 
-// SyncAll 触发三类源全量+增量同步，串行化（mu 互斥）。
+// SyncAll 触发四类源全量+增量同步，串行化（mu 互斥）。
 //
 // 流程：
 //  1. Claude Code：枚举 ~/.claude/projects/*/*.jsonl
 //  2. Codex：枚举 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 //  3. OpenCode：读 ~/.local/share/opencode/opencode.db
-//  4. 刷新 daily_rollup（分区刷新：仅重算受影响日期）
+//  4. Pi：枚举 codebox 隔离目录 + ~/.pi/agent/sessions 下会话 jsonl
+//  5. 刷新 daily_rollup（分区刷新：仅重算受影响日期）
 //
 // 统计语义（M5）：
 //   - RecordsAdded：真正新增行（INSERT 生效）。
@@ -145,7 +147,37 @@ func (s *Service) SyncAll() error {
 		}
 	}
 
-	// === 4. 刷新 daily_rollup（分区刷新） ===
+	// === 4. Pi jsonl ===
+	// Pi 会话来源两处：codebox 隔离目录（<configDir>/pi-runtime/sessions，
+	// codebox 启动 pi 时注入 PI_CODING_AGENT_DIR）与默认用户目录（~/.pi/agent/sessions）。
+	piFiles := enumeratePiSessionFiles(s.configDir, home)
+	filesScanned += len(piFiles)
+	for _, f := range piFiles {
+		f := f
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out := s.syncPiJSONL(ctx, f)
+			if out.err != nil {
+				appendErr("pi", f+": "+out.err.Error())
+				return
+			}
+			errorsMu.Lock()
+			recordsAdded += out.added
+			processedCount += out.processed
+			errorsMu.Unlock()
+			affectedMu.Lock()
+			for _, d := range out.days {
+				affectedDays[d] = struct{}{}
+			}
+			affectedMu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// === 5. 刷新 daily_rollup（分区刷新） ===
 	// 始终加入"今天"以兜底 proxy 实时路径（proxy 绕过 sync 直接写主表，
 	// 仅靠分区刷新会漏；多刷新一天的代价极小）。
 	affectedDays[time.Now().UTC().Format("2006-01-02")] = struct{}{}
@@ -480,6 +512,137 @@ func (s *Service) updateSyncStateOpenCode(ctx context.Context, lastUpdated int64
 		LastSyncedAt:    time.Now().UTC(),
 		LastError:       lastErr,
 		RecordsAdded:    added,
+	}
+	return upsertSyncState(ctx, s.db, state)
+}
+
+// normalizePiProvider strips codebox's "amagi-" namespace prefix from a Pi
+// provider id so Pi usage merges with the canonical provider bucket (currency,
+// pricing, dashboard grouping). Pi records whatever --provider it was given;
+// codebox launches Pi with "amagi-<name>" to isolate it from Pi's built-in
+// providers. Non-prefixed providers are returned unchanged.
+func normalizePiProvider(raw string) string {
+	if p := strings.TrimPrefix(raw, "amagi-"); p != raw && p != "" {
+		return p
+	}
+	return raw
+}
+
+// enumeratePiSessionFiles collects Pi session JSONLs from both roots:
+//   - codebox 隔离目录 <configDir>/pi-runtime/sessions（codebox 启动 pi 时注入的
+//     PI_CODING_AGENT_DIR，会话写在此处）
+//   - 默认用户目录 ~/.pi/agent/sessions（用户自行启动 pi 的会话）
+//
+// 两个根在默认配置下互不重叠，但 symlink/别名可能让同一物理文件出现在两个
+// 根下（P2-1）。枚举后按 canonical path（EvalSymlinks）去重，保证同一物理
+// 会话只入库一次。
+func enumeratePiSessionFiles(configDir, home string) []string {
+	raw := make([]string, 0, 64)
+	raw = append(raw, enumerateJSONLs(filepath.Join(configDir, "pi-runtime", "sessions"), ".jsonl")...)
+	raw = append(raw, enumerateJSONLs(filepath.Join(home, ".pi", "agent", "sessions"), ".jsonl")...)
+
+	seen := make(map[string]struct{}, len(raw))
+	files := make([]string, 0, len(raw))
+	for _, p := range raw {
+		// EvalSymlinks 解析为物理路径；解析失败（文件已被删等）则保留原路径。
+		canonical := p
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			canonical = resolved
+		}
+		if _, dup := seen[canonical]; dup {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		files = append(files, p)
+	}
+	return files
+}
+
+// syncPiJSONL 同步单个 Pi 会话 jsonl 文件。
+//
+// 增量策略与 claude/codex 一致（设计 8.2）：mtime+size 未变则跳过；否则从
+// last_line_offset 续传解析，INSERT OR IGNORE（dedup_key="pi:"+sha1(file:entry)）。
+// 与正在运行的会话写入冲突由增量 offset + INSERT OR IGNORE 共同规避：
+// 已落盘的 assistant 消息 dedup_key 稳定，重复扫描幂等。
+func (s *Service) syncPiJSONL(ctx context.Context, path string) syncOutcome {
+	info, err := os.Stat(path)
+	if err != nil {
+		return syncOutcome{err: err}
+	}
+	state, _ := getSyncState(ctx, s.db, "pi_jsonl", path)
+	if state.LastMTime == info.ModTime().UnixNano() && state.LastLineOffset == info.Size() {
+		return syncOutcome{}
+	}
+
+	startOffset := state.LastLineOffset
+	// mtime 变但 size 没变：保守从头扫（覆盖更新）
+	if state.LastMTime != 0 && state.LastMTime != info.ModTime().UnixNano() && state.LastLineOffset == info.Size() {
+		startOffset = 0
+	}
+
+	stubs, lastOffset, parseErr := pi.ExtractUsageRecords(path, startOffset)
+	if parseErr != nil {
+		_ = s.updateSyncStatePi(ctx, path, info.ModTime().UnixNano(), startOffset, 0, parseErr.Error())
+		return syncOutcome{err: parseErr}
+	}
+
+	out := syncOutcome{days: make([]string, 0, len(stubs))}
+	for _, st := range stubs {
+		select {
+		case <-ctx.Done():
+			out.err = ctx.Err()
+			return out
+		default:
+		}
+		evt := UsageEvent{
+			AppType:                  appPi,
+			Source:                   SourceSessionLog,
+			Provider:                 normalizePiProvider(st.Provider),
+			Model:                    st.Model,
+			ProjectDir:               st.ProjectDir,
+			SessionID:                st.SessionID,
+			InputTokens:              st.InputTokens,
+			OutputTokens:             st.OutputTokens,
+			CacheReadInputTokens:     st.CacheReadInputTokens,
+			CacheCreationInputTokens: st.CacheCreationInputTokens,
+			OccurredAt:               st.OccurredAt,
+			DedupKey:                 st.DedupKey,
+			CostProvided:             st.CostProvided,
+			NativeCost:               st.NativeCost,
+			// P1-6：pi 的 usage.cost.total 以美元计价（见 pi-ai README）。parser 已在
+			// CostProvided=true 时给出 CurrencyCode="USD"；这里原样透传，避免被
+			// currencyForProvider 误判为国产 provider 的 CNY。仅当无原生成本
+			// （CostProvided=false，回退本地价格表）时才走 provider 币种推断。
+			CurrencyCode: st.CurrencyCode,
+		}
+		isNew, err := s.Record(evt)
+		if err != nil {
+			s.logWarn("usage", "pi record 失败", err.Error())
+			continue
+		}
+		out.processed++
+		if isNew {
+			out.added++
+			out.days = append(out.days, evt.OccurredAt.UTC().Format("2006-01-02"))
+		}
+	}
+
+	if err := s.updateSyncStatePi(ctx, path, info.ModTime().UnixNano(), lastOffset, out.added, ""); err != nil {
+		s.logWarn("usage", "pi sync_state 写入失败", err.Error())
+	}
+	return out
+}
+
+func (s *Service) updateSyncStatePi(ctx context.Context, path string, mtime, offset int64, added int64, lastErr string) error {
+	state := SyncState{
+		SourceType:     "pi_jsonl",
+		SourceKey:      path,
+		AppType:        appPi,
+		LastMTime:      mtime,
+		LastLineOffset: offset,
+		LastSyncedAt:   time.Now().UTC(),
+		LastError:      lastErr,
+		RecordsAdded:   added,
 	}
 	return upsertSyncState(ctx, s.db, state)
 }

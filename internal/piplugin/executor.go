@@ -1,0 +1,84 @@
+package piplugin
+
+import (
+	"amagi-codebox/internal/launcher"
+	"amagi-codebox/internal/platform"
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+// piCommandTimeout 是 pi install/remove/update 的最长等待时间。
+// 这些命令可能触发 npm install / git clone，故给到 3 分钟。
+const piCommandTimeout = 3 * time.Minute
+
+// executePiCommand 运行 pi CLI（pi install/remove/update 等写操作走这里）。
+// 读操作（list/details）不走本函数，而是直接解析 settings.json + 扫描实体目录，
+// 避免 fork CLI 带来的开销与不确定性。
+func (s *Service) executePiCommand(ctx context.Context, args ...string) (*CommandResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, piCommandTimeout)
+	defer cancel()
+
+	resolver := s.resolver
+	if resolver == nil {
+		resolver = platform.NewCLIResolver(platform.CurrentCapabilities())
+	}
+	env := platform.BuildEffectiveEnv(os.Environ())
+	// P1-2：强制 pi CLI 在 CodeBox 托管运行时目录（pi-runtime）上执行写操作，
+	// 与 LaunchPiSession 注入的 PI_CODING_AGENT_DIR 保持一致。面板安装的包才会
+	// 出现在 CodeBox 启动的 Pi 会话中，避免管理范围与启动范围脱节。
+	env = launcher.BuildEnv(env, map[string]string{"PI_CODING_AGENT_DIR": s.agentDir})
+	cli, _, err := resolver.ResolveExecutable(piExecutable, append([]string(nil), args...), env)
+	if err != nil {
+		return nil, fmt.Errorf("未找到 pi CLI，请先安装或检查 PATH: %w", err)
+	}
+
+	runner := s.runner
+	if runner == nil {
+		runner = platform.NewProcessRunner()
+	}
+	joinedArgs := strings.Join(args, " ")
+	if s.log != nil {
+		s.log.Info("piplugin", "执行 pi 包命令", joinedArgs)
+	}
+
+	processResult, err := runner.Run(runCtx, platform.CommandSpec{
+		Path:   cli.Path,
+		Args:   cli.Args,
+		Env:    env,
+		Policy: platform.DefaultProcessPolicy(),
+	})
+	if processResult == nil {
+		processResult = &platform.ProcessResult{}
+	}
+	result := &CommandResult{
+		Success: err == nil,
+		Output:  strings.TrimSpace(processResult.Stdout),
+		Error:   strings.TrimSpace(processResult.Stderr),
+	}
+	if runCtx.Err() == context.DeadlineExceeded {
+		result.Success = false
+		if result.Error == "" {
+			result.Error = "pi 包命令执行超时，请稍后重试"
+		}
+		return result, fmt.Errorf("pi 包命令执行超时: %s", joinedArgs)
+	}
+	if err != nil {
+		if result.Error == "" {
+			result.Error = err.Error()
+		}
+		if s.log != nil {
+			s.log.Error("piplugin", "pi 包命令执行失败", fmt.Sprintf("args=%s error=%s", joinedArgs, result.Error))
+		}
+		return result, fmt.Errorf("pi 包命令执行失败：%s", result.Error)
+	}
+	if s.log != nil {
+		s.log.Info("piplugin", "pi 包命令执行完成", joinedArgs)
+	}
+	return result, nil
+}

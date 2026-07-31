@@ -20,6 +20,7 @@ type AppInterface interface {
 	LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, useHeadroom bool, shellPath string) (string, error)
 	LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
 	LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error)
+	LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
 	StopSession(sessionID string) error
 	RemoveSession(sessionID string) error
 	ClearStoppedSessions() int

@@ -17,6 +17,7 @@ export * from './provider';
 export * from './plugin';
 export * from './opencodePlugin';
 export * from './codexPlugin';
+export * from './piPlugin';
 
 // Workspace
 export * from './workspace';

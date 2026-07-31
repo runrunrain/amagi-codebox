@@ -38,4 +38,5 @@ type launchMetadataResponse struct {
 	Claude   launchMetaSection         `json:"claude"`
 	OpenCode launchMetaOpenCodeSection `json:"opencode"`
 	Codex    launchMetaSection         `json:"codex"`
+	Pi       launchMetaSection         `json:"pi"`
 }

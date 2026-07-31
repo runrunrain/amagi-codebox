@@ -60,6 +60,7 @@ func main() {
 			app.Plugins,
 			app.CodexPlugins,
 			app.OpenCodePlugins,
+			app.PiPlugins,
 			app.Workspaces,
 			app.OpenCodeConfig,
 			app.EnvCheck,

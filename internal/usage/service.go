@@ -244,6 +244,7 @@ func (s *Service) eventToRecord(evt UsageEvent) UsageRecord {
 //   - claudecode: "cc:msg_" + message.id（应在 evt.DedupKey 提前填好；此处用 SessionID+OccurredAt 兜底）
 //   - codex:      "cx:" + sha1(model|四维token|timestamp)[:16]
 //   - opencode:   "oc:" + session.id
+//   - pi:         "pi:" + sha1(model|sessionid|timestamp)[:16]（会话 jsonl 路径在 parser 预填 file+entry 作用域键）
 //   - proxy:      "px:" + SessionID + ":" + RequestID
 func generateDedupKey(evt UsageEvent) string {
 	switch evt.AppType {
@@ -259,6 +260,9 @@ func generateDedupKey(evt UsageEvent) string {
 			evt.OccurredAt.UnixNano())
 	case appOpenCode:
 		return dedupPrefixOpenCode + evt.SessionID
+	case appPi:
+		// session_log 的 pi: 前缀（含会话文件+entry id）由 parser 预填；此为兜底。
+		return dedupPrefixPi + hash16(evt.Model, evt.SessionID, evt.OccurredAt.UnixNano())
 	default:
 		if evt.Source == SourceProxy {
 			return fmt.Sprintf("%s%s:%s", dedupPrefixProxy, evt.SessionID, evt.RequestID)
