@@ -102,6 +102,51 @@ func TestBuildPiModelsConfigResolvesEnvHeaders(t *testing.T) {
 	}
 }
 
+// TestBuildPiModelsConfigEnablesExtendedThinkingLevels 验证回归：思考开启的模型
+// 必须写入 thinkingLevelMap.xhigh/max——pi 仅在 map 显式声明时开放扩展级别，
+// 缺省时 clampThinkingLevel 将 --thinking max/xhigh 钳回 high（k3-256k 无法切到
+// max 的根因）。思考未开启时不写 reasoning 也不写 thinkingLevelMap。
+func TestBuildPiModelsConfigEnablesExtendedThinkingLevels(t *testing.T) {
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+	}
+	enabled := config.Parameters{
+		Thinking: &config.ThinkingConfig{Type: "enabled"},
+	}
+	cfg, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", enabled)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-kimi"]
+	models := entry["models"].([]map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(models))
+	}
+	if models[0]["reasoning"] != true {
+		t.Errorf("reasoning = %#v, want true", models[0]["reasoning"])
+	}
+	levelMap, ok := models[0]["thinkingLevelMap"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinkingLevelMap missing or wrong type: %#v", models[0]["thinkingLevelMap"])
+	}
+	if levelMap["xhigh"] != "xhigh" || levelMap["max"] != "max" {
+		t.Errorf("thinkingLevelMap = %#v, want xhigh/max identity", levelMap)
+	}
+
+	// 思考未开启：不写 reasoning / thinkingLevelMap。
+	cfgOff, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{})
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig (no thinking): %v", err)
+	}
+	mOff := cfgOff["providers"].(map[string]map[string]any)["amagi-kimi"]["models"].([]map[string]any)[0]
+	if _, present := mOff["reasoning"]; present {
+		t.Errorf("reasoning must be omitted when thinking disabled, got %#v", mOff["reasoning"])
+	}
+	if _, present := mOff["thinkingLevelMap"]; present {
+		t.Errorf("thinkingLevelMap must be omitted when thinking disabled, got %#v", mOff["thinkingLevelMap"])
+	}
+}
+
 // TestWritePiAgentConfigUpgradesLegacyPerms (审核 Major-2③) verifies that a
 // pre-existing 0755 agent dir (created by older versions) is tightened to 0700
 // on the next write, and an overwritten models.json ends up 0600.

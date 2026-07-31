@@ -119,6 +119,17 @@ func BuildPiModelsConfig(
 		// （pi 的思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchPiSession）
 		if params.Thinking != nil && params.Thinking.Type == "enabled" {
 			m["reasoning"] = true
+			// 开放扩展思考级别 xhigh/max：pi 仅在 thinkingLevelMap 显式声明该级别
+			// 时才视为支持（pi-ai getSupportedThinkingLevels：xhigh/max 要求 map 值
+			// 非 undefined，否则 clampThinkingLevel 将其钳回 high）。amagi 的
+			// ReasoningEffort 值域含 xhigh/max 且直接作为 --thinking 级别透传，故
+			// 在此恒开启；identity 值经 pi 原样发给 provider（openai-completions 作为
+			// reasoning_effort；anthropic-messages 作为 adaptive thinking effort，
+			// "max"/"xhigh" 均为合法值）。标准级别（off..high）走 pi 默认映射，不声明。
+			m["thinkingLevelMap"] = map[string]any{
+				"xhigh": "xhigh",
+				"max":   "max",
+			}
 		}
 		// 可选透传 model 级 compat（supportsDeveloperRole/supportsReasoningEffort 等）。
 		// 仅在 params.PiCompat 非空时写入，不设置时 pi 行为不变。
