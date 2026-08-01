@@ -147,6 +147,48 @@ func TestBuildPiModelsConfigEnablesExtendedThinkingLevels(t *testing.T) {
 	}
 }
 
+// TestBuildPiModelsConfigCompatDefaults 验证回归：amagi 托管的第三方 OpenAI 兼容
+// 服务商（如 kimi coding）不接受 developer 角色，pi 内置探测覆盖不到 api.kimi.com，
+// 默认以 developer 角色发送 system prompt 会报 400。compat.supportsDeveloperRole
+// 必须默认 false；预设 pi_compat 显式覆写时显式值优先。
+func TestBuildPiModelsConfigCompatDefaults(t *testing.T) {
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.kimi.com/coding/v1"},
+	}
+
+	// 默认：supportsDeveloperRole=false。
+	cfg, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{})
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	m := cfg["providers"].(map[string]map[string]any)["amagi-kimi"]["models"].([]map[string]any)[0]
+	compat, ok := m["compat"].(map[string]any)
+	if !ok {
+		t.Fatalf("compat missing or wrong type: %#v", m["compat"])
+	}
+	if compat["supportsDeveloperRole"] != false {
+		t.Errorf("supportsDeveloperRole = %#v, want false", compat["supportsDeveloperRole"])
+	}
+
+	// 显式覆写：pi_compat 的值优先，其余键原样透传。
+	cfg2, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{
+		PiCompat: map[string]any{
+			"supportsDeveloperRole":   true,
+			"supportsReasoningEffort": false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig (override): %v", err)
+	}
+	compat2 := cfg2["providers"].(map[string]map[string]any)["amagi-kimi"]["models"].([]map[string]any)[0]["compat"].(map[string]any)
+	if compat2["supportsDeveloperRole"] != true {
+		t.Errorf("explicit supportsDeveloperRole=true overridden, got %#v", compat2["supportsDeveloperRole"])
+	}
+	if compat2["supportsReasoningEffort"] != false {
+		t.Errorf("supportsReasoningEffort not passed through, got %#v", compat2["supportsReasoningEffort"])
+	}
+}
+
 // TestWritePiAgentConfigUpgradesLegacyPerms (审核 Major-2③) verifies that a
 // pre-existing 0755 agent dir (created by older versions) is tightened to 0700
 // on the next write, and an overwritten models.json ends up 0600.

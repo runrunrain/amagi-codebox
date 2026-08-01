@@ -102,7 +102,7 @@ func TestBuildOverrides_ReasoningEffort(t *testing.T) {
 		DefaultModel: "claude-sonnet-4-20250514",
 		Presets: map[string]config.Preset{
 			"test-preset": {
-				Name: "Test Preset",
+				Name:  "Test Preset",
 				Model: "claude-sonnet-4-20250514",
 				Parameters: config.Parameters{
 					ReasoningEffort: "high",
@@ -133,7 +133,7 @@ func TestBuildOverrides_ReasoningEffort_Empty(t *testing.T) {
 		DefaultModel: "claude-sonnet-4-20250514",
 		Presets: map[string]config.Preset{
 			"test-preset": {
-				Name: "Test Preset",
+				Name:  "Test Preset",
 				Model: "claude-sonnet-4-20250514",
 				Parameters: config.Parameters{
 					ReasoningEffort: "", // 空值不设置环境变量
@@ -160,7 +160,7 @@ func TestBuildOverrides_ReasoningEffort_Whitespace(t *testing.T) {
 		DefaultModel: "claude-sonnet-4-20250514",
 		Presets: map[string]config.Preset{
 			"test-preset": {
-				Name: "Test Preset",
+				Name:  "Test Preset",
 				Model: "claude-sonnet-4-20250514",
 				Parameters: config.Parameters{
 					ReasoningEffort: "   ", // 纯空白
@@ -190,7 +190,7 @@ func TestBuildOverrides_ReasoningEffort_AllLevels(t *testing.T) {
 			DefaultModel: "claude-sonnet-4-20250514",
 			Presets: map[string]config.Preset{
 				"test-preset": {
-					Name: "Test Preset",
+					Name:  "Test Preset",
 					Model: "claude-sonnet-4-20250514",
 					Parameters: config.Parameters{
 						ReasoningEffort: level,
@@ -208,5 +208,64 @@ func TestBuildOverrides_ReasoningEffort_AllLevels(t *testing.T) {
 		if effort != level {
 			t.Fatalf("CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", effort, level)
 		}
+	}
+}
+
+// TestBuildEnvInjectsSystemProxy 验证：环境无代理键且系统代理可用时，BuildEnv
+// 尾部注入 HTTP_PROXY/HTTPS_PROXY/NO_PROXY；用户显式代理配置优先，不被覆盖；
+// 系统代理不可用（返回 nil）时不注入。
+func TestBuildEnvInjectsSystemProxy(t *testing.T) {
+	orig := systemProxyEnvFn
+	defer func() { systemProxyEnvFn = orig }()
+
+	envHas := func(env []string, key string) (string, bool) {
+		prefix := key + "="
+		for _, kv := range env {
+			if strings.HasPrefix(kv, prefix) {
+				return kv[len(prefix):], true
+			}
+		}
+		return "", false
+	}
+
+	// 1) 无代理键 + 系统代理可用 -> 注入。
+	systemProxyEnvFn = func() map[string]string {
+		return map[string]string{
+			"HTTP_PROXY": "http://127.0.0.1:5800", "HTTPS_PROXY": "http://127.0.0.1:5800",
+			"http_proxy": "http://127.0.0.1:5800", "https_proxy": "http://127.0.0.1:5800",
+			"NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
+		}
+	}
+	env := BuildEnv([]string{"PATH=/usr/bin"}, nil)
+	if v, ok := envHas(env, "HTTPS_PROXY"); !ok || v != "http://127.0.0.1:5800" {
+		t.Errorf("HTTPS_PROXY = %q,%v, want injected", v, ok)
+	}
+	if v, ok := envHas(env, "https_proxy"); !ok || v != "http://127.0.0.1:5800" {
+		t.Errorf("https_proxy = %q,%v, want injected", v, ok)
+	}
+	if v, ok := envHas(env, "NO_PROXY"); !ok || !strings.Contains(v, "127.0.0.1") {
+		t.Errorf("NO_PROXY = %q,%v, want localhost bypass", v, ok)
+	}
+
+	// 2) base 已有代理键 -> 不注入（用户显式配置优先）。
+	env = BuildEnv([]string{"PATH=/usr/bin", "HTTPS_PROXY=http://10.0.0.1:7890"}, nil)
+	if v, _ := envHas(env, "HTTPS_PROXY"); v != "http://10.0.0.1:7890" {
+		t.Errorf("user HTTPS_PROXY overridden: %q", v)
+	}
+	if _, ok := envHas(env, "NO_PROXY"); ok {
+		t.Errorf("NO_PROXY must not be injected when user proxy present")
+	}
+
+	// 3) overrides 显式代理键 -> 不注入。
+	env = BuildEnv([]string{"PATH=/usr/bin"}, map[string]string{"http_proxy": "http://10.0.0.2:8080"})
+	if _, ok := envHas(env, "HTTPS_PROXY"); ok {
+		t.Errorf("HTTPS_PROXY must not be injected when override proxy present")
+	}
+
+	// 4) 系统代理不可用（nil） -> 不注入。
+	systemProxyEnvFn = func() map[string]string { return nil }
+	env = BuildEnv([]string{"PATH=/usr/bin"}, nil)
+	if _, ok := envHas(env, "HTTPS_PROXY"); ok {
+		t.Errorf("HTTPS_PROXY must not be injected when system proxy unavailable")
 	}
 }

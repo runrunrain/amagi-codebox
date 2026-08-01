@@ -1,0 +1,84 @@
+package platform
+
+import (
+	"fmt"
+	"net"
+	"strings"
+	"time"
+)
+
+// system_proxy.go：把操作系统级代理（macOS 系统设置 / Windows Internet Settings）
+// 转换为进程环境变量（HTTP_PROXY/HTTPS_PROXY/NO_PROXY）。
+//
+// 背景：codebox 以 GUI 方式启动时不经过用户 shell，os.Environ 拿不到用户在
+// shell rc 里配置的代理变量；Node 系 CLI（pi 等）访问 chatgpt.com 这类被墙
+// 站点会报 "fetch failed"。macOS/Windows 的系统代理对 GUI 应用可见，故在启动
+// CLI 会话时探测并注入。
+//
+// 保护（三重）：
+//  1. 用户显式设置的代理变量（env/overrides 中已有的 HTTP_PROXY 等）优先，不覆盖；
+//  2. 仅当系统代理启用时才注入；
+//  3. 注入前做 TCP 可达性探测（代理 App 关闭时 scutil 仍可能显示启用），
+//     不可达则不注入，避免把原本直连可用的会话打进死代理。
+//
+// 注入时同时写 NO_PROXY（localhost/127.0.0.1/::1）：codebox 本地回环服务
+// （headroom 代理 8787/8788、本地 relay）不能被外部代理接管。
+
+// proxyDialTimeout 是系统代理可达性探测的超时。保持很小（本地代理应瞬时响应），
+// 避免在每次会话启动时引入可感知延迟。
+const proxyDialTimeout = 300 * time.Millisecond
+
+// proxyDialReachable 可替换（测试注入）。默认实现做 TCP 探测。
+var proxyDialReachable = func(host, port string) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), proxyDialTimeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// defaultNoProxy 是注入代理时附带的回环绕行清单（用户显式 NO_PROXY 优先）。
+const defaultNoProxy = "localhost,127.0.0.1,::1"
+
+// SystemProxyEnv 返回系统代理对应的环境变量集；系统代理未启用、不支持的平台
+// 或代理不可达时返回 nil。返回值含大写与小写键（不同 HTTP 客户端读取习惯不同）。
+func SystemProxyEnv() map[string]string {
+	host, port, ok := detectSystemProxy()
+	if !ok {
+		return nil
+	}
+	if !proxyDialReachable(host, port) {
+		return nil
+	}
+	proxyURL := fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
+	return map[string]string{
+		"HTTP_PROXY":  proxyURL,
+		"HTTPS_PROXY": proxyURL,
+		"http_proxy":  proxyURL,
+		"https_proxy": proxyURL,
+		"NO_PROXY":    defaultNoProxy,
+		"no_proxy":    defaultNoProxy,
+	}
+}
+
+// proxyEnvKeys 是 SystemProxyEnv 注入的全部键（含大小写）。launcher.BuildEnv
+// 据此判断用户是否已显式配置代理（存在任意一个即视为已配置）。
+var proxyEnvKeys = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+}
+
+// HasProxyEnv 判断环境变量列表中是否已存在代理相关键（Windows 大小写不敏感）。
+func HasProxyEnv(env []string) bool {
+	caseInsensitive := currentOS() == "windows"
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		for _, pk := range proxyEnvKeys {
+			if key == pk || (caseInsensitive && strings.EqualFold(key, pk)) {
+				return true
+			}
+		}
+	}
+	return false
+}

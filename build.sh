@@ -52,7 +52,10 @@ if command -v git >/dev/null 2>&1; then
     GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 fi
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
-GO_VER="$(go version 2>/dev/null || echo unknown)"
+# go version 输出为 "go version go1.x.y darwin/arm64"（含空格），直接注入 -X 会被
+# linker 按空格拆词导致构建失败；仅取版本号字段（go1.x.y）。
+GO_VER="$(go version 2>/dev/null | awk '{print $3}' || echo unknown)"
+GO_VER="${GO_VER:-unknown}"
 
 echo "[提示] 构建版本: ${GIT_VERSION} (commit ${GIT_COMMIT}, go: ${GO_VER})"
 

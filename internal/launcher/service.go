@@ -596,7 +596,34 @@ func BuildEnv(base []string, overrides map[string]string) []string {
 			out = append(out, k+"="+v)
 		}
 	}
-	return out
+	return appendSystemProxyEnv(out)
+}
+
+// systemProxyEnvFn 可替换（测试注入）；默认走平台系统代理探测。
+var systemProxyEnvFn = platform.SystemProxyEnv
+
+// appendSystemProxyEnv 在合并后的环境尾部注入系统代理变量（HTTP_PROXY/HTTPS_PROXY/
+// NO_PROXY，含小写）。仅当环境中尚未存在任何代理键时注入——用户显式配置优先。
+// 平台探测内部保证：系统代理未启用或不可达时返回 nil（不注入），避免把直连可用
+// 的会话打进死代理。
+//
+// 背景：GUI 启动的 codebox 拿不到 shell rc 中的代理变量，Node 系 CLI（pi）访问
+// chatgpt.com 等需代理的站点会报 "fetch failed"；pi 的 HTTP 层使用 undici
+// EnvHttpProxyAgent，会在请求时读取进程代理环境变量，注入即可生效。
+func appendSystemProxyEnv(env []string) []string {
+	if platform.HasProxyEnv(env) {
+		return env
+	}
+	proxyEnv := systemProxyEnvFn()
+	if len(proxyEnv) == 0 {
+		return env
+	}
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
+		if v, ok := proxyEnv[k]; ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }
 
 func splitEnvKV(kv string) (key string, val string) {

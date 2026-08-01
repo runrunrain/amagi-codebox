@@ -33,7 +33,9 @@ type Parameters struct {
 	ReasoningEffort  string               `json:"reasoning_effort,omitempty"` // Claude Code 推理强度（low/medium/high/xhigh/max）
 	// PiCompat 是 pi 专属的 model 级兼容标志（supportsDeveloperRole/supportsReasoningEffort/
 	// forceAdaptiveThinking/allowEmptySignature 等），原样透传给 pi models.json model.compat。
-	// 仅在配置中存在时透传，不设置时 pi 行为不变。键名必须与 pi 文档一致。
+	// 仅在配置中存在时透传；例外是 supportsDeveloperRole——BuildPiModelsConfig 对未显式
+	// 设置的预设默认写 false（第三方 OpenAI 兼容服务商多不接受 developer 角色，见
+	// pi_config.go），显式值优先。其余键名必须与 pi 文档一致。
 	PiCompat map[string]any `json:"pi_compat,omitempty"`
 }
 

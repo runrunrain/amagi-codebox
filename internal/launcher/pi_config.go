@@ -132,10 +132,20 @@ func BuildPiModelsConfig(
 			}
 		}
 		// 可选透传 model 级 compat（supportsDeveloperRole/supportsReasoningEffort 等）。
-		// 仅在 params.PiCompat 非空时写入，不设置时 pi 行为不变。
-		if len(params.PiCompat) > 0 {
-			m["compat"] = params.PiCompat
+		// supportsDeveloperRole 默认 false：pi 对 reasoning=true 的模型默认以
+		// developer 角色发送 system prompt（openai-completions），仅当其内置探测
+		// 命中 moonshot/zai 等非标服务商时才回退 system；amagi 托管的多为第三方
+		// OpenAI 兼容服务商（如 kimi coding 的 api.kimi.com），探测无法覆盖，会
+		// 报 400 "role 'developer' is not allowed"。system 角色对所有服务商都安全，
+		// 故默认关闭；用户可在预设 pi_compat 中显式覆写（显式值优先）。
+		compat := make(map[string]any, len(params.PiCompat)+1)
+		for k, v := range params.PiCompat {
+			compat[k] = v
 		}
+		if _, overridden := compat["supportsDeveloperRole"]; !overridden {
+			compat["supportsDeveloperRole"] = false
+		}
+		m["compat"] = compat
 		entry["models"] = []map[string]any{m}
 	}
 
