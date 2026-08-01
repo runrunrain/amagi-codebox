@@ -83,7 +83,7 @@ func BuildPiModelsConfig(
 	// 敏感值保护（P1-7）：header 值可写成 `$ENV:VAR_NAME` 或 `${ENV:VAR_NAME}`
 	// 引用环境变量。amagi 的配置文件仅保存引用字面量（不含明文密钥，可安全导
 	// 出/备份）；BuildPiModelsConfig 在启动时解析为 os.Getenv(VAR_NAME) 的实际值，
-	// 只写入锁定的运行时 models.json（0600，位于 0700 的 pi-runtime 目录）。未设
+	// 只写入锁定的 ~/.pi/agent/models.json（0600，agent 目录 0700）。未设
 	// 环境变量时解析为空字符串（该 header 被省略），避免落盘空占位。
 	if headers := provider.EffectiveHeaders(format); len(headers) > 0 {
 		resolved := resolveEnvHeaders(headers)
@@ -158,8 +158,8 @@ func BuildPiModelsConfig(
 
 // WritePiAgentConfig 将 pi models.json 配置原子写入 agentDir/models.json。
 //
-// agentDir 由调用方提供（amagi 使用 <configDir>/pi-runtime 隔离目录，
-// 通过 PI_CODING_AGENT_DIR 环境变量让 pi 读取，完全不碰用户 ~/.pi/agent/）。
+// agentDir 由调用方提供；CodeBox 使用 Pi 的标准用户目录
+// ~/.pi/agent，不再另建 <configDir>/pi-runtime 副本。
 //
 // 权限收紧（P1-7）：agentDir 以 0700 创建，models.json 以 0600 写入——该文件可能
 // 携带解析后的敏感 header 值（见 BuildPiModelsConfig 的 `$ENV:` 约定），收紧权限
@@ -204,6 +204,71 @@ func WritePiAgentConfig(agentDir string, cfg map[string]any) error {
 		return fmt.Errorf("chmod pi models.json: %w", err)
 	}
 	return nil
+}
+
+// MergePiAgentConfig 把 agentDir/models.json 的现有内容并入待写入的 cfg。
+// 它用于 CodeBox 直接共用 ~/.pi/agent 时保留用户已有的 providers
+// 及其他顶层字段；cfg 中的当次 amagi 配置优先。
+func MergePiAgentConfig(cfg map[string]any, agentDir string) map[string]any {
+	if strings.TrimSpace(agentDir) == "" {
+		return cfg
+	}
+	existing := readPiJSONObject(filepath.Join(agentDir, "models.json"))
+	if len(existing) == 0 {
+		return cfg
+	}
+
+	existingProviders, _ := existing["providers"].(map[string]any)
+	managedProviders := piProviderEntries(cfg["providers"])
+	providers := make(map[string]any, len(existingProviders)+len(managedProviders))
+	for key, value := range existingProviders {
+		providers[key] = value
+	}
+	for key, value := range managedProviders {
+		providers[key] = value
+	}
+
+	merged := make(map[string]any, len(existing)+len(cfg))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range cfg {
+		merged[key] = value
+	}
+	if len(providers) > 0 {
+		merged["providers"] = providers
+	}
+	return merged
+}
+
+// piProviderEntries 把 cfg["providers"] 归一化为 map[string]any。
+// BuildPiModelsConfig 产出 map[string]map[string]any，JSON 反序列化则产出
+// map[string]any，合并时两种形态都要保留。
+func piProviderEntries(value any) map[string]any {
+	out := make(map[string]any)
+	switch providers := value.(type) {
+	case map[string]any:
+		for key, entry := range providers {
+			out[key] = entry
+		}
+	case map[string]map[string]any:
+		for key, entry := range providers {
+			out[key] = entry
+		}
+	}
+	return out
+}
+
+func readPiJSONObject(path string) map[string]any {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return map[string]any{}
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return map[string]any{}
+	}
+	return obj
 }
 
 // envHeaderRefPattern 匹配 header 值中对环境变量的引用：`$ENV:VAR_NAME` 或

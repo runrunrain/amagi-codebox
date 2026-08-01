@@ -29,9 +29,8 @@ func (s *Service) executePiCommand(ctx context.Context, args ...string) (*Comman
 		resolver = platform.NewCLIResolver(platform.CurrentCapabilities())
 	}
 	env := platform.BuildEffectiveEnv(os.Environ())
-	// P1-2：强制 pi CLI 在 CodeBox 托管运行时目录（pi-runtime）上执行写操作，
-	// 与 LaunchPiSession 注入的 PI_CODING_AGENT_DIR 保持一致。面板安装的包才会
-	// 出现在 CodeBox 启动的 Pi 会话中，避免管理范围与启动范围脱节。
+	// 强制 pi CLI 在服务指定的标准用户 agentDir（~/.pi/agent）上
+	// 执行写操作，确保插件面板与普通 Pi/CodeBox Pi 共享配置。
 	env = launcher.BuildEnv(env, map[string]string{"PI_CODING_AGENT_DIR": s.agentDir})
 	cli, _, err := resolver.ResolveExecutable(piExecutable, append([]string(nil), args...), env)
 	if err != nil {

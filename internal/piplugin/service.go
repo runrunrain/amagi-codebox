@@ -9,11 +9,9 @@
 //	pi list                # 读 settings.json 展示已装包
 //	pi update  <source>    # 更新单个包
 //
-// 管理范围（P1-2）：CodeBox 装配时固定为托管运行时目录
-// filepath.Join(configDir, "pi-runtime")，与 LaunchPiSession 注入的
-// PI_CODING_AGENT_DIR 完全一致；写操作（install/remove/update）在 fork pi CLI 时
-// 显式注入同一 PI_CODING_AGENT_DIR 环境变量，确保面板安装的包会被 CodeBox 启动的
-// Pi 会话加载。不触碰全局 ~/.pi/agent。
+// 管理范围：CodeBox 装配时使用 Pi 的标准用户目录
+// ~/.pi/agent。写操作（install/remove/update）在 fork pi CLI 时显式注入
+// 该 agentDir，确保插件面板与普通 Pi/CodeBox Pi 会话共享同一份配置。
 //
 // 本服务设计对标 internal/opencodeplugin：读操作（list/details）优先解析
 // settings.json + 扫描实体目录，避免 fork pi CLI；写操作（install/remove/update）
@@ -51,8 +49,8 @@ type Service struct {
 }
 
 // NewService creates a pi plugin service. agentDir 为 pi 的配置/包存储根；CodeBox
-// 装配处传入 filepath.Join(configDir, "pi-runtime")（P1-2，与 LaunchPiSession 的
-// PI_CODING_AGENT_DIR 一致）。传入空串时回退到 $PI_CODING_AGENT_DIR → ~/.pi/agent
+// 装配处传入 ~/.pi/agent。传入空串时回退到
+// $PI_CODING_AGENT_DIR → ~/.pi/agent
 // （仅用于测试或外部直启场景）。
 func NewService(agentDir string, log *logging.Service) *Service {
 	return NewServiceWithDeps(agentDir, log,

@@ -14,7 +14,7 @@ import (
 // sensitive (API keys referenced via $ENV: at build time).
 func TestWritePiAgentConfigTightPerms(t *testing.T) {
 	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "pi-runtime")
+	agentDir := filepath.Join(dir, ".pi", "agent")
 	cfg := map[string]any{"providers": map[string]any{"amagi-x": map[string]any{"baseUrl": "https://x"}}}
 	if err := WritePiAgentConfig(agentDir, cfg); err != nil {
 		t.Fatalf("WritePiAgentConfig: %v", err)
@@ -194,7 +194,7 @@ func TestBuildPiModelsConfigCompatDefaults(t *testing.T) {
 // on the next write, and an overwritten models.json ends up 0600.
 func TestWritePiAgentConfigUpgradesLegacyPerms(t *testing.T) {
 	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "pi-runtime")
+	agentDir := filepath.Join(dir, ".pi", "agent")
 	// Simulate a legacy install: loose dir + loose file.
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -225,5 +225,47 @@ func TestWritePiAgentConfigUpgradesLegacyPerms(t *testing.T) {
 	}
 	if mi.Mode().Perm() != 0o600 {
 		t.Errorf("overwritten models.json perm = %o, want 0600", mi.Mode().Perm())
+	}
+}
+
+func TestMergePiAgentConfigPreservesExistingConfig(t *testing.T) {
+	agentDir := t.TempDir()
+	existing := map[string]any{
+		"version": 2,
+		"providers": map[string]any{
+			"existing":  map[string]any{"baseUrl": "https://existing.example"},
+			"amagi-new": map[string]any{"baseUrl": "https://stale.example"},
+		},
+	}
+	data, err := json.Marshal(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := map[string]any{
+		"providers": map[string]map[string]any{
+			"amagi-new": {"baseUrl": "https://fresh.example"},
+		},
+	}
+	merged := MergePiAgentConfig(cfg, agentDir)
+	if merged["version"] != float64(2) {
+		t.Fatalf("existing top-level config was not preserved: %#v", merged)
+	}
+	providers, ok := merged["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers type = %T, want map[string]any", merged["providers"])
+	}
+	if _, ok := providers["existing"]; !ok {
+		t.Fatalf("existing provider was not preserved: %#v", providers)
+	}
+	managed, ok := providers["amagi-new"].(map[string]any)
+	if !ok || managed["baseUrl"] != "https://fresh.example" {
+		t.Fatalf("managed provider did not override stale entry: %#v", providers["amagi-new"])
+	}
+	if _, changed := cfg["version"]; changed {
+		t.Fatal("input cfg was mutated")
 	}
 }

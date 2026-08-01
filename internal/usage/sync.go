@@ -148,8 +148,8 @@ func (s *Service) SyncAll() error {
 	}
 
 	// === 4. Pi jsonl ===
-	// Pi 会话来源两处：codebox 隔离目录（<configDir>/pi-runtime/sessions，
-	// codebox 启动 pi 时注入 PI_CODING_AGENT_DIR）与默认用户目录（~/.pi/agent/sessions）。
+	// Pi 新会话位于默认用户目录 ~/.pi/agent/sessions。同时仅为
+	// 历史用量兼容继续扫描旧版 <configDir>/pi-runtime/sessions。
 	piFiles := enumeratePiSessionFiles(s.configDir, home)
 	filesScanned += len(piFiles)
 	for _, f := range piFiles {
@@ -529,9 +529,8 @@ func normalizePiProvider(raw string) string {
 }
 
 // enumeratePiSessionFiles collects Pi session JSONLs from both roots:
-//   - codebox 隔离目录 <configDir>/pi-runtime/sessions（codebox 启动 pi 时注入的
-//     PI_CODING_AGENT_DIR，会话写在此处）
-//   - 默认用户目录 ~/.pi/agent/sessions（用户自行启动 pi 的会话）
+//   - 旧版 CodeBox 隔离目录 <configDir>/pi-runtime/sessions（仅历史兼容）
+//   - Pi 标准用户目录 ~/.pi/agent/sessions（当前唯一活跃写入源）
 //
 // 两个根在默认配置下互不重叠，但 symlink/别名可能让同一物理文件出现在两个
 // 根下（P2-1）。枚举后按 canonical path（EvalSymlinks）去重，保证同一物理

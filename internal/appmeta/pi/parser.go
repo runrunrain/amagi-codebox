@@ -5,10 +5,9 @@
 //	<PI_CODING_AGENT_DIR>/sessions/--<cwd-slashes-as-dashes>--/<timestamp>_<uuid>.jsonl
 //
 // (default config dir ~/.pi/agent; see pi docs/session-format.md). amagi-codebox
-// launches Pi with an isolated PI_CODING_AGENT_DIR (<configDir>/pi-runtime), so
-// codebox-launched sessions live there, while the default ~/.pi/agent/sessions
-// holds user-launched sessions. Both roots share the same on-disk layout and are
-// parsed identically.
+// now uses that same default directory. Historical CodeBox releases used an
+// isolated <configDir>/pi-runtime root; usage synchronization may still read
+// those old session files, whose on-disk layout is identical.
 //
 // Each line is a JSON object carrying a "type" field. The first line is a
 // SessionHeader; billable usage lives on four entry shapes (see

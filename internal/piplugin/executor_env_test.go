@@ -16,12 +16,11 @@ func envValue(env []string, key string) (string, bool) {
 	return "", false
 }
 
-// TestExecutePiCommandInjectsAgentDir (P1-2) verifies that pi CLI write operations
+// TestExecutePiCommandInjectsAgentDir verifies that pi CLI write operations
 // (install/remove/update) explicitly inject PI_CODING_AGENT_DIR pointing at the
-// CodeBox-managed runtime dir, so the package lands where LaunchPiSession will
-// load it from.
+// shared standard user agent root.
 func TestExecutePiCommandInjectsAgentDir(t *testing.T) {
-	agentDir := "/codebox/pi-runtime"
+	agentDir := "/home/user/.pi/agent"
 	runner := &testRunner{}
 	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
 

@@ -188,16 +188,10 @@ func NewApp(mobileAssets embed.FS) *App {
 	pluginsSvc := plugin.NewService("", log)
 	codexPluginsSvc := codexplugin.NewService("", log)
 	openCodePluginsSvc := opencodeplugin.NewService("", "", log)
-	piPluginsSvc := piplugin.NewService(filepath.Join(configDir, "pi-runtime"), log)
-	// 继承全局 pi agent 状态（~/.pi/agent -> pi-runtime）：账号认证 auth.json、
-	// settings.json 的 packages 插件注册、git/npm 包实体符号链接。否则 CodeBox
-	// 隔离启动的 pi 与插件面板都看不到用户已有的登录态与已装插件。
-	// best-effort：失败仅告警，不影响装配。
-	if err := launcher.SyncPiGlobalState(filepath.Join(configDir, "pi-runtime"), func(format string, args ...any) {
-		log.Warn("pi", "全局状态继承", fmt.Sprintf(format, args...))
-	}); err != nil {
-		log.Warn("pi", "全局状态继承失败", err.Error())
-	}
+	// Pi 直接共用标准用户配置树 ~/.pi/agent，不再维护
+	// ~/.amagi-codebox/pi-runtime 隔离副本。插件面板与 CodeBox 启动的
+	// Pi 因此读写同一份 settings/auth/packages/models 状态。
+	piPluginsSvc := piplugin.NewService(defaultPiAgentDir(), log)
 	processRunner := platform.NewProcessRunner()
 
 	// headroom-venv lives under the CodeBox config directory. It is shared by
@@ -1722,36 +1716,35 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 
 	// 构建环境变量注入 + pi models.json 配置写入。
 	//
-	// Pi 通过 PI_CODING_AGENT_DIR 指定 agent 目录，从中读取 models.json 的 providers 配置。
+	// Pi 从标准用户目录 ~/.pi/agent 读取 models.json 的 providers 配置。
 	// amagi 把当前选中的 provider 翻译成 pi 的一个自定义命名 provider（"amagi-<name>"），
-	// 写入隔离目录 <configDir>/pi-runtime/models.json，再通过 PI_CODING_AGENT_DIR 让 pi 读取。
+	// 合并写入 ~/.pi/agent/models.json。启动时显式移除 PI_CODING_AGENT_DIR，
+	// 避免系统或 CodeBox 自定义环境里的旧值又把 Pi 导向独立副本。
 	// 这样 baseURL/api/apiKey 都正确注入，第三方 Anthropic/OpenAI 兼容 provider（如 GLM）
 	// 会正确路由到其真实 endpoint，不再误打 pi 内置 anthropic/openai 的官方地址。
 	//
 	// 与 Claude Code（ANTHROPIC_BASE_URL env）/ Codex（config.toml）/ OpenCode
 	//（OPENCODE_CONFIG_CONTENT env）同构：amagi 的 provider 配置作为通用底层，
 	// 各引擎各自翻译消费。
-	envOverrides := map[string]string{}
+	envOverrides := map[string]string{
+		// BuildEnv 约定：空值表示从子进程环境中删除该变量。
+		"PI_CODING_AGENT_DIR": "",
+	}
 	if providerID != "" {
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
 			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model, presetParams)
 			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
 
-			// 写入 pi 隔离 agent 目录的 models.json，并注入 PI_CODING_AGENT_DIR。
+			// 合并写入 pi 标准 agent 目录的 models.json。
 			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
 			// 失败则回退到 piProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
 			// presetParams 透传 contextWindow/maxTokens/thinking 到 pi model 配置。
 			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams); cfgErr == nil {
-				agentDir := filepath.Join(defaultConfigDir(), "pi-runtime")
-				// 启动前再同步一次全局继承（用户可能在装配后新登录/新装插件），
-				// 并把全局 models.json 的自定义 providers 并入待写配置（amagi 条目优先），
-				// 使 CodeBox 启动的 pi 同时可见全部已有服务商。
-				if syncErr := launcher.SyncPiGlobalState(agentDir, nil); syncErr != nil {
-					a.Log.Warn("pi", "全局状态继承失败", syncErr.Error())
-				}
-				piCfg = launcher.MergeGlobalPiProviders(piCfg, agentDir)
+				agentDir := defaultPiAgentDir()
+				// 保留用户 models.json 中已有的 provider 和其他顶层配置，
+				// 当次 amagi 生成的同名 provider 优先。
+				piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
 				if writeErr := launcher.WritePiAgentConfig(agentDir, piCfg); writeErr == nil {
-					envOverrides["PI_CODING_AGENT_DIR"] = agentDir
 					launchSettings.Provider = launcher.PiProviderID(providerID)
 					a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
 						launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
@@ -2623,7 +2616,7 @@ func resolveCodexLaunchSettings(provider config.Provider, requestedModel string)
 // 注意：这是**回退路径**，仅当 LaunchPiSession 未能生成 pi models.json 时使用。
 // 主路径是 launcher.BuildPiModelsConfig + WritePiAgentConfig，会把 amagi provider
 // 翻译成 pi 的自定义命名 provider（"amagi-<name>"，含完整 baseURL/api/apiKey），
-// 通过 PI_CODING_AGENT_DIR 隔离加载。
+// 合并到 Pi 的标准 ~/.pi/agent/models.json 后加载。
 //
 // 此回退映射把第三方 Anthropic/OpenAI 兼容 provider 粗略归到 pi 内置的
 // anthropic/openai，会丢失自定义 baseURL（导致第三方 provider 误打官方 endpoint），
@@ -3670,6 +3663,17 @@ func defaultConfigDir() string {
 		return ".amagi-codebox"
 	}
 	return filepath.Join(home, ".amagi-codebox")
+}
+
+// defaultPiAgentDir 返回 Pi 的标准用户级 agent 目录。Pi 的用户数据树
+// 位于 ~/.pi，其 settings.json/models.json/auth.json/packages/sessions 位于
+// ~/.pi/agent。CodeBox 不应把它改写到自己的 configDir。
+func defaultPiAgentDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".pi", "agent")
+	}
+	return filepath.Join(home, ".pi", "agent")
 }
 
 // headroomVenvBinSubdir returns the platform-specific bin directory inside
