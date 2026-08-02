@@ -2,8 +2,10 @@ package remote
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -13,30 +15,66 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/remote/contract"
 )
 
 // Server 远程 API HTTP 服务器，允许移动端通过 HTTP/WebSocket 操作 Amagi CodeBox 的全部功能。
 type Server struct {
-	host              string
-	port              int
-	auth              *Auth
-	app               AppInterface
-	log               *logging.Service
-	httpSrv           *http.Server
-	cancel            context.CancelFunc
-	running           bool
-	mu                sync.RWMutex
-	webRoot           string   // 移动端 Web 前端的 dist 目录路径，为空则不提供静态文件服务
-	mobileAssets      embed.FS // 构建时嵌入的移动端 Web 资源（mobile/dist）
-	mobileAssetsPrefix string  // mobileAssets 中的路径前缀，默认 "mobile/dist"
+	host               string
+	port               int
+	auth               *Auth
+	app                AppInterface
+	log                *logging.Service
+	httpSrv            *http.Server
+	cancel             context.CancelFunc
+	running            bool
+	starting           bool       // CAS reserve under s.mu to serialize concurrent Start
+	stopping           bool       // set under s.mu when a Stop has committed to the current run (R2-Major-03 fence)
+	stoppingRun        *serverRun // the run whose Stop tail window owns `stopping`; Start waits on its done (R3-Major-03)
+	runSeq             uint64     // diagnostic: # of published runs (atomic)
+	mu                 sync.RWMutex
+	webRoot            string   // 移动端 Web 前端的 dist 目录路径，为空则不提供静态文件服务
+	mobileAssets       embed.FS // 构建时嵌入的移动端 Web 资源（mobile/dist）
+	mobileAssetsPrefix string   // mobileAssets 中的路径前缀，默认 "mobile/dist"
+
+	// M1-A security surface (zero when constructed via the legacy NewServer).
+	secOpts     SecurityOptions
+	v1sec       *v1Security
+	store       *fileDeviceStore
+	gate        *securityMaintenanceGate
+	registry    *connectionRegistry
+	pairing     *deviceService
+	sink        SecurityEventSink
+	durableSink *durableSecurityEventSink
+	curRun      *serverRun
+	runOnce     sync.Once
+	runDone     chan struct{}
+
+	// M1-B2c1 internal service-event emission (NFR-17).
+	serverEventScope string // process scope for stable service EventIDs
+	serverEventSeq   uint64 // monotonic per-process sequence (atomic)
+
+	// M1-B2c2 legacy deprecation event dedup (NFR-17): per-process tuple set;
+	// each (carrier,routeClass) is recorded at most once.
+	legacySeenMu sync.Mutex
+	legacySeen   map[legacyAuthTupleKey]bool
 }
 
 // NewServer 创建远程服务器实例，不启动监听。
 // mobileAssets 为构建时嵌入的移动端 Web 资源（mobile/dist），可为空 embed.FS。
 func NewServer(port int, app AppInterface, log *logging.Service, mobileAssets embed.FS) *Server {
+	// Event-scope entropy failure does NOT panic: an empty scope disables service
+	// events (with closed health) rather than crashing startup.
+	scopeBytes := make([]byte, 16)
+	defer zeroBytes(scopeBytes) // wipe the temporary scope entropy on every path
+	scope := ""
+	if _, err := io.ReadFull(rand.Reader, scopeBytes); err == nil {
+		scope = rawURLBase64(scopeBytes)
+	}
 	return &Server{
 		port:               port,
 		auth:               newAuth(),
@@ -44,25 +82,88 @@ func NewServer(port int, app AppInterface, log *logging.Service, mobileAssets em
 		log:                log,
 		mobileAssets:       mobileAssets,
 		mobileAssetsPrefix: "mobile/dist",
+		serverEventScope:   scope,
+		legacySeen:         make(map[legacyAuthTupleKey]bool),
 	}
 }
 
-// Start 在后台 goroutine 中启动 HTTP 服务器。
+// Start 在后台 goroutine 中启动 HTTP 服务器。并发 Start 由 s.mu 下的 `starting`
+// CAS reserve 串行化：只有一个调用能进入 listen/publish，其余立即返回错误/幂等。
+// R3-Major-03: 入口在 s.mu 下检查 `stopping`——若上一 run 的 Stop 尾窗未结束
+// （stopping=true），本 Start 等待该 run 的 done 后重试，杜绝 Stop 尾窗内新 Start
+// 发布 listener / event 倒序。s.mu 从不跨 store Sync/Terminate 或 durable I/O 持有。
 func (s *Server) Start(parentCtx context.Context) error {
-	s.mu.Lock()
-	if s.running {
+	// Stopping gate (R3-Major-03): wait for any in-progress Stop to fully finish
+	// before publishing a new run. A Stop in its tail window (running=false but
+	// stopping=true, done not yet closed) must complete first so the old stopped
+	// event is appended before any new started event, and Stop's caller observes a
+	// fully-stopped server. The wait releases s.mu (it blocks on a channel).
+	for {
+		s.mu.Lock()
+		if s.running {
+			s.mu.Unlock()
+			return nil
+		}
+		if s.starting {
+			s.mu.Unlock()
+			return fmt.Errorf("remote server: start already in progress")
+		}
+		if !s.stopping {
+			// No Stop in progress; this Start may proceed.
+			s.starting = true
+			s.mu.Unlock()
+			break
+		}
+		// A Stop tail window owns `stopping`; wait on that run's done (released s.mu).
+		waitRun := s.stoppingRun
 		s.mu.Unlock()
-		return nil
+		if waitRun != nil {
+			select {
+			case <-waitRun.done:
+			case <-parentCtx.Done():
+				return parentCtx.Err()
+			}
+		}
+		// loop: re-check stopping (the just-finished Stop cleared it by identity)
 	}
-	s.mu.Unlock()
+	// Any failure before publish must clear `starting`.
+	clearStarting := func() {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
+	}
+
+	// Maintenance epoch blocks Start (and poisons an active/entering session).
+	if s.gate != nil && s.gate.recordNormalSecurityAttempt() {
+		clearStarting()
+		return fmt.Errorf("remote server: maintenance epoch active")
+	}
+	// Hold a normal gate permit across listen + run publish + registry.Start so a
+	// maintenance Begin cannot interleave with a live service. Returned on every
+	// path; the permit is a gate counter, not server.mu, so no lock is held across
+	// listen/Sync/Terminate.
+	var permit normalStorePermit
+	havePermit := false
+	if s.gate != nil {
+		p, ok := s.gate.issueNormalPermit()
+		if !ok {
+			clearStarting()
+			return fmt.Errorf("remote server: maintenance epoch active")
+		}
+		permit = p
+		havePermit = true
+	}
+	returnPermit := func() {
+		if havePermit {
+			s.gate.returnNormalPermit(permit)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
-	s.cancel = cancel
 
 	handler := s.buildHandler()
-
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	s.httpSrv = &http.Server{
+	httpSrv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
@@ -72,44 +173,106 @@ func (s *Server) Start(parentCtx context.Context) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		cancel()
+		returnPermit()
+		clearStarting()
 		return fmt.Errorf("remote server listen %s: %w", addr, err)
 	}
 
+	run := &serverRun{shutdownOnce: &sync.Once{}, done: make(chan struct{}), startedDone: make(chan struct{}), listener: ln, httpServer: httpSrv}
 	s.mu.Lock()
+	s.starting = false
 	s.running = true
+	s.httpSrv = httpSrv
+	s.cancel = cancel
+	s.curRun = run
+	// NOTE: do NOT reset s.stopping here. The entry gate above guarantees
+	// stopping==false when we reach publish (we waited for any in-progress Stop
+	// to finish). publishLifecycleAcceptance still re-checks it defensively.
 	s.mu.Unlock()
+	run.generation = atomic.AddUint64(&s.runSeq, 1)
+
+	// Test seam (nil in production): lets tests inject a concurrent Stop into
+	// the publish→acceptance window to prove the fence deterministically.
+	if testLifecycleBarrier != nil {
+		testLifecycleBarrier()
+	}
+
+	// State flip (R3-N01/R4-Major): publish registry + pairing acceptance AND
+	// take started-event ownership (run.startedPending) under s.mu, but do NOT emit
+	// the started event under s.mu — a durable sink append (write / Sync /
+	// rotation) must not block a racing Stop from acquiring s.mu to commit stopping
+	// + Suspend/fence. The started event is appended OUTSIDE s.mu below; event
+	// order vs stopped is guaranteed by the startedDone handshake (stopInternal for
+	// an accepted run waits on <-run.startedDone before appending stopped), NOT by
+	// holding s.mu across the append.
+	accepted := s.publishLifecycleAcceptance(run)
+	returnPermit() // publish complete; release the gate permit
+	if accepted {
+		// Test seam (nil in production): inject a direct Stop/Shutdown in the
+		// acceptance→emit window (R4-Major). The handshake makes stopInternal wait
+		// on startedDone, so the started append completes before stopped/Close.
+		if testAcceptanceEmitBarrier != nil {
+			testAcceptanceEmitBarrier()
+		}
+		// Emit started OUTSIDE s.mu (restores emitServiceEvent's original isolation
+		// intent: append outside pair/store/registry/server-state locks).
+		// emitServiceEvent records any append failure as closed health itself.
+		s.emitServiceEvent(RemoteServiceStarted)
+		// Signal started-event completion so an accepted run's stopInternal can
+		// append stopped (always close, even if the append degraded — the failure
+		// is already recorded as health; Stop observes it and does not reorder).
+		close(run.startedDone)
+		// R4-Major: a direct Stop/Shutdown may have shut this run down during the
+		// acceptance→emit window (stopInternal committed stopping + nilled curRun,
+		// then waited on startedDone which we just closed). If so, the run is dead
+		// — do NOT spawn Serve/ctx and return an error (a stopped run must not
+		// report Start success). The listener was already closed by stopInternal.
+		s.mu.Lock()
+		stillCurrent := s.curRun == run && !s.stopping
+		s.mu.Unlock()
+		if !stillCurrent {
+			return errServerStoppedDuringStart
+		}
+	}
+	if !accepted {
+		// A racing Stop won BEFORE acceptance (startedPending never set, so
+		// stopInternal did not wait on startedDone). No started event emitted.
+		return nil
+	}
 
 	go func() {
 		launchHost := s.desktopLaunchHost()
 		s.log.Info("remote", "远程服务器启动", fmt.Sprintf("listen_host=%s port=%d desktop_host=%s", s.GetHost(), s.GetPort(), launchHost))
-		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.log.Error("remote", "远程服务器异常退出", err.Error())
+			s.stopInternal(run, stopCauseServeFail)
+		} else {
+			s.stopInternal(run, stopCauseServeReturn)
 		}
-		s.mu.Lock()
-		s.running = false
-		s.mu.Unlock()
-		cancel()
 	}()
 
 	// 监控父 context 取消
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		s.httpSrv.Shutdown(shutdownCtx)
+		s.stopInternal(run, stopCauseParentCancel)
 	}()
 
 	return nil
 }
 
-// Stop 优雅关闭服务器。
+// Stop 优雅关闭服务器，统一走 stopInternal。
 func (s *Server) Stop() {
-	if s.cancel != nil {
-		s.cancel()
-	}
 	s.mu.Lock()
-	s.running = false
+	run := s.curRun
+	cancel := s.cancel
 	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if run != nil {
+		s.stopInternal(run, stopCauseExplicit)
+		<-run.done
+	}
 }
 
 // IsRunning 返回服务器是否正在运行。
@@ -182,13 +345,21 @@ func (s *Server) HasEmbeddedMobileWeb() bool {
 	return true
 }
 
-// BuildDesktopLaunchURL 返回桌面入口 Web UI 地址。
+// BuildDesktopLaunchURL 返回桌面入口 Web UI 地址。随机源失败（grant 为空）→ 返回 ""
+// 失败闭合，不打开浏览器。
 // 本地通配/回环地址统一映射到 127.0.0.1，其余具体 host 保留原值。
 func (s *Server) BuildDesktopLaunchURL() string {
 	host := s.desktopLaunchHost()
+	if host == "" {
+		return "" // concrete non-loopback listen host → no LAN desktop launch URL
+	}
+	grant := s.auth.IssueLaunchGrant(host)
+	if grant == "" {
+		return "" // rand failure → fail-closed, no URL
+	}
 	query := url.Values{}
 	query.Set("autoconnect", "1")
-	query.Set("launch", s.auth.IssueLaunchGrant(host))
+	query.Set("launch", grant)
 	return fmt.Sprintf("http://%s/?%s", net.JoinHostPort(host, strconv.Itoa(s.GetPort())), query.Encode())
 }
 
@@ -196,25 +367,34 @@ func (s *Server) desktopLaunchHost() string {
 	return desktopLaunchHostForListenHost(s.GetHost())
 }
 
+// desktopLaunchHostForListenHost maps a listen host to the desktop-launch
+// target host. Only loopback/localhost/wildcard listeners yield a usable
+// loopback target; a CONCRETE non-loopback IP/hostname yields "" — the desktop
+// launch URL must never target a LAN address (it would hit the loopback-only
+// legacy guard). IPv6 wildcard "::" prefers "::1" (no assumed dual-stack).
 func desktopLaunchHostForListenHost(host string) string {
 	trimmed := strings.TrimSpace(host)
-	if trimmed == "" {
+	canonical := strings.TrimPrefix(strings.TrimSuffix(trimmed, "]"), "[")
+	if canonical == "" {
 		return "127.0.0.1"
 	}
-
-	canonical := strings.TrimPrefix(strings.TrimSuffix(trimmed, "]"), "[")
 	if strings.EqualFold(canonical, "localhost") {
 		return "127.0.0.1"
 	}
-
-	if ip := net.ParseIP(canonical); ip != nil {
-		if ip.IsLoopback() || ip.IsUnspecified() {
+	ip := net.ParseIP(canonical)
+	if ip == nil {
+		return "" // hostname → concrete non-loopback
+	}
+	if ip.IsLoopback() {
+		return ip.String()
+	}
+	if ip.IsUnspecified() {
+		if ip.To4() != nil {
 			return "127.0.0.1"
 		}
-		return canonical
+		return "::1" // IPv6 wildcard → ::1 (do not assume dual-stack)
 	}
-
-	return trimmed
+	return "" // concrete non-loopback IP
 }
 
 func (s *Server) getEffectiveWebRoot() string {
@@ -229,29 +409,209 @@ func (s *Server) getEffectiveWebRoot() string {
 	return strings.TrimSpace(s.webRoot)
 }
 
-// buildHandler 构建最终的 HTTP handler。
-// 始终使用复合 handler：/api/ 和 /ws/ 走认证 + API，其余动态检查 webRoot 后决定走静态文件还是回退到 API。
-// 静态资源优先级：用户配置的 MobileWebRoot（index.html 存在）> 内置 embedded mobile dist > 回退 API handler。
-// webRoot 可以在服务器运行期间随时设置或更新，无需重启。
+// ---------------------------------------------------------------------------
+// M1-B2a legacy loopback guard (design §A / §D, Leader C-1/C-3)
+// ---------------------------------------------------------------------------
+
+const (
+	legacyCompatibilityEpoch = 1
+	legacyRemovalEpoch       = 3
+)
+
+// setLegacyCompatibilityHeaders writes the fixed deprecation/no-store headers
+// every epoch-1/2 legacy response (success/error/OPTIONS) carries (design §D.2).
+func setLegacyCompatibilityHeaders(h http.Header) {
+	h.Set("Deprecation", "true")
+	h.Set("X-Amagi-Compatibility-Epoch", strconv.Itoa(legacyCompatibilityEpoch))
+	h.Set("X-Amagi-Removal-Epoch", strconv.Itoa(legacyRemovalEpoch))
+	h.Set("Warning", `299 Amagi-CodeBox "legacy remote API is loopback-only and will be removed at compatibility epoch 3"`)
+	h.Set("Cache-Control", "no-store")
+}
+
+// isLoopbackPeer is the SOLE algorithm for trusting a legacy peer: it reads
+// only r.RemoteAddr (never Host/Origin/Forwarded/X-Forwarded-*). Requires a
+// successful SplitHostPort with a numeric port 1..65535, a ParseIP-able host
+// (no zone), and IP.IsLoopback().
+func isLoopbackPeer(r *http.Request) bool {
+	host, portStr, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	if portStr == "" {
+		return false
+	}
+	port, perr := strconv.Atoi(portStr)
+	if perr != nil || port < 1 || port > 65535 {
+		return false
+	}
+	if strings.ContainsAny(host, "%") { // reject IPv6 zone
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
+
+// isLegacyAPIPath reports whether path is in the legacy bootstrap/API/WS
+// namespace (the surface the loopback guard restricts).
+func isLegacyAPIPath(path string) bool {
+	if path == "/api/bootstrap/consume" {
+		return true
+	}
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/")
+}
+
+// isAllowedLegacyTokenCarrier reports the exact frozen ?token= carrier: a real
+// loopback GET /ws/terminal/{nonempty} with a WebSocket Upgrade whose query is
+// only `token` plus an optional single known `mode` (design §D.1 / C-3).
+func isAllowedLegacyTokenCarrier(r *http.Request) bool {
+	if !isLoopbackPeer(r) {
+		return false
+	}
+	if r.Method != http.MethodGet {
+		return false
+	}
+	if !strings.HasPrefix(r.URL.Path, "/ws/terminal/") {
+		return false
+	}
+	sessionID := strings.TrimPrefix(r.URL.Path, "/ws/terminal/")
+	if sessionID == "" || strings.Contains(sessionID, "/") {
+		return false
+	}
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	// Connection header must carry a case-insensitive "upgrade" token (RFC 6455).
+	if !headerHasToken(r.Header.Get("Connection"), "upgrade") {
+		return false
+	}
+	q := r.URL.Query()
+	for k, v := range q {
+		if k == "token" {
+			if len(v) != 1 {
+				return false
+			}
+			continue
+		}
+		if k == "mode" {
+			if len(v) != 1 || (v[0] != "controller" && v[0] != "observer") {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return q.Has("token")
+}
+
+// headerHasToken reports whether a comma-separated header value contains the
+// given token case-insensitively (per RFC 7230 token-list semantics).
+func headerHasToken(headerVal, want string) bool {
+	for _, part := range strings.Split(headerVal, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeLegacyReject writes a fixed legacy rejection (no credential oracle) with
+// the deprecation/no-store headers.
+func writeLegacyReject(w http.ResponseWriter, status int) {
+	setLegacyCompatibilityHeaders(w.Header())
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	msg := "forbidden"
+	if status == http.StatusUnauthorized {
+		msg = "unauthorized"
+	}
+	w.Write([]byte(`{"error":"` + msg + `"}`))
+}
+
+// requireLoopbackPeer is the defense-in-depth inner guard wrapped around
+// sensitive handlers; it blocks a non-loopback peer before body decode / App
+// call. The global legacy guard remains authoritative.
+func (s *Server) requireLoopbackPeer(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackPeer(r) {
+			writeLegacyReject(w, http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func (s *Server) buildHandler() http.Handler {
 	protectedMux := http.NewServeMux()
 	s.registerRoutes(protectedMux)
 
 	bootstrapMux := http.NewServeMux()
-	bootstrapMux.HandleFunc("POST /api/bootstrap/consume", s.handleConsumeLaunchGrant)
+	// Inner loopback guard on the bootstrap handler itself (defense-in-depth;
+	// the global guard remains authoritative).
+	bootstrapMux.HandleFunc("POST /api/bootstrap/consume", s.requireLoopbackPeer(s.handleConsumeLaunchGrant))
 
-	apiHandler := corsMiddleware(s.auth.Middleware(protectedMux))
+	// Legacy auth observer: derive routeClass from the request and record the
+	// legacy_auth_deprecated event (deduped per tuple). Only fires on successful
+	// auth; invalid/LAN attempts never reach here (the loopback guard rejects
+	// non-loopback before the auth handler).
+	legacyObserver := func(carrier LegacyAuthCarrier, r *http.Request) {
+		s.recordLegacyAuthEvent(carrier, deriveLegacyRouteClass(r))
+	}
+	apiHandler := corsMiddleware(s.auth.MiddlewareWithObserver(protectedMux, legacyObserver))
 	bootstrapHandler := corsMiddleware(bootstrapMux)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/bootstrap/consume" {
-			bootstrapHandler.ServeHTTP(w, r)
+		// v1 security routes are dispatched OUTSIDE legacy auth (design O-6) and
+		// BEFORE the legacy loopback guard.
+		if strings.HasPrefix(r.URL.Path, contract.RESTBasePath+"/") || r.URL.Path == contract.RESTBasePath {
+			if s.v1sec != nil {
+				s.buildV1Handler().ServeHTTP(w, r)
+				return
+			}
+		}
+
+		legacyPath := isLegacyAPIPath(r.URL.Path)
+		// Strict query parse: url.ParseQuery decodes percent-encoding (so a
+		// percent-encoded `token` key is recognized) and surfaces parse errors. A
+		// parse error fails closed (401) before static/legacy — token-like /
+		// malformed queries must never be served.
+		parsedQuery, qerr := url.ParseQuery(r.URL.RawQuery)
+		if qerr != nil {
+			writeLegacyReject(w, http.StatusUnauthorized)
+			return
+		}
+		hasTokenQuery := len(parsedQuery["token"]) > 0
+
+		if legacyPath {
+			// Legacy namespace: non-loopback is 403 BEFORE auth/token (no oracle).
+			if !isLoopbackPeer(r) {
+				writeLegacyReject(w, http.StatusForbidden)
+				return
+			}
+			// Loopback legacy: the ?token= carrier must be the exact frozen WS
+			// carrier; any other ?token= (REST/query/extra/duplicate/non-upgrade)
+			// is 401 before auth/handler.
+			if hasTokenQuery && !isAllowedLegacyTokenCarrier(r) {
+				writeLegacyReject(w, http.StatusUnauthorized)
+				return
+			}
+			// Loopback legacy: all responses carry the fixed deprecation headers.
+			setLegacyCompatibilityHeaders(w.Header())
+			if r.URL.Path == "/api/bootstrap/consume" {
+				bootstrapHandler.ServeHTTP(w, r)
+				return
+			}
+			apiHandler.ServeHTTP(w, r)
 			return
 		}
 
-		// API 和 WebSocket 请求始终走认证 handler
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
-			apiHandler.ServeHTTP(w, r)
+		// Non-legacy (static-eligible): a top-level ?token= is never a carrier
+		// here (the carrier is /ws/terminal, a legacy path above), so reject
+		// before static — `/?token=` must never serve/redirect (C-3).
+		if hasTokenQuery {
+			writeLegacyReject(w, http.StatusUnauthorized)
 			return
 		}
 
@@ -312,8 +672,108 @@ func (s *Server) serveStaticOrSPA(w http.ResponseWriter, r *http.Request, fileSe
 
 // RegenerateToken 重新生成 Token 并返回新值。
 func (s *Server) RegenerateToken() string {
-	return s.auth.RegenerateToken()
+	tok := s.auth.RegenerateToken()
+	// Successful rotation of a non-empty token emits a closed internal event;
+	// failure (empty token) emits nothing.
+	if tok != "" {
+		s.emitServiceEvent(LegacyTokenRotated)
+	}
+	return tok
 }
+
+// emitServiceEvent derives a stable EventID (processScope+kind+occurredAt+seq)
+// and appends a closed internal service event to the sink. Append happens
+// outside all pairMu/store/registry locks; failure only records closed health
+// (it never rolls back a business transition).
+func (s *Server) emitServiceEvent(kind ServiceSecurityEventKind) {
+	at := s.now().UTC()
+	// Empty scope (event-scope entropy failure at construction) disables service
+	// events; record closed health if a security face exists.
+	if s.serverEventScope == "" {
+		if s.v1sec != nil {
+			s.v1sec.health.Record(HealthEventDurabilityDegraded, "", at)
+		}
+		return
+	}
+	if s.sink == nil {
+		return
+	}
+	seq := atomic.AddUint64(&s.serverEventSeq, 1)
+	eid := deriveServiceEventID(s.serverEventScope, kind, at, seq)
+	res, _ := s.sink.AppendSecurityEvent(ServiceSecurityEvent{EventID: eid, Kind: kind, OccurredAt: at})
+	var h *securityHealthRegister
+	if s.v1sec != nil {
+		h = s.v1sec.health
+	}
+	recordEventAppendHealth(h, res, eid, at)
+}
+
+// EmitListenConfigurationChanged records a closed internal event after a
+// successful user-initiated listen configuration change (host/port). The kind
+// is closed; App cannot pass an arbitrary string.
+func (s *Server) EmitListenConfigurationChanged() {
+	s.emitServiceEvent(RemoteListenConfigurationChanged)
+}
+
+// legacyAuthTupleKey is the per-process dedup key for legacy deprecation events.
+type legacyAuthTupleKey struct {
+	carrier    LegacyAuthCarrier
+	routeClass LegacyAuthRouteClass
+}
+
+// deriveLegacyRouteClass maps a request path+method to the closed legacy route
+// class (0 if not a legacy route).
+func deriveLegacyRouteClass(r *http.Request) LegacyAuthRouteClass {
+	if strings.HasPrefix(r.URL.Path, "/ws/") {
+		return RouteWebSocket
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		if r.Method == http.MethodGet {
+			return RouteAPIRead
+		}
+		return RouteAPIWrite
+	}
+	return 0
+}
+
+// recordLegacyAuthEvent records a legacy_auth_deprecated event for the given
+// (carrier, routeClass) tuple at most once per process. The EventID is stable
+// from serverEventScope+carrier+routeClass+outcome (no occurredAt). The tuple is
+// marked seen BEFORE the append so a PreAccept/degraded failure never causes a
+// retry; the append outcome is mapped to closed health only and never changes
+// the auth/handler response.
+func (s *Server) recordLegacyAuthEvent(carrier LegacyAuthCarrier, routeClass LegacyAuthRouteClass) {
+	if carrier == 0 || routeClass == 0 || s.sink == nil || s.serverEventScope == "" {
+		return
+	}
+	key := legacyAuthTupleKey{carrier: carrier, routeClass: routeClass}
+	s.legacySeenMu.Lock()
+	if s.legacySeen[key] {
+		s.legacySeenMu.Unlock()
+		return // already recorded this tuple
+	}
+	if len(s.legacySeen) >= maxLegacyAuthTuples {
+		s.legacySeenMu.Unlock()
+		return // bounded; never grows unbounded
+	}
+	s.legacySeen[key] = true // mark seen BEFORE append (no retry on failure)
+	s.legacySeenMu.Unlock()
+
+	at := s.now().UTC()
+	eid := deriveLegacyAuthEventID(s.serverEventScope, carrier, routeClass, LegacyAuthAccepted)
+	res, _ := s.sink.AppendSecurityEvent(LegacyAuthSecurityEvent{
+		EventID: eid, OccurredAt: at, Carrier: carrier, RouteClass: routeClass, Outcome: LegacyAuthAccepted,
+	})
+	var h *securityHealthRegister
+	if s.v1sec != nil {
+		h = s.v1sec.health
+	}
+	recordEventAppendHealth(h, res, eid, at)
+}
+
+// maxLegacyAuthTuples bounds the legacy deprecation tuple set (4 carriers × 4
+// routes = 16 absolute max).
+const maxLegacyAuthTuples = 16
 
 // GetToken 返回认证 token（供前端 Wails 展示）。
 func (s *Server) GetToken() string {

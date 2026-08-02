@@ -1,10 +1,14 @@
 package settings
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNormalizeDashboardDefaults_DoesNotPropagateLegacyTerminalModeToNonClaudeEngines(t *testing.T) {
@@ -209,5 +213,526 @@ func TestSetDashboardDefaults_PreservesCodexGlobalHeadroomDisabled(t *testing.T)
 	}
 	if state.Target != "" || state.Port != 0 {
 		t.Fatalf("disabled codex-global state should stay zeroed, got %+v", state)
+	}
+}
+
+// --- R2-Minor-02: SetRemoteEndpoint concurrency + Save snapshot safety ---
+
+// validEndpointPairs are distinct, individually-valid (host,port) tuples used by
+// the concurrency tests. Each pair's host last-octet == port last-3-digits so a
+// "mixed tuple" (host_i, port_j, i!=j) is detectable.
+func validEndpointPairs(n int) []struct {
+	host string
+	port int
+} {
+	out := make([]struct {
+		host string
+		port int
+	}, n)
+	for i := 0; i < n; i++ {
+		out[i] = struct {
+			host string
+			port int
+		}{host: fmt.Sprintf("10.0.0.%d", i+2), port: 9000 + i}
+	}
+	return out
+}
+
+// TestSetRemoteEndpoint_Concurrent_NoMixedTuple runs N concurrent
+// SetRemoteEndpoint calls with distinct (host,port) pairs. With the saveMu
+// transaction each call fully commits before the next, so the final (host,port)
+// must be ONE consistent pair — never a mix (host_i, port_j, i!=j). Run with
+// -race to also catch data races on the settings fields.
+func TestSetRemoteEndpoint_Concurrent_NoMixedTuple(t *testing.T) {
+	svc := NewService(t.TempDir())
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pairs := validEndpointPairs(8)
+	var wg sync.WaitGroup
+	for _, p := range pairs {
+		wg.Add(1)
+		go func(p struct {
+			host string
+			port int
+		}) {
+			defer wg.Done()
+			if err := svc.SetRemoteEndpoint(p.host, p.port); err != nil {
+				t.Errorf("SetRemoteEndpoint(%s,%d): %v", p.host, p.port, err)
+			}
+		}(p)
+	}
+	wg.Wait()
+
+	host := svc.GetRemoteHost()
+	port := svc.GetRemotePort()
+	// The final tuple must be one of the committed pairs (consistent, not mixed).
+	matched := false
+	for _, p := range pairs {
+		if host == p.host && port == p.port {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("final tuple (%s,%d) is a MIXED or unexpected value — concurrent setters overwrote each other partially", host, port)
+	}
+	// On-disk must agree with in-memory (the winning commit was persisted).
+	if err := svc.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if svc.GetRemoteHost() != host || svc.GetRemotePort() != port {
+		t.Fatalf("disk (%s,%d) != memory (%s,%d)", svc.GetRemoteHost(), svc.GetRemotePort(), host, port)
+	}
+}
+
+// TestSave_ConcurrentSliceMutation_NoMarshalDrift runs concurrent AddShellPath
+// (appends to the ShellPaths slice) and Save (which marshals the settings).
+// With the immutable-snapshot Save, the marshal deep-copies the slice under mu,
+// so there is no data race and no torn read. Without the fix (old Save held a
+// live pointer after RLock release) the race detector would flag concurrent
+// slice access. Run with -race.
+func TestSave_ConcurrentSliceMutation_NoMarshalDrift(t *testing.T) {
+	svc := NewService(t.TempDir())
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	// Writer: append shell paths continuously.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = svc.AddShellPath(ShellEntry{Path: fmt.Sprintf("/sh/%d", i), Label: "x"})
+		}
+	}()
+	// Reader/saver: Save continuously (marshals snapshot).
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = svc.Save()
+			}
+		}()
+	}
+	// Let it run briefly to exercise the race window.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// TestSetRemoteEndpoint_SaveFails_MemoryReverted_DiskUnchanged forces a Save
+// failure by making the .tmp path a directory (so WriteFile fails with EISDIR),
+// then asserts the in-memory host/port are reverted to the pre-call values and
+// the on-disk file is untouched (R2-Minor-02: fault rollback must not leave a
+// partial tuple or clobber another setter's committed value).
+func TestSetRemoteEndpoint_SaveFails_MemoryReverted_DiskUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Establish a known-good committed baseline on disk.
+	if err := svc.SetRemoteEndpoint("10.0.0.50", 9050); err != nil {
+		t.Fatalf("baseline SetRemoteEndpoint: %v", err)
+	}
+	diskBefore, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+
+	// Force the NEXT Save to fail: create the .tmp path as a directory so
+	// WriteFile(configPath+".tmp") returns EISDIR.
+	tmpDir := filepath.Join(dir, "settings.json.tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir tmp fault: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	err := svc.SetRemoteEndpoint("172.16.0.9", 9099)
+	if err == nil {
+		t.Fatal("SetRemoteEndpoint must fail when Save fails (injected .tmp dir)")
+	}
+	// In-memory reverted to the baseline tuple.
+	if got := svc.GetRemoteHost(); got != "10.0.0.50" {
+		t.Fatalf("in-memory host after failed Save=%q want 10.0.0.50 (reverted)", got)
+	}
+	if got := svc.GetRemotePort(); got != 9050 {
+		t.Fatalf("in-memory port after failed Save=%d want 9050 (reverted)", got)
+	}
+	// On-disk unchanged.
+	diskAfter, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if string(diskAfter) != string(diskBefore) {
+		t.Fatalf("on-disk settings changed after a failed Save\n got: %s\nwant: %s", diskAfter, diskBefore)
+	}
+}
+
+// TestSetRemoteEndpoint_ConcurrentOneFails_OtherStillConsistent runs two
+// concurrent SetRemoteEndpoint calls where one is forced to fail (Save fault)
+// and the other succeeds. The failed call's rollback (under saveMu) must NOT
+// overwrite the successful call's committed value: the final tuple is the
+// successful call's pair, not the failed call's pre-state.
+func TestSetRemoteEndpoint_ConcurrentOneFails_OtherStillConsistent(t *testing.T) {
+	for trial := 0; trial < 20; trial++ {
+		dir := t.TempDir()
+		svc := NewService(dir)
+		if err := svc.Load(); err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		// Baseline.
+		if err := svc.SetRemoteEndpoint("10.0.0.1", 9001); err != nil {
+			t.Fatalf("baseline: %v", err)
+		}
+		var wg sync.WaitGroup
+		// Failing call: .tmp is a directory.
+		tmpDir := filepath.Join(dir, "settings.json.tmp")
+		_ = os.MkdirAll(tmpDir, 0o700)
+		wg.Add(2)
+		var failErr error
+		go func() {
+			defer wg.Done()
+			failErr = svc.SetRemoteEndpoint("192.168.1.99", 9999) // will fail (Save fault)
+		}()
+		go func() {
+			defer wg.Done()
+			// Remove the fault so the successful call can commit; a tiny race is
+			// acceptable — we only assert the FINAL tuple is internally consistent.
+			_ = os.RemoveAll(tmpDir)
+			if err := svc.SetRemoteEndpoint("10.0.0.7", 9007); err != nil {
+				t.Errorf("successful SetRemoteEndpoint: %v", err)
+			}
+		}()
+		wg.Wait()
+		_ = failErr // one of the two calls is expected to fail
+
+		host := svc.GetRemoteHost()
+		port := svc.GetRemotePort()
+		consistent := (host == "10.0.0.7" && port == 9007) || (host == "10.0.0.1" && port == 9001) || (host == "192.168.1.99" && port == 9999)
+		if !consistent {
+			t.Fatalf("trial %d: final tuple (%s,%d) is MIXED — rollback overwrote a committed value", trial, host, port)
+		}
+		// Disk must match memory.
+		if err := svc.Load(); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if svc.GetRemoteHost() != host || svc.GetRemotePort() != port {
+			t.Fatalf("trial %d: disk (%s,%d) != memory (%s,%d)", trial, svc.GetRemoteHost(), svc.GetRemotePort(), host, port)
+		}
+	}
+}
+
+// --- R3-Minor-02: Load serialization + setter Save-fault three-way ---
+
+// assertRemoteThreeWayConsistent reloads a FRESH service from the same dir and
+// asserts the live service's (host,port,enabled) match disk (R3-Minor-02).
+func assertRemoteThreeWayConsistent(t *testing.T, live *Service, dir string) {
+	t.Helper()
+	fresh := NewService(dir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("fresh Load: %v", err)
+	}
+	if live.GetRemoteHost() != fresh.GetRemoteHost() {
+		t.Errorf("memory host=%q != disk host=%q", live.GetRemoteHost(), fresh.GetRemoteHost())
+	}
+	if live.GetRemotePort() != fresh.GetRemotePort() {
+		t.Errorf("memory port=%d != disk port=%d", live.GetRemotePort(), fresh.GetRemotePort())
+	}
+	if live.GetRemoteEnabled() != fresh.GetRemoteEnabled() {
+		t.Errorf("memory enabled=%v != disk enabled=%v", live.GetRemoteEnabled(), fresh.GetRemoteEnabled())
+	}
+}
+
+// TestSetRemoteEndpoint_VsLoad_NoStaleOverwrite proves Settings.Load is in the
+// saveMu sequence (R3-Minor-02 ②): a concurrent Load cannot read stale disk and
+// overwrite an in-flight SetRemoteEndpoint's mutated memory. After repeated
+// concurrent endpoint+Load cycles, memory always equals disk.
+func TestSetRemoteEndpoint_VsLoad_NoStaleOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemoteEndpoint("10.0.0.1", 9001); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	pairs := validEndpointPairs(6)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	// Loader goroutine: repeatedly reloads.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = svc.Load()
+		}
+	}()
+	// Endpoint goroutines: repeatedly set distinct tuples.
+	for _, p := range pairs {
+		wg.Add(1)
+		go func(p struct {
+			host string
+			port int
+		}) {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				_ = svc.SetRemoteEndpoint(p.host, p.port)
+			}
+		}(p)
+	}
+	// Let them race briefly.
+	time.Sleep(60 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	// Three-way consistency: memory == disk.
+	assertRemoteThreeWayConsistent(t, svc, dir)
+}
+
+// TestSetRemoteHost_SaveFails_MemoryReverted_DiskUnchanged proves the individual
+// setter reverts in-memory on Save failure (R3-Minor-02 ③).
+func TestSetRemoteHost_SaveFails_MemoryReverted_DiskUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemoteHost("10.0.0.50"); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	diskBefore, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	tmpDir := filepath.Join(dir, "settings.json.tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir tmp fault: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	if err := svc.SetRemoteHost("172.16.0.9"); err == nil {
+		t.Fatal("SetRemoteHost must fail when Save fails")
+	}
+	if got := svc.GetRemoteHost(); got != "10.0.0.50" {
+		t.Fatalf("memory host after failed Save=%q want 10.0.0.50 (reverted)", got)
+	}
+	diskAfter, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if string(diskAfter) != string(diskBefore) {
+		t.Fatal("disk host changed after a failed Save")
+	}
+}
+
+// TestSetRemotePort_SaveFails_MemoryReverted_DiskUnchanged (R3-Minor-02 ③).
+func TestSetRemotePort_SaveFails_MemoryReverted_DiskUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemotePort(9050); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	diskBefore, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	tmpDir := filepath.Join(dir, "settings.json.tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir tmp fault: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	if err := svc.SetRemotePort(9099); err == nil {
+		t.Fatal("SetRemotePort must fail when Save fails")
+	}
+	if got := svc.GetRemotePort(); got != 9050 {
+		t.Fatalf("memory port after failed Save=%d want 9050 (reverted)", got)
+	}
+	diskAfter, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if string(diskAfter) != string(diskBefore) {
+		t.Fatal("disk changed after a failed Save")
+	}
+}
+
+// TestSetRemoteEnabled_SaveFails_MemoryReverted_DiskUnchanged (R3-Minor-02 ③).
+func TestSetRemoteEnabled_SaveFails_MemoryReverted_DiskUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemoteEnabled(true); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	diskBefore, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	tmpDir := filepath.Join(dir, "settings.json.tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir tmp fault: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	if err := svc.SetRemoteEnabled(false); err == nil {
+		t.Fatal("SetRemoteEnabled must fail when Save fails")
+	}
+	if got := svc.GetRemoteEnabled(); got != true {
+		t.Fatalf("memory enabled after failed Save=%v want true (reverted)", got)
+	}
+	diskAfter, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if string(diskAfter) != string(diskBefore) {
+		t.Fatal("disk changed after a failed Save")
+	}
+}
+
+// --- R4-Minor: Save commit boundary (rename is last fallible step) ---
+
+// TestSaveLocked_PreRenameSyncFailure_DiskUnchanged proves the R4-Minor commit
+// boundary: a pre-rename sync failure leaves disk == old value (rename never
+// ran), so the setter's memory revert keeps memory==disk. There is NO fallible
+// step after rename (post-rename chmod removed), so any saveLocked error means
+// "not committed".
+func TestSaveLocked_PreRenameSyncFailure_DiskUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemoteEndpoint("10.0.0.1", 9001); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	diskBefore, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+
+	settingsPreRenameSync = func(*os.File) error { return errors.New("injected sync failure") }
+	t.Cleanup(func() { settingsPreRenameSync = func(f *os.File) error { return f.Sync() } })
+
+	if err := svc.SetRemoteEndpoint("172.16.0.9", 9099); err == nil {
+		t.Fatal("SetRemoteEndpoint must fail when the pre-rename sync fails")
+	}
+	// memory reverted to baseline.
+	if got := svc.GetRemoteHost(); got != "10.0.0.1" {
+		t.Fatalf("memory host=%q want 10.0.0.1 (reverted)", got)
+	}
+	// disk unchanged (rename never ran; tmp removed).
+	diskAfter, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if string(diskAfter) != string(diskBefore) {
+		t.Fatalf("disk changed despite a pre-rename (not-committed) failure\n got: %s\nwant: %s", diskAfter, diskBefore)
+	}
+	// No leftover .tmp.
+	if _, err := os.Stat(filepath.Join(dir, "settings.json.tmp")); err == nil {
+		t.Fatal("leftover settings.json.tmp after a pre-rename failure")
+	}
+}
+
+// TestSaveLocked_NoFallibleStepAfterRename proves structurally/behaviorally that
+// a successful save leaves the file at mode 0600 with the new content and that
+// there is no separate post-rename chmod (the temp was prepared at 0600 before
+// rename, which carries the mode). This is the positive side of the commit
+// boundary: after rename succeeds the file is final.
+func TestSaveLocked_NoFallibleStepAfterRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file mode assertion")
+	}
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemoteEndpoint("10.0.0.7", 9007); err != nil {
+		t.Fatalf("SetRemoteEndpoint: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("settings.json mode=%o want 0600 (temp prepared pre-rename; no post-rename chmod)", got)
+	}
+	// A fresh service reloads the committed value (rename was the commit).
+	fresh := NewService(dir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if fresh.GetRemoteHost() != "10.0.0.7" || fresh.GetRemotePort() != 9007 {
+		t.Fatalf("reloaded=(%s,%d) want (10.0.0.7,9007)", fresh.GetRemoteHost(), fresh.GetRemotePort())
+	}
+}
+
+// TestSetRemoteEnabled_SaveFails_MemoryAndLiveConsistent proves the enabled
+// setter reverts memory on Save failure (R4-Minor ③) and that a fresh reload
+// reads the old (persisted) value — three-way consistency on the enabled field.
+func TestSetRemoteEnabled_SaveFails_MemoryAndLiveConsistent(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetRemoteEnabled(true); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	tmpDir := filepath.Join(dir, "settings.json.tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir tmp fault: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	if err := svc.SetRemoteEnabled(false); err == nil {
+		t.Fatal("SetRemoteEnabled must fail when Save fails")
+	}
+	if svc.GetRemoteEnabled() != true {
+		t.Fatal("memory enabled must be REVERTED to true on Save failure")
+	}
+	fresh := NewService(dir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if fresh.GetRemoteEnabled() != true {
+		t.Fatal("disk enabled must still be true (Save failed before rename)")
+	}
+}
+
+// TestSaveLocked_PreRenameSyncHandle_IsWritable is the R5-N01 shape guard: the
+// pre-rename fsync must run on a WRITABLE handle (O_RDWR → Windows
+// GENERIC_WRITE), because FlushFileBuffers (backing File.Sync on Windows)
+// requires GENERIC_WRITE — a read-only reopen (os.Open / O_RDONLY) would make
+// every Save fail pre-commit on Windows. This test proves the handle handed to
+// settingsPreRenameSync is writable by writing a probe byte through it (a
+// read-only handle would reject the write). It runs on every platform; the
+// same O_RDWR code path runs on Windows, so write-success here implies the
+// Windows FlushFileBuffers access-right requirement is met.
+func TestSaveLocked_PreRenameSyncHandle_IsWritable(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	sawWritable := false
+	settingsPreRenameSync = func(f *os.File) error {
+		// Probe: write a trailing newline through the sync handle. A read-only
+		// handle (O_RDONLY) fails this with EBADF/EPERM — the same access denial
+		// that would break FlushFileBuffers on Windows.
+		if n, err := f.Write([]byte("\n")); err == nil && n == 1 {
+			sawWritable = true
+		}
+		return f.Sync()
+	}
+	t.Cleanup(func() { settingsPreRenameSync = func(f *os.File) error { return f.Sync() } })
+
+	if err := svc.SetRemoteHost("10.0.0.9"); err != nil {
+		t.Fatalf("SetRemoteHost: %v", err)
+	}
+	if !sawWritable {
+		t.Fatal("pre-rename sync handle must be WRITABLE (O_RDWR/GENERIC_WRITE), not read-only (R5-N01)")
+	}
+	// The probe appended a trailing newline (JSON trailing whitespace is valid);
+	// reload must read back the persisted host, proving a real Save/reload round
+	// trip on a writable sync handle.
+	fresh := NewService(dir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if fresh.GetRemoteHost() != "10.0.0.9" {
+		t.Fatalf("reloaded host=%q want 10.0.0.9", fresh.GetRemoteHost())
 	}
 }

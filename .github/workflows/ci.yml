@@ -1,10 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+  # Stage pushes intentionally do not consume GitHub Actions. Run CI once,
+  # manually, after all development is complete (C-011).
+  workflow_dispatch:
 
 permissions:
   contents: read

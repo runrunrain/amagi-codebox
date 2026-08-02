@@ -42,15 +42,16 @@ func TestBuildDesktopLaunchURLUsesLoopbackAndLaunchParams(t *testing.T) {
 	tests := []struct {
 		name         string
 		listenHost   string
-		expectedHost string
+		expectedHost string // empty => expect an empty URL (concrete non-loopback)
 	}{
 		{name: "empty host maps to loopback", listenHost: "", expectedHost: "127.0.0.1:8680"},
 		{name: "ipv4 wildcard maps to loopback", listenHost: "0.0.0.0", expectedHost: "127.0.0.1:8680"},
-		{name: "ipv6 wildcard maps to loopback", listenHost: "::", expectedHost: "127.0.0.1:8680"},
+		{name: "ipv6 wildcard maps to ::1", listenHost: "::", expectedHost: "[::1]:8680"},
 		{name: "localhost maps to loopback", listenHost: "localhost", expectedHost: "127.0.0.1:8680"},
-		{name: "specific ipv4 stays reachable", listenHost: "192.168.31.8", expectedHost: "192.168.31.8:8680"},
-		{name: "specific hostname stays reachable", listenHost: "example.internal", expectedHost: "example.internal:8680"},
-		{name: "specific ipv6 stays reachable", listenHost: "2001:db8::8", expectedHost: "[2001:db8::8]:8680"},
+		{name: "loopback ipv4 stays", listenHost: "127.0.0.1", expectedHost: "127.0.0.1:8680"},
+		{name: "concrete ipv4 yields empty URL", listenHost: "192.168.31.8", expectedHost: ""},
+		{name: "concrete hostname yields empty URL", listenHost: "example.internal", expectedHost: ""},
+		{name: "concrete ipv6 yields empty URL", listenHost: "2001:db8::8", expectedHost: ""},
 	}
 
 	for _, tt := range tests {
@@ -58,6 +59,13 @@ func TestBuildDesktopLaunchURLUsesLoopbackAndLaunchParams(t *testing.T) {
 			srv := newTestServer(t, 8680)
 			srv.SetHost(tt.listenHost)
 			raw := srv.BuildDesktopLaunchURL()
+
+			if tt.expectedHost == "" {
+				if raw != "" {
+					t.Fatalf("concrete non-loopback host must yield empty URL, got %q", raw)
+				}
+				return
+			}
 
 			parsed, err := url.Parse(raw)
 			if err != nil {
@@ -242,6 +250,7 @@ func TestNoWebRootNoEmbedded_FallsBackToAPI(t *testing.T) {
 	handler := srv.buildHandler()
 
 	req := httptest.NewRequest("GET", "/something", nil)
+	req.RemoteAddr = "127.0.0.1:1234" // loopback: intended to test the auth fallback, not the loopback guard
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

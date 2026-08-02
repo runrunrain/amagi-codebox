@@ -35,6 +35,7 @@ import (
 	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
+	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
@@ -168,6 +169,26 @@ type App struct {
 	persistenceMu       sync.RWMutex
 	persistentLoadState persistentLoadState
 
+	// configDir 是所有服务共享的配置根（~/.amagi-codebox）。由 NewApp 设置；
+	// 迁移 gate 与 Remote 安全面共用它，使 settings.json 与设备存储/备份位于
+	// 同一目录（design §C, ratification C-2）。
+	configDir string
+
+	// securityLoadAttempts counts LoadSecurityState invocations owned by this
+	// App (migration gate step a + normal post-gate path). It is the exactly-once
+	// seam for tests: 0 for skip paths (Future/Manual/Detect-error), 1 otherwise.
+	securityLoadAttempts int
+
+	// remoteLifecycleMu serializes the App-layer remote lifecycle orchestration
+	// (stopped-check → SetHost/SetPort → Settings Save → restart) between
+	// SetRemoteEndpoint / SetRemoteHost / SetRemotePort and ToggleRemoteServer
+	// (R2-Minor-02). Without it, two concurrent Wails calls could interleave
+	// Stop/SetHost/SetPort/Start and leave the live server on a mixed host:port
+	// tuple, or race the stopped-check against a toggle. Inner service locks
+	// (Settings.saveMu / Server.mu) are always acquired AFTER this one, so lock
+	// ordering stays remoteLifecycleMu → inner.
+	remoteLifecycleMu sync.Mutex
+
 	// codexGlobalMu serializes the codex-global headroom orchestration between
 	// the async startup restore goroutine (restoreCodexGlobalHeadroomOnStartup)
 	// and the synchronous UI toggle (SetCodexGlobalHeadroom). Without it, a user
@@ -218,6 +239,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
 	app := &App{
+		configDir:       configDir,
 		Config:          config.NewConfigService(configDir),
 		Secrets:         secrets.NewSecretsService(configDir),
 		Launcher:        launcher.NewLauncherService(log, envVarsSvc),
@@ -245,7 +267,10 @@ func NewApp(mobileAssets embed.FS) *App {
 		FileOpener:      platform.NewFileOpener(processRunner),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
-	app.Remote = remote.NewServer(8680, app, log, mobileAssets)
+	// M1-A：接线设备安全面（design §14.1）。HostSummary provider 为私有闭包，
+	// 遍历 contract.KnownCLITypes 调用真实 CLIResolver.Resolve(AppType)。
+	app.Remote = remote.NewServerWithSecurity(8680, app, log, mobileAssets,
+		remote.NewProductionSecurityOptions(configDir, app.buildRemoteHostSummary))
 	// 方案 P：注入用户主目录，供 List 回填已退出 claudecode 会话的标题（直读历史 jsonl）。
 	// 获取失败时记日志但不阻塞启动（标题功能降级，不影响会话启动主流程）。
 	if home, homeErr := os.UserHomeDir(); homeErr != nil {
@@ -778,13 +803,21 @@ func (a *App) GetRemoteWebUIStatus() RemoteWebUIStatusResult {
 		return status
 	}
 
-	status.Openable = true
 	status.URL = a.Remote.BuildDesktopLaunchURL()
+	if status.URL == "" {
+		// 随机源失败 → 未能签发 launch grant：失败闭合，不打开浏览器。
+		status.Openable = false
+		status.Reason = "failed to issue launch grant"
+		return status
+	}
+	status.Openable = true
 	return status
 }
 
 // OpenRemoteWebUI 确保远程服务可用后，在默认浏览器中打开移动端 Web UI。
 func (a *App) OpenRemoteWebUI() (OpenRemoteWebUIResult, error) {
+	a.remoteLifecycleMu.Lock()
+	defer a.remoteLifecycleMu.Unlock()
 	status := a.GetRemoteWebUIStatus()
 	if !status.Openable {
 		if status.Reason == "" {
@@ -798,12 +831,23 @@ func (a *App) OpenRemoteWebUI() (OpenRemoteWebUIResult, error) {
 			a.Log.Error("remote", "打开 Web UI 前启动远程服务器失败", err.Error())
 			return OpenRemoteWebUIResult{}, fmt.Errorf("start remote server before opening web ui: %w", err)
 		}
+		// Persist enabled=true. If persistence fails, STOP the just-started server and
+		// return an error (R4-Minor: symmetric with Toggle(true)'s failure path) so
+		// we never leave a running server whose enabled state did not persist — that
+		// would form a running=true / settings=false / disk=false drift.
 		if err := a.Settings.SetRemoteEnabled(true); err != nil {
-			a.Log.Warn("remote", "远程服务已启动，但无法保存启用状态", err.Error())
+			a.Remote.Stop()
+			a.Log.Error("remote", "远程服务已启动，但无法保存启用状态，已停止服务", err.Error())
+			return OpenRemoteWebUIResult{}, fmt.Errorf("persist remote enabled state: %w", err)
 		}
 	}
 
-	launchURL := a.Remote.BuildDesktopLaunchURL()
+	// Reuse the URL/grant already computed in GetRemoteWebUIStatus; do not issue
+	// a second launch grant.
+	launchURL := status.URL
+	if launchURL == "" {
+		return OpenRemoteWebUIResult{}, errors.New(status.Reason)
+	}
 	wailsRuntime.BrowserOpenURL(a.ctx, launchURL)
 
 	a.Log.Info("remote", "已打开桌面 Web UI", fmt.Sprintf("host=%s port=%d", a.Remote.GetHost(), a.Remote.GetPort()))
@@ -821,8 +865,90 @@ func (a *App) RegenerateRemoteToken() string {
 	return token
 }
 
+// RemoteSecurityEventRecord is the sanitized Wails-facing projection of one
+// durable security event (no raw line/path/secret).
+type RemoteSecurityEventRecord = remote.SecurityEventRecord
+
+// ListRemoteSecurityEvents returns the sanitized newest-first durable security
+// event log. limit 0→100, valid 1..500; invalid limits or a not-open/degraded
+// sink return an error.
+func (a *App) ListRemoteSecurityEvents(limit int) ([]RemoteSecurityEventRecord, error) {
+	return a.Remote.ListRemoteSecurityEvents(limit)
+}
+
+// buildRemoteHostSummary 是私有 HostSummary provider（design §14.1）。遍历
+// contract.KnownCLITypes，对每项调用真实 CLIResolver.Resolve(AppType,
+// ModeEmbedded, os.Environ())，仅把 bool 放入 DTO；不调用 ResolveExecutable、
+// 不复制 CLI candidate 字符串、不预 build env；错误/path/diagnostics 不外露。
+func (a *App) buildRemoteHostSummary() (contract.HostSummary, error) {
+	return hostSummaryFromResolver(a.CLIResolver, resolveAppVersion())
+}
+
+// hostSummaryFromResolver 构造 HostSummary。resolver 仅需 Resolve；可注入测试双。
+func hostSummaryFromResolver(resolver interface {
+	Resolve(platform.ResolveRequest) (platform.ResolvedLaunchSpec, error)
+}, serverVersion string) (contract.HostSummary, error) {
+	avail := make([]contract.CLIAvailability, 0, len(contract.KnownCLITypes))
+	for _, cliType := range contract.KnownCLITypes {
+		spec, err := resolver.Resolve(platform.ResolveRequest{
+			AppType:    string(cliType),
+			LaunchMode: string(session.ModeEmbedded),
+			Env:        os.Environ(),
+		})
+		available := err == nil && spec.CLI.Path != ""
+		avail = append(avail, contract.CLIAvailability{CLIType: cliType, Available: available})
+	}
+	return contract.HostSummary{
+		APIVersion:      contract.APIVersionV1,
+		ServerVersion:   serverVersion,
+		CLIAvailability: avail,
+	}, nil
+}
+
+// --- M1-A 设备配对/安全 Wails wrappers（design §14.1）---
+
+// CreateRemotePairingWindow 创建配对窗口（code 仅本次返回，不持久/不记录）。
+func (a *App) CreateRemotePairingWindow(confirmTerminalExposure bool) (remote.PairingWindowInfo, error) {
+	return a.Remote.CreatePairingWindow(confirmTerminalExposure)
+}
+
+// GetRemotePairingWindow 返回配对窗口状态（不含 code）。
+func (a *App) GetRemotePairingWindow() (remote.PairingWindowStatus, error) {
+	return a.Remote.GetPairingWindow()
+}
+
+// CancelRemotePairingWindow 按 generation CAS 取消配对窗口。
+func (a *App) CancelRemotePairingWindow(generation uint64) (bool, error) {
+	return a.Remote.CancelPairingWindow(generation)
+}
+
+// ListRemoteDevices 返回已配对设备列表。
+func (a *App) ListRemoteDevices() ([]remote.DeviceInfo, error) {
+	return a.Remote.ListDevices()
+}
+
+// RevokeRemoteDevice 撤销设备（confirm=false 拒绝）。
+func (a *App) RevokeRemoteDevice(deviceID string, confirm bool) (remote.RevokeDeviceResult, error) {
+	if strings.TrimSpace(deviceID) == "" {
+		return remote.RevokeDeviceResult{}, fmt.Errorf("device id required")
+	}
+	return a.Remote.RevokeDevice(deviceID, confirm)
+}
+
+// GetRemoteSecurityHealth 返回有界安全健康快照。
+func (a *App) GetRemoteSecurityHealth() remote.SecurityHealthSnapshot {
+	return a.Remote.GetSecurityHealth()
+}
+
+// AcknowledgeRemoteSecurityHealth 确认一个 closed health code（不 resolve/retry）。
+func (a *App) AcknowledgeRemoteSecurityHealth(code string) (remote.SecurityHealthSnapshot, error) {
+	return a.Remote.AcknowledgeSecurityHealth(code)
+}
+
 // ToggleRemoteServer 启动或停止远程服务器。
 func (a *App) ToggleRemoteServer(enabled bool) error {
+	a.remoteLifecycleMu.Lock()
+	defer a.remoteLifecycleMu.Unlock()
 	if enabled {
 		if err := a.Remote.Start(a.ctx); err != nil {
 			a.Log.Error("remote", "启动远程服务器失败", err.Error())
@@ -848,6 +974,8 @@ func (a *App) SetRemotePort(port int) error {
 	if port < 1024 || port > 65535 {
 		return fmt.Errorf("port %d out of valid range [1024, 65535]", port)
 	}
+	a.remoteLifecycleMu.Lock()
+	defer a.remoteLifecycleMu.Unlock()
 	if err := a.Settings.SetRemotePort(port); err != nil {
 		return err
 	}
@@ -864,11 +992,14 @@ func (a *App) SetRemotePort(port int) error {
 		}
 		a.Log.Info("remote", "远程服务器已在新端口启动", fmt.Sprintf("port=%d", port))
 	}
+	a.Remote.EmitListenConfigurationChanged() // user-initiated change; not Startup restore
 	return nil
 }
 
 // SetRemoteHost 设置远程服务器监听地址（需先停止服务器，再设置地址，再启动）。
 func (a *App) SetRemoteHost(host string) error {
+	a.remoteLifecycleMu.Lock()
+	defer a.remoteLifecycleMu.Unlock()
 	if err := a.Settings.SetRemoteHost(host); err != nil {
 		return err
 	}
@@ -885,10 +1016,43 @@ func (a *App) SetRemoteHost(host string) error {
 		}
 		a.Log.Info("remote", "远程服务器已在新地址启动", fmt.Sprintf("host=%s", host))
 	}
+	a.Remote.EmitListenConfigurationChanged() // user-initiated change; not Startup restore
 	return nil
 }
 
-// --- remote.PtyBridge 实现（委托给 pty.Service）---
+// SetRemoteEndpoint updates the remote listen host AND port in a single backend
+// transaction (Minor-02): one validation + one settings Save, so a partial
+// failure (host ok, port invalid — or vice-versa) never persists one without the
+// other. The whole stopped-check → live tuple swap → restart sequence runs under
+// remoteLifecycleMu (shared with ToggleRemoteServer) so two concurrent endpoint
+// calls, or an endpoint vs a toggle, cannot interleave and leave the live server
+// on a mixed host:port tuple (R2-Minor-02). The server is stopped/restarted
+// around the in-memory swap exactly like the individual setters, but only if the
+// transactional Save succeeded. The legacy SetRemoteHost/SetRemotePort remain
+// for their existing callers.
+func (a *App) SetRemoteEndpoint(host string, port int) error {
+	a.remoteLifecycleMu.Lock()
+	defer a.remoteLifecycleMu.Unlock()
+	if err := a.Settings.SetRemoteEndpoint(host, port); err != nil {
+		return err
+	}
+	wasRunning := a.Remote.IsRunning()
+	if wasRunning {
+		a.Remote.Stop()
+	}
+	a.Remote.SetHost(host)
+	a.Remote.SetPort(port)
+	a.Log.Info("remote", "监听地址与端口已更新", fmt.Sprintf("host=%s port=%d", host, port))
+	if wasRunning {
+		if err := a.Remote.Start(a.ctx); err != nil {
+			a.Log.Error("remote", "更换地址与端口后重启服务器失败", err.Error())
+			return fmt.Errorf("restart remote server on %s:%d: %w", host, port, err)
+		}
+		a.Log.Info("remote", "远程服务器已在新地址与端口启动", fmt.Sprintf("host=%s port=%d", host, port))
+	}
+	a.Remote.EmitListenConfigurationChanged() // user-initiated change; not Startup restore
+	return nil
+}
 
 func (a *App) RegisterOutputCallback(sessionID string, id string, cb func(data []byte)) {
 	a.Pty.RegisterOutputCallback(sessionID, id, cb)
@@ -922,6 +1086,12 @@ func (a *App) Startup(ctx context.Context) {
 
 	a.Log.Info("app", "应用启动")
 	loadState := persistentLoadState{initialized: true}
+
+	// M1-B3c: 在 Settings.Load 前运行远程安全迁移 gate。若 settings.json 为 v0
+	// （含 legacy remoteToken），gate 在 raw bytes 上完成 v0→v1 迁移；迁移路径下
+	// gate 本身执行唯一的 LoadSecurityState，否则交由下方常规路径执行一次。
+	// 任何失败/ManualRepair/Future 路径都记录固定警告（不含路径/值/秘密）且不 Start。
+	securityLoaded, startAllowed := a.runRemoteSecurityMigrationGate()
 
 	// 加载设置并同步 GitHub Token 到 Updater
 	remoteEnabled := false
@@ -1064,15 +1234,11 @@ func (a *App) Startup(ctx context.Context) {
 
 	// 远程 API 仅在用户显式启用后恢复。新安装和没有该设置的旧配置
 	// 默认保持 loopback 且不监听，避免无意暴露到局域网。
-	if remoteEnabled {
-		if err := a.Remote.Start(ctx); err != nil {
-			a.Log.Warn("app", "远程服务器启动失败（不影响主功能）", err.Error())
-		} else {
-			a.Log.Info("app", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
-		}
-	} else {
-		a.Log.Info("app", "远程服务器未启用；可在设置中显式启动")
-	}
+	// M1-B3c：remote load/start 由迁移 gate 结果守卫。LoadSecurityState 在所有
+	// 路径上仅调用一次（迁移路径由 gate 步骤 a 完成；Missing/Current 由此处完成；
+	// Future/Manual/失败路径全部跳过）。Start 条件为 remoteEnabled && startAllowed；
+	// 回滚成功及一切失败路径永不 Start（design §C.4）。
+	a.applyRemoteGateResult(ctx, securityLoaded, startAllowed, remoteEnabled)
 
 	// 启动系统托盘（仅在平台能力允许时）
 	capabilities := a.platformCapabilities()
@@ -1098,6 +1264,10 @@ func (a *App) Shutdown(ctx context.Context) {
 
 	a.Tray.Stop()
 	a.Remote.Stop()
+	// M1-B1: idempotently close the durable security event sink on shutdown.
+	if err := a.Remote.CloseSecurityState(); err != nil {
+		a.Log.Warn("remote", "关闭持久安全事件 sink 失败", err.Error())
+	}
 	if a.Usage != nil {
 		if err := a.Usage.Close(); err != nil {
 			a.Log.Error("usage", "关闭使用统计失败", err.Error())

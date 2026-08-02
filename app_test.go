@@ -3,18 +3,23 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/paths"
+	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
+	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
@@ -476,15 +481,16 @@ func newTestAppWithRemote(t *testing.T) *App {
 	}
 
 	app := &App{
-		Config:   cfgSvc,
-		Secrets:  secretsSvc,
-		Sessions: session.NewManager(),
-		Launcher: launcher.NewLauncherService(logSvc, envVarsSvc),
-		Pty:      pty.NewService(logSvc),
-		EnvVars:  envVarsSvc,
-		Paths:    pathsSvc,
-		Log:      logSvc,
-		Settings: settingsSvc,
+		Config:    cfgSvc,
+		Secrets:   secretsSvc,
+		Sessions:  session.NewManager(),
+		Launcher:  launcher.NewLauncherService(logSvc, envVarsSvc),
+		Pty:       pty.NewService(logSvc),
+		EnvVars:   envVarsSvc,
+		Paths:     pathsSvc,
+		Log:       logSvc,
+		Settings:  settingsSvc,
+		configDir: configDir,
 	}
 
 	// Wire Remote with embedded test FS.
@@ -651,5 +657,464 @@ func TestGetStartupWarnings_ReturnsCopy(t *testing.T) {
 	again := app.GetStartupWarnings()
 	if again[0] != "original" {
 		t.Fatalf("internal state was mutated: got %q, want %q", again[0], "original")
+	}
+}
+
+// fakeResolver records Resolve calls and returns a standard-binary path for the
+// canonical Claude app type only (proves the provider routes through Resolve and
+// maps availability to bool; it does NOT replicate CLI candidate mapping).
+type fakeResolver struct {
+	called []string
+}
+
+func (f *fakeResolver) Resolve(req platform.ResolveRequest) (platform.ResolvedLaunchSpec, error) {
+	f.called = append(f.called, req.AppType)
+	if req.LaunchMode != string(session.ModeEmbedded) {
+		return platform.ResolvedLaunchSpec{}, nil
+	}
+	spec := platform.ResolvedLaunchSpec{AppType: req.AppType, LaunchMode: req.LaunchMode}
+	if req.AppType == string(contract.CLITypeClaudeCode) {
+		spec.CLI = platform.ResolvedCLI{Path: "/usr/bin/claude"}
+	}
+	return spec, nil
+}
+
+func (f *fakeResolver) ResolveExecutable(string, []string, []string) (platform.ResolvedCLI, platform.LaunchDiagnostics, error) {
+	panic("provider must not call ResolveExecutable")
+}
+
+func TestHostSummaryProviderUsesResolverAppType(t *testing.T) {
+	r := &fakeResolver{}
+	hs, err := hostSummaryFromResolver(r, "1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hs.APIVersion != contract.APIVersionV1 || hs.ServerVersion != "1.2.3" {
+		t.Fatalf("host summary header wrong: %+v", hs)
+	}
+	if len(hs.CLIAvailability) != len(contract.KnownCLITypes) {
+		t.Fatalf("availability len=%d want %d", len(hs.CLIAvailability), len(contract.KnownCLITypes))
+	}
+	// Every KnownCLIType was resolved exactly once via Resolve (no ResolveExecutable).
+	if len(r.called) != len(contract.KnownCLITypes) {
+		t.Fatalf("Resolve called %d times want %d", len(r.called), len(contract.KnownCLITypes))
+	}
+	byType := map[contract.CLIType]bool{}
+	for _, a := range hs.CLIAvailability {
+		byType[a.CLIType] = a.Available
+	}
+	// Canonical Claude app type is available (standard binary); others are not.
+	if !byType[contract.CLITypeClaudeCode] {
+		t.Fatal("claudecode should be available via resolver standard binary")
+	}
+	for _, ct := range []contract.CLIType{contract.CLITypeOpenCode, contract.CLITypeCodex, contract.CLITypePi} {
+		if byType[ct] {
+			t.Fatalf("%s should be unavailable", ct)
+		}
+	}
+}
+
+// --- M1-B2c1: App user-initiated listen-config events ---
+
+func validHostSummaryMain() contract.HostSummary {
+	return contract.HostSummary{
+		APIVersion:    contract.APIVersionV1,
+		ServerVersion: "test",
+		CLIAvailability: []contract.CLIAvailability{
+			{CLIType: contract.CLITypeClaudeCode, Available: true},
+			{CLIType: contract.CLITypeOpenCode, Available: false},
+			{CLIType: contract.CLITypeCodex, Available: false},
+			{CLIType: contract.CLITypePi, Available: false},
+		},
+	}
+}
+
+func TestAppConfigEventOnUserChange(t *testing.T) {
+	app := newTestAppWithRemote(t)
+	secDir := t.TempDir()
+	opts := remote.NewProductionSecurityOptions(secDir, func() (contract.HostSummary, error) {
+		return validHostSummaryMain(), nil
+	})
+	secSrv := remote.NewServerWithSecurity(0, app, app.Log, embed.FS{}, opts)
+	app.Remote = secSrv
+	if err := secSrv.LoadSecurityState(); err != nil {
+		t.Fatalf("LoadSecurityState: %v", err)
+	}
+
+	configEventCount := func() int {
+		n := 0
+		for _, r := range func() []remote.SecurityEventRecord { r, _ := secSrv.ListRemoteSecurityEvents(0); return r }() {
+			if r.Kind == "remote_listen_configuration_changed" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Startup-style direct SetPort must NOT emit a config event.
+	secSrv.SetPort(8680)
+	if configEventCount() != 0 {
+		t.Fatal("direct SetPort (Startup-style restore) must not emit a config event")
+	}
+
+	// User SetRemotePort success → emits exactly one config event.
+	if err := app.SetRemotePort(9001); err != nil {
+		t.Fatalf("SetRemotePort: %v", err)
+	}
+	if configEventCount() != 1 {
+		t.Fatalf("after SetRemotePort: config events=%d want 1", configEventCount())
+	}
+
+	// User SetRemoteHost success → emits a second config event.
+	if err := app.SetRemoteHost("127.0.0.1"); err != nil {
+		t.Fatalf("SetRemoteHost: %v", err)
+	}
+	if configEventCount() != 2 {
+		t.Fatalf("after SetRemoteHost: config events=%d want 2", configEventCount())
+	}
+}
+
+func TestAppListRemoteSecurityEventsWrapper(t *testing.T) {
+	app := newTestAppWithRemote(t)
+	secDir := t.TempDir()
+	opts := remote.NewProductionSecurityOptions(secDir, func() (contract.HostSummary, error) {
+		return validHostSummaryMain(), nil
+	})
+	secSrv := remote.NewServerWithSecurity(0, app, app.Log, embed.FS{}, opts)
+	app.Remote = secSrv
+	if err := secSrv.LoadSecurityState(); err != nil {
+		t.Fatalf("LoadSecurityState: %v", err)
+	}
+
+	// Emit a closed event via the App wrapper (SetRemotePort emits config_changed).
+	if err := app.SetRemotePort(9001); err != nil {
+		t.Fatalf("SetRemotePort: %v", err)
+	}
+
+	// App.ListRemoteSecurityEvents(0) returns the sanitized record.
+	recs, err := app.ListRemoteSecurityEvents(0)
+	if err != nil {
+		t.Fatalf("ListRemoteSecurityEvents(0): %v", err)
+	}
+	if len(recs) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	if recs[0].Kind != "remote_listen_configuration_changed" {
+		t.Fatalf("first record kind=%q want remote_listen_configuration_changed", recs[0].Kind)
+	}
+
+	// Invalid limit propagated as error.
+	if _, err := app.ListRemoteSecurityEvents(-1); err == nil {
+		t.Fatal("invalid limit must return error via the wrapper")
+	}
+	if _, err := app.ListRemoteSecurityEvents(501); err == nil {
+		t.Fatal("limit>500 must return error via the wrapper")
+	}
+}
+
+// --- Minor-02: SetRemoteEndpoint is a single transaction (host+port) ---
+
+// newRemoteAppForEndpoint builds an App wired with a real security Remote and a
+// loaded Settings service so SetRemoteEndpoint can be exercised transactionally.
+func newRemoteAppForEndpoint(t *testing.T) *App {
+	t.Helper()
+	app := newTestAppWithRemote(t)
+	secDir := t.TempDir()
+	opts := remote.NewProductionSecurityOptions(secDir, func() (contract.HostSummary, error) {
+		return validHostSummaryMain(), nil
+	})
+	secSrv := remote.NewServerWithSecurity(0, app, app.Log, embed.FS{}, opts)
+	app.Remote = secSrv
+	if err := secSrv.LoadSecurityState(); err != nil {
+		t.Fatalf("LoadSecurityState: %v", err)
+	}
+	return app
+}
+
+// TestSetRemoteEndpoint_Success_BothPersisted: a valid host+port persists BOTH
+// in one Save and updates the live server host/port.
+func TestSetRemoteEndpoint_Success_BothPersisted(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	if err := app.SetRemoteEndpoint("192.168.1.55", 9999); err != nil {
+		t.Fatalf("SetRemoteEndpoint: %v", err)
+	}
+	if got := app.Settings.GetRemoteHost(); got != "192.168.1.55" {
+		t.Fatalf("GetRemoteHost=%q want 192.168.1.55", got)
+	}
+	if got := app.Settings.GetRemotePort(); got != 9999 {
+		t.Fatalf("GetRemotePort=%d want 9999", got)
+	}
+	if got := app.Remote.GetHost(); got != "192.168.1.55" {
+		t.Fatalf("server host=%q want 192.168.1.55", got)
+	}
+	if got := app.Remote.GetPort(); got != 9999 {
+		t.Fatalf("server port=%d want 9999", got)
+	}
+}
+
+// TestSetRemoteEndpoint_BadPort_HostNotPersisted: an out-of-range port fails
+// validation with NO persistence — the host is NOT applied (transactional).
+func TestSetRemoteEndpoint_BadPort_HostNotPersisted(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	hostBefore := app.Remote.GetHost()
+	portBefore := app.Remote.GetPort()
+	settingsHostBefore := app.Settings.GetRemoteHost()
+	if err := app.SetRemoteEndpoint("10.0.0.5", 80); err == nil {
+		t.Fatal("port 80 must be rejected (out of range)")
+	}
+	// Neither host nor port changed (compare each surface to its own before value).
+	if got := app.Remote.GetHost(); got != hostBefore {
+		t.Fatalf("server host leaked on bad port: got=%q want=%q", got, hostBefore)
+	}
+	if got := app.Remote.GetPort(); got != portBefore {
+		t.Fatalf("server port leaked on bad port: got=%d want=%d", got, portBefore)
+	}
+	if got := app.Settings.GetRemoteHost(); got != settingsHostBefore {
+		t.Fatalf("settings host leaked on bad port: got=%q want=%q", got, settingsHostBefore)
+	}
+}
+
+// TestSetRemoteEndpoint_BadHost_PortNotPersisted: an empty host fails validation
+// with NO persistence — the port is NOT applied (transactional).
+func TestSetRemoteEndpoint_BadHost_PortNotPersisted(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	hostBefore := app.Remote.GetHost()
+	portBefore := app.Remote.GetPort()
+	settingsPortBefore := app.Settings.GetRemotePort()
+	if err := app.SetRemoteEndpoint("   ", 7777); err == nil {
+		t.Fatal("empty/blank host must be rejected")
+	}
+	if got := app.Remote.GetHost(); got != hostBefore {
+		t.Fatalf("server host leaked on bad host: got=%q want=%q", got, hostBefore)
+	}
+	if got := app.Remote.GetPort(); got != portBefore {
+		t.Fatalf("server port leaked on bad host: got=%d want=%d", got, portBefore)
+	}
+	if got := app.Settings.GetRemotePort(); got != settingsPortBefore {
+		t.Fatalf("settings port leaked on bad host: got=%d want=%d", got, settingsPortBefore)
+	}
+}
+
+// TestSetRemoteEndpoint_AtomicReload: reloading the SAME Settings service from
+// disk after a successful SetRemoteEndpoint reads back BOTH values (on-disk
+// atomicity, not just in-memory).
+func TestSetRemoteEndpoint_AtomicReload(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	if err := app.SetRemoteEndpoint("172.16.0.9", 8681); err != nil {
+		t.Fatalf("SetRemoteEndpoint: %v", err)
+	}
+	// Reload the live Settings service from its on-disk file and verify both.
+	if err := app.Settings.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := app.Settings.GetRemoteHost(); got != "172.16.0.9" {
+		t.Fatalf("reloaded host=%q want 172.16.0.9", got)
+	}
+	if got := app.Settings.GetRemotePort(); got != 8681 {
+		t.Fatalf("reloaded port=%d want 8681", got)
+	}
+}
+
+// --- R2-Minor-02: App-layer endpoint/toggle lifecycle serialization ---
+
+// appEndpointPairs are distinct valid (host,port) tuples for the App concurrency
+// tests. The live server stores host/port in separate fields, so without the
+// remoteLifecycleMu two concurrent endpoints could interleave SetHost/SetPort
+// and leave a mixed tuple (host_i, port_j).
+func appEndpointPairs(n int) []struct {
+	host string
+	port int
+} {
+	out := make([]struct {
+		host string
+		port int
+	}, n)
+	for i := 0; i < n; i++ {
+		out[i] = struct {
+			host string
+			port int
+		}{host: fmt.Sprintf("10.0.0.%d", i+2), port: 9000 + i}
+	}
+	return out
+}
+
+// TestSetRemoteEndpoint_AppConcurrent_LiveTupleNotMixed runs N concurrent
+// App.SetRemoteEndpoint calls (server NOT running, so the stopped-check→
+// SetHost→SetPort→Save path is exercised). With remoteLifecycleMu the live
+// server host:port must be ONE consistent pair — never a mix. Run with -race.
+func TestSetRemoteEndpoint_AppConcurrent_LiveTupleNotMixed(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	app.ctx = t.Context()
+	pairs := appEndpointPairs(8)
+	var wg sync.WaitGroup
+	for _, p := range pairs {
+		wg.Add(1)
+		go func(p struct {
+			host string
+			port int
+		}) {
+			defer wg.Done()
+			if err := app.SetRemoteEndpoint(p.host, p.port); err != nil {
+				t.Errorf("SetRemoteEndpoint(%s,%d): %v", p.host, p.port, err)
+			}
+		}(p)
+	}
+	wg.Wait()
+	host := app.Remote.GetHost()
+	port := app.Remote.GetPort()
+	matched := false
+	for _, p := range pairs {
+		if host == p.host && port == p.port {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("live tuple (%s,%d) is MIXED — concurrent endpoints interleaved SetHost/SetPort", host, port)
+	}
+	// Live tuple must match persisted settings (single transaction).
+	if got := app.Settings.GetRemoteHost(); got != host {
+		t.Fatalf("settings host=%q != live host=%q", got, host)
+	}
+	if got := app.Settings.GetRemotePort(); got != port {
+		t.Fatalf("settings port=%d != live port=%d", got, port)
+	}
+}
+
+// TestSetRemoteEndpoint_VsToggle_Serialized runs concurrent SetRemoteEndpoint
+// and ToggleRemoteServer(false). With remoteLifecycleMu they serialize: no
+// panic, and the final live host:port is a consistent tuple (the endpoint's, or
+// the pre-call baseline if the toggle ran last without changing host/port). The
+// toggle(false) path does not touch host/port, so the endpoint's pair wins.
+func TestSetRemoteEndpoint_VsToggle_Serialized(t *testing.T) {
+	for trial := 0; trial < 10; trial++ {
+		app := newRemoteAppForEndpoint(t)
+		app.ctx = t.Context()
+		// Baseline endpoint.
+		if err := app.SetRemoteEndpoint("10.0.0.1", 9001); err != nil {
+			t.Fatalf("baseline: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = app.SetRemoteEndpoint("10.0.0.9", 9009)
+		}()
+		go func() {
+			defer wg.Done()
+			// Toggle off (server not running → Stop is a no-op; persists enabled=false).
+			_ = app.ToggleRemoteServer(false)
+		}()
+		wg.Wait()
+		host := app.Remote.GetHost()
+		port := app.Remote.GetPort()
+		// The toggle(false) never changes host/port, so the final tuple is either
+		// the new endpoint pair or the baseline — both are consistent (not mixed).
+		consistent := (host == "10.0.0.9" && port == 9009) || (host == "10.0.0.1" && port == 9001)
+		if !consistent {
+			t.Fatalf("trial %d: live tuple (%s,%d) is MIXED after endpoint-vs-toggle", trial, host, port)
+		}
+		// Live host/port must agree with persisted settings.
+		if app.Settings.GetRemoteHost() != host || app.Settings.GetRemotePort() != port {
+			t.Fatalf("trial %d: settings (%s,%d) != live (%s,%d)", trial, app.Settings.GetRemoteHost(), app.Settings.GetRemotePort(), host, port)
+		}
+	}
+}
+
+// --- R3-Minor-02 ①: OpenRemoteWebUI shares remoteLifecycleMu ---
+
+// TestOpenRemoteWebUI_SerializedUnderLifecycleMu proves OpenRemoteWebUI acquires
+// remoteLifecycleMu (R3-Minor-02 ①): while another lifecycle op holds the mutex,
+// OpenRemoteWebUI blocks; once released it proceeds. This closes the bypass
+// where OpenRemoteWebUI's Remote.Start could interleave with SetRemoteEndpoint.
+func TestOpenRemoteWebUI_SerializedUnderLifecycleMu(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	app.ctx = t.Context()
+
+	// Hold the lifecycle mutex from another goroutine.
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		app.remoteLifecycleMu.Lock()
+		close(held)
+		<-release
+		app.remoteLifecycleMu.Unlock()
+	}()
+	<-held // deterministic: the goroutine now holds the mutex
+
+	// OpenRemoteWebUI must block while the mutex is held.
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := app.OpenRemoteWebUI()
+		openDone <- err
+	}()
+	select {
+	case err := <-openDone:
+		t.Fatalf("OpenRemoteWebUI returned (err=%v) while remoteLifecycleMu was held — mutex not acquired", err)
+	case <-time.After(40 * time.Millisecond):
+		// Good: blocked.
+	}
+	// Release; OpenRemoteWebUI should now proceed (it returns an error because the
+	// test app has no real mobile web / Wails browser runtime, but that is fine —
+	// we only asserted the serialization).
+	close(release)
+	select {
+	case <-openDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenRemoteWebUI did not return after the mutex was released")
+	}
+}
+
+// --- R4-Minor: OpenRemoteWebUI persistence-failure three-way consistency ---
+
+// TestOpenRemoteWebUI_SetRemoteEnabledFails_StopsServer_ThreeWayConsistent
+// proves the R4-Minor fix: when Open starts the server but SetRemoteEnabled(true)
+// persistence fails, Open STOPS the just-started server and returns an error
+// (symmetric with Toggle(true)) so running/settings/disk stay consistent at the
+// pre-call value, instead of leaving a running server whose enabled state did
+// not persist.
+func TestOpenRemoteWebUI_SetRemoteEnabledFails_StopsServer_ThreeWayConsistent(t *testing.T) {
+	app := newRemoteAppForEndpoint(t)
+	app.ctx = t.Context()
+	app.Remote.SetPort(0)
+	app.Remote.SetHost("127.0.0.1")
+
+	// Make the Web UI Openable: configure a webRoot with an index.html so
+	// GetRemoteWebUIStatus.Openable==true and the Start path is reached.
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+	if err := app.Settings.SetMobileWebRoot(webDir); err != nil {
+		t.Fatalf("SetMobileWebRoot: %v", err)
+	}
+
+	// Inject a Save failure for SetRemoteEnabled(true): make the .tmp path a dir.
+	tmpDir := filepath.Join(app.configDir, "settings.json.tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir tmp fault: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	res, err := app.OpenRemoteWebUI()
+	if err == nil {
+		t.Fatal("OpenRemoteWebUI must return an error when SetRemoteEnabled persistence fails")
+	}
+	_ = res
+	// Three-way consistency at the pre-call value (enabled was false, not running):
+	// live server stopped, settings reverted, disk unchanged.
+	if app.Remote.IsRunning() {
+		t.Fatal("server must be STOPPED after Open's SetRemoteEnabled failure (no running/disk drift)")
+	}
+	if app.Settings.GetRemoteEnabled() {
+		t.Fatal("settings enabled must be REVERTED to false after Open's persistence failure")
+	}
+	// Disk: reload a fresh service and confirm enabled is still false.
+	fresh := settings.NewService(app.configDir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if fresh.GetRemoteEnabled() {
+		t.Fatal("disk enabled must still be false (SetRemoteEnabled failed before rename)")
 	}
 }

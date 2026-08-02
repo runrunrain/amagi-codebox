@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!--
+  TEST-ONLY dev harness（M1-C PG-05 浏览器证据用）。
+  本入口仅由 `vite dev` 直接访问（/harness/remote/），
+  生产构建入口是 frontend/index.html，本文件与 stub 均不进入生产 bundle。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RemoteSettings Harness (test-only)</title>
+    <style>
+      body {
+        margin: 0;
+        background: #faf9f5;
+      }
+      .harness-frame {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 28px 24px;
+      }
+      .harness-banner {
+        font: 12px/1.5 -apple-system, 'PingFang SC', sans-serif;
+        color: #6c6a64;
+        border: 1px dashed #8e8b82;
+        border-radius: 8px;
+        padding: 6px 10px;
+        margin-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="harness-frame">
+      <div class="harness-banner">TEST-ONLY harness · window.go.main.App 为场景 stub，非真实后端</div>
+      <div id="app"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

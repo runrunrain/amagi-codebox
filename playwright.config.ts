@@ -59,11 +59,14 @@ export default defineConfig({
     },
     {
       name: 'mobile-320',
-      testIgnore: ['**/network.spec.ts', '**/timing.spec.ts'],
+      // connect-pg01-real 每用例拉起真 harness，开销按设计只在 mobile-360 承担一次。
+      testIgnore: ['**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts'],
       use: { viewport: { width: 320, height: 800 }, isMobile: true, hasTouch: true },
     },
     {
       name: 'desktop',
+      // 真服务器配对 E2E 属移动 PG-01 场景（M1-D2），desktop 不重复跑。
+      testIgnore: ['**/connect-pg01-real.spec.ts'],
       use: { viewport: { width: 1280, height: 720 } },
     },
   ],

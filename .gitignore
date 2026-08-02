@@ -55,3 +55,7 @@ test-results/
 playwright-report/
 /blob-report/
 /playwright/.cache
+
+# E2E harness 本地构建产物（源码在 e2e/harness/，二进制不入库）
+/e2e/harness/remote-server/remote-server
+/remote-server

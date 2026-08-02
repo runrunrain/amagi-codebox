@@ -90,6 +90,10 @@ export function SetRemoteEnabled(arg1) {
   return window['go']['settings']['Service']['SetRemoteEnabled'](arg1);
 }
 
+export function SetRemoteEndpoint(arg1, arg2) {
+  return window['go']['settings']['Service']['SetRemoteEndpoint'](arg1, arg2);
+}
+
 export function SetRemoteHost(arg1) {
   return window['go']['settings']['Service']['SetRemoteHost'](arg1);
 }

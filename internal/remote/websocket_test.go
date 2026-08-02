@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -163,7 +164,9 @@ func TestWebSocketControllerReceivesDimensionsWithoutOwningResize(t *testing.T) 
 	t.Cleanup(httpServer.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/terminal/session-1?token=" + url.QueryEscape(srv.GetToken()) + "&mode=controller"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	hdr := http.Header{}
+	hdr.Set("Origin", httpServer.URL)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
@@ -209,7 +212,9 @@ func TestWebSocketReplaysHistoryBeforeBufferedLiveOutput(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/terminal/session-1?token=" + url.QueryEscape(srv.GetToken()) + "&mode=observer"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	hdr := http.Header{}
+	hdr.Set("Origin", httpServer.URL)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}

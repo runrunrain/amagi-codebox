@@ -46,6 +46,8 @@ export function SetMobileWebRoot(arg1:string):Promise<void>;
 
 export function SetRemoteEnabled(arg1:boolean):Promise<void>;
 
+export function SetRemoteEndpoint(arg1:string,arg2:number):Promise<void>;
+
 export function SetRemoteHost(arg1:string):Promise<void>;
 
 export function SetRemotePort(arg1:number):Promise<void>;

@@ -8,11 +8,13 @@ const route = useRoute()
 const drawerOpen = ref(false)
 
 const isTerminalView = () => route.name === 'terminal'
+// M1-D1：PG-01 连接配对页 / 大厅占位使用独立壳（VT 浅色、无 legacy 导航）
+const isBareView = () => route.meta.bare === true
 </script>
 
 <template>
-  <div class="app-layout">
-    <header v-if="!isTerminalView()" class="top-bar">
+  <div class="app-layout" :class="{ 'app-layout--bare': isBareView() }">
+    <header v-if="!isTerminalView() && !isBareView()" class="top-bar">
       <button class="menu-btn" @click="drawerOpen = true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="3" y1="6" x2="21" y2="6" />
@@ -24,13 +26,13 @@ const isTerminalView = () => route.name === 'terminal'
       <ConnectionStatus />
     </header>
 
-    <DrawerNav v-model:open="drawerOpen" />
+    <DrawerNav v-if="!isBareView()" v-model:open="drawerOpen" />
 
-    <main class="content" :class="{ 'content--terminal': isTerminalView() }">
+    <main class="content" :class="{ 'content--terminal': isTerminalView(), 'content--bare': isBareView() }">
       <router-view :key="route.fullPath" />
     </main>
 
-    <nav v-if="!isTerminalView()" class="bottom-nav">
+    <nav v-if="!isTerminalView() && !isBareView()" class="bottom-nav">
       <router-link to="/sessions" class="nav-item" active-class="nav-item--active">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="2" y="3" width="20" height="14" rx="2" />
@@ -75,6 +77,15 @@ const isTerminalView = () => route.name === 'terminal'
   height: 100dvh;
   background: #0d1117;
   color: #c9d1d9;
+}
+
+.app-layout--bare {
+  background: var(--VT-canvas, #FAF9F5);
+  color: var(--VT-text, #252523);
+}
+
+.content--bare {
+  overflow-y: auto;
 }
 
 .top-bar {

@@ -99,3 +99,12 @@ export const V1_REST_ENDPOINTS = [
   { method: 'POST', path: '/sessions/{id}/control/acquire', successStatus: 200 },
   { method: 'POST', path: '/sessions/{id}/control/release', successStatus: 200 },
 ] as const satisfies readonly RestEndpoint[];
+
+/**
+ * Named endpoint handles consumed by clients (Minor-01). These are direct
+ * references INTO the frozen manifest above — consumers must import these
+ * (or index V1_REST_ENDPOINTS themselves) instead of copying method/path
+ * strings, so a contract change cannot silently drift from the client.
+ */
+export const V1_ENDPOINT_PAIRING_COMPLETE: RestEndpoint = V1_REST_ENDPOINTS[0];
+export const V1_ENDPOINT_HOST_SUMMARY: RestEndpoint = V1_REST_ENDPOINTS[1];

@@ -11,45 +11,43 @@ import (
 
 // registerRoutes 注册所有 REST API 路由。
 func (s *Server) registerRoutes(mux *http.ServeMux) {
-	// App info
+	// App info (read-only; not sensitive)
 	mux.HandleFunc("GET /api/info", s.handleGetInfo)
 
-	// Sessions
+	// Sessions — writes/controls are loopback-only (inner guard, §A.1).
 	mux.HandleFunc("GET /api/sessions", s.handleGetSessions)
 	mux.HandleFunc("GET /api/sessions/launch-meta", s.handleGetLaunchMeta)
-	mux.HandleFunc("POST /api/sessions/launch", s.handleLaunchSession)
-	mux.HandleFunc("POST /api/sessions/launch-codex", s.handleLaunchCodex)
-	mux.HandleFunc("POST /api/sessions/launch-opencode", s.handleLaunchOpenCode)
-	mux.HandleFunc("POST /api/sessions/launch-pi", s.handleLaunchPi)
-	mux.HandleFunc("POST /api/sessions/clear-stopped", s.handleClearStopped)
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleStopSession)
-	mux.HandleFunc("POST /api/sessions/{id}/resize", s.handleResizeSession)
-	mux.HandleFunc("DELETE /api/sessions/{id}/remove", s.handleRemoveSession)
+	mux.HandleFunc("POST /api/sessions/launch", s.requireLoopbackPeer(s.handleLaunchSession))
+	mux.HandleFunc("POST /api/sessions/launch-codex", s.requireLoopbackPeer(s.handleLaunchCodex))
+	mux.HandleFunc("POST /api/sessions/launch-opencode", s.requireLoopbackPeer(s.handleLaunchOpenCode))
+	mux.HandleFunc("POST /api/sessions/launch-pi", s.requireLoopbackPeer(s.handleLaunchPi))
+	mux.HandleFunc("POST /api/sessions/clear-stopped", s.requireLoopbackPeer(s.handleClearStopped))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireLoopbackPeer(s.handleStopSession))
+	mux.HandleFunc("POST /api/sessions/{id}/resize", s.requireLoopbackPeer(s.handleResizeSession))
+	mux.HandleFunc("DELETE /api/sessions/{id}/remove", s.requireLoopbackPeer(s.handleRemoveSession))
 
-	// Providers
-	mux.HandleFunc("GET /api/providers", s.handleGetProviders)
-	mux.HandleFunc("GET /api/providers/{name}", s.handleGetProvider)
-	mux.HandleFunc("PUT /api/providers/{name}", s.handleSaveProvider)
-	mux.HandleFunc("GET /api/providers-by-type/{type}", s.handleGetProvidersByType)
+	// Providers — detail/export/save/by-type may carry API keys (loopback-only).
+	mux.HandleFunc("GET /api/providers", s.requireLoopbackPeer(s.handleGetProviders))
+	mux.HandleFunc("GET /api/providers/{name}", s.requireLoopbackPeer(s.handleGetProvider))
+	mux.HandleFunc("PUT /api/providers/{name}", s.requireLoopbackPeer(s.handleSaveProvider))
+	mux.HandleFunc("GET /api/providers-by-type/{type}", s.requireLoopbackPeer(s.handleGetProvidersByType))
 
-	// Config
-	mux.HandleFunc("POST /api/config/save", s.handleSaveConfig)
+	// Config (management write face)
+	mux.HandleFunc("POST /api/config/save", s.requireLoopbackPeer(s.handleSaveConfig))
 
-	// Secrets
-	mux.HandleFunc("GET /api/secrets/diagnostics", s.handleGetDiagnostics)
+	// Secrets diagnostics (sensitive)
+	mux.HandleFunc("GET /api/secrets/diagnostics", s.requireLoopbackPeer(s.handleGetDiagnostics))
 
-	// Settings
-	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
-	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	// Settings (RemoteToken; loopback-only)
+	mux.HandleFunc("GET /api/settings", s.requireLoopbackPeer(s.handleGetSettings))
+	mux.HandleFunc("PUT /api/settings", s.requireLoopbackPeer(s.handleUpdateSettings))
 
-	// Logs
-	mux.HandleFunc("GET /api/logs", s.handleGetLogs)
+	// Logs / paths (free text / path sensitive)
+	mux.HandleFunc("GET /api/logs", s.requireLoopbackPeer(s.handleGetLogs))
+	mux.HandleFunc("GET /api/paths", s.requireLoopbackPeer(s.handleGetPaths))
 
-	// Paths
-	mux.HandleFunc("GET /api/paths", s.handleGetPaths)
-
-	// WebSocket terminal (no auth middleware here - handled inside handler via token param)
-	mux.HandleFunc("/ws/terminal/{sessionID}", s.handleWebSocketTerminal)
+	// WebSocket terminal (loopback-only inner guard; token checked inside handler)
+	mux.HandleFunc("/ws/terminal/{sessionID}", s.requireLoopbackPeer(s.handleWebSocketTerminal))
 }
 
 // --- helpers ---
@@ -94,6 +92,8 @@ func (s *Server) handleConsumeLaunchGrant(w http.ResponseWriter, r *http.Request
 	}
 
 	http.SetCookie(w, cookie)
+	// Record launch_grant only after ConsumeLaunchGrant success (one tuple).
+	s.recordLegacyAuthEvent(CarrierLaunchGrant, RouteBootstrap)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

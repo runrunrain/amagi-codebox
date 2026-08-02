@@ -12,7 +12,17 @@ import {
   ToggleRemoteServer,
   SetRemotePort,
   SetRemoteHost,
+  SetRemoteEndpoint,
+  CreateRemotePairingWindow,
+  GetRemotePairingWindow,
+  CancelRemotePairingWindow,
+  ListRemoteDevices,
+  RevokeRemoteDevice,
+  ListRemoteSecurityEvents,
+  GetRemoteSecurityHealth,
+  AcknowledgeRemoteSecurityHealth,
 } from '../../wailsjs/go/main/App';
+import type { remote } from '../../wailsjs/go/models';
 
 /**
  * Get remote token
@@ -108,4 +118,71 @@ export async function setRemoteHost(host: string): Promise<void> {
     console.error('Failed to set remote host:', error);
     throw error;
   }
+}
+
+/**
+ * Set remote host + port in ONE backend transaction (Minor-02).
+ * Either both persist or neither does — a failure never leaves a partial commit.
+ */
+export async function setRemoteEndpoint(host: string, port: number): Promise<void> {
+  try {
+    await SetRemoteEndpoint(host, port);
+  } catch (error) {
+    console.error('Failed to set remote endpoint:', error);
+    throw error;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * M1 配对 / 设备 / 安全事件 API（PG-05 桌面远程控制中心）
+ * 绑定权威来源：frontend/wailsjs/go/main/App.d.ts + models.ts（自动生成，勿手改）
+ * ------------------------------------------------------------------------- */
+
+/** 创建配对窗口。confirmTerminalExposure 必须为用户显式勾选结果（P-02 不预勾选）。 */
+export async function createRemotePairingWindow(
+  confirmTerminalExposure: boolean,
+): Promise<remote.PairingWindowInfo> {
+  return await CreateRemotePairingWindow(confirmTerminalExposure);
+}
+
+/** 查询配对窗口状态（不含一次性配对码）。 */
+export async function getRemotePairingWindow(): Promise<remote.PairingWindowStatus> {
+  return await GetRemotePairingWindow();
+}
+
+/** 按 generation CAS 取消配对窗口；返回是否实际取消成功。 */
+export async function cancelRemotePairingWindow(generation: number): Promise<boolean> {
+  return await CancelRemotePairingWindow(generation);
+}
+
+/** 已配对设备列表。 */
+export async function listRemoteDevices(): Promise<remote.DeviceInfo[]> {
+  return await ListRemoteDevices();
+}
+
+/** 撤销设备。confirm 必须来自 PG-06 确认对话的显式确认。 */
+export async function revokeRemoteDevice(
+  deviceID: string,
+  confirm: boolean,
+): Promise<remote.RevokeDeviceResult> {
+  return await RevokeRemoteDevice(deviceID, confirm);
+}
+
+/** 本地可见安全事件（sanitized 投影，newest-first）。limit 合法范围 1..500。 */
+export async function listRemoteSecurityEvents(
+  limit: number,
+): Promise<remote.SecurityEventRecord[]> {
+  return await ListRemoteSecurityEvents(limit);
+}
+
+/** 有界安全健康快照。 */
+export async function getRemoteSecurityHealth(): Promise<remote.SecurityHealthSnapshot> {
+  return await GetRemoteSecurityHealth();
+}
+
+/** 确认一个已关闭（非 active）的健康问题码；返回最新快照。 */
+export async function acknowledgeRemoteSecurityHealth(
+  code: string,
+): Promise<remote.SecurityHealthSnapshot> {
+  return await AcknowledgeRemoteSecurityHealth(code);
 }

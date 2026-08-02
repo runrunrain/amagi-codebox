@@ -1,0 +1,37 @@
+/**
+ * VT 语义令牌层（P4 视觉风格 v2.2 §5.1/§5.2 权威数值）。
+ * 作用域限定 `.remote-cc`（桌面远程控制中心 PG-05），不泄漏到全局，避免影响
+ * 应用其余部分的既有 Apple 风令牌体系。实现只允许引用语义层变量，禁止硬编码色值。
+ */
+
+.remote-cc {
+  /* 表面 */
+  --vt-canvas: #FAF9F5;
+  --vt-surface: #F4F3EE;
+  --vt-surface-raised: #EFE9DE;
+  --vt-surface-dark: #1F1E1B;
+
+  /* 边界 */
+  --vt-border: #E6DFD8;
+  --vt-border-strong: #8E8B82;
+
+  /* 文本 */
+  --vt-text: #252523;
+  --vt-text-secondary: #6C6A64;
+  --vt-text-disabled: #8E8B82;
+
+  /* 语义 */
+  --vt-accent: #C15F3C;
+  --vt-accent-strong: #A9583E;
+  --vt-success: #2F7D46;
+  --vt-warning: #8A5A12;
+  --vt-danger: #BC3F3F;
+  --vt-control: #33607D;
+  --vt-secondary: #6C6A64;
+  --vt-on-dark: #FAF9F5;
+
+  /* 三层字体栈（P4 §5.2）：衬线仅用于页面级展示标题，UI 正文无衬线，等宽用于码/倒计时 */
+  --vt-font-display: "New York", "Iowan Old Style", Georgia, "Songti SC", "Noto Serif CJK SC", serif;
+  --vt-font-ui: -apple-system, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --vt-font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}

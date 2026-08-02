@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -74,15 +75,16 @@ type TerminalSettings struct {
 
 // AppSettings 应用设置
 type AppSettings struct {
-	Dashboard     DashboardDefaults `json:"dashboard"`
-	ShellPaths    []ShellEntry      `json:"shellPaths"`
-	SavedWorkDirs []WorkDirEntry    `json:"savedWorkDirs"`
-	Terminal      TerminalSettings  `json:"terminal"`
-	RemoteHost    string            `json:"remoteHost"`
-	RemotePort    int               `json:"remotePort"`
-	RemoteEnabled bool              `json:"remoteEnabled"`
-	MobileWebRoot string            `json:"mobileWebRoot"`
-	GitHubToken   string            `json:"githubToken"`
+	Dashboard             DashboardDefaults `json:"dashboard"`
+	ShellPaths            []ShellEntry      `json:"shellPaths"`
+	SavedWorkDirs         []WorkDirEntry    `json:"savedWorkDirs"`
+	Terminal              TerminalSettings  `json:"terminal"`
+	RemoteHost            string            `json:"remoteHost"`
+	RemotePort            int               `json:"remotePort"`
+	RemoteEnabled         bool              `json:"remoteEnabled"`
+	RemoteSecurityVersion int               `json:"remoteSecurityVersion,omitempty"`
+	MobileWebRoot         string            `json:"mobileWebRoot"`
+	GitHubToken           string            `json:"githubToken"`
 }
 
 func defaultSettings() *AppSettings {
@@ -106,8 +108,9 @@ func defaultSettings() *AppSettings {
 		Terminal: TerminalSettings{
 			Scrollback: 100000,
 		},
-		RemoteHost: "127.0.0.1",
-		RemotePort: 8680,
+		RemoteHost:            "127.0.0.1",
+		RemotePort:            8680,
+		RemoteSecurityVersion: 1,
 	}
 }
 
@@ -115,7 +118,14 @@ func defaultSettings() *AppSettings {
 type Service struct {
 	configPath string
 	settings   *AppSettings
-	mu         sync.RWMutex
+	mu         sync.RWMutex // guards the live settings pointer + fields
+	// saveMu serializes all persistence commits so concurrent setters cannot
+	// interleave or overwrite each other (R2-Minor-02). It is held across the
+	// mutate+save transaction by the transactional setters (SetRemoteEndpoint /
+	// SetRemoteHost / SetRemotePort / SetRemoteEnabled); Save() takes it for
+	// plain callers. Inner data access still uses mu; saveMu is always acquired
+	// BEFORE mu (lock ordering saveMu → mu), and no path takes mu→saveMu.
+	saveMu sync.Mutex
 }
 
 func NewService(configDir string) *Service {
@@ -126,6 +136,8 @@ func NewService(configDir string) *Service {
 }
 
 func (s *Service) Load() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -160,14 +172,30 @@ func (s *Service) Load() error {
 }
 
 func (s *Service) Save() error {
-	s.mu.RLock()
-	cfg := s.settings
-	path := s.configPath
-	s.mu.RUnlock()
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	return s.saveLocked()
+}
 
+// saveLocked marshals an immutable deep-copy snapshot and writes it atomically.
+// The caller MUST hold saveMu so concurrent commits serialize. It snapshots
+// settings under mu (deep copy), then marshals the snapshot — never the live
+// pointer — so a concurrent setter cannot drift the marshal mid-flight
+// (R2-Minor-02: "Save no longer marshals a pointer released after RLock").
+//
+// Commit boundary (R4-Minor): os.Rename is the LAST fallible step. The temp file
+// is fully prepared (written + chmod 0600 + Sync) BEFORE the rename, and rename
+// carries the temp's inode/mode onto the final path. There is NO fallible step
+// after rename (the old post-rename chmod is removed), so any error returned by
+// saveLocked is guaranteed to mean "not committed" — callers may safely revert
+// in-memory state on error without risking a disk/memory split where disk holds
+// the new value but memory was rolled back.
+func (s *Service) saveLocked() error {
+	cfg := s.snapshotSettings()
 	if cfg == nil {
 		return errors.New("settings not loaded")
 	}
+	path := s.configPath
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -183,21 +211,74 @@ func (s *Service) Save() error {
 	}
 	b = append(b, '\n')
 
+	// Prepare the temp file with a SINGLE writable handle: create/truncate +
+	// write + chmod + fsync all on the same O_RDWR handle. Windows
+	// FlushFileBuffers (backing File.Sync) requires GENERIC_WRITE, which O_RDONLY
+	// (os.Open) does NOT grant — a read-only reopen would make every Save fail
+	// pre-commit on Windows (R5-N01). Everything before rename is abortable;
+	// rename remains the LAST fallible step (atomic commit).
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("write temp settings: %w", err)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("create temp settings: %w", err)
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		return fmt.Errorf("set temp settings permissions: %w", err)
+	// writeFull + chmod + sync on the SAME writable handle; any failure removes
+	// the temp and aborts (not committed → caller safely reverts memory).
+	werr := func() error {
+		if _, err := writeFull(f, b); err != nil {
+			return fmt.Errorf("write temp settings: %w", err)
+		}
+		if err := f.Chmod(0o600); err != nil {
+			return fmt.Errorf("set temp settings permissions: %w", err)
+		}
+		if err := settingsPreRenameSync(f); err != nil {
+			return fmt.Errorf("sync temp settings: %w", err)
+		}
+		return nil
+	}()
+	cerr := f.Close()
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return werr
 	}
+	if cerr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close temp settings: %w", cerr)
+	}
+	// Atomic commit: rename is the LAST fallible step. The temp was fully
+	// prepared (written + chmod 0600 + fsync) on a writable handle; rename carries
+	// the temp's inode/mode onto the final path, so no post-rename step is needed.
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace settings: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("set settings permissions: %w", err)
-	}
 	return nil
+}
+
+// settingsPreRenameSync (test-only; defaults to (*os.File).Sync) lets tests
+// inject a pre-rename sync failure to prove the commit boundary (R4-Minor): any
+// error before rename means "not committed" so callers safely revert memory. It
+// receives the SAME writable handle used to write the temp (O_RDWR → Windows
+// GENERIC_WRITE), so the Sync backing syscall (fsync / FlushFileBuffers) has the
+// write access Windows requires (R5-N01). It MUST NOT be given a read-only
+// handle.
+var settingsPreRenameSync = func(f *os.File) error { return f.Sync() }
+
+// snapshotSettings returns a deep copy of the current settings under mu. The
+// copy is immutable w.r.t. concurrent setters, so saveLocked can marshal it
+// after releasing the data lock without live-pointer drift (R2-Minor-02).
+func (s *Service) snapshotSettings() *AppSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	src := s.settings
+	if src == nil {
+		return nil
+	}
+	cp := *src // shallow copy: all value-type fields (DashboardDefaults, Terminal, strings, ints) copied
+	// Deep-copy slices so a concurrent append cannot race the marshal.
+	cp.ShellPaths = append([]ShellEntry(nil), src.ShellPaths...)
+	cp.SavedWorkDirs = append([]WorkDirEntry(nil), src.SavedWorkDirs...)
+	return &cp
 }
 
 // --- Dashboard Defaults ---
@@ -413,17 +494,37 @@ func (s *Service) GetRemoteEnabled() bool {
 }
 
 func (s *Service) SetRemoteEnabled(enabled bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.Lock()
+	old := s.settings.RemoteEnabled
 	s.settings.RemoteEnabled = enabled
 	s.mu.Unlock()
-	return s.Save()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk (R3-Minor-02 ③).
+		s.mu.Lock()
+		s.settings.RemoteEnabled = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Service) SetRemoteHost(host string) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.Lock()
+	old := s.settings.RemoteHost
 	s.settings.RemoteHost = host
 	s.mu.Unlock()
-	return s.Save()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk (R3-Minor-02 ③).
+		s.mu.Lock()
+		s.settings.RemoteHost = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Service) GetRemotePort() int {
@@ -440,10 +541,57 @@ func (s *Service) SetRemotePort(port int) error {
 	if port < 1024 || port > 65535 {
 		return fmt.Errorf("port %d out of valid range [1024, 65535]", port)
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.Lock()
+	old := s.settings.RemotePort
 	s.settings.RemotePort = port
 	s.mu.Unlock()
-	return s.Save()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk (R3-Minor-02 ③).
+		s.mu.Lock()
+		s.settings.RemotePort = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// SetRemoteEndpoint updates the remote listen host AND port in a single
+// transaction: both are validated before any mutation, both are set under one
+// data lock, and a single saveLocked persists them atomically (R2-Minor-02).
+// The whole validate→mutate→persist sequence runs under saveMu so two concurrent
+// endpoint calls (or an endpoint vs another remote setter) serialize and cannot
+// overwrite each other. If persistence fails the in-memory values are reverted
+// under saveMu so a partial failure never leaves host updated without port (or
+// vice-versa) and cannot clobber a concurrent setter's committed value.
+func (s *Service) SetRemoteEndpoint(host string, port int) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("remote host must not be empty")
+	}
+	if port < 1024 || port > 65535 {
+		return fmt.Errorf("port %d out of valid range [1024, 65535]", port)
+	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	oldHost := s.settings.RemoteHost
+	oldPort := s.settings.RemotePort
+	s.settings.RemoteHost = host
+	s.settings.RemotePort = port
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves no partial state. The revert
+		// is under saveMu (still held) so it cannot be observed or overwritten by
+		// a concurrent setter (R2-Minor-02).
+		s.mu.Lock()
+		s.settings.RemoteHost = oldHost
+		s.settings.RemotePort = oldPort
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // --- Mobile Web Root ---
