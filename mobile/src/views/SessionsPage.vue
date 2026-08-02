@@ -632,7 +632,7 @@ onMounted(() => {
 
 .icon-btn:active {
   background: #21262d;
-  border-color: #484f58;
+  border-color: var(--VT-legacy-on-dark-border);
   color: #c9d1d9;
 }
 
@@ -763,7 +763,7 @@ onMounted(() => {
 
 .section-label--dim {
   margin-top: 20px;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
 }
 
 .section-dot {
@@ -778,6 +778,7 @@ onMounted(() => {
 }
 
 .section-dot--dim {
+  /* P4-forbidden dot — remove in M2-B */
   background: #484f58;
   box-shadow: none;
 }
@@ -792,7 +793,7 @@ onMounted(() => {
 }
 
 .section-count--dim {
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   background: #1c2128;
 }
 
@@ -896,7 +897,7 @@ onMounted(() => {
 
 .session-time {
   font-size: 11px;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -927,12 +928,12 @@ onMounted(() => {
 }
 
 .meta-tag--dim {
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
 }
 
 .meta-tag--dim.meta-tag--primary {
   background: #1c2128;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
 }
 
 /* Workdir */
@@ -994,7 +995,7 @@ onMounted(() => {
 
 .action-btn--remove {
   background: transparent;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   border-color: #21262d;
 }
 
@@ -1010,7 +1011,7 @@ onMounted(() => {
   padding: 10px;
   margin-top: 12px;
   background: transparent;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   border: 1px dashed #21262d;
   border-radius: 8px;
   font-size: 12px;
@@ -1067,7 +1068,7 @@ onMounted(() => {
 .section-header {
   font-size: 11px;
   font-weight: 600;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   margin-bottom: 10px;
@@ -1304,7 +1305,7 @@ onMounted(() => {
 
   .icon-btn:hover {
     background: #21262d;
-    border-color: #484f58;
+    border-color: var(--VT-legacy-on-dark-border);
     color: #c9d1d9;
   }
 

@@ -1,0 +1,114 @@
+/* ==========================================================================
+   VT Semantic Tokens — Amagi CodeBox mobile (M0-04)
+   --------------------------------------------------------------------------
+   权威来源：P4 视觉风格 v2.2
+   · §5.1 浅色语义令牌（本期主交付，冻结值，2026-08-01 用户确认 P4-DIR-01~05）
+   · §6.3 终端/代码深墨面 ANSI 调色映射（spec 冻结值；xterm theme 实现后置 M2-D）
+   对比度数值均按 WCAG 相对亮度公式（sRGB 线性化）重算并可复算，
+   由 mobile/scripts/check-contrast.mjs 逐对门禁（CI: Check contrast ratios）。
+
+   边界（M0-04）：
+   · 本文件是 --VT-* 唯一真相源；实现只允许引用语义层令牌（P4 §5.1）。
+   · 不 alias / 不替换任何 --session-*（TerminalPage 局部 legacy 系统，
+     退役随视觉迁移里程碑 M2-C/D，见 baize 闭合报告「闭合 2」）。
+   · 深色 VT 令牌变体不在本期定义（P4-DIR-04：浅色为主交付，深色预留分层）。
+   ========================================================================== */
+
+:root {
+  /* ------------------------------------------------------------------
+     基色层 / 语义层：P4 v2.2 §5.1 浅色冻结令牌
+     ------------------------------------------------------------------ */
+
+  /* 页面底色（cream） */
+  --VT-canvas: #FAF9F5;
+  /* 卡片/面板（Pampas） */
+  --VT-surface: #F4F3EE;
+  /* 嵌套面板、悬停、键帽 */
+  --VT-surface-raised: #EFE9DE;
+  /* 终端网格/代码块专用暖深墨面（§6.3） */
+  --VT-surface-dark: #1F1E1B;
+
+  /* 装饰性分隔细线；不承担控件识别（仅装饰，不作为信息边界） */
+  --VT-border: #E6DFD8;
+  /* 输入框/控件识别边界（非文本 ≥3:1；对 canvas 3.23:1、对 surface 3.07:1） */
+  --VT-border-strong: #8E8B82;
+
+  /* 主文本（对 canvas 14.58:1、对 surface 13.82:1、对 raised 12.71:1） */
+  --VT-text: #252523;
+  /* 次要文本（对 canvas 5.13:1、对 surface 4.87:1；
+     对 raised 4.48:1——raised 面上仅限 ≥18px 或 14px 粗体，
+     小号文字改用 VT-text 或置于 canvas/surface 面） */
+  --VT-text-secondary: #6C6A64;
+  /* 禁用文本；仅限真正禁用态（豁免），禁止用作次级信息色（C-06 教训沿用） */
+  --VT-text-disabled: #8E8B82;
+
+  /* 交互强调图形：焦点环、图标、左边条、悬停/品牌性强调底
+     （对 canvas 4.01:1、对 surface 3.80:1；白字其上 4.23:1 未达 4.5:1，
+     白字仅限 ≥18px 或 14px 粗体；不作小号文字/常规按钮文字底色） */
+  --VT-accent: #C15F3C;
+  /* 主按钮填充（+白字 5.06:1）、链接、小号强调文字、按下态
+     （对 canvas 4.80:1、对 surface 4.55:1；对 raised 4.19:1 限大字号粗体） */
+  --VT-accent-strong: #A9583E;
+
+  /* 成功/已连接/连续（对 canvas 4.81:1、对 surface 4.56:1；
+     对 raised 4.20:1——raised 面限图标+VT-text 或大字号粗体） */
+  --VT-success: #2F7D46;
+  /* 警告/降级/风险提示（对 canvas 5.61:1、对 surface 5.32:1、对 raised 4.89:1） */
+  --VT-warning: #8A5A12;
+  /* 危险操作/已断开/已撤销（对 canvas 5.08:1、对 surface 4.82:1；
+     对 raised 4.43:1 限大字号粗体或图标+VT-text） */
+  --VT-danger: #BC3F3F;
+  /* 控制权专属信号（五层状态专色专用，全色系唯一冷色；
+     对 canvas 6.41:1、对 surface 6.08:1、对 raised 5.59:1；白字其上 6.75:1） */
+  --VT-control: #33607D;
+
+  /* 状态语义槽位：中性/非异常（会话已停止、观察中、无控制者）；
+     与 VT-text-secondary 同基色，小号文字遵循其 raised 面限制 */
+  --VT-secondary: #6C6A64;
+  /* 历史缺口/补齐标记（配合虚线纹理与图标；同 secondary 数值） */
+  --VT-gap: #6C6A64;
+
+  /* 终端/代码深墨面上的文本（对 surface-dark 15.9:1） */
+  --VT-on-dark: #FAF9F5;
+
+  /* ------------------------------------------------------------------
+     ANSI 调色映射：P4 v2.2 §6.3 冻结 spec 值（对 VT-surface-dark #1F1E1B）
+     说明：M0-04 仅冻结 spec 令牌与对比度门禁；xterm theme 22 属性
+     （TerminalPage.vue:674-696 纯 JS 对象）替换后置 M2-D（按需诊断视图）。
+     ------------------------------------------------------------------ */
+
+  /* normal 前景（15.82:1）；同 --VT-on-dark，独立槽位供 ANSI 表消费 */
+  --VT-ansi-foreground: #FAF9F5;
+  /* bold/bright 前景（16.67:1） */
+  --VT-ansi-bright-foreground: #FFFFFF;
+  /* black（2.29:1）——仅作反衬底/边框，不承载正文（装饰豁免，登记备查） */
+  --VT-ansi-black: #5A564F;
+  /* red（5.65:1） */
+  --VT-ansi-red: #E07A5F;
+  /* green（7.74:1） */
+  --VT-ansi-green: #7FBF8E;
+  /* yellow（7.41:1） */
+  --VT-ansi-yellow: #D9A441;
+  /* blue（6.75:1） */
+  --VT-ansi-blue: #7FA8D9;
+  /* magenta（6.19:1） */
+  --VT-ansi-magenta: #C48BC0;
+  /* cyan（7.62:1） */
+  --VT-ansi-cyan: #6FBDB3;
+  /* bright 系：同色相应更亮一阶，均高于上表对应值（P4 §6.3）——
+     具体色值随 M2-D xterm theme 实现确定并复核 */
+
+  /* ------------------------------------------------------------------
+     Legacy on-dark bridge 令牌（临时 —— M2 视觉迁移完成后退役删除）
+     用途：当前页面底色仍是 dark legacy surface（style.css #0d1117、
+     卡片 #161b22/#21262d），P4 浅色令牌在这些暗面上数值 FAIL
+     （如 VT-text-secondary 对 #0d1117 仅 3.50:1）。在全局视觉迁移前，
+     仅以下桥接令牌允许用于当前 dark legacy surface，
+     且只允许出现在 M0-04 allowlist selectors（原 2.28:1 失败色替换点）。
+     ------------------------------------------------------------------ */
+
+  /* 正文/图标 on dark：对 #0d1117 6.15:1、对 #161b22 5.62:1（≥4.5 PASS） */
+  --VT-legacy-on-dark-muted: #8b949e;
+  /* 控件边界 on dark：对 #0d1117 4.12:1（非文本 ≥3:1 PASS） */
+  --VT-legacy-on-dark-border: #6e7681;
+}

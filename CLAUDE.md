@@ -28,11 +28,14 @@ npm run build                    # mobile + frontend
 ### Go lint & test
 ```bash
 go vet ./...                                   # what CI actually runs
-go test ./...                                  # run all Go tests (NOT gated by CI — run manually)
+go test ./...                                  # CI runs this on macos-latest; run manually for full local coverage
 go test ./internal/config -run TestServiceName # single package / single test
 go test -race ./internal/session               # with race detector (concurrency-heavy packages)
 ```
-Note: `.github/workflows/ci.yml` only runs `go vet ./...` plus frontend/mobile builds — **`go test` is not part of CI**, so tests are a manual pre-submit step. The `envcheck.test` file in the repo root is a stale committed test binary, not a source file — ignore it.
+Note: `.github/workflows/ci.yml` runs `go vet ./...` (windows + macos), full `go test ./... -count=1` on macos-latest (windows-latest only compile-checks via `-run '^$'`), plus frontend/mobile builds and the mobile Vitest suite. The `envcheck.test` file in the repo root is a stale committed test binary, not a source file — ignore it.
+
+### Toolchain version baseline (C-001)
+**CI/release** precisely pins **Go `1.25.0`** and **Node `20.19.0`** (exact versions in `ci.yml`/`release.yml` setup-go/setup-node). **`go.mod`** declares the project's Go language baseline (`go 1.25.0`) — this is the minimum toolchain the module targets, not a local version lock: there is no `toolchain` directive and no `.go-version`, so a locally installed newer Go (e.g. 1.26.x) is used as-is without forced downgrade. **Node** is locally pinned by the root `.node-version` file (`20.19.0`, consumed by fnm/nodenv). npm stays `>=10` in the manifests (not engine-strict).
 
 ### Version injection
 `main.Version/BuildTime/GitCommit/GoVersion` are injected at build time via ldflags. Source of truth: `build.sh`/`build.bat` read `git describe --tags`, falling back to `wails.json` `info.productVersion`, then `dev`. Bump version by editing `wails.json` (and the two `package.json` files).

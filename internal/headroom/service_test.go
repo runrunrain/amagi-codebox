@@ -138,39 +138,104 @@ func TestBuildChildEnv_BackwardCompatible(t *testing.T) {
 	}
 }
 
-// TestResolveHeadroomBinWithEnv_AugmentsPATH verifies the returned environment
-// has a PATH that is a superset of the process PATH -- i.e. the resolver's
-// augmentation directories are present. This is the core guarantee that lets
-// the child process find headroom under a minimal macOS GUI PATH.
+// TestResolveHeadroomBinWithEnv_AugmentsPATH verifies the resolver's PATH
+// augmentation chain end-to-end. On darwin it runs under a CONTROLLED minimal
+// PATH (mimicking a Finder/GUI launch); on other platforms it uses the real
+// process PATH. This is the regression guard for the macOS "executable file
+// not found in $PATH" fix: a Finder/GUI-launched process inherits little more
+// than /usr/bin:/bin, so resolveHeadroomBinWithEnv must propagate darwin
+// controlled additions (common install locations + standard system dirs) into
+// the enhanced PATH the child runs with.
+//
+// Why a controlled PATH matters on darwin: if the test read the ambient PATH
+// (which on dev/CI/Agent shells already contains every controlled candidate),
+// the augmentation chain could be removed entirely and every assertion would
+// still pass -- a false green that defeats the regression guard. By seeding a
+// minimal PATH we force the test to prove the resolver ACTUALLY adds the
+// directories that were missing.
+//
+// Cross-platform honesty: the controlled minimal PATH is darwin-only -- it
+// uses POSIX ':' separators and darwin PATH semantics. Non-darwin platforms
+// must NOT receive a POSIX fixture, so they keep the real process PATH and
+// the darwin-specific missing-baseline assertion is skipped there.
 func TestResolveHeadroomBinWithEnv_AugmentsPATH(t *testing.T) {
-	// Snapshot the process PATH entries before resolution.
+	// Default to the real process PATH for the platform-independent invariants.
+	// Only on darwin do we override it with a controlled minimal PATH (mimics a
+	// Finder/GUI launch) so the test proves the resolver's darwin augmentation
+	// chain actually adds the missing controlled candidates. t.Setenv restores
+	// the original PATH on cleanup; resolveHeadroomBinCore reads os.Environ(),
+	// so the controlled value flows through the real augmentation chain.
 	processPathValue := os.Getenv("PATH")
-	processEntries := pathEntries(processPathValue)
+	if runtime.GOOS == "darwin" {
+		const minimalPATH = "/usr/bin:/bin"
+		t.Setenv("PATH", minimalPATH)
+		processPathValue = minimalPATH
+	}
+	originalEntries := pathEntries(processPathValue)
 
 	svc := NewHeadroomService(nil, nil)
 	_, enhancedEnv := svc.resolveHeadroomBinWithEnv()
 	m := envMap(enhancedEnv)
 	enhancedEntries := pathEntries(m["PATH"])
 
-	// Every entry present in the original PATH must still be present in the
-	// enhanced PATH (augmentation only adds, never removes).
+	// (1) Superset invariant (platform-independent): augmentation only adds,
+	// never removes. Every entry present in the original PATH must survive
+	// into the enhanced PATH.
 	var missing []string
-	for entry := range processEntries {
+	for entry := range originalEntries {
 		if _, ok := enhancedEntries[entry]; !ok {
 			missing = append(missing, entry)
 		}
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		t.Fatalf("enhanced PATH lost entries from process PATH: %v", missing)
+		t.Fatalf("enhanced PATH lost entries from original PATH: %v", missing)
 	}
 
-	// On darwin the resolver is expected to add at least one controlled
-	// directory (e.g. /opt/homebrew/bin, ~/.local/bin). This is the whole point
-	// of the fix: the child needs these entries to locate headroom.
+	// (2) Dedup invariant (platform-independent): the enhanced PATH must not
+	// carry duplicate entries (controlled additions are appended only when
+	// absent). pathEntries collapses to a set and cannot detect multiplicity,
+	// so re-parse the raw PATH string and count by filepath.Clean key.
+	rawEntries := strings.Split(m["PATH"], string(os.PathListSeparator))
+	seen := make(map[string]int, len(rawEntries))
+	for _, e := range rawEntries {
+		key := filepath.Clean(strings.TrimSpace(e))
+		if key == "" {
+			continue
+		}
+		seen[key]++
+	}
+	for key, count := range seen {
+		if count > 1 {
+			t.Fatalf("enhanced PATH has duplicate entry %q (%d times); dedup invariant violated; PATH=%q", key, count, m["PATH"])
+		}
+	}
+
+	// (3) darwin augmentation: under the controlled minimal PATH, the darwin
+	// controlled baseline directories that were MISSING must now be present in
+	// the enhanced PATH. This is the real regression target: if
+	// BuildEffectiveEnv stopped propagating darwin controlled additions, these
+	// assertions fail because the minimal PATH deliberately omits them. The
+	// setup and this assertion are darwin-specific; on other platforms the
+	// resolver has no controlled-additions contract, so only the
+	// platform-independent superset + dedup invariants above apply.
 	if runtime.GOOS == "darwin" {
-		if len(enhancedEntries) <= len(processEntries) {
-			t.Fatalf("enhanced PATH (%d entries) did not add any directories over process PATH (%d entries); augmentation expected on darwin", len(enhancedEntries), len(processEntries))
+		// darwinBaselineDirs mirrors internal/platform.darwinBaselinePATH: the
+		// standard system directories the resolver guarantees to keep present
+		// on darwin. We compute which of these were absent from the controlled
+		// minimal PATH and assert the resolver added exactly those back.
+		darwinBaselineDirs := []string{
+			"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+			"/bin", "/usr/sbin", "/sbin",
+		}
+		for _, dir := range darwinBaselineDirs {
+			cleaned := filepath.Clean(dir)
+			if _, wasPresent := originalEntries[cleaned]; wasPresent {
+				continue // already in minimal PATH, not an augmentation target
+			}
+			if _, ok := enhancedEntries[cleaned]; !ok {
+				t.Fatalf("controlled minimal PATH omitted %q but enhanced PATH did not add it back; darwin augmentation chain broken; PATH=%q", dir, m["PATH"])
+			}
 		}
 	}
 }

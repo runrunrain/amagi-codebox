@@ -18,6 +18,7 @@
     "@capacitor/android": "^8.2.0",
     "@capacitor/cli": "^8.2.0",
     "@capacitor/core": "^8.2.0",
+    "@tanstack/vue-virtual": "3.13.35",
     "@vueuse/core": "^14.2.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
@@ -26,9 +27,9 @@
     "highlight.js": "^11.11.1",
     "html5-qrcode": "^2.3.8",
     "marked": "^17.0.5",
+    "pinia": "3.0.4",
     "vue": "^3.5.30",
-    "vue-router": "^4.6.4",
-    "xterm": "^5.3.0"
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

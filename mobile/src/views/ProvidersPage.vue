@@ -300,7 +300,7 @@ onMounted(() => {
 
 .provider-edit-hint {
   font-size: 11px;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   text-align: right;
 }
 

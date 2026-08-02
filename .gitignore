@@ -48,3 +48,10 @@ release/
 
 # Go test binaries
 *.test
+
+# Playwright E2E artifacts (M0-05)
+# 基线 PNG 入库（e2e/baselines/）；运行期产物不入库
+test-results/
+playwright-report/
+/blob-report/
+/playwright/.cache

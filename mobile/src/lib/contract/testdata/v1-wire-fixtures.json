@@ -1,0 +1,676 @@
+{
+  "schemaVersion": 2,
+  "note": "M0-03 v1 wire fixtures. Single machine-readable source shared by Go (wire_test.go) and TS (wire.test.ts). No credentials/tokens/cookies. Pairing code appears ONLY in PairingCompleteRequest. Counts unchanged: 10 REST / 5 client / 7 server event / 9 concrete / 12 error.",
+  "manifest": {
+    "apiVersion": "v1",
+    "requestIdHeader": "X-Request-ID",
+    "restBasePath": "/api/remote/v1",
+    "webSocketV1Path": "/ws/v1",
+    "restEndpoints": [
+      { "method": "POST", "path": "/pairing/complete", "successStatus": 201 },
+      { "method": "GET", "path": "/host/summary", "successStatus": 200 },
+      { "method": "GET", "path": "/sessions", "successStatus": 200 },
+      { "method": "GET", "path": "/sessions/{id}", "successStatus": 200 },
+      { "method": "POST", "path": "/sessions", "successStatus": 201 },
+      { "method": "POST", "path": "/sessions/{id}/stop", "successStatus": 200 },
+      { "method": "POST", "path": "/sessions/{id}/restart", "successStatus": 200 },
+      { "method": "DELETE", "path": "/sessions/{id}", "successStatus": 204 },
+      { "method": "POST", "path": "/sessions/{id}/control/acquire", "successStatus": 200 },
+      { "method": "POST", "path": "/sessions/{id}/control/release", "successStatus": 200 }
+    ],
+    "clientFrameTypes": ["attach", "input", "resize", "backfill", "ping"],
+    "serverEventTypes": ["session.attached", "output", "backfill.result", "session.state", "control.state", "auth.revoked", "error"],
+    "errorCodes": [
+      "net.unreachable", "service.down", "auth.unpaired", "auth.window_expired", "auth.revoked",
+      "session.not_found", "session.launch_failed", "control.busy", "control.forbidden",
+      "history.gap", "rate.limited", "bad_request"
+    ],
+    "cliTypes": ["claudecode", "opencode", "codex", "pi"],
+    "sessionStates": ["running", "stopped", "exited", "unavailable", "removed"],
+    "controlStates": ["none", "you", "other", "desktop"],
+    "historyStates": ["continuous", "backfilled", "gap"],
+    "errorLayers": ["connection", "auth", "session", "control", "history"],
+    "actionHints": ["retry", "check-desktop", "re-pair", "request-control", "continue-from-latest", "upgrade-client"]
+  },
+  "rest": {
+    "pairingCompleteRequest": {
+      "code": "pair-code-7K3F",
+      "deviceName": "Maorun iPhone"
+    },
+    "pairingCompleteResponse": {
+      "device": { "id": "dev_opaque_1", "name": "Maorun iPhone", "pairedAt": "2026-08-02T01:02:03Z" },
+      "host": {
+        "apiVersion": "v1",
+        "serverVersion": "1.2.60",
+        "cliAvailability": [
+          { "cliType": "claudecode", "available": true },
+          { "cliType": "opencode", "available": true },
+          { "cliType": "codex", "available": false },
+          { "cliType": "pi", "available": true }
+        ]
+      }
+    },
+    "hostSummary": {
+      "apiVersion": "v1",
+      "serverVersion": "1.2.60",
+      "cliAvailability": [
+        { "cliType": "claudecode", "available": true },
+        { "cliType": "opencode", "available": true },
+        { "cliType": "codex", "available": false },
+        { "cliType": "pi", "available": true }
+      ]
+    },
+    "sessionListEmpty": [],
+    "sessionSummary": {
+      "id": "sess_opaque_1",
+      "title": "Fix remote contract",
+      "cliType": "claudecode",
+      "state": "running",
+      "control": { "state": "other", "deviceName": "iPad" },
+      "lastActivityAt": "2026-08-02T01:03:00Z"
+    },
+    "sessionDetail": {
+      "id": "sess_opaque_1",
+      "title": "Fix remote contract",
+      "cliType": "claudecode",
+      "state": "running",
+      "control": { "state": "you" },
+      "lastActivityAt": "2026-08-02T01:03:00Z",
+      "workdir": "/workspace/project",
+      "startedAt": "2026-08-02T01:00:00Z",
+      "earliestSeq": 41,
+      "latestSeq": 77
+    },
+    "createSessionRequest": { "cliType": "pi" },
+    "createSessionRequestWithWorkdir": { "cliType": "pi", "workdir": "/workspace/project" },
+    "confirmActionRequest": { "confirm": true },
+    "controlSnapshotNone": { "state": "none" },
+    "controlSnapshotYou": { "state": "you" },
+    "controlSnapshotOther": { "state": "other", "deviceName": "iPad" },
+    "controlSnapshotDesktop": { "state": "desktop" }
+  },
+  "clientFrames": {
+    "attach": {
+      "type": "attach",
+      "requestId": "req_attach_1",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1"
+    },
+    "attachWithLastSeq": {
+      "type": "attach",
+      "requestId": "req_attach_2",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "lastSeq": 40
+    },
+    "input": {
+      "type": "input",
+      "requestId": "req_input_1",
+      "id": "msg_1",
+      "data": "5L2g5aW9"
+    },
+    "resize": {
+      "type": "resize",
+      "requestId": "req_resize_1",
+      "cols": 120,
+      "rows": 40
+    },
+    "backfill": {
+      "type": "backfill",
+      "requestId": "req_backfill_1",
+      "fromSeq": 41,
+      "toSeq": 50
+    },
+    "ping": {
+      "type": "ping",
+      "requestId": "req_ping_1"
+    }
+  },
+  "serverEvents": {
+    "sessionAttachedEmptyHistory": {
+      "type": "session.attached",
+      "requestId": "req_attach_1",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "continuous" }
+      }
+    },
+    "sessionAttachedWithHistory": {
+      "type": "session.attached",
+      "requestId": "req_attach_2",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "YQ==" },
+        { "type": "session.state", "sessionId": "sess_opaque_1", "state": "running", "restartBoundary": true, "seq": 45, "occurredAt": "2026-08-02T01:05:00Z" }
+      ],
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "backfilled" }
+      }
+    },
+    "sessionAttachedGap": {
+      "type": "session.attached",
+      "requestId": "req_attach_gap",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "YQ==" },
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 42, "chunk": "Yg==" }
+      ],
+      "earliestSeq": 41,
+      "latestSeq": 42,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "gap", "gap": { "code": "history.gap", "fromSeq": 11, "toSeq": 40 } }
+      }
+    },
+    "output": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": 41,
+      "chunk": "YWJj",
+      "structuredExpected": true
+    },
+    "backfillResultFrames": {
+      "type": "backfill.result",
+      "requestId": "req_backfill_1",
+      "sessionId": "sess_opaque_1",
+      "fromSeq": 41,
+      "toSeq": 42,
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "frames": [
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "YQ==" },
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 42, "chunk": "Yg==" }
+      ]
+    },
+    "backfillResultGap": {
+      "type": "backfill.result",
+      "requestId": "req_backfill_2",
+      "sessionId": "sess_opaque_1",
+      "fromSeq": 10,
+      "toSeq": 20,
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "gap": { "code": "history.gap", "fromSeq": 10, "toSeq": 20 }
+    },
+    "sessionStateExited": {
+      "type": "session.state",
+      "sessionId": "sess_opaque_1",
+      "state": "exited",
+      "occurredAt": "2026-08-02T01:10:00Z"
+    },
+    "sessionStateRestartBoundary": {
+      "type": "session.state",
+      "sessionId": "sess_opaque_1",
+      "state": "running",
+      "restartBoundary": true,
+      "seq": 52,
+      "occurredAt": "2026-08-02T01:11:00Z"
+    },
+    "controlStateOther": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "other",
+      "deviceName": "iPad",
+      "reason": "acquired",
+      "occurredAt": "2026-08-02T01:12:00Z"
+    },
+    "controlStateYou": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "you",
+      "reason": "acquired",
+      "occurredAt": "2026-08-02T01:12:01Z"
+    },
+    "controlStateNone": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "none",
+      "reason": "released",
+      "occurredAt": "2026-08-02T01:12:02Z"
+    },
+    "controlStateDesktop": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "desktop",
+      "reason": "takeover",
+      "occurredAt": "2026-08-02T01:12:03Z"
+    },
+    "authRevoked": {
+      "type": "auth.revoked",
+      "reason": "device_revoked",
+      "occurredAt": "2026-08-02T01:13:00Z"
+    },
+    "error": {
+      "type": "error",
+      "requestId": "req_input_1",
+      "sessionId": "sess_opaque_1",
+      "code": "control.forbidden",
+      "layer": "control",
+      "message": "current device is not the controller",
+      "actionHint": "request-control"
+    },
+    "unknownEvent": {
+      "type": "session.metrics",
+      "sessionId": "sess_secret_value_xyz",
+      "cpu": 42
+    }
+  },
+  "errors": {
+    "netUnreachable": {
+      "requestId": "req_http_1",
+      "code": "net.unreachable",
+      "layer": "connection",
+      "message": "network unreachable",
+      "actionHint": "retry"
+    },
+    "serviceDown": {
+      "requestId": "req_http_2",
+      "code": "service.down",
+      "layer": "connection",
+      "message": "remote service is down",
+      "actionHint": "check-desktop"
+    },
+    "authUnpaired": {
+      "requestId": "req_http_3",
+      "code": "auth.unpaired",
+      "layer": "auth",
+      "message": "no valid device pairing",
+      "actionHint": "re-pair"
+    },
+    "authWindowExpired": {
+      "requestId": "req_http_4",
+      "code": "auth.window_expired",
+      "layer": "auth",
+      "message": "pairing window expired",
+      "actionHint": "check-desktop"
+    },
+    "authRevoked": {
+      "requestId": "req_http_5",
+      "code": "auth.revoked",
+      "layer": "auth",
+      "message": "device revoked",
+      "actionHint": "re-pair"
+    },
+    "sessionNotFound": {
+      "requestId": "req_http_6",
+      "code": "session.not_found",
+      "layer": "session",
+      "message": "session not found",
+      "actionHint": "retry"
+    },
+    "sessionLaunchFailed": {
+      "requestId": "req_http_7",
+      "code": "session.launch_failed",
+      "layer": "session",
+      "message": "session launch failed",
+      "actionHint": "check-desktop",
+      "details": { "cliType": "pi" }
+    },
+    "controlBusy": {
+      "requestId": "req_http_8",
+      "code": "control.busy",
+      "layer": "control",
+      "message": "control already held",
+      "actionHint": "retry"
+    },
+    "controlForbidden": {
+      "requestId": "req_http_9",
+      "code": "control.forbidden",
+      "layer": "control",
+      "message": "current device is not the controller",
+      "actionHint": "request-control"
+    },
+    "historyGap": {
+      "requestId": "req_http_10",
+      "code": "history.gap",
+      "layer": "history",
+      "message": "requested range unavailable",
+      "actionHint": "continue-from-latest"
+    },
+    "rateLimited": {
+      "requestId": "req_http_11",
+      "code": "rate.limited",
+      "layer": "connection",
+      "message": "too many requests",
+      "actionHint": "retry"
+    },
+    "badRequest": {
+      "requestId": "req_http_12",
+      "code": "bad_request",
+      "layer": "session",
+      "message": "malformed request",
+      "actionHint": "retry"
+    },
+    "versionMismatch": {
+      "requestId": "req_attach_3",
+      "code": "bad_request",
+      "layer": "connection",
+      "message": "unsupported api version",
+      "actionHint": "upgrade-client",
+      "details": {
+        "reason": "unsupported_api_version",
+        "receivedApiVersion": "v2",
+        "supportedApiVersions": ["v1"]
+      }
+    }
+  },
+  "invalid": {
+    "nullRequiredField": {
+      "type": "input",
+      "requestId": "req_bad_1",
+      "id": null,
+      "data": "YQ=="
+    },
+    "missingRequiredField": {
+      "type": "resize",
+      "requestId": "req_bad_2",
+      "cols": 120
+    },
+    "unknownClientFrame": {
+      "type": "subscribe",
+      "requestId": "req_bad_4",
+      "topic": "metrics"
+    },
+    "unknownClientField": {
+      "type": "input",
+      "requestId": "req_bad_5",
+      "id": "msg_bad",
+      "data": "YQ==",
+      "topic": "metrics"
+    },
+    "confirmFalse": { "confirm": false },
+    "confirmNull": { "confirm": null },
+    "confirmMissing": {},
+    "framesAndGapBothPresent": {
+      "type": "backfill.result",
+      "requestId": "req_bad_3",
+      "sessionId": "sess_opaque_1",
+      "fromSeq": 41,
+      "toSeq": 42,
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "frames": [{ "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "YQ==" }],
+      "gap": { "code": "history.gap", "fromSeq": 41, "toSeq": 42 }
+    },
+    "backfillNeitherFramesNorGap": {
+      "type": "backfill.result",
+      "requestId": "req_bad_6",
+      "sessionId": "sess_opaque_1",
+      "fromSeq": 41,
+      "toSeq": 42,
+      "earliestSeq": 41,
+      "latestSeq": 77
+    },
+    "controlOtherMissingDeviceName": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "other",
+      "reason": "acquired",
+      "occurredAt": "2026-08-02T01:20:00Z"
+    },
+    "controlNoneWithDeviceName": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "none",
+      "deviceName": "leak",
+      "reason": "released",
+      "occurredAt": "2026-08-02T01:20:01Z"
+    },
+    "controlYouWithDeviceName": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "you",
+      "deviceName": "leak",
+      "reason": "acquired",
+      "occurredAt": "2026-08-02T01:20:02Z"
+    },
+    "controlDesktopWithDeviceName": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "desktop",
+      "deviceName": "leak",
+      "reason": "takeover",
+      "occurredAt": "2026-08-02T01:20:03Z"
+    },
+    "knownOutputNullChunk": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": 41,
+      "chunk": null
+    },
+    "knownSessionUnknownState": {
+      "type": "session.state",
+      "sessionId": "sess_opaque_1",
+      "state": "frozen",
+      "occurredAt": "2026-08-02T01:20:04Z"
+    },
+    "knownAttachedUnknownAuthState": {
+      "type": "session.attached",
+      "requestId": "req_bad_auth",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "maybe" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "continuous" }
+      }
+    },
+    "knownAttachedUnknownHistoryState": {
+      "type": "session.attached",
+      "requestId": "req_bad_hist",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "lost" }
+      }
+    },
+    "knownControlUnknownState": {
+      "type": "control.state",
+      "sessionId": "sess_opaque_1",
+      "state": "shared",
+      "reason": "acquired",
+      "occurredAt": "2026-08-02T01:20:05Z"
+    },
+    "historyGapMissingRange": {
+      "type": "session.attached",
+      "requestId": "req_bad_h1",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "gap" }
+      }
+    },
+    "historyGapNullRange": {
+      "type": "session.attached",
+      "requestId": "req_bad_h2",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "gap", "gap": null }
+      }
+    },
+    "historyContinuousWithRange": {
+      "type": "session.attached",
+      "requestId": "req_bad_h3",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "continuous", "gap": { "code": "history.gap", "fromSeq": 1, "toSeq": 5 } }
+      }
+    },
+    "historyBackfilledWithRange": {
+      "type": "session.attached",
+      "requestId": "req_bad_h4",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "backfilled", "gap": { "code": "history.gap", "fromSeq": 1, "toSeq": 5 } }
+      }
+    },
+    "unsafeSeqAboveMax": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": 9007199254740992,
+      "chunk": "YQ=="
+    },
+    "unsafeSeqFractional": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": 1.5,
+      "chunk": "YQ=="
+    },
+    "unsafeSeqNegative": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": -1,
+      "chunk": "YQ=="
+    },
+    "replaySeqZero": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": 0,
+      "chunk": "YQ=="
+    },
+    "attachedGapRangeMismatch": {
+      "type": "session.attached",
+      "requestId": "req_bad_ag",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "YQ==" }
+      ],
+      "earliestSeq": 41,
+      "latestSeq": 42,
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "gap", "gap": { "code": "history.gap", "fromSeq": 11, "toSeq": 39 } }
+      }
+    },
+    "outputStructuredExpectedNull": {
+      "type": "output",
+      "sessionId": "sess_opaque_1",
+      "seq": 41,
+      "chunk": "YQ==",
+      "structuredExpected": null
+    },
+    "errorRequestIdNull": {
+      "type": "error",
+      "requestId": null,
+      "code": "control.forbidden",
+      "layer": "control",
+      "message": "x",
+      "actionHint": "retry"
+    },
+    "errorDetailsNull": {
+      "type": "error",
+      "requestId": "req_bad_d",
+      "code": "control.forbidden",
+      "layer": "control",
+      "message": "x",
+      "actionHint": "retry",
+      "details": null
+    },
+    "sessionStateRestartFalse": {
+      "type": "session.state",
+      "sessionId": "sess_opaque_1",
+      "state": "running",
+      "restartBoundary": false,
+      "seq": 52,
+      "occurredAt": "2026-08-02T01:30:00Z"
+    },
+    "sessionStateSeqAlone": {
+      "type": "session.state",
+      "sessionId": "sess_opaque_1",
+      "state": "running",
+      "seq": 52,
+      "occurredAt": "2026-08-02T01:30:01Z"
+    },
+    "backfillFrameOutOfRange": {
+      "type": "backfill.result",
+      "requestId": "req_bad_b1",
+      "sessionId": "sess_opaque_1",
+      "fromSeq": 10,
+      "toSeq": 20,
+      "earliestSeq": 10,
+      "latestSeq": 77,
+      "frames": [
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 1, "chunk": "YQ==" }
+      ]
+    },
+    "backfillFrameNonAscending": {
+      "type": "backfill.result",
+      "requestId": "req_bad_b2",
+      "sessionId": "sess_opaque_1",
+      "fromSeq": 41,
+      "toSeq": 42,
+      "earliestSeq": 41,
+      "latestSeq": 77,
+      "frames": [
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 42, "chunk": "YQ==" },
+        { "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "Yg==" }
+      ]
+    }
+  }
+}

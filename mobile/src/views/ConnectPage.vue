@@ -296,7 +296,7 @@ onMounted(async () => {
   right: 4px;
   background: none;
   border: none;
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   cursor: pointer;
   padding: 6px;
   border-radius: 4px;
@@ -454,12 +454,12 @@ onMounted(async () => {
   }
 
   .scan-btn:hover {
-    border-color: #484f58;
+    border-color: var(--VT-legacy-on-dark-border);
     background: rgba(88, 166, 255, 0.04);
   }
 
   .cancel-scan-btn:hover {
-    border-color: #484f58;
+    border-color: var(--VT-legacy-on-dark-border);
     color: #c9d1d9;
   }
 }

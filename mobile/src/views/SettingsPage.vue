@@ -415,7 +415,7 @@ onMounted(() => {
 }
 
 .log-time {
-  color: #484f58;
+  color: var(--VT-legacy-on-dark-muted);
   white-space: nowrap;
   flex-shrink: 0;
 }
