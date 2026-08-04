@@ -13,10 +13,12 @@ import (
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
+	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
@@ -111,6 +113,12 @@ func newTestAppWithConfigDir(t *testing.T) (*App, string) {
 
 	pathsSvc := paths.NewPathsService(configDir)
 
+	// Headroom/Proxy are touched by LaunchSession's proxy-selection switch
+	// (even in the all-off default branch, which calls Headroom.IsRunning).
+	// Initialize them with a real (idle) service so App-layer tests that
+	// exercise LaunchSession do not nil-deref. They are never started here.
+	testProcessRunner := platform.NewProcessRunner()
+
 	return &App{
 		Log:      logSvc,
 		Config:   cfgSvc,
@@ -120,6 +128,8 @@ func newTestAppWithConfigDir(t *testing.T) (*App, string) {
 		Pty:      pty.NewService(logSvc),
 		EnvVars:  envVarsSvc,
 		Paths:    pathsSvc,
+		Proxy:    proxy.NewProxyService(),
+		Headroom: headroom.NewHeadroomService(testProcessRunner, logSvc),
 	}, configDir
 }
 

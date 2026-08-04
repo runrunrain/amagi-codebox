@@ -11,7 +11,12 @@ import (
 // the isConfigPathAllowed whitelist (<tmpdir>/.claude/settings.json).
 func makeAllowedConfigDir(t *testing.T) (string, string) {
 	t.Helper()
-	tmpDir := t.TempDir()
+	// Use the canonical (EvalSymlinks-resolved) temp dir so that the target
+	// config path and the trusted-project-root (derived from os.Getwd) are in
+	// the same name form. On Windows the raw TEMP uses 8.3 short names while
+	// isConfigPathAllowed resolves the target through EvalSymlinks; a mismatch
+	// would cause the legitimate project config path to be rejected.
+	tmpDir := canonicalTempDir(t)
 	claudeDir := filepath.Join(tmpDir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		t.Fatal(err)

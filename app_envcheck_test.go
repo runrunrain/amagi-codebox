@@ -106,7 +106,9 @@ func (r *appEnvCheckRunnerWithFailure) Start(_ platform.CommandSpec) (*exec.Cmd,
 func newTestAppWithEnvCheck(t *testing.T, runner platform.ProcessRunner) *App {
 	t.Helper()
 
-	// Create temp executables so exec.LookPath finds them
+	// Create temp executables so exec.LookPath finds every supported tool;
+	// omitting one would make the healthy-env fixture report it as missing and
+	// skew AllOK.
 	tmpDir := t.TempDir()
 	for _, name := range []string{"claude", "opencode", "codex", "pi", "headroom"} {
 		ext := ""

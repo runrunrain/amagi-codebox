@@ -91,17 +91,17 @@ func defaultSettings() *AppSettings {
 	return &AppSettings{
 		Dashboard: DashboardDefaults{
 			Mode:           "embedded",
-			Shell:          "pwsh",
+			Shell:          "wsl",
 			ClaudeMode:     "embedded",
-			ClaudeShell:    "pwsh",
+			ClaudeShell:    "wsl",
 			OpenCodeMode:   "embedded",
-			OpenCodeShell:  "pwsh",
+			OpenCodeShell:  "wsl",
 			CodexMode:      "embedded",
-			CodexShell:     "pwsh",
+			CodexShell:     "wsl",
 			PiMode:         "embedded",
-			PiShell:        "pwsh",
+			PiShell:        "wsl",
 			AmagiCodeMode:  "embedded",
-			AmagiCodeShell: "pwsh",
+			AmagiCodeShell: "wsl",
 		},
 		ShellPaths:    []ShellEntry{},
 		SavedWorkDirs: []WorkDirEntry{},
@@ -381,35 +381,35 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 		if d.Shell != "" {
 			d.ClaudeShell = d.Shell
 		} else {
-			d.ClaudeShell = "pwsh"
+			d.ClaudeShell = "wsl"
 		}
 	}
 	if d.OpenCodeShell == "" {
 		if d.Shell != "" {
 			d.OpenCodeShell = d.Shell
 		} else {
-			d.OpenCodeShell = "pwsh"
+			d.OpenCodeShell = "wsl"
 		}
 	}
 	if d.CodexShell == "" {
 		if d.Shell != "" {
 			d.CodexShell = d.Shell
 		} else {
-			d.CodexShell = "pwsh"
+			d.CodexShell = "wsl"
 		}
 	}
 	if d.PiShell == "" {
 		if d.Shell != "" {
 			d.PiShell = d.Shell
 		} else {
-			d.PiShell = "pwsh"
+			d.PiShell = "wsl"
 		}
 	}
 	if d.AmagiCodeShell == "" {
 		if d.Shell != "" {
 			d.AmagiCodeShell = d.Shell
 		} else {
-			d.AmagiCodeShell = "pwsh"
+			d.AmagiCodeShell = "wsl"
 		}
 	}
 

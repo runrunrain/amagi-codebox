@@ -45,6 +45,27 @@ func writeTestExecutable(t *testing.T, dir string, name string) string {
 	return path
 }
 
+// canonicalTempDir returns t.TempDir() resolved through filepath.EvalSymlinks.
+//
+// The business code resolves executable paths via filepath.EvalSymlinks
+// (see resolveRealExecutablePath / resolveClaudeExecutablePathsForCheck) and
+// compares config paths against EvalSymlinks-resolved patterns
+// (isConfigPathAllowed). On Windows the per-user TEMP frequently uses 8.3
+// short names (e.g. C:\Users\ADMINI~1\...) while EvalSymlinks returns the
+// long form (C:\Users\Administrator\...). If a test builds paths from the raw
+// short-name TempDir, those paths will not match the long-name paths emitted
+// by the business code (breaking mock path-prefix substring matching and
+// path-equality assertions). Using the canonical form here keeps the test
+// fixtures aligned with the business code's resolution on every platform.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && strings.TrimSpace(resolved) != "" {
+		return resolved
+	}
+	return dir
+}
+
 func runnerSawArgs(runner *mockRunner, pathContains string, args ...string) bool {
 	for _, call := range runner.calls {
 		if !strings.Contains(call.Path, pathContains) {
