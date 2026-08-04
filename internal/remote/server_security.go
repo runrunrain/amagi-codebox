@@ -230,6 +230,13 @@ func (s *Server) stopInternal(run *serverRun, cause serverStopCause) {
 		s.mu.Unlock()
 		_ = sameRun
 
+		// H2/§4A.3: FenceAllRemote is the FIRST lock-free action after Stop admission,
+		// BEFORE pairing.Suspend / registry Stop / Terminate / HTTP shutdown /
+		// startedDone wait / stopped event. This ensures no new device launch/write/
+		// lifecycle intent can succeed while the Suspend sink is blocked (design §4A.3,
+		// T41). The caller holds no server/pairing/registry/store/hub/journal lock.
+		s.lifecycleHook.FenceAllRemote(ControlCauseServerStopped, time.Now())
+
 		if s.pairing != nil {
 			s.pairing.Suspend()
 		}
@@ -240,6 +247,12 @@ func (s *Server) stopInternal(run *serverRun, cause serverStopCause) {
 		for _, c := range detached {
 			c.Terminate(ConnectionTermination{Cause: TerminationServerStopped, OccurredAt: time.Now()})
 		}
+		// M-002: release all remote device holders immediately (no grace) after
+		// registry terminate, so a restart leaves no stale device holder (design
+		// §4A.3 authority order: Fence → Suspend → registry Stop → Terminate →
+		// Release(server_stopped) → HTTP shutdown). Device holders go to ownerNone
+		// with a typed transition; desktop holders are preserved.
+		s.lifecycleHook.ReleaseAllRemote(ControlCauseServerStopped, time.Now())
 		if run.httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := run.httpServer.Shutdown(ctx); err != nil {
@@ -522,6 +535,12 @@ func (s *Server) BeginDeviceStoreMaintenance() (MaintenanceSession, error) {
 	if s.gate.isActive() {
 		return MaintenanceSession{}, errSecurityNotReady
 	}
+	// H2/§4A.3: idempotent Fence+Release(maintenance) before store Begin. This
+	// ensures no device launch/write/lifecycle intent is in flight during the
+	// maintenance epoch (design §4A.3: "stopped precheck → idempotent
+	// Fence+Release(maintenance) → store Begin→postcheck").
+	s.lifecycleHook.FenceAllRemote(ControlCauseMaintenance, time.Now())
+	s.lifecycleHook.ReleaseAllRemote(ControlCauseMaintenance, time.Now())
 	sess, err := s.store.BeginMaintenance()
 	if err != nil {
 		return MaintenanceSession{}, err

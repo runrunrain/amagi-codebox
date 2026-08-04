@@ -36,12 +36,16 @@ func (s *Service) AttachSessionObserver(sessionID string, id string, outputCB fu
 	return nil, 0, 0, fmt.Errorf("pty backend is not implemented on this platform yet")
 }
 func (s *Service) DetachSessionObserver(sessionID string, id string) { _, _, _ = s, sessionID, id }
-func (s *Service) SetContext(ctx context.Context)                    { _, _ = s, ctx }
+func (s *Service) SetRunEventSink(sink RunEventSink)                 { _ = sink }
 func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env []string, cols, rows int) (int, error) {
 	_, _, _, _, _, _, _ = shellPath, autoCommand, workDir, env, cols, rows, s
 	return 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSpec) (int, error) {
+	return s.StartResolvedWithRun(sessionID, spec, nil)
+}
+func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error) {
+	_ = runHandle
 	_ = spec
 	return 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
@@ -52,16 +56,35 @@ func (s *Service) Write(sessionID string, data string) error {
 	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) WriteLarge(sessionID string, data string) error { return s.Write(sessionID, data) }
-func (s *Service) Resize(sessionID string, cols, rows int) error {
+func (s *Service) WriteRaw(ctx context.Context, sessionID string, data []byte) error {
+	_ = ctx
+	_ = data
+	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
+}
+func (s *Service) Resize(ctx context.Context, sessionID string, cols, rows int) error {
+	_ = ctx
 	_, _ = cols, rows
 	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) GetPtyDimensions(sessionID string) (cols, rows int, err error) {
 	return 0, 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
-func (s *Service) Close(sessionID string) error    { return nil }
+func (s *Service) Close(sessionID string) error { return nil }
+func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
+	receipt := newDetachReceipt()
+	_ = detachWithExactReaper(receipt, func() error { return nil }, nil)
+	return receipt, nil
+}
 func (s *Service) CloseAll()                       {}
 func (s *Service) IsRunning(sessionID string) bool { return false }
+
+// StartupAutoCommand returns "" on platforms without a delayed bootstrap
+// (M-005). Darwin embeds the startup command in the shell invocation; this stub
+// has no PTY backend.
+func (s *Service) StartupAutoCommand(spec platform.ResolvedLaunchSpec) string {
+	_ = spec
+	return ""
+}
 func (s *Service) GetOutputHistory(sessionID string) ([]byte, error) {
 	return nil, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }

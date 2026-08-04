@@ -168,6 +168,9 @@ const PAIRS = [
   { fg: '--VT-control', bg: RAISED, cat: 'normal', note: '控制权信号 on raised（P4 5.59:1）' },
   { fg: WHITE, bg: '--VT-accent-strong', cat: 'normal', note: '主按钮白字 on accent-strong（P4 5.06:1）' },
   { fg: WHITE, bg: '--VT-control', cat: 'normal', note: '控制徽章白字 on control（P4 6.75:1）' },
+  { fg: CANVAS, bg: '--VT-danger', cat: 'normal', note: '危险按钮近白字 on danger（M2-C 停止运行按钮，实算 ~5.05:1）' },
+  { fg: CANVAS, bg: '--VT-control', cat: 'normal', note: '控制权按钮近白字 on control（M2-C 获取控制权按钮）' },
+  { fg: CANVAS, bg: '--VT-accent-strong', cat: 'normal', note: '近白字 on accent-strong（M2-C 发送按钮 / M2-D 诊断返回主面按钮，实算 ~4.83:1）' },
   { fg: '--VT-on-dark', bg: SURFACE_DARK, cat: 'normal', note: '终端正文 on surface-dark（P4 15.9:1）' },
   // legacy dark bridge（临时，M2 视觉迁移后随令牌退役）
   { fg: '--VT-legacy-on-dark-muted', bg: LEGACY_BG, cat: 'normal', note: 'bridge 正文/图标 on #0d1117（实测 6.15:1）' },

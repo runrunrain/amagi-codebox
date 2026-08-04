@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "note": "M0-03 v1 wire fixtures. Single machine-readable source shared by Go (wire_test.go) and TS (wire.test.ts). No credentials/tokens/cookies. Pairing code appears ONLY in PairingCompleteRequest. Counts unchanged: 10 REST / 5 client / 7 server event / 9 concrete / 12 error.",
+  "note": "M0-03 v1 wire fixtures. Single machine-readable source shared by Go (wire_test.go) and TS (wire.test.ts). No credentials/tokens/cookies. Pairing code appears ONLY in PairingCompleteRequest. Counts unchanged: 10 REST / 5 client / 7 server event / 9 concrete / 12 error. CG-01 additive: manifest.authRevokedReasons/authRevokedCloseCode + invalid authRevokedUnknownReason/authRevokedNullReason (reason manifest count=1, not in frozen counts).",
   "manifest": {
     "apiVersion": "v1",
     "requestIdHeader": "X-Request-ID",
@@ -30,7 +30,9 @@
     "controlStates": ["none", "you", "other", "desktop"],
     "historyStates": ["continuous", "backfilled", "gap"],
     "errorLayers": ["connection", "auth", "session", "control", "history"],
-    "actionHints": ["retry", "check-desktop", "re-pair", "request-control", "continue-from-latest", "upgrade-client"]
+    "actionHints": ["retry", "check-desktop", "re-pair", "request-control", "continue-from-latest", "upgrade-client"],
+    "authRevokedReasons": ["device_revoked"],
+    "authRevokedCloseCode": 1008
   },
   "rest": {
     "pairingCompleteRequest": {
@@ -646,6 +648,16 @@
       "state": "running",
       "seq": 52,
       "occurredAt": "2026-08-02T01:30:01Z"
+    },
+    "authRevokedUnknownReason": {
+      "type": "auth.revoked",
+      "reason": "future_reason_fixture_only",
+      "occurredAt": "2026-08-02T01:13:00Z"
+    },
+    "authRevokedNullReason": {
+      "type": "auth.revoked",
+      "reason": null,
+      "occurredAt": "2026-08-02T01:13:00Z"
     },
     "backfillFrameOutOfRange": {
       "type": "backfill.result",

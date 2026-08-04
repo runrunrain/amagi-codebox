@@ -377,4 +377,3 @@ func normalizePathKeyForNative(path string, goos string) string {
 	}
 	return path
 }
-

@@ -25,18 +25,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
@@ -89,6 +94,281 @@ func pickLoopbackPort() (int, error) {
 }
 
 // ---------------------------------------------------------------------------
+// M2-INT session 接线（TEST-ONLY）：受控 fake CLI + 真实 adapter 装配
+// ---------------------------------------------------------------------------
+//
+// 本节是 M2-INT 的核心扩展：按 app.go NewApp 同款装配真实 RemoteSessionAdapter
+// （ControlRuntime / SessionCatalog / SessionStreamStore / SessionOperationJournal /
+// RemoteLaunchResolver / LaunchRawPort / SessionRawPort），并 SetSessionAdapter
+// 注册到数据面 Server，使 v1 session REST index 2-9 + /ws/v1 在 harness 内全激活。
+//
+// 与生产的唯一差异在两个 seam：
+//   · RemoteLaunchResolver → fakeRemoteLaunchResolver：不查找真实 CLI 二进制，
+//     对四类已知 CLI 一律解析成功，返回指向 fake CLI 的 recipe + sentinel spec。
+//   · LaunchRawPort/SessionRawPort → fakeLaunchRaw/fakeSessionRaw：不启动真实
+//     进程/PTY，仅记录会话生命周期（Start/Stop/Remove/Resize 全部记账）。
+//
+// 输出注入走真实 M2/H3 目的地（SessionStreamStore.AppendOutput 分配 v1 Seq +
+// 回放环；SessionEventHub.ReserveRunRecordUnderState + PublishReserved 经真实
+// 因果账本投递给已 attach 的 WS 订阅者）。这是生产 H1→pump 写入的同一目的地；
+// harness 从控制面驱动它，因为远端启动的 PTY 输出尚未经 run-scoped projector
+// 路由（control_wiring.go appLaunchRaw 已披露的 wiring 残留）。真实四类 CLI
+// 本机端到端（真二进制→真 PTY→完整 run-observation 路径）属 M4/最终验收。
+
+// fakeRemoteLaunchResolver 是 harness 提供的确定性 RemoteLaunchResolver：对四类
+// 已知 CLI 一律解析成功，返回 fake CLI recipe + sentinel spec（不查找真实二进制）。
+type fakeRemoteLaunchResolver struct {
+	homeDir string
+}
+
+// fakeCLISpec 是 fake CLI 的 sentinel spec（fakeLaunchRaw 不消费它，仅类型占位）。
+type fakeCLISpec struct{}
+
+func knownCLI(cli contract.CLIType) bool {
+	for _, k := range contract.KnownCLITypes {
+		if k == cli {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *fakeRemoteLaunchResolver) ResolveCreate(_ context.Context, req contract.CreateSessionRequest) (remote.RemoteLaunchResolution, *remote.LaunchResolveFailure) {
+	if !knownCLI(req.CLIType) {
+		return remote.RemoteLaunchResolution{}, &remote.LaunchResolveFailure{Kind: remote.LaunchResolveFailureContext, CLIType: req.CLIType}
+	}
+	workdir := r.homeDir
+	if req.Workdir != nil && *req.Workdir != "" {
+		workdir = *req.Workdir
+	}
+	return remote.RemoteLaunchResolution{
+		Recipe: remote.RemoteLaunchRecipe{CLIType: req.CLIType, Workdir: workdir},
+		Spec:   fakeCLISpec{},
+	}, nil
+}
+
+func (r *fakeRemoteLaunchResolver) ResolveRestart(_ context.Context, recipe remote.RemoteLaunchRecipe) (remote.RemoteLaunchResolution, *remote.LaunchResolveFailure) {
+	if !knownCLI(recipe.CLIType) {
+		return remote.RemoteLaunchResolution{}, &remote.LaunchResolveFailure{Kind: remote.LaunchResolveFailureContext, CLIType: recipe.CLIType}
+	}
+	return remote.RemoteLaunchResolution{Recipe: recipe, Spec: fakeCLISpec{}}, nil
+}
+
+func (r *fakeRemoteLaunchResolver) Probe(_ context.Context, cli contract.CLIType) (contract.CLIAvailability, *remote.LaunchResolveFailure) {
+	// harness 宣称四类 CLI 全可用，使大厅启动器全部可点（真实 availability 由
+	// HostSummary 经 buildHostSummary + 真实 resolver 提供，与本 Probe 解耦）。
+	return contract.CLIAvailability{CLIType: cli, Available: knownCLI(cli)}, nil
+}
+
+// fakeSessionRegistry 记录 fake CLI 会话生命周期（Start/Stop/Remove/Resize），
+// 供控制面/测试观测，不启动任何真实进程。
+type fakeSessionRegistry struct {
+	mu       sync.Mutex
+	sessions map[string]string // sessionID → state（running/stopped/removed）
+}
+
+func newFakeSessionRegistry() *fakeSessionRegistry {
+	return &fakeSessionRegistry{sessions: make(map[string]string)}
+}
+
+func (r *fakeSessionRegistry) start(id string)  { r.set(id, "running") }
+func (r *fakeSessionRegistry) stop(id string)   { r.set(id, "stopped") }
+func (r *fakeSessionRegistry) remove(id string) { r.set(id, "removed") }
+func (r *fakeSessionRegistry) set(id, state string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessions[id] = state
+}
+func (r *fakeSessionRegistry) state(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessions[id]
+}
+
+// fakeLaunchRaw 实现 remote.LaunchRawPort：StartProcess 仅在 registry 记账，
+// 不启动真实进程（已在 gate DoLaunchEffect 回调内，gate 许可已获取）。
+type fakeLaunchRaw struct {
+	reg *fakeSessionRegistry
+}
+
+func (f fakeLaunchRaw) StartProcess(_ context.Context, sessionID contract.SessionID, _ remote.RemoteLaunchRecipe, _ any, _ *remote.RunObservationPermit) error {
+	f.reg.start(string(sessionID))
+	return nil
+}
+
+// fakeSessionRaw 实现 remote.SessionRawPort：Stop/Remove/Resize 仅记账。
+type fakeSessionRaw struct {
+	reg *fakeSessionRegistry
+}
+
+func (f fakeSessionRaw) StopSession(_ context.Context, sessionID contract.SessionID) error {
+	f.reg.stop(string(sessionID))
+	return nil
+}
+func (f fakeSessionRaw) RemoveSession(_ context.Context, sessionID contract.SessionID) error {
+	f.reg.remove(string(sessionID))
+	return nil
+}
+func (f fakeSessionRaw) ResizeSession(_ context.Context, sessionID contract.SessionID, _, _ int) error {
+	return nil // fake CLI 无真实 PTY 尺寸
+}
+
+// controlState 汇集控制面（TEST-ONLY）所需的全部句柄：数据面 Server、注入用
+// adapter/runtime、数据面 origin（控制面以真实 HTTP 调用数据面 pairing/create），
+// 以及懒装配的“控制设备”凭据 + 每会话因果源序号。
+type controlState struct {
+	srv        *remote.Server
+	adapter    *remote.RemoteSessionAdapter
+	dataOrigin string
+	reg        *fakeSessionRegistry
+
+	devMu       sync.Mutex
+	ctlCookie   string // 控制设备的 device cookie 值（同源 loopback HTTP 携带）
+	ctlDeviceID string
+
+	srcMu       sync.Mutex
+	srcCounters map[string]int // sessionID → 已注入因果源序号（单调）
+}
+
+// injectOutput 经真实 M2/H3 路径注入一条输出：SessionStreamStore 分配 v1 Seq +
+// 回放环；SessionEventHub 预留因果票据并 PublishReserved 投递给已 attach 的
+// WS 订阅者（真实因果 drain loop → socket）。
+func (st *controlState) injectOutput(sessionID contract.SessionID, data []byte) contract.Seq {
+	rt := st.adapter.Runtime()
+	seq := st.adapter.Streams().AppendOutput(sessionID, data)
+	if rt == nil {
+		return seq
+	}
+	st.srcMu.Lock()
+	st.srcCounters[string(sessionID)]++
+	src := st.srcCounters[string(sessionID)]
+	st.srcMu.Unlock()
+	pos := remote.RunCausalPosition{SegmentID: 1, Source: remote.RunSourceOrdinal(src)}
+	// SetRunPos 使 stream.runPos 与因果水位 watermark.Run 同步推进：attach 的
+	// syncFeedAndAttachCausal 比较 expectedPos(=stream.runPos) 与 watermark.Run，
+	// 两者必须一致（生产中由 pump 从 feed 同步；harness 直接注入须手动同步）。
+	st.adapter.Streams().SetRunPos(sessionID, pos)
+	ticket, err := rt.Hub().ReserveRunRecordUnderState(sessionID, pos, remote.CausalReplay)
+	if err != nil {
+		return seq // 预留失败：回放环仍已更新（attach/backfill 可见），best-effort
+	}
+	rt.Hub().PublishReserved(ticket, contract.OutputEvent{
+		Type:      contract.ServerEventTypeOutput,
+		SessionID: sessionID,
+		Seq:       seq,
+		Chunk:     base64.StdEncoding.EncodeToString(data),
+	})
+	st.adapter.Catalog().TouchActivity(sessionID, time.Now())
+	return seq
+}
+
+// injectBoundary 经真实 M2/H3 路径注入一条重启边界：AppendBoundary 分配 Seq +
+// 回放环；因果预留 + PublishReserved 投递 session.state(restartBoundary) 帧。
+func (st *controlState) injectBoundary(sessionID contract.SessionID) contract.Seq {
+	rt := st.adapter.Runtime()
+	seq := st.adapter.Streams().AppendBoundary(sessionID)
+	if rt == nil {
+		return seq
+	}
+	st.srcMu.Lock()
+	st.srcCounters[string(sessionID)]++
+	src := st.srcCounters[string(sessionID)]
+	st.srcMu.Unlock()
+	pos := remote.RunCausalPosition{SegmentID: 1, Source: remote.RunSourceOrdinal(src)}
+	st.adapter.Streams().SetRunPos(sessionID, pos)
+	ticket, err := rt.Hub().ReserveRunRecordUnderState(sessionID, pos, remote.CausalReplay)
+	if err != nil {
+		return seq
+	}
+	rt.Hub().PublishReserved(ticket, contract.SessionRestartBoundaryEvent{
+		Type:            contract.ServerEventTypeSessionState,
+		SessionID:       sessionID,
+		State:           contract.SessionStateRunning,
+		RestartBoundary: true,
+		Seq:             seq,
+		OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	return seq
+}
+
+// ensureControlDevice 懒装配一个“控制设备”：开窗 → 以真实 loopback HTTP
+// POST /pairing/complete 完成配对 → 捕获 Set-Cookie。后续 create/stop 等经
+// 真实 REST 调用数据面时携带该 Cookie（与桌面 Wails 边界同级真实 auth 路径）。
+func (st *controlState) ensureControlDevice() error {
+	st.devMu.Lock()
+	defer st.devMu.Unlock()
+	if st.ctlCookie != "" {
+		return nil
+	}
+	info, err := st.srv.CreatePairingWindow(true)
+	if err != nil {
+		return fmt.Errorf("open pairing window: %w", err)
+	}
+	body, _ := json.Marshal(contract.PairingCompleteRequest{
+		Code:       info.Code,
+		DeviceName: "E2E 控制面·控制设备",
+	})
+	req, _ := http.NewRequest(http.MethodPost, st.dataOrigin+contract.RESTBasePath+"/pairing/complete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// 控制面是同源 loopback 调用者（harness 数据面调用自身），如实声明同源 Origin；
+	// 与桌面 Wails 同源边界同级，服务端仍执行全部 Origin/Host/auth 校验。
+	req.Header.Set("Origin", st.dataOrigin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("pairing complete: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pairing complete -> %d: %s", resp.StatusCode, string(raw))
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == "amagi_codebox_device" {
+			st.ctlCookie = c.Value
+			break
+		}
+	}
+	if st.ctlCookie == "" {
+		return errors.New("pairing complete: no device cookie set")
+	}
+	var pairResp contract.PairingCompleteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pairResp); err != nil {
+		// 响应体已读（cookies 已取）；decode 失败不致命，deviceID 从 list 推导。
+		st.ctlDeviceID = string(pairResp.Device.ID)
+	} else {
+		st.ctlDeviceID = string(pairResp.Device.ID)
+	}
+	return nil
+}
+
+// createSessionViaREST 以控制设备凭据经真实 REST POST /sessions 创建会话，
+// 返回 SessionDetail（真实 gate/catalog/stream 全路径）。
+func (st *controlState) createSessionViaREST(cliType contract.CLIType) (contract.SessionDetail, error) {
+	if err := st.ensureControlDevice(); err != nil {
+		return contract.SessionDetail{}, err
+	}
+	body, _ := json.Marshal(contract.CreateSessionRequest{CLIType: cliType})
+	req, _ := http.NewRequest(http.MethodPost, st.dataOrigin+contract.RESTBasePath+"/sessions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", st.dataOrigin)
+	req.AddCookie(&http.Cookie{Name: "amagi_codebox_device", Value: st.ctlCookie})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return contract.SessionDetail{}, fmt.Errorf("create session: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return contract.SessionDetail{}, fmt.Errorf("create session -> %d: %s", resp.StatusCode, string(raw))
+	}
+	var detail contract.SessionDetail
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return contract.SessionDetail{}, fmt.Errorf("create session decode: %w", err)
+	}
+	return detail, nil
+}
+
+// ---------------------------------------------------------------------------
 // 控制面（TEST-ONLY，仅 loopback）
 // ---------------------------------------------------------------------------
 
@@ -102,9 +382,10 @@ func writeCtlError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-// controlMux 只组装"桌面用户动作等价物"。所有端点都要求 loopback peer
-// （监听本身已绑定 127.0.0.1，双重保险）。
-func controlMux(srv *remote.Server) *http.ServeMux {
+// controlMux 只组装"桌面用户动作等价物" + M2-INT fake CLI 注入通道。所有端点
+// 都要求 loopback peer（监听本身已绑定 127.0.0.1，双重保险）。
+func controlMux(st *controlState) *http.ServeMux {
+	srv := st.srv
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -167,6 +448,78 @@ func controlMux(srv *remote.Server) *http.ServeMux {
 		writeJSON(w, http.StatusOK, res)
 	})
 
+	// --- M2-INT fake CLI 通道（TEST-ONLY）：控制面造会话 / 注入输出 / 查 journal ---
+
+	// 创建受控 fake CLI 会话：控制设备经真实 REST POST /sessions 创建，走完整
+	// gate/catalog/stream 路径。返回 SessionDetail（含真实 sessionId）。
+	mux.HandleFunc("POST /control/session", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			CLIType string `json:"cliType"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeCtlError(w, http.StatusBadRequest, err)
+			return
+		}
+		detail, err := st.createSessionViaREST(contract.CLIType(body.CLIType))
+		if err != nil {
+			writeCtlError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"sessionId": detail.ID,
+			"title":     detail.Title,
+			"state":     detail.State,
+			"cliType":   detail.CLIType,
+		})
+	})
+
+	// 向会话注入输出（fake CLI 回输出）：经真实 M2/H3 路径（Seq + 因果账本）。
+	mux.HandleFunc("POST /control/session/{id}/output", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeCtlError(w, http.StatusBadRequest, err)
+			return
+		}
+		if sessionID == "" || body.Text == "" {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id and text required"))
+			return
+		}
+		seq := st.injectOutput(sessionID, []byte(body.Text))
+		writeJSON(w, http.StatusOK, map[string]any{"seq": seq})
+	})
+
+	// 向会话注入重启边界（stop/restart 边界渲染）：经真实 M2/H3 路径。
+	mux.HandleFunc("POST /control/session/{id}/boundary", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		if sessionID == "" {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id required"))
+			return
+		}
+		seq := st.injectBoundary(sessionID)
+		writeJSON(w, http.StatusOK, map[string]any{"seq": seq})
+	})
+
+	// 查询会话危险操作 journal（真实文件后端；最新优先）。
+	mux.HandleFunc("GET /control/session/{id}/journal", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		records, err := st.adapter.Journal().ListRecent(r.Context(), 50)
+		if err != nil {
+			writeCtlError(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		// 过滤本会话（journal 不含凭据；全量返回亦可，这里按会话过滤便于断言）。
+		filtered := make([]remote.SessionOperationRecord, 0, len(records))
+		for _, rec := range records {
+			if rec.SessionID == sessionID {
+				filtered = append(filtered, rec)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"records": filtered})
+	})
+
 	return mux
 }
 
@@ -212,6 +565,30 @@ func main() {
 	// 伺服均不触达 App（server.go 对 s.app 做 nil 守卫）；legacy /api/* 面
 	// 不属于本 E2E 范围，harness 也不向它发请求。
 
+	// --- M2-INT session 接线：真实 RemoteSessionAdapter 装配（TEST-ONLY） ---
+	// 与 app.go NewApp 同款依赖（design §4.2）：ControlRuntime + catalog +
+	// streams + journal + resolver + LaunchRawPort + SessionRawPort。唯一差异：
+	// resolver/launchRaw/sessRaw 指向 harness 提供的确定性 fake CLI（见本文件
+	// M2-INT 节），不查找真实二进制/不启动真实进程。装配后 v1 session REST
+	// index 2-9 + /ws/v1 全激活（design §4A hardening gate）。
+	homeDir, _ := os.UserHomeDir()
+	control := remote.NewControlRuntime(remote.NewSystemClock(), log)
+	m2Catalog := remote.NewSessionCatalog()
+	m2Streams := remote.NewSessionStreamStore()
+	m2Journal := remote.NewSessionOperationJournal(configDir)
+	fakeReg := newFakeSessionRegistry()
+	m2Adapter := remote.NewRemoteSessionAdapter(
+		control.Gate(), control, m2Catalog, m2Streams, m2Journal,
+		&fakeRemoteLaunchResolver{homeDir: homeDir},
+		fakeLaunchRaw{reg: fakeReg},
+		fakeSessionRaw{reg: fakeReg},
+		remote.NewSystemClock(), configDir,
+	)
+	srv.SetSessionAdapter(m2Adapter)
+	// MarkReady 必须在 srv.Start 前完成：gate 在接受任何请求前需进入 ready
+	// （CreateSession/AttachControl 等均 checkReady；未 ready → service.down）。
+	control.MarkReady()
+
 	if err := srv.LoadSecurityState(); err != nil {
 		fmt.Fprintln(os.Stderr, "harness: LoadSecurityState:", err)
 		cleanup()
@@ -243,8 +620,14 @@ func main() {
 		os.Exit(1)
 	}
 	ctlSrv := &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", ctlPort),
-		Handler: controlMux(srv),
+		Addr: fmt.Sprintf("127.0.0.1:%d", ctlPort),
+		Handler: controlMux(&controlState{
+			srv:         srv,
+			adapter:     m2Adapter,
+			dataOrigin:  fmt.Sprintf("http://127.0.0.1:%d", dataPort),
+			reg:         fakeReg,
+			srcCounters: make(map[string]int),
+		}),
 	}
 	ctlLn, err := net.Listen("tcp", ctlSrv.Addr)
 	if err != nil {

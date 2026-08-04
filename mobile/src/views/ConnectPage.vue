@@ -12,7 +12,7 @@
  *   ④ E-01～E-04 状态呈现（分类文案+可执行动作，禁笼统失败 AC-23）
  *   ⑤ LAN 明文 HTTP 风险提示（RiskBanner，无"不再提示"）
  *   ⑥ E-11 壳回落：JS/Web API 不可用 → 静态说明块；相机不可用 → 手动入口
- * 配对成功 → auth store → 会话大厅占位路由（#/lobby，大厅本体是 M2 交付）。
+ * 配对成功 → auth store → 会话大厅（#/lobby，PG-02，M2-B 交付）。
  * ---------------------------------------------------------------------------
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';

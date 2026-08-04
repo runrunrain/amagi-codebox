@@ -18,8 +18,9 @@
     <!-- Close Button (hover only) -->
     <button
       class="close-btn"
+      :disabled="session.status === 'stopping'"
       @click.stop="handleClose"
-      title="关闭会话"
+      :title="session.status === 'stopping' ? '停止中，正在等待进程退出' : '关闭会话'"
     >
       <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"/>
@@ -55,11 +56,19 @@ const emit = defineEmits<{
 }>()
 
 const statusColor = computed(() => {
-  return props.session.status === 'running' ? 'var(--success)' : 'var(--tertiary)'
+  if (props.session.status === 'running') return 'var(--success)'
+  if (props.session.status === 'stopping') return 'var(--warning, #FF9500)'
+  return 'var(--tertiary)'
 })
 
 const statusText = computed(() => {
-  return props.session.status === 'running' ? '运行中' : '已退出'
+  switch (props.session.status) {
+    case 'running': return '运行中'
+    case 'stopping': return '停止中'
+    case 'stopped': return '已停止'
+    case 'failed': return '启动失败'
+    default: return '已退出'
+  }
 })
 
 const tagColorValue = computed(() => {
@@ -92,6 +101,7 @@ function handleClick() {
 }
 
 function handleClose() {
+  if (props.session.status === 'stopping') return
   emit('close', props.session.id)
 }
 </script>
@@ -192,8 +202,13 @@ function handleClose() {
   opacity: 1;
 }
 
-.close-btn:hover {
+.close-btn:hover:not(:disabled) {
   background: rgba(255, 59, 48, 0.15);
+}
+
+.close-btn:disabled {
+  cursor: wait;
+  opacity: 0.45;
 }
 
 .close-btn:hover .close-icon {

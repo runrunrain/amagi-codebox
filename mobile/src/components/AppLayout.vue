@@ -8,8 +8,13 @@ const route = useRoute()
 const drawerOpen = ref(false)
 
 const isTerminalView = () => route.name === 'terminal'
-// M1-D1：PG-01 连接配对页 / 大厅占位使用独立壳（VT 浅色、无 legacy 导航）
+// M1-D1：PG-01 连接配对页 / PG-02 大厅使用独立壳（VT 浅色、无 legacy 导航）
 const isBareView = () => route.meta.bare === true
+
+// M2-D（PG-04）：workspace 的 ?view=terminal 查询变化是同一会话的呈现切换
+// （结构化主面 ⇄ 诊断视图），必须复用组件实例与 WS attach——按 path 作为 key，
+// query 变化不重挂载；其余页面维持 fullPath 语义（ConnectPage 等依赖重挂载）。
+const routerViewKey = () => (route.name === 'workspace' ? route.path : route.fullPath)
 </script>
 
 <template>
@@ -29,7 +34,7 @@ const isBareView = () => route.meta.bare === true
     <DrawerNav v-if="!isBareView()" v-model:open="drawerOpen" />
 
     <main class="content" :class="{ 'content--terminal': isTerminalView(), 'content--bare': isBareView() }">
-      <router-view :key="route.fullPath" />
+      <router-view :key="routerViewKey()" />
     </main>
 
     <nav v-if="!isTerminalView() && !isBareView()" class="bottom-nav">

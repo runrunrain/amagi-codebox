@@ -44,9 +44,9 @@
       打开 Web 界面
     </button>
 
-    <!-- Running Sessions Section -->
+    <!-- Active Sessions Section (running + stopping until terminal receipt) -->
     <div class="section-label">
-      <span>运行中</span>
+      <span>活动会话</span>
       <span class="count-pill">{{ sessionCount }}</span>
     </div>
     <div class="sess-list">
@@ -74,7 +74,7 @@
         </div>
       </template>
       <div v-else class="sess-empty">
-        无运行中会话
+        无活动会话
         <span class="sess-empty-hint">点击上方「新建会话」开始</span>
       </div>
     </div>
@@ -120,7 +120,7 @@ const sessionStore = useSessionStore()
 const { refresh, startPolling, stopPolling } = useSessionList()
 const { state: dashState, persistDefaults } = useDashboardState()
 const platformCaps = usePlatformCapabilities()
-const { showSuccess, showError } = useToast()
+const { showSuccess, showError, showInfo } = useToast()
 // 共用会话启动逻辑（与 SessionSettingsView 共享，消除重复）
 const { canLaunchFromSettings, launchFromSettings: launchSession } = useSessionLaunch()
 
@@ -255,6 +255,10 @@ function handleSessionClick(session: any) {
 
 async function handleSessionClose(session: any) {
   const sessionId = session.id
+  if (session.status === 'stopping') {
+    showInfo('会话正在停止，等待进程退出后才会移出列表')
+    return
+  }
 
   try {
     await sessionApi.stopSession(sessionId)
@@ -270,7 +274,7 @@ async function handleSessionClose(session: any) {
       }
       router.push('/terminal')
     } else {
-      // 最后一个会话关闭：必返回会话设置
+      // 最后一个active会话取得terminal receipt后才返回会话设置
       sessionStore.setActiveSession(null)
       router.push('/')
     }

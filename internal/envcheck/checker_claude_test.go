@@ -577,7 +577,7 @@ func (r *corruptBinaryRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
 // surfaces a structured issue with reinstall solutions to the frontend.
 func TestCheckClaudeCode_DetectPathSelfHealOnCorruptedBinary(t *testing.T) {
 	withSimulatedGOOS(t, "linux")
-	withIntegrityThreshold(t, 100 * 1024 * 1024)
+	withIntegrityThreshold(t, 100*1024*1024)
 
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")

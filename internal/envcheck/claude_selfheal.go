@@ -72,8 +72,8 @@ const claudeCodesignTimeout = 10 * time.Second
 // claudeNPMResidueCleanupResult describes what self-heal removed, so callers
 // can produce actionable user-facing messages.
 type claudeNPMResidueCleanupResult struct {
-	StagingDirs   []string
-	PackageDirs   []string
+	StagingDirs    []string
+	PackageDirs    []string
 	OrphanBinLinks []string
 }
 
@@ -174,10 +174,10 @@ func (s *Service) cleanClaudeNPMResidueIfPresent() (*claudeNPMResidueCleanupResu
 
 // cleanClaudeNPMResidue performs the three-step recovery documented in
 // Claude-Code-安装异常说明.md section 四.2:
-//   1. Remove every @anthropic-ai/.claude-code-* staging directory.
-//   2. Remove the @anthropic-ai/claude-code main package directory.
-//   3. Remove orphan npm bin links (claude / claude.cmd / claude.exe) that
-//      point at the now-deleted package.
+//  1. Remove every @anthropic-ai/.claude-code-* staging directory.
+//  2. Remove the @anthropic-ai/claude-code main package directory.
+//  3. Remove orphan npm bin links (claude / claude.cmd / claude.exe) that
+//     point at the now-deleted package.
 //
 // It does NOT touch any user configuration, any other package, or any
 // native-channel binary under ~/.local.

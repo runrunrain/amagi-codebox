@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,9 +24,15 @@ type LaunchResult struct {
 	PID       int    `json:"-"`
 }
 
+type recoveredExternalProcess struct {
+	pid      int
+	identity string
+}
+
 // LauncherService 管理 Claude Code 进程的启动（支持多实例）。
 type LauncherService struct {
-	processes map[string]*exec.Cmd // sessionID -> cmd
+	processes map[string]*exec.Cmd // sessionID -> child cmd owned by this App instance
+	recovered map[string]recoveredExternalProcess
 	mu        sync.Mutex
 	proxyPort int
 	log       *logging.Service
@@ -36,6 +43,7 @@ type LauncherService struct {
 func NewLauncherService(log *logging.Service, envVars *envvars.EnvVarsService) *LauncherService {
 	return &LauncherService{
 		processes: make(map[string]*exec.Cmd),
+		recovered: make(map[string]recoveredExternalProcess),
 		log:       log,
 		envVars:   envVars,
 		resolver:  platform.NewCLIResolver(platform.CurrentCapabilities()),
@@ -183,6 +191,22 @@ func (s *LauncherService) Launch(
 	mode session.LaunchMode,
 	workDir string,
 ) (*LaunchResult, error) {
+	return s.LaunchGuarded(sessionID, provider, presetName, apiKey, agentTeams, mode, workDir, nil)
+}
+
+// LaunchGuarded invokes beforeRawStart immediately before cmd.Start. App uses
+// this hook to revalidate its shutdown generation after any command/env setup
+// delay; a rejected guard guarantees raw OS Start was never called.
+func (s *LauncherService) LaunchGuarded(
+	sessionID string,
+	provider config.Provider,
+	presetName string,
+	apiKey string,
+	agentTeams config.AgentTeamsConfig,
+	mode session.LaunchMode,
+	workDir string,
+	beforeRawStart func() error,
+) (*LaunchResult, error) {
 	overrides := s.BuildOverrides(provider, presetName, apiKey, agentTeams)
 	env := BuildEnv(s.baseEnv(), overrides)
 
@@ -206,6 +230,11 @@ func (s *LauncherService) Launch(
 
 	s.log.Info("launcher", "正在启动进程", fmt.Sprintf("sessionID=%s mode=%s", sessionID, mode))
 
+	if beforeRawStart != nil {
+		if err := beforeRawStart(); err != nil {
+			return nil, fmt.Errorf("authorize process start: %w", err)
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "进程启动失败", err.Error())
 		return nil, fmt.Errorf("start process: %w", err)
@@ -225,10 +254,12 @@ func (s *LauncherService) Launch(
 	// 监控进程退出
 	go func(id string, c *exec.Cmd) {
 		err := c.Wait()
-		s.log.Info("launcher", "进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 		s.mu.Lock()
-		delete(s.processes, id)
+		if s.processes[id] == c {
+			delete(s.processes, id)
+		}
 		s.mu.Unlock()
+		s.log.Info("launcher", "进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 	}(sessionID, cmd)
 
 	return &LaunchResult{
@@ -292,10 +323,12 @@ func (s *LauncherService) LaunchOpenCode(
 	// 监控进程退出
 	go func(id string, c *exec.Cmd) {
 		err := c.Wait()
-		s.log.Info("launcher", "OpenCode 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 		s.mu.Lock()
-		delete(s.processes, id)
+		if s.processes[id] == c {
+			delete(s.processes, id)
+		}
 		s.mu.Unlock()
+		s.log.Info("launcher", "OpenCode 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 	}(sessionID, cmd)
 
 	return &LaunchResult{
@@ -315,12 +348,29 @@ func (s *LauncherService) LaunchCodex(
 	workDir string,
 	envOverrides map[string]string,
 ) (*LaunchResult, error) {
+	return s.LaunchCodexGuarded(sessionID, modelName, mode, workDir, envOverrides, nil)
+}
+
+// LaunchCodexGuarded is the Codex counterpart to LaunchGuarded.
+func (s *LauncherService) LaunchCodexGuarded(
+	sessionID string,
+	modelName string,
+	mode session.LaunchMode,
+	workDir string,
+	envOverrides map[string]string,
+	beforeRawStart func() error,
+) (*LaunchResult, error) {
 	env := BuildEnv(s.baseEnv(), envOverrides)
 
 	cmd := s.buildCodexCmd(modelName, workDir, env)
 
 	s.log.Info("launcher", "正在启动 Codex 进程", fmt.Sprintf("sessionID=%s mode=%s model=%s", sessionID, mode, modelName))
 
+	if beforeRawStart != nil {
+		if err := beforeRawStart(); err != nil {
+			return nil, fmt.Errorf("authorize Codex process start: %w", err)
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "Codex 进程启动失败", err.Error())
 		return nil, fmt.Errorf("start codex process: %w", err)
@@ -340,10 +390,12 @@ func (s *LauncherService) LaunchCodex(
 	// 监控进程退出
 	go func(id string, c *exec.Cmd) {
 		err := c.Wait()
-		s.log.Info("launcher", "Codex 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 		s.mu.Lock()
-		delete(s.processes, id)
+		if s.processes[id] == c {
+			delete(s.processes, id)
+		}
 		s.mu.Unlock()
+		s.log.Info("launcher", "Codex 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 	}(sessionID, cmd)
 
 	return &LaunchResult{
@@ -407,10 +459,12 @@ func (s *LauncherService) LaunchPi(
 	// 监控进程退出
 	go func(id string, c *exec.Cmd) {
 		err := c.Wait()
-		s.log.Info("launcher", "Pi 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 		s.mu.Lock()
-		delete(s.processes, id)
+		if s.processes[id] == c {
+			delete(s.processes, id)
+		}
 		s.mu.Unlock()
+		s.log.Info("launcher", "Pi 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
 	}(sessionID, cmd)
 
 	return &LaunchResult{
@@ -475,28 +529,114 @@ func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.C
 	return cmd
 }
 
+// CaptureProcessIdentity returns a PID-reuse-resistant OS start identity for a
+// process currently owned by this Launcher. It is persisted only for failed
+// post-start cleanup handoff and contains no argv/env/path.
+func (s *LauncherService) CaptureProcessIdentity(sessionID string) (string, error) {
+	s.mu.Lock()
+	cmd := s.processes[sessionID]
+	recovered, recoveredOK := s.recovered[sessionID]
+	s.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		identity, running, err := inspectExternalProcess(cmd.Process.Pid)
+		if err != nil {
+			return "", err
+		}
+		if !running || identity == "" {
+			return "", fmt.Errorf("process is already terminal: %s", sessionID)
+		}
+		// Wait removes the exact cmd before logging. Recheck ownership after OS
+		// inspection so a process reaped/reused during inspection cannot lend its
+		// creation identity to the old session record.
+		s.mu.Lock()
+		stillOwned := s.processes[sessionID] == cmd
+		s.mu.Unlock()
+		if !stillOwned {
+			return "", fmt.Errorf("process became terminal during identity capture: %s", sessionID)
+		}
+		return identity, nil
+	}
+	if recoveredOK {
+		return recovered.identity, nil
+	}
+	return "", fmt.Errorf("process is not registered: %s", sessionID)
+}
+
+// RecoverProcess adopts a durable cleanup record after App restart. The OS
+// start identity prevents signalling a PID-reused process. Inspection errors
+// retain a fail-closed in-memory owner and report running=true so the caller
+// keeps its dependency admission while the reaper retries.
+func (s *LauncherService) RecoverProcess(sessionID string, pid int, expectedIdentity string) (bool, error) {
+	if sessionID == "" || pid <= 0 || expectedIdentity == "" {
+		return false, errors.New("recover process: invalid durable identity")
+	}
+	recovered := recoveredExternalProcess{pid: pid, identity: expectedIdentity}
+	s.mu.Lock()
+	if cmd := s.processes[sessionID]; cmd != nil {
+		s.mu.Unlock()
+		return true, nil
+	}
+	s.recovered[sessionID] = recovered
+	s.mu.Unlock()
+
+	identity, running, inspectErr := inspectExternalProcess(pid)
+	terminal, signal, classifyErr := classifyRecoveredExternalProcess(expectedIdentity, identity, running, inspectErr)
+	if terminal {
+		s.removeRecoveredExact(sessionID, recovered)
+		return false, classifyErr
+	}
+	if !signal {
+		// Inspection uncertainty and legacy procfs identities remain adopted.
+		// Callers retain their durable record/admission and retry without signal.
+		return true, classifyErr
+	}
+	return true, nil
+}
+
+func (s *LauncherService) removeRecoveredExact(sessionID string, expected recoveredExternalProcess) {
+	s.mu.Lock()
+	if current, ok := s.recovered[sessionID]; ok && current == expected {
+		delete(s.recovered, sessionID)
+	}
+	s.mu.Unlock()
+}
+
 // Stop 停止指定会话的进程
 func (s *LauncherService) Stop(sessionID string) error {
 	s.log.Info("launcher", "停止进程", "sessionID="+sessionID)
 	s.mu.Lock()
-	cmd, ok := s.processes[sessionID]
-	if !ok {
-		s.mu.Unlock()
-		s.log.Debug("launcher", "进程已不存在", "sessionID="+sessionID)
-		return nil
-	}
-	delete(s.processes, sessionID)
+	cmd, childOK := s.processes[sessionID]
+	recovered, recoveredOK := s.recovered[sessionID]
 	s.mu.Unlock()
 
-	if cmd == nil || cmd.Process == nil {
+	if childOK {
+		// The launch-owned Wait goroutine is the sole child terminal receipt and
+		// map remover. A failed Kill therefore remains exactly addressable.
+		if cmd == nil || cmd.Process == nil {
+			return nil
+		}
+		if err := cmd.Process.Kill(); err != nil {
+			s.log.Error("launcher", "杀死进程失败", fmt.Sprintf("sessionID=%s err=%v", sessionID, err))
+			return fmt.Errorf("kill process: %w", err)
+		}
+		s.log.Info("launcher", "已发送停止信号", "sessionID="+sessionID)
 		return nil
 	}
-	if err := cmd.Process.Kill(); err != nil {
-		s.log.Error("launcher", "杀死进程失败", fmt.Sprintf("sessionID=%s err=%v", sessionID, err))
-		return fmt.Errorf("kill process: %w", err)
+	if recoveredOK {
+		terminal, err := terminateRecoveredExternalProcess(recovered.pid, recovered.identity)
+		if terminal {
+			s.removeRecoveredExact(sessionID, recovered)
+		}
+		if err != nil {
+			s.log.Error("launcher", "停止恢复进程失败", fmt.Sprintf("sessionID=%s err=%v", sessionID, err))
+			return err
+		}
+		if !terminal {
+			s.log.Info("launcher", "已向恢复进程发送停止信号", "sessionID="+sessionID)
+		}
+		return nil
 	}
-	_ = cmd.Wait()
-	s.log.Info("launcher", "进程已停止", "sessionID="+sessionID)
+	s.log.Debug("launcher", "进程已不存在", "sessionID="+sessionID)
 	return nil
 }
 
@@ -508,14 +648,31 @@ func (s *LauncherService) StopAll() {
 	for k, v := range s.processes {
 		cmds[k] = v
 	}
-	s.processes = make(map[string]*exec.Cmd)
+	recovered := make(map[string]recoveredExternalProcess, len(s.recovered))
+	for k, v := range s.recovered {
+		recovered[k] = v
+	}
 	s.mu.Unlock()
 
+	// Do not clear ownership before terminal. Child Wait or recovered identity
+	// observation removes the exact entry; failed kills remain retriable.
 	for id, cmd := range cmds {
-		if cmd != nil && cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			s.log.Info("launcher", "进程已停止", "sessionID="+id)
+		if cmd == nil || cmd.Process == nil {
+			continue
+		}
+		if err := cmd.Process.Kill(); err != nil {
+			s.log.Error("launcher", "杀死进程失败", fmt.Sprintf("sessionID=%s err=%v", id, err))
+			continue
+		}
+		s.log.Info("launcher", "已发送停止信号", "sessionID="+id)
+	}
+	for id, process := range recovered {
+		terminal, err := terminateRecoveredExternalProcess(process.pid, process.identity)
+		if terminal {
+			s.removeRecoveredExact(id, process)
+		}
+		if err != nil {
+			s.log.Error("launcher", "停止恢复进程失败", fmt.Sprintf("sessionID=%s err=%v", id, err))
 		}
 	}
 }
@@ -523,16 +680,38 @@ func (s *LauncherService) StopAll() {
 // IsRunning 检查指定会话是否在运行
 func (s *LauncherService) IsRunning(sessionID string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.processes[sessionID]
-	return ok
+	_, childOK := s.processes[sessionID]
+	recovered, recoveredOK := s.recovered[sessionID]
+	s.mu.Unlock()
+	if childOK {
+		return true
+	}
+	if !recoveredOK {
+		return false
+	}
+	identity, running, inspectErr := inspectExternalProcess(recovered.pid)
+	terminal, _, _ := classifyRecoveredExternalProcess(recovered.identity, identity, running, inspectErr)
+	if terminal {
+		s.removeRecoveredExact(sessionID, recovered)
+		return false
+	}
+	// Exact, inspection-uncertain and legacy-schema live identities all remain
+	// owned. Only exact current-schema identity can be signalled by Stop.
+	return true
 }
 
 // RunningCount 返回运行中的进程数
 func (s *LauncherService) RunningCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.processes)
+	ids := make(map[string]struct{}, len(s.processes)+len(s.recovered))
+	for id := range s.processes {
+		ids[id] = struct{}{}
+	}
+	for id := range s.recovered {
+		ids[id] = struct{}{}
+	}
+	return len(ids)
 }
 
 // BuildEnv merges base env with overrides, where overrides win.

@@ -6,7 +6,32 @@ import (
 	"slices"
 	"sync"
 	"testing"
+
+	"amagi-codebox/internal/platform"
 )
+
+func TestR4_001_DarwinCloseReleasesSameIDForRestart(t *testing.T) {
+	s := NewService(nil)
+	spec := platform.ResolvedLaunchSpec{
+		CLI:           platform.ResolvedCLI{Path: "/bin/sh", Args: []string{"-c", "sleep 30"}},
+		BootstrapMode: platform.BootstrapDirectCommand,
+		PTYCols:       80,
+		PTYRows:       24,
+	}
+	const sid = "r4-001-darwin-restart"
+	if _, err := s.StartResolvedWithRun(sid, spec, struct{}{}); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	if err := s.Close(sid); err != nil {
+		t.Fatalf("close old run: %v", err)
+	}
+	if _, err := s.StartResolvedWithRun(sid, spec, struct{}{}); err != nil {
+		t.Fatalf("same-ID restart after close: %v", err)
+	}
+	if _, err := s.DetachSession(sid); err != nil {
+		t.Fatalf("cleanup detach: %v", err)
+	}
+}
 
 func TestBuildDarwinPTYEnvironmentFromBase_InheritsNilEnvAndAddsMissingColorDefaults(t *testing.T) {
 	inherited := []string{"PATH=/usr/bin", "PARENT_ONLY=1"}

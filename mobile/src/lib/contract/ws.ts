@@ -64,6 +64,20 @@ export const KNOWN_SERVER_EVENT_TYPES = [
 ] as const;
 
 // ---------------------------------------------------------------------------
+// auth.revoked reason manifest + close directive (CG-01 contract addendum).
+// The reason is a closed one-value enum for server PRODUCERS; the close code
+// is a transport directive, NOT an 8th event type or 13th error code. Unknown
+// reasons normalize to a sanitized UnknownServerEvent with force-unauthorized
+// (fail-closed). Clients revoke on the event TYPE, never on the reason value.
+// ---------------------------------------------------------------------------
+export const AUTH_REVOKED_REASON_DEVICE_REVOKED = 'device_revoked' as const;
+export const KNOWN_AUTH_REVOKED_REASONS = [
+  AUTH_REVOKED_REASON_DEVICE_REVOKED,
+] as const;
+export type AuthRevokedReason = (typeof KNOWN_AUTH_REVOKED_REASONS)[number];
+export const AUTH_REVOKED_CLOSE_CODE = 1008 as const;
+
+// ---------------------------------------------------------------------------
 // Snapshot layers (session.attached). HistorySnapshot is a conditional union
 // (addendum §1.4): gap state requires a GapRange; continuous/backfilled forbid it.
 // ---------------------------------------------------------------------------
@@ -203,7 +217,7 @@ export type ControlStateEvent = ControlStateEventCommon & (
 
 export interface AuthRevokedEvent {
   type: typeof SERVER_EVENT_TYPE_AUTH_REVOKED;
-  reason: string;
+  reason: AuthRevokedReason;
   occurredAt: string;
 }
 
@@ -294,6 +308,13 @@ const CLOSED_CONTROL_STATES = new Set<string>(['none', 'you', 'other', 'desktop'
 const CLOSED_HISTORY_STATES = new Set<string>(['continuous', 'backfilled', 'gap']);
 const CLOSED_ERROR_LAYERS = new Set<string>(['connection', 'auth', 'session', 'control', 'history']);
 const KNOWN_SERVER_TYPES = new Set<string>(KNOWN_SERVER_EVENT_TYPES);
+
+// isKnownAuthRevokedReason: type guard for the CG-01 closed reason enum. An
+// empty/future/non-canonical value returns false so normalizeAuthRevoked
+// rejects it (the caller then force-unauthorizes via inferFallback).
+function isKnownAuthRevokedReason(v: unknown): v is AuthRevokedReason {
+  return typeof v === 'string' && (KNOWN_AUTH_REVOKED_REASONS as readonly string[]).includes(v);
+}
 
 function sanitizeWireType(t: unknown): string {
   if (typeof t === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(t)) return t;
@@ -389,6 +410,14 @@ function inferFallback(obj: Record<string, unknown>): Reasoned {
     if ('state' in obj && !CLOSED_SESSION_STATES.has(String(obj.state))) {
       consider({ reason: 'unknown-enum', fallback: 'mark-session-unavailable' });
     }
+  }
+  if (t === SERVER_EVENT_TYPE_AUTH_REVOKED) {
+    // CG-01 fail-closed: ANY auth.revoked that fails normalization MUST
+    // force-unauthorized. The client revokes on the event type, never on the
+    // reason value. reason-field problems are 'unknown-enum'; other malformed
+    // fields are 'malformed-known-event' — both sanitize to the same fallback.
+    const reasonBad = !isKnownAuthRevokedReason(obj.reason);
+    consider({ reason: reasonBad ? 'unknown-enum' : 'malformed-known-event', fallback: 'force-unauthorized' });
   }
   if (t === SERVER_EVENT_TYPE_OUTPUT || t === SERVER_EVENT_TYPE_BACKFILL_RESULT) {
     if ('seq' in obj && !isSafeSeq(obj.seq)) {
@@ -639,11 +668,12 @@ function normalizeControlState(obj: Record<string, unknown>): ControlStateEvent 
 }
 
 function normalizeAuthRevoked(obj: Record<string, unknown>): AuthRevokedEvent | null {
-  const reason = reqStr(obj, 'reason');
-  if (!reason) return null;
+  // CG-01: reason MUST be a known canonical value. Unknown/missing/null/empty
+  // returns null; the caller maps the failure to force-unauthorized.
+  if (!isKnownAuthRevokedReason(obj.reason)) return null;
   const occurredAt = reqStr(obj, 'occurredAt');
   if (!occurredAt) return null;
-  return { type: SERVER_EVENT_TYPE_AUTH_REVOKED, reason, occurredAt };
+  return { type: SERVER_EVENT_TYPE_AUTH_REVOKED, reason: obj.reason, occurredAt };
 }
 
 function normalizeError(obj: Record<string, unknown>): ErrorEvent | null {

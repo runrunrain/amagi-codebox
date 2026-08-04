@@ -391,7 +391,7 @@ func TestCleanHeadroom_InvokesHeadroomStopperBeforeRemoval(t *testing.T) {
 	stopperCalls := 0
 	stopperVenvAtCall := ""
 	var stopperMu sync.Mutex
-	svc.SetHeadroomStopper(func() error {
+	svc.SetHeadroomStopper(func() (error, func()) {
 		stopperMu.Lock()
 		defer stopperMu.Unlock()
 		stopperCalls++
@@ -403,7 +403,7 @@ func TestCleanHeadroom_InvokesHeadroomStopperBeforeRemoval(t *testing.T) {
 		} else {
 			stopperVenvAtCall = "absent"
 		}
-		return nil
+		return nil, nil
 	})
 
 	result, err := svc.CleanHeadroom()
@@ -450,9 +450,9 @@ func TestCleanHeadroom_StopperErrorDoesNotBlockUninstall(t *testing.T) {
 	svc.SetHeadroomVenvDir(venvDir)
 
 	stopperCalled := false
-	svc.SetHeadroomStopper(func() error {
+	svc.SetHeadroomStopper(func() (error, func()) {
 		stopperCalled = true
-		return fmt.Errorf("simulated stop failure (proxy already dead)")
+		return fmt.Errorf("simulated stop failure (proxy already dead)"), nil
 	})
 
 	result, err := svc.CleanHeadroom()

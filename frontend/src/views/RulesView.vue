@@ -175,18 +175,19 @@ import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import RuleDialog from '../components/rules/RuleDialog.vue'
 
 import { useToast } from '../composables/useToast'
-import { proxy } from '../../wailsjs/go/models'
 import {
-  GetRules,
-  AddRule,
-  UpdateRule,
-  DeleteRule,
-  Start,
-  Stop,
-  GetStatus,
-  GetLogs,
-} from '../../wailsjs/go/proxy/ProxyService'
-import { GetProxyBackendURLHistory, AddProxyBackendURL } from '../../wailsjs/go/main/App'
+  ProxyGetRules,
+  ProxyAddRule,
+  ProxyUpdateRule,
+  ProxyDeleteRule,
+  ProxyStart,
+  ProxyStop,
+  ProxyGetStatus,
+  ProxyGetLogs,
+  GetProxyBackendURLHistory,
+  AddProxyBackendURL,
+} from '../../wailsjs/go/main/App'
+import { proxy } from '../../wailsjs/go/models'
 
 const { showSuccess, showError } = useToast()
 
@@ -256,7 +257,7 @@ const handleSaveBackendURL = async () => {
 
 const fetchStatus = async () => {
   try {
-    const status = await GetStatus()
+    const status = await ProxyGetStatus()
     if (status) {
       isRunning.value = status.running || false
       if (status.port) port.value = status.port
@@ -270,7 +271,7 @@ const fetchStatus = async () => {
 
 const fetchRules = async () => {
   try {
-    const fetchedRules = await GetRules()
+    const fetchedRules = await ProxyGetRules()
     rules.value = fetchedRules || []
   } catch (err) {
     throw err
@@ -279,7 +280,7 @@ const fetchRules = async () => {
 
 const fetchLogs = async () => {
   try {
-    const fetchedLogs = await GetLogs()
+    const fetchedLogs = await ProxyGetLogs()
     logs.value = fetchedLogs || []
   } catch (err) {
     throw err
@@ -296,7 +297,7 @@ const startProxy = async () => {
   try {
     await AddProxyBackendURL(trimmedURL)
     await fetchBackendURLHistory()
-    await Start(port.value, trimmedURL)
+    await ProxyStart(port.value, trimmedURL)
     await fetchStatus()
     showSuccess('代理已启动')
   } catch (err) {
@@ -310,7 +311,7 @@ const startProxy = async () => {
 const stopProxy = async () => {
   loading.value = true
   try {
-    await Stop()
+    await ProxyStop()
     await fetchStatus()
     showSuccess('代理已停止')
   } catch (err) {
@@ -323,7 +324,7 @@ const stopProxy = async () => {
 
 const toggleRuleEnabled = async (rule: proxy.InjectionRule) => {
   try {
-    await UpdateRule(rule)
+    await ProxyUpdateRule(rule)
   } catch (err) {
     console.error('Failed to update rule:', err)
     showError('更新规则失败: ' + err)
@@ -351,7 +352,7 @@ const confirmDeleteRule = async () => {
 
   loading.value = true
   try {
-    await DeleteRule(ruleToDelete.value)
+    await ProxyDeleteRule(ruleToDelete.value)
     await fetchRules()
     showSuccess('删除规则成功')
   } catch (err) {

@@ -52,6 +52,15 @@ interface HarnessWindow {
   addressRequired: boolean;
 }
 
+/** M2-INT R12：外部进程清理恢复场景项（对齐 backend privacy status 语义：
+ *  processAlive 是 stub 侧的“OS 活性”真相；status/confirm 均按它复检）。 */
+interface HarnessRecoveryItem {
+  sessionId: string;
+  kind: number;
+  reason: string;
+  processAlive: boolean;
+}
+
 interface HarnessState {
   running: boolean;
   host: string;
@@ -64,6 +73,9 @@ interface HarnessState {
   nextWindowTtlMs: number;
   windowAddressRequired: boolean;
   eventSeq: number;
+  recoveryItems: HarnessRecoveryItem[];
+  startupWarnings: string[];
+  failNextConfirmWithPersistence: boolean;
 }
 
 declare global {
@@ -75,6 +87,9 @@ declare global {
       expireActiveWindow: () => void;
       setWindowAddressRequired: (v: boolean) => void;
       pushHealthIssue: (code: string, active: boolean) => void;
+      setRecoveryProcessAlive: (sessionId: string, alive: boolean) => void;
+      failNextConfirmWithPersistence: () => void;
+      pushStartupWarning: (msg: string) => void;
       reset: () => void;
     };
   }
@@ -112,6 +127,9 @@ function initialState(): HarnessState {
     nextWindowTtlMs: 90_000,
     windowAddressRequired: false,
     eventSeq: 0,
+    recoveryItems: [],
+    startupWarnings: [],
+    failNextConfirmWithPersistence: false,
   };
 }
 
@@ -132,6 +150,35 @@ export function installRemoteStub(): void {
       droppedEventIds: [],
       recentEventIds: [],
     });
+  }
+
+  // 场景种子（M2-INT R12）：?seedRecovery=running|awaiting|two
+  //   running  → 旧进程仍存活（status 返回 running，confirm 被 live 拒绝）
+  //   awaiting → 旧进程已退出（status 返回 awaiting_confirmation，可确认）
+  //   two      → 一项存活一项已退出（多项计数/fence 不完全释放）
+  const seedRecovery = params.get('seedRecovery');
+  if (seedRecovery === 'running' || seedRecovery === 'awaiting' || seedRecovery === 'two') {
+    state.recoveryItems.push({
+      sessionId: 'SES-LEGACY-0001',
+      kind: 2,
+      reason: 'legacy_process_identity',
+      processAlive: seedRecovery === 'running',
+    });
+    if (seedRecovery === 'two') {
+      state.recoveryItems.push({
+        sessionId: 'SES-LEGACY-0002',
+        kind: 3,
+        reason: 'identity_inspection_uncertain',
+        processAlive: true,
+      });
+    }
+  }
+
+  // 场景种子：?seedStartupWarning=1 预置与 app.go Startup 完全同文的启动警告
+  if (params.get('seedStartupWarning') === '1') {
+    state.startupWarnings.push(
+      '检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁 Headroom',
+    );
   }
 
   const delay = () => new Promise((r) => setTimeout(r, 30));
@@ -318,6 +365,48 @@ export function installRemoteStub(): void {
       }),
 
     OpenRemoteWebUI: () => call('OpenRemoteWebUI', [], () => ({ ok: true })),
+
+    /* ------------------------------------------------------------------
+     * M2-INT R12：恢复 status/confirm/startup warnings stub。
+     * 语义对齐 proxy_headroom_facade.go：status 每次调用复检活性；
+     * confirm 走 confirmed=true + 活性复检 + 持久化，无 force-clear。
+     * ------------------------------------------------------------------ */
+    GetExternalCleanupRecoveryStatus: () =>
+      call('GetExternalCleanupRecoveryStatus', [], () => ({
+        version: 1,
+        blocked: state.recoveryItems.length > 0,
+        items: state.recoveryItems.map((item) => ({
+          sessionId: item.sessionId,
+          kind: item.kind,
+          reason: item.reason,
+          state: item.processAlive ? 'running' : 'awaiting_confirmation',
+          canConfirm: !item.processAlive,
+        })),
+      })),
+
+    ConfirmExternalCleanupRecovery: (sessionID: string, confirmed: boolean) =>
+      call('ConfirmExternalCleanupRecovery', [sessionID, confirmed], () => {
+        const item = state.recoveryItems.find((i) => i.sessionId === sessionID);
+        if (!item) throw new Error('external cleanup recovery: item not found');
+        if (!confirmed) {
+          throw new Error('external cleanup recovery: explicit confirmation required');
+        }
+        if (item.processAlive) {
+          throw new Error('external cleanup recovery: process is still running');
+        }
+        if (state.failNextConfirmWithPersistence) {
+          state.failNextConfirmWithPersistence = false;
+          throw new Error('confirm external cleanup persistence: external cleanup store: not ready');
+        }
+        state.recoveryItems = state.recoveryItems.filter((i) => i.sessionId !== sessionID);
+        return {
+          sessionId: sessionID,
+          cleared: true,
+          fenceReleased: state.recoveryItems.length === 0,
+        };
+      }),
+
+    GetStartupWarnings: () => call('GetStartupWarnings', [], () => [...state.startupWarnings]),
   };
 
   (window as unknown as { go: { main: { App: typeof app } } }).go = { main: { App: app } };
@@ -345,6 +434,16 @@ export function installRemoteStub(): void {
         droppedEventIds: [],
         recentEventIds: [],
       });
+    },
+    setRecoveryProcessAlive: (sessionId: string, alive: boolean) => {
+      const item = state.recoveryItems.find((i) => i.sessionId === sessionId);
+      if (item) item.processAlive = alive;
+    },
+    failNextConfirmWithPersistence: () => {
+      state.failNextConfirmWithPersistence = true;
+    },
+    pushStartupWarning: (msg: string) => {
+      state.startupWarnings.push(msg);
     },
     reset: () => {
       state = initialState();

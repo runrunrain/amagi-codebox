@@ -191,14 +191,31 @@ export async function checkClaudeConfig(): Promise<any> {
 /**
  * Clean (uninstall) Headroom via pip.
  * Calls envcheck.Service.CleanHeadroom directly (no App-level wrapper exists).
+ * R3-002: when active sessions still hold a headroom lease, the backend returns
+ * the Go sentinel `headroom is in use by active sessions` (envcheck.ErrHeadroomInUse)
+ * as the error string and does NOT remove the venv. We surface this as a typed
+ * rejection so the UI can show a distinct "in use" message instead of a generic
+ * uninstall failure.
  */
 export async function cleanHeadroom(): Promise<InstallResult> {
   try {
     return await CleanHeadroom();
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to clean Headroom:', error);
     throw error;
   }
+}
+
+/**
+ * Returns true when a cleanHeadroom rejection is the typed "headroom in use by
+ * active sessions" rejection (R3-002). The backend wraps envcheck.ErrHeadroomInUse;
+ * Wails surfaces the error string, so we match the sentinel message substring.
+ * Callers should present a distinct confirm/reject message rather than retrying.
+ */
+export function isHeadroomInUseRejection(error: any): boolean {
+  if (!error) return false;
+  const msg = typeof error === 'string' ? error : (error?.message ?? String(error));
+  return msg.includes('headroom is in use by active sessions');
 }
 
 /**

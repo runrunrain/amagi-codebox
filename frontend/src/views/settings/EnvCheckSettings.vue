@@ -336,6 +336,7 @@ import {
   uninstallClaudeCode,
   cleanClaudeInstall,
   cleanHeadroom,
+  isHeadroomInUseRejection,
   fixClaudeConfig,
   runEnvFixAction,
 } from '../../api/envcheck'
@@ -343,7 +344,7 @@ import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
 
-const { showSuccess, showError, showInfo } = useToast()
+const { showSuccess, showError, showInfo, showWarn } = useToast()
 
 interface ToolMeta {
   key: string
@@ -943,11 +944,23 @@ async function handleUninstallHeadroom(): Promise<void> {
     await runSingleCheck('headroom')
   } catch (err: any) {
     console.error('Headroom uninstall failed:', err)
-    showError('Headroom 卸载失败: ' + (err?.message || String(err)))
-    lastResult.value = {
-      title: 'Headroom 卸载失败',
-      description: err?.message || String(err),
-      type: 'error',
+    // R3-002: surface the typed in-use rejection distinctly — the venv was NOT
+    // removed because active sessions still depend on it. The user should stop
+    // those sessions first rather than interpret this as a generic failure.
+    if (isHeadroomInUseRejection(err)) {
+      showWarn('Headroom 正被活跃会话占用，无法卸载：请先停止依赖 Headroom 的会话后再试')
+      lastResult.value = {
+        title: 'Headroom 卸载被拒绝',
+        description: '仍有活跃会话占用 Headroom，请先停止这些会话后再卸载。',
+        type: 'warning',
+      }
+    } else {
+      showError('Headroom 卸载失败: ' + (err?.message || String(err)))
+      lastResult.value = {
+        title: 'Headroom 卸载失败',
+        description: err?.message || String(err),
+        type: 'error',
+      }
     }
   } finally {
     headroomUninstalling.value = false

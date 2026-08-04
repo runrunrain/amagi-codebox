@@ -86,7 +86,7 @@ Key DTO invariants:
 
 - Sole URL: `ws[s]://<host>/ws/v1`. URL MUST NOT carry token/session/mode/credential. Browser auto-sends the device Cookie; Origin MUST be non-empty and allowlisted (empty Origin ⇒ HTTP 403 before upgrade, D-004).
 - One session per connection; switching session opens a new connection. First business frame MUST be `attach` (ping is a liveness hint, not authorization).
-- `auth.revoked` ⇒ event then close 1008; version/protocol mismatch ⇒ close 1002; oversize frame ⇒ close 1009.
+- `auth.revoked` ⇒ event then close 1008 (`AuthRevokedCloseCode`; CG-01 canonical reason `device_revoked`); version/protocol mismatch ⇒ close 1002; oversize frame ⇒ close 1009.
 
 ### 4.1 Client frames (all: required non-null `requestId`)
 
@@ -105,7 +105,7 @@ Key DTO invariants:
 - `session.state` (normal): `{type, sessionId, state, occurredAt}` — no seq, not replayable.
 - `session.state` (restart boundary): `{type, sessionId, state, restartBoundary:true, seq, occurredAt}` — replayable; no separate `session.restartBoundary` type.
 - `control.state`: `{type, sessionId, state, deviceName?, reason, occurredAt}`. `deviceName` only when `state="other"`.
-- `auth.revoked`: `{type, reason, occurredAt}`.
+- `auth.revoked`: `{type, reason, occurredAt}`. `reason` is a **closed enum** (CG-01): v1 known = `device_revoked` only (`AuthRevokedReasonDeviceRevoked` / `AUTH_REVOKED_REASON_DEVICE_REVOKED`). The event precedes a close **1008** (`AuthRevokedCloseCode` / `AUTH_REVOKED_CLOSE_CODE`). Unknown/missing/null/malformed `reason` MUST be treated as **force-unauthorized** (fail-closed): the client revokes on the event *type*, never on the reason value. 1008 is a generic policy code (not a reason) — other policy closes may also use 1008, so do not infer device-revoke from the close code alone; only the `auth.revoked` event or a subsequent 401 changes persistent authorization presentation.
 - `error`: `{type, requestId?, sessionId?, code, layer, message, actionHint, details?}`. `requestId` conditional.
 
 ### 4.3 seq / earliest / latest / gap / backfill invariants

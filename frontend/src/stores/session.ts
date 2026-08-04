@@ -20,8 +20,14 @@ export const useSessionStore = defineStore('session', () => {
   const isPolling = ref(false);
 
   // Computed
+  // "stopping" remains an active backend-owned process until Wait/terminal.
+  // Keep it in the desktop list/count so users do not see a false stopped state.
   const runningSessions = computed(() => {
-    return sessions.value.filter(s => s.status === 'running');
+    return sessions.value.filter(s => s.status === 'running' || s.status === 'stopping');
+  });
+
+  const stoppingSessions = computed(() => {
+    return sessions.value.filter(s => s.status === 'stopping');
   });
 
   const activeSession = computed(() => {
@@ -73,6 +79,7 @@ export const useSessionStore = defineStore('session', () => {
 
     // Computed
     runningSessions,
+    stoppingSessions,
     activeSession,
     sessionCount,
 

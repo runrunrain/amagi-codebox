@@ -28,6 +28,7 @@ type Server struct {
 	port               int
 	auth               *Auth
 	app                AppInterface
+	ptyBridge          any // optional PtyBridge/ObserverAttachProvider/DimensionsProvider (unbound; design §8.6.3)
 	log                *logging.Service
 	httpSrv            *http.Server
 	cancel             context.CancelFunc
@@ -62,6 +63,23 @@ type Server struct {
 	// each (carrier,routeClass) is recorded at most once.
 	legacySeenMu sync.Mutex
 	legacySeen   map[legacyAuthTupleKey]bool
+
+	// H2: control lifecycle hook (design §4A.3). Injected by the App's
+	// control_wiring before Server.Start. When nil, a no-op hook is used (legacy
+	// Server without M3-A). The hook is synchronous, idempotent, and performs NO
+	// network/file I/O.
+	lifecycleHook ControlLifecycleHook
+
+	// M2-A session REST adapter (design §4.2). Injected by the App after
+	// control_wiring + security setup. When nil, session routes stay 404
+	// (design §4A hardening gate: routes activate only after H0-H3 PASS).
+	sessionAdapter *RemoteSessionAdapter
+}
+
+// SetSessionAdapter injects the M2-A session REST adapter (design §4.2).
+// MUST be called before Start. When not called, session routes stay 404.
+func (s *Server) SetSessionAdapter(adapter *RemoteSessionAdapter) {
+	s.sessionAdapter = adapter
 }
 
 // NewServer 创建远程服务器实例，不启动监听。
@@ -84,8 +102,25 @@ func NewServer(port int, app AppInterface, log *logging.Service, mobileAssets em
 		mobileAssetsPrefix: "mobile/dist",
 		serverEventScope:   scope,
 		legacySeen:         make(map[legacyAuthTupleKey]bool),
+		lifecycleHook:      noopLifecycleHook{},
 	}
 }
+
+// SetControlLifecycleHook injects the H2 control lifecycle hook (design §4A.3).
+// MUST be called before Start. When not called, a no-op hook is used (legacy).
+// It also propagates the hook to the deviceService (pairing) for revoke/latch
+// wiring (design §4A.3).
+func (s *Server) SetControlLifecycleHook(hook ControlLifecycleHook) {
+	if hook == nil {
+		hook = noopLifecycleHook{}
+	}
+	s.lifecycleHook = hook
+	if s.pairing != nil {
+		s.pairing.SetControlLifecycleHook(hook)
+	}
+}
+
+// controlHook returns the lifecycle hook (never nil).
 
 // Start 在后台 goroutine 中启动 HTTP 服务器。并发 Start 由 s.mu 下的 `starting`
 // CAS reserve 串行化：只有一个调用能进入 listen/publish，其余立即返回错误/幂等。
@@ -208,6 +243,11 @@ func (s *Server) Start(parentCtx context.Context) error {
 	accepted := s.publishLifecycleAcceptance(run)
 	returnPermit() // publish complete; release the gate permit
 	if accepted {
+		// H2/§4A.3: tell the control runtime that remote control is accepting
+		// again with a new acceptance generation. This is called OUTSIDE s.mu,
+		// after the listen/run publish and acceptance commit, so a fresh attach can
+		// proceed. The hook is synchronous and idempotent (design §4A.3).
+		s.lifecycleHook.RestartRemote(time.Now())
 		// Test seam (nil in production): inject a direct Stop/Shutdown in the
 		// acceptance→emit window (R4-Major). The handshake makes stopInternal wait
 		// on startedDone, so the started append completes before stopped/Close.
@@ -309,6 +349,16 @@ func (s *Server) SetWebRoot(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.webRoot = path
+}
+
+// SetPtyBridge injects the unbound PTY bridge adapter (design §8.6.3). The
+// adapter implements PtyBridge / ObserverAttachProvider / DimensionsProvider
+// and is NOT Wails-bound (unlike the old App callback exports). The legacy WS
+// handler uses this instead of type-asserting the Wails-bound App.
+func (s *Server) SetPtyBridge(b any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ptyBridge = b
 }
 
 // SetMobileAssetsPrefix sets the path prefix within the embedded FS where mobile
@@ -570,6 +620,13 @@ func (s *Server) buildHandler() http.Handler {
 				s.buildV1Handler().ServeHTTP(w, r)
 				return
 			}
+		}
+
+		// v1 WebSocket upgrade path (design §6.1: single /ws/v1 consumer).
+		// Dispatched BEFORE legacy auth; only active when sessionAdapter is wired.
+		if r.URL.Path == contract.WebSocketV1Path && s.sessionAdapter != nil {
+			s.handleV1WebSocket(w, r)
+			return
 		}
 
 		legacyPath := isLegacyAPIPath(r.URL.Path)

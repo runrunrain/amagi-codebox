@@ -9,7 +9,6 @@ import {
   LaunchCodexSession,
   LaunchPiSession,
   StopSession,
-  StopAllSessions,
   GetSessions,
   GetSession,
   RemoveSession,
@@ -18,15 +17,7 @@ import {
   PtyWriteLarge,
   PtyResize,
   GetOutputHistorySnapshot,
-  RegisterOutputCallback,
-  UnregisterOutputCallback,
-  RegisterExitCallback,
-  UnregisterExitCallback,
-  RegisterResizeCallback,
-  UnregisterResizeCallback,
   GetPtyDimensions,
-  AttachSessionObserver,
-  DetachSessionObserver,
 } from '../../wailsjs/go/main/App';
 
 import { session } from '../../wailsjs/go/models';
@@ -147,18 +138,6 @@ export async function stopSession(sessionId: string): Promise<void> {
 }
 
 /**
- * Stop all sessions
- */
-export async function stopAllSessions(): Promise<void> {
-  try {
-    await StopAllSessions();
-  } catch (error) {
-    console.error('Failed to stop all sessions:', error);
-    throw error;
-  }
-}
-
-/**
  * Get all sessions
  */
 export async function getSessions(): Promise<SessionInfo[]> {
@@ -255,48 +234,6 @@ export async function getOutputHistorySnapshot(sessionId: string): Promise<strin
 }
 
 /**
- * Register output callback
- */
-export function registerOutputCallback(sessionId: string, id: string, callback: (data: number[]) => void): void {
-  RegisterOutputCallback(sessionId, id, callback);
-}
-
-/**
- * Unregister output callback
- */
-export function unregisterOutputCallback(sessionId: string, id: string): void {
-  UnregisterOutputCallback(sessionId, id);
-}
-
-/**
- * Register exit callback
- */
-export function registerExitCallback(sessionId: string, id: string, callback: (exitCode: number) => void): void {
-  RegisterExitCallback(sessionId, id, callback);
-}
-
-/**
- * Unregister exit callback
- */
-export function unregisterExitCallback(sessionId: string, id: string): void {
-  UnregisterExitCallback(sessionId, id);
-}
-
-/**
- * Register resize callback
- */
-export function registerResizeCallback(sessionId: string, id: string, callback: (cols: number, rows: number) => void): void {
-  RegisterResizeCallback(sessionId, id, callback);
-}
-
-/**
- * Unregister resize callback
- */
-export function unregisterResizeCallback(sessionId: string, id: string): void {
-  UnregisterResizeCallback(sessionId, id);
-}
-
-/**
  * Get PTY dimensions.
  * Backend packs cols and rows into a single number (cols * 1000 + rows).
  */
@@ -308,29 +245,4 @@ export async function getPtyDimensions(sessionId: string): Promise<{ cols: numbe
     console.error('Failed to get PTY dimensions:', error);
     throw error;
   }
-}
-
-/**
- * Attach session observer.
- * Returns the buffered output history (number[] of byte values).
- */
-export async function attachSessionObserver(
-  sessionId: string,
-  id: string,
-  outputCB: (data: number[]) => void,
-  resizeCB: (cols: number, rows: number) => void
-): Promise<number[]> {
-  try {
-    return await AttachSessionObserver(sessionId, id, outputCB, resizeCB);
-  } catch (error) {
-    console.error('Failed to attach session observer:', error);
-    throw error;
-  }
-}
-
-/**
- * Detach session observer
- */
-export function detachSessionObserver(sessionId: string, id: string): void {
-  DetachSessionObserver(sessionId, id);
 }

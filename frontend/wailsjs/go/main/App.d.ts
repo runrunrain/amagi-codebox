@@ -12,6 +12,7 @@ import {logging} from '../models';
 import {paths} from '../models';
 import {platform} from '../models';
 import {session} from '../models';
+import {proxy} from '../models';
 
 export function AcknowledgeRemoteSecurityHealth(arg1:string):Promise<remote.SecurityHealthSnapshot>;
 
@@ -20,8 +21,6 @@ export function AddProxyBackendURL(arg1:string):Promise<void>;
 export function AddSavedWorkDir(arg1:string,arg2:string):Promise<Array<settings.WorkDirEntry>>;
 
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
-
-export function AttachSessionObserver(arg1:string,arg2:string,arg3:any,arg4:any):Promise<Array<number>>;
 
 export function BrowseDirectory():Promise<string>;
 
@@ -39,6 +38,10 @@ export function ClearLogs():Promise<void>;
 
 export function ClearStoppedSessions():Promise<number>;
 
+export function ClearStoppedSessionsDetailed():Promise<main.ClearStoppedSessionsResult>;
+
+export function ConfirmExternalCleanupRecovery(arg1:string,arg2:boolean):Promise<remote.ExternalCleanupRecoveryResult>;
+
 export function CreateRemotePairingWindow(arg1:boolean):Promise<remote.PairingWindowInfo>;
 
 export function DeleteEnvVar(arg1:string):Promise<void>;
@@ -46,8 +49,6 @@ export function DeleteEnvVar(arg1:string):Promise<void>;
 export function DeleteProvider(arg1:string):Promise<void>;
 
 export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
-
-export function DetachSessionObserver(arg1:string,arg2:string):Promise<void>;
 
 export function DownloadAndApplyUpdate():Promise<void>;
 
@@ -79,6 +80,8 @@ export function GetEnvVarsGlobalSyncStatus():Promise<envvars.GlobalSyncStatus>;
 
 export function GetEnvVarsJSON():Promise<string>;
 
+export function GetExternalCleanupRecoveryStatus():Promise<remote.ExternalCleanupRecoveryStatus>;
+
 export function GetGitHubToken():Promise<string>;
 
 export function GetHeadroomPerfByClient():Promise<Array<headroom.ClientPerfStat>>;
@@ -100,8 +103,6 @@ export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.Merge
 export function GetOpenCodeConfig():Promise<string>;
 
 export function GetOpenCodeConfigPath():Promise<string>;
-
-export function GetOutputHistory(arg1:string):Promise<Array<number>>;
 
 export function GetOutputHistorySnapshot(arg1:string):Promise<string>;
 
@@ -141,6 +142,16 @@ export function GetTerminalPresets(arg1:string):Promise<Record<string, config.Te
 
 export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 
+export function HeadroomGetPort():Promise<number>;
+
+export function HeadroomGetStatus():Promise<headroom.HeadroomStatus>;
+
+export function HeadroomIsRunning():Promise<boolean>;
+
+export function HeadroomStart(arg1:string):Promise<void>;
+
+export function HeadroomStop():Promise<void>;
+
 export function ImportConfigFromFile():Promise<string>;
 
 export function ImportEnvVars(arg1:string):Promise<void>;
@@ -169,6 +180,32 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
+export function ProxyAddRule(arg1:proxy.InjectionRule):Promise<void>;
+
+export function ProxyDeleteRule(arg1:string):Promise<void>;
+
+export function ProxyGetLogs():Promise<Array<proxy.InjectionLog>>;
+
+export function ProxyGetPort():Promise<number>;
+
+export function ProxyGetRules():Promise<Array<proxy.InjectionRule>>;
+
+export function ProxyGetStatus():Promise<proxy.ProxyStatus>;
+
+export function ProxyIsRunning():Promise<boolean>;
+
+export function ProxyLoadRules(arg1:string):Promise<void>;
+
+export function ProxySaveRules(arg1:string):Promise<void>;
+
+export function ProxySetRules(arg1:Array<proxy.InjectionRule>):Promise<void>;
+
+export function ProxyStart(arg1:number,arg2:string):Promise<void>;
+
+export function ProxyStop():Promise<void>;
+
+export function ProxyUpdateRule(arg1:proxy.InjectionRule):Promise<void>;
+
 export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function PtyWrite(arg1:string,arg2:string):Promise<void>;
@@ -178,12 +215,6 @@ export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 export function QuickLaunch(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
-
-export function RegisterExitCallback(arg1:string,arg2:string,arg3:any):Promise<void>;
-
-export function RegisterOutputCallback(arg1:string,arg2:string,arg3:any):Promise<void>;
-
-export function RegisterResizeCallback(arg1:string,arg2:string,arg3:any):Promise<void>;
 
 export function RemoveProxyBackendURL(arg1:string):Promise<void>;
 
@@ -237,19 +268,11 @@ export function StartInstallToolAsync(arg1:string):Promise<envcheck.OperationSta
 
 export function StartUpdateToolAsync(arg1:string):Promise<envcheck.OperationState>;
 
-export function StopAllSessions():Promise<void>;
-
 export function StopSession(arg1:string):Promise<void>;
 
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 
 export function UninstallClaudeCode(arg1:string):Promise<envcheck.InstallResult>;
-
-export function UnregisterExitCallback(arg1:string,arg2:string):Promise<void>;
-
-export function UnregisterOutputCallback(arg1:string,arg2:string):Promise<void>;
-
-export function UnregisterResizeCallback(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
 

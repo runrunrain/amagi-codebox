@@ -2,6 +2,7 @@ package envcheck
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -70,11 +71,13 @@ type Service struct {
 	// CleanHeadroom public entry before the venv directory is removed. It
 	// terminates the headroom proxy child process so Windows can release the
 	// locked headroom.exe inside the venv (RemoveAll would otherwise fail).
-	// The callback error is non-fatal: a stopped-or-not-running proxy must not
-	// block uninstall. Nil (the zero value) means no stopper is wired and
-	// CleanHeadroom skips the stop step (backwards compatible with tests and
-	// any caller that does not inject a stopper).
-	headroomStopper func() error
+	// The callback returns (stopErr, releaseDrain): releaseDrain, when non-nil,
+	// releases any install-drain critical section acquired by the stopper
+	// (R4-002) and MUST be invoked by CleanHeadroom after the venv removal
+	// completes or aborts. The stopErr is non-fatal unless it wraps
+	// ErrHeadroomInUse. Nil (the zero value) means no stopper is wired and
+	// CleanHeadroom skips the stop step (backwards compatible with tests).
+	headroomStopper func() (error, func())
 
 	// Async operation state
 	opMu    sync.Mutex
@@ -130,16 +133,17 @@ func (s *Service) SetHeadroomVenvDir(dir string) {
 // SetHeadroomStopper injects the callback used to stop the headroom proxy
 // child process before CleanHeadroom removes the venv directory. This is
 // required on Windows where a running headroom.exe inside the venv is locked
-// by the OS and os.RemoveAll would fail. Wiring (app.go) injects
-// HeadroomService.Stop here so CleanHeadroom is self-protecting: the stop
-// happens inside the clean entry regardless of which caller invoked it, so
-// the frontend does not need to remember to stop the proxy first.
+// by the OS and os.RemoveAll would fail. Wiring (app.go) injects a callback
+// that ALSO acquires the SharedServiceCoordinator install-drain (R4-002) so a
+// concurrent launch cannot obtain a headroom lease whose venv dependency is
+// about to be deleted. The callback returns (stopErr, releaseDrain): the
+// releaseDrain callback MUST be invoked by CleanHeadroom after the venv removal
+// to release the drain.
 //
-// The injected callback's error is treated as best-effort by CleanHeadroom
-// (a not-running proxy is a valid state); pass a function that tolerates
-// being called when the proxy is already stopped. Must be called before
-// CleanHeadroom.
-func (s *Service) SetHeadroomStopper(fn func() error) {
+// The injected callback's stopErr is treated as best-effort by CleanHeadroom
+// (a not-running proxy is a valid state) unless it wraps ErrHeadroomInUse
+// (fatal: active leases). Must be called before CleanHeadroom.
+func (s *Service) SetHeadroomStopper(fn func() (error, func())) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.headroomStopper = fn
@@ -811,6 +815,17 @@ var ErrBusy = fmt.Errorf("another install or update operation is in progress")
 // ErrAlreadyRunning is returned when the same tool+kind operation is already running.
 var ErrAlreadyRunning = fmt.Errorf("this operation is already running")
 
+// ErrHeadroomInUse is the typed rejection returned by CleanHeadroom when the
+// injected headroom stopper reports the shared headroom is still in use by
+// active sessions (R3-002 / PG-06). CleanHeadroom aborts BEFORE the venv
+// directory is removed so an active run's dependency is never deleted out from
+// under it. Callers surface this to the desktop confirm/reject flow (the UI
+// shows "still in use by N sessions" instead of a generic success). The
+// injected stopper is expected to wrap this sentinel (errors.Is) when it wants
+// CleanHeadroom to treat the failure as a fatal in-use rejection rather than a
+// best-effort stop failure.
+var ErrHeadroomInUse = errors.New("headroom is in use by active sessions")
+
 // StartInstallTool starts an asynchronous install operation for the given tool.
 // It returns immediately with the initial OperationState. The actual work runs in
 // a background goroutine that survives frontend page navigation.
@@ -1088,9 +1103,13 @@ func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResul
 // venv directory is removed, it invokes the injected headroom stopper (see
 // SetHeadroomStopper) so the headroom proxy child process is terminated first
 // -- this is required on Windows where a running headroom.exe inside the venv
-// is locked by the OS and os.RemoveAll would fail. The stopper is best-effort
-// and its error is non-fatal (a not-running proxy is a valid pre-state for
-// uninstall). After removal, it refreshes the cached Headroom status.
+// is locked by the OS and os.RemoveAll would fail.
+//
+// R3-002: if the stopper returns an error wrapping ErrHeadroomInUse (the shared
+// headroom is still depended on by active sessions), CleanHeadroom ABORTS before
+// the venv is removed and returns ErrHeadroomInUse so the desktop confirm/reject
+// flow can surface the rejection. A plain stop failure (e.g. process already
+// dead) remains best-effort and non-fatal: the venv removal still proceeds.
 func (s *Service) CleanHeadroom() (*InstallResult, error) {
 	s.opMu.Lock()
 	if s.current != nil && s.current.Status == OperationStatusRunning {
@@ -1111,17 +1130,34 @@ func (s *Service) CleanHeadroom() (*InstallResult, error) {
 	s.opMu.Unlock()
 
 	// Stop the headroom proxy before removing the venv. On Windows the running
-	// headroom.exe lives inside the venv and is locked by the OS, so
-	// os.RemoveAll would fail with "Access is denied" if the proxy were still
-	// running. The stop is best-effort: a not-running proxy returns nil from
-	// HeadroomService.Stop, and even a non-nil error here must not block
-	// uninstall (the proxy may have died independently). We deliberately do
-	// not return on stopErr so the venv removal still proceeds; the venv
-	// removal itself is the authoritative uninstall step and surfaces its own
-	// error if it fails.
+	// headroom.exe lives inside the venv and is locked by the OS, so os.RemoveAll
+	// would fail with "Access is denied" if the proxy were still running.
+	//
+	// R3-002: a stopper error wrapping ErrHeadroomInUse is a FATAL rejection
+	// (active sessions depend on the shared venv) — abort BEFORE removing the
+	// venv so an in-flight run's dependency is never deleted. Any other stopper
+	// error stays best-effort (the proxy may have died independently).
+	// R4-002: the stopper returns a releaseDrain callback that releases the
+	// SharedServiceCoordinator install-drain; it is held across the venv removal
+	// (deferred) so a concurrent launch cannot obtain a headroom lease whose
+	// dependency is being deleted.
 	stopFn := s.headroomStopper
 	if stopFn != nil {
-		_ = stopFn()
+		stopErr, releaseDrain := stopFn()
+		if releaseDrain != nil {
+			defer releaseDrain()
+		}
+		if stopErr != nil {
+			if errors.Is(stopErr, ErrHeadroomInUse) {
+				s.invalidateVersionCache(ToolHeadroom)
+				_, _ = s.CheckOne(ToolHeadroom)
+				s.opMu.Lock()
+				s.current = nil
+				s.opMu.Unlock()
+				return nil, ErrHeadroomInUse
+			}
+			// Non-fatal stop failure: fall through to venv removal.
+		}
 	}
 
 	result, err := s.cleanHeadroom()

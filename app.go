@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"amagi-codebox/internal/codexplugin"
@@ -52,6 +53,48 @@ type codexLaunchSettings struct {
 	Model string
 }
 
+// externalLauncherPort is the narrow Launcher-owned lifecycle used by external
+// Claude/Codex sessions. Production uses LauncherService; tests inject a
+// deterministic process lifecycle without changing the exported App surface.
+type externalLauncherPort interface {
+	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error) (*launcher.LaunchResult, error)
+	LaunchCodexGuarded(string, string, session.LaunchMode, string, map[string]string, func() error) (*launcher.LaunchResult, error)
+	CaptureProcessIdentity(string) (string, error)
+	RecoverProcess(string, int, string) (bool, error)
+	IsRunning(string) bool
+	Stop(string) error
+	StopAll()
+}
+
+// externalCleanupClaim is the exact App-owned handoff after an OS process
+// starts but its durable PID upgrade or Headroom lease promotion cannot finish.
+// It retains a pre-start reservation or upgraded record, the startup admission
+// (when the coordinator is still open), and a retriable Launcher owner until a
+// true terminal observation. It is not a Control permit and grants no writes.
+type externalCleanupClaim struct {
+	sessionID        string
+	admission        *remote.SharedLaunchAdmission
+	lifecycle        externalLauncherPort
+	record           externalCleanupRecord
+	reservation      externalCleanupReservation
+	recordDurable    bool
+	recoveryReason   remote.ExternalCleanupRecoveryReason
+	terminalObserved bool
+	done             chan struct{}
+	reaperOnce       sync.Once
+	completionMu     sync.Mutex
+}
+
+type externalOwnershipAttempt struct {
+	sessionID          string
+	kind               remote.SharedServiceKind
+	startGeneration    uint64
+	startCommitted     bool
+	rawStartAuthorized bool
+	processStarted     bool
+	durableReservation bool
+}
+
 // piLaunchSettings 是 Pi 会话的启动参数。
 // Provider 对应 pi 的 --provider 参数（anthropic/openai 等 Pi 内置 provider 名）；
 // piLaunchSettings 是 Pi 会话的启动参数。
@@ -65,6 +108,10 @@ const (
 	codexModelProviderName     = "amagi-codebox-provider"
 	codexOfficialOpenAIAPIHost = "api.openai.com"
 	maxClipboardImageBytes     = 20 * 1024 * 1024
+	// defaultExternalShutdownCleanupBudget is one wall-clock budget shared by
+	// handoff observation and StopAll. It bounds only external ownership cleanup;
+	// every unrecovered item is returned as a typed report.
+	defaultExternalShutdownCleanupBudget = 2 * time.Second
 	// CodexGlobalHeadroomDefaultPort is the dedicated port for the independent
 	// codex-global headroom instance (8788). It must differ from the claude
 	// session headroom DefaultPort (8787) so the two proxies never collide.
@@ -157,6 +204,50 @@ type App struct {
 	OpenCodeConfig  *opencodeconfig.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
+
+	// Control runtime (M3-A2): the gate authority for all session write side
+	// effects. Raw ports (Pty/Proxy/Headroom) sit BEHIND it and are never
+	// Wails-bound (design §4.1, §6.3 C-01).
+	control     *remote.ControlRuntime
+	sharedCoord *remote.SharedServiceCoordinator
+
+	// sharedLeases tracks per-session shared-service leases acquired at launch so
+	// they can be released on run terminal/remove (M-006). Guarded by
+	// sharedLeaseMu.
+	sharedLeaseMu sync.Mutex
+	sharedLeases  map[string][]*remote.SharedDependencyLease
+
+	// externalLauncher is a narrow test seam; nil selects the production
+	// LauncherService. externalRunPollInterval is zero in production (1s).
+	externalLauncher        externalLauncherPort
+	externalRunPollInterval time.Duration
+
+	// externalCleanups owns post-start processes whose durable identity upgrade
+	// or Headroom lease promotion failed and whose first compensating Stop could
+	// not prove terminal. Each exact claim remains until explicit Stop/reaper
+	// terminal; pre-start reservations survive App exit and Shutdown reports every
+	// bounded abandonment rather than silently forgetting ownership.
+	externalOwnershipMu     sync.Mutex
+	externalShutdown        atomic.Bool
+	externalStartGeneration atomic.Uint64
+
+	externalCleanupMu                     sync.Mutex
+	externalCleanups                      map[string]*externalCleanupClaim
+	externalDurableRuns                   map[string]externalCleanupRecord
+	externalCleanupStore                  externalCleanupStore
+	externalCleanupRecoveryBlocked        bool
+	externalOwnershipAttempt              *externalOwnershipAttempt
+	externalShutdownCleanupBudget         time.Duration
+	externalCleanupEvents                 []remote.ExternalCleanupAbandonmentEvent
+	externalCleanupEventSink              func(remote.ExternalCleanupAbandonmentEvent)
+	externalCleanupRecoveryAuditEvents    []remote.ExternalCleanupRecoveryAuditEvent
+	externalCleanupRecoveryAuditEventSink func(remote.ExternalCleanupRecoveryAuditEvent)
+	lastExternalCleanupShutdownReport     remote.ExternalCleanupShutdownReport
+
+	// sessionRemove is the narrow Manager.Remove seam used by clear-stopped.
+	// Production leaves it nil and calls Sessions.Remove; tests inject exact
+	// per-ID failures to prove partial-result propagation without racing internals.
+	sessionRemove func(string) error
 
 	Capabilities platform.PlatformCapabilities
 	CLIResolver  platform.CLIResolver
@@ -287,6 +378,38 @@ func NewApp(mobileAssets embed.FS) *App {
 	// proxy. The callback is best-effort: CleanHeadroom ignores its error.
 	// Wired after `app` exists so the closure can reference both services.
 	envCheckSvc.SetHeadroomStopper(app.stopAllHeadroomForUninstall)
+
+	// M3-A2: control runtime + shared-service coordinator. The PTY raw port and
+	// Wails context are injected at Startup (they require the Wails ctx). The
+	// arbiter/gate/projector are ready immediately; MarkReady is called in
+	// Startup after all wiring is complete.
+	app.control = remote.NewControlRuntime(remote.NewSystemClock(), log)
+	app.sharedCoord = remote.NewSharedServiceCoordinator()
+	app.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+	app.externalCleanups = make(map[string]*externalCleanupClaim)
+	app.externalDurableRuns = make(map[string]externalCleanupRecord)
+	app.externalCleanupStore = newFileExternalCleanupStore(configDir)
+	// Wire the unbound PTY bridge adapter (design §8.6.3): legacy/v1 WS reaches
+	// PTY callbacks through this adapter, not through Wails-bound App methods.
+	app.Remote.SetPtyBridge(ptyBridgeAdapter{app: app, pty: app.Pty})
+
+	// M2-A session REST adapter wiring (design §4.2). Inject all M2-A
+	// dependencies into the RemoteSessionAdapter and register it with the
+	// Server. When wired, session REST index 2-9 + /ws/v1 activate (design §4A
+	// hardening gate). The resolver wraps the same platform.CLIResolver that M1
+	// HostSummary uses; the journal is the file-backed dangerous-op log.
+	homeDir, _ := os.UserHomeDir()
+	m2aCatalog := remote.NewSessionCatalog()
+	m2aStreams := remote.NewSessionStreamStore()
+	m2aJournal := remote.NewSessionOperationJournal(configDir)
+	m2aResolver := remote.NewProductionRemoteLaunchResolver(app.CLIResolver, homeDir, os.Environ(), nil)
+	m2aLaunchRaw := appLaunchRaw{pty: app.Pty}
+	m2aSessRaw := appSessionRaw{pty: app.Pty, sessions: app.Sessions}
+	m2aAdapter := remote.NewRemoteSessionAdapter(
+		app.control.Gate(), app.control, m2aCatalog, m2aStreams, m2aJournal,
+		m2aResolver, m2aLaunchRaw, m2aSessRaw, remote.NewSystemClock(), configDir,
+	)
+	app.Remote.SetSessionAdapter(m2aAdapter)
 	return app
 }
 
@@ -651,6 +774,20 @@ func (a *App) SetCodexGlobalHeadroom(enabled bool, target string, port int) (Cod
 	a.codexGlobalMu.Lock()
 	defer a.codexGlobalMu.Unlock()
 
+	// M-006: the Codex global headroom is a shared singleton. Acquire/release is
+	// session-scoped (Codex launches hold a lease while the toggle is on); the
+	// toggle itself is a Start/Stop mutation that MUST consult the coordinator so
+	// it cannot reconfigure/stop the singleton out from under active sessions.
+	mutation := remote.MutationStartDifferentConfig
+	if !enabled {
+		mutation = remote.MutationStop
+	}
+	admission, err := a.acquireSharedMutation(remote.SharedServiceCodexHeadroom, mutation)
+	if err != nil {
+		return a.GetCodexGlobalHeadroom(), err
+	}
+	defer a.sharedCoord.ReleaseMutationAdmission(admission)
+
 	if enabled {
 		target = strings.TrimSpace(target)
 		if target == "" {
@@ -713,6 +850,12 @@ func (a *App) restoreCodexGlobalHeadroomOnStartup() {
 	if a.Settings == nil || a.CodexHeadroom == nil {
 		return
 	}
+	if a.isExternalCleanupRecoveryBlocked() {
+		if a.Log != nil {
+			a.Log.Warn("headroom", "跳过 codex 全局 headroom 恢复：外部进程清理登记未完成")
+		}
+		return
+	}
 	// Hold codexGlobalMu across the read + orchestration so a concurrent UI
 	// SetCodexGlobalHeadroom(false) cannot slip in between the Enabled read and
 	// the StartForOpenAI / config-sync below (which would otherwise re-enable a
@@ -732,6 +875,18 @@ func (a *App) restoreCodexGlobalHeadroomOnStartup() {
 	port := state.Port
 	if port <= 0 {
 		port = CodexGlobalHeadroomDefaultPort
+	}
+
+	// R5-002: startup restoration is a real Headroom Start mutation too. Keep an
+	// exact coordinator token live across Start + config sync + persistence so a
+	// concurrent uninstall drain cannot observe an empty dependency set midway.
+	if a.sharedCoord != nil {
+		admission, err := a.sharedCoord.AcquireMutationAdmission(remote.SharedServiceCodexHeadroom, remote.MutationStartDifferentConfig)
+		if err != nil {
+			a.Log.Warn("headroom", "恢复 codex 全局上下文压缩被共享服务门禁拒绝", err.Error())
+			return
+		}
+		defer a.sharedCoord.ReleaseMutationAdmission(admission)
 	}
 
 	if !a.CodexHeadroom.IsRunning() {
@@ -1054,34 +1209,32 @@ func (a *App) SetRemoteEndpoint(host string, port int) error {
 	return nil
 }
 
-func (a *App) RegisterOutputCallback(sessionID string, id string, cb func(data []byte)) {
-	a.Pty.RegisterOutputCallback(sessionID, id, cb)
-}
-
-func (a *App) UnregisterOutputCallback(sessionID string, id string) {
-	a.Pty.UnregisterOutputCallback(sessionID, id)
-}
-
-func (a *App) RegisterExitCallback(sessionID string, id string, cb func(exitCode uint32)) {
-	a.Pty.RegisterExitCallback(sessionID, id, cb)
-}
-
-func (a *App) UnregisterExitCallback(sessionID string, id string) {
-	a.Pty.UnregisterExitCallback(sessionID, id)
-}
-
-func (a *App) RegisterResizeCallback(sessionID string, id string, cb func(cols, rows int)) {
-	a.Pty.RegisterResizeCallback(sessionID, id, cb)
-}
-
-func (a *App) UnregisterResizeCallback(sessionID string, id string) {
-	a.Pty.UnregisterResizeCallback(sessionID, id)
-}
-
 // Startup Wails 生命周期钩子：应用启动时加载配置和密钥。
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
-	a.Pty.SetContext(ctx)
+
+	// Recover durable post-start cleanup ownership before any startup restore or
+	// user mutation can touch Headroom. A recovered admission fail-closes the
+	// fresh coordinator until the identity-verified process reaches terminal.
+	if err := a.recoverExternalCleanups(); err != nil {
+		a.addStartupWarning("检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁 Headroom")
+		if a.Log != nil {
+			a.Log.Warn("session", "恢复外部进程清理登记失败", err.Error())
+		}
+	}
+
+	// M3-A2: wire the control runtime. Raw PTY output/exit now flows through
+	// the RunEventProjector (no direct EventsEmit); desktop writes go through
+	// the ControlGate (design §6.3, §8.6).
+	a.Pty.SetRunEventSink(a.control.Projector())
+	a.control.SetPTYRawPort(appPTYRaw{a.Pty})
+	a.control.SetPTYLifecycleRawPort(appPTYLifecycle{a: a})
+	a.control.SetWailsContext(ctx)
+	a.control.MarkReady()
+	// H2: wire the control lifecycle hook so Server Stop/revoke/security-latch
+	// fence remote control first (design §4A.3 fence-first authority order).
+	a.Remote.SetControlLifecycleHook(remote.NewControlLifecycleHook(a.control))
+
 	a.Updater.CleanupOldBinary()
 
 	a.Log.Info("app", "应用启动")
@@ -1257,6 +1410,19 @@ func (a *App) Startup(ctx context.Context) {
 func (a *App) Shutdown(ctx context.Context) {
 	a.Log.Info("app", "应用关闭中...")
 
+	// M3-A2 §10.3: authoritative control shutdown fence FIRST — cancels all
+	// device/desktop launch/run permits and current operations, fences run
+	// identities. This is the infallible one-shot; subsequent cleanup is
+	// bounded and best-effort. No new operations/launches are admitted after.
+	if a.control != nil {
+		_ = a.control.CloseForShutdown()
+	}
+	// Fence new external starts lock-free, close shared admissions, and give all
+	// in-flight ownership handoffs/StopAll one wall-clock budget. Unrecovered
+	// items retain durable authority and are emitted as typed abandonment events;
+	// Shutdown never waits indefinitely for disk or process terminal receipt.
+	a.shutdownExternalOwnershipBounded()
+
 	// 先保存配置和密钥
 	if err := a.SaveAllConfig(); err != nil {
 		a.Log.Error("app", "关闭时保存配置失败", err.Error())
@@ -1291,11 +1457,114 @@ func (a *App) Shutdown(ctx context.Context) {
 			a.Log.Error("app", "关闭代理失败", err.Error())
 		}
 	}
-	// 停止所有终端进程
-	a.Launcher.StopAll()
+	// External Launcher processes were already handled by the bounded ownership
+	// phase immediately after the authority fence. Embedded PTYs close here.
 	a.Pty.CloseAll()
 	a.Log.Info("app", "应用已关闭")
 	a.Log.Close()
+}
+
+func (a *App) externalSessionLauncher() externalLauncherPort {
+	if a.externalLauncher != nil {
+		return a.externalLauncher
+	}
+	if a.Launcher == nil {
+		return nil
+	}
+	return a.Launcher
+}
+
+func (a *App) externalSessionPollInterval() time.Duration {
+	if a.externalRunPollInterval > 0 {
+		return a.externalRunPollInterval
+	}
+	return time.Second
+}
+
+// shutdownExternalOwnershipBounded is the testable external-process phase of
+// graceful Shutdown. A pre-start reservation means it may return at the budget
+// without converting an unknown process into "no owner"; every unresolved item
+// is included in a typed report and logged. The StopAll worker may finish later,
+// while durable authority and the in-process reaper remain conservative.
+func (a *App) shutdownExternalOwnershipBounded() remote.ExternalCleanupShutdownReport {
+	started := time.Now()
+	budget := a.externalShutdownBudget()
+	deadline := started.Add(budget)
+	a.fenceExternalProcessStarts()
+	a.closeSharedLeasesForShutdown()
+
+	handoffTimedOut := false
+	for {
+		a.externalCleanupMu.Lock()
+		inFlight := a.externalOwnershipAttempt != nil
+		a.externalCleanupMu.Unlock()
+		if !inFlight {
+			break
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			handoffTimedOut = true
+			break
+		}
+		sleep := 5 * time.Millisecond
+		if remaining < sleep {
+			sleep = remaining
+		}
+		time.Sleep(sleep)
+	}
+
+	stopAllTimedOut := false
+	if external := a.externalSessionLauncher(); external != nil {
+		done := make(chan struct{}, 1)
+		go func() {
+			external.StopAll()
+			a.completeTerminatedExternalCleanups()
+			done <- struct{}{}
+		}()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			stopAllTimedOut = true
+		} else {
+			timer := time.NewTimer(remaining)
+			select {
+			case <-done:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-timer.C:
+				stopAllTimedOut = true
+			}
+		}
+	}
+
+	reason := remote.ExternalCleanupAbandonmentShutdownUnconfirmed
+	if stopAllTimedOut {
+		reason = remote.ExternalCleanupAbandonmentShutdownStopTimeout
+	}
+	unrecovered := a.snapshotExternalCleanupAbandonments(reason)
+	for _, event := range unrecovered {
+		a.recordExternalCleanupAbandonment(event)
+	}
+	report := remote.ExternalCleanupShutdownReport{
+		BudgetMillis:    budget.Milliseconds(),
+		ElapsedMillis:   time.Since(started).Milliseconds(),
+		StopAllTimedOut: stopAllTimedOut,
+		HandoffTimedOut: handoffTimedOut,
+		Unrecovered:     unrecovered,
+	}
+	a.externalCleanupMu.Lock()
+	a.lastExternalCleanupShutdownReport = report
+	a.externalCleanupMu.Unlock()
+	return report
+}
+
+// stopExternalProcessesForShutdown preserves the Round8 test seam while routing
+// through the bounded Round9 protocol.
+func (a *App) stopExternalProcessesForShutdown() remote.ExternalCleanupShutdownReport {
+	return a.shutdownExternalOwnershipBounded()
 }
 
 func (a *App) validateLaunchMode(mode string) error {
@@ -1420,6 +1689,29 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		workDir = home
 	}
 
+	// R5-002/R6-001: every Headroom-dependent launch crosses the uninstall
+	// admission barrier before Headroom.Start, session creation, resolution, or
+	// PTY/external startup. Embedded launches promote before PTY start; external
+	// launches keep the admission through Launcher startup and atomically promote
+	// it to an opaque external-run lifetime lease before reporting success.
+	var headroomAdmission *remote.SharedLaunchAdmission
+	if useHeadroom {
+		if a.isExternalCleanupRecoveryBlocked() {
+			return "", remote.ErrSharedServiceInUse
+		}
+		if a.sharedCoord == nil {
+			return "", remote.ErrSharedServiceInUse
+		}
+		var admissionErr error
+		headroomAdmission, admissionErr = a.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceClaudeHeadroom)
+		if admissionErr != nil {
+			return "", fmt.Errorf("headroom launch admission: %w", admissionErr)
+		}
+		defer func() {
+			a.sharedCoord.ReleaseLaunchAdmission(headroomAdmission)
+		}()
+	}
+
 	// realBackend 是真实 upstream 的 base URL（如 api.anthropic.com）。
 	// headroom 与注入代理都需要它：headroom 据此转发，注入代理在非串联模式下据此转发。
 	realBackend := provider.EffectiveBaseURL("anthropic")
@@ -1524,7 +1816,16 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			return "", err
 		}
 
-		pid, err := a.Pty.StartResolved(sess.ID, spec)
+		// M-006: acquire shared-service leases for proxy/headroom so the
+		// coordinator guard is non-empty while this run is active.
+		var sharedKinds []remote.SharedServiceKind
+		if useProxy {
+			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeProxy)
+		}
+		if useHeadroom {
+			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeHeadroom)
+		}
+		pid, err := a.launchEmbeddedPTYWithAdmission(sess.ID, spec, headroomAdmission, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -1548,21 +1849,134 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 				}
 			}
 			a.Sessions.MarkExited(id)
+			a.releaseSharedLeases(id) // M-006: release shared leases on natural PTY exit
 			a.Log.Info("session", "PTY进程已退出", "id="+id)
 		}(sess.ID)
 
 		return sess.ID, nil
 	}
 
-	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.Launch(sess.ID, *provider, presetName, apiKey, agentTeams, launchMode, workDir)
-	if err != nil {
+	// 外部终端/VSCode/Zed 模式：使用 Launcher。R6-001 keeps the
+	// startup admission live until a successful process start can atomically
+	// promote to an opaque external-run dependency lease.
+	external := a.externalSessionLauncher()
+	if external == nil {
+		err := errors.New("external launcher is not initialized")
 		a.Sessions.MarkFailed(sess.ID, err.Error())
-		a.Log.Error("session", "进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-		return "", fmt.Errorf("launch claude: %w", err)
+		return "", err
+	}
+	var externalRun *remote.ExternalRunIdentity
+	if headroomAdmission != nil {
+		if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
+			a.Sessions.MarkFailed(sess.ID, storeErr.Error())
+			return "", fmt.Errorf("prepare durable external Claude cleanup: %w", storeErr)
+		}
+		externalRun, err = a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", fmt.Errorf("prepare external Claude run: %w", err)
+		}
+	}
+	startGeneration, startErr := a.captureExternalProcessStartGeneration()
+	if startErr != nil {
+		a.Sessions.MarkFailed(sess.ID, startErr.Error())
+		return "", startErr
+	}
+	a.externalOwnershipMu.Lock()
+	if a.externalShutdown.Load() {
+		a.externalOwnershipMu.Unlock()
+		err := remote.ErrSharedCoordinatorClosed
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	defer a.externalOwnershipMu.Unlock()
+	ownershipKind := remote.SharedServiceKind(0) // no shared dependency
+	if headroomAdmission != nil {
+		ownershipKind = remote.SharedServiceClaudeHeadroom
+	}
+	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
+	defer a.endExternalOwnershipAttempt(attempt)
+	var reservation externalCleanupReservation
+	if headroomAdmission != nil {
+		var reserveErr error
+		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceClaudeHeadroom)
+		if reserveErr != nil {
+			a.Sessions.MarkFailed(sess.ID, reserveErr.Error())
+			return "", fmt.Errorf("prepare durable external Claude ownership: %w", reserveErr)
+		}
+		a.markExternalOwnershipReservation(attempt)
+	}
+	if !a.commitExternalProcessStart(attempt, startGeneration) {
+		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+		a.Sessions.MarkFailed(sess.ID, startErr.Error())
+		return "", startErr
+	}
+	result, err := external.LaunchGuarded(
+		sess.ID, *provider, presetName, apiKey, agentTeams, launchMode, workDir,
+		func() error { return a.authorizeExternalRawStart(attempt, startGeneration) },
+	)
+	if err != nil {
+		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
+			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+			a.Sessions.MarkFailed(sess.ID, startErr.Error())
+			return "", startErr
+		}
+		completionErr := a.completeExternalProcessReservation(reservation)
+		a.releaseSharedLeases(sess.ID)
+		launchErr := fmt.Errorf("launch claude: %w", err)
+		if completionErr != nil {
+			launchErr = errors.Join(launchErr, completionErr)
+		}
+		a.Sessions.MarkFailed(sess.ID, launchErr.Error())
+		a.Log.Error("session", "进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
+		return "", launchErr
+	}
+	// Record PID and fsync OS identity immediately after start, before lease
+	// promotion. Successful runs and failed promotions therefore share one
+	// durable ownership chain across graceful Shutdown.
+	a.markExternalOwnershipStarted(attempt)
+	a.Sessions.SetPID(sess.ID, result.PID)
+	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
+		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, reservation, headroomAdmission, external)
+		headroomAdmission = nil
+		a.Sessions.MarkFailed(sess.ID, cleanupErr.Error())
+		return "", cleanupErr
+	}
+	if headroomAdmission != nil {
+		durableRecord, ownershipErr := a.persistExternalProcessOwnership(
+			sess.ID, result.PID, remote.SharedServiceClaudeHeadroom, external,
+		)
+		if ownershipErr != nil {
+			cleanup := a.registerExternalCleanup(durableRecord, reservation, false, headroomAdmission, external)
+			headroomAdmission = nil
+			stopErr := a.compensateExternalCleanup(cleanup)
+			a.recordExternalCleanupAbandonment(remote.ExternalCleanupAbandonmentEvent{
+				SessionID:          sess.ID,
+				Kind:               remote.SharedServiceClaudeHeadroom,
+				Reason:             remote.ExternalCleanupAbandonmentDurabilityHandoff,
+				DurableReservation: true,
+			})
+			activationErr := fmt.Errorf("persist external Claude process ownership: %w", ownershipErr)
+			if stopErr != nil {
+				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
+			}
+			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
+			return "", activationErr
+		}
+		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceClaudeHeadroom, headroomAdmission); leaseErr != nil {
+			cleanup := a.registerExternalCleanup(durableRecord, externalCleanupReservation{}, true, headroomAdmission, external)
+			headroomAdmission = nil
+			stopErr := a.compensateExternalCleanup(cleanup)
+			activationErr := fmt.Errorf("activate external Claude headroom lease: %w", leaseErr)
+			if stopErr != nil {
+				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
+			}
+			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
+			return "", activationErr
+		}
+		a.rememberExternalDurableRun(durableRecord)
 	}
 
-	a.Sessions.SetPID(sess.ID, result.PID)
 	a.Log.Info("session", "进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
 
 	// 方案 R 降级（external 模式）：Launcher.Launch 不支持注入 --session-id，
@@ -1570,42 +1984,75 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	// 副作用：external 模式下同 workDir 多会话仍会指向同一最新 jsonl（边缘场景，主上已知）。
 	a.startTitleTracker(sess.ID, workDir)
 
-	// 监控进程退出
-	go func(id string) {
-		for a.Launcher.IsRunning(id) {
+	// 监控进程退出。Release happens only after the Launcher reports terminal;
+	// delayed observation is conservative (blocks mutation longer, never shorter).
+	monitorCtx := a.ctx
+	if monitorCtx == nil {
+		monitorCtx = context.Background()
+	}
+	go func(id string, lifecycle externalLauncherPort) {
+		for lifecycle.IsRunning(id) {
 			select {
-			case <-a.ctx.Done():
+			case <-monitorCtx.Done():
 				return
-			case <-time.After(time.Second):
+			case <-time.After(a.externalSessionPollInterval()):
 			}
 		}
 		a.Sessions.MarkExited(id)
+		a.releaseSharedLeases(id)
 		a.Log.Info("session", "进程已退出", "id="+id)
-	}(sess.ID)
+	}(sess.ID, external)
 
 	return sess.ID, nil
 }
 
 // StopSession 停止指定会话
+// M-005: embedded PTY sessions are the control gate's domain — route through
+// the gate and FAIL-CLOSED (never bypass to raw Pty.Close). When the control
+// runtime is nil/not-ready, or the gate denies (including DenySessionNotFound
+// for an unknown PTY session), the stop is rejected rather than falling back to
+// a raw PTY close. External Launcher sessions (terminal/VSCode/Zed — no embedded
+// PTY) remain Launcher-owned: Launcher is their legitimate authority, not a
+// gate bypass.
 func (a *App) StopSession(sessionID string) error {
 	a.Log.Info("session", "停止会话", "id="+sessionID)
 
-	// 优先检查 PTY 会话
 	if a.Pty.IsRunning(sessionID) {
-		if err := a.Pty.Close(sessionID); err != nil {
-			a.Log.Error("session", "停止PTY会话失败", fmt.Sprintf("id=%s err=%v", sessionID, err))
-			return err
+		// Embedded PTY session → gate-authoritative stop (fail-closed).
+		if a.control == nil || !a.control.IsReady() {
+			return remote.ErrControlNotReady
+		}
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := a.control.DesktopStop(ctx, contract.SessionID(sessionID)); err != nil {
+			return err // fail-closed (incl. DenySessionNotFound)
 		}
 		a.Sessions.MarkStopped(sessionID)
+		a.releaseSharedLeases(sessionID) // M-006
 		return nil
 	}
 
-	// 否则走 Launcher
-	if err := a.Launcher.Stop(sessionID); err != nil {
-		a.Log.Error("session", "停止会话失败", fmt.Sprintf("id=%s err=%v", sessionID, err))
-		return err
+	// Non-PTY external Launcher session: Launcher owns the process (not a gate
+	// bypass). A failed stop retains the lease because the dependency may still
+	// be live; successful/already-terminal stop releases it exactly once.
+	external := a.externalSessionLauncher()
+	if external != nil && external.IsRunning(sessionID) {
+		if err := external.Stop(sessionID); err != nil {
+			a.Log.Error("session", "停止会话失败", fmt.Sprintf("id=%s err=%v", sessionID, err))
+			return err
+		}
+		a.Sessions.MarkStopping(sessionID)
+		if external.IsRunning(sessionID) {
+			// Stop was accepted but Launcher Wait has not proven terminal. Stopping
+			// remains active/non-removable; monitor or cleanup reaper owns the lease.
+			return nil
+		}
 	}
+	a.completeExternalCleanupForSession(sessionID)
 	a.Sessions.MarkStopped(sessionID)
+	a.releaseSharedLeases(sessionID)
 	return nil
 }
 
@@ -1627,12 +2074,22 @@ func (a *App) startTitleTracker(amagiSessionID, workDir string) {
 	go session.TrackTitle(a.ctx, a.Sessions, amagiSessionID, homeDir, workDir, a.Log)
 }
 
-// StopAllSessions 停止所有运行中的会话
-func (a *App) StopAllSessions() {
+// stopAllSessionsForShutdown is the unexported shutdown cleanup helper (design
+// §10.3). It is called ONLY from App.Shutdown and never appears in the Wails
+// Bind manifest. The authoritative shutdown fence is
+// ControlRuntime.CloseForShutdown (called from Shutdown).
+func (a *App) stopAllSessionsForShutdown() {
 	ids := a.Sessions.GetRunning()
+	external := a.externalSessionLauncher()
 	for _, id := range ids {
-		_ = a.Launcher.Stop(id)
+		if external != nil {
+			if err := external.Stop(id); err != nil || external.IsRunning(id) {
+				continue // terminal owner/lease remains until monitor or reaper receipt
+			}
+		}
+		a.completeExternalCleanupForSession(id)
 		a.Sessions.MarkStopped(id)
+		a.releaseSharedLeases(id)
 	}
 }
 
@@ -1642,13 +2099,165 @@ func (a *App) GetSessions() []session.SessionInfo {
 }
 
 // RemoveSession 删除已结束的会话记录
+// M-005: route through the control gate so a stopped/running gate-managed
+// session has its PTY closed AND its control tombstone cleaned by the desktop
+// authority (DesktopRemove). FAIL-CLOSED: a running PTY session whose control
+// runtime is unavailable is rejected rather than bypassed to the raw manager.
+// A DenySessionNotFound (the gate does not manage the session) is the signal
+// that the session is external/legacy → manager record cleanup.
 func (a *App) RemoveSession(sessionID string) error {
-	return a.Sessions.Remove(sessionID)
+	if a.control != nil && a.control.IsReady() {
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := a.control.DesktopRemove(ctx, contract.SessionID(sessionID)); err != nil {
+			if !isControlUnknownSession(err) {
+				return err // gate denial → fail-closed
+			}
+			// DenySessionNotFound: gate does not manage this session → external/legacy.
+		} else {
+			a.releaseSharedLeases(sessionID) // M-006
+			return nil
+		}
+	} else if a.Pty.IsRunning(sessionID) {
+		// PTY running but gate unavailable → fail-closed (no raw manager bypass).
+		return remote.ErrControlNotReady
+	}
+	// External Launcher / legacy record (PTY not running here): manager cleanup.
+	// Release only after Manager.Remove confirms the record is non-running; a
+	// failed remove must not drop a dependency from a potentially active run.
+	if err := a.Sessions.Remove(sessionID); err != nil {
+		return err
+	}
+	a.releaseSharedLeases(sessionID)
+	return nil
 }
 
 // ClearStoppedSessions 清除所有已结束的会话
+// M-005 + R3-005: route control-tombstone cleanup through the desktop authority
+// (desktop authoritative batch semantics) before clearing the session manager,
+// so the batch clear is gate-authorized rather than a raw manager mutation.
+// Stopped sessions have no live PTY; this only removes their control entries.
+//
+// R3-005 fail-closed: control-MANAGED (embedded) stopped sessions are cleared
+// through the gate ONLY when control is ready; if control is nil/not-ready they
+// are SKIPPED (neither control entry nor manager record is touched) so the two
+// stores can never diverge with a dangling control entry. Legacy/terminal
+// sessions (no control entry by construction) are still cleared from the manager
+// directly. Returns the count of manager records cleared.
 func (a *App) ClearStoppedSessions() int {
-	return a.Sessions.ClearStopped()
+	return a.ClearStoppedSessionsDetailed().Cleared
+}
+
+// ClearStoppedSessionFailure is one per-ID failure from either the control Gate
+// or Manager.Remove. Reason is diagnostic text and contains no session content.
+type ClearStoppedSessionFailure struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// ClearStoppedSessionsResult is the truthful partial result of a batch clear.
+// Cleared/ClearedIDs reflect actual successful Manager.Remove calls only.
+// RetainedIDs includes gate-skipped and manager-failed records; Failed separates
+// operational errors from ordinary skips such as a concurrent restart.
+type ClearStoppedSessionsResult struct {
+	Cleared     int                          `json:"cleared"`
+	ClearedIDs  []string                     `json:"clearedIds"`
+	RetainedIDs []string                     `json:"retainedIds"`
+	Failed      []ClearStoppedSessionFailure `json:"failed"`
+}
+
+// removeStoppedSessionRecord calls the production Manager.Remove unless a test
+// injects the narrow per-ID failure seam above.
+func (a *App) removeStoppedSessionRecord(id string) error {
+	var err error
+	if a.sessionRemove != nil {
+		err = a.sessionRemove(id)
+	} else {
+		err = a.Sessions.Remove(id)
+	}
+	if err != nil {
+		return err
+	}
+	a.releaseSharedLeases(id)
+	return nil
+}
+
+// ClearStoppedSessionsDetailed clears stopped sessions and returns a typed
+// per-store partial result. Control-managed IDs first pass the authoritative
+// Gate; every eligible ID then calls Manager.Remove individually. Manager
+// failures are retained and propagated, never counted as cleared.
+func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
+	result := ClearStoppedSessionsResult{}
+	var eligible []string
+	var controlManaged []string
+	for _, s := range a.Sessions.List() {
+		switch s.Status {
+		case session.StatusRunning:
+			continue
+		case session.StatusStopping:
+			result.RetainedIDs = append(result.RetainedIDs, s.ID)
+			result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: s.ID, Reason: session.ErrSessionStopping.Error()})
+			continue
+		}
+		if s.Mode == session.ModeEmbedded {
+			controlManaged = append(controlManaged, s.ID)
+		} else {
+			eligible = append(eligible, s.ID)
+		}
+	}
+
+	controlReady := a.control != nil && a.control.IsReady()
+	if len(controlManaged) > 0 {
+		if !controlReady {
+			// Fail-closed: do NOT clear only the manager when control authority is
+			// unavailable; these are ordinary retained/skipped IDs, not raw errors.
+			result.RetainedIDs = append(result.RetainedIDs, controlManaged...)
+		} else {
+			ctx := a.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			ids := make([]contract.SessionID, len(controlManaged))
+			for i, id := range controlManaged {
+				ids[i] = contract.SessionID(id)
+			}
+			controlResult := a.control.DesktopClearStopped(ctx, ids)
+			for _, perID := range controlResult.Results {
+				id := string(perID.ID)
+				switch perID.Status {
+				case remote.DesktopClearCleared:
+					eligible = append(eligible, id)
+				case remote.DesktopClearErrored:
+					result.RetainedIDs = append(result.RetainedIDs, id)
+					result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: perID.Reason})
+					if a.Log != nil {
+						a.Log.Warn("session", "控制面清理已停止会话失败", fmt.Sprintf("id=%s reason=%s", id, perID.Reason))
+					}
+				default:
+					result.RetainedIDs = append(result.RetainedIDs, id)
+				}
+			}
+		}
+	}
+
+	// R4-005 residual: Manager.Remove is authoritative for the returned count.
+	// A control tombstone may already be gone, but a manager failure is reported
+	// as retained/failed and never converted into a false success.
+	for _, id := range eligible {
+		if err := a.removeStoppedSessionRecord(id); err != nil {
+			result.RetainedIDs = append(result.RetainedIDs, id)
+			result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: err.Error()})
+			if a.Log != nil {
+				a.Log.Warn("session", "会话管理器清理失败", fmt.Sprintf("id=%s err=%v", id, err))
+			}
+			continue
+		}
+		result.ClearedIDs = append(result.ClearedIDs, id)
+	}
+	result.Cleared = len(result.ClearedIDs)
+	return result
 }
 
 // LaunchCodexSession 启动 Codex CLI 终端会话
@@ -1702,6 +2311,32 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 
 	launchSettings := codexLaunchSettings{
 		Model: normalizeCodexModelName(modelName),
+	}
+
+	// R5-002: when Codex is configured to use global Headroom, acquire the
+	// uninstall admission before config sync, session creation, resolution, or
+	// PTY startup. Persisted Enabled remains true while uninstall has stopped the
+	// process but has not yet removed the marker, closing that drain window too.
+	var codexHeadroomAdmission *remote.SharedLaunchAdmission
+	codexUsesGlobalHeadroom := a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning()
+	if a.Settings != nil && a.Settings.GetCodexGlobalHeadroom().Enabled {
+		codexUsesGlobalHeadroom = true
+	}
+	if codexUsesGlobalHeadroom {
+		if a.isExternalCleanupRecoveryBlocked() {
+			return "", remote.ErrSharedServiceInUse
+		}
+		if a.sharedCoord == nil {
+			return "", remote.ErrSharedServiceInUse
+		}
+		var admissionErr error
+		codexHeadroomAdmission, admissionErr = a.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceCodexHeadroom)
+		if admissionErr != nil {
+			return "", fmt.Errorf("codex headroom launch admission: %w", admissionErr)
+		}
+		defer func() {
+			a.sharedCoord.ReleaseLaunchAdmission(codexHeadroomAdmission)
+		}()
 	}
 
 	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
@@ -1775,7 +2410,14 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 			return "", err
 		}
 
-		pid, err := a.Pty.StartResolved(sess.ID, spec)
+		// M-006: a Codex session that routes through the global headroom (8788)
+		// depends on it; acquire a lease so the toggle/uninstall coordinator guard is
+		// non-empty for the run lifetime.
+		var sharedKinds []remote.SharedServiceKind
+		if codexHeadroomAdmission != nil {
+			sharedKinds = append(sharedKinds, remote.SharedServiceCodexHeadroom)
+		}
+		pid, err := a.launchEmbeddedPTYWithAdmission(sess.ID, spec, codexHeadroomAdmission, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Codex PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -1793,34 +2435,149 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 				}
 			}
 			a.Sessions.MarkExited(id)
+			a.releaseSharedLeases(id) // M-006: release Codex headroom lease on natural exit
 			a.Log.Info("session", "Codex PTY进程已退出", "id="+id)
 		}(sess.ID)
 
 		return sess.ID, nil
 	}
 
-	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.LaunchCodex(sess.ID, launchSettings.Model, launchMode, workDir, envOverrides)
-	if err != nil {
+	// 外部终端/VSCode/Zed 模式：使用 Launcher。Keep the Codex
+	// Headroom admission through startup, then promote before returning success.
+	external := a.externalSessionLauncher()
+	if external == nil {
+		err := errors.New("external launcher is not initialized")
 		a.Sessions.MarkFailed(sess.ID, err.Error())
-		a.Log.Error("session", "Codex 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-		return "", fmt.Errorf("launch codex: %w", err)
+		return "", err
+	}
+	var externalRun *remote.ExternalRunIdentity
+	if codexHeadroomAdmission != nil {
+		if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
+			a.Sessions.MarkFailed(sess.ID, storeErr.Error())
+			return "", fmt.Errorf("prepare durable external Codex cleanup: %w", storeErr)
+		}
+		identity, identityErr := a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
+		if identityErr != nil {
+			a.Sessions.MarkFailed(sess.ID, identityErr.Error())
+			return "", fmt.Errorf("prepare external Codex run: %w", identityErr)
+		}
+		externalRun = identity
+	}
+	startGeneration, startErr := a.captureExternalProcessStartGeneration()
+	if startErr != nil {
+		a.Sessions.MarkFailed(sess.ID, startErr.Error())
+		return "", startErr
+	}
+	a.externalOwnershipMu.Lock()
+	if a.externalShutdown.Load() {
+		a.externalOwnershipMu.Unlock()
+		err := remote.ErrSharedCoordinatorClosed
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	defer a.externalOwnershipMu.Unlock()
+	ownershipKind := remote.SharedServiceKind(0) // no shared dependency
+	if codexHeadroomAdmission != nil {
+		ownershipKind = remote.SharedServiceCodexHeadroom
+	}
+	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
+	defer a.endExternalOwnershipAttempt(attempt)
+	var reservation externalCleanupReservation
+	if codexHeadroomAdmission != nil {
+		var reserveErr error
+		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceCodexHeadroom)
+		if reserveErr != nil {
+			a.Sessions.MarkFailed(sess.ID, reserveErr.Error())
+			return "", fmt.Errorf("prepare durable external Codex ownership: %w", reserveErr)
+		}
+		a.markExternalOwnershipReservation(attempt)
+	}
+	if !a.commitExternalProcessStart(attempt, startGeneration) {
+		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+		a.Sessions.MarkFailed(sess.ID, startErr.Error())
+		return "", startErr
+	}
+	result, err := external.LaunchCodexGuarded(
+		sess.ID, launchSettings.Model, launchMode, workDir, envOverrides,
+		func() error { return a.authorizeExternalRawStart(attempt, startGeneration) },
+	)
+	if err != nil {
+		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
+			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+			a.Sessions.MarkFailed(sess.ID, startErr.Error())
+			return "", startErr
+		}
+		completionErr := a.completeExternalProcessReservation(reservation)
+		a.releaseSharedLeases(sess.ID)
+		launchErr := fmt.Errorf("launch codex: %w", err)
+		if completionErr != nil {
+			launchErr = errors.Join(launchErr, completionErr)
+		}
+		a.Sessions.MarkFailed(sess.ID, launchErr.Error())
+		a.Log.Error("session", "Codex 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
+		return "", launchErr
+	}
+	a.markExternalOwnershipStarted(attempt)
+	a.Sessions.SetPID(sess.ID, result.PID)
+	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
+		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, reservation, codexHeadroomAdmission, external)
+		codexHeadroomAdmission = nil
+		a.Sessions.MarkFailed(sess.ID, cleanupErr.Error())
+		return "", cleanupErr
+	}
+	if codexHeadroomAdmission != nil {
+		durableRecord, ownershipErr := a.persistExternalProcessOwnership(
+			sess.ID, result.PID, remote.SharedServiceCodexHeadroom, external,
+		)
+		if ownershipErr != nil {
+			cleanup := a.registerExternalCleanup(durableRecord, reservation, false, codexHeadroomAdmission, external)
+			codexHeadroomAdmission = nil
+			stopErr := a.compensateExternalCleanup(cleanup)
+			a.recordExternalCleanupAbandonment(remote.ExternalCleanupAbandonmentEvent{
+				SessionID:          sess.ID,
+				Kind:               remote.SharedServiceCodexHeadroom,
+				Reason:             remote.ExternalCleanupAbandonmentDurabilityHandoff,
+				DurableReservation: true,
+			})
+			activationErr := fmt.Errorf("persist external Codex process ownership: %w", ownershipErr)
+			if stopErr != nil {
+				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Codex process: %w", stopErr))
+			}
+			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
+			return "", activationErr
+		}
+		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceCodexHeadroom, codexHeadroomAdmission); leaseErr != nil {
+			cleanup := a.registerExternalCleanup(durableRecord, externalCleanupReservation{}, true, codexHeadroomAdmission, external)
+			codexHeadroomAdmission = nil
+			stopErr := a.compensateExternalCleanup(cleanup)
+			activationErr := fmt.Errorf("activate external Codex headroom lease: %w", leaseErr)
+			if stopErr != nil {
+				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Codex process: %w", stopErr))
+			}
+			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
+			return "", activationErr
+		}
+		a.rememberExternalDurableRun(durableRecord)
 	}
 
-	a.Sessions.SetPID(sess.ID, result.PID)
 	a.Log.Info("session", "Codex 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
 
-	go func(id string) {
-		for a.Launcher.IsRunning(id) {
+	monitorCtx := a.ctx
+	if monitorCtx == nil {
+		monitorCtx = context.Background()
+	}
+	go func(id string, lifecycle externalLauncherPort) {
+		for lifecycle.IsRunning(id) {
 			select {
-			case <-a.ctx.Done():
+			case <-monitorCtx.Done():
 				return
-			case <-time.After(time.Second):
+			case <-time.After(a.externalSessionPollInterval()):
 			}
 		}
 		a.Sessions.MarkExited(id)
+		a.releaseSharedLeases(id)
 		a.Log.Info("session", "Codex 进程已退出", "id="+id)
-	}(sess.ID)
+	}(sess.ID, external)
 
 	return sess.ID, nil
 }
@@ -1970,7 +2727,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			return "", err
 		}
 
-		pid, err := a.Pty.StartResolved(sess.ID, spec)
+		pid, err := a.launchEmbeddedPTY(sess.ID, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Pi PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -2539,9 +3296,38 @@ func removeCodexGlobalHeadroomConfig() error {
 // marker block and persistence so codex does not keep pointing at the removed
 // proxy (a dead openai_base_url would break codex until manually fixed).
 //
-// The returned error is best-effort: CleanHeadroom ignores it (mirroring the
-// original single-instance Stop contract). Individual failures are logged.
-func (a *App) stopAllHeadroomForUninstall() error {
+// R3-002: when the coordinator rejects because active sessions hold headroom
+// leases, this returns envcheck.ErrHeadroomInUse (wrapping the coordinator
+// detail) so CleanHeadroom treats it as a FATAL rejection and aborts BEFORE the
+// venv is removed. Plain stop failures (process already dead, etc.) remain
+// best-effort and non-fatal. Individual failures are logged.
+func (a *App) stopAllHeadroomForUninstall() (error, func()) {
+	if a.isExternalCleanupRecoveryBlocked() {
+		return fmt.Errorf("%w: %w", envcheck.ErrHeadroomInUse, remote.ErrSharedServiceInUse), func() {}
+	}
+	// M-006 / R3-002: consult the coordinator BEFORE tearing down shared headroom.
+	// R4-002 (TOCTOU): instead of two instantaneous LeaseCount checks (which left a
+	// window for a concurrent launch to acquire a lease before RemoveAll), this
+	// enters a SINGLE install-drain critical section on the SharedServiceCoordinator
+	// that blocks new AcquireForRun for BOTH headroom kinds, confirms both are
+	// lease-free, and stays held until CleanHeadroom finishes the venv removal. It
+	// returns (stopErr, releaseDrain): releaseDrain releases the drain and is
+	// invoked by CleanHeadroom via defer after RemoveAll (or on abort). When
+	// existing leases are present, it returns ErrHeadroomInUse (fatal) plus the
+	// releaseDrain (still set so the caller releases the drain it entered).
+	release := func() {} // default no-op when coordinator is absent
+	if a.sharedCoord != nil {
+		empty := a.sharedCoord.BeginHeadroomUninstallDrain()
+		release = a.sharedCoord.EndHeadroomUninstallDrain
+		if !empty {
+			cn := a.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom)
+			xn := a.sharedCoord.LeaseCount(remote.SharedServiceCodexHeadroom)
+			if a.Log != nil {
+				a.Log.Warn("headroom", "卸载联动拒绝：仍有活跃会话占用 headroom", fmt.Sprintf("claude=%d codex=%d", cn, xn))
+			}
+			return fmt.Errorf("%w: %w", envcheck.ErrHeadroomInUse, remote.ErrSharedServiceInUse), release
+		}
+	}
 	var firstErr error
 	logErr := func(scope string, err error) {
 		if err == nil {
@@ -2566,7 +3352,7 @@ func (a *App) stopAllHeadroomForUninstall() error {
 		logErr("卸载联动：清理 codex 全局 openai_base_url 失败", removeCodexGlobalHeadroomConfig())
 		logErr("卸载联动：清除 codex 全局 headroom 持久化失败", a.Settings.SetCodexGlobalHeadroom(false, "", 0))
 	}
-	return firstErr
+	return firstErr, release
 }
 
 func countTopLevelAssignment(lines []string, key string) int {
@@ -3046,7 +3832,7 @@ launchCommon:
 			return "", err
 		}
 
-		pid, err := a.Pty.StartResolved(sess.ID, spec)
+		pid, err := a.launchEmbeddedPTY(sess.ID, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "OpenCode PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -3337,14 +4123,34 @@ func (a *App) ExportLogs() (string, error) {
 // --- PTY 终端 API ---
 
 // PtyWrite 向内嵌终端写入数据（前端键盘输入）。data 为 base64 编码。
+// M-005: fail-closed — when the control runtime is not ready the write is
+// rejected rather than falling back to the raw PTY service (design §6.3 C-01:
+// every mutation must go through the Gate). The control runtime is created in
+// the App constructor and MarkReady runs in Startup before any embedded PTY is
+// created, so this only rejects writes during the startup/shutdown window.
 func (a *App) PtyWrite(sessionID string, data string) error {
-	return a.Pty.Write(sessionID, data)
+	if a.control == nil || !a.control.IsReady() {
+		return remote.ErrControlNotReady
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return fmt.Errorf("decode base64: %w", err)
+	}
+	return a.control.DesktopInput(a.ctx, contract.SessionID(sessionID), raw)
 }
 
 // PtyWriteLarge 向内嵌终端分块写入大量数据（用于长文本粘贴）。data 为 base64 编码。
 // 内部将数据拆分为 1KB 小块逐步写入，避免 ConPTY 缓冲区溢出截断。
+// M-005: fail-closed (see PtyWrite).
 func (a *App) PtyWriteLarge(sessionID string, data string) error {
-	return a.Pty.WriteLarge(sessionID, data)
+	if a.control == nil || !a.control.IsReady() {
+		return remote.ErrControlNotReady
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return fmt.Errorf("decode base64: %w", err)
+	}
+	return a.control.DesktopPasteChunk(a.ctx, contract.SessionID(sessionID), raw)
 }
 
 // SaveClipboardImage 将 base64 编码的 PNG 保存为私有临时文件，返回文件绝对路径。
@@ -3399,27 +4205,30 @@ func writeClipboardImage(raw []byte) (string, error) {
 }
 
 // PtyResize 调整内嵌终端尺寸
+// M-005: fail-closed (see PtyWrite).
 func (a *App) PtyResize(sessionID string, cols, rows int) error {
-	return a.Pty.Resize(sessionID, cols, rows)
-}
-
-// GetOutputHistory 返回指定 PTY 会话的输出历史，供 WebSocket 重放。
-// 实现 remote.HistoryProvider 接口。
-func (a *App) GetOutputHistory(sessionID string) ([]byte, error) {
-	return a.Pty.GetOutputHistory(sessionID)
+	if a.control == nil || !a.control.IsReady() {
+		return remote.ErrControlNotReady
+	}
+	return a.control.DesktopPassiveResize(a.ctx, contract.SessionID(sessionID), cols, rows)
 }
 
 // GetOutputHistorySnapshot returns a JSON-encoded snapshot of the output history
-// along with the emitSeq at snapshot time. The JSON structure is:
+// along with the emitSeq and the current run token/version at snapshot time.
+// The JSON structure is:
 //
-//	{"data": "<base64-encoded bytes>", "seq": <uint64>}
+//	{"data": "<base64-encoded bytes>", "seq": <uint64>, "runToken": "<opaque>", "runVersion": "<decimal>"}
 //
 // Frontend uses the seq to deduplicate live events: any live event with
 // seq <= the returned seq is already contained in the history snapshot.
+// runToken/runVersion enable A3's strict run-scoped filtering (design §8.6.1).
 func (a *App) GetOutputHistorySnapshot(sessionID string) (string, error) {
 	data, seq, err := a.Pty.GetOutputHistoryWithSeq(sessionID)
 	if err != nil {
 		return "", err
+	}
+	if a.control != nil {
+		return a.control.Projector().FormatSnapshotJSON(contract.SessionID(sessionID), data, seq)
 	}
 	result := struct {
 		Data string `json:"data"`
@@ -3428,27 +4237,17 @@ func (a *App) GetOutputHistorySnapshot(sessionID string) (string, error) {
 		Data: base64.StdEncoding.EncodeToString(data),
 		Seq:  seq,
 	}
-	bytes, err := json.Marshal(result)
+	b, err := json.Marshal(result)
 	if err != nil {
 		return "", fmt.Errorf("marshal history snapshot: %w", err)
 	}
-	return string(bytes), nil
+	return string(b), nil
 }
 
 // GetPtyDimensions 返回指定 PTY 会话的当前尺寸。
 // 实现 remote.DimensionsProvider 接口。
 func (a *App) GetPtyDimensions(sessionID string) (cols, rows int, err error) {
 	return a.Pty.GetPtyDimensions(sessionID)
-}
-
-// AttachSessionObserver 原子返回 history / dimensions 快照并注册 live 回调。
-func (a *App) AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) ([]byte, int, int, error) {
-	return a.Pty.AttachSessionObserver(sessionID, id, outputCB, resizeCB)
-}
-
-// DetachSessionObserver 注销通过 AttachSessionObserver 注册的 live 回调。
-func (a *App) DetachSessionObserver(sessionID string, id string) {
-	a.Pty.DetachSessionObserver(sessionID, id)
 }
 
 // OpenFileInEditor 使用系统默认程序打开指定文件。

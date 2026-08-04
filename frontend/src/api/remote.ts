@@ -21,6 +21,9 @@ import {
   ListRemoteSecurityEvents,
   GetRemoteSecurityHealth,
   AcknowledgeRemoteSecurityHealth,
+  GetExternalCleanupRecoveryStatus,
+  ConfirmExternalCleanupRecovery,
+  GetStartupWarnings,
 } from '../../wailsjs/go/main/App';
 import type { remote } from '../../wailsjs/go/models';
 
@@ -185,4 +188,31 @@ export async function acknowledgeRemoteSecurityHealth(
   code: string,
 ): Promise<remote.SecurityHealthSnapshot> {
   return await AcknowledgeRemoteSecurityHealth(code);
+}
+
+/* ---------------------------------------------------------------------------
+ * M2-INT R12：外部进程清理恢复（legacy/uncertainty）API（R11-002 产品闭环）
+ * 绑定权威来源：frontend/wailsjs/go/main/App.d.ts + models.ts（自动生成，勿手改）
+ * 隐私语义：status 只含 sessionId/kind/reason/state/canConfirm，无 PID/路径/argv。
+ * ------------------------------------------------------------------------- */
+
+/** 隐私最小恢复状态：legacy/uncertain 外部进程清理项与全局锁定标记。 */
+export async function getExternalCleanupRecoveryStatus(): Promise<remote.ExternalCleanupRecoveryStatus> {
+  return await GetExternalCleanupRecoveryStatus();
+}
+
+/**
+ * 显式确认恢复。confirmed 必须来自 PG-06 确认对话的显式确认（无 force-clear）。
+ * 后端会再次核验进程活性：仍在运行 / 持久化失败 / 项不存在均抛错且不释放锁定。
+ */
+export async function confirmExternalCleanupRecovery(
+  sessionID: string,
+  confirmed: boolean,
+): Promise<remote.ExternalCleanupRecoveryResult> {
+  return await ConfirmExternalCleanupRecovery(sessionID, confirmed);
+}
+
+/** 启动警告（本次启动累积；含 legacy 外部清理提示）。仅展示，不当 toast 自动消失。 */
+export async function getStartupWarnings(): Promise<string[]> {
+  return await GetStartupWarnings();
 }

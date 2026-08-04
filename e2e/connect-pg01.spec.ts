@@ -132,9 +132,11 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
     expect(consoleErrors).toEqual([])
   })
 
-  test('诊断分类：已授权 → 进入会话大厅占位（M2 大厅诚实占位）', async ({ page }) => {
+  test('诊断分类：已授权 → 进入会话大厅（PG-02，M2-B 本体）', async ({ page }) => {
     const consoleErrors = watchConsole(page)
     await page.route(`${BASE}/host/summary`, (route) => fulfillJson(route, 200, HOST_SUMMARY))
+    // PG-02 大厅会拉取真实会话列表（route mock，空列表为 []，design §5.3）。
+    await page.route(`${BASE}/sessions`, (route) => fulfillJson(route, 200, []))
     await page.goto('/')
 
     await expect(page.locator('.diagnosis-title')).toHaveText('已授权，可以进入')
@@ -144,9 +146,10 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
     await page.getByRole('button', { name: '进入会话大厅' }).click()
     await expect(page).toHaveURL(/#\/lobby$/)
     await expect(page.locator('.lobby-title')).toHaveText('会话大厅')
-    await expect(page.locator('.placeholder-card')).toContainText('M2')
-    await expect(page.locator('.projection-card')).toContainText('1.0.5-mock')
-    await page.screenshot({ path: 'test-results/pg01-lobby-placeholder.png', fullPage: true })
+    // PG-02 本体：宿主投影行 + 空态（图标+说明），不再是 M2 占位卡。
+    await expect(page.locator('.lobby-host-line')).toContainText('1.0.5-mock')
+    await expect(page.locator('.empty-state')).toContainText('还没有会话')
+    await page.screenshot({ path: 'test-results/pg01-lobby-pg02.png', fullPage: true })
     expect(consoleErrors).toEqual([])
   })
 
@@ -175,6 +178,7 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
       }
       return fulfillJson(route, 200, HOST_SUMMARY)
     })
+    await page.route(`${BASE}/sessions`, (route) => fulfillJson(route, 200, []))
 
     await page.goto('/')
     await expect(page.locator('.diagnosis-title')).toHaveText('这台设备还没有配对')
@@ -192,8 +196,10 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
 
     await page.getByRole('button', { name: '完成配对' }).click()
     await expect(page).toHaveURL(/#\/lobby$/)
-    await expect(page.locator('.projection-card')).toContainText('我的 Android 设备')
-    await expect(page.locator('.placeholder-card')).toBeVisible()
+    // PG-02 大厅：设备投影与宿主版本呈现于头部（非密投影）。
+    await expect(page.locator('.lobby-host-line')).toContainText('我的 Android 设备')
+    await expect(page.locator('.lobby-host-line')).toContainText('1.0.5-mock')
+    await expect(page.locator('.empty-state')).toBeVisible()
     await page.screenshot({ path: 'test-results/pg01-pair-success-lobby.png', fullPage: true })
 
     // 配对材料不留地址栏历史（replace 进大厅，hash 无 code）。

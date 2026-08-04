@@ -1,8 +1,8 @@
 /**
- * lib/api.ts — Remote REST v1 client（M1-D1 PG-01）
+ * lib/api.ts — Remote REST v1 client（M1-D1 PG-01；M2-B PG-02 扩展会话端点）
  * ---------------------------------------------------------------------------
  * 契约来源：mobile/src/lib/contract（M0-03 冻结）。本文件只 import 契约类型与
- * 常量，不复制任何路径/错误码字符串。
+ * 常量（含 V1_ENDPOINT_* 具名 handle，M1 Minor-01 纪律），不复制任何路径/错误码字符串。
  *
  * 边界：
  *   · BASE 为契约冻结的相对路径 REST_BASE_PATH（/api/remote/v1），页面由宿主
@@ -17,6 +17,14 @@ import {
   REST_BASE_PATH,
   V1_ENDPOINT_PAIRING_COMPLETE,
   V1_ENDPOINT_HOST_SUMMARY,
+  V1_ENDPOINT_SESSIONS_LIST,
+  V1_ENDPOINT_SESSION_DETAIL,
+  V1_ENDPOINT_SESSION_CREATE,
+  V1_ENDPOINT_SESSION_STOP,
+  V1_ENDPOINT_SESSION_RESTART,
+  V1_ENDPOINT_SESSION_REMOVE,
+  V1_ENDPOINT_CONTROL_ACQUIRE,
+  V1_ENDPOINT_CONTROL_RELEASE,
   ERROR_CODE_NET_UNREACHABLE,
   ERROR_CODE_SERVICE_DOWN,
   ERROR_CODE_AUTH_UNPAIRED,
@@ -27,7 +35,13 @@ import {
   type PairingCompleteResponse,
   type HostSummary,
   type RequestID,
-  type RestMethod,
+  type RestEndpoint,
+  type SessionID,
+  type SessionList,
+  type SessionDetail,
+  type ControlSnapshot,
+  type CreateSessionRequest,
+  type ConfirmActionRequest,
 } from './contract';
 
 /** 客户端侧结构化错误：网络层失败也会被综合为契约错误形态（code=net.unreachable）。 */
@@ -76,11 +90,24 @@ export function toApiRequestError(err: unknown): ApiRequestError {
   });
 }
 
-async function request<T>(method: RestMethod, path: string, body?: unknown): Promise<T> {
+/**
+ * 统一请求内核：method/path 一律取自契约具名 handle（Minor-01），本函数不
+ * 接受调用方传入的路径字符串。`{id}` 单段占位用 encodeURIComponent 恰好
+ * 替换一次（与服务端恰好 PathUnescape 一次对齐，design §5.1）。
+ */
+async function request<T>(
+  endpoint: RestEndpoint,
+  options: { sessionId?: SessionID; body?: unknown } = {},
+): Promise<T> {
+  const path =
+    options.sessionId === undefined
+      ? endpoint.path
+      : endpoint.path.replace('{id}', encodeURIComponent(options.sessionId));
+  const body = options.body;
   let response: Response;
   try {
     response = await fetch(`${REST_BASE_PATH}${path}`, {
-      method,
+      method: endpoint.method,
       credentials: 'same-origin',
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -88,6 +115,12 @@ async function request<T>(method: RestMethod, path: string, body?: unknown): Pro
   } catch (err) {
     // fetch 拒绝（DNS/TCP/离线/CORS）：统一映射为契约 net.unreachable，不透出宿主细节。
     throw toApiRequestError(err);
+  }
+
+  // 204 No Content（DELETE /sessions/{id}）：契约明确无 body（design §5.1），
+  // 不做 JSON 解析，直接成功返回。
+  if (response.status === 204 && endpoint.successStatus === 204) {
+    return undefined as T;
   }
 
   if (response.ok) {
@@ -153,14 +186,59 @@ async function request<T>(method: RestMethod, path: string, body?: unknown): Pro
  * method/path 一律消费契约 manifest 具名常量（Minor-01），不复制字符串。
  */
 export async function completePairing(code: string, deviceName: string): Promise<PairingCompleteResponse> {
-  return request<PairingCompleteResponse>(
-    V1_ENDPOINT_PAIRING_COMPLETE.method,
-    V1_ENDPOINT_PAIRING_COMPLETE.path,
-    { code, deviceName },
-  );
+  return request<PairingCompleteResponse>(V1_ENDPOINT_PAIRING_COMPLETE, {
+    body: { code, deviceName },
+  });
 }
 
 /** 宿主摘要（需设备 Cookie 凭据）。 */
 export async function getHostSummary(): Promise<HostSummary> {
-  return request<HostSummary>(V1_ENDPOINT_HOST_SUMMARY.method, V1_ENDPOINT_HOST_SUMMARY.path);
+  return request<HostSummary>(V1_ENDPOINT_HOST_SUMMARY);
+}
+
+// ---------------------------------------------------------------------------
+// 会话端点（M2-B PG-02；design §5.2 index 2-9）
+// ---------------------------------------------------------------------------
+
+/** 会话列表：paired device 即可，不要求控制权；空列表为 `[]`。 */
+export async function listSessions(): Promise<SessionList> {
+  return request<SessionList>(V1_ENDPOINT_SESSIONS_LIST);
+}
+
+/** 会话详情：staging/removed/未知统一 session.not_found。 */
+export async function getSessionDetail(sessionId: SessionID): Promise<SessionDetail> {
+  return request<SessionDetail>(V1_ENDPOINT_SESSION_DETAIL, { sessionId });
+}
+
+/** 启动新会话（四 frozen CLI 之一）；成功后初始 control=none，不自动占权。 */
+export async function createSession(req: CreateSessionRequest): Promise<SessionDetail> {
+  return request<SessionDetail>(V1_ENDPOINT_SESSION_CREATE, { body: req });
+}
+
+/** PG-06 危险操作的协议级 confirm 载荷（confirm 必须为字面 true）。 */
+const CONFIRM_BODY: ConfirmActionRequest = { confirm: true };
+
+/** 停止会话（需控制权；幂等收敛）。成功 200 返回最新 SessionDetail。 */
+export async function stopSession(sessionId: SessionID): Promise<SessionDetail> {
+  return request<SessionDetail>(V1_ENDPOINT_SESSION_STOP, { sessionId, body: CONFIRM_BODY });
+}
+
+/** 同 ID 重启会话（需控制权；recipe 不变）。 */
+export async function restartSession(sessionId: SessionID): Promise<SessionDetail> {
+  return request<SessionDetail>(V1_ENDPOINT_SESSION_RESTART, { sessionId, body: CONFIRM_BODY });
+}
+
+/** 移除会话（需控制权；不可逆）。成功 204 无 body。 */
+export async function removeSession(sessionId: SessionID): Promise<void> {
+  return request<void>(V1_ENDPOINT_SESSION_REMOVE, { sessionId, body: CONFIRM_BODY });
+}
+
+/** 获取控制权（none→you；同 device 幂等；other/desktop 占用 → control.busy）。空 body。 */
+export async function acquireControl(sessionId: SessionID): Promise<ControlSnapshot> {
+  return request<ControlSnapshot>(V1_ENDPOINT_CONTROL_ACQUIRE, { sessionId });
+}
+
+/** 释放控制权（you→none；非 holder → control.forbidden）。空 body。 */
+export async function releaseControl(sessionId: SessionID): Promise<ControlSnapshot> {
+  return request<ControlSnapshot>(V1_ENDPOINT_CONTROL_RELEASE, { sessionId });
 }

@@ -23,7 +23,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/launch-pi", s.requireLoopbackPeer(s.handleLaunchPi))
 	mux.HandleFunc("POST /api/sessions/clear-stopped", s.requireLoopbackPeer(s.handleClearStopped))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireLoopbackPeer(s.handleStopSession))
-	mux.HandleFunc("POST /api/sessions/{id}/resize", s.requireLoopbackPeer(s.handleResizeSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}/remove", s.requireLoopbackPeer(s.handleRemoveSession))
 
 	// Providers — detail/export/save/by-type may carry API keys (loopback-only).
@@ -259,22 +258,10 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (s *Server) handleResizeSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		Cols int `json:"cols"`
-		Rows int `json:"rows"`
-	}
-	if err := readJSON(r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	if err := s.app.PtyResize(id, body.Cols, body.Rows); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
+// handleResizeSession was deleted (design §6.3 / §3.3): legacy REST resize is
+// abolished; Wails local resize is retained and future remote resize goes only
+// through /ws/v1. The desktop PtyResize facade now routes through ControlGate
+// DoDesktopPassiveResize.
 
 func (s *Server) handleRemoveSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

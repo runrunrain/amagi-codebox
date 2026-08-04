@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,12 +24,13 @@ import (
 func cryptoRandRead(b []byte) (int, error) { return rand.Read(b) }
 
 // v1RouteSpec describes one active v1 route (design §6.7). The handler receives
-// the once-resolved request ID and the CORS-allowed flag (no re-resolution).
+// the once-resolved request ID, the CORS-allowed flag, and the extracted
+// sessionID (empty for routes without {id}) (no re-resolution).
 type v1RouteSpec struct {
 	endpointIndex int // indexes contract.V1RestEndpoints
 	auth          v1AuthPolicy
 	origin        v1OriginPolicy
-	handler       func(http.ResponseWriter, *http.Request, contract.RestEndpoint, contract.RequestID, bool, v1Principal)
+	handler       func(http.ResponseWriter, *http.Request, contract.RestEndpoint, contract.RequestID, bool, v1Principal, contract.SessionID)
 }
 
 // pairingBodyCap bounds the pairing request body (design §4.1: 4 KiB).
@@ -131,14 +133,15 @@ type v1Security struct {
 	hostCache  *hostSummaryCache
 }
 
-// registerV1Routes returns the active v1 route specs. M1-B2b activates exactly
-// index 0 (pairing/complete) + index 1 (host/summary); index 2+ stays
-// unregistered (404). Manifest bounds are asserted.
+// registerV1Routes returns the active v1 route specs. M2-A activates
+// indices 0-9 (all v1 endpoints) when sessionAdapter is non-nil; otherwise
+// only index 0 (pairing/complete) + index 1 (host/summary) are active and the
+// session routes stay 404 (design §4A hardening gate). Manifest bounds asserted.
 func (s *Server) registerV1Routes() []v1RouteSpec {
 	if len(contract.V1RestEndpoints) < 2 {
 		panic("security: V1RestEndpoints manifest has fewer than 2 entries")
 	}
-	return []v1RouteSpec{
+	specs := []v1RouteSpec{
 		{
 			endpointIndex: 0,
 			auth:          publicPairing,
@@ -152,6 +155,20 @@ func (s *Server) registerV1Routes() []v1RouteSpec {
 			handler:       s.handleV1HostSummary,
 		},
 	}
+	// M2-A session routes: activate only when the adapter is wired (design §4A).
+	if s.sessionAdapter != nil {
+		specs = append(specs,
+			v1RouteSpec{endpointIndex: 2, auth: deviceCookie, origin: safeBrowserProof, handler: s.handleV1SessionsList},
+			v1RouteSpec{endpointIndex: 3, auth: deviceCookie, origin: safeBrowserProof, handler: s.handleV1SessionDetail},
+			v1RouteSpec{endpointIndex: 4, auth: deviceCookie, origin: unsafeOriginRequired, handler: s.handleV1SessionCreate},
+			v1RouteSpec{endpointIndex: 5, auth: deviceCookie, origin: unsafeOriginRequired, handler: s.handleV1SessionStop},
+			v1RouteSpec{endpointIndex: 6, auth: deviceCookie, origin: unsafeOriginRequired, handler: s.handleV1SessionRestart},
+			v1RouteSpec{endpointIndex: 7, auth: deviceCookie, origin: unsafeOriginRequired, handler: s.handleV1SessionRemove},
+			v1RouteSpec{endpointIndex: 8, auth: deviceCookie, origin: unsafeOriginRequired, handler: s.handleV1ControlAcquire},
+			v1RouteSpec{endpointIndex: 9, auth: deviceCookie, origin: unsafeOriginRequired, handler: s.handleV1ControlRelease},
+		)
+	}
+	return specs
 }
 
 // v1Principal is the authenticated principal passed to a handler (zero-value
@@ -210,8 +227,8 @@ func (s *Server) buildV1Handler() http.Handler {
 		// OPTIONS preflight: resolve by path; Host / empty-query / exact-Origin /
 		// ACRM==manifest method; no Cookie auth.
 		if r.Method == http.MethodOptions {
-			spec := v1SpecByPath(specs, r.URL.Path)
-			if spec == nil {
+			m := v1SpecByPath(specs, r.URL.Path)
+			if m == nil {
 				writeV1Error(w, reqID, http.StatusNotFound, contract.ErrorCodeBadRequest,
 					contract.ErrorLayerConnection, "remote endpoint not available", contract.ActionHintRetry)
 				return
@@ -231,7 +248,7 @@ func (s *Server) buildV1Handler() http.Handler {
 					contract.ErrorLayerAuth, "request origin rejected", contract.ActionHintCheckDesktop)
 				return
 			}
-			ep := contract.V1RestEndpoints[spec.endpointIndex]
+			ep := contract.V1RestEndpoints[m.spec.endpointIndex]
 			if r.Header.Get("Access-Control-Request-Method") != ep.Method {
 				writeV1Error(w, reqID, http.StatusBadRequest, contract.ErrorCodeBadRequest,
 					contract.ErrorLayerConnection, "request method rejected", contract.ActionHintRetry)
@@ -246,8 +263,8 @@ func (s *Server) buildV1Handler() http.Handler {
 		// Path classification FIRST (Major-04): distinguish known vs unknown path
 		// before any method/gate work, so a known path with a wrong method returns
 		// 405 while an unknown path stays 404 regardless of method/gates.
-		spec := v1SpecByPath(specs, r.URL.Path)
-		if spec == nil {
+		m := v1SpecByPath(specs, r.URL.Path)
+		if m == nil {
 			writeV1Error(w, reqID, http.StatusNotFound, contract.ErrorCodeBadRequest,
 				contract.ErrorLayerConnection, "remote endpoint not available", contract.ActionHintRetry)
 			return
@@ -265,17 +282,24 @@ func (s *Server) buildV1Handler() http.Handler {
 				contract.ErrorLayerConnection, "query parameters are not allowed", contract.ActionHintRetry)
 			return
 		}
-		// Method gate: a KNOWN path with the wrong method returns 405 (design §12.3)
-		// with a contract bad_request body + Allow header; only an exact method match
-		// proceeds to origin/auth.
-		ep := contract.V1RestEndpoints[spec.endpointIndex]
-		if r.Method != ep.Method {
-			w.Header().Set("Allow", ep.Method+", "+http.MethodOptions)
+		// Method resolution: resolve the spec matching path AND method. A KNOWN
+		// path (m != nil) whose method matches no spec returns 405 (design §12.3);
+		// only an exact path+method match proceeds to origin/auth. This correctly
+		// disambiguates same-path-different-method routes (GET/POST /sessions,
+		// GET/DELETE /sessions/{id}) — v1SpecByPath returns only the first path
+		// match, which would otherwise shadow the method-correct sibling.
+		mm := v1SpecByPathMethod(specs, r.URL.Path, r.Method)
+		if mm == nil {
+			// m-001: aggregate ALL active methods for this path (not just the first
+			// path match), so a 405 on a shared path like /sessions (GET+POST) or
+			// /sessions/{id} (GET+DELETE) lists every allowed method.
+			w.Header().Set("Allow", allowedMethodsForPath(specs, r.URL.Path))
 			writeV1Error(w, reqID, http.StatusMethodNotAllowed, contract.ErrorCodeBadRequest,
 				contract.ErrorLayerConnection, "request method rejected", contract.ActionHintRetry)
 			return
 		}
-		matched := spec
+		ep := contract.V1RestEndpoints[mm.spec.endpointIndex]
+		matched := mm.spec
 		// Central origin policy.
 		if !enforceOriginPolicy(r, matched.origin, corsAllowed) {
 			writeV1Error(w, reqID, http.StatusForbidden, contract.ErrorCodeBadRequest,
@@ -288,19 +312,111 @@ func (s *Server) buildV1Handler() http.Handler {
 			return
 		}
 
-		matched.handler(w, r, ep, reqID, corsAllowed, principal)
+		matched.handler(w, r, ep, reqID, corsAllowed, principal, mm.sessionID)
 	})
 }
 
-// v1SpecByPath finds the active spec whose full path matches path (any method).
-func v1SpecByPath(specs []v1RouteSpec, path string) *v1RouteSpec {
+// v1PathMatch holds the result of matching a request path against v1 routes.
+type v1PathMatch struct {
+	spec      *v1RouteSpec
+	sessionID contract.SessionID // extracted from {id}, empty if none
+}
+
+// v1SpecByPath finds the active spec whose full path matches path, extracting
+// the {id} segment if the manifest pattern contains one. Returns nil if no
+// active route matches. NOTE: when multiple specs share a path with different
+// methods (GET/POST /sessions, GET/DELETE /sessions/{id}), this returns the
+// FIRST path match regardless of method — callers needing method-correct
+// resolution MUST use v1SpecByPathMethod. v1SpecByPath is retained for the
+// path-known 404 classification and OPTIONS preflight (method-agnostic).
+func v1SpecByPath(specs []v1RouteSpec, path string) *v1PathMatch {
 	for i := range specs {
 		ep := contract.V1RestEndpoints[specs[i].endpointIndex]
-		if path == contract.RESTBasePath+ep.Path {
-			return &specs[i]
+		fullPath := contract.RESTBasePath + ep.Path
+		if sid, ok := matchV1Path(fullPath, path); ok {
+			return &v1PathMatch{spec: &specs[i], sessionID: sid}
 		}
 	}
 	return nil
+}
+
+// v1SpecByPathMethod resolves the active spec matching path AND method. It
+// returns the method-correct match when one exists, or nil when the path is
+// known but no spec matches the method (caller emits 405). This fixes the
+// same-path-different-method ambiguity that v1SpecByPath cannot resolve alone.
+func v1SpecByPathMethod(specs []v1RouteSpec, path, method string) *v1PathMatch {
+	for i := range specs {
+		ep := contract.V1RestEndpoints[specs[i].endpointIndex]
+		fullPath := contract.RESTBasePath + ep.Path
+		if sid, ok := matchV1Path(fullPath, path); ok && ep.Method == method {
+			return &v1PathMatch{spec: &specs[i], sessionID: sid}
+		}
+	}
+	return nil
+}
+
+// allowedMethodsForPath aggregates every active route method whose full path
+// matches `path`, sorted and de-duplicated, then appends OPTIONS. It is the
+// source of the 405 Allow header so a shared path (GET+POST /sessions,
+// GET+DELETE /sessions/{id}) advertises all its legal methods, not just the
+// first registered one (m-001).
+func allowedMethodsForPath(specs []v1RouteSpec, path string) string {
+	seen := make(map[string]struct{}, 4)
+	var methods []string
+	for i := range specs {
+		ep := contract.V1RestEndpoints[specs[i].endpointIndex]
+		fullPath := contract.RESTBasePath + ep.Path
+		if _, ok := matchV1Path(fullPath, path); ok {
+			if _, dup := seen[ep.Method]; !dup {
+				seen[ep.Method] = struct{}{}
+				methods = append(methods, ep.Method)
+			}
+		}
+	}
+	sort.Strings(methods)
+	methods = append(methods, http.MethodOptions)
+	return strings.Join(methods, ", ")
+}
+
+// matchV1Path matches a request path against a manifest pattern containing an
+// optional {id} segment. If the pattern has {id}, the corresponding request
+// segment is extracted and validated (design §5.1). Returns (sessionID, true)
+// on match; ("", false) on no match or invalid ID.
+func matchV1Path(pattern, actual string) (contract.SessionID, bool) {
+	// Fast path: exact match (no {id}).
+	if pattern == actual {
+		return "", true
+	}
+	// Check for {id} in the pattern.
+	idMarker := "{id}"
+	idIdx := strings.Index(pattern, idMarker)
+	if idIdx < 0 {
+		return "", false // no {id} and not exact match
+	}
+	// Split pattern into prefix (before {id}) and suffix (after {id}).
+	// The prefix includes the trailing '/' separator before {id}.
+	prefix := pattern[:idIdx]
+	suffix := pattern[idIdx+len(idMarker):]
+	if !strings.HasPrefix(actual, prefix) {
+		return "", false
+	}
+	if !strings.HasSuffix(actual, suffix) {
+		return "", false
+	}
+	// Extract the {id} segment from between prefix and suffix.
+	idPart := actual[len(prefix) : len(actual)-len(suffix)]
+	if len(idPart) == 0 {
+		return "", false
+	}
+	// Validate: single segment (no extra /), and PathUnescape exactly once.
+	decoded, err := pathUnescapeSegment(idPart)
+	if err != nil {
+		return "", false
+	}
+	if !validV1SessionID(decoded) {
+		return "", false
+	}
+	return contract.SessionID(decoded), true
 }
 
 // enforceOriginPolicy applies the route's origin policy centrally. No forwarded
@@ -439,7 +555,7 @@ func (s *Server) enforceAuthPolicy(w http.ResponseWriter, r *http.Request, polic
 // provider/cache → contract marshal (full body) → RecordDeviceSeen once → 200.
 // RecordDeviceSeen outcome/error never changes the prepared 200/status/body
 // (its health issues enter security health only). No CLI paths/provider/key/env.
-func (s *Server) handleV1HostSummary(w http.ResponseWriter, r *http.Request, ep contract.RestEndpoint, reqID contract.RequestID, corsAllowed bool, principal v1Principal) {
+func (s *Server) handleV1HostSummary(w http.ResponseWriter, r *http.Request, ep contract.RestEndpoint, reqID contract.RequestID, corsAllowed bool, principal v1Principal, sessionID contract.SessionID) {
 	sec := s.v1sec
 	host, herr := sec.hostCache.get()
 	if herr != nil {
@@ -464,7 +580,7 @@ func (s *Server) handleV1HostSummary(w http.ResponseWriter, r *http.Request, ep 
 // handleV1PairingComplete implements the design §12.2 fixed order. The request
 // ID is resolved once by the dispatcher and passed in; the handler never
 // re-resolves it, so the header and the APIError body always share the same ID.
-func (s *Server) handleV1PairingComplete(w http.ResponseWriter, r *http.Request, ep contract.RestEndpoint, reqID contract.RequestID, corsAllowed bool, principal v1Principal) {
+func (s *Server) handleV1PairingComplete(w http.ResponseWriter, r *http.Request, ep contract.RestEndpoint, reqID contract.RequestID, corsAllowed bool, principal v1Principal, sessionID contract.SessionID) {
 	_ = principal // public route; no authenticated principal
 	sec := s.v1sec
 
@@ -624,3 +740,37 @@ func newRequestIDBytes() string {
 	}
 	return rawURLBase64(buf)
 }
+
+// MaxV1SessionIDBytes is the private cap on session ID byte length (design §5.1).
+const MaxV1SessionIDBytes = 256
+
+// pathUnescapeSegment decodes exactly one percent-encoded path segment. It
+// rejects multi-segment values, decoded slashes/backslashes, NUL/control bytes,
+// and invalid UTF-8 (design §5.1).
+func pathUnescapeSegment(raw string) (string, error) {
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		return "", err
+	}
+	// Reject decoded slashes/backslashes (path traversal).
+	if strings.ContainsAny(decoded, "/\\") {
+		return "", pathSegmentErr
+	}
+	// Reject NUL and control bytes.
+	for _, c := range decoded {
+		if c == 0 || c < 0x20 || c == 0x7f {
+			return "", pathSegmentErr
+		}
+	}
+	return decoded, nil
+}
+
+// validV1SessionID validates a decoded session ID (design §5.1).
+func validV1SessionID(id string) bool {
+	if id == "" || len(id) > MaxV1SessionIDBytes {
+		return false
+	}
+	return true
+}
+
+var pathSegmentErr = closedTextError("invalid path segment")

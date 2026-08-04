@@ -49,6 +49,10 @@ func (systemClock) AfterFunc(d time.Duration, f func()) securityTimer {
 	return stdlibTimer{time.AfterFunc(d, f)}
 }
 
+// NewSystemClock returns the production Clock (delegates to stdlib time).
+// Used by the ControlRuntime for grace timers and deadline derivation.
+func NewSystemClock() Clock { return systemClock{} }
+
 type stdlibTimer struct{ *time.Timer }
 
 func (t stdlibTimer) Stop() bool { return t.Timer.Stop() }
@@ -752,6 +756,10 @@ type deviceService struct {
 	policy         PairingPolicy
 	processScopeID string
 
+	// H2: control lifecycle hook for revoke/latch wiring (design §4A.3).
+	// Defaults to no-op; set via SetControlLifecycleHook before Server.Start.
+	controlHook ControlLifecycleHook
+
 	mu                sync.Mutex // pairMu
 	accepting         bool       // true only after a successful listener publish (Resume); false on construct/Stop/listen-fail/serve-fail
 	window            pairingWindow
@@ -780,6 +788,7 @@ func newDeviceService(
 		gate: gate, store: store, registry: registry,
 		random: random, clock: clock, sink: sink, health: health,
 		policy: policy, processScopeID: rawURLBase64(scope),
+		controlHook: noopLifecycleHook{},
 	}, nil
 }
 
@@ -1154,6 +1163,15 @@ func (d *deviceService) ListDevices() ([]DeviceInfo, error) {
 	return out, nil
 }
 
+// SetControlLifecycleHook injects the H2 control lifecycle hook (design §4A.3).
+// Called by the Server before Start. When not set, a no-op hook is used.
+func (d *deviceService) SetControlLifecycleHook(hook ControlLifecycleHook) {
+	if hook == nil {
+		hook = noopLifecycleHook{}
+	}
+	d.controlHook = hook
+}
+
 // RevokeDevice persists the revoke (ledger authority) → fences/detaches the
 // device's connections → terminates them OUTSIDE the registry lock → appends the
 // event. Duplicate revoke does not append a second event but still fences.
@@ -1175,11 +1193,26 @@ func (d *deviceService) RevokeDevice(deviceID contract.DeviceID) (RevokeDeviceRe
 		d.latchSecurity()
 	}
 
+	// H2/§4A.3 authority order: committed-or-existing tombstone → Mark →
+	// registry FenceDevice → Terminate → Release notice → existing security event.
+	// MarkDeviceRevoked is the global no-new-admission fence; it is called AFTER
+	// the ledger commit and BEFORE registry FenceDevice so no new device launch/
+	// lifecycle intent can succeed while connections are being fenced.
+	d.controlHook.MarkDeviceRevoked(deviceID)
+
 	// Fence + detach under the registry lock; terminate OUTSIDE it.
 	detached := d.registry.FenceDevice(deviceID, at)
 	for _, c := range detached {
 		c.Terminate(ConnectionTermination{Cause: TerminationDeviceRevoked, OccurredAt: at})
 	}
+
+	// H2/§4A.3: ReleaseRevokedDevice clears the revoked device's control holders
+	// AFTER registry Terminate (design §4A.3 ordering: Mark→Fence→Terminate→
+	// Release→event).
+	d.controlHook.ReleaseRevokedDevice(DeviceRevocationNotice{
+		DeviceID:   deviceID,
+		OccurredAt: at,
+	})
 
 	outcome := EventAccepted
 	if rr.AlreadyRevoked {
@@ -1209,10 +1242,17 @@ func (d *deviceService) consumeLocked() {
 // latchSecurity latches the whole security face unavailable.
 func (d *deviceService) latchSecurity() {
 	d.store.latchReady()
+	// H2/§4A.3 authority order: authoritative store latch → Fence(security) →
+	// registry Stop → Terminate → Release. FenceAllRemote is called AFTER the
+	// store latch and BEFORE registry Stop so no new device launch/write can
+	// succeed while connections are being stopped (design §4A.3).
+	d.controlHook.FenceAllRemote(ControlCauseSecurityUnavailable, d.clock.Now())
 	detached := d.registry.Stop(d.clock.Now())
 	for _, c := range detached {
 		c.Terminate(ConnectionTermination{Cause: TerminationSecurityStateUnavailable, OccurredAt: d.clock.Now()})
 	}
+	// H2/§4A.3: ReleaseAllRemote clears device holders with the security reason.
+	d.controlHook.ReleaseAllRemote(ControlCauseSecurityUnavailable, d.clock.Now())
 	d.health.Record(HealthStoreIndeterminate, "", d.clock.Now())
 }
 

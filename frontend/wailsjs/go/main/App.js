@@ -18,10 +18,6 @@ export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
 
-export function AttachSessionObserver(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['AttachSessionObserver'](arg1, arg2, arg3, arg4);
-}
-
 export function BrowseDirectory() {
   return window['go']['main']['App']['BrowseDirectory']();
 }
@@ -54,6 +50,14 @@ export function ClearStoppedSessions() {
   return window['go']['main']['App']['ClearStoppedSessions']();
 }
 
+export function ClearStoppedSessionsDetailed() {
+  return window['go']['main']['App']['ClearStoppedSessionsDetailed']();
+}
+
+export function ConfirmExternalCleanupRecovery(arg1, arg2) {
+  return window['go']['main']['App']['ConfirmExternalCleanupRecovery'](arg1, arg2);
+}
+
 export function CreateRemotePairingWindow(arg1) {
   return window['go']['main']['App']['CreateRemotePairingWindow'](arg1);
 }
@@ -68,10 +72,6 @@ export function DeleteProvider(arg1) {
 
 export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
-}
-
-export function DetachSessionObserver(arg1, arg2) {
-  return window['go']['main']['App']['DetachSessionObserver'](arg1, arg2);
 }
 
 export function DownloadAndApplyUpdate() {
@@ -134,6 +134,10 @@ export function GetEnvVarsJSON() {
   return window['go']['main']['App']['GetEnvVarsJSON']();
 }
 
+export function GetExternalCleanupRecoveryStatus() {
+  return window['go']['main']['App']['GetExternalCleanupRecoveryStatus']();
+}
+
 export function GetGitHubToken() {
   return window['go']['main']['App']['GetGitHubToken']();
 }
@@ -176,10 +180,6 @@ export function GetOpenCodeConfig() {
 
 export function GetOpenCodeConfigPath() {
   return window['go']['main']['App']['GetOpenCodeConfigPath']();
-}
-
-export function GetOutputHistory(arg1) {
-  return window['go']['main']['App']['GetOutputHistory'](arg1);
 }
 
 export function GetOutputHistorySnapshot(arg1) {
@@ -258,6 +258,26 @@ export function GetUrlHistory(arg1) {
   return window['go']['main']['App']['GetUrlHistory'](arg1);
 }
 
+export function HeadroomGetPort() {
+  return window['go']['main']['App']['HeadroomGetPort']();
+}
+
+export function HeadroomGetStatus() {
+  return window['go']['main']['App']['HeadroomGetStatus']();
+}
+
+export function HeadroomIsRunning() {
+  return window['go']['main']['App']['HeadroomIsRunning']();
+}
+
+export function HeadroomStart(arg1) {
+  return window['go']['main']['App']['HeadroomStart'](arg1);
+}
+
+export function HeadroomStop() {
+  return window['go']['main']['App']['HeadroomStop']();
+}
+
 export function ImportConfigFromFile() {
   return window['go']['main']['App']['ImportConfigFromFile']();
 }
@@ -314,6 +334,58 @@ export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
 }
 
+export function ProxyAddRule(arg1) {
+  return window['go']['main']['App']['ProxyAddRule'](arg1);
+}
+
+export function ProxyDeleteRule(arg1) {
+  return window['go']['main']['App']['ProxyDeleteRule'](arg1);
+}
+
+export function ProxyGetLogs() {
+  return window['go']['main']['App']['ProxyGetLogs']();
+}
+
+export function ProxyGetPort() {
+  return window['go']['main']['App']['ProxyGetPort']();
+}
+
+export function ProxyGetRules() {
+  return window['go']['main']['App']['ProxyGetRules']();
+}
+
+export function ProxyGetStatus() {
+  return window['go']['main']['App']['ProxyGetStatus']();
+}
+
+export function ProxyIsRunning() {
+  return window['go']['main']['App']['ProxyIsRunning']();
+}
+
+export function ProxyLoadRules(arg1) {
+  return window['go']['main']['App']['ProxyLoadRules'](arg1);
+}
+
+export function ProxySaveRules(arg1) {
+  return window['go']['main']['App']['ProxySaveRules'](arg1);
+}
+
+export function ProxySetRules(arg1) {
+  return window['go']['main']['App']['ProxySetRules'](arg1);
+}
+
+export function ProxyStart(arg1, arg2) {
+  return window['go']['main']['App']['ProxyStart'](arg1, arg2);
+}
+
+export function ProxyStop() {
+  return window['go']['main']['App']['ProxyStop']();
+}
+
+export function ProxyUpdateRule(arg1) {
+  return window['go']['main']['App']['ProxyUpdateRule'](arg1);
+}
+
 export function PtyResize(arg1, arg2, arg3) {
   return window['go']['main']['App']['PtyResize'](arg1, arg2, arg3);
 }
@@ -332,18 +404,6 @@ export function QuickLaunch(arg1, arg2, arg3, arg4) {
 
 export function RegenerateRemoteToken() {
   return window['go']['main']['App']['RegenerateRemoteToken']();
-}
-
-export function RegisterExitCallback(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RegisterExitCallback'](arg1, arg2, arg3);
-}
-
-export function RegisterOutputCallback(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RegisterOutputCallback'](arg1, arg2, arg3);
-}
-
-export function RegisterResizeCallback(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RegisterResizeCallback'](arg1, arg2, arg3);
 }
 
 export function RemoveProxyBackendURL(arg1) {
@@ -450,10 +510,6 @@ export function StartUpdateToolAsync(arg1) {
   return window['go']['main']['App']['StartUpdateToolAsync'](arg1);
 }
 
-export function StopAllSessions() {
-  return window['go']['main']['App']['StopAllSessions']();
-}
-
 export function StopSession(arg1) {
   return window['go']['main']['App']['StopSession'](arg1);
 }
@@ -464,18 +520,6 @@ export function ToggleRemoteServer(arg1) {
 
 export function UninstallClaudeCode(arg1) {
   return window['go']['main']['App']['UninstallClaudeCode'](arg1);
-}
-
-export function UnregisterExitCallback(arg1, arg2) {
-  return window['go']['main']['App']['UnregisterExitCallback'](arg1, arg2);
-}
-
-export function UnregisterOutputCallback(arg1, arg2) {
-  return window['go']['main']['App']['UnregisterOutputCallback'](arg1, arg2);
-}
-
-export function UnregisterResizeCallback(arg1, arg2) {
-  return window['go']['main']['App']['UnregisterResizeCallback'](arg1, arg2);
 }
 
 export function UpdateProvider(arg1, arg2, arg3) {

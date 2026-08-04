@@ -442,6 +442,183 @@ async function main() {
     'S17 stopped 下 CreateRemotePairingWindow 仍被拒绝（仅 Create 保留 accepting 门）',
   );
 
+  // ==================== M2-INT R12：外部进程清理恢复 UX（S18–S23） ====================
+
+  // ---------- S18 Startup warning 横幅消费（可关闭、当次启动内持久提醒） ----------
+  await page.goto(`${HARNESS_URL}?seedStartupWarning=1`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-testid="startup-warning-banner"]', { timeout: 10_000 });
+  assert(
+    await page.locator('[data-testid="startup-warning-banner"]').textContent().then((t) => t.includes('未完成的外部进程清理')),
+    'S18 Startup warning 被当前 App shell 消费为可见提示条',
+  );
+  await shot('r1-startup-warning-banner');
+  // 前往处理入口可达（harness 中仅翻转 uiStore，不应报错）；横幅不随导航自动消失（持久提醒）。
+  await page.locator('[data-testid="startup-warning-goto"]').click();
+  assert(
+    await page.locator('[data-testid="startup-warning-banner"]').isVisible(),
+    'S18 点击「前往处理」后横幅仍可见（不自动关闭，持久提醒）',
+  );
+  // 手动关闭：当次启动内不再显示。
+  await page.locator('[data-testid="startup-warning-dismiss"]').click();
+  await page.waitForSelector('[data-testid="startup-warning-banner"]', { state: 'detached', timeout: 5000 });
+  assert(true, 'S18 横幅可手动关闭');
+  await shot('r2-startup-warning-dismissed');
+  // 重新加载（等同下次启动）：警告仍在则再次提醒（关闭不落 localStorage，不当次外持久）。
+  await page.goto(`${HARNESS_URL}?seedStartupWarning=1`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-testid="startup-warning-banner"]', { timeout: 10_000 });
+  assert(true, 'S18 重新启动后警告再次提醒（关闭仅当次启动生效）');
+  await page.locator('[data-testid="startup-warning-dismiss"]').click();
+  await page.waitForSelector('[data-testid="startup-warning-banner"]', { state: 'detached', timeout: 5000 });
+
+  // ---------- S19 恢复卡 running 态：隐私安全状态展示 + 重新核验 ----------
+  await page.goto(`${HARNESS_URL}?seedRecovery=running`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-testid="recovery-blocked"]', { timeout: 10_000 });
+  assert(
+    await page.locator('[data-testid="recovery-blocked"]').textContent().then((t) => t.includes('检测到 1 项未完成的外部进程清理')),
+    'S19 恢复卡展示待恢复计数（1 项）',
+  );
+  assert(
+    await page.locator('[data-testid="recovery-state-running"]').isVisible(),
+    'S19 running 态如实展示「旧终端仍在运行」',
+  );
+  assert(
+    await page.locator('text=请先在系统中关闭对应的旧外部终端').isVisible(),
+    'S19 running 态给出可执行指导（关闭旧终端后重新核验）',
+  );
+  assert(
+    (await page.locator('[data-testid="recovery-confirm-open"]').count()) === 0,
+    'S19 running 态不出现确认入口（canConfirm=false，防误确认）',
+  );
+  // 隐私门禁：sessionId/PID/路径一律不上屏（对齐 R11-002 privacy status 语义）。
+  const recoveryCardText = await page.locator('.rec-card').textContent();
+  assert(!recoveryCardText.includes('SES-LEGACY'), 'S19 隐私：恢复卡不渲染 sessionId');
+  assert(!recoveryCardText.includes('PID') && !recoveryCardText.includes('/Users/'), 'S19 隐私：恢复卡不渲染 PID/路径');
+  assert(
+    await page.locator('.rec-card').textContent().then((t) => t.includes('Claude Headroom 进程') && t.includes('旧版本遗留进程')),
+    'S19 仅展示类型与原因文案（计数/类型语义）',
+  );
+  await shot('r3-recovery-running');
+  // 重新核验：stub 进程仍存活 → 保持 running 态并给出提示。
+  const statusCallsBefore = await page.evaluate(() =>
+    window.__remoteHarness.calls.filter((c) => c.method === 'GetExternalCleanupRecoveryStatus').length,
+  );
+  await page.locator('[data-testid="recovery-recheck"]').click();
+  await page.waitForFunction(
+    (n) => window.__remoteHarness.calls.filter((c) => c.method === 'GetExternalCleanupRecoveryStatus').length > n,
+    statusCallsBefore,
+    { timeout: 5000 },
+  );
+  assert(true, 'S19 「重新核验」真实触发后端活性复检（status 调用递增）');
+  await page.waitForSelector('.toast-item', { timeout: 5000 });
+  assert(
+    await page.locator('.toast-item').first().textContent().then((t) => t.includes('仍在运行')),
+    'S19 核验后仍运行 → 明确提示未通过',
+  );
+  assert(
+    await page.locator('[data-testid="recovery-state-running"]').isVisible(),
+    'S19 核验未通过后保持 running 态（不伪装可确认）',
+  );
+  await shot('r4-recovery-recheck-still-running');
+
+  // ---------- S20 awaiting 态 → PG-06 显式确认对话 ----------
+  await page.goto(`${HARNESS_URL}?seedRecovery=awaiting`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-testid="recovery-state-awaiting"]', { timeout: 10_000 });
+  assert(true, 'S20 旧进程已退出 → awaiting_confirmation 态如实展示');
+  await page.locator('[data-testid="recovery-confirm-open"]').click();
+  await page.waitForSelector('.pg06-dialog', { timeout: 5000 });
+  assert(
+    await page.locator('.pg06-dialog .pg06-title').textContent().then((t) => t.includes('完成外部进程清理恢复')),
+    'S20 PG-06 对话标题（完成外部进程清理恢复）',
+  );
+  assert(
+    await page.locator('.pg06-consequence').textContent().then((t) => t.includes('再次核验') && t.includes('仍在运行将被拒绝')),
+    'S20 对话如实说明后果（确认前再次核验，仍在运行将被拒绝）',
+  );
+  assert(
+    await page.locator('.pg06-irreversible').textContent().then((t) => t.includes('不可撤销') && t.includes('强制清除')),
+    'S20 不可逆性说明 + 明确无强制清除入口（no force-clear）',
+  );
+  assert(
+    await page.locator('.pg06-danger').textContent().then((t) => t.includes('确认已完成清理')),
+    'S20 危险按钮动词化（确认已完成清理）',
+  );
+  const focusOnCancel = await page.evaluate(() =>
+    document.activeElement?.classList.contains('pg06-cancel'),
+  );
+  assert(focusOnCancel, 'S20 安全默认：初始焦点在「取消」，危险按钮需主动移焦');
+  await shot('r5-recovery-confirm-dialog');
+  // Esc 取消分支：对话关闭且零后端调用。
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('.pg06-dialog', { state: 'detached', timeout: 5000 });
+  const confirmCallsAfterEsc = await page.evaluate(() =>
+    window.__remoteHarness.calls.filter((c) => c.method === 'ConfirmExternalCleanupRecovery'),
+  );
+  assert(confirmCallsAfterEsc.length === 0, 'S20 Esc 取消后 confirm 未被调用');
+
+  // ---------- S21 显式确认成功：状态清除 + 提示 + 本机记录 ----------
+  await page.locator('[data-testid="recovery-confirm-open"]').click();
+  await page.waitForSelector('.pg06-dialog', { timeout: 5000 });
+  await page.locator('.pg06-danger').click();
+  await page.waitForSelector('.toast-item.toast-success', { timeout: 5000 });
+  assert(
+    await page.locator('.toast-item.toast-success').first().textContent().then((t) => t.includes('Headroom 安全锁定已解除')),
+    'S21 成功提示如实呈现 fenceReleased（Headroom 锁定已解除）',
+  );
+  const confirmCalls = await page.evaluate(() =>
+    window.__remoteHarness.calls.filter((c) => c.method === 'ConfirmExternalCleanupRecovery'),
+  );
+  assert(
+    confirmCalls.length === 1 && confirmCalls[0].args[0] === 'SES-LEGACY-0001' && confirmCalls[0].args[1] === true,
+    `S21 ConfirmExternalCleanupRecovery 以 (sessionID, confirmed=true) 调用一次（实际 ${JSON.stringify(confirmCalls)}）`,
+  );
+  await page.waitForSelector('[data-testid="recovery-healthy"]', { timeout: 5000 });
+  assert(true, 'S21 恢复成功后状态清除（健康态）');
+  await page.waitForSelector('[data-testid="recovery-local-log"]', { timeout: 5000 });
+  assert(
+    await page.locator('[data-testid="recovery-local-log"]').textContent().then((t) => t.includes('已完成恢复')),
+    'S21 本机恢复确认记录可见（已完成恢复）',
+  );
+  await shot('r6-recovery-cleared');
+
+  // ---------- S22 live 拒绝态：确认瞬间进程仍存活 → 拒绝原因展示 ----------
+  await page.goto(`${HARNESS_URL}?seedRecovery=awaiting`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-testid="recovery-state-awaiting"]', { timeout: 10_000 });
+  await page.locator('[data-testid="recovery-confirm-open"]').click();
+  await page.waitForSelector('.pg06-dialog', { timeout: 5000 });
+  // 对话打开后、确认前进程被拉回存活（stub 模拟 OS 真相）→ confirm 被 live 拒绝。
+  await page.evaluate(() => window.__remoteHarness.setRecoveryProcessAlive('SES-LEGACY-0001', true));
+  await page.locator('.pg06-danger').click();
+  await page.waitForSelector('.toast-item.toast-error', { timeout: 5000 });
+  assert(
+    await page.locator('.toast-item.toast-error').first().textContent().then((t) => t.includes('恢复被拒绝') && t.includes('仍在运行')),
+    'S22 live 拒绝时展示拒绝原因（旧进程仍在运行）',
+  );
+  await page.waitForSelector('[data-testid="recovery-state-running"]', { timeout: 5000 });
+  assert(true, 'S22 拒绝后状态如实回到 running 态（未清除、未伪装成功）');
+  const rejectedConfirmCalls = await page.evaluate(() =>
+    window.__remoteHarness.calls.filter((c) => c.method === 'ConfirmExternalCleanupRecovery'),
+  );
+  assert(
+    rejectedConfirmCalls.length === 1 && rejectedConfirmCalls[0].args[1] === true,
+    'S22 显式确认语义真实到达后端（confirmed=true），由后端 live 拒绝',
+  );
+  assert(
+    await page.locator('[data-testid="recovery-local-log"]').textContent().then((t) => t.includes('被拒绝：旧进程仍在运行')),
+    'S22 拒绝结果写入本机恢复确认记录',
+  );
+  await shot('r7-recovery-rejected');
+
+  // ---------- S23 健康态（无种子）：持久可发现 + 无横向溢出 ----------
+  await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-testid="recovery-healthy"]', { timeout: 10_000 });
+  assert(
+    await page.locator('[data-testid="recovery-healthy"]').textContent().then((t) => t.includes('未发现待恢复的外部进程清理项')),
+    'S23 无待恢复项时健康态如实呈现（卡片持久可发现）',
+  );
+  const recOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert(recOverflow <= 0, `S23 桌面视口无横向溢出（实际 ${recOverflow}px）`);
+  await shot('r8-recovery-healthy');
+
   // ---------- console 无 error 断言 ----------
   assert(consoleErrors.length === 0, `全程 console 无 error（实际 ${consoleErrors.length} 条）`);
 

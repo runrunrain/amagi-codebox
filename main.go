@@ -46,26 +46,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.Startup,
 		OnShutdown:       app.Shutdown,
-		Bind: []any{
-			app,
-			app.Config,
-			app.Secrets,
-			app.Proxy,
-			app.Headroom,
-			app.Paths,
-			app.Log,
-			app.Pty,
-			app.Settings,
-			app.Updater,
-			app.Plugins,
-			app.CodexPlugins,
-			app.OpenCodePlugins,
-			app.PiPlugins,
-			app.Workspaces,
-			app.OpenCodeConfig,
-			app.EnvCheck,
-			app.Usage,
-		},
+		Bind:             buildWailsBindList(app),
 	})
 
 	if err != nil {

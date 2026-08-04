@@ -367,7 +367,6 @@ func TestCleanClaudeNPMResidue_StagingUnderLibNodeModules_Regression(t *testing.
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // P0-3: InspectClaudeBinaryIntegrity
 // ---------------------------------------------------------------------------
@@ -561,7 +560,7 @@ func TestHealthyClaudeBinaryCandidates_FiltersShards(t *testing.T) {
 	shard := filepath.Join(dir, "shard")
 	missing := filepath.Join(dir, "missing")
 	writeFixture(t, healthy, make([]byte, 150*1024*1024)) // above threshold
-	writeFixture(t, shard, make([]byte, 1*1024))         // below threshold
+	writeFixture(t, shard, make([]byte, 1*1024))          // below threshold
 
 	got := healthyClaudeBinaryCandidates([]string{healthy, shard, missing})
 	if len(got) != 1 {
@@ -745,14 +744,14 @@ func TestLooksLikeClaudeCorruptionError(t *testing.T) {
 	}{
 		{name: "nil", err: nil, want: false},
 		{name: "classified SIGKILL",
-			err: classifyClaudeVersionError("", &platform.ProcessResult{Stderr: "signal: killed"}, errors.New("signal: killed")),
+			err:  classifyClaudeVersionError("", &platform.ProcessResult{Stderr: "signal: killed"}, errors.New("signal: killed")),
 			want: true},
 		{name: "classified exit code 137",
-			err: classifyClaudeVersionError("", &platform.ProcessResult{Stdout: "exit code 137"}, errors.New("exit status 137")),
+			err:  classifyClaudeVersionError("", &platform.ProcessResult{Stdout: "exit code 137"}, errors.New("exit status 137")),
 			want: true},
 		{name: "classified corrupted on disk", err: buildClassifiedCorruptedErrorForTest(t), want: true},
 		{name: "classified generic not corruption",
-			err: classifyClaudeVersionError("", &platform.ProcessResult{}, errors.New("exec: file not found")),
+			err:  classifyClaudeVersionError("", &platform.ProcessResult{}, errors.New("exec: file not found")),
 			want: false},
 		{name: "plain error string no longer matches (legacy substring)", err: errors.New("claude binary likely corrupted (AMFI SIGKILL / exit code 137): signal: killed"), want: false},
 		{name: "plain exit code 137 string no longer matches (legacy substring)", err: errors.New("run failed: exit code 137"), want: false},
@@ -846,7 +845,7 @@ func TestClaudeVersionError_StructuredKind(t *testing.T) {
 // the integrity finding and the cleanup result.
 func TestSelfHealClaudeNPMResidueForDetection_TriggersCleanupOnCorruption(t *testing.T) {
 	withSimulatedGOOS(t, "linux")
-	withIntegrityThreshold(t, 100 * 1024 * 1024)
+	withIntegrityThreshold(t, 100*1024*1024)
 
 	root := t.TempDir()
 	prefix := filepath.Join(root, "npm-global")
@@ -909,7 +908,7 @@ func TestSelfHealClaudeNPMResidueForDetection_TriggersCleanupOnCorruption(t *tes
 // checkClaudeCode can still build a useful CheckStatus.
 func TestSelfHealClaudeNPMResidueForDetection_SurfacesPartialCleanupFailure(t *testing.T) {
 	withSimulatedGOOS(t, "linux")
-	withIntegrityThreshold(t, 100 * 1024 * 1024)
+	withIntegrityThreshold(t, 100*1024*1024)
 
 	// fakeFailingPrefixRunner returns an error for `npm prefix -g`, so
 	// cleanClaudeNPMResidue cannot resolve the scoped dir.

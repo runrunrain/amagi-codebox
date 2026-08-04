@@ -15,7 +15,6 @@ import (
 	"amagi-codebox/internal/platform"
 
 	"github.com/UserExistsError/conpty"
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const maxOutputHistorySize = 1024 * 1024 // 1MB 环形缓冲区上限，避免移动端回放只剩会话尾部
@@ -30,6 +29,7 @@ type PtySession struct {
 	emitSeq       uint64     // monotonic counter incremented per PTY output chunk under historyMu
 	currentCols   int        // 当前 PTY 列数
 	currentRows   int        // 当前 PTY 行数
+	runHandle     any        // opaque run identity; passed back to RunEventSink
 }
 
 // outputCallback PTY 输出回调，供远程服务器的 WebSocket 使用
@@ -42,16 +42,14 @@ type exitCallback func(exitCode uint32)
 type resizeCallback func(cols, rows int)
 
 // Service 管理所有嵌入式终端的 PTY 会话。
-// 通过 Wails 事件双向传输数据：
-//   - 后端→前端: EventsEmit("pty:data:<sessionID>", {s: emitSeq, d: base64Data})
-//   - 前端→后端: PtyWrite(sessionID, base64Data)
-//
+// raw PTY 的 read/wait loop 不再直接 EventsEmit（design §8.6 M-01）：
+// 全部 output/exit 经注入的 RunEventSink 交 RunEventProjector 做 run-scoped 投影。
 // 同时支持注册远程回调，供 WebSocket 转发使用。
 type Service struct {
 	sessions    map[string]*PtySession
 	mu          sync.Mutex
-	ctx         context.Context // Wails app context (for EventsEmit)
 	log         *logging.Service
+	runSink     RunEventSink // sole output/exit sink; replaces direct EventsEmit (design §8.6 M-01)
 	outputCBsMu sync.RWMutex
 	outputCBs   map[string]map[string]outputCallback // sessionID → {connID → cb}
 	exitCBsMu   sync.RWMutex
@@ -218,9 +216,10 @@ func (s *Service) snapshotResizeCallbacks(sessionID string) []resizeCallback {
 	return callbacks
 }
 
-// SetContext 设置 Wails 应用上下文（Startup 时调用）
-func (s *Service) SetContext(ctx context.Context) {
-	s.ctx = ctx
+// SetRunEventSink injects the sole output/exit sink. Raw PTY goroutines call
+// this sink instead of emitting Wails events directly (design §8.6 M-01).
+func (s *Service) SetRunEventSink(sink RunEventSink) {
+	s.runSink = sink
 }
 
 // Start 创建一个 ConPTY 会话。
@@ -268,6 +267,14 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 }
 
 func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSpec) (int, error) {
+	return s.StartResolvedWithRun(sessionID, spec, nil)
+}
+
+// StartResolvedWithRun starts a PTY session bound to an opaque run handle.
+// The handle is passed back to the RunEventSink for run-scoped output/exit
+// projection (design §8.6). A nil handle means output/exit is dropped
+// (fail-closed: no ungated Wails emit).
+func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -317,6 +324,7 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 		done:        done,
 		currentCols: cols,
 		currentRows: rows,
+		runHandle:   runHandle,
 	}
 	s.sessions[sessionID] = ps
 
@@ -326,8 +334,10 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	// 启动等待协程：监控进程退出
 	go s.waitLoop(sessionID, ps, ctx)
 
-	// 如果指定了自动命令，延迟发送到 shell
-	if sendAutoCommand != "" {
+	// 如果指定了自动命令，延迟发送到 shell。控制托管会话（runHandle != nil）
+	// 的 bootstrap 由 App 层经控制门 DoBootstrapPTY 发送（M-005：不裸写 cpty），
+	// 这里只为非托管（legacy）启动保留原始延迟写入。
+	if sendAutoCommand != "" && runHandle == nil {
 		go func() {
 			time.Sleep(1000 * time.Millisecond) // 等待 shell 初始化完成
 			cmd := sendAutoCommand + "\r\n"
@@ -337,6 +347,17 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	}
 
 	return pid, nil
+}
+
+// StartupAutoCommand returns the auto-command that StartResolvedWithRun would
+// send after shell init for the given spec (M-005). The App layer uses this to
+// route the delayed bootstrap write through the control gate (DoBootstrapPTY)
+// instead of a raw cpty.Write goroutine for control-managed launches. Returns
+// "" when no delayed command is needed (the command is either embedded in the
+// shell invocation or absent).
+func (s *Service) StartupAutoCommand(spec platform.ResolvedLaunchSpec) string {
+	_, sendAutoCommand := buildResolvedStartupPlan(spec, s.log)
+	return sendAutoCommand
 }
 
 func buildResolvedStartupPlan(spec platform.ResolvedLaunchSpec, log *logging.Service) (string, string) {
@@ -396,10 +417,11 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 			}
 			ps.historyMu.Unlock()
 
-			// Wails 前端事件
-			if s.ctx != nil {
-				data := base64.StdEncoding.EncodeToString(chunk)
-				wailsRuntime.EventsEmit(s.ctx, "pty:data:"+sessionID, map[string]any{"s": seq, "d": data})
+			// Run-scoped output: raw PTY never emits Wails events directly
+			// (design §8.6 M-01). The projector validates the run handle and
+			// emits run-tagged pty:data if the run is still current.
+			if s.runSink != nil {
+				s.runSink.OfferOutput(ps.runHandle, seq, chunk)
 			}
 
 			// 远程 WebSocket 回调
@@ -419,18 +441,37 @@ func (s *Service) waitLoop(sessionID string, ps *PtySession, ctx context.Context
 	exitCode, err := ps.cpty.Wait(ctx)
 	s.log.Info("pty", "进程退出", fmt.Sprintf("id=%s exitCode=%d err=%v", sessionID, exitCode, err))
 
-	// Wails 前端事件
-	if s.ctx != nil {
-		wailsRuntime.EventsEmit(s.ctx, "pty:exit:"+sessionID, map[string]interface{}{
-			"exitCode": exitCode,
-			"error":    fmt.Sprintf("%v", err),
-		})
+	// Run-scoped exit: raw PTY never emits Wails events directly (design §8.6).
+	failed := err != nil && err != context.Canceled
+	if s.runSink != nil {
+		s.runSink.OfferExit(ps.runHandle, exitCode, failed)
 	}
 
 	// 远程 WebSocket 退出回调
 	for _, cb := range s.snapshotExitCallbacks(sessionID) {
 		cb(exitCode)
 	}
+}
+
+// WriteRaw writes raw (non-base64) bytes to the PTY. Used by the control gate
+// closures which decode base64 at the App layer and checkpoint per chunk
+// before each irreversible syscall (design §6.1, §9.4). M-009: the context
+// carries the operation deadline; the write observes it non-blocking before the
+// syscall so a gated/timeout-cancelled effect can bail. The underlying ConPTY
+// write syscall cannot be interrupted, so the gate additionally bounds the
+// effect and quarantines the backend on timeout.
+func (s *Service) WriteRaw(ctx context.Context, sessionID string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err // gated/timeout-cancelled before the irreversible syscall
+	}
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+	_, err := ps.cpty.Write(data)
+	return err
 }
 
 // Write 向 PTY 写入数据（前端用户输入）。data 为 base64 编码。
@@ -483,8 +524,12 @@ func (s *Service) WriteLarge(sessionID string, data string) error {
 	return nil
 }
 
-// Resize 调整 PTY 尺寸
-func (s *Service) Resize(sessionID string, cols, rows int) error {
+// Resize 调整 PTY 尺寸。M-009: ctx 携带操作 deadline，resize 在 syscall 前
+// 非阻塞观察它；底层 syscall 不可中断，gate 侧另有 bounded+quarantine 兑底。
+func (s *Service) Resize(ctx context.Context, sessionID string, cols, rows int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	ps, ok := s.sessions[sessionID]
 	if !ok {
@@ -526,6 +571,51 @@ func (s *Service) GetPtyDimensions(sessionID string) (cols, rows int, err error)
 	return cols, rows, nil
 }
 
+// DetachSession forcibly detaches/closes the ConPTY backend for a session
+// (R3-004). It is invoked by the control gate's quarantine path when a bounded
+// raw Write/Resize times out mid-syscall: the underlying ConPTY write syscall
+// cannot be interrupted, so closing the ConPTY handle releases the stuck
+// overlapped I/O (the OS cancels outstanding I/O on handle close) and the
+// locked resource. This unblocks the stuck goroutine and lets a trusted desktop
+// recovery lifecycle (Stop/Restart) clean up. Safe to call on an already-closed
+// session (idempotent no-op). It does NOT block on the read loop (a bounded
+// Close already does that; Detach only needs to tear down the handle).
+func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
+	receipt := newDetachReceipt()
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if !ok {
+		s.mu.Unlock()
+		// No active map owner is already-detached evidence. Return a confirmed,
+		// typed receipt so the control gate need not guess from a nil error.
+		_ = detachWithExactReaper(receipt, func() error { return nil }, nil)
+		return receipt, nil
+	}
+	// Move this exact pointer out of the active namespace before close. A close
+	// failure is NOT lost: the receipt/reaper retain ps and retry ps.cpty.Close
+	// directly, never a same-ID replacement from s.sessions.
+	delete(s.sessions, sessionID)
+	s.mu.Unlock()
+
+	if s.log != nil {
+		s.log.Info("pty", "R4-004 强制 detach ConPTY 后端", "id="+sessionID)
+	}
+	ps.cancel()
+	closeErr := detachWithExactReaper(receipt, func() error {
+		return ps.cpty.Close()
+	}, func(err error) {
+		if s.log != nil {
+			s.log.Warn("pty", "R4-004 exact ConPTY detach 重试失败", fmt.Sprintf("id=%s err=%v", sessionID, err))
+		}
+	})
+	if closeErr != nil && s.log != nil {
+		s.log.Warn("pty", "R4-004 ConPTY detach 首次关闭失败，已进入 exact reaper", fmt.Sprintf("id=%s err=%v", sessionID, closeErr))
+	}
+	// Do NOT wait on ps.done here: the gate's quarantine already advanced
+	// backendEpoch. The exact receipt is confirmed only after Close succeeds.
+	return receipt, closeErr
+}
+
 // Close 关闭指定 PTY 会话
 func (s *Service) Close(sessionID string) error {
 	s.mu.Lock()
@@ -540,7 +630,16 @@ func (s *Service) Close(sessionID string) error {
 	s.log.Info("pty", "关闭 PTY 会话", "id="+sessionID)
 	ps.cancel()
 	err := ps.cpty.Close()
-	<-ps.done // 等待读取协程退出
+	// M-009: bounded wait for the read loop to exit. A stuck read must not hold a
+	// gate deadline indefinitely; after the deadline Close returns (the session
+	// is already removed + canceled, so the goroutine will exit when its read
+	// returns and produce no further committable observation — the committer's
+	// backendEpoch check drops late output).
+	select {
+	case <-ps.done:
+	case <-time.After(ptyCloseWaitTimeout):
+		s.log.Warn("pty", "关闭等待读取协程退出超时", "id="+sessionID)
+	}
 	return err
 }
 

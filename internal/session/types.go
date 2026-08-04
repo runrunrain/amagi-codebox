@@ -1,6 +1,9 @@
 package session
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // AppType 应用类型
 type AppType string
@@ -27,10 +30,16 @@ const (
 type SessionStatus string
 
 const (
-	StatusRunning SessionStatus = "running"
-	StatusStopped SessionStatus = "stopped"
-	StatusExited  SessionStatus = "exited"
-	StatusFailed  SessionStatus = "failed"
+	StatusRunning  SessionStatus = "running"
+	StatusStopping SessionStatus = "stopping"
+	StatusStopped  SessionStatus = "stopped"
+	StatusExited   SessionStatus = "exited"
+	StatusFailed   SessionStatus = "failed"
+)
+
+var (
+	ErrSessionRunning  = errors.New("session is running")
+	ErrSessionStopping = errors.New("session is stopping")
 )
 
 // Session 表示一个终端会话实例
@@ -70,9 +79,9 @@ type SessionInfo struct {
 	WorkDir   string        `json:"workDir"`
 	Status    SessionStatus `json:"status"`
 	PID       int           `json:"pid"`
-	StartedAt   string        `json:"startedAt"`
-	Duration    string        `json:"duration"`
-	UseProxy    bool          `json:"useProxy"`
+	StartedAt string        `json:"startedAt"`
+	Duration  string        `json:"duration"`
+	UseProxy  bool          `json:"useProxy"`
 	// Title 为前端展示用会话标题（首条 user message 摘要）。
 	Title string `json:"title"`
 	// ClaudeSessionID 是 tracker 动态跟踪到的 Claude session uuid

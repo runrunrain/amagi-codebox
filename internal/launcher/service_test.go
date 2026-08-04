@@ -1,14 +1,215 @@
 package launcher
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/session"
 )
+
+func TestLauncherRecoveredProcessIdentitySurvivesInstanceBoundary(t *testing.T) {
+	if os.Getenv("AMAGI_LAUNCHER_HELPER_PROCESS") == "1" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	logService := logging.NewService(t.TempDir())
+	t.Cleanup(logService.Close)
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestLauncherRecoveredProcessIdentitySurvivesInstanceBoundary")
+	cmd.Env = append(os.Environ(), "AMAGI_LAUNCHER_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper child: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	const sessionID = "cross-instance-helper"
+	first := NewLauncherService(logService, nil)
+	first.processes[sessionID] = cmd
+	waitDone := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		first.mu.Lock()
+		delete(first.processes, sessionID)
+		first.mu.Unlock()
+		close(waitDone)
+	}()
+
+	identity, err := first.CaptureProcessIdentity(sessionID)
+	if err != nil {
+		t.Fatalf("CaptureProcessIdentity: %v", err)
+	}
+	mismatched := NewLauncherService(logService, nil)
+	if running, err := mismatched.RecoverProcess(sessionID, cmd.Process.Pid, identity+":reused"); err != nil || running {
+		t.Fatalf("PID-reuse mismatch running=%v err=%v want terminal original identity", running, err)
+	}
+	if !first.IsRunning(sessionID) {
+		t.Fatal("identity mismatch signalled the still-live unrelated process")
+	}
+
+	second := NewLauncherService(logService, nil)
+	running, err := second.RecoverProcess(sessionID, cmd.Process.Pid, identity)
+	if err != nil || !running {
+		t.Fatalf("RecoverProcess running=%v err=%v", running, err)
+	}
+	if err := second.Stop(sessionID); err != nil {
+		t.Fatalf("Stop recovered process: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for second.IsRunning(sessionID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if second.IsRunning(sessionID) {
+		currentIdentity, running, inspectErr := inspectExternalProcess(cmd.Process.Pid)
+		t.Fatalf("identity-verified recovered helper did not reach terminal: identity=%q running=%v err=%v", currentIdentity, running, inspectErr)
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original child Wait did not observe recovered Stop terminal")
+	}
+}
+
+func TestLauncherLegacyProcFSRecoveryRetainsLiveProcessWithoutSignal(t *testing.T) {
+	if os.Getenv("AMAGI_LAUNCHER_LEGACY_HELPER_PROCESS") == "1" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	logService := logging.NewService(t.TempDir())
+	t.Cleanup(logService.Close)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLauncherLegacyProcFSRecoveryRetainsLiveProcessWithoutSignal$")
+	cmd.Env = append(os.Environ(), "AMAGI_LAUNCHER_LEGACY_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start legacy helper child: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	const sessionID = "legacy-procfs-helper"
+	owner := NewLauncherService(logService, nil)
+	owner.processes[sessionID] = cmd
+	waitDone := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		owner.mu.Lock()
+		delete(owner.processes, sessionID)
+		owner.mu.Unlock()
+		close(waitDone)
+	}()
+
+	recovered := NewLauncherService(logService, nil)
+	running, err := recovered.RecoverProcess(sessionID, cmd.Process.Pid, "procfs:424242")
+	if !running || !errors.Is(err, ErrLegacyProcFSIdentity) {
+		t.Fatalf("legacy RecoverProcess running=%v err=%v", running, err)
+	}
+	if err := recovered.Stop(sessionID); !errors.Is(err, ErrLegacyProcFSIdentity) {
+		t.Fatalf("legacy Stop error=%v want migration uncertainty", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if !owner.IsRunning(sessionID) {
+		t.Fatal("legacy Stop signalled the live helper")
+	}
+	if !recovered.IsRunning(sessionID) {
+		t.Fatal("legacy recovery discarded ownership while helper remained live")
+	}
+
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("kill helper during cleanup: %v", err)
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("legacy helper Wait did not observe terminal")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for recovered.IsRunning(sessionID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if recovered.IsRunning(sessionID) {
+		t.Fatal("legacy recovery did not complete after proven process absence")
+	}
+}
+
+func TestLauncherGuardRejectsClaudeAndCodexBeforeRawStart(t *testing.T) {
+	logService := logging.NewService(t.TempDir())
+	t.Cleanup(logService.Close)
+	svc := NewLauncherService(logService, nil)
+	guardErr := errors.New("injected shutdown generation fence")
+	guard := func() error { return guardErr }
+	workDir := t.TempDir()
+	provider := config.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}
+
+	if _, err := svc.LaunchGuarded("guarded-claude", provider, "", "", config.AgentTeamsConfig{}, session.ModeTerminal, workDir, guard); !errors.Is(err, guardErr) {
+		t.Fatalf("Claude guarded launch error=%v", err)
+	}
+	if _, err := svc.LaunchCodexGuarded("guarded-codex", "", session.ModeTerminal, workDir, nil, guard); !errors.Is(err, guardErr) {
+		t.Fatalf("Codex guarded launch error=%v", err)
+	}
+	if got := svc.RunningCount(); got != 0 {
+		t.Fatalf("rejected guarded launches registered %d process(es)", got)
+	}
+}
+
+func TestLauncherStopFailureRetainsProcessForRetryOwnership(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("invalid-PID kill semantics are Unix-specific; Windows is cross-compiled")
+	}
+	logService := logging.NewService(t.TempDir())
+	t.Cleanup(logService.Close)
+	svc := NewLauncherService(logService, nil)
+
+	// FindProcess succeeds without validating a Unix PID. Kill then fails
+	// deterministically, exercising the ownership-preserving error path without
+	// starting or signalling a real process.
+	process, err := os.FindProcess(1 << 30)
+	if err != nil {
+		t.Fatalf("FindProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = process.Release() })
+	const sessionID = "failed-stop-owner"
+	svc.processes[sessionID] = &exec.Cmd{Process: process}
+
+	if err := svc.Stop(sessionID); err == nil {
+		t.Fatal("Stop unexpectedly succeeded for invalid PID")
+	}
+	if !svc.IsRunning(sessionID) {
+		t.Fatal("failed Stop discarded process ownership; retry/reaper can no longer address it")
+	}
+}
+
+func TestLauncherStopAllFailureRetainsProcessForShutdownReaper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("invalid-PID kill semantics are Unix-specific; Windows is cross-compiled")
+	}
+	logService := logging.NewService(t.TempDir())
+	t.Cleanup(logService.Close)
+	svc := NewLauncherService(logService, nil)
+	process, err := os.FindProcess(1 << 30)
+	if err != nil {
+		t.Fatalf("FindProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = process.Release() })
+	const sessionID = "failed-stop-all-owner"
+	svc.processes[sessionID] = &exec.Cmd{Process: process}
+
+	svc.StopAll()
+	if !svc.IsRunning(sessionID) {
+		t.Fatal("failed StopAll discarded process ownership before shutdown reaper receipt")
+	}
+}
 
 func TestBuildOverrides_DualFormatProviderUsesAnthropicForClaude(t *testing.T) {
 	svc := NewLauncherService(nil, nil)

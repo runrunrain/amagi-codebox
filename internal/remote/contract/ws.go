@@ -49,6 +49,43 @@ var KnownServerEventTypes = []string{
 }
 
 // ---------------------------------------------------------------------------
+// auth.revoked reason manifest + close directive (CG-01 contract addendum).
+//
+// The reason is a closed one-value enum for server PRODUCERS; the close code
+// is a transport directive, NOT an 8th server event type or a 13th error code.
+// Unknown/missing/null/malformed reasons produce no bytes (producer strict).
+// Consumers MUST treat any auth.revoked event (known/unknown/malformed reason)
+// as force-unauthorized: the client revokes on the event TYPE, never on the
+// reason value. 1008 is a generic policy code — other policy closes may also
+// use 1008, so a client MUST NOT infer device-revoke from the close code alone.
+// ---------------------------------------------------------------------------
+
+// AuthRevokedReason is the closed enum of canonical auth.revoked reason values.
+// It is opaque: clients MUST NOT switch client behavior on its value (the
+// event type already forces unauthorized); it exists for producer narrowing
+// and forward-safe strict decode.
+type AuthRevokedReason string
+
+// AuthRevokedReasonDeviceRevoked is the sole v1 canonical reason: the device's
+// persistent authorization was revoked.
+const AuthRevokedReasonDeviceRevoked AuthRevokedReason = "device_revoked"
+
+// KnownAuthRevokedReasons is the complete set of v1 canonical auth.revoked
+// reasons (independent of KnownServerEventTypes/KnownErrorCodes). Server
+// producers MUST construct Reason only from this set; ValidateServerEvent and
+// DecodeKnownServerEvent reject any other value with no bytes produced.
+var KnownAuthRevokedReasons = []AuthRevokedReason{
+	AuthRevokedReasonDeviceRevoked,
+}
+
+// AuthRevokedCloseCode is the WS close code that follows a canonical
+// auth.revoked event (RFC 6455 1008 Policy Violation). It lives in the contract
+// package without importing any WebSocket implementation: the future producer
+// hands it to the existing close API. This constant does not change the frozen
+// event/error/type counts.
+const AuthRevokedCloseCode = 1008
+
+// ---------------------------------------------------------------------------
 // Snapshot layers (design §8.3 session.attached)
 // ---------------------------------------------------------------------------
 
@@ -296,12 +333,15 @@ type ControlStateEvent struct {
 
 func (ControlStateEvent) isKnownServerEvent() {}
 
-// AuthRevokedEvent precedes a close 1008. The client returns to unauthorized
-// state but does NOT auto-clear local drafts (design E-03/E-04).
+// AuthRevokedEvent precedes a close 1008 (AuthRevokedCloseCode). Reason is the
+// closed AuthRevokedReason enum (CG-01): producers cannot assign a free string
+// without a compile-time cast, and ValidateServerEvent rejects non-members. The
+// client returns to unauthorized state but does NOT auto-clear local drafts
+// (design E-03/E-04).
 type AuthRevokedEvent struct {
-	Type       string `json:"type"`
-	Reason     string `json:"reason"`
-	OccurredAt string `json:"occurredAt"`
+	Type       string            `json:"type"`
+	Reason     AuthRevokedReason `json:"reason"`
+	OccurredAt string            `json:"occurredAt"`
 }
 
 func (AuthRevokedEvent) isKnownServerEvent() {}
@@ -382,6 +422,18 @@ func validateSessionSnapshot(s SessionSnapshot) error {
 func isKnownControlState(s ControlState) bool {
 	for _, k := range KnownControlStates {
 		if k == s {
+			return true
+		}
+	}
+	return false
+}
+
+// isKnownAuthRevokedReason reports whether r is a canonical v1 auth.revoked
+// reason. An empty or future/non-canonical value returns false, so the
+// validator rejects it (CG-01 closed producer enum).
+func isKnownAuthRevokedReason(r AuthRevokedReason) bool {
+	for _, k := range KnownAuthRevokedReasons {
+		if k == r {
 			return true
 		}
 	}
@@ -636,8 +688,10 @@ func validateAuthRevokedEvent(e AuthRevokedEvent) error {
 	if e.Type != ServerEventTypeAuthRevoked {
 		return fmt.Errorf("contract: AuthRevokedEvent.Type must be %q", ServerEventTypeAuthRevoked)
 	}
-	if e.Reason == "" {
-		return errors.New("contract: AuthRevokedEvent.Reason must be non-empty")
+	// CG-01 closed reason enum: unknown/empty reasons are rejected with no bytes
+	// produced (producer strict). isKnownAuthRevokedReason implicitly rejects "".
+	if !isKnownAuthRevokedReason(e.Reason) {
+		return fmt.Errorf("contract: AuthRevokedEvent.Reason %q is not a known auth revoked reason", e.Reason)
 	}
 	if e.OccurredAt == "" {
 		return errors.New("contract: AuthRevokedEvent.OccurredAt must be non-empty")
@@ -1151,7 +1205,9 @@ func decodeControlState(f map[string]json.RawMessage) (ControlStateEvent, error)
 }
 
 func decodeAuthRevoked(f map[string]json.RawMessage) (AuthRevokedEvent, error) {
-	reason, err := reqNonEmptyString(f, "reason")
+	// reqNonEmptyString rejects missing/null/empty/wrong-type reason at decode
+	// time; the membership check runs in validateAuthRevokedEvent.
+	reasonStr, err := reqNonEmptyString(f, "reason")
 	if err != nil {
 		return AuthRevokedEvent{}, err
 	}
@@ -1159,7 +1215,7 @@ func decodeAuthRevoked(f map[string]json.RawMessage) (AuthRevokedEvent, error) {
 	if err != nil {
 		return AuthRevokedEvent{}, err
 	}
-	return AuthRevokedEvent{Type: ServerEventTypeAuthRevoked, Reason: reason, OccurredAt: occurred}, nil
+	return AuthRevokedEvent{Type: ServerEventTypeAuthRevoked, Reason: AuthRevokedReason(reasonStr), OccurredAt: occurred}, nil
 }
 
 func decodeErrorEvent(f map[string]json.RawMessage) (ErrorEvent, error) {

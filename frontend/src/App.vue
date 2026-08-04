@@ -3,6 +3,7 @@ import { onMounted } from 'vue'
 import { usePlatformCapabilities } from './composables/usePlatformCapabilities'
 import AppShell from './components/layout/AppShell.vue'
 import Toast from './components/common/Toast.vue'
+import StartupWarningBanner from './components/remote/StartupWarningBanner.vue'
 
 const { ensure } = usePlatformCapabilities()
 
@@ -15,6 +16,7 @@ onMounted(() => {
   <AppShell>
     <router-view />
   </AppShell>
+  <StartupWarningBanner />
   <Toast />
 </template>
 

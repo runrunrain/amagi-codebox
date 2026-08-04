@@ -1,0 +1,83 @@
+{
+  "task": "M3-A2 Bind收口+raw port接线+写路径迁移 (阶段2/3)",
+  "agent": "luban",
+  "type": "work",
+  "status": "completed",
+  "design_authority": "fuxi/20260803-m3-a-control-arbitration-design/design.md (Round3)",
+  "baseline": "d8986ea + M3-A1 untracked",
+  "artifacts": {
+    "report": "agent-outputs/luban/20260803-m3-a2-bind-migration/implementation-report.md",
+    "logs": "agent-outputs/luban/20260803-m3-a2-bind-migration/logs/test-results.log"
+  },
+  "changed_files": {
+    "new": [
+      "bind_list.go",
+      "bind_manifest_test.go",
+      "control_wiring.go",
+      "proxy_headroom_facade.go",
+      "internal/remote/control_runtime.go",
+      "internal/remote/control_runtime_test.go",
+      "internal/remote/shared_coordinator.go",
+      "internal/pty/run_sink.go"
+    ],
+    "modified": [
+      "main.go",
+      "app.go",
+      "app_test.go",
+      "internal/pty/service.go",
+      "internal/pty/service_darwin.go",
+      "internal/pty/service_other_stub.go",
+      "internal/remote/device.go",
+      "internal/remote/handlers.go",
+      "internal/remote/server.go",
+      "internal/remote/websocket.go",
+      "internal/remote/websocket_test.go",
+      "frontend/src/api/proxy.ts",
+      "frontend/src/api/headroom.ts",
+      "frontend/src/api/session.ts",
+      "frontend/src/views/RulesView.vue",
+      "frontend/src/components/rules/RuleDialog.vue"
+    ],
+    "generated": [
+      "frontend/wailsjs/go/main/App.js",
+      "frontend/wailsjs/go/main/App.d.ts",
+      "frontend/wailsjs/go/models.ts"
+    ],
+    "deleted_generated": [
+      "frontend/wailsjs/go/pty/Service.js",
+      "frontend/wailsjs/go/proxy/ProxyService.js",
+      "frontend/wailsjs/go/headroom/HeadroomService.js"
+    ]
+  },
+  "findings_closed": {
+    "C-01": "Bind收口: raw PTY/Proxy/Headroom移出Bind + StopAllSessions改不导出 + GetOutputHistory删除 + callback exports迁unbound adapter + T-24 manifest test",
+    "M-01_producer": "raw PTY EventsEmit归零(两平台) + RunEventProjector exact-run投影 + RunEventSink注入",
+    "N-01": "SharedServiceCoordinator active-run lease + Proxy/Headroom facade lease-strict guard",
+    "R3-Minor-01": "App.GetOutputHistory删除, 仅留run-tagged GetOutputHistorySnapshot"
+  },
+  "residuals": [
+    "frontend consumer strict filter (§8.6.2) = A3",
+    "launch逐effect checkpoint/receipt (§6.4.1) = 残留",
+    "delayed auto-command bootstrap write不经DoBootstrapPTY = 残留",
+    "legacy WS authority wiring (MintLegacyWSAuthority定义未接线) = 残留",
+    "shared lease acquire at launch = 残留(infrastructure就位)",
+    "session pre-existing race TestTrackTitle_PlanR (M1 baseline, A1已披露)",
+    "history非run-scoped (per-run buffer属A3)"
+  ],
+  "verification": {
+    "build": "PASS",
+    "vet": "PASS",
+    "test_all": "PASS (28 packages)",
+    "race_remote": "PASS",
+    "race_pty": "PASS",
+    "race_root": "PASS",
+    "race_session": "FAIL (pre-existing M1 baseline, not introduced)",
+    "windows_cross_compile": "PASS",
+    "frontend_build": "PASS",
+    "static_gate_pty_eventsmit": "0 (PASS)",
+    "static_gate_frontend_stale_ref": "0 (PASS)",
+    "bind_manifest_test": "PASS (5/5)",
+    "targeted_tests": "PASS (7/7: projector/lease/gating)"
+  },
+  "git_discipline": "no commit/push/reset/stash/clean"
+}

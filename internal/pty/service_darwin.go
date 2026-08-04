@@ -5,6 +5,7 @@ package pty
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +19,6 @@ import (
 	"amagi-codebox/internal/platform"
 
 	creackpty "github.com/creack/pty"
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const maxOutputHistorySize = 1024 * 1024
@@ -37,6 +37,7 @@ type PtySession struct {
 	exitCode      uint32
 	waitErr       error
 	waitOnce      sync.Once
+	runHandle     any // opaque run identity; passed back to RunEventSink
 }
 
 type outputCallback func(data []byte)
@@ -46,8 +47,8 @@ type resizeCallback func(cols, rows int)
 type Service struct {
 	sessions    map[string]*PtySession
 	mu          sync.Mutex
-	ctx         context.Context
 	log         *logging.Service
+	runSink     RunEventSink // sole output/exit sink; replaces direct EventsEmit (design §8.6 M-01)
 	outputCBsMu sync.RWMutex
 	outputCBs   map[string]map[string]outputCallback
 	exitCBsMu   sync.RWMutex
@@ -202,7 +203,7 @@ func (s *Service) snapshotResizeCallbacks(sessionID string) []resizeCallback {
 	return callbacks
 }
 
-func (s *Service) SetContext(ctx context.Context) { s.ctx = ctx }
+func (s *Service) SetRunEventSink(sink RunEventSink) { s.runSink = sink }
 
 func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env []string, cols, rows int) (int, error) {
 	spec := platform.ResolvedLaunchSpec{
@@ -230,6 +231,13 @@ func (s *Service) Start(sessionID, shellPath, autoCommand, workDir string, env [
 }
 
 func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSpec) (int, error) {
+	return s.StartResolvedWithRun(sessionID, spec, nil)
+}
+
+// StartResolvedWithRun starts a PTY session bound to an opaque run handle.
+// The handle is passed back to the RunEventSink for run-scoped output/exit
+// projection (design §8.6). A nil handle means output/exit is dropped.
+func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -265,7 +273,7 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
-	ps := &PtySession{cmd: cmd, ptmx: ptmx, done: make(chan struct{}), currentCols: cols, currentRows: rows, running: true}
+	ps := &PtySession{cmd: cmd, ptmx: ptmx, done: make(chan struct{}), currentCols: cols, currentRows: rows, running: true, runHandle: runHandle}
 	s.sessions[sessionID] = ps
 
 	if s.log != nil {
@@ -389,9 +397,10 @@ func (s *Service) readLoop(sessionID string, ps *PtySession) {
 				ps.outputHistory = trimHistoryToFrontier(ps.outputHistory, maxOutputHistorySize)
 			}
 			ps.historyMu.Unlock()
-			if s.ctx != nil {
-				data := base64.StdEncoding.EncodeToString(chunk)
-				wailsRuntime.EventsEmit(s.ctx, "pty:data:"+sessionID, map[string]any{"s": seq, "d": data})
+			// Run-scoped output: raw PTY never emits Wails events directly
+			// (design §8.6 M-01). The projector validates the run handle.
+			if s.runSink != nil {
+				s.runSink.OfferOutput(ps.runHandle, seq, chunk)
 			}
 			for _, cb := range s.snapshotOutputCallbacks(sessionID) {
 				cb(chunk)
@@ -545,12 +554,28 @@ func (s *Service) waitLoop(sessionID string, ps *PtySession) {
 	if s.log != nil {
 		s.log.Info("pty", "darwin PTY 进程退出", fmt.Sprintf("id=%s exitCode=%d err=%v", sessionID, exitCode, err))
 	}
-	if s.ctx != nil {
-		wailsRuntime.EventsEmit(s.ctx, "pty:exit:"+sessionID, map[string]any{"exitCode": exitCode, "error": fmt.Sprintf("%v", err)})
+	// Run-scoped exit: raw PTY never emits Wails events directly (design §8.6).
+	failed := err != nil
+	if s.runSink != nil {
+		s.runSink.OfferExit(ps.runHandle, uint32(max(exitCode, 0)), failed)
 	}
 	for _, cb := range s.snapshotExitCallbacks(sessionID) {
 		cb(uint32(max(exitCode, 0)))
 	}
+}
+
+// WriteRaw writes raw (non-base64) bytes to the PTY. Used by the control gate
+// closures (design §6.1, §9.4).
+func (s *Service) WriteRaw(ctx context.Context, sessionID string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err // M-009: gated/timeout-cancelled before the irreversible syscall
+	}
+	ps, err := s.session(sessionID)
+	if err != nil {
+		return err
+	}
+	_, err = ps.ptmx.Write(data)
+	return err
 }
 
 func (s *Service) Write(sessionID string, data string) error {
@@ -591,7 +616,10 @@ func (s *Service) WriteLarge(sessionID string, data string) error {
 	return nil
 }
 
-func (s *Service) Resize(sessionID string, cols, rows int) error {
+func (s *Service) Resize(ctx context.Context, sessionID string, cols, rows int) error {
+	if err := ctx.Err(); err != nil {
+		return err // M-009
+	}
 	ps, err := s.session(sessionID)
 	if err != nil {
 		return err
@@ -628,28 +656,114 @@ func (s *Service) GetPtyDimensions(sessionID string) (cols, rows int, err error)
 	return ps.currentCols, ps.currentRows, nil
 }
 
+// DetachSession forcibly detaches the Darwin PTY backend for a session (R3-004).
+// Invoked by the control gate's quarantine path when a bounded raw Write/Resize
+// times out. On Darwin a stuck read/write on the ptmx is released by closing the
+// ptmx + killing the process group (SIGKILL). This unblocks the stuck goroutine
+// so a trusted desktop recovery lifecycle can clean up. Safe on an already-closed
+// session (idempotent no-op). It does NOT bounded-wait on the process exit (the
+// gate already advanced backendEpoch; late output is dropped by the committer).
+func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
+	receipt := newDetachReceipt()
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if ok {
+		delete(s.sessions, sessionID)
+	}
+	s.mu.Unlock()
+	if !ok {
+		_ = detachWithExactReaper(receipt, func() error { return nil }, nil)
+		return receipt, nil
+	}
+	// The retry closure captures this exact *PtySession; it never resolves the
+	// session ID again, so a replacement PTY cannot be killed by a late reaper.
+	detachExact := func() error {
+		var detachErr error
+		if ps.cmd != nil && ps.cmd.Process != nil {
+			pid := ps.cmd.Process.Pid
+			// StartWithAttrs uses Setsid, so -pid addresses the exact process group.
+			if pid > 0 {
+				if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+					detachErr = errors.Join(detachErr, err)
+				}
+			}
+		}
+		if ps.ptmx != nil {
+			if err := ps.ptmx.Close(); err != nil && !isDarwinPTYAlreadyClosed(err) {
+				detachErr = errors.Join(detachErr, err)
+			}
+		}
+		return detachErr
+	}
+	firstErr := detachWithExactReaper(receipt, detachExact, func(err error) {
+		if s.log != nil {
+			s.log.Warn("pty", "R4-004 exact Darwin PTY detach retry failed", fmt.Sprintf("id=%s err=%v", sessionID, err))
+		}
+	})
+	if firstErr != nil && s.log != nil {
+		s.log.Warn("pty", "R4-004 Darwin PTY detach first close failed; exact reaper armed", fmt.Sprintf("id=%s err=%v", sessionID, firstErr))
+	}
+	return receipt, firstErr
+}
+
 func (s *Service) Close(sessionID string) error {
-	ps, err := s.session(sessionID)
-	if err != nil {
+	// Keep the exact pointer in the active map until close is confirmed. A failed
+	// close therefore blocks a same-ID replacement and remains retriable instead
+	// of deleting ownership before a potentially failing syscall.
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
 		return nil
 	}
+
+	var closeErr error
 	ps.mu.RLock()
 	running := ps.running
 	ps.mu.RUnlock()
-	if !running {
-		return nil
-	}
-	if ps.cmd.Process != nil {
-		_ = ps.cmd.Process.Signal(syscall.SIGTERM)
+	if running && ps.cmd.Process != nil {
+		pid := ps.cmd.Process.Pid
+		if pid > 0 {
+			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				closeErr = errors.Join(closeErr, err)
+			}
+		}
 		select {
 		case <-ps.done:
 		case <-time.After(2 * time.Second):
-			_ = ps.cmd.Process.Kill()
-			<-ps.done
+			if pid > 0 {
+				if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+					closeErr = errors.Join(closeErr, err)
+				}
+			}
+			// Closing ptmx releases a read that remains blocked after process kill.
+			if err := ps.ptmx.Close(); err != nil && !isDarwinPTYAlreadyClosed(err) {
+				closeErr = errors.Join(closeErr, err)
+			}
+			select {
+			case <-ps.done:
+			case <-time.After(ptyCloseWaitTimeout):
+				closeErr = errors.Join(closeErr, fmt.Errorf("darwin pty close timed out"))
+			}
 		}
 	}
-	_ = ps.ptmx.Close()
+	if err := ps.ptmx.Close(); err != nil && !isDarwinPTYAlreadyClosed(err) {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	// Delete only if this exact pointer is still the map owner (ABA defense).
+	s.mu.Lock()
+	if s.sessions[sessionID] == ps {
+		delete(s.sessions, sessionID)
+	}
+	s.mu.Unlock()
 	return nil
+}
+
+func isDarwinPTYAlreadyClosed(err error) bool {
+	return errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrInvalid)
 }
 
 func (s *Service) CloseAll() {
@@ -662,6 +776,14 @@ func (s *Service) CloseAll() {
 	for _, id := range ids {
 		_ = s.Close(id)
 	}
+}
+
+// StartupAutoCommand returns "" on Darwin (M-005): the startup command is
+// embedded directly in the shell invocation (-ilc <cmd>) by buildDarwinPTYCommand,
+// so there is no separate delayed write for the App layer to gate.
+func (s *Service) StartupAutoCommand(spec platform.ResolvedLaunchSpec) string {
+	_ = spec
+	return ""
 }
 
 func (s *Service) IsRunning(sessionID string) bool {

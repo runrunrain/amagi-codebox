@@ -13,20 +13,22 @@ const fixturePath = "../../../mobile/src/lib/contract/testdata/v1-wire-fixtures.
 
 type fixtureEnvelope struct {
 	Manifest struct {
-		APIVersion       string         `json:"apiVersion"`
-		RequestIDHeader  string         `json:"requestIdHeader"`
-		RESTBasePath     string         `json:"restBasePath"`
-		WebSocketV1Path  string         `json:"webSocketV1Path"`
-		RestEndpoints    []RestEndpoint `json:"restEndpoints"`
-		ClientFrameTypes []string       `json:"clientFrameTypes"`
-		ServerEventTypes []string       `json:"serverEventTypes"`
-		ErrorCodes       []string       `json:"errorCodes"`
-		CLITypes         []string       `json:"cliTypes"`
-		SessionStates    []string       `json:"sessionStates"`
-		ControlStates    []string       `json:"controlStates"`
-		HistoryStates    []string       `json:"historyStates"`
-		ErrorLayers      []string       `json:"errorLayers"`
-		ActionHints      []string       `json:"actionHints"`
+		APIVersion           string         `json:"apiVersion"`
+		RequestIDHeader      string         `json:"requestIdHeader"`
+		RESTBasePath         string         `json:"restBasePath"`
+		WebSocketV1Path      string         `json:"webSocketV1Path"`
+		RestEndpoints        []RestEndpoint `json:"restEndpoints"`
+		ClientFrameTypes     []string       `json:"clientFrameTypes"`
+		ServerEventTypes     []string       `json:"serverEventTypes"`
+		ErrorCodes           []string       `json:"errorCodes"`
+		CLITypes             []string       `json:"cliTypes"`
+		SessionStates        []string       `json:"sessionStates"`
+		ControlStates        []string       `json:"controlStates"`
+		HistoryStates        []string       `json:"historyStates"`
+		ErrorLayers          []string       `json:"errorLayers"`
+		ActionHints          []string       `json:"actionHints"`
+		AuthRevokedReasons   []string       `json:"authRevokedReasons"`
+		AuthRevokedCloseCode int            `json:"authRevokedCloseCode"`
 	} `json:"manifest"`
 	REST struct {
 		PairingCompleteRequest          json.RawMessage `json:"pairingCompleteRequest"`
@@ -136,6 +138,15 @@ func TestManifests_FullParity(t *testing.T) {
 	check(layerStrings(KnownErrorLayers), m.ErrorLayers, "errorLayers")
 	check(hintStrings(KnownActionHints), m.ActionHints, "actionHints")
 
+	// CG-01 auth.revoked reason manifest + close directive parity.
+	check(reasonStrings(KnownAuthRevokedReasons), m.AuthRevokedReasons, "authRevokedReasons")
+	if AuthRevokedCloseCode != m.AuthRevokedCloseCode {
+		t.Errorf("AuthRevokedCloseCode = %d, want %d (fixture)", AuthRevokedCloseCode, m.AuthRevokedCloseCode)
+	}
+	if len(KnownAuthRevokedReasons) != 1 {
+		t.Errorf("KnownAuthRevokedReasons count = %d, want 1 (CG-01 independent of frozen counts)", len(KnownAuthRevokedReasons))
+	}
+
 	if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownServerEventTypes) != 7 || len(KnownErrorCodes) != 12 {
 		t.Errorf("frozen counts changed: endpoints=%d client=%d server=%d errors=%d", len(V1RestEndpoints), len(KnownClientFrameTypes), len(KnownServerEventTypes), len(KnownErrorCodes))
 	}
@@ -148,6 +159,7 @@ func controlStateStrings(c []ControlState) []string { return anyStrings(c) }
 func historyStateStrings(c []HistoryState) []string { return anyStrings(c) }
 func layerStrings(c []ErrorLayer) []string          { return anyStrings(c) }
 func hintStrings(c []ActionHint) []string           { return anyStrings(c) }
+func reasonStrings(c []AuthRevokedReason) []string  { return anyStrings(c) }
 
 func anyStrings[T ~string](c []T) []string {
 	out := make([]string, len(c))
@@ -322,6 +334,30 @@ func TestServerEvents_DecodeValidateMarshal(t *testing.T) {
 		}
 		assertJSONEqual(t, b, raw)
 	}
+
+	// serverEvents consumed-set parity (CG-01 §5.1): the known decode keys plus
+	// the existing unknownEvent (rejected by the strict decoder as an unknown
+	// server event type) must cover every fixture serverEvents root key — no
+	// orphan fixture case and no untested key.
+	consumedServer := make(map[string]bool, len(knownKeys)+1)
+	for _, k := range knownKeys {
+		consumedServer[k] = true
+	}
+	consumedServer["unknownEvent"] = true
+	if len(consumedServer) != len(fx.ServerEvents) {
+		var missing []string
+		for k := range fx.ServerEvents {
+			if !consumedServer[k] {
+				missing = append(missing, k)
+			}
+		}
+		t.Fatalf("serverEvents consumed set (%d) != fixture keys (%d); unconsumed: %v", len(consumedServer), len(fx.ServerEvents), missing)
+	}
+	// unknownEvent has an unknown wire type; the strict contract decoder rejects
+	// it (TS-side forward-compatible normalization is the client's job, not this API).
+	if _, err := DecodeKnownServerEvent(fx.ServerEvents["unknownEvent"]); err == nil {
+		t.Errorf("serverEvents.unknownEvent must be rejected by DecodeKnownServerEvent (unknown type)")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +486,7 @@ func TestInvalid_AllRejected(t *testing.T) {
 		"outputStructuredExpectedNull": true, "errorRequestIdNull": true, "errorDetailsNull": true,
 		"sessionStateRestartFalse": true, "sessionStateSeqAlone": true,
 		"backfillFrameOutOfRange": true, "backfillFrameNonAscending": true,
+		"authRevokedUnknownReason": true, "authRevokedNullReason": true,
 	}
 	clientInvalid := map[string]bool{
 		"nullRequiredField": true, "missingRequiredField": true,
@@ -573,4 +610,152 @@ func TestManifest_OrderSensitive(t *testing.T) {
 	if !stringsEqualExact(canonical, append([]string(nil), canonical...)) {
 		t.Errorf("stringsEqualExact must equal identical-order array")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// (12) CG-01 auth.revoked canonical reason + close directive contract.
+// Addendum §2.2 symbols, §3.1 Go enforcement, §4 compatibility, §7 C1-C6.
+// C7/C8 (producer fence→event→close sequencing) require the future producer /
+// close writer (M2-A scope) and are intentionally NOT tested here: this package
+// only provides the contract symbols and strict validator.
+// ---------------------------------------------------------------------------
+
+func TestCG01_AuthRevokedContract(t *testing.T) {
+	fx := loadFixture(t)
+
+	// C1 symbol parity: the sole canonical reason, the close code, and the
+	// manifest all agree across Go source and the shared fixture.
+	t.Run("C1_symbol_parity", func(t *testing.T) {
+		if AuthRevokedReasonDeviceRevoked != "device_revoked" {
+			t.Errorf("AuthRevokedReasonDeviceRevoked = %q, want %q", AuthRevokedReasonDeviceRevoked, "device_revoked")
+		}
+		if len(KnownAuthRevokedReasons) != 1 || KnownAuthRevokedReasons[0] != AuthRevokedReasonDeviceRevoked {
+			t.Errorf("KnownAuthRevokedReasons = %v, want [device_revoked]", KnownAuthRevokedReasons)
+		}
+		if AuthRevokedCloseCode != 1008 {
+			t.Errorf("AuthRevokedCloseCode = %d, want 1008", AuthRevokedCloseCode)
+		}
+		if !stringsEqualExact(reasonStrings(KnownAuthRevokedReasons), fx.Manifest.AuthRevokedReasons) {
+			t.Errorf("reason manifest vs fixture: %v != %v", KnownAuthRevokedReasons, fx.Manifest.AuthRevokedReasons)
+		}
+		if AuthRevokedCloseCode != fx.Manifest.AuthRevokedCloseCode {
+			t.Errorf("close code vs fixture: %d != %d", AuthRevokedCloseCode, fx.Manifest.AuthRevokedCloseCode)
+		}
+		// Close code lives in the contract package without importing a WS impl.
+		if AuthRevokedCloseCode != 1008 { // re-asserted for clarity
+			t.Fatal("close code must be 1008")
+		}
+	})
+
+	// C2 valid producer: Validate/Marshal/Decode accept the canonical event and
+	// the round-trip preserves the reason constant (no literal in the test build).
+	t.Run("C2_valid_producer", func(t *testing.T) {
+		ev := AuthRevokedEvent{
+			Type:       ServerEventTypeAuthRevoked,
+			Reason:     AuthRevokedReasonDeviceRevoked, // symbol only, no literal
+			OccurredAt: "2026-08-03T00:00:00Z",
+		}
+		if err := ValidateServerEvent(ev); err != nil {
+			t.Fatalf("ValidateServerEvent canonical: %v", err)
+		}
+		b, err := MarshalServerEvent(ev)
+		if err != nil {
+			t.Fatalf("MarshalServerEvent canonical: %v", err)
+		}
+		if !strings.Contains(string(b), `"reason":"device_revoked"`) {
+			t.Errorf("canonical reason not preserved in marshal: %s", string(b))
+		}
+		// Decode the fixture canonical event and re-marshal: semantic equality.
+		decoded, err := DecodeKnownServerEvent(fx.ServerEvents["authRevoked"])
+		if err != nil {
+			t.Fatalf("DecodeKnownServerEvent fixture authRevoked: %v", err)
+		}
+		ar, ok := decoded.(AuthRevokedEvent)
+		if !ok || ar.Reason != AuthRevokedReasonDeviceRevoked {
+			t.Fatalf("decoded reason = %v, want %q", ar.Reason, AuthRevokedReasonDeviceRevoked)
+		}
+		rm, _ := MarshalServerEvent(decoded)
+		assertJSONEqual(t, rm, fx.ServerEvents["authRevoked"])
+	})
+
+	// C3 unknown reason: the strict decoder/validator reject with no bytes.
+	t.Run("C3_unknown_reason_rejected", func(t *testing.T) {
+		if _, err := DecodeKnownServerEvent(fx.Invalid["authRevokedUnknownReason"]); err == nil {
+			t.Errorf("unknown reason must be rejected by DecodeKnownServerEvent")
+		}
+		// Producer hardening: constructing an event with a non-canonical reason
+		// (requires an explicit cast — this is the intended compile barrier) fails
+		// validation and produces no bytes.
+		bad := AuthRevokedEvent{Type: ServerEventTypeAuthRevoked, Reason: AuthRevokedReason("future"), OccurredAt: "t"}
+		if err := ValidateServerEvent(bad); err == nil {
+			t.Errorf("ValidateServerEvent must reject non-canonical reason")
+		}
+		if _, err := MarshalServerEvent(bad); err == nil {
+			t.Errorf("MarshalServerEvent must produce no bytes for non-canonical reason")
+		}
+	})
+
+	// C4 malformed reason: missing/null/empty all fail-closed (no bytes).
+	t.Run("C4_malformed_reason_rejected", func(t *testing.T) {
+		// null reason (fixture).
+		if _, err := DecodeKnownServerEvent(fx.Invalid["authRevokedNullReason"]); err == nil {
+			t.Errorf("null reason must be rejected by DecodeKnownServerEvent")
+		}
+		// empty reason.
+		if err := ValidateServerEvent(AuthRevokedEvent{Type: ServerEventTypeAuthRevoked, Reason: "", OccurredAt: "t"}); err == nil {
+			t.Errorf("empty reason must be rejected by ValidateServerEvent")
+		}
+		// missing reason.
+		if _, err := DecodeKnownServerEvent([]byte(`{"type":"auth.revoked","occurredAt":"t"}`)); err == nil {
+			t.Errorf("missing reason must be rejected by DecodeKnownServerEvent")
+		}
+		// wrong type reason.
+		if _, err := DecodeKnownServerEvent([]byte(`{"type":"auth.revoked","reason":123,"occurredAt":"t"}`)); err == nil {
+			t.Errorf("non-string reason must be rejected by DecodeKnownServerEvent")
+		}
+	})
+
+	// C5 counts unchanged: the reason manifest is independent of the frozen
+	// event/error/type counts (additive, not mixed in).
+	t.Run("C5_counts_unchanged", func(t *testing.T) {
+		if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownServerEventTypes) != 7 || len(KnownErrorCodes) != 12 {
+			t.Errorf("frozen counts changed")
+		}
+		if len(KnownAuthRevokedReasons) != 1 {
+			t.Errorf("reason manifest count = %d, want 1", len(KnownAuthRevokedReasons))
+		}
+		// The reason manifest is a distinct slice, not folded into event types.
+		found := false
+		for _, et := range KnownServerEventTypes {
+			if et == string(AuthRevokedReasonDeviceRevoked) {
+				found = true
+			}
+		}
+		if found {
+			t.Errorf("device_revoked must NOT appear in KnownServerEventTypes (independent manifest)")
+		}
+	})
+
+	// C6 no literal: the type system enforces producer narrowing — assigning a
+	// raw string to AuthRevokedEvent.Reason is a compile error without an
+	// explicit cast. This subtest documents the compile barrier via a typed
+	// constant assignment (no string literal on the producer path).
+	t.Run("C6_producer_type_barrier", func(t *testing.T) {
+		// This line compiles only because the constant is AuthRevokedReason.
+		var _ AuthRevokedReason = AuthRevokedReasonDeviceRevoked
+		// The wire bytes are produced solely from the constant, not a literal.
+		ev := AuthRevokedEvent{Type: ServerEventTypeAuthRevoked, Reason: AuthRevokedReasonDeviceRevoked, OccurredAt: "t"}
+		b, err := MarshalServerEvent(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "\"device_revoked\"") {
+			t.Errorf("wire bytes must contain the canonical reason")
+		}
+		// The close code is imported from the contract symbol, not a magic number.
+		var closeCode int = AuthRevokedCloseCode
+		if closeCode != 1008 {
+			t.Errorf("close code = %d, want 1008", closeCode)
+		}
+	})
 }

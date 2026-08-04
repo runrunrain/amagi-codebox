@@ -89,6 +89,13 @@ const { toasts, removeToast } = useToast();
   color: #42a5f5;
 }
 
+.toast-warn {
+  border-left-color: #ffa726;
+}
+.toast-warn .toast-icon {
+  color: #ffa726;
+}
+
 .toast-icon {
   display: flex;
   align-items: center;

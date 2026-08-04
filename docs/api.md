@@ -43,6 +43,18 @@
 **Returns**: `session.SessionInfo`, `error`  
 **Description**: 按会话 ID 查询会话信息。
 
+### GetExternalCleanupRecoveryStatus
+**Service**: App
+**Parameters**: none
+**Returns**: `remote.ExternalCleanupRecoveryStatus`
+**Description**: 返回隐私最小化的外部进程恢复状态。仅包含会话 ID、共享服务类型、恢复原因与是否已可安全确认；不暴露 PID、命令、环境变量、路径、provider 或终端内容。
+
+### ConfirmExternalCleanupRecovery
+**Service**: App
+**Parameters**: `sessionID (string)`, `confirmed (bool)`
+**Returns**: `remote.ExternalCleanupRecoveryResult`, `error`
+**Description**: 显式确认旧外部终端已关闭。仅在 `confirmed=true`、OS 已证明进程不存在且 journal exact completion 成功时清理 owner/admission 并重算 Headroom 恢复 fence；不提供 force-clear。每次接受或拒绝都会记录 typed audit event。
+
 ### GetRemoteToken
 **Service**: App  
 **Parameters**: none  

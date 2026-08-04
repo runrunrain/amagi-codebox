@@ -1,7 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
 const ConnectPage = () => import('../views/ConnectPage.vue')
-const LobbyPlaceholderPage = () => import('../views/LobbyPlaceholderPage.vue')
+const WorkspacePage = () => import('../views/WorkspacePage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
 const TerminalPage = () => import('../views/TerminalPage.vue')
 const SessionsPage = () => import('../views/SessionsPage.vue')
@@ -21,10 +21,19 @@ const router = createRouter({
       meta: { bare: true },
     },
     {
-      // 会话大厅诚实占位（大厅本体 M2 交付，届时按 P5 IA 接管 #/sessions）
+      // PG-02 会话大厅（M2-B 本体）。权威路由名 lobby 不变（PG-01 与既有
+      // E2E 均以 #/lobby 为目标）；SessionsPage.vue 已重写为 PG-02。
       path: '/lobby',
       name: 'lobby',
-      component: LobbyPlaceholderPage,
+      component: SessionsPage,
+      // PG-02 独立壳：VT 浅色、不挂 legacy top-bar/bottom-nav
+      meta: { bare: true },
+    },
+    {
+      // PG-03 会话工作区本体（M2-C）：内容转化阅读面（Timeline/Composer/ControlBar）。
+      path: '/workspace/:sessionId',
+      name: 'workspace',
+      component: WorkspacePage,
       meta: { bare: true },
     },
     {
@@ -38,9 +47,10 @@ const router = createRouter({
       component: TerminalPage,
     },
     {
+      // legacy #/sessions 已由 PG-02 大厅接管（P5 IA）：重定向到 #/lobby，
+      // 保留旧链接（AppLayout/DrawerNav/Dashboard）可达性。
       path: '/sessions',
-      name: 'sessions',
-      component: SessionsPage,
+      redirect: { name: 'lobby' },
     },
     {
       path: '/providers',

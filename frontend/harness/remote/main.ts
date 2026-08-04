@@ -4,10 +4,11 @@
  * 关键：必须在挂载应用前注入 window.go.main.App stub（wailsjs 绑定运行时调用它）。
  */
 import { createApp } from 'vue';
+import { createPinia } from 'pinia';
 import '../../src/styles/index.css';
 import { installRemoteStub } from './stub';
 import HarnessApp from './HarnessApp.vue';
 
 installRemoteStub();
 
-createApp(HarnessApp).mount('#app');
+createApp(HarnessApp).use(createPinia()).mount('#app');

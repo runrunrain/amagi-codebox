@@ -127,6 +127,17 @@ func (m *Manager) GetStatus(id string) SessionStatus {
 	return ""
 }
 
+// MarkStopping records that an asynchronous external Stop was accepted but the
+// Launcher has not yet produced its Wait/terminal receipt. Stopping remains an
+// active, non-removable state and does not set StoppedAt.
+func (m *Manager) MarkStopping(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.sessions[id]; ok && s.Status == StatusRunning {
+		s.Status = StatusStopping
+	}
+}
+
 // MarkStopped 标记会话为已停止
 func (m *Manager) MarkStopped(id string) {
 	m.mu.Lock()
@@ -138,14 +149,20 @@ func (m *Manager) MarkStopped(id string) {
 	}
 }
 
-// MarkExited 标记会话为已退出（进程自行结束）
+// MarkExited records the Launcher/PTY terminal receipt. A naturally terminal
+// running session becomes exited; a user-requested stopping session becomes
+// stopped only now, never when the asynchronous signal was merely accepted.
 func (m *Manager) MarkExited(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s, ok := m.sessions[id]; ok {
-		if s.Status == StatusRunning {
-			now := time.Now()
+		now := time.Now()
+		switch s.Status {
+		case StatusRunning:
 			s.Status = StatusExited
+			s.StoppedAt = &now
+		case StatusStopping:
+			s.Status = StatusStopped
 			s.StoppedAt = &now
 		}
 	}
@@ -191,7 +208,7 @@ func (m *Manager) List() []SessionInfo {
 	for _, s := range m.sessions {
 		// 方案 P 直读：仅当 homeDir 已注入、会话已退出、Title 空且 ClaudeSessionID 非空时尝试。
 		if homeDir != "" && s.Title == "" && s.ClaudeSessionID != "" &&
-			s.Status != StatusRunning && s.AppType == AppTypeClaudeCode {
+			!isActiveSessionStatus(s.Status) && s.AppType == AppTypeClaudeCode {
 			if title, ok := readTitleFromJSONL(homeDir, s.WorkDir, s.ClaudeSessionID); ok {
 				s.Title = title // 写回缓存，后续 List 不再读盘
 			}
@@ -214,7 +231,7 @@ func (m *Manager) List() []SessionInfo {
 			ClaudeSessionID: s.ClaudeSessionID,
 		}
 
-		if s.Status == StatusRunning {
+		if isActiveSessionStatus(s.Status) {
 			info.Duration = formatDuration(time.Since(s.StartedAt))
 		} else if s.StoppedAt != nil {
 			info.Duration = formatDuration(s.StoppedAt.Sub(s.StartedAt))
@@ -253,7 +270,7 @@ func (m *Manager) RunningCount() int {
 	defer m.mu.RUnlock()
 	count := 0
 	for _, s := range m.sessions {
-		if s.Status == StatusRunning {
+		if isActiveSessionStatus(s.Status) {
 			count++
 		}
 	}
@@ -268,8 +285,11 @@ func (m *Manager) Remove(id string) error {
 	if !ok {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	if s.Status == StatusRunning {
-		return fmt.Errorf("cannot remove running session: %s", id)
+	switch s.Status {
+	case StatusRunning:
+		return fmt.Errorf("cannot remove running session: %s: %w", id, ErrSessionRunning)
+	case StatusStopping:
+		return fmt.Errorf("cannot remove stopping session: %s: %w", id, ErrSessionStopping)
 	}
 	delete(m.sessions, id)
 	return nil
@@ -281,7 +301,7 @@ func (m *Manager) ClearStopped() int {
 	defer m.mu.Unlock()
 	count := 0
 	for id, s := range m.sessions {
-		if s.Status != StatusRunning {
+		if !isActiveSessionStatus(s.Status) {
 			delete(m.sessions, id)
 			count++
 		}
@@ -295,11 +315,15 @@ func (m *Manager) GetRunning() []string {
 	defer m.mu.RUnlock()
 	var ids []string
 	for id, s := range m.sessions {
-		if s.Status == StatusRunning {
+		if isActiveSessionStatus(s.Status) {
 			ids = append(ids, id)
 		}
 	}
 	return ids
+}
+
+func isActiveSessionStatus(status SessionStatus) bool {
+	return status == StatusRunning || status == StatusStopping
 }
 
 func formatDuration(d time.Duration) string {

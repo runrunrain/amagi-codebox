@@ -1574,6 +1574,56 @@ export namespace logging {
 
 export namespace main {
 
+	export class ClearStoppedSessionFailure {
+	    id: string;
+	    reason: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ClearStoppedSessionFailure(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class ClearStoppedSessionsResult {
+	    cleared: number;
+	    clearedIds: string[];
+	    retainedIds: string[];
+	    failed: ClearStoppedSessionFailure[];
+
+	    static createFrom(source: any = {}) {
+	        return new ClearStoppedSessionsResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cleared = source["cleared"];
+	        this.clearedIds = source["clearedIds"];
+	        this.retainedIds = source["retainedIds"];
+	        this.failed = this.convertValues(source["failed"], ClearStoppedSessionFailure);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CodexGlobalHeadroomStatus {
 	    enabled: boolean;
 	    target: string;
@@ -2028,26 +2078,6 @@ export namespace piplugin {
 
 export namespace platform {
 
-	export class LaunchDiagnostics {
-	    shellSource: string;
-	    cliSource: string;
-	    pathSources: string[];
-	    warnings: string[];
-	    missingCandidates: string[];
-
-	    static createFrom(source: any = {}) {
-	        return new LaunchDiagnostics(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.shellSource = source["shellSource"];
-	        this.cliSource = source["cliSource"];
-	        this.pathSources = source["pathSources"];
-	        this.warnings = source["warnings"];
-	        this.missingCandidates = source["missingCandidates"];
-	    }
-	}
 	export class ShellDescriptor {
 	    key: string;
 	    label: string;
@@ -2134,123 +2164,6 @@ export namespace platform {
 		    return a;
 		}
 	}
-	export class ProcessPolicy {
-	    hideConsoleWindow: boolean;
-	    detached: boolean;
-
-	    static createFrom(source: any = {}) {
-	        return new ProcessPolicy(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.hideConsoleWindow = source["hideConsoleWindow"];
-	        this.detached = source["detached"];
-	    }
-	}
-	export class ResolvedCLI {
-	    name: string;
-	    path: string;
-	    args: string[];
-
-	    static createFrom(source: any = {}) {
-	        return new ResolvedCLI(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.path = source["path"];
-	        this.args = source["args"];
-	    }
-	}
-	export class ResolvedEnv {
-	    variables: string[];
-	    effectivePath: string;
-	    addedPathEntries: string[];
-
-	    static createFrom(source: any = {}) {
-	        return new ResolvedEnv(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.variables = source["variables"];
-	        this.effectivePath = source["effectivePath"];
-	        this.addedPathEntries = source["addedPathEntries"];
-	    }
-	}
-	export class ResolvedShell {
-	    key: string;
-	    path: string;
-	    loginStyle: string;
-	    bootstrapArg: string;
-
-	    static createFrom(source: any = {}) {
-	        return new ResolvedShell(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.key = source["key"];
-	        this.path = source["path"];
-	        this.loginStyle = source["loginStyle"];
-	        this.bootstrapArg = source["bootstrapArg"];
-	    }
-	}
-	export class ResolvedLaunchSpec {
-	    appType: string;
-	    launchMode: string;
-	    workDir: string;
-	    cli: ResolvedCLI;
-	    shell?: ResolvedShell;
-	    bootstrapMode: string;
-	    startupCommand?: string;
-	    env: ResolvedEnv;
-	    ptyCols: number;
-	    ptyRows: number;
-	    processPolicy: ProcessPolicy;
-	    diagnostics: LaunchDiagnostics;
-
-	    static createFrom(source: any = {}) {
-	        return new ResolvedLaunchSpec(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.appType = source["appType"];
-	        this.launchMode = source["launchMode"];
-	        this.workDir = source["workDir"];
-	        this.cli = this.convertValues(source["cli"], ResolvedCLI);
-	        this.shell = this.convertValues(source["shell"], ResolvedShell);
-	        this.bootstrapMode = source["bootstrapMode"];
-	        this.startupCommand = source["startupCommand"];
-	        this.env = this.convertValues(source["env"], ResolvedEnv);
-	        this.ptyCols = source["ptyCols"];
-	        this.ptyRows = source["ptyRows"];
-	        this.processPolicy = this.convertValues(source["processPolicy"], ProcessPolicy);
-	        this.diagnostics = this.convertValues(source["diagnostics"], LaunchDiagnostics);
-	    }
-
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-
 
 }
 
@@ -2658,6 +2571,76 @@ export namespace remote {
 	        this.credentialExpiresAt = source["credentialExpiresAt"];
 	        this.revokedAt = source["revokedAt"];
 	    }
+	}
+	export class ExternalCleanupRecoveryItem {
+	    sessionId: string;
+	    kind: number;
+	    reason: string;
+	    state: string;
+	    canConfirm: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new ExternalCleanupRecoveryItem(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.kind = source["kind"];
+	        this.reason = source["reason"];
+	        this.state = source["state"];
+	        this.canConfirm = source["canConfirm"];
+	    }
+	}
+	export class ExternalCleanupRecoveryResult {
+	    sessionId: string;
+	    cleared: boolean;
+	    fenceReleased: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new ExternalCleanupRecoveryResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.cleared = source["cleared"];
+	        this.fenceReleased = source["fenceReleased"];
+	    }
+	}
+	export class ExternalCleanupRecoveryStatus {
+	    version: number;
+	    blocked: boolean;
+	    items: ExternalCleanupRecoveryItem[];
+
+	    static createFrom(source: any = {}) {
+	        return new ExternalCleanupRecoveryStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.blocked = source["blocked"];
+	        this.items = this.convertValues(source["items"], ExternalCleanupRecoveryItem);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class PairingWindowInfo {
 	    generation: number;

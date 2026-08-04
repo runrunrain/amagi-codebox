@@ -88,7 +88,7 @@
 import { ref, watch, computed } from 'vue';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
-import { AddRule, UpdateRule } from '../../../wailsjs/go/proxy/ProxyService';
+import { ProxyAddRule, ProxyUpdateRule } from '../../../wailsjs/go/main/App';
 import { proxy } from '../../../wailsjs/go/models';
 
 interface Props {
@@ -164,9 +164,9 @@ async function handleSubmit() {
   loading.value = true;
   try {
     if (isEditing.value) {
-      await UpdateRule(form.value);
+      await ProxyUpdateRule(form.value);
     } else {
-      await AddRule(form.value);
+      await ProxyAddRule(form.value);
     }
     emit('success');
     handleClose();

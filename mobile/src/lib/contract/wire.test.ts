@@ -9,6 +9,8 @@
  */
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type {
+  AuthRevokedEvent,
+  AuthRevokedReason,
   BackfillResultEvent,
   ClientFrame,
   ConfirmActionRequest,
@@ -21,8 +23,11 @@ import type {
   UnknownServerEvent,
 } from './index';
 import {
+  AUTH_REVOKED_CLOSE_CODE,
+  AUTH_REVOKED_REASON_DEVICE_REVOKED,
   isClientFrame,
   KNOWN_ACTION_HINTS,
+  KNOWN_AUTH_REVOKED_REASONS,
   KNOWN_CLI_TYPES,
   KNOWN_CLIENT_FRAME_TYPES,
   KNOWN_CONTROL_STATES,
@@ -58,6 +63,14 @@ describe('production manifests vs fixture', () => {
     expect([...KNOWN_HISTORY_STATES]).toEqual(m.historyStates);
     expect([...KNOWN_ERROR_LAYERS]).toEqual(m.errorLayers);
     expect([...KNOWN_ACTION_HINTS]).toEqual(m.actionHints);
+  });
+
+  it('CG-01 auth.revoked reason manifest + close code match fixture (C1)', () => {
+    expect([...KNOWN_AUTH_REVOKED_REASONS]).toEqual(m.authRevokedReasons);
+    expect(AUTH_REVOKED_REASON_DEVICE_REVOKED).toBe('device_revoked');
+    expect(AUTH_REVOKED_CLOSE_CODE).toBe(m.authRevokedCloseCode);
+    expect(AUTH_REVOKED_CLOSE_CODE).toBe(1008);
+    expect(KNOWN_AUTH_REVOKED_REASONS).toHaveLength(1);
   });
 });
 
@@ -101,6 +114,15 @@ describe('normalizeServerEvent (production runtime)', () => {
       const ev = normalizeServerEvent(fixture.serverEvents[key]);
       expect(ev.type, `${key} should be known`).not.toBe('unknown');
     }
+    // serverEvents consumed-set parity (CG-01 §5.1): the known normalize keys
+    // plus the existing unknownEvent must cover every fixture serverEvents
+    // root key — no orphan case, no untested key.
+    const consumed = new Set<string>([...knownKeys, 'unknownEvent']);
+    expect([...consumed].sort()).toEqual(Object.keys(fixture.serverEvents).sort());
+    // unknownEvent normalizes to sanitized UnknownServerEvent (not a known type).
+    const unk = normalizeServerEvent(fixture.serverEvents.unknownEvent) as UnknownServerEvent;
+    expect(unk.type).toBe('unknown');
+    expect(unk.reason).toBe('unknown-type');
   });
 
   it('attached-gap normalizes with the nested GapRange', () => {
@@ -135,6 +157,7 @@ describe('normalizeServerEvent (production runtime)', () => {
       'outputStructuredExpectedNull', 'errorRequestIdNull', 'errorDetailsNull',
       'sessionStateRestartFalse', 'sessionStateSeqAlone',
       'backfillFrameOutOfRange', 'backfillFrameNonAscending',
+      'authRevokedUnknownReason', 'authRevokedNullReason',
     ] as const;
     for (const key of serverInvalid) {
       const ev = normalizeServerEvent(fixture.invalid[key]);
@@ -148,6 +171,9 @@ describe('normalizeServerEvent (production runtime)', () => {
     expect((normalizeServerEvent(fixture.invalid.knownAttachedUnknownHistoryState) as UnknownServerEvent).fallback).toBe('mark-history-gap');
     expect((normalizeServerEvent(fixture.invalid.knownSessionUnknownState) as UnknownServerEvent).fallback).toBe('mark-session-unavailable');
     expect((normalizeServerEvent(fixture.invalid.unsafeSeqAboveMax) as UnknownServerEvent).fallback).toBe('mark-history-gap');
+    // CG-01 fail-closed: unknown/null auth.revoked reason → force-unauthorized.
+    expect((normalizeServerEvent(fixture.invalid.authRevokedUnknownReason) as UnknownServerEvent).fallback).toBe('force-unauthorized');
+    expect((normalizeServerEvent(fixture.invalid.authRevokedNullReason) as UnknownServerEvent).fallback).toBe('force-unauthorized');
   });
 
   it('never throws on arbitrary input', () => {
@@ -241,6 +267,7 @@ describe('invalid fixture consumption', () => {
       'outputStructuredExpectedNull', 'errorRequestIdNull', 'errorDetailsNull',
       'sessionStateRestartFalse', 'sessionStateSeqAlone',
       'backfillFrameOutOfRange', 'backfillFrameNonAscending',
+      'authRevokedUnknownReason', 'authRevokedNullReason',
       // compile @ts-expect-error
       'confirmFalse', 'confirmNull', 'confirmMissing',
     ]);
@@ -262,5 +289,97 @@ describe('union shapes', () => {
     expectTypeOf<{ state: 'you' }>().toMatchTypeOf<ControlSnapshot>();
     expectTypeOf<{ state: 'desktop' }>().toMatchTypeOf<ControlSnapshot>();
     expectTypeOf<{ state: 'other' }>().not.toMatchTypeOf<ControlSnapshot>();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (7) CG-01 auth.revoked canonical reason + close directive contract.
+// Addendum §2.2 symbols, §3.2 TS enforcement, §4 compatibility, §7 C1-C6.
+// C7/C8 (producer fence→event→close sequencing) require the future producer /
+// close writer (M2-A scope) and are NOT tested here: this module only provides
+// the contract symbols and the production normalizer.
+// ---------------------------------------------------------------------------
+describe('CG-01 auth.revoked contract', () => {
+  it('C1: canonical reason + close code are the sole symbols (parity with fixture)', () => {
+    expect(AUTH_REVOKED_REASON_DEVICE_REVOKED).toBe('device_revoked');
+    expect([...KNOWN_AUTH_REVOKED_REASONS]).toEqual(['device_revoked']);
+    expect(AUTH_REVOKED_CLOSE_CODE).toBe(1008);
+    // The reason tuple is distinct from the event-type/error tuples.
+    expect(KNOWN_SERVER_EVENT_TYPES).not.toContain('device_revoked');
+    expect(KNOWN_ERROR_CODES).not.toContain('device_revoked');
+  });
+
+  it('C2: normalize accepts the canonical fixture event (valid producer bytes)', () => {
+    const ev = normalizeServerEvent(fixture.serverEvents.authRevoked) as AuthRevokedEvent;
+    expect(ev.type).toBe('auth.revoked');
+    expect(ev.reason).toBe(AUTH_REVOKED_REASON_DEVICE_REVOKED);
+    expect(ev.reason).toBe('device_revoked');
+  });
+
+  it('C3+C4: unknown / null / missing / empty / wrong-type reason all fail-closed to force-unauthorized', () => {
+    const cases: Array<{ label: string; input: unknown }> = [
+      { label: 'unknown', input: fixture.invalid.authRevokedUnknownReason },
+      { label: 'null', input: fixture.invalid.authRevokedNullReason },
+      { label: 'missing', input: { type: 'auth.revoked', occurredAt: 't' } },
+      { label: 'empty', input: { type: 'auth.revoked', reason: '', occurredAt: 't' } },
+      { label: 'wrong-type', input: { type: 'auth.revoked', reason: 123, occurredAt: 't' } },
+    ];
+    for (const c of cases) {
+      const ev = normalizeServerEvent(c.input) as UnknownServerEvent;
+      expect(ev.type, `${c.label} must normalize to unknown`).toBe('unknown');
+      expect(ev.fallback, `${c.label} must force-unauthorized`).toBe('force-unauthorized');
+      // Sanitization: raw reason value is NOT retained.
+      const serialized = JSON.stringify(ev);
+      expect(serialized, `${c.label} must not retain raw reason`).not.toContain('future_reason_fixture_only');
+    }
+    // Unknown reason is classified as unknown-enum; null/missing as malformed/unknown.
+    const unkReason = normalizeServerEvent(fixture.invalid.authRevokedUnknownReason) as UnknownServerEvent;
+    expect(unkReason.reason).toBe('unknown-enum');
+  });
+
+  it('legacy open-string consumer probe: a synthetic future reason still forces unauthorized by event TYPE', () => {
+    // Simulates an OLD consumer that still treated reason as an open string.
+    // The reducer MUST force-unauthorized on type==='auth.revoked' regardless of
+    // the reason value; it must never ignore/default on an unknown reason.
+    const syntheticFuture = { type: 'auth.revoked', reason: 'session_killed_future', occurredAt: '2099-01-01T00:00:00Z' };
+    const ev = normalizeServerEvent(syntheticFuture) as UnknownServerEvent;
+    expect(ev.type).toBe('unknown'); // new consumer sanitizes unknown reason
+    expect(ev.fallback).toBe('force-unauthorized'); // but still revokes
+    expect(ev.wireType).toBe('auth.revoked'); // the wire type is retained for diagnostics
+    // The raw future reason value must NOT leak into the sanitized event.
+    expect(JSON.stringify(ev)).not.toContain('session_killed_future');
+  });
+
+  it('version semantics: old/new/future reason matrix is compatible and fail-closed', () => {
+    // old server (fixture bytes) → new consumer: device_revoked is known.
+    const oldBytes = fixture.serverEvents.authRevoked;
+    const oldDecoded = normalizeServerEvent(oldBytes);
+    expect(oldDecoded.type).toBe('auth.revoked');
+    // new server → old consumer (open-string reason): the same three fields are
+    // accepted by a legacy normalizer that only checked non-empty reason. This
+    // is the compatibility obligation: old readers accept the canonical bytes.
+    const legacyOpenStringAccept = (input: unknown): boolean => {
+      const o = input as Record<string, unknown>;
+      return o?.type === 'auth.revoked' && typeof o.reason === 'string' && (o.reason as string).length > 0;
+    };
+    expect(legacyOpenStringAccept(oldBytes)).toBe(true);
+    // future unknown reason → old consumer: must still revoke by TYPE (fail-closed).
+    const futureReason = { type: 'auth.revoked', reason: 'device_killed_future', occurredAt: '2099-01-01T00:00:00Z' };
+    expect(legacyOpenStringAccept(futureReason)).toBe(true); // old accepts the string
+    // future noncanonical → new consumer: sanitized Unknown + force-unauthorized.
+    expect((normalizeServerEvent(futureReason) as UnknownServerEvent).fallback).toBe('force-unauthorized');
+    // Wire shape unchanged: still the same three fields, no v2/negotiation.
+    expect(Object.keys(oldBytes as object).sort()).toEqual(['occurredAt', 'reason', 'type']);
+  });
+
+  it('C6: producer narrowing — reason literal satisfies AuthRevokedReason, arbitrary string does not (compile barrier)', () => {
+    // The canonical constant is assignable to the closed type.
+    const r: AuthRevokedReason = AUTH_REVOKED_REASON_DEVICE_REVOKED;
+    expect(r).toBe('device_revoked');
+    // @ts-expect-error an arbitrary string literal is NOT assignable to the closed union
+    const bad: AuthRevokedReason = 'session_killed';
+    void bad;
+    // The AuthRevokedEvent.reason field is the closed type, not open string.
+    expectTypeOf<AuthRevokedEvent['reason']>().toEqualTypeOf<AuthRevokedReason>();
   });
 });

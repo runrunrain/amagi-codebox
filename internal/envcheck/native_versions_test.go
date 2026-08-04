@@ -120,7 +120,7 @@ func TestScanClaudeNativeVersionsDir_SortsNewestFirstAndSkipsCorrupted(t *testin
 	withClaudeUserHome(t, home)
 
 	// Healthy binaries (5MB each). Threshold set so they pass.
-	withIntegrityThreshold(t, 1 << 20) // 1MB
+	withIntegrityThreshold(t, 1<<20) // 1MB
 	writeHealthyNativeVersion(t, home, "2.1.150")
 	writeHealthyNativeVersion(t, home, "2.1.181")
 	writeHealthyNativeVersion(t, home, "2.1.143")

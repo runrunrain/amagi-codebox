@@ -227,7 +227,7 @@ func TestClearStoppedSessionsWithoutCodexHomeIsolation(t *testing.T) {
 func TestStopAllSessionsWithoutCodexHomeIsolation(t *testing.T) {
 	app := newTestApp(t)
 	_ = app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
-	app.StopAllSessions()
+	app.stopAllSessionsForShutdown()
 }
 
 // --- Model name normalization ---

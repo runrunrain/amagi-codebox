@@ -13,9 +13,9 @@
         <button class="btn btn-ghost" @click="handleOpenDetail" title="会话详情">会话详情</button>
         <button
           class="btn btn-ghost danger"
-          :disabled="stopping || session?.status !== 'running'"
+          :disabled="isStopping || session?.status !== 'running'"
           @click="handleStop"
-        >{{ stopping ? '停止中…' : '停止' }}</button>
+        >{{ isStopping ? '停止中…' : '停止' }}</button>
       </div>
     </div>
 
@@ -88,7 +88,7 @@ const props = defineProps<{ sessionId: string }>()
 
 const sessionStore = useSessionStore()
 const { stopAndRefresh, refresh } = useSessionList()
-const { showSuccess, showError, showInfo } = useToast()
+const { showError, showInfo } = useToast()
 const platformCaps = usePlatformCapabilities()
 
 // one engine instance per TerminalView; the whole tree below shares it.
@@ -113,10 +113,14 @@ const sessionTitle = computed(() => {
   return `#${s.id} ${dir || '会话'}`
 })
 
+const isStopping = computed(() => stopping.value || session.value?.status === 'stopping')
+
 const statusColor = computed(() => {
   const s = session.value
   if (!s) return 'var(--tertiary)'
-  return s.status === 'running' ? 'var(--success)' : 'var(--tertiary)'
+  if (s.status === 'running') return 'var(--success)'
+  if (s.status === 'stopping') return 'var(--warning, #FF9500)'
+  return 'var(--tertiary)'
 })
 
 onMounted(async () => {
@@ -247,7 +251,9 @@ async function handleStop() {
   stopping.value = true
   try {
     await stopAndRefresh(s.id)
-    showSuccess('会话已停止')
+    // Stop success means the signal was accepted, not that Wait has produced a
+    // terminal receipt. The exit callback/poll owns the eventual completion.
+    showInfo('已请求停止，正在等待进程退出')
   } catch (err) {
     showError('停止失败: ' + err)
   } finally {

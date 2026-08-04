@@ -246,11 +246,11 @@ func TestUpdateProvider_ValidationErrors(t *testing.T) {
 	validJSON := buildExportProviderJSON(t, "glm-4", "", "")
 
 	tests := []struct {
-		name        string
-		oldName     string
-		newName     string
-		jsonStr     string
-		wantSubstr  string
+		name       string
+		oldName    string
+		newName    string
+		jsonStr    string
+		wantSubstr string
 	}{
 		{"empty oldName", "", "new", validJSON, "provider name is required"},
 		{"empty newName", "glm", "  ", validJSON, "provider name is required"},

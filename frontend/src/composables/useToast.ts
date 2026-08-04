@@ -1,6 +1,6 @@
 import { reactive } from 'vue';
 
-export type ToastType = 'success' | 'error' | 'info';
+export type ToastType = 'success' | 'error' | 'info' | 'warn';
 
 export interface Toast {
   id: number;
@@ -35,12 +35,14 @@ export function useToast() {
   const showSuccess = (message: string, duration?: number) => showToast(message, 'success', duration);
   const showError = (message: string, duration?: number) => showToast(message, 'error', duration);
   const showInfo = (message: string, duration?: number) => showToast(message, 'info', duration);
+  const showWarn = (message: string, duration?: number) => showToast(message, 'warn', duration);
 
   return {
     toasts,
     showSuccess,
     showError,
     showInfo,
+    showWarn,
     removeToast
   };
 }

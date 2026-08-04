@@ -6,17 +6,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // fakeTitleLogger 是 titleLogger 的测试桩，记录最近一次 Info 调用。
+//
+// 必须并发安全：生产环境的 titleLogger 实现（logging.Service.Info）会被多个
+// TrackTitle goroutine 共享调用（见 app.go 的 go session.TrackTitle(...) 循环），
+// 故 Info 的隐含契约是"可被多 goroutine 并发调用"。测试桩用 mu 保护 lastMsg
+// 以满足该契约——此前 lastMsg 无锁写入，TestTrackTitle_PlanR_LockedNoCrosstalk
+// 把同一个 *fakeTitleLogger 传给两个并发 TrackTitle goroutine，触发 data race。
 type fakeTitleLogger struct {
+	mu      sync.Mutex
 	lastMsg string
 }
 
 func (f *fakeTitleLogger) Info(source, message string, detail ...string) {
+	f.mu.Lock()
 	f.lastMsg = message
+	f.mu.Unlock()
 }
 
 // writeJSONLFixture 在 baseDir 下创建一个 .claude/projects/<encoded-workDir>/ 子目录，

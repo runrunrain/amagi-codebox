@@ -185,6 +185,7 @@ func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *s
 //   - workDir 路径（"X:\WorkSpace\amagi-codebox"）
 //   - slash command 的 XML 标签（"<command-message>amagi:pull</command-message>"）
 //   - 其他纯路径行
+//
 // 直接取首行会把这些噪音设为标题。本函数跳过它们，找到首条描述性内容作标题。
 //
 // 不跳过的内容：markdown 标题（## Task Contract）、正常自然语言消息等。

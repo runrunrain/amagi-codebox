@@ -1,8 +1,8 @@
 <!--
   PG-05 桌面远程控制中心（设置 > 远程访问）· 六卡重写
   设计权威：前端视觉交互设计 v1.2 §PG-05/§PG-06/§5/§6 + 视觉风格 v2.2 VT 令牌。
-  自上而下：① 远程服务开关卡 → ② LAN 暴露确认卡 → ③ 配对卡 → ④ 可信设备卡
-           → ⑤ 活动控制卡（M3 占位，诚实空态）→ ⑥ 本地可见记录卡。
+  自上而下：⓪ 外部进程清理恢复卡 → ① 远程服务开关卡 → ② LAN 暴露确认卡 → ③ 配对卡
+           → ④ 可信设备卡 → ⑤ 活动控制卡（M3 占位，诚实空态）→ ⑥ 本地可见记录卡。
   硬规则：不展示主凭据/Provider 密钥的"方便复制"入口（§4.2，本页不渲染 Token）；
   危险动作一律 PG-06 确认 + 本地记录；配对 QR 为主路径。
 -->
@@ -21,6 +21,9 @@
         <span class="rc-error-detail">{{ statusError.detail }}</span>
         <button type="button" class="rc-link" data-testid="status-retry" @click="loadAll">重试</button>
       </div>
+
+      <!-- ⓪ 外部进程清理恢复卡（M2-INT R12：legacy/uncertainty 恢复闭环入口，持久可发现） -->
+      <ExternalCleanupRecoveryCard />
 
       <!-- ① 远程服务开关卡 -->
       <RemoteServiceCard
@@ -78,6 +81,7 @@ import {
 } from '../../api/remote';
 import { classifyRemoteError, type ClassifiedError } from '../../components/remote/remoteShared';
 import RemoteServiceCard from '../../components/remote/RemoteServiceCard.vue';
+import ExternalCleanupRecoveryCard from '../../components/remote/ExternalCleanupRecoveryCard.vue';
 import LanExposureCard from '../../components/remote/LanExposureCard.vue';
 import PairingCard from '../../components/remote/PairingCard.vue';
 import TrustedDevicesCard from '../../components/remote/TrustedDevicesCard.vue';

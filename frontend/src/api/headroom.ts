@@ -1,16 +1,16 @@
 /**
  * Headroom API
  * Encapsulates Headroom context-compression proxy operations.
- * Directly wraps wailsjs/go/headroom/HeadroomService.
+ * M3-A2: raw HeadroomService removed from Bind; mutations go through App facade (C-01).
  */
 
 import {
-  Start,
-  Stop,
-  IsRunning,
-  GetStatus,
-  GetPort,
-} from '../../wailsjs/go/headroom/HeadroomService';
+  HeadroomStart,
+  HeadroomStop,
+  HeadroomIsRunning,
+  HeadroomGetStatus,
+  HeadroomGetPort,
+} from '../../wailsjs/go/main/App';
 import { GetHeadroomSavings, GetHeadroomPerfByClient } from '../../wailsjs/go/main/App';
 
 import { headroom } from '../../wailsjs/go/models';
@@ -27,7 +27,7 @@ type ClientPerfStat = headroom.ClientPerfStat;
  */
 export async function startHeadroom(backendUrl: string): Promise<void> {
   try {
-    await Start(backendUrl);
+    await HeadroomStart(backendUrl);
   } catch (error) {
     console.error('[api.headroom.startHeadroom]', error);
     throw error;
@@ -39,7 +39,7 @@ export async function startHeadroom(backendUrl: string): Promise<void> {
  */
 export async function stopHeadroom(): Promise<void> {
   try {
-    await Stop();
+    await HeadroomStop();
   } catch (error) {
     console.error('[api.headroom.stopHeadroom]', error);
     throw error;
@@ -51,7 +51,7 @@ export async function stopHeadroom(): Promise<void> {
  */
 export async function isHeadroomRunning(): Promise<boolean> {
   try {
-    return await IsRunning();
+    return await HeadroomIsRunning();
   } catch (error) {
     console.error('[api.headroom.isHeadroomRunning]', error);
     throw error;
@@ -63,7 +63,7 @@ export async function isHeadroomRunning(): Promise<boolean> {
  */
 export async function getHeadroomStatus(): Promise<HeadroomStatus> {
   try {
-    return await GetStatus();
+    return await HeadroomGetStatus();
   } catch (error) {
     console.error('[api.headroom.getHeadroomStatus]', error);
     throw error;
@@ -75,7 +75,7 @@ export async function getHeadroomStatus(): Promise<HeadroomStatus> {
  */
 export async function getHeadroomPort(): Promise<number> {
   try {
-    return await GetPort();
+    return await HeadroomGetPort();
   } catch (error) {
     console.error('[api.headroom.getHeadroomPort]', error);
     throw error;

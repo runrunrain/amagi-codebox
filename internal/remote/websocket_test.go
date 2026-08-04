@@ -2,7 +2,6 @@ package remote
 
 import (
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,53 +23,14 @@ import (
 )
 
 type websocketTestApp struct {
-	mu               sync.Mutex
-	outputCallbacks  map[string]func([]byte)
-	resizeCallbacks  map[string]func(int, int)
-	ptyResizeCalls   int
-	inputWrites      chan string
-	history          []byte
-	liveDuringAttach []byte
+	mu             sync.Mutex
+	ptyResizeCalls int
+	inputWrites    chan string
 }
 
 func newWebsocketTestApp() *websocketTestApp {
 	return &websocketTestApp{
-		outputCallbacks: make(map[string]func([]byte)),
-		resizeCallbacks: make(map[string]func(int, int)),
-		inputWrites:     make(chan string, 4),
-		history:         []byte("history"),
-	}
-}
-
-func (a *websocketTestApp) AttachSessionObserver(sessionID string, id string, outputCB func(data []byte), resizeCB func(cols, rows int)) ([]byte, int, int, error) {
-	a.mu.Lock()
-	a.outputCallbacks[id] = outputCB
-	a.resizeCallbacks[id] = resizeCB
-	liveDuringAttach := append([]byte(nil), a.liveDuringAttach...)
-	a.mu.Unlock()
-	if len(liveDuringAttach) > 0 {
-		outputCB(liveDuringAttach)
-	}
-	return append([]byte(nil), a.history...), 132, 43, nil
-}
-
-func (a *websocketTestApp) DetachSessionObserver(sessionID string, id string) {
-	a.mu.Lock()
-	delete(a.outputCallbacks, id)
-	delete(a.resizeCallbacks, id)
-	a.mu.Unlock()
-}
-
-func (a *websocketTestApp) emitResize(cols, rows int) {
-	a.mu.Lock()
-	callbacks := make([]func(int, int), 0, len(a.resizeCallbacks))
-	for _, cb := range a.resizeCallbacks {
-		callbacks = append(callbacks, cb)
-	}
-	a.mu.Unlock()
-
-	for _, cb := range callbacks {
-		cb(cols, rows)
+		inputWrites: make(chan string, 4),
 	}
 }
 
@@ -90,30 +50,6 @@ func (a *websocketTestApp) PtyResize(sessionID string, cols, rows int) error {
 	a.ptyResizeCalls++
 	a.mu.Unlock()
 	return nil
-}
-
-func (a *websocketTestApp) RegisterOutputCallback(sessionID string, id string, cb func(data []byte)) {
-	a.mu.Lock()
-	a.outputCallbacks[id] = cb
-	a.mu.Unlock()
-}
-func (a *websocketTestApp) UnregisterOutputCallback(sessionID string, id string) {
-	a.mu.Lock()
-	delete(a.outputCallbacks, id)
-	a.mu.Unlock()
-}
-func (a *websocketTestApp) RegisterExitCallback(sessionID string, id string, cb func(exitCode uint32)) {
-}
-func (a *websocketTestApp) UnregisterExitCallback(sessionID string, id string) {}
-func (a *websocketTestApp) RegisterResizeCallback(sessionID string, id string, cb func(cols, rows int)) {
-	a.mu.Lock()
-	a.resizeCallbacks[id] = cb
-	a.mu.Unlock()
-}
-func (a *websocketTestApp) UnregisterResizeCallback(sessionID string, id string) {
-	a.mu.Lock()
-	delete(a.resizeCallbacks, id)
-	a.mu.Unlock()
 }
 
 func (a *websocketTestApp) GetAppInfo() map[string]any         { return map[string]any{} }
@@ -155,9 +91,15 @@ func (a *websocketTestApp) GetPathsService() *paths.PathsService    { return nil
 func (a *websocketTestApp) GetConfigService() *config.ConfigService { return nil }
 func (a *websocketTestApp) SetRemotePort(port int) error            { return nil }
 
-func TestWebSocketControllerReceivesDimensionsWithoutOwningResize(t *testing.T) {
+// TestWebSocketLegacyInputOnlyNoOutputBypass (M-003): the legacy /ws/terminal
+// path is INPUT-ONLY. It must NOT deliver output/history/dimensions/exit frames
+// (the naked-SessionID callback bypass is removed; all PTY output/exit flows
+// through the run-scoped projector). Input (PtyWrite) is still dispatched, and a
+// remote resize frame does not call PtyResize (desktop remains geometry owner).
+func TestWebSocketLegacyInputOnlyNoOutputBypass(t *testing.T) {
 	app := newWebsocketTestApp()
 	srv := NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
+	srv.SetPtyBridge(app) // M3-A2: unbound PTY bridge (design §8.6.3)
 	t.Cleanup(srv.log.Close)
 
 	httpServer := httptest.NewServer(srv.buildHandler())
@@ -172,73 +114,36 @@ func TestWebSocketControllerReceivesDimensionsWithoutOwningResize(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	initial := readDimensionsFrame(t, conn)
-	if initial.Cols != 132 || initial.Rows != 43 {
-		t.Fatalf("initial dimensions = %dx%d, want 132x43", initial.Cols, initial.Rows)
+	// M-003: no output/dimensions/history frame should arrive — the bypass is gone.
+	// A short read deadline must time out (no server→client data frames).
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var msg serverMsg
+	if err := conn.ReadJSON(&msg); err == nil {
+		t.Fatalf("M-003 regression: legacy path delivered a %q frame (output bypass not removed)", msg.Type)
 	}
 
-	app.emitResize(120, 35)
-	live := readDimensionsFrame(t, conn)
-	if live.Cols != 120 || live.Rows != 35 {
-		t.Fatalf("live dimensions = %dx%d, want 120x35", live.Cols, live.Rows)
-	}
-
-	if err := conn.WriteJSON(clientMsg{Type: "resize", Cols: 88, Rows: 24}); err != nil {
-		t.Fatalf("write resize frame: %v", err)
-	}
+	// Input is still dispatched (legacy loopback compat).
 	if err := conn.WriteJSON(clientMsg{Type: "input", Data: "abc"}); err != nil {
 		t.Fatalf("write input frame: %v", err)
 	}
-
 	select {
-	case <-app.inputWrites:
+	case got := <-app.inputWrites:
+		if got != "abc" {
+			t.Fatalf("input data = %q, want abc", got)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("server did not process input after resize frame")
+		t.Fatal("server did not process input")
 	}
 
+	// A resize frame must not call PtyResize (desktop owns geometry).
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatalf("reset read deadline: %v", err)
+	}
+	_ = conn.WriteJSON(clientMsg{Type: "resize", Cols: 88, Rows: 24})
 	if got := app.resizeCallCount(); got != 0 {
 		t.Fatalf("remote resize should not call PtyResize, got %d calls", got)
-	}
-}
-
-func TestWebSocketReplaysHistoryBeforeBufferedLiveOutput(t *testing.T) {
-	app := newWebsocketTestApp()
-	app.history = []byte("existing transcript")
-	app.liveDuringAttach = []byte("live after attach")
-	srv := NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
-	t.Cleanup(srv.log.Close)
-
-	httpServer := httptest.NewServer(srv.buildHandler())
-	t.Cleanup(httpServer.Close)
-
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/terminal/session-1?token=" + url.QueryEscape(srv.GetToken()) + "&mode=observer"
-	hdr := http.Header{}
-	hdr.Set("Origin", httpServer.URL)
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	first := readNextFrame(t, conn)
-	if first.Type != "output" || !first.History {
-		t.Fatalf("first frame = type %q history=%v, want history output", first.Type, first.History)
-	}
-	if got := decodeServerMsgData(t, first); got != "existing transcript" {
-		t.Fatalf("history data = %q, want existing transcript", got)
-	}
-
-	second := readNextFrame(t, conn)
-	if second.Type != "dimensions" {
-		t.Fatalf("second frame type = %q, want dimensions before live output", second.Type)
-	}
-
-	third := readNextFrame(t, conn)
-	if third.Type != "output" || third.History {
-		t.Fatalf("third frame = type %q history=%v, want live output", third.Type, third.History)
-	}
-	if got := decodeServerMsgData(t, third); got != "live after attach" {
-		t.Fatalf("live data = %q, want live after attach", got)
 	}
 }
 
@@ -281,26 +186,6 @@ func TestServerMsgSerializesOutputCompatibilityFields(t *testing.T) {
 	}
 }
 
-func readDimensionsFrame(t *testing.T, conn *websocket.Conn) serverMsg {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if err := conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
-			t.Fatalf("set read deadline: %v", err)
-		}
-
-		var msg serverMsg
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("read websocket frame: %v", err)
-		}
-		if msg.Type == "dimensions" {
-			return msg
-		}
-	}
-	t.Fatal("timed out waiting for dimensions frame")
-	return serverMsg{}
-}
-
 func readNextFrame(t *testing.T, conn *websocket.Conn) serverMsg {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -311,13 +196,4 @@ func readNextFrame(t *testing.T, conn *websocket.Conn) serverMsg {
 		t.Fatalf("read websocket frame: %v", err)
 	}
 	return msg
-}
-
-func decodeServerMsgData(t *testing.T, msg serverMsg) string {
-	t.Helper()
-	decoded, err := base64.StdEncoding.DecodeString(msg.Data)
-	if err != nil {
-		t.Fatalf("decode message data: %v", err)
-	}
-	return string(decoded)
 }

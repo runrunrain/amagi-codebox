@@ -61,6 +61,9 @@ export interface SessionDetail extends SessionSummary {
   latestSeq: Seq; // required even when 0
 }
 
+/** SessionList — GET /sessions top-level array. Empty list MUST be `[]` (design §5.3). */
+export type SessionList = SessionSummary[];
+
 /** CreateSessionRequest — cliType required; workdir optional (host default). */
 export interface CreateSessionRequest {
   cliType: CLIType;
@@ -108,3 +111,13 @@ export const V1_REST_ENDPOINTS = [
  */
 export const V1_ENDPOINT_PAIRING_COMPLETE: RestEndpoint = V1_REST_ENDPOINTS[0];
 export const V1_ENDPOINT_HOST_SUMMARY: RestEndpoint = V1_REST_ENDPOINTS[1];
+// Session endpoints (design §5.2 indices 2-9). Same additive handle pattern as
+// index 0/1 — direct references INTO the frozen manifest, never copied values.
+export const V1_ENDPOINT_SESSIONS_LIST: RestEndpoint = V1_REST_ENDPOINTS[2];
+export const V1_ENDPOINT_SESSION_DETAIL: RestEndpoint = V1_REST_ENDPOINTS[3];
+export const V1_ENDPOINT_SESSION_CREATE: RestEndpoint = V1_REST_ENDPOINTS[4];
+export const V1_ENDPOINT_SESSION_STOP: RestEndpoint = V1_REST_ENDPOINTS[5];
+export const V1_ENDPOINT_SESSION_RESTART: RestEndpoint = V1_REST_ENDPOINTS[6];
+export const V1_ENDPOINT_SESSION_REMOVE: RestEndpoint = V1_REST_ENDPOINTS[7];
+export const V1_ENDPOINT_CONTROL_ACQUIRE: RestEndpoint = V1_REST_ENDPOINTS[8];
+export const V1_ENDPOINT_CONTROL_RELEASE: RestEndpoint = V1_REST_ENDPOINTS[9];
