@@ -78,11 +78,22 @@ func trustedClaudeProjectConfigRoot() string {
 	if err != nil || strings.TrimSpace(cwd) == "" {
 		return ""
 	}
-	root, err := filepath.Abs(cwd)
+	absCwd, err := filepath.Abs(cwd)
 	if err != nil {
 		return ""
 	}
-	root = filepath.Clean(root)
+	// Normalize through EvalSymlinks so the trusted root uses the same canonical
+	// name form as the target side (isConfigPathAllowed resolves the target via
+	// EvalSymlinks). On Windows the cwd/TEMP may retain an 8.3 short name (e.g.
+	// C:\Users\ADMINI~1\...) while the resolved target is in long form; without
+	// this normalization the two sides diverge and legitimate project-level
+	// config writes are rejected.
+	root, err := filepath.EvalSymlinks(absCwd)
+	if err != nil {
+		root = filepath.Clean(absCwd)
+	} else {
+		root = filepath.Clean(root)
+	}
 	if isProtectedConfigPath(root) {
 		return ""
 	}
@@ -106,6 +117,11 @@ func pathIsUnderUserHome(path string) bool {
 	if err != nil || strings.TrimSpace(homeDir) == "" {
 		return false
 	}
+	// Canonicalize to match the (already normalized) `path` name form; the home
+	// dir may otherwise retain 8.3 short names on some Windows configurations.
+	if resolved, err := filepath.EvalSymlinks(homeDir); err == nil && strings.TrimSpace(resolved) != "" {
+		homeDir = resolved
+	}
 	return cleanPathHasPrefix(path, homeDir)
 }
 
@@ -113,6 +129,14 @@ func pathIsUnderTemp(path string) bool {
 	tempDir := os.TempDir()
 	if strings.TrimSpace(tempDir) == "" {
 		return false
+	}
+	// os.TempDir() reflects the TEMP/TMP env var, which on Windows frequently
+	// retains an 8.3 short name (e.g. C:\Users\ADMINI~1\AppData\Local\Temp).
+	// Resolve it to the canonical long form so it matches the (already
+	// normalized) `path`; otherwise a legitimate TEMP-based trusted root would
+	// be rejected purely due to name-form asymmetry.
+	if resolved, err := filepath.EvalSymlinks(tempDir); err == nil && strings.TrimSpace(resolved) != "" {
+		tempDir = resolved
 	}
 	return cleanPathHasPrefix(path, tempDir)
 }

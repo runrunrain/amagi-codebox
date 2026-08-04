@@ -903,7 +903,11 @@ func TestUpdate_FirstCommandSucceedsButVersionUnchanged_FallsBack(t *testing.T) 
 }
 
 func TestUpdate_OpenCodeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
-	tmpDir := t.TempDir()
+	// Canonical (long-name) temp dir: the business code resolves executable
+	// paths via EvalSymlinks and emits those resolved paths in error messages,
+	// so the assertions must compare against the same canonical form. On
+	// Windows the raw TEMP uses 8.3 short names that would not substring-match.
+	tmpDir := canonicalTempDir(t)
 	oldBinDir := filepath.Join(tmpDir, "old-bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
 	npmBinDir := filepath.Join(npmPrefix, "bin")
@@ -1199,7 +1203,8 @@ func TestUpdate_OpenCodeNPMCandidateNewAndDefaultSamePath_Succeeds(t *testing.T)
 }
 
 func TestUpdate_CodexNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
-	tmpDir := t.TempDir()
+	// Canonical (long-name) temp dir: see OpenCode variant for rationale.
+	tmpDir := canonicalTempDir(t)
 	oldBinDir := filepath.Join(tmpDir, "old-bin", "node_modules", "@openai", "codex", "bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
 	npmBinDir := filepath.Join(npmPrefix, "bin")
@@ -1582,7 +1587,8 @@ func (r *codexStaleNPMCleanupRunner) brewCalled() bool {
 }
 
 func TestUpdate_ClaudeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {
-	tmpDir := t.TempDir()
+	// Canonical (long-name) temp dir: see OpenCode variant for rationale.
+	tmpDir := canonicalTempDir(t)
 	oldBinDir := filepath.Join(tmpDir, "old-bin", "node_modules", "@anthropic-ai", "claude-code", "bin")
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
 	npmBinDir := filepath.Join(npmPrefix, "bin")

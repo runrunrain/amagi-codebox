@@ -214,7 +214,12 @@ func TestGetCachedStatus_ReflectsLatestCheckAll(t *testing.T) {
 // for a single tool updates the cache for that tool without removing others.
 func TestGetCachedStatus_UpdatedAfterCheckOne(t *testing.T) {
 	// Arrange
-	tmpDir := t.TempDir()
+	// Canonical (long-name) temp dir: checkClaudeCode resolves the invocation
+	// path via EvalSymlinks and calls the runner with that long-name path, so
+	// the mock's path-prefix (built from tmpDir) must be in the same form to
+	// match; otherwise the version probe falls through to "not found" and the
+	// cached version stays empty.
+	tmpDir := canonicalTempDir(t)
 	claudePath := writeTestExecutable(t, tmpDir, "claude")
 	openCodePath := writeTestExecutable(t, tmpDir, "opencode")
 	codexPath := writeTestExecutable(t, tmpDir, "codex")
