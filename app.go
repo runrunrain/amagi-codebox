@@ -43,6 +43,7 @@ import (
 	"amagi-codebox/internal/updater"
 	"amagi-codebox/internal/usage"
 	"amagi-codebox/internal/workspace"
+	"amagi-codebox/internal/wslsetup"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -157,6 +158,7 @@ type App struct {
 	OpenCodeConfig  *opencodeconfig.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
+	WSLSetup        *wslsetup.Service
 
 	Capabilities platform.PlatformCapabilities
 	CLIResolver  platform.CLIResolver
@@ -262,6 +264,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		OpenCodeConfig:  opencodeconfig.NewService(),
 		EnvCheck:        envCheckSvc,
 		Usage:           usage.NewService(configDir, log),
+		WSLSetup:        wslsetup.NewService(log),
 		Capabilities:    capabilities,
 		CLIResolver:     platform.NewCLIResolver(capabilities),
 		FileOpener:      platform.NewFileOpener(processRunner),
@@ -371,6 +374,20 @@ func (a *App) InstallTool(tool string) (*envcheck.InstallResult, error) {
 		return nil, fmt.Errorf("install tool: %w", err)
 	}
 	return a.EnvCheck.Install(t)
+}
+
+// GetWSLCLIStatus 返回 WSL 内托管 CLI 的安装状态快照（发行版、原生 Node 版本、
+// 各 CLI 是否已原生安装）。非 Windows 或无可用发行版时 Available=false。
+func (a *App) GetWSLCLIStatus() wslsetup.Status {
+	return a.WSLSetup.GetStatus()
+}
+
+// InstallCLIToWSL 将指定 CLI（claude/opencode/codex）安装到 WSL 发行版内部：
+// 确保原生 Node 20 + 用户级 npm 前缀，再 npm i -g 对应包并包并校验。幂等：已原生安装
+// 则直接返回 AlreadyOK。Windows 有效。
+func (a *App) InstallCLIToWSL(tool string) (*wslsetup.InstallResult, error) {
+	a.Log.Info("wslsetup", "安装 CLI 到 WSL 请求", "tool="+tool)
+	return a.WSLSetup.InstallTool(tool)
 }
 
 // UpdateTool 更新指定 CLI 工具。
