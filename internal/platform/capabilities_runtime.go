@@ -34,7 +34,11 @@ func capabilitiesForTarget(osName string, arch string) PlatformCapabilities {
 		capabilities.BackgroundResidentSupported = true
 		capabilities.CloseAction = CloseActionHide
 		capabilities.SecureSecretStoreKind = "dpapi"
-		capabilities.DefaultShellKey = "pwsh"
+		// Default to WSL so terminals launched by CodeBox run in a Linux
+		// environment, sidestepping PowerShell-specific friction. When no usable
+		// WSL distro is installed the resolver falls back to pwsh/powershell/cmd
+		// via defaultShellForCapabilities' two-pass candidate scan.
+		capabilities.DefaultShellKey = "wsl"
 	case "darwin":
 		capabilities.EmbeddedTerminalSupported = true
 		capabilities.StandaloneTerminalSupported = false

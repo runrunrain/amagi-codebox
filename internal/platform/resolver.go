@@ -13,6 +13,11 @@ const (
 	BootstrapDirectCommand LaunchBootstrapMode = "direct-command"
 	BootstrapShellInline   LaunchBootstrapMode = "shell-inline"
 	BootstrapShellAttach   LaunchBootstrapMode = "shell-attach"
+	// BootstrapWSL runs the CLI inside a WSL distro. The PTY layer builds the
+	// `wsl.exe -d <distro> --cd <workdir> -- bash -lic '<cli>; exec bash -li'`
+	// command line; the CLI is resolved by the Linux PATH inside WSL, not by the
+	// Windows resolver, and injected env crosses the boundary via WSLENV.
+	BootstrapWSL LaunchBootstrapMode = "wsl"
 )
 
 type ResolvedCLI struct {
@@ -105,6 +110,58 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 	}
 	cliName := cliCandidates[0]
 
+	// WSL branch (evaluated BEFORE Windows CLI resolution): when the effective
+	// shell is WSL, the CLI runs inside the Linux distro and is resolved by the
+	// WSL PATH, NOT by the Windows resolver. We must therefore short-circuit here
+	// and NOT call resolveCLIForRequest, whose cli_not_found error would otherwise
+	// block the core scenario where the CLI is installed only inside WSL (the CLI
+	// legitimately does not exist on the Windows PATH). This also bypasses the
+	// Claude npm-shim forced-cmd logic below, which only addresses a Windows-side
+	// PowerShell/claude.ps1 problem that does not exist inside WSL. Injected
+	// auth/provider env crosses the boundary via WSLENV.
+	//
+	// The effective shell is the explicitly requested shell (already resolved
+	// above) or, when none was requested for an embedded launch, the capability
+	// default.
+	if r.capabilities.OS == "windows" &&
+		(normalizedLaunchMode(request.LaunchMode) == "" || normalizedLaunchMode(request.LaunchMode) == "embedded") {
+		wslShell := resolvedShell
+		wslSource := shellSource
+		if wslShell == nil {
+			def := defaultShellForCapabilities(resolvedEnv, r.capabilities)
+			if strings.EqualFold(def.Key, "wsl") {
+				wslShell = &def
+				wslSource = "default"
+			}
+		}
+		if wslShell != nil && strings.EqualFold(wslShell.Key, "wsl") {
+			wslEnv := appendWSLENVForwarding(append([]string(nil), resolvedEnv...))
+			spec := ResolvedLaunchSpec{
+				AppType:       request.AppType,
+				LaunchMode:    request.LaunchMode,
+				WorkDir:       request.WorkDir,
+				CLI:           ResolvedCLI{Name: cliName, Path: cliName, Args: append([]string(nil), request.CLIArgs...)},
+				Shell:         wslShell,
+				BootstrapMode: BootstrapWSL,
+				Env: ResolvedEnv{
+					Variables:        wslEnv,
+					EffectivePATH:    effectivePATH,
+					AddedPATHEntries: addedEntries,
+				},
+				PTYCols:       request.PTYCols,
+				PTYRows:       request.PTYRows,
+				ProcessPolicy: DefaultProcessPolicy(),
+				Diagnostics: LaunchDiagnostics{
+					ShellSource: wslSource,
+					CLISource:   "wsl-path",
+					PATHSources: append([]string(nil), pathSources...),
+					Warnings:    append([]string(nil), shellWarnings...),
+				},
+			}
+			return spec, nil
+		}
+	}
+
 	cli, diagnostics, err := r.resolveCLIForRequest(cliCandidates, request.CLIArgs, resolvedEnv, resolvedShell)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
@@ -169,7 +226,12 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 	}
 
 	if requestedShell == "" && shouldInlineWindowsScriptWrapper(r.capabilities.OS, cli.Path) {
-		shell := defaultShellForCapabilities(resolvedEnv, r.capabilities)
+		// A Windows script wrapper (.cmd/.bat/.ps1) must be run by a Windows shell
+		// (pwsh/cmd) that can interpret it inline. WSL cannot execute a Windows
+		// script, so explicitly resolve a non-WSL default here even when the
+		// capability default is wsl — otherwise this path would regress to a
+		// direct exec of the script file (which CreateProcess cannot launch).
+		shell := defaultNonWSLShellForCapabilities(resolvedEnv, r.capabilities)
 		resolvedShell = &shell
 		shellSource = "default"
 	}
@@ -178,6 +240,19 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		spec.BootstrapMode = BootstrapDirectCommand
 		spec.Diagnostics.ShellSource = shellSource
 		spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
+		return spec, nil
+	}
+
+	// A wsl shell reaching this tail means a non-embedded launch (e.g. terminal
+	// mode) requested WSL. The inline pwsh/cmd command construction below is not
+	// valid for wsl.exe, so fall back to a direct command rather than emit a
+	// malformed `wsl.exe <cli>` line. (Embedded WSL is fully handled by the WSL
+	// branch above.)
+	if strings.EqualFold(resolvedShell.Key, "wsl") {
+		spec.BootstrapMode = BootstrapDirectCommand
+		spec.Diagnostics.ShellSource = shellSource
+		spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings,
+			append(shellWarnings, "WSL shell is only supported for embedded launches; using a direct command for this launch mode")...)
 		return spec, nil
 	}
 
@@ -336,6 +411,12 @@ func resolveRequestedShell(requestedShell string, env []string, capabilities Pla
 
 	for _, candidate := range shellCandidates(capabilities.OS) {
 		if strings.EqualFold(candidate.key, trimmed) || strings.EqualFold(candidate.label, trimmed) {
+			// The wsl candidate requires a usable distro; without one, fall
+			// through to the default-shell fallback (pwsh/cmd) below.
+			if strings.EqualFold(candidate.key, "wsl") && !hasUsableWSLDistro(env) {
+				warnings = append(warnings, "requested shell \"wsl\" has no usable distro installed; falling back to the default shell")
+				break
+			}
 			if resolvedPath := resolveCommandPathForOS(capabilities.OS, trimmed, env); resolvedPath != "" {
 				return buildResolvedShell(candidate.key, resolvedPath, capabilities), "explicit", warnings
 			}
@@ -368,16 +449,47 @@ func defaultShellForCapabilities(env []string, capabilities PlatformCapabilities
 		if !strings.EqualFold(candidate.key, capabilities.DefaultShellKey) {
 			continue
 		}
-		if resolvedPath := resolveBinaryFromCandidatesForOS(capabilities.OS, candidate.candidates, env); resolvedPath != "" {
+		if resolvedPath := resolveShellCandidatePath(candidate, env, capabilities.OS); resolvedPath != "" {
 			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
 		}
 	}
 	for _, candidate := range shellCandidates(capabilities.OS) {
-		if resolvedPath := resolveBinaryFromCandidatesForOS(capabilities.OS, candidate.candidates, env); resolvedPath != "" {
+		if resolvedPath := resolveShellCandidatePath(candidate, env, capabilities.OS); resolvedPath != "" {
 			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
 		}
 	}
 	return ResolvedShell{}
+}
+
+// defaultNonWSLShellForCapabilities resolves the first available shell that is
+// NOT wsl. Used where a native Windows shell is required regardless of the WSL
+// default (e.g. inline execution of a Windows script wrapper).
+func defaultNonWSLShellForCapabilities(env []string, capabilities PlatformCapabilities) ResolvedShell {
+	for _, candidate := range shellCandidates(capabilities.OS) {
+		if strings.EqualFold(candidate.key, "wsl") {
+			continue
+		}
+		if resolvedPath := resolveShellCandidatePath(candidate, env, capabilities.OS); resolvedPath != "" {
+			return buildResolvedShell(candidate.key, resolvedPath, capabilities)
+		}
+	}
+	return ResolvedShell{}
+}
+
+// resolveShellCandidatePath resolves a shell candidate's binary path with one
+// extra gate: the `wsl` candidate additionally requires a usable (non-reserved)
+// WSL distro. Having wsl.exe present but no installed distro must NOT count as
+// resolved, otherwise WSL would be selected on machines where it cannot run and
+// the pwsh/cmd fallback would never be reached.
+func resolveShellCandidatePath(candidate shellCandidate, env []string, osName string) string {
+	resolvedPath := resolveBinaryFromCandidatesForOS(osName, candidate.candidates, env)
+	if resolvedPath == "" {
+		return ""
+	}
+	if strings.EqualFold(candidate.key, "wsl") && !hasUsableWSLDistro(env) {
+		return ""
+	}
+	return resolvedPath
 }
 
 func buildResolvedShell(key string, resolvedPath string, capabilities PlatformCapabilities) ResolvedShell {
@@ -388,6 +500,10 @@ func buildResolvedShell(key string, resolvedPath string, capabilities PlatformCa
 		loginStyle = "login"
 	}
 	switch key {
+	case "wsl":
+		// WSL command line is assembled in the PTY layer; no bootstrap flag here.
+		bootstrapArg = ""
+		loginStyle = "login"
 	case "pwsh", "powershell":
 		bootstrapArg = "-Command"
 		loginStyle = "interactive"
