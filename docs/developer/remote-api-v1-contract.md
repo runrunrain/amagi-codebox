@@ -33,7 +33,7 @@
 | `APIVersion` | string | Only `"v1"`; case-sensitive. |
 | `RequestID` | string | Non-empty opaque. REST header `X-Request-ID`; WS top-level `requestId`. Never carries credentials. Client may provide; server generates+echoes if absent. |
 | `SessionID` / `DeviceID` | string | Non-empty opaque; clients MUST NOT parse as UUID/prefix. |
-| `MessageID` | string | `input.id`; unique within one WS connection; repeated id is silently dropped (no re-write). |
+| `MessageID` | string | `input.id`; the idempotency key for a logical input. CG-03 (`contract-addendum-cg03.md`) upgrades the canonical scope to `(SessionID lifetime, authenticated DeviceID)`: session restart does not reset it, only session remove ends it. The canonical producer format is `msg-v1-` + 32 lowercase hex (39 ASCII bytes, 128 random bits, generated once via CSPRNG), which is also the opt-in discriminator for the per-session input ledger + ACK path. The wire consumer still accepts any legacy non-empty opaque ID (per-connection dedupe + silent success); legacy IDs MUST NOT be suppressed across connections. |
 | time | string | Server UTC, RFC3339Nano, `Z`; clients parse by ISO-8601. |
 | `Seq` | integer / TS `number` / Go `uint64` | `0`–`9007199254740991`; 0 = empty-history sentinel; real replay frames start at 1. Server guarantees JS safe integer before encoding. |
 | `chunk` / `input.data` | string | RFC 4648 standard padded Base64. Empty input forbidden; empty output produces no frame. |
@@ -50,7 +50,7 @@
 
 ### 2.3 Unknown / enum compatibility
 
-- TS distinguishes `KnownServerEvent` (7 frozen categories), `UnknownServerEvent` (sanitized: `{type:'unknown', wireType, reason, fallback, metadata}` — NO `raw`, field values or unknown field names), `DecodedServerEvent = KnownServerEvent | UnknownServerEvent`.
+- TS distinguishes `KnownServerEvent` (8 frozen categories — CG-03 adds the additive `input.ack`), `UnknownServerEvent` (sanitized: `{type:'unknown', wireType, reason, fallback, metadata}` — NO `raw`, field values or unknown field names), `DecodedServerEvent = KnownServerEvent | UnknownServerEvent`.
 - Unknown server `type`: keep connection, ignore business update, record sanitized diagnostic; NEVER throw/terminate.
 - Known event unknown optional field: ignored.
 - Unknown auth/control state ⇒ safe read-only/unauthorized fallback; unknown history state ⇒ render as possible gap; unknown session state ⇒ render as `unavailable`.
@@ -91,22 +91,23 @@ Key DTO invariants:
 ### 4.1 Client frames (all: required non-null `requestId`)
 
 - `attach`: `{type, requestId, apiVersion, sessionId, lastSeq?}`. Re-attach after attached ⇒ `bad_request`.
-- `input`: `{type, requestId, id, data}`. Controller only; observer gets `control.forbidden`; no JSON ACK; repeated `id` silently dropped.
+- `input`: `{type, requestId, id, data}`. Controller only; observer gets `control.forbidden`. CG-03: a new producer generates the canonical `id` (`msg-v1-` + 32 lowercase hex, 128-bit CSPRNG) once and binds it to immutable base64 `data` before the outbox accepts the entry; retries reuse the same `id` and append a fresh canonical `requestId` per attempt. Only canonical IDs opt into the per-session input ledger + ACK confirmation; legacy non-empty opaque `id`s keep the per-connection dedupe + silent-success path. No success ACK for legacy IDs.
 - `resize`: `{type, requestId, cols, rows}`. Controller only; no JSON ACK.
 - `backfill`: `{type, requestId, fromSeq, toSeq}`. Closed range, `1 <= fromSeq <= toSeq`; one correlated `backfill.result`.
 - `ping`: `{type, requestId}`. No payload/ACK; cannot substitute for attach/auth.
 
-### 4.2 Server events (7 categories)
+### 4.2 Server events (8 categories)
 
-- `session.attached`: `{type, requestId, apiVersion, sessionId, history:ReplayFrame[], earliestSeq, latestSeq, snapshot:FiveLayerSnapshot}`. `requestId` = attach `requestId`; at attach time connection=`connected`, auth=`authorized` only. `snapshot.history` is a conditional union (§4.4): `gap` state carries a nested `gap:GapRange`; `continuous`/`backfilled` forbid it.
+- `session.attached`: `{type, requestId, apiVersion, sessionId, history:ReplayFrame[], earliestSeq, latestSeq, snapshot:FiveLayerSnapshot, inputAckMode?}`. `requestId` = attach `requestId`; at attach time connection=`connected`, auth=`authorized` only. `snapshot.history` is a conditional union (§4.4): `gap` state carries a nested `gap:GapRange`; `continuous`/`backfilled` forbid it. `inputAckMode` (CG-03) is optional: absent = input-ack capability unavailable (read-only for new clients); present = the sole canonical value `session-window-v1`. An unknown value is treated as absent (forward-compat, read projection preserved). A new client MUST NOT send input when the mode is absent/unknown.
 - `output` (replayable): `{type, sessionId, seq, chunk, structuredExpected?}`.
 - `backfill.result` (frames): `{type, requestId, sessionId, fromSeq, toSeq, earliestSeq, latestSeq, frames}`.
-- `backfill.result` (gap): `{..., gap:{code:"history.gap", fromSeq, toSeq}}`. Exactly one of `frames`/`gap`.
+- `backfill.result` (gap): `{..., gap:{code:"history.gap", fromSeq, toSeq}}`. Exactly one of `frames`/`gap`. v1 has **no partial-gap representation**: the gap MUST cover the full requested range (`gap.fromSeq == fromSeq && gap.toSeq == toSeq`, enforced by the production validator).
 - `session.state` (normal): `{type, sessionId, state, occurredAt}` — no seq, not replayable.
 - `session.state` (restart boundary): `{type, sessionId, state, restartBoundary:true, seq, occurredAt}` — replayable; no separate `session.restartBoundary` type.
 - `control.state`: `{type, sessionId, state, deviceName?, reason, occurredAt}`. `deviceName` only when `state="other"`.
 - `auth.revoked`: `{type, reason, occurredAt}`. `reason` is a **closed enum** (CG-01): v1 known = `device_revoked` only (`AuthRevokedReasonDeviceRevoked` / `AUTH_REVOKED_REASON_DEVICE_REVOKED`). The event precedes a close **1008** (`AuthRevokedCloseCode` / `AUTH_REVOKED_CLOSE_CODE`). Unknown/missing/null/malformed `reason` MUST be treated as **force-unauthorized** (fail-closed): the client revokes on the event *type*, never on the reason value. 1008 is a generic policy code (not a reason) — other policy closes may also use 1008, so do not infer device-revoke from the close code alone; only the `auth.revoked` event or a subsequent 401 changes persistent authorization presentation.
 - `error`: `{type, requestId?, sessionId?, code, layer, message, actionHint, details?}`. `requestId` conditional.
+- `input.ack` (CG-03, additive 8th event): `{type, requestId, sessionId, id}`. Confirms a canonical input `MessageID` was committed by the per-session ledger — exactly-once raw PTY write, or a duplicate of an already-committed `(DeviceID, MessageID)` key (re-ACK). Carries NO seq/status/time/data/details; its sole meaning is "the key is committed". It is never broadcast, never enters replay history/backfill, and is delivered only to the requesting connection's sole outbound writer. `requestId` equals the triggering wire attempt; `id` is the stable canonical `MessageID`. Only canonical IDs (`msg-v1-` + 32 hex) produce an ACK; legacy non-empty opaque IDs keep the per-connection dedupe + silent-success path and produce NO ACK. A malformed ACK is sanitized to Unknown + force-read-only (no settlement, no raw ID retained).
 
 ### 4.3 seq / earliest / latest / gap / backfill invariants
 

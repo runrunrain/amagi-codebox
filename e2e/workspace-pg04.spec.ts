@@ -46,6 +46,9 @@ function attached(over: Record<string, unknown> = {}) {
     earliestSeq: 0,
     latestSeq: 0,
     snapshot: snapshot(),
+    // M3-001：capability-capable server（inputAckMode 协商）= 正常生产场景；
+    // 缺失时新客户端只读（fail-closed）。mock 夹具默认协商 canonical 能力。
+    inputAckMode: 'session-window-v1',
     ...over,
   }
 }

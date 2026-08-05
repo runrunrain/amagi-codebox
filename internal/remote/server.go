@@ -74,12 +74,64 @@ type Server struct {
 	// control_wiring + security setup. When nil, session routes stay 404
 	// (design §4A hardening gate: routes activate only after H0-H3 PASS).
 	sessionAdapter *RemoteSessionAdapter
+
+	// CG-03 per-session canonical input ledger registry (contract-addendum-cg03
+	// §5). Lazy-created per session; destroyed on session remove.
+	inputLedgers *SessionInputLedgerRegistry
+
+	// M0-06/M3-B timing collector (design §6): server-side attach/resync duration.
+	// Fixed-schema, no payload/ID; in-process test/report harness only.
+	metrics *Metrics
 }
 
 // SetSessionAdapter injects the M2-A session REST adapter (design §4.2).
 // MUST be called before Start. When not called, session routes stay 404.
 func (s *Server) SetSessionAdapter(adapter *RemoteSessionAdapter) {
 	s.sessionAdapter = adapter
+	s.inputLedgers = NewSessionInputLedgerRegistry()
+	s.metrics = NewMetrics(nil)
+	// M3-005：权威 remove 提交时销毁该 session 的 CG-03 ledger（remote REST remove
+	// 路径）。desktop remove/clear 跨包路径由 App 经 DestroySessionInputLedger 接线。
+	adapter.destroyLedger = func(sessionID contract.SessionID) {
+		s.inputLedgers.Destroy(sessionID)
+	}
+}
+
+// DestroySessionInputLedger releases the CG-03 per-session input ledger for
+// sessionID (M3-005). Called by the App after an authoritative desktop
+// remove/clear commit so the registry has no unbounded per-session residual
+// window. Idempotent; nil-safe when the ledger registry is not wired (legacy
+// Server without SetSessionAdapter) and nil-receiver-safe (test App without a
+// wired Remote). Only the server owning the registry is the authoritative
+// destroy point; failed/retained IDs are never destroyed by the caller (the
+// App only calls this after a confirmed remove commit).
+func (s *Server) DestroySessionInputLedger(sessionID contract.SessionID) {
+	if s == nil || s.inputLedgers == nil {
+		return
+	}
+	s.inputLedgers.Destroy(sessionID)
+}
+
+// LedgerForSession returns the per-session canonical input ledger for
+// sessionID, lazily creating it on first use (same semantics as the WS
+// canonical-input path). Exposed for resource-lifecycle tests that must
+// populate a ledger before asserting DestroySessionInputLedger releases it.
+// Returns nil when the registry is not wired (legacy Server without
+// SetSessionAdapter).
+func (s *Server) LedgerForSession(sessionID contract.SessionID) *SessionInputLedger {
+	if s == nil || s.inputLedgers == nil {
+		return nil
+	}
+	return s.inputLedgers.Ledger(sessionID)
+}
+
+// TimingSnapshot returns the server-side attach/resync timing snapshot (design
+// §6). Fixed-schema, no payload/ID; for in-process test/report harness only.
+func (s *Server) TimingSnapshot() MetricsSnapshot {
+	if s.metrics == nil {
+		return MetricsSnapshot{SchemaVersion: 1, Unit: "ms"}
+	}
+	return s.metrics.Snapshot()
 }
 
 // NewServer 创建远程服务器实例，不启动监听。

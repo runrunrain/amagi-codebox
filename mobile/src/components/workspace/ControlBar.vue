@@ -9,9 +9,18 @@
 import { ref } from 'vue';
 import type { ControlSnapshot } from '../../lib/contract';
 
+/** E-06 控制提示（design §7 [R2/M-04]）：kind=lost（被收回/被接管）| conflict（acquire 409）。 */
+export interface ControlNoticeView {
+  kind: 'lost' | 'conflict';
+  /** lost：变迁后的权威控制态；conflict：当前权威控制态（未被 409 改变）。 */
+  controlState: 'you' | 'desktop' | 'other' | 'none';
+  deviceName: string | null;
+  text: string;
+}
+
 const props = defineProps<{
   control: ControlSnapshot;
-  notice: string | null;
+  notice: ControlNoticeView | null;
   busy: boolean;
 }>();
 
@@ -68,8 +77,17 @@ async function run(action: 'acquire' | 'release'): Promise<void> {
       </button>
       <span v-else class="control-observer-note">观察中</span>
     </div>
-    <p v-if="notice" class="control-notice" role="status">
-      {{ notice }}
+    <p
+      v-if="notice"
+      class="control-notice"
+      :class="`control-notice--${notice.kind}`"
+      role="status"
+      data-testid="control-notice"
+      data-e="e06"
+      :data-kind="notice.kind"
+      :data-control-state="notice.controlState"
+    >
+      {{ notice.text }}
       <button type="button" class="control-notice-dismiss" aria-label="关闭提示" @click="emit('dismiss-notice')">×</button>
     </p>
   </div>
@@ -160,6 +178,10 @@ async function run(action: 'acquire' | 'release'): Promise<void> {
   font-size: 12px;
   color: var(--VT-text);
   line-height: 1.5;
+}
+
+.control-notice--conflict {
+  border-left-color: var(--VT-danger);
 }
 
 .control-notice-dismiss {

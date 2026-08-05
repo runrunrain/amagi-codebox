@@ -24,7 +24,6 @@ import {
   AUTH_REVOKED_CLOSE_CODE,
   CLIENT_FRAME_TYPE_ATTACH,
   CLIENT_FRAME_TYPE_BACKFILL,
-  CLIENT_FRAME_TYPE_INPUT,
   CLIENT_FRAME_TYPE_PING,
   CLIENT_FRAME_TYPE_RESIZE,
   WEB_SOCKET_V1_PATH,
@@ -178,6 +177,13 @@ export class SessionWsClient {
     this.openSocket();
   }
 
+  /** M3-004：强制重连（live pending 越界/同 Seq 冲突 fail-closed）。关闭当前 socket
+   *  并触发保守 reattach（携带 frontier 游标重新对齐 retained window）。 */
+  forceReconnect(): void {
+    if (this.disposed) return;
+    this.scheduleReconnect('forced-frontier-realign');
+  }
+
   /** 终止：停止重连与 ping，关闭 socket，不再发出任何事件。 */
   dispose(): void {
     this.disposed = true;
@@ -199,15 +205,9 @@ export class SessionWsClient {
     this.setState('closed', { terminalReason: null });
   }
 
-  /** 发送 input（attached 且文本非空才发；返回是否已发送）。 */
-  sendInput(text: string): boolean {
-    if (this.state !== 'attached' || text.length === 0) return false;
-    const frame: InputFrame = {
-      type: CLIENT_FRAME_TYPE_INPUT,
-      requestId: nextRequestId(),
-      id: `msg-${nextRequestId()}`,
-      data: encodeUtf8ToBase64(text),
-    };
+  /** 发送预构造 input 帧（CG-03 outbox 构造 canonical ID/data 后调用）。 */
+  sendInputFrame(frame: InputFrame): boolean {
+    if (this.state !== 'attached') return false;
     return this.sendFrame(frame);
   }
 

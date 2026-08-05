@@ -27,8 +27,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -40,6 +42,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -197,20 +200,150 @@ func (f fakeLaunchRaw) StartProcess(_ context.Context, sessionID contract.Sessio
 }
 
 // fakeSessionRaw 实现 remote.SessionRawPort：Stop/Remove/Resize 仅记账。
+// M3-C：同时实现 remote.PTYRawPort（WriteRaw 计数 + ResizeRaw 记账 +
+// DetachSession 桩），使 canonical input 路径真实走 ledger→raw→ACK，
+// 并让整形 E2E 能断言 rawInput 调用次数（输入 0 重复的机器 oracle）。
+//
+// M3-007 C5b（R2 证据修复）：ResizeRaw 支持 test-only barrier——当 barrier armed
+// 时阻塞，直到 release 或 ctx 取消（fence/timeout）。用于证明 A 的 resize 真实
+// 到达 server、进入 gate（lane+permit+checkpoint 通过）、停在 raw port in-flight，
+// 再被 desktop take fence 取消 ctx → raw port 见 ctx.Done() 返回 error → 不 commit。
+// barrier 是 TEST-ONLY（不进生产）；hit 计数供 E2E 断言 resize 确实到达 raw port。
+// WriteRaw 不需 barrier（C5b 只针对 resize checkpoint 场景）。
 type fakeSessionRaw struct {
 	reg *fakeSessionRegistry
+
+	ioMu           sync.Mutex
+	writeCount     map[string]int
+	writeBytes     map[string]int
+	resizeCount    map[string]int
+	lastResizeCols map[string]int // TEST-ONLY：最后一次 ResizeRaw 的 cols（C5b rawResize=[desktop-dims] oracle）
+	lastResizeRows map[string]int // TEST-ONLY：最后一次 ResizeRaw 的 rows
+	// M3-007 C2b（R3 冻结 oracle）：不可逆 FIFO 顺序摘要。每次 WriteRaw 以
+	// rolling SHA-256 链累积（chain_i = sha256(chain_{i-1} || payload_i)），只存
+	// hex 摘要不存原文（隐私：与 network.ts HMAC 摘要 posture 一致；生产 raw port
+	// 不存任何 payload）。测试侧据已知 FIFO 序列独立复算同一链比对，证明 raw port
+	// 见到 32 项的顺序与客户端入队一致（不乱序、不丢）。per-process 全局（单用例独占）。
+	writeOrderChain string
+
+	// C5b test-only resize barrier（per-process 全局；E2E 单用例独占 harness 进程）。
+	barrierMu         sync.Mutex
+	resizeBarrier     chan struct{} // non-nil = armed；close 释放
+	resizeBarrierHits atomic.Int32
 }
 
-func (f fakeSessionRaw) StopSession(_ context.Context, sessionID contract.SessionID) error {
+func newFakeSessionRaw(reg *fakeSessionRegistry) *fakeSessionRaw {
+	return &fakeSessionRaw{
+		reg:            reg,
+		writeCount:     make(map[string]int),
+		writeBytes:     make(map[string]int),
+		resizeCount:    make(map[string]int),
+		lastResizeCols: make(map[string]int),
+		lastResizeRows: make(map[string]int),
+	}
+}
+
+func (f *fakeSessionRaw) StopSession(_ context.Context, sessionID contract.SessionID) error {
 	f.reg.stop(string(sessionID))
 	return nil
 }
-func (f fakeSessionRaw) RemoveSession(_ context.Context, sessionID contract.SessionID) error {
+func (f *fakeSessionRaw) RemoveSession(_ context.Context, sessionID contract.SessionID) error {
 	f.reg.remove(string(sessionID))
 	return nil
 }
-func (f fakeSessionRaw) ResizeSession(_ context.Context, sessionID contract.SessionID, _, _ int) error {
+func (f *fakeSessionRaw) ResizeSession(_ context.Context, sessionID contract.SessionID, _, _ int) error {
 	return nil // fake CLI 无真实 PTY 尺寸
+}
+
+// WriteRaw 实现 remote.PTYRawPort：不启动真实进程，仅按会话计数（幂等断言 oracle）。
+// M3-007 C2b（R3 冻结 oracle）：同步累积不可逆 FIFO 顺序摘要（rolling SHA-256），
+// 证明 raw port 见到 N 项的顺序与客户端 FIFO 入队一致（不依赖客户端自报顺序）。
+func (f *fakeSessionRaw) WriteRaw(_ context.Context, sessionID string, data []byte) error {
+	f.ioMu.Lock()
+	f.writeCount[sessionID]++
+	f.writeBytes[sessionID] += len(data)
+	sum := sha256.Sum256([]byte(f.writeOrderChain + string(data)))
+	f.writeOrderChain = hex.EncodeToString(sum[:])
+	f.ioMu.Unlock()
+	return nil
+}
+
+// ResizeRaw 实现 remote.PTYRawPort：计数并记录最后一次尺寸（不产生真实 PTY 副作用）。
+// C5b test-only barrier：当 armed 时阻塞，直到 release 或 ctx 取消。ctx 取消
+// （fence/timeout）时返回 ctx.Err() 且 **不计数**——证明 in-flight resize 被
+// fence 阻止 commit。这模拟一个 ctx-aware raw port（真实 PTY ioctl 极快且
+// 不可中断，但 test fake 以 barrier + ctx 检查呈现「in-flight 被 fence」语义）。
+func (f *fakeSessionRaw) ResizeRaw(ctx context.Context, sessionID string, cols, rows int) error {
+	f.barrierMu.Lock()
+	ch := f.resizeBarrier
+	f.barrierMu.Unlock()
+	if ch != nil {
+		f.resizeBarrierHits.Add(1)
+		select {
+		case <-ch:
+			// barrier 释放：继续记录（未被 fence）。
+		case <-ctx.Done():
+			// fence/timeout 取消了 operation ctx：raw port 中止，不 commit。
+			return ctx.Err()
+		}
+	}
+	f.ioMu.Lock()
+	f.resizeCount[sessionID]++
+	f.lastResizeCols[sessionID] = cols
+	f.lastResizeRows[sessionID] = rows
+	f.ioMu.Unlock()
+	return nil
+}
+
+// armResizeBarrier 装载 test-only resize barrier（TEST-ONLY，C5b）。
+// 幂等：重复 arm 不覆盖既有 barrier。
+func (f *fakeSessionRaw) armResizeBarrier() {
+	f.barrierMu.Lock()
+	defer f.barrierMu.Unlock()
+	if f.resizeBarrier == nil {
+		f.resizeBarrier = make(chan struct{})
+	}
+}
+
+// releaseResizeBarrier 释放 test-only resize barrier（TEST-ONLY，C5b）。
+// 幂等：未 armed 时为 no-op。释放后 ResizeRaw 不再阻塞（直到再次 arm）。
+func (f *fakeSessionRaw) releaseResizeBarrier() {
+	f.barrierMu.Lock()
+	defer f.barrierMu.Unlock()
+	if f.resizeBarrier != nil {
+		close(f.resizeBarrier)
+		f.resizeBarrier = nil
+	}
+}
+
+// fakeDetachReceipt 是 DetachSession 的立即确认收据（fake CLI 无真实后端）。
+type fakeDetachReceipt struct{ id uint64 }
+
+func (r fakeDetachReceipt) Identity() uint64             { return r.id }
+func (r fakeDetachReceipt) Confirmed() bool              { return true }
+func (r fakeDetachReceipt) LastError() error             { return nil }
+func (r fakeDetachReceipt) Wait(_ context.Context) error { return nil }
+
+// DetachSession 实现 remote.PTYRawPort：fake CLI 无后端可拆，返回立即确认收据。
+func (f *fakeSessionRaw) DetachSession(_ string) (remote.BackendDetachReceipt, error) {
+	return fakeDetachReceipt{id: 1}, nil
+}
+
+// rawIOSnapshot 返回会话的 raw IO 计数（TEST-ONLY 控制面断言用）。
+// M3-007 C5b：含 resizeBarrierHits（全局，证明 resize 到达 raw port in-flight）。
+// M3-007 C2b（R3）：含 writeOrderChain（不可逆 FIFO 顺序摘要，证明 N 项 drain 顺序）。
+func (f *fakeSessionRaw) rawIOSnapshot(sessionID string) map[string]any {
+	f.ioMu.Lock()
+	defer f.ioMu.Unlock()
+	return map[string]any{
+		"writeCount":        f.writeCount[sessionID],
+		"writeBytes":        f.writeBytes[sessionID],
+		"resizeCount":       f.resizeCount[sessionID],
+		"lastResizeCols":    f.lastResizeCols[sessionID],
+		"lastResizeRows":    f.lastResizeRows[sessionID],
+		"resizeBarrierHits": int(f.resizeBarrierHits.Load()),
+		"writeOrderChain":   f.writeOrderChain,
+	}
 }
 
 // controlState 汇集控制面（TEST-ONLY）所需的全部句柄：数据面 Server、注入用
@@ -221,6 +354,7 @@ type controlState struct {
 	adapter    *remote.RemoteSessionAdapter
 	dataOrigin string
 	reg        *fakeSessionRegistry
+	sessRaw    *fakeSessionRaw // M3-C：raw IO 计数（输入幂等 oracle）
 
 	devMu       sync.Mutex
 	ctlCookie   string // 控制设备的 device cookie 值（同源 loopback HTTP 携带）
@@ -491,6 +625,37 @@ func controlMux(st *controlState) *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"seq": seq})
 	})
 
+	// 批量注入 N 帧输出（C6a eviction：一次注入 >4096 帧使 origin 仅保留 tail）。
+	// 服务端循环调真实 AppendOutput + 因果 publish；返回首末 Seq。
+	mux.HandleFunc("POST /control/session/{id}/output-many", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		var body struct {
+			Count  int    `json:"count"`
+			Prefix string `json:"prefix"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeCtlError(w, http.StatusBadRequest, err)
+			return
+		}
+		if sessionID == "" || body.Count <= 0 {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id and count>0 required"))
+			return
+		}
+		prefix := body.Prefix
+		if prefix == "" {
+			prefix = "f"
+		}
+		var first, last contract.Seq
+		for i := 0; i < body.Count; i++ {
+			seq := st.injectOutput(sessionID, []byte(fmt.Sprintf("%s-%d\n", prefix, i+1)))
+			if i == 0 {
+				first = seq
+			}
+			last = seq
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"firstSeq": first, "lastSeq": last, "count": body.Count})
+	})
+
 	// 向会话注入重启边界（stop/restart 边界渲染）：经真实 M2/H3 路径。
 	mux.HandleFunc("POST /control/session/{id}/boundary", func(w http.ResponseWriter, r *http.Request) {
 		sessionID := contract.SessionID(r.PathValue("id"))
@@ -518,6 +683,112 @@ func controlMux(st *controlState) *http.ServeMux {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"records": filtered})
+	})
+
+	// 查询会话 raw IO 计数（M3-C 整形 E2E 输入幂等 oracle：rawInput 调用次数）。
+	mux.HandleFunc("GET /control/session/{id}/raw-io", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("id")
+		if sessionID == "" {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id required"))
+			return
+		}
+		writeJSON(w, http.StatusOK, st.sessRaw.rawIOSnapshot(sessionID))
+	})
+
+	// --- M3-INT 多设备/几何/grace 控制端点（TEST-ONLY）---
+	// 以下三个端点扮演「桌面用户动作等价物」（与桌面 Wails 边界同级），调用与
+	// 桌面端相同的 ControlRuntime 导出 API；服务端仍执行全部 gate/arbiter 校验。
+	// 控制面绝不进入生产二进制。
+
+	// desktop 收回控制权：等同桌面端「收回控制」（TakeDesktop）。
+	// 经真实 gate.TakeDesktop → arbiter commitTransition(reasonTakeover) →
+	// SessionEventHub 广播 control.state(takeover) 给已 attach 的 WS 订阅者。
+	mux.HandleFunc("POST /control/session/{id}/desktop-take", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		if sessionID == "" {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id required"))
+			return
+		}
+		rt := st.adapter.Runtime()
+		if err := rt.Gate().TakeDesktop(r.Context(), rt.DesktopAuthority(), sessionID); err != nil {
+			writeCtlError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"taken": true})
+	})
+
+	// desktop 释放控制权：等同桌面端「释放控制」（ReleaseDesktop）。
+	// 使多设备编排中「设备重新申请」可在 desktop 收回后成功。
+	mux.HandleFunc("POST /control/session/{id}/desktop-release", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		if sessionID == "" {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id required"))
+			return
+		}
+		rt := st.adapter.Runtime()
+		if err := rt.Gate().ReleaseDesktop(r.Context(), rt.DesktopAuthority(), sessionID); err != nil {
+			writeCtlError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"released": true})
+	})
+
+	// desktop 被动 resize（不取控制权；design §6.2 R-06：device 持权时被拒）。
+	// 经真实 ControlRuntime.DesktopPassiveResize → gate.DoDesktopPassiveResize →
+	// fakeSessionRaw.ResizeRaw 计数（几何冲突 oracle）。
+	mux.HandleFunc("POST /control/session/{id}/desktop-passive-resize", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := contract.SessionID(r.PathValue("id"))
+		if sessionID == "" {
+			writeCtlError(w, http.StatusBadRequest, errors.New("id required"))
+			return
+		}
+		var body struct {
+			Cols int `json:"cols"`
+			Rows int `json:"rows"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeCtlError(w, http.StatusBadRequest, err)
+			return
+		}
+		rt := st.adapter.Runtime()
+		if err := rt.DesktopPassiveResize(r.Context(), sessionID, body.Cols, body.Rows); err != nil {
+			writeCtlError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"resized": true})
+	})
+
+	// M3-007 C5b（R2 证据修复）test-only resize barrier：arm/release。barrier 使
+	// A 的 resize 到达 server 后阻塞在 raw port（已过 lane+permit+checkpoint），
+	// 让 desktop take 先 fence，再释放 → raw port 见 ctx.Done() → 不 commit。
+	// 这证明 resize **真实到达 server 并 in-flight**（非 relay/pre-admission）。
+	// 端点 TEST-ONLY，不进生产。
+	mux.HandleFunc("POST /control/session/{id}/arm-resize-barrier", func(w http.ResponseWriter, r *http.Request) {
+		st.sessRaw.armResizeBarrier()
+		writeJSON(w, http.StatusOK, map[string]any{"armed": true})
+	})
+	mux.HandleFunc("POST /control/session/{id}/release-resize-barrier", func(w http.ResponseWriter, r *http.Request) {
+		st.sessRaw.releaseResizeBarrier()
+		writeJSON(w, http.StatusOK, map[string]any{"released": true})
+	})
+
+	// 覆盖 grace 时长（design §7.2 / C-004）：E2E 把 30s 缩短到可观测窗口，
+	// 使「grace 内拒绝 / grace 过期可申请」可在 wall-clock 内确定性验证。
+	// 只影响 SetGraceDuration 之后 arm 的 grace 定时器（system clock）。
+	mux.HandleFunc("POST /control/grace-duration", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Seconds float64 `json:"seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeCtlError(w, http.StatusBadRequest, err)
+			return
+		}
+		if body.Seconds <= 0 {
+			writeCtlError(w, http.StatusBadRequest, errors.New("seconds must be > 0"))
+			return
+		}
+		st.adapter.Runtime().Arbiter().SetGraceDuration(time.Duration(body.Seconds * float64(time.Second)))
+		writeJSON(w, http.StatusOK, map[string]any{"seconds": body.Seconds})
 	})
 
 	return mux
@@ -577,13 +848,18 @@ func main() {
 	m2Streams := remote.NewSessionStreamStore()
 	m2Journal := remote.NewSessionOperationJournal(configDir)
 	fakeReg := newFakeSessionRegistry()
+	fakeRaw := newFakeSessionRaw(fakeReg)
 	m2Adapter := remote.NewRemoteSessionAdapter(
 		control.Gate(), control, m2Catalog, m2Streams, m2Journal,
 		&fakeRemoteLaunchResolver{homeDir: homeDir},
 		fakeLaunchRaw{reg: fakeReg},
-		fakeSessionRaw{reg: fakeReg},
+		fakeRaw,
 		remote.NewSystemClock(), configDir,
 	)
+	// 与生产 app.go:1230 同款：把同一 raw port 注入 ControlRuntime 自身（供
+	// DesktopPassiveResize/DesktopWrite 等桌面路径使用），否则 runtime.ptyRaw 为
+	// nil → DesktopPassiveResize 误报 "runtime not ready"（test-only 接线缺口）。
+	control.SetPTYRawPort(fakeRaw)
 	srv.SetSessionAdapter(m2Adapter)
 	// MarkReady 必须在 srv.Start 前完成：gate 在接受任何请求前需进入 ready
 	// （CreateSession/AttachControl 等均 checkReady；未 ready → service.down）。
@@ -626,6 +902,7 @@ func main() {
 			adapter:     m2Adapter,
 			dataOrigin:  fmt.Sprintf("http://127.0.0.1:%d", dataPort),
 			reg:         fakeReg,
+			sessRaw:     fakeRaw,
 			srcCounters: make(map[string]int),
 		}),
 	}

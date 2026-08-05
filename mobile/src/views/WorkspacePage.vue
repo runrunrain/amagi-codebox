@@ -18,6 +18,7 @@ import ConfirmDialog from '../components/lobby/ConfirmDialog.vue';
 import TimelineView from '../components/workspace/TimelineView.vue';
 import ComposerBar from '../components/workspace/ComposerBar.vue';
 import ControlBar from '../components/workspace/ControlBar.vue';
+import ContinuityBanner from '../components/workspace/ContinuityBanner.vue';
 import GuideCard from '../components/workspace/GuideCard.vue';
 import RawTerminalView from '../components/workspace/RawTerminalView.vue';
 
@@ -135,6 +136,20 @@ onUnmounted(() => {
 });
 
 const title = computed(() => store.detail?.title ?? sessionId.value);
+
+// --- M3-C NoticeStack 优先级（design §7）：P0 fatal > P1 lastError > P2 E-07 > P3 degraded ---
+// M3-008：优先级不仅计算还实际控制渲染——P1/P3 横幅按 noticeLevel 互斥，
+// P0 隐藏 E-06 notice 与 ContinuityBanner 并禁用 ControlBar；P1 暂压 E-07/P3，
+// dismiss 后若状态仍有效则由 v-if 条件自然恢复（store 状态不被压制方改变）。
+const noticeLevel = computed(() => store.primaryNotice);
+
+// E-07「跳到缺口」：滚动到首个原位缺口标记。
+const timelineRef = ref<InstanceType<typeof TimelineView> | null>(null);
+
+function jumpToGap(): void {
+  const id = store.firstGapEntryId;
+  if (id) timelineRef.value?.scrollToItem(id);
+}
 </script>
 
 <template>
@@ -203,11 +218,19 @@ const title = computed(() => store.detail?.title ?? sessionId.value);
 
     <ControlBar
       :control="store.control"
-      :notice="store.controlNotice"
-      :busy="store.wsState !== 'attached'"
+      :notice="noticeLevel === 'fatal' ? null : store.controlNotice"
+      :busy="store.wsState !== 'attached' || noticeLevel === 'fatal'"
       @acquire="store.acquire()"
       @release="store.release()"
       @dismiss-notice="store.controlNotice = null"
+    />
+
+    <!-- E-07 ContinuityBanner（design §7：ControlBar 之后；P0/P1 压制时隐藏） -->
+    <ContinuityBanner
+      v-if="store.recoveryEpisode && noticeLevel === 'recovery'"
+      :episode="store.recoveryEpisode"
+      @jump-gap="jumpToGap"
+      @dismiss="store.dismissRecovery()"
     />
 
     <!-- 加载/错误/降级横幅 -->
@@ -220,11 +243,13 @@ const title = computed(() => store.detail?.title ?? sessionId.value);
       </div>
       <button type="button" class="banner-action" @click="store.open(sessionId)">重试</button>
     </div>
-    <div v-if="store.degradedNotice" class="banner banner--warning" role="status">
+    <!-- M3-008：P3/P1 横幅按 noticeLevel 互斥（design §7 冻结优先级）；
+         高压级在位时压制，dismiss 后若状态仍有效则自然恢复。 -->
+    <div v-if="noticeLevel === 'degraded' && store.degradedNotice" class="banner banner--warning" role="status">
       <div class="banner-body"><span>{{ store.degradedNotice }}</span></div>
       <button type="button" class="banner-action" @click="store.dismissDegraded()">知道了</button>
     </div>
-    <div v-if="store.lastError" class="banner banner--danger" role="alert">
+    <div v-if="noticeLevel === 'error' && store.lastError" class="banner banner--danger" role="alert">
       <div class="banner-body">
         <span>{{ store.lastError.message }}</span>
         <span class="banner-code">{{ store.lastError.code }}</span>
@@ -235,10 +260,16 @@ const title = computed(() => store.detail?.title ?? sessionId.value);
       <div class="banner-body"><strong>会话已被移除</strong><span>它不再存在，请返回大厅。</span></div>
       <button type="button" class="banner-action" @click="router.replace({ name: 'lobby' })">返回大厅</button>
     </div>
+    <!-- P0 terminal fatal（design §7：terminal 覆盖恢复条，不再显示「已恢复」） -->
+    <div v-if="store.wsState === 'closed' && store.terminalReason" class="banner banner--danger" role="alert" data-testid="terminal-banner">
+      <div class="banner-body"><strong>连接已终止</strong><span>{{ store.terminalReason }}</span></div>
+      <button type="button" class="banner-action" @click="router.replace({ name: 'lobby' })">返回大厅</button>
+    </div>
 
     <!-- 主阅读面：结构化内容转化时间线（唯一主形态） -->
     <TimelineView
       v-if="!isDiagnostic"
+      ref="timelineRef"
       :items="store.timelineItems"
       :output-version="store.latestSeq"
       :can-answer="store.canWrite"
@@ -269,6 +300,7 @@ const title = computed(() => store.detail?.title ?? sessionId.value);
       :can-control="store.control.state === 'you'"
       :block-reason="store.writeBlockReason"
       :history="store.commandHistory"
+      :outbox="store.outboxView"
       @update:draft="(v: string) => (store.draft = v)"
       @send="store.sendDraft()"
       @stop="stopConfirmOpen = true"

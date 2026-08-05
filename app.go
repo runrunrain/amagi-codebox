@@ -2117,7 +2117,8 @@ func (a *App) RemoveSession(sessionID string) error {
 			}
 			// DenySessionNotFound: gate does not manage this session → external/legacy.
 		} else {
-			a.releaseSharedLeases(sessionID) // M-006
+			a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID)) // M3-005: gate remove committed
+			a.releaseSharedLeases(sessionID)                                  // M-006
 			return nil
 		}
 	} else if a.Pty.IsRunning(sessionID) {
@@ -2130,6 +2131,7 @@ func (a *App) RemoveSession(sessionID string) error {
 	if err := a.Sessions.Remove(sessionID); err != nil {
 		return err
 	}
+	a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID)) // M3-005: manager remove committed
 	a.releaseSharedLeases(sessionID)
 	return nil
 }
@@ -2180,6 +2182,7 @@ func (a *App) removeStoppedSessionRecord(id string) error {
 	if err != nil {
 		return err
 	}
+	a.Remote.DestroySessionInputLedger(contract.SessionID(id)) // M3-005: manager remove committed (batch clear path)
 	a.releaseSharedLeases(id)
 	return nil
 }

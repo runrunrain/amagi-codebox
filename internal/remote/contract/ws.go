@@ -22,6 +22,7 @@ const (
 	ServerEventTypeControlState    = "control.state"
 	ServerEventTypeAuthRevoked     = "auth.revoked"
 	ServerEventTypeError           = "error"
+	ServerEventTypeInputAck        = "input.ack"
 )
 
 // KnownClientFrameTypes is the complete set of 5 v1 client frame types. An
@@ -35,9 +36,12 @@ var KnownClientFrameTypes = []string{
 	ClientFrameTypePing,
 }
 
-// KnownServerEventTypes is the complete set of 7 v1 server event type
+// KnownServerEventTypes is the complete set of 8 v1 server event type
 // categories. Unknown server types are forward-compatible: clients keep the
 // connection, ignore business updates and record a sanitized diagnostic.
+// input.ack (CG-03, contract-addendum-cg03.md §3) is additive: an old client
+// that does not know it normalizes the event to a sanitized Unknown and keeps
+// the connection (it never produced canonical IDs, so it never waits on it).
 var KnownServerEventTypes = []string{
 	ServerEventTypeSessionAttached,
 	ServerEventTypeOutput,
@@ -46,6 +50,7 @@ var KnownServerEventTypes = []string{
 	ServerEventTypeControlState,
 	ServerEventTypeAuthRevoked,
 	ServerEventTypeError,
+	ServerEventTypeInputAck,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +89,83 @@ var KnownAuthRevokedReasons = []AuthRevokedReason{
 // hands it to the existing close API. This constant does not change the frozen
 // event/error/type counts.
 const AuthRevokedCloseCode = 1008
+
+// ---------------------------------------------------------------------------
+// CG-03 input confirmation capability (contract-addendum-cg03.md §3).
+//
+// input.ack is an additive server event: it confirms a logical input MessageID
+// was committed (exactly-once raw PTY write or a duplicate of an already-
+// committed key). It carries no seq/status/time/data/details — its sole meaning
+// is "the (DeviceID, MessageID) key is committed". It is never broadcast, never
+// enters replay history/backfill, and is delivered only to the requesting
+// connection's sole outbound writer. A malformed ACK is sanitized to Unknown +
+// force-read-only (no settlement, no raw ID retained).
+//
+// The capability is negotiated on session.attached via an optional inputAckMode:
+// absent = capability unavailable (read-only for new clients); present = the
+// sole canonical value session-window-v1. A new server sets it; an old server
+// omits it. A new client MUST NOT send input when the mode is absent/unknown.
+// ---------------------------------------------------------------------------
+
+// InputAckMode is the optional session.attached capability marker (CG-03). The
+// pointer carries optionality: nil = absent (capability unavailable).
+type InputAckMode string
+
+// InputAckModeSessionWindowV1 is the sole v1 input-ack capability value: the
+// per-session, bounded, non-evicting input ledger with ACK confirmation.
+const InputAckModeSessionWindowV1 InputAckMode = "session-window-v1"
+
+// IsCanonicalMessageID reports whether id is the CG-03 canonical producer
+// format: "msg-v1-" + 32 lowercase hex (39 ASCII bytes, 128 random bits). It is
+// the opt-in discriminator for the session input ledger + ACK path; any other
+// non-empty opaque ID keeps the legacy per-connection dedupe + silent-success
+// path and MUST NOT be suppressed across connections. This is a pure byte
+// classifier (no regex/imports) and is the exact canonical classifier used by
+// the server producer to route canonical vs legacy IDs.
+func IsCanonicalMessageID(id MessageID) bool {
+	const prefix = "msg-v1-"
+	s := string(id)
+	if len(s) != len(prefix)+32 {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if s[i] != prefix[i] {
+			return false
+		}
+	}
+	for i := len(prefix); i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsCanonicalRequestID reports whether rid is the CG-03 canonical attempt ID
+// format: "req-v1-" + 32 lowercase hex (39 ASCII bytes). Each wire attempt of a
+// canonical input appends a fresh canonical RequestID to the entry's all-attempt
+// set before sending; the ACK matches the entry by MessageID OR any all-attempt
+// RequestID.
+func IsCanonicalRequestID(rid RequestID) bool {
+	const prefix = "req-v1-"
+	s := string(rid)
+	if len(s) != len(prefix)+32 {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if s[i] != prefix[i] {
+			return false
+		}
+	}
+	for i := len(prefix); i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
 
 // ---------------------------------------------------------------------------
 // Snapshot layers (design §8.3 session.attached)
@@ -223,14 +305,15 @@ type ReplayFrame interface {
 // retained when lastSeq omitted), ascending by seq, empty as []. earliestSeq
 // and latestSeq are required even when 0.
 type SessionAttachedEvent struct {
-	Type        string            `json:"type"`
-	RequestID   RequestID         `json:"requestId"`
-	APIVersion  APIVersion        `json:"apiVersion"`
-	SessionID   SessionID         `json:"sessionId"`
-	History     []ReplayFrame     `json:"history"`
-	EarliestSeq Seq               `json:"earliestSeq"`
-	LatestSeq   Seq               `json:"latestSeq"`
-	Snapshot    FiveLayerSnapshot `json:"snapshot"`
+	Type         string            `json:"type"`
+	RequestID    RequestID         `json:"requestId"`
+	APIVersion   APIVersion        `json:"apiVersion"`
+	SessionID    SessionID         `json:"sessionId"`
+	History      []ReplayFrame     `json:"history"`
+	EarliestSeq  Seq               `json:"earliestSeq"`
+	LatestSeq    Seq               `json:"latestSeq"`
+	Snapshot     FiveLayerSnapshot `json:"snapshot"`
+	InputAckMode *InputAckMode     `json:"inputAckMode,omitempty"`
 }
 
 func (SessionAttachedEvent) isKnownServerEvent() {}
@@ -267,8 +350,14 @@ type BackfillFramesResultEvent struct {
 func (BackfillFramesResultEvent) isKnownServerEvent() {}
 
 // BackfillGapResultEvent is the gap variant of backfill.result: the requested
-// range (or part of it) is unavailable. gap is a normal, displayable result and
-// does NOT replace a connection drop. Exactly one of frames/gap is present.
+// range is unavailable. gap is a normal, displayable result and does NOT replace
+// a connection drop. Exactly one of frames/gap is present. v1 has NO partial-gap
+// representation (design §4.3.6: "fully retained ⇒ frames variant; start before
+// earliest ⇒ gap variant (no mixing)"): the gap MUST cover the FULL requested
+// range [FromSeq, ToSeq] (Gap.FromSeq == FromSeq && Gap.ToSeq == ToSeq). The
+// server producer emits the whole requested range as the gap; the validator
+// enforces it so a client can safely advance its frontier across the whole
+// range without crossing positions that were never held nor adjudicated.
 type BackfillGapResultEvent struct {
 	Type        string    `json:"type"`
 	RequestID   RequestID `json:"requestId"`
@@ -361,6 +450,21 @@ type ErrorEvent struct {
 }
 
 func (ErrorEvent) isKnownServerEvent() {}
+
+// InputAckEvent (CG-03) confirms a canonical input MessageID was committed by
+// the per-session ledger: exactly-once raw PTY write, or a duplicate of an
+// already-committed (DeviceID, MessageID) key (re-ACK). It carries no
+// seq/status/time/data/details. requestId equals the triggering wire attempt;
+// id is the stable canonical MessageID key. It is not a ReplayFrame (no seq),
+// is never broadcast, and never enters history/backfill.
+type InputAckEvent struct {
+	Type      string    `json:"type"`
+	RequestID RequestID `json:"requestId"`
+	SessionID SessionID `json:"sessionId"`
+	ID        MessageID `json:"id"`
+}
+
+func (InputAckEvent) isKnownServerEvent() {}
 
 // ===========================================================================
 // Production validators (pure). Addendum §5.3.
@@ -537,6 +641,10 @@ func validateAttached(a SessionAttachedEvent) error {
 			return errors.New("contract: attached history gap.ToSeq+1 must equal EarliestSeq")
 		}
 	}
+	// CG-03 inputAckMode is an optional additive field; the decoder only ever
+	// sets it to the canonical value (unknown values are treated as absent), so
+	// no validation is needed here. The producer constructs it from the typed
+	// constant InputAckModeSessionWindowV1 only.
 	return nil
 }
 
@@ -574,15 +682,28 @@ func validateBackfillFrames(b BackfillFramesResultEvent) error {
 	if err := validateReplayFrames(b.Frames); err != nil {
 		return err
 	}
-	// Each frame seq must be within [FromSeq, ToSeq] and strictly ascending.
+	// M3-004: the frames variant claims the FULL closed range [FromSeq, ToSeq] is
+	// retained (a partial range must use the gap variant). Require contiguous,
+	// exhaustive cover: first==FromSeq, every adjacent pair differs by exactly 1,
+	// last==ToSeq. Without this a partial [seq2] for [2,3] passes the old
+	// in-range+ascending check and the store would wrongly mark seq3 settled.
 	var prev Seq
 	for i, fr := range b.Frames {
 		s := replayFrameSeq(fr)
 		if s < b.FromSeq || s > b.ToSeq {
 			return fmt.Errorf("contract: BackfillFramesResultEvent.Frames[%d] seq %d outside [%d,%d]", i, s, b.FromSeq, b.ToSeq)
 		}
-		if i > 0 && s <= prev {
-			return fmt.Errorf("contract: BackfillFramesResultEvent.Frames[%d] seq %d not strictly ascending", i, s)
+		if i == 0 {
+			if s != b.FromSeq {
+				return fmt.Errorf("contract: BackfillFramesResultEvent.Frames[0] seq %d != FromSeq %d (non-contiguous cover; use gap variant for partial range)", s, b.FromSeq)
+			}
+		} else {
+			if s != prev+1 {
+				return fmt.Errorf("contract: BackfillFramesResultEvent.Frames[%d] seq %d not contiguous with prev %d (non-exhaustive cover; use gap variant for partial range)", i, s, prev)
+			}
+		}
+		if i == len(b.Frames)-1 && s != b.ToSeq {
+			return fmt.Errorf("contract: BackfillFramesResultEvent.Frames last seq %d != ToSeq %d (non-exhaustive cover; use gap variant for partial range)", s, b.ToSeq)
 		}
 		prev = s
 	}
@@ -614,7 +735,21 @@ func validateBackfillGap(b BackfillGapResultEvent) error {
 	if err := validateSeqRange(b.LatestSeq); err != nil {
 		return err
 	}
-	return validateGapRange(b.Gap)
+	if err := validateGapRange(b.Gap); err != nil {
+		return err
+	}
+	// M3-004 (R3): the gap variant must cover the FULL requested range. v1 has no
+	// partial-gap representation (design §4.3.6: "fully retained ⇒ frames; start
+	// before earliest ⇒ gap variant (no mixing)"; the server producer emits
+	// Gap{FromSeq: frame.FromSeq, ToSeq: frame.ToSeq}). Without this check a partial
+	// inner gap [2,2] for outer [2,4] would pass the inner-only validation and the
+	// store would advance its frontier to event.toSeq=4, crossing Seq3/4 which were
+	// never held nor authoritatively adjudicated — violating design §3 (frontier
+	// advances only across held or authoritatively-unavailable positions).
+	if b.Gap.FromSeq != b.FromSeq || b.Gap.ToSeq != b.ToSeq {
+		return fmt.Errorf("contract: BackfillGapResultEvent.Gap must cover the full requested range [FromSeq=%d, ToSeq=%d]; got gap [%d, %d] (v1 has no partial-gap representation)", b.FromSeq, b.ToSeq, b.Gap.FromSeq, b.Gap.ToSeq)
+	}
+	return nil
 }
 
 func validateSessionStateNormal(e SessionStateEvent) error {
@@ -718,6 +853,27 @@ func validateErrorEvent(e ErrorEvent) error {
 	return nil
 }
 
+// validateInputAck validates a CG-03 input.ack event. The ACK has exactly four
+// required fields (type/requestId/sessionId/id) and no seq/status/time/data/
+// details. The id accepts any non-empty opaque value: the canonical 39-byte
+// discriminator is a producer-side opt-in, not a consumer requirement (legacy
+// non-empty ACKs still decode), so the validator only requires non-empty id.
+func validateInputAck(e InputAckEvent) error {
+	if e.Type != ServerEventTypeInputAck {
+		return fmt.Errorf("contract: InputAckEvent.Type must be %q", ServerEventTypeInputAck)
+	}
+	if e.RequestID == "" {
+		return errors.New("contract: InputAckEvent.RequestID must be non-empty")
+	}
+	if e.SessionID == "" {
+		return errors.New("contract: InputAckEvent.SessionID must be non-empty")
+	}
+	if e.ID == "" {
+		return errors.New("contract: InputAckEvent.ID must be non-empty")
+	}
+	return nil
+}
+
 // ValidateServerEvent validates a known server event by its concrete type. It
 // enforces required fields, closed enums, safe seq, conditional/XOR, replay
 // frames and the attached-time snapshot constraints.
@@ -741,6 +897,8 @@ func ValidateServerEvent(e KnownServerEvent) error {
 		return validateAuthRevokedEvent(v)
 	case ErrorEvent:
 		return validateErrorEvent(v)
+	case InputAckEvent:
+		return validateInputAck(v)
 	default:
 		return fmt.Errorf("contract: unknown KnownServerEvent type %T", e)
 	}
@@ -963,6 +1121,12 @@ func DecodeKnownServerEvent(raw []byte) (KnownServerEvent, error) {
 			return nil, err
 		}
 		return ev, validateErrorEvent(ev)
+	case ServerEventTypeInputAck:
+		ev, err := decodeInputAck(f)
+		if err != nil {
+			return nil, err
+		}
+		return ev, validateInputAck(ev)
 	default:
 		return nil, fmt.Errorf("contract: unknown server event type %q", ftype)
 	}
@@ -1002,10 +1166,22 @@ func decodeAttached(f map[string]json.RawMessage) (SessionAttachedEvent, error) 
 	if err != nil {
 		return SessionAttachedEvent{}, err
 	}
-	return SessionAttachedEvent{
+	out := SessionAttachedEvent{
 		Type: ServerEventTypeSessionAttached, RequestID: RequestID(rid), APIVersion: APIVersion(apiVer),
 		SessionID: SessionID(sid), History: history, EarliestSeq: earliest, LatestSeq: latest, Snapshot: snap,
-	}, nil
+	}
+	// CG-03 input ack capability (contract-addendum-cg03.md §3/§4): inputAckMode
+	// is an optional additive field. Only the sole canonical value enables the
+	// capability; absent OR unknown value = capability unavailable (read
+	// projection preserved, input disabled). An unknown future value is treated
+	// as absent (forward-compat: "known event unknown optional field: ignored"),
+	// NOT a malformed event.
+	if mode, ok, err := optFieldT[InputAckMode](f, "inputAckMode"); err != nil {
+		return SessionAttachedEvent{}, err
+	} else if ok && mode == InputAckModeSessionWindowV1 {
+		out.InputAckMode = &mode
+	}
+	return out, nil
 }
 
 // decodeReplayFrames decodes the named array field into ReplayFrame concrete
@@ -1216,6 +1392,26 @@ func decodeAuthRevoked(f map[string]json.RawMessage) (AuthRevokedEvent, error) {
 		return AuthRevokedEvent{}, err
 	}
 	return AuthRevokedEvent{Type: ServerEventTypeAuthRevoked, Reason: AuthRevokedReason(reasonStr), OccurredAt: occurred}, nil
+}
+
+// decodeInputAck decodes a CG-03 input.ack event (additive: unknown fields are
+// discarded, matching the forward-compatible server-event decode contract). The
+// id accepts any non-empty opaque value; the canonical 39-byte discriminator is
+// validated only when the server producer classifies the canonical ledger path.
+func decodeInputAck(f map[string]json.RawMessage) (InputAckEvent, error) {
+	rid, err := reqNonEmptyString(f, "requestId")
+	if err != nil {
+		return InputAckEvent{}, err
+	}
+	sid, err := reqNonEmptyString(f, "sessionId")
+	if err != nil {
+		return InputAckEvent{}, err
+	}
+	id, err := reqNonEmptyString(f, "id")
+	if err != nil {
+		return InputAckEvent{}, err
+	}
+	return InputAckEvent{Type: ServerEventTypeInputAck, RequestID: RequestID(rid), SessionID: SessionID(sid), ID: MessageID(id)}, nil
 }
 
 func decodeErrorEvent(f map[string]json.RawMessage) (ErrorEvent, error) {

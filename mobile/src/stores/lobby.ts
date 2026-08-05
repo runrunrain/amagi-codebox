@@ -50,6 +50,7 @@ import {
   toApiRequestError,
   type ApiRequestError,
 } from '../lib/api';
+import { createTimingRecorder, type TimingRecorder, type TimingReportV1 } from '../lib/timing';
 
 // --- 错误分类（展示层消费；禁笼统失败） ---
 
@@ -252,6 +253,35 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   /** 最近一次危险操作回执（含记录占位说明，M2-C 查询面预留）。 */
   const lastReceipt = ref<OperationReceipt | null>(null);
 
+  // --- M3-006 T lane timing（design §6：T0=列表导航前 / T1=列表可交互渲染完成） ---
+  // 每次 load()（导航/刷新/重试）创建新 recorder 并在起点打 T0——对齐
+  // design §6「列表路由每次导航创建一个 recorder并完成 T lane」，避免重复
+  // 导航触发 duplicate_mark fault。T1 由 SessionsPage 在 loading true→false
+  // 后 nextTick（成功/空态/可操作错误态渲染完成）调用 markListTimingT1；
+  // auth 失效踢回 PG-01 不打 T1（该导航无 T 样本，fail-closed）。
+  // 消费面（design §6）：仅保留最近一次已完成 report 内存快照 + 显式
+  // listTimingSnapshot() 供 Vitest/Playwright 读取；无 wire/HTTP/localStorage/
+  // console 默认输出，report 固定 schema 不含 ID/URL/payload/时间戳。
+  let listTiming: TimingRecorder | null = null;
+  const lastListTimingReport = ref<TimingReportV1 | null>(null);
+
+  /**
+   * T1 锚点：列表成功/空态/可操作错误态渲染完成（SessionsPage nextTick 后调用）。
+   * fail-closed：非法转换（缺 T0/duplicate）不落快照，保留上一份已完成 report。
+   */
+  function markListTimingT1(): void {
+    const recorder = listTiming;
+    if (recorder === null) return;
+    listTiming = null;
+    const transition = recorder.mark('T1');
+    if (transition.accepted) lastListTimingReport.value = recorder.snapshot();
+  }
+
+  /** 最近一次已完成 T lane report（固定 schema 内存快照；无则 null）。 */
+  function listTimingSnapshot(): TimingReportV1 | null {
+    return lastListTimingReport.value;
+  }
+
   const cliAvailability = computed(() => host.value?.cliAvailability ?? []);
   const runningCount = computed(() => sessions.value.filter((s) => s.state === 'running').length);
   const controlledCount = computed(() => sessions.value.filter((s) => s.control.state === 'you').length);
@@ -270,6 +300,9 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
 
   /** 大厅加载/刷新：host/summary（含 CLI availability）+ 会话列表。 */
   async function load(): Promise<void> {
+    // M3-006 T0：每次列表加载创建新 recorder 并在起点打 T0（design §6）。
+    listTiming = createTimingRecorder();
+    listTiming.mark('T0');
     loading.value = true;
     controlConflict.value = null;
     try {
@@ -450,6 +483,8 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
     dismissReceipt,
     dismissLaunchError,
     dismissConflict,
+    markListTimingT1,
+    listTimingSnapshot,
   };
 });
 

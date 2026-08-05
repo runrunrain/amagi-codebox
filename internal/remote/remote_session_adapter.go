@@ -76,6 +76,13 @@ type RemoteSessionAdapter struct {
 
 	// configDir is the host config root (for workdir default etc.).
 	configDir string
+
+	// destroyLedger (M3-005), if set, releases the CG-03 per-session input ledger
+	// when a session is authoritatively removed (LifecycleRemove commit). Wired by
+	// the Server, which owns the SessionInputLedgerRegistry. The App additionally
+	// calls Server.DestroySessionInputLedger after desktop RemoveSession / batch
+	// clear commits to cover the cross-package desktop paths.
+	destroyLedger func(contract.SessionID)
 }
 
 // NewRemoteSessionAdapter creates an adapter with the given dependencies.
@@ -423,6 +430,12 @@ func (a *RemoteSessionAdapter) lifecycle(ctx context.Context, reqID contract.Req
 	if op == LifecycleRemove && result.Removed {
 		a.catalog.Remove(sessionID)
 		a.streams.RemoveStream(sessionID)
+		// M3-005：权威 remove 提交后销毁该 session 的 CG-03 ledger（remote REST remove
+		// 路径）。desktop remove/clear 跨包路径由 App 经 Server.DestroySessionInputLedger
+		// 接线（二者命中其一即可，Destroy 幂等）。
+		if a.destroyLedger != nil {
+			a.destroyLedger(sessionID)
+		}
 		return SessionDetailResult{}, nil
 	}
 	if op == LifecycleRestart && result.RestartBoundary {

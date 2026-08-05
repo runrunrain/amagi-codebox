@@ -12,6 +12,18 @@
 export type RequestID = string;
 export type SessionID = string;
 export type DeviceID = string;
+/**
+ * MessageID is input.id — the idempotency key for a logical input. CG-03
+ * (contract-addendum-cg03.md §3) upgrades the canonical scope to (SessionID
+ * lifetime, authenticated DeviceID): session restart does not reset it; only
+ * session remove ends it. The canonical producer format is "msg-v1-" + 32
+ * lowercase hex (39 ASCII bytes, 128 random bits), generated once via
+ * crypto.getRandomValues and bound to immutable base64 payload before the
+ * outbox accepts the entry; it is also the opt-in discriminator for the session
+ * input ledger + ACK path (isCanonicalMessageID). The wire consumer still
+ * accepts any legacy non-empty opaque ID (per-connection dedupe + silent
+ * success); legacy IDs MUST NOT be suppressed across connections.
+ */
 export type MessageID = string;
 
 // --- Seq: per-session replay cursor. 0 = "no replay frame yet"; real frames

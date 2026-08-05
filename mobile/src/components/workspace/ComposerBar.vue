@@ -12,6 +12,15 @@
  */
 import { nextTick, ref, watch } from 'vue';
 
+/** outbox 可视投影（M3-C；store.outboxView 形状）。 */
+export interface OutboxStripView {
+  pendingCount: number;
+  haltedCount: number;
+  maxAttemptNo: number;
+  resending: boolean;
+  exhaustedUnconfirmed: boolean;
+}
+
 const props = defineProps<{
   draft: string;
   sending: boolean;
@@ -22,6 +31,8 @@ const props = defineProps<{
   /** 观察者/不可写原因（null = 可写）。 */
   blockReason: string | null;
   history: string[];
+  /** outbox 待确认/停发投影（可选；无 capability 时全 0 不渲染）。 */
+  outbox?: OutboxStripView;
 }>();
 
 const emit = defineEmits<{
@@ -66,6 +77,31 @@ function onReuse(text: string): void {
 <template>
   <div class="composer">
     <p v-if="blockReason" class="composer-block-reason" role="note">{{ blockReason }}</p>
+
+    <!-- outbox 可视条（M3-C）：待确认/自动重发反馈/停发态，如实呈现不伪造 confirmed -->
+    <div
+      v-if="outbox && (outbox.pendingCount > 0 || outbox.haltedCount > 0)"
+      class="outbox-strip"
+      role="status"
+      aria-live="polite"
+      data-testid="outbox-strip"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4z" />
+      </svg>
+      <span v-if="outbox.resending" class="outbox-text outbox-text--resending">
+        已恢复，正在自动重发 {{ outbox.pendingCount }} 条未确认指令…
+      </span>
+      <span v-else-if="outbox.pendingCount > 0" class="outbox-text">
+        {{ outbox.pendingCount }} 条指令待确认<template v-if="outbox.maxAttemptNo > 1">（第 {{ outbox.maxAttemptNo }} 次尝试）</template>
+      </span>
+      <span v-if="outbox.exhaustedUnconfirmed" class="outbox-text outbox-text--warn">
+        已达重试上限仍未确认：发送状态未知，请人工判断后重发
+      </span>
+      <span v-if="outbox.haltedCount > 0" class="outbox-text outbox-text--warn">
+        {{ outbox.haltedCount }} 条指令已停止发送（控制权已变化），内容保留在时间线
+      </span>
+    </div>
 
     <div v-if="historyOpen && history.length > 0" class="history-panel" role="menu" aria-label="历史指令">
       <button
@@ -136,6 +172,37 @@ function onReuse(text: string): void {
   font-size: 12px;
   color: var(--VT-text-secondary);
   line-height: 1.5;
+}
+
+.outbox-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  background: var(--VT-surface);
+  border: 1px solid var(--VT-border);
+  border-left: 4px solid var(--VT-warning);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--VT-text);
+  line-height: 1.5;
+}
+
+.outbox-strip > svg {
+  flex-shrink: 0;
+  color: var(--VT-warning);
+}
+
+.outbox-text--resending {
+  color: var(--VT-accent-strong);
+  font-weight: 600;
+}
+
+.outbox-text--warn {
+  color: var(--VT-warning);
+  font-weight: 600;
 }
 
 .history-panel {

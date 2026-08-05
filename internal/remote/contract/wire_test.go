@@ -147,7 +147,7 @@ func TestManifests_FullParity(t *testing.T) {
 		t.Errorf("KnownAuthRevokedReasons count = %d, want 1 (CG-01 independent of frozen counts)", len(KnownAuthRevokedReasons))
 	}
 
-	if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownServerEventTypes) != 7 || len(KnownErrorCodes) != 12 {
+	if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownServerEventTypes) != 8 || len(KnownErrorCodes) != 12 {
 		t.Errorf("frozen counts changed: endpoints=%d client=%d server=%d errors=%d", len(V1RestEndpoints), len(KnownClientFrameTypes), len(KnownServerEventTypes), len(KnownErrorCodes))
 	}
 }
@@ -265,7 +265,7 @@ func TestREST_MarshalResponses(t *testing.T) {
 
 func TestClientFrames_Decode(t *testing.T) {
 	fx := loadFixture(t)
-	for _, key := range []string{"attach", "attachWithLastSeq", "input", "resize", "backfill", "ping"} {
+	for _, key := range []string{"attach", "attachWithLastSeq", "input", "inputCanonical", "resize", "backfill", "ping"} {
 		raw, ok := fx.ClientFrames[key]
 		if !ok {
 			t.Fatalf("missing client frame %q", key)
@@ -305,7 +305,7 @@ func clientRequestID(f ClientFrame) RequestID {
 }
 
 // ---------------------------------------------------------------------------
-// (4) Server events Decode/Validate/Marshal (production) — all 9 concrete
+// (4) Server events Decode/Validate/Marshal (production) — all 10 concrete
 // categories + the attached-gap sample.
 // ---------------------------------------------------------------------------
 
@@ -313,11 +313,18 @@ func TestServerEvents_DecodeValidateMarshal(t *testing.T) {
 	fx := loadFixture(t)
 	knownKeys := []string{
 		"sessionAttachedEmptyHistory", "sessionAttachedWithHistory", "sessionAttachedGap",
+		"sessionAttachedWithInputAckMode",
 		"output", "backfillResultFrames", "backfillResultGap",
 		"sessionStateExited", "sessionStateRestartBoundary",
 		"controlStateOther", "controlStateYou", "controlStateNone", "controlStateDesktop",
 		"authRevoked", "error",
+		"inputAck", "inputAckLegacyId",
 	}
+	// decodeOnlyKeys: forward-compat fixtures whose decode is intentionally lossy
+	// (an unknown optional field is dropped), so the marshal round-trip cannot
+	// reproduce the original bytes. They are decoded + validated, then asserted
+	// separately rather than round-tripped.
+	decodeOnlyKeys := []string{"sessionAttachedUnknownInputAckMode"}
 	for _, key := range knownKeys {
 		raw := fx.ServerEvents[key]
 		ev, err := DecodeKnownServerEvent(raw)
@@ -334,13 +341,31 @@ func TestServerEvents_DecodeValidateMarshal(t *testing.T) {
 		}
 		assertJSONEqual(t, b, raw)
 	}
+	// Forward-compat: an unknown inputAckMode is treated as absent (capability
+	// unavailable), so the decoded event has a nil InputAckMode and validates OK.
+	for _, key := range decodeOnlyKeys {
+		raw := fx.ServerEvents[key]
+		ev, err := DecodeKnownServerEvent(raw)
+		if err != nil {
+			t.Fatalf("DecodeKnownServerEvent %s: %v", key, err)
+		}
+		if err := ValidateServerEvent(ev); err != nil {
+			t.Fatalf("ValidateServerEvent %s: %v", key, err)
+		}
+		if a, ok := ev.(SessionAttachedEvent); !ok || a.InputAckMode != nil {
+			t.Errorf("%s: unknown inputAckMode must decode to absent (nil), got %v", key, a.InputAckMode)
+		}
+	}
 
 	// serverEvents consumed-set parity (CG-01 §5.1): the known decode keys plus
 	// the existing unknownEvent (rejected by the strict decoder as an unknown
 	// server event type) must cover every fixture serverEvents root key — no
 	// orphan fixture case and no untested key.
-	consumedServer := make(map[string]bool, len(knownKeys)+1)
+	consumedServer := make(map[string]bool, len(knownKeys)+len(decodeOnlyKeys)+1)
 	for _, k := range knownKeys {
+		consumedServer[k] = true
+	}
+	for _, k := range decodeOnlyKeys {
 		consumedServer[k] = true
 	}
 	consumedServer["unknownEvent"] = true
@@ -442,8 +467,112 @@ func minimalSnapshot() FiveLayerSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// (7) Seq boundaries: max ok; max+1 / 0 replay / negative / fractional reject.
+// (6b) Backfill frames contiguous full-cover (M3-004).
 // ---------------------------------------------------------------------------
+
+func TestBackfillFrames_ContiguousFullCover(t *testing.T) {
+	mk := func(from, to Seq, seqs []Seq) BackfillFramesResultEvent {
+		frames := make([]ReplayFrame, 0, len(seqs))
+		for _, s := range seqs {
+			frames = append(frames, OutputEvent{Type: ServerEventTypeOutput, SessionID: "s", Seq: s, Chunk: "YQ=="})
+		}
+		return BackfillFramesResultEvent{
+			Type: ServerEventTypeBackfillResult, RequestID: "r", SessionID: "s",
+			FromSeq: from, ToSeq: to, EarliestSeq: 1, LatestSeq: 9, Frames: frames,
+		}
+	}
+
+	valids := []struct {
+		name string
+		ev   BackfillFramesResultEvent
+	}{
+		{"single point", mk(2, 2, []Seq{2})},
+		{"full contiguous [2,4]", mk(2, 4, []Seq{2, 3, 4})},
+		{"two points", mk(7, 8, []Seq{7, 8})},
+	}
+	for _, tc := range valids {
+		if err := ValidateServerEvent(tc.ev); err != nil {
+			t.Errorf("%s: expected valid contiguous cover, got error: %v", tc.name, err)
+		}
+		if _, err := MarshalServerEvent(tc.ev); err != nil {
+			t.Errorf("%s: MarshalServerEvent failed: %v", tc.name, err)
+		}
+	}
+
+	invalids := []struct {
+		name string
+		ev   BackfillFramesResultEvent
+	}{
+		// Partial: server must use the gap variant for a non-retained seq, not emit a
+		// frames variant that omits a seq inside [fromSeq, toSeq].
+		{"partial missing first", mk(2, 3, []Seq{3})},
+		{"partial missing last", mk(2, 3, []Seq{2})},
+		{"partial gap in middle", mk(2, 4, []Seq{2, 4})},
+		{"single subrange of multi-point", mk(2, 4, []Seq{3})},
+	}
+	for _, tc := range invalids {
+		if err := ValidateServerEvent(tc.ev); err == nil {
+			t.Errorf("%s: expected rejection (non-contiguous/partial cover), got nil", tc.name)
+		}
+		if _, err := MarshalServerEvent(tc.ev); err == nil {
+			t.Errorf("%s: MarshalServerEvent must reject non-contiguous cover", tc.name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// (6c) Backfill gap whole-range cover (M3-004 R3 residual). v1 has no partial-
+// gap representation: the gap variant MUST cover the full requested range.
+// ---------------------------------------------------------------------------
+
+func TestBackfillGap_WholeRangeCover(t *testing.T) {
+	mk := func(from, to, gapFrom, gapTo Seq) BackfillGapResultEvent {
+		return BackfillGapResultEvent{
+			Type: ServerEventTypeBackfillResult, RequestID: "r", SessionID: "s",
+			FromSeq: from, ToSeq: to, EarliestSeq: 1, LatestSeq: 9,
+			Gap: GapRange{Code: ErrorCodeHistoryGap, FromSeq: gapFrom, ToSeq: gapTo},
+		}
+	}
+
+	valids := []struct {
+		name string
+		ev   BackfillGapResultEvent
+	}{
+		{"single point gap==outer", mk(2, 2, 2, 2)},
+		{"full range gap==outer [2,4]", mk(2, 4, 2, 4)},
+		{"two points gap==outer [7,8]", mk(7, 8, 7, 8)},
+	}
+	for _, tc := range valids {
+		if err := ValidateServerEvent(tc.ev); err != nil {
+			t.Errorf("%s: expected valid whole-range gap, got error: %v", tc.name, err)
+		}
+		if _, err := MarshalServerEvent(tc.ev); err != nil {
+			t.Errorf("%s: MarshalServerEvent failed: %v", tc.name, err)
+		}
+	}
+
+	invalids := []struct {
+		name string
+		ev   BackfillGapResultEvent
+	}{
+		// M3-004 R3: a partial inner gap must be rejected. Without this the client
+		// store would advance its frontier to event.toSeq, crossing un-adjudicated
+		// seqs that were never held nor authoritatively ruled unavailable.
+		{"partial gap covers start only", mk(2, 4, 2, 2)},
+		{"partial gap covers end only", mk(2, 4, 4, 4)},
+		{"partial gap covers middle", mk(2, 6, 3, 4)},
+		{"gap shifted below request", mk(2, 4, 1, 4)},
+		{"gap shifted above request", mk(2, 4, 2, 5)},
+	}
+	for _, tc := range invalids {
+		if err := ValidateServerEvent(tc.ev); err == nil {
+			t.Errorf("%s: expected rejection (partial gap; v1 requires whole-range cover), got nil", tc.name)
+		}
+		if _, err := MarshalServerEvent(tc.ev); err == nil {
+			t.Errorf("%s: MarshalServerEvent must reject partial gap", tc.name)
+		}
+	}
+}
 
 func TestSeqBoundaries(t *testing.T) {
 	// max is valid (replay seq).
@@ -487,6 +616,7 @@ func TestInvalid_AllRejected(t *testing.T) {
 		"sessionStateRestartFalse": true, "sessionStateSeqAlone": true,
 		"backfillFrameOutOfRange": true, "backfillFrameNonAscending": true,
 		"authRevokedUnknownReason": true, "authRevokedNullReason": true,
+		"inputAckMissingId": true, "inputAckNullId": true,
 	}
 	clientInvalid := map[string]bool{
 		"nullRequiredField": true, "missingRequiredField": true,
@@ -554,6 +684,7 @@ func TestMarkerInterfaces(t *testing.T) {
 	var _ KnownServerEvent = ControlStateEvent{}
 	var _ KnownServerEvent = AuthRevokedEvent{}
 	var _ KnownServerEvent = ErrorEvent{}
+	var _ KnownServerEvent = InputAckEvent{}
 
 	var _ ReplayFrame = OutputEvent{}
 	var _ ReplayFrame = SessionRestartBoundaryEvent{}
@@ -718,7 +849,7 @@ func TestCG01_AuthRevokedContract(t *testing.T) {
 	// C5 counts unchanged: the reason manifest is independent of the frozen
 	// event/error/type counts (additive, not mixed in).
 	t.Run("C5_counts_unchanged", func(t *testing.T) {
-		if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownServerEventTypes) != 7 || len(KnownErrorCodes) != 12 {
+		if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownServerEventTypes) != 8 || len(KnownErrorCodes) != 12 {
 			t.Errorf("frozen counts changed")
 		}
 		if len(KnownAuthRevokedReasons) != 1 {
@@ -756,6 +887,137 @@ func TestCG01_AuthRevokedContract(t *testing.T) {
 		var closeCode int = AuthRevokedCloseCode
 		if closeCode != 1008 {
 			t.Errorf("close code = %d, want 1008", closeCode)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// (13) CG-03 input.ack contract (contract-addendum-cg03.md §3/§6).
+// C4/C5/C6/C8/C9 require the server producer/ledger + client outbox (Step 3);
+// this package only provides the contract symbols + strict validator, so the
+// tested assertions are the symbol/decode/marshal/classifier facts (C1-C3, C7).
+// ---------------------------------------------------------------------------
+
+func TestCG03_InputAckContract(t *testing.T) {
+	fx := loadFixture(t)
+
+	// C1 symbol + count parity: the additive event/mode symbols agree across Go
+	// source and the shared fixture; event types=8, concrete=10, REST/client/
+	// error counts unchanged.
+	t.Run("C1_symbol_parity", func(t *testing.T) {
+		if ServerEventTypeInputAck != "input.ack" {
+			t.Errorf("ServerEventTypeInputAck = %q, want input.ack", ServerEventTypeInputAck)
+		}
+		if InputAckModeSessionWindowV1 != "session-window-v1" {
+			t.Errorf("InputAckModeSessionWindowV1 = %q", InputAckModeSessionWindowV1)
+		}
+		if !stringsEqualExact(KnownServerEventTypes, fx.Manifest.ServerEventTypes) {
+			t.Errorf("server event types vs fixture: %v != %v", KnownServerEventTypes, fx.Manifest.ServerEventTypes)
+		}
+		if len(KnownServerEventTypes) != 8 {
+			t.Errorf("server event types = %d, want 8", len(KnownServerEventTypes))
+		}
+		// input.ack is the last additive entry; it is distinct from the frozen 7.
+		if KnownServerEventTypes[7] != ServerEventTypeInputAck {
+			t.Errorf("input.ack must be the 8th (last) server event type")
+		}
+		// 10 concrete KnownServerEvent implementations (marker-interface count).
+		concrete := []KnownServerEvent{
+			SessionAttachedEvent{}, OutputEvent{}, BackfillFramesResultEvent{}, BackfillGapResultEvent{},
+			SessionStateEvent{}, SessionRestartBoundaryEvent{}, ControlStateEvent{}, AuthRevokedEvent{},
+			ErrorEvent{}, InputAckEvent{},
+		}
+		if len(concrete) != 10 {
+			t.Errorf("concrete event count = %d, want 10", len(concrete))
+		}
+		// frozen counts unchanged.
+		if len(V1RestEndpoints) != 10 || len(KnownClientFrameTypes) != 5 || len(KnownErrorCodes) != 12 {
+			t.Errorf("frozen counts changed: endpoints=%d client=%d errors=%d", len(V1RestEndpoints), len(KnownClientFrameTypes), len(KnownErrorCodes))
+		}
+	})
+
+	// C2 canonical ACK Validate/Marshal/Decode round-trip; InputAckEvent is NOT
+	// a ReplayFrame and carries no seq.
+	t.Run("C2_canonical_ack_roundtrip", func(t *testing.T) {
+		ev, err := DecodeKnownServerEvent(fx.ServerEvents["inputAck"])
+		if err != nil {
+			t.Fatalf("Decode inputAck: %v", err)
+		}
+		ack, ok := ev.(InputAckEvent)
+		if !ok {
+			t.Fatalf("decoded event is %T, want InputAckEvent", ev)
+		}
+		if !IsCanonicalMessageID(ack.ID) {
+			t.Errorf("inputAck.id is not canonical: %q", ack.ID)
+		}
+		if !IsCanonicalRequestID(ack.RequestID) {
+			t.Errorf("inputAck.requestId is not canonical: %q", ack.RequestID)
+		}
+		// InputAckEvent is NOT a ReplayFrame (no seq position in history).
+		if _, isReplay := any(ack).(ReplayFrame); isReplay {
+			t.Errorf("InputAckEvent must NOT implement ReplayFrame")
+		}
+		// Marshal round-trip preserves the canonical ID and exact wire shape.
+		b, err := MarshalServerEvent(ev)
+		if err != nil {
+			t.Fatalf("Marshal inputAck: %v", err)
+		}
+		assertJSONEqual(t, b, fx.ServerEvents["inputAck"])
+	})
+
+	// C3 missing/null/empty ID produce no bytes (producer strict); legacy
+	// non-empty opaque ID still decodes (additive consumer path).
+	t.Run("C3_id_rules", func(t *testing.T) {
+		// legacy non-empty opaque ID decodes (per-connection dedupe path stays).
+		ev, err := DecodeKnownServerEvent(fx.ServerEvents["inputAckLegacyId"])
+		if err != nil {
+			t.Fatalf("Decode inputAckLegacyId: %v", err)
+		}
+		ack, _ := ev.(InputAckEvent)
+		if IsCanonicalMessageID(ack.ID) {
+			t.Errorf("legacy id must NOT be canonical: %q", ack.ID)
+		}
+		// missing/null id produce no marshal bytes (empty = Go zero value).
+		if _, err := MarshalServerEvent(InputAckEvent{Type: ServerEventTypeInputAck, RequestID: "r", SessionID: "s"}); err == nil {
+			t.Errorf("ACK with empty id must produce no bytes")
+		}
+		// a non-empty legacy id (even a single char) IS valid on the consumer path.
+		if _, err := MarshalServerEvent(InputAckEvent{Type: ServerEventTypeInputAck, RequestID: "r", SessionID: "s", ID: "x"}); err != nil {
+			t.Errorf("ACK with non-empty legacy id must marshal: %v", err)
+		}
+	})
+
+	// C7 privacy: ACK wire has no data/seq/status/details; the canonical
+	// classifier rejects non-canonical shapes (wrong prefix / length / case).
+	t.Run("C7_privacy_classifier", func(t *testing.T) {
+		b, err := MarshalServerEvent(InputAckEvent{Type: ServerEventTypeInputAck, RequestID: "req-v1-11111111111111111111111111111111", SessionID: "s", ID: "msg-v1-22222222222222222222222222222222"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"\"data\":", "\"seq\":", "\"status\":", "\"details\":"} {
+			if strings.Contains(string(b), forbidden) {
+				t.Errorf("ACK wire must not carry %q: %s", forbidden, string(b))
+			}
+		}
+		// canonical classifier: exact 39-byte msg-v1- + 32 lower-hex only.
+		good := []MessageID{"msg-v1-22222222222222222222222222222222", "msg-v1-0123456789abcdef0123456789abcdef"}
+		for _, id := range good {
+			if !IsCanonicalMessageID(id) {
+				t.Errorf("expected canonical: %q", id)
+			}
+		}
+		bad := []MessageID{"", "msg_1", "msg-v1-222", "msg-v1-2222222222222222222222222222222X", "MSG-V1-22222222222222222222222222222222", "msg-v1-222222222222222222222222222222222"}
+		for _, id := range bad {
+			if IsCanonicalMessageID(id) {
+				t.Errorf("expected non-canonical: %q", id)
+			}
+		}
+		// canonical RequestID classifier symmetry.
+		if !IsCanonicalRequestID("req-v1-11111111111111111111111111111111") {
+			t.Errorf("canonical requestId rejected")
+		}
+		if IsCanonicalRequestID("req-v1-short") {
+			t.Errorf("non-canonical requestId accepted")
 		}
 	})
 }

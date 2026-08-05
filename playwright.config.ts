@@ -59,14 +59,14 @@ export default defineConfig({
     },
     {
       name: 'mobile-320',
-      // connect-pg01-real / workspace-real 每用例拉起真 harness，开销按设计只在 mobile-360 承担一次。
-      testIgnore: ['**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts'],
+      // connect-pg01-real / workspace-real / workspace-m3c-relay / m3-int-* 每用例拉起真 harness，开销按设计只在 mobile-360 承担一次。
+      testIgnore: ['**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts'],
       use: { viewport: { width: 320, height: 800 }, isMobile: true, hasTouch: true },
     },
     {
       name: 'desktop',
-      // 真服务器配对 / 真链 WS E2E 属移动 PG-01/PG-03 场景（M1-D2/M2-INT），desktop 不重复跑。
-      testIgnore: ['**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts'],
+      // 真服务器配对 / 真链 WS E2E 属移动 PG-01/PG-03 场景（M1-D2/M2-INT/M3-C/M3-INT），desktop 不重复跑。
+      testIgnore: ['**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts'],
       use: { viewport: { width: 1280, height: 720 } },
     },
   ],

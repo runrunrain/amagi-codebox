@@ -307,6 +307,36 @@ func TestAdapter_RemoveSession(t *testing.T) {
 	}
 }
 
+// TestAdapter_LifecycleRemoveDestroysLedger (M3-005): the adapter's authoritative
+// remove commit (lifecycle LifecycleRemove) MUST invoke destroyLedger, releasing
+// the CG-03 ledger for that session. Drives the real adapter.RemoveSession path
+// with a device holder so DoDeviceLifecycle authorizes the remove.
+func TestAdapter_LifecycleRemoveDestroysLedger(t *testing.T) {
+	adapter, _, _, sessRaw := setupAdapterTest(t)
+	activateTestSession(t, adapter, "s1")
+	ctx := context.Background()
+	principal := DevicePrincipal{DeviceID: "dev1"}
+	// Make dev1 the control holder so DoDeviceLifecycle authorizes the remove.
+	lease := &ControlConnectionLease{deviceID: "dev1", connectionID: "conn1", attachmentGeneration: 1}
+	lease.live.Store(true)
+	if _, err := adapter.Gate().Acquire(ctx, principal, lease, contract.SessionID("s1")); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	// Wire a destroyLedger spy.
+	var destroyed contract.SessionID
+	adapter.destroyLedger = func(sid contract.SessionID) { destroyed = sid }
+	// RemoveSession drives the adapter lifecycle() remove commit.
+	if aerr := adapter.RemoveSession(ctx, "req1", principal, "s1"); aerr != nil {
+		t.Fatalf("RemoveSession: %v", aerr)
+	}
+	if destroyed != "s1" {
+		t.Fatalf("destroyLedger not called with s1 after remove (got %q)", destroyed)
+	}
+	if len(sessRaw.removed) == 0 || sessRaw.removed[len(sessRaw.removed)-1] != "s1" {
+		t.Fatalf("sessRaw.RemoveSession not called for s1: %v", sessRaw.removed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Acquire / Release tests
 // ---------------------------------------------------------------------------

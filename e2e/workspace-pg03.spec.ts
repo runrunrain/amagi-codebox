@@ -51,6 +51,9 @@ function attached(over: Record<string, unknown> = {}) {
     earliestSeq: 0,
     latestSeq: 0,
     snapshot: snapshot(),
+    // M3-001：capability-capable server（inputAckMode 协商）= 正常生产场景；
+    // 缺失时新客户端只读（fail-closed）。mock 夹具默认协商 canonical 能力。
+    inputAckMode: 'session-window-v1',
     ...over,
   }
 }
@@ -384,53 +387,89 @@ test.describe('M2-C PG-03 内容转化工作区', () => {
     expect(consoleErrors).toEqual([])
   })
 
-  test('GapMarker：缺口原位标记 → 尝试补齐 → backfill 帧 → 内容原位替换', async ({ page }, testInfo) => {
+  test('GapMarker：首次 attach 全量历史（late-attach 修复）+ live 缺口原位补齐', async ({ page }, testInfo) => {
     const consoleErrors = watchConsole(page)
     await dismissGuide(page)
-    await mockRest(page, makeDetail({ earliestSeq: 10, latestSeq: 10 }))
+    // design §3：detail.latestSeq 是 REST advisory bound，不作游标。
+    // 新设备首 attach 省略 lastSeq → 服务端返回全量 retained tail（late-attach 修复端到端可见）。
+    await mockRest(page, makeDetail({ earliestSeq: 1, latestSeq: 50 }))
     const ws = await mockWs(page, {
-      autoAttach: (frames) => {
-        const attach = frames.filter((f) => f.type === 'attach').at(-1)
-        // 客户端 lastSeq=5（预设游标经 detail.latestSeq=5）
-        expect(attach?.lastSeq).toBe(5)
-        return attached({
-          earliestSeq: 10,
-          latestSeq: 10,
-          snapshot: snapshot({ history: { state: 'gap', gap: { code: 'history.gap', fromSeq: 6, toSeq: 9 } } }),
-          history: [output(10, 'retained latest\n')],
-        })
-      },
+      autoAttach: () =>
+        attached({
+          earliestSeq: 1,
+          latestSeq: 3,
+          history: [output(1, 'retained one\n'), output(2, 'retained two\n'), output(3, 'retained three\n')],
+        }),
     })
-    // detail.latestSeq=5 → attach 携带 lastSeq=5，服务端判定 gap [6,9]
-    await page.unroute(`${BASE}/sessions/sess-1`)
-    await mockRest(page, makeDetail({ earliestSeq: 10, latestSeq: 5 }))
     await enterWorkspace(page)
 
-    const gap = page.locator('.gap-marker')
+    // 首次 attach 必须 omit lastSeq（绝不用 detail.latestSeq=50）——在 handler 外断言。
+    const firstAttach = ws.frames.find((f) => f.type === 'attach')
+    expect(firstAttach).toBeDefined()
+    expect('lastSeq' in (firstAttach ?? {})).toBe(false)
+
+    // 全量可用历史渲染：新设备看到 seq1–3 全部 retained 帧（late-attach 修复端到端可见）。
+    await expect(page.locator('.mono-block').first()).toContainText('retained one')
+    await expect(page.locator('.mono-block').first()).toContainText('retained three')
+
+    // live seq=5 越洞 [4,4]：recoverable 原位标记 + 机器属性（addendum §1.2：
+    // 可恢复缺口只能来自 live reorder；attached-time gap 恒为已逐出 origin 段）。
+    ws.send(output(5, 'live five\n'))
+    const gap = page.locator('[data-testid=gap-marker]')
     await expect(gap).toBeVisible()
-    await expect(gap).toContainText('历史缺口：第 6–9 段未保留')
+    await expect(gap).toContainText('历史缺口：第 4–4 段未保留')
+    await expect(gap).toHaveAttribute('data-gap-state', 'recoverable')
+    await expect(gap).toHaveAttribute('data-from-seq', '4')
+    await expect(gap).toHaveAttribute('data-to-seq', '4')
     await expect(page.locator('.status-bar')).toContainText('历史：存在缺口')
     await page.screenshot({ path: shotName(testInfo, 'gap-marker'), fullPage: false })
 
+    // 尝试补齐 → backfill 帧 → 内容原位替换（标记消失）。
     await gap.getByRole('button', { name: '尝试补齐' }).click()
+    await expect(gap).toHaveAttribute('data-gap-state', 'filling')
     const bf = ws.frames.find((f) => f.type === 'backfill')
     expect(bf).toBeDefined()
-    expect([bf?.fromSeq, bf?.toSeq]).toEqual([6, 9])
+    expect([bf?.fromSeq, bf?.toSeq]).toEqual([4, 4])
     ws.send({
       type: 'backfill.result',
       requestId: String(bf?.requestId),
       sessionId: 'sess-1',
-      fromSeq: 6,
-      toSeq: 7,
-      earliestSeq: 6,
-      latestSeq: 10,
-      frames: [output(6, 'filled six\n'), output(7, 'filled seven\n')],
+      fromSeq: 4,
+      toSeq: 4,
+      earliestSeq: 1,
+      latestSeq: 5,
+      frames: [output(4, 'filled four\n')],
     })
-    await expect(page.locator('.gap-marker')).toHaveCount(0)
-    await expect(page.locator('.mono-block').first()).toContainText('filled six')
-    await expect(page.locator('.status-bar')).toContainText('历史：已补齐')
+    await expect(page.locator('[data-testid=gap-marker]')).toHaveCount(0)
+    await expect(page.locator('.mono-block', { hasText: 'filled four' })).toBeVisible()
 
     await page.screenshot({ path: shotName(testInfo, 'gap-filled'), fullPage: false })
+    expect(consoleErrors).toEqual([])
+  })
+
+  test('GapMarker：低于保留窗的缺口裁定 settled-unavailable（exhausted 原位保留，无补齐按钮）', async ({ page }, testInfo) => {
+    const consoleErrors = watchConsole(page)
+    await dismissGuide(page)
+    await mockRest(page, makeDetail({ earliestSeq: 10, latestSeq: 10 }))
+    await mockWs(page, {
+      autoAttach: () =>
+        attached({
+          earliestSeq: 10,
+          latestSeq: 10,
+          snapshot: snapshot({ history: { state: 'gap', gap: { code: 'history.gap', fromSeq: 1, toSeq: 9 } } }),
+          history: [output(10, 'retained latest\n')],
+        }),
+    })
+    await enterWorkspace(page)
+
+    // design §3：attached earliestSeq(10)>F+1(1) → [1,9] 已逐出 → 显式不可恢复提示。
+    const gap = page.locator('[data-testid=gap-marker]')
+    await expect(gap).toBeVisible()
+    await expect(gap).toHaveAttribute('data-gap-state', 'exhausted')
+    await expect(gap).toContainText('该段已不可补齐，从最新继续')
+    await expect(gap.getByRole('button', { name: '尝试补齐' })).toHaveCount(0)
+    await expect(page.locator('.status-bar')).toContainText('历史：存在缺口')
+    await page.screenshot({ path: shotName(testInfo, 'gap-exhausted'), fullPage: false })
     expect(consoleErrors).toEqual([])
   })
 
@@ -510,11 +549,15 @@ test.describe('M2-C PG-03 内容转化工作区', () => {
       type: 'control.state',
       sessionId: 'sess-1',
       state: 'desktop',
-      reason: 'desktop took control',
+      reason: 'takeover',
       occurredAt: '2026-08-03T02:00:00Z',
     })
     await expect(page.locator('.control-bar')).toContainText('桌面端控制中')
-    await expect(page.locator('.control-notice')).toContainText('desktop took control')
+    // E-06（design §7）：takeover 映射固定文案（unknown reason 不直出）。
+    await expect(page.locator('[data-testid=control-notice]')).toContainText('桌面端已收回控制权')
+    await expect(page.locator('[data-testid=control-notice]')).toHaveAttribute('data-e', 'e06')
+    await expect(page.locator('[data-testid=control-notice]')).toHaveAttribute('data-kind', 'lost')
+    await expect(page.locator('[data-testid=control-notice]')).toHaveAttribute('data-control-state', 'desktop')
     // 写操作即时禁用
     await expect(page.locator('.composer-input')).toBeDisabled()
     expect(consoleErrors).toEqual([])

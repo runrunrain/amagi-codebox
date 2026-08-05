@@ -116,6 +116,10 @@ export type ContentItem =
 export interface UserItem extends TimelineItemBase {
   kind: 'user';
   text: string;
+  /** M3-C outbox 结算状态（canonical capability；null=legacy 直发不显示 chip）。 */
+  delivery?: 'sending' | 'settled' | 'halted' | null;
+  /** 当前 wire attempt 次数（sending 态展示重试进度）。 */
+  attemptNo?: number;
 }
 
 /** 重启边界（PR-05：原位渲染，不占内容）。 */

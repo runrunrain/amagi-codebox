@@ -115,6 +115,9 @@ const (
 	wsOutboundAttached wsOutboundPriority = iota
 	wsOutboundControl
 	wsOutboundError
+	// wsOutboundInputAck is the CG-03 input.ack confirmation: a correlated response
+	// to a client request (after error, before backfill/history). FIFO within class.
+	wsOutboundInputAck
 	wsOutboundBackfill
 	wsOutboundCausal
 	wsOutboundPriorityCount
@@ -663,6 +666,19 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 		return
 	}
 
+	// M3-B timing (design §6): Start after strict-decoded attach, before the
+	// causal cut. Omitted cursor = TimingAttach (first attach); present cursor
+	// (incl. 0) = TimingResync. Observe only after the attached frame is
+	// validated+marshaled and the first packet write succeeds.
+	var timing *Timer
+	if c.server.metrics != nil {
+		kind := TimingAttach
+		if frame.LastSeq != nil {
+			kind = TimingResync
+		}
+		timing, _ = c.server.metrics.Start(kind)
+	}
+
 	// M-007 staging attach: the causal cut (SyncFeed convergence + watermark)
 	// MUST succeed BEFORE any lease is committed. A causal failure returns
 	// service.down with ZERO lease replacement (AttachControl is not called, so
@@ -779,6 +795,13 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 			History:    contract.HistorySnapshot{State: histState, Gap: gap},
 		},
 	}
+	// CG-03: declare the input-ack capability when the per-session ledger is
+	// available (contract-addendum-cg03.md §3). A new client reads this to decide
+	// whether canonical input confirmation is active.
+	if c.server.inputLedgers != nil {
+		mode := contract.InputAckModeSessionWindowV1
+		attached.InputAckMode = &mode
+	}
 	// Test barrier models a transition/overflow at the last attach instant. The
 	// production value is nil; the fencer is already installed before this point.
 	if c.beforeAttachedWrite != nil {
@@ -791,6 +814,10 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 	if err := c.writeServerEventSync(attached); err != nil {
 		c.requestTeardown()
 		return
+	}
+	// M3-B timing: Observe only on successful first-packet write (design §6).
+	if timing != nil {
+		timing.Observe()
 	}
 	go c.deliveryLoop()
 }
@@ -906,6 +933,11 @@ func (c *wsV1Connection) deliveryLoop() {
 // Input handling (design §6.5 input)
 // ---------------------------------------------------------------------------
 
+// errInputLedgerFull signals the per-session canonical input ledger is at
+// capacity (8192 entries / 1 MiB); the handler maps it to rate.limited (design
+// §5: no eviction, no new ID).
+var errInputLedgerFull = errors.New("input ledger at capacity")
+
 func (c *wsV1Connection) handleInput(frame contract.InputFrame) {
 	c.mu.Lock()
 	state := c.state
@@ -919,7 +951,16 @@ func (c *wsV1Connection) handleInput(frame contract.InputFrame) {
 		return
 	}
 
-	// Input dedupe (design §6.5: repeated id → silent drop).
+	// CG-03 canonical classifier (contract-addendum-cg03.md §3/§5): canonical
+	// msg-v1- IDs route to the per-session ledger + ACK; legacy non-empty opaque
+	// IDs keep the per-connection dedupe + silent-success path and MUST NOT be
+	// suppressed across connections.
+	if contract.IsCanonicalMessageID(frame.ID) {
+		c.handleCanonicalInput(frame, lease, sessionID)
+		return
+	}
+
+	// Legacy path: per-connection dedupe (design §6.5: repeated id → silent drop).
 	if c.isInputDuplicate(frame.ID) {
 		return // silent
 	}
@@ -959,6 +1000,84 @@ func (c *wsV1Connection) handleInput(frame contract.InputFrame) {
 	// producer may allocate a Seq and append to replay (C-001: input is a
 	// one-way sink; echoing it back would leak secrets to observers/history).
 	c.adapter.Catalog().TouchActivity(sessionID, time.Now())
+}
+
+// handleCanonicalInput runs the CG-03 per-session ledger + ACK path for a
+// canonical msg-v1- input. Authority-first: the ledger is touched only after the
+// M3-A OperationLane grants the exact permit. The ledger never calls back into
+// gate/hub/socket; the handler reads the Reserve status and decides raw/ACK.
+func (c *wsV1Connection) handleCanonicalInput(frame contract.InputFrame, lease *ControlConnectionLease, sessionID contract.SessionID) {
+	data, err := base64.StdEncoding.DecodeString(frame.Data)
+	if err != nil {
+		c.sendWSError(frame.RequestID, sessionID, contract.ErrorCodeBadRequest, contract.ErrorLayerSession,
+			"invalid input data", contract.ActionHintRetry)
+		return
+	}
+	runtime := c.adapter.Runtime()
+	if runtime == nil {
+		c.sendWSError(frame.RequestID, sessionID, contract.ErrorCodeServiceDown, contract.ErrorLayerConnection,
+			"control service unavailable", contract.ActionHintCheckDesktop)
+		return
+	}
+	device := c.principal.DeviceID
+	ctx, cancel := context.WithTimeout(context.Background(), controlDataOperationTimeout)
+	defer cancel()
+	err = runtime.Gate().DoDevicePTY(ctx, lease, sessionID, PTYInput, func(ctx context.Context, permit *operationPermit) error {
+		if err := permit.Checkpoint(ctx, 1); err != nil {
+			return err
+		}
+		// M3-005：ledger lookup/creation 移到 exact permit checkpoint 之后（authority-first）；
+		// 观察者/陈旧 lease 在 gate 通过前不会创建空 ledger（不分配资源）。
+		ledger := c.server.inputLedgers.Ledger(sessionID)
+		status := ledger.Reserve(device, frame.ID)
+		switch status {
+		case InputLedgerCommitted:
+			// Already committed (duplicate across reconnect): re-ACK only, no rewrite.
+			c.sendInputAck(frame.RequestID, sessionID, frame.ID)
+			return nil
+		case InputLedgerPending, InputLedgerIndeterminate:
+			// Another attempt owns the in-flight entry, or a prior raw errored;
+			// do NOT rewrite (the owner resolves; indeterminate stays unknown).
+			return nil
+		case InputLedgerFull:
+			return errInputLedgerFull
+		}
+		// status == Owner: exactly-once raw write.
+		raw := c.rawPTYPort()
+		if raw == nil {
+			ledger.ReleaseUncalled(device, frame.ID)
+			return nil
+		}
+		if werr := raw.WriteRaw(ctx, string(sessionID), data); werr != nil {
+			ledger.MarkIndeterminate(device, frame.ID)
+			return werr
+		}
+		ledger.Commit(device, frame.ID)
+		c.sendInputAck(frame.RequestID, sessionID, frame.ID)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errInputLedgerFull) {
+			c.sendWSError(frame.RequestID, sessionID, contract.ErrorCodeRateLimited, contract.ErrorLayerConnection,
+				"input ledger at capacity", contract.ActionHintRetry)
+			return
+		}
+		c.sendWSGateError(frame.RequestID, sessionID, err)
+		return
+	}
+	c.adapter.Catalog().TouchActivity(sessionID, time.Now())
+}
+
+// sendInputAck enqueues a CG-03 input.ack to the requesting connection's sole
+// outbound writer. Best-effort: a fenced/terminal queue drops the ACK, but the
+// ledger stays committed and a client retry produces a re-ACK (design §5).
+func (c *wsV1Connection) sendInputAck(reqID contract.RequestID, sessionID contract.SessionID, id contract.MessageID) {
+	c.writeServerEvent(contract.InputAckEvent{
+		Type:      contract.ServerEventTypeInputAck,
+		RequestID: reqID,
+		SessionID: sessionID,
+		ID:        id,
+	})
 }
 
 // rawPTYPort returns the PTY raw port from the adapter (if available).
@@ -1319,6 +1438,8 @@ func outboundPriorityFor(ev contract.KnownServerEvent) wsOutboundPriority {
 		return wsOutboundControl
 	case contract.ErrorEvent:
 		return wsOutboundError
+	case contract.InputAckEvent:
+		return wsOutboundInputAck
 	case contract.BackfillFramesResultEvent, contract.BackfillGapResultEvent:
 		return wsOutboundBackfill
 	default:

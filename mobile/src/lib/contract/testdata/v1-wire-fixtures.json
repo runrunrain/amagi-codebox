@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 2,
-  "note": "M0-03 v1 wire fixtures. Single machine-readable source shared by Go (wire_test.go) and TS (wire.test.ts). No credentials/tokens/cookies. Pairing code appears ONLY in PairingCompleteRequest. Counts unchanged: 10 REST / 5 client / 7 server event / 9 concrete / 12 error. CG-01 additive: manifest.authRevokedReasons/authRevokedCloseCode + invalid authRevokedUnknownReason/authRevokedNullReason (reason manifest count=1, not in frozen counts).",
+  "schemaVersion": 3,
+  "note": "M0-03 v1 wire fixtures. Single machine-readable source shared by Go (wire_test.go) and TS (wire.test.ts). No credentials/tokens/cookies. Pairing code appears ONLY in PairingCompleteRequest. CG-01 additive: manifest.authRevokedReasons/authRevokedCloseCode + invalid authRevokedUnknownReason/authRevokedNullReason (reason manifest count=1, not in frozen counts). CG-03 additive: manifest.inputAckModes + input.ack event (8th server event type, 10th concrete) + attached.inputAckMode capability; canonical input.id (39-byte msg-v1-) + legacy opaque decode; invalid inputAckMissingId/inputAckNullId/inputAckUnknownMode/inputAckExtraField. Frozen counts: 10 REST / 5 client / 8 server event / 10 concrete / 12 error.",
   "manifest": {
     "apiVersion": "v1",
     "requestIdHeader": "X-Request-ID",
@@ -19,7 +19,7 @@
       { "method": "POST", "path": "/sessions/{id}/control/release", "successStatus": 200 }
     ],
     "clientFrameTypes": ["attach", "input", "resize", "backfill", "ping"],
-    "serverEventTypes": ["session.attached", "output", "backfill.result", "session.state", "control.state", "auth.revoked", "error"],
+    "serverEventTypes": ["session.attached", "output", "backfill.result", "session.state", "control.state", "auth.revoked", "error", "input.ack"],
     "errorCodes": [
       "net.unreachable", "service.down", "auth.unpaired", "auth.window_expired", "auth.revoked",
       "session.not_found", "session.launch_failed", "control.busy", "control.forbidden",
@@ -32,7 +32,8 @@
     "errorLayers": ["connection", "auth", "session", "control", "history"],
     "actionHints": ["retry", "check-desktop", "re-pair", "request-control", "continue-from-latest", "upgrade-client"],
     "authRevokedReasons": ["device_revoked"],
-    "authRevokedCloseCode": 1008
+    "authRevokedCloseCode": 1008,
+    "inputAckModes": ["session-window-v1"]
   },
   "rest": {
     "pairingCompleteRequest": {
@@ -109,6 +110,12 @@
       "type": "input",
       "requestId": "req_input_1",
       "id": "msg_1",
+      "data": "5L2g5aW9"
+    },
+    "inputCanonical": {
+      "type": "input",
+      "requestId": "req-v1-11111111111111111111111111111111",
+      "id": "msg-v1-22222222222222222222222222222222",
       "data": "5L2g5aW9"
     },
     "resize": {
@@ -269,6 +276,52 @@
       "layer": "control",
       "message": "current device is not the controller",
       "actionHint": "request-control"
+    },
+    "inputAck": {
+      "type": "input.ack",
+      "requestId": "req-v1-11111111111111111111111111111111",
+      "sessionId": "sess_opaque_1",
+      "id": "msg-v1-22222222222222222222222222222222"
+    },
+    "inputAckLegacyId": {
+      "type": "input.ack",
+      "requestId": "req_input_legacy",
+      "sessionId": "sess_opaque_1",
+      "id": "msg_legacy_1"
+    },
+    "sessionAttachedWithInputAckMode": {
+      "type": "session.attached",
+      "requestId": "req_attach_ack",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "inputAckMode": "session-window-v1",
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "continuous" }
+      }
+    },
+    "sessionAttachedUnknownInputAckMode": {
+      "type": "session.attached",
+      "requestId": "req_attach_future",
+      "apiVersion": "v1",
+      "sessionId": "sess_opaque_1",
+      "history": [],
+      "earliestSeq": 0,
+      "latestSeq": 0,
+      "inputAckMode": "future_window_v2",
+      "snapshot": {
+        "connection": { "state": "connected" },
+        "auth": { "state": "authorized" },
+        "session": { "state": "running" },
+        "control": { "state": "none" },
+        "history": { "state": "continuous" }
+      }
     },
     "unknownEvent": {
       "type": "session.metrics",
@@ -683,6 +736,17 @@
         { "type": "output", "sessionId": "sess_opaque_1", "seq": 42, "chunk": "YQ==" },
         { "type": "output", "sessionId": "sess_opaque_1", "seq": 41, "chunk": "Yg==" }
       ]
+    },
+    "inputAckMissingId": {
+      "type": "input.ack",
+      "requestId": "req_ack_bad_1",
+      "sessionId": "sess_opaque_1"
+    },
+    "inputAckNullId": {
+      "type": "input.ack",
+      "requestId": "req_ack_bad_2",
+      "sessionId": "sess_opaque_1",
+      "id": null
     }
   }
 }

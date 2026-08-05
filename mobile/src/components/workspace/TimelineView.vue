@@ -95,7 +95,25 @@ watch(
   },
 );
 
-defineExpose({ scrollToBottom });
+/** E-07「跳到缺口」导航：按条目 id 滚动到原位标记（虚拟滚动 scrollToIndex）。 */
+function scrollToItem(id: string): void {
+  const idx = props.items.findIndex((i) => i.id === id);
+  if (idx < 0) return;
+  virtualizer.value.scrollToIndex(idx, { align: 'center' });
+}
+
+defineExpose({ scrollToBottom, scrollToItem });
+
+/** 用户指令卡结算 chip 文案（M3-C outbox 可视化；不含 ID/payload）。 */
+function deliveryChip(item: TimelineItem): { text: string; tone: 'sending' | 'settled' | 'halted' | 'unknown' } | null {
+  if (item.kind !== 'user' || !item.delivery) return null;
+  const attempts = item.attemptNo ?? 0;
+  if (item.delivery === 'settled') return { text: '已确认', tone: 'settled' };
+  if (item.delivery === 'halted') return { text: '已停发（控制权已变化）', tone: 'halted' };
+  // sending：attempts 达上限仍未 ACK → terminal 未确认态（诚实，不伪造 confirmed）。
+  if (attempts >= 8) return { text: '未确认，已停止自动重发', tone: 'unknown' };
+  return { text: attempts > 1 ? `发送中（第 ${attempts} 次尝试）` : '发送中', tone: 'sending' };
+}
 
 function gapFilling(item: GapItem): boolean {
   return props.fillingGapIds.has(item.id);
@@ -120,12 +138,22 @@ function measureRow(el: unknown): void {
         :ref="measureRow"
         class="timeline-row"
         :style="{ transform: `translateY(${vItem.start}px)` }"
+        data-testid="timeline-item"
+        :data-seq="items[vItem.index]?.kind === 'boundary' ? (items[vItem.index] as { seq: number }).seq : undefined"
       >
         <template v-if="items[vItem.index]">
-          <!-- 用户指令：coral 左边条 -->
+          <!-- 用户指令：coral 左边条 + outbox 结算 chip（M3-C） -->
           <div v-if="items[vItem.index].kind === 'user'" class="user-message">
             <span class="user-tag">你</span>
             <span class="user-text">{{ (items[vItem.index] as { text: string }).text }}</span>
+            <span
+              v-if="deliveryChip(items[vItem.index])"
+              class="user-delivery"
+              :class="`user-delivery--${deliveryChip(items[vItem.index])?.tone}`"
+              role="status"
+            >
+              {{ deliveryChip(items[vItem.index])?.text }}
+            </span>
           </div>
           <PromptActionCard
             v-else-if="items[vItem.index].kind === 'prompt-action'"
@@ -229,6 +257,34 @@ function measureRow(el: unknown): void {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.user-delivery {
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--VT-border);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.user-delivery--sending {
+  border-color: var(--VT-warning);
+  color: var(--VT-warning);
+}
+
+.user-delivery--settled {
+  border-color: var(--VT-success);
+  color: var(--VT-success);
+}
+
+.user-delivery--halted,
+.user-delivery--unknown {
+  border-color: var(--VT-danger);
+  color: var(--VT-danger);
 }
 
 .new-output-pill {

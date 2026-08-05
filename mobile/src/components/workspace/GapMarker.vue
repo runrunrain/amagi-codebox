@@ -9,7 +9,7 @@
  */
 import type { GapItem } from '../../lib/timeline';
 
-defineProps<{
+const props = defineProps<{
   item: GapItem;
   filling: boolean;
 }>();
@@ -17,10 +17,26 @@ defineProps<{
 const emit = defineEmits<{
   fill: [entryId: string];
 }>();
+
+/** design §7：data-gap-state=recoverable|filling|exhausted（机器 oracle 固定属性）。 */
+function gapState(): 'recoverable' | 'filling' | 'exhausted' {
+  if (props.item.exhausted) return 'exhausted';
+  if (props.filling) return 'filling';
+  return 'recoverable';
+}
 </script>
 
 <template>
-  <div class="gap-marker" role="note" aria-label="历史缺口">
+  <div
+    class="gap-marker"
+    role="note"
+    aria-label="历史缺口"
+    aria-live="polite"
+    data-testid="gap-marker"
+    :data-from-seq="item.fromSeq"
+    :data-to-seq="item.toSeq"
+    :data-gap-state="gapState()"
+  >
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <line x1="5" y1="12" x2="9" y2="12" /><line x1="15" y1="12" x2="19" y2="12" /><line x1="12" y1="5" x2="12" y2="9" opacity="0" />
       <path d="M7 4h10a2 2 0 0 1 2 2v3M17 20H7a2 2 0 0 1-2-2v-3" />

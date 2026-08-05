@@ -17,7 +17,7 @@
  * 凭据：Cookie 唯一凭据载体；本页不展示、不存储任何凭据材料。
  * ---------------------------------------------------------------------------
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { type CLIType, type SessionSummary } from '../lib/contract';
 import { useAuthStore } from '../stores/auth';
@@ -47,6 +47,20 @@ watch(
     if (lost === null) return;
     auth.invalidateAuthorization(lost === 'revoked' ? 'revoked' : 'expired');
     await router.replace({ name: 'connect', query: { reason: lost } });
+  },
+);
+
+// M3-006 T1（design §6：T1=列表成功/空态/可操作错误态完成渲染）：
+// loading true→false 后下一渲染 tick 打 T1——此时成功列表/空态/分类错误+重试
+// 三分支之一已进 DOM。auth 失效踢回 PG-01 不是列表可交互终态，不打 T1
+// （该导航无 T 样本，recorder 随下次 load 丢弃，fail-closed）。
+watch(
+  () => lobby.loading,
+  async (loading, prev) => {
+    if (prev !== true || loading !== false) return;
+    await nextTick();
+    if (lobby.authLost !== null) return;
+    lobby.markListTimingT1();
   },
 );
 

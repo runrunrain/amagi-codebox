@@ -272,20 +272,32 @@ describe('出站帧', () => {
     return h;
   }
 
-  it('input：UTF-8 → base64；帧经 isClientFrame 验证', () => {
+  it('input（canonical sendInputFrame）：预构造帧经 isClientFrame 验证后发送', () => {
     const h = attachedHarness();
-    expect(h.client.sendInput('你好\r')).toBe(true);
-    const frame = JSON.parse(h.sockets[0].sent[h.sockets[0].sent.length - 1]);
-    expect(frame.type).toBe('input');
-    expect(decodeChunkToText(frame.data)).toBe('你好\r');
-    expect(isClientFrame(frame)).toBe(true);
+    const frame = {
+      type: 'input' as const,
+      requestId: 'req-v1-' + 'a'.repeat(32),
+      id: 'msg-v1-' + 'b'.repeat(32),
+      data: encodeUtf8ToBase64('你好\r'),
+    };
+    expect(h.client.sendInputFrame(frame)).toBe(true);
+    const sent = JSON.parse(h.sockets[0].sent[h.sockets[0].sent.length - 1]);
+    expect(sent.type).toBe('input');
+    expect(decodeChunkToText(sent.data)).toBe('你好\r');
+    expect(isClientFrame(sent)).toBe(true);
   });
 
-  it('未 attached 时 input 不发送', () => {
+  it('未 attached 时 input 帧不发送（sendInputFrame）', () => {
     const h = makeHarness();
     h.client.connect();
     h.sockets[0].fireOpen(); // awaiting-attach
-    expect(h.client.sendInput('x')).toBe(false);
+    const frame = {
+      type: 'input' as const,
+      requestId: 'req-v1-' + 'a'.repeat(32),
+      id: 'msg-v1-' + 'b'.repeat(32),
+      data: 'eA==',
+    };
+    expect(h.client.sendInputFrame(frame)).toBe(false);
     expect(h.sockets[0].sent).toHaveLength(1); // 只有 attach
   });
 

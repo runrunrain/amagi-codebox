@@ -23,7 +23,18 @@ type (
 	// DeviceID is a non-empty opaque device ID (server-side only; never sent
 	// to clients in v1 wire DTOs).
 	DeviceID string
-	// MessageID is input.id — the per-WS-connection idempotency key.
+	// MessageID is input.id — the idempotency key for a logical input. CG-03
+	// (contract-addendum-cg03.md §3) upgrades the canonical scope to
+	// (SessionID lifetime, authenticated DeviceID): session restart does NOT
+	// reset it; only session remove ends it. The canonical producer format is
+	// "msg-v1-" + 32 lowercase hex (39 ASCII bytes, 128 random bits), generated
+	// once via crypto/rand and bound to immutable base64 payload before the
+	// outbox accepts the entry; it is also the opt-in discriminator for the
+	// session input ledger + ACK path (IsCanonicalMessageID). The wire consumer
+	// still accepts any legacy non-empty opaque ID, which keeps the legacy
+	// per-connection dedupe + silent-success path; legacy IDs MUST NOT be
+	// suppressed across connections. Same ID with a different payload is a
+	// non-conforming producer; exactly-once does not cover that.
 	MessageID string
 )
 

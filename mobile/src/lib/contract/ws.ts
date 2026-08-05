@@ -4,7 +4,7 @@
  *
  * Design §8 + addendum §1/§3/§4. URL is SOLELY /ws/v1 (no token/session/mode in
  * URL; Cookie authenticates). Every client frame has a required top-level
- * requestId. There are 5 client frame types and 7 server event type categories;
+ * requestId. There are 5 client frame types and 8 server event type categories;
  * backfill.result (frames|gap) and session.state (normal|restart-boundary) each
  * have two variants.
  *
@@ -53,6 +53,7 @@ export const SERVER_EVENT_TYPE_SESSION_STATE = 'session.state' as const;
 export const SERVER_EVENT_TYPE_CONTROL_STATE = 'control.state' as const;
 export const SERVER_EVENT_TYPE_AUTH_REVOKED = 'auth.revoked' as const;
 export const SERVER_EVENT_TYPE_ERROR = 'error' as const;
+export const SERVER_EVENT_TYPE_INPUT_ACK = 'input.ack' as const;
 export const KNOWN_SERVER_EVENT_TYPES = [
   SERVER_EVENT_TYPE_SESSION_ATTACHED,
   SERVER_EVENT_TYPE_OUTPUT,
@@ -61,6 +62,7 @@ export const KNOWN_SERVER_EVENT_TYPES = [
   SERVER_EVENT_TYPE_CONTROL_STATE,
   SERVER_EVENT_TYPE_AUTH_REVOKED,
   SERVER_EVENT_TYPE_ERROR,
+  SERVER_EVENT_TYPE_INPUT_ACK,
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,51 @@ export const KNOWN_AUTH_REVOKED_REASONS = [
 ] as const;
 export type AuthRevokedReason = (typeof KNOWN_AUTH_REVOKED_REASONS)[number];
 export const AUTH_REVOKED_CLOSE_CODE = 1008 as const;
+
+// ---------------------------------------------------------------------------
+// CG-03 input confirmation capability (contract-addendum-cg03.md §3).
+// input.ack is an additive server event confirming a canonical MessageID was
+// committed by the per-session ledger. It carries no seq/status/time/data/
+// details. The capability is negotiated on session.attached via an optional
+// inputAckMode: absent = capability unavailable (read-only); present = the sole
+// canonical value. A new client MUST NOT send input when the mode is
+// absent/unknown. A malformed ACK normalizes to Unknown + force-read-only.
+// ---------------------------------------------------------------------------
+export const INPUT_ACK_MODE_SESSION_WINDOW_V1 = 'session-window-v1' as const;
+export type InputAckMode = typeof INPUT_ACK_MODE_SESSION_WINDOW_V1;
+
+// isCanonicalMessageID: CG-03 producer discriminator. "msg-v1-" + 32 lowercase
+// hex (39 ASCII bytes). Pure byte classifier (no regex); canonical IDs opt into
+// the session ledger + ACK path, legacy non-empty IDs keep per-connection dedupe.
+export function isCanonicalMessageID(id: string): boolean {
+  if (typeof id !== 'string' || id.length !== 39) return false;
+  const prefix = 'msg-v1-';
+  for (let i = 0; i < prefix.length; i++) {
+    if (id.charCodeAt(i) !== prefix.charCodeAt(i)) return false;
+  }
+  for (let i = prefix.length; i < 39; i++) {
+    const c = id.charCodeAt(i);
+    const isHex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102); // 0-9 a-f
+    if (!isHex) return false;
+  }
+  return true;
+}
+
+// isCanonicalRequestID: CG-03 canonical attempt ID discriminator.
+// "req-v1-" + 32 lowercase hex (39 ASCII bytes).
+export function isCanonicalRequestID(rid: string): boolean {
+  if (typeof rid !== 'string' || rid.length !== 39) return false;
+  const prefix = 'req-v1-';
+  for (let i = 0; i < prefix.length; i++) {
+    if (rid.charCodeAt(i) !== prefix.charCodeAt(i)) return false;
+  }
+  for (let i = prefix.length; i < 39; i++) {
+    const c = rid.charCodeAt(i);
+    const isHex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102); // 0-9 a-f
+    if (!isHex) return false;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Snapshot layers (session.attached). HistorySnapshot is a conditional union
@@ -142,7 +189,7 @@ export interface PingFrame {
 export type ClientFrame = AttachFrame | InputFrame | ResizeFrame | BackfillFrame | PingFrame;
 
 // ---------------------------------------------------------------------------
-// Server events — 7 categories
+// Server events — 8 categories
 // ---------------------------------------------------------------------------
 export interface SessionAttachedEvent {
   type: typeof SERVER_EVENT_TYPE_SESSION_ATTACHED;
@@ -153,6 +200,7 @@ export interface SessionAttachedEvent {
   earliestSeq: Seq;
   latestSeq: Seq;
   snapshot: FiveLayerSnapshot;
+  inputAckMode?: typeof INPUT_ACK_MODE_SESSION_WINDOW_V1;
 }
 
 export interface OutputEvent {
@@ -232,10 +280,19 @@ export interface ErrorEvent {
   details?: Record<string, unknown>;
 }
 
+/** InputAckEvent (CG-03): confirms a canonical input MessageID was committed.
+ * No seq/status/time/data/details; never a ReplayFrame; never broadcast. */
+export interface InputAckEvent {
+  type: typeof SERVER_EVENT_TYPE_INPUT_ACK;
+  requestId: RequestID;
+  sessionId: SessionID;
+  id: MessageID;
+}
+
 /** ReplayFrame: server events that occupy a seq position in replay history. */
 export type ReplayFrame = OutputEvent | SessionRestartBoundaryEvent;
 
-/** KnownServerEvent: the 7 frozen categories. */
+/** KnownServerEvent: the 8 frozen categories. */
 export type KnownServerEvent =
   | SessionAttachedEvent
   | OutputEvent
@@ -245,7 +302,8 @@ export type KnownServerEvent =
   | SessionRestartBoundaryEvent
   | ControlStateEvent
   | AuthRevokedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | InputAckEvent;
 
 // ---------------------------------------------------------------------------
 // UnknownServerEvent — sanitized fail-safe (addendum §4.4). NO raw payload,
@@ -419,6 +477,11 @@ function inferFallback(obj: Record<string, unknown>): Reasoned {
     const reasonBad = !isKnownAuthRevokedReason(obj.reason);
     consider({ reason: reasonBad ? 'unknown-enum' : 'malformed-known-event', fallback: 'force-unauthorized' });
   }
+  if (t === SERVER_EVENT_TYPE_INPUT_ACK) {
+    // CG-03: a malformed ACK cannot be trusted for settlement; force-read-only
+    // so the client stops accepting input confirmations it cannot verify.
+    consider({ reason: 'malformed-known-event', fallback: 'force-read-only' });
+  }
   if (t === SERVER_EVENT_TYPE_OUTPUT || t === SERVER_EVENT_TYPE_BACKFILL_RESULT) {
     if ('seq' in obj && !isSafeSeq(obj.seq)) {
       consider({ reason: 'unsafe-seq', fallback: 'mark-history-gap' });
@@ -445,6 +508,8 @@ function normalizeKnown(obj: Record<string, unknown>): KnownServerEvent | null {
       return normalizeAuthRevoked(obj);
     case SERVER_EVENT_TYPE_ERROR:
       return normalizeError(obj);
+    case SERVER_EVENT_TYPE_INPUT_ACK:
+      return normalizeInputAck(obj);
     default:
       return null;
   }
@@ -597,7 +662,16 @@ function normalizeAttached(obj: Record<string, unknown>): SessionAttachedEvent |
   if (snapshot.history.state === 'gap' && snapshot.history.gap) {
     if (snapshot.history.gap.toSeq + 1 !== (obj.earliestSeq as number)) return null;
   }
-  return { type: SERVER_EVENT_TYPE_SESSION_ATTACHED, requestId, apiVersion: 'v1', sessionId, history, earliestSeq: obj.earliestSeq as number, latestSeq: obj.latestSeq as number, snapshot };
+  const out: SessionAttachedEvent = { type: SERVER_EVENT_TYPE_SESSION_ATTACHED, requestId, apiVersion: 'v1', sessionId, history, earliestSeq: obj.earliestSeq as number, latestSeq: obj.latestSeq as number, snapshot };
+  // CG-03 input ack capability (contract-addendum-cg03.md §3/§4): inputAckMode
+  // is optional + additive. Only the sole canonical value enables the
+  // capability; absent OR unknown value = capability unavailable (read
+  // projection preserved, input disabled). An unknown future value is treated
+  // as absent (forward-compat), NOT a malformed event.
+  if (obj.inputAckMode === INPUT_ACK_MODE_SESSION_WINDOW_V1) {
+    out.inputAckMode = obj.inputAckMode;
+  }
+  return out;
 }
 
 function normalizeBackfill(obj: Record<string, unknown>): BackfillResultEvent | null {
@@ -616,16 +690,35 @@ function normalizeBackfill(obj: Record<string, unknown>): BackfillResultEvent | 
   if (hasFrames && !hasGap) {
     const frames = normalizeReplayArray(obj.frames);
     if (frames === null || frames.length === 0) return null;
+    // M3-004: the frames variant claims the FULL closed range [fromSeq, toSeq]
+    // is retained (a partial range must use the gap variant). Require
+    // contiguous, exhaustive cover: first==fromSeq, every adjacent pair differs
+    // by exactly 1, last==toSeq. Without this a partial [seq2] for [2,3] passes
+    // the old in-range+ascending check and the store would wrongly settle seq3.
+    let prev = 0;
     for (let i = 0; i < frames.length; i++) {
       const s = replayFrameSeq(frames[i]);
       if (s < common.fromSeq || s > common.toSeq) return null;
-      if (i > 0 && s <= replayFrameSeq(frames[i - 1])) return null;
+      if (i === 0) {
+        if (s !== common.fromSeq) return null;
+      } else if (s !== prev + 1) {
+        return null;
+      }
+      if (i === frames.length - 1 && s !== common.toSeq) return null;
+      prev = s;
     }
     return { ...common, frames };
   }
   if (hasGap && !hasFrames) {
     const gap = normalizeGapRange(obj.gap);
     if (!gap) return null;
+    // M3-004 (R3): the gap variant must cover the FULL requested range. v1 has no
+    // partial-gap representation (design §4.3.6 "fully retained ⇒ frames; start
+    // before earliest ⇒ gap variant (no mixing)"). A partial inner gap must be
+    // rejected (fail-closed → unknown) so the store cannot advance its frontier
+    // past positions that were never held nor authoritatively adjudicated
+    // (design §3). The server producer emits the whole requested range as the gap.
+    if (gap.fromSeq !== common.fromSeq || gap.toSeq !== common.toSeq) return null;
     return { ...common, gap };
   }
   return null; // both or neither
@@ -674,6 +767,20 @@ function normalizeAuthRevoked(obj: Record<string, unknown>): AuthRevokedEvent | 
   const occurredAt = reqStr(obj, 'occurredAt');
   if (!occurredAt) return null;
   return { type: SERVER_EVENT_TYPE_AUTH_REVOKED, reason: obj.reason, occurredAt };
+}
+
+// normalizeInputAck: CG-03 ack has exactly four required fields (type/
+// requestId/sessionId/id). The id accepts any non-empty opaque value; the
+// canonical 39-byte discriminator is a producer-side opt-in, not a consumer
+// requirement. A malformed ACK returns null → caller maps to force-read-only.
+function normalizeInputAck(obj: Record<string, unknown>): InputAckEvent | null {
+  const requestId = reqStr(obj, 'requestId');
+  if (!requestId) return null;
+  const sessionId = reqStr(obj, 'sessionId');
+  if (!sessionId) return null;
+  const id = reqStr(obj, 'id');
+  if (!id) return null;
+  return { type: SERVER_EVENT_TYPE_INPUT_ACK, requestId, sessionId, id };
 }
 
 function normalizeError(obj: Record<string, unknown>): ErrorEvent | null {
