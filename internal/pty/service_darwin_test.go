@@ -102,6 +102,41 @@ func TestBuildDarwinPTYEnvironmentFromBase_PreservesExplicitColorConfiguration(t
 	assertEnvContains(t, enriched, "LANG=en_US.UTF-8")
 }
 
+func TestBuildDarwinPTYEnvironmentFromBase_RepairsNonInteractiveLauncherEnvironment(t *testing.T) {
+	inherited := []string{
+		"PATH=/usr/bin",
+		"TERM=dumb",
+		"COLORTERM=",
+		"NO_COLOR=1",
+	}
+
+	enriched := buildDarwinPTYEnvironmentFromBase(nil, inherited)
+
+	assertEnvContains(t, enriched, "PATH=/usr/bin")
+	assertEnvContains(t, enriched, "TERM=xterm-256color")
+	assertEnvContains(t, enriched, "COLORTERM=truecolor")
+	assertEnvNotContains(t, enriched, "TERM=dumb")
+	assertEnvNotContains(t, enriched, "COLORTERM=")
+	assertEnvNotContains(t, enriched, "NO_COLOR=1")
+	assertEnvContains(t, enriched, "LANG=en_US.UTF-8")
+}
+
+func TestBuildDarwinPTYEnvironmentFromBase_RemovesNoColorFromProvidedEnv(t *testing.T) {
+	env := []string{
+		"PATH=/custom/bin",
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"NO_COLOR=",
+	}
+
+	enriched := buildDarwinPTYEnvironmentFromBase(env, nil)
+
+	assertEnvNotContains(t, enriched, "NO_COLOR=")
+	if slices.Contains(env, "NO_COLOR=") == false {
+		t.Fatal("input env slice should remain unchanged")
+	}
+}
+
 func TestBuildDarwinPTYEnvironmentFromBase_FinalConstructionUsesProvidedEnvWithoutParentLeakage(t *testing.T) {
 	env := []string{"PATH=/custom/bin"}
 	inherited := []string{"AMAGI_DARWIN_SHOULD_NOT_LEAK=parent-only"}

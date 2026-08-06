@@ -21,11 +21,18 @@ test.beforeEach(async ({ page }) => {
     type Listener = (data: unknown) => void
     const listeners = new Map<string, Set<Listener>>()
     let snapshotCalls = 0
+    const resizeCalls: Array<{ cols: number; rows: number }> = []
+    let failNextResize = false
 
     const emit = (name: string, data: unknown) => {
       for (const listener of listeners.get(name) ?? []) listener(data)
     }
-    const encode = (value: string) => btoa(value)
+    const encode = (value: string) => {
+      const bytes = new TextEncoder().encode(value)
+      let binary = ''
+      for (const byte of bytes) binary += String.fromCharCode(byte)
+      return btoa(binary)
+    }
 
     const capabilities = {
       platformId: 'terminal-render-test',
@@ -86,6 +93,13 @@ test.beforeEach(async ({ page }) => {
           }, 25)
         })
       },
+      PtyResize: async (_sessionId, cols, rows) => {
+        resizeCalls.push({ cols: Number(cols), rows: Number(rows) })
+        if (failNextResize) {
+          failNextResize = false
+          throw new Error('synthetic transient resize failure')
+        }
+      },
       GetPtyDimensions: async () => 120030,
       GetProviders: async () => [],
       GetTerminalPresets: async () => [],
@@ -103,6 +117,10 @@ test.beforeEach(async ({ page }) => {
       emit,
       encode,
       snapshotCalls: () => snapshotCalls,
+      resizeCalls: () => [...resizeCalls],
+      failNextResize: () => {
+        failNextResize = true
+      },
     }
     ;(window as any).go = { main: { App: app } }
     ;(window as any).runtime = new Proxy(
@@ -185,4 +203,82 @@ test('same-session restart resets seq dedup and rejects late output from the old
   const rows = page.locator('.xterm-rows')
   await expect(rows).toContainText('NEW_RUN_SEQ_ONE')
   await expect(rows).not.toContainText('STALE_OLD_RUN_MUST_NOT_RENDER')
+})
+
+test('ANSI colours and CJK input remain in one terminal grid', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.sess-item', { hasText: 'terminal-render-workspace' }).locator('.sess-info').click()
+  await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
+
+  await page.evaluate(() => {
+    const testApi = (window as any).__terminalTest
+    testApi.emit('pty:data:terminal-render-regression', {
+      r: 'run-old',
+      v: '7',
+      s: 4,
+      d: testApi.encode('\x1b[2J\x1b[H\x1b[31mRED\x1b[0m 你好\r\nPROMPT> 输入'),
+    })
+  })
+
+  const rows = page.locator('.xterm-rows')
+  await expect(rows).toContainText('RED 你好')
+  await expect(rows).toContainText('PROMPT> 输入')
+  const red = rows.locator('.xterm-fg-1').filter({ hasText: 'RED' })
+  await expect(red).toHaveCount(1)
+
+  const grid = await page.evaluate(() => {
+    const rowElements = Array.from(document.querySelectorAll<HTMLElement>('.xterm-rows > div'))
+    const cjkRow = rowElements.find((row) => row.textContent?.includes('PROMPT> 输入'))
+    const style = document.querySelector<HTMLElement>('.xterm-rows')
+    return {
+      cjkRows: rowElements.filter((row) => row.textContent?.includes('PROMPT> 输入')).length,
+      ligatures: style ? getComputedStyle(style).fontVariantLigatures : '',
+      cjkText: cjkRow?.textContent ?? '',
+    }
+  })
+  expect(grid.cjkRows).toBe(1)
+  expect(grid.cjkText).toContain('PROMPT> 输入')
+  expect(grid.ligatures).toBe('none')
+})
+
+test('PTY geometry retries transient failures and fills the terminal height', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.sess-item', { hasText: 'terminal-render-workspace' }).locator('.sess-info').click()
+  await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
+
+  const before = await page.evaluate(() => {
+    const testApi = (window as any).__terminalTest
+    testApi.failNextResize()
+    return testApi.resizeCalls().length
+  })
+  await page.setViewportSize({ width: 1280, height: 760 })
+
+  await expect.poll(async () => {
+    return page.evaluate((start) => {
+      const calls = (window as any).__terminalTest.resizeCalls()
+      return calls.length >= start + 2 &&
+        calls[calls.length - 1].cols === calls[calls.length - 2].cols &&
+        calls[calls.length - 1].rows === calls[calls.length - 2].rows
+    }, before)
+  }).toBe(true)
+
+  const geometry = await page.evaluate(() => {
+    const body = document.querySelector<HTMLElement>('.term-body')!
+    const screen = document.querySelector<HTMLElement>('.xterm-screen')!
+    const renderedRows = document.querySelectorAll('.xterm-rows > div').length
+    const calls = (window as any).__terminalTest.resizeCalls()
+    const last = calls[calls.length - 1]
+    return {
+      renderedRows,
+      resizedRows: last.rows,
+      bottomRemainder: body.getBoundingClientRect().height - screen.getBoundingClientRect().height,
+      rowHeight: screen.getBoundingClientRect().height / renderedRows,
+    }
+  })
+
+  expect(geometry.resizedRows).toBe(geometry.renderedRows)
+  // fit may leave only the unavoidable fractional remainder (< one cell),
+  // never the multi-row strip seen in the OpenCode regression screenshot.
+  expect(geometry.bottomRemainder).toBeGreaterThanOrEqual(0)
+  expect(geometry.bottomRemainder).toBeLessThan(geometry.rowHeight + 1)
 })

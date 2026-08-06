@@ -455,6 +455,15 @@ function onCtxSelectAll() {
   text-align: left;
 }
 
+/* Full-screen CLIs position borders and cursors by terminal cells. Disable
+   discretionary ligatures/kerning so the DOM renderer cannot visually merge
+   adjacent cells, especially around CJK input and box-drawing characters. */
+.term-body :deep(.xterm-rows) {
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
 /* Never force .xterm-screen to 100% width. xterm owns the exact
    cols*cellWidth geometry; stretching that surface introduces sub-pixel row
    and mouse-coordinate drift for every renderer. */

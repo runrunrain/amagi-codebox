@@ -50,6 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_app_model ON usage_records(app_type, normal
 CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_records(provider);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_records(session_id);
 CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_records(source);
+CREATE INDEX IF NOT EXISTS idx_usage_source_occurred ON usage_records(source, occurred_at);
 
 CREATE TABLE IF NOT EXISTS sync_state (
     source_type      TEXT NOT NULL,
@@ -91,7 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_rollup_day ON daily_rollup(day);
 CREATE INDEX IF NOT EXISTS idx_rollup_model ON daily_rollup(normalized_model);
 `
 
-// openDB 打开 SQLite 数据库（WAL 模式，单连接串行写）。
+// openDB 打开 SQLite 写库（WAL 模式，单连接串行写）。
 //
 // modernc.org/sqlite 通过 DSN 的 _pragma= 传递 PRAGMA：
 //   - journal_mode=WAL：并发读写安全
@@ -106,6 +107,31 @@ func openDB(dbPath string) (*sql.DB, error) {
 	}
 	// 单写连接：modernc 在高并发写时通过串行化避免 SQLITE_BUSY。
 	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+// openReadDB opens an independent read-only pool for dashboard queries.
+//
+// The writer deliberately stays single-connection because usage ingestion uses
+// probe-then-upsert sequences. Sharing that one connection with the dashboard
+// made the four concurrent aggregate requests queue behind each other (and
+// behind SyncAll), so later requests exhausted their deadline before executing.
+// WAL lets these readers observe a consistent snapshot while ingestion keeps
+// using the serialized writer connection.
+func openReadDB(dbPath string) (*sql.DB, error) {
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(ON)&_pragma=busy_timeout(5000)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read-only sqlite %s: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping read-only sqlite %s: %w", dbPath, err)
+	}
 	return db, nil
 }
 
@@ -454,14 +480,7 @@ func uniqueSortedDays(days []string) []string {
 //   - appType / source / provider（空表示不限）
 //   - model（normalized_model 精确匹配）
 func filterWhere(where *strings.Builder, args *[]any, f SummaryFilter, model string) {
-	if f.StartDate != "" {
-		where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') >= ?")
-		*args = append(*args, f.StartDate)
-	}
-	if f.EndDate != "" {
-		where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') <= ?")
-		*args = append(*args, f.EndDate)
-	}
+	appendOccurredAtRange(where, args, f.StartDate, f.EndDate)
 	if f.AppType != "" {
 		where.WriteString(" AND app_type = ?")
 		*args = append(*args, f.AppType)
@@ -477,5 +496,31 @@ func filterWhere(where *strings.Builder, args *[]any, f SummaryFilter, model str
 	if model != "" {
 		where.WriteString(" AND normalized_model = ?")
 		*args = append(*args, model)
+	}
+}
+
+// appendOccurredAtRange translates valid UTC calendar dates to the stored Unix
+// nanosecond range. Applying strftime to every row prevented SQLite from using
+// idx_usage_occurred (and the source+time composite index) on large databases.
+// Invalid dates retain the legacy string-comparison behaviour instead of
+// silently broadening the query.
+func appendOccurredAtRange(where *strings.Builder, args *[]any, startDate, endDate string) {
+	if startDate != "" {
+		if start, err := time.Parse("2006-01-02", startDate); err == nil {
+			where.WriteString(" AND occurred_at >= ?")
+			*args = append(*args, start.UnixNano())
+		} else {
+			where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') >= ?")
+			*args = append(*args, startDate)
+		}
+	}
+	if endDate != "" {
+		if end, err := time.Parse("2006-01-02", endDate); err == nil {
+			where.WriteString(" AND occurred_at < ?")
+			*args = append(*args, end.AddDate(0, 0, 1).UnixNano())
+		} else {
+			where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') <= ?")
+			*args = append(*args, endDate)
+		}
 	}
 }

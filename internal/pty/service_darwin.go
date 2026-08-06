@@ -328,7 +328,39 @@ func buildDarwinPTYEnvironmentFromBase(env []string, inheritedEnv []string) []st
 	if len(base) == 0 {
 		base = inheritedEnv
 	}
-	enriched := append([]string(nil), base...)
+	// The desktop app can itself be launched from a non-interactive host (for
+	// example Codex, Finder, or a test runner).  Those hosts commonly export
+	// TERM=dumb and NO_COLOR=1 for their own log stream.  Passing those values
+	// through to an interactive PTY makes full-screen CLIs disable ANSI colour
+	// and select reduced-capability output modes instead of the UI that xterm is
+	// capable of rendering.
+	//
+	// Build a fresh slice so neither the resolved environment nor os.Environ is
+	// mutated.  NO_COLOR is launcher presentation policy, not a terminal
+	// capability, so it must not cross the embedded-terminal boundary.
+	enriched := make([]string, 0, len(base)+3)
+	for _, entry := range base {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			enriched = append(enriched, entry)
+			continue
+		}
+		switch name {
+		case "NO_COLOR":
+			continue
+		case "TERM":
+			if strings.TrimSpace(value) == "" || strings.EqualFold(strings.TrimSpace(value), "dumb") {
+				enriched = append(enriched, "TERM=xterm-256color")
+				continue
+			}
+		case "COLORTERM":
+			if strings.TrimSpace(value) == "" {
+				enriched = append(enriched, "COLORTERM=truecolor")
+				continue
+			}
+		}
+		enriched = append(enriched, entry)
+	}
 	if !hasEnvKey(enriched, "TERM") {
 		enriched = append(enriched, "TERM=xterm-256color")
 	}

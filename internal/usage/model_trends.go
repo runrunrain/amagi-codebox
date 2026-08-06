@@ -45,10 +45,7 @@ func (s *Service) queryModelDailyTrendsFromMain(ctx context.Context, filter Tren
 	var where strings.Builder
 	var args []any
 	where.WriteString("WHERE 1=1")
-	where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') >= ?")
-	args = append(args, start)
-	where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') <= ?")
-	args = append(args, end)
+	appendOccurredAtRange(&where, &args, start, end)
 	if filter.AppType != "" {
 		where.WriteString(" AND app_type = ?")
 		args = append(args, filter.AppType)
@@ -75,7 +72,7 @@ func (s *Service) queryModelDailyTrendsFromMain(ctx context.Context, filter Tren
 }
 
 func (s *Service) scanAndFillModelTrends(ctx context.Context, query string, args []any, start, end string) ([]ModelDailyTrendPoint, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query model daily trends: %w", err)
 	}

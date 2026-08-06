@@ -26,7 +26,8 @@ import (
 type Service struct {
 	configDir string
 	dbPath    string
-	db        *sql.DB
+	db        *sql.DB // serialized writer
+	readDB    *sql.DB // independent WAL readers for dashboard queries
 	pricing   *PricingService
 	log       *logging.Service
 
@@ -71,7 +72,13 @@ func (s *Service) Load() error {
 		_ = db.Close()
 		return err
 	}
+	readDB, err := openReadDB(s.dbPath)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
 	s.db = db
+	s.readDB = readDB
 	if err := s.pricing.Load(); err != nil {
 		if s.log != nil {
 			s.log.Warn("usage", "价格表加载失败，使用内置 seed", err.Error())
@@ -112,10 +119,23 @@ func (s *Service) Close() error {
 		return nil
 	}
 	s.closed = true
-	if s.db != nil {
-		return s.db.Close()
+	var closeErr error
+	if s.readDB != nil {
+		closeErr = errors.Join(closeErr, s.readDB.Close())
+		s.readDB = nil
 	}
-	return nil
+	if s.db != nil {
+		closeErr = errors.Join(closeErr, s.db.Close())
+		s.db = nil
+	}
+	return closeErr
+}
+
+func (s *Service) queryDB() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
 }
 
 // logWarn 安全日志（log 可能为 nil）。

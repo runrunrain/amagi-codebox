@@ -20,6 +20,7 @@ func (s *Service) querySummary(ctx context.Context, filter SummaryFilter) (Summa
 	)
 	where.WriteString("WHERE 1=1")
 	filterWhere(&where, &args, filter, "")
+	db := s.queryDB()
 
 	q := fmt.Sprintf(`SELECT
 		COUNT(*),
@@ -35,7 +36,7 @@ func (s *Service) querySummary(ctx context.Context, filter SummaryFilter) (Summa
 
 	var sum Summary
 	var dateStart, dateEnd string
-	err := s.db.QueryRowContext(ctx, q, args...).Scan(
+	err := db.QueryRowContext(ctx, q, args...).Scan(
 		&sum.TotalRequests,
 		&sum.TotalTokens,
 		&sum.TotalInputTokens,
@@ -56,7 +57,7 @@ func (s *Service) querySummary(ctx context.Context, filter SummaryFilter) (Summa
 	q2 := fmt.Sprintf(`SELECT currency_code, COALESCE(SUM(total_cost),0)
 		FROM usage_records %s
 		GROUP BY currency_code`, where.String())
-	rows, err := s.db.QueryContext(ctx, q2, args...)
+	rows, err := db.QueryContext(ctx, q2, args...)
 	if err != nil {
 		return sum, fmt.Errorf("query cost by currency: %w", err)
 	}
@@ -124,7 +125,7 @@ func (s *Service) queryDailyTrends(ctx context.Context, filter TrendFilter) ([]D
 	}
 	q += " GROUP BY day ORDER BY day ASC"
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.queryDB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query daily rollup: %w", err)
 	}
@@ -177,10 +178,7 @@ func (s *Service) queryDailyTrendsFromMain(ctx context.Context, filter TrendFilt
 	var where strings.Builder
 	var args []any
 	where.WriteString("WHERE 1=1")
-	where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') >= ?")
-	args = append(args, start)
-	where.WriteString(" AND strftime('%Y-%m-%d', occurred_at / 1000000000, 'unixepoch') <= ?")
-	args = append(args, end)
+	appendOccurredAtRange(&where, &args, start, end)
 	if filter.AppType != "" {
 		where.WriteString(" AND app_type = ?")
 		args = append(args, filter.AppType)
@@ -202,7 +200,7 @@ func (s *Service) queryDailyTrendsFromMain(ctx context.Context, filter TrendFilt
 		GROUP BY day, currency_code
 		ORDER BY day ASC`, where.String())
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.queryDB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query trends from main: %w", err)
 	}
@@ -312,7 +310,7 @@ func (s *Service) queryModelStats(ctx context.Context, filter StatFilter) ([]Mod
 		GROUP BY normalized_model, provider, currency_code, app_type
 		ORDER BY SUM(total_cost) DESC, normalized_model ASC`, where.String())
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.queryDB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query model stats: %w", err)
 	}
@@ -364,7 +362,7 @@ func (s *Service) queryProviderStats(ctx context.Context, filter StatFilter) ([]
 		GROUP BY provider
 		ORDER BY provider ASC`, where.String())
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.queryDB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query provider stats: %w", err)
 	}
@@ -397,7 +395,7 @@ func (s *Service) queryProviderStats(ctx context.Context, filter StatFilter) ([]
 	costQ := fmt.Sprintf(`SELECT provider, currency_code, COALESCE(SUM(total_cost),0)
 		FROM usage_records %s
 		GROUP BY provider, currency_code`, where.String())
-	costRows, err := s.db.QueryContext(ctx, costQ, args...)
+	costRows, err := s.queryDB().QueryContext(ctx, costQ, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query provider costs by currency: %w", err)
 	}
@@ -468,7 +466,7 @@ func (s *Service) queryRequestLogs(ctx context.Context, filter LogFilter) ([]Usa
 		LIMIT ? OFFSET ?`, where.String())
 	args = append(args, pageSize, offset)
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.queryDB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query request logs: %w", err)
 	}
@@ -508,7 +506,7 @@ func (s *Service) queryUnknownModels(ctx context.Context) ([]UnknownModel, error
 		FROM usage_records
 		GROUP BY normalized_model
 		ORDER BY COUNT(*) DESC`
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.queryDB().QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("query unknown models: %w", err)
 	}

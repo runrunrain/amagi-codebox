@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// Aggregate queries scan substantially more data than paginated logs. Keep a
+// bounded deadline, but leave enough headroom for large local histories and
+// concurrent dashboard reads on slower disks.
+const aggregateQueryTimeout = 15 * time.Second
+
 // ===== 前端 API 方法（Wails 自动生成 frontend/wailsjs/go/usage/Service.{js,d.ts}） =====
 // 签名严格对齐设计第 11 章；洛神前端依赖这些契约。
 // 方法返回值类型必须可 JSON 序列化（struct with json tags / 基本类型）。
@@ -15,7 +20,7 @@ func (s *Service) GetUsageSummary(filter SummaryFilter) (Summary, error) {
 	if s.db == nil {
 		return Summary{TotalCostByCurrency: map[string]int64{}}, fmt.Errorf("usage service not loaded")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), aggregateQueryTimeout)
 	defer cancel()
 	summary, err := s.querySummary(ctx, filter)
 	if err != nil {
@@ -32,7 +37,7 @@ func (s *Service) GetDailyTrends(filter TrendFilter) ([]DailyTrendPoint, error) 
 	if s.db == nil {
 		return []DailyTrendPoint{}, fmt.Errorf("usage service not loaded")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), aggregateQueryTimeout)
 	defer cancel()
 	return s.queryDailyTrends(ctx, filter)
 }
@@ -43,7 +48,7 @@ func (s *Service) GetModelDailyTrends(filter TrendFilter) ([]ModelDailyTrendPoin
 	if s.db == nil {
 		return []ModelDailyTrendPoint{}, fmt.Errorf("usage service not loaded")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), aggregateQueryTimeout)
 	defer cancel()
 	return s.queryModelDailyTrends(ctx, filter)
 }
@@ -53,7 +58,7 @@ func (s *Service) GetModelStats(filter StatFilter) ([]ModelStat, error) {
 	if s.db == nil {
 		return []ModelStat{}, fmt.Errorf("usage service not loaded")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), aggregateQueryTimeout)
 	defer cancel()
 	return s.queryModelStats(ctx, filter)
 }
@@ -63,7 +68,7 @@ func (s *Service) GetProviderStats(filter StatFilter) ([]ProviderStat, error) {
 	if s.db == nil {
 		return []ProviderStat{}, fmt.Errorf("usage service not loaded")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), aggregateQueryTimeout)
 	defer cancel()
 	return s.queryProviderStats(ctx, filter)
 }
@@ -104,7 +109,7 @@ func (s *Service) GetSyncState() []SyncState {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := listSyncStates(ctx, s.db)
+	out, err := listSyncStates(ctx, s.queryDB())
 	if err != nil {
 		s.logWarn("usage", "GetSyncState 失败", err.Error())
 		return []SyncState{}

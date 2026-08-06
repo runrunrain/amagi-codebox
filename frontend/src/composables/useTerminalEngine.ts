@@ -69,6 +69,18 @@ interface TerminalInstance {
   activeDragCleanup: (() => void) | null
   lastCols: number
   lastRows: number
+  /** Latest xterm geometry that the backend PTY must converge to. */
+  desiredCols: number
+  desiredRows: number
+  /** Last geometry acknowledged by the backend. */
+  acknowledgedCols: number
+  acknowledgedRows: number
+  /** Serialize Wails resize calls so an older response cannot win a race. */
+  resizeInFlight: boolean
+  /** Force one more resize even if the last acknowledged size is identical. */
+  resizeForcePending: boolean
+  resizeRetryTimer: number | null
+  resizeFailureCount: number
   /** highest emitSeq covered by the loaded history snapshot */
   historySnapshotSeq: number
   /** current backend run identity; seq is only comparable within this pair. */
@@ -404,14 +416,96 @@ export function useTerminalEngine() {
 
   // ---- fit + resize ------------------------------------------------------
 
+  /**
+   * Send PTY resizes one at a time and always converge to the newest desired
+   * geometry.  ResizeObserver, route activation and the mount fallback can
+   * fire close together; issuing their IPC calls concurrently allows an older
+   * request to complete last and leave a full-screen TUI several rows shorter
+   * than xterm.  Transient gate/startup failures are retried instead of being
+   * silently discarded.
+   */
+  function pumpPtyResize(sessionId: string, inst: TerminalInstance) {
+    if (terminals.get(sessionId) !== inst || inst.resizeInFlight || inst.resizeRetryTimer !== null) {
+      return
+    }
+    if (inst.desiredCols <= 0 || inst.desiredRows <= 0) return
+
+    const alreadyAcknowledged =
+      inst.acknowledgedCols === inst.desiredCols &&
+      inst.acknowledgedRows === inst.desiredRows
+    if (alreadyAcknowledged && !inst.resizeForcePending) return
+
+    const cols = inst.desiredCols
+    const rows = inst.desiredRows
+    inst.resizeForcePending = false
+    inst.resizeInFlight = true
+    let failed = false
+
+    PtyResize(sessionId, cols, rows)
+      .then(() => {
+        if (terminals.get(sessionId) !== inst) return
+        inst.acknowledgedCols = cols
+        inst.acknowledgedRows = rows
+        inst.resizeFailureCount = 0
+      })
+      .catch((error) => {
+        failed = true
+        if (terminals.get(sessionId) !== inst) return
+        inst.resizeForcePending = true
+        inst.resizeFailureCount++
+        if (inst.resizeFailureCount === 1 || inst.resizeFailureCount % 10 === 0) {
+          console.warn('[amagi-codebox] PTY resize failed; retrying', {
+            sessionId,
+            cols,
+            rows,
+            error,
+          })
+        }
+        const retryDelay = Math.min(1000, 100 * 2 ** Math.min(inst.resizeFailureCount - 1, 4))
+        inst.resizeRetryTimer = window.setTimeout(() => {
+          inst.resizeRetryTimer = null
+          pumpPtyResize(sessionId, inst)
+        }, retryDelay)
+      })
+      .finally(() => {
+        if (terminals.get(sessionId) !== inst) return
+        inst.resizeInFlight = false
+        // A newer ResizeObserver result may have arrived while IPC was in
+        // flight. Send it now, but leave failures to their backoff timer.
+        if (!failed) pumpPtyResize(sessionId, inst)
+      })
+  }
+
+  function requestPtyResize(
+    sessionId: string,
+    inst: TerminalInstance,
+    cols: number,
+    rows: number,
+    force = false,
+  ) {
+    if (cols <= 0 || rows <= 0 || terminals.get(sessionId) !== inst) return
+    const changed = cols !== inst.desiredCols || rows !== inst.desiredRows
+    inst.desiredCols = cols
+    inst.desiredRows = rows
+    if (force) inst.resizeForcePending = true
+
+    // A genuinely newer geometry should not wait behind backoff for a stale
+    // failed size. It still cannot overtake an in-flight request.
+    if (changed && inst.resizeRetryTimer !== null) {
+      clearTimeout(inst.resizeRetryTimer)
+      inst.resizeRetryTimer = null
+    }
+    pumpPtyResize(sessionId, inst)
+  }
+
   function fitTerminal(sessionId: string, force = false, containerEl?: HTMLElement) {
     const inst = terminals.get(sessionId)
     if (!inst) return
     const dims = inst.fit.proposeDimensions()
     if (!dims || dims.cols <= 0 || dims.rows <= 0) return
 
-    const sameDims = dims.cols === inst.lastCols && dims.rows === inst.lastRows
-    if (sameDims && !force) return
+    const proposedSameDims = dims.cols === inst.lastCols && dims.rows === inst.lastRows
+    if (proposedSameDims && !force) return
 
     try {
       // Preserve user scroll position when not at the bottom: fit.fit() can
@@ -424,18 +518,15 @@ export function useTerminalEngine() {
         : true
 
       inst.fit.fit()
-      // Always sync PtyResize when force=true, even if dimensions appear
-      // unchanged. This recovers from a missed initial resize: if the very
-      // first PtyResize during mountTerm silently failed (caught by the
-      // .catch below), the PTY stays at its default 120×40 while xterm
-      // renders at the correct dimensions. The TUI then draws at the PTY's
-      // stale columns, producing tearing, misaligned clicks and broken
-      // scroll. The backend's Resize() deduplicates by currentCols/Rows, so
-      // calling this on every force-fit has zero cost when truly unchanged.
+      // Use xterm's applied geometry rather than the pre-fit proposal. Font
+      // metric changes can make those differ by one row/column.
+      const cols = inst.term.cols
+      const rows = inst.term.rows
+      const sameDims = cols === inst.lastCols && rows === inst.lastRows
       if (!sameDims || force) {
-        inst.lastCols = dims.cols
-        inst.lastRows = dims.rows
-        PtyResize(sessionId, dims.cols, dims.rows).catch(() => {})
+        inst.lastCols = cols
+        inst.lastRows = rows
+        requestPtyResize(sessionId, inst, cols, rows, force)
       }
 
       if (!isAtBottom && viewport) {
@@ -453,7 +544,7 @@ export function useTerminalEngine() {
     if (!inst) return
     inst.lastCols = cols
     inst.lastRows = rows
-    PtyResize(sessionId, cols, rows).catch(() => {})
+    requestPtyResize(sessionId, inst, cols, rows, true)
   }
 
   /** Rebuild WebGL after a DPR change, then force a complete redraw. */
@@ -625,6 +716,14 @@ export function useTerminalEngine() {
       activeDragCleanup: null,
       lastCols: 0,
       lastRows: 0,
+      desiredCols: 0,
+      desiredRows: 0,
+      acknowledgedCols: 0,
+      acknowledgedRows: 0,
+      resizeInFlight: false,
+      resizeForcePending: false,
+      resizeRetryTimer: null,
+      resizeFailureCount: 0,
       historySnapshotSeq: 0,
       runToken: '',
       runVersion: '',
@@ -754,11 +853,12 @@ export function useTerminalEngine() {
     // afterwards creates a transient backing store with the wrong geometry.
     try {
       fit.fit()
-      const dims = fit.proposeDimensions()
-      if (dims && dims.cols > 0 && dims.rows > 0) {
-        inst.lastCols = dims.cols
-        inst.lastRows = dims.rows
-        PtyResize(sessionId, dims.cols, dims.rows).catch(() => {})
+      const cols = term.cols
+      const rows = term.rows
+      if (cols > 0 && rows > 0) {
+        inst.lastCols = cols
+        inst.lastRows = rows
+        requestPtyResize(sessionId, inst, cols, rows, true)
       }
     } catch {
       /* outer mount frame will retry once layout is measurable */
@@ -1065,6 +1165,10 @@ export function useTerminalEngine() {
     if (inst.historyReplayTimer !== null) {
       clearTimeout(inst.historyReplayTimer)
       inst.historyReplayTimer = null
+    }
+    if (inst.resizeRetryTimer !== null) {
+      clearTimeout(inst.resizeRetryTimer)
+      inst.resizeRetryTimer = null
     }
 
     try {
