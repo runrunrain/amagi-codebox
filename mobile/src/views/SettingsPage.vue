@@ -113,7 +113,7 @@ onMounted(() => {
         <div class="form-group toggle-group">
           <label class="form-label">Auto Start</label>
           <label class="toggle">
-            <input type="checkbox" v-model="settings.autoStart" />
+            <input type="checkbox" class="toggle-input" v-model="settings.autoStart" aria-label="Auto Start" />
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -219,6 +219,8 @@ onMounted(() => {
   color: #8b949e;
   font-size: 14px;
   cursor: pointer;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
 }
 
 .tab--active {
@@ -255,7 +257,9 @@ onMounted(() => {
   border: 1px solid #30363d;
   border-radius: 6px;
   color: #c9d1d9;
-  font-size: 15px;
+  /* M4-A：44px 触控目标 + 16px 字号（防 iOS 聚焦自动缩放） */
+  min-height: 44px;
+  font-size: 16px;
   outline: none;
   box-sizing: border-box;
   -webkit-appearance: none;
@@ -283,23 +287,37 @@ onMounted(() => {
   margin-bottom: 0;
 }
 
+/* M4-R3（谛听 M4-R3-001）：44px 触控目标。视觉轨道保持 44×24，
+   但触控面扩为 44×44——原生 input 覆盖整个触控面（透明但真实可点，
+   同时是运行时测量与静态审计的真实 hit area），不再 0×0 隐藏。 */
 .toggle {
   position: relative;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 44px;
-  height: 24px;
+  min-height: 44px;
 }
 
-.toggle input {
+.toggle-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 44px;
+  min-height: 44px;
   opacity: 0;
-  width: 0;
-  height: 0;
+  cursor: pointer;
 }
 
 .toggle-slider {
-  position: absolute;
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 24px;
   cursor: pointer;
-  inset: 0;
   background: #30363d;
   border-radius: 12px;
   transition: 0.2s;
@@ -321,6 +339,12 @@ onMounted(() => {
   background: #238636;
 }
 
+/* M4-R3：键盘焦点可见（input 透明覆盖，焦点态映射到视觉轨道）。 */
+.toggle-input:focus-visible + .toggle-slider {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
 .toggle input:checked + .toggle-slider::before {
   transform: translateX(20px);
 }
@@ -335,6 +359,8 @@ onMounted(() => {
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
 }
 
 .save-btn:active {
@@ -365,7 +391,9 @@ onMounted(() => {
   border: 1px solid #30363d;
   border-radius: 4px;
   color: #c9d1d9;
-  font-size: 12px;
+  /* M4-A：44px 触控目标 + 16px 字号（防 iOS 聚焦自动缩放） */
+  min-height: 44px;
+  font-size: 16px;
   outline: none;
   -webkit-appearance: none;
 }
@@ -377,7 +405,9 @@ onMounted(() => {
   border: 1px solid #30363d;
   border-radius: 4px;
   color: #c9d1d9;
-  font-size: 12px;
+  /* M4-A：44px 触控目标 + 16px 字号 */
+  min-height: 44px;
+  font-size: 16px;
   outline: none;
 }
 
@@ -395,6 +425,10 @@ onMounted(() => {
   cursor: pointer;
   display: flex;
   align-items: center;
+  justify-content: center;
+  /* M4-A：44px 触控目标 */
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .filter-btn:active {

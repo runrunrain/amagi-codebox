@@ -223,6 +223,18 @@ function measureRow(el: unknown): void {
   box-sizing: border-box;
 }
 
+/* M4-A safe-area：横屏（刘海/圆角在左右）时间线行不贴边；竖屏不变。 */
+@media (orientation: landscape) {
+  .timeline-row {
+    padding-left: calc(12px + env(safe-area-inset-left, 0px));
+    padding-right: calc(12px + env(safe-area-inset-right, 0px));
+  }
+  .timeline-empty {
+    padding-left: calc(20px + env(safe-area-inset-left, 0px));
+    padding-right: calc(20px + env(safe-area-inset-right, 0px));
+  }
+}
+
 .timeline-empty {
   padding: 32px 20px;
   text-align: center;

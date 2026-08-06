@@ -39,6 +39,7 @@ const (
     AppTypeClaudeCode AppType = "claudecode" // Claude Code
     AppTypeOpenCode   AppType = "opencode"   // OpenCode
     AppTypeCodex      AppType = "codex"      // Codex CLI
+    AppTypePi         AppType = "pi"         // Pi coding agent
     AppTypeAmagiCode  AppType = "amagicode"  // 已废弃，仅用于读取历史会话
 )
 ```
@@ -48,6 +49,7 @@ const (
 - **ClaudeCode (`claudecode`)**：要求 Provider 兼容 Anthropic 格式（`Provider.IsAnthropicCompatible()` 为 `true`）。启动入口 `App.LaunchSession`。
 - **Codex (`codex`)**：启动入口 `App.LaunchCodexSession`，按"模型 + provider"组合启动。
 - **OpenCode (`opencode`)**：启动入口 `App.LaunchOpenCode`，双轨兼容：优先查 `opencode_presets`（新模型），回退到 `terminal_presets.opencode`（旧模型）。
+- **Pi (`pi`)**：启动入口 `App.LaunchPiSession`，按「模型 + provider」组合启动，由 `terminal_preset`（`type="pi"`）驱动（对标 Codex）。
 
 ---
 

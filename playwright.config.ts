@@ -49,24 +49,34 @@ export default defineConfig({
   // 仅 Chromium 三视口（C-009：Chromium-only；不配置 WebKit/Firefox）。
   // network.spec.ts 为 helper 语义回归，与视口无关；mobile 两视口经 testIgnore 排除
   // （非 runtime skip / no-op），仅 desktop 运行一次，避免三视口重复跑 helper-only spec。
+  //
+  // M4-B 性能套件（e2e/perf/**）全局排除（M4-INT R1 / diting M4-001）：
+  //   该套件自带环境契约（M4B_ROUND=N）与独立 runner（e2e/perf/playwright.perf.config.ts +
+  //   e2e/perf/run-perf.sh）。默认入口（`npx playwright test`）不带 M4B_ROUND 时其用例
+  //   会确定性抛错，污染回归信号。故每个 project 的 testIgnore 都排除 **/perf/**
+  //   （Playwright 中 project 级 testIgnore 覆盖顶层值，必须在每个 project 显式声明才能做到全局一致）。
+  //   性能测量只经独立 perf config 显式运行，默认入口恢复确定性全绿。
   projects: [
     {
       name: 'mobile-360',
       // network.spec.ts / timing.spec.ts 为 helper/管道语义测试，与视口无关；
       // 经 testIgnore 排除（非 runtime skip），仅 desktop 运行一次（M0-05 / M0-06 原则一致）。
-      testIgnore: ['**/network.spec.ts', '**/timing.spec.ts'],
+      // **/perf/** 见上文 M4-B 全局排除说明。
+      testIgnore: ['**/perf/**', '**/network.spec.ts', '**/timing.spec.ts'],
       use: { viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true },
     },
     {
       name: 'mobile-320',
       // connect-pg01-real / workspace-real / workspace-m3c-relay / m3-int-* 每用例拉起真 harness，开销按设计只在 mobile-360 承担一次。
-      testIgnore: ['**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts'],
+      // a11y-m4 自管理视口（含横屏/缩放模拟），按设计只在 mobile-360 跑一次（M4-A）。
+      testIgnore: ['**/perf/**', '**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts', '**/a11y-m4.spec.ts'],
       use: { viewport: { width: 320, height: 800 }, isMobile: true, hasTouch: true },
     },
     {
       name: 'desktop',
       // 真服务器配对 / 真链 WS E2E 属移动 PG-01/PG-03 场景（M1-D2/M2-INT/M3-C/M3-INT），desktop 不重复跑。
-      testIgnore: ['**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts'],
+      // a11y-m4 为移动适配专项（M4-A），desktop 不重复跑。
+      testIgnore: ['**/perf/**', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts', '**/a11y-m4.spec.ts'],
       use: { viewport: { width: 1280, height: 720 } },
     },
   ],

@@ -227,20 +227,21 @@ type App struct {
 
 ### AppType
 
-`internal/session/types.go` 定义四种应用类型：
+`internal/session/types.go` 定义应用类型常量（四种可启动 + 一种已弃用）：
 
 ```go
 const (
     AppTypeClaudeCode AppType = "claudecode" // Claude Code 应用
     AppTypeOpenCode   AppType = "opencode"   // Open Code 应用
     AppTypeCodex      AppType = "codex"      // Codex CLI 应用
+    AppTypePi         AppType = "pi"         // Pi coding agent 应用
     // AppTypeAmagiCode 已弃用，仅为读取旧会话保留。
     // 新建 AmagiCode 会话与启动 API 已移除。
     AppTypeAmagiCode AppType = "amagicode"
 )
 ```
 
-实际可启动三种（Claude Code、OpenCode、Codex）；`amagicode` 仅保留读取旧会话能力。
+实际可启动四种（Claude Code、OpenCode、Codex、Pi）；`amagicode` 仅保留读取旧会话能力。四种可启动类型与远程契约 `manifest.cliTypes` 一一对应（`claudecode` / `opencode` / `codex` / `pi`），`HostSummary.cliAvailability` 须恰好为这四种。
 
 `LaunchMode` 同文件定义：
 
@@ -279,7 +280,7 @@ const (
 `internal/remote/Server` 在启用时启动 HTTP + WebSocket（默认端口 8680，可由 Settings 持久化覆盖）。核心端点（核实自 `internal/remote/handlers.go`）：
 
 - `GET /api/info` — 服务信息
-- `GET /api/sessions`、`POST /api/sessions/launch`（含 `launch-codex`、`launch-opencode`）、`DELETE /api/sessions/{id}` 等 — 会话管理
+- `GET /api/sessions`、`POST /api/sessions/launch`（含 `launch-codex`、`launch-opencode`、`launch-pi`）、`DELETE /api/sessions/{id}` 等 — 会话管理
 - `GET|PUT /api/providers`、`GET|PUT /api/providers/{name}`、`GET /api/providers-by-type/{type}` — 提供商读写
 - `GET|PUT /api/settings`、`GET /api/logs`、`GET /api/paths`、`GET /api/secrets/diagnostics` — 设置与诊断
 - `POST /api/bootstrap/consume` — 移动端引导

@@ -10,7 +10,7 @@
  * → ComposerBar（两面同一组件，权限语义不变——P-04）。
  * ---------------------------------------------------------------------------
  */
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useWorkspaceStore } from '../stores/workspace';
 import StatusBar from '../components/lobby/StatusBar.vue';
@@ -54,6 +54,25 @@ function dismissGuide(): void {
 // 诊断视图复用同一会话订阅，不重连。
 const isDiagnostic = computed(() => route.query.view === 'terminal');
 const menuOpen = ref(false);
+const menuBtnRef = ref<HTMLButtonElement | null>(null);
+const menuPanelRef = ref<HTMLElement | null>(null);
+
+// M4-A 焦点管理：菜单打开 → 焦点进首项；Esc/点选关闭 → 焦点回触发钮。
+watch(menuOpen, async (open) => {
+  if (open) {
+    await nextTick();
+    menuPanelRef.value?.querySelector<HTMLElement>('.menu-item')?.focus();
+  } else {
+    menuBtnRef.value?.focus();
+  }
+});
+
+function onMenuKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.stopPropagation();
+    menuOpen.value = false;
+  }
+}
 
 function openDiagnostic(): void {
   menuOpen.value = false;
@@ -166,7 +185,7 @@ function jumpToGap(): void {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="15 18 9 12 15 6" />
         </svg>
-        大厅
+        <span class="btn-label">大厅</span>
       </button>
       <button
         v-else
@@ -177,19 +196,19 @@ function jumpToGap(): void {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="15 18 9 12 15 6" />
         </svg>
-        返回主阅读面
+        <span class="btn-label">返回主阅读面</span>
       </button>
       <h1 class="workspace-title">
         <span class="title-text">{{ title }}</span>
         <span v-if="isDiagnostic" class="diagnostic-badge">诊断视图</span>
       </h1>
-      <div class="menu-wrap">
-        <button type="button" class="menu-btn" aria-label="更多操作" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
+      <div class="menu-wrap" @keydown="onMenuKeydown">
+        <button ref="menuBtnRef" type="button" class="menu-btn" aria-label="更多操作" aria-haspopup="menu" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" />
           </svg>
         </button>
-        <div v-if="menuOpen" class="menu-panel" role="menu">
+        <div v-if="menuOpen" ref="menuPanelRef" class="menu-panel" role="menu" aria-label="会话操作菜单">
           <button
             v-if="!isDiagnostic"
             type="button"
@@ -325,6 +344,9 @@ function jumpToGap(): void {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* M4-A：软键盘收缩跟随 visualViewport（iOS 必需；Android 与 dvh 一致；
+     无 API 时回落 dvh，不劣化）。 */
+  height: var(--vvh, 100dvh);
   background: var(--VT-canvas);
   color: var(--VT-text);
 }
@@ -334,6 +356,10 @@ function jumpToGap(): void {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  /* M4-A safe-area：顶部刘海 + 横屏左右 */
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  padding-left: calc(12px + env(safe-area-inset-left, 0px));
+  padding-right: calc(12px + env(safe-area-inset-right, 0px));
 }
 
 .back-btn {
@@ -446,6 +472,9 @@ function jumpToGap(): void {
   align-items: center;
   gap: 10px;
   margin: 6px 12px;
+  /* M4-A safe-area：横屏下横幅不贴刘海边 */
+  margin-left: calc(12px + env(safe-area-inset-left, 0px));
+  margin-right: calc(12px + env(safe-area-inset-right, 0px));
   padding: 10px 12px;
   border-radius: 10px;
   font-size: 13px;
@@ -529,5 +558,54 @@ function jumpToGap(): void {
   font-size: 11px;
   font-weight: 600;
   vertical-align: middle;
+}
+
+/* M4-R1：超窄逻辑视口（≤240px，含 200% 缩放等效 180px）header 防裁切。
+   实测（谛听 M4-006 补全覆盖后浮出）：诊断面 back-btn「返回主阅读面」自然宽
+   ~126px + menu-btn 44px 在 180px 下溢出右缘 18px——flex 溢出被裁不产生文档
+   级横向滚动，scrollWidth 检测为盲。优先级：返回动作 > 菜单 > 标题；诊断身份
+   由主色返回钮与菜单项承担，badge 让位隐藏；btn-label ellipsis 保底。 */
+@media (max-width: 240px) {
+  .workspace-header {
+    gap: 6px;
+    padding-left: calc(8px + env(safe-area-inset-left, 0px));
+    padding-right: calc(8px + env(safe-area-inset-right, 0px));
+  }
+  .back-btn {
+    flex-shrink: 1;
+    min-width: 44px;
+    overflow: hidden;
+  }
+  .back-btn .btn-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .diagnostic-badge {
+    display: none;
+  }
+}
+
+/* M4-A 横屏紧凑模式：矮视口（手机横屏 ≤500px）头部/横幅压缩，
+   主阅读面与时间线优先占高；竖屏与桌面不受影响。 */
+@media (orientation: landscape) and (max-height: 500px) {
+  .workspace-header {
+    padding-top: calc(4px + env(safe-area-inset-top, 0px));
+    padding-bottom: 4px;
+  }
+  .back-btn {
+    min-height: 44px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .workspace-title {
+    font-size: 15px;
+  }
+  .banner {
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding: 6px 12px;
+  }
 }
 </style>

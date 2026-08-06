@@ -100,6 +100,21 @@ async function run(action: 'acquire' | 'release'): Promise<void> {
   border-top: 1px solid var(--VT-border);
 }
 
+/* M4-A safe-area + 横屏紧凑：横屏（刘海在左右）不贴边；矮视口压缩纵向节奏。 */
+@media (orientation: landscape) {
+  .control-bar {
+    padding-left: calc(12px + env(safe-area-inset-left, 0px));
+    padding-right: calc(12px + env(safe-area-inset-right, 0px));
+  }
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .control-bar {
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+}
+
 .control-row {
   display: flex;
   align-items: center;

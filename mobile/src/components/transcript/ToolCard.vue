@@ -149,7 +149,8 @@ const hasDetail = computed(() => Boolean(props.part.inputPreview || props.part.o
 
 .tool-detail-toggle {
   justify-self: start;
-  min-height: 30px;
+  /* M4-A：44px 触控目标（原 30px 不达标） */
+  min-height: 44px;
   padding: 0;
   border: 0;
   background: transparent;

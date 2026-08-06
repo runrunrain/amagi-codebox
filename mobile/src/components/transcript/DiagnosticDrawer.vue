@@ -191,6 +191,8 @@ onBeforeUnmount(() => {
   color: #c9d1d9;
   border-radius: 999px;
   padding: 6px 12px;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
 }
 
 .diagnostic-drawer-empty,

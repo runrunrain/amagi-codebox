@@ -40,6 +40,31 @@ input, select, textarea, button {
   font-family: inherit;
 }
 
+/* M4-A：reduced-motion 全局兜底（legacy 暗色体系页面无局部降级规则；
+   PG 浅色体系各组件另有局部规则，与此全局网叠加不冲突）。
+   动效只服务反馈与空间关系；系统偏好减动效时全部收缩到即时。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* M4-A：键盘可达底线——全局可见焦点环（PG 组件有局部 VT-accent 环，
+   此处兜底 legacy 暗色体系中未定义焦点样式的可交互元素）。 */
+:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
+/* 路由切换程序化聚焦的页标题（tabindex=-1）不画焦点环——焦点是给读屏的
+   逻辑起点，不是用户交互焦点；真实键盘 Tab 到交互控件仍用上面的环。 */
+h1[tabindex="-1"]:focus {
+  outline: none;
+}
+
 a {
   color: #58a6ff;
   text-decoration: none;

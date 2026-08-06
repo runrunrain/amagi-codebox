@@ -1034,12 +1034,13 @@ onUnmounted(() => {
           <div v-if="summaryWorkDir" class="terminal-summary-workdir">{{ summaryWorkDir }}</div>
         </div>
         <div v-if="sessionMetaChips.length > 0" class="terminal-meta-chip-row">
-          <button
+          <!-- M4-R1：元信息 chip 无任何点击行为，<button> 语义造假（可聚焦但
+               无动作）且高度仅 ~24px——改为非交互 <span>，样式类保留。 -->
+          <span
             v-for="chip in sessionMetaChips"
             :key="chip"
-            type="button"
             class="terminal-meta-chip terminal-meta-button"
-          >{{ chip }}</button>
+          >{{ chip }}</span>
         </div>
         <SessionTimeline
           v-if="structuredViewEnabled"
@@ -2274,7 +2275,9 @@ onUnmounted(() => {
 
 .session-view-toggle,
 .terminal-diagnostic-button {
-  min-height: 32px;
+  /* M4-R1：头部动作钮 32→44px（谛听 M4-002 实测 32px 不达标） */
+  min-width: 44px;
+  min-height: 44px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
@@ -2444,6 +2447,9 @@ onUnmounted(() => {
   border-color: var(--session-border-weak);
   background: var(--session-surface-subtle);
   font-family: inherit;
+  /* M4-R1：「终端键」开关钮 32→44px（.composer-chip 基类 32px 被本规则覆盖） */
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .composer-chip--optional {
@@ -2523,14 +2529,16 @@ onUnmounted(() => {
     font-size: 15px;
   }
 
+  /* M4-R1：移动端触控目标 44px（谛听 M4-002：font-btn 30px / shortcut-btn 38px 不达标）；
+     桌面基值保持紧凑（fine pointer 不受触控尺寸约束）。 */
   .font-btn {
-    min-width: 34px;
-    min-height: 30px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .shortcut-btn {
     min-width: 46px;
-    min-height: 38px;
+    min-height: 44px;
   }
 }
 

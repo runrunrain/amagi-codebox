@@ -86,13 +86,6 @@ function onCardClick() {
   emit('open', props.session);
 }
 
-function onCardKeydown(event: KeyboardEvent) {
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault();
-    emit('open', props.session);
-  }
-}
-
 type MenuAction = 'acquire' | 'release' | 'stop' | 'restart' | 'remove';
 
 function onMenuAction(action: MenuAction) {
@@ -107,17 +100,19 @@ function onMenuAction(action: MenuAction) {
 </script>
 
 <template>
-  <article
-    class="session-card"
-    tabindex="0"
-    role="button"
-    :aria-label="`打开会话 ${session.title}`"
-    @click="onCardClick"
-    @keydown="onCardKeydown"
-  >
-    <div class="card-main">
-      <!-- 顶行：CLI 类型 + 运行状态（三通道） -->
-      <div class="card-top">
+  <!-- M4-A：article 不再兼任可交互角色（role=button 嵌套菜单按钮违反
+       nested-interactive / WCAG 4.1.2）。打开动作收束为真实 <button>，
+       菜单按钮为其兄弟节点，键盘/读屏路径各自独立可达。 -->
+  <article class="session-card">
+    <button
+      type="button"
+      class="card-open"
+      :aria-label="`打开会话 ${session.title}`"
+      @click="onCardClick"
+    >
+      <span class="card-main">
+        <!-- 顶行：CLI 类型 + 运行状态（三通道） -->
+        <span class="card-top">
         <span class="cli-badge">{{ cliLabel(session.cliType) }}</span>
         <span class="state-chip" :class="`state-chip--${stateMeta.tone}`">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -125,25 +120,29 @@ function onMenuAction(action: MenuAction) {
           </svg>
           {{ stateMeta.label }}
         </span>
-      </div>
-
-      <!-- 名称（host 生成的安全 title，不含 provider/model/终端内容） -->
-      <h3 class="session-title">{{ session.title }}</h3>
-
-      <!-- 控制者投影 + 最后活动 -->
-      <div class="card-meta">
-        <span class="control-chip" :class="{ 'control-chip--you': session.control.state === 'you' }">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
-          </svg>
-          {{ control.text }}
         </span>
-        <span class="activity-time">最后活动 · {{ relativeActivity }}</span>
-      </div>
-    </div>
 
-    <!-- overflow 危险菜单 -->
-    <div ref="menuRef" class="card-menu" @click.stop @keydown.stop>
+        <!-- 名称（host 生成的安全 title，不含 provider/model/终端内容） -->
+        <span class="session-title" role="heading" aria-level="3">{{ session.title }}</span>
+
+        <!-- 控制者投影 + 最后活动 -->
+        <span class="card-meta">
+          <span class="control-chip" :class="{ 'control-chip--you': session.control.state === 'you' }">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+            </svg>
+            {{ control.text }}
+          </span>
+          <span class="activity-time">最后活动 · {{ relativeActivity }}</span>
+        </span>
+      </span>
+    </button>
+
+    <!-- overflow 危险菜单。M4-R1：移除 M4-A 前的 @click.stop/@keydown.stop
+         遗留——article 已无点击处理器（打开动作在兄弟按钮 .card-open 上），
+         冒泡停止只剩副作用（Esc 在菜单内无法关闭）；移除后 Esc 经 document
+         监听器正常关闭菜单，包装 div 不再被审计误计为交互元素。 -->
+    <div ref="menuRef" class="card-menu">
       <button
         type="button"
         class="menu-btn"
@@ -230,15 +229,31 @@ function onMenuAction(action: MenuAction) {
   background: var(--VT-surface);
   border: 1px solid var(--VT-border);
   border-radius: 10px;
-  cursor: pointer;
 }
 
-.session-card:focus-visible {
+/* M4-A：打开动作真实按钮（原 article[role=button] 交互样式迁移至此）。 */
+/* M4-R1：显式 min-height 声明——卡片全高按钮，静态审计可判定（运行时实证 ≫44px）。 */
+.card-open {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  margin: -14px 0 -14px -14px;
+  padding: 14px 0 14px 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 10px 0 0 10px;
+}
+
+.card-open:focus-visible {
   outline: 2px solid var(--VT-accent);
   outline-offset: 2px;
 }
 
-.session-card:active {
+.card-open:active {
   background: var(--VT-surface-raised);
 }
 
@@ -292,6 +307,7 @@ function onMenuAction(action: MenuAction) {
 }
 
 .session-title {
+  display: block;
   margin: 0;
   font-size: 16px;
   font-weight: 700;

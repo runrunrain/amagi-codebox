@@ -13,17 +13,20 @@
 | 3 | `@playwright/test` | 1.58.2 | Apache-2.0 | root（devDependency） | E2E 测试 runner（M0-05 基建） | https://registry.npmjs.org/@playwright/test/1.58.2 | https://github.com/microsoft/playwright/blob/master/LICENSE |
 | 4 | `qrcode` | 1.5.4 | MIT | frontend（桌面端，复用） | 二维码生成（`QRCode.toCanvas`） | https://registry.npmjs.org/qrcode/1.5.4 | https://github.com/soldair/node-qrcode/blob/master/license |
 | 5 | `html5-qrcode` | 2.3.8 | Apache-2.0 | mobile（远程 Web 端，复用） | 二维码扫码（`Html5QrcodeScanner` 相机扫码） | https://registry.npmjs.org/html5-qrcode/2.3.8 | https://github.com/mebjas/html5-qrcode/blob/master/LICENSE |
+| 6 | `@axe-core/playwright` | 4.12.1 | MPL-2.0 | root（devDependency） | axe 无障碍审计 E2E 接入（M4-A，wcag2a/aa 门禁） | https://registry.npmjs.org/@axe-core/playwright/4.12.1 | https://github.com/dequelabs/axe-core-npm/blob/develop/LICENSE.txt |
 
 ### 版本钉定方式
 
 - `pinia`、`@tanstack/vue-virtual`：mobile `package.json` 中为**精确版本**（无 caret，如 `"pinia": "3.0.4"`）。
 - `@playwright/test`：root `package.json` devDependency 中为**精确版本**（`"@playwright/test": "1.58.2"`）。
+- `@axe-core/playwright`：root `package.json` devDependency 中为**精确版本**（`"@axe-core/playwright": "4.12.1"`，M4-A 新增；安装使用 `--save-exact --ignore-scripts`，无 postinstall 副作用；其传递依赖 `axe-core` 同为 MPL-2.0，lockfile resolved 锁定 4.12.1）。
 - `qrcode`、`html5-qrcode`：复用既有声明范围（`^1.5.4` / `^2.3.8`），lockfile resolved 锁定为 1.5.4 / 2.3.8（C-002 冻结值要求不新增/升级/移除）。
 
 ## 许可类型说明
 
 - **MIT**（pinia、@tanstack/vue-virtual、qrcode）：宽松许可，允许商用、修改、分发，需保留版权声明。
 - **Apache-2.0**（@playwright/test、html5-qrcode）：宽松许可，含专利授权条款，允许商用、修改、分发，需保留 NOTICE 与版权声明。
+- **MPL-2.0**（@axe-core/playwright / axe-core）：弱 copyleft（文件级），允许商用与私有分发；修改过的 MPL 覆盖文件需以 MPL-2.0 提供源码。本轮仅**原样调用**（devDependency，CI/开发机 E2E 门禁），不修改其源文件、不随 Amagi CodeBox release 分发——copyleft 义务不触及产品与测试代码。
 
 > Apache-2.0 与 MIT 同属宽松许可，可混用。wenqu 资料包已登记：技术方案 TD-15/§13 原假设“均 MIT”与官方许可不符（@playwright/test、html5-qrcode 实为 Apache-2.0），本表按官方双源核验结果登记。
 

@@ -105,6 +105,15 @@ const LAYER_ICONS: Record<StatusLayer['key'], string> = {
   gap: 8px;
 }
 
+/* M4-A safe-area：横屏（刘海/圆角在左右）时芯片条不贴边；
+   竖屏保持既有视觉（0 内边距）。 */
+@media (orientation: landscape) {
+  .status-bar {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+}
+
 .status-chips {
   display: flex;
   align-items: center;

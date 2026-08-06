@@ -207,6 +207,7 @@ const (
     AppTypeClaudeCode AppType = "claudecode"
     AppTypeOpenCode   AppType = "opencode"
     AppTypeCodex      AppType = "codex"
+    AppTypePi         AppType = "pi"
     // AppTypeAmagiCode is deprecated and retained only for reading legacy sessions.
     AppTypeAmagiCode AppType = "amagicode"
 )

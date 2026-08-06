@@ -635,8 +635,34 @@ onBeforeUnmount(() => {
   background: var(--VT-canvas);
   color: var(--VT-text);
   padding: 24px 20px 40px;
+  /* M4-A safe-area：竖屏顶部刘海 + 横屏左右刘海/圆角 + 底部 home 指示条 */
+  padding-top: calc(24px + env(safe-area-inset-top, 0px));
+  padding-left: calc(20px + env(safe-area-inset-left, 0px));
+  padding-right: calc(20px + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
+}
+
+/* M4-A 横屏紧凑模式：矮视口（手机横屏 ≤500px 高）压缩页面节奏，
+   品牌区单行化，主操作优先可达；竖屏与桌面不受影响。 */
+@media (orientation: landscape) and (max-height: 500px) {
+  .connect-page {
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .page-header {
+    margin-bottom: 10px;
+  }
+  .brand-title {
+    font-size: 17px;
+  }
+  .status-chips {
+    margin-top: 8px;
+  }
+  .page-main {
+    gap: 10px;
+  }
 }
 
 .page-header {

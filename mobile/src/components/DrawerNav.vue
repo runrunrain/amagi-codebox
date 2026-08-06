@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, onBeforeUnmount, watch } from 'vue'
 import { useConnection } from '../stores/connection'
 
 const props = defineProps<{ open: boolean }>()
@@ -9,6 +10,38 @@ const { isConnected, serverUrl, disconnect } = useConnection()
 function close() {
   emit('update:open', false)
 }
+
+// M4-A 焦点管理：打开时焦点进抽屉（关闭钮），Esc 关闭，关闭后焦点回触发钮
+// （AppLayout 顶栏 menu-btn）。Teleport 到 body，drawer 在 DOM 尾部，不接管
+// Tab 圈闭（抽屉为页面附属导航，ConfirmDialog 才有 modal 圈闭义务）。
+let restoreFocusEl: HTMLElement | null = null
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    close()
+  }
+}
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (open) {
+      restoreFocusEl = document.activeElement as HTMLElement | null
+      await nextTick()
+      document.querySelector<HTMLElement>('.drawer .close-btn')?.focus()
+      document.addEventListener('keydown', onKeydown, true)
+    } else {
+      document.removeEventListener('keydown', onKeydown, true)
+      restoreFocusEl?.focus?.()
+      restoreFocusEl = null
+    }
+  },
+)
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown, true)
+})
 </script>
 
 <template>
@@ -18,7 +51,7 @@ function close() {
         <div class="drawer">
           <div class="drawer-header">
             <h2>Amagi CodeBox</h2>
-            <button class="close-btn" @click="close">
+            <button class="close-btn" aria-label="关闭导航菜单" @click="close">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
@@ -127,6 +160,12 @@ function close() {
   cursor: pointer;
   padding: 4px;
   border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* M4-A：44px 触控目标 */
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .close-btn:active {
@@ -172,6 +211,9 @@ function close() {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
+  box-sizing: border-box;
   color: #c9d1d9;
   text-decoration: none;
   font-size: 14px;
@@ -194,6 +236,8 @@ function close() {
 .disconnect-btn {
   width: 100%;
   padding: 10px;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
   background: rgba(248, 81, 73, 0.15);
   color: #f85149;
   border: 1px solid rgba(248, 81, 73, 0.3);

@@ -328,9 +328,32 @@ function openWorkspace(session: SessionSummary) {
   background: var(--VT-canvas);
   color: var(--VT-text);
   padding: 16px 20px 40px;
+  /* M4-A safe-area：顶部刘海 + 横屏左右 + 底部 home 指示条 */
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  padding-left: calc(20px + env(safe-area-inset-left, 0px));
+  padding-right: calc(20px + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* M4-A 横屏紧凑模式：矮视口压缩页头与间距，列表/启动器优先。 */
+@media (orientation: landscape) and (max-height: 500px) {
+  .lobby-page {
+    gap: 10px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .lobby-main {
+    gap: 10px;
+  }
+  .lobby-title {
+    font-size: 17px;
+  }
+  .empty-state {
+    padding: 16px 24px 12px;
+  }
 }
 
 .lobby-header {

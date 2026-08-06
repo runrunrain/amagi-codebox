@@ -133,6 +133,12 @@ onMounted(() => {
   cursor: pointer;
   padding: 6px;
   border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* M4-A：44px 触控目标 */
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .refresh-btn:active {
@@ -191,6 +197,8 @@ onMounted(() => {
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 16px;
+  /* M4-R1：大卡片显式 min-height 声明（静态审计可判定；运行时 ≫44px） */
+  min-height: 44px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;

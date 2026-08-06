@@ -212,6 +212,12 @@ onMounted(() => {
   cursor: pointer;
   padding: 6px;
   border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* M4-A：44px 触控目标 */
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .icon-btn:active {
@@ -246,6 +252,8 @@ onMounted(() => {
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 12px;
+  /* M4-R1：大卡片显式 min-height 声明（静态审计可判定；运行时 ≫44px） */
+  min-height: 44px;
   cursor: pointer;
 }
 
@@ -353,6 +361,8 @@ onMounted(() => {
   color: #8b949e;
   font-size: 12px;
   cursor: pointer;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
 }
 
 .toggle-btn.active {
@@ -383,7 +393,9 @@ onMounted(() => {
   border: 1px solid #30363d;
   border-radius: 6px;
   color: #c9d1d9;
-  font-size: 14px;
+  /* M4-A：44px 触控目标 + 16px 字号（防 iOS 聚焦自动缩放，user-scalable 已解禁） */
+  min-height: 44px;
+  font-size: 16px;
   outline: none;
   box-sizing: border-box;
 }
@@ -439,6 +451,8 @@ onMounted(() => {
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
+  /* M4-A：44px 触控目标 */
+  min-height: 44px;
 }
 
 .btn--secondary {

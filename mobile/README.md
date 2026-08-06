@@ -251,7 +251,7 @@ cd android
 
 - 桌面端项目：同一仓库内的 amagi-codebox 主项目（仓库根目录）
 - Remote API 端口：8680（Bearer Token 认证，可在桌面端设置中修改）
-- 会话模式：Claude / OpenCode / Codex（与桌面端 AppType 对应）
+- 会话模式：Claude / OpenCode / Codex / Pi（与桌面端 AppType 对应；远程契约 `cliTypes` 为这四种）
 - WebSocket 协议：客户端发送 `input`(base64) / `resize`(cols,rows)，服务端推送 `output`(base64) / `exit`(code)
 
 ## 常用命令

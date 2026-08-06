@@ -162,9 +162,26 @@ function onReuse(text: string): void {
 
 <style scoped>
 .composer {
+  /* M4-R3（谛听 M4-006）：显式不收缩——窄屏首次 Guide 态下由 Guide/时间线
+     收缩让位，Composer（含停止运行）必须完整保持在视口底部。 */
+  flex-shrink: 0;
   border-top: 1px solid var(--VT-border);
   background: var(--VT-canvas);
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  /* M4-A safe-area：横屏下 Composer 不贴刘海边（左右内边距） */
+  padding-left: calc(12px + env(safe-area-inset-left, 0px));
+  padding-right: calc(12px + env(safe-area-inset-right, 0px));
+}
+
+/* M4-A 横屏紧凑模式：矮视口压缩输入区节奏，保持 44px 目标不变。 */
+@media (orientation: landscape) and (max-height: 500px) {
+  .composer {
+    padding-top: 4px;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+  .history-panel {
+    max-height: 30vh;
+  }
 }
 
 .composer-block-reason {
@@ -341,5 +358,27 @@ function onReuse(text: string): void {
 .composer-stop:focus-visible {
   outline: 2px solid var(--VT-accent);
   outline-offset: 2px;
+}
+
+/* M4-R2（谛听 M4-006）：≤240px 超窄逻辑视口（含 200% 缩放等效 180px）
+   Composer 防裁切。单行 flex 放不下 历史(44)+输入+发送(min-content~60)
+   +停止(min-content~80)+三 gap——flex 溢出被右缘裁切且不产生文档级
+   scrollWidth（实测 180px 停止控制被裁，谛听 R2 读图取证）。拆三层：
+   输入独占首行（order -1 + 100% basis），历史+发送第二行，停止独占
+   第三行（danger 主操作不缩字不缩高，保持 ≥44px 与完整文案）。 */
+@media (max-width: 240px) {
+  .composer-row {
+    flex-wrap: wrap;
+  }
+  .composer-input {
+    flex: 1 1 100%;
+    order: -1;
+  }
+  .composer-send {
+    flex: 1 1 auto;
+  }
+  .composer-stop {
+    flex: 1 1 100%;
+  }
 }
 </style>

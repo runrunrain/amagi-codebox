@@ -32,6 +32,14 @@ const emit = defineEmits<{
 
 <style scoped>
 .guide-card {
+  /* M4-R3（谛听 M4-006）：工作区为 100dvh 纵向 flex 列，Guide 未收缩时
+     其固有高度会把 Composer 推出视口（180×800 首次态实测停止按钮
+     bottom=852>800 且文档不可滚）。Guide 可收缩（min-height:0 + flex
+     收缩）并内部滚动，关闭钮由 sticky 头部保持可达；Composer 不被挤压。 */
+  flex-shrink: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   margin: 12px;
   padding: 14px;
   background: var(--VT-surface);
@@ -44,6 +52,14 @@ const emit = defineEmits<{
   display: flex;
   align-items: center;
   gap: 8px;
+  /* M4-R3：内部滚动时头部吸附顶缘——关闭引导按钮任何滚动位置可达。
+     负 margin/top 抵消容器 padding，吸附后与卡片可视顶缘齐平。 */
+  position: sticky;
+  top: -14px;
+  margin: -14px -14px 0;
+  padding: 14px 14px 8px;
+  background: var(--VT-surface);
+  border-radius: 9px 9px 0 0;
 }
 
 .guide-title {

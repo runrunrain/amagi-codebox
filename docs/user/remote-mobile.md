@@ -123,6 +123,7 @@
 | `POST /api/sessions/launch` | 启动 Claude 会话。Body：`{providerName, presetName, mode, workDir, useProxy, useHeadroom, shellPath}` |
 | `POST /api/sessions/launch-codex` | 启动 Codex 会话。Body：`{modelName, providerID, mode, workDir, shellPath}` |
 | `POST /api/sessions/launch-opencode` | 启动 OpenCode 会话。Body：`{providerName, presetName, mode, workDir, shellPath}` |
+| `POST /api/sessions/launch-pi` | 启动 Pi 会话。Body：`{modelName, providerID, mode, workDir, shellPath}`（对标 `launch-codex`，由 `terminal_preset` `type="pi"` 驱动） |
 | `POST /api/sessions/clear-stopped` | 清理已停止会话；返回 `{cleared: <n>}` |
 | `DELETE /api/sessions/{id}` | 停止指定会话 |
 | `POST /api/sessions/{id}/resize` | 调整会话尺寸。Body：`{cols, rows}` |

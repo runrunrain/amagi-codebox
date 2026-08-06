@@ -19,7 +19,7 @@
 ## 功能特性
 
 - **跨平台支持**：Windows 10/11 和 macOS 原生支持
-- **多应用管理**：Claude Code、OpenCode、Codex 三种应用统一管理
+- **多应用管理**：Claude Code、OpenCode、Codex、Pi 四种应用统一管理
 - **多服务提供商**：Anthropic、OpenAI、GLM、MiniMax、Kimi 等，支持自定义添加
 - **预设配置管理**：每个提供商支持多套预设，可配置模型、温度、思考模式等
 - **API 密钥安全存储**：Windows DPAPI / macOS Keychain 加密存储
@@ -77,7 +77,7 @@ Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译
 
 **后端服务包**：`internal/` 下 24 个服务包，各遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`（插件系统）、`proxy`（代理注入）、`headroom`（上下文压缩）、`remote`（远程控制）、`envcheck`（环境检测与修复）、`updater`（自动更新）、`workspace`（工作空间）等。
 
-**三种应用类型**：`claudecode` / `opencode` / `codex`（外加已弃用的 `amagicode`）。`LaunchSession` 是会话启动核心入口，按预设解析提供商、编排代理与 headroom 链路、注入环境变量与 `--session-id`，最终在 PTY 中启动 CLI。
+**四种应用类型**：`claudecode` / `opencode` / `codex` / `pi`（外加已弃用的 `amagicode`）。`LaunchSession` 是会话启动核心入口，按预设解析提供商、编排代理与 headroom 链路、注入环境变量与 `--session-id`，最终在 PTY 中启动 CLI。
 
 **跨平台**：平台差异通过 Go `//go:build` 约束在编译期分流（如 secrets 在 Windows 用 DPAPI、macOS 用 Keychain、Linux 为不支持），启动时由 `platform.CurrentCapabilities()` 一次性解析能力集合，运行期只读。
 
@@ -137,6 +137,7 @@ amagi-codebox/
 | `POST` | `/api/sessions/launch` | 启动 Claude Code 会话 |
 | `POST` | `/api/sessions/launch-codex` | 启动 Codex 会话 |
 | `POST` | `/api/sessions/launch-opencode` | 启动 OpenCode 会话 |
+| `POST` | `/api/sessions/launch-pi` | 启动 Pi 会话 |
 | `DELETE` | `/api/sessions/{id}` | 停止会话 |
 | `GET` / `PUT` | `/api/providers`、`/api/providers/{name}` | 提供商读写 |
 | `GET` / `PUT` | `/api/settings` | 应用设置读写 |
@@ -144,6 +145,36 @@ amagi-codebox/
 | `WebSocket` | `/ws/terminal/{sessionID}` | 终端桥接 |
 
 > 完整端点、鉴权流程（Token / launch grant / 本地 cookie）与移动端连接见 [远程控制与移动端](docs/user/remote-mobile.md)。
+
+### Remote API v1 契约端点（开发中）
+
+> 上方 `/api/*` 与 `/ws/terminal/*` 是**已上线**的 legacy 远程 API（Bearer Token 鉴权）。下方是**正在分阶段构建（M0–M4）**的 v1 契约 API，二者是独立的两套接口；v1 以 device Cookie 鉴权。
+
+**权威来源**：`docs/developer/remote-api-v1-contract.md`（规范文档）与 `mobile/src/lib/contract/testdata/v1-wire-fixtures.json` 的 `manifest`（机器可读单一真相源，Go/TS 双端共享）。下表由该 manifest 生成式整理；变更须同改 manifest + 契约文档 + 双端类型骨架（`internal/remote/contract/`、`mobile/src/lib/contract/`）+ 双端测试（同一 diff），禁止手抄路径字面量。
+
+REST v1（`BASE = /api/remote/v1`，除 `pairing/complete` 外均需 device Cookie）：
+
+| # | 方法 | 路径 | 成功 | 阶段 |
+|---|------|------|------|------|
+| 1 | POST | `/pairing/complete` | 201 | M1 |
+| 2 | GET | `/host/summary` | 200 | M1 |
+| 3 | GET | `/sessions` | 200 | M2 |
+| 4 | GET | `/sessions/{id}` | 200 | M2 |
+| 5 | POST | `/sessions` | 201 | M2 |
+| 6 | POST | `/sessions/{id}/stop` | 200 | M2 + control |
+| 7 | POST | `/sessions/{id}/restart` | 200 | M2 + control |
+| 8 | DELETE | `/sessions/{id}` | 204 | M2 + control |
+| 9 | POST | `/sessions/{id}/control/acquire` | 200 | M3 |
+| 10 | POST | `/sessions/{id}/control/release` | 200 | M3 |
+
+WebSocket v1：唯一 URL `ws[s]://<host>/ws/v1`（URL 不带 token/session/credential，浏览器自动携带 device Cookie）。客户端帧 5 类：`attach` / `input` / `resize` / `backfill` / `ping`；服务端事件 8 类：`session.attached` / `output` / `backfill.result` / `session.state` / `control.state` / `auth.revoked` / `error` / `input.ack`。
+
+附录（CG 增补）：
+
+- **CG-01**：`auth.revoked` 事件 `reason` 为闭枚举（v1 已知仅 `device_revoked`），事件后关闭码 **1008**；客户端按事件**类型**撤销而非按 reason 值，未知/缺失 reason → fail-closed（force-unauthorized）。
+- **CG-03**：`input.ack` 为加性第 8 类服务端事件，确认 canonical `MessageID`（`msg-v1-` + 32 位小写 hex）已被 per-session ledger 提交；`session.attached` 经可选 `inputAckMode`（唯一规范值 `session-window-v1`）协商该能力，缺省/未知值即只读。
+
+错误码 12 个：`net.unreachable` / `service.down` / `auth.unpaired` / `auth.window_expired` / `auth.revoked` / `session.not_found` / `session.launch_failed` / `control.busy` / `control.forbidden` / `history.gap` / `rate.limited` / `bad_request`。
 
 ---
 
