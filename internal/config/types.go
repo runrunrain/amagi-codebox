@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 )
 
@@ -396,7 +397,7 @@ func BuildExportProvider(provider Provider, apiKey string) ExportProvider {
 		DefaultModel: provider.DefaultModel,
 		Presets:      presets,
 		Type:         provider.EffectiveType(),
-		BaseURL:      provider.EffectiveBaseURL(""),
+		BaseURL:      provider.EffectiveBaseURLRaw(""),
 		AuthKey:      provider.EffectiveAuthKey(""),
 		APIKey:       strings.TrimSpace(apiKey),
 	}
@@ -524,9 +525,118 @@ func (p Provider) EffectiveType() string {
 	return "anthropic"
 }
 
-// EffectiveBaseURL 返回指定格式或首选格式的有效 BaseURL。
+// NormalizeOpenAIBaseURL 归一化 OpenAI 兼容端点的 base URL。
+//
+// 处理规则（保守、不丢数据，仅作用于可确认的 URL path）：
+//  1. TrimSpace；
+//  2. 用 net/url 解析；解析失败、host 缺失（相对路径、scheme-only、普通非
+//     URL 字符串）保守返回 TrimSpace 后的原值，避免对 hostless 输入做破坏性
+//     裁剪（如 "/chat/completions" 被裁成空串、"https://" 被裁成 "https:"）；
+//  3. 仅对 URL.Path 做后缀处理：循环剥离尾部 "/" 与 "/chat/completions" 后缀
+//     （精确后缀匹配，大小写敏感，保证幂等：重复后缀也被完全剥离）；
+//  4. query/fragment/host/scheme/userinfo 等其他部分原样保留；path 未变化时
+//     直接返回原值，零副作用。
+//
+// 设计意图：用户常粘贴带 "/chat/completions" 后缀的完整端点（如
+// https://opencode.ai/zen/go/v1/chat/completions），而各 AI CLI（opencode
+// @ai-sdk/openai-compatible、codex、pi）默认会在 baseURL 后自行拼接该路径，
+// 原样透传会导致双重后缀请求失败。此处统一剥离后缀，下游再按需拼接。
+//
+// 限制在 URL path 内处理（而非对整个字符串做后缀裁剪），可避免破坏带
+// query/fragment 的企业网关或签名地址（如 ?redirect=/chat/completions/）。
+//
+// anthropic 格式的 base URL 不经此函数（见 EffectiveBaseURL），以避免破坏
+// anthropic 端点语义。
+func NormalizeOpenAIBaseURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	parsed, err := url.Parse(s)
+	if err != nil {
+		return s
+	}
+	// host 缺失（相对路径、scheme-only、非 URL 字符串）保守返回原值。
+	if parsed.Host == "" {
+		return s
+	}
+	// 基于编码形式（EscapedPath）做后缀剥离，保留 %2F 等转义序列不被误当真实分隔符。
+	// parsed.Path 是解码值，无法区分字面 "/" 与 "%2F"；直接对 Path 操作会破坏转义路径
+	// （如网关单段路由 /v1%2Fchat%2Fcompletions 会被解码为 /v1/chat/completions 而误裁剪，
+	// 且清空 RawPath 会永久丢失编码提示）。EscapedPath 返回编码形式，仅匹配其中的字面
+	// "/" 与 "chat/completions"，转义斜杠 %2F/%2f 不受影响，混合转义输入往返无损。
+	// （增量复审新 Major：转义路径保守处理）
+	escapedOrig := parsed.EscapedPath()
+	escaped := escapedOrig
+	for {
+		next := strings.TrimRight(escaped, "/")
+		if strings.HasSuffix(next, "/chat/completions") {
+			next = strings.TrimSuffix(next, "/chat/completions")
+			next = strings.TrimRight(next, "/")
+		}
+		if next == escaped {
+			break
+		}
+		escaped = next
+	}
+	// escaped 未变化时原样返回，保留原始编码/格式（绝大多数无后缀的 base URL 命中此分支，零副作用）。
+	if escaped == escapedOrig {
+		return s
+	}
+	// 重建 URL：解码新 escaped 为 Path，并显式设 RawPath 保留转义序列。
+	// escaped 由剥离字面子串得来，仍是合法编码（剥离不影响转义完整性），
+	// PathUnescape 理论上不会失败；失败时保守返回原值（不死守重建）。
+	newPath, unescErr := url.PathUnescape(escaped)
+	if unescErr != nil {
+		return s
+	}
+	parsed.Path = newPath
+	parsed.RawPath = escaped
+	return parsed.String()
+}
+
+// IsOfficialOpenAIBaseURL 判断 baseURL 是否指向官方 OpenAI API。
+//
+// 使用 net/url 解析后比较 Hostname()，仅当 host 精确等于 api.openai.com
+// （大小写不敏感）时返回 true，避免 strings.Contains 子串匹配被欺骗性 host
+// 误判（如 https://api.openai.com.evil.example/v1 或
+// https://gateway.example/proxy/api.openai.com/v1 会被旧实现当成官方 OpenAI，
+// 导致 provider ID 被改为内置 "openai" 且不注入 npm，第三方配置失效）。
+//
+// 对无 scheme 的输入补 https:// 后再解析；解析失败或 host 缺失时保守返回
+// false（按第三方处理）。launcher 与 config 迁移共用本判定，保证语义一致
+// （审核 Major-4）。
+//
+// FQDN 尾点 DNS 等价处理：https://api.openai.com./v1 的 Hostname() 为
+// "api.openai.com."（含单个尾点），与无尾点域名 DNS 等价，应识别为官方
+// （增量复审 Minor）。userinfo 不参与 host 比较（Hostname() 已排除）：
+// https://user@api.openai.com/v1 判官方，https://api.openai.com@evil.example/v1
+// 因 Hostname() 为 evil.example 而判第三方。
+func IsOfficialOpenAIBaseURL(baseURL string) bool {
+	s := strings.TrimSpace(baseURL)
+	if s == "" {
+		return false
+	}
+	parseTarget := s
+	if !strings.Contains(parseTarget, "://") {
+		parseTarget = "https://" + parseTarget
+	}
+	parsed, err := url.Parse(parseTarget)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	host := parsed.Hostname()
+	host = strings.TrimSuffix(host, ".") // 剥离单个 DNS 尾点（FQDN 等价）
+	return strings.EqualFold(host, "api.openai.com")
+}
+
+// EffectiveBaseURLRaw 返回指定格式或首选格式的原始 BaseURL（未经归一化）。
 // format 为空时使用 PreferredFormat()。
-func (p Provider) EffectiveBaseURL(format string) string {
+//
+// 供存储/导出路径（SyncLegacyFields、BuildExportProvider）使用，以保证用户
+// 原始输入值不被归一化污染。运行时消费端（launcher / codex / pi）应使用
+// EffectiveBaseURL。
+func (p Provider) EffectiveBaseURLRaw(format string) string {
 	if format == "" {
 		format = p.PreferredFormat()
 	}
@@ -540,7 +650,29 @@ func (p Provider) EffectiveBaseURL(format string) string {
 			return p.Anthropic.BaseURL
 		}
 	}
-	return p.BaseURL
+	return p.BaseURL // 旧顶层字段回退
+}
+
+// EffectiveBaseURL 返回指定格式或首选格式的有效 BaseURL（运行时消费用）。
+// format 为空时使用 PreferredFormat()。
+//
+// 当生效格式为 openai 时，返回值经 NormalizeOpenAIBaseURL 归一化（剥离
+// /chat/completions 后缀与尾斜杠）；anthropic 格式分支一律保持原样透传，
+// 不做归一化。空 format 经 PreferredFormat() 推导，openai 兼容 provider 在
+// 空 format 下同样走归一化。
+//
+// 注意：归一化仅用于运行时消费端。存储/导出必须保持用户原始输入值，使用
+// EffectiveBaseURLRaw（见 SyncLegacyFields / BuildExportProvider）。
+func (p Provider) EffectiveBaseURL(format string) string {
+	if format == "" {
+		format = p.PreferredFormat()
+	}
+	raw := p.EffectiveBaseURLRaw(format)
+	// 仅 OpenAI 格式做 base URL 归一化；anthropic 端点语义保持原样。
+	if strings.ToLower(format) == "openai" {
+		return NormalizeOpenAIBaseURL(raw)
+	}
+	return raw
 }
 
 // EffectiveAuthKey 返回指定格式或首选格式的有效 AuthKey（认证类型标识）。
@@ -608,12 +740,17 @@ func (p Provider) IsOAuthMode() bool {
 // SyncLegacyFields 将新格式字段同步回旧顶层字段 Type/BaseURL/AuthKey，
 // 以便仍依赖旧字段的代码路径能正常工作。
 // 仅在新格式字段已建立时执行回填。
+//
+// 注意：BaseURL 使用 EffectiveBaseURLRaw（未归一化的原始值），保证存储到
+// models.json 的 legacy base_url 与用户输入一致；归一化只发生在运行时
+// 消费端（EffectiveBaseURL）。否则用户输入 .../v1/chat/completions 后，
+// legacy 字段会被改写成 .../v1，破坏存储原样语义（审核 Major-2）。
 func (p Provider) SyncLegacyFields() Provider {
 	if p.Anthropic == nil && p.OpenAI == nil {
 		return p
 	}
 	p.Type = p.EffectiveType()
-	p.BaseURL = p.EffectiveBaseURL("")
+	p.BaseURL = p.EffectiveBaseURLRaw("")
 	p.AuthKey = p.EffectiveAuthKey("")
 	return p
 }

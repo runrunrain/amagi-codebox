@@ -71,7 +71,15 @@
  *     mousedown interceptor that synthesizes a selection via term.select()).
  *   - Once selected, Ctrl+Shift+C copies and Delete/Backspace bulk-erases.
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { session as sessionModels } from '../../../wailsjs/go/models'
 import { useSessionStore } from '../../stores/session'
 import { useSessionList } from '../../composables/useSessionList'
@@ -84,7 +92,9 @@ import TerminalContextMenu from './TerminalContextMenu.vue'
 
 type SessionInfo = sessionModels.SessionInfo
 
-const props = defineProps<{ sessionId: string }>()
+const props = withDefaults(defineProps<{ sessionId: string; active?: boolean }>(), {
+  active: true,
+})
 
 const sessionStore = useSessionStore()
 const { stopAndRefresh, refresh } = useSessionList()
@@ -98,6 +108,8 @@ const bodyRef = ref<HTMLElement | null>(null)
 const stopping = ref(false)
 const detailVisible = ref(false)
 const hasSelection = ref(false)
+const routeSurfaceActive = ref(true)
+const surfaceActive = computed(() => props.active && routeSurfaceActive.value)
 
 // right-click menu transient state
 const ctx = ref({ visible: false, x: 0, y: 0 })
@@ -123,6 +135,39 @@ const statusColor = computed(() => {
   return 'var(--tertiary)'
 })
 
+let rendererRefreshPending = false
+
+function refreshVisibleSurface() {
+  if (!surfaceActive.value) return
+  const el = bodyRef.value
+  if (!el) return
+  requestAnimationFrame(() => {
+    if (!surfaceActive.value || bodyRef.value !== el) return
+    if (rendererRefreshPending) {
+      rendererRefreshPending = false
+      engine.refreshRenderer(props.sessionId, el)
+    } else {
+      engine.refreshTerminal(props.sessionId, el)
+    }
+  })
+}
+
+onActivated(() => {
+  routeSurfaceActive.value = true
+  refreshVisibleSurface()
+})
+
+onDeactivated(() => {
+  routeSurfaceActive.value = false
+})
+
+watch(
+  () => props.active,
+  (active) => {
+    if (active) refreshVisibleSurface()
+  },
+)
+
 onMounted(async () => {
   // Platform caps must be loaded before terminal creation: otherwise
   // isDarwin/isWindows return false when the singleton cache is null (page
@@ -145,17 +190,12 @@ onMounted(async () => {
     },
   })
 
-  // initial fit deferred one frame so the container has a measured size
-  requestAnimationFrame(() => engine.fitTerminal(props.sessionId, true, el))
+  refreshVisibleSurface()
 
-  // P1 兜底：mount 后 200ms 再 force fit 一次。覆盖 canvas/WebGL renderer
-  // activate 与容器 layout 的最坏时序——切会话回来重走 mount 时，renderer
-  // 在 mountTerm 内同步 activate（早于末尾 fit 与本 rAF），可能用 0/中间
-  // 尺寸构建 texture atlas 导致撕裂黑屏；engine 内部已追加 renderer 加载后
-  // 的 rAF force fit + clearTextureAtlas，这里再加一层时间维度兜底，吸收
-  // ResizeObserver 首次回调与 history replay 期间的尺寸抖动。
+  // A delayed public-API redraw absorbs the first ResizeObserver callback and
+  // late web-font metrics without replacing a renderer under queued writes.
   mountFallbackFitTimer = setTimeout(() => {
-    if (bodyRef.value === el) engine.fitTerminal(props.sessionId, true, el)
+    if (bodyRef.value === el) refreshVisibleSurface()
   }, 200)
 })
 
@@ -170,37 +210,31 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     if (resizeDebounce) clearTimeout(resizeDebounce)
     resizeDebounce = setTimeout(() => {
-      engine.fitTerminal(props.sessionId, false, el)
+      if (surfaceActive.value) engine.fitTerminal(props.sessionId, false, el)
     }, 100)
   })
   resizeObserver.observe(el)
 })
 
-// refit when the tab regains visibility (alt-tab 切回 / 窗口最小化后还原 / 页面可见性恢复，visibilitychange 触发).
-// 注意：此处用 force=false。alt-tab 切回时容器尺寸通常未变，force=true 会
-// 强制执行 fit.fit() 触发 xterm resize→重排，视觉上表现为内容刷屏滚动到
-// 最底部（回归）。force=false 时仅当尺寸真正变化才 fit，避免不必要的重排；
-// 真实尺寸变化（窗口拉伸/DPI 切换）由上方 ResizeObserver 兜底捕获。
+// A restored WKWebView may retain a correct xterm buffer but an invalidated
+// paint layer. Force a complete redraw even when rows/cols did not change.
 function onVisibility() {
   if (document.visibilityState !== 'visible') return
-  const el = bodyRef.value
-  if (el) engine.fitTerminal(props.sessionId, false, el)
+  refreshVisibleSurface()
 }
 onMounted(() => document.addEventListener('visibilitychange', onVisibility))
 
 // Detect devicePixelRatio changes (moving the window between monitors with
 // different DPI, or the OS zoom level changing). When DPR changes, the
-// canvas/WebGL renderer's backing store is still sized for the old DPR,
-// producing blurry / torn output. term.resize() with unchanged cols/rows
-// is a no-op in xterm's bufferService, so we must dispose and reload the
-// renderer addon to rebuild the canvas at the new DPR.
+// WebGL's backing store must be rebuilt on Windows/Linux. Hidden/cached
+// terminals defer that rebuild until they become visible again.
 let dprMql: MediaQueryList | null = null
 function watchDpr() {
   const dpr = window.devicePixelRatio || 1
   dprMql = window.matchMedia(`(resolution: ${dpr}dppx)`)
   const handler = () => {
-    const el = bodyRef.value
-    engine.refreshRenderer(props.sessionId, el ?? undefined)
+    rendererRefreshPending = true
+    refreshVisibleSurface()
     // Re-arm: create a new MQL for the new DPR value.
     if (dprMql) dprMql.removeEventListener('change', handler)
     watchDpr()
@@ -421,14 +455,9 @@ function onCtxSelectAll() {
   text-align: left;
 }
 
-/* NOTE: the previous `width: 100% !important` on .xterm-screen was removed
-   because it forced the canvas/WebGL renderer's <canvas> element to be
-   stretched by the browser after xterm sized it to cols*cellWidth. That
-   sub-pixel mismatch was a contributing cause of the tearing symptom on
-   macOS. With canvas renderer + addon-fit's natural sizing, .xterm-screen
-   already matches the host width and the rule is unnecessary. If a black
-   border reappears, investigate fit timing rather than re-adding this
-   override. */
+/* Never force .xterm-screen to 100% width. xterm owns the exact
+   cols*cellWidth geometry; stretching that surface introduces sub-pixel row
+   and mouse-coordinate drift for every renderer. */
 
 /* match demo scrollbar thumb so the terminal area reads as one surface */
 .term-body :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
@@ -436,11 +465,8 @@ function onCtxSelectAll() {
 }
 
 /* xterm.css sets .xterm-viewport background to #000, but our terminal theme
-   uses #1B1B1F. During scroll / repaint the viewport background can flash
-   through behind the canvas (the canvas has transparency at the edges or
-   during partial redraws), producing a brief black flash perceived as
-   tearing. Override to match the theme background so the viewport, host
-   and canvas all share the same base color. */
+   uses #1B1B1F. Match the host so scroll/repaint never exposes a contrasting
+   strip behind the renderer. */
 .term-body :deep(.xterm-viewport) {
   background-color: var(--termBg, #1b1b1f);
 }

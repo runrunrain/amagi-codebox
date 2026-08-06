@@ -17,7 +17,7 @@
 
 | 层 | 实现 | 关键源码 |
 |----|------|----------|
-| 前端渲染 | xterm.js 6 + Fit / WebGL / Canvas / Web Links addon | `frontend/src/composables/useTerminalEngine.ts` |
+| 前端渲染 | xterm.js 6 + Fit / WebGL / Web Links addon | `frontend/src/composables/useTerminalEngine.ts` |
 | 伪终端宿主 | Windows ConPTY；macOS creack/pty；其他平台为 stub | `internal/pty/service.go`、`internal/pty/service_darwin.go`、`internal/pty/service_other_stub.go` |
 | 数据通道 | Wails 事件 + base64 编码的双向流 | 后端 `EventsEmit` / 前端 `EventsOn`，前端→后端走 `PtyWrite` / `PtyWriteLarge` |
 
@@ -91,17 +91,15 @@ new Terminal({
 
 ### 渲染器选择策略
 
-xterm.js 默认使用 DOM 渲染；为提升高频 TUI 重绘下的性能，Amagi CodeBox 按以下优先级尝试加载更快的渲染器：
+xterm.js 默认使用 DOM 渲染。Amagi CodeBox 按平台选择经过兼容性验证的渲染器：
 
 | 平台 | 加载的 addon | 原因 |
 |------|--------------|------|
-| macOS（WKWebView） | `@xterm/addon-canvas`（CanvasAddon） | WebGL 在 WKWebView 中会损坏 scrollback 纹理图集；Canvas 渲染到单一 `<canvas>`，避开 GPU 纹理路径，同时远快于 DOM 渲染 |
+| macOS（WKWebView） | xterm 6 内置 DOM 渲染器 | WebGL 在 WKWebView 中会损坏 scrollback 纹理图集；已发布的 CanvasAddon 仅声明兼容 xterm 5，不能加载到本项目的 xterm 6 |
 | Windows / Linux | `@xterm/addon-webgl`（WebglAddon，需通过 WebGL 探测） | WebGL 是这些平台上最快的渲染器 |
 | 任意加载失败 | xterm 内置 DOM 渲染器 | 失败时 fail-open，保证终端可用 |
 
 WebGL addon 还实现了上下文丢失重连：`onContextLoss` 触发后 500ms 重新加载渲染器并强制 fit。
-
-> Canvas addon 不暴露 `onContextLoss`；如果底层 canvas 上下文丢失，xterm 渲染器注册表会在下一次渲染时回退到默认 DOM 渲染器。
 
 ### Link 识别
 
@@ -116,8 +114,9 @@ xterm 加载两类链接 provider：
 
 - **作用**：移动端或桌面端后加入的观察者连接到运行中的会话时，可重放最近输出，避免"只看到会话尾部"。
 - **trim 算法**：`trimHistoryToFrontier` 在截断时避免从多字节 UTF-8 字符中间或 ANSI 转义序列中间开始，防止回放乱码。
-- **seq 去重**：每段输出都附带单调递增的 `emitSeq`。前端挂载时先取一次 `GetOutputHistorySnapshot`（含 `{data, seq}`），把 seq 作为水位线；之后任何 `seq <= 水位线` 的实时事件都被丢弃，避免历史与实时流之间出现重复帧。
-- **分块写入**：1 MB 历史不会一次性 `term.write()`，而是按 64 KB 分块、每块之间让出一帧（`requestAnimationFrame`），避免长时间阻塞主线程。
+- **run + seq 去重**：每段输出都附带运行身份 `runToken/runVersion` 和本轮单调递增的 `emitSeq`。前端只在同一轮运行内用 seq 水位线去重；同一会话重启后会接受新运行从 1 开始的 seq，并丢弃迟到的旧运行事件。
+- **分块写入**：1 MB 历史按 64 KB 分块。下一块只会在上一块 `term.write(..., callback)` 的 callback（代表解析完成）后入队，并通过 `setTimeout(0)` 让出主线程；不会把“入队返回”误当成“解析完成”。
+- **回放屏障**：快照请求期间收到的实时输出和退出提示先缓存，历史解析完成后再按顺序写入；回放过程中不销毁或替换 renderer。
 
 ---
 
@@ -152,7 +151,7 @@ xterm 加载两类链接 provider：
 2. WebView 异步 `navigator.clipboard.writeText`。
 3. 同步 `document.execCommand('copy')`（已废弃，兜底）。
 
-> 这种降级是必须的：WebView2 在焦点落到 xterm canvas/WebGL 元素、或用户激活上下文丢失时，`navigator.clipboard.writeText` 会抛 `NotAllowedError` 静默失败。
+> 这种降级是必须的：WebView2 在焦点落到 xterm 渲染表面、或用户激活上下文丢失时，`navigator.clipboard.writeText` 会抛 `NotAllowedError` 静默失败。
 
 ### Shift + 拖动强制选择
 
@@ -250,8 +249,8 @@ func (s *Service) DetachSessionObserver(sessionID, id string)
 
 | 事件名 | Payload | 说明 |
 |--------|---------|------|
-| `pty:data:<sessionID>` | `{ "s": <seq>, "d": "<base64>" }` | PTY 输出，`s` 为单调递增序列号 |
-| `pty:exit:<sessionID>` | `{ "exitCode": <int>, "error": "<err>" }` | 进程退出 |
+| `pty:data:<sessionID>` | `{ "r": "<runToken>", "v": "<runVersion>", "s": <seq>, "d": "<base64>" }` | PTY 输出；`s` 只在同一个 `r/v` 运行内单调递增 |
+| `pty:exit:<sessionID>` | `{ "r": "<runToken>", "v": "<runVersion>", "exitCode": <int> }` | 当前运行的进程退出 |
 
 > 历史兼容：前端解析 `pty:data` 时同时接受裸字符串（不带 seq 的旧协议），此时 seq 视为 0，不参与去重。
 
@@ -287,8 +286,9 @@ Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前
 
 Amagi CodeBox 支持同时运行多个会话（多 Tab）。每个会话在后端独立持有 `PtySession`，前端以 session ID 为 key 维护独立的 `TerminalInstance`（xterm 实例 + addon + 监听器 + 状态）。切换 Tab 时：
 
-- 已挂载的会话不会被销毁，只是从 DOM 上卸载或隐藏。
-- 切回原 Tab 时，通过历史回放 + 实时事件续流，恢复到当前最新输出。
+- 已访问的会话保持 xterm 与事件监听器挂载，只隐藏非当前终端；隐藏期间仍持续解析实时输出。
+- `/terminal` 路由由 Vue `KeepAlive` 缓存。切到 Provider Center 等页面再回来时不会销毁 buffer，也不会再次回放可能已经截断的 ANSI 历史，只做 fit + 完整重绘。
+- 历史快照只用于某个会话在当前前端生命周期内的首次挂载。
 - 进程退出会触发 `pty:exit`，但 xterm 实例继续保留退出提示，用户仍可查看末尾输出。
 
 ---
@@ -307,7 +307,7 @@ Amagi CodeBox 支持同时运行多个会话（多 Tab）。每个会话在后�
 ## 已知限制与注意事项
 
 - 字体硬编码：当前没有 UI 修改入口；如需自定义字体需修改源码（`useTerminalEngine.ts`）。
-- macOS WebGL 不可用：WKWebView 下 WebGL addon 会损坏 scrollback 纹理图集，因此 macOS 强制使用 Canvas addon。
+- macOS 使用 DOM renderer：WKWebView 下不启用 WebGL；CanvasAddon 当前只兼容 xterm 5，也不加载。
 - Linux/其他平台未实现 PTY 后端：所有 PTY 操作返回 `pty backend is not implemented on this platform yet`。
 - 长粘贴有节流：> 1 KB 的粘贴会被切成 1 KB 块、块间 10 ms 延迟，超大粘贴的体验是渐进式的。
 - 历史缓冲上限固定为 1 MB：会话输出极长时，更早的内容会被裁剪到安全边界（不切断多字节 UTF-8 或 ANSI 转义）。

@@ -1456,15 +1456,19 @@ func migrateTerminalPresetsToOpenCodePresets(cfg *AppConfig) {
 
 // deriveOpenCodeProviderIDSimple 是一个无外部依赖的 provider ID 推导。
 // 与 launcher 包中的 deriveOpenCodeProviderID 逻辑一致。
+//
+// OpenAI 官方判定使用 IsOfficialOpenAIBaseURL（net/url 解析后 host 精确等于
+// api.openai.com），避免子串匹配被欺骗性 host 误判（审核 Major-4）。
 func deriveOpenCodeProviderIDSimple(providerName string, provider Provider) string {
-	baseURL := strings.TrimSpace(strings.ToLower(provider.EffectiveBaseURL("")))
+	baseURL := provider.EffectiveBaseURL("")
 	if provider.IsOpenAICompatible() {
-		if strings.Contains(baseURL, "api.openai.com") {
+		if IsOfficialOpenAIBaseURL(baseURL) {
 			return "openai"
 		}
 		return providerName
 	}
-	if strings.Contains(baseURL, "api.anthropic.com") {
+	lowerBaseURL := strings.ToLower(baseURL)
+	if strings.Contains(lowerBaseURL, "api.anthropic.com") {
 		return "anthropic"
 	}
 	return providerName
@@ -1506,7 +1510,12 @@ func buildMigratedOpenCodeConfig(providerName string, provider Provider, tp Term
 
 	// 构建 provider entry（无 apiKey）
 	isOpenAIType := provider.IsOpenAICompatible()
-	effectiveBaseURL := provider.EffectiveBaseURL("")
+	// 持久化路径使用原始值（EffectiveBaseURLRaw），不归一化：迁移产出的
+	// OpenCodePreset.Config 会被落盘/导出，归一化值会污染存储语义（用户原值
+	// .../v1/chat/completions 被永久改写成 .../v1）。运行时归一化由 launcher
+	// 的 BuildOpenCodeRuntimeConfigFromPreset inject 从 localProvider.EffectiveBaseURL
+	// 重新读取并覆盖。（增量复审 Major-2：迁移持久化全程原值）
+	effectiveBaseURL := provider.EffectiveBaseURLRaw("")
 	options := map[string]any{}
 	if isOpenAIType {
 		if effectiveBaseURL != "" {

@@ -2651,3 +2651,681 @@ func mapKeys(m map[string]any) []string {
 	}
 	return keys
 }
+
+// ========================================================================
+// S. npm 字段注入测试（OpenAI 兼容 provider 自动补 @ai-sdk/openai-compatible）
+// ========================================================================
+
+// TestBuildOpenCodeRuntimeConfig_ThirdPartyOpenAIInjectsNPM 验证旧轨道下
+// 第三方 OpenAI 兼容 provider（baseURL 非 api.openai.com）生成的条目含
+// npm: "@ai-sdk/openai-compatible"。
+func TestBuildOpenCodeRuntimeConfig_ThirdPartyOpenAIInjectsNPM(t *testing.T) {
+	provider := config.Provider{
+		Type:         "openai",
+		BaseURL:      "https://opencode.ai/zen/go/v1",
+		DefaultModel: "deepseek-v4-flash",
+		AuthKey:      "OPENAI_API_KEY",
+		Presets: map[string]config.Preset{
+			"default": {
+				Name:  "Zen",
+				Model: "deepseek-v4-flash",
+			},
+		},
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfig("zen-provider", provider, "default", "sk-zen")
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfig: %v", err)
+	}
+
+	providerSection, _ := cfg["provider"].(map[string]any)
+	// 第三方使用 providerName 作为 OC provider id
+	provEntry, _ := providerSection["zen-provider"].(map[string]any)
+	if provEntry == nil {
+		t.Fatalf("provider.zen-provider should exist; got keys: %v", mapKeys(providerSection))
+	}
+	if got := provEntry["npm"]; got != "@ai-sdk/openai-compatible" {
+		t.Fatalf("npm = %v, want @ai-sdk/openai-compatible", got)
+	}
+	// npm 与 options 平级（schema 校验）
+	if _, hasOptions := provEntry["options"]; !hasOptions {
+		t.Fatal("options should exist alongside npm")
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfig_OfficialOpenAINoNPM 验证 api.openai.com 的
+// 内置 openai provider 条目不含 npm（走 opencode 预置实现）。
+func TestBuildOpenCodeRuntimeConfig_OfficialOpenAINoNPM(t *testing.T) {
+	provider := config.Provider{
+		Type:         "openai",
+		BaseURL:      "https://api.openai.com/v1",
+		DefaultModel: "gpt-5",
+		AuthKey:      "OPENAI_API_KEY",
+		Presets: map[string]config.Preset{
+			"default": {Name: "GPT", Model: "gpt-5"},
+		},
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfig("openai", provider, "default", "sk-test")
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfig: %v", err)
+	}
+
+	providerSection, _ := cfg["provider"].(map[string]any)
+	openaiEntry, _ := providerSection["openai"].(map[string]any)
+	if openaiEntry == nil {
+		t.Fatal("provider.openai should exist")
+	}
+	if _, hasNPM := openaiEntry["npm"]; hasNPM {
+		t.Fatalf("official openai provider must NOT contain npm; got entry: %v", openaiEntry)
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfig_AnthropicProviderNoNPM 验证 anthropic
+// provider 条目不含 npm（npm 仅对 OpenAI 兼容 provider 注入）。
+func TestBuildOpenCodeRuntimeConfig_AnthropicProviderNoNPM(t *testing.T) {
+	provider := config.Provider{
+		BaseURL:      "https://api.anthropic.com",
+		DefaultModel: "claude-sonnet-4-5",
+		AuthKey:      "ANTHROPIC_API_KEY",
+		Presets: map[string]config.Preset{
+			"default": {Name: "Claude", Model: "claude-sonnet-4-5"},
+		},
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfig("anthropic", provider, "default", "sk-ant")
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfig: %v", err)
+	}
+
+	providerSection, _ := cfg["provider"].(map[string]any)
+	anthEntry, _ := providerSection["anthropic"].(map[string]any)
+	if anthEntry == nil {
+		t.Fatal("provider.anthropic should exist")
+	}
+	if _, hasNPM := anthEntry["npm"]; hasNPM {
+		t.Fatalf("anthropic provider must NOT contain npm; got entry: %v", anthEntry)
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfig_ThirdPartyAnthropicNoNPM 验证第三方
+// Anthropic 兼容 provider 条目不含 npm。
+func TestBuildOpenCodeRuntimeConfig_ThirdPartyAnthropicNoNPM(t *testing.T) {
+	provider := config.Provider{
+		BaseURL:      "https://custom.anthropic.api",
+		DefaultModel: "custom-llm",
+		AuthKey:      "ANTHROPIC_API_KEY",
+		Presets: map[string]config.Preset{
+			"default": {Name: "Custom", Model: "custom-llm"},
+		},
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfig("custom-anthropic", provider, "default", "sk-custom")
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfig: %v", err)
+	}
+
+	providerSection, _ := cfg["provider"].(map[string]any)
+	customEntry, _ := providerSection["custom-anthropic"].(map[string]any)
+	if customEntry == nil {
+		t.Fatal("provider.custom-anthropic should exist")
+	}
+	if _, hasNPM := customEntry["npm"]; hasNPM {
+		t.Fatalf("third-party anthropic provider must NOT contain npm; got entry: %v", customEntry)
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfig_ThirdPartyOpenAIBaseURLNormalized 验证
+// 第三方 OpenAI provider 的 baseURL 经过归一化（带 /chat/completions 后缀被剥离）
+// 且仍注入 npm。
+func TestBuildOpenCodeRuntimeConfig_ThirdPartyOpenAIBaseURLNormalized(t *testing.T) {
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{
+			Enabled: true,
+			BaseURL: "https://opencode.ai/zen/go/v1/chat/completions",
+		},
+		DefaultModel: "deepseek-v4-flash",
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfig("zen", provider, "", "sk-zen")
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfig: %v", err)
+	}
+
+	providerSection, _ := cfg["provider"].(map[string]any)
+	// baseURL 不含 api.openai.com -> 用 providerName "zen" 作 id
+	zenEntry, _ := providerSection["zen"].(map[string]any)
+	if zenEntry == nil {
+		t.Fatalf("provider.zen should exist; got keys: %v", mapKeys(providerSection))
+	}
+	options, _ := zenEntry["options"].(map[string]any)
+	if options["baseURL"] != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("baseURL = %v, want https://opencode.ai/zen/go/v1 (suffix stripped)", options["baseURL"])
+	}
+	if zenEntry["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("npm = %v, want @ai-sdk/openai-compatible", zenEntry["npm"])
+	}
+}
+
+// --- preset 轨道 npm 注入测试 ---
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_ThirdPartyOpenAIAutoNPM 验证
+// preset 轨道下，代码为第三方 OpenAI 兼容 binding 新建的 provider entry
+// 自动补 npm（binding key 非 "openai"）。
+//
+// 关键：preset.Config 的 provider 节点不含该 binding key 时，才算"代码新建"
+// （entryExisted=false）；若用户在 preset.Config 手写了该 provider（哪怕空
+// 对象 {}），则属"用户手写"，不补 npm（见 UserWrittenEntryPreservesNPMDecision）。
+func TestBuildOpenCodeRuntimeConfigFromPreset_ThirdPartyOpenAIAutoNPM(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "auto-npm",
+		Name: "Auto NPM",
+		// provider 节点为空对象 -> providers["zen"] 不存在 -> 代码新建 entry
+		Config: json.RawMessage(`{
+			"model": "zen/deepseek-v4-flash",
+			"provider": {}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"zen": {
+				LocalProvider: "my-zen",
+				Format:        "openai",
+				Inject:        []string{"apiKey", "baseURL"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		return "sk-zen", nil
+	}
+	getProvider := func(providerName string) (*config.Provider, error) {
+		if providerName == "my-zen" {
+			p := config.Provider{
+				OpenAI: &config.OpenAIFormat{
+					Enabled: true,
+					BaseURL: "https://opencode.ai/zen/go/v1",
+				},
+			}
+			return &p, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	zenEntry, _ := providers["zen"].(map[string]any)
+	if zenEntry == nil {
+		t.Fatalf("provider.zen should exist; got keys: %v", mapKeys(providers))
+	}
+	if zenEntry["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("auto-created third-party openai entry npm = %v, want @ai-sdk/openai-compatible", zenEntry["npm"])
+	}
+	// baseURL 也应注入（带后缀会被归一化，此处无后缀原样）
+	options, _ := zenEntry["options"].(map[string]any)
+	if options["baseURL"] != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("baseURL = %v, want https://opencode.ai/zen/go/v1", options["baseURL"])
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_UserWrittenExplicitNPMPreserved
+// 验证 preset 轨道下，用户在 preset.Config 中显式写了 npm 键（含自定义包名）
+// 时，代码不覆盖用户值（保留用户指定的 npm 包）。
+//
+// 审核 Major-1：npm 注入条件改为"entry 无 npm 键才补"，已有 npm 键则保留不覆盖。
+func TestBuildOpenCodeRuntimeConfigFromPreset_UserWrittenExplicitNPMPreserved(t *testing.T) {
+	// 用户手写 provider.zen 且显式指定自定义 npm 包 @ai-sdk/glm。
+	preset := config.OpenCodePreset{
+		ID:   "user-npm",
+		Name: "User NPM",
+		Config: json.RawMessage(`{
+			"model": "zen/deepseek-v4-flash",
+			"provider": {
+				"zen": {
+					"npm": "@ai-sdk/glm",
+					"options": {"baseURL": "https://opencode.ai/zen/go/v1"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"zen": {
+				LocalProvider: "my-zen",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		return "sk-zen", nil
+	}
+	getProvider := func(providerName string) (*config.Provider, error) {
+		if providerName == "my-zen" {
+			p := config.Provider{
+				OpenAI: &config.OpenAIFormat{
+					Enabled: true,
+					BaseURL: "https://opencode.ai/zen/go/v1",
+				},
+			}
+			return &p, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	zenEntry, _ := providers["zen"].(map[string]any)
+	if zenEntry == nil {
+		t.Fatalf("provider.zen should exist; got keys: %v", mapKeys(providers))
+	}
+	// 用户显式写的 npm 必须保留，不被覆盖为默认 @ai-sdk/openai-compatible
+	if zenEntry["npm"] != "@ai-sdk/glm" {
+		t.Fatalf("user-written npm must be preserved; got %v, want @ai-sdk/glm", zenEntry["npm"])
+	}
+	// apiKey 仍应注入到已有 options
+	options, _ := zenEntry["options"].(map[string]any)
+	if options["apiKey"] != "sk-zen" {
+		t.Fatalf("apiKey should still be injected into user entry; got %v", options["apiKey"])
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_BuiltinOpenAINoNPM 验证 preset
+// 轨道下，binding key 为内置 "openai" 的 openai 格式 binding 不注入 npm。
+func TestBuildOpenCodeRuntimeConfigFromPreset_BuiltinOpenAINoNPM(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "builtin-openai",
+		Name: "Builtin OpenAI",
+		Config: json.RawMessage(`{
+			"model": "openai/gpt-5",
+			"provider": {
+				"openai": {}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"openai": {
+				LocalProvider: "my-openai",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		return "sk-openai", nil
+	}
+	getProvider := func(providerName string) (*config.Provider, error) {
+		if providerName == "my-openai" {
+			p := config.Provider{
+				OpenAI: &config.OpenAIFormat{
+					Enabled: true,
+					BaseURL: "https://api.openai.com/v1",
+				},
+			}
+			return &p, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	openaiEntry, _ := providers["openai"].(map[string]any)
+	if openaiEntry == nil {
+		t.Fatal("provider.openai should exist")
+	}
+	if _, hasNPM := openaiEntry["npm"]; hasNPM {
+		t.Fatalf("builtin openai binding must NOT get npm; got entry: %v", openaiEntry)
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_AnthropicBindingNoNPM 验证
+// preset 轨道下 anthropic 格式 binding 不注入 npm。
+func TestBuildOpenCodeRuntimeConfigFromPreset_AnthropicBindingNoNPM(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "anth-binding",
+		Name: "Anthropic Binding",
+		Config: json.RawMessage(`{
+			"model": "custom/claude",
+			"provider": {
+				"custom": {}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"custom": {
+				LocalProvider: "my-anth",
+				Format:        "anthropic",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		return "sk-ant", nil
+	}
+	getProvider := func(providerName string) (*config.Provider, error) {
+		if providerName == "my-anth" {
+			p := config.Provider{
+				Anthropic: &config.AnthropicFormat{
+					Enabled: true,
+					BaseURL: "https://api.anthropic.com",
+				},
+			}
+			return &p, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	customEntry, _ := providers["custom"].(map[string]any)
+	if customEntry == nil {
+		t.Fatal("provider.custom should exist")
+	}
+	if _, hasNPM := customEntry["npm"]; hasNPM {
+		t.Fatalf("anthropic binding must NOT get npm; got entry: %v", customEntry)
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_MigratedEntryWithoutNPMGetsDefaultNPM
+// 验证迁移链：自动迁移（migrateTerminalPresetsToOpenCodePresets ->
+// buildMigratedOpenCodeConfig, service.go:1475）生成的第三方 OpenAI preset，
+// 其 provider entry 已存在但无 npm 键；BuildOpenCodeRuntimeConfigFromPreset 必须
+// 为其补默认 npm @ai-sdk/openai-compatible，并正确注入 baseURL（归一化）、apiKey、
+// 保留 model。
+//
+// 审核 Major-1：旧实现因 entryExisted=true 漏注入 npm，导致迁移主启动路径的
+// OPENCODE_CONFIG_CONTENT.provider.<id> 缺 @ai-sdk/openai-compatible。
+//
+// preset.Config 模拟 buildMigratedOpenCodeConfig 的真实输出结构
+// （service.go:1507-1551）：model 字段 + provider.<providerName>.options.baseURL
+// （无 npm）。
+func TestBuildOpenCodeRuntimeConfigFromPreset_MigratedEntryWithoutNPMGetsDefaultNPM(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "migrated-zen",
+		Name: "Migrated Zen",
+		// 迁移生成的 Config：provider.zen 已存在（entryExisted=true），含 options
+		// 但无 npm —— 这是 buildMigratedOpenCodeConfig 的真实输出。
+		Config: json.RawMessage(`{
+			"model": "zen/deepseek-v4-flash",
+			"provider": {
+				"zen": {
+					"options": {"baseURL": "https://opencode.ai/zen/go/v1"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"zen": {
+				LocalProvider: "my-zen",
+				Format:        "openai",
+				Inject:        []string{"apiKey", "baseURL"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) {
+		if providerName == "my-zen" {
+			return "sk-zen", nil
+		}
+		return "", nil
+	}
+	getProvider := func(providerName string) (*config.Provider, error) {
+		if providerName == "my-zen" {
+			// 运行时读取的原始 baseURL 带后缀，应被归一化
+			p := config.Provider{
+				OpenAI: &config.OpenAIFormat{
+					Enabled: true,
+					BaseURL: "https://opencode.ai/zen/go/v1/chat/completions",
+				},
+			}
+			return &p, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	// model 保留
+	if cfg["model"] != "zen/deepseek-v4-flash" {
+		t.Fatalf("model = %v, want zen/deepseek-v4-flash", cfg["model"])
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	zenEntry, _ := providers["zen"].(map[string]any)
+	if zenEntry == nil {
+		t.Fatalf("provider.zen should exist; got keys: %v", mapKeys(providers))
+	}
+	// 迁移 entry 无 npm -> 必须补默认 npm（Major-1 核心断言）
+	if zenEntry["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("migrated entry without npm must get default npm; got %v, want @ai-sdk/openai-compatible", zenEntry["npm"])
+	}
+	options, _ := zenEntry["options"].(map[string]any)
+	if options == nil {
+		t.Fatal("options should exist")
+	}
+	// baseURL 从 localProvider 运行时读取并归一化（带后缀被剥离）
+	if options["baseURL"] != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("baseURL = %v, want https://opencode.ai/zen/go/v1 (normalized)", options["baseURL"])
+	}
+	// apiKey 注入
+	if options["apiKey"] != "sk-zen" {
+		t.Fatalf("apiKey = %v, want sk-zen", options["apiKey"])
+	}
+}
+
+// TestBuildOpenCodeRuntimeConfigFromPreset_UserEntryWithoutNPMGetsDefaultNPM
+// 验证用户在 preset.Config 手写了 provider 条目但未写 npm 键时，代码补默认 npm。
+// 审核 Major-1：注入条件为"entry 无 npm 键才补"，不区分 entry 来源（用户手写
+// 空条目与迁移生成的条目同等处理）。
+func TestBuildOpenCodeRuntimeConfigFromPreset_UserEntryWithoutNPMGetsDefaultNPM(t *testing.T) {
+	preset := config.OpenCodePreset{
+		ID:   "user-empty-entry",
+		Name: "User Empty Entry",
+		Config: json.RawMessage(`{
+			"model": "zen/deepseek-v4-flash",
+			"provider": {
+				"zen": {
+					"options": {"baseURL": "https://opencode.ai/zen/go/v1"}
+				}
+			}
+		}`),
+		Bindings: map[string]config.OpenCodeBinding{
+			"zen": {
+				LocalProvider: "my-zen",
+				Format:        "openai",
+				Inject:        []string{"apiKey"},
+			},
+		},
+	}
+
+	getAPIKey := func(providerName, format string) (string, error) { return "sk-zen", nil }
+	getProvider := func(providerName string) (*config.Provider, error) {
+		if providerName == "my-zen" {
+			p := config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://opencode.ai/zen/go/v1"}}
+			return &p, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	cfg, err := BuildOpenCodeRuntimeConfigFromPreset(preset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	providers, _ := cfg["provider"].(map[string]any)
+	zenEntry, _ := providers["zen"].(map[string]any)
+	if zenEntry == nil {
+		t.Fatalf("provider.zen should exist; got keys: %v", mapKeys(providers))
+	}
+	// 用户手写 entry 但无 npm 键 -> 补默认 npm
+	if zenEntry["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("user entry without npm must get default npm; got %v, want @ai-sdk/openai-compatible", zenEntry["npm"])
+	}
+}
+
+// TestDeriveOpenCodeProviderID_DeceptiveHost 验证官方 OpenAI host 判定使用
+// 精确 host 比较，欺骗性 host/path 不被误判为内置 openai（审核 Major-4）。
+func TestDeriveOpenCodeProviderID_DeceptiveHost(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerName string
+		baseURL      string
+		want         string
+	}{
+		{"official openai", "openai", "https://api.openai.com/v1", "openai"},
+		{"deceptive trailing subdomain uses providerName", "mygw", "https://api.openai.com.evil.example/v1", "mygw"},
+		{"deceptive path contains host uses providerName", "mygw", "https://gateway.example/proxy/api.openai.com/v1", "mygw"},
+		{"deceptive path equals host uses providerName", "evil", "https://evil.example/api.openai.com", "evil"},
+		{"third party uses providerName", "deepseek", "https://api.deepseek.com/v1", "deepseek"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := config.Provider{
+				Type:    "openai",
+				BaseURL: tt.baseURL,
+				AuthKey: "OPENAI_API_KEY",
+			}
+			if got := deriveOpenCodeProviderID(tt.providerName, provider); got != tt.want {
+				t.Fatalf("deriveOpenCodeProviderID(%q, %q) = %q, want %q", tt.providerName, tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMigrationChain_RealLoadMigrationThenRuntimeBuild 是真实跨包迁移链集成测试
+// （增量复审 Major-1 证据缺口闭环）。
+//
+// 替代手工模拟 buildMigratedOpenCodeConfig 输出结构的 fixture 测试，改为：
+//  1. 构造含第三方 OpenAI provider（baseURL 带后缀）+ opencode 类型 terminal preset 的 config；
+//  2. 真实调用 config 包公开 API：SaveProvider + SaveTerminalPreset -> Save -> 新建 ConfigService
+//     重新 Load，触发真实迁移函数 migrateTerminalPresetsToOpenCodePresets
+//     -> buildMigratedOpenCodeConfig（config 包内私有，通过公开 Load 间接触发）；
+//  3. 读取真实迁移产出的 OpenCodePreset，断言持久化 Config 中 baseURL 为用户原始值
+//     （Major-2：迁移持久化全程原值，不被归一化污染）；
+//  4. 将真实迁移产出的 preset 交给 launcher 运行时构建 BuildOpenCodeRuntimeConfigFromPreset
+//     （getProvider 直接走 ConfigService.GetProvider 真实读取），断言：
+//     npm 注入 @ai-sdk/openai-compatible（Major-1）、provider ID 为 providerName、
+//     运行时 baseURL 归一化（来自 localProvider.EffectiveBaseURL）、apiKey 注入、model 保留。
+//
+// 该测试真实跨包：config 迁移（Load 内部）-> launcher 运行时构建，任何一层结构漂移都会失败。
+func TestMigrationChain_RealLoadMigrationThenRuntimeBuild(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. 构造含第三方 OpenAI provider 的 config
+	svc := config.NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const rawBaseURL = "https://opencode.ai/zen/go/v1/chat/completions"
+	if err := svc.SaveProvider("zen", config.Provider{
+		Type:         "openai",
+		BaseURL:      rawBaseURL,
+		AuthKey:      "OPENAI_API_KEY",
+		DefaultModel: "deepseek-v4-flash",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	// 2. 创建 opencode 类型 terminal preset，Provider 指向 zen
+	if err := svc.SaveTerminalPreset("opencode", "zen/migrated", config.TerminalPreset{
+		Name:     "Zen Migrated",
+		Provider: "zen",
+		Model:    "deepseek-v4-flash",
+	}); err != nil {
+		t.Fatalf("SaveTerminalPreset: %v", err)
+	}
+
+	// 3. 持久化 + 重新 Load，触发真实迁移链
+	if err := svc.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	svc2 := config.NewConfigService(dir)
+	if err := svc2.Load(); err != nil {
+		t.Fatalf("re-Load: %v", err)
+	}
+
+	// 4. 拿到真实迁移产出的 OpenCodePreset
+	ocPreset, err := svc2.GetOpenCodePreset("zen/migrated")
+	if err != nil {
+		t.Fatalf("GetOpenCodePreset after migration: %v", err)
+	}
+	if ocPreset.Source == nil || ocPreset.Source.Kind != "migrated-overlay" {
+		t.Fatalf("Source.Kind = %v, want migrated-overlay", ocPreset.Source)
+	}
+
+	// 5. 断言持久化 Config 中 baseURL 保持原始值（Major-2 闭环：迁移持久化原值）
+	var persistedCfg map[string]any
+	if err := json.Unmarshal(ocPreset.Config, &persistedCfg); err != nil {
+		t.Fatalf("unmarshal migrated Config: %v", err)
+	}
+	providers, _ := persistedCfg["provider"].(map[string]any)
+	zenEntry, _ := providers["zen"].(map[string]any)
+	if zenEntry == nil {
+		t.Fatalf("persisted Config should contain provider.zen; got keys: %v", mapKeys(providers))
+	}
+	persistedOptions, _ := zenEntry["options"].(map[string]any)
+	persistedBaseURL, _ := persistedOptions["baseURL"].(string)
+	if persistedBaseURL != rawBaseURL {
+		t.Fatalf("persisted baseURL = %q, want raw %q (Major-2: migration persistence must keep raw value)", persistedBaseURL, rawBaseURL)
+	}
+	// 迁移生成的 entry 不含 npm（由运行时层补，Major-1 的前提）
+	if _, hasNPM := zenEntry["npm"]; hasNPM {
+		t.Fatalf("migrated entry should NOT have npm (runtime layer adds it); got %v", zenEntry)
+	}
+
+	// 6. 真实迁移产出的 preset 交给 launcher 运行时构建
+	//    getProvider 直接走 ConfigService.GetProvider，真实读取持久化 provider。
+	getAPIKey := func(providerName, format string) (string, error) {
+		if providerName == "zen" {
+			return "sk-zen", nil
+		}
+		return "", nil
+	}
+	getProvider := func(providerName string) (*config.Provider, error) {
+		return svc2.GetProvider(providerName)
+	}
+
+	runtimeCfg, err := BuildOpenCodeRuntimeConfigFromPreset(*ocPreset, getAPIKey, getProvider)
+	if err != nil {
+		t.Fatalf("BuildOpenCodeRuntimeConfigFromPreset: %v", err)
+	}
+
+	// 7. 断言运行时产出（Major-1 npm 注入 + Major-2 运行时归一化）
+	// model 字段保留：ocProviderID/model
+	if model, _ := runtimeCfg["model"].(string); model != "zen/deepseek-v4-flash" {
+		t.Fatalf("runtime model = %q, want zen/deepseek-v4-flash", model)
+	}
+	rtProviders, _ := runtimeCfg["provider"].(map[string]any)
+	rtZen, _ := rtProviders["zen"].(map[string]any)
+	if rtZen == nil {
+		t.Fatalf("runtime config should contain provider.zen; got keys: %v", mapKeys(rtProviders))
+	}
+	// 第三方 OpenAI provider 补默认 npm（Major-1 核心断言：迁移 entry 无 npm -> 运行时补）
+	if rtZen["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("runtime provider.zen.npm = %v, want @ai-sdk/openai-compatible (Major-1)", rtZen["npm"])
+	}
+	rtOptions, _ := rtZen["options"].(map[string]any)
+	// 运行时 baseURL 归一化（带后缀被剥离），来自 localProvider.EffectiveBaseURL 覆盖持久化原值
+	rtBaseURL, _ := rtOptions["baseURL"].(string)
+	if rtBaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("runtime baseURL = %q, want normalized https://opencode.ai/zen/go/v1", rtBaseURL)
+	}
+	if rtAPIKey, _ := rtOptions["apiKey"].(string); rtAPIKey != "sk-zen" {
+		t.Fatalf("runtime apiKey = %v, want sk-zen", rtOptions["apiKey"])
+	}
+}

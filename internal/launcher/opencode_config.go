@@ -79,20 +79,24 @@ func BuildOpenCodeRuntimeConfig(
 // deriveOpenCodeProviderID 从 amagi-codebox 的 provider 配置推导 OpenCode 的 provider ID。
 //
 // 映射规则：
-//   - OpenAI 兼容且 baseURL 含 api.openai.com -> "openai"
+//   - OpenAI 兼容且 baseURL host 精确等于 api.openai.com -> "openai"
 //   - OpenAI 兼容且 baseURL 为其他 -> 使用 providerName（作为 openai-compatible provider 的 ID）
 //   - Anthropic 官方 -> "anthropic"
 //   - 其他（使用 Anthropic 兼容 API 的第三方） -> 使用 providerName
+//
+// OpenAI 官方判定使用 config.IsOfficialOpenAIBaseURL（net/url 解析后 host 精确
+// 比较），避免子串匹配被欺骗性 host 误判（审核 Major-4）。
 func deriveOpenCodeProviderID(providerName string, provider config.Provider) string {
-	baseURL := strings.TrimSpace(strings.ToLower(provider.EffectiveBaseURL("")))
+	baseURL := provider.EffectiveBaseURL("")
 
 	if provider.IsOpenAICompatible() {
-		if strings.Contains(baseURL, "api.openai.com") {
+		if config.IsOfficialOpenAIBaseURL(baseURL) {
 			return "openai"
 		}
 		return providerName
 	}
-	if strings.Contains(baseURL, "api.anthropic.com") {
+	lowerBaseURL := strings.ToLower(baseURL)
+	if strings.Contains(lowerBaseURL, "api.anthropic.com") {
 		return "anthropic"
 	}
 	return providerName
@@ -116,6 +120,14 @@ func buildOpenCodeProviderMap(providerName string, provider config.Provider, api
 		}
 		if provider.OpenAI != nil && provider.OpenAI.Organization != "" {
 			options["organization"] = provider.OpenAI.Organization
+		}
+		// 第三方 OpenAI 兼容 provider（非内置 "openai"，即 baseURL 不含
+		// api.openai.com）必须显式声明 npm 包，否则 opencode 运行时无法识别
+		// 该 provider。内置 "openai" 走 opencode 预置实现，不需要 npm 字段。
+		// npm 与 options 平级，符合 opencode.json schema（provider.<id>.npm）。
+		ocProviderID := deriveOpenCodeProviderID(providerName, provider)
+		if ocProviderID != "openai" {
+			entry["npm"] = "@ai-sdk/openai-compatible"
 		}
 	} else {
 		lowerBaseURL := strings.TrimSpace(strings.ToLower(effectiveBaseURL))
@@ -328,7 +340,10 @@ func BuildOpenCodeRuntimeConfigFromPreset(
 			inject = []string{"apiKey", "baseURL"}
 		}
 
-		// 3e. 获取或创建 provider entry
+		// 3e. 获取或创建 provider entry。
+		// entry 可能来自 preset.Config（用户手写或自动迁移 buildMigratedOpenCodeConfig
+		// 生成），也可能由代码新建。npm 注入以"entry 是否已含 npm 键"为准（见下方），
+		// 不依赖 entry 来源（审核 Major-1：迁移生成的 entry 已存在但无 npm，必须补）。
 		provEntry, _ := providers[ocProviderID].(map[string]any)
 		if provEntry == nil {
 			provEntry = map[string]any{}
@@ -364,6 +379,18 @@ func BuildOpenCodeRuntimeConfigFromPreset(
 
 		if len(options) > 0 {
 			provEntry["options"] = options
+		}
+		// 第三方 OpenAI 兼容 provider（非内置 "openai"）且该 entry 未显式声明
+		// npm 时，补默认 npm 包声明 @ai-sdk/openai-compatible，与旧轨道
+		// buildOpenCodeProviderMap 行为一致。判定依据是"entry 是否已含 npm 键"
+		// 而非"entry 是否存在"：自动迁移（migrateTerminalPresetsToOpenCodePresets
+		// -> buildMigratedOpenCodeConfig）生成的 entry 已存在但无 npm，必须补；
+		// 用户显式写了 npm（含自定义包名如 @ai-sdk/glm）则保留不覆盖。npm 与
+		// options 平级，符合 opencode.json schema（provider.<id>.npm）。（审核 Major-1）
+		if format == "openai" && ocProviderID != "openai" {
+			if _, hasNPM := provEntry["npm"]; !hasNPM {
+				provEntry["npm"] = "@ai-sdk/openai-compatible"
+			}
 		}
 		providers[ocProviderID] = provEntry
 	}

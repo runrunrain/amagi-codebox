@@ -6,6 +6,8 @@
  *   - three-state history decoding (string base64 / Array<number> / Uint8Array)
  *   - seq-based dedup so live chunks already contained in the history snapshot
  *     are dropped (prevents interleaving on page reload / remount)
+ *   - run-token/version filtering so a restarted session's seq=1 is accepted
+ *     while late output from the previous run is rejected
  *   - live-buffer + history-replay ordering
  *   - WebGL probe (skipped on macOS to avoid texture-atlas scrollback
  *     corruption in WKWebView), context-loss reconnect
@@ -23,7 +25,6 @@ import { ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
@@ -51,8 +52,6 @@ interface TerminalInstance {
   term: Terminal
   fit: FitAddon
   webgl: WebglAddon | null
-  /** canvas renderer addon (macOS middle-tier between WebGL and DOM) */
-  canvas: CanvasAddon | null
   /** dispose fn returned by EventsOn for the pty:data:<id> stream */
   disposeDataListener: (() => void) | null
   /** dispose fn returned by EventsOn for the pty:exit:<id> stream */
@@ -72,15 +71,18 @@ interface TerminalInstance {
   lastRows: number
   /** highest emitSeq covered by the loaded history snapshot */
   historySnapshotSeq: number
-  /** micro-batch scheduler token for writeLiveChunk (rAF coalesce). */
-  liveBatchRaf: number | null
-  /** accumulated chunks awaiting the next animation frame. */
-  liveBatchQueue: LiveChunk[]
+  /** current backend run identity; seq is only comparable within this pair. */
+  runToken: string
+  runVersion: string
+  /** pending yield between history chunks; cancelled during teardown. */
+  historyReplayTimer: number | null
 }
 
 interface LiveChunk {
   seq: number
   bytes: Uint8Array
+  runToken: string
+  runVersion: string
 }
 
 export interface MountOptions {
@@ -145,6 +147,21 @@ function decodeHistoryData(data: unknown): Uint8Array | null {
   }
   console.warn('[amagi-codebox] history decode: unexpected type', typeof data)
   return null
+}
+
+/** Compare non-negative decimal uint64 strings without JS number coercion. */
+function compareRunVersions(left: string, right: string): number {
+  const a = left.replace(/^0+(?=\d)/, '')
+  const b = right.replace(/^0+(?=\d)/, '')
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const result = new Uint8Array(left.length + right.length)
+  result.set(left, 0)
+  result.set(right, left.length)
+  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -385,31 +402,6 @@ export function useTerminalEngine() {
     }
   }
 
-  /**
-   * Load the canvas renderer as a middle-tier between WebGL and the default
-   * DOM renderer. Used on macOS where the WebGL texture-atlas still
-   * corrupts scrollback in WKWebView; canvas avoids the GPU texture path
-   * while still rendering into a single <canvas> (far cheaper than reflowing
-   * the DOM on every ANSI redraw from opencode TUI).
-   *
-   * Failures fall through silently — xterm keeps its default renderer.
-   */
-  function loadCanvasRenderer(sessionId: string, inst: TerminalInstance) {
-    try {
-      // CanvasAddon (0.8.0-beta.48) does not expose onContextLoss like
-      // WebglAddon; if the underlying canvas context is lost, xterm's
-      // renderer registry will fall back to its default DOM renderer on
-      // the next render pass. We rely on the try/catch around loadAddon
-      // to swallow constructor-time failures.
-      const canvas = new CanvasAddon()
-      inst.term.loadAddon(canvas)
-      inst.canvas = canvas
-    } catch (e) {
-      console.warn('[amagi-codebox] canvas renderer load failed:', e)
-      inst.canvas = null
-    }
-  }
-
   // ---- fit + resize ------------------------------------------------------
 
   function fitTerminal(sessionId: string, force = false, containerEl?: HTMLElement) {
@@ -464,58 +456,52 @@ export function useTerminalEngine() {
     PtyResize(sessionId, cols, rows).catch(() => {})
   }
 
-  /**
-   * Dispose the current renderer (canvas/WebGL) and reload it, then
-   * force-fit. Used when devicePixelRatio changes (window moved between
-   * monitors with different DPI): the renderer's canvas backing store is
-   * sized for the old DPR, and term.resize() with unchanged cols/rows is
-   * a no-op in xterm's bufferService — so the backing store never updates.
-   * Reloading the addon is the only reliable way to rebuild the canvas at
-   * the new DPR without tearing.
-   */
+  /** Rebuild WebGL after a DPR change, then force a complete redraw. */
   function refreshRenderer(sessionId: string, containerEl?: HTMLElement) {
     const inst = terminals.get(sessionId)
     if (!inst || !inst.term.element) return
 
-    // Tear down existing renderer addon(s).
-    try {
-      inst.canvas?.dispose()
-    } catch {
-      /* already disposed */
-    }
-    inst.canvas = null
-    try {
-      inst.webgl?.dispose()
-    } catch {
-      /* already disposed */
-    }
-    inst.webgl = null
-
-    // Reload the platform-appropriate renderer.
-    if (platformCaps.caps.value && platformCaps.isDarwin.value) {
-      loadCanvasRenderer(sessionId, inst)
-    } else if (
-      platformCaps.caps.value &&
-      !platformCaps.isDarwin.value &&
-      isWebGLReliable()
-    ) {
-      loadWebglRenderer(sessionId, inst)
+    // macOS intentionally stays on xterm 6's built-in DOM renderer. The
+    // published CanvasAddon only declares compatibility with xterm 5 and its
+    // stale canvas rows are the source of the WKWebView tearing regression.
+    if (!platformCaps.isDarwin.value) {
+      try {
+        inst.webgl?.dispose()
+      } catch {
+        /* already disposed */
+      }
+      inst.webgl = null
+      if (platformCaps.caps.value && isWebGLReliable()) {
+        loadWebglRenderer(sessionId, inst)
+      }
     }
 
-    // Force-fit on next frame so the new renderer's canvas and texture
-    // atlas are built at the correct (possibly new DPR) dimensions.
     requestAnimationFrame(() => {
       if (terminals.get(sessionId) !== inst) return
       fitTerminal(sessionId, true, containerEl)
-      const canvas = inst.canvas as unknown as {
-        clearTextureAtlas?: () => void
-      } | null
       try {
-        canvas?.clearTextureAtlas?.()
+        inst.term.clearTextureAtlas()
+        inst.term.refresh(0, inst.term.rows - 1)
       } catch {
         /* noop */
       }
     })
+  }
+
+  /**
+   * Re-measure and repaint the visible surface without replacing its buffer or
+   * renderer. Used after route/session reactivation and OS visibility changes.
+   */
+  function refreshTerminal(sessionId: string, containerEl?: HTMLElement) {
+    const inst = terminals.get(sessionId)
+    if (!inst || !inst.term.element) return
+    fitTerminal(sessionId, true, containerEl)
+    try {
+      inst.term.clearTextureAtlas()
+      inst.term.refresh(0, inst.term.rows - 1)
+    } catch {
+      /* terminal may be mid-teardown */
+    }
   }
 
   // ---- core mount --------------------------------------------------------
@@ -632,7 +618,6 @@ export function useTerminalEngine() {
       term,
       fit,
       webgl: null,
-      canvas: null,
       disposeDataListener: null,
       disposeExitListener: null,
       disposePasteListener: null,
@@ -641,63 +626,61 @@ export function useTerminalEngine() {
       lastCols: 0,
       lastRows: 0,
       historySnapshotSeq: 0,
-      liveBatchRaf: null,
-      liveBatchQueue: [],
+      runToken: '',
+      runVersion: '',
+      historyReplayTimer: null,
     }
     terminals.set(sessionId, inst)
 
     // seq-based dedup: any live chunk with seq <= snapshot seq is already in
     // the history bytes -> skip it. Both the flush path and the direct path
     // go through here so dedup is never bypassed.
-    //
-    // Micro-batch: PTY data events arrive in bursts (a single opencode TUI
-    // redraw splits into dozens of base64 chunks within ~16ms). Writing each
-    // chunk synchronously forces the renderer to schedule a paint per chunk,
-    // which is the dominant cause of tearing under the DOM/canvas renderer.
-    // Coalesce all chunks arriving inside one animation frame into a single
-    // term.write() call, preserving order and never dropping bytes.
-    function writeLiveChunk(seq: number, bytes: Uint8Array) {
-      if (seq > 0 && seq <= inst.historySnapshotSeq) return
-      // If a flush is already scheduled, just append; otherwise seed + rAF.
-      inst.liveBatchQueue.push({ seq, bytes })
-      if (inst.liveBatchRaf !== null) return
-      inst.liveBatchRaf = requestAnimationFrame(() => {
-        inst.liveBatchRaf = null
-        // Instance-identity guard: if the session was disposed (or switched
-        // to a new instance) between scheduling and firing, accessing
-        // inst.term would hit a disposed terminal. Mirrors the guard already
-        // present in writeHistoryInChunks. try/catch below still backs us up,
-        // but this avoids touching a dead term entirely.
-        if (terminals.get(sessionId) !== inst) {
-          inst.liveBatchQueue.length = 0
-          return
+    // xterm's WriteBuffer already batches and time-slices parser work. Adding
+    // an outer requestAnimationFrame queue makes delivery depend on the WebView
+    // paint loop and can leave PTY bytes stranded when that loop is throttled.
+    function prepareLiveChunk(chunk: LiveChunk): Uint8Array | null {
+      const tagged = chunk.runToken !== '' || chunk.runVersion !== ''
+      const sameRun =
+        chunk.runToken === inst.runToken && chunk.runVersion === inst.runVersion
+
+      if (tagged && !sameRun) {
+        if (inst.runToken === '' && inst.runVersion === '') {
+          // Tagged live-only fallback (snapshot unavailable): establish the
+          // first observed run as the local boundary.
+          inst.runToken = chunk.runToken
+          inst.runVersion = chunk.runVersion
+          inst.historySnapshotSeq = 0
+        } else {
+          const versionOrder = compareRunVersions(chunk.runVersion, inst.runVersion)
+          // Older run, or a conflicting token at the same version: fail closed.
+          if (versionOrder <= 0) return null
+
+          // Same session, newer run. emitSeq restarts at 1, so reset the dedup
+          // frontier before accepting bytes from the replacement process.
+          inst.runToken = chunk.runToken
+          inst.runVersion = chunk.runVersion
+          inst.historySnapshotSeq = 0
+          const boundary = new TextEncoder().encode(
+            '\r\n\x1b[90m[amagi-codebox] 会话已进入新的运行\x1b[0m\r\n',
+          )
+          return concatBytes(boundary, chunk.bytes)
         }
-        const queue = inst.liveBatchQueue
-        if (queue.length === 0) return
-        inst.liveBatchQueue = []
-        // Merge queued chunks into one Uint8Array so the renderer sees a
-        // single write (one paint, one reflow). Order is preserved.
-        let total = 0
-        for (const c of queue) total += c.bytes.length
-        const merged = new Uint8Array(total)
-        let offset = 0
-        for (const c of queue) {
-          merged.set(c.bytes, offset)
-          offset += c.bytes.length
-        }
-        try {
-          // 写入即可，不手动 scrollToBottom：xterm 默认的 isUserScrolling
-          // 保护已经实现"用户在底部时跟随新输出、用户上翻时不跟随"。
-          // v1.2.67 在此显式 scrollToBottom，绕过了 isUserScrolling，
-          // 在 TUI(opencode/Claude Code)启用鼠标 SGR 模式后 wheel 被转发给
-          // PTY、.xterm-viewport.scrollTop 不变、userScrolledUp 永远 false，
-          // 导致每个流式 chunk 都把视口拽回底部、用户无法上翻查看历史。
-          // 与 legacy Terminals.vue:523-528 的 writeLiveChunk 行为对齐。
-          inst.term.write(merged)
-        } catch {
-          /* term may be mid-teardown */
-        }
-      })
+      }
+
+      if (chunk.seq > 0 && chunk.seq <= inst.historySnapshotSeq) return null
+      return chunk.bytes
+    }
+
+    function writeLiveChunk(chunk: LiveChunk): boolean {
+      const bytes = prepareLiveChunk(chunk)
+      if (!bytes || terminals.get(sessionId) !== inst) return false
+      try {
+        inst.term.write(bytes)
+        return true
+      } catch {
+        /* term may be mid-teardown */
+        return false
+      }
     }
 
     const dataEvent = 'pty:data:' + sessionId
@@ -705,6 +688,8 @@ export function useTerminalEngine() {
       try {
         let seq: number
         let base64Data: string
+        let runToken = ''
+        let runVersion = ''
         if (
           eventData &&
           typeof eventData === 'object' &&
@@ -713,6 +698,8 @@ export function useTerminalEngine() {
         ) {
           seq = eventData.s as number
           base64Data = eventData.d as string
+          runToken = typeof eventData.r === 'string' ? eventData.r : ''
+          runVersion = typeof eventData.v === 'string' ? eventData.v : ''
         } else if (typeof eventData === 'string') {
           // legacy fallback without seq -> flush through after replay.
           seq = 0
@@ -721,11 +708,12 @@ export function useTerminalEngine() {
           return
         }
         const bytes = base64ToUint8(base64Data)
+        const chunk = { seq, bytes, runToken, runVersion }
         if (!historyReplayed) {
-          liveBuffer.push({ seq, bytes })
+          liveBuffer.push(chunk)
           return
         }
-        writeLiveChunk(seq, bytes)
+        writeLiveChunk(chunk)
       } catch (err) {
         console.error('decode error:', err)
       }
@@ -733,11 +721,21 @@ export function useTerminalEngine() {
 
     const exitEvent = 'pty:exit:' + sessionId
     const disposeExitListener = EventsOn(exitEvent, (info: any) => {
-      term.write('\r\n\x1b[33m[amagi-codebox] 进程已退出')
+      let message = '\r\n\x1b[33m[amagi-codebox] 进程已退出'
       if (info && info.exitCode !== undefined) {
-        term.write(` (exit code: ${info.exitCode})`)
+        message += ` (exit code: ${info.exitCode})`
       }
-      term.write('\x1b[0m\r\n')
+      const marker = new TextEncoder().encode(message + '\x1b[0m\r\n')
+      const chunk: LiveChunk = {
+        seq: 0,
+        bytes: marker,
+        runToken: info && typeof info.r === 'string' ? info.r : '',
+        runVersion: info && typeof info.v === 'string' ? info.v : '',
+      }
+      // Exit can race the history snapshot. Keep its marker behind the same
+      // replay barrier so it cannot appear in the middle of historical ANSI.
+      if (historyReplayed) writeLiveChunk(chunk)
+      else liveBuffer.push(chunk)
       options.onExit?.(info && typeof info === 'object' ? { exitCode: info.exitCode } : {})
     })
 
@@ -749,6 +747,21 @@ export function useTerminalEngine() {
       term.open(containerEl)
     } catch (err) {
       console.error('[amagi-codebox] xterm open failed:', err)
+    }
+
+    // Establish the final rows/cols before an accelerated renderer is loaded.
+    // Loading WebGL against xterm's default 80x24 dimensions and fitting only
+    // afterwards creates a transient backing store with the wrong geometry.
+    try {
+      fit.fit()
+      const dims = fit.proposeDimensions()
+      if (dims && dims.cols > 0 && dims.rows > 0) {
+        inst.lastCols = dims.cols
+        inst.lastRows = dims.rows
+        PtyResize(sessionId, dims.cols, dims.rows).catch(() => {})
+      }
+    } catch {
+      /* outer mount frame will retry once layout is measurable */
     }
 
     // WebLinksAddon: detect HTTP/HTTPS URLs in output, open with system browser.
@@ -818,49 +831,19 @@ export function useTerminalEngine() {
       console.warn('registerLinkProvider failed', e)
     }
 
-    // Renderer selection.
-    // - macOS WKWebView: WebGL addon historically corrupts the texture atlas
-    //   on scrollback. We load the Canvas addon instead — it draws into a
-    //   single <canvas> (no GPU texture path) and is dramatically faster
-    //   than xterm's default DOM renderer under opencode TUI's high-frequency
-    //   full-screen redraws.
-    // - non-Darwin (Windows/Linux): keep the WebGL path when the probe
-    //   succeeds; WebGL remains the fastest renderer on those platforms.
-    // - any canvas/WebGL load failure fails open: xterm falls back to its
-    //   built-in DOM renderer rather than bricking the terminal.
-    if (platformCaps.caps.value && platformCaps.isDarwin.value) {
-      loadCanvasRenderer(sessionId, inst)
-    } else if (platformCaps.caps.value && !platformCaps.isDarwin.value && isWebGLReliable()) {
+    // macOS WKWebView uses xterm 6's built-in DOM renderer. The available
+    // CanvasAddon is a beta package whose peer range is xterm 5 only; loading
+    // it into xterm 6 produced stale rows and torn canvases. Windows/Linux keep
+    // the compatible WebGL accelerator and fail open to DOM if it cannot load.
+    if (platformCaps.caps.value && !platformCaps.isDarwin.value && isWebGLReliable()) {
       loadWebglRenderer(sessionId, inst)
     }
 
-    // Renderer activate-time size refresh (regression fix for v1.2.68 切会话撕裂黑屏).
-    // Canvas/WebGL addon 的 activate 在 BaseRenderLayer 构造瞬间即
-    // createElement+appendChild+_initCanvas+_refreshCharAtlas，device 像素与
-    // texture atlas 在这一刻定型。而此处分枝紧跟 term.open(containerEl) 同步
-    // 执行，早于下方 mountTerm 末尾的 fit.fit() 与外层 TerminalView.vue 的
-    // rAF force fit——activate 时 term dimensions 仍是默认/中间态，atlas 用
-    // 错误 cell 度量构建，后续 fit 即便触发 renderer.onResize 也未必纠正 atlas，
-    // 表现为切会话回来撕裂近黑屏，需"窗口最大化→ResizeObserver→完整 onResize"
-    // 才恢复。修复：renderer 加载后下一帧强制 force fit（让 fit.fit() 重算
-    // cols/rows 并 term.resize → renderer.onResize），并对 canvas 显式调用
-    // clearTextureAtlas 强制下一次渲染重建 atlas。WebGL 无 clearTextureAtlas，
-    // 但 force fit 同样能触发其 dimensions change → atlas 重建。这一帧延迟
-    // 用户感知不到，但能消除 activate 时序险境。force=true 绕过 sameDims bail。
+    // One post-layout repaint covers delayed CSS/font layout without replacing
+    // the renderer while parser writes may still be queued.
     requestAnimationFrame(() => {
       if (terminals.get(sessionId) !== inst) return
-      // force fit 让 proposeDimensions 即使与 lastCols/lastRows 相同也重跑 fit
-      fitTerminal(sessionId, true, containerEl)
-      // canvas renderer 的 texture atlas 可能已在错误尺寸下构建；CanvasAddon
-      // typings 不暴露 clearTextureAtlas，用类型断言安全调用，缺失则 noop。
-      const canvas = inst.canvas as unknown as {
-        clearTextureAtlas?: () => void
-      } | null
-      try {
-        canvas?.clearTextureAtlas?.()
-      } catch {
-        /* mid-teardown or addon mismatch: noop */
-      }
+      refreshTerminal(sessionId, containerEl)
     })
 
     // ----- history replay -----
@@ -870,103 +853,67 @@ export function useTerminalEngine() {
     // M2 type compatibility: decodeHistoryData handles string / Array<number>
     // / Uint8Array return shapes.
     //
-    // Chunked write: a 1MB snapshot written in a single term.write() call
-    // blocks the main thread for hundreds of milliseconds on the DOM/canvas
-    // renderer (parser + layout + paint all synchronous). Under opencode TUI
-    // that means a perceptible "frozen" terminal right after switching
-    // sessions. Slice the snapshot into ~64KB chunks and yield one frame
-    // between them so the renderer can paint progressively. After the final
-    // chunk, force a single scrollToBottom() so the viewport lands on the
-    // latest output — this is the regression introduced by v1.2.59 which
-    // removed the auto-follow call and left the viewport parked at buffer
-    // row 0 after a snapshot replay, presenting the user with a blank / old
-    // screen on every session switch.
+    // xterm's write() only enqueues parser work. A replay chunk is complete
+    // exclusively when its callback fires; treating the method return as
+    // completion interleaves history, live output and renderer replacement.
+    // Serialize chunks through callbacks and yield with a timer so parsing is
+    // independent of whether the WebView currently grants animation frames.
     const HISTORY_CHUNK_SIZE = 64 * 1024
     function writeHistoryInChunks(decoded: Uint8Array, done: () => void) {
       let offset = 0
       const total = decoded.length
       function writeNextChunk() {
-        // term may have been disposed mid-replay (rapid session switching).
         if (terminals.get(sessionId) !== inst) return
         const end = Math.min(offset + HISTORY_CHUNK_SIZE, total)
         try {
-          inst.term.write(decoded.subarray(offset, end))
+          inst.term.write(decoded.subarray(offset, end), () => {
+            if (terminals.get(sessionId) !== inst) return
+            offset = end
+            if (offset < total) {
+              inst.historyReplayTimer = window.setTimeout(() => {
+                inst.historyReplayTimer = null
+                writeNextChunk()
+              }, 0)
+            } else {
+              done()
+            }
+          })
         } catch {
           /* term mid-teardown */
-          return
-        }
-        offset = end
-        if (offset < total) {
-          // Yield one frame between chunks so paint/cursor blink don't pile
-          // up. setTimeout(0) would also work but rAF aligns with the
-          // display refresh and avoids extra layout passes.
-          requestAnimationFrame(writeNextChunk)
-        } else {
-          done()
         }
       }
       writeNextChunk()
     }
 
+    function finishHistoryReplay() {
+      if (terminals.get(sessionId) !== inst) return
+      historyReplayed = true
+      flushLiveBuffer(() => {
+        if (terminals.get(sessionId) !== inst) return
+        try {
+          inst.term.scrollToBottom()
+          inst.term.clearTextureAtlas()
+          inst.term.refresh(0, inst.term.rows - 1)
+        } catch {
+          /* viewport may be tearing down */
+        }
+      })
+    }
+
     GetOutputHistorySnapshot(sessionId)
       .then((jsonStr: string) => {
         if (!jsonStr) {
-          historyReplayed = true
-          flushLiveBuffer()
+          finishHistoryReplay()
           return
         }
         try {
           const snapshot = JSON.parse(jsonStr)
+          inst.runToken = typeof snapshot.runToken === 'string' ? snapshot.runToken : ''
+          inst.runVersion = typeof snapshot.runVersion === 'string' ? snapshot.runVersion : ''
           const decoded = decodeHistoryData(snapshot.data)
           if (decoded && decoded.length > 0) {
             inst.historySnapshotSeq = snapshot.seq || 0
-            writeHistoryInChunks(decoded, () => {
-              // Final chunk done — pin the viewport to the latest output.
-              // 切会话 replay 写入大量历史数据期间 dimensions 可能抖动，
-              // texture atlas 或基于中间状态构建；done 时清理一次让最终
-              // 渲染基于干净 atlas，与上方 renderer 加载后的清理同源。
-              const canvas = inst.canvas as unknown as {
-                clearTextureAtlas?: () => void
-              } | null
-              try {
-                canvas?.clearTextureAtlas?.()
-              } catch {
-                /* mid-teardown or addon mismatch: noop */
-              }
-              try {
-                inst.term.scrollToBottom()
-              } catch {
-                /* viewport not ready */
-              }
-              historyReplayed = true
-              flushLiveBuffer()
-
-              // 大体量历史 replay 后重建 renderer（修路由切走再切回的
-              // 显示异常/无法交互/无法选中复制）。
-              //
-              // 根因：mountTerm 在 replay 之前就加载了 canvas/WebGL
-              // renderer，随后 writeHistoryInChunks 把最多 1MB 的历史
-              // 拆成 ~64KB 跨十几帧 term.write 进去。renderer 在这十几
-              // 帧里被迫绘制 opencode TUI 的大量整屏 ANSI 重绘，texture
-              // atlas 与 cell 度量被写脏/写错；而本回调此前只对 *canvas*
-              // 调 clearTextureAtlas，**WebGL（Windows）的图集从不被清
-              // 理**，也没有任何「replay 后重建 renderer」的动作。结果
-              // buffer 数据正确（故输入框仍可输入、PTY 仍活），但绘制层
-              // 脏了——显示花屏错位、视觉上无法交互；且 attachForcedSelection
-              // 依赖 .xterm-screen 像素尺寸算 cellWidth，尺寸错乱时
-              // cellWidth<=0 直接放弃选区 → 无法选中复制。首次启动历史小、
-              // 不触发；用一段时间历史变大后，切到其他路由（会话设置/
-              // 环境拓展）再切回 /terminal 必现。
-              //
-              // 修法：对超过单块阈值的大 replay，用经过验证的 refreshRenderer
-              // （DPR 变化时同款路径）dispose+reload renderer 并 force-fit，
-              // 让 renderer 基于最终 buffer 与正确尺寸重建图集。小历史/
-              // 首次挂载路径不受影响（decoded.length <= 单块阈值时跳过），
-              // 回归风险低。WebGL reload 同时重新注册 onContextLoss。
-              if (decoded.length > HISTORY_CHUNK_SIZE) {
-                refreshRenderer(sessionId, containerEl)
-              }
-            })
+            writeHistoryInChunks(decoded, finishHistoryReplay)
             return
           } else if (decoded !== null && decoded.length === 0) {
             // decodeHistoryData returned empty: data valid but empty.
@@ -978,57 +925,51 @@ export function useTerminalEngine() {
         } catch (e) {
           console.warn('history replay failed:', e)
         }
-        historyReplayed = true
-        flushLiveBuffer()
+        finishHistoryReplay()
       })
       .catch(() => {
         // Session may not support history (e.g. already exited): flush live.
-        historyReplayed = true
-        flushLiveBuffer()
+        finishHistoryReplay()
       })
 
-    function flushLiveBuffer() {
+    function flushLiveBuffer(done: () => void) {
+      const accepted: Uint8Array[] = []
       for (const chunk of liveBuffer) {
-        writeLiveChunk(chunk.seq, chunk.bytes)
+        const bytes = prepareLiveChunk(chunk)
+        if (bytes) accepted.push(bytes)
       }
       liveBuffer.length = 0
-    }
-
-    // initial fit + resize to backend
-    try {
-      fit.fit()
-      const dims = fit.proposeDimensions()
-      if (dims && dims.cols > 0 && dims.rows > 0) {
-        inst.lastCols = dims.cols
-        inst.lastRows = dims.rows
-        PtyResize(sessionId, dims.cols, dims.rows).catch(() => {})
+      if (accepted.length === 0) {
+        done()
+        return
       }
-    } catch {
-      /* container may not have layout yet */
+      let total = 0
+      for (const bytes of accepted) total += bytes.length
+      const merged = new Uint8Array(total)
+      let offset = 0
+      for (const bytes of accepted) {
+        merged.set(bytes, offset)
+        offset += bytes.length
+      }
+      try {
+        // The callback is the ordering barrier: only repaint after all bytes
+        // buffered during the snapshot request have actually been parsed.
+        inst.term.write(merged, done)
+      } catch {
+        done()
+      }
     }
 
     // Refit once all web fonts have loaded. The initial cell measurement
     // (done synchronously during term.open) may use a fallback font if the
     // primary font ('SF Mono' etc.) hasn't finished loading yet. When the
-    // real font renders at a different width, the canvas cells no longer
-    // align with the renderer's stored cell dimensions — causing visual
-    // tearing, mouse→cell coordinate misalignment (clicks miss TUI items)
-    // and scroll position drift. document.fonts.ready resolves when the
-    // font set is stable; we force-fit + clearTextureAtlas to rebuild the
-    // atlas at the correct cell metrics.
+    // real font renders at a different width, cell geometry and mouse mapping
+    // drift. Refit and request a complete public-API redraw once fonts settle.
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready
         .then(() => {
           if (terminals.get(sessionId) !== inst) return
-          fitTerminal(sessionId, true, containerEl)
-          const canvas = inst.canvas as unknown as {
-            clearTextureAtlas?: () => void
-          } | null
-          try {
-            canvas?.clearTextureAtlas?.()
-          } catch {
-            /* mid-teardown or addon mismatch: noop */
-          }
+          refreshTerminal(sessionId, containerEl)
         })
         .catch(() => {
           /* fonts.ready rejected (rare): ignore */
@@ -1121,19 +1062,10 @@ export function useTerminalEngine() {
     inst.activeDragCleanup?.()
     inst.activeDragCleanup = null
 
-    // Cancel any pending micro-batch so it doesn't fire after dispose.
-    if (inst.liveBatchRaf !== null) {
-      cancelAnimationFrame(inst.liveBatchRaf)
-      inst.liveBatchRaf = null
+    if (inst.historyReplayTimer !== null) {
+      clearTimeout(inst.historyReplayTimer)
+      inst.historyReplayTimer = null
     }
-    inst.liveBatchQueue.length = 0
-
-    try {
-      inst.canvas?.dispose()
-    } catch {
-      /* already disposed */
-    }
-    inst.canvas = null
 
     try {
       inst.term.dispose()
@@ -1277,6 +1209,7 @@ export function useTerminalEngine() {
     writeInput,
     resizeTerm,
     fitTerminal,
+    refreshTerminal,
     refreshRenderer,
     disposeTerm,
     disposeAll,

@@ -1,0 +1,104 @@
+{
+  "task": "OpenAI base URL 归一化 + 自定义 provider 自动补 npm（opencode 双轨道）",
+  "agent": "luban",
+  "type": "work",
+  "status": "completed",
+  "design_authority": "agent-outputs/provider-baseurl-consumption.md (调研报告)",
+  "artifacts": {
+    "report": "agent-outputs/luban/20260806-openai-baseurl-normalize-npm/self-test-report.md",
+    "logs": "agent-outputs/luban/20260806-openai-baseurl-normalize-npm/logs/test-results.log"
+  },
+  "changed_files": {
+    "new": [
+      "internal/config/types_test.go"
+    ],
+    "modified": [
+      "internal/config/types.go",
+      "internal/config/service.go",
+      "internal/launcher/opencode_config.go",
+      "internal/launcher/opencode_config_test.go"
+    ]
+  },
+  "changes": {
+    "C1-normalize": "新增 config.NormalizeOpenAIBaseURL（循环剥离尾斜杠与 /chat/completions 后缀，大小写敏感，保守不丢数据）；EffectiveBaseURL openai 分支（新字段/legacy 回退/空 format 推导）统一归一化，anthropic 分支不动",
+    "C2-npm-legacy-track": "buildOpenCodeProviderMap 对第三方 OpenAI 兼容 provider（deriveOpenCodeProviderID != openai）补 npm=@ai-sdk/openai-compatible，内置 openai 与 anthropic 不加",
+    "C3-npm-preset-track": "BuildOpenCodeRuntimeConfigFromPreset 以 entryExisted 区分代码新建 vs 用户手写；代码新建的第三方 openai entry 补 npm，用户手写不强行注入（deepMerge 语义保持）"
+  },
+  "decisions": {
+    "duplicate_suffix": "循环剥离至不再匹配（保证幂等），非单次剥一层",
+    "preset_npm_entry_source": "providers[key] 存在=用户手写(不补) / 不存在=代码新建(补)；用户手写空对象{}也算用户手写"
+  },
+  "verification": {
+    "build": "PASS",
+    "vet": "PASS",
+    "test_config_launcher": "PASS (ok amagi-codebox/internal/config; ok amagi-codebox/internal/launcher)",
+    "test_root": "PASS (ok amagi-codebox, 含 app_codex_config_test.go)",
+    "new_tests_config": "8 函数 (含 14 子用例表驱动 + 幂等 + EffectiveBaseURL 归一化矩阵 6 例)",
+    "new_tests_launcher": "9 函数 (npm 注入三态: 第三方含/官方openai不含/anthropic不含 + preset 轨道新建补/手写不补)"
+  },
+  "residuals": [
+    "opencode/codex/pi 运行时对 baseURL 消费行为未端到端验证（外部 CLI 侧，代码库无对应逻辑，与调研报告待核验项一致）",
+    "codex wire_api 未改（Contract 明确不做）",
+    "前端未改（后端归一化透明处理）"
+  ],
+  "review_recommendation": "建议 diting 审核（触及 opencode.json schema 生成 npm 字段 + 全局 base URL 归一化语义，属接口/schema 风险路径）",
+  "git_discipline": "no commit/push/reset/stash/clean",
+  "revisions": {
+    "revision1": {
+      "date": "2026-08-06",
+      "trigger": "谛听审核打回 4 个 Major (agent-outputs/reviewer/20260806-122225-openai-baseurl-normalize-npm-review.md)",
+      "report": "agent-outputs/luban/20260806-openai-baseurl-normalize-npm/self-test-report-revision1.md",
+      "major_fixes": {
+        "Major-1": "npm 注入条件从 !entryExisted 改为 entry 无 npm 键 (opencode_config.go:385-393)，覆盖迁移链主启动路径",
+        "Major-2": "新增 EffectiveBaseURLRaw，SyncLegacyFields/BuildExportProvider 改用原始值，归一化仅在运行时消费端 (types.go:618/732/400)",
+        "Major-3": "NormalizeOpenAIBaseURL 改用 net/url 仅处理 path，保留 query/fragment，hostless/解析失败保守返回原值 (types.go:550-588)",
+        "Major-4": "新增 IsOfficialOpenAIBaseURL 精确 host 判定，launcher 与 config 迁移共用同一 helper (types.go:596 / opencode_config.go:93 / service.go:1465)"
+      },
+      "new_tests": [
+        "TestNormalizeOpenAIBaseURL (28例, 含修正 hostless 期望 + query/fragment/scheme-only/non-url 反例)",
+        "TestIsOfficialOpenAIBaseURL (14例, 含欺骗 host: trailing subdomain / path 含子串)",
+        "TestEffectiveBaseURLRaw_NotNormalized / _LegacyFallback",
+        "TestSyncLegacyFields_PreservesRawBaseURL",
+        "TestBuildExportProvider_PreservesRawBaseURL",
+        "TestBuildOpenCodeRuntimeConfigFromPreset_MigratedEntryWithoutNPMGetsDefaultNPM (迁移链端到端)",
+        "TestBuildOpenCodeRuntimeConfigFromPreset_UserEntryWithoutNPMGetsDefaultNPM",
+        "TestBuildOpenCodeRuntimeConfigFromPreset_UserWrittenExplicitNPMPreserved (改语义: 显式 npm 保留)",
+        "TestDeriveOpenCodeProviderID_DeceptiveHost"
+      ],
+      "verification_r1": {
+        "build": "PASS",
+        "vet": "PASS",
+        "test_config_launcher": "PASS (config 0.812s / launcher 1.205s)",
+        "test_root": "PASS (ok amagi-codebox 23.041s)",
+        "git_diff_check": "PASS (clean)"
+      },
+      "scope_control": "仅改 4 文件 + 新建 types_test.go；未触碰 frontend/appmeta 并发改动；未动 codex wire_api"
+    },
+    "revision2": {
+      "date": "2026-08-06",
+      "trigger": "谛听增量复审打回：2 Major 未闭环 (Major-2 迁移持久化仍归一化 / Major-1 真实迁移链证据缺口) + 1 新 Major (转义路径被破坏) + 1 Minor (尾点域名) (agent-outputs/reviewer/20260806-124445-openai-baseurl-normalize-npm-incremental-review.md)",
+      "report": "agent-outputs/luban/20260806-openai-baseurl-normalize-npm/self-test-report-revision2.md",
+      "fixes": {
+        "Major-2_unresolved": "buildMigratedOpenCodeConfig baseURL 改 EffectiveBaseURLRaw (service.go:1513-1519)，迁移持久化全程原值",
+        "Major-1_evidence_gap": "新增 TestMigrationChain_RealLoadMigrationThenRuntimeBuild 真实跨包迁移链集成测试 (launcher 测试末尾)，替代手工 fixture",
+        "new_major_escaped_path": "NormalizeOpenAIBaseURL 改基于 EscapedPath 剥离 + 重建 RawPath (types.go:563-593)，%2F/%2f/混合转义往返无损",
+        "minor_trailing_dot": "IsOfficialOpenAIBaseURL 剥 DNS 尾点 (types.go:620-622)，api.openai.com. FQDN 识别为官方"
+      },
+      "new_tests": [
+        "TestNormalizeOpenAIBaseURL 新增 5 转义路径用例 (%2F/%2f 大小写 + 转义+尾斜杠 + %7E + 混合真实/转义段)",
+        "TestNormalizeOpenAIBaseURL_EscapedPathIdempotent (4 例转义路径幂等)",
+        "TestIsOfficialOpenAIBaseURL 新增 4 用例 (官方 FQDN 尾点带/不带 scheme + 官方 userinfo + 欺骗 userinfo hosts 官方域名)",
+        "TestMigrationChain_RealLoadMigrationThenRuntimeBuild (真实跨包迁移链: SaveProvider+SaveTerminalPreset -> Save -> Load 触发真实迁移 -> GetOpenCodePreset -> BuildOpenCodeRuntimeConfigFromPreset)"
+      ],
+      "verification_r2": {
+        "build": "PASS (exit 0)",
+        "vet": "PASS (exit 0)",
+        "test_config_launcher": "PASS (config 0.425s / launcher 0.802s)",
+        "test_root": "PASS (ok amagi-codebox 8.102s)",
+        "git_diff_check": "PASS (exit 0)"
+      },
+      "schema_probe": "修复前用独立 Go 程序实测 net/url 对 %2F/%2f/尾点/userinfo 的真实行为，确认 EscapedPath 保留转义大小写、%2F 不等于字面 /，4.7 死代码预防",
+      "scope_control": "revision2 增量仅改 service.go:1513 + types.go:563-593/620-622 + 两测试文件追加；未触碰 frontend 并发改动；未动 codex wire_api；未动 anthropic 判定"
+    }
+  }
+}

@@ -14,7 +14,20 @@ onMounted(() => {
 
 <template>
   <AppShell>
-    <router-view />
+    <router-view v-slot="{ Component, route }">
+      <KeepAlive>
+        <component
+          :is="Component"
+          v-if="route.meta.keepAlive"
+          :key="String(route.name)"
+        />
+      </KeepAlive>
+      <component
+        :is="Component"
+        v-if="!route.meta.keepAlive"
+        :key="String(route.name)"
+      />
+    </router-view>
   </AppShell>
   <StartupWarningBanner />
   <Toast />
