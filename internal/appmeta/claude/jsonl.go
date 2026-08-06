@@ -20,8 +20,11 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,7 +294,8 @@ type usageRecord struct {
 //
 // 解析规则（设计 5.1）：
 //   - 从 startOffset 字节偏移开始读取（断点续传）；startOffset=0 全量
-//   - 逐行 JSON 解码（bufio.Scanner，缓冲扩到 1MiB）
+//   - 逐行 JSON 解码（bufio.Reader.ReadBytes，按需扩容，可吞下含 base64 图片
+//     或大 tool_result 的超长单行，替代原先固定上限的 bufio.Scanner）
 //   - 仅处理 type=="assistant" 的行
 //   - 从 message.usage 取四维 token：input_tokens / output_tokens /
 //     cache_read_input_tokens / cache_creation_input_tokens
@@ -317,6 +321,16 @@ func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEv
 
 	// 断点续传：Seek 到上次偏移（必落在行边界 \n 之后）
 	if startOffset > 0 {
+		// legacy size+1 游标迁移：旧 Scanner 实现对无尾 \n 的末行执行 len(line)+1，
+		// sync_state.last_line_offset 可能等于当时 fileSize+1。直接 Seek 越过 EOF
+		// 在普通文件上成功但 ReadBytes 立即 EOF，会原样返回 size+1，导致 sync 层
+		// offset==size 快速跳过条件永不成立（每轮空扫），且文件追加后从追加区第
+		// 2 字节起读会损坏首行 JSON。收敛为 fileSize 即可：文件未增长时 ReadBytes
+		// 立即 EOF 返回 offset==fileSize（sync 快速跳过生效），文件追加后从正确
+		// 位置续读。与 codex parser 保持同一口径。
+		if info, statErr := os.Stat(jsonlPath); statErr == nil && startOffset > info.Size() {
+			startOffset = info.Size()
+		}
 		if _, seekErr := f.Seek(startOffset, 0); seekErr != nil {
 			return nil, startOffset, fmt.Errorf("seek jsonl %q to %d: %w", jsonlPath, startOffset, seekErr)
 		}
@@ -325,77 +339,70 @@ func ExtractUsageRecords(jsonlPath string, startOffset int64) (records []UsageEv
 	// SessionID 与 ProjectDir 从文件路径推断（避免每行重复解析）
 	sessionID, projectDirEncoded := inferSessionAndProjectFromPath(jsonlPath)
 
-	scanner := bufio.NewScanner(f)
-	// 实测：含 base64 图片或大 tool_result 的单行可达数 MB；扩到 16MiB 防 token too long。
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// bufio.Reader.ReadBytes 按需扩容，不受固定缓冲上限约束，可吞下含 base64 图片
+	// 或大 tool_result 的超长单行，替代原先 16MiB bufio.Scanner（超过上限会报
+	// bufio.Scanner: token too long，导致整文件用量解析失败）。
+	reader := bufio.NewReaderSize(f, 64*1024)
 
 	currentOffset := startOffset
-	for scanner.Scan() {
-		lineBytes := scanner.Bytes()
-		// 累计字节偏移：len(lineBytes) + 1（\n 换行符）
-		// 注意：bufio.Scanner 在 EOF 无 \n 时返回最后一行但不增加 +1，
-		// 但 Claude jsonl 每行必以 \n 结尾（追加写），此假设成立。
-		currentOffset += int64(len(lineBytes)) + 1
+	for {
+		rawLine, readErr := reader.ReadBytes('\n')
+		if len(rawLine) > 0 {
+			// ReadBytes 返回值含分隔符 \n，其长度即本行实际占用字节数；
+			// 直接累加保证断点续传 offset 精确（含文件末尾无 \n 的尾行）。
+			currentOffset += int64(len(rawLine))
+			line := bytes.TrimRight(rawLine, "\r\n")
+			if len(line) > 0 {
+				var rec usageRecord
+				// 仅处理 type=="assistant" 且带 message.id 的行；其余（含解析失败）跳过
+				if json.Unmarshal(line, &rec) == nil && rec.Type == "assistant" && rec.Message.ID != "" {
+					var occurredAt time.Time
+					if rec.Timestamp != "" {
+						// ISO8601（如 "2026-07-17T02:42:42.807Z"）
+						if t, parseErr := time.Parse(time.RFC3339Nano, rec.Timestamp); parseErr == nil {
+							occurredAt = t.UTC()
+						}
+					}
+					if occurredAt.IsZero() {
+						// timestamp 缺失或解析失败：用文件 mtime 兜底（避免零值污染时间分布）
+						if info, statErr := os.Stat(jsonlPath); statErr == nil {
+							occurredAt = info.ModTime().UTC()
+						} else {
+							occurredAt = time.Now().UTC()
+						}
+					}
 
-		if len(lineBytes) == 0 {
-			continue
-		}
+					// 优先用根级 cwd（更准确），其次从路径推断
+					projectDir := rec.Cwd
+					if projectDir == "" {
+						projectDir = projectDirEncoded
+					}
+					sessID := sessionID
+					if rec.SessionID != "" {
+						sessID = rec.SessionID
+					}
 
-		var rec usageRecord
-		if jsonErr := json.Unmarshal(lineBytes, &rec); jsonErr != nil {
-			// 单行解析失败不中断：兼容 schema 演进
-			continue
-		}
-		if rec.Type != "assistant" {
-			continue
-		}
-		if rec.Message.ID == "" {
-			// 无 message.id 无法去重，跳过（保守）
-			continue
-		}
-
-		var occurredAt time.Time
-		if rec.Timestamp != "" {
-			// ISO8601（如 "2026-07-17T02:42:42.807Z"）
-			if t, parseErr := time.Parse(time.RFC3339Nano, rec.Timestamp); parseErr == nil {
-				occurredAt = t.UTC()
+					records = append(records, UsageEventStub{
+						DedupKey:                 dedupPrefixClaudeSession + rec.Message.ID,
+						Model:                    rec.Message.Model,
+						ProjectDir:               projectDir,
+						SessionID:                sessID,
+						RawMessageID:             rec.Message.ID,
+						InputTokens:              rec.Message.Usage.InputTokens,
+						OutputTokens:             rec.Message.Usage.OutputTokens,
+						CacheReadInputTokens:     rec.Message.Usage.CacheReadInputTokens,
+						CacheCreationInputTokens: rec.Message.Usage.CacheCreationInputTokens,
+						OccurredAt:               occurredAt,
+					})
+				}
 			}
 		}
-		if occurredAt.IsZero() {
-			// timestamp 缺失或解析失败：用文件 mtime 兜底（避免零值污染时间分布）
-			if info, statErr := os.Stat(jsonlPath); statErr == nil {
-				occurredAt = info.ModTime().UTC()
-			} else {
-				occurredAt = time.Now().UTC()
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return records, currentOffset, fmt.Errorf("scan jsonl %q: %w", jsonlPath, readErr)
 			}
+			break
 		}
-
-		// 优先用根级 cwd（更准确），其次从路径推断
-		projectDir := rec.Cwd
-		if projectDir == "" {
-			projectDir = projectDirEncoded
-		}
-		sessID := sessionID
-		if rec.SessionID != "" {
-			sessID = rec.SessionID
-		}
-
-		records = append(records, UsageEventStub{
-			DedupKey:                 dedupPrefixClaudeSession + rec.Message.ID,
-			Model:                    rec.Message.Model,
-			ProjectDir:               projectDir,
-			SessionID:                sessID,
-			RawMessageID:             rec.Message.ID,
-			InputTokens:              rec.Message.Usage.InputTokens,
-			OutputTokens:             rec.Message.Usage.OutputTokens,
-			CacheReadInputTokens:     rec.Message.Usage.CacheReadInputTokens,
-			CacheCreationInputTokens: rec.Message.Usage.CacheCreationInputTokens,
-			OccurredAt:               occurredAt,
-		})
-	}
-
-	if scanErr := scanner.Err(); scanErr != nil {
-		return records, currentOffset, fmt.Errorf("scan jsonl %q: %w", jsonlPath, scanErr)
 	}
 
 	return records, currentOffset, nil

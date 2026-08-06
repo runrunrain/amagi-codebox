@@ -30,10 +30,13 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +149,16 @@ func ExtractUsageRecordsWithContext(jsonlPath string, startOffset int64, context
 	defer f.Close()
 
 	if startOffset > 0 {
+		// legacy size+1 游标迁移：旧 Scanner 实现对无尾 \n 的末行执行 len(line)+1，
+		// sync_state.last_line_offset 可能等于当时 fileSize+1。直接 Seek 越过 EOF
+		// 在普通文件上成功但 ReadBytes 立即 EOF，会原样返回 size+1，导致 sync 层
+		// offset==size 快速跳过条件永不成立（每轮空扫），且文件追加后从追加区第
+		// 2 字节起读会损坏首行 JSON。收敛为 fileSize 即可：文件未增长时 ReadBytes
+		// 立即 EOF 返回 offset==fileSize（sync 快速跳过生效），文件追加后从正确
+		// 位置续读（追加通常先补 \n，size+1 恰好对齐新行起点）。
+		if info, statErr := os.Stat(jsonlPath); statErr == nil && startOffset > info.Size() {
+			startOffset = info.Size()
+		}
 		if _, seekErr := f.Seek(startOffset, 0); seekErr != nil {
 			return nil, startOffset, context, fmt.Errorf("seek codex jsonl %q to %d: %w", jsonlPath, startOffset, seekErr)
 		}
@@ -161,120 +174,115 @@ func ExtractUsageRecordsWithContext(jsonlPath string, startOffset int64, context
 		provider         = context.Provider
 	)
 
-	scanner := bufio.NewScanner(f)
-	// 实测：含大 tool_result 的 codex rollout 单行可达数 MB；扩到 16MiB 防 token too long。
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// bufio.Reader.ReadBytes 按需扩容，不受固定缓冲上限约束，可吞下含数 MB
+	// tool_result/base64 的超长行（实测主上单行可达 30MB），替代原先 16MiB
+	// bufio.Scanner（超过上限会报 bufio.Scanner: token too long，导致整文件解析失败）。
+	reader := bufio.NewReaderSize(f, 64*1024)
 
 	currentOffset := startOffset
-	for scanner.Scan() {
-		lineBytes := scanner.Bytes()
-		currentOffset += int64(len(lineBytes)) + 1 // +1 for \n
-		if len(lineBytes) == 0 {
-			continue
-		}
+	for {
+		rawLine, readErr := reader.ReadBytes('\n')
+		if len(rawLine) > 0 {
+			// ReadBytes 返回值含分隔符 \n，其长度即本行实际占用字节数；
+			// 直接累加保证断点续传 offset 精确（含文件末尾无 \n 的尾行）。
+			currentOffset += int64(len(rawLine))
+			line := bytes.TrimRight(rawLine, "\r\n")
+			if len(line) > 0 {
+				var rec codexRecord
+				if json.Unmarshal(line, &rec) == nil {
+					// 首次遇到的 session_meta / turn_context 记录提取元信息（全文件共享）
+					switch {
+					case rec.Type == "session_meta" && len(rec.Payload) > 0:
+						var sm sessionMetaPayload
+						if json.Unmarshal(rec.Payload, &sm) == nil {
+							if sm.Cwd != "" {
+								fileProjectDir = sm.Cwd
+							}
+							if sm.ModelProvider != "" {
+								provider = sm.ModelProvider
+							}
+							if sm.Model != "" {
+								sessionMetaModel = sm.Model
+							}
+							if sm.ID != "" {
+								sessionMetaID = sm.ID
+							}
+						}
+					case rec.Type == "turn_context" && len(rec.Payload) > 0:
+						var tc turnContextPayload
+						if json.Unmarshal(rec.Payload, &tc) == nil {
+							// A rollout can switch models between turns. Keep the latest
+							// context so each subsequent token_count gets the right model.
+							if tc.Model != "" {
+								turnCtxModel = tc.Model
+							}
+							if tc.Cwd != "" {
+								fileProjectDir = tc.Cwd
+							}
+						}
+					case rec.Type == "event_msg":
+						// 仅处理 token_count 子类型；单行解析失败或非 token_count 跳过（兼容 schema 演进）
+						var em eventMsgPayload
+						if json.Unmarshal(rec.Payload, &em) == nil && em.Type == "token_count" {
+							// 模型选择：优先 turn_context.model，其次 session_meta.model（通常 null）
+							model := turnCtxModel
+							if model == "" {
+								model = sessionMetaModel
+							}
 
-		var rec codexRecord
-		if jsonErr := json.Unmarshal(lineBytes, &rec); jsonErr != nil {
-			continue
-		}
+							// 解析时间戳（ISO8601）
+							var occurredAt time.Time
+							if rec.Timestamp != "" {
+								if t, parseErr := time.Parse(time.RFC3339Nano, rec.Timestamp); parseErr == nil {
+									occurredAt = t.UTC()
+								}
+							}
+							if occurredAt.IsZero() {
+								if info, statErr := os.Stat(jsonlPath); statErr == nil {
+									occurredAt = info.ModTime().UTC()
+								} else {
+									occurredAt = time.Now().UTC()
+								}
+							}
 
-		// 首次遇到的 session_meta / turn_context 记录提取元信息（全文件共享）
-		if rec.Type == "session_meta" && len(rec.Payload) > 0 {
-			var sm sessionMetaPayload
-			if jsonErr := json.Unmarshal(rec.Payload, &sm); jsonErr == nil {
-				if sm.Cwd != "" {
-					fileProjectDir = sm.Cwd
-				}
-				if sm.ModelProvider != "" {
-					provider = sm.ModelProvider
-				}
-				if sm.Model != "" {
-					sessionMetaModel = sm.Model
-				}
-				if sm.ID != "" {
-					sessionMetaID = sm.ID
+							// 四维 token（reasoning 归 output）
+							in := em.Info.LastTokenUsage.InputTokens
+							cr := em.Info.LastTokenUsage.CachedInputTokens
+							out := em.Info.LastTokenUsage.OutputTokens + em.Info.LastTokenUsage.ReasoningOutputTokens
+
+							// dedup_key: "cx:" + sha1(model|in|out|cr|cc|timestamp)[:16]
+							// 含 timestamp 让同文件多 turn 不冲突；含四维 + model 避免不同会话碰撞。
+							dedup := "cx:" + hash16(model, in, out, cr, 0, rec.Timestamp)
+
+							sessID := fileSessionID
+							if sessionMetaID != "" {
+								sessID = sessionMetaID
+							}
+
+							records = append(records, UsageEventStub{
+								DedupKey:                 dedup,
+								Model:                    model,
+								Provider:                 provider,
+								ProjectDir:               fileProjectDir,
+								SessionID:                sessID,
+								RawMessageID:             "",
+								InputTokens:              in,
+								OutputTokens:             out,
+								CacheReadInputTokens:     cr,
+								CacheCreationInputTokens: 0, // codex 不提供 cache_creation
+								OccurredAt:               occurredAt,
+							})
+						}
+					}
 				}
 			}
-			continue
 		}
-		if rec.Type == "turn_context" && len(rec.Payload) > 0 {
-			var tc turnContextPayload
-			if jsonErr := json.Unmarshal(rec.Payload, &tc); jsonErr == nil {
-				// A rollout can switch models between turns. Keep the latest
-				// context so each subsequent token_count gets the right model.
-				if tc.Model != "" {
-					turnCtxModel = tc.Model
-				}
-				if tc.Cwd != "" {
-					fileProjectDir = tc.Cwd
-				}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return records, currentOffset, context, fmt.Errorf("scan codex jsonl %q: %w", jsonlPath, readErr)
 			}
-			continue
+			break
 		}
-
-		if rec.Type != "event_msg" {
-			continue
-		}
-		var em eventMsgPayload
-		if jsonErr := json.Unmarshal(rec.Payload, &em); jsonErr != nil {
-			continue
-		}
-		if em.Type != "token_count" {
-			continue
-		}
-
-		// 模型选择：优先 turn_context.model，其次 session_meta.model（通常 null）
-		model := turnCtxModel
-		if model == "" {
-			model = sessionMetaModel
-		}
-
-		// 解析时间戳（ISO8601）
-		var occurredAt time.Time
-		if rec.Timestamp != "" {
-			if t, parseErr := time.Parse(time.RFC3339Nano, rec.Timestamp); parseErr == nil {
-				occurredAt = t.UTC()
-			}
-		}
-		if occurredAt.IsZero() {
-			if info, statErr := os.Stat(jsonlPath); statErr == nil {
-				occurredAt = info.ModTime().UTC()
-			} else {
-				occurredAt = time.Now().UTC()
-			}
-		}
-
-		// 四维 token（reasoning 归 output）
-		in := em.Info.LastTokenUsage.InputTokens
-		cr := em.Info.LastTokenUsage.CachedInputTokens
-		out := em.Info.LastTokenUsage.OutputTokens + em.Info.LastTokenUsage.ReasoningOutputTokens
-
-		// dedup_key: "cx:" + sha1(model|in|out|cr|cc|timestamp)[:16]
-		// 含 timestamp 让同文件多 turn 不冲突；含四维 + model 避免不同会话碰撞。
-		dedup := "cx:" + hash16(model, in, out, cr, 0, rec.Timestamp)
-
-		sessID := fileSessionID
-		if sessionMetaID != "" {
-			sessID = sessionMetaID
-		}
-
-		records = append(records, UsageEventStub{
-			DedupKey:                 dedup,
-			Model:                    model,
-			Provider:                 provider,
-			ProjectDir:               fileProjectDir,
-			SessionID:                sessID,
-			RawMessageID:             "",
-			InputTokens:              in,
-			OutputTokens:             out,
-			CacheReadInputTokens:     cr,
-			CacheCreationInputTokens: 0, // codex 不提供 cache_creation
-			OccurredAt:               occurredAt,
-		})
-	}
-
-	if scanErr := scanner.Err(); scanErr != nil {
-		return records, currentOffset, context, fmt.Errorf("scan codex jsonl %q: %w", jsonlPath, scanErr)
 	}
 
 	nextContext = UsageContext{
@@ -301,62 +309,75 @@ func ReadUsageContext(jsonlPath string, endOffset int64) (UsageContext, error) {
 		return UsageContext{}, fmt.Errorf("open codex jsonl %q: %w", jsonlPath, err)
 	}
 	defer f.Close()
+	return readUsageContextFromReader(f, endOffset, inferSessionIDFromPath(jsonlPath), jsonlPath)
+}
 
-	context := UsageContext{SessionID: inferSessionIDFromPath(jsonlPath)}
+// readUsageContextFromReader reads metadata records from r until endOffset.
+// 抽出为内部函数便于注入错误 reader 做单测（Minor-1）。
+//
+// 错误顺序要点：bufio.Reader.ReadBytes 允许同时返回 data 与非 EOF 错误（典型
+// 场景：读到无尾换行的末行且底层 I/O 故障）。此时必须先传播非 EOF 错误，再按
+// endOffset 结束——否则达到 endOffset 时 break 会吞掉 I/O 错误静默成功，后续
+// 增量记录可能基于不完整行得到错误/缺失的 model、provider。
+func readUsageContextFromReader(r io.Reader, endOffset int64, sessionID, sourceLabel string) (UsageContext, error) {
+	context := UsageContext{SessionID: sessionID}
 	if endOffset <= 0 {
 		return context, nil
 	}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// 同 ExtractUsageRecordsWithContext：用 bufio.Reader.ReadBytes 取代固定上限的
+	// Scanner，避免含超长行（数 MB 的 tool_result）的 rollout 在读取上下文时报
+	// bufio.Scanner: token too long。
+	reader := bufio.NewReaderSize(r, 64*1024)
 	var offset int64
-	for scanner.Scan() {
-		lineBytes := scanner.Bytes()
-		offset += int64(len(lineBytes)) + 1
-		if len(lineBytes) == 0 {
-			if offset >= endOffset {
-				break
+	for {
+		rawLine, readErr := reader.ReadBytes('\n')
+		if len(rawLine) > 0 {
+			offset += int64(len(rawLine))
+			line := bytes.TrimRight(rawLine, "\r\n")
+			if len(line) > 0 {
+				var rec codexRecord
+				if json.Unmarshal(line, &rec) == nil && len(rec.Payload) > 0 {
+					switch rec.Type {
+					case "session_meta":
+						var sm sessionMetaPayload
+						if json.Unmarshal(rec.Payload, &sm) == nil {
+							if sm.ModelProvider != "" {
+								context.Provider = sm.ModelProvider
+							}
+							if sm.Model != "" && context.Model == "" {
+								context.Model = sm.Model
+							}
+							if sm.Cwd != "" {
+								context.ProjectDir = sm.Cwd
+							}
+							if sm.ID != "" {
+								context.SessionID = sm.ID
+							}
+						}
+					case "turn_context":
+						var tc turnContextPayload
+						if json.Unmarshal(rec.Payload, &tc) == nil {
+							if tc.Model != "" {
+								context.Model = tc.Model
+							}
+							if tc.Cwd != "" {
+								context.ProjectDir = tc.Cwd
+							}
+						}
+					}
+				}
 			}
-			continue
 		}
-
-		var rec codexRecord
-		if json.Unmarshal(lineBytes, &rec) == nil && len(rec.Payload) > 0 {
-			switch rec.Type {
-			case "session_meta":
-				var sm sessionMetaPayload
-				if json.Unmarshal(rec.Payload, &sm) == nil {
-					if sm.ModelProvider != "" {
-						context.Provider = sm.ModelProvider
-					}
-					if sm.Model != "" && context.Model == "" {
-						context.Model = sm.Model
-					}
-					if sm.Cwd != "" {
-						context.ProjectDir = sm.Cwd
-					}
-					if sm.ID != "" {
-						context.SessionID = sm.ID
-					}
-				}
-			case "turn_context":
-				var tc turnContextPayload
-				if json.Unmarshal(rec.Payload, &tc) == nil {
-					if tc.Model != "" {
-						context.Model = tc.Model
-					}
-					if tc.Cwd != "" {
-						context.ProjectDir = tc.Cwd
-					}
-				}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return context, fmt.Errorf("scan codex context %q: %w", sourceLabel, readErr)
 			}
+			break
 		}
 		if offset >= endOffset {
 			break
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return context, fmt.Errorf("scan codex context %q: %w", jsonlPath, err)
 	}
 	return context, nil
 }
