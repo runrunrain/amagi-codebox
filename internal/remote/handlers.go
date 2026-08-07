@@ -21,6 +21,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/launch-codex", s.requireLoopbackPeer(s.handleLaunchCodex))
 	mux.HandleFunc("POST /api/sessions/launch-opencode", s.requireLoopbackPeer(s.handleLaunchOpenCode))
 	mux.HandleFunc("POST /api/sessions/launch-pi", s.requireLoopbackPeer(s.handleLaunchPi))
+	mux.HandleFunc("POST /api/sessions/launch-omp", s.requireLoopbackPeer(s.handleLaunchOmp))
 	mux.HandleFunc("POST /api/sessions/clear-stopped", s.requireLoopbackPeer(s.handleClearStopped))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireLoopbackPeer(s.handleStopSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}/remove", s.requireLoopbackPeer(s.handleRemoveSession))
@@ -237,6 +238,34 @@ func (s *Server) handleLaunchPi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.app.LaunchPiSession(body.ModelName, body.ProviderID, body.Mode, body.WorkDir, body.ShellPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	info, err := s.app.GetSession(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// handleLaunchOmp 远程启动 Oh My Pi (omp) 会话（复刻 handleLaunchPi）。
+// 调用 app.LaunchOmpSession(modelName, providerID, mode, workDir, shellPath)，
+// 签名与 Pi/Codex 一致（modelName 可为 terminal_preset 的 stable key）。
+func (s *Server) handleLaunchOmp(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ModelName  string `json:"modelName"`
+		ProviderID string `json:"providerID"`
+		Mode       string `json:"mode"`
+		WorkDir    string `json:"workDir"`
+		ShellPath  string `json:"shellPath"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	id, err := s.app.LaunchOmpSession(body.ModelName, body.ProviderID, body.Mode, body.WorkDir, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

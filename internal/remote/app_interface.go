@@ -21,6 +21,7 @@ type AppInterface interface {
 	LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
 	LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error)
 	LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
+	LaunchOmpSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error)
 	StopSession(sessionID string) error
 	RemoveSession(sessionID string) error
 	ClearStoppedSessions() int

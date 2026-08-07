@@ -14,7 +14,7 @@ export function basename(path: string): string {
 /**
  * Application type label for a session/app tag.
  * Truth source: internal/session/types.go AppType const
- *   claudecode / opencode / codex / pi (+ amagicode legacy)
+ *   claudecode / opencode / codex / pi / omp (+ amagicode legacy)
  * Falls back to the raw tag when unknown.
  */
 export function appTypeLabel(tag: string): string {
@@ -23,6 +23,7 @@ export function appTypeLabel(tag: string): string {
     opencode: 'OpenCode',
     codex: 'Codex',
     pi: 'Pi',
+    omp: 'Oh My Pi',
     amagicode: 'AmagiCode',
   };
   return labels[tag] || tag;
@@ -35,6 +36,7 @@ export function appTypeLabel(tag: string): string {
  *   opencode   -> warning orange (#FF9500)
  *   codex      -> purple (#AF52DE)
  *   pi         -> system green (#34C759)
+ *   omp        -> system teal (#30B0C7)
  *   amagicode  -> tertiary gray (legacy)
  * Unknown falls back to tertiary gray.
  */
@@ -44,6 +46,7 @@ export function tagColor(tag: string): string {
     opencode: '#FF9500',
     codex: '#AF52DE',
     pi: '#34C759',
+    omp: '#30B0C7',
     amagicode: '#8E8E93',
   };
   return colors[tag] || '#8E8E93';

@@ -12,6 +12,7 @@ import (
 	"amagi-codebox/internal/appmeta/claude"
 	"amagi-codebox/internal/appmeta/codex"
 	"amagi-codebox/internal/appmeta/opencode"
+	"amagi-codebox/internal/appmeta/omp"
 	"amagi-codebox/internal/appmeta/pi"
 )
 
@@ -25,7 +26,8 @@ const syncConcurrency = 4
 //  2. Codex：枚举 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 //  3. OpenCode：读 ~/.local/share/opencode/opencode.db
 //  4. Pi：枚举 codebox 隔离目录 + ~/.pi/agent/sessions 下会话 jsonl
-//  5. 刷新 daily_rollup（分区刷新：仅重算受影响日期）
+//  5. Omp：枚举 ~/.omp/agent/sessions 下会话 jsonl
+//  6. 刷新 daily_rollup（分区刷新：仅重算受影响日期）
 //
 // 统计语义（M5）：
 //   - RecordsAdded：真正新增行（INSERT 生效）。
@@ -177,7 +179,37 @@ func (s *Service) SyncAll() error {
 	}
 	wg.Wait()
 
-	// === 5. 刷新 daily_rollup（分区刷新） ===
+	// === 5. Omp jsonl ===
+	// omp 新会话位于默认用户目录 ~/.omp/agent/sessions（单根，无旧版隔离根；
+	// pi-runtime 不适用于 omp——omp 无历史 CodeBox 版本）。
+	ompFiles := enumerateOmpSessionFiles(home)
+	filesScanned += len(ompFiles)
+	for _, f := range ompFiles {
+		f := f
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out := s.syncOmpJSONL(ctx, f)
+			if out.err != nil {
+				appendErr("omp", f+": "+out.err.Error())
+				return
+			}
+			errorsMu.Lock()
+			recordsAdded += out.added
+			processedCount += out.processed
+			errorsMu.Unlock()
+			affectedMu.Lock()
+			for _, d := range out.days {
+				affectedDays[d] = struct{}{}
+			}
+			affectedMu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// === 6. 刷新 daily_rollup（分区刷新） ===
 	// 始终加入"今天"以兜底 proxy 实时路径（proxy 绕过 sync 直接写主表，
 	// 仅靠分区刷新会漏；多刷新一天的代价极小）。
 	affectedDays[time.Now().UTC().Format("2006-01-02")] = struct{}{}
@@ -637,6 +669,117 @@ func (s *Service) updateSyncStatePi(ctx context.Context, path string, mtime, off
 		SourceType:     "pi_jsonl",
 		SourceKey:      path,
 		AppType:        appPi,
+		LastMTime:      mtime,
+		LastLineOffset: offset,
+		LastSyncedAt:   time.Now().UTC(),
+		LastError:      lastErr,
+		RecordsAdded:   added,
+	}
+	return upsertSyncState(ctx, s.db, state)
+}
+
+// normalizeOmpProvider strips codebox's "amagi-" namespace prefix from an omp
+// provider id so omp usage merges with the canonical provider bucket (currency,
+// pricing, dashboard grouping) — same semantics as normalizePiProvider. omp
+// records whatever --provider it was given; codebox launches omp with
+// "amagi-<name>" to isolate it from omp's built-in providers. Non-prefixed
+// providers are returned unchanged.
+func normalizeOmpProvider(raw string) string {
+	if p := strings.TrimPrefix(raw, "amagi-"); p != raw && p != "" {
+		return p
+	}
+	return raw
+}
+
+// enumerateOmpSessionFiles collects omp session JSONLs from the single root
+// ~/.omp/agent/sessions.
+//
+// omp 无旧版 CodeBox 隔离根（pi-runtime 仅 pi 历史兼容），故只有一个根。
+// 目录递归扫描（walkFiles）自然覆盖 omp 的嵌套子会话 transcript
+//（sessions/<project>/<session>/<id>.jsonl，subagent/advisor 会话），
+// 内容指纹 dedup 会折叠与父会话重叠的拷贝条目。
+func enumerateOmpSessionFiles(home string) []string {
+	return enumerateJSONLs(filepath.Join(home, ".omp", "agent", "sessions"), ".jsonl")
+}
+
+// syncOmpJSONL 同步单个 omp 会话 jsonl 文件（复刻 syncPiJSONL）。
+//
+// 增量策略与 claude/codex/pi 一致：mtime+size 未变则跳过；否则从
+// last_line_offset 续传解析，INSERT OR IGNORE（dedup_key="omp:"+内容指纹）。
+func (s *Service) syncOmpJSONL(ctx context.Context, path string) syncOutcome {
+	info, err := os.Stat(path)
+	if err != nil {
+		return syncOutcome{err: err}
+	}
+	state, _ := getSyncState(ctx, s.db, "omp_jsonl", path)
+	if state.LastMTime == info.ModTime().UnixNano() && state.LastLineOffset == info.Size() {
+		return syncOutcome{}
+	}
+
+	startOffset := state.LastLineOffset
+	// mtime 变但 size 没变：保守从头扫（覆盖更新）
+	if state.LastMTime != 0 && state.LastMTime != info.ModTime().UnixNano() && state.LastLineOffset == info.Size() {
+		startOffset = 0
+	}
+
+	stubs, lastOffset, parseErr := omp.ExtractUsageRecords(path, startOffset)
+	if parseErr != nil {
+		_ = s.updateSyncStateOmp(ctx, path, info.ModTime().UnixNano(), startOffset, 0, parseErr.Error())
+		return syncOutcome{err: parseErr}
+	}
+
+	out := syncOutcome{days: make([]string, 0, len(stubs))}
+	for _, st := range stubs {
+		select {
+		case <-ctx.Done():
+			out.err = ctx.Err()
+			return out
+		default:
+		}
+		evt := UsageEvent{
+			AppType:                  appOmp,
+			Source:                   SourceSessionLog,
+			Provider:                 normalizeOmpProvider(st.Provider),
+			Model:                    st.Model,
+			ProjectDir:               st.ProjectDir,
+			SessionID:                st.SessionID,
+			InputTokens:              st.InputTokens,
+			OutputTokens:             st.OutputTokens,
+			CacheReadInputTokens:     st.CacheReadInputTokens,
+			CacheCreationInputTokens: st.CacheCreationInputTokens,
+			OccurredAt:               st.OccurredAt,
+			DedupKey:                 st.DedupKey,
+			CostProvided:             st.CostProvided,
+			NativeCost:               st.NativeCost,
+			// omp 的 usage.cost.total 以美元计价。parser 已在 CostProvided=true 时
+			// 给出 CurrencyCode="USD"；这里原样透传，避免被 currencyForProvider
+			// 误判为国产 provider 的 CNY。仅当无原生成本（CostProvided=false，
+			// 回退本地价格表）时才走 provider 币种推断。
+			CurrencyCode: st.CurrencyCode,
+		}
+		isNew, err := s.Record(evt)
+		if err != nil {
+			s.logWarn("usage", "omp record 失败", err.Error())
+			continue
+		}
+		out.processed++
+		if isNew {
+			out.added++
+			out.days = append(out.days, evt.OccurredAt.UTC().Format("2006-01-02"))
+		}
+	}
+
+	if err := s.updateSyncStateOmp(ctx, path, info.ModTime().UnixNano(), lastOffset, out.added, ""); err != nil {
+		s.logWarn("usage", "omp sync_state 写入失败", err.Error())
+	}
+	return out
+}
+
+func (s *Service) updateSyncStateOmp(ctx context.Context, path string, mtime, offset int64, added int64, lastErr string) error {
+	state := SyncState{
+		SourceType:     "omp_jsonl",
+		SourceKey:      path,
+		AppType:        appOmp,
 		LastMTime:      mtime,
 		LastLineOffset: offset,
 		LastSyncedAt:   time.Now().UTC(),

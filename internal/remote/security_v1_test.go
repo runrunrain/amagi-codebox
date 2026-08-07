@@ -37,6 +37,7 @@ func validHostSummary() (contract.HostSummary, error) {
 			{CLIType: contract.CLITypeOpenCode, Available: false},
 			{CLIType: contract.CLITypeCodex, Available: false},
 			{CLIType: contract.CLITypePi, Available: false},
+			{CLIType: contract.CLITypeOmp, Available: false},
 		},
 	}, nil
 }

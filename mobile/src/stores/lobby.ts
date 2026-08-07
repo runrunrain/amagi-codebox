@@ -20,6 +20,7 @@ import { defineStore } from 'pinia';
 import {
   CLI_TYPE_CLAUDE_CODE,
   CLI_TYPE_CODEX,
+  CLI_TYPE_OMP,
   CLI_TYPE_OPENCODE,
   CLI_TYPE_PI,
   ERROR_CODE_AUTH_REVOKED,
@@ -215,6 +216,7 @@ export const CLI_METAS: readonly CliMeta[] = [
   { cliType: CLI_TYPE_OPENCODE, label: 'OpenCode' },
   { cliType: CLI_TYPE_CODEX, label: 'Codex' },
   { cliType: CLI_TYPE_PI, label: 'Pi' },
+  { cliType: CLI_TYPE_OMP, label: 'Oh My Pi' },
 ] as const;
 
 export function cliLabel(cliType: CLIType): string {

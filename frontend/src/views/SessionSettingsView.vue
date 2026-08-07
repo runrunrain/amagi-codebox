@@ -274,6 +274,7 @@ const openaiProviders = ref<Record<string, Provider>>({})
 const claudePresets = ref<MergedTerminalPreset[]>([])
 const codexPresets = ref<MergedTerminalPreset[]>([])
 const piPresets = ref<MergedTerminalPreset[]>([])
+const ompPresets = ref<MergedTerminalPreset[]>([])
 const openCodePresetList = ref<Array<{ key: string; name: string; description: string; bindingCount: number }>>([])
 
 // --- 引擎选项 ---
@@ -282,6 +283,7 @@ const engineOptions = [
   { value: 'opencode', label: 'OpenCode' },
   { value: 'codex', label: 'Codex' },
   { value: 'pi', label: 'Pi' },
+  { value: 'omp', label: 'Oh My Pi' },
 ]
 
 // --- 引擎相关计算属性 ---
@@ -289,12 +291,14 @@ const currentMode = computed(() => {
   if (dashState.engine === 'claudecode') return dashState.claudeMode
   if (dashState.engine === 'opencode') return dashState.openCodeMode
   if (dashState.engine === 'pi') return dashState.piMode
+  if (dashState.engine === 'omp') return dashState.ompMode
   return dashState.codexMode
 })
 function setMode(v: string) {
   if (dashState.engine === 'claudecode') dashState.claudeMode = v
   else if (dashState.engine === 'opencode') dashState.openCodeMode = v
   else if (dashState.engine === 'pi') dashState.piMode = v
+  else if (dashState.engine === 'omp') dashState.ompMode = v
   else dashState.codexMode = v
 }
 
@@ -302,12 +306,14 @@ const currentShell = computed(() => {
   if (dashState.engine === 'claudecode') return dashState.claudeShell
   if (dashState.engine === 'opencode') return dashState.openCodeShell
   if (dashState.engine === 'pi') return dashState.piShell
+  if (dashState.engine === 'omp') return dashState.ompShell
   return dashState.codexShell
 })
 function setShell(v: string) {
   if (dashState.engine === 'claudecode') dashState.claudeShell = v
   else if (dashState.engine === 'opencode') dashState.openCodeShell = v
   else if (dashState.engine === 'pi') dashState.piShell = v
+  else if (dashState.engine === 'omp') dashState.ompShell = v
   else dashState.codexShell = v
 }
 
@@ -315,31 +321,35 @@ const currentCustomShellPath = computed(() => {
   if (dashState.engine === 'claudecode') return dashState.claudeCustomShellPath
   if (dashState.engine === 'opencode') return dashState.openCodeCustomShellPath
   if (dashState.engine === 'pi') return dashState.piCustomShellPath
+  if (dashState.engine === 'omp') return dashState.ompCustomShellPath
   return dashState.codexCustomShellPath
 })
 function setCustomShellPath(v: string) {
   if (dashState.engine === 'claudecode') dashState.claudeCustomShellPath = v
   else if (dashState.engine === 'opencode') dashState.openCodeCustomShellPath = v
   else if (dashState.engine === 'pi') dashState.piCustomShellPath = v
+  else if (dashState.engine === 'omp') dashState.ompCustomShellPath = v
   else dashState.codexCustomShellPath = v
 }
 
 const currentProvider = computed(() => {
   if (dashState.engine === 'codex') return dashState.codexProvider
   if (dashState.engine === 'pi') return dashState.piProvider
+  if (dashState.engine === 'omp') return dashState.ompProvider
   return dashState.provider
 })
 
 const currentPreset = computed(() => {
   if (dashState.engine === 'codex') return dashState.codexModel
   if (dashState.engine === 'pi') return dashState.piModel
+  if (dashState.engine === 'omp') return dashState.ompModel
   if (dashState.engine === 'opencode') return dashState.openCodePresetKey
   return dashState.preset
 })
 
 // --- 下拉选项 ---
 const providerOptions = computed(() => {
-  const map = (dashState.engine === 'codex' || dashState.engine === 'pi') ? openaiProviders.value : anthropicProviders.value
+  const map = (dashState.engine === 'codex' || dashState.engine === 'pi' || dashState.engine === 'omp') ? openaiProviders.value : anthropicProviders.value
   return Object.keys(map).sort().map(name => ({ value: name, label: name }))
 })
 
@@ -356,6 +366,7 @@ const presetOptions = computed(() => {
   }
   const list = dashState.engine === 'codex' ? codexPresets.value
     : dashState.engine === 'pi' ? piPresets.value
+    : dashState.engine === 'omp' ? ompPresets.value
     : claudePresets.value
   const targetProvider = currentProvider.value
   return list
@@ -438,6 +449,26 @@ function validatePiPreset() {
   }
 }
 
+function validateOmpPreset() {
+  if (dashState.engine !== 'omp') return
+  if (dashState.ompModel) {
+    const entry = ompPresets.value.find(p => p.key === dashState.ompModel)
+    if (entry && entry.provider === dashState.ompProvider) return
+  }
+  if (ompPresets.value.length > 0) {
+    const match = ompPresets.value.find(p => p.provider === dashState.ompProvider)
+    if (match) {
+      dashState.ompModel = match.key
+    } else {
+      const first = ompPresets.value[0]
+      dashState.ompProvider = first.provider
+      dashState.ompModel = first.key
+    }
+  } else {
+    dashState.ompModel = ''
+  }
+}
+
 // --- 事件处理 ---
 function handleEngineChange(v: string) {
   dashState.engine = v as any
@@ -453,6 +484,10 @@ function handleProviderChange(v: string) {
     dashState.piProvider = v
     const first = piPresets.value.find(p => p.provider === v)
     dashState.piModel = first ? first.key : ''
+  } else if (dashState.engine === 'omp') {
+    dashState.ompProvider = v
+    const first = ompPresets.value.find(p => p.provider === v)
+    dashState.ompModel = first ? first.key : ''
   } else {
     dashState.provider = v
     const first = claudePresets.value.find(p => p.provider === v)
@@ -469,6 +504,10 @@ function handlePresetChange(v: string) {
     dashState.piModel = v
     const entry = piPresets.value.find(p => p.key === v)
     if (entry && entry.provider) dashState.piProvider = entry.provider
+  } else if (dashState.engine === 'omp') {
+    dashState.ompModel = v
+    const entry = ompPresets.value.find(p => p.key === v)
+    if (entry && entry.provider) dashState.ompProvider = entry.provider
   } else if (dashState.engine === 'opencode') {
     dashState.openCodePresetKey = v
   } else {
@@ -610,14 +649,16 @@ async function loadProviders() {
 
 async function loadTerminalPresets() {
   try {
-    const [claude, codex, pi] = await Promise.all([
+    const [claude, codex, pi, omp] = await Promise.all([
       providerApi.getMergedTerminalPresets('claude_code'),
       providerApi.getMergedTerminalPresets('codex'),
       providerApi.getMergedTerminalPresets('pi'),
+      providerApi.getMergedTerminalPresets('omp'),
     ])
     claudePresets.value = claude || []
     codexPresets.value = codex || []
     piPresets.value = pi || []
+    ompPresets.value = omp || []
   } catch (err) {
     console.error('Failed to load terminal presets:', err)
   }
@@ -647,6 +688,7 @@ async function loadOpenCodePresets() {
 watch(claudePresets, () => { if (dashState.engine === 'claudecode') validateClaudePreset() })
 watch(codexPresets, () => { if (dashState.engine === 'codex') validateCodexPreset() })
 watch(piPresets, () => { if (dashState.engine === 'pi') validatePiPreset() })
+watch(ompPresets, () => { if (dashState.engine === 'omp') validateOmpPreset() })
 
 onMounted(async () => {
   await platformCaps.ensure()
@@ -668,9 +710,13 @@ onMounted(async () => {
   if (!dashState.piProvider && Object.keys(openaiProviders.value).length > 0) {
     dashState.piProvider = Object.keys(openaiProviders.value)[0]
   }
+  if (!dashState.ompProvider && Object.keys(openaiProviders.value).length > 0) {
+    dashState.ompProvider = Object.keys(openaiProviders.value)[0]
+  }
   validateClaudePreset()
   validateCodexPreset()
   validatePiPreset()
+  validateOmpPreset()
 })
 </script>
 

@@ -273,6 +273,44 @@ func TestBuildClaudeCmdUsesEffectivePATHWithNativeDefaultAfterPathOverride(t *te
 	}
 }
 
+// TestBuildOmpCmdArgs 验证 buildOmpCmd 的参数拼装（复刻 buildPiCmd 契约）：
+// --provider/--model/--thinking 仅在非空时附加；命令经 resolveCLIPath("omp") 解析。
+func TestBuildOmpCmdArgs(t *testing.T) {
+	svc := NewLauncherService(nil, nil)
+	env := []string{"PATH=/usr/bin:/bin"}
+
+	// 全参数：provider + model + thinking
+	cmd := svc.buildOmpCmd("amagi-glm", "glm-5", "max", "/work", env)
+	if cmd.Path == "omp" || cmd.Path == "" {
+		t.Errorf("cmd path = %q, want resolved omp path (not bare name)", cmd.Path)
+	}
+	if cmd.Dir != "/work" {
+		t.Errorf("cmd.Dir = %q, want /work", cmd.Dir)
+	}
+	wantArgs := []string{"--provider", "amagi-glm", "--model", "glm-5", "--thinking", "max"}
+	if strings.Join(cmd.Args[1:], " ") != strings.Join(wantArgs, " ") {
+		t.Errorf("args = %v, want %v", cmd.Args[1:], wantArgs)
+	}
+
+	// 空 thinking：不附加 --thinking
+	cmd2 := svc.buildOmpCmd("amagi-glm", "glm-5", "", "/work", env)
+	if strings.Join(cmd2.Args[1:], " ") != "--provider amagi-glm --model glm-5" {
+		t.Errorf("args without thinking = %v", cmd2.Args[1:])
+	}
+
+	// 全空：无任何附加参数
+	cmd3 := svc.buildOmpCmd("", "", "", "/work", env)
+	if len(cmd3.Args) != 1 {
+		t.Errorf("args with empty inputs = %v, want only the program path", cmd3.Args)
+	}
+
+	// 环境变量透传
+	cmd4 := svc.buildOmpCmd("", "", "", "/work", []string{"OPENAI_API_KEY=sk-test", "PATH=/usr/bin"})
+	if got := envValueForTest(cmd4.Env, "OPENAI_API_KEY"); got != "sk-test" {
+		t.Errorf("env OPENAI_API_KEY = %q, want sk-test", got)
+	}
+}
+
 func envValueForTest(env []string, key string) string {
 	for _, kv := range env {
 		parts := strings.SplitN(kv, "=", 2)

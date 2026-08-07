@@ -164,6 +164,8 @@ export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
 
 export function LaunchCodexSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
+export function LaunchOmpSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
+
 export function LaunchOpenCode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
 export function LaunchPiSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;

@@ -239,6 +239,8 @@ func cliLabel(cliType contract.CLIType) string {
 		return "Codex"
 	case contract.CLITypePi:
 		return "Pi"
+	case contract.CLITypeOmp:
+		return "Oh My Pi"
 	default:
 		return string(cliType)
 	}

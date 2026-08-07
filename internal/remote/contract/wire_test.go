@@ -197,15 +197,16 @@ func TestREST_DecodeRequests(t *testing.T) {
 
 func TestREST_MarshalResponses(t *testing.T) {
 	fx := loadFixture(t)
-	fourCLI := []CLIAvailability{
+	fiveCLI := []CLIAvailability{
 		{CLIType: CLITypeClaudeCode, Available: true},
 		{CLIType: CLITypeOpenCode, Available: true},
 		{CLIType: CLITypeCodex, Available: false},
 		{CLIType: CLITypePi, Available: true},
+		{CLIType: CLITypeOmp, Available: false},
 	}
 	pairing := PairingCompleteResponse{
 		Device: DeviceSummary{ID: "dev_opaque_1", Name: "Maorun iPhone", PairedAt: "2026-08-02T01:02:03Z"},
-		Host:   HostSummary{APIVersion: APIVersionV1, ServerVersion: "1.2.60", CLIAvailability: fourCLI},
+		Host:   HostSummary{APIVersion: APIVersionV1, ServerVersion: "1.2.60", CLIAvailability: fiveCLI},
 	}
 	b, err := MarshalRESTResponse(pairing)
 	if err != nil {
@@ -213,7 +214,7 @@ func TestREST_MarshalResponses(t *testing.T) {
 	}
 	assertJSONEqual(t, b, fx.REST.PairingCompleteResponse)
 
-	host := HostSummary{APIVersion: APIVersionV1, ServerVersion: "1.2.60", CLIAvailability: fourCLI}
+	host := HostSummary{APIVersion: APIVersionV1, ServerVersion: "1.2.60", CLIAvailability: fiveCLI}
 	bh, err := MarshalRESTResponse(host)
 	if err != nil {
 		t.Fatalf("MarshalRESTResponse host: %v", err)

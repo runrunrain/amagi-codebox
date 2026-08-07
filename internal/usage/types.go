@@ -18,6 +18,7 @@ const (
 	dedupPrefixCodex    = "cx:"
 	dedupPrefixOpenCode = "oc:"
 	dedupPrefixPi       = "pi:"
+	dedupPrefixOmp      = "omp:"
 	dedupPrefixProxy    = "px:"
 )
 
@@ -27,6 +28,7 @@ const (
 	appCodex      = "codex"
 	appOpenCode   = "opencode"
 	appPi         = "pi"
+	appOmp        = "omp"
 )
 
 // UsageRecord 是单条用量记录的规范结构，跨三类源 + proxy 实时统一。

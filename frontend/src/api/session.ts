@@ -8,6 +8,7 @@ import {
   LaunchOpenCode,
   LaunchCodexSession,
   LaunchPiSession,
+  LaunchOmpSession,
   StopSession,
   GetSessions,
   GetSession,
@@ -121,6 +122,30 @@ export async function launchPiSession(params: {
     );
   } catch (error) {
     console.error('Failed to launch Pi session:', error);
+    throw error;
+  }
+}
+
+/**
+ * Launch an Oh My Pi (omp) coding agent session
+ */
+export async function launchOmpSession(params: {
+  modelName: string;
+  providerID: string;
+  mode: string;
+  workDir: string;
+  shellPath?: string;
+}): Promise<string> {
+  try {
+    return await LaunchOmpSession(
+      params.modelName,
+      params.providerID,
+      params.mode,
+      params.workDir,
+      params.shellPath || ''
+    );
+  } catch (error) {
+    console.error('Failed to launch Omp session:', error);
     throw error;
   }
 }

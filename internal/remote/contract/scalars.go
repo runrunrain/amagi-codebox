@@ -50,7 +50,7 @@ type Seq uint64
 // cannot be silently rounded in TS clients.
 const MaxSeqSafeInteger Seq = 9007199254740991
 
-// CLIType enumerates the four frozen remote-controlled CLI types.
+// CLIType enumerates the remote-controlled CLI types.
 type CLIType string
 
 const (
@@ -58,14 +58,16 @@ const (
 	CLITypeOpenCode   CLIType = "opencode"
 	CLITypeCodex      CLIType = "codex"
 	CLITypePi         CLIType = "pi"
+	CLITypeOmp        CLIType = "omp"
 )
 
-// KnownCLITypes is the complete set of four CLI types in canonical order.
+// KnownCLITypes is the complete set of CLI types in canonical order.
 var KnownCLITypes = []CLIType{
 	CLITypeClaudeCode,
 	CLITypeOpenCode,
 	CLITypeCodex,
 	CLITypePi,
+	CLITypeOmp,
 }
 
 // SessionState enumerates the five frozen session lifecycle states. `removed`

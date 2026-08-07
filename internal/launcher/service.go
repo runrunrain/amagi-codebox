@@ -497,6 +497,84 @@ func (s *LauncherService) buildPiCmd(providerName, modelName, thinkingLevel, wor
 	return cmd
 }
 
+// LaunchOmp 启动一个新的 Oh My Pi (omp) 进程，返回启动结果。
+// 支持两种模式：terminal（独立终端）、embedded（内嵌终端）。
+// providerName 非空时附加 --provider providerName；modelName 非空时附加 --model modelName；
+// thinkingLevel 非空时附加 --thinking thinkingLevel（值域 off/minimal/low/medium/high/xhigh/max/auto）。
+// envOverrides 中的键值对（如 OPENAI_API_KEY/ANTHROPIC_API_KEY）会注入到进程环境变量。
+// 复刻 LaunchPi：omp 与 pi 同源，CLI 参数契约一致（--provider/--model/--thinking）。
+func (s *LauncherService) LaunchOmp(
+	sessionID string,
+	providerName string,
+	modelName string,
+	thinkingLevel string,
+	mode session.LaunchMode,
+	workDir string,
+	envOverrides map[string]string,
+) (*LaunchResult, error) {
+	env := BuildEnv(s.baseEnv(), envOverrides)
+
+	cmd := s.buildOmpCmd(providerName, modelName, thinkingLevel, workDir, env)
+
+	s.log.Info("launcher", "正在启动 omp 进程", fmt.Sprintf("sessionID=%s mode=%s provider=%s model=%s thinking=%s", sessionID, mode, providerName, modelName, thinkingLevel))
+
+	if err := cmd.Start(); err != nil {
+		s.log.Error("launcher", "omp 进程启动失败", err.Error())
+		return nil, fmt.Errorf("start omp process: %w", err)
+	}
+
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+
+	s.log.Info("launcher", "omp 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
+
+	s.mu.Lock()
+	s.processes[sessionID] = cmd
+	s.mu.Unlock()
+
+	// 监控进程退出
+	go func(id string, c *exec.Cmd) {
+		err := c.Wait()
+		s.mu.Lock()
+		if s.processes[id] == c {
+			delete(s.processes, id)
+		}
+		s.mu.Unlock()
+		s.log.Info("launcher", "omp 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
+	}(sessionID, cmd)
+
+	return &LaunchResult{
+		SessionID: sessionID,
+		PID:       pid,
+	}, nil
+}
+
+// buildOmpCmd 构建 omp 进程命令（复刻 buildPiCmd）。
+// providerName 非空时附加 --provider providerName；
+// modelName 非空时附加 --model modelName；
+// thinkingLevel 非空时附加 --thinking thinkingLevel。
+func (s *LauncherService) buildOmpCmd(providerName, modelName, thinkingLevel, workDir string, env []string) *exec.Cmd {
+	args := []string{}
+	if providerName != "" {
+		args = append(args, "--provider", providerName)
+	}
+	if modelName != "" {
+		args = append(args, "--model", modelName)
+	}
+	if thinkingLevel != "" {
+		args = append(args, "--thinking", thinkingLevel)
+	}
+	cmd := exec.Command(s.resolveCLIPath("omp", env), args...)
+	cmd.Dir = workDir
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
 // buildClaudeCmd 构建 claude 进程命令。
 // 复刻原始验证可行的方式：直接 exec.Command("claude")，
 // 传递 os.Stdin/Stdout/Stderr，由 Windows 自动分配新控制台。

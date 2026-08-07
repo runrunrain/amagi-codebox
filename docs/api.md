@@ -187,6 +187,12 @@
 **Returns**: `string`, `error`  
 **Description**: 启动 OpenCode 会话，并按 provider 类型注入相应环境变量。
 
+### LaunchOmpSession
+**Service**: App  
+**Parameters**: `modelName (string)`, `providerID (string)`, `mode (string)`, `workDir (string)`, `shellPath (string)`  
+**Returns**: `string`, `error`  
+**Description**: 启动 Oh My Pi (omp) 会话。providerID 非空时把 amagi Provider 翻译为 omp 自定义 provider（"amagi-<name>"）写入 ~/.omp/agent/models.yml，并以 --provider/--model/--thinking 参数启动；modelName 可为 terminal_preset 的 stable key。
+
 ### BrowseDirectory
 **Service**: App  
 **Parameters**: none  

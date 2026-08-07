@@ -283,6 +283,10 @@ func generateDedupKey(evt UsageEvent) string {
 	case appPi:
 		// session_log 的 pi: 前缀（含会话文件+entry id）由 parser 预填；此为兜底。
 		return dedupPrefixPi + hash16(evt.Model, evt.SessionID, evt.OccurredAt.UnixNano())
+	case appOmp:
+		// session_log 的 omp: 前缀（含会话文件+entry id）由 parser 预填；此为兜底
+		//（与 appPi 同一模式，omp 与 pi 同构）。
+		return dedupPrefixOmp + hash16(evt.Model, evt.SessionID, evt.OccurredAt.UnixNano())
 	default:
 		if evt.Source == SourceProxy {
 			return fmt.Sprintf("%s%s:%s", dedupPrefixProxy, evt.SessionID, evt.RequestID)

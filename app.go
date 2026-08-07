@@ -104,6 +104,14 @@ type piLaunchSettings struct {
 	Thinking string // --thinking arg（off/minimal/low/medium/high/xhigh/max），来自预设 ReasoningEffort
 }
 
+// ompLaunchSettings 是 Oh My Pi (omp) 会话的启动参数（复刻 piLaunchSettings）。
+// omp 与 pi 同源，CLI 参数契约一致：--provider/--model/--thinking。
+type ompLaunchSettings struct {
+	Provider string // --provider arg（amagi-<name> 或内置 anthropic/openai）
+	Model    string // --model arg
+	Thinking string // --thinking arg（off/minimal/low/medium/high/xhigh/max/auto），来自预设 ReasoningEffort
+}
+
 const (
 	codexModelProviderName     = "amagi-codebox-provider"
 	codexOfficialOpenAIAPIHost = "api.openai.com"
@@ -674,6 +682,8 @@ func parseCLITool(tool string) (envcheck.CLITool, error) {
 		return envcheck.ToolCodex, nil
 	case "pi":
 		return envcheck.ToolPi, nil
+	case "omp":
+		return envcheck.ToolOmp, nil
 	case "headroom":
 		return envcheck.ToolHeadroom, nil
 	default:
@@ -2780,6 +2790,201 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	return sess.ID, nil
 }
 
+// LaunchOmpSession 启动一个新的 Oh My Pi (omp) 会话（完整复刻 LaunchPiSession）。
+//
+// omp 与 pi 同源：同样的 --provider/--model/--thinking CLI 契约、同样的
+// PI_CODING_AGENT_DIR agent 根重定位、同样的会话 JSONL 结构。差异：
+//   - agent 根为 ~/.omp/agent（defaultOmpAgentDir），models.yml 为 YAML 格式；
+//   - 模型选择走 --model provider/model（--provider 为 legacy 仍可用）；
+//   - omp 无插件管理面板（piplugin 模式不复制，一期不做）。
+//
+// 主链路：terminal_presets 桥接（type "omp"）→ 写 ~/.omp/agent/models.yml
+//（BuildOmpModelsConfig + MergeOmpModelsConfig + WriteOmpAgentConfig，成功则
+// Provider=amagi-<name>，失败回退 ompProviderMapping）→ embedded/terminal 双模式。
+func (a *App) LaunchOmpSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
+	a.Log.Info("session", "启动 omp 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
+
+	// ---- terminal_presets 桥接 ----
+	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("omp", modelName)
+	tpFound := tpErr == nil && tp != nil
+	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
+	// 供后续写入 omp models.yml 的 model 配置与解析 --thinking 级别。
+	var presetParams config.Parameters
+	if tpFound {
+		if tpProvider != "" {
+			providerID = tpProvider
+		}
+		modelName = tp.Model
+		presetParams = tp.Parameters
+		a.Log.Info("session", "omp 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
+	}
+
+	// ---- legacy provider preset fallback ----
+	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
+	if !tpFound && providerID != "" {
+		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
+			if preset, ok := provider.Presets[modelName]; ok {
+				resolvedModel := preset.Model
+				if resolvedModel == "" {
+					resolvedModel = provider.DefaultModel
+				}
+				a.Log.Info("session", "omp 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
+				modelName = resolvedModel
+				presetParams = preset.Parameters
+			}
+		}
+	}
+
+	// 确定启动模式
+	launchMode := embeddedDefaultLaunchMode(mode)
+	if err := a.validateLaunchMode(string(launchMode)); err != nil {
+		return "", err
+	}
+
+	// 如果未指定工作目录，使用默认路径
+	if workDir == "" {
+		workDir = a.Paths.GetDefaultPath()
+	}
+	if workDir == "" {
+		home, _ := os.UserHomeDir()
+		workDir = home
+	}
+
+	launchSettings := ompLaunchSettings{
+		Model: strings.TrimSpace(modelName),
+	}
+
+	// 构建环境变量注入 + omp models.yml 配置写入。
+	//
+	// omp 从标准用户目录 ~/.omp/agent 读取 models.yml 的 providers 配置。
+	// amagi 把当前选中的 provider 翻译成 omp 的一个自定义命名 provider（"amagi-<name>"），
+	// 合并写入 ~/.omp/agent/models.yml。启动时显式移除 PI_CODING_AGENT_DIR，
+	// 避免系统或 CodeBox 自定义环境里的旧值又把 omp 导向独立副本
+	//（实测：PI_CODING_AGENT_DIR 只重定位会话目录，models.yml 始终从默认根读取）。
+	envOverrides := map[string]string{
+		// BuildEnv 约定：空值表示从子进程环境中删除该变量。
+		"PI_CODING_AGENT_DIR": "",
+	}
+	if providerID != "" {
+		if provider, err := a.Config.GetProvider(providerID); err == nil {
+			launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
+			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
+
+			// 合并写入 omp 标准 agent 目录的 models.yml。
+			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
+			// 失败则回退到 ompProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
+			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams); cfgErr == nil {
+				agentDir := defaultOmpAgentDir()
+				// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
+				// 当次 amagi 生成的同名 provider 优先。
+				ompCfg = launcher.MergeOmpModelsConfig(ompCfg, agentDir)
+				if writeErr := launcher.WriteOmpAgentConfig(agentDir, ompCfg); writeErr == nil {
+					launchSettings.Provider = launcher.OmpProviderID(providerID)
+					a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
+						launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+				} else {
+					a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
+					launchSettings.Provider, _ = ompProviderMapping(*provider)
+				}
+			} else {
+				a.Log.Warn("omp", "生成 omp models.yml 失败，回退内置 provider", cfgErr.Error())
+				launchSettings.Provider, _ = ompProviderMapping(*provider)
+			}
+
+			// 冗余兜底：注入对应 API Key env var（与 OpenCode/Pi 的双路注入一致）。
+			// omp 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
+			if apiKey != "" {
+				if _, apiKeyEnv := ompProviderMapping(*provider); apiKeyEnv != "" {
+					envOverrides[apiKeyEnv] = apiKey
+				}
+			}
+		}
+	}
+
+	// 创建会话记录
+	sess := a.Sessions.Create(session.AppTypeOhMyPi, "omp", providerID, launchSettings.Model, launchMode, workDir, false)
+	a.Log.Info("session", "omp 会话已创建", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
+
+	// 调试日志：输出 envOverrides 注入情况
+	envKeys := make([]string, 0, len(envOverrides))
+	for k := range envOverrides {
+		envKeys = append(envKeys, k)
+	}
+	a.Log.Info("omp", "envOverrides keys", fmt.Sprintf("%v", envKeys))
+
+	// 内嵌终端模式：使用 ConPTY
+	if launchMode == session.ModeEmbedded {
+		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
+		baseEnv := a.EnvVars.MergeWithSystem()
+		env := launcher.BuildEnv(baseEnv, envOverrides)
+
+		args := []string{}
+		if launchSettings.Provider != "" {
+			args = append(args, "--provider", launchSettings.Provider)
+		}
+		if launchSettings.Model != "" {
+			args = append(args, "--model", launchSettings.Model)
+		}
+		if launchSettings.Thinking != "" {
+			args = append(args, "--thinking", launchSettings.Thinking)
+		}
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOhMyPi, string(launchMode), shellPath, workDir, env, args)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			return "", err
+		}
+
+		pid, err := a.launchEmbeddedPTY(sess.ID, spec)
+		if err != nil {
+			a.Sessions.MarkFailed(sess.ID, err.Error())
+			a.Log.Error("session", "omp PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+			return "", fmt.Errorf("start omp pty: %w", err)
+		}
+		a.Sessions.SetPID(sess.ID, pid)
+		a.Log.Info("session", "omp PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
+
+		go func(id string) {
+			for a.Pty.IsRunning(id) {
+				select {
+				case <-a.ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+			a.Sessions.MarkExited(id)
+			a.Log.Info("session", "omp PTY进程已退出", "id="+id)
+		}(sess.ID)
+
+		return sess.ID, nil
+	}
+
+	// 外部终端/VSCode/Zed 模式：使用 Launcher
+	result, err := a.Launcher.LaunchOmp(sess.ID, launchSettings.Provider, launchSettings.Model, launchSettings.Thinking, launchMode, workDir, envOverrides)
+	if err != nil {
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		a.Log.Error("session", "omp 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
+		return "", fmt.Errorf("launch omp: %w", err)
+	}
+
+	a.Sessions.SetPID(sess.ID, result.PID)
+	a.Log.Info("session", "omp 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
+
+	go func(id string) {
+		for a.Launcher.IsRunning(id) {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+		a.Sessions.MarkExited(id)
+		a.Log.Info("session", "omp 进程已退出", "id="+id)
+	}(sess.ID)
+
+	return sess.ID, nil
+}
+
 func normalizeCodexModelName(modelName string) string {
 	trimmed := strings.TrimSpace(modelName)
 	lower := strings.ToLower(trimmed)
@@ -3612,6 +3817,54 @@ func resolvePiLaunchSettings(provider config.Provider, requestedModel string, pa
 	}
 	return piLaunchSettings{
 		Provider: piProvider,
+		Model:    model,
+		Thinking: thinking,
+	}
+}
+
+// ompProviderMapping 把 amagi Provider 映射成 omp 的内置 provider 名 + 对应 API Key env var。
+//
+// 注意：这是**回退路径**，仅当 LaunchOmpSession 未能生成 omp models.yml 时使用。
+// 主路径是 launcher.BuildOmpModelsConfig + WriteOmpAgentConfig，会把 amagi provider
+// 翻译成 omp 的自定义命名 provider（"amagi-<name>"，含完整 baseURL/api/apiKey），
+// 合并到 omp 的标准 ~/.omp/agent/models.yml 后加载。
+//
+// 此回退映射把第三方 Anthropic/OpenAI 兼容 provider 粗略归到 omp 内置的
+// anthropic/openai，会丢失自定义 baseURL（导致第三方 provider 误打官方 endpoint），
+// 因此仅作兜底，不应作为常态路径（复刻 piProviderMapping）。
+func ompProviderMapping(p config.Provider) (ompProvider, apiKeyEnv string) {
+	if p.IsAnthropicCompatible() {
+		return "anthropic", "ANTHROPIC_API_KEY"
+	}
+	if p.IsOpenAICompatible() {
+		return "openai", "OPENAI_API_KEY"
+	}
+	return "", ""
+}
+
+// resolveOmpLaunchSettings 解析 omp 会话启动参数：确定 provider / model / thinking
+// （复刻 resolvePiLaunchSettings）。
+// requestedModel 为空时回退到 provider.DefaultModel。
+// params.ReasoningEffort（low/medium/high/xhigh/max）直接作为 omp 的 --thinking 级别，
+// 两者值域兼容；若 Thinking.Type=="disabled" 则强制 off。
+//
+// 返回的 Provider 是初始猜测（ompProviderMapping 的内置 provider 名）；
+// LaunchOmpSession 在成功写入 omp models.yml 后会用 "amagi-<name>" 覆盖它。
+func resolveOmpLaunchSettings(provider config.Provider, requestedModel string, params config.Parameters) ompLaunchSettings {
+	model := strings.TrimSpace(requestedModel)
+	ompProvider, _ := ompProviderMapping(provider)
+	if model == "" {
+		model = strings.TrimSpace(provider.DefaultModel)
+	}
+	thinking := strings.TrimSpace(params.ReasoningEffort)
+	// Thinking.Type=disabled 显式关闭思考（omp 用 off）。
+	// 注意：只有 ReasoningEffort 为空且 Thinking 显式 disabled 时才映射 off，
+	// 避免 disabled + 某个 effort 值的歧义（effort 优先）。
+	if thinking == "" && params.Thinking != nil && params.Thinking.Type == "disabled" {
+		thinking = "off"
+	}
+	return ompLaunchSettings{
+		Provider: ompProvider,
 		Model:    model,
 		Thinking: thinking,
 	}
@@ -4646,6 +4899,17 @@ func defaultPiAgentDir() string {
 		return filepath.Join(".pi", "agent")
 	}
 	return filepath.Join(home, ".pi", "agent")
+}
+
+// defaultOmpAgentDir 返回 Oh My Pi (omp) 的标准用户级 agent 目录（复刻
+// defaultPiAgentDir）。omp 的用户数据树位于 ~/.omp，models.yml/sessions 位于
+// ~/.omp/agent。CodeBox 不应把它改写到自己的 configDir。
+func defaultOmpAgentDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".omp", "agent")
+	}
+	return filepath.Join(home, ".omp", "agent")
 }
 
 // headroomVenvBinSubdir returns the platform-specific bin directory inside

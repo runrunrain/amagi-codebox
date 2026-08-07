@@ -8,7 +8,7 @@ import { usePlatformCapabilities } from './usePlatformCapabilities'
  * 注意：shell 默认值 '' 会在 initDefaults 中由平台能力 defaultShellKey 覆盖
  */
 const state = reactive({
-  engine: 'claudecode' as 'claudecode' | 'opencode' | 'codex' | 'pi',
+  engine: 'claudecode' as 'claudecode' | 'opencode' | 'codex' | 'pi' | 'omp',
   provider: '',
   preset: '',
   openCodePresetKey: '',
@@ -18,10 +18,14 @@ const state = reactive({
   // Pi 独立选择（复用 amagi provider，映射到 Pi 内置 provider）
   piProvider: '',
   piModel: '',
+  // Omp 独立选择（复用 amagi provider，映射到 Omp 内置 provider）
+  ompProvider: '',
+  ompModel: '',
   claudeMode: 'embedded',
   openCodeMode: 'embedded',
   codexMode: 'embedded',
   piMode: 'embedded',
+  ompMode: 'embedded',
   workDir: '',
   useProxy: false,
   useHeadroom: false,
@@ -35,10 +39,12 @@ const state = reactive({
   openCodeShell: '',
   codexShell: '',
   piShell: '',
+  ompShell: '',
   claudeCustomShellPath: '',
   openCodeCustomShellPath: '',
   codexCustomShellPath: '',
   piCustomShellPath: '',
+  ompCustomShellPath: '',
   initialized: false,
 })
 
@@ -61,14 +67,18 @@ export function useDashboardState() {
       state.codexModel = state.codexModel || ''
       state.piProvider = state.piProvider || ''
       state.piModel = state.piModel || ''
+      state.ompProvider = state.ompProvider || ''
+      state.ompModel = state.ompModel || ''
       state.claudeMode = d.claudeMode || d.mode || 'embedded'
       state.openCodeMode = d.openCodeMode || 'embedded'
       state.codexMode = d.codexMode || 'embedded'
       state.piMode = d.piMode || 'embedded'
+      state.ompMode = d.ompMode || 'embedded'
       state.claudeShell = d.claudeShell || d.shell || shellFallback
       state.openCodeShell = d.openCodeShell || d.shell || shellFallback
       state.codexShell = d.codexShell || d.shell || shellFallback
       state.piShell = d.piShell || d.shell || shellFallback
+      state.ompShell = d.ompShell || d.shell || shellFallback
       state.useProxy = d.useProxy || false
       state.useHeadroom = d.useHeadroom || false
       state.codexGlobalHeadroom = d.codexGlobalHeadroom || false
@@ -113,6 +123,8 @@ export function useDashboardState() {
         codexShell: state.codexShell,
         piMode: state.piMode,
         piShell: state.piShell,
+        ompMode: state.ompMode,
+        ompShell: state.ompShell,
         amagiCodePreset: '',
         amagiCodeMode: '',
         amagiCodeShell: '',
@@ -137,6 +149,8 @@ export function useDashboardState() {
     state.codexModel = ''
     state.piProvider = ''
     state.piModel = ''
+    state.ompProvider = ''
+    state.ompModel = ''
     state.workDir = ''
     state.useProxy = false
     state.useHeadroom = false

@@ -45,6 +45,54 @@ func TestNormalizeDashboardDefaults_PreservesExplicitEngineModes(t *testing.T) {
 	}
 }
 
+// TestNormalizeDashboardDefaults_OmpModeAndShell 验证 omp 引擎默认值与透传
+//（复刻 PiMode/PiShell 语义）：缺省时 OmpMode=embedded、OmpShell 跟随 Shell；
+// 显式设置时原样保留。
+func TestNormalizeDashboardDefaults_OmpModeAndShell(t *testing.T) {
+	// 缺省：embedded + 跟随全局 Shell。
+	d := DashboardDefaults{Shell: "zsh"}
+	normalizeDashboardDefaults(&d)
+	if d.OmpMode != "embedded" {
+		t.Fatalf("OmpMode = %q, want embedded", d.OmpMode)
+	}
+	if d.OmpShell != "zsh" {
+		t.Fatalf("OmpShell = %q, want zsh (follows Shell)", d.OmpShell)
+	}
+
+	// 无全局 Shell：回退 pwsh。
+	d2 := DashboardDefaults{}
+	normalizeDashboardDefaults(&d2)
+	if d2.OmpShell != "pwsh" {
+		t.Fatalf("OmpShell = %q, want pwsh fallback", d2.OmpShell)
+	}
+
+	// 显式值保留。
+	d3 := DashboardDefaults{OmpMode: "terminal", OmpShell: "bash"}
+	normalizeDashboardDefaults(&d3)
+	if d3.OmpMode != "terminal" || d3.OmpShell != "bash" {
+		t.Fatalf("explicit omp values not preserved: mode=%q shell=%q", d3.OmpMode, d3.OmpShell)
+	}
+}
+
+// TestDashboardDefaults_OmpModeRoundTrip 验证 OmpMode/OmpShell 经
+// SetDashboardDefaults/GetDashboardDefaults 完整往返（透传不丢失）。
+func TestDashboardDefaults_OmpModeRoundTrip(t *testing.T) {
+	svc := NewService(t.TempDir())
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := svc.GetDashboardDefaults()
+	d.OmpMode = "terminal"
+	d.OmpShell = "fish"
+	if err := svc.SetDashboardDefaults(d); err != nil {
+		t.Fatalf("SetDashboardDefaults: %v", err)
+	}
+	got := svc.GetDashboardDefaults()
+	if got.OmpMode != "terminal" || got.OmpShell != "fish" {
+		t.Fatalf("round-trip omp = mode:%q shell:%q, want terminal/fish", got.OmpMode, got.OmpShell)
+	}
+}
+
 func TestSaveStoresSettingsInPrivateFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX file permission bits are validated on macOS/Linux")

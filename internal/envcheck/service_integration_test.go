@@ -48,8 +48,8 @@ func TestCheckAll_PartialToolFailure_ReturnsAllItems(t *testing.T) {
 	if overall == nil {
 		t.Fatal("CheckAll() returned nil OverallStatus")
 	}
-	if len(overall.Items) != 5 {
-		t.Fatalf("overall.Items count = %d, want 5", len(overall.Items))
+	if len(overall.Items) != len(SupportedTools()) {
+		t.Fatalf("overall.Items count = %d, want %d", len(overall.Items), len(SupportedTools()))
 	}
 
 	// Assert: Claude has error but is present
@@ -101,8 +101,8 @@ func TestCheckAll_TwoToolsFail_StillReturnsAllItems(t *testing.T) {
 	if overall == nil {
 		t.Fatal("CheckAll() returned nil")
 	}
-	if len(overall.Items) != 5 {
-		t.Fatalf("expected 5 items, got %d", len(overall.Items))
+	if len(overall.Items) != len(SupportedTools()) {
+		t.Fatalf("expected %d items, got %d", len(SupportedTools()), len(overall.Items))
 	}
 	if len(overall.Issues) < 2 {
 		t.Fatalf("expected at least 2 issues, got %d", len(overall.Issues))
@@ -274,6 +274,7 @@ func TestGetCachedStatus_MultipleCheckOneCallsPreservesAllItems(t *testing.T) {
 	svc.CheckOne(ToolOpenCode)
 	svc.CheckOne(ToolCodex)
 	svc.CheckOne(ToolPi)
+	svc.CheckOne(ToolOmp)
 	svc.CheckOne(ToolHeadroom)
 
 	// Assert: all three tools present in cache

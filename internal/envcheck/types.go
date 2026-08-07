@@ -22,6 +22,7 @@ const (
 	ToolOpenCode   CLITool = "opencode"
 	ToolCodex      CLITool = "codex"
 	ToolPi         CLITool = "pi"
+	ToolOmp        CLITool = "omp"
 	ToolHeadroom   CLITool = "headroom"
 )
 

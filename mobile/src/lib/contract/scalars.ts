@@ -46,23 +46,26 @@ export const REST_BASE_PATH = '/api/remote/v1' as const;
 /** The SOLE v1 WebSocket upgrade path. There is no second "/events" entry point. */
 export const WEB_SOCKET_V1_PATH = '/ws/v1' as const;
 
-// --- Known CLI types (four frozen remote-controlled CLIs) ---
+// --- Known CLI types (five remote-controlled CLIs) ---
 export const CLI_TYPE_CLAUDE_CODE = 'claudecode' as const;
 export const CLI_TYPE_OPENCODE = 'opencode' as const;
 export const CLI_TYPE_CODEX = 'codex' as const;
 export const CLI_TYPE_PI = 'pi' as const;
+export const CLI_TYPE_OMP = 'omp' as const;
 export type CLIType =
   | typeof CLI_TYPE_CLAUDE_CODE
   | typeof CLI_TYPE_OPENCODE
   | typeof CLI_TYPE_CODEX
-  | typeof CLI_TYPE_PI;
+  | typeof CLI_TYPE_PI
+  | typeof CLI_TYPE_OMP;
 
-/** Complete set of four CLI types in canonical order (manifest parity). */
+/** Complete set of five CLI types in canonical order (manifest parity). */
 export const KNOWN_CLI_TYPES = [
   CLI_TYPE_CLAUDE_CODE,
   CLI_TYPE_OPENCODE,
   CLI_TYPE_CODEX,
   CLI_TYPE_PI,
+  CLI_TYPE_OMP,
 ] as const;
 
 // --- Session lifecycle states. `removed` is primarily an event state. ---

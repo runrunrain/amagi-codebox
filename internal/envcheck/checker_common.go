@@ -173,6 +173,8 @@ func cliCommandNamesForTool(tool CLITool) []string {
 		return []string{"codex"}
 	case ToolPi:
 		return []string{"pi"}
+	case ToolOmp:
+		return []string{"omp"}
 	case ToolHeadroom:
 		return []string{"headroom"}
 	default:
@@ -191,6 +193,8 @@ func npmPackageName(tool CLITool) string {
 		return "@openai/codex"
 	case ToolPi:
 		return "@earendil-works/pi-coding-agent"
+	case ToolOmp:
+		return "@oh-my-pi/pi-coding-agent"
 	default:
 		return ""
 	}

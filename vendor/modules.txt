@@ -196,6 +196,9 @@ golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
+# gopkg.in/yaml.v3 v3.0.1
+## explicit
+gopkg.in/yaml.v3
 # modernc.org/libc v1.74.1
 ## explicit; go 1.25.0
 modernc.org/libc

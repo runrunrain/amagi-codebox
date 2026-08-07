@@ -80,8 +80,8 @@ func forceRuntimeGOOSForTest(t *testing.T, goos string) {
 
 func TestSupportedTools(t *testing.T) {
 	tools := SupportedTools()
-	if len(tools) != 5 {
-		t.Fatalf("SupportedTools() returned %d tools, want 5", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("SupportedTools() returned %d tools, want 6", len(tools))
 	}
 	seen := map[CLITool]bool{}
 	for _, tool := range tools {
@@ -90,7 +90,7 @@ func TestSupportedTools(t *testing.T) {
 		}
 		seen[tool] = true
 	}
-	for _, expected := range []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolHeadroom} {
+	for _, expected := range []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp, ToolHeadroom} {
 		if !seen[expected] {
 			t.Errorf("SupportedTools() missing %q", expected)
 		}
@@ -106,6 +106,7 @@ func TestIsValidCLITool(t *testing.T) {
 		{ToolOpenCode, true},
 		{ToolCodex, true},
 		{ToolPi, true},
+		{ToolOmp, true},
 		{ToolHeadroom, true},
 		{CLITool("nonexistent"), false},
 		{CLITool(""), false},

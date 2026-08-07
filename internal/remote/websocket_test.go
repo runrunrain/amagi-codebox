@@ -69,6 +69,9 @@ func (a *websocketTestApp) LaunchOpenCode(providerName string, presetName string
 func (a *websocketTestApp) LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
 	return "", errors.New("not implemented")
 }
+func (a *websocketTestApp) LaunchOmpSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
+	return "", errors.New("not implemented")
+}
 func (a *websocketTestApp) StopSession(sessionID string) error   { return nil }
 func (a *websocketTestApp) RemoveSession(sessionID string) error { return nil }
 func (a *websocketTestApp) ClearStoppedSessions() int            { return 0 }

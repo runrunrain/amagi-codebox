@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Amagi CodeBox — a Wails v2 desktop app (Go backend + Vue 3/TS frontend, compiled into one binary) that manages configurations for three AI-CLI apps: **Claude Code**, **OpenCode**, and **Codex**. It manages multiple service providers/presets, stores API keys via OS keychain, launches and proxies CLI sessions with an embedded terminal (xterm.js + ConPTY/PTY), and exposes a remote-control HTTP/WebSocket API for a companion mobile app. Targets Windows 10+ and macOS.
+Amagi CodeBox — a Wails v2 desktop app (Go backend + Vue 3/TS frontend, compiled into one binary) that manages configurations for five AI-CLI apps: **Claude Code**, **OpenCode**, **Codex**, **Pi**, and **Oh My Pi (omp)**. It manages multiple service providers/presets, stores API keys via OS keychain, launches and proxies CLI sessions with an embedded terminal (xterm.js + ConPTY/PTY), and exposes a remote-control HTTP/WebSocket API for a companion mobile app. Targets Windows 10+ and macOS.
 
 ## Common commands
 
@@ -62,7 +62,7 @@ Wails auto-generates TypeScript bindings under `frontend/wailsjs/go/<pkg>/` from
 Routing uses hash history (`createWebHashHistory`) in `frontend/src/router/index.ts`. UI is Element Plus + a custom design-token layer in `frontend/src/styles/tokens.css`.
 
 ### Managed app types & sessions
-Three (plus a fourth internal) app types defined in `internal/session/types.go` as `AppType`: `claudecode`, `opencode`, `codex`, `amagicode`. `LaunchSession` in `app.go` is the core entrypoint — it resolves provider/preset, optionally applies proxy injection and headroom, then spawns a PTY session tracked by the session manager. Sessions stream output to the frontend via registered callbacks (`RegisterOutputCallback`, etc.).
+Five CLI app types (plus a deprecated internal one) defined in `internal/session/types.go` as `AppType`: `claudecode`, `opencode`, `codex`, `pi`, `omp` (Oh My Pi), and the deprecated `amagicode`. `LaunchSession` in `app.go` is the core entrypoint for Claude Code — it resolves provider/preset, optionally applies proxy injection and headroom, then spawns a PTY session tracked by the session manager. Pi/omp sessions launch through their own entrypoints (`LaunchPiSession`/`LaunchOmpSession`), which write provider configs into the CLI's own agent root (`~/.pi/agent` / `~/.omp/agent`). Sessions stream output to the frontend via registered callbacks (`RegisterOutputCallback`, etc.).
 
 ### Remote control & mobile
 `internal/remote/` runs an HTTP + WebSocket server (when enabled) for the companion Capacitor app in `mobile/`. Endpoints documented in README; all require an `Authorization` token. The mobile frontend is a **separate build** (`mobile/`) embedded via `//go:embed all:mobile/dist` in `main.go` — it is not the desktop frontend.

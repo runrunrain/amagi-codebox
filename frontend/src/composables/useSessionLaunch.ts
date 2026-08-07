@@ -6,7 +6,7 @@
  *
  * 职责：
  *   - canLaunchFromSettings(dashState)：宽松启动前置校验（仅字段非空）
- *   - launchFromSettings(dashState, opts)：三引擎统一启动 + 按 mode 决定是否跳 /terminal
+ *   - launchFromSettings(dashState, opts)：多引擎统一启动 + 按 mode 决定是否跳 /terminal
  *   - resolveShellPath(dashState, platformCaps)：按当前引擎解析 Shell 路径
  *
  * 行为契约：
@@ -85,6 +85,9 @@ export function useSessionLaunch() {
     if (dashState.engine === 'pi') {
       return !!(dashState.piProvider && dashState.piModel)
     }
+    if (dashState.engine === 'omp') {
+      return !!(dashState.ompProvider && dashState.ompModel)
+    }
     // OpenCode: "使用全局配置"时 preset 为空（openCodePresetKey），仍可启动
     // 只要有工作目录即可启动（provider 可为空，用全局配置）
     return !!dashState.workDir
@@ -105,10 +108,12 @@ export function useSessionLaunch() {
     const shell = dashState.engine === 'claudecode' ? dashState.claudeShell
       : dashState.engine === 'opencode' ? dashState.openCodeShell
       : dashState.engine === 'pi' ? dashState.piShell
+      : dashState.engine === 'omp' ? dashState.ompShell
       : dashState.codexShell
     const custom = dashState.engine === 'claudecode' ? dashState.claudeCustomShellPath
       : dashState.engine === 'opencode' ? dashState.openCodeCustomShellPath
       : dashState.engine === 'pi' ? dashState.piCustomShellPath
+      : dashState.engine === 'omp' ? dashState.ompCustomShellPath
       : dashState.codexCustomShellPath
 
     if (shell === '') return ''
@@ -194,6 +199,14 @@ export function useSessionLaunch() {
           workDir: dashState.workDir,
           shellPath: dashState.piMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })
+      } else if (dashState.engine === 'omp') {
+        sessionId = await sessionApi.launchOmpSession({
+          modelName: dashState.ompModel,
+          providerID: dashState.ompProvider,
+          mode: dashState.ompMode,
+          workDir: dashState.workDir,
+          shellPath: dashState.ompMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
+        })
       }
 
       await persistDefaults()
@@ -203,7 +216,8 @@ export function useSessionLaunch() {
 
       const engineLabel = dashState.engine === 'claudecode' ? 'ClaudeCode'
         : dashState.engine === 'opencode' ? 'OpenCode'
-        : dashState.engine === 'pi' ? 'Pi' : 'Codex'
+        : dashState.engine === 'pi' ? 'Pi'
+        : dashState.engine === 'omp' ? 'Oh My Pi' : 'Codex'
 
       // 按当前引擎取对应 mode，决定是否跳 /terminal：
       //   - embedded：内嵌终端显示该会话，跳 /terminal
@@ -212,6 +226,7 @@ export function useSessionLaunch() {
       const launchMode = dashState.engine === 'claudecode' ? dashState.claudeMode
         : dashState.engine === 'opencode' ? dashState.openCodeMode
         : dashState.engine === 'pi' ? dashState.piMode
+        : dashState.engine === 'omp' ? dashState.ompMode
         : dashState.codexMode
 
       if (launchMode === 'embedded') {

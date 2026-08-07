@@ -3,7 +3,7 @@
  * CliLauncher — PG-02 CLI 启动器（M2-B）
  * ---------------------------------------------------------------------------
  * 契约（Task Contract M2-B / design §5.2 index 4 / §5.4）：
- *   · 四类 frozen CLI 卡片（claudecode/opencode/codex/pi），每类独立图标+文字；
+ *   · 五类 frozen CLI 卡片（claudecode/opencode/codex/pi/omp），每类独立图标+文字；
  *   · available=false → 禁用并说明原因（宿主未就绪，不伪装可点）；
  *   · 提交中（launching）禁用防连点；
  *   · 启动失败分类由页面级面板呈现（AC-25），本组件只负责触发。
@@ -36,6 +36,8 @@ const CLI_ICONS: Record<CLIType, string> = {
   codex: 'M4 4h16v16H4zM9 9h6M9 13h4',
   // Pi：希腊字母 π 笔触
   pi: 'M7 8h10M9 8c0 4-1 7-2 8M15 8c0 4 .5 6.5 2 8M5 8c0-2 1-3 3-3h8c2 0 3 1 3 3',
+  // Oh My Pi：带直径线的圆环（O 风格，与 pi 的 π 笔触区分）
+  omp: 'M12 8a4 4 0 1 0 0 8 4 4 0 1 0 0-8zM8.5 12h7',
 };
 
 function cliIcon(meta: CliMeta): string {

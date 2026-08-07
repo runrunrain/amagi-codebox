@@ -321,6 +321,8 @@ func cliCandidatesForAppType(appType string) ([]string, error) {
 		return []string{"codex"}, nil
 	case "pi":
 		return []string{"pi"}, nil
+	case "omp":
+		return []string{"omp"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported app type: %s", appType)
 	}

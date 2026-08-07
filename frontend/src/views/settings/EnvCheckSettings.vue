@@ -380,6 +380,7 @@ const TOOL_METAS: ToolMeta[] = [
   { key: 'opencode', displayName: 'OpenCode', iconChar: 'O', bgColor: 'rgba(79,195,247,0.15)' },
   { key: 'codex', displayName: 'Codex', iconChar: 'X', bgColor: 'rgba(102,187,106,0.15)' },
   { key: 'pi', displayName: 'Pi', iconChar: 'P', bgColor: 'rgba(52,199,89,0.15)' },
+  { key: 'omp', displayName: 'Oh My Pi', iconChar: 'O', bgColor: 'rgba(48,176,199,0.15)' },
   { key: 'headroom', displayName: 'Headroom', iconChar: 'H', bgColor: 'rgba(149,117,205,0.15)' },
 ]
 

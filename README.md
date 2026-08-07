@@ -138,6 +138,7 @@ amagi-codebox/
 | `POST` | `/api/sessions/launch-codex` | 启动 Codex 会话 |
 | `POST` | `/api/sessions/launch-opencode` | 启动 OpenCode 会话 |
 | `POST` | `/api/sessions/launch-pi` | 启动 Pi 会话 |
+| `POST` | `/api/sessions/launch-omp` | 启动 Oh My Pi (omp) 会话 |
 | `DELETE` | `/api/sessions/{id}` | 停止会话 |
 | `GET` / `PUT` | `/api/providers`、`/api/providers/{name}` | 提供商读写 |
 | `GET` / `PUT` | `/api/settings` | 应用设置读写 |

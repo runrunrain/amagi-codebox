@@ -124,6 +124,7 @@
                 <option value="opencode">OpenCode</option>
                 <option value="codex">Codex</option>
                 <option value="pi">Pi</option>
+                <option value="omp">Oh My Pi</option>
               </select>
             </label>
             <label class="filter-group">

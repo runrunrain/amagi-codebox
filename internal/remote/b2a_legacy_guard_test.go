@@ -54,6 +54,9 @@ func (a *b2aSpyApp) LaunchOpenCode(string, string, string, string, string) (stri
 func (a *b2aSpyApp) LaunchPiSession(string, string, string, string, string) (string, error) {
 	return "", errors.New("n/a")
 }
+func (a *b2aSpyApp) LaunchOmpSession(string, string, string, string, string) (string, error) {
+	return "", errors.New("n/a")
+}
 func (a *b2aSpyApp) StopSession(string) error         { return nil }
 func (a *b2aSpyApp) RemoveSession(string) error       { return nil }
 func (a *b2aSpyApp) ClearStoppedSessions() int        { return 0 }

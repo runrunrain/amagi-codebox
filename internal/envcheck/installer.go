@@ -73,6 +73,10 @@ const (
 	// Pi 通过 npm 全局安装：npm install -g @earendil-works/pi-coding-agent
 	piNPMPackageName = "@earendil-works/pi-coding-agent"
 
+	// ompNPMPackageName 是 Oh My Pi (omp) 的 npm 包名。
+	// omp 通过 npm 全局安装：npm install -g @oh-my-pi/pi-coding-agent
+	ompNPMPackageName = "@oh-my-pi/pi-coding-agent"
+
 	// headroomPackageName is the pip distribution name for Headroom. It is the
 	// PyPI package, not an npm package; the name reflects the install channel.
 	headroomPackageName = "headroom-ai"
@@ -1462,6 +1466,19 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			return nil, err
 		}
 		return []installCommand{s.resolveCommandNPMPath(npmPiCommand(operation))}, nil
+	case ToolOmp:
+		// Update + 外部托管（Homebrew/native）时保持原安装来源，不走 npm 平行安装。
+		if operation == installOperationUpdate && isExternalManagedInstall(current) {
+			cmd, err := s.ompSelfUpdateCommand(current)
+			if err != nil {
+				return nil, err
+			}
+			return []installCommand{cmd}, nil
+		}
+		if err := s.ensureNPMAvailable(); err != nil {
+			return nil, err
+		}
+		return []installCommand{s.resolveCommandNPMPath(npmOmpCommand(operation))}, nil
 	case ToolHeadroom:
 		// Headroom is installed into a CodeBox-managed venv to avoid PEP 668
 		// (externally-managed-environment) which blocks bare `pip install` on
@@ -1570,6 +1587,45 @@ func npmPiCommand(operation installOperation) installCommand {
 func piSelfUpdateCommand(current *CheckStatus) installCommand {
 	// Pi 的自更新命令为 "pi update self"（见 pi --help）。
 	return sourceSelfUpdateCommand("Pi", current, []string{"update", "self"}, npmCLIToolInstallTimeout)
+}
+
+// npmOmpCommand 返回 Oh My Pi (omp) 的 npm 安装/更新命令。
+// 与 npmPiCommand 同构；更新用 "install -g @latest"（npm update 可能是 no-op）。
+func npmOmpCommand(operation installOperation) installCommand {
+	if operation == installOperationUpdate {
+		return installCommand{
+			description: "npm global install @oh-my-pi/pi-coding-agent@latest",
+			path:        "npm",
+			args:        []string{"install", "-g", "@oh-my-pi/pi-coding-agent@latest"},
+			timeout:     npmCLIToolInstallTimeout,
+		}
+	}
+	return installCommand{
+		description: "npm global install @oh-my-pi/pi-coding-agent",
+		path:        "npm",
+		args:        []string{"install", "-g", "@oh-my-pi/pi-coding-agent"},
+		timeout:     npmCLIToolInstallTimeout,
+	}
+}
+
+// ompSelfUpdateCommand 返回 omp 外部托管安装的更新命令。
+// omp 无自带 "update self" 子命令（未确认）；按安装来源分派：
+//   - Homebrew 装  -> brew upgrade can1357/tap/omp（保持原来源，避免平行 npm 副本）
+//   - 其余（native）-> npm 命令兜底（npm install -g @oh-my-pi/pi-coding-agent@latest）
+func (s *Service) ompSelfUpdateCommand(current *CheckStatus) (installCommand, error) {
+	if current != nil && current.InstallMethod == InstallMethodHomebrew {
+		brewPath, err := s.resolveBrewPath()
+		if err != nil {
+			return installCommand{}, fmt.Errorf("resolve brew for omp update: %w", err)
+		}
+		return installCommand{
+			description: "brew upgrade can1357/tap/omp",
+			path:        brewPath,
+			args:        []string{"upgrade", "can1357/tap/omp"},
+			timeout:     npmCLIToolInstallTimeout,
+		}, nil
+	}
+	return npmOmpCommand(installOperationUpdate), nil
 }
 
 // isExternalManagedInstall identifies a healthy existing installation that is
@@ -3037,6 +3093,8 @@ func displayToolName(tool CLITool) string {
 		return "Codex"
 	case ToolPi:
 		return "Pi"
+	case ToolOmp:
+		return "Oh My Pi (omp)"
 	case ToolHeadroom:
 		return "Headroom"
 	default:
