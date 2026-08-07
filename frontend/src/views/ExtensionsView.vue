@@ -1,6 +1,6 @@
 <template>
   <section class="view-extensions">
-    <PageHead title="扩展管理" description="管理 Claude、OpenCode、Codex 与 Pi 插件、工作区与环境变量"/>
+    <PageHead title="扩展管理" description="管理 Claude、OpenCode、Codex、Pi 与 OMP 插件、工作区与环境变量"/>
 
     <!-- Main segmented control: Plugins | Workspaces | Environment -->
     <div class="ex-main-tabs">
@@ -42,6 +42,11 @@
           <!-- Pi packages -->
           <div v-else-if="pluginEngine === 'pi'" class="engine-pane">
             <PiPluginPanel />
+          </div>
+
+          <!-- OMP plugins -->
+          <div v-else-if="pluginEngine === 'omp'" class="engine-pane">
+            <OmpPluginPanel />
           </div>
 
           <!-- Codex plugins -->
@@ -118,6 +123,7 @@ import EmptyState from '../components/ui/EmptyState.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
 import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';
 import PiPluginPanel from '../components/extensions/PiPluginPanel.vue';
+import OmpPluginPanel from '../components/extensions/OmpPluginPanel.vue';
 import WorkspacesPanel from '../components/extensions/WorkspacesPanel.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
@@ -149,6 +155,7 @@ const engineOptions = ref([
   { value: 'opencode', label: 'OpenCode' },
   { value: 'codex', label: 'Codex' },
   { value: 'pi', label: 'Pi' },
+  { value: 'omp', label: 'OMP' },
 ]);
 
 // Add marketplace dialog

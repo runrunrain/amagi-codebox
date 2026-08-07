@@ -1693,6 +1693,87 @@ export namespace main {
 
 }
 
+export namespace ompplugin {
+	
+	export class CommandResult {
+	    success: boolean;
+	    output: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommandResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.output = source["output"];
+	        this.error = source["error"];
+	    }
+	}
+	export class Plugin {
+	    id: string;
+	    name: string;
+	    version?: string;
+	    kind: string;
+	    enabled: boolean;
+	    enabledFeatures?: string[];
+	    description?: string;
+	    scope?: string;
+	    installPath?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Plugin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.kind = source["kind"];
+	        this.enabled = source["enabled"];
+	        this.enabledFeatures = source["enabledFeatures"];
+	        this.description = source["description"];
+	        this.scope = source["scope"];
+	        this.installPath = source["installPath"];
+	    }
+	}
+	export class PluginsData {
+	    installed: Plugin[];
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginsData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.installed = this.convertValues(source["installed"], Plugin);
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace opencodeplugin {
 	
 	export class CommandResult {

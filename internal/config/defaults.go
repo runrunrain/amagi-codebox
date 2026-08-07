@@ -121,10 +121,49 @@ func DefaultPiPresets() map[string]TerminalPreset {
 	}
 }
 
+// DefaultOmpPresets 返回 Oh My Pi (omp) 引擎的内置默认终端预设。
+//
+// omp 与 pi 同构：同样的 --provider/--model/--thinking CLI 契约，models.yml
+// 消费 Thinking/ReasoningEffort/ContextWindow/MaxTokens/PiCompat 参数。
+// 因此逐条镜像 DefaultPiPresets() 的 5 条种子，覆盖全部内置 provider
+// （anthropic/openai/glm/minimax/kimi），启动时经 ompProviderMapping 映射。
+//
+// stable key = provider + "/default"，与各 provider 的 default 预设模型保持一致。
+func DefaultOmpPresets() map[string]TerminalPreset {
+	return map[string]TerminalPreset{
+		"anthropic/default": {
+			Name:     "default",
+			Provider: "anthropic",
+			Model:    "", // 走 anthropic provider 默认（OAuth）
+		},
+		"openai/default": {
+			Name:     "default",
+			Provider: "openai",
+			Model:    "codex-mini-latest",
+		},
+		"glm/default": {
+			Name:     "default",
+			Provider: "glm",
+			Model:    "glm-5",
+		},
+		"minimax/default": {
+			Name:     "default",
+			Provider: "minimax",
+			Model:    "MiniMax-M2.5",
+		},
+		"kimi/default": {
+			Name:     "default",
+			Provider: "kimi",
+			Model:    "kimi-k2.5",
+		},
+	}
+}
+
 // DefaultTerminalPresets 返回内置默认终端预设容器。
-// 当前仅 Pi 引擎有内置种子；ClaudeCode/OpenCode/Codex 保持 nil（由迁移或用户填充）。
+// 当前仅 Pi/omp 引擎有内置种子；ClaudeCode/OpenCode/Codex 保持 nil（由迁移或用户填充）。
 func DefaultTerminalPresets() *TerminalPresetsConfig {
 	return &TerminalPresetsConfig{
-		Pi: DefaultPiPresets(),
+		Pi:  DefaultPiPresets(),
+		Omp: DefaultOmpPresets(),
 	}
 }

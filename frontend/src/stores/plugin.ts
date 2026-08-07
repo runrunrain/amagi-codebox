@@ -46,7 +46,7 @@ export const usePluginStore = defineStore('plugin', () => {
   const extMainTab = ref<'plugins' | 'workspaces' | 'env' | 'tools'>('plugins');
 
   // Plugin engine selection
-  const pluginEngine = ref<'claude' | 'opencode' | 'codex' | 'pi'>('claude');
+  const pluginEngine = ref<'claude' | 'opencode' | 'codex' | 'pi' | 'omp'>('claude');
 
   // Plugin view state: installed | market
   const pluginView = ref<'installed' | 'market'>('installed');
@@ -232,7 +232,7 @@ export const usePluginStore = defineStore('plugin', () => {
     extMainTab.value = tab;
   }
 
-  function setPluginEngine(engine: 'claude' | 'opencode' | 'codex' | 'pi') {
+  function setPluginEngine(engine: 'claude' | 'opencode' | 'codex' | 'pi' | 'omp') {
     pluginEngine.value = engine;
     // Reset active plugin when switching engines
     activePluginId.value = null;

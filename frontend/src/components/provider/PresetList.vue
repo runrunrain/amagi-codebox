@@ -1,6 +1,6 @@
 <!--
-  PresetList - Claude Code / Codex 统一预设范式（对照 demo renderPresets + 旧 ProviderCenter）。
-  props.engine: 'claude' | 'codex'
+  PresetList - Claude Code / Codex / Pi / OMP 统一预设范式（对照 demo renderPresets + 旧 ProviderCenter）。
+  props.engine: 'claude' | 'codex' | 'pi' | 'omp'
   数据来源：store.mergedPresets[engine]（GetMergedTerminalPresets，含内置默认 + 用户自定义，source 区分）
   卡片样式 .preset-card + .param.model 高亮模型参数。
   「添加预设」emit('add')，弹窗在 P7 批次实现。
@@ -122,7 +122,7 @@ import PresetDialog from './PresetDialog.vue';
 
 type MergedTerminalPreset = config.MergedTerminalPreset;
 
-const props = defineProps<{ engine: 'claude' | 'codex' | 'pi' }>();
+const props = defineProps<{ engine: 'claude' | 'codex' | 'pi' | 'omp' }>();
 
 const store = useProviderStore();
 const { showSuccess, showError } = useToast();
@@ -146,6 +146,7 @@ const error = ref('');
 const engineLabel = computed(() => {
   if (props.engine === 'claude') return 'Claude Code';
   if (props.engine === 'pi') return 'Pi';
+  if (props.engine === 'omp') return 'OMP';
   return 'Codex';
 });
 

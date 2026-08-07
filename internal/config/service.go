@@ -36,8 +36,8 @@ func scrubProviderAPIKeys(p Provider) Provider {
 			AuthKey:      p.OpenAI.AuthKey,
 			// APIKey 刻意不复制
 			// Headers/AuthHeader 必须保留，原因同上。
-			Headers:      p.OpenAI.Headers,
-			AuthHeader:   p.OpenAI.AuthHeader,
+			Headers:    p.OpenAI.Headers,
+			AuthHeader: p.OpenAI.AuthHeader,
 		}
 	}
 	return p
@@ -122,9 +122,11 @@ func (s *ConfigService) Load() error {
 
 	// 幂等补齐 Pi 引擎内置默认终端预设（仅补缺失项，不覆盖用户配置）
 	piSeeded := seedDefaultPiPresets(&cfg)
+	// 幂等补齐 omp 引擎内置默认终端预设（与 pi 同构，语义一致）
+	ompSeeded := seedDefaultOmpPresets(&cfg)
 
-	// 若 terminal_preset key 被清洗或 Pi 预设被补齐，持久化幂等结果
-	if presetKeyCleaned || piSeeded {
+	// 若 terminal_preset key 被清洗或 Pi/omp 预设被补齐，持久化幂等结果
+	if presetKeyCleaned || piSeeded || ompSeeded {
 		if err := s.saveLockedConfig(&cfg); err != nil {
 			return fmt.Errorf("persist terminal preset maintenance: %w", err)
 		}
@@ -302,6 +304,31 @@ func seedDefaultPiPresets(cfg *AppConfig) bool {
 	for key, tp := range DefaultPiPresets() {
 		if _, exists := cfg.TerminalPresets.Pi[key]; !exists {
 			cfg.TerminalPresets.Pi[key] = tp
+			changed = true
+		}
+	}
+	return changed
+}
+
+// seedDefaultOmpPresets 幂等地补齐 omp 引擎的内置默认终端预设。
+//
+// 语义与 seedDefaultPiPresets 完全一致：仅补齐「内置 provider 且 Omp 桶中缺失」
+// 的条目；已存在（含用户自定义或已删除后留空）的 key 不被覆盖，保证幂等与
+// 用户操作优先。返回是否发生变更（用于决定是否需要写盘）。
+func seedDefaultOmpPresets(cfg *AppConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.TerminalPresets == nil {
+		cfg.TerminalPresets = &TerminalPresetsConfig{}
+	}
+	if cfg.TerminalPresets.Omp == nil {
+		cfg.TerminalPresets.Omp = map[string]TerminalPreset{}
+	}
+	changed := false
+	for key, tp := range DefaultOmpPresets() {
+		if _, exists := cfg.TerminalPresets.Omp[key]; !exists {
+			cfg.TerminalPresets.Omp[key] = tp
 			changed = true
 		}
 	}
@@ -985,6 +1012,12 @@ func (s *ConfigService) GetAllTerminalPresets() *TerminalPresetsConfig {
 			cp.Pi[k] = v
 		}
 	}
+	if s.config.TerminalPresets.Omp != nil {
+		cp.Omp = make(map[string]TerminalPreset, len(s.config.TerminalPresets.Omp))
+		for k, v := range s.config.TerminalPresets.Omp {
+			cp.Omp[k] = v
+		}
+	}
 	return cp
 }
 
@@ -1040,6 +1073,12 @@ func cloneTerminalPresetsConfig(src *TerminalPresetsConfig) *TerminalPresetsConf
 		dst.Pi = make(map[string]TerminalPreset, len(src.Pi))
 		for k, v := range src.Pi {
 			dst.Pi[k] = v
+		}
+	}
+	if src.Omp != nil {
+		dst.Omp = make(map[string]TerminalPreset, len(src.Omp))
+		for k, v := range src.Omp {
+			dst.Omp[k] = v
 		}
 	}
 	return dst
@@ -1129,14 +1168,14 @@ func (s *ConfigService) SetAgentTeams(config AgentTeamsConfig) error {
 // MergedTerminalPreset 合并后的终端预设，供 Dashboard 展示用。
 // 优先使用 terminal_presets（新体系），按 provider 分组回退到 provider.presets（旧体系）。
 type MergedTerminalPreset struct {
-	Key         string     `json:"key"`                   // 稳定 key（用于读写后端）
-	Label       string     `json:"label"`                 // 友好展示名
+	Key         string     `json:"key"`   // 稳定 key（用于读写后端）
+	Label       string     `json:"label"` // 友好展示名
 	Provider    string     `json:"provider"`
 	Model       string     `json:"model"`
 	ModelHaiku  string     `json:"model_haiku,omitempty"`  // Haiku 档位模型（Claude Code 专用）
 	ModelSonnet string     `json:"model_sonnet,omitempty"` // Sonnet 档位模型（Claude Code 专用）
 	ModelOpus   string     `json:"model_opus,omitempty"`   // Opus 档位模型（Claude Code 专用）
-	Parameters  Parameters `json:"parameters"`              // 模型参数
+	Parameters  Parameters `json:"parameters"`             // 模型参数
 	Source      string     `json:"source"`                 // "terminal_preset" 或 "provider_preset"
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -2968,5 +2969,120 @@ func TestSaveProviderRetainsHeadersAndAuthHeader(t *testing.T) {
 	}
 	if got.OpenAI.AuthHeader == nil || !*got.OpenAI.AuthHeader {
 		t.Errorf("AuthHeader lost through scrub: %+v", got.OpenAI.AuthHeader)
+	}
+}
+
+// ============================================================================
+// Omp 终端预设种子（seedDefaultOmpPresets）
+// ============================================================================
+
+// TestOmpPresetSeedingSeedsDefaults 验证首轮 Load 补齐 5 条 omp 默认预设并落盘。
+func TestOmpPresetSeedingSeedsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	// 空配置（无 terminal_presets）触发种子补齐
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	presets, err := svc.GetTerminalPresets("omp")
+	if err != nil {
+		t.Fatalf("GetTerminalPresets: %v", err)
+	}
+	if len(presets) != len(DefaultOmpPresets()) {
+		t.Fatalf("expected %d omp presets, got %d: %#v", len(DefaultOmpPresets()), len(presets), presets)
+	}
+	for key, want := range DefaultOmpPresets() {
+		got, ok := presets[key]
+		if !ok {
+			t.Fatalf("missing omp preset key %q", key)
+		}
+		if got.Provider != want.Provider || got.Model != want.Model {
+			t.Fatalf("omp preset %q = %+v, want provider=%s model=%s", key, got, want.Provider, want.Model)
+		}
+	}
+	// 种子结果应已落盘（Load 检测到变更并持久化）
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"omp"`) {
+		t.Fatal("models.json should contain terminal_presets.omp after seeding")
+	}
+}
+
+// TestOmpPresetSeedingIdempotent 验证二次 Load 零变更（不重复写盘）。
+func TestOmpPresetSeedingIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Load(); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("second Load rewrote models.json -- omp seeding not idempotent")
+	}
+}
+
+// TestOmpPresetSeedingKeepsUserEntry 验证用户已建的相同 key 不被种子覆盖，
+// 其余缺失条目照常补齐。
+func TestOmpPresetSeedingKeepsUserEntry(t *testing.T) {
+	dir := t.TempDir()
+	userModel := "claude-user-model"
+	cfg := map[string]any{
+		"terminal_presets": map[string]any{
+			"omp": map[string]any{
+				"anthropic/default": map[string]any{
+					"name":     "user-anthropic",
+					"provider": "anthropic",
+					"model":    userModel,
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	presets, err := svc.GetTerminalPresets("omp")
+	if err != nil {
+		t.Fatalf("GetTerminalPresets: %v", err)
+	}
+	// 用户条目保留原值
+	if got := presets["anthropic/default"]; got.Model != userModel {
+		t.Fatalf("user entry was overwritten: got %+v, want model=%s", got, userModel)
+	}
+	// 其余 4 条补齐
+	if len(presets) != len(DefaultOmpPresets()) {
+		t.Fatalf("expected %d omp presets, got %d", len(DefaultOmpPresets()), len(presets))
+	}
+	for key := range DefaultOmpPresets() {
+		if _, ok := presets[key]; !ok {
+			t.Fatalf("missing omp preset key %q", key)
+		}
 	}
 }

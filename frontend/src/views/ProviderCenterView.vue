@@ -73,6 +73,12 @@
           engine="pi"
           @add="handlePresetAdd"
         />
+        <!-- OMP 预设（与 Pi 统一范式：--thinking CLI 契约同构）-->
+        <PresetList
+          v-else-if="store.presetEngine === 'omp'"
+          engine="omp"
+          @add="handlePresetAdd"
+        />
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
         <template v-else-if="store.presetEngine === 'opencode'">
           <!-- 三级 Segmented：预设管理 | 全局配置 -->
@@ -123,6 +129,7 @@ const ENGINE_TABS = [
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
   { value: 'pi', label: 'Pi' },
+  { value: 'omp', label: 'OMP' },
 ];
 
 const OPENCODE_MODES = [
@@ -193,6 +200,8 @@ function handlePresetAdd() {
       ? 'Codex'
       : store.presetEngine === 'pi'
       ? 'Pi'
+      : store.presetEngine === 'omp'
+      ? 'OMP'
       : 'OpenCode';
   showInfo(`${label} 添加预设功能将在 P7 弹窗批次实现`);
 }

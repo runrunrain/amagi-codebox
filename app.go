@@ -27,6 +27,7 @@ import (
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/ompplugin"
 	"amagi-codebox/internal/opencodeconfig"
 	"amagi-codebox/internal/opencodeplugin"
 	"amagi-codebox/internal/paths"
@@ -208,6 +209,7 @@ type App struct {
 	CodexPlugins    *codexplugin.Service
 	OpenCodePlugins *opencodeplugin.Service
 	PiPlugins       *piplugin.Service
+	OmpPlugins      *ompplugin.Service
 	Workspaces      *workspace.Service
 	OpenCodeConfig  *opencodeconfig.Service
 	EnvCheck        *envcheck.Service
@@ -312,6 +314,8 @@ func NewApp(mobileAssets embed.FS) *App {
 	// ~/.amagi-codebox/pi-runtime 隔离副本。插件面板与 CodeBox 启动的
 	// Pi 因此读写同一份 settings/auth/packages/models 状态。
 	piPluginsSvc := piplugin.NewService(defaultPiAgentDir(), log)
+	// omp 插件 CLI 自带目录语义（~/.omp/plugins），无需 agentDir 注入。
+	ompPluginsSvc := ompplugin.NewService(log)
 	processRunner := platform.NewProcessRunner()
 
 	// headroom-venv lives under the CodeBox config directory. It is shared by
@@ -357,6 +361,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		CodexPlugins:    codexPluginsSvc,
 		OpenCodePlugins: openCodePluginsSvc,
 		PiPlugins:       piPluginsSvc,
+		OmpPlugins:      ompPluginsSvc,
 		Workspaces:      workspace.NewService(configDir, pluginsSvc, log),
 		OpenCodeConfig:  opencodeconfig.NewService(),
 		EnvCheck:        envCheckSvc,
@@ -2796,10 +2801,11 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 // PI_CODING_AGENT_DIR agent 根重定位、同样的会话 JSONL 结构。差异：
 //   - agent 根为 ~/.omp/agent（defaultOmpAgentDir），models.yml 为 YAML 格式；
 //   - 模型选择走 --model provider/model（--provider 为 legacy 仍可用）；
-//   - omp 无插件管理面板（piplugin 模式不复制，一期不做）。
+//   - 插件管理由 internal/ompplugin 服务承载（omp plugin list --json + 写操作
+//     CLI，npm 与 marketplace 双源，接线见 bind_list.go）。
 //
 // 主链路：terminal_presets 桥接（type "omp"）→ 写 ~/.omp/agent/models.yml
-//（BuildOmpModelsConfig + MergeOmpModelsConfig + WriteOmpAgentConfig，成功则
+// （BuildOmpModelsConfig + MergeOmpModelsConfig + WriteOmpAgentConfig，成功则
 // Provider=amagi-<name>，失败回退 ompProviderMapping）→ embedded/terminal 双模式。
 func (a *App) LaunchOmpSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
 	a.Log.Info("session", "启动 omp 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))

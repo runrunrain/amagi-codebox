@@ -32,7 +32,7 @@ type MergedTerminalPreset = config.MergedTerminalPreset;
 export type ProviderFilter = 'all' | 'anthropic' | 'openai';
 
 /** 预设引擎（二级 Tab） */
-export type PresetEngine = 'claude' | 'codex' | 'opencode' | 'pi';
+export type PresetEngine = 'claude' | 'codex' | 'opencode' | 'pi' | 'omp';
 
 /** engine -> wailsjs terminalType 映射（opencode 走 config.json，不调 merged） */
 const ENGINE_TO_TERMINAL_TYPE: Record<PresetEngine, string> = {
@@ -40,6 +40,7 @@ const ENGINE_TO_TERMINAL_TYPE: Record<PresetEngine, string> = {
   codex: 'codex',
   opencode: 'opencode',
   pi: 'pi',
+  omp: 'omp',
 };
 
 /** 带元数据的提供商视图模型（id + 密钥配置状态） */
@@ -75,12 +76,14 @@ export const useProviderStore = defineStore('provider', () => {
     codex: {},
     opencode: {},
     pi: {},
+    omp: {},
   });
   const mergedPresets = ref<Record<string, MergedTerminalPreset[]>>({
     claude: [],
     codex: [],
     opencode: [],
     pi: [],
+    omp: [],
   });
   const loadingProviders = ref(false);
   const loadingPresets = ref(false);
@@ -95,6 +98,7 @@ export const useProviderStore = defineStore('provider', () => {
     codex: false,
     opencode: false,
     pi: false,
+    omp: false,
   });
   const presetLoadError = ref<string>('');
 
@@ -322,6 +326,7 @@ export const useProviderStore = defineStore('provider', () => {
         loadPresets('codex', true),
         loadPresets('opencode', true),
         loadPresets('pi', true),
+        loadPresets('omp', true),
       ]);
     }
   }
