@@ -88,3 +88,44 @@ func TestM003_StaleRunNotCommitted(t *testing.T) {
 		t.Fatalf("stale observation must not advance the stream: before=(%d,%d) after=(%d,%d)", beforeEarliest, beforeLatest, afterEarliest, afterLatest)
 	}
 }
+
+// TestM003_ProducerContinuesPastFeedRecordWindow proves the H1 record limit is
+// a replay-window bound, not a lifetime output limit. PTY reads commonly arrive
+// as small chunks, so a long-running interactive session can cross 4096 records
+// well before it crosses the 1 MiB byte budget. The producer must evict the
+// oldest replay record and continue assigning live Seq values.
+func TestM003_ProducerContinuesPastFeedRecordWindow(t *testing.T) {
+	clock := newCtrlFakeClock(time.Now())
+	rt := NewControlRuntime(clock, nil)
+	rt.MarkReady()
+	streams := NewSessionStreamStore()
+	rt.Projector().SetStreamPump(streams)
+
+	sessionID := contract.SessionID("s-long-running")
+	_, _, obsPermit, err := rt.BeginDesktopRun(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("BeginDesktopRun: %v", err)
+	}
+	rt.Projector().TrackRun(sessionID, obsPermit)
+
+	const beyondWindow = 32
+	total := liveFeedMaxRecords + beyondWindow
+	for i := 1; i <= total; i++ {
+		rt.Projector().OfferOutput(obsPermit, uint64(i), []byte{'x'})
+	}
+
+	_, latest := streams.SeqBounds(sessionID)
+	if latest != contract.Seq(total) {
+		t.Fatalf("live projection stopped at Seq %d, want %d", latest, total)
+	}
+	snapshot, _, err := rt.Feed().SnapshotAndSubscribe(sessionID)
+	if err != nil {
+		t.Fatalf("SnapshotAndSubscribe: %v", err)
+	}
+	if snapshot.OriginComplete {
+		t.Fatal("record-window eviction must mark the replay origin incomplete")
+	}
+	if got := len(snapshot.Records); got != liveFeedMaxRecords {
+		t.Fatalf("retained record count=%d want %d", got, liveFeedMaxRecords)
+	}
+}

@@ -389,7 +389,9 @@ type liveRunFeed struct {
 	// terminal is set when an exit record has been committed for the current run.
 	terminal bool
 
-	// faulted is set on feed health failure (overflow/ordinal fault).
+	// faulted is set on a feed health failure (an incoming batch cannot fit,
+	// causal reservation fails, or an ordinal is exhausted). Ordinary ring
+	// eviction is not a fault.
 	faulted bool
 }
 
@@ -675,18 +677,12 @@ func (c *runSegmentCommitter) stageRunObservationLocked(stage *LiveRestartStage,
 // fault). The causal port is called while both locks are held (it does O(1)
 // work under its own ledger lock — the three-lock domain).
 func (c *runSegmentCommitter) appendRecordLocked(feed *liveRunFeed, rec LiveRunRecord, class CausalProjectionClass) (RunSourceOrdinal, bool) {
-	// Preflight capacity.
-	if len(feed.records) >= liveFeedMaxRecords {
+	// Both limits describe a replay ring, not a lifetime output quota. Evict
+	// whole oldest records before appending so a long-running session cannot
+	// permanently fault after 4096 small PTY reads.
+	if !c.ensureFeedCapacityLocked(feed, 1, uint64(len(rec.Output))) {
 		feed.faulted = true
 		return 0, false
-	}
-	if feed.totalBytes+uint64(len(rec.Output)) > liveFeedMaxBytes && rec.Output != nil {
-		// Evict oldest to make room (whole-record eviction).
-		c.evictOldestLocked(feed)
-		if feed.totalBytes+uint64(len(rec.Output)) > liveFeedMaxBytes {
-			feed.faulted = true
-			return 0, false
-		}
 	}
 	// Allocate source ordinal.
 	feed.nextSourceOrdinal++
@@ -707,19 +703,36 @@ func (c *runSegmentCommitter) appendRecordLocked(feed *liveRunFeed, rec LiveRunR
 	return sourceOrd, true
 }
 
-// evictOldestLocked removes the oldest record(s) to make byte rooms and marks
-// originLost. Caller holds feed.mu. The pumpIndex hint is decremented per
-// front-eviction so it keeps pointing at the same logical record after the left
-// shift (N-001).
-func (c *runSegmentCommitter) evictOldestLocked(feed *liveRunFeed) {
-	for len(feed.records) > 0 && feed.totalBytes > liveFeedMaxBytes-liveFeedMaxOutputRecordBytes {
-		old := feed.records[0]
-		feed.records = feed.records[1:]
-		feed.totalBytes -= uint64(len(old.Output))
-		feed.originLost = true
-		if feed.pumpIndex > 0 {
-			feed.pumpIndex--
+// ensureFeedCapacityLocked evicts whole oldest records until an atomic append
+// of additionalRecords/additionalBytes fits both replay-window limits. Caller
+// holds feed.mu. It returns false only when the incoming batch cannot fit even
+// in an empty ring.
+func (c *runSegmentCommitter) ensureFeedCapacityLocked(feed *liveRunFeed, additionalRecords int, additionalBytes uint64) bool {
+	if additionalRecords < 0 || additionalRecords > liveFeedMaxRecords || additionalBytes > liveFeedMaxBytes {
+		return false
+	}
+	for len(feed.records)+additionalRecords > liveFeedMaxRecords || feed.totalBytes+additionalBytes > liveFeedMaxBytes {
+		if len(feed.records) == 0 {
+			return false
 		}
+		c.evictOldestLocked(feed)
+	}
+	return true
+}
+
+// evictOldestLocked removes one oldest record and marks originLost. Caller
+// holds feed.mu. The pumpIndex hint is decremented so it keeps pointing at the
+// same logical record after the remaining slice shifts left (N-001).
+func (c *runSegmentCommitter) evictOldestLocked(feed *liveRunFeed) {
+	if len(feed.records) == 0 {
+		return
+	}
+	old := feed.records[0]
+	feed.records = feed.records[1:]
+	feed.totalBytes -= uint64(len(old.Output))
+	feed.originLost = true
+	if feed.pumpIndex > 0 {
+		feed.pumpIndex--
 	}
 }
 
@@ -833,7 +846,7 @@ func (c *runSegmentCommitter) CommitRestartSegment(
 	if stage != nil {
 		stageRecordCount = len(stage.records)
 	}
-	if feed.segmentID == RunSegmentID(^uint64(0)) || len(feed.records)+1+stageRecordCount > liveFeedMaxRecords {
+	if feed.segmentID == RunSegmentID(^uint64(0)) {
 		feed.faulted = true
 		return nil, errFeedFault
 	}
@@ -842,6 +855,16 @@ func (c *runSegmentCommitter) CommitRestartSegment(
 			feed.faulted = true
 			return nil, errFeedFault
 		}
+	}
+	stageBytes := uint64(0)
+	if stage != nil {
+		stageBytes = stage.totalBytes
+	}
+	// Reserve the whole boundary + staged prefix before appending any of it. This
+	// may evict old, already-pumpable replay records, but never the new prefix.
+	if !c.ensureFeedCapacityLocked(feed, 1+stageRecordCount, stageBytes) {
+		feed.faulted = true
+		return nil, errFeedFault
 	}
 
 	// Snapshot the feed fields changed before the boundary append. appendRecordLocked
