@@ -60,6 +60,13 @@ func BuildOmpModelsConfig(
 	}
 	if apiKey != "" {
 		entry["apiKey"] = apiKey
+	} else {
+		// omp rejects the entire models.yml when a full custom provider has
+		// models but neither apiKey nor auth:none.  Keep keyless endpoints valid
+		// instead of letting one provider disable every custom provider in the
+		// file.  Authenticated providers still receive the resolved literal key
+		// above.
+		entry["auth"] = "none"
 	}
 	// 可选透传（与 pi 一致）：
 	//   - headers     ：provider 级自定义请求头（omp provider.headers），
@@ -177,7 +184,9 @@ func WriteOmpAgentConfig(agentDir string, cfg map[string]any) error {
 
 // MergeOmpModelsConfig 把 agentDir/models.yml 的现有内容并入待写入的 cfg。
 // 它用于 CodeBox 直接共用 ~/.omp/agent 时保留用户已有的 providers 及其他顶层
-// 字段（如 equivalence 等）；cfg 中的当次 amagi 配置优先（同名 provider 覆盖）。
+// 字段（如 equivalence 等）。"amagi-" 是 CodeBox 的保留命名空间：旧的托管
+// provider 会先被清除，只保留 cfg 中本次生成的条目，避免失效的历史条目导致 omp
+// 拒绝整份 models.yml，进而让当前有效 provider 也变成 Unknown provider。
 func MergeOmpModelsConfig(cfg map[string]any, agentDir string) map[string]any {
 	if strings.TrimSpace(agentDir) == "" {
 		return cfg
@@ -191,6 +200,9 @@ func MergeOmpModelsConfig(cfg map[string]any, agentDir string) map[string]any {
 	managedProviders := piProviderEntries(cfg["providers"])
 	providers := make(map[string]any, len(existingProviders)+len(managedProviders))
 	for key, value := range existingProviders {
+		if strings.HasPrefix(key, "amagi-") {
+			continue
+		}
 		providers[key] = value
 	}
 	for key, value := range managedProviders {

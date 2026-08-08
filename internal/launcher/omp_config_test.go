@@ -91,6 +91,36 @@ func TestBuildOmpModelsConfigProviderShapes(t *testing.T) {
 	}
 }
 
+// TestBuildOmpModelsConfigKeylessAuth verifies a custom provider without an
+// API key is explicitly marked keyless. omp rejects the entire models.yml when
+// a provider has custom models but has neither apiKey nor auth:none.
+func TestBuildOmpModelsConfigKeylessAuth(t *testing.T) {
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "http://127.0.0.1:8000/v1"},
+	}
+
+	cfg, err := BuildOmpModelsConfig("local", provider, "local-model", "", config.Parameters{})
+	if err != nil {
+		t.Fatalf("BuildOmpModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-local"]
+	if entry["auth"] != "none" {
+		t.Fatalf("auth = %#v, want none", entry["auth"])
+	}
+	if _, present := entry["apiKey"]; present {
+		t.Fatalf("apiKey must be omitted for a keyless provider, got %#v", entry["apiKey"])
+	}
+
+	withKey, err := BuildOmpModelsConfig("hosted", provider, "hosted-model", "secret", config.Parameters{})
+	if err != nil {
+		t.Fatalf("BuildOmpModelsConfig with key: %v", err)
+	}
+	keyedEntry := withKey["providers"].(map[string]map[string]any)["amagi-hosted"]
+	if _, present := keyedEntry["auth"]; present {
+		t.Fatalf("auth must be omitted when apiKey is present, got %#v", keyedEntry["auth"])
+	}
+}
+
 // TestBuildOmpModelsConfigResolvesEnvHeaders verifies $ENV: refs are resolved
 // at build time, literals pass through, unset refs are omitted (same P1-7
 // contract as BuildPiModelsConfig).
@@ -256,14 +286,16 @@ func TestWriteOmpAgentConfigUpgradesLegacyPerms(t *testing.T) {
 
 // TestMergeOmpModelsConfigPreservesUserProviders verifies user-defined
 // providers and other top-level fields (equivalence etc.) survive the merge,
-// while the amagi-managed provider wins on name collision.
+// while stale amagi-managed providers are removed and the current one wins on
+// name collision.
 func TestMergeOmpModelsConfigPreservesUserProviders(t *testing.T) {
 	agentDir := t.TempDir()
 	existing := map[string]any{
 		"equivalence": map[string]any{"anthropic/claude-x": "openrouter/foo"},
 		"providers": map[string]any{
-			"existing":  map[string]any{"baseUrl": "https://existing.example"},
-			"amagi-new": map[string]any{"baseUrl": "https://stale.example"},
+			"existing":     map[string]any{"baseUrl": "https://existing.example"},
+			"amagi-new":    map[string]any{"baseUrl": "https://stale.example"},
+			"amagi-broken": map[string]any{"baseUrl": "https://broken.example"},
 		},
 	}
 	data, err := yaml.Marshal(existing)
@@ -289,6 +321,9 @@ func TestMergeOmpModelsConfigPreservesUserProviders(t *testing.T) {
 	}
 	if _, ok := providers["existing"]; !ok {
 		t.Fatalf("existing provider was not preserved: %#v", providers)
+	}
+	if _, ok := providers["amagi-broken"]; ok {
+		t.Fatalf("stale managed provider was preserved: %#v", providers)
 	}
 	managed, ok := providers["amagi-new"].(map[string]any)
 	if !ok || managed["baseUrl"] != "https://fresh.example" {
