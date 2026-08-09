@@ -217,7 +217,7 @@ func newR6ExternalLeaseApp(t *testing.T) (*App, *r6ExternalLauncher, string) {
 	}
 	app.configDir = configDir
 	app.sharedCoord = remote.NewSharedServiceCoordinator()
-	app.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	app.externalCleanupStore = newFileExternalCleanupStore(configDir)
 	app.externalRunPollInterval = 5 * time.Millisecond
 	fake := newR6ExternalLauncher()

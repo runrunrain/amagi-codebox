@@ -573,6 +573,36 @@ func (g *controlGate) runBoundedLifecycleEffect(entry *controlEntry, raw func() 
 	}
 }
 
+// runBoundedRestartEffect gives the full typed restart transaction its own
+// budget. On timeout it fences/detaches the backend and waits for the canceled
+// transaction to acknowledge before ownership cleanup proceeds.
+func (g *controlGate) runBoundedRestartEffect(entry *controlEntry, raw func() (SessionMutationResult, error)) (SessionMutationResult, error) {
+	type restartResult struct {
+		result SessionMutationResult
+		err    error
+	}
+	done := make(chan restartResult, 1)
+	go func() {
+		result, err := raw()
+		done <- restartResult{result: result, err: err}
+	}()
+	timer := time.NewTimer(controlRestartEffectTimeout)
+	defer timer.Stop()
+	select {
+	case outcome := <-done:
+		return outcome.result, outcome.err
+	case <-timer.C:
+		detach := g.quarantineBackend(entry)
+		ack := time.NewTimer(controlCancelAckTimeout)
+		defer ack.Stop()
+		select {
+		case <-done:
+		case <-ack.C:
+		}
+		return SessionMutationResult{}, &ControlGateError{Kind: DenyOperationTimeout, Detach: detach.disposition}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Permit creation (stateMu-held validation)
 // ---------------------------------------------------------------------------
@@ -799,6 +829,477 @@ func (g *controlGate) doBoundedDeviceLifecycle(ctx context.Context, principal De
 		g.arbiter.physicallyDeleteEntry(sessionID)
 	}
 	return result, nil
+}
+
+// PreparedControlRestart retains the exact lifecycle lane/permit after the old
+// binding is closed and the new process/effects are staged. Authority commits
+// it only with a PreparedCompositeRestart.
+type PreparedControlRestart struct {
+	gate            *controlGate
+	entry           *controlEntry
+	permit          *operationPermit
+	activation      *PreparedCompositeRestart
+	ready           bool
+	committed       bool
+	consumed        bool
+	postCommitFence bool
+	resolved        chan struct{}
+}
+
+func (g *controlGate) prepareDeviceRestart(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlRestart, error) {
+	entry := g.arbiter.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	intentID, gateErr := g.commitLifecycleIntent(entry, LifecycleRestart)
+	if gateErr != nil {
+		return nil, gateErr
+	}
+	if err := g.acquireLaneOrQuarantine(ctx, entry); err != nil {
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, err
+	}
+	permit, gateErr := g.createDeviceLifecyclePermit(ctx, entry, principal, intentID, LifecycleRestart)
+	if gateErr != nil {
+		entry.opLane.release()
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, gateErr
+	}
+	token := &PreparedControlRestart{gate: g, entry: entry, permit: permit, resolved: make(chan struct{})}
+	result, rawErr := g.runBoundedRestartEffect(entry, func() (SessionMutationResult, error) { return mutate(permit.ctx(), permit) })
+	if rawErr != nil || !result.StateChanged || permit.restartStage == nil {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	entry.stateMu.Lock()
+	if !lifecyclePermitAuthoritativeLocked(entry, permit) || entry.removed || entry.preparedRestart != nil || entry.preparedStop != nil || entry.preparedRemoval != nil {
+		entry.stateMu.Unlock()
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		return nil, &ControlGateError{Kind: DenyStalePermit}
+	}
+	entry.preparedRestart = token
+	token.ready = true
+	entry.stateMu.Unlock()
+	return token, nil
+}
+
+func (g *controlGate) bindPreparedControlRestart(token *PreparedControlRestart, activation *PreparedCompositeRestart) error {
+	if token == nil || activation == nil || token.gate != g || token.entry == nil || !token.ready || token.committed || token.consumed {
+		return &ControlGateError{Kind: DenyStalePermit}
+	}
+	token.entry.stateMu.Lock()
+	defer token.entry.stateMu.Unlock()
+	if token.entry.preparedRestart != token || activation.entry != token.entry || activation.permit != token.permit {
+		return &ControlGateError{Kind: DenyStalePermit}
+	}
+	token.activation = activation
+	if token.postCommitFence {
+		activation.postCommitFence = true
+	}
+	return nil
+}
+
+func (g *controlGate) commitPreparedControlRestartNoFail(token *PreparedControlRestart) {
+	if token == nil || token.gate != g || token.entry == nil || token.activation == nil || !token.ready || token.consumed || token.committed {
+		panic("remote: invalid prepared control restart")
+	}
+	entry := token.entry
+	entry.stateMu.Lock()
+	if entry.preparedRestart != token || entry.currentOp != token.permit {
+		entry.stateMu.Unlock()
+		panic("remote: prepared control restart ownership changed")
+	}
+	entry.currentOp = nil
+	token.committed = true
+	entry.stateMu.Unlock()
+}
+
+func (g *controlGate) finishPreparedControlRestart(token *PreparedControlRestart) {
+	if token == nil || token.gate != g || !token.committed || token.consumed {
+		return
+	}
+	token.entry.stateMu.Lock()
+	if token.entry.preparedRestart == token {
+		token.entry.preparedRestart = nil
+	}
+	token.entry.stateMu.Unlock()
+	token.permit.finish()
+	token.entry.opLane.release()
+	token.consumed = true
+	close(token.resolved)
+}
+
+func (g *controlGate) abortPreparedControlRestart(token *PreparedControlRestart) {
+	if token == nil || token.gate != g || token.entry == nil || token.permit == nil || token.consumed || token.committed {
+		return
+	}
+	token.entry.stateMu.Lock()
+	if token.entry.preparedRestart == token {
+		token.entry.preparedRestart = nil
+	}
+	if token.entry.currentOp == token.permit && token.entry.operationSeq == token.permit.opSeq {
+		token.entry.currentOp = nil
+	}
+	token.entry.stateMu.Unlock()
+	token.permit.finish()
+	token.entry.opLane.release()
+	token.consumed = true
+	close(token.resolved)
+}
+
+type PreparedControlStop struct {
+	gate            *controlGate
+	entry           *controlEntry
+	permit          *operationPermit
+	ready           bool
+	committed       bool
+	consumed        bool
+	postCommitFence bool
+	resolved        chan struct{}
+}
+
+func (g *controlGate) prepareDeviceStop(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlStop, error) {
+	entry := g.arbiter.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	intentID, gateErr := g.commitLifecycleIntent(entry, LifecycleStop)
+	if gateErr != nil {
+		return nil, gateErr
+	}
+	if err := g.acquireLaneOrQuarantine(ctx, entry); err != nil {
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, err
+	}
+	permit, gateErr := g.createDeviceLifecyclePermit(ctx, entry, principal, intentID, LifecycleStop)
+	if gateErr != nil {
+		entry.opLane.release()
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, gateErr
+	}
+	token := &PreparedControlStop{gate: g, entry: entry, permit: permit, resolved: make(chan struct{})}
+	result, rawErr := g.runBoundedLifecycleEffect(entry, func() (SessionMutationResult, error) { return mutate(permit.ctx(), permit) })
+	if rawErr != nil || !result.StateChanged {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	if gateErr := g.sealPreparedControlStop(token); gateErr != nil {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		return nil, gateErr
+	}
+	return token, nil
+}
+
+func (g *controlGate) prepareDesktopStop(ctx context.Context, authority *DesktopAuthority, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlStop, error) {
+	entry := g.arbiter.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	intentID, gateErr := g.commitLifecycleIntent(entry, LifecycleStop)
+	if gateErr != nil {
+		return nil, gateErr
+	}
+	if err := g.acquireLaneOrQuarantine(ctx, entry); err != nil {
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, err
+	}
+	permit, gateErr := g.createLifecyclePermit(ctx, entry, authority, intentID, LifecycleStop)
+	if gateErr != nil {
+		entry.opLane.release()
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, gateErr
+	}
+	token := &PreparedControlStop{gate: g, entry: entry, permit: permit, resolved: make(chan struct{})}
+	result, rawErr := g.runBoundedLifecycleEffect(entry, func() (SessionMutationResult, error) { return mutate(permit.ctx(), permit) })
+	if rawErr != nil || !result.StateChanged {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	if gateErr := g.sealPreparedControlStop(token); gateErr != nil {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		return nil, gateErr
+	}
+	return token, nil
+}
+
+func (g *controlGate) sealPreparedControlStop(token *PreparedControlStop) *ControlGateError {
+	if token == nil || token.entry == nil || token.permit == nil {
+		return &ControlGateError{Kind: DenyStalePermit}
+	}
+	entry := token.entry
+	entry.stateMu.Lock()
+	if !lifecyclePermitAuthoritativeLocked(entry, token.permit) || entry.removed || entry.preparedStop != nil || entry.preparedRemoval != nil {
+		entry.stateMu.Unlock()
+		return &ControlGateError{Kind: DenyStalePermit}
+	}
+	entry.preparedStop = token
+	token.ready = true
+	entry.stateMu.Unlock()
+	return nil
+}
+
+func (g *controlGate) commitPreparedControlStopNoFail(token *PreparedControlStop) {
+	if token == nil || token.gate != g || token.entry == nil || token.permit == nil || !token.ready || token.consumed || token.committed {
+		panic("remote: invalid prepared control stop")
+	}
+	entry := token.entry
+	entry.stateMu.Lock()
+	if entry.preparedStop != token {
+		entry.stateMu.Unlock()
+		panic("remote: prepared control stop ownership changed")
+	}
+	entry.runPhase = runTerminal
+	entry.stateMirror = contract.SessionStateStopped
+	entry.stateMirrorSet = true
+	entry.currentOp = nil
+	token.committed = true
+	entry.stateMu.Unlock()
+}
+
+func (g *controlGate) finishPreparedControlStop(token *PreparedControlStop) {
+	if token == nil || token.gate != g || !token.committed || token.consumed {
+		return
+	}
+	token.entry.stateMu.Lock()
+	if token.entry.preparedStop == token {
+		token.entry.preparedStop = nil
+	}
+	token.entry.stateMu.Unlock()
+	token.permit.finish()
+	token.entry.opLane.release()
+	token.consumed = true
+	close(token.resolved)
+}
+
+func (g *controlGate) abortPreparedControlStop(token *PreparedControlStop) {
+	if token == nil || token.gate != g || token.entry == nil || token.permit == nil || token.consumed || token.committed {
+		return
+	}
+	token.entry.stateMu.Lock()
+	if token.entry.preparedStop == token {
+		token.entry.preparedStop = nil
+	}
+	if token.entry.currentOp == token.permit && token.entry.operationSeq == token.permit.opSeq {
+		token.entry.currentOp = nil
+	}
+	token.entry.stateMu.Unlock()
+	token.permit.finish()
+	token.entry.opLane.release()
+	token.consumed = true
+	close(token.resolved)
+}
+
+// PreparedControlRemove retains the exact lifecycle lane/permit after the raw
+// process close. SessionAuthority commits this token together with membership
+// and the pre-reserved H3 terminal ticket.
+type PreparedControlRemove struct {
+	gate                 *controlGate
+	entry                *controlEntry
+	permit               *operationPermit
+	sessionID            contract.SessionID
+	nextControlEpoch     uint64
+	nextHolderGeneration HolderGeneration
+	nextBackendEpoch     uint64
+	advanceHolder        bool
+	graceTimer           securityTimer
+	ready                bool
+	committed            bool
+	consumed             bool
+	postCommitFence      bool
+	resolved             chan struct{}
+}
+
+func (g *controlGate) prepareDeviceRemove(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlRemove, error) {
+	entry := g.arbiter.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	intentID, gateErr := g.commitLifecycleIntent(entry, LifecycleRemove)
+	if gateErr != nil {
+		return nil, gateErr
+	}
+	if err := g.acquireLaneOrQuarantine(ctx, entry); err != nil {
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, err
+	}
+	permit, gateErr := g.createDeviceLifecyclePermit(ctx, entry, principal, intentID, LifecycleRemove)
+	if gateErr != nil {
+		entry.opLane.release()
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, gateErr
+	}
+	token := &PreparedControlRemove{gate: g, entry: entry, permit: permit, sessionID: sessionID, resolved: make(chan struct{})}
+	result, rawErr := g.runBoundedLifecycleEffect(entry, func() (SessionMutationResult, error) { return mutate(permit.ctx(), permit) })
+	if rawErr != nil || !result.Removed {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	if gateErr := g.sealPreparedControlRemove(token); gateErr != nil {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		return nil, gateErr
+	}
+	return token, nil
+}
+
+func (g *controlGate) prepareDesktopRemove(ctx context.Context, authority *DesktopAuthority, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlRemove, error) {
+	entry := g.arbiter.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	intentID, gateErr := g.commitLifecycleIntent(entry, LifecycleRemove)
+	if gateErr != nil {
+		return nil, gateErr
+	}
+	if err := g.acquireLaneOrQuarantine(ctx, entry); err != nil {
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, err
+	}
+	permit, gateErr := g.createLifecyclePermit(ctx, entry, authority, intentID, LifecycleRemove)
+	if gateErr != nil {
+		entry.opLane.release()
+		g.abandonLifecycleIntent(entry, intentID)
+		return nil, gateErr
+	}
+	token := &PreparedControlRemove{gate: g, entry: entry, permit: permit, sessionID: sessionID, resolved: make(chan struct{})}
+	result, rawErr := g.runBoundedLifecycleEffect(entry, func() (SessionMutationResult, error) { return mutate(permit.ctx(), permit) })
+	if rawErr != nil || !result.Removed {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	if gateErr := g.sealPreparedControlRemove(token); gateErr != nil {
+		g.finishLifecycleResult(entry, permit)
+		entry.opLane.release()
+		return nil, gateErr
+	}
+	return token, nil
+}
+
+func lifecyclePermitAuthoritativeLocked(entry *controlEntry, permit *operationPermit) bool {
+	return entry != nil && permit != nil && !permit.fenced.Load() && entry.currentOp == permit &&
+		entry.operationSeq == permit.opSeq && entry.controlEpoch == permit.controlEpoch &&
+		entry.currentRun == permit.run && entry.runEpoch == permit.runEpoch && entry.backendEpoch == permit.backendEpoch
+}
+
+func (g *controlGate) sealPreparedControlRemove(token *PreparedControlRemove) *ControlGateError {
+	if token == nil || token.entry == nil || token.permit == nil {
+		return &ControlGateError{Kind: DenyStalePermit}
+	}
+	entry := token.entry
+	entry.stateMu.Lock()
+	if !lifecyclePermitAuthoritativeLocked(entry, token.permit) || entry.removed || entry.preparedStop != nil || entry.preparedRemoval != nil {
+		entry.stateMu.Unlock()
+		return &ControlGateError{Kind: DenyStalePermit}
+	}
+	controlEpoch, controlOK := nextEpoch(entry.controlEpoch)
+	backendEpoch, backendOK := nextEpoch(entry.backendEpoch)
+	holderEpoch := uint64(entry.holderGeneration)
+	holderOK := true
+	if entry.owner.kind != ownerNone {
+		holderEpoch, holderOK = nextEpoch(holderEpoch)
+		token.advanceHolder = true
+	}
+	if !controlOK || !backendOK || !holderOK {
+		entry.stateMu.Unlock()
+		g.arbiter.healthLatched.Store(true)
+		return &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	token.nextControlEpoch = controlEpoch
+	token.nextBackendEpoch = backendEpoch
+	token.nextHolderGeneration = HolderGeneration(holderEpoch)
+	token.graceTimer = entry.graceTimer
+	entry.graceTimer = nil
+	entry.graceDesc = graceTimerDescriptor{}
+	entry.preparedRemoval = token
+	token.ready = true
+	entry.stateMu.Unlock()
+	if token.graceTimer != nil {
+		token.graceTimer.Stop()
+		token.graceTimer = nil
+	}
+	return nil
+}
+
+func (g *controlGate) commitPreparedControlRemoveNoFail(token *PreparedControlRemove) {
+	if token == nil || token.gate != g || token.entry == nil || token.permit == nil || !token.ready || token.consumed || token.committed {
+		panic("remote: invalid prepared control remove")
+	}
+	entry := token.entry
+	entry.stateMu.Lock()
+	if entry.preparedRemoval != token {
+		entry.stateMu.Unlock()
+		panic("remote: prepared control remove ownership changed")
+	}
+	entry.owner = controlOwner{kind: ownerNone}
+	entry.controlEpoch = token.nextControlEpoch
+	if token.advanceHolder {
+		entry.holderGeneration = token.nextHolderGeneration
+	}
+	entry.backendEpoch = token.nextBackendEpoch
+	entry.removed = true
+	entry.runPhase = runTerminal
+	entry.currentRun = nil
+	entry.stateMirror = contract.SessionStateRemoved
+	entry.stateMirrorSet = true
+	entry.currentOp = nil
+	token.committed = true
+	entry.stateMu.Unlock()
+}
+
+func (g *controlGate) finishPreparedControlRemove(token *PreparedControlRemove) {
+	if token == nil || token.gate != g || !token.committed || token.consumed {
+		return
+	}
+	token.entry.stateMu.Lock()
+	if token.entry.preparedRemoval == token {
+		token.entry.preparedRemoval = nil
+	}
+	token.entry.stateMu.Unlock()
+	token.permit.finish()
+	token.entry.opLane.release()
+	token.consumed = true
+	close(token.resolved)
+}
+
+func (g *controlGate) abortPreparedControlRemove(token *PreparedControlRemove) {
+	if token == nil || token.gate != g || token.entry == nil || token.permit == nil || token.consumed || token.committed {
+		return
+	}
+	token.entry.stateMu.Lock()
+	if token.entry.preparedRemoval == token {
+		token.entry.preparedRemoval = nil
+	}
+	if token.entry.currentOp == token.permit && token.entry.operationSeq == token.permit.opSeq {
+		token.entry.currentOp = nil
+	}
+	token.entry.stateMu.Unlock()
+	token.permit.finish()
+	token.entry.opLane.release()
+	token.consumed = true
+	close(token.resolved)
 }
 
 // commitLifecycleIntent commits a lifecycle drain intent under stateMu (phase 1).

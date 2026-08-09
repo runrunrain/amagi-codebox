@@ -1,18 +1,5 @@
 package remote
 
-// control_attachment.go — AttachmentDirectory: authoritative connection lease
-// management for (DeviceID, SessionID) pairs (design §4.1, §7.1).
-//
-// The directory is NOT a holder authority — it only tracks which connection is
-// authoritative for a (device, session) pair and supports atomic replacement.
-// The ControlArbiter separately owns the holder state. acquire input must
-// present an exact live lease from this directory.
-//
-// Lock order (design §9.3): AttachmentDirectory.mu is acquired/released
-// independently. The arbiter NEVER holds AttachmentDirectory.mu while holding
-// stateMu, and vice versa. Rebind/Detach happen after releasing the directory
-// lock.
-
 import (
 	"sync"
 	"sync/atomic"
@@ -20,149 +7,304 @@ import (
 	"amagi-codebox/internal/remote/contract"
 )
 
-// attachmentKey identifies one (device, session) attachment slot.
 type attachmentKey struct {
 	deviceID  contract.DeviceID
 	sessionID contract.SessionID
 }
 
-// AttachmentDirectory maps (DeviceID, SessionID) to the authoritative
-// ControlConnectionLease. A new attach for the same key atomically fences the
-// old lease so that two connections can never simultaneously be authoritative
-// writers for the same pair.
+type attachmentBootstrap struct {
+	payload   atomic.Pointer[[]byte]
+	written   atomic.Bool
+	ready     chan struct{}
+	readyOnce sync.Once
+}
+
+func (b *attachmentBootstrap) Store(payload []byte) {
+	if b == nil {
+		return
+	}
+	if len(payload) == 0 {
+		b.ResolveAbsent()
+		return
+	}
+	owned := append([]byte(nil), payload...)
+	b.payload.Store(&owned)
+	b.readyOnce.Do(func() { close(b.ready) })
+}
+
+func (b *attachmentBootstrap) Load() []byte {
+	if b == nil {
+		return nil
+	}
+	payload := b.payload.Load()
+	if payload == nil {
+		return nil
+	}
+	return *payload
+}
+
+func (b *attachmentBootstrap) MarkWritten() {
+	if b != nil {
+		b.written.Store(true)
+	}
+}
+
+func (b *attachmentBootstrap) ResolveAbsent() {
+	if b != nil {
+		b.readyOnce.Do(func() { close(b.ready) })
+	}
+}
+
+func (b *attachmentBootstrap) PendingPayload() []byte {
+	if b == nil {
+		return nil
+	}
+	if b.ready != nil {
+		<-b.ready
+	}
+	if b.written.Load() {
+		return nil
+	}
+	return b.Load()
+}
+
+type attachmentNode struct {
+	lease      *ControlConnectionLease
+	controlSub *hubSubscriber
+	causalSub  *causalHubSubscription
+	terminal   RemovalTerminalPort
+	bootstrap  *attachmentBootstrap
+}
+
+type attachmentSlot struct {
+	mu      sync.Mutex
+	current *attachmentNode
+	pending *AttachReservation
+	seq     uint64
+}
+
+type AttachReservation struct {
+	slot       *attachmentSlot
+	key        attachmentKey
+	generation uint64
+	node       *attachmentNode
+	old        *attachmentNode
+	committed  bool
+	aborted    bool
+}
+
+func (r *AttachReservation) Lease() *ControlConnectionLease {
+	if r == nil || r.node == nil {
+		return nil
+	}
+	return r.node.lease
+}
+
+func (r *AttachReservation) Bootstrap() *attachmentBootstrap {
+	if r == nil || r.node == nil {
+		return nil
+	}
+	return r.node.bootstrap
+}
+
 type AttachmentDirectory struct {
-	mu     sync.Mutex
-	leases map[attachmentKey]*ControlConnectionLease
-
-	// generationCounter is the monotonic attachment generation. Each new lease
-	// gets a unique generation; stale leases/detaches/timers are suppressed by
-	// exact-generation mismatch.
-	generationCounter uint64
-
+	mu    sync.Mutex
+	slots map[attachmentKey]*attachmentSlot
 	ready atomic.Bool
 }
 
-// NewAttachmentDirectory creates a directory in the not-ready state.
 func NewAttachmentDirectory() *AttachmentDirectory {
-	return &AttachmentDirectory{
-		leases: make(map[attachmentKey]*ControlConnectionLease),
-	}
+	return &AttachmentDirectory{slots: make(map[attachmentKey]*attachmentSlot)}
 }
 
-// MarkReady enables the directory for production use.
-func (d *AttachmentDirectory) MarkReady() {
-	d.ready.Store(true)
-}
-
-// IsReady reports whether the directory is ready.
+func (d *AttachmentDirectory) MarkReady()    { d.ready.Store(true) }
 func (d *AttachmentDirectory) IsReady() bool { return d.ready.Load() }
 
-// Attach mints a new authoritative ControlConnectionLease for (deviceID,
-// sessionID). If a previous lease exists for the same key, it is atomically
-// fenced (replaced). The fenced old lease is returned so the caller can
-// downgrade/close the old connection after releasing the directory lock.
-//
-// deviceName is the projection-only name from the authenticated record.
-func (d *AttachmentDirectory) Attach(
-	deviceID contract.DeviceID,
-	deviceName string,
-	connectionID ConnectionID,
-	sessionID contract.SessionID,
-) (newLease *ControlConnectionLease, fencedOld *ControlConnectionLease) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.generationCounter++
-	if d.generationCounter == 0 {
-		// Overflow: refuse to mint (generation 0 reserved for sentinel).
-		d.generationCounter--
-		return nil, nil
+// ReserveAttach allocates a complete inactive node without replacing the live
+// lease. Final commit only swaps stable pointers and live bits in the slot.
+func (d *AttachmentDirectory) ReserveAttach(deviceID contract.DeviceID, deviceName string, connectionID ConnectionID, sessionID contract.SessionID, terminal RemovalTerminalPort) *AttachReservation {
+	if d == nil || deviceID == "" || connectionID == "" || sessionID == "" {
+		return nil
 	}
 	key := attachmentKey{deviceID: deviceID, sessionID: sessionID}
-	old := d.leases[key]
-	if old != nil {
-		old.fence()
+	d.mu.Lock()
+	slot := d.slots[key]
+	if slot == nil {
+		slot = &attachmentSlot{}
+		d.slots[key] = slot
 	}
-	newLease = &ControlConnectionLease{
-		deviceID:             deviceID,
-		deviceName:           deviceName,
-		connectionID:         connectionID,
-		attachmentGeneration: d.generationCounter,
+	d.mu.Unlock()
+
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.pending != nil || slot.seq == ^uint64(0) {
+		return nil
 	}
-	newLease.live.Store(true)
-	d.leases[key] = newLease
-	return newLease, old
+	slot.seq++
+	lease := &ControlConnectionLease{
+		deviceID: deviceID, deviceName: deviceName, connectionID: connectionID,
+		attachmentGeneration: slot.seq,
+	}
+	reservation := &AttachReservation{
+		slot: slot, key: key, generation: slot.seq,
+		node: &attachmentNode{lease: lease, terminal: terminal, bootstrap: &attachmentBootstrap{ready: make(chan struct{})}},
+		old:  slot.current,
+	}
+	slot.pending = reservation
+	return reservation
 }
 
-// Detach fences the lease for (deviceID, sessionID) if it matches the given
-// attachment generation. A stale detach (wrong generation) is a no-op and does
-// not affect a replacement lease. Returns true if a live lease was actually
-// detached.
-func (d *AttachmentDirectory) Detach(
-	deviceID contract.DeviceID,
-	sessionID contract.SessionID,
-	attachmentGeneration uint64,
-) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	key := attachmentKey{deviceID: deviceID, sessionID: sessionID}
-	lease, ok := d.leases[key]
-	if !ok || lease.attachmentGeneration != attachmentGeneration {
-		return false // stale detach
+func (d *AttachmentDirectory) commitReservedAttachNoFail(reservation *AttachReservation) (*ControlConnectionLease, bool) {
+	if reservation == nil || reservation.slot == nil || reservation.node == nil || reservation.node.lease == nil {
+		return nil, false
 	}
-	lease.fence()
-	delete(d.leases, key)
+	slot := reservation.slot
+	if !d.ready.Load() {
+		return nil, false
+	}
+	slot.mu.Lock()
+	if reservation.aborted || reservation.committed || reservation.node.lease.fenced.Load() || slot.pending != reservation || slot.current != reservation.old || reservation.generation != reservation.node.lease.attachmentGeneration {
+		slot.mu.Unlock()
+		return nil, false
+	}
+	var oldLease *ControlConnectionLease
+	if reservation.old != nil {
+		oldLease = reservation.old.lease
+		if oldLease != nil {
+			oldLease.fence()
+		}
+	}
+	slot.current = reservation.node
+	slot.pending = nil
+	reservation.node.lease.live.Store(true)
+	reservation.committed = true
+	slot.mu.Unlock()
+	return oldLease, true
+}
+
+func (d *AttachmentDirectory) AbortAttachReservation(reservation *AttachReservation) {
+	if reservation == nil || reservation.slot == nil {
+		return
+	}
+	reservation.slot.mu.Lock()
+	if !reservation.committed && reservation.slot.pending == reservation {
+		reservation.slot.pending = nil
+		reservation.aborted = true
+		if reservation.node != nil {
+			reservation.node.bootstrap.ResolveAbsent()
+			if reservation.node.lease != nil {
+				reservation.node.lease.fence()
+			}
+		}
+	}
+	reservation.slot.mu.Unlock()
+}
+
+// Attach is the compatibility wrapper used by existing non-WS callers.
+func (d *AttachmentDirectory) Attach(deviceID contract.DeviceID, deviceName string, connectionID ConnectionID, sessionID contract.SessionID) (newLease *ControlConnectionLease, fencedOld *ControlConnectionLease) {
+	reservation := d.ReserveAttach(deviceID, deviceName, connectionID, sessionID, nil)
+	if reservation == nil {
+		return nil, nil
+	}
+	old, ok := d.commitReservedAttachNoFail(reservation)
+	if !ok {
+		d.AbortAttachReservation(reservation)
+		return nil, old
+	}
+	return reservation.node.lease, old
+}
+
+func (d *AttachmentDirectory) Detach(deviceID contract.DeviceID, sessionID contract.SessionID, attachmentGeneration uint64) bool {
+	key := attachmentKey{deviceID: deviceID, sessionID: sessionID}
+	d.mu.Lock()
+	slot := d.slots[key]
+	d.mu.Unlock()
+	if slot == nil {
+		return false
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.current == nil || slot.current.lease == nil || slot.current.lease.attachmentGeneration != attachmentGeneration {
+		return false
+	}
+	slot.current.lease.fence()
+	slot.current = nil
 	return true
 }
 
-// CurrentLease returns the current lease for (deviceID, sessionID), or nil if
-// none exists. The returned pointer's live bit reflects the current state.
-func (d *AttachmentDirectory) CurrentLease(
-	deviceID contract.DeviceID,
-	sessionID contract.SessionID,
-) *ControlConnectionLease {
+func (d *AttachmentDirectory) CurrentLease(deviceID contract.DeviceID, sessionID contract.SessionID) *ControlConnectionLease {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.leases[attachmentKey{deviceID: deviceID, sessionID: sessionID}]
+	slot := d.slots[attachmentKey{deviceID: deviceID, sessionID: sessionID}]
+	d.mu.Unlock()
+	if slot == nil {
+		return nil
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.current == nil {
+		return nil
+	}
+	return slot.current.lease
 }
 
-// DetachAllForDevice fences and removes all leases for the given device across
-// all sessions. Used during revoke to fence the device's authoritative
-// attachments. Returns the detached leases (snapshot taken under lock).
+func (d *AttachmentDirectory) snapshotSlots() []*attachmentSlot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	slots := make([]*attachmentSlot, 0, len(d.slots))
+	for _, slot := range d.slots {
+		slots = append(slots, slot)
+	}
+	return slots
+}
+
 func (d *AttachmentDirectory) DetachAllForDevice(deviceID contract.DeviceID) []*ControlConnectionLease {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	var detached []*ControlConnectionLease
-	for key, lease := range d.leases {
-		if key.deviceID == deviceID {
-			lease.fence()
-			detached = append(detached, lease)
-			delete(d.leases, key)
+	for _, slot := range d.snapshotSlots() {
+		slot.mu.Lock()
+		if slot.pending != nil && slot.pending.node != nil && slot.pending.node.lease != nil && slot.pending.node.lease.deviceID == deviceID {
+			slot.pending.aborted = true
+			slot.pending.node.bootstrap.ResolveAbsent()
+			slot.pending.node.lease.fence()
+			slot.pending = nil
 		}
+		if slot.current != nil && slot.current.lease != nil && slot.current.lease.deviceID == deviceID {
+			slot.current.lease.fence()
+			detached = append(detached, slot.current.lease)
+			slot.current = nil
+		}
+		slot.mu.Unlock()
 	}
 	return detached
 }
 
-// DetachAll fences and removes all leases (Server Stop / shutdown).
 func (d *AttachmentDirectory) DetachAll() []*ControlConnectionLease {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	detached := make([]*ControlConnectionLease, 0, len(d.leases))
-	for key, lease := range d.leases {
-		lease.fence()
-		detached = append(detached, lease)
-		delete(d.leases, key)
+	var detached []*ControlConnectionLease
+	for _, slot := range d.snapshotSlots() {
+		slot.mu.Lock()
+		if slot.pending != nil {
+			slot.pending.aborted = true
+			if slot.pending.node != nil {
+				slot.pending.node.bootstrap.ResolveAbsent()
+				if slot.pending.node.lease != nil {
+					slot.pending.node.lease.fence()
+				}
+			}
+			slot.pending = nil
+		}
+		if slot.current != nil && slot.current.lease != nil {
+			slot.current.lease.fence()
+			detached = append(detached, slot.current.lease)
+			slot.current = nil
+		}
+		slot.mu.Unlock()
 	}
 	return detached
 }
 
-// Clear marks the directory not-ready and drops all leases (shutdown).
 func (d *AttachmentDirectory) Clear() {
+	d.DetachAll()
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.ready.Store(false)
-	d.leases = make(map[attachmentKey]*ControlConnectionLease)
+	d.slots = make(map[attachmentKey]*attachmentSlot)
+	d.mu.Unlock()
 }

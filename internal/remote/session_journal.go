@@ -75,16 +75,19 @@ const (
 // It contains NO device/request identity, path/title/provider/model, argv/env,
 // terminal/raw error, or credential.
 type SessionOperationRecord struct {
-	Version     uint8                   `json:"version"`
-	OperationID string                  `json:"operationId"` // 16 random bytes RawURL; groups records
-	SessionID   contract.SessionID      `json:"sessionId"`
-	CLIType     contract.CLIType        `json:"cliType"`
-	Operation   SessionOperationKind    `json:"operation"`
-	Phase       SessionOperationPhase   `json:"phase"`
-	Outcome     SessionOperationOutcome `json:"outcome"`
-	Actor       SessionOperationActor   `json:"actor"`
-	FailureCode *contract.ErrorCode     `json:"failureCode,omitempty"`
-	OccurredAt  string                  `json:"occurredAt"` // RFC3339Nano UTC
+	Version            uint8                   `json:"version"`
+	OperationID        string                  `json:"operationId"` // 16 random bytes RawURL; groups records
+	SessionID          contract.SessionID      `json:"sessionId"`
+	CLIType            contract.CLIType        `json:"cliType"`
+	Operation          SessionOperationKind    `json:"operation"`
+	Phase              SessionOperationPhase   `json:"phase"`
+	Outcome            SessionOperationOutcome `json:"outcome"`
+	Actor              SessionOperationActor   `json:"actor"`
+	FailureCode        *contract.ErrorCode     `json:"failureCode,omitempty"`
+	ReceiptID          uint64                  `json:"receiptId,omitempty"`
+	MembershipRevision uint64                  `json:"membershipRevision,omitempty"`
+	LifecycleRevision  uint64                  `json:"lifecycleRevision,omitempty"`
+	OccurredAt         string                  `json:"occurredAt"` // RFC3339Nano UTC
 }
 
 // SessionOperationIntent is the data needed to begin an intent record.
@@ -98,12 +101,26 @@ type SessionOperationIntent struct {
 
 // OperationRecordPermit is the opaque permit returned by BeginIntent (design
 // §8.5.2: "append+file sync成功才返回 opaque permit").
+type SessionOperationCommitEvidence struct {
+	ReceiptID          uint64
+	MembershipRevision uint64
+	LifecycleRevision  uint64
+}
+
 type OperationRecordPermit struct {
-	intent SessionOperationIntent
+	intent   SessionOperationIntent
+	evidence SessionOperationCommitEvidence
 }
 
 // Intent returns the intent data (for the caller to correlate).
 func (p *OperationRecordPermit) Intent() SessionOperationIntent { return p.intent }
+
+func (p *OperationRecordPermit) BindCommitEvidence(evidence SessionOperationCommitEvidence) {
+	if p == nil || evidence.ReceiptID == 0 {
+		return
+	}
+	p.evidence = evidence
+}
 
 // ---------------------------------------------------------------------------
 // Frozen capacity constants (design §8.5.1)
@@ -189,6 +206,7 @@ func (j *fileSessionOperationJournal) init() {
 		// Fix file perms.
 		_ = os.Chmod(j.path, journalFilePerm)
 		j.ready = true
+		j.recoverPendingRemoves()
 		return
 	}
 	if !os.IsNotExist(err) {
@@ -203,6 +221,39 @@ func (j *fileSessionOperationJournal) init() {
 	}
 	f.Close()
 	j.ready = true
+	j.recoverPendingRemoves()
+}
+
+// recoverPendingRemoves projects every durable pending remove as recovery /
+// indeterminate. A prior process has no durable commit proof, so startup never
+// fabricates a committed result from an intent alone.
+func (j *fileSessionOperationJournal) recoverPendingRemoves() {
+	if !j.ready {
+		return
+	}
+	records, err := j.readAllRecords()
+	if err != nil {
+		j.ready = false
+		return
+	}
+	latest := make(map[string]SessionOperationRecord)
+	for _, record := range records {
+		latest[record.OperationID] = record
+	}
+	for _, record := range latest {
+		if record.Operation != SessionOpRemove || record.Phase != SessionPhaseIntent || record.Outcome != SessionOutcomePending {
+			continue
+		}
+		recovery := SessionOperationRecord{
+			Version: journalVersion, OperationID: record.OperationID, SessionID: record.SessionID,
+			CLIType: record.CLIType, Operation: record.Operation, Phase: SessionPhaseRecovery,
+			Outcome: SessionOutcomeIndeterminate, Actor: record.Actor, OccurredAt: nowUTCNano(),
+		}
+		if err := j.appendRecord(recovery); err != nil {
+			j.ready = false
+			return
+		}
+	}
 }
 
 // IsReady reports whether the journal is ready for dangerous operations.
@@ -258,15 +309,18 @@ func (j *fileSessionOperationJournal) Complete(ctx context.Context, permit *Oper
 		return errJournalInvalidOutcome
 	}
 	rec := SessionOperationRecord{
-		Version:     journalVersion,
-		OperationID: permit.intent.OperationID,
-		SessionID:   permit.intent.SessionID,
-		CLIType:     permit.intent.CLIType,
-		Operation:   permit.intent.Operation,
-		Phase:       SessionPhaseResult,
-		Outcome:     outcome,
-		Actor:       permit.intent.Actor,
-		OccurredAt:  nowUTCNano(),
+		Version:            journalVersion,
+		OperationID:        permit.intent.OperationID,
+		SessionID:          permit.intent.SessionID,
+		CLIType:            permit.intent.CLIType,
+		Operation:          permit.intent.Operation,
+		Phase:              SessionPhaseResult,
+		Outcome:            outcome,
+		Actor:              permit.intent.Actor,
+		ReceiptID:          permit.evidence.ReceiptID,
+		MembershipRevision: permit.evidence.MembershipRevision,
+		LifecycleRevision:  permit.evidence.LifecycleRevision,
+		OccurredAt:         nowUTCNano(),
 	}
 	if outcome == SessionOutcomeFailed && failureCode != "" {
 		rec.FailureCode = &failureCode
@@ -456,15 +510,18 @@ func (j *noopSessionOperationJournal) Complete(ctx context.Context, permit *Oper
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	rec := SessionOperationRecord{
-		Version:     journalVersion,
-		OperationID: permit.intent.OperationID,
-		SessionID:   permit.intent.SessionID,
-		CLIType:     permit.intent.CLIType,
-		Operation:   permit.intent.Operation,
-		Phase:       SessionPhaseResult,
-		Outcome:     outcome,
-		Actor:       permit.intent.Actor,
-		OccurredAt:  nowUTCNano(),
+		Version:            journalVersion,
+		OperationID:        permit.intent.OperationID,
+		SessionID:          permit.intent.SessionID,
+		CLIType:            permit.intent.CLIType,
+		Operation:          permit.intent.Operation,
+		Phase:              SessionPhaseResult,
+		Outcome:            outcome,
+		Actor:              permit.intent.Actor,
+		ReceiptID:          permit.evidence.ReceiptID,
+		MembershipRevision: permit.evidence.MembershipRevision,
+		LifecycleRevision:  permit.evidence.LifecycleRevision,
+		OccurredAt:         nowUTCNano(),
 	}
 	if outcome == SessionOutcomeFailed && failureCode != "" {
 		rec.FailureCode = &failureCode

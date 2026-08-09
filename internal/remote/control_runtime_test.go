@@ -6,6 +6,7 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -135,6 +136,54 @@ func TestSharedServiceCoordinator_LeaseBlocksMutation(t *testing.T) {
 	if err := c.CheckMutation(SharedServiceClaudeProxy, MutationStop, [32]byte{}); err != nil {
 		t.Errorf("expected nil after release, got %v", err)
 	}
+}
+
+func TestSharedLaunchAdmissionBindsExactConfigBeforeEffects(t *testing.T) {
+	coordinator := NewSharedServiceCoordinator()
+	firstFingerprint := [32]byte{1, 2, 3}
+	secondFingerprint := [32]byte{1, 2, 4}
+	first, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeProxy, firstFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.ReleaseLaunchAdmission(first)
+	compatible, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeProxy, firstFingerprint)
+	if err != nil {
+		t.Fatalf("compatible pending config rejected: %v", err)
+	}
+	coordinator.ReleaseLaunchAdmission(compatible)
+	if _, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeProxy, secondFingerprint); !errors.Is(err, ErrSharedServiceInUse) {
+		t.Fatalf("incompatible pending config error = %v, want ErrSharedServiceInUse", err)
+	}
+	if _, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeProxy); !errors.Is(err, ErrSharedServiceInUse) {
+		t.Fatalf("unbound launch crossed exact pending config: %v", err)
+	}
+}
+
+func TestSharedCompensatingStopRequiresExclusiveTransactionOwnership(t *testing.T) {
+	coordinator := NewSharedServiceCoordinator()
+	first, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.MarkLaunchTransactionStarted(first); err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.AuthorizeCompensatingStop(first) {
+		t.Fatal("compensating Stop authorized while a competing launch transaction existed")
+	}
+	coordinator.ReleaseLaunchAdmission(second)
+	if !coordinator.AuthorizeCompensatingStop(first) {
+		t.Fatal("exclusive exact starter was not authorized to compensate")
+	}
+	if coordinator.AuthorizeCompensatingStop(first) {
+		t.Fatal("one-shot compensating Stop authorization was reused")
+	}
+	coordinator.ReleaseLaunchAdmission(first)
 }
 
 // TestSharedServiceCoordinator_IncompatibleConfigRejected verifies that

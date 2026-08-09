@@ -26,6 +26,7 @@ import (
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
+	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/ompplugin"
 	"amagi-codebox/internal/opencodeconfig"
@@ -34,6 +35,7 @@ import (
 	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/plugin"
+	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
@@ -218,14 +220,18 @@ type App struct {
 	// Control runtime (M3-A2): the gate authority for all session write side
 	// effects. Raw ports (Pty/Proxy/Headroom) sit BEHIND it and are never
 	// Wails-bound (design §4.1, §6.3 C-01).
-	control     *remote.ControlRuntime
-	sharedCoord *remote.SharedServiceCoordinator
+	control           *remote.ControlRuntime
+	sessionAdapter    *remote.RemoteSessionAdapter
+	sharedCoord       *remote.SharedServiceCoordinator
+	processRegistry   *processcap.Registry
+	remoteDefaults    *launchplan.DefaultStore
+	remotePlanner     launchplan.Planner
+	compensationDebts *launchplan.CompensationDebtRegistry
 
-	// sharedLeases tracks per-session shared-service leases acquired at launch so
-	// they can be released on run terminal/remove (M-006). Guarded by
-	// sharedLeaseMu.
+	// sharedLeases is keyed by the exact {sessionID, runEpoch, kind} owner. It is
+	// updated inside the coordinator's composite transfer critical section.
 	sharedLeaseMu sync.Mutex
-	sharedLeases  map[string][]*remote.SharedDependencyLease
+	sharedLeases  map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease
 
 	// externalLauncher is a narrow test seam; nil selects the production
 	// LauncherService. externalRunPollInterval is zero in production (1s).
@@ -342,37 +348,40 @@ func NewApp(mobileAssets embed.FS) *App {
 	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
 	app := &App{
-		configDir:       configDir,
-		Config:          config.NewConfigService(configDir),
-		Secrets:         secrets.NewSecretsService(configDir),
-		Launcher:        launcher.NewLauncherService(log, envVarsSvc),
-		Proxy:           proxy.NewProxyService(),
-		Headroom:        headroomSvc,
-		CodexHeadroom:   codexHeadroomSvc,
-		Tray:            tray.NewService(),
-		Sessions:        session.NewManager(),
-		Paths:           paths.NewPathsService(configDir),
-		Log:             log,
-		Pty:             pty.NewService(log),
-		Settings:        settings.NewService(configDir),
-		EnvVars:         envVarsSvc,
-		Updater:         updater.NewService(Version, log),
-		Plugins:         pluginsSvc,
-		CodexPlugins:    codexPluginsSvc,
-		OpenCodePlugins: openCodePluginsSvc,
-		PiPlugins:       piPluginsSvc,
-		OmpPlugins:      ompPluginsSvc,
-		Workspaces:      workspace.NewService(configDir, pluginsSvc, log),
-		OpenCodeConfig:  opencodeconfig.NewService(),
-		EnvCheck:        envCheckSvc,
-		Usage:           usage.NewService(configDir, log),
-		Capabilities:    capabilities,
-		CLIResolver:     platform.NewCLIResolver(capabilities),
-		FileOpener:      platform.NewFileOpener(processRunner),
+		configDir:         configDir,
+		Config:            config.NewConfigService(configDir),
+		Secrets:           secrets.NewSecretsService(configDir),
+		Launcher:          launcher.NewLauncherService(log, envVarsSvc),
+		Proxy:             proxy.NewProxyService(),
+		Headroom:          headroomSvc,
+		CodexHeadroom:     codexHeadroomSvc,
+		Tray:              tray.NewService(),
+		Sessions:          session.NewManager(),
+		Paths:             paths.NewPathsService(configDir),
+		Log:               log,
+		Pty:               pty.NewService(log),
+		Settings:          settings.NewService(configDir),
+		EnvVars:           envVarsSvc,
+		Updater:           updater.NewService(Version, log),
+		Plugins:           pluginsSvc,
+		CodexPlugins:      codexPluginsSvc,
+		OpenCodePlugins:   openCodePluginsSvc,
+		PiPlugins:         piPluginsSvc,
+		OmpPlugins:        ompPluginsSvc,
+		Workspaces:        workspace.NewService(configDir, pluginsSvc, log),
+		OpenCodeConfig:    opencodeconfig.NewService(),
+		EnvCheck:          envCheckSvc,
+		Usage:             usage.NewService(configDir, log),
+		Capabilities:      capabilities,
+		CLIResolver:       platform.NewCLIResolver(capabilities),
+		FileOpener:        platform.NewFileOpener(processRunner),
+		processRegistry:   processcap.NewRegistry(),
+		remotePlanner:     launchplan.NewFailClosedPlanner(),
+		compensationDebts: launchplan.NewCompensationDebtRegistry(),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
-	// M1-A：接线设备安全面（design §14.1）。HostSummary provider 为私有闭包，
-	// 遍历 contract.KnownCLITypes 调用真实 CLIResolver.Resolve(AppType)。
+	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
+	// desktop-equivalent builder 未接线，因此两条路径一致地 fail closed。
 	app.Remote = remote.NewServerWithSecurity(8680, app, log, mobileAssets,
 		remote.NewProductionSecurityOptions(configDir, app.buildRemoteHostSummary))
 	// 方案 P：注入用户主目录，供 List 回填已退出 claudecode 会话的标题（直读历史 jsonl）。
@@ -398,32 +407,89 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Startup after all wiring is complete.
 	app.control = remote.NewControlRuntime(remote.NewSystemClock(), log)
 	app.sharedCoord = remote.NewSharedServiceCoordinator()
-	app.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+	app.control.Projector().SetRunTerminalCleanup(app.releaseSharedLeasesExact)
+	if defaults, defaultsErr := launchplan.NewDefaultStore(app.Settings); defaultsErr != nil {
+		log.Warn("session", "remote launch defaults 不可用，远程创建保持关闭", defaultsErr.Error())
+	} else {
+		app.remoteDefaults = defaults
+		homeDir := ""
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			homeDir = home
+		}
+		// Production planner: resolves desktop defaults into canonical Plans.
+		// Falls back to FailClosedPlanner only if essential services are missing.
+		if app.remoteDefaults != nil && app.CLIResolver != nil {
+			app.remotePlanner = newAppLaunchPlanner(
+				app.Config, app.Secrets, app.remoteDefaults, app.CLIResolver,
+				app.Capabilities, app.Paths, app.EnvVars, homeDir,
+			)
+		}
+	}
+	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	app.externalCleanups = make(map[string]*externalCleanupClaim)
 	app.externalDurableRuns = make(map[string]externalCleanupRecord)
 	app.externalCleanupStore = newFileExternalCleanupStore(configDir)
 	// Wire the unbound PTY bridge adapter (design §8.6.3): legacy/v1 WS reaches
 	// PTY callbacks through this adapter, not through Wails-bound App methods.
-	app.Remote.SetPtyBridge(ptyBridgeAdapter{app: app, pty: app.Pty})
+	app.Remote.SetPtyBridge(ptyBridgeAdapter{app: app})
 
-	// M2-A session REST adapter wiring (design §4.2). Inject all M2-A
-	// dependencies into the RemoteSessionAdapter and register it with the
-	// Server. When wired, session REST index 2-9 + /ws/v1 activate (design §4A
-	// hardening gate). The resolver wraps the same platform.CLIResolver that M1
-	// HostSummary uses; the journal is the file-backed dangerous-op log.
-	homeDir, _ := os.UserHomeDir()
-	m2aCatalog := remote.NewSessionCatalog()
+	// Production session membership is Manager-only. Remote create and restart
+	// remain fail-closed until the five desktop-equivalent planners and executor
+	// are implemented; neither a binary-only resolver nor a raw PTY starter is
+	// injected into this adapter.
 	m2aStreams := remote.NewSessionStreamStore()
 	m2aJournal := remote.NewSessionOperationJournal(configDir)
-	m2aResolver := remote.NewProductionRemoteLaunchResolver(app.CLIResolver, homeDir, os.Environ(), nil)
-	m2aLaunchRaw := appLaunchRaw{pty: app.Pty}
 	m2aSessRaw := appSessionRaw{pty: app.Pty, sessions: app.Sessions}
 	m2aAdapter := remote.NewRemoteSessionAdapter(
-		app.control.Gate(), app.control, m2aCatalog, m2aStreams, m2aJournal,
-		m2aResolver, m2aLaunchRaw, m2aSessRaw, remote.NewSystemClock(), configDir,
+		app.control.Gate(), app.control, nil, m2aStreams, m2aJournal,
+		remote.NewNoopRemoteLaunchResolver(), nil, m2aSessRaw, remote.NewSystemClock(), configDir,
 	)
+	m2aAdapter.SetSessionAuthority(app.Sessions, app.processRegistry, app.remotePlanner)
+	m2aAdapter.SetPostRemoveCleanup(app.releaseSharedLeases)
+	// Production executor: applies typed Effects for remote create.
+	if _, ok := app.remotePlanner.(*appLaunchPlanner); ok {
+		exec := newAppLaunchExecutor(launchExecutorDeps{
+			pty:           app.Pty,
+			proxy:         app.Proxy,
+			headroom:      app.Headroom,
+			codexHeadroom: app.CodexHeadroom,
+			launcherSvc:   app.Launcher,
+			sharedCoord:   app.sharedCoord,
+			debts:         app.compensationDebts,
+		})
+		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
+		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
+		m2aAdapter.SetRestartPtyStart(func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error) {
+			resolved, ok := spec.(platform.ResolvedLaunchSpec)
+			if !ok {
+				return processcap.StartEvidence{}, fmt.Errorf("restart: invalid spec type")
+			}
+			return app.Pty.StartResolvedWithRunEvidence(sessionID, resolved, runHandle)
+		})
+	}
+	app.sessionAdapter = m2aAdapter
 	app.Remote.SetSessionAdapter(m2aAdapter)
 	return app
+}
+
+// GetLaunchCompensationDebts returns the conservative, secret-free projection
+// of config compensation that could not be confirmed.
+func (a *App) GetLaunchCompensationDebts() []launchplan.CompensationDebt {
+	if a.compensationDebts == nil {
+		return nil
+	}
+	return a.compensationDebts.List()
+}
+
+// RetryLaunchCompensationDebt retries one exact receipt/key owner.
+func (a *App) RetryLaunchCompensationDebt(owner string) error {
+	if a.compensationDebts == nil {
+		return fmt.Errorf("compensation debt registry is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := a.compensationDebts.Retry(ctx, owner)
+	return err
 }
 
 func (a *App) setPersistentLoadState(state persistentLoadState) {
@@ -1046,33 +1112,21 @@ func (a *App) ListRemoteSecurityEvents(limit int) ([]RemoteSecurityEventRecord, 
 	return a.Remote.ListRemoteSecurityEvents(limit)
 }
 
-// buildRemoteHostSummary 是私有 HostSummary provider（design §14.1）。遍历
-// contract.KnownCLITypes，对每项调用真实 CLIResolver.Resolve(AppType,
-// ModeEmbedded, os.Environ())，仅把 bool 放入 DTO；不调用 ResolveExecutable、
-// 不复制 CLI candidate 字符串、不预 build env；错误/path/diagnostics 不外露。
+// buildRemoteHostSummary is the private HostSummary provider. It probes every
+// known CLI through the same Planner instance consumed by remote create; a
+// missing planner is fail-closed rather than a binary-only availability fallback.
 func (a *App) buildRemoteHostSummary() (contract.HostSummary, error) {
-	return hostSummaryFromResolver(a.CLIResolver, resolveAppVersion())
-}
-
-// hostSummaryFromResolver 构造 HostSummary。resolver 仅需 Resolve；可注入测试双。
-func hostSummaryFromResolver(resolver interface {
-	Resolve(platform.ResolveRequest) (platform.ResolvedLaunchSpec, error)
-}, serverVersion string) (contract.HostSummary, error) {
-	avail := make([]contract.CLIAvailability, 0, len(contract.KnownCLITypes))
-	for _, cliType := range contract.KnownCLITypes {
-		spec, err := resolver.Resolve(platform.ResolveRequest{
-			AppType:    string(cliType),
-			LaunchMode: string(session.ModeEmbedded),
-			Env:        os.Environ(),
-		})
-		available := err == nil && spec.CLI.Path != ""
-		avail = append(avail, contract.CLIAvailability{CLIType: cliType, Available: available})
+	planner := a.remotePlanner
+	if planner == nil {
+		planner = launchplan.NewFailClosedPlanner()
 	}
-	return contract.HostSummary{
-		APIVersion:      contract.APIVersionV1,
-		ServerVersion:   serverVersion,
-		CLIAvailability: avail,
-	}, nil
+	availability := make([]contract.CLIAvailability, 0, len(contract.KnownCLITypes))
+	for _, cliType := range contract.KnownCLITypes {
+		item, _ := planner.Probe(context.Background(), cliType)
+		item.CLIType = cliType
+		availability = append(availability, item)
+	}
+	return contract.HostSummary{APIVersion: contract.APIVersionV1, ServerVersion: resolveAppVersion(), CLIAvailability: availability}, nil
 }
 
 // --- M1-A 设备配对/安全 Wails wrappers（design §14.1）---
@@ -1789,9 +1843,19 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Launcher.SetProxyPort(0)
 	}
 
-	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir, useProxy)
-	a.Log.Info("session", "会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, model, launchMode))
+	// Reserve embedded identity hidden; external keeps the legacy local timing but
+	// remains remoteEligible=false in the same Authority owner.
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir, useProxy)
+	if err != nil {
+		return "", err
+	}
+	authorityCommitted := authorityReservation == nil
+	defer func() {
+		if !authorityCommitted && authorityReservation != nil {
+			a.Sessions.AbortCreate(authorityReservation)
+		}
+	}()
+	a.Log.Info("session", "会话身份已预留", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, model, launchMode))
 
 	// === usage：仅 useProxy 时注入 proxy 上下文，让实时钩子关联到本会话（设计 9.4）===
 	if useProxy && a.Usage != nil {
@@ -1840,12 +1904,14 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		if useHeadroom {
 			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeHeadroom)
 		}
-		pid, err := a.launchEmbeddedPTYWithAdmission(sess.ID, spec, headroomAdmission, sharedKinds...)
+		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useProxy, useHeadroom)
+		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, headroomAdmission, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start pty: %w", err)
 		}
+		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
@@ -1946,6 +2012,20 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Log.Error("session", "进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
 		return "", launchErr
 	}
+	// Register the concrete launcher binding immediately after successful start;
+	// all later compensation uses this exact capability, never PID/session lookup.
+	externalBindingKey, externalBindingRegistered, bindingErr := a.registerExternalProcessEvidence(result)
+	if bindingErr != nil {
+		closeUnregisteredExternalEvidence(context.Background(), result)
+		a.Sessions.MarkFailed(sess.ID, bindingErr.Error())
+		return "", bindingErr
+	}
+	externalAuthorityCommitted := false
+	defer func() {
+		if !externalAuthorityCommitted {
+			a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
+		}
+	}()
 	// Record PID and fsync OS identity immediately after start, before lease
 	// promotion. Successful runs and failed promotions therefore share one
 	// durable ownership chain across graceful Shutdown.
@@ -1992,6 +2072,12 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.rememberExternalDurableRun(durableRecord)
 	}
 
+	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useProxy, useHeadroom)
+	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	externalAuthorityCommitted = true
 	a.Log.Info("session", "进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
 
 	// 方案 R 降级（external 模式）：Launcher.Launch 不支持注入 --session-id，
@@ -2032,8 +2118,21 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 func (a *App) StopSession(sessionID string) error {
 	a.Log.Info("session", "停止会话", "id="+sessionID)
 
+	if record, getErr := a.Sessions.Get(sessionID); getErr == nil && (record.Mode == session.ModeEmbedded || record.Mode == session.ModeTerminal) && a.sessionAdapter != nil {
+		if a.control == nil || !a.control.IsReady() {
+			return remote.ErrControlNotReady
+		}
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := a.sessionAdapter.DesktopStopAuthoritative(ctx, contract.SessionID(sessionID)); err != nil {
+			return err
+		}
+		a.releaseSharedLeases(sessionID)
+		return nil
+	}
 	if a.Pty.IsRunning(sessionID) {
-		// Embedded PTY session → gate-authoritative stop (fail-closed).
 		if a.control == nil || !a.control.IsReady() {
 			return remote.ErrControlNotReady
 		}
@@ -2042,10 +2141,10 @@ func (a *App) StopSession(sessionID string) error {
 			ctx = context.Background()
 		}
 		if err := a.control.DesktopStop(ctx, contract.SessionID(sessionID)); err != nil {
-			return err // fail-closed (incl. DenySessionNotFound)
+			return err
 		}
 		a.Sessions.MarkStopped(sessionID)
-		a.releaseSharedLeases(sessionID) // M-006
+		a.releaseSharedLeases(sessionID)
 		return nil
 	}
 
@@ -2121,23 +2220,31 @@ func (a *App) GetSessions() []session.SessionInfo {
 // A DenySessionNotFound (the gate does not manage the session) is the signal
 // that the session is external/legacy → manager record cleanup.
 func (a *App) RemoveSession(sessionID string) error {
-	if a.control != nil && a.control.IsReady() {
+	if record, getErr := a.Sessions.Get(sessionID); getErr == nil && (record.Mode == session.ModeEmbedded || record.Mode == session.ModeTerminal) && a.sessionAdapter != nil {
+		if a.control == nil || !a.control.IsReady() {
+			return remote.ErrControlNotReady
+		}
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return a.sessionAdapter.DesktopRemoveAuthoritative(ctx, contract.SessionID(sessionID))
+	}
+	if a.sessionAdapter == nil && a.control != nil && a.control.IsReady() {
 		ctx := a.ctx
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		if err := a.control.DesktopRemove(ctx, contract.SessionID(sessionID)); err != nil {
 			if !isControlUnknownSession(err) {
-				return err // gate denial → fail-closed
+				return err
 			}
-			// DenySessionNotFound: gate does not manage this session → external/legacy.
 		} else {
-			a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID)) // M3-005: gate remove committed
-			a.releaseSharedLeases(sessionID)                                  // M-006
+			a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID))
+			a.releaseSharedLeases(sessionID)
 			return nil
 		}
 	} else if a.Pty.IsRunning(sessionID) {
-		// PTY running but gate unavailable → fail-closed (no raw manager bypass).
 		return remote.ErrControlNotReady
 	}
 	// External Launcher / legacy record (PTY not running here): manager cleanup.
@@ -2160,9 +2267,10 @@ func (a *App) RemoveSession(sessionID string) error {
 // R3-005 fail-closed: control-MANAGED (embedded) stopped sessions are cleared
 // through the gate ONLY when control is ready; if control is nil/not-ready they
 // are SKIPPED (neither control entry nor manager record is touched) so the two
-// stores can never diverge with a dangling control entry. Legacy/terminal
-// sessions (no control entry by construction) are still cleared from the manager
-// directly. Returns the count of manager records cleared.
+// stores can never diverge with a dangling control entry. When the Authority
+// adapter is wired, both embedded and external sessions use exact process
+// capabilities and receipt-keyed GC; only isolated legacy mode falls back.
+// Returns the count of records authoritatively cleared.
 func (a *App) ClearStoppedSessions() int {
 	return a.ClearStoppedSessionsDetailed().Cleared
 }
@@ -2203,9 +2311,9 @@ func (a *App) removeStoppedSessionRecord(id string) error {
 }
 
 // ClearStoppedSessionsDetailed clears stopped sessions and returns a typed
-// per-store partial result. Control-managed IDs first pass the authoritative
-// Gate; every eligible ID then calls Manager.Remove individually. Manager
-// failures are retained and propagated, never counted as cleared.
+// partial result. With SessionAuthority wired, every embedded or external ID
+// uses DesktopRemoveAuthoritative; only legacy fallback IDs call Manager.Remove
+// directly. Failures are retained and never counted as cleared.
 func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
 	result := ClearStoppedSessionsResult{}
 	var eligible []string
@@ -2219,7 +2327,9 @@ func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
 			result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: s.ID, Reason: session.ErrSessionStopping.Error()})
 			continue
 		}
-		if s.Mode == session.ModeEmbedded {
+		if a.sessionAdapter != nil && (s.Mode == session.ModeEmbedded || s.Mode == session.ModeTerminal) {
+			controlManaged = append(controlManaged, s.ID)
+		} else if s.Mode == session.ModeEmbedded {
 			controlManaged = append(controlManaged, s.ID)
 		} else {
 			eligible = append(eligible, s.ID)
@@ -2229,32 +2339,38 @@ func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
 	controlReady := a.control != nil && a.control.IsReady()
 	if len(controlManaged) > 0 {
 		if !controlReady {
-			// Fail-closed: do NOT clear only the manager when control authority is
-			// unavailable; these are ordinary retained/skipped IDs, not raw errors.
 			result.RetainedIDs = append(result.RetainedIDs, controlManaged...)
 		} else {
 			ctx := a.ctx
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			ids := make([]contract.SessionID, len(controlManaged))
-			for i, id := range controlManaged {
-				ids[i] = contract.SessionID(id)
-			}
-			controlResult := a.control.DesktopClearStopped(ctx, ids)
-			for _, perID := range controlResult.Results {
-				id := string(perID.ID)
-				switch perID.Status {
-				case remote.DesktopClearCleared:
-					eligible = append(eligible, id)
-				case remote.DesktopClearErrored:
-					result.RetainedIDs = append(result.RetainedIDs, id)
-					result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: perID.Reason})
-					if a.Log != nil {
-						a.Log.Warn("session", "控制面清理已停止会话失败", fmt.Sprintf("id=%s reason=%s", id, perID.Reason))
+			if a.sessionAdapter != nil {
+				for _, id := range controlManaged {
+					if err := a.sessionAdapter.DesktopRemoveAuthoritative(ctx, contract.SessionID(id)); err != nil {
+						result.RetainedIDs = append(result.RetainedIDs, id)
+						result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: err.Error()})
+						continue
 					}
-				default:
-					result.RetainedIDs = append(result.RetainedIDs, id)
+					result.ClearedIDs = append(result.ClearedIDs, id)
+				}
+			} else {
+				ids := make([]contract.SessionID, len(controlManaged))
+				for i, id := range controlManaged {
+					ids[i] = contract.SessionID(id)
+				}
+				controlResult := a.control.DesktopClearStopped(ctx, ids)
+				for _, perID := range controlResult.Results {
+					id := string(perID.ID)
+					switch perID.Status {
+					case remote.DesktopClearCleared:
+						eligible = append(eligible, id)
+					case remote.DesktopClearErrored:
+						result.RetainedIDs = append(result.RetainedIDs, id)
+						result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: perID.Reason})
+					default:
+						result.RetainedIDs = append(result.RetainedIDs, id)
+					}
 				}
 			}
 		}
@@ -2401,9 +2517,18 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		}
 	}
 
-	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
-	a.Log.Info("session", "Codex 会话已创建", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, launchSettings.Model, launchMode))
+	// Embedded identity stays hidden until PTY, Control and H1 activation finish.
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
+	if err != nil {
+		return "", err
+	}
+	authorityCommitted := authorityReservation == nil
+	defer func() {
+		if !authorityCommitted && authorityReservation != nil {
+			a.Sessions.AbortCreate(authorityReservation)
+		}
+	}()
+	a.Log.Info("session", "Codex 会话身份已预留", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, launchSettings.Model, launchMode))
 
 	// 调试日志：输出 envOverrides 注入情况
 	envKeys := make([]string, 0, len(envOverrides))
@@ -2435,12 +2560,14 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		if codexHeadroomAdmission != nil {
 			sharedKinds = append(sharedKinds, remote.SharedServiceCodexHeadroom)
 		}
-		pid, err := a.launchEmbeddedPTYWithAdmission(sess.ID, spec, codexHeadroomAdmission, sharedKinds...)
+		recipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, false, codexHeadroomAdmission != nil)
+		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, codexHeadroomAdmission, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Codex PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start codex pty: %w", err)
 		}
+		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "Codex PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
@@ -2535,6 +2662,18 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		a.Log.Error("session", "Codex 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
 		return "", launchErr
 	}
+	externalBindingKey, externalBindingRegistered, bindingErr := a.registerExternalProcessEvidence(result)
+	if bindingErr != nil {
+		closeUnregisteredExternalEvidence(context.Background(), result)
+		a.Sessions.MarkFailed(sess.ID, bindingErr.Error())
+		return "", bindingErr
+	}
+	externalAuthorityCommitted := false
+	defer func() {
+		if !externalAuthorityCommitted {
+			a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
+		}
+	}()
 	a.markExternalOwnershipStarted(attempt)
 	a.Sessions.SetPID(sess.ID, result.PID)
 	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
@@ -2578,6 +2717,12 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		a.rememberExternalDurableRun(durableRecord)
 	}
 
+	externalRecipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, false, codexHeadroomAdmission != nil)
+	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	externalAuthorityCommitted = true
 	a.Log.Info("session", "Codex 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
 
 	monitorCtx := a.ctx
@@ -2712,9 +2857,18 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		}
 	}
 
-	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir, false)
-	a.Log.Info("session", "Pi 会话已创建", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
+	// Embedded identity stays hidden until its exact PTY run is active.
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir, false)
+	if err != nil {
+		return "", err
+	}
+	authorityCommitted := authorityReservation == nil
+	defer func() {
+		if !authorityCommitted && authorityReservation != nil {
+			a.Sessions.AbortCreate(authorityReservation)
+		}
+	}()
+	a.Log.Info("session", "Pi 会话身份已预留", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
 
 	// 调试日志：输出 envOverrides 注入情况
 	envKeys := make([]string, 0, len(envOverrides))
@@ -2745,12 +2899,14 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			return "", err
 		}
 
-		pid, err := a.launchEmbeddedPTY(sess.ID, spec)
+		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Pi PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start pi pty: %w", err)
 		}
+		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
@@ -2775,6 +2931,18 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.Log.Error("session", "Pi 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 		return "", fmt.Errorf("launch pi: %w", err)
+	}
+	externalBindingKey, externalBindingRegistered, err := a.registerExternalProcessEvidence(result)
+	if err != nil {
+		closeUnregisteredExternalEvidence(context.Background(), result)
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
+		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
 	}
 
 	a.Sessions.SetPID(sess.ID, result.PID)
@@ -2908,9 +3076,18 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		}
 	}
 
-	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeOhMyPi, "omp", providerID, launchSettings.Model, launchMode, workDir, false)
-	a.Log.Info("session", "omp 会话已创建", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
+	// Embedded identity stays hidden until its exact PTY run is active.
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOhMyPi, "omp", providerID, launchSettings.Model, launchMode, workDir, false)
+	if err != nil {
+		return "", err
+	}
+	authorityCommitted := authorityReservation == nil
+	defer func() {
+		if !authorityCommitted && authorityReservation != nil {
+			a.Sessions.AbortCreate(authorityReservation)
+		}
+	}()
+	a.Log.Info("session", "omp 会话身份已预留", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
 
 	// 调试日志：输出 envOverrides 注入情况
 	envKeys := make([]string, 0, len(envOverrides))
@@ -2941,12 +3118,14 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 			return "", err
 		}
 
-		pid, err := a.launchEmbeddedPTY(sess.ID, spec)
+		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "omp PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start omp pty: %w", err)
 		}
+		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "omp PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
@@ -2971,6 +3150,18 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.Log.Error("session", "omp 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 		return "", fmt.Errorf("launch omp: %w", err)
+	}
+	externalBindingKey, externalBindingRegistered, err := a.registerExternalProcessEvidence(result)
+	if err != nil {
+		closeUnregisteredExternalEvidence(context.Background(), result)
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	externalRecipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
+		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
 	}
 
 	a.Sessions.SetPID(sess.ID, result.PID)
@@ -3046,7 +3237,16 @@ func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
 			return fmt.Errorf("read config.toml: %w", err)
 		}
 	}
+	rendered, err := renderCodexConfig(data, configPath, opts)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, rendered, 0644)
+}
 
+// renderCodexConfig is the pure Codex TOML transform shared by desktop writes
+// and the transactional remote executor. The caller owns durable file I/O.
+func renderCodexConfig(data []byte, configPath string, opts codexConfigSyncOptions) ([]byte, error) {
 	content := string(data)
 	lines := []string{}
 	if content != "" {
@@ -3070,12 +3270,11 @@ func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
 		}
 		updated := syncCodexTopLevelAssignments(lines, []string{"model = " + strconv.Quote(opts.Model)}, false)
 		if countTopLevelAssignment(updated, "model") == 0 {
-			return fmt.Errorf("top-level model field not found in %s", configPath)
+			return nil, fmt.Errorf("top-level model field not found in %s", configPath)
 		}
 		lines = updated
 	}
-
-	return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+	return []byte(strings.Join(lines, "\n")), nil
 }
 
 func syncCodexTopLevelAssignments(lines []string, assignmentLines []string, insertMissing bool) []string {
@@ -4078,9 +4277,18 @@ launchCommon:
 		sessionProvider = providerName
 	}
 
-	// 创建会话记录
-	sess := a.Sessions.Create(session.AppTypeOpenCode, sessionProvider, presetName, "", launchMode, workDir, false)
-	a.Log.Info("session", "OpenCode 会话已创建", fmt.Sprintf("id=%s mode=%s", sess.ID, launchMode))
+	// Embedded identity stays hidden until its exact PTY run is active.
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOpenCode, sessionProvider, presetName, "", launchMode, workDir, false)
+	if err != nil {
+		return "", err
+	}
+	authorityCommitted := authorityReservation == nil
+	defer func() {
+		if !authorityCommitted && authorityReservation != nil {
+			a.Sessions.AbortCreate(authorityReservation)
+		}
+	}()
+	a.Log.Info("session", "OpenCode 会话身份已预留", fmt.Sprintf("id=%s mode=%s", sess.ID, launchMode))
 
 	// 根据模式选择启动方式
 	if launchMode == session.ModeEmbedded {
@@ -4094,12 +4302,14 @@ launchCommon:
 			return "", err
 		}
 
-		pid, err := a.launchEmbeddedPTY(sess.ID, spec)
+		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false, false)
+		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "OpenCode PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start opencode pty: %w", err)
 		}
+		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "OpenCode PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 
@@ -4128,6 +4338,18 @@ launchCommon:
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		a.Log.Error("session", "OpenCode 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 		return "", fmt.Errorf("launch opencode: %w", err)
+	}
+	externalBindingKey, externalBindingRegistered, err := a.registerExternalProcessEvidence(result)
+	if err != nil {
+		closeUnregisteredExternalEvidence(context.Background(), result)
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
+	}
+	externalRecipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false, false)
+	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
+		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
+		a.Sessions.MarkFailed(sess.ID, err.Error())
+		return "", err
 	}
 
 	a.Sessions.SetPID(sess.ID, result.PID)

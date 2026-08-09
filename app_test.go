@@ -683,6 +683,19 @@ func (f *fakeResolver) ResolveExecutable(string, []string, []string) (platform.R
 	panic("provider must not call ResolveExecutable")
 }
 
+func hostSummaryFromResolver(resolver interface {
+	Resolve(platform.ResolveRequest) (platform.ResolvedLaunchSpec, error)
+}, serverVersion string) (contract.HostSummary, error) {
+	availability := make([]contract.CLIAvailability, 0, len(contract.KnownCLITypes))
+	for _, cliType := range contract.KnownCLITypes {
+		spec, err := resolver.Resolve(platform.ResolveRequest{
+			AppType: string(cliType), LaunchMode: string(session.ModeEmbedded), Env: os.Environ(),
+		})
+		availability = append(availability, contract.CLIAvailability{CLIType: cliType, Available: err == nil && spec.CLI.Path != ""})
+	}
+	return contract.HostSummary{APIVersion: contract.APIVersionV1, ServerVersion: serverVersion, CLIAvailability: availability}, nil
+}
+
 func TestHostSummaryProviderUsesResolverAppType(t *testing.T) {
 	r := &fakeResolver{}
 	hs, err := hostSummaryFromResolver(r, "1.2.3")

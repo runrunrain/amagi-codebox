@@ -4,6 +4,7 @@ package pty
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 )
 
 func newASCIIPathTempDir(t *testing.T, pattern string) string {
@@ -131,6 +133,73 @@ func TestStart_CmdShellLaunchesOpenCodeWithEmbeddedEnv(t *testing.T) {
 	}
 	if !svc.IsRunning("opencode-embedded-env") {
 		t.Fatal("expected shell session to remain running after startup command")
+	}
+}
+
+func TestExactShellAttachReadyThenBootstrapExecutesTargetCLI(t *testing.T) {
+	dumpFile := setupFakeOpenCode(t)
+	t.Setenv("ZHIPU_API_KEY", "exact-zhipu-key")
+	t.Setenv("MINIMAX_API_KEY", "exact-minimax-key")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"provider":{"id":"exact"}}`)
+
+	logSvc := logging.NewService(t.TempDir())
+	defer logSvc.Close()
+	svc := NewService(logSvc)
+	spec := platform.ResolvedLaunchSpec{
+		AppType: "opencode", LaunchMode: "embedded", WorkDir: newASCIIPathTempDir(t, "pty-exact-bootstrap-"),
+		CLI:   platform.ResolvedCLI{Name: "opencode", Path: "opencode"},
+		Shell: &platform.ResolvedShell{Key: "cmd", Path: "cmd.exe"},
+		Env:   platform.ResolvedEnv{Variables: os.Environ()}, BootstrapMode: platform.BootstrapShellAttach,
+		StartupCommand: "opencode", PTYCols: 120, PTYRows: 40,
+	}
+	evidence, err := svc.StartResolvedWithRunEvidence("exact-bootstrap", spec, struct{}{})
+	if err != nil {
+		t.Fatalf("StartResolvedWithRunEvidence: %v", err)
+	}
+	defer evidence.Binding.CloseExact(context.Background())
+	if err := evidence.Validate(processcap.BackendPTY); err != nil {
+		t.Fatalf("start evidence: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	bindingID := evidence.Binding.BindingID()
+	if err := svc.WaitReadyForBinding(ctx, "exact-bootstrap", bindingID); err != nil {
+		t.Fatalf("WaitReadyForBinding: %v", err)
+	}
+	if err := svc.WriteRawForBinding(ctx, "exact-bootstrap", bindingID, []byte("opencode\r\n")); err != nil {
+		t.Fatalf("WriteRawForBinding: %v", err)
+	}
+	waitForDumpFile(t, dumpFile, 10*time.Second)
+	env := parseEnvDump(t, dumpFile)
+	if env["ZHIPU_API_KEY"] != "exact-zhipu-key" || env["MINIMAX_API_KEY"] != "exact-minimax-key" || env["OPENCODE_CONFIG_CONTENT"] != `{"provider":{"id":"exact"}}` {
+		t.Fatalf("target CLI did not receive exact bootstrap environment: %#v", env)
+	}
+}
+
+func TestWaitReadyForBindingShellAttachRequiresFirstOutput(t *testing.T) {
+	owner, err := processcap.NewOwnerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := processcap.BindingID{Kind: processcap.BackendPTY, Owner: owner, Generation: 1}
+	ps := &PtySession{
+		ready: make(chan struct{}), exited: make(chan struct{}), shellReady: make(chan struct{}),
+		bootstrapMode: platform.BootstrapShellAttach, bindingID: id,
+	}
+	close(ps.ready)
+	svc := &Service{sessions: map[string]*PtySession{"shell": ps}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- svc.WaitReadyForBinding(ctx, "shell", id) }()
+	select {
+	case err := <-result:
+		t.Fatalf("ready returned before shell output: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(ps.shellReady)
+	if err := <-result; err != nil {
+		t.Fatalf("ready after shell output: %v", err)
 	}
 }
 

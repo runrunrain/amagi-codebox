@@ -43,6 +43,18 @@
 **Returns**: `session.SessionInfo`, `error`  
 **Description**: 按会话 ID 查询会话信息。
 
+### GetLaunchCompensationDebts
+**Service**: App
+**Parameters**: none
+**Returns**: `[]launchplan.CompensationDebt`
+**Description**: 返回未能确认完成的启动配置补偿债务。投影仅包含 exact owner、effect、step、typed disposition、错误摘要、尝试次数与更新时间，不包含配置内容或 credential。
+
+### RetryLaunchCompensationDebt
+**Service**: App
+**Parameters**: `owner (string)`
+**Returns**: `error`
+**Description**: 在 5 秒边界内重试一个 exact owner 的补偿。仅 confirmed 会删除该债务；unavailable/indeterminate 继续保守保留。
+
 ### GetExternalCleanupRecoveryStatus
 **Service**: App
 **Parameters**: none

@@ -3,11 +3,15 @@
 package pty
 
 import (
+	"context"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 )
 
 func TestR4_001_DarwinCloseReleasesSameIDForRestart(t *testing.T) {
@@ -30,6 +34,49 @@ func TestR4_001_DarwinCloseReleasesSameIDForRestart(t *testing.T) {
 	}
 	if _, err := s.DetachSession(sid); err != nil {
 		t.Fatalf("cleanup detach: %v", err)
+	}
+}
+
+func TestDarwinExactReadyAndBootstrapWriteUseSameBinding(t *testing.T) {
+	s := NewService(nil)
+	const sid = "darwin-exact-bootstrap"
+	spec := platform.ResolvedLaunchSpec{
+		CLI: platform.ResolvedCLI{Path: "/bin/cat"}, BootstrapMode: platform.BootstrapDirectCommand,
+		PTYCols: 80, PTYRows: 24,
+	}
+	evidence, err := s.StartResolvedWithRunEvidence(sid, spec, struct{}{})
+	if err != nil {
+		t.Fatalf("StartResolvedWithRunEvidence: %v", err)
+	}
+	defer evidence.Binding.CloseExact(context.Background())
+	if err := evidence.Validate(processcap.BackendPTY); err != nil {
+		t.Fatalf("start evidence: %v", err)
+	}
+	output := make(chan string, 8)
+	s.RegisterOutputCallback(sid, "exact-observer", func(data []byte) { output <- string(data) })
+	defer s.UnregisterOutputCallback(sid, "exact-observer")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	bindingID := evidence.Binding.BindingID()
+	if err := s.WaitReadyForBinding(ctx, sid, bindingID); err != nil {
+		t.Fatalf("WaitReadyForBinding: %v", err)
+	}
+	if err := s.WriteRawForBinding(ctx, sid, bindingID, []byte("exact-bootstrap-marker\n")); err != nil {
+		t.Fatalf("WriteRawForBinding: %v", err)
+	}
+	var observed string
+	for !strings.Contains(observed, "exact-bootstrap-marker") {
+		select {
+		case chunk := <-output:
+			observed += chunk
+		case <-ctx.Done():
+			t.Fatalf("bootstrap marker not observed, output=%q", observed)
+		}
+	}
+	stale := bindingID
+	stale.Generation++
+	if err := s.WriteRawForBinding(ctx, sid, stale, []byte("stale\n")); err == nil {
+		t.Fatal("stale binding bootstrap write succeeded")
 	}
 }
 

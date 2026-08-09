@@ -33,6 +33,11 @@ var ErrSharedServiceInUse = errors.New("shared service is in use by active sessi
 // identity may repopulate leases after ClearAll has released them.
 var ErrSharedCoordinatorClosed = errors.New("shared service coordinator is closed")
 
+// isHeadroomKind reports whether the kind is a headroom dependency (not proxy).
+func isHeadroomKind(kind SharedServiceKind) bool {
+	return kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom
+}
+
 // SharedServiceMutationKind enumerates the manual facade mutations that are
 // lease-guarded (design §6.7.2 method-family table).
 type SharedServiceMutationKind uint8
@@ -57,6 +62,24 @@ type SharedServiceEntry struct {
 	leases            map[*SharedDependencyLease]struct{}
 }
 
+type sharedLaunchTransaction struct {
+	kind     SharedServiceKind
+	started  bool
+	released bool
+	pending  map[*SharedDependencyLease]struct{}
+}
+
+// SharedLeaseTransfer reserves an exact pending→promoted ownership switch.
+// ReleaseExact waits for this ticket so natural exit cannot race the composite.
+type SharedLeaseTransfer struct {
+	coordinator *SharedServiceCoordinator
+	oldLeases   []*SharedDependencyLease
+	newLeases   []*SharedDependencyLease
+	resolved    chan struct{}
+	committed   bool
+	consumed    bool
+}
+
 // SharedServiceCoordinator manages active-run leases for the three shared
 // singletons: ClaudeProxy, ClaudeHeadroom, CodexHeadroom.
 type SharedServiceCoordinator struct {
@@ -68,7 +91,9 @@ type SharedServiceCoordinator struct {
 	// any Headroom/PTY side effect. An uninstall drain linearized after a claim
 	// observes it as non-empty and aborts; a drain linearized first rejects it.
 	launchAdmissions   map[*SharedLaunchAdmission]struct{}
+	launchTransactions map[*SharedLaunchAdmission]*sharedLaunchTransaction
 	mutationAdmissions map[*SharedMutationAdmission]struct{}
+	leaseTransfers     map[*SharedDependencyLease]*SharedLeaseTransfer
 	admissionSeq       uint64
 	externalRunSeq     uint64
 
@@ -88,7 +113,9 @@ func NewSharedServiceCoordinator() *SharedServiceCoordinator {
 		entries:            make(map[SharedServiceKind]*SharedServiceEntry),
 		genCount:           make(map[SharedServiceKind]uint64),
 		launchAdmissions:   make(map[*SharedLaunchAdmission]struct{}),
+		launchTransactions: make(map[*SharedLaunchAdmission]*sharedLaunchTransaction),
 		mutationAdmissions: make(map[*SharedMutationAdmission]struct{}),
+		leaseTransfers:     make(map[*SharedDependencyLease]*SharedLeaseTransfer),
 	}
 }
 
@@ -97,8 +124,10 @@ func NewSharedServiceCoordinator() *SharedServiceCoordinator {
 // and atomically promoted to a run lease. Callers must release it on every path;
 // release is idempotent, including after successful promotion.
 type SharedLaunchAdmission struct {
-	kind       SharedServiceKind
-	generation uint64
+	kind              SharedServiceKind
+	generation        uint64
+	configFingerprint [32]byte
+	configBound       bool
 }
 
 // SharedMutationAdmission is an exact pending singleton mutation. It keeps the
@@ -130,15 +159,26 @@ func (a *SharedLaunchAdmission) Kind() SharedServiceKind {
 // AcquireLaunchAdmission enters the uninstall admission barrier before launch
 // side effects. Only Headroom dependencies need the install-drain barrier.
 func (c *SharedServiceCoordinator) AcquireLaunchAdmission(kind SharedServiceKind) (*SharedLaunchAdmission, error) {
-	if kind != SharedServiceClaudeHeadroom && kind != SharedServiceCodexHeadroom {
-		return nil, errors.New("control: launch admission is only valid for headroom dependencies")
+	return c.acquireLaunchAdmission(kind, [32]byte{}, false)
+}
+
+// AcquireLaunchAdmissionForConfig binds the pre-effect admission to the same
+// exact fingerprint later used by the effect and run lease. Concurrent launch
+// transactions for one singleton may coexist only when this tuple matches.
+func (c *SharedServiceCoordinator) AcquireLaunchAdmissionForConfig(kind SharedServiceKind, fingerprint [32]byte) (*SharedLaunchAdmission, error) {
+	return c.acquireLaunchAdmission(kind, fingerprint, true)
+}
+
+func (c *SharedServiceCoordinator) acquireLaunchAdmission(kind SharedServiceKind, fingerprint [32]byte, configBound bool) (*SharedLaunchAdmission, error) {
+	if kind != SharedServiceClaudeHeadroom && kind != SharedServiceCodexHeadroom && kind != SharedServiceClaudeProxy {
+		return nil, errors.New("control: launch admission is only valid for headroom or proxy dependencies")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return nil, ErrSharedCoordinatorClosed
 	}
-	if c.headroomDraining {
+	if isHeadroomKind(kind) && c.headroomDraining {
 		return nil, ErrSharedServiceInUse
 	}
 	for mutation := range c.mutationAdmissions {
@@ -146,12 +186,35 @@ func (c *SharedServiceCoordinator) AcquireLaunchAdmission(kind SharedServiceKind
 			return nil, ErrSharedServiceInUse
 		}
 	}
+	if configBound {
+		if entry := c.entries[kind]; entry != nil && len(entry.leases) > 0 && entry.configFingerprint != fingerprint {
+			return nil, ErrSharedServiceInUse
+		}
+		for existing, transaction := range c.launchTransactions {
+			if transaction == nil || transaction.released || transaction.kind != kind {
+				continue
+			}
+			if !existing.configBound || existing.configFingerprint != fingerprint {
+				return nil, ErrSharedServiceInUse
+			}
+		}
+	} else {
+		for existing, transaction := range c.launchTransactions {
+			if transaction != nil && !transaction.released && transaction.kind == kind && existing.configBound {
+				return nil, ErrSharedServiceInUse
+			}
+		}
+	}
 	if c.admissionSeq == ^uint64(0) {
 		return nil, errors.New("control: launch admission generation exhausted")
 	}
 	c.admissionSeq++
-	admission := &SharedLaunchAdmission{kind: kind, generation: c.admissionSeq}
+	admission := &SharedLaunchAdmission{
+		kind: kind, generation: c.admissionSeq,
+		configFingerprint: fingerprint, configBound: configBound,
+	}
 	c.launchAdmissions[admission] = struct{}{}
+	c.launchTransactions[admission] = &sharedLaunchTransaction{kind: kind, pending: make(map[*SharedDependencyLease]struct{})}
 	return admission, nil
 }
 
@@ -163,7 +226,64 @@ func (c *SharedServiceCoordinator) ReleaseLaunchAdmission(admission *SharedLaunc
 	}
 	c.mu.Lock()
 	delete(c.launchAdmissions, admission)
+	if txn := c.launchTransactions[admission]; txn != nil {
+		txn.released = true
+		if !txn.started && len(txn.pending) == 0 {
+			delete(c.launchTransactions, admission)
+		}
+	}
 	c.mu.Unlock()
+}
+
+// MarkLaunchTransactionStarted records that the exact admitted transaction
+// started the singleton. It must be called immediately after raw Start succeeds.
+func (c *SharedServiceCoordinator) MarkLaunchTransactionStarted(admission *SharedLaunchAdmission) error {
+	if admission == nil {
+		return errors.New("control: shared start has no launch admission")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return ErrSharedCoordinatorClosed
+	}
+	txn := c.launchTransactions[admission]
+	if txn == nil || txn.kind != admission.kind || admission.generation == 0 || txn.started {
+		return errors.New("control: stale shared start transaction")
+	}
+	txn.started = true
+	return nil
+}
+
+// AuthorizeCompensatingStop proves that this exact transaction started the
+// service and that no promoted or competing pending owner depends on it.
+func (c *SharedServiceCoordinator) AuthorizeCompensatingStop(admission *SharedLaunchAdmission) bool {
+	if admission == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	txn := c.launchTransactions[admission]
+	if txn == nil || !txn.started || txn.kind != admission.kind {
+		return false
+	}
+	entry := c.entries[txn.kind]
+	if entry != nil {
+		for lease := range entry.leases {
+			if lease.promoted || lease.admission != admission {
+				return false
+			}
+		}
+	}
+	for other, otherTxn := range c.launchTransactions {
+		if other != admission && otherTxn.kind == txn.kind && (!otherTxn.released || len(otherTxn.pending) > 0) {
+			return false
+		}
+	}
+	txn.started = false
+	if txn.released && len(txn.pending) == 0 {
+		delete(c.launchTransactions, admission)
+	}
+	return true
 }
 
 // AcquireMutationAdmission atomically checks all pending/active users and owns
@@ -260,10 +380,10 @@ func (c *SharedServiceCoordinator) acquireForExternalRun(
 		return nil, errors.New("control: external headroom run requires launch admission")
 	}
 	lease := &SharedDependencyLease{
-		sessionID:   identity.sessionID,
-		externalRun: identity,
+		sessionID: identity.sessionID, runEpoch: identity.generation,
+		externalRun: identity, kind: kind,
 	}
-	return c.acquireLease(kind, configFingerprint, admission, lease)
+	return c.acquireLease(kind, configFingerprint, admission, lease, true)
 }
 
 // AcquireForRun adds a run lease for the given service kind. A Headroom run
@@ -276,7 +396,7 @@ func (c *SharedServiceCoordinator) AcquireForRun(
 	kind SharedServiceKind,
 	configFingerprint [32]byte,
 ) (*SharedDependencyLease, error) {
-	return c.acquireForRun(ctx, runPermit, kind, configFingerprint, nil)
+	return c.acquireForRun(ctx, runPermit, kind, configFingerprint, nil, true)
 }
 
 // AcquireForRunWithAdmission atomically promotes admission to the exact run
@@ -290,7 +410,37 @@ func (c *SharedServiceCoordinator) AcquireForRunWithAdmission(
 	configFingerprint [32]byte,
 	admission *SharedLaunchAdmission,
 ) (*SharedDependencyLease, error) {
-	return c.acquireForRun(ctx, runPermit, kind, configFingerprint, admission)
+	return c.acquireForRun(ctx, runPermit, kind, configFingerprint, admission, true)
+}
+
+// AcquirePendingForRunWithAdmission converts an admission into an exact hidden
+// run lease without promoting it. The composite commit must transfer/promote it.
+func (c *SharedServiceCoordinator) AcquirePendingForRunWithAdmission(
+	ctx context.Context,
+	runPermit *RunPermit,
+	kind SharedServiceKind,
+	configFingerprint [32]byte,
+	admission *SharedLaunchAdmission,
+) (*SharedDependencyLease, error) {
+	return c.acquireForRun(ctx, runPermit, kind, configFingerprint, admission, false)
+}
+
+// AcquirePendingForObservationWithAdmission is the restart equivalent: the
+// hidden observation permit identifies the reserved new run before publication.
+func (c *SharedServiceCoordinator) AcquirePendingForObservationWithAdmission(
+	_ context.Context,
+	permit *RunObservationPermit,
+	kind SharedServiceKind,
+	configFingerprint [32]byte,
+	admission *SharedLaunchAdmission,
+) (*SharedDependencyLease, error) {
+	if permit == nil || permit.entry == nil || permit.run == nil || permit.runEpoch == 0 {
+		return nil, errors.New("control: invalid restart observation permit")
+	}
+	lease := &SharedDependencyLease{
+		sessionID: permit.entry.sessionID, run: permit.run, runEpoch: permit.runEpoch, kind: kind,
+	}
+	return c.acquireLease(kind, configFingerprint, admission, lease, false)
 }
 
 func (c *SharedServiceCoordinator) acquireForRun(
@@ -299,16 +449,16 @@ func (c *SharedServiceCoordinator) acquireForRun(
 	kind SharedServiceKind,
 	configFingerprint [32]byte,
 	admission *SharedLaunchAdmission,
+	promoted bool,
 ) (*SharedDependencyLease, error) {
 	if runPermit == nil || runPermit.run == nil {
 		return nil, errors.New("control: nil run permit")
 	}
 	lease := &SharedDependencyLease{
-		sessionID: entryIDFromRunPermit(runPermit),
-		run:       runPermit.run,
-		runEpoch:  runPermit.runEpoch,
+		sessionID: entryIDFromRunPermit(runPermit), run: runPermit.run,
+		runEpoch: runPermit.runEpoch, kind: kind,
 	}
-	return c.acquireLease(kind, configFingerprint, admission, lease)
+	return c.acquireLease(kind, configFingerprint, admission, lease, promoted)
 }
 
 func (c *SharedServiceCoordinator) acquireLease(
@@ -316,6 +466,7 @@ func (c *SharedServiceCoordinator) acquireLease(
 	configFingerprint [32]byte,
 	admission *SharedLaunchAdmission,
 	lease *SharedDependencyLease,
+	promoted bool,
 ) (*SharedDependencyLease, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -324,9 +475,12 @@ func (c *SharedServiceCoordinator) acquireLease(
 	}
 
 	admitted := false
+	var transaction *sharedLaunchTransaction
 	if admission != nil {
 		_, admitted = c.launchAdmissions[admission]
-		if !admitted || admission.generation == 0 || admission.kind != kind {
+		transaction = c.launchTransactions[admission]
+		if !admitted || transaction == nil || transaction.released || admission.generation == 0 || admission.kind != kind || transaction.kind != kind ||
+			(admission.configBound && admission.configFingerprint != configFingerprint) {
 			return nil, errors.New("control: stale or mismatched launch admission")
 		}
 	}
@@ -355,16 +509,34 @@ func (c *SharedServiceCoordinator) acquireLease(
 			leases:            make(map[*SharedDependencyLease]struct{}),
 		}
 		c.entries[kind] = entry
-	} else if entry.configFingerprint != configFingerprint && len(entry.leases) > 0 {
-		// Incompatible config while leases exist: reject (do NOT stop the old
-		// instance — design §6.7.1 forbids the old LaunchSession behavior).
-		return nil, ErrSharedServiceInUse
+	} else if entry.configFingerprint != configFingerprint {
+		if len(entry.leases) > 0 {
+			// Incompatible config while leases exist: reject (do NOT stop the old
+			// instance — design §6.7.1 forbids the old LaunchSession behavior).
+			return nil, ErrSharedServiceInUse
+		}
+		if c.genCount[kind] == ^uint64(0) {
+			return nil, errors.New("control: shared service generation exhausted")
+		}
+		c.genCount[kind]++
+		entry = &SharedServiceEntry{
+			serviceGeneration: c.genCount[kind], configFingerprint: configFingerprint,
+			leases: make(map[*SharedDependencyLease]struct{}),
+		}
+		c.entries[kind] = entry
 	}
 
 	lease.serviceGeneration = entry.serviceGeneration
+	lease.promoted = promoted
+	lease.admission = admission
 	entry.leases[lease] = struct{}{}
 	if admitted {
-		delete(c.launchAdmissions, admission) // promotion is one atomic mutation
+		delete(c.launchAdmissions, admission)
+		if promoted {
+			delete(c.launchTransactions, admission)
+		} else {
+			transaction.pending[lease] = struct{}{}
+		}
 	}
 	return lease, nil
 }
@@ -372,19 +544,168 @@ func (c *SharedServiceCoordinator) acquireLease(
 // ReleaseExact removes the exact run lease. Called on run terminal/remove/
 // shutdown. If the last lease is released, the singleton is left idle (not
 // stopped) to preserve current singleton behavior (design §6.7.1).
-func (c *SharedServiceCoordinator) ReleaseExact(_ context.Context, lease *SharedDependencyLease) error {
+func (c *SharedServiceCoordinator) ReleaseExact(ctx context.Context, lease *SharedDependencyLease) error {
 	if lease == nil {
 		return nil
 	}
+	for {
+		c.mu.Lock()
+		if transfer := c.leaseTransfers[lease]; transfer != nil {
+			resolved := transfer.resolved
+			c.mu.Unlock()
+			if ctx == nil {
+				<-resolved
+				continue
+			}
+			select {
+			case <-resolved:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		entry := c.entries[lease.kind]
+		if entry != nil {
+			delete(entry.leases, lease)
+		}
+		if txn := c.launchTransactions[lease.admission]; txn != nil {
+			delete(txn.pending, lease)
+			if txn.released && !txn.started && len(txn.pending) == 0 {
+				delete(c.launchTransactions, lease.admission)
+			}
+		}
+		c.mu.Unlock()
+		return nil
+	}
+}
+
+// PrepareLeaseTransfer reserves an exact composite ownership switch. Old
+// leases must be promoted; new leases must be pending and belong to newEpoch.
+func (c *SharedServiceCoordinator) PrepareLeaseTransfer(
+	sessionID contract.SessionID,
+	oldEpoch, newEpoch uint64,
+	oldLeases, newLeases []*SharedDependencyLease,
+) (*SharedLeaseTransfer, error) {
+	if sessionID == "" || newEpoch == 0 {
+		return nil, errors.New("control: invalid shared lease transfer owner")
+	}
+	token := &SharedLeaseTransfer{
+		coordinator: c, oldLeases: append([]*SharedDependencyLease(nil), oldLeases...),
+		newLeases: append([]*SharedDependencyLease(nil), newLeases...), resolved: make(chan struct{}),
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, entry := range c.entries {
-		if _, ok := entry.leases[lease]; ok {
-			delete(entry.leases, lease)
-			return nil
+	if c.closed {
+		return nil, ErrSharedCoordinatorClosed
+	}
+	seen := make(map[*SharedDependencyLease]struct{}, len(oldLeases)+len(newLeases))
+	for _, lease := range oldLeases {
+		if lease == nil || lease.sessionID != sessionID || lease.runEpoch != oldEpoch || !lease.promoted || c.leaseTransfers[lease] != nil {
+			return nil, errors.New("control: stale old shared lease")
+		}
+		entry := c.entries[lease.kind]
+		if entry == nil {
+			return nil, errors.New("control: old shared lease generation unavailable")
+		}
+		if _, ok := entry.leases[lease]; !ok {
+			return nil, errors.New("control: old shared lease is not owned")
+		}
+		seen[lease] = struct{}{}
+	}
+	for _, lease := range newLeases {
+		if lease == nil || lease.sessionID != sessionID || lease.runEpoch != newEpoch || lease.promoted || c.leaseTransfers[lease] != nil {
+			return nil, errors.New("control: stale pending shared lease")
+		}
+		if _, duplicate := seen[lease]; duplicate {
+			return nil, errors.New("control: duplicate shared lease transfer member")
+		}
+		entry := c.entries[lease.kind]
+		if entry == nil {
+			return nil, errors.New("control: pending shared lease generation unavailable")
+		}
+		if _, ok := entry.leases[lease]; !ok {
+			return nil, errors.New("control: pending shared lease is not owned")
+		}
+		seen[lease] = struct{}{}
+	}
+	for lease := range seen {
+		c.leaseTransfers[lease] = token
+	}
+	return token, nil
+}
+
+// CommitLeaseTransferNoFail promotes the new generation, releases the old
+// generation, and updates the outer owner registry while coordinator.mu is held.
+func (c *SharedServiceCoordinator) CommitLeaseTransferNoFail(token *SharedLeaseTransfer, updateOwner func()) {
+	if token == nil || token.coordinator != c || token.committed || token.consumed {
+		panic("control: invalid shared lease transfer commit")
+	}
+	c.mu.Lock()
+	for _, lease := range token.oldLeases {
+		if c.leaseTransfers[lease] != token || !lease.promoted {
+			c.mu.Unlock()
+			panic("control: old shared lease transfer ownership changed")
 		}
 	}
-	return nil // idempotent: already released
+	for _, lease := range token.newLeases {
+		if c.leaseTransfers[lease] != token || lease.promoted {
+			c.mu.Unlock()
+			panic("control: pending shared lease transfer ownership changed")
+		}
+	}
+	for _, lease := range token.oldLeases {
+		if entry := c.entries[lease.kind]; entry != nil {
+			delete(entry.leases, lease)
+		}
+	}
+	for _, lease := range token.newLeases {
+		lease.promoted = true
+		if txn := c.launchTransactions[lease.admission]; txn != nil {
+			delete(txn.pending, lease)
+			delete(c.launchTransactions, lease.admission)
+		}
+	}
+	if updateOwner != nil {
+		updateOwner()
+	}
+	token.committed = true
+	c.mu.Unlock()
+}
+
+func (c *SharedServiceCoordinator) FinishLeaseTransfer(token *SharedLeaseTransfer) {
+	if token == nil || token.coordinator != c || !token.committed || token.consumed {
+		return
+	}
+	c.mu.Lock()
+	for _, lease := range token.oldLeases {
+		delete(c.leaseTransfers, lease)
+	}
+	for _, lease := range token.newLeases {
+		delete(c.leaseTransfers, lease)
+	}
+	token.consumed = true
+	c.mu.Unlock()
+	close(token.resolved)
+}
+
+func (c *SharedServiceCoordinator) AbortLeaseTransfer(token *SharedLeaseTransfer) {
+	if token == nil || token.coordinator != c || token.committed || token.consumed {
+		return
+	}
+	c.mu.Lock()
+	for _, lease := range token.oldLeases {
+		if c.leaseTransfers[lease] == token {
+			delete(c.leaseTransfers, lease)
+		}
+	}
+	for _, lease := range token.newLeases {
+		if c.leaseTransfers[lease] == token {
+			delete(c.leaseTransfers, lease)
+		}
+	}
+	token.consumed = true
+	c.mu.Unlock()
+	close(token.resolved)
 }
 
 // CheckMutation performs a one-shot compatibility check against current lease/
@@ -485,6 +806,22 @@ func (c *SharedServiceCoordinator) LeaseCount(kind SharedServiceKind) int {
 	return len(entry.leases)
 }
 
+// PromotedLeaseCount returns committed run owners for compensation/lifecycle
+// diagnostics. Pending transaction leases are deliberately excluded.
+func (c *SharedServiceCoordinator) PromotedLeaseCount(kind SharedServiceKind) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	count := 0
+	if entry := c.entries[kind]; entry != nil {
+		for lease := range entry.leases {
+			if lease.promoted {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // LaunchAdmissionCount returns pending claims for a kind (diagnostic/test only).
 func (c *SharedServiceCoordinator) LaunchAdmissionCount(kind SharedServiceKind) int {
 	c.mu.Lock()
@@ -522,7 +859,19 @@ func (c *SharedServiceCoordinator) ClearAll() {
 		entry.leases = make(map[*SharedDependencyLease]struct{})
 	}
 	c.launchAdmissions = make(map[*SharedLaunchAdmission]struct{})
+	c.launchTransactions = make(map[*SharedLaunchAdmission]*sharedLaunchTransaction)
 	c.mutationAdmissions = make(map[*SharedMutationAdmission]struct{})
+	resolvedTransfers := make(map[*SharedLeaseTransfer]struct{})
+	for _, transfer := range c.leaseTransfers {
+		resolvedTransfers[transfer] = struct{}{}
+	}
+	for transfer := range resolvedTransfers {
+		if !transfer.consumed {
+			transfer.consumed = true
+			close(transfer.resolved)
+		}
+	}
+	c.leaseTransfers = make(map[*SharedDependencyLease]*SharedLeaseTransfer)
 	c.headroomDraining = false
 }
 

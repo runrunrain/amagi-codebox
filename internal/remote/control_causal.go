@@ -144,7 +144,8 @@ type CausalEventReservation struct {
 type causalReservationState uint8
 
 const (
-	causalReserved causalReservationState = iota + 1
+	causalPrepared causalReservationState = iota + 1
+	causalReserved
 	causalReady
 	causalReleased
 	causalSuppressed

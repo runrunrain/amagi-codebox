@@ -17,6 +17,7 @@ import (
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 
 	creackpty "github.com/creack/pty"
 )
@@ -27,6 +28,10 @@ type PtySession struct {
 	cmd           *exec.Cmd
 	ptmx          *os.File
 	done          chan struct{}
+	ready         chan struct{}
+	readArmed     chan struct{}
+	waitArmed     chan struct{}
+	exited        chan struct{}
 	outputHistory []byte
 	historyMu     sync.Mutex
 	emitSeq       uint64 // monotonic counter incremented per PTY output chunk under historyMu
@@ -38,6 +43,7 @@ type PtySession struct {
 	waitErr       error
 	waitOnce      sync.Once
 	runHandle     any // opaque run identity; passed back to RunEventSink
+	bindingID     processcap.BindingID
 }
 
 type outputCallback func(data []byte)
@@ -45,21 +51,25 @@ type exitCallback func(exitCode uint32)
 type resizeCallback func(cols, rows int)
 
 type Service struct {
-	sessions    map[string]*PtySession
-	mu          sync.Mutex
-	log         *logging.Service
-	runSink     RunEventSink // sole output/exit sink; replaces direct EventsEmit (design §8.6 M-01)
-	outputCBsMu sync.RWMutex
-	outputCBs   map[string]map[string]outputCallback
-	exitCBsMu   sync.RWMutex
-	exitCBs     map[string]map[string]exitCallback
-	resizeCBsMu sync.RWMutex
-	resizeCBs   map[string]map[string]resizeCallback
+	sessions          map[string]*PtySession
+	mu                sync.Mutex
+	ownerID           uint64
+	bindingGeneration uint64
+	log               *logging.Service
+	runSink           RunEventSink // sole output/exit sink; replaces direct EventsEmit (design §8.6 M-01)
+	outputCBsMu       sync.RWMutex
+	outputCBs         map[string]map[string]outputCallback
+	exitCBsMu         sync.RWMutex
+	exitCBs           map[string]map[string]exitCallback
+	resizeCBsMu       sync.RWMutex
+	resizeCBs         map[string]map[string]resizeCallback
 }
 
 func NewService(log *logging.Service) *Service {
+	ownerID, _ := processcap.NewOwnerID()
 	return &Service{
 		sessions:  make(map[string]*PtySession),
+		ownerID:   ownerID,
 		log:       log,
 		outputCBs: make(map[string]map[string]outputCallback),
 		exitCBs:   make(map[string]map[string]exitCallback),
@@ -238,12 +248,26 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 // The handle is passed back to the RunEventSink for run-scoped output/exit
 // projection (design §8.6). A nil handle means output/exit is dropped.
 func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error) {
+	evidence, err := s.StartResolvedWithRunEvidence(sessionID, spec, runHandle)
+	return evidence.PID, err
+}
+
+// StartResolvedWithRunEvidence returns the concrete exact-close capability
+// minted with the backend map insertion. Callers retain it in processcap.Registry.
+func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (processcap.StartEvidence, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.sessions[sessionID]; exists {
-		return 0, fmt.Errorf("session %s already exists", sessionID)
+	if s.ownerID == 0 {
+		return processcap.StartEvidence{}, fmt.Errorf("pty owner identity unavailable")
 	}
+	if _, exists := s.sessions[sessionID]; exists {
+		return processcap.StartEvidence{}, fmt.Errorf("session %s already exists", sessionID)
+	}
+	if s.bindingGeneration == ^uint64(0) {
+		return processcap.StartEvidence{}, fmt.Errorf("pty binding generation exhausted")
+	}
+	bindingGeneration := s.bindingGeneration + 1
 
 	cols := spec.PTYCols
 	rows := spec.PTYRows
@@ -256,7 +280,7 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 
 	cmd, commandSummary, err := buildDarwinPTYCommand(spec)
 	if err != nil {
-		return 0, formatLaunchFailure(spec, "build-command", err)
+		return processcap.StartEvidence{}, formatLaunchFailure(spec, "build-command", err)
 	}
 	if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir
@@ -266,14 +290,20 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 
 	ptmx, err := creackpty.StartWithAttrs(cmd, &creackpty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}, cmd.SysProcAttr)
 	if err != nil {
-		return 0, formatLaunchFailure(spec, "spawn-pty", err)
+		return processcap.StartEvidence{}, formatLaunchFailure(spec, "spawn-pty", err)
 	}
 
 	pid := 0
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
-	ps := &PtySession{cmd: cmd, ptmx: ptmx, done: make(chan struct{}), currentCols: cols, currentRows: rows, running: true, runHandle: runHandle}
+	bindingID := processcap.BindingID{Kind: processcap.BackendPTY, Owner: s.ownerID, Generation: bindingGeneration}
+	ps := &PtySession{
+		cmd: cmd, ptmx: ptmx, done: make(chan struct{}), ready: make(chan struct{}),
+		readArmed: make(chan struct{}), waitArmed: make(chan struct{}), exited: make(chan struct{}),
+		currentCols: cols, currentRows: rows, running: true, runHandle: runHandle, bindingID: bindingID,
+	}
+	s.bindingGeneration = bindingGeneration
 	s.sessions[sessionID] = ps
 
 	if s.log != nil {
@@ -282,7 +312,13 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 
 	go s.readLoop(sessionID, ps)
 	go s.waitLoop(sessionID, ps)
-	return pid, nil
+	go func() {
+		<-ps.readArmed
+		<-ps.waitArmed
+		close(ps.ready)
+	}()
+	binding := &ptyBinding{service: s, sessionID: sessionID, session: ps, id: bindingID}
+	return processcap.StartEvidence{PID: pid, Binding: binding}, nil
 }
 
 func buildDarwinPTYCommand(spec platform.ResolvedLaunchSpec) (*exec.Cmd, string, error) {
@@ -414,6 +450,7 @@ func formatLaunchFailure(spec platform.ResolvedLaunchSpec, stage string, err err
 }
 
 func (s *Service) readLoop(sessionID string, ps *PtySession) {
+	close(ps.readArmed)
 	defer close(ps.done)
 	buf := make([]byte, 8192)
 	for {
@@ -572,6 +609,8 @@ func findTruncatedEscape(history []byte, start int) int {
 }
 
 func (s *Service) waitLoop(sessionID string, ps *PtySession) {
+	close(ps.waitArmed)
+	defer close(ps.exited)
 	err := ps.cmd.Wait()
 	exitCode := 0
 	if ps.cmd.ProcessState != nil {
@@ -607,6 +646,57 @@ func (s *Service) WriteRaw(ctx context.Context, sessionID string, data []byte) e
 		return err
 	}
 	_, err = ps.ptmx.Write(data)
+	return err
+}
+
+// WaitReadyForBinding is the exact PTY ready/live barrier used by staged launch
+// transactions. Both I/O pumps must be armed and the exact process must still
+// be running under the binding minted by Start.
+func (s *Service) WaitReadyForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID) error {
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if !ok || ps.bindingID != bindingID {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s binding is not current", sessionID)
+	}
+	ready, exited := ps.ready, ps.exited
+	s.mu.Unlock()
+
+	if err := waitExactPTYReadiness(ctx, sessionID, ready, exited, nil, false); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	current := s.sessions[sessionID] == ps && ps.bindingID == bindingID
+	s.mu.Unlock()
+	ps.mu.RLock()
+	running := ps.running
+	ps.mu.RUnlock()
+	if !current || !running {
+		return fmt.Errorf("session %s is not live at PTY ready barrier", sessionID)
+	}
+	return nil
+}
+
+// WriteRawForBinding writes only to the exact current binding, preventing a
+// delayed bootstrap write from reaching an ABA replacement session.
+func (s *Service) WriteRawForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if !ok || ps.bindingID != bindingID {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s binding is not current", sessionID)
+	}
+	exited := ps.exited
+	s.mu.Unlock()
+	select {
+	case <-exited:
+		return fmt.Errorf("session %s exited before exact PTY write", sessionID)
+	default:
+	}
+	_, err := ps.ptmx.Write(data)
 	return err
 }
 
@@ -696,7 +786,6 @@ func (s *Service) GetPtyDimensions(sessionID string) (cols, rows int, err error)
 // session (idempotent no-op). It does NOT bounded-wait on the process exit (the
 // gate already advanced backendEpoch; late output is dropped by the committer).
 func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
-	receipt := newDetachReceipt()
 	s.mu.Lock()
 	ps, ok := s.sessions[sessionID]
 	if ok {
@@ -704,16 +793,24 @@ func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
 	}
 	s.mu.Unlock()
 	if !ok {
+		receipt := newDetachReceipt()
 		_ = detachWithExactReaper(receipt, func() error { return nil }, nil)
 		return receipt, nil
 	}
-	// The retry closure captures this exact *PtySession; it never resolves the
-	// session ID again, so a replacement PTY cannot be killed by a late reaper.
+	return s.detachExactSession(sessionID, ps)
+}
+
+func (s *Service) detachExactSession(sessionID string, ps *PtySession) (*DetachReceipt, error) {
+	receipt := newDetachReceipt()
+	s.mu.Lock()
+	if s.sessions[sessionID] == ps {
+		delete(s.sessions, sessionID)
+	}
+	s.mu.Unlock()
 	detachExact := func() error {
 		var detachErr error
 		if ps.cmd != nil && ps.cmd.Process != nil {
 			pid := ps.cmd.Process.Pid
-			// StartWithAttrs uses Setsid, so -pid addresses the exact process group.
 			if pid > 0 {
 				if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 					detachErr = errors.Join(detachErr, err)
@@ -878,6 +975,33 @@ func (s *Service) session(sessionID string) (*PtySession, error) {
 		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
 	return ps, nil
+}
+
+type ptyBinding struct {
+	service   *Service
+	sessionID string
+	session   *PtySession
+	id        processcap.BindingID
+	once      sync.Once
+	evidence  processcap.ExactCloseEvidence
+}
+
+func (b *ptyBinding) BindingID() processcap.BindingID { return b.id }
+
+func (b *ptyBinding) CloseExact(ctx context.Context) processcap.ExactCloseEvidence {
+	b.once.Do(func() {
+		receipt, closeErr := b.service.detachExactSession(b.sessionID, b.session)
+		disposition := processcap.CloseConfirmed
+		if closeErr != nil || !receipt.Confirmed() {
+			disposition = processcap.CloseIndeterminate
+		}
+		evidence, err := processcap.NewExactCloseEvidence(b.id, receipt.Identity(), disposition, receipt)
+		if err != nil {
+			panic(err)
+		}
+		b.evidence = evidence
+	})
+	return b.evidence
 }
 
 func max(a, b int) int {

@@ -10,6 +10,7 @@ import (
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 )
 
 type outputCallback func(data []byte)
@@ -45,9 +46,13 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 	return s.StartResolvedWithRun(sessionID, spec, nil)
 }
 func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error) {
+	evidence, err := s.StartResolvedWithRunEvidence(sessionID, spec, runHandle)
+	return evidence.PID, err
+}
+func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (processcap.StartEvidence, error) {
 	_ = runHandle
 	_ = spec
-	return 0, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
+	return processcap.StartEvidence{}, fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) Write(sessionID string, data string) error {
 	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
@@ -59,6 +64,14 @@ func (s *Service) WriteLarge(sessionID string, data string) error { return s.Wri
 func (s *Service) WriteRaw(ctx context.Context, sessionID string, data []byte) error {
 	_ = ctx
 	_ = data
+	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
+}
+func (s *Service) WaitReadyForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID) error {
+	_, _ = ctx, bindingID
+	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
+}
+func (s *Service) WriteRawForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID, data []byte) error {
+	_, _, _ = ctx, bindingID, data
 	return fmt.Errorf("pty backend is not implemented on this platform yet for session %s", sessionID)
 }
 func (s *Service) Resize(ctx context.Context, sessionID string, cols, rows int) error {

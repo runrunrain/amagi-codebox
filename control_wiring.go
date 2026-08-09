@@ -9,14 +9,20 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
 
+	"amagi-codebox/internal/launcher"
+	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
+	"amagi-codebox/internal/session"
 )
 
 // desktopBootstrapDelay is the wait for the spawned shell to initialize before
@@ -74,30 +80,46 @@ func (a appPTYRaw) DetachSession(sessionID string) (remote.BackendDetachReceipt,
 	return a.pty.DetachSession(sessionID)
 }
 
-// launchEmbeddedPTY starts an embedded PTY run through the control gate. Shared
-// run leases are acquired after BeginDesktopRun but BEFORE raw PTY startup, so a
-// drain rejection has zero process side effects. Headroom callers additionally
-// pass a pre-side-effect SharedLaunchAdmission via the internal helper below.
-func (a *App) launchEmbeddedPTY(sessionID string, spec platform.ResolvedLaunchSpec, sharedKinds ...remote.SharedServiceKind) (int, error) {
-	return a.launchEmbeddedPTYWithAdmission(sessionID, spec, nil, sharedKinds...)
+func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, model string, mode session.LaunchMode, workdir string, useProxy bool) (*session.Session, *session.CreateReservation, error) {
+	if mode != session.ModeEmbedded {
+		created := a.Sessions.Create(appType, provider, preset, model, mode, workdir, useProxy)
+		if created == nil {
+			return nil, nil, session.ErrAuthorityInvalidCreate
+		}
+		return created, nil, nil
+	}
+	reservation, err := a.Sessions.ReserveCreate(session.CreateSpec{
+		AppType: appType, Origin: launchplan.OriginDesktop, Mode: launchplan.ModeEmbedded,
+		Workdir: workdir, RemoteEligible: true, Provider: provider, Preset: preset,
+		Model: model, UseProxy: useProxy,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	created := reservation.Session()
+	return &created, reservation, nil
 }
 
-// launchEmbeddedPTYWithAdmission executes the dependency/run transaction:
-//
-//  1. BeginDesktopRun (hidden run identity)
-//  2. acquire/promote all shared dependency leases
-//  3. StartResolvedWithRun (first raw PTY side effect)
-//  4. ActivateDesktopRun + TrackRun
-//
-// Every failure releases acquired leases and aborts in reverse order.
-func (a *App) launchEmbeddedPTYWithAdmission(sessionID string, spec platform.ResolvedLaunchSpec, admission *remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
-	if a.control == nil {
-		if admission != nil || len(sharedKinds) > 0 {
-			return 0, remote.ErrControlNotReady
-		}
-		// Fallback only for dependency-free pre-Startup diagnostics.
-		return a.Pty.StartResolved(sessionID, spec)
+func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string, useProxy, useHeadroom bool) launchplan.StableRecipe {
+	return launchplan.StableRecipe{
+		CLIType: contract.CLIType(appType), Workdir: workdir, ProviderRef: provider,
+		PresetRef: preset, ModelRef: model, ShellRef: shell, UseProxy: useProxy,
+		UseHeadroom: useHeadroom,
 	}
+}
+
+// launchEmbeddedPTY starts one hidden Authority + Control run. Process, shared
+// leases, Control and H1 are fully prepared before Authority becomes the sole
+// public membership bit.
+func (a *App) launchEmbeddedPTY(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, sharedKinds ...remote.SharedServiceKind) (int, error) {
+	return a.launchEmbeddedPTYWithAdmission(reservation, recipe, spec, nil, sharedKinds...)
+}
+
+func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, admission *remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
+	if reservation == nil || reservation.SessionID() == "" || a.control == nil || a.processRegistry == nil {
+		return 0, remote.ErrControlNotReady
+	}
+	sessionID := reservation.SessionID()
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -106,13 +128,15 @@ func (a *App) launchEmbeddedPTYWithAdmission(sessionID string, spec platform.Res
 	if err != nil {
 		return 0, fmt.Errorf("begin desktop run: %w", err)
 	}
+	abortHidden := func(cause error) {
+		a.releaseSharedLeases(sessionID)
+		a.control.AbortDesktopRun(ctx, launchPermit, cause)
+		a.control.RemoveDesktopSession(ctx, contract.SessionID(sessionID))
+	}
 
-	// R5-002: acquire every run lease before PTY startup. For Headroom, atomically
-	// promote the exact admission that protected earlier Headroom.Start/config
-	// work; a later uninstall drain therefore loses to this already-admitted run.
 	if len(sharedKinds) > 0 {
 		if a.sharedCoord == nil {
-			a.control.AbortDesktopRun(ctx, launchPermit, remote.ErrSharedServiceInUse)
+			abortHidden(remote.ErrSharedServiceInUse)
 			return 0, remote.ErrSharedServiceInUse
 		}
 		for _, kind := range sharedKinds {
@@ -124,35 +148,66 @@ func (a *App) launchEmbeddedPTYWithAdmission(sessionID string, spec platform.Res
 				lease, acqErr = a.sharedCoord.AcquireForRun(ctx, runPermit, kind, a.sharedFingerprint(kind))
 			}
 			if acqErr != nil {
-				a.releaseSharedLeases(sessionID)
-				a.control.AbortDesktopRun(ctx, launchPermit, acqErr)
+				abortHidden(acqErr)
 				return 0, fmt.Errorf("acquire shared lease: %w", acqErr)
 			}
 			a.rememberSharedLease(sessionID, lease)
 		}
 	}
 
-	pid, err := a.Pty.StartResolvedWithRun(sessionID, spec, obsPermit)
+	start, err := a.Pty.StartResolvedWithRunEvidence(sessionID, spec, obsPermit)
 	if err != nil {
-		a.releaseSharedLeases(sessionID)
-		a.control.AbortDesktopRun(ctx, launchPermit, err)
+		abortHidden(err)
 		return 0, err
 	}
-	if err := a.control.ActivateDesktopRun(ctx, runPermit); err != nil {
-		_ = a.Pty.Close(sessionID)
-		a.releaseSharedLeases(sessionID)
-		a.control.AbortDesktopRun(ctx, launchPermit, err)
-		a.control.RemoveDesktopSession(ctx, contract.SessionID(sessionID))
-		return 0, fmt.Errorf("activate run: %w", err)
+	if err := start.Validate(processcap.BackendPTY); err != nil {
+		_ = start.Binding.CloseExact(ctx)
+		abortHidden(err)
+		return 0, err
 	}
-	a.control.Projector().TrackRun(contract.SessionID(sessionID), obsPermit)
-	// M-005: route the delayed bootstrap (auto-command) through the control gate's
-	// DoBootstrapPTY instead of a raw cpty.Write goroutine. StartResolvedWithRun
-	// skips its own delayed write for control-managed runs (runHandle != nil), so
-	// the only path the auto-command reaches the PTY is this gated write. The run
-	// permit is revalidated by DoBootstrapPTY; a revoke/stop during the delay
-	// denies the write safely. Best-effort: a denied bootstrap only means the
-	// auto-command is not sent (the session is already fenced/stopped).
+	registryKey, err := a.processRegistry.Register(start.Binding, obsPermit.RunEpoch())
+	if err != nil {
+		_ = start.Binding.CloseExact(ctx)
+		abortHidden(err)
+		return 0, err
+	}
+	compensateProcess := func(cause error) {
+		closeEvidence := start.Binding.CloseExact(ctx)
+		if closeEvidence.Confirmed() {
+			_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+		}
+		abortHidden(cause)
+	}
+
+	values := session.PreparedAuthorityActivation{
+		Session: reservation.Session(), Recipe: recipe, BindingID: registryKey.BindingID,
+		PID: start.PID, RunRevision: obsPermit.RunEpoch(), StartedAt: reservation.Session().StartedAt,
+		LastActivityAt: time.Now(),
+	}
+	authorityToken, err := a.Sessions.PrepareActivation(reservation, values)
+	if err != nil {
+		compensateProcess(err)
+		return 0, err
+	}
+	preparedActivation, err := a.control.PrepareCompositeActivation(contract.SessionID(sessionID), runPermit, obsPermit)
+	if err != nil {
+		a.Sessions.AbortPreparedActivation(authorityToken)
+		compensateProcess(err)
+		return 0, err
+	}
+	if _, err := a.Sessions.CommitPreparedActivation(authorityToken, preparedActivation.CommitNoFail); err != nil {
+		a.control.AbortCompositeActivation(preparedActivation)
+		a.Sessions.AbortPreparedActivation(authorityToken)
+		compensateProcess(err)
+		return 0, err
+	}
+	a.control.FinishCompositeActivation(preparedActivation)
+	if a.remoteDefaults != nil {
+		if err := a.remoteDefaults.RecordDesktopActivation(recipe); err != nil && a.Log != nil {
+			a.Log.Warn("session", "记录 remote launch default 失败", err.Error())
+		}
+	}
+
 	if autoCmd := a.Pty.StartupAutoCommand(spec); autoCmd != "" {
 		rp := runPermit
 		sid := contract.SessionID(sessionID)
@@ -166,7 +221,53 @@ func (a *App) launchEmbeddedPTYWithAdmission(sessionID string, spec platform.Res
 			_ = a.control.DesktopBootstrap(ctx, rp, sid, cmd)
 		}()
 	}
-	return pid, nil
+	return start.PID, nil
+}
+
+func (a *App) registerExternalProcessEvidence(result *launcher.LaunchResult) (processcap.RegistryKey, bool, error) {
+	if result == nil || result.Evidence.Validate(processcap.BackendExternalLauncher) != nil {
+		if a.externalLauncher != nil {
+			return processcap.RegistryKey{}, false, nil
+		}
+		return processcap.RegistryKey{}, false, session.ErrAuthorityProcessUnavailable
+	}
+	if a.processRegistry == nil {
+		return processcap.RegistryKey{}, false, session.ErrAuthorityProcessUnavailable
+	}
+	key, err := a.processRegistry.Register(result.Evidence.Binding, result.Evidence.Binding.BindingID().Generation)
+	return key, err == nil, err
+}
+
+func closeUnregisteredExternalEvidence(ctx context.Context, result *launcher.LaunchResult) {
+	if result == nil || result.Evidence.Binding == nil {
+		return
+	}
+	_ = result.Evidence.Binding.CloseExact(ctx)
+}
+
+func (a *App) compensateExternalProcessEvidence(ctx context.Context, result *launcher.LaunchResult, key processcap.RegistryKey, registered bool) {
+	if !registered || result == nil || result.Evidence.Binding == nil {
+		return
+	}
+	closeEvidence := result.Evidence.Binding.CloseExact(ctx)
+	if closeEvidence.Confirmed() {
+		_ = a.processRegistry.ReleaseExact(key.BindingID, key.RunGeneration, result.Evidence.Binding)
+	}
+}
+
+func (a *App) finalizeExternalAuthority(sessionID string, result *launcher.LaunchResult, key processcap.RegistryKey, registered bool, recipe launchplan.StableRecipe) error {
+	if !registered {
+		return nil
+	}
+	if _, err := a.Sessions.BindLegacyProcess(sessionID, result.Evidence, recipe); err != nil {
+		return err
+	}
+	if a.remoteDefaults != nil {
+		if err := a.remoteDefaults.RecordDesktopActivation(recipe); err != nil && a.Log != nil {
+			a.Log.Warn("session", "记录 remote launch default 失败", err.Error())
+		}
+	}
+	return nil
 }
 
 // sharedFingerprintForProxy computes a non-secret config fingerprint for the
@@ -175,42 +276,10 @@ func (a *App) launchEmbeddedPTYWithAdmission(sessionID string, spec platform.Res
 // launch is in progress (the lease is acquired only by launches that use the
 // shared proxy).
 //
-// --- M2-A remote raw ports (design §4.2, §4.4) ---
+// --- M2-A remote lifecycle raw port (design §4.2, §4.4) ---
 //
-// appLaunchRaw adapts the PTY service to remote.LaunchRawPort. It starts the
-// CLI process inside the gated DoLaunchEffect callback (the gate has already
-// acquired the launch permit + registered the staging session). Residual
-// (disclosed): the obs permit (RunObservationPermit) is not plumbed through
-// the LaunchRawPort.StartProcess signature, so remote-launched PTY output does
-// not yet route through the run-scoped RunEventProjector. It uses StartResolved
-// (non-run-scoped) rather than StartResolvedWithRun. Full obs-permit routing
-// is a deeper wiring follow-up.
-type appLaunchRaw struct {
-	pty ptyStarter
-}
-
-type ptyStarter interface {
-	StartResolved(sessionID string, spec platform.ResolvedLaunchSpec) (int, error)
-	StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error)
-}
-
-// StartProcess starts the CLI process run-scoped (remote.LaunchRawPort). M-003:
-// when an obsPermit is provided the PTY is started run-scoped so its output/exit
-// flows through the H1 committer; otherwise it falls back to the non-run-scoped
-// start.
-func (a appLaunchRaw) StartProcess(ctx context.Context, sessionID contract.SessionID, recipe remote.RemoteLaunchRecipe, spec any, obsPermit *remote.RunObservationPermit) error {
-	resolved, ok := spec.(platform.ResolvedLaunchSpec)
-	if !ok {
-		return fmt.Errorf("launch: invalid resolved spec type")
-	}
-	if obsPermit != nil {
-		_, err := a.pty.StartResolvedWithRun(string(sessionID), resolved, obsPermit)
-		return err
-	}
-	_, err := a.pty.StartResolved(string(sessionID), resolved)
-	return err
-}
-
+// No production LaunchRawPort is wired: remote create remains fail-closed until
+// a complete five-CLI launchplan.Executor can replay desktop configuration.
 // appSessionRaw adapts PTY close/resize + session.Manager to
 // remote.SessionRawPort (stop/remove/resize behind the gate).
 type appSessionRaw struct {
@@ -257,11 +326,9 @@ func (a appSessionRaw) ResizeSession(ctx context.Context, sessionID contract.Ses
 // (design §8.6.3). It is NOT Wails-bound. M-003: the legacy naked-SessionID
 // output/exit/resize callback delegation is REMOVED — all PTY output/exit is
 // unified through the run-scoped RunEventProjector. Only the gated PtyWrite/
-// PtyResize input surface remains. The pty field is retained for app.go
-// construction compatibility (app.Remote.SetPtyBridge(ptyBridgeAdapter{...})).
+// PtyResize input surface remains.
 type ptyBridgeAdapter struct {
 	app *App
-	pty ptyStarter // retained for app.go construction; legacy callbacks removed (M-003)
 }
 
 func (b ptyBridgeAdapter) PtyWrite(sessionID string, data string) error {
@@ -284,23 +351,26 @@ func isControlUnknownSession(err error) bool {
 }
 
 func sharedFingerprintForProxy(backendURL string, port int) [32]byte {
-	// Minimal stable fingerprint over non-secret config. Not a security hash;
-	// only used to detect incompatible-config launches while a lease exists.
-	var fp [32]byte
-	s := fmt.Sprintf("proxy|%s|%d", backendURL, port)
-	for i := 0; i < len(s) && i < 32; i++ {
-		fp[i] = s[i]
-	}
-	return fp
+	return sharedServiceFingerprint("claude-proxy", backendURL, port)
 }
 
-// sharedFingerprintForHeadroom computes a non-secret config fingerprint for a
-// headroom singleton.
-func sharedFingerprintForHeadroom(target string, port int) [32]byte {
-	var fp [32]byte
-	s := fmt.Sprintf("headroom|%s|%d", target, port)
-	for i := 0; i < len(s) && i < 32; i++ {
-		fp[i] = s[i]
-	}
-	return fp
+// sharedFingerprintForHeadroom computes SHA-256 over the exact service,
+// upstream, and listen-port tuple. The same tuple is used by planner, executor
+// verification, mutation guards, and lease promotion.
+func sharedFingerprintForHeadroom(service, upstreamURL string, port int) [32]byte {
+	return sharedServiceFingerprint(service, upstreamURL, port)
+}
+
+func sharedServiceFingerprint(service, upstreamURL string, port int) [32]byte {
+	payload := make([]byte, 0, 16+len(service)+len(upstreamURL)+8)
+	var scalar [8]byte
+	binary.BigEndian.PutUint64(scalar[:], uint64(len(service)))
+	payload = append(payload, scalar[:]...)
+	payload = append(payload, service...)
+	binary.BigEndian.PutUint64(scalar[:], uint64(len(upstreamURL)))
+	payload = append(payload, scalar[:]...)
+	payload = append(payload, upstreamURL...)
+	binary.BigEndian.PutUint64(scalar[:], uint64(int64(port)))
+	payload = append(payload, scalar[:]...)
+	return sha256.Sum256(payload)
 }

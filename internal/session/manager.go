@@ -2,259 +2,307 @@ package session
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
 	"amagi-codebox/internal/appmeta/claude"
-
-	"github.com/google/uuid"
+	"amagi-codebox/internal/launchplan"
 )
 
-// Manager 多终端会话管理器
+// Manager is the sole owner of session identity, origin, launch mode,
+// membership and host lifecycle. Remote projections consume authority snapshots
+// and never own a second existence index.
 type Manager struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
+	indexMu sync.RWMutex
+	entries map[string]*authorityEntry
+	usedIDs map[string]struct{}
 
-	// homeDir 用于 List 时回填已退出会话的标题（从 jsonl 直读）。
-	// 由 SetHomeDir 注入；为零值时 List 跳过 jsonl 直读（保持纯内存读语义）。
+	homeMu  sync.RWMutex
 	homeDir string
+
+	reservationSeq uint64
+	receiptSeqMu   sync.Mutex
+	receiptSeq     uint64
+	lifecycleSeqMu sync.Mutex
+	lifecycleSeq   uint64
+
+	reclaimedMu sync.Mutex
+	reclaimed   map[uint64]RemoveReceipt
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		sessions: make(map[string]*Session),
+		entries:   make(map[string]*authorityEntry),
+		usedIDs:   make(map[string]struct{}),
+		reclaimed: make(map[uint64]RemoveReceipt),
 	}
 }
 
-// SetHomeDir 注入用户主目录，供 List 回填已退出会话的标题（方案 P 直读历史 jsonl）。
-// 由 app.go startup 阶段注入一次；多次调用以最后一次为准。
 func (m *Manager) SetHomeDir(homeDir string) {
 	if homeDir == "" {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.homeMu.Lock()
 	m.homeDir = homeDir
+	m.homeMu.Unlock()
 }
 
-// Create 创建一个新的会话记录（尚未启动进程）
+// Create preserves the legacy immediate-create API for local callers and tests.
+// Production launch paths use ReserveCreate and commit only after process and
+// control activation. The resulting record is nevertheless an Authority entry,
+// not a second legacy store.
 func (m *Manager) Create(appType AppType, provider, preset, model string, mode LaunchMode, workDir string, useProxy bool) *Session {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	s := &Session{
-		ID:        uuid.New().String()[:8],
-		AppType:   appType,
-		Provider:  provider,
-		Preset:    preset,
-		Model:     model,
-		Mode:      mode,
-		WorkDir:   workDir,
-		Status:    StatusRunning,
-		StartedAt: time.Now(),
-		UseProxy:  useProxy,
+	authorityMode, err := authorityModeFromLaunchMode(mode)
+	if err != nil {
+		return nil
 	}
-
-	m.sessions[s.ID] = s
-	return s
+	if workDir == "" {
+		workDir = "."
+	}
+	reservation, err := m.ReserveCreate(CreateSpec{
+		AppType: appType,
+		Origin:  launchplan.OriginDesktop,
+		Mode:    authorityMode,
+		Workdir: workDir,
+		// Immediate legacy creation has no composite Control/H1 activation proof;
+		// it is therefore never admitted to remote projection.
+		RemoteEligible: false,
+		Provider:       provider,
+		Preset:         preset,
+		Model:          model,
+		UseProxy:       useProxy,
+	})
+	if err != nil {
+		return nil
+	}
+	entry := reservation.entry
+	entry.guard.Lock()
+	entry.private.revisions = SessionRevisions{Membership: 1, Lifecycle: 1, Run: 1, Activity: 1}
+	entry.private.state = AuthorityRunning
+	entry.private.lastActivityAt = entry.session.StartedAt
+	entry.activityAt.Store(entry.session.StartedAt.UnixNano())
+	entry.activityRevision.Store(1)
+	entry.phase = authorityPresent
+	copy := entry.session
+	entry.guard.Unlock()
+	reservation.used.Store(true)
+	return &copy
 }
 
-// SetPID 设置进程 PID
 func (m *Manager) SetPID(id string, pid int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok {
-		s.PID = pid
+	entry := m.entryForID(id)
+	if entry == nil {
+		return
 	}
+	entry.guard.Lock()
+	entry.session.PID = pid
+	entry.guard.Unlock()
 }
 
-// SetTitle 设置会话标题（首条 user message 摘要）。
-//
-// 方案 P 行为说明：标题可被多次覆盖（用户 /resume 切到历史会话后继续输入，
-// 标题应跟随切换后的会话）。空文本或会话不存在时无操作。
 func (m *Manager) SetTitle(id string, text string) {
 	if text == "" {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
-	if !ok {
+	entry := m.entryForID(id)
+	if entry == nil {
 		return
 	}
-	s.Title = text
+	entry.guard.Lock()
+	if entry.phase == authorityPresent {
+		entry.session.Title = text
+	}
+	entry.guard.Unlock()
 }
 
-// SetClaudeSessionID 设置会话当前跟踪到的 Claude session uuid（方案 P 动态跟踪，可覆盖）。
-// 会话停止时最后写入的值即冻结，供 List 直读历史 jsonl。
-// 空字符串或会话不存在时无操作。
 func (m *Manager) SetClaudeSessionID(id string, sessionID string) {
 	if sessionID == "" {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok {
-		s.ClaudeSessionID = sessionID
+	entry := m.entryForID(id)
+	if entry == nil {
+		return
 	}
+	entry.guard.Lock()
+	if entry.phase != authorityTombstoned {
+		entry.session.ClaudeSessionID = sessionID
+	}
+	entry.guard.Unlock()
 }
 
-// GetClaudeSessionID 返回会话当前锁定的 Claude session uuid。
-//
-// 方案 R 下：
-//   - embedded 启动时由 app.go 注入的 --session-id 值（锁定值）；
-//   - tracker 跟随 /resume 切换后写入的最新值。
-//
-// 空串表示未锁定（external 模式 / 注入失败 / 会话不存在），tracker 应降级方案 P
-// （FindLatestActiveJSONL 取最新 mtime）。
 func (m *Manager) GetClaudeSessionID(id string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if s, ok := m.sessions[id]; ok {
-		return s.ClaudeSessionID
+	entry := m.entryForID(id)
+	if entry == nil {
+		return ""
 	}
-	return ""
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase != authorityPresent {
+		return ""
+	}
+	return entry.session.ClaudeSessionID
 }
 
-// GetStatus 返回会话当前状态；会话不存在时返回空串。
-// 供轮询 goroutine 在不持锁的情况下感知会话是否已停止（兜底退出信号）。
 func (m *Manager) GetStatus(id string) SessionStatus {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if s, ok := m.sessions[id]; ok {
-		return s.Status
+	entry := m.entryForID(id)
+	if entry == nil {
+		return ""
 	}
-	return ""
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase != authorityPresent {
+		return ""
+	}
+	return entry.session.Status
 }
 
-// MarkStopping records that an asynchronous external Stop was accepted but the
-// Launcher has not yet produced its Wait/terminal receipt. Stopping remains an
-// active, non-removable state and does not set StoppedAt.
 func (m *Manager) MarkStopping(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok && s.Status == StatusRunning {
-		s.Status = StatusStopping
+	entry := m.entryForID(id)
+	if entry == nil {
+		return
+	}
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase == authorityPresent && entry.session.Status == StatusRunning && entry.private.pendingRemoveID == 0 && entry.private.pendingLifecycleID == 0 {
+		entry.session.Status = StatusStopping
+		entry.private.state = AuthorityStopping
+		advanceLegacyLifecycleLocked(entry, time.Now())
 	}
 }
 
-// MarkStopped 标记会话为已停止
 func (m *Manager) MarkStopped(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok {
-		now := time.Now()
-		s.Status = StatusStopped
-		s.StoppedAt = &now
+	entry := m.entryForID(id)
+	if entry == nil {
+		return
 	}
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase != authorityPresent || entry.private.pendingRemoveID != 0 || entry.private.pendingLifecycleID != 0 {
+		return
+	}
+	now := time.Now()
+	entry.session.Status = StatusStopped
+	entry.session.StoppedAt = &now
+	entry.private.state = AuthorityStopped
+	advanceLegacyLifecycleLocked(entry, now)
 }
 
-// MarkExited records the Launcher/PTY terminal receipt. A naturally terminal
-// running session becomes exited; a user-requested stopping session becomes
-// stopped only now, never when the asynchronous signal was merely accepted.
 func (m *Manager) MarkExited(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok {
-		now := time.Now()
-		switch s.Status {
-		case StatusRunning:
-			s.Status = StatusExited
-			s.StoppedAt = &now
-		case StatusStopping:
-			s.Status = StatusStopped
-			s.StoppedAt = &now
-		}
+	entry := m.entryForID(id)
+	if entry == nil {
+		return
+	}
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase != authorityPresent || entry.private.pendingRemoveID != 0 || entry.private.pendingLifecycleID != 0 {
+		return
+	}
+	now := time.Now()
+	switch entry.session.Status {
+	case StatusRunning:
+		entry.session.Status = StatusExited
+		entry.session.StoppedAt = &now
+		entry.private.state = AuthorityExited
+		advanceLegacyLifecycleLocked(entry, now)
+	case StatusStopping:
+		entry.session.Status = StatusStopped
+		entry.session.StoppedAt = &now
+		entry.private.state = AuthorityStopped
+		advanceLegacyLifecycleLocked(entry, now)
 	}
 }
 
-// MarkFailed 标记会话为失败
 func (m *Manager) MarkFailed(id string, errMsg string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok {
-		now := time.Now()
-		s.Status = StatusFailed
-		s.StoppedAt = &now
-		s.ErrorMessage = errMsg
+	entry := m.entryForID(id)
+	if entry == nil {
+		return
+	}
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase == authorityTombstoned || entry.private.pendingRemoveID != 0 || entry.private.pendingLifecycleID != 0 {
+		return
+	}
+	now := time.Now()
+	entry.session.Status = StatusFailed
+	entry.session.StoppedAt = &now
+	entry.session.ErrorMessage = errMsg
+	entry.private.state = AuthorityUnavailable
+	if entry.phase == authorityPresent {
+		advanceLegacyLifecycleLocked(entry, now)
 	}
 }
 
-// Get 获取单个会话
 func (m *Manager) Get(id string) (*Session, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	s, ok := m.sessions[id]
-	if !ok {
+	entry := m.entryForID(id)
+	if entry == nil {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
-	copy := *s
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase != authorityPresent {
+		return nil, fmt.Errorf("session not found: %s", id)
+	}
+	copy := entry.session
 	return &copy, nil
 }
 
-// List 返回所有会话的摘要信息
-//
-// 方案 P 直读：若 homeDir 已注入，对已退出（Status != Running）且 Title 空但
-// ClaudeSessionID 非空的会话，从 ~/.claude/projects/<encoded-workDir>/<sid>.jsonl
-// 直读首条 user message 填充 Title。读后写回 Session.Title 缓存，避免重复 IO。
-// jsonl 不存在或读取失败时静默，Title 保持空（不报错）。
+type legacyListSnapshot struct {
+	entry              *authorityEntry
+	session            Session
+	membershipRevision uint64
+}
+
 func (m *Manager) List() []SessionInfo {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.indexMu.RLock()
+	entries := make([]*authorityEntry, 0, len(m.entries))
+	for _, entry := range m.entries {
+		entries = append(entries, entry)
+	}
+	m.indexMu.RUnlock()
 
+	snapshots := make([]legacyListSnapshot, 0, len(entries))
+	for _, entry := range entries {
+		entry.guard.Lock()
+		if entry.phase == authorityPresent {
+			snapshots = append(snapshots, legacyListSnapshot{entry: entry, session: entry.session, membershipRevision: entry.private.revisions.Membership})
+		}
+		entry.guard.Unlock()
+	}
+
+	m.homeMu.RLock()
 	homeDir := m.homeDir
-
-	result := make([]SessionInfo, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		// 方案 P 直读：仅当 homeDir 已注入、会话已退出、Title 空且 ClaudeSessionID 非空时尝试。
-		if homeDir != "" && s.Title == "" && s.ClaudeSessionID != "" &&
-			!isActiveSessionStatus(s.Status) && s.AppType == AppTypeClaudeCode {
+	m.homeMu.RUnlock()
+	result := make([]SessionInfo, 0, len(snapshots))
+	for i := range snapshots {
+		s := snapshots[i].session
+		if homeDir != "" && s.Title == "" && s.ClaudeSessionID != "" && !isActiveSessionStatus(s.Status) && s.AppType == AppTypeClaudeCode {
 			if title, ok := readTitleFromJSONL(homeDir, s.WorkDir, s.ClaudeSessionID); ok {
-				s.Title = title // 写回缓存，后续 List 不再读盘
+				entry := snapshots[i].entry
+				entry.guard.Lock()
+				if entry.phase == authorityPresent && entry.private.revisions.Membership == snapshots[i].membershipRevision && entry.session.Title == "" {
+					entry.session.Title = title
+					s.Title = title
+				}
+				entry.guard.Unlock()
 			}
 		}
-
 		info := SessionInfo{
-			ID:        s.ID,
-			AppType:   s.AppType,
-			Provider:  s.Provider,
-			Preset:    s.Preset,
-			Model:     s.Model,
-			Mode:      s.Mode,
-			WorkDir:   s.WorkDir,
-			Status:    s.Status,
-			PID:       s.PID,
-			StartedAt: s.StartedAt.Format(time.RFC3339),
-			UseProxy:  s.UseProxy,
-
-			Title:           s.Title,
-			ClaudeSessionID: s.ClaudeSessionID,
+			ID: s.ID, AppType: s.AppType, Provider: s.Provider, Preset: s.Preset,
+			Model: s.Model, Mode: s.Mode, WorkDir: s.WorkDir, Status: s.Status,
+			PID: s.PID, StartedAt: s.StartedAt.Format(time.RFC3339), UseProxy: s.UseProxy,
+			Title: s.Title, ClaudeSessionID: s.ClaudeSessionID,
 		}
-
 		if isActiveSessionStatus(s.Status) {
 			info.Duration = formatDuration(time.Since(s.StartedAt))
 		} else if s.StoppedAt != nil {
 			info.Duration = formatDuration(s.StoppedAt.Sub(s.StartedAt))
 		}
-
 		result = append(result, info)
 	}
-
-	// 按启动时间倒序排列
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if result[i].StartedAt < result[j].StartedAt {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
-
+	sort.Slice(result, func(i, j int) bool { return result[i].StartedAt > result[j].StartedAt })
 	return result
 }
 
-// readTitleFromJSONL 从 homeDir/.claude/projects/<encoded-workDir>/<sid>.jsonl 直读首条 user message。
-// 返回 (title, true) 表示成功；jsonl 不存在 / 无 user message / 读取失败 → ("", false)。
-// 调用方负责持锁（本函数不接触 Manager.mu，仅做 IO）。
 func readTitleFromJSONL(homeDir, workDir, claudeSessionID string) (string, bool) {
 	jsonlPath := claude.SessionJSONLPath(homeDir, workDir, claudeSessionID)
 	content, found, err := claude.ExtractFirstUserMessage(jsonlPath)
@@ -264,62 +312,81 @@ func readTitleFromJSONL(homeDir, workDir, claudeSessionID string) (string, bool)
 	return truncateFirstLine(content, titleMaxRunes, workDir), true
 }
 
-// RunningCount 返回运行中的会话数量
 func (m *Manager) RunningCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	count := 0
-	for _, s := range m.sessions {
-		if isActiveSessionStatus(s.Status) {
+	for _, session := range m.List() {
+		if isActiveSessionStatus(session.Status) {
 			count++
 		}
 	}
 	return count
 }
 
-// Remove 删除已结束的会话记录
+// Remove is the legacy local removal wrapper. Authoritative embedded paths use
+// PrepareRemove and CommitPreparedRemove; this wrapper still removes terminal
+// legacy/external records from the same Authority index.
 func (m *Manager) Remove(id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
-	if !ok {
+	entry := m.entryForID(id)
+	if entry == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	switch s.Status {
+	entry.guard.Lock()
+	if entry.phase != authorityPresent {
+		entry.guard.Unlock()
+		return fmt.Errorf("session not found: %s", id)
+	}
+	switch entry.session.Status {
 	case StatusRunning:
+		entry.guard.Unlock()
 		return fmt.Errorf("cannot remove running session: %s: %w", id, ErrSessionRunning)
 	case StatusStopping:
+		entry.guard.Unlock()
 		return fmt.Errorf("cannot remove stopping session: %s: %w", id, ErrSessionStopping)
 	}
-	delete(m.sessions, id)
+	entry.phase = authorityTombstoned
+	entry.guard.Unlock()
+	m.indexMu.Lock()
+	if m.entries[id] == entry {
+		delete(m.entries, id)
+	}
+	m.indexMu.Unlock()
 	return nil
 }
 
-// ClearStopped 清除所有非运行中的会话
 func (m *Manager) ClearStopped() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ids := make([]string, 0)
+	for _, info := range m.List() {
+		if !isActiveSessionStatus(info.Status) {
+			ids = append(ids, info.ID)
+		}
+	}
 	count := 0
-	for id, s := range m.sessions {
-		if !isActiveSessionStatus(s.Status) {
-			delete(m.sessions, id)
+	for _, id := range ids {
+		if m.Remove(id) == nil {
 			count++
 		}
 	}
 	return count
 }
 
-// GetRunning 返回所有运行中的会话 ID 列表
 func (m *Manager) GetRunning() []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var ids []string
-	for id, s := range m.sessions {
-		if isActiveSessionStatus(s.Status) {
-			ids = append(ids, id)
+	result := make([]string, 0)
+	for _, info := range m.List() {
+		if isActiveSessionStatus(info.Status) {
+			result = append(result, info.ID)
 		}
 	}
-	return ids
+	return result
+}
+
+func advanceLegacyLifecycleLocked(entry *authorityEntry, at time.Time) {
+	if entry.private.revisions.Lifecycle != ^uint64(0) {
+		entry.private.revisions.Lifecycle++
+	}
+	if at.After(entry.private.lastActivityAt) {
+		entry.private.lastActivityAt = at
+	}
+	incrementActivityLocked(entry)
 }
 
 func isActiveSessionStatus(status SessionStatus) bool {

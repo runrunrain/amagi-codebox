@@ -132,7 +132,7 @@ func TestR8_001_DurableCleanupReloadContinuesReaperAcrossAppInstance(t *testing.
 	app2.configDir = configDir
 	app2.ctx = context.Background()
 	app2.sharedCoord = remote.NewSharedServiceCoordinator()
-	app2.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+	app2.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	app2.externalRunPollInterval = 5 * time.Millisecond
 	app2.externalCleanupStore = newFileExternalCleanupStore(configDir)
 	fake2 := newR6ExternalLauncher()

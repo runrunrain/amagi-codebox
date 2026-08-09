@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,18 +11,22 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/session"
 )
 
 // LaunchResult 启动结果（返回给 app 层，不暴露给前端）
 type LaunchResult struct {
-	SessionID string `json:"-"`
-	PID       int    `json:"-"`
+	SessionID string                   `json:"-"`
+	PID       int                      `json:"-"`
+	Evidence  processcap.StartEvidence `json:"-"`
 }
 
 type recoveredExternalProcess struct {
@@ -31,19 +36,23 @@ type recoveredExternalProcess struct {
 
 // LauncherService 管理 Claude Code 进程的启动（支持多实例）。
 type LauncherService struct {
-	processes map[string]*exec.Cmd // sessionID -> child cmd owned by this App instance
-	recovered map[string]recoveredExternalProcess
-	mu        sync.Mutex
-	proxyPort int
-	log       *logging.Service
-	envVars   *envvars.EnvVarsService
-	resolver  platform.CLIResolver
+	processes         map[string]*exec.Cmd // sessionID -> child cmd owned by this App instance
+	recovered         map[string]recoveredExternalProcess
+	mu                sync.Mutex
+	ownerID           uint64
+	bindingGeneration uint64
+	proxyPort         int
+	log               *logging.Service
+	envVars           *envvars.EnvVarsService
+	resolver          platform.CLIResolver
 }
 
 func NewLauncherService(log *logging.Service, envVars *envvars.EnvVarsService) *LauncherService {
+	ownerID, _ := processcap.NewOwnerID()
 	return &LauncherService{
 		processes: make(map[string]*exec.Cmd),
 		recovered: make(map[string]recoveredExternalProcess),
+		ownerID:   ownerID,
 		log:       log,
 		envVars:   envVars,
 		resolver:  platform.NewCLIResolver(platform.CurrentCapabilities()),
@@ -180,6 +189,49 @@ func (s *LauncherService) BuildOverrides(
 	return overrides
 }
 
+func (s *LauncherService) reserveBindingID(sessionID string) (processcap.BindingID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ownerID == 0 {
+		return processcap.BindingID{}, errors.New("launcher owner identity unavailable")
+	}
+	if s.processes[sessionID] != nil {
+		return processcap.BindingID{}, fmt.Errorf("process is already registered: %s", sessionID)
+	}
+	if _, exists := s.recovered[sessionID]; exists {
+		return processcap.BindingID{}, fmt.Errorf("recovered process is already registered: %s", sessionID)
+	}
+	if s.bindingGeneration == ^uint64(0) {
+		return processcap.BindingID{}, errors.New("launcher binding generation exhausted")
+	}
+	s.bindingGeneration++
+	return processcap.BindingID{Kind: processcap.BackendExternalLauncher, Owner: s.ownerID, Generation: s.bindingGeneration}, nil
+}
+
+func (s *LauncherService) registerStartedProcess(sessionID string, cmd *exec.Cmd, bindingID processcap.BindingID) *LaunchResult {
+	binding := &launcherBinding{service: s, sessionID: sessionID, cmd: cmd, id: bindingID, done: make(chan struct{})}
+	s.mu.Lock()
+	s.processes[sessionID] = cmd
+	s.mu.Unlock()
+	go func(id string, c *exec.Cmd, b *launcherBinding) {
+		err := c.Wait()
+		s.mu.Lock()
+		if s.processes[id] == c {
+			delete(s.processes, id)
+		}
+		s.mu.Unlock()
+		b.confirmTerminal()
+		if s.log != nil {
+			s.log.Info("launcher", "进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
+		}
+	}(sessionID, cmd, binding)
+	pid := 0
+	if cmd != nil && cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	return &LaunchResult{SessionID: sessionID, PID: pid, Evidence: processcap.StartEvidence{PID: pid, Binding: binding}}
+}
+
 // Launch 启动一个新的 Claude Code 进程，返回启动结果。
 // 支持两种模式：terminal（独立终端）、embedded（内嵌终端）
 func (s *LauncherService) Launch(
@@ -235,37 +287,17 @@ func (s *LauncherService) LaunchGuarded(
 			return nil, fmt.Errorf("authorize process start: %w", err)
 		}
 	}
+	bindingID, err := s.reserveBindingID(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "进程启动失败", err.Error())
 		return nil, fmt.Errorf("start process: %w", err)
 	}
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-
-	s.log.Info("launcher", "进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
-
-	s.mu.Lock()
-	s.processes[sessionID] = cmd
-	s.mu.Unlock()
-
-	// 监控进程退出
-	go func(id string, c *exec.Cmd) {
-		err := c.Wait()
-		s.mu.Lock()
-		if s.processes[id] == c {
-			delete(s.processes, id)
-		}
-		s.mu.Unlock()
-		s.log.Info("launcher", "进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
-	}(sessionID, cmd)
-
-	return &LaunchResult{
-		SessionID: sessionID,
-		PID:       pid,
-	}, nil
+	result := s.registerStartedProcess(sessionID, cmd, bindingID)
+	s.log.Info("launcher", "进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, result.PID))
+	return result, nil
 }
 
 // LaunchOpenCode 启动一个新的 OpenCode 进程，返回启动结果。
@@ -304,37 +336,17 @@ func (s *LauncherService) LaunchOpenCode(
 
 	s.log.Info("launcher", "正在启动 OpenCode 进程", fmt.Sprintf("sessionID=%s mode=%s", sessionID, mode))
 
+	bindingID, err := s.reserveBindingID(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "OpenCode 进程启动失败", err.Error())
 		return nil, fmt.Errorf("start opencode process: %w", err)
 	}
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-
-	s.log.Info("launcher", "OpenCode 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
-
-	s.mu.Lock()
-	s.processes[sessionID] = cmd
-	s.mu.Unlock()
-
-	// 监控进程退出
-	go func(id string, c *exec.Cmd) {
-		err := c.Wait()
-		s.mu.Lock()
-		if s.processes[id] == c {
-			delete(s.processes, id)
-		}
-		s.mu.Unlock()
-		s.log.Info("launcher", "OpenCode 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
-	}(sessionID, cmd)
-
-	return &LaunchResult{
-		SessionID: sessionID,
-		PID:       pid,
-	}, nil
+	result := s.registerStartedProcess(sessionID, cmd, bindingID)
+	s.log.Info("launcher", "OpenCode 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, result.PID))
+	return result, nil
 }
 
 // LaunchCodex 启动一个新的 Codex CLI 进程，返回启动结果。
@@ -371,37 +383,17 @@ func (s *LauncherService) LaunchCodexGuarded(
 			return nil, fmt.Errorf("authorize Codex process start: %w", err)
 		}
 	}
+	bindingID, err := s.reserveBindingID(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "Codex 进程启动失败", err.Error())
 		return nil, fmt.Errorf("start codex process: %w", err)
 	}
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-
-	s.log.Info("launcher", "Codex 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
-
-	s.mu.Lock()
-	s.processes[sessionID] = cmd
-	s.mu.Unlock()
-
-	// 监控进程退出
-	go func(id string, c *exec.Cmd) {
-		err := c.Wait()
-		s.mu.Lock()
-		if s.processes[id] == c {
-			delete(s.processes, id)
-		}
-		s.mu.Unlock()
-		s.log.Info("launcher", "Codex 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
-	}(sessionID, cmd)
-
-	return &LaunchResult{
-		SessionID: sessionID,
-		PID:       pid,
-	}, nil
+	result := s.registerStartedProcess(sessionID, cmd, bindingID)
+	s.log.Info("launcher", "Codex 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, result.PID))
+	return result, nil
 }
 
 // buildCodexCmd 构建 codex 进程命令。
@@ -440,37 +432,17 @@ func (s *LauncherService) LaunchPi(
 
 	s.log.Info("launcher", "正在启动 Pi 进程", fmt.Sprintf("sessionID=%s mode=%s provider=%s model=%s thinking=%s", sessionID, mode, providerName, modelName, thinkingLevel))
 
+	bindingID, err := s.reserveBindingID(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "Pi 进程启动失败", err.Error())
 		return nil, fmt.Errorf("start pi process: %w", err)
 	}
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-
-	s.log.Info("launcher", "Pi 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
-
-	s.mu.Lock()
-	s.processes[sessionID] = cmd
-	s.mu.Unlock()
-
-	// 监控进程退出
-	go func(id string, c *exec.Cmd) {
-		err := c.Wait()
-		s.mu.Lock()
-		if s.processes[id] == c {
-			delete(s.processes, id)
-		}
-		s.mu.Unlock()
-		s.log.Info("launcher", "Pi 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
-	}(sessionID, cmd)
-
-	return &LaunchResult{
-		SessionID: sessionID,
-		PID:       pid,
-	}, nil
+	result := s.registerStartedProcess(sessionID, cmd, bindingID)
+	s.log.Info("launcher", "Pi 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, result.PID))
+	return result, nil
 }
 
 // buildPiCmd 构建 pi 进程命令。
@@ -518,37 +490,17 @@ func (s *LauncherService) LaunchOmp(
 
 	s.log.Info("launcher", "正在启动 omp 进程", fmt.Sprintf("sessionID=%s mode=%s provider=%s model=%s thinking=%s", sessionID, mode, providerName, modelName, thinkingLevel))
 
+	bindingID, err := s.reserveBindingID(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		s.log.Error("launcher", "omp 进程启动失败", err.Error())
 		return nil, fmt.Errorf("start omp process: %w", err)
 	}
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-
-	s.log.Info("launcher", "omp 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, pid))
-
-	s.mu.Lock()
-	s.processes[sessionID] = cmd
-	s.mu.Unlock()
-
-	// 监控进程退出
-	go func(id string, c *exec.Cmd) {
-		err := c.Wait()
-		s.mu.Lock()
-		if s.processes[id] == c {
-			delete(s.processes, id)
-		}
-		s.mu.Unlock()
-		s.log.Info("launcher", "omp 进程已退出", fmt.Sprintf("sessionID=%s exitErr=%v", id, err))
-	}(sessionID, cmd)
-
-	return &LaunchResult{
-		SessionID: sessionID,
-		PID:       pid,
-	}, nil
+	result := s.registerStartedProcess(sessionID, cmd, bindingID)
+	s.log.Info("launcher", "omp 进程已启动", fmt.Sprintf("sessionID=%s pid=%d", sessionID, result.PID))
+	return result, nil
 }
 
 // buildOmpCmd 构建 omp 进程命令（复刻 buildPiCmd）。
@@ -605,6 +557,76 @@ func (s *LauncherService) buildOpenCodeCmd(workDir string, env []string) *exec.C
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd
+}
+
+var launcherCloseReceiptSeq atomic.Uint64
+
+type launcherBinding struct {
+	service   *LauncherService
+	sessionID string
+	cmd       *exec.Cmd
+	id        processcap.BindingID
+	done      chan struct{}
+
+	doneOnce  sync.Once
+	closeOnce sync.Once
+	terminal  atomic.Bool
+	evidence  processcap.ExactCloseEvidence
+}
+
+func (b *launcherBinding) BindingID() processcap.BindingID { return b.id }
+
+func (b *launcherBinding) confirmTerminal() {
+	b.terminal.Store(true)
+	b.doneOnce.Do(func() { close(b.done) })
+}
+
+func (b *launcherBinding) Wait(ctx context.Context) error {
+	select {
+	case <-b.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *launcherBinding) Confirmed() bool { return b.terminal.Load() }
+
+func (b *launcherBinding) CloseExact(ctx context.Context) processcap.ExactCloseEvidence {
+	b.closeOnce.Do(func() {
+		disposition := processcap.CloseIndeterminate
+		if b.cmd == nil || b.cmd.Process == nil || b.terminal.Load() || (b.cmd.ProcessState != nil && b.cmd.ProcessState.Exited()) {
+			b.confirmTerminal()
+			disposition = processcap.CloseAlreadyAbsent
+		} else {
+			killErr := b.cmd.Process.Kill()
+			if errors.Is(killErr, os.ErrProcessDone) {
+				b.confirmTerminal()
+				disposition = processcap.CloseAlreadyAbsent
+			} else if killErr == nil {
+				waitCtx := ctx
+				if _, hasDeadline := waitCtx.Deadline(); !hasDeadline {
+					var cancel context.CancelFunc
+					waitCtx, cancel = context.WithTimeout(waitCtx, 3*time.Second)
+					defer cancel()
+				}
+				if b.Wait(waitCtx) == nil {
+					disposition = processcap.CloseConfirmed
+				}
+			}
+		}
+		receiptID := launcherCloseReceiptSeq.Add(1)
+		var waiter processcap.CloseWaiter
+		if disposition == processcap.CloseIndeterminate {
+			waiter = b
+		}
+		evidence, err := processcap.NewExactCloseEvidence(b.id, receiptID, disposition, waiter)
+		if err != nil {
+			panic(err)
+		}
+		b.evidence = evidence
+	})
+	return b.evidence
 }
 
 // CaptureProcessIdentity returns a PID-reuse-resistant OS start identity for a

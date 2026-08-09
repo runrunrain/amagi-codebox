@@ -238,6 +238,9 @@ type LiveRestartStage struct {
 	terminal     bool // pre-activate exit latch; production activation must fail
 	faulted      bool // bounded FIFO overflow or invalid staged observation
 	closed       bool
+	sealed       bool
+	owner        uint64
+	resolved     chan struct{}
 }
 
 // LifecycleIntentStub is the minimal opaque intent pointer carried by the feed
@@ -393,6 +396,9 @@ type liveRunFeed struct {
 	// causal reservation fails, or an ordinal is exhausted). Ordinary ring
 	// eviction is not a fault.
 	faulted bool
+
+	preparedActivationOwner uint64
+	preparedRestartOwner    uint64
 }
 
 func newLiveRunFeed(sessionID contract.SessionID) *liveRunFeed {
@@ -527,9 +533,43 @@ func (c *runSegmentCommitter) CommitRunObservation(permit *RunObservationPermit,
 		// Caller bug: drop as feed fault rather than truncating.
 		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedFeedFault, Kind: obs.Kind})
 	}
-	feed := c.EnsureFeed(permit.entry.sessionID)
 	entry := permit.entry
+	entry.stateMu.Lock()
+	if entry.preparedStop != nil || entry.preparedRemoval != nil {
+		entry.stateMu.Unlock()
+		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedStageClosed, Kind: obs.Kind})
+	}
+	if entry.currentRun == permit.run && entry.runEpoch == permit.runEpoch && entry.backendEpoch == permit.backendEpoch && entry.initialStage != nil {
+		stage := entry.initialStage
+		if stage.sealed {
+			resolved := stage.resolved
+			entry.stateMu.Unlock()
+			if resolved != nil {
+				<-resolved
+			}
+			return c.CommitRunObservation(permit, obs)
+		}
+		if entry.runPhase == runStarting {
+			outcome := c.stageInitialRunObservationLocked(stage, permit, obs)
+			entry.stateMu.Unlock()
+			return outcome
+		}
+	}
+	if stage := matchingRestartObservationStageLocked(entry, permit); stage != nil && stage.sealed {
+		resolved := stage.resolved
+		entry.stateMu.Unlock()
+		if resolved != nil {
+			<-resolved
+		}
+		return c.CommitRunObservation(permit, obs)
+	}
+	if entry.currentRun == permit.run && entry.runEpoch == permit.runEpoch && entry.runPhase == runStarting {
+		entry.stateMu.Unlock()
+		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedStageClosed, Kind: obs.Kind})
+	}
+	entry.stateMu.Unlock()
 
+	feed := c.EnsureFeed(permit.entry.sessionID)
 	// Three-lock domain: stateMu → feed.mu → (causal ledger via port, which is
 	// called while both are held — the port does O(1) work under its own lock).
 	entry.stateMu.Lock()
@@ -605,6 +645,38 @@ func (c *runSegmentCommitter) CommitRunObservation(permit *RunObservationPermit,
 	})
 }
 
+func (c *runSegmentCommitter) stageInitialRunObservationLocked(stage *initialRunStage, permit *RunObservationPermit, obs RunObservation) RunObservationOutcome {
+	if stage == nil || stage.sealed {
+		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedStageClosed, Kind: obs.Kind})
+	}
+	if stage.faulted {
+		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedFeedFault, Kind: obs.Kind})
+	}
+	if len(stage.records) >= liveFeedMaxRecords-1 || stage.totalBytes+uint64(len(obs.Output)) > liveStageMaxBytes {
+		stage.faulted = true
+		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedFeedFault, Kind: obs.Kind})
+	}
+	if obs.Kind == ObservationExit && stage.terminal {
+		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedDuplicateTerminal, Kind: obs.Kind})
+	}
+	recordKind := LiveRecordOutput
+	if obs.Kind == ObservationExit {
+		recordKind = LiveRecordExit
+	}
+	stage.stageOrdinal++
+	stage.records = append(stage.records, LiveRunRecord{
+		Run: permit.run, RunEpoch: permit.runEpoch, Kind: recordKind,
+		Output: obs.Output, Exit: obs.Exit, ProjectionSeq: obs.ProjectionSeq,
+	})
+	stage.totalBytes += uint64(len(obs.Output))
+	if obs.Kind == ObservationExit {
+		stage.terminal = true
+	}
+	return c.record(obs.Kind, RunObservationOutcome{
+		Disposition: ObservationStaged, Kind: obs.Kind, StageOrdinal: stage.stageOrdinal,
+	})
+}
+
 // matchingRestartObservationStageLocked returns the exact hidden stage that
 // owns permit, or nil for every stale/aborted/superseded observation. Caller
 // holds entry.stateMu.
@@ -627,7 +699,7 @@ func matchingRestartObservationStageLocked(entry *controlEntry, permit *RunObser
 // with activate/abort and therefore defines source order for the hidden stage.
 // Space is O(min(4095 records, 992 KiB)); each call is O(1).
 func (c *runSegmentCommitter) stageRunObservationLocked(stage *LiveRestartStage, permit *RunObservationPermit, obs RunObservation) RunObservationOutcome {
-	if stage == nil || stage.closed {
+	if stage == nil || stage.closed || stage.sealed {
 		return c.record(obs.Kind, RunObservationOutcome{Disposition: ObservationDroppedStageClosed, Kind: obs.Kind})
 	}
 	if stage.faulted {

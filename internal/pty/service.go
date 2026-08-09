@@ -13,6 +13,7 @@ import (
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/processcap"
 
 	"github.com/UserExistsError/conpty"
 )
@@ -21,15 +22,23 @@ const maxOutputHistorySize = 1024 * 1024 // 1MB 环形缓冲区上限，避免�
 
 // PtySession 一个 ConPTY 会话
 type PtySession struct {
-	cpty          *conpty.ConPty
-	cancel        context.CancelFunc
-	done          chan struct{}
-	outputHistory []byte     // 最近输出的环形缓冲区，供后加入的 WebSocket 客户端重放
-	historyMu     sync.Mutex // 保护 outputHistory
-	emitSeq       uint64     // monotonic counter incremented per PTY output chunk under historyMu
-	currentCols   int        // 当前 PTY 列数
-	currentRows   int        // 当前 PTY 行数
-	runHandle     any        // opaque run identity; passed back to RunEventSink
+	cpty           *conpty.ConPty
+	cancel         context.CancelFunc
+	done           chan struct{}
+	ready          chan struct{}
+	readArmed      chan struct{}
+	waitArmed      chan struct{}
+	exited         chan struct{}
+	shellReady     chan struct{}
+	shellReadyOnce sync.Once
+	bootstrapMode  platform.LaunchBootstrapMode
+	outputHistory  []byte     // 最近输出的环形缓冲区，供后加入的 WebSocket 客户端重放
+	historyMu      sync.Mutex // 保护 outputHistory
+	emitSeq        uint64     // monotonic counter incremented per PTY output chunk under historyMu
+	currentCols    int        // 当前 PTY 列数
+	currentRows    int        // 当前 PTY 行数
+	runHandle      any        // opaque run identity; passed back to RunEventSink
+	bindingID      processcap.BindingID
 }
 
 // outputCallback PTY 输出回调，供远程服务器的 WebSocket 使用
@@ -46,21 +55,25 @@ type resizeCallback func(cols, rows int)
 // 全部 output/exit 经注入的 RunEventSink 交 RunEventProjector 做 run-scoped 投影。
 // 同时支持注册远程回调，供 WebSocket 转发使用。
 type Service struct {
-	sessions    map[string]*PtySession
-	mu          sync.Mutex
-	log         *logging.Service
-	runSink     RunEventSink // sole output/exit sink; replaces direct EventsEmit (design §8.6 M-01)
-	outputCBsMu sync.RWMutex
-	outputCBs   map[string]map[string]outputCallback // sessionID → {connID → cb}
-	exitCBsMu   sync.RWMutex
-	exitCBs     map[string]map[string]exitCallback // sessionID → {connID → cb}
-	resizeCBsMu sync.RWMutex
-	resizeCBs   map[string]map[string]resizeCallback // sessionID → {connID → cb}
+	sessions          map[string]*PtySession
+	mu                sync.Mutex
+	ownerID           uint64
+	bindingGeneration uint64
+	log               *logging.Service
+	runSink           RunEventSink // sole output/exit sink; replaces direct EventsEmit (design §8.6 M-01)
+	outputCBsMu       sync.RWMutex
+	outputCBs         map[string]map[string]outputCallback // sessionID → {connID → cb}
+	exitCBsMu         sync.RWMutex
+	exitCBs           map[string]map[string]exitCallback // sessionID → {connID → cb}
+	resizeCBsMu       sync.RWMutex
+	resizeCBs         map[string]map[string]resizeCallback // sessionID → {connID → cb}
 }
 
 func NewService(log *logging.Service) *Service {
+	ownerID, _ := processcap.NewOwnerID()
 	return &Service{
 		sessions:  make(map[string]*PtySession),
+		ownerID:   ownerID,
 		log:       log,
 		outputCBs: make(map[string]map[string]outputCallback),
 		exitCBs:   make(map[string]map[string]exitCallback),
@@ -275,12 +288,26 @@ func (s *Service) StartResolved(sessionID string, spec platform.ResolvedLaunchSp
 // projection (design §8.6). A nil handle means output/exit is dropped
 // (fail-closed: no ungated Wails emit).
 func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (int, error) {
+	evidence, err := s.StartResolvedWithRunEvidence(sessionID, spec, runHandle)
+	return evidence.PID, err
+}
+
+// StartResolvedWithRunEvidence returns the concrete exact-close capability
+// minted with the backend map insertion. Callers retain it in processcap.Registry.
+func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (processcap.StartEvidence, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.sessions[sessionID]; exists {
-		return 0, fmt.Errorf("session %s already exists", sessionID)
+	if s.ownerID == 0 {
+		return processcap.StartEvidence{}, fmt.Errorf("pty owner identity unavailable")
 	}
+	if _, exists := s.sessions[sessionID]; exists {
+		return processcap.StartEvidence{}, fmt.Errorf("session %s already exists", sessionID)
+	}
+	if s.bindingGeneration == ^uint64(0) {
+		return processcap.StartEvidence{}, fmt.Errorf("pty binding generation exhausted")
+	}
+	bindingGeneration := s.bindingGeneration + 1
 
 	cols := spec.PTYCols
 	rows := spec.PTYRows
@@ -309,7 +336,7 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 	cpty, err := conpty.Start(commandLine, opts...)
 	if err != nil {
 		s.log.Error("pty", "ConPTY 启动失败", err.Error())
-		return 0, fmt.Errorf("conpty start: %w", err)
+		return processcap.StartEvidence{}, fmt.Errorf("conpty start: %w", err)
 	}
 
 	pid := cpty.Pid()
@@ -317,15 +344,28 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	ready := make(chan struct{})
+	readArmed := make(chan struct{})
+	waitArmed := make(chan struct{})
+	exited := make(chan struct{})
 
+	bindingID := processcap.BindingID{Kind: processcap.BackendPTY, Owner: s.ownerID, Generation: bindingGeneration}
 	ps := &PtySession{
-		cpty:        cpty,
-		cancel:      cancel,
-		done:        done,
-		currentCols: cols,
-		currentRows: rows,
-		runHandle:   runHandle,
+		cpty:          cpty,
+		cancel:        cancel,
+		done:          done,
+		ready:         ready,
+		readArmed:     readArmed,
+		waitArmed:     waitArmed,
+		exited:        exited,
+		shellReady:    make(chan struct{}),
+		bootstrapMode: spec.BootstrapMode,
+		currentCols:   cols,
+		currentRows:   rows,
+		runHandle:     runHandle,
+		bindingID:     bindingID,
 	}
+	s.bindingGeneration = bindingGeneration
 	s.sessions[sessionID] = ps
 
 	// 启动读取协程：从 ConPTY 读取输出，通过 Wails 事件发送到前端
@@ -333,6 +373,11 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 
 	// 启动等待协程：监控进程退出
 	go s.waitLoop(sessionID, ps, ctx)
+	go func() {
+		<-ps.readArmed
+		<-ps.waitArmed
+		close(ps.ready)
+	}()
 
 	// 如果指定了自动命令，延迟发送到 shell。控制托管会话（runHandle != nil）
 	// 的 bootstrap 由 App 层经控制门 DoBootstrapPTY 发送（M-005：不裸写 cpty），
@@ -346,7 +391,8 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 		}()
 	}
 
-	return pid, nil
+	binding := &ptyBinding{service: s, sessionID: sessionID, session: ps, id: bindingID}
+	return processcap.StartEvidence{PID: pid, Binding: binding}, nil
 }
 
 // StartupAutoCommand returns the auto-command that StartResolvedWithRun would
@@ -394,6 +440,7 @@ func buildResolvedStartupPlan(spec platform.ResolvedLaunchSpec, log *logging.Ser
 
 // readLoop 持续读取 ConPTY 输出并发送给前端及所有注册的远程回调
 func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context, done chan struct{}) {
+	close(ps.readArmed)
 	defer close(done)
 	buf := make([]byte, 8192)
 	for {
@@ -404,6 +451,7 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 		}
 		n, err := ps.cpty.Read(buf)
 		if n > 0 {
+			ps.shellReadyOnce.Do(func() { close(ps.shellReady) })
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 
@@ -438,6 +486,8 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 
 // waitLoop 等待进程退出并通知前端及所有注册的远程回调
 func (s *Service) waitLoop(sessionID string, ps *PtySession, ctx context.Context) {
+	close(ps.waitArmed)
+	defer close(ps.exited)
 	exitCode, err := ps.cpty.Wait(ctx)
 	s.log.Info("pty", "进程退出", fmt.Sprintf("id=%s exitCode=%d err=%v", sessionID, exitCode, err))
 
@@ -469,6 +519,57 @@ func (s *Service) WriteRaw(ctx context.Context, sessionID string, data []byte) e
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("session %s not found", sessionID)
+	}
+	_, err := ps.cpty.Write(data)
+	return err
+}
+
+// WaitReadyForBinding is the exact PTY ready/live barrier used by staged launch
+// transactions. Ready means the exact map owner is still installed, both the
+// read and wait pumps have been armed, and the process has not reported exit.
+// Shell-attach mode additionally waits for the exact ConPTY's first output,
+// proving that the interactive shell initialized before bootstrap input.
+func (s *Service) WaitReadyForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID) error {
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if !ok || ps.bindingID != bindingID {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s binding is not current", sessionID)
+	}
+	ready, exited := ps.ready, ps.exited
+	s.mu.Unlock()
+
+	if err := waitExactPTYReadiness(ctx, sessionID, ready, exited, ps.shellReady, ps.bootstrapMode == platform.BootstrapShellAttach); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	current := s.sessions[sessionID] == ps && ps.bindingID == bindingID
+	s.mu.Unlock()
+	if !current {
+		return fmt.Errorf("session %s binding changed at PTY ready barrier", sessionID)
+	}
+	return nil
+}
+
+// WriteRawForBinding writes only when the exact binding minted by Start is
+// still the current live owner. It prevents a delayed bootstrap from reaching
+// an ABA replacement that reused the same SessionID.
+func (s *Service) WriteRawForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	ps, ok := s.sessions[sessionID]
+	if !ok || ps.bindingID != bindingID {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s binding is not current", sessionID)
+	}
+	exited := ps.exited
+	s.mu.Unlock()
+	select {
+	case <-exited:
+		return fmt.Errorf("session %s exited before exact PTY write", sessionID)
+	default:
 	}
 	_, err := ps.cpty.Write(data)
 	return err
@@ -581,22 +682,27 @@ func (s *Service) GetPtyDimensions(sessionID string) (cols, rows int, err error)
 // session (idempotent no-op). It does NOT block on the read loop (a bounded
 // Close already does that; Detach only needs to tear down the handle).
 func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
-	receipt := newDetachReceipt()
 	s.mu.Lock()
 	ps, ok := s.sessions[sessionID]
+	if ok {
+		delete(s.sessions, sessionID)
+	}
+	s.mu.Unlock()
 	if !ok {
-		s.mu.Unlock()
-		// No active map owner is already-detached evidence. Return a confirmed,
-		// typed receipt so the control gate need not guess from a nil error.
+		receipt := newDetachReceipt()
 		_ = detachWithExactReaper(receipt, func() error { return nil }, nil)
 		return receipt, nil
 	}
-	// Move this exact pointer out of the active namespace before close. A close
-	// failure is NOT lost: the receipt/reaper retain ps and retry ps.cpty.Close
-	// directly, never a same-ID replacement from s.sessions.
-	delete(s.sessions, sessionID)
-	s.mu.Unlock()
+	return s.detachExactSession(sessionID, ps)
+}
 
+func (s *Service) detachExactSession(sessionID string, ps *PtySession) (*DetachReceipt, error) {
+	receipt := newDetachReceipt()
+	s.mu.Lock()
+	if s.sessions[sessionID] == ps {
+		delete(s.sessions, sessionID)
+	}
+	s.mu.Unlock()
 	if s.log != nil {
 		s.log.Info("pty", "R4-004 强制 detach ConPTY 后端", "id="+sessionID)
 	}
@@ -611,9 +717,34 @@ func (s *Service) DetachSession(sessionID string) (*DetachReceipt, error) {
 	if closeErr != nil && s.log != nil {
 		s.log.Warn("pty", "R4-004 ConPTY detach 首次关闭失败，已进入 exact reaper", fmt.Sprintf("id=%s err=%v", sessionID, closeErr))
 	}
-	// Do NOT wait on ps.done here: the gate's quarantine already advanced
-	// backendEpoch. The exact receipt is confirmed only after Close succeeds.
 	return receipt, closeErr
+}
+
+type ptyBinding struct {
+	service   *Service
+	sessionID string
+	session   *PtySession
+	id        processcap.BindingID
+	once      sync.Once
+	evidence  processcap.ExactCloseEvidence
+}
+
+func (b *ptyBinding) BindingID() processcap.BindingID { return b.id }
+
+func (b *ptyBinding) CloseExact(ctx context.Context) processcap.ExactCloseEvidence {
+	b.once.Do(func() {
+		receipt, closeErr := b.service.detachExactSession(b.sessionID, b.session)
+		disposition := processcap.CloseConfirmed
+		if closeErr != nil || !receipt.Confirmed() {
+			disposition = processcap.CloseIndeterminate
+		}
+		evidence, err := processcap.NewExactCloseEvidence(b.id, receipt.Identity(), disposition, receipt)
+		if err != nil {
+			panic(err)
+		}
+		b.evidence = evidence
+	})
+	return b.evidence
 }
 
 // Close 关闭指定 PTY 会话

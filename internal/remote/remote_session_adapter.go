@@ -24,7 +24,10 @@ import (
 	"fmt"
 	"time"
 
+	"amagi-codebox/internal/launchplan"
+	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/remote/contract"
+	"amagi-codebox/internal/session"
 )
 
 // ---------------------------------------------------------------------------
@@ -73,6 +76,23 @@ type RemoteSessionAdapter struct {
 	sessRaw   SessionRawPort
 	mapper    v1ErrorMapper
 	clock     Clock
+
+	// authority is the sole production identity/membership owner. catalog remains
+	// only as a compatibility fixture when authority is nil.
+	authority       *session.Manager
+	processRegistry *processcap.Registry
+	planner         launchplan.Planner
+	executor        launchplan.Executor
+	sharedCoord     *SharedServiceCoordinator
+	ptyStart        restartPtyStartFunc
+	journalRetries  *JournalRetryRegistry
+	removeGC        *RemoveGCRegistry
+	releaseShared   func(string)
+
+	// prepareSharedLeaseTransfer binds pending leases to the exact Authority
+	// composite commit and atomically updates the App owner registry.
+	prepareSharedLeaseTransfer func(string, uint64, uint64, []*SharedDependencyLease) (func(), func(), func(), error)
+	releaseSharedExact         func(string, uint64)
 
 	// configDir is the host config root (for workdir default etc.).
 	configDir string
@@ -126,6 +146,68 @@ func NewRemoteSessionAdapter(
 	}
 }
 
+// SetSessionAuthority switches the adapter to the production single-owner path.
+// A nil dependency keeps tests fail-closed on the legacy fixture path.
+func (a *RemoteSessionAdapter) SetSessionAuthority(authority *session.Manager, registry *processcap.Registry, planner launchplan.Planner) {
+	a.authority = authority
+	a.processRegistry = registry
+	if planner == nil {
+		planner = launchplan.NewFailClosedPlanner()
+	}
+	a.planner = planner
+	if authority != nil {
+		// Production has no second membership owner. SessionCatalog remains only
+		// as an isolated compatibility fixture for pre-Authority unit tests.
+		a.catalog = nil
+		if a.journalRetries == nil {
+			a.journalRetries = NewJournalRetryRegistry()
+		}
+		if a.removeGC == nil {
+			a.removeGC = NewRemoveGCRegistry()
+		}
+	}
+	if a.runtime != nil && authority != nil {
+		a.runtime.Projector().SetSessionAuthority(authority)
+	}
+}
+
+func (a *RemoteSessionAdapter) SetPostRemoveCleanup(releaseShared func(string)) {
+	a.releaseShared = releaseShared
+}
+
+// SetLaunchExecutor injects the production Executor and shared-service
+// coordinator for remote create. Both must be non-nil for create to succeed;
+// nil executor keeps create fail-closed.
+func (a *RemoteSessionAdapter) SetLaunchExecutor(executor launchplan.Executor, coord *SharedServiceCoordinator) {
+	a.executor = executor
+	a.sharedCoord = coord
+}
+
+// SetSharedLeaseTransfer injects the exact App/coordinator composite owner.
+func (a *RemoteSessionAdapter) SetSharedLeaseTransfer(
+	prepare func(string, uint64, uint64, []*SharedDependencyLease) (func(), func(), func(), error),
+	releaseExact func(string, uint64),
+) {
+	a.prepareSharedLeaseTransfer = prepare
+	a.releaseSharedExact = releaseExact
+}
+
+// restartPtyStartFunc starts a new PTY for a restart operation. The spec is
+// passed as any to avoid importing platform in this package; the caller
+// (root package) type-asserts before calling.
+type restartPtyStartFunc func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error)
+
+// SetRestartPtyStart injects the PTY start function for restart operations.
+func (a *RemoteSessionAdapter) SetRestartPtyStart(fn restartPtyStartFunc) {
+	a.ptyStart = fn
+}
+
+func (a *RemoteSessionAdapter) FlushPostCommitDebt(ctx context.Context) bool {
+	journalOK := a.journalRetries == nil || a.journalRetries.Flush(ctx)
+	gcOK := a.removeGC == nil || a.removeGC.Flush(ctx)
+	return journalOK && gcOK
+}
+
 // Gate returns the underlying control gate (for WS adapter attach/detach).
 func (a *RemoteSessionAdapter) Gate() ControlGate { return a.gate }
 
@@ -154,26 +236,39 @@ func (a *RemoteSessionAdapter) Clock() Clock { return a.clock }
 // ListSessions returns a sorted list of public, non-removed sessions with
 // audience-relative control projection (design §5.3).
 func (a *RemoteSessionAdapter) ListSessions(ctx context.Context, viewer contract.DeviceID) (SessionListResult, *AdapterError) {
+	if a.authority != nil {
+		snapshots := a.authority.ListRemoteSafeSnapshots()
+		list := make(contract.SessionList, 0, len(snapshots))
+		for _, authoritySnapshot := range snapshots {
+			sid := contract.SessionID(authoritySnapshot.Handle.SessionID())
+			controlSnapshot, err := a.gate.SnapshotForDevice(sid, viewer)
+			if err != nil {
+				re, ok := a.mapper.mapGateError(contract.RequestID(""), err)
+				if !ok {
+					re = a.mapper.mapGenericError(contract.RequestID(""))
+				}
+				return SessionListResult{}, newAdapterError(re)
+			}
+			list = append(list, contract.SessionSummary{
+				ID: sid, Title: authoritySnapshot.SafeTitle, CLIType: contract.CLIType(authoritySnapshot.CLIType),
+				State: authorityStateToWire(authoritySnapshot.State), Control: controlSnapshot,
+				LastActivityAt: formatUTC(authoritySnapshot.LastActivityAt),
+			})
+		}
+		return SessionListResult{List: list}, nil
+	}
 	entries := a.catalog.ListEntries()
 	list := make(contract.SessionList, 0, len(entries))
 	for _, e := range entries {
 		snap, err := a.gate.SnapshotForDevice(e.id, viewer)
 		if err != nil {
-			// Gate unhealthy for this session: return 503.
 			re, ok := a.mapper.mapGateError(contract.RequestID(""), err)
 			if !ok {
 				re = a.mapper.mapGenericError(contract.RequestID(""))
 			}
 			return SessionListResult{}, newAdapterError(re)
 		}
-		list = append(list, contract.SessionSummary{
-			ID:             e.id,
-			Title:          e.title,
-			CLIType:        e.cliType,
-			State:          a.sessionState(e.id),
-			Control:        snap,
-			LastActivityAt: formatUTC(e.lastActivityAt),
-		})
+		list = append(list, contract.SessionSummary{ID: e.id, Title: e.title, CLIType: e.cliType, State: a.sessionState(e.id), Control: snap, LastActivityAt: formatUTC(e.lastActivityAt)})
 	}
 	return SessionListResult{List: list}, nil
 }
@@ -185,12 +280,25 @@ func (a *RemoteSessionAdapter) ListSessions(ctx context.Context, viewer contract
 // SessionDetail returns the detail projection for a session (design §5.3).
 // staging/removed/unknown → session.not_found.
 func (a *RemoteSessionAdapter) SessionDetail(ctx context.Context, reqID contract.RequestID, sessionID contract.SessionID, viewer contract.DeviceID) (SessionDetailResult, *AdapterError) {
+	if a.authority != nil {
+		authoritySnapshot, err := a.authority.RemoteSnapshotByID(string(sessionID))
+		if err != nil {
+			return SessionDetailResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+		controlSnapshot, gateErr := a.gate.SnapshotForDevice(sessionID, viewer)
+		if gateErr != nil {
+			re, ok := a.mapper.mapGateError(reqID, gateErr)
+			if !ok {
+				re = a.mapper.mapGenericError(reqID)
+			}
+			return SessionDetailResult{}, newAdapterError(re)
+		}
+		earliest, latest := a.streams.SeqBounds(sessionID)
+		return authorityDetail(authoritySnapshot, controlSnapshot, earliest, latest), nil
+	}
 	entry, ok := a.catalog.Entry(sessionID)
 	if !ok {
-		return SessionDetailResult{}, newAdapterError(restError{
-			status: 404,
-			body:   newAPIError(reqID, contract.ErrorCodeSessionNotFound, contract.ErrorLayerSession, "session not found", contract.ActionHintRetry),
-		})
+		return SessionDetailResult{}, newAdapterError(sessionNotFoundRestError(reqID))
 	}
 	snap, err := a.gate.SnapshotForDevice(sessionID, viewer)
 	if err != nil {
@@ -201,31 +309,21 @@ func (a *RemoteSessionAdapter) SessionDetail(ctx context.Context, reqID contract
 		return SessionDetailResult{}, newAdapterError(re)
 	}
 	earliest, latest := a.streams.SeqBounds(sessionID)
-	return SessionDetailResult{
-		Detail: contract.SessionDetail{
-			SessionSummary: contract.SessionSummary{
-				ID:             sessionID,
-				Title:          entry.title,
-				CLIType:        entry.cliType,
-				State:          a.sessionState(sessionID),
-				Control:        snap,
-				LastActivityAt: formatUTC(entry.lastActivityAt),
-			},
-			Workdir:     entry.workdir,
-			StartedAt:   formatUTC(entry.startedAt),
-			EarliestSeq: earliest,
-			LatestSeq:   latest,
-		},
-	}, nil
+	return SessionDetailResult{Detail: contract.SessionDetail{SessionSummary: contract.SessionSummary{ID: sessionID, Title: entry.title, CLIType: entry.cliType, State: a.sessionState(sessionID), Control: snap, LastActivityAt: formatUTC(entry.lastActivityAt)}, Workdir: entry.workdir, StartedAt: formatUTC(entry.startedAt), EarliestSeq: earliest, LatestSeq: latest}}, nil
 }
 
 // ---------------------------------------------------------------------------
 // Create (design §5.2 endpoint 4, §4.4, §5.4)
 // ---------------------------------------------------------------------------
 
-// CreateSession starts a new session. It resolves the launch context, begins a
-// launch transaction, executes effects, and activates the run (design §4.4).
+// CreateSession starts a new session. For production (authority != nil), it
+// resolves the launch context via the Planner, begins a launch transaction,
+// executes typed Effects via the Executor, and activates the run through the
+// composite activation flow (design §4.4, §5.4).
 func (a *RemoteSessionAdapter) CreateSession(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, req contract.CreateSessionRequest) (SessionDetailResult, *AdapterError) {
+	if a.authority != nil {
+		return a.authorityCreateSession(ctx, reqID, principal, req)
+	}
 	if a.launchRaw == nil {
 		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 	}
@@ -321,6 +419,372 @@ func (a *RemoteSessionAdapter) CreateSession(ctx context.Context, reqID contract
 	}, nil
 }
 
+// authorityCreateSession implements the production remote create flow:
+// BuildPlan → ReserveCreate → BeginDeviceLaunch → RegisterStarting →
+// Executor Prepare/Apply → shared leases → ProcessEvidence → registry →
+// PrepareCompositeActivation → PrepareActivation → CommitPreparedActivation →
+// FinishCompositeActivation → detail. Every failure path does exact
+// compensation and leaves no public Authority/Control/active process.
+func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, req contract.CreateSessionRequest) (SessionDetailResult, *AdapterError) {
+	planner := a.planner
+	if planner == nil {
+		planner = launchplan.NewFailClosedPlanner()
+	}
+	workdir := ""
+	if req.Workdir != nil {
+		workdir = *req.Workdir
+	}
+
+	// 1. BuildPlan (pure read, zero side effects).
+	plan, failure := planner.BuildPlan(ctx, launchplan.BuildRequest{
+		CLIType: req.CLIType, Origin: launchplan.OriginRemote,
+		Mode: launchplan.ModeEmbedded, Workdir: workdir,
+	})
+	if failure != nil {
+		if plan != nil {
+			plan.Secrets.Dispose()
+		}
+		kind := LaunchResolveFailureContext
+		switch failure.Kind {
+		case launchplan.FailureWorkdir:
+			kind = LaunchResolveFailureWorkdir
+		case launchplan.FailureCapability:
+			kind = LaunchResolveFailureCapability
+		}
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapLaunchFailure(reqID, newLaunchResolveFailure(kind, req.CLIType)))
+	}
+
+	// If no production executor is wired, fail closed (plan was read-only).
+	if a.executor == nil {
+		plan.Secrets.Dispose()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapLaunchFailure(reqID, newLaunchResolveFailure(LaunchResolveFailureContext, req.CLIType)))
+	}
+
+	// 2. Authority hidden ReserveCreate.
+	reservation, reserveErr := a.authority.ReserveCreate(session.CreateSpec{
+		AppType:        session.AppType(req.CLIType),
+		Origin:         launchplan.OriginRemote,
+		Mode:           launchplan.ModeEmbedded,
+		Workdir:        plan.Recipe.Workdir,
+		RemoteEligible: true,
+		Provider:       plan.Recipe.ProviderRef,
+		Preset:         plan.Recipe.PresetRef,
+		Model:          plan.Recipe.ModelRef,
+		UseProxy:       plan.Recipe.UseProxy,
+	})
+	if reserveErr != nil {
+		plan.Secrets.Dispose()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	sessionID := contract.SessionID(reservation.SessionID())
+
+	abortReservation := func() {
+		a.authority.AbortCreate(reservation)
+	}
+
+	// 3. Begin device launch.
+	launchPermit, err := a.gate.BeginDeviceLaunch(ctx, principal)
+	if err != nil {
+		plan.Secrets.Dispose()
+		abortReservation()
+		re, ok := a.mapper.mapGateError(reqID, err)
+		if !ok {
+			re = a.mapper.mapGenericError(reqID)
+		}
+		return SessionDetailResult{}, newAdapterError(re)
+	}
+
+	// 4. Register starting session (staging, not yet public).
+	runPermit, obsPermit, err := a.gate.RegisterStartingSession(ctx, launchPermit, sessionID)
+	if err != nil {
+		plan.Secrets.Dispose()
+		a.gate.AbortLaunch(ctx, launchPermit, err)
+		abortReservation()
+		re, ok := a.mapper.mapGateError(reqID, err)
+		if !ok {
+			re = a.mapper.mapGenericError(reqID)
+		}
+		return SessionDetailResult{}, newAdapterError(re)
+	}
+
+	// 5. Acquire launch admissions before Executor preparation or any shared
+	// side effect. The exact admissions are bound into their prepared effects.
+	var admissions []*SharedLaunchAdmission
+	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
+	releaseAdmissions := func() {
+		for _, adm := range admissions {
+			if a.sharedCoord != nil {
+				a.sharedCoord.ReleaseLaunchAdmission(adm)
+			}
+		}
+	}
+	for _, planAdm := range plan.Admissions {
+		if a.sharedCoord == nil {
+			continue
+		}
+		remoteKind, ok := sharedKindFromPlan(planAdm.Service)
+		if !ok {
+			continue
+		}
+		adm, acqErr := a.sharedCoord.AcquireLaunchAdmissionForConfig(remoteKind, planAdm.ConfigFingerprint)
+		if acqErr != nil {
+			releaseAdmissions()
+			plan.Secrets.Dispose()
+			a.gate.AbortLaunch(ctx, launchPermit, acqErr)
+			abortReservation()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		admissions = append(admissions, adm)
+		sharedAdmissions[planAdm.Service] = adm
+	}
+
+	// 6. Executor Prepare (all effect allocations; opaque exact run handle).
+	execution, err := a.executor.Prepare(ctx, plan, launchplan.ExecutionBinding{
+		SessionID: string(sessionID), RunEpoch: obsPermit.RunEpoch(), RunHandle: obsPermit,
+		SharedAdmissions: sharedAdmissions,
+	})
+	if err != nil {
+		releaseAdmissions()
+		plan.Secrets.Dispose()
+		a.gate.AbortLaunch(ctx, launchPermit, err)
+		abortReservation()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapLaunchFailure(reqID, newLaunchResolveFailure(LaunchResolveFailureEffect, req.CLIType)))
+	}
+
+	// 7. Effect loop (each effect, including exact PTY bootstrap, goes through
+	// the same staged run permit and gate checkpoint before publication).
+	for i := 0; i < execution.Count(); i++ {
+		effectKind := launchEffectKindForSpec(plan.Effects[i])
+		effectErr := a.gate.DoLaunchEffect(ctx, runPermit, effectKind, func(effectCtx context.Context, p *operationPermit, receipt *EffectReceipt) error {
+			effect := execution.Effect(i)
+			effect.ArmOwnership()
+			if cpErr := p.Checkpoint(effectCtx, 1); cpErr != nil {
+				return cpErr
+			}
+			evidence, applyErr := effect.Apply(effectCtx)
+			if applyErr != nil {
+				return applyErr
+			}
+			execution.RecordApplied(i, evidence)
+			return nil
+		})
+		if effectErr != nil {
+			releaseAdmissions()
+			execution.Abort(ctx)
+			a.gate.AbortLaunch(ctx, launchPermit, effectErr)
+			abortReservation()
+			execution.DisposeSecrets()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapLaunchFailure(reqID, newLaunchResolveFailure(LaunchResolveFailureEffect, req.CLIType)))
+		}
+	}
+
+	// 8. Process evidence → register binding.
+	start, hasProcess := execution.ProcessEvidence()
+	if !hasProcess {
+		releaseAdmissions()
+		execution.Abort(ctx)
+		a.gate.AbortLaunch(ctx, launchPermit, errors.New("no process evidence"))
+		abortReservation()
+		execution.DisposeSecrets()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapLaunchFailure(reqID, newLaunchResolveFailure(LaunchResolveFailureEffect, req.CLIType)))
+	}
+	if vErr := start.Validate(processcap.BackendPTY); vErr != nil {
+		_ = start.Binding.CloseExact(ctx)
+		releaseAdmissions()
+		execution.Abort(ctx)
+		a.gate.AbortLaunch(ctx, launchPermit, vErr)
+		abortReservation()
+		execution.DisposeSecrets()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	registryKey, regErr := a.processRegistry.Register(start.Binding, obsPermit.RunEpoch())
+	if regErr != nil {
+		_ = start.Binding.CloseExact(ctx)
+		releaseAdmissions()
+		execution.Abort(ctx)
+		a.gate.AbortLaunch(ctx, launchPermit, regErr)
+		abortReservation()
+		execution.DisposeSecrets()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	// 9. M-005: Promote admissions to exact run leases.
+	var acquiredLeases []*SharedDependencyLease
+	releaseLeases := func() {
+		for _, lease := range acquiredLeases {
+			if a.sharedCoord != nil {
+				_ = a.sharedCoord.ReleaseExact(nil, lease)
+			}
+		}
+	}
+	for idx, planAdm := range plan.Admissions {
+		if a.sharedCoord == nil || idx >= len(admissions) {
+			continue
+		}
+		remoteKind, ok := sharedKindFromPlan(planAdm.Service)
+		if !ok {
+			continue
+		}
+		lease, acqErr := a.sharedCoord.AcquirePendingForRunWithAdmission(ctx, runPermit, remoteKind, planAdm.ConfigFingerprint, admissions[idx])
+		if acqErr != nil {
+			closeEvidence := start.Binding.CloseExact(ctx)
+			if closeEvidence.Confirmed() {
+				_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+			}
+			releaseLeases()
+			releaseAdmissions()
+			execution.Abort(ctx)
+			a.gate.AbortLaunch(ctx, launchPermit, acqErr)
+			abortReservation()
+			execution.DisposeSecrets()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		acquiredLeases = append(acquiredLeases, lease)
+	}
+	// Reserve the exact pending→promoted transfer. No App owner or promoted lease
+	// is visible until the Authority composite callback executes.
+	sharedCommit := func() {}
+	sharedFinish := func() {}
+	sharedAbort := func() {}
+	if len(acquiredLeases) > 0 {
+		if a.prepareSharedLeaseTransfer == nil {
+			closeEvidence := start.Binding.CloseExact(ctx)
+			if closeEvidence.Confirmed() {
+				_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+			}
+			releaseLeases()
+			releaseAdmissions()
+			execution.Abort(ctx)
+			a.gate.AbortLaunch(ctx, launchPermit, ErrSharedServiceInUse)
+			abortReservation()
+			execution.DisposeSecrets()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		var transferErr error
+		sharedCommit, sharedFinish, sharedAbort, transferErr = a.prepareSharedLeaseTransfer(string(sessionID), 0, obsPermit.RunEpoch(), acquiredLeases)
+		if transferErr != nil {
+			closeEvidence := start.Binding.CloseExact(ctx)
+			if closeEvidence.Confirmed() {
+				_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+			}
+			releaseLeases()
+			releaseAdmissions()
+			execution.Abort(ctx)
+			a.gate.AbortLaunch(ctx, launchPermit, transferErr)
+			abortReservation()
+			execution.DisposeSecrets()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+	}
+
+	// 10. Prepare composite activation (seal prepared state).
+	preparedActivation, prepErr := a.runtime.PrepareCompositeActivation(sessionID, runPermit, obsPermit)
+	if prepErr != nil {
+		sharedAbort()
+		closeEvidence := start.Binding.CloseExact(ctx)
+		if closeEvidence.Confirmed() {
+			_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+		}
+		releaseLeases()
+		execution.Abort(ctx)
+		a.gate.AbortLaunch(ctx, launchPermit, prepErr)
+		abortReservation()
+		execution.DisposeSecrets()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	// 10. Prepare Authority activation (token/receipt allocation, still hidden).
+	values := session.PreparedAuthorityActivation{
+		Session: reservation.Session(), Recipe: plan.Recipe, BindingID: registryKey.BindingID,
+		PID: start.PID, RunRevision: obsPermit.RunEpoch(), StartedAt: reservation.Session().StartedAt,
+		LastActivityAt: a.clock.Now(),
+	}
+	authorityToken, actErr := a.authority.PrepareActivation(reservation, values)
+	if actErr != nil {
+		a.runtime.AbortCompositeActivation(preparedActivation)
+		sharedAbort()
+		closeEvidence := start.Binding.CloseExact(ctx)
+		if closeEvidence.Confirmed() {
+			_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+		}
+		releaseLeases()
+		execution.Abort(ctx)
+		a.gate.AbortLaunch(ctx, launchPermit, actErr)
+		abortReservation()
+		execution.DisposeSecrets()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	// 12. Commit Authority, Control/H1, and shared ownership in one no-fail callback.
+	receipt, commitErr := a.authority.CommitPreparedActivation(authorityToken, func() {
+		preparedActivation.CommitNoFail()
+		sharedCommit()
+	})
+	if commitErr != nil {
+		a.runtime.AbortCompositeActivation(preparedActivation)
+		sharedAbort()
+		a.authority.AbortPreparedActivation(authorityToken)
+		closeEvidence := start.Binding.CloseExact(ctx)
+		if closeEvidence.Confirmed() {
+			_ = a.processRegistry.ReleaseExact(registryKey.BindingID, registryKey.RunGeneration, start.Binding)
+		}
+		releaseLeases()
+		execution.Abort(ctx)
+		a.gate.AbortLaunch(ctx, launchPermit, commitErr)
+		abortReservation()
+		execution.DisposeSecrets()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	// 13. Finish hidden projections and release transfer waiters.
+	a.runtime.FinishCompositeActivation(preparedActivation)
+	sharedFinish()
+
+	// 14. Mark committed + dispose secrets.
+	execution.MarkCommitted()
+	execution.DisposeSecrets()
+
+	// 14. Build detail response.
+	controlSnapshot, _ := a.gate.SnapshotForDevice(sessionID, principal.DeviceID)
+	earliest, latest := a.streams.SeqBounds(sessionID)
+	return authorityDetail(receipt.Snapshot, controlSnapshot, earliest, latest), nil
+}
+
+// sharedKindFromPlan maps a launchplan.SharedServiceKind to the remote
+// SharedServiceKind. Returns false for unknown kinds.
+func sharedKindFromPlan(planKind launchplan.SharedServiceKind) (SharedServiceKind, bool) {
+	switch planKind {
+	case launchplan.SharedClaudeProxy:
+		return SharedServiceClaudeProxy, true
+	case launchplan.SharedClaudeHeadroom:
+		return SharedServiceClaudeHeadroom, true
+	case launchplan.SharedCodexHeadroom:
+		return SharedServiceCodexHeadroom, true
+	default:
+		return 0, false
+	}
+}
+
+// launchEffectKindForSpec maps an EffectSpec to the gate's LaunchEffectKind.
+func launchEffectKindForSpec(spec launchplan.EffectSpec) LaunchEffectKind {
+	switch spec.Kind {
+	case launchplan.EffectHeadroomStart:
+		return LaunchHeadroomStart
+	case launchplan.EffectProxyStart:
+		return LaunchProxyStart
+	case launchplan.EffectConfigMutation:
+		return LaunchConfigMutation
+	case launchplan.EffectPTYStart:
+		return LaunchPTYStart
+	case launchplan.EffectExternalProcessStart:
+		return LaunchProcessStart
+	case launchplan.EffectBootstrapWrite:
+		return LaunchBootstrapWrite
+	default:
+		return LaunchPTYStart
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Stop (design §5.2 endpoint 5, §5.5)
 // ---------------------------------------------------------------------------
@@ -353,6 +817,9 @@ func (a *RemoteSessionAdapter) RemoveSession(ctx context.Context, reqID contract
 
 // lifecycle is the shared stop/restart/remove path (design §5.5).
 func (a *RemoteSessionAdapter) lifecycle(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, sessionID contract.SessionID, op LifecycleOperation, jop SessionOperationKind) (SessionDetailResult, *AdapterError) {
+	if a.authority != nil {
+		return a.authorityLifecycle(ctx, reqID, principal, sessionID, op, jop)
+	}
 	// Verify the session is public.
 	entry, ok := a.catalog.Entry(sessionID)
 	if !ok {
@@ -465,6 +932,675 @@ func (a *RemoteSessionAdapter) lifecycle(ctx context.Context, reqID contract.Req
 	}, nil
 }
 
+// authorityRestart implements M-03: same-ID restart with exact old binding
+// close, OriginRestart plan, H1/H3 restart boundary, and composite run switch.
+// Preserves startedAt/history/ledger. On failure, reconciles to honest
+// stopped/unavailable and compensates the new run.
+func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, sessionID contract.SessionID) (SessionDetailResult, *AdapterError) {
+	if a.planner == nil || a.executor == nil || a.processRegistry == nil || a.journal == nil ||
+		a.runtime == nil || a.sharedCoord == nil || a.prepareSharedLeaseTransfer == nil {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	snapshot, err := a.authority.RemoteSnapshotByID(string(sessionID))
+	if err != nil {
+		return SessionDetailResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+	}
+	processRef, err := a.authority.ProcessRef(snapshot.Handle)
+	if err != nil {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	oldBinding, ok := a.processRegistry.ResolveExact(processRef.BindingID, processRef.RunRevision)
+	if !ok {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	plan, failure := a.planner.BuildPlan(ctx, launchplan.BuildRequest{
+		CLIType: contract.CLIType(snapshot.CLIType), Origin: launchplan.OriginRestart,
+		Mode: launchplan.ModeEmbedded, Workdir: snapshot.Workdir,
+	})
+	if failure != nil {
+		if plan != nil {
+			plan.Secrets.Dispose()
+		}
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapLaunchFailure(reqID, newLaunchResolveFailure(LaunchResolveFailureContext, contract.CLIType(snapshot.CLIType))))
+	}
+	defer plan.Secrets.Dispose()
+
+	lifecycleToken, err := a.authority.PrepareLifecycle(snapshot.Handle, session.LifecycleRestart,
+		session.LifecycleExpected{MembershipRevision: snapshot.Revisions.Membership, LifecycleRevision: snapshot.Revisions.Lifecycle, RunRevision: snapshot.Revisions.Run},
+		processRef.BindingID)
+	if err != nil {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	opID := GenerateOperationID()
+	if opID == "" {
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	journalPermit, err := a.journal.BeginIntent(ctx, SessionOperationIntent{
+		OperationID: opID, SessionID: sessionID, CLIType: contract.CLIType(snapshot.CLIType),
+		Operation: SessionOpRestart, Actor: SessionActorRemote,
+	})
+	if err != nil {
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapJournalError(reqID))
+	}
+
+	var admissions []*SharedLaunchAdmission
+	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
+	releaseAdmissions := func() {
+		for _, admission := range admissions {
+			a.sharedCoord.ReleaseLaunchAdmission(admission)
+		}
+	}
+	for _, spec := range plan.Admissions {
+		kind, known := sharedKindFromPlan(spec.Service)
+		if !known {
+			releaseAdmissions()
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		admission, admissionErr := a.sharedCoord.AcquireLaunchAdmissionForConfig(kind, spec.ConfigFingerprint)
+		if admissionErr != nil {
+			releaseAdmissions()
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		admissions = append(admissions, admission)
+		sharedAdmissions[spec.Service] = admission
+	}
+
+	var (
+		restartPermit     *operationPermit
+		sealReceipt       *RunSegmentSealReceipt
+		newObsPermit      *RunObservationPermit
+		execution         launchplan.PreparedExecution
+		start             processcap.StartEvidence
+		newRegistryKey    processcap.RegistryKey
+		newRegistered     bool
+		oldCloseAttempted bool
+		oldCloseConfirmed bool
+		newLeases         []*SharedDependencyLease
+		controlRestart    *PreparedControlRestart
+		restartActivation *PreparedCompositeRestart
+		sharedCommit      = func() {}
+		sharedFinish      = func() {}
+		sharedAbort       = func() {}
+		sharedPrepared    bool
+	)
+
+	abortTransaction := func(cause error) launchplan.CompensationReport {
+		if sharedPrepared {
+			sharedAbort()
+			sharedPrepared = false
+		}
+		if restartActivation != nil {
+			_ = a.runtime.AbortCompositeRestart(restartActivation)
+			restartActivation = nil
+		} else if restartPermit != nil && sealReceipt != nil {
+			if restartPermit.restartStage != nil {
+				_ = a.runtime.AbortRestartStage(restartPermit, sealReceipt, sessionID)
+			} else {
+				_ = a.runtime.RollbackRestartSealForPermit(restartPermit, sealReceipt, sessionID)
+			}
+		}
+		if controlRestart != nil {
+			a.runtime.AbortPreparedControlRestart(controlRestart)
+			controlRestart = nil
+		}
+		compCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		report := launchplan.CompensationReport{}
+		if execution != nil {
+			report = execution.Abort(compCtx)
+		}
+		if newRegistered && start.Binding != nil {
+			closeEvidence := start.Binding.CloseExact(compCtx)
+			if closeEvidence.Confirmed() {
+				_ = a.processRegistry.ReleaseExact(newRegistryKey.BindingID, newRegistryKey.RunGeneration, start.Binding)
+			}
+		}
+		for _, lease := range newLeases {
+			_ = a.sharedCoord.ReleaseExact(compCtx, lease)
+		}
+		releaseAdmissions()
+		if execution != nil {
+			execution.DisposeSecrets()
+		}
+		if oldCloseConfirmed && a.releaseSharedExact != nil {
+			a.releaseSharedExact(string(sessionID), processRef.RunRevision)
+		}
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		if oldCloseAttempted {
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, true, a.clock.Now())
+		}
+		_ = cause
+		return report
+	}
+
+	controlRestart, err = a.runtime.PrepareDeviceControlRestart(ctx, principal, sessionID, func(restartCtx context.Context, permit *operationPermit) (SessionMutationResult, error) {
+		restartPermit = permit
+		if checkpointErr := permit.Checkpoint(restartCtx, 1); checkpointErr != nil {
+			return SessionMutationResult{}, checkpointErr
+		}
+		sealReceipt, err = a.runtime.SealRestartSegmentForPermit(permit, sessionID)
+		if err != nil {
+			return SessionMutationResult{}, err
+		}
+		oldCloseAttempted = true
+		closeEvidence, closeOK := a.processRegistry.CloseExact(restartCtx, processRef.BindingID, processRef.RunRevision)
+		if !closeOK || !closeEvidence.Confirmed() {
+			return SessionMutationResult{}, errExactCloseIndeterminate
+		}
+		oldCloseConfirmed = true
+		if err = a.processRegistry.ReleaseExact(processRef.BindingID, processRef.RunRevision, oldBinding); err != nil {
+			return SessionMutationResult{}, err
+		}
+		newObsPermit, err = a.runtime.StageRestartRun(permit, sealReceipt, sessionID)
+		if err != nil {
+			return SessionMutationResult{}, err
+		}
+		execution, err = a.executor.Prepare(restartCtx, plan, launchplan.ExecutionBinding{
+			SessionID: string(sessionID), RunEpoch: newObsPermit.RunEpoch(), RunHandle: newObsPermit,
+			SharedAdmissions: sharedAdmissions,
+		})
+		if err != nil {
+			return SessionMutationResult{}, err
+		}
+		for i := 0; i < execution.Count(); i++ {
+			if err = permit.Checkpoint(restartCtx, uint32(i+2)); err != nil {
+				return SessionMutationResult{}, err
+			}
+			effect := execution.Effect(i)
+			effect.ArmOwnership()
+			evidence, applyErr := effect.Apply(restartCtx)
+			if applyErr != nil {
+				return SessionMutationResult{}, applyErr
+			}
+			execution.RecordApplied(i, evidence)
+			if err = permit.Checkpoint(restartCtx, uint32(i+3)); err != nil {
+				return SessionMutationResult{}, err
+			}
+		}
+		var hasProcess bool
+		start, hasProcess = execution.ProcessEvidence()
+		if !hasProcess {
+			return SessionMutationResult{}, errors.New("restart execution produced no process evidence")
+		}
+		if err = start.Validate(processcap.BackendPTY); err != nil {
+			return SessionMutationResult{}, err
+		}
+		newRegistryKey, err = a.processRegistry.Register(start.Binding, newObsPermit.RunEpoch())
+		if err != nil {
+			return SessionMutationResult{}, err
+		}
+		newRegistered = true
+		for idx, spec := range plan.Admissions {
+			kind, known := sharedKindFromPlan(spec.Service)
+			if !known || idx >= len(admissions) {
+				return SessionMutationResult{}, ErrSharedServiceInUse
+			}
+			lease, leaseErr := a.sharedCoord.AcquirePendingForObservationWithAdmission(
+				restartCtx, newObsPermit, kind, spec.ConfigFingerprint, admissions[idx],
+			)
+			if leaseErr != nil {
+				return SessionMutationResult{}, leaseErr
+			}
+			newLeases = append(newLeases, lease)
+		}
+		return SessionMutationResult{State: contract.SessionStateRunning, StateChanged: true, RestartBoundary: true}, nil
+	})
+	if err != nil {
+		report := abortTransaction(err)
+		outcome := SessionOutcomeFailed
+		if oldCloseAttempted || report.Failed > 0 {
+			outcome = SessionOutcomeIndeterminate
+		}
+		_ = a.journal.Complete(ctx, journalPermit, outcome, contract.ErrorCodeServiceDown)
+		re, mapped := a.mapper.mapGateError(reqID, err)
+		if !mapped {
+			re = a.mapper.mapGenericError(reqID)
+		}
+		return SessionDetailResult{}, newAdapterError(re)
+	}
+
+	if err = a.authority.BindPreparedRestartResult(lifecycleToken, session.PreparedRestartValues{
+		BindingID: newRegistryKey.BindingID, PID: start.PID, RunRevision: newObsPermit.RunEpoch(), Recipe: plan.Recipe,
+	}); err != nil {
+		report := abortTransaction(err)
+		outcome := SessionOutcomeIndeterminate
+		if report.Failed == 0 && !oldCloseAttempted {
+			outcome = SessionOutcomeFailed
+		}
+		_ = a.journal.Complete(ctx, journalPermit, outcome, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	restartActivation, err = a.runtime.PrepareCompositeRestart(sessionID, restartPermit, sealReceipt)
+	if err != nil {
+		_ = abortTransaction(err)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	sharedCommit, sharedFinish, sharedAbort, err = a.prepareSharedLeaseTransfer(
+		string(sessionID), processRef.RunRevision, newObsPermit.RunEpoch(), newLeases,
+	)
+	if err != nil {
+		_ = abortTransaction(err)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	sharedPrepared = true
+	if err = a.runtime.BindPreparedControlRestart(controlRestart, restartActivation); err != nil {
+		_ = abortTransaction(err)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	receipt, commitErr := a.authority.CommitPreparedRestart(lifecycleToken, func() {
+		restartActivation.CommitNoFail()
+		a.runtime.CommitPreparedControlRestartNoFail(controlRestart)
+		sharedCommit()
+	})
+	if commitErr != nil {
+		_ = abortTransaction(commitErr)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	execution.MarkCommitted()
+	execution.DisposeSecrets()
+	a.runtime.FinishCompositeRestart(restartActivation)
+	a.runtime.FinishPreparedControlRestart(controlRestart)
+	sharedFinish()
+	sharedPrepared = false
+	releaseAdmissions()
+
+	if restartActivation.PostCommitFenced() {
+		closeEvidence := start.Binding.CloseExact(context.Background())
+		if closeEvidence.Confirmed() {
+			_ = a.processRegistry.ReleaseExact(newRegistryKey.BindingID, newRegistryKey.RunGeneration, start.Binding)
+		}
+		if a.releaseSharedExact != nil {
+			a.releaseSharedExact(string(sessionID), newObsPermit.RunEpoch())
+		}
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeCommitted, "")
+	controlSnapshot, _ := a.gate.SnapshotForDevice(sessionID, principal.DeviceID)
+	earliest, latest := a.streams.SeqBounds(sessionID)
+	return authorityDetail(receipt.Snapshot, controlSnapshot, earliest, latest), nil
+}
+
+func (a *RemoteSessionAdapter) authorityLifecycle(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, sessionID contract.SessionID, op LifecycleOperation, jop SessionOperationKind) (SessionDetailResult, *AdapterError) {
+	if op == LifecycleRestart {
+		return a.authorityRestart(ctx, reqID, principal, sessionID)
+	}
+	if a.processRegistry == nil || a.journal == nil || a.runtime == nil {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	snapshot, err := a.authority.RemoteSnapshotByID(string(sessionID))
+	if err != nil {
+		return SessionDetailResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+	}
+	processRef, err := a.authority.ProcessRef(snapshot.Handle)
+	if err != nil {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	binding, ok := a.processRegistry.ResolveExact(processRef.BindingID, processRef.RunRevision)
+	if !ok {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	opID := GenerateOperationID()
+	if opID == "" {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	journalPermit, err := a.journal.BeginIntent(ctx, SessionOperationIntent{
+		OperationID: opID, SessionID: sessionID, CLIType: contract.CLIType(snapshot.CLIType),
+		Operation: jop, Actor: SessionActorRemote,
+	})
+	if err != nil {
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapJournalError(reqID))
+	}
+
+	var removeToken *session.PreparedRemoveToken
+	var lifecycleToken *session.PreparedLifecycleToken
+	expectedRemove := session.RemoveExpected{MembershipRevision: snapshot.Revisions.Membership, LifecycleRevision: snapshot.Revisions.Lifecycle, RunRevision: snapshot.Revisions.Run}
+	expectedLifecycle := session.LifecycleExpected{MembershipRevision: snapshot.Revisions.Membership, LifecycleRevision: snapshot.Revisions.Lifecycle, RunRevision: snapshot.Revisions.Run}
+	if op == LifecycleRemove {
+		removeToken, err = a.authority.PrepareRemove(snapshot.Handle, expectedRemove, processRef.BindingID)
+	} else {
+		lifecycleToken, err = a.authority.PrepareLifecycle(snapshot.Handle, session.LifecycleStop, expectedLifecycle, processRef.BindingID)
+	}
+	if err != nil {
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeControlBusy)
+		if errors.Is(err, session.ErrAuthorityNotFound) {
+			return SessionDetailResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	abortManagerToken := func() {
+		if removeToken != nil {
+			a.authority.AbortPreparedRemove(removeToken)
+		}
+		if lifecycleToken != nil {
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+		}
+	}
+
+	var terminalTicket *PreparedTerminalStateReservation
+	var terminalDeliveries []preparedRemovalDelivery
+	var closeEvidence processcap.ExactCloseEvidence
+	effect := func(effectCtx context.Context, permit *operationPermit) (SessionMutationResult, error) {
+		if err := permit.Checkpoint(effectCtx, 1); err != nil {
+			return SessionMutationResult{}, err
+		}
+		var closeOK bool
+		closeEvidence, closeOK = a.processRegistry.CloseExact(effectCtx, processRef.BindingID, processRef.RunRevision)
+		if !closeOK || !closeEvidence.Confirmed() {
+			return SessionMutationResult{}, errExactCloseIndeterminate
+		}
+		if op == LifecycleRemove {
+			return SessionMutationResult{Removed: true}, nil
+		}
+		return SessionMutationResult{State: contract.SessionStateStopped, StateChanged: true}, nil
+	}
+	var preparedControlRemove *PreparedControlRemove
+	var preparedControlStop *PreparedControlStop
+	var lifecycleErr error
+	if op == LifecycleRemove {
+		preparedControlRemove, lifecycleErr = a.runtime.PrepareDeviceControlRemove(ctx, principal, sessionID, effect)
+	} else {
+		preparedControlStop, lifecycleErr = a.runtime.PrepareDeviceControlStop(ctx, principal, sessionID, effect)
+	}
+	if lifecycleErr != nil {
+		abortManagerToken()
+		a.runtime.Hub().AbortTerminalStateReservation(terminalTicket)
+		outcome := SessionOutcomeFailed
+		if closeEvidence.ReceiptID() != 0 {
+			outcome = SessionOutcomeIndeterminate
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, true, a.clock.Now())
+		}
+		_ = a.journal.Complete(ctx, journalPermit, outcome, contract.ErrorCodeServiceDown)
+		re, mapped := a.mapper.mapGateError(reqID, lifecycleErr)
+		if !mapped {
+			re = a.mapper.mapGenericError(reqID)
+		}
+		return SessionDetailResult{}, newAdapterError(re)
+	}
+
+	if op == LifecycleRemove {
+		terminalTicket, err = a.runtime.Hub().PrepareTerminalStateReservation(sessionID)
+		if err == nil {
+			terminalDeliveries, err = a.runtime.Hub().PrepareRemovalDeliveries(sessionID, func(viewer contract.DeviceID) (contract.ControlSnapshot, error) {
+				return a.gate.SnapshotForDevice(sessionID, viewer)
+			}, a.clock.Now())
+		}
+		if err != nil {
+			abortManagerToken()
+			a.runtime.AbortPreparedControlRemove(preparedControlRemove)
+			a.runtime.Hub().AbortTerminalStateReservation(terminalTicket)
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, true, a.clock.Now())
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+	}
+
+	if op == LifecycleStop {
+		lifecycleReceipt, commitErr := a.authority.CommitPreparedStop(lifecycleToken, closeEvidence, func() {
+			a.runtime.CommitPreparedControlStopNoFail(preparedControlStop)
+		})
+		if commitErr != nil {
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+			a.runtime.AbortPreparedControlStop(preparedControlStop)
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, true, a.clock.Now())
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		a.runtime.FinishPreparedControlStop(preparedControlStop)
+		// Stop retains the already-closed exact capability so a later Remove or
+		// Restart can still resolve the same generation. Shared dependencies are
+		// nevertheless terminal for this run and release immediately.
+		if a.releaseSharedExact != nil {
+			a.releaseSharedExact(string(sessionID), processRef.RunRevision)
+		}
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeCommitted, "")
+		controlSnapshot, snapErr := a.gate.SnapshotForDevice(sessionID, principal.DeviceID)
+		if snapErr != nil {
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		earliest, latest := a.streams.SeqBounds(sessionID)
+		return authorityDetail(lifecycleReceipt.Snapshot, controlSnapshot, earliest, latest), nil
+	}
+
+	removedAt := a.clock.Now()
+	removeReceipt, commitErr := a.authority.CommitPreparedRemove(removeToken, closeEvidence, removedAt, func() {
+		a.runtime.Hub().CommitTerminalStateReservationNoFail(terminalTicket)
+		a.runtime.CommitPreparedControlRemoveNoFail(preparedControlRemove)
+	})
+	if commitErr != nil {
+		a.authority.AbortPreparedRemove(removeToken)
+		a.runtime.AbortPreparedControlRemove(preparedControlRemove)
+		a.runtime.Hub().AbortTerminalStateReservation(terminalTicket)
+		a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, true, removedAt)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	a.runtime.Hub().FinishTerminalStateReservation(terminalTicket)
+	a.runtime.FinishPreparedControlRemove(preparedControlRemove)
+	if err := a.processRegistry.ReleaseExact(processRef.BindingID, processRef.RunRevision, binding); err != nil {
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	if a.releaseSharedExact != nil {
+		a.releaseSharedExact(string(sessionID), processRef.RunRevision)
+	}
+	admitRemovalDeliveries(terminalDeliveries)
+	if a.removeGC != nil {
+		a.removeGC.Activate(newRemoveGCEntry(removeReceipt, a.runtime, a.streams, a.destroyLedger, a.releaseShared, a.processRegistry, binding, processRef.RunRevision, a.authority))
+	}
+	commitEvidence := SessionOperationCommitEvidence{ReceiptID: removeReceipt.ReceiptID, MembershipRevision: removeReceipt.MembershipRevision, LifecycleRevision: removeReceipt.LifecycleRevision}
+	journalPermit.BindCommitEvidence(commitEvidence)
+	if err := a.journal.Complete(ctx, journalPermit, SessionOutcomeCommitted, ""); err != nil && a.journalRetries != nil {
+		a.journalRetries.ActivateCommitted(a.journal, journalPermit, commitEvidence)
+	}
+	return SessionDetailResult{}, nil
+}
+
+// DesktopStopAuthoritative and DesktopRemoveAuthoritative use the same Manager
+// preflight, concrete Binding and receipt-keyed cleanup as v1 lifecycle. They
+// never fall back to a SessionID/PID close.
+func (a *RemoteSessionAdapter) DesktopStopAuthoritative(ctx context.Context, sessionID contract.SessionID) error {
+	return a.desktopAuthorityLifecycle(ctx, sessionID, LifecycleStop, SessionOpStop)
+}
+
+func (a *RemoteSessionAdapter) DesktopRemoveAuthoritative(ctx context.Context, sessionID contract.SessionID) error {
+	return a.desktopAuthorityLifecycle(ctx, sessionID, LifecycleRemove, SessionOpRemove)
+}
+
+func (a *RemoteSessionAdapter) desktopAuthorityLifecycle(ctx context.Context, sessionID contract.SessionID, op LifecycleOperation, journalOp SessionOperationKind) error {
+	if a.authority == nil || a.processRegistry == nil || a.runtime == nil || a.journal == nil {
+		return ErrControlNotReady
+	}
+	snapshot, err := a.authority.LifecycleSnapshotByID(string(sessionID))
+	if err != nil {
+		return err
+	}
+	processRef, err := a.authority.ProcessRef(snapshot.Handle)
+	if err != nil {
+		return err
+	}
+	binding, ok := a.processRegistry.ResolveExact(processRef.BindingID, processRef.RunRevision)
+	if !ok {
+		return session.ErrAuthorityProcessUnavailable
+	}
+	opID := GenerateOperationID()
+	if opID == "" {
+		return errors.New("remote: operation identity unavailable")
+	}
+	journalPermit, err := a.journal.BeginIntent(ctx, SessionOperationIntent{
+		OperationID: opID, SessionID: sessionID, CLIType: contract.CLIType(snapshot.CLIType),
+		Operation: journalOp, Actor: SessionActorDesktop,
+	})
+	if err != nil {
+		return err
+	}
+
+	var removeToken *session.PreparedRemoveToken
+	var lifecycleToken *session.PreparedLifecycleToken
+	if op == LifecycleRemove {
+		removeToken, err = a.authority.PrepareRemove(snapshot.Handle, session.RemoveExpected{
+			MembershipRevision: snapshot.Revisions.Membership, LifecycleRevision: snapshot.Revisions.Lifecycle, RunRevision: snapshot.Revisions.Run,
+		}, processRef.BindingID)
+	} else {
+		lifecycleToken, err = a.authority.PrepareLifecycle(snapshot.Handle, session.LifecycleStop, session.LifecycleExpected{
+			MembershipRevision: snapshot.Revisions.Membership, LifecycleRevision: snapshot.Revisions.Lifecycle, RunRevision: snapshot.Revisions.Run,
+		}, processRef.BindingID)
+	}
+	if err != nil {
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeControlBusy)
+		return err
+	}
+	abort := func() {
+		if removeToken != nil {
+			a.authority.AbortPreparedRemove(removeToken)
+		}
+		if lifecycleToken != nil {
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+		}
+	}
+	controlManaged := snapshot.Mode == launchplan.ModeEmbedded
+	var ticket *PreparedTerminalStateReservation
+	var deliveries []preparedRemovalDelivery
+	var closeEvidence processcap.ExactCloseEvidence
+	var lifecycleErr error
+	var preparedControlRemove *PreparedControlRemove
+	var preparedControlStop *PreparedControlStop
+	if controlManaged {
+		effect := func(effectCtx context.Context, permit *operationPermit) (SessionMutationResult, error) {
+			if err := permit.Checkpoint(effectCtx, 1); err != nil {
+				return SessionMutationResult{}, err
+			}
+			var closeOK bool
+			closeEvidence, closeOK = a.processRegistry.CloseExact(effectCtx, processRef.BindingID, processRef.RunRevision)
+			if !closeOK || !closeEvidence.Confirmed() {
+				return SessionMutationResult{}, errExactCloseIndeterminate
+			}
+			if op == LifecycleRemove {
+				return SessionMutationResult{Removed: true}, nil
+			}
+			return SessionMutationResult{State: contract.SessionStateStopped, StateChanged: true}, nil
+		}
+		if op == LifecycleRemove {
+			preparedControlRemove, lifecycleErr = a.runtime.PrepareDesktopControlRemove(ctx, sessionID, effect)
+		} else {
+			preparedControlStop, lifecycleErr = a.runtime.PrepareDesktopControlStop(ctx, sessionID, effect)
+		}
+	} else {
+		var closeOK bool
+		closeEvidence, closeOK = a.processRegistry.CloseExact(ctx, processRef.BindingID, processRef.RunRevision)
+		if !closeOK || !closeEvidence.Confirmed() {
+			lifecycleErr = errExactCloseIndeterminate
+		}
+	}
+	if lifecycleErr != nil {
+		abort()
+		a.runtime.Hub().AbortTerminalStateReservation(ticket)
+		outcome := SessionOutcomeFailed
+		if closeEvidence.ReceiptID() != 0 {
+			outcome = SessionOutcomeIndeterminate
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, controlManaged, a.clock.Now())
+		}
+		_ = a.journal.Complete(ctx, journalPermit, outcome, contract.ErrorCodeServiceDown)
+		return lifecycleErr
+	}
+	if op == LifecycleRemove && controlManaged {
+		ticket, err = a.runtime.Hub().PrepareTerminalStateReservation(sessionID)
+		if err == nil {
+			deliveries, err = a.runtime.Hub().PrepareRemovalDeliveries(sessionID, func(viewer contract.DeviceID) (contract.ControlSnapshot, error) {
+				return a.gate.SnapshotForDevice(sessionID, viewer)
+			}, a.clock.Now())
+		}
+		if err != nil {
+			abort()
+			a.runtime.AbortPreparedControlRemove(preparedControlRemove)
+			a.runtime.Hub().AbortTerminalStateReservation(ticket)
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, true, a.clock.Now())
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+			return err
+		}
+	}
+	if op == LifecycleStop {
+		if _, err := a.authority.CommitPreparedStop(lifecycleToken, closeEvidence, func() {
+			if controlManaged {
+				a.runtime.CommitPreparedControlStopNoFail(preparedControlStop)
+			}
+		}); err != nil {
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+			a.runtime.AbortPreparedControlStop(preparedControlStop)
+			a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, controlManaged, a.clock.Now())
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+			return err
+		}
+		a.runtime.FinishPreparedControlStop(preparedControlStop)
+		if a.releaseSharedExact != nil {
+			a.releaseSharedExact(string(sessionID), processRef.RunRevision)
+		}
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeCommitted, "")
+		return nil
+	}
+	removedAt := a.clock.Now()
+	receipt, err := a.authority.CommitPreparedRemove(removeToken, closeEvidence, removedAt, func() {
+		if controlManaged {
+			a.runtime.Hub().CommitTerminalStateReservationNoFail(ticket)
+			a.runtime.CommitPreparedControlRemoveNoFail(preparedControlRemove)
+		}
+	})
+	if err != nil {
+		a.authority.AbortPreparedRemove(removeToken)
+		a.runtime.AbortPreparedControlRemove(preparedControlRemove)
+		a.runtime.Hub().AbortTerminalStateReservation(ticket)
+		a.reconcileClosedRunWithoutCommit(sessionID, processRef.RunRevision, controlManaged, removedAt)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return err
+	}
+	if controlManaged {
+		a.runtime.Hub().FinishTerminalStateReservation(ticket)
+		a.runtime.FinishPreparedControlRemove(preparedControlRemove)
+	}
+	if err := a.processRegistry.ReleaseExact(processRef.BindingID, processRef.RunRevision, binding); err != nil {
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeIndeterminate, contract.ErrorCodeServiceDown)
+		return err
+	}
+	if a.releaseSharedExact != nil {
+		a.releaseSharedExact(string(sessionID), processRef.RunRevision)
+	}
+	admitRemovalDeliveries(deliveries)
+	if a.removeGC != nil {
+		a.removeGC.Activate(newRemoveGCEntry(receipt, a.runtime, a.streams, a.destroyLedger, a.releaseShared, a.processRegistry, binding, processRef.RunRevision, a.authority))
+	}
+	commitEvidence := SessionOperationCommitEvidence{ReceiptID: receipt.ReceiptID, MembershipRevision: receipt.MembershipRevision, LifecycleRevision: receipt.LifecycleRevision}
+	journalPermit.BindCommitEvidence(commitEvidence)
+	if err := a.journal.Complete(ctx, journalPermit, SessionOutcomeCommitted, ""); err != nil && a.journalRetries != nil {
+		a.journalRetries.ActivateCommitted(a.journal, journalPermit, commitEvidence)
+	}
+	return nil
+}
+
+func (a *RemoteSessionAdapter) reconcileClosedRunWithoutCommit(sessionID contract.SessionID, runRevision uint64, controlManaged bool, at time.Time) {
+	if controlManaged && a.runtime != nil {
+		a.runtime.ReconcileRestartFailure(sessionID, runRevision)
+	}
+	if a.authority != nil {
+		a.authority.CommitExactRunUnavailable(string(sessionID), runRevision, at)
+	}
+}
+
+var errExactCloseIndeterminate = errors.New("remote: exact close indeterminate")
+
 // restartRawEffect performs a REAL three-phase restart (M-004/R4-001): seal old
 // segment → checkpoint+stop old process → re-resolve → reserve/mint a hidden run
 // → checkpoint+StartProcess with its observation identity → exact activate. Only
@@ -575,17 +1711,34 @@ func (a *RemoteSessionAdapter) restartRawEffect(ctx context.Context, p *operatio
 // AcquireControl grants control to the device (design §5.2 endpoint 8).
 // Requires a current live lease (from WS attach).
 func (a *RemoteSessionAdapter) AcquireControl(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, sessionID contract.SessionID, lease *ControlConnectionLease) (ControlResult, *AdapterError) {
-	if _, ok := a.catalog.Entry(sessionID); !ok {
-		return ControlResult{}, newAdapterError(restError{
-			status: 404,
-			body:   newAPIError(reqID, contract.ErrorCodeSessionNotFound, contract.ErrorLayerSession, "session not found", contract.ActionHintRetry),
-		})
+	if a.authority != nil {
+		if _, resolveErr := a.authority.RemoteSnapshotByID(string(sessionID)); resolveErr != nil {
+			return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+	} else if _, ok := a.catalog.Entry(sessionID); !ok {
+		return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
 	}
 	if lease == nil || !lease.IsLive() {
-		return ControlResult{}, newAdapterError(restError{
-			status: 403,
-			body:   newAPIError(reqID, contract.ErrorCodeControlForbidden, contract.ErrorLayerControl, "active session connection required", contract.ActionHintRequestControl),
-		})
+		return ControlResult{}, newAdapterError(restError{status: 403, body: newAPIError(reqID, contract.ErrorCodeControlForbidden, contract.ErrorLayerControl, "active session connection required", contract.ActionHintRequestControl)})
+	}
+	if a.authority != nil {
+		resolved, resolveErr := a.authority.ResolveRemoteHandle(string(sessionID))
+		if resolveErr != nil {
+			return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+		var snap contract.ControlSnapshot
+		var gateErr error
+		if err := a.authority.CommitResolvedAttach(resolved, func() { snap, gateErr = a.gate.Acquire(ctx, principal, lease, sessionID) }); err != nil {
+			return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+		if gateErr != nil {
+			re, ok := a.mapper.mapGateError(reqID, gateErr)
+			if !ok {
+				re = a.mapper.mapGenericError(reqID)
+			}
+			return ControlResult{}, newAdapterError(re)
+		}
+		return ControlResult{Snapshot: snap}, nil
 	}
 	snap, err := a.gate.Acquire(ctx, principal, lease, sessionID)
 	if err != nil {
@@ -601,11 +1754,27 @@ func (a *RemoteSessionAdapter) AcquireControl(ctx context.Context, reqID contrac
 // ReleaseControl releases control (design §5.2 endpoint 9). Exact current
 // device holder.
 func (a *RemoteSessionAdapter) ReleaseControl(ctx context.Context, reqID contract.RequestID, principal DevicePrincipal, sessionID contract.SessionID) (ControlResult, *AdapterError) {
+	if a.authority != nil {
+		resolved, resolveErr := a.authority.ResolveRemoteHandle(string(sessionID))
+		if resolveErr != nil {
+			return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+		var snap contract.ControlSnapshot
+		var gateErr error
+		if err := a.authority.CommitResolvedAttach(resolved, func() { snap, gateErr = a.gate.Release(ctx, principal, sessionID) }); err != nil {
+			return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
+		}
+		if gateErr != nil {
+			re, ok := a.mapper.mapGateError(reqID, gateErr)
+			if !ok {
+				re = a.mapper.mapGenericError(reqID)
+			}
+			return ControlResult{}, newAdapterError(re)
+		}
+		return ControlResult{Snapshot: snap}, nil
+	}
 	if _, ok := a.catalog.Entry(sessionID); !ok {
-		return ControlResult{}, newAdapterError(restError{
-			status: 404,
-			body:   newAPIError(reqID, contract.ErrorCodeSessionNotFound, contract.ErrorLayerSession, "session not found", contract.ActionHintRetry),
-		})
+		return ControlResult{}, newAdapterError(sessionNotFoundRestError(reqID))
 	}
 	snap, err := a.gate.Release(ctx, principal, sessionID)
 	if err != nil {
@@ -622,17 +1791,91 @@ func (a *RemoteSessionAdapter) ReleaseControl(ctx context.Context, reqID contrac
 // Helpers
 // ---------------------------------------------------------------------------
 
-// sessionState returns the wire session state for a session. It reads the
-// arbiter's state mirror (if available) or falls back to catalog presence.
+type ResolvedRemoteMembershipHandle struct {
+	authority session.ResolvedRemoteHandle
+}
+
+func (a *RemoteSessionAdapter) ResolveRemoteHandle(sessionID contract.SessionID) (ResolvedRemoteMembershipHandle, *AdapterError) {
+	if a.authority == nil {
+		return ResolvedRemoteMembershipHandle{}, nil
+	}
+	resolved, err := a.authority.ResolveRemoteHandle(string(sessionID))
+	if err != nil {
+		return ResolvedRemoteMembershipHandle{}, newAdapterError(sessionNotFoundRestError(""))
+	}
+	return ResolvedRemoteMembershipHandle{authority: resolved}, nil
+}
+
+func (a *RemoteSessionAdapter) CommitResolvedAttach(handle ResolvedRemoteMembershipHandle, noFail func()) error {
+	if a.authority == nil {
+		if noFail != nil {
+			noFail()
+		}
+		return nil
+	}
+	return a.authority.CommitResolvedAttach(handle.authority, noFail)
+}
+
+func (a *RemoteSessionAdapter) TouchActivity(sessionID contract.SessionID, at time.Time) {
+	if a.authority != nil {
+		snapshot, err := a.authority.RemoteSnapshotByID(string(sessionID))
+		if err == nil {
+			a.authority.TouchActivity(string(sessionID), snapshot.Revisions.Run, at)
+		}
+		return
+	}
+	if a.catalog != nil {
+		a.catalog.TouchActivity(sessionID, at)
+	}
+}
+
+func sessionNotFoundRestError(reqID contract.RequestID) restError {
+	return restError{status: 404, body: newAPIError(reqID, contract.ErrorCodeSessionNotFound, contract.ErrorLayerSession, "session not found", contract.ActionHintRetry)}
+}
+
+func authorityStateToWire(state session.AuthorityLifecycleState) contract.SessionState {
+	switch state {
+	case session.AuthorityRunning:
+		return contract.SessionStateRunning
+	case session.AuthorityStopping:
+		return contract.SessionStateUnavailable
+	case session.AuthorityStopped:
+		return contract.SessionStateStopped
+	case session.AuthorityExited:
+		return contract.SessionStateExited
+	default:
+		return contract.SessionStateUnavailable
+	}
+}
+
+func authorityDetail(snapshot session.AuthoritySnapshot, control contract.ControlSnapshot, earliest, latest contract.Seq) SessionDetailResult {
+	return SessionDetailResult{Detail: contract.SessionDetail{
+		SessionSummary: contract.SessionSummary{
+			ID: contract.SessionID(snapshot.Handle.SessionID()), Title: snapshot.SafeTitle,
+			CLIType: contract.CLIType(snapshot.CLIType), State: authorityStateToWire(snapshot.State),
+			Control: control, LastActivityAt: formatUTC(snapshot.LastActivityAt),
+		},
+		Workdir: snapshot.Workdir, StartedAt: formatUTC(snapshot.StartedAt), EarliestSeq: earliest, LatestSeq: latest,
+	}}
+}
+
+// sessionState returns the wire session state for a session. Authority is the
+// production source; the catalog fallback exists only for legacy fixtures.
 func (a *RemoteSessionAdapter) sessionState(sessionID contract.SessionID) contract.SessionState {
+	if a.authority != nil {
+		if snapshot, err := a.authority.RemoteSnapshotByID(string(sessionID)); err == nil {
+			return authorityStateToWire(snapshot.State)
+		}
+		return contract.SessionStateUnavailable
+	}
 	if a.runtime != nil {
 		mirror, _, ok := a.runtime.Arbiter().SessionStateMirror(sessionID)
 		if ok && mirror != "" {
 			return mirror
 		}
 	}
-	// Fallback: if in catalog, assume running.
-	if a.catalog.IsPublic(sessionID) {
+	// Fallback: if in the compatibility catalog, assume running.
+	if a.catalog != nil && a.catalog.IsPublic(sessionID) {
 		return contract.SessionStateRunning
 	}
 	return contract.SessionStateUnavailable

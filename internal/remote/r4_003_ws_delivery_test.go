@@ -167,6 +167,91 @@ func TestR4_003_ControlQueuedDuringAttachStillFollowsAttached(t *testing.T) {
 	conn.requestTeardown()
 }
 
+func TestRemovalTerminalWritesAttachedThenRemovedAndCloses1000(t *testing.T) {
+	serverConn, clientConn := dialWSV1Pipe(t)
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	conn := &wsV1Connection{conn: serverConn, state: wsV1StateRegisteredAwaitAttach, done: make(chan struct{})}
+	conn.ensureOutboundWriter()
+	bootstrap := &attachmentBootstrap{ready: make(chan struct{})}
+	occurredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	controlPayload, err := contract.MarshalServerEvent(contract.ControlStateEvent{
+		Type: contract.ServerEventTypeControlState, SessionID: "removed-ws",
+		State: contract.ControlStateNone, Reason: string(reasonSessionRemoved), OccurredAt: occurredAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removedPayload, err := contract.MarshalServerEvent(contract.SessionStateEvent{
+		Type: contract.ServerEventTypeSessionState, SessionID: "removed-ws",
+		State: contract.SessionStateRemoved, OccurredAt: occurredAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &PreparedRemovalTerminal{
+		bootstrap: bootstrap, basePayloads: [][]byte{controlPayload, removedPayload}, closeCode: removalNormalCloseCode,
+	}
+	if !conn.AdmitRemovalTerminal(item) {
+		t.Fatal("removal terminal admission failed")
+	}
+	attachedPayload, err := contract.MarshalServerEvent(contract.SessionAttachedEvent{
+		Type: contract.ServerEventTypeSessionAttached, RequestID: "attach-before-remove",
+		APIVersion: contract.APIVersionV1, SessionID: "removed-ws", History: []contract.ReplayFrame{},
+		Snapshot: contract.FiveLayerSnapshot{
+			Connection: contract.ConnectionSnapshot{State: contract.AttachedConnectionState},
+			Auth:       contract.AuthSnapshot{State: contract.AttachedAuthState},
+			Session:    contract.SessionSnapshot{State: contract.SessionStateRunning},
+			Control:    contract.ControlSnapshot{State: contract.ControlStateNone},
+			History:    contract.HistorySnapshot{State: contract.HistoryStateContinuous},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap.Store(attachedPayload)
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	want := []string{
+		contract.ServerEventTypeSessionAttached,
+		contract.ServerEventTypeControlState,
+		contract.ServerEventTypeSessionState,
+	}
+	attachedCount := 0
+	for i, expected := range want {
+		messageType, payload, readErr := clientConn.ReadMessage()
+		if readErr != nil {
+			t.Fatalf("read terminal event %d: %v", i, readErr)
+		}
+		if messageType != websocket.TextMessage {
+			t.Fatalf("terminal event %d message type = %d", i, messageType)
+		}
+		var envelope struct {
+			Type  string                `json:"type"`
+			State contract.SessionState `json:"state"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			t.Fatalf("decode terminal event %d: %v", i, err)
+		}
+		if envelope.Type != expected {
+			t.Fatalf("terminal order[%d] = %q, want %q", i, envelope.Type, expected)
+		}
+		if envelope.Type == contract.ServerEventTypeSessionAttached {
+			attachedCount++
+		}
+		if envelope.Type == contract.ServerEventTypeSessionState && envelope.State != contract.SessionStateRemoved {
+			t.Fatalf("terminal session state = %q", envelope.State)
+		}
+	}
+	if attachedCount != 1 {
+		t.Fatalf("session.attached count = %d", attachedCount)
+	}
+	if _, _, closeErr := clientConn.ReadMessage(); !websocket.IsCloseError(closeErr, websocket.CloseNormalClosure) {
+		t.Fatalf("terminal close error = %v, want close 1000", closeErr)
+	}
+}
+
 // TestR4_003_DeterministicMergePriority executes the production response,
 // control-projector outbound, and causal-delivery seams against one paused outbound
 // writer. Producers deliberately enqueue in reverse priority order. Once the

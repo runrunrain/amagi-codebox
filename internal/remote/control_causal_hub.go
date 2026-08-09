@@ -26,6 +26,7 @@ package remote
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"amagi-codebox/internal/remote/contract"
 )
@@ -62,6 +63,8 @@ type causalLedger struct {
 
 	// unresolvedCount tracks reserved-but-not-released reservations for the cap.
 	unresolvedCount int
+	preparedCount   int
+	preparedOwner   uint64
 
 	// watermark is the causal cut: highest reserved event ordinal + highest
 	// reserved run position (design §4A.4).
@@ -127,7 +130,7 @@ func (h *SessionEventHub) PreflightRunRecordBatchUnderState(sessionID contract.S
 	if count < 0 || l.faulted {
 		return errCausalLedgerFaulted
 	}
-	if count > causalLedgerMaxUnresolved-l.unresolvedCount {
+	if count > causalLedgerMaxUnresolved-l.unresolvedCount-l.preparedCount {
 		l.faulted = true
 		return errCausalLedgerFull
 	}
@@ -152,7 +155,7 @@ func (h *SessionEventHub) ReserveRunRecordUnderState(
 	if l.faulted {
 		return nil, errCausalLedgerFaulted
 	}
-	if l.unresolvedCount >= causalLedgerMaxUnresolved {
+	if l.unresolvedCount+l.preparedCount >= causalLedgerMaxUnresolved {
 		l.faulted = true
 		return nil, errCausalLedgerFull
 	}
@@ -196,6 +199,85 @@ func (h *SessionEventHub) ReserveRunRecordUnderState(
 		l.watermark.Run = position
 	}
 	return ticket, nil
+}
+
+type PreparedTerminalStateReservation struct {
+	ledger    *causalLedger
+	ticket    *CausalEventReservation
+	committed bool
+}
+
+// PrepareTerminalStateReservation allocates an ordinary-state ordinal in the
+// hidden prepared state. It does not advance the attach-visible watermark.
+func (h *SessionEventHub) PrepareTerminalStateReservation(sessionID contract.SessionID) (*PreparedTerminalStateReservation, error) {
+	ledger := h.ledgerFor(sessionID)
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if ledger.faulted || ledger.unresolvedCount+ledger.preparedCount >= causalLedgerMaxUnresolved || ledger.nextOrdinal == SessionEventOrdinal(^uint64(0)) {
+		return nil, errCausalLedgerFull
+	}
+	position := ledger.watermark.Run
+	ticket := &CausalEventReservation{
+		sessionID: sessionID, position: position, ordinal: ledger.nextOrdinal,
+		class: CausalOrdinaryState, state: causalPrepared,
+	}
+	ledger.nextOrdinal++
+	ledger.reservations[ticket.ordinal] = ticket
+	ledger.preparedCount++
+	return &PreparedTerminalStateReservation{ledger: ledger, ticket: ticket}, nil
+}
+
+func (h *SessionEventHub) CommitTerminalStateReservationNoFail(prepared *PreparedTerminalStateReservation) {
+	if prepared == nil || prepared.ledger == nil || prepared.ticket == nil || prepared.committed {
+		panic("remote: missing terminal causal reservation")
+	}
+	ledger := prepared.ledger
+	ticket := prepared.ticket
+	ledger.mu.Lock()
+	if ticket.state != causalPrepared || ledger.preparedCount <= 0 {
+		ledger.mu.Unlock()
+		panic("remote: stale terminal causal reservation")
+	}
+	ticket.state = causalReleased
+	ledger.preparedCount--
+	if ticket.ordinal > ledger.watermark.Event {
+		ledger.watermark.Event = ticket.ordinal
+	}
+	if ticket.position.SegmentID > ledger.watermark.Run.SegmentID ||
+		(ticket.position.SegmentID == ledger.watermark.Run.SegmentID && ticket.position.Source > ledger.watermark.Run.Source) {
+		ledger.watermark.Run = ticket.position
+	}
+	ticket.storedOutcome = CausalPublishOutcome{Disposition: CausalPublished, Ordinal: ticket.ordinal}
+	prepared.committed = true
+	ledger.mu.Unlock()
+}
+
+func (h *SessionEventHub) FinishTerminalStateReservation(prepared *PreparedTerminalStateReservation) {
+	if prepared == nil || prepared.ledger == nil || prepared.ticket == nil || !prepared.committed {
+		return
+	}
+	ledger := prepared.ledger
+	ticket := prepared.ticket
+	ledger.mu.Lock()
+	if ledger.reservations[ticket.ordinal] == ticket {
+		delete(ledger.reservations, ticket.ordinal)
+	}
+	ledger.mu.Unlock()
+}
+
+func (h *SessionEventHub) AbortTerminalStateReservation(prepared *PreparedTerminalStateReservation) {
+	if prepared == nil || prepared.ledger == nil || prepared.ticket == nil || prepared.committed {
+		return
+	}
+	ledger := prepared.ledger
+	ticket := prepared.ticket
+	ledger.mu.Lock()
+	if ticket.state == causalPrepared {
+		ticket.state = causalSuppressed
+		ledger.preparedCount--
+		delete(ledger.reservations, ticket.ordinal)
+	}
+	ledger.mu.Unlock()
 }
 
 // SealRunSegmentUnderState suppresses not-yet-released runState reservations for
@@ -357,6 +439,7 @@ type causalHubSubscription struct {
 	startAfterEventOrdinal SessionEventOrdinal
 	lease                  *ControlConnectionLease
 	fencer                 SubscriptionAuthorityFencer
+	active                 atomic.Bool
 
 	mu     sync.Mutex
 	queue  []queuedEvent
@@ -529,11 +612,47 @@ func (h *SessionEventHub) RegisterCausalSubscription(
 		notify:                 make(chan struct{}, 1),
 		done:                   make(chan struct{}),
 	}
+	sub.active.Store(true)
 	l := h.ledgerFor(sessionID)
 	l.mu.Lock()
 	l.subs = append(l.subs, sub)
 	l.mu.Unlock()
 	return sub
+}
+
+func (h *SessionEventHub) PrepareCausalSubscription(sessionID contract.SessionID, startAfter SessionEventOrdinal, lease *ControlConnectionLease, fencer SubscriptionAuthorityFencer) *causalHubSubscription {
+	sub := &causalHubSubscription{
+		sessionID: sessionID, startAfterEventOrdinal: startAfter, lease: lease,
+		fencer: fencer, notify: make(chan struct{}, 1), done: make(chan struct{}),
+	}
+	ledger := h.ledgerFor(sessionID)
+	ledger.mu.Lock()
+	ledger.subs = append(ledger.subs, sub)
+	ledger.mu.Unlock()
+	return sub
+}
+
+func (h *SessionEventHub) commitPreparedCausalSubscriptionNoFail(sub *causalHubSubscription) {
+	if sub == nil {
+		panic("remote: missing prepared causal subscription")
+	}
+	sub.active.Store(true)
+}
+
+func (h *SessionEventHub) AbortPreparedCausalSubscription(sub *causalHubSubscription) {
+	if sub == nil || sub.active.Load() {
+		return
+	}
+	ledger := h.ledgerFor(sub.sessionID)
+	ledger.mu.Lock()
+	for i, current := range ledger.subs {
+		if current == sub {
+			ledger.subs = append(ledger.subs[:i], ledger.subs[i+1:]...)
+			break
+		}
+	}
+	ledger.mu.Unlock()
+	sub.BeginTerminal()
 }
 
 // UnregisterCausalSubscription removes a causal subscription from its ledger.

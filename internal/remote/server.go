@@ -357,6 +357,7 @@ func (s *Server) Stop() {
 	s.mu.Lock()
 	run := s.curRun
 	cancel := s.cancel
+	adapter := s.sessionAdapter
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -364,6 +365,11 @@ func (s *Server) Stop() {
 	if run != nil {
 		s.stopInternal(run, stopCauseExplicit)
 		<-run.done
+	}
+	if adapter != nil {
+		ctx, cancelFlush := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		adapter.FlushPostCommitDebt(ctx)
+		cancelFlush()
 	}
 }
 

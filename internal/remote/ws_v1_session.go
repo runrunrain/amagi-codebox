@@ -134,12 +134,14 @@ type wsOutboundFrame struct {
 	priority   wsOutboundPriority
 	payload    []byte
 	completion chan error
+	bootstrap  *attachmentBootstrap
 }
 
 type wsOutboundTerminal struct {
-	preClosePayload []byte
-	closeCode       int
-	completion      chan error
+	preClosePayloads [][]byte
+	removal          *PreparedRemovalTerminal
+	closeCode        int
+	completion       chan error
 }
 
 type wsOutboundTake struct {
@@ -195,6 +197,10 @@ func completeWSOutbound(ch chan error, err error) {
 }
 
 func (q *wsOutboundQueue) enqueue(priority wsOutboundPriority, payload []byte, wait bool) (<-chan error, error) {
+	return q.enqueueWithBootstrap(priority, payload, wait, nil)
+}
+
+func (q *wsOutboundQueue) enqueueWithBootstrap(priority wsOutboundPriority, payload []byte, wait bool, bootstrap *attachmentBootstrap) (<-chan error, error) {
 	var completion chan error
 	if wait {
 		completion = make(chan error, 1)
@@ -217,7 +223,7 @@ func (q *wsOutboundQueue) enqueue(priority wsOutboundPriority, payload []byte, w
 		return completion, errWSOutboundFull
 	}
 	q.lanes[priority] = append(q.lanes[priority], wsOutboundFrame{
-		priority: priority, payload: payload, completion: completion,
+		priority: priority, payload: payload, completion: completion, bootstrap: bootstrap,
 	})
 	q.pending++
 	q.pendingBytes += len(payload)
@@ -244,11 +250,39 @@ func (q *wsOutboundQueue) enqueueTerminal(preClosePayload []byte, closeCode int)
 	// in the same item, so event→close cannot be split by another producer.
 	q.generation++
 	q.dropPendingLocked(errWSOutboundTerminated)
-	q.terminal = &wsOutboundTerminal{
-		preClosePayload: preClosePayload,
-		closeCode:       closeCode,
-		completion:      completion,
+	var payloads [][]byte
+	if len(preClosePayload) > 0 {
+		payloads = [][]byte{preClosePayload}
 	}
+	q.terminal = &wsOutboundTerminal{
+		preClosePayloads: payloads,
+		closeCode:        closeCode,
+		completion:       completion,
+	}
+	q.mu.Unlock()
+	q.signal()
+	return completion, nil
+}
+
+func (q *wsOutboundQueue) enqueuePreparedRemovalTerminal(item *PreparedRemovalTerminal) (<-chan error, error) {
+	if item == nil || len(item.basePayloads) == 0 || item.closeCode != removalNormalCloseCode {
+		return nil, errWSOutboundTerminated
+	}
+	completion := make(chan error, 1)
+	q.mu.Lock()
+	if q.fenced {
+		q.mu.Unlock()
+		completeWSOutbound(completion, errWSOutboundFenced)
+		return completion, errWSOutboundFenced
+	}
+	if q.closed || q.terminal != nil {
+		q.mu.Unlock()
+		completeWSOutbound(completion, errWSOutboundTerminated)
+		return completion, errWSOutboundTerminated
+	}
+	q.generation++
+	q.dropPendingLocked(errWSOutboundTerminated)
+	q.terminal = &wsOutboundTerminal{removal: item, closeCode: item.closeCode, completion: completion}
 	q.mu.Unlock()
 	q.signal()
 	return completion, nil
@@ -524,6 +558,7 @@ func (s *Server) handleV1WebSocket(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 var _ controlOutboundQueueConsumer = (*wsV1Connection)(nil)
+var _ RemovalTerminalPort = (*wsV1Connection)(nil)
 
 // DeliverControlState implements the legacy ControlEventConsumer writer seam.
 // Production control admission uses enqueueControlStateOutbound below; an
@@ -589,6 +624,54 @@ func (c *wsV1Connection) Terminate(t ConnectionTermination) {
 		}
 	}
 	c.terminate(wsV1Terminal{cause: "terminated", code: code, preCloseEvent: preClose})
+}
+
+// AdmitRemovalTerminal installs the prepared removed payload list as one queue
+// barrier. Cleanup runs only after the sole writer has attempted removed→1000.
+func (c *wsV1Connection) AdmitRemovalTerminal(item *PreparedRemovalTerminal) bool {
+	if item == nil {
+		return false
+	}
+	c.mu.Lock()
+	if c.state == wsV1StateClosed || c.state == wsV1StateTerminating {
+		c.mu.Unlock()
+		return false
+	}
+	c.state = wsV1StateClosed
+	handle := c.handle
+	sub := c.causalSub
+	c.causalSub = nil
+	adapter := c.adapter
+	server := c.server
+	c.mu.Unlock()
+
+	c.ensureOutboundWriter()
+	completion, err := c.outbound.enqueuePreparedRemovalTerminal(item)
+	if err != nil {
+		c.requestTeardown()
+		c.cleanupCausalSubscription(sub)
+		if handle != nil && adapter != nil && adapter.Runtime() != nil {
+			adapter.Runtime().DetachControl(handle, false)
+		}
+		if server != nil {
+			server.unregisterV1Connection(c.registration)
+		}
+		return false
+	}
+	go func() {
+		writeErr := <-completion
+		c.cleanupCausalSubscription(sub)
+		if handle != nil && adapter != nil && adapter.Runtime() != nil {
+			adapter.Runtime().DetachControl(handle, false)
+		}
+		if server != nil {
+			server.unregisterV1Connection(c.registration)
+		}
+		if writeErr != nil {
+			c.requestTeardown()
+		}
+	}()
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +748,17 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 			"control service unavailable", contract.ActionHintCheckDesktop, websocket.CloseInternalServerErr)
 		return
 	}
+	// Resolve the stable Authority entry before stream/attachment locks. The
+	// final pass uses only this opaque token and never re-enters Manager.indexMu.
+	membership, membershipErr := c.adapter.ResolveRemoteHandle(sessionID)
+	if membershipErr != nil {
+		c.terminate(wsV1Terminal{
+			cause: "attach_not_found", code: websocket.CloseNormalClosure,
+			preCloseEvent: c.newWSError(frame.RequestID, sessionID, contract.ErrorCodeSessionNotFound,
+				contract.ErrorLayerSession, "session not found", contract.ActionHintRetry),
+		})
+		return
+	}
 
 	// M3-B timing (design §6): Start after strict-decoded attach, before the
 	// causal cut. Omitted cursor = TimingAttach (first attach); present cursor
@@ -694,10 +788,8 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 		return
 	}
 
-	// AttachControl (design §6.3: device auth → AttachControl → snapshot +
-	// subscribe). Only reached after the causal cut converged, so a lease is
-	// committed only on the success path.
-	handle, snap, fencedOld, gErr := runtime.AttachControl(c.principal, c.connectionID, sessionID, c)
+	// Allocate the complete hidden node before entering the membership guard.
+	prepared, gErr := runtime.PrepareRemoteAttach(c.principal, c.connectionID, sessionID, c, watermark, wsQueueFullFencer{conn: c})
 	if gErr != nil {
 		c.terminate(wsV1Terminal{
 			cause: "attach_failed", code: websocket.CloseNormalClosure,
@@ -705,34 +797,60 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 		})
 		return
 	}
-	_ = fencedOld // old lease already fenced by AttachControl; directory handles cleanup
+	committed := false
+	defer func() {
+		if !committed {
+			runtime.AbortPreparedRemoteAttach(prepared)
+		}
+	}()
 
+	// The fatal-guarded final block performs only state/slot locks and stable
+	// pointer/live-bit stores. It does not allocate, launch goroutines, marshal,
+	// or discover interfaces.
+	var snap contract.ControlSnapshot
+	var fencedOld *ControlConnectionLease
+	commitErr := c.adapter.CommitResolvedAttach(membership, func() {
+		snap, fencedOld, gErr = runtime.CommitPreparedRemoteAttachNoAlloc(prepared)
+	})
+	if commitErr != nil {
+		c.terminate(wsV1Terminal{
+			cause: "attach_not_found", code: websocket.CloseNormalClosure,
+			preCloseEvent: c.newWSError(frame.RequestID, sessionID, contract.ErrorCodeSessionNotFound,
+				contract.ErrorLayerSession, "session not found", contract.ActionHintRetry),
+		})
+		return
+	}
+	if gErr != nil {
+		c.terminate(wsV1Terminal{
+			cause: "attach_failed", code: websocket.CloseNormalClosure,
+			preCloseEvent: c.newWSGateError(frame.RequestID, sessionID, gErr),
+		})
+		return
+	}
+	committed = true
+	runtime.FinishPreparedRemoteAttach(prepared)
+	handle := prepared.Handle()
+	bootstrapResolved := false
+	defer func() {
+		if !bootstrapResolved {
+			prepared.Bootstrap().ResolveAbsent()
+		}
+	}()
+	_ = fencedOld
 	c.mu.Lock()
-	c.handle = handle
-	c.lease = handle.Lease()
-	c.sessionID = sessionID
-	c.state = wsV1StateAttached
+	attachedLocally := c.state == wsV1StateRegisteredAwaitAttach
+	if attachedLocally {
+		c.handle = handle
+		c.lease = handle.Lease()
+		c.causalSub = prepared.CausalSubscription()
+		c.sessionID = sessionID
+		c.state = wsV1StateAttached
+	}
 	c.mu.Unlock()
-
-	// R4-003: install the control-overflow fencer immediately after AttachControl
-	// returns — before causal registration or history assembly. SetAuthorityFencer
-	// also catches an overflow from the unavoidable Subscribe→return interval.
-	handle.SetControlDeliveryFencer(wsQueueFullFencer{conn: c})
-	if !c.lease.IsLive() || c.outbound.isFenced() {
+	if !handle.Lease().IsLive() || c.outbound.isFenced() {
 		c.requestTeardown()
 		return
 	}
-
-	// Register the causal subscription (bootstrap reservation) with the converged
-	// watermark as startAfter (events ≤ watermark are absorbed into attached
-	// history). A queue-full fences the subscription's authority and triggers a
-	// one-time connection teardown (M-007: exact authority fence → terminal close
-	// → detach/reaper). The fencer never blocks inside the hub ledger lock: it
-	// closes the transport asynchronously so the read loop runs the authoritative
-	// detach/fence/unregister.
-	c.mu.Lock()
-	c.causalSub = runtime.Hub().RegisterCausalSubscription(sessionID, watermark.Event, c.lease, wsQueueFullFencer{conn: c})
-	c.mu.Unlock()
 
 	// Build the session.attached event with FiveLayer snapshot.
 	earliest, latest := c.adapter.Streams().SeqBounds(sessionID)
@@ -802,6 +920,25 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 		mode := contract.InputAckModeSessionWindowV1
 		attached.InputAckMode = &mode
 	}
+	bootstrapPayload, marshalErr := json.Marshal(attached)
+	if marshalErr != nil {
+		c.terminate(wsV1Terminal{cause: "attach_encode_failed", code: websocket.CloseInternalServerErr})
+		return
+	}
+	prepared.Bootstrap().Store(bootstrapPayload)
+	bootstrapResolved = true
+	if !attachedLocally {
+		runtime.DetachControl(handle, false)
+		prepared.CausalSubscription().BeginTerminal()
+		runtime.Hub().UnregisterCausalSubscription(prepared.CausalSubscription())
+		return
+	}
+	c.mu.Lock()
+	stateAfterBootstrap := c.state
+	c.mu.Unlock()
+	if stateAfterBootstrap != wsV1StateAttached {
+		return
+	}
 	// Test barrier models a transition/overflow at the last attach instant. The
 	// production value is nil; the fencer is already installed before this point.
 	if c.beforeAttachedWrite != nil {
@@ -811,7 +948,7 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 	// on the socket before source draining starts. If attach-window overflow won,
 	// the fenced queue rejects this frame and requestTeardown drives read-loop
 	// DetachControl cleanup; no attached/residual event can escape afterward.
-	if err := c.writeServerEventSync(attached); err != nil {
+	if err := c.writeBootstrapPayloadSync(bootstrapPayload, prepared.Bootstrap()); err != nil {
 		c.requestTeardown()
 		return
 	}
@@ -824,16 +961,7 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 
 // adapterSessionState returns the wire session state for the attached session.
 func (c *wsV1Connection) adapterSessionState(sessionID contract.SessionID) contract.SessionState {
-	if c.adapter.Runtime() != nil {
-		mirror, _, ok := c.adapter.Runtime().Arbiter().SessionStateMirror(sessionID)
-		if ok && mirror != "" {
-			return mirror
-		}
-	}
-	if c.adapter.Catalog().IsPublic(sessionID) {
-		return contract.SessionStateRunning
-	}
-	return contract.SessionStateUnavailable
+	return c.adapter.sessionState(sessionID)
 }
 
 // deliveryLoop is the sole upstream merge actor. It never writes the socket;
@@ -999,7 +1127,7 @@ func (c *wsV1Connection) handleInput(frame contract.InputFrame) {
 	// to the output stream store / replay / broadcast — only the real PTY output
 	// producer may allocate a Seq and append to replay (C-001: input is a
 	// one-way sink; echoing it back would leak secrets to observers/history).
-	c.adapter.Catalog().TouchActivity(sessionID, time.Now())
+	c.adapter.TouchActivity(sessionID, time.Now())
 }
 
 // handleCanonicalInput runs the CG-03 per-session ledger + ACK path for a
@@ -1065,7 +1193,7 @@ func (c *wsV1Connection) handleCanonicalInput(frame contract.InputFrame, lease *
 		c.sendWSGateError(frame.RequestID, sessionID, err)
 		return
 	}
-	c.adapter.Catalog().TouchActivity(sessionID, time.Now())
+	c.adapter.TouchActivity(sessionID, time.Now())
 }
 
 // sendInputAck enqueues a CG-03 input.ack to the requesting connection's sole
@@ -1353,6 +1481,9 @@ func (c *wsV1Connection) outboundWriteLoop() {
 			}
 			err := c.writeSocketFrame(websocket.TextMessage, take.frame.payload)
 			if err == nil && take.frame.priority == wsOutboundAttached {
+				if take.frame.bootstrap != nil {
+					take.frame.bootstrap.MarkWritten()
+				}
 				c.outbound.finishBootstrap()
 			}
 			completeWSOutbound(take.frame.completion, err)
@@ -1368,8 +1499,18 @@ func (c *wsV1Connection) outboundWriteLoop() {
 
 func (c *wsV1Connection) writeTerminal(terminal *wsOutboundTerminal) error {
 	var writeErr error
-	if len(terminal.preClosePayload) > 0 {
-		writeErr = c.writeSocketFrame(websocket.TextMessage, terminal.preClosePayload)
+	payloads := terminal.preClosePayloads
+	if terminal.removal != nil {
+		payloads = terminal.removal.PayloadsForWriter()
+	}
+	for _, payload := range payloads {
+		if len(payload) == 0 {
+			continue
+		}
+		writeErr = c.writeSocketFrame(websocket.TextMessage, payload)
+		if writeErr != nil {
+			break
+		}
 	}
 	if writeErr == nil {
 		writeErr = c.writeSocketFrame(websocket.CloseMessage,
@@ -1470,6 +1611,15 @@ func (c *wsV1Connection) writeServerEvent(ev contract.KnownServerEvent) bool {
 
 func (c *wsV1Connection) writeServerEventSync(ev contract.KnownServerEvent) error {
 	completion, err := c.enqueueServerEvent(ev, true)
+	if err != nil {
+		return err
+	}
+	return <-completion
+}
+
+func (c *wsV1Connection) writeBootstrapPayloadSync(payload []byte, bootstrap *attachmentBootstrap) error {
+	c.ensureOutboundWriter()
+	completion, err := c.outbound.enqueueWithBootstrap(wsOutboundAttached, payload, true, bootstrap)
 	if err != nil {
 		return err
 	}

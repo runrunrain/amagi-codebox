@@ -21,6 +21,7 @@ import (
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/remote"
+	"amagi-codebox/internal/remote/contract"
 )
 
 var (
@@ -68,27 +69,76 @@ func (a *App) sharedFingerprint(kind remote.SharedServiceKind) [32]byte {
 		return sharedFingerprintForProxy(st.BackendURL, st.Port)
 	case remote.SharedServiceClaudeHeadroom:
 		st := a.Headroom.GetStatus()
-		return sharedFingerprintForHeadroom(st.BackendURL, st.Port)
+		return sharedFingerprintForHeadroom("claude-headroom", st.BackendURL, st.Port)
 	case remote.SharedServiceCodexHeadroom:
 		if a.CodexHeadroom != nil {
 			st := a.CodexHeadroom.GetStatus()
-			return sharedFingerprintForHeadroom(st.BackendURL, st.Port)
+			return sharedFingerprintForHeadroom("codex-headroom", st.BackendURL, st.Port)
 		}
 	}
 	return [32]byte{}
 }
 
-// rememberSharedLease records a shared-service lease for a session (M-006).
+// rememberSharedLease records an already-promoted exact owner. Remote
+// create/restart uses prepareSharedLeaseTransfer instead so registration and
+// coordinator promotion share one composite critical section.
 func (a *App) rememberSharedLease(sessionID string, lease *remote.SharedDependencyLease) {
 	if lease == nil {
+		return
+	}
+	key := lease.OwnerKey()
+	if string(key.SessionID) != sessionID || key.RunEpoch == 0 || key.Kind == 0 || !lease.Promoted() {
 		return
 	}
 	a.sharedLeaseMu.Lock()
 	defer a.sharedLeaseMu.Unlock()
 	if a.sharedLeases == nil {
-		a.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+		a.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	}
-	a.sharedLeases[sessionID] = append(a.sharedLeases[sessionID], lease)
+	a.sharedLeases[key] = lease
+}
+
+// prepareSharedLeaseTransfer reserves an exact App/coordinator ownership switch.
+// CommitNoFail is invoked inside the Authority composite callback; Finish opens
+// blocked exact releases only after every owner projection has been updated.
+func (a *App) prepareSharedLeaseTransfer(
+	sessionID string,
+	oldEpoch, newEpoch uint64,
+	newLeases []*remote.SharedDependencyLease,
+) (commitNoFail func(), finish func(), abort func(), err error) {
+	if a.sharedCoord == nil || sessionID == "" || newEpoch == 0 {
+		return nil, nil, nil, remote.ErrSharedServiceInUse
+	}
+	a.sharedLeaseMu.Lock()
+	if a.sharedLeases == nil {
+		a.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
+	}
+	oldLeases := make([]*remote.SharedDependencyLease, 0, 3)
+	for key, lease := range a.sharedLeases {
+		if string(key.SessionID) == sessionID && key.RunEpoch == oldEpoch {
+			oldLeases = append(oldLeases, lease)
+		}
+	}
+	a.sharedLeaseMu.Unlock()
+	token, err := a.sharedCoord.PrepareLeaseTransfer(contract.SessionID(sessionID), oldEpoch, newEpoch, oldLeases, newLeases)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	commitNoFail = func() {
+		a.sharedLeaseMu.Lock()
+		a.sharedCoord.CommitLeaseTransferNoFail(token, func() {
+			for _, lease := range oldLeases {
+				delete(a.sharedLeases, lease.OwnerKey())
+			}
+			for _, lease := range newLeases {
+				a.sharedLeases[lease.OwnerKey()] = lease
+			}
+		})
+		a.sharedLeaseMu.Unlock()
+	}
+	finish = func() { a.sharedCoord.FinishLeaseTransfer(token) }
+	abort = func() { a.sharedCoord.AbortLeaseTransfer(token) }
+	return commitNoFail, finish, abort, nil
 }
 
 // acquireAndRememberExternalSharedLease atomically promotes one startup
@@ -119,9 +169,9 @@ func (a *App) acquireAndRememberExternalSharedLease(
 		return err
 	}
 	if a.sharedLeases == nil {
-		a.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+		a.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	}
-	a.sharedLeases[sessionID] = append(a.sharedLeases[sessionID], lease)
+	a.sharedLeases[lease.OwnerKey()] = lease
 	return nil
 }
 
@@ -977,30 +1027,52 @@ func (a *App) closeSharedLeasesForShutdown() {
 	defer a.sharedLeaseMu.Unlock()
 	if a.sharedCoord != nil {
 		ctx := context.Background()
-		for _, leases := range a.sharedLeases {
-			for _, lease := range leases {
-				_ = a.sharedCoord.ReleaseExact(ctx, lease)
-			}
+		for _, lease := range a.sharedLeases {
+			_ = a.sharedCoord.ReleaseExact(ctx, lease)
 		}
 		a.sharedCoord.ClearAll()
 	}
-	a.sharedLeases = make(map[string][]*remote.SharedDependencyLease)
+	a.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 }
 
-// releaseSharedLeases releases all shared-service leases for a session (M-006).
-// Called on run terminal / stop / remove. Idempotent.
+// releaseSharedLeasesExact releases only one run generation. A late terminal
+// callback therefore cannot release a newer restarted run's dependencies.
+func (a *App) releaseSharedLeasesExact(sessionID string, runEpoch uint64) {
+	a.sharedLeaseMu.Lock()
+	leases := make([]*remote.SharedDependencyLease, 0, 3)
+	for key, lease := range a.sharedLeases {
+		if string(key.SessionID) == sessionID && key.RunEpoch == runEpoch {
+			leases = append(leases, lease)
+			delete(a.sharedLeases, key)
+		}
+	}
+	a.sharedLeaseMu.Unlock()
+	if a.sharedCoord == nil {
+		return
+	}
+	for _, lease := range leases {
+		_ = a.sharedCoord.ReleaseExact(context.Background(), lease)
+	}
+}
+
+// releaseSharedLeases is retained for external/legacy terminal paths that own
+// the whole SessionID. Authority-managed paths call the exact variant.
 func (a *App) releaseSharedLeases(sessionID string) {
 	a.sharedLeaseMu.Lock()
-	leases := a.sharedLeases[sessionID]
-	delete(a.sharedLeases, sessionID)
+	leases := make([]*remote.SharedDependencyLease, 0, 3)
+	for key, lease := range a.sharedLeases {
+		if string(key.SessionID) == sessionID {
+			leases = append(leases, lease)
+			delete(a.sharedLeases, key)
+		}
+	}
 	a.sharedLeaseMu.Unlock()
 	a.completeExternalDurableRun(sessionID)
 	if a.sharedCoord == nil {
 		return
 	}
-	ctx := context.Background()
 	for _, lease := range leases {
-		_ = a.sharedCoord.ReleaseExact(ctx, lease)
+		_ = a.sharedCoord.ReleaseExact(context.Background(), lease)
 	}
 }
 

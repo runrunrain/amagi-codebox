@@ -116,6 +116,13 @@ type controlEntry struct {
 	// owner/runPhase for wire DTO assembly.
 	stateMirror    contract.SessionState
 	stateMirrorSet bool
+
+	initialStage              *initialRunStage
+	preparedActivation        *PreparedCompositeActivation
+	preparedRestartActivation *PreparedCompositeRestart
+	preparedRestart           *PreparedControlRestart
+	preparedStop              *PreparedControlStop
+	preparedRemoval           *PreparedControlRemove
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +286,9 @@ func (a *ControlArbiter) commitTransition(
 	reason controlTransitionReason,
 	now time.Time,
 ) bool {
+	if entry.preparedRemoval != nil {
+		return false
+	}
 	// Close any pending lifecycle intent for the OLD generation before advancing.
 	// The intent's phase-2/checkpoint/result exact-match will fail on generation
 	// mismatch, yielding a typed closed outcome (design §4A.1, §5.6).
@@ -634,6 +644,47 @@ func (a *ControlArbiter) SnapshotForDevice(
 // Atomic attach-view (design §7.1 step 5, T-23)
 // ---------------------------------------------------------------------------
 
+// commitPreparedAttachView is the allocation-free final attach block. The
+// directory node and both hidden subscriptions already exist; this method only
+// flips stable pointers/live bits while stateMu excludes control transitions.
+var errPreparedAttachUnavailable = &ControlGateError{Kind: DenyControlUnavailable}
+
+func (a *ControlArbiter) commitPreparedAttachView(runtime *ControlRuntime, prepared *PreparedRemoteAttach) (contract.ControlSnapshot, *ControlConnectionLease, *ControlGateError) {
+	if runtime == nil || prepared == nil || prepared.reservation == nil || prepared.handle == nil || prepared.finalFailure == nil {
+		return contract.ControlSnapshot{}, nil, errPreparedAttachUnavailable
+	}
+	lease := prepared.reservation.Lease()
+	entry := prepared.controlEntry
+	if lease == nil || entry == nil || entry.sessionID != prepared.handle.sessionID {
+		return contract.ControlSnapshot{}, nil, prepared.finalFailure
+	}
+	entry.stateMu.Lock()
+	if !isEntryPublic(entry) || entry.removed || lease.fenced.Load() || entry.controlEpoch != prepared.expectedControlEpoch {
+		entry.stateMu.Unlock()
+		return contract.ControlSnapshot{}, nil, prepared.finalFailure
+	}
+	old, ok := runtime.directory.commitReservedAttachNoFail(prepared.reservation)
+	if !ok {
+		entry.stateMu.Unlock()
+		return contract.ControlSnapshot{}, nil, prepared.finalFailure
+	}
+	runtime.hub.commitPreparedCausalSubscriptionNoFail(prepared.causalSub)
+	runtime.hub.commitPreparedControlSubscriptionNoFail(prepared.controlSub)
+	if prepared.rebindHolder {
+		prepared.graceTimer = entry.graceTimer
+		entry.graceTimer = nil
+		entry.graceDesc = graceTimerDescriptor{}
+		entry.owner.connectionID = lease.ConnectionID()
+		entry.owner.attachmentGeneration = lease.AttachmentGeneration()
+		entry.owner.phase = deviceConnected
+		entry.owner.graceDeadline = time.Time{}
+		entry.controlEpoch = prepared.reboundEpoch
+	}
+	snapshot := prepared.snapshot
+	entry.stateMu.Unlock()
+	return snapshot, old, nil
+}
+
 // AttachView atomically rebinds a grace holder (if applicable), invokes the
 // subscribe callback under entry.stateMu, and returns the control snapshot —
 // all under the same stateMu critical section. This guarantees no control
@@ -872,13 +923,32 @@ func (a *ControlArbiter) MarkDeviceRevoked(deviceID contract.DeviceID) {
 		held = append(held, e)
 	}
 	a.tableMu.RUnlock()
+	preparedLifecycle := make([]chan struct{}, 0, len(held))
 	for _, e := range held {
 		e.stateMu.Lock()
 		if !e.removed && e.owner.kind == ownerDevice && e.owner.deviceID == deviceID {
 			a.fenceCurrentOpLocked(e)
 			a.closeLifecycleIntentLocked(e, LifecycleClosedRevoke)
+			if prepared := e.preparedRestart; prepared != nil {
+				prepared.postCommitFence = true
+				if prepared.activation != nil {
+					prepared.activation.postCommitFence = true
+				}
+				preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+			}
+			if prepared := e.preparedStop; prepared != nil {
+				prepared.postCommitFence = true
+				preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+			}
+			if prepared := e.preparedRemoval; prepared != nil {
+				prepared.postCommitFence = true
+				preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+			}
 		}
 		e.stateMu.Unlock()
+	}
+	for _, resolved := range preparedLifecycle {
+		<-resolved
 	}
 }
 
@@ -948,17 +1018,38 @@ func (a *ControlArbiter) FenceAllRemote() {
 		p.cancel(errServerStopped)
 	}
 
-	// Fence all current operations (state-only cancel; no wait for done).
+	// Fence all current operations. A lifecycle that already installed a
+	// prepared owner is allowed to finish its no-fail commit; wait only for that
+	// bounded in-memory resolution before returning.
 	a.tableMu.RLock()
 	entries := make([]*controlEntry, 0, len(a.entries))
 	for _, e := range a.entries {
 		entries = append(entries, e)
 	}
 	a.tableMu.RUnlock()
+	preparedLifecycle := make([]chan struct{}, 0, len(entries))
 	for _, e := range entries {
 		e.stateMu.Lock()
 		a.fenceCurrentOpLocked(e)
+		if prepared := e.preparedRestart; prepared != nil {
+			prepared.postCommitFence = true
+			if prepared.activation != nil {
+				prepared.activation.postCommitFence = true
+			}
+			preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+		}
+		if prepared := e.preparedStop; prepared != nil {
+			prepared.postCommitFence = true
+			preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+		}
+		if prepared := e.preparedRemoval; prepared != nil {
+			prepared.postCommitFence = true
+			preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+		}
 		e.stateMu.Unlock()
+	}
+	for _, resolved := range preparedLifecycle {
+		<-resolved
 	}
 }
 
@@ -1010,8 +1101,9 @@ func (a *ControlArbiter) RestartRemote() {
 // desktop launch permits and current operations. Returns a one-shot
 // ShutdownCleanupPermit.
 //
-// This does NOT wait for raw I/O. The permit holder performs bounded cleanup
-// outside the state lock.
+// This does not wait for raw I/O. It may wait only for a sealed, allocation-free
+// composite activation to resolve so shutdown cannot return with a half-published
+// run; the permit holder performs process cleanup outside the state lock.
 func (a *ControlArbiter) CloseForShutdown() *ShutdownCleanupPermit {
 	a.ready.Store(false)
 	a.acceptingRemote.Store(false)
@@ -1032,7 +1124,9 @@ func (a *ControlArbiter) CloseForShutdown() *ShutdownCleanupPermit {
 		p.cancel(errShutdown)
 	}
 
-	// Fence all current operations + cancel grace timers.
+	// Fence all current operations + cancel grace timers. A sealed composite
+	// activation is an in-memory commit critical section: mark it for post-commit
+	// fencing and wait for its preallocated resolution after releasing stateMu.
 	a.tableMu.Lock()
 	entries := make([]*controlEntry, 0, len(a.entries))
 	for _, e := range a.entries {
@@ -1040,11 +1134,38 @@ func (a *ControlArbiter) CloseForShutdown() *ShutdownCleanupPermit {
 	}
 	a.entries = make(map[contract.SessionID]*controlEntry)
 	a.tableMu.Unlock()
+	preparedActivations := make([]*PreparedCompositeActivation, 0, len(entries))
+	preparedLifecycle := make([]chan struct{}, 0, len(entries))
 	for _, e := range entries {
 		e.stateMu.Lock()
 		a.cancelGraceTimerLocked(e)
 		a.fenceCurrentOpLocked(e)
+		if prepared := e.preparedActivation; prepared != nil {
+			prepared.postCommitFence = true
+			preparedActivations = append(preparedActivations, prepared)
+		}
+		if prepared := e.preparedRestart; prepared != nil {
+			prepared.postCommitFence = true
+			if prepared.activation != nil {
+				prepared.activation.postCommitFence = true
+			}
+			preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+		}
+		if prepared := e.preparedStop; prepared != nil {
+			prepared.postCommitFence = true
+			preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+		}
+		if prepared := e.preparedRemoval; prepared != nil {
+			prepared.postCommitFence = true
+			preparedLifecycle = append(preparedLifecycle, prepared.resolved)
+		}
 		e.stateMu.Unlock()
+	}
+	for _, prepared := range preparedActivations {
+		<-prepared.resolved
+	}
+	for _, resolved := range preparedLifecycle {
+		<-resolved
 	}
 
 	permit := &ShutdownCleanupPermit{generation: a.runtimeGeneration.Load()}
@@ -1068,6 +1189,9 @@ func (a *ControlArbiter) cancelGraceTimerLocked(entry *controlEntry) {
 // context. This is state-only: it does NOT wait for the operation to
 // acknowledge or for done. Caller holds stateMu.
 func (a *ControlArbiter) fenceCurrentOpLocked(entry *controlEntry) {
+	if entry.preparedRestart != nil || entry.preparedStop != nil || entry.preparedRemoval != nil {
+		return
+	}
 	if entry.currentOp != nil {
 		entry.currentOp.fenced.Store(true)
 		if entry.currentOp.cancel != nil {
@@ -1104,6 +1228,7 @@ func (a *ControlArbiter) registerStartingSession(
 		opLane:       newBoundedOperationLane(),
 		runPhase:     runStarting,
 		backend:      backendHealthy,
+		initialStage: &initialRunStage{records: make([]LiveRunRecord, 0, liveFeedMaxRecords-1)},
 	}
 
 	run, runEpoch, ok := a.mintRunIdentityLocked(entry)
@@ -1196,9 +1321,10 @@ func (a *ControlArbiter) activateRun(p *RunPermit) *ControlGateError {
 	if p.run != p.entry.currentRun || p.runEpoch != p.entry.runEpoch {
 		return &ControlGateError{Kind: DenyStalePermit}
 	}
-	if p.entry.runPhase != runStarting {
+	if p.entry.runPhase != runStarting || p.entry.preparedActivation != nil {
 		return &ControlGateError{Kind: DenyStalePermit}
 	}
+	p.entry.initialStage = nil
 	p.entry.runPhase = runActive
 	if !p.entry.stateMirrorSet {
 		p.entry.stateMirror = contract.SessionStateRunning
@@ -1309,6 +1435,24 @@ func (a *ControlArbiter) ObserveExit(
 // permit.
 func (a *ControlArbiter) ObserveOutput(permit *RunObservationPermit) bool {
 	return a.observeRunTransition(permit, nil)
+}
+
+// CommitExactStopped records an exact run's confirmed stop after the process
+// capability has reached terminal. A stale run generation is a silent no-op.
+func (a *ControlArbiter) CommitExactStopped(sessionID contract.SessionID, runEpoch uint64) bool {
+	entry := a.entryFor(sessionID)
+	if entry == nil {
+		return false
+	}
+	entry.stateMu.Lock()
+	defer entry.stateMu.Unlock()
+	if entry.removed || entry.currentRun == nil || entry.runEpoch != runEpoch {
+		return false
+	}
+	entry.runPhase = runTerminal
+	entry.stateMirror = contract.SessionStateStopped
+	entry.stateMirrorSet = true
+	return true
 }
 
 // ReconcileRestartFailure transitions an entry to an honest terminal/unavailable

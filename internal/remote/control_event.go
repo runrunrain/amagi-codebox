@@ -140,7 +140,9 @@ type hubSubscriber struct {
 	// overflow (writer mode). Mirrors the causal subscription's queue-full fence:
 	// the lease live-bit is cleared synchronously and the transport is torn down
 	// asynchronously so a slow consumer cannot keep a stale authority view.
-	fencer SubscriptionAuthorityFencer
+	fencer    SubscriptionAuthorityFencer
+	bootstrap *attachmentBootstrap
+	active    atomic.Bool
 
 	mu       sync.Mutex
 	queue    []contract.KnownServerEvent
@@ -234,10 +236,40 @@ func (h *SessionEventHub) Subscribe(
 		notify:         make(chan struct{}, 1),
 		done:           make(chan struct{}),
 	}
+	sub.active.Store(true)
 	h.mu.Lock()
 	h.subscribers[sub] = struct{}{}
 	h.mu.Unlock()
 	return sub
+}
+
+func (h *SessionEventHub) PrepareControlSubscription(sessionID contract.SessionID, viewerDeviceID contract.DeviceID, lease *ControlConnectionLease, consumer ControlEventConsumer) *hubSubscriber {
+	sub := &hubSubscriber{
+		sessionID: sessionID, viewerDeviceID: viewerDeviceID, lease: lease,
+		consumer: consumer, capacity: defaultHubSubscriberCapacity,
+		notify: make(chan struct{}, 1), done: make(chan struct{}),
+	}
+	h.mu.Lock()
+	h.subscribers[sub] = struct{}{}
+	h.mu.Unlock()
+	return sub
+}
+
+func (h *SessionEventHub) commitPreparedControlSubscriptionNoFail(sub *hubSubscriber) {
+	if sub == nil {
+		panic("remote: missing prepared control subscription")
+	}
+	sub.active.Store(true)
+}
+
+func (h *SessionEventHub) AbortPreparedControlSubscription(sub *hubSubscriber) {
+	if sub == nil || sub.active.Load() {
+		return
+	}
+	h.mu.Lock()
+	delete(h.subscribers, sub)
+	h.mu.Unlock()
+	sub.stop()
 }
 
 // StartWriter launches the per-subscriber writer goroutine that drains the FIFO
@@ -334,6 +366,9 @@ func (h *SessionEventHub) EnqueueControlTransition(t controlTransition) {
 	for sub := range h.subscribers {
 		if sub.sessionID != t.sessionID {
 			continue // route only to subscribers attached to this session
+		}
+		if !sub.active.Load() {
+			continue
 		}
 		if sub.IsFenced() || (sub.lease != nil && !sub.lease.IsLive()) {
 			continue

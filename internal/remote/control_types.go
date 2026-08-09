@@ -54,6 +54,10 @@ const (
 	// on a healthy close while still bounding a hung backend (M-009).
 	controlLifecycleEffectTimeout = 5 * time.Second
 
+	// controlRestartEffectTimeout covers the complete Planner/Executor restart
+	// transaction while still bounding a stuck shared/config/PTY effect.
+	controlRestartEffectTimeout = 15 * time.Second
+
 	// controlCancelAckTimeout is the max wait for a fenced operation to
 	// acknowledge after cancel. If exceeded, the backend is quarantined.
 	controlCancelAckTimeout = 1 * time.Second
@@ -401,16 +405,38 @@ const (
 	SharedServiceCodexHeadroom
 )
 
-// SharedDependencyLease is the exact-run lease on a shared singleton. A2's
-// SharedServiceCoordinator mints/releases these. Exactly one of run or
-// externalRun identifies the consumer; an external identity carries no Control
-// write authority.
+// SharedLeaseOwnerKey is the exact shared singleton owner identity. Kind is
+// part of the key so one run can own multiple independent dependencies.
+type SharedLeaseOwnerKey struct {
+	SessionID contract.SessionID
+	RunEpoch  uint64
+	Kind      SharedServiceKind
+}
+
+// SharedDependencyLease is the exact-run lease on a shared singleton. Exactly
+// one of run or externalRun identifies the consumer; an external identity
+// carries no Control write authority. A run lease remains pending until the
+// Authority/Control composite commit promotes it.
 type SharedDependencyLease struct {
 	sessionID         contract.SessionID
 	run               *runIdentity
 	externalRun       *ExternalRunIdentity
 	runEpoch          uint64
+	kind              SharedServiceKind
 	serviceGeneration uint64
+	promoted          bool
+	admission         *SharedLaunchAdmission
+}
+
+func (l *SharedDependencyLease) OwnerKey() SharedLeaseOwnerKey {
+	if l == nil {
+		return SharedLeaseOwnerKey{}
+	}
+	return SharedLeaseOwnerKey{SessionID: l.sessionID, RunEpoch: l.runEpoch, Kind: l.kind}
+}
+
+func (l *SharedDependencyLease) Promoted() bool {
+	return l != nil && l.promoted
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +512,7 @@ type ControlConnectionLease struct {
 	connectionID         ConnectionID
 	attachmentGeneration uint64
 	live                 atomic.Bool
+	fenced               atomic.Bool
 }
 
 // DeviceID returns the authenticated device for this lease.
@@ -504,4 +531,7 @@ func (l *ControlConnectionLease) AttachmentGeneration() uint64 { return l.attach
 func (l *ControlConnectionLease) IsLive() bool { return l.live.Load() }
 
 // fence marks this lease as no longer authoritative. Idempotent.
-func (l *ControlConnectionLease) fence() { l.live.Store(false) }
+func (l *ControlConnectionLease) fence() {
+	l.fenced.Store(true)
+	l.live.Store(false)
+}

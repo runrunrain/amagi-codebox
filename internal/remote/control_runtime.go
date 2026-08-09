@@ -22,11 +22,14 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/remote/contract"
+	"amagi-codebox/internal/session"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,6 +115,7 @@ func MintLegacyWSAuthority() *DesktopAuthority {
 type ControlRuntime struct {
 	arbiter   *ControlArbiter
 	gate      ControlGate
+	gateImpl  *controlGate
 	directory *AttachmentDirectory
 	hub       *SessionEventHub
 
@@ -132,9 +136,10 @@ type ControlRuntime struct {
 	// ptyLifecycle is the raw close/remove port for desktop lifecycle (M-005).
 	ptyLifecycle PTYLifecycleRawPort
 
-	mu     sync.Mutex
-	ready  bool
-	closed bool
+	mu            sync.Mutex
+	ready         bool
+	closed        bool
+	activationTxn atomic.Uint64
 }
 
 // NewControlRuntime constructs a runtime with a fresh arbiter/gate/directory/
@@ -146,6 +151,7 @@ func NewControlRuntime(clock Clock, log *logging.Service) *ControlRuntime {
 	directory := NewAttachmentDirectory()
 	arbiter := NewControlArbiter(clock, hub, directory)
 	gate := NewControlGate(arbiter, hub, directory)
+	gateImpl, _ := gate.(*controlGate)
 	projector := NewRunEventProjector(arbiter, log)
 	// Wire the hub's defense-in-depth validation-failure latch to the arbiter
 	// health latch (design §8.1: a producer contract never-event latches the gate).
@@ -160,6 +166,7 @@ func NewControlRuntime(clock Clock, log *logging.Service) *ControlRuntime {
 	rt := &ControlRuntime{
 		arbiter:          arbiter,
 		gate:             gate,
+		gateImpl:         gateImpl,
 		directory:        directory,
 		hub:              hub,
 		committer:        committer,
@@ -654,6 +661,105 @@ func (r *ControlRuntime) DesktopRemove(ctx context.Context, sessionID contract.S
 	return err
 }
 
+func (r *ControlRuntime) PrepareDeviceControlRestart(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlRestart, error) {
+	if r == nil || r.gateImpl == nil {
+		return nil, ErrControlNotReady
+	}
+	return r.gateImpl.prepareDeviceRestart(ctx, principal, sessionID, mutate)
+}
+
+func (r *ControlRuntime) BindPreparedControlRestart(token *PreparedControlRestart, activation *PreparedCompositeRestart) error {
+	if r == nil || r.gateImpl == nil {
+		return ErrControlNotReady
+	}
+	return r.gateImpl.bindPreparedControlRestart(token, activation)
+}
+
+func (r *ControlRuntime) CommitPreparedControlRestartNoFail(token *PreparedControlRestart) {
+	if r == nil || r.gateImpl == nil {
+		panic("remote: control gate unavailable during prepared restart")
+	}
+	r.gateImpl.commitPreparedControlRestartNoFail(token)
+}
+
+func (r *ControlRuntime) FinishPreparedControlRestart(token *PreparedControlRestart) {
+	if r != nil && r.gateImpl != nil {
+		r.gateImpl.finishPreparedControlRestart(token)
+	}
+}
+
+func (r *ControlRuntime) AbortPreparedControlRestart(token *PreparedControlRestart) {
+	if r != nil && r.gateImpl != nil {
+		r.gateImpl.abortPreparedControlRestart(token)
+	}
+}
+
+func (r *ControlRuntime) PrepareDeviceControlStop(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlStop, error) {
+	if r == nil || r.gateImpl == nil {
+		return nil, ErrControlNotReady
+	}
+	return r.gateImpl.prepareDeviceStop(ctx, principal, sessionID, mutate)
+}
+
+func (r *ControlRuntime) PrepareDesktopControlStop(ctx context.Context, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlStop, error) {
+	if r == nil || r.gateImpl == nil {
+		return nil, ErrControlNotReady
+	}
+	return r.gateImpl.prepareDesktopStop(ctx, r.desktopAuthority, sessionID, mutate)
+}
+
+func (r *ControlRuntime) CommitPreparedControlStopNoFail(token *PreparedControlStop) {
+	if r == nil || r.gateImpl == nil {
+		panic("remote: control gate unavailable during prepared stop")
+	}
+	r.gateImpl.commitPreparedControlStopNoFail(token)
+}
+
+func (r *ControlRuntime) FinishPreparedControlStop(token *PreparedControlStop) {
+	if r != nil && r.gateImpl != nil {
+		r.gateImpl.finishPreparedControlStop(token)
+	}
+}
+
+func (r *ControlRuntime) AbortPreparedControlStop(token *PreparedControlStop) {
+	if r != nil && r.gateImpl != nil {
+		r.gateImpl.abortPreparedControlStop(token)
+	}
+}
+
+func (r *ControlRuntime) PrepareDeviceControlRemove(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlRemove, error) {
+	if r == nil || r.gateImpl == nil {
+		return nil, ErrControlNotReady
+	}
+	return r.gateImpl.prepareDeviceRemove(ctx, principal, sessionID, mutate)
+}
+
+func (r *ControlRuntime) PrepareDesktopControlRemove(ctx context.Context, sessionID contract.SessionID, mutate RawSessionEffect) (*PreparedControlRemove, error) {
+	if r == nil || r.gateImpl == nil {
+		return nil, ErrControlNotReady
+	}
+	return r.gateImpl.prepareDesktopRemove(ctx, r.desktopAuthority, sessionID, mutate)
+}
+
+func (r *ControlRuntime) CommitPreparedControlRemoveNoFail(token *PreparedControlRemove) {
+	if r == nil || r.gateImpl == nil {
+		panic("remote: control gate unavailable during prepared remove")
+	}
+	r.gateImpl.commitPreparedControlRemoveNoFail(token)
+}
+
+func (r *ControlRuntime) FinishPreparedControlRemove(token *PreparedControlRemove) {
+	if r != nil && r.gateImpl != nil {
+		r.gateImpl.finishPreparedControlRemove(token)
+	}
+}
+
+func (r *ControlRuntime) AbortPreparedControlRemove(token *PreparedControlRemove) {
+	if r != nil && r.gateImpl != nil {
+		r.gateImpl.abortPreparedControlRemove(token)
+	}
+}
+
 // DesktopClearStatus is the per-session outcome of an authoritative batch
 // clear of stopped-session control entries (R4-005).
 type DesktopClearStatus uint8
@@ -865,6 +971,138 @@ func (h *ControlAttachmentHandle) ControlNotifyCh() <-chan struct{} {
 	return h.subscriber.notify
 }
 
+type PreparedRemoteAttach struct {
+	reservation          *AttachReservation
+	controlEntry         *controlEntry
+	handle               *ControlAttachmentHandle
+	controlSub           *hubSubscriber
+	causalSub            *causalHubSubscription
+	watermark            CausalWatermark
+	expectedControlEpoch uint64
+	reboundEpoch         uint64
+	rebindHolder         bool
+	snapshot             contract.ControlSnapshot
+	finalFailure         *ControlGateError
+	graceTimer           securityTimer
+	committed            bool
+}
+
+func (p *PreparedRemoteAttach) Handle() *ControlAttachmentHandle {
+	if p == nil {
+		return nil
+	}
+	return p.handle
+}
+
+func (p *PreparedRemoteAttach) CausalSubscription() *causalHubSubscription {
+	if p == nil {
+		return nil
+	}
+	return p.causalSub
+}
+
+func (p *PreparedRemoteAttach) Bootstrap() *attachmentBootstrap {
+	if p == nil || p.reservation == nil {
+		return nil
+	}
+	return p.reservation.Bootstrap()
+}
+
+func (r *ControlRuntime) PrepareRemoteAttach(principal DevicePrincipal, connectionID ConnectionID, sessionID contract.SessionID, consumer ControlEventConsumer, startAfter CausalWatermark, fencer SubscriptionAuthorityFencer) (*PreparedRemoteAttach, *ControlGateError) {
+	if r == nil || r.gate == nil || r.directory == nil || !r.directory.IsReady() || consumer == nil {
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	terminal, ok := consumer.(RemovalTerminalPort)
+	if !ok {
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	controlEntry := r.arbiter.entryFor(sessionID)
+	if controlEntry == nil {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	controlEntry.stateMu.Lock()
+	controlPublic := isEntryPublic(controlEntry)
+	expectedControlEpoch := controlEntry.controlEpoch
+	snapshot := r.arbiter.projector.SnapshotForViewer(controlEntry.owner, principal.DeviceID)
+	rebindHolder := controlEntry.owner.kind == ownerDevice && controlEntry.owner.deviceID == principal.DeviceID
+	reboundEpoch := uint64(0)
+	epochAvailable := true
+	if rebindHolder {
+		var epochOK bool
+		reboundEpoch, epochOK = nextEpoch(controlEntry.controlEpoch)
+		if !epochOK {
+			r.arbiter.healthLatched.Store(true)
+			epochAvailable = false
+		}
+	}
+	controlEntry.stateMu.Unlock()
+	if !controlPublic {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	if !epochAvailable || !r.arbiter.validateSnapshotOrLatch(snapshot) {
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	reservation := r.directory.ReserveAttach(principal.DeviceID, principal.DeviceName, connectionID, sessionID, terminal)
+	if reservation == nil {
+		return nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	lease := reservation.Lease()
+	controlSub := r.hub.PrepareControlSubscription(sessionID, principal.DeviceID, lease, consumer)
+	controlSub.bootstrap = reservation.node.bootstrap
+	controlSub.SetAuthorityFencer(fencer)
+	causalSub := r.hub.PrepareCausalSubscription(sessionID, startAfter.Event, lease, fencer)
+	reservation.node.controlSub = controlSub
+	reservation.node.causalSub = causalSub
+	prepared := &PreparedRemoteAttach{
+		reservation: reservation, controlEntry: controlEntry, controlSub: controlSub, causalSub: causalSub, watermark: startAfter,
+		expectedControlEpoch: expectedControlEpoch, reboundEpoch: reboundEpoch, rebindHolder: rebindHolder,
+		snapshot: snapshot, finalFailure: &ControlGateError{Kind: DenyControlUnavailable},
+	}
+	prepared.handle = &ControlAttachmentHandle{sessionID: sessionID, deviceID: principal.DeviceID, lease: lease, subscriber: controlSub}
+	return prepared, nil
+}
+
+func (r *ControlRuntime) AbortPreparedRemoteAttach(prepared *PreparedRemoteAttach) {
+	if r == nil || prepared == nil || prepared.committed {
+		return
+	}
+	r.hub.AbortPreparedControlSubscription(prepared.controlSub)
+	r.hub.AbortPreparedCausalSubscription(prepared.causalSub)
+	r.directory.AbortAttachReservation(prepared.reservation)
+}
+
+func (r *ControlRuntime) CommitPreparedRemoteAttachNoAlloc(prepared *PreparedRemoteAttach) (contract.ControlSnapshot, *ControlConnectionLease, *ControlGateError) {
+	if r == nil || prepared == nil || prepared.reservation == nil || prepared.handle == nil || prepared.committed {
+		return contract.ControlSnapshot{}, nil, &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	snapshot, old, gateErr := r.arbiter.commitPreparedAttachView(r, prepared)
+	if gateErr != nil {
+		return contract.ControlSnapshot{}, nil, gateErr
+	}
+	prepared.committed = true
+	return snapshot, old, nil
+}
+
+func (r *ControlRuntime) FinishPreparedRemoteAttach(prepared *PreparedRemoteAttach) {
+	if prepared == nil {
+		return
+	}
+	if prepared.graceTimer != nil {
+		prepared.graceTimer.Stop()
+		prepared.graceTimer = nil
+	}
+	// Supersession fencing is intentionally post-commit: invoking a transport
+	// fencer is fallible callback work and cannot run inside Manager's fatal
+	// no-fail closure. The old lease was already made non-live in the final swap.
+	if prepared.reservation != nil && prepared.reservation.old != nil {
+		if oldControl := prepared.reservation.old.controlSub; oldControl != nil {
+			oldControl.fenceAuthority()
+		} else if oldCausal := prepared.reservation.old.causalSub; oldCausal != nil {
+			oldCausal.fenceAuthority()
+		}
+	}
+}
+
 // AttachControl mints an authoritative lease for (deviceID, sessionID), binds a
 // hub subscriber (delivering events to consumer), and returns the audience-
 // relative control snapshot for the initial session.attached (design §7.1).
@@ -963,10 +1201,12 @@ type RunEventProjector struct {
 	// producer) and incrementally pump it to the v1 stream Seq + causal hub so
 	// attached remote clients receive live data. nil committer = legacy path
 	// (arbiter validation only).
-	committer  RunSegmentCommitter
-	feed       LiveRunContinuityFeed
-	hub        *SessionEventHub
-	streamPump liveStreamPump
+	committer       RunSegmentCommitter
+	feed            LiveRunContinuityFeed
+	hub             *SessionEventHub
+	streamPump      liveStreamPump
+	authority       *session.Manager
+	terminalCleanup func(string, uint64)
 
 	mu    sync.Mutex
 	ctx   context.Context // Wails app context for EventsEmit
@@ -985,6 +1225,7 @@ type liveStreamPump interface {
 type runProjection struct {
 	token   string
 	version string // decimal string of runEpoch (avoids JS uint64 precision loss)
+	open    atomic.Bool
 	// flushing holds a bounded restart-prefix barrier for Wails projection.
 	// Post-activate callbacks wait on flushDone without holding any lock, so the
 	// staged prefix cannot be overtaken and no unbounded side queue is created.
@@ -1026,6 +1267,22 @@ func (p *RunEventProjector) SetStreamPump(pump liveStreamPump) {
 	p.mu.Unlock()
 }
 
+// SetSessionAuthority wires exact run activity/exit updates to the sole host
+// identity owner. It does not create a reverse package dependency.
+func (p *RunEventProjector) SetSessionAuthority(authority *session.Manager) {
+	p.mu.Lock()
+	p.authority = authority
+	p.mu.Unlock()
+}
+
+// SetRunTerminalCleanup wires exact-generation shared ownership release for a
+// committed natural exit. Staged exits never invoke it.
+func (p *RunEventProjector) SetRunTerminalCleanup(cleanup func(string, uint64)) {
+	p.mu.Lock()
+	p.terminalCleanup = cleanup
+	p.mu.Unlock()
+}
+
 // MarkReady enables the projector.
 func (p *RunEventProjector) MarkReady() {
 	p.mu.Lock()
@@ -1046,15 +1303,29 @@ func (p *RunEventProjector) SetContext(ctx context.Context) {
 // runActivated first record) so subsequent CommitRunObservation calls commit
 // into an initialized segment.
 func (p *RunEventProjector) TrackRun(sessionID contract.SessionID, permit *RunObservationPermit) {
-	if permit == nil || permit.run == nil {
+	if permit == nil || permit.run == nil || permit.entry == nil {
 		return
 	}
-	p.mu.Lock()
-	closeProjectionFlushLocked(p.runs[sessionID])
-	p.runs[sessionID] = &runProjection{
+	// Compatibility-only activation used by existing H1 unit fixtures. The
+	// production App uses PrepareCompositeActivation and never calls TrackRun.
+	permit.entry.stateMu.Lock()
+	if permit.entry.currentRun == permit.run && permit.entry.runEpoch == permit.runEpoch && permit.entry.runPhase == runStarting && permit.entry.preparedActivation == nil {
+		permit.entry.initialStage = nil
+		permit.entry.runPhase = runActive
+		if !permit.entry.stateMirrorSet {
+			permit.entry.stateMirror = contract.SessionStateRunning
+			permit.entry.stateMirrorSet = true
+		}
+	}
+	permit.entry.stateMu.Unlock()
+	projection := &runProjection{
 		token:   permit.run.desktopRunToken,
 		version: strconv.FormatUint(permit.runEpoch, 10),
 	}
+	projection.open.Store(true)
+	p.mu.Lock()
+	closeProjectionFlushLocked(p.runs[sessionID])
+	p.runs[sessionID] = projection
 	committer := p.committer
 	p.mu.Unlock()
 	if committer != nil {
@@ -1093,6 +1364,7 @@ func (p *RunEventProjector) TrackRestartRunStaged(sessionID contract.SessionID, 
 		version:  strconv.FormatUint(permit.runEpoch, 10),
 		flushing: len(staged) > 0,
 	}
+	rp.open.Store(true)
 	if rp.flushing {
 		rp.flushDone = make(chan struct{})
 	}
@@ -1104,9 +1376,6 @@ func (p *RunEventProjector) TrackRestartRunStaged(sessionID contract.SessionID, 
 // published. New callbacks wait behind flushDone without holding a lock; the
 // barrier opens atomically only after the complete staged prefix is emitted.
 func (p *RunEventProjector) FlushRestartStage(sessionID contract.SessionID, staged []LiveRunRecord) {
-	if len(staged) == 0 {
-		return
-	}
 	events := make([]runProjectionEvent, 0, len(staged))
 	for _, rec := range staged {
 		switch rec.Kind {
@@ -1178,6 +1447,7 @@ func (p *RunEventProjector) OfferOutput(runHandle any, seq uint64, data []byte) 
 	feed := p.feed
 	hub := p.hub
 	pump := p.streamPump
+	authority := p.authority
 	p.mu.Unlock()
 	if committer != nil {
 		staged := false
@@ -1208,6 +1478,9 @@ func (p *RunEventProjector) OfferOutput(runHandle any, seq uint64, data []byte) 
 	} else if !p.arbiter.ObserveOutput(permit) {
 		return // stale/duplicate run: silent no-op
 	}
+	if authority != nil {
+		authority.TouchActivity(string(sid), permit.RunEpoch(), time.Now())
+	}
 	p.emit(sid, seq, data, false, 0)
 }
 
@@ -1226,6 +1499,8 @@ func (p *RunEventProjector) OfferExit(runHandle any, exitCode uint32, failed boo
 	feed := p.feed
 	hub := p.hub
 	pump := p.streamPump
+	authority := p.authority
+	terminalCleanup := p.terminalCleanup
 	p.mu.Unlock()
 	if committer != nil {
 		outcome := committer.CommitRunObservation(permit, NewExitObservation(obs))
@@ -1240,6 +1515,13 @@ func (p *RunEventProjector) OfferExit(runHandle any, exitCode uint32, failed boo
 		}
 	} else if !p.arbiter.ObserveExit(permit, obs) {
 		return // stale/duplicate exit: silent no-op
+	}
+	committedAuthority := true
+	if authority != nil {
+		committedAuthority = authority.CommitExactRunExit(string(sid), permit.RunEpoch(), failed, time.Now())
+	}
+	if committedAuthority && terminalCleanup != nil {
+		terminalCleanup(string(sid), permit.RunEpoch())
 	}
 	p.emit(sid, 0, nil, true, exitCode)
 }
@@ -1263,6 +1545,10 @@ func (p *RunEventProjector) emit(sessionID contract.SessionID, seq uint64, data 
 		p.mu.Lock()
 		ctx := p.ctx
 		rp := p.runs[sessionID]
+		if rp != nil && !rp.open.Load() {
+			p.mu.Unlock()
+			return
+		}
 		if rp != nil && rp.flushing {
 			done := rp.flushDone
 			p.mu.Unlock()
@@ -1322,7 +1608,7 @@ func (p *RunEventProjector) GetRunSnapshot(sessionID contract.SessionID) (token,
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	rp := p.runs[sessionID]
-	if rp == nil {
+	if rp == nil || !rp.open.Load() {
 		return "", ""
 	}
 	return rp.token, rp.version

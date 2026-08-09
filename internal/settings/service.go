@@ -70,6 +70,18 @@ type CodexGlobalHeadroomState struct {
 	Port    int    `json:"port"`
 }
 
+// RemoteLaunchDefaultV1 persists only non-sensitive desktop launch references.
+// Workdir, mode, resolved executable data, environment and credentials are
+// deliberately absent; remote launch planning resolves those afresh.
+type RemoteLaunchDefaultV1 struct {
+	ProviderRef string `json:"providerRef,omitempty"`
+	PresetRef   string `json:"presetRef,omitempty"`
+	ModelRef    string `json:"modelRef,omitempty"`
+	ShellRef    string `json:"shellRef,omitempty"`
+	UseProxy    bool   `json:"useProxy,omitempty"`
+	UseHeadroom bool   `json:"useHeadroom,omitempty"`
+}
+
 // TerminalSettings 终端设置
 type TerminalSettings struct {
 	Scrollback int `json:"scrollback"`
@@ -77,16 +89,17 @@ type TerminalSettings struct {
 
 // AppSettings 应用设置
 type AppSettings struct {
-	Dashboard             DashboardDefaults `json:"dashboard"`
-	ShellPaths            []ShellEntry      `json:"shellPaths"`
-	SavedWorkDirs         []WorkDirEntry    `json:"savedWorkDirs"`
-	Terminal              TerminalSettings  `json:"terminal"`
-	RemoteHost            string            `json:"remoteHost"`
-	RemotePort            int               `json:"remotePort"`
-	RemoteEnabled         bool              `json:"remoteEnabled"`
-	RemoteSecurityVersion int               `json:"remoteSecurityVersion,omitempty"`
-	MobileWebRoot         string            `json:"mobileWebRoot"`
-	GitHubToken           string            `json:"githubToken"`
+	Dashboard              DashboardDefaults                `json:"dashboard"`
+	ShellPaths             []ShellEntry                     `json:"shellPaths"`
+	SavedWorkDirs          []WorkDirEntry                   `json:"savedWorkDirs"`
+	Terminal               TerminalSettings                 `json:"terminal"`
+	RemoteHost             string                           `json:"remoteHost"`
+	RemotePort             int                              `json:"remotePort"`
+	RemoteEnabled          bool                             `json:"remoteEnabled"`
+	RemoteSecurityVersion  int                              `json:"remoteSecurityVersion,omitempty"`
+	RemoteLaunchDefaultsV1 map[string]RemoteLaunchDefaultV1 `json:"remoteLaunchDefaultsV1,omitempty"`
+	MobileWebRoot          string                           `json:"mobileWebRoot"`
+	GitHubToken            string                           `json:"githubToken"`
 }
 
 func defaultSettings() *AppSettings {
@@ -107,8 +120,9 @@ func defaultSettings() *AppSettings {
 			AmagiCodeMode:  "embedded",
 			AmagiCodeShell: "pwsh",
 		},
-		ShellPaths:    []ShellEntry{},
-		SavedWorkDirs: []WorkDirEntry{},
+		ShellPaths:             []ShellEntry{},
+		SavedWorkDirs:          []WorkDirEntry{},
+		RemoteLaunchDefaultsV1: make(map[string]RemoteLaunchDefaultV1),
 		Terminal: TerminalSettings{
 			Scrollback: 100000,
 		},
@@ -163,6 +177,9 @@ func (s *Service) Load() error {
 	}
 	if cfg.SavedWorkDirs == nil {
 		cfg.SavedWorkDirs = []WorkDirEntry{}
+	}
+	if cfg.RemoteLaunchDefaultsV1 == nil {
+		cfg.RemoteLaunchDefaultsV1 = make(map[string]RemoteLaunchDefaultV1)
 	}
 	if cfg.Terminal.Scrollback <= 0 {
 		cfg.Terminal.Scrollback = 100000
@@ -282,6 +299,7 @@ func (s *Service) snapshotSettings() *AppSettings {
 	// Deep-copy slices so a concurrent append cannot race the marshal.
 	cp.ShellPaths = append([]ShellEntry(nil), src.ShellPaths...)
 	cp.SavedWorkDirs = append([]WorkDirEntry(nil), src.SavedWorkDirs...)
+	cp.RemoteLaunchDefaultsV1 = cloneRemoteLaunchDefaultsV1(src.RemoteLaunchDefaultsV1)
 	return &cp
 }
 
@@ -695,6 +713,51 @@ func (s *Service) RemoveSavedWorkDir(path string) error {
 	return nil
 }
 
+// --- Remote launch defaults v1 ---
+
+func cloneRemoteLaunchDefaultsV1(src map[string]RemoteLaunchDefaultV1) map[string]RemoteLaunchDefaultV1 {
+	if len(src) == 0 {
+		return make(map[string]RemoteLaunchDefaultV1)
+	}
+	copy := make(map[string]RemoteLaunchDefaultV1, len(src))
+	for cliType, refs := range src {
+		copy[cliType] = refs
+	}
+	return copy
+}
+
+func (s *Service) GetRemoteLaunchDefaultsV1() map[string]RemoteLaunchDefaultV1 {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneRemoteLaunchDefaultsV1(s.settings.RemoteLaunchDefaultsV1)
+}
+
+// RecordRemoteLaunchDefaultV1 atomically records one successfully activated
+// desktop launch. Callers supply the canonical CLI type and stable refs only.
+func (s *Service) RecordRemoteLaunchDefaultV1(cliType string, refs RemoteLaunchDefaultV1) error {
+	if s == nil || strings.TrimSpace(cliType) != cliType || cliType == "" {
+		return errors.New("settings: invalid remote launch CLI type")
+	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	previous := cloneRemoteLaunchDefaultsV1(s.settings.RemoteLaunchDefaultsV1)
+	next := cloneRemoteLaunchDefaultsV1(previous)
+	next[cliType] = refs
+	s.settings.RemoteLaunchDefaultsV1 = next
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		s.mu.Lock()
+		s.settings.RemoteLaunchDefaultsV1 = previous
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // --- Full Settings ---
 
 func (s *Service) GetSettings() *AppSettings {
@@ -706,5 +769,7 @@ func (s *Service) GetSettings() *AppSettings {
 		shellCopy[i] = e
 	}
 	copy.ShellPaths = shellCopy
+	copy.SavedWorkDirs = append([]WorkDirEntry(nil), s.settings.SavedWorkDirs...)
+	copy.RemoteLaunchDefaultsV1 = cloneRemoteLaunchDefaultsV1(s.settings.RemoteLaunchDefaultsV1)
 	return &copy
 }
