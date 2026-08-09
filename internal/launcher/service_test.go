@@ -276,13 +276,23 @@ func TestBuildClaudeCmdUsesEffectivePATHWithNativeDefaultAfterPathOverride(t *te
 // TestBuildOmpCmdArgs 验证 buildOmpCmd 的参数拼装（复刻 buildPiCmd 契约）：
 // --provider/--model/--thinking 仅在非空时附加；命令经 resolveCLIPath("omp") 解析。
 func TestBuildOmpCmdArgs(t *testing.T) {
+	fakeBinDir := t.TempDir()
+	fakeName := "omp"
+	if runtime.GOOS == "windows" {
+		fakeName += ".exe"
+	}
+	fakeOmpPath := filepath.Join(fakeBinDir, fakeName)
+	if err := os.WriteFile(fakeOmpPath, []byte("test executable"), 0o755); err != nil {
+		t.Fatalf("write fake omp executable: %v", err)
+	}
+
 	svc := NewLauncherService(nil, nil)
-	env := []string{"PATH=/usr/bin:/bin"}
+	env := []string{"PATH=" + fakeBinDir}
 
 	// 全参数：provider + model + thinking
 	cmd := svc.buildOmpCmd("amagi-glm", "glm-5", "max", "/work", env)
-	if cmd.Path == "omp" || cmd.Path == "" {
-		t.Errorf("cmd path = %q, want resolved omp path (not bare name)", cmd.Path)
+	if cmd.Path != fakeOmpPath {
+		t.Errorf("cmd path = %q, want controlled fake omp path %q", cmd.Path, fakeOmpPath)
 	}
 	if cmd.Dir != "/work" {
 		t.Errorf("cmd.Dir = %q, want /work", cmd.Dir)
