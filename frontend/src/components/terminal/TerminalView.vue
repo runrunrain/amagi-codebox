@@ -23,7 +23,7 @@
     <!-- @wheel.stop 阻止 wheel 冒泡到 .main(overflow:auto)：opencode TUI 启用
          SGR/1006 鼠标上报后，xterm 把 wheel 编码为按钮事件发给 PTY，PTY 不消费
          时事件继续冒泡，触发 .main 整体视图滚动。stopPropagation 在冒泡阶段
-         拦截，不影响子元素 .xterm-viewport 自身的 wheel→scrollback 处理。
+         拦截，不影响 xterm 子元素自身的 wheel→scrollback 处理。
          绝不加 .prevent：会阻止 xterm 自身的 scrollback 滚动。 -->
     <div
       ref="bodyRef"
@@ -59,11 +59,10 @@
  * TerminalView — single-session terminal surface.
  *
  * Owns the xterm mount lifecycle for one session via useTerminalEngine.
- * Switching sessions in the sidebar replaces this component (keyed by id),
- * so each mount/dispose pair is clean. Buffer state is preserved across
- * switches by replaying the backend's 1MB output-history snapshot on the
- * next mount; the engine forces a scrollToBottom() once the replay finishes
- * so the viewport always lands on the latest output.
+ * TerminalPage keeps every visited session mounted and only hides inactive
+ * surfaces, so route/session reactivation reuses the same parsed buffer.
+ * Refreshes re-fit and repaint that buffer while preserving its logical
+ * viewport position.
  *
  * Selection:
  *   - macOS: hold Option and drag (native xterm escape hatch).
@@ -145,9 +144,9 @@ function refreshVisibleSurface() {
     if (!surfaceActive.value || bodyRef.value !== el) return
     if (rendererRefreshPending) {
       rendererRefreshPending = false
-      engine.refreshRenderer(props.sessionId, el)
+      engine.refreshRenderer(props.sessionId)
     } else {
-      engine.refreshTerminal(props.sessionId, el)
+      engine.refreshTerminal(props.sessionId)
     }
   })
 }
@@ -179,6 +178,8 @@ onMounted(async () => {
   if (!el) return
 
   engine.mountTerm(props.sessionId, el, {
+    encodeShiftEnterAsCsiU:
+      session.value?.appType === 'pi' || session.value?.appType === 'omp',
     onExit: (info) => {
       // exit also surfaces via the 2s poll in useSessionList, but refresh
       // immediately so the dot turns grey without a perceptible delay.
@@ -210,7 +211,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     if (resizeDebounce) clearTimeout(resizeDebounce)
     resizeDebounce = setTimeout(() => {
-      if (surfaceActive.value) engine.fitTerminal(props.sessionId, false, el)
+      if (surfaceActive.value) engine.fitTerminal(props.sessionId)
     }, 100)
   })
   resizeObserver.observe(el)

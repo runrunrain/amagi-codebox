@@ -127,6 +127,7 @@ xterm 加载两类链接 provider：
 | 快捷键 | 行为 |
 |--------|------|
 | 普通按键 | 直接发送到 PTY（经 `PtyWrite`） |
+| `Shift+Enter`（Pi / OMP） | 发送 CSI-u `ESC [ 13 ; 2 u`，保留 Shift 修饰键并在输入框内插入换行 |
 | `Ctrl+C`（有选区） | 复制选区到剪贴板，不发送 SIGINT |
 | `Ctrl+C`（无选区） | 转发 SIGINT 到 PTY |
 | `Ctrl+V` | 阻止默认；粘贴走 xterm textarea 的 paste 事件钩子（见下） |
@@ -272,9 +273,9 @@ Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前
 
 `@xterm/addon-fit` 的 `FitAddon` 负责根据容器尺寸计算合适的列/行：
 
-- `fitTerminal(sessionId, force, containerEl)` 是统一入口。
+- `fitTerminal(sessionId, force)` 是统一入口。
 - 维度未变时跳过 `fit()`，避免触发不必要的屏幕缓冲区重绘。
-- 用户上翻查看历史时，`fit()` 后会恢复滚动位置，避免视口被瞬间拽回底部。
+- `fit()` 前记录 xterm 逻辑缓冲区的 `viewportY/baseY`；用户上翻时恢复原逻辑行，原本位于底部时重新 `scrollToBottom()`，不依赖 xterm 6 已停用的 `.xterm-viewport.scrollTop`。
 
 ### Resize
 
@@ -287,7 +288,7 @@ Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前
 Amagi CodeBox 支持同时运行多个会话（多 Tab）。每个会话在后端独立持有 `PtySession`，前端以 session ID 为 key 维护独立的 `TerminalInstance`（xterm 实例 + addon + 监听器 + 状态）。切换 Tab 时：
 
 - 已访问的会话保持 xterm 与事件监听器挂载，只隐藏非当前终端；隐藏期间仍持续解析实时输出。
-- `/terminal` 路由由 Vue `KeepAlive` 缓存。切到 Provider Center 等页面再回来时不会销毁 buffer，也不会再次回放可能已经截断的 ANSI 历史，只做 fit + 完整重绘。
+- `/terminal` 路由由 Vue `KeepAlive` 缓存。切到 Provider Center 等页面再回来时不会销毁 buffer，也不会再次回放可能已经截断的 ANSI 历史，只做 fit + 完整重绘；刷新前后通过 xterm 逻辑缓冲区的 `viewportY/baseY` 恢复阅读位置，原本跟随最新输出时继续保持在底部。
 - 历史快照只用于某个会话在当前前端生命周期内的首次挂载。
 - 进程退出会触发 `pty:exit`，但 xterm 实例继续保留退出提示，用户仍可查看末尾输出。
 

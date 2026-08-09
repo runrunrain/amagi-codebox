@@ -102,6 +102,11 @@ export interface MountOptions {
   onExit?: (info: { exitCode?: number }) => void
   /** Optional scrollback override (defaults to 100000). */
   scrollback?: number
+  /**
+   * Preserve the Shift modifier on Enter with a CSI-u sequence. xterm 6
+   * otherwise emits the same CR for Enter and Shift+Enter.
+   */
+  encodeShiftEnterAsCsiU?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +503,7 @@ export function useTerminalEngine() {
     pumpPtyResize(sessionId, inst)
   }
 
-  function fitTerminal(sessionId: string, force = false, containerEl?: HTMLElement) {
+  function fitTerminal(sessionId: string, force = false) {
     const inst = terminals.get(sessionId)
     if (!inst) return
     const dims = inst.fit.proposeDimensions()
@@ -508,14 +513,12 @@ export function useTerminalEngine() {
     if (proposedSameDims && !force) return
 
     try {
-      // Preserve user scroll position when not at the bottom: fit.fit() can
-      // momentarily jump the viewport, so we restore it on the next frame.
-      const viewport =
-        containerEl?.querySelector('.xterm-viewport') as HTMLElement | null
-      const scrollTop = viewport?.scrollTop ?? 0
-      const isAtBottom = viewport
-        ? viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2
-        : true
+      // xterm 6 owns scrolling through its virtual .xterm-scrollable-element;
+      // the legacy .xterm-viewport DOM node no longer carries scrollTop.
+      // Capture the public logical buffer position before fit/renderer sync.
+      const buffer = inst.term.buffer.active
+      const viewportY = buffer.viewportY
+      const wasAtBottom = viewportY >= buffer.baseY
 
       inst.fit.fit()
       // Use xterm's applied geometry rather than the pre-fit proposal. Font
@@ -529,11 +532,25 @@ export function useTerminalEngine() {
         requestPtyResize(sessionId, inst, cols, rows, force)
       }
 
-      if (!isAtBottom && viewport) {
-        requestAnimationFrame(() => {
-          viewport.scrollTop = scrollTop
-        })
+      // fit() and its queued renderer sync can each reset the virtual
+      // scrollable surface. Restore synchronously and after both paint turns.
+      const restoreViewport = () => {
+        if (terminals.get(sessionId) !== inst) return
+        try {
+          if (wasAtBottom) {
+            inst.term.scrollToBottom()
+          } else {
+            inst.term.scrollToLine(Math.min(viewportY, inst.term.buffer.active.baseY))
+          }
+        } catch {
+          /* terminal may be mid-teardown */
+        }
       }
+      restoreViewport()
+      requestAnimationFrame(() => {
+        restoreViewport()
+        requestAnimationFrame(restoreViewport)
+      })
     } catch {
       // swallow: fit can throw transient errors during teardown
     }
@@ -548,7 +565,7 @@ export function useTerminalEngine() {
   }
 
   /** Rebuild WebGL after a DPR change, then force a complete redraw. */
-  function refreshRenderer(sessionId: string, containerEl?: HTMLElement) {
+  function refreshRenderer(sessionId: string) {
     const inst = terminals.get(sessionId)
     if (!inst || !inst.term.element) return
 
@@ -569,7 +586,7 @@ export function useTerminalEngine() {
 
     requestAnimationFrame(() => {
       if (terminals.get(sessionId) !== inst) return
-      fitTerminal(sessionId, true, containerEl)
+      fitTerminal(sessionId, true)
       try {
         inst.term.clearTextureAtlas()
         inst.term.refresh(0, inst.term.rows - 1)
@@ -583,10 +600,10 @@ export function useTerminalEngine() {
    * Re-measure and repaint the visible surface without replacing its buffer or
    * renderer. Used after route/session reactivation and OS visibility changes.
    */
-  function refreshTerminal(sessionId: string, containerEl?: HTMLElement) {
+  function refreshTerminal(sessionId: string) {
     const inst = terminals.get(sessionId)
     if (!inst || !inst.term.element) return
-    fitTerminal(sessionId, true, containerEl)
+    fitTerminal(sessionId, true)
     try {
       inst.term.clearTextureAtlas()
       inst.term.refresh(0, inst.term.rows - 1)
@@ -637,9 +654,32 @@ export function useTerminalEngine() {
     const fit = new FitAddon()
     term.loadAddon(fit)
 
+    const csiUShiftEnter = '\x1b[13;2u'
+    let rewriteNextEnterAsCsiU = false
+
     // ----- keyboard: copy / paste / select-all / delete-selection -----
     term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
       if (ev.type !== 'keydown') return true
+
+      // Pi/OMP negotiate extended keyboard input, but xterm 6 ignores both
+      // Kitty keyboard protocol and modifyOtherKeys. Mark the next CR emitted
+      // by xterm so the normal onData path can preserve the Shift modifier
+      // without sending both the replacement and xterm's original CR.
+      if (
+        options.encodeShiftEnterAsCsiU &&
+        ev.shiftKey &&
+        !ev.ctrlKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        !ev.isComposing &&
+        ev.key === 'Enter'
+      ) {
+        rewriteNextEnterAsCsiU = true
+        window.setTimeout(() => {
+          rewriteNextEnterAsCsiU = false
+        }, 0)
+        return true
+      }
 
       if (ev.ctrlKey && ev.shiftKey && ev.code === 'KeyC') {
         copySelection(sessionId)
@@ -692,7 +732,12 @@ export function useTerminalEngine() {
 
     // user input -> backend PTY
     term.onData((data: string) => {
-      const bytes = new TextEncoder().encode(data)
+      let forwardedData = data
+      if (rewriteNextEnterAsCsiU) {
+        rewriteNextEnterAsCsiU = false
+        if (data === '\r') forwardedData = csiUShiftEnter
+      }
+      const bytes = new TextEncoder().encode(forwardedData)
       const encoded = uint8ToBase64(bytes)
       PtyWrite(sessionId, encoded).catch((err) => {
         console.error('PtyWrite error:', err)
@@ -943,7 +988,7 @@ export function useTerminalEngine() {
     // the renderer while parser writes may still be queued.
     requestAnimationFrame(() => {
       if (terminals.get(sessionId) !== inst) return
-      refreshTerminal(sessionId, containerEl)
+      refreshTerminal(sessionId)
     })
 
     // ----- history replay -----
@@ -1069,7 +1114,7 @@ export function useTerminalEngine() {
       document.fonts.ready
         .then(() => {
           if (terminals.get(sessionId) !== inst) return
-          refreshTerminal(sessionId, containerEl)
+          refreshTerminal(sessionId)
         })
         .catch(() => {
           /* fonts.ready rejected (rare): ignore */

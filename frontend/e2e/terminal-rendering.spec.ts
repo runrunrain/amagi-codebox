@@ -1,8 +1,23 @@
 import { expect, test } from '@playwright/test'
 
+declare global {
+  interface Window {
+    __terminalTest: {
+      emit: (name: string, data: unknown) => void
+      encode: (value: string) => string
+      snapshotCalls: () => number
+      writeCalls: () => string[]
+      jumpViewportOnNextResize: () => void
+      viewportJumps: () => number
+      resizeCalls: () => Array<{ cols: number; rows: number }>
+      failNextResize: () => void
+    }
+  }
+}
+
 const terminalSession = {
   id: 'terminal-render-regression',
-  appType: 'opencode',
+  appType: 'pi',
   providerName: 'test-provider',
   presetName: '',
   model: 'test-model',
@@ -23,6 +38,9 @@ test.beforeEach(async ({ page }) => {
     let snapshotCalls = 0
     const resizeCalls: Array<{ cols: number; rows: number }> = []
     let failNextResize = false
+    const writeCalls: string[] = []
+    let jumpViewportOnNextResize = false
+    let viewportJumps = 0
 
     const emit = (name: string, data: unknown) => {
       for (const listener of listeners.get(name) ?? []) listener(data)
@@ -93,11 +111,34 @@ test.beforeEach(async ({ page }) => {
           }, 25)
         })
       },
+      PtyWrite: async (_sessionId, data) => {
+        writeCalls.push(String(data))
+      },
       PtyResize: async (_sessionId, cols, rows) => {
         resizeCalls.push({ cols: Number(cols), rows: Number(rows) })
         if (failNextResize) {
           failNextResize = false
           throw new Error('synthetic transient resize failure')
+        }
+        if (jumpViewportOnNextResize) {
+          jumpViewportOnNextResize = false
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const textarea = document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+              for (let page = 0; page < 100; page++) {
+                const event = new KeyboardEvent('keydown', {
+                  bubbles: true,
+                  cancelable: true,
+                  code: 'PageUp',
+                  key: 'PageUp',
+                  shiftKey: true,
+                })
+                Object.defineProperty(event, 'keyCode', { value: 33 })
+                textarea?.dispatchEvent(event)
+              }
+              viewportJumps++
+            })
+          })
         }
       },
       GetPtyDimensions: async () => 120030,
@@ -113,10 +154,15 @@ test.beforeEach(async ({ page }) => {
       },
     })
 
-    ;(window as any).__terminalTest = {
+    ;window.__terminalTest = {
       emit,
       encode,
       snapshotCalls: () => snapshotCalls,
+      writeCalls: () => [...writeCalls],
+      jumpViewportOnNextResize: () => {
+        jumpViewportOnNextResize = true
+      },
+      viewportJumps: () => viewportJumps,
       resizeCalls: () => [...resizeCalls],
       failNextResize: () => {
         failNextResize = true
@@ -164,7 +210,7 @@ test('route changes preserve the terminal and repaint output received while hidd
   await page.getByRole('link', { name: 'Provider Center' }).click()
   await expect(page).toHaveURL(/#\/provider$/)
   await page.evaluate(() => {
-    const testApi = (window as any).__terminalTest
+    const testApi = window.__terminalTest
     testApi.emit('pty:data:terminal-render-regression', {
       r: 'run-old',
       v: '7',
@@ -176,7 +222,7 @@ test('route changes preserve the terminal and repaint output received while hidd
   await sessionItem.locator('.sess-info').click()
   await expect(page).toHaveURL(/#\/terminal$/)
   await expect(page.locator('.xterm-rows')).toContainText('LIVE_WHILE_HIDDEN')
-  await expect.poll(() => page.evaluate(() => (window as any).__terminalTest.snapshotCalls())).toBe(1)
+  await expect.poll(() => page.evaluate(() => window.__terminalTest.snapshotCalls())).toBe(1)
 })
 
 test('same-session restart resets seq dedup and rejects late output from the old run', async ({ page }) => {
@@ -185,7 +231,7 @@ test('same-session restart resets seq dedup and rejects late output from the old
   await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
 
   await page.evaluate(() => {
-    const testApi = (window as any).__terminalTest
+    const testApi = window.__terminalTest
     testApi.emit('pty:data:terminal-render-regression', {
       r: 'run-new',
       v: '8',
@@ -211,7 +257,7 @@ test('ANSI colours and CJK input remain in one terminal grid', async ({ page }) 
   await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
 
   await page.evaluate(() => {
-    const testApi = (window as any).__terminalTest
+    const testApi = window.__terminalTest
     testApi.emit('pty:data:terminal-render-regression', {
       r: 'run-old',
       v: '7',
@@ -241,13 +287,70 @@ test('ANSI colours and CJK input remain in one terminal grid', async ({ page }) 
   expect(grid.ligatures).toBe('none')
 })
 
+test('Pi receives distinct submit and multiline input sequences', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.sess-item', { hasText: 'terminal-render-workspace' }).locator('.sess-info').click()
+  await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
+
+  const textarea = page.locator('.xterm-helper-textarea')
+  await textarea.focus()
+  await page.keyboard.press('Shift+Enter')
+  await page.keyboard.press('Enter')
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      return window.__terminalTest.writeCalls().map((value: string) => {
+        return Array.from(atob(value), (character) => character.charCodeAt(0))
+      })
+    })
+  }).toEqual([[27, 91, 49, 51, 59, 50, 117], [13]])
+})
+
+test('refresh keeps a terminal that was following output at the bottom', async ({ page }) => {
+  await page.goto('/')
+  const sessionItem = page.locator('.sess-item', { hasText: 'terminal-render-workspace' })
+  await sessionItem.locator('.sess-info').click()
+  await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
+  await page.evaluate(() => {
+    const testApi = window.__terminalTest
+    testApi.emit('pty:data:terminal-render-regression', {
+      r: 'run-old',
+      v: '7',
+      s: 4,
+      d: testApi.encode(`${'scrollback-line\r\n'.repeat(500)}LATEST_OUTPUT`),
+    })
+  })
+  await expect(page.locator('.xterm-rows')).toContainText('LATEST_OUTPUT')
+  await expect.poll(() => page.evaluate(() => {
+    return window.__terminalTest.resizeCalls().length
+  })).toBeGreaterThanOrEqual(2)
+  await page.getByRole('link', { name: 'Provider Center' }).click()
+  await sessionItem.locator('.sess-info').click()
+
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+  await expect(page.locator('.xterm-rows')).toContainText('LATEST_OUTPUT')
+  await page.evaluate(() => {
+    window.__terminalTest.jumpViewportOnNextResize()
+  })
+  await page.setViewportSize({ width: 1200, height: 700 })
+  await expect.poll(() => page.evaluate(() => {
+    return window.__terminalTest.viewportJumps()
+  })).toBe(1)
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+  await expect(page.locator('.xterm-rows')).toContainText('LATEST_OUTPUT')
+})
+
 test('PTY geometry retries transient failures and fills the terminal height', async ({ page }) => {
   await page.goto('/')
   await page.locator('.sess-item', { hasText: 'terminal-render-workspace' }).locator('.sess-info').click()
   await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
 
   const before = await page.evaluate(() => {
-    const testApi = (window as any).__terminalTest
+    const testApi = window.__terminalTest
     testApi.failNextResize()
     return testApi.resizeCalls().length
   })
@@ -255,7 +358,7 @@ test('PTY geometry retries transient failures and fills the terminal height', as
 
   await expect.poll(async () => {
     return page.evaluate((start) => {
-      const calls = (window as any).__terminalTest.resizeCalls()
+      const calls = window.__terminalTest.resizeCalls()
       return calls.length >= start + 2 &&
         calls[calls.length - 1].cols === calls[calls.length - 2].cols &&
         calls[calls.length - 1].rows === calls[calls.length - 2].rows
@@ -266,7 +369,7 @@ test('PTY geometry retries transient failures and fills the terminal height', as
     const body = document.querySelector<HTMLElement>('.term-body')!
     const screen = document.querySelector<HTMLElement>('.xterm-screen')!
     const renderedRows = document.querySelectorAll('.xterm-rows > div').length
-    const calls = (window as any).__terminalTest.resizeCalls()
+    const calls = window.__terminalTest.resizeCalls()
     const last = calls[calls.length - 1]
     return {
       renderedRows,
