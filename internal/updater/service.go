@@ -18,11 +18,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const userAgent = "amagi-codebox-updater"
 
 const maxDownloadAttempts = 3
+
+const maxCheckAttempts = 3
 
 const (
 	releaseRepoOwner = "runrunrain"
@@ -68,6 +71,7 @@ type Service struct {
 	log            *logging.Service
 	capabilities   platform.PlatformCapabilities
 	httpClient     httpDoer
+	retryWait      func(time.Duration)
 
 	mu       sync.Mutex
 	lastInfo *UpdateInfo
@@ -106,6 +110,7 @@ func NewService(currentVersion string, log *logging.Service) *Service {
 		log:            log,
 		capabilities:   platform.CurrentCapabilities(),
 		httpClient:     http.DefaultClient,
+		retryWait:      time.Sleep,
 	}
 }
 
@@ -119,16 +124,9 @@ func (s *Service) SetToken(token string) {
 func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", s.repoOwner, s.repoRepo)
 	token := s.getToken()
-	resp, err := s.doLatestReleaseRequest(url, token, token != "")
+	resp, err := s.latestReleaseResponse(url, token)
 	if err != nil {
 		return nil, fmt.Errorf("request latest release: %w", err)
-	}
-	if token != "" && isAuthFallbackStatus(resp.StatusCode) {
-		discardAndClose(resp.Body)
-		resp, err = s.doLatestReleaseRequest(url, "", false)
-		if err != nil {
-			return nil, fmt.Errorf("request latest release without auth after auth failure: %w", err)
-		}
 	}
 	defer resp.Body.Close()
 
@@ -156,6 +154,45 @@ func (s *Service) CheckForUpdate() (*UpdateInfo, error) {
 	}
 
 	return info, nil
+}
+
+// latestReleaseResponse retries transient GitHub/network failures. A configured
+// token may become invalid or be rejected for a public repository, so every
+// attempt also has a one-shot unauthenticated fallback.
+func (s *Service) latestReleaseResponse(requestURL string, token string) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxCheckAttempts; attempt++ {
+		resp, err := s.doLatestReleaseRequest(requestURL, token, token != "")
+		if err == nil && token != "" && isAuthFallbackStatus(resp.StatusCode) {
+			discardAndClose(resp.Body)
+			resp, err = s.doLatestReleaseRequest(requestURL, "", false)
+		}
+
+		if err != nil {
+			lastErr = err
+			if !isRetryableNetworkError(err) || attempt == maxCheckAttempts {
+				break
+			}
+			s.waitForRetry(attempt)
+			continue
+		}
+
+		if !isRetryableStatus(resp.StatusCode) || attempt == maxCheckAttempts {
+			return resp, nil
+		}
+
+		lastErr = fmt.Errorf("github latest release returned %d", resp.StatusCode)
+		discardAndClose(resp.Body)
+		s.waitForRetry(attempt)
+	}
+	return nil, lastErr
+}
+
+func (s *Service) waitForRetry(attempt int) {
+	if s.retryWait == nil {
+		return
+	}
+	s.retryWait(time.Duration(attempt) * 250 * time.Millisecond)
 }
 
 func (s *Service) doLatestReleaseRequest(requestURL string, token string, useAuth bool) (*http.Response, error) {
@@ -188,6 +225,9 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 	if info.DownloadURL == "" {
 		return fmt.Errorf("missing download url")
 	}
+	if info.UpdateAction != updateActionInstall {
+		return fmt.Errorf("this release has no installable package for platform %s; open the release page instead", s.capabilities.PlatformID)
+	}
 	if !s.capabilities.UpdateInstallSupported {
 		return fmt.Errorf("platform %s only supports checking for updates and opening the download page", s.capabilities.PlatformID)
 	}
@@ -203,10 +243,11 @@ func (s *Service) DownloadAndApply(onProgress func(downloaded, total int64)) err
 }
 
 // downloadAndApplyWindowsExeZip implements the Windows exe-in-zip update flow.
-// Behavior is identical to the original DownloadAndApply.
+// The staged executable completes the locked-file swap after this process exits.
 func (s *Service) downloadAndApplyWindowsExeZip(info *UpdateInfo, onProgress func(downloaded, total int64)) error {
-	downloadPath := filepath.Join(os.TempDir(), "amagi-codebox-update.zip")
-	extractedPath := filepath.Join(os.TempDir(), "amagi-codebox-update.exe")
+	uniqueSuffix := strconv.Itoa(os.Getpid()) + "-" + randomHex(8)
+	downloadPath := filepath.Join(os.TempDir(), "amagi-codebox-update-"+uniqueSuffix+".zip")
+	extractedPath := filepath.Join(os.TempDir(), "amagi-codebox-update-"+uniqueSuffix+".exe")
 	_ = os.Remove(downloadPath)
 	_ = os.Remove(extractedPath)
 
@@ -224,37 +265,17 @@ func (s *Service) downloadAndApplyWindowsExeZip(info *UpdateInfo, onProgress fun
 	if err != nil {
 		return fmt.Errorf("get current executable: %w", err)
 	}
-	oldPath := exePath + ".old"
-
-	if _, err := os.Stat(oldPath); err == nil {
-		if err := os.Remove(oldPath); err != nil {
-			return fmt.Errorf("remove old backup: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat old backup: %w", err)
-	}
-
-	if err := os.Rename(exePath, oldPath); err != nil {
-		return fmt.Errorf("backup current executable: %w", err)
-	}
-
-	if err := copyFile(extractedPath, exePath); err != nil {
-		_ = os.Rename(oldPath, exePath)
-		return fmt.Errorf("replace executable: %w", err)
-	}
-
-	if err := startUpdatedExecutable(exePath); err != nil {
-		_ = os.Remove(exePath)
-		_ = os.Rename(oldPath, exePath)
-		return fmt.Errorf("start updated executable: %w", err)
+	// Windows normally locks the running executable. Launch the downloaded new
+	// binary in helper mode and let it replace this executable after this process
+	// exits, instead of attempting the swap while the file is still in use.
+	if err := launchWindowsUpdateHelper(extractedPath, exePath, os.Getpid()); err != nil {
+		return fmt.Errorf("launch update helper: %w", err)
 	}
 
 	if s.log != nil {
 		s.log.Info("updater", "更新已应用，正在重启", fmt.Sprintf("from=%s to=%s", info.CurrentVersion, info.LatestVersion))
 	}
 
-	_ = os.Remove(downloadPath)
-	_ = os.Remove(extractedPath)
 	exitProcess(0)
 	return nil
 }
@@ -812,6 +833,9 @@ func (s *Service) downloadZipOnce(downloadURL string, targetPath string, onProgr
 	if _, err := io.Copy(file, io.TeeReader(resp.Body, writer)); err != nil {
 		return isRetryableNetworkError(err), false, fmt.Errorf("write temp zip: %w", err)
 	}
+	if total > 0 && writer.downloaded != total {
+		return true, false, fmt.Errorf("write temp zip: %w (downloaded %d of %d bytes)", io.ErrUnexpectedEOF, writer.downloaded, total)
+	}
 
 	return false, false, nil
 }
@@ -953,12 +977,20 @@ func buildUpdateInfo(currentVersion string, capabilities platform.PlatformCapabi
 	releaseURL := releasePageURL(release, releaseRepoOwner, releaseRepoName)
 	action := updateActionForCapabilities(capabilities)
 	asset, err := selectReleaseAssetForAction(capabilities, action, release.Assets)
-	if err != nil {
-		return nil, err
+	if err != nil && action == updateActionInstall {
+		// GitHub release jobs upload platform assets independently. During that
+		// window (or when a platform artifact is intentionally absent), update
+		// detection must still succeed so the UI can notify the user and offer the
+		// release page instead of silently losing the new-version reminder.
+		action = updateActionOpenDownloadPage
+		asset = nil
 	}
 
 	normalizedCurrent := normalizeVersion(currentVersion)
 	latestVersion := normalizeVersion(release.TagName)
+	if latestVersion == "" {
+		return nil, fmt.Errorf("latest release has an empty tag name")
+	}
 
 	hasUpdate := false
 	cmp := compareVersions(latestVersion, normalizedCurrent)

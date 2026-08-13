@@ -2,6 +2,7 @@ package main
 
 import (
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/updater"
 	"embed"
 	"os"
 
@@ -26,6 +27,14 @@ var (
 )
 
 func main() {
+	if handled, err := updater.MaybeRunWindowsUpdateHelper(os.Args); handled {
+		if err != nil {
+			println("Update error:", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+
 	capabilities := platform.CurrentCapabilities()
 	if !platform.EnsureSingleInstance("amagi-codebox-single-instance-mutex", "Amagi CodeBox") {
 		os.Exit(0)

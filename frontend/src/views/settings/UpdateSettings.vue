@@ -53,9 +53,9 @@
             variant="primary"
             size="small"
             :disabled="downloading"
-            @click="downloadAndApply"
+            @click="handleUpdateAction"
           >
-            {{ downloading ? '下载安装中...' : '下载并安装' }}
+            {{ updateActionLabel }}
           </AppButton>
         </div>
       </div>
@@ -99,7 +99,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
+import { BrowserOpenURL, EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
 import {
   checkForUpdate,
   downloadAndApplyUpdate,
@@ -145,6 +145,11 @@ const progressText = computed(() => {
   if (!downloading.value) return ''
   if (total <= 0) return '准备中...'
   return `${fmt(downloaded)} / ${fmt(total)}`
+})
+
+const updateActionLabel = computed(() => {
+  if (updateInfo.value?.updateAction !== 'install') return '打开下载页面'
+  return downloading.value ? '下载安装中...' : '下载并安装'
 })
 
 function normalizeUpdateError(err: any): string {
@@ -194,6 +199,15 @@ async function downloadAndApply() {
   }
 }
 
+function handleUpdateAction() {
+  if (updateInfo.value?.updateAction !== 'install') {
+    const url = updateInfo.value?.releaseURL || updateInfo.value?.downloadURL
+    if (url) BrowserOpenURL(url)
+    return
+  }
+  void downloadAndApply()
+}
+
 function cleanupProgressListener() {
   if (removeProgressListener) {
     try {
@@ -237,6 +251,7 @@ onMounted(async () => {
   } catch (err) {
     console.warn('load github token failed:', err)
   }
+  await checkUpdate()
 })
 </script>
 

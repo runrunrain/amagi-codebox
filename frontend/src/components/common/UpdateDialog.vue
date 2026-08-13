@@ -64,7 +64,7 @@
       <!-- Update Actions -->
       <div class="update-actions">
         <AppButton
-          v-if="!updateInfo.hasUpdate && !checking"
+          v-if="!checked && !checking"
           variant="primary"
           @click="handleCheckUpdate"
         >
@@ -74,7 +74,7 @@
           <span class="spinner"></span>
           <span>检查更新中...</span>
         </div>
-        <template v-else-if="updateInfo.hasUpdate">
+        <template v-else-if="checked && updateInfo.hasUpdate">
           <p v-if="updateInfo.updateAction === 'install'" class="install-hint">
             应用将退出并重启以完成更新
           </p>
@@ -82,11 +82,12 @@
             <AppButton
               variant="primary"
               :disabled="downloading"
-              @click="handleDownloadAndApply"
+              @click="handlePrimaryUpdateAction"
             >
-              {{ downloading ? '下载中...' : '下载并安装' }}
+              {{ updateInfo.updateAction === 'install' ? (downloading ? '下载中...' : '下载并安装') : '打开下载页面' }}
             </AppButton>
             <AppButton
+              v-if="updateInfo.updateAction === 'install'"
               variant="ghost"
               @click="handleOpenReleasePage"
             >
@@ -94,7 +95,7 @@
             </AppButton>
           </div>
         </template>
-        <div v-else-if="updateInfo.hasUpdate === false" class="uptodate-state">
+        <div v-else-if="checked" class="uptodate-state">
           <span class="status-dot"></span>
           <span>当前已是最新版本</span>
         </div>
@@ -125,7 +126,8 @@ interface UpdateInfo {
   latestVersion: string;
   publishedAt: string;
   releaseNotes: string;
-  updateAction: 'install' | 'manual';
+  releaseURL: string;
+  updateAction: 'install' | 'open-download-page';
 }
 
 interface Props {
@@ -151,9 +153,11 @@ const updateInfo = ref<UpdateInfo>({
   latestVersion: '',
   publishedAt: '',
   releaseNotes: '',
-  updateAction: 'manual',
+  releaseURL: '',
+  updateAction: 'open-download-page',
 });
 const checking = ref(false);
+const checked = ref(false);
 const downloading = ref(false);
 const updateError = ref('');
 
@@ -186,8 +190,10 @@ async function handleCheckUpdate() {
         latestVersion: info.latestVersion || '',
         publishedAt: info.publishedAt || '',
         releaseNotes: info.releaseNotes || '',
-        updateAction: (info.updateAction as 'install' | 'manual') || 'manual',
+        releaseURL: info.releaseURL || '',
+        updateAction: (info.updateAction as 'install' | 'open-download-page') || 'open-download-page',
       };
+      checked.value = true;
     }
   } catch (error) {
     console.error('[UpdateDialog] Check update failed:', error);
@@ -212,6 +218,14 @@ async function handleDownloadAndApply() {
   }
 }
 
+function handlePrimaryUpdateAction() {
+  if (updateInfo.value.updateAction !== 'install') {
+    handleOpenReleasePage();
+    return;
+  }
+  void handleDownloadAndApply();
+}
+
 // normalizeUpdateError 从 Wails 抛出的错误中提取可读消息。
 // 兼容 string / Error / 普通对象三种形态。
 function normalizeUpdateError(err: any): string {
@@ -221,9 +235,7 @@ function normalizeUpdateError(err: any): string {
 }
 
 function handleOpenReleasePage() {
-  // GitHub repository URL: https://github.com/runrunrain/amagi-codebox
-  // Can be made configurable via build flag if needed
-  const url = `https://github.com/runrunrain/amagi-codebox/releases/tag/${updateInfo.value.latestVersion}`;
+  const url = updateInfo.value.releaseURL || `https://github.com/runrunrain/amagi-codebox/releases/tag/v${updateInfo.value.latestVersion}`;
   BrowserOpenURL(url);
 }
 

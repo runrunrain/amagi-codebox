@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(req *http.Request) (*http.Response, error)
@@ -127,7 +128,7 @@ func TestBuildUpdateInfoAllowsDarwinReleasePageWithoutAsset(t *testing.T) {
 	}
 }
 
-func TestBuildUpdateInfoDarwinArm64RequiresAssetForInstall(t *testing.T) {
+func TestBuildUpdateInfoDarwinArm64FallsBackWhenAssetIsNotReady(t *testing.T) {
 	release := githubRelease{
 		TagName: "v1.2.3",
 		HTMLURL: "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3",
@@ -140,18 +141,30 @@ func TestBuildUpdateInfoDarwinArm64RequiresAssetForInstall(t *testing.T) {
 		UpdateInstallSupported: true,
 	}
 
-	_, err := buildUpdateInfo("v1.2.2", caps, release)
-	if err == nil {
-		t.Fatal("expected error when darwin arm64 install is requested but no asset exists")
+	info, err := buildUpdateInfo("v1.2.2", caps, release)
+	if err != nil {
+		t.Fatalf("expected release-page fallback, got error: %v", err)
+	}
+	if !info.HasUpdate {
+		t.Fatal("expected new version to remain visible while the asset is not ready")
+	}
+	if info.UpdateAction != updateActionOpenDownloadPage {
+		t.Fatalf("expected release-page action, got %q", info.UpdateAction)
+	}
+	if info.DownloadURL != release.HTMLURL {
+		t.Fatalf("expected release page, got %q", info.DownloadURL)
 	}
 }
 
-func TestBuildUpdateInfoRequiresWindowsAssetForInstall(t *testing.T) {
+func TestBuildUpdateInfoWindowsFallsBackWhenAssetIsNotReady(t *testing.T) {
 	release := githubRelease{TagName: "v1.2.3", HTMLURL: "https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3"}
 
-	_, err := buildUpdateInfo("v1.2.2", platform.PlatformCapabilities{OS: "windows", Arch: "amd64", PlatformID: "windows", UpdateInstallSupported: true}, release)
-	if err == nil {
-		t.Fatal("expected windows install flow to require matching asset")
+	info, err := buildUpdateInfo("v1.2.2", platform.PlatformCapabilities{OS: "windows", Arch: "amd64", PlatformID: "windows", UpdateInstallSupported: true}, release)
+	if err != nil {
+		t.Fatalf("expected release-page fallback, got error: %v", err)
+	}
+	if !info.HasUpdate || info.UpdateAction != updateActionOpenDownloadPage {
+		t.Fatalf("expected visible update with release-page action, got %+v", info)
 	}
 }
 
@@ -192,6 +205,28 @@ func TestBuildUpdateInfoLinuxUsesDownloadPage(t *testing.T) {
 	}
 }
 
+func TestBuildUpdateInfoRejectsEmptyReleaseTag(t *testing.T) {
+	_, err := buildUpdateInfo("v1.2.2", platform.PlatformCapabilities{OS: "linux", Arch: "amd64", PlatformID: "linux"}, githubRelease{})
+	if err == nil || !strings.Contains(err.Error(), "empty tag") {
+		t.Fatalf("expected empty tag error, got %v", err)
+	}
+}
+
+func TestDownloadAndApplyRejectsReleasePageAction(t *testing.T) {
+	service := NewService("v1.2.2", nil)
+	service.capabilities = platform.PlatformCapabilities{OS: "windows", Arch: "amd64", PlatformID: "windows", UpdateInstallSupported: true}
+	service.lastInfo = &UpdateInfo{
+		HasUpdate:    true,
+		DownloadURL:  "https://example.com/releases/v1.2.3",
+		UpdateAction: updateActionOpenDownloadPage,
+	}
+
+	err := service.DownloadAndApply(nil)
+	if err == nil || !strings.Contains(err.Error(), "open the release page") {
+		t.Fatalf("expected release-page guidance, got %v", err)
+	}
+}
+
 // --- HTTP fallback and retry tests ---
 
 func TestCheckForUpdateToken403FallbackNoAuth(t *testing.T) {
@@ -222,6 +257,52 @@ func TestCheckForUpdateToken403FallbackNoAuth(t *testing.T) {
 	}
 	if authHeaders[1] != "" {
 		t.Fatal("expected fallback request to omit Authorization")
+	}
+}
+
+func TestCheckForUpdateRetriesTransientServerFailure(t *testing.T) {
+	var requests int
+	service := NewService("v1.2.2", nil)
+	service.capabilities = platform.PlatformCapabilities{OS: "windows", Arch: "amd64", PlatformID: "windows", UpdateInstallSupported: true}
+	service.retryWait = func(time.Duration) {}
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return testHTTPResponse(http.StatusBadGateway, `temporary failure`), nil
+		}
+		return testHTTPResponse(http.StatusOK, `{"tag_name":"v1.2.3","html_url":"https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3","assets":[{"name":"amagi-codebox-v1.2.3-windows-amd64.zip","browser_download_url":"https://example.com/windows.zip","size":7}]}`), nil
+	})
+
+	info, err := service.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("CheckForUpdate returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 requests, got %d", requests)
+	}
+	if !info.HasUpdate {
+		t.Fatalf("expected update after retry, got %+v", info)
+	}
+}
+
+func TestCheckForUpdateRetriesTransientNetworkFailure(t *testing.T) {
+	var requests int
+	service := NewService("v1.2.2", nil)
+	service.capabilities = platform.PlatformCapabilities{OS: "linux", Arch: "amd64", PlatformID: "linux"}
+	service.retryWait = func(time.Duration) {}
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return testHTTPResponse(http.StatusOK, `{"tag_name":"v1.2.3","html_url":"https://github.com/runrunrain/amagi-codebox/releases/tag/v1.2.3"}`), nil
+	})
+
+	if _, err := service.CheckForUpdate(); err != nil {
+		t.Fatalf("CheckForUpdate returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 requests, got %d", requests)
 	}
 }
 
@@ -355,6 +436,29 @@ func TestDownloadZipRemovesPartialFileAfterExhaustedBodyEOF(t *testing.T) {
 	}
 	if _, statErr := os.Stat(targetPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected partial file to be removed, stat error: %v", statErr)
+	}
+}
+
+func TestDownloadZipRetriesTruncatedBodyWithoutReadError(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "update.zip")
+	var requests int
+	service := NewService("v1.2.2", nil)
+	service.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			resp := testHTTPResponse(http.StatusOK, "short")
+			resp.ContentLength = 10
+			return resp, nil
+		}
+		return testHTTPResponse(http.StatusOK, "complete"), nil
+	})
+
+	if err := service.downloadZip("https://example.com/update.zip", targetPath, nil); err != nil {
+		t.Fatalf("downloadZip returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected truncated response to be retried, got %d requests", requests)
 	}
 }
 

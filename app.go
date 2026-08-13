@@ -379,7 +379,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		Pty:               pty.NewService(log),
 		Settings:          settings.NewService(configDir),
 		EnvVars:           envVarsSvc,
-		Updater:           updater.NewService(Version, log),
+		Updater:           updater.NewService(resolveAppVersion(), log),
 		Plugins:           pluginsSvc,
 		CodexPlugins:      codexPluginsSvc,
 		OpenCodePlugins:   openCodePluginsSvc,
