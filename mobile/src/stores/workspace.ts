@@ -40,7 +40,7 @@ import {
 import { classifyLobbyError, type ClassifiedError } from './lobby';
 import {
   SessionWsClient,
-  decodeChunkToText,
+  createOutputChunkDecoder,
   encodeUtf8ToBase64,
   type WsClientState,
 } from '../lib/ws';
@@ -231,8 +231,24 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
   // 只存解码后原文（ANSI 原样），不做行处理；重连不清空（attach 携带 lastSeq
   // 只回补增量，流连续；open() 新会话才清空）。backfill 帧是乱序旧历史，
   // 不注入本流（缺口由状态条历史层诚实呈现，不在网格内伪造内容）。
-  const rawTranscript = new RawTranscript({ maxChars: 256_000 });
+  // 后端 v1 replay window 的字节预算为 1 MiB。JS string 以 UTF-16 code unit
+  // 计数；4 Mi code units 足以无损容纳任意合法 1 MiB UTF-8 回放（最坏为单字节
+  // ASCII），并给 attach 后紧随的实时输出留出余量，避免远程诊断页二次裁剪。
+  const rawTranscript = new RawTranscript({ maxChars: 4 * 1024 * 1024 });
   const rawSubscribers = new Set<(text: string) => void>();
+  // PTY read boundaries are arbitrary and may split one UTF-8 code point. Keep
+  // one streaming decoder for the ordered attach/live path; decoding every
+  // frame independently replaces split characters and makes output appear
+  // incomplete/garbled.
+  const outputDecoder = createOutputChunkDecoder();
+
+  function decodeOrderedOutput(chunk: string): string {
+    return outputDecoder.decode(chunk);
+  }
+
+  function resetOrderedOutputDecoder(): void {
+    outputDecoder.reset();
+  }
 
   function notifyRaw(text: string): void {
     for (const cb of rawSubscribers) cb(text);
@@ -441,8 +457,13 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
   function applySingleReplayFrame(frame: ReplayFrame): void {
     noteAppliedSeq(frame.seq);
     if (frame.type === 'output') {
-      appendOutputText(frame.seq, decodeChunkToText(frame.chunk));
+      appendOutputText(frame.seq, decodeOrderedOutput(frame.chunk));
     } else if (frame.type === 'session.state' && frame.restartBoundary === true) {
+      // A restart starts a new byte stream; never combine a trailing partial
+      // code point from the previous run with bytes from the next run.
+      const trailing = outputDecoder.flush();
+      if (trailing) appendOutputText(frame.seq, trailing);
+      resetOrderedOutputDecoder();
       sealAtBoundary(frame);
     }
   }
@@ -524,6 +545,7 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
 
   /** backfill 补齐帧：专属段原位插入（不混入活跃段；补齐帧为完整历史，即封即算）。 */
   function applyBackfillFrames(frames: ReplayFrame[]): void {
+    const backfillDecoder = createOutputChunkDecoder();
     let seg: SegmentEntry | null = null;
     const finalize = () => {
       if (!seg) return;
@@ -550,12 +572,14 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
           };
           insertEntry(seg);
         }
-        const text = decodeChunkToText(frame.chunk);
+        const text = backfillDecoder.decode(frame.chunk);
         const merged = seg.partial + text;
         const parts = merged.split('\n');
         seg.partial = parts.pop() ?? '';
         for (const p of parts) seg.lines.push(p.replace(/\r$/, ''));
       } else if (frame.type === 'session.state' && frame.restartBoundary === true) {
+        const trailing = backfillDecoder.flush();
+        if (trailing && seg) seg.partial += trailing;
         finalize();
         insertEntry({
           entryId: `boundary-${frame.seq}`,
@@ -566,8 +590,11 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
           state: frame.state,
           occurredAt: frame.occurredAt,
         });
+        backfillDecoder.reset();
       }
     }
+    const trailing = backfillDecoder.flush();
+    if (trailing && seg) seg.partial += trailing;
     finalize();
   }
 
@@ -601,6 +628,12 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
         // 旧连接的 stale pending 作废：attached history 是权威因果切面。
         pendingBySeq.clear();
         pendingBytes = 0;
+        if (event.snapshot.history.state === 'gap' || event.earliestSeq > prevFrontier + 1) {
+          // Missing bytes may include the remainder of a UTF-8 code point held
+          // by the streaming decoder. Do not combine it with the first retained
+          // byte after an authoritative gap.
+          resetOrderedOutputDecoder();
+        }
         applyReplayFrames(event.history);
         // 结算 frontier 至 attached latestSeq：tail 已全量应用；被逐出的 gap 是
         // settled-unavailable（允许 F 跨过——design §3）。detail.latestSeq 不作游标。
@@ -882,6 +915,7 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
     appliedSeqCounts.clear();
     appliedSeqTruncated = false;
     rawTranscript.clear();
+    resetOrderedOutputDecoder();
     draft.value = '';
     sending.value = false;
     stopping.value = false;

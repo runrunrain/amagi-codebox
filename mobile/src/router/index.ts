@@ -3,7 +3,6 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const ConnectPage = () => import('../views/ConnectPage.vue')
 const WorkspacePage = () => import('../views/WorkspacePage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
-const TerminalPage = () => import('../views/TerminalPage.vue')
 const SessionsPage = () => import('../views/SessionsPage.vue')
 const ProvidersPage = () => import('../views/ProvidersPage.vue')
 const SettingsPage = () => import('../views/SettingsPage.vue')
@@ -42,9 +41,14 @@ const router = createRouter({
       component: DashboardPage,
     },
     {
+      // 旧版终端深链统一迁移到 v1 工作区诊断视图。旧 TerminalPage 使用的
+      // /ws/terminal 兼容通道现为 input-only，继续挂载会导致远程页面无输出。
       path: '/terminal/:sessionId',
-      name: 'terminal',
-      component: TerminalPage,
+      redirect: (to) => ({
+        name: 'workspace',
+        params: { sessionId: to.params.sessionId },
+        query: { ...to.query, view: 'terminal' },
+      }),
     },
     {
       // legacy #/sessions 已由 PG-02 大厅接管（P5 IA）：重定向到 #/lobby，

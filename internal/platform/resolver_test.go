@@ -136,6 +136,10 @@ func TestDarwinEffectivePATHIncludesHomeLocalBin(t *testing.T) {
 }
 
 func TestDarwinResolveExecutableFindsCodexInLocalNodeBin(t *testing.T) {
+	previousApplicationsDir := darwinSystemApplicationsDir
+	darwinSystemApplicationsDir = filepath.Join(t.TempDir(), "Applications")
+	t.Cleanup(func() { darwinSystemApplicationsDir = previousApplicationsDir })
+
 	homeDir := t.TempDir()
 	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
 	codexPath := filepath.Join(npmLocalNodeDir, "codex")
@@ -205,6 +209,70 @@ func TestDarwinResolveExecutableFindsCodexInChatGPTAppBundle(t *testing.T) {
 	}
 	if spec.Diagnostics.CLISource != "app-bundle" {
 		t.Fatalf("launch CLI source = %q, want app-bundle", spec.Diagnostics.CLISource)
+	}
+}
+
+func TestDarwinResolveExecutablePrefersAppBundleOverPATHCodex(t *testing.T) {
+	homeDir := t.TempDir()
+	bundledPath := filepath.Join(homeDir, "Applications", "ChatGPT.app", "Contents", "Resources", "codex")
+	if err := os.MkdirAll(filepath.Dir(bundledPath), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle resources: %v", err)
+	}
+	if err := os.WriteFile(bundledPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write bundled codex: %v", err)
+	}
+
+	binDir := filepath.Join(homeDir, ".local", "node", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy bin: %v", err)
+	}
+	pathCodex := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(pathCodex, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write caller PATH codex: %v", err)
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	cli, diagnostics, err := resolver.ResolveExecutable("codex", nil, []string{
+		"HOME=" + homeDir,
+		"PATH=" + binDir,
+	})
+	if err != nil {
+		t.Fatalf("ResolveExecutable: %v", err)
+	}
+	if cli.Path != bundledPath {
+		t.Fatalf("resolved Codex path = %q, want desktop bundle %q instead of PATH shim %q", cli.Path, bundledPath, pathCodex)
+	}
+	if diagnostics.CLISource != "app-bundle" {
+		t.Fatalf("CLI source = %q, want app-bundle", diagnostics.CLISource)
+	}
+}
+
+func TestShouldPreferDarwinCodexAppBundleOnlyForLegacyDefaultPaths(t *testing.T) {
+	for _, path := range []string{
+		"/Users/alice/.local/node/bin/codex",
+		"/Users/alice/.local/bin/codex",
+		"/Users/alice/.npm-global/bin/codex",
+		"/Users/alice/.nvm/versions/node/v22.18.0/bin/codex",
+		"/Users/alice/.fnm/node-versions/v22.18.0/installation/bin/codex",
+		"/Users/alice/.volta/bin/codex",
+		"/Users/alice/.asdf/installs/nodejs/22.18.0/bin/codex",
+		"/Users/alice/.local/share/pnpm/codex",
+		"/Users/alice/.bun/bin/codex",
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+	} {
+		if !shouldPreferDarwinCodexAppBundle("codex", path) {
+			t.Fatalf("legacy Codex path %q should yield to app bundle", path)
+		}
+	}
+	for _, path := range []string{
+		"/tmp/test-bin/codex",
+		"/managed/company/codex",
+		"/tmp/old/node_modules/@openai/codex/bin/codex",
+	} {
+		if shouldPreferDarwinCodexAppBundle("codex", path) {
+			t.Fatalf("explicit/custom Codex path %q should remain usable", path)
+		}
 	}
 }
 

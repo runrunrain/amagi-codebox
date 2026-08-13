@@ -70,6 +70,19 @@ vi.mock('../../../src/lib/ws', () => {
   return {
     SessionWsClient: FakeWsClient,
     decodeChunkToText: decode,
+    createOutputChunkDecoder: () => {
+      let decoder = new TextDecoder('utf-8');
+      return {
+        decode: (b64: string) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          return decoder.decode(bytes, { stream: true });
+        },
+        flush: () => decoder.decode(),
+        reset: () => { decoder = new TextDecoder('utf-8'); },
+      };
+    },
     encodeUtf8ToBase64: (s: string) => s,
   };
 });

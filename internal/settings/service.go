@@ -773,3 +773,45 @@ func (s *Service) GetSettings() *AppSettings {
 	copy.RemoteLaunchDefaultsV1 = cloneRemoteLaunchDefaultsV1(s.settings.RemoteLaunchDefaultsV1)
 	return &copy
 }
+
+// ReplaceSettings validates, normalizes and atomically replaces the complete
+// portable settings snapshot.
+func (s *Service) ReplaceSettings(next AppSettings) error {
+	if strings.TrimSpace(next.RemoteHost) == "" {
+		next.RemoteHost = "127.0.0.1"
+	}
+	if next.RemotePort == 0 {
+		next.RemotePort = 8680
+	}
+	if next.RemotePort < 1024 || next.RemotePort > 65535 {
+		return fmt.Errorf("port %d out of valid range [1024, 65535]", next.RemotePort)
+	}
+	if next.ShellPaths == nil {
+		next.ShellPaths = []ShellEntry{}
+	}
+	if next.SavedWorkDirs == nil {
+		next.SavedWorkDirs = []WorkDirEntry{}
+	}
+	if next.RemoteLaunchDefaultsV1 == nil {
+		next.RemoteLaunchDefaultsV1 = make(map[string]RemoteLaunchDefaultV1)
+	}
+	if next.Terminal.Scrollback <= 0 {
+		next.Terminal.Scrollback = 100000
+	}
+	next.RemoteSecurityVersion = 1
+	normalizeDashboardDefaults(&next.Dashboard)
+
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	previous := s.settings
+	s.settings = &next
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		s.mu.Lock()
+		s.settings = previous
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}

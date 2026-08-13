@@ -7,12 +7,14 @@ package remote
 // unaffected.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"embed"
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -386,9 +388,11 @@ func (s *Server) requireSecurity() error {
 }
 
 // CreatePairingWindow opens a pairing window (code returned ONCE). The BaseURL
-// is built strictly from the real listen host/port: only a concrete routable
-// LAN IP yields a valid base; wildcard/unspecified/loopback/hostname yield an
-// empty base with AddressRequired. The code is NEVER placed in path/query.
+// is built from the real listen host/port. A concrete routable LAN IP is used
+// directly; a wildcard listen address is resolved to a concrete local interface
+// address so the desktop can render a QR code that another device can open.
+// Loopback/hostname/non-routable addresses still fail closed with
+// AddressRequired. The code is NEVER placed in a server-observed path/query.
 func (s *Server) CreatePairingWindow(confirmTerminalExposure bool) (PairingWindowInfo, error) {
 	if !confirmTerminalExposure {
 		return PairingWindowInfo{}, errSecurityNotReady
@@ -396,13 +400,118 @@ func (s *Server) CreatePairingWindow(confirmTerminalExposure bool) (PairingWindo
 	if err := s.requireSecurity(); err != nil {
 		return PairingWindowInfo{}, err
 	}
-	base, addressRequired := buildPairingBaseURL(s.GetHost(), s.GetPort())
+	base, addressRequired := s.buildPairingAdvertiseBaseURL()
 	info, err := s.pairing.CreateWindow(base)
 	if err != nil {
 		return PairingWindowInfo{}, err
 	}
 	info.AddressRequired = addressRequired
 	return info, nil
+}
+
+// buildPairingAdvertiseBaseURL resolves wildcard listeners to one concrete
+// interface address. The QR destination must be reachable from another LAN
+// device; advertising 0.0.0.0/[::] or loopback would produce an unusable code.
+func (s *Server) buildPairingAdvertiseBaseURL() (string, bool) {
+	host := s.GetHost()
+	port := s.GetPort()
+	if base, required := buildPairingBaseURL(host, port); !required {
+		return base, false
+	}
+	if port < 1 || port > 65535 || !isWildcardListenHost(host) {
+		return "", true
+	}
+
+	resolver := s.interfaceAddrs
+	if resolver == nil {
+		resolver = net.InterfaceAddrs
+	}
+	addrs, err := resolver()
+	if err != nil {
+		return "", true
+	}
+	family := 0
+	if canonicalListenHost(host) == "::" {
+		family = 6
+	} else {
+		family = 4
+	}
+	ip := selectPairingAdvertiseIP(addrs, family)
+	if ip == nil {
+		return "", true
+	}
+	return "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(port)), false
+}
+
+func canonicalListenHost(host string) string {
+	h := strings.TrimSpace(host)
+	return strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
+}
+
+func isWildcardListenHost(host string) bool {
+	switch canonicalListenHost(host) {
+	case "", "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+// selectPairingAdvertiseIP picks a stable, routable LAN address. Private
+// addresses are preferred over public ones and IPv4 is preferred when the
+// listener is IPv4. family is 4 or 6.
+func selectPairingAdvertiseIP(addrs []net.Addr, family int) net.IP {
+	type candidate struct {
+		ip    net.IP
+		score int
+	}
+	var candidates []candidate
+	for _, addr := range addrs {
+		var ip net.IP
+		switch value := addr.(type) {
+		case *net.IPNet:
+			ip = value.IP
+		case *net.IPAddr:
+			ip = value.IP
+		default:
+			raw := addr.String()
+			if host, _, err := net.SplitHostPort(raw); err == nil {
+				raw = host
+			} else if slash := strings.IndexByte(raw, '/'); slash >= 0 {
+				raw = raw[:slash]
+			}
+			ip = net.ParseIP(strings.Trim(raw, "[]"))
+		}
+		if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsMulticast() || !ip.IsGlobalUnicast() {
+			continue
+		}
+		isV4 := ip.To4() != nil
+		if (family == 4 && !isV4) || (family == 6 && isV4) {
+			continue
+		}
+		canon := ip
+		if isV4 {
+			canon = ip.To4()
+		} else {
+			canon = ip.To16()
+		}
+		score := 1
+		if canon.IsPrivate() {
+			score = 0
+		}
+		candidates = append(candidates, candidate{ip: append(net.IP(nil), canon...), score: score})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score < candidates[j].score
+		}
+		return bytes.Compare(candidates[i].ip, candidates[j].ip) < 0
+	})
+	return candidates[0].ip
 }
 
 // buildPairingBaseURL returns a strict http://host:port base for a concrete

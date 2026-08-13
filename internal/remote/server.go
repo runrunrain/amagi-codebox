@@ -41,6 +41,10 @@ type Server struct {
 	webRoot            string   // 移动端 Web 前端的 dist 目录路径，为空则不提供静态文件服务
 	mobileAssets       embed.FS // 构建时嵌入的移动端 Web 资源（mobile/dist）
 	mobileAssetsPrefix string   // mobileAssets 中的路径前缀，默认 "mobile/dist"
+	// interfaceAddrs is the LAN-address discovery seam used only when the
+	// server listens on a wildcard address and needs to advertise a concrete
+	// address in the desktop pairing QR code.
+	interfaceAddrs func() ([]net.Addr, error)
 
 	// M1-A security surface (zero when constructed via the legacy NewServer).
 	secOpts     SecurityOptions
@@ -152,6 +156,7 @@ func NewServer(port int, app AppInterface, log *logging.Service, mobileAssets em
 		log:                log,
 		mobileAssets:       mobileAssets,
 		mobileAssetsPrefix: "mobile/dist",
+		interfaceAddrs:     net.InterfaceAddrs,
 		serverEventScope:   scope,
 		legacySeen:         make(map[legacyAuthTupleKey]bool),
 		lifecycleHook:      noopLifecycleHook{},

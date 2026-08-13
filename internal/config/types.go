@@ -351,6 +351,11 @@ type ExportConfig struct {
 	AgentTeams      AgentTeamsConfig          `json:"agent_teams"`
 	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
 	OpenCodePresets map[string]OpenCodePreset `json:"opencode_presets,omitempty"`
+	// Portable is present in v2 exports. It contains non-provider application
+	// configuration required to reproduce the same setup on another device.
+	// json.RawMessage keeps the config package independent from the individual
+	// settings/path/workspace/proxy packages; the App boundary owns composition.
+	Portable json.RawMessage `json:"portable,omitempty"`
 }
 
 // ExportProvider 导入/导出时的提供商配置（含 API key 明文）。

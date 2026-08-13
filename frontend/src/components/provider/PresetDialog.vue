@@ -76,7 +76,7 @@
       </div>
 
       <!-- 参数设置 -->
-      <div class="form-section">
+      <div v-if="engine === 'claude' || engine === 'codex' || engine === 'pi' || engine === 'omp'" class="form-section">
         <div class="form-section-title">参数设置（留空使用默认值）</div>
         <div class="form-row">
           <div class="form-group">
@@ -151,9 +151,9 @@
         </div>
       </div>
 
-      <!-- 推理强度 / 思考强度（Claude Code Effort Level / Pi --thinking / OMP --thinking） -->
-      <div v-if="engine === 'claude' || engine === 'pi' || engine === 'omp'" class="form-section">
-        <div class="form-section-title">推理强度（{{ engine === 'pi' ? 'Pi Thinking Level' : engine === 'omp' ? 'OMP Thinking Level' : 'Claude Code Effort Level' }}）</div>
+      <!-- 推理强度 / 思考强度 -->
+      <div class="form-section">
+        <div class="form-section-title">推理强度（{{ engine === 'pi' ? 'Pi Thinking Level' : engine === 'omp' ? 'OMP Thinking Level' : engine === 'codex' ? 'Codex Reasoning Effort' : 'Claude Code Effort Level' }}）</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">推理强度</label>
@@ -311,7 +311,7 @@ function initForm() {
     // Thinking（Claude Code）
     form.thinkingType = params?.thinking?.type || '';
     form.thinkingBudget = params?.thinking?.budgetTokens;
-    // 推理强度（Claude Code Effort Level：注入 CLAUDE_CODE_EFFORT_LEVEL，仅 Claude Code 生效）
+    // 推理强度（由各终端的启动链映射到对应配置或参数）
     form.reasoningEffort = params?.reasoning_effort || '';
     // Context Window / Auto Compact
     form.contextWindow = ctx?.model_context_window;
@@ -394,10 +394,9 @@ async function handleSave() {
         budgetTokens: form.thinkingBudget,
       };
     }
-    // 推理强度：Claude Code 通过 CLAUDE_CODE_EFFORT_LEVEL env 注入；
-    // Pi / OMP 通过 --thinking CLI flag 注入（后端会话启动解析映射，二者 CLI 契约同构）。
-    // 值域 low/medium/high/xhigh/max 完全兼容。Codex/OpenCode 不消费此字段。
-    if ((props.engine === 'claude' || props.engine === 'pi' || props.engine === 'omp') && form.reasoningEffort) {
+    // 推理强度：Claude Code 通过 CLAUDE_CODE_EFFORT_LEVEL，Codex 通过
+    // model_reasoning_effort 单进程覆盖，Pi / OMP 通过 --thinking。
+    if (form.reasoningEffort) {
       parameters.reasoning_effort = form.reasoningEffort;
     }
     if (form.contextWindow !== undefined || form.compactLimit !== undefined) {

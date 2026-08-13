@@ -42,7 +42,7 @@
 | `App.SetRemotePort(port)` | 修改端口（范围 1024–65535）。先持久化到 `settings.json`，再若服务器正在运行则停止→改端口→重启 |
 | `App.SetRemoteHost(host)` | 修改监听地址。同上策略 |
 | `App.RegenerateRemoteToken()` | 重新生成 Token 并返回新值 |
-| `App.GetRemoteToken()` | 返回当前 Token（供 UI 展示与扫码） |
+| `App.GetRemoteToken()` | 返回 legacy API Token（不用于新版二维码配对） |
 
 默认配置（`internal/settings/service.go` 的 `defaultSettings()`）：
 
@@ -165,6 +165,13 @@
 
 ## WebSocket 终端
 
+新版移动端使用单一端点 `ws://<host>:<port>/ws/v1`。连接由设备 Cookie 鉴权，
+客户端发送 `session.attach` 后，服务端先回放最多 1 MB 的历史帧，再无缝衔接实时输出；
+同一会话重启时以带 `restartBoundary=true` 的 `session.state` 帧标记输出边界。终端输出按 base64 字节块传输，
+移动端采用流式 UTF-8 解码，字符即使横跨多个 WebSocket 帧也不会被截断。
+
+下面的 `/ws/terminal` 是仅供本机兼容调用的 legacy 通道，不应再用于移动端输出展示。
+
 ### 端点
 
 ```
@@ -175,26 +182,15 @@ ws://<host>:<port>/ws/terminal/<sessionID>?token=<token>
 - 认证：URL 参数 `token`（与 REST 共用同一 Token），或本地会话 cookie。Handler 不走全局 Auth middleware，自行校验。
 - 校验失败返回 `401 Unauthorized` 与 JSON `{"error":"unauthorized"}`。
 
-### 协议（来自 `mobile/README.md`）
+> 该 legacy 通道现在只接收输入，不再向客户端广播终端输出。历史回放和实时输出统一由 `/ws/v1` 提供。
 
-双向 base64 编码：
+### Legacy 兼容行为
 
 | 方向 | 消息类型 | 内容 |
 |------|----------|------|
 | 客户端 → 服务端 | `input` | base64 编码的用户输入 |
-| 客户端 → 服务端 | `resize` | `{cols, rows}` |
-| 服务端 → 客户端 | `output` | base64 编码的 PTY 输出 |
-| 服务端 → 客户端 | `exit` | `{code}` 进程退出码 |
-
-### Observer 模式
-
-移动端连接到运行中的会话时，使用 Observer 模式：
-
-- 通过 `AttachSessionObserver(sessionID, id, outputCB, resizeCB)` 原子附加：
-    - 返回历史输出快照（最多 1 MB，见 [./terminal.md](./terminal.md#历史回放)）。
-    - 返回当前 PTY 尺寸 `{cols, rows}`。
-    - 注册 live output / dimensions 回调，避免 history 与 live 之间丢帧。
-- Observer 的 resize 仅影响自身视口，不会改变桌面端 PTY 的尺寸（避免桌面端正在使用的窗口被远程强制 resize）。
+| 客户端 → 服务端 | `resize` | 为保护桌面 PTY 尺寸权威而忽略 |
+| 服务端 → 客户端 | — | 不发送输出、退出或尺寸事件 |
 
 ---
 
@@ -215,25 +211,32 @@ ws://<host>:<port>/ws/terminal/<sessionID>?token=<token>
 
 | 页面 | 路由 | 功能 |
 |------|------|------|
-| Connect | `/#/` | 输入服务器地址、Token；支持扫码 |
-| Dashboard | `/#/dashboard` | 活跃会话概览 |
-| Terminal | `/#/terminal/{id}` | Observer 模式终端查看 |
-| Sessions | `/#/sessions` | 启动 / 停止 / 移除会话 |
+| Connect | `/#/connect` | 二维码自动配对或手动输入宿主地址、一次性配对码 |
+| Lobby | `/#/lobby` | 会话概览与启动入口 |
+| Workspace | `/#/workspace/{id}` | 历史回放、实时输出、输入与终端诊断视图 |
+| Legacy Terminal | `/#/terminal/{id}` | 自动重定向到对应 Workspace 的终端诊断视图 |
 | Providers | `/#/providers` | Provider 管理 |
 | Settings | `/#/settings` | 连接管理 |
 
 ### 连接方式
 
-打开 Web 页面或 App 后，在 Connect 页填写两个字段：
+推荐在桌面端打开「设置 › 远程访问」，发起短时配对窗口后直接扫描二维码：
+
+1. 桌面端在监听 `0.0.0.0` 时自动选择可达的局域网 IP，而不是把不可访问的 `0.0.0.0` 写入二维码。
+2. 二维码内容是 `http://<局域网IP>:<端口>/#/connect?...` 网页 URL，使用系统相机扫码即可直接打开。
+3. 页面自动提交一次性配对码；成功后进入会话大厅，不再要求手工复制地址或 Token。
+4. 配对码放在 URL hash 中，不会随 HTTP 请求发送；页面读取后立即从地址栏清除。
+
+需要降级处理时，可在 Connect 页手动填写：
 
 | 字段 | 说明 |
 |------|------|
 | Server URL | Amagi CodeBox Remote API 地址，形如 `http://<桌面IP>:8680` |
-| Token | 桌面端生成的 Bearer Token（`App.GetRemoteToken()` 或 `GetRemoteStatus().token`） |
+| Pairing Code | 桌面端短时配对窗口展示的一次性配对码 |
 
-支持扫码：桌面端把 `Server URL` 与 `Token` 编码为二维码（前端依赖 `qrcode`），移动端用 `html5-qrcode` 扫码自动填入。
+页面内扫码器继续兼容旧版 JSON 二维码；新版 URL 二维码既可由页面内扫码器识别，也可由手机系统相机直接打开。
 
-首次连接成功后，Server URL 与 Token 保存在浏览器 `localStorage`。
+首次连接成功后，服务端写入 HttpOnly 设备 Cookie；一次性配对码不会写入 `localStorage`。
 
 ### 三种部署形态（摘自 `mobile/README.md`）
 
@@ -249,8 +252,8 @@ ws://<host>:<port>/ws/terminal/<sessionID>?token=<token>
 
 ## 安全注意事项
 
-- **默认监听 `0.0.0.0:8680`**：局域网内任何设备都可访问。务必保管好 Token；若不需要远程访问，应在桌面端关闭远程控制或把 host 改为 `127.0.0.1`。
-- **HTTP 明文**：远程 API 当前不提供 HTTPS。Token 在同网段传输可视作可接受，但跨公网部署必须在反向代理层启用 TLS。
+- **默认监听 `0.0.0.0:8680`**：局域网内任何设备都可访问。一次性配对码有效期间应避免向无关人员展示；若不需要远程访问，应在桌面端关闭远程控制或把 host 改为 `127.0.0.1`。
+- **HTTP 明文**：远程 API 当前不提供 HTTPS。局域网扫码会通过 HTTP 传输配对请求与设备 Cookie；跨公网部署必须在反向代理层启用 TLS。
 - **Token 不可远程重置**：防止攻击者通过 API 自我洗牌；重新生成需在桌面端操作。
 - **launch grant 严格同源**：grant 颁发时绑定 host，消费时校验 Sec-Fetch-Site / Origin / Referer，且仅存活 2 分钟，最大限度降低被第三方页面截获的风险。
 - **WebSocket Origin**：`isAllowedWebSocketOrigin` 在带 Origin 头时校验同源；空 Origin 视为允许（非浏览器客户端）。
@@ -265,7 +268,7 @@ ws://<host>:<port>/ws/terminal/<sessionID>?token=<token>
 - **README 与代码的偏差**：`README.md` 列出的 `GET /api/status`、`POST /api/launch`、`POST /api/regenerate-token` 等端点在当前代码中不存在；本篇按实际路由描述。
 - **Token 远程获取受限**：`GET /api/settings` 返回 `remoteToken`，但已持有 Token 才能访问该端点；这意味着 Token 是"展示给已登录客户端"，而非"匿名获取"。
 - **`PUT /api/settings` 字段有限**：当前仅支持 `remotePort`，其它字段（host、token 等）必须通过桌面端修改。
-- **移动端 Observer 不改 PTY 尺寸**：桌面端 PTY 尺寸由桌面端会话设置决定；移动端只是观察。
+- **移动端不拥有 PTY 尺寸权威**：桌面端 PTY 尺寸由桌面端会话设置决定；移动端 resize 只调整自身远程视口。
 - **WebGL 在移动端可能不可用**：移动端 xterm.js 同样根据平台能力选择渲染器，但具体策略由移动端代码决定（待核实：移动端是否复用桌面端的 macOS/Windows 渲染器选择逻辑）。
 
-> 待核实：移动端 `/ws/terminal/{id}` 与代码注册的 `/ws/terminal/{sessionID}` 命名是否一致；`mobileWebRoot` 在 `settings.json` 中的默认值；`App.GetRemoteWebUIStatus` 中 `Reason` 字段的所有可能取值。
+> 待核实：`mobileWebRoot` 在 `settings.json` 中的默认值；`App.GetRemoteWebUIStatus` 中 `Reason` 字段的所有可能取值。

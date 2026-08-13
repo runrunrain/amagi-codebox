@@ -51,6 +51,9 @@ func resolveExecutable(commandName string) resolveResult {
 		if source == "ambient-path" && !systemPATHOk {
 			pathState = PathStateCodeboxPATH
 		}
+		if source == "app-bundle" {
+			pathState = PathStateOutsidePATH
+		}
 		return resolveResult{
 			executablePath: resolved.Path,
 			systemPATHOk:   systemPATHOk,
@@ -102,7 +105,7 @@ func applyPathStateToStatus(status *CheckStatus, rr resolveResult, tool CLITool)
 		status.ExecutablePath = rr.executablePath
 
 		// When resolver found it but LookPath did not, add an info-level hint.
-		if !rr.systemPATHOk {
+		if !rr.systemPATHOk && rr.pathSource != "app-bundle" {
 			issue := CheckIssue{
 				Severity: SeverityInfo,
 				Code:     "path_not_in_system_path",

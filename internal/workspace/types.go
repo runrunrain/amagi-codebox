@@ -56,6 +56,14 @@ type GlobalEnabled struct {
 	DeployedAt      string              `json:"deployedAt"`
 }
 
+// PortableConfig contains workspace bookkeeping only. Deployment manifests and
+// generated files are machine-local artifacts and are rebuilt by an explicit
+// sync on the destination device.
+type PortableConfig struct {
+	Workspaces    []Workspace     `json:"workspaces"`
+	GlobalEnabled []GlobalEnabled `json:"globalEnabled"`
+}
+
 type DeploymentManifest struct {
 	Version     string            `json:"version"`
 	GeneratedAt string            `json:"generatedAt"`

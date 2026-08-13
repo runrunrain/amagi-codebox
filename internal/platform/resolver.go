@@ -211,6 +211,13 @@ func (r *defaultCLIResolver) resolveCLIForRequest(commands []string, args []stri
 	for _, command := range commands {
 		cli, diagnostics, ok := r.resolveExecutableFromControlledEnv(command, args, env)
 		if ok {
+			if r.capabilities.OS == "darwin" && shouldPreferDarwinCodexAppBundle(command, cli.Path) {
+				if bundled := resolveDarwinCodexAppBundle(command, env); bundled != "" {
+					cli.Path = bundled
+					diagnostics.CLISource = "app-bundle"
+					diagnostics.PATHSources = []string{"app-bundle"}
+				}
+			}
 			return cli, diagnostics, nil
 		}
 		if firstErr == nil {
@@ -225,6 +232,16 @@ func (r *defaultCLIResolver) resolveCLIForRequest(commands []string, args []stri
 			}
 		}
 	}
+	if r.capabilities.OS == "darwin" {
+		for _, command := range commands {
+			if resolvedPath := resolveDarwinCodexAppBundle(command, env); resolvedPath != "" {
+				return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
+					CLISource:   "app-bundle",
+					PATHSources: []string{"app-bundle"},
+				}, nil
+			}
+		}
+	}
 	// On Darwin with a resolved shell, fall back to shell-assisted resolution.
 	// A login shell may know about CLIs installed via shell-specific mechanisms
 	// (nvm, rbenv, conda init, etc.) that are not on any static PATH.
@@ -234,21 +251,6 @@ func (r *defaultCLIResolver) resolveCLIForRequest(commands []string, args []stri
 				return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
 					CLISource:   "shell-assisted",
 					PATHSources: []string{"app-env", "controlled-additions", "inherited", "shell-fallback"},
-				}, nil
-			}
-		}
-	}
-	// Finder-launched macOS apps normally inherit only launchd's minimal PATH.
-	// The Codex CLI embedded in ChatGPT.app/Codex.app is therefore invisible to
-	// ordinary PATH resolution even though it is a valid launch target. Keep the
-	// bundle fallback after the caller PATH and shell fallback so explicit user
-	// installations continue to take precedence.
-	if r.capabilities.OS == "darwin" {
-		for _, command := range commands {
-			if resolvedPath := resolveDarwinCodexAppBundle(command, env); resolvedPath != "" {
-				return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, LaunchDiagnostics{
-					CLISource:   "app-bundle",
-					PATHSources: []string{"app-env", "controlled-additions", "app-bundle"},
 				}, nil
 			}
 		}

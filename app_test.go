@@ -281,6 +281,42 @@ func TestResolveCodexLaunchSettings_FallsBackToProviderDefault(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCLIArgsMapsPresetAndCustomProvider(t *testing.T) {
+	args := buildCodexCLIArgs(codexLaunchSettings{
+		Model:              "gpt-5.6-luna",
+		ReasoningEffort:    "max",
+		ModelContextWindow: 1047576,
+		AutoCompactLimit:   900000,
+		ProviderBaseURL:    "https://proxy.example.com/v1",
+	})
+	joined := strings.Join(args, "\n")
+	for _, want := range []string{
+		"gpt-5.6-luna",
+		`model_reasoning_effort="max"`,
+		"model_context_window=1047576",
+		"model_auto_compact_token_limit=900000",
+		`model_provider="amagi-codebox-provider"`,
+		`forced_login_method="api"`,
+		`base_url="https://proxy.example.com/v1"`,
+		`env_key="OPENAI_API_KEY"`,
+		`wire_api="responses"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Codex args missing %q: %v", want, args)
+		}
+	}
+}
+
+func TestBuildCodexCLIArgsOfficialProviderKeepsDesktopAuth(t *testing.T) {
+	args := buildCodexCLIArgs(codexLaunchSettings{Model: "gpt-5.6-luna"})
+	joined := strings.Join(args, "\n")
+	for _, forbidden := range []string{"model_provider=", "forced_login_method=", "model_providers."} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("official Codex launch should not override desktop auth/provider: %v", args)
+		}
+	}
+}
+
 // --- BuildEnv unit test (kept for fast unit feedback) ---
 
 func TestBuildEnv_OpenAIOverrides_ReachFinalEnv(t *testing.T) {

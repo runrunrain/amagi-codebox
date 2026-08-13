@@ -11,26 +11,26 @@ import (
 var darwinBaselinePATH = []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
 var pathLookupUserHomeDir = os.UserHomeDir
+var darwinSystemApplicationsDir = "/Applications"
 
 func resolveExecutableWithEnvForOS(osName string, command string, env []string) (string, string) {
 	if resolved := resolveCommandPathForOS(osName, command, env); resolved != "" {
+		if osName == "darwin" && shouldPreferDarwinCodexAppBundle(command, resolved) {
+			if bundled := resolveDarwinCodexAppBundle(command, env); bundled != "" {
+				return bundled, "app-bundle"
+			}
+		}
 		if isAbsoluteOrExplicitPath(command) {
 			return resolved, "explicit-path"
 		}
 		return resolved, "path-search"
 	}
 	if osName == "darwin" {
-		if resolved := resolveCommandViaShellFallback(command, env, nil); resolved != "" {
-			return resolved, "fallback"
-		}
-		// The ChatGPT and Codex macOS apps bundle a supported Codex CLI under
-		// their application resources. Finder-launched desktop apps generally
-		// inherit the minimal launchd PATH, so that bundle directory is absent
-		// even when `codex` works in an interactive terminal. Treat the known
-		// app bundle locations as a final controlled fallback, after the caller
-		// PATH and shell-specific resolution have had precedence.
 		if resolved := resolveDarwinCodexAppBundle(command, env); resolved != "" {
 			return resolved, "app-bundle"
+		}
+		if resolved := resolveCommandViaShellFallback(command, env, nil); resolved != "" {
+			return resolved, "fallback"
 		}
 	}
 	if osName == currentOS() {
@@ -39,6 +39,36 @@ func resolveExecutableWithEnvForOS(osName string, command string, env []string) 
 		}
 	}
 	return "", "missing"
+}
+
+// shouldPreferDarwinCodexAppBundle identifies installation paths that commonly
+// belong to the legacy standalone CLI channels. A caller-supplied executable
+// in an arbitrary directory remains an explicit override (and keeps tests and
+// managed enterprise wrappers viable), while known npm/Homebrew/user-bin shims
+// cannot shadow the desktop-bundled Codex.
+func shouldPreferDarwinCodexAppBundle(command, resolvedPath string) bool {
+	if !strings.EqualFold(strings.TrimSpace(command), "codex") || strings.TrimSpace(resolvedPath) == "" {
+		return false
+	}
+	normalized := strings.ToLower(filepath.ToSlash(filepath.Clean(resolvedPath)))
+	for _, marker := range []string{
+		"/.local/node/bin/",
+		"/.local/bin/",
+		"/.npm-global/bin/",
+		"/.nvm/versions/node/",
+		"/.fnm/node-versions/",
+		"/.volta/bin/",
+		"/.asdf/installs/nodejs/",
+		"/.local/share/pnpm/",
+		"/.bun/bin/",
+		"/opt/homebrew/bin/",
+		"/usr/local/bin/",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveCommandPath(command string, env []string) string {
@@ -263,7 +293,7 @@ func resolveDarwinCodexAppBundle(command string, env []string) string {
 	if home, err := pathLookupUserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		appendApplicationDir(filepath.Join(home, "Applications"))
 	}
-	appendApplicationDir("/Applications")
+	appendApplicationDir(darwinSystemApplicationsDir)
 
 	for _, appDir := range applicationDirs {
 		for _, appName := range []string{"ChatGPT.app", "Codex.app"} {

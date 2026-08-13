@@ -281,6 +281,22 @@ test.describe('M2-D PG-04 原始终端按需诊断视图', () => {
     expect(consoleErrors).toEqual([])
   })
 
+  test('旧 /terminal 深链迁移到 v1 Workspace，并继续显示历史输出', async ({ page }) => {
+    const consoleErrors = watchConsole(page)
+    await dismissGuide(page)
+    await mockRest(page)
+    await mockWs(page, {
+      autoAttach: () => attached({ latestSeq: 1, history: [output(1, 'legacy link migrated\r\n')] }),
+    })
+
+    await page.goto('/#/terminal/sess-1')
+
+    await expect(page).toHaveURL(/#\/workspace\/sess-1\?view=terminal$/)
+    await expect(page.locator('.diagnostic-badge')).toHaveText('诊断视图')
+    await expect(page.locator('.raw-terminal-host .xterm-rows')).toContainText('legacy link migrated')
+    expect(consoleErrors).toEqual([])
+  })
+
   test('软键盘视口跟随：视口收缩后 Composer 保持可达、网格 refit 上报真实尺寸', async ({ page }, testInfo) => {
     const consoleErrors = watchConsole(page)
     await dismissGuide(page)

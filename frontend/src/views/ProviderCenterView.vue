@@ -27,8 +27,8 @@
           class="pc-main-tabs"
         />
         <div class="pc-head-actions">
-          <AppButton variant="ghost" size="small" @click="handleExport">导出配置</AppButton>
-          <AppButton variant="ghost" size="small" @click="handleImport">JSON 导入</AppButton>
+          <AppButton variant="ghost" size="small" @click="handleExport">导出完整配置</AppButton>
+          <AppButton variant="ghost" size="small" @click="handleImport">导入完整配置</AppButton>
         </div>
       </div>
 
@@ -168,6 +168,9 @@ watch(
 
 // 导出/导入沿用 legacy ProviderCenter 逻辑（真实调用 wailsjs）
 function handleExport() {
+  if (!window.confirm('完整配置包含 API Key、环境变量及其他敏感设置，并将以明文写入导出文件。请妥善保管。是否继续？')) {
+    return;
+  }
   ExportConfigToFile()
     .then((path) => {
       if (path) showSuccess('配置已导出到: ' + path);
@@ -176,6 +179,9 @@ function handleExport() {
 }
 
 function handleImport() {
+  if (!window.confirm('导入 v2 完整配置会替换当前设备上的服务商、预设、密钥及应用设置。导入成功后需要重启应用。是否继续？')) {
+    return;
+  }
   ImportConfigFromFile()
     .then((result) => {
       if (result) {

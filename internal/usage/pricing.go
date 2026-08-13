@@ -207,6 +207,67 @@ func (p *PricingService) List() []ModelPricing {
 	return out
 }
 
+// Snapshot returns the complete pricing configuration, including fallback
+// policy and user edits to built-in rows.
+func (p *PricingService) Snapshot() PricingData {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.data == nil {
+		return PricingData{Models: []ModelPricing{}}
+	}
+	return PricingData{
+		Version:        p.data.Version,
+		Models:         append([]ModelPricing(nil), p.data.Models...),
+		FallbackPolicy: p.data.FallbackPolicy,
+	}
+}
+
+// ReplaceSnapshot validates and atomically persists a complete pricing table.
+func (p *PricingService) ReplaceSnapshot(next PricingData) error {
+	if next.Models == nil {
+		next.Models = []ModelPricing{}
+	}
+	seenIDs := make(map[string]struct{}, len(next.Models))
+	seenPatterns := make(map[string]struct{}, len(next.Models))
+	for _, model := range next.Models {
+		if model.ID == "" || model.ModelPattern == "" {
+			return errors.New("pricing id and modelPattern are required")
+		}
+		if model.CurrencyCode != "USD" && model.CurrencyCode != "CNY" {
+			return fmt.Errorf("pricing %q currencyCode must be USD or CNY", model.ID)
+		}
+		if _, exists := seenIDs[model.ID]; exists {
+			return fmt.Errorf("duplicate pricing id %q", model.ID)
+		}
+		if _, exists := seenPatterns[model.ModelPattern]; exists {
+			return fmt.Errorf("duplicate pricing modelPattern %q", model.ModelPattern)
+		}
+		seenIDs[model.ID] = struct{}{}
+		seenPatterns[model.ModelPattern] = struct{}{}
+	}
+	if next.FallbackPolicy.DefaultCurrency == "" {
+		next.FallbackPolicy.DefaultCurrency = "USD"
+	}
+	if next.FallbackPolicy.UnknownModelStrategy == "" {
+		next.FallbackPolicy.UnknownModelStrategy = "zero_cost"
+	}
+	if next.FallbackPolicy.CNYToUSDFixedRate <= 0 {
+		next.FallbackPolicy.CNYToUSDFixedRate = 0.14
+	}
+
+	p.mu.Lock()
+	previous := p.data
+	p.data = &next
+	p.mu.Unlock()
+	if err := p.Save(); err != nil {
+		p.mu.Lock()
+		p.data = previous
+		p.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // Upsert 新增或更新（按 ID）。内置模型允许改价但保留 IsBuiltin=true。
 func (p *PricingService) Upsert(mp ModelPricing) error {
 	if mp.ModelPattern == "" {

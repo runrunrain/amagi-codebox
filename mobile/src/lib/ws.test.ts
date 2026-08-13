@@ -10,6 +10,7 @@ import { isClientFrame } from './contract';
 import {
   SessionWsClient,
   decodeChunkToText,
+  createOutputChunkDecoder,
   encodeUtf8ToBase64,
   reconnectDelay,
   terminalCloseReason,
@@ -327,5 +328,13 @@ describe('出站帧', () => {
     for (const s of samples) {
       expect(decodeChunkToText(encodeUtf8ToBase64(s))).toBe(s);
     }
+  });
+
+  it('有序解码跨 frame 保留完整 UTF-8 字符', () => {
+    const decoder = createOutputChunkDecoder();
+    // “你” = E4 BD A0，模拟 PTY read 把字符拆成 2 + 1 字节。
+    expect(decoder.decode('5L0=')).toBe('');
+    expect(decoder.decode('oA==')).toBe('你');
+    expect(decoder.flush()).toBe('');
   });
 });

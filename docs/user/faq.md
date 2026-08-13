@@ -229,9 +229,9 @@ WKWebView 下 xterm.js 的 WebGL addon 会损坏 scrollback 纹理图集（历�
 
 详见 [./remote-mobile.md](./remote-mobile.md)。要点：
 
-1. 桌面端启用远程控制（默认 `0.0.0.0:8680`）。
-2. 其他设备打开移动端 Web UI 或 Android App，填入桌面端的局域网 IP 与 Token。
-3. Token 在桌面端的远程设置页查看（`App.GetRemoteToken()`）。
+1. 桌面端启用远程控制（默认 `0.0.0.0:8680`），并发起短时配对窗口。
+2. 用手机系统相机扫描桌面端二维码；系统会直接打开可达的局域网网页地址。
+3. 页面自动提交一次性配对码，成功后直接进入会话大厅。也可在连接页手动输入地址与配对码。
 
 桌面浏览器可在桌面端通过 `App.OpenRemoteWebUI()` 直接打开内置 Web UI，自动通过 launch grant 换 cookie，无需手工输入 Token。
 
@@ -241,7 +241,9 @@ Token 只能通过桌面端重新生成（`App.RegenerateRemoteToken()`），没
 
 ### 远程端能看到桌面终端的全部输出吗？
 
-能看到最近 1 MB 的历史输出 + 后续实时输出。1 MB 之前的更早内容会被环形缓冲区裁剪（在 UTF-8 / ANSI 安全边界处切断）。移动端 Observer 模式不会改变桌面端 PTY 尺寸。
+能看到最近 1 MB 的历史输出 + 后续实时输出。1 MB 之前的更早内容会被环形缓冲区裁剪。
+移动端通过 `/ws/v1` 流式解码 UTF-8 输出，字符跨 WebSocket 帧时也能完整显示；旧版
+`/#/terminal/{id}` 链接会自动转到新版 Workspace 终端诊断视图。
 
 ---
 

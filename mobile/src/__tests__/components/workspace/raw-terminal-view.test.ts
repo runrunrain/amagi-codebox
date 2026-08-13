@@ -128,6 +128,7 @@ describe('RawTerminalView', () => {
     });
     expect(term.options.disableStdin).toBe(true);
     expect(term.options.screenReaderMode).toBe(true);
+    expect(term.options.scrollback).toBe(1024 * 1024);
     // fit 后上报真实网格（PR-04 同一 sendResize 路径由父级承接）。
     expect(wrapper.emitted('resize')).toEqual([[80, 24]]);
     await waitWritten(term, 'replay-output\r\n');

@@ -287,8 +287,8 @@ func TestLaunchCodexSession_Terminal_OpenAI_InjectsEnvVars(t *testing.T) {
 	app.StopSession(sessionID)
 }
 
-func TestLaunchCodexSession_Terminal_Anthropic_InjectsEnvVars(t *testing.T) {
-	_, dumpFile, _ := setupFakeCodex(t)
+func TestLaunchCodexSession_Terminal_RejectsAnthropicProvider(t *testing.T) {
+	setupFakeCodex(t)
 
 	const origCodexHome = `C:\Users\test\anthropic-codex-home`
 	if err := os.Setenv("CODEX_HOME", origCodexHome); err != nil {
@@ -312,34 +312,19 @@ func TestLaunchCodexSession_Terminal_Anthropic_InjectsEnvVars(t *testing.T) {
 		t.Fatalf("SetAPIKey: %v", err)
 	}
 
-	sessionID, err := app.LaunchCodexSession(
+	_, err := app.LaunchCodexSession(
 		"claude-sonnet-4-20250514",
 		providerID,
 		"terminal",
 		newASCIIPathTempDir(t, "codex-workdir-"),
 		"",
 	)
-	if err != nil {
-		t.Fatalf("LaunchCodexSession failed: %v", err)
+	if err == nil {
+		t.Fatal("LaunchCodexSession should reject a non-OpenAI provider")
 	}
-
-	waitForDumpFile(t, dumpFile, 10*time.Second)
-	env := parseEnvDump(t, dumpFile)
-
-	if env["ANTHROPIC_API_KEY"] != "sk-ant-test-key-456" {
-		t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", env["ANTHROPIC_API_KEY"], "sk-ant-test-key-456")
+	if !strings.Contains(err.Error(), "not OpenAI-compatible") {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if env["ANTHROPIC_BASE_URL"] != "https://api.anthropic.com" {
-		t.Fatalf("ANTHROPIC_BASE_URL = %q, want %q", env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
-	}
-	if env["OPENAI_API_KEY"] == "sk-test-openai-key-123" {
-		t.Fatal("OPENAI_API_KEY should not be set to the OpenAI test value by Anthropic overrides")
-	}
-	if env["CODEX_HOME"] != origCodexHome {
-		t.Fatalf("CODEX_HOME = %q, want %q (original preserved)", env["CODEX_HOME"], origCodexHome)
-	}
-
-	app.StopSession(sessionID)
 }
 
 func TestLaunchCodexSession_Terminal_NoProvider_NoPreExistingCODEXHOME(t *testing.T) {

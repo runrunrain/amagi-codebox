@@ -483,11 +483,11 @@ func (e *configMutationEffect) renderCandidate() (path string, candidate []byte,
 		candidate, err = yaml.Marshal(cfg)
 		return path, candidate, 0o600, 0o700, err
 	case launchplan.ConfigCodex:
-		home, homeErr := os.UserHomeDir()
+		codexHome, homeErr := platform.CodexHomeDir(os.Environ())
 		if homeErr != nil {
-			return "", nil, 0, 0, fmt.Errorf("get home dir: %w", homeErr)
+			return "", nil, 0, 0, fmt.Errorf("get Codex home: %w", homeErr)
 		}
-		path = filepath.Join(home, ".codex", "config.toml")
+		path = filepath.Join(codexHome, "config.toml")
 		return path, nil, 0o644, 0o755, nil
 	default:
 		return "", nil, 0, 0, fmt.Errorf("unsupported config target: %d", e.target)

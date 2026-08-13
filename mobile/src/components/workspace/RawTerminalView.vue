@@ -121,7 +121,10 @@ onMounted(async () => {
       screenReaderMode: true,
       // 原始流保真：PT 输出自带 \r\n，不做 EOL 改写。
       convertEol: false,
-      scrollback: 5000,
+      // 服务端 replay window 最多 1 MiB。最坏情况下每个字节都是换行，
+      // 因而用 1 Mi 行作为上限，避免内容已到浏览器却又被 xterm 二次裁掉。
+      // 诊断视图按需加载，常规移动端首屏不会承担这部分缓冲成本。
+      scrollback: 1024 * 1024,
     }) as TerminalLike;
     const fit = new fitModule.FitAddon() as FitAddonLike;
     // loadAddon 为 xterm 实例方法；结构类型上未声明，运行时调用。

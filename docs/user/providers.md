@@ -297,8 +297,8 @@ type OpenCodeBinding struct {
 
 Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 [./usage.md](./usage.md#provider-center-provider-providercenterview)）：
 
-- **导出配置**：基于 `ExportConfig` 结构生成 JSON，包含 providers、agent_teams、terminal_presets、opencode_presets。导出时 Anthropic / OpenAI 内嵌的 `api_key` 会被清空；仅顶层 `api_key` 写出当前 provider 级统一密钥。
-- **JSON 导入**：从 JSON 还原配置。导入时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥：优先顶层 `api_key`，否则按首选格式回退到 legacy `api_key`。
+- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、工作区选择、代理规则、价格表和 OpenCode 全局配置。Anthropic / OpenAI 内嵌的 `api_key` 仍会清空，当前 provider 统一密钥写在顶层；`portable.secrets` 保存全部其余密钥。导出文件含明文凭据。
+- **导入完整配置**：v2 快照按整体替换语义还原并在失败时尽力回滚，成功后需重启；v1 文件保持旧协议兼容。导入 provider 时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥：优先顶层 `api_key`，否则按首选格式回退到 legacy `api_key`。
 
 导入/导出涉及的密钥同步会经过 secrets 服务（加密存储），明文不会进入 `config.json`。安全机制详见 [../security.md](../security.md)。
 

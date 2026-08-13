@@ -90,19 +90,6 @@ func (s *ConfigService) Load() error {
 		cfg.Models = map[string]Provider{}
 	}
 
-	// 合并默认提供商（保留用户配置，添加缺失的默认提供商）
-	defaultCfg := DefaultConfig()
-	for name, provider := range defaultCfg.Models {
-		if _, exists := cfg.Models[name]; !exists {
-			cfg.Models[name] = provider
-		}
-	}
-
-	// 迁移：将旧的 anthropic API Key 配置升级为 OAuth
-	if p, ok := cfg.Models["anthropic"]; ok && p.AuthKey != AuthTypeOAuth {
-		cfg.Models["anthropic"] = defaultCfg.Models["anthropic"]
-	}
-
 	if migrateProviderTypes(cfg.Models) {
 		if err := s.saveLockedConfig(&cfg); err != nil {
 			return fmt.Errorf("migrate provider types: %w", err)
@@ -120,15 +107,10 @@ func (s *ConfigService) Load() error {
 	// 自动迁移：terminal_presets.opencode -> opencode_presets（新模型）
 	migrateTerminalPresetsToOpenCodePresets(&cfg)
 
-	// 幂等补齐 Pi 引擎内置默认终端预设（仅补缺失项，不覆盖用户配置）
-	piSeeded := seedDefaultPiPresets(&cfg)
-	// 幂等补齐 omp 引擎内置默认终端预设（与 pi 同构，语义一致）
-	ompSeeded := seedDefaultOmpPresets(&cfg)
-
-	// 若 terminal_preset key 被清洗或 Pi/omp 预设被补齐，持久化幂等结果
-	if presetKeyCleaned || piSeeded || ompSeeded {
+	// Provider presets are user-owned. Do not repopulate deleted/default entries.
+	if presetKeyCleaned {
 		if err := s.saveLockedConfig(&cfg); err != nil {
-			return fmt.Errorf("persist terminal preset maintenance: %w", err)
+			return fmt.Errorf("persist terminal preset cleanup: %w", err)
 		}
 	}
 
@@ -283,56 +265,6 @@ func migrateProviderToDualFormat(models map[string]Provider) {
 
 		models[name] = p
 	}
-}
-
-// seedDefaultPiPresets 幂等地补齐 Pi 引擎的内置默认终端预设。
-//
-// 仅补齐「内置 provider 且 Pi 桶中缺失」的条目；已存在（含用户自定义或已删除后留空）
-// 的 key 不被覆盖，保证幂等与用户操作优先。
-// 返回是否发生变更（用于决定是否需要写盘）。
-func seedDefaultPiPresets(cfg *AppConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	if cfg.TerminalPresets == nil {
-		cfg.TerminalPresets = &TerminalPresetsConfig{}
-	}
-	if cfg.TerminalPresets.Pi == nil {
-		cfg.TerminalPresets.Pi = map[string]TerminalPreset{}
-	}
-	changed := false
-	for key, tp := range DefaultPiPresets() {
-		if _, exists := cfg.TerminalPresets.Pi[key]; !exists {
-			cfg.TerminalPresets.Pi[key] = tp
-			changed = true
-		}
-	}
-	return changed
-}
-
-// seedDefaultOmpPresets 幂等地补齐 omp 引擎的内置默认终端预设。
-//
-// 语义与 seedDefaultPiPresets 完全一致：仅补齐「内置 provider 且 Omp 桶中缺失」
-// 的条目；已存在（含用户自定义或已删除后留空）的 key 不被覆盖，保证幂等与
-// 用户操作优先。返回是否发生变更（用于决定是否需要写盘）。
-func seedDefaultOmpPresets(cfg *AppConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	if cfg.TerminalPresets == nil {
-		cfg.TerminalPresets = &TerminalPresetsConfig{}
-	}
-	if cfg.TerminalPresets.Omp == nil {
-		cfg.TerminalPresets.Omp = map[string]TerminalPreset{}
-	}
-	changed := false
-	for key, tp := range DefaultOmpPresets() {
-		if _, exists := cfg.TerminalPresets.Omp[key]; !exists {
-			cfg.TerminalPresets.Omp[key] = tp
-			changed = true
-		}
-	}
-	return changed
 }
 
 // CleanupMigratedProviderPresets 清理已迁移到 terminal_presets 的旧 provider.presets。
@@ -524,6 +456,44 @@ func (s *ConfigService) GetProviders() map[string]Provider {
 		out[k] = v
 	}
 	return out
+}
+
+// ReplaceProviders replaces the complete provider snapshot in one persistence
+// transaction. It is used by full-device import so providers removed from the
+// exported source do not survive as stale local entries.
+func (s *ConfigService) ReplaceProviders(providers map[string]Provider) error {
+	if providers == nil {
+		providers = map[string]Provider{}
+	}
+	next := make(map[string]Provider, len(providers))
+	for name, provider := range providers {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return errors.New("provider name is required")
+		}
+		if strings.Contains(name, "/") {
+			return fmt.Errorf("invalid provider name %q: must not contain '/'", name)
+		}
+		if provider.Presets == nil {
+			provider.Presets = map[string]Preset{}
+		}
+		provider = scrubProviderAPIKeys(normalizeProviderType(provider.SyncLegacyFields()))
+		warnSensitiveLiteralHeaders(name, provider)
+		next[name] = provider
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	previous := s.config.Models
+	s.config.Models = next
+	if err := s.saveLocked(); err != nil {
+		s.config.Models = previous
+		return err
+	}
+	return nil
 }
 
 // GetProviderNames 返回所有已配置的提供商名称（排序后）
@@ -857,6 +827,15 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 	// 校验 reasoning_effort 字段
 	if !IsValidClaudeReasoningEffort(preset.Parameters.ReasoningEffort) {
 		return fmt.Errorf("invalid reasoning_effort value: %s (valid: empty, low, medium, high, xhigh, max)", preset.Parameters.ReasoningEffort)
+	}
+	if terminalType == string(TerminalPresetCodex) && preset.Parameters.ContextWindow != nil {
+		contextWindow := preset.Parameters.ContextWindow
+		if contextWindow.ModelContextWindow < 0 || contextWindow.AutoCompactTokenLimit < 0 {
+			return errors.New("Codex context window values must be non-negative")
+		}
+		if contextWindow.ModelContextWindow > 0 && contextWindow.AutoCompactTokenLimit > contextWindow.ModelContextWindow {
+			return errors.New("Codex auto compact token limit cannot exceed the model context window")
+		}
 	}
 	preset.NormalizeOpenCodeCfg()
 

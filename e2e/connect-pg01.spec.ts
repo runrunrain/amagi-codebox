@@ -3,7 +3,7 @@
 // 范围：PG-01 组件级浏览器证据。API 一律 Playwright route mock（非生产 mock）：
 //   · 四类诊断（网络不可达 / 服务未开启或版本不兼容 / 未配对 / 已授权可进）
 //   · 配对成功 201（Set-Cookie 由 mock 下发）与失败错误码（window_expired/unpaired）
-//   · 配对窗口倒计时与过期自动回态（深链 expiresAt 真实路径，非测试钩子）
+//   · 二维码 URL 深链自动配对、配对窗口倒计时与过期自动回态
 //   · 扫码降级（headless 无摄像头 → 分类文案 + 手动入口）
 //   · 320px 回流（mobile-320 project 上无横向溢出）
 // 真服务器 E2E（真 Go 宿主、真 Cookie、真窗口生命周期）归 D2，不在本 spec 伪证。
@@ -244,10 +244,45 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
     expect(consoleErrors).toEqual([])
   })
 
-  test('配对窗口倒计时：深链 expiresAt 真实路径 → 等宽倒计时 + 过期自动回态', async ({ page }) => {
+  test('二维码 URL 深链：打开网页后自动配对、清除材料并进入大厅', async ({ page }) => {
+    const consoleErrors = watchConsole(page)
+    let pairCalls = 0
+    await page.route(`${BASE}/pairing/complete`, async (route) => {
+      pairCalls += 1
+      const body = route.request().postDataJSON() as { code?: string; deviceName?: string }
+      expect(body.code).toBe('QR-DIRECT-CODE')
+      expect(body.deviceName).toBeTruthy()
+      await fulfillJson(route, 201, {
+        device: { id: 'dev-qr', name: body.deviceName, pairedAt: '2026-08-13T08:00:00Z' },
+        host: HOST_SUMMARY,
+      })
+    })
+    await page.route(`${BASE}/host/summary`, (route) => {
+      if (pairCalls === 0) {
+        return fulfillJson(route, 401, apiErrorBody('auth.unpaired', 'auth', 'device not paired', 're-pair'))
+      }
+      return fulfillJson(route, 200, HOST_SUMMARY)
+    })
+    await page.route(`${BASE}/sessions`, (route) => fulfillJson(route, 200, []))
+
+    const expiresAt = new Date(Date.now() + 90_000).toISOString()
+    await page.goto(`/#/connect?code=QR-DIRECT-CODE&expiresAt=${encodeURIComponent(expiresAt)}`)
+
+    await expect(page).toHaveURL(/#\/lobby$/)
+    await expect(page.locator('.lobby-title')).toHaveText('会话大厅')
+    expect(pairCalls).toBe(1)
+    expect(page.url()).not.toContain('code=')
+    expect(page.url()).not.toContain('expiresAt=')
+    expect(consoleErrors).toEqual([])
+  })
+
+  test('自动配对提交期间：深链 expiresAt 显示等宽倒计时', async ({ page }) => {
     const consoleErrors = watchConsole(page)
     await mockUnpaired(page)
-    // 90s 窗口：断言倒计时芯片与等宽数字；随后短窗口用例验证过期回态。
+    await page.route(`${BASE}/pairing/complete`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      await fulfillJson(route, 401, apiErrorBody('auth.unpaired', 'auth', 'invalid pairing code', 're-pair'))
+    })
     const expiresAt = Date.now() + 90_000
     await page.goto(`/#/connect?code=DEEP-LINK-CODE&expiresAt=${expiresAt}`)
 
@@ -258,7 +293,8 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
     await expect(page.locator('.countdown-time')).toHaveText(/^0[01]:\d{2}$/)
     const variant = await page.locator('.countdown-time').evaluate((el) => getComputedStyle(el).fontVariantNumeric)
     expect(variant).toContain('tabular-nums')
-    // 深链配对码已进入确认表单（诚实呈现，不自动提交）。
+    // 自动提交失败后仍保留确认表单，允许人工核对和重试。
+    await expect(page.locator('.pair-error-title')).toHaveText('配对码不正确或已被使用')
     await expect(page.locator('#pair-code')).toHaveValue('DEEP-LINK-CODE')
     await page.screenshot({ path: 'test-results/pg01-countdown.png', fullPage: true })
     expect(consoleErrors).toEqual([])
@@ -267,6 +303,10 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
   test('配对窗口倒计时：过期自动回态（3s 窗口 → E-02 面板 + 材料清除）', async ({ page }) => {
     const consoleErrors = watchConsole(page)
     await mockUnpaired(page)
+    await page.route(`${BASE}/pairing/complete`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000))
+      await fulfillJson(route, 401, apiErrorBody('auth.window_expired', 'auth', 'pairing window closed', 're-pair'))
+    })
     const expiresAt = Date.now() + 3_000
     await page.goto(`/#/connect?code=SHORT-LIVED&expiresAt=${expiresAt}`)
 

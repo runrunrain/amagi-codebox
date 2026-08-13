@@ -7,7 +7,7 @@ import ConnectionStatus from './ConnectionStatus.vue'
 const route = useRoute()
 const drawerOpen = ref(false)
 
-const isTerminalView = () => route.name === 'terminal'
+const isTerminalView = () => route.name === 'workspace' && route.query.view === 'terminal'
 // M1-D1：PG-01 连接配对页 / PG-02 大厅使用独立壳（VT 浅色、无 legacy 导航）
 const isBareView = () => route.meta.bare === true
 

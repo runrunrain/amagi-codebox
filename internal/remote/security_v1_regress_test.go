@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -292,9 +293,40 @@ func TestCreatePairingWindowBaseURL(t *testing.T) {
 	}
 
 	srv.SetHost("0.0.0.0")
+	srv.interfaceAddrs = func() ([]net.Addr, error) { return nil, nil }
 	info2, _ := srv.CreatePairingWindow(true)
 	if info2.BaseURL != "" || !info2.AddressRequired {
 		t.Fatalf("wildcard: BaseURL=%q AddressRequired=%v", info2.BaseURL, info2.AddressRequired)
+	}
+}
+
+func TestCreatePairingWindowWildcardAdvertisesReachableLANAddress(t *testing.T) {
+	dir := t.TempDir()
+	clk := newSecFakeClock(time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC))
+	opts := newSecurityOptions(dir, validHostSummary, clk, rand.Reader, NewVolatileSecurityEventSink())
+	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	t.Cleanup(srv.log.Close)
+	srv.LoadSecurityState()
+	srv.pairing.Resume()
+	srv.SetHost("0.0.0.0")
+	srv.SetPort(8680)
+	srv.interfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{
+			&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+			&net.IPNet{IP: net.ParseIP("203.0.113.8"), Mask: net.CIDRMask(24, 32)},
+			&net.IPNet{IP: net.ParseIP("192.168.31.9"), Mask: net.CIDRMask(24, 32)},
+		}, nil
+	}
+
+	info, err := srv.CreatePairingWindow(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.BaseURL != "http://192.168.31.9:8680" || info.AddressRequired {
+		t.Fatalf("BaseURL=%q AddressRequired=%v", info.BaseURL, info.AddressRequired)
+	}
+	if strings.Contains(info.BaseURL, info.Code) {
+		t.Fatal("code leaked into server-observed BaseURL")
 	}
 }
 

@@ -69,7 +69,7 @@ Five CLI app types (plus a deprecated internal one) defined in `internal/session
 
 ## Conventions
 
-- **Config lives in `~/.amagi-codebox/`**: `config.json` (providers/presets), `secrets.json` (encrypted keys), `settings.json`, `envvars.json`, `settings_amagi.json`, `global-enabled.json`. The app reads/writes these via the service layer; don't parse them ad hoc.
+- **Config lives in `~/.amagi-codebox/`**: `models.json` (providers/presets), `secrets.enc` (platform-protected keys), `settings.json`, `paths.json`, `envvars.json`, `workspaces.json`, `global-enabled.json`, proxy configuration, pricing, and remote security state. The app reads/writes these via the service layer; don't parse them ad hoc. Fresh installs intentionally contain no provider or terminal-preset seeds.
 - **JSON edits**: this repo uses `tidwall/gjson` + `tidwall/sjson` for surgical JSON mutation (config files, manifests) rather than unmarshal-mutate-marshal in many places. Match that style for partial edits.
 - **Code & docs are bilingual** (Chinese + English) — follow the surrounding file's language.
 - **Amagi runtime artifacts**, not app code: `agent-outputs/`, `.amagi/`, `projects-memory/`. The `.amagi-codebox/frontend-redesign` handoff doc in `demo/` describes a prior frontend rework.

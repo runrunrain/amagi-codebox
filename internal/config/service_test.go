@@ -377,18 +377,15 @@ func TestMigrateProviderPresetsToTerminal_Idempotent(t *testing.T) {
 }
 
 func TestMigrateProviderPresetsToTerminal_EmptyConfig(t *testing.T) {
-	// Verify migration on a service with no extra providers beyond defaults.
-	// DefaultConfig already has providers, so migration will migrate those,
-	// but calling again should be idempotent.
+	// A clean installation has no bundled providers or presets to migrate.
 	svc := newTestConfigService(t)
 
-	// First migration migrates all default provider presets
-	count1, _, err := svc.MigrateProviderPresetsToTerminal()
+	count1, changed1, err := svc.MigrateProviderPresetsToTerminal()
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if count1 == 0 {
-		t.Fatal("default config should have at least some provider presets to migrate")
+	if count1 != 0 || changed1 {
+		t.Fatalf("clean config migration = (%d, %v), want (0, false)", count1, changed1)
 	}
 
 	// Second call should be no-op
@@ -2476,6 +2473,19 @@ func TestSaveTerminalPreset_InvalidReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestSaveTerminalPreset_CodexRejectsInvalidContextWindow(t *testing.T) {
+	svc := newTestConfigService(t)
+	preset := TerminalPreset{
+		Name: "Codex invalid context", Provider: "openai", Model: "gpt-5.6-luna",
+		Parameters: Parameters{ContextWindow: &ContextWindowConfig{
+			ModelContextWindow: 1000, AutoCompactTokenLimit: 1200,
+		}},
+	}
+	if err := svc.SaveTerminalPreset("codex", "openai/invalid-context", preset); err == nil {
+		t.Fatal("Codex preset accepted auto compact limit larger than context window")
+	}
+}
+
 func TestIsValidClaudeReasoningEffort(t *testing.T) {
 	tests := []struct {
 		input string
@@ -2973,14 +2983,14 @@ func TestSaveProviderRetainsHeadersAndAuthHeader(t *testing.T) {
 }
 
 // ============================================================================
-// Omp 终端预设种子（seedDefaultOmpPresets）
+// Omp 干净初始环境
 // ============================================================================
 
-// TestOmpPresetSeedingSeedsDefaults 验证首轮 Load 补齐 5 条 omp 默认预设并落盘。
+// TestOmpPresetSeedingSeedsDefaults 验证首轮 Load 不注入 omp 服务商预设。
 func TestOmpPresetSeedingSeedsDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
-	// 空配置（无 terminal_presets）触发种子补齐
+	// 空配置（无 terminal_presets）必须保持干净。
 	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2992,25 +3002,16 @@ func TestOmpPresetSeedingSeedsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTerminalPresets: %v", err)
 	}
-	if len(presets) != len(DefaultOmpPresets()) {
-		t.Fatalf("expected %d omp presets, got %d: %#v", len(DefaultOmpPresets()), len(presets), presets)
+	if len(presets) != 0 {
+		t.Fatalf("expected clean omp presets, got %#v", presets)
 	}
-	for key, want := range DefaultOmpPresets() {
-		got, ok := presets[key]
-		if !ok {
-			t.Fatalf("missing omp preset key %q", key)
-		}
-		if got.Provider != want.Provider || got.Model != want.Model {
-			t.Fatalf("omp preset %q = %+v, want provider=%s model=%s", key, got, want.Provider, want.Model)
-		}
-	}
-	// 种子结果应已落盘（Load 检测到变更并持久化）
+	// Load 不应为了种子生成 terminal_presets。
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"omp"`) {
-		t.Fatal("models.json should contain terminal_presets.omp after seeding")
+	if strings.Contains(string(data), `"omp"`) {
+		t.Fatal("models.json should not contain a seeded terminal_presets.omp")
 	}
 }
 
@@ -3041,8 +3042,7 @@ func TestOmpPresetSeedingIdempotent(t *testing.T) {
 	}
 }
 
-// TestOmpPresetSeedingKeepsUserEntry 验证用户已建的相同 key 不被种子覆盖，
-// 其余缺失条目照常补齐。
+// TestOmpPresetSeedingKeepsUserEntry 验证用户条目保留且不补入其它预设。
 func TestOmpPresetSeedingKeepsUserEntry(t *testing.T) {
 	dir := t.TempDir()
 	userModel := "claude-user-model"
@@ -3076,13 +3076,7 @@ func TestOmpPresetSeedingKeepsUserEntry(t *testing.T) {
 	if got := presets["anthropic/default"]; got.Model != userModel {
 		t.Fatalf("user entry was overwritten: got %+v, want model=%s", got, userModel)
 	}
-	// 其余 4 条补齐
-	if len(presets) != len(DefaultOmpPresets()) {
-		t.Fatalf("expected %d omp presets, got %d", len(DefaultOmpPresets()), len(presets))
-	}
-	for key := range DefaultOmpPresets() {
-		if _, ok := presets[key]; !ok {
-			t.Fatalf("missing omp preset key %q", key)
-		}
+	if len(presets) != 1 {
+		t.Fatalf("expected only the user preset, got %d: %#v", len(presets), presets)
 	}
 }

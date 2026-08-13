@@ -146,6 +146,28 @@ func TestApplyPathStateToStatus_ShellFallback(t *testing.T) {
 	}
 }
 
+func TestApplyPathStateToStatus_CodexAppBundleIsHealthyOutsidePATH(t *testing.T) {
+	status := &CheckStatus{Tool: ToolCodex, InstallMethod: InstallMethodUnknown}
+	rr := resolveResult{
+		executablePath: "/Applications/ChatGPT.app/Contents/Resources/codex",
+		systemPATHOk:   false,
+		pathState:      PathStateOutsidePATH,
+		pathSource:     "app-bundle",
+	}
+
+	applyPathStateToStatus(status, rr, ToolCodex)
+
+	if !status.PATHOk || status.SystemPATHOk {
+		t.Fatalf("app bundle status path flags = PATHOk:%v SystemPATHOk:%v", status.PATHOk, status.SystemPATHOk)
+	}
+	if status.PathState != PathStateOutsidePATH || status.PathSource != "app-bundle" {
+		t.Fatalf("app bundle path metadata = %q/%q", status.PathState, status.PathSource)
+	}
+	if len(status.Issues) != 0 || len(status.Solutions) != 0 {
+		t.Fatalf("desktop-bundled Codex should not report a PATH repair issue: issues=%v solutions=%v", status.Issues, status.Solutions)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 2. Darwin/Linux Claude install commands do not contain powershell.exe/winget
 // ---------------------------------------------------------------------------

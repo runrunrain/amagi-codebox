@@ -38,6 +38,60 @@ func (s *Service) Save() error {
 	return writeJSONFile(s.globalEnabledPath, globalEnabledFile{Entries: globalEnabled})
 }
 
+// GetPortableConfig returns a deep copy of workspace selections.
+func (s *Service) GetPortableConfig() PortableConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return PortableConfig{
+		Workspaces:    cloneWorkspaces(s.workspaces),
+		GlobalEnabled: cloneGlobalEnabled(s.globalEnabled),
+	}
+}
+
+// ReplacePortableConfig replaces workspace bookkeeping without deploying or
+// deleting any files on the destination machine.
+func (s *Service) ReplacePortableConfig(next PortableConfig) error {
+	workspaces := cloneWorkspaces(next.Workspaces)
+	if workspaces == nil {
+		workspaces = []Workspace{}
+	}
+	seenIDs := make(map[string]struct{}, len(workspaces))
+	seenPaths := make(map[string]struct{}, len(workspaces))
+	for i := range workspaces {
+		workspaces[i] = normalizeWorkspace(workspaces[i])
+		if workspaces[i].ID == "" || workspaces[i].Path == "" || workspaces[i].Path == "." {
+			return errors.New("workspace id and path are required")
+		}
+		if _, exists := seenIDs[workspaces[i].ID]; exists {
+			return fmt.Errorf("duplicate workspace id: %s", workspaces[i].ID)
+		}
+		if _, exists := seenPaths[workspaces[i].Path]; exists {
+			return fmt.Errorf("duplicate workspace path: %s", workspaces[i].Path)
+		}
+		seenIDs[workspaces[i].ID] = struct{}{}
+		seenPaths[workspaces[i].Path] = struct{}{}
+	}
+	globalEnabled := cloneGlobalEnabled(next.GlobalEnabled)
+	if globalEnabled == nil {
+		globalEnabled = []GlobalEnabled{}
+	}
+
+	s.mu.Lock()
+	previousWorkspaces := s.workspaces
+	previousGlobal := s.globalEnabled
+	s.workspaces = workspaces
+	s.globalEnabled = globalEnabled
+	s.mu.Unlock()
+	if err := s.Save(); err != nil {
+		s.mu.Lock()
+		s.workspaces = previousWorkspaces
+		s.globalEnabled = previousGlobal
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 func (s *Service) readWorkspacesFile() ([]Workspace, error) {
 	var raw workspacesFile
 	if err := readJSONFile(s.workspacesPath, &raw); err != nil {

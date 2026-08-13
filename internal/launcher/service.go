@@ -372,11 +372,29 @@ func (s *LauncherService) LaunchCodexGuarded(
 	envOverrides map[string]string,
 	beforeRawStart func() error,
 ) (*LaunchResult, error) {
+	args := []string{}
+	if modelName != "" {
+		args = append(args, "-m", modelName)
+	}
+	return s.LaunchCodexArgsGuarded(sessionID, args, mode, workDir, envOverrides, beforeRawStart)
+}
+
+// LaunchCodexArgsGuarded launches Codex with the already-resolved argument
+// list. It carries per-session -c overrides from CodeBox presets without
+// rewriting the user's persistent Codex defaults.
+func (s *LauncherService) LaunchCodexArgsGuarded(
+	sessionID string,
+	args []string,
+	mode session.LaunchMode,
+	workDir string,
+	envOverrides map[string]string,
+	beforeRawStart func() error,
+) (*LaunchResult, error) {
 	env := BuildEnv(s.baseEnv(), envOverrides)
 
-	cmd := s.buildCodexCmd(modelName, workDir, env)
+	cmd := s.buildCodexArgsCmd(args, workDir, env)
 
-	s.log.Info("launcher", "正在启动 Codex 进程", fmt.Sprintf("sessionID=%s mode=%s model=%s", sessionID, mode, modelName))
+	s.log.Info("launcher", "正在启动 Codex 进程", fmt.Sprintf("sessionID=%s mode=%s", sessionID, mode))
 
 	if beforeRawStart != nil {
 		if err := beforeRawStart(); err != nil {
@@ -403,9 +421,14 @@ func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string)
 	if modelName != "" {
 		args = append(args, "-m", modelName)
 	}
-	cmd := exec.Command(s.resolveCLIPath("codex", env), args...)
+	return s.buildCodexArgsCmd(args, workDir, env)
+}
+
+func (s *LauncherService) buildCodexArgsCmd(args []string, workDir string, env []string) *exec.Cmd {
+	effectiveEnv := platform.BuildEffectiveEnv(env)
+	cmd := exec.Command(s.resolveCLIPath("codex", effectiveEnv), args...)
 	cmd.Dir = workDir
-	cmd.Env = env
+	cmd.Env = effectiveEnv
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

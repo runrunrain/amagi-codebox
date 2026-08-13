@@ -1,7 +1,8 @@
 <!--
   卡③ 配对卡（PG-05 PairingCard 契约：二维码 + 等宽倒计时 + 取消）
   - CreateRemotePairingWindow 需用户显式勾选 terminal-exposure 确认（不预勾选）。
-  - QR 载荷为一次性配对材料（baseUrl + 短码），不含永久主凭据（PR-01）；
+  - QR 载荷为可直接打开的 Web URL；一次性配对材料只放在 hash query 中，
+    不会随 HTTP 请求发送给服务器，也不含永久主凭据（PR-01）；
     addressRequired（无具体 LAN IP）时不渲染 QR，展示短码 + 手动输入指引。
   - 轮询 GetRemotePairingWindow 检测窗口结束（过期/配对完成/外部取消）。
 -->
@@ -56,7 +57,7 @@
       <div class="pair-live">
         <div v-if="activeWindow.baseUrl" class="pair-qr">
           <canvas ref="qrCanvas" class="pair-qr-canvas" data-testid="pairing-qr" aria-label="配对二维码" />
-          <p class="pair-qr-hint">用远程设备扫码，或在设备上手动输入地址与配对码</p>
+          <p class="pair-qr-hint">用系统相机扫码即可打开网页，并自动带入一次性配对码</p>
         </div>
         <div v-else class="pair-noaddr" role="note">
           当前监听地址不是具体局域网 IP，二维码不可用。请在远程设备上手动输入本机地址与下方配对码。
@@ -170,8 +171,15 @@ async function startPairing() {
 
 async function renderQR(info: remote.PairingWindowInfo) {
   if (!qrCanvas.value || !info.baseUrl) return;
-  // 一次性配对材料：baseUrl + 短码；不含 token/主凭据（PR-01）
-  const payload = JSON.stringify({ v: 1, url: info.baseUrl, code: info.code });
+  // 使用标准 http(s) URL，让系统相机/扫码器可以直接打开。配对码与过期时间
+  // 只存在于 hash query（# 后），浏览器首个 HTTP 请求不会把它们发送到服务器；
+  // ConnectPage 读取后会立即从地址栏清除。不含 token/永久主凭据（PR-01）。
+  const target = new URL(info.baseUrl);
+  target.pathname = '/';
+  target.search = '';
+  const params = new URLSearchParams({ code: info.code, expiresAt: info.expiresAt });
+  target.hash = `/connect?${params.toString()}`;
+  const payload = target.toString();
   // QR 颜色取自 VT 令牌计算值（qrcode canvas API 需具体色值，禁硬编码）
   const scope = qrCanvas.value.closest('.remote-cc') ?? document.documentElement;
   const cs = getComputedStyle(scope as Element);

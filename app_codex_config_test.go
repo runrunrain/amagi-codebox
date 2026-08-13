@@ -342,6 +342,31 @@ func TestIsCustomCodexOpenAIBaseURL(t *testing.T) {
 	}
 }
 
+func TestSyncCodexConfigUsesCODEXHOME(t *testing.T) {
+	home := t.TempDir()
+	customCodexHome := filepath.Join(t.TempDir(), "codex-state")
+	setTestUserHome(t, home)
+	t.Setenv("CODEX_HOME", customCodexHome)
+	configPath := filepath.Join(customCodexHome, "config.toml")
+	if err := os.MkdirAll(customCodexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("model = \"old\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncCodexConfigModel("gpt-5.6-luna"); err != nil {
+		t.Fatalf("syncCodexConfigModel: %v", err)
+	}
+	got := readCodexTestConfig(t, configPath)
+	if !strings.Contains(got, `model = "gpt-5.6-luna"`) {
+		t.Fatalf("CODEX_HOME config was not updated: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("default ~/.codex config should remain untouched, stat err=%v", err)
+	}
+}
+
 func hasTopLevelLine(content, want string) bool {
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)

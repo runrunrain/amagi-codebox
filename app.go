@@ -53,7 +53,11 @@ import (
 )
 
 type codexLaunchSettings struct {
-	Model string
+	Model              string
+	ReasoningEffort    string
+	ModelContextWindow int
+	AutoCompactLimit   int
+	ProviderBaseURL    string
 }
 
 // externalLauncherPort is the narrow Launcher-owned lifecycle used by external
@@ -67,6 +71,13 @@ type externalLauncherPort interface {
 	IsRunning(string) bool
 	Stop(string) error
 	StopAll()
+}
+
+// codexArgsExternalLauncherPort is the current production Codex launcher
+// contract. The legacy string-model method remains on externalLauncherPort so
+// persisted recovery test doubles and older embedders stay source compatible.
+type codexArgsExternalLauncherPort interface {
+	LaunchCodexArgsGuarded(string, []string, session.LaunchMode, string, map[string]string, func() error) (*launcher.LaunchResult, error)
 }
 
 // externalCleanupClaim is the exact App-owned handoff after an OS process
@@ -295,6 +306,12 @@ type App struct {
 	// (Settings.saveMu / Server.mu) are always acquired AFTER this one, so lock
 	// ordering stays remoteLifecycleMu → inner.
 	remoteLifecycleMu sync.Mutex
+
+	// portableConfigMu serializes complete export/import dialogs and their
+	// cross-service snapshots. Individual services remain independently locked;
+	// this prevents two Wails transfer requests from interleaving their
+	// replacement/rollback sequences.
+	portableConfigMu sync.Mutex
 
 	// codexGlobalMu serializes the codex-global headroom orchestration between
 	// the async startup restore goroutine (restoreCodexGlobalHeadroomOnStartup)
@@ -2402,6 +2419,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 
 	// ---- terminal_presets 桥接 ----
 	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
+	var selectedPresetParams *config.Parameters
 	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("codex", modelName)
 	tpFound := tpErr == nil && tp != nil
 	if tpFound {
@@ -2409,6 +2427,8 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 			providerID = tpProvider
 		}
 		modelName = tp.Model
+		params := tp.Parameters
+		selectedPresetParams = &params
 		a.Log.Info("session", "Codex 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
 	}
 
@@ -2418,6 +2438,8 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	if !tpFound && providerID != "" {
 		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
 			if preset, ok := provider.Presets[modelName]; ok {
+				params := preset.Parameters
+				selectedPresetParams = &params
 				resolvedModel := preset.Model
 				if resolvedModel == "" {
 					resolvedModel = provider.DefaultModel
@@ -2498,24 +2520,22 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 	if providerID != "" {
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
+			if !isOpenAIProvider(*provider) {
+				return "", fmt.Errorf("Codex provider %q is not OpenAI-compatible", providerID)
+			}
 			launchSettings = resolveCodexLaunchSettings(*provider, launchSettings.Model)
 			injectProviderEnv(providerID, provider)
-		}
-	}
-
-	// 同步 Codex config.toml。仅当 OpenAI 兼容 provider 同时具备自定义 BaseURL 和 API key 时，
-	// 写入自定义 provider 与 api 登录约束；官方/无 BaseURL 路径会清理 amagi 托管配置，避免污染官方登录。
-	if launchSettings.Model != "" {
-		var err error
-		if codexProviderBaseURL != "" {
-			err = syncCodexCustomProviderConfig(launchSettings.Model, codexProviderBaseURL)
+			if baseURL := provider.EffectiveBaseURL("openai"); isCustomCodexOpenAIBaseURL(baseURL) && codexProviderBaseURL == "" {
+				return "", fmt.Errorf("Codex provider %q requires an API key for custom endpoint %s", providerID, baseURL)
+			}
 		} else {
-			err = syncCodexConfigModel(launchSettings.Model)
-		}
-		if err != nil {
-			a.Log.Warn("codex", "sync config.toml model failed", fmt.Sprintf("model=%s err=%v", launchSettings.Model, err))
+			return "", fmt.Errorf("resolve Codex provider %q: %w", providerID, err)
 		}
 	}
+	if selectedPresetParams != nil {
+		applyCodexPresetParameters(&launchSettings, *selectedPresetParams)
+	}
+	launchSettings.ProviderBaseURL = codexProviderBaseURL
 
 	// Embedded identity stays hidden until PTY, Control and H1 activation finish.
 	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
@@ -2543,10 +2563,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 
-		args := []string{}
-		if launchSettings.Model != "" {
-			args = append(args, "-m", launchSettings.Model)
-		}
+		args := buildCodexCLIArgs(launchSettings)
 		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, env, args)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -2642,10 +2659,17 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		a.Sessions.MarkFailed(sess.ID, startErr.Error())
 		return "", startErr
 	}
-	result, err := external.LaunchCodexGuarded(
-		sess.ID, launchSettings.Model, launchMode, workDir, envOverrides,
-		func() error { return a.authorizeExternalRawStart(attempt, startGeneration) },
-	)
+	beforeRawStart := func() error { return a.authorizeExternalRawStart(attempt, startGeneration) }
+	var result *launcher.LaunchResult
+	if argsLauncher, ok := external.(codexArgsExternalLauncherPort); ok {
+		result, err = argsLauncher.LaunchCodexArgsGuarded(
+			sess.ID, buildCodexCLIArgs(launchSettings), launchMode, workDir, envOverrides, beforeRawStart,
+		)
+	} else {
+		result, err = external.LaunchCodexGuarded(
+			sess.ID, launchSettings.Model, launchMode, workDir, envOverrides, beforeRawStart,
+		)
+	}
 	if err != nil {
 		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
 			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
@@ -3194,20 +3218,20 @@ func normalizeCodexModelName(modelName string) string {
 // syncCodexConfigModel updates the top-level model in an existing Codex config.toml
 // and removes amagi-managed provider state so official Codex login can recover.
 func syncCodexConfigModel(model string) error {
-	home, err := os.UserHomeDir()
+	codexHome, err := platform.CodexHomeDir(os.Environ())
 	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
+		return fmt.Errorf("get Codex home: %w", err)
 	}
-	configPath := filepath.Join(home, ".codex", "config.toml")
+	configPath := filepath.Join(codexHome, "config.toml")
 	return syncCodexConfigFile(configPath, codexConfigSyncOptions{Model: model, CleanupManagedConfig: true})
 }
 
 func syncCodexCustomProviderConfig(model, baseURL string) error {
-	home, err := os.UserHomeDir()
+	codexHome, err := platform.CodexHomeDir(os.Environ())
 	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
+		return fmt.Errorf("get Codex home: %w", err)
 	}
-	configPath := filepath.Join(home, ".codex", "config.toml")
+	configPath := filepath.Join(codexHome, "config.toml")
 	return syncCodexCustomProviderConfigFile(configPath, model, baseURL)
 }
 
@@ -3484,11 +3508,11 @@ func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL str
 // are idempotent: re-running with the same state is a no-op (apart from a fresh
 // backup when content actually changes).
 func syncCodexGlobalHeadroomConfig(enabled bool, port int) error {
-	home, err := os.UserHomeDir()
+	codexHome, err := platform.CodexHomeDir(os.Environ())
 	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
+		return fmt.Errorf("get Codex home: %w", err)
 	}
-	configPath := filepath.Join(home, ".codex", "config.toml")
+	configPath := filepath.Join(codexHome, "config.toml")
 
 	previous, err := os.ReadFile(configPath)
 	if err != nil {
@@ -3975,9 +3999,52 @@ func resolveCodexLaunchSettings(provider config.Provider, requestedModel string)
 		if normalizedPresetModel := normalizeCodexModelName(matchedPreset.Model); normalizedPresetModel != "" {
 			settings.Model = normalizedPresetModel
 		}
+		applyCodexPresetParameters(&settings, matchedPreset.Parameters)
 	}
 
 	return settings
+}
+
+func applyCodexPresetParameters(settings *codexLaunchSettings, params config.Parameters) {
+	if settings == nil {
+		return
+	}
+	settings.ReasoningEffort = strings.TrimSpace(params.ReasoningEffort)
+	if params.ContextWindow != nil {
+		settings.ModelContextWindow = params.ContextWindow.ModelContextWindow
+		settings.AutoCompactLimit = params.ContextWindow.AutoCompactTokenLimit
+	}
+}
+
+// buildCodexCLIArgs maps CodeBox presets onto documented Codex per-process
+// config overrides. Keeping these settings on the command line ensures one
+// session's preset does not rewrite the user's persistent defaults.
+func buildCodexCLIArgs(settings codexLaunchSettings) []string {
+	args := make([]string, 0, 8)
+	if settings.Model != "" {
+		args = append(args, "-m", settings.Model)
+	}
+	if settings.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(settings.ReasoningEffort))
+	}
+	if settings.ModelContextWindow > 0 {
+		args = append(args, "-c", "model_context_window="+strconv.Itoa(settings.ModelContextWindow))
+	}
+	if settings.AutoCompactLimit > 0 {
+		args = append(args, "-c", "model_auto_compact_token_limit="+strconv.Itoa(settings.AutoCompactLimit))
+	}
+	if settings.ProviderBaseURL != "" {
+		providerConfig := "{name=" + strconv.Quote(codexModelProviderName) +
+			",base_url=" + strconv.Quote(settings.ProviderBaseURL) +
+			",env_key=" + strconv.Quote("OPENAI_API_KEY") +
+			",requires_openai_auth=false,wire_api=" + strconv.Quote("responses") + "}"
+		args = append(args,
+			"-c", "model_provider="+strconv.Quote(codexModelProviderName),
+			"-c", "forced_login_method="+strconv.Quote("api"),
+			"-c", "model_providers."+codexModelProviderName+"="+providerConfig,
+		)
+	}
+	return args
 }
 
 // piProviderMapping 把 amagi Provider 映射成 Pi 的内置 provider 名 + 对应 API Key env var。
@@ -4759,31 +4826,16 @@ func (a *App) GetKeyDiagnostics() map[string]map[string]string {
 	return a.Secrets.GetKeyDiagnostics(providers)
 }
 
-// ExportConfigToFile 将所有 providers、presets 和 API keys 合并导出为 JSON 文件。
+// ExportConfigToFile 将所有可移植配置合并导出为 JSON 文件。
 // 通过系统对话框让用户选择保存位置；导出文件仅对当前用户可读。
 func (a *App) ExportConfigToFile() (string, error) {
+	a.portableConfigMu.Lock()
+	defer a.portableConfigMu.Unlock()
 	a.Log.Info("app", "开始导出配置")
 
-	// 构建导出数据
-	providers := a.Config.GetProviders()
-	agentTeams := a.Config.GetAgentTeams()
-	terminalPresets := a.Config.GetAllTerminalPresets()
-	openCodePresets := a.Config.GetAllOpenCodePresets()
-
-	exportProviders := make(map[string]config.ExportProvider, len(providers))
-	for name, p := range providers {
-		apiKey, _ := a.getProviderAPIKey(name, p)
-		exportProviders[name] = buildExportProvider(p, apiKey)
-	}
-
-	exportCfg := config.ExportConfig{
-		Version:         "1.0",
-		ExportedAt:      time.Now().Format(time.RFC3339),
-		Source:          "amagi-codebox",
-		Providers:       exportProviders,
-		AgentTeams:      agentTeams,
-		TerminalPresets: terminalPresets,
-		OpenCodePresets: openCodePresets,
+	exportCfg, err := a.buildCompleteExportConfig()
+	if err != nil {
+		return "", err
 	}
 
 	data, err := json.MarshalIndent(exportCfg, "", "  ")
@@ -4794,8 +4846,8 @@ func (a *App) ExportConfigToFile() (string, error) {
 
 	// 弹出保存对话框
 	savePath, err := wailsRuntime.SaveFileDialog(a.ctx, wailsRuntime.SaveDialogOptions{
-		Title:           "导出配置",
-		DefaultFilename: "amagi-codebox-config.json",
+		Title:           "导出完整配置",
+		DefaultFilename: "amagi-codebox-complete-config.json",
 		Filters: []wailsRuntime.FileFilter{
 			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
 		},
@@ -4820,8 +4872,10 @@ func (a *App) ExportConfigToFile() (string, error) {
 }
 
 // ImportConfigFromFile 通过文件选择对话框导入 JSON 配置文件。
-// providers / AgentTeams 按现有导入逻辑写入，terminal_presets / opencode_presets 采用快照替换语义。
+// v2 文件采用完整快照替换语义；v1 文件继续按旧协议兼容导入。
 func (a *App) ImportConfigFromFile() (string, error) {
+	a.portableConfigMu.Lock()
+	defer a.portableConfigMu.Unlock()
 	a.Log.Info("app", "开始导入配置")
 
 	// 弹出文件选择对话框
@@ -4847,26 +4901,22 @@ func (a *App) ImportConfigFromFile() (string, error) {
 		return "", fmt.Errorf("read file: %w", err)
 	}
 
-	// 剥离 UTF-8 BOM（Windows 编辑器可能在文件开头添加 BOM）
-	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
-		data = data[3:]
+	exportCfg, exportRaw, err := decodeConfigExport(data)
+	if err != nil {
+		return "", err
 	}
 
-	// 解析为 ExportConfig 结构体
-	var exportCfg config.ExportConfig
-	if err := json.Unmarshal(data, &exportCfg); err != nil {
-		return "", fmt.Errorf("parse JSON: %w", err)
-	}
-	var exportRaw struct {
-		OpenCodePresets *json.RawMessage `json:"opencode_presets"`
-	}
-	if err := json.Unmarshal(data, &exportRaw); err != nil {
-		return "", fmt.Errorf("parse import snapshot metadata: %w", err)
-	}
-
-	// 验证基本字段
-	if exportCfg.Version == "" || exportCfg.Source == "" {
-		return "", fmt.Errorf("invalid config file: missing version or source field")
+	if exportRaw.Portable != nil {
+		portable, err := decodePortableConfig(exportCfg.Portable)
+		if err != nil {
+			return "", err
+		}
+		if err := a.applyCompleteConfig(exportCfg, portable, exportRaw.OpenCodePresets != nil); err != nil {
+			return "", fmt.Errorf("import complete config: %w", err)
+		}
+		msg := fmt.Sprintf("完整配置导入成功：%d 个提供商。请重启应用以载入全部设置", len(exportCfg.Providers))
+		a.Log.Info("app", msg, filePath)
+		return msg, nil
 	}
 
 	// 遍历 providers 并导入

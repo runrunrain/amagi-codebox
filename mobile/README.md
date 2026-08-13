@@ -140,32 +140,35 @@ ipconfig    # 查看本机局域网 IP，如 192.168.1.100
 
 ### 连接页面填写说明
 
-打开 Web 页面后，在连接页输入两个字段：
+推荐在桌面端发起短时配对后，直接用手机系统相机扫描二维码。二维码是宿主网页 URL；
+扫码会打开对应局域网地址、自动提交一次性配对码并进入会话大厅。二维码中的配对材料位于
+URL hash，页面读取后会立即从地址栏清除。
+
+需要降级处理时，也可以在连接页手动输入两个字段：
 
 | 字段 | 说明 | 示例 |
 |------|------|------|
 | Server URL | Amagi CodeBox Remote API 地址（不是 Web 页面地址） | `http://你的服务器IP:8680` |
-| Token | Amagi CodeBox 桌面端生成的 Bearer Token | 在桌面端设置页查看 |
+| Pairing Code | 桌面端短时配对窗口生成的一次性配对码 | 在桌面端设置页查看 |
 
-也可使用 Scan QR Code 扫描桌面端生成的二维码自动填入。
+页面内 Scan QR Code 也支持新版 URL 二维码和旧版 JSON 二维码。
 
 ### 页面功能
 
 | 页面 | 路径 | 功能 |
 |------|------|------|
-| Connect | `/#/` | 输入服务器地址和 Token 连接 |
-| Dashboard | `/#/dashboard` | 活跃会话概览 |
-| Terminal | `/#/terminal/{id}` | Observer 模式终端查看（不影响桌面端尺寸） |
-| Sessions | `/#/sessions` | 启动/停止/管理会话 |
+| Connect | `/#/connect` | 扫码自动配对或手动输入地址与配对码 |
+| Lobby | `/#/lobby` | 会话概览与启动入口 |
+| Workspace | `/#/workspace/{id}` | 历史回放、实时输出、输入与终端诊断视图 |
+| Legacy Terminal | `/#/terminal/{id}` | 重定向到对应 Workspace 的终端诊断视图 |
 | Providers | `/#/providers` | AI 服务商配置管理 |
 | Settings | `/#/settings` | 连接和应用设置 |
 
 ### 注意事项
 
-- Web 页面地址和 Server URL 是不同的服务，端口不同
-- 终端页使用 Observer 模式：只查看输出，不会改变桌面端的 PTY 窗口尺寸
-- Token 可在 Amagi CodeBox 桌面端的 Remote API 设置中查看或重新生成
-- 首次连接成功后，Server URL 和 Token 会保存在浏览器 localStorage 中
+- 内置移动网页与 Remote API 由同一宿主、同一端口提供
+- Workspace 通过 `/ws/v1` 接收最多 1 MB 历史回放并继续显示实时输出
+- 一次性配对码不会持久化；授权凭据由服务端写入 HttpOnly 设备 Cookie
 
 ---
 

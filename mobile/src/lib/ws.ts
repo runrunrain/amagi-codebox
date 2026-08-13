@@ -118,7 +118,9 @@ export function encodeUtf8ToBase64(text: string): string {
   return btoa(binary);
 }
 
-/** output/backfill chunk（Base64）→ UTF-8 文本（有损替换，不抛异常）。 */
+/** output/backfill chunk（Base64）→ UTF-8 文本（有损替换，不抛异常）。
+ * 单帧工具仅适合独立文本；有序 PTY 输出必须复用 createOutputChunkDecoder，
+ * 因为一次 UTF-8 字符可能跨两个 WebSocket frame。 */
 export function decodeChunkToText(base64: string): string {
   try {
     const bytes = decodeBase64ToUint8(base64);
@@ -126,6 +128,32 @@ export function decodeChunkToText(base64: string): string {
   } catch {
     return '';
   }
+}
+
+export interface OutputChunkDecoder {
+  decode(base64: string): string;
+  flush(): string;
+  reset(): void;
+}
+
+/** Stateful UTF-8 decoder for one ordered PTY byte stream. */
+export function createOutputChunkDecoder(): OutputChunkDecoder {
+  let decoder = new TextDecoder('utf-8', { fatal: false });
+  return {
+    decode(base64: string): string {
+      try {
+        return decoder.decode(decodeBase64ToUint8(base64), { stream: true });
+      } catch {
+        return '';
+      }
+    },
+    flush(): string {
+      return decoder.decode();
+    },
+    reset(): void {
+      decoder = new TextDecoder('utf-8', { fatal: false });
+    },
+  };
 }
 
 let requestCounter = 0;

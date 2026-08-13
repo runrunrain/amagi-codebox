@@ -75,6 +75,19 @@ vi.mock('../../../src/lib/ws', () => {
   return {
     SessionWsClient: FakeWsClient,
     decodeChunkToText: decode,
+    createOutputChunkDecoder: () => {
+      let decoder = new TextDecoder('utf-8');
+      return {
+        decode: (b64: string) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          return decoder.decode(bytes, { stream: true });
+        },
+        flush: () => decoder.decode(),
+        reset: () => { decoder = new TextDecoder('utf-8'); },
+      };
+    },
     encodeUtf8ToBase64: encode,
   };
 });
@@ -1062,6 +1075,15 @@ describe('原始输出流（PG-04 诊断视图；M2-D）', () => {
     client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 2, chunk: b64('live\r\n') });
     expect(store.getRawTranscript()).toBe('\x1b[32mok\x1b[0m\r\nlive\r\n');
     expect(received).toEqual(['\x1b[32mok\x1b[0m\r\n', 'live\r\n']);
+  });
+
+  it('跨 output frame 的 UTF-8 字符保持完整', async () => {
+    const { store, client } = await openStore();
+    fireAttached(client);
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 1, chunk: '5L0=' });
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 2, chunk: 'oA==' });
+    expect(store.getRawTranscript()).toBe('你');
+    expect(store.timelineItems.some((item) => item.kind === 'mono' && (item as { text: string }).text === '你')).toBe(true);
   });
 
   it('退订后不再接收；open() 新会话清空缓冲', async () => {

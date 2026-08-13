@@ -50,6 +50,14 @@ type envVarsFile struct {
 	GlobalSyncBackups     map[string]GlobalEnvBackup `json:"globalSyncBackups,omitempty"`
 }
 
+// PortableConfig is the device-independent environment-variable snapshot.
+// OS backup values and managed-key bookkeeping are intentionally excluded:
+// those describe the source machine and are rebuilt locally when sync is on.
+type PortableConfig struct {
+	EnvVars           []EnvVar `json:"envVars"`
+	GlobalSyncEnabled bool     `json:"globalSyncEnabled,omitempty"`
+}
+
 // EnvVarsService 管理自定义环境变量，持久化到 envvars.json
 type EnvVarsService struct {
 	configPath            string
@@ -173,6 +181,64 @@ func (s *EnvVarsService) GetAll() []EnvVar {
 	out := make([]EnvVar, len(s.envVars))
 	copy(out, s.envVars)
 	return out
+}
+
+// GetPortableConfig returns the complete device-independent env configuration.
+func (s *EnvVarsService) GetPortableConfig() PortableConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return PortableConfig{
+		EnvVars:           append([]EnvVar(nil), s.envVars...),
+		GlobalSyncEnabled: s.globalSyncEnabled,
+	}
+}
+
+// ReplacePortableConfig replaces variables and rebuilds global-sync ownership
+// against the destination OS. Unsupported platforms safely keep sync disabled.
+func (s *EnvVarsService) ReplacePortableConfig(next PortableConfig) error {
+	if next.EnvVars == nil {
+		next.EnvVars = []EnvVar{}
+	}
+	if err := validateEnvVars(next.EnvVars); err != nil {
+		return fmt.Errorf("import validation: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previousVars := append([]EnvVar(nil), s.envVars...)
+	previousEnabled := s.globalSyncEnabled
+	previousManaged := append([]string(nil), s.globalSyncManagedKeys...)
+	previousBackups := make(map[string]GlobalEnvBackup, len(s.globalSyncBackups))
+	for key, value := range s.globalSyncBackups {
+		previousBackups[key] = value
+	}
+
+	if s.globalSyncEnabled {
+		if err := s.disableGlobalSyncLocked(); err != nil {
+			return fmt.Errorf("disable existing global sync: %w", err)
+		}
+	}
+	s.envVars = append([]EnvVar(nil), next.EnvVars...)
+	s.globalSyncEnabled = false
+	s.globalSyncManagedKeys = []string{}
+	s.globalSyncBackups = map[string]GlobalEnvBackup{}
+	if next.GlobalSyncEnabled && s.supportsGlobalSync() {
+		if err := s.enableGlobalSyncLocked(); err != nil {
+			s.envVars = previousVars
+			s.globalSyncEnabled = previousEnabled
+			s.globalSyncManagedKeys = previousManaged
+			s.globalSyncBackups = previousBackups
+			return fmt.Errorf("enable imported global sync: %w", err)
+		}
+	}
+	if err := s.save(); err != nil {
+		s.envVars = previousVars
+		s.globalSyncEnabled = previousEnabled
+		s.globalSyncManagedKeys = previousManaged
+		s.globalSyncBackups = previousBackups
+		return err
+	}
+	return nil
 }
 
 // Get 返回指定 key 的值，找不到时返回空字符串和 false

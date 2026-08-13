@@ -365,17 +365,24 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 
 	providerID := recipe.ProviderRef
 	modelRef := recipe.ModelRef
+	var selectedPresetParams *config.Parameters
 
 	// Terminal preset / legacy fallback for model resolution.
 	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset("codex", modelRef)
 	tpFound := tpErr == nil && tp != nil
-	if tpFound && tpProvider != "" {
-		providerID = tpProvider
+	if tpFound {
+		if tpProvider != "" {
+			providerID = tpProvider
+		}
 		modelRef = tp.Model
+		params := tp.Parameters
+		selectedPresetParams = &params
 	}
 	if !tpFound && providerID != "" {
 		if provider, pErr := p.config.GetProvider(providerID); pErr == nil && provider != nil {
 			if preset, ok := provider.Presets[modelRef]; ok {
+				params := preset.Parameters
+				selectedPresetParams = &params
 				resolved := preset.Model
 				if resolved == "" {
 					resolved = provider.DefaultModel
@@ -389,7 +396,13 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 	if err != nil || provider == nil {
 		return fail(launchplan.FailureLaunchContext)
 	}
+	if !isOpenAIProvider(*provider) {
+		return fail(launchplan.FailureLaunchContext)
+	}
 	launchSettings := resolveCodexLaunchSettings(*provider, modelRef)
+	if selectedPresetParams != nil {
+		applyCodexPresetParameters(&launchSettings, *selectedPresetParams)
+	}
 	if launchSettings.Model == "" {
 		return fail(launchplan.FailureLaunchContext)
 	}
@@ -399,33 +412,22 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 	codexProviderBaseURL := ""
 	apiKey := p.getAPIKey(providerID, *provider)
 	if apiKey != "" {
-		if isOpenAIProvider(*provider) {
-			envOverrides["OPENAI_API_KEY"] = apiKey
-			if baseURL := provider.EffectiveBaseURL("openai"); baseURL != "" {
-				envOverrides["OPENAI_BASE_URL"] = baseURL
-				if isCustomCodexOpenAIBaseURL(baseURL) {
-					codexProviderBaseURL = baseURL
-				}
-			}
-		} else {
-			envOverrides["ANTHROPIC_API_KEY"] = apiKey
-			if baseURL := provider.EffectiveBaseURL("anthropic"); baseURL != "" {
-				envOverrides["ANTHROPIC_BASE_URL"] = baseURL
+		envOverrides["OPENAI_API_KEY"] = apiKey
+		if baseURL := provider.EffectiveBaseURL("openai"); baseURL != "" {
+			envOverrides["OPENAI_BASE_URL"] = baseURL
+			if isCustomCodexOpenAIBaseURL(baseURL) {
+				codexProviderBaseURL = baseURL
 			}
 		}
 	}
-
-	// Codex config.toml content (read-only computation).
-	configBuf, preimage, cfgOK := p.computeCodexConfig(launchSettings.Model, codexProviderBaseURL)
-	if !cfgOK {
+	if baseURL := provider.EffectiveBaseURL("openai"); isCustomCodexOpenAIBaseURL(baseURL) && codexProviderBaseURL == "" {
 		return fail(launchplan.FailureLaunchContext)
 	}
 
+	launchSettings.ProviderBaseURL = codexProviderBaseURL
+
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), envOverrides)
-	args := []string{}
-	if launchSettings.Model != "" {
-		args = append(args, "-m", launchSettings.Model)
-	}
+	args := buildCodexCLIArgs(launchSettings)
 	spec, err := p.resolver.Resolve(platform.ResolveRequest{
 		AppType: string(session.AppTypeCodex), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
@@ -435,7 +437,9 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 		return fail(launchplan.FailureCapability)
 	}
 
-	// Effects: [HeadroomStart?] [ConfigMutation] PTYStart.
+	// Effects: [HeadroomStart?] PTYStart. Model/provider/preset routing is
+	// carried as per-process CLI overrides, so concurrent Codex sessions never
+	// race by rewriting the user's config.toml.
 	var admissions []launchplan.SharedAdmissionSpec
 	var effects []launchplan.EffectSpec
 	if recipe.UseHeadroom {
@@ -453,14 +457,6 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 			},
 		})
 	}
-	secrets := launchplan.NewEphemeralSecretBundle(configBuf)
-	idx := launchplan.SecretBufferRef{Index: 0}
-	effects = append(effects, launchplan.EffectSpec{
-		Kind: launchplan.EffectConfigMutation,
-		Config: &launchplan.ConfigMutationSpec{
-			Target: launchplan.ConfigCodex, Candidate: idx, ExpectedPreimageDigest: preimage,
-		},
-	})
 	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
 		Process: &launchplan.ProcessStartSpec{
@@ -468,7 +464,7 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 		},
 	})
 	effects = append(effects, buildBootstrapEffect(spec))
-	return p.finalizePlanWithSecrets(recipe, admissions, effects, secrets)
+	return p.finalizePlan(recipe, admissions, effects)
 }
 
 // ---------------------------------------------------------------------------
@@ -782,23 +778,6 @@ func (p *appLaunchPlanner) finalizePlanWithSecrets(recipe launchplan.StableRecip
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: recipe.CLIType}
 	}
 	return plan, nil
-}
-
-// computeCodexConfig computes the Codex config.toml mutation content and the
-// current file preimage digest. Returns the content buffer, preimage, and
-// ok=false if computation fails (model empty for custom provider).
-func (p *appLaunchPlanner) computeCodexConfig(model, baseURL string) ([]byte, [32]byte, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, [32]byte{}, false
-	}
-	configPath := filepath.Join(home, ".codex", "config.toml")
-	preimage := computeFilePreimage(configPath)
-	// Encode the mutation instruction: "model" or "model\nbaseURL".
-	if baseURL != "" {
-		return []byte(model + "\n" + baseURL), preimage, true
-	}
-	return []byte(model), preimage, true
 }
 
 // computeFilePreimage returns SHA-256 of the file content, or zero digest if

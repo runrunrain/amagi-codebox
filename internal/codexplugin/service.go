@@ -28,9 +28,9 @@ func NewService(codexDir string, log *logging.Service) *Service {
 
 func NewServiceWithDeps(codexDir string, log *logging.Service, resolver platform.CLIResolver, runner platform.ProcessRunner) *Service {
 	if strings.TrimSpace(codexDir) == "" {
-		homeDir, err := os.UserHomeDir()
-		if err == nil && strings.TrimSpace(homeDir) != "" {
-			codexDir = filepath.Join(homeDir, ".codex")
+		resolvedDir, err := platform.CodexHomeDir(os.Environ())
+		if err == nil && strings.TrimSpace(resolvedDir) != "" {
+			codexDir = resolvedDir
 		} else {
 			codexDir = filepath.Join(".", ".codex")
 		}

@@ -292,6 +292,41 @@ func (s *ProxyService) GetBackendURLHistory() []string {
 	return history
 }
 
+// ReplacePortableConfig replaces and persists the proxy's device-independent
+// configuration. Runtime listener/session state is intentionally untouched.
+func (s *ProxyService) ReplacePortableConfig(rules []InjectionRule, history []string) error {
+	if rules == nil {
+		rules = []InjectionRule{}
+	}
+	if history == nil {
+		history = []string{}
+	}
+	s.mu.Lock()
+	previousRules := s.rules
+	previousHistory := s.backendURLHistory
+	s.rules = append([]InjectionRule(nil), rules...)
+	s.backendURLHistory = append([]string(nil), history...)
+	if s.configDir == "" {
+		s.mu.Unlock()
+		return errors.New("proxy config directory is not initialized")
+	}
+	if err := s.saveRulesUnlocked(); err != nil {
+		s.rules = previousRules
+		s.backendURLHistory = previousHistory
+		s.mu.Unlock()
+		return err
+	}
+	if err := s.saveBackendURLHistoryUnlocked(); err != nil {
+		s.rules = previousRules
+		s.backendURLHistory = previousHistory
+		_ = s.saveRulesUnlocked()
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	return nil
+}
+
 // AddBackendURL 添加后端URL到历史记录（去重、限制20条、最近在前）
 func (s *ProxyService) AddBackendURL(url string) error {
 	if url == "" {

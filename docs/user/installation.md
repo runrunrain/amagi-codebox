@@ -129,7 +129,7 @@ API 密钥的加密与存储细节见 [../security.md](../security.md)。建议�
 
 1. 启动应用，进入默认的"会话设置"页（路由 `/`）。
 2. 前往"环境检测"页（`/envcheck`），确认本机 CLI 工具状态。
-3. 前往"Provider Center"（`/provider`），查看内置的默认提供商（anthropic、openai、glm、minimax、kimi）。
+3. 前往“Provider Center”（`/provider`），新增自己的服务提供商，或导入从旧设备导出的完整配置。新安装不会预置服务提供商。
 4. 在选定提供商中填入 API 密钥并保存（密钥会经 OS 加密后写入 `secrets.json`）。
 5. 回到"会话设置"页，选择引擎、提供商、预设与工作目录，启动首个会话。
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -108,6 +109,51 @@ func (s *PathsService) GetDefaultPath() string {
 		return ""
 	}
 	return s.config.DefaultPath
+}
+
+// GetConfig returns a copy of the complete portable path configuration.
+func (s *PathsService) GetConfig() PathsConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return PathsConfig{Paths: []PathEntry{}}
+	}
+	return PathsConfig{
+		Paths:       append([]PathEntry(nil), s.config.Paths...),
+		DefaultPath: s.config.DefaultPath,
+	}
+}
+
+// ReplaceConfig atomically replaces the complete path snapshot.
+func (s *PathsService) ReplaceConfig(next PathsConfig) error {
+	if next.Paths == nil {
+		next.Paths = []PathEntry{}
+	}
+	seen := make(map[string]struct{}, len(next.Paths))
+	for i := range next.Paths {
+		next.Paths[i].Path = strings.TrimSpace(next.Paths[i].Path)
+		if next.Paths[i].Path == "" {
+			return errors.New("path is required")
+		}
+		if _, exists := seen[next.Paths[i].Path]; exists {
+			return fmt.Errorf("path already exists: %s", next.Paths[i].Path)
+		}
+		seen[next.Paths[i].Path] = struct{}{}
+		if next.Paths[i].Label == "" {
+			next.Paths[i].Label = filepath.Base(next.Paths[i].Path)
+		}
+	}
+	s.mu.Lock()
+	previous := s.config
+	s.config = &next
+	s.mu.Unlock()
+	if err := s.Save(); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *PathsService) SetDefaultPath(path string) error {

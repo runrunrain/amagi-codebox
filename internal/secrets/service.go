@@ -143,6 +143,45 @@ func (s *SecretsService) GetAllProviders() []string {
 	return providers
 }
 
+// Snapshot returns a copy of every stored secret. Full configuration exports
+// use this in addition to provider API keys so auxiliary and legacy credentials
+// are not silently lost during device migration.
+func (s *SecretsService) Snapshot() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]string, len(s.cache))
+	for key, value := range s.cache {
+		out[key] = value
+	}
+	return out
+}
+
+// ReplaceAll atomically replaces the in-memory secret snapshot and persists it
+// through the platform secret store. A failed store write restores the previous
+// cache so callers can safely report an unsuccessful import.
+func (s *SecretsService) ReplaceAll(next map[string]string) error {
+	clean := make(map[string]string, len(next))
+	for key, value := range next {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return errors.New("secret key is required")
+		}
+		clean[key] = strings.TrimSpace(value)
+	}
+
+	s.mu.Lock()
+	previous := s.cache
+	s.cache = clean
+	s.mu.Unlock()
+	if err := s.Save(); err != nil {
+		s.mu.Lock()
+		s.cache = previous
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // GetAPIKeyWithFallback 先查存储，再查环境变量。
 // 返回 (apiKey, source)，source 为 "stored" 或命中的环境变量名；都未命中则返回 ("", "").
 func (s *SecretsService) GetAPIKeyWithFallback(provider string) (string, string) {

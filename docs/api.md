@@ -341,13 +341,13 @@
 **Service**: App  
 **Parameters**: none  
 **Returns**: `string`, `error`  
-**Description**: 打开保存对话框，将全部 provider、preset 和 API Key 导出到 JSON 文件。
+**Description**: 打开保存对话框，将可移植的完整配置导出到 JSON 文件。v2 快照包含 provider/全部密钥、各引擎 preset、应用设置、路径、自定义环境变量、工作区与全局插件选择、代理规则与 URL 历史、价格表和 OpenCode 全局配置。导出文件包含明文敏感信息，写入权限为当前用户可读写。
 
 ### ImportConfigFromFile
 **Service**: App  
 **Parameters**: none  
 **Returns**: `string`, `error`  
-**Description**: 打开文件选择对话框，从导出的 JSON 文件导入 provider 和 Agent Teams 配置。
+**Description**: 打开文件选择对话框导入配置。v2 完整快照采用替换语义并在失败时尽力回滚，成功后需重启应用；v1 文件继续兼容原有 provider/preset 导入。日志、会话与用量数据库、远程配对设备、插件实体、运行时缓存不属于可移植配置。
 
 ### GetProviderExportJSON
 **Service**: App  

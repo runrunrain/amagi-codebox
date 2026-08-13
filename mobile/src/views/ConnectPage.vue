@@ -128,7 +128,8 @@ async function retryDiagnosis(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 深链参数（QR 载荷为 JSON {v,url,code,expiresAt?}；跨宿主经 hash query 传递）
+// 深链参数（桌面 QR 直接编码当前宿主的 #/connect?code=... URL；旧版 JSON QR
+// 仍由 handleQrDecoded 兼容，跨宿主同样经 hash query 传递）。
 // ---------------------------------------------------------------------------
 interface PairingDeepLink {
   code: string;
@@ -236,8 +237,40 @@ function beginPairEntry(entry: PairEntry, seed?: PairingDeepLink): void {
   }
 }
 
+/** QR/深链直连：自动生成本机名称并提交一次性配对材料。失败时保留已填表单，
+ * 用户仍可核对名称/配对码后手动重试。 */
+function beginAutomaticPairing(seed: PairingDeepLink): void {
+  beginPairEntry('manual', seed);
+  deviceNameInput.value = deviceNameInput.value || suggestDeviceName();
+  void submitPairing();
+}
+
 // 扫码
 function handleQrDecoded(text: string): void {
+  // 新版桌面二维码是可直接打开的网页 URL。内置扫码器也接受它：异源时整页
+  // 导航，同源时从 hash query 提取一次性配对材料并进入确认步骤。
+  try {
+    const target = new URL(text.trim());
+    if (target.protocol === 'http:' || target.protocol === 'https:') {
+      const hashQuery = target.hash.includes('?') ? target.hash.slice(target.hash.indexOf('?') + 1) : '';
+      const params = new URLSearchParams(hashQuery);
+      const code = params.get('code')?.trim() ?? '';
+      const rawExp = params.get('expiresAt');
+      const parsedExp = rawExp && /^\d+$/.test(rawExp) ? Number(rawExp) : rawExp ? Date.parse(rawExp) : NaN;
+      const expiresAt = Number.isFinite(parsedExp) && parsedExp > Date.now() ? parsedExp : null;
+      if (code) {
+        if (target.origin !== window.location.origin) {
+          window.location.assign(target.toString());
+        } else {
+          beginAutomaticPairing({ code, expiresAt });
+        }
+        return;
+      }
+    }
+  } catch {
+    // 不是 URL：继续尝试兼容旧版 JSON QR。
+  }
+
   let payload: Record<string, unknown> | null = null;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -283,7 +316,7 @@ function handleQrDecoded(text: string): void {
     }
   }
 
-  beginPairEntry('manual', { code, expiresAt });
+  beginAutomaticPairing({ code, expiresAt });
 }
 
 function handleScannerFailed(): void {
@@ -420,14 +453,17 @@ const authChip = computed(() => {
 // ---------------------------------------------------------------------------
 onMounted(() => {
   if (!webApiAvailable) return;
-  initKickBanner();
+  // 必须先读取再清地址栏。旧顺序由 initKickBanner 先 replaceState，导致 QR
+  // 深链中的 code 在 readDeepLink 前丢失，表现为“扫码打开了页面但没有连接”。
   const deepLink = readDeepLink();
+  initKickBanner();
   void runDiagnosis().then(() => {
-    // 深链带入配对码：诊断落在未配对态时直接进入确认步骤。
+    // 深链带入配对码：诊断落在未配对态时自动完成配对并进入大厅。
     if (deepLink.code && auth.status !== 'paired') {
-      beginPairEntry('manual', deepLink);
+      beginAutomaticPairing(deepLink);
     } else if (deepLink.code) {
       stripPairingParams();
+      void router.replace({ name: 'lobby' });
     }
   });
 });

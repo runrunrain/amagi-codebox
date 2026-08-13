@@ -118,7 +118,7 @@ amagi-codebox/
 | `settings_amagi.json` | Amagi 模型配置 |
 | `global-enabled.json` | 全局启用插件 |
 
-**提供商与预设模型**：每个 Provider 支持多套 Preset，Preset 携带 `Parameters`（模型、温度、max_tokens）、`ThinkingConfig`（思考模式）、`ContextWindowConfig`（上下文窗口）等。内置 anthropic、openai、glm、minimax、kimi 五个默认提供商，可自定义添加。
+**提供商与预设模型**：每个 Provider 支持多套 Preset，Preset 携带 `Parameters`（模型、温度、max_tokens）、`ThinkingConfig`（思考模式）、`ContextWindowConfig`（上下文窗口）等。新安装使用干净初始环境，不预置服务提供商或终端预设，均由用户自定义添加或从完整配置导入。
 
 > 字段定义与完整结构见 [提供商与预设配置](docs/user/providers.md)。
 

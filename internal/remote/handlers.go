@@ -135,7 +135,7 @@ func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
 			Presets:   buildLaunchPresetOptions(configSvc, "codex"),
 		},
 		Pi: launchMetaSection{
-			// Pi 通过 terminal_preset 驱动（DefaultPiPresets + 用户 type="pi" 预设），
+			// Pi 通过用户维护的 terminal_preset（type="pi"）驱动；新安装不注入预设，
 			// 预设内含 provider+model 映射；providers 取全集以便手动选择。
 			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
 			Presets:   buildLaunchPresetOptions(configSvc, "pi"),

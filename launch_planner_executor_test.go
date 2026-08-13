@@ -90,6 +90,12 @@ func testPlannerSetup(t *testing.T, cli contract.CLIType, providerName, apiKey s
 			"test-preset": {Name: "test-preset", Model: "test-model"},
 		},
 	}
+	if cli == contract.CLITypeCodex {
+		provider.Anthropic = nil
+		provider.OpenAI = &config.OpenAIFormat{
+			Enabled: true, BaseURL: "https://api.openai.com/v1", AuthKey: "OPENAI_API_KEY",
+		}
+	}
 	if err := cfgSvc.SaveProvider(providerName, provider); err != nil {
 		t.Fatalf("SaveProvider: %v", err)
 	}
@@ -230,6 +236,77 @@ func TestRemoteModeForcedEmbedded(t *testing.T) {
 	for _, eff := range plan.Effects {
 		if eff.Process != nil && eff.Process.Mode != launchplan.ModeEmbedded {
 			t.Fatal("remote should force embedded")
+		}
+	}
+}
+
+func TestBuildPlanCodexUsesProviderAndPresetAsPerProcessOverrides(t *testing.T) {
+	home := isolatedHome(t)
+	dir := t.TempDir()
+	cfgSvc := config.NewConfigService(dir)
+	if err := cfgSvc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	secSvc := secrets.NewSecretsService(dir)
+	settingsSvc := settings.NewService(dir)
+	if err := settingsSvc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := launchplan.NewDefaultStore(settingsSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerID := "codex-proxy"
+	if err := cfgSvc.SaveProvider(providerID, config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://proxy.example.com/v1", AuthKey: "OPENAI_API_KEY"},
+		DefaultModel: "gpt-5.6-luna",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgSvc.SaveTerminalPreset("codex", providerID+"/max", config.TerminalPreset{
+		Name: "Max", Provider: providerID, Model: "gpt-5.6-luna",
+		Parameters: config.Parameters{
+			ReasoningEffort: "max",
+			ContextWindow: &config.ContextWindowConfig{
+				ModelContextWindow: 1047576, AutoCompactTokenLimit: 900000,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := secSvc.SetAPIKey(providerID, "codex-secret-123456789"); err != nil {
+		t.Fatal(err)
+	}
+	if err := defaults.RecordDesktopActivation(launchplan.StableRecipe{
+		CLIType: contract.CLITypeCodex, Workdir: dir, ProviderRef: providerID, ModelRef: providerID + "/max",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	planner := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(), paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), home)
+	plan, failure := planner.BuildPlan(context.Background(), launchplan.BuildRequest{CLIType: contract.CLITypeCodex, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded})
+	if failure != nil {
+		t.Fatalf("BuildPlan failure: %#v", failure)
+	}
+	defer plan.Secrets.Dispose()
+	for _, effect := range plan.Effects {
+		if effect.Config != nil {
+			t.Fatal("Codex plan must not mutate shared config.toml")
+		}
+		if effect.Process == nil {
+			continue
+		}
+		joinedArgs := strings.Join(effect.Process.Resolved.CLI.Args, "\n")
+		for _, want := range []string{
+			"gpt-5.6-luna", `model_reasoning_effort="max"`, "model_context_window=1047576",
+			"model_auto_compact_token_limit=900000", `model_provider="amagi-codebox-provider"`,
+			`base_url="https://proxy.example.com/v1"`,
+		} {
+			if !strings.Contains(joinedArgs, want) {
+				t.Fatalf("Codex process args missing %q: %v", want, effect.Process.Resolved.CLI.Args)
+			}
+		}
+		if !envContainsExact(effect.Process.Resolved.Env.Variables, "OPENAI_API_KEY=codex-secret-123456789") {
+			t.Fatalf("Codex process env missing provider credential: %v", effect.Process.Resolved.Env.Variables)
 		}
 	}
 }

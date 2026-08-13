@@ -95,7 +95,7 @@ onMounted(() => {
         <span class="action-count">Configuration</span>
       </button>
 
-      <button v-if="activeSessions().length > 0" class="action-card" @click="router.push(`/terminal/${activeSessions()[0].id}`)">
+      <button v-if="activeSessions().length > 0" class="action-card" @click="router.push({ name: 'workspace', params: { sessionId: activeSessions()[0].id } })">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f0883e" stroke-width="1.5">
           <polyline points="4 17 10 11 4 5" />
           <line x1="12" y1="19" x2="20" y2="19" />
