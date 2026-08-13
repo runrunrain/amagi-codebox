@@ -27,8 +27,12 @@
           class="pc-main-tabs"
         />
         <div class="pc-head-actions">
-          <AppButton variant="ghost" size="small" @click="handleExport">导出完整配置</AppButton>
-          <AppButton variant="ghost" size="small" @click="handleImport">导入完整配置</AppButton>
+          <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestExport">
+            {{ transferAction === 'export' ? '导出中...' : '导出完整配置' }}
+          </AppButton>
+          <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestImport">
+            {{ transferAction === 'import' ? '导入中...' : '导入完整配置' }}
+          </AppButton>
         </div>
       </div>
 
@@ -98,6 +102,25 @@
         </template>
       </div>
     </ConfigCard>
+
+    <ConfirmDialog
+      v-model:open="showExportConfirm"
+      title="导出完整配置"
+      message="完整配置包含 API Key、环境变量及其他敏感设置，并将以明文写入导出文件。请妥善保管导出文件。"
+      confirm-text="选择保存位置"
+      cancel-text="取消"
+      @confirm="handleExport"
+    />
+
+    <ConfirmDialog
+      v-model:open="showImportConfirm"
+      :danger="true"
+      title="导入完整配置"
+      message="导入完整配置会替换当前设备上的服务商、预设、密钥及应用设置。导入成功后需要重启应用。"
+      confirm-text="选择配置文件"
+      cancel-text="取消"
+      @confirm="handleImport"
+    />
   </section>
 </template>
 
@@ -107,6 +130,7 @@ import PageHead from '../components/ui/PageHead.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import AppButton from '../components/ui/AppButton.vue';
+import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
 import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import OpenCodePresets from '../components/provider/OpenCodePresets.vue';
@@ -139,6 +163,10 @@ const OPENCODE_MODES = [
 
 const mainTab = ref<'providers' | 'presets'>('providers');
 const openCodeMode = ref<'presets' | 'global'>('global');
+const showExportConfirm = ref(false);
+const showImportConfirm = ref(false);
+const transferAction = ref<'export' | 'import' | null>(null);
+const transferring = computed(() => transferAction.value !== null);
 
 // 二级 engine 双向绑定（写入 store + 触发按需加载）
 const engineModel = computed<string>({
@@ -166,30 +194,51 @@ watch(
   }
 );
 
-// 导出/导入沿用 legacy ProviderCenter 逻辑（真实调用 wailsjs）
-function handleExport() {
-  if (!window.confirm('完整配置包含 API Key、环境变量及其他敏感设置，并将以明文写入导出文件。请妥善保管。是否继续？')) {
-    return;
-  }
-  ExportConfigToFile()
-    .then((path) => {
-      if (path) showSuccess('配置已导出到: ' + path);
-    })
-    .catch((err) => showError('导出失败: ' + err));
+function requestExport() {
+  showExportConfirm.value = true;
 }
 
-function handleImport() {
-  if (!window.confirm('导入 v2 完整配置会替换当前设备上的服务商、预设、密钥及应用设置。导入成功后需要重启应用。是否继续？')) {
-    return;
+function requestImport() {
+  showImportConfirm.value = true;
+}
+
+async function handleExport() {
+  if (transferring.value) return;
+  transferAction.value = 'export';
+  try {
+    const path = await ExportConfigToFile();
+    if (path) showSuccess('配置已导出到: ' + path);
+  } catch (err) {
+    showError('导出失败: ' + normalizeTransferError(err));
+  } finally {
+    transferAction.value = null;
   }
-  ImportConfigFromFile()
-    .then((result) => {
-      if (result) {
-        showSuccess(result);
-        return store.loadProviders();
-      }
-    })
-    .catch((err) => showError('导入失败: ' + err));
+}
+
+async function handleImport() {
+  if (transferring.value) return;
+  transferAction.value = 'import';
+  try {
+    const result = await ImportConfigFromFile();
+    if (result) {
+      showSuccess(result);
+      await store.loadProviders();
+    }
+  } catch (err) {
+    showError('导入失败: ' + normalizeTransferError(err));
+  } finally {
+    transferAction.value = null;
+  }
+}
+
+function normalizeTransferError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }
 
 // 添加提供商弹窗在 P7 批次实现，本批仅提示

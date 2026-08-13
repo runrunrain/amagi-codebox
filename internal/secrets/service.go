@@ -14,8 +14,16 @@ type SecretsService struct {
 	secretsPath string
 	store       SecretStore
 	cache       map[string]string // provider -> apikey
+	loading     bool
+	loaded      bool
+	loadErr     error
 	mu          sync.RWMutex
 }
+
+var (
+	ErrSecretsLoading   = errors.New("secrets are still loading")
+	ErrSecretsNotLoaded = errors.New("secrets have not been loaded")
+)
 
 func NewSecretsService(configDir string) *SecretsService {
 	return &SecretsService{
@@ -38,26 +46,53 @@ func NewSecretsServiceWithStore(configDir string, store SecretStore) *SecretsSer
 
 func (s *SecretsService) Load() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.loading {
+		s.mu.Unlock()
+		return ErrSecretsLoading
+	}
+	s.loading = true
+	s.loadErr = nil
+	path := s.secretsPath
+	store := s.store
+	s.mu.Unlock()
 
-	loaded, err := s.store.Load(s.secretsPath)
+	// OS credential stores may wait for an authorization prompt. Never hold the
+	// cache lock across that I/O: the desktop UI must remain able to report that
+	// secrets are still loading instead of blocking indefinitely behind this call.
+	loaded, err := store.Load(path)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loading = false
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.cache = map[string]string{}
+			s.loaded = true
+			s.loadErr = nil
 			return nil
 		}
+		s.loaded = false
+		s.loadErr = err
 		return err
 	}
 	if loaded == nil {
 		s.cache = map[string]string{}
+		s.loaded = true
+		s.loadErr = nil
 		return nil
 	}
 	s.cache = loaded
+	s.loaded = true
+	s.loadErr = nil
 	return nil
 }
 
 func (s *SecretsService) Save() error {
 	s.mu.RLock()
+	if s.loading {
+		s.mu.RUnlock()
+		return ErrSecretsLoading
+	}
 	m := make(map[string]string, len(s.cache))
 	for k, v := range s.cache {
 		m[k] = v
@@ -104,6 +139,9 @@ func (s *SecretsService) SetAPIKey(provider, apiKey string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.loading {
+		return ErrSecretsLoading
+	}
 	if s.cache == nil {
 		s.cache = map[string]string{}
 	}
@@ -117,6 +155,9 @@ func (s *SecretsService) DeleteAPIKey(provider string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.loading {
+		return ErrSecretsLoading
+	}
 	if s.cache == nil {
 		s.cache = map[string]string{}
 	}
@@ -143,17 +184,27 @@ func (s *SecretsService) GetAllProviders() []string {
 	return providers
 }
 
-// Snapshot returns a copy of every stored secret. Full configuration exports
-// use this in addition to provider API keys so auxiliary and legacy credentials
-// are not silently lost during device migration.
-func (s *SecretsService) Snapshot() map[string]string {
+// Snapshot returns a copy of every stored secret. It refuses to return a
+// partial snapshot while the platform credential store is loading or after it
+// failed to load, so a "complete" configuration export cannot silently lose
+// credentials.
+func (s *SecretsService) Snapshot() (map[string]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.loading {
+		return nil, ErrSecretsLoading
+	}
+	if !s.loaded {
+		if s.loadErr != nil {
+			return nil, fmt.Errorf("load secrets: %w", s.loadErr)
+		}
+		return nil, ErrSecretsNotLoaded
+	}
 	out := make(map[string]string, len(s.cache))
 	for key, value := range s.cache {
 		out[key] = value
 	}
-	return out
+	return out, nil
 }
 
 // ReplaceAll atomically replaces the in-memory secret snapshot and persists it
@@ -170,6 +221,10 @@ func (s *SecretsService) ReplaceAll(next map[string]string) error {
 	}
 
 	s.mu.Lock()
+	if s.loading {
+		s.mu.Unlock()
+		return ErrSecretsLoading
+	}
 	previous := s.cache
 	s.cache = clean
 	s.mu.Unlock()

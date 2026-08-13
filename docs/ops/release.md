@@ -3,6 +3,7 @@
 面向负责发布 Amagi CodeBox 桌面二进制与 GitHub Release 的运维同学与维护者。内容基于仓库现有的 `build.sh`、`build.bat`、`wails.json`、`.github/workflows/release.yml` 核实；凡未由脚本或 workflow 实际执行的步骤均以"（待核实）"标注。
 
 相关文档：
+- 每次发布前将 [CHANGELOG.md](../../CHANGELOG.md) 的 `[Unreleased]` 内容归档到对应版本，并填写发布日期。
 - 版本号管理见 `./versioning.md`。
 - CI/CD 流水线总览见 `./ci-cd.md`。
 - 本地构建细节与排错见 `../developer/build-dev.md`。

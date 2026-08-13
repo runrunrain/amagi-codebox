@@ -80,7 +80,10 @@ func (a *App) buildCompleteExportConfig() (config.ExportConfig, error) {
 		return config.ExportConfig{}, errors.New("OpenCode global config is invalid JSON; fix it before exporting")
 	}
 
-	secretsSnapshot := a.Secrets.Snapshot()
+	secretsSnapshot, err := a.Secrets.Snapshot()
+	if err != nil {
+		return config.ExportConfig{}, fmt.Errorf("密钥尚未加载完成，无法处理完整配置，请稍后重试: %w", err)
+	}
 	portable := portableConfigSnapshot{
 		Settings:       a.Settings.GetSettings(),
 		Paths:          pointerTo(a.Paths.GetConfig()),

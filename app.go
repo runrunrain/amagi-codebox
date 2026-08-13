@@ -4831,20 +4831,9 @@ func (a *App) GetKeyDiagnostics() map[string]map[string]string {
 func (a *App) ExportConfigToFile() (string, error) {
 	a.portableConfigMu.Lock()
 	defer a.portableConfigMu.Unlock()
-	a.Log.Info("app", "开始导出配置")
 
-	exportCfg, err := a.buildCompleteExportConfig()
-	if err != nil {
-		return "", err
-	}
-
-	data, err := json.MarshalIndent(exportCfg, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal export config: %w", err)
-	}
-	data = append(data, '\n')
-
-	// 弹出保存对话框
+	// 优先弹出保存对话框，避免配置快照中的慢速系统服务（例如 macOS
+	// 钥匙串授权）让用户误以为按钮没有响应。
 	savePath, err := wailsRuntime.SaveFileDialog(a.ctx, wailsRuntime.SaveDialogOptions{
 		Title:           "导出完整配置",
 		DefaultFilename: "amagi-codebox-complete-config.json",
@@ -4861,6 +4850,18 @@ func (a *App) ExportConfigToFile() (string, error) {
 		a.Log.Info("app", "用户取消了配置导出")
 		return "", nil
 	}
+
+	a.Log.Info("app", "开始导出配置")
+	exportCfg, err := a.buildCompleteExportConfig()
+	if err != nil {
+		return "", err
+	}
+
+	data, err := json.MarshalIndent(exportCfg, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal export config: %w", err)
+	}
+	data = append(data, '\n')
 
 	// atomic 写入用户选择的路径
 	if err := atomicWriteFile(savePath, data); err != nil {
