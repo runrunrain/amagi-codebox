@@ -218,6 +218,14 @@ export function GetPathsService() {
   return window['go']['main']['App']['GetPathsService']();
 }
 
+export function GetPiAuthConfig() {
+  return window['go']['main']['App']['GetPiAuthConfig']();
+}
+
+export function GetPiAuthConfigPath() {
+  return window['go']['main']['App']['GetPiAuthConfigPath']();
+}
+
 export function GetPiModelCatalog() {
   return window['go']['main']['App']['GetPiModelCatalog']();
 }
@@ -452,6 +460,10 @@ export function SaveOmpModelsConfig(arg1) {
 
 export function SaveOpenCodeConfig(arg1) {
   return window['go']['main']['App']['SaveOpenCodeConfig'](arg1);
+}
+
+export function SavePiAuthConfig(arg1) {
+  return window['go']['main']['App']['SavePiAuthConfig'](arg1);
 }
 
 export function SavePiModelsConfig(arg1) {

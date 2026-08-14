@@ -49,6 +49,10 @@ func modelsConfigPath() string {
 	return filepath.Join(agentDir(), "models.json")
 }
 
+func authConfigPath() string {
+	return filepath.Join(agentDir(), "auth.json")
+}
+
 // ensureDir creates the parent directory of the given path if it does not exist.
 func ensureDir(path string) error {
 	dir := filepath.Dir(path)
@@ -188,6 +192,65 @@ func (s *Service) GetModelsConfigPath() (string, error) {
 	return modelsConfigPath(), nil
 }
 
+// GetAuthConfig 读取 auth.json（提供商凭据）内容。文件缺失时返回空对象骨架；
+// JSON 非法或根不是对象时原样返回内容，供用户在源码模式修复。
+// 文件含明文凭据，仅本地读取展示，写回走 SaveAuthConfig。
+func (s *Service) GetAuthConfig() (string, error) {
+	data, err := os.ReadFile(authConfigPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "{\n}\n", nil
+		}
+		return "", fmt.Errorf("read pi auth config: %w", err)
+	}
+	if !json.Valid(data) {
+		return string(data), nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
+		return string(data), nil
+	}
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("format auth config: %w", err)
+	}
+	if string(formatted) == "{}" {
+		formatted = []byte("{\n}")
+	}
+	return string(formatted) + "\n", nil
+}
+
+// SaveAuthConfig 校验并保存 auth.json：必须是合法 JSON 且根为对象。
+// 含明文凭据，通过临时文件原子写入（0600）。
+func (s *Service) SaveAuthConfig(content string) error {
+	if !json.Valid([]byte(content)) {
+		return fmt.Errorf("invalid JSON: content is not valid JSON")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil || obj == nil {
+		return errors.New("invalid config: root must be a JSON object")
+	}
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format JSON: %w", err)
+	}
+	if string(formatted) == "{}" {
+		formatted = []byte("{\n}")
+	}
+	formatted = append(formatted, '\n')
+
+	path := authConfigPath()
+	if err := ensureDir(path); err != nil {
+		return err
+	}
+	return writePrivateFile(path, formatted)
+}
+
+// GetAuthConfigPath 返回 auth.json 的绝对路径，供前端展示。
+func (s *Service) GetAuthConfigPath() (string, error) {
+	return authConfigPath(), nil
+}
+
 // ModelCatalogEntry 是目录中的单个模型摘要（不含 cost/compat 等编辑无关字段）。
 type ModelCatalogEntry struct {
 	ID             string   `json:"id"`
@@ -202,6 +265,9 @@ type ModelCatalogProvider struct {
 	Name   string              `json:"name"`
 	API    string              `json:"api,omitempty"`
 	Models []ModelCatalogEntry `json:"models"`
+	// HasAuth 表示该 provider 已有可用凭据（auth.json 条目或 models.json 内联
+	// apiKey），供前端下拉标注，避免选到无凭据模型。
+	HasAuth bool `json:"hasAuth"`
 }
 
 // ModelCatalog 是下发到前端的 provider→model 目录。
@@ -240,6 +306,24 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 	}
 	sort.Strings(names)
 
+	// auth.json 中的提供商名集合（不读取凭据内容，仅判断有无有效条目）
+	authNames := map[string]bool{}
+	if authData, err := os.ReadFile(authConfigPath()); err == nil {
+		var authRoot map[string]any
+		if json.Unmarshal(authData, &authRoot) == nil {
+			for k, v := range authRoot {
+				entry, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				switch t, _ := entry["type"].(string); t {
+				case "api_key", "oauth":
+					authNames[k] = true
+				}
+			}
+		}
+	}
+
 	for _, name := range names {
 		entry := ModelCatalogProvider{Name: name, Models: []ModelCatalogEntry{}}
 		provider, _ := providersRaw[name].(map[string]any)
@@ -247,6 +331,10 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 			if api, ok := provider["api"].(string); ok {
 				entry.API = api
 			}
+			if key, ok := provider["apiKey"].(string); ok && key != "" {
+				entry.HasAuth = true
+			}
+			entry.HasAuth = entry.HasAuth || authNames[name]
 			if models, ok := provider["models"].([]any); ok {
 				for _, m := range models {
 					model, ok := m.(map[string]any)

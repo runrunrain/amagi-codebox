@@ -84,10 +84,12 @@ const model = computed(() => parsed.value?.model || '');
 const level = computed(() => parsed.value?.level || '');
 
 const providerOptions = computed<DropdownOption[]>(() =>
-  props.catalog.providers.map((p) => ({
-    value: p.name,
-    label: p.api ? `${p.name}（${p.api}）` : p.name,
-  }))
+  props.catalog.providers.map((p) => {
+    let label = p.api ? `${p.name}（${p.api}）` : p.name;
+    // 标注凭据状态：未认证的提供商选了也无法调用，帮助用户避坑
+    label += p.hasAuth ? ' ✓' : '（未认证）';
+    return { value: p.name, label };
+  })
 );
 
 const modelOptions = computed<DropdownOption[]>(() => {

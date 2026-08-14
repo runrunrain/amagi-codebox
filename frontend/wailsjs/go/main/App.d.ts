@@ -122,6 +122,10 @@ export function GetOutputHistorySnapshot(arg1:string):Promise<string>;
 
 export function GetPathsService():Promise<paths.PathsService>;
 
+export function GetPiAuthConfig():Promise<string>;
+
+export function GetPiAuthConfigPath():Promise<string>;
+
 export function GetPiModelCatalog():Promise<string>;
 
 export function GetPiModelsConfig():Promise<string>;
@@ -239,6 +243,8 @@ export function SaveOmpConfig(arg1:string):Promise<void>;
 export function SaveOmpModelsConfig(arg1:string):Promise<void>;
 
 export function SaveOpenCodeConfig(arg1:string):Promise<void>;
+
+export function SavePiAuthConfig(arg1:string):Promise<void>;
 
 export function SavePiModelsConfig(arg1:string):Promise<void>;
 

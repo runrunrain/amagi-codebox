@@ -202,6 +202,9 @@ type ModelCatalogProvider struct {
 	Name   string              `json:"name"`
 	API    string              `json:"api,omitempty"`
 	Models []ModelCatalogEntry `json:"models"`
+	// HasAuth 表示该 provider 已有可用凭据（omp 凭据内联在 models.yml：
+	// apiKey / auth / authHeader），供前端下拉标注。
+	HasAuth bool `json:"hasAuth"`
 }
 
 type ModelCatalog struct {
@@ -244,6 +247,15 @@ func (s *Service) GetOmpModelCatalog() (string, error) {
 		if provider != nil {
 			if api, ok := provider["api"].(string); ok {
 				entry.API = api
+			}
+			if key, ok := provider["apiKey"].(string); ok && key != "" {
+				entry.HasAuth = true
+			}
+			if _, ok := provider["auth"]; ok {
+				entry.HasAuth = true
+			}
+			if header, ok := provider["authHeader"].(bool); ok && header {
+				entry.HasAuth = true
 			}
 			if models, ok := provider["models"].([]any); ok {
 				for _, m := range models {

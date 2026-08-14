@@ -5491,6 +5491,21 @@ func (a *App) GetPiModelsConfigPath() (string, error) {
 	return a.PiConfig.GetModelsConfigPath()
 }
 
+// GetPiAuthConfig 读取 pi 的 auth.json 提供商凭据全文（含明文密钥，仅本地编辑用）。
+func (a *App) GetPiAuthConfig() (string, error) {
+	return a.PiConfig.GetAuthConfig()
+}
+
+// SavePiAuthConfig 校验并保存 auth.json（原子写入）。
+func (a *App) SavePiAuthConfig(content string) error {
+	return a.PiConfig.SaveAuthConfig(content)
+}
+
+// GetPiAuthConfigPath 返回 auth.json 的绝对路径，供前端展示。
+func (a *App) GetPiAuthConfigPath() (string, error) {
+	return a.PiConfig.GetAuthConfigPath()
+}
+
 // --- OMP (oh-my-pi) 配置 API ---
 
 // GetOmpConfig 读取 omp 的 config.yml 配置内容（YAML 文本）。

@@ -5,6 +5,10 @@ export function GetAmagiConfig():Promise<string>;
 
 export function GetAmagiConfigPath():Promise<string>;
 
+export function GetAuthConfig():Promise<string>;
+
+export function GetAuthConfigPath():Promise<string>;
+
 export function GetModelsConfig():Promise<string>;
 
 export function GetModelsConfigPath():Promise<string>;
@@ -12,5 +16,7 @@ export function GetModelsConfigPath():Promise<string>;
 export function GetPiModelCatalog():Promise<string>;
 
 export function SaveAmagiConfig(arg1:string):Promise<void>;
+
+export function SaveAuthConfig(arg1:string):Promise<void>;
 
 export function SaveModelsConfig(arg1:string):Promise<void>;

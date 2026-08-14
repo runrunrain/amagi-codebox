@@ -10,6 +10,14 @@ export function GetAmagiConfigPath() {
   return window['go']['piconfig']['Service']['GetAmagiConfigPath']();
 }
 
+export function GetAuthConfig() {
+  return window['go']['piconfig']['Service']['GetAuthConfig']();
+}
+
+export function GetAuthConfigPath() {
+  return window['go']['piconfig']['Service']['GetAuthConfigPath']();
+}
+
 export function GetModelsConfig() {
   return window['go']['piconfig']['Service']['GetModelsConfig']();
 }
@@ -24,6 +32,10 @@ export function GetPiModelCatalog() {
 
 export function SaveAmagiConfig(arg1) {
   return window['go']['piconfig']['Service']['SaveAmagiConfig'](arg1);
+}
+
+export function SaveAuthConfig(arg1) {
+  return window['go']['piconfig']['Service']['SaveAuthConfig'](arg1);
 }
 
 export function SaveModelsConfig(arg1) {

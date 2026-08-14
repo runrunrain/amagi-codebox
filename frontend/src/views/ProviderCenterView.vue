@@ -69,7 +69,7 @@
           v-else-if="store.presetEngine === 'openai'"
           format="openai"
         />
-        <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
+        <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 | 认证登录 -->
         <template v-else-if="store.presetEngine === 'pi'">
           <Segmented
             v-model="piMode"
@@ -78,7 +78,8 @@
             class="oc-mode-tabs"
           />
           <PiAmagiConfig v-if="piMode === 'agents'" />
-          <ProviderRegistryEditor v-else engine="pi" />
+          <ProviderRegistryEditor v-else-if="piMode === 'registry'" engine="pi" />
+          <AuthConfigEditor v-else />
         </template>
 
         <!-- OMP (oh-my-pi) 结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
@@ -147,6 +148,7 @@ import OpenCodeGlobalConfig from '../components/provider/OpenCodeGlobalConfig.vu
 import PiAmagiConfig from '../components/provider/PiAmagiConfig.vue';
 import OmpGlobalConfig from '../components/provider/OmpGlobalConfig.vue';
 import ProviderRegistryEditor from '../components/provider/ProviderRegistryEditor.vue';
+import AuthConfigEditor from '../components/provider/AuthConfigEditor.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
@@ -176,6 +178,7 @@ const OPENCODE_MODES = [
 const PI_MODES = [
   { value: 'agents', label: 'Agent 配置' },
   { value: 'registry', label: '模型提供商' },
+  { value: 'auth', label: '认证登录' },
 ];
 
 const OMP_MODES = [
@@ -185,7 +188,7 @@ const OMP_MODES = [
 
 const mainTab = ref<'providers' | 'presets'>('providers');
 const openCodeMode = ref<'presets' | 'global'>('global');
-const piMode = ref<'agents' | 'registry'>('agents');
+const piMode = ref<'agents' | 'registry' | 'auth'>('agents');
 const ompMode = ref<'agents' | 'registry'>('agents');
 const showExportConfirm = ref(false);
 const showImportConfirm = ref(false);

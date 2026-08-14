@@ -16,6 +16,8 @@ export interface CatalogProvider {
   name: string;
   api?: string;
   models: CatalogModel[];
+  /** 该提供商是否已有可用凭据（auth.json 条目或注册表内联 apiKey） */
+  hasAuth?: boolean;
 }
 
 export interface ModelCatalog {
