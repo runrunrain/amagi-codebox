@@ -135,6 +135,59 @@ func writePrivateFile(path string, data []byte) error {
 	}
 }
 
+// GetModelsConfig 读取 models.json（provider 注册表）内容。
+// 文件缺失时返回只含空 providers 的骨架；JSON 非法或根不是对象时
+// 原样返回内容，供用户在源码模式修复。
+func (s *Service) GetModelsConfig() (string, error) {
+	data, err := os.ReadFile(modelsConfigPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "{\n  \"providers\": {}\n}\n", nil
+		}
+		return "", fmt.Errorf("read pi models config: %w", err)
+	}
+	if !json.Valid(data) {
+		return string(data), nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
+		return string(data), nil
+	}
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("format models config: %w", err)
+	}
+	return string(formatted) + "\n", nil
+}
+
+// SaveModelsConfig 校验并保存 models.json：必须是合法 JSON 且根为对象。
+// 文件含 apiKey 等敏感信息，通过临时文件原子写入（0600）。
+func (s *Service) SaveModelsConfig(content string) error {
+	if !json.Valid([]byte(content)) {
+		return fmt.Errorf("invalid JSON: content is not valid JSON")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil || obj == nil {
+		return errors.New("invalid config: root must be a JSON object")
+	}
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format JSON: %w", err)
+	}
+	formatted = append(formatted, '\n')
+
+	path := modelsConfigPath()
+	if err := ensureDir(path); err != nil {
+		return err
+	}
+	return writePrivateFile(path, formatted)
+}
+
+// GetModelsConfigPath 返回 models.json 的绝对路径，供前端展示。
+func (s *Service) GetModelsConfigPath() (string, error) {
+	return modelsConfigPath(), nil
+}
+
 // ModelCatalogEntry 是目录中的单个模型摘要（不含 cost/compat 等编辑无关字段）。
 type ModelCatalogEntry struct {
 	ID             string   `json:"id"`

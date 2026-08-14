@@ -69,11 +69,29 @@
           v-else-if="store.presetEngine === 'openai'"
           format="openai"
         />
-        <!-- Pi（amagi-pi）结构化配置：可视化/JSON 双模式 + 模型下拉关联 -->
-        <PiAmagiConfig v-else-if="store.presetEngine === 'pi'" />
+        <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
+        <template v-else-if="store.presetEngine === 'pi'">
+          <Segmented
+            v-model="piMode"
+            :options="PI_MODES"
+            variant="pill"
+            class="oc-mode-tabs"
+          />
+          <PiAmagiConfig v-if="piMode === 'agents'" />
+          <ProviderRegistryEditor v-else engine="pi" />
+        </template>
 
-        <!-- OMP (oh-my-pi) 结构化配置：可视化/YAML 双模式 + 模型下拉关联 -->
-        <OmpGlobalConfig v-else-if="store.presetEngine === 'omp'" />
+        <!-- OMP (oh-my-pi) 结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
+        <template v-else-if="store.presetEngine === 'omp'">
+          <Segmented
+            v-model="ompMode"
+            :options="OMP_MODES"
+            variant="pill"
+            class="oc-mode-tabs"
+          />
+          <OmpGlobalConfig v-if="ompMode === 'agents'" />
+          <ProviderRegistryEditor v-else engine="omp" />
+        </template>
 
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
         <template v-else-if="store.presetEngine === 'opencode'">
@@ -128,6 +146,7 @@ import OpenCodePresets from '../components/provider/OpenCodePresets.vue';
 import OpenCodeGlobalConfig from '../components/provider/OpenCodeGlobalConfig.vue';
 import PiAmagiConfig from '../components/provider/PiAmagiConfig.vue';
 import OmpGlobalConfig from '../components/provider/OmpGlobalConfig.vue';
+import ProviderRegistryEditor from '../components/provider/ProviderRegistryEditor.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
@@ -154,8 +173,20 @@ const OPENCODE_MODES = [
   { value: 'global', label: '全局配置' },
 ];
 
+const PI_MODES = [
+  { value: 'agents', label: 'Agent 配置' },
+  { value: 'registry', label: '模型提供商' },
+];
+
+const OMP_MODES = [
+  { value: 'agents', label: 'Agent 配置' },
+  { value: 'registry', label: '模型提供商' },
+];
+
 const mainTab = ref<'providers' | 'presets'>('providers');
 const openCodeMode = ref<'presets' | 'global'>('global');
+const piMode = ref<'agents' | 'registry'>('agents');
+const ompMode = ref<'agents' | 'registry'>('agents');
 const showExportConfirm = ref(false);
 const showImportConfirm = ref(false);
 const transferAction = ref<'export' | 'import' | null>(null);

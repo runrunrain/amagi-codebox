@@ -5476,6 +5476,21 @@ func (a *App) GetPiModelCatalog() (string, error) {
 	return a.PiConfig.GetPiModelCatalog()
 }
 
+// GetPiModelsConfig 读取 pi 的 models.json 注册表全文（含 apiKey，本地文件）。
+func (a *App) GetPiModelsConfig() (string, error) {
+	return a.PiConfig.GetModelsConfig()
+}
+
+// SavePiModelsConfig 校验并保存 models.json（原子写入）。
+func (a *App) SavePiModelsConfig(content string) error {
+	return a.PiConfig.SaveModelsConfig(content)
+}
+
+// GetPiModelsConfigPath 返回 models.json 的绝对路径，供前端展示。
+func (a *App) GetPiModelsConfigPath() (string, error) {
+	return a.PiConfig.GetModelsConfigPath()
+}
+
 // --- OMP (oh-my-pi) 配置 API ---
 
 // GetOmpConfig 读取 omp 的 config.yml 配置内容（YAML 文本）。
@@ -5497,6 +5512,21 @@ func (a *App) GetOmpConfigPath() (string, error) {
 // 供前端可视化配置的下拉关联使用。
 func (a *App) GetOmpModelCatalog() (string, error) {
 	return a.OmpConfig.GetOmpModelCatalog()
+}
+
+// GetOmpModelsConfig 读取 omp 的 models.yml 注册表全文（含 apiKey，本地文件）。
+func (a *App) GetOmpModelsConfig() (string, error) {
+	return a.OmpConfig.GetModelsConfig()
+}
+
+// SaveOmpModelsConfig 校验并保存 models.yml（原子写入）。
+func (a *App) SaveOmpModelsConfig(content string) error {
+	return a.OmpConfig.SaveModelsConfig(content)
+}
+
+// GetOmpModelsConfigPath 返回 models.yml 的绝对路径，供前端展示。
+func (a *App) GetOmpModelsConfigPath() (string, error) {
+	return a.OmpConfig.GetModelsConfigPath()
 }
 
 // --- 终端预设 API ---

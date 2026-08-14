@@ -194,6 +194,14 @@ export function GetOmpModelCatalog() {
   return window['go']['main']['App']['GetOmpModelCatalog']();
 }
 
+export function GetOmpModelsConfig() {
+  return window['go']['main']['App']['GetOmpModelsConfig']();
+}
+
+export function GetOmpModelsConfigPath() {
+  return window['go']['main']['App']['GetOmpModelsConfigPath']();
+}
+
 export function GetOpenCodeConfig() {
   return window['go']['main']['App']['GetOpenCodeConfig']();
 }
@@ -212,6 +220,14 @@ export function GetPathsService() {
 
 export function GetPiModelCatalog() {
   return window['go']['main']['App']['GetPiModelCatalog']();
+}
+
+export function GetPiModelsConfig() {
+  return window['go']['main']['App']['GetPiModelsConfig']();
+}
+
+export function GetPiModelsConfigPath() {
+  return window['go']['main']['App']['GetPiModelsConfigPath']();
 }
 
 export function GetPlatformCapabilities() {
@@ -430,8 +446,16 @@ export function SaveOmpConfig(arg1) {
   return window['go']['main']['App']['SaveOmpConfig'](arg1);
 }
 
+export function SaveOmpModelsConfig(arg1) {
+  return window['go']['main']['App']['SaveOmpModelsConfig'](arg1);
+}
+
 export function SaveOpenCodeConfig(arg1) {
   return window['go']['main']['App']['SaveOpenCodeConfig'](arg1);
+}
+
+export function SavePiModelsConfig(arg1) {
+  return window['go']['main']['App']['SavePiModelsConfig'](arg1);
 }
 
 export function SaveProviderFromJSON(arg1, arg2) {

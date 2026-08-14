@@ -139,6 +139,55 @@ func writePrivateFile(path string, data []byte) error {
 	}
 }
 
+// GetModelsConfig 读取 models.yml（provider 注册表）内容。
+// 文件缺失时返回只含空 providers 的骨架；YAML 非法或根不是映射时
+// 原样返回内容，供用户在源码模式修复。
+func (s *Service) GetModelsConfig() (string, error) {
+	data, err := os.ReadFile(modelsConfigPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "providers: {}\n", nil
+		}
+		return "", fmt.Errorf("read omp models config: %w", err)
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil || root == nil {
+		return string(data), nil
+	}
+	formatted, err := marshalYAML(root)
+	if err != nil {
+		return "", fmt.Errorf("format models config: %w", err)
+	}
+	return formatted, nil
+}
+
+// SaveModelsConfig 校验并保存 models.yml：必须是合法 YAML 且根为映射。
+// 文件含 apiKey 等敏感信息，通过临时文件原子写入（0600）。
+func (s *Service) SaveModelsConfig(content string) error {
+	var root map[string]any
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
+	}
+	if root == nil {
+		return errors.New("invalid config: root must be a YAML mapping")
+	}
+	formatted, err := marshalYAML(root)
+	if err != nil {
+		return fmt.Errorf("format YAML: %w", err)
+	}
+
+	path := modelsConfigPath()
+	if err := ensureDir(path); err != nil {
+		return err
+	}
+	return writePrivateFile(path, []byte(formatted))
+}
+
+// GetModelsConfigPath 返回 models.yml 的绝对路径，供前端展示。
+func (s *Service) GetModelsConfigPath() (string, error) {
+	return modelsConfigPath(), nil
+}
+
 // ModelCatalogEntry / ModelCatalogProvider / ModelCatalog 与 piconfig 保持
 // 相同的 JSON 形态，前端可共用同一套目录解析逻辑。
 type ModelCatalogEntry struct {

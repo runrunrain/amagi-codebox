@@ -110,6 +110,10 @@ export function GetOmpConfigPath():Promise<string>;
 
 export function GetOmpModelCatalog():Promise<string>;
 
+export function GetOmpModelsConfig():Promise<string>;
+
+export function GetOmpModelsConfigPath():Promise<string>;
+
 export function GetOpenCodeConfig():Promise<string>;
 
 export function GetOpenCodeConfigPath():Promise<string>;
@@ -119,6 +123,10 @@ export function GetOutputHistorySnapshot(arg1:string):Promise<string>;
 export function GetPathsService():Promise<paths.PathsService>;
 
 export function GetPiModelCatalog():Promise<string>;
+
+export function GetPiModelsConfig():Promise<string>;
+
+export function GetPiModelsConfigPath():Promise<string>;
 
 export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;
 
@@ -228,7 +236,11 @@ export function SaveEnvVarsJSON(arg1:string):Promise<void>;
 
 export function SaveOmpConfig(arg1:string):Promise<void>;
 
+export function SaveOmpModelsConfig(arg1:string):Promise<void>;
+
 export function SaveOpenCodeConfig(arg1:string):Promise<void>;
+
+export function SavePiModelsConfig(arg1:string):Promise<void>;
 
 export function SaveProviderFromJSON(arg1:string,arg2:string):Promise<void>;
 
