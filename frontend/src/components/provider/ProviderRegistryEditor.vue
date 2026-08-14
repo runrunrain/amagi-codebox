@@ -2,9 +2,11 @@
   ProviderRegistryEditor - pi/omp 模型提供商注册表可视化编辑器。
   pi 编辑 ~/.pi/agent/models.json（JSON），omp 编辑 ~/.omp/agent/models.yml（YAML），
   两者 providers 结构一致：{ api, apiKey?, baseUrl?, models: [{id, ...元数据}] }。
-  可视化模式：provider 折叠卡片（api 下拉/回退输入、baseUrl、apiKey 密文输入、
-  模型列表增删改）；未识别字段（auth/thinkingLevelMap/cost/compat 等）走
-  RawJsonEditor 兜底，保存时原样保留。源码模式：JSON/YAML 文本直接编辑。
+  可视化模式完全可视化：provider 折叠卡片（api 下拉/回退输入、baseUrl、apiKey
+  密文输入、模型列表增删改）；高级字段用专用编辑器（thinkingLevelMap 级别映射、
+  thinking 模式+级别列表、input 能力列表、cost 四项费用），其余未知字段走
+  VisualValueEditor 递归可视化编辑（字符串/数字/布尔/列表/嵌套对象，零 JSON）。
+  源码模式完全源码：JSON/YAML 文本直接编辑。
   注意：amagi-* 前缀的 provider 由 CodeBox 提供商中心同步管理，手工修改可能被覆盖。
 -->
 <template>
@@ -97,15 +99,27 @@
             </div>
           </div>
 
-          <!-- provider 级未识别字段兜底（auth: none / authHeader 等） -->
-          <div v-if="providerUnknownKeys(name).length" class="pre-unknown">
-            <div class="pre-unknown-title">其他字段（JSON 兜底）</div>
+          <!-- provider 级其他字段（auth: none / authHeader 等），完全可视化 -->
+          <div class="pre-unknown">
+            <div class="pre-unknown-title">其他字段</div>
+            <div v-if="providerUnknownKeys(name).length === 0" class="pre-unknown-empty">暂无其他字段</div>
             <div v-for="k in providerUnknownKeys(name)" :key="k" class="pre-unknown-item">
-              <div class="pre-unknown-key">{{ k }}</div>
-              <RawJsonEditor
+              <div class="pre-unknown-head">
+                <span class="pre-unknown-key">{{ k }}</span>
+                <AppButton variant="icon" size="small" aria-label="删除字段" @click="deleteProviderField(name, k)">
+                  <span class="pre-remove">×</span>
+                </AppButton>
+              </div>
+              <VisualValueEditor
                 :model-value="providersMap[name]?.[k]"
                 @update:model-value="setProviderField(name, k, $event)"
               />
+            </div>
+            <div class="pre-actions">
+              <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
+              <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
+              <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
+              <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
             </div>
           </div>
 
@@ -163,15 +177,122 @@
                   />
                 </div>
               </div>
-              <!-- 模型级未识别字段兜底（thinkingLevelMap / thinking / cost / compat / input） -->
-              <div v-if="modelUnknownKeys(name, idx).length" class="pre-unknown">
-                <div class="pre-unknown-title">模型高级字段（JSON 兜底）</div>
-                <div v-for="k in modelUnknownKeys(name, idx)" :key="k" class="pre-unknown-item">
-                  <div class="pre-unknown-key">{{ k }}</div>
-                  <RawJsonEditor
+              <!-- 模型高级字段：专用可视化编辑器，完全可视化 -->
+              <div class="pre-unknown">
+                <div class="pre-unknown-title">高级字段</div>
+                <div
+                  v-if="modelAdvancedPresent(name, idx).length === 0 && modelExtraKeys(name, idx).length === 0"
+                  class="pre-unknown-empty"
+                >
+                  暂无高级字段
+                </div>
+
+                <!-- thinkingLevelMap：级别映射 -->
+                <div v-if="hasModelField(name, idx, 'thinkingLevelMap')" class="pre-unknown-item">
+                  <div class="pre-unknown-head">
+                    <span class="pre-unknown-key">thinkingLevelMap（级别映射）</span>
+                    <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'thinkingLevelMap')">
+                      <span class="pre-remove">×</span>
+                    </AppButton>
+                  </div>
+                  <ThinkingLevelMapEditor
+                    :model-value="modelFieldObject(name, idx, 'thinkingLevelMap')"
+                    @update:model-value="setModelField(name, idx, 'thinkingLevelMap', $event)"
+                  />
+                </div>
+
+                <!-- thinking：mode + levels -->
+                <div v-if="hasModelField(name, idx, 'thinking')" class="pre-unknown-item">
+                  <div class="pre-unknown-head">
+                    <span class="pre-unknown-key">thinking（思考模式）</span>
+                    <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'thinking')">
+                      <span class="pre-remove">×</span>
+                    </AppButton>
+                  </div>
+                  <div class="pre-thinking">
+                    <div class="pre-field">
+                      <label class="pre-label">mode</label>
+                      <TextInput
+                        :model-value="thinkingMode(name, idx)"
+                        mono
+                        placeholder="如 effort"
+                        @update:model-value="updateThinkingMode(name, idx, $event)"
+                      />
+                    </div>
+                    <div class="pre-field">
+                      <label class="pre-label">levels</label>
+                      <StringListEditor
+                        :model-value="thinkingLevels(name, idx)"
+                        item-placeholder="级别（如 high）"
+                        add-label="添加级别"
+                        empty-text="未设置级别"
+                        mono
+                        @update:model-value="updateThinkingLevels(name, idx, $event)"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- input：输入能力 -->
+                <div v-if="hasModelField(name, idx, 'input')" class="pre-unknown-item">
+                  <div class="pre-unknown-head">
+                    <span class="pre-unknown-key">input（输入能力）</span>
+                    <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'input')">
+                      <span class="pre-remove">×</span>
+                    </AppButton>
+                  </div>
+                  <StringListEditor
+                    :model-value="modelFieldStringArray(name, idx, 'input')"
+                    item-placeholder="能力（如 text / image）"
+                    add-label="添加能力"
+                    empty-text="未设置"
+                    mono
+                    @update:model-value="setModelField(name, idx, 'input', $event)"
+                  />
+                </div>
+
+                <!-- cost：四项费用 -->
+                <div v-if="hasModelField(name, idx, 'cost')" class="pre-unknown-item">
+                  <div class="pre-unknown-head">
+                    <span class="pre-unknown-key">cost（USD / 百万 token）</span>
+                    <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'cost')">
+                      <span class="pre-remove">×</span>
+                    </AppButton>
+                  </div>
+                  <div class="pre-cost-grid">
+                    <div v-for="f in COST_FIELDS" :key="f.key" class="pre-field">
+                      <label class="pre-label">{{ f.label }}</label>
+                      <TextInput
+                        :model-value="costFieldString(name, idx, f.key)"
+                        type="number"
+                        :placeholder="f.placeholder"
+                        @update:model-value="updateCostField(name, idx, f.key, $event)"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 其余未知字段：递归可视化编辑 -->
+                <div v-for="k in modelExtraKeys(name, idx)" :key="k" class="pre-unknown-item">
+                  <div class="pre-unknown-head">
+                    <span class="pre-unknown-key">{{ k }}</span>
+                    <AppButton variant="icon" size="small" aria-label="删除字段" @click="deleteModelField(name, idx, k)">
+                      <span class="pre-remove">×</span>
+                    </AppButton>
+                  </div>
+                  <VisualValueEditor
                     :model-value="providersMap[name]?.models?.[idx]?.[k]"
                     @update:model-value="setModelField(name, idx, k, $event)"
                   />
+                </div>
+
+                <div class="pre-actions">
+                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinkingLevelMap')">+ 级别映射</AppButton>
+                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinking')">+ thinking</AppButton>
+                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'input')">+ 输入能力</AppButton>
+                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'cost')">+ 费用</AppButton>
+                  <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, {})">+ 对象字段</AppButton>
+                  <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, '')">+ 字符串字段</AppButton>
                 </div>
               </div>
             </div>
@@ -198,10 +319,10 @@
           </AppButton>
         </div>
 
-        <!-- 根级未识别键（$schema 等） -->
+        <!-- 根级其他键（$schema 等），完全可视化 -->
         <ConfigCategoryCard
           v-if="rootUnknownKeys.length"
-          title="其他顶层键（JSON 兜底）"
+          title="其他顶层键"
           category="unknown"
           :expanded="expandedRoot"
           :badge="rootUnknownKeys.length"
@@ -209,8 +330,13 @@
         >
           <div class="pre-unknown">
             <div v-for="k in rootUnknownKeys" :key="k" class="pre-unknown-item">
-              <div class="pre-unknown-key">{{ k }}</div>
-              <RawJsonEditor :model-value="data[k]" @update:model-value="setRootField(k, $event)" />
+              <div class="pre-unknown-head">
+                <span class="pre-unknown-key">{{ k }}</span>
+                <AppButton variant="icon" size="small" aria-label="删除键" @click="deleteRootField(k)">
+                  <span class="pre-remove">×</span>
+                </AppButton>
+              </div>
+              <VisualValueEditor :model-value="data[k]" @update:model-value="setRootField(k, $event)" />
             </div>
           </div>
         </ConfigCategoryCard>
@@ -244,7 +370,9 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import ConfigCategoryCard from './ConfigCategoryCard.vue';
-import RawJsonEditor from './RawJsonEditor.vue';
+import StringListEditor from './StringListEditor.vue';
+import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
+import VisualValueEditor from './VisualValueEditor.vue';
 
 const props = defineProps<{ engine: 'pi' | 'omp' }>();
 
@@ -268,6 +396,15 @@ const API_OPTIONS = [
 
 const PROVIDER_KNOWN_KEYS = new Set(['api', 'apiKey', 'baseUrl', 'models']);
 const MODEL_KNOWN_KEYS = new Set(['id', 'name', 'contextWindow', 'maxTokens', 'reasoning']);
+/** 模型高级字段（有专用可视化编辑器） */
+const MODEL_ADVANCED_KEYS = new Set(['thinkingLevelMap', 'thinking', 'input', 'cost']);
+/** cost 对象的四个已知费用字段 */
+const COST_FIELDS = [
+  { key: 'input', label: '输入', placeholder: '如 1.0' },
+  { key: 'output', label: '输出', placeholder: '如 2.0' },
+  { key: 'cacheRead', label: '缓存读', placeholder: '如 0.1' },
+  { key: 'cacheWrite', label: '缓存写', placeholder: '如 0.2' },
+] as const;
 
 const loading = ref(true);
 const saving = ref(false);
@@ -315,7 +452,48 @@ function providerUnknownKeys(name: string): string[] {
 function modelUnknownKeys(name: string, idx: number): string[] {
   const m = providerModels(name)[idx];
   if (!m || typeof m !== 'object' || Array.isArray(m)) return [];
-  return Object.keys(m).filter((k) => !MODEL_KNOWN_KEYS.has(k));
+  return Object.keys(m).filter((k) => !MODEL_KNOWN_KEYS.has(k) && !MODEL_ADVANCED_KEYS.has(k));
+}
+
+function hasModelField(name: string, idx: number, key: string): boolean {
+  const m = providerModels(name)[idx];
+  return !!m && typeof m === 'object' && key in m;
+}
+
+function modelAdvancedPresent(name: string, idx: number): string[] {
+  const m = providerModels(name)[idx];
+  if (!m || typeof m !== 'object') return [];
+  return Object.keys(m).filter((k) => MODEL_ADVANCED_KEYS.has(k));
+}
+
+function modelExtraKeys(name: string, idx: number): string[] {
+  return modelUnknownKeys(name, idx);
+}
+
+function modelFieldObject(name: string, idx: number, key: string): Record<string, any> {
+  const v = providerModels(name)[idx]?.[key];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+
+function modelFieldStringArray(name: string, idx: number, key: string): string[] {
+  const v = providerModels(name)[idx]?.[key];
+  return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+}
+
+function thinkingLevels(name: string, idx: number): string[] {
+  const thinking = modelFieldObject(name, idx, 'thinking');
+  return Array.isArray(thinking.levels) ? thinking.levels.filter((x: any) => typeof x === 'string') : [];
+}
+
+function thinkingMode(name: string, idx: number): string {
+  const mode = modelFieldObject(name, idx, 'thinking').mode;
+  return typeof mode === 'string' ? mode : '';
+}
+
+function costFieldString(name: string, idx: number, field: string): string {
+  const cost = modelFieldObject(name, idx, 'cost');
+  const v = cost[field];
+  return v === undefined || v === null ? '' : String(v);
 }
 
 function providerApiRaw(name: string): string {
@@ -406,8 +584,104 @@ function setProviderField(name: string, key: string, value: any) {
 }
 
 function setRootField(key: string, value: any) {
-  if (value === null) delete data.value[key];
-  else data.value[key] = value;
+  data.value[key] = value;
+  serialize();
+}
+
+function deleteRootField(key: string) {
+  delete data.value[key];
+  serialize();
+}
+
+function deleteProviderField(name: string, key: string) {
+  const entry = providersMap.value[name];
+  if (!entry || typeof entry !== 'object') return;
+  delete entry[key];
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function addProviderField(name: string, defaultValue: any) {
+  const entry = providersMap.value[name];
+  if (!entry || typeof entry !== 'object') return;
+  let k = 'new_field';
+  let i = 1;
+  while (k in entry) k = 'new_field_' + i++;
+  entry[k] = defaultValue;
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function deleteModelField(name: string, idx: number, key: string) {
+  const m = providerModelsRef(name)[idx];
+  if (!m || typeof m !== 'object') return;
+  delete m[key];
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function addModelAdvanced(name: string, idx: number, key: string) {
+  const defaults: Record<string, any> = {
+    thinkingLevelMap: { high: 'high', max: 'max' },
+    thinking: { mode: 'effort', levels: ['low', 'high'] },
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const m = providerModelsRef(name)[idx];
+  if (!m || typeof m !== 'object' || !(key in defaults)) return;
+  m[key] = defaults[key];
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function addModelExtraField(name: string, idx: number, defaultValue: any) {
+  const m = providerModelsRef(name)[idx];
+  if (!m || typeof m !== 'object') return;
+  let k = 'new_field';
+  let i = 1;
+  while (k in m) k = 'new_field_' + i++;
+  m[k] = defaultValue;
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function updateThinkingMode(name: string, idx: number, mode: string) {
+  const m = providerModelsRef(name)[idx];
+  if (!m || typeof m !== 'object') return;
+  const thinking = { ...(m.thinking || {}) };
+  if (mode === '') delete thinking.mode;
+  else thinking.mode = mode;
+  m.thinking = thinking;
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function updateThinkingLevels(name: string, idx: number, levels: string[]) {
+  const m = providerModelsRef(name)[idx];
+  if (!m || typeof m !== 'object') return;
+  m.thinking = { ...(m.thinking || {}), levels };
+  data.value.providers = { ...ensureProviders() };
+  serialize();
+}
+
+function updateCostField(name: string, idx: number, field: string, raw: string) {
+  const m = providerModelsRef(name)[idx];
+  if (!m || typeof m !== 'object') return;
+  const cost = { ...(m.cost || {}) };
+  const trimmed = String(raw).trim();
+  if (!trimmed) {
+    delete cost[field];
+  } else {
+    const num = Number(trimmed);
+    if (Number.isNaN(num)) return;
+    cost[field] = num;
+  }
+  if (Object.keys(cost).length === 0) {
+    delete m.cost; // 四项全空则移除 cost 字段
+  } else {
+    m.cost = cost;
+  }
+  data.value.providers = { ...ensureProviders() };
   serialize();
 }
 
@@ -668,10 +942,36 @@ onMounted(() => {
   letter-spacing: 0.3px;
 }
 
+.pre-unknown-empty {
+  font-size: 12px;
+  color: var(--tertiary);
+  padding: 2px 0;
+}
+
+.pre-unknown-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .pre-unknown-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+}
+
+.pre-thinking {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.pre-cost-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
 }
 
 .pre-unknown-key {
