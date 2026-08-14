@@ -114,6 +114,21 @@ func (s *Service) Load() error {
 	} else if updated > 0 {
 		s.logInfo("usage", "DeepSeek V4 Pro 历史币种已修正", fmt.Sprintf("records=%d", updated))
 	}
+	// GLM-5.3/5.1 previously fell back to the glm-5 prefix price; dedicated seed
+	// entries now exist (temporary GLM-5.2 rates: same base model, official API
+	// pricing unpublished, editable in the pricing UI). Reprice locally estimated
+	// records so historical cost and display name use the new entries;
+	// OpenCode-supplied totals are marked cost_provided and remain untouched.
+	if updated, err := s.repriceEstimatedUsageForPattern(ctx, "glm-5.3"); err != nil {
+		s.logWarn("usage", "GLM-5.3 历史成本重算失败", err.Error())
+	} else if updated > 0 {
+		s.logInfo("usage", "GLM-5.3 历史成本已重算", fmt.Sprintf("records=%d", updated))
+	}
+	if updated, err := s.repriceEstimatedUsageForPattern(ctx, "glm-5.1"); err != nil {
+		s.logWarn("usage", "GLM-5.1 历史成本重算失败", err.Error())
+	} else if updated > 0 {
+		s.logInfo("usage", "GLM-5.1 历史成本已重算", fmt.Sprintf("records=%d", updated))
+	}
 	return nil
 }
 

@@ -451,7 +451,7 @@ func TestRecordForceIsNewSemantic(t *testing.T) {
 func TestPricingSeedCNY(t *testing.T) {
 	data := defaultPricingData()
 	cnyCount, usdCount := 0, 0
-	glmFound := false
+	glmFound, glm53Found, glm51Found := false, false, false
 	for _, m := range data.Models {
 		switch m.CurrencyCode {
 		case "CNY":
@@ -465,6 +465,18 @@ func TestPricingSeedCNY(t *testing.T) {
 				t.Errorf("glm-5.2 currency = %s, want CNY", m.CurrencyCode)
 			}
 		}
+		if m.ModelPattern == "glm-5.3" {
+			glm53Found = true
+			if m.CurrencyCode != "CNY" {
+				t.Errorf("glm-5.3 currency = %s, want CNY", m.CurrencyCode)
+			}
+		}
+		if m.ModelPattern == "glm-5.1" {
+			glm51Found = true
+			if m.CurrencyCode != "CNY" {
+				t.Errorf("glm-5.1 currency = %s, want CNY", m.CurrencyCode)
+			}
+		}
 	}
 	if cnyCount == 0 {
 		t.Error("expected some CNY models in seed")
@@ -474,6 +486,12 @@ func TestPricingSeedCNY(t *testing.T) {
 	}
 	if !glmFound {
 		t.Error("expected glm-5.2 in seed (user machine has this model)")
+	}
+	if !glm53Found {
+		t.Error("expected glm-5.3 in seed (temporary GLM-5.2 rates, editable in pricing UI)")
+	}
+	if !glm51Found {
+		t.Error("expected glm-5.1 in seed (was priced via glm-5 prefix fallback)")
 	}
 }
 

@@ -4,7 +4,9 @@
     一级 Segmented(pill): 「服务提供商」|「预设」
     区域标签：服务提供商区描述「底层资源」；预设区描述「启动配置」
     服务提供商 tab（本批实现）：网格 + 详情模式切换
-    预设 tab：EmptyState「即将上线」占位（P3-B 填）
+    预设 tab：二级导航拆两组——「格式预设」（Anthropic/OpenAI 公共协议格式）
+    与「CLI 独立配置」（OpenCode/Pi/OMP 专属配置文件），组间视觉分隔；
+    CLI 独立配置组件全部 defineAsyncComponent 懒加载，退出入口 chunk。
   -->
   <section class="view-provider">
     <PageHead title="Provider Center" description="统一管理服务提供商与可跨 CLI 复用的公共预设" />
@@ -51,13 +53,36 @@
           <span>绑定提供商与模型参数</span>
         </div>
 
-        <!-- 二级下划线 Tab：两类公共协议格式 + OpenCode 独立配置。 -->
-        <Segmented
-          v-model="engineModel"
-          :options="ENGINE_TABS"
-          variant="underline"
-          class="pc-engine-tabs"
-        />
+        <!-- 二级导航拆两组：格式预设（跨 CLI 复用的公共协议格式）与 CLI 独立配置（各 CLI 专属配置文件，互不共享）。 -->
+        <div class="pc-engine-group">
+          <div class="pc-zone-label">
+            <span>格式预设</span>
+            <span class="zn-sep">·</span>
+            <span>跨 CLI 复用的公共协议格式</span>
+          </div>
+          <Segmented
+            v-model="formatModel"
+            :options="FORMAT_TABS"
+            variant="underline"
+            class="pc-engine-tabs"
+          />
+        </div>
+
+        <div class="pc-group-divider" aria-hidden="true" />
+
+        <div class="pc-engine-group">
+          <div class="pc-zone-label">
+            <span>CLI 独立配置</span>
+            <span class="zn-sep">·</span>
+            <span>各 CLI 专属配置文件，互不共享</span>
+          </div>
+          <Segmented
+            v-model="cliModel"
+            :options="CLI_TABS"
+            variant="underline"
+            class="pc-engine-tabs"
+          />
+        </div>
 
         <!-- Claude Code 复用 Anthropic 格式公共预设。 -->
         <PresetList
@@ -77,9 +102,9 @@
             variant="pill"
             class="oc-mode-tabs"
           />
-          <PiAmagiConfig v-if="piMode === 'agents'" />
-          <ProviderRegistryEditor v-else-if="piMode === 'registry'" engine="pi" />
-          <AuthConfigEditor v-else />
+          <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" />
+          <ProviderRegistryEditor v-else-if="piMode === 'registry'" :key="presetLoadKey" engine="pi" />
+          <AuthConfigEditor v-else :key="presetLoadKey" />
         </template>
 
         <!-- OMP (oh-my-pi) 结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
@@ -90,8 +115,8 @@
             variant="pill"
             class="oc-mode-tabs"
           />
-          <OmpGlobalConfig v-if="ompMode === 'agents'" />
-          <ProviderRegistryEditor v-else engine="omp" />
+          <OmpGlobalConfig v-if="ompMode === 'agents'" :key="presetLoadKey" />
+          <ProviderRegistryEditor v-else :key="presetLoadKey" engine="omp" />
         </template>
 
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
@@ -106,9 +131,10 @@
           <!-- OpenCode 预设管理 -->
           <OpenCodePresets
             v-if="openCodeMode === 'presets'"
+            :key="presetLoadKey"
           />
           <!-- OpenCode 全局配置 -->
-          <OpenCodeGlobalConfig v-else />
+          <OpenCodeGlobalConfig v-else :key="presetLoadKey" />
         </template>
       </div>
     </ConfigCard>
@@ -135,20 +161,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch, defineAsyncComponent, defineComponent, h, type Component } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import AppButton from '../components/ui/AppButton.vue';
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
+import LoadingState from '../components/ui/LoadingState.vue';
+import ErrorState from '../components/ui/ErrorState.vue';
 import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
-import OpenCodePresets from '../components/provider/OpenCodePresets.vue';
-import OpenCodeGlobalConfig from '../components/provider/OpenCodeGlobalConfig.vue';
-import PiAmagiConfig from '../components/provider/PiAmagiConfig.vue';
-import OmpGlobalConfig from '../components/provider/OmpGlobalConfig.vue';
-import ProviderRegistryEditor from '../components/provider/ProviderRegistryEditor.vue';
-import AuthConfigEditor from '../components/provider/AuthConfigEditor.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
@@ -162,9 +184,15 @@ const MAIN_TABS = [
   { value: 'presets', label: '预设' },
 ];
 
-const ENGINE_TABS = [
+// 二级导航拆两组（ENGINE_TABS 已拆分）：
+// 格式预设 = 公共协议格式（terminal_presets，跨 CLI 复用）；
+// CLI 独立配置 = 各 CLI 专属配置文件编辑，内部自带三级 Tab。
+const FORMAT_TABS = [
   { value: 'anthropic', label: 'Anthropic 格式' },
   { value: 'openai', label: 'OpenAI 格式' },
+];
+
+const CLI_TABS = [
   { value: 'opencode', label: 'OpenCode' },
   { value: 'pi', label: 'Pi' },
   { value: 'omp', label: 'OMP' },
@@ -195,11 +223,60 @@ const showImportConfirm = ref(false);
 const transferAction = ref<'export' | 'import' | null>(null);
 const transferring = computed(() => transferAction.value !== null);
 
-// 二级 engine 双向绑定（写入 store + 触发按需加载）
-const engineModel = computed<string>({
-  get: () => store.presetEngine,
-  set: (v: string) => store.setPresetEngine(v as PresetEngine),
+// 二级 engine 双向绑定（写入 store + 触发按需加载）。
+// store.presetEngine 仍是唯一选中态；两组 Segmented 各只反映本组内的值，
+// 选中引擎不在本组时显示为空（无高亮），点选时写回 store。
+const FORMAT_ENGINES: readonly PresetEngine[] = ['anthropic', 'openai'];
+const CLI_ENGINES: readonly PresetEngine[] = ['opencode', 'pi', 'omp'];
+
+const formatModel = computed<string>({
+  get: () => (FORMAT_ENGINES.includes(store.presetEngine) ? store.presetEngine : ''),
+  set: (v: string) => {
+    if (v) store.setPresetEngine(v as PresetEngine);
+  },
 });
+
+const cliModel = computed<string>({
+  get: () => (CLI_ENGINES.includes(store.presetEngine) ? store.presetEngine : ''),
+  set: (v: string) => {
+    if (v) store.setPresetEngine(v as PresetEngine);
+  },
+});
+
+// CLI 独立配置组件懒加载（AppShell.vue:37-43 模式）：合计约 4,100 行且非默认视图，
+// 异步加载使其退出入口 chunk；delay 避免快速切换时 loading 闪烁。
+// 更换 presetLoadKey 会重新挂载异步组件并重新执行 loader（动态 import 可重试）。
+const presetLoadKey = ref(0);
+
+const PresetLoadError = defineComponent({
+  name: 'PresetLoadError',
+  setup() {
+    return () =>
+      h(ErrorState, {
+        title: '配置页加载失败',
+        message: '配置界面资源加载失败，请重试。',
+        onRetry: () => {
+          presetLoadKey.value++;
+        },
+      });
+  },
+});
+
+function lazyPreset<T extends Component>(loader: () => Promise<T>) {
+  return defineAsyncComponent({
+    loader,
+    loadingComponent: LoadingState,
+    errorComponent: PresetLoadError,
+    delay: 120,
+  });
+}
+
+const OpenCodePresets = lazyPreset(() => import('../components/provider/OpenCodePresets.vue'));
+const OpenCodeGlobalConfig = lazyPreset(() => import('../components/provider/OpenCodeGlobalConfig.vue'));
+const PiAmagiConfig = lazyPreset(() => import('../components/provider/PiAmagiConfig.vue'));
+const OmpGlobalConfig = lazyPreset(() => import('../components/provider/OmpGlobalConfig.vue'));
+const ProviderRegistryEditor = lazyPreset(() => import('../components/provider/ProviderRegistryEditor.vue'));
+const AuthConfigEditor = lazyPreset(() => import('../components/provider/AuthConfigEditor.vue'));
 
 onMounted(() => {
   store.loadProviders();
@@ -341,6 +418,20 @@ function handleAdd() {
 
 .pc-zone-label .zn-sep {
   color: var(--separator);
+}
+
+/* 二级导航两组：组标签（复用 .pc-zone-label 范式）+ underline Segmented */
+.pc-engine-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 组间视觉分隔 */
+.pc-group-divider {
+  height: 1px;
+  background: var(--separator);
+  opacity: 0.6;
 }
 
 /* 二级下划线 Tab：与一级 pill 区分层级（对照 demo .pc-engine-tabs） */
