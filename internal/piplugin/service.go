@@ -21,6 +21,7 @@ package piplugin
 import (
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -300,7 +301,7 @@ func (s *Service) InstallPackage(source string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executePiCommand(nil, "install", source)
+	return s.executePiCommand(context.TODO(), "install", source)
 }
 
 // RemovePackage 通过 pi CLI 移除包（从 settings.json packages[] 删除；实体保留）。
@@ -311,7 +312,7 @@ func (s *Service) RemovePackage(source string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executePiCommand(nil, "remove", source)
+	return s.executePiCommand(context.TODO(), "remove", source)
 }
 
 // UpdatePackage 通过 pi CLI 更新单个包。
@@ -337,7 +338,7 @@ func (s *Service) UpdatePackage(source string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executePiCommand(nil, "update", source)
+	return s.executePiCommand(context.TODO(), "update", source)
 }
 
 // inspectPackage 扫描实体目录补全包元数据；resources=true 时进一步枚举子资源。

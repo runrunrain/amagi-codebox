@@ -22,14 +22,6 @@ export function GetKeyDiagnostics(arg1) {
   return window['go']['secrets']['SecretsService']['GetKeyDiagnostics'](arg1);
 }
 
-export function GetMinimaxAPIKey() {
-  return window['go']['secrets']['SecretsService']['GetMinimaxAPIKey']();
-}
-
-export function GetZhipuAPIKey() {
-  return window['go']['secrets']['SecretsService']['GetZhipuAPIKey']();
-}
-
 export function HasAPIKey(arg1) {
   return window['go']['secrets']['SecretsService']['HasAPIKey'](arg1);
 }
@@ -48,14 +40,6 @@ export function Save() {
 
 export function SetAPIKey(arg1, arg2) {
   return window['go']['secrets']['SecretsService']['SetAPIKey'](arg1, arg2);
-}
-
-export function SetMinimaxAPIKey(arg1) {
-  return window['go']['secrets']['SecretsService']['SetMinimaxAPIKey'](arg1);
-}
-
-export function SetZhipuAPIKey(arg1) {
-  return window['go']['secrets']['SecretsService']['SetZhipuAPIKey'](arg1);
 }
 
 export function Snapshot() {

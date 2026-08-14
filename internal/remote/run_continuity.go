@@ -1022,10 +1022,9 @@ func (c *runSegmentCommitter) record(kind RunObservationKind, o RunObservationOu
 
 // errFeed* are sentinel errors for segment operations.
 var (
-	errFeedAlreadySealed = feedErr("feed already sealed")
-	errFeedStaleRun      = feedErr("feed run is stale")
-	errFeedNotSealed     = feedErr("feed not sealed")
-	errFeedFault         = feedErr("feed faulted")
+	errFeedStaleRun  = feedErr("feed run is stale")
+	errFeedNotSealed = feedErr("feed not sealed")
+	errFeedFault     = feedErr("feed faulted")
 )
 
 type feedErr string

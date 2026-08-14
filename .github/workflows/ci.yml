@@ -36,6 +36,13 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
+      # Lint 门禁（Phase 3 S6）：与本地同一 pinned 版本；跑在 matrix 两条腿上，
+      # 使 _windows.go/_darwin.go 平台专属文件均被静态检查。
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
       - name: Go test
         if: matrix.os == 'macos-latest'
         run: go test ./... -count=1

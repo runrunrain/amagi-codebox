@@ -294,4 +294,3 @@ type lifecycleClosedOutcome struct {
 }
 
 // isClosed reports whether the intent has a closed outcome (fence wrote it).
-func (o *lifecycleClosedOutcome) isClosed() bool { return o != nil }

@@ -1230,7 +1230,7 @@ func TestDisposeSecretsZeroesEnv(t *testing.T) {
 		}
 	}
 	if !hadEnv {
-		// Some CLIs may have empty env; that's OK as long as no non-empty leaked.
+		t.Fatal("no ptyStartEffect with non-empty env found; test setup did not exercise secret env vars")
 	}
 }
 

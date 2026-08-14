@@ -50,8 +50,8 @@ func TestValidDNSLabelHostStrict(t *testing.T) {
 	// Total host length ≤ 253.
 	longLabel := strings.Repeat("a", 50)
 	longHost := longLabel + "." + longLabel + "." + longLabel + "." + longLabel + "." + longLabel // 250+ dots
-	if len(longHost) <= 253 && validDNSLabelHost(longHost) {
-		// ok if within bounds
+	if len(longHost) <= 253 && !validDNSLabelHost(longHost) {
+		t.Errorf("host len %d within 253 should be accepted", len(longHost))
 	}
 	tooLong := strings.Repeat("a", 254)
 	if validDNSLabelHost(tooLong) {

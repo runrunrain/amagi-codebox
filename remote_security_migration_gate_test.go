@@ -86,15 +86,6 @@ func txnDirExists(configDir string) bool {
 	return err == nil
 }
 
-// containsBytes reports whether path's bytes contain needle.
-func containsBytes(path, needle string) bool {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return bytes.Contains(b, []byte(needle))
-}
-
 // containsBytesGlob reports whether any file under root (recursive) contains
 // needle. Used for the privacy scan over the device store + backup tree.
 func containsBytesGlob(t *testing.T, root, needle string) bool {

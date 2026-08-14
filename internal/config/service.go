@@ -126,42 +126,22 @@ func (s *ConfigService) Load() error {
 	return nil
 }
 
+// Save persists the current in-memory config to models.json.
+//
+// It holds s.mu for the whole scrub+marshal+write so that a concurrent
+// SaveProvider/SavePreset (which mutates s.config.Models under the write lock)
+// cannot race with the map iteration inside scrubConfigAPIKeys / json.Marshal.
+// The previous RLock-then-release form marshalled the shared s.config pointer
+// unlocked, leaving a window for a concurrent map write to crash the process
+// ("concurrent map iteration and map write") or trip the race detector. No
+// caller of Save holds s.mu — the only production caller is App.SaveAllConfig,
+// which takes no config lock — so acquiring the write lock here cannot
+// self-deadlock. Behavior is otherwise identical to saveLocked (same scrub +
+// tmp+rename+chmod, plus the same nil-Models defaulting).
 func (s *ConfigService) Save() error {
-	s.mu.RLock()
-	cfg := s.config
-	path := s.configPath
-	s.mu.RUnlock()
-
-	if cfg == nil {
-		return errors.New("config not loaded")
-	}
-
-	// 最终兜底保险：写盘前清除所有 Provider 的敏感字段
-	scrubConfigAPIKeys(cfg)
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("mkdir config dir: %w", err)
-	}
-
-	b, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	b = append(b, '\n')
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	// 覆盖残留的旧权限 tmp（WriteFile 不改变已存在文件的权限位）。
-	_ = os.Chmod(tmp, 0o600)
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace config: %w", err)
-	}
-	// 配置可能携带 header 值（含敏感 literal），收紧到属主可读（R3 复审）。
-	_ = os.Chmod(path, 0o600)
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
 }
 
 // saveLocked 在已持有写锁的情况下将当前 config 写入磁盘。
@@ -645,6 +625,31 @@ func (s *ConfigService) GetProvider(name string) (*Provider, error) {
 	}
 	copy := p
 	return &copy, nil
+}
+
+// SnapshotProvider 在单次读锁内返回 provider 的深快照：结构体字段连同
+// Presets 外层 map 一起拷贝（Presets 为 nil 时返回空 map，调用方可直接注入）。
+// 供“provider 与 presets 必须同代”的桥接路径（App.LaunchSession /
+// LaunchOpenCode 的 terminal_preset 桥接）使用：GetProvider + GetPresets
+// 两次独立加锁之间，SaveProvider/SavePreset 可并发改写，拼出的会是跨配置
+// 代次的混合快照（谛听终审 Minor-2）。返回的 Presets 是副本，写它不会
+// 影响 ConfigService 内部状态。
+func (s *ConfigService) SnapshotProvider(name string) (*Provider, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return nil, errors.New("config not loaded")
+	}
+	p, ok := s.config.Models[name]
+	if !ok {
+		return nil, fmt.Errorf("provider not found: %s", name)
+	}
+	out := p
+	out.Presets = make(map[string]Preset, len(p.Presets))
+	for k, v := range p.Presets {
+		out.Presets[k] = v
+	}
+	return &out, nil
 }
 
 func (s *ConfigService) SaveProvider(name string, p Provider) error {

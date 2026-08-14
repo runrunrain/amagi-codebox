@@ -1555,11 +1555,6 @@ func sortSessionEntryPairs(s []sessionEntryPair) {
 	}
 }
 
-// sortAffectedSessions is an alias for backward compatibility.
-func sortAffectedSessions(s []sessionEntryPair) {
-	sortSessionEntryPairs(s)
-}
-
 // ---------------------------------------------------------------------------
 // Cancellation cause errors (for permit.cancel)
 // ---------------------------------------------------------------------------
@@ -1568,22 +1563,7 @@ var (
 	errDeviceRevoked = errors.New("control: device revoked")
 	errServerStopped = errors.New("control: server stopped")
 	errShutdown      = errors.New("control: shutdown")
-	errSecurityLatch = errors.New("control: security latch")
 )
-
-// contextCauseFor converts a transition reason to a context cancellation cause.
-func contextCauseFor(reason controlTransitionReason) error {
-	switch reason {
-	case reasonDeviceRevoked:
-		return errDeviceRevoked
-	case reasonServiceStopped:
-		return errServerStopped
-	case reasonSecurityUnavailable:
-		return errSecurityLatch
-	default:
-		return errOperationFenced
-	}
-}
 
 // suppress unused import for context (used by permit types in control_gate.go)
 var _ = context.Background

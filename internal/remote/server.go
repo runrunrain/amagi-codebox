@@ -56,8 +56,6 @@ type Server struct {
 	sink        SecurityEventSink
 	durableSink *durableSecurityEventSink
 	curRun      *serverRun
-	runOnce     sync.Once
-	runDone     chan struct{}
 
 	// M1-B2c1 internal service-event emission (NFR-17).
 	serverEventScope string // process scope for stable service EventIDs
@@ -454,7 +452,7 @@ func (s *Server) HasEmbeddedMobileWeb() bool {
 	if err != nil {
 		return false
 	}
-	f.Close()
+	_ = f.Close()
 	return true
 }
 

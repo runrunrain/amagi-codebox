@@ -25,20 +25,33 @@ import {
 } from '../../wailsjs/go/main/App';
 
 import { config } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type aliases
 type Provider = config.Provider;
 type TerminalPreset = config.TerminalPreset;
 type MergedTerminalPreset = config.MergedTerminalPreset;
 
-let configService: any = null;
+/**
+ * GetConfigService 返回的是 wails 绑定的 ConfigService 代理实例；
+ * 生成的 models.ts 中 config.ConfigService 类不携带方法签名，
+ * 这里按本模块实际调用的方法面显式声明句柄类型（对齐 internal/config/service.go）。
+ */
+interface ConfigServiceHandle {
+  GetProvider(name: string): Promise<Provider>;
+  GetPreset(providerName: string, presetName: string): Promise<config.Preset>;
+  SavePreset(providerName: string, presetName: string, preset: config.Preset): Promise<void>;
+  DeletePreset(providerName: string, presetName: string): Promise<void>;
+}
+
+let configService: ConfigServiceHandle | null = null;
 
 /**
  * Initialize config service
  */
-async function getService() {
+async function getService(): Promise<ConfigServiceHandle> {
   if (!configService) {
-    configService = await GetConfigService();
+    configService = (await GetConfigService()) as unknown as ConfigServiceHandle;
   }
   return configService;
 }
@@ -46,37 +59,22 @@ async function getService() {
 /**
  * Get providers by type
  */
-export async function getProvidersByType(providerType: string): Promise<Record<string, Provider>> {
-  try {
-    return await GetProvidersByType(providerType);
-  } catch (error) {
-    console.error('[api.provider.getProvidersByType]', error);
-    throw error;
-  }
+export function getProvidersByType(providerType: string): Promise<Record<string, Provider>> {
+  return callApi('[api.provider.getProvidersByType]', () => GetProvidersByType(providerType));
 }
 
 /**
  * Get provider export as JSON
  */
-export async function getProviderExportJSON(providerName: string): Promise<string> {
-  try {
-    return await GetProviderExportJSON(providerName);
-  } catch (error) {
-    console.error('[api.provider.getProviderExportJSON]', error);
-    throw error;
-  }
+export function getProviderExportJSON(providerName: string): Promise<string> {
+  return callApi('[api.provider.getProviderExportJSON]', () => GetProviderExportJSON(providerName));
 }
 
 /**
  * Save provider from JSON
  */
-export async function saveProviderFromJSON(providerName: string, jsonStr: string): Promise<void> {
-  try {
-    await SaveProviderFromJSON(providerName, jsonStr);
-  } catch (error) {
-    console.error('[api.provider.saveProviderFromJSON]', error);
-    throw error;
-  }
+export function saveProviderFromJSON(providerName: string, jsonStr: string): Promise<void> {
+  return callApi('[api.provider.saveProviderFromJSON]', () => SaveProviderFromJSON(providerName, jsonStr));
 }
 
 /**
@@ -92,147 +90,92 @@ export async function saveProviderFromJSON(providerName: string, jsonStr: string
  *   填入新值 = 更新密钥。
  * - presets 字段应从 getProviderExportJSON 返回原样保留，避免覆盖清空 legacy presets。
  */
-export async function updateProvider(
+export function updateProvider(
   oldName: string,
   newName: string,
   providerJSON: string
 ): Promise<void> {
-  try {
-    await UpdateProvider(oldName, newName, providerJSON);
-  } catch (error) {
-    console.error('[api.provider.updateProvider]', error);
-    throw error;
-  }
+  return callApi('[api.provider.updateProvider]', () => UpdateProvider(oldName, newName, providerJSON));
 }
 
 /**
  * Get URL history for a provider
  */
-export async function getUrlHistory(providerID: string): Promise<string[]> {
-  try {
-    return await GetUrlHistory(providerID);
-  } catch (error) {
-    console.error('[api.provider.getUrlHistory]', error);
-    throw error;
-  }
+export function getUrlHistory(providerID: string): Promise<string[]> {
+  return callApi('[api.provider.getUrlHistory]', () => GetUrlHistory(providerID));
 }
 
 /**
  * Add URL to history
  */
-export async function addUrlToHistory(providerID: string, url: string): Promise<void> {
-  try {
-    await AddUrlToHistory(providerID, url);
-  } catch (error) {
-    console.error('[api.provider.addUrlToHistory]', error);
-    throw error;
-  }
+export function addUrlToHistory(providerID: string, url: string): Promise<void> {
+  return callApi('[api.provider.addUrlToHistory]', () => AddUrlToHistory(providerID, url));
 }
 
 /**
  * Remove URL from history
  */
-export async function removeUrlFromHistory(providerID: string, url: string): Promise<void> {
-  try {
-    await RemoveUrlFromHistory(providerID, url);
-  } catch (error) {
-    console.error('[api.provider.removeUrlFromHistory]', error);
-    throw error;
-  }
+export function removeUrlFromHistory(providerID: string, url: string): Promise<void> {
+  return callApi('[api.provider.removeUrlFromHistory]', () => RemoveUrlFromHistory(providerID, url));
 }
 
 /**
  * Get terminal presets
  */
-export async function getTerminalPresets(terminalType: string): Promise<Record<string, TerminalPreset>> {
-  try {
-    return await GetTerminalPresets(terminalType);
-  } catch (error) {
-    console.error('[api.provider.getTerminalPresets]', error);
-    throw error;
-  }
+export function getTerminalPresets(terminalType: string): Promise<Record<string, TerminalPreset>> {
+  return callApi('[api.provider.getTerminalPresets]', () => GetTerminalPresets(terminalType));
 }
 
 /**
  * Save terminal preset
  */
-export async function saveTerminalPreset(
+export function saveTerminalPreset(
   terminalType: string,
   presetName: string,
   preset: TerminalPreset
 ): Promise<void> {
-  try {
-    await SaveTerminalPreset(terminalType, presetName, preset);
-  } catch (error) {
-    console.error('[api.provider.saveTerminalPreset]', error);
-    throw error;
-  }
+  return callApi('[api.provider.saveTerminalPreset]', () => SaveTerminalPreset(terminalType, presetName, preset));
 }
 
 /**
  * Delete terminal preset
  */
-export async function deleteTerminalPreset(terminalType: string, presetName: string): Promise<void> {
-  try {
-    await DeleteTerminalPreset(terminalType, presetName);
-  } catch (error) {
-    console.error('[api.provider.deleteTerminalPreset]', error);
-    throw error;
-  }
+export function deleteTerminalPreset(terminalType: string, presetName: string): Promise<void> {
+  return callApi('[api.provider.deleteTerminalPreset]', () => DeleteTerminalPreset(terminalType, presetName));
 }
 
 /**
  * Get merged terminal presets
  */
-export async function getMergedTerminalPresets(terminalType: string): Promise<MergedTerminalPreset[]> {
-  try {
-    return await GetMergedTerminalPresets(terminalType);
-  } catch (error) {
-    console.error('[api.provider.getMergedTerminalPresets]', error);
-    throw error;
-  }
+export function getMergedTerminalPresets(terminalType: string): Promise<MergedTerminalPreset[]> {
+  return callApi('[api.provider.getMergedTerminalPresets]', () => GetMergedTerminalPresets(terminalType));
 }
 
 /**
  * Get OpenCode global config.json content
  */
-export async function getOpenCodeConfig(): Promise<string> {
-  try {
-    return await GetOpenCodeConfig();
-  } catch (error) {
-    console.error('[api.provider.getOpenCodeConfig]', error);
-    throw error;
-  }
+export function getOpenCodeConfig(): Promise<string> {
+  return callApi('[api.provider.getOpenCodeConfig]', () => GetOpenCodeConfig());
 }
 
 /**
  * Get OpenCode global config.json file path
  */
-export async function getOpenCodeConfigPath(): Promise<string> {
-  try {
-    return await GetOpenCodeConfigPath();
-  } catch (error) {
-    console.error('[api.provider.getOpenCodeConfigPath]', error);
-    throw error;
-  }
+export function getOpenCodeConfigPath(): Promise<string> {
+  return callApi('[api.provider.getOpenCodeConfigPath]', () => GetOpenCodeConfigPath());
 }
 
 /**
  * Save OpenCode global config.json content
  */
-export async function saveOpenCodeConfig(content: string): Promise<void> {
-  try {
-    await SaveOpenCodeConfig(content);
-  } catch (error) {
-    console.error('[api.provider.saveOpenCodeConfig]', error);
-    throw error;
-  }
+export function saveOpenCodeConfig(content: string): Promise<void> {
+  return callApi('[api.provider.saveOpenCodeConfig]', () => SaveOpenCodeConfig(content));
 }
 
 /**
  * Resolve terminal preset
  */
-export async function resolveTerminalPreset(
+export function resolveTerminalPreset(
   terminalType: string,
   key: string
 ): Promise<{
@@ -241,88 +184,63 @@ export async function resolveTerminalPreset(
   openCodeCfgJSON: string;
   found: boolean;
 }> {
-  try {
+  return callApi('[api.provider.resolveTerminalPreset]', async () => {
     const jsonStr = await ResolveTerminalPreset(terminalType, key);
     const parsed = JSON.parse(jsonStr);
     return parsed;
-  } catch (error) {
-    console.error('[api.provider.resolveTerminalPreset]', error);
-    throw error;
-  }
+  });
 }
 
 /**
  * Get provider (via ConfigService)
  */
-export async function getProvider(id: string): Promise<Provider> {
-  try {
+export function getProvider(id: string): Promise<Provider> {
+  return callApi('[api.provider.getProvider]', async () => {
     const service = await getService();
     return await service.GetProvider(id);
-  } catch (error) {
-    console.error('[api.provider.getProvider]', error);
-    throw error;
-  }
+  });
 }
 
 /**
  * Save provider (via ConfigService)
  */
-export async function saveProvider(id: string, provider: Provider): Promise<void> {
-  try {
-    await SaveProviderFromJSON(id, JSON.stringify(provider));
-  } catch (error) {
-    console.error('[api.provider.saveProvider]', error);
-    throw error;
-  }
+export function saveProvider(id: string, provider: Provider): Promise<void> {
+  return callApi('[api.provider.saveProvider]', () => SaveProviderFromJSON(id, JSON.stringify(provider)));
 }
 
 /**
  * Delete provider (via ConfigService)
  */
-export async function deleteProvider(id: string): Promise<void> {
-  try {
-    await DeleteProvider(id);
-  } catch (error) {
-    console.error('[api.provider.deleteProvider]', error);
-    throw error;
-  }
+export function deleteProvider(id: string): Promise<void> {
+  return callApi('[api.provider.deleteProvider]', () => DeleteProvider(id));
 }
 
 /**
  * Get preset (via ConfigService)
  */
-export async function getPreset(terminalType: string, presetName: string): Promise<any> {
-  try {
+export function getPreset(terminalType: string, presetName: string): Promise<config.Preset> {
+  return callApi('[api.provider.getPreset]', async () => {
     const service = await getService();
     return await service.GetPreset(terminalType, presetName);
-  } catch (error) {
-    console.error('[api.provider.getPreset]', error);
-    throw error;
-  }
+  });
 }
 
 /**
  * Save preset (via ConfigService)
  */
-export async function savePreset(terminalType: string, presetName: string, preset: any): Promise<void> {
-  try {
+export function savePreset(terminalType: string, presetName: string, preset: config.Preset): Promise<void> {
+  return callApi('[api.provider.savePreset]', async () => {
     const service = await getService();
     await service.SavePreset(terminalType, presetName, preset);
-  } catch (error) {
-    console.error('[api.provider.savePreset]', error);
-    throw error;
-  }
+  });
 }
 
 /**
  * Delete preset (via ConfigService)
  */
-export async function deletePreset(terminalType: string, presetName: string): Promise<void> {
-  try {
+export function deletePreset(terminalType: string, presetName: string): Promise<void> {
+  return callApi('[api.provider.deletePreset]', async () => {
     const service = await getService();
     await service.DeletePreset(terminalType, presetName);
-  } catch (error) {
-    console.error('[api.provider.deletePreset]', error);
-    throw error;
-  }
+  });
 }

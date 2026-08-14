@@ -55,6 +55,16 @@ type authorityPrivate struct {
 	pendingRemoveID    uint64
 	pendingLifecycleID uint64
 	removeReceipt      RemoveReceipt
+
+	// titleScanMtime/titleScanSize cache the jsonl file fingerprint of the last
+	// List() title backfill that scanned this stopped claudecode session and
+	// found no extractable title. While the file's (mtime, size) is unchanged,
+	// subsequent polls (frontend useSessionList polls every 2s) skip the
+	// rescan. titleScanned marks whether the fingerprint is set. Guarded by the
+	// owning entry.guard. Reset (titleScanned=false) when a title is found.
+	titleScanMtime int64
+	titleScanSize  int64
+	titleScanned   bool
 }
 
 type authorityEntry struct {

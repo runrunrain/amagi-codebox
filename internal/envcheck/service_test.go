@@ -486,7 +486,6 @@ func TestCheckOne_CodexVersion_BothFail(t *testing.T) {
 
 // codexFallbackRunner returns error for --version but success for -V.
 type codexFallbackRunner struct {
-	calls     []string
 	firstErr  error
 	firstOut  string
 	secondOut string

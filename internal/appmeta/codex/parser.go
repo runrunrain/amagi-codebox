@@ -394,6 +394,6 @@ func inferSessionIDFromPath(jsonlPath string) string {
 // hash16 计算输入字段拼接后的 SHA1，返回前 16 个 hex 字符。
 func hash16(parts ...any) string {
 	h := sha1.New()
-	fmt.Fprint(h, parts...)
+	_, _ = fmt.Fprint(h, parts...)
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }

@@ -71,10 +71,6 @@ func shouldPreferDarwinCodexAppBundle(command, resolvedPath string) bool {
 	return false
 }
 
-func resolveCommandPath(command string, env []string) string {
-	return resolveCommandPathForOS(currentOS(), command, env)
-}
-
 func BuildEffectiveEnv(env []string) []string {
 	vars, _, _, _ := buildEffectiveEnvForOS(currentOS(), env)
 	return vars

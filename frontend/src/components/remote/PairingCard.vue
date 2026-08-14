@@ -113,7 +113,7 @@ interface Props {
   running: boolean;
 }
 
-const props = defineProps<Props>();
+defineProps<Props>();
 
 const emit = defineEmits<{
   /** 窗口结束（取消/过期/配对完成）或需要刷新设备与事件 */

@@ -258,7 +258,7 @@ func (s *Server) stopInternal(run *serverRun, cause serverStopCause) {
 		if run.httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := run.httpServer.Shutdown(ctx); err != nil {
-				run.httpServer.Close()
+				_ = run.httpServer.Close()
 			}
 			cancel()
 		}
@@ -267,9 +267,7 @@ func (s *Server) stopInternal(run *serverRun, cause serverStopCause) {
 		}
 		s.mu.Lock()
 		s.running = false
-		if s.cancel != nil && (cause == stopCauseExplicit) {
-			// explicit Stop already cancelled
-		}
+		// explicit Stop（stopCauseExplicit）已通过 s.cancel 取消，此处无需重复 cancel。
 		isSameRun := sameRun
 		s.mu.Unlock()
 
@@ -703,10 +701,6 @@ func (s *Server) EndDeviceStoreMaintenance(sess MaintenanceSession) error {
 
 func (s *Server) AbortDeviceStoreMaintenance(sess MaintenanceSession) error {
 	return s.store.AbortMaintenance(sess)
-}
-
-func (s *Server) withDeviceStoreMigrationWriter(sess MaintenanceSession, fn func(deviceStoreMaintenanceWriter) error) error {
-	return s.store.WithMigrationWriter(sess, fn)
 }
 
 // CleanupMigrationBackup deletes exactly the validated backup directory for the

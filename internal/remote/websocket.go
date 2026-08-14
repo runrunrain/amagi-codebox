@@ -73,7 +73,7 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, sessionI
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // 尽力关闭 WS 连接；客户端可能已断开，错误无可处理
 
 	connID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
 	s.log.Info("remote", "WebSocket（legacy input-only）连接已建立", fmt.Sprintf("session=%s conn=%s", sessionID, connID))

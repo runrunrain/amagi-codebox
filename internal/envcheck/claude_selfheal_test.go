@@ -387,9 +387,13 @@ func withSimulatedGOOS(t *testing.T, goos string) {
 
 func TestInspectClaudeBinaryIntegrity_EmptyPath(t *testing.T) {
 	r := InspectClaudeBinaryIntegrity("")
-	if r.Exists || r.Corrupted == false && r.Reason == "" {
-		// Reason is set to "empty path" but Corrupted stays false because an
-		// empty path is not a corruption signal -- there is nothing to inspect.
+	// Reason is set to "empty path" but Corrupted stays false because an
+	// empty path is not a corruption signal -- there is nothing to inspect.
+	if r.Exists {
+		t.Fatalf("Exists = true, want false for empty path")
+	}
+	if r.Corrupted {
+		t.Fatalf("Corrupted = true, want false for empty path")
 	}
 	if r.Reason != "empty path" {
 		t.Fatalf("reason = %q, want %q", r.Reason, "empty path")

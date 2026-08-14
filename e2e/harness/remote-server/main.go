@@ -182,11 +182,6 @@ func (r *fakeSessionRegistry) set(id, state string) {
 	defer r.mu.Unlock()
 	r.sessions[id] = state
 }
-func (r *fakeSessionRegistry) state(id string) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.sessions[id]
-}
 
 // fakeLaunchRaw 实现 remote.LaunchRawPort：StartProcess 仅在 registry 记账，
 // 不启动真实进程（已在 gate DoLaunchEffect 回调内，gate 许可已获取）。

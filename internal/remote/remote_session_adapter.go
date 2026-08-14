@@ -626,7 +626,7 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 	releaseLeases := func() {
 		for _, lease := range acquiredLeases {
 			if a.sharedCoord != nil {
-				_ = a.sharedCoord.ReleaseExact(nil, lease)
+				_ = a.sharedCoord.ReleaseExact(context.TODO(), lease)
 			}
 		}
 	}
@@ -914,12 +914,11 @@ func (a *RemoteSessionAdapter) lifecycle(ctx context.Context, reqID contract.Req
 		}
 		return SessionDetailResult{}, nil
 	}
-	if op == LifecycleRestart && result.RestartBoundary {
-		// M-004: the restart boundary is committed via H1 CommitRestartSegment inside
-		// restartRawEffect (and pumped to the v1 stream there). No manual
-		// AppendBoundary / best-effort H3 seal here — the H1 seal already performed
-		// SealRunSegmentUnderState atomically in the three-lock domain.
-	}
+	// M-004: the restart boundary is committed via H1 CommitRestartSegment inside
+	// restartRawEffect (and pumped to the v1 stream there). No manual
+	// AppendBoundary / best-effort H3 seal for op == LifecycleRestart &&
+	// result.RestartBoundary — the H1 seal already performed SealRunSegmentUnderState
+	// atomically in the three-lock domain.
 	// Build detail response.
 	snap, _ := a.gate.SnapshotForDevice(sessionID, principal.DeviceID)
 	earliest, latest := a.streams.SeqBounds(sessionID)
@@ -1034,10 +1033,10 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 		newLeases         []*SharedDependencyLease
 		controlRestart    *PreparedControlRestart
 		restartActivation *PreparedCompositeRestart
-		sharedCommit      = func() {}
-		sharedFinish      = func() {}
-		sharedAbort       = func() {}
-		sharedPrepared    bool
+		sharedCommit   = func() {}
+		sharedFinish   func()
+		sharedAbort    = func() {}
+		sharedPrepared bool
 	)
 
 	abortTransaction := func(cause error) launchplan.CompensationReport {

@@ -41,7 +41,6 @@ type PtySession struct {
 	mu            sync.RWMutex
 	exitCode      uint32
 	waitErr       error
-	waitOnce      sync.Once
 	runHandle     any // opaque run identity; passed back to RunEventSink
 	bindingID     processcap.BindingID
 }
@@ -336,7 +335,7 @@ func buildDarwinPTYCommand(spec platform.ResolvedLaunchSpec) (*exec.Cmd, string,
 		startupCommand = platformCommandSummary(spec.CLI.Path, spec.CLI.Args)
 	}
 
-	args := []string{}
+	var args []string
 	switch spec.Shell.Key {
 	case "pwsh", "powershell":
 		args = []string{"-NoLogo", "-NoProfile", "-Command", startupCommand}

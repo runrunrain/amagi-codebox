@@ -21,6 +21,13 @@ const syncConcurrency = 4
 
 // SyncAll 触发四类源全量+增量同步，串行化（mu 互斥）。
 //
+// 实际轮次逻辑在 syncAllLocked（调用者持锁执行并返回本轮 meta）；
+// SyncAll 只是“加锁→跑一轮→解锁”的薄封装，供后台 ticker 与普通调用方使用。
+// 需要“本轮结果归属”的调用方（SyncSessionUsage）必须直接走 syncAllLocked，
+// 在同一次临界区内取得本轮 meta——不能解锁后重读 s.syncMeta，否则会在
+// unlock/relock 窗口被已等待同一把锁的下一轮（后台 ticker）覆盖并额外
+// 阻塞一整轮（谛听终审 Major-1）。
+//
 // 流程：
 //  1. Claude Code：枚举 ~/.claude/projects/*/*.jsonl
 //  2. Codex：枚举 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
@@ -39,9 +46,20 @@ const syncConcurrency = 4
 func (s *Service) SyncAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, err := s.syncAllLocked()
+	return err
+}
 
+// syncAllLocked 执行一轮完整同步；调用者必须已持有 s.mu。
+// 返回值即本轮 SyncRunMeta（同时写入 s.syncMeta 供诊断/测试读取）。
+func (s *Service) syncAllLocked() (SyncRunMeta, error) {
 	if s.db == nil {
-		return errServiceNotLoaded
+		return SyncRunMeta{}, errServiceNotLoaded
+	}
+	if s.syncRoundStart != nil {
+		// 测试 seam：持锁阻塞点，用于确定性编排多轮争锁（见
+		// sync_round_attribution_test.go）。生产路径恒为 nil，零开销。
+		s.syncRoundStart()
 	}
 
 	started := time.Now().UTC()
@@ -51,8 +69,8 @@ func (s *Service) SyncAll() error {
 
 	home, _ := os.UserHomeDir()
 	if home == "" {
-		// 无 homeDir 时仅跳过同步（不报错）
-		return nil
+		// 无 homeDir 时仅跳过同步（不报错，不落 syncMeta）
+		return SyncRunMeta{}, nil
 	}
 
 	var (
@@ -228,7 +246,7 @@ func (s *Service) SyncAll() error {
 			" processed="+strconv.FormatInt(processedCount, 10)+
 			" days="+strconv.Itoa(len(days))+
 			" errors="+strconv.Itoa(len(syncMeta.Errors)))
-	return nil
+	return syncMeta, nil
 }
 
 // StartBackgroundSync 启动后台定时同步 goroutine（直到 s.Ctx 取消）。

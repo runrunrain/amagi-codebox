@@ -836,6 +836,12 @@ func (c *wsV1Connection) handleAttach(frame contract.AttachFrame) {
 			prepared.Bootstrap().ResolveAbsent()
 		}
 	}()
+	// fencedOld is the previous (deviceID, sessionID) lease that this attach
+	// atomically fenced (replaced) inside runtime.CommitPreparedRemoteAttachNoAlloc.
+	// FinishPreparedRemoteAttach (called above) already performed the post-commit
+	// supersession fencing of that old lease's authority, so the returned pointer
+	// carries no further action for this caller. The explicit assignment
+	// documents the deliberate drop instead of silently ignoring a returned lease.
 	_ = fencedOld
 	c.mu.Lock()
 	attachedLocally := c.state == wsV1StateRegisteredAwaitAttach
@@ -1745,14 +1751,4 @@ func (s *Server) unregisterV1Connection(reg ConnectionRegistration) {
 	if s.registry != nil {
 		s.registry.Unregister(reg)
 	}
-}
-
-// wsV1ConnJSON is used for debug marshaling (not wire).
-type wsV1ConnJSON struct {
-	State string `json:"state"`
-}
-
-func marshalWSV1State(state wsV1ConnectionState) string {
-	b, _ := json.Marshal(wsV1ConnJSON{State: state.String()})
-	return string(b)
 }

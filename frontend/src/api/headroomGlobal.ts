@@ -15,6 +15,7 @@ import {
 } from '../../wailsjs/go/main/App';
 
 import { main } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // 类型别名：暴露给上层组件使用
 type CodexGlobalHeadroomStatus = main.CodexGlobalHeadroomStatus;
@@ -26,13 +27,8 @@ type CodexGlobalHeadroomStatus = main.CodexGlobalHeadroomStatus;
  *
  * 后端回退策略：target 空回退 https://api.openai.com/v1，port<=0 回退 8788。
  */
-export async function getCodexGlobalHeadroom(): Promise<CodexGlobalHeadroomStatus> {
-  try {
-    return await GetCodexGlobalHeadroom();
-  } catch (error) {
-    console.error('[api.headroomGlobal.getCodexGlobalHeadroom]', error);
-    throw error;
-  }
+export function getCodexGlobalHeadroom(): Promise<CodexGlobalHeadroomStatus> {
+  return callApi('[api.headroomGlobal.getCodexGlobalHeadroom]', () => GetCodexGlobalHeadroom());
 }
 
 /**
@@ -51,17 +47,12 @@ export async function getCodexGlobalHeadroom(): Promise<CodexGlobalHeadroomStatu
  * @param port     第二实例监听端口；<=0 由后端回退到 8788
  * @returns        最新状态（含 running 探测结果）
  */
-export async function setCodexGlobalHeadroom(
+export function setCodexGlobalHeadroom(
   enabled: boolean,
   target: string,
   port: number,
 ): Promise<CodexGlobalHeadroomStatus> {
-  try {
-    return await SetCodexGlobalHeadroom(enabled, target, port);
-  } catch (error) {
-    console.error('[api.headroomGlobal.setCodexGlobalHeadroom]', error);
-    throw error;
-  }
+  return callApi('[api.headroomGlobal.setCodexGlobalHeadroom]', () => SetCodexGlobalHeadroom(enabled, target, port));
 }
 
 export type { CodexGlobalHeadroomStatus };

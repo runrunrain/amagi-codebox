@@ -352,17 +352,9 @@ func TestTrimHistoryToFrontier_SkipsTruncatedEscape(t *testing.T) {
 }
 
 func TestTrimHistoryToFrontier_CompleteEscapeUnchanged(t *testing.T) {
-	// "AA" + ESC[m (reset: 0x1B 0x5B 0x6D) + "BB"
+	// "A" + ESC[m (reset: 0x1B 0x5B 0x6D) + "BBBB"
 	// The ESC sequence is complete (has terminator 'm' before trim point).
-	history := []byte{0x41, 0x41, 0x1B, 0x5B, 0x6D, 0x42, 0x42}
-	// Trim to 4. Naive start at index 3, which is 0x5B.
-	// ESC at index 2 has terminator 'm' at index 4, which is before start 3? No, 4 > 3.
-	// So ESC at index 2, check terminators between index 3 and 3... none. Has truncated.
-	// Let me fix the test: the terminator must be BEFORE start (index 3).
-	// Actually, checking between i+1=3 and start=3 means range is empty, so hasTerminator=false.
-	// This means the ESC is truncated. Let's construct a better test.
-	// "A" + ESC[m + "BBBB"
-	history = []byte{0x41, 0x1B, 0x5B, 0x6D, 0x42, 0x42, 0x42, 0x42}
+	history := []byte{0x41, 0x1B, 0x5B, 0x6D, 0x42, 0x42, 0x42, 0x42}
 	// Trim to 5. Naive start at index 3, which is 0x6D ('m').
 	// 0x6D is a leading byte (ASCII), so UTF-8 check passes.
 	// Now check escape: scan back from index 3. Find ESC at index 1.

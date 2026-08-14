@@ -11,10 +11,6 @@ export function GetAllProviders():Promise<Array<string>>;
 
 export function GetKeyDiagnostics(arg1:Array<string>):Promise<Record<string, Record<string, string>>>;
 
-export function GetMinimaxAPIKey():Promise<string>;
-
-export function GetZhipuAPIKey():Promise<string>;
-
 export function HasAPIKey(arg1:string):Promise<boolean>;
 
 export function Load():Promise<void>;
@@ -24,9 +20,5 @@ export function ReplaceAll(arg1:Record<string, string>):Promise<void>;
 export function Save():Promise<void>;
 
 export function SetAPIKey(arg1:string,arg2:string):Promise<void>;
-
-export function SetMinimaxAPIKey(arg1:string):Promise<void>;
-
-export function SetZhipuAPIKey(arg1:string):Promise<void>;
 
 export function Snapshot():Promise<Record<string, string>>;

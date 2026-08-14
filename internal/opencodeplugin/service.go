@@ -13,6 +13,7 @@ package opencodeplugin
 import (
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,7 +183,7 @@ func (s *Service) InstallPlugin(spec string) (*CommandResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.executeOpenCodeCommand(nil, "plugin", spec, "--global")
+	result, err := s.executeOpenCodeCommand(context.TODO(), "plugin", spec, "--global")
 	if err != nil {
 		// CLI 失败兜底：opencode 1.18.10 对 github: spec 会「假失败」——包已完整
 		// 装入 cache（inspectPlugin 能定位 InstallPath），仅入口点解析报错且不写
@@ -235,7 +236,7 @@ func (s *Service) UpdatePlugin(spec string) (*CommandResult, error) {
 		return result, nil
 	}
 
-	result, err := s.executeOpenCodeCommand(nil, "plugin", target.Spec, "--global", "--force")
+	result, err := s.executeOpenCodeCommand(context.TODO(), "plugin", target.Spec, "--global", "--force")
 	if err != nil {
 		// CLI 失败兜底（同 InstallPlugin）。Major-1 签名守卫：仅当 CLI 失败命中
 		// isKnownFalseInstallFailure（NpmInstallFailedError）才进入；超时/权限/参数

@@ -164,3 +164,27 @@ func TestBindManifest_HeadroomFacadesReachable(t *testing.T) {
 		}
 	}
 }
+
+// TestBindManifest_SecretsDeadBindMethodsRemoved freezes the removal of the
+// provider-specific key accessor shim methods that had no Go or frontend/src
+// callers (verified by grep across .go and frontend/src — only stale
+// frontend/wailsjs generated stubs remained, which wails build regenerates).
+// They reached the frontend directly via app.Secrets (bind_list.go) and so were
+// dead surface on the bound SecretsService. GetAllProviders is intentionally
+// retained: it has a real Go caller in cmd/codebox (secretProviderNames).
+func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
+	app := newTestApp(t)
+	if app.Secrets == nil {
+		t.Fatal("app.Secrets is nil; secrets service not wired")
+	}
+	rt := reflect.TypeOf(app.Secrets)
+	for _, name := range []string{"GetZhipuAPIKey", "SetZhipuAPIKey", "GetMinimaxAPIKey", "SetMinimaxAPIKey"} {
+		if _, ok := rt.MethodByName(name); ok {
+			t.Errorf("removed dead bind method %s reappeared on SecretsService", name)
+		}
+	}
+	// Sanity: GetAllProviders must remain (cmd/codebox depends on it).
+	if _, ok := rt.MethodByName("GetAllProviders"); !ok {
+		t.Errorf("GetAllProviders must remain on SecretsService (cmd/codebox caller)")
+	}
+}

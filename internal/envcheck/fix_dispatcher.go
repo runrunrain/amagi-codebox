@@ -1014,7 +1014,7 @@ func (s *Service) runFixPathWindows(req FixActionRequest) (*FixActionResult, err
 			"Add-Type -Name Win32 -Namespace System -MemberDefinition '[DllImport(\"user32.dll\")]public static extern IntPtr SendMessageTimeout(IntPtr hWnd,uint Msg,UIntPtr wParam,string lParam,uint fuFlags,uint uTimeout,out UIntPtr lpdwResult);'; $HWND_BROADCAST=0xffff; $WM_SETTINGCHANGE=0x001a; $result=0; [System.Win32]::SendMessageTimeout($HWND_BROADCAST,$WM_SETTINGCHANGE,0,'Environment',2,5000,[ref]$result)"},
 		Policy: platform.DefaultProcessPolicy(),
 	}
-	s.processRunner.Run(context.Background(), broadcastCmd) // 忽略广播错误
+	_, _ = s.processRunner.Run(context.Background(), broadcastCmd) // 忽略广播错误
 
 	return &FixActionResult{
 		Success:         true,

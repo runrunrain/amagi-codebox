@@ -374,8 +374,6 @@ async function loadGlobalSyncStatus() {
     globalSyncLoading.value = true;
     const status = await envvarsApi.getEnvVarsGlobalSyncStatus();
     globalSyncStatus.value = status;
-  } catch (error) {
-    throw error;
   } finally {
     globalSyncLoading.value = false;
   }
@@ -386,8 +384,6 @@ async function loadEnvVars() {
     loading.value = true;
     const vars = await envvarsApi.getEnvVars();
     envVars.value = vars;
-  } catch (error) {
-    throw error;
   } finally {
     loading.value = false;
   }

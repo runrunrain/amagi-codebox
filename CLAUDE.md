@@ -32,7 +32,7 @@ go test ./...                                  # CI runs this on macos-latest; r
 go test ./internal/config -run TestServiceName # single package / single test
 go test -race ./internal/session               # with race detector (concurrency-heavy packages)
 ```
-Note: `.github/workflows/ci.yml` runs `go vet ./...` (windows + macos), full `go test ./... -count=1` on macos-latest (windows-latest only compile-checks via `-run '^$'`), plus frontend/mobile builds and the mobile Vitest suite. The `envcheck.test` file in the repo root is a stale committed test binary, not a source file — ignore it.
+Note: `.github/workflows/ci.yml` runs `go vet ./...` (windows + macos), full `go test ./... -count=1` on macos-latest (windows-latest only compile-checks via `-run '^$'`), plus frontend/mobile builds and the mobile Vitest suite. The `envcheck.test` file in the repo root is a stale local test binary that was never committed to git, not a source file — ignore it.
 
 ### Toolchain version baseline (C-001)
 **CI/release** precisely pins **Go `1.25.0`** and **Node `20.19.0`** (exact versions in `ci.yml`/`release.yml` setup-go/setup-node). **`go.mod`** declares the project's Go language baseline (`go 1.25.0`) — this is the minimum toolchain the module targets, not a local version lock: there is no `toolchain` directive and no `.go-version`, so a locally installed newer Go (e.g. 1.26.x) is used as-is without forced downgrade. **Node** is locally pinned by the root `.node-version` file (`20.19.0`, consumed by fnm/nodenv). npm stays `>=10` in the manifests (not engine-strict).
@@ -43,7 +43,7 @@ Note: `.github/workflows/ci.yml` runs `go vet ./...` (windows + macos), full `go
 ## Architecture
 
 ### The binding spine (read multiple files together)
-`main.go` boots Wails and **binds** the `App` struct plus 14 service structs (15 bindings total) to the frontend. `app.go` (~104KB) is the central hub: it holds pointers to every service and exposes orchestration methods (session launch, env-check actions, remote-control toggles, callback registration). Each bound struct's exported methods become callable from JS. The full surface is documented in `docs/api.md`.
+`main.go` boots Wails and **binds** the `App` struct plus 16 service structs (17 bindings total) to the frontend — the exact list lives in `bind_list.go` (`buildWailsBindList`). `app.go` (~214KB) is the central hub: it holds pointers to every service and exposes orchestration methods (session launch, env-check actions, remote-control toggles, callback registration). Each bound struct's exported methods become callable from JS. The full surface is documented in `docs/api.md`.
 
 Service packages live under `internal/`. Each follows the same pattern: a `Service`/`ConfigService` struct with a `New...()` constructor and exported methods, e.g. `internal/config` (`ConfigService` → providers/presets), `internal/secrets` (key storage), `internal/session` (app sessions), `internal/plugin` + `internal/codexplugin`, `internal/envcheck`, `internal/remote`, `internal/pty`, `internal/updater`, and `internal/headroom`.
 
@@ -59,7 +59,7 @@ When editing platform-specific behavior, edit the correct `_<os>.go` file for yo
 ### Frontend ↔ backend bridge
 Wails auto-generates TypeScript bindings under `frontend/wailsjs/go/<pkg>/` from the bound Go methods whenever you run `wails dev`/`wails build`. **Never hand-edit `frontend/wailsjs/`** — regenerate it. `frontend/src/api/*.ts` modules wrap those raw bindings into typed, ergonomic functions (one per domain: `provider.ts`, `session.ts`, `plugin.ts`, etc.), and Pinia stores in `frontend/src/stores/` consume them. Flow: Vue view → composable/store → `src/api/*.ts` → `wailsjs/go/...` → Go service.
 
-Routing uses hash history (`createWebHashHistory`) in `frontend/src/router/index.ts`. UI is Element Plus + a custom design-token layer in `frontend/src/styles/tokens.css`.
+Routing uses hash history (`createWebHashHistory`) in `frontend/src/router/index.ts`. UI is built on the app's own `frontend/src/components/ui/` component kit + a custom design-token layer in `frontend/src/styles/tokens.css` (Element Plus was fully removed in the 2025-08 bundle-slimming pass — do not reintroduce it).
 
 ### Managed app types & sessions
 Five CLI app types (plus a deprecated internal one) defined in `internal/session/types.go` as `AppType`: `claudecode`, `opencode`, `codex`, `pi`, `omp` (Oh My Pi), and the deprecated `amagicode`. `LaunchSession` in `app.go` is the core entrypoint for Claude Code — it resolves provider/preset, optionally enables Headroom, then spawns a PTY session tracked by the session manager. Pi/omp sessions launch through their own entrypoints (`LaunchPiSession`/`LaunchOmpSession`), which write provider configs into the CLI's own agent root (`~/.pi/agent` / `~/.omp/agent`). Sessions stream output to the frontend via registered callbacks (`RegisterOutputCallback`, etc.).

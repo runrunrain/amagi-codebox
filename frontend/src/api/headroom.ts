@@ -14,6 +14,7 @@ import {
 import { GetHeadroomSavings, GetHeadroomPerfByClient } from '../../wailsjs/go/main/App';
 
 import { headroom } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type aliases
 type HeadroomStatus = headroom.HeadroomStatus;
@@ -25,61 +26,36 @@ type ClientPerfStat = headroom.ClientPerfStat;
  * realBackendUrl is the real upstream API base URL; Headroom forwards
  * compressed traffic to it via ANTHROPIC_TARGET_API_URL.
  */
-export async function startHeadroom(backendUrl: string): Promise<void> {
-  try {
-    await HeadroomStart(backendUrl);
-  } catch (error) {
-    console.error('[api.headroom.startHeadroom]', error);
-    throw error;
-  }
+export function startHeadroom(backendUrl: string): Promise<void> {
+  return callApi('[api.headroom.startHeadroom]', () => HeadroomStart(backendUrl));
 }
 
 /**
  * Stop the Headroom proxy subprocess. No-op if not running.
  */
-export async function stopHeadroom(): Promise<void> {
-  try {
-    await HeadroomStop();
-  } catch (error) {
-    console.error('[api.headroom.stopHeadroom]', error);
-    throw error;
-  }
+export function stopHeadroom(): Promise<void> {
+  return callApi('[api.headroom.stopHeadroom]', () => HeadroomStop());
 }
 
 /**
  * Check whether the Headroom proxy is currently running.
  */
-export async function isHeadroomRunning(): Promise<boolean> {
-  try {
-    return await HeadroomIsRunning();
-  } catch (error) {
-    console.error('[api.headroom.isHeadroomRunning]', error);
-    throw error;
-  }
+export function isHeadroomRunning(): Promise<boolean> {
+  return callApi('[api.headroom.isHeadroomRunning]', () => HeadroomIsRunning());
 }
 
 /**
  * Get the Headroom proxy status snapshot (running / port / backendUrl).
  */
-export async function getHeadroomStatus(): Promise<HeadroomStatus> {
-  try {
-    return await HeadroomGetStatus();
-  } catch (error) {
-    console.error('[api.headroom.getHeadroomStatus]', error);
-    throw error;
-  }
+export function getHeadroomStatus(): Promise<HeadroomStatus> {
+  return callApi('[api.headroom.getHeadroomStatus]', () => HeadroomGetStatus());
 }
 
 /**
  * Get the port Headroom is configured to listen on.
  */
-export async function getHeadroomPort(): Promise<number> {
-  try {
-    return await HeadroomGetPort();
-  } catch (error) {
-    console.error('[api.headroom.getHeadroomPort]', error);
-    throw error;
-  }
+export function getHeadroomPort(): Promise<number> {
+  return callApi('[api.headroom.getHeadroomPort]', () => HeadroomGetPort());
 }
 
 /**
@@ -87,13 +63,8 @@ export async function getHeadroomPort(): Promise<number> {
  * Reads the lifetime compression statistics persisted by the Headroom proxy.
  * Rejects when Headroom is not installed / not enabled / has no data file.
  */
-export async function getHeadroomSavings(): Promise<SavingsReport> {
-  try {
-    return await GetHeadroomSavings();
-  } catch (error) {
-    console.error('[api.headroom.getHeadroomSavings]', error);
-    throw error;
-  }
+export function getHeadroomSavings(): Promise<SavingsReport> {
+  return callApi('[api.headroom.getHeadroomSavings]', () => GetHeadroomSavings());
 }
 
 /**
@@ -113,11 +84,6 @@ export async function getHeadroomSavings(): Promise<SavingsReport> {
  * Rejects when Headroom is not installed / perf subcommand fails / JSON parse
  * fails; never returns fabricated data.
  */
-export async function getHeadroomPerfByClient(): Promise<ClientPerfStat[]> {
-  try {
-    return await GetHeadroomPerfByClient();
-  } catch (error) {
-    console.error('[api.headroom.getHeadroomPerfByClient]', error);
-    throw error;
-  }
+export function getHeadroomPerfByClient(): Promise<ClientPerfStat[]> {
+  return callApi('[api.headroom.getHeadroomPerfByClient]', () => GetHeadroomPerfByClient());
 }

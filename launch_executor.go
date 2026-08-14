@@ -215,7 +215,7 @@ func (e *headroomStartEffect) Apply(_ context.Context) (launchplan.EffectEvidenc
 		return launchplan.EffectEvidence{}, errors.New("headroom upstream URL is empty")
 	}
 	var svc headroomStartPort
-	start := func() error { return nil }
+	var start func() error
 	switch e.service {
 	case launchplan.SharedClaudeHeadroom:
 		svc = e.deps.headroom

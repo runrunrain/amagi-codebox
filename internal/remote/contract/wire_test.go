@@ -84,9 +84,7 @@ func assertJSONEqual(t *testing.T, got []byte, want json.RawMessage) {
 	}
 }
 
-func strPtr(s string) *string     { return &s }
-func boolPtr(b bool) *bool        { return &b }
-func gapPtr(g GapRange) *GapRange { return &g }
+func strPtr(s string) *string { return &s }
 
 func stringsEqualExact(a, b []string) bool {
 	return reflect.DeepEqual(a, b)

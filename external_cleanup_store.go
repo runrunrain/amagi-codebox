@@ -377,7 +377,9 @@ func (s *fileExternalCleanupStore) Reserve(reservation externalCleanupReservatio
 	if err := s.appendLocked(event); err != nil {
 		return err
 	}
-	s.applyEvent(event)
+	if err := s.applyEvent(event); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -409,7 +411,9 @@ func (s *fileExternalCleanupStore) Register(record externalCleanupRecord) error 
 	if err := s.appendLocked(event); err != nil {
 		return err
 	}
-	s.applyEvent(event)
+	if err := s.applyEvent(event); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -435,7 +439,9 @@ func (s *fileExternalCleanupStore) CompleteReservation(reservation externalClean
 	if err := s.appendLocked(event); err != nil {
 		return err
 	}
-	s.applyEvent(event)
+	if err := s.applyEvent(event); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -461,7 +467,9 @@ func (s *fileExternalCleanupStore) Complete(record externalCleanupRecord) error 
 	if err := s.appendLocked(event); err != nil {
 		return err
 	}
-	s.applyEvent(event)
+	if err := s.applyEvent(event); err != nil {
+		return err
+	}
 	return nil
 }
 

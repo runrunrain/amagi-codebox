@@ -22,6 +22,7 @@ import {
 } from '../../wailsjs/go/main/App';
 
 import { session } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type alias
 type SessionInfo = session.SessionInfo;
@@ -29,7 +30,7 @@ type SessionInfo = session.SessionInfo;
 /**
  * Launch a Claude Code session
  */
-export async function launchClaudeSession(params: {
+export function launchClaudeSession(params: {
   providerName: string;
   presetName: string;
   mode: string;
@@ -37,235 +38,162 @@ export async function launchClaudeSession(params: {
   useHeadroom: boolean;
   shellPath?: string;
 }): Promise<string> {
-  try {
-    return await LaunchSession(
-      params.providerName,
-      params.presetName,
-      params.mode,
-      params.workDir,
-      params.useHeadroom,
-      params.shellPath || ''
-    );
-  } catch (error) {
-    console.error('Failed to launch Claude session:', error);
-    throw error;
-  }
+  return callApi('[api.session.launchClaudeSession]', () => LaunchSession(
+    params.providerName,
+    params.presetName,
+    params.mode,
+    params.workDir,
+    params.useHeadroom,
+    params.shellPath || ''
+  ));
 }
 
 /**
  * Launch an OpenCode session
  */
-export async function launchOpenCodeSession(params: {
+export function launchOpenCodeSession(params: {
   providerName: string;
   presetName: string;
   mode: string;
   workDir: string;
   shellPath?: string;
 }): Promise<string> {
-  try {
-    return await LaunchOpenCode(
-      params.providerName,
-      params.presetName,
-      params.mode,
-      params.workDir,
-      params.shellPath || ''
-    );
-  } catch (error) {
-    console.error('Failed to launch OpenCode session:', error);
-    throw error;
-  }
+  return callApi('[api.session.launchOpenCodeSession]', () => LaunchOpenCode(
+    params.providerName,
+    params.presetName,
+    params.mode,
+    params.workDir,
+    params.shellPath || ''
+  ));
 }
 
 /**
  * Launch a Codex CLI session
  */
-export async function launchCodexSession(params: {
+export function launchCodexSession(params: {
   modelName: string;
   providerID: string;
   mode: string;
   workDir: string;
   shellPath?: string;
 }): Promise<string> {
-  try {
-    return await LaunchCodexSession(
-      params.modelName,
-      params.providerID,
-      params.mode,
-      params.workDir,
-      params.shellPath || ''
-    );
-  } catch (error) {
-    console.error('Failed to launch Codex session:', error);
-    throw error;
-  }
+  return callApi('[api.session.launchCodexSession]', () => LaunchCodexSession(
+    params.modelName,
+    params.providerID,
+    params.mode,
+    params.workDir,
+    params.shellPath || ''
+  ));
 }
 
 /**
  * Launch a Pi coding agent session
  */
-export async function launchPiSession(params: {
+export function launchPiSession(params: {
   modelName: string;
   providerID: string;
   mode: string;
   workDir: string;
   shellPath?: string;
 }): Promise<string> {
-  try {
-    return await LaunchPiSession(
-      params.modelName,
-      params.providerID,
-      params.mode,
-      params.workDir,
-      params.shellPath || ''
-    );
-  } catch (error) {
-    console.error('Failed to launch Pi session:', error);
-    throw error;
-  }
+  return callApi('[api.session.launchPiSession]', () => LaunchPiSession(
+    params.modelName,
+    params.providerID,
+    params.mode,
+    params.workDir,
+    params.shellPath || ''
+  ));
 }
 
 /**
  * Launch an Oh My Pi (omp) coding agent session
  */
-export async function launchOmpSession(params: {
+export function launchOmpSession(params: {
   modelName: string;
   providerID: string;
   mode: string;
   workDir: string;
   shellPath?: string;
 }): Promise<string> {
-  try {
-    return await LaunchOmpSession(
-      params.modelName,
-      params.providerID,
-      params.mode,
-      params.workDir,
-      params.shellPath || ''
-    );
-  } catch (error) {
-    console.error('Failed to launch Omp session:', error);
-    throw error;
-  }
+  return callApi('[api.session.launchOmpSession]', () => LaunchOmpSession(
+    params.modelName,
+    params.providerID,
+    params.mode,
+    params.workDir,
+    params.shellPath || ''
+  ));
 }
 
 /**
  * Stop a session
  */
-export async function stopSession(sessionId: string): Promise<void> {
-  try {
-    await StopSession(sessionId);
-  } catch (error) {
-    console.error('Failed to stop session:', error);
-    throw error;
-  }
+export function stopSession(sessionId: string): Promise<void> {
+  return callApi('[api.session.stopSession]', () => StopSession(sessionId));
 }
 
 /**
  * Get all sessions
  */
-export async function getSessions(): Promise<SessionInfo[]> {
-  try {
-    return await GetSessions();
-  } catch (error) {
-    console.error('Failed to get sessions:', error);
-    throw error;
-  }
+export function getSessions(): Promise<SessionInfo[]> {
+  return callApi('[api.session.getSessions]', () => GetSessions());
 }
 
 /**
  * Get a specific session
  */
-export async function getSession(sessionId: string): Promise<session.SessionInfo> {
-  try {
-    return await GetSession(sessionId);
-  } catch (error) {
-    console.error('Failed to get session:', error);
-    throw error;
-  }
+export function getSession(sessionId: string): Promise<session.SessionInfo> {
+  return callApi('[api.session.getSession]', () => GetSession(sessionId));
 }
 
 /**
  * Remove a session
  */
-export async function removeSession(sessionId: string): Promise<void> {
-  try {
-    await RemoveSession(sessionId);
-  } catch (error) {
-    console.error('Failed to remove session:', error);
-    throw error;
-  }
+export function removeSession(sessionId: string): Promise<void> {
+  return callApi('[api.session.removeSession]', () => RemoveSession(sessionId));
 }
 
 /**
  * Clear all stopped sessions
  */
-export async function clearStoppedSessions(): Promise<number> {
-  try {
-    return await ClearStoppedSessions();
-  } catch (error) {
-    console.error('Failed to clear stopped sessions:', error);
-    throw error;
-  }
+export function clearStoppedSessions(): Promise<number> {
+  return callApi('[api.session.clearStoppedSessions]', () => ClearStoppedSessions());
 }
 
 /**
  * Write to PTY
  */
-export async function ptyWrite(sessionId: string, data: string): Promise<void> {
-  try {
-    await PtyWrite(sessionId, data);
-  } catch (error) {
-    console.error('Failed to write to PTY:', error);
-    throw error;
-  }
+export function ptyWrite(sessionId: string, data: string): Promise<void> {
+  return callApi('[api.session.ptyWrite]', () => PtyWrite(sessionId, data));
 }
 
 /**
  * Write large data to PTY
  */
-export async function ptyWriteLarge(sessionId: string, data: string): Promise<void> {
-  try {
-    await PtyWriteLarge(sessionId, data);
-  } catch (error) {
-    console.error('Failed to write large to PTY:', error);
-    throw error;
-  }
+export function ptyWriteLarge(sessionId: string, data: string): Promise<void> {
+  return callApi('[api.session.ptyWriteLarge]', () => PtyWriteLarge(sessionId, data));
 }
 
 /**
  * Resize PTY
  */
-export async function ptyResize(sessionId: string, cols: number, rows: number): Promise<void> {
-  try {
-    await PtyResize(sessionId, cols, rows);
-  } catch (error) {
-    console.error('Failed to resize PTY:', error);
-    throw error;
-  }
+export function ptyResize(sessionId: string, cols: number, rows: number): Promise<void> {
+  return callApi('[api.session.ptyResize]', () => PtyResize(sessionId, cols, rows));
 }
 
 /**
  * Get output history snapshot
  */
-export async function getOutputHistorySnapshot(sessionId: string): Promise<string> {
-  try {
-    return await GetOutputHistorySnapshot(sessionId);
-  } catch (error) {
-    console.error('Failed to get output history:', error);
-    throw error;
-  }
+export function getOutputHistorySnapshot(sessionId: string): Promise<string> {
+  return callApi('[api.session.getOutputHistorySnapshot]', () => GetOutputHistorySnapshot(sessionId));
 }
 
 /**
  * Get PTY dimensions.
  * Backend packs cols and rows into a single number (cols * 1000 + rows).
  */
-export async function getPtyDimensions(sessionId: string): Promise<{ cols: number; rows: number }> {
-  try {
+export function getPtyDimensions(sessionId: string): Promise<{ cols: number; rows: number }> {
+  return callApi('[api.session.getPtyDimensions]', async () => {
     const packed = await GetPtyDimensions(sessionId);
     return { cols: Math.floor(packed / 1000), rows: packed % 1000 };
-  } catch (error) {
-    console.error('Failed to get PTY dimensions:', error);
-    throw error;
-  }
+  });
 }

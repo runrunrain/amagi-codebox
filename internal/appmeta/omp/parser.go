@@ -388,7 +388,7 @@ func hash16(parts ...any) string {
 	h := sha1.New()
 	for _, p := range parts {
 		s := fmt.Sprintf("%v", p)
-		fmt.Fprintf(h, "%d:%s;", len(s), s)
+		_, _ = fmt.Fprintf(h, "%d:%s;", len(s), s)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }

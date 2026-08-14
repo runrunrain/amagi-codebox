@@ -465,7 +465,7 @@ func TestUpdateGitHubPluginFallsBackWhenCLIFailsButCacheReady(t *testing.T) {
 			writeTestCachedPackage(t, cacheDir, targetSpec, "example-plugin", map[string]any{
 				"name": "example-plugin", "version": "1.5.164", "main": "./index.js",
 			})
-			return nil, fmt.Errorf(fakeCLIFailure)
+			return nil, fmt.Errorf("%s", fakeCLIFailure)
 		default:
 			t.Fatalf("unexpected executable: %s", command.Path)
 			return nil, nil
@@ -509,7 +509,7 @@ func TestUpdateGitHubPluginReturnsCLIErrWhenCacheMissing(t *testing.T) {
 			return &platform.ProcessResult{Stdout: "bbb\trefs/tags/v1.5.164"}, nil
 		}
 		// 假失败且不写 cache
-		return nil, fmt.Errorf(fakeCLIFailure)
+		return nil, fmt.Errorf("%s", fakeCLIFailure)
 	}}
 
 	svc := NewServiceWithDeps(configDir, cacheDir, nil, testResolver{}, runner)
@@ -544,7 +544,7 @@ func TestInstallPluginFallsBackWhenCLIFailsButCacheReady(t *testing.T) {
 			writeTestCachedPackage(t, cacheDir, spec, "example-plugin", map[string]any{
 				"name": "example-plugin", "version": "1.5.164", "main": "./index.js",
 			})
-			return nil, fmt.Errorf(fakeCLIFailure)
+			return nil, fmt.Errorf("%s", fakeCLIFailure)
 		default:
 			t.Fatalf("unexpected executable: %s", command.Path)
 			return nil, nil
@@ -579,7 +579,7 @@ func TestInstallPluginReturnsCLIErrWhenCacheMissing(t *testing.T) {
 			return &platform.ProcessResult{Stdout: "bbb\trefs/tags/v1.5.164"}, nil
 		case "/fake/opencode":
 			// 假失败且不写 cache
-			return nil, fmt.Errorf(fakeCLIFailure)
+			return nil, fmt.Errorf("%s", fakeCLIFailure)
 		default:
 			t.Fatalf("unexpected executable: %s", command.Path)
 			return nil, nil
@@ -624,7 +624,7 @@ func TestInstallPluginRejectsStaleCacheOnGithubFallback(t *testing.T) {
 			return &platform.ProcessResult{Stdout: "bbb\trefs/tags/v1.5.164"}, nil
 		case "/fake/opencode":
 			// 假失败且不刷新 cache
-			return nil, fmt.Errorf(fakeCLIFailure)
+			return nil, fmt.Errorf("%s", fakeCLIFailure)
 		default:
 			t.Fatalf("unexpected executable: %s", command.Path)
 			return nil, nil
@@ -657,7 +657,7 @@ func TestInstallPluginDoesNotFallbackForNpmSpec(t *testing.T) {
 	})
 
 	runner := &testRunner{run: func(platform.CommandSpec) (*platform.ProcessResult, error) {
-		return nil, fmt.Errorf(fakeCLIFailure)
+		return nil, fmt.Errorf("%s", fakeCLIFailure)
 	}}
 
 	svc := NewServiceWithDeps(configDir, cacheDir, nil, testResolver{}, runner)
@@ -690,7 +690,7 @@ func TestInstallPluginReturnsCLIErrWhenLsRemoteFails(t *testing.T) {
 		case "/fake/git":
 			return nil, fmt.Errorf("ls-remote network down")
 		case "/fake/opencode":
-			return nil, fmt.Errorf(fakeCLIFailure)
+			return nil, fmt.Errorf("%s", fakeCLIFailure)
 		default:
 			t.Fatalf("unexpected executable: %s", command.Path)
 			return nil, nil
@@ -729,7 +729,7 @@ func TestUpdateGitHubPluginRejectsStaleCacheOnFallback(t *testing.T) {
 			return &platform.ProcessResult{Stdout: "bbb\trefs/tags/v1.5.164"}, nil
 		case "/fake/opencode":
 			// 假失败且不刷新 cache（target.Spec 的 cache 缺失）
-			return nil, fmt.Errorf(fakeCLIFailure)
+			return nil, fmt.Errorf("%s", fakeCLIFailure)
 		default:
 			t.Fatalf("unexpected executable: %s", command.Path)
 			return nil, nil
@@ -766,7 +766,7 @@ func TestUpdateNPMPluginDoesNotFallbackWhenCLIFails(t *testing.T) {
 			t.Fatalf("unexpected executable: %s", command.Path)
 		}
 		// npm CLI 假失败（实证不会，此处验证收窄：即便 cache 存在也不兜底）
-		return nil, fmt.Errorf(fakeCLIFailure)
+		return nil, fmt.Errorf("%s", fakeCLIFailure)
 	}}
 	svc := NewServiceWithDeps(configDir, cacheDir, nil, testResolver{}, runner)
 	svc.http = testHTTPDoer(func(req *http.Request) (*http.Response, error) {

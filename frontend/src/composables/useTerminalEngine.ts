@@ -24,7 +24,9 @@
 import { ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
+// WebGL addon 改为动态 import（见 loadWebglRenderer）：仅在非 macOS 且探测通过
+// 时按需加载，退出 TerminalPageView 主 chunk。类型引用在编译期擦除，不产生静态依赖。
+import type { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
@@ -52,6 +54,12 @@ interface TerminalInstance {
   term: Terminal
   fit: FitAddon
   webgl: WebglAddon | null
+  /**
+   * In-flight WebGL dynamic-import/load promise. mount / DPR refresh /
+   * context-loss retry 三个入口并发触发时复用同一 Promise，不重复发起
+   * 动态 import；settle 后清除（成功或失败都允许后续重试）。
+   */
+  webglLoadPromise: Promise<void> | null
   /** dispose fn returned by EventsOn for the pty:data:<id> stream */
   disposeDataListener: (() => void) | null
   /** dispose fn returned by EventsOn for the pty:exit:<id> stream */
@@ -392,31 +400,48 @@ export function useTerminalEngine() {
   // ---- WebGL renderer with context-loss reconnect ------------------------
 
   function loadWebglRenderer(sessionId: string, inst: TerminalInstance) {
-    try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => {
-        if (inst.webgl === webgl) {
-          inst.webgl.dispose()
-          inst.webgl = null
-        } else {
-          webgl.dispose()
-        }
+    // 动态 import：addon-webgl 独立 chunk，仅在非 macOS 且探测通过时拉取
+    // （对齐 mobile RawTerminalView 的动态 xterm 栈做法）。永不抛出——
+    // 失败时回退 xterm 内置 DOM renderer。
+    // 并发入口去重：同一实例同时只允许一代加载，复用 in-flight Promise。
+    if (inst.webglLoadPromise) return
+    inst.webglLoadPromise = (async () => {
+      try {
+        const { WebglAddon } = await import('@xterm/addon-webgl')
+        // import 期间实例可能已销毁/替换或宿主已 detach，加载前再校验一次。
+        if (terminals.get(sessionId) !== inst || !inst.term.element) return
+        // 已有激活的 renderer（如 refreshRenderer 之外的路径先完成）：
+        // 本代不再覆盖，避免叠加 context-loss handler 与所有权混乱。
+        if (inst.webgl) return
+        const webgl = new WebglAddon()
+        webgl.onContextLoss(() => {
+          if (inst.webgl === webgl) {
+            inst.webgl.dispose()
+            inst.webgl = null
+          } else {
+            webgl.dispose()
+          }
 
-        window.setTimeout(() => {
-          if (terminals.get(sessionId) !== inst || !inst.term.element) return
-          try {
+          window.setTimeout(() => {
+            // 重试前确认实例仍存活、尚无新 renderer 且没有加载在进行，
+            // 避免与 DPR 刷新等入口重复加载。
+            if (terminals.get(sessionId) !== inst || !inst.term.element) return
+            if (inst.webgl || inst.webglLoadPromise) return
             loadWebglRenderer(sessionId, inst)
             window.setTimeout(() => fitTerminal(sessionId), 50)
-          } catch {
-            inst.webgl = null
-          }
-        }, 500)
-      })
-      inst.term.loadAddon(webgl)
-      inst.webgl = webgl
-    } catch {
-      inst.webgl = null
-    }
+          }, 500)
+        })
+        inst.term.loadAddon(webgl)
+        inst.webgl = webgl
+      } catch {
+        // 本代是 in-flight 窗口内唯一可能创建 addon 的一代；失败回退 DOM
+        // renderer，webgl 保持/恢复为 null，不覆盖较新状态。
+        inst.webgl = null
+      } finally {
+        // settle 后清除 in-flight 标记，允许 context-loss / DPR 路径重试。
+        inst.webglLoadPromise = null
+      }
+    })()
   }
 
   // ---- fit + resize ------------------------------------------------------
@@ -754,6 +779,7 @@ export function useTerminalEngine() {
       term,
       fit,
       webgl: null,
+      webglLoadPromise: null,
       disposeDataListener: null,
       disposeExitListener: null,
       disposePasteListener: null,
@@ -925,7 +951,7 @@ export function useTerminalEngine() {
       // Require a path separator to avoid matching bare filenames / versions.
       // Matches: src/main.ts:42  ./lib/util.go:10:5  C:\path\to\file.go:100
       const FILE_PATH_REGEX =
-        /(?:[A-Za-z]:[\/]|[.][\/])(?:[\w.\-]+[\/])*[\w.\-]+\.[a-zA-Z]{1,10}(?::(\d+)(?::\d+)?)?|(?:[\/]|(?:[\w.\-]+[\/]){1,})(?:[\w.\-]+[\/])*[\w.\-]+\.[a-zA-Z]{1,10}(?::(\d+)(?::\d+)?)?/g
+        /(?:[A-Za-z]:[/]|[.][/])(?:[\w.-]+[/])*[\w.-]+\.[a-zA-Z]{1,10}(?::(\d+)(?::\d+)?)?|(?:[/]|(?:[\w.-]+[/]){1,})(?:[\w.-]+[/])*[\w.-]+\.[a-zA-Z]{1,10}(?::(\d+)(?::\d+)?)?/g
 
       term.registerLinkProvider({
         provideLinks(bufferLineNumber: number, callback: (links: any[]) => void) {

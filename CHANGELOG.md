@@ -6,6 +6,25 @@
 
 ## [Unreleased]
 
+## [1.3.21] - 2026-08-15
+
+### Fixed
+
+- 修复配置保存的并发 map 迭代/写入竞态：`ConfigService.Save` 原来在读锁内取指针、释放锁后再无锁 scrub+marshal+写盘，与并发 `SaveProvider`/`SavePreset`（写锁内改写 `s.config.Models`）之间存在窗口，可能触发「concurrent map iteration and map write」进程崩溃或 race detector 告警；现改为全程持写锁走 `saveLocked`，行为不变。
+- 修复「立即同步」结果归属错误：`SyncSessionUsage` 原为 `SyncAll()` 解锁后重读 `s.syncMeta`，在解锁/重加锁窗口内已等待同一把锁的后台轮次会先执行并覆盖 meta，导致前台额外阻塞一整轮（最长 10 分钟）且读到的是后台轮次的结果；改为持锁的 `syncAllLocked` 直接返回本轮 meta。
+- 修复停止会话标题回填的性能问题：桌面端 2 秒轮询 session 列表时，`List()` 对无标题的 stopped claudecode 会话每次都会把 jsonl 重扫到 EOF；新增按 (mtime, size) 指纹的负结果缓存，文件未变时跳过重扫，追加写入会令缓存失效从而仍能检测到后补标题。
+- 修复 terminal_preset 桥接的跨配置代次快照：`LaunchSession`/`LaunchOpenCode` 原为 `GetProvider` + `GetPresets` 两次独立加锁，之间并发改写会拼出混合快照；新增 `SnapshotProvider` 在单次读锁内返回 provider 与 Presets 的同代深快照（Presets 非 nil 副本，可直接注入桥接条目）。
+- 修复外部清理存储（external_cleanup_store）`Reserve`/`Register`/`Complete` 等路径忽略 `applyEvent` 错误的问题：事件追加成功后内存态应用失败现在会正确返回错误，不再静默吞掉。
+
+### Changed
+
+- 前端 API 层统一错误处理语义：全部 `frontend/src/api/*` 模块改用共享的 `callApi` 包装器（以 `[api.<module>.<fn>]` 上下文打印日志后原样 rethrow），行为与直接调用 wails 绑定一致。
+- 终端 WebGL 渲染器改为动态加载：`@xterm/addon-webgl` 从主 chunk 静态依赖拆出，仅非 macOS 且探测通过时按需 import，带 in-flight 去重与 context-loss 重试，失败回退 DOM renderer（对齐 mobile 动态 xterm 栈做法）。
+- 移除前端 `element-plus` 依赖及样式覆写文件（`element-overrides.css`），按现有自绘组件风格收敛。
+- Headroom 共享代理明确单租户语义：启动非 headroom ClaudeCode 会话时主动拆除 :8787 代理属于已文档化的设计决策，`Stop` 失败不再被吞掉而是记录警告日志。
+- CI 新增 golangci-lint 门禁（v2.12.2，与本地 pinned 一致，跑在 matrix 两条腿上覆盖平台专属文件）；前端新增 eslint（10.x + eslint-plugin-vue + typescript-eslint）与 `check:bundle` 产物校验脚本。
+- 清理已无调用方的历史代码：zhipu/minimax API Key 专用存取方法、Origin 解析中的未用字段与辅助函数（`pairEndpointHostOK`/`asciiHost` 等）、`checkSharedLease` 等。
+
 ## [1.3.20] - 2026-08-14
 
 ### Fixed

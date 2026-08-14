@@ -1318,10 +1318,7 @@ func assertNoBareShellMetacharsInPwshTokens(t *testing.T, cmd string) {
 	t.Helper()
 	// The leading "& " is the PowerShell call operator -- intentionally safe.
 	// Skip it before checking for bare metacharacters.
-	rest := cmd
-	if strings.HasPrefix(rest, "& ") {
-		rest = rest[2:]
-	}
+	rest := strings.TrimPrefix(cmd, "& ")
 	// Parse tokens between single quotes. Everything inside '...' is safe.
 	// Check the non-quoted parts for dangerous characters.
 	dangerous := "|<>(){};`$"

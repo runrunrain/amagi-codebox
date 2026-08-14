@@ -23,6 +23,7 @@ import {
 import { CleanHeadroom } from '../../wailsjs/go/envcheck/Service';
 
 import { envcheck } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type aliases
 type OverallStatus = envcheck.OverallStatus;
@@ -35,157 +36,92 @@ type InstallResult = envcheck.InstallResult;
 /**
  * Run environment check
  */
-export async function runEnvCheck(): Promise<OverallStatus> {
-  try {
-    return await RunEnvCheck();
-  } catch (error) {
-    console.error('Failed to run env check:', error);
-    throw error;
-  }
+export function runEnvCheck(): Promise<OverallStatus> {
+  return callApi('[api.envcheck.runEnvCheck]', () => RunEnvCheck());
 }
 
 /**
  * Check specific tool
  */
-export async function checkTool(tool: string): Promise<CheckStatus> {
-  try {
-    return await CheckTool(tool);
-  } catch (error) {
-    console.error('Failed to check tool:', error);
-    throw error;
-  }
+export function checkTool(tool: string): Promise<CheckStatus> {
+  return callApi('[api.envcheck.checkTool]', () => CheckTool(tool));
 }
 
 /**
  * Install tool
  */
-export async function installTool(tool: string): Promise<InstallResult> {
-  try {
-    return await InstallTool(tool);
-  } catch (error) {
-    console.error('Failed to install tool:', error);
-    throw error;
-  }
+export function installTool(tool: string): Promise<InstallResult> {
+  return callApi('[api.envcheck.installTool]', () => InstallTool(tool));
 }
 
 /**
  * Update tool
  */
-export async function updateTool(tool: string): Promise<InstallResult> {
-  try {
-    return await UpdateTool(tool);
-  } catch (error) {
-    console.error('Failed to update tool:', error);
-    throw error;
-  }
+export function updateTool(tool: string): Promise<InstallResult> {
+  return callApi('[api.envcheck.updateTool]', () => UpdateTool(tool));
 }
 
 /**
  * Start async tool install
  */
-export async function startInstallToolAsync(tool: string): Promise<OperationState> {
-  try {
-    return await StartInstallToolAsync(tool);
-  } catch (error) {
-    console.error('Failed to start async install:', error);
-    throw error;
-  }
+export function startInstallToolAsync(tool: string): Promise<OperationState> {
+  return callApi('[api.envcheck.startInstallToolAsync]', () => StartInstallToolAsync(tool));
 }
 
 /**
  * Start async tool update
  */
-export async function startUpdateToolAsync(tool: string): Promise<OperationState> {
-  try {
-    return await StartUpdateToolAsync(tool);
-  } catch (error) {
-    console.error('Failed to start async update:', error);
-    throw error;
-  }
+export function startUpdateToolAsync(tool: string): Promise<OperationState> {
+  return callApi('[api.envcheck.startUpdateToolAsync]', () => StartUpdateToolAsync(tool));
 }
 
 /**
  * Get env check snapshot
  */
-export async function getEnvCheckSnapshot(): Promise<EnvCheckSnapshot> {
-  try {
-    return await GetEnvCheckSnapshot();
-  } catch (error) {
-    console.error('Failed to get env check snapshot:', error);
-    throw error;
-  }
+export function getEnvCheckSnapshot(): Promise<EnvCheckSnapshot> {
+  return callApi('[api.envcheck.getEnvCheckSnapshot]', () => GetEnvCheckSnapshot());
 }
 
 /**
  * Run fix action
  */
-export async function runEnvFixAction(action: string, tool: string, extraPath: string): Promise<FixActionResult> {
-  try {
-    return await RunEnvFixAction(action, tool, extraPath);
-  } catch (error) {
-    console.error('Failed to run fix action:', error);
-    throw error;
-  }
+export function runEnvFixAction(action: string, tool: string, extraPath: string): Promise<FixActionResult> {
+  return callApi('[api.envcheck.runEnvFixAction]', () => RunEnvFixAction(action, tool, extraPath));
 }
 
 /**
  * Install Claude with method
  */
-export async function installClaudeWithMethod(method: string): Promise<InstallResult> {
-  try {
-    return await InstallClaudeWithMethod(method);
-  } catch (error) {
-    console.error('Failed to install Claude:', error);
-    throw error;
-  }
+export function installClaudeWithMethod(method: string): Promise<InstallResult> {
+  return callApi('[api.envcheck.installClaudeWithMethod]', () => InstallClaudeWithMethod(method));
 }
 
 /**
  * Start async Claude install
  */
-export async function startInstallClaudeWithMethodAsync(method: string): Promise<OperationState> {
-  try {
-    return await StartInstallClaudeWithMethodAsync(method);
-  } catch (error) {
-    console.error('Failed to start async Claude install:', error);
-    throw error;
-  }
+export function startInstallClaudeWithMethodAsync(method: string): Promise<OperationState> {
+  return callApi('[api.envcheck.startInstallClaudeWithMethodAsync]', () => StartInstallClaudeWithMethodAsync(method));
 }
 
 /**
  * Clean Claude install
  */
-export async function cleanClaudeInstall(method: string): Promise<InstallResult> {
-  try {
-    return await CleanClaudeInstall(method);
-  } catch (error) {
-    console.error('Failed to clean Claude install:', error);
-    throw error;
-  }
+export function cleanClaudeInstall(method: string): Promise<InstallResult> {
+  return callApi('[api.envcheck.cleanClaudeInstall]', () => CleanClaudeInstall(method));
 }
 
 /**
  * Uninstall Claude Code
  */
-export async function uninstallClaudeCode(method: string): Promise<InstallResult> {
-  try {
-    return await UninstallClaudeCode(method);
-  } catch (error) {
-    console.error('Failed to uninstall Claude Code:', error);
-    throw error;
-  }
+export function uninstallClaudeCode(method: string): Promise<InstallResult> {
+  return callApi('[api.envcheck.uninstallClaudeCode]', () => UninstallClaudeCode(method));
 }
 
 /**
  * Check Claude config
  */
-export async function checkClaudeConfig(): Promise<any> {
-  try {
-    return await CheckClaudeConfig();
-  } catch (error) {
-    console.error('Failed to check Claude config:', error);
-    throw error;
-  }
+export function checkClaudeConfig(): Promise<envcheck.ClaudeConfigStatus> {
+  return callApi('[api.envcheck.checkClaudeConfig]', () => CheckClaudeConfig());
 }
 
 /**
@@ -197,13 +133,8 @@ export async function checkClaudeConfig(): Promise<any> {
  * rejection so the UI can show a distinct "in use" message instead of a generic
  * uninstall failure.
  */
-export async function cleanHeadroom(): Promise<InstallResult> {
-  try {
-    return await CleanHeadroom();
-  } catch (error: any) {
-    console.error('Failed to clean Headroom:', error);
-    throw error;
-  }
+export function cleanHeadroom(): Promise<InstallResult> {
+  return callApi('[api.envcheck.cleanHeadroom]', () => CleanHeadroom());
 }
 
 /**
@@ -212,20 +143,17 @@ export async function cleanHeadroom(): Promise<InstallResult> {
  * Wails surfaces the error string, so we match the sentinel message substring.
  * Callers should present a distinct confirm/reject message rather than retrying.
  */
-export function isHeadroomInUseRejection(error: any): boolean {
+export function isHeadroomInUseRejection(error: unknown): boolean {
   if (!error) return false;
-  const msg = typeof error === 'string' ? error : (error?.message ?? String(error));
-  return msg.includes('headroom is in use by active sessions');
+  const msg = typeof error === 'string'
+    ? error
+    : ((error as { message?: unknown })?.message ?? String(error));
+  return String(msg).includes('headroom is in use by active sessions');
 }
 
 /**
  * Fix Claude config
  */
-export async function fixClaudeConfig(key: string, value: string, filePath: string): Promise<any> {
-  try {
-    return await FixClaudeConfig(key, value, filePath);
-  } catch (error) {
-    console.error('Failed to fix Claude config:', error);
-    throw error;
-  }
+export function fixClaudeConfig(key: string, value: string, filePath: string): Promise<envcheck.ConfigFixResult> {
+  return callApi('[api.envcheck.fixClaudeConfig]', () => FixClaudeConfig(key, value, filePath));
 }

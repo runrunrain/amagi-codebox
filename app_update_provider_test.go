@@ -227,9 +227,14 @@ func TestUpdateProvider_RenameMigratesTerminalPresets(t *testing.T) {
 	if tp.Provider != "zhipu" {
 		t.Fatalf("tp.Provider = %q, want zhipu", tp.Provider)
 	}
-	// 旧 key 不应再解析
-	if _, _, err := app.Config.ResolveTerminalPreset("claude_code", "glm/max"); err != nil {
-		// err 为 nil 表示未找到（返回空），此处期望返回空 provider
+	// 旧 key 不应再解析：not-found 语义是「空 provider + nil error」
+	// （与空 TerminalPresets 表一致，见 ResolveTerminalPreset）。
+	oldProv, oldTP, err := app.Config.ResolveTerminalPreset("claude_code", "glm/max")
+	if err != nil {
+		t.Fatalf("ResolveTerminalPreset(glm/max) err = %v, want nil", err)
+	}
+	if oldProv != "" || oldTP != nil {
+		t.Fatalf("ResolveTerminalPreset(glm/max) = (%q, %v), want empty not-found result", oldProv, oldTP)
 	}
 }
 

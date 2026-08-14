@@ -518,7 +518,7 @@ func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launc
 	var result piOmpLaunchResult
 	if prov, pErr := p.config.GetProvider(providerID); pErr == nil && prov != nil {
 		s := resolvePiLaunchSettings(*prov, modelRef, presetParams)
-		result = piOmpLaunchResult{Provider: s.Provider, Model: s.Model, Thinking: s.Thinking}
+		result = piOmpLaunchResult(s)
 	} else {
 		result = piOmpLaunchResult{Model: modelRef}
 	}
@@ -560,7 +560,7 @@ func (p *appLaunchPlanner) buildOmpPlan(recipe launchplan.StableRecipe, req laun
 	var result piOmpLaunchResult
 	if prov, pErr := p.config.GetProvider(providerID); pErr == nil && prov != nil {
 		s := resolveOmpLaunchSettings(*prov, modelRef, presetParams)
-		result = piOmpLaunchResult{Provider: s.Provider, Model: s.Model, Thinking: s.Thinking}
+		result = piOmpLaunchResult(s)
 	} else {
 		result = piOmpLaunchResult{Model: modelRef}
 	}
@@ -614,12 +614,10 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 	}
 	if !tpFound && providerID != "" {
 		if provider, pErr := p.config.GetProvider(providerID); pErr == nil && provider != nil {
+			// 预设命中时仅取 presetParams：模型解析已在调用方经
+			// resolvePiLaunchSettings/resolveOmpLaunchSettings 写入 launchResult，
+			// 此处的 modelRef 解析结果不会被后续读取。
 			if preset, ok := provider.Presets[modelRef]; ok {
-				resolved := preset.Model
-				if resolved == "" {
-					resolved = provider.DefaultModel
-				}
-				modelRef = resolved
 				presetParams = preset.Parameters
 			}
 		}

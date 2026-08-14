@@ -13,87 +13,58 @@ import {
 } from '../../wailsjs/go/main/App';
 
 import { logging } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 type Entry = logging.Entry;
 
 /**
  * Get logs with optional filters
  */
-export async function getLogs(params: {
+export function getLogs(params: {
   level?: string;
   source?: string;
   keyword?: string;
   limit?: number;
 }): Promise<Entry[]> {
-  try {
-    return await GetLogs(
-      params.level || '',
-      params.source || '',
-      params.keyword || '',
-      params.limit || 100
-    );
-  } catch (error) {
-    console.error('Failed to get logs:', error);
-    throw error;
-  }
+  return callApi('[api.logs.getLogs]', () => GetLogs(
+    params.level || '',
+    params.source || '',
+    params.keyword || '',
+    params.limit || 100
+  ));
 }
 
 /**
  * Get log sources
  */
-export async function getLogSources(): Promise<string[]> {
-  try {
-    return await GetLogSources();
-  } catch (error) {
-    console.error('Failed to get log sources:', error);
-    throw error;
-  }
+export function getLogSources(): Promise<string[]> {
+  return callApi('[api.logs.getLogSources]', () => GetLogSources());
 }
 
 /**
  * Get log files
  */
-export async function getLogFiles(): Promise<string[]> {
-  try {
-    return await GetLogFiles();
-  } catch (error) {
-    console.error('Failed to get log files:', error);
-    throw error;
-  }
+export function getLogFiles(): Promise<string[]> {
+  return callApi('[api.logs.getLogFiles]', () => GetLogFiles());
 }
 
 /**
  * Get log file content
  */
-export async function getLogFileContent(filename: string): Promise<string> {
-  try {
-    return await GetLogFileContent(filename);
-  } catch (error) {
-    console.error('Failed to get log file content:', error);
-    throw error;
-  }
+export function getLogFileContent(filename: string): Promise<string> {
+  return callApi('[api.logs.getLogFileContent]', () => GetLogFileContent(filename));
 }
 
 /**
  * Clear logs
  */
-export async function clearLogs(): Promise<void> {
-  try {
-    await ClearLogs();
-  } catch (error) {
-    console.error('Failed to clear logs:', error);
-    throw error;
-  }
+export function clearLogs(): Promise<void> {
+  return callApi('[api.logs.clearLogs]', () => ClearLogs());
 }
 
 /**
  * Export logs
  */
-export async function exportLogs(): Promise<string> {
-  try {
-    return await ExportLogs();
-  } catch (error) {
-    console.error('Failed to export logs:', error);
-    throw error;
-  }
+export function exportLogs(): Promise<string> {
+  return callApi('[api.logs.exportLogs]', () => ExportLogs());
 }

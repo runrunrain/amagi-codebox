@@ -180,7 +180,7 @@ onMounted(async () => {
   engine.mountTerm(props.sessionId, el, {
     encodeShiftEnterAsCsiU:
       session.value?.appType === 'pi' || session.value?.appType === 'omp',
-    onExit: (info) => {
+    onExit: (_info) => {
       // exit also surfaces via the 2s poll in useSessionList, but refresh
       // immediately so the dot turns grey without a perceptible delay.
       refresh()

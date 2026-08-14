@@ -103,13 +103,11 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
-	cliName := cliCandidates[0]
-
 	cli, diagnostics, err := r.resolveCLIForRequest(cliCandidates, request.CLIArgs, resolvedEnv, resolvedShell)
 	if err != nil {
 		return ResolvedLaunchSpec{}, err
 	}
-	cliName = cli.Name
+	cliName := cli.Name
 	if len(pathSources) > 0 {
 		diagnostics.PATHSources = append([]string(nil), pathSources...)
 	}
@@ -303,14 +301,6 @@ func (r *defaultCLIResolver) ResolveExecutable(command string, args []string, en
 		}
 	}
 	return ResolvedCLI{Name: command, Path: resolvedPath, Args: append([]string(nil), args...)}, diagnostics, nil
-}
-
-func cliNameForAppType(appType string) (string, error) {
-	candidates, err := cliCandidatesForAppType(appType)
-	if err != nil {
-		return "", err
-	}
-	return candidates[0], nil
 }
 
 func cliCandidatesForAppType(appType string) ([]string, error) {

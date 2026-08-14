@@ -156,10 +156,6 @@ func TestC5b_Frozen_DevicePermitStoppedAtCheckpoint_DesktopTakeFences_Checkpoint
 	}
 
 	// desktop 随后 resize commit（系统一致：device 被拒不阻塞 desktop）。
-	const (
-		desktopCols = 100
-		desktopRows = 40
-	)
 	var desktopCommitted atomic.Int32
 	dErr := gate.DoDesktopPTY(ctx, desktopAuth, sid, PTYResize, func(opCtx context.Context, permit *operationPermit) error {
 		if err := permit.Checkpoint(opCtx, 1); err != nil {

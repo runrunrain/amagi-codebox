@@ -419,28 +419,6 @@ func normalizeComparableHost(host string) string {
 	return strings.ToLower(trimmed)
 }
 
-func isLoopbackRemoteAddr(remoteAddr string) bool {
-	trimmed := strings.TrimSpace(remoteAddr)
-	if trimmed == "" {
-		return false
-	}
-
-	if addrPort, err := netip.ParseAddrPort(trimmed); err == nil {
-		return addrPort.Addr().IsLoopback()
-	}
-
-	trimmed = strings.TrimPrefix(strings.TrimSuffix(trimmed, "]"), "[")
-	if zoneIndex := strings.Index(trimmed, "%"); zoneIndex >= 0 {
-		trimmed = trimmed[:zoneIndex]
-	}
-
-	addr, err := netip.ParseAddr(trimmed)
-	if err != nil {
-		return false
-	}
-	return addr.IsLoopback()
-}
-
 // Middleware 返回验证 Bearer Token 的 HTTP 中间件
 func (a *Auth) Middleware(next http.Handler) http.Handler {
 	return a.MiddlewareWithObserver(next, nil)

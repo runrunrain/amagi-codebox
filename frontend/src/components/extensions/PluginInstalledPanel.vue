@@ -337,7 +337,6 @@ const {
   activeCxPluginDetail,
   resFilter,
   resourceFilters,
-  ccInstalled,
   cxInstalled,
   cxWarnings,
   cxDuplicates,
@@ -357,7 +356,6 @@ const {
   updatePlugin,
   upgradeCxMarketplace,
   updateCcMarketplace,
-  loadCcInstalled,
   loadCcAllData,
   loadCxPlugins,
   toggleCxPlugin,
@@ -451,7 +449,7 @@ const filteredPlugins = computed(() => {
   // Codex: filter by resource type
   if (resFilter.value === 'all') return cxInstalled.value;
 
-  return cxInstalled.value.filter((p: any) => {
+  return cxInstalled.value.filter(() => {
     // Would need to check detail for resource types
     // For now, return all
     return true;

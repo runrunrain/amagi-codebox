@@ -37,11 +37,20 @@ frontend/qa-*.log
 # Agent outputs
 .amagi/
 
-# Amagi 审核运行时状态，不应纳入版本控制
+# AI 工具运行时产物（plans/state），不入库（infra-audit F3）
+.zcode/
+
+# Amagi 审核运行时状态，不应纳入版本控制（F3）
 .claude/review-status.json
+.claude/settings.json
+.claude/agent-teams-state.json
+.claude/test-status.json
 
 # Release builds
 release/
+
+# Release 资产目录（CI 产物 / 本地不入库，F3）
+release-assets/
 
 # Development logs
 *.log

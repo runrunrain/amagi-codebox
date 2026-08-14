@@ -26,7 +26,6 @@ type CodexPlugin = codexplugin.CodexPlugin;
 type CodexPluginDetail = codexplugin.CodexPluginDetail;
 type CodexMarketplace = codexplugin.CodexMarketplace;
 type CodexAvailablePlugin = codexplugin.CodexAvailablePlugin;
-type CodexPluginsData = codexplugin.CodexPluginsData;
 
 // Extended installed plugin with runtime computed fields
 interface ExtendedInstalledPlugin extends InstalledPlugin {

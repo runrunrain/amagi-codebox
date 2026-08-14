@@ -7,14 +7,20 @@
 - [App (`app`)](#app-app)
 - [Plugin Service (`app.Plugins`)](#plugin-service-appplugins)
 - [OpenCode Plugin Service (`app.OpenCodePlugins`)](#opencode-plugin-service-appopencodeplugins)
+- [Codex Plugin Service (`app.CodexPlugins`)](#codex-plugin-service-appcodexplugins)
+- [Pi Plugin Service (`app.PiPlugins`)](#pi-plugin-service-apppiplugins)
+- [Omp Plugin Service (`app.OmpPlugins`)](#omp-plugin-service-appompplugins)
 - [Config Service (`app.Config`)](#config-service-appconfig)
 - [Secrets Service (`app.Secrets`)](#secrets-service-appsecrets)
 - [Paths Service (`app.Paths`)](#paths-service-apppaths)
 - [Logging Service (`app.Log`)](#logging-service-applog)
-- [PTY Service (`app.Pty`)](#pty-service-apppty)
 - [Settings Service (`app.Settings`)](#settings-service-appsettings)
 - [Updater Service (`app.Updater`)](#updater-service-appupdater)
 - [OpenCode Config Service (`app.OpenCodeConfig`)](#opencode-config-service-appopencodeconfig)
+- [Pi Config Service (`app.PiConfig`)](#pi-config-service-apppiconfig)
+- [Omp Config Service (`app.OmpConfig`)](#omp-config-service-appompconfig)
+- [EnvCheck Service (`app.EnvCheck`)](#envcheck-service-appenvcheck)
+- [Usage Service (`app.Usage`)](#usage-service-appusage)
 
 ## App (`app`)
 
@@ -96,42 +102,6 @@
 **Returns**: `error`
 **Description**: 更新远程服务器端口，并在需要时自动重启远程服务。
 
-### RegisterOutputCallback
-**Service**: App
-**Parameters**: `sessionID (string)`, `id (string)`, `cb (func(data []byte))`
-**Returns**: `void`
-**Description**: 为指定 PTY 会话注册输出回调，供远程桥接层使用。
-
-### UnregisterOutputCallback
-**Service**: App
-**Parameters**: `sessionID (string)`, `id (string)`
-**Returns**: `void`
-**Description**: 注销 PTY 输出回调。
-
-### RegisterExitCallback
-**Service**: App
-**Parameters**: `sessionID (string)`, `id (string)`, `cb (func(exitCode uint32))`
-**Returns**: `void`
-**Description**: 为指定 PTY 会话注册退出回调。
-
-### UnregisterExitCallback
-**Service**: App
-**Parameters**: `sessionID (string)`, `id (string)`
-**Returns**: `void`
-**Description**: 注销 PTY 退出回调。
-
-### RegisterResizeCallback
-**Service**: App
-**Parameters**: `sessionID (string)`, `id (string)`, `cb (func(cols, rows int))`
-**Returns**: `void`
-**Description**: 为指定 PTY 会话注册尺寸变化回调。
-
-### UnregisterResizeCallback
-**Service**: App
-**Parameters**: `sessionID (string)`, `id (string)`
-**Returns**: `void`
-**Description**: 注销 PTY 尺寸变化回调。
-
 ### Startup
 **Service**: App
 **Parameters**: `ctx (context.Context)`
@@ -156,12 +126,6 @@
 **Returns**: `error`
 **Description**: 停止指定会话，兼容 PTY 会话和外部启动器会话。
 
-### StopAllSessions
-**Service**: App
-**Parameters**: none
-**Returns**: `void`
-**Description**: 停止所有运行中的会话。
-
 ### GetSessions
 **Service**: App
 **Parameters**: none
@@ -185,6 +149,12 @@
 **Parameters**: `modelName (string)`, `providerID (string)`, `mode (string)`, `workDir (string)`, `shellPath (string)`
 **Returns**: `string`, `error`
 **Description**: 启动 Codex CLI 会话，可注入 provider 对应的认证信息。
+
+### LaunchPiSession
+**Service**: App
+**Parameters**: `modelName (string)`, `providerID (string)`, `mode (string)`, `workDir (string)`, `shellPath (string)`
+**Returns**: `string`, `error`
+**Description**: 启动 Pi coding agent 会话。modelName 可为 terminal_preset 的 stable key（命中时用预设的 provider/model 覆盖参数）；providerID 非空时把 amagi Provider 翻译为 Pi 自定义 provider，合并写入 `~/.pi/agent/models.json`（保留已有 provider 与顶层配置），并以 `--provider`/`--model`/`--thinking` 参数启动；写入失败时回退内置 provider。
 
 ### GetProvidersByType
 **Service**: App
@@ -312,11 +282,11 @@
 **Returns**: `error`
 **Description**: 调整指定 PTY 会话的尺寸。
 
-### GetOutputHistory
+### GetOutputHistorySnapshot
 **Service**: App
 **Parameters**: `sessionID (string)`
-**Returns**: `[]byte`, `error`
-**Description**: 返回指定 PTY 会话的输出历史。
+**Returns**: `string`, `error`
+**Description**: 返回指定 PTY 会话的输出历史快照。返回 JSON：`{"data": "<base64>", "seq": <uint64>}`（启用 run-scoped 过滤时含 `runToken`/`runVersion`）。前端用 `seq` 对实时事件去重：任何 `seq <= 快照 seq` 的实时事件已包含在快照内。
 
 ### GetPtyDimensions
 **Service**: App
@@ -573,6 +543,162 @@
 **Returns**: `*opencodeplugin.CommandResult`, `error`
 **Description**: 从严格 JSON 全局配置的 `plugin` 数组移除指定项并保留缓存；JSONC 配置不会自动改写。
 
+## Codex Plugin Service (`app.CodexPlugins`)
+
+管理 Codex CLI 的插件市场与插件（`internal/codexplugin`）。
+
+### ListMarketplaces
+**Service**: Codex Plugin Service
+**Parameters**: none
+**Returns**: `[]CodexMarketplace`, `error`
+**Description**: 返回已注册市场列表：合并 config.toml 注册与 `codex plugin marketplace list` CLI 结果；CLI 失败时从配置插件与本地缓存推断，全部失败才返回错误。
+
+### AddMarketplace
+**Service**: Codex Plugin Service
+**Parameters**: `req (AddMarketplaceRequest)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `codex plugin marketplace add <source>`。`AddMarketplaceRequest` 仅含 `Source` 字段。
+
+### UpgradeMarketplace
+**Service**: Codex Plugin Service
+**Parameters**: `name (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `codex plugin marketplace upgrade <name>`。
+
+### RemoveMarketplace
+**Service**: Codex Plugin Service
+**Parameters**: `name (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `codex plugin marketplace remove <name>`。
+
+### ListPlugins
+**Service**: Codex Plugin Service
+**Parameters**: `marketplace (string)`
+**Returns**: `[]CodexPlugin`, `error`
+**Description**: 列出已安装插件（按市场过滤，空串返回全部）。优先读取 `codex plugin list` CLI 输出，失败时回退 config.toml；含重复安装诊断。
+
+### InstallPlugin
+**Service**: Codex Plugin Service
+**Parameters**: `selector (PluginSelector)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `codex plugin add <pluginID>`，随后同步启用状态并做安装后校验。`PluginSelector` 以 `PluginID` 优先，未传时由 `Name` + `Marketplace` 组合定位。
+
+### UninstallPlugin
+**Service**: Codex Plugin Service
+**Parameters**: `selector (PluginSelector)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 卸载指定插件。
+
+### SetPluginEnabled
+**Service**: Codex Plugin Service
+**Parameters**: `selector (PluginSelector)`, `enabled (bool)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 启用/禁用指定插件。
+
+### GetPluginDetails
+**Service**: Codex Plugin Service
+**Parameters**: `selector (PluginSelector)`
+**Returns**: `*CodexPluginDetail`, `error`
+**Description**: 返回指定插件详情：manifest 内容与扫描到的 skills、agents、commands、hooks、MCP 资源。
+
+### ListAvailablePlugins
+**Service**: Codex Plugin Service
+**Parameters**: none
+**Returns**: `[]CodexAvailablePlugin`, `error`
+**Description**: 从已注册市场枚举可安装插件。
+
+### RefreshPlugins
+**Service**: Codex Plugin Service
+**Parameters**: none
+**Returns**: `*CodexPluginsData`, `error`
+**Description**: 聚合市场、已安装与可安装列表；CLI 错误全部收纳进 `Warnings` 字段，仅完全无数据时才向上抛错。
+
+### SetPluginSubItemEnabled
+**Service**: Codex Plugin Service
+**Parameters**: `pluginId (string)`, `subItemType (string)`, `subItemId (string)`, `enabled (bool)`
+**Returns**: `error`
+**Description**: 兼容接口：Codex 插件暂不支持子项级禁用，记录日志后返回 nil。
+
+## Pi Plugin Service (`app.PiPlugins`)
+
+管理 pi 的包（登记于 `~/.pi/agent/settings.json` 的 `packages[]`，`internal/piplugin`）。
+
+### ListInstalledPackages
+**Service**: Pi Plugin Service
+**Parameters**: none
+**Returns**: `[]Package`, `error`
+**Description**: 列出 settings.json 中登记的全部包，附实体元数据。
+
+### RefreshPackages
+**Service**: Pi Plugin Service
+**Parameters**: none
+**Returns**: `*PackagesData`, `error`
+**Description**: 刷新并返回聚合数据，含"已登记但实体目录缺失"告警列表。
+
+### GetPackageDetails
+**Service**: Pi Plugin Service
+**Parameters**: `source (string)`
+**Returns**: `*PackageDetail`, `error`
+**Description**: 返回单个包的详情（含扫描到的子资源）。未登记返回明确错误。
+
+### InstallPackage
+**Service**: Pi Plugin Service
+**Parameters**: `source (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 通过 pi CLI 安装包（写 settings.json + 拉取实体）。
+
+### RemovePackage
+**Service**: Pi Plugin Service
+**Parameters**: `source (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 通过 pi CLI 移除包（从 settings.json `packages[]` 删除；实体目录保留）。
+
+### UpdatePackage
+**Service**: Pi Plugin Service
+**Parameters**: `source (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 通过 pi CLI 更新单个包；仅允许更新已登记的包（未登记返回明确错误，避免 CLI 静默无操作）。
+
+## Omp Plugin Service (`app.OmpPlugins`)
+
+管理 omp 的插件（npm + marketplace，`internal/ompplugin`）。
+
+### ListPlugins
+**Service**: Omp Plugin Service
+**Parameters**: none
+**Returns**: `[]Plugin`, `error`
+**Description**: 执行 `omp plugin list --json` 列出已安装插件。
+
+### RefreshPlugins
+**Service**: Omp Plugin Service
+**Parameters**: none
+**Returns**: `*PluginsData`, `error`
+**Description**: 返回聚合数据（列表 + 解析降级 Warnings 信封）。
+
+### InstallPlugin
+**Service**: Omp Plugin Service
+**Parameters**: `spec (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `omp install <spec>`；支持 npm/git/local/marketplace ref，含命令行元字符的 spec 会被拒绝（防注入）。
+
+### UninstallPlugin
+**Service**: Omp Plugin Service
+**Parameters**: `name (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `omp plugin uninstall <name>`（npm 与 marketplace 由 CLI 自动路由）。
+
+### SetPluginEnabled
+**Service**: Omp Plugin Service
+**Parameters**: `name (string)`, `enabled (bool)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 执行 `omp plugin enable|disable <name>`。
+
+### UpgradePlugin
+**Service**: Omp Plugin Service
+**Parameters**: `name (string)`
+**Returns**: `*CommandResult`, `error`
+**Description**: 升级单个插件：marketplace 插件走 `omp plugin upgrade <id>`；npm 或未识别目标走 `omp install <name> --force` 重装升级。
+
 ## Config Service (`app.Config`)
 
 ### Load
@@ -634,6 +760,12 @@
 **Parameters**: `providerName (string)`
 **Returns**: `map[string]Preset`, `error`
 **Description**: 返回指定 provider 的 preset 列表。
+
+### SnapshotProvider
+**Service**: Config Service
+**Parameters**: `name (string)`
+**Returns**: `*Provider`, `error`
+**Description**: [内部方法] 单次读锁内返回 provider 深快照（结构体字段 + Presets 外层 map 一起拷贝，Presets 为 nil 时返回空 map）。供 `App.LaunchSession` / `LaunchOpenCode` 的 terminal_preset 桥接使用，保证 provider 与 presets 同配置代际，避免 GetProvider + GetPresets 两次独立加锁之间并发保存造成的跨代混合。前端不直接调用。
 
 ### SavePreset
 **Service**: Config Service
@@ -726,30 +858,6 @@
 **Parameters**: `provider (string)`
 **Returns**: `string`, `string`
 **Description**: 先查存储密钥，再查环境变量，返回 `(apiKey, source)`。
-
-### GetZhipuAPIKey
-**Service**: Secrets Service
-**Parameters**: none
-**Returns**: `string`
-**Description**: 返回 `zhipu` provider 的 API Key。
-
-### SetZhipuAPIKey
-**Service**: Secrets Service
-**Parameters**: `key (string)`
-**Returns**: `error`
-**Description**: 设置 `zhipu` provider 的 API Key。
-
-### GetMinimaxAPIKey
-**Service**: Secrets Service
-**Parameters**: none
-**Returns**: `string`
-**Description**: 返回 `minimax_codex` provider 的 API Key。
-
-### SetMinimaxAPIKey
-**Service**: Secrets Service
-**Parameters**: `key (string)`
-**Returns**: `error`
-**Description**: 设置 `minimax_codex` provider 的 API Key。
 
 ### GetKeyDiagnostics
 **Service**: Secrets Service
@@ -881,109 +989,19 @@
 **Returns**: `void`
 **Description**: 关闭当前日志文件句柄。
 
-## PTY Service (`app.Pty`)
+## PTY 绑定说明（`app.Pty` 已下线）
 
-### RegisterOutputCallback
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `id (string)`, `cb (func(data []byte))`
-**Returns**: `void`
-**Description**: 注册 PTY 输出回调，供远程层实时转发输出。
-
-### UnregisterOutputCallback
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `id (string)`
-**Returns**: `void`
-**Description**: 注销 PTY 输出回调。
-
-### RegisterExitCallback
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `id (string)`, `cb (func(exitCode uint32))`
-**Returns**: `void`
-**Description**: 注册 PTY 退出回调。
-
-### UnregisterExitCallback
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `id (string)`
-**Returns**: `void`
-**Description**: 注销 PTY 退出回调。
-
-### RegisterResizeCallback
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `id (string)`, `cb (func(cols, rows int))`
-**Returns**: `void`
-**Description**: 注册 PTY 尺寸变化回调。
-
-### UnregisterResizeCallback
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `id (string)`
-**Returns**: `void`
-**Description**: 注销 PTY 尺寸变化回调。
-
-### SetContext
-**Service**: PTY Service
-**Parameters**: `ctx (context.Context)`
-**Returns**: `void`
-**Description**: 设置 Wails 应用上下文，供事件发射使用。
-
-### Start
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `shellPath (string)`, `autoCommand (string)`, `workDir (string)`, `env ([]string)`, `cols (int)`, `rows (int)`
-**Returns**: `int`, `error`
-**Description**: 创建一个新的 ConPTY 会话并返回进程 PID。
-
-### Write
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `data (string)`
-**Returns**: `error`
-**Description**: 向 PTY 写入 base64 编码数据。
-
-### WriteLarge
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `data (string)`
-**Returns**: `error`
-**Description**: 以分块方式向 PTY 写入大段 base64 数据。
-
-### Resize
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`, `cols (int)`, `rows (int)`
-**Returns**: `error`
-**Description**: 调整 PTY 会话尺寸。
-
-### GetPtyDimensions
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`
-**Returns**: `cols (int)`, `rows (int)`, `err (error)`
-**Description**: 返回 PTY 当前列数和行数。
-
-### Close
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`
-**Returns**: `error`
-**Description**: 关闭指定 PTY 会话。
-
-### CloseAll
-**Service**: PTY Service
-**Parameters**: none
-**Returns**: `void`
-**Description**: 关闭全部 PTY 会话。
-
-### IsRunning
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`
-**Returns**: `bool`
-**Description**: 检查指定会话是否仍存在。
-
-### GetOutputHistory
-**Service**: PTY Service
-**Parameters**: `sessionID (string)`
-**Returns**: `[]byte`, `error`
-**Description**: 返回指定 PTY 会话的输出历史，用于重放。
-
-### RunningCount
-**Service**: PTY Service
-**Parameters**: none
-**Returns**: `int`
-**Description**: 返回当前运行中的 PTY 会话数量。
+> **迁移警示**：raw `app.Pty`（`internal/pty.Service`）**不在 Wails 绑定面内**，请勿在绑定面中查找 `Pty` 服务。
+>
+> `bind_list.go`（C-01/T-24 gate）与 `bind_manifest_test.go` 断言原始 `pty.Service` / `headroom.HeadroomService` 对象不可达；PTY 读写请一律走 `App` 上的门面方法：
+>
+> - `App.PtyWrite(sessionID, data)` / `App.PtyWriteLarge(sessionID, data)` — 写入终端输入（base64）
+> - `App.PtyResize(sessionID, cols, rows)` — 调整终端尺寸
+> - `App.GetPtyDimensions(sessionID)` — 查询当前尺寸
+> - `App.GetOutputHistorySnapshot(sessionID)` — 原子 `{data, seq}` 回放快照
+> - `App.SaveClipboardImage(base64Data)` — 保存剪贴板图片
+>
+> 旧文档中的 `RegisterOutputCallback` / `RegisterExitCallback` / `RegisterResizeCallback`（及对应注销方法）、`StopAllSessions`、`GetOutputHistory` 均**不存在于绑定面**（`bind_manifest_test.go` 的 `appForbiddenMethods` 断言它们不得导出）。回调注册是 Go 内部（`internal/remote` / `internal/pty`）的桥接职责；前端实时输出走 Wails runtime 事件（`pty:data:<sessionID>` / `pty:exit:<sessionID>`，见 `frontend/src/composables/useTerminalEngine.ts`），历史回放走 `App.GetOutputHistorySnapshot`。
 
 ## Settings Service (`app.Settings`)
 
@@ -1130,3 +1148,355 @@
 **Parameters**: none
 **Returns**: `string`, `error`
 **Description**: 返回全局 OpenCode 配置文件的绝对路径（`$HOME/.config/opencode/opencode.json`），供前端展示。
+
+## Pi Config Service (`app.PiConfig`)
+
+读写 pi 的 agent 目录（`~/.pi/agent`）下的 `amagi.json` / `models.json` / `auth.json`（`internal/piconfig`）。
+
+### GetAmagiConfig
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `amagi.json` 内容。文件缺失时返回默认骨架；JSON 非法或根不是对象时原样返回内容，供用户在源码模式修复。
+
+### SaveAmagiConfig
+**Service**: Pi Config Service
+**Parameters**: `content (string)` -- 必须为根节点为对象的合法 JSON
+**Returns**: `error`
+**Description**: 校验并保存 `amagi.json`。写入采用原子方式（临时文件 0600 + rename，rename 失败回退直接覆盖）。
+
+### GetAmagiConfigPath
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 返回 `amagi.json` 的绝对路径，供前端展示/复制。
+
+### GetModelsConfig
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `models.json`（provider 注册表）内容。文件缺失时返回只含空 `providers` 的骨架；非法 JSON 原样返回。
+
+### SaveModelsConfig
+**Service**: Pi Config Service
+**Parameters**: `content (string)` -- 必须为根节点为对象的合法 JSON
+**Returns**: `error`
+**Description**: 校验并保存 `models.json`。文件含 `apiKey` 等敏感信息，原子写入（0600）。
+
+### GetModelsConfigPath
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 返回 `models.json` 的绝对路径，供前端展示。
+
+### GetAuthConfig
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `auth.json`（提供商凭据）内容。文件缺失时返回空对象骨架；非法 JSON 原样返回。文件含明文凭据，仅本地读取展示。
+
+### SaveAuthConfig
+**Service**: Pi Config Service
+**Parameters**: `content (string)` -- 必须为根节点为对象的合法 JSON
+**Returns**: `error`
+**Description**: 校验并保存 `auth.json`。含明文凭据，原子写入（0600）。
+
+### GetAuthConfigPath
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 返回 `auth.json` 的绝对路径，供前端展示。
+
+### GetPiModelCatalog
+**Service**: Pi Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `models.json` 抽取 provider→models 目录（只读，不含 `apiKey` 等敏感字段），序列化为 JSON 返回，供前端下拉。文件缺失时返回空目录。
+
+## Omp Config Service (`app.OmpConfig`)
+
+读写 omp 的 agent 目录（`~/.omp/agent`）下的 `config.yml` / `models.yml`（`internal/ompconfig`）。
+
+### GetOmpConfig
+**Service**: Omp Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `config.yml` 内容。文件缺失时返回 `modelRoles: {}` 最小骨架；YAML 非法或根不是映射时原样返回内容，供用户在源码模式修复。
+
+### SaveOmpConfig
+**Service**: Omp Config Service
+**Parameters**: `content (string)` -- 必须为根节点为映射的合法 YAML
+**Returns**: `error`
+**Description**: 校验并保存 `config.yml`。写入采用原子方式（临时文件 0600 + rename）。
+
+### GetOmpConfigPath
+**Service**: Omp Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 返回 `config.yml` 的绝对路径，供前端展示/复制。
+
+### GetModelsConfig
+**Service**: Omp Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `models.yml`（provider 注册表）内容。文件缺失时返回只含空 `providers` 的骨架；非法 YAML 原样返回。
+
+### SaveModelsConfig
+**Service**: Omp Config Service
+**Parameters**: `content (string)` -- 必须为根节点为映射的合法 YAML
+**Returns**: `error`
+**Description**: 校验并保存 `models.yml`。文件含 `apiKey` 等敏感信息，原子写入（0600）。
+
+### GetModelsConfigPath
+**Service**: Omp Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 返回 `models.yml` 的绝对路径，供前端展示。
+
+### GetOmpModelCatalog
+**Service**: Omp Config Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 读取 `models.yml` 抽取 provider→models 目录（不含 `apiKey` 等敏感字段），并追加 `omp models ls --json` 返回的内置目录提供商（自定义条目优先），序列化为 JSON 返回。
+
+## EnvCheck Service (`app.EnvCheck`)
+
+CLI 工具环境检测、问题诊断与一键修复，以及 Claude Code 安装/卸载生命周期管理（`internal/envcheck`）。
+
+### SetHeadroomVenvDir
+**Service**: EnvCheck Service
+**Parameters**: `dir (string)`
+**Returns**: `void`
+**Description**: [内部方法] 注入 CodeBox 管理的 headroom venv 目录（app.go 接线时调用），使检测/安装/启动/卸载指向同一 venv。须在首次 `CheckOne`/`Install` 前调用。
+
+### SetHeadroomStopper
+**Service**: EnvCheck Service
+**Parameters**: `fn (func() (error, func()))`
+**Returns**: `void`
+**Description**: [内部方法] 注入 `CleanHeadroom` 删除 venv 前停止 headroom 代理子进程的回调（Windows 上运行中的 headroom.exe 会被 OS 锁住）。回调返回 `(stopErr, releaseDrain)`。
+
+### CheckAll
+**Service**: EnvCheck Service
+**Parameters**: none
+**Returns**: `*OverallStatus`, `error`
+**Description**: 检测全部受支持的 CLI 工具并更新内存缓存。
+
+### CheckOne
+**Service**: EnvCheck Service
+**Parameters**: `tool (CLITool)`
+**Returns**: `*CheckStatus`, `error`
+**Description**: 检测单个工具（`claude_code` / `opencode` / `codex` / `pi` / `omp` / `headroom`）。
+
+### CheckLatestVersion
+**Service**: EnvCheck Service
+**Parameters**: `tool (CLITool)`
+**Returns**: `latestVersion (string)`, `err (error)`
+**Description**: 查询指定工具的最新可用版本。成功结果内存缓存 24 小时，避免重复请求 registry/包管理器。
+
+### Install
+**Service**: EnvCheck Service
+**Parameters**: `tool (CLITool)`
+**Returns**: `*InstallResult`, `error`
+**Description**: 同步安装指定工具。
+
+### Update
+**Service**: EnvCheck Service
+**Parameters**: `tool (CLITool)`
+**Returns**: `*InstallResult`, `error`
+**Description**: 同步更新指定工具。
+
+### GetCachedStatus
+**Service**: EnvCheck Service
+**Parameters**: none
+**Returns**: `*OverallStatus`
+**Description**: 返回最近一次环境检测结果（可能为缓存）。
+
+### StartInstallTool
+**Service**: EnvCheck Service
+**Parameters**: `tool (CLITool)`
+**Returns**: `*OperationState`, `error`
+**Description**: 启动异步安装操作，立即返回初始状态；实际工作在后台 goroutine 执行，可跨前端页面导航存活。同一 tool+kind 已在运行则返回当前状态；其他操作运行中返回 `ErrBusy`。
+
+### StartUpdateTool
+**Service**: EnvCheck Service
+**Parameters**: `tool (CLITool)`
+**Returns**: `*OperationState`, `error`
+**Description**: 启动异步更新操作，并发语义同 `StartInstallTool`。
+
+### StartInstallClaudeCodeWithMethod
+**Service**: EnvCheck Service
+**Parameters**: `method (ClaudeInstallMethod)`
+**Returns**: `*OperationState`, `error`
+**Description**: 按用户选择的渠道（`npm` / `native`）异步安装 Claude Code，操作状态生命周期同 `StartInstallTool`，但不回退自动渠道链。
+
+### GetOperationState
+**Service**: EnvCheck Service
+**Parameters**: none
+**Returns**: `*OperationState`
+**Description**: 返回当前异步操作状态；无操作时返回 nil。
+
+### GetEnvCheckSnapshot
+**Service**: EnvCheck Service
+**Parameters**: none
+**Returns**: `*EnvCheckSnapshot`
+**Description**: 返回组合快照（工具状态 + 当前操作），是前端的主轮询端点。
+
+### RunFixAction
+**Service**: EnvCheck Service
+**Parameters**: `req (FixActionRequest)`
+**Returns**: `*FixActionResult`, `error`
+**Description**: 白名单修复动作的单一入口（`fix_path` / `install_tool` / `install_node` / `retry` / `manual_command` / `fix_claude_config` / `install_claude_method` / `clean_claude_install`）。不接受前端任意命令，白名单外的 action 返回错误。
+
+### CheckClaudeConfig
+**Service**: EnvCheck Service
+**Parameters**: none
+**Returns**: `*ClaudeConfigStatus`, `error`
+**Description**: 扫描 Claude Code 配置文件，报告必需配置项是否存在。
+
+### FixClaudeConfig
+**Service**: EnvCheck Service
+**Parameters**: `req (ConfigFixRequest)`
+**Returns**: `*ConfigFixResult`, `error`
+**Description**: 向目标文件写入单个配置项。仅写缺失的 key，已存在的 key 绝不覆盖。
+
+### CleanClaudeCode
+**Service**: EnvCheck Service
+**Parameters**: `method (InstallMethod)`
+**Returns**: `*InstallResult`, `error`
+**Description**: 移除指定渠道（`npm` / `native`）的 Claude Code 安装，完成后校验其不再存在。与安装/更新共用同一操作门，重叠请求返回 `ErrBusy`。
+
+### CleanHeadroom
+**Service**: EnvCheck Service
+**Parameters**: none
+**Returns**: `*InstallResult`, `error`
+**Description**: 移除 CodeBox 管理的 Headroom venv 目录。删除前调用注入的 stopper 停止代理；若代理仍被活跃会话依赖（`ErrHeadroomInUse`），在删除前中止并返回该错误。
+
+### InstallClaudeCodeWithMethod
+**Service**: EnvCheck Service
+**Parameters**: `method (ClaudeInstallMethod)`
+**Returns**: `*InstallResult`, `error`
+**Description**: 按指定渠道同步安装 Claude Code，与异步操作共用序列化门。
+
+## Usage Service (`app.Usage`)
+
+用量聚合、成本统计与价格表管理（`internal/usage`，SQLite）。
+
+### GetUsageSummary
+**Service**: Usage Service
+**Parameters**: `filter (SummaryFilter)`
+**Returns**: `Summary`, `error`
+**Description**: 返回仪表盘汇总：请求数、Token 总量（不重叠口径）、按币种成本等。`SummaryFilter` 含 `StartDate`/`EndDate`（UTC 闭区间，空=不限）、`AppType`、`Source`、`Provider`。
+
+### GetDailyTrends
+**Service**: Usage Service
+**Parameters**: `filter (TrendFilter)`
+**Returns**: `[]DailyTrendPoint`, `error`
+**Description**: 返回日趋势折线图数据。`TrendFilter` 在 `SummaryFilter` 基础上增加 `Granularity`（day/week）与 `Days`（最近 N 天，与日期区间互斥）。
+
+### GetModelDailyTrends
+**Service**: Usage Service
+**Parameters**: `filter (TrendFilter)`
+**Returns**: `[]ModelDailyTrendPoint`, `error`
+**Description**: 返回按模型分线的日趋势（不聚合模型），避免价格/Token 量级差异混入同一条折线。
+
+### GetModelStats
+**Service**: Usage Service
+**Parameters**: `filter (StatFilter)`
+**Returns**: `[]ModelStat`, `error`
+**Description**: 返回按模型聚合的统计（Token、缓存命中率、成本等）。
+
+### GetProviderStats
+**Service**: Usage Service
+**Parameters**: `filter (StatFilter)`
+**Returns**: `[]ProviderStat`, `error`
+**Description**: 返回按供应商聚合的统计。
+
+### GetRequestLogs
+**Service**: Usage Service
+**Parameters**: `filter (LogFilter)`
+**Returns**: `[]UsageRecord`, `error`
+**Description**: 返回分页明细日志。`LogFilter` 增加 `Model`、`Page`（1 起）、`PageSize`（默认 50，上限 500）。
+
+### SyncSessionUsage
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `SyncResult`, `error`
+**Description**: 阻塞执行一次同步（前端"立即同步"按钮），返回起止时间、新增记录数、处理数、扫描文件数与错误列表。
+
+### GetSyncState
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `[]SyncState`
+**Description**: 返回所有来源的同步游标。
+
+### GetModelPricing
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `[]ModelPricing`
+**Description**: 返回价格表全量。
+
+### UpsertModelPricing
+**Service**: Usage Service
+**Parameters**: `mp (ModelPricing)`
+**Returns**: `error`
+**Description**: 新增或更新价格表条目；更新后按匹配到的模型重算历史估算成本。
+
+### DeleteModelPricing
+**Service**: Usage Service
+**Parameters**: `id (string)`
+**Returns**: `error`
+**Description**: 删除自定义价格条目（内置条目不可删）。
+
+### ResetModelPricing
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `error`
+**Description**: 重置为内置 seed 价格表，并重算全部历史估算成本。
+
+### GetUnknownModels
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `[]UnknownModel`, `error`
+**Description**: 返回价格表未匹配的模型列表（含样本原始名称、请求数与最后出现时间）。
+
+### Load
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `error`
+**Description**: [内部方法] 启动时加载 SQLite 数据库（app.go 接线调用）。
+
+### Close
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `error`
+**Description**: [内部方法] 关闭数据库连接（app.go 接线调用）。
+
+### SyncAll
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `error`
+**Description**: [内部方法] 执行全量同步（`SyncSessionUsage` 与启动/后台同步的内部实现）。
+
+### StartBackgroundSync
+**Service**: Usage Service
+**Parameters**: `interval (time.Duration)`
+**Returns**: `void`
+**Description**: [内部方法] 启动后台周期同步（app.go 接线调用）。
+
+### Record
+**Service**: Usage Service
+**Parameters**: `evt (UsageEvent)`
+**Returns**: `bool`, `error`
+**Description**: [内部方法] 记录一条用量事件（含去重，返回是否新增）。
+
+### RecordForce
+**Service**: Usage Service
+**Parameters**: `evt (UsageEvent)`
+**Returns**: `error`
+**Description**: [内部方法] 强制记录一条用量事件。
+
+### Pricing
+**Service**: Usage Service
+**Parameters**: none
+**Returns**: `*PricingService`
+**Description**: [内部方法] 返回价格表子服务实例（App 层内部使用）。

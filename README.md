@@ -6,7 +6,7 @@
 
 **管理 Claude Code / OpenCode / Codex 多服务提供商配置的跨平台桌面应用**
 
-[![Version](https://img.shields.io/badge/version-1.3.13-blue)](https://github.com/runrunrain/amagi-codebox)
+[![Version](https://img.shields.io/badge/version-1.3.21-blue)](https://github.com/runrunrain/amagi-codebox)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)](https://go.dev)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)
@@ -21,7 +21,7 @@
 ## 功能特性
 
 - **跨平台支持**：Windows 10/11 和 macOS 原生支持
-- **多应用管理**：Claude Code、OpenCode、Codex、Pi 四种应用统一管理
+- **多应用管理**：Claude Code、OpenCode、Codex、Pi、Oh My Pi (OMP) 五种应用统一管理
 - **多服务提供商**：Anthropic、OpenAI、GLM、MiniMax、Kimi 等，支持自定义添加
 - **预设配置管理**：每个提供商支持多套预设，可配置模型、温度、思考模式等
 - **API 密钥安全存储**：Windows DPAPI / macOS Keychain 加密存储
@@ -77,7 +77,7 @@ Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译
 
 **后端服务包**：`internal/` 下各服务包遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`（插件系统）、`headroom`（上下文压缩）、`remote`（远程控制）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
 
-**四种应用类型**：`claudecode` / `opencode` / `codex` / `pi`（外加已弃用的 `amagicode`）。`LaunchSession` 是会话启动核心入口，按预设解析提供商、编排代理与 headroom 链路、注入环境变量与 `--session-id`，最终在 PTY 中启动 CLI。
+**五种应用类型**：`claudecode` / `opencode` / `codex` / `pi` / `omp`（外加已弃用的 `amagicode`）。`LaunchSession` 是会话启动核心入口，按预设解析提供商、编排代理与 headroom 链路、注入环境变量与 `--session-id`，最终在 PTY 中启动 CLI。
 
 **跨平台**：平台差异通过 Go `//go:build` 约束在编译期分流（如 secrets 在 Windows 用 DPAPI、macOS 用 Keychain、Linux 为不支持），启动时由 `platform.CurrentCapabilities()` 一次性解析能力集合，运行期只读。
 

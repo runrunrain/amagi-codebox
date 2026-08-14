@@ -86,14 +86,21 @@ func (s *Service) GetRequestLogs(filter LogFilter) ([]UsageRecord, error) {
 // SyncSessionUsage 阻塞执行一次同步，返回结果（设计 11.6 / 前端「立即同步」按钮）。
 func (s *Service) SyncSessionUsage() (SyncResult, error) {
 	started := time.Now().UTC()
-	err := s.SyncAll()
+	// 单次临界区内执行本轮同步并直接取得本轮 meta（谛听终审 Major-1）：
+	// 若先走 SyncAll() 再重读 s.syncMeta，解锁→重加锁的窗口里，已等待同一把
+	// 锁的后台轮次（StartBackgroundSync）会先获得锁并覆盖 s.syncMeta；前台
+	// 将额外阻塞一整轮（最长 10 分钟）并读到后台轮次的结果。持锁 helper
+	// 直接返回本轮 meta，轮次归属与返回延迟都不受后续轮次影响。
+	s.mu.Lock()
+	meta, err := s.syncAllLocked()
+	s.mu.Unlock()
 	res := SyncResult{
 		StartedAt:      started,
 		FinishedAt:     time.Now().UTC(),
-		RecordsAdded:   s.syncMeta.RecordsAdded,
-		ProcessedCount: s.syncMeta.ProcessedCount,
-		FilesScanned:   s.syncMeta.FilesScanned,
-		Errors:         s.syncMeta.Errors,
+		RecordsAdded:   meta.RecordsAdded,
+		ProcessedCount: meta.ProcessedCount,
+		FilesScanned:   meta.FilesScanned,
+		Errors:         meta.Errors,
 	}
 	res.Duration = res.FinishedAt.Sub(res.StartedAt).String()
 	if err != nil {

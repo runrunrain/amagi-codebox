@@ -1,7 +1,7 @@
 <template>
   <div :class="containerClasses">
     <button
-      v-for="(option, index) in options"
+      v-for="option in options"
       :key="option.value"
       :class="optionClasses(option.value)"
       :disabled="disabled"

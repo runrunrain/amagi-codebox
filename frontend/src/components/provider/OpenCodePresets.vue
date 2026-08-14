@@ -133,7 +133,7 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 
-const emit = defineEmits<{ (e: 'add'): void }>();
+defineEmits<{ (e: 'add'): void }>();
 
 const store = useProviderStore();
 const showPresetDialog = ref(false);

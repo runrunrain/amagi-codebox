@@ -25,115 +25,71 @@ import {
   ConfirmExternalCleanupRecovery,
   GetStartupWarnings,
 } from '../../wailsjs/go/main/App';
-import type { remote } from '../../wailsjs/go/models';
+import type { main, remote } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 /**
  * Get remote token
  */
-export async function getRemoteToken(): Promise<string> {
-  try {
-    return await GetRemoteToken();
-  } catch (error) {
-    console.error('Failed to get remote token:', error);
-    throw error;
-  }
+export function getRemoteToken(): Promise<string> {
+  return callApi('[api.remote.getRemoteToken]', () => GetRemoteToken());
 }
 
 /**
  * Get remote status
  */
-export async function getRemoteStatus(): Promise<Record<string, any>> {
-  try {
-    return await GetRemoteStatus();
-  } catch (error) {
-    console.error('Failed to get remote status:', error);
-    throw error;
-  }
+export function getRemoteStatus(): Promise<Record<string, any>> {
+  return callApi('[api.remote.getRemoteStatus]', () => GetRemoteStatus());
 }
 
 /**
  * Get remote Web UI status
  */
-export async function getRemoteWebUIStatus(): Promise<any> {
-  try {
-    return await GetRemoteWebUIStatus();
-  } catch (error) {
-    console.error('Failed to get remote Web UI status:', error);
-    throw error;
-  }
+export function getRemoteWebUIStatus(): Promise<main.RemoteWebUIStatusResult> {
+  return callApi('[api.remote.getRemoteWebUIStatus]', () => GetRemoteWebUIStatus());
 }
 
 /**
  * Open remote Web UI
  */
-export async function openRemoteWebUI(): Promise<any> {
-  try {
-    return await OpenRemoteWebUI();
-  } catch (error) {
-    console.error('Failed to open remote Web UI:', error);
-    throw error;
-  }
+export function openRemoteWebUI(): Promise<main.OpenRemoteWebUIResult> {
+  return callApi('[api.remote.openRemoteWebUI]', () => OpenRemoteWebUI());
 }
 
 /**
  * Regenerate remote token
  */
-export async function regenerateRemoteToken(): Promise<string> {
-  try {
-    return await RegenerateRemoteToken();
-  } catch (error) {
-    console.error('Failed to regenerate remote token:', error);
-    throw error;
-  }
+export function regenerateRemoteToken(): Promise<string> {
+  return callApi('[api.remote.regenerateRemoteToken]', () => RegenerateRemoteToken());
 }
 
 /**
  * Toggle remote server
  */
-export async function toggleRemoteServer(enabled: boolean): Promise<void> {
-  try {
-    await ToggleRemoteServer(enabled);
-  } catch (error) {
-    console.error('Failed to toggle remote server:', error);
-    throw error;
-  }
+export function toggleRemoteServer(enabled: boolean): Promise<void> {
+  return callApi('[api.remote.toggleRemoteServer]', () => ToggleRemoteServer(enabled));
 }
 
 /**
  * Set remote port
  */
-export async function setRemotePort(port: number): Promise<void> {
-  try {
-    await SetRemotePort(port);
-  } catch (error) {
-    console.error('Failed to set remote port:', error);
-    throw error;
-  }
+export function setRemotePort(port: number): Promise<void> {
+  return callApi('[api.remote.setRemotePort]', () => SetRemotePort(port));
 }
 
 /**
  * Set remote host
  */
-export async function setRemoteHost(host: string): Promise<void> {
-  try {
-    await SetRemoteHost(host);
-  } catch (error) {
-    console.error('Failed to set remote host:', error);
-    throw error;
-  }
+export function setRemoteHost(host: string): Promise<void> {
+  return callApi('[api.remote.setRemoteHost]', () => SetRemoteHost(host));
 }
 
 /**
  * Set remote host + port in ONE backend transaction (Minor-02).
  * Either both persist or neither does — a failure never leaves a partial commit.
  */
-export async function setRemoteEndpoint(host: string, port: number): Promise<void> {
-  try {
-    await SetRemoteEndpoint(host, port);
-  } catch (error) {
-    console.error('Failed to set remote endpoint:', error);
-    throw error;
-  }
+export function setRemoteEndpoint(host: string, port: number): Promise<void> {
+  return callApi('[api.remote.setRemoteEndpoint]', () => SetRemoteEndpoint(host, port));
 }
 
 /* ---------------------------------------------------------------------------

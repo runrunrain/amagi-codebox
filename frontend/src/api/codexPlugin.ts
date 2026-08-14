@@ -19,6 +19,7 @@ import {
 } from '../../wailsjs/go/codexplugin/Service';
 
 import { codexplugin } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type aliases for convenience
 type CodexMarketplaceType = codexplugin.CodexMarketplace;
@@ -33,131 +34,76 @@ type PluginSelectorType = codexplugin.PluginSelector;
 /**
  * List marketplaces
  */
-export async function listCodexMarketplaces(): Promise<CodexMarketplaceType[]> {
-  try {
-    return await ListMarketplaces();
-  } catch (error) {
-    console.error('[api.codexPlugin.listCodexMarketplaces]', error);
-    throw error;
-  }
+export function listCodexMarketplaces(): Promise<CodexMarketplaceType[]> {
+  return callApi('[api.codexPlugin.listCodexMarketplaces]', () => ListMarketplaces());
 }
 
 /**
  * Add marketplace
  */
-export async function addCodexMarketplace(req: AddMarketplaceRequestType): Promise<CommandResultType> {
-  try {
-    return await AddMarketplace(req);
-  } catch (error) {
-    console.error('[api.codexPlugin.addCodexMarketplace]', error);
-    throw error;
-  }
+export function addCodexMarketplace(req: AddMarketplaceRequestType): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.addCodexMarketplace]', () => AddMarketplace(req));
 }
 
 /**
  * Upgrade marketplace
  */
-export async function upgradeCodexMarketplace(name: string): Promise<CommandResultType> {
-  try {
-    return await UpgradeMarketplace(name);
-  } catch (error) {
-    console.error('[api.codexPlugin.upgradeCodexMarketplace]', error);
-    throw error;
-  }
+export function upgradeCodexMarketplace(name: string): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.upgradeCodexMarketplace]', () => UpgradeMarketplace(name));
 }
 
 /**
  * Remove marketplace
  */
-export async function removeCodexMarketplace(name: string): Promise<CommandResultType> {
-  try {
-    return await RemoveMarketplace(name);
-  } catch (error) {
-    console.error('[api.codexPlugin.removeCodexMarketplace]', error);
-    throw error;
-  }
+export function removeCodexMarketplace(name: string): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.removeCodexMarketplace]', () => RemoveMarketplace(name));
 }
 
 /**
  * List plugins in marketplace
  */
-export async function listCodexPlugins(marketplace: string): Promise<CodexPluginType[]> {
-  try {
-    return await ListPlugins(marketplace);
-  } catch (error) {
-    console.error('[api.codexPlugin.listCodexPlugins]', error);
-    throw error;
-  }
+export function listCodexPlugins(marketplace: string): Promise<CodexPluginType[]> {
+  return callApi('[api.codexPlugin.listCodexPlugins]', () => ListPlugins(marketplace));
 }
 
 /**
  * Install plugin
  */
-export async function installCodexPlugin(selector: PluginSelectorType): Promise<CommandResultType> {
-  try {
-    return await InstallPlugin(selector);
-  } catch (error) {
-    console.error('[api.codexPlugin.installCodexPlugin]', error);
-    throw error;
-  }
+export function installCodexPlugin(selector: PluginSelectorType): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.installCodexPlugin]', () => InstallPlugin(selector));
 }
 
 /**
  * Uninstall plugin
  */
-export async function uninstallCodexPlugin(selector: PluginSelectorType): Promise<CommandResultType> {
-  try {
-    return await UninstallPlugin(selector);
-  } catch (error) {
-    console.error('[api.codexPlugin.uninstallCodexPlugin]', error);
-    throw error;
-  }
+export function uninstallCodexPlugin(selector: PluginSelectorType): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.uninstallCodexPlugin]', () => UninstallPlugin(selector));
 }
 
 /**
  * Set plugin enabled
  */
-export async function setCodexPluginEnabled(selector: PluginSelectorType, enabled: boolean): Promise<CommandResultType> {
-  try {
-    return await SetPluginEnabled(selector, enabled);
-  } catch (error) {
-    console.error('[api.codexPlugin.setCodexPluginEnabled]', error);
-    throw error;
-  }
+export function setCodexPluginEnabled(selector: PluginSelectorType, enabled: boolean): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.setCodexPluginEnabled]', () => SetPluginEnabled(selector, enabled));
 }
 
 /**
  * Get plugin details
  */
-export async function getCodexPluginDetails(selector: PluginSelectorType): Promise<CodexPluginDetailType> {
-  try {
-    return await GetPluginDetails(selector);
-  } catch (error) {
-    console.error('[api.codexPlugin.getCodexPluginDetails]', error);
-    throw error;
-  }
+export function getCodexPluginDetails(selector: PluginSelectorType): Promise<CodexPluginDetailType> {
+  return callApi('[api.codexPlugin.getCodexPluginDetails]', () => GetPluginDetails(selector));
 }
 
 /**
  * List available plugins
  */
-export async function listAvailableCodexPlugins(): Promise<CodexAvailablePluginType[]> {
-  try {
-    return await ListAvailablePlugins();
-  } catch (error) {
-    console.error('[api.codexPlugin.listAvailableCodexPlugins]', error);
-    throw error;
-  }
+export function listAvailableCodexPlugins(): Promise<CodexAvailablePluginType[]> {
+  return callApi('[api.codexPlugin.listAvailableCodexPlugins]', () => ListAvailablePlugins());
 }
 
 /**
  * Refresh plugins
  */
-export async function refreshCodexPlugins(): Promise<CodexPluginsDataType> {
-  try {
-    return await RefreshPlugins();
-  } catch (error) {
-    console.error('[api.codexPlugin.refreshCodexPlugins]', error);
-    throw error;
-  }
+export function refreshCodexPlugins(): Promise<CodexPluginsDataType> {
+  return callApi('[api.codexPlugin.refreshCodexPlugins]', () => RefreshPlugins());
 }

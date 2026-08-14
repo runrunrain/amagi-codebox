@@ -11,7 +11,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"sync/atomic"
 
 	"amagi-codebox/internal/remote/contract"
@@ -172,10 +171,6 @@ type restartRunStage struct {
 // ---------------------------------------------------------------------------
 // LaunchPermit — launch fencing capability (design §6.1, §6.4)
 // ---------------------------------------------------------------------------
-
-// errLaunchPermitCanceled is the cause set when a launch permit is canceled by
-// revoke/Stop/latch/shutdown.
-var errLaunchPermitCanceled = errors.New("control: launch permit canceled")
 
 // LaunchPermit binds a launch transaction to {DeviceID, acceptanceGeneration,
 // runtimeGeneration, launchGeneration}. Device permits also carry the device

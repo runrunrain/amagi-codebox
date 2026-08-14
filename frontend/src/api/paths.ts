@@ -19,6 +19,7 @@ import {
 import { BrowseDirectory, OpenFileInEditor } from '../../wailsjs/go/main/App';
 
 import { paths } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type alias
 type PathEntry = paths.PathEntry;
@@ -26,131 +27,76 @@ type PathEntry = paths.PathEntry;
 /**
  * Get paths
  */
-export async function getPaths(): Promise<PathEntry[]> {
-  try {
-    return await GetPaths();
-  } catch (error) {
-    console.error('[api.paths.getPaths]', error);
-    throw error;
-  }
+export function getPaths(): Promise<PathEntry[]> {
+  return callApi('[api.paths.getPaths]', () => GetPaths());
 }
 
 /**
  * Add path
  */
-export async function addPath(entry: PathEntry): Promise<void> {
-  try {
-    await AddPath(entry);
-  } catch (error) {
-    console.error('[api.paths.addPath]', error);
-    throw error;
-  }
+export function addPath(entry: PathEntry): Promise<void> {
+  return callApi('[api.paths.addPath]', () => AddPath(entry));
 }
 
 /**
  * Remove path
  */
-export async function removePath(path: string): Promise<void> {
-  try {
-    await RemovePath(path);
-  } catch (error) {
-    console.error('[api.paths.removePath]', error);
-    throw error;
-  }
+export function removePath(path: string): Promise<void> {
+  return callApi('[api.paths.removePath]', () => RemovePath(path));
 }
 
 /**
  * Get default path
  */
-export async function getDefaultPath(): Promise<string> {
-  try {
-    return await GetDefaultPath();
-  } catch (error) {
-    console.error('[api.paths.getDefaultPath]', error);
-    throw error;
-  }
+export function getDefaultPath(): Promise<string> {
+  return callApi('[api.paths.getDefaultPath]', () => GetDefaultPath());
 }
 
 /**
  * Set default path
  */
-export async function setDefaultPath(path: string): Promise<void> {
-  try {
-    await SetDefaultPath(path);
-  } catch (error) {
-    console.error('[api.paths.setDefaultPath]', error);
-    throw error;
-  }
+export function setDefaultPath(path: string): Promise<void> {
+  return callApi('[api.paths.setDefaultPath]', () => SetDefaultPath(path));
 }
 
 /**
  * Update path label
  */
-export async function updatePathLabel(path: string, label: string): Promise<void> {
-  try {
-    await UpdateLabel(path, label);
-  } catch (error) {
-    console.error('[api.paths.updatePathLabel]', error);
-    throw error;
-  }
+export function updatePathLabel(path: string, label: string): Promise<void> {
+  return callApi('[api.paths.updatePathLabel]', () => UpdateLabel(path, label));
 }
 
 /**
  * Validate path
  */
-export async function validatePath(path: string): Promise<boolean> {
-  try {
-    return await ValidatePath(path);
-  } catch (error) {
-    console.error('[api.paths.validatePath]', error);
-    throw error;
-  }
+export function validatePath(path: string): Promise<boolean> {
+  return callApi('[api.paths.validatePath]', () => ValidatePath(path));
 }
 
 /**
  * Load paths
  */
-export async function loadPaths(): Promise<void> {
-  try {
-    await Load();
-  } catch (error) {
-    console.error('[api.paths.loadPaths]', error);
-    throw error;
-  }
+export function loadPaths(): Promise<void> {
+  return callApi('[api.paths.loadPaths]', () => Load());
 }
 
 /**
  * Save paths
  */
-export async function savePaths(): Promise<void> {
-  try {
-    await Save();
-  } catch (error) {
-    console.error('[api.paths.savePaths]', error);
-    throw error;
-  }
+export function savePaths(): Promise<void> {
+  return callApi('[api.paths.savePaths]', () => Save());
 }
 
 /**
  * Browse directory (native file picker)
  */
-export async function browseDirectory(): Promise<string> {
-  try {
-    return await BrowseDirectory();
-  } catch (error) {
-    console.error('[api.paths.browseDirectory]', error);
-    throw error;
-  }
+export function browseDirectory(): Promise<string> {
+  return callApi('[api.paths.browseDirectory]', () => BrowseDirectory());
 }
 
 /**
  * Open file in editor
  */
-export async function openFileInEditor(filePath: string, line?: number): Promise<void> {
-  try {
-    await OpenFileInEditor(filePath, line || 0);
-  } catch (error) {
-    console.error('[api.paths.openFileInEditor]', error);
-    throw error;
-  }
+export function openFileInEditor(filePath: string, line?: number): Promise<void> {
+  return callApi('[api.paths.openFileInEditor]', () => OpenFileInEditor(filePath, line || 0));
 }

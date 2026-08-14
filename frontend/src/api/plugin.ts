@@ -29,6 +29,7 @@ import {
 import { SetPluginSubItemEnabled as AppSetPluginSubItemEnabled } from '../../wailsjs/go/main/App';
 
 import { plugin } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type aliases
 type Marketplace = plugin.Marketplace;
@@ -45,181 +46,113 @@ type SubItemRef = plugin.SubItemRef;
 /**
  * Get marketplaces
  */
-export async function getMarketplaces(): Promise<Marketplace[]> {
-  try {
-    return await GetMarketplaces();
-  } catch (error) {
-    console.error('[api.plugin.getMarketplaces]', error);
-    throw error;
-  }
+export function getMarketplaces(): Promise<Marketplace[]> {
+  return callApi('[api.plugin.getMarketplaces]', () => GetMarketplaces());
 }
 
 /**
  * Get installed plugins
  */
-export async function getInstalledPlugins(): Promise<InstalledPlugin[]> {
-  try {
-    return await GetInstalledPlugins();
-  } catch (error) {
-    console.error('[api.plugin.getInstalledPlugins]', error);
-    throw error;
-  }
+export function getInstalledPlugins(): Promise<InstalledPlugin[]> {
+  return callApi('[api.plugin.getInstalledPlugins]', () => GetInstalledPlugins());
 }
 
 /**
  * Get available plugins
+ *
+ * 后端 GetAvailablePlugins 返回 []interface{}（claude CLI JSON 归一化为
+ * internal/plugin.AvailablePlugin 形状，未导出到 wailsjs models），生成的绑定
+ * 类型为 Array<any>；store 层按 PluginDetail[] 消费，此处对齐该事实契约。
  */
-export async function getAvailablePlugins(): Promise<any[]> {
-  try {
-    return await GetAvailablePlugins();
-  } catch (error) {
-    console.error('[api.plugin.getAvailablePlugins]', error);
-    throw error;
-  }
+export function getAvailablePlugins(): Promise<PluginDetail[]> {
+  return callApi('[api.plugin.getAvailablePlugins]', async () => {
+    const plugins = await GetAvailablePlugins();
+    return plugins as PluginDetail[];
+  });
 }
 
 /**
  * Get plugin detail
  */
-export async function getPluginDetail(pluginId: string): Promise<PluginDetail> {
-  try {
-    return await GetPluginDetail(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.getPluginDetail]', error);
-    throw error;
-  }
+export function getPluginDetail(pluginId: string): Promise<PluginDetail> {
+  return callApi('[api.plugin.getPluginDetail]', () => GetPluginDetail(pluginId));
 }
 
 /**
  * Get plugin sub items
  */
-export async function getPluginSubItems(pluginId: string): Promise<SubItem[]> {
-  try {
-    return await GetPluginSubItems(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.getPluginSubItems]', error);
-    throw error;
-  }
+export function getPluginSubItems(pluginId: string): Promise<SubItem[]> {
+  return callApi('[api.plugin.getPluginSubItems]', () => GetPluginSubItems(pluginId));
 }
 
 /**
  * Get plugin sub item states
  */
-export async function getPluginSubItemStates(pluginId: string): Promise<PluginSubItemState> {
-  try {
-    return await GetPluginSubItemStates(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.getPluginSubItemStates]', error);
-    throw error;
-  }
+export function getPluginSubItemStates(pluginId: string): Promise<PluginSubItemState> {
+  return callApi('[api.plugin.getPluginSubItemStates]', () => GetPluginSubItemStates(pluginId));
 }
 
 /**
  * Analyze plugin type
  */
-export async function analyzePluginType(pluginId: string): Promise<PluginType> {
-  try {
-    return await AnalyzePluginType(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.analyzePluginType]', error);
-    throw error;
-  }
+export function analyzePluginType(pluginId: string): Promise<PluginType> {
+  return callApi('[api.plugin.analyzePluginType]', () => AnalyzePluginType(pluginId));
 }
 
 /**
  * Install plugin
  */
-export async function installPlugin(pluginName: string): Promise<CommandResult> {
-  try {
-    return await InstallPlugin(pluginName);
-  } catch (error) {
-    console.error('[api.plugin.installPlugin]', error);
-    throw error;
-  }
+export function installPlugin(pluginName: string): Promise<CommandResult> {
+  return callApi('[api.plugin.installPlugin]', () => InstallPlugin(pluginName));
 }
 
 /**
  * Uninstall plugin
  */
-export async function uninstallPlugin(pluginId: string): Promise<CommandResult> {
-  try {
-    return await UninstallPlugin(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.uninstallPlugin]', error);
-    throw error;
-  }
+export function uninstallPlugin(pluginId: string): Promise<CommandResult> {
+  return callApi('[api.plugin.uninstallPlugin]', () => UninstallPlugin(pluginId));
 }
 
 /**
  * Enable plugin
  */
-export async function enablePlugin(pluginId: string): Promise<CommandResult> {
-  try {
-    return await EnablePlugin(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.enablePlugin]', error);
-    throw error;
-  }
+export function enablePlugin(pluginId: string): Promise<CommandResult> {
+  return callApi('[api.plugin.enablePlugin]', () => EnablePlugin(pluginId));
 }
 
 /**
  * Disable plugin
  */
-export async function disablePlugin(pluginId: string): Promise<CommandResult> {
-  try {
-    return await DisablePlugin(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.disablePlugin]', error);
-    throw error;
-  }
+export function disablePlugin(pluginId: string): Promise<CommandResult> {
+  return callApi('[api.plugin.disablePlugin]', () => DisablePlugin(pluginId));
 }
 
 /**
  * Update plugin
  */
-export async function updatePlugin(pluginId: string): Promise<CommandResult> {
-  try {
-    return await UpdatePlugin(pluginId);
-  } catch (error) {
-    console.error('[api.plugin.updatePlugin]', error);
-    throw error;
-  }
+export function updatePlugin(pluginId: string): Promise<CommandResult> {
+  return callApi('[api.plugin.updatePlugin]', () => UpdatePlugin(pluginId));
 }
 
 /**
  * Update marketplace
  */
-export async function updateMarketplace(name: string): Promise<CommandResult> {
-  try {
-    return await UpdateMarketplace(name);
-  } catch (error) {
-    console.error('[api.plugin.updateMarketplace]', error);
-    throw error;
-  }
+export function updateMarketplace(name: string): Promise<CommandResult> {
+  return callApi('[api.plugin.updateMarketplace]', () => UpdateMarketplace(name));
 }
 
 /**
  * Add marketplace
  */
-export async function addMarketplace(source: string): Promise<CommandResult> {
-  try {
-    return await AddMarketplace(source);
-  } catch (error) {
-    console.error('[api.plugin.addMarketplace]', error);
-    throw error;
-  }
+export function addMarketplace(source: string): Promise<CommandResult> {
+  return callApi('[api.plugin.addMarketplace]', () => AddMarketplace(source));
 }
 
 /**
  * Remove marketplace
  */
-export async function removeMarketplace(name: string): Promise<CommandResult> {
-  try {
-    return await RemoveMarketplace(name);
-  } catch (error) {
-    console.error('[api.plugin.removeMarketplace]', error);
-    throw error;
-  }
+export function removeMarketplace(name: string): Promise<CommandResult> {
+  return callApi('[api.plugin.removeMarketplace]', () => RemoveMarketplace(name));
 }
 
 /**
@@ -228,17 +161,12 @@ export async function removeMarketplace(name: string): Promise<CommandResult> {
  * 注意：此函数调的是 plugin.Service.SetSubItemEnabled（Claude 专用、对象参数版本）。
  * 仅适用于 Claude 引擎。Codex 引擎或需要 Codex/Claude 双路兼容时，请使用 setPluginSubItemEnabled。
  */
-export async function setSubItemEnabled(
+export function setSubItemEnabled(
   pluginId: string,
   subItemRef: SubItemRef,
   enabled: boolean
 ): Promise<void> {
-  try {
-    await SetSubItemEnabled(pluginId, subItemRef, enabled);
-  } catch (error) {
-    console.error('[api.plugin.setSubItemEnabled]', error);
-    throw error;
-  }
+  return callApi('[api.plugin.setSubItemEnabled]', () => SetSubItemEnabled(pluginId, subItemRef, enabled));
 }
 
 /**
@@ -256,28 +184,18 @@ export async function setSubItemEnabled(
  * 参数 subItemType 取值为后端 SubItemType 单数：skill / agent / command / hook / mcp。
  * Codex 与 Claude 两条路径都走此入口，避免直调 window.go.main.App 造成状态散落。
  */
-export async function setPluginSubItemEnabled(
+export function setPluginSubItemEnabled(
   pluginId: string,
   subItemType: string,
   subItemId: string,
   enabled: boolean
 ): Promise<void> {
-  try {
-    await AppSetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled);
-  } catch (error) {
-    console.error('[api.plugin.setPluginSubItemEnabled]', error);
-    throw error;
-  }
+  return callApi('[api.plugin.setPluginSubItemEnabled]', () => AppSetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled));
 }
 
 /**
  * Refresh plugins
  */
-export async function refreshPlugins(): Promise<void> {
-  try {
-    await RefreshPlugins();
-  } catch (error) {
-    console.error('[api.plugin.refreshPlugins]', error);
-    throw error;
-  }
+export function refreshPlugins(): Promise<void> {
+  return callApi('[api.plugin.refreshPlugins]', () => RefreshPlugins());
 }

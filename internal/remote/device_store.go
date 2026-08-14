@@ -14,7 +14,6 @@ package remote
 import (
 	"bytes"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -93,8 +92,6 @@ func paddedBase64(b []byte) string { return base64.StdEncoding.EncodeToString(b)
 
 func decodePaddedBase64(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
 
-func decodeRawURLBase64(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
-
 func newEventHash() hash.Hash { return sha256.New() }
 
 const snapshotHashDomain = "amagi-codebox/device-snapshot/v1"
@@ -111,14 +108,6 @@ func computeDeviceDigest(salt, secret []byte) []byte {
 	h.Write(salt)
 	h.Write(secret)
 	return h.Sum(nil)
-}
-
-// verifyDeviceDigest recomputes and constant-time-compares the digest.
-func verifyDeviceDigest(salt, secret, storedHash []byte) bool {
-	if len(storedHash) != 32 {
-		return false
-	}
-	return subtle.ConstantTimeCompare(computeDeviceDigest(salt, secret), storedHash) == 1
 }
 
 // generateDeviceID returns a 16-byte RawURL DeviceID (22 chars).
@@ -172,18 +161,6 @@ type revokeStoreResult struct {
 	Mutation       StoreMutationResult
 }
 
-type deviceRepository interface {
-	LoadOrInitialize(normalStorePermit) error
-	Lookup(normalStorePermit, contract.DeviceID) (deviceRecord, bool, error)
-	List(normalStorePermit) ([]deviceRecord, error)
-	Create(normalStorePermit, deviceRecord) (StoreMutationResult, error)
-	Revoke(normalStorePermit, contract.DeviceID, time.Time) (revokeStoreResult, error)
-	TouchSeen(normalStorePermit, deviceSeenObservation, time.Duration) (deviceRecord, seenStoreDisposition, StoreMutationResult, error)
-	BackupForMigration(MaintenanceSession) (DeviceStoreBackup, error)
-	RestoreMigrationBackup(MaintenanceSession, DeviceStoreBackup) error
-	ValidateMaintenanceStore(MaintenanceSession) error
-}
-
 // ---------------------------------------------------------------------------
 // fileDeviceStore
 // ---------------------------------------------------------------------------
@@ -229,9 +206,6 @@ func newFileDeviceStore(dir string, clock Clock, random io.Reader, gate *securit
 		devices:      make(map[contract.DeviceID]deviceRecord),
 	}
 }
-
-// nonce returns the immutable per-process nonce (no lock required).
-func (s *fileDeviceStore) nonce() [32]byte { return s.processNonce }
 
 // validateNormalPermit validates a normal permit WITHOUT acquiring the gate
 // lock. The nonce is immutable; kind is checked. The gate guarantees it cannot

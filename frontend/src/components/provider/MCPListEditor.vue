@@ -9,7 +9,7 @@
     </div>
     <div v-else class="mle-items">
       <div
-        v-for="(item, index) in serverList"
+        v-for="item in serverList"
         :key="item.key"
         class="mle-item"
       >

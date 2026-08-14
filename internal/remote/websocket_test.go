@@ -188,15 +188,3 @@ func TestServerMsgSerializesOutputCompatibilityFields(t *testing.T) {
 		}
 	}
 }
-
-func readNextFrame(t *testing.T, conn *websocket.Conn) serverMsg {
-	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
-	var msg serverMsg
-	if err := conn.ReadJSON(&msg); err != nil {
-		t.Fatalf("read websocket frame: %v", err)
-	}
-	return msg
-}

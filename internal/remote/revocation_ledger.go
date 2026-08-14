@@ -51,21 +51,6 @@ type revocationLedger struct {
 // committedTombstoneCount returns the number of committed tombstones (C-010).
 func (l *revocationLedger) committedTombstoneCount() int { return len(l.tombstones) }
 
-// isRevoked reports whether deviceID has a committed tombstone.
-func (l *revocationLedger) isRevoked(deviceID string) (ledgerTombstone, bool) {
-	t, ok := l.tombstones[deviceID]
-	return t, ok
-}
-
-// revokedSet returns a defensive copy of the revoked device IDs.
-func (l *revocationLedger) revokedSet() map[string]ledgerTombstone {
-	out := make(map[string]ledgerTombstone, len(l.tombstones))
-	for k, v := range l.tombstones {
-		out[k] = v
-	}
-	return out
-}
-
 // ledgerReplayResult classifies the trailing bytes after the committed prefix.
 type ledgerTailClassification uint8
 
@@ -127,13 +112,6 @@ type ledgerPrepareHashInput struct {
 	DeviceID  string `json:"deviceId"`
 	RevokedAt string `json:"revokedAt"`
 	PrevHash  string `json:"prevHash"`
-}
-
-type ledgerCommitHashInput struct {
-	Version  int    `json:"version"`
-	Type     string `json:"type"`
-	StoreID  string `json:"storeId"`
-	Sequence uint64 `json:"sequence"`
 }
 
 // computeRecordHash hashes the canonical typed fields (excluding recordHash).

@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -9,6 +10,12 @@ import (
 	"amagi-codebox/internal/appmeta/claude"
 	"amagi-codebox/internal/launchplan"
 )
+
+// extractFirstUserMessage is the jsonl first-user-message resolver used by the
+// stopped-session title backfill. It defaults to the real claude parser and is
+// overridable in tests (see manager_titlecache_test.go) to observe scan
+// invocations for negative-result cache coverage.
+var extractFirstUserMessage = claude.ExtractFirstUserMessage
 
 // Manager is the sole owner of session identity, origin, launch mode,
 // membership and host lifecycle. Remote projections consume authority snapshots
@@ -251,7 +258,14 @@ type legacyListSnapshot struct {
 	membershipRevision uint64
 }
 
-func (m *Manager) List() []SessionInfo {
+// collectPresentSnapshots snapshots all presently-authoritative entries with a
+// copy of their Session field and the membership revision captured under each
+// entry's guard. It performs NO jsonl title backfill. Callers that only need
+// counts or IDs (RunningCount, GetRunning, ClearStopped) use this to avoid the
+// per-poll jsonl scan that List() performs for stopped claudecode sessions.
+// Results are sorted newest-first (by StartedAt) for a deterministic order
+// matching List()'s final sort.
+func (m *Manager) collectPresentSnapshots() []legacyListSnapshot {
 	m.indexMu.RLock()
 	entries := make([]*authorityEntry, 0, len(m.entries))
 	for _, entry := range m.entries {
@@ -267,6 +281,14 @@ func (m *Manager) List() []SessionInfo {
 		}
 		entry.guard.Unlock()
 	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].session.StartedAt.After(snapshots[j].session.StartedAt)
+	})
+	return snapshots
+}
+
+func (m *Manager) List() []SessionInfo {
+	snapshots := m.collectPresentSnapshots()
 
 	m.homeMu.RLock()
 	homeDir := m.homeDir
@@ -275,12 +297,14 @@ func (m *Manager) List() []SessionInfo {
 	for i := range snapshots {
 		s := snapshots[i].session
 		if homeDir != "" && s.Title == "" && s.ClaudeSessionID != "" && !isActiveSessionStatus(s.Status) && s.AppType == AppTypeClaudeCode {
-			if title, ok := readTitleFromJSONL(homeDir, s.WorkDir, s.ClaudeSessionID); ok {
-				entry := snapshots[i].entry
+			entry := snapshots[i].entry
+			if title, ok := m.tryReadCLITitle(entry, s, homeDir); ok {
 				entry.guard.Lock()
 				if entry.phase == authorityPresent && entry.private.revisions.Membership == snapshots[i].membershipRevision && entry.session.Title == "" {
 					entry.session.Title = title
 					s.Title = title
+					// 正结果：令任何陈旧的负结果指纹失效。
+					entry.private.titleScanned = false
 				}
 				entry.guard.Unlock()
 			}
@@ -302,19 +326,56 @@ func (m *Manager) List() []SessionInfo {
 	return result
 }
 
-func readTitleFromJSONL(homeDir, workDir, claudeSessionID string) (string, bool) {
-	jsonlPath := claude.SessionJSONLPath(homeDir, workDir, claudeSessionID)
-	content, found, err := claude.ExtractFirstUserMessage(jsonlPath)
-	if err != nil || !found {
+// tryReadCLITitle resolves a stopped claudecode session's title from its jsonl
+// file with a per-entry negative-result cache. The desktop UI polls sessions
+// (useSessionList, every 2s) and List() backfills titles for stopped
+// claudecode sessions whose Title is still empty. Without a negative cache every
+// poll re-scanned the jsonl to EOF whenever there was no extractable title. The
+// cache stores the file's (mtime, size) fingerprint at the last negative scan;
+// a subsequent poll whose os.Stat matches the fingerprint skips the rescan.
+// Appending to the file (size/mtime change) invalidates the cache so a later
+// title is still detected. Fingerprint reads/writes are guarded by entry.guard.
+func (m *Manager) tryReadCLITitle(entry *authorityEntry, s Session, homeDir string) (string, bool) {
+	jsonlPath := claude.SessionJSONLPath(homeDir, s.WorkDir, s.ClaudeSessionID)
+	fi, err := os.Stat(jsonlPath)
+	if err != nil {
+		// 文件不存在或不可访问：无法生成指纹，下次轮询重新 stat（廉价），不缓存。
 		return "", false
 	}
-	return truncateFirstLine(content, titleMaxRunes, workDir), true
+	mtimeNs := fi.ModTime().UnixNano()
+	size := fi.Size()
+
+	entry.guard.Lock()
+	cachedNegative := entry.private.titleScanned &&
+		entry.private.titleScanMtime == mtimeNs &&
+		entry.private.titleScanSize == size
+	entry.guard.Unlock()
+	if cachedNegative {
+		return "", false
+	}
+
+	content, found, scanErr := extractFirstUserMessage(jsonlPath)
+	if scanErr != nil {
+		return "", false
+	}
+	if !found {
+		// 负结果：记录指纹，文件未变时下次轮询跳过重扫。
+		entry.guard.Lock()
+		if entry.phase == authorityPresent {
+			entry.private.titleScanMtime = mtimeNs
+			entry.private.titleScanSize = size
+			entry.private.titleScanned = true
+		}
+		entry.guard.Unlock()
+		return "", false
+	}
+	return truncateFirstLine(content, titleMaxRunes, s.WorkDir), true
 }
 
 func (m *Manager) RunningCount() int {
 	count := 0
-	for _, session := range m.List() {
-		if isActiveSessionStatus(session.Status) {
+	for _, snap := range m.collectPresentSnapshots() {
+		if isActiveSessionStatus(snap.session.Status) {
 			count++
 		}
 	}
@@ -353,10 +414,14 @@ func (m *Manager) Remove(id string) error {
 }
 
 func (m *Manager) ClearStopped() int {
-	ids := make([]string, 0)
-	for _, info := range m.List() {
-		if !isActiveSessionStatus(info.Status) {
-			ids = append(ids, info.ID)
+	// Use collectPresentSnapshots (no jsonl IO) instead of List(): this helper
+	// only needs Status, and List()'s stopped-session title backfill would force
+	// a per-call jsonl scan on every clear.
+	snapshots := m.collectPresentSnapshots()
+	ids := make([]string, 0, len(snapshots))
+	for _, snap := range snapshots {
+		if !isActiveSessionStatus(snap.session.Status) {
+			ids = append(ids, snap.session.ID)
 		}
 	}
 	count := 0
@@ -369,10 +434,11 @@ func (m *Manager) ClearStopped() int {
 }
 
 func (m *Manager) GetRunning() []string {
-	result := make([]string, 0)
-	for _, info := range m.List() {
-		if isActiveSessionStatus(info.Status) {
-			result = append(result, info.ID)
+	snapshots := m.collectPresentSnapshots()
+	result := make([]string, 0, len(snapshots))
+	for _, snap := range snapshots {
+		if isActiveSessionStatus(snap.session.Status) {
+			result = append(result, snap.session.ID)
 		}
 	}
 	return result

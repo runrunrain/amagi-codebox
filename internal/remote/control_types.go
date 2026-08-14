@@ -25,11 +25,6 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	// controlStateTransitionBudget is the max time for a state-only
-	// take/release/expire/revoke commit + in-memory event reservation. Exceeding
-	// it latches control health; state fence NEVER waits for raw I/O.
-	controlStateTransitionBudget = 250 * time.Millisecond
-
 	// controlOperationLaneWaitTimeout is the max wait for a previous operation
 	// to release the per-session lane.
 	controlOperationLaneWaitTimeout = 1 * time.Second
@@ -62,23 +57,9 @@ const (
 	// acknowledge after cancel. If exceeded, the backend is quarantined.
 	controlCancelAckTimeout = 1 * time.Second
 
-	// controlGracefulStopTimeout is the graceful stop deadline before force.
-	controlGracefulStopTimeout = 2 * time.Second
-
-	// controlForceDetachTimeout is the force close/kill acknowledgement window.
-	controlForceDetachTimeout = 1 * time.Second
-
-	// controlSessionStopTotalTimeout is the worst-case 1s drain + 2s graceful +
-	// 1s force.
-	controlSessionStopTotalTimeout = 4 * time.Second
-
 	// controlLaunchStepTimeout is the per-effect deadline for a single
 	// shared service/config/process start.
 	controlLaunchStepTimeout = 5 * time.Second
-
-	// controlShutdownCleanupTimeout is the aggregate deadline for app shutdown
-	// parallel cleanup of all sessions/shared effects.
-	controlShutdownCleanupTimeout = 5 * time.Second
 
 	// controlGraceDuration is the device disconnect retention period (C-004
 	// provisional 30s; adjustable via constructor for tests).

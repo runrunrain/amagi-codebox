@@ -74,7 +74,7 @@
       <!-- Market source list (left sidebar) -->
       <aside class="market-source-pane">
         <div
-          v-for="(market, idx) in markets"
+          v-for="market in markets"
           :key="getSourceKey(market)"
           :class="['market-card', { active: isSourceActive(market) }]"
         >
@@ -197,7 +197,7 @@ const props = withDefaults(defineProps<Props>(), {
   engine: 'claude',
 });
 
-const emit = defineEmits<{
+defineEmits<{
   (e: 'addMarket', engine: 'claude' | 'codex'): void;
 }>();
 
@@ -208,9 +208,6 @@ const {
   cxMarkets,
   cxAvailable,
   activeMarketId,
-  marketSearchQuery,
-  marketSortBy,
-  loadingMarket,
 } = storeToRefs(pluginStore);
 
 const {

@@ -32,14 +32,10 @@ const (
 
 // canonicalOrigin is a parsed Origin header.
 type canonicalOrigin struct {
-	scheme   string
-	host     string
-	port     int // explicit port; 0 if absent
-	path     string
-	query    string
-	fragment string
-	userinfo string
-	opaque   bool
+	scheme string
+	host   string
+	port   int // explicit port; 0 if absent
+	path   string
 }
 
 // parseCanonicalOrigin strictly parses a single Origin header value. It rejects
@@ -187,11 +183,6 @@ func canonicalAllowedOrigin(r *http.Request, origin string) bool {
 	return co.path == ""
 }
 
-// pairEndpointHostOK validates the Host header port equals the server port.
-func pairEndpointHostOK(r *http.Request, serverPort int) bool {
-	return strictHostValid(r, serverPort)
-}
-
 // strictHostValid validates the Host header for a v1 pairing/unsafe request:
 // non-empty, no userinfo ('@') / IPv6 zone ('%') / non-ASCII / malformed labels,
 // and effective port == serverPort. SplitHostPort errors are NOT treated as a
@@ -293,19 +284,6 @@ func validDNSLabelHost(h string) bool {
 			}
 		}
 		if label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-	}
-	return true
-}
-
-// asciiHost reports whether a host is non-empty printable ASCII.
-func asciiHost(h string) bool {
-	if h == "" {
-		return false
-	}
-	for _, c := range []byte(h) {
-		if c < 0x21 || c > 0x7e || c == 0x7f {
 			return false
 		}
 	}

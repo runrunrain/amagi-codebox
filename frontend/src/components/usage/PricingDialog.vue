@@ -284,7 +284,7 @@ function validate(): boolean {
   const pattern = form.value.modelPattern.trim();
   if (!pattern) {
     e.modelPattern = '模型 ID 必填';
-  } else if (!/^[a-z0-9._:\-]+$/i.test(pattern)) {
+  } else if (!/^[a-z0-9._:-]+$/i.test(pattern)) {
     e.modelPattern = '仅允许字母、数字、点、连字符、冒号、下划线';
   }
   const prices = [

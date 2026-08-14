@@ -82,7 +82,6 @@ import {
 import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import Segmented from '../../components/ui/Segmented.vue'
-import Switch from '../../components/ui/Switch.vue'
 import AppButton from '../../components/ui/AppButton.vue'
 
 const { showSuccess, showError } = useToast()

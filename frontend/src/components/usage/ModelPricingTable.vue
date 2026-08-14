@@ -1,14 +1,14 @@
 <template>
   <div class="pricing-table-wrap">
     <!-- 未知模型快捷入口 / Unknown-model quick-add chips -->
-    <div v-if="unknownModels.length > 0" class="unknown-block">
+    <div v-if="unknownModelsMapped.length > 0" class="unknown-block">
       <div class="unknown-head">
-        <span class="unknown-title">未配置价格的模型（{{ unknownModels.length }}）</span>
+        <span class="unknown-title">未配置价格的模型（{{ unknownModelsMapped.length }}）</span>
         <span class="unknown-hint">点击「+」为该模型新增价格</span>
       </div>
       <div class="unknown-chips">
         <button
-          v-for="u in unknownModels"
+          v-for="u in unknownModelsMapped"
           :key="u.normalizedModel"
           class="unknown-chip"
           :title="`样例：${u.sampleRaw || u.normalizedModel}（${u.requests} 次）`"
@@ -118,7 +118,7 @@ const unknownList = computed<UnknownModelLike[]>(() => props.unknownModels as Un
 
 // 重新映射以便模板用 u.displayName（如果没有则回退到 normalizedModel）。
 // 通过 computed 透出 displayName 字段，保持模板简洁。
-const unknownModels = computed(() =>
+const unknownModelsMapped = computed(() =>
   unknownList.value.map((u) => ({
     ...u,
     displayName: u.displayName || u.normalizedModel,

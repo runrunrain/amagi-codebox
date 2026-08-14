@@ -17,7 +17,6 @@ import type {
   SummaryFilter,
   TrendFilter,
   StatFilter,
-  LogFilter,
   Summary,
   ModelDailyTrendPoint,
   ModelStat,

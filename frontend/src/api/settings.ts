@@ -26,6 +26,7 @@ import {
 } from '../../wailsjs/go/settings/Service';
 
 import { settings } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // Type aliases
 type DashboardDefaults = settings.DashboardDefaults;
@@ -36,215 +37,125 @@ type AppSettings = settings.AppSettings;
 /**
  * Get dashboard defaults
  */
-export async function getDashboardDefaults(): Promise<DashboardDefaults> {
-  try {
-    return await GetDashboardDefaults();
-  } catch (error) {
-    console.error('[api.settings.getDashboardDefaults]', error);
-    throw error;
-  }
+export function getDashboardDefaults(): Promise<DashboardDefaults> {
+  return callApi('[api.settings.getDashboardDefaults]', () => GetDashboardDefaults());
 }
 
 /**
  * Set dashboard defaults
  */
-export async function setDashboardDefaults(defaults: DashboardDefaults): Promise<void> {
-  try {
-    await SetDashboardDefaults(defaults);
-  } catch (error) {
-    console.error('[api.settings.setDashboardDefaults]', error);
-    throw error;
-  }
+export function setDashboardDefaults(defaults: DashboardDefaults): Promise<void> {
+  return callApi('[api.settings.setDashboardDefaults]', () => SetDashboardDefaults(defaults));
 }
 
 /**
  * Get shell paths
  */
-export async function getShellPaths(): Promise<ShellEntry[]> {
-  try {
-    return await GetShellPaths();
-  } catch (error) {
-    console.error('[api.settings.getShellPaths]', error);
-    throw error;
-  }
+export function getShellPaths(): Promise<ShellEntry[]> {
+  return callApi('[api.settings.getShellPaths]', () => GetShellPaths());
 }
 
 /**
  * Add shell path
  */
-export async function addShellPath(entry: ShellEntry): Promise<void> {
-  try {
-    await AddShellPath(entry);
-  } catch (error) {
-    console.error('[api.settings.addShellPath]', error);
-    throw error;
-  }
+export function addShellPath(entry: ShellEntry): Promise<void> {
+  return callApi('[api.settings.addShellPath]', () => AddShellPath(entry));
 }
 
 /**
  * Remove shell path
  */
-export async function removeShellPath(path: string): Promise<void> {
-  try {
-    await RemoveShellPath(path);
-  } catch (error) {
-    console.error('[api.settings.removeShellPath]', error);
-    throw error;
-  }
+export function removeShellPath(path: string): Promise<void> {
+  return callApi('[api.settings.removeShellPath]', () => RemoveShellPath(path));
 }
 
 /**
  * Get terminal settings
  */
-export async function getTerminalSettings(): Promise<TerminalSettings> {
-  try {
-    return await GetTerminalSettings();
-  } catch (error) {
-    console.error('[api.settings.getTerminalSettings]', error);
-    throw error;
-  }
+export function getTerminalSettings(): Promise<TerminalSettings> {
+  return callApi('[api.settings.getTerminalSettings]', () => GetTerminalSettings());
 }
 
 /**
  * Set terminal settings
  */
-export async function setTerminalSettings(settings: TerminalSettings): Promise<void> {
-  try {
-    await SetTerminalSettings(settings);
-  } catch (error) {
-    console.error('[api.settings.setTerminalSettings]', error);
-    throw error;
-  }
+export function setTerminalSettings(settings: TerminalSettings): Promise<void> {
+  return callApi('[api.settings.setTerminalSettings]', () => SetTerminalSettings(settings));
 }
 
 /**
  * Get remote host
  */
-export async function getRemoteHost(): Promise<string> {
-  try {
-    return await GetRemoteHost();
-  } catch (error) {
-    console.error('[api.settings.getRemoteHost]', error);
-    throw error;
-  }
+export function getRemoteHost(): Promise<string> {
+  return callApi('[api.settings.getRemoteHost]', () => GetRemoteHost());
 }
 
 /**
  * Set remote host
  */
-export async function setRemoteHost(host: string): Promise<void> {
-  try {
-    await SetRemoteHost(host);
-  } catch (error) {
-    console.error('[api.settings.setRemoteHost]', error);
-    throw error;
-  }
+export function setRemoteHost(host: string): Promise<void> {
+  return callApi('[api.settings.setRemoteHost]', () => SetRemoteHost(host));
 }
 
 /**
  * Get remote port
  */
-export async function getRemotePort(): Promise<number> {
-  try {
-    return await GetRemotePort();
-  } catch (error) {
-    console.error('[api.settings.getRemotePort]', error);
-    throw error;
-  }
+export function getRemotePort(): Promise<number> {
+  return callApi('[api.settings.getRemotePort]', () => GetRemotePort());
 }
 
 /**
  * Set remote port
  */
-export async function setRemotePort(port: number): Promise<void> {
-  try {
-    await SetRemotePort(port);
-  } catch (error) {
-    console.error('[api.settings.setRemotePort]', error);
-    throw error;
-  }
+export function setRemotePort(port: number): Promise<void> {
+  return callApi('[api.settings.setRemotePort]', () => SetRemotePort(port));
 }
 
 /**
  * Get GitHub token
  */
-export async function getGitHubToken(): Promise<string> {
-  try {
-    return await GetGitHubToken();
-  } catch (error) {
-    console.error('[api.settings.getGitHubToken]', error);
-    throw error;
-  }
+export function getGitHubToken(): Promise<string> {
+  return callApi('[api.settings.getGitHubToken]', () => GetGitHubToken());
 }
 
 /**
  * Set GitHub token
  */
-export async function setGitHubToken(token: string): Promise<void> {
-  try {
-    await SetGitHubToken(token);
-  } catch (error) {
-    console.error('[api.settings.setGitHubToken]', error);
-    throw error;
-  }
+export function setGitHubToken(token: string): Promise<void> {
+  return callApi('[api.settings.setGitHubToken]', () => SetGitHubToken(token));
 }
 
 /**
  * Get mobile web root
  */
-export async function getMobileWebRoot(): Promise<string> {
-  try {
-    return await GetMobileWebRoot();
-  } catch (error) {
-    console.error('[api.settings.getMobileWebRoot]', error);
-    throw error;
-  }
+export function getMobileWebRoot(): Promise<string> {
+  return callApi('[api.settings.getMobileWebRoot]', () => GetMobileWebRoot());
 }
 
 /**
  * Set mobile web root
  */
-export async function setMobileWebRoot(path: string): Promise<void> {
-  try {
-    await SetMobileWebRoot(path);
-  } catch (error) {
-    console.error('[api.settings.setMobileWebRoot]', error);
-    throw error;
-  }
+export function setMobileWebRoot(path: string): Promise<void> {
+  return callApi('[api.settings.setMobileWebRoot]', () => SetMobileWebRoot(path));
 }
 
 /**
  * Get all settings
  */
-export async function getAllSettings(): Promise<AppSettings> {
-  try {
-    return await GetSettings();
-  } catch (error) {
-    console.error('[api.settings.getAllSettings]', error);
-    throw error;
-  }
+export function getAllSettings(): Promise<AppSettings> {
+  return callApi('[api.settings.getAllSettings]', () => GetSettings());
 }
 
 /**
  * Load settings from file
  */
-export async function loadSettings(): Promise<void> {
-  try {
-    await Load();
-  } catch (error) {
-    console.error('[api.settings.loadSettings]', error);
-    throw error;
-  }
+export function loadSettings(): Promise<void> {
+  return callApi('[api.settings.loadSettings]', () => Load());
 }
 
 /**
  * Save settings to file
  */
-export async function saveSettings(): Promise<void> {
-  try {
-    await Save();
-  } catch (error) {
-    console.error('[api.settings.saveSettings]', error);
-    throw error;
-  }
+export function saveSettings(): Promise<void> {
+  return callApi('[api.settings.saveSettings]', () => Save());
 }

@@ -409,7 +409,7 @@ func TestExecuteOmpCommandTimeout(t *testing.T) {
 	svc := NewServiceWithDeps(nil, testResolver{}, blockingRunner{})
 
 	start := time.Now()
-	result, err := svc.executeOmpCommand(nil, 50*time.Millisecond, "install", "slow-pkg")
+	result, err := svc.executeOmpCommand(context.TODO(), 50*time.Millisecond, "install", "slow-pkg")
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")

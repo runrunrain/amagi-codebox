@@ -29,21 +29,6 @@ var (
 	ErrExternalCleanupRecheckUnavailable   = errors.New("external cleanup recovery: process recheck unavailable")
 )
 
-// checkSharedLease returns ErrSharedServiceInUse if the given mutation is
-// blocked by an active run lease (design §6.7.2). M-006: in production the
-// coordinator is always wired (constructed in the App factory); a nil
-// coordinator means the App is not yet initialized, so we fail closed (reject)
-// rather than silently allowing a mutation that could break active sessions.
-func (a *App) checkSharedLease(kind remote.SharedServiceKind, mutation remote.SharedServiceMutationKind) error {
-	if a.isExternalCleanupRecoveryBlocked() && isHeadroomSharedKind(kind) {
-		return remote.ErrSharedServiceInUse
-	}
-	if a.sharedCoord == nil {
-		return remote.ErrSharedServiceInUse
-	}
-	return a.sharedCoord.CheckMutation(kind, mutation, a.sharedFingerprint(kind))
-}
-
 // acquireSharedMutation owns the check→raw-I/O window for a singleton mutation.
 // Unlike a one-shot check, the exact token remains visible to launch admissions
 // and uninstall drains until the caller releases it.

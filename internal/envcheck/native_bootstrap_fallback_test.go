@@ -193,15 +193,6 @@ func writeCommandFile(path string) error {
 	return os.WriteFile(path, []byte(content), 0o755)
 }
 
-func argsContain(args []string, needle string) bool {
-	for _, arg := range args {
-		if strings.Contains(arg, needle) {
-			return true
-		}
-	}
-	return false
-}
-
 func isNPMPath(pathLower string) bool {
 	base := strings.ToLower(filepath.Base(pathLower))
 	return strings.Contains(pathLower, "npm") || base == "npm" || base == "npm.cmd" || base == "npm.exe"

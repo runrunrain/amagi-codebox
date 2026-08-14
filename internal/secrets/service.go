@@ -272,28 +272,6 @@ func getProviderEnvVars(provider string) []string {
 	}
 }
 
-// GetZhipuAPIKey 读取智谱 API Key。
-func (s *SecretsService) GetZhipuAPIKey() string {
-	key, _ := s.GetAPIKey("zhipu")
-	return key
-}
-
-// SetZhipuAPIKey 存储智谱 API Key。
-func (s *SecretsService) SetZhipuAPIKey(key string) error {
-	return s.SetAPIKey("zhipu", key)
-}
-
-// GetMinimaxAPIKey 读取 MiniMax API Key。
-func (s *SecretsService) GetMinimaxAPIKey() string {
-	key, _ := s.GetAPIKey("minimax_codex")
-	return key
-}
-
-// SetMinimaxAPIKey 存储 MiniMax API Key。
-func (s *SecretsService) SetMinimaxAPIKey(key string) error {
-	return s.SetAPIKey("minimax_codex", key)
-}
-
 // MaskKey 返回密钥的掩码版本，保留前4后4，中间用*替代。
 func MaskKey(key string) string {
 	if len(key) <= 8 {

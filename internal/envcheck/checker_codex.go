@@ -103,10 +103,6 @@ func (s *Service) checkCodexFromNPMGlobalPrefix() (*CheckStatus, []string, error
 	return nil, candidates, fmt.Errorf("Codex executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }
 
-func codexNPMGlobalExecutableCandidates(prefix string) []string {
-	return codexNPMGlobalExecutableCandidatesWithRoot(prefix, "")
-}
-
 func codexNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot string) []string {
 	return npmGlobalCommandCandidates(prefix, npmRoot, codexCommandName, codexNPMPackageName)
 }

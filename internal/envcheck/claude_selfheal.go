@@ -63,9 +63,6 @@ const claudeNPMScopedDirName = "@anthropic-ai"
 // fixture files small.
 var claudeNPMIntegrityMinBytes int64 = 100 * 1024 * 1024
 
-// claudeCodesignIdentifier is the expected code-signing identifier on macOS.
-const claudeCodesignIdentifier = "com.anthropic.claude-code"
-
 // claudeCodesignTimeout bounds the codesign(1) verification call.
 const claudeCodesignTimeout = 10 * time.Second
 
@@ -442,10 +439,10 @@ func verifyClaudeDarwinSignature(path string) (string, bool) {
 type claudeVersionErrorKind int
 
 const (
-	// claudeVersionErrorUnknown is the zero value and must never be emitted
-	// by classifyClaudeVersionError. It exists only to make zero-value
-	// detection explicit.
-	claudeVersionErrorUnknown claudeVersionErrorKind = iota
+	// Zero value (unnamed) is "unknown" and must never be emitted
+	// by classifyClaudeVersionError. The anchor exists only to keep iota
+	// numbering explicit and zero-value detection stable.
+	_ claudeVersionErrorKind = iota
 	// claudeVersionErrorSIGKILL indicates macOS AMFI rejected an unsigned or
 	// malformed Mach-O at exec time. The exec failure surfaces as
 	// "signal: killed" / exit code 137 / errno -88, and the underlying binary

@@ -46,7 +46,6 @@ type replayFrameEntry struct {
 	seq    contract.Seq
 	kind   LiveRunRecordKind // LiveRecordOutput or LiveRecordRestartBoundary
 	output []byte            // immutable copy (for output)
-	exit   ProcessExitObservation
 }
 
 // toWireFrame converts the entry to a wire ReplayFrame (OutputEvent or

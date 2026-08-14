@@ -11,12 +11,6 @@ import (
 	"amagi-codebox/internal/config"
 )
 
-// PiModelsConfig 是 pi 的 ~/.pi/agent/models.json（或 PI_CODING_AGENT_DIR/models.json）
-// 顶层结构。amagi 仅填充 providers 段，其余字段（如 version）保持最小。
-type piModelsConfig struct {
-	Providers map[string]map[string]any `json:"providers,omitempty"`
-}
-
 // PiProviderID 返回 amagi 托管的 pi provider 标识。
 //
 // pi 支持在 models.json 里注册任意命名的自定义 provider，并用 --provider 引用。

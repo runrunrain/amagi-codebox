@@ -26,7 +26,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
 import Dialog from './Dialog.vue';
 import AppButton from './AppButton.vue';
 
@@ -39,7 +38,7 @@ interface Props {
   cancelText?: string;
 }
 
-const props = withDefaults(defineProps<Props>(), {
+withDefaults(defineProps<Props>(), {
   open: false,
   title: '确认',
   message: '',

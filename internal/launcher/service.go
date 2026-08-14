@@ -414,16 +414,6 @@ func (s *LauncherService) LaunchCodexArgsGuarded(
 	return result, nil
 }
 
-// buildCodexCmd 构建 codex 进程命令。
-// modelName 非空时附加 -m modelName 参数。
-func (s *LauncherService) buildCodexCmd(modelName, workDir string, env []string) *exec.Cmd {
-	args := []string{}
-	if modelName != "" {
-		args = append(args, "-m", modelName)
-	}
-	return s.buildCodexArgsCmd(args, workDir, env)
-}
-
 func (s *LauncherService) buildCodexArgsCmd(args []string, workDir string, env []string) *exec.Cmd {
 	effectiveEnv := platform.BuildEffectiveEnv(env)
 	cmd := exec.Command(s.resolveCLIPath("codex", effectiveEnv), args...)

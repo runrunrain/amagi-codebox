@@ -36,8 +36,10 @@ type Service struct {
 	entries  []Entry
 	logDir   string
 	logFile  *os.File
-	maxMem   int // 内存中保留的最大条数
+	logDate  string // 当前 logFile 对应的日期（2006-01-02），用于跨天滚动
+	maxMem   int    // 内存中保留的最大条数
 	minLevel Level
+	closed   bool // Close 后置位，阻止 log() 重新打开文件
 }
 
 var levelOrder = map[Level]int{
@@ -47,19 +49,34 @@ var levelOrder = map[Level]int{
 	LevelError: 3,
 }
 
+// reportWriteError surfaces a log-file write failure, so a full disk or an
+// unwritable file no longer causes log lines to disappear silently (the file
+// sink already shares every line with the stderr mirror, but the write error
+// itself was previously dropped). Default prints to stderr. Overridable in
+// tests to assert the error is reported (see service_test.go).
+var reportWriteError = func(err error) {
+	fmt.Fprintf(os.Stderr, "[logging] write log failed: %v\n", err)
+}
+
 func NewService(configDir string) *Service {
 	dir := filepath.Join(configDir, "logs")
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		// 目录创建失败时日志退化为内存+stderr 镜像（与下方 OpenFile 失败同策略），
+		// 但不静默：与 reportWriteError 一致地向 stderr 报告。
+		fmt.Fprintf(os.Stderr, "[logging] create log dir failed: %v\n", err)
+	}
 
+	today := time.Now().Format("2006-01-02")
 	s := &Service{
 		logDir:   dir,
+		logDate:  today,
 		entries:  make([]Entry, 0, 512),
 		maxMem:   2000,
 		minLevel: LevelDebug,
 	}
 
 	// 打开当天日志文件
-	name := fmt.Sprintf("amagi-codebox-%s.log", time.Now().Format("2006-01-02"))
+	name := fmt.Sprintf("amagi-codebox-%s.log", today)
 	f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err == nil {
 		s.logFile = f
@@ -74,8 +91,9 @@ func (s *Service) log(level Level, source, message, detail string) {
 		return
 	}
 
+	now := time.Now()
 	e := Entry{
-		Time:    time.Now().Format("2006-01-02 15:04:05.000"),
+		Time:    now.Format("2006-01-02 15:04:05.000"),
 		Level:   level,
 		Source:  source,
 		Message: message,
@@ -87,20 +105,49 @@ func (s *Service) log(level Level, source, message, detail string) {
 	if len(s.entries) > s.maxMem {
 		s.entries = s.entries[len(s.entries)-s.maxMem:]
 	}
-	f := s.logFile
-	s.mu.Unlock()
-
-	// 写文件（不持锁）
-	if f != nil {
+	// 跨天滚动与写盘都在 s.mu 内完成：日期变更时关闭旧文件并打开当天新文件，
+	// 避免跨午夜瞬间多 goroutine 写入已关闭的旧 fd；写错误通过 reportWriteError
+	// 上报，不再静默丢弃。Shutdown（closed=true）后不再重开文件，但内存条目与
+	// stderr 镜像仍保留。
+	if s.closed {
+		// 已关闭：不再写文件。
+	} else if rerr := s.ensureLogFileLocked(now.Format("2006-01-02")); rerr != nil {
+		reportWriteError(rerr)
+	} else if s.logFile != nil {
 		line := fmt.Sprintf("[%s] %s [%s] %s", e.Time, e.Level, e.Source, e.Message)
 		if e.Detail != "" {
 			line += " | " + e.Detail
 		}
-		f.WriteString(line + "\n")
+		if _, werr := s.logFile.WriteString(line + "\n"); werr != nil {
+			reportWriteError(werr)
+		}
 	}
+	s.mu.Unlock()
 
 	// 同时输出到 stderr 便于开发调试
 	fmt.Fprintf(os.Stderr, "[%s] %s [%s] %s\n", e.Time, e.Level, e.Source, e.Message)
+}
+
+// ensureLogFileLocked 确保当前打开的日志文件对应 today。跨天运行时关闭旧文件
+// 并打开当天新文件，实现日志文件按天滚动（启动后不再跨天则直接复用）。调用
+// 方必须持有 s.mu。Close 后由 log() 跳过调用，避免重开文件。
+func (s *Service) ensureLogFileLocked(today string) error {
+	if s.logFile != nil && s.logDate == today {
+		return nil
+	}
+	// 日期变化（或首次打开失败后补开）：滚动到当天文件。
+	if s.logFile != nil {
+		_ = s.logFile.Close()
+		s.logFile = nil
+	}
+	name := fmt.Sprintf("amagi-codebox-%s.log", today)
+	f, err := os.OpenFile(filepath.Join(s.logDir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	s.logFile = f
+	s.logDate = today
+	return nil
 }
 
 func (s *Service) Debug(source, message string, detail ...string) {
@@ -217,10 +264,11 @@ func (s *Service) ExportJSON() (string, error) {
 	return string(data), nil
 }
 
-// Close 关闭日志文件
+// Close 关闭日志文件并标记关闭，阻止后续 log() 重新打开文件。
 func (s *Service) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
 	if s.logFile != nil {
 		s.logFile.Close()
 		s.logFile = nil

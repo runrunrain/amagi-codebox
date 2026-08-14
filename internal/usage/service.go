@@ -36,6 +36,12 @@ type Service struct {
 	closeMu  sync.Mutex
 	syncMeta SyncRunMeta // 最近一次 SyncAll 结果
 
+	// syncRoundStart，非 nil 时在每轮同步开始、s.mu 持有期间被调用。
+	// 测试专用 seam：用于确定性编排“前台轮次进行中、后台 ticker 已等待
+	// 同一把锁”的双轮竞争（见 sync_round_attribution_test.go）；
+	// 生产路径恒为 nil，单次指针判新开销可忽略。
+	syncRoundStart func()
+
 	// Ctx 由 app.go Startup 注入（Wails 应用级生命周期 ctx）。
 	// Wails v2 仅绑定"方法"，结构体字段（即使是导出字段）不会进入 wailsjs 生成路径。
 	// 供 StartBackgroundSync 内部读取，避免把 context.Context 暴露成前端绑定。
@@ -287,10 +293,10 @@ func generateDedupKey(evt UsageEvent) string {
 	}
 }
 
-// hash16 计算输入字段拼接后的 SHA1，返回前 16 个 hex 字符（64 bit 哈希）。
+	// hash16 计算输入字段拼接后的 SHA1，返回前 16 个 hex 字符（64 bit 哈希）。
 func hash16(parts ...any) string {
 	h := sha1.New()
-	fmt.Fprint(h, parts...)
+	_, _ = fmt.Fprint(h, parts...)
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 

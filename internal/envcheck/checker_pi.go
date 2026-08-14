@@ -105,10 +105,6 @@ func (s *Service) checkPiFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
 	return nil, candidates, fmt.Errorf("Pi executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }
 
-func piNPMGlobalExecutableCandidates(prefix string) []string {
-	return piNPMGlobalExecutableCandidatesWithRoot(prefix, "")
-}
-
 func piNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot string) []string {
 	return npmGlobalCommandCandidates(prefix, npmRoot, piCommandName, piNPMPackageName)
 }

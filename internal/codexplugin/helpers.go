@@ -2,7 +2,6 @@ package codexplugin
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -74,12 +73,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func relativePluginPath(installPath, filePath string) string {
-	relPath, err := filepath.Rel(installPath, filePath)
-	if err != nil {
-		return filepath.ToSlash(filePath)
-	}
-	return filepath.ToSlash(relPath)
 }

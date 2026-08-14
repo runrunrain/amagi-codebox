@@ -26,7 +26,6 @@ type fakeCausalPort struct {
 	reservations   []*CausalEventReservation
 	sealCalls      []sealedSegment
 	rollbackCalls  []CausalSealReceipt
-	publishResults []CausalPublishOutcome
 	reserveErr     error
 }
 
@@ -100,12 +99,6 @@ type recordingLifecycleHook struct {
 	mu    sync.Mutex
 	calls []string
 	ready atomic.Bool
-}
-
-func newRecordingLifecycleHook() *recordingLifecycleHook {
-	h := &recordingLifecycleHook{}
-	h.ready.Store(true)
-	return h
 }
 
 func (h *recordingLifecycleHook) IsReady() bool { return h.ready.Load() }

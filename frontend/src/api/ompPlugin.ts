@@ -44,7 +44,7 @@ async function callOmp<T>(context: string, fn: () => Promise<T>): Promise<T> {
     return await fn();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`${context}：${message}`);
+    throw new Error(`${context}：${message}`, { cause: err });
   }
 }
 

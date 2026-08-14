@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "1.3.20",
+  "version": "1.3.21",
   "type": "module",
   "engines": {
     "node": ">=20.19.0 <23",
@@ -10,16 +10,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check:bundle": "node scripts/check-bundle-no-xterm.mjs"
   },
   "dependencies": {
-    "@element-plus/icons-vue": "^2.3.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "chart.js": "^4.5.1",
-    "element-plus": "^2.13.3",
     "js-yaml": "^5.2.3",
     "pinia": "^2.3.1",
     "qrcode": "^1.5.4",
@@ -31,11 +32,16 @@
     "@babel/types": "^7.18.10",
     "@emnapi/core": "^1.10.0",
     "@emnapi/runtime": "^1.10.0",
+    "@eslint/js": "10.0.1",
     "@types/js-yaml": "^4.0.9",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.5",
+    "eslint": "10.8.1",
+    "eslint-plugin-vue": "10.10.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "8.67.0",
     "vite": "^8.0.16",
+    "vue-eslint-parser": "10.4.1",
     "vue-tsc": "^3.3.7"
   }
 }

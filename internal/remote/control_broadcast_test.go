@@ -70,25 +70,6 @@ func (s *spyControlConsumer) Close() {
 	s.mu.Unlock()
 }
 
-// spyManagedConn is a minimal ManagedV1Connection spy (Terminate records the
-// cause). It composes spyControlConsumer so a single object plays both roles.
-type spyManagedConn struct {
-	*spyControlConsumer
-	terminateMu sync.Mutex
-	terminated  []ConnectionTerminationCause
-}
-
-func newSpyManagedConn() *spyManagedConn {
-	return &spyManagedConn{spyControlConsumer: newSpyConsumer()}
-}
-
-func (c *spyManagedConn) Terminate(t ConnectionTermination) {
-	c.terminateMu.Lock()
-	c.terminated = append(c.terminated, t.Cause)
-	c.terminateMu.Unlock()
-	c.Close()
-}
-
 // ---------------------------------------------------------------------------
 // Runtime test fixture
 // ---------------------------------------------------------------------------

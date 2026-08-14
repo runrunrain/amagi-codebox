@@ -159,7 +159,7 @@ func TestDedupInsertIdempotent(t *testing.T) {
 	}
 
 	// 验证 count == 1
-	count, err := recordCount(nil, s.db)
+	count, err := recordCount(context.TODO(), s.db)
 	if err != nil {
 		t.Fatalf("recordCount: %v", err)
 	}
@@ -283,12 +283,12 @@ func TestDailyRollupRefresh(t *testing.T) {
 	}
 
 	// 刷新 rollup（传 nil 走全量刷新，等价于旧行为）
-	if err := refreshDailyRollup(nil, s.db, nil); err != nil {
+	if err := refreshDailyRollup(context.TODO(), s.db, nil); err != nil {
 		t.Fatalf("refreshDailyRollup: %v", err)
 	}
 
 	// 查询日趋势
-	points, err := s.queryDailyTrends(nil, TrendFilter{Days: 7})
+	points, err := s.queryDailyTrends(context.TODO(), TrendFilter{Days: 7})
 	if err != nil {
 		t.Fatalf("queryDailyTrends: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	}
 
 	// 先全量刷新建立基线。
-	if err := refreshDailyRollup(nil, s.db, nil); err != nil {
+	if err := refreshDailyRollup(context.TODO(), s.db, nil); err != nil {
 		t.Fatalf("baseline refresh: %v", err)
 	}
 
@@ -352,12 +352,12 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Record day2 add: %v", err)
 	}
-	if err := refreshDailyRollup(nil, s.db, []string{day2Key}); err != nil {
+	if err := refreshDailyRollup(context.TODO(), s.db, []string{day2Key}); err != nil {
 		t.Fatalf("partition refresh: %v", err)
 	}
 
 	// 查询：day2 应聚合成 1 行（同 model+provider+currency），requests=2。
-	points, err := s.queryDailyTrends(nil, TrendFilter{Days: 30})
+	points, err := s.queryDailyTrends(context.TODO(), TrendFilter{Days: 30})
 	if err != nil {
 		t.Fatalf("queryDailyTrends: %v", err)
 	}
@@ -375,10 +375,10 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	}
 
 	// 等价性：再做一次全量刷新，结果应与分区刷新完全一致。
-	if err := refreshDailyRollup(nil, s.db, nil); err != nil {
+	if err := refreshDailyRollup(context.TODO(), s.db, nil); err != nil {
 		t.Fatalf("equivalence refresh: %v", err)
 	}
-	points2, err := s.queryDailyTrends(nil, TrendFilter{Days: 30})
+	points2, err := s.queryDailyTrends(context.TODO(), TrendFilter{Days: 30})
 	if err != nil {
 		t.Fatalf("queryDailyTrends after full: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestRecordForceIsNewSemantic(t *testing.T) {
 	}
 
 	// 行数仍为 1。
-	count, _ := recordCount(nil, s.db)
+	count, _ := recordCount(context.TODO(), s.db)
 	if count != 1 {
 		t.Errorf("count = %d, want 1 (REPLACE does not add rows)", count)
 	}

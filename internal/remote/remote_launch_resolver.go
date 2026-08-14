@@ -108,13 +108,6 @@ type SessionRawPort interface {
 	ResizeSession(ctx context.Context, sessionID contract.SessionID, cols, rows int) error
 }
 
-// noopLaunchRawPort is a raw port that records calls but does nothing (tests).
-type noopLaunchRawPort struct{}
-
-func (noopLaunchRawPort) StartProcess(ctx context.Context, sessionID contract.SessionID, recipe RemoteLaunchRecipe, spec any, obsPermit *RunObservationPermit) error {
-	return nil
-}
-
 // noopSessionRawPort records nothing (tests inject fakes).
 type noopSessionRawPort struct{}
 

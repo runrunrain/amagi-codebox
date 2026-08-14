@@ -175,7 +175,6 @@ func (processRunner) RunWithEvidence(ctx context.Context, spec CommandSpec, evid
 	for {
 		select {
 		case <-evidenceCh:
-			evidenceObserved = true
 			if !timer.Stop() {
 				select {
 				case <-timer.C:

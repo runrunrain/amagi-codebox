@@ -134,6 +134,9 @@
       <div class="card-head">
         <h2>日志记录</h2>
         <div class="head-actions">
+          <span v-if="atBackendCap" class="log-cap-hint" title="后端内存日志上限 2000 条，更早日志请查看下方日志文件">
+            已达内存上限 2000 条
+          </span>
           <span class="log-count">{{ entries.length }} 条</span>
           <AppButton variant="ghost" size="small" @click="handleExport">导出</AppButton>
           <AppButton variant="danger" size="small" @click="handleClear">清除</AppButton>
@@ -157,20 +160,20 @@
           </thead>
           <tbody>
             <tr
-              v-for="(entry, idx) in entries"
-              :key="idx"
-              :class="['log-row', 'row-' + entry.level.toLowerCase()]"
+              v-for="item in keyedEntries"
+              :key="item.key"
+              :class="['log-row', 'row-' + item.entry.level.toLowerCase()]"
             >
-              <td class="col-time mono">{{ formatTime(entry.time) }}</td>
+              <td class="col-time mono">{{ formatTime(item.entry.time) }}</td>
               <td class="col-level">
-                <span :class="['level-badge', 'badge-' + entry.level.toLowerCase()]">
-                  {{ entry.level }}
+                <span :class="['level-badge', 'badge-' + item.entry.level.toLowerCase()]">
+                  {{ item.entry.level }}
                 </span>
               </td>
-              <td class="col-source mono">{{ entry.source }}</td>
-              <td class="col-message">{{ entry.message }}</td>
-              <td class="col-detail mono" :title="entry.detail">
-                {{ entry.detail || '-' }}
+              <td class="col-source mono">{{ item.entry.source }}</td>
+              <td class="col-message">{{ item.entry.message }}</td>
+              <td class="col-detail mono" :title="item.entry.detail">
+                {{ item.entry.detail || '-' }}
               </td>
             </tr>
           </tbody>
@@ -374,6 +377,26 @@ const debouncedRefresh = () => {
   debounceTimer = window.setTimeout(refreshLogs, 300)
 }
 
+// 稳定合成 key：time+level+source+message 为主体；同批内完全相同的重复条目
+// 追加确定性出现序号，避免 key 冲突。相比位置下标，条目内容不变时 key 不变，
+// 2s 自动刷新替换数组时未变化的行可复用 DOM。
+const keyedEntries = computed(() => {
+  const seen = new Map<string, number>()
+  return entries.value.map((entry) => {
+    const base = `${entry.time}|${entry.level}|${entry.source}|${entry.message}`
+    const n = (seen.get(base) ?? 0) + 1
+    seen.set(base, n)
+    return { entry, key: n > 1 ? `${base}#${n}` : base }
+  })
+})
+
+// “全部”档（limit=0）：后端内存日志硬上限 2000 条（internal/logging maxMem），
+// 达到上限时给出提示，引导到日志文件查看更早记录；表格保留原生滚动，不做虚拟化。
+const BACKEND_LOG_CAP = 2000
+const atBackendCap = computed(
+  () => filterLimit.value === 0 && entries.value.length >= BACKEND_LOG_CAP
+)
+
 const loadFileContent = async (filename: string) => {
   try {
     selectedFile.value = filename
@@ -568,6 +591,11 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--tertiary);
   margin-right: 4px;
+}
+
+.log-cap-hint {
+  font-size: 12px;
+  color: var(--warning);
 }
 
 .empty-container {

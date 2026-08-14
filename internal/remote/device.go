@@ -8,7 +8,6 @@ package remote
 // device_auth.go / server.go.
 
 import (
-	"context"
 	"crypto/subtle"
 	"encoding/base32"
 	"errors"
@@ -692,16 +691,6 @@ var errSecurityNotReady = errors.New("security state unavailable")
 // (R4-Major): the run is dead, so Start must not report success. Fixed closed
 // text; no path/host/port.
 var errServerStoppedDuringStart = errors.New("remote server: stopped during start")
-
-// contextKey types are unexported to avoid collisions.
-type devicePrincipalCtxKey struct{}
-
-// devicePrincipalFromContext retrieves a device principal placed by the
-// authenticator. Production callers come from the v1 route middleware.
-func devicePrincipalFromContext(ctx context.Context) (DevicePrincipal, bool) {
-	p, ok := ctx.Value(devicePrincipalCtxKey{}).(DevicePrincipal)
-	return p, ok
-}
 
 // ---------------------------------------------------------------------------
 // Pairing state machine + deviceService (design §8/§9.5/§11)

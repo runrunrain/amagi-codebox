@@ -11,7 +11,6 @@ package remote
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,7 +21,6 @@ import (
 // recordingFencer records FenceSubscriptionWrites calls (proof the overflow path
 // invoked the async teardown).
 type recordingFencer struct {
-	mu    sync.Mutex
 	calls int32
 }
 

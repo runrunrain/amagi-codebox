@@ -12,6 +12,7 @@ package ompplugin
 import (
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -83,7 +84,7 @@ func (s *Service) ListPlugins() ([]Plugin, error) {
 
 // listPluginsUnlocked 是 ListPlugins 的内部实现（供写操作在持锁下复用）。
 func (s *Service) listPluginsUnlocked() ([]Plugin, []string, error) {
-	result, err := s.executeOmpCommand(nil, ompListTimeout, "plugin", "list", "--json")
+	result, err := s.executeOmpCommand(context.TODO(), ompListTimeout, "plugin", "list", "--json")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -111,7 +112,7 @@ func (s *Service) InstallPlugin(spec string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executeOmpCommand(nil, ompInstallTimeout, "install", spec)
+	return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", spec)
 }
 
 // UninstallPlugin 通过 omp CLI 卸载插件（npm 与 marketplace 由 CLI 自动路由）。
@@ -122,7 +123,7 @@ func (s *Service) UninstallPlugin(name string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executeOmpCommand(nil, ompPluginWriteTimeout, "plugin", "uninstall", name)
+	return s.executeOmpCommand(context.TODO(), ompPluginWriteTimeout, "plugin", "uninstall", name)
 }
 
 // SetPluginEnabled 启用/禁用插件（omp plugin enable|disable <name>）。
@@ -137,7 +138,7 @@ func (s *Service) SetPluginEnabled(name string, enabled bool) (*CommandResult, e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executeOmpCommand(nil, ompPluginWriteTimeout, "plugin", action, name)
+	return s.executeOmpCommand(context.TODO(), ompPluginWriteTimeout, "plugin", action, name)
 }
 
 // UpgradePlugin 升级单个插件：
@@ -156,12 +157,12 @@ func (s *Service) UpgradePlugin(name string) (*CommandResult, error) {
 		for i := range plugins {
 			if plugins[i].ID == name || plugins[i].Name == name {
 				if plugins[i].Kind == pluginKindMarketplace {
-					return s.executeOmpCommand(nil, ompInstallTimeout, "plugin", "upgrade", plugins[i].ID)
+					return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "plugin", "upgrade", plugins[i].ID)
 				}
-				return s.executeOmpCommand(nil, ompInstallTimeout, "install", name, "--force")
+				return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", name, "--force")
 			}
 		}
 	}
 	// 未在列表命中（含旧版 omp 降级为空列表）：按 npm 重装即升级兜底。
-	return s.executeOmpCommand(nil, ompInstallTimeout, "install", name, "--force")
+	return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", name, "--force")
 }

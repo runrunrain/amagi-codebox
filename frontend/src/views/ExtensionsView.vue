@@ -131,7 +131,6 @@ const { showError, showSuccess } = useToast();
 const {
   addCcMarketplace,
   addCxMarketplace,
-  loadCcMarkets,
 } = pluginStore;
 
 // Main tab options

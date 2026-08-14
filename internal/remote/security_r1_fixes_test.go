@@ -74,40 +74,6 @@ func (r *recordingRawPort) WriteCount() int {
 	return len(r.writes)
 }
 
-// recordingSessionRaw records stop/remove/resize lifecycle calls.
-type recordingSessionRaw struct {
-	mu     sync.Mutex
-	stop   int
-	remove int
-	resize int
-	// blockStop, if non-nil, blocks StopSession until the channel is closed,
-	// letting a lifecycle raw effect hold the operation lane.
-	blockStop chan struct{}
-}
-
-func (r *recordingSessionRaw) StopSession(context.Context, contract.SessionID) error {
-	r.mu.Lock()
-	r.stop++
-	blk := r.blockStop
-	r.mu.Unlock()
-	if blk != nil {
-		<-blk // hold the lane
-	}
-	return nil
-}
-func (r *recordingSessionRaw) RemoveSession(context.Context, contract.SessionID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.remove++
-	return nil
-}
-func (r *recordingSessionRaw) ResizeSession(context.Context, contract.SessionID, int, int) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.resize++
-	return nil
-}
-
 // buildAdapterForTest builds a ready ControlRuntime + RemoteSessionAdapter with
 // the given raw ports, returning all the pieces a WS/lifecycle test needs.
 func buildAdapterForTest(t *testing.T, ptyRaw PTYRawPort, sessRaw SessionRawPort) (*ControlRuntime, *RemoteSessionAdapter, *SessionStreamStore) {

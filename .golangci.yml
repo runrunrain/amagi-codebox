@@ -1,0 +1,59 @@
+# golangci-lint 配置（Phase 3 S6：lint 门禁引入，保守起步）
+# 文档：https://golangci-lint.run/usage/configuration/
+# 版本基线：v2.12.2（CI 与本地保持同一 pinned 版本）
+version: "2"
+
+run:
+  # 全量首跑/CI 上限；默认 0 = 无超时，显式收紧避免悬挂。
+  timeout: 10m
+
+linters:
+  # 只启用显式列出的 linters，避免默认集随版本漂移。
+  default: none
+  enable:
+    - govet       # 与 CI 现有 go vet ./... 对齐
+    - staticcheck # SA*/S* 缺陷类静态检查（U 系检查已委托给 unused，无重叠）
+    - errcheck    # 未检查的 error 返回值
+    - ineffassign # 无效赋值
+    - unused      # 未使用的代码（v2 中独立于 staticcheck，二者不冲突）
+  settings:
+    staticcheck:
+      # 只保留缺陷类检查（SA*）与简化类（S1*）。
+      # 排除 ST*（风格）与 QF*（重构建议）：二者非缺陷，且修复必然引入
+      # 无行为收益的改动（ST1005 需改用户可见错误文案、ST1008 需改既有
+      # `(error, func())` 清理闭包签名、QF1001/QF1003 为可选重构）。
+      # 存量计数见 reports/s6-go-lint.md。
+      checks:
+        - "SA*"
+        - "S1*"
+    errcheck:
+      # 排除「清理惯例」类调用：读路径 defer Close、尽力清理的 os.Remove、
+      # commit 后兜底 Rollback、HTTP 响应写（客户端已断开时无可处理）、
+      # zip/HTTP body 等流式资源的尽力 Close。
+      # 这些属于结构性惯例而非缺陷；其余未检错误一律显式处理。
+      exclude-functions:
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+        - (*archive/zip.ReadCloser).Close
+        - (io.ReadCloser).Close
+        - os.Remove
+        - os.RemoveAll
+        - (net/http.ResponseWriter).Write
+  exclusions:
+    # vendor 目录必须排除（vendored deps 已提交，不属于本仓库维护面）。
+    paths:
+      - vendor
+    rules:
+      # 测试代码不跑 errcheck：测试中的 best-effort 写入/关闭由断言兜底，
+      # 门禁聚焦产品代码的未检错误（对齐 golangci-lint v1 时代默认排除项 EXC0001）。
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  # 完整输出不截断，便于存量盘点与 CI 日志留档。
+  max-issues-per-linter: 0
+  max-same-issues: 0

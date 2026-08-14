@@ -159,7 +159,6 @@ func TestRequestIDHeaderMatchesBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type countingProvider struct {
-	mu     sync.Mutex
 	count  int64
 	delay  time.Duration
 	result func() (contract.HostSummary, error)

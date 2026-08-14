@@ -331,23 +331,6 @@ func TestSanitizeInstallerOutputRedactsSensitiveValues(t *testing.T) {
 	}
 }
 
-type deadlineCaptureRunner struct {
-	deadline time.Duration
-	result   *platform.ProcessResult
-	err      error
-}
-
-func (r *deadlineCaptureRunner) Run(ctx context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
-	if deadline, ok := ctx.Deadline(); ok {
-		r.deadline = time.Until(deadline)
-	}
-	return r.result, r.err
-}
-
-func (r *deadlineCaptureRunner) Start(_ platform.CommandSpec) (*exec.Cmd, error) {
-	return nil, nil
-}
-
 type timeoutDiagnosticRunner struct{}
 
 func (timeoutDiagnosticRunner) Run(ctx context.Context, _ platform.CommandSpec) (*platform.ProcessResult, error) {
@@ -1148,16 +1131,6 @@ func (r *openCodeHomebrewCleanupRunner) brewUninstallCall() (platform.CommandSpe
 	return platform.CommandSpec{}, false
 }
 
-func envValue(env []string, key string) string {
-	for _, entry := range env {
-		name, value, ok := strings.Cut(entry, "=")
-		if ok && name == key {
-			return value
-		}
-	}
-	return ""
-}
-
 func TestUpdate_OpenCodeNPMCandidateNewAndDefaultSamePath_Succeeds(t *testing.T) {
 	tmpDir := t.TempDir()
 	npmPrefix := filepath.Join(tmpDir, "npm-prefix")
@@ -1568,17 +1541,6 @@ func (r *codexStaleNPMCleanupRunner) codexUninstallCall() (platform.CommandSpec,
 		}
 	}
 	return platform.CommandSpec{}, false
-}
-
-func (r *codexStaleNPMCleanupRunner) brewCalled() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, call := range r.calls {
-		if strings.EqualFold(filepath.Base(call.Path), "brew") {
-			return true
-		}
-	}
-	return false
 }
 
 func TestUpdate_ClaudeNPMCandidateNewButDefaultStillOld_Fails(t *testing.T) {

@@ -214,13 +214,6 @@ func TestDurableRotationCaps(t *testing.T) {
 	sa.Close()
 }
 
-func devIDString(i int) string {
-	b := make([]byte, 16)
-	b[0] = byte(i)
-	b[1] = byte(i >> 8)
-	return rawURLBase64(b)
-}
-
 func TestDurablePartialSyncFaultAndConfirm(t *testing.T) {
 	s, _ := newTestDurable(t)
 	// Inject a Sync fault: append returns degraded + pending retained.

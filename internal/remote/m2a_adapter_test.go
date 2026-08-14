@@ -73,7 +73,6 @@ func (f *fakeSessionRawPort) ResizeSession(ctx context.Context, sessionID contra
 
 // fakeResolver always succeeds with a known recipe.
 type fakeResolver struct {
-	recipe RemoteLaunchRecipe
 }
 
 func (f *fakeResolver) ResolveCreate(ctx context.Context, req contract.CreateSessionRequest) (RemoteLaunchResolution, *LaunchResolveFailure) {

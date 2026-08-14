@@ -1811,15 +1811,18 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Log.Info("session", "命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", presetName, tpProvider, tp.Model))
 	}
 
-	provider, err := a.Config.GetProvider(providerName)
+	// SnapshotProvider：单次读锁内同时拷贝 provider 字段与 Presets map。桥接
+	// 要求 provider 与 presets 同配置代际——GetProvider + GetPresets 两次独立
+	// 加锁之间 SaveProvider/SavePreset 可并发改写，会拼出跨代混合快照（谛听
+	// 终审 Minor-2）；且返回的 Presets 是非 nil 副本，可直接注入桥接条目。
+	provider, err := a.Config.SnapshotProvider(providerName)
 	if err != nil {
 		a.Log.Error("session", "获取提供商失败", err.Error())
 		return "", fmt.Errorf("get provider: %w", err)
 	}
-	// 若命中 terminal preset，将其桥接为旧 config.Preset 注入 provider 副本
+	// 若命中 terminal preset，将其桥接为旧 config.Preset 注入 provider 快照
 	// 这样后续 BuildOverrides / Launch 走完整旧链路，model + parameters 全部生效
 	if tpFound {
-		provCopy := *provider
 		converted := config.Preset{
 			Name:        tp.Name,
 			Model:       tp.Model,
@@ -1828,11 +1831,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			ModelOpus:   tp.ModelOpus,
 			Parameters:  tp.Parameters,
 		}
-		if provCopy.Presets == nil {
-			provCopy.Presets = map[string]config.Preset{}
-		}
-		provCopy.Presets[presetName] = converted
-		*provider = provCopy
+		provider.Presets[presetName] = converted
 		a.Log.Info("session", "已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
 	}
 	if !provider.IsAnthropicCompatible() {
@@ -1846,7 +1845,6 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	if provider.IsOAuthMode() {
 		// OAuth 模式不需要 API 密钥，使用 Claude Code 原生 OAuth 认证
 		apiKey = ""
-		keySource = "oauth"
 		a.Log.Info("session", "使用 OAuth 认证（白板启动）", "provider="+providerName)
 	} else {
 		apiKey, keySource = a.getProviderAPIKey(providerName, *provider)
@@ -1924,9 +1922,24 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		}
 		a.Launcher.SetHeadroomPort(headroom.DefaultPort)
 	} else {
-		// CLI → 真实 API
+		// CLI → 真实 API.
+		//
+		// Single-tenant headroom semantics (documented decision, audit §4.2):
+		// the desktop app runs one shared headroom compression proxy (:8787).
+		// Launching a non-headroom ClaudeCode session intentionally tears the
+		// shared proxy down so the new session talks to the real upstream
+		// directly. This assumes a single active headroom consumer at a time; a
+		// concurrent headroom-dependent session would have its :8787 upstream
+		// cut. The Session/SessionInfo records do not carry a useHeadroom flag,
+		// so the session manager cannot identify headroom-dependent sessions and
+		// an active-session guard is not feasible without expanding the
+		// frontend-visible session contract. We therefore document the
+		// single-tenant assumption here and surface Stop failures instead of
+		// swallowing them (the previous `_ = a.Headroom.Stop()` hid errors).
 		if a.Headroom.IsRunning() {
-			_ = a.Headroom.Stop()
+			if err := a.Headroom.Stop(); err != nil {
+				a.Log.Warn("headroom", "关闭共享上下文压缩代理失败", err.Error())
+			}
 		}
 		a.Launcher.SetHeadroomPort(0)
 	}
@@ -4373,27 +4386,24 @@ func (a *App) LaunchOpenCode(providerName string, presetName string, mode string
 			}
 
 			if providerName != "" {
-				loadedProvider, err := a.Config.GetProvider(providerName)
+				// SnapshotProvider：单次读锁内 provider+presets 同代快照（同
+				// LaunchSession 桥接，谛听终审 Minor-2），Presets 为非 nil 副本。
+				loadedProvider, err := a.Config.SnapshotProvider(providerName)
 				if err != nil {
 					a.Log.Error("session", "获取 OpenCode 提供商失败", err.Error())
 					return "", fmt.Errorf("get opencode provider: %w", err)
 				}
 				provider = loadedProvider
 
-				// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 副本
+				// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 快照
 				if tpFound {
-					provCopy := *provider
 					converted := config.Preset{
 						Name:           tp.Name,
 						Model:          tp.Model,
 						Parameters:     tp.Parameters,
 						OpenCodeConfig: tp.OpenCodeCfg,
 					}
-					if provCopy.Presets == nil {
-						provCopy.Presets = map[string]config.Preset{}
-					}
-					provCopy.Presets[presetName] = converted
-					*provider = provCopy
+					provider.Presets[presetName] = converted
 					a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
 				}
 

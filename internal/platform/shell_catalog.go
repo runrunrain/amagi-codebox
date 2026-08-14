@@ -47,10 +47,6 @@ func shellCandidates(osName string) []shellCandidate {
 	}
 }
 
-func resolveBinaryFromCandidates(candidates []string, env []string) string {
-	return resolveBinaryFromCandidatesForOS(currentOS(), candidates, env)
-}
-
 func resolveBinaryFromCandidatesForOS(osName string, candidates []string, env []string) string {
 	for _, candidate := range candidates {
 		if candidate == "" {

@@ -586,16 +586,6 @@ func (s *causalHubSubscription) BeginTerminal() {
 // SessionEventHub: causal ledger map + causal subscription registration
 // ---------------------------------------------------------------------------
 
-// initCausalLedgers lazily initializes the causal ledger map (called from
-// NewSessionEventHub).
-func (h *SessionEventHub) initCausalLedgers() {
-	h.causalMu.Lock()
-	defer h.causalMu.Unlock()
-	if h.ledgers == nil {
-		h.ledgers = make(map[contract.SessionID]*causalLedger)
-	}
-}
-
 // RegisterCausalSubscription creates a causal subscription with the given
 // startAfterEventOrdinal and registers it with the session's ledger.
 func (h *SessionEventHub) RegisterCausalSubscription(

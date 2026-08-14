@@ -23,6 +23,7 @@ import {
   GetUnknownModels,
 } from '../../wailsjs/go/usage/Service';
 import { usage } from '../../wailsjs/go/models';
+import { callApi } from './internal/call';
 
 // === 类型别名（对齐 wailsjs 真实导出，是本模块的权威类型来源）===
 // Type aliases mirroring the canonical wailsjs usage namespace.
@@ -121,135 +122,70 @@ export function createTrendFilter(filter: SummaryFilter, days = 30, granularity 
 // === 查询类 / Read queries ===
 
 /** 拉取累计汇总（总请求/总 token/各币种成本/主币种 USD 折算） */
-export async function getUsageSummary(filter: SummaryFilter): Promise<Summary> {
-  try {
-    return await GetUsageSummary(filter);
-  } catch (error) {
-    console.error('[api.usage.getUsageSummary]', error);
-    throw error;
-  }
+export function getUsageSummary(filter: SummaryFilter): Promise<Summary> {
+  return callApi('[api.usage.getUsageSummary]', () => GetUsageSummary(filter));
 }
 
 /** 拉取日趋势（最近 N 天，每日成本与 token） */
-export async function getDailyTrends(filter: TrendFilter): Promise<DailyTrendPoint[]> {
-  try {
-    return await GetDailyTrends(filter);
-  } catch (error) {
-    console.error('[api.usage.getDailyTrends]', error);
-    throw error;
-  }
+export function getDailyTrends(filter: TrendFilter): Promise<DailyTrendPoint[]> {
+  return callApi('[api.usage.getDailyTrends]', () => GetDailyTrends(filter));
 }
 
 /** Per-model daily trends. Each model remains an independent curve. */
-export async function getModelDailyTrends(filter: TrendFilter): Promise<ModelDailyTrendPoint[]> {
-  try {
-    return await GetModelDailyTrends(filter);
-  } catch (error) {
-    console.error('[api.usage.getModelDailyTrends]', error);
-    throw error;
-  }
+export function getModelDailyTrends(filter: TrendFilter): Promise<ModelDailyTrendPoint[]> {
+  return callApi('[api.usage.getModelDailyTrends]', () => GetModelDailyTrends(filter));
 }
 
 /** 模型维度统计（含 hasPrice 标记，用于无价格徽章） */
-export async function getModelStats(filter: StatFilter): Promise<ModelStat[]> {
-  try {
-    return await GetModelStats(filter);
-  } catch (error) {
-    console.error('[api.usage.getModelStats]', error);
-    throw error;
-  }
+export function getModelStats(filter: StatFilter): Promise<ModelStat[]> {
+  return callApi('[api.usage.getModelStats]', () => GetModelStats(filter));
 }
 
 /** 供应商维度统计（请求数/各币种成本/总 token/模型数） */
-export async function getProviderStats(filter: StatFilter): Promise<ProviderStat[]> {
-  try {
-    return await GetProviderStats(filter);
-  } catch (error) {
-    console.error('[api.usage.getProviderStats]', error);
-    throw error;
-  }
+export function getProviderStats(filter: StatFilter): Promise<ProviderStat[]> {
+  return callApi('[api.usage.getProviderStats]', () => GetProviderStats(filter));
 }
 
 /** 明细日志查询（分页） */
-export async function getRequestLogs(filter: LogFilter): Promise<UsageRecord[]> {
-  try {
-    return await GetRequestLogs(filter);
-  } catch (error) {
-    console.error('[api.usage.getRequestLogs]', error);
-    throw error;
-  }
+export function getRequestLogs(filter: LogFilter): Promise<UsageRecord[]> {
+  return callApi('[api.usage.getRequestLogs]', () => GetRequestLogs(filter));
 }
 
 /** 未知模型列表（usage_records 中存在但价格表未匹配） */
-export async function getUnknownModels(): Promise<UnknownModel[]> {
-  try {
-    return await GetUnknownModels();
-  } catch (error) {
-    console.error('[api.usage.getUnknownModels]', error);
-    throw error;
-  }
+export function getUnknownModels(): Promise<UnknownModel[]> {
+  return callApi('[api.usage.getUnknownModels]', () => GetUnknownModels());
 }
 
 // === 同步类 / Sync ===
 
 /** 触发一次阻塞同步（三类 CLI 源），返回结果摘要。「立即同步」按钮调用。 */
-export async function syncSessionUsage(): Promise<SyncResult> {
-  try {
-    return await SyncSessionUsage();
-  } catch (error) {
-    console.error('[api.usage.syncSessionUsage]', error);
-    throw error;
-  }
+export function syncSessionUsage(): Promise<SyncResult> {
+  return callApi('[api.usage.syncSessionUsage]', () => SyncSessionUsage());
 }
 
 /** 拉取各源的增量同步游标（用于状态展示） */
-export async function getSyncState(): Promise<SyncState[]> {
-  try {
-    return await GetSyncState();
-  } catch (error) {
-    console.error('[api.usage.getSyncState]', error);
-    throw error;
-  }
+export function getSyncState(): Promise<SyncState[]> {
+  return callApi('[api.usage.getSyncState]', () => GetSyncState());
 }
 
 // === 价格表 CRUD / Pricing table CRUD ===
 
 /** 列出全部价格表条目（内置 + 自定义） */
-export async function getModelPricing(): Promise<ModelPricing[]> {
-  try {
-    return await GetModelPricing();
-  } catch (error) {
-    console.error('[api.usage.getModelPricing]', error);
-    throw error;
-  }
+export function getModelPricing(): Promise<ModelPricing[]> {
+  return callApi('[api.usage.getModelPricing]', () => GetModelPricing());
 }
 
 /** 新增/更新一条价格（按 id 覆盖；isBuiltin 模型也可改价） */
-export async function upsertModelPricing(mp: ModelPricing): Promise<void> {
-  try {
-    await UpsertModelPricing(mp);
-  } catch (error) {
-    console.error('[api.usage.upsertModelPricing]', error);
-    throw error;
-  }
+export function upsertModelPricing(mp: ModelPricing): Promise<void> {
+  return callApi('[api.usage.upsertModelPricing]', () => UpsertModelPricing(mp));
 }
 
 /** 删除一条自定义价格（内置模型后端会拒绝） */
-export async function deleteModelPricing(id: string): Promise<void> {
-  try {
-    await DeleteModelPricing(id);
-  } catch (error) {
-    console.error('[api.usage.deleteModelPricing]', error);
-    throw error;
-  }
+export function deleteModelPricing(id: string): Promise<void> {
+  return callApi('[api.usage.deleteModelPricing]', () => DeleteModelPricing(id));
 }
 
 /** 恢复内置价格表 seed */
-export async function resetModelPricing(): Promise<void> {
-  try {
-    await ResetModelPricing();
-  } catch (error) {
-    console.error('[api.usage.resetModelPricing]', error);
-    throw error;
-  }
+export function resetModelPricing(): Promise<void> {
+  return callApi('[api.usage.resetModelPricing]', () => ResetModelPricing());
 }
