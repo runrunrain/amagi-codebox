@@ -86,8 +86,11 @@ const level = computed(() => parsed.value?.level || '');
 const providerOptions = computed<DropdownOption[]>(() =>
   props.catalog.providers.map((p) => {
     let label = p.api ? `${p.name}（${p.api}）` : p.name;
-    // 标注凭据状态：未认证的提供商选了也无法调用，帮助用户避坑
-    label += p.hasAuth ? ' ✓' : '（未认证）';
+    // 标注凭据/来源状态：✓ 已认证；内置目录提供商（OAuth 登录如 openai-codex）
+    // 凭据由 CLI 自身管理；未认证的注册表提供商选了也无法调用，帮助用户避坑
+    if (p.hasAuth) label += ' ✓';
+    else if (p.source === 'builtin') label += '（内置）';
+    else label += '（未认证）';
     return { value: p.name, label };
   })
 );

@@ -268,6 +268,10 @@ type ModelCatalogProvider struct {
 	// HasAuth 表示该 provider 已有可用凭据（auth.json 条目或 models.json 内联
 	// apiKey），供前端下拉标注，避免选到无凭据模型。
 	HasAuth bool `json:"hasAuth"`
+	// Source 区分来源：custom = models.json 注册表（可编辑），builtin =
+	// 内置模型目录（models-store.json 缓存，如 openai-codex 等 OAuth 登录
+	// 提供商）。custom 省略该字段。
+	Source string `json:"source,omitempty"`
 }
 
 // ModelCatalog 是下发到前端的 provider→model 目录。
@@ -341,33 +345,20 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 					if !ok {
 						continue
 					}
-					me := ModelCatalogEntry{}
-					if id, ok := model["id"].(string); ok {
-						me.ID = id
+					if me, ok := extractModelEntry(model); ok {
+						entry.Models = append(entry.Models, me)
 					}
-					if me.ID == "" {
-						continue
-					}
-					if n, ok := model["name"].(string); ok {
-						me.Name = n
-					}
-					if r, ok := model["reasoning"].(bool); ok {
-						me.Reasoning = r
-					}
-					if cw, ok := model["contextWindow"].(float64); ok {
-						me.ContextWindow = int(cw)
-					}
-					me.ThinkingLevels = extractThinkingLevels(model["thinkingLevelMap"])
-					if me.ThinkingLevels == nil {
-						if thinking, ok := model["thinking"].(map[string]any); ok {
-							me.ThinkingLevels = extractThinkingLevels(thinking["levels"])
-						}
-					}
-					entry.Models = append(entry.Models, me)
 				}
 			}
 		}
 		catalog.Providers = append(catalog.Providers, entry)
+	}
+
+	// 追加内置目录（models-store.json，根层为 providers 映射）：补齐仅存在于
+	// 内置目录/仅通过 OAuth 登录的提供商（如 openai-codex）。models.json 中
+	// 已有的自定义条目优先，不被内置版本覆盖。
+	if builtin, err := loadBuiltinCatalog(names, authNames); err == nil {
+		catalog.Providers = append(catalog.Providers, builtin...)
 	}
 
 	out, err := json.MarshalIndent(catalog, "", "  ")
@@ -375,6 +366,87 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 		return "", fmt.Errorf("encode model catalog: %w", err)
 	}
 	return string(out), nil
+}
+
+// extractModelEntry 从单个 model 映射抽取目录条目（id 为空时 ok=false）。
+func extractModelEntry(model map[string]any) (ModelCatalogEntry, bool) {
+	me := ModelCatalogEntry{}
+	if id, ok := model["id"].(string); ok {
+		me.ID = id
+	}
+	if me.ID == "" {
+		return me, false
+	}
+	if n, ok := model["name"].(string); ok {
+		me.Name = n
+	}
+	if r, ok := model["reasoning"].(bool); ok {
+		me.Reasoning = r
+	}
+	if cw, ok := model["contextWindow"].(float64); ok {
+		me.ContextWindow = int(cw)
+	}
+	me.ThinkingLevels = extractThinkingLevels(model["thinkingLevelMap"])
+	if me.ThinkingLevels == nil {
+		if thinking, ok := model["thinking"].(map[string]any); ok {
+			me.ThinkingLevels = extractThinkingLevels(thinking["levels"])
+		}
+	}
+	return me, true
+}
+
+// loadBuiltinCatalog 读取 models-store.json（pi 内置模型目录缓存）并返回
+// 不在自定义注册表中的 providers。authNames 用于标注 OAuth/api_key 登录状态。
+func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]ModelCatalogProvider, error) {
+	storePath := filepath.Join(agentDir(), "models-store.json")
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		return nil, err
+	}
+	var store map[string]any
+	if err := json.Unmarshal(data, &store); err != nil {
+		return nil, err
+	}
+
+	custom := map[string]bool{}
+	for _, n := range customNames {
+		custom[n] = true
+	}
+
+	names := make([]string, 0, len(store))
+	for name := range store {
+		if custom[name] {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var out []ModelCatalogProvider
+	for _, name := range names {
+		entry := ModelCatalogProvider{
+			Name:    name,
+			Models:  []ModelCatalogEntry{},
+			Source:  "builtin",
+			HasAuth: authNames[name],
+		}
+		provider, _ := store[name].(map[string]any)
+		if provider != nil {
+			if models, ok := provider["models"].([]any); ok {
+				for _, m := range models {
+					model, ok := m.(map[string]any)
+					if !ok {
+						continue
+					}
+					if me, ok := extractModelEntry(model); ok {
+						entry.Models = append(entry.Models, me)
+					}
+				}
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 // extractThinkingLevels 从 thinkingLevelMap（map[输入级别]输出级别）中

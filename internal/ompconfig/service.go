@@ -7,13 +7,16 @@
 package ompconfig
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -205,6 +208,10 @@ type ModelCatalogProvider struct {
 	// HasAuth 表示该 provider 已有可用凭据（omp 凭据内联在 models.yml：
 	// apiKey / auth / authHeader），供前端下拉标注。
 	HasAuth bool `json:"hasAuth"`
+	// Source 区分来源：custom = models.yml 注册表（可编辑），builtin = omp
+	// 内置模型目录（`omp models ls --json` 拉取，如 openai-codex 等 OAuth
+	// 登录提供商，凭据由 omp 自身管理）。custom 省略该字段。
+	Source string `json:"source,omitempty"`
 }
 
 type ModelCatalog struct {
@@ -212,34 +219,31 @@ type ModelCatalog struct {
 }
 
 // GetOmpModelCatalog 读取 models.yml，抽取 provider→models 目录（只读，
-// 不含 apiKey 等敏感信息），序列化为 JSON 返回。文件缺失时返回空目录。
+// 不含 apiKey 等敏感信息），并追加 `omp models ls --json` 返回的内置目录
+// 提供商（models.yml 已有的自定义条目优先）。文件缺失时返回仅内置的目录。
 func (s *Service) GetOmpModelCatalog() (string, error) {
 	catalog := ModelCatalog{Providers: []ModelCatalogProvider{}}
 
 	data, err := os.ReadFile(modelsConfigPath())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			out, _ := json.Marshal(catalog)
-			return string(out), nil
-		}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("read omp models config: %w", err)
 	}
 
-	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return "", fmt.Errorf("parse omp models config: %w", err)
+	names := []string{}
+	providersRaw := map[string]any{}
+	if err == nil {
+		var root map[string]any
+		if err := yaml.Unmarshal(data, &root); err != nil {
+			return "", fmt.Errorf("parse omp models config: %w", err)
+		}
+		if raw, ok := root["providers"].(map[string]any); ok {
+			providersRaw = raw
+		}
+		for name := range providersRaw {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 	}
-	providersRaw, ok := root["providers"].(map[string]any)
-	if !ok {
-		out, _ := json.Marshal(catalog)
-		return string(out), nil
-	}
-
-	names := make([]string, 0, len(providersRaw))
-	for name := range providersRaw {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 
 	for _, name := range names {
 		entry := ModelCatalogProvider{Name: name, Models: []ModelCatalogEntry{}}
@@ -293,11 +297,113 @@ func (s *Service) GetOmpModelCatalog() (string, error) {
 		catalog.Providers = append(catalog.Providers, entry)
 	}
 
+	// 追加 omp 内置目录（`omp models ls --json`）：补齐仅内置/OAuth 登录的
+	// 提供商（如 openai-codex）。CLI 不可用或失败时静默降级为仅自定义目录。
+	if builtin, err := loadOmpBuiltinCatalog(names); err == nil {
+		catalog.Providers = append(catalog.Providers, builtin...)
+	}
+
 	out, err := json.MarshalIndent(catalog, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("encode model catalog: %w", err)
 	}
 	return string(out), nil
+}
+
+// loadOmpBuiltinCatalog 执行 `omp models ls --json` 并返回不在自定义注册表
+// 中的内置 providers。omp 内置提供商凭据（OAuth 等）由 omp 自身管理，
+// HasAuth 置 false 但 Source=builtin，前端以「内置」标注区分。
+func loadOmpBuiltinCatalog(customNames []string) ([]ModelCatalogProvider, error) {
+	output, err := runOmpModelsList()
+	if err != nil {
+		return nil, err
+	}
+	return parseOmpModelsList(output, customNames)
+}
+
+// runOmpModelsList 在 PATH 及常见安装路径中定位 omp 并执行
+// `omp models ls --json`（5 秒超时）。
+func runOmpModelsList() ([]byte, error) {
+	candidates := []string{"omp", "/opt/homebrew/bin/omp", "/usr/local/bin/omp"}
+	var bin string
+	for _, c := range candidates {
+		if c != "omp" {
+			if _, err := os.Stat(c); err != nil {
+				continue
+			}
+			bin = c
+			break
+		}
+		if path, err := exec.LookPath(c); err == nil {
+			bin = path
+			break
+		}
+	}
+	if bin == "" {
+		return nil, errors.New("omp CLI not found")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "models", "ls", "--json", "--no-extensions")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("run omp models ls: %w", err)
+	}
+	return out, nil
+}
+
+// parseOmpModelsList 解析 `omp models ls --json` 输出：
+// { models: [ { provider, id, name, reasoning, contextWindow, thinking } ] }。
+func parseOmpModelsList(output []byte, customNames []string) ([]ModelCatalogProvider, error) {
+	var parsed struct {
+		Models []struct {
+			Provider      string `json:"provider"`
+			ID            string `json:"id"`
+			Name          string `json:"name"`
+			Reasoning     bool   `json:"reasoning"`
+			ContextWindow int    `json:"contextWindow"`
+			Thinking      *struct {
+				Levels []string `json:"levels"`
+			} `json:"thinking"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		return nil, fmt.Errorf("parse omp models ls output: %w", err)
+	}
+
+	custom := map[string]bool{}
+	for _, n := range customNames {
+		custom[n] = true
+	}
+
+	byProvider := map[string]*ModelCatalogProvider{}
+	var order []string
+	for _, m := range parsed.Models {
+		if m.Provider == "" || m.ID == "" || custom[m.Provider] {
+			continue
+		}
+		entry, ok := byProvider[m.Provider]
+		if !ok {
+			entry = &ModelCatalogProvider{Name: m.Provider, Models: []ModelCatalogEntry{}, Source: "builtin"}
+			byProvider[m.Provider] = entry
+			order = append(order, m.Provider)
+		}
+		me := ModelCatalogEntry{ID: m.ID, Name: m.Name, Reasoning: m.Reasoning, ContextWindow: m.ContextWindow}
+		if m.Thinking != nil && len(m.Thinking.Levels) > 0 {
+			levels := append([]string(nil), m.Thinking.Levels...)
+			sort.Strings(levels)
+			me.ThinkingLevels = levels
+		}
+		entry.Models = append(entry.Models, me)
+	}
+
+	out := make([]ModelCatalogProvider, 0, len(order))
+	sort.Strings(order)
+	for _, name := range order {
+		out = append(out, *byProvider[name])
+	}
+	return out, nil
 }
 
 // yaml.v3 会把整数解码为 int、浮点解码为 float64，toFloat 统一数值转换。

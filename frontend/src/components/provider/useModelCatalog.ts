@@ -18,6 +18,8 @@ export interface CatalogProvider {
   models: CatalogModel[];
   /** 该提供商是否已有可用凭据（auth.json 条目或注册表内联 apiKey） */
   hasAuth?: boolean;
+  /** 来源：custom = 注册表（可编辑，省略该字段）；builtin = 内置目录（OAuth 登录提供商如 openai-codex） */
+  source?: 'custom' | 'builtin';
 }
 
 export interface ModelCatalog {
