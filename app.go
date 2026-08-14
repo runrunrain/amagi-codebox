@@ -2917,6 +2917,13 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// BuildEnv 约定：空值表示从子进程环境中删除该变量。
 		"PI_CODING_AGENT_DIR": "",
 	}
+	// 内嵌/外部 Pi 会话默认跳过 pi 启动期网络操作（pi.dev 模型目录刷新、
+	// 版本检查、包管理网络）。这些操作在网络或本地代理抖动时会把启动拖到
+	// 数十秒甚至挂起（用户表现为"终端一直加载不完"）；PI_OFFLINE 不影响
+	// 模型推理与 amagi MCP。用户在环境变量面板显式配置 PI_OFFLINE 时尊重其值。
+	if _, explicit := a.EnvVars.Get("PI_OFFLINE"); !explicit {
+		envOverrides["PI_OFFLINE"] = "1"
+	}
 	if providerID != "" {
 		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
 		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
@@ -3143,6 +3150,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 	envOverrides := map[string]string{
 		// BuildEnv 约定：空值表示从子进程环境中删除该变量。
 		"PI_CODING_AGENT_DIR": "",
+	}
+	// 与 Pi 会话同理：跳过 omp 启动期网络操作（目录刷新/版本检查），避免网络
+	// 抖动时启动挂起；不影响模型推理。omp 与 pi 同源，读取同名环境变量。
+	if _, explicit := a.EnvVars.Get("PI_OFFLINE"); !explicit {
+		envOverrides["PI_OFFLINE"] = "1"
 	}
 	if providerID != "" {
 		a.providerSyncMu.Lock()

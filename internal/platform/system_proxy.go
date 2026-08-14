@@ -2,7 +2,9 @@ package platform
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -28,6 +30,11 @@ import (
 // 避免在每次会话启动时引入可感知延迟。
 const proxyDialTimeout = 300 * time.Millisecond
 
+// proxyHTTPProbeTimeout 是 HTTP 级代理健康探测的超时。部分代理 App 在异常
+// 状态下 TCP 端口仍接受连接但不转发任何流量（"活端口、死代理"），仅靠 TCP
+// 探测会把会话全部流量打进死代理，表现为 CLI 启动期网络操作长时间挂起。
+const proxyHTTPProbeTimeout = 1500 * time.Millisecond
+
 // proxyDialReachable 可替换（测试注入）。默认实现做 TCP 探测。
 var proxyDialReachable = func(host, port string) bool {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), proxyDialTimeout)
@@ -35,6 +42,21 @@ var proxyDialReachable = func(host, port string) bool {
 		return false
 	}
 	_ = conn.Close()
+	return true
+}
+
+// proxyHTTPResponsive 可替换（测试注入）。默认实现向代理监听端口直接发一个
+// HTTP 请求：健康的 HTTP 代理（Surge/Clash/sing-box 等混合端口）会对 origin-form
+// 请求快速返回 4xx/200 等任何 HTTP 响应；TCP 通了但内核/进程卡死不会应答，
+// 超时即判定为不可用。
+var proxyHTTPResponsive = func(host, port string) bool {
+	client := &http.Client{ Timeout: proxyHTTPProbeTimeout }
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/")
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	return true
 }
 
@@ -49,6 +71,9 @@ func SystemProxyEnv() map[string]string {
 		return nil
 	}
 	if !proxyDialReachable(host, port) {
+		return nil
+	}
+	if !proxyHTTPResponsive(host, port) {
 		return nil
 	}
 	proxyURL := fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
