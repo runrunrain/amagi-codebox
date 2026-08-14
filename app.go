@@ -2582,18 +2582,27 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		}
 	}
 	if providerID != "" {
-		a.providerSyncMu.Lock()
-		if provider, err := a.Config.GetProvider(providerID); err == nil {
+		// v1.3.13 重构时此处 Lock 后从未 Unlock（且持锁提前 return），一次
+		// Codex 启动即永久持有 providerSyncMu，后续 Pi/OMP 启动与配置保存
+		// 全部死锁。改为闭包 + defer 确保所有路径（含校验失败提前返回）解锁。
+		if err := func() error {
+			a.providerSyncMu.Lock()
+			defer a.providerSyncMu.Unlock()
+			provider, err := a.Config.GetProvider(providerID)
+			if err != nil {
+				return fmt.Errorf("resolve Codex provider %q: %w", providerID, err)
+			}
 			if !isOpenAIProvider(*provider) {
-				return "", fmt.Errorf("Codex provider %q is not OpenAI-compatible", providerID)
+				return fmt.Errorf("Codex provider %q is not OpenAI-compatible", providerID)
 			}
 			launchSettings = resolveCodexLaunchSettings(*provider, launchSettings.Model)
 			injectProviderEnv(providerID, provider)
 			if baseURL := provider.EffectiveBaseURL("openai"); isCustomCodexOpenAIBaseURL(baseURL) && codexProviderBaseURL == "" {
-				return "", fmt.Errorf("Codex provider %q requires an API key for custom endpoint %s", providerID, baseURL)
+				return fmt.Errorf("Codex provider %q requires an API key for custom endpoint %s", providerID, baseURL)
 			}
-		} else {
-			return "", fmt.Errorf("resolve Codex provider %q: %w", providerID, err)
+			return nil
+		}(); err != nil {
+			return "", err
 		}
 	}
 	if selectedPresetParams != nil {
@@ -2909,6 +2918,11 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		"PI_CODING_AGENT_DIR": "",
 	}
 	if providerID != "" {
+		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
+		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
+		// v1.3.13 重构时此处缺失 Lock()，未加锁直接 Unlock 触发 Go fatal error
+		// （sync: unlock of unlocked mutex），导致带提供商启动 Pi 会话即崩溃。
+		a.providerSyncMu.Lock()
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
 			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model, presetParams)
 			apiKey, _ := a.getProviderAPIKey(providerID, *provider)

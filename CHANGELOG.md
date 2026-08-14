@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.19] - 2026-08-14
+
+### Fixed
+
+- 修复带提供商启动 Pi 会话（含内嵌终端）即崩溃的问题：v1.3.13 的 provider sync 重构在 LaunchPiSession 中留下了未配对的 providerSyncMu.Unlock()，对未加锁互斥量解锁触发 Go fatal error（sync: unlock of unlocked mutex），进程直接退出。补回与 Codex/OMP 对称的 Lock()。
+- 修复 LaunchCodexSession 持有 providerSyncMu 从不解锁的问题（同一重构引入）：Lock 后既无 Unlock 且存在持锁提前 return，一次 Codex 启动即永久占用互斥锁，导致后续 Pi/OMP 启动与配置保存全部死锁。改为闭包 + defer，所有路径（含校验失败返回）均正确解锁。
+
 ## [1.3.18] - 2026-08-14
 
 ### Added
