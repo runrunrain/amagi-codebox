@@ -29,10 +29,12 @@ import (
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/ompconfig"
 	"amagi-codebox/internal/ompplugin"
 	"amagi-codebox/internal/opencodeconfig"
 	"amagi-codebox/internal/opencodeplugin"
 	"amagi-codebox/internal/paths"
+	"amagi-codebox/internal/piconfig"
 	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/plugin"
@@ -219,6 +221,8 @@ type App struct {
 	PiPlugins       *piplugin.Service
 	OmpPlugins      *ompplugin.Service
 	OpenCodeConfig  *opencodeconfig.Service
+	PiConfig        *piconfig.Service
+	OmpConfig       *ompconfig.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
 
@@ -387,6 +391,8 @@ func NewApp(mobileAssets embed.FS) *App {
 		PiPlugins:           piPluginsSvc,
 		OmpPlugins:          ompPluginsSvc,
 		OpenCodeConfig:      opencodeconfig.NewService(),
+		PiConfig:            piconfig.NewService(),
+		OmpConfig:           ompconfig.NewService(),
 		EnvCheck:            envCheckSvc,
 		Usage:               usage.NewService(configDir, log),
 		Capabilities:        capabilities,
@@ -5445,6 +5451,52 @@ func (a *App) SaveOpenCodeConfig(content string) error {
 // GetOpenCodeConfigPath 返回全局 OpenCode 配置文件的绝对路径，供前端展示。
 func (a *App) GetOpenCodeConfigPath() (string, error) {
 	return a.OpenCodeConfig.GetOpenCodeConfigPath()
+}
+
+// --- Pi (amagi-pi) 配置 API ---
+
+// GetAmagiConfig 读取 pi 的 amagi.json 配置内容（JSON 文本）。
+func (a *App) GetAmagiConfig() (string, error) {
+	return a.PiConfig.GetAmagiConfig()
+}
+
+// SaveAmagiConfig 校验并保存 amagi.json（原子写入）。
+func (a *App) SaveAmagiConfig(content string) error {
+	return a.PiConfig.SaveAmagiConfig(content)
+}
+
+// GetAmagiConfigPath 返回 amagi.json 的绝对路径，供前端展示。
+func (a *App) GetAmagiConfigPath() (string, error) {
+	return a.PiConfig.GetAmagiConfigPath()
+}
+
+// GetPiModelCatalog 读取 models.json 抽取 provider→model 目录（只读，不含密钥），
+// 供前端可视化配置的下拉关联使用。
+func (a *App) GetPiModelCatalog() (string, error) {
+	return a.PiConfig.GetPiModelCatalog()
+}
+
+// --- OMP (oh-my-pi) 配置 API ---
+
+// GetOmpConfig 读取 omp 的 config.yml 配置内容（YAML 文本）。
+func (a *App) GetOmpConfig() (string, error) {
+	return a.OmpConfig.GetOmpConfig()
+}
+
+// SaveOmpConfig 校验并保存 config.yml（原子写入）。
+func (a *App) SaveOmpConfig(content string) error {
+	return a.OmpConfig.SaveOmpConfig(content)
+}
+
+// GetOmpConfigPath 返回 config.yml 的绝对路径，供前端展示。
+func (a *App) GetOmpConfigPath() (string, error) {
+	return a.OmpConfig.GetOmpConfigPath()
+}
+
+// GetOmpModelCatalog 读取 models.yml 抽取 provider→model 目录（只读，不含密钥），
+// 供前端可视化配置的下拉关联使用。
+func (a *App) GetOmpModelCatalog() (string, error) {
+	return a.OmpConfig.GetOmpModelCatalog()
 }
 
 // --- 终端预设 API ---

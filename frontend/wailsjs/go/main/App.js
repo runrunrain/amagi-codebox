@@ -94,6 +94,14 @@ export function FixClaudeConfig(arg1, arg2, arg3) {
   return window['go']['main']['App']['FixClaudeConfig'](arg1, arg2, arg3);
 }
 
+export function GetAmagiConfig() {
+  return window['go']['main']['App']['GetAmagiConfig']();
+}
+
+export function GetAmagiConfigPath() {
+  return window['go']['main']['App']['GetAmagiConfigPath']();
+}
+
 export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
@@ -174,6 +182,18 @@ export function GetMergedTerminalPresets(arg1) {
   return window['go']['main']['App']['GetMergedTerminalPresets'](arg1);
 }
 
+export function GetOmpConfig() {
+  return window['go']['main']['App']['GetOmpConfig']();
+}
+
+export function GetOmpConfigPath() {
+  return window['go']['main']['App']['GetOmpConfigPath']();
+}
+
+export function GetOmpModelCatalog() {
+  return window['go']['main']['App']['GetOmpModelCatalog']();
+}
+
 export function GetOpenCodeConfig() {
   return window['go']['main']['App']['GetOpenCodeConfig']();
 }
@@ -188,6 +208,10 @@ export function GetOutputHistorySnapshot(arg1) {
 
 export function GetPathsService() {
   return window['go']['main']['App']['GetPathsService']();
+}
+
+export function GetPiModelCatalog() {
+  return window['go']['main']['App']['GetPiModelCatalog']();
 }
 
 export function GetPlatformCapabilities() {
@@ -390,12 +414,20 @@ export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
 }
 
+export function SaveAmagiConfig(arg1) {
+  return window['go']['main']['App']['SaveAmagiConfig'](arg1);
+}
+
 export function SaveClipboardImage(arg1) {
   return window['go']['main']['App']['SaveClipboardImage'](arg1);
 }
 
 export function SaveEnvVarsJSON(arg1) {
   return window['go']['main']['App']['SaveEnvVarsJSON'](arg1);
+}
+
+export function SaveOmpConfig(arg1) {
+  return window['go']['main']['App']['SaveOmpConfig'](arg1);
 }
 
 export function SaveOpenCodeConfig(arg1) {

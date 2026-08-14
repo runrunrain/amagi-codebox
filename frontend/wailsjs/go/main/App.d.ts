@@ -60,6 +60,10 @@ export function ExportLogs():Promise<string>;
 
 export function FixClaudeConfig(arg1:string,arg2:string,arg3:string):Promise<envcheck.ConfigFixResult>;
 
+export function GetAmagiConfig():Promise<string>;
+
+export function GetAmagiConfigPath():Promise<string>;
+
 export function GetAppInfo():Promise<Record<string, any>>;
 
 export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>;
@@ -100,6 +104,12 @@ export function GetLogs(arg1:string,arg2:string,arg3:string,arg4:number):Promise
 
 export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
 
+export function GetOmpConfig():Promise<string>;
+
+export function GetOmpConfigPath():Promise<string>;
+
+export function GetOmpModelCatalog():Promise<string>;
+
 export function GetOpenCodeConfig():Promise<string>;
 
 export function GetOpenCodeConfigPath():Promise<string>;
@@ -107,6 +117,8 @@ export function GetOpenCodeConfigPath():Promise<string>;
 export function GetOutputHistorySnapshot(arg1:string):Promise<string>;
 
 export function GetPathsService():Promise<paths.PathsService>;
+
+export function GetPiModelCatalog():Promise<string>;
 
 export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;
 
@@ -208,9 +220,13 @@ export function RunEnvFixAction(arg1:string,arg2:string,arg3:string):Promise<env
 
 export function SaveAllConfig():Promise<void>;
 
+export function SaveAmagiConfig(arg1:string):Promise<void>;
+
 export function SaveClipboardImage(arg1:string):Promise<string>;
 
 export function SaveEnvVarsJSON(arg1:string):Promise<void>;
+
+export function SaveOmpConfig(arg1:string):Promise<void>;
 
 export function SaveOpenCodeConfig(arg1:string):Promise<void>;
 

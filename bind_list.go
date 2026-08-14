@@ -29,6 +29,8 @@ func buildWailsBindList(app *App) []any {
 		app.PiPlugins,
 		app.OmpPlugins,
 		app.OpenCodeConfig,
+		app.PiConfig,
+		app.OmpConfig,
 		app.EnvCheck,
 		app.Usage,
 	}

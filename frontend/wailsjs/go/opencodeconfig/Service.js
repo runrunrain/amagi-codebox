@@ -13,3 +13,7 @@ export function GetOpenCodeConfigPath() {
 export function SaveOpenCodeConfig(arg1) {
   return window['go']['opencodeconfig']['Service']['SaveOpenCodeConfig'](arg1);
 }
+
+export function SyncManagedProviders(arg1) {
+  return window['go']['opencodeconfig']['Service']['SyncManagedProviders'](arg1);
+}

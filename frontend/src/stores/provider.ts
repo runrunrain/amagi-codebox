@@ -31,11 +31,11 @@ type MergedTerminalPreset = config.MergedTerminalPreset;
 
 export type ProviderFilter = 'all' | 'anthropic' | 'openai';
 
-/** 预设域：两类公共协议格式 + OpenCode 独立完整配置。 */
-export type PresetEngine = 'anthropic' | 'openai' | 'opencode';
+/** 预设域：两类公共协议格式 + OpenCode 独立完整配置 + Pi/OMP 结构化配置。 */
+export type PresetEngine = 'anthropic' | 'openai' | 'opencode' | 'pi' | 'omp';
 
-/** engine -> wailsjs terminalType 映射（opencode 走 config.json，不调 merged） */
-const ENGINE_TO_TERMINAL_TYPE: Record<PresetEngine, string> = {
+/** engine -> wailsjs terminalType 映射（opencode/pi/omp 走各自配置文件，不调 merged） */
+const ENGINE_TO_TERMINAL_TYPE: Partial<Record<PresetEngine, string>> = {
   anthropic: 'anthropic',
   openai: 'openai',
   opencode: 'opencode',
@@ -91,6 +91,8 @@ export const useProviderStore = defineStore('provider', () => {
     anthropic: false,
     openai: false,
     opencode: false,
+    pi: false,
+    omp: false,
   });
   const presetLoadError = ref<string>('');
 
@@ -234,6 +236,12 @@ export const useProviderStore = defineStore('provider', () => {
    */
   async function loadPresets(engine: PresetEngine, force = false) {
     if (!force && presetLoaded.value[engine]) return;
+    // pi/omp 的配置内容由 PiAmagiConfig/OmpGlobalConfig 组件自加载（含模型目录），
+    // 这里仅标记已加载，避免触发 merged presets 请求。
+    if (engine === 'pi' || engine === 'omp') {
+      presetLoaded.value = { ...presetLoaded.value, [engine]: true };
+      return;
+    }
     loadingPresets.value = true;
     presetLoadError.value = '';
     try {
@@ -245,7 +253,7 @@ export const useProviderStore = defineStore('provider', () => {
         ocConfigContent.value = content || '';
         ocConfigPath.value = path || '';
       } else {
-        const terminalType = ENGINE_TO_TERMINAL_TYPE[engine];
+        const terminalType = ENGINE_TO_TERMINAL_TYPE[engine]!;
         const list = await getMergedTerminalPresets(terminalType);
         mergedPresets.value = { ...mergedPresets.value, [engine]: list || [] };
       }
@@ -271,7 +279,7 @@ export const useProviderStore = defineStore('provider', () => {
     if (engine === 'opencode') {
       throw new Error('opencode presets are managed via config.json, not deletable here');
     }
-    const terminalType = ENGINE_TO_TERMINAL_TYPE[engine];
+    const terminalType = ENGINE_TO_TERMINAL_TYPE[engine]!;
     await deleteTerminalPreset(terminalType, key);
     // 删除后强制刷新该引擎列表，确保 UI 与后端一致
     await loadPresets(engine, true);

@@ -6,3 +6,5 @@ export function GetOpenCodeConfig():Promise<string>;
 export function GetOpenCodeConfigPath():Promise<string>;
 
 export function SaveOpenCodeConfig(arg1:string):Promise<void>;
+
+export function SyncManagedProviders(arg1:Record<string, any>):Promise<void>;

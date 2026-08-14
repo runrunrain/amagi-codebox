@@ -69,6 +69,12 @@
           v-else-if="store.presetEngine === 'openai'"
           format="openai"
         />
+        <!-- Pi（amagi-pi）结构化配置：可视化/JSON 双模式 + 模型下拉关联 -->
+        <PiAmagiConfig v-else-if="store.presetEngine === 'pi'" />
+
+        <!-- OMP (oh-my-pi) 结构化配置：可视化/YAML 双模式 + 模型下拉关联 -->
+        <OmpGlobalConfig v-else-if="store.presetEngine === 'omp'" />
+
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
         <template v-else-if="store.presetEngine === 'opencode'">
           <!-- 三级 Segmented：预设管理 | 全局配置 -->
@@ -120,6 +126,8 @@ import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import OpenCodePresets from '../components/provider/OpenCodePresets.vue';
 import OpenCodeGlobalConfig from '../components/provider/OpenCodeGlobalConfig.vue';
+import PiAmagiConfig from '../components/provider/PiAmagiConfig.vue';
+import OmpGlobalConfig from '../components/provider/OmpGlobalConfig.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
@@ -137,6 +145,8 @@ const ENGINE_TABS = [
   { value: 'anthropic', label: 'Anthropic 格式' },
   { value: 'openai', label: 'OpenAI 格式' },
   { value: 'opencode', label: 'OpenCode' },
+  { value: 'pi', label: 'Pi' },
+  { value: 'omp', label: 'OMP' },
 ];
 
 const OPENCODE_MODES = [
