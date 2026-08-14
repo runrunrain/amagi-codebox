@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [1.3.22] - 2026-08-15
+
+### Added
+
+- 价格表新增 glm-5.3 / glm-5.1 定价条目：官方 API 计价未公布前临时沿用 GLM-5.2 费率（input 2 / output 8 / cache-read 0.2 CNY per M，注释标注「临时价」，可在价格表 UI 编辑后自动重算）；`Load` 时对历史记录按新条目重算本地估算成本（GLM-5.3 与 GLM-5.1 各一批），OpenCode 供给的 `cost_provided` 记录保持不动。
+
+### Changed
+
+- Provider Center 预设页层级重构：原来五项并排拆为两组——「格式预设」（Anthropic/OpenAI）与「CLI 独立配置」（OpenCode/Pi/OMP），用组标签 + 分隔线区分层级；三 CLI 配置组件改为懒加载，视图 chunk 从 213KB 降到 40KB。
+
 ## [1.3.21] - 2026-08-15
 
 ### Fixed
