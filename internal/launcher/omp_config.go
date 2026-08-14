@@ -101,11 +101,13 @@ func BuildOmpModelsConfig(
 		if params.MaxTokens > 0 {
 			m["maxTokens"] = params.MaxTokens
 		}
-		// 思考开关：amagi Thinking.Type=="enabled" -> omp reasoning=true
+		// 思考开关：amagi Thinking.Type=="enabled" 或 ReasoningEffort 非空 -> omp reasoning=true
 		// （思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchOmpSession）。
 		// thinkingLevelMap.xhigh/max 恒开启，与 BuildPiModelsConfig 同一语义
 		//（omp 与 pi 同源，clampThinkingLevel 仅在 map 显式声明时开放扩展级别）。
-		if params.Thinking != nil && params.Thinking.Type == "enabled" {
+		// v1.3.23 与 pi_config.go 同步修复：reasoning_effort 单独出现也开启 reasoning。
+		hasReasoningEffort := strings.TrimSpace(params.ReasoningEffort) != ""
+		if (params.Thinking != nil && params.Thinking.Type == "enabled") || hasReasoningEffort {
 			m["reasoning"] = true
 			m["thinkingLevelMap"] = map[string]any{
 				"xhigh": "xhigh",

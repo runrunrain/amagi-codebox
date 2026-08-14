@@ -66,6 +66,8 @@ interface TerminalInstance {
   disposeExitListener: (() => void) | null
   /** capture-phase paste listener removal on the xterm textarea */
   disposePasteListener: (() => void) | null
+  /** v1.3.23 scroll-jump guard：onScroll 订阅 + 容器 wheel/pointer/key 标记监听移除 */
+  disposeScrollGuard: (() => void) | null
   /** detach handler for the Shift+drag forced-selection interceptor */
   disposeForcedSelection: (() => void) | null
   /**
@@ -752,7 +754,79 @@ export function useTerminalEngine() {
         return false
       }
 
+      // macOS Option+key → ESC-prefixed sequence, so terminal apps receive real
+      // Alt bindings (pi/amagi ⌥W board, ⌥T tasks, ⌥R review). Without this,
+      // xterm (macOptionIsMeta off by default) types special characters instead.
+      // Scope: single-char keys + Backspace (word-delete); arrows/compose/dead
+      // keys and Cmd/Ctrl combos untouched. Same pattern as CSI-u rewrite above.
+      if (
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        ev.altKey &&
+        !ev.isComposing &&
+        ev.key !== 'Dead' &&
+        ev.key !== 'Alt' &&
+        !ev.key.startsWith('Arrow')
+      ) {
+        let seq: string | null = null
+        if (ev.key === 'Backspace') seq = '\x1b\x7f'
+        else if (ev.key.length === 1) seq = '\x1b' + ev.key
+        if (seq) {
+          const bytes = new TextEncoder().encode(seq)
+          PtyWrite(sessionId, uint8ToBase64(bytes)).catch(() => {})
+          return false
+        }
+      }
+
       return true
+    })
+
+    // ----- scroll-jump guard -----
+    // xterm 6 的虚拟滚动面在 renderer 维度抖动（DPR/fit/WKWebView 滚动条重排）时，
+    // 内部 ScrollState 钳制可能把 scrollTop 瞬时归 0，且 _sync 在 ydisp 未变时
+    // 不恢复位置——表现为"偶尔跳到最顶部"。无法从 xterm 内部根治，行为级治理：
+    // 区分用户主动滚动（滚轮/滚动条/翻页键）与非用户意图跳顶；后者发生时，
+    // 若此前视口贴底（跟随最新输出），自动滚回底部。
+    let prevAtBottom = true
+    let userScrollUntil = 0
+    const markUserScroll = () => {
+      userScrollUntil = performance.now() + 800
+    }
+    containerEl.addEventListener('wheel', markUserScroll, { capture: true, passive: true })
+    containerEl.addEventListener('pointerdown', markUserScroll, { capture: true, passive: true })
+    const markUserScrollKeydown = (ev: KeyboardEvent) => {
+      // 33/34 PageUp/PageDown, 35/36 End/Home, 38/40 ↑/↓
+      if ([33, 34, 35, 36, 38, 40].includes(ev.keyCode)) markUserScroll()
+    }
+    containerEl.addEventListener('keydown', markUserScrollKeydown, {
+      capture: true,
+      passive: true,
+    })
+    let guardBusy = false
+    const disposeScrollGuard = term.onScroll(() => {
+      if (guardBusy) return
+      const buffer = term.buffer.active
+      const atBottom = buffer.viewportY >= buffer.baseY
+      const spurious =
+        performance.now() > userScrollUntil &&
+        prevAtBottom &&
+        !atBottom &&
+        buffer.baseY >= term.rows * 2 &&
+        buffer.viewportY === 0
+      if (spurious) {
+        // 延迟到当前滚动事务外恢复，避免在 onScroll 回调内重入
+        guardBusy = true
+        window.setTimeout(() => {
+          guardBusy = false
+          try {
+            term.scrollToBottom()
+          } catch {
+            /* mid-teardown */
+          }
+        }, 0)
+        return
+      }
+      prevAtBottom = atBottom
     })
 
     // user input -> backend PTY
@@ -783,6 +857,13 @@ export function useTerminalEngine() {
       disposeDataListener: null,
       disposeExitListener: null,
       disposePasteListener: null,
+      disposeScrollGuard: () => {
+        disposeScrollGuard?.dispose?.()
+        const el = term.element?.parentElement ?? containerEl
+        el.removeEventListener('wheel', markUserScroll, true)
+        el.removeEventListener('pointerdown', markUserScroll, true)
+        el.removeEventListener('keydown', markUserScrollKeydown, true)
+      },
       disposeForcedSelection: null,
       activeDragCleanup: null,
       lastCols: 0,
@@ -1224,6 +1305,8 @@ export function useTerminalEngine() {
     inst.disposeExitListener = null
     inst.disposePasteListener?.()
     inst.disposePasteListener = null
+    inst.disposeScrollGuard?.()
+    inst.disposeScrollGuard = null
     inst.disposeForcedSelection?.()
     inst.disposeForcedSelection = null
 

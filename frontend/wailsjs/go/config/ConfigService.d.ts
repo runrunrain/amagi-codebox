@@ -65,3 +65,5 @@ export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalP
 export function SetAgentTeams(arg1:config.AgentTeamsConfig):Promise<void>;
 
 export function SetAllTerminalPresets(arg1:config.TerminalPresetsConfig):Promise<void>;
+
+export function SnapshotProvider(arg1:string):Promise<config.Provider>;

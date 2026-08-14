@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [1.3.23] - 2026-08-15
+
+### Fixed
+
+- 修复 Pi/OMP 预设 `reasoning_effort` 静默失效的问题：`BuildPiModelsConfig`/`BuildOmpModelsConfig` 原来只在 `thinking.type == "enabled"` 时才写 `reasoning: true`，而 `reasoning_effort` 单独出现（无 thinking.type）时模型未声明 reasoning，pi 侧 `clampThinkingLevel` 会把任何 `--thinking` 值钳回 off，导致预设 `reasoning_effort=max` 长期零推理运行（实战：glm/codecode 预设）；现 `reasoning_effort` 非空同样开启 reasoning 并开放 xhigh/max 扩展思考级别，与 thinking 开关同一语义。
+- 修复终端偶发跳顶：xterm 6 虚拟滚动面在 renderer 维度抖动（DPR/fit/WKWebView 滚动条重排）时内部 ScrollState 钳制可能把 scrollTop 瞬时归 0 且 `_sync` 在 ydisp 未变时不恢复位置；新增滚动跳变 guard——区分用户主动滚动（滚轮/滚动条/翻页键）与非用户意图跳顶，后者发生时若此前视口贴底则自动滚回底部。
+
+### Added
+
+- macOS 终端 Option+key 支持：按 Option 组合的单字符键与 Backspace 转为 ESC 前缀序列转发给 PTY，使 pi/amagi 的 ⌥W 画板、⌥T 任务、⌥R 审查等 Alt 快捷键可用（此前 xterm 默认 macOptionIsMeta 关闭，Option 键会输入特殊字符而非真实 Alt 绑定）；箭头/组合键/Cmd/Ctrl 组合不受影响。
+
 ## [1.3.22] - 2026-08-15
 
 ### Added

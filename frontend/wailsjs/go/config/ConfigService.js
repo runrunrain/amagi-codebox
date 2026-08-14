@@ -129,3 +129,7 @@ export function SetAgentTeams(arg1) {
 export function SetAllTerminalPresets(arg1) {
   return window['go']['config']['ConfigService']['SetAllTerminalPresets'](arg1);
 }
+
+export function SnapshotProvider(arg1) {
+  return window['go']['config']['ConfigService']['SnapshotProvider'](arg1);
+}

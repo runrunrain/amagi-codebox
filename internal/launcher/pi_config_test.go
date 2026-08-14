@@ -68,6 +68,35 @@ func TestResolveEnvHeaderValue(t *testing.T) {
 // TestBuildPiModelsConfigResolvesEnvHeaders (P1-7) verifies that header values
 // written as $ENV: refs are resolved to the env value at build time, while plain
 // literals pass through unchanged, and unset refs are omitted.
+func TestBuildPiModelsConfigReasoningEffortAlone(t *testing.T) {
+	// v1.3.23 回归：reasoning_effort 单独出现（无 thinking.type）也必须开启 reasoning，
+	// 否则 pi clampThinkingLevel 把 --thinking max 钳回 off，预设强度静默失效。
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
+	}
+	params := config.Parameters{
+		ReasoningEffort: "max",
+		ContextWindow:   &config.ContextWindowConfig{ModelContextWindow: 1000000},
+	}
+	cfg, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "test-key", params)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig error: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-glm"]
+	models := entry["models"].([]map[string]any)
+	m := models[0]
+	if m["reasoning"] != true {
+		t.Errorf("reasoning = %#v, want true (reasoning_effort alone must enable reasoning)", m["reasoning"])
+	}
+	lm, ok := m["thinkingLevelMap"].(map[string]any)
+	if !ok || lm["max"] != "max" || lm["xhigh"] != "xhigh" {
+		t.Errorf("thinkingLevelMap = %#v, want xhigh/max identity", m["thinkingLevelMap"])
+	}
+	if m["contextWindow"] != 1000000 {
+		t.Errorf("contextWindow = %#v, want 1000000", m["contextWindow"])
+	}
+}
+
 func TestBuildPiModelsConfigResolvesEnvHeaders(t *testing.T) {
 	t.Setenv("AMAGI_PI_HDR_RESOLVED", "resolved-secret")
 	provider := config.Provider{

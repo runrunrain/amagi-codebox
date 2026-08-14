@@ -109,9 +109,13 @@ func BuildPiModelsConfig(
 		if params.MaxTokens > 0 {
 			m["maxTokens"] = params.MaxTokens
 		}
-		// 思考开关：amagi Thinking.Type=="enabled" -> pi reasoning=true
-		// （pi 的思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchPiSession）
-		if params.Thinking != nil && params.Thinking.Type == "enabled" {
+		// 思考开关：amagi Thinking.Type=="enabled" 或 ReasoningEffort 非空 -> pi reasoning=true
+		// （pi 的思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchPiSession）。
+		// v1.3.23 修复：reasoning_effort 单独出现（无 thinking.type）也必须开启 reasoning——
+		// pi 侧 clampThinkingLevel 对未声明 reasoning 的模型把任何 --thinking 值钳回 off，
+		// 导致预设 reasoning_effort=max 静默失效（实战：glm/codecode 预设长期零推理运行）。
+		hasReasoningEffort := strings.TrimSpace(params.ReasoningEffort) != ""
+		if (params.Thinking != nil && params.Thinking.Type == "enabled") || hasReasoningEffort {
 			m["reasoning"] = true
 			// 开放扩展思考级别 xhigh/max：pi 仅在 thinkingLevelMap 显式声明该级别
 			// 时才视为支持（pi-ai getSupportedThinkingLevels：xhigh/max 要求 map 值
