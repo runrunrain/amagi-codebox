@@ -1,7 +1,7 @@
 package remote
 
 // shared_coordinator.go — SharedServiceCoordinator: launch, mutation, and
-// active-run lease authority for Proxy/Headroom shared singletons (design §6.7).
+// active-run lease authority for Headroom shared singletons (design §6.7).
 //
 // Policy (§3.4 S1 lease-strict, §6.7.2): manual Start/Stop/reconfigure is
 // STABLY REJECTED (raw call = 0) while any pending/active run lease exists for
@@ -33,7 +33,7 @@ var ErrSharedServiceInUse = errors.New("shared service is in use by active sessi
 // identity may repopulate leases after ClearAll has released them.
 var ErrSharedCoordinatorClosed = errors.New("shared service coordinator is closed")
 
-// isHeadroomKind reports whether the kind is a headroom dependency (not proxy).
+// isHeadroomKind reports whether the kind is a Headroom dependency.
 func isHeadroomKind(kind SharedServiceKind) bool {
 	return kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom
 }
@@ -80,8 +80,8 @@ type SharedLeaseTransfer struct {
 	consumed    bool
 }
 
-// SharedServiceCoordinator manages active-run leases for the three shared
-// singletons: ClaudeProxy, ClaudeHeadroom, CodexHeadroom.
+// SharedServiceCoordinator manages active-run leases for the Claude and Codex
+// Headroom singletons.
 type SharedServiceCoordinator struct {
 	mu       sync.Mutex
 	entries  map[SharedServiceKind]*SharedServiceEntry
@@ -101,8 +101,7 @@ type SharedServiceCoordinator struct {
 	// admissions for BOTH headroom kinds for the duration of an uninstall. It is the
 	// install-drain critical section that closes the TOCTOU window between the
 	// empty check and the venv deletion (a launch that sneaks in after the check
-	// would otherwise have its dependency deleted). Non-headroom kinds (proxy)
-	// are unaffected.
+	// would otherwise have its dependency deleted).
 	headroomDraining bool
 	closed           bool
 }
@@ -170,8 +169,8 @@ func (c *SharedServiceCoordinator) AcquireLaunchAdmissionForConfig(kind SharedSe
 }
 
 func (c *SharedServiceCoordinator) acquireLaunchAdmission(kind SharedServiceKind, fingerprint [32]byte, configBound bool) (*SharedLaunchAdmission, error) {
-	if kind != SharedServiceClaudeHeadroom && kind != SharedServiceCodexHeadroom && kind != SharedServiceClaudeProxy {
-		return nil, errors.New("control: launch admission is only valid for headroom or proxy dependencies")
+	if kind != SharedServiceClaudeHeadroom && kind != SharedServiceCodexHeadroom {
+		return nil, errors.New("control: launch admission is only valid for headroom dependencies")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

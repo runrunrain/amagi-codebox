@@ -37,7 +37,7 @@ func DefaultOmpPresets() map[string]TerminalPreset {
 // render a clean state without nil handling or implicit provider creation.
 func DefaultTerminalPresets() *TerminalPresetsConfig {
 	return &TerminalPresetsConfig{
-		Pi:  map[string]TerminalPreset{},
-		Omp: map[string]TerminalPreset{},
+		Anthropic: map[string]TerminalPreset{},
+		OpenAI:    map[string]TerminalPreset{},
 	}
 }

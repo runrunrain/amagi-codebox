@@ -9,12 +9,9 @@ import (
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/opencodeconfig"
 	"amagi-codebox/internal/paths"
-	"amagi-codebox/internal/plugin"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/usage"
-	"amagi-codebox/internal/workspace"
 )
 
 func newPortableConfigTestApp(t *testing.T) *App {
@@ -45,17 +42,6 @@ func newPortableConfigTestApp(t *testing.T) *App {
 	if err := envService.Load(); err != nil {
 		t.Fatalf("load envvars: %v", err)
 	}
-	workspaceService := workspace.NewService(configDir, plugin.NewService("", logService), logService)
-	if err := workspaceService.Load(); err != nil {
-		t.Fatalf("load workspaces: %v", err)
-	}
-	proxyService := proxy.NewProxyService()
-	if err := proxyService.LoadRules(configDir); err != nil {
-		t.Fatalf("load proxy rules: %v", err)
-	}
-	if err := proxyService.LoadBackendURLHistory(configDir); err != nil {
-		t.Fatalf("load proxy history: %v", err)
-	}
 	usageService := usage.NewService(configDir, logService)
 	if err := usageService.Load(); err != nil {
 		t.Fatalf("load usage: %v", err)
@@ -69,8 +55,6 @@ func newPortableConfigTestApp(t *testing.T) *App {
 		Settings:       settingsService,
 		Paths:          pathsService,
 		EnvVars:        envService,
-		Workspaces:     workspaceService,
-		Proxy:          proxyService,
 		Usage:          usageService,
 		OpenCodeConfig: opencodeconfig.NewService(),
 		Log:            logService,
@@ -103,9 +87,6 @@ func TestCompleteConfigRoundTripRestoresPortableState(t *testing.T) {
 	}
 	if err := app.EnvVars.ReplacePortableConfig(envvars.PortableConfig{EnvVars: []envvars.EnvVar{{Key: "ROUND_TRIP", Value: "yes"}}}); err != nil {
 		t.Fatalf("save envvars: %v", err)
-	}
-	if err := app.Proxy.ReplacePortableConfig([]proxy.InjectionRule{{ID: "rule-1", Name: "Rule", Enabled: true}}, []string{"https://backend.example.test"}); err != nil {
-		t.Fatalf("save proxy config: %v", err)
 	}
 	if err := app.OpenCodeConfig.SaveOpenCodeConfig(`{"theme":"round-trip"}`); err != nil {
 		t.Fatalf("save OpenCode config: %v", err)
@@ -164,6 +145,37 @@ func TestCompleteConfigRoundTripRestoresPortableState(t *testing.T) {
 	var openCode map[string]any
 	if err := json.Unmarshal([]byte(openCodeJSON), &openCode); err != nil || openCode["theme"] != "round-trip" {
 		t.Fatalf("OpenCode config not restored: %s (%v)", openCodeJSON, err)
+	}
+}
+
+func TestCompleteConfigIgnoresRemovedLegacySections(t *testing.T) {
+	app := newPortableConfigTestApp(t)
+	exported, err := app.buildCompleteExportConfig()
+	if err != nil {
+		t.Fatalf("build export: %v", err)
+	}
+
+	var portable map[string]json.RawMessage
+	if err := json.Unmarshal(exported.Portable, &portable); err != nil {
+		t.Fatalf("decode portable JSON: %v", err)
+	}
+	for _, removed := range []string{"workspaces", "proxy"} {
+		if _, exists := portable[removed]; exists {
+			t.Fatalf("new export still contains removed section %q", removed)
+		}
+	}
+
+	// json.Unmarshal deliberately ignores these legacy v2 fields. This keeps
+	// previously exported complete configs importable without restoring either
+	// removed feature or touching its old on-disk artifacts.
+	portable["workspaces"] = json.RawMessage(`{"items":[],"global_enabled":[]}`)
+	portable["proxy"] = json.RawMessage(`{"rules":[],"backend_url_history":[]}`)
+	legacyPortable, err := json.Marshal(portable)
+	if err != nil {
+		t.Fatalf("marshal legacy portable JSON: %v", err)
+	}
+	if _, err := decodePortableConfig(legacyPortable); err != nil {
+		t.Fatalf("legacy removed sections should be ignored: %v", err)
 	}
 }
 

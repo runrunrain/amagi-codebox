@@ -19,7 +19,7 @@ import (
 //
 // 持有 SQLite 连接与 PricingService，暴露：
 //   - Load/Close：生命周期
-//   - Record：单条事件入库（proxy 实时路径）
+//   - Record：单条事件入库
 //   - RecordBatch：批量记录入库（同步器调用）
 //   - SyncAll/StartBackgroundSync：调度（见 sync.go）
 //   - GetUsageSummary 等（见 api.go）
@@ -255,7 +255,6 @@ func (s *Service) eventToRecord(evt UsageEvent) UsageRecord {
 		CostProvided:             evt.CostProvided,
 		OccurredAt:               evt.OccurredAt.UTC(),
 		RecordedAt:               time.Now().UTC(),
-		RequestID:                evt.RequestID,
 	}
 }
 
@@ -265,13 +264,9 @@ func (s *Service) eventToRecord(evt UsageEvent) UsageRecord {
 //   - codex:      "cx:" + sha1(model|四维token|timestamp)[:16]
 //   - opencode:   "oc:" + session.id
 //   - pi:         "pi:" + sha1(model|sessionid|timestamp)[:16]（会话 jsonl 路径在 parser 预填 file+entry 作用域键）
-//   - proxy:      "px:" + SessionID + ":" + RequestID
 func generateDedupKey(evt UsageEvent) string {
 	switch evt.AppType {
 	case appClaudeCode:
-		if evt.Source == SourceProxy {
-			return fmt.Sprintf("%s%s:%s", dedupPrefixProxy, evt.SessionID, evt.RequestID)
-		}
 		// session_log 的 cc:msg_ 前缀由 parser 直接填；兜底用 hash
 		return dedupPrefixClaude + hash16(evt.Model, evt.SessionID, evt.OccurredAt)
 	case appCodex:
@@ -288,9 +283,6 @@ func generateDedupKey(evt UsageEvent) string {
 		//（与 appPi 同一模式，omp 与 pi 同构）。
 		return dedupPrefixOmp + hash16(evt.Model, evt.SessionID, evt.OccurredAt.UnixNano())
 	default:
-		if evt.Source == SourceProxy {
-			return fmt.Sprintf("%s%s:%s", dedupPrefixProxy, evt.SessionID, evt.RequestID)
-		}
 		return "ux:" + hash16(evt.AppType, evt.Model, evt.SessionID, evt.OccurredAt)
 	}
 }

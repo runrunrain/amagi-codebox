@@ -8,8 +8,6 @@ type Source string
 const (
 	// SourceSessionLog 来自 CLI 自身的会话日志（jsonl / SQLite）。
 	SourceSessionLog Source = "session_log"
-	// SourceProxy 来自 amagi-codebox proxy 实时拦截。
-	SourceProxy Source = "proxy"
 )
 
 // 跨源去重键前缀（设计第 7 章）。
@@ -19,7 +17,6 @@ const (
 	dedupPrefixOpenCode = "oc:"
 	dedupPrefixPi       = "pi:"
 	dedupPrefixOmp      = "omp:"
-	dedupPrefixProxy    = "px:"
 )
 
 // AppType 常量字符串（复用 internal/session.AppType 的值，避免在 usage 包内反向依赖 session 包）。
@@ -31,7 +28,7 @@ const (
 	appOmp        = "omp"
 )
 
-// UsageRecord 是单条用量记录的规范结构，跨三类源 + proxy 实时统一。
+// UsageRecord 是单条用量记录的规范结构。
 //
 // 字段语义：
 //   - 所有 token 字段使用 int（单次 batch 累加仍远低于 int32 上限，用 int 留余量）。
@@ -45,14 +42,14 @@ type UsageRecord struct {
 	DedupKey string `json:"dedupKey"`
 
 	// 来源与归属。
-	AppType         string `json:"appType"`          // claudecode / codex / opencode
-	Source          Source `json:"source"`           // session_log / proxy
-	Provider        string `json:"provider"`         // inferProviderFromURL 或 model_provider
-	Model           string `json:"model"`            // 原始模型名（未标准化）
-	NormalizedModel string `json:"normalizedModel"`  // 标准化后用于匹配价格表
-	SessionID       string `json:"sessionId"`        // amagi session id 或外部 session 标识
-	ProjectDir      string `json:"projectDir"`       // 工作目录（若可识别）
-	Preset          string `json:"preset,omitempty"` // proxy 路径才有
+	AppType         string `json:"appType"`         // claudecode / codex / opencode
+	Source          Source `json:"source"`          // session_log
+	Provider        string `json:"provider"`        // inferProviderFromURL 或 model_provider
+	Model           string `json:"model"`           // 原始模型名（未标准化）
+	NormalizedModel string `json:"normalizedModel"` // 标准化后用于匹配价格表
+	SessionID       string `json:"sessionId"`       // amagi session id 或外部 session 标识
+	ProjectDir      string `json:"projectDir"`      // 工作目录（若可识别）
+	Preset          string `json:"preset,omitempty"`
 
 	// 四维 token。
 	InputTokens              int `json:"inputTokens"`
@@ -79,11 +76,9 @@ type UsageRecord struct {
 	OccurredAt time.Time `json:"occurredAt"` // CLI 事件时间
 	RecordedAt time.Time `json:"recordedAt"` // 入库时间
 
-	// 调试（仅 proxy 路径填 amagi request_id）。
-	RequestID string `json:"requestId,omitempty"`
 }
 
-// UsageEvent 是从 proxy 或 jsonl 解析出的原始事件，进入 Service 后转为 UsageRecord。
+// UsageEvent 是从会话日志解析出的原始事件，进入 Service 后转为 UsageRecord。
 //
 // Service.Record 内部完成：
 //  1. NormalizedModel = NormalizeModelID(Model)
@@ -107,7 +102,6 @@ type UsageEvent struct {
 	CacheCreationInputTokens int
 
 	OccurredAt time.Time
-	RequestID  string // proxy 路径填
 	DedupKey   string // 可选；空则由 Service 按 AppType 约定生成
 
 	// OpenCode 专用：若 CostProvided=true，跳过价格表计算，直接用 NativeCost 作为 TotalCost

@@ -25,11 +25,6 @@ const router = createRouter({
       component: () => import('../views/ExtensionsView.vue')
     },
     {
-      path: '/rules',
-      name: 'Rules',
-      component: () => import('../views/RulesView.vue')
-    },
-    {
       path: '/envcheck',
       name: 'EnvCheck',
       component: () => import('../views/EnvCheckView.vue')

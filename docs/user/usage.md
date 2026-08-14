@@ -19,8 +19,7 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
 | `/` | `SessionSettingsView.vue` | 会话设置 | 配置并启动一个新的 AI 编程会话（应用默认页） |
 | `/terminal` | `TerminalPageView.vue` | 终端 | 显示当前选中会话的内嵌 xterm 终端 |
 | `/provider` | `ProviderCenterView.vue` | Provider Center | 统一管理服务提供商与各引擎预设 |
-| `/extensions` | `ExtensionsView.vue` | 扩展管理 | 管理 Claude / OpenCode / Codex 插件、工作区、环境变量 |
-| `/rules` | `RulesView.vue` | 注入规则 | 管理 API 注入规则与代理状态 |
+| `/extensions` | `ExtensionsView.vue` | 扩展管理 | 管理 Claude / OpenCode / Codex / Pi / OMP 插件与环境变量 |
 | `/envcheck` | `EnvCheckView.vue` | 环境检测 | CLI 工具安装状态、版本与 PATH 校验 |
 | `/logs` | `LogsView.vue` | 系统日志 | 查看应用运行日志与 Headroom 压缩统计 |
 | `/usage` | `UsageView.vue` | 使用统计 | 查看按模型归因的 Token、缓存命中与成本 |
@@ -65,17 +64,17 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
 
 ## Provider Center `/provider`（ProviderCenterView）
 
-统一管理服务提供商与各引擎预设。顶部页面描述："统一管理服务提供商与各引擎预设"。
+统一管理服务提供商与可跨 CLI 复用的公共预设。
 
 页面结构：
 
 - **一级 Pill 导航**（`Segmented`）：
     - **服务提供商**：以网格展示所有 provider，进入详情可编辑单个 provider。详见 [./providers.md](./providers.md)。
-    - **预设**（启动配置）：按引擎管理预设，下方提供二级下划线 Tab。
+    - **预设**（启动配置）：按协议格式管理公共预设，下方提供二级下划线 Tab。
 - **顶部右侧操作**：
     - **导出完整配置**：导出可迁移到新设备的完整 JSON 快照，包含明文密钥和环境变量，请妥善保管。
     - **导入完整配置**：从 v2 快照替换当前配置；旧 v1 Provider 配置仍可兼容导入。成功后请重启应用。
-- **预设区二级 Tab**：Claude Code / Codex / OpenCode。其中 OpenCode 预设较特殊，再下设"预设管理 / 全局配置"三级切换。
+- **预设区二级 Tab**：Anthropic 格式 / OpenAI 格式 / OpenCode。Claude Code 使用 Anthropic；Codex、Pi、OMP 共享 OpenAI；OpenCode 再下设"预设管理 / 全局配置"三级切换。
 
 Provider 与 Preset 的概念、字段含义与 `config.json` 结构详见 [./providers.md](./providers.md)。
 
@@ -83,33 +82,16 @@ Provider 与 Preset 的概念、字段含义与 `config.json` 结构详见 [./pr
 
 ## 扩展管理 `/extensions`（ExtensionsView）
 
-管理 Claude、OpenCode 与 Codex 插件、工作区与环境变量。顶部页面描述："管理 Claude、OpenCode 与 Codex 插件、工作区与环境变量"。
+管理 Claude、OpenCode、Codex、Pi 与 OMP 插件和环境变量。
 
 页面结构：
 
 - **一级 Pill 导航**：
-    - **Plugins**：下方再有 ClaudeCode / OpenCode / Codex 二级下划线 Tab。Claude 与 Codex 支持 marketplace；OpenCode 直接按模块地址安装，并展示全局配置中的插件。
-    - **Workspaces**：工作区面板（多工作空间创建、插件部署、冲突检测）。
+    - **Plugins**：下方再有 ClaudeCode / OpenCode / Codex / Pi / OMP 二级下划线 Tab。Claude 与 Codex 支持 marketplace；OpenCode 直接按模块地址安装，并展示全局配置中的插件。
     - **Environment**：环境变量面板（用户自定义环境变量，写入 `~/.amagi-codebox/envvars.json`）。
+    - **Other tools**：Headroom 等辅助工具。
 
-插件系统对应后端 `internal/plugin`、`internal/opencodeplugin` 与 `internal/codexplugin`；工作区对应 `internal/workspace`。
-
----
-
-## 注入规则 `/rules`（RulesView）
-
-管理 API 注入规则与代理状态。顶部页面描述："管理 API 注入规则与代理状态"。
-
-页面核心元素：
-
-- **代理控制卡片**：
-    - **状态指示**：运行中 / 已停止（彩色圆点）。
-    - **规则数量**：当前已配置的注入规则总数。
-    - **本地端口**：注入代理监听的本地端口（默认 `5280`）。
-    - **目标后端 URL**：下拉选择（来自历史记录）或输入，点击"保存"加入历史。
-- **规则列表**：维护具体的关键字匹配规则与待注入的 Prompt 内容。
-
-代理运行时不允许编辑端口与后端 URL，需先停止代理。后端实现位于 `internal/proxy`（"代理注入引擎"）。
+插件系统对应后端 `internal/plugin`、`internal/opencodeplugin`、`internal/codexplugin`、`internal/piplugin` 与 `internal/ompplugin`。
 
 ---
 
@@ -188,7 +170,7 @@ CLI 工具安装状态、版本与 PATH 校验。顶部页面描述："CLI 工�
 
 | 引擎 | 后端方法（`app.go`） | 关键参数 |
 |------|---------------------|----------|
-| ClaudeCode | `LaunchSession` | `providerName, presetName, mode, workDir, useProxy, useHeadroom, shellPath` |
+| ClaudeCode | `LaunchSession` | `providerName, presetName, mode, workDir, useHeadroom, shellPath` |
 | Codex | `LaunchCodexSession` | `modelName, providerID, mode, workDir, shellPath` |
 | OpenCode | `LaunchOpenCode` | `providerName, presetName, mode, workDir, shellPath` |
 

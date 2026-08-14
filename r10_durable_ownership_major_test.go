@@ -61,7 +61,7 @@ func TestR10_001_SlowReservePastShutdownBudgetCannotLateStart(t *testing.T) {
 			case "claude":
 				providerID := configureR6ClaudeProvider(t, app)
 				go func() {
-					_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, true, "")
+					_, err := app.LaunchSession(providerID, "", "terminal", workDir, true, "")
 					launchDone <- err
 				}()
 			case "codex":

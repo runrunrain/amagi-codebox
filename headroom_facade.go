@@ -1,14 +1,13 @@
 package main
 
-// proxy_headroom_facade.go — M3-A2 App-level desktop facade for the Proxy and
-// Headroom shared singletons (design §4.1, §6.3, §6.7).
+// Headroom facade and shared-service coordination for the desktop app
+// (design §4.1, §6.3, §6.7).
 //
-// These raw services are REMOVED from the Wails Bind list (C-01); the frontend
-// now reaches them only through these App-level methods. Mutation methods
+// These raw services are not in the Wails Bind list (C-01); the frontend
+// reaches them only through these App-level methods. Mutation methods
 // (Start/Stop/reconfigure) are lease-guarded by the SharedServiceCoordinator
 // (design §6.7 N-01): while any active/pending run lease exists, they are
-// stably rejected with raw call = 0. Read methods (GetRules/GetStatus/etc.)
-// pass through unconditionally.
+// stably rejected with raw call = 0. Read methods pass through unconditionally.
 
 import (
 	"context"
@@ -19,7 +18,6 @@ import (
 
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
 )
@@ -64,9 +62,6 @@ func (a *App) acquireSharedMutation(kind remote.SharedServiceKind, mutation remo
 // incompatible-config launches while a lease exists.
 func (a *App) sharedFingerprint(kind remote.SharedServiceKind) [32]byte {
 	switch kind {
-	case remote.SharedServiceClaudeProxy:
-		st := a.Proxy.GetStatus()
-		return sharedFingerprintForProxy(st.BackendURL, st.Port)
 	case remote.SharedServiceClaudeHeadroom:
 		st := a.Headroom.GetStatus()
 		return sharedFingerprintForHeadroom("claude-headroom", st.BackendURL, st.Port)
@@ -1077,89 +1072,10 @@ func (a *App) releaseSharedLeases(sessionID string) {
 }
 
 // ---------------------------------------------------------------------------
-// Proxy facade
-// ---------------------------------------------------------------------------
-
-// ProxyGetRules returns the current injection rules (read; no lease guard).
-func (a *App) ProxyGetRules() []proxy.InjectionRule { return a.Proxy.GetRules() }
-
-// ProxySetRules replaces all injection rules (mutation; lease-guarded).
-func (a *App) ProxySetRules(rules []proxy.InjectionRule) error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationReconfigure); err != nil {
-		return err
-	}
-	a.Proxy.SetRules(rules)
-	return nil
-}
-
-// ProxyAddRule adds a single injection rule (mutation; lease-guarded).
-func (a *App) ProxyAddRule(rule proxy.InjectionRule) error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationReconfigure); err != nil {
-		return err
-	}
-	return a.Proxy.AddRule(rule)
-}
-
-// ProxyUpdateRule updates an injection rule (mutation; lease-guarded).
-func (a *App) ProxyUpdateRule(rule proxy.InjectionRule) error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationReconfigure); err != nil {
-		return err
-	}
-	return a.Proxy.UpdateRule(rule)
-}
-
-// ProxyDeleteRule deletes an injection rule (mutation; lease-guarded).
-func (a *App) ProxyDeleteRule(id string) error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationReconfigure); err != nil {
-		return err
-	}
-	return a.Proxy.DeleteRule(id)
-}
-
-// ProxyLoadRules loads rules from the config dir (read; no lease guard).
-func (a *App) ProxyLoadRules(configDir string) error { return a.Proxy.LoadRules(configDir) }
-
-// ProxySaveRules persists rules to the config dir (mutation; lease-guarded).
-func (a *App) ProxySaveRules(configDir string) error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationReconfigure); err != nil {
-		return err
-	}
-	return a.Proxy.SaveRules(configDir)
-}
-
-// ProxyStart starts the injection proxy (mutation; lease-guarded).
-func (a *App) ProxyStart(port int, backendURL string) error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationStartDifferentConfig); err != nil {
-		return err
-	}
-	return a.Proxy.Start(port, backendURL)
-}
-
-// ProxyStop stops the injection proxy (mutation; lease-guarded).
-func (a *App) ProxyStop() error {
-	if err := a.checkSharedLease(remote.SharedServiceClaudeProxy, remote.MutationStop); err != nil {
-		return err
-	}
-	return a.Proxy.Stop()
-}
-
-// ProxyIsRunning reports whether the proxy is running (read).
-func (a *App) ProxyIsRunning() bool { return a.Proxy.IsRunning() }
-
-// ProxyGetStatus returns the proxy status (read).
-func (a *App) ProxyGetStatus() proxy.ProxyStatus { return a.Proxy.GetStatus() }
-
-// ProxyGetLogs returns recent injection logs (read).
-func (a *App) ProxyGetLogs() []proxy.InjectionLog { return a.Proxy.GetLogs() }
-
-// ProxyGetPort returns the proxy port (read).
-func (a *App) ProxyGetPort() int { return a.Proxy.GetPort() }
-
-// ---------------------------------------------------------------------------
 // Headroom facade
 // ---------------------------------------------------------------------------
 
-// HeadroomStart starts the Claude headroom proxy (mutation; lease-guarded).
+// HeadroomStart starts the Claude Headroom service (mutation; lease-guarded).
 func (a *App) HeadroomStart(realBackendURL string) error {
 	admission, err := a.acquireSharedMutation(remote.SharedServiceClaudeHeadroom, remote.MutationStartDifferentConfig)
 	if err != nil {
@@ -1169,7 +1085,7 @@ func (a *App) HeadroomStart(realBackendURL string) error {
 	return a.Headroom.Start(realBackendURL)
 }
 
-// HeadroomStop stops the Claude headroom proxy (mutation; lease-guarded).
+// HeadroomStop stops the Claude Headroom service (mutation; lease-guarded).
 func (a *App) HeadroomStop() error {
 	admission, err := a.acquireSharedMutation(remote.SharedServiceClaudeHeadroom, remote.MutationStop)
 	if err != nil {

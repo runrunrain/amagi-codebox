@@ -80,9 +80,9 @@ func (a appPTYRaw) DetachSession(sessionID string) (remote.BackendDetachReceipt,
 	return a.pty.DetachSession(sessionID)
 }
 
-func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, model string, mode session.LaunchMode, workdir string, useProxy bool) (*session.Session, *session.CreateReservation, error) {
+func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, model string, mode session.LaunchMode, workdir string) (*session.Session, *session.CreateReservation, error) {
 	if mode != session.ModeEmbedded {
-		created := a.Sessions.Create(appType, provider, preset, model, mode, workdir, useProxy)
+		created := a.Sessions.Create(appType, provider, preset, model, mode, workdir)
 		if created == nil {
 			return nil, nil, session.ErrAuthorityInvalidCreate
 		}
@@ -91,7 +91,7 @@ func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, mo
 	reservation, err := a.Sessions.ReserveCreate(session.CreateSpec{
 		AppType: appType, Origin: launchplan.OriginDesktop, Mode: launchplan.ModeEmbedded,
 		Workdir: workdir, RemoteEligible: true, Provider: provider, Preset: preset,
-		Model: model, UseProxy: useProxy,
+		Model: model,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -100,11 +100,10 @@ func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, mo
 	return &created, reservation, nil
 }
 
-func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string, useProxy, useHeadroom bool) launchplan.StableRecipe {
+func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string, useHeadroom bool) launchplan.StableRecipe {
 	return launchplan.StableRecipe{
 		CLIType: contract.CLIType(appType), Workdir: workdir, ProviderRef: provider,
-		PresetRef: preset, ModelRef: model, ShellRef: shell, UseProxy: useProxy,
-		UseHeadroom: useHeadroom,
+		PresetRef: preset, ModelRef: model, ShellRef: shell, UseHeadroom: useHeadroom,
 	}
 }
 
@@ -270,12 +269,6 @@ func (a *App) finalizeExternalAuthority(sessionID string, result *launcher.Launc
 	return nil
 }
 
-// sharedFingerprintForProxy computes a non-secret config fingerprint for the
-// Claude proxy singleton (design §6.7.1: canonical port/topology/upstream
-// digest, no credentials/rules body). A zero fingerprint is used when no
-// launch is in progress (the lease is acquired only by launches that use the
-// shared proxy).
-//
 // --- M2-A remote lifecycle raw port (design §4.2, §4.4) ---
 //
 // No production LaunchRawPort is wired: remote create remains fail-closed until
@@ -348,10 +341,6 @@ func isControlUnknownSession(err error) bool {
 		return ge.Kind == remote.DenySessionNotFound
 	}
 	return false
-}
-
-func sharedFingerprintForProxy(backendURL string, port int) [32]byte {
-	return sharedServiceFingerprint("claude-proxy", backendURL, port)
 }
 
 // sharedFingerprintForHeadroom computes SHA-256 over the exact service,

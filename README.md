@@ -6,7 +6,7 @@
 
 **管理 Claude Code / OpenCode / Codex 多服务提供商配置的跨平台桌面应用**
 
-[![Version](https://img.shields.io/badge/version-1.3.12-blue)](https://github.com/runrunrain/amagi-codebox)
+[![Version](https://img.shields.io/badge/version-1.3.13-blue)](https://github.com/runrunrain/amagi-codebox)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)](https://go.dev)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)
@@ -25,9 +25,7 @@
 - **多服务提供商**：Anthropic、OpenAI、GLM、MiniMax、Kimi 等，支持自定义添加
 - **预设配置管理**：每个提供商支持多套预设，可配置模型、温度、思考模式等
 - **API 密钥安全存储**：Windows DPAPI / macOS Keychain 加密存储
-- **代理注入引擎**：关键字匹配，自动注入自定义 Prompt
 - **三引擎插件管理**：管理 Claude Code、OpenCode 与 Codex 插件，支持安装/卸载/更新
-- **工作空间管理**：多工作空间创建、插件部署、冲突检测
 - **内嵌终端**：xterm.js + ConPTY/macOS PTY，多 Tab 并发运行
 - **远程控制**：HTTP API + WebSocket 终端桥接，支持移动端控制
 - **自动更新**：GitHub Releases 检测，支持 Windows 和 macOS 一键下载安装
@@ -77,7 +75,7 @@ Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译
 
 **绑定主干**：`main.go` 通过 Wails `Bind` 把 `App` 枢纽与 16 个服务 struct（共 17 个绑定）暴露给前端。`app.go` 是中央枢纽，持有所有服务指针并负责会话编排、环境检测、远程控制等跨服务协调。每个服务 struct 的导出方法会被 Wails 自动生成为 TypeScript 绑定（`frontend/wailsjs/go/`），前端经 `frontend/src/api/*.ts` 包装层与 Pinia store 调用。
 
-**后端服务包**：`internal/` 下 24 个服务包，各遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`（插件系统）、`proxy`（代理注入）、`headroom`（上下文压缩）、`remote`（远程控制）、`envcheck`（环境检测与修复）、`updater`（自动更新）、`workspace`（工作空间）等。
+**后端服务包**：`internal/` 下各服务包遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`（插件系统）、`headroom`（上下文压缩）、`remote`（远程控制）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
 
 **四种应用类型**：`claudecode` / `opencode` / `codex` / `pi`（外加已弃用的 `amagicode`）。`LaunchSession` 是会话启动核心入口，按预设解析提供商、编排代理与 headroom 链路、注入环境变量与 `--session-id`，最终在 PTY 中启动 CLI。
 
@@ -118,7 +116,6 @@ amagi-codebox/
 | `settings.json` | 应用设置（远程端口、移动端 Web 根、GitHub Token 等） |
 | `envvars.json` | 自定义环境变量 |
 | `settings_amagi.json` | Amagi 模型配置 |
-| `global-enabled.json` | 全局启用插件 |
 
 **提供商与预设模型**：每个 Provider 支持多套 Preset，Preset 携带 `Parameters`（模型、温度、max_tokens）、`ThinkingConfig`（思考模式）、`ContextWindowConfig`（上下文窗口）等。新安装使用干净初始环境，不预置服务提供商或终端预设，均由用户自定义添加或从完整配置导入。
 

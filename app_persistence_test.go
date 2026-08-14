@@ -12,13 +12,10 @@ import (
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/paths"
-	"amagi-codebox/internal/plugin"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
-	"amagi-codebox/internal/workspace"
 )
 
 type failingSecretStore struct {
@@ -48,10 +45,6 @@ func TestSaveAllConfigSkipsFailedStartupLoads(t *testing.T) {
 
 	writeFile(t, filepath.Join(configDir, "settings.json"), `{"dashboard":`)
 	writeFile(t, filepath.Join(configDir, "paths.json"), `{"paths":`)
-	writeFile(t, filepath.Join(configDir, "workspaces.json"), `{"workspaces":`)
-	writeFile(t, filepath.Join(configDir, "global-enabled.json"), `{"entries":[{"pluginId":"keep-me"}]}`)
-	writeFile(t, filepath.Join(configDir, "injection-rules.json"), `[{"id":`)
-	writeFile(t, filepath.Join(configDir, "proxy-backend-url-history.json"), `["https://keep.example",`)
 
 	cfgSvc := config.NewConfigService(configDir)
 	if err := cfgSvc.Load(); err != nil {
@@ -74,47 +67,28 @@ func TestSaveAllConfigSkipsFailedStartupLoads(t *testing.T) {
 		t.Fatal("expected secrets load to fail")
 	}
 
-	pluginSvc := plugin.NewService("", logSvc)
-	workspaceSvc := workspace.NewService(configDir, pluginSvc, logSvc)
-	if err := workspaceSvc.Load(); err == nil {
-		t.Fatal("expected workspace load to fail")
-	}
-
-	proxySvc := proxy.NewProxyService()
-	if err := proxySvc.LoadRules(configDir); err == nil {
-		t.Fatal("expected proxy rules load to fail")
-	}
-	if err := proxySvc.LoadBackendURLHistory(configDir); err == nil {
-		t.Fatal("expected proxy history load to fail")
-	}
-
 	envVarsSvc := envvars.NewEnvVarsService(configDir)
 	if err := envVarsSvc.Load(); err != nil {
 		t.Fatalf("load env vars: %v", err)
 	}
 
 	app := &App{
-		Config:     cfgSvc,
-		Secrets:    secretsSvc,
-		Paths:      pathsSvc,
-		Settings:   settingsSvc,
-		Workspaces: workspaceSvc,
-		Proxy:      proxySvc,
-		Log:        logSvc,
-		Sessions:   session.NewManager(),
-		Launcher:   launcher.NewLauncherService(logSvc, envVarsSvc),
-		Pty:        pty.NewService(logSvc),
-		EnvVars:    envVarsSvc,
+		Config:   cfgSvc,
+		Secrets:  secretsSvc,
+		Paths:    pathsSvc,
+		Settings: settingsSvc,
+		Log:      logSvc,
+		Sessions: session.NewManager(),
+		Launcher: launcher.NewLauncherService(logSvc, envVarsSvc),
+		Pty:      pty.NewService(logSvc),
+		EnvVars:  envVarsSvc,
 	}
 	app.setPersistentLoadState(persistentLoadState{
-		initialized:        true,
-		configLoaded:       true,
-		secretsLoaded:      false,
-		pathsLoaded:        false,
-		settingsLoaded:     false,
-		workspacesLoaded:   false,
-		proxyRulesLoaded:   false,
-		proxyHistoryLoaded: false,
+		initialized:    true,
+		configLoaded:   true,
+		secretsLoaded:  false,
+		pathsLoaded:    false,
+		settingsLoaded: false,
 	})
 
 	err := app.SaveAllConfig()
@@ -125,9 +99,6 @@ func TestSaveAllConfigSkipsFailedStartupLoads(t *testing.T) {
 		"secrets.enc",
 		"paths.json",
 		"settings.json",
-		"workspaces.json/global-enabled.json",
-		"injection-rules.json",
-		"proxy-backend-url-history.json",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("SaveAllConfig error should mention %q, got %v", want, err)
@@ -139,10 +110,6 @@ func TestSaveAllConfigSkipsFailedStartupLoads(t *testing.T) {
 
 	assertFileContent(t, filepath.Join(configDir, "settings.json"), `{"dashboard":`)
 	assertFileContent(t, filepath.Join(configDir, "paths.json"), `{"paths":`)
-	assertFileContent(t, filepath.Join(configDir, "workspaces.json"), `{"workspaces":`)
-	assertFileContent(t, filepath.Join(configDir, "global-enabled.json"), `{"entries":[{"pluginId":"keep-me"}]}`)
-	assertFileContent(t, filepath.Join(configDir, "injection-rules.json"), `[{"id":`)
-	assertFileContent(t, filepath.Join(configDir, "proxy-backend-url-history.json"), `["https://keep.example",`)
 }
 
 func writeFile(t *testing.T, path string, content string) {

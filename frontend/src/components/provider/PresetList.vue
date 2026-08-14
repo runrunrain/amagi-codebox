@@ -1,7 +1,6 @@
 <!--
-  PresetList - Claude Code / Codex / Pi / OMP 统一预设范式（对照 demo renderPresets + 旧 ProviderCenter）。
-  props.engine: 'claude' | 'codex' | 'pi' | 'omp'
-  数据来源：store.mergedPresets[engine]（GetMergedTerminalPresets，含内置默认 + 用户自定义，source 区分）
+  PresetList - Anthropic / OpenAI 公共格式预设。
+  Claude Code 消费 Anthropic；Codex / Pi / OMP 消费 OpenAI。
   卡片样式 .preset-card + .param.model 高亮模型参数。
   「添加预设」emit('add')，弹窗在 P7 批次实现。
 -->
@@ -62,8 +61,8 @@
         </div>
         <div class="preset-badges">
           <span v-if="p.model" class="param model">{{ p.model }}</span>
-          <!-- Claude Code：模型档位（非空才显示） -->
-          <template v-if="engine === 'claude'">
+          <!-- Anthropic / Claude Code 模型档位（非空才显示） -->
+          <template v-if="format === 'anthropic'">
             <span v-if="p.model_haiku" class="param tier">H: {{ p.model_haiku }}</span>
             <span v-if="p.model_sonnet" class="param tier">S: {{ p.model_sonnet }}</span>
             <span v-if="p.model_opus" class="param tier">O: {{ p.model_opus }}</span>
@@ -90,7 +89,7 @@
   <!-- 预设弹窗 -->
   <PresetDialog
     v-model:open="showPresetDialog"
-    :engine="engine"
+    :format="format"
     :preset="editingPreset"
     @saved="handlePresetSaved"
   />
@@ -122,7 +121,7 @@ import PresetDialog from './PresetDialog.vue';
 
 type MergedTerminalPreset = config.MergedTerminalPreset;
 
-const props = defineProps<{ engine: 'claude' | 'codex' | 'pi' | 'omp' }>();
+const props = defineProps<{ format: 'anthropic' | 'openai' }>();
 
 const store = useProviderStore();
 const { showSuccess, showError } = useToast();
@@ -144,13 +143,10 @@ const loading = ref(true);
 const error = ref('');
 
 const engineLabel = computed(() => {
-  if (props.engine === 'claude') return 'Claude Code';
-  if (props.engine === 'pi') return 'Pi';
-  if (props.engine === 'omp') return 'OMP';
-  return 'Codex';
+  return props.format === 'anthropic' ? 'Anthropic 格式' : 'OpenAI 格式';
 });
 
-const allPresets = computed<MergedTerminalPreset[]>(() => store.mergedPresets[props.engine] || []);
+const allPresets = computed<MergedTerminalPreset[]>(() => store.mergedPresets[props.format] || []);
 
 /** 按 Provider 维度聚合，供筛选 Chip 列出实际存在的 provider 名 */
 const providerNames = computed<string[]>(() => {
@@ -220,7 +216,7 @@ async function handlePresetSaved() {
   loading.value = true;
   error.value = '';
   try {
-    await store.loadPresets(props.engine, true);
+    await store.loadPresets(props.format, true);
   } catch (err) {
     error.value = String(err);
   } finally {
@@ -245,7 +241,7 @@ async function confirmDelete() {
   if (!target || deleting.value) return;
   deleting.value = true;
   try {
-    await store.deletePreset(props.engine, target.key);
+    await store.deletePreset(props.format, target.key);
     showSuccess('已删除预设');
   } catch (err) {
     console.error('[PresetList] 删除失败:', err);
@@ -262,7 +258,7 @@ async function initialLoad() {
   loading.value = true;
   error.value = '';
   try {
-    await store.loadPresets(props.engine, false);
+    await store.loadPresets(props.format, false);
   } catch (err) {
     error.value = String(err);
   } finally {

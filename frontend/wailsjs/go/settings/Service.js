@@ -34,6 +34,10 @@ export function GetRemoteHost() {
   return window['go']['settings']['Service']['GetRemoteHost']();
 }
 
+export function GetRemoteLaunchDefaultsV1() {
+  return window['go']['settings']['Service']['GetRemoteLaunchDefaultsV1']();
+}
+
 export function GetRemotePort() {
   return window['go']['settings']['Service']['GetRemotePort']();
 }
@@ -58,12 +62,20 @@ export function Load() {
   return window['go']['settings']['Service']['Load']();
 }
 
+export function RecordRemoteLaunchDefaultV1(arg1, arg2) {
+  return window['go']['settings']['Service']['RecordRemoteLaunchDefaultV1'](arg1, arg2);
+}
+
 export function RemoveSavedWorkDir(arg1) {
   return window['go']['settings']['Service']['RemoveSavedWorkDir'](arg1);
 }
 
 export function RemoveShellPath(arg1) {
   return window['go']['settings']['Service']['RemoveShellPath'](arg1);
+}
+
+export function ReplaceSettings(arg1) {
+  return window['go']['settings']['Service']['ReplaceSettings'](arg1);
 }
 
 export function Save() {

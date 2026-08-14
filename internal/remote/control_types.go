@@ -73,7 +73,7 @@ const (
 	controlSessionStopTotalTimeout = 4 * time.Second
 
 	// controlLaunchStepTimeout is the per-effect deadline for a single
-	// proxy/headroom/config/process start.
+	// shared service/config/process start.
 	controlLaunchStepTimeout = 5 * time.Second
 
 	// controlShutdownCleanupTimeout is the aggregate deadline for app shutdown
@@ -220,8 +220,7 @@ const (
 type LaunchEffectKind uint8
 
 const (
-	LaunchProxyStart LaunchEffectKind = iota + 1
-	LaunchHeadroomStart
+	LaunchHeadroomStart LaunchEffectKind = iota + 1
 	LaunchConfigMutation
 	LaunchPTYStart
 	LaunchProcessStart
@@ -400,8 +399,7 @@ type controlTransition struct {
 type SharedServiceKind uint8
 
 const (
-	SharedServiceClaudeProxy SharedServiceKind = iota + 1
-	SharedServiceClaudeHeadroom
+	SharedServiceClaudeHeadroom SharedServiceKind = iota + 1
 	SharedServiceCodexHeadroom
 )
 

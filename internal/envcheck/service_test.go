@@ -670,6 +670,57 @@ func TestCheckLatestVersion_CacheHit(t *testing.T) {
 	}
 }
 
+func TestEnrichWithLatestVersion_PiAndOmpUseNPMPackages(t *testing.T) {
+	tests := []struct {
+		name        string
+		tool        CLITool
+		packageName string
+		current     string
+		latest      string
+	}{
+		{
+			name:        "Pi",
+			tool:        ToolPi,
+			packageName: piNPMPackageName,
+			current:     "0.83.0",
+			latest:      "0.84.1",
+		},
+		{
+			name:        "Oh My Pi",
+			tool:        ToolOmp,
+			packageName: ompNPMPackageName,
+			current:     "17.2.10",
+			latest:      "17.3.0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &mockRunner{responses: []mockResponse{
+				responseFor("npm", tc.latest, nil),
+			}}
+			svc := NewServiceWithRunner(runner)
+			status := &CheckStatus{
+				Tool:      tc.tool,
+				Installed: true,
+				Version:   tc.current,
+			}
+
+			svc.enrichWithLatestVersion(status)
+
+			if status.LatestVersion != tc.latest {
+				t.Fatalf("LatestVersion = %q, want %q", status.LatestVersion, tc.latest)
+			}
+			if !status.HasUpdate {
+				t.Fatalf("HasUpdate = false for installed %s %s with latest %s", tc.name, tc.current, tc.latest)
+			}
+			if !runnerSawArgs(runner, "npm", "view", tc.packageName, "version") {
+				t.Fatalf("latest-version check did not query npm package %q; calls=%+v", tc.packageName, runner.calls)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 12. emptyOverallStatus / cloneOverallStatus
 // ---------------------------------------------------------------------------

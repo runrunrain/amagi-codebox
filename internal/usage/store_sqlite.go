@@ -222,7 +222,7 @@ func insertRecord(ctx context.Context, db *sql.DB, r UsageRecord) (bool, error) 
 		r.InputTokens, r.OutputTokens, r.CacheReadInputTokens, r.CacheCreationInputTokens,
 		r.BillableInputTokens,
 		r.InputCost, r.OutputCost, r.CacheReadCost, r.CacheCreationCost, r.TotalCost, r.CurrencyCode, r.CostProvided,
-		r.OccurredAt.UnixNano(), r.RecordedAt.UnixNano(), r.RequestID,
+		r.OccurredAt.UnixNano(), r.RecordedAt.UnixNano(), "",
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert usage record: %w", err)
@@ -264,7 +264,7 @@ func upsertRecord(ctx context.Context, db *sql.DB, r UsageRecord) (bool, error) 
 		r.InputTokens, r.OutputTokens, r.CacheReadInputTokens, r.CacheCreationInputTokens,
 		r.BillableInputTokens,
 		r.InputCost, r.OutputCost, r.CacheReadCost, r.CacheCreationCost, r.TotalCost, r.CurrencyCode, r.CostProvided,
-		r.OccurredAt.UnixNano(), r.RecordedAt.UnixNano(), r.RequestID,
+		r.OccurredAt.UnixNano(), r.RecordedAt.UnixNano(), "",
 	)
 	if err != nil {
 		return false, fmt.Errorf("upsert usage record: %w", err)

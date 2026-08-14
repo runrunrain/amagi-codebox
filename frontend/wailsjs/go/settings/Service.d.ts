@@ -18,6 +18,8 @@ export function GetRemoteEnabled():Promise<boolean>;
 
 export function GetRemoteHost():Promise<string>;
 
+export function GetRemoteLaunchDefaultsV1():Promise<Record<string, settings.RemoteLaunchDefaultV1>>;
+
 export function GetRemotePort():Promise<number>;
 
 export function GetSavedWorkDirs():Promise<Array<settings.WorkDirEntry>>;
@@ -30,9 +32,13 @@ export function GetTerminalSettings():Promise<settings.TerminalSettings>;
 
 export function Load():Promise<void>;
 
+export function RecordRemoteLaunchDefaultV1(arg1:string,arg2:settings.RemoteLaunchDefaultV1):Promise<void>;
+
 export function RemoveSavedWorkDir(arg1:string):Promise<void>;
 
 export function RemoveShellPath(arg1:string):Promise<void>;
+
+export function ReplaceSettings(arg1:settings.AppSettings):Promise<void>;
 
 export function Save():Promise<void>;
 

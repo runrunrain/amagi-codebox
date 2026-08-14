@@ -102,7 +102,6 @@ type CreateSpec struct {
 	Provider       string
 	Preset         string
 	Model          string
-	UseProxy       bool
 	StartedAt      time.Time
 }
 
@@ -308,7 +307,6 @@ func (m *Manager) ReserveCreate(spec CreateSpec) (*CreateReservation, error) {
 			WorkDir:   spec.Workdir,
 			Status:    StatusRunning,
 			StartedAt: startedAt,
-			UseProxy:  spec.UseProxy,
 		},
 		private: authorityPrivate{
 			origin:         spec.Origin,

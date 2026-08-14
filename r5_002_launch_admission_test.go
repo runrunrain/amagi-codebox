@@ -134,7 +134,7 @@ func TestR5_002_ExternalHeadroomLaunchAlsoRejectsBeforeHeadroomStart(t *testing.
 	}
 	defer app.sharedCoord.EndHeadroomUninstallDrain()
 
-	_, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	_, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if !errors.Is(err, remote.ErrSharedServiceInUse) {
 		t.Fatalf("external launch during drain error=%v want ErrSharedServiceInUse", err)
 	}
@@ -173,7 +173,7 @@ func TestR5_002_LaunchDuringHeadroomDrainHasZeroPreAdmissionSideEffectsAndCanRet
 	if empty := app.sharedCoord.BeginHeadroomUninstallDrain(); !empty {
 		t.Fatal("expected empty drain at test start")
 	}
-	_, err := app.LaunchSession(providerID, "", "embedded", t.TempDir(), false, true, "")
+	_, err := app.LaunchSession(providerID, "", "embedded", t.TempDir(), true, "")
 	if !errors.Is(err, remote.ErrSharedServiceInUse) {
 		t.Errorf("launch during drain error=%v want ErrSharedServiceInUse", err)
 	}
@@ -188,7 +188,7 @@ func TestR5_002_LaunchDuringHeadroomDrainHasZeroPreAdmissionSideEffectsAndCanRet
 	}
 
 	app.sharedCoord.EndHeadroomUninstallDrain()
-	_, retryErr := app.LaunchSession(providerID, "", "embedded", t.TempDir(), false, true, "")
+	_, retryErr := app.LaunchSession(providerID, "", "embedded", t.TempDir(), true, "")
 	if errors.Is(retryErr, remote.ErrSharedServiceInUse) {
 		t.Fatalf("retry after drain release remained rejected: %v", retryErr)
 	}

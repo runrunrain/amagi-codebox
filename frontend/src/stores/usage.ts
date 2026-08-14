@@ -50,7 +50,7 @@ export const useUsageStore = defineStore('usage', () => {
   const lastSyncedAt = ref<string>('');
 
   // === State: 筛选器 / Filter ===
-  // 默认 source=session_log：避免与 proxy 实时拦截双计（设计 §7.2）。
+  // 默认使用会话日志数据源。
   const filter = ref<SummaryFilter>(usageApi.createSummaryFilter());
   const trendDays = ref(30);
 

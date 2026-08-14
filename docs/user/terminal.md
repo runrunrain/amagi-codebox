@@ -167,7 +167,7 @@ OpenCode 等 TUI 启用 SGR/1006 鼠标报告后，xterm 会把鼠标事件转�
 
 ### 终端预设（TerminalPreset）
 
-`TerminalPreset`（`internal/config/types.go`）是按终端维度组织的预设容器，独立于 Provider。它只承载模型与参数，不含 shell 或字体。
+`TerminalPreset`（`internal/config/types.go`）是按 API 协议格式组织的公共预设，独立于 Provider。它只承载模型与参数，不含 shell 或字体。
 
 字段：
 
@@ -180,13 +180,12 @@ OpenCode 等 TUI 启用 SGR/1006 鼠标报告后，xterm 会把鼠标事件转�
 | Sonnet 档位模型 | `model_sonnet` | Claude Code 专用 |
 | Opus 档位模型 | `model_opus` | Claude Code 专用 |
 | 模型参数 | `parameters` | 透传给 CLI |
-| OpenCode 配置 | `opencode_cfg` | 仅 `opencode` 类型使用，原始 JSON 对象 |
+当前分组（`TerminalPresetsConfig`）：
 
-类型分组（`TerminalPresetsConfig`）：
+- `anthropic`：Claude Code 使用的公共预设
+- `openai`：Codex、Pi、OMP 共享的公共预设
 
-- `claude_code`：Claude Code 终端预设
-- `opencode`：OpenCode 终端预设
-- `codex`：Codex 终端预设
+OpenCode 不属于这两类，使用独立的 `opencode_presets` 完整配置。历史 `opencode_cfg` 字段只保留给旧数据迁移。
 
 > 任务规格曾提到"TerminalPreset（shell/字体等）"。实际代码中，shell 不在 TerminalPreset 内，字体在 `useTerminalEngine.ts` 硬编码——见下一节。
 

@@ -6,10 +6,6 @@ export function AcknowledgeRemoteSecurityHealth(arg1) {
   return window['go']['main']['App']['AcknowledgeRemoteSecurityHealth'](arg1);
 }
 
-export function AddProxyBackendURL(arg1) {
-  return window['go']['main']['App']['AddProxyBackendURL'](arg1);
-}
-
 export function AddSavedWorkDir(arg1, arg2) {
   return window['go']['main']['App']['AddSavedWorkDir'](arg1, arg2);
 }
@@ -154,6 +150,10 @@ export function GetKeyDiagnostics() {
   return window['go']['main']['App']['GetKeyDiagnostics']();
 }
 
+export function GetLaunchCompensationDebts() {
+  return window['go']['main']['App']['GetLaunchCompensationDebts']();
+}
+
 export function GetLogFileContent(arg1) {
   return window['go']['main']['App']['GetLogFileContent'](arg1);
 }
@@ -200,10 +200,6 @@ export function GetProviderExportJSON(arg1) {
 
 export function GetProvidersByType(arg1) {
   return window['go']['main']['App']['GetProvidersByType'](arg1);
-}
-
-export function GetProxyBackendURLHistory() {
-  return window['go']['main']['App']['GetProxyBackendURLHistory']();
 }
 
 export function GetPtyDimensions(arg1) {
@@ -314,8 +310,8 @@ export function LaunchPiSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchPiSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function ListRemoteDevices() {
@@ -338,58 +334,6 @@ export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
 }
 
-export function ProxyAddRule(arg1) {
-  return window['go']['main']['App']['ProxyAddRule'](arg1);
-}
-
-export function ProxyDeleteRule(arg1) {
-  return window['go']['main']['App']['ProxyDeleteRule'](arg1);
-}
-
-export function ProxyGetLogs() {
-  return window['go']['main']['App']['ProxyGetLogs']();
-}
-
-export function ProxyGetPort() {
-  return window['go']['main']['App']['ProxyGetPort']();
-}
-
-export function ProxyGetRules() {
-  return window['go']['main']['App']['ProxyGetRules']();
-}
-
-export function ProxyGetStatus() {
-  return window['go']['main']['App']['ProxyGetStatus']();
-}
-
-export function ProxyIsRunning() {
-  return window['go']['main']['App']['ProxyIsRunning']();
-}
-
-export function ProxyLoadRules(arg1) {
-  return window['go']['main']['App']['ProxyLoadRules'](arg1);
-}
-
-export function ProxySaveRules(arg1) {
-  return window['go']['main']['App']['ProxySaveRules'](arg1);
-}
-
-export function ProxySetRules(arg1) {
-  return window['go']['main']['App']['ProxySetRules'](arg1);
-}
-
-export function ProxyStart(arg1, arg2) {
-  return window['go']['main']['App']['ProxyStart'](arg1, arg2);
-}
-
-export function ProxyStop() {
-  return window['go']['main']['App']['ProxyStop']();
-}
-
-export function ProxyUpdateRule(arg1) {
-  return window['go']['main']['App']['ProxyUpdateRule'](arg1);
-}
-
 export function PtyResize(arg1, arg2, arg3) {
   return window['go']['main']['App']['PtyResize'](arg1, arg2, arg3);
 }
@@ -402,16 +346,12 @@ export function PtyWriteLarge(arg1, arg2) {
   return window['go']['main']['App']['PtyWriteLarge'](arg1, arg2);
 }
 
-export function QuickLaunch(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3, arg4);
+export function QuickLaunch(arg1, arg2, arg3) {
+  return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
 }
 
 export function RegenerateRemoteToken() {
   return window['go']['main']['App']['RegenerateRemoteToken']();
-}
-
-export function RemoveProxyBackendURL(arg1) {
-  return window['go']['main']['App']['RemoveProxyBackendURL'](arg1);
 }
 
 export function RemoveSavedWorkDir(arg1) {
@@ -428,6 +368,10 @@ export function RemoveUrlFromHistory(arg1, arg2) {
 
 export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
+}
+
+export function RetryLaunchCompensationDebt(arg1) {
+  return window['go']['main']['App']['RetryLaunchCompensationDebt'](arg1);
 }
 
 export function RevokeRemoteDevice(arg1, arg2) {
@@ -484,10 +428,6 @@ export function SetGitHubToken(arg1) {
 
 export function SetPluginSubItemEnabled(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetPluginSubItemEnabled'](arg1, arg2, arg3, arg4);
-}
-
-export function SetProxyBackendURL(arg1) {
-  return window['go']['main']['App']['SetProxyBackendURL'](arg1);
 }
 
 export function SetRemoteEndpoint(arg1, arg2) {

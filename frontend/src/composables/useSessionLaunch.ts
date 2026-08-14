@@ -167,7 +167,6 @@ export function useSessionLaunch() {
           presetName: dashState.preset,
           mode: dashState.claudeMode,
           workDir: dashState.workDir,
-          useProxy: dashState.useProxy,
           useHeadroom: dashState.useHeadroom,
           shellPath: dashState.claudeMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })

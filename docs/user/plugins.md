@@ -1,6 +1,6 @@
 # 插件系统
 
-面向 Amagi CodeBox 的终端用户。本篇说明应用内插件管理的三类引擎（Claude Code、OpenCode 与 Codex）、各自的安装与管理路径、工作空间部署与冲突检测，以及跨引擎子项启停的统一入口。Amagi CodeBox 不自行实现插件运行时；安装和更新优先调用各 CLI 的正式命令，并在其上叠加配置读取、资源展示、子项级启停和工作空间部署等能力。
+面向 Amagi CodeBox 的终端用户。本篇说明应用内插件管理的三类引擎（Claude Code、OpenCode 与 Codex）、各自的安装与管理路径，以及跨引擎子项启停的统一入口。Amagi CodeBox 不自行实现插件运行时；安装和更新优先调用各 CLI 的正式命令，并在其上叠加配置读取、资源展示和子项级启停等能力。
 
 相关参考：
 
@@ -27,8 +27,6 @@ Amagi CodeBox 在 CLI 之上添加的能力：
 
 - **市场聚合视图**：把多个市场的可安装插件聚合到统一列表。
 - **子项级启停**（仅 Claude 真正落盘）：在插件内部按 skill / agent / command / hook / mcp / claude 子项粒度启用或禁用。
-- **工作空间部署**：把全局或工作空间级启用项部署到目标目录，并维护部署清单。
-- **冲突检测**：在部署前识别目标文件、用户文件、MCP key、手动修改过的托管文件等冲突。
 
 > 不在范围内：插件本身的开发、签名、运行时沙箱。这些由各 CLI 自身负责。
 
@@ -195,66 +193,6 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 
 ---
 
-## 工作空间部署
-
-工作空间（`internal/workspace`）把插件部署到具体目录，目标工具包括 Claude、OpenCode、Cursor、VSCode（`ToolType`）。
-
-### 持久化文件
-
-| 路径 | 内容 |
-|------|------|
-| `~/.amagi-codebox/workspaces.json` | 工作空间列表 |
-| `~/.amagi-codebox/global-enabled.json` | 全局启用项（`Entries: []GlobalEnabled`） |
-| `~/.amagi-codebox/global-deploy-manifest.json` | 全局部署清单 |
-| `<workspacePath>/.amagi-codebox-deploy-manifest.json`（待核实：实际路径与命名） | 工作空间级部署清单 |
-
-`GlobalEnabled` 结构：
-
-```go
-type GlobalEnabled struct {
-    PluginID        string              `json:"pluginId"`
-    EnabledAll      bool                `json:"enabledAll"`
-    EnabledSubItems []plugin.SubItemRef `json:"enabledSubItems"`
-    Tools           []ToolType          `json:"tools"`
-    DeployedAt      string              `json:"deployedAt"`
-}
-```
-
-校验规则（`validateGlobalEnabled`）：
-
-- `PluginID` 不能为空。
-- `EnabledAll == false` 时，`EnabledSubItems` 必须非空；否则被拒绝（拒绝"部分启用但一个都没选"的状态，避免静默无效状态）。
-- `Tools` 至少一个有效工具类型。
-
-### 部署流程
-
-`SetGlobalEnabled(entries)` 是写全局启用并触发重新部署的入口：
-
-1. `preflightGlobalOwnershipMigration`：检查现有部署归属，避免与待写入条目冲突。
-2. `validateGlobalEnabled`：拒绝不合法条目。
-3. `buildGlobalPlan`：基于 entries + 工具集构建部署计划（按 SubItemRef 展开为具体文件 / MCP key 操作）。
-4. 应用到所有受影响的工作空间（`applyWorkspaceOwnershipMigration` + `migrateWorkspacePluginSelections`）。
-5. 返回 `DeployResult`：含 warnings / conflicts / manifest / deployed / removed。
-
-工作空间级部署（`SourceScopeWorkspace`）走类似流程，但作用域为单个工作空间路径。
-
-### 冲突检测
-
-`CheckConflicts(pluginID, scope, target)` 在实际部署前识别冲突。冲突类型（`ConflictType`）：
-
-| 类型 | 含义 | 默认 blocking |
-|------|------|---------------|
-| `target_path` | 多个插件试图写入同一目标路径 | 是 |
-| `user_file` | 目标路径已被识别为用户手写文件 | 是 |
-| `mcp_key` | MCP server key 冲突 | 是 |
-| `modified_file` | 托管文件在部署后被手动修改，当前操作不会覆盖 | 是 |
-
-`managedTargetModified(root, target, entries)` 通过校验和判定托管文件是否被手动改动；被改动的文件不会被覆盖，避免用户编辑丢失。
-
-> 待核实：工作空间级 manifest 文件的确切文件名与位置；移动 / 重命名工作空间目录后旧 manifest 的清理策略。
-
----
-
 ## 配置文件汇总
 
 | 文件 | 写入方 | 用途 |
@@ -262,14 +200,11 @@ type GlobalEnabled struct {
 | `~/.claude/plugins/installed_plugins.json` | `claude` CLI | Claude 已安装插件注册表（真相源） |
 | `~/.claude/plugins/marketplaces.json`（待核实：确切文件名） | `claude` CLI | Claude 市场注册 |
 | `~/.amagi-codebox/plugin-subitems.json` | Amagi CodeBox（`plugin.Service`） | Claude 插件子项禁用列表 |
-| `~/.amagi-codebox/workspaces.json` | Amagi CodeBox（`workspace.Service`） | 工作空间列表 |
-| `~/.amagi-codebox/global-enabled.json` | Amagi CodeBox（`workspace.Service`） | 全局启用项 |
-| `~/.amagi-codebox/global-deploy-manifest.json` | Amagi CodeBox（`workspace.Service`） | 全局部署清单 |
 | `~/.config/opencode/opencode.json` / `opencode.jsonc` | `opencode` CLI；卸载时可能由 CodeBox 更新 | OpenCode 全局插件列表 |
 | `~/.cache/opencode/packages/` | `opencode` CLI | OpenCode 插件包缓存 |
 | `~/.codex/` 下的状态与缓存（待核实：具体文件名） | `codex` CLI | Codex 插件状态 |
 
-> 这些文件建议通过应用 UI 维护，不要手工编辑。手工编辑可能破坏 `tmp + rename` 原子写入约定、manifest 校验和契约或两引擎的 ID 对齐。
+> 这些文件建议通过应用 UI 维护，不要手工编辑。手工编辑可能破坏 `tmp + rename` 原子写入约定或不同插件引擎的 ID 对齐。
 
 ---
 

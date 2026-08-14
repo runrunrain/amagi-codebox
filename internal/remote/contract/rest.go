@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // PairingCompleteRequest is the body of POST /pairing/complete. It is the only
@@ -29,6 +30,59 @@ type CLIAvailability struct {
 	Available bool    `json:"available"` // required, no omitempty (false is meaningful)
 }
 
+// LaunchPathOption is a non-secret, host-owned path choice exposed to an
+// authorized remote client. Path values are launch inputs, never credentials.
+type LaunchPathOption struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
+}
+
+// LaunchProviderOption exposes only the stable provider reference and display
+// metadata needed by the remote launcher. URLs, environment and API keys are
+// deliberately absent.
+type LaunchProviderOption struct {
+	Ref          string `json:"ref"`
+	Label        string `json:"label"`
+	Kind         string `json:"kind,omitempty"`
+	DefaultModel string `json:"defaultModel,omitempty"`
+}
+
+// LaunchPresetOption is the safe projection of a host terminal preset. Ref is
+// the stable key accepted by CreateSessionRequest; it never contains secrets.
+type LaunchPresetOption struct {
+	Ref         string `json:"ref"`
+	Label       string `json:"label"`
+	ProviderRef string `json:"providerRef,omitempty"`
+	ModelRef    string `json:"modelRef,omitempty"`
+}
+
+// LaunchDefaults is the last successfully activated desktop recipe for one
+// CLI. It contains stable references and booleans only.
+type LaunchDefaults struct {
+	ProviderRef string `json:"providerRef,omitempty"`
+	PresetRef   string `json:"presetRef,omitempty"`
+	ModelRef    string `json:"modelRef,omitempty"`
+	ShellRef    string `json:"shellRef,omitempty"`
+	UseHeadroom bool   `json:"useHeadroom"`
+}
+
+// CLILaunchSettings groups the safe choices for one frozen CLI type.
+type CLILaunchSettings struct {
+	CLIType   CLIType                `json:"cliType"`
+	Providers []LaunchProviderOption `json:"providers"`
+	Presets   []LaunchPresetOption   `json:"presets"`
+	Defaults  *LaunchDefaults        `json:"defaults,omitempty"`
+}
+
+// LaunchSettings is the complete non-secret settings surface used to create a
+// remote terminal session. It is optional on HostSummary for additive v1
+// compatibility with older hosts/fixtures.
+type LaunchSettings struct {
+	Workdirs []LaunchPathOption  `json:"workdirs"`
+	Shells   []LaunchPathOption  `json:"shells"`
+	CLIs     []CLILaunchSettings `json:"clis"`
+}
+
 // HostSummary is the body of GET /host/summary. It exposes the API version and
 // CLI availability, but never Provider API Key, RemoteToken, exported JSON or
 // environment variable values.
@@ -36,6 +90,7 @@ type HostSummary struct {
 	APIVersion      APIVersion        `json:"apiVersion"`
 	ServerVersion   string            `json:"serverVersion"`
 	CLIAvailability []CLIAvailability `json:"cliAvailability"`
+	LaunchSettings  *LaunchSettings   `json:"launchSettings,omitempty"`
 }
 
 // PairingCompleteResponse is the 201 body of POST /pairing/complete. The device
@@ -78,12 +133,17 @@ type SessionDetail struct {
 }
 
 // CreateSessionRequest is the body of POST /sessions. cliType is required;
-// workdir is optional (omitted means the host default directory). v1 does not
-// carry provider/preset/model/apiKey; the host resolves launch context from its
-// own config.
+// all other fields are optional safe launch selections. API keys, provider
+// URLs and environment values never cross this boundary: the host resolves
+// stable references against its own configuration and secret store.
 type CreateSessionRequest struct {
-	CLIType CLIType `json:"cliType"`
-	Workdir *string `json:"workdir,omitempty"`
+	CLIType     CLIType `json:"cliType"`
+	Workdir     *string `json:"workdir,omitempty"`
+	ProviderRef *string `json:"providerRef,omitempty"`
+	PresetRef   *string `json:"presetRef,omitempty"`
+	ModelRef    *string `json:"modelRef,omitempty"`
+	ShellRef    *string `json:"shellRef,omitempty"`
+	UseHeadroom *bool   `json:"useHeadroom,omitempty"`
 }
 
 // ConfirmActionRequest is the body of stop/restart/delete. confirm MUST be
@@ -158,14 +218,13 @@ func DecodePairingCompleteRequest(raw []byte) (PairingCompleteRequest, error) {
 }
 
 // DecodeCreateSessionRequest strictly decodes a create-session request:
-// exactly {cliType, workdir?}, cliType required known CLI, workdir optional
-// non-empty.
+// cliType required known CLI; optional string selections must be non-empty.
 func DecodeCreateSessionRequest(raw []byte) (CreateSessionRequest, error) {
 	f, err := strictFields(raw)
 	if err != nil {
 		return CreateSessionRequest{}, err
 	}
-	if err := rejectUnknown(f, "cliType", "workdir"); err != nil {
+	if err := rejectUnknown(f, "cliType", "workdir", "providerRef", "presetRef", "modelRef", "shellRef", "useHeadroom"); err != nil {
 		return CreateSessionRequest{}, err
 	}
 	cli, err := reqField[CLIType](f, "cliType")
@@ -183,6 +242,29 @@ func DecodeCreateSessionRequest(raw []byte) (CreateSessionRequest, error) {
 			return req, errors.New("contract: workdir must be non-empty when present")
 		}
 		req.Workdir = &wd
+	}
+	for key, target := range map[string]**string{
+		"providerRef": &req.ProviderRef,
+		"presetRef":   &req.PresetRef,
+		"modelRef":    &req.ModelRef,
+		"shellRef":    &req.ShellRef,
+	} {
+		value, ok, err := optFieldT[string](f, key)
+		if err != nil {
+			return req, err
+		}
+		if ok {
+			if strings.TrimSpace(value) == "" {
+				return req, fmt.Errorf("contract: %s must be non-empty when present", key)
+			}
+			value = strings.TrimSpace(value)
+			*target = &value
+		}
+	}
+	if value, ok, err := optFieldT[bool](f, "useHeadroom"); err != nil {
+		return req, err
+	} else if ok {
+		req.UseHeadroom = &value
 	}
 	return req, nil
 }
@@ -214,6 +296,41 @@ func DecodeConfirmActionRequest(raw []byte) (ConfirmActionRequest, error) {
 func validateCLIAvailability(c CLIAvailability) error {
 	if !isKnownCLIType(c.CLIType) {
 		return fmt.Errorf("contract: cliType %q is not a known CLI type", c.CLIType)
+	}
+	return nil
+}
+
+func validateLaunchSettings(s *LaunchSettings) error {
+	if s == nil {
+		return nil
+	}
+	if s.Workdirs == nil || s.Shells == nil || s.CLIs == nil {
+		return errors.New("contract: LaunchSettings slices must not be nil")
+	}
+	seenCLI := make(map[CLIType]bool, len(s.CLIs))
+	for _, item := range s.CLIs {
+		if !isKnownCLIType(item.CLIType) || seenCLI[item.CLIType] {
+			return fmt.Errorf("contract: invalid or duplicate launch settings CLI %q", item.CLIType)
+		}
+		seenCLI[item.CLIType] = true
+		if item.Providers == nil || item.Presets == nil {
+			return fmt.Errorf("contract: launch settings for %q must use non-nil option slices", item.CLIType)
+		}
+		for _, option := range item.Providers {
+			if strings.TrimSpace(option.Ref) == "" || strings.TrimSpace(option.Label) == "" {
+				return errors.New("contract: launch provider ref and label must be non-empty")
+			}
+		}
+		for _, option := range item.Presets {
+			if strings.TrimSpace(option.Ref) == "" || strings.TrimSpace(option.Label) == "" {
+				return errors.New("contract: launch preset ref and label must be non-empty")
+			}
+		}
+	}
+	for _, option := range append(append([]LaunchPathOption{}, s.Workdirs...), s.Shells...) {
+		if strings.TrimSpace(option.Path) == "" || strings.TrimSpace(option.Label) == "" {
+			return errors.New("contract: launch path and label must be non-empty")
+		}
 	}
 	return nil
 }
@@ -259,7 +376,7 @@ func validateHostSummary(h HostSummary) error {
 			return fmt.Errorf("contract: HostSummary.CLIAvailability missing CLIType %q", k)
 		}
 	}
-	return nil
+	return validateLaunchSettings(h.LaunchSettings)
 }
 
 // ValidateControlSnapshot enforces the conditional union on State.

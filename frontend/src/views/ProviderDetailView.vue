@@ -184,10 +184,8 @@ import { useToast } from '../composables/useToast';
 import {
   HasAPIKey,
   GetAPIKey,
-  SetAPIKey,
-  DeleteAPIKey,
-  Save as SaveSecrets,
 } from '../../wailsjs/go/secrets/SecretsService';
+import { getProviderExportJSON, saveProviderFromJSON } from '../api/provider';
 
 const emit = defineEmits<{
   back: [];
@@ -364,21 +362,9 @@ async function saveApiKey() {
   if (!id || !inputValue.value) return;
   loading.value = true;
   try {
-    await SetAPIKey(id, inputValue.value);
-    await SaveSecrets();
-    // 清理 legacy 格式 key（best-effort）
-    for (const suffix of [':anthropic', ':openai']) {
-      try {
-        await DeleteAPIKey(id + suffix);
-      } catch {
-        /* key may not exist */
-      }
-    }
-    try {
-      await SaveSecrets();
-    } catch {
-      /* ignore */
-    }
+    const exportObj = JSON.parse(await getProviderExportJSON(id));
+    exportObj.api_key = inputValue.value;
+    await saveProviderFromJSON(id, JSON.stringify(exportObj));
     await store.loadProviders();
     await loadKey();
     cancelEdit();
@@ -396,15 +382,10 @@ async function deleteApiKey() {
   if (!id) return;
   loading.value = true;
   try {
-    const keysToDelete = [id, id + ':anthropic', id + ':openai'];
-    for (const key of keysToDelete) {
-      try {
-        await DeleteAPIKey(key);
-      } catch {
-        /* key may not exist */
-      }
-    }
-    await SaveSecrets();
+    const exportObj = JSON.parse(await getProviderExportJSON(id));
+    exportObj.api_key = '';
+    exportObj.clear_api_key = true;
+    await saveProviderFromJSON(id, JSON.stringify(exportObj));
     actualKey.value = '';
     keyVisible.value = false;
     confirmDelete.value = false;

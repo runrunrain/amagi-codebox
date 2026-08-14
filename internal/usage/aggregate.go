@@ -476,13 +476,13 @@ func (s *Service) queryRequestLogs(ctx context.Context, filter LogFilter) ([]Usa
 	for rows.Next() {
 		var r UsageRecord
 		var occurredNano, recordedNano int64
-		var source string
+		var source, legacyRequestID string
 		if err := rows.Scan(
 			&r.ID, &r.DedupKey, &r.AppType, &source, &r.Provider, &r.Model, &r.NormalizedModel,
 			&r.SessionID, &r.ProjectDir, &r.Preset,
 			&r.InputTokens, &r.OutputTokens, &r.CacheReadInputTokens, &r.CacheCreationInputTokens, &r.BillableInputTokens,
 			&r.InputCost, &r.OutputCost, &r.CacheReadCost, &r.CacheCreationCost, &r.TotalCost, &r.CurrencyCode,
-			&r.CostProvided, &occurredNano, &recordedNano, &r.RequestID,
+			&r.CostProvided, &occurredNano, &recordedNano, &legacyRequestID,
 		); err != nil {
 			return nil, err
 		}

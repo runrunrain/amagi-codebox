@@ -47,7 +47,6 @@ type DashboardDefaults struct {
 	AmagiCodeMode string `json:"amagiCodeMode"`
 	// Deprecated: retained only so legacy settings.json files can still be decoded.
 	AmagiCodeShell string `json:"amagiCodeShell"`
-	UseProxy       bool   `json:"useProxy"`
 	UseHeadroom    bool   `json:"useHeadroom"`
 	// CodexGlobalHeadroom enables a second, independent headroom instance that
 	// compresses Codex desktop traffic globally. Unlike UseHeadroom (which is a
@@ -78,7 +77,6 @@ type RemoteLaunchDefaultV1 struct {
 	PresetRef   string `json:"presetRef,omitempty"`
 	ModelRef    string `json:"modelRef,omitempty"`
 	ShellRef    string `json:"shellRef,omitempty"`
-	UseProxy    bool   `json:"useProxy,omitempty"`
 	UseHeadroom bool   `json:"useHeadroom,omitempty"`
 }
 

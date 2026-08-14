@@ -280,7 +280,7 @@ func TestR6_001_ClaudeExternalRunRejectsStopAndUninstallUntilStopSucceeds(t *tes
 	app, fake, _ := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
 
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if err != nil {
 		t.Fatalf("LaunchSession: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestR6_001_InstantExternalCrashDoesNotLeakLease(t *testing.T) {
 	providerID := configureR6ClaudeProvider(t, app)
 	fake.onStarted = fake.finish // crash after OS start succeeds but before App returns
 
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if err != nil {
 		t.Fatalf("LaunchSession with instant crash: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestR6_001_InstantExternalCrashDoesNotLeakLease(t *testing.T) {
 
 func TestR6_001_ExternalRemoveReleasesExactLease(t *testing.T) {
 	app, _, _ := newR6ExternalLeaseApp(t)
-	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "", "m", session.ModeTerminal, t.TempDir(), false)
+	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "", "m", session.ModeTerminal, t.TempDir())
 	admission, err := app.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceClaudeHeadroom)
 	if err != nil {
 		t.Fatalf("AcquireLaunchAdmission: %v", err)
@@ -392,7 +392,7 @@ func TestR6_001_ExternalLaunchFailureAndShutdownRaceDoNotLeak(t *testing.T) {
 		app, fake, _ := newR6ExternalLeaseApp(t)
 		providerID := configureR6ClaudeProvider(t, app)
 		fake.launchErr = errors.New("injected launcher failure")
-		if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, ""); err == nil {
+		if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, ""); err == nil {
 			t.Fatal("LaunchSession unexpectedly succeeded")
 		}
 		if got := app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom); got != 0 {
@@ -411,7 +411,7 @@ func TestR6_001_ExternalLaunchFailureAndShutdownRaceDoNotLeak(t *testing.T) {
 		app, fake, _ := newR6ExternalLeaseApp(t)
 		providerID := configureR6ClaudeProvider(t, app)
 		fake.onStarted = func(string) { app.sharedCoord.ClearAll() }
-		if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, ""); !errors.Is(err, remote.ErrSharedCoordinatorClosed) {
+		if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, ""); !errors.Is(err, remote.ErrSharedCoordinatorClosed) {
 			t.Fatalf("launch/shutdown race error=%v want ErrSharedCoordinatorClosed", err)
 		}
 		if fake.callsToStop() != 1 {
@@ -465,7 +465,7 @@ func TestR6_001_PromotionAndCompensationDoubleFailureTransfersAdmissionToRecover
 	var startedID string
 	fake.onStarted = func(id string) { startedID = id }
 	fake.setStopError(errors.New("injected compensation stop failure"))
-	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, ""); !errors.Is(err, remote.ErrSharedServiceInUse) {
+	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, ""); !errors.Is(err, remote.ErrSharedServiceInUse) {
 		t.Fatalf("LaunchSession error=%v want promotion ErrSharedServiceInUse", err)
 	}
 	if startedID == "" || !fake.IsRunning(startedID) {

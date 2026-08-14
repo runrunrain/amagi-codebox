@@ -48,6 +48,8 @@ export function RenameProvider(arg1:string,arg2:string):Promise<void>;
 
 export function ReplaceImportedPresetSnapshots(arg1:config.TerminalPresetsConfig,arg2:Record<string, config.OpenCodePreset>,arg3:boolean):Promise<void>;
 
+export function ReplaceProviders(arg1:Record<string, config.Provider>):Promise<void>;
+
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
 export function Save():Promise<void>;

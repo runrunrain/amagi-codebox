@@ -25,10 +25,51 @@ export interface CLIAvailability {
   available: boolean; // required; false is meaningful (no omitempty)
 }
 
+export interface LaunchPathOption {
+  path: string;
+  label: string;
+}
+
+export interface LaunchProviderOption {
+  ref: string;
+  label: string;
+  kind?: string;
+  defaultModel?: string;
+}
+
+export interface LaunchPresetOption {
+  ref: string;
+  label: string;
+  providerRef?: string;
+  modelRef?: string;
+}
+
+export interface LaunchDefaults {
+  providerRef?: string;
+  presetRef?: string;
+  modelRef?: string;
+  shellRef?: string;
+  useHeadroom: boolean;
+}
+
+export interface CLILaunchSettings {
+  cliType: CLIType;
+  providers: LaunchProviderOption[];
+  presets: LaunchPresetOption[];
+  defaults?: LaunchDefaults;
+}
+
+export interface LaunchSettings {
+  workdirs: LaunchPathOption[];
+  shells: LaunchPathOption[];
+  clis: CLILaunchSettings[];
+}
+
 export interface HostSummary {
   apiVersion: APIVersion;
   serverVersion: string;
   cliAvailability: CLIAvailability[]; // one entry per frozen CLI type
+  launchSettings?: LaunchSettings;
 }
 
 export interface PairingCompleteResponse {
@@ -68,6 +109,11 @@ export type SessionList = SessionSummary[];
 export interface CreateSessionRequest {
   cliType: CLIType;
   workdir?: string;
+  providerRef?: string;
+  presetRef?: string;
+  modelRef?: string;
+  shellRef?: string;
+  useHeadroom?: boolean;
 }
 
 /**

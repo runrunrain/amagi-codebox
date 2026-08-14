@@ -78,6 +78,8 @@
 
 Key DTO invariants:
 - `ConfirmActionRequest.confirm` MUST be literal `true`.
+- `HostSummary.launchSettings` 是可选的增量字段，仅向已配对设备暴露工作目录、Shell、provider/preset/model 的稳定引用与开关；不含 URL、环境变量或密钥。
+- `CreateSessionRequest` 除 `cliType`/`workdir` 外可携带 `providerRef`、`presetRef`、`modelRef`、`shellRef`、`useHeadroom`，宿主必须用本地配置与密钥存储解析这些引用。
 - `ControlSnapshot` is a 4-variant union on `state`; `deviceName` present ONLY when `state="other"`.
 - `SessionDetail.earliestSeq`/`latestSeq` required even when 0.
 - Response bodies NEVER carry `credential`/`token`/`apiKey`/`remoteToken`/`cookie`. Pairing `code` appears ONLY in `PairingCompleteRequest`.

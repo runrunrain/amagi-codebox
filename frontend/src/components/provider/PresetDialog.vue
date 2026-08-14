@@ -41,9 +41,9 @@
         />
       </div>
 
-      <!-- Claude Code 模型档位（可选，留空表示不覆盖该档） -->
-      <div v-if="engine === 'claude'" class="form-section">
-        <div class="form-section-title">Claude Code 模型档位（可选）</div>
+      <!-- Anthropic / Claude Code 模型档位（可选） -->
+      <div v-if="format === 'anthropic'" class="form-section">
+        <div class="form-section-title">Claude Code 模型档位（Anthropic 格式可选）</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Haiku</label>
@@ -76,7 +76,7 @@
       </div>
 
       <!-- 参数设置 -->
-      <div v-if="engine === 'claude' || engine === 'codex' || engine === 'pi' || engine === 'omp'" class="form-section">
+      <div class="form-section">
         <div class="form-section-title">参数设置（留空使用默认值）</div>
         <div class="form-row">
           <div class="form-group">
@@ -126,8 +126,8 @@
       </div>
 
       <!-- Thinking 模式 -->
-      <div v-if="engine === 'claude' || engine === 'pi' || engine === 'omp'" class="form-section">
-        <div class="form-section-title">Thinking 模式</div>
+      <div class="form-section">
+        <div class="form-section-title">Thinking 模式（由兼容 CLI 按能力映射）</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Thinking 模式</label>
@@ -153,7 +153,7 @@
 
       <!-- 推理强度 / 思考强度 -->
       <div class="form-section">
-        <div class="form-section-title">推理强度（{{ engine === 'pi' ? 'Pi Thinking Level' : engine === 'omp' ? 'OMP Thinking Level' : engine === 'codex' ? 'Codex Reasoning Effort' : 'Claude Code Effort Level' }}）</div>
+        <div class="form-section-title">推理强度（{{ format === 'anthropic' ? 'Claude Code Effort Level' : 'Codex / Pi / OMP 共用' }}）</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">推理强度</label>
@@ -222,7 +222,7 @@ import AppButton from '../ui/AppButton.vue';
 
 interface Props {
   open?: boolean;
-  engine: 'claude' | 'codex' | 'pi' | 'omp';
+  format: 'anthropic' | 'openai';
   preset?: config.MergedTerminalPreset | null;
 }
 
@@ -241,24 +241,23 @@ const loading = ref(false);
 
 // terminalType 映射
 const terminalType = computed(() => {
-  if (props.engine === 'claude') return 'claude_code';
-  if (props.engine === 'pi') return 'pi';
-  if (props.engine === 'omp') return 'omp';
-  return 'codex';
+  return props.format;
 });
 
 // 可用的 Provider 名称
-const providerNames = computed(() => Object.keys(store.providers));
+const providerNames = computed(() => Object.entries(store.providers)
+  .filter(([, provider]) => {
+    const p = provider as any;
+    return props.format === 'anthropic' ? !!p.anthropic?.enabled : !!p.openai?.enabled;
+  })
+  .map(([name]) => name));
 
 // 是否编辑模式
 const isEditing = computed(() => !!props.preset);
 
 // 标题
 const engineTitle = computed(() => {
-  if (props.engine === 'claude') return 'Claude Code';
-  if (props.engine === 'pi') return 'Pi';
-  if (props.engine === 'omp') return 'OMP';
-  return 'Codex';
+  return props.format === 'anthropic' ? 'Anthropic 格式' : 'OpenAI 格式';
 });
 const title = computed(() => (isEditing.value ? '编辑' : '添加') + ' ' + engineTitle.value + ' 预设');
 
@@ -374,7 +373,7 @@ async function handleSave() {
     if (form.model) terminalPreset.model = form.model;
 
     // Claude Code 模型档位（使用下划线命名，与旧代码一致）
-    if (props.engine === 'claude') {
+    if (props.format === 'anthropic') {
       if (form.modelHaiku) terminalPreset.model_haiku = form.modelHaiku;
       if (form.modelSonnet) terminalPreset.model_sonnet = form.modelSonnet;
       if (form.modelOpus) terminalPreset.model_opus = form.modelOpus;
@@ -388,7 +387,7 @@ async function handleSave() {
     if (form.streamValue !== '') {
       parameters.stream = form.streamValue === 'true';
     }
-    if ((props.engine === 'claude' || props.engine === 'pi' || props.engine === 'omp') && form.thinkingType) {
+    if (form.thinkingType) {
       parameters.thinking = {
         type: form.thinkingType,
         budgetTokens: form.thinkingBudget,

@@ -11,10 +11,8 @@ import (
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/paths"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/usage"
-	"amagi-codebox/internal/workspace"
 )
 
 const completeConfigExportVersion = "2.0"
@@ -23,24 +21,17 @@ const completeConfigExportVersion = "2.0"
 // export. Runtime history, logs, usage.db, paired devices, generated deployment
 // manifests and installed plugin files are deliberately outside this contract.
 type portableConfigSnapshot struct {
-	Settings       *settings.AppSettings     `json:"settings"`
-	Paths          *paths.PathsConfig        `json:"paths"`
-	EnvVars        *envvars.PortableConfig   `json:"env_vars"`
-	Secrets        *map[string]string        `json:"secrets"`
-	Workspaces     *workspace.PortableConfig `json:"workspaces"`
-	Proxy          *portableProxyConfig      `json:"proxy"`
-	Pricing        *usage.PricingData        `json:"pricing"`
-	OpenCodeConfig json.RawMessage           `json:"opencode_global_config"`
-}
-
-type portableProxyConfig struct {
-	Rules             []proxy.InjectionRule `json:"rules"`
-	BackendURLHistory []string              `json:"backend_url_history"`
+	Settings       *settings.AppSettings   `json:"settings"`
+	Paths          *paths.PathsConfig      `json:"paths"`
+	EnvVars        *envvars.PortableConfig `json:"env_vars"`
+	Secrets        *map[string]string      `json:"secrets"`
+	Pricing        *usage.PricingData      `json:"pricing"`
+	OpenCodeConfig json.RawMessage         `json:"opencode_global_config"`
 }
 
 func (p portableConfigSnapshot) validate() error {
 	if p.Settings == nil || p.Paths == nil || p.EnvVars == nil || p.Secrets == nil ||
-		p.Workspaces == nil || p.Proxy == nil || p.Pricing == nil {
+		p.Pricing == nil {
 		return errors.New("complete config snapshot is missing one or more required sections")
 	}
 	if len(p.OpenCodeConfig) == 0 || !json.Valid(p.OpenCodeConfig) {
@@ -60,7 +51,7 @@ func (p portableConfigSnapshot) validate() error {
 
 func (a *App) buildCompleteExportConfig() (config.ExportConfig, error) {
 	if a.Config == nil || a.Secrets == nil || a.Settings == nil || a.Paths == nil ||
-		a.EnvVars == nil || a.Workspaces == nil || a.Proxy == nil || a.Usage == nil ||
+		a.EnvVars == nil || a.Usage == nil ||
 		a.OpenCodeConfig == nil {
 		return config.ExportConfig{}, errors.New("configuration services are not initialized")
 	}
@@ -89,8 +80,6 @@ func (a *App) buildCompleteExportConfig() (config.ExportConfig, error) {
 		Paths:          pointerTo(a.Paths.GetConfig()),
 		EnvVars:        pointerTo(a.EnvVars.GetPortableConfig()),
 		Secrets:        &secretsSnapshot,
-		Workspaces:     pointerTo(a.Workspaces.GetPortableConfig()),
-		Proxy:          &portableProxyConfig{Rules: a.Proxy.GetRules(), BackendURLHistory: a.Proxy.GetBackendURLHistory()},
 		Pricing:        pointerTo(a.Usage.Pricing().Snapshot()),
 		OpenCodeConfig: json.RawMessage(openCodeConfig),
 	}
@@ -184,7 +173,7 @@ func importedProvidersAndSecrets(exported config.ExportConfig, baseSecrets map[s
 // restored from the captured pre-import snapshot on a best-effort basis.
 func (a *App) applyCompleteConfig(exported config.ExportConfig, portable portableConfigSnapshot, hasExplicitOpenCodeSnapshot bool) (err error) {
 	if a.Config == nil || a.Secrets == nil || a.Settings == nil || a.Paths == nil ||
-		a.EnvVars == nil || a.Workspaces == nil || a.Proxy == nil || a.Usage == nil ||
+		a.EnvVars == nil || a.Usage == nil ||
 		a.OpenCodeConfig == nil {
 		return errors.New("configuration services are not initialized")
 	}
@@ -238,16 +227,10 @@ func (a *App) applyCompleteConfig(exported config.ExportConfig, portable portabl
 	if err = a.EnvVars.ReplacePortableConfig(*portable.EnvVars); err != nil {
 		return fmt.Errorf("replace environment variables: %w", err)
 	}
-	if err = a.Workspaces.ReplacePortableConfig(*portable.Workspaces); err != nil {
-		return fmt.Errorf("replace workspaces: %w", err)
-	}
-	if err = a.Proxy.ReplacePortableConfig(portable.Proxy.Rules, portable.Proxy.BackendURLHistory); err != nil {
-		return fmt.Errorf("replace proxy config: %w", err)
-	}
 	if err = a.Usage.Pricing().ReplaceSnapshot(*portable.Pricing); err != nil {
 		return fmt.Errorf("replace pricing: %w", err)
 	}
-	if err = a.OpenCodeConfig.SaveOpenCodeConfig(string(portable.OpenCodeConfig)); err != nil {
+	if err = a.SaveOpenCodeConfig(string(portable.OpenCodeConfig)); err != nil {
 		return fmt.Errorf("replace OpenCode global config: %w", err)
 	}
 
@@ -280,7 +263,7 @@ func validateCompleteImportServices(a *App, providers map[string]config.Provider
 		return err
 	}
 	if exported.TerminalPresets != nil {
-		for _, terminalType := range config.ValidTerminalPresetTypes() {
+		for _, terminalType := range config.CompatibleTerminalPresetTypes() {
 			for key, preset := range exported.TerminalPresets.GetMap(terminalType) {
 				if err := configService.SaveTerminalPreset(string(terminalType), key, preset); err != nil {
 					return fmt.Errorf("terminal preset %s/%s: %w", terminalType, key, err)
@@ -309,20 +292,6 @@ func validateCompleteImportServices(a *App, providers map[string]config.Provider
 		return err
 	}
 	if err := pathsService.ReplaceConfig(*portable.Paths); err != nil {
-		return err
-	}
-	workspaceService := workspace.NewService(validationDir, a.Plugins, a.Log)
-	if err := workspaceService.Load(); err != nil {
-		return err
-	}
-	if err := workspaceService.ReplacePortableConfig(*portable.Workspaces); err != nil {
-		return err
-	}
-	proxyService := proxy.NewProxyService()
-	if err := proxyService.LoadRules(validationDir); err != nil {
-		return err
-	}
-	if err := proxyService.ReplacePortableConfig(portable.Proxy.Rules, portable.Proxy.BackendURLHistory); err != nil {
 		return err
 	}
 	pricingService := usage.NewPricingService(validationDir)
@@ -359,8 +328,6 @@ func (a *App) restoreCompleteConfig(exported config.ExportConfig, portable porta
 	var restoreErr error
 	restoreErr = errors.Join(restoreErr, a.OpenCodeConfig.SaveOpenCodeConfig(string(portable.OpenCodeConfig)))
 	restoreErr = errors.Join(restoreErr, a.Usage.Pricing().ReplaceSnapshot(*portable.Pricing))
-	restoreErr = errors.Join(restoreErr, a.Proxy.ReplacePortableConfig(portable.Proxy.Rules, portable.Proxy.BackendURLHistory))
-	restoreErr = errors.Join(restoreErr, a.Workspaces.ReplacePortableConfig(*portable.Workspaces))
 	restoreErr = errors.Join(restoreErr, a.EnvVars.ReplacePortableConfig(*portable.EnvVars))
 	restoreErr = errors.Join(restoreErr, a.Paths.ReplaceConfig(*portable.Paths))
 	restoreErr = errors.Join(restoreErr, a.Settings.ReplaceSettings(*portable.Settings))
@@ -371,5 +338,6 @@ func (a *App) restoreCompleteConfig(exported config.ExportConfig, portable porta
 	restoreErr = errors.Join(restoreErr, a.Config.ReplaceProviders(providers))
 	restoreErr = errors.Join(restoreErr, a.Config.SetAgentTeams(exported.AgentTeams))
 	restoreErr = errors.Join(restoreErr, a.Config.ReplaceImportedPresetSnapshots(exported.TerminalPresets, exported.OpenCodePresets, true))
+	restoreErr = errors.Join(restoreErr, a.syncProvidersToHarnesses())
 	return restoreErr
 }

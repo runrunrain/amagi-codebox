@@ -42,7 +42,7 @@ func (a *b2aSpyApp) GetSessions() []session.SessionInfo {
 func (a *b2aSpyApp) GetSession(string) (session.SessionInfo, error) {
 	return session.SessionInfo{}, errors.New("n/a")
 }
-func (a *b2aSpyApp) LaunchSession(string, string, string, string, bool, bool, string) (string, error) {
+func (a *b2aSpyApp) LaunchSession(string, string, string, string, bool, string) (string, error) {
 	return "", errors.New("n/a")
 }
 func (a *b2aSpyApp) LaunchCodexSession(string, string, string, string, string) (string, error) {

@@ -185,8 +185,8 @@ func WriteOmpAgentConfig(agentDir string, cfg map[string]any) error {
 // MergeOmpModelsConfig 把 agentDir/models.yml 的现有内容并入待写入的 cfg。
 // 它用于 CodeBox 直接共用 ~/.omp/agent 时保留用户已有的 providers 及其他顶层
 // 字段（如 equivalence 等）。"amagi-" 是 CodeBox 的保留命名空间：旧的托管
-// provider 会先被清除，只保留 cfg 中本次生成的条目，避免失效的历史条目导致 omp
-// 拒绝整份 models.yml，进而让当前有效 provider 也变成 Unknown provider。
+// provider 的全量清理由 ReconcileOmpAgentConfig 负责；本函数只用于启动时覆盖当前
+// provider，必须保留已由统一同步写入的其他 amagi provider。
 func MergeOmpModelsConfig(cfg map[string]any, agentDir string) map[string]any {
 	if strings.TrimSpace(agentDir) == "" {
 		return cfg
@@ -196,30 +196,7 @@ func MergeOmpModelsConfig(cfg map[string]any, agentDir string) map[string]any {
 		return cfg
 	}
 
-	existingProviders, _ := existing["providers"].(map[string]any)
-	managedProviders := piProviderEntries(cfg["providers"])
-	providers := make(map[string]any, len(existingProviders)+len(managedProviders))
-	for key, value := range existingProviders {
-		if strings.HasPrefix(key, "amagi-") {
-			continue
-		}
-		providers[key] = value
-	}
-	for key, value := range managedProviders {
-		providers[key] = value
-	}
-
-	merged := make(map[string]any, len(existing)+len(cfg))
-	for key, value := range existing {
-		merged[key] = value
-	}
-	for key, value := range cfg {
-		merged[key] = value
-	}
-	if len(providers) > 0 {
-		merged["providers"] = providers
-	}
-	return merged
+	return mergeProviderConfig(existing, cfg, false)
 }
 
 // readOmpYAMLObject 读取 YAML 配置为 map[string]any；文件缺失或解析失败按空

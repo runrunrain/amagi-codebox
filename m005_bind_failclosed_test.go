@@ -64,7 +64,7 @@ func wireTestControl(t *testing.T, app *App) *remote.ControlRuntime {
 // process; the gate entry is what we assert against.)
 func registerGateSession(t *testing.T, app *App) string {
 	t.Helper()
-	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	sid := sess.ID
 	app.Sessions.MarkStopped(sid) // manager.Remove rejects running records
 	rt := app.control
@@ -144,7 +144,7 @@ func TestM005_StopSession_NoRawCloseBypass(t *testing.T) {
 func TestM005_RemoveSession_LegacyRecordWhenControlUnavailable(t *testing.T) {
 	app := newTestApp(t)
 	// control intentionally NOT wired (nil) — simulates pre-Startup.
-	rec := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	rec := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	app.Sessions.MarkStopped(rec.ID)
 	if err := app.RemoveSession(rec.ID); err != nil {
 		t.Fatalf("RemoveSession legacy record with control unavailable: %v", err)

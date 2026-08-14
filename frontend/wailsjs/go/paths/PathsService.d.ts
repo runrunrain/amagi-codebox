@@ -4,6 +4,8 @@ import {paths} from '../models';
 
 export function AddPath(arg1:paths.PathEntry):Promise<void>;
 
+export function GetConfig():Promise<paths.PathsConfig>;
+
 export function GetDefaultPath():Promise<string>;
 
 export function GetPaths():Promise<Array<paths.PathEntry>>;
@@ -11,6 +13,8 @@ export function GetPaths():Promise<Array<paths.PathEntry>>;
 export function Load():Promise<void>;
 
 export function RemovePath(arg1:string):Promise<void>;
+
+export function ReplaceConfig(arg1:paths.PathsConfig):Promise<void>;
 
 export function Save():Promise<void>;
 

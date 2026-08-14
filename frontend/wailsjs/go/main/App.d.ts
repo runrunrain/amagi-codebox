@@ -8,15 +8,13 @@ import {main} from '../models';
 import {config} from '../models';
 import {envvars} from '../models';
 import {headroom} from '../models';
+import {launchplan} from '../models';
 import {logging} from '../models';
 import {paths} from '../models';
 import {platform} from '../models';
 import {session} from '../models';
-import {proxy} from '../models';
 
 export function AcknowledgeRemoteSecurityHealth(arg1:string):Promise<remote.SecurityHealthSnapshot>;
-
-export function AddProxyBackendURL(arg1:string):Promise<void>;
 
 export function AddSavedWorkDir(arg1:string,arg2:string):Promise<Array<settings.WorkDirEntry>>;
 
@@ -90,6 +88,8 @@ export function GetHeadroomSavings():Promise<headroom.SavingsReport>;
 
 export function GetKeyDiagnostics():Promise<Record<string, Record<string, string>>>;
 
+export function GetLaunchCompensationDebts():Promise<Array<launchplan.CompensationDebt>>;
+
 export function GetLogFileContent(arg1:string):Promise<string>;
 
 export function GetLogFiles():Promise<Array<string>>;
@@ -113,8 +113,6 @@ export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>
 export function GetProviderExportJSON(arg1:string):Promise<string>;
 
 export function GetProvidersByType(arg1:string):Promise<Record<string, config.Provider>>;
-
-export function GetProxyBackendURLHistory():Promise<Array<string>>;
 
 export function GetPtyDimensions(arg1:string):Promise<number>;
 
@@ -170,7 +168,7 @@ export function LaunchOpenCode(arg1:string,arg2:string,arg3:string,arg4:string,a
 
 export function LaunchPiSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
-export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:boolean,arg7:string):Promise<string>;
+export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<string>;
 
 export function ListRemoteDevices():Promise<Array<remote.DeviceInfo>>;
 
@@ -182,43 +180,15 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
-export function ProxyAddRule(arg1:proxy.InjectionRule):Promise<void>;
-
-export function ProxyDeleteRule(arg1:string):Promise<void>;
-
-export function ProxyGetLogs():Promise<Array<proxy.InjectionLog>>;
-
-export function ProxyGetPort():Promise<number>;
-
-export function ProxyGetRules():Promise<Array<proxy.InjectionRule>>;
-
-export function ProxyGetStatus():Promise<proxy.ProxyStatus>;
-
-export function ProxyIsRunning():Promise<boolean>;
-
-export function ProxyLoadRules(arg1:string):Promise<void>;
-
-export function ProxySaveRules(arg1:string):Promise<void>;
-
-export function ProxySetRules(arg1:Array<proxy.InjectionRule>):Promise<void>;
-
-export function ProxyStart(arg1:number,arg2:string):Promise<void>;
-
-export function ProxyStop():Promise<void>;
-
-export function ProxyUpdateRule(arg1:proxy.InjectionRule):Promise<void>;
-
 export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function PtyWrite(arg1:string,arg2:string):Promise<void>;
 
 export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 
-export function QuickLaunch(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<void>;
+export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
-
-export function RemoveProxyBackendURL(arg1:string):Promise<void>;
 
 export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;
 
@@ -227,6 +197,8 @@ export function RemoveSession(arg1:string):Promise<void>;
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
+
+export function RetryLaunchCompensationDebt(arg1:string):Promise<void>;
 
 export function RevokeRemoteDevice(arg1:string,arg2:boolean):Promise<remote.RevokeDeviceResult>;
 
@@ -255,8 +227,6 @@ export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.Global
 export function SetGitHubToken(arg1:string):Promise<void>;
 
 export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
-
-export function SetProxyBackendURL(arg1:string):Promise<void>;
 
 export function SetRemoteEndpoint(arg1:string,arg2:number):Promise<void>;
 

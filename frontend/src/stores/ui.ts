@@ -10,8 +10,7 @@ export const useUIStore = defineStore('ui', () => {
   // Settings mode state
   const settingsMode = ref(false);
 
-  // Active setting page key (general/shell/terminal/remote/update/rules/about)
-  // 注：envcheck 已升为主页导航（EnvCheckView），rules 下沉到设置页
+  // Active setting page key (general/shell/terminal/remote/update/about)
   const activeSettingKey = ref<string>('general');
 
   // Current view ID

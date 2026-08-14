@@ -178,15 +178,6 @@
           </div>
         </div>
 
-        <!-- 启用注入代理 -->
-        <div class="setting-row">
-          <label>启用注入代理</label>
-          <Switch
-            :model-value="dashState.useProxy"
-            @update:model-value="dashState.useProxy = $event"
-          />
-        </div>
-
         <!-- 启用 Headroom 上下文压缩 -->
         <div class="setting-row">
           <label>启用 Headroom 上下文压缩</label>
@@ -649,16 +640,16 @@ async function loadProviders() {
 
 async function loadTerminalPresets() {
   try {
-    const [claude, codex, pi, omp] = await Promise.all([
-      providerApi.getMergedTerminalPresets('claude_code'),
-      providerApi.getMergedTerminalPresets('codex'),
-      providerApi.getMergedTerminalPresets('pi'),
-      providerApi.getMergedTerminalPresets('omp'),
+    const [anthropic, openai] = await Promise.all([
+      providerApi.getMergedTerminalPresets('anthropic'),
+      providerApi.getMergedTerminalPresets('openai'),
     ])
-    claudePresets.value = claude || []
-    codexPresets.value = codex || []
-    piPresets.value = pi || []
-    ompPresets.value = omp || []
+    claudePresets.value = anthropic || []
+    // Codex / Pi / OMP consume one shared OpenAI-format preset collection.
+    const sharedOpenAI = openai || []
+    codexPresets.value = sharedOpenAI
+    piPresets.value = sharedOpenAI
+    ompPresets.value = sharedOpenAI
   } catch (err) {
     console.error('Failed to load terminal presets:', err)
   }

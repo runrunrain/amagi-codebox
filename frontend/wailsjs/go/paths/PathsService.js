@@ -6,6 +6,10 @@ export function AddPath(arg1) {
   return window['go']['paths']['PathsService']['AddPath'](arg1);
 }
 
+export function GetConfig() {
+  return window['go']['paths']['PathsService']['GetConfig']();
+}
+
 export function GetDefaultPath() {
   return window['go']['paths']['PathsService']['GetDefaultPath']();
 }
@@ -20,6 +24,10 @@ export function Load() {
 
 export function RemovePath(arg1) {
   return window['go']['paths']['PathsService']['RemovePath'](arg1);
+}
+
+export function ReplaceConfig(arg1) {
+  return window['go']['paths']['PathsService']['ReplaceConfig'](arg1);
 }
 
 export function Save() {

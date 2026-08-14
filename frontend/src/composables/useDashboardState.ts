@@ -27,7 +27,6 @@ const state = reactive({
   piMode: 'embedded',
   ompMode: 'embedded',
   workDir: '',
-  useProxy: false,
   useHeadroom: false,
   // Codex 全局 headroom 开关由独立的设置入口（App.SetCodexGlobalHeadroom）管理，
   // 不属于本仪表盘表单。这里仅缓存后端持久化值，在 persistDefaults 时原样回写，
@@ -79,7 +78,6 @@ export function useDashboardState() {
       state.codexShell = d.codexShell || d.shell || shellFallback
       state.piShell = d.piShell || d.shell || shellFallback
       state.ompShell = d.ompShell || d.shell || shellFallback
-      state.useProxy = d.useProxy || false
       state.useHeadroom = d.useHeadroom || false
       state.codexGlobalHeadroom = d.codexGlobalHeadroom || false
       state.codexGlobalHeadroomTarget = d.codexGlobalHeadroomTarget || ''
@@ -128,7 +126,6 @@ export function useDashboardState() {
         amagiCodePreset: '',
         amagiCodeMode: '',
         amagiCodeShell: '',
-        useProxy: state.useProxy,
         useHeadroom: state.useHeadroom,
         // Pass-through placeholders (see function doc above) — backend ignores.
         codexGlobalHeadroom: state.codexGlobalHeadroom,
@@ -152,7 +149,6 @@ export function useDashboardState() {
     state.ompProvider = ''
     state.ompModel = ''
     state.workDir = ''
-    state.useProxy = false
     state.useHeadroom = false
     state.initialized = false
   }

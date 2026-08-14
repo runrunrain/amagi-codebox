@@ -434,11 +434,25 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 	if req.Workdir != nil {
 		workdir = *req.Workdir
 	}
+	stableRefs := &launchplan.StableLaunchRefs{}
+	if req.ProviderRef != nil {
+		stableRefs.ProviderRef = *req.ProviderRef
+	}
+	if req.PresetRef != nil {
+		stableRefs.PresetRef = *req.PresetRef
+	}
+	if req.ModelRef != nil {
+		stableRefs.ModelRef = *req.ModelRef
+	}
+	if req.ShellRef != nil {
+		stableRefs.ShellRef = *req.ShellRef
+	}
+	stableRefs.UseHeadroom = req.UseHeadroom
 
 	// 1. BuildPlan (pure read, zero side effects).
 	plan, failure := planner.BuildPlan(ctx, launchplan.BuildRequest{
 		CLIType: req.CLIType, Origin: launchplan.OriginRemote,
-		Mode: launchplan.ModeEmbedded, Workdir: workdir,
+		Mode: launchplan.ModeEmbedded, Workdir: workdir, StableRefs: stableRefs,
 	})
 	if failure != nil {
 		if plan != nil {
@@ -470,7 +484,6 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 		Provider:       plan.Recipe.ProviderRef,
 		Preset:         plan.Recipe.PresetRef,
 		Model:          plan.Recipe.ModelRef,
-		UseProxy:       plan.Recipe.UseProxy,
 	})
 	if reserveErr != nil {
 		plan.Secrets.Dispose()
@@ -754,8 +767,6 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 // SharedServiceKind. Returns false for unknown kinds.
 func sharedKindFromPlan(planKind launchplan.SharedServiceKind) (SharedServiceKind, bool) {
 	switch planKind {
-	case launchplan.SharedClaudeProxy:
-		return SharedServiceClaudeProxy, true
 	case launchplan.SharedClaudeHeadroom:
 		return SharedServiceClaudeHeadroom, true
 	case launchplan.SharedCodexHeadroom:
@@ -770,8 +781,6 @@ func launchEffectKindForSpec(spec launchplan.EffectSpec) LaunchEffectKind {
 	switch spec.Kind {
 	case launchplan.EffectHeadroomStart:
 		return LaunchHeadroomStart
-	case launchplan.EffectProxyStart:
-		return LaunchProxyStart
 	case launchplan.EffectConfigMutation:
 		return LaunchConfigMutation
 	case launchplan.EffectPTYStart:

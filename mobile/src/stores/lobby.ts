@@ -36,6 +36,7 @@ import {
   type CLIType,
   type ControlSnapshot,
   type HostSummary,
+  type CreateSessionRequest,
   type SessionID,
   type SessionSummary,
 } from '../lib/contract';
@@ -285,8 +286,9 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   }
 
   const cliAvailability = computed(() => host.value?.cliAvailability ?? []);
-  const runningCount = computed(() => sessions.value.filter((s) => s.state === 'running').length);
-  const controlledCount = computed(() => sessions.value.filter((s) => s.control.state === 'you').length);
+  const visibleSessions = computed(() => sessions.value.filter((s) => s.state === 'running'));
+  const runningCount = computed(() => visibleSessions.value.length);
+  const controlledCount = computed(() => visibleSessions.value.filter((s) => s.control.state === 'you').length);
 
   function handleAuthFailure(err: ApiRequestError): boolean {
     if (err.code === ERROR_CODE_AUTH_REVOKED) {
@@ -312,7 +314,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
       host.value = nextHost;
       try {
         const list = await listSessions();
-        sessions.value = list;
+        sessions.value = list.filter((item) => item.state === 'running');
         loadError.value = null;
       } catch (rawErr) {
         const err = toApiRequestError(rawErr);
@@ -335,7 +337,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   async function refreshSessions(): Promise<void> {
     try {
       const list = await listSessions();
-      sessions.value = list;
+      sessions.value = list.filter((item) => item.state === 'running');
       if (loadError.value !== null) loadError.value = null;
     } catch (rawErr) {
       const err = toApiRequestError(rawErr);
@@ -344,13 +346,14 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
     }
   }
 
-  /** 启动新会话（四类 CLI 之一）；失败按 AC-25 分类并返回 false。 */
-  async function launch(cliType: CLIType): Promise<boolean> {
+  /** 启动新会话；可覆盖宿主默认的安全会话设置。 */
+  async function launch(req: CreateSessionRequest): Promise<boolean> {
+    const cliType = req.cliType;
     if (launching.value !== null) return false; // 防连点：一次一个启动
     launching.value = cliType;
     launchError.value = null;
     try {
-      await createSession({ cliType });
+      await createSession(req);
       await refreshSessions();
       return true;
     } catch (rawErr) {

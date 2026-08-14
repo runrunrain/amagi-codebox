@@ -771,13 +771,6 @@ func setSettingValue(svc *settings.Service, key string, value string) error {
 	case "dashboard.codexshell":
 		dashboard.CodexShell = value
 		return svc.SetDashboardDefaults(dashboard)
-	case "dashboard.useproxy":
-		parsed, err := strconv.ParseBool(value)
-		if err != nil {
-			return fmt.Errorf("parse bool for %s: %w", key, err)
-		}
-		dashboard.UseProxy = parsed
-		return svc.SetDashboardDefaults(dashboard)
 	case "terminal.scrollback":
 		parsed, err := strconv.Atoi(value)
 		if err != nil {

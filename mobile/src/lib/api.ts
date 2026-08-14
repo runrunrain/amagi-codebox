@@ -210,7 +210,7 @@ export async function getSessionDetail(sessionId: SessionID): Promise<SessionDet
   return request<SessionDetail>(V1_ENDPOINT_SESSION_DETAIL, { sessionId });
 }
 
-/** 启动新会话（四 frozen CLI 之一）；成功后初始 control=none，不自动占权。 */
+/** 启动新会话（五类 CLI 之一，可携带安全会话设置）；成功后不自动占权。 */
 export async function createSession(req: CreateSessionRequest): Promise<SessionDetail> {
   return request<SessionDetail>(V1_ENDPOINT_SESSION_CREATE, { body: req });
 }

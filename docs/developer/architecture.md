@@ -51,7 +51,7 @@ var mobileFS embed.FS
                                      v
                         +---------------------------+
                         |  app.go: App 枢纽         |
-                        |  持有 16 个被绑定服务指针 |
+                        |  持有前端绑定与内部服务   |
                         |  + 5 个内部服务           |
                         +------------+--------------+
                                      |
@@ -60,9 +60,9 @@ var mobileFS embed.FS
 +-----------------------+ +--------------------+ +-------------------+
 | 桌面前端 Vue 3        | | Wails 绑定桥       | | internal/* 服务包 |
 | (frontend/dist)       | | (wailsjs 自动生成) | | config / secrets  |
-| Pinia + composables   | |  - App + 16 服务   | | session / pty     |
-| Element Plus          | |  方法 → TS 绑定    | | proxy / headroom  |
-+-----------+-----------+ +---------+----------+ | plugin / workspace|
+| Pinia + composables   | |  - App + 服务      | | session / pty     |
+| Element Plus          | |  方法 → TS 绑定    | | headroom          |
++-----------+-----------+ +---------+----------+ | plugin            |
             ^                       |            | remote / updater  |
             | EventsEmit("pty:...") | 调用       | envcheck / paths  |
             +-------+---------------+            | settings / log    |
@@ -70,7 +70,7 @@ var mobileFS embed.FS
             +-------+--------+                   | opencodeconfig    |
             | internal/pty   |<------ 转发 ------| codexplugin       |
             | (ConPTY/PTY)   |         (远程)    | envvars / appmeta |
-            +----------------+                   | platform / proxy  |
+            +----------------+                   | platform          |
                                                  +-------------------+
                                                            ^
                                                            |
@@ -109,7 +109,6 @@ Bind: []any{
     app,               // *App（枢纽）
     app.Config,        // *config.ConfigService
     app.Secrets,       // *secrets.SecretsService
-    app.Proxy,         // *proxy.ProxyService
     app.Headroom,      // *headroom.HeadroomService
     app.Paths,         // *paths.PathsService
     app.Log,           // *logging.Service
@@ -119,14 +118,13 @@ Bind: []any{
     app.Plugins,       // *plugin.Service
     app.CodexPlugins,  // *codexplugin.Service
     app.OpenCodePlugins,// *opencodeplugin.Service
-    app.Workspaces,    // *workspace.Service
     app.OpenCodeConfig,// *opencodeconfig.Service
     app.EnvCheck,      // *envcheck.Service
     app.Usage,         // *usage.Service
 },
 ```
 
-实际绑定数量为 **1 个 `App` + 16 个服务 struct = 17 个绑定**。
+实际绑定清单以 `bind_list.go` 为准。
 
 以下 `App` 字段对应的服务**不直接绑定**，仅通过 `App` 上的方法间接暴露给前端：`Launcher`、`Tray`、`Sessions`、`Remote`、`EnvVars`。
 
@@ -141,7 +139,6 @@ type App struct {
     Config         *config.ConfigService
     Secrets        *secrets.SecretsService
     Launcher       *launcher.LauncherService
-    Proxy          *proxy.ProxyService
     Headroom       *headroom.HeadroomService
     Tray           *tray.Service
     Sessions       *session.Manager
@@ -154,7 +151,6 @@ type App struct {
     Updater        *updater.Service
     Plugins        *plugin.Service
     CodexPlugins   *codexplugin.Service
-    Workspaces     *workspace.Service
     OpenCodeConfig *opencodeconfig.Service
     EnvCheck       *envcheck.Service
 
@@ -174,7 +170,7 @@ type App struct {
 
 ### 服务包范式（`internal/*`）
 
-`internal/` 下共 22 个服务包（`ls internal/` 核实），下表列出其中一部分：
+`internal/` 下的服务包各自负责一个业务领域，下表列出其中一部分：
 
 | 包 | 主结构 | 构造函数 | 备注 |
 |---|---|---|---|
@@ -182,13 +178,11 @@ type App struct {
 | `internal/secrets` | `SecretsService` | `NewSecretsService(configDir)` | 平台相关后端（见下） |
 | `internal/session` | `Manager` | `NewManager()` | 会话生命周期 |
 | `internal/pty` | `Service` | `NewService(log)` | 平台相关 PTY |
-| `internal/proxy` | `ProxyService` | `NewProxyService()` | Prompt 注入代理 |
 | `internal/headroom` | `HeadroomService` | `NewHeadroomService(...)` | 上下文压缩代理 |
 | `internal/launcher` | `LauncherService` | `NewLauncherService(log, envVarsSvc)` | 进程启动 + env override |
 | `internal/plugin` | `Service` | `NewService("", log)` | Claude Code 插件 |
 | `internal/codexplugin` | `Service` | `NewService("", log)` | Codex 插件 |
 | `internal/opencodeplugin` | `Service` | `NewService("", "", log)` | OpenCode 全局插件 |
-| `internal/workspace` | `Service` | `NewService(configDir, pluginsSvc, log)` | 多工作空间管理 |
 | `internal/envcheck` | `Service` | `NewServiceWithRunner(...)` | CLI 工具检测与一键修复 |
 | `internal/envvars` | `EnvVarsService` | `NewEnvVarsService(configDir)` | 自定义环境变量 |
 | `internal/settings` | `Service` | `NewService(configDir)` | 应用设置 |
@@ -214,14 +208,14 @@ type App struct {
 
 1. 注入 `ctx`：`a.Pty.SetContext(ctx)`，便于通过 `wailsRuntime.EventsEmit` 推送事件。
 2. 清理旧更新二进制：`a.Updater.CleanupOldBinary()`。
-3. 按顺序加载持久化状态（任一失败仅告警，不阻断启动）：`Settings → Config → Secrets → Paths → EnvVars → Proxy 规则与 URL 历史 → Workspaces`。每次成功后置位 `persistentLoadState`，关闭时据此判断是否跳过保存以避免覆盖原文件。
+3. 按顺序加载持久化状态（任一失败仅告警，不阻断启动）：`Settings → Config → Secrets → Paths → EnvVars`。每次成功后置位 `persistentLoadState`，关闭时据此判断是否跳过保存以避免覆盖原文件。
 4. Config 加载后自动迁移：`MigrateProviderPresetsToTerminal` 将旧 `provider.presets` 迁到 `terminal_presets`（幂等，失败累计为 startup warning）。
 5. Settings 加载后同步远程端口、移动端 Web 根目录、GitHub Token 到 `Remote`/`Updater`。
 6. 异步触发环境检测（`go func() { a.EnvCheck.CheckAll() }`），不阻塞启动；失败 issue 转为 startup warning。
 7. 启动远程 API：`a.Remote.Start(ctx)`，失败不影响主功能。
 8. 条件启动系统托盘：`capabilities.SystemTraySupported && len(trayIcon) > 0`。
 
-`Shutdown(ctx)`（`app.go:768`）按相反顺序释放：保存配置 → 停止托盘 → 停止远程服务器 → 停止 Headroom → 停止 Proxy → `Launcher.StopAll()` → `Pty.CloseAll()` → 关闭日志。
+`Shutdown(ctx)` 按相反顺序释放：保存配置 → 停止托盘 → 停止远程服务器 → 停止 Headroom → `Launcher.StopAll()` → `Pty.CloseAll()` → 关闭日志。
 
 ## 会话类型与 LaunchSession 生命周期
 
@@ -250,15 +244,11 @@ const (
 
 ### LaunchSession 主入口
 
-`App.LaunchSession(providerName, presetName, mode, workDir, useProxy, useHeadroom, shellPath string) (string, error)`（`app.go:826`）是 Claude Code 会话的核心入口。关键流程：
+`App.LaunchSession(providerName, presetName, mode, workDir, useHeadroom, shellPath string) (string, error)` 是 Claude Code 会话的核心入口。关键流程：
 
-1. **terminal_presets 桥接**：先以 `presetName` 作为 stable key 查 `Config.ResolveTerminalPreset("claude_code", presetName)`。命中则用其 provider/model 覆盖参数，并桥接回旧 `provider.Presets` 链路。
+1. **公共格式预设桥接**：先以 `presetName` 作为 stable key 查 Anthropic 格式预设。Claude Code 共享 Anthropic 桶，Codex / Pi / OMP 共享 OpenAI 桶；命中后用其 provider/model 覆盖参数。
 2. **提供商校验**：`provider.IsAnthropicCompatible()` 必须 true；OAuth 模式走白板启动（无 API key），否则从 Secrets 取 key。
-3. **代理/headroom 编排**（四种组合，见 `switch`）：
-   - `useHeadroom && useProxy`：串联 `CLI → 注入代理(:5280) → headroom(:8787) → 真实 API`。
-   - `useHeadroom && !useProxy`：仅 headroom：`CLI → headroom → 真实 API`。
-   - `!useHeadroom && useProxy`：仅注入代理：`CLI → 注入代理(:5280) → 真实 API`。
-   - 两者皆关：`CLI → 真实 API`。
+3. **Headroom 编排**：启用时走 `CLI → headroom(:8787) → 真实 API`，关闭时直接连接真实 API。
 4. **会话记录**：`Sessions.Create(...)` 返回 session ID。
 5. **embedded 启动**：
    - `Launcher.BuildOverrides(...)` 构造环境变量覆盖（含 `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`）。
@@ -307,7 +297,6 @@ Server 接收 `mobileAssets embed.FS`，对外提供 `mobile/dist` 作为移动�
 | `settings.json` | 应用设置（远程端口、移动端 Web 根、GitHub Token 等） |
 | `envvars.json` | 自定义环境变量 |
 | `settings_amagi.json` | Amagi 模型配置 |
-| `global-enabled.json` | 全局启用插件 |
 
 仓库惯例：JSON 的局部编辑使用 `tidwall/gjson` + `tidwall/sjson`，避免 unmarshal-mutate-marshal。修改配置时遵循服务层 API，不要直接解析文件。
 

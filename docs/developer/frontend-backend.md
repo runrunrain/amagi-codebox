@@ -43,7 +43,6 @@ Go: wailsRuntime.EventsEmit("pty:data:<id>", {s: seq, d: base64})
 | `*App`（package `main`） | `frontend/wailsjs/go/main/` | `App.js`、`App.d.ts` |
 | `*config.ConfigService` | `frontend/wailsjs/go/config/` | `ConfigService.js`、`ConfigService.d.ts` |
 | `*secrets.SecretsService` | `frontend/wailsjs/go/secrets/` | `SecretsService.js`、`SecretsService.d.ts` |
-| `*proxy.ProxyService` | `frontend/wailsjs/go/proxy/` | `ProxyService.js`、`ProxyService.d.ts` |
 | `*headroom.HeadroomService` | `frontend/wailsjs/go/headroom/` | `HeadroomService.js`、`HeadroomService.d.ts` |
 | `*paths.PathsService` | `frontend/wailsjs/go/paths/` | `PathsService.js`、`PathsService.d.ts` |
 | `*logging.Service` | `frontend/wailsjs/go/logging/` | `Service.js`、`Service.d.ts` |
@@ -52,7 +51,6 @@ Go: wailsRuntime.EventsEmit("pty:data:<id>", {s: seq, d: base64})
 | `*updater.Service` | `frontend/wailsjs/go/updater/` | `Service.js`、`Service.d.ts` |
 | `*plugin.Service` | `frontend/wailsjs/go/plugin/` | `Service.js`、`Service.d.ts` |
 | `*codexplugin.Service` | `frontend/wailsjs/go/codexplugin/` | `Service.js`、`Service.d.ts` |
-| `*workspace.Service` | `frontend/wailsjs/go/workspace/` | `Service.js`、`Service.d.ts` |
 | `*opencodeconfig.Service` | `frontend/wailsjs/go/opencodeconfig/` | `Service.js`、`Service.d.ts` |
 | `*envcheck.Service` | `frontend/wailsjs/go/envcheck/` | `Service.js`、`Service.d.ts` |
 
@@ -65,7 +63,7 @@ Go: wailsRuntime.EventsEmit("pty:data:<id>", {s: seq, d: base64})
 每个绑定的 struct 方法签名直接映射为同名导出函数。例如 `app.go` 的：
 
 ```go
-func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, useHeadroom bool, shellPath string) (string, error)
+func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useHeadroom bool, shellPath string) (string, error)
 ```
 
 生成 `frontend/wailsjs/go/main/App.d.ts`：
@@ -97,7 +95,7 @@ export async function getProvider(id: string): Promise<Provider> {
 
 ## 第二层：`frontend/src/api/*.ts` 包装层
 
-15 个包装模块，每个对应一个业务域：
+包装层按业务域组织：
 
 ```
 frontend/src/api/
@@ -107,8 +105,6 @@ frontend/src/api/
 ├── plugin.ts         # Claude Code 插件
 ├── opencodePlugin.ts # OpenCode 插件
 ├── codexPlugin.ts    # Codex 插件
-├── workspace.ts      # 工作空间
-├── proxy.ts          # Prompt 注入代理
 ├── settings.ts       # 应用设置
 ├── remote.ts         # 远程控制 HTTP API 状态
 ├── envcheck.ts       # 环境检测与一键修复
@@ -182,13 +178,12 @@ export {
 
 ## 第三层：Pinia store
 
-5 个 store 位于 `frontend/src/stores/`：
+Pinia store 位于 `frontend/src/stores/`：
 
 | Store | 文件 | 主要状态 |
 |---|---|---|
 | `useSessionStore` | `session.ts` | `sessions`、`activeSessionId`、`isPolling` |
 | `useProviderStore` | `provider.ts` | providers map、`terminal_presets`、`activeProviderId`、filter |
-| `useWorkspaceStore` | `workspace.ts` | 工作空间列表与当前选中 |
 | `usePluginStore` | `plugin.ts` | 插件市场与已安装插件 |
 | `useUiStore` | `ui.ts` | 主题、侧栏等 UI 状态 |
 
@@ -271,7 +266,6 @@ if (dashState.engine === 'claudecode') {
     presetName: dashState.preset,
     mode: dashState.claudeMode,
     workDir: dashState.workDir,
-    useProxy: dashState.useProxy,
     useHeadroom: dashState.useHeadroom,
     shellPath: dashState.claudeMode === 'embedded'
       ? resolveShellPath(dashState, platformCaps) : '',
@@ -286,12 +280,12 @@ if (dashState.engine === 'claudecode') {
 ```ts
 export async function launchClaudeSession(params: {
   providerName: string; presetName: string; mode: string;
-  workDir: string; useProxy: boolean; useHeadroom: boolean;
+  workDir: string; useHeadroom: boolean;
   shellPath?: string;
 }): Promise<string> {
   return await LaunchSession(
     params.providerName, params.presetName, params.mode,
-    params.workDir, params.useProxy, params.useHeadroom,
+    params.workDir, params.useHeadroom,
     params.shellPath || '',
   );
 }
@@ -299,7 +293,7 @@ export async function launchClaudeSession(params: {
 
 ### 4. Wails 生成的 TS 绑定
 
-`frontend/wailsjs/go/main/App.js` 中 `LaunchSession` 是 IPC 调用（实现由 Wails runtime 注入），签名为 7 个位置参数、返回 `Promise<string>`。
+`frontend/wailsjs/go/main/App.js` 中 `LaunchSession` 是 IPC 调用（实现由 Wails runtime 注入），签名为 6 个位置参数、返回 `Promise<string>`。
 
 ### 5. Go 方法
 
@@ -370,4 +364,4 @@ Go 端 `pty.Service.PtyWrite` 解码 base64 后写入对应 `PtySession` 的 PTY
 
 - `frontend/wailsjs/go/main/App.js` 的具体生成实现未在文中展开（Wails runtime 注入），如需了解 IPC 协议细节需查阅 Wails v2 文档。
 - `useTerminalEngine.ts` 的完整终端实例管理逻辑（行数较多，本篇仅引用事件名与 `PtyWrite` 入口）。
-- 各 store 的完整 actions 清单：本篇仅示例 `session.ts` 与 `provider.ts` 头部，其余 store（`workspace`、`plugin`、`ui`）未逐一展开。
+- 各 store 的完整 actions 清单：本篇仅示例 `session.ts` 与 `provider.ts` 头部，其余 store 未逐一展开。

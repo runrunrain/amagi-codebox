@@ -11,8 +11,8 @@ import (
 
 	"amagi-codebox/internal/appmeta/claude"
 	"amagi-codebox/internal/appmeta/codex"
-	"amagi-codebox/internal/appmeta/opencode"
 	"amagi-codebox/internal/appmeta/omp"
+	"amagi-codebox/internal/appmeta/opencode"
 	"amagi-codebox/internal/appmeta/pi"
 )
 
@@ -35,7 +35,6 @@ const syncConcurrency = 4
 //
 // rollup 刷新（M3）：
 //   - affectedDays 收集本轮 sync 中实际改写过 DB 的行对应的 UTC 日期。
-//   - 始终把"今天"加入集合，以兜底 proxy 实时路径直接写入主表的记录（proxy 绕过 sync）。
 //   - 若 affectedDays 为空（sync 无任何变化），跳过刷新——rollup 已一致。
 func (s *Service) SyncAll() error {
 	s.mu.Lock()
@@ -210,9 +209,6 @@ func (s *Service) SyncAll() error {
 	wg.Wait()
 
 	// === 6. 刷新 daily_rollup（分区刷新） ===
-	// 始终加入"今天"以兜底 proxy 实时路径（proxy 绕过 sync 直接写主表，
-	// 仅靠分区刷新会漏；多刷新一天的代价极小）。
-	affectedDays[time.Now().UTC().Format("2006-01-02")] = struct{}{}
 	days := make([]string, 0, len(affectedDays))
 	for d := range affectedDays {
 		days = append(days, d)
@@ -696,7 +692,7 @@ func normalizeOmpProvider(raw string) string {
 //
 // omp 无旧版 CodeBox 隔离根（pi-runtime 仅 pi 历史兼容），故只有一个根。
 // 目录递归扫描（walkFiles）自然覆盖 omp 的嵌套子会话 transcript
-//（sessions/<project>/<session>/<id>.jsonl，subagent/advisor 会话），
+// （sessions/<project>/<session>/<id>.jsonl，subagent/advisor 会话），
 // 内容指纹 dedup 会折叠与父会话重叠的拷贝条目。
 func enumerateOmpSessionFiles(home string) []string {
 	return enumerateJSONLs(filepath.Join(home, ".omp", "agent", "sessions"), ".jsonl")

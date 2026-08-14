@@ -157,7 +157,7 @@ func TestAuthorityDesktopAndV1ShareSameIDAndExternalIsHidden(t *testing.T) {
 	if list.List[0].ID != fixture.sid || fixture.manager.List()[0].ID != string(fixture.sid) {
 		t.Fatalf("desktop/v1 ID mismatch: desktop=%s v1=%s", fixture.manager.List()[0].ID, list.List[0].ID)
 	}
-	external := fixture.manager.Create(session.AppTypeCodex, "private-provider", "", "private-model", session.ModeTerminal, "/work", false)
+	external := fixture.manager.Create(session.AppTypeCodex, "private-provider", "", "private-model", session.ModeTerminal, "/work")
 	if external == nil {
 		t.Fatal("external create failed")
 	}

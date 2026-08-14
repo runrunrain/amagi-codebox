@@ -204,7 +204,7 @@ func TestExactRunExitDropsStaleReceipt(t *testing.T) {
 
 func TestLegacySessionInfoWireShapeUnchanged(t *testing.T) {
 	manager := NewManager()
-	s := manager.Create(AppTypePi, "provider", "preset", "model", ModeTerminal, "/work", true)
+	s := manager.Create(AppTypePi, "provider", "preset", "model", ModeTerminal, "/work")
 	if s == nil {
 		t.Fatal("Create returned nil")
 	}
@@ -220,7 +220,7 @@ func TestLegacySessionInfoWireShapeUnchanged(t *testing.T) {
 	for key := range object {
 		got = append(got, key)
 	}
-	want := []string{"appType", "claudeSessionId", "duration", "id", "mode", "model", "pid", "preset", "provider", "startedAt", "status", "title", "useProxy", "workDir"}
+	want := []string{"appType", "claudeSessionId", "duration", "id", "mode", "model", "pid", "preset", "provider", "startedAt", "status", "title", "workDir"}
 	if !reflect.DeepEqual(stringSet(got), stringSet(want)) {
 		t.Fatalf("wire keys = %v, want %v; json=%s", got, want, encoded)
 	}

@@ -7,7 +7,7 @@
     预设 tab：EmptyState「即将上线」占位（P3-B 填）
   -->
   <section class="view-provider">
-    <PageHead title="Provider Center" description="统一管理服务提供商与各引擎预设" />
+    <PageHead title="Provider Center" description="统一管理服务提供商与可跨 CLI 复用的公共预设" />
 
     <!-- 详情模式：覆盖网格视图（对照 demo .pc-detail）-->
     <ProviderDetailView
@@ -51,7 +51,7 @@
           <span>绑定提供商与模型参数</span>
         </div>
 
-        <!-- 二级下划线 Tab：Claude Code | Codex | OpenCode（与一级 pill 区分层级）-->
+        <!-- 二级下划线 Tab：两类公共协议格式 + OpenCode 独立配置。 -->
         <Segmented
           v-model="engineModel"
           :options="ENGINE_TABS"
@@ -59,29 +59,15 @@
           class="pc-engine-tabs"
         />
 
-        <!-- Claude Code 预设 -->
+        <!-- Claude Code 复用 Anthropic 格式公共预设。 -->
         <PresetList
-          v-if="store.presetEngine === 'claude'"
-          engine="claude"
-          @add="handlePresetAdd"
+          v-if="store.presetEngine === 'anthropic'"
+          format="anthropic"
         />
-        <!-- Codex 预设（与 Claude Code 统一范式）-->
+        <!-- Codex / Pi / OMP 及后续兼容 CLI 共用 OpenAI 格式预设。 -->
         <PresetList
-          v-else-if="store.presetEngine === 'codex'"
-          engine="codex"
-          @add="handlePresetAdd"
-        />
-        <!-- Pi 预设（与 Claude Code/Codex 统一范式）-->
-        <PresetList
-          v-else-if="store.presetEngine === 'pi'"
-          engine="pi"
-          @add="handlePresetAdd"
-        />
-        <!-- OMP 预设（与 Pi 统一范式：--thinking CLI 契约同构）-->
-        <PresetList
-          v-else-if="store.presetEngine === 'omp'"
-          engine="omp"
-          @add="handlePresetAdd"
+          v-else-if="store.presetEngine === 'openai'"
+          format="openai"
         />
         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
         <template v-else-if="store.presetEngine === 'opencode'">
@@ -95,7 +81,6 @@
           <!-- OpenCode 预设管理 -->
           <OpenCodePresets
             v-if="openCodeMode === 'presets'"
-            @add="handlePresetAdd"
           />
           <!-- OpenCode 全局配置 -->
           <OpenCodeGlobalConfig v-else />
@@ -149,11 +134,9 @@ const MAIN_TABS = [
 ];
 
 const ENGINE_TABS = [
-  { value: 'claude', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex' },
+  { value: 'anthropic', label: 'Anthropic 格式' },
+  { value: 'openai', label: 'OpenAI 格式' },
   { value: 'opencode', label: 'OpenCode' },
-  { value: 'pi', label: 'Pi' },
-  { value: 'omp', label: 'OMP' },
 ];
 
 const OPENCODE_MODES = [
@@ -246,20 +229,6 @@ function handleAdd() {
   showInfo('添加提供商功能将在 P7 弹窗批次实现');
 }
 
-// 添加预设弹窗在 P7 批次实现，本批仅提示（emit 占位）
-function handlePresetAdd() {
-  const label =
-    store.presetEngine === 'claude'
-      ? 'Claude Code'
-      : store.presetEngine === 'codex'
-      ? 'Codex'
-      : store.presetEngine === 'pi'
-      ? 'Pi'
-      : store.presetEngine === 'omp'
-      ? 'OMP'
-      : 'OpenCode';
-  showInfo(`${label} 添加预设功能将在 P7 弹窗批次实现`);
-}
 </script>
 
 <style scoped>

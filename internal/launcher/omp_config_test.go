@@ -286,8 +286,9 @@ func TestWriteOmpAgentConfigUpgradesLegacyPerms(t *testing.T) {
 
 // TestMergeOmpModelsConfigPreservesUserProviders verifies user-defined
 // providers and other top-level fields (equivalence etc.) survive the merge,
-// while stale amagi-managed providers are removed and the current one wins on
-// name collision.
+// while sibling amagi-managed providers survive the launch-time overlay and the
+// current one wins on name collision. Full stale-entry pruning is covered by
+// ReconcileOmpAgentConfig/provider synchronization.
 func TestMergeOmpModelsConfigPreservesUserProviders(t *testing.T) {
 	agentDir := t.TempDir()
 	existing := map[string]any{
@@ -322,8 +323,8 @@ func TestMergeOmpModelsConfigPreservesUserProviders(t *testing.T) {
 	if _, ok := providers["existing"]; !ok {
 		t.Fatalf("existing provider was not preserved: %#v", providers)
 	}
-	if _, ok := providers["amagi-broken"]; ok {
-		t.Fatalf("stale managed provider was preserved: %#v", providers)
+	if _, ok := providers["amagi-broken"]; !ok {
+		t.Fatalf("sibling managed provider was removed by launch overlay: %#v", providers)
 	}
 	managed, ok := providers["amagi-new"].(map[string]any)
 	if !ok || managed["baseUrl"] != "https://fresh.example" {

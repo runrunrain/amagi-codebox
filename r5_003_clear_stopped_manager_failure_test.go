@@ -24,9 +24,9 @@ func containsR5ID(ids []string, want string) bool {
 func TestR4_005_ManagerRemoveFailureIsPropagatedAndCountedAsPartial(t *testing.T) {
 	app := newTestApp(t)
 
-	first := app.Sessions.Create(session.AppTypeCodex, "codex", "", "m1", session.ModeTerminal, t.TempDir(), false)
-	failed := app.Sessions.Create(session.AppTypeCodex, "codex", "", "m2", session.ModeTerminal, t.TempDir(), false)
-	third := app.Sessions.Create(session.AppTypeCodex, "codex", "", "m3", session.ModeTerminal, t.TempDir(), false)
+	first := app.Sessions.Create(session.AppTypeCodex, "codex", "", "m1", session.ModeTerminal, t.TempDir())
+	failed := app.Sessions.Create(session.AppTypeCodex, "codex", "", "m2", session.ModeTerminal, t.TempDir())
+	third := app.Sessions.Create(session.AppTypeCodex, "codex", "", "m3", session.ModeTerminal, t.TempDir())
 	for _, id := range []string{first.ID, failed.ID, third.ID} {
 		app.Sessions.MarkStopped(id)
 	}
@@ -67,14 +67,14 @@ func TestR4_005_ManagerRemoveFailureIsPropagatedAndCountedAsPartial(t *testing.T
 
 func TestR4_005_ManagerRemoveRunningRaceIsPropagatedAndRetained(t *testing.T) {
 	app := newTestApp(t)
-	candidate := app.Sessions.Create(session.AppTypeCodex, "codex", "", "race", session.ModeTerminal, t.TempDir(), false)
+	candidate := app.Sessions.Create(session.AppTypeCodex, "codex", "", "race", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(candidate.ID)
 
 	// Model snapshot→remove changing back to running with a genuine
 	// Manager.Remove error. The narrow seam maps that injected manager outcome
 	// to the candidate ID without adding a production-only state mutator.
 	tracingManager := session.NewManager()
-	running := tracingManager.Create(session.AppTypeCodex, "codex", "", "running", session.ModeTerminal, t.TempDir(), false)
+	running := tracingManager.Create(session.AppTypeCodex, "codex", "", "running", session.ModeTerminal, t.TempDir())
 	app.sessionRemove = func(string) error {
 		return tracingManager.Remove(running.ID)
 	}

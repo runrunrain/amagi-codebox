@@ -141,7 +141,7 @@ func TestR11_001_NoHeadroomExternalCommitIsShutdownVisibleAndCannotLateStart(t *
 			case "claude":
 				providerID := configureR6ClaudeProvider(t, app)
 				go func() {
-					_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, false, "")
+					_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, "")
 					launchDone <- err
 				}()
 			case "codex":
@@ -205,7 +205,7 @@ func TestR11_001_AuthorizedNoHeadroomLateStartTransfersToReaper(t *testing.T) {
 	launchDone := make(chan error, 1)
 	workDir := t.TempDir()
 	go func() {
-		_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, false, "")
+		_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, "")
 		launchDone <- err
 	}()
 	select {
@@ -323,7 +323,7 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 
 	fake.setStopError(nil)
 	providerID := configureR6ClaudeProvider(t, app)
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if err != nil {
 		t.Fatalf("normal Headroom launch after same-App recovery: %v", err)
 	}

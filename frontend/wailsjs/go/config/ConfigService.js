@@ -94,6 +94,10 @@ export function ReplaceImportedPresetSnapshots(arg1, arg2, arg3) {
   return window['go']['config']['ConfigService']['ReplaceImportedPresetSnapshots'](arg1, arg2, arg3);
 }
 
+export function ReplaceProviders(arg1) {
+  return window['go']['config']['ConfigService']['ReplaceProviders'](arg1);
+}
+
 export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['config']['ConfigService']['ResolveTerminalPreset'](arg1, arg2);
 }

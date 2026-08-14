@@ -45,7 +45,7 @@ Note: `.github/workflows/ci.yml` runs `go vet ./...` (windows + macos), full `go
 ### The binding spine (read multiple files together)
 `main.go` boots Wails and **binds** the `App` struct plus 14 service structs (15 bindings total) to the frontend. `app.go` (~104KB) is the central hub: it holds pointers to every service and exposes orchestration methods (session launch, env-check actions, remote-control toggles, callback registration). Each bound struct's exported methods become callable from JS. The full surface is documented in `docs/api.md`.
 
-Service packages live under `internal/` (22 of them). Each follows the same pattern: a `Service`/`ConfigService` struct with a `New...()` constructor and exported methods, e.g. `internal/config` (`ConfigService` → providers/presets), `internal/secrets` (key storage), `internal/session` (app sessions), `internal/plugin` + `internal/codexplugin`, `internal/envcheck`, `internal/remote`, `internal/pty`, `internal/updater`, `internal/workspace`, `internal/headroom`, `internal/proxy` (prompt-injection engine).
+Service packages live under `internal/`. Each follows the same pattern: a `Service`/`ConfigService` struct with a `New...()` constructor and exported methods, e.g. `internal/config` (`ConfigService` → providers/presets), `internal/secrets` (key storage), `internal/session` (app sessions), `internal/plugin` + `internal/codexplugin`, `internal/envcheck`, `internal/remote`, `internal/pty`, `internal/updater`, and `internal/headroom`.
 
 ### Cross-platform via build tags (do not branch at runtime)
 Platform differences are handled by Go build constraints, **not** runtime `if runtime.GOOS`. Files are suffixed `_<os>.go`:
@@ -62,14 +62,14 @@ Wails auto-generates TypeScript bindings under `frontend/wailsjs/go/<pkg>/` from
 Routing uses hash history (`createWebHashHistory`) in `frontend/src/router/index.ts`. UI is Element Plus + a custom design-token layer in `frontend/src/styles/tokens.css`.
 
 ### Managed app types & sessions
-Five CLI app types (plus a deprecated internal one) defined in `internal/session/types.go` as `AppType`: `claudecode`, `opencode`, `codex`, `pi`, `omp` (Oh My Pi), and the deprecated `amagicode`. `LaunchSession` in `app.go` is the core entrypoint for Claude Code — it resolves provider/preset, optionally applies proxy injection and headroom, then spawns a PTY session tracked by the session manager. Pi/omp sessions launch through their own entrypoints (`LaunchPiSession`/`LaunchOmpSession`), which write provider configs into the CLI's own agent root (`~/.pi/agent` / `~/.omp/agent`). Sessions stream output to the frontend via registered callbacks (`RegisterOutputCallback`, etc.).
+Five CLI app types (plus a deprecated internal one) defined in `internal/session/types.go` as `AppType`: `claudecode`, `opencode`, `codex`, `pi`, `omp` (Oh My Pi), and the deprecated `amagicode`. `LaunchSession` in `app.go` is the core entrypoint for Claude Code — it resolves provider/preset, optionally enables Headroom, then spawns a PTY session tracked by the session manager. Pi/omp sessions launch through their own entrypoints (`LaunchPiSession`/`LaunchOmpSession`), which write provider configs into the CLI's own agent root (`~/.pi/agent` / `~/.omp/agent`). Sessions stream output to the frontend via registered callbacks (`RegisterOutputCallback`, etc.).
 
 ### Remote control & mobile
 `internal/remote/` runs an HTTP + WebSocket server (when enabled) for the companion Capacitor app in `mobile/`. Endpoints documented in README; all require an `Authorization` token. The mobile frontend is a **separate build** (`mobile/`) embedded via `//go:embed all:mobile/dist` in `main.go` — it is not the desktop frontend.
 
 ## Conventions
 
-- **Config lives in `~/.amagi-codebox/`**: `models.json` (providers/presets), `secrets.enc` (platform-protected keys), `settings.json`, `paths.json`, `envvars.json`, `workspaces.json`, `global-enabled.json`, proxy configuration, pricing, and remote security state. The app reads/writes these via the service layer; don't parse them ad hoc. Fresh installs intentionally contain no provider or terminal-preset seeds.
+- **Config lives in `~/.amagi-codebox/`**: `models.json` (providers/presets), `secrets.enc` (platform-protected keys), `settings.json`, `paths.json`, `envvars.json`, pricing, and remote security state. The app reads/writes these via the service layer; don't parse them ad hoc. Fresh installs intentionally contain no provider or terminal-preset seeds.
 - **JSON edits**: this repo uses `tidwall/gjson` + `tidwall/sjson` for surgical JSON mutation (config files, manifests) rather than unmarshal-mutate-marshal in many places. Match that style for partial edits.
 - **Code & docs are bilingual** (Chinese + English) — follow the surrounding file's language.
 - **Amagi runtime artifacts**, not app code: `agent-outputs/`, `.amagi/`, `projects-memory/`. The `.amagi-codebox/frontend-redesign` handoff doc in `demo/` describes a prior frontend rework.

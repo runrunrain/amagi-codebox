@@ -41,7 +41,7 @@ type LauncherService struct {
 	mu                sync.Mutex
 	ownerID           uint64
 	bindingGeneration uint64
-	proxyPort         int
+	headroomPort      int
 	log               *logging.Service
 	envVars           *envvars.EnvVarsService
 	resolver          platform.CLIResolver
@@ -75,10 +75,10 @@ func (s *LauncherService) baseEnv() []string {
 	return os.Environ()
 }
 
-func (s *LauncherService) SetProxyPort(port int) {
+func (s *LauncherService) SetHeadroomPort(port int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.proxyPort = port
+	s.headroomPort = port
 }
 
 // BuildOverrides 根据提供商配置和预设参数构建环境变量覆盖映射。
@@ -90,7 +90,7 @@ func (s *LauncherService) BuildOverrides(
 	agentTeams config.AgentTeamsConfig,
 ) map[string]string {
 	s.mu.Lock()
-	proxyPort := s.proxyPort
+	headroomPort := s.headroomPort
 	s.mu.Unlock()
 
 	preset, ok := provider.Presets[presetName]
@@ -107,8 +107,8 @@ func (s *LauncherService) BuildOverrides(
 	if provider.IsOAuthMode() {
 		// OAuth 模式必须直连官方端点，不能继承代理或 API Key 环境。
 		overrides["ANTHROPIC_BASE_URL"] = ""
-	} else if proxyPort > 0 {
-		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", proxyPort)
+	} else if headroomPort > 0 {
+		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", headroomPort)
 	} else {
 		overrides["ANTHROPIC_BASE_URL"] = provider.EffectiveBaseURL("anthropic")
 	}

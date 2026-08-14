@@ -32,8 +32,7 @@ type StableLaunchRefs struct {
 	PresetRef   string `json:"presetRef,omitempty"`
 	ModelRef    string `json:"modelRef,omitempty"`
 	ShellRef    string `json:"shellRef,omitempty"`
-	UseProxy    bool   `json:"useProxy,omitempty"`
-	UseHeadroom bool   `json:"useHeadroom,omitempty"`
+	UseHeadroom *bool  `json:"useHeadroom,omitempty"`
 }
 
 type StableRecipe struct {
@@ -43,7 +42,6 @@ type StableRecipe struct {
 	PresetRef   string           `json:"presetRef,omitempty"`
 	ModelRef    string           `json:"modelRef,omitempty"`
 	ShellRef    string           `json:"shellRef,omitempty"`
-	UseProxy    bool             `json:"useProxy,omitempty"`
 	UseHeadroom bool             `json:"useHeadroom,omitempty"`
 }
 
@@ -58,8 +56,7 @@ type BuildRequest struct {
 type SharedServiceKind uint8
 
 const (
-	SharedClaudeProxy SharedServiceKind = iota + 1
-	SharedClaudeHeadroom
+	SharedClaudeHeadroom SharedServiceKind = iota + 1
 	SharedCodexHeadroom
 )
 
@@ -76,7 +73,6 @@ type EffectKind uint8
 
 const (
 	EffectHeadroomStart EffectKind = iota + 1
-	EffectProxyStart
 	EffectConfigMutation
 	EffectPTYStart
 	EffectExternalProcessStart
@@ -94,7 +90,7 @@ type SharedStartSpec struct {
 	Service           SharedServiceKind
 	ConfigFingerprint [32]byte
 	UpstreamURL       string // non-secret real backend URL the shared service forwards to
-	ListenPort        int    // canonical listen port (5280 proxy / 8787 headroom / 8788 codex)
+	ListenPort        int    // canonical Headroom listen port (8787 Claude / 8788 Codex)
 }
 
 type ConfigMutationSpec struct {
@@ -235,7 +231,7 @@ func (p *Plan) Validate() error {
 
 func effectMatchesUnion(effect EffectSpec) bool {
 	switch effect.Kind {
-	case EffectHeadroomStart, EffectProxyStart:
+	case EffectHeadroomStart:
 		return effect.Shared != nil
 	case EffectConfigMutation:
 		return effect.Config != nil
@@ -252,10 +248,8 @@ func CanonicalEffectRank(effect EffectSpec) int {
 	switch effect.Kind {
 	case EffectHeadroomStart:
 		return 0
-	case EffectProxyStart:
-		return 1
 	case EffectConfigMutation:
-		return 2 + int(effect.Config.Target)
+		return 1 + int(effect.Config.Target)
 	case EffectPTYStart, EffectExternalProcessStart:
 		return 16
 	case EffectBootstrapWrite:

@@ -30,7 +30,7 @@ func newRunPermitForDrainTest(t *testing.T, gate ControlGate, sid contract.Sessi
 
 // TestR4_002_Drain_BlocksNewHeadroomAcquireWhileHeld proves that while the
 // uninstall drain is held, AcquireForRun for BOTH headroom kinds is rejected
-// (ErrSharedServiceInUse), but a non-headroom kind (proxy) is unaffected.
+// (ErrSharedServiceInUse).
 func TestR4_002_Drain_BlocksNewHeadroomAcquireWhileHeld(t *testing.T) {
 	c := newTestCoordinator()
 	clock := newCtrlFakeClock(time.Now())
@@ -53,11 +53,6 @@ func TestR4_002_Drain_BlocksNewHeadroomAcquireWhileHeld(t *testing.T) {
 	}
 	if _, err := c.AcquireForRun(context.Background(), rpH, SharedServiceCodexHeadroom, fp); !errors.Is(err, ErrSharedServiceInUse) {
 		t.Fatalf("codex headroom acquire during drain: expected ErrSharedServiceInUse, got %v", err)
-	}
-	// Proxy (non-headroom) is unaffected by the headroom drain.
-	rpP := newRunPermitForDrainTest(t, gate, "drain-proxy")
-	if _, err := c.AcquireForRun(context.Background(), rpP, SharedServiceClaudeProxy, fp); err != nil {
-		t.Fatalf("proxy acquire during headroom drain should succeed, got %v", err)
 	}
 }
 

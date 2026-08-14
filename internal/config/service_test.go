@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -146,13 +147,13 @@ func TestDeleteTerminalPreset_InvalidType(t *testing.T) {
 	}
 }
 
-func TestSaveTerminalPreset_MultipleTypes(t *testing.T) {
+func TestSaveTerminalPreset_CommonFormatsAndLegacyAliases(t *testing.T) {
 	svc := newTestConfigService(t)
 
-	// Save to different terminal types
+	// Legacy CLI aliases write into their protocol-format common bucket.
 	tp1 := TerminalPreset{Name: "Claude Preset", Provider: "anthropic", Model: "claude-sonnet-4-20250514"}
 	tp2 := TerminalPreset{Name: "Codex Preset", Provider: "openai", Model: "codex-mini-latest"}
-	tp3 := TerminalPreset{Name: "OpenCode Preset", Provider: "glm", Model: "glm-5"}
+	tp3 := TerminalPreset{Name: "Pi Preset", Provider: "openai", Model: "gpt-5.6"}
 
 	if err := svc.SaveTerminalPreset("claude_code", "tp1", tp1); err != nil {
 		t.Fatalf("Save claude_code: %v", err)
@@ -160,23 +161,96 @@ func TestSaveTerminalPreset_MultipleTypes(t *testing.T) {
 	if err := svc.SaveTerminalPreset("codex", "tp2", tp2); err != nil {
 		t.Fatalf("Save codex: %v", err)
 	}
-	if err := svc.SaveTerminalPreset("opencode", "tp3", tp3); err != nil {
-		t.Fatalf("Save opencode: %v", err)
+	if err := svc.SaveTerminalPreset("pi", "tp3", tp3); err != nil {
+		t.Fatalf("Save pi: %v", err)
 	}
 
-	// Verify isolation: each type only sees its own presets
+	// Claude Code sees Anthropic only; every OpenAI-compatible CLI sees the same
+	// shared OpenAI map rather than maintaining its own copy.
 	cc, _ := svc.GetTerminalPresets("claude_code")
 	cx, _ := svc.GetTerminalPresets("codex")
-	oc, _ := svc.GetTerminalPresets("opencode")
+	pi, _ := svc.GetTerminalPresets("pi")
+	omp, _ := svc.GetTerminalPresets("omp")
 
 	if len(cc) != 1 || cc["tp1"].Name != "Claude Preset" {
 		t.Fatalf("claude_code presets = %v, want exactly tp1", cc)
 	}
-	if len(cx) != 1 || cx["tp2"].Name != "Codex Preset" {
-		t.Fatalf("codex presets = %v, want exactly tp2", cx)
+	if len(cx) != 2 || cx["tp2"].Name != "Codex Preset" || cx["tp3"].Name != "Pi Preset" {
+		t.Fatalf("openai presets = %v, want shared tp2 + tp3", cx)
 	}
-	if len(oc) != 1 || oc["tp3"].Name != "OpenCode Preset" {
-		t.Fatalf("opencode presets = %v, want exactly tp3", oc)
+	if !reflect.DeepEqual(cx, pi) || !reflect.DeepEqual(cx, omp) {
+		t.Fatalf("OpenAI aliases diverged: codex=%v pi=%v omp=%v", cx, pi, omp)
+	}
+}
+
+func TestMigrateTerminalPresetsToFormats_DeduplicatesAndPreservesConflicts(t *testing.T) {
+	shared := TerminalPreset{Name: "Shared", Provider: "openai", Model: "gpt-5.6"}
+	piVariant := TerminalPreset{Name: "Shared", Provider: "openai", Model: "gpt-5.6", Parameters: Parameters{ReasoningEffort: "max"}}
+	cfg := &AppConfig{TerminalPresets: &TerminalPresetsConfig{
+		ClaudeCode: map[string]TerminalPreset{"anthropic/default": {Name: "Claude", Provider: "anthropic", Model: "claude-sonnet-4-6"}},
+		Codex:      map[string]TerminalPreset{"openai/shared": shared},
+		Pi:         map[string]TerminalPreset{"openai/shared": piVariant, "openai/same": shared},
+		Omp:        map[string]TerminalPreset{"openai/same": shared},
+	}}
+
+	if !MigrateTerminalPresetsToFormats(cfg) {
+		t.Fatal("expected legacy buckets to migrate")
+	}
+	tp := cfg.TerminalPresets
+	if len(tp.Anthropic) != 1 || tp.Anthropic["anthropic/default"].Model != "claude-sonnet-4-6" {
+		t.Fatalf("anthropic migration = %#v", tp.Anthropic)
+	}
+	if len(tp.OpenAI) != 3 {
+		t.Fatalf("openai migration should dedupe one identical row and retain one conflict: %#v", tp.OpenAI)
+	}
+	if tp.OpenAI["openai/shared"].Parameters.ReasoningEffort != "" {
+		t.Fatal("Codex-first canonical entry was overwritten")
+	}
+	conflict, ok := tp.OpenAI["openai/shared~pi"]
+	if !ok || conflict.Parameters.ReasoningEffort != "max" || !strings.Contains(conflict.Name, "PI") {
+		t.Fatalf("Pi conflict not preserved with provenance: %#v", tp.OpenAI)
+	}
+	if tp.ClaudeCode != nil || tp.Codex != nil || tp.Pi != nil || tp.Omp != nil {
+		t.Fatalf("legacy buckets were not cleared: %#v", tp)
+	}
+	if MigrateTerminalPresetsToFormats(cfg) {
+		t.Fatal("second format migration must be idempotent")
+	}
+}
+
+func TestLoadMigratesLegacyCLIBucketsToCommonFormats(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"models":{},"terminal_presets":{"claude_code":{"a/default":{"name":"A","provider":"a","model":"claude"}},"codex":{"o/default":{"name":"O","provider":"o","model":"gpt"}},"pi":{"o/pi":{"name":"Pi","provider":"o","model":"gpt-pi"}}}}`
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	openAI, _ := svc.GetTerminalPresets("openai")
+	if len(openAI) != 2 || openAI["o/default"].Model != "gpt" || openAI["o/pi"].Model != "gpt-pi" {
+		t.Fatalf("shared OpenAI presets = %#v", openAI)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	buckets := saved["terminal_presets"].(map[string]any)
+	if _, ok := buckets["anthropic"]; !ok {
+		t.Fatal("anthropic common bucket missing after persistence")
+	}
+	if _, ok := buckets["openai"]; !ok {
+		t.Fatal("openai common bucket missing after persistence")
+	}
+	for _, old := range []string{"claude_code", "codex", "pi", "omp", "opencode"} {
+		if _, exists := buckets[old]; exists {
+			t.Fatalf("legacy bucket %q persisted after migration: %s", old, data)
+		}
 	}
 }
 
@@ -311,8 +385,8 @@ func TestMigrateProviderPresetsToTerminal_OpenCodeTarget(t *testing.T) {
 		t.Fatalf("expected at least 1 migrated, got %d", count)
 	}
 
-	// Should appear in opencode
-	ocPresets, _ := svc.GetTerminalPresets("opencode")
+	// OpenCode remains an independent preset model, not a terminal format bucket.
+	ocPresets := svc.GetOpenCodePresets()
 	stableKey := "my-provider/oc"
 	if _, ok := ocPresets[stableKey]; !ok {
 		t.Fatalf("expected preset at opencode/%q", stableKey)
@@ -739,7 +813,7 @@ func TestSetAllTerminalPresets_Replace(t *testing.T) {
 	}
 
 	cc, _ := svc.GetTerminalPresets("claude_code")
-	oc, _ := svc.GetTerminalPresets("opencode")
+	oc := svc.GetOpenCodePresets()
 	codex, _ := svc.GetTerminalPresets("codex")
 
 	if _, ok := cc["existing"]; ok {
@@ -939,13 +1013,13 @@ func TestTerminalPresetsFileStructure(t *testing.T) {
 	}
 
 	var tp struct {
-		ClaudeCode map[string]TerminalPreset `json:"claude_code"`
+		Anthropic map[string]TerminalPreset `json:"anthropic"`
 	}
 	json.Unmarshal(tpRaw, &tp)
 
-	if tp.ClaudeCode["anthropic/fast"].Model != "claude-3.5" {
-		t.Fatalf("terminal_presets.claude_code['anthropic/fast'].Model = %q, want %q",
-			tp.ClaudeCode["anthropic/fast"].Model, "claude-3.5")
+	if tp.Anthropic["anthropic/fast"].Model != "claude-3.5" {
+		t.Fatalf("terminal_presets.anthropic['anthropic/fast'].Model = %q, want %q",
+			tp.Anthropic["anthropic/fast"].Model, "claude-3.5")
 	}
 }
 
@@ -999,7 +1073,7 @@ func TestMigrateOpenCodeConfig_Fidelity(t *testing.T) {
 		t.Fatalf("expected at least 1 migrated, got %d", count)
 	}
 
-	presets, _ := svc.GetTerminalPresets("opencode")
+	presets := svc.GetOpenCodePresets()
 	stableKey := "test-provider/oc"
 	tp, ok := presets[stableKey]
 	if !ok {
@@ -1008,8 +1082,8 @@ func TestMigrateOpenCodeConfig_Fidelity(t *testing.T) {
 
 	// Verify OpenCodeCfg preserves the full object structure
 	var result map[string]interface{}
-	if err := json.Unmarshal(tp.OpenCodeCfg, &result); err != nil {
-		t.Fatalf("OpenCodeCfg is not valid JSON: %v (raw=%s)", err, string(tp.OpenCodeCfg))
+	if err := json.Unmarshal(tp.Config, &result); err != nil {
+		t.Fatalf("OpenCode preset config is not valid JSON: %v (raw=%s)", err, string(tp.Config))
 	}
 	if result["theme"] != "dark" {
 		t.Fatalf("theme = %v, want dark", result["theme"])
@@ -1082,7 +1156,7 @@ func TestMigrateOpenCodeConfig_DoubleEncodedFidelity(t *testing.T) {
 		t.Fatalf("expected at least 1 migrated, got %d", count)
 	}
 
-	presets, _ := svc2.GetTerminalPresets("opencode")
+	presets := svc2.GetOpenCodePresets()
 	tp, ok := presets["test-provider/oc"]
 	if !ok {
 		t.Fatal("expected preset test-provider/oc in opencode")
@@ -1090,8 +1164,8 @@ func TestMigrateOpenCodeConfig_DoubleEncodedFidelity(t *testing.T) {
 
 	// After migration, OpenCodeCfg should be a clean JSON object (not a double-encoded string)
 	var result map[string]interface{}
-	if err := json.Unmarshal(tp.OpenCodeCfg, &result); err != nil {
-		t.Fatalf("OpenCodeCfg should be valid JSON after migration auto-normalization, got: %v (raw=%s)", err, string(tp.OpenCodeCfg))
+	if err := json.Unmarshal(tp.Config, &result); err != nil {
+		t.Fatalf("OpenCode config should be valid JSON after migration auto-normalization, got: %v (raw=%s)", err, string(tp.Config))
 	}
 	if result["theme"] != "dark" {
 		t.Fatalf("theme = %v, want dark", result["theme"])
@@ -1121,15 +1195,18 @@ func TestMigrateOpenCodeConfig_EmptyPreserved(t *testing.T) {
 
 	svc.MigrateProviderPresetsToTerminal()
 
-	presets, _ := svc.GetTerminalPresets("opencode")
+	presets := svc.GetOpenCodePresets()
 	tp := presets["test-provider/oc"]
 
-	if tp.OpenCodeCfg != nil {
-		t.Fatalf("expected nil OpenCodeCfg when source was nil, got: %s", string(tp.OpenCodeCfg))
+	if len(tp.Config) == 0 {
+		t.Fatal("expected migrated OpenCode preset to contain a complete runtime config")
 	}
-	// Other fields should still be correct
-	if tp.Model != "claude-3.5" {
-		t.Fatalf("Model = %q, want claude-3.5", tp.Model)
+	var config map[string]any
+	if err := json.Unmarshal(tp.Config, &config); err != nil {
+		t.Fatalf("unmarshal OpenCode config: %v", err)
+	}
+	if config["model"] != "test-provider/claude-3.5" {
+		t.Fatalf("model = %q, want test-provider/claude-3.5", config["model"])
 	}
 }
 
@@ -1160,31 +1237,26 @@ func TestMigrateOpenCodeConfig_ParametersFidelity(t *testing.T) {
 
 	svc.MigrateProviderPresetsToTerminal()
 
-	presets, _ := svc.GetTerminalPresets("opencode")
+	presets := svc.GetOpenCodePresets()
 	tp := presets["test-provider/oc"]
 
-	// Verify parameters fidelity
-	if tp.Parameters.Temperature != 0.7 {
-		t.Fatalf("Temperature = %v, want 0.7", tp.Parameters.Temperature)
+	// The independent preset stores the complete OpenCode config. Verify the
+	// overlay and the supported model options survive that conversion.
+	var result map[string]any
+	if err := json.Unmarshal(tp.Config, &result); err != nil {
+		t.Fatalf("unmarshal OpenCode config: %v", err)
 	}
-	if tp.Parameters.MaxTokens != 4096 {
-		t.Fatalf("MaxTokens = %v, want 4096", tp.Parameters.MaxTokens)
-	}
-	if tp.Parameters.Thinking == nil || tp.Parameters.Thinking.Type != "enabled" {
-		t.Fatalf("Thinking = %v, want type=enabled", tp.Parameters.Thinking)
-	}
-	if tp.Parameters.Thinking.BudgetTokens != 10000 {
-		t.Fatalf("Thinking.BudgetTokens = %v, want 10000", tp.Parameters.Thinking.BudgetTokens)
-	}
-	if tp.Parameters.Stream == nil || *tp.Parameters.Stream != true {
-		t.Fatalf("Stream = %v, want true", tp.Parameters.Stream)
-	}
-
-	// Verify OpenCodeCfg fidelity
-	var result map[string]string
-	json.Unmarshal(tp.OpenCodeCfg, &result)
 	if result["theme"] != "light" {
 		t.Fatalf("theme = %q, want light", result["theme"])
+	}
+	providerConfig := result["provider"].(map[string]any)["test-provider"].(map[string]any)
+	modelOptions := providerConfig["models"].(map[string]any)["claude-3.5"].(map[string]any)["options"].(map[string]any)
+	if modelOptions["temperature"] != 0.7 || modelOptions["maxTokens"] != float64(4096) {
+		t.Fatalf("model options = %#v, want temperature=0.7 and maxTokens=4096", modelOptions)
+	}
+	thinking := modelOptions["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" || thinking["budgetTokens"] != float64(10000) {
+		t.Fatalf("thinking = %#v, want enabled/10000", thinking)
 	}
 }
 
@@ -1302,7 +1374,7 @@ func TestMigrate_MultipleProvidersMixedTargets(t *testing.T) {
 
 	// Verify routing
 	cc, _ := svc.GetTerminalPresets("claude_code")
-	oc, _ := svc.GetTerminalPresets("opencode")
+	oc := svc.GetOpenCodePresets()
 	cx, _ := svc.GetTerminalPresets("codex")
 
 	// provider-a/cc-preset -> claude_code
@@ -1356,12 +1428,12 @@ func TestMigrate_UnknownFieldsPreserved(t *testing.T) {
 
 	svc.MigrateProviderPresetsToTerminal()
 
-	presets, _ := svc.GetTerminalPresets("opencode")
+	presets := svc.GetOpenCodePresets()
 	tp := presets["test-provider/oc"]
 
 	var result map[string]interface{}
-	if err := json.Unmarshal(tp.OpenCodeCfg, &result); err != nil {
-		t.Fatalf("unmarshal OpenCodeCfg: %v", err)
+	if err := json.Unmarshal(tp.Config, &result); err != nil {
+		t.Fatalf("unmarshal OpenCode config: %v", err)
 	}
 	if result["future_field_1"] != "some_value" {
 		t.Fatalf("future_field_1 = %v, want some_value", result["future_field_1"])
@@ -1420,20 +1492,14 @@ func TestMigrate_PersistAndReload(t *testing.T) {
 	svc2 := NewConfigService(dir)
 	svc2.Load()
 
-	presets, err := svc2.GetTerminalPresets("opencode")
-	if err != nil {
-		t.Fatalf("GetTerminalPresets: %v", err)
-	}
+	presets := svc2.GetOpenCodePresets()
 
 	tp, ok := presets["test-provider/oc"]
 	if !ok {
 		t.Fatal("expected test-provider/oc to survive reload")
 	}
-	if tp.Model != "claude-3.5" {
-		t.Fatalf("Model = %q, want claude-3.5", tp.Model)
-	}
 	var cfg map[string]string
-	json.Unmarshal(tp.OpenCodeCfg, &cfg)
+	json.Unmarshal(tp.Config, &cfg)
 	if cfg["theme"] != "dark" {
 		t.Fatalf("theme = %q, want dark", cfg["theme"])
 	}
@@ -1473,12 +1539,12 @@ func TestMigrate_NormalizeDoesNotCorruptCleanJSON(t *testing.T) {
 
 	svc.MigrateProviderPresetsToTerminal()
 
-	presets, _ := svc.GetTerminalPresets("opencode")
+	presets := svc.GetOpenCodePresets()
 	tp := presets["test-provider/oc"]
 
 	// The clean JSON must be byte-for-byte preserved (modulo whitespace in object)
 	var result map[string]interface{}
-	if err := json.Unmarshal(tp.OpenCodeCfg, &result); err != nil {
+	if err := json.Unmarshal(tp.Config, &result); err != nil {
 		t.Fatalf("clean JSON should still be valid after migration normalization: %v", err)
 	}
 	if result["theme"] != "solarized" {
@@ -1645,10 +1711,10 @@ func TestCleanupMigratedPresets_AllMigrated(t *testing.T) {
 	// Migrate all presets to terminal_presets
 	svc.MigrateProviderPresetsToTerminal()
 
-	// Verify presets still exist on provider before cleanup
+	// The migration now cleans the legacy provider-owned presets atomically.
 	provBefore, _ := svc.GetProvider("test-provider")
-	if len(provBefore.Presets) == 0 {
-		t.Fatal("expected presets to exist before cleanup")
+	if len(provBefore.Presets) != 0 {
+		t.Fatalf("expected presets to be cleaned during migration, got %d", len(provBefore.Presets))
 	}
 
 	// Run cleanup
@@ -2577,7 +2643,7 @@ func TestCompressDuplicatedPrefixPresetKey_Idempotent(t *testing.T) {
 // RenameProvider -- provider 改名跨模块联动（设计 10.1）
 // ============================================================================
 
-// seedProviderForRename 构造一个带三 map TerminalPreset + OpenCodePreset binding + legacy Preset 的 provider，
+// seedProviderForRename 构造一个带两类公共 TerminalPreset + OpenCodePreset binding + legacy Preset 的 provider，
 // 用于 RenameProvider 测试。返回 provider name（即 oldName）。
 func seedProviderForRename(t *testing.T, svc *ConfigService, name string) {
 	t.Helper()
@@ -2590,7 +2656,7 @@ func seedProviderForRename(t *testing.T, svc *ConfigService, name string) {
 	}); err != nil {
 		t.Fatalf("SaveProvider(%s): %v", name, err)
 	}
-	for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+	for _, tt := range []TerminalPresetType{TerminalPresetAnthropic, TerminalPresetOpenAI} {
 		tp := TerminalPreset{Name: "Max", Provider: name, Model: name + "-4-max"}
 		if err := svc.SaveTerminalPreset(string(tt), name+"/max", tp); err != nil {
 			t.Fatalf("SaveTerminalPreset(%s, %s/max): %v", tt, name, err)
@@ -2607,7 +2673,7 @@ func seedProviderForRename(t *testing.T, svc *ConfigService, name string) {
 }
 
 // TestRenameProvider_BasicRenameMigratesAllReferences 验证基本改名：Models key 迁移、
-// 三 map TerminalPresets stable key 同步 + Provider 字段更新、OpenCode bindings 更新、legacy Presets 随迁。
+// 两类公共 TerminalPresets stable key 同步 + Provider 字段更新、OpenCode bindings 更新、legacy Presets 随迁。
 func TestRenameProvider_BasicRenameMigratesAllReferences(t *testing.T) {
 	svc := newTestConfigService(t)
 	seedProviderForRename(t, svc, "glm")
@@ -2635,8 +2701,8 @@ func TestRenameProvider_BasicRenameMigratesAllReferences(t *testing.T) {
 		t.Fatal("legacy preset 'legacy' not migrated to new name")
 	}
 
-	// 三 map TerminalPresets stable key 同步 + Provider 字段更新
-	for _, tt := range []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex} {
+	// 两类公共 TerminalPresets stable key 同步 + Provider 字段更新
+	for _, tt := range []TerminalPresetType{TerminalPresetAnthropic, TerminalPresetOpenAI} {
 		presets, err := svc.GetTerminalPresets(string(tt))
 		if err != nil {
 			t.Fatalf("GetTerminalPresets(%s): %v", tt, err)

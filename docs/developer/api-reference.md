@@ -17,7 +17,6 @@ Amagi CodeBox 的前后端通信基于 Wails v2 的绑定。事实链路：
        app,
        app.Config,
        app.Secrets,
-       app.Proxy,
        app.Headroom,
        app.Paths,
        app.Log,
@@ -26,12 +25,11 @@ Amagi CodeBox 的前后端通信基于 Wails v2 的绑定。事实链路：
        app.Updater,
        app.Plugins,
        app.CodexPlugins,
-       app.Workspaces,
        app.OpenCodeConfig,
        app.EnvCheck,
    },
    ```
-   即 `App` 本体加上 14 个服务 struct，共 15 个绑定（核实自 `main.go`）。
+   绑定数量和服务清单以 `bind_list.go` 为准。
 
 2. 这些 struct 的**导出方法**（首字母大写）会被 Wails 在 `wails dev` / `wails build` 时自动生成 TypeScript 绑定，落到：
    ```
@@ -39,7 +37,7 @@ Amagi CodeBox 的前后端通信基于 Wails v2 的绑定。事实链路：
    frontend/wailsjs/go/main/Config.ts       # 各服务（命名按 struct 类型）
    frontend/wailsjs/go/main/models.ts       # 参数/返回值涉及的 Go struct 类型
    ```
-3. 前端 `frontend/src/api/*.ts`（共 15 个领域模块：provider/session/plugin/codexPlugin/workspace/proxy/settings/paths/logs/updater/envvars/envcheck/headroom/remote 以及聚合的 index）把这些原始绑定包装为类型化、带错误处理的函数，Pinia store 与 Vue 组件只消费包装层，不直接碰 `wailsjs/`。
+3. 前端 `frontend/src/api/*.ts` 按业务领域把这些原始绑定包装为类型化、带错误处理的函数，Pinia store 与 Vue 组件只消费包装层，不直接碰 `wailsjs/`。
 
 数据流：
 
@@ -208,9 +206,9 @@ async function getService() {
 - 导出方法供前端/远程层调用。
 - 跨平台差异通过 `_<os>.go` 文件 + build constraints 处理，不用运行时 `if runtime.GOOS`。
 
-服务包示例：`internal/config`（providers/presets）、`internal/secrets`（keychain）、`internal/session`（CLI 会话）、`internal/plugin` + `internal/codexplugin`、`internal/envcheck`、`internal/remote`、`internal/pty`、`internal/updater`、`internal/workspace`、`internal/headroom`、`internal/proxy`（prompt 注入引擎）。
+服务包示例：`internal/config`（providers/presets）、`internal/secrets`（keychain）、`internal/session`（CLI 会话）、`internal/plugin` + `internal/codexplugin`、`internal/envcheck`、`internal/remote`、`internal/pty`、`internal/updater` 与 `internal/headroom`。
 
 ## 待核实项
 
-- `docs/api.md` 当前 Table of Contents 列出 11 个服务分组，而 `main.go` 的 `Bind` 列表实际有 14 个服务 struct。差异：Headroom、CodexPlugins、Workspaces、EnvCheck 这 4 个服务的导出方法**是否已全部收录**进 `../api.md`（待核实，建议补齐 TOC 与方法清单）。
-- `frontend/src/api/headroom.ts`、`envcheck.ts`、`codexPlugin.ts`、`workspace.ts` 已存在（glob 核实），说明前端包装层已覆盖；缺失的是 `docs/api.md` 的分组叙述，不是绑定缺失。
+- `docs/api.md` 的服务分组与 `bind_list.go` 的实际绑定清单仍需定期同步核对。
+- `frontend/src/api/headroom.ts`、`envcheck.ts`、`codexPlugin.ts` 已存在，说明对应前端包装层已覆盖；仍需核对文档分组是否完整。

@@ -56,7 +56,6 @@ type Session struct {
 	PID          int           `json:"pid"`
 	StartedAt    time.Time     `json:"startedAt"`
 	StoppedAt    *time.Time    `json:"stoppedAt,omitempty"`
-	UseProxy     bool          `json:"useProxy"`
 	ErrorMessage string        `json:"errorMessage,omitempty"`
 	// Title 是会话标题（首条 user message 摘要），由方案 P 的轮询写入。
 	// 方案 P 下可被多次覆盖：用户 /resume 切到历史会话并继续输入，
@@ -82,7 +81,6 @@ type SessionInfo struct {
 	PID       int           `json:"pid"`
 	StartedAt string        `json:"startedAt"`
 	Duration  string        `json:"duration"`
-	UseProxy  bool          `json:"useProxy"`
 	// Title 为前端展示用会话标题（首条 user message 摘要）。
 	Title string `json:"title"`
 	// ClaudeSessionID 是 tracker 动态跟踪到的 Claude session uuid
@@ -98,5 +96,4 @@ type LaunchRequest struct {
 	PresetName   string     `json:"presetName"`
 	Mode         LaunchMode `json:"mode"`
 	WorkDir      string     `json:"workDir"`
-	UseProxy     bool       `json:"useProxy"`
 }

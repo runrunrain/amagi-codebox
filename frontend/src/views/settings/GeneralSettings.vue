@@ -59,10 +59,6 @@
         </select>
       </div>
 
-      <div class="setting-row">
-        <label>默认启用注入代理</label>
-        <Switch :model-value="defaults.useProxy" @update:model-value="(v) => (defaults.useProxy = v)" />
-      </div>
     </div>
 
     <div class="card-footer">
@@ -119,7 +115,6 @@ const defaults = reactive({
   openCodeShell: '',
   codexMode: 'embedded',
   codexShell: '',
-  useProxy: false,
   useHeadroom: false,
 })
 
@@ -199,7 +194,7 @@ async function loadData() {
     console.error('load providers:', err)
   }
   try {
-    const presets = await GetMergedTerminalPresets('claude_code')
+    const presets = await GetMergedTerminalPresets('anthropic')
     settingsMergedPresets.value = (presets || []) as unknown as MergedPresetEntry[]
   } catch (err) {
     console.error('load merged presets:', err)
@@ -233,7 +228,6 @@ async function loadData() {
     defaults.openCodeShell = d.openCodeShell || d.shell || shellFallback
     defaults.codexMode = d.codexMode || 'embedded'
     defaults.codexShell = d.codexShell || d.shell || shellFallback
-    defaults.useProxy = d.useProxy || false
     defaults.useHeadroom = d.useHeadroom || false
   } catch (err) {
     console.error('load defaults:', err)
@@ -255,7 +249,6 @@ async function saveDefaults() {
       openCodeShell: defaults.openCodeShell,
       codexMode: defaults.codexMode,
       codexShell: defaults.codexShell,
-      useProxy: defaults.useProxy,
       useHeadroom: defaults.useHeadroom,
     } as any)
     showSuccess('默认值已保存')

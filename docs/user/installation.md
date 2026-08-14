@@ -106,7 +106,7 @@ func defaultConfigDir() string {
 }
 ```
 
-目录生成时机：应用启动钩子 `App.Startup`（`app.go`）依次调用各服务的 `Load()`，包括 Settings、Config、Secrets、Paths、EnvVars、Proxy、Workspaces 等。这些服务首次写入时会在 `~/.amagi-codebox/` 下创建对应文件（首次启动若加载失败，会回退到内置默认配置并记入日志，不阻断启动）。
+目录生成时机：应用启动钩子 `App.Startup`（`app.go`）依次调用各服务的 `Load()`，包括 Settings、Config、Secrets、Paths 与 EnvVars 等。这些服务首次写入时会在 `~/.amagi-codebox/` 下创建对应文件（首次启动若加载失败，会回退到内置默认配置并记入日志，不阻断启动）。
 
 目录下常见文件（与 `README.md` "配置文件"表一致）：
 
@@ -117,7 +117,6 @@ func defaultConfigDir() string {
 | `settings.json` | 应用设置（远程端口、GitHub Token 等） |
 | `envvars.json` | 自定义环境变量 |
 | `settings_amagi.json` | Amagi 模型配置 |
-| `global-enabled.json` | 全局启用的插件列表 |
 
 API 密钥的加密与存储细节见 [../security.md](../security.md)。建议不要手工编辑这些文件；如需导入/导出，请使用应用内"Provider Center"提供的导入与导出功能（详见 [./providers.md](./providers.md)）。
 

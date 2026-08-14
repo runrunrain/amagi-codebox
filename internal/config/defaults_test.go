@@ -14,7 +14,7 @@ func TestDefaultConfigStartsWithoutProvidersOrPresets(t *testing.T) {
 		t.Fatal("fresh config contains Pi/OMP provider presets")
 	}
 	terminal := DefaultTerminalPresets()
-	if terminal == nil || len(terminal.Pi) != 0 || len(terminal.Omp) != 0 {
+	if terminal == nil || len(terminal.Anthropic) != 0 || len(terminal.OpenAI) != 0 {
 		t.Fatalf("fresh terminal presets are not clean: %#v", terminal)
 	}
 }

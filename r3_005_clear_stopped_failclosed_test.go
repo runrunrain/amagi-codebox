@@ -23,7 +23,7 @@ import (
 func TestR3_005_ClearStopped_ControlManagedFailClosedWhenControlUnavailable(t *testing.T) {
 	app := newTestApp(t)
 	// control intentionally NOT wired (nil) — simulates pre-Startup / shutdown.
-	emb := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	emb := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	app.Sessions.MarkStopped(emb.ID)
 
 	result := app.ClearStoppedSessionsDetailed()
@@ -74,7 +74,7 @@ func TestR3_005_ClearStopped_ControlManagedClearedWhenControlReady(t *testing.T)
 func TestR3_005_ClearStopped_LegacyTerminalAlwaysEligible(t *testing.T) {
 	app := newTestApp(t)
 	// control intentionally NOT wired.
-	term := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	term := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(term.ID)
 
 	result := app.ClearStoppedSessionsDetailed()
@@ -97,9 +97,9 @@ func TestR3_005_ClearStopped_LegacyTerminalAlwaysEligible(t *testing.T) {
 func TestR3_005_ClearStopped_MixedBatchPartialClear(t *testing.T) {
 	app := newTestApp(t)
 	// control NOT wired.
-	emb := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	emb := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	app.Sessions.MarkStopped(emb.ID)
-	term := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	term := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(term.ID)
 
 	result := app.ClearStoppedSessionsDetailed()

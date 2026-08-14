@@ -241,16 +241,6 @@ func TestGenerateDedupKey(t *testing.T) {
 	if oc != "oc:ses_abc" {
 		t.Errorf("opencode dedup = %q, want oc:ses_abc", oc)
 	}
-	// proxy: "px:" + SessionID + ":" + RequestID
-	px := generateDedupKey(UsageEvent{
-		AppType:   appClaudeCode,
-		Source:    SourceProxy,
-		SessionID: "sess1",
-		RequestID: "req1",
-	})
-	if px != "px:sess1:req1" {
-		t.Errorf("proxy dedup = %q, want px:sess1:req1", px)
-	}
 	// codex: "cx:" + 16hex
 	cx := generateDedupKey(UsageEvent{
 		AppType:              appCodex,

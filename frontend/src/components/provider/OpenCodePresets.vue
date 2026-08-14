@@ -76,7 +76,7 @@
           <div class="oc-key">key: {{ item.key }}</div>
           <div class="oc-desc" v-if="item.desc">{{ item.desc }}</div>
           <div class="oc-meta">
-            <span v-if="item.bindCount > 0" class="oc-bind">绑定 {{ item.bindCount }} 个工作区</span>
+            <span v-if="item.bindCount > 0" class="oc-bind">绑定 {{ item.bindCount }} 个提供商</span>
             <span v-if="item.provider" class="oc-prov-tag">{{ item.provider }}</span>
             <span v-if="item.model" class="oc-model-tag">{{ item.model }}</span>
           </div>

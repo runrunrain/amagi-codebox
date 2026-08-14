@@ -368,7 +368,7 @@ export function installRemoteStub(): void {
 
     /* ------------------------------------------------------------------
      * M2-INT R12：恢复 status/confirm/startup warnings stub。
-     * 语义对齐 proxy_headroom_facade.go：status 每次调用复检活性；
+     * 语义对齐 headroom_facade.go：status 每次调用复检活性；
      * confirm 走 confirmed=true + 活性复检 + 持久化，无 force-clear。
      * ------------------------------------------------------------------ */
     GetExternalCleanupRecoveryStatus: () =>

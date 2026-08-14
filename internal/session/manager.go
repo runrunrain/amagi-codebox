@@ -52,7 +52,7 @@ func (m *Manager) SetHomeDir(homeDir string) {
 // Production launch paths use ReserveCreate and commit only after process and
 // control activation. The resulting record is nevertheless an Authority entry,
 // not a second legacy store.
-func (m *Manager) Create(appType AppType, provider, preset, model string, mode LaunchMode, workDir string, useProxy bool) *Session {
+func (m *Manager) Create(appType AppType, provider, preset, model string, mode LaunchMode, workDir string) *Session {
 	authorityMode, err := authorityModeFromLaunchMode(mode)
 	if err != nil {
 		return nil
@@ -71,7 +71,6 @@ func (m *Manager) Create(appType AppType, provider, preset, model string, mode L
 		Provider:       provider,
 		Preset:         preset,
 		Model:          model,
-		UseProxy:       useProxy,
 	})
 	if err != nil {
 		return nil
@@ -289,7 +288,7 @@ func (m *Manager) List() []SessionInfo {
 		info := SessionInfo{
 			ID: s.ID, AppType: s.AppType, Provider: s.Provider, Preset: s.Preset,
 			Model: s.Model, Mode: s.Mode, WorkDir: s.WorkDir, Status: s.Status,
-			PID: s.PID, StartedAt: s.StartedAt.Format(time.RFC3339), UseProxy: s.UseProxy,
+			PID: s.PID, StartedAt: s.StartedAt.Format(time.RFC3339),
 			Title: s.Title, ClaudeSessionID: s.ClaudeSessionID,
 		}
 		if isActiveSessionStatus(s.Status) {

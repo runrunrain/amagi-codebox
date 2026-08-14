@@ -17,9 +17,9 @@
  * 凭据：Cookie 唯一凭据载体；本页不展示、不存储任何凭据材料。
  * ---------------------------------------------------------------------------
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { type CLIType, type SessionSummary } from '../lib/contract';
+import { type CreateSessionRequest, type SessionSummary } from '../lib/contract';
 import { useAuthStore } from '../stores/auth';
 import { useLobbyStore, type DangerousOperation } from '../stores/lobby';
 import StatusBar, { type StatusLayer } from '../components/lobby/StatusBar.vue';
@@ -38,6 +38,14 @@ onMounted(async () => {
     return;
   }
   await lobby.load();
+  refreshTimer = window.setInterval(() => {
+    if (!document.hidden && !lobby.loading && lobby.launching === null) void lobby.refreshSessions();
+  }, 3000);
+});
+
+let refreshTimer: number | null = null;
+onBeforeUnmount(() => {
+  if (refreshTimer !== null) window.clearInterval(refreshTimer);
 });
 
 // 授权失效（auth.* 401 于任何大厅请求）：清态踢回 PG-01。
@@ -98,8 +106,8 @@ const layers = computed<StatusLayer[]>(() => {
 });
 
 // --- 启动器 ---
-async function onLaunch(cliType: CLIType) {
-  await lobby.launch(cliType);
+async function onLaunch(req: CreateSessionRequest) {
+  await lobby.launch(req);
 }
 
 // --- PG-06 危险操作确认流 ---
@@ -118,7 +126,7 @@ const OPERATION_COPY: Record<
   stop: {
     title: (t) => `停止会话「${t}」？`,
     verb: '停止会话',
-    consequences: ['会话进程将被终止，未完成的交互会被中断。', '停止后可通过「重启会话」在同一记录下再次启动。'],
+    consequences: ['会话进程将被终止，未完成的交互会被中断。', '停止后该会话卡片会自动从大厅清理。'],
     irreversible: false,
   },
   restart: {
@@ -236,6 +244,7 @@ function openWorkspace(session: SessionSummary) {
       <CliLauncher
         v-if="lobby.loaded && lobby.host"
         :availability="lobby.cliAvailability"
+        :settings="lobby.host.launchSettings"
         :launching="lobby.launching"
         @launch="onLaunch"
       />

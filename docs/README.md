@@ -29,7 +29,7 @@ docs/
 - [界面功能总览](user/usage.md) — 各功能页（会话设置、终端、提供商中心、扩展、规则、环境检测、日志）与启动会话流程
 - [提供商与预设配置](user/providers.md) — Provider / Preset / Parameters 概念、三种应用类型、`config.json` 结构
 - [内嵌终端](user/terminal.md) — xterm.js + ConPTY/PTY、多 Tab、终端预设与回调机制
-- [插件系统](user/plugins.md) — Claude Code 与 Codex 插件、工作空间部署与冲突检测
+- [插件系统](user/plugins.md) — Claude Code、OpenCode 与 Codex 插件管理
 - [远程控制与移动端](user/remote-mobile.md) — HTTP/WebSocket 远程 API、Token 认证、移动端连接
 - [常见问题](user/faq.md) — 环境检测、安装、单实例、托盘、配置目录
 

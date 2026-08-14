@@ -1,8 +1,8 @@
 <template>
   <section class="view-extensions">
-    <PageHead title="扩展管理" description="管理 Claude、OpenCode、Codex、Pi 与 OMP 插件、工作区与环境变量"/>
+    <PageHead title="扩展管理" description="管理 Claude、OpenCode、Codex、Pi 与 OMP 插件和环境变量"/>
 
-    <!-- Main segmented control: Plugins | Workspaces | Environment -->
+    <!-- Main segmented control: Plugins | Environment | Other tools -->
     <div class="ex-main-tabs">
       <Segmented
         v-model="extMainTab"
@@ -57,11 +57,6 @@
             />
           </div>
         </div>
-      </div>
-
-      <!-- Workspaces tab -->
-      <div v-else-if="extMainTab === 'workspaces'" class="tab-pane">
-        <WorkspacesPanel />
       </div>
 
       <!-- Environment variables tab -->
@@ -119,12 +114,10 @@ import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import PageHead from '../components/ui/PageHead.vue';
 import Segmented from '../components/ui/Segmented.vue';
-import EmptyState from '../components/ui/EmptyState.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
 import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';
 import PiPluginPanel from '../components/extensions/PiPluginPanel.vue';
 import OmpPluginPanel from '../components/extensions/OmpPluginPanel.vue';
-import WorkspacesPanel from '../components/extensions/WorkspacesPanel.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
@@ -144,7 +137,6 @@ const {
 // Main tab options
 const mainTabOptions = ref([
   { value: 'plugins', label: '插件管理' },
-  { value: 'workspaces', label: '工作区管理' },
   { value: 'env', label: '环境变量' },
   { value: 'tools', label: '其他工具' },
 ]);

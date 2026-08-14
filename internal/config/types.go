@@ -125,36 +125,65 @@ func (p *Preset) NormalizeOpenCodeConfig() {
 	}
 }
 
-// TerminalPresetType 定义终端预设的目标 CLI 类型
-// 与 PresetTargetType 不同，这是终端维度的独立容器标识。
+// TerminalPresetType 定义公共预设的协议格式。
+//
+// 新模型只维护 Anthropic / OpenAI 两个公共桶：Claude Code 消费 Anthropic，
+// Codex / Pi / OMP 及后续 OpenAI-compatible CLI 消费 OpenAI。OpenCode 使用
+// 独立的 OpenCodePresets，不属于 TerminalPresetsConfig。
+//
+// 旧 CLI 级常量保留为 API/导入兼容别名，所有 CRUD/解析都会规范化到公共格式。
 type TerminalPresetType string
 
 const (
-	// TerminalPresetClaudeCode 表示 Claude Code 终端预设
+	TerminalPresetAnthropic TerminalPresetType = "anthropic"
+	TerminalPresetOpenAI    TerminalPresetType = "openai"
+
+	// 以下常量仅用于兼容历史 models.json 与旧调用方。
 	TerminalPresetClaudeCode TerminalPresetType = "claude_code"
-	// TerminalPresetOpenCode 表示 OpenCode 终端预设
-	TerminalPresetOpenCode TerminalPresetType = "opencode"
-	// TerminalPresetCodex 表示 Codex 终端预设
-	TerminalPresetCodex TerminalPresetType = "codex"
-	// TerminalPresetPi 表示 Pi coding agent 终端预设
-	TerminalPresetPi TerminalPresetType = "pi"
-	// TerminalPresetOmp 表示 Oh My Pi (omp) 终端预设
-	TerminalPresetOmp TerminalPresetType = "omp"
+	TerminalPresetOpenCode   TerminalPresetType = "opencode"
+	TerminalPresetCodex      TerminalPresetType = "codex"
+	TerminalPresetPi         TerminalPresetType = "pi"
+	TerminalPresetOmp        TerminalPresetType = "omp"
 )
 
-// ValidTerminalPresetTypes 返回所有合法的终端预设类型
+// ValidTerminalPresetTypes 返回当前持久化/导出的公共预设类型。
 func ValidTerminalPresetTypes() []TerminalPresetType {
-	return []TerminalPresetType{TerminalPresetClaudeCode, TerminalPresetOpenCode, TerminalPresetCodex, TerminalPresetPi, TerminalPresetOmp}
+	return []TerminalPresetType{TerminalPresetAnthropic, TerminalPresetOpenAI}
+}
+
+// CompatibleTerminalPresetTypes returns every accepted import/API spelling.
+// Persistence and exports must continue to use ValidTerminalPresetTypes only.
+func CompatibleTerminalPresetTypes() []TerminalPresetType {
+	return []TerminalPresetType{
+		TerminalPresetAnthropic,
+		TerminalPresetOpenAI,
+		TerminalPresetClaudeCode,
+		TerminalPresetOpenCode,
+		TerminalPresetCodex,
+		TerminalPresetPi,
+		TerminalPresetOmp,
+	}
+}
+
+// CanonicalTerminalPresetType 把公共格式或历史 CLI 名称解析为公共格式。
+// OpenCode 返回自身仅用于旧 API 兼容迁移；新数据应写入 OpenCodePresets。
+func CanonicalTerminalPresetType(t string) (TerminalPresetType, bool) {
+	switch TerminalPresetType(t) {
+	case TerminalPresetAnthropic, TerminalPresetClaudeCode:
+		return TerminalPresetAnthropic, true
+	case TerminalPresetOpenAI, TerminalPresetCodex, TerminalPresetPi, TerminalPresetOmp:
+		return TerminalPresetOpenAI, true
+	case TerminalPresetOpenCode:
+		return TerminalPresetOpenCode, true
+	default:
+		return "", false
+	}
 }
 
 // IsValidTerminalPresetType 检查给定类型是否合法
 func IsValidTerminalPresetType(t string) bool {
-	for _, vt := range ValidTerminalPresetTypes() {
-		if string(vt) == t {
-			return true
-		}
-	}
-	return false
+	_, ok := CanonicalTerminalPresetType(t)
+	return ok
 }
 
 // TerminalPreset 终端预设配置。
@@ -196,9 +225,14 @@ func (tp *TerminalPreset) NormalizeOpenCodeCfg() {
 	}
 }
 
-// TerminalPresetsConfig 终端预设容器，按终端类型分组。
-// 存储于 AppConfig.TerminalPresets。
+// TerminalPresetsConfig 公共预设容器。
+// Anthropic / OpenAI 是当前持久化模型；其余字段仅用于读取旧 models.json / 导入快照，
+// Load 后会无损合并并清空，因此新写盘不再随 CLI 数量扩张而增加重复桶。
 type TerminalPresetsConfig struct {
+	Anthropic map[string]TerminalPreset `json:"anthropic,omitempty"`
+	OpenAI    map[string]TerminalPreset `json:"openai,omitempty"`
+
+	// Deprecated compatibility buckets.
 	ClaudeCode map[string]TerminalPreset `json:"claude_code,omitempty"`
 	OpenCode   map[string]TerminalPreset `json:"opencode,omitempty"`
 	Codex      map[string]TerminalPreset `json:"codex,omitempty"`
@@ -206,42 +240,56 @@ type TerminalPresetsConfig struct {
 	Omp        map[string]TerminalPreset `json:"omp,omitempty"`
 }
 
-// GetMap 按 TerminalPresetType 返回对应的预设 map。
+// GetMap 按公共格式或旧 CLI 别名返回预设 map。
 func (tpc *TerminalPresetsConfig) GetMap(terminalType TerminalPresetType) map[string]TerminalPreset {
 	if tpc == nil {
 		return nil
 	}
-	switch terminalType {
-	case TerminalPresetClaudeCode:
+	canonical, ok := CanonicalTerminalPresetType(string(terminalType))
+	if !ok {
+		return nil
+	}
+	switch canonical {
+	case TerminalPresetAnthropic:
+		if tpc.Anthropic != nil {
+			return tpc.Anthropic
+		}
 		return tpc.ClaudeCode
+	case TerminalPresetOpenAI:
+		if tpc.OpenAI != nil {
+			return tpc.OpenAI
+		}
+		// 仅供尚未经过 Load 迁移的兼容对象读取对应旧桶。
+		switch terminalType {
+		case TerminalPresetPi:
+			return tpc.Pi
+		case TerminalPresetOmp:
+			return tpc.Omp
+		default:
+			return tpc.Codex
+		}
 	case TerminalPresetOpenCode:
 		return tpc.OpenCode
-	case TerminalPresetCodex:
-		return tpc.Codex
-	case TerminalPresetPi:
-		return tpc.Pi
-	case TerminalPresetOmp:
-		return tpc.Omp
 	}
 	return nil
 }
 
-// SetMap 按 TerminalPresetType 设置对应的预设 map。
+// SetMap 按公共格式或旧 CLI 别名写入公共桶。
 func (tpc *TerminalPresetsConfig) SetMap(terminalType TerminalPresetType, m map[string]TerminalPreset) {
 	if tpc == nil {
 		return
 	}
-	switch terminalType {
-	case TerminalPresetClaudeCode:
-		tpc.ClaudeCode = m
+	canonical, ok := CanonicalTerminalPresetType(string(terminalType))
+	if !ok {
+		return
+	}
+	switch canonical {
+	case TerminalPresetAnthropic:
+		tpc.Anthropic = m
+	case TerminalPresetOpenAI:
+		tpc.OpenAI = m
 	case TerminalPresetOpenCode:
 		tpc.OpenCode = m
-	case TerminalPresetCodex:
-		tpc.Codex = m
-	case TerminalPresetPi:
-		tpc.Pi = m
-	case TerminalPresetOmp:
-		tpc.Omp = m
 	}
 }
 
@@ -354,7 +402,7 @@ type ExportConfig struct {
 	// Portable is present in v2 exports. It contains non-provider application
 	// configuration required to reproduce the same setup on another device.
 	// json.RawMessage keeps the config package independent from the individual
-	// settings/path/workspace/proxy packages; the App boundary owns composition.
+	// settings/path and other service packages; the App boundary owns composition.
 	Portable json.RawMessage `json:"portable,omitempty"`
 }
 

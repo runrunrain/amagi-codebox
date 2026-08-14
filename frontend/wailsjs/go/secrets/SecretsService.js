@@ -38,6 +38,10 @@ export function Load() {
   return window['go']['secrets']['SecretsService']['Load']();
 }
 
+export function ReplaceAll(arg1) {
+  return window['go']['secrets']['SecretsService']['ReplaceAll'](arg1);
+}
+
 export function Save() {
   return window['go']['secrets']['SecretsService']['Save']();
 }
@@ -52,4 +56,8 @@ export function SetMinimaxAPIKey(arg1) {
 
 export function SetZhipuAPIKey(arg1) {
   return window['go']['secrets']['SecretsService']['SetZhipuAPIKey'](arg1);
+}
+
+export function Snapshot() {
+  return window['go']['secrets']['SecretsService']['Snapshot']();
 }

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,7 +37,6 @@ import (
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/plugin"
 	"amagi-codebox/internal/processcap"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
@@ -46,7 +46,6 @@ import (
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
 	"amagi-codebox/internal/usage"
-	"amagi-codebox/internal/workspace"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -182,14 +181,11 @@ type OpenRemoteWebUIResult struct {
 }
 
 type persistentLoadState struct {
-	initialized        bool
-	configLoaded       bool
-	secretsLoaded      bool
-	pathsLoaded        bool
-	settingsLoaded     bool
-	workspacesLoaded   bool
-	proxyRulesLoaded   bool
-	proxyHistoryLoaded bool
+	initialized    bool
+	configLoaded   bool
+	secretsLoaded  bool
+	pathsLoaded    bool
+	settingsLoaded bool
 }
 
 // App 主应用结构体，负责跨服务协调和生命周期管理。
@@ -200,7 +196,6 @@ type App struct {
 	Config   *config.ConfigService
 	Secrets  *secrets.SecretsService
 	Launcher *launcher.LauncherService
-	Proxy    *proxy.ProxyService
 	Headroom *headroom.HeadroomService
 	// CodexHeadroom is a second, independent headroom instance that compresses
 	// Codex desktop traffic globally (port 8788, OpenAI target). It is fully
@@ -223,13 +218,12 @@ type App struct {
 	OpenCodePlugins *opencodeplugin.Service
 	PiPlugins       *piplugin.Service
 	OmpPlugins      *ompplugin.Service
-	Workspaces      *workspace.Service
 	OpenCodeConfig  *opencodeconfig.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
 
 	// Control runtime (M3-A2): the gate authority for all session write side
-	// effects. Raw ports (Pty/Proxy/Headroom) sit BEHIND it and are never
+	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
 	// Wails-bound (design §4.1, §6.3 C-01).
 	control           *remote.ControlRuntime
 	sessionAdapter    *remote.RemoteSessionAdapter
@@ -313,6 +307,14 @@ type App struct {
 	// replacement/rollback sequences.
 	portableConfigMu sync.Mutex
 
+	// providerSyncMu serializes reconciliation of CodeBox-managed provider
+	// entries across OpenCode, Pi and OMP. providerSyncEnabled is set only by
+	// NewApp; minimal test Apps opt in explicitly with isolated harness paths.
+	providerSyncMu      sync.Mutex
+	providerSyncEnabled bool
+	providerSyncPiDir   string
+	providerSyncOmpDir  string
+
 	// codexGlobalMu serializes the codex-global headroom orchestration between
 	// the async startup restore goroutine (restoreCodexGlobalHeadroomOnStartup)
 	// and the synchronous UI toggle (SetCodexGlobalHeadroom). Without it, a user
@@ -365,36 +367,37 @@ func NewApp(mobileAssets embed.FS) *App {
 	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
 	app := &App{
-		configDir:         configDir,
-		Config:            config.NewConfigService(configDir),
-		Secrets:           secrets.NewSecretsService(configDir),
-		Launcher:          launcher.NewLauncherService(log, envVarsSvc),
-		Proxy:             proxy.NewProxyService(),
-		Headroom:          headroomSvc,
-		CodexHeadroom:     codexHeadroomSvc,
-		Tray:              tray.NewService(),
-		Sessions:          session.NewManager(),
-		Paths:             paths.NewPathsService(configDir),
-		Log:               log,
-		Pty:               pty.NewService(log),
-		Settings:          settings.NewService(configDir),
-		EnvVars:           envVarsSvc,
-		Updater:           updater.NewService(resolveAppVersion(), log),
-		Plugins:           pluginsSvc,
-		CodexPlugins:      codexPluginsSvc,
-		OpenCodePlugins:   openCodePluginsSvc,
-		PiPlugins:         piPluginsSvc,
-		OmpPlugins:        ompPluginsSvc,
-		Workspaces:        workspace.NewService(configDir, pluginsSvc, log),
-		OpenCodeConfig:    opencodeconfig.NewService(),
-		EnvCheck:          envCheckSvc,
-		Usage:             usage.NewService(configDir, log),
-		Capabilities:      capabilities,
-		CLIResolver:       platform.NewCLIResolver(capabilities),
-		FileOpener:        platform.NewFileOpener(processRunner),
-		processRegistry:   processcap.NewRegistry(),
-		remotePlanner:     launchplan.NewFailClosedPlanner(),
-		compensationDebts: launchplan.NewCompensationDebtRegistry(),
+		configDir:           configDir,
+		Config:              config.NewConfigService(configDir),
+		Secrets:             secrets.NewSecretsService(configDir),
+		Launcher:            launcher.NewLauncherService(log, envVarsSvc),
+		Headroom:            headroomSvc,
+		CodexHeadroom:       codexHeadroomSvc,
+		Tray:                tray.NewService(),
+		Sessions:            session.NewManager(),
+		Paths:               paths.NewPathsService(configDir),
+		Log:                 log,
+		Pty:                 pty.NewService(log),
+		Settings:            settings.NewService(configDir),
+		EnvVars:             envVarsSvc,
+		Updater:             updater.NewService(resolveAppVersion(), log),
+		Plugins:             pluginsSvc,
+		CodexPlugins:        codexPluginsSvc,
+		OpenCodePlugins:     openCodePluginsSvc,
+		PiPlugins:           piPluginsSvc,
+		OmpPlugins:          ompPluginsSvc,
+		OpenCodeConfig:      opencodeconfig.NewService(),
+		EnvCheck:            envCheckSvc,
+		Usage:               usage.NewService(configDir, log),
+		Capabilities:        capabilities,
+		CLIResolver:         platform.NewCLIResolver(capabilities),
+		FileOpener:          platform.NewFileOpener(processRunner),
+		providerSyncEnabled: true,
+		providerSyncPiDir:   defaultPiAgentDir(),
+		providerSyncOmpDir:  defaultOmpAgentDir(),
+		processRegistry:     processcap.NewRegistry(),
+		remotePlanner:       launchplan.NewFailClosedPlanner(),
+		compensationDebts:   launchplan.NewCompensationDebtRegistry(),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
@@ -467,12 +470,11 @@ func NewApp(mobileAssets embed.FS) *App {
 	if _, ok := app.remotePlanner.(*appLaunchPlanner); ok {
 		exec := newAppLaunchExecutor(launchExecutorDeps{
 			pty:           app.Pty,
-			proxy:         app.Proxy,
 			headroom:      app.Headroom,
 			codexHeadroom: app.CodexHeadroom,
-			launcherSvc:   app.Launcher,
 			sharedCoord:   app.sharedCoord,
 			debts:         app.compensationDebts,
+			configMu:      &app.providerSyncMu,
 		})
 		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
 		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
@@ -1143,7 +1145,148 @@ func (a *App) buildRemoteHostSummary() (contract.HostSummary, error) {
 		item.CLIType = cliType
 		availability = append(availability, item)
 	}
-	return contract.HostSummary{APIVersion: contract.APIVersionV1, ServerVersion: resolveAppVersion(), CLIAvailability: availability}, nil
+	return contract.HostSummary{
+		APIVersion: contract.APIVersionV1, ServerVersion: resolveAppVersion(),
+		CLIAvailability: availability, LaunchSettings: a.buildRemoteLaunchSettings(),
+	}, nil
+}
+
+// buildRemoteLaunchSettings returns the complete authorized-device launch
+// form without exposing provider URLs, credentials or environment values.
+func (a *App) buildRemoteLaunchSettings() *contract.LaunchSettings {
+	settingsSurface := &contract.LaunchSettings{
+		Workdirs: []contract.LaunchPathOption{}, Shells: []contract.LaunchPathOption{},
+		CLIs: make([]contract.CLILaunchSettings, 0, len(contract.KnownCLITypes)),
+	}
+	seenWorkdirs := map[string]bool{}
+	addWorkdir := func(path, label string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seenWorkdirs[path] {
+			return
+		}
+		label = strings.TrimSpace(label)
+		if label == "" {
+			label = filepath.Base(path)
+		}
+		settingsSurface.Workdirs = append(settingsSurface.Workdirs, contract.LaunchPathOption{Path: path, Label: label})
+		seenWorkdirs[path] = true
+	}
+	if a.Paths != nil {
+		addWorkdir(a.Paths.GetDefaultPath(), "默认目录")
+		for _, item := range a.Paths.GetPaths() {
+			addWorkdir(item.Path, item.Label)
+		}
+	}
+	if a.Settings != nil {
+		for _, item := range a.Settings.GetSettings().SavedWorkDirs {
+			addWorkdir(item.Path, item.Label)
+		}
+		seenShells := map[string]bool{}
+		addShell := func(path, label string) {
+			path = strings.TrimSpace(path)
+			if path == "" || seenShells[path] {
+				return
+			}
+			label = strings.TrimSpace(label)
+			if label == "" {
+				label = filepath.Base(path)
+			}
+			settingsSurface.Shells = append(settingsSurface.Shells, contract.LaunchPathOption{Path: path, Label: label})
+			seenShells[path] = true
+		}
+		for _, item := range a.Settings.GetShellPaths() {
+			addShell(item.Path, item.Label)
+		}
+		dashboard := a.Settings.GetDashboardDefaults()
+		for _, item := range []struct{ path, label string }{
+			{dashboard.ClaudeShell, "Claude Code 默认 Shell"},
+			{dashboard.OpenCodeShell, "OpenCode 默认 Shell"},
+			{dashboard.CodexShell, "Codex 默认 Shell"},
+			{dashboard.PiShell, "Pi 默认 Shell"},
+			{dashboard.OmpShell, "Oh My Pi 默认 Shell"},
+		} {
+			addShell(item.path, item.label)
+		}
+	}
+
+	providers := map[string]config.Provider{}
+	if a.Config != nil {
+		providers = a.Config.GetProviders()
+	}
+	providerKeys := make([]string, 0, len(providers))
+	for key := range providers {
+		providerKeys = append(providerKeys, key)
+	}
+	sort.Strings(providerKeys)
+	defaults := map[string]settings.RemoteLaunchDefaultV1{}
+	if a.Settings != nil {
+		defaults = a.Settings.GetRemoteLaunchDefaultsV1()
+	}
+	presetFormat := map[contract.CLIType]string{
+		contract.CLITypeClaudeCode: string(config.TerminalPresetAnthropic),
+		contract.CLITypeCodex:      string(config.TerminalPresetOpenAI),
+		contract.CLITypePi:         string(config.TerminalPresetOpenAI),
+		contract.CLITypeOmp:        string(config.TerminalPresetOpenAI),
+	}
+	for _, cliType := range contract.KnownCLITypes {
+		entry := contract.CLILaunchSettings{
+			CLIType: cliType, Providers: []contract.LaunchProviderOption{}, Presets: []contract.LaunchPresetOption{},
+		}
+		for _, key := range providerKeys {
+			provider := providers[key]
+			if cliType == contract.CLITypeClaudeCode && !provider.IsAnthropicCompatible() {
+				continue
+			}
+			if (cliType == contract.CLITypeCodex || cliType == contract.CLITypePi || cliType == contract.CLITypeOmp) && !provider.IsOpenAICompatible() {
+				continue
+			}
+			entry.Providers = append(entry.Providers, contract.LaunchProviderOption{
+				Ref: key, Label: key, Kind: provider.EffectiveType(), DefaultModel: provider.DefaultModel,
+			})
+		}
+		if a.Config != nil {
+			seenPresets := map[string]bool{}
+			if cliType == contract.CLITypeOpenCode {
+				openCodePresets := a.Config.GetOpenCodePresets()
+				keys := make([]string, 0, len(openCodePresets))
+				for key := range openCodePresets {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					label := strings.TrimSpace(openCodePresets[key].Name)
+					if label == "" {
+						label = key
+					}
+					entry.Presets = append(entry.Presets, contract.LaunchPresetOption{Ref: key, Label: label})
+					seenPresets[key] = true
+				}
+			}
+			format, usesCommonPresets := presetFormat[cliType]
+			if usesCommonPresets {
+				presets, err := a.Config.GetMergedTerminalPresets(format)
+				if err == nil {
+					for _, preset := range presets {
+						if seenPresets[preset.Key] {
+							continue
+						}
+						entry.Presets = append(entry.Presets, contract.LaunchPresetOption{
+							Ref: preset.Key, Label: preset.Label, ProviderRef: preset.Provider, ModelRef: preset.Model,
+						})
+						seenPresets[preset.Key] = true
+					}
+				}
+			}
+		}
+		if refs, ok := defaults[string(cliType)]; ok {
+			entry.Defaults = &contract.LaunchDefaults{
+				ProviderRef: refs.ProviderRef, PresetRef: refs.PresetRef, ModelRef: refs.ModelRef,
+				ShellRef: refs.ShellRef, UseHeadroom: refs.UseHeadroom,
+			}
+		}
+		settingsSurface.CLIs = append(settingsSurface.CLIs, entry)
+	}
+	return settingsSurface
 }
 
 // --- M1-A 设备配对/安全 Wails wrappers（design §14.1）---
@@ -1379,6 +1522,14 @@ func (a *App) Startup(ctx context.Context) {
 		loadState.secretsLoaded = true
 		a.Log.Info("app", "密钥加载成功")
 	}
+	if loadState.configLoaded && loadState.secretsLoaded {
+		if err := a.syncProvidersToHarnesses(); err != nil {
+			a.Log.Warn("provider-sync", "启动时同步 OpenCode/Pi/OMP 提供商失败", err.Error())
+			a.addStartupWarning("提供商配置未能完整同步到 OpenCode、Pi 或 Oh My Pi；原配置文件已保留，请修复提示中的配置错误后重试保存")
+		} else {
+			a.Log.Info("provider-sync", "OpenCode/Pi/OMP 提供商配置已同步")
+		}
+	}
 	if err := a.Paths.Load(); err != nil {
 		a.Log.Warn("app", "加载路径失败", err.Error())
 	} else {
@@ -1390,28 +1541,9 @@ func (a *App) Startup(ctx context.Context) {
 	} else {
 		a.Log.Info("app", "自定义环境变量加载成功")
 	}
-	if err := a.Proxy.LoadRules(defaultConfigDir()); err != nil {
-		a.Log.Warn("app", "加载注入规则失败", err.Error())
-	} else {
-		loadState.proxyRulesLoaded = true
-		a.Log.Info("app", "注入规则加载成功")
-	}
-	if err := a.Proxy.LoadBackendURLHistory(defaultConfigDir()); err != nil {
-		a.Log.Warn("app", "加载后端URL历史记录失败", err.Error())
-	} else {
-		loadState.proxyHistoryLoaded = true
-		a.Log.Info("app", "后端URL历史记录加载成功")
-	}
-	if err := a.Workspaces.Load(); err != nil {
-		a.Log.Warn("app", "加载工作区配置失败", err.Error())
-	} else {
-		loadState.workspacesLoaded = true
-		a.Log.Info("app", "工作区配置加载成功")
-	}
 	a.setPersistentLoadState(loadState)
 
-	// 使用统计：加载 usage.db + 注入 proxy sink + 异步触发首次同步 + 后台定时同步。
-	// 失败不阻塞启动；sync_session_log 路径仍可工作，仅 proxy 实时路径降级。
+	// 使用统计：加载 usage.db，异步触发首次同步并启动后台定时同步。
 	if a.Usage != nil {
 		if err := a.Usage.Load(); err != nil {
 			a.Log.Warn("usage", "使用统计加载失败", err.Error())
@@ -1420,27 +1552,6 @@ func (a *App) Startup(ctx context.Context) {
 			// 注入应用级 ctx 给 usage.Service（M1：StartBackgroundSync 不再接受 ctx 参数）。
 			// Wails v2 仅绑定"方法"，结构体字段（即使导出）不进入 wailsjs 生成路径。
 			a.Usage.Ctx = ctx
-			// 适配闭包：把 proxy.UsageEvent 转 usage.UsageEvent 并入库。
-			// 设计 9.1 / 9.3：proxy 包不 import usage 包；app.go 作为适配器在边界层做类型转换。
-			a.Proxy.SetUsageSink(func(pevt proxy.UsageEvent) {
-				if a.Usage == nil {
-					return
-				}
-				_, _ = a.Usage.Record(usage.UsageEvent{
-					AppType:                  pevt.AppType,
-					Source:                   usage.SourceProxy,
-					Provider:                 pevt.Provider,
-					Model:                    pevt.Model,
-					SessionID:                pevt.SessionID,
-					Preset:                   pevt.Preset,
-					InputTokens:              pevt.InputTokens,
-					OutputTokens:             pevt.OutputTokens,
-					CacheReadInputTokens:     pevt.CacheReadInputTokens,
-					CacheCreationInputTokens: pevt.CacheCreationInputTokens,
-					OccurredAt:               pevt.OccurredAt,
-					RequestID:                pevt.RequestID,
-				})
-			})
 			go func() {
 				if err := a.Usage.SyncAll(); err != nil {
 					a.Log.Warn("usage", "首次同步失败", err.Error())
@@ -1536,11 +1647,6 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning() {
 		if err := a.CodexHeadroom.Stop(); err != nil {
 			a.Log.Error("app", "关闭 codex 全局 Headroom 失败", err.Error())
-		}
-	}
-	if a.Proxy.IsRunning() {
-		if err := a.Proxy.Stop(); err != nil {
-			a.Log.Error("app", "关闭代理失败", err.Error())
 		}
 	}
 	// External Launcher processes were already handled by the bounded ownership
@@ -1684,12 +1790,12 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 // --- 多终端会话管理 ---
 
 // LaunchSession 启动一个新的终端会话
-func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useProxy bool, useHeadroom bool, shellPath string) (string, error) {
-	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s proxy=%v headroom=%v shell=%s", providerName, presetName, mode, workDir, useProxy, useHeadroom, shellPath))
+func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useHeadroom bool, shellPath string) (string, error) {
+	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s headroom=%v shell=%s", providerName, presetName, mode, workDir, useHeadroom, shellPath))
 
 	// ---- terminal_presets 桥接 ----
 	// 先尝试用 presetName 作为 terminal_preset 的 stable key 查找新体系
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("claude_code", presetName)
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetAnthropic), presetName)
 	tpFound := tpErr == nil && tp != nil
 	if tpFound {
 		// 新体系中 provider 以 tp.Provider 为准，参数中传入的 providerName 作为 fallback
@@ -1799,35 +1905,9 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	}
 
 	// realBackend 是真实 upstream 的 base URL（如 api.anthropic.com）。
-	// headroom 与注入代理都需要它：headroom 据此转发，注入代理在非串联模式下据此转发。
 	realBackend := provider.EffectiveBaseURL("anthropic")
-	switch {
-	case useHeadroom && useProxy:
-		// 串联叠加: CLI → 注入代理(:5280) → headroom 压缩(:8787) → 真实 API
-		// 注入代理的 backendURL 指向 headroom，headroom 再转发到真实 API。
-		// 注入代理的 proxyHandler 已透传全部请求头(含 Authorization / x-api-key)，
-		// 因此 API key 链路完整，headroom 能拿到认证信息继续转发。
-		if !a.Headroom.IsRunning() {
-			if err := a.Headroom.Start(realBackend); err != nil {
-				a.Log.Error("headroom", "上下文压缩启动失败", err.Error())
-				return "", fmt.Errorf("start headroom: %w", err)
-			}
-			a.Log.Info("headroom", "上下文压缩已启用并生效",
-				fmt.Sprintf("CLI → 注入代理:5280 → headroom:127.0.0.1:8787 → %s", realBackend))
-		}
-		if !a.Proxy.IsRunning() {
-			codeboxPort := a.Proxy.GetPort()
-			if codeboxPort == 0 {
-				codeboxPort = 5280
-			}
-			headroomUpstream := fmt.Sprintf("http://127.0.0.1:%d", headroom.DefaultPort)
-			if err := a.Proxy.Start(codeboxPort, headroomUpstream); err != nil {
-				return "", fmt.Errorf("start proxy: %w", err)
-			}
-		}
-		a.Launcher.SetProxyPort(a.Proxy.GetPort())
-	case useHeadroom && !useProxy:
-		// 只开 headroom: CLI → headroom 压缩(:8787) → 真实 API
+	if useHeadroom {
+		// CLI → headroom 压缩(:8787) → 真实 API
 		if !a.Headroom.IsRunning() {
 			if err := a.Headroom.Start(realBackend); err != nil {
 				a.Log.Error("headroom", "上下文压缩启动失败", err.Error())
@@ -1836,33 +1916,18 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			a.Log.Info("headroom", "上下文压缩已启用并生效",
 				fmt.Sprintf("CLI → headroom:127.0.0.1:8787 → %s", realBackend))
 		}
-		a.Launcher.SetProxyPort(headroom.DefaultPort)
-	case !useHeadroom && useProxy:
-		// 只开注入代理(现有逻辑): CLI → 注入代理(:5280) → 真实 API
+		a.Launcher.SetHeadroomPort(headroom.DefaultPort)
+	} else {
+		// CLI → 真实 API
 		if a.Headroom.IsRunning() {
 			_ = a.Headroom.Stop()
 		}
-		if !a.Proxy.IsRunning() {
-			port := a.Proxy.GetPort()
-			if port == 0 {
-				port = 5280
-			}
-			if err := a.Proxy.Start(port, realBackend); err != nil {
-				return "", fmt.Errorf("start proxy: %w", err)
-			}
-		}
-		a.Launcher.SetProxyPort(a.Proxy.GetPort())
-	default:
-		// 都关: CLI → 真实 API
-		if a.Headroom.IsRunning() {
-			_ = a.Headroom.Stop()
-		}
-		a.Launcher.SetProxyPort(0)
+		a.Launcher.SetHeadroomPort(0)
 	}
 
 	// Reserve embedded identity hidden; external keeps the legacy local timing but
 	// remains remoteEligible=false in the same Authority owner.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir, useProxy)
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir)
 	if err != nil {
 		return "", err
 	}
@@ -1873,11 +1938,6 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		}
 	}()
 	a.Log.Info("session", "会话身份已预留", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, model, launchMode))
-
-	// === usage：仅 useProxy 时注入 proxy 上下文，让实时钩子关联到本会话（设计 9.4）===
-	if useProxy && a.Usage != nil {
-		a.Proxy.SetCurrentSession(sess.ID, providerName, presetName, string(session.AppTypeClaudeCode))
-	}
 
 	// 根据模式选择启动方式
 	if launchMode == session.ModeEmbedded {
@@ -1912,16 +1972,13 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			return "", err
 		}
 
-		// M-006: acquire shared-service leases for proxy/headroom so the
+		// M-006: acquire the shared Headroom lease so the
 		// coordinator guard is non-empty while this run is active.
 		var sharedKinds []remote.SharedServiceKind
-		if useProxy {
-			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeProxy)
-		}
 		if useHeadroom {
 			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeHeadroom)
 		}
-		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useProxy, useHeadroom)
+		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
 		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, headroomAdmission, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -2089,7 +2146,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.rememberExternalDurableRun(durableRecord)
 	}
 
-	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useProxy, useHeadroom)
+	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
@@ -2420,7 +2477,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	// ---- terminal_presets 桥接 ----
 	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
 	var selectedPresetParams *config.Parameters
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("codex", modelName)
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelName)
 	tpFound := tpErr == nil && tp != nil
 	if tpFound {
 		if tpProvider != "" {
@@ -2519,6 +2576,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		}
 	}
 	if providerID != "" {
+		a.providerSyncMu.Lock()
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
 			if !isOpenAIProvider(*provider) {
 				return "", fmt.Errorf("Codex provider %q is not OpenAI-compatible", providerID)
@@ -2538,7 +2596,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	launchSettings.ProviderBaseURL = codexProviderBaseURL
 
 	// Embedded identity stays hidden until PTY, Control and H1 activation finish.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir, false)
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir)
 	if err != nil {
 		return "", err
 	}
@@ -2577,7 +2635,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		if codexHeadroomAdmission != nil {
 			sharedKinds = append(sharedKinds, remote.SharedServiceCodexHeadroom)
 		}
-		recipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, false, codexHeadroomAdmission != nil)
+		recipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, codexHeadroomAdmission != nil)
 		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, codexHeadroomAdmission, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -2741,7 +2799,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		a.rememberExternalDurableRun(durableRecord)
 	}
 
-	externalRecipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, false, codexHeadroomAdmission != nil)
+	externalRecipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, codexHeadroomAdmission != nil)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
@@ -2779,7 +2837,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 
 	// ---- terminal_presets 桥接 ----
 	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("pi", modelName)
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelName)
 	tpFound := tpErr == nil && tp != nil
 	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
 	// 供后续写入 pi models.json 的 model 配置与解析 --thinking 级别。
@@ -2858,7 +2916,8 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				// 保留用户 models.json 中已有的 provider 和其他顶层配置，
 				// 当次 amagi 生成的同名 provider 优先。
 				piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
-				if writeErr := launcher.WritePiAgentConfig(agentDir, piCfg); writeErr == nil {
+				writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
+				if writeErr == nil {
 					launchSettings.Provider = launcher.PiProviderID(providerID)
 					a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
 						launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
@@ -2879,10 +2938,11 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				}
 			}
 		}
+		a.providerSyncMu.Unlock()
 	}
 
 	// Embedded identity stays hidden until its exact PTY run is active.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir, false)
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir)
 	if err != nil {
 		return "", err
 	}
@@ -2923,7 +2983,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			return "", err
 		}
 
-		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -2962,7 +3022,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
 	}
-	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
 		a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -3004,7 +3064,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 
 	// ---- terminal_presets 桥接 ----
 	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("omp", modelName)
+	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelName)
 	tpFound := tpErr == nil && tp != nil
 	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
 	// 供后续写入 omp models.yml 的 model 配置与解析 --thinking 级别。
@@ -3065,6 +3125,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		"PI_CODING_AGENT_DIR": "",
 	}
 	if providerID != "" {
+		a.providerSyncMu.Lock()
 		if provider, err := a.Config.GetProvider(providerID); err == nil {
 			launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
 			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
@@ -3077,7 +3138,8 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 				// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
 				// 当次 amagi 生成的同名 provider 优先。
 				ompCfg = launcher.MergeOmpModelsConfig(ompCfg, agentDir)
-				if writeErr := launcher.WriteOmpAgentConfig(agentDir, ompCfg); writeErr == nil {
+				writeErr := launcher.WriteOmpAgentConfig(agentDir, ompCfg)
+				if writeErr == nil {
 					launchSettings.Provider = launcher.OmpProviderID(providerID)
 					a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
 						launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
@@ -3098,10 +3160,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 				}
 			}
 		}
+		a.providerSyncMu.Unlock()
 	}
 
 	// Embedded identity stays hidden until its exact PTY run is active.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOhMyPi, "omp", providerID, launchSettings.Model, launchMode, workDir, false)
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOhMyPi, "omp", providerID, launchSettings.Model, launchMode, workDir)
 	if err != nil {
 		return "", err
 	}
@@ -3142,7 +3205,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 			return "", err
 		}
 
-		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -3181,7 +3244,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
 	}
-	externalRecipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false, false)
+	externalRecipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
 		a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -4345,7 +4408,7 @@ launchCommon:
 	}
 
 	// Embedded identity stays hidden until its exact PTY run is active.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOpenCode, sessionProvider, presetName, "", launchMode, workDir, false)
+	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOpenCode, sessionProvider, presetName, "", launchMode, workDir)
 	if err != nil {
 		return "", err
 	}
@@ -4369,7 +4432,7 @@ launchCommon:
 			return "", err
 		}
 
-		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false, false)
+		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -4412,7 +4475,7 @@ launchCommon:
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
 	}
-	externalRecipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false, false)
+	externalRecipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
 		a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -4453,8 +4516,8 @@ func (a *App) BrowseDirectory() (string, error) {
 // --- 原有兼容方法 ---
 
 // QuickLaunch 兼容原有接口（使用终端模式）
-func (a *App) QuickLaunch(providerName, presetName string, useProxy bool, useHeadroom bool) error {
-	_, err := a.LaunchSession(providerName, presetName, "terminal", "", useProxy, useHeadroom, "")
+func (a *App) QuickLaunch(providerName, presetName string, useHeadroom bool) error {
+	_, err := a.LaunchSession(providerName, presetName, "terminal", "", useHeadroom, "")
 	return err
 }
 
@@ -4495,28 +4558,10 @@ func (a *App) SaveAllConfig() error {
 		saveErrs = append(saveErrs, a.skipPersistentSaveError("settings.json"))
 	}
 
-	if shouldSaveLoadedState(state, state.workspacesLoaded) {
-		if err := a.Workspaces.Save(); err != nil {
-			saveErrs = append(saveErrs, fmt.Errorf("save workspaces: %w", err))
+	if !state.initialized || (state.configLoaded && state.secretsLoaded) {
+		if err := a.syncProvidersToHarnesses(); err != nil {
+			saveErrs = append(saveErrs, fmt.Errorf("sync providers to OpenCode/Pi/OMP: %w", err))
 		}
-	} else {
-		saveErrs = append(saveErrs, a.skipPersistentSaveError("workspaces.json/global-enabled.json"))
-	}
-
-	if shouldSaveLoadedState(state, state.proxyRulesLoaded) {
-		if err := a.Proxy.SaveRules(defaultConfigDir()); err != nil {
-			saveErrs = append(saveErrs, fmt.Errorf("save injection rules: %w", err))
-		}
-	} else {
-		saveErrs = append(saveErrs, a.skipPersistentSaveError("injection-rules.json"))
-	}
-
-	if shouldSaveLoadedState(state, state.proxyHistoryLoaded) {
-		if err := a.Proxy.SaveBackendURLHistory(defaultConfigDir()); err != nil {
-			saveErrs = append(saveErrs, fmt.Errorf("save backend URL history: %w", err))
-		}
-	} else {
-		saveErrs = append(saveErrs, a.skipPersistentSaveError("proxy-backend-url-history.json"))
 	}
 
 	return errors.Join(saveErrs...)
@@ -4544,7 +4589,6 @@ func (a *App) GetAppInfo() map[string]any {
 		"goVersion":    goVer,
 		"configDir":    defaultConfigDir(),
 		"runningCount": a.Sessions.RunningCount(),
-		"proxyStatus":  a.Proxy.GetStatus(),
 	}
 }
 
@@ -4951,6 +4995,12 @@ func (a *App) ImportConfigFromFile() (string, error) {
 	} else {
 		a.Log.Info("app", "preset 快照已导入")
 	}
+	if err := a.Secrets.Save(); err != nil {
+		return "", fmt.Errorf("save imported provider secrets: %w", err)
+	}
+	if err := a.syncProvidersToHarnesses(); err != nil {
+		return "", a.providerSyncError("提供商配置导入", err)
+	}
 
 	msg := fmt.Sprintf("成功导入 %d 个提供商配置", importCount)
 	a.Log.Info("app", msg, filePath)
@@ -4979,21 +5029,49 @@ func (a *App) GetProviderExportJSON(providerName string) (string, error) {
 // SaveProviderFromJSON 将前端传入的 JSON 字符串解析后保存到指定提供商，
 // 若 APIKey 有变更则同步更新密钥存储。
 // 支持双格式结构导入，同时兼容旧 JSON 格式。
-// API key 仅写入密钥存储（secrets.enc），永远不会明文落盘到 models.json。
+// API key 不会写入 CodeBox 的 models.json；为了让独立 harness 可直接使用统一
+// provider，它会同步到权限为 0600 的 harness provider 配置。各 harness 自己的认证
+// 存储（OpenCode auth.json、Pi auth.json、OMP agent.db）不会被修改。
 func (a *App) SaveProviderFromJSON(providerName string, jsonStr string) error {
+	trimmedName := strings.TrimSpace(providerName)
+	if trimmedName == "" || trimmedName != providerName || strings.Contains(trimmedName, "/") {
+		return fmt.Errorf("invalid provider name %q: must be non-empty, trimmed, and must not contain '/'", providerName)
+	}
 	var ep config.ExportProvider
 	if err := json.Unmarshal([]byte(jsonStr), &ep); err != nil {
 		return fmt.Errorf("invalid JSON format: %w", err)
 	}
+	var requestOptions struct {
+		ClearAPIKey bool `json:"clear_api_key"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &requestOptions); err != nil {
+		return fmt.Errorf("invalid JSON format: %w", err)
+	}
 
-	if err := a.saveImportedProviderAPIKey(providerName, selectImportedProviderAPIKey(ep)); err != nil {
-		return fmt.Errorf("save provider API key for %q: %w", providerName, err)
+	apiKey := selectImportedProviderAPIKey(ep)
+	secretsChanged := false
+	if requestOptions.ClearAPIKey {
+		a.deleteProviderAPIKeys(providerName)
+		secretsChanged = true
+	} else if strings.TrimSpace(apiKey) != "" {
+		if err := a.saveImportedProviderAPIKey(providerName, apiKey); err != nil {
+			return fmt.Errorf("save provider API key for %q: %w", providerName, err)
+		}
+		secretsChanged = true
 	}
 
 	provider := buildProviderFromExportProvider(ep)
 
 	if err := a.Config.SaveProvider(providerName, provider); err != nil {
 		return fmt.Errorf("save provider %q: %w", providerName, err)
+	}
+	if secretsChanged {
+		if err := a.Secrets.Save(); err != nil {
+			return fmt.Errorf("provider saved but API key persistence failed: %w", err)
+		}
+	}
+	if err := a.syncProvidersToHarnesses(); err != nil {
+		return a.providerSyncError("提供商配置", err)
 	}
 
 	a.Log.Info("app", "已从 JSON 保存提供商配置", providerName)
@@ -5089,6 +5167,9 @@ func (a *App) UpdateProvider(oldName, newName string, providerJSON string) error
 			return fmt.Errorf("config renamed but secrets save failed: %w; please re-enter API key for %s", err, newName)
 		}
 	}
+	if err := a.syncProvidersToHarnesses(); err != nil {
+		return a.providerSyncError("提供商配置", err)
+	}
 
 	a.Log.Info("app", "provider 已改名", oldName+" -> "+newName)
 	return nil
@@ -5124,7 +5205,20 @@ func (a *App) DeleteProvider(name string) error {
 	if name == "" {
 		return errors.New("provider name is required")
 	}
-	return a.Config.DeleteProvider(name)
+	if err := a.Config.DeleteProvider(name); err != nil {
+		return err
+	}
+	var deleteErrs []error
+	if a.Secrets != nil {
+		a.deleteProviderAPIKeys(name)
+		if err := a.Secrets.Save(); err != nil {
+			deleteErrs = append(deleteErrs, fmt.Errorf("provider deleted but secret cleanup failed: %w", err))
+		}
+	}
+	if err := a.syncProvidersToHarnesses(); err != nil {
+		deleteErrs = append(deleteErrs, a.providerSyncError("提供商删除", err))
+	}
+	return errors.Join(deleteErrs...)
 }
 
 // atomicWriteFile atomically writes a user-private export. It uses an
@@ -5216,36 +5310,6 @@ func (a *App) AddUrlToHistory(providerID, url string) error {
 // RemoveUrlFromHistory 从历史记录中删除指定URL
 func (a *App) RemoveUrlFromHistory(providerID, url string) error {
 	return a.Config.RemoveUrlFromHistory(providerID, url)
-}
-
-// --- 注入规则后端URL历史API ---
-
-// GetProxyBackendURLHistory 获取注入规则后端URL历史记录
-func (a *App) GetProxyBackendURLHistory() []string {
-	return a.Proxy.GetBackendURLHistory()
-}
-
-// AddProxyBackendURL 添加注入规则后端URL到历史记录（自动去重并调整到最前）
-func (a *App) AddProxyBackendURL(url string) error {
-	if err := a.Proxy.AddBackendURL(url); err != nil {
-		return err
-	}
-	// 自动保存配置
-	return a.Proxy.SaveBackendURLHistory(defaultConfigDir())
-}
-
-// RemoveProxyBackendURL 从历史记录中删除指定注入规则后端URL
-func (a *App) RemoveProxyBackendURL(url string) error {
-	if err := a.Proxy.RemoveBackendURL(url); err != nil {
-		return err
-	}
-	// 自动保存配置
-	return a.Proxy.SaveBackendURLHistory(defaultConfigDir())
-}
-
-// SetProxyBackendURL 设置当前使用的注入规则后端URL，并自动添加到历史记录
-func (a *App) SetProxyBackendURL(url string) error {
-	return a.Proxy.SetBackendURL(url)
 }
 
 // --- 自定义环境变量 API ---
@@ -5367,7 +5431,15 @@ func (a *App) GetOpenCodeConfig() (string, error) {
 // content 必须为合法 JSON，否则返回错误。
 // 保存采用原子写入（先写临时文件再 rename），避免损坏。
 func (a *App) SaveOpenCodeConfig(content string) error {
-	return a.OpenCodeConfig.SaveOpenCodeConfig(content)
+	if !a.providerSyncEnabled {
+		return a.OpenCodeConfig.SaveOpenCodeConfig(content)
+	}
+	a.providerSyncMu.Lock()
+	defer a.providerSyncMu.Unlock()
+	if err := a.OpenCodeConfig.SaveOpenCodeConfig(content); err != nil {
+		return err
+	}
+	return a.syncProvidersToHarnessesLocked()
 }
 
 // GetOpenCodeConfigPath 返回全局 OpenCode 配置文件的绝对路径，供前端展示。
@@ -5384,12 +5456,18 @@ func (a *App) GetTerminalPresets(terminalType string) (map[string]config.Termina
 
 // SaveTerminalPreset 保存指定终端类型的预设。
 func (a *App) SaveTerminalPreset(terminalType string, presetName string, preset config.TerminalPreset) error {
-	return a.Config.SaveTerminalPreset(terminalType, presetName, preset)
+	if err := a.Config.SaveTerminalPreset(terminalType, presetName, preset); err != nil {
+		return err
+	}
+	return a.providerSyncError("公共预设", a.syncProvidersToHarnesses())
 }
 
 // DeleteTerminalPreset 删除指定终端类型的预设。
 func (a *App) DeleteTerminalPreset(terminalType string, presetName string) error {
-	return a.Config.DeleteTerminalPreset(terminalType, presetName)
+	if err := a.Config.DeleteTerminalPreset(terminalType, presetName); err != nil {
+		return err
+	}
+	return a.providerSyncError("公共预设", a.syncProvidersToHarnesses())
 }
 
 // MigrateProviderPresetsToTerminal 将旧的 provider.presets 迁移到 terminal_presets。

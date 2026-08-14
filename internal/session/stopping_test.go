@@ -7,7 +7,7 @@ import (
 
 func TestStoppingRemainsActiveAndNonRemovableUntilTerminalReceipt(t *testing.T) {
 	manager := NewManager()
-	sess := manager.Create(AppTypeClaudeCode, "p", "", "m", ModeTerminal, t.TempDir(), false)
+	sess := manager.Create(AppTypeClaudeCode, "p", "", "m", ModeTerminal, t.TempDir())
 	manager.MarkStopping(sess.ID)
 
 	if got := manager.GetStatus(sess.ID); got != StatusStopping {

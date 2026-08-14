@@ -124,7 +124,7 @@ func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
 		Paths: paths,
 		Claude: launchMetaSection{
 			Providers: buildLaunchProviderOptions(s.app.GetProvidersByType("anthropic")),
-			Presets:   buildLaunchPresetOptions(configSvc, "claude_code"),
+			Presets:   buildLaunchPresetOptions(configSvc, string(config.TerminalPresetAnthropic)),
 		},
 		OpenCode: launchMetaOpenCodeSection{
 			Providers: buildLaunchProviderOptions(s.app.GetProvidersByType("openai")),
@@ -132,13 +132,13 @@ func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
 		},
 		Codex: launchMetaSection{
 			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
-			Presets:   buildLaunchPresetOptions(configSvc, "codex"),
+			Presets:   buildLaunchPresetOptions(configSvc, string(config.TerminalPresetOpenAI)),
 		},
 		Pi: launchMetaSection{
-			// Pi 通过用户维护的 terminal_preset（type="pi"）驱动；新安装不注入预设，
-			// 预设内含 provider+model 映射；providers 取全集以便手动选择。
+			// Pi 与 Codex / OMP 共享 OpenAI-format preset；预设内含
+			// provider+model 映射，providers 取全集以便手动选择。
 			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
-			Presets:   buildLaunchPresetOptions(configSvc, "pi"),
+			Presets:   buildLaunchPresetOptions(configSvc, string(config.TerminalPresetOpenAI)),
 		},
 	}
 
@@ -151,7 +151,6 @@ func (s *Server) handleLaunchSession(w http.ResponseWriter, r *http.Request) {
 		PresetName   string `json:"presetName"`
 		Mode         string `json:"mode"`
 		WorkDir      string `json:"workDir"`
-		UseProxy     bool   `json:"useProxy"`
 		UseHeadroom  bool   `json:"useHeadroom"`
 		ShellPath    string `json:"shellPath"`
 	}
@@ -159,7 +158,7 @@ func (s *Server) handleLaunchSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	id, err := s.app.LaunchSession(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.UseProxy, body.UseHeadroom, body.ShellPath)
+	id, err := s.app.LaunchSession(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.UseHeadroom, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

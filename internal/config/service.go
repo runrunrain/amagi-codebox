@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -98,19 +100,25 @@ func (s *ConfigService) Load() error {
 
 	// Provider 双格式升级
 	migrateProviderToDualFormat(cfg.Models)
+	// OpenCode has its own complete-config preset model. Migrate its historical
+	// terminal bucket before the common-format migration clears legacy buckets.
+	migrateTerminalPresetsToOpenCodePresets(&cfg)
+
+	// CLI-specific terminal buckets are a historical storage model. Collapse
+	// them into two protocol-format buckets so every compatible CLI reuses the
+	// same preset definition. Conflicts are retained under deterministic keys.
+	formatPresetsMigrated := MigrateTerminalPresetsToFormats(&cfg)
+
 	// 清理已迁移的旧 presets（仅当 terminal_presets 已建立时）
 	CleanupMigratedProviderPresets(&cfg)
 
 	// 清洗 terminal_presets 中被前端 bug 污染的重复前缀 key/name（幂等）
 	presetKeyCleaned := CleanupDuplicatedPrefixPresetKeys(&cfg)
 
-	// 自动迁移：terminal_presets.opencode -> opencode_presets（新模型）
-	migrateTerminalPresetsToOpenCodePresets(&cfg)
-
 	// Provider presets are user-owned. Do not repopulate deleted/default entries.
-	if presetKeyCleaned {
+	if presetKeyCleaned || formatPresetsMigrated {
 		if err := s.saveLockedConfig(&cfg); err != nil {
-			return fmt.Errorf("persist terminal preset cleanup: %w", err)
+			return fmt.Errorf("persist terminal preset migration: %w", err)
 		}
 	}
 
@@ -271,7 +279,7 @@ func migrateProviderToDualFormat(models map[string]Provider) {
 // 仅当 terminal_presets 中存在对应条目（同 provider/presetName stable key）时才清理。
 // 幂等安全：多次调用无副作用。
 func CleanupMigratedProviderPresets(cfg *AppConfig) {
-	if cfg.TerminalPresets == nil {
+	if cfg.TerminalPresets == nil && len(cfg.OpenCodePresets) == 0 {
 		return
 	}
 
@@ -295,6 +303,11 @@ func CleanupMigratedProviderPresets(cfg *AppConfig) {
 					}
 				}
 			}
+			if !found {
+				if _, exists := cfg.OpenCodePresets[stableKey]; exists {
+					found = true
+				}
+			}
 
 			if !found {
 				allCleaned = false
@@ -307,6 +320,116 @@ func CleanupMigratedProviderPresets(cfg *AppConfig) {
 			cfg.Models[provName] = prov
 		}
 	}
+}
+
+// MigrateTerminalPresetsToFormats collapses historical CLI-specific buckets
+// into the Anthropic/OpenAI common preset domains. Existing common entries win.
+// Identical legacy entries are deduplicated; a same-key entry with different
+// data is retained under a deterministic "~<source>" suffix, never overwritten.
+// OpenCode is intentionally not merged: it has already been migrated to the
+// independent OpenCodePresets model before this function runs.
+func MigrateTerminalPresetsToFormats(cfg *AppConfig) bool {
+	if cfg == nil || cfg.TerminalPresets == nil {
+		return false
+	}
+	tpc := cfg.TerminalPresets
+	changed := false
+
+	anthropic := cloneTerminalPresetMap(tpc.Anthropic)
+	if anthropic == nil {
+		anthropic = map[string]TerminalPreset{}
+	}
+	if mergeLegacyTerminalPresetBucket(anthropic, tpc.ClaudeCode, "claude-code") {
+		changed = true
+	}
+
+	openai := cloneTerminalPresetMap(tpc.OpenAI)
+	if openai == nil {
+		openai = map[string]TerminalPreset{}
+	}
+	for _, source := range []struct {
+		name   string
+		bucket map[string]TerminalPreset
+	}{
+		{name: "codex", bucket: tpc.Codex},
+		{name: "pi", bucket: tpc.Pi},
+		{name: "omp", bucket: tpc.Omp},
+	} {
+		if mergeLegacyTerminalPresetBucket(openai, source.bucket, source.name) {
+			changed = true
+		}
+	}
+
+	if tpc.Anthropic == nil || tpc.OpenAI == nil || tpc.ClaudeCode != nil ||
+		tpc.Codex != nil || tpc.Pi != nil || tpc.Omp != nil || tpc.OpenCode != nil {
+		changed = true
+	}
+	tpc.Anthropic = anthropic
+	tpc.OpenAI = openai
+	tpc.ClaudeCode = nil
+	tpc.Codex = nil
+	tpc.Pi = nil
+	tpc.Omp = nil
+	tpc.OpenCode = nil
+	return changed
+}
+
+func cloneTerminalPresetMap(src map[string]TerminalPreset) map[string]TerminalPreset {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]TerminalPreset, len(src))
+	for key, preset := range src {
+		dst[key] = preset
+	}
+	return dst
+}
+
+func mergeLegacyTerminalPresetBucket(dst, src map[string]TerminalPreset, source string) bool {
+	if len(src) == 0 {
+		return false
+	}
+	keys := make([]string, 0, len(src))
+	for key := range src {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	changed := false
+	for _, key := range keys {
+		preset := src[key]
+		if existing, ok := dst[key]; !ok {
+			dst[key] = preset
+			changed = true
+			continue
+		} else if reflect.DeepEqual(existing, preset) {
+			changed = true // legacy duplicate is removed even though no new row is added
+			continue
+		}
+
+		base := key + "~" + source
+		candidate := base
+		for suffix := 2; ; suffix++ {
+			if existing, ok := dst[candidate]; !ok {
+				preset.Name = formatMigratedConflictLabel(preset.Name, source)
+				dst[candidate] = preset
+				changed = true
+				break
+			} else if reflect.DeepEqual(existing, preset) {
+				changed = true
+				break
+			}
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		}
+	}
+	return changed
+}
+
+func formatMigratedConflictLabel(label, source string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "迁移预设"
+	}
+	return label + " · " + strings.ToUpper(source)
 }
 
 // compressDuplicatedPrefixPresetKey 检测并压缩 terminal_preset key 中重复堆叠的前缀。
@@ -794,8 +917,9 @@ func (s *ConfigService) DeletePreset(providerName, presetName string) error {
 // GetTerminalPresets 获取指定终端类型的所有预设。
 // 返回预设 map 的副本。
 func (s *ConfigService) GetTerminalPresets(terminalType string) (map[string]TerminalPreset, error) {
-	if !IsValidTerminalPresetType(terminalType) {
-		return nil, fmt.Errorf("invalid terminal preset type: %s (valid: claude_code, opencode, codex)", terminalType)
+	canonical, ok := CanonicalTerminalPresetType(terminalType)
+	if !ok {
+		return nil, fmt.Errorf("invalid terminal preset type: %s (valid formats: anthropic, openai; legacy CLI aliases are accepted)", terminalType)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -805,7 +929,7 @@ func (s *ConfigService) GetTerminalPresets(terminalType string) (map[string]Term
 	if s.config.TerminalPresets == nil {
 		return map[string]TerminalPreset{}, nil
 	}
-	m := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	m := s.config.TerminalPresets.GetMap(canonical)
 	if m == nil {
 		return map[string]TerminalPreset{}, nil
 	}
@@ -818,7 +942,8 @@ func (s *ConfigService) GetTerminalPresets(terminalType string) (map[string]Term
 
 // SaveTerminalPreset 保存指定终端类型的预设。
 func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, preset TerminalPreset) error {
-	if !IsValidTerminalPresetType(terminalType) {
+	canonical, ok := CanonicalTerminalPresetType(terminalType)
+	if !ok {
 		return fmt.Errorf("invalid terminal preset type: %s", terminalType)
 	}
 	if presetName == "" {
@@ -828,7 +953,7 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 	if !IsValidClaudeReasoningEffort(preset.Parameters.ReasoningEffort) {
 		return fmt.Errorf("invalid reasoning_effort value: %s (valid: empty, low, medium, high, xhigh, max)", preset.Parameters.ReasoningEffort)
 	}
-	if terminalType == string(TerminalPresetCodex) && preset.Parameters.ContextWindow != nil {
+	if canonical == TerminalPresetOpenAI && preset.Parameters.ContextWindow != nil {
 		contextWindow := preset.Parameters.ContextWindow
 		if contextWindow.ModelContextWindow < 0 || contextWindow.AutoCompactTokenLimit < 0 {
 			return errors.New("Codex context window values must be non-negative")
@@ -847,18 +972,32 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 	if s.config.TerminalPresets == nil {
 		s.config.TerminalPresets = &TerminalPresetsConfig{}
 	}
-	m := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	if canonical == TerminalPresetOpenCode {
+		legacy := s.config.TerminalPresets.GetMap(TerminalPresetOpenCode)
+		if legacy == nil {
+			legacy = map[string]TerminalPreset{}
+		}
+		legacy[presetName] = preset
+		s.config.TerminalPresets.SetMap(TerminalPresetOpenCode, legacy)
+		migrateTerminalPresetsToOpenCodePresets(s.config)
+		// Do not create new CLI-specific storage even when an older caller uses
+		// the compatibility API spelling.
+		s.config.TerminalPresets.OpenCode = nil
+		return s.saveLocked()
+	}
+	m := s.config.TerminalPresets.GetMap(canonical)
 	if m == nil {
 		m = map[string]TerminalPreset{}
 	}
 	m[presetName] = preset
-	s.config.TerminalPresets.SetMap(TerminalPresetType(terminalType), m)
+	s.config.TerminalPresets.SetMap(canonical, m)
 	return s.saveLocked()
 }
 
 // DeleteTerminalPreset 删除指定终端类型的预设。
 func (s *ConfigService) DeleteTerminalPreset(terminalType, presetName string) error {
-	if !IsValidTerminalPresetType(terminalType) {
+	canonical, ok := CanonicalTerminalPresetType(terminalType)
+	if !ok {
 		return fmt.Errorf("invalid terminal preset type: %s", terminalType)
 	}
 	if presetName == "" {
@@ -869,23 +1008,35 @@ func (s *ConfigService) DeleteTerminalPreset(terminalType, presetName string) er
 	if s.config == nil {
 		return errors.New("config not loaded")
 	}
+	if canonical == TerminalPresetOpenCode {
+		if s.config.OpenCodePresets != nil {
+			delete(s.config.OpenCodePresets, presetName)
+		}
+		if s.config.TerminalPresets != nil {
+			legacy := s.config.TerminalPresets.GetMap(TerminalPresetOpenCode)
+			if legacy != nil {
+				delete(legacy, presetName)
+				s.config.TerminalPresets.SetMap(TerminalPresetOpenCode, legacy)
+			}
+		}
+		return s.saveLocked()
+	}
 	if s.config.TerminalPresets == nil {
 		return nil
 	}
-	m := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	m := s.config.TerminalPresets.GetMap(canonical)
 	if m == nil {
 		return nil
 	}
 	delete(m, presetName)
-	s.config.TerminalPresets.SetMap(TerminalPresetType(terminalType), m)
+	s.config.TerminalPresets.SetMap(canonical, m)
 	return s.saveLocked()
 }
 
 // MigrateProviderPresetsToTerminal 将旧的 provider.presets 迁移到 terminal_presets。
-// 迁移规则：
-//   - target=codex 或无 target 的 anthropic provider presets -> claude_code 终端预设
-//   - target=opencode 的 presets -> opencode 终端预设
-//   - target=codex 或无 target 的 openai provider presets -> codex 终端预设
+// 迁移规则：Anthropic provider -> anthropic 公共预设；OpenAI-compatible
+// provider -> openai 公共预设；target=opencode 仍进入 legacy OpenCode 桶，随后
+// 由独立迁移器转换为 OpenCodePresets。
 //
 // 已存在的同名 terminal preset 不会被覆盖。
 // 返回 (迁移数量, 是否有变更, error)。
@@ -911,13 +1062,10 @@ func (s *ConfigService) MigrateProviderPresetsToTerminal() (int, bool, error) {
 			switch {
 			case target == PresetTargetOpenCode:
 				termType = TerminalPresetOpenCode
-			case target == PresetTargetPi:
-				termType = TerminalPresetPi
 			case isOpenAI:
-				termType = TerminalPresetCodex
+				termType = TerminalPresetOpenAI
 			default:
-				// anthropic + no target or target=codex -> claude_code
-				termType = TerminalPresetClaudeCode
+				termType = TerminalPresetAnthropic
 			}
 
 			tpMap := s.config.TerminalPresets.GetMap(termType)
@@ -951,6 +1099,12 @@ func (s *ConfigService) MigrateProviderPresetsToTerminal() (int, bool, error) {
 	}
 
 	if changed {
+		migrateTerminalPresetsToOpenCodePresets(s.config)
+		MigrateTerminalPresetsToFormats(s.config)
+		// The legacy provider-owned definitions are now represented by either a
+		// common format preset or an independent OpenCode preset. Remove them in
+		// the same transaction so a reload cannot migrate them a second time.
+		CleanupMigratedProviderPresets(s.config)
 		if err := s.saveLocked(); err != nil {
 			return migrated, changed, fmt.Errorf("save after migration: %w", err)
 		}
@@ -966,36 +1120,9 @@ func (s *ConfigService) GetAllTerminalPresets() *TerminalPresetsConfig {
 		return nil
 	}
 	// Deep copy
-	cp := &TerminalPresetsConfig{}
-	if s.config.TerminalPresets.ClaudeCode != nil {
-		cp.ClaudeCode = make(map[string]TerminalPreset, len(s.config.TerminalPresets.ClaudeCode))
-		for k, v := range s.config.TerminalPresets.ClaudeCode {
-			cp.ClaudeCode[k] = v
-		}
-	}
-	if s.config.TerminalPresets.OpenCode != nil {
-		cp.OpenCode = make(map[string]TerminalPreset, len(s.config.TerminalPresets.OpenCode))
-		for k, v := range s.config.TerminalPresets.OpenCode {
-			cp.OpenCode[k] = v
-		}
-	}
-	if s.config.TerminalPresets.Codex != nil {
-		cp.Codex = make(map[string]TerminalPreset, len(s.config.TerminalPresets.Codex))
-		for k, v := range s.config.TerminalPresets.Codex {
-			cp.Codex[k] = v
-		}
-	}
-	if s.config.TerminalPresets.Pi != nil {
-		cp.Pi = make(map[string]TerminalPreset, len(s.config.TerminalPresets.Pi))
-		for k, v := range s.config.TerminalPresets.Pi {
-			cp.Pi[k] = v
-		}
-	}
-	if s.config.TerminalPresets.Omp != nil {
-		cp.Omp = make(map[string]TerminalPreset, len(s.config.TerminalPresets.Omp))
-		for k, v := range s.config.TerminalPresets.Omp {
-			cp.Omp[k] = v
-		}
+	cp := &TerminalPresetsConfig{
+		Anthropic: cloneTerminalPresetMap(s.config.TerminalPresets.GetMap(TerminalPresetAnthropic)),
+		OpenAI:    cloneTerminalPresetMap(s.config.TerminalPresets.GetMap(TerminalPresetOpenAI)),
 	}
 	return cp
 }
@@ -1022,6 +1149,8 @@ func (s *ConfigService) SetAllTerminalPresets(tp *TerminalPresetsConfig) error {
 		return errors.New("config not loaded")
 	}
 	s.config.TerminalPresets = cloneTerminalPresetsConfig(tp)
+	migrateTerminalPresetsToOpenCodePresets(s.config)
+	MigrateTerminalPresetsToFormats(s.config)
 	return s.saveLocked()
 }
 
@@ -1029,7 +1158,10 @@ func cloneTerminalPresetsConfig(src *TerminalPresetsConfig) *TerminalPresetsConf
 	if src == nil {
 		return nil
 	}
-	dst := &TerminalPresetsConfig{}
+	dst := &TerminalPresetsConfig{
+		Anthropic: cloneTerminalPresetMap(src.Anthropic),
+		OpenAI:    cloneTerminalPresetMap(src.OpenAI),
+	}
 	if src.ClaudeCode != nil {
 		dst.ClaudeCode = make(map[string]TerminalPreset, len(src.ClaudeCode))
 		for k, v := range src.ClaudeCode {
@@ -1119,6 +1251,9 @@ func (s *ConfigService) ReplaceImportedPresetSnapshots(terminal *TerminalPresets
 		migrateTerminalPresetsToOpenCodePresets(tmp)
 		openCodeSnapshot = tmp.OpenCodePresets
 	}
+	if terminalSnapshot != nil {
+		MigrateTerminalPresetsToFormats(&AppConfig{TerminalPresets: terminalSnapshot})
+	}
 
 	s.config.TerminalPresets = terminalSnapshot
 	s.config.OpenCodePresets = openCodeSnapshot
@@ -1161,7 +1296,8 @@ type MergedTerminalPreset struct {
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
 // 仅从 terminal_presets（新体系）读取，不再回退到旧 provider.presets。
 func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedTerminalPreset, error) {
-	if !IsValidTerminalPresetType(terminalType) {
+	canonical, ok := CanonicalTerminalPresetType(terminalType)
+	if !ok {
 		return nil, fmt.Errorf("invalid terminal preset type: %s", terminalType)
 	}
 	s.mu.RLock()
@@ -1170,12 +1306,11 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 		return nil, errors.New("config not loaded")
 	}
 
-	tt := TerminalPresetType(terminalType)
 	var result []MergedTerminalPreset
 
 	// 1. 先从 terminal_presets 读取（新体系）
 	if s.config.TerminalPresets != nil {
-		tpMap := s.config.TerminalPresets.GetMap(tt)
+		tpMap := s.config.TerminalPresets.GetMap(canonical)
 		for key, tp := range tpMap {
 			label := tp.Name
 			if label == "" {
@@ -1211,7 +1346,8 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 // 用于启动链：先查新体系，返回 (providerName, *TerminalPreset)。
 // 若 key 不在新体系中则返回 ("", nil)。
 func (s *ConfigService) ResolveTerminalPreset(terminalType, key string) (string, *TerminalPreset, error) {
-	if !IsValidTerminalPresetType(terminalType) {
+	canonical, ok := CanonicalTerminalPresetType(terminalType)
+	if !ok {
 		return "", nil, fmt.Errorf("invalid terminal preset type: %s", terminalType)
 	}
 	s.mu.RLock()
@@ -1222,7 +1358,7 @@ func (s *ConfigService) ResolveTerminalPreset(terminalType, key string) (string,
 	if s.config.TerminalPresets == nil {
 		return "", nil, nil
 	}
-	tpMap := s.config.TerminalPresets.GetMap(TerminalPresetType(terminalType))
+	tpMap := s.config.TerminalPresets.GetMap(canonical)
 	if tpMap == nil {
 		return "", nil, nil
 	}
@@ -1503,13 +1639,6 @@ func buildMigratedOpenCodeConfig(providerName string, provider Provider, tp Term
 		OpenCodeConfig: tp.OpenCodeCfg,
 	}
 	legacyPreset.NormalizeOpenCodeConfig()
-
-	// 临时注入到 provider 副本中
-	provCopy := provider
-	if provCopy.Presets == nil {
-		provCopy.Presets = map[string]Preset{}
-	}
-	provCopy.Presets["__migration__"] = legacyPreset
 
 	// 确定 ocProviderID
 	ocProviderID := deriveOpenCodeProviderIDSimple(providerName, provider)

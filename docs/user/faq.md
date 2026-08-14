@@ -175,10 +175,7 @@
 | `settings.json` | 应用设置（远程端口、shell 路径、GitHub Token 等） |
 | `envvars.json` | 自定义环境变量 |
 | `settings_amagi.json` | Amagi 模型配置 |
-| `global-enabled.json` | 全局启用的插件列表 |
 | `plugin-subitems.json` | Claude 插件子项禁用列表 |
-| `workspaces.json` | 工作空间列表 |
-| `global-deploy-manifest.json` | 全局部署清单 |
 
 首次启动若加载失败，应用回退到内置默认配置并记入日志，不阻断启动。
 
@@ -194,11 +191,10 @@
 
 ### 可以手工编辑配置文件吗？
 
-不推荐。这些文件由对应 Service 层维护，部分文件（如 `global-enabled.json`、`workspaces.json`、`global-deploy-manifest.json`）之间存在契约（部署清单的 checksum、`GlobalEnabled` 与工作空间归属关系等），手工编辑可能破坏一致性。建议：
+不推荐。这些文件由对应 Service 层维护，手工编辑可能破坏配置结构或原子写入约定。建议：
 
 - 提供商/预设：用"Provider Center"页（`/provider`）的导入/导出功能。
 - 插件子项：用扩展管理页（`/extensions`）。
-- 工作空间：用对应 UI。
 - 远程端口/host：用设置页或远程 API `PUT /api/settings`。
 
 > 备份与迁移：复制整个 `~/.amagi-codebox/` 目录即可（但 `secrets.json` 的加密绑定到原机器的 OS 凭据，跨机器迁移后密钥需要重新录入）。

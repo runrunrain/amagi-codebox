@@ -1,7 +1,7 @@
 package main
 
 // bind_manifest_test.go — T-24 production Wails Bind surface test (design §4.1,
-// §6.3, §10.3 C-01). Asserts that raw PTY/Proxy/Headroom services are NOT bound,
+// §6.3, §10.3 C-01). Asserts that raw PTY/Headroom services are NOT bound,
 // and that the App exposes neither the cleanup bypass (StopAllSessions) nor the
 // raw callback/history exports (R3-Minor-01).
 
@@ -15,7 +15,6 @@ import (
 // in the production Bind list — the raw service objects themselves (design §6.3).
 var forbiddenTypePrefixes = []string{
 	"pty.Service",
-	"proxy.ProxyService",
 	"headroom.HeadroomService",
 }
 
@@ -155,11 +154,11 @@ func TestBindManifest_AppIsBound(t *testing.T) {
 	}
 }
 
-func TestBindManifest_ProxyHeadroomFacadesReachable(t *testing.T) {
+func TestBindManifest_HeadroomFacadesReachable(t *testing.T) {
 	app := newTestApp(t)
 	appType := reflect.TypeOf(app)
-	// Lease-guarded facade methods that replaced the raw Proxy/Headroom bindings.
-	for _, name := range []string{"ProxyStart", "ProxyStop", "ProxyGetRules", "HeadroomStart", "HeadroomStop", "HeadroomGetStatus"} {
+	// Lease-guarded facade methods that replace the raw Headroom binding.
+	for _, name := range []string{"HeadroomStart", "HeadroomStop", "HeadroomGetStatus"} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App facade %s is missing (replaces raw service binding)", name)
 		}

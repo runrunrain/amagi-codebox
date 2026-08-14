@@ -38,7 +38,7 @@ var proxyDialReachable = func(host, port string) bool {
 	return true
 }
 
-// defaultNoProxy 是注入代理时附带的回环绕行清单（用户显式 NO_PROXY 优先）。
+// defaultNoProxy 是注入系统代理环境变量时附带的回环绕行清单（用户显式 NO_PROXY 优先）。
 const defaultNoProxy = "localhost,127.0.0.1,::1"
 
 // SystemProxyEnv 返回系统代理对应的环境变量集；系统代理未启用、不支持的平台

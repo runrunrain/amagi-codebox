@@ -70,7 +70,7 @@ jobs:
 
 **CI 不跑的内容**（核实自 workflow 与 `../developer/testing.md`）：
 - **`go test ./...` 完全不在 CI 中**。Go 单元测试、集成测试、真实样本测试都是提交前的手动责任。
-- **`go test -race`** 不在 CI 中（并发包如 `session`/`pty`/`proxy`/`remote` 的竞态检测需本地跑）。
+- **`go test -race`** 不在 CI 中（并发包如 `session`/`pty`/`remote` 的竞态检测需本地跑）。
 - **移动端 `vitest run` 不在 CI 中**（`mobile/package.json` 配置了 vitest，但 CI 只跑 `build`）。
 - **`wails build` 不在 CI 中**。CI 只做静态检查与前端/移动端构建，**不产出可运行二进制**。要发布二进制需打 tag 触发 Release workflow。
 - **平台覆盖不全**：CI 仅 Windows runner，`_darwin.go` 文件不参与 Windows 编译，macOS 路径在 CI 中无验证。

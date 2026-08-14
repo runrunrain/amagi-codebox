@@ -18,7 +18,6 @@ import (
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
@@ -115,7 +114,7 @@ func testPlannerSetup(t *testing.T, cli contract.CLIType, providerName, apiKey s
 
 // --- Probe / BuildPlan basics ---
 
-func TestProbeFalseWithoutDefaults(t *testing.T) {
+func TestProbeChecksInstalledCLIWithoutDefaults(t *testing.T) {
 	isolatedHome(t)
 	dir := t.TempDir()
 	settingsSvc := settings.NewService(dir)
@@ -128,8 +127,8 @@ func TestProbeFalseWithoutDefaults(t *testing.T) {
 	)
 	for _, cli := range contract.KnownCLITypes {
 		avail, failure := p.Probe(context.Background(), cli)
-		if avail.Available || failure == nil {
-			t.Fatalf("%s Probe should fail without defaults", cli)
+		if !avail.Available || failure != nil {
+			t.Fatalf("%s Probe should reflect installed CLI without requiring launch defaults", cli)
 		}
 	}
 }
@@ -240,6 +239,30 @@ func TestRemoteModeForcedEmbedded(t *testing.T) {
 	}
 }
 
+func TestBuildPlanRemoteOverridesStoredDefaults(t *testing.T) {
+	p, _, cfgSvc, secSvc := testPlannerSetup(t, contract.CLITypeCodex, "old-provider", "old-key-123456789")
+	if err := cfgSvc.SaveProvider("new-provider", config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com/v1", AuthKey: "OPENAI_API_KEY"},
+		DefaultModel: "gpt-new",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := secSvc.SetAPIKey("new-provider", "new-key-123456789"); err != nil {
+		t.Fatal(err)
+	}
+	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
+		CLIType: contract.CLITypeCodex, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
+		StableRefs: &launchplan.StableLaunchRefs{ProviderRef: "new-provider", ModelRef: "gpt-new"},
+	})
+	if failure != nil {
+		t.Fatalf("override BuildPlan failure: %#v", failure)
+	}
+	defer plan.Secrets.Dispose()
+	if plan.Recipe.ProviderRef != "new-provider" || plan.Recipe.ModelRef != "gpt-new" {
+		t.Fatalf("remote override not applied: %#v", plan.Recipe)
+	}
+}
+
 func TestBuildPlanCodexUsesProviderAndPresetAsPerProcessOverrides(t *testing.T) {
 	home := isolatedHome(t)
 	dir := t.TempDir()
@@ -313,7 +336,7 @@ func TestBuildPlanCodexUsesProviderAndPresetAsPerProcessOverrides(t *testing.T) 
 
 // --- M-01: SharedStartSpec carries upstream/port ---
 
-func TestBuildPlanClaudeProxyHeadroomUpstreamPort(t *testing.T) {
+func TestBuildPlanClaudeHeadroomUpstreamPort(t *testing.T) {
 	dir := isolatedHome(t)
 	cfgSvc := config.NewConfigService(dir)
 	cfgSvc.Load()
@@ -329,7 +352,7 @@ func TestBuildPlanClaudeProxyHeadroomUpstreamPort(t *testing.T) {
 	defaults.RecordDesktopActivation(launchplan.StableRecipe{
 		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
 		ProviderRef: "claude-provider", PresetRef: "p", ModelRef: "claude-3",
-		UseProxy: true, UseHeadroom: true,
+		UseHeadroom: true,
 	})
 	p := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(),
 		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), dir)
@@ -350,55 +373,10 @@ func TestBuildPlanClaudeProxyHeadroomUpstreamPort(t *testing.T) {
 				t.Fatalf("headroom port = %d, want 8787", eff.Shared.ListenPort)
 			}
 		}
-		if eff.Kind == launchplan.EffectProxyStart && eff.Shared != nil {
-			expectedUpstream := "http://127.0.0.1:8787"
-			if eff.Shared.UpstreamURL != expectedUpstream {
-				t.Fatalf("proxy upstream = %q, want %s", eff.Shared.UpstreamURL, expectedUpstream)
-			}
-			if eff.Shared.ListenPort != 5280 {
-				t.Fatalf("proxy port = %d, want 5280", eff.Shared.ListenPort)
-			}
-		}
 	}
 }
 
 // --- M-01: fake services verify Start parameters ---
-
-type fakeProxyService struct {
-	mu         sync.Mutex
-	running    bool
-	startCalls []fakeProxyStartCall
-}
-
-type fakeProxyStartCall struct {
-	Port       int
-	BackendURL string
-}
-
-func (f *fakeProxyService) IsRunning() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.running }
-func (f *fakeProxyService) GetStatus() proxy.ProxyStatus {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	status := proxy.ProxyStatus{Running: f.running}
-	if len(f.startCalls) > 0 {
-		status.Port = f.startCalls[len(f.startCalls)-1].Port
-		status.BackendURL = f.startCalls[len(f.startCalls)-1].BackendURL
-	}
-	return status
-}
-func (f *fakeProxyService) Start(port int, backendURL string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.startCalls = append(f.startCalls, fakeProxyStartCall{Port: port, BackendURL: backendURL})
-	f.running = true
-	return nil
-}
-func (f *fakeProxyService) Stop() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.running = false
-	return nil
-}
 
 type fakeHeadroomService struct {
 	mu         sync.Mutex
@@ -478,7 +456,7 @@ func TestExecutorRejectsRunningHeadroomConfigurationMismatch(t *testing.T) {
 	}
 }
 
-func TestExecutorHeadroomProxyStartWithUpstreamPort(t *testing.T) {
+func TestExecutorHeadroomStartWithUpstreamPort(t *testing.T) {
 	dir := isolatedHome(t)
 	cfgSvc := config.NewConfigService(dir)
 	cfgSvc.Load()
@@ -494,7 +472,7 @@ func TestExecutorHeadroomProxyStartWithUpstreamPort(t *testing.T) {
 	defaults.RecordDesktopActivation(launchplan.StableRecipe{
 		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
 		ProviderRef: "p", PresetRef: "p", ModelRef: "m",
-		UseProxy: true, UseHeadroom: true,
+		UseHeadroom: true,
 	})
 	p := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(),
 		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), dir)
@@ -505,15 +483,12 @@ func TestExecutorHeadroomProxyStartWithUpstreamPort(t *testing.T) {
 		t.Fatalf("BuildPlan: %v", failure)
 	}
 	// Fake services as spies.
-	proxySpy := &fakeProxyService{}
 	headroomSpy := &fakeHeadroomService{}
 	coord := remote.NewSharedServiceCoordinator()
 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
 	for _, spec := range plan.Admissions {
 		var kind remote.SharedServiceKind
 		switch spec.Service {
-		case launchplan.SharedClaudeProxy:
-			kind = remote.SharedServiceClaudeProxy
 		case launchplan.SharedClaudeHeadroom:
 			kind = remote.SharedServiceClaudeHeadroom
 		case launchplan.SharedCodexHeadroom:
@@ -529,7 +504,7 @@ func TestExecutorHeadroomProxyStartWithUpstreamPort(t *testing.T) {
 		defer coord.ReleaseLaunchAdmission(admission)
 	}
 	exec := newAppLaunchExecutor(launchExecutorDeps{
-		proxy: proxySpy, headroom: headroomSpy, sharedCoord: coord,
+		headroom: headroomSpy, sharedCoord: coord,
 	})
 	prepared, err := exec.Prepare(context.Background(), plan, launchplan.ExecutionBinding{
 		SessionID: "s", RunEpoch: 1, RunHandle: "handle", SharedAdmissions: sharedAdmissions,
@@ -538,7 +513,7 @@ func TestExecutorHeadroomProxyStartWithUpstreamPort(t *testing.T) {
 		plan.Secrets.Dispose()
 		t.Fatalf("Prepare: %v", err)
 	}
-	// Apply headroom + proxy effects (skip PTY + bootstrap).
+	// Apply the Headroom effect (skip PTY + bootstrap).
 	for i := 0; i < prepared.Count(); i++ {
 		eff := prepared.Effect(i)
 		if eff.Kind() == launchplan.EffectPTYStart || eff.Kind() == launchplan.EffectBootstrapWrite {
@@ -558,18 +533,6 @@ func TestExecutorHeadroomProxyStartWithUpstreamPort(t *testing.T) {
 		t.Fatalf("headroom Start calls = %v, want [https://api.anthropic.com]", headroomSpy.startCalls)
 	}
 	headroomSpy.mu.Unlock()
-	// Assert proxy received headroom chain + port 5280.
-	proxySpy.mu.Lock()
-	if len(proxySpy.startCalls) != 1 {
-		t.Fatalf("proxy Start calls = %d, want 1", len(proxySpy.startCalls))
-	}
-	if proxySpy.startCalls[0].Port != 5280 {
-		t.Fatalf("proxy port = %d, want 5280", proxySpy.startCalls[0].Port)
-	}
-	if proxySpy.startCalls[0].BackendURL != "http://127.0.0.1:8787" {
-		t.Fatalf("proxy upstream = %q, want http://127.0.0.1:8787", proxySpy.startCalls[0].BackendURL)
-	}
-	proxySpy.mu.Unlock()
 }
 
 // --- M-02: Pi/Omp provider ID = PiProviderID ---

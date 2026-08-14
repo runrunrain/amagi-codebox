@@ -84,6 +84,22 @@ type Provider struct {
     - `OPENAI_API_KEY`（OpenAI 格式标识）
 - **API 密钥不存储在 Provider 里**。`AnthropicFormat.APIKey` 与 `OpenAIFormat.APIKey` 仅用于导入旧 JSON / 兼容历史导出结构；运行时正式密钥来源始终是 provider 级 secrets（key = providerName）。密钥加密细节见 [../security.md](../security.md)。
 
+## 统一同步到 OpenCode、Pi 与 Oh My Pi
+
+Provider Center 是以下三套 harness provider 配置的统一来源：
+
+| Harness | 同步目标 | CodeBox 所有权范围 |
+|---|---|---|
+| OpenCode | `~/.config/opencode/opencode.json` 的 `provider` | `amagi-*` provider |
+| Pi | `~/.pi/agent/models.json` 的 `providers` | `amagi-*` provider |
+| Oh My Pi | `~/.omp/agent/models.yml` 的 `providers` | `amagi-*` provider |
+
+新增、编辑、改名、删除或导入 Provider 后，CodeBox 会重新对账这三处的 `amagi-*` 条目。默认模型和关联的公共预设模型会一起登记；改名或删除后，失效的旧托管条目也会被清除。启动应用和执行“保存全部配置”时会再次对账，从而修复外部删除造成的不一致。
+
+同步只接管 `amagi-` 保留命名空间：其他 provider 和其他顶层配置保持不变。OpenCode 的 `~/.local/share/opencode/auth.json`、Pi 的 `~/.pi/agent/auth.json`、Oh My Pi 的 `agent.db` 等 OAuth/登录认证数据不会被读取或修改。已有配置文件无法解析时，同步会报错并保留原文件，不会以空配置覆盖。
+
+为了让三个 harness 脱离 CodeBox 也能直接使用自定义 provider，CodeBox secrets 中的 API Key 会写入各 harness 支持的 provider 字段；相关配置文件会收紧为 `0600` 权限。没有 Base URL 或没有模型的 Provider 仍保留在 CodeBox 中，但不会发布为无效的 harness 自定义 provider。
+
 ---
 
 ## Preset 与 Parameters
@@ -236,17 +252,22 @@ type AppConfig struct {
 
 ---
 
-## TerminalPreset：终端维度的预设容器
+## TerminalPreset：可复用的格式预设
 
-除了挂在 Provider 下的 `presets`，应用还支持独立的终端预设体系（`TerminalPresetsConfig`），按引擎分组：
+公共预设按 API 协议格式分组，不再为每个 CLI 维护一份重复配置：
 
 ```go
 type TerminalPresetsConfig struct {
-    ClaudeCode map[string]TerminalPreset `json:"claude_code,omitempty"`
-    OpenCode   map[string]TerminalPreset `json:"opencode,omitempty"`
-    Codex      map[string]TerminalPreset `json:"codex,omitempty"`
+    Anthropic map[string]TerminalPreset `json:"anthropic,omitempty"`
+    OpenAI    map[string]TerminalPreset `json:"openai,omitempty"`
 }
 ```
+
+- Claude Code 读取 Anthropic 格式预设。
+- Codex、Pi、OMP 以及后续 OpenAI-compatible CLI 读取同一份 OpenAI 格式预设。
+- OpenCode 使用独立的 `opencode_presets`完整配置模型。
+
+旧 `claude_code` / `codex` / `pi` / `omp` 分组会在加载时自动合并。同 key 且内容相同的条目去重；同 key 但内容不同的条目会保留为带来源后缀的预设，避免迁移时丢失配置。
 
 每个 `TerminalPreset` 关联一个 provider 名称，可覆盖 provider 的默认模型：
 
@@ -263,7 +284,7 @@ type TerminalPreset struct {
 }
 ```
 
-启动时（`App.LaunchSession` 等）会先尝试用 preset key 在 `terminal_presets` 中查找新体系预设；未命中则回退到旧 `provider.presets`。应用启动时还会自动执行 `MigrateProviderPresetsToTerminal`，将旧的 `provider.presets` 幂等迁移到 `terminal_presets`（迁移失败不阻断启动，仅记 warning）。
+启动时（`App.LaunchSession` 等）会按 CLI 所属格式查找 preset key。应用还会将旧的 `provider.presets` 幂等迁移到对应公共格式，OpenCode 目标预设则迁移到 `opencode_presets`。
 
 ---
 
@@ -289,7 +310,7 @@ type OpenCodeBinding struct {
 }
 ```
 
-启动 OpenCode 会话时（`App.LaunchOpenCode`），优先匹配 `opencode_presets`（新模型），未命中再回退到 `terminal_presets.opencode`（旧模型）。
+启动 OpenCode 会话时（`App.LaunchOpenCode`）优先匹配 `opencode_presets`。历史 `terminal_presets.opencode` 数据会自动转换并从新存储中移除。
 
 ---
 
@@ -297,7 +318,7 @@ type OpenCodeBinding struct {
 
 Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 [./usage.md](./usage.md#provider-center-provider-providercenterview)）：
 
-- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、工作区选择、代理规则、价格表和 OpenCode 全局配置。Anthropic / OpenAI 内嵌的 `api_key` 仍会清空，当前 provider 统一密钥写在顶层；`portable.secrets` 保存全部其余密钥。导出文件含明文凭据。
+- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、价格表和 OpenCode 全局配置。Anthropic / OpenAI 内嵌的 `api_key` 仍会清空，当前 provider 统一密钥写在顶层；`portable.secrets` 保存全部其余密钥。导出文件含明文凭据。
 - **导入完整配置**：v2 快照按整体替换语义还原并在失败时尽力回滚，成功后需重启；v1 文件保持旧协议兼容。导入 provider 时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥：优先顶层 `api_key`，否则按首选格式回退到 legacy `api_key`。
 
 导入/导出涉及的密钥同步会经过 secrets 服务（加密存储），明文不会进入 `config.json`。安全机制详见 [../security.md](../security.md)。

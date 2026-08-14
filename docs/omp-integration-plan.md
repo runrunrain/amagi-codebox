@@ -83,7 +83,7 @@
 ### 一期不做（边界披露）
 
 - **omp 插件管理 UI**：marketplace 格式与 pi 的 settings.json packages[] 完全不同，piplugin 模式不可复用；`omp plugin` CLI 封装 + 前端面板留待二期。
-- 代理注入（proxy headroom）：pi 直连不经 proxy，omp 同处理（不接入 proxy 引擎）。
+- Headroom：pi 与 omp 均沿用现有直连处理，不引入额外中转层。
 
 ## 测试清单
 

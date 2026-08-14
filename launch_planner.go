@@ -7,9 +7,10 @@ package main
 //   - BuildPlan is pure read/pre-parse: no config write, no service mutation,
 //     no process spawn. All side effects live in the Executor Apply phase.
 //   - Remote/restart origins force ModeEmbedded.
-//   - Per-CLI defaults are read from settings remoteLaunchDefaultsV1; missing
-//     defaults produce a typed FailureLaunchContext (Probe=false, Create 422).
-//   - Probe and Create share the same BuildPlan path.
+//   - Per-CLI defaults are read from settings remoteLaunchDefaultsV1 and may be
+//     overridden by explicit, non-secret remote launch selections.
+//   - Probe checks executable capability independently from recipe readiness;
+//     Create performs the full provider/preset/secret validation.
 
 import (
 	"context"
@@ -101,10 +102,40 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 	if req.Origin == launchplan.OriginRemote || req.Origin == launchplan.OriginRestart {
 		req.Mode = launchplan.ModeEmbedded
 	}
-	// Read per-CLI defaults from settings.
+	// Read per-CLI defaults from settings. An explicit remote selection may be
+	// used before this CLI has ever been launched on the desktop.
 	recipe, ok := p.defaults.HostDefaultRefs(req.CLIType)
-	if !ok {
+	if !ok && req.StableRefs == nil {
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+	}
+	if !ok {
+		recipe = launchplan.StableRecipe{CLIType: req.CLIType}
+	}
+	if recipe.PresetRef != "" && (req.CLIType == contract.CLITypePi || req.CLIType == contract.CLITypeOmp) {
+		recipe.ModelRef = recipe.PresetRef
+	}
+	if refs := req.StableRefs; refs != nil {
+		if refs.ProviderRef != "" {
+			recipe.ProviderRef = refs.ProviderRef
+		}
+		if refs.PresetRef != "" {
+			recipe.PresetRef = refs.PresetRef
+			// Codex/Pi/Omp address terminal presets through ModelRef in their
+			// existing desktop planners. Preserve that stable-key convention for
+			// a remote preset selection unless the caller supplied a model override.
+			if refs.ModelRef == "" && (req.CLIType == contract.CLITypeCodex || req.CLIType == contract.CLITypePi || req.CLIType == contract.CLITypeOmp) {
+				recipe.ModelRef = refs.PresetRef
+			}
+		}
+		if refs.ModelRef != "" {
+			recipe.ModelRef = refs.ModelRef
+		}
+		if refs.ShellRef != "" {
+			recipe.ShellRef = refs.ShellRef
+		}
+		if refs.UseHeadroom != nil {
+			recipe.UseHeadroom = *refs.UseHeadroom
+		}
 	}
 	// Canonical workdir.
 	workdir := strings.TrimSpace(req.Workdir)
@@ -136,16 +167,21 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 }
 
 func (p *appLaunchPlanner) Probe(ctx context.Context, cli contract.CLIType) (contract.CLIAvailability, *launchplan.BuildFailure) {
-	plan, failure := p.BuildPlan(ctx, launchplan.BuildRequest{
-		CLIType: cli,
-		Origin:  launchplan.OriginRemote,
-		Mode:    launchplan.ModeEmbedded,
-	})
-	if plan != nil {
-		plan.Secrets.Dispose()
-		return contract.CLIAvailability{CLIType: cli, Available: true}, nil
+	if !launchplan.KnownCLIType(cli) || p.resolver == nil {
+		return contract.CLIAvailability{CLIType: cli, Available: false}, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: cli}
 	}
-	return contract.CLIAvailability{CLIType: cli, Available: false}, failure
+	workdir := p.canonicalWorkdir()
+	if workdir == "" {
+		return contract.CLIAvailability{CLIType: cli, Available: false}, &launchplan.BuildFailure{Kind: launchplan.FailureWorkdir, CLIType: cli}
+	}
+	_, err := p.resolver.Resolve(platform.ResolveRequest{
+		AppType: string(cli), LaunchMode: string(session.ModeEmbedded), WorkDir: workdir,
+		Env: p.envVars.MergeWithSystem(), PTYCols: 120, PTYRows: 40,
+	})
+	if err != nil {
+		return contract.CLIAvailability{CLIType: cli, Available: false}, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: cli}
+	}
+	return contract.CLIAvailability{CLIType: cli, Available: true}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +197,7 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 	presetName := recipe.PresetRef
 
 	// Terminal preset bridge.
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset("claude_code", presetName)
+	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(string(config.TerminalPresetAnthropic), presetName)
 	tpFound := tpErr == nil && tp != nil
 	if tpFound && tpProvider != "" {
 		providerName = tpProvider
@@ -199,10 +235,9 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 
 	// Preset is resolved inside computeClaudeOverrides via provider.Presets.
 
-	// Compute env overrides (pure; replicates launcher.BuildOverrides logic
-	// without mutating the LauncherService proxyPort).
-	effectiveProxyPort := claudeEffectiveProxyPort(recipe.UseProxy, recipe.UseHeadroom)
-	overrides := computeClaudeOverrides(*provider, presetName, apiKey, p.config.GetAgentTeams(), effectiveProxyPort)
+	// Compute env overrides without mutating the LauncherService routing port.
+	effectiveHeadroomPort := claudeEffectiveHeadroomPort(recipe.UseHeadroom)
+	overrides := computeClaudeOverrides(*provider, presetName, apiKey, p.config.GetAgentTeams(), effectiveHeadroomPort)
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), overrides)
 
 	// Resolve CLI/shell.
@@ -215,7 +250,7 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 		return fail(launchplan.FailureCapability)
 	}
 
-	// Build effects in canonical order: Headroom → Proxy → PTY → Bootstrap.
+	// Build effects in canonical order: Headroom → PTY → Bootstrap.
 	var admissions []launchplan.SharedAdmissionSpec
 	var effects []launchplan.EffectSpec
 	realBackend := strings.TrimRight(provider.EffectiveBaseURL("anthropic"), "/")
@@ -227,22 +262,6 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 			Shared: &launchplan.SharedStartSpec{
 				Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fp,
 				UpstreamURL: realBackend, ListenPort: headroom.DefaultPort,
-			},
-		})
-	}
-	if recipe.UseProxy {
-		// When both proxy and headroom are active, proxy forwards to headroom.
-		proxyUpstream := realBackend
-		if recipe.UseHeadroom {
-			proxyUpstream = fmt.Sprintf("http://127.0.0.1:%d", headroom.DefaultPort)
-		}
-		fp := sharedFingerprintForProxy(proxyUpstream, proxyDefaultPort)
-		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedClaudeProxy, ConfigFingerprint: fp})
-		effects = append(effects, launchplan.EffectSpec{
-			Kind: launchplan.EffectProxyStart,
-			Shared: &launchplan.SharedStartSpec{
-				Service: launchplan.SharedClaudeProxy, ConfigFingerprint: fp,
-				UpstreamURL: proxyUpstream, ListenPort: proxyDefaultPort,
 			},
 		})
 	}
@@ -368,7 +387,7 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 	var selectedPresetParams *config.Parameters
 
 	// Terminal preset / legacy fallback for model resolution.
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset("codex", modelRef)
+	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelRef)
 	tpFound := tpErr == nil && tp != nil
 	if tpFound {
 		if tpProvider != "" {
@@ -474,7 +493,7 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
 	providerID := recipe.ProviderRef
 	modelRef := recipe.ModelRef
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset("pi", modelRef)
+	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelRef)
 	tpFound := tpErr == nil && tp != nil
 	var presetParams config.Parameters
 	if tpFound {
@@ -503,7 +522,7 @@ func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launc
 	} else {
 		result = piOmpLaunchResult{Model: modelRef}
 	}
-	return p.buildPiOmpPlan(recipe, req, session.AppTypePi, "pi",
+	return p.buildPiOmpPlan(recipe, req, session.AppTypePi, string(config.TerminalPresetOpenAI),
 		launcher.BuildPiModelsConfig, launcher.MergePiAgentConfig,
 		defaultPiAgentDir, launchplan.ConfigPi, result,
 	)
@@ -516,7 +535,7 @@ func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launc
 func (p *appLaunchPlanner) buildOmpPlan(recipe launchplan.StableRecipe, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
 	providerID := recipe.ProviderRef
 	modelRef := recipe.ModelRef
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset("omp", modelRef)
+	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelRef)
 	tpFound := tpErr == nil && tp != nil
 	var presetParams config.Parameters
 	if tpFound {
@@ -545,7 +564,7 @@ func (p *appLaunchPlanner) buildOmpPlan(recipe launchplan.StableRecipe, req laun
 	} else {
 		result = piOmpLaunchResult{Model: modelRef}
 	}
-	return p.buildPiOmpPlan(recipe, req, session.AppTypeOhMyPi, "omp",
+	return p.buildPiOmpPlan(recipe, req, session.AppTypeOhMyPi, string(config.TerminalPresetOpenAI),
 		launcher.BuildOmpModelsConfig, launcher.MergeOmpModelsConfig,
 		defaultOmpAgentDir, launchplan.ConfigOmp, result,
 	)
@@ -790,15 +809,8 @@ func computeFilePreimage(path string) [32]byte {
 	return sha256.Sum256(data)
 }
 
-// claudeEffectiveProxyPort returns the effective proxy port for Claude env
-// computation, replicating the desktop LaunchSession logic.
-// proxyDefaultPort is the canonical codebox injection proxy port (5280).
-const proxyDefaultPort = 5280
-
-func claudeEffectiveProxyPort(useProxy, useHeadroom bool) int {
-	if useProxy {
-		return proxyDefaultPort
-	}
+// claudeEffectiveHeadroomPort returns the local Headroom port for Claude env.
+func claudeEffectiveHeadroomPort(useHeadroom bool) int {
 	if useHeadroom {
 		return headroom.DefaultPort
 	}
@@ -806,9 +818,9 @@ func claudeEffectiveProxyPort(useProxy, useHeadroom bool) int {
 }
 
 // computeClaudeOverrides replicates launcher.LauncherService.BuildOverrides
-// without mutating the LauncherService proxyPort. The effectiveProxyPort is
+// without mutating the LauncherService Headroom state. The effective Headroom port is
 // pre-computed by the caller.
-func computeClaudeOverrides(provider config.Provider, presetName, apiKey string, agentTeams config.AgentTeamsConfig, effectiveProxyPort int) map[string]string {
+func computeClaudeOverrides(provider config.Provider, presetName, apiKey string, agentTeams config.AgentTeamsConfig, effectiveHeadroomPort int) map[string]string {
 	preset, ok := provider.Presets[presetName]
 	overrides := map[string]string{}
 	if !provider.IsAnthropicCompatible() {
@@ -819,8 +831,8 @@ func computeClaudeOverrides(provider config.Provider, presetName, apiKey string,
 	}
 	if provider.IsOAuthMode() {
 		overrides["ANTHROPIC_BASE_URL"] = ""
-	} else if effectiveProxyPort > 0 {
-		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", effectiveProxyPort)
+	} else if effectiveHeadroomPort > 0 {
+		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", effectiveHeadroomPort)
 	} else {
 		overrides["ANTHROPIC_BASE_URL"] = provider.EffectiveBaseURL("anthropic")
 	}

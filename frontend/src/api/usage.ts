@@ -44,7 +44,7 @@ export type UnknownModel = usage.UnknownModel;
 /**
  * 构造带默认筛选条件的 SummaryFilter，避免分散默认值。
  * Factory for a fresh SummaryFilter with safe defaults.
- * 默认 source=session_log：避免与 proxy 实时拦截双计（设计 §7.2）。
+ * 默认使用会话日志数据源。
  */
 export type UsageRangePreset = 'today' | '7d' | '30d' | 'month' | 'custom';
 
@@ -83,8 +83,7 @@ export function createSummaryFilter(overrides: Partial<SummaryFilter> = {}): Sum
     startDate: defaultRange.startDate,
     endDate: defaultRange.endDate,
     appType: '',
-    // 默认仅 session_log：proxy 路径与 session_log 路径会重复入库，前端默认只看主路径。
-    // Default to session_log only: proxy + session_log double-count by design, main path wins.
+    // 会话日志是当前唯一的用量采集路径。
     source: 'session_log',
     provider: '',
     ...overrides,

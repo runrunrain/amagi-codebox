@@ -24,7 +24,7 @@ func TestR4_005_ClearStopped_RaceRestart_RetainedByBothStores(t *testing.T) {
 
 	// Create a manager record (stopped) + an ACTIVE gate entry under the same id
 	// (simulates: snapshot said stopped, then it restarted → runActive).
-	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	sid := sess.ID
 	app.Sessions.MarkStopped(sid)
 	rt := app.control
@@ -96,7 +96,7 @@ func TestR4_005_ClearStopped_PartialClearMixedSync(t *testing.T) {
 	// stopped + gate-terminal → will be cleared.
 	stopped := registerGateSession(t, app)
 	// stopped manager record but ACTIVE gate entry → retained (race).
-	active := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	active := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	app.Sessions.MarkStopped(active.ID)
 	rt := app.control
 	lp, rp, op, err := rt.BeginDesktopRun(context.Background(), contract.SessionID(active.ID))

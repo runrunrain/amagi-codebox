@@ -83,9 +83,9 @@ func TestLaunchFence_AbortCompensatesReverseOrder(t *testing.T) {
 	// Apply two effects with compensation tracking.
 	var compOrder []LaunchEffectKind
 	// Effect 1.
-	err = gate.DoLaunchEffect(ctx, rp, LaunchProxyStart, func(ctx context.Context, permit *operationPermit, receipt *EffectReceipt) error {
+	err = gate.DoLaunchEffect(ctx, rp, LaunchConfigMutation, func(ctx context.Context, permit *operationPermit, receipt *EffectReceipt) error {
 		receipt.MarkApplied(func(ctx context.Context) error {
-			compOrder = append(compOrder, LaunchProxyStart)
+			compOrder = append(compOrder, LaunchConfigMutation)
 			return nil
 		})
 		return permit.Checkpoint(ctx, 1)
@@ -105,13 +105,13 @@ func TestLaunchFence_AbortCompensatesReverseOrder(t *testing.T) {
 		t.Fatalf("effect 2: %v", err)
 	}
 
-	// Abort: compensation should run in REVERSE order (HeadroomStart then ProxyStart).
+	// Abort: compensation should run in reverse order.
 	gate.AbortLaunch(ctx, lp, errors.New("test abort"))
 	if len(compOrder) != 2 {
 		t.Fatalf("expected 2 compensations, got %d", len(compOrder))
 	}
-	if compOrder[0] != LaunchHeadroomStart || compOrder[1] != LaunchProxyStart {
-		t.Fatalf("expected reverse order [HeadroomStart, ProxyStart], got %v", compOrder)
+	if compOrder[0] != LaunchHeadroomStart || compOrder[1] != LaunchConfigMutation {
+		t.Fatalf("expected reverse order [HeadroomStart, ConfigMutation], got %v", compOrder)
 	}
 
 	// Staging entry should be deletable (not public).
@@ -153,7 +153,7 @@ func TestLaunchFence_DeviceLaunchCanceledByRevoke(t *testing.T) {
 		// registerStartingSession failed (expected); create entry manually for test.
 		rp.entry = &controlEntry{sessionID: sid, opLane: newBoundedOperationLane(), controlEpoch: 1, runPhase: runStarting}
 	}
-	err = gate.DoLaunchEffect(ctx, rp, LaunchProxyStart, func(ctx context.Context, permit *operationPermit, receipt *EffectReceipt) error {
+	err = gate.DoLaunchEffect(ctx, rp, LaunchHeadroomStart, func(ctx context.Context, permit *operationPermit, receipt *EffectReceipt) error {
 		t.Fatal("effect should not execute for revoked device")
 		return nil
 	})

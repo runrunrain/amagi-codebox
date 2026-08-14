@@ -6,6 +6,30 @@
 
 ## [Unreleased]
 
+## [1.3.13] - 2026-08-14
+
+### Added
+
+- Provider Center 新增 OpenCode、Pi 与 Oh My Pi 提供商统一同步：仅接管各配置文件中的 `amagi-*` 命名空间，同步模型、参数与凭据，同时保留用户自有 Provider 和登录认证数据。
+- 远程启动器新增每次会话的工作目录、服务提供商、终端预设、模型、Shell 与 Claude Headroom 设置，并通过不含密钥的安全契约传递。
+
+### Changed
+
+- 终端预设改为按 Anthropic、OpenAI 协议格式共享；Claude Code 使用 Anthropic 预设，Codex、Pi 与 Oh My Pi 共用 OpenAI 预设，历史 CLI 专属预设会无损迁移。
+
+### Fixed
+
+- 修复环境检测未查询 Pi 与 Oh My Pi 最新 npm 版本、导致存在新版本时仍显示“已安装”而不是“有更新”的问题。
+- 修复远程 Web 将 CLI 可用性错误绑定到“最近一次桌面启动配置”、导致 OpenCode、Codex、Oh My Pi 等已安装终端仍无法启动的问题。
+- 修复远程会话停止或进程退出后卡片不会自动清理的问题；大厅会过滤终止状态并定时刷新。
+
+### Removed
+
+- 移除已失去实际用途的工作区管理功能，包括桌面端工作区面板、项目级与全局插件部署、冲突检测、工作区持久化、完整配置中的工作区快照以及对应 Wails 绑定。
+- 历史完整配置中的 `portable.workspaces` 字段继续兼容读取但会被忽略；现有工作区清单和部署产物不会被应用自动删除。
+- 移除 Prompt 注入代理功能，包括注入规则页、会话代理开关、代理服务、实时代理用量来源、远程契约字段、持久化与 Wails 绑定。
+- 历史完整配置中的 `portable.proxy` 字段继续兼容读取但会被忽略；现有注入规则与代理 URL 历史文件不会被应用自动删除。
+
 ## [1.3.12] - 2026-08-14
 
 ### Added
@@ -133,7 +157,8 @@
 
 - 修复 Pi 兼容模式默认值。
 
-[Unreleased]: https://github.com/runrunrain/amagi-codebox/compare/v1.3.12...HEAD
+[Unreleased]: https://github.com/runrunrain/amagi-codebox/compare/v1.3.13...HEAD
+[1.3.13]: https://github.com/runrunrain/amagi-codebox/compare/v1.3.12...v1.3.13
 [1.3.12]: https://github.com/runrunrain/amagi-codebox/compare/v1.3.11...v1.3.12
 [1.3.11]: https://github.com/runrunrain/amagi-codebox/compare/v1.3.10...v1.3.11
 [1.3.10]: https://github.com/runrunrain/amagi-codebox/compare/v1.3.09...v1.3.10

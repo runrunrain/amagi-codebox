@@ -117,7 +117,7 @@ func TestR9_004_PostStartDurabilityFailureRetainsReservationAndShutdownIsBounded
 	fake.onStarted = func(id string) { sessionID = id }
 
 	launchStarted := time.Now()
-	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, ""); err == nil {
+	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, ""); err == nil {
 		t.Fatal("post-start register failure unexpectedly returned success")
 	}
 	if elapsed := time.Since(launchStarted); elapsed > 500*time.Millisecond {
@@ -182,7 +182,7 @@ func TestR9_004_ConcurrentBlockedRegisterCannotHoldShutdownPastBudget(t *testing
 	launchDone := make(chan error, 1)
 	workDir := t.TempDir()
 	go func() {
-		_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, true, "")
+		_, err := app.LaunchSession(providerID, "", "terminal", workDir, true, "")
 		launchDone <- err
 	}()
 	select {
@@ -227,7 +227,7 @@ func TestR9_004_BlockedStopAllReturnsAtBudgetWithTypedUnrecoveredReport(t *testi
 	}
 	app.externalLauncher = blocking
 	app.externalShutdownCleanupBudget = 60 * time.Millisecond
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if err != nil {
 		t.Fatalf("LaunchSession: %v", err)
 	}

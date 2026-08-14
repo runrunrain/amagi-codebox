@@ -31,7 +31,6 @@ import (
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
-	"amagi-codebox/internal/proxy"
 	"amagi-codebox/internal/remote"
 	"gopkg.in/yaml.v3"
 )
@@ -39,25 +38,17 @@ import (
 // launchExecutorDeps holds the App service adapters the executor needs.
 type launchExecutorDeps struct {
 	pty           ptyStartPort
-	proxy         proxyStartPort
 	headroom      headroomStartPort
 	codexHeadroom headroomStartPort
-	launcherSvc   launcherProxyPort
 	sharedCoord   *remote.SharedServiceCoordinator
 	debts         *launchplan.CompensationDebtRegistry
+	configMu      *sync.Mutex
 }
 
 type ptyStartPort interface {
 	StartResolvedWithRunEvidence(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (processcap.StartEvidence, error)
 	WaitReadyForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID) error
 	WriteRawForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID, data []byte) error
-}
-
-type proxyStartPort interface {
-	IsRunning() bool
-	GetStatus() proxy.ProxyStatus
-	Start(port int, backendURL string) error
-	Stop() error
 }
 
 type headroomStartPort interface {
@@ -67,10 +58,6 @@ type headroomStartPort interface {
 	Start(backendURL string) error
 	StartForOpenAI(backendURL string) error
 	Stop() error
-}
-
-type launcherProxyPort interface {
-	SetProxyPort(port int)
 }
 
 // appLaunchExecutor implements launchplan.Executor.
@@ -133,11 +120,6 @@ func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.Pr
 			return nil, errors.New("headroom effect missing shared spec")
 		}
 		return b.buildHeadroomStart(spec.Shared), nil
-	case launchplan.EffectProxyStart:
-		if spec.Shared == nil {
-			return nil, errors.New("proxy effect missing shared spec")
-		}
-		return b.buildProxyStart(spec.Shared), nil
 	case launchplan.EffectConfigMutation:
 		if spec.Config == nil {
 			return nil, errors.New("config effect missing config spec")
@@ -172,13 +154,6 @@ func (b *preparedEffectBuilder) buildHeadroomStart(shared *launchplan.SharedStar
 	}
 }
 
-func (b *preparedEffectBuilder) buildProxyStart(shared *launchplan.SharedStartSpec) launchplan.PreparedEffect {
-	return &proxyStartEffect{
-		deps: b.deps, service: shared.Service, upstreamURL: shared.UpstreamURL, listenPort: shared.ListenPort,
-		admission: sharedAdmissionFromBinding(b.sharedAdmissions, shared.Service),
-	}
-}
-
 func sharedAdmissionFromBinding(admissions map[launchplan.SharedServiceKind]any, kind launchplan.SharedServiceKind) *remote.SharedLaunchAdmission {
 	if admissions == nil {
 		return nil
@@ -196,7 +171,7 @@ func (b *preparedEffectBuilder) buildConfigMutation(cfg *launchplan.ConfigMutati
 	return &configMutationEffect{
 		target: cfg.Target, content: owned, preimage: cfg.ExpectedPreimageDigest,
 		owner: fmt.Sprintf("%s/%d/config/%d", b.sessionID, b.runEpoch, cfg.Target),
-		debts: b.deps.debts,
+		debts: b.deps.debts, configMu: b.deps.configMu,
 	}, nil
 }
 
@@ -306,85 +281,6 @@ func (e *headroomStartEffect) compensate(_ context.Context) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Proxy start effect (M-01: uses SharedStartSpec upstream/port)
-// ---------------------------------------------------------------------------
-
-type proxyStartEffect struct {
-	deps        launchExecutorDeps
-	service     launchplan.SharedServiceKind
-	upstreamURL string
-	listenPort  int
-	startedByMe bool
-	committed   bool
-	admission   *remote.SharedLaunchAdmission
-}
-
-func (e *proxyStartEffect) Kind() launchplan.EffectKind { return launchplan.EffectProxyStart }
-func (e *proxyStartEffect) ArmOwnership()               {}
-
-func (e *proxyStartEffect) Apply(_ context.Context) (launchplan.EffectEvidence, error) {
-	if e.service != launchplan.SharedClaudeProxy {
-		return launchplan.EffectEvidence{}, fmt.Errorf("unknown proxy service: %d", e.service)
-	}
-	svc := e.deps.proxy
-	if svc == nil {
-		return launchplan.EffectEvidence{}, errors.New("proxy service unavailable")
-	}
-	if svc.IsRunning() {
-		status := svc.GetStatus()
-		if !status.Running || status.Port != e.listenPort || status.BackendURL != e.upstreamURL {
-			return launchplan.EffectEvidence{}, errors.New("running proxy configuration does not match launch plan")
-		}
-		return launchplan.EffectEvidence{}, nil
-	}
-	port := e.listenPort
-	if port <= 0 {
-		return launchplan.EffectEvidence{}, errors.New("proxy listen port is invalid")
-	}
-	if e.upstreamURL == "" {
-		return launchplan.EffectEvidence{}, errors.New("proxy upstream URL is empty")
-	}
-	if err := svc.Start(port, e.upstreamURL); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("start proxy: %w", err)
-	}
-	e.startedByMe = true
-	if e.deps.sharedCoord == nil || e.admission == nil {
-		_ = svc.Stop()
-		e.startedByMe = false
-		return launchplan.EffectEvidence{}, errors.New("proxy start transaction is not coordinator-owned")
-	}
-	if err := e.deps.sharedCoord.MarkLaunchTransactionStarted(e.admission); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("record proxy start ownership: %w", err)
-	}
-	status := svc.GetStatus()
-	if !status.Running || status.Port != port || status.BackendURL != e.upstreamURL {
-		if e.deps.sharedCoord.AuthorizeCompensatingStop(e.admission) {
-			_ = svc.Stop()
-		}
-		e.startedByMe = false
-		return launchplan.EffectEvidence{}, errors.New("started proxy configuration failed exact verification")
-	}
-	if e.deps.launcherSvc != nil {
-		e.deps.launcherSvc.SetProxyPort(port)
-	}
-	return launchplan.EffectEvidence{}, nil
-}
-
-func (e *proxyStartEffect) compensate(_ context.Context) bool {
-	if !e.startedByMe || e.committed || e.deps.sharedCoord == nil || !e.deps.sharedCoord.AuthorizeCompensatingStop(e.admission) {
-		return true
-	}
-	var err error
-	if e.deps.proxy != nil {
-		err = e.deps.proxy.Stop()
-	}
-	if err == nil && e.deps.launcherSvc != nil {
-		e.deps.launcherSvc.SetProxyPort(0)
-	}
-	return err == nil
-}
-
-// ---------------------------------------------------------------------------
 // Config mutation effect (M-04: exact CAS rollback)
 // ---------------------------------------------------------------------------
 
@@ -403,6 +299,7 @@ type configMutationEffect struct {
 	prevMode      os.FileMode
 	prevContent   []byte
 	committed     bool
+	configMu      *sync.Mutex
 }
 
 type atomicConfigWriteResult struct {
@@ -422,6 +319,16 @@ func (e *configMutationEffect) Kind() launchplan.EffectKind { return launchplan.
 func (e *configMutationEffect) ArmOwnership()               {}
 
 func (e *configMutationEffect) Apply(ctx context.Context) (launchplan.EffectEvidence, error) {
+	configLocked := false
+	if e.configMu != nil {
+		e.configMu.Lock()
+		configLocked = true
+	}
+	defer func() {
+		if configLocked {
+			e.configMu.Unlock()
+		}
+	}()
 	path, candidate, mode, dirMode, err := e.renderCandidate()
 	if err != nil {
 		return launchplan.EffectEvidence{}, err
@@ -450,6 +357,10 @@ func (e *configMutationEffect) Apply(ctx context.Context) (launchplan.EffectEvid
 	if result.Replaced {
 		e.written = true
 		e.writtenDigest = sha256.Sum256(candidate)
+	}
+	if configLocked {
+		e.configMu.Unlock()
+		configLocked = false
 	}
 	if writeErr != nil {
 		if e.written {
@@ -638,6 +549,10 @@ func (e *configMutationEffect) compensate(ctx context.Context) launchplan.Compen
 func (e *configMutationEffect) compensateAttempt(ctx context.Context) launchplan.CompensationOutcome {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.configMu != nil {
+		e.configMu.Lock()
+		defer e.configMu.Unlock()
+	}
 	outcome := launchplan.CompensationOutcome{Owner: e.owner, Effect: launchplan.EffectConfigMutation, Step: "config-restore"}
 	if e.committed || !e.written {
 		outcome.Disposition = launchplan.CompensationConfirmed
@@ -885,10 +800,6 @@ func (e *appPreparedExecution) Abort(ctx context.Context) launchplan.Compensatio
 			if !eff.compensate(ctx) {
 				report.Failed++
 			}
-		case *proxyStartEffect:
-			if !eff.compensate(ctx) {
-				report.Failed++
-			}
 		case *configMutationEffect:
 			outcome := eff.compensate(ctx)
 			report.Outcomes = append(report.Outcomes, outcome)
@@ -912,8 +823,6 @@ func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 	switch typed := effect.(type) {
 	case *headroomStartEffect:
 		return typed.startedByMe
-	case *proxyStartEffect:
-		return typed.startedByMe
 	case *configMutationEffect:
 		return typed.hasPartialOwnership()
 	case *ptyStartEffect:
@@ -928,8 +837,6 @@ func (e *appPreparedExecution) MarkCommitted() {
 	for _, eff := range e.effects {
 		switch typed := eff.(type) {
 		case *headroomStartEffect:
-			typed.committed = true
-		case *proxyStartEffect:
 			typed.committed = true
 		case *configMutationEffect:
 			typed.markCommitted()

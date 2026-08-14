@@ -33,7 +33,6 @@ type RemoteLaunchRecipe struct {
 	ModelRef    string
 	Mode        string
 	ShellPath   string
-	UseProxy    bool
 	UseHeadroom bool
 }
 

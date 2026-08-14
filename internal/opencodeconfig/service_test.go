@@ -1,6 +1,7 @@
 package opencodeconfig
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -376,5 +377,89 @@ func TestWriteConfigFileFallsBackToDirectOverwriteWhenRenameFails(t *testing.T) 
 
 	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temp file should be cleaned up, stat err = %v", err)
+	}
+}
+
+func TestSyncManagedProvidersPreservesLoginProvidersAndOtherSettings(t *testing.T) {
+	home := setTestHome(t)
+	configDir := filepath.Join(home, ".config", "opencode")
+	configPath := filepath.Join(configDir, "opencode.json")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{
+  "theme": "dark",
+  "provider": {
+    "anthropic": {"options": {"oauth": true}},
+    "amagi-stale": {"options": {"apiKey": "old"}}
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	managed := map[string]any{
+		"amagi-current": map[string]any{
+			"npm":     "@ai-sdk/openai-compatible",
+			"options": map[string]any{"baseURL": "https://example.com/v1", "apiKey": "new"},
+		},
+	}
+	if err := svc.SyncManagedProviders(managed); err != nil {
+		t.Fatalf("SyncManagedProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["theme"] != "dark" {
+		t.Fatalf("top-level setting was changed: %#v", got)
+	}
+	providers := got["provider"].(map[string]any)
+	if _, exists := providers["anthropic"]; !exists {
+		t.Fatalf("login-backed provider was removed: %#v", providers)
+	}
+	if _, exists := providers["amagi-stale"]; exists {
+		t.Fatalf("stale managed provider was preserved: %#v", providers)
+	}
+	if _, exists := providers["amagi-current"]; !exists {
+		t.Fatalf("current managed provider missing: %#v", providers)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("opencode.json perm = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestSyncManagedProvidersRefusesToOverwriteInvalidConfig(t *testing.T) {
+	home := setTestHome(t)
+	configDir := filepath.Join(home, ".config", "opencode")
+	configPath := filepath.Join(configDir, "opencode.json")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"provider":`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := NewService().SyncManagedProviders(map[string]any{"amagi-x": map[string]any{}})
+	if err == nil {
+		t.Fatal("expected invalid existing config to fail")
+	}
+	got, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("invalid config was overwritten: %q", got)
 	}
 }

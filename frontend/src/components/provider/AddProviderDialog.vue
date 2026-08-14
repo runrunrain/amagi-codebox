@@ -1,6 +1,7 @@
 <!--
   AddProviderDialog - 通用「新增 / 编辑」提供商弹窗。
-  - 新增模式（editTarget 为空）：原 SaveProvider + SetAPIKey 逻辑，行为保持不变。
+  - 新增模式（editTarget 为空）：通过 App.SaveProviderFromJSON 统一保存配置和密钥，
+    并由后端同步 OpenCode / Pi / OMP。
   - 编辑模式（editTarget 存在）：标题切换为「编辑提供商」、字段回填、名称可改；
     提交时构造 ExportProvider JSON（api_key 空 = 保持不变，presets 原样保留）
     → store.updateProvider(oldId, newName, json)。
@@ -101,9 +102,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue';
 import { config } from '../../../wailsjs/go/models';
-import { SaveProvider } from '../../../wailsjs/go/config/ConfigService';
-import { SetAPIKey, Save as SaveSecrets } from '../../../wailsjs/go/secrets/SecretsService';
-import { getProviderExportJSON } from '../../api/provider';
+import { getProviderExportJSON, saveProviderFromJSON } from '../../api/provider';
 import { useProviderStore } from '../../stores/provider';
 import { useToast } from '../../composables/useToast';
 import Dialog from '../ui/Dialog.vue';
@@ -337,32 +336,25 @@ async function handleSave() {
     const newName = form.name.trim();
 
     if (!props.editTarget) {
-      // —— 新增模式（保持原逻辑不变，避免回归）——
-      // 构建 Provider 对象（照搬旧 ProviderCenter 逻辑）
-      const provider = new config.Provider();
-      provider.default_model = form.defaultModel || '';
-
+      // —— 新增模式：统一走 App 编排层，避免绕过 harness 同步 ——
+      const exportObj: any = {
+        default_model: form.defaultModel || '',
+        presets: {},
+        api_key: form.apiKey.trim(),
+      };
       if (form.supportsAnthropic) {
-        provider.anthropic = {
+        exportObj.anthropic = {
           enabled: true,
           base_url: form.anthropicBaseUrl || undefined,
         };
       }
       if (form.supportsOpenAI) {
-        provider.openai = {
+        exportObj.openai = {
           enabled: true,
           base_url: form.openaiBaseUrl || undefined,
         };
       }
-
-      // 保存 Provider
-      await SaveProvider(form.name, provider);
-
-      // 保存 API Key（如果提供）—— SetAPIKey 仅写入内存 cache，必须追加 Save() 持久化
-      if (form.apiKey.trim()) {
-        await SetAPIKey(form.name, form.apiKey.trim());
-        await SaveSecrets();
-      }
+      await saveProviderFromJSON(newName, JSON.stringify(exportObj));
     } else {
       // —— 编辑模式：统一调 store.updateProvider ——
       const oldId = props.editTarget.id;

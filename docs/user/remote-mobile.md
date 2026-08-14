@@ -120,7 +120,7 @@
 | `GET /api/info` | 应用信息（含 `remotePort`） |
 | `GET /api/sessions` | 获取会话列表 |
 | `GET /api/sessions/launch-meta` | 启动元数据：可用工作目录、各引擎的 provider/preset 选项 |
-| `POST /api/sessions/launch` | 启动 Claude 会话。Body：`{providerName, presetName, mode, workDir, useProxy, useHeadroom, shellPath}` |
+| `POST /api/sessions/launch` | 启动 Claude 会话。Body：`{providerName, presetName, mode, workDir, useHeadroom, shellPath}` |
 | `POST /api/sessions/launch-codex` | 启动 Codex 会话。Body：`{modelName, providerID, mode, workDir, shellPath}` |
 | `POST /api/sessions/launch-opencode` | 启动 OpenCode 会话。Body：`{providerName, presetName, mode, workDir, shellPath}` |
 | `POST /api/sessions/launch-pi` | 启动 Pi 会话。Body：`{modelName, providerID, mode, workDir, shellPath}`（对标 `launch-codex`，由 `terminal_preset` `type="pi"` 驱动） |

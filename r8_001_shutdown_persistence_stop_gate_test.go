@@ -30,7 +30,7 @@ func TestR8_001_PostStartDurabilityFailureReturnsWithDurableReservation(t *testi
 	var sessionID string
 	fake.onStarted = func(id string) { sessionID = id }
 
-	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, ""); err == nil {
+	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, ""); err == nil {
 		t.Fatal("durability failure unexpectedly returned success")
 	}
 	if sessionID == "" || !fake.IsRunning(sessionID) || r7ExternalCleanupCount(app) != 1 {
@@ -53,7 +53,7 @@ func TestR8_001_ShutdownFenceRejectsLateExternalProcessStart(t *testing.T) {
 	providerID := configureR6ClaudeProvider(t, app)
 	app.externalShutdown.Store(true)
 
-	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, ""); !errors.Is(err, remote.ErrSharedCoordinatorClosed) {
+	if _, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, ""); !errors.Is(err, remote.ErrSharedCoordinatorClosed) {
 		t.Fatalf("late external launch error=%v want ErrSharedCoordinatorClosed", err)
 	}
 	fake.mu.Lock()
@@ -71,7 +71,7 @@ func TestR8_001_ShutdownFenceRejectsLateExternalProcessStart(t *testing.T) {
 func TestR8_001_ActiveRunShutdownStopAllFailureRemainsDurable(t *testing.T) {
 	app, fake, _ := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if err != nil {
 		t.Fatalf("LaunchSession: %v", err)
 	}
@@ -189,7 +189,7 @@ func launchR8AsyncStoppingSession(t *testing.T) (*App, *r6ExternalLauncher, stri
 	app, fake, _ := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
 	fake.setAsyncStop(true) // Stop accepted; Wait/terminal deliberately delayed
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), false, true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
 	if err != nil {
 		t.Fatalf("LaunchSession: %v", err)
 	}

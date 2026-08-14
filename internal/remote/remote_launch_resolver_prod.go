@@ -47,7 +47,7 @@ type platformCLIResolveShim interface {
 // provider/model wiring).
 type remoteLaunchDefaultsReader interface {
 	// HostDefaultRefs returns the stable recipe refs (provider/preset/model/mode/
-	// shell/proxy/headroom) for a CLI type, or ok=false if no unique default exists
+	// shell/headroom) for a CLI type, or ok=false if no unique default exists
 	// (design §5.4: "0 个或多个 fail closed，绝不取 map 第一项").
 	HostDefaultRefs(cli contract.CLIType) (RemoteLaunchRecipe, bool)
 }
@@ -116,18 +116,32 @@ func (r *productionRemoteLaunchResolver) ResolveCreate(ctx context.Context, req 
 	}
 	if r.defaults != nil {
 		if dr, ok := r.defaults.HostDefaultRefs(cliType); ok {
-			// Merge host-default refs (provider/preset/model/mode/shell/proxy/headroom).
+			// Merge host-default refs (provider/preset/model/mode/shell/headroom).
 			recipe.ProviderRef = dr.ProviderRef
 			recipe.PresetRef = dr.PresetRef
 			recipe.ModelRef = dr.ModelRef
 			recipe.Mode = dr.Mode
 			recipe.ShellPath = dr.ShellPath
-			recipe.UseProxy = dr.UseProxy
 			recipe.UseHeadroom = dr.UseHeadroom
 		}
 		// No host default: recipe refs stay empty. Resolution still succeeds — the
 		// binary is found via Resolve(AppType). Provider/model wiring is the launch
 		// effect's job (raw port), not the resolver's.
+	}
+	if req.ProviderRef != nil {
+		recipe.ProviderRef = *req.ProviderRef
+	}
+	if req.PresetRef != nil {
+		recipe.PresetRef = *req.PresetRef
+	}
+	if req.ModelRef != nil {
+		recipe.ModelRef = *req.ModelRef
+	}
+	if req.ShellRef != nil {
+		recipe.ShellPath = *req.ShellRef
+	}
+	if req.UseHeadroom != nil {
+		recipe.UseHeadroom = *req.UseHeadroom
 	}
 	// 4. Build ResolveRequest and call the real CLIResolver.
 	spec, ferr := r.resolveSpec(recipe)
@@ -243,7 +257,7 @@ func canonicalDir(path string) (string, error) {
 	return real, nil
 }
 
-// isKnownCLIType reports whether the CLIType is one of the four frozen types
+// isKnownCLIType reports whether the CLIType is one of the five frozen types
 // (design §5.4: "不得把内部 amagicode 当第五种 wire CLI").
 func isKnownCLIType(cli contract.CLIType) bool {
 	for _, k := range contract.KnownCLITypes {

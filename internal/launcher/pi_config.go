@@ -218,27 +218,7 @@ func MergePiAgentConfig(cfg map[string]any, agentDir string) map[string]any {
 		return cfg
 	}
 
-	existingProviders, _ := existing["providers"].(map[string]any)
-	managedProviders := piProviderEntries(cfg["providers"])
-	providers := make(map[string]any, len(existingProviders)+len(managedProviders))
-	for key, value := range existingProviders {
-		providers[key] = value
-	}
-	for key, value := range managedProviders {
-		providers[key] = value
-	}
-
-	merged := make(map[string]any, len(existing)+len(cfg))
-	for key, value := range existing {
-		merged[key] = value
-	}
-	for key, value := range cfg {
-		merged[key] = value
-	}
-	if len(providers) > 0 {
-		merged["providers"] = providers
-	}
-	return merged
+	return mergeProviderConfig(existing, cfg, false)
 }
 
 // piProviderEntries 把 cfg["providers"] 归一化为 map[string]any。

@@ -117,7 +117,7 @@ func TestTrackTitle_CapturesTitleAndSessionID(t *testing.T) {
 	const workDir = "X:/WorkSpace/demo"
 
 	mgr := NewManager()
-	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "model", ModeEmbedded, workDir, false)
+	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "model", ModeEmbedded, workDir)
 
 	// 预先写入 jsonl（模拟 Claude Code 启动后已落第一条用户消息）。
 	const wantSessionID = "abc-123-uuid"
@@ -181,8 +181,8 @@ func TestTrackTitle_PlanR_LockedNoCrosstalk(t *testing.T) {
 	const workDir = "X:/WorkSpace/demo"
 
 	mgr := NewManager()
-	sessA := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
-	sessB := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	sessA := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
+	sessB := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 
 	const sidA = "locked-uuid-A"
 	const sidB = "locked-uuid-B"
@@ -228,7 +228,7 @@ func TestTrackTitle_PausedLockedNoCrosstalk(t *testing.T) {
 	const workDir = "X:/WorkSpace/demo"
 
 	mgr := NewManager()
-	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 
 	// 构造：lockedPath（用户已暂停输入，mtime backdate 到 10 分钟前）+ 同目录另一 jsonl（mtime 新）
 	const sidLocked = "paused-session-uuid"
@@ -289,7 +289,7 @@ func TestTrackTitle_NoSID_DegradesPlanP(t *testing.T) {
 	const workDir = "X:/WorkSpace/demo"
 
 	mgr := NewManager()
-	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 	// 故意不 SetClaudeSessionID → 模拟 external 模式（app.go external 分支不注入）
 
 	const latestSid = "latest-by-mtime"
@@ -313,7 +313,7 @@ func TestTrackTitle_LockedNotExist_Waits(t *testing.T) {
 	const workDir = "X:/WorkSpace/demo"
 
 	mgr := NewManager()
-	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 	// 注入 sid 但不创建对应 jsonl（模拟 claude 刚启动，jsonl 尚未落盘）
 	const lockedSid = "not-yet-created"
 	mgr.SetClaudeSessionID(sess.ID, lockedSid)
@@ -372,7 +372,7 @@ func TestList_FillsExitedTitleFromJSONL(t *testing.T) {
 	mgr := NewManager()
 	mgr.SetHomeDir(homeDir)
 
-	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "model", ModeEmbedded, workDir, false)
+	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "model", ModeEmbedded, workDir)
 	// 模拟会话已退出且 tracker 已冻结 ClaudeSessionID（标题未填，留空触发 List 直读）
 	mgr.SetClaudeSessionID(sess.ID, claudeSID)
 	mgr.MarkExited(sess.ID)
@@ -408,18 +408,18 @@ func TestList_SkipsRunningAndMissingJSONL(t *testing.T) {
 	mgr.SetHomeDir(homeDir)
 
 	// 1) Running 会话不直读（即使 ClaudeSessionID 已设）
-	runSess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	runSess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 	mgr.SetClaudeSessionID(runSess.ID, "never-written")
 	// 不写 jsonl 文件
 	// 故意不 MarkExited：保持 Running
 
 	// 2) Exited 但 jsonl 不存在 → 静默空标题
-	exitSess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	exitSess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 	mgr.SetClaudeSessionID(exitSess.ID, "missing-uuid")
 	mgr.MarkExited(exitSess.ID)
 
 	// 3) Exited 但 ClaudeSessionID 为空（未跟踪到）→ 静默空标题
-	exitEmptySID := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir, false)
+	exitEmptySID := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
 	mgr.MarkExited(exitEmptySID.ID)
 
 	infos := mgr.List()

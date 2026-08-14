@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var (
@@ -147,6 +148,68 @@ func (s *Service) SaveOpenCodeConfig(content string) error {
 	return writeConfigFile(path, formatted)
 }
 
+// SyncManagedProviders replaces only the CodeBox-owned amagi-* entries in the
+// global OpenCode provider map. It intentionally leaves built-in/login-backed
+// provider entries and every other top-level setting untouched. OpenCode's
+// auth.json is a separate file and is never read or written here.
+func (s *Service) SyncManagedProviders(managed map[string]any) error {
+	path, err := configFilePath()
+	if err != nil {
+		return err
+	}
+
+	obj := map[string]any{}
+	data, readErr := os.ReadFile(path)
+	switch {
+	case errors.Is(readErr, os.ErrNotExist):
+	case readErr != nil:
+		return fmt.Errorf("read opencode config: %w", readErr)
+	default:
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return fmt.Errorf("parse opencode config before provider sync: %w", err)
+		}
+		if obj == nil {
+			return errors.New("parse opencode config before provider sync: root must be a JSON object")
+		}
+	}
+
+	providers := map[string]any{}
+	if existing, exists := obj["provider"]; exists && existing != nil {
+		existingProviders, ok := existing.(map[string]any)
+		if !ok {
+			return errors.New("parse opencode config before provider sync: provider must be a JSON object")
+		}
+		for id, entry := range existingProviders {
+			if strings.HasPrefix(id, "amagi-") {
+				continue
+			}
+			providers[id] = entry
+		}
+	}
+	for id, entry := range managed {
+		if !strings.HasPrefix(id, "amagi-") {
+			return fmt.Errorf("managed opencode provider %q must use the amagi- namespace", id)
+		}
+		providers[id] = entry
+	}
+	if _, existed := obj["provider"]; existed || len(providers) > 0 || len(managed) > 0 {
+		obj["provider"] = providers
+	}
+
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format opencode config after provider sync: %w", err)
+	}
+	if string(formatted) == "{}" {
+		formatted = []byte("{\n}")
+	}
+	formatted = append(formatted, '\n')
+	if err := ensureDir(path); err != nil {
+		return err
+	}
+	return writePrivateConfigFile(path, formatted)
+}
+
 func writeConfigFile(path string, formatted []byte) error {
 	tmp := path + ".tmp"
 	if err := osWriteFile(tmp, formatted, 0o644); err != nil {
@@ -161,6 +224,36 @@ func writeConfigFile(path string, formatted []byte) error {
 	} else {
 		renameErr := err
 		if overwriteErr := osWriteFile(path, formatted, 0o644); overwriteErr == nil {
+			return nil
+		} else {
+			return fmt.Errorf("replace config file %s: rename temp file %s failed: %w; fallback overwrite failed: %v", path, tmp, renameErr, overwriteErr)
+		}
+	}
+}
+
+func writePrivateConfigFile(path string, formatted []byte) error {
+	tmp := path + ".tmp"
+	if err := osWriteFile(tmp, formatted, 0o600); err != nil {
+		return fmt.Errorf("write temp file %s: %w", tmp, err)
+	}
+	defer func() {
+		_ = osRemove(tmp)
+	}()
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return fmt.Errorf("chmod temp file %s: %w", tmp, err)
+	}
+
+	if err := osRename(tmp, path); err == nil {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("chmod config file %s: %w", path, err)
+		}
+		return nil
+	} else {
+		renameErr := err
+		if overwriteErr := osWriteFile(path, formatted, 0o600); overwriteErr == nil {
+			if chmodErr := os.Chmod(path, 0o600); chmodErr != nil {
+				return fmt.Errorf("chmod config file %s: %w", path, chmodErr)
+			}
 			return nil
 		} else {
 			return fmt.Errorf("replace config file %s: rename temp file %s failed: %w; fallback overwrite failed: %v", path, tmp, renameErr, overwriteErr)

@@ -142,6 +142,21 @@ describe('M3-006 T0/T1 生产锚点（真实路由导航）', () => {
     consoleInfo.mockRestore();
   });
 
+  it('停止、退出与不可用会话不会残留在大厅卡片列表', async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      SESSION,
+      { ...SESSION, id: 'sess-stopped', state: 'stopped' },
+      { ...SESSION, id: 'sess-exited', state: 'exited' },
+      { ...SESSION, id: 'sess-unavailable', state: 'unavailable' },
+    ]);
+    const router = buildRouter();
+    const wrapper = await enterLobby(pinia, router);
+
+    expect(wrapper.findAll('.session-card')).toHaveLength(1);
+    expect(useLobbyStore().sessions.map((item) => item.id)).toEqual(['sess-1']);
+    consoleInfo.mockRestore();
+  });
+
   it('可操作错误态分支：分类错误 + 重试渲染完成同样完成 T lane', async () => {
     vi.mocked(listSessions).mockRejectedValue(
       new ApiRequestError({

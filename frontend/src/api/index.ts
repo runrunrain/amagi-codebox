@@ -19,12 +19,6 @@ export * from './opencodePlugin';
 export * from './codexPlugin';
 export * from './piPlugin';
 
-// Workspace
-export * from './workspace';
-
-// Proxy & Injection
-export * from './proxy';
-
 // Settings (host/port setters namespaced to avoid collision with remote)
 export {
   getDashboardDefaults,

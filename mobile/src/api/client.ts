@@ -41,7 +41,7 @@ export interface LaunchSessionRequest {
   presetName: string
   mode: string
   workDir: string
-  useProxy: boolean
+  useHeadroom: boolean
   shellPath: string
 }
 

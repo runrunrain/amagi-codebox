@@ -26,7 +26,7 @@ Amagi CodeBox 有三条测试/质量线，分属不同子项目：
 
 - 根目录：`app_test.go`、`app_envcheck_test.go`、`app_codex_config_test.go`、`app_persistence_test.go`、`app_terminal_windows_test.go`、`app_update_provider_test.go`。
 - `cmd/codebox/main_test.go`：CLI 工具入口测试。
-- `internal/` 下 22 个服务包，测试热点集中在 `internal/envcheck/`（13 个测试文件，含 checker、installer、selfheal、integration 等多种类型）、`internal/codexplugin/`（5 个）、`internal/remote/`（3 个）、`internal/session/`、`internal/proxy/`、`internal/pty/`、`internal/headroom/`、`internal/platform/` 等。
+- 测试热点集中在 `internal/envcheck/`、`internal/codexplugin/`、`internal/remote/`、`internal/session/`、`internal/pty/`、`internal/headroom/` 与 `internal/platform/` 等。
 
 ### 运行命令
 
@@ -40,7 +40,7 @@ go test ./internal/config
 # 单包单测
 go test ./internal/config -run TestServiceName
 
-# 竞态检测（推荐用于 session、pty、remote、proxy 等并发包）
+# 竞态检测（推荐用于 session、pty、remote 等并发包）
 go test -race ./internal/session
 
 # 详细输出
@@ -58,7 +58,7 @@ CLAUDE.md 特别提示：仓库根的 `envcheck.test` 是一个陈旧的、被�
 
 #### 1. 普通单元测试
 
-最常见形式。例如 `internal/config/service_test.go`、`internal/secrets/service_test.go`、`internal/proxy/usage_test.go`。直接 `go test ./internal/<pkg>` 即可运行。
+最常见形式。例如 `internal/config/service_test.go`、`internal/secrets/service_test.go`。直接 `go test ./internal/<pkg>` 即可运行。
 
 #### 2. 集成测试（环境门控）
 
@@ -121,7 +121,7 @@ go test -tags realfixture ./internal/session/... -run TestRealFixture_MasterJSON
 
 - 优先放在被测包内（`internal/<pkg>/<file>_test.go`），用同一 package 做"白盒"测试。
 - 跨包的端到端场景才放根目录（`app_*_test.go`）或 `cmd/codebox/`。
-- 涉及并发（session、pty、proxy、remote、envcheck 异步操作）默认加 `-race` 复跑一次。
+- 涉及并发（session、pty、remote、envcheck 异步操作）默认加 `-race` 复跑一次。
 - 避免误提交测试二进制（参考 `envcheck.test` 的前车之鉴）；不要把 `go test -c` 产物纳入 git。
 - 新增依赖真实环境的测试时，**必须**用环境变量或 build tag 默认跳过，并在文件头注释里写明跑法。
 

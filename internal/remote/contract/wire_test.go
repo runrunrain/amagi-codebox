@@ -195,6 +195,29 @@ func TestREST_DecodeRequests(t *testing.T) {
 	}
 }
 
+func TestREST_DecodeCreateSessionSettings(t *testing.T) {
+	req, err := DecodeCreateSessionRequest([]byte(`{
+		"cliType":"codex","workdir":"/workspace","providerRef":"openai-main",
+		"presetRef":"max","modelRef":"gpt-5.6","shellRef":"/bin/zsh",
+		"useHeadroom":true
+	}`))
+	if err != nil {
+		t.Fatalf("DecodeCreateSessionRequest settings: %v", err)
+	}
+	if req.ProviderRef == nil || *req.ProviderRef != "openai-main" || req.UseHeadroom == nil || !*req.UseHeadroom {
+		t.Fatalf("settings not decoded: %#v", req)
+	}
+	for _, raw := range [][]byte{
+		[]byte(`{"cliType":"codex","providerRef":""}`),
+		[]byte(`{"cliType":"codex","shellRef":null}`),
+		[]byte(`{"cliType":"codex","apiKey":"secret"}`),
+	} {
+		if _, err := DecodeCreateSessionRequest(raw); err == nil {
+			t.Fatalf("unsafe/invalid create request accepted: %s", raw)
+		}
+	}
+}
+
 func TestREST_MarshalResponses(t *testing.T) {
 	fx := loadFixture(t)
 	fiveCLI := []CLIAvailability{

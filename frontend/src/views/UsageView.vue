@@ -130,9 +130,8 @@
             <label class="filter-group">
               <span title="Data Source">数据源</span>
               <select v-model="filterSource" class="filter-select">
-                <option value="">全部（含实时代理）</option>
-                <option value="session_log">仅会话日志（推荐）</option>
-                <option value="proxy">仅实时代理</option>
+                <option value="">全部</option>
+                <option value="session_log">会话日志</option>
               </select>
             </label>
             <label class="filter-group">
@@ -145,9 +144,6 @@
             <div class="filter-actions">
               <AppButton variant="ghost" size="small" @click="handleResetFilter">重置筛选</AppButton>
             </div>
-          </div>
-          <div v-if="filterSource === ''" class="filter-warn">
-            提示：同时统计会话日志和实时代理，可能会包含同一请求的两个来源；默认只看会话日志更准确。
           </div>
         </ConfigCard>
 
@@ -383,7 +379,6 @@ const dateRangeLabel = computed(() => {
 
 const sourceLabel = computed(() => {
   if (store.filter.source === 'session_log') return '会话日志';
-  if (store.filter.source === 'proxy') return '实时代理';
   return '全部数据源';
 });
 

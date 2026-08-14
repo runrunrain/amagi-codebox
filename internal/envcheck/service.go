@@ -488,6 +488,10 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 		return s.npmPackageVersion("opencode-ai")
 	case ToolCodex:
 		return s.npmPackageVersion("@openai/codex")
+	case ToolPi:
+		return s.npmPackageVersion(piNPMPackageName)
+	case ToolOmp:
+		return s.npmPackageVersion(ompNPMPackageName)
 	case ToolHeadroom:
 		// Headroom is distributed via pip, and there is no reliable single
 		// pip command that returns the latest published version across pip

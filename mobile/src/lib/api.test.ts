@@ -253,6 +253,22 @@ describe('createSession / 生命周期 / 控制权', () => {
     expect(JSON.parse(String(call[1].body))).toEqual({ cliType: 'claudecode' });
   });
 
+  it('POST /sessions 可携带安全会话设置，但不携带密钥或 URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, sessionDetailBody));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createSession({
+      cliType: 'codex', workdir: '/workspace/project', providerRef: 'openai-main',
+      presetRef: 'max', modelRef: 'gpt-5.6', shellRef: '/bin/zsh', useHeadroom: true,
+    });
+    const body = JSON.parse(String(lastCall(fetchMock)[1].body));
+    expect(body).toEqual({
+      cliType: 'codex', workdir: '/workspace/project', providerRef: 'openai-main',
+      presetRef: 'max', modelRef: 'gpt-5.6', shellRef: '/bin/zsh', useHeadroom: true,
+    });
+    expect(JSON.stringify(body)).not.toMatch(/apiKey|baseURL|token|environment/i);
+  });
+
   it('422 session.launch_failed 保留 details.cliType（AC-25）', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse(422, {

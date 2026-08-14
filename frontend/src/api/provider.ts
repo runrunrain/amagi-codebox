@@ -9,6 +9,7 @@ import {
   GetProviderExportJSON,
   SaveProviderFromJSON,
   UpdateProvider,
+  DeleteProvider,
   GetUrlHistory,
   AddUrlToHistory,
   RemoveUrlFromHistory,
@@ -268,8 +269,7 @@ export async function getProvider(id: string): Promise<Provider> {
  */
 export async function saveProvider(id: string, provider: Provider): Promise<void> {
   try {
-    const service = await getService();
-    await service.SaveProvider(id, provider);
+    await SaveProviderFromJSON(id, JSON.stringify(provider));
   } catch (error) {
     console.error('[api.provider.saveProvider]', error);
     throw error;
@@ -281,8 +281,7 @@ export async function saveProvider(id: string, provider: Provider): Promise<void
  */
 export async function deleteProvider(id: string): Promise<void> {
   try {
-    const service = await getService();
-    await service.DeleteProvider(id);
+    await DeleteProvider(id);
   } catch (error) {
     console.error('[api.provider.deleteProvider]', error);
     throw error;

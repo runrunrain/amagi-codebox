@@ -41,7 +41,7 @@ func TestPlanRejectsProcessDuplicationAndOutOfOrderEffects(t *testing.T) {
 	if err := plan.Validate(); err == nil {
 		t.Fatal("duplicate process effect accepted")
 	}
-	plan.Effects = []EffectSpec{process(), {Kind: EffectProxyStart, Shared: &SharedStartSpec{Service: SharedClaudeProxy}}}
+	plan.Effects = []EffectSpec{process(), {Kind: EffectHeadroomStart, Shared: &SharedStartSpec{Service: SharedClaudeHeadroom}}}
 	if err := plan.Validate(); err != ErrInvalidEffectOrder {
 		t.Fatalf("out-of-order error = %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDefaultStorePersistsOnlyStableRefsInSettingsAfterExplicitRecord(t *test
 	if _, ok := store.HostDefaultRefs(contract.CLITypeClaudeCode); ok {
 		t.Fatal("default exists before desktop activation record")
 	}
-	recipe := StableRecipe{CLIType: contract.CLITypeClaudeCode, Workdir: "/work", ProviderRef: "provider-a", PresetRef: "preset-a", ModelRef: "model-a", UseProxy: true}
+	recipe := StableRecipe{CLIType: contract.CLITypeClaudeCode, Workdir: "/work", ProviderRef: "provider-a", PresetRef: "preset-a", ModelRef: "model-a", UseHeadroom: true}
 	if err := store.RecordDesktopActivation(recipe); err != nil {
 		t.Fatalf("RecordDesktopActivation: %v", err)
 	}

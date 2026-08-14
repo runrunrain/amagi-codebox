@@ -5,12 +5,11 @@ package main
 //
 // buildWailsBindList returns the EXACT slice passed to wails.Run Bind. It is a
 // separate function so that bind_manifest_test.go can reflect over it and
-// assert that the raw pty.Service / proxy.ProxyService / headroom.HeadroomService
+// assert that the raw pty.Service / headroom.HeadroomService
 // objects and the exported App.StopAllSessions are NOT reachable (T-24).
 //
 // Excluded (raw, behind the gate):
 //   - app.Pty       → terminal writes go through App.PtyWrite/PtyResize (gated)
-//   - app.Proxy     → mutations go through App.Proxy* facade (lease-guarded)
 //   - app.Headroom  → mutations go through App.Headroom* facade (lease-guarded)
 //
 // Remaining bound objects expose only read/config/gated-facade methods.
@@ -29,7 +28,6 @@ func buildWailsBindList(app *App) []any {
 		app.OpenCodePlugins,
 		app.PiPlugins,
 		app.OmpPlugins,
-		app.Workspaces,
 		app.OpenCodeConfig,
 		app.EnvCheck,
 		app.Usage,

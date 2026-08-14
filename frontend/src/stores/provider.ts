@@ -31,16 +31,14 @@ type MergedTerminalPreset = config.MergedTerminalPreset;
 
 export type ProviderFilter = 'all' | 'anthropic' | 'openai';
 
-/** 预设引擎（二级 Tab） */
-export type PresetEngine = 'claude' | 'codex' | 'opencode' | 'pi' | 'omp';
+/** 预设域：两类公共协议格式 + OpenCode 独立完整配置。 */
+export type PresetEngine = 'anthropic' | 'openai' | 'opencode';
 
 /** engine -> wailsjs terminalType 映射（opencode 走 config.json，不调 merged） */
 const ENGINE_TO_TERMINAL_TYPE: Record<PresetEngine, string> = {
-  claude: 'claude_code',
-  codex: 'codex',
+  anthropic: 'anthropic',
+  openai: 'openai',
   opencode: 'opencode',
-  pi: 'pi',
-  omp: 'omp',
 };
 
 /** 带元数据的提供商视图模型（id + 密钥配置状态） */
@@ -72,33 +70,27 @@ export const useProviderStore = defineStore('provider', () => {
 
   // 预设相关（P3-B 使用）
   const presets = ref<Record<string, Record<string, TerminalPreset>>>({
-    claude: {},
-    codex: {},
+    anthropic: {},
+    openai: {},
     opencode: {},
-    pi: {},
-    omp: {},
   });
   const mergedPresets = ref<Record<string, MergedTerminalPreset[]>>({
-    claude: [],
-    codex: [],
+    anthropic: [],
+    openai: [],
     opencode: [],
-    pi: [],
-    omp: [],
   });
   const loadingProviders = ref(false);
   const loadingPresets = ref(false);
 
   // P3-B 预设 tab 状态
-  const presetEngine = ref<PresetEngine>('claude');
+  const presetEngine = ref<PresetEngine>('anthropic');
   const presetFilter = ref<string>('all'); // claude/codex 用 provider 名筛选
   const presetSearch = ref<string>(''); // opencode 卡片搜索
   /** 各引擎是否已加载过（避免重复请求；切换 tab 时按需加载） */
   const presetLoaded = ref<Record<PresetEngine, boolean>>({
-    claude: false,
-    codex: false,
+    anthropic: false,
+    openai: false,
     opencode: false,
-    pi: false,
-    omp: false,
   });
   const presetLoadError = ref<string>('');
 
@@ -142,8 +134,8 @@ export const useProviderStore = defineStore('provider', () => {
 
   // 兼容旧 computed
   const providerList = computed(() => Object.values(providers.value));
-  const claudePresets = computed(() => mergedPresets.value.claude || []);
-  const codexPresets = computed(() => mergedPresets.value.codex || []);
+  const claudePresets = computed(() => mergedPresets.value.anthropic || []);
+  const codexPresets = computed(() => mergedPresets.value.openai || []);
   const opencodePresets = computed(() => mergedPresets.value.opencode || []);
 
   // ---- Actions ----
@@ -236,7 +228,7 @@ export const useProviderStore = defineStore('provider', () => {
 
   /**
    * 加载指定引擎的预设数据。
-   * - claude/codex: GetMergedTerminalPresets(terminalType)，结果存入 mergedPresets[engine]
+   * - anthropic/openai: GetMergedTerminalPresets(format)，结果存入公共格式桶
    * - opencode: GetOpenCodeConfig + GetOpenCodeConfigPath（config.json 管理，不走 merged）
    * 已加载过的引擎会跳过，force=true 强制刷新。
    */
@@ -270,7 +262,7 @@ export const useProviderStore = defineStore('provider', () => {
   }
 
   /**
-   * 删除指定引擎的预设（仅支持 claude/codex；opencode 走 config.json，不在此路径）。
+   * 删除指定公共格式的预设（OpenCode 走独立完整配置，不在此路径）。
    * engine → terminalType 映射与 loadPresets 一致；调用方传 MergedTerminalPreset.key。
    * 后端 DeleteTerminalPreset 仅对用户 map 生效：内置/managed 项 key 不在 map 里会 no-op，
    * 因此调用方必须先在前端按 source='user' 过滤，禁止对内置项调用此 action。
@@ -322,11 +314,9 @@ export const useProviderStore = defineStore('provider', () => {
     // 改名时 stable key 已重命名（策略 B），强制刷新各引擎 presets
     if (oldId !== newName) {
       await Promise.all([
-        loadPresets('claude', true),
-        loadPresets('codex', true),
+        loadPresets('anthropic', true),
+        loadPresets('openai', true),
         loadPresets('opencode', true),
-        loadPresets('pi', true),
-        loadPresets('omp', true),
       ]);
     }
   }

@@ -46,7 +46,7 @@ func ledgerReleased(app *App, sid string, before *remote.SessionInputLedger) boo
 func TestM3_005_RemoveSession_LegacyDestroysLedger(t *testing.T) {
 	app := wireLedgerRegistry(t)
 	// control intentionally NOT wired (nil) → legacy/manager path.
-	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "", false)
+	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	app.Sessions.MarkStopped(sess.ID)
 	// Populate the ledger (simulate a prior canonical input on this session).
 	before := app.Remote.LedgerForSession(contract.SessionID(sess.ID))
@@ -88,8 +88,8 @@ func TestM3_005_RemoveSession_GateManagedDestroysLedger(t *testing.T) {
 // Manager.Remove MUST release each cleared session's ledger.
 func TestM3_005_ClearStopped_LegacyDestroysLedger(t *testing.T) {
 	app := wireLedgerRegistry(t)
-	a := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeTerminal, "", false)
-	b := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeTerminal, "", false)
+	a := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeTerminal, "")
+	b := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeTerminal, "")
 	app.Sessions.MarkStopped(a.ID)
 	app.Sessions.MarkStopped(b.ID)
 
@@ -118,7 +118,7 @@ func TestM3_005_ClearStopped_LegacyDestroysLedger(t *testing.T) {
 // 误删ledger" requirement.
 func TestM3_005_ClearStopped_RetainedDoesNotDestroyLedger(t *testing.T) {
 	app := wireLedgerRegistry(t)
-	failed := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeTerminal, "", false)
+	failed := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeTerminal, "")
 	app.Sessions.MarkStopped(failed.ID)
 
 	// Populate the ledger.

@@ -82,9 +82,6 @@ func newTestCoordinator() *SharedServiceCoordinator {
 // active leases, manual mutations are allowed.
 func TestSharedServiceCoordinator_NoLeaseAllowsMutation(t *testing.T) {
 	c := newTestCoordinator()
-	if err := c.CheckMutation(SharedServiceClaudeProxy, MutationStop, [32]byte{}); err != nil {
-		t.Errorf("expected nil with no leases, got %v", err)
-	}
 	if err := c.CheckMutation(SharedServiceClaudeHeadroom, MutationReconfigure, [32]byte{}); err != nil {
 		t.Errorf("expected nil with no leases, got %v", err)
 	}
@@ -107,33 +104,33 @@ func TestSharedServiceCoordinator_LeaseBlocksMutation(t *testing.T) {
 	gate.ActivateRun(context.Background(), runPermit)
 
 	fp := [32]byte{1, 2, 3}
-	lease, err := c.AcquireForRun(context.Background(), runPermit, SharedServiceClaudeProxy, fp)
+	lease, err := c.AcquireForRun(context.Background(), runPermit, SharedServiceClaudeHeadroom, fp)
 	if err != nil {
 		t.Fatalf("AcquireForRun: %v", err)
 	}
-	if c.LeaseCount(SharedServiceClaudeProxy) != 1 {
-		t.Errorf("expected 1 lease, got %d", c.LeaseCount(SharedServiceClaudeProxy))
+	if c.LeaseCount(SharedServiceClaudeHeadroom) != 1 {
+		t.Errorf("expected 1 lease, got %d", c.LeaseCount(SharedServiceClaudeHeadroom))
 	}
 
 	// Mutations must be rejected while the lease exists.
-	if err := c.CheckMutation(SharedServiceClaudeProxy, MutationStop, [32]byte{}); err != ErrSharedServiceInUse {
+	if err := c.CheckMutation(SharedServiceClaudeHeadroom, MutationStop, [32]byte{}); err != ErrSharedServiceInUse {
 		t.Errorf("expected ErrSharedServiceInUse, got %v", err)
 	}
-	if err := c.CheckMutation(SharedServiceClaudeProxy, MutationReconfigure, [32]byte{}); err != ErrSharedServiceInUse {
+	if err := c.CheckMutation(SharedServiceClaudeHeadroom, MutationReconfigure, [32]byte{}); err != ErrSharedServiceInUse {
 		t.Errorf("expected ErrSharedServiceInUse, got %v", err)
 	}
 
 	// Exact no-op is always allowed.
-	if err := c.CheckMutation(SharedServiceClaudeProxy, MutationExactNoOp, [32]byte{}); err != nil {
+	if err := c.CheckMutation(SharedServiceClaudeHeadroom, MutationExactNoOp, [32]byte{}); err != nil {
 		t.Errorf("expected nil for exact no-op, got %v", err)
 	}
 
 	// After release, mutations are allowed again.
 	c.ReleaseExact(context.Background(), lease)
-	if c.LeaseCount(SharedServiceClaudeProxy) != 0 {
-		t.Errorf("expected 0 leases after release, got %d", c.LeaseCount(SharedServiceClaudeProxy))
+	if c.LeaseCount(SharedServiceClaudeHeadroom) != 0 {
+		t.Errorf("expected 0 leases after release, got %d", c.LeaseCount(SharedServiceClaudeHeadroom))
 	}
-	if err := c.CheckMutation(SharedServiceClaudeProxy, MutationStop, [32]byte{}); err != nil {
+	if err := c.CheckMutation(SharedServiceClaudeHeadroom, MutationStop, [32]byte{}); err != nil {
 		t.Errorf("expected nil after release, got %v", err)
 	}
 }
@@ -142,31 +139,31 @@ func TestSharedLaunchAdmissionBindsExactConfigBeforeEffects(t *testing.T) {
 	coordinator := NewSharedServiceCoordinator()
 	firstFingerprint := [32]byte{1, 2, 3}
 	secondFingerprint := [32]byte{1, 2, 4}
-	first, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeProxy, firstFingerprint)
+	first, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeHeadroom, firstFingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer coordinator.ReleaseLaunchAdmission(first)
-	compatible, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeProxy, firstFingerprint)
+	compatible, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeHeadroom, firstFingerprint)
 	if err != nil {
 		t.Fatalf("compatible pending config rejected: %v", err)
 	}
 	coordinator.ReleaseLaunchAdmission(compatible)
-	if _, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeProxy, secondFingerprint); !errors.Is(err, ErrSharedServiceInUse) {
+	if _, err := coordinator.AcquireLaunchAdmissionForConfig(SharedServiceClaudeHeadroom, secondFingerprint); !errors.Is(err, ErrSharedServiceInUse) {
 		t.Fatalf("incompatible pending config error = %v, want ErrSharedServiceInUse", err)
 	}
-	if _, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeProxy); !errors.Is(err, ErrSharedServiceInUse) {
+	if _, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeHeadroom); !errors.Is(err, ErrSharedServiceInUse) {
 		t.Fatalf("unbound launch crossed exact pending config: %v", err)
 	}
 }
 
 func TestSharedCompensatingStopRequiresExclusiveTransactionOwnership(t *testing.T) {
 	coordinator := NewSharedServiceCoordinator()
-	first, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeProxy)
+	first, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeHeadroom)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeProxy)
+	second, err := coordinator.AcquireLaunchAdmission(SharedServiceClaudeHeadroom)
 	if err != nil {
 		t.Fatal(err)
 	}

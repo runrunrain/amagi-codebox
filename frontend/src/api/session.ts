@@ -34,7 +34,6 @@ export async function launchClaudeSession(params: {
   presetName: string;
   mode: string;
   workDir: string;
-  useProxy: boolean;
   useHeadroom: boolean;
   shellPath?: string;
 }): Promise<string> {
@@ -44,7 +43,6 @@ export async function launchClaudeSession(params: {
       params.presetName,
       params.mode,
       params.workDir,
-      params.useProxy,
       params.useHeadroom,
       params.shellPath || ''
     );

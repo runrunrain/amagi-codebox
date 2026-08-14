@@ -9,18 +9,63 @@
  *   · 启动失败分类由页面级面板呈现（AC-25），本组件只负责触发。
  * ---------------------------------------------------------------------------
  */
+import { computed, reactive, ref } from 'vue';
 import { CLI_METAS, type CliMeta } from '../../stores/lobby';
-import type { CLIAvailability, CLIType } from '../../lib/contract';
+import type { CLIAvailability, CLIType, CreateSessionRequest, LaunchSettings } from '../../lib/contract';
 
 const props = defineProps<{
   availability: CLIAvailability[];
   /** 当前正在启动的 CLI（防连点）；null = 空闲。 */
   launching: CLIType | null;
+  settings?: LaunchSettings;
 }>();
 
 const emit = defineEmits<{
-  launch: [cliType: CLIType];
+  launch: [request: CreateSessionRequest];
 }>();
+
+const selectedCLI = ref<CLIType | null>(null);
+const draft = reactive({ workdir: '', providerRef: '', presetRef: '', modelRef: '', shellRef: '', useHeadroom: false });
+
+const cliSettings = computed(() => props.settings?.clis.find((item) => item.cliType === selectedCLI.value));
+
+function chooseCLI(cliType: CLIType): void {
+  selectedCLI.value = cliType;
+  const defaults = props.settings?.clis.find((item) => item.cliType === cliType)?.defaults;
+  draft.workdir = props.settings?.workdirs[0]?.path ?? '';
+  draft.providerRef = defaults?.providerRef ?? '';
+  draft.presetRef = defaults?.presetRef ?? '';
+  draft.modelRef = defaults?.presetRef ? '' : (defaults?.modelRef ?? '');
+  draft.shellRef = defaults?.shellRef ?? '';
+  draft.useHeadroom = defaults?.useHeadroom ?? false;
+}
+
+function applyPreset(): void {
+  const selected = cliSettings.value?.presets.find((item) => item.ref === draft.presetRef);
+  // A preset key is authoritative. Do not accidentally keep the model from a
+  // previously selected/default recipe; the host resolves the preset model and
+  // its parameters from the stable key.
+  draft.modelRef = '';
+  if (selected?.providerRef) draft.providerRef = selected.providerRef;
+}
+
+function applyProvider(): void {
+  draft.modelRef = '';
+}
+
+function submit(): void {
+  if (selectedCLI.value === null) return;
+  const request: CreateSessionRequest = { cliType: selectedCLI.value };
+  if (draft.workdir.trim()) request.workdir = draft.workdir.trim();
+  if (draft.providerRef) request.providerRef = draft.providerRef;
+  if (draft.presetRef) request.presetRef = draft.presetRef;
+  if (draft.modelRef.trim()) request.modelRef = draft.modelRef.trim();
+  if (draft.shellRef) request.shellRef = draft.shellRef;
+  if (selectedCLI.value === 'claudecode') {
+    request.useHeadroom = draft.useHeadroom;
+  }
+  emit('launch', request);
+}
 
 function isAvailable(cliType: CLIType): boolean {
   return props.availability.some((a) => a.cliType === cliType && a.available);
@@ -57,7 +102,7 @@ function cliIcon(meta: CliMeta): string {
         :class="{ 'cli-card--disabled': !isAvailable(meta.cliType) }"
         :disabled="!isAvailable(meta.cliType) || launching !== null"
         :aria-disabled="!isAvailable(meta.cliType)"
-        @click="emit('launch', meta.cliType)"
+        @click="chooseCLI(meta.cliType)"
       >
         <span class="cli-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -72,6 +117,50 @@ function cliIcon(meta: CliMeta): string {
         <span v-else class="cli-state">点击启动</span>
       </button>
     </div>
+    <form v-if="selectedCLI" class="launch-settings" @submit.prevent="submit">
+      <div class="settings-heading">
+        <strong>{{ CLI_METAS.find((item) => item.cliType === selectedCLI)?.label }} 会话设置</strong>
+        <button type="button" class="settings-close" aria-label="关闭会话设置" @click="selectedCLI = null">×</button>
+      </div>
+      <label>
+        工作目录
+        <input v-model="draft.workdir" list="remote-workdirs" placeholder="留空使用宿主默认目录" />
+        <datalist id="remote-workdirs">
+          <option v-for="item in settings?.workdirs ?? []" :key="item.path" :value="item.path">{{ item.label }}</option>
+        </datalist>
+      </label>
+      <label v-if="(cliSettings?.providers.length ?? 0) > 0">
+        服务提供商
+        <select v-model="draft.providerRef" @change="applyProvider">
+          <option value="">使用宿主默认</option>
+          <option v-for="item in cliSettings?.providers ?? []" :key="item.ref" :value="item.ref">{{ item.label }}</option>
+        </select>
+      </label>
+      <label v-if="(cliSettings?.presets.length ?? 0) > 0">
+        终端预设
+        <select v-model="draft.presetRef" @change="applyPreset">
+          <option value="">使用宿主默认</option>
+          <option v-for="item in cliSettings?.presets ?? []" :key="item.ref" :value="item.ref">{{ item.label }}</option>
+        </select>
+      </label>
+      <label>
+        模型（可选覆盖）
+        <input v-model="draft.modelRef" placeholder="通常留空，由终端预设决定" />
+      </label>
+      <label>
+        Shell
+        <select v-model="draft.shellRef">
+          <option value="">系统默认</option>
+          <option v-for="item in settings?.shells ?? []" :key="item.path" :value="item.path">{{ item.label }}</option>
+        </select>
+      </label>
+      <div v-if="selectedCLI === 'claudecode'" class="settings-checks">
+        <label><input v-model="draft.useHeadroom" type="checkbox" /> 使用 Headroom</label>
+      </div>
+      <button class="launch-submit" type="submit" :disabled="launching !== null">
+        {{ launching === selectedCLI ? '启动中…' : '启动会话' }}
+      </button>
+    </form>
   </section>
 </template>
 
@@ -149,6 +238,24 @@ function cliIcon(meta: CliMeta): string {
 .cli-card--disabled .cli-label {
   color: var(--VT-text-disabled);
 }
+
+.launch-settings {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--VT-border-strong);
+  border-radius: 10px;
+  background: var(--VT-surface);
+}
+
+.settings-heading { display: flex; align-items: center; justify-content: space-between; }
+.settings-close { min-width: 36px; min-height: 36px; border: 0; background: transparent; color: var(--VT-text-secondary); font-size: 24px; }
+.launch-settings label { display: grid; gap: 6px; color: var(--VT-text-secondary); font-size: 12px; }
+.launch-settings input:not([type='checkbox']), .launch-settings select { min-height: 44px; padding: 9px 10px; border: 1px solid var(--VT-border); border-radius: 8px; background: var(--VT-canvas); color: var(--VT-text); font: inherit; }
+.settings-checks { display: flex; flex-wrap: wrap; gap: 16px; }
+.settings-checks label { display: flex; align-items: center; gap: 8px; }
+.launch-submit { min-height: 44px; border: 0; border-radius: 8px; background: var(--VT-accent-strong); color: white; font-weight: 700; }
+.launch-settings input:focus-visible, .launch-settings select:focus-visible, .launch-submit:focus-visible, .settings-close:focus-visible { outline: 2px solid var(--VT-accent); outline-offset: 2px; }
 
 @media (hover: hover) {
   .cli-card:hover:not(:disabled) {

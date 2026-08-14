@@ -7,7 +7,7 @@ type SummaryFilter struct {
 	StartDate string `json:"startDate"` // "2026-07-01"，UTC 日期，闭区间；空表示不限
 	EndDate   string `json:"endDate"`   // "2026-07-17"，UTC 日期，闭区间；空表示不限
 	AppType   string `json:"appType"`   // "claudecode"/"codex"/"opencode"/""=all
-	Source    string `json:"source"`    // "session_log"/"proxy"/""=all
+	Source    string `json:"source"`    // "session_log"/""=all
 	Provider  string `json:"provider"`  // ""=all
 }
 

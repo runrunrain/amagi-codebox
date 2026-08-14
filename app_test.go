@@ -191,7 +191,7 @@ func TestIsOpenAIProvider_AuthKeyFallback(t *testing.T) {
 func TestStopSessionWithoutCodexHomeIsolation(t *testing.T) {
 	app := newTestApp(t)
 
-	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(sess.ID)
 
 	err := app.StopSession(sess.ID)
@@ -203,7 +203,7 @@ func TestStopSessionWithoutCodexHomeIsolation(t *testing.T) {
 func TestRemoveSessionWithoutCodexHomeIsolation(t *testing.T) {
 	app := newTestApp(t)
 
-	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(sess.ID)
 
 	err := app.RemoveSession(sess.ID)
@@ -215,7 +215,7 @@ func TestRemoveSessionWithoutCodexHomeIsolation(t *testing.T) {
 func TestClearStoppedSessionsWithoutCodexHomeIsolation(t *testing.T) {
 	app := newTestApp(t)
 
-	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	sess := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(sess.ID)
 
 	cleared := app.ClearStoppedSessions()
@@ -226,7 +226,7 @@ func TestClearStoppedSessionsWithoutCodexHomeIsolation(t *testing.T) {
 
 func TestStopAllSessionsWithoutCodexHomeIsolation(t *testing.T) {
 	app := newTestApp(t)
-	_ = app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir(), false)
+	_ = app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.stopAllSessionsForShutdown()
 }
 
