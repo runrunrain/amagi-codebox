@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.26] - 2026-08-15
+
+### Fixed
+
+- Pi 插件登记匹配逻辑统一化：把 v1.3.25 在 `SwitchPackageSource` 里做的双向归一匹配（面板 local 源绝对形态 ⇄ settings 相对形态）提取为通用的 `findRegistered`/`containsSource`，并推广到全部登记型操作——`GetPackageDetails`、`RemovePackage`（未登记时不再提前报错，透传原值让 CLI 报错）、`UpdatePackage`（改用 settings 原始登记串调 CLI，消除 cwd 失配路径）。local 源在各操作间行为一致，不再只有 switch 一条路径做过归一化。
+
 ## [1.3.25] - 2026-08-15
 
 ### Fixed

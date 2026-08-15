@@ -469,3 +469,35 @@ func TestSwitchAcceptsAbsoluteFormOfRegisteredRelativeLocalSource(t *testing.T) 
 		t.Fatalf("remove args should use settings raw form: got %#v", runner.specs[0].Args)
 	}
 }
+
+func TestGetDetailsAndRemoveAcceptAbsoluteForm(t *testing.T) {
+	agentDir := t.TempDir()
+	writeTestSettings(t, agentDir, []any{"../../maorun-workpace/amagi-pi"})
+	absForm := filepath.Join(agentDir, "..", "..", "maorun-workpace", "amagi-pi")
+
+	// GetPackageDetails：绝对形态应命中相对登记
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+	if _, err := svc.GetPackageDetails(absForm); err != nil {
+		t.Fatalf("GetPackageDetails with absolute form: %v", err)
+	}
+
+	// UpdatePackage：绝对形态应转 settings 原始串调 CLI
+	runner := &testRunner{}
+	svc2 := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
+	if _, err := svc2.UpdatePackage(absForm); err != nil {
+		t.Fatalf("UpdatePackage with absolute form: %v", err)
+	}
+	if want := []string{"update", "../../maorun-workpace/amagi-pi"}; !reflect.DeepEqual(runner.specs[0].Args, want) {
+		t.Fatalf("update args should use settings raw form: got %#v", runner.specs[0].Args)
+	}
+
+	// RemovePackage：同型转原始串
+	runner2 := &testRunner{}
+	svc3 := NewServiceWithDeps(agentDir, nil, testResolver{}, runner2)
+	if _, err := svc3.RemovePackage(absForm); err != nil {
+		t.Fatalf("RemovePackage with absolute form: %v", err)
+	}
+	if want := []string{"remove", "../../maorun-workpace/amagi-pi"}; !reflect.DeepEqual(runner2.specs[0].Args, want) {
+		t.Fatalf("remove args should use settings raw form: got %#v", runner2.specs[0].Args)
+	}
+}

@@ -202,6 +202,34 @@ func toStringSlice(result gjson.Result) []string {
 	return out
 }
 
+// containsSource 字面包含判断（供归一化后的直接校验）。
+func (s *Service) containsSource(configured []configuredPackage, source string) bool {
+	for _, cfg := range configured {
+		if cfg.source == source {
+			return true
+		}
+	}
+	return false
+}
+
+// findRegistered 返回与 source 归一化匹配的 settings 原始登记串（未命中返回 ""）。
+// 匹配规则：字面相等；或 local 源绝对形态 ↔ settings 相对形态（agentDir 基准）互认。
+// 面板回传的 source 来自 inspectPackage 的 Source 字段（local 已是绝对路径），
+// 而 settings 存 pi install 规范化后的相对 agentDir 形态——必须双向归一。
+func (s *Service) findRegistered(source string, configured []configuredPackage) string {
+	for _, cfg := range configured {
+		if cfg.source == source {
+			return cfg.source
+		}
+		if parseSource(cfg.source).sourceType == sourceLocal && parseSource(source).sourceType == sourceLocal {
+			if s.absolutizeLocalSource(cfg.source) == s.absolutizeLocalSource(source) {
+				return cfg.source
+			}
+		}
+	}
+	return ""
+}
+
 // absolutizeLocalSource 把 local 源归一为绝对路径（相对形态按 agentDir 解析，与 pi
 // package-manager getBaseDirForScope("user") 同基准）。非 local 源或解析失败返回原串。
 func (s *Service) absolutizeLocalSource(source string) string {
@@ -294,17 +322,17 @@ func (s *Service) GetPackageDetails(source string) (*PackageDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	found := false
+	// v1.3.23 修复：归一化匹配（面板 local 源是绝对形态，settings 是相对形态）。
+	registered := s.findRegistered(source, configured)
+	if registered == "" {
+		return nil, fmt.Errorf("pi 包未在 settings.json 中登记: %s", source)
+	}
 	var match configuredPackage
 	for _, cfg := range configured {
-		if cfg.source == source {
-			found = true
+		if cfg.source == registered {
 			match = cfg
 			break
 		}
-	}
-	if !found {
-		return nil, fmt.Errorf("pi 包未在 settings.json 中登记: %s", source)
 	}
 	detail := s.inspectPackage(match, true)
 	return &detail, nil
@@ -329,6 +357,12 @@ func (s *Service) RemovePackage(source string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// v1.3.23：优先用 settings 原始登记串（归一化匹配；未登记时透传原值让 CLI 报错）。
+	if configured, cfgErr := s.readConfiguredPackages(); cfgErr == nil {
+		if registered := s.findRegistered(source, configured); registered != "" {
+			source = registered
+		}
+	}
 	return s.executePiCommand(context.TODO(), "remove", source)
 }
 
@@ -343,19 +377,14 @@ func (s *Service) UpdatePackage(source string) (*CommandResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	found := false
-	for _, cfg := range configured {
-		if cfg.source == source {
-			found = true
-			break
-		}
-	}
-	if !found {
+	registered := s.findRegistered(source, configured)
+	if registered == "" {
 		return nil, fmt.Errorf("pi 包未在 settings.json 中登记，无法更新: %s", source)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executePiCommand(context.TODO(), "update", source)
+	// 用 settings 原始登记串调 CLI（相对形态在 cwd=agentDir 下稳匹配）。
+	return s.executePiCommand(context.TODO(), "update", registered)
 }
 
 // inspectPackage 扫描实体目录补全包元数据；resources=true 时进一步枚举子资源。
@@ -653,19 +682,13 @@ func (s *Service) SwitchPackageSource(oldSource, newSource string) (*CommandResu
 	if err != nil {
 		return nil, err
 	}
-	// 登记匹配：settings 里 local 源是相对 agentDir 形态，面板回传绝对形态——
-	// 双向归一后比较（remove 交给 pi CLI 时用 settings 原始字符串，绝对稳匹配）。
-	oldRegistered := ""
-	for _, cfg := range configured {
-		if cfg.source == oldSource || (parseSource(cfg.source).sourceType == sourceLocal && s.absolutizeLocalSource(cfg.source) == oldSource) {
-			oldRegistered = cfg.source
-			break
-		}
+	// 登记匹配：findRegistered 双向归一（面板 local 源是绝对形态，settings 是相对形态）。
+	if registered := s.findRegistered(oldSource, configured); registered != "" {
+		oldSource = registered
 	}
-	if oldRegistered == "" {
+	if !s.containsSource(configured, oldSource) {
 		return nil, fmt.Errorf("旧源未在 settings.json 中登记，无法切换: %s", oldSource)
 	}
-	oldSource = oldRegistered
 	// 新源已登记时拒绝（pi install 同名包会双引用——实战踩坑）。
 	for _, cfg := range configured {
 		if cfg.source == newSource {
