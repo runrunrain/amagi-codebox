@@ -12,4 +12,6 @@ export function RefreshPackages():Promise<piplugin.PackagesData>;
 
 export function RemovePackage(arg1:string):Promise<piplugin.CommandResult>;
 
+export function SwitchPackageSource(arg1:string,arg2:string):Promise<piplugin.CommandResult>;
+
 export function UpdatePackage(arg1:string):Promise<piplugin.CommandResult>;

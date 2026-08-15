@@ -597,3 +597,77 @@ func resourceDisplayName(root, absPath, typ string) string {
 	}
 	return name
 }
+
+// SwitchPackageSource 在同一逻辑插件的不同源类型之间切换（git ⇄ npm ⇄ 本地）。
+//
+// 背景（2026-08-15 实战）：开发期需要 git（发布版）与本地路径（工作区直载）之间
+// 往返——此前只能手动 pi remove + pi install + 手改 settings.json（曾因双引用并存
+// 导致双载冲突）。本方法把该流程原子化：
+//
+//	oldSource 在 packages[] 登记 → remove（实体保留）→ install newSource → 失败回滚重装 old。
+//	校验 oldSource 已登记；newSource 合法性走 validateSource；同源直通（no-op 成功）。
+func (s *Service) SwitchPackageSource(oldSource, newSource string) (*CommandResult, error) {
+	oldSource, err := validateSource(oldSource)
+	if err != nil {
+		return nil, err
+	}
+	newSource, err2 := validateSource(newSource)
+	if err2 != nil {
+		return nil, err2
+	}
+	if oldSource == newSource {
+		return &CommandResult{Success: true, Output: "新旧源相同，无需切换"}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	configured, err := s.readConfiguredPackages()
+	if err != nil {
+		return nil, err
+	}
+	oldFound := false
+	for _, cfg := range configured {
+		if cfg.source == oldSource {
+			oldFound = true
+			break
+		}
+	}
+	if !oldFound {
+		return nil, fmt.Errorf("旧源未在 settings.json 中登记，无法切换: %s", oldSource)
+	}
+	// 新源已登记时拒绝（pi install 同名包会双引用——实战踩坑）。
+	for _, cfg := range configured {
+		if cfg.source == newSource {
+			return nil, fmt.Errorf("新源已在 settings.json 中登记（会形成双引用冲突），请先移除: %s", newSource)
+		}
+	}
+
+	if s.log != nil {
+		s.log.Info("piplugin", "切换包源", fmt.Sprintf("%s -> %s", oldSource, newSource))
+	}
+
+	// ① remove 旧源（packages[] 移除；实体保留备回滚）
+	if _, err := s.executePiCommand(context.TODO(), "remove", oldSource); err != nil {
+		return nil, fmt.Errorf("移除旧源失败（配置未变）: %w", err)
+	}
+	// ② install 新源
+	installRes, err := s.executePiCommand(context.TODO(), "install", newSource)
+	if err != nil || (installRes != nil && !installRes.Success) {
+		// ③ 回滚：重装旧源，恢复切换前状态
+		var rollbackErr error
+		if _, rollbackErr = s.executePiCommand(context.TODO(), "install", oldSource); rollbackErr != nil && s.log != nil {
+			s.log.Error("piplugin", "切换失败且回滚重装旧源失败（需手动 pi install 恢复）",
+				fmt.Sprintf("old=%s err=%v", oldSource, rollbackErr))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("安装新源失败（已回滚旧源）: %w", err)
+		}
+		return &CommandResult{
+			Success: false,
+			Error:   fmt.Sprintf("安装新源失败（已回滚旧源）: %s", installRes.Error),
+			Output:  installRes.Output,
+		}, nil
+	}
+	installRes.Output = fmt.Sprintf("已从 %s 切换到 %s\n%s", oldSource, newSource, installRes.Output)
+	return installRes, nil
+}

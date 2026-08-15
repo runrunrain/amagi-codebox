@@ -4,6 +4,7 @@ import (
 	"amagi-codebox/internal/platform"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -352,5 +353,80 @@ func TestDefaultAgentDirRespectsEnv(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", "/custom/pi/agent")
 	if got := defaultAgentDir(); got != "/custom/pi/agent" {
 		t.Fatalf("expected env override, got %s", got)
+	}
+}
+
+func TestSwitchPackageSourceInvokesRemoveThenInstall(t *testing.T) {
+	agentDir := t.TempDir()
+	writeTestSettings(t, agentDir, []any{"git:github.com/runrunrain/amagi-pi"})
+	runner := &testRunner{}
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
+
+	res, err := svc.SwitchPackageSource("git:github.com/runrunrain/amagi-pi", "/local/amagi-pi")
+	if err != nil {
+		t.Fatalf("SwitchPackageSource: %v", err)
+	}
+	if !res.Success {
+		t.Fatalf("expected success, got %#v", res)
+	}
+	if len(runner.specs) != 2 {
+		t.Fatalf("expected 2 CLI calls (remove+install), got %d", len(runner.specs))
+	}
+	if want := []string{"remove", "git:github.com/runrunrain/amagi-pi"}; !reflect.DeepEqual(runner.specs[0].Args, want) {
+		t.Fatalf("call#1 args: got %#v want %#v", runner.specs[0].Args, want)
+	}
+	if want := []string{"install", "/local/amagi-pi"}; !reflect.DeepEqual(runner.specs[1].Args, want) {
+		t.Fatalf("call#2 args: got %#v want %#v", runner.specs[1].Args, want)
+	}
+}
+
+func TestSwitchPackageSourceValidations(t *testing.T) {
+	agentDir := t.TempDir()
+	writeTestSettings(t, agentDir, []any{"npm:amagi-pi"})
+	runner := &testRunner{}
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
+
+	// 旧源未登记
+	if _, err := svc.SwitchPackageSource("git:github.com/x/not-registered", "/local/x"); err == nil {
+		t.Fatal("expected error for unregistered old source")
+	}
+	// 新源已登记（双引用防护）：settings 里同包再登记一个版本化源
+	writeTestSettings(t, agentDir, []any{"npm:amagi-pi", "npm:amagi-pi@2"})
+	if _, err := svc.SwitchPackageSource("npm:amagi-pi", "npm:amagi-pi@2"); err == nil {
+		t.Fatal("expected error when new source already registered")
+	}
+	writeTestSettings(t, agentDir, []any{"npm:amagi-pi"})
+	// 同源直通
+	res, err := svc.SwitchPackageSource("npm:amagi-pi", "npm:amagi-pi")
+	if err != nil || !res.Success {
+		t.Fatalf("same-source no-op should succeed: %v", err)
+	}
+	if len(runner.specs) != 0 {
+		t.Fatalf("validations must not reach CLI, got %d calls", len(runner.specs))
+	}
+}
+
+func TestSwitchPackageSourceRollsBackOnInstallFailure(t *testing.T) {
+	agentDir := t.TempDir()
+	writeTestSettings(t, agentDir, []any{"git:github.com/runrunrain/amagi-pi"})
+	runner := &testRunner{run: func(spec platform.CommandSpec) (*platform.ProcessResult, error) {
+		if strings.Join(spec.Args, " ") == "install /local/broken" {
+			return &platform.ProcessResult{Stdout: "", Stderr: "install failed"}, errors.New("exit status 1")
+		}
+		return &platform.ProcessResult{Stdout: "Done"}, nil
+	}}
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
+
+	res, err := svc.SwitchPackageSource("git:github.com/runrunrain/amagi-pi", "/local/broken")
+	// 安装失败 → Switch 返回 error（已回滚）或 Success=false 结果，两者都算失败路径
+	if err == nil && res != nil && res.Success {
+		t.Fatal("expected failed switch result")
+	}
+	// remove → install(失败) → 回滚 install 旧源 = 3 次调用
+	if len(runner.specs) != 3 {
+		t.Fatalf("expected 3 CLI calls (remove+install+rollback), got %d", len(runner.specs))
+	}
+	if want := []string{"install", "git:github.com/runrunrain/amagi-pi"}; !reflect.DeepEqual(runner.specs[2].Args, want) {
+		t.Fatalf("rollback args: got %#v want %#v", runner.specs[2].Args, want)
 	}
 }

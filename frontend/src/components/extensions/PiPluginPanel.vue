@@ -115,6 +115,59 @@
             </div>
           </div>
 
+          <!-- 源类型切换：git ⇄ npm ⇄ 本地（remove+install 原子事务，失败自动回滚） -->
+          <div class="switch-source-card">
+            <div class="switch-source-head">
+              <span>切换源类型</span>
+              <span class="switch-source-tip">git ⇄ npm ⇄ 本地互转；旧实体保留，可随时切回</span>
+            </div>
+            <div class="switch-type-row">
+              <AppButton
+                v-for="t in switchTypes"
+                :key="t.value"
+                :variant="switchTargetType === t.value ? 'primary' : 'ghost'"
+                size="small"
+                :disabled="mutating || t.value === activePackage.sourceType"
+                @click="pickSwitchType(t.value)"
+              >
+                {{ t.label }}{{ activePackage.sourceType === t.value ? '（当前）' : '' }}
+              </AppButton>
+            </div>
+            <div v-if="switchTargetType" class="switch-input-row">
+              <label :for="`switch-source-${activePackage.sourceType}`">新源地址</label>
+              <input
+                :id="`switch-source-${activePackage.sourceType}`"
+                v-model="switchTargetSource"
+                class="module-input"
+                :placeholder="switchPlaceholder"
+                @keydown.enter="handleSwitchSource"
+              />
+              <div v-if="switchHistory.length" class="switch-history">
+                <span>历史：</span>
+                <code
+                  v-for="h in switchHistory"
+                  :key="h"
+                  class="switch-history-item"
+                  :title="`使用 ${h}`"
+                  @click="switchTargetSource = h"
+                >{{ shortenSource(h) }}</code>
+              </div>
+            </div>
+            <div v-if="switchTargetType" class="switch-actions">
+              <AppButton variant="ghost" size="small" :disabled="mutating" @click="cancelSwitch">
+                取消
+              </AppButton>
+              <AppButton
+                variant="primary"
+                size="small"
+                :disabled="mutating || !switchTargetSource.trim()"
+                @click="handleSwitchSource"
+              >
+                {{ mutating ? '切换中…' : '切换' }}
+              </AppButton>
+            </div>
+          </div>
+
           <div v-if="loadingDetail" class="detail-loading">正在读取包资源…</div>
           <template v-else-if="isDetail(activePackage)">
             <div class="resource-summary">
@@ -210,6 +263,7 @@ import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import { useToast } from '../../composables/useToast';
+import { SwitchPackageSource } from '../../../wailsjs/go/piplugin/Service';
 import { truncate } from '../../utils/format';
 
 const store = usePiPluginStore();
@@ -229,6 +283,94 @@ const mutating = ref(false);
 const showInstallDialog = ref(false);
 const showRemoveDialog = ref(false);
 const installSource = ref('');
+
+// ---- 源类型切换（git ⇄ npm ⇄ 本地）----
+type SwitchType = 'git' | 'npm' | 'local';
+const switchTypes: { value: SwitchType; label: string }[] = [
+  { value: 'git', label: 'Git 仓库' },
+  { value: 'npm', label: 'npm 包' },
+  { value: 'local', label: '本地路径' },
+];
+const switchTargetType = ref<SwitchType | ''>('');
+const switchTargetSource = ref('');
+// 历史源记忆（按包名分组持久化 localStorage；主上 git↔本地往返场景的一键切回）
+const switchHistoryKey = (name: string) => `amagi-codebox.pi.switch-history.${name}`;
+function loadSwitchHistory(name: string): string[] {
+  try {
+    const raw = localStorage.getItem(switchHistoryKey(name));
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(arr) ? (arr as string[]).slice(0, 5) : [];
+  } catch {
+    return [];
+  }
+}
+function appendSwitchHistory(name: string, source: string): void {
+  if (!name || !source) return;
+  try {
+    const list = loadSwitchHistory(name);
+    const next = [source, ...list.filter(x => x !== source)].slice(0, 5);
+    localStorage.setItem(switchHistoryKey(name), JSON.stringify(next));
+  } catch {
+    /* localStorage 不可用时静默降级（仅失去记忆） */
+  }
+}
+const switchHistory = computed(() =>
+  activePackage.value ? loadSwitchHistory(activePackage.value.name) : [],
+);
+const switchPlaceholder = computed(() => {
+  switch (switchTargetType.value) {
+    case 'git':
+      return '例：git:github.com/runrunrain/amagi-pi';
+    case 'npm':
+      return '例：npm:amagi-pi';
+    case 'local':
+      return '例：/Users/maorun/maorun-workpace/amagi-pi';
+    default:
+      return '';
+  }
+});
+function pickSwitchType(t: SwitchType): void {
+  switchTargetType.value = t;
+  // 本地/历史一键预填：历史里找同类型源
+  const hist = activePackage.value ? loadSwitchHistory(activePackage.value.name) : [];
+  const typed = hist.find(h =>
+    t === 'git' ? h.startsWith('git:') :
+    t === 'npm' ? h.startsWith('npm:') :
+    !h.startsWith('git:') && !h.startsWith('npm:'),
+  );
+  switchTargetSource.value = typed ?? '';
+}
+function cancelSwitch(): void {
+  switchTargetType.value = '';
+  switchTargetSource.value = '';
+}
+function shortenSource(src: string): string {
+  if (src.length <= 42) return src;
+  return `${src.slice(0, 24)}…${src.slice(-14)}`;
+}
+async function handleSwitchSource(): Promise<void> {
+  const pkg = activePackage.value;
+  const target = switchTargetSource.value.trim();
+  if (!pkg || !target || mutating.value) return;
+  mutating.value = true;
+  try {
+    const result = await SwitchPackageSource(pkg.source, target);
+    if (result && result.success) {
+      appendSwitchHistory(pkg.name, target);
+      appendSwitchHistory(pkg.name, pkg.source);
+      showSuccess(result.output || `已切换到 ${target}；重启 pi 会话后生效`);
+      cancelSwitch();
+      await store.selectPackage(target);
+      await store.refresh(true);
+    } else {
+      showError(`切换失败：${result?.error || '未知错误（配置已回滚）'}`);
+    }
+  } catch (error) {
+    showError(`切换失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    mutating.value = false;
+  }
+}
 
 const resourceNames = computed(() => {
   const pkg = activePackage.value;
@@ -270,6 +412,7 @@ async function loadPackages() {
 }
 
 async function select(source: string) {
+  cancelSwitch();
   try {
     await store.selectPackage(source);
   } catch (error) {
@@ -602,5 +745,67 @@ onMounted(loadPackages);
   .resource-summary {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* 源类型切换卡片 */
+.switch-source-card {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 10px;
+  background: var(--bg-elevated, #171a21);
+}
+.switch-source-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.switch-source-tip {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted, #8b93a3);
+}
+.switch-type-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.switch-input-row {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.switch-input-row label {
+  font-size: 11px;
+  color: var(--text-muted, #8b93a3);
+}
+.switch-history {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-muted, #8b93a3);
+}
+.switch-history-item {
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  transition: border-color 0.15s ease;
+}
+.switch-history-item:hover {
+  border-color: var(--accent, #4f8cff);
+}
+.switch-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

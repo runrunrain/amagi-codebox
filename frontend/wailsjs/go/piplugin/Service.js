@@ -22,6 +22,10 @@ export function RemovePackage(arg1) {
   return window['go']['piplugin']['Service']['RemovePackage'](arg1);
 }
 
+export function SwitchPackageSource(arg1, arg2) {
+  return window['go']['piplugin']['Service']['SwitchPackageSource'](arg1, arg2);
+}
+
 export function UpdatePackage(arg1) {
   return window['go']['piplugin']['Service']['UpdatePackage'](arg1);
 }
