@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.3.25] - 2026-08-15
+
+### Fixed
+
+- 修复 Pi 插件 local 源在 remove/switch 时报「No matching package found」的问题：pi 的包匹配 key 对 local 源输入侧按 `process.cwd()` 解析相对路径、settings 侧按 agentDir 解析，GUI 进程 cwd（通常为 /）≠ agentDir 时面板回传 settings 原样字符串必失配。三处根治：
+  - `executePiCommand` 统一以 `agentDir` 作为子进程工作目录，输入侧与 settings 侧同一解析基准；
+  - `inspectPackage` 对 local 源的 Source 输出归一为绝对路径（相对形态按 agentDir 解析），面板 remove/switch 回传绝对路径稳匹配；ID 保留 settings 原始字符串供精确登记定位；
+  - `SwitchPackageSource` 登记匹配改为双向归一（settings 相对形态 ⇄ 面板绝对形态），切换前回写 settings 原始字符串。
+
 ## [1.3.24] - 2026-08-15
 
 ### Added

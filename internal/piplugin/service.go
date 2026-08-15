@@ -202,6 +202,23 @@ func toStringSlice(result gjson.Result) []string {
 	return out
 }
 
+// absolutizeLocalSource 把 local 源归一为绝对路径（相对形态按 agentDir 解析，与 pi
+// package-manager getBaseDirForScope("user") 同基准）。非 local 源或解析失败返回原串。
+func (s *Service) absolutizeLocalSource(source string) string {
+	parsed := parseSource(source)
+	if parsed.sourceType != sourceLocal {
+		return source
+	}
+	p := parsed.localPath
+	if p == "" {
+		return source
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(s.agentDir, p)
+	}
+	return filepath.Clean(p)
+}
+
 // resolveInstallPath 依据源类型定位实体目录：
 //   - npm:  <agentDir>/npm/node_modules/<name>
 //   - git:  <agentDir>/git/<host>/<user>/<project>
@@ -344,10 +361,21 @@ func (s *Service) UpdatePackage(source string) (*CommandResult, error) {
 // inspectPackage 扫描实体目录补全包元数据；resources=true 时进一步枚举子资源。
 func (s *Service) inspectPackage(cfg configuredPackage, resources bool) PackageDetail {
 	parsed := parseSource(cfg.source)
+	// v1.3.23 修复：local 源的 Source 输出规范化绝对路径（按 agentDir 解析相对形态——
+	// pi install 时 settings 存的就是相对 agentDir 的路径）。面板 remove/switch 回传
+	// Source 字符串作 pi CLI 输入：绝对路径的 match-key 与 cwd 无关，稳匹配；
+	// 相对路径在 cwd≠agentDir 时失配（实战报 No matching package found）。
+	// ID 保留 settings 原始字符串供精确登记定位。
+	displaySource := cfg.source
+	if parsed.sourceType == sourceLocal {
+		if abs := s.absolutizeLocalSource(cfg.source); abs != "" {
+			displaySource = abs
+		}
+	}
 	detail := PackageDetail{
 		Package: Package{
 			ID:         cfg.source,
-			Source:     cfg.source,
+			Source:     displaySource,
 			SourceType: parsed.sourceType,
 			Name:       fallbackName(cfg.source),
 			Scope:      "user",
@@ -625,16 +653,19 @@ func (s *Service) SwitchPackageSource(oldSource, newSource string) (*CommandResu
 	if err != nil {
 		return nil, err
 	}
-	oldFound := false
+	// 登记匹配：settings 里 local 源是相对 agentDir 形态，面板回传绝对形态——
+	// 双向归一后比较（remove 交给 pi CLI 时用 settings 原始字符串，绝对稳匹配）。
+	oldRegistered := ""
 	for _, cfg := range configured {
-		if cfg.source == oldSource {
-			oldFound = true
+		if cfg.source == oldSource || (parseSource(cfg.source).sourceType == sourceLocal && s.absolutizeLocalSource(cfg.source) == oldSource) {
+			oldRegistered = cfg.source
 			break
 		}
 	}
-	if !oldFound {
+	if oldRegistered == "" {
 		return nil, fmt.Errorf("旧源未在 settings.json 中登记，无法切换: %s", oldSource)
 	}
+	oldSource = oldRegistered
 	// 新源已登记时拒绝（pi install 同名包会双引用——实战踩坑）。
 	for _, cfg := range configured {
 		if cfg.source == newSource {

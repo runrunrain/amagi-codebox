@@ -430,3 +430,42 @@ func TestSwitchPackageSourceRollsBackOnInstallFailure(t *testing.T) {
 		t.Fatalf("rollback args: got %#v want %#v", runner.specs[2].Args, want)
 	}
 }
+
+func TestLocalSourceDisplayedAsAbsolutePath(t *testing.T) {
+	agentDir := t.TempDir()
+	// settings 存相对 agentDir 形态（pi install 规范化产物）
+	writeTestSettings(t, agentDir, []any{"../../maorun-workpace/amagi-pi"})
+	want := filepath.Join(agentDir, "..", "..", "maorun-workpace", "amagi-pi")
+
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+	data, err := svc.RefreshPackages()
+	if err != nil {
+		t.Fatalf("RefreshPackages: %v", err)
+	}
+	if len(data.Installed) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(data.Installed))
+	}
+	got := data.Installed[0].Source
+	if !filepath.IsAbs(got) {
+		t.Fatalf("local source should be displayed as absolute path, got %q", got)
+	}
+	if want != got {
+		t.Fatalf("abs path: got %q want %q", got, want)
+	}
+}
+
+func TestSwitchAcceptsAbsoluteFormOfRegisteredRelativeLocalSource(t *testing.T) {
+	agentDir := t.TempDir()
+	writeTestSettings(t, agentDir, []any{"../../maorun-workpace/amagi-pi"})
+	absForm := filepath.Join(agentDir, "..", "..", "maorun-workpace", "amagi-pi")
+	runner := &testRunner{}
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
+
+	// 面板传绝对形态（settings 是相对形态）——应匹配登记并 remove 相对原始串
+	if _, err := svc.SwitchPackageSource(absForm, "git:github.com/runrunrain/amagi-pi"); err != nil {
+		t.Fatalf("SwitchPackageSource with absolute form: %v", err)
+	}
+	if want := []string{"remove", "../../maorun-workpace/amagi-pi"}; !reflect.DeepEqual(runner.specs[0].Args, want) {
+		t.Fatalf("remove args should use settings raw form: got %#v", runner.specs[0].Args)
+	}
+}

@@ -50,6 +50,12 @@ func (s *Service) executePiCommand(ctx context.Context, args ...string) (*Comman
 		Path:   cli.Path,
 		Args:   cli.Args,
 		Env:    env,
+		// v1.3.23 修复：pi remove/update 对 local 源的匹配 key 输入侧按 process.cwd()
+		// 解析相对路径、settings 侧按 agentDir 解析（pi package-manager.js
+		// getSourceMatchKeyForInput vs ForSettings）。GUI 进程 cwd（通常 /）≠ agentDir
+		// 时面板传 settings 原样字符串（如 ../../maorun-workpace/amagi-pi）必失配
+		// （实战：remove/switch 报 No matching package found）。统一 cwd=agentDir 根治。
+		Dir: s.agentDir,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if processResult == nil {
