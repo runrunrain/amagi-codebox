@@ -3,8 +3,10 @@
     <button
       v-for="option in options"
       :key="option.value"
+      type="button"
       :class="optionClasses(option.value)"
       :disabled="disabled"
+      :aria-pressed="variant === 'pill' ? option.value === modelValue : undefined"
       @click="select(option.value)"
     >
       {{ option.label }}

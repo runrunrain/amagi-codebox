@@ -10,6 +10,14 @@
         <span class="model-pill" v-if="session?.model">{{ session.model }}</span>
       </div>
       <div class="term-tb-right">
+        <!-- TUI ⇄ Web 切换（蓝图 T-1.6；A-4：仅 pi 会话且 webui available 才显示） -->
+        <div v-if="webUIToggleVisible" class="plane-toggle" role="group" aria-label="会话显示平面切换">
+          <Segmented
+            v-model="activePlane"
+            :options="planeOptions"
+            variant="pill"
+          />
+        </div>
         <button class="btn btn-ghost" @click="handleOpenDetail" title="会话详情">会话详情</button>
         <button
           class="btn btn-ghost danger"
@@ -28,9 +36,22 @@
     <div
       ref="bodyRef"
       class="term-body"
+      :class="{ 'web-active': activePlane === 'web' }"
       @wheel.stop
       @contextmenu.prevent="handleContextMenu"
     >
+      <!-- Web 平面（pi + webui available）：与 xterm 平面互斥 v-show，
+           切走后保留不销毁（交互文档 §3）；xterm 由 .web-active 类隐藏。 -->
+      <WebPlaneHost
+        v-if="webPlaneMounted"
+        v-show="activePlane === 'web'"
+        :url="webUrl"
+        :session-id="sessionId"
+        :ended="webEnded"
+        @error="onWebPlaneError"
+        @retry="handleWebRetry"
+        @switch-to-tui="activePlane = 'tui'"
+      />
       <!-- TerminalContextMenu 渲染在 term-body 上方 -->
       <TerminalContextMenu
         :visible="ctx.visible"
@@ -88,6 +109,9 @@ import { useTerminalEngine } from '../../composables/useTerminalEngine'
 import { basename } from '../../utils/format'
 import SessionDetailModal from '../session/SessionDetailModal.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
+import WebPlaneHost from './WebPlaneHost.vue'
+import Segmented from '../ui/Segmented.vue'
+import { openWebPlane } from '../../api/webui'
 
 type SessionInfo = sessionModels.SessionInfo
 
@@ -125,6 +149,78 @@ const sessionTitle = computed(() => {
 })
 
 const isStopping = computed(() => stopping.value || session.value?.status === 'stopping')
+
+// ---- pi Web 平面切换（蓝图 T-1.6）----
+// 切换状态按组件实例（= 按 sessionId，TerminalPage 每会话一实例 v-show 缓存）
+// 隔离，内存持有不持久化（TD-9）。
+const planeOptions = [
+  { value: 'tui', label: '终端' },
+  { value: 'web', label: '网页' },
+]
+const activePlane = ref<'tui' | 'web'>('tui')
+const webPlaneMounted = ref(false)
+const webUrl = ref('')
+const webEnded = ref(false)
+
+const isPiSession = computed(() => session.value?.appType === 'pi')
+const webuiState = computed(
+  () => sessionStore.webuiStatus[props.sessionId]?.state ?? 'unknown',
+)
+// A-4：仅 pi 会话且探测 available 且会话运行中才显示切换控件；
+// 会话结束后 toolbar 仅 TUI 可切（交互文档 §3.4）——ended 后隐藏控件，
+// 若用户仍在 Web 平面则由 WebPlaneHost 结束态提供“切回终端”。
+const webUIToggleVisible = computed(
+  () =>
+    isPiSession.value &&
+    webuiState.value === 'available' &&
+    session.value?.status === 'running',
+)
+
+async function activateWebPlane() {
+  try {
+    webUrl.value = await openWebPlane(props.sessionId)
+    webEnded.value = false
+    webPlaneMounted.value = true
+  } catch (err) {
+    showError('Web 平面不可用: ' + err)
+    activePlane.value = 'tui'
+    // 状态可能已变化（服务刚消亡）：重新探测刷新。
+    sessionStore.ensureWebUIProbe(props.sessionId)
+  }
+}
+
+function onWebPlaneError() {
+  // iframe 加载失败：重新探测服务状态（可能已 ended/unavailable）。
+  sessionStore.ensureWebUIProbe(props.sessionId)
+}
+
+async function handleWebRetry() {
+  try {
+    webUrl.value = await openWebPlane(props.sessionId)
+  } catch (err) {
+    showError('Web 平面重试失败: ' + err)
+    sessionStore.ensureWebUIProbe(props.sessionId)
+  }
+}
+
+watch(activePlane, (plane) => {
+  if (plane === 'web') {
+    void activateWebPlane()
+  } else {
+    // 切回 TUI：xterm 平面恢复 v-show 后 refit（交互文档 §7）。
+    refreshVisibleSurface()
+  }
+})
+
+// 会话退出 → Web 平面结束态（保留最后画面 + badge）。
+watch(
+  () => session.value?.status,
+  (status) => {
+    if (status && status !== 'running' && status !== 'stopping') {
+      webEnded.value = true
+    }
+  },
+)
 
 const statusColor = computed(() => {
   const s = session.value
@@ -168,6 +264,12 @@ watch(
 )
 
 onMounted(async () => {
+  // pi 会话启动 webui 探测轮询（0.5–1s 节奏，available/终态后自动停止）。
+  // 必须在 mountTerm 之前启动与否无关，幂等可重入。
+  if (isPiSession.value) {
+    sessionStore.ensureWebUIProbe(props.sessionId)
+  }
+
   // Platform caps must be loaded before terminal creation: otherwise
   // isDarwin/isWindows return false when the singleton cache is null (page
   // opened directly / refreshed), causing the WebGL guard to fail-open on
@@ -269,6 +371,7 @@ onBeforeUnmount(() => {
   dprCleanup?.()
   dprCleanup = null
   dprMql = null
+  sessionStore.stopWebUIProbe(props.sessionId)
   engine.disposeTerm(props.sessionId)
 })
 
@@ -397,8 +500,19 @@ function onCtxSelectAll() {
 
 .term-tb-right {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* TUI ⇄ Web 切换控件：与相邻按钮规格一致（交互文档 §4.1） */
+.plane-toggle {
+  min-width: 128px;
+}
+
+.plane-toggle :deep(.seg) {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .btn {
@@ -442,6 +556,12 @@ function onCtxSelectAll() {
   min-height: 0;
   position: relative;
   overflow: hidden;
+}
+
+/* Web 平面激活时隐藏 xterm 平面（互斥 v-show 语义；xterm 元素由 JS 创建，
+   以容器类控制显隐，进程不停、缓冲保留）。 */
+.term-body.web-active :deep(.xterm) {
+  display: none;
 }
 
 /* let xterm fill the host.
