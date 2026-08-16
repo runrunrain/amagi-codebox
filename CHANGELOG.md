@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.29] - 2026-08-16
+
+### Chore
+
+- 版本维护发布（无代码变更）：同步 wails.json / package.json / 锁文件 / README 徽章 / md5 至 1.3.29。
+
 ## [1.3.28] - 2026-08-16
 
 ### Docs
