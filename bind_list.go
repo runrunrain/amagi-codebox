@@ -33,5 +33,6 @@ func buildWailsBindList(app *App) []any {
 		app.OmpConfig,
 		app.EnvCheck,
 		app.Usage,
+		app.WebUI,
 	}
 }

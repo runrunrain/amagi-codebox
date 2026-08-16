@@ -168,7 +168,21 @@ test.beforeEach(async ({ page }) => {
         failNextResize = true
       },
     }
-    ;(window as any).go = { main: { App: app } }
+    ;(window as any).go = {
+      main: { App: app },
+      // webui Service 绑定 stub：T-2.3 a11y 测试需要 pi Web 平面切换控件可见
+      // （ProbeWebUI → available；OpenWebPlane → about:blank 免真实服务）。
+      webui: {
+        Service: {
+          GetWebUIStatus: async () => ({ state: 'unknown' }),
+          ProbeWebUI: async () => ({ state: 'available', url: '', port: 0 }),
+          OpenWebPlane: async () => 'about:blank',
+          RegisterSession: async () => null,
+          RemoveSession: async () => null,
+          Invalidate: async () => null,
+        },
+      },
+    }
     ;(window as any).runtime = new Proxy(
       {
         EventsOnMultiple(name: string, callback: Listener) {
@@ -342,6 +356,35 @@ test('refresh keeps a terminal that was following output at the bottom', async (
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
   }))
   await expect(page.locator('.xterm-rows')).toContainText('LATEST_OUTPUT')
+})
+
+test('web plane toggle exposes aria-pressed and the iframe an accessible title (T-2.3 a11y)', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.sess-item', { hasText: 'terminal-render-workspace' }).locator('.sess-info').click()
+  await expect(page.locator('.xterm-rows')).toContainText('LIVE_AFTER_HISTORY')
+
+  // 切换控件：role=group + 两个 pill 选项以 aria-pressed 表达当前平面（交互文档 §8）
+  const group = page.getByRole('group', { name: '会话显示平面切换' })
+  await expect(group).toBeVisible()
+  const tuiBtn = group.getByRole('button', { name: '终端' })
+  const webBtn = group.getByRole('button', { name: '网页' })
+  await expect(tuiBtn).toHaveAttribute('aria-pressed', 'true')
+  await expect(webBtn).toHaveAttribute('aria-pressed', 'false')
+
+  // 键盘等效路径：按钮均为原生 button，click 即 Enter/Space 激活
+  await webBtn.click()
+  await expect(tuiBtn).toHaveAttribute('aria-pressed', 'false')
+  await expect(webBtn).toHaveAttribute('aria-pressed', 'true')
+
+  // Web 平面 iframe：可访问 title + sandbox 边界（契约 §6.5）
+  const frame = page.locator('.web-plane-host iframe.web-frame')
+  await expect(frame).toHaveAttribute('title', 'Pi Web 会话平面')
+  await expect(frame).toHaveAttribute('sandbox', 'allow-scripts allow-forms')
+
+  // 切回终端后 iframe 保留不销毁（v-show），aria-pressed 回落
+  await tuiBtn.click()
+  await expect(tuiBtn).toHaveAttribute('aria-pressed', 'true')
+  await expect(frame).toBeHidden()
 })
 
 test('PTY geometry retries transient failures and fills the terminal height', async ({ page }) => {

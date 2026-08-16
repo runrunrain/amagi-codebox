@@ -48,6 +48,7 @@ import (
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
 	"amagi-codebox/internal/usage"
+	"amagi-codebox/internal/webui"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -225,6 +226,9 @@ type App struct {
 	OmpConfig       *ompconfig.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
+	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
+	// 仅 embedded pi 会话注册；其他 CLI 不感知。
+	WebUI           *webui.Service
 
 	// Control runtime (M3-A2): the gate authority for all session write side
 	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
@@ -395,6 +399,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		OmpConfig:           ompconfig.NewService(),
 		EnvCheck:            envCheckSvc,
 		Usage:               usage.NewService(configDir, log),
+		WebUI:               webui.NewService(log, filepath.Join(defaultPiAgentDir(), "amagi", "webui-registry")),
 		Capabilities:        capabilities,
 		CLIResolver:         platform.NewCLIResolver(capabilities),
 		FileOpener:          platform.NewFileOpener(processRunner),
@@ -2321,7 +2326,11 @@ func (a *App) RemoveSession(sessionID string) error {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return a.sessionAdapter.DesktopRemoveAuthoritative(ctx, contract.SessionID(sessionID))
+		if err := a.sessionAdapter.DesktopRemoveAuthoritative(ctx, contract.SessionID(sessionID)); err != nil {
+			return err
+		}
+		a.removeWebUITracker(sessionID) // Minor6：Remove commit 点同步清理 webui tracker
+		return nil
 	}
 	if a.sessionAdapter == nil && a.control != nil && a.control.IsReady() {
 		ctx := a.ctx
@@ -2335,6 +2344,7 @@ func (a *App) RemoveSession(sessionID string) error {
 		} else {
 			a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID))
 			a.releaseSharedLeases(sessionID)
+			a.removeWebUITracker(sessionID) // Minor6
 			return nil
 		}
 	} else if a.Pty.IsRunning(sessionID) {
@@ -2348,7 +2358,16 @@ func (a *App) RemoveSession(sessionID string) error {
 	}
 	a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID)) // M3-005: manager remove committed
 	a.releaseSharedLeases(sessionID)
+	a.removeWebUITracker(sessionID) // Minor6
 	return nil
+}
+
+// removeWebUITracker 在会话删除 commit 点清理 webui 探测 tracker（Minor6）。
+// WebUI 服务未接线（测试构造）时为空操作。
+func (a *App) removeWebUITracker(sessionID string) {
+	if a.WebUI != nil {
+		a.WebUI.RemoveSession(sessionID)
+	}
 }
 
 // ClearStoppedSessions 清除所有已结束的会话
@@ -2400,6 +2419,7 @@ func (a *App) removeStoppedSessionRecord(id string) error {
 	}
 	a.Remote.DestroySessionInputLedger(contract.SessionID(id)) // M3-005: manager remove committed (batch clear path)
 	a.releaseSharedLeases(id)
+	a.removeWebUITracker(id) // Minor6：批量清理 commit 点同步清理 webui tracker
 	return nil
 }
 
@@ -2445,6 +2465,7 @@ func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
 						result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: err.Error()})
 						continue
 					}
+					a.removeWebUITracker(id) // Minor6：adapter 批量成功路径同样清理 webui tracker
 					result.ClearedIDs = append(result.ClearedIDs, id)
 				}
 			} else {
@@ -3003,6 +3024,29 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 
 	// 内嵌终端模式：使用 ConPTY
 	if launchMode == session.ModeEmbedded {
+		// T-1.5：为 embedded pi 注入 webui 端口（契约 v1.0.2 §7.2 通道 1）。
+		// 仅 appType=pi 的本路径注入，不影响其他 CLI 与外部终端模式。
+		// 分配失败不阻断启动：扩展无 env 时自选端口并写注册表（§7.2 通道 2），
+		// codebox 探测侧走注册表回退发现。
+		webuiPort := 0
+		if p, pErr := webui.AllocateFreePort(); pErr == nil {
+			webuiPort = p
+			envOverrides["AMAGI_WEBUI_PORT"] = strconv.Itoa(p)
+		} else {
+			a.Log.Warn("webui", "webui 空闲端口分配失败，走注册表回退发现", pErr.Error())
+		}
+
+		// v1.0.2：生成每会话 capability token 并经 AMAGI_WEBUI_TOKEN 注入；
+		// 与端口注入解耦（端口分配失败也注入 token——扩展自选端口仍强制校验，
+		// 探测侧可从注册表条目补读）。生成失败不阻断启动，探测退化为无 token。
+		webuiToken := ""
+		if tok, tErr := webui.GenerateToken(); tErr == nil {
+			webuiToken = tok
+			envOverrides["AMAGI_WEBUI_TOKEN"] = tok
+		} else {
+			a.Log.Warn("webui", "webui capability token 生成失败，探测不带 token", tErr.Error())
+		}
+
 		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
@@ -3033,6 +3077,9 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
+		// T-1.5：注册 webui 探测（携带注入端口、pid 与 v1.0.2 token，供
+		// /api/info 探测与注册表回退匹配；webuiPort=0 表示纯注册表发现）。
+		a.WebUI.RegisterSession(sess.ID, pid, webuiPort, webuiToken)
 
 		go func(id string) {
 			for a.Pty.IsRunning(id) {
@@ -3043,6 +3090,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				}
 			}
 			a.Sessions.MarkExited(id)
+			a.WebUI.Invalidate(id)
 			a.Log.Info("session", "Pi PTY进程已退出", "id="+id)
 		}(sess.ID)
 

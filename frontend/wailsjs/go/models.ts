@@ -3803,3 +3803,24 @@ export namespace usage {
 
 }
 
+export namespace webui {
+	
+	export class Status {
+	    state: string;
+	    url?: string;
+	    port?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.url = source["url"];
+	        this.port = source["port"];
+	    }
+	}
+
+}
+
