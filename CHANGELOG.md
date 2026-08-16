@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [1.3.27] - 2026-08-16
+
+### Added
+
+- Pi 会话 WebUI 壳集成（TUI/Web 双平面）：
+  - 后端 `internal/webui`：端口分配 + env 注入、探测状态机（PID/sessionId/port 强校验、注册表目录式回退 + 陈旧淘汰、ended 终态栅栏、锁外 IO）、capability token 注入与 fragment URL；新增 `WebUI` 绑定服务。
+  - 前端：Segmented 切换（仅 pi + available 时显示）、`WebPlaneHost` iframe（`sandbox=allow-scripts allow-forms`）、sessionId 隔离、探测单飞轮询、迟到结果丢弃。
+  - 生命周期：`RemoveSession`/批量清理/adapter 路径的 tracker 清理。
+  - 测试：`internal/webui` 14 用例（`-race` 通过）+ terminal e2e a11y 断言；三态真实 E2E 全过（A-1/A-2/A-4/M2）。
+
 ## [1.3.26] - 2026-08-15
 
 ### Fixed
