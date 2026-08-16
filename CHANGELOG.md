@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.28] - 2026-08-16
+
+### Docs
+
+- 新增 AI CLI 本地 Web UI 能力调研文档（agent-outputs/webui-research.md）：梳理 OpenCode（`opencode web` / `opencode serve`，含鉴权与关键端点）、OpenAI Codex CLI（无本地 Web UI，仅有实验性 `app-server`）等 CLI 的本地 Web 平面现状，作为 webui 壳集成（v1.3.27）后续迭代的参考资料。
+
 ## [1.3.27] - 2026-08-16
 
 ### Added
