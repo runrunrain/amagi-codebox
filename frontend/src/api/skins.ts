@@ -40,7 +40,7 @@ export function removeSkin(id: string): Promise<void> {
   return callApi('[api.skins.removeSkin]', () => RemoveSkin(id));
 }
 
-/** 读取皮肤设置（enabled/imageId/dim/blur）。 */
+/** 读取皮肤设置（enabled/imageId/dim/blur/opacity）。 */
 export function getSkinSettings(): Promise<SkinSettings> {
   return callApi('[api.skins.getSkinSettings]', () => GetSkinSettings());
 }

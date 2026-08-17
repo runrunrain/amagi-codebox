@@ -577,6 +577,13 @@ function onCtxSelectAll() {
   display: none;
 }
 
+/* 皮肤模式下 Web 平面透皮：xterm 平面保持 --termBg 不透明，仅在 Web 平面
+   激活时让宿主底转透明，皮肤层经 WebPlaneHost（透明）+ iframe（webui 内嵌
+   模式 body 透明）一路透出。 */
+html[data-skin='on'] .term-body.web-active {
+  background: transparent;
+}
+
 /* let xterm fill the host.
    padding:0 让终端文字贴合容器边缘——内部行列已由 fitTerminal 基于
    实际尺寸计算，去掉 padding 不会破坏 fit；此前 14px 18px 的留白会

@@ -137,7 +137,8 @@ onBeforeUnmount(() => clearWatchdog());
   inset: 0;
   display: flex;
   flex-direction: column;
-  background: var(--card, #fff);
+  /* 透明：皮肤模式下透出全局皮肤层；webui 页面（#/t= 内嵌模式）body 自身透明 */
+  background: transparent;
   min-height: 0;
 }
 
@@ -146,7 +147,8 @@ onBeforeUnmount(() => clearWatchdog());
   width: 100%;
   border: none;
   min-height: 0;
-  background: var(--card, #fff);
+  /* iframe 不设背景即可透出宿主皮肤层（iframe 默认透明） */
+  background: transparent;
 }
 
 .plane-overlay {
@@ -157,7 +159,10 @@ onBeforeUnmount(() => clearWatchdog());
   align-items: center;
   justify-content: center;
   gap: 4px;
+  /* 加载期/错误态可读优先：保留 --card 实底；皮肤模式下 --card 为半透明，
+     叠 backdrop-filter 压花背景保证文字对比度 */
   background: var(--card, #fff);
+  backdrop-filter: blur(14px) saturate(1.1);
 }
 
 .plane-ended-bar {
@@ -169,7 +174,9 @@ onBeforeUnmount(() => clearWatchdog());
   gap: 8px;
   padding: 6px 10px;
   border-radius: 9px;
+  /* 透皮下 --control 为半透明：backdrop-filter 压花保证结束 badge 可读 */
   background: var(--control);
+  backdrop-filter: blur(10px);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
 

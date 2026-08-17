@@ -5,9 +5,11 @@
  * 由 App.vue watch skin store 后在 <html> 上写入：
  *   --skin-image: url("/skins/<file>")
  *   --skin-blur: <px>
- *   --skin-dim:  0..1
+ *   --skin-dim:  0..1（整图黑色蒙层不透明度）
+ *   --skin-panel-alpha: 0..1（内容面板不透明度，与 dim 解耦）
  *   data-skin="on"
- * 皮肤启用时窗口面 token 转半透明 rgba，让背景透出；前景 token 不变保证可读。
+ * 皮肤启用时窗口面 token 以 color-mix 按 --skin-panel-alpha 混合 transparent，
+ * 让背景透出；前景 token 不变保证可读。
  * 终端区域（--termBg 不透明）不受影响。
  */
 
@@ -15,6 +17,8 @@
   --skin-image: none;
   --skin-blur: 0px;
   --skin-dim: 0.35;
+  /* 面板不透明度默认 0.7；0 档可读性由下方 max(..., 0.12) 下限 + dim 蒙层保底 */
+  --skin-panel-alpha: 0.7;
 }
 
 /* 固定背景层：cover + 可调模糊；放大补偿 blur 造成的边缘透明。
@@ -50,12 +54,16 @@
 }
 
 html[data-skin='on'] {
-  /* 窗口面半透明化（保持 light 基调，前景 label/secondary 不变） */
-  --window: rgba(251, 251, 253, 0.62);
-  --card: rgba(255, 255, 255, 0.72);
-  --sidebar: rgba(245, 245, 247, 0.55);
-  --control: rgba(242, 242, 245, 0.8);
-  --controlHover: rgba(229, 229, 234, 0.85);
+  /* 窗口面按 --skin-panel-alpha 混合 transparent（tokens.css 原色 1:1 提取，
+     仅在覆盖层变量化，不改设计规范文件）。
+     max(--skin-panel-alpha, 0.12)：透明度 0 档（纯图）时面板仍保留 12% 亮底，
+     配合 dim 蒙层保证浅色主题深色文字在任意图片上的对比度下限。 */
+  --skin-panel-mix: calc(max(var(--skin-panel-alpha), 0.12) * 100%);
+  --window: color-mix(in srgb, #FBFBFD var(--skin-panel-mix), transparent);
+  --card: color-mix(in srgb, #FFFFFF var(--skin-panel-mix), transparent);
+  --sidebar: color-mix(in srgb, #F5F5F7 var(--skin-panel-mix), transparent);
+  --control: color-mix(in srgb, #F2F2F5 var(--skin-panel-mix), transparent);
+  --controlHover: color-mix(in srgb, #E5E5EA var(--skin-panel-mix), transparent);
   /* 半透明面上投影弱化，避免脏边 */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 18px rgba(0, 0, 0, 0.06);
 }

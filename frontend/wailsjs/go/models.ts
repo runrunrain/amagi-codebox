@@ -2955,6 +2955,7 @@ export namespace settings {
 	    imageId: string;
 	    dim: number;
 	    blur: number;
+	    opacity: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SkinSettings(source);
@@ -2966,6 +2967,7 @@ export namespace settings {
 	        this.imageId = source["imageId"];
 	        this.dim = source["dim"];
 	        this.blur = source["blur"];
+	        this.opacity = source["opacity"];
 	    }
 	}
 	export class RemoteLaunchDefaultV1 {

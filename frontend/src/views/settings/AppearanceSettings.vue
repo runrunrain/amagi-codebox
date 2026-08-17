@@ -3,7 +3,7 @@
     <div class="card-head">
       <div>
         <h2>皮肤</h2>
-        <p class="set-sub">选择本地图片作为应用全局背景，可调调光与模糊；终端区域保持不透明</p>
+        <p class="set-sub">选择本地图片作为应用全局背景，可调调光、模糊与内容不透明度；终端区域保持不透明</p>
       </div>
       <AppButton variant="primary" :disabled="importing" @click="onPick">
         {{ importing ? '导入中...' : '选择图片' }}
@@ -74,6 +74,23 @@
         />
         <span class="range-num">{{ skinStore.settings.blur }}px</span>
       </div>
+      <div class="range-row">
+        <span class="range-label">内容不透明度</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          :value="skinStore.settings.opacity"
+          :disabled="!skinStore.active"
+          @input="onOpacityInput"
+          @change="onOpacityCommit"
+        />
+        <span class="range-num">{{ skinStore.settings.opacity }}%</span>
+      </div>
+      <p class="sliders-hint">
+        调光＝整张背景图压暗；内容不透明度＝窗口/侧栏/卡片等面板透出背景图的程度（100% 为不透明）
+      </p>
     </div>
 
     <div class="card-footer">
@@ -173,6 +190,18 @@ function onBlurInput(e: Event) {
 async function onBlurCommit(e: Event) {
   try {
     await skinStore.apply({ blur: Number((e.target as HTMLInputElement).value) })
+  } catch (err) {
+    showError('保存失败: ' + errMsg(err))
+  }
+}
+
+function onOpacityInput(e: Event) {
+  skinStore.preview({ opacity: Number((e.target as HTMLInputElement).value) })
+}
+
+async function onOpacityCommit(e: Event) {
+  try {
+    await skinStore.apply({ opacity: Number((e.target as HTMLInputElement).value) })
   } catch (err) {
     showError('保存失败: ' + errMsg(err))
   }
@@ -317,7 +346,7 @@ onMounted(() => {
 .range-label {
   font-size: 13px;
   color: var(--secondary);
-  min-width: 32px;
+  min-width: 78px;
 }
 
 .range-row input[type='range'] {
@@ -337,6 +366,12 @@ onMounted(() => {
   color: var(--label);
   min-width: 48px;
   text-align: right;
+}
+
+.sliders-hint {
+  font-size: 11px;
+  color: var(--tertiary);
+  margin-top: 4px;
 }
 
 .card-footer {

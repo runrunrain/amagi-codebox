@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [1.3.33] - 2026-08-18
+
+### Added
+
+- 皮肤功能新增「内容不透明度」档位（`SkinSettings.Opacity`，默认 70，0-100 与 dim 解耦）：dim 调背景蒙版层，opacity 调内容面板（窗口/侧栏/卡片等）本体——窗口面 token 改以 `color-mix` 按 `--skin-panel-alpha` 混合 transparent，皮肤层经面板半透明透出；0 档可读性由 0.12 下限 + dim 蒙层保底。老 settings.json 无 skin 键时整体回落默认（dim=35、opacity=70）；含 skin 键但缺 opacity 子键时读入 0（合法档位不回填，前端滑块即时调整）。
+- Web 平面透皮：皮肤模式下 Web 平面激活时宿主底转透明（`html[data-skin='on'] .term-body.web-active` 与 `WebPlaneHost` 宿主/iframe 透明），皮肤层经 webui 内嵌页（body 透明）一路透出；`WebPlaneHost` 加载期/错误态与 ended badge 用 `backdrop-filter` 压花保证文字对比度。
+- 外观设置页新增内容不透明度滑块；`--skin-panel-alpha` CSS 变量注入与 watch 同步（App.vue）。
+
 ## [1.3.32] - 2026-08-17
 
 ### Added

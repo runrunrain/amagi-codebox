@@ -1,6 +1,6 @@
 # 新功能：本地图片应用皮肤（皮肤/壁纸）
 
-> **状态（2026-08-17）：已完成**。后端切片 A（luban）+ 前端切片 B（luoshen）均实施验收：`go vet ./...` 净，skins/settings/webui 包全绿，`npm --prefix frontend run build`（vue-tsc）通过。实施报告：`impl-report-backend.md`、`impl-report-frontend.md`。未 commit；手工 E2E（选图→生效→重启保持→恢复默认）待主上验证。
+> **状态（2026-08-17 第二轮已完成）**。第一轮：后端切片 A + 前端切片 B（基础皮肤）。第二轮（三个增强需求）：①输入草稿：pi webui 新增 /api/draft（v1.0.9，服务端存 sessionId 键，根因是 KeepAlive DOM 移动致 iframe 重载且 opaque origin 无法用 localStorage）+ webui 前端回填/防抖保存/提交清空；②透明度：SkinSettings 新增 opacity（内容面板不透明度 0..100 默认 70，与 dim 解耦），skin.css color-mix 变量化 + 0 档 12% 保底；③web 页透皮：WebPlaneHost 透明 + webui .webui-embedded 模式（#/t= 检测，body 透明、顶栏/输入区面板化半透明+blur）。报告：impl-report-opacity-backend.md / webui-draft-server-report.md（amagi-pi）/ webui-embed-skin-report.md（amagi-pi）/ impl-report-frontend-round2.md。验证：两仓全绿（codebox vet净+skins/settings 绿+build 过；amagi-pi node --test 16/16 + vitest 113/113 + npm test 1200/0）。未 commit。
 
 ## 需求
 

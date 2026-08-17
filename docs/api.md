@@ -1058,13 +1058,13 @@
 **Service**: Settings Service
 **Parameters**: none
 **Returns**: `SkinSettings`
-**Description**: 返回皮肤设置（`{enabled, imageId, dim, blur}`；默认 `{false, "", 35, 0}`）。老 settings.json 无 `skin` 键时 Load 合并为默认值。
+**Description**: 返回皮肤设置（`{enabled, imageId, dim, blur, opacity}`；默认 `{false, "", 35, 0, 70}`）。`opacity` 为内容面板（窗口/侧栏/卡片等）不透明度百分比 0..100（0=面板全透出皮肤图片，100=面板不透明），与 `dim`（背景蒙版层）解耦。老 settings.json 无 `skin` 键时 Load 合并为默认值；含 `skin` 键但缺 `opacity` 子键的老文件按 0 读入（0 为合法档位，不回填默认）。
 
 ### SetSkinSettings
 **Service**: Settings Service
 **Parameters**: `sk (SkinSettings)`
 **Returns**: `error`
-**Description**: 更新皮肤设置并保存。`dim` clamp 到 [0,100]、`blur` clamp 到 [0,40]，越界取边界值而非报错。ImageID 存在性校验在 Skins 服务层（`app.Skins.SetSkinSettings`）。
+**Description**: 更新皮肤设置并保存。`dim`/`opacity` clamp 到 [0,100]、`blur` clamp 到 [0,40]，越界取边界值而非报错。ImageID 存在性校验在 Skins 服务层（`app.Skins.SetSkinSettings`）。
 
 ### SetTerminalSettings
 **Service**: Settings Service

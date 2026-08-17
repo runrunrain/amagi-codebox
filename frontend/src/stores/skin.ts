@@ -1,9 +1,9 @@
 /**
  * Skin Store (Pinia setup style)
- * 皮肤/壁纸状态：settings（enabled/imageId/dim/blur）+ 皮肤库列表 + 当前皮肤。
+ * 皮肤/壁纸状态：settings（enabled/imageId/dim/blur/opacity）+ 皮肤库列表 + 当前皮肤。
  *
  * App.vue 启动时 load() 一次，并 watch settings/currentSkin 同步
- * --skin-image / --skin-blur / --skin-dim CSS 变量与 html[data-skin]；
+ * --skin-image / --skin-blur / --skin-dim / --skin-panel-alpha CSS 变量与 html[data-skin]；
  * 设置页保存后即时生效，无需刷新。
  */
 
@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS: SkinSettings = {
   imageId: '',
   dim: 35,
   blur: 0,
+  opacity: 70,
 } as SkinSettings;
 
 export const useSkinStore = defineStore('skin', () => {
@@ -71,7 +72,13 @@ export const useSkinStore = defineStore('skin', () => {
 
   /** 恢复默认：关闭皮肤。 */
   async function clear() {
-    await apply({ enabled: false, imageId: '', dim: DEFAULT_SETTINGS.dim, blur: DEFAULT_SETTINGS.blur });
+    await apply({
+      enabled: false,
+      imageId: '',
+      dim: DEFAULT_SETTINGS.dim,
+      blur: DEFAULT_SETTINGS.blur,
+      opacity: DEFAULT_SETTINGS.opacity,
+    });
   }
 
   /** 调系统对话框导入图片；用户取消返回 null。导入后刷新皮肤库。 */
