@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.3.30] - 2026-08-16
+
+### Fixed
+
+- 修复 Dropdown 下拉菜单被祖先容器裁剪的问题：菜单改为 Teleport 到 document.body + `position:fixed`（left/top/bottom/width/max-height 由 JS 内联注入），彻底脱离 AppShell 主滚动容器 `overflow:auto` / 壳层 `overflow:hidden` 的裁剪——此前列表尾部行的菜单会被裁掉。
+- 下拉菜单空间自适应：视口下方空间不足（< 320px 上限）且上方更宽裕时自动向上翻转（独立 `dropdown-fade-up` 过渡方向）；maxHeight 按可用空间钳制；宽度保底 140px 并向视口内钳制。
+- 滚动/缩放行为：菜单打开期间监听 scroll（capture，覆盖 AppShell 内层 overflow 容器）与 resize 实时重定位；触发器滚出视口时直接关闭菜单。
+- z-index 层级：菜单 2000（高于 Dialog 1000，对话框内下拉不再被遮挡），低于 SessionDetailModal(3000)/Toast(9999)/TerminalContextMenu(10000)；外点关闭判定覆盖 teleport 后的触发器 root + 菜单元素；`prefers-reduced-motion` 下禁用过渡。
+
 ## [1.3.29] - 2026-08-16
 
 ### Chore
