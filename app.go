@@ -45,6 +45,7 @@ import (
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
+	"amagi-codebox/internal/skins"
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
 	"amagi-codebox/internal/usage"
@@ -228,7 +229,10 @@ type App struct {
 	Usage           *usage.Service
 	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
 	// 仅 embedded pi 会话注册；其他 CLI 不感知。
-	WebUI           *webui.Service
+	WebUI *webui.Service
+	// Skins 是本地图片皮肤管理服务（皮肤图片库 ~/.amagi-codebox/skins +
+	// /skins/ 只读资源 Handler）。Startup 注入 Wails ctx 后才能弹选择对话框。
+	Skins *skins.Service
 
 	// Control runtime (M3-A2): the gate authority for all session write side
 	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
@@ -374,6 +378,8 @@ func NewApp(mobileAssets embed.FS) *App {
 	envCheckSvc := envcheck.NewServiceWithRunner(processRunner)
 	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
+	settingsSvc := settings.NewService(configDir)
+
 	app := &App{
 		configDir:           configDir,
 		Config:              config.NewConfigService(configDir),
@@ -386,7 +392,8 @@ func NewApp(mobileAssets embed.FS) *App {
 		Paths:               paths.NewPathsService(configDir),
 		Log:                 log,
 		Pty:                 pty.NewService(log),
-		Settings:            settings.NewService(configDir),
+		Settings:            settingsSvc,
+		Skins:               skins.NewService(settingsSvc, filepath.Join(configDir, "skins"), log),
 		EnvVars:             envVarsSvc,
 		Updater:             updater.NewService(resolveAppVersion(), log),
 		Plugins:             pluginsSvc,
@@ -1452,6 +1459,9 @@ func (a *App) SetRemoteEndpoint(host string, port int) error {
 // Startup Wails 生命周期钩子：应用启动时加载配置和密钥。
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// 皮肤服务依赖 Wails ctx 弹原生文件选择对话框（PickSkinImage）。
+	a.Skins.SetContext(ctx)
 
 	// Recover durable post-start cleanup ownership before any startup restore or
 	// user mutation can touch Headroom. A recovered admission fail-closes the

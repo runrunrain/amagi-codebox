@@ -34,5 +34,6 @@ func buildWailsBindList(app *App) []any {
 		app.EnvCheck,
 		app.Usage,
 		app.WebUI,
+		app.Skins,
 	}
 }

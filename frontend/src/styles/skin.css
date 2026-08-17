@@ -1,0 +1,76 @@
+/**
+ * Skin Layer Styles（皮肤/壁纸视觉层）
+ *
+ * 结构：App.vue 挂载 .skin-layer（背景图 + blur）与 .skin-dim（调光蒙版），
+ * 由 App.vue watch skin store 后在 <html> 上写入：
+ *   --skin-image: url("/skins/<file>")
+ *   --skin-blur: <px>
+ *   --skin-dim:  0..1
+ *   data-skin="on"
+ * 皮肤启用时窗口面 token 转半透明 rgba，让背景透出；前景 token 不变保证可读。
+ * 终端区域（--termBg 不透明）不受影响。
+ */
+
+:root {
+  --skin-image: none;
+  --skin-blur: 0px;
+  --skin-dim: 0.35;
+}
+
+/* 固定背景层：cover + 可调模糊；放大补偿 blur 造成的边缘透明。
+   z-index:-1 沉到所有内容之下（html/body 背景在皮肤模式下转透明，
+   负 z-index 仍绘于根画布背景之上，因此图片可见）。 */
+.skin-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--skin-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: blur(var(--skin-blur));
+  transform: scale(1.08);
+}
+
+/* 调光蒙版：压暗背景保证前景可读（dim 默认 0.35 保底）。 */
+.skin-dim {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: rgba(0, 0, 0, var(--skin-dim));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skin-layer,
+  .skin-dim {
+    transition: none;
+  }
+}
+
+html[data-skin='on'] {
+  /* 窗口面半透明化（保持 light 基调，前景 label/secondary 不变） */
+  --window: rgba(251, 251, 253, 0.62);
+  --card: rgba(255, 255, 255, 0.72);
+  --sidebar: rgba(245, 245, 247, 0.55);
+  --control: rgba(242, 242, 245, 0.8);
+  --controlHover: rgba(229, 229, 234, 0.85);
+  /* 半透明面上投影弱化，避免脏边 */
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 18px rgba(0, 0, 0, 0.06);
+}
+
+html[data-skin='on'],
+html[data-skin='on'] body {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skin-layer {
+    transition: filter 0.25s ease;
+  }
+
+  .skin-dim {
+    transition: background 0.25s ease;
+  }
+}

@@ -784,3 +784,92 @@ func TestSaveLocked_PreRenameSyncHandle_IsWritable(t *testing.T) {
 		t.Fatalf("reloaded host=%q want 10.0.0.9", fresh.GetRemoteHost())
 	}
 }
+
+// --- Skin Settings（本地图片皮肤，plan 后端切片 A）---
+
+// TestSkinSettings_DefaultAndRoundTrip 验证默认值（关闭、dim 35）与
+// Set/Get 往返（含持久化：新建 Service 从同目录 Load 后仍读到新值）。
+func TestSkinSettings_DefaultAndRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0}
+	if got := svc.GetSkinSettings(); got != want {
+		t.Fatalf("fresh default = %+v, want %+v", got, want)
+	}
+
+	set := SkinSettings{Enabled: true, ImageID: "abc123", Dim: 60, Blur: 12}
+	if err := svc.SetSkinSettings(set); err != nil {
+		t.Fatalf("SetSkinSettings: %v", err)
+	}
+	if got := svc.GetSkinSettings(); got != set {
+		t.Fatalf("after set = %+v, want %+v", got, set)
+	}
+
+	fresh := NewService(dir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("fresh Load: %v", err)
+	}
+	if got := fresh.GetSkinSettings(); got != set {
+		t.Fatalf("reloaded = %+v, want %+v", got, set)
+	}
+}
+
+// TestSkinSettings_ClampOutOfRange 验证越界值取边界而非报错。
+func TestSkinSettings_ClampOutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := svc.SetSkinSettings(SkinSettings{Dim: 200, Blur: 99}); err != nil {
+		t.Fatalf("SetSkinSettings(high): %v", err)
+	}
+	if got := svc.GetSkinSettings(); got.Dim != 100 || got.Blur != 40 {
+		t.Fatalf("high clamp = %+v, want dim=100 blur=40", got)
+	}
+	if err := svc.SetSkinSettings(SkinSettings{Dim: -10, Blur: -1}); err != nil {
+		t.Fatalf("SetSkinSettings(low): %v", err)
+	}
+	if got := svc.GetSkinSettings(); got.Dim != 0 || got.Blur != 0 {
+		t.Fatalf("low clamp = %+v, want dim=0 blur=0", got)
+	}
+}
+
+// TestSkinSettings_MissingKeyFallsBackToDefault 验证老 settings.json 无
+// skin 键时 Load 合并为默认值（而非零值 dim=0）。
+func TestSkinSettings_MissingKeyFallsBackToDefault(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"dashboard":{"claudeMode":"embedded"},"remoteHost":"127.0.0.1","remotePort":8680}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy settings: %v", err)
+	}
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0}
+	if got := svc.GetSkinSettings(); got != want {
+		t.Fatalf("legacy load = %+v, want default %+v", got, want)
+	}
+}
+
+// TestSkinSettings_LoadOutOfRangeClamped 验证手改文件中的越界值在 Load
+// 时被合并 clamp。
+func TestSkinSettings_LoadOutOfRangeClamped(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"skin":{"enabled":true,"imageId":"x","dim":500,"blur":99}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := svc.GetSkinSettings()
+	if !got.Enabled || got.ImageID != "x" || got.Dim != 100 || got.Blur != 40 {
+		t.Fatalf("clamped load = %+v, want enabled=true x dim=100 blur=40", got)
+	}
+}

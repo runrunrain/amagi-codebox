@@ -85,6 +85,46 @@ type TerminalSettings struct {
 	Scrollback int `json:"scrollback"`
 }
 
+// SkinSettings 皮肤设置（本地图片皮肤：背景层 + 蒙版调光/模糊）。
+// Enabled 时 ImageID 必须对应皮肤库中已导入的图片（该存在性校验由
+// skins 服务层负责，settings 层只管持久化与区间 clamp）。
+type SkinSettings struct {
+	Enabled bool   `json:"enabled"`
+	ImageID string `json:"imageId"`
+	// Dim 是蒙版不透明度百分比 0..100（默认 35，保证前景可读）。
+	Dim int `json:"dim"`
+	// Blur 是背景模糊半径 px 0..40。
+	Blur int `json:"blur"`
+}
+
+// DefaultSkinSettings 返回皮肤设置的默认值（关闭、未选图、dim 35、blur 0）。
+func DefaultSkinSettings() SkinSettings {
+	return SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0}
+}
+
+// normalizeSkinSettings 合并零值并 clamp 到合法区间：老 settings.json 无
+// skin 键时反序列化为零值，此时回落到默认值（dim=35）；显式越界值取边界
+// 而非报错。零值 SkinSettings 与“未写入该键”不可区分，但 dim 仅在
+// Enabled 时影响渲染，误重置无害。
+func normalizeSkinSettings(sk SkinSettings) SkinSettings {
+	if sk == (SkinSettings{}) {
+		return DefaultSkinSettings()
+	}
+	if sk.Dim < 0 {
+		sk.Dim = 0
+	}
+	if sk.Dim > 100 {
+		sk.Dim = 100
+	}
+	if sk.Blur < 0 {
+		sk.Blur = 0
+	}
+	if sk.Blur > 40 {
+		sk.Blur = 40
+	}
+	return sk
+}
+
 // AppSettings 应用设置
 type AppSettings struct {
 	Dashboard              DashboardDefaults                `json:"dashboard"`
@@ -98,6 +138,7 @@ type AppSettings struct {
 	RemoteLaunchDefaultsV1 map[string]RemoteLaunchDefaultV1 `json:"remoteLaunchDefaultsV1,omitempty"`
 	MobileWebRoot          string                           `json:"mobileWebRoot"`
 	GitHubToken            string                           `json:"githubToken"`
+	Skin                   SkinSettings                     `json:"skin"`
 }
 
 func defaultSettings() *AppSettings {
@@ -127,6 +168,7 @@ func defaultSettings() *AppSettings {
 		RemoteHost:            "127.0.0.1",
 		RemotePort:            8680,
 		RemoteSecurityVersion: 1,
+		Skin:                  DefaultSkinSettings(),
 	}
 }
 
@@ -182,6 +224,7 @@ func (s *Service) Load() error {
 	if cfg.Terminal.Scrollback <= 0 {
 		cfg.Terminal.Scrollback = 100000
 	}
+	cfg.Skin = normalizeSkinSettings(cfg.Skin)
 	if cfg.RemotePort <= 0 {
 		cfg.RemotePort = 8680
 	}
@@ -505,6 +548,26 @@ func (s *Service) SetTerminalSettings(t TerminalSettings) error {
 	return s.Save()
 }
 
+// --- Skin Settings ---
+
+// GetSkinSettings 返回皮肤设置。区间 clamp 见 SetSkinSettings。
+func (s *Service) GetSkinSettings() SkinSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings.Skin
+}
+
+// SetSkinSettings 更新皮肤设置并保存。Dim clamp 到 [0,100]、Blur clamp 到
+// [0,40]，越界取边界值而非报错（前端滑块失控时兜底）。ImageID 存在性
+// 校验不在本层（见 skins.Service.SetSkinSettings）。
+func (s *Service) SetSkinSettings(sk SkinSettings) error {
+	sk = normalizeSkinSettings(sk)
+	s.mu.Lock()
+	s.settings.Skin = sk
+	s.mu.Unlock()
+	return s.Save()
+}
+
 // --- Remote Host & Port ---
 
 func (s *Service) GetRemoteHost() string {
@@ -796,6 +859,7 @@ func (s *Service) ReplaceSettings(next AppSettings) error {
 	if next.Terminal.Scrollback <= 0 {
 		next.Terminal.Scrollback = 100000
 	}
+	next.Skin = normalizeSkinSettings(next.Skin)
 	next.RemoteSecurityVersion = 1
 	normalizeDashboardDefaults(&next.Dashboard)
 

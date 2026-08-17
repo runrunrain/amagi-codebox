@@ -9,6 +9,7 @@
       <GeneralSettings v-if="activeKey === 'general'" />
       <ShellSettings v-else-if="activeKey === 'shell'" />
       <TerminalSettings v-else-if="activeKey === 'terminal'" />
+      <AppearanceSettings v-else-if="activeKey === 'appearance'" />
       <RemoteSettings v-else-if="activeKey === 'remote'" />
       <UpdateSettings v-else-if="activeKey === 'update'" />
       <AboutSettings v-else-if="activeKey === 'about'" />
@@ -23,6 +24,7 @@ import PageHead from '../../components/ui/PageHead.vue'
 import GeneralSettings from './GeneralSettings.vue'
 import ShellSettings from './ShellSettings.vue'
 import TerminalSettings from './TerminalSettings.vue'
+import AppearanceSettings from './AppearanceSettings.vue'
 import RemoteSettings from './RemoteSettings.vue'
 import UpdateSettings from './UpdateSettings.vue'
 import AboutSettings from './AboutSettings.vue'
@@ -34,6 +36,7 @@ const META: Record<string, { title: string; description: string }> = {
   general: { title: '常规设置', description: '配置应用启动默认项' },
   shell: { title: 'Shell', description: '自定义终端 Shell 路径' },
   terminal: { title: '终端设置', description: '终端渲染与滚动缓冲' },
+  appearance: { title: '外观', description: '皮肤背景、调光与模糊' },
   remote: { title: '远程控制', description: 'HTTP/WebSocket 远程访问与移动端连接' },
   update: { title: '软件更新', description: '检查并安装新版本' },
   about: { title: '关于', description: '应用信息' },

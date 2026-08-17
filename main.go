@@ -51,6 +51,8 @@ func main() {
 		HideWindowOnClose: capabilities.HideOnCloseSupported && capabilities.CloseAction == platform.CloseActionHide,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
+			// /skins/<file> 回落：皮肤图片只读静态服务（前端 <img src="/skins/...">）。
+			Handler: app.Skins.AssetHandler(),
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.Startup,

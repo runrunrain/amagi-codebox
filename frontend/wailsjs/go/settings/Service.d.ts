@@ -28,6 +28,8 @@ export function GetSettings():Promise<settings.AppSettings>;
 
 export function GetShellPaths():Promise<Array<settings.ShellEntry>>;
 
+export function GetSkinSettings():Promise<settings.SkinSettings>;
+
 export function GetTerminalSettings():Promise<settings.TerminalSettings>;
 
 export function Load():Promise<void>;
@@ -57,5 +59,7 @@ export function SetRemoteEndpoint(arg1:string,arg2:number):Promise<void>;
 export function SetRemoteHost(arg1:string):Promise<void>;
 
 export function SetRemotePort(arg1:number):Promise<void>;
+
+export function SetSkinSettings(arg1:settings.SkinSettings):Promise<void>;
 
 export function SetTerminalSettings(arg1:settings.TerminalSettings):Promise<void>;

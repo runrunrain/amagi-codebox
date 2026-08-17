@@ -21,6 +21,7 @@
 - [Omp Config Service (`app.OmpConfig`)](#omp-config-service-appompconfig)
 - [EnvCheck Service (`app.EnvCheck`)](#envcheck-service-appenvcheck)
 - [Usage Service (`app.Usage`)](#usage-service-appusage)
+- [Skins Service (`app.Skins`)](#skins-service-appskins)
 
 ## App (`app`)
 
@@ -1053,6 +1054,18 @@
 **Returns**: `TerminalSettings`
 **Description**: 返回终端相关设置。
 
+### GetSkinSettings
+**Service**: Settings Service
+**Parameters**: none
+**Returns**: `SkinSettings`
+**Description**: 返回皮肤设置（`{enabled, imageId, dim, blur}`；默认 `{false, "", 35, 0}`）。老 settings.json 无 `skin` 键时 Load 合并为默认值。
+
+### SetSkinSettings
+**Service**: Settings Service
+**Parameters**: `sk (SkinSettings)`
+**Returns**: `error`
+**Description**: 更新皮肤设置并保存。`dim` clamp 到 [0,100]、`blur` clamp 到 [0,40]，越界取边界值而非报错。ImageID 存在性校验在 Skins 服务层（`app.Skins.SetSkinSettings`）。
+
 ### SetTerminalSettings
 **Service**: Settings Service
 **Parameters**: `t (TerminalSettings)`
@@ -1500,3 +1513,55 @@ CLI 工具环境检测、问题诊断与一键修复，以及 Claude Code 安装
 **Parameters**: none
 **Returns**: `*PricingService`
 **Description**: [内部方法] 返回价格表子服务实例（App 层内部使用）。
+
+## Skins Service (`app.Skins`)
+
+本地图片皮肤（皮肤/壁纸）管理服务：导入即拷贝到 `~/.amagi-codebox/skins/`（文件名 `<id>.<ext>`，id 为 16 字节随机 hex），源文件不受影响。前端通过 assetserver 自定义 Handler 以 `/skins/<file>` 只读访问图片。
+
+### PickSkinImage
+**Service**: Skins Service
+**Parameters**: none
+**Returns**: `*Skin`
+**Description**: 弹出文件选择对话框（png/jpg/jpeg/webp）并导入所选图片。用户取消返回 `nil`。导入校验：魔数（防改后缀）、单文件 ≤ 20MB；png/jpeg 用标准库解析尺寸，webp 接受但尺寸记 0。返回 `Skin{id, fileName, url("/skins/<file>"), bytes, width, height, importedAt}`。
+
+### ImportSkinImage
+**Service**: Skins Service
+**Parameters**: `path (string)`
+**Returns**: `*Skin`
+**Description**: 从本地路径导入皮肤图片（`PickSkinImage` 的无对话框内层，校验与拷贝逻辑与之一致）。
+
+### ListSkins
+**Service**: Skins Service
+**Parameters**: none
+**Returns**: `[]Skin`
+**Description**: 枚举皮肤库（只认 png/jpg/jpeg/webp 扩展名，导入是唯一写入口），按导入时间降序。皮肤库不存在时返回空列表。
+
+### RemoveSkin
+**Service**: Skins Service
+**Parameters**: `id (string)`
+**Returns**: `error`
+**Description**: 删除指定皮肤图片。当前皮肤已启用且正是该图片时返回错误（前端引导先停用）。
+
+### GetSkinSettings
+**Service**: Skins Service
+**Parameters**: none
+**Returns**: `SkinSettings`
+**Description**: 返回皮肤设置（委托 Settings 服务）。
+
+### SetSkinSettings
+**Service**: Skins Service
+**Parameters**: `sk (SkinSettings)`
+**Returns**: `error`
+**Description**: 更新皮肤设置（clamp 由 Settings 层完成）。`enabled=true` 时校验 ImageID 对应文件存在于皮肤库，不存在返回错误。
+
+### SetContext
+**Service**: Skins Service
+**Parameters**: `ctx (context.Context)`
+**Returns**: `void`
+**Description**: [内部方法] 注入 Wails app context（Startup 接线调用，`PickSkinImage` 依赖它弹对话框）。
+
+### AssetHandler
+**Service**: Skins Service
+**Parameters**: none
+**Returns**: `http.Handler`
+**Description**: [内部方法] 返回 `/skins/` 只读静态资源 Handler（main.go assetserver 装配：仅 GET、路径清洗防穿越、按扩展名 Content-Type、404 兕底、无目录列表）。

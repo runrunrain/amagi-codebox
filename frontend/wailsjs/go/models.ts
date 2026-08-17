@@ -2950,6 +2950,24 @@ export namespace session {
 
 export namespace settings {
 	
+	export class SkinSettings {
+	    enabled: boolean;
+	    imageId: string;
+	    dim: number;
+	    blur: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SkinSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.imageId = source["imageId"];
+	        this.dim = source["dim"];
+	        this.blur = source["blur"];
+	    }
+	}
 	export class RemoteLaunchDefaultV1 {
 	    providerRef?: string;
 	    presetRef?: string;
@@ -3080,6 +3098,7 @@ export namespace settings {
 	    remoteLaunchDefaultsV1?: Record<string, RemoteLaunchDefaultV1>;
 	    mobileWebRoot: string;
 	    githubToken: string;
+	    skin: SkinSettings;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppSettings(source);
@@ -3098,6 +3117,7 @@ export namespace settings {
 	        this.remoteLaunchDefaultsV1 = this.convertValues(source["remoteLaunchDefaultsV1"], RemoteLaunchDefaultV1, true);
 	        this.mobileWebRoot = source["mobileWebRoot"];
 	        this.githubToken = source["githubToken"];
+	        this.skin = this.convertValues(source["skin"], SkinSettings);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3150,6 +3170,36 @@ export namespace settings {
 	}
 	
 	
+	
+
+}
+
+export namespace skins {
+	
+	export class Skin {
+	    id: string;
+	    fileName: string;
+	    url: string;
+	    bytes: number;
+	    width: number;
+	    height: number;
+	    importedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Skin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.fileName = source["fileName"];
+	        this.url = source["url"];
+	        this.bytes = source["bytes"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.importedAt = source["importedAt"];
+	    }
+	}
 
 }
 

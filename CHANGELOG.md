@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [1.3.32] - 2026-08-17
+
+### Added
+
+- 新增本地图片皮肤（壁纸）功能：
+  - 后端 `internal/skins`：皮肤图片库位于 `~/.amagi-codebox/skins/`，导入即拷贝为随机 hex id（源文件不受影响），仅接受 png/jpeg/webp（魔数校验防改后缀，≤20MB），尺寸解析 png/jpeg 用 `DecodeConfig` 只读头部（webp 记 0）；通过 Wails assetserver 自定义 Handler 以 `/skins/<file>` 只读访问（不提供目录列表）。导入（ImportSkinImage）是唯一写入口。
+  - 设置层：`SkinSettings`（enabled / imageId / dim 0-100 默认 35 / blur 0-40）持久化到 settings.json，clamp 越界值、零值回落默认。
+  - 前端：设置页新增「外观」子页（`AppearanceSettings`）——缩略图网格、导入（原生文件对话框）、删除、启用/关闭、调光与模糊滑杆；`skin` store 启动加载并 watch 同步 `--skin-image/--skin-dim/--skin-blur` CSS 变量与 `html[data-skin]`，保存即时生效无需刷新；`App.vue` 挂载 `.skin-layer`（cover 背景 + 可调模糊）与 `.skin-dim`（调光蒙版，保底 0.35 防过亮），窗口面 token 转半透明让背景透出，终端区域不透明不受影响。
+  - 绑定与文档：`Skins` 服务接入 bind 列表与 Startup（SetContext 后才能弹原生对话框）；docs/api.md 记录新接口。
+
 ## [1.3.31] - 2026-08-17
 
 ### Fixed

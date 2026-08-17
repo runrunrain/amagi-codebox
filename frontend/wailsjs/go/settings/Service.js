@@ -54,6 +54,10 @@ export function GetShellPaths() {
   return window['go']['settings']['Service']['GetShellPaths']();
 }
 
+export function GetSkinSettings() {
+  return window['go']['settings']['Service']['GetSkinSettings']();
+}
+
 export function GetTerminalSettings() {
   return window['go']['settings']['Service']['GetTerminalSettings']();
 }
@@ -112,6 +116,10 @@ export function SetRemoteHost(arg1) {
 
 export function SetRemotePort(arg1) {
   return window['go']['settings']['Service']['SetRemotePort'](arg1);
+}
+
+export function SetSkinSettings(arg1) {
+  return window['go']['settings']['Service']['SetSkinSettings'](arg1);
 }
 
 export function SetTerminalSettings(arg1) {

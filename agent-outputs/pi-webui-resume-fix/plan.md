@@ -1,6 +1,6 @@
 # pi WebUI /resume 会话内容不显示 — 根因分析与修复方案
 
-> **状态（2026-08-17）：已完成**。切片 1（amagi-pi：`agent-outputs/pi-webui-resume-fix-slice1.md`）与切片 2（codebox：`impl-report-slice2.md`）均已实施验收；Leader 验收后追加修复：available 态保活探测遇瞬时 503 不再误降 unavailable（`service.go` resultNotReady 分支 + `TestProbe_AvailableKeepsAliveOnTransientNotReady`）。两仓均未 commit。手工 E2E（启动 pi → /resume → Web 平面显示历史）待主上桌面验证。
+> **状态（2026-08-17 v2 最终）：已完成并修正**。初版方案（切片 1 热切换）基于"扩展在同闭包内存活"的错误假设——真实 pi 的 createRuntime 在 switchSession 后整体重载扩展，热分支永不触发且旧 server 保活占死端口。v1.0.8 已改为：switch 类 shutdown 立即停服释放端口，新注册冷启动重绑同一注入端口；输入适配器全部防御化（修复 web 输入致 Node unhandled rejection 杀死 pi 进程）。详见 amagi-pi `agent-outputs/pi-webui-switch-stop-report.md`。切片 2（壳侧 pid 粘性 + 3s 保活 + 瞬时 503 不降级）不变且依然必要。两仓均未 commit。手工 E2E（启动 pi → /resume → web 页断线重连后显示历史；web 输入不崩进程）待主上验证。
 
 ## 症状
 
