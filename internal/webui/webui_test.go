@@ -142,24 +142,128 @@ func TestProbe_RefusedThenUnavailable(t *testing.T) {
 	}
 }
 
-func TestProbe_SessionIDMismatchRejected(t *testing.T) {
+func TestProbe_ResumeSessionSwitchAdopted(t *testing.T) {
+	// /resume、/new、fork、reload：同 pid 会话切换，sessionId 演进（A→B）
+	// 且端口不变 → 采纳为 available，tracker 跟随更新 piSessionID。
 	s := newTestService(t, time.Minute)
-	// stub 返回的 sessionId 与已学到的不同 → 不得判 available。
+	stubSession := "pi-sess-a"
 	var port int
 	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infoJSON("other-pi-session", 4321, port))
+		fmt.Fprint(w, infoJSON(stubSession, 4321, port))
 	})
 	s.RegisterSession("s4", 4321, port, "")
-	// 预置已学到的 piSessionID（模拟端口复用场景）。
+	if st := s.ProbeWebUI("s4"); st.State != StateAvailable {
+		t.Fatalf("首轮应 available，got %s", st.State)
+	}
+	if learned := trackerPiSessionID(s, "s4"); learned != "pi-sess-a" {
+		t.Fatalf("piSessionID=%q, want pi-sess-a", learned)
+	}
+	// TUI /resume：sessionId 演进，pid/端口不变。
+	stubSession = "pi-sess-b"
+	if st := s.ProbeWebUI("s4"); st.State != StateAvailable {
+		t.Fatalf("会话切换后应保持 available，got %s", st.State)
+	}
+	if learned := trackerPiSessionID(s, "s4"); learned != "pi-sess-b" {
+		t.Fatalf("会话切换后 piSessionID=%q, want pi-sess-b（跟随更新）", learned)
+	}
+}
+
+func TestProbe_AvailableKeepsAliveOnTransientNotReady(t *testing.T) {
+	// 保活探测（available 后低频轮询）遇瞬时 503（会话切换/服务重建窗口
+	// ready=false，pid 校验通过）：不降级——unavailable 只属于探测窗口内
+	// 未就绪，available 态由 failStreak（持续不可达）或 Invalidate 决定。
+	s := newTestService(t, time.Millisecond) // 探测窗口投小，验证 available 后 503 不触发窗口耗尽分支
+	ready := true
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !ready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"v":1,"ready":false,"sessionId":null,"pid":4321,"port":null,"startedAt":"x","seq":0,"buffered":0,"clients":0,"pendingCount":0}`)
+			return
+		}
+		fmt.Fprint(w, infoJSON("pi-sess-k", 4321, port))
+	})
+	s.RegisterSession("sk", 4321, port, "")
+	if st := s.ProbeWebUI("sk"); st.State != StateAvailable {
+		t.Fatalf("首轮应 available，got %s", st.State)
+	}
+	// 模拟会话切换窗口的瞬时未就绪：available 必须保持。
+	ready = false
+	if st := s.ProbeWebUI("sk"); st.State != StateAvailable {
+		t.Fatalf("available 遇瞬时 503 不应降级，got %s", st.State)
+	}
+	// 恢复后仍 available 且 URL 不变。
+	ready = true
+	if st := s.ProbeWebUI("sk"); st.State != StateAvailable {
+		t.Fatalf("恢复后应保持 available，got %s", st.State)
+	}
+}
+
+func TestProbe_SessionSwitchWithPIDChangeRejected(t *testing.T) {
+	// 会话切换合法的前提是 pid 不变：sessionId 演进 + pid 也变（端口被其他
+	// pi 进程复用）→ 拒绝，failStreak 照常累积（ended 语义不变）。
+	s := newTestService(t, time.Minute)
+	stubPID := 4321
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-sess-b", stubPID, port))
+	})
+	s.RegisterSession("s4b", 4321, port, "")
+	if st := s.ProbeWebUI("s4b"); st.State != StateAvailable {
+		t.Fatalf("首轮应 available，got %s", st.State)
+	}
+	// 端口被另一个 pi 复用：sessionId 与 pid 均变。
+	stubPID = 7777
+	if st := s.ProbeWebUI("s4b"); st.State != StateAvailable {
+		t.Fatalf("首次失败应保持 available（failStreak=1），got %s", st.State)
+	}
+	if st := s.ProbeWebUI("s4b"); st.State != StateEnded {
+		t.Fatalf("连续失败应 ended，got %s", st.State)
+	}
+	if learned := trackerPiSessionID(s, "s4b"); learned != "pi-sess-b" {
+		t.Fatalf("拒绝路径不得更新 piSessionID，got %q", learned)
+	}
+}
+
+func TestProbe_RegistryFallbackSessionSwitchAdopted(t *testing.T) {
+	// 注册表回退通道：已学到 piSessionID=A；条目 sessionId=B 但 pid 一致
+	//（会话切换后扩展覆盖写注册表）→ 入围并采纳，tracker 跟随更新为 B。
+	s := newTestService(t, time.Minute)
+	var realPort int
+	realPort = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-sess-b", 4321, realPort))
+	})
+	deadPort, err := AllocateFreePort()
+	if err != nil {
+		t.Fatalf("AllocateFreePort: %v", err)
+	}
+	writeRegistryEntry(t, s.registryDir, 4321, RegistryEntry{
+		V: 1, PID: 4321, Host: "127.0.0.1", Port: realPort, SessionID: "pi-sess-b", Ready: true,
+	})
+	s.RegisterSession("s4c", 4321, deadPort, "")
+	// 预置已学到的 piSessionID（模拟采纳后端口漂移，只剩注册表通道）。
 	s.mu.Lock()
-	s.trackers["s4"].piSessionID = "expected-pi-session"
+	s.trackers["s4c"].piSessionID = "pi-sess-a"
 	s.mu.Unlock()
 
-	st := s.ProbeWebUI("s4")
-	if st.State == StateAvailable {
-		t.Fatalf("sessionId 不匹配不得 available，got url=%s", st.URL)
+	st := s.ProbeWebUI("s4c")
+	if st.State != StateAvailable || st.Port != realPort {
+		t.Fatalf("pid 一致但 sessionId 演进的注册表条目应被采纳，got %+v", st)
 	}
+	if learned := trackerPiSessionID(s, "s4c"); learned != "pi-sess-b" {
+		t.Fatalf("piSessionID=%q, want pi-sess-b（跟随更新）", learned)
+	}
+}
+
+// trackerPiSessionID 读取 tracker 当前学到的 pi 会话 ID（测试断言用）。
+func trackerPiSessionID(s *Service, sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trackers[sessionID].piSessionID
 }
 
 func TestProbe_ProtocolVersionRejected(t *testing.T) {
@@ -388,9 +492,9 @@ func TestProbe_FirstAdoptionRejectsEmptySessionID(t *testing.T) {
 	}
 }
 
-func TestProbe_StickyRechecksPIDAndSessionID(t *testing.T) {
-	// 粘性复核：采纳后端口被新 pi 复用（sessionId 与 pid 均变）→ 不得保持
-	// available 于错误身份；转注册表/失败路径。
+func TestProbe_StickyRechecksPID(t *testing.T) {
+	// 粘性复核（resume 修订后粘性键 = pid）：采纳后端口被新 pi 复用
+	//（pid 变化）→ 不得保持 available 于错误身份；转注册表/失败路径。
 	s := newTestService(t, time.Minute)
 	stubPID := 4321
 	var port int

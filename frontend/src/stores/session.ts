@@ -13,6 +13,10 @@ type SessionInfo = session.SessionInfo;
 /** webui 探测轮询节奏（契约 §4.1 建议 0.5–1s）。 */
 const WEBUI_PROBE_INTERVAL_MS = 800;
 
+/** available 后的保活节奏：跟随 /resume、/new、fork、reload 导致的
+ * sessionId/端口演进（老扩展端口漂移场景经 url 字段传导）。 */
+const WEBUI_KEEPALIVE_INTERVAL_MS = 3000;
+
 export const useSessionStore = defineStore('session', () => {
   // All sessions
   const sessions = ref<SessionInfo[]>([]);
@@ -34,8 +38,8 @@ export const useSessionStore = defineStore('session', () => {
   const webuiProbeGen = new Map<string, number>();
 
   /**
-   * 启动（幂等）某 pi 会话的 webui 探测轮询；到达
-   * available/unavailable/ended 终态后自动停止。
+   * 启动（幂等）某 pi 会话的 webui 探测轮询；unavailable/ended 终态后自动
+   * 停止，available 后转低频保活（跟随会话切换导致的 url 演进）。
    */
   function ensureWebUIProbe(sessionId: string) {
     if (webuiProbeTimers.has(sessionId)) return;
@@ -45,13 +49,18 @@ export const useSessionStore = defineStore('session', () => {
       webuiProbeGen.get(sessionId) === gen && webuiProbeTimers.has(sessionId);
     const tick = async () => {
       let terminal = false;
+      let nextDelay = WEBUI_PROBE_INTERVAL_MS;
       try {
         const st = await probeWebUI(sessionId);
         // Minor6：轮询已停止/重试换代（含会话被 removeSession）→ 丢弃迟到结果。
         if (!isCurrent()) return;
         webuiStatus.value = { ...webuiStatus.value, [sessionId]: st };
-        if (st.state === 'available' || st.state === 'unavailable' || st.state === 'ended') {
+        if (st.state === 'unavailable' || st.state === 'ended') {
           terminal = true;
+        } else if (st.state === 'available') {
+          // available 非终态：转低频保活，跟随 /resume 等会话切换
+          //（sessionId 演进/端口漂移经 webuiStatus.url 传导）。
+          nextDelay = WEBUI_KEEPALIVE_INTERVAL_MS;
         }
       } catch {
         // 单次探测失败不改变状态（callApi 已打日志）；下轮重试。
@@ -61,7 +70,7 @@ export const useSessionStore = defineStore('session', () => {
         stopWebUIProbe(sessionId);
         return;
       }
-      webuiProbeTimers.set(sessionId, setTimeout(tick, WEBUI_PROBE_INTERVAL_MS));
+      webuiProbeTimers.set(sessionId, setTimeout(tick, nextDelay));
     };
     // 立即首轮（0ms timer 保持 map 占位语义统一）。
     webuiProbeTimers.set(sessionId, setTimeout(tick, 0));

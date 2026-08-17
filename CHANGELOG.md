@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [1.3.31] - 2026-08-17
+
+### Fixed
+
+- 修复 pi WebUI 在 TUI 内执行 `/resume`、`/new`、fork、reload 后失联的问题：这些操作在同进程内切换会话，sessionId 必变而 pid 不变，原粘性校验把 sessionId 变化当作身份漂移拒绝采纳。后端粘性键放宽为 pid——注册表回退扫描 pid 一致也入围，`validateAdoption` 粘性复核 sessionId 失配不构成拒绝（pid 失配仍拒绝，端口被其他 pi 进程复用的防线不变），`adoptLocked` 跟随更新 piSessionID 并记「webui 会话切换」日志。
+- available 后的保活探测遇瞬时 503（会话切换/服务重建窗口的 ready=false，pid 已校验确属目标进程）不再降级——unavailable/ended 只由持续不可达（failStreak）或会话退出（Invalidate）决定。
+- 前端探测轮询：available 由终态改为低频保活（800ms 探测节奏 → 3000ms），跟随会话切换导致的 url 演进；TerminalView 监听 webuiStatus.url 变化同步刷新 webUrl（老扩展端口漂移场景），URL 未变时的强制 reload 仍由 WebPlaneHost 既有机制接管。
+
 ## [1.3.30] - 2026-08-16
 
 ### Fixed

@@ -222,6 +222,19 @@ watch(
   },
 )
 
+// 会话切换跟随（/resume、/new、fork、reload）：webuiStatus.url 演进（老扩展
+// 端口漂移场景）时同步刷新 webUrl——此前只在打开/切换平面时经 openWebPlane
+// 取一次。URL 直接取自 store 状态（available 且非空时采用），不重复调用
+// openWebPlane（避免额外探测）；URL 未变时的强制 reload 由 WebPlaneHost
+// 既有机制接管，不重复实现。
+watch(
+  () => sessionStore.webuiStatus[props.sessionId]?.url,
+  (url) => {
+    if (!url || webuiState.value !== 'available' || activePlane.value !== 'web') return
+    webUrl.value = url
+  },
+)
+
 const statusColor = computed(() => {
   const s = session.value
   if (!s) return 'var(--tertiary)'

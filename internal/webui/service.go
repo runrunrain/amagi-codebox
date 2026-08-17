@@ -5,6 +5,10 @@ package webui
 // 状态机（技术方案 §5）：unknown → probing → available | unavailable；
 // 会话结束（pi 进程退出 → server 消亡 → 探测持续失败，契约 §7.4）→ ended。
 //
+// pi TUI 内 /resume、/new、fork、reload 会在同进程内切换会话：sessionId
+// 必变而 pid 不变，故采纳粘性键为 pid——sessionId 演进视为合法会话切换，
+// 跟随更新并记日志（见 validateAdoption / adoptLocked）。
+//
 // 每个 embedded pi 会话一条 tracker：LaunchPiSession 在 PTY 启动成功后
 // RegisterSession（携带注入端口、pid 与 v1.0.2 capability token），前端按
 // 0.5–1s 节奏轮询 ProbeWebUI 直到 available（契约 §4.1 建议节奏）；会话退出
@@ -51,7 +55,7 @@ type tracker struct {
 	pid          int    // pi 进程 pid（注册表回退按 pid 匹配 + 采纳强校验用）
 	injectedPort int    // AMAGI_WEBUI_PORT 注入端口（0 = 注入失败，纯注册表发现）
 	token        string // v1.0.2 capability token（AMAGI_WEBUI_TOKEN 注入值；空 = 未注入，探测时从注册表条目补读）
-	piSessionID  string // 探测成功后从 /api/info 学到的 pi 会话 UUID
+	piSessionID  string // 探测成功后从 /api/info 学到的 pi 会话 UUID（/resume 等会话切换后跟随演进；粘性键是 pid）
 	state        State
 	port         int // 当前确认/候选端口
 	registeredAt time.Time
@@ -144,7 +148,8 @@ func (s *Service) GetWebUIStatus(sessionID string) Status {
 }
 
 // ProbeWebUI 执行一轮探测并返回最新状态。前端按契约 §4.1 建议的
-// 0.5–1s 节奏轮询；available / unavailable / ended 后应停止轮询。
+// 0.5–1s 节奏轮询；available 后转低频保活（跟随 /resume 等会话切换），
+// unavailable / ended 后停止轮询。
 // 网络 I/O 在全局锁外执行（Major3：不阻塞其他会话的状态读写）。
 func (s *Service) ProbeWebUI(sessionID string) Status {
 	s.mu.Lock()
@@ -253,6 +258,12 @@ func (s *Service) probe(sessionID string, t *tracker) {
 	case resultAdopted:
 		s.adoptLocked(t, port, info, token)
 	case resultNotReady:
+		// 保活探测（available 后）遇瞬时 503（会话切换/服务重建窗口的
+		// ready=false，pid 已校验确属目标进程）：不降级——unavailable/ended
+		// 只由持续不可达（failStreak）或会话退出（Invalidate）决定。
+		if t.state == StateAvailable {
+			return
+		}
 		s.markStillProbingLocked(t)
 	default:
 		// 全部通道失败。
@@ -290,20 +301,25 @@ func (s *Service) runProbe(client *http.Client, registryDir string, snap *probeS
 		}
 	}
 
-	// 通道 2：注册表回退扫描。匹配键 = 已学到的 piSessionID（优先）或 pid；
-	// 每个候选逐探测验证，失败即淘汰（§7.3：权威判定永远是探测）；
-	// 探测失败/校验不过的候选 best-effort 删除其注册文件（陈旧条目清理）。
+	// 通道 2：注册表回退扫描。匹配键：已学到的 piSessionID 精确匹配优先，
+	// 失配但 pid 一致也采纳（/resume 等会话切换后扩展覆盖写条目，sessionId
+	// 演进；per-pid 注册表天然唯一）；每个候选逐探测验证，失败即淘汰
+	//（§7.3：权威判定永远是探测）；探测失败/校验不过的候选 best-effort
+	// 删除其注册文件（陈旧条目清理）。
 	for _, e := range scanRegistry(registryDir) {
 		// 注入端口已试过则跳过；例外：未携带注入 token 且本条目带 token 时
 		// 同端口也重试（独立终端场景：首次空 token 探测 403，需从条目补读）。
 		if e.Port == snap.port && snap.port > 0 && !(snap.token == "" && e.Token != "") {
 			continue
 		}
+		pidMatch := snap.pid > 0 && e.PID == snap.pid
 		if snap.piSessionID != "" {
-			if e.SessionID != snap.piSessionID {
+			// 精确匹配优先；失配但 pid 一致（会话切换后条目覆盖写）也入围，
+			// 最终归属由 validateAdoption 强校验裁决。
+			if e.SessionID != snap.piSessionID && !pidMatch {
 				continue
 			}
-		} else if snap.pid <= 0 || e.PID != snap.pid {
+		} else if !pidMatch {
 			continue
 		}
 		// v1.0.2：注入 token 优先；未注入时从注册表条目补读（独立终端场景）。
@@ -332,11 +348,13 @@ func probeCandidate(client *http.Client, port int, token string, expectPID int) 
 	return probeInfo(ctx, client, port, token, expectPID)
 }
 
-// validateAdoption 是采纳强校验（Major2）：
-//   - 首次采纳（piSessionID 未学到）：pid 匹配（已知时）+ sessionId 非空 +
-//     info.port==候选端口，三者齐备才采纳——防止端口复用/他服务占用误采纳；
-//   - 粘性复核（piSessionID 已学到）：sessionId + pid 双校验，且 info.port
-//     仍等于候选端口。
+// validateAdoption 是采纳强校验（Major2；resume 修订：粘性键放宽为 pid）：
+//   - sessionId 非空 + pid 匹配（已知时）+ info.port==候选端口，齐备才
+//     采纳——防止端口复用/他服务占用误采纳；
+//   - 粘性复核：pi /resume、/new、fork、reload 在同进程内切换会话，
+//     sessionId 必变而 pid 不变，故 sessionId 失配不构成拒绝（合法会话
+//     切换，由 adoptLocked 跟随更新）；pid 失配仍拒绝（端口被其他 pi
+//     进程复用的既有防线不变）。
 func validateAdoption(snap *probeSnapshot, info *Info, candidatePort int) bool {
 	if info == nil || info.SessionID == "" {
 		return false
@@ -347,15 +365,18 @@ func validateAdoption(snap *probeSnapshot, info *Info, candidatePort int) bool {
 	if candidatePort > 0 && info.Port != candidatePort {
 		return false
 	}
-	if snap.piSessionID != "" && info.SessionID != snap.piSessionID {
-		return false
-	}
 	return true
 }
 
 // adoptLocked 采纳一次成功探测：记录端口/sessionId/token 并置 available。
 // 调用方必须持有 s.mu。
 func (s *Service) adoptLocked(t *tracker, port int, info *Info, token string) {
+	// 会话切换（/resume、/new、fork、reload）：pid 不变而 sessionId 演进，
+	// 属同进程内的合法切换而非身份漂移，跟随更新。
+	if old := t.piSessionID; old != "" && old != info.SessionID {
+		s.log.Info("webui", "webui 会话切换",
+			fmt.Sprintf("port=%d piSession=%s -> %s", port, old, info.SessionID))
+	}
 	t.piSessionID = info.SessionID
 	t.port = port
 	if token != "" {
