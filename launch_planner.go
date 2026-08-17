@@ -137,12 +137,11 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 			recipe.UseHeadroom = *refs.UseHeadroom
 		}
 	}
-	// Canonical workdir.
-	workdir := strings.TrimSpace(req.Workdir)
-	if workdir == "" {
-		workdir = p.canonicalWorkdir()
-	}
-	if workdir == "" {
+	// Canonical workdir：与桌面 Launch* 入口共用同一校验/回退链（launch_workdir.go）。
+	// 无效的远程 workdir 不再作为不可用的 lpCurrentDirectory 击穿到 ConPTY，
+	// 先回退默认目录→Home；全部不可用才报 FailureWorkdir。
+	workdir, workdirErr := resolveLaunchWorkDirChain(strings.TrimSpace(req.Workdir), p.canonicalWorkdir(), nil)
+	if workdirErr != nil {
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureWorkdir, CLIType: req.CLIType}
 	}
 	if err := platform.ValidateLaunchRequest(p.capabilities, string(session.ModeEmbedded)); err != nil {

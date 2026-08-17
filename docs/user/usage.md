@@ -72,8 +72,8 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
     - **服务提供商**：以网格展示所有 provider，进入详情可编辑单个 provider。详见 [./providers.md](./providers.md)。
     - **预设**（启动配置）：按协议格式管理公共预设，下方提供二级下划线 Tab。
 - **顶部右侧操作**：
-    - **导出完整配置**：导出可迁移到新设备的完整 JSON 快照，包含明文密钥和环境变量，请妥善保管。
-    - **导入完整配置**：从 v2 快照替换当前配置；旧 v1 Provider 配置仍可兼容导入。成功后请重启应用。
+    - **导出完整配置**：导出可迁移到新设备的完整 JSON 快照，包含明文密钥、环境变量和 CLI 独立配置（OpenCode 全局配置、pi 的 models/auth/amagi 配置、omp 的 config/models 配置），请妥善保管。
+    - **导入完整配置**：从 v2 快照替换当前配置（含 CLI 独立配置，旧版导出文件缺失的字段自动跳过）；旧 v1 Provider 配置仍可兼容导入。成功后请重启应用。
 - **预设区二级 Tab**：Anthropic 格式 / OpenAI 格式 / OpenCode。Claude Code 使用 Anthropic；Codex、Pi、OMP 共享 OpenAI；OpenCode 再下设"预设管理 / 全局配置"三级切换。
 
 Provider 与 Preset 的概念、字段含义与 `config.json` 结构详见 [./providers.md](./providers.md)。

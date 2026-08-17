@@ -1891,14 +1891,13 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		return "", err
 	}
 
-	// 如果未指定工作目录，使用默认路径
-	if workDir == "" {
-		workDir = a.Paths.GetDefaultPath()
+	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+	if wdErr != nil {
+		return "", wdErr
 	}
-	if workDir == "" {
-		home, _ := os.UserHomeDir()
-		workDir = home
-	}
+	workDir = resolvedWorkDir
 
 	// R5-002/R6-001: every Headroom-dependent launch crosses the uninstall
 	// admission barrier before Headroom.Start, session creation, resolution, or
@@ -2563,14 +2562,13 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		return "", err
 	}
 
-	// 如果未指定工作目录，使用默认路径
-	if workDir == "" {
-		workDir = a.Paths.GetDefaultPath()
+	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+	if wdErr != nil {
+		return "", wdErr
 	}
-	if workDir == "" {
-		home, _ := os.UserHomeDir()
-		workDir = home
-	}
+	workDir = resolvedWorkDir
 
 	launchSettings := codexLaunchSettings{
 		Model: normalizeCodexModelName(modelName),
@@ -2932,14 +2930,13 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		return "", err
 	}
 
-	// 如果未指定工作目录，使用默认路径
-	if workDir == "" {
-		workDir = a.Paths.GetDefaultPath()
+	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+	if wdErr != nil {
+		return "", wdErr
 	}
-	if workDir == "" {
-		home, _ := os.UserHomeDir()
-		workDir = home
-	}
+	workDir = resolvedWorkDir
 
 	launchSettings := piLaunchSettings{
 		Model: strings.TrimSpace(modelName),
@@ -3198,14 +3195,13 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		return "", err
 	}
 
-	// 如果未指定工作目录，使用默认路径
-	if workDir == "" {
-		workDir = a.Paths.GetDefaultPath()
+	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+	if wdErr != nil {
+		return "", wdErr
 	}
-	if workDir == "" {
-		home, _ := os.UserHomeDir()
-		workDir = home
-	}
+	workDir = resolvedWorkDir
 
 	launchSettings := ompLaunchSettings{
 		Model: strings.TrimSpace(modelName),
@@ -4493,14 +4489,13 @@ launchCommon:
 		return "", err
 	}
 
-	// 如果未指定工作目录，使用默认路径
-	if workDir == "" {
-		workDir = a.Paths.GetDefaultPath()
+	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+	if wdErr != nil {
+		return "", wdErr
 	}
-	if workDir == "" {
-		home, _ := os.UserHomeDir()
-		workDir = home
-	}
+	workDir = resolvedWorkDir
 
 	sessionProvider := "opencode"
 	if providerName != "" {

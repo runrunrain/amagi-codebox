@@ -86,7 +86,7 @@ type TerminalSettings struct {
 }
 
 // SkinSettings 皮肤设置（本地图片皮肤：背景层 + 蒙版调光/模糊 + 内容
-// 面板不透明度）。
+// 面板不透明度 + 前景文字加深）。
 // Enabled 时 ImageID 必须对应皮肤库中已导入的图片（该存在性校验由
 // skins 服务层负责，settings 层只管持久化与区间 clamp）。
 type SkinSettings struct {
@@ -100,19 +100,25 @@ type SkinSettings struct {
 	// （默认 70；0=面板全透出皮肤图片，100=面板不透明）。与 Dim 解耦：
 	// Dim 调背景蒙版层，Opacity 调内容面板本体。
 	Opacity int `json:"opacity"`
+	// TextBoost 是前景文字加深（字体浓度）强度百分比 0..100（默认 0
+	// =不增强、保持现状）。与 Dim（背景蒙版调光）、Opacity（内容面板
+	// 不透明度）三者解耦：TextBoost 只作用于前景文字加深与其底衬强度。
+	TextBoost int `json:"textBoost"`
 }
 
 // DefaultSkinSettings 返回皮肤设置的默认值（关闭、未选图、dim 35、blur 0、
-// opacity 70）。
+// opacity 70、textBoost 0）。
 func DefaultSkinSettings() SkinSettings {
-	return SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0, Opacity: 70}
+	return SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0, Opacity: 70, TextBoost: 0}
 }
 
 // normalizeSkinSettings 合并零值并 clamp 到合法区间：老 settings.json 无
-// skin 键时反序列化为零值，此时整体回落到默认值（dim=35、opacity=70）；
-// 显式越界值取边界而非报错。含 skin 键但缺 opacity 子键的老文件读入
-// opacity=0：零值与“未写入该键”不可区分（同 dim 的既有取舍），且 0 是
-// 合法档位不能回填默认——仅在 Enabled 时影响渲染，前端滑块可即时调整。
+// skin 键时反序列化为零值，此时整体回落到默认值（dim=35、opacity=70、
+// textBoost=0）；显式越界值取边界而非报错。含 skin 键但缺 opacity 子键的
+// 老文件读入 opacity=0：零值与“未写入该键”不可区分（同 dim 的既有取舍），
+// 且 0 是合法档位不能回填默认——仅在 Enabled 时影响渲染，前端滑块可即时
+// 调整。缺 textBoost 子键的老文件同样读入 0，且 0 即默认值（不增强），
+// 无突变问题——textBoost 默认即零值，取舍比 opacity 更干净。
 func normalizeSkinSettings(sk SkinSettings) SkinSettings {
 	if sk == (SkinSettings{}) {
 		return DefaultSkinSettings()
@@ -134,6 +140,12 @@ func normalizeSkinSettings(sk SkinSettings) SkinSettings {
 	}
 	if sk.Opacity > 100 {
 		sk.Opacity = 100
+	}
+	if sk.TextBoost < 0 {
+		sk.TextBoost = 0
+	}
+	if sk.TextBoost > 100 {
+		sk.TextBoost = 100
 	}
 	return sk
 }
@@ -570,8 +582,9 @@ func (s *Service) GetSkinSettings() SkinSettings {
 	return s.settings.Skin
 }
 
-// SetSkinSettings 更新皮肤设置并保存。Dim/Opacity clamp 到 [0,100]、
-// Blur clamp 到 [0,40]，越界取边界值而非报错（前端滑块失控时兜底）。
+// SetSkinSettings 更新皮肤设置并保存。Dim/Opacity/TextBoost clamp 到
+// [0,100]、Blur clamp 到 [0,40]，越界取边界值而非报错（前端滑块失控时
+// 兜底）。
 // ImageID 存在性校验不在本层（见 skins.Service.SetSkinSettings）。
 func (s *Service) SetSkinSettings(sk SkinSettings) error {
 	sk = normalizeSkinSettings(sk)

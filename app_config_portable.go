@@ -13,6 +13,8 @@ import (
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/usage"
+
+	"gopkg.in/yaml.v3"
 )
 
 const completeConfigExportVersion = "2.0"
@@ -27,6 +29,17 @@ type portableConfigSnapshot struct {
 	Secrets        *map[string]string      `json:"secrets"`
 	Pricing        *usage.PricingData      `json:"pricing"`
 	OpenCodeConfig json.RawMessage         `json:"opencode_global_config"`
+
+	// CLI 独立配置全文快照（可选 section）。仅当源设备上对应文件存在且
+	// 内容合法时导出；导入按存在性整体替换目标文件，旧 v2 导出文件缺失
+	// 这些字段时行为完全不变。内容含明文凭据（pi auth.json token、
+	// models.json/models.yml 内联 apiKey 等），与顶层 provider api_key
+	// 明文导出语义一致。
+	PiModelsConfig  json.RawMessage `json:"pi_models_config,omitempty"`  // ~/.pi/agent/models.json
+	PiAuthConfig    json.RawMessage `json:"pi_auth_config,omitempty"`    // ~/.pi/agent/auth.json
+	PiAmagiConfig   json.RawMessage `json:"pi_amagi_config,omitempty"`   // ~/.pi/agent/amagi.json
+	OmpConfig       string          `json:"omp_config,omitempty"`        // ~/.omp/agent/config.yml
+	OmpModelsConfig string          `json:"omp_models_config,omitempty"` // ~/.omp/agent/models.yml
 }
 
 func (p portableConfigSnapshot) validate() error {
@@ -83,6 +96,7 @@ func (a *App) buildCompleteExportConfig() (config.ExportConfig, error) {
 		Pricing:        pointerTo(a.Usage.Pricing().Snapshot()),
 		OpenCodeConfig: json.RawMessage(openCodeConfig),
 	}
+	a.appendCLIConfigSections(&portable)
 	portableJSON, err := json.Marshal(portable)
 	if err != nil {
 		return config.ExportConfig{}, fmt.Errorf("marshal portable config: %w", err)
@@ -101,6 +115,160 @@ func (a *App) buildCompleteExportConfig() (config.ExportConfig, error) {
 }
 
 func pointerTo[T any](value T) *T { return &value }
+
+// validateJSONObjectConfig 校验 pi 配置内容：合法 JSON 且根为对象，与
+// piconfig Save* 方法的写入校验保持一致。
+func validateJSONObjectConfig(content string) error {
+	if !json.Valid([]byte(content)) {
+		return errors.New("content is not valid JSON")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil || obj == nil {
+		return errors.New("root must be a JSON object")
+	}
+	return nil
+}
+
+// validateYAMLMappingConfig 校验 omp 配置内容：合法 YAML 且根为映射，与
+// ompconfig Save* 方法的写入校验保持一致。
+func validateYAMLMappingConfig(content string) error {
+	var root map[string]any
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
+	}
+	if root == nil {
+		return errors.New("root must be a YAML mapping")
+	}
+	return nil
+}
+
+// appendCLIConfigSections 将 CLI 独立配置（pi 的 models.json/auth.json/
+// amagi.json 与 omp 的 config.yml/models.yml）全文读入 portable 快照。
+// 这些 section 采用尽力而为语义：对应文件不存在时静默跳过（不导出占位
+// 骨架，避免把“源设备未使用该 CLI”误表达为“空注册表”），读取失败或
+// 内容非法时记 Warn 跳过该字段，单个 CLI 配置损坏不阻断完整导出
+// （区别于 OpenCode 全局配置的硬性要求）。
+func (a *App) appendCLIConfigSections(portable *portableConfigSnapshot) {
+	if a.PiConfig != nil {
+		portable.PiModelsConfig = readCLIConfigSection(a, "pi_models_config",
+			a.PiConfig.GetModelsConfigPath, a.PiConfig.GetModelsConfig, validateJSONObjectConfig)
+		portable.PiAuthConfig = readCLIConfigSection(a, "pi_auth_config",
+			a.PiConfig.GetAuthConfigPath, a.PiConfig.GetAuthConfig, validateJSONObjectConfig)
+		portable.PiAmagiConfig = readCLIConfigSection(a, "pi_amagi_config",
+			a.PiConfig.GetAmagiConfigPath, a.PiConfig.GetAmagiConfig, validateJSONObjectConfig)
+	}
+	if a.OmpConfig != nil {
+		portable.OmpConfig = string(readCLIConfigSection(a, "omp_config",
+			a.OmpConfig.GetOmpConfigPath, a.OmpConfig.GetOmpConfig, validateYAMLMappingConfig))
+		portable.OmpModelsConfig = string(readCLIConfigSection(a, "omp_models_config",
+			a.OmpConfig.GetModelsConfigPath, a.OmpConfig.GetModelsConfig, validateYAMLMappingConfig))
+	}
+}
+
+// readCLIConfigSection 读取单个 CLI 配置 section：文件不存在时返回 nil
+// （静默跳过）；读取失败或校验失败时记 Warn 并返回 nil。
+func readCLIConfigSection(a *App, field string, pathFn func() (string, error), readFn func() (string, error), validate func(string) error) json.RawMessage {
+	path, err := pathFn()
+	if err != nil {
+		a.warnCLIConfigSkip(field, fmt.Sprintf("resolve path: %v", err))
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			a.warnCLIConfigSkip(field, fmt.Sprintf("stat %s: %v", path, err))
+		}
+		return nil
+	}
+	content, err := readFn()
+	if err != nil {
+		a.warnCLIConfigSkip(field, err.Error())
+		return nil
+	}
+	if err := validate(content); err != nil {
+		a.warnCLIConfigSkip(field, err.Error())
+		return nil
+	}
+	return json.RawMessage(content)
+}
+
+func (a *App) warnCLIConfigSkip(field, reason string) {
+	if a.Log != nil {
+		a.Log.Warn("app", "导出完整配置：跳过 CLI 独立配置字段", fmt.Sprintf("field=%s reason=%s", field, reason))
+	}
+}
+
+// applyCLIConfigSections 按存在性恢复快照中的 CLI 独立配置（v2 完整
+// 快照替换语义：整体替换目标文件）。字段缺失时跳过写入，因此旧 v2
+// 导出文件导入行为不变。写失败按 errors.Join 聚合返回；调用方
+// （applyCompleteConfig / restoreCompleteConfig）据此触发共享回滚。
+func (a *App) applyCLIConfigSections(portable portableConfigSnapshot) error {
+	var errs error
+	if len(portable.PiModelsConfig) > 0 {
+		if a.PiConfig == nil {
+			errs = errors.Join(errs, errors.New("replace pi models config: pi config service is not initialized"))
+		} else if err := a.PiConfig.SaveModelsConfig(string(portable.PiModelsConfig)); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("replace pi models config: %w", err))
+		}
+	}
+	if len(portable.PiAuthConfig) > 0 {
+		if a.PiConfig == nil {
+			errs = errors.Join(errs, errors.New("replace pi auth config: pi config service is not initialized"))
+		} else if err := a.PiConfig.SaveAuthConfig(string(portable.PiAuthConfig)); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("replace pi auth config: %w", err))
+		}
+	}
+	if len(portable.PiAmagiConfig) > 0 {
+		if a.PiConfig == nil {
+			errs = errors.Join(errs, errors.New("replace pi amagi config: pi config service is not initialized"))
+		} else if err := a.PiConfig.SaveAmagiConfig(string(portable.PiAmagiConfig)); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("replace pi amagi config: %w", err))
+		}
+	}
+	if portable.OmpConfig != "" {
+		if a.OmpConfig == nil {
+			errs = errors.Join(errs, errors.New("replace omp config: omp config service is not initialized"))
+		} else if err := a.OmpConfig.SaveOmpConfig(portable.OmpConfig); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("replace omp config: %w", err))
+		}
+	}
+	if portable.OmpModelsConfig != "" {
+		if a.OmpConfig == nil {
+			errs = errors.Join(errs, errors.New("replace omp models config: omp config service is not initialized"))
+		} else if err := a.OmpConfig.SaveModelsConfig(portable.OmpModelsConfig); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("replace omp models config: %w", err))
+		}
+	}
+	return errs
+}
+
+// validateCLIConfigSections 在导入写入前校验快照中的 CLI 独立配置内容，
+// 与 validateCompleteImportServices 的整体思路一致：畸形内容在触碰任何
+// 实际状态前失败，不依赖回滚。内容校验镜像 Save* 写入校验；多个畸形
+// section 的错误用 errors.Join 聚合，一次性全部报出。
+func validateCLIConfigSections(portable portableConfigSnapshot) error {
+	sections := []struct {
+		name     string
+		present  bool
+		content  string
+		validate func(string) error
+	}{
+		{"pi models config", len(portable.PiModelsConfig) > 0, string(portable.PiModelsConfig), validateJSONObjectConfig},
+		{"pi auth config", len(portable.PiAuthConfig) > 0, string(portable.PiAuthConfig), validateJSONObjectConfig},
+		{"pi amagi config", len(portable.PiAmagiConfig) > 0, string(portable.PiAmagiConfig), validateJSONObjectConfig},
+		{"omp config", portable.OmpConfig != "", portable.OmpConfig, validateYAMLMappingConfig},
+		{"omp models config", portable.OmpModelsConfig != "", portable.OmpModelsConfig, validateYAMLMappingConfig},
+	}
+	var errs error
+	for _, section := range sections {
+		if !section.present {
+			continue
+		}
+		if err := section.validate(section.content); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("%s: %w", section.name, err))
+		}
+	}
+	return errs
+}
 
 type configImportMetadata struct {
 	OpenCodePresets *json.RawMessage `json:"opencode_presets"`
@@ -233,6 +401,9 @@ func (a *App) applyCompleteConfig(exported config.ExportConfig, portable portabl
 	if err = a.SaveOpenCodeConfig(string(portable.OpenCodeConfig)); err != nil {
 		return fmt.Errorf("replace OpenCode global config: %w", err)
 	}
+	if err = a.applyCLIConfigSections(portable); err != nil {
+		return fmt.Errorf("replace CLI standalone configs: %w", err)
+	}
 
 	rollbackNeeded = false
 	if a.Remote != nil && a.Remote.IsRunning() {
@@ -301,7 +472,7 @@ func validateCompleteImportServices(a *App, providers map[string]config.Provider
 	if err := validatePortableEnvConfig(*portable.EnvVars); err != nil {
 		return err
 	}
-	return nil
+	return validateCLIConfigSections(portable)
 }
 
 func validatePortableEnvConfig(next envvars.PortableConfig) error {
@@ -338,6 +509,7 @@ func (a *App) restoreCompleteConfig(exported config.ExportConfig, portable porta
 	restoreErr = errors.Join(restoreErr, a.Config.ReplaceProviders(providers))
 	restoreErr = errors.Join(restoreErr, a.Config.SetAgentTeams(exported.AgentTeams))
 	restoreErr = errors.Join(restoreErr, a.Config.ReplaceImportedPresetSnapshots(exported.TerminalPresets, exported.OpenCodePresets, true))
+	restoreErr = errors.Join(restoreErr, a.applyCLIConfigSections(portable))
 	restoreErr = errors.Join(restoreErr, a.syncProvidersToHarnesses())
 	return restoreErr
 }

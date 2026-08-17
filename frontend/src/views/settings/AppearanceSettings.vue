@@ -3,7 +3,7 @@
     <div class="card-head">
       <div>
         <h2>皮肤</h2>
-        <p class="set-sub">选择本地图片作为应用全局背景，可调调光、模糊与内容不透明度；终端区域保持不透明</p>
+        <p class="set-sub">选择本地图片作为应用全局背景，可调调光、模糊、内容不透明度与字体调光；终端区域保持不透明</p>
       </div>
       <AppButton variant="primary" :disabled="importing" @click="onPick">
         {{ importing ? '导入中...' : '选择图片' }}
@@ -88,8 +88,22 @@
         />
         <span class="range-num">{{ skinStore.settings.opacity }}%</span>
       </div>
+      <div class="range-row">
+        <span class="range-label">字体调光</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          :value="skinStore.settings.textBoost"
+          :disabled="!skinStore.active"
+          @input="onTextBoostInput"
+          @change="onTextBoostCommit"
+        />
+        <span class="range-num">{{ skinStore.settings.textBoost }}%</span>
+      </div>
       <p class="sliders-hint">
-        调光＝整张背景图压暗；内容不透明度＝窗口/侧栏/卡片等面板透出背景图的程度（100% 为不透明）
+        调光＝整张背景图压暗；内容不透明度＝窗口/侧栏/卡片等面板透出背景图的程度（100% 为不透明）；字体调光＝独立于背景调光，加深前景文字并加淡底衬，保证任意背景图下文字可读（0% 为不增强）
       </p>
     </div>
 
@@ -202,6 +216,18 @@ function onOpacityInput(e: Event) {
 async function onOpacityCommit(e: Event) {
   try {
     await skinStore.apply({ opacity: Number((e.target as HTMLInputElement).value) })
+  } catch (err) {
+    showError('保存失败: ' + errMsg(err))
+  }
+}
+
+function onTextBoostInput(e: Event) {
+  skinStore.preview({ textBoost: Number((e.target as HTMLInputElement).value) })
+}
+
+async function onTextBoostCommit(e: Event) {
+  try {
+    await skinStore.apply({ textBoost: Number((e.target as HTMLInputElement).value) })
   } catch (err) {
     showError('保存失败: ' + errMsg(err))
   }

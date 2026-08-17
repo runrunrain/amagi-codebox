@@ -318,8 +318,8 @@ type OpenCodeBinding struct {
 
 Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 [./usage.md](./usage.md#provider-center-provider-providercenterview)）：
 
-- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、价格表和 OpenCode 全局配置。Anthropic / OpenAI 内嵌的 `api_key` 仍会清空，当前 provider 统一密钥写在顶层；`portable.secrets` 保存全部其余密钥。导出文件含明文凭据。
-- **导入完整配置**：v2 快照按整体替换语义还原并在失败时尽力回滚，成功后需重启；v1 文件保持旧协议兼容。导入 provider 时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥：优先顶层 `api_key`，否则按首选格式回退到 legacy `api_key`。
+- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、价格表、OpenCode 全局配置，以及 CLI 独立配置全文快照：pi 的 `~/.pi/agent/models.json`、`auth.json`、`amagi.json` 与 omp 的 `~/.omp/agent/config.yml`、`models.yml`。CLI 独立配置仅在源设备对应文件存在且内容合法时导出；缺失或损坏（非法 JSON/YAML、无法读取）的字段会记 Warn 并跳过，不会阻断导出。Anthropic / OpenAI 内嵌的 `api_key` 仍会清空，当前 provider 统一密钥写在顶层；`portable.secrets` 保存全部其余密钥。导出文件含明文凭据，包括 pi `auth.json` 的 auth token、pi/omp models 配置中的内联 `apiKey`，与 provider API key 明文导出语义一致，请妥善保管。
+- **导入完整配置**：v2 快照按整体替换语义还原并在失败时尽力回滚，成功后需重启；v1 文件保持旧协议兼容。导入 provider 时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥：优先顶层 `api_key`，否则按首选格式回退到 legacy `api_key`。CLI 独立配置按“完整快照替换”语义恢复：快照中存在的字段整体替换目标设备对应文件，缺失字段（含旧版 v2 导出文件）跳过不写入，导入行为与旧文件完全一致；内容非法会在写入前整体报错并触发回滚。注意与 codebox 管理配置的共存关系：pi/omp 会话启动时仍会以合并方式把 `amagi-<name>` 托管条目写入同一文件（不会覆盖导入的自定义 provider），导入的快照仅在导入时整体替换一次。
 
 导入/导出涉及的密钥同步会经过 secrets 服务（加密存储），明文不会进入 `config.json`。安全机制详见 [../security.md](../security.md)。
 

@@ -7,9 +7,12 @@
  *   --skin-blur: <px>
  *   --skin-dim:  0..1（整图黑色蒙层不透明度）
  *   --skin-panel-alpha: 0..1（内容面板不透明度，与 dim 解耦）
+ *   --skin-text-boost: 0..1（前景文字加深强度；0 时 App.vue 移除该变量，
+ *     下方 color-mix 声明随之失效、前景 token 回退 tokens.css 原色）
  *   data-skin="on"
  * 皮肤启用时窗口面 token 以 color-mix 按 --skin-panel-alpha 混合 transparent，
- * 让背景透出；前景 token 不变保证可读。
+ * 让背景透出；前景 token 按 --skin-text-boost 向 black 加深，并为正文容器
+ * 叠同强度淡色 text-shadow 底衬，保证任意背景图下文字可读。
  * 终端区域（--termBg 不透明）不受影响。
  */
 
@@ -19,6 +22,8 @@
   --skin-dim: 0.35;
   /* 面板不透明度默认 0.7；0 档可读性由下方 max(..., 0.12) 下限 + dim 蒙层保底 */
   --skin-panel-alpha: 0.7;
+  /* 前景文字加深默认 0=不增强；即使变量存在，0% 权重混合结果即原色 */
+  --skin-text-boost: 0;
 }
 
 /* 固定背景层：cover + 可调模糊；放大补偿 blur 造成的边缘透明。
@@ -66,6 +71,28 @@ html[data-skin='on'] {
   --controlHover: color-mix(in srgb, #E5E5EA var(--skin-panel-mix), transparent);
   /* 半透明面上投影弱化，避免脏边 */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 18px rgba(0, 0, 0, 0.06);
+
+  /* 前景文字加深：三级文字 token 按 --skin-text-boost 向 black 混合
+     （原色取自 tokens.css 1:1，仅覆盖层变量化，不改设计规范文件）。
+     black 权重 = boost%，boost=100 时全黑；boost=0 时 App.vue 移除变量、
+     本组声明失效回退 tokens.css 原色（0 档=现状）。
+     深色文字 + 半透明亮面板 + dim 蒙层方向一致：文字越深越能从花背景中析出。 */
+  --label: color-mix(in srgb, #1D1D1F, black calc(var(--skin-text-boost) * 100%));
+  --secondary: color-mix(in srgb, #6E6E73, black calc(var(--skin-text-boost) * 100%));
+  --tertiary: color-mix(in srgb, #8E8E93, black calc(var(--skin-text-boost) * 100%));
+}
+
+/* 底衬取舍：选 text-shadow 淡色光晕而非容器背景——不涂色块、零布局影响、
+   不与容器既有背景/边框冲突，且对容器内所有文本节点生效。
+   命中面克制在 3 个类：设置页行标签（.setting-row label，覆盖 5 个设置视图）、
+   侧栏会话主标题（.sess-title）、侧栏导航项（.nav-item）。
+   强度 = boost * 0.25% 的黑色半透明光晕（boost=100 时 25% alpha），
+   把文字边缘从复杂背景纹理中柔化分离。boost=0 时变量缺失，整组声明失效。 */
+html[data-skin='on'] .setting-row label,
+html[data-skin='on'] .sess-title,
+html[data-skin='on'] .nav-item {
+  text-shadow: 0 0 6px
+    color-mix(in srgb, black calc(var(--skin-text-boost) * 25%), transparent);
 }
 
 html[data-skin='on'],

@@ -311,13 +311,13 @@
 **Service**: App
 **Parameters**: none
 **Returns**: `string`, `error`
-**Description**: 打开保存对话框，将可移植的完整配置导出到 JSON 文件。v2 快照包含 provider/全部密钥、各引擎 preset、应用设置、路径、自定义环境变量、价格表和 OpenCode 全局配置。导出文件包含明文敏感信息，写入权限为当前用户可读写。
+**Description**: 打开保存对话框，将可移植的完整配置导出到 JSON 文件。v2 快照包含 provider/全部密钥、各引擎 preset、应用设置、路径、自定义环境变量、价格表、OpenCode 全局配置，以及 CLI 独立配置全文快照（pi 的 `models.json`/`auth.json`/`amagi.json`、omp 的 `config.yml`/`models.yml`；仅当源设备对应文件存在且内容合法时导出，缺失或损坏的字段记 Warn 跳过、不阻断导出）。导出文件包含明文敏感信息（provider API key、pi auth token、models 内联 apiKey 等），写入权限为当前用户可读写。
 
 ### ImportConfigFromFile
 **Service**: App
 **Parameters**: none
 **Returns**: `string`, `error`
-**Description**: 打开文件选择对话框导入配置。v2 完整快照采用替换语义并在失败时尽力回滚，成功后需重启应用；v1 文件继续兼容原有 provider/preset 导入。日志、会话与用量数据库、远程配对设备、插件实体、运行时缓存不属于可移植配置。
+**Description**: 打开文件选择对话框导入配置。v2 完整快照采用替换语义并在失败时尽力回滚，成功后需重启应用；快照中存在的 CLI 独立配置段会整体替换目标设备对应文件（与 codebox 管理的 provider 配置共存，后续启动 pi/omp 会话时仍会合并写入 `amagi-<name>` 托管条目），缺失段（含旧版 v2 导出文件）自动跳过；v1 文件继续兼容原有 provider/preset 导入。日志、会话与用量数据库、远程配对设备、插件实体、运行时缓存不属于可移植配置。
 
 ### GetProviderExportJSON
 **Service**: App
@@ -1058,13 +1058,13 @@
 **Service**: Settings Service
 **Parameters**: none
 **Returns**: `SkinSettings`
-**Description**: 返回皮肤设置（`{enabled, imageId, dim, blur, opacity}`；默认 `{false, "", 35, 0, 70}`）。`opacity` 为内容面板（窗口/侧栏/卡片等）不透明度百分比 0..100（0=面板全透出皮肤图片，100=面板不透明），与 `dim`（背景蒙版层）解耦。老 settings.json 无 `skin` 键时 Load 合并为默认值；含 `skin` 键但缺 `opacity` 子键的老文件按 0 读入（0 为合法档位，不回填默认）。
+**Description**: 返回皮肤设置（`{enabled, imageId, dim, blur, opacity, textBoost}`；默认 `{false, "", 35, 0, 70, 0}`）。`opacity` 为内容面板（窗口/侧栏/卡片等）不透明度百分比 0..100（0=面板全透出皮肤图片，100=面板不透明）。`textBoost` 为前景文字加深（字体浓度）强度百分比 0..100，作用于前景文字加深与底衬强度（0=不增强、保持现状），与背景调光 `dim`（背景蒙版层）、面板透明度 `opacity`（内容面板本体）三者独立解耦。老 settings.json 无 `skin` 键时 Load 合并为默认值；含 `skin` 键但缺 `opacity` 子键的老文件按 0 读入（0 为合法档位，不回填默认）；缺 `textBoost` 子键同样读入 0，且 0 即默认值，无突变。
 
 ### SetSkinSettings
 **Service**: Settings Service
 **Parameters**: `sk (SkinSettings)`
 **Returns**: `error`
-**Description**: 更新皮肤设置并保存。`dim`/`opacity` clamp 到 [0,100]、`blur` clamp 到 [0,40]，越界取边界值而非报错。ImageID 存在性校验在 Skins 服务层（`app.Skins.SetSkinSettings`）。
+**Description**: 更新皮肤设置并保存。`dim`/`opacity`/`textBoost` clamp 到 [0,100]、`blur` clamp 到 [0,40]，越界取边界值而非报错。ImageID 存在性校验在 Skins 服务层（`app.Skins.SetSkinSettings`）。
 
 ### SetTerminalSettings
 **Service**: Settings Service

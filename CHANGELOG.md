@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [1.3.34] - 2026-08-18
+
+### Fixed
+
+- 修复 Windows 启动会话报 `conpty start: Failed to create console process: The directory name is invalid` 的问题：workDir 全链路此前只在空值时回退默认目录，非空值从不校验，陈旧默认目录、笔误、带引号路径会直穿到 CreateProcessW 的 lpCurrentDirectory 导致进程创建失败（ERROR_DIRECTORY 267）。新增 `launch_workdir.go` 单一校验/回退 choke point，全部 `Launch*` 入口（ClaudeCode/Codex/Pi/OMP/OpenCode）统一接入：requested 先 Clean+Abs 归一化，候选链 requested → defaultPath → 用户 Home 逐个 Stat 校验（存在且是目录），回退发生记 Warn（含原始路径/原因/回退目标），全部候选无效才报错。
+
+### Added
+
+- 完整配置导出（v2 快照）新增 CLI 独立配置全文 section：pi 的 `models.json`/`auth.json`/`amagi.json` 与 omp 的 `config.yml`/`models.yml`。导出为尽力而为语义——文件不存在静默跳过（不导出空骨架）、读取失败或内容非法记 Warn 跳过单个字段不阻断整体导出；导入时存在的 section 按整体替换语义写入目标设备（与 codebox 托管的 provider 配置共存），缺失 section（含旧版 v2 导出文件）自动跳过、行为不变。内容含明文凭据（pi auth token、内联 apiKey），与顶层 provider api_key 明文导出语义一致。附 292 行封闭式测试。
+- 皮肤新增「前景文字加深」（`SkinSettings.TextBoost`，默认 0=不增强，0-100）：三级前景文字 token（label/secondary/tertiary）按强度向 black `color-mix`，并为设置页行标签、侧栏会话标题、导航项叠同强度淡色 text-shadow 底衬，保证任意背景图下文字可读；0 档移除变量整组声明失效回退原色（0 档=现状）。与 dim（背景蒙版）、opacity（面板本体）三者独立解耦。
+
 ## [1.3.33] - 2026-08-18
 
 ### Added

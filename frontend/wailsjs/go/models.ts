@@ -2956,6 +2956,7 @@ export namespace settings {
 	    dim: number;
 	    blur: number;
 	    opacity: number;
+	    textBoost: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SkinSettings(source);
@@ -2968,6 +2969,7 @@ export namespace settings {
 	        this.dim = source["dim"];
 	        this.blur = source["blur"];
 	        this.opacity = source["opacity"];
+	        this.textBoost = source["textBoost"];
 	    }
 	}
 	export class RemoteLaunchDefaultV1 {

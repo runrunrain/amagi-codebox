@@ -787,20 +787,21 @@ func TestSaveLocked_PreRenameSyncHandle_IsWritable(t *testing.T) {
 
 // --- Skin Settings（本地图片皮肤，plan 后端切片 A）---
 
-// TestSkinSettings_DefaultAndRoundTrip 验证默认值（关闭、dim 35、opacity 70）
-// 与 Set/Get 往返（含持久化：新建 Service 从同目录 Load 后仍读到新值）。
+// TestSkinSettings_DefaultAndRoundTrip 验证默认值（关闭、dim 35、opacity 70、
+// textBoost 0）与 Set/Get 往返（含持久化：新建 Service 从同目录 Load 后
+// 仍读到新值）。
 func TestSkinSettings_DefaultAndRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 	if err := svc.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0, Opacity: 70}
+	want := SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0, Opacity: 70, TextBoost: 0}
 	if got := svc.GetSkinSettings(); got != want {
 		t.Fatalf("fresh default = %+v, want %+v", got, want)
 	}
 
-	set := SkinSettings{Enabled: true, ImageID: "abc123", Dim: 60, Blur: 12, Opacity: 85}
+	set := SkinSettings{Enabled: true, ImageID: "abc123", Dim: 60, Blur: 12, Opacity: 85, TextBoost: 60}
 	if err := svc.SetSkinSettings(set); err != nil {
 		t.Fatalf("SetSkinSettings: %v", err)
 	}
@@ -817,25 +818,25 @@ func TestSkinSettings_DefaultAndRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSkinSettings_ClampOutOfRange 验证越界值取边界而非报错（opacity
-// 边界 -1/101）。
+// TestSkinSettings_ClampOutOfRange 验证越界值取边界而非报错（opacity/
+// textBoost 边界 -1/101）。
 func TestSkinSettings_ClampOutOfRange(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 	if err := svc.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := svc.SetSkinSettings(SkinSettings{Dim: 200, Blur: 99, Opacity: 101}); err != nil {
+	if err := svc.SetSkinSettings(SkinSettings{Dim: 200, Blur: 99, Opacity: 101, TextBoost: 101}); err != nil {
 		t.Fatalf("SetSkinSettings(high): %v", err)
 	}
-	if got := svc.GetSkinSettings(); got.Dim != 100 || got.Blur != 40 || got.Opacity != 100 {
-		t.Fatalf("high clamp = %+v, want dim=100 blur=40 opacity=100", got)
+	if got := svc.GetSkinSettings(); got.Dim != 100 || got.Blur != 40 || got.Opacity != 100 || got.TextBoost != 100 {
+		t.Fatalf("high clamp = %+v, want dim=100 blur=40 opacity=100 textBoost=100", got)
 	}
-	if err := svc.SetSkinSettings(SkinSettings{Dim: -10, Blur: -1, Opacity: -1}); err != nil {
+	if err := svc.SetSkinSettings(SkinSettings{Dim: -10, Blur: -1, Opacity: -1, TextBoost: -1}); err != nil {
 		t.Fatalf("SetSkinSettings(low): %v", err)
 	}
-	if got := svc.GetSkinSettings(); got.Dim != 0 || got.Blur != 0 || got.Opacity != 0 {
-		t.Fatalf("low clamp = %+v, want dim=0 blur=0 opacity=0", got)
+	if got := svc.GetSkinSettings(); got.Dim != 0 || got.Blur != 0 || got.Opacity != 0 || got.TextBoost != 0 {
+		t.Fatalf("low clamp = %+v, want dim=0 blur=0 opacity=0 textBoost=0", got)
 	}
 }
 
@@ -851,7 +852,7 @@ func TestSkinSettings_MissingKeyFallsBackToDefault(t *testing.T) {
 	if err := svc.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0, Opacity: 70}
+	want := SkinSettings{Enabled: false, ImageID: "", Dim: 35, Blur: 0, Opacity: 70, TextBoost: 0}
 	if got := svc.GetSkinSettings(); got != want {
 		t.Fatalf("legacy load = %+v, want default %+v", got, want)
 	}
@@ -878,11 +879,14 @@ func TestSkinSettings_LegacySkinKeyWithoutOpacity(t *testing.T) {
 	}
 }
 
-// TestSkinSettings_LoadOutOfRangeClamped 验证手改文件中的越界值在 Load
-// 时被合并 clamp。
-func TestSkinSettings_LoadOutOfRangeClamped(t *testing.T) {
+// TestSkinSettings_LegacySkinKeyWithoutTextBoost 验证含 skin 键但缺
+// textBoost 子键的老文件（textBoost 上线前版本写出）读入 textBoost=0：
+// 0 即默认值（不增强、保持现状），零值与“未写入该键”不可区分但语义
+// 重合，无突变问题——比 opacity（0≠默认 70）的取舍更干净（见
+// normalizeSkinSettings 注释）。
+func TestSkinSettings_LegacySkinKeyWithoutTextBoost(t *testing.T) {
 	dir := t.TempDir()
-	raw := `{"skin":{"enabled":true,"imageId":"x","dim":500,"blur":99,"opacity":500}}`
+	raw := `{"skin":{"enabled":false,"imageId":"","dim":40,"blur":8,"opacity":65}}`
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
@@ -891,7 +895,26 @@ func TestSkinSettings_LoadOutOfRangeClamped(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	got := svc.GetSkinSettings()
-	if !got.Enabled || got.ImageID != "x" || got.Dim != 100 || got.Blur != 40 || got.Opacity != 100 {
-		t.Fatalf("clamped load = %+v, want enabled=true x dim=100 blur=40 opacity=100", got)
+	want := SkinSettings{Enabled: false, ImageID: "", Dim: 40, Blur: 8, Opacity: 65, TextBoost: 0}
+	if got != want {
+		t.Fatalf("legacy skin without textBoost = %+v, want %+v", got, want)
+	}
+}
+
+// TestSkinSettings_LoadOutOfRangeClamped 验证手改文件中的越界值在 Load
+// 时被合并 clamp。
+func TestSkinSettings_LoadOutOfRangeClamped(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"skin":{"enabled":true,"imageId":"x","dim":500,"blur":99,"opacity":500,"textBoost":500}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := svc.GetSkinSettings()
+	if !got.Enabled || got.ImageID != "x" || got.Dim != 100 || got.Blur != 40 || got.Opacity != 100 || got.TextBoost != 100 {
+		t.Fatalf("clamped load = %+v, want enabled=true x dim=100 blur=40 opacity=100 textBoost=100", got)
 	}
 }

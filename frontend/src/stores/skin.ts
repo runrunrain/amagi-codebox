@@ -1,9 +1,9 @@
 /**
  * Skin Store (Pinia setup style)
- * 皮肤/壁纸状态：settings（enabled/imageId/dim/blur/opacity）+ 皮肤库列表 + 当前皮肤。
+ * 皮肤/壁纸状态：settings（enabled/imageId/dim/blur/opacity/textBoost）+ 皮肤库列表 + 当前皮肤。
  *
  * App.vue 启动时 load() 一次，并 watch settings/currentSkin 同步
- * --skin-image / --skin-blur / --skin-dim / --skin-panel-alpha CSS 变量与 html[data-skin]；
+ * --skin-image / --skin-blur / --skin-dim / --skin-panel-alpha / --skin-text-boost CSS 变量与 html[data-skin]；
  * 设置页保存后即时生效，无需刷新。
  */
 
@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS: SkinSettings = {
   dim: 35,
   blur: 0,
   opacity: 70,
+  textBoost: 0,
 } as SkinSettings;
 
 export const useSkinStore = defineStore('skin', () => {
@@ -78,6 +79,7 @@ export const useSkinStore = defineStore('skin', () => {
       dim: DEFAULT_SETTINGS.dim,
       blur: DEFAULT_SETTINGS.blur,
       opacity: DEFAULT_SETTINGS.opacity,
+      textBoost: DEFAULT_SETTINGS.textBoost,
     });
   }
 

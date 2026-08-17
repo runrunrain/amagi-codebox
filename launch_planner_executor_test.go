@@ -1344,3 +1344,60 @@ func TestBuildPlanDoesNotWriteConfigFiles(t *testing.T) {
 		t.Fatal("BuildPlan should not write pi models.json")
 	}
 }
+
+// --- Workdir validation/fallback (launch_workdir.go) ---
+
+// 无效的远程 workdir 不再作为不可用的 lpCurrentDirectory 击穿到 ConPTY，
+// 而是回退 canonical workdir（默认目录→Home）后正常出计划。
+func TestBuildPlanInvalidWorkdirFallsBackToCanonical(t *testing.T) {
+	p, _, _, _ := testPlannerSetup(t, contract.CLITypePi, "workdir-fallback-provider", "workdir-key-123456789")
+	missing := filepath.Join(t.TempDir(), "definitely-missing")
+	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
+		CLIType: contract.CLITypePi, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
+		Workdir: missing,
+	})
+	if failure != nil {
+		t.Fatalf("BuildPlan should fall back to canonical workdir, got failure: %v", failure)
+	}
+	defer plan.Secrets.Dispose()
+	if plan.Recipe.Workdir == "" || plan.Recipe.Workdir == missing {
+		t.Fatalf("Recipe.Workdir = %q, want canonical fallback (not the invalid %q)", plan.Recipe.Workdir, missing)
+	}
+	if _, err := os.Stat(plan.Recipe.Workdir); err != nil {
+		t.Fatalf("fallback workdir %q should exist: %v", plan.Recipe.Workdir, err)
+	}
+}
+
+// requested、canonical（homeDir 字段）与真实 HOME 全部不可用时按 FailureWorkdir 失败。
+func TestBuildPlanAllWorkdirsInvalidFails(t *testing.T) {
+	isolatedHome(t)
+	dir := t.TempDir()
+	missingHome := filepath.Join(dir, "missing-home")
+	t.Setenv("HOME", missingHome)
+	t.Setenv("USERPROFILE", missingHome)
+	settingsSvc := settings.NewService(dir)
+	if err := settingsSvc.Load(); err != nil {
+		t.Fatalf("settings Load: %v", err)
+	}
+	defaults, _ := launchplan.NewDefaultStore(settingsSvc)
+	defaults.RecordDesktopActivation(launchplan.StableRecipe{
+		CLIType: contract.CLITypeClaudeCode, Workdir: filepath.Join(dir, "recipe"),
+		ProviderRef: "p", PresetRef: "preset", ModelRef: "m",
+	})
+	p := newAppLaunchPlanner(
+		config.NewConfigService(dir), secrets.NewSecretsService(dir),
+		defaults, fakeCLIResolver{}, fakePlatformCaps(),
+		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), missingHome,
+	)
+	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
+		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
+		Workdir: filepath.Join(dir, "missing-requested"),
+	})
+	if plan != nil {
+		plan.Secrets.Dispose()
+		t.Fatal("BuildPlan should fail when every workdir candidate is unusable")
+	}
+	if failure == nil || failure.Kind != launchplan.FailureWorkdir {
+		t.Fatalf("expected FailureWorkdir, got %v", failure)
+	}
+}
