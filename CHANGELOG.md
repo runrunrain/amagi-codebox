@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.37] - 2026-08-18
+
+### Fixed
+
+- 修复 Pi/OMP 用某预设启动时其他预设模型被整体替换丢失的问题：`BuildPiModelsConfig`/`BuildOmpModelsConfig` 此前只注册启动选中的单个模型，同 provider 其余预设的模型会被后续启动覆盖掉；改为注册整个托管模型列表——启动选中的模型排首位且参数以本次传入为准，其余预设按键序注册（各带自己的 Parameters），DefaultModel 未被覆盖时以零参数兜底，按模型 id 去重保证同 provider 多预设引用同一模型只注册一次（先注册者参数优先、输出确定，models.json/yml 幂等可比）。提取共享的 `buildManagedModelEntries`/`buildManagedModelEntry`/`appendManagedModelEntry`，pi/omp 两端同构。
+
 ## [1.3.36] - 2026-08-18
 
 ### Fixed

@@ -83,49 +83,11 @@ func BuildOmpModelsConfig(
 		entry["authHeader"] = *authHeader
 	}
 
-	// 注册 model，使 omp 识别该模型并允许 --model 引用。
-	model := strings.TrimSpace(modelName)
-	if model == "" {
-		model = strings.TrimSpace(provider.DefaultModel)
-	}
-	if model != "" {
-		m := map[string]any{
-			"id":   model,
-			"name": model,
-		}
-		// 最大上下文窗口：amagi ContextWindow.ModelContextWindow -> omp contextWindow
-		if params.ContextWindow != nil && params.ContextWindow.ModelContextWindow > 0 {
-			m["contextWindow"] = params.ContextWindow.ModelContextWindow
-		}
-		// 最大输出 token
-		if params.MaxTokens > 0 {
-			m["maxTokens"] = params.MaxTokens
-		}
-		// 思考开关：amagi Thinking.Type=="enabled" 或 ReasoningEffort 非空 -> omp reasoning=true
-		// （思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchOmpSession）。
-		// thinkingLevelMap.xhigh/max 恒开启，与 BuildPiModelsConfig 同一语义
-		//（omp 与 pi 同源，clampThinkingLevel 仅在 map 显式声明时开放扩展级别）。
-		// v1.3.23 与 pi_config.go 同步修复：reasoning_effort 单独出现也开启 reasoning。
-		hasReasoningEffort := strings.TrimSpace(params.ReasoningEffort) != ""
-		if (params.Thinking != nil && params.Thinking.Type == "enabled") || hasReasoningEffort {
-			m["reasoning"] = true
-			m["thinkingLevelMap"] = map[string]any{
-				"xhigh": "xhigh",
-				"max":   "max",
-			}
-		}
-		// 可选透传 model 级 compat（supportsDeveloperRole/supportsReasoningEffort 等）。
-		// supportsDeveloperRole 默认 false（与 pi 同因：amagi 托管的多为第三方
-		// OpenAI 兼容服务商，内置探测无法覆盖，developer 角色会报 400）。
-		compat := make(map[string]any, len(params.PiCompat)+1)
-		for k, v := range params.PiCompat {
-			compat[k] = v
-		}
-		if _, overridden := compat["supportsDeveloperRole"]; !overridden {
-			compat["supportsDeveloperRole"] = false
-		}
-		m["compat"] = compat
-		entry["models"] = []map[string]any{m}
+	// 注册 models 列表（v1.3.34 多模型修复，与 BuildPiModelsConfig 同构）：
+	// 启动选中的模型排首且参数权威，同 provider 其余预设模型一并注册，
+	// DefaultModel 兑底；修复用某预设启动时其他预设模型被整体替换丢失。
+	if models := buildManagedModelEntries(provider, modelName, params); len(models) > 0 {
+		entry["models"] = models
 	}
 
 	return map[string]any{

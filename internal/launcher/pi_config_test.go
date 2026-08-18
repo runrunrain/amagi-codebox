@@ -298,3 +298,89 @@ func TestMergePiAgentConfigPreservesExistingConfig(t *testing.T) {
 		t.Fatal("input cfg was mutated")
 	}
 }
+
+func TestBuildPiModelsConfigRegistersAllProviderPresetModels(t *testing.T) {
+	// v1.3.34 回归：provider 有多个预设（各带不同模型/参数）时，托管条目
+	// 必须注册全部预设模型——此前 desired 只含启动选中的单模型，mergeProviderConfig
+	// 对同名托管条目整体替换 → 其他预设模型被覆盖丢失。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "model-d",
+		Presets: map[string]config.Preset{
+			"a": {Model: "model-a", Parameters: config.Parameters{
+				ContextWindow: &config.ContextWindowConfig{ModelContextWindow: 1000000},
+			}},
+			"b": {Model: "model-b", Parameters: config.Parameters{
+				ReasoningEffort: "max",
+			}},
+			// 同模型 id 的重复预设：去重，先注册者（启动选中/排序靠前）参数优先。
+			"c": {Model: "model-a", Parameters: config.Parameters{
+				MaxTokens: 9999,
+			}},
+		},
+	}
+	launchedParams := config.Parameters{MaxTokens: 2048}
+	cfg, err := BuildPiModelsConfig("multi", provider, "model-b", "k", launchedParams)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-multi"]
+	models := entry["models"].([]map[string]any)
+	if len(models) != 3 {
+		t.Fatalf("models len = %d, want 3 (model-b + model-a 去重 + model-d 兜底): %v", len(models), models)
+	}
+	byID := make(map[string]map[string]any, len(models))
+	var order []string
+	for _, m := range models {
+		byID[m["id"].(string)] = m
+		order = append(order, m["id"].(string))
+	}
+	// 启动选中的模型排首位，参数以本次传入为准（非预设 b 的 reasoning）。
+	if order[0] != "model-b" {
+		t.Errorf("first model = %q, want model-b (launched first)", order[0])
+	}
+	if byID["model-b"]["maxTokens"] != 2048 {
+		t.Errorf("launched model maxTokens = %#v, want 2048 (launch params authoritative)", byID["model-b"]["maxTokens"])
+	}
+	if _, has := byID["model-b"]["reasoning"]; has {
+		t.Errorf("launched model must use launch params, not preset b reasoning")
+	}
+	// 其余预设按各自 Parameters 注册。
+	if byID["model-a"]["contextWindow"] != 1000000 {
+		t.Errorf("model-a contextWindow = %#v, want 1000000 (preset a params)", byID["model-a"]["contextWindow"])
+	}
+	if byID["model-a"]["maxTokens"] == 9999 {
+		t.Errorf("duplicate preset c params must not override first registration")
+	}
+	// DefaultModel 未被覆盖时兜底裸注册（零参数）。
+	if _, has := byID["model-d"]["maxTokens"]; has {
+		t.Errorf("default model should be bare-registered, got params: %v", byID["model-d"])
+	}
+}
+
+func TestBuildOmpModelsConfigRegistersAllProviderPresetModels(t *testing.T) {
+	// 与 pi 同构的多预设回归（omp models.yml 的 models 数组同样不得收敛为单模型）。
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		Presets: map[string]config.Preset{
+			"fast": {Model: "flash-x"},
+			"max":  {Model: "think-y", Parameters: config.Parameters{ReasoningEffort: "max"}},
+		},
+	}
+	cfg, err := BuildOmpModelsConfig("m", provider, "flash-x", "k", config.Parameters{})
+	if err != nil {
+		t.Fatalf("BuildOmpModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-m"]
+	models := entry["models"].([]map[string]any)
+	if len(models) != 2 {
+		t.Fatalf("models len = %d, want 2: %v", len(models), models)
+	}
+	if models[0]["id"] != "flash-x" {
+		t.Errorf("first model = %v, want flash-x (launched first)", models[0]["id"])
+	}
+	byID := map[string]map[string]any{models[0]["id"].(string): models[0], models[1]["id"].(string): models[1]}
+	if byID["think-y"]["reasoning"] != true {
+		t.Errorf("think-y reasoning = %#v, want true (own preset params)", byID["think-y"]["reasoning"])
+	}
+}

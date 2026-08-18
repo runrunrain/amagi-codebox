@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"amagi-codebox/internal/config"
@@ -89,62 +90,14 @@ func BuildPiModelsConfig(
 		entry["authHeader"] = *authHeader
 	}
 
-	// 注册 model，使 pi 识别该模型并允许 --model 引用。
-	// pi 要求自定义 provider 至少声明其提供的 model id。
-	// 同时透传预设参数：contextWindow（最大上下文）/ maxTokens / reasoning（思考开关）。
-	model := strings.TrimSpace(modelName)
-	if model == "" {
-		model = strings.TrimSpace(provider.DefaultModel)
-	}
-	if model != "" {
-		m := map[string]any{
-			"id":   model,
-			"name": model,
-		}
-		// 最大上下文窗口：amagi ContextWindow.ModelContextWindow -> pi contextWindow
-		if params.ContextWindow != nil && params.ContextWindow.ModelContextWindow > 0 {
-			m["contextWindow"] = params.ContextWindow.ModelContextWindow
-		}
-		// 最大输出 token
-		if params.MaxTokens > 0 {
-			m["maxTokens"] = params.MaxTokens
-		}
-		// 思考开关：amagi Thinking.Type=="enabled" 或 ReasoningEffort 非空 -> pi reasoning=true
-		// （pi 的思考强度级别通过 --thinking CLI flag 注入，见 app.go LaunchPiSession）。
-		// v1.3.23 修复：reasoning_effort 单独出现（无 thinking.type）也必须开启 reasoning——
-		// pi 侧 clampThinkingLevel 对未声明 reasoning 的模型把任何 --thinking 值钳回 off，
-		// 导致预设 reasoning_effort=max 静默失效（实战：glm/codecode 预设长期零推理运行）。
-		hasReasoningEffort := strings.TrimSpace(params.ReasoningEffort) != ""
-		if (params.Thinking != nil && params.Thinking.Type == "enabled") || hasReasoningEffort {
-			m["reasoning"] = true
-			// 开放扩展思考级别 xhigh/max：pi 仅在 thinkingLevelMap 显式声明该级别
-			// 时才视为支持（pi-ai getSupportedThinkingLevels：xhigh/max 要求 map 值
-			// 非 undefined，否则 clampThinkingLevel 将其钳回 high）。amagi 的
-			// ReasoningEffort 值域含 xhigh/max 且直接作为 --thinking 级别透传，故
-			// 在此恒开启；identity 值经 pi 原样发给 provider（openai-completions 作为
-			// reasoning_effort；anthropic-messages 作为 adaptive thinking effort，
-			// "max"/"xhigh" 均为合法值）。标准级别（off..high）走 pi 默认映射，不声明。
-			m["thinkingLevelMap"] = map[string]any{
-				"xhigh": "xhigh",
-				"max":   "max",
-			}
-		}
-		// 可选透传 model 级 compat（supportsDeveloperRole/supportsReasoningEffort 等）。
-		// supportsDeveloperRole 默认 false：pi 对 reasoning=true 的模型默认以
-		// developer 角色发送 system prompt（openai-completions），仅当其内置探测
-		// 命中 moonshot/zai 等非标服务商时才回退 system；amagi 托管的多为第三方
-		// OpenAI 兼容服务商（如 kimi coding 的 api.kimi.com），探测无法覆盖，会
-		// 报 400 "role 'developer' is not allowed"。system 角色对所有服务商都安全，
-		// 故默认关闭；用户可在预设 pi_compat 中显式覆写（显式值优先）。
-		compat := make(map[string]any, len(params.PiCompat)+1)
-		for k, v := range params.PiCompat {
-			compat[k] = v
-		}
-		if _, overridden := compat["supportsDeveloperRole"]; !overridden {
-			compat["supportsDeveloperRole"] = false
-		}
-		m["compat"] = compat
-		entry["models"] = []map[string]any{m}
+	// 注册 models 列表（v1.3.34 多模型修复）：托管条目注册该 provider 的
+	// 全部预设模型——启动选中的模型排首位且参数以本次传入为准（权威），
+	// 其余预设按各自 Parameters 注册（contextWindow/maxTokens/reasoning/
+	// compat 独立生效），DefaultModel 未被覆盖时兑底裸注册。修复：用某一预设
+	// 启动时，mergeProviderConfig 对同名托管条目 amagi-<name> 整体替换，
+	// desired 只含单模型 → 同 provider 其他预设模型在 models.json 被覆盖丢失。
+	if models := buildManagedModelEntries(provider, modelName, params); len(models) > 0 {
+		entry["models"] = models
 	}
 
 	return map[string]any{
@@ -152,6 +105,90 @@ func BuildPiModelsConfig(
 			piID: entry,
 		},
 	}, nil
+}
+
+// buildManagedModelEntry 构建单个托管模型条目（pi 与 omp 同构，v1.3.34 抽取共享）。
+func buildManagedModelEntry(model string, params config.Parameters) map[string]any {
+	m := map[string]any{
+		"id":   model,
+		"name": model,
+	}
+	// 最大上下文窗口：amagi ContextWindow.ModelContextWindow -> pi/omp contextWindow
+	if params.ContextWindow != nil && params.ContextWindow.ModelContextWindow > 0 {
+		m["contextWindow"] = params.ContextWindow.ModelContextWindow
+	}
+	// 最大输出 token
+	if params.MaxTokens > 0 {
+		m["maxTokens"] = params.MaxTokens
+	}
+	// 思考开关：amagi Thinking.Type=="enabled" 或 ReasoningEffort 非空 -> reasoning=true
+	//（思考强度级别经 --thinking CLI flag 注入，见 app.go Launch*Session）。
+	// v1.3.23 修复：reasoning_effort 单独出现（无 thinking.type）也必须开启 reasoning——
+	// pi/omp 侧 clampThinkingLevel 对未声明 reasoning 的模型把任何 --thinking 值钳回
+	// off，导致预设 reasoning_effort=max 静默失效（实战：glm/codecode 预设长期零推理）。
+	hasReasoningEffort := strings.TrimSpace(params.ReasoningEffort) != ""
+	if (params.Thinking != nil && params.Thinking.Type == "enabled") || hasReasoningEffort {
+		m["reasoning"] = true
+		// 开放扩展思考级别 xhigh/max：仅当 thinkingLevelMap 显式声明该级别时才被
+		// 视为支持（getSupportedThinkingLevels：xhigh/max 要求 map 值非 undefined，
+		// 否则 clampThinkingLevel 钳回 high）。amagi 的 ReasoningEffort 值域含
+		// xhigh/max 且直接作为 --thinking 级别透传，故 identity 声明恒开启；标准
+		// 级别（off..high）走默认映射，不声明。
+		m["thinkingLevelMap"] = map[string]any{
+			"xhigh": "xhigh",
+			"max":   "max",
+		}
+	}
+	// 可选透传 model 级 compat；supportsDeveloperRole 默认 false：reasoning=true 的
+	// 模型默认以 developer 角色发 system prompt，内置探测仅覆盖 moonshot/zai 等
+	// 非标服务商，amagi 托管的第三方 OpenAI 兼容服务商会被 400 "role 'developer'
+	// is not allowed"；system 角色对所有服务商都安全，故默认关闭（可经 pi_compat
+	// 显式覆写，显式值优先）。
+	compat := make(map[string]any, len(params.PiCompat)+1)
+	for k, v := range params.PiCompat {
+		compat[k] = v
+	}
+	if _, overridden := compat["supportsDeveloperRole"]; !overridden {
+		compat["supportsDeveloperRole"] = false
+	}
+	m["compat"] = compat
+	return m
+}
+
+// appendManagedModelEntry 按模型 id 去重追加（空 id / 已注册跳过）。去重保证
+// 同 provider 多预设引用同一模型 id 时只注册一次，且先注册者（启动选中模型/
+// 排序靠前的预设）参数优先，输出确定。
+func appendManagedModelEntry(models []map[string]any, seen map[string]bool, model string, params config.Parameters) []map[string]any {
+	model = strings.TrimSpace(model)
+	if model == "" || seen[model] {
+		return models
+	}
+	seen[model] = true
+	return append(models, buildManagedModelEntry(model, params))
+}
+
+// buildManagedModelEntries 生成托管 provider 的 models 注册列表（v1.3.34）。
+// 顺序与权威性：启动选中的模型（缺省回落 DefaultModel）排首位且参数以本次传入
+// 为准；其余预设按键序注册、各带自己的 Parameters；DefaultModel 未被前两者
+// 覆盖时以零参数兑底注册。preset 键排序保证输出确定（models.json/yml 幂等可比）。
+func buildManagedModelEntries(provider config.Provider, modelName string, params config.Parameters) []map[string]any {
+	launched := strings.TrimSpace(modelName)
+	if launched == "" {
+		launched = strings.TrimSpace(provider.DefaultModel)
+	}
+	models := make([]map[string]any, 0, len(provider.Presets)+1)
+	seen := make(map[string]bool, len(provider.Presets)+1)
+	models = appendManagedModelEntry(models, seen, launched, params)
+	keys := make([]string, 0, len(provider.Presets))
+	for key := range provider.Presets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters)
+	}
+	models = appendManagedModelEntry(models, seen, provider.DefaultModel, config.Parameters{})
+	return models
 }
 
 // WritePiAgentConfig 将 pi models.json 配置原子写入 agentDir/models.json。
