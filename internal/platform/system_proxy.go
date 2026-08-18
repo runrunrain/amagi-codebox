@@ -17,14 +17,17 @@ import (
 // 站点会报 "fetch failed"。macOS/Windows 的系统代理对 GUI 应用可见，故在启动
 // CLI 会话时探测并注入。
 //
-// 保护（三重）：
+// 保护（四重）：
 //  1. 用户显式设置的代理变量（env/overrides 中已有的 HTTP_PROXY 等）优先，不覆盖；
 //  2. 仅当系统代理启用时才注入；
-//  3. 注入前做 TCP 可达性探测（代理 App 关闭时 scutil 仍可能显示启用），
-//     不可达则不注入，避免把原本直连可用的会话打进死代理。
+//  3. 注入前做 TCP/HTTP 可达性探测（代理 App 关闭时 scutil 仍可能显示启用），
+//     不可达则不注入，避免把原本直连可用的会话打进死代理；
+//  4. NO_PROXY 同步系统例外列表（macOS ExceptionsList / Windows ProxyOverride），
+//     保证「系统设置里加了例外直连的站点」在 CLI 会话里同样绕开代理，
+//     避免 GUI 与终端行为分叉（内网域名被注入代理后报 503/ECONNRESET）。
 //
-// 注入时同时写 NO_PROXY（localhost/127.0.0.1/::1）：codebox 本地回环服务
-// （headroom 代理 8787/8788、本地 relay）不能被外部代理接管。
+// 注入时 NO_PROXY 以回环绕行（localhost/127.0.0.1/::1）打底：codebox 本地回环服务
+// （headroom 代理 8787/8788、本地 relay）不能被外部代理接管；其上合并系统例外项。
 
 // proxyDialTimeout 是系统代理可达性探测的超时。保持很小（本地代理应瞬时响应），
 // 避免在每次会话启动时引入可感知延迟。
@@ -50,7 +53,7 @@ var proxyDialReachable = func(host, port string) bool {
 // 请求快速返回 4xx/200 等任何 HTTP 响应；TCP 通了但内核/进程卡死不会应答，
 // 超时即判定为不可用。
 var proxyHTTPResponsive = func(host, port string) bool {
-	client := &http.Client{ Timeout: proxyHTTPProbeTimeout }
+	client := &http.Client{Timeout: proxyHTTPProbeTimeout}
 	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/")
 	if err != nil {
 		return false
@@ -60,13 +63,15 @@ var proxyHTTPResponsive = func(host, port string) bool {
 	return true
 }
 
-// defaultNoProxy 是注入系统代理环境变量时附带的回环绕行清单（用户显式 NO_PROXY 优先）。
+// defaultNoProxy 是注入 NO_PROXY 的回环绕行打底清单；系统例外列表经
+// mergeNoProxy 追加在其后（用户显式 NO_PROXY 仍然整体优先）。
 const defaultNoProxy = "localhost,127.0.0.1,::1"
 
 // SystemProxyEnv 返回系统代理对应的环境变量集；系统代理未启用、不支持的平台
 // 或代理不可达时返回 nil。返回值含大写与小写键（不同 HTTP 客户端读取习惯不同）。
+// NO_PROXY = defaultNoProxy + 系统代理例外列表（见 mergeNoProxy）。
 func SystemProxyEnv() map[string]string {
-	host, port, ok := detectSystemProxy()
+	host, port, exceptions, ok := detectSystemProxy()
 	if !ok {
 		return nil
 	}
@@ -77,14 +82,42 @@ func SystemProxyEnv() map[string]string {
 		return nil
 	}
 	proxyURL := fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
+	noProxy := mergeNoProxy(exceptions)
 	return map[string]string{
 		"HTTP_PROXY":  proxyURL,
 		"HTTPS_PROXY": proxyURL,
 		"http_proxy":  proxyURL,
 		"https_proxy": proxyURL,
-		"NO_PROXY":    defaultNoProxy,
-		"no_proxy":    defaultNoProxy,
+		"NO_PROXY":    noProxy,
+		"no_proxy":    noProxy,
 	}
+}
+
+// mergeNoProxy 合并回环绕行清单与系统代理例外列表：defaultNoProxy 打底，
+// 例外项去重追加。注意 macOS/Windows 例外可能含前缀通配（127.*、192.168.*），
+// 这不是标准 no_proxy 后缀语法，注入后无害（永远不会匹配成域名后缀），
+// 实际绕行主要靠其中的域名项（如 *.vx.net / router.ai.vx.net）。
+func mergeNoProxy(exceptions []string) string {
+	seen := make(map[string]struct{}, len(exceptions)+4)
+	out := make([]string, 0, len(exceptions)+4)
+	add := func(entry string) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return
+		}
+		if _, dup := seen[entry]; dup {
+			return
+		}
+		seen[entry] = struct{}{}
+		out = append(out, entry)
+	}
+	for _, base := range strings.Split(defaultNoProxy, ",") {
+		add(base)
+	}
+	for _, entry := range exceptions {
+		add(entry)
+	}
+	return strings.Join(out, ",")
 }
 
 // proxyEnvKeys 是 SystemProxyEnv 注入的全部键（含大小写）。launcher.BuildEnv

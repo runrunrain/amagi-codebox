@@ -2,28 +2,40 @@
 
 package platform
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestParseScutilProxy 覆盖 scutil --proxy 输出解析：HTTPS 优先、HTTP 回退、
-// 未启用返回 false。
+// 未启用返回 false、ExceptionsList 例外项提取（单元素分号串与多元素两种形式）。
 func TestParseScutilProxy(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		host string
-		port string
-		ok   bool
+		name       string
+		in         string
+		host       string
+		port       string
+		exceptions []string
+		ok         bool
 	}{
 		{
-			name: "https enabled",
-			in: "ExceptionsList : <array> {\n  0 : *.local\n}\n" +
+			name: "https enabled with semicolon exceptions",
+			in: "ExceptionsList : <array> {\n  0 : localhost;127.*;192.168.*;*.vx.net\n}\n" +
 				"HTTPEnable : 1\nHTTPPort : 5800\nHTTPProxy : 127.0.0.1\n" +
 				"HTTPSEnable : 1\nHTTPSPort : 5800\nHTTPSProxy : 127.0.0.1\n" +
 				"SOCKSEnable : 1\nSOCKSPort : 5800\nSOCKSProxy : 127.0.0.1\n",
 			host: "127.0.0.1", port: "5800", ok: true,
+			exceptions: []string{"localhost", "127.*", "192.168.*", "*.vx.net"},
 		},
 		{
-			name: "http only fallback",
+			name: "multi element array",
+			in: "ExceptionsList : <array> {\n  0 : *.local\n  1 : *.vx.net\n}\n" +
+				"HTTPSEnable : 1\nHTTPSPort : 8888\nHTTPSProxy : 10.0.0.2\n",
+			host: "10.0.0.2", port: "8888", ok: true,
+			exceptions: []string{"*.local", "*.vx.net"},
+		},
+		{
+			name: "http only fallback without exceptions",
 			in:   "HTTPEnable : 1\nHTTPPort : 7890\nHTTPProxy : 10.0.0.2\nHTTPSEnable : 0\n",
 			host: "10.0.0.2", port: "7890", ok: true,
 		},
@@ -39,10 +51,10 @@ func TestParseScutilProxy(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		host, port, ok := parseScutilProxy(c.in)
-		if ok != c.ok || host != c.host || port != c.port {
-			t.Errorf("%s: parseScutilProxy = (%q,%q,%v), want (%q,%q,%v)",
-				c.name, host, port, ok, c.host, c.port, c.ok)
+		host, port, exceptions, ok := parseScutilProxy(c.in)
+		if ok != c.ok || host != c.host || port != c.port || !slices.Equal(exceptions, c.exceptions) {
+			t.Errorf("%s: parseScutilProxy = (%q,%q,%v,%v), want (%q,%q,%v,%v)",
+				c.name, host, port, exceptions, ok, c.host, c.port, c.exceptions, c.ok)
 		}
 	}
 }

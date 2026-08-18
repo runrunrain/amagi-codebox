@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.36] - 2026-08-18
+
+### Fixed
+
+- 增强系统代理环境变量注入：NO_PROXY 自动同步系统代理例外列表（macOS `ExceptionsList` / Windows `ProxyOverride`），保证系统设置里配置了直连例外的内网域名与服务在 CLI 会话中同样绕开代理，避免终端被注入代理后报 503 / ECONNRESET；
+- Windows 代理探测增强：`detectSystemProxy` 支持分协议格式解析（如 `http=host:port;https=host:port`），过滤 `<local>` 控制标记，并准确提取 `ProxyOverride` 例外条目合并至 NO_PROXY。
+
 ## [1.3.35] - 2026-08-18
 
 ### Fixed

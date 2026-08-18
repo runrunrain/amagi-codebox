@@ -10,24 +10,65 @@ import (
 // detectSystemProxy 读取 Windows Internet Settings 注册表代理配置：
 //
 //	HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
-//	  ProxyEnable  REG_DWORD  0x1
-//	  ProxyServer  REG_SZ     host:port（或 "http=host:port;https=host:port" 分协议形式）
+//	  ProxyEnable    REG_DWORD  0x1
+//	  ProxyServer    REG_SZ     host:port（或 "http=host:port;https=host:port" 分协议形式）
+//	  ProxyOverride  REG_SZ     分号分隔的例外列表（如 "localhost;127.*;<local>"）
 //
 // 通过 `reg query` 读取，避免引入额外依赖；未启用或解析失败时 ok=false。
-func detectSystemProxy() (host, port string, ok bool) {
+// 例外列表（ProxyOverride）一并返回，供 NO_PROXY 同步（<local> 控制标记丢弃）。
+func detectSystemProxy() (host, port string, exceptions []string, ok bool) {
 	out, err := exec.Command("reg", "query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
 		"/v", "ProxyEnable").Output()
 	if err != nil || !parseRegDwordEnabled(string(out)) {
-		return "", "", false
+		return "", "", nil, false
 	}
 	out, err = exec.Command("reg", "query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
 		"/v", "ProxyServer").Output()
 	if err != nil {
-		return "", "", false
+		return "", "", nil, false
 	}
-	return parseRegProxyServer(string(out))
+	host, port, ok = parseRegProxyServer(string(out))
+	if !ok {
+		return "", "", nil, false
+	}
+	return host, port, readRegProxyOverride(), true
+}
+
+// readRegProxyOverride 读取并解析注册表 ProxyOverride 例外列表；
+// 读取失败或未配置时返回 nil（例外同步是增强项，不阻断代理注入）。
+func readRegProxyOverride() []string {
+	out, err := exec.Command("reg", "query",
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
+		"/v", "ProxyOverride").Output()
+	if err != nil {
+		return nil
+	}
+	return parseRegProxyOverride(string(out))
+}
+
+// parseRegProxyOverride 是 readRegProxyOverride 的纯函数内核（可测试）。
+// 值为分号分隔（如 "localhost;127.*;10.*;<local>"）；<local> 是
+// "绕过不含点号的裸主机名"控制标记，环境变量协议无对应语义，丢弃。
+func parseRegProxyOverride(output string) []string {
+	var value string
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "ProxyOverride") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			value = fields[len(fields)-1]
+		}
+	}
+	var out []string
+	for _, entry := range strings.Split(value, ";") {
+		if entry = strings.TrimSpace(entry); entry != "" && !strings.EqualFold(entry, "<local>") {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // parseRegDwordEnabled 解析 reg query ProxyEnable 输出（0x1 为启用）。
