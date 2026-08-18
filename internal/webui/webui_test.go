@@ -800,3 +800,38 @@ func TestProbe_EvictsStaleRegistryFile(t *testing.T) {
 		t.Fatalf("陈旧注册文件应被删除，err=%v", err)
 	}
 }
+
+func TestProbe_WindowsShellAttachTokenProvenAdopted(t *testing.T) {
+	// Windows 内嵌 pi 走 BootstrapShellAttach：ConPTY 只起 shell（tracker 注册
+	// 的 pid 是 shell pid），pi(node) 经输入流启动，webui server 的 info.PID 是
+	// node pid——必然失配。注入 token 非空且探测 200 即证明归属，应采纳。
+	s := newTestService(t, time.Minute)
+	const shellPID = 4321
+	const nodePID = 9999
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-sess-win", nodePID, port))
+	})
+	s.RegisterSession("sw", shellPID, port, "tok-win")
+	if st := s.ProbeWebUI("sw"); st.State != StateAvailable {
+		t.Fatalf("token 已证归属时 pid 失配（shell=%d node=%d）应采纳，got %s", shellPID, nodePID, st.State)
+	}
+}
+
+func TestProbe_WindowsShellAttachEmptyTokenStillRejected(t *testing.T) {
+	// token 为空（legacy/独立终端未注入）：pid 防线维持——pid 失配仍拒绝，
+	// 防端口被其他进程复用误采纳。
+	s := newTestService(t, time.Millisecond)
+	const shellPID = 4321
+	const otherPID = 9999
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-sess-x", otherPID, port))
+	})
+	s.RegisterSession("sx", shellPID, port, "")
+	if st := s.ProbeWebUI("sx"); st.State == StateAvailable {
+		t.Fatalf("空 token + pid 失配不应采纳，got %s", st.State)
+	}
+}

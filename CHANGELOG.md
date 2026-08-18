@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.35] - 2026-08-18
+
+### Fixed
+
+- 修复 Windows 内嵌 pi 会话 WebUI 探测始终无法采纳的问题：Windows 下内嵌 pi 走 BootstrapShellAttach（ConPTY 只起 shell，pi 命令经输入流注入），PTY pid 是 shell pid 而非 node pid，pid 等值校验在该架构下必然失配，探测被 `validateAdoption` 拒绝。修订采纳强校验为「token 即身份」：token 探测（token 非空且得到 200）时豁免 pid 校验——注入的 `AMAGI_WEBUI_TOKEN` 是壳与扩展间的共享密钥，`/api/info` 受 capability 保护（错误 token → 401/403 不可达），携正确 token 的 200 已证明服务归属；注册表回退扫描 token 相等也入围（条目 pid 是 node pid 与 tracker 的 shell pid 必然失配）。token 为空（legacy/独立终端未注入）时维持 pid 防线不变（防端口被其他进程复用）。附带修复 webui 包 gofmt 格式问题。
+
 ## [1.3.34] - 2026-08-18
 
 ### Fixed

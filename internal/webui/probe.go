@@ -46,7 +46,7 @@ type Info struct {
 
 // probeInfo 对 127.0.0.1:<port>/api/info 执行一次探测（v1.0.2：token 非空
 // 时携带 Authorization: Bearer 头）。expectPID>0 时用于 503 体的 pid 校验
-//（Major3：仅 v/pid 校验通过的 503 才视为"未就绪"）。
+// （Major3：仅 v/pid 校验通过的 503 才视为"未就绪"）。
 // 返回的 *Info 仅在 probeReady 时保证非 nil。
 func probeInfo(ctx context.Context, client *http.Client, port int, token string, expectPID int) (*Info, probeOutcome) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/api/info", port)

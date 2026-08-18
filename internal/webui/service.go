@@ -93,7 +93,7 @@ type Service struct {
 }
 
 // NewService 创建 webui 服务。registryDir 为契约 §7.3 注册表目录
-//（~/.pi/agent/amagi/webui-registry）。
+// （~/.pi/agent/amagi/webui-registry）。
 func NewService(log *logging.Service, registryDir string) *Service {
 	return &Service{
 		log:           log,
@@ -283,11 +283,12 @@ func (s *Service) probe(sessionID string, t *tracker) {
 // runProbe 执行锁外网络 I/O：先注入端口，失败回退注册表扫描（§7.2 双通道）。
 // 每个候选独立超时（Major3）。返回采纳结论与生效 token。
 func (s *Service) runProbe(client *http.Client, registryDir string, snap *probeSnapshot) (probeResult, int, *Info, string) {
-	// 通道 1：注入端口探测。
+	// 通道 1：注入端口探测。tokenProven（token 非空）时 200 已证归属，
+	// validateAdoption 豁免 pid 等值（Windows shell-attach：node pid ≠ shell pid）。
 	if snap.port > 0 {
 		switch info, outcome := probeCandidate(client, snap.port, snap.token, snap.pid); outcome {
 		case probeReady:
-			if validateAdoption(snap, info, snap.port) {
+			if validateAdoption(snap, info, snap.port, snap.token != "") {
 				return resultAdopted, snap.port, info, snap.token
 			}
 			// 强校验不通过：端口被复用/错位，转注册表回退（§7.3 陈旧条目同规则）。
@@ -313,13 +314,16 @@ func (s *Service) runProbe(client *http.Client, registryDir string, snap *probeS
 			continue
 		}
 		pidMatch := snap.pid > 0 && e.PID == snap.pid
+		// token 相等入围（Windows shell-attach：条目 pid 是 node pid，与
+		// tracker 的 shell pid 必然失配；注入 token 与条目 token 一致即归属）。
+		tokenMatch := snap.token != "" && e.Token == snap.token
 		if snap.piSessionID != "" {
-			// 精确匹配优先；失配但 pid 一致（会话切换后条目覆盖写）也入围，
-			// 最终归属由 validateAdoption 强校验裁决。
-			if e.SessionID != snap.piSessionID && !pidMatch {
+			// 精确匹配优先；失配但 pid 一致（会话切换后条目覆盖写）或 token
+			// 相等也入围，最终归属由 validateAdoption 强校验裁决。
+			if e.SessionID != snap.piSessionID && !pidMatch && !tokenMatch {
 				continue
 			}
-		} else if !pidMatch {
+		} else if !pidMatch && !tokenMatch {
 			continue
 		}
 		// v1.0.2：注入 token 优先；未注入时从注册表条目补读（独立终端场景）。
@@ -328,7 +332,7 @@ func (s *Service) runProbe(client *http.Client, registryDir string, snap *probeS
 			token = e.Token
 		}
 		if info, outcome := probeCandidate(client, e.Port, token, snap.pid); outcome == probeReady {
-			if validateAdoption(snap, info, e.Port) {
+			if validateAdoption(snap, info, e.Port, token != "") {
 				return resultAdopted, e.Port, info, token
 			}
 		}
@@ -348,18 +352,23 @@ func probeCandidate(client *http.Client, port int, token string, expectPID int) 
 	return probeInfo(ctx, client, port, token, expectPID)
 }
 
-// validateAdoption 是采纳强校验（Major2；resume 修订：粘性键放宽为 pid）：
-//   - sessionId 非空 + pid 匹配（已知时）+ info.port==候选端口，齐备才
-//     采纳——防止端口复用/他服务占用误采纳；
-//   - 粘性复核：pi /resume、/new、fork、reload 在同进程内切换会话，
-//     sessionId 必变而 pid 不变，故 sessionId 失配不构成拒绝（合法会话
-//     切换，由 adoptLocked 跟随更新）；pid 失配仍拒绝（端口被其他 pi
-//     进程复用的既有防线不变）。
-func validateAdoption(snap *probeSnapshot, info *Info, candidatePort int) bool {
+// validateAdoption 是采纳强校验（Major2；resume 修订：粘性键放宽为 pid；
+// Windows shell-attach 修订：token 即身份）：
+//   - sessionId 非空 + info.port==候选端口，齐备才采纳；
+//   - pid 校验：token 探测（tokenProven，探测所用 token 非空且得到 200）时
+//     豁免——注入的 AMAGI_WEBUI_TOKEN 是壳与扩展间的共享密钥，/api/info
+//     受 capability 保护（错误 token → 401/403 不可达），携正确 token 的
+//     200 已证明服务归属；且 Windows 内嵌 pi 走 BootstrapShellAttach
+//     （ConPTY 只起 shell，pi 命令经输入流注入），PTY pid 是 shell pid
+//     而非 node pid，pid 等值在该架构下必然失配。token 为空
+//     （legacy/独立终端未注入）时维持 pid 防线（防端口被其他进程复用）；
+//   - 粘性复核：sessionId 演进（/resume 等）视为合法切换，由 adoptLocked
+//     跟随更新。
+func validateAdoption(snap *probeSnapshot, info *Info, candidatePort int, tokenProven bool) bool {
 	if info == nil || info.SessionID == "" {
 		return false
 	}
-	if snap.pid > 0 && info.PID != snap.pid {
+	if !tokenProven && snap.pid > 0 && info.PID != snap.pid {
 		return false
 	}
 	if candidatePort > 0 && info.Port != candidatePort {
@@ -404,7 +413,7 @@ func (s *Service) markStillProbingLocked(t *tracker) {
 }
 
 // statusOf 构造状态快照。available 且 token 已知时 URL 携带 v1.0.2 fragment
-//（#/t=<token>，供 sandbox 页面凭 fragment 取 token 调用 API）。
+// （#/t=<token>，供 sandbox 页面凭 fragment 取 token 调用 API）。
 func statusOf(t *tracker) Status {
 	if t == nil {
 		return Status{State: StateUnknown}
