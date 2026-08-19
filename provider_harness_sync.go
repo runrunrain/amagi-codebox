@@ -28,7 +28,12 @@ func (a *App) syncProvidersToHarnessesLocked() error {
 	}
 
 	providers := a.Config.GetProviders()
-	modelsByProvider := collectManagedProviderModels(providers, a.Config.GetAllTerminalPresets())
+	presets := a.Config.GetAllTerminalPresets()
+	// Pi/OMP consume the shared OpenAI preset bucket only (the Anthropic bucket
+	// belongs to Claude Code); OpenCode keeps consuming both public buckets as
+	// before, so its opencode.json provider entries are unchanged.
+	piOmpModelsByProvider := collectManagedProviderModels(providers, presets, []config.TerminalPresetType{config.TerminalPresetOpenAI})
+	openCodeModelsByProvider := collectManagedProviderModels(providers, presets, config.ValidTerminalPresetTypes())
 	piProviders := map[string]any{}
 	ompProviders := map[string]any{}
 	openCodeProviders := map[string]any{}
@@ -43,11 +48,12 @@ func (a *App) syncProvidersToHarnessesLocked() error {
 	for _, name := range names {
 		provider := providers[name]
 		apiKey, _ := a.getProviderAPIKey(name, provider)
-		models := modelsByProvider[name]
+		models := piOmpModelsByProvider[name]
+		openCodeModels := openCodeModelsByProvider[name]
 		// A harness custom provider without any model is unusable and some OMP
 		// versions reject the whole models.yml for it. Keep the CodeBox provider
 		// as the source of truth, but do not publish it until a model is set.
-		if len(models) == 0 {
+		if len(models) == 0 && len(openCodeModels) == 0 {
 			continue
 		}
 		// A CodeBox entry with no explicit endpoint may intentionally rely on a
@@ -72,7 +78,7 @@ func (a *App) syncProvidersToHarnessesLocked() error {
 			appendHarnessProviderEntries(ompProviders, ompCfg)
 		}
 
-		id, entry, err := launcher.BuildOpenCodeManagedProviderEntry(name, provider, apiKey, models)
+		id, entry, err := launcher.BuildOpenCodeManagedProviderEntry(name, provider, apiKey, openCodeModels)
 		if err != nil {
 			syncErrs = append(syncErrs, fmt.Errorf("build OpenCode provider %q: %w", name, err))
 		} else {
@@ -121,59 +127,13 @@ func appendHarnessProviderEntries(destination map[string]any, cfg map[string]any
 func collectManagedProviderModels(
 	providers map[string]config.Provider,
 	presets *config.TerminalPresetsConfig,
+	terminalTypes []config.TerminalPresetType,
 ) map[string][]launcher.ManagedProviderModel {
-	modelParams := make(map[string]map[string]config.Parameters, len(providers))
+	result := make(map[string][]launcher.ManagedProviderModel, len(providers))
 	for name, provider := range providers {
-		modelParams[name] = map[string]config.Parameters{}
-		if model := strings.TrimSpace(provider.DefaultModel); model != "" {
-			modelParams[name][model] = config.Parameters{}
+		if models := launcher.ManagedPresetModels(name, provider, presets, terminalTypes...); len(models) > 0 {
+			result[name] = models
 		}
-		legacyNames := make([]string, 0, len(provider.Presets))
-		for presetName := range provider.Presets {
-			legacyNames = append(legacyNames, presetName)
-		}
-		sort.Strings(legacyNames)
-		for _, presetName := range legacyNames {
-			preset := provider.Presets[presetName]
-			if model := strings.TrimSpace(preset.Model); model != "" {
-				modelParams[name][model] = preset.Parameters
-			}
-		}
-	}
-
-	for _, terminalType := range config.ValidTerminalPresetTypes() {
-		presetMap := presets.GetMap(terminalType)
-		presetNames := make([]string, 0, len(presetMap))
-		for presetName := range presetMap {
-			presetNames = append(presetNames, presetName)
-		}
-		sort.Strings(presetNames)
-		for _, presetName := range presetNames {
-			preset := presetMap[presetName]
-			providerName := strings.TrimSpace(preset.Provider)
-			if _, exists := modelParams[providerName]; !exists {
-				continue
-			}
-			for _, model := range []string{preset.Model, preset.ModelHaiku, preset.ModelSonnet, preset.ModelOpus} {
-				if model = strings.TrimSpace(model); model != "" {
-					modelParams[providerName][model] = preset.Parameters
-				}
-			}
-		}
-	}
-
-	result := make(map[string][]launcher.ManagedProviderModel, len(modelParams))
-	for providerName, byModel := range modelParams {
-		modelNames := make([]string, 0, len(byModel))
-		for model := range byModel {
-			modelNames = append(modelNames, model)
-		}
-		sort.Strings(modelNames)
-		models := make([]launcher.ManagedProviderModel, 0, len(modelNames))
-		for _, model := range modelNames {
-			models = append(models, launcher.ManagedProviderModel{ID: model, Parameters: byModel[model]})
-		}
-		result[providerName] = models
 	}
 	return result
 }

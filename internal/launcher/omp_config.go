@@ -33,7 +33,8 @@ func OmpProviderID(providerName string) string {
 //  1. provider id = "amagi-<providerName>"（隔离命名，不碰 omp 内置 provider）
 //  2. baseUrl/api/apiKey 从 Provider 双格式推导
 //  3. models 注册当前选中的 model（来自 preset 或 provider.DefaultModel），
-//     并透传 Parameters 中的 contextWindow/maxTokens/reasoning/thinkingLevelMap/compat
+//     并透传 Parameters 中的 contextWindow/maxTokens/reasoning/thinkingLevelMap/compat；
+//     presetModels（openai 公共预设桶）下同 provider 其余预设模型一并注册
 //
 // 返回的 map 可直接 yaml.Marshal 后写入 ~/.omp/agent/models.yml。
 func BuildOmpModelsConfig(
@@ -42,6 +43,7 @@ func BuildOmpModelsConfig(
 	modelName string,
 	apiKey string,
 	params config.Parameters,
+	presetModels []ManagedProviderModel,
 ) (map[string]any, error) {
 	ompID := OmpProviderID(providerName)
 	format := "anthropic"
@@ -84,9 +86,9 @@ func BuildOmpModelsConfig(
 	}
 
 	// 注册 models 列表（v1.3.34 多模型修复，与 BuildPiModelsConfig 同构）：
-	// 启动选中的模型排首且参数权威，同 provider 其余预设模型一并注册，
-	// DefaultModel 兑底；修复用某预设启动时其他预设模型被整体替换丢失。
-	if models := buildManagedModelEntries(provider, modelName, params); len(models) > 0 {
+	// 启动选中的模型排首且参数权威，同 provider 其余 openai 桶预设模型一并
+	// 注册，DefaultModel 兑底；修复用某预设启动时其他预设模型被整体替换丢失。
+	if models := buildManagedModelEntries(provider, modelName, params, presetModels); len(models) > 0 {
 		entry["models"] = models
 	}
 

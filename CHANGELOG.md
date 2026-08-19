@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.40] - 2026-08-19
+
+### Fixed
+
+- 修复 Pi/OMP 启动时漏注统一同步写入的同 provider 其他预设模型的问题：启动写入是托管条目（`amagi-<name>`）的整体替换语义，此前 BuildPiModelsConfig/BuildOmpModelsConfig 只收集旧版 `provider.Presets` + DefaultModel，终端公共预设桶（openai 桶，pi/omp 消费）里的同 provider 预设模型会被挤掉。重构模型注册收集：新增 `ManagedPresetModels` 统一派生（DefaultModel → 旧版 provider.Presets → 指定 terminal 桶 preset，后源覆盖前源同 id），按 model id 排序输出确定；`buildManagedModelsConfig` 改为单次把整个 models 列表交给 builder（每个模型保留各自 Parameters，替代此前 per-model 构建再 first-seen 合并）；pi/omp 启动路径传 openai 公共预设桶的预设模型，`buildManagedModelEntries` 追加顺序为启动模型（权威）→ presetModels → 旧版 Presets → DefaultModel 兜底。裸参数继承逻辑同样先查 openai 桶 presetModels 再查旧版 Presets。
+
 ## [1.3.39] - 2026-08-19
 
 ### Fixed

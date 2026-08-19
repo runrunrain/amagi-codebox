@@ -40,6 +40,7 @@ type launchConfigPort interface {
 	ResolveTerminalPreset(terminalType, key string) (string, *config.TerminalPreset, error)
 	GetOpenCodePreset(key string) (*config.OpenCodePreset, error)
 	GetAgentTeams() config.AgentTeamsConfig
+	GetAllTerminalPresets() *config.TerminalPresetsConfig
 }
 
 // launchSecretsPort is the narrow read-only interface over secrets.SecretsService.
@@ -570,7 +571,7 @@ func (p *appLaunchPlanner) buildOmpPlan(recipe launchplan.StableRecipe, req laun
 }
 
 // piOmpConfigBuilder is the shared signature for BuildPiModelsConfig / BuildOmpModelsConfig.
-type piOmpConfigBuilder func(providerName string, provider config.Provider, model string, apiKey string, params config.Parameters) (map[string]any, error)
+type piOmpConfigBuilder func(providerName string, provider config.Provider, model string, apiKey string, params config.Parameters, presetModels []launcher.ManagedProviderModel) (map[string]any, error)
 
 // piOmpConfigMerger is the shared signature for MergePiAgentConfig / MergeOmpModelsConfig.
 type piOmpConfigMerger func(cfg map[string]any, agentDir string) map[string]any
@@ -663,7 +664,7 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 		if strings.TrimSpace(apiKey) == "" {
 			return fail(launchplan.FailureLaunchContext)
 		}
-		cfg, cfgErr := configBuilder(providerID, *provider, launchResult.Model, apiKey, presetParams)
+		cfg, cfgErr := configBuilder(providerID, *provider, launchResult.Model, apiKey, presetParams, launcher.ManagedPresetModels(providerID, *provider, p.config.GetAllTerminalPresets(), config.TerminalPresetOpenAI))
 		if cfgErr != nil {
 			return fail(launchplan.FailureLaunchContext)
 		}

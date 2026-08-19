@@ -2979,7 +2979,11 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
 			// 失败则回退到 piProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
 			// presetParams 透传 contextWindow/maxTokens/thinking 到 pi model 配置。
-			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams); cfgErr == nil {
+			// presetModels：该 provider 在 openai 公共预设桶（pi/omp 消费的桶）下的
+			// 全部预设模型。启动写入是托管条目的整体替换语义，漏注会把统一同步
+			// 写入的同 provider 其他预设模型挤掉。
+			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), config.TerminalPresetOpenAI)
+			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
 				agentDir := defaultPiAgentDir()
 				// 保留用户 models.json 中已有的 provider 和其他顶层配置，
 				// 当次 amagi 生成的同名 provider 优先。
@@ -3232,7 +3236,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 			// 合并写入 omp 标准 agent 目录的 models.yml。
 			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
 			// 失败则回退到 ompProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
-			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams); cfgErr == nil {
+			// presetModels 同 Pi：取该 provider 在 openai 公共预设桶下的全部预设
+			// 模型（启动写入是托管条目整体替换语义，漏注会把统一同步写入的同
+			// provider 其他预设模型挤掉）。
+			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), config.TerminalPresetOpenAI)
+			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
 				agentDir := defaultOmpAgentDir()
 				// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
 				// 当次 amagi 生成的同名 provider 优先。

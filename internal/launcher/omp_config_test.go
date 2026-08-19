@@ -57,7 +57,7 @@ func TestBuildOmpModelsConfigProviderShapes(t *testing.T) {
 	openAI := config.Provider{
 		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com/v1"},
 	}
-	cfg, err := BuildOmpModelsConfig("custom", openAI, "m", "k", config.Parameters{})
+	cfg, err := BuildOmpModelsConfig("custom", openAI, "m", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig (openai): %v", err)
 	}
@@ -75,7 +75,7 @@ func TestBuildOmpModelsConfigProviderShapes(t *testing.T) {
 	anthropic := config.Provider{
 		Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.example.com/anthropic"},
 	}
-	cfg2, err := BuildOmpModelsConfig("custom", anthropic, "m", "k", config.Parameters{})
+	cfg2, err := BuildOmpModelsConfig("custom", anthropic, "m", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig (anthropic): %v", err)
 	}
@@ -86,7 +86,7 @@ func TestBuildOmpModelsConfigProviderShapes(t *testing.T) {
 
 	// no baseURL -> error (same contract as pi)
 	broken := config.Provider{}
-	if _, err := BuildOmpModelsConfig("x", broken, "m", "k", config.Parameters{}); err == nil {
+	if _, err := BuildOmpModelsConfig("x", broken, "m", "k", config.Parameters{}, nil); err == nil {
 		t.Error("expected error for provider without baseURL")
 	}
 }
@@ -99,7 +99,7 @@ func TestBuildOmpModelsConfigKeylessAuth(t *testing.T) {
 		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "http://127.0.0.1:8000/v1"},
 	}
 
-	cfg, err := BuildOmpModelsConfig("local", provider, "local-model", "", config.Parameters{})
+	cfg, err := BuildOmpModelsConfig("local", provider, "local-model", "", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestBuildOmpModelsConfigKeylessAuth(t *testing.T) {
 		t.Fatalf("apiKey must be omitted for a keyless provider, got %#v", entry["apiKey"])
 	}
 
-	withKey, err := BuildOmpModelsConfig("hosted", provider, "hosted-model", "secret", config.Parameters{})
+	withKey, err := BuildOmpModelsConfig("hosted", provider, "hosted-model", "secret", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig with key: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestBuildOmpModelsConfigResolvesEnvHeaders(t *testing.T) {
 			},
 		},
 	}
-	cfg, err := BuildOmpModelsConfig("custom", provider, "m", "k", config.Parameters{})
+	cfg, err := BuildOmpModelsConfig("custom", provider, "m", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestBuildOmpModelsConfigThinkingLevelMap(t *testing.T) {
 		ContextWindow: &config.ContextWindowConfig{ModelContextWindow: 128000},
 		MaxTokens:     8192,
 	}
-	cfg, err := BuildOmpModelsConfig("kimi", provider, "k3-256k", "k", enabled)
+	cfg, err := BuildOmpModelsConfig("kimi", provider, "k3-256k", "k", enabled, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestBuildOmpModelsConfigThinkingLevelMap(t *testing.T) {
 	}
 
 	// thinking disabled: no reasoning / thinkingLevelMap
-	cfgOff, err := BuildOmpModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{})
+	cfgOff, err := BuildOmpModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig (no thinking): %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBuildOmpModelsConfigCompatDefaults(t *testing.T) {
 		OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.kimi.com/coding/v1"},
 	}
 
-	cfg, err := BuildOmpModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{})
+	cfg, err := BuildOmpModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestBuildOmpModelsConfigCompatDefaults(t *testing.T) {
 			"supportsDeveloperRole":   true,
 			"supportsReasoningEffort": false,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig (override): %v", err)
 	}

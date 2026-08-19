@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"amagi-codebox/internal/config"
@@ -53,7 +54,69 @@ func BuildOmpManagedProviderConfig(
 	return buildManagedModelsConfig(providerName, provider, apiKey, models, BuildOmpModelsConfig)
 }
 
-type managedModelsBuilder func(string, config.Provider, string, string, config.Parameters) (map[string]any, error)
+type managedModelsBuilder func(string, config.Provider, string, string, config.Parameters, []ManagedProviderModel) (map[string]any, error)
+
+// ManagedPresetModels derives the model registrations CodeBox publishes for
+// one provider from its DefaultModel, its legacy provider.Presets and the
+// terminal preset buckets listed in terminalTypes. Later sources overwrite
+// earlier ones for the same model id, so bucket presets (iterated in the
+// given order) win over legacy presets and the zero-parameter DefaultModel.
+// The result is sorted by model id, making it deterministic and directly
+// consumable as the presetModels argument of BuildPiModelsConfig /
+// BuildOmpModelsConfig. Pi and OMP must pass only the OpenAI bucket
+// (TerminalPresetOpenAI): the Anthropic bucket belongs to Claude Code.
+func ManagedPresetModels(
+	providerName string,
+	provider config.Provider,
+	presets *config.TerminalPresetsConfig,
+	terminalTypes ...config.TerminalPresetType,
+) []ManagedProviderModel {
+	modelParams := map[string]config.Parameters{}
+	if model := strings.TrimSpace(provider.DefaultModel); model != "" {
+		modelParams[model] = config.Parameters{}
+	}
+	for _, key := range sortedPresetKeys(provider.Presets) {
+		if model := strings.TrimSpace(provider.Presets[key].Model); model != "" {
+			modelParams[model] = provider.Presets[key].Parameters
+		}
+	}
+	for _, terminalType := range terminalTypes {
+		presetMap := presets.GetMap(terminalType)
+		for _, key := range sortedTerminalPresetKeys(presetMap) {
+			preset := presetMap[key]
+			if strings.TrimSpace(preset.Provider) != providerName {
+				continue
+			}
+			for _, model := range []string{preset.Model, preset.ModelHaiku, preset.ModelSonnet, preset.ModelOpus} {
+				if model = strings.TrimSpace(model); model != "" {
+					modelParams[model] = preset.Parameters
+				}
+			}
+		}
+	}
+
+	modelNames := make([]string, 0, len(modelParams))
+	for model := range modelParams {
+		modelNames = append(modelNames, model)
+	}
+	sort.Strings(modelNames)
+	models := make([]ManagedProviderModel, 0, len(modelNames))
+	for _, model := range modelNames {
+		models = append(models, ManagedProviderModel{ID: model, Parameters: modelParams[model]})
+	}
+	return models
+}
+
+// sortedTerminalPresetKeys returns terminal preset keys in sorted order
+// (nil-safe), keeping bucket iteration deterministic.
+func sortedTerminalPresetKeys(presetMap map[string]config.TerminalPreset) []string {
+	keys := make([]string, 0, len(presetMap))
+	for key := range presetMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 func buildManagedModelsConfig(
 	providerName string,
@@ -66,63 +129,15 @@ func buildManagedModelsConfig(
 		models = []ManagedProviderModel{{ID: provider.DefaultModel}}
 	}
 
-	var providerID string
-	var providerEntry map[string]any
-	mergedModels := make([]map[string]any, 0, len(models))
-	seenModels := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		cfg, err := build(providerName, provider, model.ID, apiKey, model.Parameters)
-		if err != nil {
-			return nil, err
-		}
-		entries := piProviderEntries(cfg["providers"])
-		for id, rawEntry := range entries {
-			entry, ok := rawEntry.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("provider %q generated an invalid harness entry", providerName)
-			}
-			if providerEntry == nil {
-				providerID = id
-				providerEntry = entry
-			}
-			for _, generatedModel := range modelEntryList(entry["models"]) {
-				id, _ := generatedModel["id"].(string)
-				if _, exists := seenModels[id]; id == "" || exists {
-					continue
-				}
-				seenModels[id] = struct{}{}
-				mergedModels = append(mergedModels, generatedModel)
-			}
-		}
-	}
-	if providerEntry == nil {
-		return nil, fmt.Errorf("provider %q generated no harness entry", providerName)
-	}
-	if len(mergedModels) > 0 {
-		providerEntry["models"] = mergedModels
-	} else {
-		delete(providerEntry, "models")
-	}
-	return map[string]any{
-		"providers": map[string]any{providerID: providerEntry},
-	}, nil
-}
-
-func modelEntryList(value any) []map[string]any {
-	switch entries := value.(type) {
-	case []map[string]any:
-		return entries
-	case []any:
-		out := make([]map[string]any, 0, len(entries))
-		for _, rawEntry := range entries {
-			if entry, ok := rawEntry.(map[string]any); ok {
-				out = append(out, entry)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+	// Single-pass registration: the whole models list is handed to the builder
+	// so every collected model keeps its own parameters. The previous shape
+	// invoked the builder once per model and merged entries with a first-seen
+	// dedup; earlier passes appended their trailing bare DefaultModel
+	// registration, which won the dedup and stripped the collected preset
+	// parameters of the default model (observed: glm-5.3 written bare while its
+	// openai preset carried contextWindow/maxTokens/reasoning).
+	launched := models[0]
+	return build(providerName, provider, launched.ID, apiKey, launched.Parameters, models)
 }
 
 // BuildOpenCodeManagedProviderEntry builds a persistent OpenCode custom

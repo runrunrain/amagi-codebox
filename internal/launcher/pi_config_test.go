@@ -78,7 +78,7 @@ func TestBuildPiModelsConfigReasoningEffortAlone(t *testing.T) {
 		ReasoningEffort: "max",
 		ContextWindow:   &config.ContextWindowConfig{ModelContextWindow: 1000000},
 	}
-	cfg, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "test-key", params)
+	cfg, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "test-key", params, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestBuildPiModelsConfigResolvesEnvHeaders(t *testing.T) {
 			},
 		},
 	}
-	cfg, err := BuildPiModelsConfig("custom", provider, "m", "k", config.Parameters{})
+	cfg, err := BuildPiModelsConfig("custom", provider, "m", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestBuildPiModelsConfigEnablesExtendedThinkingLevels(t *testing.T) {
 	enabled := config.Parameters{
 		Thinking: &config.ThinkingConfig{Type: "enabled"},
 	}
-	cfg, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", enabled)
+	cfg, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", enabled, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestBuildPiModelsConfigEnablesExtendedThinkingLevels(t *testing.T) {
 	}
 
 	// 思考未开启：不写 reasoning / thinkingLevelMap。
-	cfgOff, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{})
+	cfgOff, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig (no thinking): %v", err)
 	}
@@ -186,7 +186,7 @@ func TestBuildPiModelsConfigCompatDefaults(t *testing.T) {
 	}
 
 	// 默认：supportsDeveloperRole=false。
-	cfg, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{})
+	cfg, err := BuildPiModelsConfig("kimi", provider, "k3-256k", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestBuildPiModelsConfigCompatDefaults(t *testing.T) {
 			"supportsDeveloperRole":   true,
 			"supportsReasoningEffort": false,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig (override): %v", err)
 	}
@@ -320,7 +320,7 @@ func TestBuildPiModelsConfigRegistersAllProviderPresetModels(t *testing.T) {
 		},
 	}
 	launchedParams := config.Parameters{MaxTokens: 2048}
-	cfg, err := BuildPiModelsConfig("multi", provider, "model-b", "k", launchedParams)
+	cfg, err := BuildPiModelsConfig("multi", provider, "model-b", "k", launchedParams, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestBuildOmpModelsConfigRegistersAllProviderPresetModels(t *testing.T) {
 			"max":  {Model: "think-y", Parameters: config.Parameters{ReasoningEffort: "max"}},
 		},
 	}
-	cfg, err := BuildOmpModelsConfig("m", provider, "flash-x", "k", config.Parameters{})
+	cfg, err := BuildOmpModelsConfig("m", provider, "flash-x", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildOmpModelsConfig: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestBuildPiModelsConfigBareLaunchInheritsMatchingPresetParams(t *testing.T)
 			}},
 		},
 	}
-	cfg, err := BuildPiModelsConfig("glm", provider, "", "k", config.Parameters{})
+	cfg, err := BuildPiModelsConfig("glm", provider, "", "k", config.Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig: %v", err)
 	}
@@ -426,12 +426,92 @@ func TestBuildPiModelsConfigBareLaunchInheritsMatchingPresetParams(t *testing.T)
 		t.Errorf("compat.thinkingFormat = %#v, want zai", compat["thinkingFormat"])
 	}
 	// 显式传入的参数仍优先（不被预设覆盖）。
-	cfg2, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "k", config.Parameters{MaxTokens: 2048})
+	cfg2, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "k", config.Parameters{MaxTokens: 2048}, nil)
 	if err != nil {
 		t.Fatalf("BuildPiModelsConfig explicit: %v", err)
 	}
 	m2 := cfg2["providers"].(map[string]map[string]any)["amagi-glm"]["models"].([]map[string]any)[0]
 	if m2["maxTokens"] != 2048 {
 		t.Errorf("explicit maxTokens = %#v, want 2048 (launch params authoritative)", m2["maxTokens"])
+	}
+}
+
+func TestBuildPiModelsConfigRegistersTerminalPresetModels(t *testing.T) {
+	// 回归：启动链路必须注册该 provider 在 openai 公共预设桶（pi/omp 消费的桶）
+	// 下的全部预设模型。此前启动写入只含启动模型 + 旧版 provider.Presets，
+	// 托管条目整体替换语义会把统一同步写入的同 provider 其他 openai 预设模型
+	// 挤掉（实测 amagi-glm 在 ~/.pi/agent/models.json 收敛为单模型）。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "glm-5.3",
+	}
+	presetModels := []ManagedProviderModel{
+		{ID: "glm-5.3", Parameters: config.Parameters{
+			MaxTokens:       65536,
+			ContextWindow:   &config.ContextWindowConfig{ModelContextWindow: 1000000},
+			ReasoningEffort: "max",
+		}},
+		{ID: "glm-5.3[1m]", Parameters: config.Parameters{
+			MaxTokens: 131072,
+		}},
+	}
+	// 用另一预设模型启动（裸参数），DefaultModel 不是启动模型。
+	cfg, err := BuildPiModelsConfig("glm", provider, "glm-5.3[1m]", "k", config.Parameters{}, presetModels)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-glm"]
+	models := entry["models"].([]map[string]any)
+	if len(models) != 2 {
+		t.Fatalf("models len = %d, want 2 (openai 桶预设模型全部注册): %v", len(models), models)
+	}
+	byID := make(map[string]map[string]any, len(models))
+	for _, m := range models {
+		byID[m["id"].(string)] = m
+	}
+	// 启动模型排首；裸参数继承同 id openai 预设参数。
+	if models[0]["id"] != "glm-5.3[1m]" {
+		t.Errorf("first model = %v, want glm-5.3[1m] (launched first)", models[0]["id"])
+	}
+	if byID["glm-5.3[1m]"]["maxTokens"] != 131072 {
+		t.Errorf("glm-5.3[1m] maxTokens = %#v, want 131072 (inherited from same-id openai preset)", byID["glm-5.3[1m]"]["maxTokens"])
+	}
+	// 未启动的 DefaultModel 同样保留自己的 openai 预设参数（glm-5.3 裸注册回归）。
+	if byID["glm-5.3"]["maxTokens"] != 65536 {
+		t.Errorf("glm-5.3 maxTokens = %#v, want 65536 (own openai preset params)", byID["glm-5.3"]["maxTokens"])
+	}
+	if byID["glm-5.3"]["contextWindow"] != 1000000 {
+		t.Errorf("glm-5.3 contextWindow = %#v, want 1000000", byID["glm-5.3"]["contextWindow"])
+	}
+	if byID["glm-5.3"]["reasoning"] != true {
+		t.Errorf("glm-5.3 reasoning = %#v, want true (reasoning_effort=max)", byID["glm-5.3"]["reasoning"])
+	}
+}
+
+func TestBuildPiModelsConfigBareLaunchInheritsTerminalPresetParams(t *testing.T) {
+	// 裸参数直启 DefaultModel 时，参数继承源新增 openai 桶 presetModels
+	//（旧版 provider.Presets 已迁移为空，实际参数都在公共预设桶里）。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "glm-5.3",
+	}
+	presetModels := []ManagedProviderModel{
+		{ID: "glm-5.3", Parameters: config.Parameters{
+			MaxTokens:     65536,
+			ContextWindow: &config.ContextWindowConfig{ModelContextWindow: 1000000},
+			Thinking:      &config.ThinkingConfig{Type: "enabled"},
+		}},
+	}
+	cfg, err := BuildPiModelsConfig("glm", provider, "", "k", config.Parameters{}, presetModels)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	models := cfg["providers"].(map[string]map[string]any)["amagi-glm"]["models"].([]map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1: %v", len(models), models)
+	}
+	m := models[0]
+	if m["maxTokens"] != 65536 || m["contextWindow"] != 1000000 || m["reasoning"] != true {
+		t.Errorf("bare default launch lost openai preset params: %v", m)
 	}
 }

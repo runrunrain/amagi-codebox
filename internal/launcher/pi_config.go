@@ -46,6 +46,11 @@ func piAPIType(provider config.Provider) string {
 //  3. models 注册当前选中的 model（来自 preset 或 provider.DefaultModel），
 //     并透传 Parameters 中的 contextWindow/maxTokens/reasoning（pi Model Configuration 字段）
 //
+// presetModels 是该 provider 在 openai 公共预设桶（pi/omp 消费的桶）下的模型注册
+// 列表（ManagedPresetModels 产出）：除启动选中模型外，同 provider 其余 openai
+// 预设模型一并注册、各带自己的 Parameters——启动写入是托管条目的整体替换语义
+// （mergeProviderConfig），漏掉预设模型会把先前的统一同步结果挤掉。
+//
 // 返回的 map 可直接 json.Marshal 后写入 PI_CODING_AGENT_DIR/models.json。
 func BuildPiModelsConfig(
 	providerName string,
@@ -53,6 +58,7 @@ func BuildPiModelsConfig(
 	modelName string,
 	apiKey string,
 	params config.Parameters,
+	presetModels []ManagedProviderModel,
 ) (map[string]any, error) {
 	piID := PiProviderID(providerName)
 	format := "anthropic"
@@ -91,13 +97,14 @@ func BuildPiModelsConfig(
 		entry["authHeader"] = *authHeader
 	}
 
-	// 注册 models 列表（v1.3.34 多模型修复）：托管条目注册该 provider 的
-	// 全部预设模型——启动选中的模型排首位且参数以本次传入为准（权威），
-	// 其余预设按各自 Parameters 注册（contextWindow/maxTokens/reasoning/
-	// compat 独立生效），DefaultModel 未被覆盖时兑底裸注册。修复：用某一预设
-	// 启动时，mergeProviderConfig 对同名托管条目 amagi-<name> 整体替换，
-	// desired 只含单模型 → 同 provider 其他预设模型在 models.json 被覆盖丢失。
-	if models := buildManagedModelEntries(provider, modelName, params); len(models) > 0 {
+	// 注册 models 列表（v1.3.34 多模型修复 + openai 预设桶）：托管条目注册该
+	// provider 的全部预设模型——启动选中的模型排首位且参数以本次传入为准（权威），
+	// 其余 openai 桶预设 / 旧版 provider.Presets 按各自 Parameters 注册
+	// （contextWindow/maxTokens/reasoning/compat 独立生效），DefaultModel 未被
+	// 覆盖时兑底裸注册。修复：用某一预设启动时，mergeProviderConfig 对同名托管
+	// 条目 amagi-<name> 整体替换，desired 漏注册预设模型会把统一同步写入的同
+	// provider 其他预设模型在 models.json 挤掉。
+	if models := buildManagedModelEntries(provider, modelName, params, presetModels); len(models) > 0 {
 		entry["models"] = models
 	}
 
@@ -170,9 +177,10 @@ func appendManagedModelEntry(models []map[string]any, seen map[string]bool, mode
 
 // buildManagedModelEntries 生成托管 provider 的 models 注册列表（v1.3.34）。
 // 顺序与权威性：启动选中的模型（缺省回落 DefaultModel）排首位且参数以本次传入
-// 为准；其余预设按键序注册、各带自己的 Parameters；DefaultModel 未被前两者
-// 覆盖时以零参数兑底注册。preset 键排序保证输出确定（models.json/yml 幂等可比）。
-func buildManagedModelEntries(provider config.Provider, modelName string, params config.Parameters) []map[string]any {
+// 为准；其余模型按 presetModels（openai 公共预设桶，按模型 id 排序、各带自己的
+// Parameters）→ 旧版 provider.Presets（按键序）→ DefaultModel 兜底裸注册的顺序
+// 追加。preset 键排序保证输出确定（models.json/yml 幂等可比）。
+func buildManagedModelEntries(provider config.Provider, modelName string, params config.Parameters, presetModels []ManagedProviderModel) []map[string]any {
 	launched := strings.TrimSpace(modelName)
 	if launched == "" {
 		launched = strings.TrimSpace(provider.DefaultModel)
@@ -182,7 +190,16 @@ func buildManagedModelEntries(provider config.Provider, modelName string, params
 	// 同 id 预设的 contextWindow/maxTokens/reasoning 全部剥掉——实战 glm-5.3 被裸
 	// 注册后 reasoning 丢失、maxTokens 缺省回落服务端 16384，推理吃光输出预算导致
 	// stopReason=length 零正文截断。零值参数时回退继承同 Model 预设的 Parameters
-	// （preset 键序保证挑选确定）；显式传入的参数仍优先。
+	// （openai 桶 presetModels 优先，其次旧版 provider.Presets，键序保证挑选确定）；
+	// 显式传入的参数仍优先。
+	if isZeroParameters(params) {
+		for _, pm := range presetModels {
+			if strings.TrimSpace(pm.ID) == launched {
+				params = pm.Parameters
+				break
+			}
+		}
+	}
 	if isZeroParameters(params) {
 		for _, key := range sortedPresetKeys(provider.Presets) {
 			if strings.TrimSpace(provider.Presets[key].Model) == launched {
@@ -191,9 +208,12 @@ func buildManagedModelEntries(provider config.Provider, modelName string, params
 			}
 		}
 	}
-	models := make([]map[string]any, 0, len(provider.Presets)+1)
-	seen := make(map[string]bool, len(provider.Presets)+1)
+	models := make([]map[string]any, 0, len(presetModels)+len(provider.Presets)+1)
+	seen := make(map[string]bool, len(presetModels)+len(provider.Presets)+1)
 	models = appendManagedModelEntry(models, seen, launched, params)
+	for _, pm := range presetModels {
+		models = appendManagedModelEntry(models, seen, pm.ID, pm.Parameters)
+	}
 	keys := sortedPresetKeys(provider.Presets)
 	for _, key := range keys {
 		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters)
