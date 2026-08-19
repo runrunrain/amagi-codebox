@@ -2,6 +2,7 @@
 import { onMounted, watch } from 'vue'
 import { usePlatformCapabilities } from './composables/usePlatformCapabilities'
 import { useSkinStore } from './stores/skin'
+import { currentSkinImage, requestBake, cancelBake } from './utils/skinBake'
 import AppShell from './components/layout/AppShell.vue'
 import Toast from './components/common/Toast.vue'
 import StartupWarningBanner from './components/remote/StartupWarningBanner.vue'
@@ -10,11 +11,10 @@ import UpdateReminder from './components/common/UpdateReminder.vue'
 const { ensure } = usePlatformCapabilities()
 const skinStore = useSkinStore()
 
-// 皮肤视觉层：store → <html> 上的 CSS 变量与 data-skin 开关（skin.css 消费）。
-// dim 保底 0.35，防止过亮背景吞掉前景可读性；opacity=内容面板不透明度
-// （0..100，与 dim 解耦），注入 --skin-panel-alpha 供 skin.css 面板 token 混合；
-// textBoost=前景文字加深（0..100，0=不增强保持现状），注入 --skin-text-boost 供
-// skin.css 前景 token 向 black 混合，0 档直接移除变量让 color-mix 声明失效回退原色。
+// 皮肤视觉层（v1.3.38 性能修复）：模糊与调光经 skinBake 预烘焙进位图后
+// 一次性注入 --skin-image——运行期零 filter、零全窗逐帧混合，修复 GPU
+// 不可用 WebView 上终端打字/操作巨大延迟。opacity=内容面板不透明度，
+// textBoost=前景文字加深，与 dim 解耦；烘焙中/不可用时回落原图直显。
 function syncSkinDom() {
   const root = document.documentElement
   const skin = skinStore.currentSkin
@@ -27,23 +27,40 @@ function syncSkinDom() {
     const rawBoost = Number(skinStore.settings.textBoost)
     const textBoost =
       Math.max(0, Math.min(100, Number.isFinite(rawBoost) ? rawBoost : 0)) / 100
-    root.style.setProperty('--skin-image', `url("${skin.url}")`)
+
+    // 预烘焙：烘焙产物优先；烘焙中/blur=0/不支持时直接原图。
+    // blurred=true 表示已烘进位图，skin.css 输出 filter:none 与透明 dim 层。
+    const baked = currentSkinImage({ url: skin.url, blur, dim })
+    root.style.setProperty('--skin-image', `url("${baked.url}")`)
     root.style.setProperty('--skin-dim', String(dim))
     root.style.setProperty('--skin-blur', `${blur}px`)
     root.style.setProperty('--skin-panel-alpha', String(opacity))
+    if (baked.blurred) {
+      root.dataset.skinBaked = '1' // 烘焙态：skin.css 零 filter + 透明蒙版
+    } else {
+      delete root.dataset.skinBaked
+      // blur=0 快路径：回落态下也零 filter（免 blur(0px) 渲染面）。
+      if (blur === 0) root.dataset.skinBlurZero = '1'
+      else delete root.dataset.skinBlurZero
+    }
     if (textBoost > 0) {
       root.style.setProperty('--skin-text-boost', String(textBoost))
     } else {
       root.style.removeProperty('--skin-text-boost')
     }
     root.dataset.skin = 'on'
+    // 防抖重烘焙；完成后回调重同步（原子换图）。
+    requestBake({ url: skin.url, blur, dim }, syncSkinDom)
   } else {
+    cancelBake()
     root.style.removeProperty('--skin-image')
     root.style.removeProperty('--skin-dim')
     root.style.removeProperty('--skin-blur')
     root.style.removeProperty('--skin-panel-alpha')
     root.style.removeProperty('--skin-text-boost')
     delete root.dataset.skin
+    delete root.dataset.skinBaked
+    delete root.dataset.skinBlurZero
   }
 }
 

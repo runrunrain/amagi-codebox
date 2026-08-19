@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.38] - 2026-08-18
+
+### Fixed
+
+- 修复皮肤功能在 GPU 不可用 WebView（Windows GPU 黑名单/RDP/虚拟机常见）上拖垮终端打字回显与整体操作响应的问题：皮肤层此前对全窗背景逐帧应用 CSS `filter: blur()` + 透明根 + 全窗蒙版合成，软件光栅下每帧成本数百毫秒。新增 `skinBake` 预烘焙引擎——调参时一次性把模糊与调光烘焙进位图（`createImageBitmap` 异步解码 → 低分辨率离屏 canvas 最长边 ≤1280 上 `filter: blur()` + dim 压暗 + scale 边缘补偿 → `toDataURL`），皮肤层运行期零 filter、零逐帧混合，仅剩一张普通背景图 + 极低成本纯色层；滑块拖动 500ms 防抖重烘焙、过程中先回落原图直显不卡 UI，烘焙完成后原子换图；烘焙失败（极老 WebView 无 filter/低内存）永久回退 CSS 直显模式（行为同旧版仍正确）。blur=0 快路径零 filter。
+
 ## [1.3.37] - 2026-08-18
 
 ### Fixed

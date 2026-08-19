@@ -26,7 +26,10 @@
   --skin-text-boost: 0;
 }
 
-/* 固定背景层：cover + 可调模糊；放大补偿 blur 造成的边缘透明。
+/* 固定背景层：cover；v1.3.38 性能修复——模糊与调光已由 skinBake 预烘焙进
+   位图（--skin-baked=1），运行期零 filter、零逐帧全窗混合，修复 GPU 不可用
+   WebView 上的终端打字/操作延迟。烘焙中/blur=0/不支持烘焙时（--skin-baked=0）
+   回落原图 + 逐帧 CSS blur（行为同旧版，仍正确仅无优化）。
    z-index:-1 沉到所有内容之下（html/body 背景在皮肤模式下转透明，
    负 z-index 仍绘于根画布背景之上，因此图片可见）。 */
 .skin-layer {
@@ -38,17 +41,23 @@
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  filter: blur(var(--skin-blur));
   transform: scale(1.08);
 }
 
-/* 调光蒙版：压暗背景保证前景可读（dim 默认 0.35 保底）。 */
-.skin-dim {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background: rgba(0, 0, 0, var(--skin-dim));
+/* 烘焙态（html[data-skin-baked]）：零 filter（模糊与边缘补偿已在位图内）；
+   烘焙图已含 dim 压暗，蒙版层完全透明（保留层占位避免层树抖动）。 */
+html[data-skin='on'][data-skin-baked] .skin-layer {
+  filter: none;
+  transform: none;
+}
+
+html[data-skin='on'][data-skin-baked] .skin-dim {
+  background: transparent;
+}
+
+/* 回落态（未烘焙）：原图直显 + 逐帧 blur（旧路径）。 */
+html[data-skin='on']:not([data-skin-baked]) .skin-layer {
+  filter: blur(var(--skin-blur));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -56,6 +65,13 @@
   .skin-dim {
     transition: none;
   }
+}
+
+/* blur=0 时零 filter 快路径（烘焙器也不处理 blur=0）：即使处于回落态，
+   blur(0px) 也省掉，避免无谓的 filter 渲染面。 */
+html[data-skin='on']:not([data-skin-baked])[data-skin-blur-zero] .skin-layer {
+  filter: none;
+  transform: none;
 }
 
 html[data-skin='on'] {
