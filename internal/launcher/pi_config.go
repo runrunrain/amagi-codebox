@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -176,19 +177,45 @@ func buildManagedModelEntries(provider config.Provider, modelName string, params
 	if launched == "" {
 		launched = strings.TrimSpace(provider.DefaultModel)
 	}
+	// 2026-08-19 修复：裸参数启动（default_model 直启 / 请求未带 parameters）时，
+	// 启动模型以零参数优先注册（appendManagedModelEntry 同 id 去重先到先得），会把
+	// 同 id 预设的 contextWindow/maxTokens/reasoning 全部剥掉——实战 glm-5.3 被裸
+	// 注册后 reasoning 丢失、maxTokens 缺省回落服务端 16384，推理吃光输出预算导致
+	// stopReason=length 零正文截断。零值参数时回退继承同 Model 预设的 Parameters
+	// （preset 键序保证挑选确定）；显式传入的参数仍优先。
+	if isZeroParameters(params) {
+		for _, key := range sortedPresetKeys(provider.Presets) {
+			if strings.TrimSpace(provider.Presets[key].Model) == launched {
+				params = provider.Presets[key].Parameters
+				break
+			}
+		}
+	}
 	models := make([]map[string]any, 0, len(provider.Presets)+1)
 	seen := make(map[string]bool, len(provider.Presets)+1)
 	models = appendManagedModelEntry(models, seen, launched, params)
-	keys := make([]string, 0, len(provider.Presets))
-	for key := range provider.Presets {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := sortedPresetKeys(provider.Presets)
 	for _, key := range keys {
 		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters)
 	}
 	models = appendManagedModelEntry(models, seen, provider.DefaultModel, config.Parameters{})
 	return models
+}
+
+// sortedPresetKeys 返回按键排序的 preset 键列表（nil 安全）。
+func sortedPresetKeys(presets map[string]config.Preset) []string {
+	keys := make([]string, 0, len(presets))
+	for key := range presets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// isZeroParameters 判断 Parameters 是否为零值（调用方未显式传参）。
+// 含指针与 map 字段，逐字段判零易漏，DeepEqual 与零值整体比较最稳。
+func isZeroParameters(p config.Parameters) bool {
+	return reflect.DeepEqual(p, config.Parameters{})
 }
 
 // WritePiAgentConfig 将 pi models.json 配置原子写入 agentDir/models.json。

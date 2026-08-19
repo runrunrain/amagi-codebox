@@ -384,3 +384,54 @@ func TestBuildOmpModelsConfigRegistersAllProviderPresetModels(t *testing.T) {
 		t.Errorf("think-y reasoning = %#v, want true (own preset params)", byID["think-y"]["reasoning"])
 	}
 }
+
+func TestBuildPiModelsConfigBareLaunchInheritsMatchingPresetParams(t *testing.T) {
+	// 2026-08-19 回归：裸参数启动（default_model 直启 / 请求未带 parameters）时，
+	// 启动模型此前以零参数优先注册，同 id 预设的 contextWindow/maxTokens/reasoning
+	// 被剥掉（实战 glm-5.3 裸注册 → reasoning 丢失 + maxTokens 缺省 16384 截断）。
+	// 现在：零值参数回退继承同 Model 预设的 Parameters；显式传入仍优先。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "glm-5.3",
+		Presets: map[string]config.Preset{
+			"glm-5.3": {Model: "glm-5.3", Parameters: config.Parameters{
+				MaxTokens:     131072,
+				ContextWindow: &config.ContextWindowConfig{ModelContextWindow: 1000000},
+				Thinking:      &config.ThinkingConfig{Type: "enabled"},
+				PiCompat:      map[string]any{"thinkingFormat": "zai"},
+			}},
+		},
+	}
+	cfg, err := BuildPiModelsConfig("glm", provider, "", "k", config.Parameters{})
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-glm"]
+	models := entry["models"].([]map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1: %v", len(models), models)
+	}
+	m := models[0]
+	if m["maxTokens"] != 131072 {
+		t.Errorf("maxTokens = %#v, want 131072 (inherited from same-id preset)", m["maxTokens"])
+	}
+	if m["contextWindow"] != 1000000 {
+		t.Errorf("contextWindow = %#v, want 1000000", m["contextWindow"])
+	}
+	if m["reasoning"] != true {
+		t.Errorf("reasoning = %#v, want true", m["reasoning"])
+	}
+	compat := m["compat"].(map[string]any)
+	if compat["thinkingFormat"] != "zai" {
+		t.Errorf("compat.thinkingFormat = %#v, want zai", compat["thinkingFormat"])
+	}
+	// 显式传入的参数仍优先（不被预设覆盖）。
+	cfg2, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "k", config.Parameters{MaxTokens: 2048})
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig explicit: %v", err)
+	}
+	m2 := cfg2["providers"].(map[string]map[string]any)["amagi-glm"]["models"].([]map[string]any)[0]
+	if m2["maxTokens"] != 2048 {
+		t.Errorf("explicit maxTokens = %#v, want 2048 (launch params authoritative)", m2["maxTokens"])
+	}
+}

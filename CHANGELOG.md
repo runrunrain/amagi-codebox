@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.39] - 2026-08-19
+
+### Fixed
+
+- 修复 Pi 裸参数启动（default_model 直启 / 请求未带 parameters）时模型参数被剥掉的问题：v1.3.37 的多模型注册中，启动模型以零参数优先注册（同 id 去重先到先得），会把同 id 预设的 contextWindow/maxTokens/reasoning 全部剥掉——实战 glm-5.3 被裸注册后 reasoning 丢失、maxTokens 缺省回落服务端 16384，推理吃光输出预算导致 `stopReason=length` 零正文截断。修复：零值参数时回退继承同 Model 预设的 Parameters（preset 键序保证挑选确定），显式传入的参数仍优先。
+
 ## [1.3.38] - 2026-08-18
 
 ### Fixed
