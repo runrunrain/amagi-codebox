@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"amagi-codebox/internal/agentprofile"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envcheck"
@@ -225,6 +226,7 @@ type App struct {
 	OpenCodeConfig  *opencodeconfig.Service
 	PiConfig        *piconfig.Service
 	OmpConfig       *ompconfig.Service
+	AgentProfiles   *agentprofile.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
 	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
@@ -404,6 +406,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		OpenCodeConfig:      opencodeconfig.NewService(),
 		PiConfig:            piconfig.NewService(),
 		OmpConfig:           ompconfig.NewService(),
+		AgentProfiles:       agentprofile.NewService(),
 		EnvCheck:            envCheckSvc,
 		Usage:               usage.NewService(configDir, log),
 		WebUI:               webui.NewService(log, filepath.Join(defaultPiAgentDir(), "amagi", "webui-registry")),

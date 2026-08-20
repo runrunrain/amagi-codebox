@@ -31,6 +31,7 @@ func buildWailsBindList(app *App) []any {
 		app.OpenCodeConfig,
 		app.PiConfig,
 		app.OmpConfig,
+		app.AgentProfiles,
 		app.EnvCheck,
 		app.Usage,
 		app.WebUI,

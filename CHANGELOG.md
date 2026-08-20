@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.44] - 2026-08-20
+
+### Added
+
+- 新增命名 agent 配置档服务（`internal/agentprofile`，公司/家一键切换）：把当前 live 的 amagi 配置（pi 的 `~/.pi/agent/amagi.json` 与 omp 的 `~/.omp/agent/amagi.json`）快照为命名配置档，并一键应用回 live 文件。存储 `~/.amagi-codebox/agent-profiles.json`（0600，临时文件 + rename 原子写入，目录 0700），形状 `{"version":1,"profiles":{"<name>":{"pi":"<amagi.json 全文>","omp":"<amagi.json 全文>","updatedAt":<epoch ms>}},"lastApplied":"<name 或空>"}`。agentDir 解析复刻 piconfig/ompconfig 语义（优先 `$PI_CODING_AGENT_DIR`）。服务接入 Wails 绑定（AgentProfiles）并附 15 个封闭式测试（含原子写入与 0600 权限断言）。
+
 ## [1.3.43] - 2026-08-20
 
 ### Chore
