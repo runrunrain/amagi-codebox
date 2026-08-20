@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.45] - 2026-08-20
+
+### Added
+
+- Agent 配置档（v1.3.44 的 `internal/agentprofile`）补全前端界面：设置页新增「Agent 配置档」子页（`AgentProfileSettings`）——从当前配置快照为档、配置档列表（查看/应用/删除）、应用前自动备份 live 文件为 `.bak-时间戳`；侧栏设置项与路由接入。配套 `frontend/src/api/agentProfile.ts` API 封装（数据量小不引入 store）。docs/api.md 记录接口。
+- 配置档 omp 侧存储从 `amagi.json` 修正为 `~/.omp/agent/config.yml`（YAML，omp 的真实 live 配置文件；留空表示不管理该侧），快照/应用/备份逻辑同步，测试补全 YAML 路径覆盖。
+
 ## [1.3.44] - 2026-08-20
 
 ### Added

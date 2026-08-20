@@ -1,12 +1,12 @@
 // Package agentprofile 管理命名 agent 配置档（公司/家一键切换）：
-// 把当前 live 的 amagi 配置（pi 的 ~/.pi/agent/amagi.json 与 omp 的
-// ~/.omp/agent/amagi.json）快照为命名配置档，并一键应用回 live 文件。
+// 把当前 live 的 agent 配置（pi 的 ~/.pi/agent/amagi.json 与 omp 的
+// ~/.omp/agent/config.yml）快照为命名配置档，并一键应用回 live 文件。
 //
 // 存储：~/.amagi-codebox/agent-profiles.json（0600，临时文件 + rename
 // 原子写入，目录 0700），形状：
 //
 //	{"version":1,"profiles":{"<name>":{"pi":"<amagi.json 全文>",
-//	  "omp":"<amagi.json 全文，可为空串>","updatedAt":<epoch ms>}},
+//	  "omp":"<config.yml 全文，可为空串>","updatedAt":<epoch ms>}},
 //	 "lastApplied":"<name 或空>"}
 //
 // agentDir 解析复刻 piconfig / ompconfig 现有语义：
@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // storeVersion 是配置档存储的当前版本；不兼容的未来版本应迁移而非混读。
@@ -29,7 +31,7 @@ const storeVersion = 1
 // maxProfileNameLength 配置档名长度上限（字符，非字节）。
 const maxProfileNameLength = 64
 
-// profile 是单个命名配置档：pi / omp 两侧 amagi.json 的全文快照。
+// profile 是单个命名配置档：pi 的 amagi.json 与 omp 的 config.yml 全文快照。
 type profile struct {
 	Pi        string `json:"pi"`
 	Omp       string `json:"omp"`
@@ -220,7 +222,7 @@ func (s *Service) GetAgentProfile(name string) (string, error) {
 }
 
 // CaptureAgentProfile 把当前 live 配置快照为命名配置档（存在则覆盖）：
-// pi 的 amagi.json 必须存在且可读；omp 的 amagi.json 缺失时记空串。
+// pi 的 amagi.json 必须存在且可读；omp 的 config.yml 缺失时记空串。
 func (s *Service) CaptureAgentProfile(name string) error {
 	n, err := validateProfileName(name)
 	if err != nil {
@@ -231,9 +233,9 @@ func (s *Service) CaptureAgentProfile(name string) error {
 	if err != nil {
 		return fmt.Errorf("read live pi amagi config: %w", err)
 	}
-	ompData, err := os.ReadFile(filepath.Join(ompAgentDir(), "amagi.json"))
+	ompData, err := os.ReadFile(filepath.Join(ompAgentDir(), "config.yml"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read live omp amagi config: %w", err)
+		return fmt.Errorf("read live omp config: %w", err)
 	}
 
 	store, err := loadStore()
@@ -248,8 +250,8 @@ func (s *Service) CaptureAgentProfile(name string) error {
 	return saveStore(store)
 }
 
-// SaveAgentProfile 显式内容保存（前端编辑后落档）。非空内容必须是合法
-// JSON，非法报错不写。
+// SaveAgentProfile 显式内容保存（前端编辑后落档）。pi 侧非空内容必须是
+// 合法 JSON，omp 侧非空内容必须是合法 YAML 且根为映射；非法报错不写。
 func (s *Service) SaveAgentProfile(name, piContent, ompContent string) error {
 	n, err := validateProfileName(name)
 	if err != nil {
@@ -258,7 +260,7 @@ func (s *Service) SaveAgentProfile(name, piContent, ompContent string) error {
 	if err := validateJSONContent("pi", piContent); err != nil {
 		return err
 	}
-	if err := validateJSONContent("omp", ompContent); err != nil {
+	if err := validateYAMLMappingContent("omp", ompContent); err != nil {
 		return err
 	}
 
@@ -285,14 +287,30 @@ func validateJSONContent(side, content string) error {
 	return nil
 }
 
+// validateYAMLMappingContent 校验非空内容是合法 YAML 且根为映射（空串表示
+// “该侧不管理”，放行），与 ompconfig Save* / app_config_portable 的校验一致。
+func validateYAMLMappingContent(side, content string) error {
+	if content == "" {
+		return nil
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return fmt.Errorf("invalid %s content: not valid YAML: %w", side, err)
+	}
+	if root == nil {
+		return fmt.Errorf("invalid %s content: root must be a YAML mapping", side)
+	}
+	return nil
+}
+
 // ApplyAgentProfile 应用命名配置档到 live 文件：
 //   - pi 内容非空则写入 ~/.pi/agent/amagi.json（原子写 + 0600）；
-//   - omp 内容非空且 omp agentDir 存在时写入 ~/.omp/agent/amagi.json；
+//   - omp 内容非空且 omp agentDir 存在时写入 ~/.omp/agent/config.yml；
 //   - 写前对每个被覆盖的已有 live 文件生成 <file>.bak-<epoch ms> 备份
 //     （仅保留一份，新备份覆盖旧）；
 //   - 成功后更新 lastApplied。
 //
-// 内容非法（非合法 JSON）时报错且不写任何文件。
+// 内容非法（pi 非合法 JSON、omp 非映射根 YAML）时报错且不写任何文件。
 func (s *Service) ApplyAgentProfile(name string) error {
 	n, err := validateProfileName(name)
 	if err != nil {
@@ -310,7 +328,7 @@ func (s *Service) ApplyAgentProfile(name string) error {
 	if err := validateJSONContent("pi", p.Pi); err != nil {
 		return err
 	}
-	if err := validateJSONContent("omp", p.Omp); err != nil {
+	if err := validateYAMLMappingContent("omp", p.Omp); err != nil {
 		return err
 	}
 
@@ -332,7 +350,7 @@ func (s *Service) ApplyAgentProfile(name string) error {
 	if p.Omp != "" {
 		dir := ompAgentDir()
 		if dirExists(dir) {
-			path := filepath.Join(dir, "amagi.json")
+			path := filepath.Join(dir, "config.yml")
 			if err := backupLiveFile(path, nowMs); err != nil {
 				return err
 			}

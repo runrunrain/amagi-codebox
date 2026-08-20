@@ -19,6 +19,7 @@
 - [OpenCode Config Service (`app.OpenCodeConfig`)](#opencode-config-service-appopencodeconfig)
 - [Pi Config Service (`app.PiConfig`)](#pi-config-service-apppiconfig)
 - [Omp Config Service (`app.OmpConfig`)](#omp-config-service-appompconfig)
+- [Agent Profiles Service (`app.AgentProfiles`)](#agent-profiles-service-appagentprofiles)
 - [EnvCheck Service (`app.EnvCheck`)](#envcheck-service-appenvcheck)
 - [Usage Service (`app.Usage`)](#usage-service-appusage)
 - [Skins Service (`app.Skins`)](#skins-service-appskins)
@@ -1271,6 +1272,46 @@
 **Parameters**: none
 **Returns**: `string`, `error`
 **Description**: 读取 `models.yml` 抽取 provider→models 目录（不含 `apiKey` 等敏感字段），并追加 `omp models ls --json` 返回的内置目录提供商（自定义条目优先），序列化为 JSON 返回。
+
+## Agent Profiles Service (`app.AgentProfiles`)
+
+命名 agent 配置档（公司/家一键切换）：把当前 live 配置快照为命名配置档并一键应用（`internal/agentprofile`）。管理 pi 的 `~/.pi/agent/amagi.json`（JSON）与 omp 的 `~/.omp/agent/config.yml`（YAML）两侧全文。配置档存储于 `~/.amagi-codebox/agent-profiles.json`（0600，原子写入）；Apply 覆盖已有 live 文件前生成 `<file>.bak-<epoch ms>` 备份（仅保留一份，新覆盖旧）。agentDir 解析优先 `$PI_CODING_AGENT_DIR`。
+
+### ListAgentProfiles
+**Service**: Agent Profiles Service
+**Parameters**: none
+**Returns**: `string`, `error`
+**Description**: 返回存储全文 JSON（`{version,profiles:{<name>:{pi,omp,updatedAt}},lastApplied}`）。文件缺失时返回空骨架。
+
+### GetAgentProfile
+**Service**: Agent Profiles Service
+**Parameters**: `name (string)`
+**Returns**: `string`, `error`
+**Description**: 返回单个配置档的 JSON（`{pi,omp,updatedAt}`，pi 为 amagi.json 全文、omp 为 config.yml 全文），预览用。
+
+### CaptureAgentProfile
+**Service**: Agent Profiles Service
+**Parameters**: `name (string)`
+**Returns**: `error`
+**Description**: 把当前 live 配置快照为命名配置档（同名覆盖）。pi 的 `amagi.json` 必须存在且可读；omp 的 `config.yml` 缺失时记空串（该侧不管理）。
+
+### SaveAgentProfile
+**Service**: Agent Profiles Service
+**Parameters**: `name (string)`, `piContent (string)` -- 非空时必须为合法 JSON, `ompContent (string)` -- 非空时必须为根节点为映射的合法 YAML
+**Returns**: `error`
+**Description**: 显式内容保存（前端编辑后落档）。空串表示“该侧不管理”；非法内容报错不写。
+
+### ApplyAgentProfile
+**Service**: Agent Profiles Service
+**Parameters**: `name (string)`
+**Returns**: `error`
+**Description**: 应用命名配置档到 live 文件：pi 内容非空写 `~/.pi/agent/amagi.json`（原子写 + 0600）；omp 内容非空且 `~/.omp/agent` 存在时写 `~/.omp/agent/config.yml`。内容非法（pi 非合法 JSON / omp 非映射根 YAML）时报错且不写任何文件；成功后更新 lastApplied。
+
+### DeleteAgentProfile
+**Service**: Agent Profiles Service
+**Parameters**: `name (string)`
+**Returns**: `error`
+**Description**: 删除命名配置档；删除的是 lastApplied 时同步清空。
 
 ## EnvCheck Service (`app.EnvCheck`)
 

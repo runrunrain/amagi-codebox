@@ -11,6 +11,7 @@
       <TerminalSettings v-else-if="activeKey === 'terminal'" />
       <AppearanceSettings v-else-if="activeKey === 'appearance'" />
       <RemoteSettings v-else-if="activeKey === 'remote'" />
+      <AgentProfileSettings v-else-if="activeKey === 'agent-profiles'" />
       <UpdateSettings v-else-if="activeKey === 'update'" />
       <AboutSettings v-else-if="activeKey === 'about'" />
     </div>
@@ -26,6 +27,7 @@ import ShellSettings from './ShellSettings.vue'
 import TerminalSettings from './TerminalSettings.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
 import RemoteSettings from './RemoteSettings.vue'
+import AgentProfileSettings from './AgentProfileSettings.vue'
 import UpdateSettings from './UpdateSettings.vue'
 import AboutSettings from './AboutSettings.vue'
 
@@ -38,6 +40,7 @@ const META: Record<string, { title: string; description: string }> = {
   terminal: { title: '终端设置', description: '终端渲染与滚动缓冲' },
   appearance: { title: '外观', description: '皮肤背景、调光与模糊' },
   remote: { title: '远程控制', description: 'HTTP/WebSocket 远程访问与移动端连接' },
+  'agent-profiles': { title: 'Agent 配置档', description: 'CLI 模型配置多档保存与一键切换' },
   update: { title: '软件更新', description: '检查并安装新版本' },
   about: { title: '关于', description: '应用信息' },
 }
