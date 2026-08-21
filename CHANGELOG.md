@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.3.47] - 2026-08-21
+
+### Added
+
+- Windows 终端默认切到 WSL（`wsl.exe` 作为一等 shell）：`DefaultShellKey` 默认值改为 wsl，探测已安装发行版（排除 docker-desktop），无可用发行版时回退 pwsh/cmd；CLI 在 WSL 内按裸名解析，注入密钥经 `WSLENV` 转发；构建 `wsl.exe -d <distro> --cd <win> -- bash -lic "<payload>"` 双层引号；Windows 脚本包装器（.cmd/.ps1）内联路径保留在 Windows shell 侧。
+- WSL CLI 安装（`internal/wslsetup`）：探测发行版与原生 Node，`npm i -g` 托管 CLI；App 绑定 `GetWSLCLIStatus` / `InstallCLIToWSL`；前端 `WSLCLISettings` 面板挂载在环境检查页下（WSL 不可用时自动隐藏）。
+- WSL 发行版架构版本（WSL1/WSL2）标注：`WSLDistroVersions` 探测 `wsl.exe -l -v`（UTF-16 解码复用、带缓存），解析 `* default` 标记、带空格发行版名与表头；探测失败返回空 map（老版本 wsl.exe 无 -v 支持）；前端在发行版名旁显示 WSL2/WSL1 徽章。
+- 附带修复本次功能提交引入的 gofmt 格式问题（wslsetup 4 个文件）。
+
 ## [1.3.46] - 2026-08-21
 
 ### Added

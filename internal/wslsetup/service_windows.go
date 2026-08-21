@@ -247,4 +247,3 @@ func firstNonEmptyLine(s string) string {
 	}
 	return ""
 }
-

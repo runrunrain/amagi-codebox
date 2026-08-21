@@ -19,7 +19,8 @@ func normalizeToolKey(tool string) string {
 }
 
 // bashSingleQuote wraps a token in POSIX single quotes for safe embedding in a
-// bash -lc script, escaping internal single quotes via the '\'' idiom.
+// bash -lc script, escaping internal single quotes with the classic sequence
+// (single quote becomes: quote, backslash-quote, quote).
 func bashSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

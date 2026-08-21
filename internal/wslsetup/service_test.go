@@ -40,10 +40,10 @@ func TestPackageForTool(t *testing.T) {
 
 func TestBashSingleQuote(t *testing.T) {
 	cases := map[string]string{
-		"opencode-ai":         `'opencode-ai'`,
-		"@anthropic-ai/x":     `'@anthropic-ai/x'`,
-		"a'b":                 `'a'\''b'`,
-		"":                    `''`,
+		"opencode-ai":     `'opencode-ai'`,
+		"@anthropic-ai/x": `'@anthropic-ai/x'`,
+		"a'b":             `'a'\''b'`,
+		"":                `''`,
 	}
 	for in, want := range cases {
 		if got := bashSingleQuote(in); got != want {
