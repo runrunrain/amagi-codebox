@@ -33,6 +33,7 @@ func shellCandidates(osName string) []shellCandidate {
 	switch osName {
 	case "windows":
 		return []shellCandidate{
+			{key: "wsl", label: "WSL (Linux)", candidates: []string{"wsl.exe", `C:/Windows/System32/wsl.exe`}},
 			{key: "pwsh", label: "PowerShell 7", candidates: []string{"pwsh.exe", `C:/Program Files/PowerShell/7/pwsh.exe`}},
 			{key: "powershell", label: "Windows PowerShell", candidates: []string{"powershell.exe"}},
 			{key: "cmd", label: "Command Prompt", candidates: []string{"cmd.exe"}},

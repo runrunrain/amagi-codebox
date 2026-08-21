@@ -407,6 +407,13 @@ func (s *Service) StartupAutoCommand(spec platform.ResolvedLaunchSpec) string {
 }
 
 func buildResolvedStartupPlan(spec platform.ResolvedLaunchSpec, log *logging.Service) (string, string) {
+	// WSL sessions run the CLI inside a Linux distro. The command line is built
+	// entirely here (wsl.exe -d ... --cd ... -- bash -lic '...'); it must not pass
+	// through the pwsh/cmd/exe fallback logic below.
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		return buildWSLCommandLine(spec, log), ""
+	}
+
 	shellPath := ""
 	if spec.Shell != nil {
 		shellPath = spec.Shell.Path
@@ -871,6 +878,112 @@ func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
 		return quotedShell, autoCommand
 	}
 	return commandLine, autoCommand
+}
+
+// buildWSLCommandLine assembles the ConPTY command line for a WSL-backed
+// session:
+//
+//	wsl.exe -d <distro> --cd "<winWorkDir>" -- bash -lic "<payload>"
+//
+// Two layers of quoting are involved and BOTH matter:
+//
+//  1. Windows layer: ConPTY passes this string to CreateProcess, where
+//     CommandLineToArgvW splits it into argv. Windows does NOT treat single
+//     quotes specially, so the bash payload must be wrapped in DOUBLE quotes
+//     with internal double quotes / backslashes escaped, so the whole payload
+//     arrives as ONE argv token to wsl.exe (which forwards it verbatim to bash).
+//  2. bash layer: inside that single argv token, each CLI token is wrapped in
+//     POSIX single quotes so spaces / $() / metachars in model names or args
+//     cannot be re-interpreted by bash.
+//
+// The payload runs the CLI (bare name, resolved via the WSL PATH) then execs an
+// interactive login shell so the terminal stays a Linux environment after the
+// CLI exits. With no CLI (pure terminal) it just opens the interactive shell.
+// --cd lets WSL do the /mnt mapping; WSLENV (already in spec.Env.Variables)
+// carries injected auth/provider env across the boundary.
+func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service) string {
+	distro := platform.DefaultWSLDistro(spec.Env.Variables)
+	if distro == "" {
+		// Defensive: the resolver only selects WSL when a usable distro exists.
+		// If we somehow reach here without one, fall back to a bare wsl.exe so the
+		// failure is visible rather than launching a wrong shell silently.
+		if log != nil {
+			log.Warn("pty", "WSL 会话无可用发行版，回退裸 wsl.exe", "")
+		}
+		return "wsl.exe"
+	}
+
+	// wsl.exe does NOT accept a double-quoted distro name after -d: it treats the
+	// surrounding quotes as part of the name and fails with WSL_E_DISTRO_NOT_FOUND
+	// (verified on real Windows CommandLineToArgvW parsing). Distro names from
+	// `wsl -l -q` are plain tokens without spaces, so pass the name bare.
+	parts := []string{"wsl.exe", "-d", distro}
+	if strings.TrimSpace(spec.WorkDir) != "" {
+		parts = append(parts, "--cd", windowsQuoteArg(spec.WorkDir))
+	}
+	parts = append(parts, "--", "bash", "-lic")
+
+	payload := buildWSLInnerCommand(spec.CLI.Path, spec.CLI.Args)
+	parts = append(parts, windowsQuoteArg(payload))
+	return strings.Join(parts, " ")
+}
+
+// buildWSLInnerCommand builds the bash -lic payload: run the CLI (if any) with
+// each token POSIX-single-quoted, then hand off to an interactive login shell so
+// the session stays in Linux.
+func buildWSLInnerCommand(cliName string, args []string) string {
+	cli := strings.TrimSpace(cliName)
+	if cli == "" {
+		return "exec bash -li"
+	}
+	tokens := make([]string, 0, 1+len(args))
+	tokens = append(tokens, bashSingleQuote(cli))
+	for _, a := range args {
+		tokens = append(tokens, bashSingleQuote(a))
+	}
+	return strings.Join(tokens, " ") + "; exec bash -li"
+}
+
+// bashSingleQuote wraps a token in POSIX single quotes, escaping internal single
+// quotes via the standard '\'' idiom. This neutralises every bash metacharacter.
+func bashSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// windowsQuoteArg wraps a value so CommandLineToArgvW parses it as a single
+// argv token. It always double-quotes, escapes internal double quotes as \", and
+// doubles any run of backslashes that immediately precedes the closing quote so
+// a trailing backslash (e.g. a drive-root workdir "D:\") cannot escape it.
+func windowsQuoteArg(value string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	backslashes := 0
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch c {
+		case '\\':
+			backslashes++
+		case '"':
+			// Escape all pending backslashes (they precede a quote), then the quote.
+			for j := 0; j < backslashes*2+1; j++ {
+				b.WriteByte('\\')
+			}
+			b.WriteByte('"')
+			backslashes = 0
+		default:
+			for j := 0; j < backslashes; j++ {
+				b.WriteByte('\\')
+			}
+			backslashes = 0
+			b.WriteByte(c)
+		}
+	}
+	// Double any trailing backslashes so they don't escape the closing quote.
+	for j := 0; j < backslashes*2; j++ {
+		b.WriteByte('\\')
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func quoteCommandPath(commandLine string) string {
