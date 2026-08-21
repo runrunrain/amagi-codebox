@@ -7,11 +7,32 @@
         <h2>快速启动</h2>
       </div>
 
-      <Segmented
-        :model-value="dashState.engine"
-        :options="engineOptions"
-        @update:model-value="handleEngineChange"
-      />
+      <!-- 引擎选择：方块浮标 (Floating Tiles，带动态悬浮与微动效) -->
+      <div class="engine-tiles-container" role="radiogroup" aria-label="选择 CLI 引擎">
+        <button
+          v-for="eng in ENGINE_TILES"
+          :key="eng.value"
+          type="button"
+          class="engine-tile"
+          :class="{ active: dashState.engine === eng.value }"
+          :style="{ '--tile-color': eng.color }"
+          role="radio"
+          :aria-checked="dashState.engine === eng.value"
+          @click="handleEngineChange(eng.value)"
+        >
+          <div class="tile-header">
+            <div class="tile-icon-box" aria-hidden="true" v-html="eng.icon"></div>
+            <div v-if="dashState.engine === eng.value" class="tile-active-beacon" title="已激活">
+              <span class="beacon-pulse"></span>
+              <span class="beacon-dot"></span>
+            </div>
+          </div>
+          <div class="tile-body">
+            <span class="tile-label">{{ eng.label }}</span>
+            <span class="tile-sublabel">{{ eng.sublabel }}</span>
+          </div>
+        </button>
+      </div>
 
       <div class="setting-list">
         <!-- 服务提供商 -->
@@ -224,7 +245,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
-import Segmented from '../components/ui/Segmented.vue'
 import Switch from '../components/ui/Switch.vue'
 import TextInput from '../components/ui/TextInput.vue'
 import Dialog from '../components/ui/Dialog.vue'
@@ -268,13 +288,43 @@ const piPresets = ref<MergedTerminalPreset[]>([])
 const ompPresets = ref<MergedTerminalPreset[]>([])
 const openCodePresetList = ref<Array<{ key: string; name: string; description: string; bindingCount: number }>>([])
 
-// --- 引擎选项 ---
-const engineOptions = [
-  { value: 'claudecode', label: 'ClaudeCode' },
-  { value: 'opencode', label: 'OpenCode' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'pi', label: 'Pi' },
-  { value: 'omp', label: 'Oh My Pi' },
+// --- 引擎选项（方块浮标数据，顺序：ClaudeCode -> Pi -> OpenCode -> Oh My Pi -> Codex）---
+const ENGINE_TILES = [
+  {
+    value: 'claudecode',
+    label: 'Claude Code',
+    sublabel: 'Anthropic CLI',
+    color: '#007AFF',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/></svg>`,
+  },
+  {
+    value: 'pi',
+    label: 'Pi',
+    sublabel: 'amagi-pi',
+    color: '#34C759',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7v10"/><path d="M15 7v7.5c0 1.5 1 2.5 2.5 2.5"/></svg>`,
+  },
+  {
+    value: 'opencode',
+    label: 'OpenCode',
+    sublabel: 'OpenCode CLI',
+    color: '#FF9500',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="4"/><path d="m8 10-2 2 2 2"/><path d="m16 10 2 2-2 2"/><path d="m13 9-2 6"/></svg>`,
+  },
+  {
+    value: 'omp',
+    label: 'Oh My Pi',
+    sublabel: 'oh-my-pi',
+    color: '#30B0C7',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  },
+  {
+    value: 'codex',
+    label: 'Codex',
+    sublabel: 'OpenAI Codex',
+    color: '#AF52DE',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="3"/><rect width="6" height="6" x="9" y="9" rx="1.5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>`,
+  },
 ]
 
 // --- 引擎相关计算属性 ---
@@ -1080,5 +1130,160 @@ onMounted(async () => {
 @keyframes luoshen-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* ================= 引擎方块浮标 (Engine Floating Tiles) ================= */
+.engine-tiles-container {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin: 6px 0 16px;
+}
+
+.engine-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px 14px;
+  min-height: 86px;
+  background: var(--control);
+  border: 1.5px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  user-select: none;
+  box-sizing: border-box;
+  transition: all 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+  outline: none;
+}
+
+.engine-tile:hover {
+  transform: translateY(-4px) scale(1.02);
+  background: var(--card);
+  border-color: var(--separator);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+.engine-tile.active {
+  transform: translateY(-5px);
+  background: #FFFFFF;
+  border-color: var(--tile-color);
+  box-shadow: 0 12px 24px -3px color-mix(in srgb, var(--tile-color) 32%, transparent),
+              0 3px 8px rgba(0, 0, 0, 0.06);
+}
+
+.engine-tile:active {
+  transform: translateY(-1px) scale(0.98);
+}
+
+.tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.tile-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--secondary);
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tile-icon-box :deep(svg) {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+}
+
+.engine-tile:hover .tile-icon-box {
+  color: var(--tile-color);
+  background: color-mix(in srgb, var(--tile-color) 14%, transparent);
+  transform: scale(1.1);
+}
+
+.engine-tile.active .tile-icon-box {
+  color: #FFFFFF;
+  background: var(--tile-color);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--tile-color) 45%, transparent);
+  transform: scale(1.05);
+}
+
+.tile-active-beacon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.beacon-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tile-color);
+  box-shadow: 0 0 6px var(--tile-color);
+}
+
+.beacon-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--tile-color);
+  opacity: 0.6;
+  animation: beacon-pulse 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
+@keyframes beacon-pulse {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.8;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.tile-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 10px;
+}
+
+.tile-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label);
+  transition: color 0.2s ease;
+}
+
+.tile-sublabel {
+  font-size: 11px;
+  color: var(--tertiary);
+  transition: color 0.2s ease;
+}
+
+.engine-tile.active .tile-sublabel {
+  color: var(--secondary);
+}
+
+@media (max-width: 800px) {
+  .engine-tiles-container {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 </style>

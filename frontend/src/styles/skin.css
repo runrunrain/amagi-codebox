@@ -111,6 +111,27 @@ html[data-skin='on'] .nav-item {
     color-mix(in srgb, black calc(var(--skin-text-boost) * 25%), transparent);
 }
 
+/* 浮层与下拉框实色防护：
+   无论皮肤透明度与面板混色比例如何，所有下拉菜单、选项列表、浮动 Popover
+   与右键菜单必须保持 100% 不透明实底（#FFFFFF 等），避免与底层内容/背景图重叠导致文字不可读。 */
+html[data-skin='on'] .dropdown-menu,
+html[data-skin='on'] .ap-qs-menu,
+html[data-skin='on'] .ctx-menu,
+html[data-skin='on'] select,
+html[data-skin='on'] select option {
+  --card: #FFFFFF;
+  --window: #FBFBFD;
+  --control: #F2F2F5;
+  --controlHover: #E5E5EA;
+  background-color: #FFFFFF;
+  opacity: 1;
+}
+
+html[data-skin='on'] select option {
+  background-color: #FFFFFF;
+  color: #1D1D1F;
+}
+
 html[data-skin='on'],
 html[data-skin='on'] body {
   background: transparent;

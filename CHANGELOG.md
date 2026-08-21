@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [1.3.46] - 2026-08-21
+
+### Added
+
+- 快速启动页引擎选择升级为「方块浮标」（Floating Tiles）：用带品牌色微发光、图标底盒、呼吸激活信标与悬浮微动效的方块磁贴替换原分段选择器，更直观展现各 CLI 引擎特性（顺序：Claude Code -> Pi -> OpenCode -> Oh My Pi -> Codex）。
+- Provider Center 顶部新增 `AgentProfileQuickSwitch` 快捷切换挂件：可即时查看当前激活的 Agent 配置档、下拉一键切换已保存配置档、快捷快照当前 live 配置或跳转设置页。
+- Provider Center 顶层导航层级重整：顶层拆分为「模型提供商」、「格式预设」与「CLI 专属配置」三个主 Tab，彻底分离跨 CLI 公共格式（Anthropic/OpenAI）与专属配置文件（OpenCode/Pi/OMP）。
+
+### Fixed
+
+- 皮肤模式浮层与下拉菜单实色防护：为所有下拉菜单、选项列表、浮动 Popover 与右键菜单强制注入实色纯白底色（`#FFFFFF`），彻底防止在调高透明度与面板混色时与底层背景图/内容重叠导致文字不可读。
+
 ## [1.3.45] - 2026-08-20
 
 ### Added

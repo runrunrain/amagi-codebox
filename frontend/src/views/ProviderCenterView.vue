@@ -29,6 +29,7 @@
           class="pc-main-tabs"
         />
         <div class="pc-head-actions">
+          <AgentProfileQuickSwitch @applied="onProfileApplied" />
           <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestExport">
             {{ transferAction === 'export' ? '导出中...' : '导出完整配置' }}
           </AppButton>
@@ -45,44 +46,20 @@
         />
       </div>
 
-      <!-- 预设区（启动配置）-->
-      <div v-else class="pc-panel pc-presets-panel">
+      <!-- 预设区（启动配置：公共格式）-->
+      <div v-else-if="mainTab === 'presets'" class="pc-panel pc-presets-panel">
         <div class="pc-zone-label">
-          <span>启动配置</span>
+          <span>格式预设</span>
           <span class="zn-sep">·</span>
-          <span>绑定提供商与模型参数</span>
+          <span>跨 CLI 复用的公共协议格式</span>
         </div>
 
-        <!-- 二级导航拆两组：格式预设（跨 CLI 复用的公共协议格式）与 CLI 独立配置（各 CLI 专属配置文件，互不共享）。 -->
-        <div class="pc-engine-group">
-          <div class="pc-zone-label">
-            <span>格式预设</span>
-            <span class="zn-sep">·</span>
-            <span>跨 CLI 复用的公共协议格式</span>
-          </div>
-          <Segmented
-            v-model="formatModel"
-            :options="FORMAT_TABS"
-            variant="underline"
-            class="pc-engine-tabs"
-          />
-        </div>
-
-        <div class="pc-group-divider" aria-hidden="true" />
-
-        <div class="pc-engine-group">
-          <div class="pc-zone-label">
-            <span>CLI 独立配置</span>
-            <span class="zn-sep">·</span>
-            <span>各 CLI 专属配置文件，互不共享</span>
-          </div>
-          <Segmented
-            v-model="cliModel"
-            :options="CLI_TABS"
-            variant="underline"
-            class="pc-engine-tabs"
-          />
-        </div>
+        <Segmented
+          v-model="formatModel"
+          :options="FORMAT_TABS"
+          variant="underline"
+          class="pc-engine-tabs"
+        />
 
         <!-- Claude Code 复用 Anthropic 格式公共预设。 -->
         <PresetList
@@ -94,8 +71,25 @@
           v-else-if="store.presetEngine === 'openai'"
           format="openai"
         />
+      </div>
+
+      <!-- CLI 独立配置区（各 CLI 专属配置文件）-->
+      <div v-else-if="mainTab === 'cliconfigs'" class="pc-panel pc-presets-panel">
+        <div class="pc-zone-label">
+          <span>CLI 专属配置</span>
+          <span class="zn-sep">·</span>
+          <span>各 CLI 专属配置文件，互不共享</span>
+        </div>
+
+        <Segmented
+          v-model="cliModel"
+          :options="CLI_TABS"
+          variant="underline"
+          class="pc-engine-tabs"
+        />
+
         <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 | 认证登录 -->
-        <template v-else-if="store.presetEngine === 'pi'">
+        <template v-if="store.presetEngine === 'pi'">
           <Segmented
             v-model="piMode"
             :options="PI_MODES"
@@ -171,6 +165,7 @@ import LoadingState from '../components/ui/LoadingState.vue';
 import ErrorState from '../components/ui/ErrorState.vue';
 import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
+import AgentProfileQuickSwitch from '../components/provider/AgentProfileQuickSwitch.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
@@ -182,9 +177,10 @@ const { showSuccess, showError, showInfo } = useToast();
 const MAIN_TABS = [
   { value: 'providers', label: '服务提供商' },
   { value: 'presets', label: '预设' },
+  { value: 'cliconfigs', label: 'CLI 独立配置' },
 ];
 
-// 二级导航拆两组（ENGINE_TABS 已拆分）：
+// 二级导航：
 // 格式预设 = 公共协议格式（terminal_presets，跨 CLI 复用）；
 // CLI 独立配置 = 各 CLI 专属配置文件编辑，内部自带三级 Tab。
 const FORMAT_TABS = [
@@ -193,9 +189,9 @@ const FORMAT_TABS = [
 ];
 
 const CLI_TABS = [
-  { value: 'opencode', label: 'OpenCode' },
   { value: 'pi', label: 'Pi' },
   { value: 'omp', label: 'OMP' },
+  { value: 'opencode', label: 'OpenCode' },
 ];
 
 const OPENCODE_MODES = [
@@ -214,7 +210,7 @@ const OMP_MODES = [
   { value: 'registry', label: '模型提供商' },
 ];
 
-const mainTab = ref<'providers' | 'presets'>('providers');
+const mainTab = ref<'providers' | 'presets' | 'cliconfigs'>('providers');
 const openCodeMode = ref<'presets' | 'global'>('global');
 const piMode = ref<'agents' | 'registry' | 'auth'>('agents');
 const ompMode = ref<'agents' | 'registry'>('agents');
@@ -224,20 +220,18 @@ const transferAction = ref<'export' | 'import' | null>(null);
 const transferring = computed(() => transferAction.value !== null);
 
 // 二级 engine 双向绑定（写入 store + 触发按需加载）。
-// store.presetEngine 仍是唯一选中态；两组 Segmented 各只反映本组内的值，
-// 选中引擎不在本组时显示为空（无高亮），点选时写回 store。
 const FORMAT_ENGINES: readonly PresetEngine[] = ['anthropic', 'openai'];
-const CLI_ENGINES: readonly PresetEngine[] = ['opencode', 'pi', 'omp'];
+const CLI_ENGINES: readonly PresetEngine[] = ['pi', 'omp', 'opencode'];
 
 const formatModel = computed<string>({
-  get: () => (FORMAT_ENGINES.includes(store.presetEngine) ? store.presetEngine : ''),
+  get: () => (FORMAT_ENGINES.includes(store.presetEngine) ? store.presetEngine : 'anthropic'),
   set: (v: string) => {
     if (v) store.setPresetEngine(v as PresetEngine);
   },
 });
 
 const cliModel = computed<string>({
-  get: () => (CLI_ENGINES.includes(store.presetEngine) ? store.presetEngine : ''),
+  get: () => (CLI_ENGINES.includes(store.presetEngine) ? store.presetEngine : 'pi'),
   set: (v: string) => {
     if (v) store.setPresetEngine(v as PresetEngine);
   },
@@ -283,10 +277,17 @@ onMounted(() => {
   // 预设数据在切换到 presets tab 或切换 engine 时按需加载
 });
 
-// 首次进入 presets tab 时加载当前 engine 数据
+// 首次进入 presets / cliconfigs tab 时加载相应 engine 数据
 watch(mainTab, (tab) => {
   if (tab === 'presets') {
+    if (!FORMAT_ENGINES.includes(store.presetEngine)) {
+      store.setPresetEngine('anthropic');
+    }
     void store.loadPresets(store.presetEngine);
+  } else if (tab === 'cliconfigs') {
+    if (!CLI_ENGINES.includes(store.presetEngine)) {
+      store.setPresetEngine('pi');
+    }
   }
 });
 
@@ -300,6 +301,10 @@ watch(
 
 function requestExport() {
   showExportConfirm.value = true;
+}
+
+function onProfileApplied() {
+  presetLoadKey.value++;
 }
 
 function requestImport() {
@@ -367,7 +372,7 @@ function handleAdd() {
 
 .pc-main-tabs {
   align-self: flex-start;
-  max-width: 320px;
+  max-width: 480px;
 }
 
 /* center 级头部：一级 pill + 导出/导入按钮同行 */

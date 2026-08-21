@@ -285,10 +285,13 @@ watch(
   list-style: none;
   margin: 0;
   padding: 4px;
-  background: var(--card);
+  background: #FFFFFF;
+  --card: #FFFFFF;
+  --control: #F2F2F5;
+  --controlHover: #E5E5EA;
   border: 1px solid var(--separator);
   border-radius: 9px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
   overflow-y: auto;
 }
 
@@ -306,7 +309,7 @@ watch(
 }
 
 .dropdown-item:hover {
-  background: var(--control);
+  background: #F2F2F5;
 }
 
 .dropdown-item.selected {
