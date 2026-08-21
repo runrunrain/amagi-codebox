@@ -143,7 +143,7 @@ import TextInput from '../ui/TextInput.vue';
 import AppButton from '../ui/AppButton.vue';
 import Badge from '../ui/Badge.vue';
 import StatusBanner from '../ui/StatusBanner.vue';
-import { probeRemoteHost, completeRemotePairing } from '../../api/remoteClient';
+import { probeRemoteHost, completeRemotePairing, renameRemoteHost } from '../../api/remoteClient';
 import type { PairingResult } from '../../api/remoteClient';
 import { copyForRemoteError, detailForRemoteError } from './remoteClientShared';
 import type { contract } from '../../../wailsjs/go/models';
@@ -248,6 +248,12 @@ async function handleComplete() {
     const res = await completeRemotePairing(address.value.trim(), pairingCode.value.trim());
     pairedResult.value = res;
     step.value = 'success';
+    // F-1 修复：把向导里采集的显示名持久化到登记簿条目（best-effort，
+    // 改名失败不影响配对成功语义，仅回退为地址名）。
+    const name = displayName.value.trim();
+    if (name && name !== res.HostPort) {
+      try { await renameRemoteHost(res.EntryID, name); } catch { /* 保留地址名 */ }
+    }
   } catch (err) {
     showFailure(err);
   } finally {
