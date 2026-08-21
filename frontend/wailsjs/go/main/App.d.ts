@@ -13,6 +13,7 @@ import {logging} from '../models';
 import {paths} from '../models';
 import {platform} from '../models';
 import {session} from '../models';
+import {wslsetup} from '../models';
 
 export function AcknowledgeRemoteSecurityHealth(arg1:string):Promise<remote.SecurityHealthSnapshot>;
 
@@ -164,6 +165,8 @@ export function GetTerminalPresets(arg1:string):Promise<Record<string, config.Te
 
 export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 
+export function GetWSLCLIStatus():Promise<wslsetup.Status>;
+
 export function HeadroomGetPort():Promise<number>;
 
 export function HeadroomGetStatus():Promise<headroom.HeadroomStatus>;
@@ -179,6 +182,8 @@ export function ImportConfigFromFile():Promise<string>;
 export function ImportEnvVars(arg1:string):Promise<void>;
 
 export function ImportEnvVarsFromFile():Promise<void>;
+
+export function InstallCLIToWSL(arg1:string):Promise<wslsetup.InstallResult>;
 
 export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallResult>;
 

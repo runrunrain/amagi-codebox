@@ -2,12 +2,14 @@
   <section class="view-envcheck">
     <PageHead title="环境检测" description="CLI 工具安装状态、版本与 PATH 校验" />
     <EnvCheckSettings />
+    <WSLCLISettings />
   </section>
 </template>
 
 <script setup lang="ts">
 import PageHead from '../components/ui/PageHead.vue'
 import EnvCheckSettings from './settings/EnvCheckSettings.vue'
+import WSLCLISettings from './settings/WSLCLISettings.vue'
 </script>
 
 <style scoped>

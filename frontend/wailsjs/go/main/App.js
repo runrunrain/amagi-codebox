@@ -302,6 +302,10 @@ export function GetUrlHistory(arg1) {
   return window['go']['main']['App']['GetUrlHistory'](arg1);
 }
 
+export function GetWSLCLIStatus() {
+  return window['go']['main']['App']['GetWSLCLIStatus']();
+}
+
 export function HeadroomGetPort() {
   return window['go']['main']['App']['HeadroomGetPort']();
 }
@@ -332,6 +336,10 @@ export function ImportEnvVars(arg1) {
 
 export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
+}
+
+export function InstallCLIToWSL(arg1) {
+  return window['go']['main']['App']['InstallCLIToWSL'](arg1);
 }
 
 export function InstallClaudeWithMethod(arg1) {
