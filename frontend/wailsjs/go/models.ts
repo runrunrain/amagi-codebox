@@ -3933,6 +3933,7 @@ export namespace wslsetup {
 	export class Status {
 	    available: boolean;
 	    distro: string;
+	    distroWSLVersion: number;
 	    nodeVersion: string;
 	    tools: ToolStatus[];
 	    reason: string;
@@ -3945,6 +3946,7 @@ export namespace wslsetup {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.available = source["available"];
 	        this.distro = source["distro"];
+	        this.distroWSLVersion = source["distroWSLVersion"];
 	        this.nodeVersion = source["nodeVersion"];
 	        this.tools = this.convertValues(source["tools"], ToolStatus);
 	        this.reason = source["reason"];

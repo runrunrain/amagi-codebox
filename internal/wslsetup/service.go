@@ -45,11 +45,12 @@ type ToolStatus struct {
 
 // Status is the frontend-facing snapshot for the WSL CLI environment.
 type Status struct {
-	Available   bool         `json:"available"`   // a usable WSL distro exists
-	Distro      string       `json:"distro"`      // selected distro name ("" when none)
-	NodeVersion string       `json:"nodeVersion"` // native node -v inside WSL ("" when absent)
-	Tools       []ToolStatus `json:"tools"`
-	Reason      string       `json:"reason"` // why Available is false
+	Available        bool         `json:"available"`        // a usable WSL distro exists
+	Distro           string       `json:"distro"`           // selected distro name ("" when none)
+	DistroWSLVersion int          `json:"distroWSLVersion"` // WSL architecture generation of Distro (1/2); 0 = unknown (probe failed / older wsl.exe)
+	NodeVersion      string       `json:"nodeVersion"`      // native node -v inside WSL ("" when absent)
+	Tools            []ToolStatus `json:"tools"`
+	Reason           string       `json:"reason"` // why Available is false
 }
 
 // packageForTool resolves the npm package for a CLI tool key.

@@ -12,6 +12,8 @@
     <template v-else>
       <div class="wsl-meta">
         <span class="mono">发行版: {{ status.distro }}</span>
+        <span v-if="status.distroWSLVersion === 2" class="badge badge-wsl2">WSL2</span>
+        <span v-else-if="status.distroWSLVersion === 1" class="badge">WSL1</span>
         <span class="mono">
           Node: {{ status.nodeVersion || '未安装 (安装 CLI 时会自动安装 Node 20)' }}
         </span>
@@ -191,6 +193,12 @@ onMounted(load)
 .badge-ok {
   color: var(--success, #2ea043);
   background: color-mix(in srgb, var(--success, #2ea043) 14%, transparent);
+}
+
+.badge-wsl2 {
+  color: var(--accent, #4c8dff);
+  background: color-mix(in srgb, var(--accent, #4c8dff) 14%, transparent);
+  font-weight: 600;
 }
 
 .badge-missing {

@@ -58,6 +58,10 @@ func (s *Service) GetStatus() Status {
 		return Status{Available: false, Reason: "no usable WSL distro installed"}
 	}
 	st := Status{Available: true, Distro: distro}
+	// Surface the WSL architecture generation (WSL1/WSL2) so the UI can show a
+	// "WSL2" badge. wsl.exe is the unified entry for both; the version only
+	// affects how the distro runs, not how we launch it. 0 = unknown.
+	st.DistroWSLVersion = platform.WSLDistroVersions(nil)[distro]
 
 	// Native node version (empty when only the Windows passthrough exists).
 	if p := s.nativeCommandPath(distro, "node"); isNativePath(p) {

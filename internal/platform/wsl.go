@@ -2,6 +2,7 @@ package platform
 
 import (
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf16"
@@ -33,6 +34,92 @@ var (
 var wslReservedDistros = map[string]struct{}{
 	"docker-desktop":      {},
 	"docker-desktop-data": {},
+}
+
+// wslDistroVersionLister runs `wsl.exe -l -v` (verbose: NAME / STATE / VERSION
+// columns) and returns raw stdout bytes. The VERSION column is the WSL
+// architecture generation (1 or 2) each distro is registered as — this is how
+// we surface "WSL2" in the UI. Older inbox wsl.exe builds do not support -v;
+// the error is swallowed by callers (version reported as 0 = unknown).
+var wslDistroVersionLister = func(env []string) ([]byte, error) {
+	cmd := exec.Command("wsl.exe", "-l", "-v")
+	cmd.Env = env
+	return cmd.Output()
+}
+
+var (
+	wslDistroVersionCacheMu   sync.Mutex
+	wslDistroVersionCache     map[string]int
+	wslDistroVersionCacheDone bool
+)
+
+// WSLDistroVersions returns a map of distro name → WSL architecture version
+// (1 or 2), cached after the first probe. Empty map when the probe fails or no
+// version info is available (older wsl.exe); callers must treat 0/absent as
+// "unknown", never as WSL1.
+func WSLDistroVersions(env []string) map[string]int {
+	wslDistroVersionCacheMu.Lock()
+	defer wslDistroVersionCacheMu.Unlock()
+	if wslDistroVersionCacheDone {
+		return wslDistroVersionCache
+	}
+	wslDistroVersionCacheDone = true
+	wslDistroVersionCache = probeWSLDistroVersions(env)
+	return wslDistroVersionCache
+}
+
+func probeWSLDistroVersions(env []string) map[string]int {
+	out, err := wslDistroVersionLister(env)
+	if err != nil {
+		return map[string]int{}
+	}
+	decoded := decodeWSLListOutput(out)
+	result := map[string]int{}
+	for _, line := range strings.Split(decoded, "\n") {
+		name, version, ok := parseWSLVerboseListLine(line)
+		if !ok {
+			continue
+		}
+		result[name] = version
+	}
+	return result
+}
+
+// parseWSLVerboseListLine parses one line of `wsl.exe -l -v` output:
+//
+//	  NAME              STATE           VERSION
+//	* Ubuntu-24.04      Running         2
+//	  Ubuntu 22.04 LTS  Stopped         1
+//
+// The default distro is marked with a leading '*'. Distro names may contain
+// spaces, so we take the LAST field as the version (when it is a pure digit)
+// and the SECOND-TO-LAST as STATE; everything before (minus any '*' marker)
+// joined back together is the name. The header line never ends in a digit and
+// is rejected naturally.
+func parseWSLVerboseListLine(line string) (string, int, bool) {
+	fields := strings.Fields(strings.Trim(line, "\r\x00"))
+	if len(fields) < 3 {
+		return "", 0, false
+	}
+	version, err := strconv.Atoi(fields[len(fields)-1])
+	if err != nil || version < 1 {
+		return "", 0, false
+	}
+	// fields = [name-part...] STATE VERSION. Distro names may contain spaces;
+	// re-join everything before the trailing STATE column.
+	name := strings.TrimSpace(strings.TrimPrefix(strings.Join(fields[:len(fields)-2], " "), "*"))
+	if name == "" {
+		return "", 0, false
+	}
+	return name, version, true
+}
+
+// resetWSLDistroVersionCacheForTest clears the version-probe cache.
+func resetWSLDistroVersionCacheForTest() {
+	wslDistroVersionCacheMu.Lock()
+	defer wslDistroVersionCacheMu.Unlock()
+	wslDistroVersionCacheDone = false
+	wslDistroVersionCache = nil
 }
 
 // availableWSLDistros returns the usable (non-reserved) WSL distributions, cached

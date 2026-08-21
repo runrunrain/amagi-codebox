@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,5 +269,58 @@ func TestWindowsResolverFallsBackWhenNoWSLDistro(t *testing.T) {
 	}
 	if spec.Shell != nil && strings.EqualFold(spec.Shell.Key, "wsl") {
 		t.Fatalf("resolved shell must not be wsl without a usable distro; got %+v", spec.Shell)
+	}
+}
+
+// withFakeWSLVerboseList installs a fake `wsl -l -v` lister returning the given
+// raw verbose output and clears the version cache. Restores a failing lister on
+// cleanup (the package default for versions).
+func withFakeWSLVerboseList(t *testing.T, raw []byte) {
+	t.Helper()
+	wslDistroVersionLister = func(env []string) ([]byte, error) { return raw, nil }
+	resetWSLDistroVersionCacheForTest()
+	t.Cleanup(func() {
+		wslDistroVersionLister = func(env []string) ([]byte, error) { return nil, errors.New("not supported") }
+		resetWSLDistroVersionCacheForTest()
+	})
+}
+
+func TestParseWSLVerboseListLine(t *testing.T) {
+	cases := []struct {
+		line     string
+		wantName string
+		wantVer  int
+		wantOK   bool
+	}{
+		{"* Ubuntu-24.04    Running    2", "Ubuntu-24.04", 2, true},
+		{"  Debian          Stopped    1", "Debian", 1, true},
+		// Distros whose names contain spaces: STATE is the second-to-last field.
+		{"  Ubuntu 22.04 LTS  Stopped  1", "Ubuntu 22.04 LTS", 1, true},
+		{"  NAME              STATE           VERSION", "", 0, false},
+		{"", "", 0, false},
+		{"  Ubuntu-24.04    Running", "", 0, false}, // missing VERSION column
+	}
+	for _, c := range cases {
+		name, ver, ok := parseWSLVerboseListLine(c.line)
+		if ok != c.wantOK || name != c.wantName || ver != c.wantVer {
+			t.Errorf("parse(%q) = (%q,%d,%v), want (%q,%d,%v)", c.line, name, ver, ok, c.wantName, c.wantVer, c.wantOK)
+		}
+	}
+}
+
+func TestWSLDistroVersionsFromVerboseOutput(t *testing.T) {
+	raw := encodeUTF16LEWithBOM("  NAME            STATE      VERSION\r\n* Ubuntu-24.04   Running    2\r\n  Debian         Stopped    1\r\n")
+	withFakeWSLVerboseList(t, raw)
+	got := WSLDistroVersions(nil)
+	if got["Ubuntu-24.04"] != 2 || got["Debian"] != 1 || len(got) != 2 {
+		t.Fatalf("versions = %v, want {Ubuntu-24.04:2, Debian:1}", got)
+	}
+}
+
+func TestWSLDistroVersionsEmptyWhenUnsupported(t *testing.T) {
+	wslDistroVersionLister = func(env []string) ([]byte, error) { return nil, errors.New("flag -v not supported") }
+	resetWSLDistroVersionCacheForTest()
+	if got := WSLDistroVersions(nil); len(got) != 0 {
+		t.Fatalf("versions = %v, want empty on probe error", got)
 	}
 }
