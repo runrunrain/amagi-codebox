@@ -886,6 +886,308 @@ export namespace config {
 
 }
 
+export namespace contract {
+	
+	export class CLIAvailability {
+	    cliType: string;
+	    available: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CLIAvailability(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cliType = source["cliType"];
+	        this.available = source["available"];
+	    }
+	}
+	export class LaunchDefaults {
+	    providerRef?: string;
+	    presetRef?: string;
+	    modelRef?: string;
+	    shellRef?: string;
+	    useHeadroom: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchDefaults(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.providerRef = source["providerRef"];
+	        this.presetRef = source["presetRef"];
+	        this.modelRef = source["modelRef"];
+	        this.shellRef = source["shellRef"];
+	        this.useHeadroom = source["useHeadroom"];
+	    }
+	}
+	export class LaunchPresetOption {
+	    ref: string;
+	    label: string;
+	    providerRef?: string;
+	    modelRef?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchPresetOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.label = source["label"];
+	        this.providerRef = source["providerRef"];
+	        this.modelRef = source["modelRef"];
+	    }
+	}
+	export class LaunchProviderOption {
+	    ref: string;
+	    label: string;
+	    kind?: string;
+	    defaultModel?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchProviderOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.label = source["label"];
+	        this.kind = source["kind"];
+	        this.defaultModel = source["defaultModel"];
+	    }
+	}
+	export class CLILaunchSettings {
+	    cliType: string;
+	    providers: LaunchProviderOption[];
+	    presets: LaunchPresetOption[];
+	    defaults?: LaunchDefaults;
+	
+	    static createFrom(source: any = {}) {
+	        return new CLILaunchSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cliType = source["cliType"];
+	        this.providers = this.convertValues(source["providers"], LaunchProviderOption);
+	        this.presets = this.convertValues(source["presets"], LaunchPresetOption);
+	        this.defaults = this.convertValues(source["defaults"], LaunchDefaults);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ControlSnapshot {
+	    state: string;
+	    deviceName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ControlSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.deviceName = source["deviceName"];
+	    }
+	}
+	export class LaunchPathOption {
+	    path: string;
+	    label: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchPathOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.label = source["label"];
+	    }
+	}
+	export class LaunchSettings {
+	    workdirs: LaunchPathOption[];
+	    shells: LaunchPathOption[];
+	    clis: CLILaunchSettings[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workdirs = this.convertValues(source["workdirs"], LaunchPathOption);
+	        this.shells = this.convertValues(source["shells"], LaunchPathOption);
+	        this.clis = this.convertValues(source["clis"], CLILaunchSettings);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HostSummary {
+	    apiVersion: string;
+	    serverVersion: string;
+	    cliAvailability: CLIAvailability[];
+	    launchSettings?: LaunchSettings;
+	
+	    static createFrom(source: any = {}) {
+	        return new HostSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.apiVersion = source["apiVersion"];
+	        this.serverVersion = source["serverVersion"];
+	        this.cliAvailability = this.convertValues(source["cliAvailability"], CLIAvailability);
+	        this.launchSettings = this.convertValues(source["launchSettings"], LaunchSettings);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	
+	
+	export class SessionDetail {
+	    id: string;
+	    title: string;
+	    cliType: string;
+	    state: string;
+	    control: ControlSnapshot;
+	    lastActivityAt: string;
+	    workdir: string;
+	    startedAt: string;
+	    earliestSeq: number;
+	    latestSeq: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.cliType = source["cliType"];
+	        this.state = source["state"];
+	        this.control = this.convertValues(source["control"], ControlSnapshot);
+	        this.lastActivityAt = source["lastActivityAt"];
+	        this.workdir = source["workdir"];
+	        this.startedAt = source["startedAt"];
+	        this.earliestSeq = source["earliestSeq"];
+	        this.latestSeq = source["latestSeq"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SessionSummary {
+	    id: string;
+	    title: string;
+	    cliType: string;
+	    state: string;
+	    control: ControlSnapshot;
+	    lastActivityAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.cliType = source["cliType"];
+	        this.state = source["state"];
+	        this.control = this.convertValues(source["control"], ControlSnapshot);
+	        this.lastActivityAt = source["lastActivityAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace envcheck {
 	
 	export class ResolutionAction {
@@ -1711,6 +2013,38 @@ export namespace main {
 	        this.port = source["port"];
 	        this.running = source["running"];
 	    }
+	}
+	export class RemoteClientConnectResult {
+	    host: remoteclient.HostEntry;
+	    summary: contract.HostSummary;
+	
+	    static createFrom(source: any = {}) {
+	        return new RemoteClientConnectResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = this.convertValues(source["host"], remoteclient.HostEntry);
+	        this.summary = this.convertValues(source["summary"], contract.HostSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class RemoteWebUIStatusResult {
 	    openable: boolean;
@@ -2884,6 +3218,122 @@ export namespace remote {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.securityReady = source["securityReady"];
 	        this.issues = this.convertValues(source["issues"], SecurityHealthIssue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace remoteclient {
+	
+	export class HostEntry {
+	    id: string;
+	    displayName: string;
+	    hostPort: string;
+	    deviceId: string;
+	    health: string;
+	    // Go type: time
+	    lastSeen: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new HostEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.hostPort = source["hostPort"];
+	        this.deviceId = source["deviceId"];
+	        this.health = source["health"];
+	        this.lastSeen = this.convertValues(source["lastSeen"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PairingResult {
+	    EntryID: string;
+	    DeviceID: string;
+	    DeviceName: string;
+	    HostPort: string;
+	    Summary: contract.HostSummary;
+	
+	    static createFrom(source: any = {}) {
+	        return new PairingResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.EntryID = source["EntryID"];
+	        this.DeviceID = source["DeviceID"];
+	        this.DeviceName = source["DeviceName"];
+	        this.HostPort = source["HostPort"];
+	        this.Summary = this.convertValues(source["Summary"], contract.HostSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ProbeResult {
+	    State: string;
+	    Summary?: contract.HostSummary;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.State = source["State"];
+	        this.Summary = this.convertValues(source["Summary"], contract.HostSummary);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

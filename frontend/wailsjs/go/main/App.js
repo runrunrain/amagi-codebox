@@ -410,6 +410,66 @@ export function RegenerateRemoteToken() {
   return window['go']['main']['App']['RegenerateRemoteToken']();
 }
 
+export function RemoteClientAddHost(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientAddHost'](arg1, arg2);
+}
+
+export function RemoteClientCompletePairing(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientCompletePairing'](arg1, arg2);
+}
+
+export function RemoteClientConnect(arg1) {
+  return window['go']['main']['App']['RemoteClientConnect'](arg1);
+}
+
+export function RemoteClientDeleteRemoteSession(arg1) {
+  return window['go']['main']['App']['RemoteClientDeleteRemoteSession'](arg1);
+}
+
+export function RemoteClientDisconnect(arg1) {
+  return window['go']['main']['App']['RemoteClientDisconnect'](arg1);
+}
+
+export function RemoteClientGetRemoteSession(arg1) {
+  return window['go']['main']['App']['RemoteClientGetRemoteSession'](arg1);
+}
+
+export function RemoteClientLaunchRemoteSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['RemoteClientLaunchRemoteSession'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function RemoteClientListHosts() {
+  return window['go']['main']['App']['RemoteClientListHosts']();
+}
+
+export function RemoteClientListRemoteSessions() {
+  return window['go']['main']['App']['RemoteClientListRemoteSessions']();
+}
+
+export function RemoteClientProbeHost(arg1) {
+  return window['go']['main']['App']['RemoteClientProbeHost'](arg1);
+}
+
+export function RemoteClientRemoveHost(arg1) {
+  return window['go']['main']['App']['RemoteClientRemoveHost'](arg1);
+}
+
+export function RemoteClientRenameHost(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientRenameHost'](arg1, arg2);
+}
+
+export function RemoteClientRestartRemoteSession(arg1) {
+  return window['go']['main']['App']['RemoteClientRestartRemoteSession'](arg1);
+}
+
+export function RemoteClientStopRemoteSession(arg1) {
+  return window['go']['main']['App']['RemoteClientStopRemoteSession'](arg1);
+}
+
+export function RemoteClientUpdateHost(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientUpdateHost'](arg1, arg2);
+}
+
 export function RemoveSavedWorkDir(arg1) {
   return window['go']['main']['App']['RemoveSavedWorkDir'](arg1);
 }

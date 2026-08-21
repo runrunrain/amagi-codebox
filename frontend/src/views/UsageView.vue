@@ -23,6 +23,9 @@
         </template>
       </PageHead>
 
+      <!-- RC1-6：远程模式提示条（使用统计为本机功能） -->
+      <RemoteScopeBanner subject="使用统计" />
+
       <EmptyState
         v-if="summary && summary.totalRequests === 0"
         title="暂无使用数据"
@@ -292,6 +295,7 @@ import {
 } from 'chart.js';
 import type { ChartData, ChartOptions, TooltipItem } from 'chart.js';
 import PageHead from '../components/ui/PageHead.vue';
+import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import AppButton from '../components/ui/AppButton.vue';
 import EmptyState from '../components/ui/EmptyState.vue';

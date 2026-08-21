@@ -1,5 +1,9 @@
 <template>
   <section class="view-settings">
+    <!-- RC1-6 桌面端互联：远程模式下会话页数据源切换为远端会话列表（只读+行操作） -->
+    <RemoteSessionsView v-if="remoteClientStore.isRemoteMode" />
+
+    <template v-else>
     <PageHead title="会话设置" description="配置并启动一个新的 AI 编程会话" />
 
     <ConfigCard>
@@ -238,6 +242,7 @@
         </button>
       </template>
     </Dialog>
+    </template>
   </section>
 </template>
 
@@ -248,6 +253,8 @@ import ConfigCard from '../components/ui/ConfigCard.vue'
 import Switch from '../components/ui/Switch.vue'
 import TextInput from '../components/ui/TextInput.vue'
 import Dialog from '../components/ui/Dialog.vue'
+import RemoteSessionsView from './RemoteSessionsView.vue'
+import { useRemoteClientStore } from '../stores/remoteClient'
 
 import { useDashboardState } from '../composables/useDashboardState'
 import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
@@ -267,6 +274,7 @@ type MergedTerminalPreset = config.MergedTerminalPreset
 const { state: dashState, initDefaults } = useDashboardState()
 const platformCaps = usePlatformCapabilities()
 const { showSuccess, showError, showInfo } = useToast()
+const remoteClientStore = useRemoteClientStore()
 
 const browsing = ref(false)
 const savedWorkDirs = ref<WorkDirEntry[]>([])

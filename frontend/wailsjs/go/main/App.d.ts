@@ -14,6 +14,8 @@ import {paths} from '../models';
 import {platform} from '../models';
 import {session} from '../models';
 import {wslsetup} from '../models';
+import {remoteclient} from '../models';
+import {contract} from '../models';
 
 export function AcknowledgeRemoteSecurityHealth(arg1:string):Promise<remote.SecurityHealthSnapshot>;
 
@@ -218,6 +220,36 @@ export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
+
+export function RemoteClientAddHost(arg1:string,arg2:string):Promise<remoteclient.HostEntry>;
+
+export function RemoteClientCompletePairing(arg1:string,arg2:string):Promise<remoteclient.PairingResult>;
+
+export function RemoteClientConnect(arg1:string):Promise<main.RemoteClientConnectResult>;
+
+export function RemoteClientDeleteRemoteSession(arg1:string):Promise<void>;
+
+export function RemoteClientDisconnect(arg1:string):Promise<void>;
+
+export function RemoteClientGetRemoteSession(arg1:string):Promise<contract.SessionDetail>;
+
+export function RemoteClientLaunchRemoteSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:boolean):Promise<contract.SessionDetail>;
+
+export function RemoteClientListHosts():Promise<Array<remoteclient.HostEntry>>;
+
+export function RemoteClientListRemoteSessions():Promise<contract.SessionList>;
+
+export function RemoteClientProbeHost(arg1:string):Promise<remoteclient.ProbeResult>;
+
+export function RemoteClientRemoveHost(arg1:string):Promise<void>;
+
+export function RemoteClientRenameHost(arg1:string,arg2:string):Promise<void>;
+
+export function RemoteClientRestartRemoteSession(arg1:string):Promise<contract.SessionDetail>;
+
+export function RemoteClientStopRemoteSession(arg1:string):Promise<contract.SessionDetail>;
+
+export function RemoteClientUpdateHost(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;
 

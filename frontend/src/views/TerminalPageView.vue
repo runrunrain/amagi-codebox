@@ -1,5 +1,10 @@
 <template>
   <section class="terminal-page">
+    <!-- RC1-6：远程模式下终端页仍为本机终端（远程终端属后续里程碑） -->
+    <div v-if="remoteClientStore.isRemoteMode" class="scope-banner-wrap">
+      <RemoteScopeBanner subject="终端页" mode="local" />
+    </div>
+
     <!-- 无选中会话：空态 -->
     <div v-if="!activeSession" class="term-empty-wrap">
       <PageHead title="终端" description="" />
@@ -27,9 +32,12 @@ import { computed, ref, watch } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import TerminalView from '../components/terminal/TerminalView.vue'
+import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue'
 import { useSessionStore } from '../stores/session'
+import { useRemoteClientStore } from '../stores/remoteClient'
 
 const sessionStore = useSessionStore()
+const remoteClientStore = useRemoteClientStore()
 
 const activeSession = computed(() => sessionStore.activeSession)
 const mountedSessionIds = ref<string[]>([])
@@ -67,5 +75,10 @@ watch(
   flex-direction: column;
   gap: 22px;
   overflow: auto;
+}
+
+.scope-banner-wrap {
+  padding: 12px 16px 0;
+  flex-shrink: 0;
 }
 </style>
