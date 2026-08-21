@@ -43,6 +43,7 @@ import (
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
+	"amagi-codebox/internal/remoteclient"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
@@ -237,6 +238,18 @@ type App struct {
 	// /skins/ 只读资源 Handler）。Startup 注入 Wails ctx 后才能弹选择对话框。
 	Skins *skins.Service
 
+	// RemoteClient 域（桌面端互联蓝图 §7）：作为 v1 契约客户端连接另一台
+	// amagi-codebox 宿主。登记簿在 NewApp 构造时从 configDir/remote-hosts.json
+	// 装载（纯文件读）；凭据存储与配对服务在 Startup 补齐（复用 App.Secrets，
+	// DPAPI/Keychain 条目 codebox-remoteclient/<DeviceID>）；当前至多一条已连接
+	// 宿主（多主机并发连接后置，蓝图 §13）。退出不强制断连。绑定方法见
+	// app_remoteclient.go。
+	rcMu       sync.Mutex
+	rcRegistry *remoteclient.HostRegistry
+	rcCreds    remoteclient.CredentialStore
+	rcPairing  *remoteclient.PairingService
+	rcConn     *remoteClientConnection
+
 	// Control runtime (M3-A2): the gate authority for all session write side
 	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
 	// Wails-bound (design §4.1, §6.3 C-01).
@@ -424,7 +437,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		processRegistry:     processcap.NewRegistry(),
 		remotePlanner:       launchplan.NewFailClosedPlanner(),
 		compensationDebts:   launchplan.NewCompensationDebtRegistry(),
-		WSLSetup:           wslsetup.NewService(log),
+		WSLSetup:            wslsetup.NewService(log),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
@@ -486,7 +499,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	// injected into this adapter.
 	m2aStreams := remote.NewSessionStreamStore()
 	m2aJournal := remote.NewSessionOperationJournal(configDir)
-	m2aSessRaw := appSessionRaw{pty: app.Pty, sessions: app.Sessions}
+	m2aSessRaw := newAppSessionRaw(app)
 	m2aAdapter := remote.NewRemoteSessionAdapter(
 		app.control.Gate(), app.control, nil, m2aStreams, m2aJournal,
 		remote.NewNoopRemoteLaunchResolver(), nil, m2aSessRaw, remote.NewSystemClock(), configDir,
@@ -515,6 +528,11 @@ func NewApp(mobileAssets embed.FS) *App {
 	}
 	app.sessionAdapter = m2aAdapter
 	app.Remote.SetSessionAdapter(m2aAdapter)
+
+	// 桌面端互联 RC1-5：装载主机登记簿（纯文件读，不碰 Keychain；凭据存储
+	// 与配对服务在 Startup 补齐，见 initRemoteClientServices）。
+	app.initRemoteClientRegistry(configDir)
+
 	return app
 }
 
@@ -1566,6 +1584,9 @@ func (a *App) Startup(ctx context.Context) {
 		loadState.secretsLoaded = true
 		a.Log.Info("app", "密钥加载成功")
 	}
+	// 桌面端互联 RC1-5：密钥库就绪后补齐远程客户端域（凭据存储 + 配对服务）。
+	// 不阻断启动：失败置 nil，相关绑定返回明确错误。
+	a.initRemoteClientServices()
 	if loadState.configLoaded && loadState.secretsLoaded {
 		if err := a.syncProvidersToHarnesses(); err != nil {
 			a.Log.Warn("provider-sync", "启动时同步 OpenCode/Pi/OMP 提供商失败", err.Error())

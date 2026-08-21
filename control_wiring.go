@@ -275,14 +275,40 @@ func (a *App) finalizeExternalAuthority(sessionID string, result *launcher.Launc
 // a complete five-CLI launchplan.Executor can replay desktop configuration.
 // appSessionRaw adapts PTY close/resize + session.Manager to
 // remote.SessionRawPort (stop/remove/resize behind the gate).
+//
+// RC1-0 缺口 A（T0-1 完成度矩阵 §4.2）：appSessionRaw 同时满足 remote.PTYRawPort。
+// v1 WS 数据面的写入目标唯一取自 adapter.sessRaw.(PTYRawPort)
+// （ws_v1_session.go rawPTYPort）；生产 sessRaw 若缺
+// WriteRaw/ResizeRaw/DetachSession 三方法，断言失败 → raw==nil → input/resize
+// 帧静默丢弃。三个新方法委托既有 appPTYRaw（pty.Service 的唯一适配层）。
 type appSessionRaw struct {
-	pty      ptyCloserResizer
+	pty      ptySessionRawBackend
 	sessions sessionLifecycle
 }
 
-type ptyCloserResizer interface {
+// newAppSessionRaw is the single production assembly of the remote adapter's
+// sessRaw (app.go NewRemoteSessionAdapter wiring). Root-package tests prove via
+// this constructor that the production value satisfies remote.PTYRawPort and
+// really writes through the real PTY data plane.
+func newAppSessionRaw(app *App) appSessionRaw {
+	return appSessionRaw{pty: app.Pty, sessions: app.Sessions}
+}
+
+// Compile-time proof (RC1-0 缺口 A): the production sessRaw type carries the
+// v1 WS raw port in addition to remote.SessionRawPort.
+var (
+	_ remote.SessionRawPort = appSessionRaw{}
+	_ remote.PTYRawPort     = appSessionRaw{}
+)
+
+// ptySessionRawBackend is the *pty.Service surface appSessionRaw needs: legacy
+// lifecycle close/resize plus the raw write/detach port for the v1 WS data
+// plane (RC1-0 缺口 A). Production satisfies it with app.Pty.
+type ptySessionRawBackend interface {
 	Close(sessionID string) error
 	Resize(ctx context.Context, sessionID string, cols, rows int) error
+	WriteRaw(ctx context.Context, sessionID string, data []byte) error
+	DetachSession(sessionID string) (*pty.DetachReceipt, error)
 }
 
 type sessionLifecycle interface {
@@ -313,6 +339,23 @@ func (a appSessionRaw) RemoveSession(ctx context.Context, sessionID contract.Ses
 // ResizeSession resizes the PTY.
 func (a appSessionRaw) ResizeSession(ctx context.Context, sessionID contract.SessionID, cols, rows int) error {
 	return a.pty.Resize(ctx, string(sessionID), cols, rows)
+}
+
+// WriteRaw/ResizeRaw/DetachSession implement remote.PTYRawPort for the v1 WS
+// data plane (RC1-0 缺口 A). Each delegates to the existing appPTYRaw adapter
+// (the single pty.Service adaptation, shared with the desktop control path);
+// the ws handlers keep their raw==nil fail-closed drop path for adapters whose
+// sessRaw still lacks the port.
+func (a appSessionRaw) WriteRaw(ctx context.Context, sessionID string, data []byte) error {
+	return appPTYRaw{a.pty}.WriteRaw(ctx, sessionID, data)
+}
+
+func (a appSessionRaw) ResizeRaw(ctx context.Context, sessionID string, cols, rows int) error {
+	return appPTYRaw{a.pty}.ResizeRaw(ctx, sessionID, cols, rows)
+}
+
+func (a appSessionRaw) DetachSession(sessionID string) (remote.BackendDetachReceipt, error) {
+	return appPTYRaw{a.pty}.DetachSession(sessionID)
 }
 
 // ptyBridgeAdapter is the unbound PTY bridge for the legacy/v1 remote WS path
