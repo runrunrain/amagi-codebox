@@ -66,6 +66,9 @@ export {
   setRemoteHost,
 } from './remote';
 
+// Remote Client（RC1-6 桌面端互联 · 客户端域）
+export * from './remoteClient';
+
 // Updates
 export * from './updater';
 

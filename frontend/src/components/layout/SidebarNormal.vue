@@ -6,6 +6,9 @@
       <div class="brand">CodeBox</div>
     </div>
 
+    <!-- 主机切换层（RC1-6 桌面端互联）：全局 host scope，常驻侧栏顶部 -->
+    <HostScopeSwitcher />
+
     <!-- New Session Button -->
     <button class="new-btn" @click="handleNewSession" title="新建会话">
       <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round">
@@ -108,6 +111,7 @@ import { usePlatformCapabilities } from '../../composables/usePlatformCapabiliti
 import { useToast } from '../../composables/useToast'
 import { useSessionLaunch } from '../../composables/useSessionLaunch'
 import SessionListItem from './SessionListItem.vue'
+import HostScopeSwitcher from '../remote/HostScopeSwitcher.vue'
 import UpdateDialog from '../common/UpdateDialog.vue'
 import { GetAppInfo, GetRemoteWebUIStatus, OpenRemoteWebUI } from '../../../wailsjs/go/main/App'
 import * as sessionApi from '../../api/session'

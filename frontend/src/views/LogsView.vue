@@ -14,6 +14,9 @@
     <template v-else>
     <PageHead title="系统日志" description="查看应用运行日志与调试信息" />
 
+    <!-- RC1-6：远程模式提示条（系统日志为本机功能） -->
+    <RemoteScopeBanner subject="系统日志" />
+
     <!-- Headroom 压缩统计（累计 · 全局 ledger） -->
     <ConfigCard class="headroom-card">
       <div class="headroom-head">
@@ -228,6 +231,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
+import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
 import TextInput from '../components/ui/TextInput.vue'
 import AppButton from '../components/ui/AppButton.vue'

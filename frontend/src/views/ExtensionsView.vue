@@ -2,6 +2,9 @@
   <section class="view-extensions">
     <PageHead title="扩展管理" description="管理 Claude、OpenCode、Codex、Pi 与 OMP 插件和环境变量"/>
 
+    <!-- RC1-6：远程模式提示条（扩展管理为本机功能） -->
+    <RemoteScopeBanner subject="扩展管理" />
+
     <!-- Main segmented control: Plugins | Environment | Other tools -->
     <div class="ex-main-tabs">
       <Segmented
@@ -113,6 +116,7 @@
 import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import PageHead from '../components/ui/PageHead.vue';
+import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
 import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';

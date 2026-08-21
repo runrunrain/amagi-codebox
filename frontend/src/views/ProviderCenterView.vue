@@ -11,6 +11,9 @@
   <section class="view-provider">
     <PageHead title="Provider Center" description="统一管理服务提供商与可跨 CLI 复用的公共预设" />
 
+    <!-- RC1-6：远程模式下仍展示本机配置（远程配置面属 RC4） -->
+    <RemoteScopeBanner subject="Provider Center" mode="local" />
+
     <!-- 详情模式：覆盖网格视图（对照 demo .pc-detail）-->
     <ProviderDetailView
       v-if="store.activeProviderId && store.activeProvider"
@@ -157,6 +160,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, defineAsyncComponent, defineComponent, h, type Component } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
+import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import AppButton from '../components/ui/AppButton.vue';
