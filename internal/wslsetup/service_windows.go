@@ -4,7 +4,9 @@ package wslsetup
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"amagi-codebox/internal/logging"
@@ -70,7 +72,7 @@ func (s *Service) GetStatus() Status {
 		}
 	}
 
-	for _, key := range []string{"claude", "opencode", "codex"} {
+	for _, key := range []string{"claude", "opencode", "codex", "pi"} {
 		pkg, _ := packageForTool(key)
 		ts := ToolStatus{Tool: key, Package: pkg}
 		if p := s.nativeCommandPath(distro, key); isNativePath(p) {
@@ -104,23 +106,38 @@ func isNativePath(p string) bool {
 	return p != "" && !strings.HasPrefix(p, "/mnt/")
 }
 
-// EnsureNode makes sure a native Node.js (>=20) is available inside the distro.
-// It is idempotent: when a non-/mnt node already exists it is a no-op. Otherwise
-// it installs Node 20 from NodeSource (requires network + root). Returns whether
-// an install was performed.
+// nodeMajorFloor / nodeMinorFloor are the minimum native Node version WSL CLI
+// installs accept. pi's undici 8.x dependency uses worker_threads APIs that only
+// exist from Node 22.13 on (its engines field says >=22.19.0); anything older
+// crashes at module load with "webidl.util.markAsUncloneable is not a function".
+const (
+	nodeMajorFloor = 22
+	nodeMinorFloor = 19
+)
+
+// EnsureNode makes sure a native Node.js at or above the version floor is
+// available inside the distro. It is idempotent: when a native node at or above
+// the floor already exists it is a no-op. Otherwise it installs Node 22 from
+// NodeSource (requires network + root), which also upgrades an older native
+// Node via apt. Returns whether an install was performed.
 func (s *Service) ensureNode(distro string) (installed bool, log string, err error) {
-	// Already have a native node?
+	// Already have a recent enough native node?
 	if isNativePath(s.nativeCommandPath(distro, "node")) {
-		v, _ := wslExec(distro, "", "node -v")
-		return false, "native node already present: " + firstNonEmptyLine(v), nil
+		if out, e := wslExec(distro, "", "node -v"); e == nil {
+			ver := strings.TrimSpace(firstNonEmptyLine(out))
+			if nodeVersionAtLeast(ver, nodeMajorFloor, nodeMinorFloor) {
+				return false, "native node already present: " + ver, nil
+			}
+			s.logInfo("wslsetup", "native node below floor, upgrading to Node 22 in WSL", "current="+ver)
+		}
 	}
 
-	s.logInfo("wslsetup", "installing native Node.js 20 in WSL", "distro="+distro)
+	s.logInfo("wslsetup", "installing native Node.js 22 in WSL", "distro="+distro)
 	script := strings.Join([]string{
 		"export DEBIAN_FRONTEND=noninteractive",
 		"apt-get update -qq",
 		"apt-get install -y ca-certificates curl gnupg",
-		"curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/nodesource_setup.sh",
+		"curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh",
 		"bash /tmp/nodesource_setup.sh",
 		"apt-get install -y nodejs",
 		"node -v",
@@ -137,16 +154,48 @@ func (s *Service) ensureNode(distro string) (installed bool, log string, err err
 }
 
 // ensureUserNpmPrefix configures a user-writable npm global prefix
-// (~/.npm-global) and puts it on PATH via ~/.bashrc, so `npm i -g` works without
-// root and the installed CLI shims resolve ahead of any Windows passthrough.
-// Idempotent.
+// (~/.npm-global) and puts it on PATH via ~/.bashrc AND ~/.profile, so
+// `npm i -g` works without root and the installed CLI shims resolve ahead of any
+// Windows passthrough. The .profile line matters for non-interactive login
+// shells (`wsl.exe -- bash -lc`): Ubuntu's .bashrc returns early for those, so a
+// .bashrc-only PATH line leaves `bash -lc pi` resolving to the /mnt/c Windows
+// shim. Idempotent.
 func (s *Service) ensureUserNpmPrefix(distro string) (string, error) {
 	script := strings.Join([]string{
 		`mkdir -p "$HOME/.npm-global"`,
 		`npm config set prefix "$HOME/.npm-global"`,
 		`grep -q "npm-global/bin" "$HOME/.bashrc" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"`,
+		`grep -q "npm-global/bin" "$HOME/.profile" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.profile"`,
 		`echo prefix-ok`,
 	}, " && ")
+	return wslExec(distro, "", script)
+}
+
+// ensurePiConfig seeds the distro's ~/.pi/agent (providers/auth/models plus the
+// amagi assets) from the Windows-side install, so pi launched inside WSL
+// recognizes the same providers (e.g. custom relays) without manual setup.
+// It only seeds when the distro has no ~/.pi/agent yet — WSL-local state is
+// never overwritten — and is skipped when the Windows side has no .pi. Sessions
+// history and settings backups stay machine-local and are dropped. Failures are
+// reported to the caller but must not fail the install: pi still runs, just
+// without the shared config.
+func (s *Service) ensurePiConfig(distro string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "skip: no windows home dir (" + err.Error() + ")", nil
+	}
+	src := wslPathFromWindowsHome(filepath.Join(home, ".pi", "agent"))
+	if src == "" {
+		return "skip: could not map windows .pi path", nil
+	}
+	script := strings.Join([]string{
+		`[ -d ` + bashSingleQuote(src) + ` ] || { echo 'no windows .pi to seed'; exit 0; }`,
+		`[ -e "$HOME/.pi/agent" ] && { echo 'wsl pi config already present'; exit 0; }`,
+		`mkdir -p "$HOME/.pi"`,
+		`cp -r ` + bashSingleQuote(src) + ` "$HOME/.pi/agent"`,
+		`rm -rf "$HOME/.pi/agent/sessions" "$HOME/.pi/agent"/settings.json.amagi-bak-*`,
+		`echo 'seeded pi config from windows'`,
+	}, "\n")
 	return wslExec(distro, "", script)
 }
 
@@ -224,6 +273,15 @@ func (s *Service) InstallTool(tool string) (*InstallResult, error) {
 		res.Success = true
 		res.Version = v
 		res.Message = fmt.Sprintf("%s installed in WSL (%s)", key, v)
+		// pi keeps its providers/auth in ~/.pi/agent on the Windows side; seed
+		// the distro copy on first WSL use so the same providers resolve.
+		if key == "pi" {
+			if cfgLog, e := s.ensurePiConfig(distro); e != nil {
+				logB.WriteString("[pi-config]\n" + cfgLog + "\nseed failed (non-fatal): " + e.Error() + "\n")
+			} else {
+				logB.WriteString("[pi-config]\n" + cfgLog + "\n")
+			}
+		}
 	} else {
 		res.Success = false
 		res.Error = "install completed but CLI did not resolve natively in WSL"

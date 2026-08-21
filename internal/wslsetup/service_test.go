@@ -26,6 +26,8 @@ func TestPackageForTool(t *testing.T) {
 		"claude_code": "@anthropic-ai/claude-code",
 		"opencode":    "opencode-ai",
 		"codex":       "@openai/codex",
+		"pi":          "@earendil-works/pi-coding-agent",
+		"Pi":          "@earendil-works/pi-coding-agent",
 	}
 	for in, want := range cases {
 		got, ok := packageForTool(in)
@@ -35,6 +37,46 @@ func TestPackageForTool(t *testing.T) {
 	}
 	if _, ok := packageForTool("nope"); ok {
 		t.Errorf("packageForTool(nope) should be !ok")
+	}
+}
+
+func TestNodeVersionAtLeast(t *testing.T) {
+	cases := []struct {
+		v           string
+		major       int
+		minor       int
+		want        bool
+		description string
+	}{
+		{"v22.23.2", 22, 19, true, "above floor"},
+		{"v22.19.0", 22, 19, true, "exactly at floor"},
+		{"v22.13.0", 22, 19, false, "below floor minor (undici markAsUncloneable missing)"},
+		{"v20.20.2", 22, 19, false, "node 20 lacks the API entirely"},
+		{"v24.1.0", 22, 19, true, "newer major"},
+		{"22.19.0", 22, 19, true, "no v prefix"},
+		{"v22", 22, 19, false, "missing minor is unparseable"},
+		{"", 22, 19, false, "empty output"},
+		{"garbage", 22, 19, false, "garbage output"},
+	}
+	for _, c := range cases {
+		if got := nodeVersionAtLeast(c.v, c.major, c.minor); got != c.want {
+			t.Errorf("nodeVersionAtLeast(%q, %d, %d) = %v, want %v (%s)", c.v, c.major, c.minor, got, c.want, c.description)
+		}
+	}
+}
+
+func TestWSLPathFromWindowsHome(t *testing.T) {
+	cases := map[string]string{
+		`C:\Users\毛润\.pi\agent`: `/mnt/c/Users/毛润/.pi/agent`,
+		`D:\Tools\My CLI`:         `/mnt/d/Tools/My CLI`,
+		`relative\path`:           "",
+		`nopath`:                  "",
+		`\\server\share\x`:        "",
+	}
+	for in, want := range cases {
+		if got := wslPathFromWindowsHome(in); got != want {
+			t.Errorf("wslPathFromWindowsHome(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

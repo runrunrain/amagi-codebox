@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- WSL CLI 安装支持 Pi：`cliPackages` 增加 `@earendil-works/pi-coding-agent`，状态面板与前端显示名同步支持（Pi 安装进 WSL 后与 Claude Code/OpenCode/Codex 一致地探测与安装）。
+- Pi 装入 WSL 时自动播种配置：首次安装后将 Windows 侧 `~/.pi/agent`（providers/auth/models 与 amagi 资产）种子到发行版内，会话历史与备份不入内；WSL 本地已有 `.pi/agent` 时不覆盖，失败仅记录日志不影响安装。
+
+### Fixed
+
+- WSL 内 Node 底线从 20 升至 22（22.19）：pi 的 undici 8.x 依赖需要 Node ≥22.19（`worker_threads.markAsUncloneable` 自 22.13 引入），旧逻辑安装 Node 20 会让 pi 在模块加载即崩溃；现探测原生 Node 版本，低于底线时经 NodeSource 升级到 Node 22。
+- npm 用户前缀 PATH 同时写入 `~/.profile`：Ubuntu 的 `.bashrc` 对非交互登录 shell（`bash -lc`）提前返回，仅写 `.bashrc` 时 `bash -lc pi` 会解析到 `/mnt/c` 泄漏的 Windows shim；`.profile` 兜底保证登录 shell 优先解析 `~/.npm-global/bin`。
+- 仓库 `.node-version` 从 20.19.0 升至 22.23.2：配合 fnm `--use-on-cd`，项目目录内的终端不再被钉在低于 pi 依赖要求的 Node 20 上。
+
 ## [1.3.47] - 2026-08-21
 
 ### Added

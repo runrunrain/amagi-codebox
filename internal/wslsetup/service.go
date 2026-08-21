@@ -16,6 +16,7 @@ var cliPackages = map[string]string{
 	"claude":   "@anthropic-ai/claude-code",
 	"opencode": "opencode-ai",
 	"codex":    "@openai/codex",
+	"pi":       "@earendil-works/pi-coding-agent",
 }
 
 // InstallResult reports the outcome of an install-into-WSL operation. It mirrors

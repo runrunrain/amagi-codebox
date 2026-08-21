@@ -61,6 +61,7 @@ const NAMES: Record<string, string> = {
   claude: 'Claude Code',
   opencode: 'OpenCode',
   codex: 'Codex',
+  pi: 'Pi',
 }
 function displayName(tool: string): string {
   return NAMES[tool] || tool
