@@ -2,20 +2,28 @@
 
 > Normative wire document for the Amagi CodeBox remote REST/WS v1 API.
 >
-- Design source: `agent-outputs/fuxi/20260802-m0-03-contract-design/design.md` (§6–§9 are the wire truth).
+> Design source: `agent-outputs/fuxi/20260802-m0-03-contract-design/design.md` (§6–§9 are the wire truth).
 > Machine-readable wire examples: `mobile/src/lib/contract/testdata/v1-wire-fixtures.json` (single shared fixture consumed by both the Go and TS tests).
 > Type skeletons: `internal/remote/contract/` (Go) and `mobile/src/lib/contract/` (TS, sole export surface `index.ts`).
 >
 > Any wire change MUST update this document, both type skeletons, the shared fixture and both tests in the SAME diff.
 
-## 1. Scope and stage boundaries
+**核实状态（2026-08-22，版本 1.3.50）**：本协议已对照 `internal/remote/contract/`（Go）与 `mobile/src/lib/contract/testdata/v1-wire-fixtures.json` 逐条复核。事件类型（8 类，含 `input.ack`）、12 个稳定错误码、关闭码（1008/1002/1009）、5 个 CLI 类型、10 个 REST 端点均与代码及共享 fixture 一致。**M0–M3 各阶段均已在生产落地**：`routes_v1.go` 的 `registerV1Routes` 在 `sessionAdapter` 接线后注册全部 10 个端点，`ws_v1_session.go` 是 `/ws/v1` 的生产消费者，`input.ack` 由 per-session input ledger 在生产中发出。§1 的阶段表保留为设计约束记录，§7 的实现边界已更新为现状。
+
+## 1. Scope and stage boundaries（设计约束记录，各阶段已落地）
 
 | Stage | Allowed | Forbidden |
 | --- | --- | --- |
-| **M0** (this document + type skeletons + fixture + pure marshal/parse/type tests) | constants, DTOs, TS discriminated unions, fixture, constants/type parity tests | NO route registration, NO HTTP/WS server start, NO auth/device/session/control/history, NO sample data in production, NO Pinia store, NO mock |
+| **M0**（契约包 + 类型骨架 + fixture + 纯 marshal/parse/type 测试） | constants, DTOs, TS discriminated unions, fixture, constants/type parity tests | NO route registration, NO HTTP/WS server start, NO auth/device/session/control/history, NO sample data in production, NO Pinia store, NO mock |
 | **M1** | `pairing/complete`, `host/summary`, device Cookie, Origin allowlist + D-004 (empty Origin rejected), revoke closes WS, legacy sensitive admin-face tightening + migration | NO fake session/control/backfill; pairing window params freeze at C-003, Cookie name/TTL at C-008 |
-| **M2** | session list/detail/create/stop/restart/delete real adapter; `session.state`/restart boundary; basic output producer | **Control authorization dependency**: M3-A control arbitration MUST run BEFORE M2 lifecycle/input/resize write operations. Do NOT open remote write routes with "any paired device may write" as a temporary relaxation. If control authorization is not yet ready, the affected remote write routes stay closed. |
-| **M3** | control acquire/release, input/resize authoritative filtering, session-level seq, earliest/latest, gap/backfill, same-connection input ID dedup, fast reconnect | NO v1 field renames; thresholds freeze at C-004/C-005 by measurement, not hardcoded in M0 |
+| **M2** | session list/detail/create/stop/restart/delete real adapter; `session.state`/restart boundary; basic output producer | **Control authorization dependency**: M3-A control arbitration MUST run BEFORE M2 lifecycle/input/resize write operations. |
+| **M3** | control acquire/release, input/resize authoritative filtering, session-level seq, earliest/latest, gap/backfill, same-connection input ID dedup, fast reconnect | NO v1 field renames; thresholds freeze at C-004/C-005 by measurement |
+
+**落地现状**（核实自 `internal/remote/routes_v1.go:140` 与 `server.go: buildHandler`）：
+
+- v1 流量在 legacy 认证**之前**分流：`/api/remote/v1` 走独立的 `buildV1Handler` 中央派发器（不复用 legacy `auth.go`），`/ws/v1` 在 `sessionAdapter` 接线后才接受 upgrade。
+- 会话路由（端点 2–9）仅在 `sessionAdapter != nil` 时激活，否则保持 404（设计 §4A 硬化门）；生产中 `NewApp` 已接线（`app.go:558-559`）。
+- 所有会话写副作用（REST 生命周期、WS input/resize、桌面 PTY 写）共享同一 ControlGate 仲裁（M-005，`bind_manifest_test.go` 冻结）。
 
 ## 2. Wire basics
 
@@ -59,7 +67,7 @@
 
 ## 3. REST v1
 
-`BASE = /api/remote/v1`. All endpoints except `pairing/complete` require a valid device Cookie.
+`BASE = /api/remote/v1`（`contract.RESTBasePath`）. All endpoints except `pairing/complete` require a valid device Cookie.
 
 | Method + path | Auth | Request | Success | Stage |
 | --- | --- | --- | --- | --- |
@@ -74,7 +82,7 @@
 | `POST /sessions/{id}/control/acquire` | device Cookie | no body | `200 ControlSnapshot`; busy ⇒ 409 | M3 |
 | `POST /sessions/{id}/control/release` | current controller | no body | `200 ControlSnapshot{state:"none"}` | M3 |
 
-`{id}` is a single URL path segment; clients percent-encode, server decodes to opaque SessionID. See the fixture `manifest.restEndpoints` for the canonical 10-endpoint enumeration.
+`{id}` is a single URL path segment; clients percent-encode, server decodes to opaque SessionID. The canonical 10-endpoint enumeration lives in `contract.V1RestEndpoints`（`internal/remote/contract/version.go`）并镜像在 fixture `manifest.restEndpoints`。
 
 Key DTO invariants:
 - `ConfirmActionRequest.confirm` MUST be literal `true`.
@@ -83,10 +91,11 @@ Key DTO invariants:
 - `ControlSnapshot` is a 4-variant union on `state`; `deviceName` present ONLY when `state="other"`.
 - `SessionDetail.earliestSeq`/`latestSeq` required even when 0.
 - Response bodies NEVER carry `credential`/`token`/`apiKey`/`remoteToken`/`cookie`. Pairing `code` appears ONLY in `PairingCompleteRequest`.
+- `cliType` 的闭合枚举是 **5 个**：`claudecode` / `opencode` / `codex` / `pi` / `omp`（`contract.KnownCLITypes`，与 `internal/session/types.go` 的五种 AppType 一一对应）。
 
 ## 4. WebSocket v1
 
-- Sole URL: `ws[s]://<host>/ws/v1`. URL MUST NOT carry token/session/mode/credential. Browser auto-sends the device Cookie; Origin MUST be non-empty and allowlisted (empty Origin ⇒ HTTP 403 before upgrade, D-004).
+- Sole URL: `ws[s]://<host>/ws/v1`（`contract.WebSocketV1Path`）. URL MUST NOT carry token/session/mode/credential. Browser auto-sends the device Cookie; Origin MUST be non-empty and allowlisted (empty Origin ⇒ HTTP 403 before upgrade, D-004).
 - One session per connection; switching session opens a new connection. First business frame MUST be `attach` (ping is a liveness hint, not authorization).
 - `auth.revoked` ⇒ event then close 1008 (`AuthRevokedCloseCode`; CG-01 canonical reason `device_revoked`); version/protocol mismatch ⇒ close 1002; oversize frame ⇒ close 1009.
 
@@ -100,7 +109,9 @@ Key DTO invariants:
 
 ### 4.2 Server events (8 categories)
 
-- `session.attached`: `{type, requestId, apiVersion, sessionId, history:ReplayFrame[], earliestSeq, latestSeq, snapshot:FiveLayerSnapshot, inputAckMode?}`. `requestId` = attach `requestId`; at attach time connection=`connected`, auth=`authorized` only. `snapshot.history` is a conditional union (§4.4): `gap` state carries a nested `gap:GapRange`; `continuous`/`backfilled` forbid it. `inputAckMode` (CG-03) is optional: absent = input-ack capability unavailable (read-only for new clients); present = the sole canonical value `session-window-v1`. An unknown value is treated as absent (forward-compat, read projection preserved). A new client MUST NOT send input when the mode is absent/unknown.
+Frozen set（`contract.KnownServerEventTypes`，核实 2026-08-22）: `session.attached`, `output`, `backfill.result`, `session.state`, `control.state`, `auth.revoked`, `error`, `input.ack`.
+
+- `session.attached`: `{type, requestId, apiVersion, sessionId, history:ReplayFrame[], earliestSeq, latestSeq, snapshot:FiveLayerSnapshot, inputAckMode?}`. `requestId` = attach `requestId`; at attach time connection=`connected`, auth=`authorized` only. `snapshot.history` is a conditional union (§4.4): `gap` state carries a nested `gap:GapRange`; `continuous`/`backfilled` forbid it. `inputAckMode` (CG-03) is optional: absent = input-ack capability unavailable (read-only for new clients); present = the sole canonical value `session-window-v1`（`contract.InputAckModeSessionWindowV1`）. An unknown value is treated as absent (forward-compat, read projection preserved). A new client MUST NOT send input when the mode is absent/unknown.
 - `output` (replayable): `{type, sessionId, seq, chunk, structuredExpected?}`.
 - `backfill.result` (frames): `{type, requestId, sessionId, fromSeq, toSeq, earliestSeq, latestSeq, frames}`.
 - `backfill.result` (gap): `{..., gap:{code:"history.gap", fromSeq, toSeq}}`. Exactly one of `frames`/`gap`. v1 has **no partial-gap representation**: the gap MUST cover the full requested range (`gap.fromSeq == fromSeq && gap.toSeq == toSeq`, enforced by the production validator).
@@ -159,26 +170,35 @@ Attached-gap example (fixture `serverEvents.sessionAttachedGap`):
 Unified REST error body (top-level, NO `{error:{...}}` envelope):
 `{requestId, code, layer, message, actionHint, details?}`.
 
-12 stable codes: `net.unreachable`, `service.down`, `auth.unpaired`, `auth.window_expired`, `auth.revoked`, `session.not_found`, `session.launch_failed` (+`details.cliType`), `control.busy`, `control.forbidden`, `history.gap`, `rate.limited`, `bad_request`. Version mismatch = `bad_request` + `details.reason:"unsupported_api_version"` (no new code). `net.unreachable` is client-synthesized (no server requestId). HTTP status is transport info; clients parse the classified body first.
+12 stable codes（`contract.KnownErrorCodes`，核实 2026-08-22）: `net.unreachable`, `service.down`, `auth.unpaired`, `auth.window_expired`, `auth.revoked`, `session.not_found`, `session.launch_failed` (+`details.cliType`), `control.busy`, `control.forbidden`, `history.gap`, `rate.limited`, `bad_request`. Version mismatch = `bad_request` + `details.reason:"unsupported_api_version"` (no new code). `net.unreachable` is client-synthesized (no server requestId). HTTP status is transport info; clients parse the classified body first.
 
 ## 6. Security invariants
 
 1. All REST/WS except `pairing/complete` require a valid device Cookie; "has Cookie" ≠ "may write" — lifecycle/input/resize also require current control.
 2. Cookie/device credential/API Key/RemoteToken/pairing code NEVER enter JSON response, WS frame, localStorage, IndexedDB, Cache Storage, URL, log or request details.
-3. WS Origin MUST be non-empty and allowlisted; empty Origin fails closed (D-004). (Current `auth.go` behavior MUST be fixed in M1; v1 does not reuse it.)
+3. WS Origin MUST be non-empty and allowlisted; empty Origin fails closed (D-004).**（已落地）** v1 不复用 legacy `auth.go`：`buildV1Handler`（`internal/remote/routes_v1.go`）在独立派发器中中央执行严格 Host、空 RawQuery、Origin 策略（`unsafeOriginRequired`/`safeBrowserProof` 按端点分类）与设备 Cookie 认证；legacy 命名空间则由 loopback 守卫保护（非 loopback 认证前即 403）。
 4. On revoke: REST 401 `auth.revoked`; existing WS sends event then close 1008; control released.
 5. `requestId`/`messageId`/`sessionId`/`deviceName` are NOT authorization basis; server resolves device identity from Cookie/connection context.
 6. Unknown control/auth enum ⇒ read-only/unauthorized fallback only; never optimistic enable.
 7. Message/frame bodies, terminal chunks, input data are never logged; error message never concatenates raw Go error/credential.
 8. Base64 decode failure, non-integer seq/size, unknown client field ⇒ reject; dirty values never reach the PTY.
 9. `structuredExpected` is a hint; absence/false does not affect raw output visibility; structured failure falls back to MonoBlock/diagnostic, never drops a chunk.
-10. M0 forbids fake handler/store/mock; fixed samples exist only in testdata and cannot be returned by production code.
+10. Fixed samples exist only in testdata and cannot be returned by production code.
 
-## 7. Production validation boundary (honest M0 scope)
+## 7. Production validation boundary（现状：已接线）
 
-The contract package provides PURE validation functions callable from tests and future v1 producers/consumers — but **no handler, WebSocket consumer, store or route is wired in M0**. The runtime enforcement boundary is the contract package only; M1/M2/M3 producers MUST call these functions rather than `json.Marshal`/`json.Unmarshal` on raw DTOs.
+契约包提供**纯校验函数**，由测试与生产 v1 producer/consumer 共同调用。M0 时期「无 handler/route 接线」的边界声明**已不再成立**——当前实现状态（核实 2026-08-22）：
 
-- **Go production API** (`internal/remote/contract`): `DecodePairingCompleteRequest`/`DecodeCreateSessionRequest`/`DecodeConfirmActionRequest` (REST ingress); `DecodeClientFrame`/`DecodeKnownServerEvent` (WS ingress); `ValidateRESTResponse`/`ValidateAPIError`/`ValidateServerEvent` + `Marshal*` (egress). Decoders check JSON object-ness, presence, null, unknown field (strict for client/request; additive allowed for known server events), trailing JSON, type errors, closed enums, conditional/XOR, safe seq and Base64. Marshals validate first and produce no bytes on failure.
-- **Required slices reject nil** (addendum §5.4): `HostSummary.CLIAvailability` (must be exactly 4 unique CLI types), `SessionList` (non-nil empty → `[]`), `SessionAttachedEvent.History` (non-nil empty ok), `BackfillFramesResultEvent.Frames` (non-nil non-empty). Producers that forget to initialize a required array get an explicit error rather than a silent `null`.
-- **TS production runtime** (`mobile/src/lib/contract/ws.ts`): `normalizeServerEvent(unknown)` and `isClientFrame(unknown)` are pure, never throw, and fully validate untrusted input. Malformed/unknown server messages normalize to a **sanitized** `UnknownServerEvent` (no `raw`, no field values, no unknown field names; only sanitized `wireType`, reason, fallback and boolean shape metadata). Fallback priority: `force-unauthorized` > `force-read-only` > `mark-history-gap` > `mark-session-unavailable` > `ignore`.
-- **Honest boundary**: statements like “Go handler uses the strict decoder” or “the TS normalizer is wired into the WebSocket client” are NOT true in M0 — only the contract-layer functions exist and are tested.
+- **REST ingress**：`internal/remote/routes_v1.go` + `session_routes_v1.go` 的 10 个 handler 经 `contract.DecodePairingCompleteRequest`/`DecodeCreateSessionRequest`/`DecodeConfirmActionRequest` 严格解码（JSON object-ness、presence、null、unknown field、trailing JSON、类型、闭合枚举、条件/XOR、安全 seq、Base64）。
+- **WS ingress/egress**：`internal/remote/ws_v1_session.go` 是 `/ws/v1` 的生产消费者，客户端帧经 `contract.DecodeClientFrame`，服务端事件经 `Validate*` + `Marshal*`（validate-first，失败不产字节）；`input.ack` 由 per-session `SessionInputLedger`（`server.go: LedgerForSession`）在生产中发出，`session.attached` 携带 `inputAckMode` 声明能力。
+- **Required slices reject nil**（addendum §5.4，仍有效）：`HostSummary.CLIAvailability`（必须恰好 **5** 个唯一 CLI 类型，对应 `contract.KnownCLITypes`）、`SessionList`（非 nil 空 → `[]`）、`SessionAttachedEvent.History`（非 nil 空 ok）、`BackfillFramesResultEvent.Frames`（非 nil 非空）。遗漏初始化必需数组的 producer 得到显式错误而非静默 `null`。
+- **TS production runtime**（`mobile/src/lib/contract/ws.ts`）：`normalizeServerEvent(unknown)` 与 `isClientFrame(unknown)` 是纯函数、从不抛异常、完整校验不可信输入。Malformed/unknown 服务端消息归一化为**脱敏** `UnknownServerEvent`（无 `raw`、无字段值、无未知字段名）。Fallback 优先级：`force-unauthorized` > `force-read-only` > `mark-history-gap` > `mark-session-unavailable` > `ignore`。
+- **桌面端 RemoteClient**（`internal/remoteclient/`）是同一契约的第二消费者：配对、宿主登记、`/ws/v1` 客户端、出站队列与回填均按本契约实现。
+
+新 v1 producer/consumer **必须**调用契约包的 Decode*/Validate*/Marshal* 入口，不得对原始 DTO 直接 `json.Marshal`/`json.Unmarshal`。
+
+## 变更记录
+
+| 日期 | 版本 | 变更 |
+|---|---|---|
+| 2026-08-22 | 1.3.50 | 对照 `internal/remote/contract` 复核：协议本体（8 事件、12 错误码、关闭码、seq 不变式）无漂移；修正三处过时表述——§1 阶段表标注已全部落地、§6.3 删除「auth.go 待 M1 修复」并描述现行 v1 派发器、§7 从「M0 未接线」更新为已接线现状，`HostSummary.CLIAvailability` 从 4 个 CLI 类型更正为 5 个（补 `omp`）。 |

@@ -1,24 +1,25 @@
 # 整体架构
 
 > 受众：维护 Amagi CodeBox 后端或前后端桥接的开发者。
-> 范围：进程结构、绑定主干、会话生命周期、远程控制与移动端架构。
-> 信息来源：`CLAUDE.md`、`main.go`、`app.go`、`internal/session/types.go`、`README.md`（均以当前仓库实际读取为准）。
+> 范围：进程结构、绑定主干、internal 包分组、会话生命周期、远程控制（legacy + v1）与移动端架构。
+> 信息来源：`main.go`、`bind_list.go`、`app.go`、`internal/session/types.go`、`internal/remote/`（均以当前仓库实际读取为准，核实日期 2026-08-22，版本 1.3.50）。
 
 ## 一句话概览
 
-Amagi CodeBox 是一个基于 Wails v2 的桌面应用：Go 后端与 Vue 3/TypeScript 前端编译为**单一二进制**，通过 Wails 的方法绑定实现前后端通信，并额外嵌入一份独立的 Capacitor 移动端构建产物，用于通过 HTTP/WebSocket 远程控制桌面端。
+Amagi CodeBox 是一个基于 Wails v2 的桌面应用：Go 后端与 Vue 3/TypeScript 前端编译为**单一二进制**，通过 Wails 方法绑定实现前后端通信；内嵌一份独立的 Capacitor 移动端构建产物，并内置 HTTP/WebSocket 远程控制服务器（legacy token API + v1 配对契约 API 双栈），供移动端或其他 CodeBox 实例远程控制本机。
 
 ## 技术栈
 
 | 层 | 选型 |
 |---|---|
-| 桌面框架 | Wails v2.11.0 |
-| 后端语言 | Go 1.25.0 |
-| 前端 | Vue 3 + TypeScript（Vite 构建） |
+| 桌面框架 | Wails v2 |
+| 后端语言 | Go（`go.mod` 基线 `go 1.25.0`） |
+| 前端 | Vue 3 + TypeScript（Vite 构建），自有 `frontend/src/components/ui/` 组件 kit + `tokens.css` 设计令牌（Element Plus 已移除，勿再引入） |
 | 终端渲染 | xterm.js |
 | 伪终端 | Windows ConPTY（`github.com/UserExistsError/conpty`）/ macOS `creack/pty` |
-| 远程通信 | `gorilla/websocket` |
-| 移动端 | Capacitor 独立构建 |
+| 远程通信 | 标准库 `net/http` + `gorilla/websocket` |
+| 用量存储 | SQLite（`usage.db`，`internal/usage/store_sqlite.go`） |
+| 移动端 | Capacitor 独立构建（`mobile/`） |
 
 ## 单二进制与嵌入资源
 
@@ -32,63 +33,20 @@ var assets embed.FS
 var mobileFS embed.FS
 ```
 
-- `frontend/dist`：桌面前端的 Vite 产物，由 Wails 的 `AssetServer.Assets` 提供。
+- `frontend/dist`：桌面前端的 Vite 产物，由 Wails 的 `AssetServer.Assets` 提供；`AssetServer.Handler` 同时挂了 `app.Skins.AssetHandler()`，把 `/skins/<file>` 回落到本地皮肤图片库（`~/.amagi-codebox/skins/`）的只读静态服务。
 - `mobile/dist`：移动端 Capacitor 前端的独立构建产物。**它不是桌面前端**，而是经 `NewApp(mobileFS)` 注入到 `remote.Server`，由远程控制 HTTP 服务器在启用时对外暴露。
 
-`build.sh`（macOS/Linux）和 `build.bat`（Windows）一次性串起 `frontend build → mobile build → wails build`，三者都跑完后才得到完整二进制。
-
-## 模块关系（文字版）
-
-```text
-                        +---------------------------+
-                        |  main.go (Wails 启动)     |
-                        |  - embed frontend/dist    |
-                        |  - embed mobile/dist      |
-                        |  - CurrentCapabilities()  |
-                        |  - EnsureSingleInstance() |
-                        +------------+--------------+
-                                     |
-                                     v
-                        +---------------------------+
-                        |  app.go: App 枢纽         |
-                        |  持有前端绑定与内部服务   |
-                        |  + 5 个内部服务           |
-                        +------------+--------------+
-                                     |
-          Bind[] 在 Wails 启动时注册 |  实线 = 直接持有/调用
-                                     v
-+-----------------------+ +--------------------+ +-------------------+
-| 桌面前端 Vue 3        | | Wails 绑定桥       | | internal/* 服务包 |
-| (frontend/dist)       | | (wailsjs 自动生成) | | config / secrets  |
-| Pinia + composables   | |  - App + 服务      | | session / pty     |
-| Element Plus          | |  方法 → TS 绑定    | | headroom          |
-+-----------+-----------+ +---------+----------+ | plugin            |
-            ^                       |            | remote / updater  |
-            | EventsEmit("pty:...") | 调用       | envcheck / paths  |
-            +-------+---------------+            | settings / log    |
-                    |                            | launcher / tray   |
-            +-------+--------+                   | opencodeconfig    |
-            | internal/pty   |<------ 转发 ------| codexplugin       |
-            | (ConPTY/PTY)   |         (远程)    | envvars / appmeta |
-            +----------------+                   | platform          |
-                                                 +-------------------+
-                                                           ^
-                                                           |
-                                                  +--------+--------+
-                                                  | mobile/dist     |
-                                                  | (Capacitor)     |
-                                                  | HTTP + WebSocket|
-                                                  +-----------------+
-```
+`build.sh`（macOS/Linux）和 `build.bat`（Windows）一次性串起 `frontend build → mobile build → wails build`；`wails.json` 的 `preBuildHooks` 保证 `wails build` 前先生成 `mobile/dist`（详见 [./build-dev.md](./build-dev.md)）。
 
 ## main.go 启动流程
 
 `main()` 串起以下步骤（顺序敏感）：
 
-1. `platform.CurrentCapabilities()`：解析当前平台能力（**仅此一次**，详见 [./platform-build-tags.md](./platform-build-tags.md)）。
-2. `platform.EnsureSingleInstance(...)`：调用 OS 单实例机制，重复启动时直接 `os.Exit(0)`。
-3. `NewApp(mobileFS)`：构造 `App`，注入所有服务（见下节）。
-4. `wails.Run(&options.App{...})`：注册 `OnStartup`、`OnShutdown`、`Bind`、窗口参数和 `AssetServer`。
+1. `updater.MaybeRunWindowsUpdateHelper(os.Args)`：Windows 更新助手模式短路（以更新助手参数启动时执行替换逻辑后直接退出，不进入 GUI）。
+2. `platform.CurrentCapabilities()`：解析当前平台能力（**仅此一次**，详见 [./platform-build-tags.md](./platform-build-tags.md)）。
+3. `platform.EnsureSingleInstance(...)`：调用 OS 单实例机制，重复启动时直接 `os.Exit(0)`。
+4. `NewApp(mobileFS)`：构造 `App`，注入所有服务（见下节）。
+5. `wails.Run(&options.App{...})`：注册 `OnStartup`、`OnShutdown`、窗口参数、`AssetServer`（含 Skins Handler），`Bind` 字段直接调用 `buildWailsBindList(app)`。
 
 `HideWindowOnClose` 由平台能力运行时决定：
 
@@ -96,216 +54,204 @@ var mobileFS embed.FS
 HideWindowOnClose: capabilities.HideOnCloseSupported && capabilities.CloseAction == platform.CloseActionHide,
 ```
 
-版本信息通过 ldflags 注入到 `main.Version/BuildTime/GitCommit/GoVersion`，默认值为 `dev`/`unknown`，由 `build.sh`/`build.bat` 读取 `git describe --tags` 后覆盖（详见 `CLAUDE.md` "Version injection"）。
+版本信息通过 ldflags 注入到 `main.Version/BuildTime/GitCommit/GoVersion`，默认值为 `dev`/`unknown`；未注入时由 `GetAppInfo` 在运行时回退到 `wails.json` 的 `info.productVersion`。注入链详见 [./build-dev.md](./build-dev.md#版本注入)。
 
-## 绑定主干
+## 绑定主干（21 个绑定）
 
-### Bind 列表
+### Bind 列表的唯一事实源：`bind_list.go`
 
-`main.go` 在 `wails.Run` 中将以下结构体暴露给前端（按声明顺序）：
-
-```go
-Bind: []any{
-    app,               // *App（枢纽）
-    app.Config,        // *config.ConfigService
-    app.Secrets,       // *secrets.SecretsService
-    app.Headroom,      // *headroom.HeadroomService
-    app.Paths,         // *paths.PathsService
-    app.Log,           // *logging.Service
-    app.Pty,           // *pty.Service
-    app.Settings,      // *settings.Service
-    app.Updater,       // *updater.Service
-    app.Plugins,       // *plugin.Service
-    app.CodexPlugins,  // *codexplugin.Service
-    app.OpenCodePlugins,// *opencodeplugin.Service
-    app.OpenCodeConfig,// *opencodeconfig.Service
-    app.EnvCheck,      // *envcheck.Service
-    app.Usage,         // *usage.Service
-},
-```
-
-实际绑定清单以 `bind_list.go` 为准。
-
-以下 `App` 字段对应的服务**不直接绑定**，仅通过 `App` 上的方法间接暴露给前端：`Launcher`、`Tray`、`Sessions`、`Remote`、`EnvVars`。
-
-### App 枢纽（`app.go`）
-
-`App` 结构体（约第 94 行起）持有跨服务协调所需的所有依赖：
+`main.go` 的 `Bind` 字段不再内联手写切片，而是调用 `buildWailsBindList(app)`（`bind_list.go`）。当前精确清单（**App + 20 个服务 = 21 个绑定**）：
 
 ```go
-type App struct {
-    ctx context.Context
-
-    Config         *config.ConfigService
-    Secrets        *secrets.SecretsService
-    Launcher       *launcher.LauncherService
-    Headroom       *headroom.HeadroomService
-    Tray           *tray.Service
-    Sessions       *session.Manager
-    Paths          *paths.PathsService
-    Log            *logging.Service
-    Pty            *pty.Service
-    Settings       *settings.Service
-    Remote         *remote.Server
-    EnvVars        *envvars.EnvVarsService
-    Updater        *updater.Service
-    Plugins        *plugin.Service
-    CodexPlugins   *codexplugin.Service
-    OpenCodeConfig *opencodeconfig.Service
-    EnvCheck       *envcheck.Service
-
-    Capabilities platform.PlatformCapabilities
-    CLIResolver  platform.CLIResolver
-    FileOpener   platform.FileOpener
-
-    startupWarnings   []string
-    startupWarningsMu sync.Mutex
-
-    persistenceMu       sync.RWMutex
-    persistentLoadState persistentLoadState
+func buildWailsBindList(app *App) []any {
+	return []any{
+		app,               // *App（枢纽门面）
+		app.Config,        // *config.ConfigService
+		app.Secrets,       // *secrets.SecretsService
+		app.Paths,         // *paths.PathsService
+		app.Log,           // *logging.Service
+		app.Settings,      // *settings.Service
+		app.Updater,       // *updater.Service
+		app.Plugins,       // *plugin.Service（Claude Code 插件）
+		app.CodexPlugins,  // *codexplugin.Service
+		app.OpenCodePlugins,// *opencodeplugin.Service
+		app.PiPlugins,     // *piplugin.Service
+		app.OmpPlugins,    // *ompplugin.Service
+		app.OpenCodeConfig,// *opencodeconfig.Service
+		app.PiConfig,      // *piconfig.Service
+		app.OmpConfig,     // *ompconfig.Service
+		app.AgentProfiles, // *agentprofile.Service
+		app.EnvCheck,      // *envcheck.Service
+		app.Usage,         // *usage.Service
+		app.WebUI,         // *webui.Service
+		app.Skins,         // *skins.Service
+		app.GitAssist,     // *gitassist.Service
+	}
 }
 ```
 
-`App` 同时实现 `remote.AppInterface`（见 `GetSettingsService`/`GetPathsService`/`GetConfigService` 三个 getter），让 `remote.Server` 能反向访问配置层。
+### 有意排除的原始服务（门控门面，设计 §4.1/§6.3 C-01）
 
-### 服务包范式（`internal/*`）
+以下两个原始服务对象**不进入 Bind 列表**，全部读写经 `App` 上的门控门面方法：
 
-`internal/` 下的服务包各自负责一个业务领域，下表列出其中一部分：
+| 原始服务 | 排除原因 | 前端可达的门面 |
+|---|---|---|
+| `app.Pty`（`*pty.Service`） | 原始终端写/缩放必须经 ControlGate 仲裁 | `App.PtyWrite` / `App.PtyWriteLarge` / `App.PtyResize` / `App.GetOutputHistorySnapshot` |
+| `app.Headroom`（`*headroom.HeadroomService`） | 变更必须经 lease 守卫 | `App.HeadroomStart` / `App.HeadroomStop` / `App.HeadroomGetStatus` 等 |
 
-| 包 | 主结构 | 构造函数 | 备注 |
-|---|---|---|---|
-| `internal/config` | `ConfigService` | `NewConfigService(configDir)` | 提供商/预设/`terminal_presets` |
-| `internal/secrets` | `SecretsService` | `NewSecretsService(configDir)` | 平台相关后端（见下） |
-| `internal/session` | `Manager` | `NewManager()` | 会话生命周期 |
-| `internal/pty` | `Service` | `NewService(log)` | 平台相关 PTY |
-| `internal/headroom` | `HeadroomService` | `NewHeadroomService(...)` | 上下文压缩代理 |
-| `internal/launcher` | `LauncherService` | `NewLauncherService(log, envVarsSvc)` | 进程启动 + env override |
-| `internal/plugin` | `Service` | `NewService("", log)` | Claude Code 插件 |
-| `internal/codexplugin` | `Service` | `NewService("", log)` | Codex 插件 |
-| `internal/opencodeplugin` | `Service` | `NewService("", "", log)` | OpenCode 全局插件 |
-| `internal/envcheck` | `Service` | `NewServiceWithRunner(...)` | CLI 工具检测与一键修复 |
-| `internal/envvars` | `EnvVarsService` | `NewEnvVarsService(configDir)` | 自定义环境变量 |
-| `internal/settings` | `Service` | `NewService(configDir)` | 应用设置 |
-| `internal/paths` | `PathsService` | `NewPathsService(configDir)` | 路径管理 |
-| `internal/logging` | `Service` | `NewService(configDir)` | 日志 |
-| `internal/updater` | `Service` | `NewService(Version, log)` | 自动更新 |
-| `internal/remote` | `Server` | `NewServer(8680, app, log, mobileAssets)` | HTTP + WebSocket |
-| `internal/tray` | `Service` | `NewService()` | 系统托盘 |
-| `internal/opencodeconfig` | `Service` | `NewService()` | OpenCode 全局 config.json |
-| `internal/platform` | （多结构） | `CurrentCapabilities()` 等 | 平台抽象层 |
+这一冻结边界由 `bind_manifest_test.go`（T-24）用反射断言守住：Bind 列表中不得出现 `pty.Service` / `headroom.HeadroomService` 类型；`App` 上不得存在 `StopAllSessions`、`RegisterOutputCallback` 等原始旁路方法；导出的会话/PTY 变更方法必须恰好是已登记的门控门面（M-005）。修改绑定表面前先读该测试（详见 [./testing.md](./testing.md)）。
 
-通用范式：
+### 不直接绑定的内部组件
 
-- 一个 `Service` 或 `ConfigService` 结构体持有配置目录、依赖服务等。
-- 一个 `New...(...)` 构造函数注入依赖。
-- 所有导出方法都是 Wails 绑定候选；前端经 `frontend/wailsjs/go/<pkg>/` 自动生成的 TS 包装调用（详见 [./frontend-backend.md](./frontend-backend.md)）。
+以下 `App` 字段不绑定到前端，由 `App` 门面或远程层内部使用：`Launcher`（进程启动）、`CodexHeadroom`（Codex 全局第二 headroom 实例，8788 端口/OpenAI 目标）、`Tray`、`Sessions`（会话管理器）、`Remote`（远程服务器）、`EnvVars`，以及 RemoteClient 域（`rcRegistry`/`rcCreds`/`rcPairing`/`rcConn`/`rcTerminals`，绑定方法集中在 `app_remoteclient.go`）。
+
+### App 枢纽（`app.go`）
+
+`App` 结构体（`app.go:201` 起）持有全部服务指针与跨服务协调状态：
+
+- **绑定服务**：上表 20 个服务指针。
+- **控制运行时**（M3-A2）：`control *remote.ControlRuntime` 是所有会话写副作用的仲裁机构；`sessionAdapter`、`sharedCoord`、`processRegistry`、`remotePlanner`、`compensationDebts` 支撑远程 v1 会话适配与启动计划/补偿债务。
+- **RemoteClient 域**：`rcRegistry`（宿主登记簿，构造时从 `configDir/remote-hosts.json` 装载）、`rcCreds`（凭据存储，复用 `App.Secrets` 的 DPAPI/Keychain，条目 `codebox-remoteclient/<DeviceID>`）、`rcPairing`、`rcConn`（当前至多一条已连接宿主）、`rcTerminals`（已连接宿主的 `/ws/v1` 终端长连接管理器）。
+- **平台能力快照**：`Capabilities platform.PlatformCapabilities`、`CLIResolver`、`FileOpener`，启动时一次性注入，运行期只读。
+
+`App` 同时实现 `remote.AppInterface`（`GetSettingsService`/`GetConfigService`/`GetPathsService` 三个 getter），让 `remote.Server` 反向访问配置层；这三个方法也会被 Wails 生成绑定，前端 `provider.ts` 用 `GetConfigService()` 拿服务句柄缓存复用（详见 [./frontend-backend.md](./frontend-backend.md)）。
+
+## internal/ 包分组（34 个一级包）
+
+`internal/` 现有 **34 个一级包**（`go list ./internal/...` 计 39 个 Go package，含 `appmeta` 的 5 个子包与 `remote/contract`）。按职责分组：
+
+| 分组 | 包 | 职责 |
+|---|---|---|
+| 配置族 | `config` / `paths` / `settings` / `envvars` / `secrets` | `models.json` 提供商/预设/terminal_presets；路径管理；应用设置与远程安全状态迁移；自定义环境变量；平台保护密钥（`secrets.enc`） |
+| 会话族 | `session` / `launcher` / `launchplan` / `pty` / `processcap` | 会话生命周期与 tracker；进程启动 + 各 CLI 配置写入（`pi_config.go`/`omp_config.go`/`opencode_config.go`）+ 提供商同步（`provider_sync.go`）；远程启动计划与补偿债务；伪终端；进程能力登记 |
+| 应用配置族 | `piconfig` / `ompconfig` / `opencodeconfig` | Pi / Oh My Pi / OpenCode 各自的 CLI 原生配置文件读写 |
+| 插件族 | `plugin` / `codexplugin` / `opencodeplugin` / `piplugin` / `ompplugin` | 五种 CLI 的插件/扩展管理 |
+| 远程族 | `remote` / `remoteclient` | 远程控制服务器（legacy + v1 双栈，含 `contract` 子包）；作为 v1 客户端连接其他 CodeBox 实例（配对、登记簿、终端管理） |
+| 功能服务 | `agentprofile` / `gitassist` / `headroom` / `usage` / `webui` / `skins` / `wslsetup` / `envcheck` / `updater` | Agent 档案；AI 辅助 git commit/push；上下文压缩代理；用量统计（SQLite）；pi Web UI 壳探测；皮肤图片库；Windows WSL 安装辅助；CLI 环境检测与一键修复；自动更新 |
+| 平台与基础设施 | `platform` / `logging` / `tray` / `structured` / `appmeta` | 平台能力/文件打开/单实例/进程策略/系统代理/WSL 查询；日志；系统托盘；终端结构化输出分类；五个 CLI 的元数据（`claude`/`codex`/`omp`/`opencode`/`pi` 子包） |
+
+通用范式：每个包一个 `Service`/`ConfigService` 结构体 + `New...()` 构造函数；导出方法即 Wails 绑定候选；跨平台差异用 `//go:build` + `_<os>.go` 文件分流（见 [./platform-build-tags.md](./platform-build-tags.md)）。
 
 ## 生命周期：Startup 与 Shutdown
 
-### Startup（`app.go:647`）
+### Startup（`app.go:1530`）
 
-`Startup(ctx context.Context)` 是 Wails 启动钩子，按以下顺序：
+`Startup(ctx)` 的实际顺序（核实自当前代码）：
 
-1. 注入 `ctx`：`a.Pty.SetContext(ctx)`，便于通过 `wailsRuntime.EventsEmit` 推送事件。
-2. 清理旧更新二进制：`a.Updater.CleanupOldBinary()`。
-3. 按顺序加载持久化状态（任一失败仅告警，不阻断启动）：`Settings → Config → Secrets → Paths → EnvVars`。每次成功后置位 `persistentLoadState`，关闭时据此判断是否跳过保存以避免覆盖原文件。
-4. Config 加载后自动迁移：`MigrateProviderPresetsToTerminal` 将旧 `provider.presets` 迁到 `terminal_presets`（幂等，失败累计为 startup warning）。
-5. Settings 加载后同步远程端口、移动端 Web 根目录、GitHub Token 到 `Remote`/`Updater`。
-6. 异步触发环境检测（`go func() { a.EnvCheck.CheckAll() }`），不阻塞启动；失败 issue 转为 startup warning。
-7. 启动远程 API：`a.Remote.Start(ctx)`，失败不影响主功能。
-8. 条件启动系统托盘：`capabilities.SystemTraySupported && len(trayIcon) > 0`。
+1. `a.Skins.SetContext(ctx)`：皮肤服务依赖 Wails ctx 弹原生文件选择对话框。
+2. `a.recoverExternalCleanups()`：恢复持久的外部进程清理所有权；失败转 startup warning 并 fail-close Headroom。
+3. **控制运行时接线**（M3-A2）：`Pty.SetRunEventSink(a.control.Projector())`（原始 PTY 输出/退出经 RunEventProjector，不再直接 EventsEmit）、`control.SetPTYRawPort/SetPTYLifecycleRawPort`、`control.SetWailsContext(ctx)`、`control.MarkReady()`；再挂 `Remote.SetControlLifecycleHook(...)`（fence-first：Stop/revoke/安全闩锁先冻结远程控制）。
+4. `a.Updater.CleanupOldBinary()`。
+5. **远程安全迁移 gate**（M1-B3c）：`runRemoteSecurityMigrationGate()` 在 `Settings.Load` 前对 raw bytes 完成 v0→v1 迁移；任何失败/ManualRepair/Future 路径记固定警告且不启动远程。
+6. 顺序加载持久化状态（任一失败仅告警，不阻断）：`Settings → Config → Secrets`。Settings 加载后同步远程 host/port、移动端 Web 根目录、GitHub Token 到 `Remote`/`Updater`；Config 加载后自动迁移 `MigrateProviderPresetsToTerminal`（旧 `provider.presets` → `terminal_presets`，幂等）。
+7. Secrets 就绪后 `a.initRemoteClientServices()` 补齐 RemoteClient 域（RC1-5）；Config+Secrets 均就绪后 `syncProvidersToHarnesses()` 把提供商配置同步到 OpenCode/Pi/OMP 的原生配置。
+8. `Paths.Load` → `EnvVars.Load`，随后置位 `persistentLoadState`（Shutdown 据此判断是否跳过保存以避免覆盖原文件）。
+9. **Usage**：`Usage.Load()` 加载 `usage.db`，注入应用级 ctx，异步首次 `SyncAll()` 并启动 5 分钟周期的后台同步。
+10. 异步 `EnvCheck.CheckAll()`，失败 issue 转 startup warning；异步 `restoreCodexGlobalHeadroomOnStartup()`（仅当上次退出前开启）。
+11. `applyRemoteGateResult(ctx, ...)`：远程 API 仅在用户显式启用且迁移 gate 放行时启动（默认 loopback 不监听）。
+12. 条件启动系统托盘：`capabilities.SystemTraySupported && len(trayIcon) > 0`。
 
-`Shutdown(ctx)` 按相反顺序释放：保存配置 → 停止托盘 → 停止远程服务器 → 停止 Headroom → `Launcher.StopAll()` → `Pty.CloseAll()` → 关闭日志。
+`Shutdown(ctx)` 反向释放：保存配置 → 停止托盘 → 停止远程服务器 → 停止 Headroom → `Launcher.StopAll()` → `Pty.CloseAll()` → 关闭日志。
 
-## 会话类型与 LaunchSession 生命周期
+## 会话类型与启动入口
 
 ### AppType
 
-`internal/session/types.go` 定义应用类型常量（五种可启动）：
+`internal/session/types.go` 定义五种应用类型（`amagicode` 已移除，commit `ef1f54e`）：
 
 ```go
 const (
-    AppTypeClaudeCode AppType = "claudecode" // Claude Code 应用
-    AppTypeOpenCode   AppType = "opencode"   // Open Code 应用
-    AppTypeCodex      AppType = "codex"      // Codex CLI 应用
-    AppTypePi         AppType = "pi"         // Pi coding agent 应用
-    AppTypeOhMyPi     AppType = "omp"        // Oh My Pi (omp) 应用
+    AppTypeClaudeCode AppType = "claudecode"
+    AppTypeOpenCode   AppType = "opencode"
+    AppTypeCodex      AppType = "codex"
+    AppTypePi         AppType = "pi"
+    AppTypeOhMyPi     AppType = "omp"
 )
 ```
 
-五种均可启动（Claude Code、OpenCode、Codex、Pi、Oh My Pi），与远程契约 `manifest.cliTypes` 一一对应（`claudecode` / `opencode` / `codex` / `pi` / `omp`），`HostSummary.cliAvailability` 须恰好为这五种。
+与远程 v1 契约 `KnownCLITypes`（`internal/remote/contract/scalars.go`）一一对应，`HostSummary.cliAvailability` 必须恰好覆盖这五种。
 
-`LaunchMode` 同文件定义：
+`LaunchMode`：`ModeTerminal = "terminal"`（独立终端窗口）/ `ModeEmbedded = "embedded"`（内嵌 ConPTY/PTY + xterm.js）。
 
-- `ModeTerminal = "terminal"`：独立终端窗口。
-- `ModeEmbedded = "embedded"`：内嵌终端（ConPTY + xterm.js）。
+### 五个启动入口（`app.go`）
 
-### LaunchSession 主入口
+| 方法 | 位置 | 目标 CLI | 说明 |
+|---|---|---|---|
+| `LaunchSession(providerName, presetName, mode, workDir, useHeadroom, shellPath)` | `app.go:1891` | Claude Code | 核心入口：解析 provider/preset、可选 Headroom 编排（`CLI → headroom(:8787) → 真实 API`）、注入 `--session-id <uuid>` 锁定 jsonl |
+| `LaunchCodexSession(modelName, providerID, mode, workDir, shellPath)` | `app.go:2600` | Codex | 可走 Codex 全局 headroom（8788，OpenAI 目标） |
+| `LaunchPiSession(modelName, providerID, mode, workDir, shellPath)` | `app.go:2969` | Pi | 由 launcher 把提供商配置写入 `~/.pi/agent` |
+| `LaunchOmpSession(modelName, providerID, mode, workDir, shellPath)` | `app.go:3238` | Oh My Pi | 同上，写入 `~/.omp/agent` |
+| `LaunchOpenCode(providerName, presetName, mode, workDir, shellPath)` | `app.go:4456` | OpenCode | 共享 Anthropic/OpenAI 格式预设桶 |
 
-`App.LaunchSession(providerName, presetName, mode, workDir, useHeadroom, shellPath string) (string, error)` 是 Claude Code 会话的核心入口。关键流程：
-
-1. **公共格式预设桥接**：先以 `presetName` 作为 stable key 查 Anthropic 格式预设。Claude Code 共享 Anthropic 桶，Codex / Pi / OMP 共享 OpenAI 桶；命中后用其 provider/model 覆盖参数。
-2. **提供商校验**：`provider.IsAnthropicCompatible()` 必须 true；OAuth 模式走白板启动（无 API key），否则从 Secrets 取 key。
-3. **Headroom 编排**：启用时走 `CLI → headroom(:8787) → 真实 API`，关闭时直接连接真实 API。
-4. **会话记录**：`Sessions.Create(...)` 返回 session ID。
-5. **embedded 启动**：
-   - `Launcher.BuildOverrides(...)` 构造环境变量覆盖（含 `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`）。
-   - `EnvVars.MergeWithSystem()` 合并自定义环境变量。
-   - 注入 `--session-id <uuid>`（方案 R），让 Claude Code 按指定 uuid 写 jsonl，tracker 锁定该文件消除同 workDir 串扰。
-   - `pty.StartResolved(sess.ID, spec)` 启动 PTY 进程，PID 写回 `Sessions.SetPID`。
+公共机制：embedded 模式下 `Launcher.BuildOverrides(...)` 构造环境变量覆盖，`EnvVars.MergeWithSystem()` 合并自定义环境变量，`pty.StartResolved(sess.ID, spec)` 拉起 PTY 进程并回写 PID。所有会话写副作用（输入、缩放、停止、删除）经 ControlGate 仲裁，远程 v1 与桌面操作共享同一仲裁（M-005）。
 
 ### 会话输出回流
 
-`internal/pty.Service` 同时支持两种输出通道：
+`internal/pty.Service` 的输出经 `RunEventProjector`（M3-A2 后不再直接 EventsEmit）分发到两类消费者：
 
-- **Wails 事件**：`EventsEmit("pty:data:<sessionID>", {s: emitSeq, d: base64Data})`，桌面前端订阅。
-- **注册回调**：`RegisterOutputCallback` / `RegisterExitCallback` / `RegisterResizeCallback`，供 `remote.Server` 的 WebSocket 转发到移动端。
+- **桌面 Wails 事件**：`pty:data:<sessionID>`，载荷 `{s: emitSeq, d: base64Data}`。
+- **远程 v1 因果流**：`/ws/v1` 是唯一远程输出消费者（`internal/remote/websocket.go` 头注）；legacy `/ws/terminal/{id}` 环回路径只保留输入分发。
 
-`PtySession` 内置 1MB 环形缓冲区（`maxOutputHistorySize`），后加入的 WebSocket 客户端可回放历史输出。前端→后端通过 `PtyWrite(sessionID, base64Data)` 写入。
+`PtySession` 内置 1MB 环形缓冲区（`maxOutputHistorySize`），后加入的客户端可回放历史输出。
 
-## 远程控制与移动端
+## 远程控制：legacy + v1 双栈
 
-`internal/remote/Server` 在启用时启动 HTTP + WebSocket（默认端口 8680，可由 Settings 持久化覆盖）。核心端点（核实自 `internal/remote/handlers.go`）：
+`internal/remote/Server` 在启用时启动 HTTP + WebSocket 服务器（默认端口 8680，Settings 可持久化覆盖）。当前是**双栈**架构（`server.go: buildHandler`）：
 
-- `GET /api/info` — 服务信息
-- `GET /api/sessions`、`POST /api/sessions/launch`（含 `launch-codex`、`launch-opencode`、`launch-pi`）、`DELETE /api/sessions/{id}` 等 — 会话管理
-- `GET|PUT /api/providers`、`GET|PUT /api/providers/{name}`、`GET /api/providers-by-type/{type}` — 提供商读写
-- `GET|PUT /api/settings`、`GET /api/logs`、`GET /api/paths`、`GET /api/secrets/diagnostics` — 设置与诊断
-- `POST /api/bootstrap/consume` — 移动端引导
-- `WebSocket /ws/terminal/{sessionID}` — 终端桥接
+### Legacy 栈（token 认证，仅 loopback）
 
-所有请求需携带 `Authorization` Token；Token 重新生成只能通过桌面端 `App.RegenerateRemoteToken`（无远程端点）。完整端点表见 [../user/remote-mobile.md](../user/remote-mobile.md)，权威来源为 `internal/remote/handlers.go`。
+`internal/remote/handlers.go` 注册的 `/api/...` 端点（`GET /api/info`、`GET|POST /api/sessions/...`（含 `launch-codex`/`launch-opencode`/`launch-pi`/`launch-omp`）、`GET|PUT /api/providers[...]`、`GET|PUT /api/settings`、`GET /api/logs|paths|secrets/diagnostics`、`POST /api/bootstrap/consume`、`/ws/terminal/{sessionID}` 等）。legacy 命名空间在 `buildHandler` 派发层面对非 loopback 请求一律 403（认证前，无 oracle），多数写操作 handler 另有 `requireLoopbackPeer` 内层守卫（纵深防御）。Token 重新生成只能走桌面端 `App.RegenerateRemoteToken`。
 
-Server 接收 `mobileAssets embed.FS`，对外提供 `mobile/dist` 作为移动端 Web UI（`MobileWebRoot` 也可由 Settings 配置为外部目录）。`RemoteWebUIStatusResult` 描述当前是否可打开、运行状态、嵌入可用性等。
+### v1 栈（设备配对 + Cookie 认证）
 
-`App` 通过实现 `remote.AppInterface` 让 Server 反向访问配置层；启动会话等动作由 Server 委托回 `App`（如启动请求最终走到 `LaunchSession` 等方法）。
+`/api/remote/v1` 下的 10 个 REST 端点与 `/ws/v1` WebSocket 在 legacy 认证**之前**分流（`buildHandler`），由独立的 `buildV1Handler` 中央派发器统一执行 Host 校验、Origin 策略、设备 Cookie 认证与控制授权（`internal/remote/routes_v1.go`、`session_routes_v1.go`、`ws_v1_session.go`）。会话路由（端点 2–9）仅在 `sessionAdapter` 接线后激活，否则保持 404（设计 §4A 硬化门）。线协议规范见 [./remote-api-v1-contract.md](./remote-api-v1-contract.md)。
+
+### RemoteClient（桌面端互联）
+
+`internal/remoteclient/` 实现 v1 契约的**客户端**侧：配对（`pairing.go`）、宿主登记簿（`hosts.go`）、会话/控制/回填/出站队列（`sessions.go`/`control.go`/`backfill.go`/`outbox.go`）、`/ws/v1` 客户端（`ws.go`）。前端 `RemoteSessionsView.vue` + `api/remoteClient.ts` + `stores/remoteClient.ts` 消费；绑定方法集中在 `app_remoteclient.go`。当前至多一条已连接宿主。
+
+### 移动端 Web 资源优先级
+
+`buildHandler` 对非 API 路径按优先级服务移动端 Web UI：① Settings 配置的 `MobileWebRoot` 外部目录 → ② 内嵌 `mobile/dist` → ③ 回退 API handler（需认证）。
 
 ## 跨平台机制（简述）
 
-平台差异通过 Go `//go:build` 约束在编译期分流，**不使用 `runtime.GOOS` 在业务路径里分支**。能力集合在启动时由 `platform.CurrentCapabilities()` 一次性解析，运行期只读。详细文件清单与各平台实现差异见 [./platform-build-tags.md](./platform-build-tags.md)。
+平台差异通过 Go `//go:build` 约束在编译期分流，**不在业务路径用 `runtime.GOOS` 分支**。能力集合在启动时由 `platform.CurrentCapabilities()` 一次性解析，运行期只读。详细文件清单见 [./platform-build-tags.md](./platform-build-tags.md)。
 
 ## 配置文件
 
 均位于 `~/.amagi-codebox/`：
 
-| 文件 | 用途 |
-|---|---|
-| `config.json` | 提供商/预设（含 `terminal_presets`） |
-| `secrets.json` | 加密 API 密钥 |
-| `settings.json` | 应用设置（远程端口、移动端 Web 根、GitHub Token 等） |
-| `envvars.json` | 自定义环境变量 |
-| `settings_amagi.json` | Amagi 模型配置 |
+| 文件 | 用途 | 负责服务 |
+|---|---|---|
+| `models.json` | 提供商/预设/terminal_presets | `internal/config` |
+| `secrets.enc` | 平台保护的 API 密钥 | `internal/secrets` |
+| `settings.json` | 应用设置（远程端口、Web 根、GitHub Token 等） | `internal/settings` |
+| `paths.json` | 路径管理 | `internal/paths` |
+| `envvars.json` | 自定义环境变量 | `internal/envvars` |
+| `agent-profiles.json` | Agent 档案 | `internal/agentprofile` |
+| `devices.json` | v1 配对设备登记 | `internal/remote` |
+| `remote-hosts.json` | RemoteClient 宿主登记簿 | `internal/remoteclient` |
+| `usage.db` | 用量统计（SQLite） | `internal/usage` |
+| `usage-pricing.json` | 用量计价 | `internal/usage` |
+| `workspaces.json` | 工作区 | — |
+| `injection-rules.json` | 注入规则 | — |
+| `skins/`、`logs/` | 皮肤图片库、日志目录 | `internal/skins` / `internal/logging` |
 
-仓库惯例：JSON 的局部编辑使用 `tidwall/gjson` + `tidwall/sjson`，避免 unmarshal-mutate-marshal。修改配置时遵循服务层 API，不要直接解析文件。
+> 注：旧文档中「`config.json` + `secrets.json`」的说法已过时——当前文件名是 `models.json` 与 `secrets.enc`（核实自 `internal/config/service.go:73`、`internal/secrets/service.go:30`）。
+
+仓库惯例：JSON 局部编辑使用 `tidwall/gjson` + `tidwall/sjson`，避免 unmarshal-mutate-marshal。修改配置一律走服务层 API，不要直接解析文件。
 
 ## 相关文档
 
-- [./frontend-backend.md](./frontend-backend.md)：Wails 自动生成绑定、`frontend/src/api/*` 包装层、Pinia store 与完整调用链。
+- [./frontend-backend.md](./frontend-backend.md)：Wails 绑定生成、`frontend/src/api/*` 包装层、Pinia store 与调用链。
 - [./platform-build-tags.md](./platform-build-tags.md)：`//go:build` 文件分流约定与各平台实现清单。
-- [../api.md](../api.md)：后端绑定方法索引。
+- [./api-reference.md](./api-reference.md)：新增绑定方法的开发流程与冻结边界。
+- [./remote-api-v1-contract.md](./remote-api-v1-contract.md)：远程 v1 线协议规范。
+- [../api.md](../api.md)：绑定方法全量清单。
 - [../security.md](../security.md)：密钥加密与传输安全。
 
 ## 待核实项
 
-- `internal/` 下服务包总数经核实为 22 个（`ls internal/`）。本表列出其中 20 个；未列入的辅助包为 `internal/appmeta`、`internal/structured`。如需机器可读清单，运行 `go list ./internal/...`。
-- `remote.Server` 的端点完整集合与鉴权细节：以 `../api.md` 和 `internal/remote/server.go` 为权威来源，本篇仅摘要。
+- `workspaces.json` 与 `injection-rules.json` 的负责服务未在本次重写中逐一核实到具体包，按共享上下文登记；需要精确归属时以 `grep -rn "workspaces.json\|injection-rules.json" internal/` 为准。
+- `Shutdown` 的逐行顺序未逐行重读（概要来自既有文档与代码抽查）；修改关机路径前请以 `app.go` 当前实现为准。

@@ -1,6 +1,6 @@
 # 内嵌终端
 
-面向 Amagi CodeBox 的终端用户。本篇说明应用内嵌终端（`/terminal` 页）的工作原理、平台差异、可配置项，以及终端会话从启动到退出的行为。终端是 Claude Code / OpenCode / Codex 三种引擎在 `embedded` 启动模式下的承载界面，理解其机制有助于解释视觉抖动、历史回放、跨平台字体渲染等常见现象。
+面向 Amagi CodeBox 的终端用户。本篇说明应用内嵌终端（`/terminal` 页）的工作原理、平台差异、可配置项，以及终端会话从启动到退出的行为。终端是 Claude Code / Pi / OpenCode / Oh My Pi / Codex 五种引擎在 `embedded` 启动模式下的承载界面，理解其机制有助于解释视觉抖动、历史回放、跨平台字体渲染等常见现象。
 
 相关参考：
 
@@ -18,18 +18,20 @@
 | 层 | 实现 | 关键源码 |
 |----|------|----------|
 | 前端渲染 | xterm.js 6 + Fit / WebGL / Web Links addon | `frontend/src/composables/useTerminalEngine.ts` |
-| 伪终端宿主 | Windows ConPTY；macOS creack/pty；其他平台为 stub | `internal/pty/service.go`、`internal/pty/service_darwin.go`、`internal/pty/service_other_stub.go` |
-| 数据通道 | Wails 事件 + base64 编码的双向流 | 后端 `EventsEmit` / 前端 `EventsOn`，前端→后端走 `PtyWrite` / `PtyWriteLarge` |
+| 伪终端宿主 | Windows ConPTY；macOS creack/pty；其他平台为 stub | `internal/pty/service.go`（windows 构建标签）、`internal/pty/service_darwin.go`、`internal/pty/service_other_stub.go` |
+| 数据通道 | Wails 事件 + base64 编码的双向流 | 后端 `EventsEmit` / 前端 `EventsOn`，前端→后端走 `App.PtyWrite` / `App.PtyResize` |
 
 工作流（简化）：
 
 1. 用户在 `/`（会话设置）页选定引擎、提供商、预设、工作目录与 shell，点击启动。
-2. 后端 `LaunchSession` 解析 provider/preset，按启动模式（`embedded`）在 PTY 服务中创建会话，返回 session ID。
+2. 后端对应的 `Launch*` 入口解析 provider/preset，按启动模式（`embedded`）在 PTY 服务中创建会话，返回 session ID。
 3. 前端在 `/terminal` 页用 session ID 挂载 xterm 实例，订阅 `pty:data:<id>` / `pty:exit:<id>` 事件。
 4. 用户键盘输入经 `PtyWrite` 写回 PTY；进程输出经事件推送到前端，渲染到 xterm。
 5. 进程退出时触发 `pty:exit:<id>`，前端写入"进程已退出"提示并通知视图层。
 
-> 平台备注：Linux/其他非 Windows、非 macOS 平台的 PTY 后端是占位 stub（`service_other_stub.go`），所有 PTY 操作都会返回 `pty backend is not implemented on this platform yet`。Amagi CodeBox 当前官方支持平台为 Windows 10 1903+ 与 macOS 10.15+。
+> **绑定门控**：原始 `pty.Service` 不直接出现在 Wails 绑定列表中（`bind_list.go` 明确将其排除）。前端能调用的只有 `App` 上的门面方法（`PtyWrite` / `PtyResize` / 回调注册转发等），由 App 层统一鉴权与门控。
+
+> 平台备注：Linux/其他非 Windows、非 macOS 平台的 PTY 后端是占位 stub（`service_other_stub.go`），所有 PTY 操作都会返回 `pty backend is not implemented on this platform yet`。Amagi CodeBox 当前官方支持平台为 Windows 10 1903+ 与 macOS（arm64）。
 
 ---
 
@@ -39,24 +41,25 @@
 
 - 依赖：`github.com/UserExistsError/conpty`（见 `internal/pty/service.go`）。
 - 会话创建：`Service.StartResolved` 调用 `conpty.Start(commandLine, opts...)`，通过 `ConPtyDimensions` / `ConPtyWorkDir` / `ConPtyEnv` 传入初始尺寸、工作目录与环境。
-- 默认尺寸：未指定时为 120 列 × 40 行（`internal/pty/service.go`）。
-- Shell 包装：
-    - PowerShell / pwsh：以 `-NoProfile -NoLogo -NoExit -ExecutionPolicy Bypass -Command "..."` 形式启动。`-ExecutionPolicy Bypass` 是进程级参数，仅对当前会话生效，不改变系统执行策略，目的是让 npm 全局安装的 `.ps1` shim（如 `opencode.ps1`）在系统策略为 `Restricted` 的机器上也能运行。
+- 默认尺寸：未指定时为 120 列 × 40 行。
+- **默认 Shell 为 WSL**：Windows 平台能力 `DefaultShellKey = "wsl"`（`internal/platform/capabilities_runtime.go`）。WSL 会话以 `wsl.exe -d <distro> --cd "<winWorkDir>" -- bash -lic '<payload>'` 形式启动，整个 payload 作为单一 argv 传给 wsl.exe；无可用发行版时回退 pwsh/powershell/cmd（详见 `internal/pty/service.go` 的 WSL 包装注释）。
+- Shell 包装（非 WSL 时）：
+    - PowerShell / pwsh：以 `-NoProfile -NoLogo -NoExit -ExecutionPolicy Bypass -Command "..."` 形式启动。`-ExecutionPolicy Bypass` 是进程级参数，仅对当前会话生效，不改变系统执行策略，目的是让 npm 全局安装的 `.ps1` shim 在系统策略为 `Restricted` 的机器上也能运行。
     - cmd：以 `/K "chcp 65001 >nul && <命令>"` 形式启动，显式切到 UTF-8 代码页。
-    - 直接命令（如 `claude`、`opencode`）：不经过 shell 包装。
-- 路径回退：若配置的 PowerShell 7 路径不存在，会按 `C:\Program Files\PowerShell\7\pwsh.exe` → `%ProgramFiles%\PowerShell\7\pwsh.exe` 顺序查找；仍未找到则回退到 `powershell.exe`（Windows PowerShell）。
+    - 直接命令（如 `claude`、`pi`）：不经过 shell 包装。
+- 路径回退：若配置的 PowerShell 7 路径不存在，按 `C:\Program Files\PowerShell\7\pwsh.exe` → `%ProgramFiles%\PowerShell\7\pwsh.exe` 顺序查找；仍未找到则回退到 `powershell.exe`。
 
 ### macOS：creack/pty
 
 - 依赖：`github.com/creack/pty`（见 `internal/pty/service_darwin.go`）。
 - 会话创建：`exec.Command` 构造子进程，`creackpty.StartWithAttrs` 启动并附加 PTY；通过 `syscall.SysProcAttr{Setsid: true, Setctty: true}` 建立新的会话与控制终端。
-- 默认尺寸：未指定时同样为 120 × 40。
+- 默认尺寸：未指定时同样为 120 × 40。默认 Shell 为 `zsh`（`DefaultShellKey`）。
 - Shell 包装：bash/zsh 使用 `-ilc`（交互式登录 shell），其他 shell（fish/sh 等）使用 `-lc`；启动命令作为参数内联传入。
-- 环境补全：若环境变量中未设置，自动补入 `TERM=xterm-256color`、`COLORTERM=truecolor`、`LANG=en_US.UTF-8`。LANG 补入是为了避免从 Finder 等启动时 LANG 未设置导致 CLI 工具（含 OpenCode）输出乱码。
+- 环境补全：若环境变量中未设置，自动补入 `TERM=xterm-256color`、`COLORTERM=truecolor`、`LANG=en_US.UTF-8`。LANG 补入是为了避免从 Finder 等启动时 LANG 未设置导致 CLI 工具输出乱码。
 
 ### 其他平台：未实现
 
-`service_other_stub.go` 在 `!windows && !darwin` 构建标签下编译，所有方法返回错误。Amagi CodeBox 不官方支持这些平台；如需了解原因或进展，可参考仓库 issue。
+`service_other_stub.go` 在 `!windows && !darwin` 构建标签下编译，所有方法返回错误。Amagi CodeBox 不官方支持这些平台。
 
 ---
 
@@ -80,14 +83,11 @@ new Terminal({
 })
 ```
 
-> 字体目前在前端硬编码，没有暴露到设置页或 `settings.json`。修改字体需要自行构建（详见 [../developer/build-dev.md](../developer/build-dev.md)）。
+> 字体目前在前端硬编码，没有暴露到设置页或 `settings.json`。修改字体需要自行构建。
 
 ### 主题
 
-`buildXtermTheme()` 返回固定的暗色主题，颜色取自应用设计 token，不是 xterm 默认配色：
-
-- 背景 `#1B1B1F`，前景 `#E6E6E6`，光标 `#5EA6FF`
-- 16 色 ANSI 调色板（黑红绿黄蓝品青白 + 亮色），完整定义见 `useTerminalEngine.ts` 的 `buildXtermTheme` 函数
+`buildXtermTheme()` 返回固定的暗色主题，颜色取自应用设计 token：背景 `#1B1B1F`，前景 `#E6E6E6`，光标 `#5EA6FF`，外加 16 色 ANSI 调色板（完整定义见 `useTerminalEngine.ts` 的 `buildXtermTheme` 函数）。
 
 ### 渲染器选择策略
 
@@ -95,7 +95,7 @@ xterm.js 默认使用 DOM 渲染。Amagi CodeBox 按平台选择经过兼容性�
 
 | 平台 | 加载的 addon | 原因 |
 |------|--------------|------|
-| macOS（WKWebView） | xterm 6 内置 DOM 渲染器 | WebGL 在 WKWebView 中会损坏 scrollback 纹理图集；已发布的 CanvasAddon 仅声明兼容 xterm 5，不能加载到本项目的 xterm 6 |
+| macOS（WKWebView） | xterm 6 内置 DOM 渲染器 | WebGL 在 WKWebView 中会损坏 scrollback 纹理图集；已发布的 CanvasAddon 仅声明兼容 xterm 5（beta peer range），不能加载到本项目的 xterm 6 |
 | Windows / Linux | `@xterm/addon-webgl`（WebglAddon，需通过 WebGL 探测） | WebGL 是这些平台上最快的渲染器 |
 | 任意加载失败 | xterm 内置 DOM 渲染器 | 失败时 fail-open，保证终端可用 |
 
@@ -114,8 +114,8 @@ xterm 加载两类链接 provider：
 
 - **作用**：移动端或桌面端后加入的观察者连接到运行中的会话时，可重放最近输出，避免"只看到会话尾部"。
 - **trim 算法**：`trimHistoryToFrontier` 在截断时避免从多字节 UTF-8 字符中间或 ANSI 转义序列中间开始，防止回放乱码。
-- **run + seq 去重**：每段输出都附带运行身份 `runToken/runVersion` 和本轮单调递增的 `emitSeq`。前端只在同一轮运行内用 seq 水位线去重；同一会话重启后会接受新运行从 1 开始的 seq，并丢弃迟到的旧运行事件。
-- **分块写入**：1 MB 历史按 64 KB 分块。下一块只会在上一块 `term.write(..., callback)` 的 callback（代表解析完成）后入队，并通过 `setTimeout(0)` 让出主线程；不会把“入队返回”误当成“解析完成”。
+- **run + seq 去重**：每段输出都附带运行身份 `runToken/runVersion` 和本轮单调递增的 `emitSeq`。前端只在同一轮运行内用 seq 水位线去重；同一会话重启后接受新运行从 1 开始的 seq，并丢弃迟到的旧运行事件。
+- **分块写入**：1 MB 历史按 64 KB 分块。下一块只会在上一块 `term.write(..., callback)` 的 callback（代表解析完成）后入队，并通过 `setTimeout(0)` 让出主线程。
 - **回放屏障**：快照请求期间收到的实时输出和退出提示先缓存，历史解析完成后再按顺序写入；回放过程中不销毁或替换 renderer。
 
 ---
@@ -167,42 +167,24 @@ OpenCode 等 TUI 启用 SGR/1006 鼠标报告后，xterm 会把鼠标事件转�
 
 ### 终端预设（TerminalPreset）
 
-`TerminalPreset`（`internal/config/types.go`）是按 API 协议格式组织的公共预设，独立于 Provider。它只承载模型与参数，不含 shell 或字体。
-
-字段：
-
-| 字段 | JSON key | 用途 |
-|------|----------|------|
-| 名称 | `name` | 预设显示名称 |
-| 关联提供商 | `provider` | 如 `anthropic`、`openai` |
-| 模型 | `model` | 可覆盖 provider 默认值 |
-| Haiku 档位模型 | `model_haiku` | Claude Code 专用 |
-| Sonnet 档位模型 | `model_sonnet` | Claude Code 专用 |
-| Opus 档位模型 | `model_opus` | Claude Code 专用 |
-| 模型参数 | `parameters` | 透传给 CLI |
-当前分组（`TerminalPresetsConfig`）：
-
-- `anthropic`：Claude Code 使用的公共预设
-- `openai`：Codex、Pi、OMP 共享的公共预设
-
-OpenCode 不属于这两类，使用独立的 `opencode_presets` 完整配置。历史 `opencode_cfg` 字段只保留给旧数据迁移。
-
-> 任务规格曾提到"TerminalPreset（shell/字体等）"。实际代码中，shell 不在 TerminalPreset 内，字体在 `useTerminalEngine.ts` 硬编码——见下一节。
+`TerminalPreset`（`internal/config/types.go`）是按 API 协议格式组织的公共预设，独立于 Provider。它只承载模型与参数（以及视觉能力标记），不含 shell 或字体。字段详见 [./providers.md](./providers.md#terminalpreset可复用的格式预设含视觉能力标记)。
 
 ### Shell 选择
 
-Shell 在会话设置页 `/`（`SessionSettingsView`）选定，存储于 `settings.json` 的 `dashboard` 对象：
+Shell 在会话设置页 `/`（`SessionSettingsView`）选定，存储于 `settings.json` 的 `dashboard` 对象（`internal/settings/service.go`）：
 
 | 引擎 | settings.json 字段 |
 |------|---------------------|
 | Claude Code | `dashboard.claudeShell` |
 | OpenCode | `dashboard.openCodeShell` |
 | Codex | `dashboard.codexShell` |
+| Pi | `dashboard.piShell` |
+| Oh My Pi | `dashboard.ompShell` |
 | 通用（legacy） | `dashboard.shell` |
 
-默认值均为 `pwsh`（Windows 默认 shell）。macOS 默认 shell 通过 `platform.CurrentCapabilities().DefaultShellKey` 解析，通常为 `zsh`。
+默认值由平台能力 `DefaultShellKey` 决定：Windows 为 `wsl`（无可用 WSL 发行版时回退 pwsh/powershell/cmd），macOS 为 `zsh`。
 
-可选 shell 由 `internal/platform` 的 shell catalog 枚举，并合并用户自定义的 `settings.json` 中 `shellPaths` 条目（每项含 `path` 与 `label`）。新增 / 删除自定义 shell 通过应用内设置页完成，不直接编辑文件。
+可选 shell 由 `internal/platform` 的 shell catalog 枚举，并合并用户自定义的 `settings.json` 中 `shellPaths` 条目（每项含 `path` 与 `label`）。新增 / 删除自定义 shell 通过"设置 → Shell"页完成，不直接编辑文件。
 
 ### 终端设置
 
@@ -212,7 +194,7 @@ Shell 在会话设置页 `/`（`SessionSettingsView`）选定，存储于 `setti
 |------|----------|--------|
 | `scrollback` | 1000 ~ 10 000 000 | 100000 |
 
-修改路径：`/terminal` 页关联的终端设置入口（`frontend/src/views/settings/TerminalSettings.vue`）。保存后需重新打开终端窗口才生效（已挂载的 xterm 实例不会动态调整 scrollback）。
+修改路径："设置 → 终端设置"（`frontend/src/views/settings/TerminalSettings.vue`）。保存后需重新打开终端窗口才生效（已挂载的 xterm 实例不会动态调整 scrollback）。
 
 ---
 
@@ -226,7 +208,7 @@ Shell 在会话设置页 `/`（`SessionSettingsView`）选定，存储于 `setti
 | `RegisterExitCallback(sessionID, id, cb)` | 进程退出 | `func(exitCode uint32)` |
 | `RegisterResizeCallback(sessionID, id, cb)` | 尺寸变化 | `func(cols, rows int)` |
 
-配套的注销方法：`UnregisterOutputCallback` / `UnregisterExitCallback` / `UnregisterResizeCallback`，参数为 `(sessionID, id)`。`App` 在 `app.go` 中以同名方法把这些接口转发给 `Pty` 服务（如 `App.RegisterOutputCallback`）。
+配套的注销方法：`UnregisterOutputCallback` / `UnregisterExitCallback` / `UnregisterResizeCallback`。`App` 在 `app.go` 中以同名方法把这些接口转发给 `Pty` 服务。
 
 原子附加辅助方法：
 
@@ -262,7 +244,7 @@ func (s *Service) DetachSessionObserver(sessionID, id string)
 | `PtyWriteLarge(sessionID, base64)` | 同上 | 长文本粘贴（> 1 KB 自动走此路径） |
 | `PtyResize(sessionID, cols, rows)` | session ID + 列/行 | 通知后端调整 PTY 尺寸 |
 
-Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前端 `src/api/` 层进一步封装。`frontend/wailsjs/` 为自动生成内容，**不要手工编辑**。
+这三个是 `App` 门面上的方法（原始 `pty.Service` 不直接绑定前端）。Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前端 `src/api/` 层进一步封装。`frontend/wailsjs/` 为自动生成内容，**不要手工编辑**。
 
 ---
 
@@ -274,7 +256,7 @@ Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前
 
 - `fitTerminal(sessionId, force)` 是统一入口。
 - 维度未变时跳过 `fit()`，避免触发不必要的屏幕缓冲区重绘。
-- `fit()` 前记录 xterm 逻辑缓冲区的 `viewportY/baseY`；用户上翻时恢复原逻辑行，原本位于底部时重新 `scrollToBottom()`，不依赖 xterm 6 已停用的 `.xterm-viewport.scrollTop`。
+- `fit()` 前记录 xterm 逻辑缓冲区的 `viewportY/baseY`；用户上翻时恢复原逻辑行，原本位于底部时重新 `scrollToBottom()`。
 
 ### Resize
 
@@ -287,7 +269,7 @@ Wails 自动生成 `frontend/wailsjs/go/main/App.ts` 中的类型化包装；前
 Amagi CodeBox 支持同时运行多个会话（多 Tab）。每个会话在后端独立持有 `PtySession`，前端以 session ID 为 key 维护独立的 `TerminalInstance`（xterm 实例 + addon + 监听器 + 状态）。切换 Tab 时：
 
 - 已访问的会话保持 xterm 与事件监听器挂载，只隐藏非当前终端；隐藏期间仍持续解析实时输出。
-- `/terminal` 路由由 Vue `KeepAlive` 缓存。切到 Provider Center 等页面再回来时不会销毁 buffer，也不会再次回放可能已经截断的 ANSI 历史，只做 fit + 完整重绘；刷新前后通过 xterm 逻辑缓冲区的 `viewportY/baseY` 恢复阅读位置，原本跟随最新输出时继续保持在底部。
+- `/terminal` 路由由 Vue `KeepAlive` 缓存。切到 Provider Center 等页面再回来时不会销毁 buffer，也不会再次回放可能已经截断的 ANSI 历史，只做 fit + 完整重绘；通过 xterm 逻辑缓冲区的 `viewportY/baseY` 恢复阅读位置，原本跟随最新输出时继续保持在底部。
 - 历史快照只用于某个会话在当前前端生命周期内的首次挂载。
 - 进程退出会触发 `pty:exit`，但 xterm 实例继续保留退出提示，用户仍可查看末尾输出。
 

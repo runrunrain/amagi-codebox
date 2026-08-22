@@ -1,6 +1,6 @@
 # 提供商与预设配置
 
-面向 Amagi CodeBox 的终端用户与高级配置者。本篇解释 Provider、Preset、模型参数（含思考模式与上下文窗口）等核心概念，说明支持的提供商类型与三种应用引擎（AppType），并给出 `config.json` 的结构示例。
+面向 Amagi CodeBox 的终端用户与高级配置者。本篇解释 Provider、Preset、模型参数（含思考模式与上下文窗口）等核心概念，说明五种应用引擎（AppType）各自的配置写入位置，并给出 `models.json` 的结构示例。
 
 API 密钥的加密存储、传输安全等安全相关内容不在本篇范围，请参考 [../security.md](../security.md)。
 
@@ -16,19 +16,21 @@ API 密钥的加密存储、传输安全等安全相关内容不在本篇范围�
 
 | 概念 | 类型（Go 包路径） | 含义 |
 |------|-------------------|------|
-| Provider | `config.Provider` (`internal/config/types.go`) | 一个服务提供商，如 Anthropic、OpenAI、GLM。包含认证格式、BaseURL、默认模型与一组 Preset |
-| Preset | `config.Preset` | 归属于某个 Provider 的预设：模型名 + 模型参数。一个 Provider 可有多个 Preset |
+| Provider | `config.Provider`（`internal/config/types.go`） | 一个服务提供商，如 Anthropic、OpenAI、GLM。包含认证格式、BaseURL、默认模型 |
+| Preset | `config.Preset` | 归属于某个 Provider 的预设：模型名 + 模型参数（旧结构，启动时自动迁移到公共预设） |
 | Parameters | `config.Parameters` | 模型运行参数：温度、top_p、max_tokens、思考模式、流式、上下文窗口等 |
 | ThinkingConfig | `config.ThinkingConfig` | 思考模式开关（`enabled` / `disabled`）与可选预算 token |
 | ContextWindowConfig | `config.ContextWindowConfig` | Codex CLI 风格的上下文窗口配置：窗口大小 + 自动压缩阈值 |
-| TerminalPreset | `config.TerminalPreset` | 终端维度的独立预设，按引擎分组（`claude_code` / `opencode` / `codex`） |
+| TerminalPreset | `config.TerminalPreset` | 按 API 协议格式组织的公共预设（`anthropic` / `openai` 两组），可携带视觉能力标记 |
 | OpenCodePreset | `config.OpenCodePreset` | OpenCode 专用预设：一份完整的 `opencode.json` 配置 + provider 绑定 |
 
 Provider 与 Preset 是"底层资源 → 启动配置"的两层模型。Provider 描述"如何连接到服务商"，Preset 描述"用什么模型 + 什么参数启动"。
 
+**核心配置文件为 `~/.amagi-codebox/models.json`**（由 `internal/config/service.go` 管理）。旧文档中的 `config.json` 说法已过时。
+
 ---
 
-## AppType：三种应用引擎
+## AppType：五种应用引擎
 
 `internal/session/types.go` 定义：
 
@@ -44,12 +46,17 @@ const (
 )
 ```
 
-每种引擎对 Provider 的格式要求不同：
+> 历史类型 `amagicode` 已移除。
 
-- **ClaudeCode (`claudecode`)**：要求 Provider 兼容 Anthropic 格式（`Provider.IsAnthropicCompatible()` 为 `true`）。启动入口 `App.LaunchSession`。
-- **Codex (`codex`)**：启动入口 `App.LaunchCodexSession`，按"模型 + provider"组合启动。
-- **OpenCode (`opencode`)**：启动入口 `App.LaunchOpenCode`，双轨兼容：优先查 `opencode_presets`（新模型），回退到 `terminal_presets.opencode`（旧模型）。
-- **Pi (`pi`)**：启动入口 `App.LaunchPiSession`，按「模型 + provider」组合启动，由 `terminal_preset`（`type="pi"`）驱动（对标 Codex）。
+每种引擎的启动入口与配置落地方式不同：
+
+| 引擎 | 启动入口（`app.go`） | 配置落地 |
+|------|---------------------|----------|
+| ClaudeCode | `LaunchSession` | CodeBox `models.json` 为唯一来源；启动时通过环境变量注入（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` / 模型变量，见 `internal/launcher/service.go`），不改写 `~/.claude` 配置；开启 Headroom 时 BaseURL 指向本地代理 |
+| Codex | `LaunchCodexSession` | 启动时把模型与 provider BaseURL 同步进 `~/.codex/config.toml`（`syncCodexCustomProviderConfigFile`，`app.go`），密钥经环境/登录态处理 |
+| OpenCode | `LaunchOpenCode` | 使用 `opencode_presets`（完整 `opencode.json`）；provider 以 `amagi-*` 命名空间同步进 `~/.config/opencode/opencode.json` |
+| Pi | `LaunchPiSession` | provider 以 `amagi-*` 命名空间合并写入 `~/.pi/agent/models.json`（0600 权限，`internal/launcher/pi_config.go`） |
+| Oh My Pi | `LaunchOmpSession` | provider 以 `amagi-*` 命名空间合并写入 `~/.omp/agent/models.yml`（与 Pi 同构的 YAML，`internal/launcher/omp_config.go`） |
 
 ---
 
@@ -77,16 +84,12 @@ type Provider struct {
 
 - **双格式字段**：`Anthropic` 与 `OpenAI` 描述该 Provider 同时支持的连接格式，每种格式各自带 `enabled`、`base_url`、`auth_key` 等字段。运行时优先读取新字段，旧字段（`Type` / `BaseURL` / `AuthKey`）保留是为了向后兼容。
 - **首选格式**：`Provider.PreferredFormat()` 返回 `"openai"` 或 `"anthropic"`。若两种格式都启用，默认 OpenAI 优先。
-- **认证类型常量**（`auth_key`）：
-    - `ANTHROPIC_API_KEY`
-    - `ANTHROPIC_AUTH_TOKEN`
-    - `OAUTH`（Anthropic 官方 OAuth）
-    - `OPENAI_API_KEY`（OpenAI 格式标识）
-- **API 密钥不存储在 Provider 里**。`AnthropicFormat.APIKey` 与 `OpenAIFormat.APIKey` 仅用于导入旧 JSON / 兼容历史导出结构；运行时正式密钥来源始终是 provider 级 secrets（key = providerName）。密钥加密细节见 [../security.md](../security.md)。
+- **认证类型常量**（`auth_key`）：`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`OAUTH`（Anthropic 官方 OAuth）、`OPENAI_API_KEY`（OpenAI 格式标识）。
+- **API 密钥不存储在 Provider 里**。`AnthropicFormat.APIKey` 与 `OpenAIFormat.APIKey` 仅用于导入旧 JSON / 兼容历史导出结构；运行时正式密钥来源始终是 provider 级 secrets（key = providerName），经平台机制保护后写入 `~/.amagi-codebox/secrets.enc`。密钥加密细节见 [../security.md](../security.md)。
 
 ## 统一同步到 OpenCode、Pi 与 Oh My Pi
 
-Provider Center 是以下三套 harness provider 配置的统一来源：
+Provider Center 是以下三套 harness provider 配置的统一来源（同步逻辑见 `internal/launcher/provider_sync.go`）：
 
 | Harness | 同步目标 | CodeBox 所有权范围 |
 |---|---|---|
@@ -94,9 +97,9 @@ Provider Center 是以下三套 harness provider 配置的统一来源：
 | Pi | `~/.pi/agent/models.json` 的 `providers` | `amagi-*` provider |
 | Oh My Pi | `~/.omp/agent/models.yml` 的 `providers` | `amagi-*` provider |
 
-新增、编辑、改名、删除或导入 Provider 后，CodeBox 会重新对账这三处的 `amagi-*` 条目。默认模型和关联的公共预设模型会一起登记；改名或删除后，失效的旧托管条目也会被清除。启动应用和执行“保存全部配置”时会再次对账，从而修复外部删除造成的不一致。
+新增、编辑、改名、删除或导入 Provider 后，CodeBox 会重新对账这三处的 `amagi-*` 条目。默认模型和关联的公共预设模型会一起登记；改名或删除后，失效的旧托管条目也会被清除。启动应用和执行"保存全部配置"时会再次对账，从而修复外部删除造成的不一致。
 
-同步只接管 `amagi-` 保留命名空间：其他 provider 和其他顶层配置保持不变。OpenCode 的 `~/.local/share/opencode/auth.json`、Pi 的 `~/.pi/agent/auth.json`、Oh My Pi 的 `agent.db` 等 OAuth/登录认证数据不会被读取或修改。已有配置文件无法解析时，同步会报错并保留原文件，不会以空配置覆盖。
+同步只接管 `amagi-` 保留命名空间（`ManagedProviderPrefix`）：其他 provider 和其他顶层配置保持不变。OpenCode 的 `~/.local/share/opencode/auth.json`、Pi 的 `~/.pi/agent/auth.json`、Oh My Pi 的 `agent.db` 等 OAuth/登录认证数据不会被读取或修改。已有配置文件无法解析时，同步会报错并保留原文件，不会以空配置覆盖。
 
 为了让三个 harness 脱离 CodeBox 也能直接使用自定义 provider，CodeBox secrets 中的 API Key 会写入各 harness 支持的 provider 字段；相关配置文件会收紧为 `0600` 权限。没有 Base URL 或没有模型的 Provider 仍保留在 CodeBox 中，但不会发布为无效的 harness 自定义 provider。
 
@@ -104,22 +107,20 @@ Provider Center 是以下三套 harness provider 配置的统一来源：
 
 ## Preset 与 Parameters
 
-### Preset
+### Preset（旧结构，自动迁移）
 
 ```go
 type Preset struct {
     Name           string           `json:"name"`
     Model          string           `json:"model"`
-    ModelHaiku     string           `json:"model_haiku,omitempty"`     // Haiku 档位（Claude Code 专用）
-    ModelSonnet    string           `json:"model_sonnet,omitempty"`    // Sonnet 档位（Claude Code 专用）
-    ModelOpus      string           `json:"model_opus,omitempty"`      // Opus 档位（Claude Code 专用）
+    ModelHaiku     string           `json:"model_haiku,omitempty"`
+    ModelSonnet    string           `json:"model_sonnet,omitempty"`
+    ModelOpus      string           `json:"model_opus,omitempty"`
     Parameters     Parameters       `json:"parameters"`
     Target         PresetTargetType `json:"target,omitempty"`          // codex（默认）| opencode
-    OpenCodeConfig json.RawMessage  `json:"opencode_config,omitempty"` // OpenCode 原始配置片段
+    OpenCodeConfig json.RawMessage  `json:"opencode_config,omitempty"`
 }
 ```
-
-`Target` 表示该 Preset 服务的 CLI 类型（`codex` 或 `opencode`），缺省按 `codex` 处理。
 
 ### Parameters
 
@@ -148,78 +149,43 @@ type ThinkingConfig struct {
 }
 ```
 
-兼容 `models.json` 的 `thinking.type` / `thinking.budgetTokens` 字段。
-
 ### ContextWindowConfig（上下文窗口，Codex CLI 风格）
 
 ```go
 type ContextWindowConfig struct {
-    ModelContextWindow    int `json:"model_context_window,omitempty"`           // 窗口大小，如 1047576 表示 1M
-    AutoCompactTokenLimit int `json:"model_auto_compact_token_limit,omitempty"` // 自动压缩触发阈值
+    ModelContextWindow    int `json:"model_context_window,omitempty"`
+    AutoCompactTokenLimit int `json:"model_auto_compact_token_limit,omitempty"`
 }
 ```
 
 ### ReasoningEffort 取值
 
-Claude Code 支持的 `reasoning_effort`（`config.IsValidClaudeReasoningEffort`）：
-
-```text
-""（未设置/默认）| low | medium | high | xhigh | max
-```
-
-注意此为 Claude 划分（含 `max`），与 `codexplugin` 的 OpenAI 划分（`none/low/medium/high/xhigh`，无 `max`）不同，两者不要混淆。
+Claude Code 支持的 `reasoning_effort`（`config.IsValidClaudeReasoningEffort`）：`""`（未设置/默认）、`low`、`medium`、`high`、`xhigh`、`max`。注意此为 Claude 划分（含 `max`），与 Codex 的 OpenAI 划分（`none/low/medium/high/xhigh`，无 `max`）不同，两者不要混淆。
 
 ---
 
-## 内置默认 Provider
+## 首次启动：无内置 Provider
 
-`internal/config/defaults.go` 的 `DefaultConfig()` 在首次启动或配置缺失时提供以下内置 Provider（值摘录自源码）：
+`internal/config/defaults.go` 的 `DefaultConfig()` 返回**空的** `Models` 表——新安装不会预置任何服务提供商或终端预设。请在 Provider Center 自行添加 Provider，或使用"导入完整配置"从旧设备恢复。
 
-| Provider Key | BaseURL | DefaultModel | AuthKey | 默认 Preset |
-|--------------|---------|--------------|---------|-------------|
-| `anthropic` | `https://api.anthropic.com` | （空，使用 OAuth） | `OAUTH` | `Default` |
-| `openai` | `https://api.openai.com/v1` | `codex-mini-latest` | `OPENAI_API_KEY` | `Codex Mini`（model `codex-mini-latest`） |
-| `glm` | `https://open.bigmodel.cn/api/anthropic` | `glm-5` | `ANTHROPIC_API_KEY` | `GLM-5`（thinking=enabled, stream=true） |
-| `minimax` | `https://api.minimaxi.com/anthropic` | `MiniMax-M2.5` | `ANTHROPIC_API_KEY` | `MiniMax-M2.5`（thinking=enabled, stream=true） |
-| `kimi` | `https://api.moonshot.cn/anthropic` | `kimi-k2.5` | `ANTHROPIC_API_KEY` | `Kimi K2.5`（thinking=enabled, stream=true） |
-
-默认 `AgentTeams`：`Enabled=true`、`TeammateMode="in-process"`。默认配置版本字段 `Version: "1.0.1"`。
-
-除上述内置项外，用户可在 Provider Center 中自定义添加 Provider。
+> 旧文档列出的 anthropic / openai / glm / minimax / kimi 内置种子已随版本演进移除，以源码现状为准。
 
 ---
 
-## `config.json` 结构示例
+## `models.json` 结构示例
 
-下面给出一个简化结构示例，字段名严格对应 `internal/config/types.go` 的 JSON tag。示例值并非真实密钥，仅作格式演示。
+字段名严格对应 `internal/config/types.go` 的 JSON tag。示例值并非真实密钥，仅作格式演示。
 
 ```json
 {
   "models": {
-    "anthropic": {
-      "default_model": "",
-      "auth_key": "OAUTH",
-      "presets": {
-        "default": { "name": "Default", "model": "" }
-      }
-    },
     "glm": {
       "anthropic": {
         "enabled": true,
         "base_url": "https://open.bigmodel.cn/api/anthropic",
         "auth_key": "ANTHROPIC_API_KEY"
       },
-      "default_model": "glm-5",
-      "presets": {
-        "default": {
-          "name": "GLM-5",
-          "model": "glm-5",
-          "parameters": {
-            "thinking": { "type": "enabled" },
-            "stream": true
-          }
-        }
-      }
+      "default_model": "glm-5"
     },
     "openai": {
       "openai": {
@@ -227,18 +193,29 @@ Claude Code 支持的 `reasoning_effort`（`config.IsValidClaudeReasoningEffort`
         "base_url": "https://api.openai.com/v1",
         "auth_key": "OPENAI_API_KEY"
       },
-      "default_model": "codex-mini-latest",
-      "presets": {
-        "default": { "name": "Codex Mini", "model": "codex-mini-latest" }
-      }
+      "default_model": "codex-mini-latest"
     }
+  },
+  "terminal_presets": {
+    "anthropic": {
+      "glm-5": {
+        "name": "GLM-5",
+        "provider": "glm",
+        "model": "glm-5",
+        "parameters": {
+          "thinking": { "type": "enabled" },
+          "stream": true
+        },
+        "vision": true,
+        "vision_priority": 10
+      }
+    },
+    "openai": {}
   },
   "agent_teams": { "enabled": true, "teammate_mode": "in-process" },
   "version": "1.0.1"
 }
 ```
-
-> 示例中省略了 `terminal_presets`、`opencode_presets`、`url_history` 等可选字段。完整结构定义见 `internal/config/types.go` 的 `AppConfig`。
 
 ```go
 type AppConfig struct {
@@ -252,7 +229,7 @@ type AppConfig struct {
 
 ---
 
-## TerminalPreset：可复用的格式预设
+## TerminalPreset：可复用的格式预设（含视觉能力标记）
 
 公共预设按 API 协议格式分组，不再为每个 CLI 维护一份重复配置：
 
@@ -265,26 +242,31 @@ type TerminalPresetsConfig struct {
 
 - Claude Code 读取 Anthropic 格式预设。
 - Codex、Pi、OMP 以及后续 OpenAI-compatible CLI 读取同一份 OpenAI 格式预设。
-- OpenCode 使用独立的 `opencode_presets`完整配置模型。
+- OpenCode 使用独立的 `opencode_presets` 完整配置模型。
 
-旧 `claude_code` / `codex` / `pi` / `omp` 分组会在加载时自动合并。同 key 且内容相同的条目去重；同 key 但内容不同的条目会保留为带来源后缀的预设，避免迁移时丢失配置。
-
-每个 `TerminalPreset` 关联一个 provider 名称，可覆盖 provider 的默认模型：
+旧 `claude_code` / `codex` / `pi` / `omp` 分组会在加载时自动合并；同 key 内容不同的条目保留为带来源后缀的预设，避免迁移丢配置。
 
 ```go
 type TerminalPreset struct {
     Name        string          `json:"name"`
-    Provider    string          `json:"provider"`                 // 关联的 provider 名称
-    Model       string          `json:"model"`                    // 可覆盖 provider 默认值
-    ModelHaiku  string          `json:"model_haiku,omitempty"`    // Claude Code 专用
-    ModelSonnet string          `json:"model_sonnet,omitempty"`   // Claude Code 专用
-    ModelOpus   string          `json:"model_opus,omitempty"`     // Claude Code 专用
+    Provider    string          `json:"provider"`               // 关联的 provider 名称
+    Model       string          `json:"model"`                  // 可覆盖 provider 默认值
+    ModelHaiku  string          `json:"model_haiku,omitempty"`  // Claude Code 专用
+    ModelSonnet string          `json:"model_sonnet,omitempty"` // Claude Code 专用
+    ModelOpus   string          `json:"model_opus,omitempty"`   // Claude Code 专用
     Parameters  Parameters      `json:"parameters"`
-    OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"`   // OpenCode 运行时 overlay
+    OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"`
+
+    // 视觉能力标记（契约 docs/vision-export-contract.md §1）
+    Vision         bool `json:"vision,omitempty"`          // 识图
+    Video          bool `json:"video,omitempty"`           // 识视频
+    VisionPriority int  `json:"vision_priority,omitempty"` // 小者优先；0 视为 100
 }
 ```
 
-启动时（`App.LaunchSession` 等）会按 CLI 所属格式查找 preset key。应用还会将旧的 `provider.presets` 幂等迁移到对应公共格式，OpenCode 目标预设则迁移到 `opencode_presets`。
+**视觉能力标记**：在 Provider Center 的预设编辑弹窗中勾选"识图 Vision"/"识视频 Video"并设定优先级后，只要 Vision 或 Video 至少一个为 true，该预设就会作为视觉模型导出到 `~/.agents/amagi-media-models.json`（`internal/config/vision.go`），供 amagi-media-understanding 等外部 skill 按优先级降级调用。标记独立于所在桶，anthropic 与 openai 桶的预设均可标记。完整契约见 `docs/vision-export-contract.md`。
+
+启动时（`App.LaunchSession` 等）按 CLI 所属格式查找 preset key。应用还会将旧的 `provider.presets` 幂等迁移到对应公共格式，OpenCode 目标预设迁移到 `opencode_presets`。
 
 ---
 
@@ -297,16 +279,9 @@ type OpenCodePreset struct {
     ID          string                     `json:"id"`
     Name        string                     `json:"name"`
     Description string                     `json:"description,omitempty"`
-    Config      json.RawMessage            `json:"config"`            // 完整 opencode.json
+    Config      json.RawMessage            `json:"config"` // 完整 opencode.json
     Bindings    map[string]OpenCodeBinding `json:"bindings,omitempty"`
     Source      *OpenCodePresetSource      `json:"source,omitempty"`
-}
-
-type OpenCodeBinding struct {
-    LocalProvider string   `json:"local_provider"`           // 本地 Provider 名
-    Format        string   `json:"format,omitempty"`         // openai / anthropic / auto
-    Inject        []string `json:"inject,omitempty"`         // apiKey / baseURL / organization
-    EnvFallback   bool     `json:"env_fallback,omitempty"`
 }
 ```
 
@@ -314,14 +289,28 @@ type OpenCodeBinding struct {
 
 ---
 
+## CLI 独立配置编辑
+
+Provider Center 的"CLI 独立配置"一级 Tab 提供各 CLI 自有配置文件的直接编辑（后端服务见括号）：
+
+| CLI | 文件 | 后端服务 |
+|-----|------|----------|
+| Pi | `~/.pi/agent/amagi.json`（Agent 配置）、`~/.pi/agent/models.json`（模型提供商）、`~/.pi/agent/auth.json`（认证登录） | `internal/piconfig` |
+| OMP | `~/.omp/agent/config.yml`（Agent 配置）、`~/.omp/agent/models.yml`（模型提供商） | `internal/ompconfig` |
+| OpenCode | `~/.config/opencode/opencode.json`（全局配置，支持 JSON/JSONC） | `internal/opencodeconfig` |
+
+注意这些文件同时被"统一同步"机制管理 `amagi-*` 条目：手工编辑非 `amagi-` 部分是安全的，改动 `amagi-*` 条目会在下次对账时被覆盖。
+
+---
+
 ## 导入 / 导出
 
-Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 [./usage.md](./usage.md#provider-center-provider-providercenterview)）：
+Provider Center 顶部提供两个针对整个配置集的操作：
 
-- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、价格表、OpenCode 全局配置，以及 CLI 独立配置全文快照：pi 的 `~/.pi/agent/models.json`、`auth.json`、`amagi.json` 与 omp 的 `~/.omp/agent/config.yml`、`models.yml`。CLI 独立配置仅在源设备对应文件存在且内容合法时导出；缺失或损坏（非法 JSON/YAML、无法读取）的字段会记 Warn 并跳过，不会阻断导出。Anthropic / OpenAI 内嵌的 `api_key` 仍会清空，当前 provider 统一密钥写在顶层；`portable.secrets` 保存全部其余密钥。导出文件含明文凭据，包括 pi `auth.json` 的 auth token、pi/omp models 配置中的内联 `apiKey`，与 provider API key 明文导出语义一致，请妥善保管。
-- **导入完整配置**：v2 快照按整体替换语义还原并在失败时尽力回滚，成功后需重启；v1 文件保持旧协议兼容。导入 provider 时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥：优先顶层 `api_key`，否则按首选格式回退到 legacy `api_key`。CLI 独立配置按“完整快照替换”语义恢复：快照中存在的字段整体替换目标设备对应文件，缺失字段（含旧版 v2 导出文件）跳过不写入，导入行为与旧文件完全一致；内容非法会在写入前整体报错并触发回滚。注意与 codebox 管理配置的共存关系：pi/omp 会话启动时仍会以合并方式把 `amagi-<name>` 托管条目写入同一文件（不会覆盖导入的自定义 provider），导入的快照仅在导入时整体替换一次。
+- **导出完整配置**：基于 v2 `ExportConfig` 生成可移植 JSON 快照，除 providers、agent_teams、terminal_presets、opencode_presets 外，还包含全部密钥、应用设置、路径、自定义环境变量、价格表、OpenCode 全局配置，以及 CLI 独立配置全文快照：pi 的 `~/.pi/agent/models.json`、`auth.json`、`amagi.json` 与 omp 的 `~/.omp/agent/config.yml`、`models.yml`。CLI 独立配置仅在源设备对应文件存在且内容合法时导出；缺失或损坏的字段记 Warn 并跳过。导出文件含明文凭据（包括 pi `auth.json` 的 auth token、pi/omp models 配置中的内联 `apiKey`），请妥善保管。
+- **导入完整配置**：v2 快照按整体替换语义还原并在失败时尽力回滚，成功后需重启；v1 文件保持旧协议兼容。导入 provider 时通过 `ExportProvider.UnifiedAPIKey()` 解析统一密钥。CLI 独立配置按"完整快照替换"语义恢复：快照中存在的字段整体替换目标设备对应文件，缺失字段跳过不写入；内容非法会在写入前整体报错并触发回滚。注意 pi/omp 会话启动时仍会以合并方式把 `amagi-<name>` 托管条目写入同一文件（不会覆盖导入的自定义 provider），导入的快照仅在导入时整体替换一次。
 
-导入/导出涉及的密钥同步会经过 secrets 服务（加密存储），明文不会进入 `config.json`。安全机制详见 [../security.md](../security.md)。
+导入/导出涉及的密钥同步经过 secrets 服务（加密存储），明文不会进入 `models.json`。安全机制详见 [../security.md](../security.md)。
 
 ---
 
@@ -331,12 +320,12 @@ Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 
 
 1. 进入 `/provider`，确保一级导航在"服务提供商"。
 2. 通过网格视图新增 provider，在详情页填写 BaseURL、认证格式（Anthropic / OpenAI）、`auth_key`、默认模型等。
-3. 保存后，在对应 provider 下添加 Preset（模型 + 参数）。
-4. 在该 provider 中填入 API 密钥（密钥经 OS Keychain / DPAPI 加密后写入 `secrets.json`）。
+3. 保存后，在"预设" Tab 下为对应格式添加公共预设（模型 + 参数）。
+4. 在该 provider 中填入 API 密钥（密钥经 OS Keychain / DPAPI 保护后写入 `secrets.enc`）。
 
 ### 为 Claude Code 启用思考模式
 
-在 ClaudeCode 预设的 `parameters.thinking` 中设置：
+在 Anthropic 格式预设的 `parameters.thinking` 中设置：
 
 ```json
 {
@@ -361,10 +350,14 @@ Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 
 }
 ```
 
+### 标记视觉模型
+
+在预设编辑弹窗的"视觉能力"区勾选"识图 Vision"或"识视频 Video"，并按需调整优先级（数值小者优先）。保存后该模型进入 `~/.agents/amagi-media-models.json` 导出清单，可被系统里安装的 amagi-media-understanding skill 直接使用。
+
 ---
 
 ## 已知限制与注意事项
 
-- 直接手工编辑 `~/.amagi-codebox/config.json` 不被禁止，但应用启动时若加载失败会回退到默认配置并记日志；推荐使用应用内的 Provider Center 进行编辑。
-- `anthropic` / `openai` 的双格式 `api_key` 字段在导入旧 JSON 时会被读取并迁移到 provider 级 secrets，新写入不会再保留这些明文字段。
+- 直接手工编辑 `~/.amagi-codebox/models.json` 不被禁止，但应用启动时若加载失败会回退到默认配置并记日志；推荐使用应用内的 Provider Center 进行编辑。
+- `anthropic` / `openai` 双格式中的 `api_key` 字段在导入旧 JSON 时会被读取并迁移到 provider 级 secrets，新写入不会再保留这些明文字段（`internal/config/service.go` 在落盘前硬性清除双格式结构中的 APIKey 明文）。
 - 旧 `provider.presets` 会在启动时自动迁移到 `terminal_presets`，迁移是幂等的；若迁移失败，应用仍可启动并给出 warning。

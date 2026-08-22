@@ -1,6 +1,7 @@
 # Oh My Pi (omp) 集成设计
 
-> 状态：待实现。仿照 amagi-codebox 现有 pi（@earendil-works/pi-coding-agent）集成模式，加入 oh-my-pi（@oh-my-pi/pi-coding-agent，CLI 命令 `omp`）支持。
+> 状态：**已实现（v1.3.x），本文档为历史设计记录**。设计时的接口设想与最终实现存在出入（如 omp 配置服务落在 `internal/ompconfig` 而非全部在 launcher），实际代码位置见文末「实现落点对照」。
+> 原状态（设计时）：待实现。仿照 amagi-codebox 现有 pi（@earendil-works/pi-coding-agent）集成模式，加入 oh-my-pi（@oh-my-pi/pi-coding-agent，CLI 命令 `omp`）支持。
 > 调研证据：omp v17.2.10（brew can1357/tap/omp 安装，`/opt/homebrew/bin/omp`）；`PI_CODING_AGENT_DIR` 可 relocate agent 根（实测）；`~/.omp/agent/models.yml` 自定义 provider 注册实测通过（`omp models` 可见 `amagi-test`）；`omp -p --model <provider>/<model>` 请求路由实测生效；会话 JSONL 格式与 pi 同构（docs/session.md + packages/stats/src/parser.ts 双重确认）；cost 为 USD（stats formatter `$` 佐证，pi-ai fork 同源）。
 
 ## 背景：omp 与 pi 的关键差异
@@ -103,3 +104,39 @@
 - 修改 usage/sync.go 主循环（各引擎平行段，加 omp 不触碰现有段）：低风险增量。
 - wailsjs 生成物不手改：由 wails 工具链重新生成。
 - AppType "omp" 命名与 remote CLIType 对齐；前端 engine 联合类型同步。
+
+## 实现落点对照
+
+omp 支持已在 v1.3.x 全部落地（`AppTypeOhMyPi` 已注册，最新提交还移除了废弃的 amagicode 类型）。设计条目与实际代码位置对照如下（均经源码核实）：
+
+### Go 后端
+
+| 设计条目 | 实际落点 |
+|----------|----------|
+| `AppTypeOhMyPi` | `internal/session/types.go`（`AppTypeOhMyPi AppType = "omp"`） |
+| `OmpProviderID` / `BuildOmpModelsConfig` / `MergeOmpModelsConfig` / `WriteOmpAgentConfig` | `internal/launcher/omp_config.go`（YAML 序列化依赖 `gopkg.in/yaml.v3`，已 vendor） |
+| provider 同步复用 | `internal/launcher/provider_sync.go`（pi/omp 共用 `buildManagedModelsConfig`） |
+| `LaunchOmp` / `buildOmpCmd` | `internal/launcher/service.go`（约 491/523 行） |
+| `LaunchOmpSession` / `resolveOmpLaunchSettings` / `defaultOmpAgentDir` | `app.go`（约 3238/4372/5460 行）；启动时显式清除 `PI_CODING_AGENT_DIR`、合并写 `~/.omp/agent/models.yml` |
+| omp 配置管理服务 | **`internal/ompconfig/service.go`**（设计稿未单列此包）：`GetOmpConfig`/`SaveOmpConfig`/`GetModelsConfig`/`SaveModelsConfig`/模型目录 `GetOmpModelCatalog`，`writePrivateFile` 0600 原子写；绑定方法见 `app.go` 的 `GetOmpConfig` 等（约 5686 行起） |
+| envcheck | `internal/envcheck/checker_omp.go`（PATH 探测、版本解析、安装方法判定） |
+| 用量解析 | `internal/appmeta/omp/parser.go`；`internal/usage/sync.go`（`normalizeOmpProvider`、`enumerateOmpSessionFiles`、`syncOmpJSONL`；`appOmp` 在 `internal/usage/service.go`） |
+| settings | `internal/settings/service.go`（`OmpMode`/`OmpShell`，默认 `embedded`/`wsl`） |
+| 远程控制 | `internal/remote/contract/scalars.go`（`CLITypeOmp`）；`internal/remote/handlers.go`（`POST /api/sessions/launch-omp` → `handleLaunchOmp`，走 `requireLoopbackPeer`）；`internal/remote/app_interface.go`（`LaunchOmpSession`） |
+| omp 插件管理（设计稿列为「一期不做」） | **已实现**：`internal/ompplugin/`（`service.go`/`executor.go`/`list_parse.go`），独立绑定 `OmpPlugins` |
+
+### 前端 / 移动端
+
+| 设计条目 | 实际落点 |
+|----------|----------|
+| engine 联合类型与 omp 表单字段 | `frontend/src/composables/useDashboardState.ts`、`frontend/src/views/SessionSettingsView.vue` |
+| 启动分支 | `frontend/src/composables/useSessionLaunch.ts` → `frontend/src/api/session.ts` `launchOmpSession` |
+| 用量过滤 | `frontend/src/views/UsageView.vue`（omp 选项） |
+| 环境检测设置 | `frontend/src/views/settings/EnvCheckSettings.vue`（TOOL_METAS 含 omp） |
+| 移动端 launcher | `mobile/src/components/lobby/CliLauncher.vue`（omp 卡片） |
+
+### 与设计稿的出入
+
+- omp 配置读写独立成包 `internal/ompconfig`（设计稿预期全部落在 `internal/launcher`）。
+- omp 插件管理在设计稿中是「一期不做」，实际已由 `internal/ompplugin` 实现并绑定。
+- 五引擎（claudecode/opencode/codex/pi/omp）格局确立后，已废弃的 amagicode 内部 CLI 类型被移除。

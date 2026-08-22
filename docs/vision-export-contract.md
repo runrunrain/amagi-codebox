@@ -2,6 +2,7 @@
 
 > 2026-05-16 | 父任务：通用型识图/识视频 skill + codebox 标记导出
 > 三方共享契约：codebox 后端、codebox 前端、amagi-media-understanding skill。字段名与文件格式即 API，单方不得擅改。
+> 状态：**已实施且经代码核对仍准确**（2026-08 复核：`internal/config/types.go` 字段与 tag、`internal/config/vision.go` 导出逻辑——优先级 0→100 归一化、anthropic-only 跳过、0600 原子写、`AMAGI_MEDIA_MODELS_PATH` 覆盖——均与本文一致）。
 
 ## 1. TerminalPreset 新增字段（Go + 前端 TS 同步）
 
