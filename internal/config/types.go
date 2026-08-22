@@ -198,6 +198,15 @@ type TerminalPreset struct {
 	ModelOpus   string          `json:"model_opus,omitempty"`   // Opus 档位模型（Claude Code 专用）
 	Parameters  Parameters      `json:"parameters"`             // 模型参数
 	OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"` // OpenCode 运行时 overlay（仅 opencode 类型使用）
+
+	// 视觉能力标记（契约 docs/vision-export-contract.md §1）：标记后可作为
+	// 识图 / 识视频模型导出到 ~/.agents/amagi-media-models.json（契约 §2）。
+	// 标记独立于所在桶：anthropic 桶与 openai 桶的 preset 均可标记；
+	// 仅 Vision 或 Video 至少一个为 true 时才会导出。
+	Vision bool `json:"vision,omitempty"` // 识图
+	Video  bool `json:"video,omitempty"`  // 识视频
+	// 能力优先级，小者优先；0 视为 100（导出时归一化）。
+	VisionPriority int `json:"vision_priority,omitempty"`
 }
 
 // NormalizeOpenCodeCfg 确保 OpenCodeCfg 存储为原始 JSON 对象。

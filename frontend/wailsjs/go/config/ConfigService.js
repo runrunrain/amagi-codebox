@@ -122,6 +122,10 @@ export function SaveTerminalPreset(arg1, arg2, arg3) {
   return window['go']['config']['ConfigService']['SaveTerminalPreset'](arg1, arg2, arg3);
 }
 
+export function SetAPIKeyResolver(arg1) {
+  return window['go']['config']['ConfigService']['SetAPIKeyResolver'](arg1);
+}
+
 export function SetAgentTeams(arg1) {
   return window['go']['config']['ConfigService']['SetAgentTeams'](arg1);
 }

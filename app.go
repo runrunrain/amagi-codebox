@@ -457,6 +457,16 @@ func NewApp(mobileAssets embed.FS) *App {
 	} else {
 		app.Sessions.SetHomeDir(home)
 	}
+	// amagi-media-understanding 导出（契约 docs/vision-export-contract.md §2）：注入 provider → 明文
+	// API key 解析器（SecretsService.GetAPIKey 适配为单返回值签名），ConfigService 在
+	// preset/provider 增删与配置加载完成后懒导出 ~/.agents/amagi-media-models.json。
+	app.Config.SetAPIKeyResolver(func(provider string) string {
+		key, err := app.Secrets.GetAPIKey(provider)
+		if err != nil || key == "" {
+			return ""
+		}
+		return key
+	})
 	// Inject the headroom stopper so CleanHeadroom terminates BOTH headroom
 	// proxy child processes (claude 8787 + codex-global 8788) before the shared
 	// venv directory is removed. Required on Windows where a running

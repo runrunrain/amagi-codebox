@@ -61,13 +61,38 @@ func scrubConfigAPIKeys(cfg *AppConfig) {
 type ConfigService struct {
 	configPath string
 	config     *AppConfig
-	mu         sync.RWMutex
+	// apiKeyResolver 解析 provider → 明文 API key，供 amagi-media-understanding 导出使用
+	// （契约 docs/vision-export-contract.md §2）。config 包不得直接依赖 secrets
+	// 包，由 App 组装时注入；未注入时（单测/嵌入式）跳过导出写盘。
+	apiKeyResolver func(provider string) string
+	mu             sync.RWMutex
 }
 
 func NewConfigService(configDir string) *ConfigService {
 	return &ConfigService{
 		configPath: filepath.Join(configDir, "models.json"),
 		config:     nil,
+	}
+}
+
+// SetAPIKeyResolver 注入 provider → 明文 API key 解析器（App 组装时接入
+// SecretsService.GetAPIKey）。注入后 Save/Delete preset/provider 与 Load 完成
+// 会懒导出视觉模型文件（契约 §2）。
+func (s *ConfigService) SetAPIKeyResolver(fn func(provider string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apiKeyResolver = fn
+}
+
+// triggerVisionExportLocked 幂等全量重导出视觉模型文件（契约 §2）。
+// 调用方必须已持有 s.mu 写锁（读取 s.config 与 apiKeyResolver 期间无并发修改）。
+// 导出属旁路产物：失败仅记 log，不阻断主流程、不影响调用方返回值。
+func (s *ConfigService) triggerVisionExportLocked() {
+	if s.apiKeyResolver == nil || s.config == nil {
+		return
+	}
+	if err := ExportVisionModels(s.config, s.apiKeyResolver); err != nil {
+		fmt.Fprintf(os.Stderr, "[config] vision models export failed: %v\n", err)
 	}
 }
 
@@ -79,6 +104,8 @@ func (s *ConfigService) Load() error {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.config = DefaultConfig()
+			// 契约 §2：启动配置加载完成后也触发一次视觉模型导出（无标记时写 models:[]）。
+			s.triggerVisionExportLocked()
 			return nil
 		}
 		return fmt.Errorf("read config: %w", err)
@@ -123,6 +150,8 @@ func (s *ConfigService) Load() error {
 	}
 
 	s.config = &cfg
+	// 契约 §2：启动配置加载完成后也触发一次视觉模型导出（无标记时写 models:[]）。
+	s.triggerVisionExportLocked()
 	return nil
 }
 
@@ -676,7 +705,12 @@ func (s *ConfigService) SaveProvider(name string, p Provider) error {
 	p = scrubProviderAPIKeys(p)
 	warnSensitiveLiteralHeaders(name, p)
 	s.config.Models[name] = p
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	// 契约 §2：provider 变更可能改变端点/key，成功后重导出视觉模型。
+	s.triggerVisionExportLocked()
+	return nil
 }
 
 // sensitiveHeaderNames 是通常携带凭据的 header 名（小写比较）。
@@ -730,7 +764,12 @@ func (s *ConfigService) DeleteProvider(name string) error {
 		return nil
 	}
 	delete(s.config.Models, name)
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	// 契约 §2：provider 删除后其带标记预设不可解析，重导出剔除对应条目。
+	s.triggerVisionExportLocked()
+	return nil
 }
 
 // RenameProvider 重命名 provider，同步迁移 config 内的所有引用：
@@ -988,7 +1027,11 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 		// Do not create new CLI-specific storage even when an older caller uses
 		// the compatibility API spelling.
 		s.config.TerminalPresets.OpenCode = nil
-		return s.saveLocked()
+		if err := s.saveLocked(); err != nil {
+			return err
+		}
+		s.triggerVisionExportLocked()
+		return nil
 	}
 	m := s.config.TerminalPresets.GetMap(canonical)
 	if m == nil {
@@ -996,7 +1039,12 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 	}
 	m[presetName] = preset
 	s.config.TerminalPresets.SetMap(canonical, m)
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	// 契约 §2：预设保存成功后重导出视觉模型。
+	s.triggerVisionExportLocked()
+	return nil
 }
 
 // DeleteTerminalPreset 删除指定终端类型的预设。
@@ -1024,7 +1072,11 @@ func (s *ConfigService) DeleteTerminalPreset(terminalType, presetName string) er
 				s.config.TerminalPresets.SetMap(TerminalPresetOpenCode, legacy)
 			}
 		}
-		return s.saveLocked()
+		if err := s.saveLocked(); err != nil {
+			return err
+		}
+		s.triggerVisionExportLocked()
+		return nil
 	}
 	if s.config.TerminalPresets == nil {
 		return nil
@@ -1035,7 +1087,12 @@ func (s *ConfigService) DeleteTerminalPreset(terminalType, presetName string) er
 	}
 	delete(m, presetName)
 	s.config.TerminalPresets.SetMap(canonical, m)
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	// 契约 §2：预设删除成功后重导出，剔除对应条目。
+	s.triggerVisionExportLocked()
+	return nil
 }
 
 // MigrateProviderPresetsToTerminal 将旧的 provider.presets 迁移到 terminal_presets。
@@ -1296,6 +1353,10 @@ type MergedTerminalPreset struct {
 	ModelOpus   string     `json:"model_opus,omitempty"`   // Opus 档位模型（Claude Code 专用）
 	Parameters  Parameters `json:"parameters"`             // 模型参数
 	Source      string     `json:"source"`                 // "terminal_preset" 或 "provider_preset"
+	// 视觉能力标记（契约 docs/vision-export-contract.md §1）：前端徽标展示与编辑回填用。
+	Vision         bool `json:"vision,omitempty"`
+	Video          bool `json:"video,omitempty"`
+	VisionPriority int  `json:"vision_priority,omitempty"`
 }
 
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
@@ -1322,15 +1383,18 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 				label = key
 			}
 			result = append(result, MergedTerminalPreset{
-				Key:         key,
-				Label:       label,
-				Provider:    tp.Provider,
-				Model:       tp.Model,
-				ModelHaiku:  tp.ModelHaiku,
-				ModelSonnet: tp.ModelSonnet,
-				ModelOpus:   tp.ModelOpus,
-				Parameters:  tp.Parameters,
-				Source:      "terminal_preset",
+				Key:            key,
+				Label:          label,
+				Provider:       tp.Provider,
+				Model:          tp.Model,
+				ModelHaiku:     tp.ModelHaiku,
+				ModelSonnet:    tp.ModelSonnet,
+				ModelOpus:      tp.ModelOpus,
+				Parameters:     tp.Parameters,
+				Source:         "terminal_preset",
+				Vision:         tp.Vision,
+				Video:          tp.Video,
+				VisionPriority: tp.VisionPriority,
 			})
 		}
 	}

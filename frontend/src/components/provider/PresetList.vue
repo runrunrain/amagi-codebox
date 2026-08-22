@@ -67,6 +67,9 @@
             <span v-if="p.model_sonnet" class="param tier">S: {{ p.model_sonnet }}</span>
             <span v-if="p.model_opus" class="param tier">O: {{ p.model_opus }}</span>
           </template>
+          <!-- 视觉能力标记（amagi-media-understanding 导出，契约 §1） -->
+          <span v-if="p.vision" class="param vision">识图</span>
+          <span v-if="p.video" class="param vision">识视频</span>
           <!-- 关键 Parameters（最关键的 2-4 个） -->
           <span v-if="thinkingType(p)" class="param key">thinking·{{ thinkingType(p) }}</span>
           <span v-if="reasoningEffort(p)" class="param key">effort·{{ reasoningEffort(p) }}</span>
@@ -402,5 +405,11 @@ onMounted(() => {
 .param.key {
   color: #AF52DE;
   background: rgba(175, 82, 222, 0.08);
+}
+
+/* 视觉能力标记：绿色弱强调，一眼识别 amagi-media-understanding 可用预设 */
+.param.vision {
+  color: #34C759;
+  background: rgba(52, 199, 89, 0.1);
 }
 </style>

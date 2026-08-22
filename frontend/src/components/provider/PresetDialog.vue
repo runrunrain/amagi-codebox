@@ -197,6 +197,35 @@
           </div>
         </div>
       </div>
+
+      <!-- 视觉能力标记（amagi-media-understanding 导出，契约 docs/vision-export-contract.md §1） -->
+      <div class="form-section">
+        <div class="form-section-title">视觉能力（amagi-media-understanding 识图 / 识视频）</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">识图 Vision</label>
+            <Switch v-model="form.vision" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">识视频 Video</label>
+            <Switch v-model="form.video" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">优先级（小者优先，留空 = 100）</label>
+            <input
+              v-model.number="form.visionPriority"
+              type="number"
+              class="form-input"
+              step="1"
+              min="0"
+              placeholder="100"
+            />
+          </div>
+        </div>
+        <p class="form-hint">
+          标记的预设会导出到 ~/.agents/amagi-media-models.json，供 amagi-media-understanding 等外部 CLI 消费；仅 OpenAI 兼容 Provider 会导出。
+        </p>
+      </div>
     </div>
 
     <template #footer>
@@ -219,6 +248,7 @@ import { SaveTerminalPreset } from '../../../wailsjs/go/main/App';
 import { useProviderStore } from '../../stores/provider';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
+import Switch from '../ui/Switch.vue';
 
 interface Props {
   open?: boolean;
@@ -278,6 +308,9 @@ const form = reactive({
   reasoningEffort: '',
   contextWindow: undefined as number | undefined,
   compactLimit: undefined as number | undefined,
+  vision: false,
+  video: false,
+  visionPriority: undefined as number | undefined,
 });
 
 const canSave = computed(() => {
@@ -315,6 +348,10 @@ function initForm() {
     // Context Window / Auto Compact
     form.contextWindow = ctx?.model_context_window;
     form.compactLimit = ctx?.model_auto_compact_token_limit;
+    // 视觉能力标记（amagi-media-understanding 导出）
+    form.vision = !!p.vision;
+    form.video = !!p.video;
+    form.visionPriority = p.vision_priority || undefined;
   } else {
     resetForm();
   }
@@ -337,6 +374,9 @@ function resetForm() {
   form.reasoningEffort = '';
   form.contextWindow = undefined;
   form.compactLimit = undefined;
+  form.vision = false;
+  form.video = false;
+  form.visionPriority = undefined;
 }
 
 // 监听 preset 变化
@@ -377,6 +417,13 @@ async function handleSave() {
       if (form.modelHaiku) terminalPreset.model_haiku = form.modelHaiku;
       if (form.modelSonnet) terminalPreset.model_sonnet = form.modelSonnet;
       if (form.modelOpus) terminalPreset.model_opus = form.modelOpus;
+    }
+
+    // 视觉能力标记（契约 §1）：omitempty 布尔，仅在开启时写入；优先级 0 视为 100（不写）。
+    if (form.vision) terminalPreset.vision = true;
+    if (form.video) terminalPreset.video = true;
+    if (form.visionPriority !== undefined && form.visionPriority !== 0) {
+      terminalPreset.vision_priority = form.visionPriority;
     }
 
     // 参数设置
@@ -495,6 +542,13 @@ async function handleSave() {
   margin: 0;
   font-size: 12px;
   color: #FF3B30;
+}
+
+.form-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--tertiary);
+  line-height: 1.5;
 }
 
 .dialog-actions {

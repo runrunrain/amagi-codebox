@@ -62,6 +62,8 @@ export function SaveProvider(arg1:string,arg2:config.Provider):Promise<void>;
 
 export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
 
+export function SetAPIKeyResolver(arg1:any):Promise<void>;
+
 export function SetAgentTeams(arg1:config.AgentTeamsConfig):Promise<void>;
 
 export function SetAllTerminalPresets(arg1:config.TerminalPresetsConfig):Promise<void>;

@@ -512,6 +512,9 @@ export namespace config {
 	    model_opus?: string;
 	    parameters: Parameters;
 	    opencode_cfg?: number[];
+	    vision?: boolean;
+	    video?: boolean;
+	    vision_priority?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new TerminalPreset(source);
@@ -527,6 +530,9 @@ export namespace config {
 	        this.model_opus = source["model_opus"];
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.opencode_cfg = source["opencode_cfg"];
+	        this.vision = source["vision"];
+	        this.video = source["video"];
+	        this.vision_priority = source["vision_priority"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -838,6 +844,9 @@ export namespace config {
 	    model_opus?: string;
 	    parameters: Parameters;
 	    source: string;
+	    vision?: boolean;
+	    video?: boolean;
+	    vision_priority?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MergedTerminalPreset(source);
@@ -854,6 +863,9 @@ export namespace config {
 	        this.model_opus = source["model_opus"];
 	        this.parameters = this.convertValues(source["parameters"], Parameters);
 	        this.source = source["source"];
+	        this.vision = source["vision"];
+	        this.video = source["video"];
+	        this.vision_priority = source["vision_priority"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
