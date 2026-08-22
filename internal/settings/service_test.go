@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestNormalizeDashboardDefaults_PreservesExplicitEngineModes(t *testing.T) {
 }
 
 // TestNormalizeDashboardDefaults_OmpModeAndShell 验证 omp 引擎默认值与透传
-//（复刻 PiMode/PiShell 语义）：缺省时 OmpMode=embedded、OmpShell 跟随 Shell；
+// （复刻 PiMode/PiShell 语义）：缺省时 OmpMode=embedded、OmpShell 跟随 Shell；
 // 显式设置时原样保留。
 func TestNormalizeDashboardDefaults_OmpModeAndShell(t *testing.T) {
 	// 缺省：embedded + 跟随全局 Shell。
@@ -916,5 +917,48 @@ func TestSkinSettings_LoadOutOfRangeClamped(t *testing.T) {
 	got := svc.GetSkinSettings()
 	if !got.Enabled || got.ImageID != "x" || got.Dim != 100 || got.Blur != 40 || got.Opacity != 100 || got.TextBoost != 100 {
 		t.Fatalf("clamped load = %+v, want enabled=true x dim=100 blur=40 opacity=100 textBoost=100", got)
+	}
+}
+
+// TestCommitSummaryPreset_RoundTrip 验证 AI 提交总结预设（"provider/preset名"）
+// 的 Get/Set 往返与磁盘持久化；空值=未设置。
+func TestCommitSummaryPreset_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := svc.GetCommitSummaryPreset(); got != "" {
+		t.Fatalf("default CommitSummaryPreset = %q, want empty", got)
+	}
+	if err := svc.SetCommitSummaryPreset("zen/summarizer"); err != nil {
+		t.Fatalf("SetCommitSummaryPreset: %v", err)
+	}
+	if got := svc.GetCommitSummaryPreset(); got != "zen/summarizer" {
+		t.Fatalf("CommitSummaryPreset = %q, want zen/summarizer", got)
+	}
+
+	// 重新 Load 验证落盘持久化。
+	svc2 := NewService(dir)
+	if err := svc2.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := svc2.GetCommitSummaryPreset(); got != "zen/summarizer" {
+		t.Fatalf("persisted CommitSummaryPreset = %q, want zen/summarizer", got)
+	}
+
+	// 清除后 omitempty 不再写键。
+	if err := svc2.SetCommitSummaryPreset(""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got := svc2.GetCommitSummaryPreset(); got != "" {
+		t.Fatalf("cleared CommitSummaryPreset = %q, want empty", got)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	if strings.Contains(string(b), "commitSummaryPreset") {
+		t.Fatalf("cleared preset must be omitted from settings.json, got: %s", b)
 	}
 }

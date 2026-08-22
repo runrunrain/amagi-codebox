@@ -36,5 +36,6 @@ func buildWailsBindList(app *App) []any {
 		app.Usage,
 		app.WebUI,
 		app.Skins,
+		app.GitAssist,
 	}
 }

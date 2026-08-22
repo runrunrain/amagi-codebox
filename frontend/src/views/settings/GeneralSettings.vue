@@ -68,6 +68,32 @@
       <span class="footer-hint">需重启应用生效</span>
     </div>
   </div>
+
+  <div class="set-card">
+    <h2>提交总结模型</h2>
+    <p class="set-sub">终端页提交/推送弹窗中 AI 生成提交信息所用的模型，仅支持 OpenAI 兼容 Provider 的预设；若预设模型为空则使用该 Provider 默认模型</p>
+
+    <div class="setting-list">
+      <div class="setting-row">
+        <label>模型预设</label>
+        <select
+          class="sel"
+          v-model="commitSummaryPreset"
+          :disabled="savingPreset || presetLoading"
+          @change="saveCommitSummaryPreset"
+        >
+          <option value="">未设置（禁用 AI 生成）</option>
+          <option v-for="opt in commitPresetOptions" :key="opt.value" :value="opt.value">
+            {{ opt.label }}
+          </option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card-footer">
+      <span class="footer-hint">选中即保存，立即生效</span>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -78,7 +104,10 @@ import { config } from '../../../wailsjs/go/models'
 import {
   getDashboardDefaults,
   setDashboardDefaults,
+  getCommitSummaryPreset,
+  setCommitSummaryPreset,
 } from '../../api/settings'
+import { useProviderStore } from '../../stores/provider'
 import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import Segmented from '../../components/ui/Segmented.vue'
@@ -96,6 +125,32 @@ const providers = ref<Record<string, Provider>>({})
 const settingsMergedPresets = ref<MergedPresetEntry[]>([])
 const openCodePresetList = ref<OpenCodePresetSummary[]>([])
 const saving = ref(false)
+
+// ---- 提交总结模型（AI 生成提交信息；数据源：provider store openai 桶 mergedPresets）----
+const providerStore = useProviderStore()
+const commitSummaryPreset = ref('')
+const savingPreset = ref(false)
+const presetLoading = computed(() => providerStore.loadingPresets)
+
+/** value 为 stable key（provider/preset 格式）；label 附模型名便于识别 */
+const commitPresetOptions = computed(() =>
+  providerStore.codexPresets.map((mp) => {
+    const value = mp.key || `${mp.provider}/${mp.label}`
+    return { value, label: mp.model ? `${value} · ${mp.model}` : value }
+  }),
+)
+
+async function saveCommitSummaryPreset() {
+  savingPreset.value = true
+  try {
+    await setCommitSummaryPreset(commitSummaryPreset.value)
+    showSuccess(commitSummaryPreset.value ? '提交总结模型已保存' : '已禁用 AI 生成提交信息')
+  } catch (err: any) {
+    showError('保存提交总结模型失败: ' + (err?.message || err))
+  } finally {
+    savingPreset.value = false
+  }
+}
 
 const activeEngineTab = ref<string>('claude')
 const engineOptions = [
@@ -214,6 +269,13 @@ async function loadData() {
   } catch (err) {
     console.error('load opencode presets:', err)
     openCodePresetList.value = []
+  }
+  // 提交总结模型：确保 provider store openai 预设已加载（已加载则跳过），并读取当前设置
+  void providerStore.loadPresets('openai')
+  try {
+    commitSummaryPreset.value = await getCommitSummaryPreset()
+  } catch (err) {
+    console.error('load commit summary preset:', err)
   }
   try {
     const d = await getDashboardDefaults()

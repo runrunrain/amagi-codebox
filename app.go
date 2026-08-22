@@ -26,6 +26,7 @@ import (
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
+	"amagi-codebox/internal/gitassist"
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
@@ -237,6 +238,9 @@ type App struct {
 	// Skins 是本地图片皮肤管理服务（皮肤图片库 ~/.amagi-codebox/skins +
 	// /skins/ 只读资源 Handler）。Startup 注入 Wails ctx 后才能弹选择对话框。
 	Skins *skins.Service
+	// GitAssist 是 AI 辅助 Git 提交/推送服务（终端会话工作区的分支切换/提交/
+	// 推送 + 内置模型生成提交信息）。apiKeyResolver 由 Secrets 适配注入。
+	GitAssist *gitassist.Service
 
 	// RemoteClient 域（桌面端互联蓝图 §7）：作为 v1 契约客户端连接另一台
 	// amagi-codebox 宿主。登记簿在 NewApp 构造时从 configDir/remote-hosts.json
@@ -461,6 +465,15 @@ func NewApp(mobileAssets embed.FS) *App {
 	// API key 解析器（SecretsService.GetAPIKey 适配为单返回值签名），ConfigService 在
 	// preset/provider 增删与配置加载完成后懒导出 ~/.agents/amagi-media-models.json。
 	app.Config.SetAPIKeyResolver(func(provider string) string {
+		key, err := app.Secrets.GetAPIKey(provider)
+		if err != nil || key == "" {
+			return ""
+		}
+		return key
+	})
+	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
+	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
+	app.GitAssist = gitassist.New(app.Config, app.Settings, func(provider string) string {
 		key, err := app.Secrets.GetAPIKey(provider)
 		if err != nil || key == "" {
 			return ""

@@ -14,6 +14,10 @@ export function GetCodexGlobalHeadroom() {
   return window['go']['settings']['Service']['GetCodexGlobalHeadroom']();
 }
 
+export function GetCommitSummaryPreset() {
+  return window['go']['settings']['Service']['GetCommitSummaryPreset']();
+}
+
 export function GetDashboardDefaults() {
   return window['go']['settings']['Service']['GetDashboardDefaults']();
 }
@@ -88,6 +92,10 @@ export function Save() {
 
 export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
   return window['go']['settings']['Service']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
+}
+
+export function SetCommitSummaryPreset(arg1) {
+  return window['go']['settings']['Service']['SetCommitSummaryPreset'](arg1);
 }
 
 export function SetDashboardDefaults(arg1) {

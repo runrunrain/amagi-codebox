@@ -163,7 +163,10 @@ type AppSettings struct {
 	RemoteLaunchDefaultsV1 map[string]RemoteLaunchDefaultV1 `json:"remoteLaunchDefaultsV1,omitempty"`
 	MobileWebRoot          string                           `json:"mobileWebRoot"`
 	GitHubToken            string                           `json:"githubToken"`
-	Skin                   SkinSettings                     `json:"skin"`
+	// CommitSummaryPreset 指定 AI 提交总结使用的终端预设，格式 "provider/preset名"；
+	// 空 = 未设置（gitassist.SummarizeDiff 据此报错引导用户去设置页选择）。
+	CommitSummaryPreset string       `json:"commitSummaryPreset,omitempty"`
+	Skin                SkinSettings `json:"skin"`
 }
 
 func defaultSettings() *AppSettings {
@@ -739,6 +742,23 @@ func (s *Service) GetGitHubToken() string {
 func (s *Service) SetGitHubToken(token string) error {
 	s.mu.Lock()
 	s.settings.GitHubToken = token
+	s.mu.Unlock()
+	return s.Save()
+}
+
+// --- Commit Summary Preset ---
+
+// GetCommitSummaryPreset 返回 AI 提交总结预设（"provider/preset名"，空=未设置）。
+func (s *Service) GetCommitSummaryPreset() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings.CommitSummaryPreset
+}
+
+// SetCommitSummaryPreset 持久化 AI 提交总结预设（"provider/preset名"，空=清除）。
+func (s *Service) SetCommitSummaryPreset(v string) error {
+	s.mu.Lock()
+	s.settings.CommitSummaryPreset = v
 	s.mu.Unlock()
 	return s.Save()
 }

@@ -20,6 +20,8 @@ import {
   SetGitHubToken,
   GetMobileWebRoot,
   SetMobileWebRoot,
+  GetCommitSummaryPreset,
+  SetCommitSummaryPreset,
   GetSettings,
   Load,
   Save,
@@ -158,4 +160,18 @@ export function loadSettings(): Promise<void> {
  */
 export function saveSettings(): Promise<void> {
   return callApi('[api.settings.saveSettings]', () => Save());
+}
+
+/**
+ * Get commit summary preset（格式 "provider/preset名"，空=未设置）
+ */
+export function getCommitSummaryPreset(): Promise<string> {
+  return callApi('[api.settings.getCommitSummaryPreset]', () => GetCommitSummaryPreset());
+}
+
+/**
+ * Set commit summary preset（空字符串 = 未设置，禁用 AI 生成提交信息）
+ */
+export function setCommitSummaryPreset(value: string): Promise<void> {
+  return callApi('[api.settings.setCommitSummaryPreset]', () => SetCommitSummaryPreset(value));
 }

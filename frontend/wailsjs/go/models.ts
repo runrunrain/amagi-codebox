@@ -1682,6 +1682,53 @@ export namespace envvars {
 
 }
 
+export namespace gitassist {
+	
+	export class BranchInfo {
+	    name: string;
+	    current: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new BranchInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.current = source["current"];
+	    }
+	}
+	export class RepoStatus {
+	    isGitRepo: boolean;
+	    branch: string;
+	    upstream: string;
+	    ahead: number;
+	    behind: number;
+	    staged: number;
+	    unstaged: number;
+	    untracked: number;
+	    remoteUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RepoStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.isGitRepo = source["isGitRepo"];
+	        this.branch = source["branch"];
+	        this.upstream = source["upstream"];
+	        this.ahead = source["ahead"];
+	        this.behind = source["behind"];
+	        this.staged = source["staged"];
+	        this.unstaged = source["unstaged"];
+	        this.untracked = source["untracked"];
+	        this.remoteUrl = source["remoteUrl"];
+	    }
+	}
+
+}
+
 export namespace headroom {
 	
 	export class ClientPerfStat {
@@ -3614,6 +3661,7 @@ export namespace settings {
 	    remoteLaunchDefaultsV1?: Record<string, RemoteLaunchDefaultV1>;
 	    mobileWebRoot: string;
 	    githubToken: string;
+	    commitSummaryPreset?: string;
 	    skin: SkinSettings;
 	
 	    static createFrom(source: any = {}) {
@@ -3633,6 +3681,7 @@ export namespace settings {
 	        this.remoteLaunchDefaultsV1 = this.convertValues(source["remoteLaunchDefaultsV1"], RemoteLaunchDefaultV1, true);
 	        this.mobileWebRoot = source["mobileWebRoot"];
 	        this.githubToken = source["githubToken"];
+	        this.commitSummaryPreset = source["commitSummaryPreset"];
 	        this.skin = this.convertValues(source["skin"], SkinSettings);
 	    }
 	
