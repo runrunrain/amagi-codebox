@@ -65,7 +65,7 @@
             >
               <span class="hs-dot" :class="dotClass(h.health)" aria-hidden="true"></span>
               <span class="hs-item-main">
-                <span class="hs-item-name">{{ h.displayName }}</span>
+                <span class="hs-item-name" :class="{ revoked: h.health === 'revoked' }">{{ h.displayName }}</span>
                 <span class="hs-item-sub">{{ h.hostPort }} · {{ hostHealthLabel(h.health) }}<template v-if="!h.deviceId">（未配对）</template></span>
               </span>
               <svg v-if="store.scope === h.id && store.isRemoteMode" class="hs-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -380,6 +380,11 @@ watch(open, (val) => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* revoked：主机条目标红（fail-closed 呈现，交互稿 §3 revoked 行） */
+.hs-item-name.revoked {
+  color: var(--danger-strong);
 }
 
 .hs-item-sub {

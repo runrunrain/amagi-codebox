@@ -42,6 +42,13 @@ export interface RemoteTerminalState {
   detail: string;
   /** 控制权四态（contract.ControlState：you/other/desktop/none）。 */
   controlState: string;
+  /**
+   * 降级检测（RC3-3）：本设备曾持有控制权且尚未恢复。事件流中离开 you 置位、
+   * 回到 you 复位；主动释放（release 响应）也复位——自愿放手不是被抢占。
+   */
+  controlWasYou: boolean;
+  /** state=other 时的持有设备名（契约条件字段，供「他人持有」文案）。 */
+  controlDeviceName: string;
   /** 远端会话五态（contract.SessionState）。 */
   sessionState: string;
   /** attach 绑定已调用且未 detach。 */
@@ -307,6 +314,8 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
       nextRetryMs: 0,
       detail: '',
       controlState: '',
+      controlWasYou: false,
+      controlDeviceName: '',
       sessionState: '',
       attached: false,
     };
@@ -380,7 +389,10 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
       });
       EventsOn('rc:control-state', (p: any) => {
         if (!p || typeof p.sessionId !== 'string') return;
-        ensureTermState(p.sessionId).controlState = String(p.state ?? '');
+        applyControlSnapshot(p.sessionId, {
+          state: String(p.state ?? ''),
+          deviceName: typeof p.deviceName === 'string' ? p.deviceName : '',
+        });
       });
       EventsOn('rc:terminal-output', (p: any) => {
         if (!p || typeof p.sessionId !== 'string') return;
@@ -461,6 +473,90 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     }
   }
 
+  /* -------------------------------------------------------------------------
+   * RC3-3 控制权域：acquire/release + 四态投影 + 被抢占降级判定
+   *
+   * 写权威在服务端（ControlView / rc:control-state 事件均为服务端快照），
+   * store 是唯一落点：终端状态条与会话列表行都从这里读，组件不得自算控制态。
+   * ----------------------------------------------------------------------- */
+
+  /** 应用服务端控制权快照：更新终端状态投影并同步会话列表条目（同一数据源）。 */
+  function applyControlSnapshot(
+    sessionID: string,
+    view: { state: string; deviceName?: string },
+  ): void {
+    const st = ensureTermState(sessionID);
+    if (view.state !== st.controlState) {
+      if (st.controlState === 'you') st.controlWasYou = true;
+      if (view.state === 'you') st.controlWasYou = false;
+      st.controlState = view.state;
+    }
+    st.controlDeviceName = view.deviceName ?? '';
+    const s = remoteSessions.value.find((x) => x.id === sessionID);
+    if (s && s.control) {
+      s.control.state = view.state;
+      s.control.deviceName = view.deviceName;
+    }
+  }
+
+  /**
+   * 控制权四态投影：rc:control-state 事件流优先，回退会话列表快照
+   * （列表行的 control 来自服务端 SessionSummary.control，同为权威）。
+   */
+  function controlStateOf(sessionID: string): string {
+    const st = remoteTerminalStates.value[sessionID];
+    if (st && st.controlState) return st.controlState;
+    return remoteSessions.value.find((s) => s.id === sessionID)?.control?.state ?? '';
+  }
+
+  /** state=other 时的持有设备名（事件流优先，回退列表快照）。 */
+  function controlDeviceNameOf(sessionID: string): string {
+    const st = remoteTerminalStates.value[sessionID];
+    if (st && st.controlState) return st.controlDeviceName;
+    return remoteSessions.value.find((s) => s.id === sessionID)?.control?.deviceName ?? '';
+  }
+
+  /**
+   * 被抢占降级判定（交互稿 §3 只读行 + ControlBanner）：本设备曾持有控制权、
+   * 事件流中被 desktop/other 夺走，且终端仍处于 attach 生命周期。
+   * 恢复 you（重新获取成功）后自动回到 false。
+   */
+  function isControlDegraded(sessionID: string): boolean {
+    const st = remoteTerminalStates.value[sessionID];
+    if (!st || !st.attached || !st.controlWasYou) return false;
+    return st.controlState === 'other' || st.controlState === 'desktop';
+  }
+
+  /**
+   * 会话的控制权操作：running 会话四态下均可 acquire（none/other/desktop →
+   * 「获取控制权」，desktop 持有时服务端可 409 拒绝，由调用方提示）；you → release。
+   */
+  function controlActionOf(sessionID: string): 'acquire' | 'release' | '' {
+    const session = remoteSessions.value.find((s) => s.id === sessionID);
+    if (!session || session.state !== 'running') return '';
+    return controlStateOf(sessionID) === 'you' ? 'release' : 'acquire';
+  }
+
+  /**
+   * 获取控制权：成功落 ControlView 权威投影；错误（含 409 control.busy）抛调用方。
+   * 契约要求 acquire 持有 attach 租约（同进程 WS，见 conn.go/RC3-go 报告）：
+   * 未 attach（如从会话列表行直接获取）时先幂等 attach，再走 acquire。
+   */
+  async function acquireControl(sessionID: string): Promise<void> {
+    if (!remoteTerminalStates.value[sessionID]?.attached) {
+      await attachRemoteTerminal(sessionID);
+    }
+    const view = await remoteClientApi.acquireRemoteControl(sessionID);
+    applyControlSnapshot(sessionID, { state: view.state ?? '', deviceName: view.deviceName });
+  }
+
+  /** 释放控制权：主动放手不是被抢占，复位降级标记。 */
+  async function releaseControl(sessionID: string): Promise<void> {
+    const view = await remoteClientApi.releaseRemoteControl(sessionID);
+    applyControlSnapshot(sessionID, { state: view.state ?? '', deviceName: view.deviceName });
+    ensureTermState(sessionID).controlWasYou = false;
+  }
+
   // 事件桥随 store 创建即就绪：rc:host-health / rc:revoked 不依赖终端页打开。
   ensureRcEventBridge();
 
@@ -502,5 +598,11 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     detachRemoteTerminal,
     subscribeRemoteTerminalOutput,
     subscribeRemoteSessionState,
+    controlStateOf,
+    controlDeviceNameOf,
+    isControlDegraded,
+    controlActionOf,
+    acquireControl,
+    releaseControl,
   };
 });

@@ -5,15 +5,21 @@
       <span class="rsb-host" :title="`主机：${store.currentHostName}`">[{{ store.currentHostName }}]</span>
       <span class="rsb-title" :title="sessionTitle">{{ sessionTitle }}</span>
       <span class="rsb-sep">·</span>
-      <span
-        v-if="controlLabel"
-        class="rsb-control"
-        :class="`ctl-${controlStateTone(controlState)}`"
-      >{{ controlLabel }}</span>
+      <!-- 控制权四态徽标（ControlBadge 统一表达；none 无标记） -->
+      <ControlBadge :state="controlState" :device-name="controlDeviceName" />
       <span class="rsb-conn" :class="`cs-${connTone}`">
         <span class="rsb-dot" aria-hidden="true" />{{ connText }}
       </span>
       <span class="rsb-spacer" />
+      <!-- RC3-3：控制权获取/释放（store.controlActionOf 单一口径；
+           409 control.busy 走 toast 提示「他人持有」，不弹窗） -->
+      <AppButton
+        v-if="controlAction"
+        variant="ghost"
+        size="small"
+        :disabled="controlBusy"
+        @click="handleControl"
+      >{{ controlButtonText }}</AppButton>
       <AppButton
         variant="ghost"
         size="small"
@@ -24,8 +30,8 @@
     </div>
 
     <!-- revoked：fail-closed（交互稿 §3 revoked 行） -->
-    <RiskBanner v-if="revoked" title="授权已撤销" class="rsb-banner">
-      本设备对主机「{{ store.currentHostName }}」的授权已被对方撤销，连接已断开。如需继续访问请重新配对。
+    <RiskBanner v-if="revoked" title="本设备授权已被对方撤销" class="rsb-banner">
+      主机「{{ store.currentHostName }}」已撤销本设备的访问授权，连接已断开。如需继续访问请重新配对。
     </RiskBanner>
 
     <!-- attach 失败（可重试） -->
@@ -42,6 +48,17 @@
       v-else-if="reconnecting"
       type="warning"
       :message="reconnectText"
+    />
+
+    <!-- 被抢占降级（RC3-3，交互稿 §3 只读行）：曾持有控制权被 desktop/other 夺走 →
+         StatusBanner + 输入区禁用（复用断线冻结态的横幅语言，不闪弹窗）；
+         恢复 you（重新获取成功）后横幅消失、输入解锁 -->
+    <StatusBanner
+      v-else-if="degraded"
+      type="warning"
+      :message="degradedText"
+      action-text="重新获取控制权"
+      @action="handleControl"
     />
 
     <!-- 只读（控制权≠你 / 输入能力缺失）：输入禁用 + 原因提示，输出流继续 -->
@@ -68,6 +85,14 @@
         @select-all="onCtxSelectAll"
         @close="closeCtx"
       />
+      <!-- desktop 持有：只读蒙层（视觉风格 §4；pointer-events:none 不挡复制/滚动） -->
+      <div
+        v-if="controlState === 'desktop' && !revoked"
+        class="term-readonly-overlay"
+        aria-hidden="true"
+      >
+        <span class="tro-chip">桌面持有 · 只读</span>
+      </div>
     </div>
   </div>
 </template>
@@ -98,12 +123,13 @@ import AppButton from '../ui/AppButton.vue'
 import StatusBanner from '../ui/StatusBanner.vue'
 import RiskBanner from '../remote/RiskBanner.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
+import ControlBadge from '../remote/ControlBadge.vue'
 import { useRemoteClientStore } from '../../stores/remoteClient'
 import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import { useTerminalEngine } from '../../composables/useTerminalEngine'
 import { createRemoteTerminalTransport } from '../../composables/remoteTerminalTransport'
-import { controlStateLabel, controlStateTone, copyForRemoteError } from '../remote/remoteClientShared'
+import { copyForRemoteError } from '../remote/remoteClientShared'
 
 const props = withDefaults(defineProps<{ sessionId: string; active?: boolean }>(), {
   active: true,
@@ -131,16 +157,15 @@ const session = computed(
 )
 const sessionTitle = computed(() => session.value?.title || `#${props.sessionId}`)
 
-// ---- 连接/控制权状态投影（rc:* 事件聚合；回退到列表快照）----
+// ---- 连接/控制权状态投影（rc:* 事件聚合于 store，组件不自算控制态）----
 const termState = computed(() => store.remoteTerminalStates[props.sessionId] ?? null)
 const connState = computed(() => termState.value?.connState ?? '')
 const sessionState = computed(
   () => termState.value?.sessionState || session.value?.state || '',
 )
-const controlState = computed(
-  () => termState.value?.controlState || session.value?.control?.state || '',
-)
-const controlLabel = computed(() => controlStateLabel(controlState.value))
+// RC3-3：控制权四态走 store 投影（事件流优先、回退列表快照）。
+const controlState = computed(() => store.controlStateOf(props.sessionId))
+const controlDeviceName = computed(() => store.controlDeviceNameOf(props.sessionId))
 
 const revoked = computed(
   () => store.connectRevoked || (termState.value?.detail ?? '').includes('撤销'),
@@ -160,6 +185,17 @@ const reconnectText = computed(() => {
   }
   const retry = t?.nextRetryMs ? `，约 ${Math.max(1, Math.round(t.nextRetryMs / 1000))}s 后重试` : ''
   return `连接已断开，正在重连（第 ${t?.attempt ?? 0} 次尝试${retry}）。输出区已冻结，恢复后自动补齐历史。`
+})
+
+// RC3-3 被抢占降级：曾持有控制权被夺走且仍 attached（store 单一判定）。
+const degraded = computed(() => !revoked.value && store.isControlDegraded(props.sessionId))
+
+const degradedText = computed(() => {
+  if (controlState.value === 'desktop') {
+    return '桌面端已接管控制权，本终端已降级为只读；输出流继续。'
+  }
+  const who = controlDeviceName.value
+  return `控制权已被${who ? `「${who}」` : '其他设备'}持有，本终端已降级为只读；输出流继续。`
 })
 
 const readonlyReason = computed(() => {
@@ -201,8 +237,13 @@ const connText = computed(() => {
 })
 
 // 输入门：attached 蕴含 control=you + 输入能力就绪（conn.go refreshInputGate）。
+// rc:control-state 可能先于 conn-state(readonly) 到达：控制态非 you 立即锁输入
+//（fail-closed，与降级横幅同帧生效）。
 function canInput(): boolean {
-  return store.remoteTerminalStates[props.sessionId]?.connState === 'attached'
+  const st = store.remoteTerminalStates[props.sessionId]
+  if (!st || st.connState !== 'attached') return false
+  if (st.controlState && st.controlState !== 'you') return false
+  return true
 }
 
 // ---- 生命周期（镜像 TerminalView：保活/重绘/DPR/可见性）----
@@ -372,6 +413,36 @@ async function handleStop() {
   }
 }
 
+// ---- RC3-3 控制权获取/释放 ----
+const controlBusy = ref(false)
+const controlAction = computed(() =>
+  revoked.value ? ('' as const) : store.controlActionOf(props.sessionId),
+)
+const controlButtonText = computed(() => {
+  if (controlBusy.value) return controlAction.value === 'release' ? '释放中…' : '获取中…'
+  return controlAction.value === 'release' ? '释放控制权' : '获取控制权'
+})
+
+async function handleControl() {
+  const action = controlAction.value
+  if (!action || controlBusy.value) return
+  controlBusy.value = true
+  try {
+    if (action === 'acquire') {
+      await store.acquireControl(props.sessionId)
+      showInfo('已获取控制权')
+    } else {
+      await store.releaseControl(props.sessionId)
+      showInfo('已释放控制权')
+    }
+  } catch (err) {
+    // 409 control.busy → toast「他人持有」文案，不弹窗（视觉风格 §4-4）。
+    showError(copyForRemoteError(err))
+  } finally {
+    controlBusy.value = false
+  }
+}
+
 function handleClose() {
   emit('close')
 }
@@ -449,30 +520,7 @@ function onCtxSelectAll() {
   flex-shrink: 0;
 }
 
-/* 控制权徽标：色调复用远程会话列表四态（视觉风格 §4） */
-.rsb-control {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.rsb-control.ctl-you {
-  color: var(--success-strong);
-  background: rgba(52, 199, 89, 0.14);
-}
-
-.rsb-control.ctl-other {
-  color: var(--warning-strong);
-  background: rgba(255, 149, 0, 0.14);
-}
-
-.rsb-control.ctl-desktop {
-  color: var(--accent-strong);
-  background: rgba(0, 122, 255, 0.1);
-}
+/* 控制权四态徽标样式收口于 ControlBadge 组件（视觉风格 §4：同一语义同一表达）。 */
 
 .rsb-conn {
   display: inline-flex;
@@ -534,6 +582,31 @@ function onCtxSelectAll() {
   min-height: 0;
   position: relative;
   overflow: hidden;
+}
+
+/* desktop 持有：只读蒙层（视觉风格 §4）。pointer-events:none——
+   蒙层只表达只读语义，不阻断滚动/选择复制（输入禁用由 canInput 门保证）。 */
+.term-readonly-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 122, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(0, 122, 255, 0.3);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 10px 12px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tro-chip {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  background: var(--card);
+  border: 1px solid rgba(0, 122, 255, 0.35);
+  border-radius: 999px;
+  padding: 2px 10px;
 }
 
 .term-body :deep(.xterm) {

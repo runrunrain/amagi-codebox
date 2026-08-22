@@ -29,6 +29,8 @@ import {
   RemoteClientTerminalDetach,
   RemoteClientTerminalSendInput,
   RemoteClientTerminalResize,
+  RemoteClientAcquireControl,
+  RemoteClientReleaseControl,
 } from '../../wailsjs/go/main/App';
 import type { remoteclient, contract, main } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -40,6 +42,8 @@ export type ConnectResult = main.RemoteClientConnectResult;
 export type RemoteSessionSummary = contract.SessionSummary;
 export type RemoteSessionDetail = contract.SessionDetail;
 export type RemoteTerminalAttachResult = main.RemoteClientTerminalAttachResult;
+/** 控制权投影（RC3-3：acquire/release 响应；state/deviceName 顶层同契约快照）。 */
+export type ControlView = remoteclient.ControlView;
 
 /** 契约 12 稳定错误码（internal/remote/contract/errors.go KnownErrorCodes）。 */
 export const REMOTE_ERROR_CODES = [
@@ -221,4 +225,20 @@ export function sendRemoteTerminalInput(sessionID: string, data: string): Promis
 /** 调整远端 PTY 尺寸（cols/rows 正整数）。 */
 export function resizeRemoteTerminal(sessionID: string, cols: number, rows: number): Promise<void> {
   return callApi('[api.remoteClient.resizeRemoteTerminal]', () => RemoteClientTerminalResize(sessionID, cols, rows));
+}
+
+/* ---------------------------------------------------------------------------
+ * 控制权域（RC3-3：v1 control/acquire|release 空 body POST；写权威在服务端，
+ * 返回 ControlView 权威投影；409 control.busy / 403 control.forbidden 按契约
+ * 错误码透传，调用方据码提示「他人持有」）
+ * ------------------------------------------------------------------------- */
+
+/** 获取会话控制权。 */
+export function acquireRemoteControl(sessionID: string): Promise<ControlView> {
+  return callApi('[api.remoteClient.acquireRemoteControl]', () => RemoteClientAcquireControl(sessionID));
+}
+
+/** 释放会话控制权。 */
+export function releaseRemoteControl(sessionID: string): Promise<ControlView> {
+  return callApi('[api.remoteClient.releaseRemoteControl]', () => RemoteClientReleaseControl(sessionID));
 }

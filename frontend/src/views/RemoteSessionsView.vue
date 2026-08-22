@@ -32,9 +32,9 @@
       @action="handleRefresh"
     />
 
-    <!-- revoked：fail-closed（交互稿 §3 revoked 行；RC2-5 rc:revoked 事件接入） -->
-    <RiskBanner v-if="store.connectRevoked" title="授权已撤销">
-      本设备对主机「{{ store.currentHostName }}」的授权已被对方撤销，连接与终端已全部断开。如需继续访问，请在对方 CodeBox 重新打开配对窗口并完成配对。
+    <!-- revoked：fail-closed（交互稿 §3 revoked 行；rc:revoked 事件接入） -->
+    <RiskBanner v-if="store.connectRevoked" title="本设备授权已被对方撤销">
+      主机「{{ store.currentHostName }}」已撤销本设备的访问授权，连接与终端已全部断开。如需继续访问，请在对方 CodeBox 重新打开配对窗口并完成配对。
     </RiskBanner>
 
     <!-- loading：骨架（不渲染旧数据冒充） -->
@@ -85,16 +85,22 @@
           <span class="rs-state" :class="`tone-${remoteSessionStateTone(s.state)}`">
             {{ remoteSessionStateLabel(s.state) }}
           </span>
-          <span
-            v-if="controlStateLabel(s.control?.state ?? '')"
-            class="rs-control"
-            :class="`ctl-${controlStateTone(s.control?.state ?? '')}`"
-          >
-            {{ controlStateLabel(s.control?.state ?? '') }}
-          </span>
+          <!-- 控制权四态徽标（ControlBadge 统一表达；none 无标记） -->
+          <ControlBadge :state="s.control?.state ?? ''" :device-name="s.control?.deviceName ?? ''" />
         </div>
 
         <div class="rs-actions">
+          <!-- RC3-3：控制权获取/释放（store.controlActionOf 单一口径；
+               409 control.busy 走 toast 提示「他人持有」，不弹窗） -->
+          <AppButton
+            v-if="store.controlActionOf(s.id)"
+            variant="ghost"
+            size="small"
+            :disabled="busyId === s.id"
+            @click="handleControl(s)"
+          >
+            {{ controlButtonText(s) }}
+          </AppButton>
           <AppButton
             variant="primary"
             size="small"
@@ -154,6 +160,7 @@ import ErrorState from '../components/ui/ErrorState.vue';
 import StatusBanner from '../components/ui/StatusBanner.vue';
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
 import RiskBanner from '../components/remote/RiskBanner.vue';
+import ControlBadge from '../components/remote/ControlBadge.vue';
 import { useRemoteClientStore } from '../stores/remoteClient';
 import { useToast } from '../composables/useToast';
 import { appTypeLabel, tagColor } from '../utils/format';
@@ -162,8 +169,6 @@ import {
   copyForRemoteError,
   remoteSessionStateLabel,
   remoteSessionStateTone,
-  controlStateLabel,
-  controlStateTone,
 } from '../components/remote/remoteClientShared';
 import type { RemoteSessionSummary } from '../api/remoteClient';
 
@@ -173,7 +178,7 @@ const { showSuccess, showError } = useToast();
 
 const refreshing = ref(false);
 const busyId = ref('');
-const busyAction = ref<'stop' | 'restart' | 'delete' | ''>('');
+const busyAction = ref<'stop' | 'restart' | 'delete' | 'acquire' | 'release' | ''>('');
 
 const deleteConfirmOpen = ref(false);
 const pendingDelete = ref<RemoteSessionSummary | null>(null);
@@ -198,6 +203,37 @@ async function handleRefresh() {
     await store.refreshRemoteSessions();
   } finally {
     refreshing.value = false;
+  }
+}
+
+function controlButtonText(s: RemoteSessionSummary): string {
+  if (busyId.value === s.id) {
+    if (busyAction.value === 'acquire') return '获取中…';
+    if (busyAction.value === 'release') return '释放中…';
+  }
+  return store.controlActionOf(s.id) === 'release' ? '释放控制权' : '获取控制权';
+}
+
+/** RC3-3：获取/释放控制权。409 control.busy → toast「他人持有」文案，不弹窗。 */
+async function handleControl(s: RemoteSessionSummary) {
+  const action = store.controlActionOf(s.id);
+  if (!action || busyId.value) return;
+  busyId.value = s.id;
+  busyAction.value = action;
+  try {
+    if (action === 'acquire') {
+      await store.acquireControl(s.id);
+      showSuccess('已获取控制权');
+    } else {
+      await store.releaseControl(s.id);
+      showSuccess('已释放控制权');
+    }
+  } catch (err) {
+    // copyForRemoteError 对 control.busy 给出「控制权正被他人持有」文案。
+    showError(copyForRemoteError(err));
+  } finally {
+    busyId.value = '';
+    busyAction.value = '';
   }
 }
 
@@ -371,29 +407,7 @@ onUnmounted(() => {
   background: rgba(255, 59, 48, 0.12);
 }
 
-/* 控制权四态（视觉风格 §4）：none 无标记 / you 绿 / other 琥珀 / desktop 蓝 */
-.rs-control {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.rs-control.ctl-you {
-  color: var(--success-strong);
-  background: rgba(52, 199, 89, 0.14);
-}
-
-.rs-control.ctl-other {
-  color: var(--warning-strong);
-  background: rgba(255, 149, 0, 0.14);
-}
-
-.rs-control.ctl-desktop {
-  color: var(--accent-strong);
-  background: rgba(0, 122, 255, 0.1);
-}
+/* 控制权四态徽标样式收口于 ControlBadge 组件（视觉风格 §4：同一语义同一表达）。 */
 
 .rs-actions {
   display: flex;

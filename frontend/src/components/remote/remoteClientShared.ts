@@ -111,15 +111,15 @@ export function remoteSessionStateTone(state: string): SessionStateTone {
   }
 }
 
-/** 控制权四态（契约 contract.ControlState；视觉风格 §4）。 */
+/** 控制权四态（契约 contract.ControlState；视觉风格 §4 冻结文案）。 */
 export function controlStateLabel(state: string): string {
   switch (state) {
     case 'you':
-      return '控制权：你';
+      return '你持有';
     case 'other':
-      return '控制权：他人';
+      return '他人持有';
     case 'desktop':
-      return '控制权：桌面';
+      return '桌面持有';
     default:
       return '';
   }
