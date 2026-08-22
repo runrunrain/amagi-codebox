@@ -466,6 +466,22 @@ export function RemoteClientStopRemoteSession(arg1) {
   return window['go']['main']['App']['RemoteClientStopRemoteSession'](arg1);
 }
 
+export function RemoteClientTerminalAttach(arg1) {
+  return window['go']['main']['App']['RemoteClientTerminalAttach'](arg1);
+}
+
+export function RemoteClientTerminalDetach(arg1) {
+  return window['go']['main']['App']['RemoteClientTerminalDetach'](arg1);
+}
+
+export function RemoteClientTerminalResize(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RemoteClientTerminalResize'](arg1, arg2, arg3);
+}
+
+export function RemoteClientTerminalSendInput(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientTerminalSendInput'](arg1, arg2);
+}
+
 export function RemoteClientUpdateHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientUpdateHost'](arg1, arg2);
 }

@@ -249,6 +249,14 @@ export function RemoteClientRestartRemoteSession(arg1:string):Promise<contract.S
 
 export function RemoteClientStopRemoteSession(arg1:string):Promise<contract.SessionDetail>;
 
+export function RemoteClientTerminalAttach(arg1:string):Promise<main.RemoteClientTerminalAttachResult>;
+
+export function RemoteClientTerminalDetach(arg1:string):Promise<void>;
+
+export function RemoteClientTerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function RemoteClientTerminalSendInput(arg1:string,arg2:string):Promise<void>;
+
 export function RemoteClientUpdateHost(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;

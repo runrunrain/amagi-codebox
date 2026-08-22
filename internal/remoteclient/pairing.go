@@ -115,7 +115,7 @@ func (p *PairingService) CompletePairing(ctx context.Context, hostPort, code, de
 	if err := p.Creds.Put(credentialEntryName(deviceID), secret); err != nil {
 		return nil, localInfraError(fmt.Errorf("store device credential: %w", err))
 	}
-	entryID, err := p.Registry.upsertPaired(hp, deviceID, "", HealthReachable, time.Now())
+	entryID, err := p.Registry.UpsertPaired(hp, deviceID, "", HealthReachable, time.Now())
 	if err != nil {
 		_ = p.Creds.Delete(credentialEntryName(deviceID))
 		return nil, localInfraError(fmt.Errorf("update host registry: %w", err))

@@ -37,8 +37,9 @@ import (
 // 上层（App 转发层/前端）依据 Code 而非 Message 做恢复决策。
 type ClientError struct {
 	StatusCode int                // HTTP 状态码；WS/纯网络失败为 0
-	API        *contract.APIError // 解码成功的服务端 v1 错误体；可为 nil
+	API        *contract.APIError // 解码成功的服务端 v1 错误体；可为 nil（自产时为契约形态镜像）
 	Err        error              // 底层错误（网络/解码失败）
+	local      bool               // 自产标记（M-3 修复）：true=客户端本地构造，非服务端真契约体
 }
 
 // Error 实现 error；不含凭据与原始终端内容（蓝图 §9）。
@@ -108,7 +109,8 @@ func localAPIError(status int, code contract.ErrorCode, layer contract.ErrorLaye
 			Message:    msg,
 			ActionHint: hint,
 		},
-		Err: cause,
+		Err:   cause,
+		local: true, // 自产：非服务端真契约体（探活等消费方不得据此判定宿主存活）
 	}
 }
 
@@ -248,7 +250,16 @@ func NewTransport(baseURL string) (*Transport, error) {
 	}
 	return &Transport{
 		BaseURL: strings.TrimSuffix(u.Scheme+"://"+u.Host, "/"),
-		HTTP:    &http.Client{Timeout: defaultRequestTimeout},
+		// M-2（diting Minor 修复）：v1 契约无重定向语义；跟随 3xx 会让设备
+		// Cookie 被 net/http 重定向复制器带到同域其它端口/子域（Cookie 头
+		// 对子域开放，isDomainOrSubdomain），或把代理拦截页伪成成功链路。
+		// 最小修复：禁用跟随，重定向一律作为非成功状态交给 classifyFailure。
+		HTTP: &http.Client{
+			Timeout: defaultRequestTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}, nil
 }
 
@@ -279,6 +290,17 @@ func (t *Transport) HasCredential() bool {
 	return t.deviceID != ""
 }
 
+// Credential 返回内存态设备凭据快照（供 ws.go 拨号头注入；secret 不得入
+// 日志/事件）。未装载时 ok=false。
+func (t *Transport) Credential() (deviceID, secret string, ok bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.deviceID == "" || t.secret == "" {
+		return "", "", false
+	}
+	return t.deviceID, t.secret, true
+}
+
 // origin 返回随每个请求声明的 Origin（同源浏览器形态 http(s)://host:port），
 // 满足服务端 unsafeOriginRequired（POST/DELETE 系）与 safeBrowserProof
 // （GET 系）策略——与 e2e harness 的 Go 客户端做法一致。
@@ -294,6 +316,12 @@ type requestOption struct {
 
 // errorBodyCap 限制错误体读取量（防御异常服务端拖垮内存）。
 const errorBodyCap = 64 << 10
+
+// successBodyCap 是成功体读取上限（M-3，diting Minor 修复）：会话列表/详情
+// 是合法可超 64KiB 的响应，此前与错误体共用 errorBodyCap 会在静默截断后把
+// 合法成功体伪装成 service.down。4MiB 与服务端回放环上限同量级，超出则
+// 如实报 service.down（防御异常服务端）。
+const successBodyCap = 4 << 20
 
 // doResp 执行一次 v1 REST 请求：路径一律取自 contract.V1RestEndpoints 具名
 // handle；注入 X-Request-ID / Origin /（按需）device Cookie / Content-Type；
@@ -337,7 +365,12 @@ func (t *Transport) doResp(ctx context.Context, ep contract.RestEndpoint, opt re
 		req.AddCookie(&http.Cookie{Name: deviceCookieName, Value: buildDeviceCookieValue(deviceID, secret)})
 	}
 	if t.HTTP == nil {
-		t.HTTP = &http.Client{Timeout: defaultRequestTimeout}
+		t.HTTP = &http.Client{
+			Timeout: defaultRequestTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 
 	resp, err := t.HTTP.Do(req)
@@ -351,12 +384,13 @@ func (t *Transport) doResp(ctx context.Context, ep contract.RestEndpoint, opt re
 		if out == nil || resp.StatusCode == http.StatusNoContent {
 			return resp, nil
 		}
-		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, errorBodyCap))
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, successBodyCap))
 		if rerr != nil {
 			return resp, serviceDownError(resp.StatusCode, rerr)
 		}
 		if err := json.Unmarshal(raw, out); err != nil {
-			// 非 JSON 成功体（如代理拦截页）：如实映射 service.down，不伪装成功。
+			// 非 JSON 成功体（如代理拦截页）或超限截断：如实映射 service.down，
+			// 不伪装成功。
 			return resp, serviceDownError(resp.StatusCode, err)
 		}
 		return resp, nil

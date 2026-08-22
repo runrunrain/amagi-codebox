@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/remoteclient"
 )
@@ -95,17 +97,28 @@ func (a *App) rcContext() context.Context {
 }
 
 // rcDropConnection 在持 rcMu 的调用方处丢弃指定宿主的连接视图（hostID 空
-// 表示无条件丢弃）。Transport 无本地资源句柄，置 nil 即断开；凭据仅内存态
-// 随之失效。
-func (a *App) rcDropConnection(hostID string) {
+// 表示无条件丢弃），并取出待清理的终端管理器（调用方在锁外 DetachAll）。
+// Transport 无本地资源句柄，置 nil 即断开；凭据仅内存态随之失效。
+func (a *App) rcDropConnection(hostID string) *remoteclient.TerminalManager {
 	if a.rcConn == nil {
-		return
+		return nil
 	}
 	if hostID != "" && a.rcConn.hostID != hostID {
-		return
+		return nil
 	}
 	a.rcConn.transport.ClearCredential()
 	a.rcConn = nil
+	term := a.rcTerminals
+	a.rcTerminals = nil
+	return term
+}
+
+// rcDetachTerminals 在锁外安全终止全部终端长连接（Detach 会等读泵退出，
+// 不得在 rcMu 内调用）。
+func (a *App) rcDetachTerminals(term *remoteclient.TerminalManager) {
+	if term != nil {
+		term.DetachAll()
+	}
 }
 
 // rcSessions 返回当前已连接宿主的会话域客户端；未连接时返回明确错误。
@@ -166,8 +179,9 @@ func (a *App) RemoteClientUpdateHost(hostID, hostPort string) error {
 		}
 	}
 	a.rcMu.Lock()
-	a.rcDropConnection(hostID)
+	term := a.rcDropConnection(hostID)
 	a.rcMu.Unlock()
+	a.rcDetachTerminals(term)
 	a.Log.Info("remoteclient", "主机地址已更新，配对态已重置", fmt.Sprintf("id=%s", hostID))
 	return nil
 }
@@ -191,8 +205,9 @@ func (a *App) RemoteClientRemoveHost(hostID string) error {
 		return errRemoteClientUnavailable
 	}
 	a.rcMu.Lock()
-	a.rcDropConnection(hostID)
+	term := a.rcDropConnection(hostID)
 	a.rcMu.Unlock()
+	a.rcDetachTerminals(term)
 	if err := a.rcPairing.ForgetHost(hostID); err != nil {
 		return fmt.Errorf("remove remote host: %w", err)
 	}
@@ -266,12 +281,17 @@ type RemoteClientConnectResult struct {
 // secret → SetCredential 注入 Transport；随后以已鉴权 GET host/summary 验
 // 证凭据，通过才建立连接（单连接模型：顶替既有连接）。失败路径把健康投影
 // 写回登记簿（auth.revoked → revoked；网络族 → unreachable）。
+//
+// M-4（diting Minor 修复）：锁范围收窄——Keychain 读取与 host/summary 网络
+// 验证（最长 10s 超时）移出 rcMu，锁只保护登记簿快照与连接视图替换；慢/
+// 不可达主机的 Connect 不再阻塞会话域绑定、Disconnect 与主机管理。同主机
+// 在验证期间被移除时，替换阶段重新校验并放弃连接；并发 Connect 以最后替
+// 换者胜（与「Connect 成功即顶替」语义一致）。
 func (a *App) RemoteClientConnect(hostID string) (RemoteClientConnectResult, error) {
-	a.rcMu.Lock()
-	defer a.rcMu.Unlock()
 	if a.rcRegistry == nil || a.rcCreds == nil {
 		return RemoteClientConnectResult{}, errRemoteClientUnavailable
 	}
+	// 快照阶段（registry 自锁，不持 rcMu）。
 	entry, ok := a.rcRegistry.Get(hostID)
 	if !ok {
 		return RemoteClientConnectResult{}, fmt.Errorf("connect remote host: host %q not found", hostID)
@@ -279,7 +299,7 @@ func (a *App) RemoteClientConnect(hostID string) (RemoteClientConnectResult, err
 	if entry.DeviceID == "" {
 		return RemoteClientConnectResult{}, fmt.Errorf("connect remote host: host %q is not paired; complete pairing first", hostID)
 	}
-	// 凭据恢复：secret 只在内存与 Keychain 间流转，不入日志/登记簿（§9）。
+	// 验证阶段（锁外）：secret 只在内存与 Keychain 间流转，不入日志/登记簿（§9）。
 	secret, err := a.rcCreds.Get(remoteclient.CredentialEntryName(entry.DeviceID))
 	if err != nil {
 		return RemoteClientConnectResult{}, fmt.Errorf("connect remote host: load device credential: %w", err)
@@ -303,30 +323,44 @@ func (a *App) RemoteClientConnect(hostID string) (RemoteClientConnectResult, err
 		_ = a.rcRegistry.SetHealth(hostID, health, time.Now())
 		return RemoteClientConnectResult{}, fmt.Errorf("connect remote host: %w", cerr)
 	}
+	// 替换阶段（锁内只做指针交换；终端长连接在锁外收尾）。
+	a.rcMu.Lock()
+	if _, still := a.rcRegistry.Get(hostID); !still {
+		// 验证期间主机被移除：不复活已删条目。
+		a.rcMu.Unlock()
+		t.ClearCredential()
+		return RemoteClientConnectResult{}, fmt.Errorf("connect remote host: host %q was removed during connect", hostID)
+	}
 	if a.rcConn != nil && a.rcConn.hostID != hostID {
 		a.Log.Info("remoteclient", "顶替既有连接（单连接模型）", fmt.Sprintf("oldHost=%s", a.rcConn.hostID))
 	}
-	a.rcDropConnection("")
+	oldTerm := a.rcDropConnection("")
 	a.rcConn = &remoteClientConnection{
 		hostID:    hostID,
 		transport: t,
 		sessions:  remoteclient.NewSessionClient(t),
 	}
+	a.rcTerminals = remoteclient.NewTerminalManager(t, hostID, a.rcEventEmitter(), remoteclient.DefaultTerminalConfig())
+	a.rcMu.Unlock()
+	a.rcDetachTerminals(oldTerm)
 	_ = a.rcRegistry.SetHealth(hostID, remoteclient.HealthReachable, time.Now())
 	updated, _ := a.rcRegistry.Get(hostID)
 	a.Log.Info("remoteclient", "已连接宿主", fmt.Sprintf("hostID=%s deviceID=%s", hostID, entry.DeviceID))
 	return RemoteClientConnectResult{Host: updated, Summary: summary}, nil
 }
 
-// RemoteClientDisconnect 断开当前连接（仅丢弃本地连接视图与内存凭据；不动
-// 登记簿/Keychain）。未连接或 hostID 不匹配时返回明确错误。
+// RemoteClientDisconnect 断开当前连接（丢弃本地连接视图与内存凭据，终止
+// 全部终端长连接；不动登记簿/Keychain）。未连接或 hostID 不匹配时返回明确
+// 错误。
 func (a *App) RemoteClientDisconnect(hostID string) error {
 	a.rcMu.Lock()
-	defer a.rcMu.Unlock()
 	if a.rcConn == nil || a.rcConn.hostID != hostID {
+		a.rcMu.Unlock()
 		return fmt.Errorf("disconnect remote host: host %q is not connected", hostID)
 	}
-	a.rcDropConnection(hostID)
+	term := a.rcDropConnection(hostID)
+	a.rcMu.Unlock()
+	a.rcDetachTerminals(term)
 	a.Log.Info("remoteclient", "已断开宿主", fmt.Sprintf("hostID=%s", hostID))
 	return nil
 }
@@ -451,4 +485,138 @@ func (a *App) RemoteClientDeleteRemoteSession(sessionID string) error {
 	}
 	a.Log.Info("remoteclient", "远端会话已移除", fmt.Sprintf("session=%s", sid))
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// 终端域（RC2：蓝图 §6 流程 3 / §7 绑定表——/ws/v1 长连接经 conn.go，
+// 输出只经事件总线，绑定不返回流）
+// ---------------------------------------------------------------------------
+
+// rcEventEmitter 返回远程客户端事件桥：wails EventsEmit 转发六类 rc:* 事件
+// （conn.go 文件头冻结清单）。rc:revoked 同时把登记簿健康投影置 revoked 并
+// 丢弃当前连接视图（fail-closed；终端会话自行停止重连，不在此同步 Detach——
+// 回调运行在读泵 goroutine 栈上，同步等待其退出会死锁）。
+func (a *App) rcEventEmitter() remoteclient.EventEmitter {
+	return rcEmitterFunc(func(name string, payload any) {
+		if a.ctx != nil {
+			wailsRuntime.EventsEmit(a.ctx, name, payload)
+		}
+		if name == remoteclient.EventRevoked {
+			if hostID, ok := payload.(map[string]any)["hostId"].(string); ok && hostID != "" {
+				_ = a.rcRegistry.SetHealth(hostID, remoteclient.HealthRevoked, time.Now())
+			}
+			a.rcMu.Lock()
+			dropped := a.rcDropConnection("")
+			a.rcMu.Unlock()
+			_ = dropped // 终端会话已自行 fail-closed，不在此等待读泵退出
+		}
+	})
+}
+
+// rcEmitterFunc 让闭包满足 EventEmitter。
+type rcEmitterFunc func(name string, payload any)
+
+func (f rcEmitterFunc) Emit(name string, payload any) { f(name, payload) }
+
+// rcTerminalManager 返回当前已连接宿主的终端管理器；未连接时返回明确错误。
+func (a *App) rcTerminalManager() (*remoteclient.TerminalManager, error) {
+	a.rcMu.Lock()
+	defer a.rcMu.Unlock()
+	if a.rcTerminals == nil {
+		return nil, errors.New("remote client: no host is connected; call RemoteClientConnect first")
+	}
+	return a.rcTerminals, nil
+}
+
+// RemoteClientTerminalAttachResult 是 attach 绑定的返回投影（终端输出不经
+// 返回值，仅经 rc:terminal-output 等事件）。
+type RemoteClientTerminalAttachResult struct {
+	SessionID string `json:"sessionId"`
+	State     string `json:"state"`
+}
+
+// RemoteClientTerminalAttach 启动（或复用）当前宿主上一个会话的 /ws/v1 终端
+// 连接：attach → output/backfill/input.ack 事件流均经事件总线回流；输入/尺寸
+// 经 SendInput/Resize 绑定。幂等：重复 attach 返回既有会话状态。
+func (a *App) RemoteClientTerminalAttach(sessionID string) (RemoteClientTerminalAttachResult, error) {
+	m, err := a.rcTerminalManager()
+	if err != nil {
+		return RemoteClientTerminalAttachResult{}, err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return RemoteClientTerminalAttachResult{}, errors.New("attach terminal: sessionID is required")
+	}
+	s, err := m.Attach(sid)
+	if err != nil {
+		return RemoteClientTerminalAttachResult{}, fmt.Errorf("attach terminal: %w", err)
+	}
+	return RemoteClientTerminalAttachResult{SessionID: sid, State: string(s.State())}, nil
+}
+
+// RemoteClientTerminalDetach 终止会话终端连接（停止重连、销毁输入 outbox）。
+func (a *App) RemoteClientTerminalDetach(sessionID string) error {
+	m, err := a.rcTerminalManager()
+	if err != nil {
+		return err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return errors.New("detach terminal: sessionID is required")
+	}
+	if err := m.Detach(sid); err != nil {
+		return fmt.Errorf("detach terminal: %w", err)
+	}
+	a.Log.Info("remoteclient", "终端连接已断开", fmt.Sprintf("session=%s", sid))
+	return nil
+}
+
+// RemoteClientTerminalSendInput 发送终端输入（data 为 UTF-8 文本，App 层
+// 编码 base64 后经 outbox 幂等发送；未获得输入能力/控制权时返回明确错误）。
+func (a *App) RemoteClientTerminalSendInput(sessionID, data string) error {
+	m, err := a.rcTerminalManager()
+	if err != nil {
+		return err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return errors.New("send terminal input: sessionID is required")
+	}
+	s, err := m.Get(sid)
+	if err != nil {
+		return fmt.Errorf("send terminal input: %w", err)
+	}
+	if err := s.SendInput(data); err != nil {
+		return fmt.Errorf("send terminal input: %w", err)
+	}
+	return nil
+}
+
+// RemoteClientTerminalResize 调整远端 PTY 尺寸（cols/rows 正整数）。
+func (a *App) RemoteClientTerminalResize(sessionID string, cols, rows int) error {
+	m, err := a.rcTerminalManager()
+	if err != nil {
+		return err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return errors.New("resize terminal: sessionID is required")
+	}
+	s, err := m.Get(sid)
+	if err != nil {
+		return fmt.Errorf("resize terminal: %w", err)
+	}
+	if err := s.Resize(cols, rows); err != nil {
+		return fmt.Errorf("resize terminal: %w", err)
+	}
+	return nil
+}
+
+// shutdownRemoteClientTerminals 是应用退出的收尾钩子（Shutdown 调用）：终止
+// 全部终端长连接并丢弃连接视图（RC1 注释承诺的 conn.go 接入后补齐项）。
+func (a *App) shutdownRemoteClientTerminals() {
+	a.rcMu.Lock()
+	term := a.rcDropConnection("")
+	a.rcMu.Unlock()
+	a.rcDetachTerminals(term)
 }

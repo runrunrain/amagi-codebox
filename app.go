@@ -249,6 +249,9 @@ type App struct {
 	rcCreds    remoteclient.CredentialStore
 	rcPairing  *remoteclient.PairingService
 	rcConn     *remoteClientConnection
+	// rcTerminals 是当前已连接宿主的终端长连接管理器（RC2：/ws/v1 终端
+	// 域，随连接替换/断开/撤销整体 DetachAll）。
+	rcTerminals *remoteclient.TerminalManager
 
 	// Control runtime (M3-A2): the gate authority for all session write side
 	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
@@ -1671,6 +1674,10 @@ func (a *App) Startup(ctx context.Context) {
 // Shutdown Wails 生命周期钩子：应用关闭前停止代理和进程。
 func (a *App) Shutdown(ctx context.Context) {
 	a.Log.Info("app", "应用关闭中...")
+
+	// RC2：先收尾远程客户端终端长连接（等待读泵退出与 outbox 销毁；
+	// 不依赖网络往返，仅本地关闭）。
+	a.shutdownRemoteClientTerminals()
 
 	// M3-A2 §10.3: authoritative control shutdown fence FIRST — cancels all
 	// device/desktop launch/run permits and current operations, fences run

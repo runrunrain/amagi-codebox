@@ -2046,6 +2046,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class RemoteClientTerminalAttachResult {
+	    sessionId: string;
+	    state: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RemoteClientTerminalAttachResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.state = source["state"];
+	    }
+	}
 	export class RemoteWebUIStatusResult {
 	    openable: boolean;
 	    reason: string;

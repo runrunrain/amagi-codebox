@@ -52,8 +52,22 @@ type fakeHost struct {
 	noCookie       bool   // 成功但不发 Set-Cookie（契约异常注入）
 	cookieOverride string // 覆盖 Cookie 值（格式异常注入）
 	bodyDeviceID   string // 覆盖响应体 device.id（不一致注入）
+	ovStatus       int    // 全局覆写状态码（0=关闭；M-3 代理注入）
+	ovBody         string // 全局覆写响应体
 	captured       []capturedRequest
 	hang           bool // 挂起处理（超时测试）
+}
+
+func (f *fakeHost) setOverride(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ovStatus, f.ovBody = status, body
+}
+
+func (f *fakeHost) clearOverride() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ovStatus, f.ovBody = 0, ""
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -173,6 +187,16 @@ func deviceWireSecret(seed byte) string {
 
 // handle 是假宿主路由：/api/remote/v1 前缀 + 静态 /healthz（探活反例用）。
 func (f *fakeHost) handle(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	if f.ovStatus != 0 { // M-3 代理注入：任意路径直接覆写非契约响应
+		status, body := f.ovStatus, f.ovBody
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+		return
+	}
+	f.mu.Unlock()
 	f.mu.Lock()
 	hang := f.hang
 	f.mu.Unlock()

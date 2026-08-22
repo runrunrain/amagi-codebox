@@ -153,14 +153,16 @@ func NewSecretsCredentialStore(configDir string) (*SecretsCredentialStore, error
 	return &SecretsCredentialStore{svc: svc}, nil
 }
 
-// NewSecretsCredentialStoreWithService 用已构造的 SecretsService 构建凭据存储
-// （App 转发层复用既有服务实例 / 测试注入 stub SecretStore）。
+// NewSecretsCredentialStoreWithService 用「已装载完成」的 SecretsService 构建
+// 凭据存储（App 转发层复用 Startup 已 Load 的单实例 / 测试注入 stub SecretStore）。
+// M-1（diting Minor 修复）：不再重复调用 svc.Load()——App.Startup 已在密钥库
+// 就绪后调用本构造器，二次 Load 会做一次多余的 Keychain 往返，并把内存
+// cache 重置为磁盘态，任何在两次 Load 之间发生的 SetAPIKey 未保存变更都会
+// 被无声丢失；且 Load 期间的 loading 标记会让并发 Get 误报 loading。调用方
+// 负责先 Load（未装载服务在使用点会以 “secrets not loaded” 如实失败）。
 func NewSecretsCredentialStoreWithService(svc *secrets.SecretsService) (*SecretsCredentialStore, error) {
 	if svc == nil {
 		return nil, errors.New("nil SecretsService")
-	}
-	if err := svc.Load(); err != nil {
-		return nil, fmt.Errorf("load credential store: %w", err)
 	}
 	return &SecretsCredentialStore{svc: svc}, nil
 }
@@ -386,9 +388,10 @@ func (r *HostRegistry) SetHealth(id string, health HealthState, lastSeen time.Ti
 	return fmt.Errorf("host %q not found", id)
 }
 
-// upsertPaired 由配对流回填：按 DeviceID 匹配既有条目，其次按 HostPort；
+// UpsertPaired 由配对流回填：按 DeviceID 匹配既有条目，其次按 HostPort；
 // 都无则新增。返回条目 ID。DisplayName 属本机可编辑字段，已有值不覆盖。
-func (r *HostRegistry) upsertPaired(hostPort, deviceID, displayName string, health HealthState, lastSeen time.Time) (string, error) {
+// （导出供 App 转发层/测试装配已配对态；生产回填路径仍是配对流。）
+func (r *HostRegistry) UpsertPaired(hostPort, deviceID, displayName string, health HealthState, lastSeen time.Time) (string, error) {
 	hp, err := ValidateHostPort(hostPort)
 	if err != nil {
 		return "", err
@@ -467,8 +470,9 @@ func ProbeHost(ctx context.Context, entry HostEntry, creds CredentialStore) (Pro
 	if cerr.Code() == contract.ErrorCodeAuthRevoked {
 		return ProbeResult{State: HealthRevoked}, now
 	}
-	if cerr.API != nil && cerr.StatusCode > 0 {
-		// 契约形态错误（如未配对 401 auth.unpaired）：宿主可达。
+	if !cerr.local && cerr.API != nil && cerr.StatusCode > 0 {
+		// 服务端真契约体（如未配对 401 auth.unpaired）：宿主可达且讲 v1 协议。
+		// 自产 fallback（代理 502 HTML→net.unreachable 等）不计入（M-3 修复）。
 		return ProbeResult{State: HealthReachable}, now
 	}
 	return ProbeResult{State: HealthUnreachable}, now

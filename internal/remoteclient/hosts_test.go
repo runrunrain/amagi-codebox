@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,6 +250,15 @@ func TestProbeHostClassification(t *testing.T) {
 		t.Fatalf("dead probe state = %q, want unreachable", res.State)
 	}
 
+	// M-3 回归：代理 502 + 非 JSON 体（自产 fallback net.unreachable，带 StatusCode）
+	// → 不得判为宿主存活。
+	f.setOverride(http.StatusBadGateway, "<html>Bad Gateway</html>")
+	res, _ = ProbeHost(ctx, unpaired, creds)
+	if res.State != HealthUnreachable {
+		t.Fatalf("proxy-502 probe state = %q, want unreachable (M-3)", res.State)
+	}
+	f.clearOverride()
+
 	// Registry.Probe 把投影写回登记簿。
 	r, _ := newTestRegistry(t)
 	e, err := r.Add("", f.hostPort())
@@ -303,6 +313,9 @@ func (stubSecretStore) LegacyImportPath(p string) string { return p }
 func TestSecretsCredentialStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	svc := secrets.NewSecretsServiceWithStore(dir, stubSecretStore{})
+	if err := svc.Load(); err != nil {
+		t.Fatalf("load secrets service: %v", err)
+	}
 	store, err := NewSecretsCredentialStoreWithService(svc)
 	if err != nil {
 		t.Fatalf("NewSecretsCredentialStoreWithService: %v", err)
@@ -339,6 +352,9 @@ func TestPairingSecretNeverOnDisk(t *testing.T) {
 		t.Fatalf("LoadHostRegistry: %v", err)
 	}
 	svc := secrets.NewSecretsServiceWithStore(dir, stubSecretStore{})
+	if err := svc.Load(); err != nil {
+		t.Fatalf("load secrets service: %v", err)
+	}
 	creds, err := NewSecretsCredentialStoreWithService(svc)
 	if err != nil {
 		t.Fatalf("credential store: %v", err)
