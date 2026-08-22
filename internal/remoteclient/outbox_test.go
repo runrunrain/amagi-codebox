@@ -271,3 +271,52 @@ func TestOutboxIssuedNotRecycled(t *testing.T) {
 }
 
 var _ = base64.StdEncoding
+
+// TestOutboxFrozenHeadDoesNotBlockQueue（MA-1 回归）：FreezePending 冻结队首后，
+// 后续 Accept 的新 entry 必须照常出队发出（冻结头不阻塞 FIFO，对齐 mobile
+// inputOutbox.ts 的 tryStartHead/retryHead——首个 pending 才是队首）；冻结头
+// 保留迟到 ACK 资格；single-flight 语义不变。
+func TestOutboxFrozenHeadDoesNotBlockQueue(t *testing.T) {
+	clock := &fakeOutboxClock{now: time.Unix(7000, 0)}
+	send := &recordedSend{}
+	ob := newTestOutbox(clock, send)
+	if _, ok := ob.Accept(b64("first")); !ok {
+		t.Fatal("first accept failed")
+	}
+	first := send.sent()[0]
+	ob.FreezePending() // control.forbidden：队首冻结为 halted
+	if _, ok := ob.Accept(b64("second")); !ok {
+		t.Fatal("accept after freeze must succeed (freeze must not permanently disable)")
+	}
+	sent := send.sent()
+	if len(sent) != 2 {
+		t.Fatalf("wire attempts = %d, want 2 (halted head must not block the FIFO)", len(sent))
+	}
+	if sent[1].Data != b64("second") {
+		t.Errorf("second wire attempt data = %q, want second payload", sent[1].Data)
+	}
+	if sent[1].ID == first.ID {
+		t.Error("second attempt must carry the new entry's MessageID, not the frozen head's")
+	}
+	// single-flight：第二项在途未结算，第三项 Accept 不抢发。
+	if _, ok := ob.Accept(b64("third")); !ok {
+		t.Fatal("third accept failed")
+	}
+	if n := len(send.sent()); n != 2 {
+		t.Fatalf("wire attempts after third accept = %d, want 2 (single-flight)", n)
+	}
+	// Resume（重连）同样跳过冻结头：续发的是首个 pending（second 的新 attempt）。
+	ob.Pause()
+	ob.Resume()
+	sent = send.sent()
+	if len(sent) != 3 {
+		t.Fatalf("wire attempts after resume = %d, want 3 (pending head retried, halted skipped)", len(sent))
+	}
+	if sent[2].ID != sent[1].ID {
+		t.Errorf("resume attempt id = %q, want same as second entry %q", sent[2].ID, sent[1].ID)
+	}
+	// 冻结头保留迟到 ACK 资格。
+	if !ob.OnAck(first.ID, first.RequestID) {
+		t.Fatal("frozen head must still accept its late ACK")
+	}
+}

@@ -36,6 +36,10 @@ import (
 // wsHandshakeTimeout 是 WS 拨号握手的默认超时（与服务端 REST 短连接节奏一致）。
 const wsHandshakeTimeout = 10 * time.Second
 
+// wsWriteTimeout 是出站帧的写超时（MI-2）：数据帧 WriteMessage 与 ping 控制帧
+// 共用——对端停滞且发送缓冲饱和时写路径有界失败，交由重试/重连状态机恢复。
+const wsWriteTimeout = 10 * time.Second
+
 // wsURL 从 REST BaseURL 推导唯一 WS URL：http→ws / https→wss + 契约冻结路径，
 // 无查询参数（契约 §4：URL MUST NOT 携带 token/session/mode/凭据）。
 func wsURL(baseURL string) string {

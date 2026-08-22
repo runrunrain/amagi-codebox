@@ -89,6 +89,40 @@ func TestTrackerOutputDuplicateDropAndHoleBuffer(t *testing.T) {
 	}
 }
 
+// TestTrackerPendingBackfillBoundToConnection（MA-2 回归）：在途 backfill 登记
+// 生命周期绑定连接——ResetPendingBackfills 清空后，孤儿 rid 的迟到 result 归
+// Unknown；UnregisterBackfill 撤销单项（写帧失败路径）。
+func TestTrackerPendingBackfillBoundToConnection(t *testing.T) {
+	const sid = contract.SessionID("s-orphan")
+	tr := NewReplayTracker()
+	tr.OnAttached(attached("r", sid, []contract.ReplayFrame{rf(sid, 1, "a")}, 1, 1,
+		contract.HistorySnapshot{State: contract.HistoryStateContinuous}))
+	tr.RegisterBackfill("rb1", 2, 5)
+	if n := tr.InFlightBackfills(); n != 1 {
+		t.Fatalf("in-flight after register = %d, want 1", n)
+	}
+	// 新连接建立：清空孤儿登记（孤儿 rid 的 result 不可能到达）。
+	tr.ResetPendingBackfills()
+	if n := tr.InFlightBackfills(); n != 0 {
+		t.Fatalf("in-flight after reset = %d, want 0", n)
+	}
+	// 即使孤儿 rid 的 result（错配）到达，也归 Unknown 忽略、不入账。
+	out := tr.OnBackfillResult(contract.BackfillFramesResultEvent{
+		Type: contract.ServerEventTypeBackfillResult, RequestID: "rb1", SessionID: sid,
+		FromSeq: 2, ToSeq: 5, EarliestSeq: 2, LatestSeq: 5,
+		Frames: []contract.ReplayFrame{rf(sid, 2, "x")},
+	})
+	if !out.Unknown || len(out.Frames) != 0 {
+		t.Fatalf("orphan rid result = %+v, want Unknown with no frames", out)
+	}
+	// 单项撤销（写帧失败）：不留 degraded 投影。
+	tr.RegisterBackfill("rb2", 2, 5)
+	tr.UnregisterBackfill("rb2")
+	if n := tr.InFlightBackfills(); n != 0 {
+		t.Fatalf("in-flight after unregister = %d, want 0", n)
+	}
+}
+
 // TestTrackerBackfillGapAdjudication：gap 变体 = 服务端裁定不可得——前沿推进
 // 跨过区间、如实上报、后方缓冲帧随后冲刷。
 func TestTrackerBackfillGapAdjudication(t *testing.T) {

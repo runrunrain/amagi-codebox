@@ -53,6 +53,11 @@ type TerminalConfig struct {
 	BackoffMax       time.Duration // 退避封顶（默认 30s）
 	PingInterval     time.Duration // 应用层 ping；0 关闭
 	PongWait         time.Duration // F-4：读超时——窗口内无任何读入（含协议 pong）判死连接；仅 PingInterval>0 时生效，缺省 2×PingInterval
+	// FrameWriteTimeout 是数据帧写超时（MI-2）：对端停滞且 TCP 发送缓冲饱和
+	// 时 WriteMessage 会无限阻塞（写路径持 writeMu，outbox 发送又持 outbox.mu，
+	// 会拖住绑定调用与全部 outbox 操作直至 F-4 读超时重连）。缺省与 ping 控制
+	// 帧同拍 10s；测试可注入缩比。0 = 缺省。
+	FrameWriteTimeout time.Duration
 	// Logger 是净化诊断日志 seam（F-3）：App 层注入既有日志设施，测试注入
 	// 录制器；nil 丢弃。本包保证只传已净化文本——不含凭据与终端字节（蓝图 §9）。
 	Logger func(format string, args ...any)
@@ -65,12 +70,13 @@ type TerminalConfig struct {
 // 读超时 60s）。
 func DefaultTerminalConfig() TerminalConfig {
 	return TerminalConfig{
-		HandshakeTimeout: wsHandshakeTimeout,
-		BackoffBase:      1 * time.Second,
-		BackoffMax:      30 * time.Second,
-		PingInterval:    30 * time.Second,
-		PongWait:        60 * time.Second,
-		Now:             time.Now,
+		HandshakeTimeout:  wsHandshakeTimeout,
+		BackoffBase:       1 * time.Second,
+		BackoffMax:        30 * time.Second,
+		PingInterval:      30 * time.Second,
+		PongWait:          60 * time.Second,
+		FrameWriteTimeout: wsWriteTimeout,
+		Now:               time.Now,
 		After: func(ctx context.Context, d time.Duration) error {
 			t := time.NewTimer(d)
 			defer t.Stop()
@@ -97,6 +103,9 @@ func (c TerminalConfig) withDefaults() TerminalConfig {
 	}
 	if c.PingInterval > 0 && c.PongWait <= 0 {
 		c.PongWait = 2 * c.PingInterval
+	}
+	if c.FrameWriteTimeout <= 0 {
+		c.FrameWriteTimeout = def.FrameWriteTimeout
 	}
 	if c.Now == nil {
 		c.Now = def.Now
@@ -308,12 +317,27 @@ func (s *TerminalSession) runOnce() (terminal bool, backoff time.Duration) {
 		if ctx.Err() != nil {
 			return true, 0 // Detach/取消：静默退出
 		}
+		// MI-3：凭据已被清除（宿主断开/换连接顶替时 Attach 与 DetachAll 竞态
+		// 孤儿化的会话无人再 Detach）——权威已失，判终态退出，不再无限重试。
+		if !s.t.HasCredential() {
+			s.logf("ws dial aborted: transport credential cleared (orphaned session terminal)")
+			s.mu.Lock()
+			s.stopped = true
+			s.mu.Unlock()
+			s.setState(ConnDisconnected, "credential cleared")
+			return true, 0
+		}
 		s.logf("ws dial failed: %v", err)
 		return false, s.nextBackoff()
 	}
 	s.mu.Lock()
 	s.ws = conn
 	s.mu.Unlock()
+	// MA-2：backfill 在途登记的生命周期绑定连接——result 只会出现在发出请求
+	// 的那条连接上；拨号成功即清空旧连接孤儿 rid（否则 InFlightBackfills 恒
+	// ≥1 会把输入门永久锁在 degraded），未决缺口由 attach 快照 gap / live
+	// 洞路径在本连接重建请求。
+	s.tracker.ResetPendingBackfills()
 	defer func() {
 		s.mu.Lock()
 		s.ws = nil
@@ -440,10 +464,7 @@ func (s *TerminalSession) readPump(conn *websocket.Conn, attachRid contract.Requ
 			s.controlYou = known.State == contract.ControlStateYou
 			s.mu.Unlock()
 			s.refreshInputGate()
-			s.emitter.Emit(EventControlState, map[string]any{
-				"sessionId": string(s.sessionID), "state": string(known.State),
-				"reason": known.Reason, "occurredAt": known.OccurredAt,
-			})
+			s.emitter.Emit(EventControlState, controlStatePayload(s.sessionID, known.State, known.DeviceName, known.Reason, known.OccurredAt))
 		case contract.BackfillResultEvent:
 			s.onBackfillResult(known)
 		case contract.InputAckEvent:
@@ -483,10 +504,7 @@ func (s *TerminalSession) onAttached(ev contract.SessionAttachedEvent) {
 	s.emitter.Emit(EventSessionState, map[string]any{
 		"sessionId": string(s.sessionID), "state": string(ev.Snapshot.Session.State),
 	})
-	s.emitter.Emit(EventControlState, map[string]any{
-		"sessionId": string(s.sessionID), "state": string(ev.Snapshot.Control.State),
-		"reason": "attach-snapshot",
-	})
+	s.emitter.Emit(EventControlState, controlStatePayload(s.sessionID, ev.Snapshot.Control.State, ev.Snapshot.Control.DeviceName, "attach-snapshot", ""))
 }
 
 // onOutput 处理 live output：单调消费、洞→backfill、重复丢弃。
@@ -725,7 +743,7 @@ func (s *TerminalSession) writePingControl() error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+	return ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteTimeout))
 }
 
 // writeFrame 编码并写一帧（写互斥；编码失败 fail-closed 不发送）。
@@ -742,6 +760,10 @@ func (s *TerminalSession) writeFrame(f contract.ClientFrame) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	// MI-2：数据帧写超时——对端停滞且 TCP 发送缓冲饱和时 WriteMessage 会无限
+	// 阻塞（写路径持 writeMu，outbox 发送又持 outbox.mu）；与 ping 控制帧同
+	// 设 deadline，超时按写失败处理（outbox 记 attempt，由重试/重连恢复）。
+	_ = ws.SetWriteDeadline(time.Now().Add(s.cfg.FrameWriteTimeout))
 	return ws.WriteMessage(websocket.TextMessage, raw)
 }
 
@@ -757,7 +779,12 @@ func (s *TerminalSession) requestBackfill(from, to contract.Seq) error {
 	}
 	rid := s.newRequestID()
 	s.tracker.RegisterBackfill(rid, from, to)
-	return s.writeFrame(contract.BackfillFrame{Type: contract.ClientFrameTypeBackfill, RequestID: rid, FromSeq: from, ToSeq: to})
+	if err := s.writeFrame(contract.BackfillFrame{Type: contract.ClientFrameTypeBackfill, RequestID: rid, FromSeq: from, ToSeq: to}); err != nil {
+		// MA-2：写帧失败 → result 不可能到达，同步撤销登记（不残留 degraded 投影）。
+		s.tracker.UnregisterBackfill(rid)
+		return err
+	}
+	return nil
 }
 
 // emitReplayFrame 把已消费的 replay 帧投递到事件总线（output 解码交给前端
@@ -769,6 +796,24 @@ func (s *TerminalSession) emitReplayFrame(fr contract.ReplayFrame) {
 			"sessionId": string(s.sessionID), "seq": uint64(out.Seq), "data": out.Chunk,
 		})
 	}
+}
+
+// controlStatePayload 构造 rc:control-state 事件载荷（冻结形状见文件头：
+// {sessionId, state, deviceName?, reason, occurredAt}；MI-1：deviceName 仅
+// state=other 时服务端必带，指针非空且非空串才携带——否则省略）。
+func controlStatePayload(sessionID contract.SessionID, state contract.ControlState, deviceName *string, reason, occurredAt string) map[string]any {
+	payload := map[string]any{
+		"sessionId": string(sessionID),
+		"state":     string(state),
+		"reason":    reason,
+	}
+	if occurredAt != "" {
+		payload["occurredAt"] = occurredAt
+	}
+	if deviceName != nil && *deviceName != "" {
+		payload["deviceName"] = *deviceName
+	}
+	return payload
 }
 
 // emitGapNotice 如实上报缺口（不吞不改；上层决策 continue-from-latest）。

@@ -252,10 +252,10 @@ func NewTransport(baseURL string) (*Transport, error) {
 	}
 	return &Transport{
 		BaseURL: strings.TrimSuffix(u.Scheme+"://"+u.Host, "/"),
-		// M-2（diting Minor 修复）：v1 契约无重定向语义；跟随 3xx 会让设备
+		// 自查加固（非 diting 编号项）：v1 契约无重定向语义；跟随 3xx 会让设备
 		// Cookie 被 net/http 重定向复制器带到同域其它端口/子域（Cookie 头
 		// 对子域开放，isDomainOrSubdomain），或把代理拦截页伪成成功链路。
-		// 最小修复：禁用跟随，重定向一律作为非成功状态交给 classifyFailure。
+		// 处置：禁用跟随，重定向一律作为非成功状态交给 classifyFailure。
 		HTTP: &http.Client{
 			Timeout: defaultRequestTimeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -319,7 +319,7 @@ type requestOption struct {
 // errorBodyCap 限制错误体读取量（防御异常服务端拖垮内存）。
 const errorBodyCap = 64 << 10
 
-// successBodyCap 是成功体读取上限（M-3，diting Minor 修复）：会话列表/详情
+// successBodyCap 是成功体读取上限（M-2，diting Minor 修复）：会话列表/详情
 // 是合法可超 64KiB 的响应，此前与错误体共用 errorBodyCap 会在静默截断后把
 // 合法成功体伪装成 service.down。4MiB 与服务端回放环上限同量级，超出则
 // 如实报 service.down（防御异常服务端）。

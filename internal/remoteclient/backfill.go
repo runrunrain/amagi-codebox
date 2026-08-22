@@ -165,11 +165,30 @@ func (r *ReplayTracker) OnAttached(ev contract.SessionAttachedEvent) AttachOutco
 	return out
 }
 
-// RegisterBackfill 登记一个在途 backfill 请求（requestId 关联）。
+// RegisterBackfill 登记一个在途 backfill 请求（requestId 关联）。登记的
+// 生命周期绑定发出请求的那条连接：result 只会在同一连接上返回。
 func (r *ReplayTracker) RegisterBackfill(rid contract.RequestID, from, to contract.Seq) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pending[rid] = seqRange{From: from, To: to}
+}
+
+// ResetPendingBackfills 清空全部在途登记（MA-2：新连接建立时调用——旧连接
+// 孤儿 rid 的 result 不可能到达，残留会把 InFlightBackfills 恒抬 ≥1 而将
+// 输入门永久锁在 degraded；未决缺口由 attach 快照 gap / live 洞路径在新
+// 连接上重建请求）。
+func (r *ReplayTracker) ResetPendingBackfills() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pending = make(map[contract.RequestID]seqRange)
+}
+
+// UnregisterBackfill 撤销单个在途登记（MA-2：backfill 帧写失败——result
+// 不可能到达，同步撤销，不残留 degraded 投影）。
+func (r *ReplayTracker) UnregisterBackfill(rid contract.RequestID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.pending, rid)
 }
 
 // OnOutput 消费一条 live output（见文件头决策表）。

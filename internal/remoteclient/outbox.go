@@ -251,7 +251,8 @@ func (o *InputOutbox) Resume() {
 }
 
 // FreezePending 冻结当前 pending（不再自动重发，但接受迟到 ACK；outbox 未
-// 永久禁用——control.forbidden / 他人接管等权威丢失场景）。
+// 永久禁用、后续 Accept 的新 entry 照常出队——control.forbidden / 他人接管
+// 等权威丢失场景；MA-1：冻结头不阻塞 FIFO）。
 func (o *InputOutbox) FreezePending() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -305,35 +306,39 @@ func (o *InputOutbox) PendingCount() int {
 // 内部（mu 已持有）
 // ---------------------------------------------------------------------------
 
-// headLocked 返回最靠前的未结算 entry。
+// headLocked 返回最靠前的待发 entry（首个 pending；MA-1 对齐 mobile
+// inputOutbox.ts 的 tryStartHead/retryHead——settled 已出队、halted 保留迟到
+// ACK 资格但不参与出队，冻结头不阻塞 FIFO 后续重发）。
 func (o *InputOutbox) headLocked() *inputEntry {
 	for _, e := range o.entries {
-		if e.state != entrySettled {
+		if e.state == entryPending {
 			return e
 		}
 	}
 	return nil
 }
 
-// kickHeadLocked 只启动「从未发过」的队首（single-flight 起点）。
+// kickHeadLocked 只启动「从未发过」的队首（single-flight 起点；headLocked
+// 已保证返回 pending）。
 func (o *InputOutbox) kickHeadLocked() {
 	if o.halted || o.paused {
 		return
 	}
 	head := o.headLocked()
-	if head == nil || head.state != entryPending || head.attempts > 0 {
+	if head == nil || head.attempts > 0 {
 		return
 	}
 	o.fireAttemptLocked(head)
 }
 
-// retryHeadLocked 为队首发下一轮 attempt（计数、受上限约束）。
+// retryHeadLocked 为队首发下一轮 attempt（计数、受上限约束；halted 冻结头
+// 不在候选内，其后 pending 照常重发）。
 func (o *InputOutbox) retryHeadLocked() {
 	if o.halted || o.paused {
 		return
 	}
 	head := o.headLocked()
-	if head == nil || head.state != entryPending {
+	if head == nil {
 		return
 	}
 	if head.attempts >= o.cfg.MaxAttempts {
