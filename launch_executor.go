@@ -476,8 +476,10 @@ func (osAtomicConfigOperations) CreateTemp(dir, pattern string) (atomicConfigFil
 func (osAtomicConfigOperations) Rename(oldPath, newPath string) error {
 	return os.Rename(oldPath, newPath)
 }
-func (osAtomicConfigOperations) Remove(path string) error        { return os.Remove(path) }
-func (osAtomicConfigOperations) SyncDirectory(path string) error { return syncConfigDirectory(path) }
+func (osAtomicConfigOperations) Remove(path string) error { return os.Remove(path) }
+func (osAtomicConfigOperations) SyncDirectory(path string) error {
+	return platform.SyncConfigDirectory(path)
+}
 
 func writeAtomicConfig(path string, content []byte, mode, dirMode os.FileMode) (atomicConfigWriteResult, error) {
 	return writeAtomicConfigWithOperations(path, content, mode, dirMode, osAtomicConfigOperations{})
@@ -566,7 +568,7 @@ func (e *configMutationEffect) compensateAttempt(ctx context.Context) launchplan
 	current, err := os.ReadFile(e.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !e.prevExisted {
-			if syncErr := syncConfigDirectory(filepath.Dir(e.path)); syncErr != nil {
+			if syncErr := platform.SyncConfigDirectory(filepath.Dir(e.path)); syncErr != nil {
 				outcome.Disposition = launchplan.CompensationUnavailable
 				outcome.Message = syncErr.Error()
 				return outcome
@@ -592,7 +594,7 @@ func (e *configMutationEffect) compensateAttempt(ctx context.Context) launchplan
 			outcome.Message = err.Error()
 			return outcome
 		}
-		if err := syncConfigDirectory(filepath.Dir(e.path)); err != nil {
+		if err := platform.SyncConfigDirectory(filepath.Dir(e.path)); err != nil {
 			outcome.Disposition = launchplan.CompensationUnavailable
 			outcome.Message = err.Error()
 			return outcome

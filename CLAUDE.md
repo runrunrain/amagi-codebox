@@ -34,6 +34,15 @@ go test -race ./internal/session               # with race detector (concurrency
 ```
 Note: `.github/workflows/ci.yml` runs `go vet ./...` (windows + macos), full `go test ./... -count=1` on macos-latest (windows-latest only compile-checks via `-run '^$'`), plus frontend/mobile builds and the mobile Vitest suite. The `envcheck.test` file in the repo root is a stale local test binary that was never committed to git, not a source file — ignore it.
 
+### Test file locations
+- Go tests: same package/directory as the code under test (`*_test.go`); semantic `<topic>_test.go` for themed/regression tests — no new batch-number file prefixes (e.g. `m005_`, `r5_002_`); keep milestone anchors in header comments. Root `package main` tests only for the App binding surface / process-level behavior.
+- Frontend unit tests → `frontend/src/__tests__/` (mirrors `src/`, `<module>.test.ts`, Vitest); mobile unit tests → `mobile/src/__tests__/`.
+- E2E: root `e2e/` is the main cross-cutting suite; `frontend/e2e/` is only for stopping/terminal-rendering specs — no third location.
+- Full rules: `docs/developer/testing.md` → 「测试文件位置与命名规范」.
+
+### Root-directory Go files
+The root `package main` admits only: the Wails entrypoints (`main.go`, `bind_list.go`), App binding/orchestration files, App-tightly-coupled launch planner/executor, and platform files bound to root `//go:embed` assets (tray icons). Standalone domain components must live in `internal/<domain>`; platform utilities go to `internal/platform` as per-OS files.
+
 ### Toolchain version baseline (C-001)
 **CI/release** precisely pins **Go `1.25.0`** and **Node `20.19.0`** (exact versions in `ci.yml`/`release.yml` setup-go/setup-node). **`go.mod`** declares the project's Go language baseline (`go 1.25.0`) — this is the minimum toolchain the module targets, not a local version lock: there is no `toolchain` directive and no `.go-version`, so a locally installed newer Go (e.g. 1.26.x) is used as-is without forced downgrade. **Node** is locally pinned by the root `.node-version` file (currently `22.23.2`, consumed by fnm/nodenv — note this intentionally diverges from the CI pin). npm stays `>=10` in the manifests (not engine-strict).
 

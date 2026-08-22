@@ -11,21 +11,22 @@ import (
 	"testing"
 	"time"
 
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/session"
 )
 
-type r8FailingCleanupStore struct{ externalCleanupStore }
+type r8FailingCleanupStore struct{ cleanupstore.Store }
 
-func (r8FailingCleanupStore) Register(externalCleanupRecord) error {
+func (r8FailingCleanupStore) Register(cleanupstore.Record) error {
 	return errors.New("injected durable write failure")
 }
 
 func TestR8_001_PostStartDurabilityFailureReturnsWithDurableReservation(t *testing.T) {
 	app, fake, configDir := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
-	underlying := newFileExternalCleanupStore(configDir)
-	app.externalCleanupStore = r8FailingCleanupStore{externalCleanupStore: underlying}
+	underlying := cleanupstore.NewFileStore(configDir)
+	app.externalCleanupStore = r8FailingCleanupStore{Store: underlying}
 	fake.setAsyncStop(true)
 	var sessionID string
 	fake.onStarted = func(id string) { sessionID = id }
@@ -98,7 +99,7 @@ func TestR8_001_ActiveRunShutdownStopAllFailureRemainsDurable(t *testing.T) {
 func TestR8_001_DurableCleanupReloadContinuesReaperAcrossAppInstance(t *testing.T) {
 	app1, fake1, configDir := newR6ExternalLeaseApp(t)
 	app1.configDir = configDir
-	app1.externalCleanupStore = newFileExternalCleanupStore(configDir)
+	app1.externalCleanupStore = cleanupstore.NewFileStore(configDir)
 	configureR6CodexHeadroom(t, app1, configDir)
 
 	var sessionID string
@@ -134,7 +135,7 @@ func TestR8_001_DurableCleanupReloadContinuesReaperAcrossAppInstance(t *testing.
 	app2.sharedCoord = remote.NewSharedServiceCoordinator()
 	app2.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	app2.externalRunPollInterval = 5 * time.Millisecond
-	app2.externalCleanupStore = newFileExternalCleanupStore(configDir)
+	app2.externalCleanupStore = cleanupstore.NewFileStore(configDir)
 	fake2 := newR6ExternalLauncher()
 	fake2.setRecoverRunning(true)
 	fake2.setStopError(errors.New("recovered process still resists Stop"))
@@ -170,7 +171,7 @@ func TestR8_001_DurableCleanupReloadContinuesReaperAcrossAppInstance(t *testing.
 	app3.configDir = configDir
 	app3.ctx = context.Background()
 	app3.sharedCoord = remote.NewSharedServiceCoordinator()
-	app3.externalCleanupStore = newFileExternalCleanupStore(configDir)
+	app3.externalCleanupStore = cleanupstore.NewFileStore(configDir)
 	app3.externalLauncher = newR6ExternalLauncher()
 	if err := app3.recoverExternalCleanups(); err != nil {
 		t.Fatalf("third-App recovery: %v", err)

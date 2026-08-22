@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/agentprofile"
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envcheck"
@@ -100,8 +101,8 @@ type externalCleanupClaim struct {
 	sessionID        string
 	admission        *remote.SharedLaunchAdmission
 	lifecycle        externalLauncherPort
-	record           externalCleanupRecord
-	reservation      externalCleanupReservation
+	record           cleanupstore.Record
+	reservation      cleanupstore.Reservation
 	recordDurable    bool
 	recoveryReason   remote.ExternalCleanupRecoveryReason
 	terminalObserved bool
@@ -299,8 +300,8 @@ type App struct {
 
 	externalCleanupMu                     sync.Mutex
 	externalCleanups                      map[string]*externalCleanupClaim
-	externalDurableRuns                   map[string]externalCleanupRecord
-	externalCleanupStore                  externalCleanupStore
+	externalDurableRuns                   map[string]cleanupstore.Record
+	externalCleanupStore                  cleanupstore.Store
 	externalCleanupRecoveryBlocked        bool
 	externalOwnershipAttempt              *externalOwnershipAttempt
 	externalShutdownCleanupBudget         time.Duration
@@ -523,8 +524,8 @@ func NewApp(mobileAssets embed.FS) *App {
 	}
 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
 	app.externalCleanups = make(map[string]*externalCleanupClaim)
-	app.externalDurableRuns = make(map[string]externalCleanupRecord)
-	app.externalCleanupStore = newFileExternalCleanupStore(configDir)
+	app.externalDurableRuns = make(map[string]cleanupstore.Record)
+	app.externalCleanupStore = cleanupstore.NewFileStore(configDir)
 	// Wire the unbound PTY bridge adapter (design §8.6.3): legacy/v1 WS reaches
 	// PTY callbacks through this adapter, not through Wails-bound App methods.
 	app.Remote.SetPtyBridge(ptyBridgeAdapter{app: app})
@@ -2168,7 +2169,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	}
 	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
 	defer a.endExternalOwnershipAttempt(attempt)
-	var reservation externalCleanupReservation
+	var reservation cleanupstore.Reservation
 	if headroomAdmission != nil {
 		var reserveErr error
 		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceClaudeHeadroom)
@@ -2250,7 +2251,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			return "", activationErr
 		}
 		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceClaudeHeadroom, headroomAdmission); leaseErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, externalCleanupReservation{}, true, headroomAdmission, external)
+			cleanup := a.registerExternalCleanup(durableRecord, cleanupstore.Reservation{}, true, headroomAdmission, external)
 			headroomAdmission = nil
 			stopErr := a.compensateExternalCleanup(cleanup)
 			activationErr := fmt.Errorf("activate external Claude headroom lease: %w", leaseErr)
@@ -2843,7 +2844,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
 	defer a.endExternalOwnershipAttempt(attempt)
-	var reservation externalCleanupReservation
+	var reservation cleanupstore.Reservation
 	if codexHeadroomAdmission != nil {
 		var reserveErr error
 		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceCodexHeadroom)
@@ -2927,7 +2928,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 			return "", activationErr
 		}
 		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceCodexHeadroom, codexHeadroomAdmission); leaseErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, externalCleanupReservation{}, true, codexHeadroomAdmission, external)
+			cleanup := a.registerExternalCleanup(durableRecord, cleanupstore.Reservation{}, true, codexHeadroomAdmission, external)
 			codexHeadroomAdmission = nil
 			stopErr := a.compensateExternalCleanup(cleanup)
 			activationErr := fmt.Errorf("activate external Codex headroom lease: %w", leaseErr)

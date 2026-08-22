@@ -16,6 +16,7 @@ import (
 	"sort"
 	"time"
 
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/remote"
@@ -264,12 +265,12 @@ func (a *App) handoffPostCommitShutdownStart(
 	sessionID string,
 	pid int,
 	kind remote.SharedServiceKind,
-	reservation externalCleanupReservation,
+	reservation cleanupstore.Reservation,
 	admission *remote.SharedLaunchAdmission,
 	lifecycle externalLauncherPort,
 ) error {
-	record := externalCleanupRecord{
-		Version:      externalCleanupJournalVersion,
+	record := cleanupstore.Record{
+		Version:      cleanupstore.JournalVersion,
 		SessionID:    sessionID,
 		PID:          pid,
 		Kind:         kind,
@@ -294,7 +295,7 @@ func (a *App) handoffPostCommitShutdownStart(
 func (a *App) rejectExternalProcessStartAfterFence(
 	sessionID string,
 	kind remote.SharedServiceKind,
-	reservation externalCleanupReservation,
+	reservation cleanupstore.Reservation,
 ) error {
 	completionErr := a.completeExternalProcessReservation(reservation)
 	if completionErr == nil && reservation.SessionID != "" {
@@ -432,7 +433,7 @@ func (a *App) GetExternalCleanupRecoveryStatus() remote.ExternalCleanupRecoveryS
 func (a *App) recomputeExternalCleanupRecoveryFence() (bool, error) {
 	if a.externalCleanupStore == nil || !a.externalCleanupStore.IsReady() {
 		a.setExternalCleanupRecoveryBlocked(true)
-		return true, errExternalCleanupStoreNotReady
+		return true, cleanupstore.ErrStoreNotReady
 	}
 	pending, err := a.externalCleanupStore.LoadPending()
 	if err != nil {
@@ -528,7 +529,7 @@ func (a *App) ConfirmExternalCleanupRecovery(sessionID string, confirmed bool) (
 
 	var persistenceErr error
 	if a.externalCleanupStore == nil {
-		persistenceErr = errExternalCleanupStoreNotReady
+		persistenceErr = cleanupstore.ErrStoreNotReady
 	} else {
 		switch {
 		case claim.recordDurable && claim.record.ProcessIdentity != "":
@@ -536,7 +537,7 @@ func (a *App) ConfirmExternalCleanupRecovery(sessionID string, confirmed bool) (
 		case claim.reservation.SessionID != "":
 			persistenceErr = a.externalCleanupStore.CompleteReservation(claim.reservation)
 		default:
-			persistenceErr = errExternalCleanupInvalidRecord
+			persistenceErr = cleanupstore.ErrInvalidRecord
 		}
 	}
 	if persistenceErr != nil {
@@ -587,7 +588,7 @@ func (a *App) snapshotExternalCleanupAbandonments(reason remote.ExternalCleanupA
 	for _, claim := range a.externalCleanups {
 		claims = append(claims, claim)
 	}
-	durableRuns := make([]externalCleanupRecord, 0, len(a.externalDurableRuns))
+	durableRuns := make([]cleanupstore.Record, 0, len(a.externalDurableRuns))
 	for _, record := range a.externalDurableRuns {
 		durableRuns = append(durableRuns, record)
 	}
@@ -639,7 +640,7 @@ func (a *App) snapshotExternalCleanupAbandonments(reason remote.ExternalCleanupA
 
 func (a *App) requireExternalCleanupStore() error {
 	if a.isExternalCleanupRecoveryBlocked() || a.externalCleanupStore == nil || !a.externalCleanupStore.IsReady() {
-		return errExternalCleanupStoreNotReady
+		return cleanupstore.ErrStoreNotReady
 	}
 	return nil
 }
@@ -648,15 +649,15 @@ func (a *App) requireExternalCleanupStore() error {
 // A later PID/identity registration consumes it atomically in journal replay;
 // if that upgrade fails, the reservation remains durable and a fresh App must
 // fail closed rather than infer that no process exists.
-func (a *App) reserveExternalProcessOwnership(sessionID string, kind remote.SharedServiceKind) (externalCleanupReservation, error) {
-	reservation := externalCleanupReservation{
-		Version:    externalCleanupJournalVersion,
+func (a *App) reserveExternalProcessOwnership(sessionID string, kind remote.SharedServiceKind) (cleanupstore.Reservation, error) {
+	reservation := cleanupstore.Reservation{
+		Version:    cleanupstore.JournalVersion,
 		SessionID:  sessionID,
 		Kind:       kind,
 		ReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if a.externalCleanupStore == nil {
-		return reservation, errExternalCleanupStoreNotReady
+		return reservation, cleanupstore.ErrStoreNotReady
 	}
 	if err := a.externalCleanupStore.Reserve(reservation); err != nil {
 		return reservation, fmt.Errorf("reserve external process ownership: %w", err)
@@ -664,7 +665,7 @@ func (a *App) reserveExternalProcessOwnership(sessionID string, kind remote.Shar
 	return reservation, nil
 }
 
-func (a *App) completeExternalProcessReservation(reservation externalCleanupReservation) error {
+func (a *App) completeExternalProcessReservation(reservation cleanupstore.Reservation) error {
 	if reservation.SessionID == "" || a.externalCleanupStore == nil {
 		return nil
 	}
@@ -683,10 +684,10 @@ func (a *App) persistExternalProcessOwnership(
 	pid int,
 	kind remote.SharedServiceKind,
 	lifecycle externalLauncherPort,
-) (externalCleanupRecord, error) {
+) (cleanupstore.Record, error) {
 	identity, identityErr := lifecycle.CaptureProcessIdentity(sessionID)
-	record := externalCleanupRecord{
-		Version:         externalCleanupJournalVersion,
+	record := cleanupstore.Record{
+		Version:         cleanupstore.JournalVersion,
 		SessionID:       sessionID,
 		PID:             pid,
 		ProcessIdentity: identity,
@@ -698,17 +699,17 @@ func (a *App) persistExternalProcessOwnership(
 		ownershipErr = fmt.Errorf("capture external process identity: %w", identityErr)
 	}
 	if a.externalCleanupStore == nil {
-		ownershipErr = errors.Join(ownershipErr, errExternalCleanupStoreNotReady)
+		ownershipErr = errors.Join(ownershipErr, cleanupstore.ErrStoreNotReady)
 	} else if err := a.externalCleanupStore.Register(record); err != nil {
 		ownershipErr = errors.Join(ownershipErr, fmt.Errorf("persist external process ownership: %w", err))
 	}
 	return record, ownershipErr
 }
 
-func (a *App) rememberExternalDurableRun(record externalCleanupRecord) {
+func (a *App) rememberExternalDurableRun(record cleanupstore.Record) {
 	a.externalCleanupMu.Lock()
 	if a.externalDurableRuns == nil {
-		a.externalDurableRuns = make(map[string]externalCleanupRecord)
+		a.externalDurableRuns = make(map[string]cleanupstore.Record)
 	}
 	a.externalDurableRuns[record.SessionID] = record
 	a.externalCleanupMu.Unlock()
@@ -718,8 +719,8 @@ func (a *App) rememberExternalDurableRun(record externalCleanupRecord) {
 // durable reservation, or transient no-Headroom PID) and any unpromoted
 // admission into the exact in-memory reaper owner before Stop.
 func (a *App) registerExternalCleanup(
-	record externalCleanupRecord,
-	reservation externalCleanupReservation,
+	record cleanupstore.Record,
+	reservation cleanupstore.Reservation,
 	recordDurable bool,
 	admission *remote.SharedLaunchAdmission,
 	lifecycle externalLauncherPort,
@@ -975,7 +976,7 @@ func (a *App) completeTerminatedExternalCleanups() {
 	for _, claim := range a.externalCleanups {
 		claims = append(claims, claim)
 	}
-	durableRuns := make([]externalCleanupRecord, 0, len(a.externalDurableRuns))
+	durableRuns := make([]cleanupstore.Record, 0, len(a.externalDurableRuns))
 	for _, record := range a.externalDurableRuns {
 		durableRuns = append(durableRuns, record)
 	}

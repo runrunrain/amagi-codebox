@@ -1,10 +1,14 @@
 //go:build windows
 
-package main
+package platform
 
 import "golang.org/x/sys/windows"
 
-func syncConfigDirectory(path string) error {
+// SyncConfigDirectory fsyncs a directory so a just-renamed/removed file inside
+// it is durable before the caller reports success. It opens the directory via
+// CreateFile with FILE_FLAG_BACKUP_SEMANTICS (directories need that flag) and
+// flushes it with FlushFileBuffers.
+func SyncConfigDirectory(path string) error {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return err

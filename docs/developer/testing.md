@@ -1,6 +1,6 @@
 # 测试约定
 
-面向为 Amagi CodeBox 添加或修改测试的开发者。内容基于 `.github/workflows/ci.yml`、`playwright.config.ts`、`mobile/vitest.config.ts`、`frontend/package.json`，以及对仓库 `*_test.go` 的 glob 核实（核实日期 2026-08-22，版本 1.3.50）。
+面向为 Amagi CodeBox 添加或修改测试的开发者。内容基于 `.github/workflows/ci.yml`、`playwright.config.ts`、`mobile/vitest.config.ts`、`frontend/vitest.config.ts`、`frontend/package.json`，以及对仓库 `*_test.go` 的 glob 核实（核实日期 2026-08-22，版本 1.3.50）。
 
 相关文档：
 - 构建与本地开发见 `./build-dev.md`。
@@ -11,11 +11,29 @@
 | 子项目 | 测试/门类型 | 工具 | CI 覆盖 |
 |---------|------------|------|----------|
 | Go 后端（`internal/`、根目录、`cmd/codebox/`） | 单元 + 集成 + 回归系列测试 | Go 自带 `testing` | macos 腿全量 `go test ./... -count=1`；windows 腿仅编译检查（`-run '^$'`）；两腿均 `go vet` + `golangci-lint` |
-| 桌面前端（`frontend/`） | 类型检查门 | `vue-tsc --noEmit`（内嵌于 `build`） | 进 CI（`npm run build`） |
+| 桌面前端（`frontend/`） | 单元测试（Vitest，`src/__tests__/`）+ 类型检查门 | Vitest + `vue-tsc --noEmit`（内嵌于 `build`） | 均进 CI（`npm run build` + `npm run test`） |
 | 移动端前端（`mobile/`） | 单元测试 + 类型检查 | Vitest + `vue-tsc -b` | 均进 CI（`npm run build` + `npm run test` + 对比度检查） |
 | E2E（`e2e/`） | Playwright 端到端 + 性能套件 | `@playwright/test`（Chromium-only） | **不进 CI**，手动运行 |
 
 注意：CI 由 `workflow_dispatch` 手动触发（C-011：stage push 不消耗 Actions），不是 push 自动跑。
+
+## 测试文件位置与命名规范
+
+新增测试按子项目对号入座，禁止第三处散落：
+
+| 子项目 | 位置 | 命名 | 理由 |
+|--------|------|------|------|
+| Go 单测 | 与被测代码**同包同目录**（语言强制，无法集中） | 被测文件同名 `_test.go` 优先；主题/回归测试用语义化 `<topic>_test.go`；`internal/remote/` 既有里程碑系列沿用 `<系列>_<编号>_<主题>_test.go` | Go 工具链强制；语义化文件名可检索，编号锚点放文件头注释 |
+| 桌面前端单测 | `frontend/src/__tests__/`（镜像 src 目录结构） | `<模块名>.test.ts` | 新建体系（原为零单测）；与 mobile 集中模式对齐 |
+| 移动端单测 | `mobile/src/__tests__/`（集中，维持现状） | 既有 `*.test.ts` | 历史已确立（61 个测试文件），不动 |
+| E2E 主套件 | 根 `e2e/`（`playwright.config.ts`） | `*.spec.ts` | 跨端/remote/集成主入口 |
+| E2E 专项套件 | `frontend/e2e/`（`frontend/playwright.stopping.config.ts`） | `*.spec.ts` | stopping config 专属（stopping-session / terminal-rendering 专项），不另设入口 |
+
+细则：
+
+- **禁止新增批次编号前缀文件名**（如 `m005_`、`r5_002_` 这类新批次编号前缀）：新系列/新批次一律语义化 `<topic>_test.go`，编号锚点（设计/缺陷编号）放文件头注释。既有文件不追溯改名：`internal/remote/` 里程碑系列（m001~m011、b2a/b2c 等）保留原名并可沿用系列命名续写；根目录 R 系列已语义化重命名，文件头注释保留原编号锚点。
+- 根目录 `package main` 新增测试仅限 **App 绑定面 / 进程级行为**；能下沉 `internal/` 包的应下沉。
+- frontend 测试文件显式 `import { describe, it, expect } from 'vitest'`（`frontend/vitest.config.ts` 不开 `globals`，与 mobile 不同），保证 `vue-tsc --noEmit` 类型门通过。
 
 ## Go 测试
 
@@ -34,7 +52,7 @@
 - 根目录：`bind_failclosed_test.go`、`shared_coordinator_test.go`、`desktop_ledger_destroy_test.go`、`clear_stopped_failclosed_test.go` / `clear_stopped_manager_sync_test.go` / `clear_stopped_manager_failure_test.go`、`launch_admission_test.go`、`external_headroom_lease_test.go`、`shutdown_persistence_stop_gate_test.go`、`durable_ownership_r9_test.go` / `durable_ownership_r10_test.go`、`external_recovery_test.go`、`raw_port_gap_test.go`、`remote_security_migration_gate_test.go` 等（R 系列已语义化重命名，文件头注释保留原缺陷/设计编号锚点）。
 - `internal/remote/`：`m001_allow_header_test.go` ~ `m011_realpath_test.go`、`m2a_*`（M2-A 适配器）、`b2a/b2b/b2c1/b2c2_*`（B2 阶段证据修正）、`c5b_checkpoint_desktop_take_test.go` 等。
 
-新增回归测试时沿用对应系列的编号与命名（`<系列>_<编号>_<主题>_test.go`），并在文件头注释标注设计/缺陷锚点。
+新增回归测试时：`internal/remote/` 既有系列沿用 `<系列>_<编号>_<主题>_test.go` 续写；其余一律语义化命名并在文件头注释标注设计/缺陷锚点（详见上文「测试文件位置与命名规范」）。
 
 ### 绑定冻结断言：`bind_manifest_test.go`（T-24）
 
@@ -95,16 +113,18 @@ go test -tags realfixture ./internal/session/... -run TestRealFixture_MasterJSON
 - 依赖真实环境的测试**必须**用环境变量或 build tag 默认跳过，并在文件头写明跑法。
 - 不要提交 `go test -c` 产物（仓库根曾有误提交的测试二进制，已清理）。
 
-## 桌面前端：类型门（无单元测试）
+## 桌面前端（Vitest，进 CI）
 
-`frontend/package.json` 只有 `dev` / `build` / `preview` 三个脚本：
+`frontend/package.json`：`"test": "vitest run"`，`"build": "vue-tsc --noEmit && vite build"`。`frontend/vitest.config.ts` 为独立配置：`environment: 'node'`、`include: ['src/__tests__/**/*.test.ts']`——不引 jsdom，避免新依赖面；未来出现组件级测试需求再评估 DOM 环境。
 
-- **无单元测试框架**（无 vitest/jest 依赖、无 `*.test.ts`，glob 核实）。
-- 唯一静态质量门是 `vue-tsc --noEmit`，内嵌于 `npm run build`；CI 经 `npm run build` 执行。
+测试集中在 `frontend/src/__tests__/` 镜像 src 目录结构（与 mobile 对齐），命名 `<模块名>.test.ts`；测试文件显式 `import { describe, it, expect } from 'vitest'`（不开 `globals`，保证 vue-tsc 类型门通过）。
 
 ```bash
-npm --prefix frontend run build     # 类型检查 + 生产构建
+npm --prefix frontend run test     # vitest run
+npm --prefix frontend run build    # 类型检查 + 生产构建
 ```
+
+CI frontend 腿：`npm ci` → `npm run build` → `npm run test`。
 
 ## 移动端测试（Vitest，进 CI）
 
@@ -154,7 +174,7 @@ E2E 不在 `ci.yml` 中执行，属手动/专项运行。
 
 **frontend-mobile**（windows-latest）：
 1. Setup Node `20.19.0`（npm cache 依赖两个 lock 文件）。
-2. frontend：`npm ci` → `npm run build`。
+2. frontend：`npm ci` → `npm run build` → `npm run test`。
 3. mobile：`npm ci` → `npm run build` → `npm run test` → `node scripts/check-contrast.mjs`。
 4. 上传 `frontend/dist` + `mobile/dist` 为 artifact（`embedded-web-assets`）。
 
@@ -175,7 +195,7 @@ E2E 不在 `ci.yml` 中执行，属手动/专项运行。
 - 并发包额外 `go test -race ./internal/<并发包>`。
 - 动绑定表面时确认 `go test . -run TestBindManifest` 全绿。
 
-改桌面前端：`npm --prefix frontend run build`（CI）。
+改桌面前端：`npm --prefix frontend run build && npm --prefix frontend run test`（CI）。
 
 改移动端：`npm --prefix mobile run build && npm --prefix mobile run test`（CI）。
 
@@ -183,5 +203,4 @@ E2E 不在 `ci.yml` 中执行，属手动/专项运行。
 
 ## 待核实项
 
-- 桌面前端无单元测试体系；是否计划引入 vitest 未在仓库内声明（待主上确认）。
 - CI 仅 workflow_dispatch 手动触发；stage 期间的回归验证依赖本地手动跑测试。

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/headroom"
@@ -218,7 +219,7 @@ func newR6ExternalLeaseApp(t *testing.T) (*App, *r6ExternalLauncher, string) {
 	app.configDir = configDir
 	app.sharedCoord = remote.NewSharedServiceCoordinator()
 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
-	app.externalCleanupStore = newFileExternalCleanupStore(configDir)
+	app.externalCleanupStore = cleanupstore.NewFileStore(configDir)
 	app.externalRunPollInterval = 5 * time.Millisecond
 	fake := newR6ExternalLauncher()
 	app.externalLauncher = fake

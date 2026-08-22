@@ -10,15 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/session"
 )
 
-type r11FailCompleteStore struct{ externalCleanupStore }
+type r11FailCompleteStore struct{ cleanupstore.Store }
 
-func (s *r11FailCompleteStore) Complete(externalCleanupRecord) error {
+func (s *r11FailCompleteStore) Complete(cleanupstore.Record) error {
 	return errors.New("injected recovery completion failure")
 }
 
@@ -235,17 +237,17 @@ func TestR11_001_AuthorizedNoHeadroomLateStartTransfersToReaper(t *testing.T) {
 
 func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testing.T) {
 	app, _, configDir := newR6ExternalLeaseApp(t)
-	record := externalCleanupRecord{
-		Version:         externalCleanupJournalVersion,
+	record := cleanupstore.Record{
+		Version:         cleanupstore.JournalVersion,
 		SessionID:       "r11-legacy-recovery",
 		PID:             5252,
 		ProcessIdentity: "procfs:771122",
 		Kind:            remote.SharedServiceCodexHeadroom,
 		RegisteredAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	event := externalCleanupJournalEvent{
-		Version:    externalCleanupJournalVersion,
-		Action:     externalCleanupRegistered,
+	event := cleanupstore.JournalEvent{
+		Version:    cleanupstore.JournalVersion,
+		Action:     cleanupstore.ActionRegistered,
 		Record:     record,
 		OccurredAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
@@ -254,10 +256,10 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 		t.Fatalf("Marshal legacy event: %v", err)
 	}
 	line = append(line, '\n')
-	if err := os.WriteFile(filepath.Join(configDir, externalCleanupJournalName), line, externalCleanupJournalFilePerm); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, cleanupstore.JournalName), line, cleanupstore.JournalFilePerm); err != nil {
 		t.Fatalf("Write legacy journal: %v", err)
 	}
-	store := newFileExternalCleanupStore(configDir)
+	store := cleanupstore.NewFileStore(configDir)
 	fake := &r10LegacyRecoveryLauncher{
 		r6ExternalLauncher: newR6ExternalLauncher(),
 		recoverErr:         launcher.ErrLegacyProcFSIdentity,
@@ -291,7 +293,7 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 		status = app.GetExternalCleanupRecoveryStatus()
 		return status.Blocked && len(status.Items) == 1 && status.Items[0].CanConfirm
 	}, "legacy terminal confirmation availability")
-	app.externalCleanupStore = &r11FailCompleteStore{externalCleanupStore: store}
+	app.externalCleanupStore = &r11FailCompleteStore{Store: store}
 	if _, err := app.ConfirmExternalCleanupRecovery(record.SessionID, true); err == nil {
 		t.Fatal("failed exact journal completion unexpectedly unlocked recovery")
 	}
@@ -334,4 +336,41 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 	waitR6(t, func() bool {
 		return app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom) == 0
 	}, "post-recovery normal launch terminal")
+}
+
+// TestExternalCleanupStoreCorruptFileFailsClosed moved with the store into
+// internal/cleanupstore; this App-level half stayed in package main because it
+// exercises the App recovery fence, not store behavior.
+func TestExternalCleanupStoreCorruptFileFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, cleanupstore.JournalName)
+	if err := os.WriteFile(path, []byte("not-json\n"), cleanupstore.JournalFilePerm); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := cleanupstore.NewFileStore(dir)
+	if store.IsReady() {
+		t.Fatal("corrupt cleanup journal unexpectedly ready")
+	}
+	if _, err := store.LoadActive(); err == nil {
+		t.Fatal("corrupt cleanup journal did not fail closed")
+	}
+
+	app := newTestApp(t)
+	app.sharedCoord = remote.NewSharedServiceCoordinator()
+	app.externalCleanupStore = store
+	if err := app.recoverExternalCleanups(); err == nil {
+		t.Fatal("App recovery unexpectedly accepted corrupt cleanup journal")
+	}
+	if !app.isExternalCleanupRecoveryBlocked() {
+		t.Fatal("corrupt durable ownership did not set the Headroom recovery fence")
+	}
+	if _, err := app.acquireSharedMutation(remote.SharedServiceClaudeHeadroom, remote.MutationStop); !errors.Is(err, remote.ErrSharedServiceInUse) {
+		t.Fatalf("recovery fence mutation error=%v", err)
+	}
+	if err, release := app.stopAllHeadroomForUninstall(); !errors.Is(err, envcheck.ErrHeadroomInUse) {
+		if release != nil {
+			release()
+		}
+		t.Fatalf("recovery fence uninstall error=%v", err)
+	}
 }

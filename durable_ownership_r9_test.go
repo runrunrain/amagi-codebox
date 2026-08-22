@@ -8,26 +8,27 @@ import (
 	"testing"
 	"time"
 
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/remote"
 )
 
 type r9FailRegisterStore struct {
-	externalCleanupStore
+	cleanupstore.Store
 }
 
-func (s *r9FailRegisterStore) Register(externalCleanupRecord) error {
+func (s *r9FailRegisterStore) Register(cleanupstore.Record) error {
 	return errors.New("injected post-start register failure")
 }
 
 type r9BlockingRegisterStore struct {
-	externalCleanupStore
+	cleanupstore.Store
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (s *r9BlockingRegisterStore) Register(externalCleanupRecord) error {
+func (s *r9BlockingRegisterStore) Register(cleanupstore.Record) error {
 	s.once.Do(func() { close(s.entered) })
 	<-s.release
 	return errors.New("injected blocked register failure")
@@ -74,11 +75,11 @@ func TestR9_002_CorruptCleanupFenceBlocksCodexGlobalEnableAndDisableRawEffects(t
 			if err := os.WriteFile(codexConfig, []byte(configSentinel), 0o600); err != nil {
 				t.Fatalf("seed Codex config: %v", err)
 			}
-			journalPath := filepath.Join(configDir, externalCleanupJournalName)
-			if err := os.WriteFile(journalPath, []byte("corrupt\n"), externalCleanupJournalFilePerm); err != nil {
+			journalPath := filepath.Join(configDir, cleanupstore.JournalName)
+			if err := os.WriteFile(journalPath, []byte("corrupt\n"), cleanupstore.JournalFilePerm); err != nil {
 				t.Fatalf("corrupt journal: %v", err)
 			}
-			app.externalCleanupStore = newFileExternalCleanupStore(configDir)
+			app.externalCleanupStore = cleanupstore.NewFileStore(configDir)
 			if err := app.recoverExternalCleanups(); err == nil || !app.isExternalCleanupRecoveryBlocked() {
 				t.Fatalf("corrupt store recovery err=%v blocked=%v", err, app.isExternalCleanupRecoveryBlocked())
 			}
@@ -106,8 +107,8 @@ func TestR9_002_CorruptCleanupFenceBlocksCodexGlobalEnableAndDisableRawEffects(t
 func TestR9_004_PostStartDurabilityFailureRetainsReservationAndShutdownIsBounded(t *testing.T) {
 	app, fake, configDir := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
-	underlying := newFileExternalCleanupStore(configDir)
-	app.externalCleanupStore = &r9FailRegisterStore{externalCleanupStore: underlying}
+	underlying := cleanupstore.NewFileStore(configDir)
+	app.externalCleanupStore = &r9FailRegisterStore{Store: underlying}
 	app.externalShutdownCleanupBudget = 75 * time.Millisecond
 	fake.setStopError(errors.New("injected permanent Stop failure"))
 
@@ -135,7 +136,7 @@ func TestR9_004_PostStartDurabilityFailureRetainsReservationAndShutdownIsBounded
 		t.Fatal("post-start failure emitted no typed abandonment event")
 	}
 
-	freshStore := newFileExternalCleanupStore(configDir)
+	freshStore := cleanupstore.NewFileStore(configDir)
 	pending, err := freshStore.LoadPending()
 	if err != nil || len(pending) != 1 || pending[0].SessionID != sessionID {
 		t.Fatalf("pre-start reservation was not durable: pending=%+v err=%v", pending, err)
@@ -167,11 +168,11 @@ func TestR9_004_PostStartDurabilityFailureRetainsReservationAndShutdownIsBounded
 func TestR9_004_ConcurrentBlockedRegisterCannotHoldShutdownPastBudget(t *testing.T) {
 	app, fake, configDir := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
-	underlying := newFileExternalCleanupStore(configDir)
+	underlying := cleanupstore.NewFileStore(configDir)
 	blockingStore := &r9BlockingRegisterStore{
-		externalCleanupStore: underlying,
-		entered:              make(chan struct{}),
-		release:              make(chan struct{}),
+		Store:   underlying,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
 	}
 	app.externalCleanupStore = blockingStore
 	app.externalShutdownCleanupBudget = 60 * time.Millisecond

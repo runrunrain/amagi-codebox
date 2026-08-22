@@ -10,21 +10,22 @@ import (
 	"testing"
 	"time"
 
+	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/remote"
 )
 
 type r10BlockingReserveStore struct {
-	externalCleanupStore
+	cleanupstore.Store
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (s *r10BlockingReserveStore) Reserve(reservation externalCleanupReservation) error {
+func (s *r10BlockingReserveStore) Reserve(reservation cleanupstore.Reservation) error {
 	s.once.Do(func() { close(s.entered) })
 	<-s.release
-	return s.externalCleanupStore.Reserve(reservation)
+	return s.Store.Reserve(reservation)
 }
 
 type r10LegacyRecoveryLauncher struct {
@@ -44,11 +45,11 @@ func TestR10_001_SlowReservePastShutdownBudgetCannotLateStart(t *testing.T) {
 	for _, cli := range []string{"claude", "codex"} {
 		t.Run(cli, func(t *testing.T) {
 			app, fake, configDir := newR6ExternalLeaseApp(t)
-			underlying := newFileExternalCleanupStore(configDir)
+			underlying := cleanupstore.NewFileStore(configDir)
 			blocking := &r10BlockingReserveStore{
-				externalCleanupStore: underlying,
-				entered:              make(chan struct{}),
-				release:              make(chan struct{}),
+				Store:   underlying,
+				entered: make(chan struct{}),
+				release: make(chan struct{}),
 			}
 			app.externalCleanupStore = blocking
 			app.externalShutdownCleanupBudget = 50 * time.Millisecond
@@ -166,17 +167,17 @@ func TestR10_001_StartCommitGenerationLinearizesBothOrders(t *testing.T) {
 
 func TestR10_002_LegacyProcFSRecordRecoveryRetainsOwnershipAndGlobalFence(t *testing.T) {
 	app, _, configDir := newR6ExternalLeaseApp(t)
-	record := externalCleanupRecord{
-		Version:         externalCleanupJournalVersion,
+	record := cleanupstore.Record{
+		Version:         cleanupstore.JournalVersion,
 		SessionID:       "legacy-procfs-live",
 		PID:             4242,
 		ProcessIdentity: "procfs:987654",
 		Kind:            remote.SharedServiceCodexHeadroom,
 		RegisteredAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	event := externalCleanupJournalEvent{
-		Version:    externalCleanupJournalVersion,
-		Action:     externalCleanupRegistered,
+	event := cleanupstore.JournalEvent{
+		Version:    cleanupstore.JournalVersion,
+		Action:     cleanupstore.ActionRegistered,
 		Record:     record,
 		OccurredAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
@@ -185,10 +186,10 @@ func TestR10_002_LegacyProcFSRecordRecoveryRetainsOwnershipAndGlobalFence(t *tes
 		t.Fatalf("Marshal legacy event: %v", err)
 	}
 	line = append(line, '\n')
-	if err := os.WriteFile(filepath.Join(configDir, externalCleanupJournalName), line, externalCleanupJournalFilePerm); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, cleanupstore.JournalName), line, cleanupstore.JournalFilePerm); err != nil {
 		t.Fatalf("Write legacy journal: %v", err)
 	}
-	store := newFileExternalCleanupStore(configDir)
+	store := cleanupstore.NewFileStore(configDir)
 	loaded, err := store.LoadActive()
 	if err != nil || len(loaded) != 1 || loaded[0].ProcessIdentity != record.ProcessIdentity {
 		t.Fatalf("legacy journal replay=%+v err=%v", loaded, err)
