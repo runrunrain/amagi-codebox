@@ -721,6 +721,7 @@ export namespace config {
 	    base_url?: string;
 	    organization?: string;
 	    auth_key?: string;
+	    wire_api?: string;
 	    headers?: Record<string, string>;
 	    auth_header?: boolean;
 	
@@ -735,6 +736,7 @@ export namespace config {
 	        this.base_url = source["base_url"];
 	        this.organization = source["organization"];
 	        this.auth_key = source["auth_key"];
+	        this.wire_api = source["wire_api"];
 	        this.headers = source["headers"];
 	        this.auth_header = source["auth_header"];
 	    }

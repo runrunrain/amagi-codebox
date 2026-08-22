@@ -62,6 +62,19 @@
         />
       </div>
 
+      <!-- OpenAI 接口协议（wire_api） -->
+      <div v-if="form.supportsOpenAI" class="form-group">
+        <label class="form-label">接口协议</label>
+        <select v-model="form.openaiWireApi" class="form-input">
+          <option value="">自动（默认）</option>
+          <option value="chat">Chat Completions (/chat/completions)</option>
+          <option value="responses">Responses (/responses)</option>
+        </select>
+        <p class="form-hint">
+          自动：Codex 走 Responses，pi/omp/OpenCode 走 Chat Completions；OpenCode 暂不支持 Responses，选择后仍走 Chat Completions
+        </p>
+      </div>
+
       <!-- 默认模型 -->
       <div class="form-group">
         <label class="form-label">默认模型</label>
@@ -141,6 +154,8 @@ const form = reactive({
   supportsOpenAI: false,
   anthropicBaseUrl: '',
   openaiBaseUrl: '',
+  /** OpenAI 接口协议：''（自动）| 'chat' | 'responses'，对应 provider.openai.wire_api */
+  openaiWireApi: '',
   defaultModel: '',
   apiKey: '',
 });
@@ -214,6 +229,7 @@ function resetForm() {
   form.supportsOpenAI = false;
   form.anthropicBaseUrl = '';
   form.openaiBaseUrl = '';
+  form.openaiWireApi = '';
   form.defaultModel = '';
   form.apiKey = '';
 }
@@ -238,6 +254,9 @@ async function fillFromEditTarget() {
   form.supportsOpenAI = !!(p.openai && p.openai.enabled);
   form.anthropicBaseUrl = p.anthropic?.base_url || '';
   form.openaiBaseUrl = p.openai?.base_url || '';
+  // wire_api 非法值归一化兜底：仅接受 chat/responses，其余视为自动
+  const wa = (p.openai?.wire_api || '').toLowerCase();
+  form.openaiWireApi = wa === 'chat' || wa === 'responses' ? wa : '';
   form.defaultModel = p.default_model || '';
   form.apiKey = ''; // 编辑模式始终清空，靠 placeholder 提示"留空保持不变"
 
@@ -308,7 +327,7 @@ function applyFormToExport(exportObj: any): any {
     next.anthropic = { ...next.anthropic, enabled: false };
   }
 
-  // OpenAI 块（保留 organization）
+  // OpenAI 块（保留 organization；wire_api 仅非空写入，空值省略保持 omitempty 语义）
   if (form.supportsOpenAI) {
     const existing = next.openai || {};
     next.openai = {
@@ -316,6 +335,11 @@ function applyFormToExport(exportObj: any): any {
       enabled: true,
       base_url: form.openaiBaseUrl || existing.base_url || '',
     };
+    if (form.openaiWireApi) {
+      next.openai.wire_api = form.openaiWireApi;
+    } else {
+      delete next.openai.wire_api;
+    }
   } else if (next.openai) {
     next.openai = { ...next.openai, enabled: false };
   }
@@ -352,6 +376,8 @@ async function handleSave() {
         exportObj.openai = {
           enabled: true,
           base_url: form.openaiBaseUrl || undefined,
+          // wire_api 空值省略（omitempty），仅 chat/responses 写入
+          wire_api: form.openaiWireApi || undefined,
         };
       }
       await saveProviderFromJSON(newName, JSON.stringify(exportObj));

@@ -89,6 +89,14 @@
             <label class="rpp-field-label" for="rpp-openai-org">Organization</label>
             <TextInput id="rpp-openai-org" v-model="form.openaiOrg" mono :disabled="saving || blocked" />
           </div>
+          <div v-if="hasOpenAI" class="rpp-field">
+            <label class="rpp-field-label" for="rpp-openai-wire-api">接口协议</label>
+            <select id="rpp-openai-wire-api" v-model="form.openaiWireApi" class="rpp-select" :disabled="saving || blocked">
+              <option value="">自动（默认）</option>
+              <option value="chat">Chat Completions (/chat/completions)</option>
+              <option value="responses">Responses (/responses)</option>
+            </select>
+          </div>
         </section>
 
         <!-- 凭据区：一律 MaskedValue 且不可展开/复制（验收 5） -->
@@ -231,7 +239,7 @@ const saveError = ref('');
 interface DetailDoc {
   default_model?: string;
   anthropic?: { enabled?: boolean; base_url?: string } | null;
-  openai?: { enabled?: boolean; base_url?: string; organization?: string } | null;
+  openai?: { enabled?: boolean; base_url?: string; organization?: string; wire_api?: string } | null;
   type?: string;
   [key: string]: unknown;
 }
@@ -278,6 +286,8 @@ const form = ref({
   anthropicBaseUrl: '',
   openaiBaseUrl: '',
   openaiOrg: '',
+  /** OpenAI 接口协议：''（自动）| 'chat' | 'responses'，对应 openai.wire_api */
+  openaiWireApi: '',
 });
 
 function resetForm() {
@@ -287,6 +297,7 @@ function resetForm() {
     anthropicBaseUrl: doc?.anthropic?.base_url ?? '',
     openaiBaseUrl: doc?.openai?.base_url ?? '',
     openaiOrg: doc?.openai?.organization ?? '',
+    openaiWireApi: normalizedWireApi(doc?.openai?.wire_api),
   };
   saveError.value = '';
 }
@@ -300,9 +311,16 @@ const hasChanges = computed(() => {
     form.value.defaultModel !== (doc.default_model ?? '') ||
     form.value.anthropicBaseUrl !== (doc.anthropic?.base_url ?? '') ||
     form.value.openaiBaseUrl !== (doc.openai?.base_url ?? '') ||
-    form.value.openaiOrg !== (doc.openai?.organization ?? '')
+    form.value.openaiOrg !== (doc.openai?.organization ?? '') ||
+    form.value.openaiWireApi !== normalizedWireApi(doc.openai?.wire_api)
   );
 });
+
+/** wire_api 归一化：trim + 小写后仅接受 chat/responses，其余归一为 ''（自动） */
+function normalizedWireApi(raw: string | undefined | null): string {
+  const wa = (raw ?? '').trim().toLowerCase();
+  return wa === 'chat' || wa === 'responses' ? wa : '';
+}
 
 /** 应用表单编辑到净化后文档副本，返回待上传 JSON（含掩码占位，store 负责剥离）。 */
 function buildEditedDoc(): string {
@@ -312,6 +330,12 @@ function buildEditedDoc(): string {
   if (doc.openai) {
     doc.openai.base_url = form.value.openaiBaseUrl;
     doc.openai.organization = form.value.openaiOrg;
+    // wire_api 仅非空写入，空值删除键保持 omitempty 语义
+    if (form.value.openaiWireApi) {
+      doc.openai.wire_api = form.value.openaiWireApi;
+    } else {
+      delete doc.openai.wire_api;
+    }
   }
   return JSON.stringify(doc);
 }
@@ -597,6 +621,28 @@ void store.loadRemoteProviders();
 
 .rpp-field :deep(.text-input) {
   flex: 1;
+}
+
+.rpp-select {
+  flex: 1;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--label);
+  background: var(--control);
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  outline: none;
+}
+
+.rpp-select:focus {
+  border-color: var(--accent);
+}
+
+.rpp-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .rpp-cred-cell {

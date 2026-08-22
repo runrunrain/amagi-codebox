@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"amagi-codebox/internal/config"
 )
 
 func TestSyncCodexConfigModel(t *testing.T) {
@@ -62,7 +64,7 @@ func TestSyncCodexConfigModel_CleansManagedCustomProviderAfterOfficialSync(t *te
 
 	setTestUserHome(t, filepath.Dir(codexDir))
 
-	if err := syncCodexCustomProviderConfig("gpt-5.5", "https://proxy.example.com/v1"); err != nil {
+	if err := syncCodexCustomProviderConfig("gpt-5.5", "https://proxy.example.com/v1", ""); err != nil {
 		t.Fatalf("syncCodexCustomProviderConfig: %v", err)
 	}
 	customData, err := os.ReadFile(configPath)
@@ -210,7 +212,7 @@ func TestSyncCodexCustomProviderConfig_CreatesMissingConfig(t *testing.T) {
 
 	setTestUserHome(t, filepath.Dir(codexDir))
 
-	if err := syncCodexCustomProviderConfig("gpt-5.5", "https://proxy.example.com/v1"); err != nil {
+	if err := syncCodexCustomProviderConfig("gpt-5.5", "https://proxy.example.com/v1", ""); err != nil {
 		t.Fatalf("syncCodexCustomProviderConfig: %v", err)
 	}
 
@@ -276,7 +278,7 @@ func TestSyncCodexCustomProviderConfig_UpdatesProviderSectionAndPreservesOtherCo
 
 	setTestUserHome(t, filepath.Dir(codexDir))
 
-	if err := syncCodexCustomProviderConfig("gpt-5.5", "https://proxy.example.com/v1"); err != nil {
+	if err := syncCodexCustomProviderConfig("gpt-5.5", "https://proxy.example.com/v1", ""); err != nil {
 		t.Fatalf("syncCodexCustomProviderConfig: %v", err)
 	}
 
@@ -654,7 +656,7 @@ func TestSyncCodexGlobalHeadroomConfig_NotCrossDeletedByCustomProvider(t *testin
 		"base_url = \"https://other.example.com/v1\"\n"
 	configPath := newCodexTestConfig(t, original)
 
-	if err := syncCodexCustomProviderConfig("gpt-5.7", "https://proxy.example.com/v1"); err != nil {
+	if err := syncCodexCustomProviderConfig("gpt-5.7", "https://proxy.example.com/v1", ""); err != nil {
 		t.Fatalf("syncCodexCustomProviderConfig: %v", err)
 	}
 	got := readCodexTestConfig(t, configPath)
@@ -793,4 +795,106 @@ func gotDirListing(dir string) string {
 		names = append(names, e.Name())
 	}
 	return strings.Join(names, ", ")
+}
+
+// TestSyncCodexCustomProviderConfigFile_WireAPI 验证 config.toml 托管 provider 段的
+// wire_api 动态化："chat" 写入 chat；未设置/非法值维持 responses（legacy 默认回归）。
+func TestSyncCodexCustomProviderConfigFile_WireAPI(t *testing.T) {
+	newConfig := func(t *testing.T) string {
+		t.Helper()
+		return filepath.Join(t.TempDir(), ".codex", "config.toml")
+	}
+
+	cases := []struct {
+		name     string
+		wireAPI  string
+		wantLine string
+	}{
+		{"chat writes chat", "chat", `wire_api = "chat"`},
+		{"uppercase chat normalized to chat", " CHAT ", `wire_api = "chat"`},
+		{"unset keeps legacy responses", "", `wire_api = "responses"`},
+		{"explicit responses stays responses", "responses", `wire_api = "responses"`},
+		{"illegal value falls back to responses", "grpc", `wire_api = "responses"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := newConfig(t)
+			if err := syncCodexCustomProviderConfigFile(configPath, "gpt-5.5", "https://proxy.example.com/v1", tc.wireAPI); err != nil {
+				t.Fatalf("syncCodexCustomProviderConfigFile: %v", err)
+			}
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(data)
+			if !strings.Contains(got, tc.wantLine) {
+				t.Fatalf("config.toml missing %q, got:\n%s", tc.wantLine, got)
+			}
+		})
+	}
+}
+
+// TestBuildCodexCLIArgsWireAPI 验证 -c 进程级覆盖的 wire_api 动态化：
+// chat → wire_api="chat"；未设置/"responses"/非法值 → wire_api="responses"（legacy 默认回归）。
+func TestBuildCodexCLIArgsWireAPI(t *testing.T) {
+	base := codexLaunchSettings{
+		Model:           "gpt-5.6-luna",
+		ProviderBaseURL: "https://proxy.example.com/v1",
+	}
+
+	cases := []struct {
+		name    string
+		wireAPI string
+		want    string
+		forbid  string
+	}{
+		{"chat", "chat", `wire_api="chat"`, `wire_api="responses"`},
+		{"unset keeps legacy responses", "", `wire_api="responses"`, `wire_api="chat"`},
+		{"explicit responses", "responses", `wire_api="responses"`, `wire_api="chat"`},
+		{"illegal value falls back to responses", "grpc", `wire_api="responses"`, `wire_api="chat"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := base
+			settings.WireAPI = tc.wireAPI
+			args := buildCodexCLIArgs(settings)
+			joined := strings.Join(args, "\n")
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("Codex args missing %q: %v", tc.want, args)
+			}
+			if strings.Contains(joined, tc.forbid) {
+				t.Fatalf("Codex args should not contain %q: %v", tc.forbid, args)
+			}
+		})
+	}
+}
+
+// TestResolveCodexLaunchSettings_WireAPI 验证 wire_api 从 provider.OpenAI 透传：
+// 双格式 provider 取 EffectiveWireAPI 归一化值；legacy 单格式（无 OpenAI 子块）为空。
+func TestResolveCodexLaunchSettings_WireAPI(t *testing.T) {
+	cases := []struct {
+		name    string
+		openAI  *config.OpenAIFormat
+		want    string
+	}{
+		{"responses passthrough", &config.OpenAIFormat{Enabled: true, WireAPI: "responses"}, "responses"},
+		{"chat passthrough", &config.OpenAIFormat{Enabled: true, WireAPI: "chat"}, "chat"},
+		{"uppercase normalized", &config.OpenAIFormat{Enabled: true, WireAPI: " CHAT "}, "chat"},
+		{"unset empty", &config.OpenAIFormat{Enabled: true}, ""},
+		{"illegal normalized to empty", &config.OpenAIFormat{Enabled: true, WireAPI: "grpc"}, ""},
+		{"nil openai block empty", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := config.Provider{
+				Type:         "openai",
+				DefaultModel: "gpt-5.5",
+				OpenAI:       tc.openAI,
+			}
+			settings := resolveCodexLaunchSettings(provider, "")
+			if settings.WireAPI != tc.want {
+				t.Fatalf("WireAPI = %q, want %q", settings.WireAPI, tc.want)
+			}
+		})
+	}
 }

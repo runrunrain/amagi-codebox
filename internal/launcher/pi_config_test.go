@@ -9,6 +9,84 @@ import (
 	"amagi-codebox/internal/config"
 )
 
+// TestPiAPITypeWireAPIMapping 验证 pi/omp 的 api 字段三值映射：
+// OpenAI 兼容默认 openai-completions；wire_api=responses 时改用 openai-responses；
+// Anthropic 兼容恒为 anthropic-messages。omp 与 pi 同构，复用同一函数
+// （omp_config.go），改一处两引擎同时生效。
+func TestPiAPITypeWireAPIMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider config.Provider
+		want     string
+	}{
+		{
+			name:     "openai default (wire_api unset) maps to openai-completions",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com/v1"}},
+			want:     "openai-completions",
+		},
+		{
+			name:     "openai wire_api chat maps to openai-completions",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, WireAPI: "chat"}},
+			want:     "openai-completions",
+		},
+		{
+			name:     "openai wire_api responses maps to openai-responses",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, WireAPI: "responses"}},
+			want:     "openai-responses",
+		},
+		{
+			name:     "openai wire_api illegal value falls back to openai-completions",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, WireAPI: "grpc"}},
+			want:     "openai-completions",
+		},
+		{
+			name:     "legacy openai provider (nil sub-block) maps to openai-completions",
+			provider: config.Provider{Type: "openai", AuthKey: "OPENAI_API_KEY"},
+			want:     "openai-completions",
+		},
+		{
+			name:     "anthropic maps to anthropic-messages",
+			provider: config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true}},
+			want:     "anthropic-messages",
+		},
+		{
+			name: "disabled openai block with wire_api does not flip anthropic",
+			provider: config.Provider{
+				Anthropic: &config.AnthropicFormat{Enabled: true},
+				OpenAI:    &config.OpenAIFormat{WireAPI: "responses"},
+			},
+			want: "anthropic-messages",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := piAPIType(tt.provider); got != tt.want {
+				t.Fatalf("piAPIType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildPiModelsConfigWireAPIResponses 验证 wire_api=responses 时 pi models.json
+// 的 api 字段透传为 openai-responses（BuildPiModelsConfig → piAPIType 全链路）。
+func TestBuildPiModelsConfigWireAPIResponses(t *testing.T) {
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{
+			Enabled: true,
+			BaseURL: "https://api.example.com/v1",
+			WireAPI: "responses",
+		},
+	}
+	cfg, err := BuildPiModelsConfig("custom", provider, "m", "k", config.Parameters{}, nil)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-custom"]
+	if entry["api"] != "openai-responses" {
+		t.Fatalf("api = %#v, want openai-responses", entry["api"])
+	}
+}
+
 // TestWritePiAgentConfigTightPerms (P1-7) verifies the agent dir is 0700 and the
 // models.json file is 0600, since the resolved header values it may carry can be
 // sensitive (API keys referenced via $ENV: at build time).

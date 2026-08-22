@@ -152,6 +152,10 @@
         <span class="ff-value">{{ openaiBaseUrl || '未设置' }}</span>
       </div>
       <div class="fmt-field">
+        <span class="ff-label">接口协议</span>
+        <span class="ff-value">{{ openaiWireApiLabel }}</span>
+      </div>
+      <div class="fmt-field">
         <span class="ff-label">Organization</span>
         <span class="ff-value">{{ openaiOrg || '（可选，未设置）' }}</span>
       </div>
@@ -279,6 +283,14 @@ const hasOpenAI = computed(() => {
 const anthropicBaseUrl = computed(() => (entry.value?.provider as any)?.anthropic?.base_url || '');
 const openaiBaseUrl = computed(() => (entry.value?.provider as any)?.openai?.base_url || '');
 const openaiOrg = computed(() => (entry.value?.provider as any)?.openai?.organization || '');
+
+/** OpenAI 接口协议展示：未设置/非法值显示「自动」，与后端 EffectiveWireAPI 归一化语义一致 */
+const openaiWireApiLabel = computed(() => {
+  const wa = ((entry.value?.provider as any)?.openai?.wire_api || '').toLowerCase();
+  if (wa === 'chat') return 'Chat Completions (/chat/completions)';
+  if (wa === 'responses') return 'Responses (/responses)';
+  return '自动';
+});
 
 /** 当前有效 Base URL：优先 anthropic/openai 子块，回退 legacy base_url */
 const effectiveBaseUrl = computed(() => {

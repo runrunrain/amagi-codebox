@@ -175,6 +175,58 @@ func TestNormalizeOpenAIBaseURL(t *testing.T) {
 			raw:  "https://host/v1%2Fseg/chat/completions",
 			want: "https://host/v1%2Fseg",
 		},
+
+		// --- /responses 后缀剥离（与 /chat/completions 同一循环/语义，wire_api 协议选择）---
+		{
+			name: "strip responses suffix",
+			raw:  "https://api.example.com/v1/responses",
+			want: "https://api.example.com/v1",
+		},
+		{
+			name: "strip responses suffix with trailing slash",
+			raw:  "https://api.example.com/v1/responses/",
+			want: "https://api.example.com/v1",
+		},
+		{
+			name: "duplicate responses suffix fully stripped by loop (idempotent)",
+			raw:  "https://api.example.com/v1/responses/responses",
+			want: "https://api.example.com/v1",
+		},
+		{
+			name: "mixed suffixes stripped by loop",
+			raw:  "https://api.example.com/v1/chat/completions/responses",
+			want: "https://api.example.com/v1",
+		},
+		{
+			name: "responses suffix stripped but query with path-like value preserved",
+			raw:  "https://host/v1/responses?target=/responses/",
+			want: "https://host/v1?target=/responses/",
+		},
+		{
+			name: "responses suffix stripped with fragment preserved",
+			raw:  "https://host/v1/responses#frag",
+			want: "https://host/v1#frag",
+		},
+		{
+			name: "uppercase Responses NOT stripped (case-sensitive, preserved as-is)",
+			raw:  "https://api.example.com/v1/Responses",
+			want: "https://api.example.com/v1/Responses",
+		},
+		{
+			name: "responses in middle not stripped (only trailing form handled)",
+			raw:  "https://gateway.example/responses/extra",
+			want: "https://gateway.example/responses/extra",
+		},
+		{
+			name: "hostless responses suffix conservative (NOT collapsed)",
+			raw:  "/v1/responses",
+			want: "/v1/responses",
+		},
+		{
+			name: "escaped slash responses suffix NOT stripped (escapes kept)",
+			raw:  "https://host/v1%2Fresponses",
+			want: "https://host/v1%2Fresponses",
+		},
 	}
 
 	for _, tt := range tests {
@@ -197,6 +249,51 @@ func TestNormalizeOpenAIBaseURL_Idempotent(t *testing.T) {
 	}
 	if first != "https://opencode.ai/zen/go/v1" {
 		t.Fatalf("first normalization = %q, want https://opencode.ai/zen/go/v1", first)
+	}
+}
+
+// TestNormalizeOpenAIBaseURL_ResponsesSuffixIdempotent 验证 /responses 剥离幂等。
+func TestNormalizeOpenAIBaseURL_ResponsesSuffixIdempotent(t *testing.T) {
+	raw := "https://api.openai.com/v1/responses"
+	first := NormalizeOpenAIBaseURL(raw)
+	second := NormalizeOpenAIBaseURL(first)
+	if first != second {
+		t.Fatalf("not idempotent: first=%q second=%q", first, second)
+	}
+	if first != "https://api.openai.com/v1" {
+		t.Fatalf("first normalization = %q, want https://api.openai.com/v1", first)
+	}
+}
+
+// TestOpenAIFormatEffectiveWireAPI 表驱动测试 wire_api 归一化：
+// trim+小写后仅接受 "chat"/"responses"，其余（未设置、空白、非法值）归一化为 ""。
+// nil 接收者安全（OpenAI 子块缺失的 legacy provider）。
+func TestOpenAIFormatEffectiveWireAPI(t *testing.T) {
+	tests := []struct {
+		name   string
+		format *OpenAIFormat
+		want   string
+	}{
+		{"nil receiver returns empty", nil, ""},
+		{"unset returns empty", &OpenAIFormat{}, ""},
+		{"empty string returns empty", &OpenAIFormat{WireAPI: ""}, ""},
+		{"whitespace only returns empty", &OpenAIFormat{WireAPI: "   "}, ""},
+		{"chat passthrough", &OpenAIFormat{WireAPI: "chat"}, "chat"},
+		{"responses passthrough", &OpenAIFormat{WireAPI: "responses"}, "responses"},
+		{"uppercase chat normalized to lowercase", &OpenAIFormat{WireAPI: "CHAT"}, "chat"},
+		{"mixed case responses normalized", &OpenAIFormat{WireAPI: "Responses"}, "responses"},
+		{"surrounding whitespace trimmed", &OpenAIFormat{WireAPI: "  chat  "}, "chat"},
+		{"tab and newline trimmed", &OpenAIFormat{WireAPI: "\tchat\n"}, "chat"},
+		{"illegal value normalized to empty", &OpenAIFormat{WireAPI: "websocket"}, ""},
+		{"protocol path value rejected", &OpenAIFormat{WireAPI: "/chat/completions"}, ""},
+		{"pi api value rejected", &OpenAIFormat{WireAPI: "openai-responses"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.format.EffectiveWireAPI(); got != tt.want {
+				t.Fatalf("EffectiveWireAPI() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

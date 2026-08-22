@@ -27,12 +27,19 @@ func PiProviderID(providerName string) string {
 //
 // pi 支持四种 api：openai-completions / openai-responses / anthropic-messages /
 // google-generative-ai。amagi 的双格式 Provider 映射：
-//   - OpenAI 兼容   -> "openai-completions"（最通用）
+//   - OpenAI 兼容   -> 默认 "openai-completions"（最通用）；
+//     OpenAI 格式 wire_api 为 "responses" 时改用 "openai-responses"
+//     （经 config.OpenAIFormat.EffectiveWireAPI 归一化，未设置/非法值维持
+//     默认，既有行为零变化）
 //   - Anthropic 兼容 -> "anthropic-messages"
 //
-// 参照 opencode_config.go 的 isOpenAIType 判定逻辑。
+// omp 的 api 判定与 pi 同构，复用同一函数（见 omp_config.go），改一处两引擎
+// 同时生效。参照 opencode_config.go 的 isOpenAIType 判定逻辑。
 func piAPIType(provider config.Provider) string {
 	if provider.IsOpenAICompatible() {
+		if provider.OpenAI.EffectiveWireAPI() == config.WireAPIResponses {
+			return "openai-responses"
+		}
 		return "openai-completions"
 	}
 	return "anthropic-messages"

@@ -65,6 +65,10 @@ type codexLaunchSettings struct {
 	ModelContextWindow int
 	AutoCompactLimit   int
 	ProviderBaseURL    string
+	// WireAPI 为 provider.OpenAI.EffectiveWireAPI() 归一化后的接口协议选择：
+	// "chat" -> Chat Completions；""/"responses" -> Responses（legacy 默认，
+	// 与既有硬编码行为一致）。实际写入由 codexWireAPI 兑底归一。
+	WireAPI string
 }
 
 // externalLauncherPort is the narrow Launcher-owned lifecycle used by external
@@ -164,6 +168,9 @@ type codexConfigSyncOptions struct {
 	Model                string
 	ModelProvider        string
 	ProviderBaseURL      string
+	// WireAPI 为托管 provider 段写入的 wire_api 值（经 codexWireAPI 归一化：
+	// "chat" -> chat，其余 -> responses legacy 默认）。空值维持既有行为。
+	WireAPI              string
 	EnsureCustomProvider bool
 	ForceAPILogin        bool
 	CleanupManagedConfig bool
@@ -3473,16 +3480,16 @@ func syncCodexConfigModel(model string) error {
 	return syncCodexConfigFile(configPath, codexConfigSyncOptions{Model: model, CleanupManagedConfig: true})
 }
 
-func syncCodexCustomProviderConfig(model, baseURL string) error {
+func syncCodexCustomProviderConfig(model, baseURL, wireAPI string) error {
 	codexHome, err := platform.CodexHomeDir(os.Environ())
 	if err != nil {
 		return fmt.Errorf("get Codex home: %w", err)
 	}
 	configPath := filepath.Join(codexHome, "config.toml")
-	return syncCodexCustomProviderConfigFile(configPath, model, baseURL)
+	return syncCodexCustomProviderConfigFile(configPath, model, baseURL, wireAPI)
 }
 
-func syncCodexCustomProviderConfigFile(configPath, model, baseURL string) error {
+func syncCodexCustomProviderConfigFile(configPath, model, baseURL, wireAPI string) error {
 	if strings.TrimSpace(model) == "" {
 		return fmt.Errorf("codex model is empty")
 	}
@@ -3496,6 +3503,7 @@ func syncCodexCustomProviderConfigFile(configPath, model, baseURL string) error 
 		Model:                model,
 		ModelProvider:        codexModelProviderName,
 		ProviderBaseURL:      baseURL,
+		WireAPI:              wireAPI,
 		EnsureCustomProvider: true,
 		ForceAPILogin:        true,
 	})
@@ -3534,7 +3542,7 @@ func renderCodexConfig(data []byte, configPath string, opts codexConfigSyncOptio
 			topLevelAssignments = append(topLevelAssignments, "forced_login_method = "+strconv.Quote("api"))
 		}
 		lines = syncCodexTopLevelAssignments(lines, topLevelAssignments, true)
-		lines = appendCodexCustomProviderSection(lines, opts.ModelProvider, opts.ProviderBaseURL)
+		lines = appendCodexCustomProviderSection(lines, opts.ModelProvider, opts.ProviderBaseURL, opts.WireAPI)
 	} else {
 		if opts.CleanupManagedConfig {
 			lines = cleanupCodexManagedProviderConfig(lines, codexModelProviderName)
@@ -3719,7 +3727,18 @@ func tomlAssignmentValueEquals(trimmedLine, value string) bool {
 	return strings.Trim(rawValue, "\"'") == value
 }
 
-func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL string) []string {
+// codexWireAPI 把 provider 侧的 wire_api 归一化为 Codex config.toml / -c 覆盖
+// 的合法值：仅 "chat"（trim+小写后）走 Chat Completions，其余（未设置、
+// "responses"、非法值）一律返回 "responses" —— 与既有硬编码 wire_api="responses"
+// 的 legacy 行为完全一致，保证未设置时零变化。
+func codexWireAPI(wireAPI string) string {
+	if strings.ToLower(strings.TrimSpace(wireAPI)) == config.WireAPIChat {
+		return config.WireAPIChat
+	}
+	return config.WireAPIResponses
+}
+
+func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL, wireAPI string) []string {
 	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
 		lines = append(lines, "")
 	}
@@ -3730,7 +3749,7 @@ func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL str
 		"base_url = "+strconv.Quote(baseURL),
 		"env_key = "+strconv.Quote("OPENAI_API_KEY"),
 		"requires_openai_auth = false",
-		"wire_api = "+strconv.Quote("responses"),
+		"wire_api = "+strconv.Quote(codexWireAPI(wireAPI)),
 		"# === amagi-codebox-inject-end ===",
 	)
 	return lines
@@ -4216,6 +4235,9 @@ func resolveCodexLaunchSettings(provider config.Provider, requestedModel string)
 	settings := codexLaunchSettings{
 		Model: normalizedModel,
 	}
+	// 接口协议选择透传：OpenAI 子块缺失或未设置时 EffectiveWireAPI 返回 ""，
+	// 下游 codexWireAPI 兑底为 responses，维持 legacy 行为零变化。
+	settings.WireAPI = provider.OpenAI.EffectiveWireAPI()
 
 	if normalizedModel == "" {
 		normalizedModel = normalizeCodexModelName(provider.DefaultModel)
@@ -4284,7 +4306,7 @@ func buildCodexCLIArgs(settings codexLaunchSettings) []string {
 		providerConfig := "{name=" + strconv.Quote(codexModelProviderName) +
 			",base_url=" + strconv.Quote(settings.ProviderBaseURL) +
 			",env_key=" + strconv.Quote("OPENAI_API_KEY") +
-			",requires_openai_auth=false,wire_api=" + strconv.Quote("responses") + "}"
+			",requires_openai_auth=false,wire_api=" + strconv.Quote(codexWireAPI(settings.WireAPI)) + "}"
 		args = append(args,
 			"-c", "model_provider="+strconv.Quote(codexModelProviderName),
 			"-c", "forced_login_method="+strconv.Quote("api"),

@@ -317,6 +317,14 @@ type AnthropicFormat struct {
 	AuthHeader *bool `json:"auth_header,omitempty"`
 }
 
+// OpenAI 格式 wire_api 合法值（接口协议选择）。
+const (
+	// WireAPIChat 走 Chat Completions 协议（POST {baseURL}/chat/completions）。
+	WireAPIChat = "chat"
+	// WireAPIResponses 走 Responses 协议（POST {baseURL}/responses）。
+	WireAPIResponses = "responses"
+)
+
 // OpenAIFormat OpenAI 兼容格式配置。
 //
 // APIKey 仅用于导入旧 JSON / 兼容历史导出结构，
@@ -327,10 +335,35 @@ type OpenAIFormat struct {
 	BaseURL      string `json:"base_url,omitempty"`
 	Organization string `json:"organization,omitempty"`
 	AuthKey      string `json:"auth_key,omitempty"`
+	// WireAPI 选择该 OpenAI 兼容端点的接口协议（可选，snake_case）。
+	// 合法值见 WireAPIChat / WireAPIResponses；未设置（""）表示默认/自动，
+	// 各 CLI 维持现状：Codex→responses、pi/omp→openai-completions。
+	// 读取一律经 EffectiveWireAPI 归一化（trim+小写，非法值 → ""），
+	// 保证未设置时现有行为零变化。OpenCode v1 不支持 responses 协议，
+	// 生成 opencode 配置时忽略该字段（仍走 chat）。
+	WireAPI string `json:"wire_api,omitempty"`
 	// Headers 是注入到该格式请求的自定义头（可选，透传给 pi models.json provider.headers）。
 	Headers map[string]string `json:"headers,omitempty"`
 	// AuthHeader 为 true 时强制携带 Authorization: Bearer（可选，透传给 pi authHeader）。
 	AuthHeader *bool `json:"auth_header,omitempty"`
+}
+
+// EffectiveWireAPI 返回 OpenAI 格式 wire_api 的归一化值。
+// 规则：TrimSpace + 小写后仅接受 "chat" / "responses"（返回小写原值），
+// 其余情况（未设置、空白、非法值）一律归一化为 ""（默认/自动，各 CLI 维持现状）。
+// nil 接收者安全：OpenAI 子块缺失（legacy 单格式 provider）时返回 ""。
+func (f *OpenAIFormat) EffectiveWireAPI() string {
+	if f == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(f.WireAPI)) {
+	case WireAPIChat:
+		return WireAPIChat
+	case WireAPIResponses:
+		return WireAPIResponses
+	default:
+		return ""
+	}
 }
 
 // Provider 服务商配置
@@ -601,15 +634,17 @@ func (p Provider) EffectiveType() string {
 //  2. 用 net/url 解析；解析失败、host 缺失（相对路径、scheme-only、普通非
 //     URL 字符串）保守返回 TrimSpace 后的原值，避免对 hostless 输入做破坏性
 //     裁剪（如 "/chat/completions" 被裁成空串、"https://" 被裁成 "https:"）；
-//  3. 仅对 URL.Path 做后缀处理：循环剥离尾部 "/" 与 "/chat/completions" 后缀
-//     （精确后缀匹配，大小写敏感，保证幂等：重复后缀也被完全剥离）；
+// 3. 仅对 URL.Path 做后缀处理：循环剥离尾部 "/" 与 "/chat/completions"、
+//     "/responses" 后缀（精确后缀匹配，大小写敏感，保证幂等：重复后缀也被
+//     完全剥离；两种后缀均按完整端点路径处理，混排时循环逐层剥离）；
 //  4. query/fragment/host/scheme/userinfo 等其他部分原样保留；path 未变化时
 //     直接返回原值，零副作用。
 //
-// 设计意图：用户常粘贴带 "/chat/completions" 后缀的完整端点（如
-// https://opencode.ai/zen/go/v1/chat/completions），而各 AI CLI（opencode
-// @ai-sdk/openai-compatible、codex、pi）默认会在 baseURL 后自行拼接该路径，
-// 原样透传会导致双重后缀请求失败。此处统一剥离后缀，下游再按需拼接。
+// 设计意图：用户常粘贴带 "/chat/completions" 或 "/responses" 后缀的完整
+// 端点（如 https://opencode.ai/zen/go/v1/chat/completions、
+// https://api.example.com/v1/responses），而各 AI CLI（opencode
+// @ai-sdk/openai-compatible、codex、pi）默认会在 baseURL 后自行拼接协议
+// 路径，原样透传会导致双重后缀请求失败。此处统一剥离后缀，下游再按需拼接。
 //
 // 限制在 URL path 内处理（而非对整个字符串做后缀裁剪），可避免破坏带
 // query/fragment 的企业网关或签名地址（如 ?redirect=/chat/completions/）。
@@ -641,6 +676,9 @@ func NormalizeOpenAIBaseURL(raw string) string {
 		next := strings.TrimRight(escaped, "/")
 		if strings.HasSuffix(next, "/chat/completions") {
 			next = strings.TrimSuffix(next, "/chat/completions")
+			next = strings.TrimRight(next, "/")
+		} else if strings.HasSuffix(next, "/responses") {
+			next = strings.TrimSuffix(next, "/responses")
 			next = strings.TrimRight(next, "/")
 		}
 		if next == escaped {
