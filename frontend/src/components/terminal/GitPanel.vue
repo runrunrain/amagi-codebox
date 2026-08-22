@@ -1,69 +1,88 @@
 <template>
   <Teleport to="body">
-    <div
+    <section
       v-if="visible"
-      class="git-panel-backdrop"
-      role="presentation"
-      @click.self="emitClose"
+      ref="panelRef"
+      class="git-panel"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="git-panel-heading"
+      :style="panelStyle"
     >
-      <section
-        ref="dialogRef"
-        class="git-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="git-panel-heading"
-        tabindex="-1"
-        @keydown.esc.stop.prevent="emitClose"
-        @keydown.tab="handleTabKey"
-      >
-        <header class="modal-header">
-          <div>
-            <p class="modal-eyebrow">AI 辅助 Git</p>
-            <h2 id="git-panel-heading">提交 / 推送</h2>
-            <p class="modal-subtitle" :title="workDir">{{ workDir || '未知工作目录' }}</p>
-          </div>
-          <button ref="closeButtonRef" type="button" class="modal-close" aria-label="关闭提交推送面板" @click="emitClose">关闭</button>
-        </header>
+      <header class="panel-header">
+        <div class="panel-header-text">
+          <h2 id="git-panel-heading">提交 / 推送</h2>
+          <p class="panel-subtitle" :title="workDir">{{ workDir || '未知工作目录' }}</p>
+        </div>
+        <button type="button" class="panel-close" aria-label="关闭提交推送面板" @click="emitClose">×</button>
+      </header>
 
-        <div class="modal-body">
-          <!-- 加载态 -->
-          <div v-if="loading" class="panel-empty panel-empty--loading">正在读取仓库状态…</div>
+      <div class="panel-body">
+        <!-- 加载态 -->
+        <div v-if="loading" class="panel-empty panel-empty--loading">正在读取仓库状态…</div>
 
-          <!-- 非 git 仓库空态 -->
-          <div v-else-if="!repo || !repo.isGitRepo" class="panel-empty">
-            当前工作区不是 Git 仓库，无法使用提交/推送功能。
-          </div>
+        <!-- 非 git 仓库空态 -->
+        <div v-else-if="!repo || !repo.isGitRepo" class="panel-empty">
+          当前工作区不是 Git 仓库，无法使用提交/推送功能。
+        </div>
 
-          <template v-else>
-            <!-- 状态区 -->
-            <div class="status-grid">
-              <div class="status-item">
-                <span>当前分支</span>
-                <strong>{{ repo.branch || '-' }}</strong>
-              </div>
-              <div class="status-item">
-                <span>上游分支</span>
-                <strong>{{ repo.upstream || '（无上游）' }}</strong>
-              </div>
-              <div class="status-item">
-                <span>领先 / 落后</span>
-                <strong>
-                  <template v-if="repo.upstream">↑{{ repo.ahead }} / ↓{{ repo.behind }}</template>
-                  <template v-else>-</template>
-                </strong>
-              </div>
-              <div class="status-item">
-                <span>变更</span>
-                <strong>暂存 {{ repo.staged }} · 未暂存 {{ repo.unstaged }} · 未跟踪 {{ repo.untracked }}</strong>
-              </div>
-              <div v-if="repo.remoteUrl" class="status-item status-item--wide">
-                <span>Remote</span>
-                <strong :title="repo.remoteUrl">{{ repo.remoteUrl }}</strong>
+        <template v-else>
+          <!-- 手风琴：仓库状态 -->
+          <section class="accordion" aria-label="仓库状态">
+            <button
+              type="button"
+              class="accordion-head"
+              :aria-expanded="statusExpanded"
+              @click="statusExpanded = !statusExpanded"
+            >
+              <span class="accordion-arrow" :class="{ expanded: statusExpanded }">▸</span>
+              <span class="accordion-title">仓库状态</span>
+              <span v-if="!statusExpanded" class="accordion-summary">
+                {{ repo.branch || '-' }} · 变更 {{ repo.staged + repo.unstaged + repo.untracked }}
+              </span>
+            </button>
+            <div v-if="statusExpanded" class="accordion-content">
+              <div class="status-grid">
+                <div class="status-item">
+                  <span>当前分支</span>
+                  <strong>{{ repo.branch || '-' }}</strong>
+                </div>
+                <div class="status-item">
+                  <span>上游分支</span>
+                  <strong>{{ repo.upstream || '（无上游）' }}</strong>
+                </div>
+                <div class="status-item">
+                  <span>领先 / 落后</span>
+                  <strong>
+                    <template v-if="repo.upstream">↑{{ repo.ahead }} / ↓{{ repo.behind }}</template>
+                    <template v-else>-</template>
+                  </strong>
+                </div>
+                <div class="status-item">
+                  <span>变更</span>
+                  <strong>暂存 {{ repo.staged }} · 未暂存 {{ repo.unstaged }} · 未跟踪 {{ repo.untracked }}</strong>
+                </div>
+                <div v-if="repo.remoteUrl" class="status-item status-item--wide">
+                  <span>Remote</span>
+                  <strong :title="repo.remoteUrl">{{ repo.remoteUrl }}</strong>
+                </div>
               </div>
             </div>
+          </section>
 
-            <!-- 分支切换 -->
-            <section class="panel-section" aria-label="分支切换">
+          <!-- 手风琴：分支切换 -->
+          <section class="accordion" aria-label="分支切换">
+            <button
+              type="button"
+              class="accordion-head"
+              :aria-expanded="branchExpanded"
+              @click="branchExpanded = !branchExpanded"
+            >
+              <span class="accordion-arrow" :class="{ expanded: branchExpanded }">▸</span>
+              <span class="accordion-title">分支切换</span>
+              <span v-if="!branchExpanded" class="accordion-summary">{{ repo.branch || '-' }}</span>
+            </button>
+            <div v-if="branchExpanded" class="accordion-content">
               <div class="section-row">
                 <label class="section-label" for="git-branch-select">切换分支</label>
                 <select
@@ -95,10 +114,24 @@
                   </button>
                 </div>
               </div>
-            </section>
+            </div>
+          </section>
 
-            <!-- 提交信息 -->
-            <section class="panel-section" aria-label="提交信息">
+          <!-- 手风琴：提交信息（默认展开，主操作路径） -->
+          <section class="accordion" aria-label="提交信息">
+            <button
+              type="button"
+              class="accordion-head"
+              :aria-expanded="messageExpanded"
+              @click="messageExpanded = !messageExpanded"
+            >
+              <span class="accordion-arrow" :class="{ expanded: messageExpanded }">▸</span>
+              <span class="accordion-title">提交信息</span>
+              <span v-if="!messageExpanded && message.trim()" class="accordion-summary" :title="message">
+                {{ message.trim() }}
+              </span>
+            </button>
+            <div v-if="messageExpanded" class="accordion-content">
               <div class="section-row section-row--head">
                 <label class="section-label" for="git-commit-message">提交信息</label>
                 <button
@@ -120,48 +153,44 @@
                 <span>{{ generateError }}</span>
                 <button type="button" class="btn ghost banner-action" @click="goSettings">去设置</button>
               </div>
-            </section>
-
-            <!-- 统一错误展示区 -->
-            <div v-if="actionError" class="banner banner--error" role="alert">{{ actionError }}</div>
-            <!-- 推送结果 -->
-            <div v-if="pushResult" class="banner banner--success" role="status">{{ pushResult }}</div>
-
-            <!-- 操作区 -->
-            <div class="action-row">
-              <button
-                type="button"
-                class="btn primary"
-                :disabled="!canCommit || committingAll"
-                @click="doCommitAll"
-              >{{ committingAll ? '提交中…' : '提交全部变更' }}</button>
-              <button
-                type="button"
-                class="btn ghost"
-                :disabled="!canCommit || repo.staged === 0 || committingStaged"
-                :title="repo.staged === 0 ? '当前没有已暂存的变更' : ''"
-                @click="doCommitStaged"
-              >{{ committingStaged ? '提交中…' : '仅提交已暂存' }}</button>
-              <button
-                type="button"
-                class="btn ghost"
-                :disabled="pushing || anyActionRunning"
-                @click="doPush"
-              >{{ pushing ? '推送中…' : '推送' }}</button>
             </div>
-          </template>
-        </div>
+          </section>
 
-        <footer class="modal-footer">
-          <button type="button" class="btn ghost" @click="emit('open-detail')">查看会话详情</button>
-        </footer>
-      </section>
-    </div>
+          <!-- 统一错误展示区 -->
+          <div v-if="actionError" class="banner banner--error" role="alert">{{ actionError }}</div>
+          <!-- 推送结果 -->
+          <div v-if="pushResult" class="banner banner--success" role="status">{{ pushResult }}</div>
+
+          <!-- 操作区 -->
+          <div class="action-row">
+            <button
+              type="button"
+              class="btn primary"
+              :disabled="!canCommit || committingAll"
+              @click="doCommitAll"
+            >{{ committingAll ? '提交中…' : '提交全部变更' }}</button>
+            <button
+              type="button"
+              class="btn ghost"
+              :disabled="!canCommit || repo.staged === 0 || committingStaged"
+              :title="repo.staged === 0 ? '当前没有已暂存的变更' : ''"
+              @click="doCommitStaged"
+            >{{ committingStaged ? '提交中…' : '仅提交已暂存' }}</button>
+            <button
+              type="button"
+              class="btn ghost"
+              :disabled="pushing || anyActionRunning"
+              @click="doPush"
+            >{{ pushing ? '推送中…' : '推送' }}</button>
+          </div>
+        </template>
+      </div>
+    </section>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   getRepoInfo,
   listBranches,
@@ -179,11 +208,11 @@ import { useUIStore } from '../../stores/ui'
 const props = defineProps<{
   visible: boolean
   workDir: string
+  anchor: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
   (event: 'close'): void
-  (event: 'open-detail'): void
 }>()
 
 const { showSuccess } = useToast()
@@ -203,9 +232,13 @@ const pushing = ref(false)
 const switching = ref(false)
 const pendingBranch = ref('')
 
-const dialogRef = ref<HTMLElement | null>(null)
-const closeButtonRef = ref<HTMLButtonElement | null>(null)
-let previousActiveElement: Element | null = null
+// 手风琴展开状态：仓库状态/分支切换默认收起，提交信息默认展开（主操作路径）
+const statusExpanded = ref(false)
+const branchExpanded = ref(false)
+const messageExpanded = ref(true)
+
+const panelRef = ref<HTMLElement | null>(null)
+const panelStyle = ref<Record<string, string>>({})
 
 const anyActionRunning = computed(
   () => committingAll.value || committingStaged.value || pushing.value || switching.value,
@@ -218,6 +251,59 @@ function errText(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)
 }
+
+// ---- 浮层定位：锚定「提交/推送」按钮，正下方右对齐，clamp 在视口内 ----
+const VIEWPORT_PAD = 12
+const PANEL_WIDTH = 400
+
+function updatePosition() {
+  const anchor = props.anchor
+  if (!anchor) return
+  const rect = anchor.getBoundingClientRect()
+  const width = Math.min(PANEL_WIDTH, window.innerWidth - VIEWPORT_PAD * 2)
+  // 右对齐：面板右缘与按钮右缘对齐；窄屏时向左 clamp 进视口
+  const left = Math.max(
+    VIEWPORT_PAD,
+    Math.min(rect.right - width, window.innerWidth - width - VIEWPORT_PAD),
+  )
+  const top = Math.min(rect.bottom + 8, window.innerHeight - VIEWPORT_PAD)
+  panelStyle.value = {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${width}px`,
+  }
+}
+
+// ---- 非阻断关闭：浮层外按下即关闭，但绝不拦截事件（不 preventDefault，
+// 事件照常落到终端，终端保持可输入/滚动/右键）----
+function onDocumentPointerDown(event: Event) {
+  const target = event.target as Node | null
+  if (!target) return
+  if (panelRef.value?.contains(target)) return
+  if (props.anchor?.contains(target)) return
+  emitClose()
+}
+
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') emitClose()
+}
+
+function attachGlobalListeners() {
+  updatePosition()
+  window.addEventListener('resize', updatePosition)
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  document.addEventListener('mousedown', onDocumentPointerDown, true)
+  document.addEventListener('keydown', onDocumentKeydown, true)
+}
+
+function detachGlobalListeners() {
+  window.removeEventListener('resize', updatePosition)
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  document.removeEventListener('mousedown', onDocumentPointerDown, true)
+  document.removeEventListener('keydown', onDocumentKeydown, true)
+}
+
+onBeforeUnmount(detachGlobalListeners)
 
 async function loadAll() {
   if (!props.workDir) {
@@ -341,143 +427,104 @@ function emitClose() {
   emit('close')
 }
 
-function restoreFocus() {
-  if (previousActiveElement instanceof HTMLElement) {
-    previousActiveElement.focus()
-  }
-  previousActiveElement = null
-}
-
-function handleTabKey(event: KeyboardEvent) {
-  const dialog = dialogRef.value
-  if (!dialog) return
-  const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  )).filter((element) => element.offsetParent !== null || element === closeButtonRef.value)
-  if (focusable.length === 0) return
-
-  const first = focusable[0]
-  const last = focusable[focusable.length - 1]
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
-  }
-}
-
 watch(
   () => props.visible,
   (visible) => {
     if (visible) {
-      previousActiveElement = document.activeElement
       // 重置瞬态状态，重新拉取仓库信息
       message.value = ''
       generateError.value = ''
       actionError.value = ''
       pushResult.value = ''
       pendingBranch.value = ''
+      statusExpanded.value = false
+      branchExpanded.value = false
+      messageExpanded.value = true
       void loadAll()
-      nextTick(() => closeButtonRef.value?.focus())
+      nextTick(() => attachGlobalListeners())
       return
     }
-    restoreFocus()
+    detachGlobalListeners()
   },
 )
 </script>
 
 <style scoped>
-.git-panel-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 3000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(4, 8, 14, 0.68);
-  backdrop-filter: blur(10px);
-}
-
+/* 锚定下拉浮层：无全屏遮罩，fixed 定位由 JS 计算（left/top/width 内联） */
 .git-panel {
-  width: min(640px, 100%);
-  max-height: min(86vh, 760px);
+  position: fixed;
+  z-index: 3000;
+  max-height: 70vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   border: 1px solid rgba(137, 221, 255, 0.24);
-  border-radius: 20px;
+  border-radius: 14px;
   background:
     radial-gradient(circle at 12% 0%, rgba(137, 221, 255, 0.16), transparent 32%),
     radial-gradient(circle at 92% 12%, rgba(102, 187, 106, 0.11), transparent 28%),
     #0b1018;
-  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.56);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   color: #d9e2ec;
   outline: none;
 }
 
-.modal-header {
+.panel-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 22px 24px 16px;
+  gap: 12px;
+  padding: 12px 14px;
   border-bottom: 1px solid rgba(58, 74, 94, 0.64);
 }
 
-.modal-eyebrow {
-  margin: 0 0 6px;
-  color: #89ddff;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.panel-header-text {
+  min-width: 0;
 }
 
-.modal-header h2 {
-  margin: 0 0 6px;
+.panel-header h2 {
+  margin: 0 0 2px;
   color: #edf6ff;
-  font-size: 20px;
+  font-size: 15px;
 }
 
-.modal-subtitle {
+.panel-subtitle {
   margin: 0;
   color: #71869b;
-  font-size: 12px;
+  font-size: 11px;
   font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 420px;
+  max-width: 320px;
 }
 
-.modal-close {
-  align-self: flex-start;
-  padding: 7px 13px;
+.panel-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid #334155;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.72);
   color: #c8d5e3;
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
 }
 
-.modal-close:hover,
-.modal-close:focus-visible {
+.panel-close:hover,
+.panel-close:focus-visible {
   border-color: #89ddff;
   color: #89ddff;
   outline: none;
 }
 
-.modal-body {
+.panel-body {
   overflow: auto;
-  padding: 18px 24px;
-}
-
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  padding: 12px 24px 16px;
-  border-top: 1px solid rgba(58, 74, 94, 0.64);
+  padding: 12px 14px 14px;
 }
 
 .panel-empty {
@@ -494,6 +541,78 @@ watch(
 .panel-empty--loading {
   border-color: rgba(137, 221, 255, 0.34);
   color: #89ddff;
+}
+
+/* ---- 手风琴 ---- */
+.accordion {
+  margin-top: 10px;
+  border: 1px solid rgba(58, 74, 94, 0.64);
+  border-radius: 12px;
+  background: rgba(10, 14, 22, 0.64);
+  overflow: hidden;
+}
+
+.accordion:first-child {
+  margin-top: 0;
+}
+
+.accordion-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: #a9bbcc;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.accordion-head:hover {
+  color: #d9e2ec;
+  background: rgba(137, 221, 255, 0.05);
+}
+
+.accordion-head:focus-visible {
+  outline: none;
+  color: #89ddff;
+  box-shadow: inset 0 0 0 2px rgba(137, 221, 255, 0.35);
+}
+
+.accordion-arrow {
+  flex-shrink: 0;
+  color: #71869b;
+  font-size: 11px;
+  transition: transform 0.15s;
+}
+
+.accordion-arrow.expanded {
+  transform: rotate(90deg);
+  color: #89ddff;
+}
+
+.accordion-title {
+  flex-shrink: 0;
+}
+
+.accordion-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: #6f8194;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.accordion-content {
+  padding: 0 12px 12px;
 }
 
 .status-grid {
@@ -528,14 +647,6 @@ watch(
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.panel-section {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border: 1px solid rgba(58, 74, 94, 0.64);
-  border-radius: 14px;
-  background: rgba(10, 14, 22, 0.64);
 }
 
 .section-row {
@@ -712,17 +823,6 @@ watch(
 }
 
 @media (max-width: 640px) {
-  .git-panel-backdrop {
-    padding: 12px;
-  }
-
-  .modal-header,
-  .modal-body,
-  .modal-footer {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
   .status-grid {
     grid-template-columns: 1fr;
   }

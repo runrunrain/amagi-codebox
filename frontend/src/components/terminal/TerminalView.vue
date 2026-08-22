@@ -18,7 +18,7 @@
             variant="pill"
           />
         </div>
-        <button class="btn btn-ghost" @click="gitPanelVisible = true" title="提交/推送">提交/推送</button>
+        <button ref="gitAnchorRef" class="btn btn-ghost" @click="gitPanelVisible = true" title="提交/推送">提交/推送</button>
         <button
           class="btn btn-ghost danger"
           :disabled="isStopping || session?.status !== 'running'"
@@ -65,20 +65,12 @@
       />
     </div>
 
-    <!-- Git 提交/推送弹窗 -->
+    <!-- Git 提交/推送浮层（锚定工具栏按钮的下拉浮层，非阻断） -->
     <GitPanel
       :visible="gitPanelVisible"
       :work-dir="session?.workDir || ''"
+      :anchor="gitAnchorRef"
       @close="gitPanelVisible = false"
-      @open-detail="handleOpenDetail"
-    />
-
-    <!-- 会话详情弹窗 -->
-    <SessionDetailModal
-      :visible="detailVisible"
-      :session-id="sessionId"
-      :session="session"
-      @close="detailVisible = false"
     />
   </div>
 </template>
@@ -115,7 +107,6 @@ import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import { useTerminalEngine } from '../../composables/useTerminalEngine'
 import { basename } from '../../utils/format'
-import SessionDetailModal from '../session/SessionDetailModal.vue'
 import GitPanel from './GitPanel.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
 import WebPlaneHost from './WebPlaneHost.vue'
@@ -138,8 +129,8 @@ const engine = useTerminalEngine()
 
 const bodyRef = ref<HTMLElement | null>(null)
 const stopping = ref(false)
-const detailVisible = ref(false)
 const gitPanelVisible = ref(false)
+const gitAnchorRef = ref<HTMLElement | null>(null)
 const hasSelection = ref(false)
 const routeSurfaceActive = ref(true)
 const surfaceActive = computed(() => props.active && routeSurfaceActive.value)
@@ -420,10 +411,6 @@ async function handleStop() {
   } finally {
     stopping.value = false
   }
-}
-
-function handleOpenDetail() {
-  detailVisible.value = true
 }
 
 // ---- right-click menu -----------------------------------------------------

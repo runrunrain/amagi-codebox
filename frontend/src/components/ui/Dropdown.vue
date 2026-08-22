@@ -277,7 +277,7 @@ watch(
 /*
  * 菜单经 Teleport 挂到 document.body，position:fixed（left/top/bottom/width/max-height 由 JS 内联注入）。
  * z-index=2000：高于 Dialog(1000)，保证对话框内的下拉不被遮挡；
- * 低于 SessionDetailModal(3000)/Toast(9999)/TerminalContextMenu(10000)，全局提示与终端右键菜单仍居顶。
+ * 低于 GitPanel(3000)/Toast(9999)/TerminalContextMenu(10000)，全局提示与终端右键菜单仍居顶。
  */
 .dropdown-menu {
   position: fixed;
