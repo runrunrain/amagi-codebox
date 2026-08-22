@@ -241,6 +241,21 @@ type Transport struct {
 // defaultRequestTimeout 是 REST 短连接的默认超时（蓝图 §6：REST 短连接）。
 const defaultRequestTimeout = 10 * time.Second
 
+// newHardenedHTTPClient 返回统一加固的 REST 客户端：短超时 + 禁跟随重定向。
+// 禁用跟随的原因（自查加固）：v1 契约无重定向语义；跟随 3xx 会让凭据载体
+// （设备 Cookie / Bearer 头）被 net/http 重定向复制器带到同域其它端口/子域
+// （Cookie 头对子域开放，isDomainOrSubdomain），或把代理拦截页伪成成功链路。
+// 重定向一律作为非成功状态交给错误归类。v1 Transport 与 legacy 配置面客户端
+// （legacyconfig.go）共用本策略。
+func newHardenedHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: defaultRequestTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // NewTransport 按 baseURL（http/https + host[:port]）构建 REST 基座。
 func NewTransport(baseURL string) (*Transport, error) {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
@@ -252,16 +267,7 @@ func NewTransport(baseURL string) (*Transport, error) {
 	}
 	return &Transport{
 		BaseURL: strings.TrimSuffix(u.Scheme+"://"+u.Host, "/"),
-		// 自查加固（非 diting 编号项）：v1 契约无重定向语义；跟随 3xx 会让设备
-		// Cookie 被 net/http 重定向复制器带到同域其它端口/子域（Cookie 头
-		// 对子域开放，isDomainOrSubdomain），或把代理拦截页伪成成功链路。
-		// 处置：禁用跟随，重定向一律作为非成功状态交给 classifyFailure。
-		HTTP: &http.Client{
-			Timeout: defaultRequestTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		HTTP:    newHardenedHTTPClient(),
 	}, nil
 }
 
@@ -367,12 +373,7 @@ func (t *Transport) doResp(ctx context.Context, ep contract.RestEndpoint, opt re
 		req.AddCookie(&http.Cookie{Name: deviceCookieName, Value: buildDeviceCookieValue(deviceID, secret)})
 	}
 	if t.HTTP == nil {
-		t.HTTP = &http.Client{
-			Timeout: defaultRequestTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
+		t.HTTP = newHardenedHTTPClient()
 	}
 
 	resp, err := t.HTTP.Do(req)

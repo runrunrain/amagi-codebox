@@ -418,6 +418,10 @@ export function RemoteClientAddHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientAddHost'](arg1, arg2);
 }
 
+export function RemoteClientClearLegacyToken(arg1) {
+  return window['go']['main']['App']['RemoteClientClearLegacyToken'](arg1);
+}
+
 export function RemoteClientCompletePairing(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientCompletePairing'](arg1, arg2);
 }
@@ -434,8 +438,16 @@ export function RemoteClientDisconnect(arg1) {
   return window['go']['main']['App']['RemoteClientDisconnect'](arg1);
 }
 
+export function RemoteClientGetRemoteProvider(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientGetRemoteProvider'](arg1, arg2);
+}
+
 export function RemoteClientGetRemoteSession(arg1) {
   return window['go']['main']['App']['RemoteClientGetRemoteSession'](arg1);
+}
+
+export function RemoteClientGetRemoteSettings(arg1) {
+  return window['go']['main']['App']['RemoteClientGetRemoteSettings'](arg1);
 }
 
 export function RemoteClientLaunchRemoteSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
@@ -446,12 +458,24 @@ export function RemoteClientListHosts() {
   return window['go']['main']['App']['RemoteClientListHosts']();
 }
 
+export function RemoteClientListRemoteProviders(arg1) {
+  return window['go']['main']['App']['RemoteClientListRemoteProviders'](arg1);
+}
+
 export function RemoteClientListRemoteSessions() {
   return window['go']['main']['App']['RemoteClientListRemoteSessions']();
 }
 
 export function RemoteClientProbeHost(arg1) {
   return window['go']['main']['App']['RemoteClientProbeHost'](arg1);
+}
+
+export function RemoteClientPutRemoteProvider(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RemoteClientPutRemoteProvider'](arg1, arg2, arg3);
+}
+
+export function RemoteClientPutRemoteSettings(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientPutRemoteSettings'](arg1, arg2);
 }
 
 export function RemoteClientReleaseControl(arg1) {
@@ -468,6 +492,10 @@ export function RemoteClientRenameHost(arg1, arg2) {
 
 export function RemoteClientRestartRemoteSession(arg1) {
   return window['go']['main']['App']['RemoteClientRestartRemoteSession'](arg1);
+}
+
+export function RemoteClientSetLegacyToken(arg1, arg2) {
+  return window['go']['main']['App']['RemoteClientSetLegacyToken'](arg1, arg2);
 }
 
 export function RemoteClientStopRemoteSession(arg1) {

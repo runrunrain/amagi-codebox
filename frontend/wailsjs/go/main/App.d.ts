@@ -225,6 +225,8 @@ export function RemoteClientAcquireControl(arg1:string):Promise<remoteclient.Con
 
 export function RemoteClientAddHost(arg1:string,arg2:string):Promise<remoteclient.HostEntry>;
 
+export function RemoteClientClearLegacyToken(arg1:string):Promise<void>;
+
 export function RemoteClientCompletePairing(arg1:string,arg2:string):Promise<remoteclient.PairingResult>;
 
 export function RemoteClientConnect(arg1:string):Promise<main.RemoteClientConnectResult>;
@@ -233,15 +235,25 @@ export function RemoteClientDeleteRemoteSession(arg1:string):Promise<void>;
 
 export function RemoteClientDisconnect(arg1:string):Promise<void>;
 
+export function RemoteClientGetRemoteProvider(arg1:string,arg2:string):Promise<string>;
+
 export function RemoteClientGetRemoteSession(arg1:string):Promise<contract.SessionDetail>;
+
+export function RemoteClientGetRemoteSettings(arg1:string):Promise<string>;
 
 export function RemoteClientLaunchRemoteSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:boolean):Promise<contract.SessionDetail>;
 
 export function RemoteClientListHosts():Promise<Array<remoteclient.HostEntry>>;
 
+export function RemoteClientListRemoteProviders(arg1:string):Promise<Array<remoteclient.LegacyProviderSummary>>;
+
 export function RemoteClientListRemoteSessions():Promise<contract.SessionList>;
 
 export function RemoteClientProbeHost(arg1:string):Promise<remoteclient.ProbeResult>;
+
+export function RemoteClientPutRemoteProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function RemoteClientPutRemoteSettings(arg1:string,arg2:string):Promise<void>;
 
 export function RemoteClientReleaseControl(arg1:string):Promise<remoteclient.ControlView>;
 
@@ -250,6 +262,8 @@ export function RemoteClientRemoveHost(arg1:string):Promise<void>;
 export function RemoteClientRenameHost(arg1:string,arg2:string):Promise<void>;
 
 export function RemoteClientRestartRemoteSession(arg1:string):Promise<contract.SessionDetail>;
+
+export function RemoteClientSetLegacyToken(arg1:string,arg2:string):Promise<void>;
 
 export function RemoteClientStopRemoteSession(arg1:string):Promise<contract.SessionDetail>;
 

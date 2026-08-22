@@ -151,13 +151,17 @@ func parsePairingCookie(resp *http.Response) (deviceID, secret string, err error
 }
 
 // ForgetHost 移除登记簿条目并清理其 Keychain 凭据（凭据删除失败则整体失败、
-// 不留孤儿条目——凭据孤儿比条目孤儿危害更大）。
+// 不留孤儿条目——凭据孤儿比条目孤儿危害更大）。legacy token 条目
+// （codebox-remoteclient/<DeviceID>/legacy，WD-5）随设备凭据一并清理。
 func (p *PairingService) ForgetHost(id string) error {
 	entry, ok := p.Registry.Get(id)
 	if !ok {
 		return fmt.Errorf("host %q not found", id)
 	}
 	if entry.DeviceID != "" {
+		if err := p.Creds.Delete(legacyTokenEntryName(entry.DeviceID)); err != nil {
+			return fmt.Errorf("delete legacy token for %s: %w", entry.DeviceID, err)
+		}
 		if err := p.Creds.Delete(credentialEntryName(entry.DeviceID)); err != nil {
 			return fmt.Errorf("delete credential for %s: %w", entry.DeviceID, err)
 		}

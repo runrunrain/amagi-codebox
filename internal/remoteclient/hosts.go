@@ -35,7 +35,9 @@ const (
 )
 
 // HostEntry 是登记簿条目（蓝图 §5 领域模型）。ID/DisplayName/HostPort 为本机
-// 可编辑字段；DeviceID 由配对流填入。
+// 可编辑字段；DeviceID 由配对流填入。HasLegacyToken 是 legacy 配置面（WD-5
+// 过渡方案）的投影标记：仅表示 Keychain 条目
+// codebox-remoteclient/<DeviceID>/legacy 曾写入，token 本体永不入簿。
 type HostEntry struct {
 	ID          string      `json:"id"`
 	DisplayName string      `json:"displayName"`
@@ -43,6 +45,7 @@ type HostEntry struct {
 	DeviceID    string      `json:"deviceId"`
 	Health      HealthState `json:"health"`
 	LastSeen    time.Time   `json:"lastSeen"`
+	HasLegacyToken bool     `json:"hasLegacyToken"`
 }
 
 // entryIDPrefix 是登记簿条目 ID 前缀（本机随机生成，与远端无关）。
@@ -353,6 +356,22 @@ func (r *HostRegistry) UpdateHostPort(id, hostPort string) error {
 			r.entries[i].DeviceID = ""
 			r.entries[i].Health = HealthProbing
 			r.entries[i].LastSeen = time.Time{}
+			r.entries[i].HasLegacyToken = false
+			return r.save()
+		}
+	}
+	return fmt.Errorf("host %q not found", id)
+}
+
+// SetLegacyTokenFlag 维护 hasLegacyToken 投影标记（legacyconfig.go 的
+// SetLegacyToken/ClearLegacyToken 与 keychain 自愈路径调用；token 本体只在
+// Keychain，本标记仅为 UI 可用性投影）。
+func (r *HostRegistry) SetLegacyTokenFlag(id string, has bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.entries {
+		if r.entries[i].ID == id {
+			r.entries[i].HasLegacyToken = has
 			return r.save()
 		}
 	}
@@ -404,6 +423,11 @@ func (r *HostRegistry) UpsertPaired(hostPort, deviceID, displayName string, heal
 	defer r.mu.Unlock()
 	for i := range r.entries {
 		if r.entries[i].DeviceID == deviceID || r.entries[i].HostPort == hp {
+			// 设备身份变更（同 HostPort 换新 DeviceID）：旧 legacy token 条目
+			// 属旧 DeviceID，投影标记随之失效（WD-5：token 按 DeviceID 键控）。
+			if r.entries[i].DeviceID != deviceID {
+				r.entries[i].HasLegacyToken = false
+			}
 			r.entries[i].DeviceID = deviceID
 			r.entries[i].HostPort = hp
 			r.entries[i].Health = health

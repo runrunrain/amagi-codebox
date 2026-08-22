@@ -86,6 +86,13 @@ func (a *App) initRemoteClientServices() {
 		return
 	}
 	a.rcPairing = pairing
+
+	legacy, err := remoteclient.NewLegacyConfigService(a.rcRegistry, a.rcCreds)
+	if err != nil {
+		a.Log.Warn("remoteclient", "legacy 配置面服务构建失败，远程配置管理功能降级", err.Error())
+		return
+	}
+	a.rcLegacy = legacy
 }
 
 // rcContext 返回远程客户端调用使用的 ctx：优先 Wails 生命周期 ctx（应用
@@ -195,6 +202,10 @@ func (a *App) RemoteClientUpdateHost(hostID, hostPort string) error {
 		return fmt.Errorf("update remote host: %w", err)
 	}
 	if prev.DeviceID != "" && a.rcCreds != nil {
+		if err := a.rcCreds.Delete(remoteclient.LegacyTokenEntryName(prev.DeviceID)); err != nil {
+			a.Log.Warn("remoteclient", "地址变更后清理旧 legacy token 失败（残留孤儿条目，无害）",
+				fmt.Sprintf("deviceID=%s err=%s", prev.DeviceID, err.Error()))
+		}
 		if err := a.rcCreds.Delete(remoteclient.CredentialEntryName(prev.DeviceID)); err != nil {
 			a.Log.Warn("remoteclient", "地址变更后清理旧凭据失败（残留孤儿凭据，无害）",
 				fmt.Sprintf("deviceID=%s err=%s", prev.DeviceID, err.Error()))
@@ -509,6 +520,119 @@ func (a *App) RemoteClientDeleteRemoteSession(sessionID string) error {
 		return fmt.Errorf("delete remote session: %w", cerr)
 	}
 	a.Log.Info("remoteclient", "远端会话已移除", fmt.Sprintf("session=%s", sid))
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// legacy 配置面（WD-5 过渡方案，RC4-1）：v1 契约无 providers/settings 端点，
+// 过渡期经宿主 legacy REST（Bearer Token，同端口）读写配置。token 按
+// per-host 可选存 Keychain（codebox-remoteclient/<DeviceID>/legacy），登记簿
+// hasLegacyToken 标记可用性；未配置 token 时配置方法返回 auth.unpaired 形
+// 态错误。净化层保证密钥字段（api_key/auth_key/remoteToken 等）下行掩码、
+// 上行拦截，明文密钥永不出入前端。
+// ---------------------------------------------------------------------------
+
+// RemoteClientSetLegacyToken 为指定主机保存 legacy token（要求已配对）。
+// token 仅入 Keychain，不入日志/登记簿/前端事件。
+func (a *App) RemoteClientSetLegacyToken(hostID, token string) error {
+	if a.rcLegacy == nil {
+		return errRemoteClientUnavailable
+	}
+	if err := a.rcLegacy.SetLegacyToken(hostID, token); err != nil {
+		return fmt.Errorf("set legacy token: %w", err)
+	}
+	a.Log.Info("remoteclient", "legacy token 已保存", fmt.Sprintf("hostID=%s", hostID))
+	return nil
+}
+
+// RemoteClientClearLegacyToken 删除指定主机的 legacy token（幂等）并清除
+// 登记簿 hasLegacyToken 标记。
+func (a *App) RemoteClientClearLegacyToken(hostID string) error {
+	if a.rcLegacy == nil {
+		return errRemoteClientUnavailable
+	}
+	if err := a.rcLegacy.ClearLegacyToken(hostID); err != nil {
+		return fmt.Errorf("clear legacy token: %w", err)
+	}
+	a.Log.Info("remoteclient", "legacy token 已清除", fmt.Sprintf("hostID=%s", hostID))
+	return nil
+}
+
+// rcLegacyOp 返回 legacy 配置面服务；未初始化时返回统一前置错误。
+func (a *App) rcLegacyOp() (*remoteclient.LegacyConfigService, error) {
+	if a.rcLegacy == nil {
+		return nil, errRemoteClientUnavailable
+	}
+	return a.rcLegacy, nil
+}
+
+// RemoteClientListRemoteProviders 列出指定宿主的提供商摘要（须已配置
+// legacy token）。错误文本携带稳定错误码（12 码体系）。
+func (a *App) RemoteClientListRemoteProviders(hostID string) ([]remoteclient.LegacyProviderSummary, error) {
+	s, err := a.rcLegacyOp()
+	if err != nil {
+		return nil, err
+	}
+	list, cerr := s.ListProviders(a.rcContext(), hostID)
+	if cerr != nil {
+		return nil, fmt.Errorf("list remote providers: %w", cerr)
+	}
+	return list, nil
+}
+
+// RemoteClientGetRemoteProvider 获取指定宿主的提供商导出 JSON（净化后：
+// 密钥字段为掩码占位«remote-managed»）。
+func (a *App) RemoteClientGetRemoteProvider(hostID, name string) (string, error) {
+	s, err := a.rcLegacyOp()
+	if err != nil {
+		return "", err
+	}
+	raw, cerr := s.GetProvider(a.rcContext(), hostID, name)
+	if cerr != nil {
+		return "", fmt.Errorf("get remote provider: %w", cerr)
+	}
+	return raw, nil
+}
+
+// RemoteClientPutRemoteProvider 保存指定宿主的提供商导出 JSON（上行净化：
+// 明文密钥字段本地拒绝，不出网）。
+func (a *App) RemoteClientPutRemoteProvider(hostID, name, providerJSON string) error {
+	s, err := a.rcLegacyOp()
+	if err != nil {
+		return err
+	}
+	if cerr := s.PutProvider(a.rcContext(), hostID, name, providerJSON); cerr != nil {
+		return fmt.Errorf("put remote provider: %w", cerr)
+	}
+	a.Log.Info("remoteclient", "远端提供商已保存", fmt.Sprintf("hostID=%s provider=%s", hostID, name))
+	return nil
+}
+
+// RemoteClientGetRemoteSettings 获取指定宿主的设置 JSON（净化后：
+// remoteToken 为掩码占位）。
+func (a *App) RemoteClientGetRemoteSettings(hostID string) (string, error) {
+	s, err := a.rcLegacyOp()
+	if err != nil {
+		return "", err
+	}
+	raw, cerr := s.GetSettings(a.rcContext(), hostID)
+	if cerr != nil {
+		return "", fmt.Errorf("get remote settings: %w", cerr)
+	}
+	return raw, nil
+}
+
+// RemoteClientPutRemoteSettings 保存指定宿主的设置 JSON（上行净化：
+// remoteToken 等密钥字段本地拒绝，不出网）。
+func (a *App) RemoteClientPutRemoteSettings(hostID, settingsJSON string) error {
+	s, err := a.rcLegacyOp()
+	if err != nil {
+		return err
+	}
+	if cerr := s.PutSettings(a.rcContext(), hostID, settingsJSON); cerr != nil {
+		return fmt.Errorf("put remote settings: %w", cerr)
+	}
+	a.Log.Info("remoteclient", "远端设置已保存", fmt.Sprintf("hostID=%s", hostID))
 	return nil
 }
 

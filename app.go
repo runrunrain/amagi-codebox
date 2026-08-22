@@ -248,7 +248,10 @@ type App struct {
 	rcRegistry *remoteclient.HostRegistry
 	rcCreds    remoteclient.CredentialStore
 	rcPairing  *remoteclient.PairingService
-	rcConn     *remoteClientConnection
+	// rcLegacy 是 legacy 配置面服务（WD-5 过渡方案，RC4-1）：per-host 可选
+	// legacy token（Keychain 条目 codebox-remoteclient/<DeviceID>/legacy）。
+	rcLegacy *remoteclient.LegacyConfigService
+	rcConn   *remoteClientConnection
 	// rcTerminals 是当前已连接宿主的终端长连接管理器（RC2：/ws/v1 终端
 	// 域，随连接替换/断开/撤销整体 DetachAll）。
 	rcTerminals *remoteclient.TerminalManager

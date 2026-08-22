@@ -3279,6 +3279,7 @@ export namespace remoteclient {
 	    health: string;
 	    // Go type: time
 	    lastSeen: any;
+	    hasLegacyToken: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new HostEntry(source);
@@ -3292,6 +3293,7 @@ export namespace remoteclient {
 	        this.deviceId = source["deviceId"];
 	        this.health = source["health"];
 	        this.lastSeen = this.convertValues(source["lastSeen"], null);
+	        this.hasLegacyToken = source["hasLegacyToken"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3311,6 +3313,26 @@ export namespace remoteclient {
 		    }
 		    return a;
 		}
+	}
+	export class LegacyProviderSummary {
+	    id: string;
+	    name: string;
+	    type: string;
+	    baseURL: string;
+	    model: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LegacyProviderSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.baseURL = source["baseURL"];
+	        this.model = source["model"];
+	    }
 	}
 	export class PairingResult {
 	    EntryID: string;
