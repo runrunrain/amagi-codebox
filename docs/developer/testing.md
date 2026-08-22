@@ -31,7 +31,7 @@
 
 仓库存在按里程碑/缺陷编号命名的回归测试系列，文件名即追溯锚点：
 
-- 根目录：`m005_bind_failclosed_test.go`、`m006_shared_coordinator_test.go`、`m3_005_desktop_ledger_destroy_test.go`、`r3_005_…` ~ `r11_…`（R 系列主修复回归）、`rc1_0_gap_a_raw_port_test.go`、`remote_security_migration_gate_test.go` 等。
+- 根目录：`bind_failclosed_test.go`、`shared_coordinator_test.go`、`desktop_ledger_destroy_test.go`、`clear_stopped_failclosed_test.go` / `clear_stopped_manager_sync_test.go` / `clear_stopped_manager_failure_test.go`、`launch_admission_test.go`、`external_headroom_lease_test.go`、`shutdown_persistence_stop_gate_test.go`、`durable_ownership_r9_test.go` / `durable_ownership_r10_test.go`、`external_recovery_test.go`、`raw_port_gap_test.go`、`remote_security_migration_gate_test.go` 等（R 系列已语义化重命名，文件头注释保留原缺陷/设计编号锚点）。
 - `internal/remote/`：`m001_allow_header_test.go` ~ `m011_realpath_test.go`、`m2a_*`（M2-A 适配器）、`b2a/b2b/b2c1/b2c2_*`（B2 阶段证据修正）、`c5b_checkpoint_desktop_take_test.go` 等。
 
 新增回归测试时沿用对应系列的编号与命名（`<系列>_<编号>_<主题>_test.go`），并在文件头注释标注设计/缺陷锚点。

@@ -1,6 +1,6 @@
 package main
 
-// r3_005_clear_stopped_failclosed_test.go — R3-005 regression: ClearStoppedSessions
+// clear_stopped_failclosed_test.go — R3-005 regression: ClearStoppedSessions
 // must (a) route control-managed (embedded) stopped sessions through the desktop
 // authority before clearing the manager, and (b) fail-closed when the control
 // runtime is unavailable — skipping control-managed records entirely (neither

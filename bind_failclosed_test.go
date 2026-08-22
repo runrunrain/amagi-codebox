@@ -1,6 +1,6 @@
 package main
 
-// m005_bind_failclosed_test.go — M-005 behavioral assertions: the bound App
+// bind_failclosed_test.go — M-005 behavioral assertions: the bound App
 // mutation methods (StopSession / RemoveSession / ClearStoppedSessions) truly
 // route through the control gate, not just exist on the surface. Proves the
 // fail-closed + gate-authoritative semantics by recording gate-side effects.

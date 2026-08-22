@@ -1,8 +1,8 @@
 /**
  * Terminal Engine Composable
  *
- * Migrated from src_legacy_backup/views/Terminals.vue (the 1178-line vetted
- * implementation). Preserves the core xterm.js lifecycle in full:
+ * Migrated from the legacy Terminal view (the 1178-line vetted
+ * implementation, preserved in git history). Preserves the core xterm.js lifecycle in full:
  *   - three-state history decoding (string base64 / Array<number> / Uint8Array)
  *   - seq-based dedup so live chunks already contained in the history snapshot
  *     are dropped (prevents interleaving on page reload / remount)

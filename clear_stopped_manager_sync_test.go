@@ -1,6 +1,6 @@
 package main
 
-// r4_005_clear_stopped_manager_sync_test.go — R4-005 App-layer invariant: the
+// clear_stopped_manager_sync_test.go — R4-005 App-layer invariant: the
 // session manager is synced ONLY to the authority-cleared set. A control-managed
 // session that is no longer stopped at gate-clear time (it restarted after the
 // App snapshot → runActive) is retained by BOTH the control gate AND the manager

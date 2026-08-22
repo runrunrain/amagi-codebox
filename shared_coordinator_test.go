@@ -1,6 +1,6 @@
 package main
 
-// m006_shared_coordinator_test.go — M-006 regression: shared-service mutations
+// shared_coordinator_test.go — M-006 regression: shared-service mutations
 // (Codex headroom toggle, uninstall) consult the SharedServiceCoordinator and are
 // rejected while active run leases exist (PG-06 confirm/reject, not warn-and-
 // force-stop). Proves the guard wiring the toggle/uninstall rely on.

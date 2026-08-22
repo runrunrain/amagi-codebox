@@ -1,6 +1,6 @@
 package main
 
-// m3_005_desktop_ledger_destroy_test.go — M3-005 cross-package regression: the
+// desktop_ledger_destroy_test.go — M3-005 cross-package regression: the
 // desktop RemoveSession / ClearStoppedSessionsDetailed commit points MUST
 // release the CG-03 per-session input ledger via Server.DestroySessionInputLedger
 // so the registry has no unbounded per-session residual window.

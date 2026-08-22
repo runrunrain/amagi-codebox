@@ -36,6 +36,10 @@ frontend/qa-*.log
 
 # Agent outputs
 .amagi/
+.amagi-worktrees/
+
+# 历史备份，已脱离维护（工作区保留，不入库）
+frontend/src_legacy_backup/
 
 # AI 工具运行时产物（plans/state），不入库（infra-audit F3）
 .zcode/
