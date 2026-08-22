@@ -6,8 +6,16 @@
 
 ## [Unreleased]
 
+## [1.3.48] - 2026-08-22
+
 ### Added
 
+- **桌面端互联（远程客户端角色）**：任意安装本应用的桌面机可作为操作台连接另一台正在运行的 CodeBox（宿主）——顶栏主机切换器（本机↔已登记主机，Cmd/Ctrl+Shift+H）、配对向导（探活→宿主摘要→输码→完成）、主机登记簿（凭据仅存本机 Keychain，不落盘不上传）。
+- 远程会话管理：列表/启动（Claude Code、OpenCode、Codex、Pi、OMP 五类 CLI）/停止/重启/删除；远程终端（attach、输入、resize、历史回填、断线自动重连，输入幂等 exactly-once）。
+- 控制权仲裁呈现：none/you/other/desktop 四态徽标与 acquire/release 操作；被宿主桌面接管时自动降级只读（横幅+输入锁+零丢失），恢复后一键取回；设备被撤销时 fail-closed 下线并引导重新配对。
+- 远程配置管理（过渡接口）：远程模式下 Provider 中心与设置页读写远端；宿主侧访问令牌仅存 Keychain；密钥字段全程掩码不可展开，占位值上行自动剔除，明文密钥在本地拦截（双层防线）。
+- 宿主端修复：生产装配下 v1 WebSocket 输入/resize 写入端口未接线（静默丢弃）问题修复——`appSessionRaw` 补齐 `PTYRawPort` 并委托既有 PTY 适配器，移动端 v1 终端同步受益。
+- 客户端网络韧性：WS 读超时+ping/pong 半开检测、指数退避重连、诊断日志接入应用日志（不含凭据与终端字节）。
 - WSL CLI 安装支持 Pi：`cliPackages` 增加 `@earendil-works/pi-coding-agent`，状态面板与前端显示名同步支持（Pi 安装进 WSL 后与 Claude Code/OpenCode/Codex 一致地探测与安装）。
 - Pi 装入 WSL 时自动播种配置：首次安装后将 Windows 侧 `~/.pi/agent`（providers/auth/models 与 amagi 资产）种子到发行版内，会话历史与备份不入内；WSL 本地已有 `.pi/agent` 时不覆盖，失败仅记录日志不影响安装。
 
