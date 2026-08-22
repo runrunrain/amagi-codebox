@@ -11,8 +11,9 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 import * as remoteClientApi from '../api/remoteClient';
-import type { HostEntry, RemoteSessionSummary } from '../api/remoteClient';
+import type { HostEntry, RemoteSessionSummary, LegacyProviderSummary } from '../api/remoteClient';
 import { remoteErrorText } from '../api/remoteClient';
+import { prepareRemoteProviderUpload, prepareRemoteSettingsUpload } from '../utils/remoteMask';
 
 export type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 export type ConnectState = 'disconnected' | 'connecting' | 'connected' | 'failed';
@@ -31,6 +32,21 @@ const HOST_PROBE_PERIODIC_MS = 30000;
 
 /** 终端连接状态投影（internal/remoteclient/conn.go ConnState 冻结五态）。 */
 export type RemoteConnState = 'disconnected' | 'connecting' | 'attached' | 'readonly' | 'degraded';
+
+/**
+ * RC4 远程配置域装载状态：idle/loading/ready + 两个专属降级态——
+ * needs-token（未配置 legacy token → EmptyState + 配置入口）与 error
+ * （含 401：已配 token 但被拒 → 提示重填）。authRejected 置位时视图
+ * 文案切换为「令牌无效/被拒，请重新配置」。
+ */
+export type RemoteConfigLoadState = 'idle' | 'loading' | 'needs-token' | 'error' | 'ready';
+
+export interface RemoteConfigSnapshot {
+  state: RemoteConfigLoadState;
+  error: string;
+  /** true = auth.unpaired（宿主拒 token / token 未配置），文案引导重填。 */
+  authRejected: boolean;
+}
 
 /** 单个远程终端会话的客户端侧状态（rc:* 事件聚合）。 */
 export interface RemoteTerminalState {
@@ -97,6 +113,33 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
   const activeRemoteTerminalId = ref<string | null>(null);
   /** rc:revoked fail-closed：当前主机授权已被撤销（交互稿 §3 revoked 行）。 */
   const connectRevoked = ref(false);
+
+  // ---- RC4 远程配置域（legacy 接口：providers 列表/详情 + settings + token）----
+  /** 远程提供商摘要列表（LegacyProviderSummary 五字段投影）。 */
+  const remoteProviders = ref<LegacyProviderSummary[]>([]);
+  const remoteProvidersView = ref<RemoteConfigSnapshot>({
+    state: 'idle',
+    error: '',
+    authRejected: false,
+  });
+  /** 当前打开的远程提供商详情（净化后 JSON 字符串，凭据字段为掩码占位）。 */
+  const remoteProviderName = ref('');
+  const remoteProviderDoc = ref('');
+  const remoteProviderDocView = ref<RemoteConfigSnapshot>({
+    state: 'idle',
+    error: '',
+    authRejected: false,
+  });
+  /** 远程应用设置（净化后 JSON 字符串，remoteToken 等为掩码占位）。 */
+  const remoteSettingsDoc = ref('');
+  const remoteSettingsView = ref<RemoteConfigSnapshot>({
+    state: 'idle',
+    error: '',
+    authRejected: false,
+  });
+
+  /** 当前主机是否已配置 legacy token（登记簿布尔投影，token 本体永不出 Keychain）。 */
+  const currentHasLegacyToken = computed(() => currentHost.value?.hasLegacyToken === true);
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -169,6 +212,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     const prev = scope.value;
     scope.value = LOCAL_SCOPE;
     stopSessionPolling();
+    resetRemoteConfigState();
     remoteSessions.value = [];
     remoteSessionsState.value = 'idle';
     remoteSessionsStale.value = false;
@@ -208,6 +252,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
       remoteSessions.value = [];
       remoteSessionsState.value = 'idle';
       remoteSessionsStale.value = false;
+      resetRemoteConfigState();
       await loadHosts();
       await refreshRemoteSessions();
       startSessionPolling();
@@ -557,6 +602,118 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     ensureTermState(sessionID).controlWasYou = false;
   }
 
+  /* -------------------------------------------------------------------------
+   * RC4 远程配置域（legacy 接口）：providers 列表/详情、settings 读写、token 配置。
+   *
+   * 错误分流（验收 5 + 空态/错误态）：auth.unpaired + 未配 token → needs-token
+   * （EmptyState + 配置入口）；auth.unpaired + 已配 token → error + authRejected
+   * （401 文案引导重填）；其余错误 → error + 原文。提交前统一经 utils/remoteMask
+   * 剥离掩码占位（store 层第二道防线，视图为第一道）。
+   * ----------------------------------------------------------------------- */
+
+  /** RC4 域全部状态复位（切主机/切回本机时调用：远端配置快照随连接作废）。 */
+  function resetRemoteConfigState(): void {
+    remoteProviders.value = [];
+    remoteProvidersView.value = { state: 'idle', error: '', authRejected: false };
+    remoteProviderName.value = '';
+    remoteProviderDoc.value = '';
+    remoteProviderDocView.value = { state: 'idle', error: '', authRejected: false };
+    remoteSettingsDoc.value = '';
+    remoteSettingsView.value = { state: 'idle', error: '', authRejected: false };
+  }
+
+  /** 将 legacy 域错误归入 RemoteConfigSnapshot（需 scope 内当前主机已就绪）。 */
+  function classifyConfigError(err: unknown): RemoteConfigSnapshot {
+    const code = remoteClientApi.extractRemoteErrorCode(err);
+    if (code === 'auth.unpaired' && !currentHasLegacyToken.value) {
+      return { state: 'needs-token', error: remoteErrorText(err), authRejected: false };
+    }
+    return { state: 'error', error: remoteErrorText(err), authRejected: code === 'auth.unpaired' };
+  }
+
+  /** 拉取远程提供商列表（仅远程模式；远程模式下 ProviderCenter 数据源）。 */
+  async function loadRemoteProviders(): Promise<void> {
+    if (!isRemoteMode.value) return;
+    remoteProvidersView.value = { state: 'loading', error: '', authRejected: false };
+    try {
+      remoteProviders.value = await remoteClientApi.listRemoteProviders(scope.value);
+      remoteProvidersView.value = { state: 'ready', error: '', authRejected: false };
+    } catch (err) {
+      remoteProviders.value = [];
+      remoteProvidersView.value = classifyConfigError(err);
+    }
+  }
+
+  /** 打开远程提供商详情（净化后 JSON；密钥字段已由 Go 掩码为占位）。 */
+  async function openRemoteProvider(name: string): Promise<void> {
+    if (!isRemoteMode.value) return;
+    remoteProviderName.value = name;
+    remoteProviderDoc.value = '';
+    remoteProviderDocView.value = { state: 'loading', error: '', authRejected: false };
+    try {
+      remoteProviderDoc.value = await remoteClientApi.getRemoteProviderJSON(scope.value, name);
+      remoteProviderDocView.value = { state: 'ready', error: '', authRejected: false };
+    } catch (err) {
+      remoteProviderDoc.value = '';
+      remoteProviderDocView.value = classifyConfigError(err);
+    }
+  }
+
+  /** 关闭远程提供商详情。 */
+  function closeRemoteProvider(): void {
+    remoteProviderName.value = '';
+    remoteProviderDoc.value = '';
+    remoteProviderDocView.value = { state: 'idle', error: '', authRejected: false };
+  }
+
+  /**
+   * 保存远程提供商（全量替换语义）：入参为视图编辑后的完整导出 JSON（含
+   * 掩码占位）。内部先经 prepareRemoteProviderUpload 剥离掩码占位 +
+   * 阻断含非统一密钥凭据字段的提交，再上传；成功后刷新列表与详情。
+   */
+  async function saveRemoteProvider(name: string, editedDocJSON: string): Promise<void> {
+    if (!isRemoteMode.value) return;
+    const payload = prepareRemoteProviderUpload(editedDocJSON);
+    await remoteClientApi.putRemoteProviderJSON(scope.value, name, payload);
+    await Promise.all([loadRemoteProviders(), openRemoteProvider(name)]);
+  }
+
+  /** 拉取远程应用设置（净化后 JSON）。 */
+  async function loadRemoteSettings(): Promise<void> {
+    if (!isRemoteMode.value) return;
+    remoteSettingsView.value = { state: 'loading', error: '', authRejected: false };
+    try {
+      remoteSettingsDoc.value = await remoteClientApi.getRemoteSettingsJSON(scope.value);
+      remoteSettingsView.value = { state: 'ready', error: '', authRejected: false };
+    } catch (err) {
+      remoteSettingsDoc.value = '';
+      remoteSettingsView.value = classifyConfigError(err);
+    }
+  }
+
+  /**
+   * 保存远程应用设置：入参为编辑后的完整设置 JSON（含掩码占位）。
+   * prepareRemoteSettingsUpload 一律剥离掩码占位（宿主仅消费非密钥字段）。
+   */
+  async function saveRemoteSettings(editedDocJSON: string): Promise<void> {
+    if (!isRemoteMode.value) return;
+    const payload = prepareRemoteSettingsUpload(editedDocJSON);
+    await remoteClientApi.putRemoteSettingsJSON(scope.value, payload);
+    await loadRemoteSettings();
+  }
+
+  /** 配置/替换当前主机的 legacy 访问令牌；成功后刷新登记簿布尔投影。 */
+  async function setRemoteLegacyToken(token: string): Promise<void> {
+    await remoteClientApi.setRemoteLegacyToken(scope.value, token);
+    await loadHosts();
+  }
+
+  /** 清除当前主机的 legacy 访问令牌（幂等）；成功后刷新登记簿。 */
+  async function clearRemoteLegacyToken(): Promise<void> {
+    await remoteClientApi.clearRemoteLegacyToken(scope.value);
+    await loadHosts();
+  }
+
   // 事件桥随 store 创建即就绪：rc:host-health / rc:revoked 不依赖终端页打开。
   ensureRcEventBridge();
 
@@ -577,6 +734,15 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     remoteTerminalStates,
     activeRemoteTerminalId,
     connectRevoked,
+    // RC4 远程配置域
+    remoteProviders,
+    remoteProvidersView,
+    remoteProviderName,
+    remoteProviderDoc,
+    remoteProviderDocView,
+    remoteSettingsDoc,
+    remoteSettingsView,
+    currentHasLegacyToken,
     // Computed
     isRemoteMode,
     currentHost,
@@ -604,5 +770,14 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     controlActionOf,
     acquireControl,
     releaseControl,
+    // RC4 远程配置域
+    loadRemoteProviders,
+    openRemoteProvider,
+    closeRemoteProvider,
+    saveRemoteProvider,
+    loadRemoteSettings,
+    saveRemoteSettings,
+    setRemoteLegacyToken,
+    clearRemoteLegacyToken,
   };
 });

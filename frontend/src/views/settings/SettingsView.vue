@@ -6,7 +6,10 @@
       :description="currentMeta.description"
     />
     <div class="settings-page">
-      <GeneralSettings v-if="activeKey === 'general'" />
+      <!-- RC4-2：远程模式下读写宿主应用设置（legacy）；下方其余设置均为本机内容 -->
+      <template v-if="rcStore.isRemoteMode">
+        <RemoteHostSettingsCard @configure-token="tokenDialogOpen = true" />
+      </template>      <GeneralSettings v-if="activeKey === 'general'" />
       <ShellSettings v-else-if="activeKey === 'shell'" />
       <TerminalSettings v-else-if="activeKey === 'terminal'" />
       <AppearanceSettings v-else-if="activeKey === 'appearance'" />
@@ -15,13 +18,24 @@
       <UpdateSettings v-else-if="activeKey === 'update'" />
       <AboutSettings v-else-if="activeKey === 'about'" />
     </div>
+
+    <!-- RC4-2：legacy 访问令牌配置（远程模式） -->
+    <LegacyTokenDialog
+      v-model:open="tokenDialogOpen"
+      :host-name="rcStore.currentHostName"
+      :has-token="rcStore.currentHasLegacyToken"
+      @changed="onTokenChanged"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useUIStore } from '../../stores/ui'
+import { useRemoteClientStore } from '../../stores/remoteClient'
 import PageHead from '../../components/ui/PageHead.vue'
+import RemoteHostSettingsCard from '../../components/remote/RemoteHostSettingsCard.vue'
+import LegacyTokenDialog from '../../components/remote/LegacyTokenDialog.vue'
 import GeneralSettings from './GeneralSettings.vue'
 import ShellSettings from './ShellSettings.vue'
 import TerminalSettings from './TerminalSettings.vue'
@@ -32,7 +46,15 @@ import UpdateSettings from './UpdateSettings.vue'
 import AboutSettings from './AboutSettings.vue'
 
 const uiStore = useUIStore()
+const rcStore = useRemoteClientStore()
 const activeKey = computed(() => uiStore.activeSettingKey)
+
+const tokenDialogOpen = ref(false)
+
+/** 令牌配置变化后重拉宿主设置（卡片可能停留在 needs-token/401 态）。 */
+function onTokenChanged() {
+  if (rcStore.isRemoteMode) void rcStore.loadRemoteSettings()
+}
 
 const META: Record<string, { title: string; description: string }> = {
   general: { title: '常规设置', description: '配置应用启动默认项' },

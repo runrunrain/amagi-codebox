@@ -11,12 +11,24 @@
   <section class="view-provider">
     <PageHead title="Provider Center" description="统一管理服务提供商与可跨 CLI 复用的公共预设" />
 
-    <!-- RC1-6：远程模式下仍展示本机配置（远程配置面属 RC4） -->
-    <RemoteScopeBanner subject="Provider Center" mode="local" />
+    <!--
+      RC4-2：远程模式下 providers tab 消费远端数据（legacy）；顶部轻提示过渡语义。
+      预设 / CLI 独立配置仍为本机内容（mode=local 横幅）。
+    -->
+    <template v-if="rcStore.isRemoteMode">
+      <StatusBanner
+        v-if="mainTab === 'providers'"
+        type="warning"
+        :message="`远程配置管理经 legacy 接口提供，需在主机设置中配置访问令牌（当前主机：${rcStore.currentHostName}）`"
+        :action-text="rcStore.currentHasLegacyToken ? '' : '配置令牌'"
+        @action="tokenDialogOpen = true"
+      />
+      <RemoteScopeBanner v-else subject="预设与 CLI 独立配置" mode="local" />
+    </template>
 
-    <!-- 详情模式：覆盖网格视图（对照 demo .pc-detail）-->
+    <!-- 详情模式：仅本机模式（远程详情由 RemoteProviderPanel 自管） -->
     <ProviderDetailView
-      v-if="store.activeProviderId && store.activeProvider"
+      v-if="!rcStore.isRemoteMode && store.activeProviderId && store.activeProvider"
       @back="store.closeProvider"
       @saved="store.loadProviders"
     />
@@ -32,19 +44,27 @@
           class="pc-main-tabs"
         />
         <div class="pc-head-actions">
-          <AgentProfileQuickSwitch @applied="onProfileApplied" />
-          <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestExport">
-            {{ transferAction === 'export' ? '导出中...' : '导出完整配置' }}
-          </AppButton>
-          <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestImport">
-            {{ transferAction === 'import' ? '导入中...' : '导入完整配置' }}
-          </AppButton>
+          <!-- 本机模式专属操作：导出/导入/配置档均作用于本机配置，远程模式下隐藏 -->
+          <template v-if="!rcStore.isRemoteMode">
+            <AgentProfileQuickSwitch @applied="onProfileApplied" />
+            <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestExport">
+              {{ transferAction === 'export' ? '导出中...' : '导出完整配置' }}
+            </AppButton>
+            <AppButton variant="ghost" size="small" :disabled="transferring" @click="requestImport">
+              {{ transferAction === 'import' ? '导入中...' : '导入完整配置' }}
+            </AppButton>
+          </template>
         </div>
       </div>
 
-      <!-- 服务提供商区 -->
+      <!-- 服务提供商区：远程模式 → 远端数据源（RC4）；本机 → 本地网格 -->
       <div v-if="mainTab === 'providers'" class="pc-panel">
+        <RemoteProviderPanel
+          v-if="rcStore.isRemoteMode"
+          @configure-token="tokenDialogOpen = true"
+        />
         <ProviderGrid
+          v-else
           @add="handleAdd"
         />
       </div>
@@ -154,6 +174,14 @@
       cancel-text="取消"
       @confirm="handleImport"
     />
+
+    <!-- RC4-2：legacy 访问令牌配置（远程模式） -->
+    <LegacyTokenDialog
+      v-model:open="tokenDialogOpen"
+      :host-name="rcStore.currentHostName"
+      :has-token="rcStore.currentHasLegacyToken"
+      @changed="onTokenChanged"
+    />
   </section>
 </template>
 
@@ -161,6 +189,7 @@
 import { ref, computed, onMounted, watch, defineAsyncComponent, defineComponent, h, type Component } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
+import StatusBanner from '../components/ui/StatusBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import AppButton from '../components/ui/AppButton.vue';
@@ -171,11 +200,15 @@ import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import AgentProfileQuickSwitch from '../components/provider/AgentProfileQuickSwitch.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
+import RemoteProviderPanel from '../components/remote/RemoteProviderPanel.vue';
+import LegacyTokenDialog from '../components/remote/LegacyTokenDialog.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
+import { useRemoteClientStore } from '../stores/remoteClient';
 import { ExportConfigToFile, ImportConfigFromFile } from '../../wailsjs/go/main/App';
 import { useToast } from '../composables/useToast';
 
 const store = useProviderStore();
+const rcStore = useRemoteClientStore();
 const { showSuccess, showError, showInfo } = useToast();
 
 const MAIN_TABS = [
@@ -222,6 +255,27 @@ const showExportConfirm = ref(false);
 const showImportConfirm = ref(false);
 const transferAction = ref<'export' | 'import' | null>(null);
 const transferring = computed(() => transferAction.value !== null);
+// RC4-2：legacy 令牌配置弹窗（远程模式）
+const tokenDialogOpen = ref(false);
+
+// 进入远程模式时关闭本地详情（本地详情数据源不适用于远端）
+watch(
+  () => rcStore.isRemoteMode,
+  (remote) => {
+    if (remote) store.closeProvider();
+  },
+  { immediate: true },
+);
+
+/** 令牌配置变化后：providers/settings 面板随 hasLegacyToken 变化重拉。 */
+function onTokenChanged() {
+  if (!rcStore.isRemoteMode) return;
+  if (mainTab.value === 'providers') {
+    void rcStore.loadRemoteProviders();
+    // 详情打开时同步重拉（否则详情停留在 401/needs-token 态）
+    if (rcStore.remoteProviderName) void rcStore.openRemoteProvider(rcStore.remoteProviderName);
+  }
+}
 
 // 二级 engine 双向绑定（写入 store + 触发按需加载）。
 const FORMAT_ENGINES: readonly PresetEngine[] = ['anthropic', 'openai'];

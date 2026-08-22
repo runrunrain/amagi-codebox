@@ -31,6 +31,13 @@ import {
   RemoteClientTerminalResize,
   RemoteClientAcquireControl,
   RemoteClientReleaseControl,
+  RemoteClientSetLegacyToken,
+  RemoteClientClearLegacyToken,
+  RemoteClientListRemoteProviders,
+  RemoteClientGetRemoteProvider,
+  RemoteClientPutRemoteProvider,
+  RemoteClientGetRemoteSettings,
+  RemoteClientPutRemoteSettings,
 } from '../../wailsjs/go/main/App';
 import type { remoteclient, contract, main } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -44,6 +51,8 @@ export type RemoteSessionDetail = contract.SessionDetail;
 export type RemoteTerminalAttachResult = main.RemoteClientTerminalAttachResult;
 /** 控制权投影（RC3-3：acquire/release 响应；state/deviceName 顶层同契约快照）。 */
 export type ControlView = remoteclient.ControlView;
+/** legacy 提供商摘要（RC4-1：宿主 providerSummary 五字段镜像，类型化解码即丢弃多余字段）。 */
+export type LegacyProviderSummary = remoteclient.LegacyProviderSummary;
 
 /** 契约 12 稳定错误码（internal/remote/contract/errors.go KnownErrorCodes）。 */
 export const REMOTE_ERROR_CODES = [
@@ -241,4 +250,62 @@ export function acquireRemoteControl(sessionID: string): Promise<ControlView> {
 /** 释放会话控制权。 */
 export function releaseRemoteControl(sessionID: string): Promise<ControlView> {
   return callApi('[api.remoteClient.releaseRemoteControl]', () => RemoteClientReleaseControl(sessionID));
+}
+
+/* ---------------------------------------------------------------------------
+ * RC4 远程配置域（legacy API 过渡方案，WD-5）
+ *
+ * 宿主 legacy REST（Bearer token 鉴权）：providers/settings 读写。Go 侧已
+ * 完成净化（下行密钥字段掩码 «remote-managed»；上行明文密钥拦截），前端
+ * 呈现纪律与提交剥离见 utils/remoteMask.ts。全部方法显式传 hostID（不隐式
+ * 复用连接态），token 未配置时后端返回 auth.unpaired 明确文案。
+ * ------------------------------------------------------------------------- */
+
+/** 配置（或替换）主机的 legacy 访问令牌（仅入 Keychain，永不出现在登记簿/日志）。 */
+export function setRemoteLegacyToken(hostID: string, token: string): Promise<void> {
+  return callApi('[api.remoteClient.setRemoteLegacyToken]', () =>
+    RemoteClientSetLegacyToken(hostID, token),
+  );
+}
+
+/** 清除主机的 legacy 访问令牌（幂等）。 */
+export function clearRemoteLegacyToken(hostID: string): Promise<void> {
+  return callApi('[api.remoteClient.clearRemoteLegacyToken]', () =>
+    RemoteClientClearLegacyToken(hostID),
+  );
+}
+
+/** 宿主全部提供商摘要（类型化五字段，无净化必要但解码即防脏字段下泄）。 */
+export async function listRemoteProviders(hostID: string): Promise<LegacyProviderSummary[]> {
+  return callApi('[api.remoteClient.listRemoteProviders]', async () =>
+    (await RemoteClientListRemoteProviders(hostID)) ?? [],
+  );
+}
+
+/** 宿主单个提供商导出 JSON（下行已掩码：凭据字段值为 «remote-managed»）。 */
+export function getRemoteProviderJSON(hostID: string, name: string): Promise<string> {
+  return callApi('[api.remoteClient.getRemoteProviderJSON]', () =>
+    RemoteClientGetRemoteProvider(hostID, name),
+  );
+}
+
+/** 上传提供商 JSON（全量替换语义；调用方须先经 prepareRemoteProviderUpload 剥离掩码占位）。 */
+export function putRemoteProviderJSON(hostID: string, name: string, providerJSON: string): Promise<void> {
+  return callApi('[api.remoteClient.putRemoteProviderJSON]', () =>
+    RemoteClientPutRemoteProvider(hostID, name, providerJSON),
+  );
+}
+
+/** 宿主应用设置 JSON（下行已掩码：remoteToken 等凭据字段值为 «remote-managed»）。 */
+export function getRemoteSettingsJSON(hostID: string): Promise<string> {
+  return callApi('[api.remoteClient.getRemoteSettingsJSON]', () =>
+    RemoteClientGetRemoteSettings(hostID),
+  );
+}
+
+/** 上传应用设置 JSON（宿主仅消费非密钥字段；调用方须先剥离掩码占位）。 */
+export function putRemoteSettingsJSON(hostID: string, settingsJSON: string): Promise<void> {
+  return callApi('[api.remoteClient.putRemoteSettingsJSON]', () =>
+    RemoteClientPutRemoteSettings(hostID, settingsJSON),
+  );
 }
