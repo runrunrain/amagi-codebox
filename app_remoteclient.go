@@ -43,11 +43,12 @@ const remoteHostsRegistryFile = "remote-hosts.json"
 var errRemoteClientUnavailable = errors.New("remote client is not initialized (host registry or credential store unavailable)")
 
 // remoteClientConnection 是当前已连接宿主的句柄：Transport（持有内存态设备
-// 凭据）+ 由它派生的会话域客户端。rcMu 保护替换/读取。
+// 凭据）+ 由它派生的会话域/控制域客户端。rcMu 保护替换/读取。
 type remoteClientConnection struct {
 	hostID    string
 	transport *remoteclient.Transport
 	sessions  *remoteclient.SessionClient
+	control   *remoteclient.ControlClient
 }
 
 // initRemoteClientRegistry 构造主机登记簿（NewApp 调用，纯文件读，不碰
@@ -129,6 +130,27 @@ func (a *App) rcSessions() (*remoteclient.SessionClient, error) {
 		return nil, errors.New("remote client: no host is connected; call RemoteClientConnect first")
 	}
 	return a.rcConn.sessions, nil
+}
+
+// rcControl 返回当前已连接宿主的控制域客户端；未连接时返回明确错误。
+func (a *App) rcControl() (*remoteclient.ControlClient, error) {
+	a.rcMu.Lock()
+	defer a.rcMu.Unlock()
+	if a.rcConn == nil {
+		return nil, errors.New("remote client: no host is connected; call RemoteClientConnect first")
+	}
+	return a.rcConn.control, nil
+}
+
+// rcTerminalLogger 返回终端域净化诊断日志 seam（F-3 修复）：把
+// remoteclient 域层 logf 转发到 App 既有日志设施。域层保证 format/args
+// 不含凭据与终端字节（蓝图 §9）；本层不再加工。
+func (a *App) rcTerminalLogger() func(format string, args ...any) {
+	return func(format string, args ...any) {
+		if a.Log != nil {
+			a.Log.Debug("remoteclient", fmt.Sprintf(format, args...))
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -339,8 +361,11 @@ func (a *App) RemoteClientConnect(hostID string) (RemoteClientConnectResult, err
 		hostID:    hostID,
 		transport: t,
 		sessions:  remoteclient.NewSessionClient(t),
+		control:   remoteclient.NewControlClient(t),
 	}
-	a.rcTerminals = remoteclient.NewTerminalManager(t, hostID, a.rcEventEmitter(), remoteclient.DefaultTerminalConfig())
+	termCfg := remoteclient.DefaultTerminalConfig()
+	termCfg.Logger = a.rcTerminalLogger() // F-3：outbox/重连/backfill 运行时诊断接线
+	a.rcTerminals = remoteclient.NewTerminalManager(t, hostID, a.rcEventEmitter(), termCfg)
 	a.rcMu.Unlock()
 	a.rcDetachTerminals(oldTerm)
 	_ = a.rcRegistry.SetHealth(hostID, remoteclient.HealthReachable, time.Now())
@@ -610,6 +635,52 @@ func (a *App) RemoteClientTerminalResize(sessionID string, cols, rows int) error
 		return fmt.Errorf("resize terminal: %w", err)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// 控制域（蓝图 §6 流程 4 / §7 绑定：RemoteClientAcquireControl/
+// ReleaseControl；F-2 修复——桌面终端 attach 后须显式 acquire 才能输入）
+// ---------------------------------------------------------------------------
+
+// RemoteClientAcquireControl 获取会话控制权：先 attach 后 acquire（无 live
+// lease 服务端拒 403 control.forbidden）；成功后服务端经 WS 推 control.state
+// 事件刷新终端输入门。他人/桌面占用返回 409 control.busy（错误文本携带
+// 稳定错误码，前端据此提示「他人持有」，不重试）。
+func (a *App) RemoteClientAcquireControl(sessionID string) (remoteclient.ControlView, error) {
+	c, err := a.rcControl()
+	if err != nil {
+		return remoteclient.ControlView{}, err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return remoteclient.ControlView{}, errors.New("acquire control: sessionID is required")
+	}
+	snap, cerr := c.AcquireControl(a.rcContext(), contract.SessionID(sid))
+	if cerr != nil {
+		return remoteclient.ControlView{}, fmt.Errorf("acquire control: %w", cerr)
+	}
+	a.Log.Info("remoteclient", "已获取控制权", fmt.Sprintf("session=%s state=%s", sid, snap.State))
+	return remoteclient.NewControlView(snap), nil
+}
+
+// RemoteClientReleaseControl 释放会话控制权（仅当前 controller；非 holder
+// 返回 403 control.forbidden）。释放后服务端推 control.state(none)，终端
+// 输入门关闭（只读）。
+func (a *App) RemoteClientReleaseControl(sessionID string) (remoteclient.ControlView, error) {
+	c, err := a.rcControl()
+	if err != nil {
+		return remoteclient.ControlView{}, err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return remoteclient.ControlView{}, errors.New("release control: sessionID is required")
+	}
+	snap, cerr := c.ReleaseControl(a.rcContext(), contract.SessionID(sid))
+	if cerr != nil {
+		return remoteclient.ControlView{}, fmt.Errorf("release control: %w", cerr)
+	}
+	a.Log.Info("remoteclient", "已释放控制权", fmt.Sprintf("session=%s state=%s", sid, snap.State))
+	return remoteclient.NewControlView(snap), nil
 }
 
 // shutdownRemoteClientTerminals 是应用退出的收尾钩子（Shutdown 调用）：终止

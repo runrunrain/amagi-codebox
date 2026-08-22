@@ -3257,6 +3257,20 @@ export namespace remote {
 
 export namespace remoteclient {
 	
+	export class ControlView {
+	    state: string;
+	    deviceName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ControlView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.deviceName = source["deviceName"];
+	    }
+	}
 	export class HostEntry {
 	    id: string;
 	    displayName: string;

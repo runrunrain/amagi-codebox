@@ -221,6 +221,8 @@ var (
 	epSessionStop     = contract.V1RestEndpoints[5]
 	epSessionRestart  = contract.V1RestEndpoints[6]
 	epSessionRemove   = contract.V1RestEndpoints[7]
+	epControlAcquire = contract.V1RestEndpoints[8]
+	epControlRelease  = contract.V1RestEndpoints[9]
 )
 
 // Transport 承载 REST 基座状态（蓝图 §3）：base URL、device Cookie（Go 侧

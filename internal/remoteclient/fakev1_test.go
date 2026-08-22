@@ -44,6 +44,8 @@ type fakeHost struct {
 	dev  *fakeDevice     // 最近一次配对签发的设备
 	rev  map[string]bool // 已撤销 deviceID
 	sess map[string]*contract.SessionDetail
+	ctl  map[string]string // 会话 → 控制权持有 deviceID（""=none）——控制域镜像
+	lease map[string]string // 会话 → 持有 live WS lease 的 deviceID（""=未 attach，镜像服务端 lease 语义）
 	seq  int
 	// 配对行为注入
 	pairingCode    string // 合法码
@@ -56,6 +58,7 @@ type fakeHost struct {
 	ovBody         string // 全局覆写响应体
 	captured       []capturedRequest
 	hang           bool // 挂起处理（超时测试）
+	ctlAcquireBody string // 覆写 acquire 200 响应体（契约异常注入；空=正常 {"state":"you"}）
 }
 
 func (f *fakeHost) setOverride(status int, body string) {
@@ -76,6 +79,8 @@ func newFakeHost(t *testing.T) *fakeHost {
 		t:            t,
 		rev:          map[string]bool{},
 		sess:         map[string]*contract.SessionDetail{},
+		ctl:          map[string]string{},
+		lease:        map[string]string{},
 		pairingCode:  "PAIR-CODE-1",
 		windowActive: true,
 	}
@@ -363,9 +368,11 @@ func (f *fakeHost) handleCreate(w http.ResponseWriter, r *http.Request, reqID st
 	f.writeOK(w, http.StatusCreated, *detail)
 }
 
-// handleSessionByID 处理 /sessions/{id} 的 GET/POST(lifecycle)/DELETE。
+// handleSessionByID 处理 /sessions/{id} 的 GET/POST(lifecycle)/DELETE 与
+// /sessions/{id}/control/{acquire,release}（控制域镜像）。
 func (f *fakeHost) handleSessionByID(w http.ResponseWriter, r *http.Request, reqID string) {
-	if _, ok := f.authenticate(w, r, reqID); !ok {
+	devID, ok := f.authenticate(w, r, reqID)
+	if !ok {
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, contract.RESTBasePath+"/sessions/")
@@ -382,6 +389,12 @@ func (f *fakeHost) handleSessionByID(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 	switch {
+	case action == "control/acquire" && r.Method == http.MethodPost:
+		f.handleControlAcquire(w, r, reqID, id, devID)
+		return
+	case action == "control/release" && r.Method == http.MethodPost:
+		f.handleControlRelease(w, r, reqID, id, devID)
+		return
 	case action == "" && r.Method == http.MethodGet:
 		f.writeOK(w, http.StatusOK, *d)
 	case action == "stop" && r.Method == http.MethodPost,
@@ -415,6 +428,77 @@ func (f *fakeHost) handleSessionByID(w http.ResponseWriter, r *http.Request, req
 	}
 }
 
+// handleControlAcquire 镜像服务端 acquire 可观察契约（design §5.2 端点 8）：
+// 空 body（非空 → bad_request）；无 live lease → 403 control.forbidden；其它
+// 设备持有 → 409 control.busy；否则授予（同 device 幂等）→ 200 {state:you}。
+func (f *fakeHost) handleControlAcquire(w http.ResponseWriter, r *http.Request, reqID, id, devID string) {
+	if !f.consumeEmptyBody(r) {
+		f.writeErr(w, reqID, http.StatusBadRequest, contract.ErrorCodeBadRequest,
+			contract.ErrorLayerControl, "request body must be empty", contract.ActionHintRetry)
+		return
+	}
+	f.mu.Lock()
+	holder, leaseDev, override := f.ctl[id], f.lease[id], f.ctlAcquireBody
+	f.mu.Unlock()
+	if leaseDev == "" {
+		f.writeErr(w, reqID, http.StatusForbidden, contract.ErrorCodeControlForbidden,
+			contract.ErrorLayerControl, "active session connection required", contract.ActionHintRequestControl)
+		return
+	}
+	if holder != "" && holder != devID {
+		f.writeErr(w, reqID, http.StatusConflict, contract.ErrorCodeControlBusy,
+			contract.ErrorLayerControl, "control already held", contract.ActionHintRequestControl)
+		return
+	}
+	f.mu.Lock()
+	f.ctl[id] = devID
+	f.mu.Unlock()
+	if override != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(override))
+		return
+	}
+	f.writeOK(w, http.StatusOK, contract.ControlSnapshot{State: contract.ControlStateYou})
+}
+
+// handleControlRelease 镜像服务端 release 可观察契约（design §5.2 端点 9）：
+// 仅当前 controller 可释放（非 holder → 403 control.forbidden）；释放后
+// 200 {state:none}。
+func (f *fakeHost) handleControlRelease(w http.ResponseWriter, r *http.Request, reqID, id, devID string) {
+	if !f.consumeEmptyBody(r) {
+		f.writeErr(w, reqID, http.StatusBadRequest, contract.ErrorCodeBadRequest,
+			contract.ErrorLayerControl, "request body must be empty", contract.ActionHintRetry)
+		return
+	}
+	f.mu.Lock()
+	holder := f.ctl[id]
+	f.mu.Unlock()
+	if holder != devID {
+		f.writeErr(w, reqID, http.StatusForbidden, contract.ErrorCodeControlForbidden,
+			contract.ErrorLayerControl, "control access denied", contract.ActionHintRequestControl)
+		return
+	}
+	f.mu.Lock()
+	delete(f.ctl, id)
+	f.mu.Unlock()
+	f.writeOK(w, http.StatusOK, contract.ControlSnapshot{State: contract.ControlStateNone})
+}
+
+// attachDevice 模拟一台设备完成 WS attach（获得 live lease）。
+func (f *fakeHost) attachDevice(sessionID, deviceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lease[sessionID] = deviceID
+}
+
+// holdControl 模拟另一台设备已持有控制权。
+func (f *fakeHost) holdControl(sessionID, deviceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ctl[sessionID] = deviceID
+}
+
 // consumeConfirm 镜像 stop/restart/delete 的 confirm:true 协议校验。
 func (f *fakeHost) consumeConfirm(r *http.Request) bool {
 	raw, rerr := io.ReadAll(r.Body)
@@ -423,4 +507,13 @@ func (f *fakeHost) consumeConfirm(r *http.Request) bool {
 	}
 	_, err := contract.DecodeConfirmActionRequest(raw)
 	return err == nil
+}
+
+// consumeEmptyBody 镜像 acquire/release 的空 body 校验（任意字节 → 拒绝）。
+func (f *fakeHost) consumeEmptyBody(r *http.Request) bool {
+	raw, rerr := io.ReadAll(r.Body)
+	if rerr != nil {
+		f.t.Errorf("fakeHost read empty-body check: %v", rerr)
+	}
+	return len(raw) == 0
 }

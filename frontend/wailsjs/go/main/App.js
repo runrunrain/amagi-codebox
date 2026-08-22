@@ -410,6 +410,10 @@ export function RegenerateRemoteToken() {
   return window['go']['main']['App']['RegenerateRemoteToken']();
 }
 
+export function RemoteClientAcquireControl(arg1) {
+  return window['go']['main']['App']['RemoteClientAcquireControl'](arg1);
+}
+
 export function RemoteClientAddHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientAddHost'](arg1, arg2);
 }
@@ -448,6 +452,10 @@ export function RemoteClientListRemoteSessions() {
 
 export function RemoteClientProbeHost(arg1) {
   return window['go']['main']['App']['RemoteClientProbeHost'](arg1);
+}
+
+export function RemoteClientReleaseControl(arg1) {
+  return window['go']['main']['App']['RemoteClientReleaseControl'](arg1);
 }
 
 export function RemoteClientRemoveHost(arg1) {

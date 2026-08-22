@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -51,19 +52,25 @@ type TerminalConfig struct {
 	BackoffBase      time.Duration // 首轮重连退避（默认 1s）
 	BackoffMax       time.Duration // 退避封顶（默认 30s）
 	PingInterval     time.Duration // 应用层 ping；0 关闭
+	PongWait         time.Duration // F-4：读超时——窗口内无任何读入（含协议 pong）判死连接；仅 PingInterval>0 时生效，缺省 2×PingInterval
+	// Logger 是净化诊断日志 seam（F-3）：App 层注入既有日志设施，测试注入
+	// 录制器；nil 丢弃。本包保证只传已净化文本——不含凭据与终端字节（蓝图 §9）。
+	Logger func(format string, args ...any)
 	// Now/After 为时钟 seam（测试确定性）。
 	Now   func() time.Time
 	After func(ctx context.Context, d time.Duration) error
 }
 
-// DefaultTerminalConfig 返回生产配置（退避 1s→30s 封顶、ping 30s）。
+// DefaultTerminalConfig 返回生产配置（退避 1s→30s 封顶、ping 30s、pong
+// 读超时 60s）。
 func DefaultTerminalConfig() TerminalConfig {
 	return TerminalConfig{
 		HandshakeTimeout: wsHandshakeTimeout,
 		BackoffBase:      1 * time.Second,
-		BackoffMax:       30 * time.Second,
-		PingInterval:     30 * time.Second,
-		Now:              time.Now,
+		BackoffMax:      30 * time.Second,
+		PingInterval:    30 * time.Second,
+		PongWait:        60 * time.Second,
+		Now:             time.Now,
 		After: func(ctx context.Context, d time.Duration) error {
 			t := time.NewTimer(d)
 			defer t.Stop()
@@ -87,6 +94,9 @@ func (c TerminalConfig) withDefaults() TerminalConfig {
 	}
 	if c.BackoffMax <= 0 {
 		c.BackoffMax = def.BackoffMax
+	}
+	if c.PingInterval > 0 && c.PongWait <= 0 {
+		c.PongWait = 2 * c.PingInterval
 	}
 	if c.Now == nil {
 		c.Now = def.Now
@@ -169,10 +179,12 @@ func newTerminalSession(t *Transport, hostID string, sessionID contract.SessionI
 	return s
 }
 
-// logf 记录净化诊断（不含凭据/payload；App 未注入 logger 时丢弃）。
+// logf 记录净化诊断（不含凭据/payload；F-3：App 层经 TerminalConfig.Logger
+// 注入既有日志设施，未注入时丢弃）。
 func (s *TerminalSession) logf(format string, args ...any) {
-	// 预留：App 层后续经 TerminalConfig 注入 logger；当前静默。
-	_ = fmt.Sprintf(format, args...)
+	if s.cfg.Logger != nil {
+		s.cfg.Logger(format, args...)
+	}
 }
 
 // State 返回当前连接状态投影。
@@ -350,10 +362,32 @@ func (s *TerminalSession) readPump(conn *websocket.Conn, attachRid contract.Requ
 		}
 		close(pingStop)
 	}()
+	// F-4：读超时 + pong 检测。握手成功即挂读 deadline（PongWait 内无任何
+	// 读入——含协议 pong——判死连接），pong/任意数据到达续期；协议 ping 随
+	// PingInterval 周期发送（与应用层 ping 同拍）驱动对端回 pong。对端
+	// SIGSTOP/僵死/NAT 半开在 PongWait 内浮出为读超时，走既有重连状态机；
+	// 提前到 attach 前启动，冻结在 attached 之前的半开同样可检测。
+	if s.cfg.PingInterval > 0 {
+		if s.cfg.PongWait > 0 {
+			if err := conn.SetReadDeadline(time.Now().Add(s.cfg.PongWait)); err != nil {
+				s.logf("ws read deadline setup failed: %v", err)
+			}
+			conn.SetPongHandler(func(string) error {
+				return conn.SetReadDeadline(time.Now().Add(s.cfg.PongWait))
+			})
+		}
+		pingTicker = time.NewTicker(s.cfg.PingInterval)
+		go s.pingLoop(pingTicker, pingStop)
+	}
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			return s.handleReadError(err)
+		}
+		if s.cfg.PongWait > 0 {
+			// 任意数据到达同样续期：活连接即使 pong 丢失也不误判（死连接
+			// SIGSTOP 后无任何读入，仍会在窗口内浮出）。
+			_ = conn.SetReadDeadline(time.Now().Add(s.cfg.PongWait))
 		}
 		ev := decodeServerEvent(raw)
 		if ev.Unknown != nil {
@@ -379,10 +413,6 @@ func (s *TerminalSession) readPump(conn *websocket.Conn, attachRid contract.Requ
 			}
 			attachedSeen = true
 			s.onAttached(known)
-			if s.cfg.PingInterval > 0 && pingTicker == nil {
-				pingTicker = time.NewTicker(s.cfg.PingInterval)
-				go s.pingLoop(pingTicker, pingStop)
-			}
 		case contract.OutputEvent:
 			s.onOutput(known)
 		case contract.SessionRestartBoundaryEvent:
@@ -523,6 +553,12 @@ func (s *TerminalSession) onErrorEvent(ev contract.ErrorEvent) {
 // handleReadError 分类读错误：终态关闭码 → 停止；1008 → revoked fail-closed；
 // 其余 → 重连退避。返回 true 表示终态。
 func (s *TerminalSession) handleReadError(err error) bool {
+	// F-4：读超时（deadline 内无 pong/数据）是死连接信号——净化日志明确
+	// 分类，随后走既有重连退避状态机。
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		s.logf("ws read deadline exceeded (%s without pong/traffic); treating connection as dead", s.cfg.PongWait)
+	}
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
 		switch closeErr.Code {
@@ -656,7 +692,8 @@ func (s *TerminalSession) forceReconnect() {
 	}
 }
 
-// pingLoop 周期发送应用层 ping（仅刷新 liveness，无业务载荷）。
+// pingLoop 周期发送协议层 ping 控制帧（F-4：驱动对端 pong 续期读
+// deadline）与应用层 ping 帧（契约 liveness，无业务载荷）。
 func (s *TerminalSession) pingLoop(ticker *time.Ticker, stop chan struct{}) {
 	for {
 		select {
@@ -665,11 +702,30 @@ func (s *TerminalSession) pingLoop(ticker *time.Ticker, stop chan struct{}) {
 		case <-s.done:
 			return
 		case <-ticker.C:
+			if s.cfg.PongWait > 0 {
+				if err := s.writePingControl(); err != nil {
+					return
+				}
+			}
 			if err := s.writeFrame(contract.PingFrame{Type: contract.ClientFrameTypePing, RequestID: s.newRequestID()}); err != nil {
 				return
 			}
 		}
 	}
+}
+
+// writePingControl 写协议层 ping 控制帧（写互斥、10s 写超时；对端
+// gorilla 读泵自动回 pong）。
+func (s *TerminalSession) writePingControl() error {
+	s.mu.Lock()
+	ws := s.ws
+	s.mu.Unlock()
+	if ws == nil {
+		return errors.New("remoteclient: no websocket connection")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
 }
 
 // writeFrame 编码并写一帧（写互斥；编码失败 fail-closed 不发送）。

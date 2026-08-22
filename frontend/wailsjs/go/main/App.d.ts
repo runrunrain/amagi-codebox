@@ -221,6 +221,8 @@ export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
 
+export function RemoteClientAcquireControl(arg1:string):Promise<remoteclient.ControlView>;
+
 export function RemoteClientAddHost(arg1:string,arg2:string):Promise<remoteclient.HostEntry>;
 
 export function RemoteClientCompletePairing(arg1:string,arg2:string):Promise<remoteclient.PairingResult>;
@@ -240,6 +242,8 @@ export function RemoteClientListHosts():Promise<Array<remoteclient.HostEntry>>;
 export function RemoteClientListRemoteSessions():Promise<contract.SessionList>;
 
 export function RemoteClientProbeHost(arg1:string):Promise<remoteclient.ProbeResult>;
+
+export function RemoteClientReleaseControl(arg1:string):Promise<remoteclient.ControlView>;
 
 export function RemoteClientRemoveHost(arg1:string):Promise<void>;
 
