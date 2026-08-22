@@ -170,9 +170,10 @@ const sessionCount = computed(() => runningSessions.value.length)
 
 // Group running sessions by appType (Apple HIG: restrained group headers).
 // Truth source of appType value: internal/session/types.go AppType const.
-// Fixed group order: claudecode -> opencode -> codex -> pi -> omp -> amagicode (legacy last).
-// Empty groups are not rendered. Within-group order follows backend List (倒序).
-const APP_TYPE_ORDER: readonly string[] = ['claudecode', 'opencode', 'codex', 'pi', 'omp', 'amagicode']
+// Fixed group order: claudecode -> opencode -> codex -> pi -> omp.
+// Empty groups are not rendered. Unknown appTypes sort after the known set.
+// Within-group order follows backend List (倒序).
+const APP_TYPE_ORDER: readonly string[] = ['claudecode', 'opencode', 'codex', 'pi', 'omp']
 
 const groupedSessionsByAppType = computed(() => {
   const sessions = runningSessions.value

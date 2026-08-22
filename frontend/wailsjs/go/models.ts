@@ -3609,9 +3609,6 @@ export namespace settings {
 	    piShell: string;
 	    ompMode: string;
 	    ompShell: string;
-	    amagiCodePreset: string;
-	    amagiCodeMode: string;
-	    amagiCodeShell: string;
 	    useHeadroom: boolean;
 	    codexGlobalHeadroom: boolean;
 	    codexGlobalHeadroomTarget: string;
@@ -3640,9 +3637,6 @@ export namespace settings {
 	        this.piShell = source["piShell"];
 	        this.ompMode = source["ompMode"];
 	        this.ompShell = source["ompShell"];
-	        this.amagiCodePreset = source["amagiCodePreset"];
-	        this.amagiCodeMode = source["amagiCodeMode"];
-	        this.amagiCodeShell = source["amagiCodeShell"];
 	        this.useHeadroom = source["useHeadroom"];
 	        this.codexGlobalHeadroom = source["codexGlobalHeadroom"];
 	        this.codexGlobalHeadroomTarget = source["codexGlobalHeadroomTarget"];

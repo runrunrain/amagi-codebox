@@ -190,12 +190,9 @@ const (
     AppTypeOpenCode   AppType = "opencode"
     AppTypeCodex      AppType = "codex"
     AppTypePi         AppType = "pi"
-    // AppTypeAmagiCode is deprecated and retained only for reading legacy sessions.
-    AppTypeAmagiCode AppType = "amagicode"
+    AppTypeOhMyPi     AppType = "omp"
 )
 ```
-
-`AppTypeAmagiCode` 已废弃，仅用于读取历史会话，新创建会话不再使用。
 
 会话状态（`SessionStatus`）：
 

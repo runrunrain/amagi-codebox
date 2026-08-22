@@ -77,7 +77,7 @@ Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译
 
 **后端服务包**：`internal/` 下各服务包遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`（插件系统）、`headroom`（上下文压缩）、`remote`（远程控制）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
 
-**五种应用类型**：`claudecode` / `opencode` / `codex` / `pi` / `omp`（外加已弃用的 `amagicode`）。`LaunchSession` 是会话启动核心入口，按预设解析提供商、编排代理与 headroom 链路、注入环境变量与 `--session-id`，最终在 PTY 中启动 CLI。
+**五种应用类型**：`claudecode` / `opencode` / `codex` / `pi` / `omp`。
 
 **跨平台**：平台差异通过 Go `//go:build` 约束在编译期分流（如 secrets 在 Windows 用 DPAPI、macOS 用 Keychain、Linux 为不支持），启动时由 `platform.CurrentCapabilities()` 一次性解析能力集合，运行期只读。
 

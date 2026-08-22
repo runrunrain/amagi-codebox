@@ -14,9 +14,6 @@ const (
 	AppTypeCodex      AppType = "codex"      // Codex CLI 应用
 	AppTypePi         AppType = "pi"         // Pi coding agent 应用
 	AppTypeOhMyPi     AppType = "omp"        // Oh My Pi (omp) 应用
-	// AppTypeAmagiCode is deprecated and retained only for reading legacy sessions.
-	// New AmagiCode session creation and launch APIs have been removed.
-	AppTypeAmagiCode AppType = "amagicode"
 )
 
 // LaunchMode 启动模式

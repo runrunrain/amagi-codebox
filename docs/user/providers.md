@@ -40,7 +40,7 @@ const (
     AppTypeOpenCode   AppType = "opencode"   // OpenCode
     AppTypeCodex      AppType = "codex"      // Codex CLI
     AppTypePi         AppType = "pi"         // Pi coding agent
-    AppTypeAmagiCode  AppType = "amagicode"  // 已废弃，仅用于读取历史会话
+    AppTypeOhMyPi     AppType = "omp"        // Oh My Pi (omp)
 )
 ```
 
@@ -368,4 +368,3 @@ Provider Center 顶部提供两个针对整个 `config.json` 的操作（详见 
 - 直接手工编辑 `~/.amagi-codebox/config.json` 不被禁止，但应用启动时若加载失败会回退到默认配置并记日志；推荐使用应用内的 Provider Center 进行编辑。
 - `anthropic` / `openai` 的双格式 `api_key` 字段在导入旧 JSON 时会被读取并迁移到 provider 级 secrets，新写入不会再保留这些明文字段。
 - 旧 `provider.presets` 会在启动时自动迁移到 `terminal_presets`，迁移是幂等的；若迁移失败，应用仍可启动并给出 warning。
-- `AppTypeAmagiCode` 已废弃，仅保留用于读取历史会话；不要为新会话选择该类型。

@@ -153,7 +153,7 @@ func TestSessionCreateAllFiveCLITypes(t *testing.T) {
 func TestSessionCreateRejectsUnknownCLIType(t *testing.T) {
 	sc, f := newPairedClient(t)
 	before := len(f.requests())
-	_, cerr := sc.CreateSession(context.Background(), contract.CreateSessionRequest{CLIType: "amagicode"})
+	_, cerr := sc.CreateSession(context.Background(), contract.CreateSessionRequest{CLIType: "internal-cli"})
 	if cerr == nil || cerr.Code() != contract.ErrorCodeBadRequest {
 		t.Fatalf("code = %v, want bad_request", cerr)
 	}

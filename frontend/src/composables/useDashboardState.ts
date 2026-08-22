@@ -123,9 +123,6 @@ export function useDashboardState() {
         piShell: state.piShell,
         ompMode: state.ompMode,
         ompShell: state.ompShell,
-        amagiCodePreset: '',
-        amagiCodeMode: '',
-        amagiCodeShell: '',
         useHeadroom: state.useHeadroom,
         // Pass-through placeholders (see function doc above) — backend ignores.
         codexGlobalHeadroom: state.codexGlobalHeadroom,

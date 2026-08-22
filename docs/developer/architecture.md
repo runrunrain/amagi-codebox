@@ -221,7 +221,7 @@ type App struct {
 
 ### AppType
 
-`internal/session/types.go` 定义应用类型常量（四种可启动 + 一种已弃用）：
+`internal/session/types.go` 定义应用类型常量（五种可启动）：
 
 ```go
 const (
@@ -229,13 +229,11 @@ const (
     AppTypeOpenCode   AppType = "opencode"   // Open Code 应用
     AppTypeCodex      AppType = "codex"      // Codex CLI 应用
     AppTypePi         AppType = "pi"         // Pi coding agent 应用
-    // AppTypeAmagiCode 已弃用，仅为读取旧会话保留。
-    // 新建 AmagiCode 会话与启动 API 已移除。
-    AppTypeAmagiCode AppType = "amagicode"
+    AppTypeOhMyPi     AppType = "omp"        // Oh My Pi (omp) 应用
 )
 ```
 
-实际可启动四种（Claude Code、OpenCode、Codex、Pi）；`amagicode` 仅保留读取旧会话能力。四种可启动类型与远程契约 `manifest.cliTypes` 一一对应（`claudecode` / `opencode` / `codex` / `pi`），`HostSummary.cliAvailability` 须恰好为这四种。
+五种均可启动（Claude Code、OpenCode、Codex、Pi、Oh My Pi），与远程契约 `manifest.cliTypes` 一一对应（`claudecode` / `opencode` / `codex` / `pi` / `omp`），`HostSummary.cliAvailability` 须恰好为这五种。
 
 `LaunchMode` 同文件定义：
 
@@ -310,5 +308,4 @@ Server 接收 `mobileAssets embed.FS`，对外提供 `mobile/dist` 作为移动�
 ## 待核实项
 
 - `internal/` 下服务包总数经核实为 22 个（`ls internal/`）。本表列出其中 20 个；未列入的辅助包为 `internal/appmeta`、`internal/structured`。如需机器可读清单，运行 `go list ./internal/...`。
-- `AppTypeAmagiCode` 仍可被哪些旧路径读取：仅注释说明"为旧会话保留"，未在 `app.go` 检索所有读取点。
 - `remote.Server` 的端点完整集合与鉴权细节：以 `../api.md` 和 `internal/remote/server.go` 为权威来源，本篇仅摘要。

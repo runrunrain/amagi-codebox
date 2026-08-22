@@ -41,13 +41,7 @@ type DashboardDefaults struct {
 	PiShell           string `json:"piShell"`
 	OmpMode           string `json:"ompMode"`
 	OmpShell          string `json:"ompShell"`
-	// Deprecated: retained only so legacy settings.json files can still be decoded.
-	AmagiCodePreset string `json:"amagiCodePreset"`
-	// Deprecated: retained only so legacy settings.json files can still be decoded.
-	AmagiCodeMode string `json:"amagiCodeMode"`
-	// Deprecated: retained only so legacy settings.json files can still be decoded.
-	AmagiCodeShell string `json:"amagiCodeShell"`
-	UseHeadroom    bool   `json:"useHeadroom"`
+	UseHeadroom       bool   `json:"useHeadroom"`
 	// CodexGlobalHeadroom enables a second, independent headroom instance that
 	// compresses Codex desktop traffic globally. Unlike UseHeadroom (which is a
 	// per-claude-session toggle on port 8787 with an Anthropic target), this
@@ -172,20 +166,18 @@ type AppSettings struct {
 func defaultSettings() *AppSettings {
 	return &AppSettings{
 		Dashboard: DashboardDefaults{
-			Mode:           "embedded",
-			Shell:          "wsl",
-			ClaudeMode:     "embedded",
-			ClaudeShell:    "wsl",
-			OpenCodeMode:   "embedded",
-			OpenCodeShell:  "wsl",
-			CodexMode:      "embedded",
-			CodexShell:     "wsl",
-			PiMode:         "embedded",
-			PiShell:        "wsl",
-			OmpMode:        "embedded",
-			OmpShell:       "wsl",
-			AmagiCodeMode:  "embedded",
-			AmagiCodeShell: "wsl",
+			Mode:          "embedded",
+			Shell:         "wsl",
+			ClaudeMode:    "embedded",
+			ClaudeShell:   "wsl",
+			OpenCodeMode:  "embedded",
+			OpenCodeShell: "wsl",
+			CodexMode:     "embedded",
+			CodexShell:    "wsl",
+			PiMode:        "embedded",
+			PiShell:       "wsl",
+			OmpMode:       "embedded",
+			OmpShell:      "wsl",
 		},
 		ShellPaths:             []ShellEntry{},
 		SavedWorkDirs:          []WorkDirEntry{},
@@ -467,9 +459,6 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 	if d.OmpMode == "" {
 		d.OmpMode = "embedded"
 	}
-	if d.AmagiCodeMode == "" {
-		d.AmagiCodeMode = "embedded"
-	}
 
 	if d.ClaudeShell == "" {
 		if d.Shell != "" {
@@ -504,13 +493,6 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 			d.OmpShell = d.Shell
 		} else {
 			d.OmpShell = "pwsh"
-		}
-	}
-	if d.AmagiCodeShell == "" {
-		if d.Shell != "" {
-			d.AmagiCodeShell = d.Shell
-		} else {
-			d.AmagiCodeShell = "wsl"
 		}
 	}
 

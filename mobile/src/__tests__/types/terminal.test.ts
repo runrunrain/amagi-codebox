@@ -18,7 +18,6 @@ describe('resolveAppType', () => {
     expect(resolveAppType(undefined)).toBe('generic')
     expect(resolveAppType(null)).toBe('generic')
     expect(resolveAppType('something-new')).toBe('generic')
-    expect(resolveAppType('amagicode')).toBe('generic')
   })
 })
 

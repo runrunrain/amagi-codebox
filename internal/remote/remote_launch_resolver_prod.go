@@ -95,7 +95,7 @@ func NewProductionRemoteLaunchResolver(
 // ResolveCreate resolves a new-session launch (design §5.4 create path).
 func (r *productionRemoteLaunchResolver) ResolveCreate(ctx context.Context, req contract.CreateSessionRequest) (RemoteLaunchResolution, *LaunchResolveFailure) {
 	cliType := req.CLIType
-	// 1. Validate frozen CLIType (reject unknown; never accept internal amagicode).
+	// 1. Validate frozen CLIType (reject any type outside the frozen wire set).
 	if !isKnownCLIType(cliType) {
 		return RemoteLaunchResolution{}, newLaunchResolveFailure(LaunchResolveFailureContext, cliType)
 	}
@@ -257,8 +257,8 @@ func canonicalDir(path string) (string, error) {
 	return real, nil
 }
 
-// isKnownCLIType reports whether the CLIType is one of the five frozen types
-// (design §5.4: "不得把内部 amagicode 当第五种 wire CLI").
+// isKnownCLIType reports whether the CLIType is one of the frozen wire types
+// (design §5.4: the wire set is closed; no internal-only types are accepted).
 func isKnownCLIType(cli contract.CLIType) bool {
 	for _, k := range contract.KnownCLITypes {
 		if k == cli {

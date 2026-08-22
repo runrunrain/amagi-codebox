@@ -109,11 +109,11 @@ func TestProductionResolver_CapabilityFailure(t *testing.T) {
 }
 
 func TestProductionResolver_UnknownCLIType(t *testing.T) {
-	// Unknown CLI type (e.g. internal amagicode) → context failure (design §5.4).
+	// Unknown CLI type → context failure (design §5.4).
 	fake := &fakePlatformCLIResolver{}
 	r := NewProductionRemoteLaunchResolver(fake, t.TempDir(), nil, nil)
 	_, lf := r.ResolveCreate(context.Background(), contract.CreateSessionRequest{
-		CLIType: contract.CLIType("amagicode"),
+		CLIType: contract.CLIType("internal-cli"),
 	})
 	if lf == nil || lf.Kind != LaunchResolveFailureContext {
 		t.Fatalf("expected context failure for unknown CLI type, got %v", lf)

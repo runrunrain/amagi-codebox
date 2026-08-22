@@ -26,23 +26,19 @@ func TestNormalizeDashboardDefaults_DoesNotPropagateLegacyTerminalModeToNonClaud
 	if d.CodexMode != "embedded" {
 		t.Fatalf("CodexMode = %q, want embedded", d.CodexMode)
 	}
-	if d.AmagiCodeMode != "embedded" {
-		t.Fatalf("AmagiCodeMode = %q, want embedded", d.AmagiCodeMode)
-	}
 }
 
 func TestNormalizeDashboardDefaults_PreservesExplicitEngineModes(t *testing.T) {
 	d := DashboardDefaults{
-		Mode:          "terminal",
-		OpenCodeMode:  "terminal",
-		CodexMode:     "terminal",
-		AmagiCodeMode: "terminal",
+		Mode:         "terminal",
+		OpenCodeMode: "terminal",
+		CodexMode:    "terminal",
 	}
 
 	normalizeDashboardDefaults(&d)
 
-	if d.OpenCodeMode != "terminal" || d.CodexMode != "terminal" || d.AmagiCodeMode != "terminal" {
-		t.Fatalf("explicit modes not preserved: opencode=%q codex=%q amagicode=%q", d.OpenCodeMode, d.CodexMode, d.AmagiCodeMode)
+	if d.OpenCodeMode != "terminal" || d.CodexMode != "terminal" {
+		t.Fatalf("explicit modes not preserved: opencode=%q codex=%q", d.OpenCodeMode, d.CodexMode)
 	}
 }
 
