@@ -181,6 +181,99 @@ func TestRemoteClientTerminalBindingsGuard(t *testing.T) {
 	}
 }
 
+// TestRemoteClientControlBindings（RC3 F-2 修复）：控制权绑定冒烟——
+// 错误路径（未连接/空参/409 透传）+ 成功路径（acquire you → release none，
+// ControlView 投影）+ F-3 装配验证（终端诊断日志经 App 既有日志设施落盘）。
+func TestRemoteClientControlBindings(t *testing.T) {
+	app := rcTestApp(t)
+
+	// 错误路径：未连接。
+	if _, err := app.RemoteClientAcquireControl("sess-1"); err == nil || !strings.Contains(err.Error(), "no host is connected") {
+		t.Errorf("AcquireControl without connection err = %v, want no-host error", err)
+	}
+	if _, err := app.RemoteClientReleaseControl("sess-1"); err == nil {
+		t.Error("ReleaseControl without connection must error")
+	}
+
+	const busyBody = `{"code":"control.busy","layer":"control","message":"control already held","actionHint":"request_control"}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/remote/v1/host/summary", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apiVersion":"v1","serverVersion":"test","cliAvailability":[]}`))
+	})
+	mux.HandleFunc("/api/remote/v1/sessions/s1/control/acquire", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"you"}`))
+	})
+	mux.HandleFunc("/api/remote/v1/sessions/s1/control/release", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"none"}`))
+	})
+	mux.HandleFunc("/api/remote/v1/sessions/s2/control/acquire", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(busyBody))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	hostID := rcPairedHost(t, app, strings.TrimPrefix(srv.URL, "http://"))
+	if _, err := app.RemoteClientConnect(hostID); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer func() { _ = app.RemoteClientDisconnect(hostID) }()
+
+	// 空参。
+	if _, err := app.RemoteClientAcquireControl("  "); err == nil {
+		t.Error("AcquireControl with blank sessionID must error")
+	}
+	if _, err := app.RemoteClientReleaseControl(""); err == nil {
+		t.Error("ReleaseControl with blank sessionID must error")
+	}
+
+	// 成功：acquire → you；release → none（投影携带契约同形快照）。
+	v, err := app.RemoteClientAcquireControl("s1")
+	if err != nil {
+		t.Fatalf("AcquireControl: %v", err)
+	}
+	if !v.You() || v.State != "you" {
+		t.Fatalf("acquire view = %+v, want state=you", v)
+	}
+	v, err = app.RemoteClientReleaseControl("s1")
+	if err != nil {
+		t.Fatalf("ReleaseControl: %v", err)
+	}
+	if v.You() || v.State != "none" {
+		t.Fatalf("release view = %+v, want state=none", v)
+	}
+
+	// 409 透传：错误文本携带稳定错误码供前端决策。
+	_, err = app.RemoteClientAcquireControl("s2")
+	if err == nil || !strings.Contains(err.Error(), "control.busy") {
+		t.Fatalf("AcquireControl busy err = %v, want control.busy passthrough", err)
+	}
+
+	// F-3 装配：终端域诊断日志（ws dial failed）经 App 既有日志设施落盘。
+	if _, err := app.RemoteClientTerminalAttach("s1"); err != nil {
+		t.Fatalf("TerminalAttach: %v", err)
+	}
+	defer func() { _ = app.RemoteClientTerminalDetach("s1") }()
+	deadline := time.Now().Add(3 * time.Second)
+	logged := false
+	for time.Now().Before(deadline) && !logged {
+		for _, e := range app.Log.GetEntries("DEBUG", "remoteclient", "", 50) {
+			if strings.Contains(e.Message, "ws dial failed") {
+				logged = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !logged {
+		t.Error("terminal diagnostics not wired into App logging service (F-3)")
+	}
+}
+
 // TestRemoteClientShutdownDetachesTerminals：shutdownRemoteClientTerminals 在
 // 已连接（含 attach 中会话）时安全收尾，不 panic、可重入。
 func TestRemoteClientShutdownDetachesTerminals(t *testing.T) {
