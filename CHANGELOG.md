@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.49] - 2026-08-22
+
+### Added
+
+- **视觉模型标记与导出**：TerminalPreset 新增 `vision` / `video` 能力标记与 `vision_priority` 优先级（契约 `docs/vision-export-contract.md` §1），Preset 编辑对话框与列表同步展示标记入口；标记独立于 preset 所在桶，anthropic 桶与 openai 桶均可标记。
+- 懒导出 `~/.agents/amagi-media-models.json`（契约 §2）：preset/provider 增删与启动配置加载后幂等全量重导出，供 amagi-media-understanding 等识图/识视频 skill 消费；API key 经注入的 resolver 从 Keychain 解析（config 包不依赖 secrets 包），文件权限 0600，导出路径可被 `AMAGI_MEDIA_MODELS_PATH` 覆盖；无标记 preset 时写空 `models: []`，区分「未配置」与「文件缺失」。
+
 ## [1.3.48] - 2026-08-22
 
 ### Added
