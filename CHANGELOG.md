@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.50] - 2026-08-22
+
+### Added
+
+- **终端 AI 辅助 Git 提交/推送**：终端视图新增 Git 面板——仓库状态展示、分支切换、AI 总结变更生成提交信息、提交与推送，面向会话工作区一键完成；全部 git 操作经 `exec.CommandContext("git", ...)` 参数独立传递，杜绝 shell 注入。
+- AI 提交总结模型可在设置页从已有终端预设中选择（`CommitSummaryPreset`，格式 `provider/preset名`，未设置时引导前往设置页）；API key 经注入 resolver 从 Keychain 解析，gitassist 包不直接依赖 secrets 包。
+
 ## [1.3.49] - 2026-08-22
 
 ### Added
