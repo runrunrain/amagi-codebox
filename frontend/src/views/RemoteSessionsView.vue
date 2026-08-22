@@ -3,7 +3,8 @@
   交互稿 §2.2：远程模式下复用会话页骨架，列表 = 远端会话（五态徽标）。
   状态模型 §3：loading（不渲染旧数据冒充）/ empty + 主操作 /
   error(可重试) 保留最后成功数据 + 过期标记 / 提交中按钮防重复。
-  本里程碑列表只读展示；行操作（重启/停止/删除）调用绑定后刷新。
+  RC2-5：行操作新增「打开终端」→ RemoteTerminalView；rc:revoked → RiskBanner
+  fail-closed。新建会话入口仍属后续里程碑。
 -->
 <template>
   <section class="view-remote-sessions">
@@ -30,6 +31,11 @@
       action-text="重试"
       @action="handleRefresh"
     />
+
+    <!-- revoked：fail-closed（交互稿 §3 revoked 行；RC2-5 rc:revoked 事件接入） -->
+    <RiskBanner v-if="store.connectRevoked" title="授权已撤销">
+      本设备对主机「{{ store.currentHostName }}」的授权已被对方撤销，连接与终端已全部断开。如需继续访问，请在对方 CodeBox 重新打开配对窗口并完成配对。
+    </RiskBanner>
 
     <!-- loading：骨架（不渲染旧数据冒充） -->
     <LoadingState
@@ -90,6 +96,14 @@
 
         <div class="rs-actions">
           <AppButton
+            variant="primary"
+            size="small"
+            :disabled="s.state === 'removed'"
+            @click="openTerminal(s)"
+          >
+            打开终端
+          </AppButton>
+          <AppButton
             variant="ghost"
             size="small"
             :disabled="busyId === s.id || s.state === 'removed'"
@@ -131,6 +145,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import PageHead from '../components/ui/PageHead.vue';
 import AppButton from '../components/ui/AppButton.vue';
 import LoadingState from '../components/ui/LoadingState.vue';
@@ -138,6 +153,7 @@ import EmptyState from '../components/ui/EmptyState.vue';
 import ErrorState from '../components/ui/ErrorState.vue';
 import StatusBanner from '../components/ui/StatusBanner.vue';
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
+import RiskBanner from '../components/remote/RiskBanner.vue';
 import { useRemoteClientStore } from '../stores/remoteClient';
 import { useToast } from '../composables/useToast';
 import { appTypeLabel, tagColor } from '../utils/format';
@@ -152,6 +168,7 @@ import {
 import type { RemoteSessionSummary } from '../api/remoteClient';
 
 const store = useRemoteClientStore();
+const router = useRouter();
 const { showSuccess, showError } = useToast();
 
 const refreshing = ref(false);
@@ -182,6 +199,12 @@ async function handleRefresh() {
   } finally {
     refreshing.value = false;
   }
+}
+
+/** RC2-5：打开远程终端（设定终端页目标并跳转；attach 由视图挂载时发起）。 */
+function openTerminal(s: RemoteSessionSummary) {
+  store.openRemoteTerminal(s.id);
+  void router.push('/terminal');
 }
 
 async function runRowAction(s: RemoteSessionSummary, action: 'stop' | 'restart', fn: () => Promise<void>) {

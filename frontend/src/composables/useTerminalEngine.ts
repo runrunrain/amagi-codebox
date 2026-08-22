@@ -19,6 +19,12 @@
  *
  * Theme colours come from the demo design tokens (var(--termBg) etc.) instead
  * of the legacy hardcoded #1a1f2e.
+ *
+ * RC2-5 传输接缝（T0-2 结论 B）：输出/退出/历史/输入/resize 五类 Wails 触点
+ * （T1–T5）抽为可注入 TerminalTransport 适配器。默认适配器 = 现有 wailsjs
+ * 调用（createLocalTerminalTransport），本地路径行为不变；远程路径由
+ * RemoteTerminalView 注入 rc:* 事件 + RemoteClientTerminal* 绑定的适配器
+ * （composables/remoteTerminalTransport.ts）。纯渲染内核不回退、不复制。
  */
 
 import { ref } from 'vue'
@@ -98,6 +104,10 @@ interface TerminalInstance {
   runVersion: string
   /** pending yield between history chunks; cancelled during teardown. */
   historyReplayTimer: number | null
+  /** RC2-5 传输适配器（T1–T5 接缝；本地 = Wails，远程 = rc:* 事件 + 绑定）。 */
+  transport: TerminalTransport
+  /** 输入门（远程只读态丢弃用户输入；本地恒 true）。 */
+  canInput: () => boolean
 }
 
 interface LiveChunk {
@@ -117,6 +127,125 @@ export interface MountOptions {
    * otherwise emits the same CR for Enter and Shift+Enter.
    */
   encodeShiftEnterAsCsiU?: boolean
+  /**
+   * RC2-5 传输适配器（T1–T5 接缝）。缺省 = 本地 Wails 传输
+   * （createLocalTerminalTransport(sessionId)），行为与改造前一致。
+   */
+  transport?: TerminalTransport
+  /**
+   * 输入门：返回 false 时用户输入（键盘/粘贴）被静默丢弃——远程只读态
+   * （控制权≠你 / 未 attached）使用；缺省始终允许输入（本地路径不变）。
+   */
+  canInput?: () => boolean
+}
+
+// ---------------------------------------------------------------------------
+// TerminalTransport（RC2-5：T1–T5 Wails 触点的可注入接缝）
+// ---------------------------------------------------------------------------
+
+/** 一帧终端输出（data 为 base64 编码字节流）。 */
+export interface TerminalOutputChunk {
+  seq: number
+  data: string
+  runToken?: string
+  runVersion?: string
+}
+
+/** 会话进程退出通知。 */
+export interface TerminalExitInfo {
+  exitCode?: number
+  runToken?: string
+  runVersion?: string
+}
+
+/** 历史快照（data 兼容 string base64 / Array<number> / Uint8Array 三态）。 */
+export interface TerminalHistorySnapshot {
+  data: unknown
+  seq?: number
+  runToken?: string
+  runVersion?: string
+}
+
+/**
+ * 终端传输适配器：渲染内核与字节来源（本地 PTY / 远程 /ws/v1）之间的窄接口。
+ * 本地实现 = 现有 wailsjs 调用上移；远程实现见 remoteTerminalTransport.ts。
+ */
+export interface TerminalTransport {
+  /** T1 输出订阅；返回解除订阅函数。 */
+  subscribeOutput(cb: (chunk: TerminalOutputChunk) => void): () => void
+  /** T2 退出订阅；返回解除订阅函数。 */
+  subscribeExit(cb: (info: TerminalExitInfo) => void): () => void
+  /** T3 历史快照；null 表示无快照（直播-only，历史经输出帧补放）。 */
+  fetchHistory(): Promise<TerminalHistorySnapshot | null>
+  /** T4 发送一段终端输入文本（UTF-8）；编码/分包由传输内部负责。 */
+  write(text: string): Promise<void>
+  /** T4 剪贴板图片保存，返回可写入终端的路径；不支持时返回空串。 */
+  saveClipboardImage(base64: string): Promise<string>
+  /** T5 调整 PTY 尺寸。 */
+  resize(cols: number, rows: number): Promise<void>
+}
+
+/**
+ * 本地（默认）传输适配器：现有 Wails 触点原样上移，行为不变。
+ */
+export function createLocalTerminalTransport(sessionId: string): TerminalTransport {
+  return {
+    subscribeOutput(cb) {
+      return EventsOn('pty:data:' + sessionId, (eventData: any) => {
+        if (
+          eventData &&
+          typeof eventData === 'object' &&
+          's' in eventData &&
+          'd' in eventData
+        ) {
+          cb({
+            seq: eventData.s as number,
+            data: eventData.d as string,
+            runToken: typeof eventData.r === 'string' ? eventData.r : '',
+            runVersion: typeof eventData.v === 'string' ? eventData.v : '',
+          })
+        } else if (typeof eventData === 'string') {
+          // legacy fallback without seq -> flush through after replay.
+          cb({ seq: 0, data: eventData })
+        }
+      })
+    },
+    subscribeExit(cb) {
+      return EventsOn('pty:exit:' + sessionId, (info: any) => {
+        cb({
+          exitCode: info && typeof info === 'object' ? info.exitCode : undefined,
+          runToken: info && typeof info.r === 'string' ? info.r : '',
+          runVersion: info && typeof info.v === 'string' ? info.v : '',
+        })
+      })
+    },
+    async fetchHistory() {
+      const jsonStr = await GetOutputHistorySnapshot(sessionId)
+      if (!jsonStr) return null
+      try {
+        return JSON.parse(jsonStr) as TerminalHistorySnapshot
+      } catch (e) {
+        console.warn('history replay failed:', e)
+        return null
+      }
+    },
+    async write(text) {
+      const bytes = new TextEncoder().encode(text)
+      const encoded = uint8ToBase64(bytes)
+      // Long text uses the chunked path to avoid ConPTY buffer overflow.
+      if (bytes.length > 1024) {
+        await PtyWriteLarge(sessionId, encoded)
+      } else {
+        await PtyWrite(sessionId, encoded)
+      }
+    },
+    saveClipboardImage(base64) {
+      return SaveClipboardImage(base64)
+    },
+    resize(cols, rows) {
+      return PtyResize(sessionId, cols, rows)
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,8 +262,8 @@ function base64ToUint8(base64: string): Uint8Array {
   return bytes
 }
 
-/** Uint8Array -> base64 */
-function uint8ToBase64(bytes: Uint8Array): string {
+/** Uint8Array -> base64（exported：远程传输的提示条合成复用） */
+export function uint8ToBase64(bytes: Uint8Array): string {
   let bin = ''
   for (let i = 0; i < bytes.length; i++) {
     bin += String.fromCharCode(bytes[i])
@@ -334,6 +463,9 @@ export function useTerminalEngine() {
     // paste 事件钩子（见 mountTerm 内 onPaste capture 监听），不经此函数，
     // 改动不应影响它。读剪贴板权限比写更严格，在 WebView2 里更易失败，故
     // 优先用 Wails 原生 ClipboardGetText（走 Windows API）。
+    // RC2-5：写入经实例传输适配器（本地 = PtyWrite*；远程 = SendInput 绑定）。
+    const inst = terminals.get(sessionId)
+    if (!inst || !inst.canInput()) return
     let text = ''
     try {
       text = await ClipboardGetText()
@@ -349,14 +481,7 @@ export function useTerminalEngine() {
     }
     try {
       if (text) {
-        const bytes = new TextEncoder().encode(text)
-        const encoded = uint8ToBase64(bytes)
-        // Long text uses the chunked path to avoid ConPTY buffer overflow.
-        if (bytes.length > 1024) {
-          await PtyWriteLarge(sessionId, encoded)
-        } else {
-          await PtyWrite(sessionId, encoded)
-        }
+        await inst.transport.write(text)
         return
       }
 
@@ -370,10 +495,9 @@ export function useTerminalEngine() {
               const arrayBuf = await blob.arrayBuffer()
               const uint8 = new Uint8Array(arrayBuf)
               const b64 = uint8ToBase64(uint8)
-              const filePath = await SaveClipboardImage(b64)
+              const filePath = await inst.transport.saveClipboardImage(b64)
               if (filePath) {
-                const pathBytes = new TextEncoder().encode(filePath)
-                await PtyWrite(sessionId, uint8ToBase64(pathBytes))
+                await inst.transport.write(filePath)
               }
               return
             }
@@ -473,7 +597,8 @@ export function useTerminalEngine() {
     inst.resizeInFlight = true
     let failed = false
 
-    PtyResize(sessionId, cols, rows)
+    inst.transport
+      .resize(cols, rows)
       .then(() => {
         if (terminals.get(sessionId) !== inst) return
         inst.acknowledgedCols = cols
@@ -661,6 +786,17 @@ export function useTerminalEngine() {
 
     const scrollback = options.scrollback ?? 100000
 
+    // RC2-5 传输接缝：本地缺省适配器 = 现有 Wails 调用；远程注入 rc:* 适配器。
+    const transport = options.transport ?? createLocalTerminalTransport(sessionId)
+    const canInput = options.canInput ?? (() => true)
+    // 单一输入出口：所有用户输入（键盘/粘贴/右键菜单）经此过输入门后发往传输。
+    const sendInput = (text: string) => {
+      if (!text || !canInput()) return
+      transport.write(text).catch((err) => {
+        console.error('[amagi-codebox] terminal input write failed:', err)
+      })
+    }
+
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
@@ -731,8 +867,7 @@ export function useTerminalEngine() {
         const sel = term.getSelection()
         if (sel && sel.length > 0) {
           const bsChars = '\b'.repeat(sel.length)
-          const bytes = new TextEncoder().encode(bsChars)
-          PtyWrite(sessionId, uint8ToBase64(bytes)).catch(() => {})
+          sendInput(bsChars)
           term.clearSelection()
           return false
         }
@@ -772,8 +907,7 @@ export function useTerminalEngine() {
         if (ev.key === 'Backspace') seq = '\x1b\x7f'
         else if (ev.key.length === 1) seq = '\x1b' + ev.key
         if (seq) {
-          const bytes = new TextEncoder().encode(seq)
-          PtyWrite(sessionId, uint8ToBase64(bytes)).catch(() => {})
+          sendInput(seq)
           return false
         }
       }
@@ -829,18 +963,14 @@ export function useTerminalEngine() {
       prevAtBottom = atBottom
     })
 
-    // user input -> backend PTY
+    // user input -> transport（本地 = 后端 PTY；远程 = /ws/v1 outbox）
     term.onData((data: string) => {
       let forwardedData = data
       if (rewriteNextEnterAsCsiU) {
         rewriteNextEnterAsCsiU = false
         if (data === '\r') forwardedData = csiUShiftEnter
       }
-      const bytes = new TextEncoder().encode(forwardedData)
-      const encoded = uint8ToBase64(bytes)
-      PtyWrite(sessionId, encoded).catch((err) => {
-        console.error('PtyWrite error:', err)
-      })
+      sendInput(forwardedData)
     })
 
     // ----- live output buffering until history replay completes -----
@@ -880,6 +1010,8 @@ export function useTerminalEngine() {
       runToken: '',
       runVersion: '',
       historyReplayTimer: null,
+      transport,
+      canInput,
     }
     terminals.set(sessionId, inst)
 
@@ -934,32 +1066,15 @@ export function useTerminalEngine() {
       }
     }
 
-    const dataEvent = 'pty:data:' + sessionId
-    const disposeDataListener = EventsOn(dataEvent, (eventData: any) => {
+    const disposeDataListener = transport.subscribeOutput((out) => {
       try {
-        let seq: number
-        let base64Data: string
-        let runToken = ''
-        let runVersion = ''
-        if (
-          eventData &&
-          typeof eventData === 'object' &&
-          's' in eventData &&
-          'd' in eventData
-        ) {
-          seq = eventData.s as number
-          base64Data = eventData.d as string
-          runToken = typeof eventData.r === 'string' ? eventData.r : ''
-          runVersion = typeof eventData.v === 'string' ? eventData.v : ''
-        } else if (typeof eventData === 'string') {
-          // legacy fallback without seq -> flush through after replay.
-          seq = 0
-          base64Data = eventData
-        } else {
-          return
+        const bytes = base64ToUint8(out.data)
+        const chunk: LiveChunk = {
+          seq: out.seq,
+          bytes,
+          runToken: out.runToken ?? '',
+          runVersion: out.runVersion ?? '',
         }
-        const bytes = base64ToUint8(base64Data)
-        const chunk = { seq, bytes, runToken, runVersion }
         if (!historyReplayed) {
           liveBuffer.push(chunk)
           return
@@ -970,8 +1085,7 @@ export function useTerminalEngine() {
       }
     })
 
-    const exitEvent = 'pty:exit:' + sessionId
-    const disposeExitListener = EventsOn(exitEvent, (info: any) => {
+    const disposeExitListener = transport.subscribeExit((info) => {
       let message = '\r\n\x1b[33m[amagi-codebox] 进程已退出'
       if (info && info.exitCode !== undefined) {
         message += ` (exit code: ${info.exitCode})`
@@ -980,14 +1094,14 @@ export function useTerminalEngine() {
       const chunk: LiveChunk = {
         seq: 0,
         bytes: marker,
-        runToken: info && typeof info.r === 'string' ? info.r : '',
-        runVersion: info && typeof info.v === 'string' ? info.v : '',
+        runToken: info && typeof info.runToken === 'string' ? info.runToken : '',
+        runVersion: info && typeof info.runVersion === 'string' ? info.runVersion : '',
       }
       // Exit can race the history snapshot. Keep its marker behind the same
       // replay barrier so it cannot appear in the middle of historical ANSI.
       if (historyReplayed) writeLiveChunk(chunk)
       else liveBuffer.push(chunk)
-      options.onExit?.(info && typeof info === 'object' ? { exitCode: info.exitCode } : {})
+      options.onExit?.({ exitCode: info?.exitCode })
     })
 
     inst.disposeDataListener = disposeDataListener
@@ -1152,31 +1266,29 @@ export function useTerminalEngine() {
       })
     }
 
-    GetOutputHistorySnapshot(sessionId)
-      .then((jsonStr: string) => {
-        if (!jsonStr) {
+    // T3：历史快照经传输获取（本地 = GetOutputHistorySnapshot；远程 = null，
+    // 历史由 Go 侧 attach 回放经输出事件补放）。
+    transport
+      .fetchHistory()
+      .then((snapshot) => {
+        if (!snapshot) {
           finishHistoryReplay()
           return
         }
-        try {
-          const snapshot = JSON.parse(jsonStr)
-          inst.runToken = typeof snapshot.runToken === 'string' ? snapshot.runToken : ''
-          inst.runVersion = typeof snapshot.runVersion === 'string' ? snapshot.runVersion : ''
-          const decoded = decodeHistoryData(snapshot.data)
-          if (decoded && decoded.length > 0) {
-            inst.historySnapshotSeq = snapshot.seq || 0
-            writeHistoryInChunks(decoded, finishHistoryReplay)
-            return
-          } else if (decoded !== null && decoded.length === 0) {
-            // decodeHistoryData returned empty: data valid but empty.
-            // Snapshot is authoritative (seq valid) -> set boundary.
-            inst.historySnapshotSeq = snapshot.seq || 0
-          }
-          // decoded === null -> decode failed: leave seq at 0 so buffered
-          // live chunks flush through without being discarded.
-        } catch (e) {
-          console.warn('history replay failed:', e)
+        inst.runToken = typeof snapshot.runToken === 'string' ? snapshot.runToken : ''
+        inst.runVersion = typeof snapshot.runVersion === 'string' ? snapshot.runVersion : ''
+        const decoded = decodeHistoryData(snapshot.data)
+        if (decoded && decoded.length > 0) {
+          inst.historySnapshotSeq = snapshot.seq || 0
+          writeHistoryInChunks(decoded, finishHistoryReplay)
+          return
+        } else if (decoded !== null && decoded.length === 0) {
+          // decodeHistoryData returned empty: data valid but empty.
+          // Snapshot is authoritative (seq valid) -> set boundary.
+          inst.historySnapshotSeq = snapshot.seq || 0
         }
+        // decoded === null -> decode failed: leave seq at 0 so buffered
+        // live chunks flush through without being discarded.
         finishHistoryReplay()
       })
       .catch(() => {
@@ -1239,13 +1351,7 @@ export function useTerminalEngine() {
         const clipEvent = e as ClipboardEvent
         const text = clipEvent.clipboardData?.getData('text') ?? ''
         if (text) {
-          const bytes = new TextEncoder().encode(text)
-          const encoded = uint8ToBase64(bytes)
-          if (bytes.length > 1024) {
-            PtyWriteLarge(sessionId, encoded).catch(() => {})
-          } else {
-            PtyWrite(sessionId, encoded).catch(() => {})
-          }
+          sendInput(text)
         } else {
           // Empty text -> check for image files (e.g. Windows Snipping Tool).
           const files = clipEvent.clipboardData?.files
@@ -1257,12 +1363,10 @@ export function useTerminalEngine() {
                 .then((buf) => {
                   const uint8 = new Uint8Array(buf)
                   const b64 = uint8ToBase64(uint8)
-                  SaveClipboardImage(b64)
+                  transport
+                    .saveClipboardImage(b64)
                     .then((filePath) => {
-                      if (filePath) {
-                        const pathBytes = new TextEncoder().encode(filePath)
-                        PtyWrite(sessionId, uint8ToBase64(pathBytes)).catch(() => {})
-                      }
+                      if (filePath) sendInput(filePath)
                     })
                     .catch(() => {})
                 })
@@ -1287,12 +1391,24 @@ export function useTerminalEngine() {
 
   function writeInput(sessionId: string, data: string) {
     const inst = terminals.get(sessionId)
-    if (!inst) return
-    const bytes = new TextEncoder().encode(data)
-    const encoded = uint8ToBase64(bytes)
-    PtyWrite(sessionId, encoded).catch((err) => {
-      console.error('PtyWrite error:', err)
+    if (!inst || !inst.canInput()) return
+    inst.transport.write(data).catch((err) => {
+      console.error('[amagi-codebox] terminal input write failed:', err)
     })
+  }
+
+  /**
+   * 写一条本地提示行（不经传输、不入 PTY）：远程会话的 restart 边界等
+   * 状态提示用（RC2-5）。
+   */
+  function writeLocalEcho(sessionId: string, text: string) {
+    const inst = terminals.get(sessionId)
+    if (!inst) return
+    try {
+      inst.term.write(new TextEncoder().encode(text))
+    } catch {
+      /* term may be mid-teardown */
+    }
   }
 
   function disposeTerm(sessionId: string) {
@@ -1465,6 +1581,7 @@ export function useTerminalEngine() {
     terminals,
     mountTerm,
     writeInput,
+    writeLocalEcho,
     resizeTerm,
     fitTerminal,
     refreshTerminal,

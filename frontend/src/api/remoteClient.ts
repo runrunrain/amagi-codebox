@@ -25,6 +25,10 @@ import {
   RemoteClientStopRemoteSession,
   RemoteClientRestartRemoteSession,
   RemoteClientDeleteRemoteSession,
+  RemoteClientTerminalAttach,
+  RemoteClientTerminalDetach,
+  RemoteClientTerminalSendInput,
+  RemoteClientTerminalResize,
 } from '../../wailsjs/go/main/App';
 import type { remoteclient, contract, main } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -35,6 +39,7 @@ export type PairingResult = remoteclient.PairingResult;
 export type ConnectResult = main.RemoteClientConnectResult;
 export type RemoteSessionSummary = contract.SessionSummary;
 export type RemoteSessionDetail = contract.SessionDetail;
+export type RemoteTerminalAttachResult = main.RemoteClientTerminalAttachResult;
 
 /** 契约 12 稳定错误码（internal/remote/contract/errors.go KnownErrorCodes）。 */
 export const REMOTE_ERROR_CODES = [
@@ -192,4 +197,28 @@ export function restartRemoteSession(sessionID: string): Promise<RemoteSessionDe
 /** 移除会话（不可逆；204 无 body）。 */
 export function deleteRemoteSession(sessionID: string): Promise<void> {
   return callApi('[api.remoteClient.deleteRemoteSession]', () => RemoteClientDeleteRemoteSession(sessionID));
+}
+
+/* ---------------------------------------------------------------------------
+ * 终端域（RC2-5：/ws/v1 长连接；输出只经 rc:* 事件总线，不经返回值）
+ * ------------------------------------------------------------------------- */
+
+/** attach（或复用）一个会话的终端连接；幂等。输出经 rc:terminal-output 事件回流。 */
+export function attachRemoteTerminal(sessionID: string): Promise<RemoteTerminalAttachResult> {
+  return callApi('[api.remoteClient.attachRemoteTerminal]', () => RemoteClientTerminalAttach(sessionID));
+}
+
+/** 终止会话终端连接（停止重连、销毁输入 outbox）。 */
+export function detachRemoteTerminal(sessionID: string): Promise<void> {
+  return callApi('[api.remoteClient.detachRemoteTerminal]', () => RemoteClientTerminalDetach(sessionID));
+}
+
+/** 发送终端输入（UTF-8 文本；Go 侧编码 base64 后经 outbox 幂等发送）。 */
+export function sendRemoteTerminalInput(sessionID: string, data: string): Promise<void> {
+  return callApi('[api.remoteClient.sendRemoteTerminalInput]', () => RemoteClientTerminalSendInput(sessionID, data));
+}
+
+/** 调整远端 PTY 尺寸（cols/rows 正整数）。 */
+export function resizeRemoteTerminal(sessionID: string, cols: number, rows: number): Promise<void> {
+  return callApi('[api.remoteClient.resizeRemoteTerminal]', () => RemoteClientTerminalResize(sessionID, cols, rows));
 }

@@ -9,6 +9,7 @@
 
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import { EventsOn } from '../../wailsjs/runtime/runtime';
 import * as remoteClientApi from '../api/remoteClient';
 import type { HostEntry, RemoteSessionSummary } from '../api/remoteClient';
 import { remoteErrorText } from '../api/remoteClient';
@@ -24,6 +25,39 @@ const SESSION_POLL_INTERVAL_MS = 4000;
 
 /** 主机探活最小间隔（菜单打开时触发，防频繁出网）。 */
 const HOST_PROBE_MIN_INTERVAL_MS = 15000;
+
+/** M-6 修复：offline 主机周期探活节奏（交互稿 §3 offline 行「自动周期探活」）。 */
+const HOST_PROBE_PERIODIC_MS = 30000;
+
+/** 终端连接状态投影（internal/remoteclient/conn.go ConnState 冻结五态）。 */
+export type RemoteConnState = 'disconnected' | 'connecting' | 'attached' | 'readonly' | 'degraded';
+
+/** 单个远程终端会话的客户端侧状态（rc:* 事件聚合）。 */
+export interface RemoteTerminalState {
+  connState: RemoteConnState | '';
+  /** 当前重连轮次（attach 成功清零）。 */
+  attempt: number;
+  /** 下一轮重连退避毫秒数。 */
+  nextRetryMs: number;
+  detail: string;
+  /** 控制权四态（contract.ControlState：you/other/desktop/none）。 */
+  controlState: string;
+  /** 远端会话五态（contract.SessionState）。 */
+  sessionState: string;
+  /** attach 绑定已调用且未 detach。 */
+  attached: boolean;
+}
+
+/** rc:terminal-output 分发载荷：输出帧或 history.gap 缺口通知（如实透出，不吞不改）。 */
+export type RemoteTerminalOutputEvent =
+  | { kind: 'output'; seq: number; data: string }
+  | { kind: 'gap'; fromSeq: number; toSeq: number; source: string };
+
+/** rc:session-state 分发载荷。 */
+export interface RemoteSessionStateEvent {
+  state: string;
+  restartBoundary?: boolean;
+}
 
 export const useRemoteClientStore = defineStore('remoteClient', () => {
   // ---- host scope ----
@@ -50,7 +84,15 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
   // ---- 配对向导 ----
   const pairingWizardOpen = ref(false);
 
+  // ---- RC2-5 远程终端：attach 状态 + rc:* 事件聚合 ----
+  const remoteTerminalStates = ref<Record<string, RemoteTerminalState>>({});
+  /** 终端页当前展示的远程会话（远程模式下）。 */
+  const activeRemoteTerminalId = ref<string | null>(null);
+  /** rc:revoked fail-closed：当前主机授权已被撤销（交互稿 §3 revoked 行）。 */
+  const connectRevoked = ref(false);
+
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const isRemoteMode = computed(() => scope.value !== LOCAL_SCOPE);
   const currentHost = computed<HostEntry | null>(
@@ -65,10 +107,31 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
       hosts.value = (await remoteClientApi.listRemoteHosts()) ?? [];
       hostsState.value = 'ready';
       hostsError.value = '';
+      // M-6：登记簿非空即启动周期探活（offline 主机自动恢复检测；
+      // probeHosts 自身 15s throttle，30s 节奏保证每轮真实出网一次）。
+      if (hosts.value.length > 0) startHostProbing();
     } catch (err) {
       hostsState.value = hosts.value.length > 0 ? 'ready' : 'error';
       hostsError.value = remoteErrorText(err);
     }
+  }
+
+  /**
+   * M-6 周期探活（setTimeout 接力单飞，与会话轮询同纪律）。一旦启动随应用
+   * 生命周期运行——主机状态灯（含切换器灰/绿）依赖它恢复，不限于远程模式。
+   */
+  function startHostProbing(): void {
+    if (probeTimer) return;
+    const tick = async () => {
+      try {
+        await probeHosts();
+      } finally {
+        if (probeTimer !== null) {
+          probeTimer = setTimeout(tick, HOST_PROBE_PERIODIC_MS);
+        }
+      }
+    };
+    probeTimer = setTimeout(tick, HOST_PROBE_PERIODIC_MS);
   }
 
   /**
@@ -103,6 +166,10 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     remoteSessionsState.value = 'idle';
     remoteSessionsStale.value = false;
     remoteSessionsError.value = '';
+    // RC2-5：终端状态随连接一并清空（Go 侧 Disconnect 已 DetachAll）。
+    remoteTerminalStates.value = {};
+    activeRemoteTerminalId.value = null;
+    connectRevoked.value = false;
     if (prev !== LOCAL_SCOPE && connectState.value === 'connected') {
       connectState.value = 'disconnected';
       try {
@@ -123,6 +190,10 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     if (hostID === scope.value && connectState.value === 'connected') return;
     connectState.value = 'connecting';
     connectError.value = '';
+    connectRevoked.value = false;
+    // 换主机：上一宿主的终端状态随之作废（Go 侧 Connect 顶替已 DetachAll）。
+    remoteTerminalStates.value = {};
+    activeRemoteTerminalId.value = null;
     try {
       await remoteClientApi.connectRemoteHost(hostID);
       scope.value = hostID;
@@ -210,6 +281,189 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     pairingWizardOpen.value = true;
   }
 
+  /* -------------------------------------------------------------------------
+   * RC2-5 远程终端：rc:* 事件桥（conn.go 文件头冻结清单）+ attach 生命周期
+   *
+   * 事件名与 payload（Go 侧 EventsEmit，map[string]any）：
+   *   rc:conn-state      {sessionId, hostId, state, attempt, nextRetryMs, detail}
+   *   rc:session-state   {sessionId, state, restartBoundary?, seq?, occurredAt}
+   *   rc:terminal-output {sessionId, seq, data} | {sessionId, gap:{fromSeq,toSeq,source}}
+   *   rc:control-state   {sessionId, state, deviceName?, reason, occurredAt}
+   *   rc:revoked         {hostId, sessionId?}
+   *   rc:host-health     {hostId, state}
+   * ----------------------------------------------------------------------- */
+
+  // 输出/会话态订阅表（非响应式：高频输出不进 ref，避免每帧触发依赖追踪）。
+  const outputSubs = new Map<string, Set<(ev: RemoteTerminalOutputEvent) => void>>();
+  const sessionStateSubs = new Map<string, Set<(ev: RemoteSessionStateEvent) => void>>();
+  let rcBridgeReady = false;
+
+  function ensureTermState(sessionID: string): RemoteTerminalState {
+    const existing = remoteTerminalStates.value[sessionID];
+    if (existing) return existing;
+    const created: RemoteTerminalState = {
+      connState: '',
+      attempt: 0,
+      nextRetryMs: 0,
+      detail: '',
+      controlState: '',
+      sessionState: '',
+      attached: false,
+    };
+    remoteTerminalStates.value[sessionID] = created;
+    return created;
+  }
+
+  /** 订阅某会话的终端输出（含 gap 缺口通知）；返回解除订阅函数。 */
+  function subscribeRemoteTerminalOutput(
+    sessionID: string,
+    cb: (ev: RemoteTerminalOutputEvent) => void,
+  ): () => void {
+    ensureRcEventBridge();
+    let set = outputSubs.get(sessionID);
+    if (!set) {
+      set = new Set();
+      outputSubs.set(sessionID, set);
+    }
+    set.add(cb);
+    return () => {
+      set.delete(cb);
+      if (set.size === 0) outputSubs.delete(sessionID);
+    };
+  }
+
+  /** 订阅某会话的 rc:session-state；返回解除订阅函数。 */
+  function subscribeRemoteSessionState(
+    sessionID: string,
+    cb: (ev: RemoteSessionStateEvent) => void,
+  ): () => void {
+    ensureRcEventBridge();
+    let set = sessionStateSubs.get(sessionID);
+    if (!set) {
+      set = new Set();
+      sessionStateSubs.set(sessionID, set);
+    }
+    set.add(cb);
+    return () => {
+      set.delete(cb);
+      if (set.size === 0) sessionStateSubs.delete(sessionID);
+    };
+  }
+
+  /** 注册六类 rc:* 事件监听（幂等；store 首次使用时即就绪）。 */
+  function ensureRcEventBridge(): void {
+    if (rcBridgeReady) return;
+    rcBridgeReady = true;
+    try {
+      EventsOn('rc:conn-state', (p: any) => {
+        if (!p || typeof p.sessionId !== 'string') return;
+        const st = ensureTermState(p.sessionId);
+        st.connState = String(p.state ?? '') as RemoteTerminalState['connState'];
+        st.attempt = Number(p.attempt ?? 0);
+        st.nextRetryMs = Number(p.nextRetryMs ?? 0);
+        st.detail = String(p.detail ?? '');
+      });
+      EventsOn('rc:session-state', (p: any) => {
+        if (!p || typeof p.sessionId !== 'string') return;
+        const st = ensureTermState(p.sessionId);
+        st.sessionState = String(p.state ?? '');
+        if (st.sessionState === 'removed') {
+          // 会话移除：幂等 scope 终结（Go 侧已停止重连）。
+          st.connState = 'disconnected';
+          st.detail = '会话已移除';
+        }
+        const ev: RemoteSessionStateEvent = {
+          state: st.sessionState,
+          restartBoundary: p.restartBoundary === true,
+        };
+        sessionStateSubs.get(p.sessionId)?.forEach((cb) => cb(ev));
+      });
+      EventsOn('rc:control-state', (p: any) => {
+        if (!p || typeof p.sessionId !== 'string') return;
+        ensureTermState(p.sessionId).controlState = String(p.state ?? '');
+      });
+      EventsOn('rc:terminal-output', (p: any) => {
+        if (!p || typeof p.sessionId !== 'string') return;
+        const subs = outputSubs.get(p.sessionId);
+        if (!subs || subs.size === 0) return;
+        let ev: RemoteTerminalOutputEvent;
+        if (p.gap && typeof p.gap === 'object') {
+          ev = {
+            kind: 'gap',
+            fromSeq: Number(p.gap.fromSeq ?? 0),
+            toSeq: Number(p.gap.toSeq ?? 0),
+            source: String(p.gap.source ?? ''),
+          };
+        } else if (typeof p.data === 'string') {
+          ev = { kind: 'output', seq: Number(p.seq ?? 0), data: p.data };
+        } else {
+          return;
+        }
+        subs.forEach((cb) => cb(ev));
+      });
+      EventsOn('rc:revoked', (p: any) => {
+        if (!p || typeof p.hostId !== 'string') return;
+        // fail-closed（交互稿 §3 revoked 行）：清连接视图 + 终端全部断开；
+        // Go 侧已丢弃连接并把登记簿健康置 revoked，这里同步前端投影。
+        if (scope.value === p.hostId) {
+          connectState.value = 'disconnected';
+          connectRevoked.value = true;
+          connectError.value = '';
+          stopSessionPolling();
+          for (const st of Object.values(remoteTerminalStates.value)) {
+            st.connState = 'disconnected';
+            st.detail = '授权已撤销';
+          }
+        }
+        void loadHosts();
+      });
+      EventsOn('rc:host-health', (p: any) => {
+        if (!p || typeof p.hostId !== 'string') return;
+        const h = hosts.value.find((x) => x.id === p.hostId);
+        if (h && typeof p.state === 'string') h.health = p.state;
+      });
+    } catch (err) {
+      // 非 Wails 环境（单测等）：事件桥不可用，终端功能降级但不影响其余域。
+      console.error('[stores.remoteClient] rc:* event bridge unavailable:', err);
+    }
+  }
+
+  /** 打开某会话的远程终端（终端页展示目标；attach 由视图挂载时发起）。 */
+  function openRemoteTerminal(sessionID: string): void {
+    ensureRcEventBridge();
+    activeRemoteTerminalId.value = sessionID;
+  }
+
+  /** attach（或复用）会话终端连接；幂等。 */
+  async function attachRemoteTerminal(sessionID: string): Promise<void> {
+    ensureRcEventBridge();
+    const res = await remoteClientApi.attachRemoteTerminal(sessionID);
+    const st = ensureTermState(sessionID);
+    st.attached = true;
+    if (res && typeof res.state === 'string' && res.state) {
+      st.connState = res.state as RemoteTerminalState['connState'];
+    }
+  }
+
+  /** detach 会话终端连接（停止重连、销毁 outbox）；视图卸载时调用。 */
+  async function detachRemoteTerminal(sessionID: string): Promise<void> {
+    const st = remoteTerminalStates.value[sessionID];
+    if (st) st.attached = false;
+    try {
+      await remoteClientApi.detachRemoteTerminal(sessionID);
+    } catch (err) {
+      // 宿主连接已断开（切回本机/换主机/revoked）时 detach 必然失败：记录即可。
+      console.error('[stores.remoteClient] detach terminal failed:', err);
+    }
+    delete remoteTerminalStates.value[sessionID];
+    if (activeRemoteTerminalId.value === sessionID) {
+      activeRemoteTerminalId.value = null;
+    }
+  }
+
+  // 事件桥随 store 创建即就绪：rc:host-health / rc:revoked 不依赖终端页打开。
+  ensureRcEventBridge();
+
   return {
     // State
     scope,
@@ -224,6 +478,9 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     remoteSessionsError,
     lastSyncedAt,
     pairingWizardOpen,
+    remoteTerminalStates,
+    activeRemoteTerminalId,
+    connectRevoked,
     // Computed
     isRemoteMode,
     currentHost,
@@ -240,5 +497,10 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     restartRemoteSession,
     deleteRemoteSession,
     openPairingWizard,
+    openRemoteTerminal,
+    attachRemoteTerminal,
+    detachRemoteTerminal,
+    subscribeRemoteTerminalOutput,
+    subscribeRemoteSessionState,
   };
 });
