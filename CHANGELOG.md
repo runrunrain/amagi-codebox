@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [1.3.51] - 2026-08-22
+
+### Added
+
+- **OpenAI 兼容端点自定义接口协议（wire_api）**：服务商 OpenAIFormat 新增 `wire_api` 字段，可显式指定 `chat` / `responses` 协议；URL 规范化支持剥离 `/responses` 后缀。Codex 启动参数与 config.toml 托管段透传 wire_api；Pi 与 OMP 引擎在 wire_api 为 responses 时自动映射 openai-responses 协议。前端服务商添加/编辑/详情页与远程配置面板新增接口协议切换与状态展示。
+
+### Changed
+
+- 终端 Git 提交面板重构为锚定浮层，会话详情弹窗同步清理。
+- 架构下沉：根目录存储逻辑下沉至 `internal/cleanupstore`，平台差异收敛到 `internal/platform`；移除已废弃的 amagicode 内部 CLI 类型。
+- 前端建立 vitest 单测体系，规范化测试文件与产物结构，清理历史备份文件。
+- 架构设计、API 参考与用户运维文档全面同步至 1.3.50 状态。
+
 ## [1.3.50] - 2026-08-22
 
 ### Added
