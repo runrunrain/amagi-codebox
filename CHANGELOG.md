@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.52] - 2026-08-23
+
+### Added
+
+- **更新器专用 HTTP 客户端与网络代理支持**：更新服务统一替换 `DefaultClient` 为专用 `newUpdateHTTPClient` 实例，独立管理请求超时与传输层逻辑；引入 `httpproxy` 支持网络代理环境变量解析与转发配置（`golang.org/x/net` 提升为直接依赖并同步 vendor）；补充专用 HTTP 客户端及其网络代理配置相关单元测试。
+
 ## [1.3.51] - 2026-08-22
 
 ### Added
