@@ -109,7 +109,7 @@ func NewService(currentVersion string, log *logging.Service) *Service {
 		currentVersion: normalizeVersion(currentVersion),
 		log:            log,
 		capabilities:   platform.CurrentCapabilities(),
-		httpClient:     http.DefaultClient,
+		httpClient:     newUpdateHTTPClient(),
 		retryWait:      time.Sleep,
 	}
 }
@@ -853,7 +853,7 @@ func (s *Service) client() httpDoer {
 	if s.httpClient != nil {
 		return s.httpClient
 	}
-	return http.DefaultClient
+	return newUpdateHTTPClient()
 }
 
 func (s *Service) getToken() string {
