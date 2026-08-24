@@ -656,3 +656,46 @@ func TestBuildPiModelsConfigVisionLaunchedFromPresetModels(t *testing.T) {
 		t.Errorf("maxTokens = %#v, want 2048 (launch params stay authoritative)", models[0]["maxTokens"])
 	}
 }
+
+func TestBuildPiModelsConfigInfersVisionForLegacyAndBareModels(t *testing.T) {
+	// diting M1 回归：legacy provider.Presets 与裸启 id 虽未进 presetModels
+	// 清单，知识库已知其模型族时也必须声明 input=["text","image"]，
+	// 否则下游守卫对这些注册条目误判为纯文本。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "gemini-2.5-pro", // 裸 DefaultModel，KB 已知族
+		Presets: map[string]config.Preset{
+			"legacy": {Model: "qwen2.5-vl-7b", Parameters: config.Parameters{MaxTokens: 4096}},
+		},
+	}
+	cfg, err := BuildPiModelsConfig("acme", provider, "", "k", config.Parameters{}, nil)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	models := cfg["providers"].(map[string]map[string]any)["amagi-acme"]["models"].([]map[string]any)
+	byID := make(map[string]map[string]any, len(models))
+	for _, m := range models {
+		byID[m["id"].(string)] = m
+	}
+	for _, id := range []string{"gemini-2.5-pro", "qwen2.5-vl-7b"} {
+		input, ok := byID[id]["input"].([]string)
+		if !ok || len(input) != 2 || input[1] != "image" {
+			t.Errorf("%s input = %#v, want [text image] via KB inference fallback", id, byID[id]["input"])
+		}
+	}
+	// 负向：KB 未知的 legacy 模型仍不写 input（推断兜底不猜测）。
+	provider2 := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "acme-text-1",
+		Presets:      map[string]config.Preset{"legacy": {Model: "acme-text-2"}},
+	}
+	cfg2, err := BuildPiModelsConfig("acme", provider2, "", "k", config.Parameters{}, nil)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig p2: %v", err)
+	}
+	for _, m := range cfg2["providers"].(map[string]map[string]any)["amagi-acme"]["models"].([]map[string]any) {
+		if _, exists := m["input"]; exists {
+			t.Errorf("unknown model %v must not declare input", m["id"])
+		}
+	}
+}

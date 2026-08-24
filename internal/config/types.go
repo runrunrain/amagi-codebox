@@ -418,8 +418,11 @@ type ModalityProbeEntry struct {
 }
 
 // ModalityProbeKey 探测缓存键（provider/model，与导出条目 id 同形）。
+// 双侧规范化（diting M2）：provider trim、model 走 normalizeKBModelID
+// （trim+小写+剥前缀），保证 collect 侧（preset.Model 未 trim 的原始值）与
+// 查询侧（trim 后 id）命中同一键。
 func ModalityProbeKey(provider, model string) string {
-	return provider + "/" + model
+	return strings.TrimSpace(provider) + "/" + normalizeKBModelID(model)
 }
 
 // LookupProbed 从缓存取探测结果；缓存缺失/未命中返回零值 + false。
@@ -663,7 +666,7 @@ func (p Provider) EffectiveType() string {
 //  2. 用 net/url 解析；解析失败、host 缺失（相对路径、scheme-only、普通非
 //     URL 字符串）保守返回 TrimSpace 后的原值，避免对 hostless 输入做破坏性
 //     裁剪（如 "/chat/completions" 被裁成空串、"https://" 被裁成 "https:"）；
-// 3. 仅对 URL.Path 做后缀处理：循环剥离尾部 "/" 与 "/chat/completions"、
+//  3. 仅对 URL.Path 做后缀处理：循环剥离尾部 "/" 与 "/chat/completions"、
 //     "/responses" 后缀（精确后缀匹配，大小写敏感，保证幂等：重复后缀也被
 //     完全剥离；两种后缀均按完整端点路径处理，混排时循环逐层剥离）；
 //  4. query/fragment/host/scheme/userinfo 等其他部分原样保留；path 未变化时

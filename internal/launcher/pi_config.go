@@ -235,15 +235,23 @@ func buildManagedModelEntries(provider config.Provider, modelName string, params
 	}
 	models := make([]map[string]any, 0, len(presetModels)+len(provider.Presets)+1)
 	seen := make(map[string]bool, len(presetModels)+len(provider.Presets)+1)
-	models = appendManagedModelEntry(models, seen, launched, params, managedModelVision(presetModels, launched))
+	// diting M1：未命中 presetModels 的模型（裸启 id / legacy provider.Presets）
+	// 以知识库推断兜底多模态声明——presetModels 清单只覆盖 terminal 公共预设桶，
+	// 但 KB（含学习层）对这些 id 同样有效；不兜底的模型会被下游守卫误判为
+	// 纯文本（本特性要修的问题在相邻桶残留）。legacy 桶已废弃且前端无写入
+	// 路径，不参与实弹探测，仅享受知识库推断。
+	inferVision := func(id string) bool {
+		return config.InferModelModalities("", id).AcceptsImageInput()
+	}
+	models = appendManagedModelEntry(models, seen, launched, params, managedModelVision(presetModels, launched) || inferVision(launched))
 	for _, pm := range presetModels {
 		models = appendManagedModelEntry(models, seen, pm.ID, pm.Parameters, pm.Vision)
 	}
 	keys := sortedPresetKeys(provider.Presets)
 	for _, key := range keys {
-		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters, false)
+		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters, inferVision(provider.Presets[key].Model))
 	}
-	models = appendManagedModelEntry(models, seen, provider.DefaultModel, config.Parameters{}, managedModelVision(presetModels, provider.DefaultModel))
+	models = appendManagedModelEntry(models, seen, provider.DefaultModel, config.Parameters{}, managedModelVision(presetModels, provider.DefaultModel) || inferVision(provider.DefaultModel))
 	return models
 }
 

@@ -149,3 +149,22 @@ func TestRecordModalityProbePersistsConclusive(t *testing.T) {
 func (s *ConfigService) configPathDir() string {
 	return filepath.Dir(s.configPath)
 }
+
+// diting M2 回归：缓存键双侧规范化——写入侧未 trim 的模型 id 与查询侧 trim 后
+// 的 id 必须命中同一键；小写与前缀差异同理。
+func TestModalityProbeKeyNormalizedBothSides(t *testing.T) {
+	svc, _, _, _ := newProbeService(t)
+	if err := svc.SaveProvider("acme", openAIProvider()); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	// 写入侧：模型 id 带空白（collect 路径不 trim preset.Model）。
+	if err := svc.RecordModalityProbe("acme", " ACME-X9 ", ModelModalities{Vision: true}, ModalityProbeSourceImageProbe, true); err != nil {
+		t.Fatalf("RecordModalityProbe: %v", err)
+	}
+	// 查询侧：trim 后/小写/带 provider 前缀的 id 同键命中。
+	for _, q := range []string{"acme-x9", "ACME-X9", "vendor/acme-x9"} {
+		if mods := LookupProbedSafe(svc.GetModalityProbeCache(), "acme", q); !mods.Vision {
+			t.Errorf("query %q missed normalized cache key", q)
+		}
+	}
+}

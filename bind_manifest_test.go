@@ -188,3 +188,40 @@ func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 		t.Errorf("GetAllProviders must remain on SecretsService (cmd/codebox caller)")
 	}
 }
+
+// TestBindManifest_ConfigServiceInjectionSurfaceReviewed (diting M3 复核):
+// ConfigService 经 bind_list 整体绑定（设计允许），其注入/回写类方法随之暴露给
+// 本地 webview。信任边界在本地 webview 内、沿袭 SetAPIKeyResolver 既有先例，
+// 予以清单化接受——本测试冻结该注入面：Set*/Record* 方法集合必须恰好等于清单，
+// 未来新增注入面必须在此显式登记其理由，防止静默扩张。
+var configServiceAcceptedMutationSurface = map[string]string{
+	"SetAPIKeyResolver":     "组装期注入 key 解析器（契约 §2 既有先例）",
+	"SetModalityProber":     "组装期注入探测调度入口（契约 v1.2）",
+	"RecordModalityProbe":   "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
+	"SetAllTerminalPresets": "预设整体导入的合法入口",
+	"SetAgentTeams":         "Agent Teams 设置的合法入口",
+}
+
+func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
+	app := newTestApp(t)
+	if app.Config == nil {
+		t.Fatal("app.Config is nil; config service not wired")
+	}
+	rt := reflect.TypeOf(app.Config)
+	actual := map[string]bool{}
+	for i := 0; i < rt.NumMethod(); i++ {
+		name := rt.Method(i).Name
+		if strings.HasPrefix(name, "Set") || strings.HasPrefix(name, "Record") {
+			actual[name] = true
+		}
+	}
+	for name, reason := range configServiceAcceptedMutationSurface {
+		if !actual[name] {
+			t.Errorf("classified ConfigService mutation %s (%s) missing", name, reason)
+		}
+		delete(actual, name)
+	}
+	for name := range actual {
+		t.Errorf("ConfigService exposes unreviewed Set*/Record* method %s —— 注入/回写面扩张须在 bind_manifest_test.go 登记理由", name)
+	}
+}
