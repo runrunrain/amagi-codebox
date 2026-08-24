@@ -436,3 +436,50 @@ func TestVisionExportDoesNotTouchModelsJSON(t *testing.T) {
 		t.Errorf("stored preset vision/priority = %v/%d, want true/0", tp.Vision, tp.VisionPriority)
 	}
 }
+
+// 5. 自动发现（契约 §2 v1.1）：未手动标记但模型 id 命中已知多模态模型族的
+// preset 自动导出，capabilities 来自推断；手动标记与推断取并集。
+func TestExportVisionModels_AutoDiscoveryIncludesUnmarkedPreset(t *testing.T) {
+	path := visionTestPath(t)
+	t.Setenv(VisionModelsPathEnv, path)
+
+	cfg := &AppConfig{
+		Models: map[string]Provider{"kimi": openAIProvider()},
+		TerminalPresets: &TerminalPresetsConfig{
+			OpenAI: map[string]TerminalPreset{
+				// 未标记，但 k3 是已知多模态模型族 → 自动收录 image。
+				"kimi/k3": {Name: "k3", Provider: "kimi", Model: "k3"},
+				// 未标记，gemini 族推断 image+video。
+				"kimi/gemini": {Name: "gemini", Provider: "kimi", Model: "gemini-3.7-flash"},
+				// 手动 video + 推断 vision → 并集 image+video。
+				"kimi/k3-video": {Name: "k3-video", Provider: "kimi", Model: "k3", Video: true},
+				// 未标记且未知族 → 不导出（负向）。
+				"kimi/plain": {Name: "plain", Provider: "kimi", Model: "acme-text-9"},
+			},
+		},
+	}
+	if err := ExportVisionModels(cfg, fakeKeyResolver("sk-test")); err != nil {
+		t.Fatalf("ExportVisionModels: %v", err)
+	}
+	f := readVisionExport(t, path)
+	if len(f.Models) != 3 {
+		t.Fatalf("models = %d, want 3 (auto-discovered + marked; unknown excluded): %v", len(f.Models), f.Models)
+	}
+
+	k3 := findVisionModel(t, f, "kimi/k3")
+	if len(k3.Capabilities) != 1 || k3.Capabilities[0] != "image" {
+		t.Errorf("kimi/k3 capabilities = %v, want [image] (auto-discovered)", k3.Capabilities)
+	}
+	gemini := findVisionModel(t, f, "kimi/gemini")
+	if len(gemini.Capabilities) != 2 || gemini.Capabilities[0] != "image" || gemini.Capabilities[1] != "video" {
+		t.Errorf("kimi/gemini capabilities = %v, want [image video] (auto-discovered)", gemini.Capabilities)
+	}
+	union := findVisionModel(t, f, "kimi/k3-video")
+	if len(union.Capabilities) != 2 || union.Capabilities[0] != "image" || union.Capabilities[1] != "video" {
+		t.Errorf("kimi/k3-video capabilities = %v, want [image video] (manual video ∪ inferred vision)", union.Capabilities)
+	}
+	// 自动收录条目的字段完整性与手动标记一致（base_url / auth_key_env / api_type）。
+	if k3.BaseURL != "http://api.maorun.top/v1" || k3.AuthKeyEnv != "OPENAI_API_KEY" || k3.APIType != "openai" {
+		t.Errorf("auto-discovered entry lost endpoint fields: %+v", k3)
+	}
+}

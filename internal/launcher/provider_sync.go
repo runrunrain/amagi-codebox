@@ -23,6 +23,13 @@ const ManagedProviderPrefix = "amagi-"
 type ManagedProviderModel struct {
 	ID         string
 	Parameters config.Parameters
+	// Vision 表示该模型被任一公共预设标记了多模态能力（Vision 或 Video）。
+	// 该标记随预设写入（PresetDialog 的识图/识视频开关，契约
+	// docs/vision-export-contract.md §1），此处透传给 pi/omp 的托管模型条目：
+	// 被标记的模型在 models.json/models.yml 中声明 input=["text","image"]，
+	// 否则下游（如 amagi-pi 守卫）按默认 ["text"] 误判不支持图片输入。
+	// 覆盖语义与 Parameters 一致：同 id 预设后序桶/后序预设胜出。
+	Vision bool
 }
 
 // ManagedProviderID returns the stable, collision-resistant provider id used
@@ -65,13 +72,18 @@ type managedModelsBuilder func(string, config.Provider, string, string, config.P
 // consumable as the presetModels argument of BuildPiModelsConfig /
 // BuildOmpModelsConfig. Pi and OMP must pass only the OpenAI bucket
 // (TerminalPresetOpenAI): the Anthropic bucket belongs to Claude Code.
+//
+// probeCache 为探测缓存快照（ConfigService.GetModalityProbeCache，nil 安全）：
+// 模型多模态标记 = 手动标记 ∨ 实弹探测结论 ∨ 静态知识库推断（三层并集）。
 func ManagedPresetModels(
 	providerName string,
 	provider config.Provider,
 	presets *config.TerminalPresetsConfig,
+	probeCache config.ModalityProbeSnapshot,
 	terminalTypes ...config.TerminalPresetType,
 ) []ManagedProviderModel {
 	modelParams := map[string]config.Parameters{}
+	modelVision := map[string]bool{}
 	if model := strings.TrimSpace(provider.DefaultModel); model != "" {
 		modelParams[model] = config.Parameters{}
 	}
@@ -90,6 +102,8 @@ func ManagedPresetModels(
 			for _, model := range []string{preset.Model, preset.ModelHaiku, preset.ModelSonnet, preset.ModelOpus} {
 				if model = strings.TrimSpace(model); model != "" {
 					modelParams[model] = preset.Parameters
+					// 多模态标记与参数同序覆盖：后序预设未标记时重置为 false。
+					modelVision[model] = preset.Vision || preset.Video
 				}
 			}
 		}
@@ -102,7 +116,13 @@ func ManagedPresetModels(
 	sort.Strings(modelNames)
 	models := make([]ManagedProviderModel, 0, len(modelNames))
 	for _, model := range modelNames {
-		models = append(models, ManagedProviderModel{ID: model, Parameters: modelParams[model]})
+		// 多模态标记三层并集：手动标记（覆盖项）∨ 实弹探测缓存（实证）∨
+		// 静态知识库（离线兜底）。客观能力不依赖用户手动配置；漏报的冷门
+		// 模型仍可手动标记补救。
+		vision := modelVision[model] ||
+			config.LookupProbedSafe(probeCache, providerName, model).AcceptsImageInput() ||
+			config.InferModelModalities(providerName, model).AcceptsImageInput()
+		models = append(models, ManagedProviderModel{ID: model, Parameters: modelParams[model], Vision: vision})
 	}
 	return models
 }

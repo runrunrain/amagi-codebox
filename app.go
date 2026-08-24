@@ -249,6 +249,8 @@ type App struct {
 	// GitAssist 是 AI 辅助 Git 提交/推送服务（终端会话工作区的分支切换/提交/
 	// 推送 + 内置模型生成提交信息）。apiKeyResolver 由 Secrets 适配注入。
 	GitAssist *gitassist.Service
+	// modalityProbeInFlight 多模态探测在飞去重（key: provider/model）。
+	modalityProbeInFlight sync.Map
 
 	// RemoteClient 域（桌面端互联蓝图 §7）：作为 v1 契约客户端连接另一台
 	// amagi-codebox 宿主。登记簿在 NewApp 构造时从 configDir/remote-hosts.json
@@ -479,6 +481,9 @@ func NewApp(mobileAssets embed.FS) *App {
 		}
 		return key
 	})
+	// 多模态实弹探测（契约 v1.2）：预设/服务商保存与配置加载后，对静态知识库
+	// 未知的模型自动实弹探测能力并落缓存，供视觉导出与 pi/omp input 声明。
+	app.wireModalityProber()
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
 	app.GitAssist = gitassist.New(app.Config, app.Settings, func(provider string) string {
@@ -3067,7 +3072,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			// presetModels：该 provider 在 openai 公共预设桶（pi/omp 消费的桶）下的
 			// 全部预设模型。启动写入是托管条目的整体替换语义，漏注会把统一同步
 			// 写入的同 provider 其他预设模型挤掉。
-			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), config.TerminalPresetOpenAI)
+			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
 				agentDir := defaultPiAgentDir()
 				// 保留用户 models.json 中已有的 provider 和其他顶层配置，
@@ -3324,7 +3329,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 			// presetModels 同 Pi：取该 provider 在 openai 公共预设桶下的全部预设
 			// 模型（启动写入是托管条目整体替换语义，漏注会把统一同步写入的同
 			// provider 其他预设模型挤掉）。
-			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), config.TerminalPresetOpenAI)
+			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
 				agentDir := defaultOmpAgentDir()
 				// 保留用户 models.yml 中已有的 provider 和其他顶层配置，

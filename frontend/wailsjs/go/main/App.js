@@ -390,6 +390,10 @@ export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
 }
 
+export function ProbeModelModalityNow(arg1, arg2) {
+  return window['go']['main']['App']['ProbeModelModalityNow'](arg1, arg2);
+}
+
 export function PtyResize(arg1, arg2, arg3) {
   return window['go']['main']['App']['PtyResize'](arg1, arg2, arg3);
 }

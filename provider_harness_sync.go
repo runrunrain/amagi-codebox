@@ -32,8 +32,8 @@ func (a *App) syncProvidersToHarnessesLocked() error {
 	// Pi/OMP consume the shared OpenAI preset bucket only (the Anthropic bucket
 	// belongs to Claude Code); OpenCode keeps consuming both public buckets as
 	// before, so its opencode.json provider entries are unchanged.
-	piOmpModelsByProvider := collectManagedProviderModels(providers, presets, []config.TerminalPresetType{config.TerminalPresetOpenAI})
-	openCodeModelsByProvider := collectManagedProviderModels(providers, presets, config.ValidTerminalPresetTypes())
+	piOmpModelsByProvider := collectManagedProviderModels(providers, presets, a.Config.GetModalityProbeCache(), []config.TerminalPresetType{config.TerminalPresetOpenAI})
+	openCodeModelsByProvider := collectManagedProviderModels(providers, presets, a.Config.GetModalityProbeCache(), config.ValidTerminalPresetTypes())
 	piProviders := map[string]any{}
 	ompProviders := map[string]any{}
 	openCodeProviders := map[string]any{}
@@ -127,11 +127,12 @@ func appendHarnessProviderEntries(destination map[string]any, cfg map[string]any
 func collectManagedProviderModels(
 	providers map[string]config.Provider,
 	presets *config.TerminalPresetsConfig,
+	probeCache config.ModalityProbeSnapshot,
 	terminalTypes []config.TerminalPresetType,
 ) map[string][]launcher.ManagedProviderModel {
 	result := make(map[string][]launcher.ManagedProviderModel, len(providers))
 	for name, provider := range providers {
-		if models := launcher.ManagedPresetModels(name, provider, presets, terminalTypes...); len(models) > 0 {
+		if models := launcher.ManagedPresetModels(name, provider, presets, probeCache, terminalTypes...); len(models) > 0 {
 			result[name] = models
 		}
 	}

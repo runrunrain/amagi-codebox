@@ -66,7 +66,7 @@ func TestManagedPresetModelsBucketSelection(t *testing.T) {
 		},
 	}
 
-	openAIOnly := ManagedPresetModels("kimi", provider, presets, config.TerminalPresetOpenAI)
+	openAIOnly := ManagedPresetModels("kimi", provider, presets, nil, config.TerminalPresetOpenAI)
 	var ids []string
 	byID := map[string]config.Parameters{}
 	for _, m := range openAIOnly {
@@ -84,7 +84,7 @@ func TestManagedPresetModelsBucketSelection(t *testing.T) {
 		t.Errorf("k3-256k maxTokens = %d, want 333 (openai bucket later preset wins)", byID["k3-256k"].MaxTokens)
 	}
 
-	both := ManagedPresetModels("kimi", provider, presets, config.ValidTerminalPresetTypes()...)
+	both := ManagedPresetModels("kimi", provider, presets, nil, config.ValidTerminalPresetTypes()...)
 	bothByID := map[string]config.Parameters{}
 	for _, m := range both {
 		bothByID[m.ID] = m.Parameters
@@ -155,5 +155,103 @@ func TestBuildManagedModelsConfigKeepsEveryCollectedModelParameters(t *testing.T
 	}
 	if ompByID["glm-5.3"]["maxTokens"] != 65536 || ompByID["glm-5.3"]["reasoning"] != true {
 		t.Errorf("omp default model lost collected preset params: %v", ompByID["glm-5.3"])
+	}
+}
+
+func TestManagedPresetModelsCarriesVisionFlag(t *testing.T) {
+	// 多模态标记透传回归：模型接受图片输入的判定 = 手动标记 ∨ 自动发现，
+	// 供 pi/omp 托管条目声明 input=["text","image"]。缺失该字段会导致下游
+	//（amagi-pi 守卫）按默认 ["text"] 误判模型不支持图片输入，拦截 read
+	// 图片（实战：amagi-kimi/k3 被误拦）。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "acme-default",
+	}
+	presets := &config.TerminalPresetsConfig{
+		OpenAI: map[string]config.TerminalPreset{
+			"kimi/marked-vision": {Provider: "kimi", Model: "acme-v9", Vision: true},
+			"kimi/marked-video":  {Provider: "kimi", Model: "acme-vid", Video: true},
+			"kimi/plain":         {Provider: "kimi", Model: "acme-plain"},
+			"kimi/auto-k3":       {Provider: "kimi", Model: "k3"}, // 未标记，自动发现
+			"kimi/auto-gemini":   {Provider: "kimi", Model: "gemini-3.7-flash"},
+		},
+	}
+	models := ManagedPresetModels("kimi", provider, presets, nil, config.TerminalPresetOpenAI)
+	visionByID := map[string]bool{}
+	for _, m := range models {
+		visionByID[m.ID] = m.Vision
+	}
+	if !visionByID["acme-v9"] {
+		t.Errorf("acme-v9 vision = false, want true (manual Vision mark)")
+	}
+	if !visionByID["acme-vid"] {
+		t.Errorf("acme-vid vision = false, want true (manual Video mark accepts image frames)")
+	}
+	if visionByID["acme-plain"] {
+		t.Errorf("acme-plain vision = true, want false (unmarked and unknown family)")
+	}
+	if visionByID["acme-default"] {
+		t.Errorf("acme-default vision = true, want false (DefaultModel unknown family)")
+	}
+	// 正向：自动发现——未手动标记的已知多模态模型族同样置位。
+	if !visionByID["k3"] {
+		t.Errorf("k3 vision = false, want true (auto-discovered kimi k3 family)")
+	}
+	if !visionByID["gemini-3.7-flash"] {
+		t.Errorf("gemini-3.7-flash vision = false, want true (auto-discovered gemini family)")
+	}
+}
+
+func TestManagedPresetModelsVisionLastWins(t *testing.T) {
+	// 覆盖语义与 Parameters 一致：同 id 预设后序（键序）覆盖前序——
+	// 后序预设未标记时手动标记重置为 false，不允许前序标记残留。
+	// 用未知模型族 id（acme-text-9 不可推断），隔离自动发现的干扰。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "acme-text-9",
+	}
+	presets := &config.TerminalPresetsConfig{
+		OpenAI: map[string]config.TerminalPreset{
+			"kimi/a-marked":   {Provider: "kimi", Model: "acme-text-9", Vision: true},
+			"kimi/b-unmarked": {Provider: "kimi", Model: "acme-text-9"},
+		},
+	}
+	models := ManagedPresetModels("kimi", provider, presets, nil, config.TerminalPresetOpenAI)
+	for _, m := range models {
+		if m.ID == "acme-text-9" && m.Vision {
+			t.Errorf("acme-text-9 vision = true, want false (later unmarked preset resets)")
+		}
+	}
+}
+
+func TestManagedPresetModelsProbeCacheUnion(t *testing.T) {
+	// 三层并集回归：探测缓存（实证）与手动标记/KB 并列——缓存判定为视觉的
+	// 未知族模型必须置位 Vision；nil lookup（未注入探测）不影响既有行为。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "acme-default",
+	}
+	presets := &config.TerminalPresetsConfig{
+		OpenAI: map[string]config.TerminalPreset{
+			"acme/v9":    {Provider: "acme", Model: "acme-v9"},    // 仅探测缓存确认
+			"acme/plain": {Provider: "acme", Model: "acme-plain"}, // 三层皆无
+		},
+	}
+	probeCache := config.ModalityProbeSnapshot{
+		"acme/acme-v9": {Vision: true, Source: config.ModalityProbeSourceImageProbe},
+	}
+	models := ManagedPresetModels("acme", provider, presets, probeCache, config.TerminalPresetOpenAI)
+	visionByID := map[string]bool{}
+	for _, m := range models {
+		visionByID[m.ID] = m.Vision
+	}
+	if !visionByID["acme-v9"] {
+		t.Errorf("acme-v9 vision = false, want true (probe cache conclusive)")
+	}
+	if visionByID["acme-plain"] {
+		t.Errorf("acme-plain vision = true, want false (no mark/probe/KB)")
+	}
+	if visionByID["acme-default"] {
+		t.Errorf("acme-default vision = true, want false")
 	}
 }

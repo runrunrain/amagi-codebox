@@ -429,6 +429,24 @@ export namespace config {
 	        this.auth_header = source["auth_header"];
 	    }
 	}
+	export class ModalityProbeEntry {
+	    vision?: boolean;
+	    video?: boolean;
+	    source: string;
+	    probed_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModalityProbeEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vision = source["vision"];
+	        this.video = source["video"];
+	        this.source = source["source"];
+	        this.probed_at = source["probed_at"];
+	    }
+	}
 	export class OpenCodePresetSource {
 	    kind?: string;
 	    legacy_provider?: string;
@@ -790,6 +808,7 @@ export namespace config {
 	    agent_teams: AgentTeamsConfig;
 	    terminal_presets?: TerminalPresetsConfig;
 	    opencode_presets?: Record<string, OpenCodePreset>;
+	    modality_probe?: Record<string, ModalityProbeEntry>;
 	    version: string;
 	
 	    static createFrom(source: any = {}) {
@@ -802,6 +821,7 @@ export namespace config {
 	        this.agent_teams = this.convertValues(source["agent_teams"], AgentTeamsConfig);
 	        this.terminal_presets = this.convertValues(source["terminal_presets"], TerminalPresetsConfig);
 	        this.opencode_presets = this.convertValues(source["opencode_presets"], OpenCodePreset, true);
+	        this.modality_probe = this.convertValues(source["modality_probe"], ModalityProbeEntry, true);
 	        this.version = source["version"];
 	    }
 	
@@ -887,6 +907,21 @@ export namespace config {
 		    }
 		    return a;
 		}
+	}
+	
+	export class ModelModalities {
+	    Vision: boolean;
+	    Video: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelModalities(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Vision = source["Vision"];
+	        this.Video = source["Video"];
+	    }
 	}
 	
 	
@@ -2057,6 +2092,26 @@ export namespace main {
 	        this.target = source["target"];
 	        this.port = source["port"];
 	        this.running = source["running"];
+	    }
+	}
+	export class ModalityProbeNowResult {
+	    conclusive: boolean;
+	    vision: boolean;
+	    video: boolean;
+	    source?: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModalityProbeNowResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conclusive = source["conclusive"];
+	        this.vision = source["vision"];
+	        this.video = source["video"];
+	        this.source = source["source"];
+	        this.message = source["message"];
 	    }
 	}
 	export class OpenRemoteWebUIResult {

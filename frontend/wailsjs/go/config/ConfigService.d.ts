@@ -22,6 +22,8 @@ export function GetConfig():Promise<config.AppConfig>;
 
 export function GetMergedTerminalPresets(arg1:string):Promise<Array<config.MergedTerminalPreset>>;
 
+export function GetModalityProbeCache():Promise<Record<string, config.ModalityProbeEntry>>;
+
 export function GetOpenCodePreset(arg1:string):Promise<config.OpenCodePreset>;
 
 export function GetOpenCodePresets():Promise<Record<string, config.OpenCodePreset>>;
@@ -41,6 +43,8 @@ export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 export function Load():Promise<void>;
 
 export function MigrateProviderPresetsToTerminal():Promise<number>;
+
+export function RecordModalityProbe(arg1:string,arg2:string,arg3:config.ModelModalities,arg4:string,arg5:boolean):Promise<void>;
 
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 
@@ -67,5 +71,7 @@ export function SetAPIKeyResolver(arg1:any):Promise<void>;
 export function SetAgentTeams(arg1:config.AgentTeamsConfig):Promise<void>;
 
 export function SetAllTerminalPresets(arg1:config.TerminalPresetsConfig):Promise<void>;
+
+export function SetModalityProber(arg1:any):Promise<void>;
 
 export function SnapshotProvider(arg1:string):Promise<config.Provider>;

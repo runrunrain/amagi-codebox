@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- **模型多模态能力自动发现**：新增 `internal/config/modalities.go` 内置主流模型族能力知识库（`InferModelModalities`，按 model id 离线推断图片/视频理解能力，保守收录、未知族不猜测）。pi/omp 托管模型条目对被标记或推断为多模态的模型主动声明 `input=["text","image"]`，修复下游（amagi-pi 守卫）按默认 `["text"]` 误判多模态模型不支持图片输入的问题（实战：amagi-kimi/k3 被误拦 read 图片）；媒体模型导出（`~/.agents/amagi-media-models.json`）收录规则由仅手动标记扩展为「手动标记 ∪ 自动发现」，capabilities 取并集（契约 docs/vision-export-contract.md v1.1）。预设的识图/识视频开关保留为覆盖项，前端无变更。
+- **多模态能力实弹探测**：预设/服务商保存与配置加载后，对知识库未知的模型自动实弹探测（先读 `/models` 模态元数据，未决再发 1x1 PNG 最小图片请求分类响应；网络/鉴权/限流等环境故障一律未决不落缓存）。有定论结论持久化到 models.json 的 `modality_probe` 缓存并联动重导出/重同步，能力判定为「手动标记 ∪ 探测缓存 ∪ 静态知识库」三层并集（契约 v1.2）。
+- **设备端知识库学习层与手动探测按钮**：探测结论按模型 id 回写 `~/.agents/amagi-modalities.json`（跨 provider 泛化、含否定结论、原子写 0600），推断时学习层实证优先于内置规则表，形成自学习闭环（契约 v1.3）；预设弹窗「视觉能力」区新增「实弹探测」按钮（Wails `ProbeModelModalityNow`），用户可主动触发并即时看到结论，探测中/成功/未决状态行内展示。
+
 ## [1.3.52] - 2026-08-23
 
 ### Added

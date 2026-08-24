@@ -211,6 +211,8 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
+export function ProbeModelModalityNow(arg1:string,arg2:string):Promise<main.ModalityProbeNowResult>;
+
 export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function PtyWrite(arg1:string,arg2:string):Promise<void>;

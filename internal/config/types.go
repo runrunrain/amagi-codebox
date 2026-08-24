@@ -402,7 +402,36 @@ type AppConfig struct {
 	AgentTeams      AgentTeamsConfig          `json:"agent_teams"`
 	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`
 	OpenCodePresets map[string]OpenCodePreset `json:"opencode_presets,omitempty"`
-	Version         string                    `json:"version"`
+	// ModalityProbe 多模态能力实弹探测缓存：key 为 "provider/model"，
+	// 仅记录有定论的探测结果（见 modalities_probe.go）；手动标记与静态
+	// 知识库之外的第三层能力来源。旧版本读新文件安全（未知字段忽略）。
+	ModalityProbe map[string]ModalityProbeEntry `json:"modality_probe,omitempty"`
+	Version       string                        `json:"version"`
+}
+
+// ModalityProbeEntry 一次有定论的多模态探测结果。
+type ModalityProbeEntry struct {
+	Vision   bool   `json:"vision,omitempty"`
+	Video    bool   `json:"video,omitempty"`
+	Source   string `json:"source"`    // models-api | image-probe
+	ProbedAt string `json:"probed_at"` // RFC3339
+}
+
+// ModalityProbeKey 探测缓存键（provider/model，与导出条目 id 同形）。
+func ModalityProbeKey(provider, model string) string {
+	return provider + "/" + model
+}
+
+// LookupProbed 从缓存取探测结果；缓存缺失/未命中返回零值 + false。
+func (cfg *AppConfig) LookupProbed(provider, model string) (ModelModalities, bool) {
+	if cfg == nil || cfg.ModalityProbe == nil {
+		return ModelModalities{}, false
+	}
+	entry, ok := cfg.ModalityProbe[ModalityProbeKey(provider, model)]
+	if !ok {
+		return ModelModalities{}, false
+	}
+	return ModelModalities{Vision: entry.Vision, Video: entry.Video}, true
 }
 
 // OpenCodePreset 一个预设 = 一份完整的 opencode.json。

@@ -41,6 +41,7 @@ type launchConfigPort interface {
 	GetOpenCodePreset(key string) (*config.OpenCodePreset, error)
 	GetAgentTeams() config.AgentTeamsConfig
 	GetAllTerminalPresets() *config.TerminalPresetsConfig
+	GetModalityProbeCache() config.ModalityProbeSnapshot
 }
 
 // launchSecretsPort is the narrow read-only interface over secrets.SecretsService.
@@ -664,7 +665,7 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 		if strings.TrimSpace(apiKey) == "" {
 			return fail(launchplan.FailureLaunchContext)
 		}
-		cfg, cfgErr := configBuilder(providerID, *provider, launchResult.Model, apiKey, presetParams, launcher.ManagedPresetModels(providerID, *provider, p.config.GetAllTerminalPresets(), config.TerminalPresetOpenAI))
+		cfg, cfgErr := configBuilder(providerID, *provider, launchResult.Model, apiKey, presetParams, launcher.ManagedPresetModels(providerID, *provider, p.config.GetAllTerminalPresets(), p.config.GetModalityProbeCache(), config.TerminalPresetOpenAI))
 		if cfgErr != nil {
 			return fail(launchplan.FailureLaunchContext)
 		}

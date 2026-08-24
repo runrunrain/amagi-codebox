@@ -42,6 +42,10 @@ export function GetMergedTerminalPresets(arg1) {
   return window['go']['config']['ConfigService']['GetMergedTerminalPresets'](arg1);
 }
 
+export function GetModalityProbeCache() {
+  return window['go']['config']['ConfigService']['GetModalityProbeCache']();
+}
+
 export function GetOpenCodePreset(arg1) {
   return window['go']['config']['ConfigService']['GetOpenCodePreset'](arg1);
 }
@@ -80,6 +84,10 @@ export function Load() {
 
 export function MigrateProviderPresetsToTerminal() {
   return window['go']['config']['ConfigService']['MigrateProviderPresetsToTerminal']();
+}
+
+export function RecordModalityProbe(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['config']['ConfigService']['RecordModalityProbe'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function RemoveUrlFromHistory(arg1, arg2) {
@@ -132,6 +140,10 @@ export function SetAgentTeams(arg1) {
 
 export function SetAllTerminalPresets(arg1) {
   return window['go']['config']['ConfigService']['SetAllTerminalPresets'](arg1);
+}
+
+export function SetModalityProber(arg1) {
+  return window['go']['config']['ConfigService']['SetModalityProber'](arg1);
 }
 
 export function SnapshotProvider(arg1) {

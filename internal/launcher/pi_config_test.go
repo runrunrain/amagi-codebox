@@ -593,3 +593,66 @@ func TestBuildPiModelsConfigBareLaunchInheritsTerminalPresetParams(t *testing.T)
 		t.Errorf("bare default launch lost openai preset params: %v", m)
 	}
 }
+
+func TestBuildPiModelsConfigVisionPresetDeclaresImageInput(t *testing.T) {
+	// 多模态 input 声明回归：预设标记 Vision/Video 的模型必须在 pi models.json
+	// 声明 input=["text","image"]，否则 pi 默认 ["text"]，amagi-pi 守卫据此拦截
+	// read 图片直送（实战：amagi-kimi/k3 实为多模态模型却被误判为纯文本）。
+	// 未标记模型不得出现 input 键（维持默认 ["text"]，与既有行为零差异）。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "k3",
+	}
+	presetModels := []ManagedProviderModel{
+		{ID: "k3", Parameters: config.Parameters{MaxTokens: 60000}, Vision: true},
+		{ID: "k3-plain", Parameters: config.Parameters{MaxTokens: 8192}},
+	}
+	cfg, err := BuildPiModelsConfig("kimi", provider, "k3", "k", config.Parameters{}, presetModels)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	models := cfg["providers"].(map[string]map[string]any)["amagi-kimi"]["models"].([]map[string]any)
+	byID := make(map[string]map[string]any, len(models))
+	for _, m := range models {
+		byID[m["id"].(string)] = m
+	}
+	// 正向：Vision 标记的启动模型声明多模态输入。
+	input, ok := byID["k3"]["input"].([]string)
+	if !ok {
+		t.Fatalf("k3 input missing or wrong type: %#v", byID["k3"]["input"])
+	}
+	if len(input) != 2 || input[0] != "text" || input[1] != "image" {
+		t.Errorf("k3 input = %v, want [text image]", input)
+	}
+	// 负向：未标记的预设模型不写 input。
+	if _, exists := byID["k3-plain"]["input"]; exists {
+		t.Errorf("k3-plain input = %v, want absent (unmarked keeps default [text])", byID["k3-plain"]["input"])
+	}
+}
+
+func TestBuildPiModelsConfigVisionLaunchedFromPresetModels(t *testing.T) {
+	// 启动模型的多模态标记以 presetModels 清单为单一事实源：即使调用方传入
+	// 显式 Parameters（启动权威），Vision 标记仍从同 id 清单条目继承。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "glm-5.3",
+	}
+	presetModels := []ManagedProviderModel{
+		{ID: "glm-5.3", Parameters: config.Parameters{MaxTokens: 65536}, Vision: true},
+	}
+	cfg, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "k", config.Parameters{MaxTokens: 2048}, presetModels)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	models := cfg["providers"].(map[string]map[string]any)["amagi-glm"]["models"].([]map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1: %v", len(models), models)
+	}
+	input, ok := models[0]["input"].([]string)
+	if !ok || len(input) != 2 || input[1] != "image" {
+		t.Errorf("launched vision model input = %#v, want [text image]", models[0]["input"])
+	}
+	if models[0]["maxTokens"] != 2048 {
+		t.Errorf("maxTokens = %#v, want 2048 (launch params stay authoritative)", models[0]["maxTokens"])
+	}
+}

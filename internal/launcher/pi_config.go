@@ -123,10 +123,16 @@ func BuildPiModelsConfig(
 }
 
 // buildManagedModelEntry 构建单个托管模型条目（pi 与 omp 同构，v1.3.34 抽取共享）。
-func buildManagedModelEntry(model string, params config.Parameters) map[string]any {
+// vision=true（预设标记 Vision/Video）时声明 input=["text","image"]：pi/omp 的
+// input 仅 text/image 两类，视频模型普遍接受图片帧输入；未标记模型不写 input，
+// 维持下游默认 ["text"]，与既有行为零差异。
+func buildManagedModelEntry(model string, params config.Parameters, vision bool) map[string]any {
 	m := map[string]any{
 		"id":   model,
 		"name": model,
+	}
+	if vision {
+		m["input"] = []string{"text", "image"}
 	}
 	// 最大上下文窗口：amagi ContextWindow.ModelContextWindow -> pi/omp contextWindow
 	if params.ContextWindow != nil && params.ContextWindow.ModelContextWindow > 0 {
@@ -173,13 +179,25 @@ func buildManagedModelEntry(model string, params config.Parameters) map[string]a
 // appendManagedModelEntry 按模型 id 去重追加（空 id / 已注册跳过）。去重保证
 // 同 provider 多预设引用同一模型 id 时只注册一次，且先注册者（启动选中模型/
 // 排序靠前的预设）参数优先，输出确定。
-func appendManagedModelEntry(models []map[string]any, seen map[string]bool, model string, params config.Parameters) []map[string]any {
+func appendManagedModelEntry(models []map[string]any, seen map[string]bool, model string, params config.Parameters, vision bool) []map[string]any {
 	model = strings.TrimSpace(model)
 	if model == "" || seen[model] {
 		return models
 	}
 	seen[model] = true
-	return append(models, buildManagedModelEntry(model, params))
+	return append(models, buildManagedModelEntry(model, params, vision))
+}
+
+// managedModelVision 查找指定模型在托管模型清单中的多模态标记。启动模型
+// 通常也在 presetModels 内（buildManagedModelsConfig 以 models[0] 为启动项），
+// 直接查表保持单一事实源；查不到（纯 DefaultModel 裸启）时按无标记处理。
+func managedModelVision(presetModels []ManagedProviderModel, id string) bool {
+	for _, pm := range presetModels {
+		if strings.TrimSpace(pm.ID) == id {
+			return pm.Vision
+		}
+	}
+	return false
 }
 
 // buildManagedModelEntries 生成托管 provider 的 models 注册列表（v1.3.34）。
@@ -217,15 +235,15 @@ func buildManagedModelEntries(provider config.Provider, modelName string, params
 	}
 	models := make([]map[string]any, 0, len(presetModels)+len(provider.Presets)+1)
 	seen := make(map[string]bool, len(presetModels)+len(provider.Presets)+1)
-	models = appendManagedModelEntry(models, seen, launched, params)
+	models = appendManagedModelEntry(models, seen, launched, params, managedModelVision(presetModels, launched))
 	for _, pm := range presetModels {
-		models = appendManagedModelEntry(models, seen, pm.ID, pm.Parameters)
+		models = appendManagedModelEntry(models, seen, pm.ID, pm.Parameters, pm.Vision)
 	}
 	keys := sortedPresetKeys(provider.Presets)
 	for _, key := range keys {
-		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters)
+		models = appendManagedModelEntry(models, seen, provider.Presets[key].Model, provider.Presets[key].Parameters, false)
 	}
-	models = appendManagedModelEntry(models, seen, provider.DefaultModel, config.Parameters{})
+	models = appendManagedModelEntry(models, seen, provider.DefaultModel, config.Parameters{}, managedModelVision(presetModels, provider.DefaultModel))
 	return models
 }
 

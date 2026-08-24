@@ -222,8 +222,14 @@
             />
           </div>
         </div>
+        <div class="probe-row">
+          <AppButton variant="ghost" size="small" :disabled="!form.provider || probing" @click="handleProbeModality">
+            {{ probing ? '探测中…' : '实弹探测' }}
+          </AppButton>
+          <span v-if="probeHint" class="probe-hint" :class="probeHintTone">{{ probeHint }}</span>
+        </div>
         <p class="form-hint">
-          标记的预设会导出到 ~/.agents/amagi-media-models.json，供 amagi-media-understanding 等外部 CLI 消费；仅 OpenAI 兼容 Provider 会导出。
+          能力判定 = 手动标记 ∪ 实弹探测 ∪ 内置知识库：已知多模态模型族自动识别，无需手动标记；「实弹探测」向 Provider 端点发送 1x1 测试图确证能力，结论写入设备知识库（~/.agents/amagi-modalities.json）。标记的预设会导出到 ~/.agents/amagi-media-models.json，供 amagi-media-understanding 等外部 CLI 消费；仅 OpenAI 兼容 Provider 会导出。
         </p>
       </div>
     </div>
@@ -244,7 +250,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue';
 import { config } from '../../../wailsjs/go/models';
-import { SaveTerminalPreset } from '../../../wailsjs/go/main/App';
+import { SaveTerminalPreset, ProbeModelModalityNow } from '../../../wailsjs/go/main/App';
 import { useProviderStore } from '../../stores/provider';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
@@ -268,6 +274,28 @@ const emit = defineEmits<{
 
 const store = useProviderStore();
 const loading = ref(false);
+
+// 实弹探测（契约 docs/vision-export-contract.md v1.2）：用户主动触发，结论由
+// 后端统一落库（设备知识库 + 视觉导出 + pi/omp 同步），此处只负责展示结果。
+const probing = ref(false);
+const probeHint = ref('');
+const probeHintTone = ref<'ok' | 'warn'>('ok');
+
+async function handleProbeModality() {
+  if (!form.provider || probing.value) return;
+  probing.value = true;
+  probeHint.value = '';
+  try {
+    const res = await ProbeModelModalityNow(form.provider, form.model || '');
+    probeHint.value = res.message;
+    probeHintTone.value = res.conclusive ? 'ok' : 'warn';
+  } catch (err) {
+    probeHint.value = '探测调用失败：' + String(err);
+    probeHintTone.value = 'warn';
+  } finally {
+    probing.value = false;
+  }
+}
 
 // terminalType 映射
 const terminalType = computed(() => {
@@ -549,6 +577,25 @@ async function handleSave() {
   font-size: 12px;
   color: var(--tertiary);
   line-height: 1.5;
+}
+
+.probe-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.probe-hint {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.probe-hint.ok {
+  color: var(--success, #34c759);
+}
+
+.probe-hint.warn {
+  color: var(--warning, #ff9500);
 }
 
 .dialog-actions {

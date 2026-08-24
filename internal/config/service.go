@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // scrubProviderAPIKeys 清除 Provider 内嵌的双格式 APIKey 明文字段。
@@ -65,6 +66,9 @@ type ConfigService struct {
 	// （契约 docs/vision-export-contract.md §2）。config 包不得直接依赖 secrets
 	// 包，由 App 组装时注入；未注入时（单测/嵌入式）跳过导出写盘。
 	apiKeyResolver func(provider string) string
+	// modalityProber 多模态实弹探测调度入口（契约 §2 v1.2，SetModalityProber
+	// 注入；非阻塞契约见其注释）。未注入时（单测/嵌入式）全部探测调度静默跳过。
+	modalityProber func(providerName, model string)
 	mu             sync.RWMutex
 }
 
@@ -82,6 +86,137 @@ func (s *ConfigService) SetAPIKeyResolver(fn func(provider string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.apiKeyResolver = fn
+}
+
+// SetModalityProber 注入多模态实弹探测调度入口（契约 §2 v1.2）。
+// 硬性契约：fn 必须非阻塞返回（典型实现为 goroutine 异步探测，完成后回调
+// RecordModalityProbe）——本 service 在持锁状态下调用 fn，fn 内同步回调
+// 本 service 会死锁。
+func (s *ConfigService) SetModalityProber(fn func(providerName, model string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modalityProber = fn
+}
+
+// GetModalityProbeCache 返回探测缓存的只读快照（拷贝，读锁保护；供
+// provider_sync/launch_planner 在同步时刻取用，见 ModalityProbeSnapshot 注释）。
+func (s *ConfigService) GetModalityProbeCache() ModalityProbeSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil || len(s.config.ModalityProbe) == 0 {
+		return nil
+	}
+	out := make(ModalityProbeSnapshot, len(s.config.ModalityProbe))
+	for k, v := range s.config.ModalityProbe {
+		out[k] = v
+	}
+	return out
+}
+
+// RecordModalityProbe 记录一次探测结论（契约 v1.2）。conclusive=false（未决：
+// 网络/鉴权/限流等环境故障）不落缓存、不持久化——下次保存/启动自然重试，
+// 绝不把环境故障误记为能力不足。有定论（含「确认不支持图片」的否定结论）时
+// 更新缓存、持久化并重导出视觉模型。
+func (s *ConfigService) RecordModalityProbe(provider, model string, mods ModelModalities, source string, conclusive bool) error {
+	if !conclusive {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.config.ModalityProbe == nil {
+		s.config.ModalityProbe = map[string]ModalityProbeEntry{}
+	}
+	s.config.ModalityProbe[ModalityProbeKey(provider, model)] = ModalityProbeEntry{
+		Vision:   mods.Vision,
+		Video:    mods.Video,
+		Source:   source,
+		ProbedAt: time.Now().Format(time.RFC3339),
+	}
+	// 契约 v1.3：有定论结论同步回写设备端学习层（按模型 id 跨 provider 泛化，
+	// 含否定结论）。写失败仅记 log——学习层丢失最多退化为重复探测，不阻断。
+	if err := RecordLearnedModalities(model, source, mods); err != nil {
+		fmt.Fprintf(os.Stderr, "[config] modality kb write failed: %v\n", err)
+	}
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	s.triggerVisionExportLocked()
+	return nil
+}
+
+// needsModalityProbeLocked 判定模型是否需要实弹探测：provider 为 OpenAI 兼容、
+// 模型非空、静态知识库未知、探测缓存未命中（含否定结论）。手动标记由调用方判。
+// 调用方必须持有 s.mu。
+func (s *ConfigService) needsModalityProbeLocked(providerName, model string) bool {
+	if s.config == nil || s.modalityProber == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	provider, ok := s.config.Models[providerName]
+	if !ok || !strings.EqualFold(provider.EffectiveType(), "openai") {
+		return false
+	}
+	if _, known := LookupModelModalities(providerName, model); known {
+		return false // 学习层（含否定结论）或内置知识库已知，无需实弹
+	}
+	if _, probed := s.config.LookupProbed(providerName, model); probed {
+		return false
+	}
+	return true
+}
+
+// dispatchModalityProbesLocked 对候选逐个调用调度入口（非 nil 已判）。
+// 调用方必须持有 s.mu；fn 的非阻塞契约保证此处不会持锁重入。
+func (s *ConfigService) dispatchModalityProbesLocked(candidates map[string][2]string) {
+	if s.modalityProber == nil {
+		return
+	}
+	for _, target := range candidates {
+		s.modalityProber(target[0], target[1])
+	}
+}
+
+// collectModalityProbeCandidatesLocked 收集全部需探测的 (provider, model)：
+// 未手动标记 Vision/Video 的 terminal preset 模型（Model 为空时回退 provider
+// DefaultModel），以及 openai 兼容 provider 的 DefaultModel 本身（裸启路径也
+// 注册它，能力未知时同样值得探测）。key 为 provider/model，同 provider 多个
+// 未知模型不会被互相覆盖。调用方必须持有 s.mu。
+func (s *ConfigService) collectModalityProbeCandidatesLocked() map[string][2]string {
+	out := map[string][2]string{}
+	if s.config == nil {
+		return out
+	}
+	add := func(provider, model string) {
+		if s.needsModalityProbeLocked(provider, model) {
+			out[ModalityProbeKey(provider, model)] = [2]string{provider, model}
+		}
+	}
+	for providerName, provider := range s.config.Models {
+		if strings.EqualFold(provider.EffectiveType(), "openai") {
+			add(providerName, provider.DefaultModel)
+		}
+	}
+	if s.config.TerminalPresets != nil {
+		for _, tt := range ValidTerminalPresetTypes() {
+			for _, tp := range s.config.TerminalPresets.GetMap(tt) {
+				if tp.Vision || tp.Video {
+					continue // 手动标记已确认能力，无需探测
+				}
+				model := tp.Model
+				if provider, ok := s.config.Models[tp.Provider]; ok && model == "" {
+					model = provider.DefaultModel
+				}
+				add(tp.Provider, model)
+			}
+		}
+	}
+	return out
 }
 
 // triggerVisionExportLocked 幂等全量重导出视觉模型文件（契约 §2）。
@@ -152,6 +287,9 @@ func (s *ConfigService) Load() error {
 	s.config = &cfg
 	// 契约 §2：启动配置加载完成后也触发一次视觉模型导出（无标记时写 models:[]）。
 	s.triggerVisionExportLocked()
+	// 契约 v1.2：加载完成后对能力未知的预设模型做一次实弹探测补全（幂等：
+	// 缓存命中/KB 已知/手动标记的模型不会重复探测）。
+	s.dispatchModalityProbesLocked(s.collectModalityProbeCandidatesLocked())
 	return nil
 }
 
@@ -710,6 +848,10 @@ func (s *ConfigService) SaveProvider(name string, p Provider) error {
 	}
 	// 契约 §2：provider 变更可能改变端点/key，成功后重导出视觉模型。
 	s.triggerVisionExportLocked()
+	// 契约 v1.2：端点/key 就绪后对能力未知的预设模型实弹探测（含本 provider
+	// 的 DefaultModel 与全部引用它的未标记 preset 模型——其他 provider 的候选
+	// 一并收集无害，探测缓存幂等）。
+	s.dispatchModalityProbesLocked(s.collectModalityProbeCandidatesLocked())
 	return nil
 }
 
@@ -1044,6 +1186,17 @@ func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, pres
 	}
 	// 契约 §2：预设保存成功后重导出视觉模型。
 	s.triggerVisionExportLocked()
+	// 契约 v1.2：未手动标记能力的 preset，其模型在静态知识库与探测缓存中均
+	// 未知时，调度一次实弹探测自动补全能力（手动标记/KB 已知/缓存已探的跳过）。
+	if !preset.Vision && !preset.Video {
+		model := preset.Model
+		if provider, ok := s.config.Models[preset.Provider]; ok && model == "" {
+			model = provider.DefaultModel
+		}
+		if s.needsModalityProbeLocked(preset.Provider, model) {
+			s.dispatchModalityProbesLocked(map[string][2]string{ModalityProbeKey(preset.Provider, model): {preset.Provider, model}})
+		}
+	}
 	return nil
 }
 
