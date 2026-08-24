@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [1.3.53] - 2026-08-24
+
 ### Added
 
 - **模型多模态能力自动发现**：新增 `internal/config/modalities.go` 内置主流模型族能力知识库（`InferModelModalities`，按 model id 离线推断图片/视频理解能力，保守收录、未知族不猜测）。pi/omp 托管模型条目对被标记或推断为多模态的模型主动声明 `input=["text","image"]`，修复下游（amagi-pi 守卫）按默认 `["text"]` 误判多模态模型不支持图片输入的问题（实战：amagi-kimi/k3 被误拦 read 图片）；媒体模型导出（`~/.agents/amagi-media-models.json`）收录规则由仅手动标记扩展为「手动标记 ∪ 自动发现」，capabilities 取并集（契约 docs/vision-export-contract.md v1.1）。预设的识图/识视频开关保留为覆盖项，前端无变更。
