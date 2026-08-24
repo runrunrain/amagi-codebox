@@ -18,8 +18,9 @@ import (
 //     主动要求最新实证，绕过已知性判定直接探测。
 //
 // 有定论结论统一走 RecordModalityProbe 落盘：AppConfig 缓存（provider/model
-// 维度）+ 设备端学习层（model 维度，跨 provider 泛化）+ 重导出视觉模型 +
-// 重同步 pi/omp 托管配置。
+// 维度）+ 设备端学习层（model 维度，跨 provider 泛化）+ 重同步 pi/omp 托管
+// 配置（探测结论驱动托管条目的 input 声明；契约 v1.4 后不再改写视觉导出
+// 文件，收录回归手动标记）。
 
 // modalityProbeTimeout 单次探测总超时（/models 元数据 + 实弹图片请求共享）。
 const modalityProbeTimeout = 30 * time.Second
@@ -59,7 +60,7 @@ func (a *App) executeModalityProbe(providerName, model string) (config.ModelModa
 	return mods, source, conclusive, nil
 }
 
-// commitModalityProbe 有定论结论的统一收尾：落缓存 + 学习层 + 重导出 + 重同步
+// commitModalityProbe 有定论结论的统一收尾：落缓存 + 学习层 + 重同步
 // （旁路产物失败仅记日志）。
 func (a *App) commitModalityProbe(providerName, model string, mods config.ModelModalities, source string) {
 	if err := a.Config.RecordModalityProbe(providerName, model, mods, source, true); err != nil {
@@ -71,8 +72,9 @@ func (a *App) commitModalityProbe(providerName, model string, mods config.ModelM
 	if a.Log != nil {
 		a.Log.Info("modality-probe", "多模态能力探测完成: "+config.ModalityProbeKey(providerName, model)+" "+config.ModalityProbeEntry{Vision: mods.Vision, Video: mods.Video, Source: source}.String())
 	}
-	// 能力结论可能新增 pi/omp 托管条目的 input 声明与视觉导出条目：重跑统一
-	// 同步（旁路产物，失败仅记日志，不告警用户）。
+	// 能力结论可能影响 pi/omp 托管条目的 input 声明（契约 v1.4：视觉导出文件
+	// 收录回归手动标记，不受探测影响）：重跑统一同步（旁路产物，失败仅记
+	// 日志，不告警用户）。
 	if err := a.syncProvidersToHarnesses(); err != nil && a.Log != nil {
 		a.Log.Warn("modality-probe", "探测后同步 harness 配置失败", err.Error())
 	}

@@ -70,11 +70,13 @@ func VisionModelsExportPath() (string, error) {
 }
 
 // ExportVisionModels 按契约 §2 幂等全量重导出视觉模型文件：
-// 遍历 terminal_presets 的 anthropic 与 openai 两桶（标记独立于所在桶），
-// 导出「手动标记 Vision/Video 或模型 id 被 InferModelModalities 识别为多模态
-// 模型族」、且关联 provider 为 OpenAI 兼容（EffectiveType == "openai"）的
-// preset；anthropic-only provider 跳过（v1 边界）。capabilities 为手动标记与
-// 自动发现的并集（v1.1）。无可导出 preset 时也写文件（models: []）。
+// 遍历 terminal_presets 的 openai 与 anthropic 两桶（标记独立于所在桶），
+// 导出「手动标记 Vision/Video」、且关联 provider 为 OpenAI 兼容
+// （EffectiveType == "openai"）的 preset；anthropic-only provider 跳过（v1
+// 边界）。收录回归手动标记（契约 v1.4）：静态知识库与实弹探测结论只驱动
+// pi/omp 托管条目的 input 声明与前端探测提示，不再作为本文件的收录来源。
+// 同一 provider/短名跨桶重复标记时按 ID 去重，openai 桶条目优先（与导出
+// api_type=openai 的调用语义一致）。无可导出 preset 时也写文件（models: []）。
 //
 // resolver 返回 provider 的明文 API key；拿不到（nil 或空串）时条目 api_key
 // 写空串，消费方 fallback 读环境变量 auth_key_env（provider 的 auth_key 标识）。
@@ -89,11 +91,17 @@ func ExportVisionModels(cfg *AppConfig, resolver func(provider string) string) e
 		Models:    []VisionExportModel{},
 	}
 	if cfg != nil && cfg.TerminalPresets != nil {
-		for _, tt := range ValidTerminalPresetTypes() {
+		// 先 openai 桶后 anthropic 桶：跨桶同名 preset 仅导出一条，openai 桶
+		// 条目优先（v1.4 去重规则，见函数头注释）。
+		seen := map[string]bool{}
+		for _, tt := range []TerminalPresetType{TerminalPresetOpenAI, TerminalPresetAnthropic} {
 			for key, tp := range cfg.TerminalPresets.GetMap(tt) {
-				if entry, ok := buildVisionExportModel(cfg, key, tp, resolver); ok {
-					export.Models = append(export.Models, entry)
+				entry, ok := buildVisionExportModel(cfg, key, tp, resolver)
+				if !ok || seen[entry.ID] {
+					continue
 				}
+				seen[entry.ID] = true
+				export.Models = append(export.Models, entry)
 			}
 		}
 	}
@@ -105,12 +113,17 @@ func ExportVisionModels(cfg *AppConfig, resolver func(provider string) string) e
 }
 
 // buildVisionExportModel 构建单个导出条目；返回 ok=false 表示该 preset 不导出
-// （无标记且自动发现未知 / provider 缺失 / anthropic-only provider）。
+// （未手动标记 / provider 缺失 / anthropic-only provider）。
 //
-// 收录来源双轨（契约 §2 v1.1）：手动 Vision/Video 标记是覆盖项；客观能力由
-// InferModelModalities 按模型族知识库自动补充——未手动标记但模型 id 命中
-// 已知多模态模型族的 preset 同样导出，capabilities 取两者并集。
+// 收录规则（契约 §2 v1.4）：仅手动 Vision/Video 标记触发导出，capabilities
+// 精确等于手动标记（不做知识库/探测并集扩充）。「模型客观支持视觉」由
+// InferModelModalities/探测层另行服务（pi/omp input 声明、前端探测提示），
+// 与「用户希望它参与识图/识视频」分离——skill 按 priority 降级时会实际
+// 调用导出端点，收录即代表用户意愿。
 func buildVisionExportModel(cfg *AppConfig, key string, tp TerminalPreset, resolver func(provider string) string) (VisionExportModel, bool) {
+	if !tp.Vision && !tp.Video {
+		return VisionExportModel{}, false
+	}
 	provider, ok := cfg.Models[tp.Provider]
 	if !ok {
 		// provider 已被删除：无法解析端点，跳过该标记条目。
@@ -137,16 +150,8 @@ func buildVisionExportModel(cfg *AppConfig, key string, tp TerminalPreset, resol
 		model = provider.DefaultModel
 	}
 
-	// 能力 = 手动标记 ∪ 实弹探测缓存 ∪ 静态知识库（三者皆空时不导出，未知
-	// 模型不猜测）。手动标记可补充探测/推断的盲区；探测否定结论仅表示
-	//「未证实」，不否决手动标记与 KB 已知能力。
-	inferred := InferModelModalities(tp.Provider, model)
-	probed, _ := cfg.LookupProbed(tp.Provider, model)
-	vision := tp.Vision || inferred.Vision || probed.Vision
-	video := tp.Video || inferred.Video || probed.Video
-	if !vision && !video {
-		return VisionExportModel{}, false
-	}
+	// 能力 = 手动标记（契约 v1.4；知识库/探测不参与，见函数头注释）。
+	vision, video := tp.Vision, tp.Video
 
 	caps := []string{}
 	if vision {

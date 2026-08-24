@@ -437,9 +437,10 @@ func TestVisionExportDoesNotTouchModelsJSON(t *testing.T) {
 	}
 }
 
-// 5. 自动发现（契约 §2 v1.1）：未手动标记但模型 id 命中已知多模态模型族的
-// preset 自动导出，capabilities 来自推断；手动标记与推断取并集。
-func TestExportVisionModels_AutoDiscoveryIncludesUnmarkedPreset(t *testing.T) {
+// 5. 收录回归手动标记（契约 §2 v1.4）：未手动标记的 preset 即使模型 id
+// 命中知识库多模态模型族、或探测缓存已实证，也不导出；capabilities 精确
+// 等于手动标记（不做并集扩充）。
+func TestExportVisionModels_UnmarkedPresetNotExported(t *testing.T) {
 	path := visionTestPath(t)
 	t.Setenv(VisionModelsPathEnv, path)
 
@@ -447,14 +448,54 @@ func TestExportVisionModels_AutoDiscoveryIncludesUnmarkedPreset(t *testing.T) {
 		Models: map[string]Provider{"kimi": openAIProvider()},
 		TerminalPresets: &TerminalPresetsConfig{
 			OpenAI: map[string]TerminalPreset{
-				// 未标记，但 k3 是已知多模态模型族 → 自动收录 image。
+				// 未标记，但 k3 是已知多模态模型族 → v1.4 不导出。
 				"kimi/k3": {Name: "k3", Provider: "kimi", Model: "k3"},
-				// 未标记，gemini 族推断 image+video。
+				// 未标记，gemini 族推断 image+video → 同样不导出。
 				"kimi/gemini": {Name: "gemini", Provider: "kimi", Model: "gemini-3.7-flash"},
-				// 手动 video + 推断 vision → 并集 image+video。
+				// 手动 video（未标 vision）→ 导出且仅 [video]，不与知识库并集。
 				"kimi/k3-video": {Name: "k3-video", Provider: "kimi", Model: "k3", Video: true},
-				// 未标记且未知族 → 不导出（负向）。
-				"kimi/plain": {Name: "plain", Provider: "kimi", Model: "acme-text-9"},
+				// 探测缓存已实证 vision=true 但未手动标记 → 同样不导出。
+				"kimi/probed": {Name: "probed", Provider: "kimi", Model: "acme-text-9"},
+			},
+		},
+		ModalityProbe: map[string]ModalityProbeEntry{
+			"kimi/acme-text-9": {Vision: true, Source: "image-probe"},
+		},
+	}
+	if err := ExportVisionModels(cfg, fakeKeyResolver("sk-test")); err != nil {
+		t.Fatalf("ExportVisionModels: %v", err)
+	}
+	f := readVisionExport(t, path)
+	if len(f.Models) != 1 {
+		t.Fatalf("models = %d, want 1 (manual-only; auto/probed/unknown excluded): %v", len(f.Models), f.Models)
+	}
+
+	manual := findVisionModel(t, f, "kimi/k3-video")
+	if len(manual.Capabilities) != 1 || manual.Capabilities[0] != "video" {
+		t.Errorf("kimi/k3-video capabilities = %v, want [video] (manual mark only, no KB union)", manual.Capabilities)
+	}
+	// 手动标记条目的字段完整性不变（base_url / auth_key_env / api_type）。
+	if manual.BaseURL != "http://api.maorun.top/v1" || manual.AuthKeyEnv != "OPENAI_API_KEY" || manual.APIType != "openai" {
+		t.Errorf("manual entry lost endpoint fields: %+v", manual)
+	}
+}
+
+// 5b. 跨桶去重（契约 §2 v1.4）：同一 provider/短名在 anthropic 与 openai
+// 两桶同时标记时仅导出一条，openai 桶条目（api_type=openai 语义）胜出。
+func TestExportVisionModels_DuplicateIDAcrossBucketsDeduped(t *testing.T) {
+	path := visionTestPath(t)
+	t.Setenv(VisionModelsPathEnv, path)
+
+	cfg := &AppConfig{
+		Models: map[string]Provider{"dual": openAIProvider()},
+		TerminalPresets: &TerminalPresetsConfig{
+			Anthropic: map[string]TerminalPreset{
+				// anthropic 桶同名条目：无参数，不应胜出。
+				"dual/vision": {Name: "vision", Provider: "dual", Model: "gemini-3.7-flash", Vision: true},
+			},
+			OpenAI: map[string]TerminalPreset{
+				"dual/vision": {Name: "vision", Provider: "dual", Model: "gemini-3.7-flash", Vision: true,
+					Parameters: Parameters{ReasoningEffort: "max"}},
 			},
 		},
 	}
@@ -462,24 +503,14 @@ func TestExportVisionModels_AutoDiscoveryIncludesUnmarkedPreset(t *testing.T) {
 		t.Fatalf("ExportVisionModels: %v", err)
 	}
 	f := readVisionExport(t, path)
-	if len(f.Models) != 3 {
-		t.Fatalf("models = %d, want 3 (auto-discovered + marked; unknown excluded): %v", len(f.Models), f.Models)
+	if len(f.Models) != 1 {
+		t.Fatalf("models = %d, want 1 (cross-bucket duplicate deduped): %v", len(f.Models), f.Models)
 	}
-
-	k3 := findVisionModel(t, f, "kimi/k3")
-	if len(k3.Capabilities) != 1 || k3.Capabilities[0] != "image" {
-		t.Errorf("kimi/k3 capabilities = %v, want [image] (auto-discovered)", k3.Capabilities)
+	m := f.Models[0]
+	if m.ID != "dual/vision" {
+		t.Fatalf("id = %q, want dual/vision", m.ID)
 	}
-	gemini := findVisionModel(t, f, "kimi/gemini")
-	if len(gemini.Capabilities) != 2 || gemini.Capabilities[0] != "image" || gemini.Capabilities[1] != "video" {
-		t.Errorf("kimi/gemini capabilities = %v, want [image video] (auto-discovered)", gemini.Capabilities)
-	}
-	union := findVisionModel(t, f, "kimi/k3-video")
-	if len(union.Capabilities) != 2 || union.Capabilities[0] != "image" || union.Capabilities[1] != "video" {
-		t.Errorf("kimi/k3-video capabilities = %v, want [image video] (manual video ∪ inferred vision)", union.Capabilities)
-	}
-	// 自动收录条目的字段完整性与手动标记一致（base_url / auth_key_env / api_type）。
-	if k3.BaseURL != "http://api.maorun.top/v1" || k3.AuthKeyEnv != "OPENAI_API_KEY" || k3.APIType != "openai" {
-		t.Errorf("auto-discovered entry lost endpoint fields: %+v", k3)
+	if m.Parameters == nil || m.Parameters.ReasoningEffort != "max" {
+		t.Errorf("dedup kept wrong bucket entry: %+v (want openai-bucket with reasoning_effort=max)", m)
 	}
 }

@@ -103,7 +103,8 @@ func TestSaveTerminalPresetSkipsKnownOrMarked(t *testing.T) {
 	}
 }
 
-// RecordModalityProbe：有定论结论持久化并可被 Lookup 与视觉导出消费；
+// RecordModalityProbe：有定论结论持久化并可被 Lookup 消费（驱动 pi/omp
+// input 声明），但不再进入视觉导出（契约 v1.4：导出收录仅取手动标记）；
 // 未决结论不落缓存、不写盘。
 func TestRecordModalityProbePersistsConclusive(t *testing.T) {
 	svc, _, exportPath, _ := newProbeService(t)
@@ -117,8 +118,8 @@ func TestRecordModalityProbePersistsConclusive(t *testing.T) {
 	if LookupProbedSafe(svc.GetModalityProbeCache(), "acme", "acme-v9").AcceptsImageInput() {
 		t.Fatal("inconclusive result must not be cached")
 	}
-	// 有定论：落缓存、持久化（重载可见）、触发视觉重导出（未标记未知族 preset
-	// 凭探测结论进入导出）。
+	// 有定论：落缓存、持久化（重载可见）；探测结论不触发视觉导出重写
+	//（契约 v1.4：导出收录仅取手动标记，探测与导出解耦）。
 	preset := TerminalPreset{Name: "v9", Provider: "acme", Model: "acme-v9"}
 	if err := svc.SaveTerminalPreset("openai", "acme/v9", preset); err != nil {
 		t.Fatalf("SaveTerminalPreset: %v", err)
@@ -137,11 +138,10 @@ func TestRecordModalityProbePersistsConclusive(t *testing.T) {
 	if mods := LookupProbedSafe(svc2.GetModalityProbeCache(), "acme", "acme-v9"); !mods.Vision {
 		t.Errorf("reloaded cache lookup = %+v, want persisted vision=true", mods)
 	}
-	// 视觉导出联动：探测结论让未标记 preset 出现在导出文件。
+	// 视觉导出解耦（v1.4）：探测结论不让未标记 preset 进入导出文件。
 	f := readVisionExport(t, exportPath)
-	m := findVisionModel(t, f, "acme/v9")
-	if len(m.Capabilities) != 1 || m.Capabilities[0] != "image" {
-		t.Errorf("capabilities = %v, want [image] from probe cache", m.Capabilities)
+	if len(f.Models) != 0 {
+		t.Errorf("export models = %v, want empty (probe results must not feed vision export)", f.Models)
 	}
 }
 

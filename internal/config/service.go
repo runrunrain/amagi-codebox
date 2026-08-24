@@ -116,7 +116,8 @@ func (s *ConfigService) GetModalityProbeCache() ModalityProbeSnapshot {
 // RecordModalityProbe 记录一次探测结论（契约 v1.2）。conclusive=false（未决：
 // 网络/鉴权/限流等环境故障）不落缓存、不持久化——下次保存/启动自然重试，
 // 绝不把环境故障误记为能力不足。有定论（含「确认不支持图片」的否定结论）时
-// 更新缓存、持久化并重导出视觉模型。
+// 更新缓存并持久化。契约 v1.4：探测结论不再影响视觉导出文件收录（回归手动
+// 标记），此处不触发重导出；仍驱动 pi/omp 托管条目 input 声明重同步。
 func (s *ConfigService) RecordModalityProbe(provider, model string, mods ModelModalities, source string, conclusive bool) error {
 	if !conclusive {
 		return nil
@@ -143,7 +144,7 @@ func (s *ConfigService) RecordModalityProbe(provider, model string, mods ModelMo
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
-	s.triggerVisionExportLocked()
+	// 契约 v1.4：探测结论与视觉导出收录解耦，不重导出 amagi-media-models.json。
 	return nil
 }
 
