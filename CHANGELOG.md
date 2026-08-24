@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.54] - 2026-08-24
+
+### Fixed
+
+- **多模态配置推断与探测缓存完善**：Pi 模型配置（`pi_config.go`）对未命中 presetModels 的裸启/legacy 预设模型以内置知识库推断兜底多模态声明，避免被下游守卫误判为纯文本；`ModalityProbeKey` 实行双侧规范化（trim + 剥前缀 + 小写），保证写入与查询侧稳定命中同一键；补充多模态缓存双侧命中与 Pi 兜底单测，并严格冻结 `ConfigService` 注入与回写方法清单（`bind_manifest_test`）。
+
 ## [1.3.53] - 2026-08-24
 
 ### Added
