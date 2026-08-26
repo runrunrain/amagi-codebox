@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.56] - 2026-08-26
+
+### Added
+
+- **Anthropic 预设选择性同步至 CLI 独立配置**：TerminalPreset 与合并视图新增 `harness_sync` 标记；`ManagedPresetModels` 支持 Anthropic 桶按标记 opt-in 补录预设及档位模型；标记预设在请求桶后序执行收集，同名模型参数与视觉能力后序覆盖；预设弹窗在 Anthropic 格式下提供 CLI 同步开关并在列表展示标记；补齐 HarnessSync 补录、参数传递与 Pi/OMP 托管配置生成测试。
+
 ## [1.3.55] - 2026-08-24
 
 ### Fixed
