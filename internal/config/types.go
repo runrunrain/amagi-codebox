@@ -207,6 +207,12 @@ type TerminalPreset struct {
 	Video  bool `json:"video,omitempty"`  // 识视频
 	// 能力优先级，小者优先；0 视为 100（导出时归一化）。
 	VisionPriority int `json:"vision_priority,omitempty"`
+
+	// 托管同步标记：该预设的模型是否加入 pi/omp 托管模型同步
+	//（CLI 独立配置 ~/.pi/agent / ~/.omp/agent 的模型提供商配置，由
+	// launcher.ManagedPresetModels 收集）。仅对 anthropic 桶有意义——
+	// openai 桶预设默认全同步，标记为 no-op。
+	HarnessSync bool `json:"harness_sync,omitempty"`
 }
 
 // NormalizeOpenCodeCfg 确保 OpenCodeCfg 存储为原始 JSON 对象。

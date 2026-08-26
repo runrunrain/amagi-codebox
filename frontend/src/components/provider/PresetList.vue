@@ -70,6 +70,12 @@
           <!-- 视觉能力标记（amagi-media-understanding 导出，契约 §1） -->
           <span v-if="p.vision" class="param vision">识图</span>
           <span v-if="p.video" class="param vision">识视频</span>
+          <!-- 同步到 CLI 独立配置标记（仅 Anthropic 格式） -->
+          <span
+            v-if="format === 'anthropic' && p.harness_sync"
+            class="param vision"
+            title="已标记同步到 CLI 独立配置（Pi/OMP）"
+          >CLI</span>
           <!-- 关键 Parameters（最关键的 2-4 个） -->
           <span v-if="thinkingType(p)" class="param key">thinking·{{ thinkingType(p) }}</span>
           <span v-if="reasoningEffort(p)" class="param key">effort·{{ reasoningEffort(p) }}</span>

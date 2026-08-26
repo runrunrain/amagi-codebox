@@ -224,6 +224,148 @@ func TestManagedPresetModelsVisionLastWins(t *testing.T) {
 	}
 }
 
+func TestManagedPresetModelsAnthropicHarnessSyncOptIn(t *testing.T) {
+	// HarnessSync opt-in：pi/omp 只传 openai 桶时，anthropic 桶预设默认
+	// 不进入托管注册；仅 HarnessSync=true 的预设逐个纳入（含其档位模型）。
+	// openai 桶行为不变：无标记也全量纳入。anthropic-only 提供商的预设
+	// 模型由此进入 pi/omp 的 models.json/models.yml。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "acme-default",
+	}
+	presets := &config.TerminalPresetsConfig{
+		Anthropic: map[string]config.TerminalPreset{
+			"glm/marked": {Provider: "glm", Model: "glm-5.3", HarnessSync: true,
+				ModelHaiku: "glm-5.3-air", ModelSonnet: "", ModelOpus: "glm-5.3x"},
+			"glm/unmarked": {Provider: "glm", Model: "glm-4"},
+		},
+		OpenAI: map[string]config.TerminalPreset{
+			"glm/openai": {Provider: "glm", Model: "glm-5.3"}, // 无标记也纳入
+		},
+	}
+
+	models := ManagedPresetModels("glm", provider, presets, nil, config.TerminalPresetOpenAI)
+	ids := map[string]bool{}
+	for _, m := range models {
+		ids[m.ID] = true
+	}
+	for _, want := range []string{"glm-5.3", "glm-5.3-air", "glm-5.3x"} {
+		if !ids[want] {
+			t.Errorf("marked anthropic model %q missing from collection: %v", want, ids)
+		}
+	}
+	if ids["glm-4"] {
+		t.Errorf("unmarked anthropic model glm-4 collected, want excluded (HarnessSync opt-in only)")
+	}
+	// openai 桶无标记仍纳入：glm-5.3 同时被 openai 预设覆盖（同 id 合并，见下述覆盖顺序测试）。
+	if !ids["glm-5.3"] {
+		t.Fatalf("openai bucket preset must still be collected without HarnessSync")
+	}
+}
+
+func TestManagedPresetModelsHarnessSyncCarriesParamsAndVision(t *testing.T) {
+	// 标记预设的 Parameters 与 Vision 标记随模型传递：与主循环收集逻辑
+	// 一致（modelParams/modelVision 覆盖），未知模型族 id 隔离自动发现干扰。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "",
+	}
+	presets := &config.TerminalPresetsConfig{
+		Anthropic: map[string]config.TerminalPreset{
+			"glm/marked": {Provider: "glm", Model: "glm-anthropic-9", HarnessSync: true,
+				Parameters: config.Parameters{MaxTokens: 4096}, Vision: true},
+		},
+	}
+
+	models := ManagedPresetModels("glm", provider, presets, nil, config.TerminalPresetOpenAI)
+	if len(models) != 1 || models[0].ID != "glm-anthropic-9" {
+		t.Fatalf("models = %v, want exactly [glm-anthropic-9]", models)
+	}
+	if models[0].Parameters.MaxTokens != 4096 {
+		t.Errorf("glm-anthropic-9 maxTokens = %d, want 4096 (carried from marked preset)", models[0].Parameters.MaxTokens)
+	}
+	if !models[0].Vision {
+		t.Errorf("glm-anthropic-9 vision = false, want true (marked preset Vision flag)")
+	}
+}
+
+func TestManagedPresetModelsHarnessSyncMarkedBucketLastWins(t *testing.T) {
+	// 覆盖顺序：标记桶追加在请求桶之后处理，同 id 模型标记桶胜出，
+	// 结果确定（结果按 id 排序，参数/vision 均取标记预设的值）。
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "",
+	}
+	presets := &config.TerminalPresetsConfig{
+		Anthropic: map[string]config.TerminalPreset{
+			"glm/marked": {Provider: "glm", Model: "glm-dual", HarnessSync: true,
+				Parameters: config.Parameters{MaxTokens: 222}, Vision: true},
+		},
+		OpenAI: map[string]config.TerminalPreset{
+			"glm/openai": {Provider: "glm", Model: "glm-dual",
+				Parameters: config.Parameters{MaxTokens: 111}},
+		},
+	}
+
+	models := ManagedPresetModels("glm", provider, presets, nil, config.TerminalPresetOpenAI)
+	if len(models) != 1 || models[0].ID != "glm-dual" {
+		t.Fatalf("models = %v, want exactly [glm-dual]", models)
+	}
+	if models[0].Parameters.MaxTokens != 222 {
+		t.Errorf("glm-dual maxTokens = %d, want 222 (marked anthropic bucket processed after requested openai bucket)", models[0].Parameters.MaxTokens)
+	}
+	if !models[0].Vision {
+		t.Errorf("glm-dual vision = false, want true (marked preset wins same-id override)")
+	}
+}
+
+func TestHarnessSyncAnthropicProviderBuildsManagedConfigs(t *testing.T) {
+	// 端到端：anthropic-only 提供商（仅 Anthropic 格式启用）+ 标记 anthropic
+	// 桶预设 → 只传 openai 桶时标记模型被收集，BuildPi/BuildOmp 托管配置的
+	// api 为 anthropic-messages 且 models 含标记模型。
+	provider := config.Provider{
+		Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.example.com"},
+	}
+	presets := &config.TerminalPresetsConfig{
+		Anthropic: map[string]config.TerminalPreset{
+			"glm/anthropic-only": {Provider: "glm", Model: "glm-anthropic-9", HarnessSync: true,
+				Parameters: config.Parameters{MaxTokens: 8192}},
+		},
+	}
+
+	models := ManagedPresetModels("glm", provider, presets, nil, config.TerminalPresetOpenAI)
+	if len(models) != 1 || models[0].ID != "glm-anthropic-9" {
+		t.Fatalf("models = %v, want exactly [glm-anthropic-9]", models)
+	}
+
+	hasMarkedModel := func(cfg map[string]any) (api string, found bool) {
+		entry := cfg["providers"].(map[string]map[string]any)["amagi-glm"]
+		for _, m := range entry["models"].([]map[string]any) {
+			if m["id"] == "glm-anthropic-9" {
+				found = true
+			}
+		}
+		api, _ = entry["api"].(string)
+		return api, found
+	}
+
+	piCfg, err := BuildPiManagedProviderConfig("glm", provider, "key", models)
+	if err != nil {
+		t.Fatalf("BuildPiManagedProviderConfig: %v", err)
+	}
+	if api, found := hasMarkedModel(piCfg); api != "anthropic-messages" || !found {
+		t.Errorf("pi entry api=%q modelsHasMarked=%v, want api=anthropic-messages and marked model present", api, found)
+	}
+
+	ompCfg, err := BuildOmpManagedProviderConfig("glm", provider, "key", models)
+	if err != nil {
+		t.Fatalf("BuildOmpManagedProviderConfig: %v", err)
+	}
+	if api, found := hasMarkedModel(ompCfg); api != "anthropic-messages" || !found {
+		t.Errorf("omp entry api=%q modelsHasMarked=%v, want api=anthropic-messages and marked model present", api, found)
+	}
+}
+
 func TestManagedPresetModelsProbeCacheUnion(t *testing.T) {
 	// 三层并集回归：探测缓存（实证）与手动标记/KB 并列——缓存判定为视觉的
 	// 未知族模型必须置位 Vision；nil lookup（未注入探测）不影响既有行为。

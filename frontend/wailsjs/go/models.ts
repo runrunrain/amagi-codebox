@@ -533,6 +533,7 @@ export namespace config {
 	    vision?: boolean;
 	    video?: boolean;
 	    vision_priority?: number;
+	    harness_sync?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new TerminalPreset(source);
@@ -551,6 +552,7 @@ export namespace config {
 	        this.vision = source["vision"];
 	        this.video = source["video"];
 	        this.vision_priority = source["vision_priority"];
+	        this.harness_sync = source["harness_sync"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -869,6 +871,7 @@ export namespace config {
 	    vision?: boolean;
 	    video?: boolean;
 	    vision_priority?: number;
+	    harness_sync?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new MergedTerminalPreset(source);
@@ -888,6 +891,7 @@ export namespace config {
 	        this.vision = source["vision"];
 	        this.video = source["video"];
 	        this.vision_priority = source["vision_priority"];
+	        this.harness_sync = source["harness_sync"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

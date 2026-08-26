@@ -1511,6 +1511,9 @@ type MergedTerminalPreset struct {
 	Vision         bool `json:"vision,omitempty"`
 	Video          bool `json:"video,omitempty"`
 	VisionPriority int  `json:"vision_priority,omitempty"`
+	// HarnessSync 透传：anthropic 桶预设加入 pi/omp 托管模型同步的 opt-in
+	//（openai 桶默认全同步，标记 no-op）；前端展示与编辑回填用。
+	HarnessSync    bool `json:"harness_sync,omitempty"`
 }
 
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。
@@ -1549,6 +1552,7 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 				Vision:         tp.Vision,
 				Video:          tp.Video,
 				VisionPriority: tp.VisionPriority,
+				HarnessSync:    tp.HarnessSync,
 			})
 		}
 	}

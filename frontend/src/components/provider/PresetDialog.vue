@@ -232,6 +232,20 @@
           能力判定 = 手动标记 ∪ 实弹探测 ∪ 内置知识库：已知多模态模型族自动识别，无需手动标记；「实弹探测」向 Provider 端点发送 1x1 测试图确证能力，结论写入设备知识库（~/.agents/amagi-modalities.json）。标记的预设会导出到 ~/.agents/amagi-media-models.json，供 amagi-media-understanding 等外部 CLI 消费；仅 OpenAI 兼容 Provider 会导出。
         </p>
       </div>
+
+      <!-- 同步到 CLI 独立配置（仅 Anthropic 格式） -->
+      <div v-if="format === 'anthropic'" class="form-section">
+        <div class="form-section-title">CLI 独立配置同步</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">同步到 CLI 独立配置</label>
+            <Switch v-model="form.harnessSync" />
+          </div>
+        </div>
+        <p class="form-hint">
+          开启后该预设的模型将随 Provider 写入 Pi / OMP 的托管模型配置（models.json / models.yml），供 CLI 独立会话选用；OpenCode 不受影响。
+        </p>
+      </div>
     </div>
 
     <template #footer>
@@ -339,6 +353,7 @@ const form = reactive({
   vision: false,
   video: false,
   visionPriority: undefined as number | undefined,
+  harnessSync: false,
 });
 
 const canSave = computed(() => {
@@ -380,6 +395,8 @@ function initForm() {
     form.vision = !!p.vision;
     form.video = !!p.video;
     form.visionPriority = p.vision_priority || undefined;
+    // 同步到 CLI 独立配置
+    form.harnessSync = !!p.harness_sync;
   } else {
     resetForm();
   }
@@ -405,6 +422,7 @@ function resetForm() {
   form.vision = false;
   form.video = false;
   form.visionPriority = undefined;
+  form.harnessSync = false;
 }
 
 // 监听 preset 变化
@@ -452,6 +470,9 @@ async function handleSave() {
     if (form.video) terminalPreset.video = true;
     if (form.visionPriority !== undefined && form.visionPriority !== 0) {
       terminalPreset.vision_priority = form.visionPriority;
+    }
+    if (form.harnessSync) {
+      terminalPreset.harness_sync = true;
     }
 
     // 参数设置

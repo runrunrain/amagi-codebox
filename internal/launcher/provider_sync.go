@@ -70,8 +70,13 @@ type managedModelsBuilder func(string, config.Provider, string, string, config.P
 // given order) win over legacy presets and the zero-parameter DefaultModel.
 // The result is sorted by model id, making it deterministic and directly
 // consumable as the presetModels argument of BuildPiModelsConfig /
-// BuildOmpModelsConfig. Pi and OMP must pass only the OpenAI bucket
-// (TerminalPresetOpenAI): the Anthropic bucket belongs to Claude Code.
+// BuildOmpModelsConfig. Pi and OMP pass only the OpenAI bucket
+// (TerminalPresetOpenAI): the Anthropic bucket belongs to Claude Code, but
+// its presets can opt in to the pi/omp managed model sync one by one via
+// TerminalPreset.HarnessSync (the OpenAI bucket is always synced in full,
+// so the flag is a no-op there). Opted-in presets of buckets not listed in
+// terminalTypes are collected after the requested ones, so they win over
+// same-id models collected from the requested buckets.
 //
 // probeCache 为探测缓存快照（ConfigService.GetModalityProbeCache，nil 安全）：
 // 模型多模态标记 = 手动标记 ∨ 实弹探测结论 ∨ 静态知识库推断（三层并集）。
@@ -103,6 +108,33 @@ func ManagedPresetModels(
 				if model = strings.TrimSpace(model); model != "" {
 					modelParams[model] = preset.Parameters
 					// 多模态标记与参数同序覆盖：后序预设未标记时重置为 false。
+					modelVision[model] = preset.Vision || preset.Video
+				}
+			}
+		}
+	}
+
+	// HarnessSync 补收：未被请求的桶（pi/omp 场景即 anthropic 桶）中，
+	// HarnessSync=true 的预设按 opt-in 逐个纳入；桶已在请求列表内时主循环
+	// 已全量收集，此轮跳过。标记桶追加在请求桶之后处理：同 id 模型后序胜出，
+	// 键序确定。收集逻辑与主循环一致（provider 匹配 + 档位模型 + 覆盖语义）。
+	requested := make(map[config.TerminalPresetType]bool, len(terminalTypes))
+	for _, terminalType := range terminalTypes {
+		requested[terminalType] = true
+	}
+	for _, terminalType := range config.ValidTerminalPresetTypes() {
+		if requested[terminalType] {
+			continue
+		}
+		presetMap := presets.GetMap(terminalType)
+		for _, key := range sortedTerminalPresetKeys(presetMap) {
+			preset := presetMap[key]
+			if !preset.HarnessSync || strings.TrimSpace(preset.Provider) != providerName {
+				continue
+			}
+			for _, model := range []string{preset.Model, preset.ModelHaiku, preset.ModelSonnet, preset.ModelOpus} {
+				if model = strings.TrimSpace(model); model != "" {
+					modelParams[model] = preset.Parameters
 					modelVision[model] = preset.Vision || preset.Video
 				}
 			}
