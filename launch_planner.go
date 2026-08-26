@@ -38,6 +38,9 @@ import (
 type launchConfigPort interface {
 	GetProvider(name string) (*config.Provider, error)
 	ResolveTerminalPreset(terminalType, key string) (string, *config.TerminalPreset, error)
+	// ResolvePiOmpTerminalPreset：pi/omp 启动链专用 resolver（openai 桶优先，
+	// marked anthropic 桶 HarnessSync 预设 opt-in 回退）。
+	ResolvePiOmpTerminalPreset(key string) (string, *config.TerminalPreset, error)
 	GetOpenCodePreset(key string) (*config.OpenCodePreset, error)
 	GetAgentTeams() config.AgentTeamsConfig
 	GetAllTerminalPresets() *config.TerminalPresetsConfig
@@ -494,7 +497,9 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
 	providerID := recipe.ProviderRef
 	modelRef := recipe.ModelRef
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelRef)
+	// 回退语义：openai 桶（pi 原生桶，撞名优先）→ anthropic 桶 HarnessSync
+	// 标记预设（opt-in）；unmarked anthropic 预设不命中，走 legacy 回退。
+	tpProvider, tp, tpErr := p.config.ResolvePiOmpTerminalPreset(modelRef)
 	tpFound := tpErr == nil && tp != nil
 	var presetParams config.Parameters
 	if tpFound {
@@ -536,7 +541,9 @@ func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launc
 func (p *appLaunchPlanner) buildOmpPlan(recipe launchplan.StableRecipe, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
 	providerID := recipe.ProviderRef
 	modelRef := recipe.ModelRef
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelRef)
+	// 回退语义：openai 桶（omp 原生桶，撞名优先）→ anthropic 桶 HarnessSync
+	// 标记预设（opt-in）；unmarked anthropic 预设不命中，走 legacy 回退。
+	tpProvider, tp, tpErr := p.config.ResolvePiOmpTerminalPreset(modelRef)
 	tpFound := tpErr == nil && tp != nil
 	var presetParams config.Parameters
 	if tpFound {
@@ -603,7 +610,10 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 	modelRef := recipe.ModelRef
 
 	// Terminal preset / legacy fallback.
-	tpProvider, tp, tpErr := p.config.ResolveTerminalPreset(terminalType, modelRef)
+	// 与 buildPiPlan/buildOmpPlan 同一回退语义：openai 桶优先 → marked
+	// anthropic 预设（HarnessSync opt-in）。此处仅取 providerID 回退与
+	// presetParams（模型解析已在调用方写入 launchResult）。
+	tpProvider, tp, tpErr := p.config.ResolvePiOmpTerminalPreset(modelRef)
 	tpFound := tpErr == nil && tp != nil
 	var presetParams config.Parameters
 	if tpFound {

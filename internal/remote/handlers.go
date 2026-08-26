@@ -137,8 +137,9 @@ func (s *Server) handleGetLaunchMeta(w http.ResponseWriter, r *http.Request) {
 		Pi: launchMetaSection{
 			// Pi 与 Codex / OMP 共享 OpenAI-format preset；预设内含
 			// provider+model 映射，providers 取全集以便手动选择。
+			// HarnessSync opt-in：openai 桶全量之外，anthropic 桶标记预设附加在后。
 			Providers: buildLaunchProviderOptions(configSvc.GetProviders()),
-			Presets:   buildLaunchPresetOptions(configSvc, string(config.TerminalPresetOpenAI)),
+			Presets:   buildPiOmpLaunchPresetOptions(configSvc),
 		},
 	}
 
@@ -503,6 +504,49 @@ func buildLaunchPresetOptions(configSvc *config.ConfigService, terminalType stri
 			Model:    preset.Model,
 			Source:   preset.Source,
 		})
+	}
+	return options
+}
+
+// buildPiOmpLaunchPresetOptions 返回 pi/omp 启动选择面的预设列表：openai
+// 公共桶（pi/omp 原生桶）全量在前，anthropic 桶中带 HarnessSync 标记
+//（opt-in 加入 pi/omp 托管同步）的预设附加在后；撞 key 时 openai 先注册
+// 胜出。目前由 handleGetLaunchMeta 的 Pi section 消费（OMP 无 legacy
+// section）；v1 移动端的合并面在根包 buildRemoteLaunchSettings。
+func buildPiOmpLaunchPresetOptions(configSvc *config.ConfigService) []launchPresetOption {
+	if configSvc == nil {
+		return []launchPresetOption{}
+	}
+	options := buildLaunchPresetOptions(configSvc, string(config.TerminalPresetOpenAI))
+	seen := make(map[string]bool, len(options))
+	for _, opt := range options {
+		seen[opt.Key] = true
+	}
+	anthropic, err := configSvc.GetMergedTerminalPresets(string(config.TerminalPresetAnthropic))
+	if err != nil {
+		return options
+	}
+	marked := make([]config.MergedTerminalPreset, 0, len(anthropic))
+	for _, preset := range anthropic {
+		if preset.HarnessSync {
+			marked = append(marked, preset)
+		}
+	}
+	// 排序规则与 buildLaunchPresetOptions 一致（Provider→Label），附加段内部确定。
+	sort.SliceStable(marked, func(i, j int) bool {
+		if marked[i].Provider == marked[j].Provider {
+			return marked[i].Label < marked[j].Label
+		}
+		return marked[i].Provider < marked[j].Provider
+	})
+	for _, preset := range marked {
+		if seen[preset.Key] {
+			continue
+		}
+		options = append(options, launchPresetOption{
+			Key: preset.Key, Label: preset.Label, Provider: preset.Provider, Model: preset.Model, Source: preset.Source,
+		})
+		seen[preset.Key] = true
 	}
 	return options
 }

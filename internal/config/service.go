@@ -1597,6 +1597,36 @@ func (s *ConfigService) ResolveTerminalPreset(terminalType, key string) (string,
 	return cp.Provider, &cp, nil
 }
 
+// ResolvePiOmpTerminalPreset 按 stable key 解析 pi/omp 启动链可用的 TerminalPreset。
+// 优先序：先查 openai 公共桶（pi/omp 原生桶，key 撞名时 openai 胜出）；
+// miss 后查 anthropic 桶，且仅当预设带 HarnessSync==true 标记才返回（opt-in：
+// 标记过的 anthropic 预设才允许被 pi/omp 消费，与 ManagedPresetModels 的补收
+// 语义一致）。unmarked anthropic 预设与两桶均 miss 一致返回 ("", nil, nil)，
+// 与 ResolveTerminalPreset 的 not-found 形态相同。
+func (s *ConfigService) ResolvePiOmpTerminalPreset(key string) (string, *TerminalPreset, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil {
+		return "", nil, errors.New("config not loaded")
+	}
+	if s.config.TerminalPresets == nil {
+		return "", nil, nil
+	}
+	if tpMap := s.config.TerminalPresets.GetMap(TerminalPresetOpenAI); tpMap != nil {
+		if tp, ok := tpMap[key]; ok {
+			cp := tp // shallow copy
+			return cp.Provider, &cp, nil
+		}
+	}
+	if tpMap := s.config.TerminalPresets.GetMap(TerminalPresetAnthropic); tpMap != nil {
+		if tp, ok := tpMap[key]; ok && tp.HarnessSync {
+			cp := tp // shallow copy
+			return cp.Provider, &cp, nil
+		}
+	}
+	return "", nil, nil
+}
+
 // ============================================================================
 // OpenCodePresets CRUD -- 新模型
 // ============================================================================

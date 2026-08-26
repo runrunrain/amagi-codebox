@@ -1326,8 +1326,40 @@ func (a *App) buildRemoteLaunchSettings() *contract.LaunchSettings {
 	presetFormat := map[contract.CLIType]string{
 		contract.CLITypeClaudeCode: string(config.TerminalPresetAnthropic),
 		contract.CLITypeCodex:      string(config.TerminalPresetOpenAI),
-		contract.CLITypePi:         string(config.TerminalPresetOpenAI),
-		contract.CLITypeOmp:        string(config.TerminalPresetOpenAI),
+	}
+	// Pi/Omp opt-in 扩面（HarnessSync）：openai 桶（pi/omp 原生桶）全量之外，
+	// anthropic 桶中带 HarnessSync 标记的预设附加在选择面末尾（撞 key 时
+	// openai 先注册胜出）；这些标记预设所属的 provider 即使非 OpenAI 兼容也
+	// 进入 Pi/Omp Providers 下拉——用户已显式标记其预设供 pi/omp 消费。
+	// 两 CLI 共享同一份派生数据，先在循环外算好（marked provider 集合 +
+	// 合并预设项），循环内只消费。
+	markedHarnessSyncProviders := map[string]bool{}
+	piOmpPresetOptions := []contract.LaunchPresetOption{}
+	if a.Config != nil {
+		seenPiOmpPresets := map[string]bool{}
+		if presets, err := a.Config.GetMergedTerminalPresets(string(config.TerminalPresetOpenAI)); err == nil {
+			for _, preset := range presets {
+				piOmpPresetOptions = append(piOmpPresetOptions, contract.LaunchPresetOption{
+					Ref: preset.Key, Label: preset.Label, ProviderRef: preset.Provider, ModelRef: preset.Model,
+				})
+				seenPiOmpPresets[preset.Key] = true
+			}
+		}
+		if presets, err := a.Config.GetMergedTerminalPresets(string(config.TerminalPresetAnthropic)); err == nil {
+			for _, preset := range presets {
+				if !preset.HarnessSync {
+					continue
+				}
+				markedHarnessSyncProviders[preset.Provider] = true
+				if seenPiOmpPresets[preset.Key] {
+					continue
+				}
+				piOmpPresetOptions = append(piOmpPresetOptions, contract.LaunchPresetOption{
+					Ref: preset.Key, Label: preset.Label, ProviderRef: preset.Provider, ModelRef: preset.Model,
+				})
+				seenPiOmpPresets[preset.Key] = true
+			}
+		}
 	}
 	for _, cliType := range contract.KnownCLITypes {
 		entry := contract.CLILaunchSettings{
@@ -1338,7 +1370,13 @@ func (a *App) buildRemoteLaunchSettings() *contract.LaunchSettings {
 			if cliType == contract.CLITypeClaudeCode && !provider.IsAnthropicCompatible() {
 				continue
 			}
-			if (cliType == contract.CLITypeCodex || cliType == contract.CLITypePi || cliType == contract.CLITypeOmp) && !provider.IsOpenAICompatible() {
+			if cliType == contract.CLITypeCodex && !provider.IsOpenAICompatible() {
+				continue
+			}
+			// Pi/Omp：OpenAI 兼容全集 + anthropic 桶有 HarnessSync 标记预设的
+			// provider（opt-in 扩面，其余非 OpenAI 兼容 provider 仍排除）。
+			if (cliType == contract.CLITypePi || cliType == contract.CLITypeOmp) &&
+				!provider.IsOpenAICompatible() && !markedHarnessSyncProviders[key] {
 				continue
 			}
 			entry.Providers = append(entry.Providers, contract.LaunchProviderOption{
@@ -1376,6 +1414,17 @@ func (a *App) buildRemoteLaunchSettings() *contract.LaunchSettings {
 						})
 						seenPresets[preset.Key] = true
 					}
+				}
+			} else if cliType == contract.CLITypePi || cliType == contract.CLITypeOmp {
+				// Pi/Omp 预设面：openai 桶全量 + anthropic 桶 HarnessSync 标记项
+				// 附加在后（piOmpPresetOptions 已在循环外算好；seenPresets 去重
+				// 保留，撞 key 时先注册者胜出）。
+				for _, preset := range piOmpPresetOptions {
+					if seenPresets[preset.Ref] {
+						continue
+					}
+					entry.Presets = append(entry.Presets, preset)
+					seenPresets[preset.Ref] = true
 				}
 			}
 		}
@@ -2983,8 +3032,10 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	a.Log.Info("session", "启动 Pi 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
 
 	// ---- terminal_presets 桥接 ----
-	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelName)
+	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）。
+	// 回退语义：先查 openai 桶（pi 原生桶，撞名优先），miss 后仅当 anthropic 桶
+	// 预设带 HarnessSync 标记（opt-in）才命中；unmarked anthropic 预设不解析。
+	tpProvider, tp, tpErr := a.Config.ResolvePiOmpTerminalPreset(modelName)
 	tpFound := tpErr == nil && tp != nil
 	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
 	// 供后续写入 pi models.json 的 model 配置与解析 --thinking 级别。
@@ -3252,8 +3303,10 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 	a.Log.Info("session", "启动 omp 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
 
 	// ---- terminal_presets 桥接 ----
-	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelName)
+	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）。
+	// 回退语义：先查 openai 桶（omp 原生桶，撞名优先），miss 后仅当 anthropic 桶
+	// 预设带 HarnessSync 标记（opt-in）才命中；unmarked anthropic 预设不解析。
+	tpProvider, tp, tpErr := a.Config.ResolvePiOmpTerminalPreset(modelName)
 	tpFound := tpErr == nil && tp != nil
 	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
 	// 供后续写入 omp models.yml 的 model 配置与解析 --thinking 级别。

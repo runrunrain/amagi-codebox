@@ -398,8 +398,18 @@ const currentPreset = computed(() => {
 
 // --- 下拉选项 ---
 const providerOptions = computed(() => {
-  const map = (dashState.engine === 'codex' || dashState.engine === 'pi' || dashState.engine === 'omp') ? openaiProviders.value : anthropicProviders.value
-  return Object.keys(map).sort().map(name => ({ value: name, label: name }))
+  if (dashState.engine === 'codex') {
+    return Object.keys(openaiProviders.value).sort().map(name => ({ value: name, label: name }))
+  }
+  if (dashState.engine === 'pi' || dashState.engine === 'omp') {
+    const list = dashState.engine === 'pi' ? piPresets.value : ompPresets.value
+    const set = new Set<string>(Object.keys(openaiProviders.value))
+    for (const p of list) {
+      if (p.provider) set.add(p.provider)
+    }
+    return Array.from(set).sort().map(name => ({ value: name, label: name }))
+  }
+  return Object.keys(anthropicProviders.value).sort().map(name => ({ value: name, label: name }))
 })
 
 const presetOptions = computed(() => {
@@ -703,11 +713,15 @@ async function loadTerminalPresets() {
       providerApi.getMergedTerminalPresets('openai'),
     ])
     claudePresets.value = anthropic || []
-    // Codex / Pi / OMP consume one shared OpenAI-format preset collection.
+    // Codex / Pi / OMP consume OpenAI-format preset collection.
+    // Pi / OMP additionally include Anthropic presets marked with HarnessSync (harness_sync: true).
+    // Marked Anthropic presets are appended after OpenAI presets so that if key names collide,
+    // the first matching OpenAI preset wins (consistent with the backend resolver priority).
     const sharedOpenAI = openai || []
+    const markedAnthropic = (anthropic || []).filter(p => p.harness_sync)
     codexPresets.value = sharedOpenAI
-    piPresets.value = sharedOpenAI
-    ompPresets.value = sharedOpenAI
+    piPresets.value = [...sharedOpenAI, ...markedAnthropic]
+    ompPresets.value = [...sharedOpenAI, ...markedAnthropic]
   } catch (err) {
     console.error('Failed to load terminal presets:', err)
   }
