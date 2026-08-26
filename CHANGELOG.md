@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.57] - 2026-08-26
+
+### Added
+
+- **Pi/OMP 会话与远程端点选择面支持 Anthropic 同步预设**：`ConfigService.ResolvePiOmpPresetKey` 统一按 OpenAI 优先、Anthropic `harness_sync` 兜底解析预设；`LaunchPlanner` 识别 Anthropic 桶同步预设并提取参数；远程客户端启动设置（`buildRemoteLaunchSettings`）与 Meta 端点将带同步标记的预设及对应 Provider 纳入可选列表；前端会话设置页支持在 Pi/OMP 下选择此类预设。
+
 ## [1.3.56] - 2026-08-26
 
 ### Added
