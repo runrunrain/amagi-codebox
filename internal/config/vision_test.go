@@ -514,3 +514,81 @@ func TestExportVisionModels_DuplicateIDAcrossBucketsDeduped(t *testing.T) {
 		t.Errorf("dedup kept wrong bucket entry: %+v (want openai-bucket with reasoning_effort=max)", m)
 	}
 }
+
+// 回归（密钥面安全）：启动顺序 Config.Load（尾部即触发首轮导出）先于
+// Secrets.Load 就绪。复现真实接线顺序——resolver/probe 注入先于 Load：门禁
+// （SetAPIKeyReadyProbe 返回 false）期间 Load/SaveProvider/SaveTerminalPreset/
+// ReexportVisionModels 的所有导出触发都不得写盘，防止用空密钥缓存把带真实
+// key 的 ~/.agents/amagi-media-models.json 覆盖成无 api_key 版本；就绪后
+// ReexportVisionModels 补发正确产物并自愈历史文件。
+func TestServiceVisionExport_SecretsNotReadyGate(t *testing.T) {
+	path := visionTestPath(t)
+	t.Setenv(VisionModelsPathEnv, path)
+
+	// 预置一份带 key 的“历史正确导出”，模拟用户已有文件，先于一切服务操作。
+	if err := ExportVisionModels(markedConfig(), fakeKeyResolver("sk-real-key")); err != nil {
+		t.Fatalf("seed export: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seeded export: %v", err)
+	}
+	assertUnchanged := func(stage string) {
+		t.Helper()
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read export after %s: %v", stage, err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("export file overwritten at %s while secrets not ready (would wipe real api_key)", stage)
+		}
+	}
+
+	ready := false
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	// 复现 App 组装顺序：注入先于 Load，Config.Load 尾部即触发首轮导出。
+	svc.SetAPIKeyResolver(fakeKeyResolver("sk-test"))
+	svc.SetAPIKeyReadyProbe(func() bool { return ready })
+
+	// 未就绪：Load 尾部的首轮导出（原故障点）被门禁跳过，历史文件字节级不变
+	//（updated_at 也不会重写）。
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	assertUnchanged("Load")
+
+	// 未就绪：SaveProvider/SaveTerminalPreset 的导出触发同样被门禁跳过。
+	if err := svc.SaveProvider("个人版API- Gemini", openAIProvider()); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	assertUnchanged("SaveProvider")
+	marked := TerminalPreset{
+		Name: "gemini-3.7-flash", Provider: "个人版API- Gemini", Model: "gemini-3.7-flash",
+		Vision: true, VisionPriority: 1,
+	}
+	if err := svc.SaveTerminalPreset("openai", "个人版API- Gemini/gemini-3.7-flash", marked); err != nil {
+		t.Fatalf("SaveTerminalPreset: %v", err)
+	}
+	assertUnchanged("SaveTerminalPreset")
+
+	// 未就绪：ReexportVisionModels 明确报错且不写盘。
+	if err := svc.ReexportVisionModels(); err == nil {
+		t.Fatal("ReexportVisionModels should fail while secrets not ready")
+	}
+	assertUnchanged("ReexportVisionModels(not ready)")
+
+	// 就绪：补发导出写盘，api_key 来自 resolver。
+	ready = true
+	if err := svc.ReexportVisionModels(); err != nil {
+		t.Fatalf("ReexportVisionModels: %v", err)
+	}
+	f := readVisionExport(t, path)
+	if len(f.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(f.Models))
+	}
+	m := findVisionModel(t, f, "个人版API- Gemini/gemini-3.7-flash")
+	if m.APIKey != "sk-test" {
+		t.Errorf("api_key = %q, want sk-test", m.APIKey)
+	}
+}

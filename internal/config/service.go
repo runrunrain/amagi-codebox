@@ -66,6 +66,11 @@ type ConfigService struct {
 	// （契约 docs/vision-export-contract.md §2）。config 包不得直接依赖 secrets
 	// 包，由 App 组装时注入；未注入时（单测/嵌入式）跳过导出写盘。
 	apiKeyResolver func(provider string) string
+	// apiKeyReady 密钥库就绪探针（SetAPIKeyReadyProbe 注入）。非 nil 且返回 false
+	// 时（密钥库未加载/加载中/上次加载失败），跳过视觉模型导出写盘：启动顺序
+	// 是 Load（尾部即触发导出）先于 Secrets.Load，不门禁会用空密钥缓存把带真实
+	// key 的导出文件覆盖成无 key 版本。“未就绪”≠“无密钥”，绝不降级导出。
+	apiKeyReady func() bool
 	// modalityProber 多模态实弹探测调度入口（契约 §2 v1.2，SetModalityProber
 	// 注入；非阻塞契约见其注释）。未注入时（单测/嵌入式）全部探测调度静默跳过。
 	modalityProber func(providerName, model string)
@@ -86,6 +91,33 @@ func (s *ConfigService) SetAPIKeyResolver(fn func(provider string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.apiKeyResolver = fn
+}
+
+// SetAPIKeyReadyProbe 注入密钥库就绪探针（App 组装时接 SecretsService.Ready）。
+// 注入后：探针返回 false 的导出触发一律跳过写盘，待密钥库就绪后由
+// ReexportVisionModels 或下一次 Save/Delete 显式补发。
+func (s *ConfigService) SetAPIKeyReadyProbe(fn func() bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apiKeyReady = fn
+}
+
+// ReexportVisionModels 幂等全量重导出视觉模型文件（契约 §2）。App 启动在
+// Secrets.Load 成功后调用补发：启动早期（密钥库未就绪）被门禁跳过的首轮
+// 导出由此补上，同时自愈历史版本遗留的无 key 导出文件。
+func (s *ConfigService) ReexportVisionModels() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	if s.apiKeyResolver == nil {
+		return nil // 未注入（单测/嵌入式）：导出本就不启用，静默成功
+	}
+	if s.apiKeyReady != nil && !s.apiKeyReady() {
+		return errors.New("secrets not ready")
+	}
+	return ExportVisionModels(s.config, s.apiKeyResolver)
 }
 
 // SetModalityProber 注入多模态实弹探测调度入口（契约 §2 v1.2）。
@@ -225,6 +257,12 @@ func (s *ConfigService) collectModalityProbeCandidatesLocked() map[string][2]str
 // 导出属旁路产物：失败仅记 log，不阻断主流程、不影响调用方返回值。
 func (s *ConfigService) triggerVisionExportLocked() {
 	if s.apiKeyResolver == nil || s.config == nil {
+		return
+	}
+	// 密钥库未就绪门禁（密钥面安全）：跳过本轮写盘，绝不把带真实 key 的导出
+	// 文件覆盖成空 key 版本（Startup 在密钥库就绪后补发）。
+	if s.apiKeyReady != nil && !s.apiKeyReady() {
+		fmt.Fprintf(os.Stderr, "[config] vision models export skipped: secrets not ready\n")
 		return
 	}
 	if err := ExportVisionModels(s.config, s.apiKeyResolver); err != nil {
@@ -1513,7 +1551,7 @@ type MergedTerminalPreset struct {
 	VisionPriority int  `json:"vision_priority,omitempty"`
 	// HarnessSync 透传：anthropic 桶预设加入 pi/omp 托管模型同步的 opt-in
 	//（openai 桶默认全同步，标记 no-op）；前端展示与编辑回填用。
-	HarnessSync    bool `json:"harness_sync,omitempty"`
+	HarnessSync bool `json:"harness_sync,omitempty"`
 }
 
 // GetMergedTerminalPresets 按 terminalType 返回合并后的预设列表。

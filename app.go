@@ -166,9 +166,9 @@ const (
 var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
 type codexConfigSyncOptions struct {
-	Model                string
-	ModelProvider        string
-	ProviderBaseURL      string
+	Model           string
+	ModelProvider   string
+	ProviderBaseURL string
 	// WireAPI 为托管 provider 段写入的 wire_api 值（经 codexWireAPI 归一化：
 	// "chat" -> chat，其余 -> responses legacy 默认）。空值维持既有行为。
 	WireAPI              string
@@ -481,6 +481,16 @@ func NewApp(mobileAssets embed.FS) *App {
 		}
 		return key
 	})
+	// 密钥库就绪门禁（密钥面安全）：启动顺序是 Config.Load（尾部即触发导出）先于
+	// Secrets.Load，若不门禁，首次导出会用未加载的空密钥缓存把 ~/.agents/
+	// amagi-media-models.json 覆盖成无 api_key 版本。注入 Ready 探针后，未就绪
+	// （未加载/加载中/上次加载失败）一律跳过本轮写盘；“未就绪”≠“无密钥”，绝不
+	// 降级导出；密钥库就绪后的首次成功导出由 Startup 里 Secrets.Load 成功后的
+	// ReexportVisionModels 补发。
+	// 并发不变量：Secrets.Load 全进程仅在 Startup 顺序执行一次（且 Load 期间 cache
+	// 保留旧值直到原子交换），因此探针门禁与导出间不存在并发 reload 窗口；若未来
+	// 引入并发/热重载 Load，须改为一次固定 Snapshot 内完成就绪判定+取 key。
+	app.Config.SetAPIKeyReadyProbe(app.Secrets.Ready)
 	// 多模态实弹探测（契约 v1.2）：预设/服务商保存与配置加载后，对静态知识库
 	// 未知的模型自动实弹探测能力并落缓存，供视觉导出与 pi/omp input 声明。
 	app.wireModalityProber()
@@ -1674,6 +1684,14 @@ func (a *App) Startup(ctx context.Context) {
 	} else {
 		loadState.secretsLoaded = true
 		a.Log.Info("app", "密钥加载成功")
+		// 密钥库就绪后补发视觉模型导出（契约 §2 + 密钥面安全）：启动早期
+		// Config.Load 尾部的首轮导出因密钥库未就绪被门禁跳过，由此补上；
+		// 同时自愈历史版本遗留的无 key 导出文件。失败仅告警，不阻断启动。
+		if err := a.Config.ReexportVisionModels(); err != nil {
+			a.Log.Warn("app", "视觉模型导出补发失败", err.Error())
+		} else {
+			a.Log.Info("app", "视觉模型导出已补发")
+		}
 	}
 	// 桌面端互联 RC1-5：密钥库就绪后补齐远程客户端域（凭据存储 + 配对服务）。
 	// 不阻断启动：失败置 nil，相关绑定返回明确错误。

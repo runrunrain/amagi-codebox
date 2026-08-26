@@ -184,6 +184,17 @@ func (s *SecretsService) GetAllProviders() []string {
 	return providers
 }
 
+// Ready reports whether the credential store has finished a successful
+// load and is not mid-reload. Key-dependent derived artifacts (such as the
+// amagi-media-models.json export) must consult this before overwriting an
+// existing keyed file: deriving from an unloaded/failed store would silently
+// replace real API keys with empty ones.
+func (s *SecretsService) Ready() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loaded && !s.loading && s.loadErr == nil
+}
+
 // Snapshot returns a copy of every stored secret. It refuses to return a
 // partial snapshot while the platform credential store is loading or after it
 // failed to load, so a "complete" configuration export cannot silently lose
