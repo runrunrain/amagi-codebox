@@ -30,6 +30,10 @@ export function Load() {
   return window['go']['secrets']['SecretsService']['Load']();
 }
 
+export function Ready() {
+  return window['go']['secrets']['SecretsService']['Ready']();
+}
+
 export function ReplaceAll(arg1) {
   return window['go']['secrets']['SecretsService']['ReplaceAll'](arg1);
 }

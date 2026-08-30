@@ -32,6 +32,7 @@ func capabilitiesForTarget(osName string, arch string) PlatformCapabilities {
 		capabilities.WindowActivationSupported = true
 		capabilities.HideOnCloseSupported = true
 		capabilities.BackgroundResidentSupported = true
+		capabilities.SystemProxyControlSupported = true
 		capabilities.CloseAction = CloseActionHide
 		capabilities.SecureSecretStoreKind = "dpapi"
 		// Default to WSL so terminals launched by CodeBox run in a Linux

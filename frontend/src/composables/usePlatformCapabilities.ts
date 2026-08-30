@@ -30,6 +30,7 @@ export interface PlatformCapabilities {
   windowActivationSupported: boolean
   hideOnCloseSupported: boolean
   backgroundResidentSupported: boolean
+  systemProxyControlSupported: boolean
   closeAction: string
   secureSecretStoreKind: string
   pathDiagnosticsSupported: boolean
@@ -68,6 +69,9 @@ export function usePlatformCapabilities() {
 
   /** true when running on macOS. */
   const isDarwin = computed(() => cached.value?.os === 'darwin')
+
+  /** true when the app can write the OS-level explicit proxy toggle (Windows). */
+  const systemProxyControlSupported = computed(() => cached.value?.systemProxyControlSupported ?? false)
 
   /**
    * Built-in shell options derived from backend SupportedShells.
@@ -116,6 +120,7 @@ export function usePlatformCapabilities() {
     caps,
     isWindows,
     isDarwin,
+    systemProxyControlSupported,
     builtinShellOptions,
     defaultShellKey,
     launchModes,

@@ -62,6 +62,10 @@ export function GetSkinSettings() {
   return window['go']['settings']['Service']['GetSkinSettings']();
 }
 
+export function GetSystemProxyEndpoint() {
+  return window['go']['settings']['Service']['GetSystemProxyEndpoint']();
+}
+
 export function GetTerminalSettings() {
   return window['go']['settings']['Service']['GetTerminalSettings']();
 }
@@ -128,6 +132,10 @@ export function SetRemotePort(arg1) {
 
 export function SetSkinSettings(arg1) {
   return window['go']['settings']['Service']['SetSkinSettings'](arg1);
+}
+
+export function SetSystemProxyEndpoint(arg1, arg2) {
+  return window['go']['settings']['Service']['SetSystemProxyEndpoint'](arg1, arg2);
 }
 
 export function SetTerminalSettings(arg1) {

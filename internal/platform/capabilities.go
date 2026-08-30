@@ -16,20 +16,23 @@ type ShellDescriptor struct {
 }
 
 type PlatformCapabilities struct {
-	PlatformID                  string            `json:"platformId"`
-	OS                          string            `json:"os"`
-	Arch                        string            `json:"arch"`
-	EmbeddedTerminalSupported   bool              `json:"embeddedTerminalSupported"`
-	StandaloneTerminalSupported bool              `json:"standaloneTerminalSupported"`
-	SystemTraySupported         bool              `json:"systemTraySupported"`
-	FileOpenSupported           bool              `json:"fileOpenSupported"`
-	UpdateCheckSupported        bool              `json:"updateCheckSupported"`
-	UpdateInstallSupported      bool              `json:"updateInstallSupported"`
-	AutoStartSupported          bool              `json:"autoStartSupported"`
-	SingleInstanceSupported     bool              `json:"singleInstanceSupported"`
-	WindowActivationSupported   bool              `json:"windowActivationSupported"`
-	HideOnCloseSupported        bool              `json:"hideOnCloseSupported"`
-	BackgroundResidentSupported bool              `json:"backgroundResidentSupported"`
+	PlatformID                  string `json:"platformId"`
+	OS                          string `json:"os"`
+	Arch                        string `json:"arch"`
+	EmbeddedTerminalSupported   bool   `json:"embeddedTerminalSupported"`
+	StandaloneTerminalSupported bool   `json:"standaloneTerminalSupported"`
+	SystemTraySupported         bool   `json:"systemTraySupported"`
+	FileOpenSupported           bool   `json:"fileOpenSupported"`
+	UpdateCheckSupported        bool   `json:"updateCheckSupported"`
+	UpdateInstallSupported      bool   `json:"updateInstallSupported"`
+	AutoStartSupported          bool   `json:"autoStartSupported"`
+	SingleInstanceSupported     bool   `json:"singleInstanceSupported"`
+	WindowActivationSupported   bool   `json:"windowActivationSupported"`
+	HideOnCloseSupported        bool   `json:"hideOnCloseSupported"`
+	BackgroundResidentSupported bool   `json:"backgroundResidentSupported"`
+	// SystemProxyControlSupported：能否从应用内写入系统级显式代理开关
+	// （Windows Internet Settings；macOS/Linux 暂不支持，UI 据此隐藏开关）。
+	SystemProxyControlSupported bool              `json:"systemProxyControlSupported"`
 	CloseAction                 CloseAction       `json:"closeAction"`
 	SecureSecretStoreKind       string            `json:"secureSecretStoreKind"`
 	PathDiagnosticsSupported    bool              `json:"pathDiagnosticsSupported"`

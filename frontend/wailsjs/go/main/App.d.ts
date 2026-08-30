@@ -163,6 +163,8 @@ export function GetSettingsService():Promise<settings.Service>;
 
 export function GetStartupWarnings():Promise<Array<string>>;
 
+export function GetSystemProxyStatus():Promise<main.SystemProxyStatus>;
+
 export function GetTerminalPresets(arg1:string):Promise<Record<string, config.TerminalPreset>>;
 
 export function GetUrlHistory(arg1:string):Promise<Array<string>>;
@@ -332,6 +334,8 @@ export function SetRemoteEndpoint(arg1:string,arg2:number):Promise<void>;
 export function SetRemoteHost(arg1:string):Promise<void>;
 
 export function SetRemotePort(arg1:number):Promise<void>;
+
+export function SetSystemProxyEnabled(arg1:boolean):Promise<main.SystemProxyStatus>;
 
 export function StartInstallClaudeWithMethodAsync(arg1:string):Promise<envcheck.OperationState>;
 

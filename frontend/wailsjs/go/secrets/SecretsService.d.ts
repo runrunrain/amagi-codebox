@@ -15,6 +15,8 @@ export function HasAPIKey(arg1:string):Promise<boolean>;
 
 export function Load():Promise<void>;
 
+export function Ready():Promise<boolean>;
+
 export function ReplaceAll(arg1:Record<string, string>):Promise<void>;
 
 export function Save():Promise<void>;
