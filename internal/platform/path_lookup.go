@@ -509,6 +509,9 @@ func resolveCommandViaShellFallback(command string, env []string, selectedShell 
 		args := buildShellResolveArgs(shell, command)
 		cmd := exec.Command(shell.Path, args[0], args[1])
 		cmd.Env = env
+		// 统一防御：当前仅 darwin 解析路径会到达这里，但本文件跨平台，
+		// 万一未来被 Windows 路径复用也保证不闪控制台窗口。
+		SuppressConsoleWindow(cmd)
 		out, err := cmd.Output()
 		if err != nil {
 			continue

@@ -252,7 +252,9 @@ func killProcessTree(cmd *exec.Cmd) {
 	if runtime.GOOS == "windows" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = exec.CommandContext(ctx, "taskkill", "/PID", fmt.Sprintf("%d", cmd.Process.Pid), "/T", "/F").Run()
+		tk := exec.CommandContext(ctx, "taskkill", "/PID", fmt.Sprintf("%d", cmd.Process.Pid), "/T", "/F")
+		SuppressConsoleWindow(tk)
+		_ = tk.Run()
 	}
 	_ = cmd.Process.Kill()
 }

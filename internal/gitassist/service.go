@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/settings"
 )
 
@@ -74,6 +75,7 @@ func runGit(workDir string, timeout time.Duration, args ...string) (string, erro
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, args...)...)
+	platform.SuppressConsoleWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -428,6 +430,7 @@ func commitViaStdin(workDir, message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "commit", "-F", "-")
+	platform.SuppressConsoleWindow(cmd)
 	cmd.Stdin = strings.NewReader(message)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -467,6 +470,7 @@ func (s *Service) Push(workDir string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir, "push"}, args...)...)
+		platform.SuppressConsoleWindow(cmd)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

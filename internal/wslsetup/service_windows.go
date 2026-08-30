@@ -41,14 +41,18 @@ var wslExec = func(distro, user, script string) (string, error) {
 		args = append(args, "-u", user)
 	}
 	args = append(args, "--", "bash", "-lc", userBinPathPrefix+script)
-	out, err := exec.Command("wsl.exe", args...).CombinedOutput()
+	cmd := exec.Command("wsl.exe", args...)
+	platform.SuppressConsoleWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
 // wslExecRoot runs a non-interactive command as root (for apt / NodeSource).
 var wslExecRoot = func(distro, script string) (string, error) {
 	args := []string{"-d", distro, "-u", "root", "--", "bash", "-lc", script}
-	out, err := exec.Command("wsl.exe", args...).CombinedOutput()
+	cmd := exec.Command("wsl.exe", args...)
+	platform.SuppressConsoleWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
@@ -59,7 +63,9 @@ var wslExecRoot = func(distro, script string) (string, error) {
 // it.
 var wslExecLogin = func(distro, script string) (string, error) {
 	args := []string{"-d", distro, "--", "bash", "-lc", script}
-	out, err := exec.Command("wsl.exe", args...).CombinedOutput()
+	cmd := exec.Command("wsl.exe", args...)
+	platform.SuppressConsoleWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 

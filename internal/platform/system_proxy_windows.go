@@ -16,16 +16,25 @@ import (
 //
 // 通过 `reg query` 读取，避免引入额外依赖；未启用或解析失败时 ok=false。
 // 例外列表（ProxyOverride）一并返回，供 NO_PROXY 同步（<local> 控制标记丢弃）。
+// regQuery 运行 `reg query` 并返回原始输出。统一带控制台窗口抑制：
+// GUI 父进程下 reg.exe（console 子系统）会闪现终端窗口。
+func regQuery(args ...string) (string, error) {
+	cmd := exec.Command("reg", args...)
+	SuppressConsoleWindow(cmd)
+	out, err := cmd.Output()
+	return string(out), err
+}
+
 func detectSystemProxy() (host, port string, exceptions []string, ok bool) {
-	out, err := exec.Command("reg", "query",
+	out, err := regQuery("query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
-		"/v", "ProxyEnable").Output()
-	if err != nil || !parseRegDwordEnabled(string(out)) {
+		"/v", "ProxyEnable")
+	if err != nil || !parseRegDwordEnabled(out) {
 		return "", "", nil, false
 	}
-	out, err = exec.Command("reg", "query",
+	out, err = regQuery("query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
-		"/v", "ProxyServer").Output()
+		"/v", "ProxyServer")
 	if err != nil {
 		return "", "", nil, false
 	}
@@ -39,13 +48,13 @@ func detectSystemProxy() (host, port string, exceptions []string, ok bool) {
 // readRegProxyOverride 读取并解析注册表 ProxyOverride 例外列表；
 // 读取失败或未配置时返回 nil（例外同步是增强项，不阻断代理注入）。
 func readRegProxyOverride() []string {
-	out, err := exec.Command("reg", "query",
+	out, err := regQuery("query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
-		"/v", "ProxyOverride").Output()
+		"/v", "ProxyOverride")
 	if err != nil {
 		return nil
 	}
-	return parseRegProxyOverride(string(out))
+	return parseRegProxyOverride(out)
 }
 
 // parseRegProxyOverride 是 readRegProxyOverride 的纯函数内核（可测试）。

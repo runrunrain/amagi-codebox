@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"amagi-codebox/internal/platform"
 )
 
 // Service 提供对 omp 配置与模型目录的读写访问。无状态。
@@ -346,6 +348,8 @@ func runOmpModelsList() ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "models", "ls", "--json", "--no-extensions")
+	// Windows 下抑制 omp（console 子系统）闪现终端窗口；其他平台 no-op。
+	platform.SuppressConsoleWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run omp models ls: %w", err)

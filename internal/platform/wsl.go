@@ -17,6 +17,7 @@ import (
 // package var so tests can inject a fake list without invoking real WSL.
 var wslDistroLister = func(env []string) ([]byte, error) {
 	cmd := exec.Command("wsl.exe", "-l", "-q")
+	SuppressConsoleWindow(cmd)
 	if len(env) > 0 {
 		cmd.Env = env
 	}
@@ -43,6 +44,7 @@ var wslReservedDistros = map[string]struct{}{
 // the error is swallowed by callers (version reported as 0 = unknown).
 var wslDistroVersionLister = func(env []string) ([]byte, error) {
 	cmd := exec.Command("wsl.exe", "-l", "-v")
+	SuppressConsoleWindow(cmd)
 	cmd.Env = env
 	return cmd.Output()
 }
