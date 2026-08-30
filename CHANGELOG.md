@@ -4,6 +4,18 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.59] - 2026-08-31
+
+### Added
+
+- **设置页支持开关全局设备显式代理（仅 Windows）**：新增 `App.GetSystemProxyStatus`/`App.SetSystemProxyEnabled` 与 `settings.Service.GetSystemProxyEndpoint`/`SetSystemProxyEndpoint` 绑定；`internal/platform` 新增 system proxy 写入门面（开启写 `ProxyServer`+`ProxyEnable=1` 并在 `ProxyOverride` 缺失时补默认回环绕行、关闭仅摘 `ProxyEnable=0` 保留地址、写入后广播 WinINet 刷新），端点持久化到 `settings.json`（默认 `127.0.0.1:5800`），状态卡片含 TCP+HTTP 双探测可达性提示；macOS/Linux 由 `systemProxyControlSupported` 能力门控隐藏。
+
+### Fixed
+
+- **后台子进程闪窗**：Windows 后台 exec 点统一窗口抑制策略（`HideWindow` + `CREATE_NO_WINDOW` 收敛到 `process_policy`），覆盖扩展管理触发的 claude plugin 查询、system proxy 注册表查询、wsl.exe 探测、wslsetup、omp models 查询、gitassist、taskkill、path lookup 等，桌面端不再弹出一闪而过的终端窗口；交互式 PTY 会话不受影响。
+- **WSL 终端模式 pi/omp 配置失效**：pi/omp 会话运行在 distro 内时，models.json/models.yml 改写入 WSL 侧 `~/.pi/agent`/`~/.omp/agent`（UNC 原子写 + 保留已有 provider 合并 + chmod 补偿），修复 Windows 侧配置不可达导致的 401；剥离携带 Windows 盘符路径值的 `PI_*` 环境变量，避免 WSLENV 转发后在 Linux 侧成为非法路径；WSL 内 fd/ripgrep 缺失时按进程一次探测并 WARN 给出 apt 安装引导。
+- **修复主应用运行时 `wails build` 不更新前端绑定**：`main.go` 的单实例互斥会把 wails 以 `-tags bindings` 构建的绑定生成进程静默 `os.Exit(0)`，导致 `frontend/wailsjs` 停滞（新绑定方法在前端 TS2305 缺失）；bindings 模式现在跳过互斥检查。
+
 ## [1.3.58] - 2026-08-30
 
 ### Added
@@ -18,14 +30,6 @@
 ### 工程
 
 - `.gitattributes` 行尾契约（LF 基线 + `.bat/.cmd/.ps1` CRLF + 二进制标记）：根治 Windows git（autocrlf=true）与 WSL git 对同一工作区的行尾判定分裂。
-
-### Added
-
-- **设置页支持开关全局设备显式代理（仅 Windows）**：新增 `App.GetSystemProxyStatus`/`App.SetSystemProxyEnabled` 与 `settings.Service.GetSystemProxyEndpoint`/`SetSystemProxyEndpoint` 绑定；`internal/platform` 新增 system proxy 写入门面（开启写 `ProxyServer`+`ProxyEnable=1` 并在 `ProxyOverride` 缺失时补默认回环绕行、关闭仅摘 `ProxyEnable=0` 保留地址、写入后广播 WinINet 刷新），端点持久化到 `settings.json`（默认 `127.0.0.1:5800`），状态卡片含 TCP+HTTP 双探测可达性提示；macOS/Linux 由 `systemProxyControlSupported` 能力门控隐藏。
-
-### Fixed
-
-- **修复主应用运行时 `wails build` 不更新前端绑定**：`main.go` 的单实例互斥会把 wails 以 `-tags bindings` 构建的绑定生成进程静默 `os.Exit(0)`，导致 `frontend/wailsjs` 停滞（新绑定方法在前端 TS2305 缺失）；bindings 模式现在跳过互斥检查。
 
 ## [1.3.57] - 2026-08-26
 
