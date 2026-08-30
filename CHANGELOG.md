@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.60] - 2026-08-31
+
+### Added
+
+- **环境检测新增 WSL 搜索工具检测与一键安装**：环境检测体系覆盖 WSL distro 内 fd/fdfind/ripgrep 缺失场景（pi/omp 会话在 `PI_OFFLINE=1` 注入下不会自下载搜索工具）。Windows + 可用 distro 时探测 distro 内工具状态（包级缓存，CheckAll 的 pi/omp 共享一次探测），缺失产出 warning issue 并提供 `install_wsl_search_tools` 一键方案：root apt 安装 `fd-find ripgrep`，安装前后双重缓存失效（安装前刷新 stale 快照、安装后复检读到新状态）+ 安装后验证探测，失败结构化报错并给手动兜底命令；无可用 distro 时回落原生侧 PATH 与 agent bin 检测（winget 指引），两侧互斥、WSL 优先。前端环境检测页新增「安装搜索工具」入口与 root 确认弹窗。
+
 ## [1.3.59] - 2026-08-31
 
 ### Added
