@@ -920,6 +920,15 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 	parts := []string{"wsl.exe", "-d", distro}
 	if strings.TrimSpace(spec.WorkDir) != "" {
 		parts = append(parts, "--cd", windowsQuoteArg(spec.WorkDir))
+		// C8: a Windows drive-letter workdir lands on the /mnt/<drive> DrvFS/9P
+		// mount, whose I/O is dramatically slower than the distro's ext4 for
+		// small-file / git-heavy workloads. Advisory log only — the session still
+		// starts. (No session-start advisory UI mechanism exists; see
+		// docs/user/usage.md 工作目录选型 for user-facing guidance.)
+		if workDirMapsToDrvFS(spec.WorkDir) && log != nil {
+			log.Warn("pty", "DrvFS 工作区 I/O 显著慢于 ext4",
+				fmt.Sprintf("workDir=%s 挂载为 %s；建议将工作区放在 WSL ext4（如 ~/）内", spec.WorkDir, drvfsMountPath(spec.WorkDir)))
+		}
 	}
 	parts = append(parts, "--", "bash", "-lic")
 
@@ -948,6 +957,28 @@ func buildWSLInnerCommand(cliName string, args []string) string {
 // quotes via the standard '\'' idiom. This neutralises every bash metacharacter.
 func bashSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// workDirMapsToDrvFS reports whether workDir is a Windows drive-letter path
+// (e.g. X:\repo): wsl.exe --cd maps those onto the /mnt/<drive> DrvFS/9P mount
+// inside the distro. Linux-style paths (~/... or /home/...) stay on ext4.
+func workDirMapsToDrvFS(workDir string) bool {
+	w := strings.TrimSpace(workDir)
+	return len(w) >= 2 && w[1] == ':' && isDriveLetter(w[0])
+}
+
+// drvfsMountPath converts a Windows drive-letter path to its WSL DrvFS mount
+// point (X:\a\b → /mnt/x/a/b). Best-effort, used for log detail only.
+func drvfsMountPath(winPath string) string {
+	w := strings.TrimSpace(winPath)
+	if !workDirMapsToDrvFS(w) {
+		return ""
+	}
+	return "/mnt/" + strings.ToLower(w[:1]) + strings.ReplaceAll(w[2:], `\`, "/")
+}
+
+func isDriveLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // windowsQuoteArg wraps a value so CommandLineToArgvW parses it as a single

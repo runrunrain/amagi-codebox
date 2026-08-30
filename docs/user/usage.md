@@ -54,6 +54,25 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
 
 > 当主机切换器处于远程模式时，本页内容被 `RemoteSessionsView` 替换。字段实际名称、可选项与平台分发以应用内显示为准。
 
+### 工作目录选型：DrvFS(/mnt/*) 与 ext4(~/)
+
+Windows 上内嵌会话默认落在 WSL，工作目录的选择直接决定会话的 I/O 性能档位：
+
+| 工作目录位置 | 文件系统 | I/O 特征 |
+|--------------|----------|----------|
+| WSL 发行版内（`~/projects` 等 ext4 路径） | ext4 | 原生 Linux 文件系统，小文件、git、npm 等密集 I/O 全速 |
+| Windows 盘符路径（`D:\repo` 等） | DrvFS（WSL2 上经 9P 协议桥接，挂载为 `/mnt/d/repo`） | 跨操作系统边界的文件访问，小文件读写 / 目录扫描 / 文件监听（inotify）显著变慢，git 仓库操作尤甚 |
+
+经验量级：在 DrvFS 上做 `git status` / `npm install` / 大量小文件读写的耗时通常是 ext4 的数倍到数十倍；会话内的 AI 工具频繁扫描代码库时差距会被放大。（WSL1 的 `/mnt/*` 是内核级翻译层，代价小于 WSL2 的 9P，但同样慢于 ext4。）
+
+**选型建议：**
+
+- 长期开发 / 重度会话：把仓库 clone 进 WSL 内（如 `~/projects/<repo>`），工作目录填 Linux 路径，获得完整 I/O 性能；
+- 只是临时看 / 改几个 Windows 文件：用 `/mnt/<盘符>/...` 路径可以接受，避免来回搬迁；
+- 仓库必须留在 Windows 侧（Windows 专属工具链、VS 调试等）：要么接受 DrvFS 慢档，要么改选 Windows 原生 Shell 会话（见 [./terminal.md](./terminal.md#何时选择-windows-原生-shell-会话)）。
+
+> CodeBox 启动 WSL 会话时，若 `--cd` 工作目录映射到 `/mnt/<盘符>`（DrvFS/9P），后端会记一条 warn 日志「DrvFS 工作区 I/O 显著慢于 ext4」作为提示（`/logs` 页可查）；这只是建议，不会阻止会话启动。
+
 ---
 
 ## 终端 `/terminal`（TerminalPageView）

@@ -100,6 +100,13 @@ type Service struct {
 	pythonVersion            string
 	pythonVersionUnsupported bool
 	pythonResolvedErr        error // error message when no supported Python is available
+
+	// WSL 混合架构探测缓存（C7）：登录 shell 内批量 `command -v` 的解析结果，
+	// TTL 缓存保证一次 CheckAll（六次 CheckOne）最多拉起一次 wsl.exe。见
+	// wsl_hybrid.go。
+	wslHybridMu        sync.Mutex
+	wslHybridPaths     map[string]string
+	wslHybridFetchedAt time.Time
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -249,6 +256,7 @@ func (s *Service) finishToolCheck(status *CheckStatus, err error) (*CheckStatus,
 	}
 	s.populateCanInstall(status)
 	s.enrichWithLatestVersion(status)
+	s.appendWSLHybridArchWarning(status)
 	s.cacheToolStatus(status)
 	return status, nil
 }

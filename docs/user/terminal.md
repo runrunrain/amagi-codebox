@@ -63,6 +63,32 @@
 
 ---
 
+## 何时选择 Windows 原生 Shell 会话
+
+Windows 上内嵌会话默认在 WSL 中启动，但有一类任务天然属于 Windows 本身：管理用户级 / 系统级配置、注册表、Windows 服务与 PowerShell 生态。这类任务应该改选 Windows 原生 Shell（PowerShell / cmd）会话，而不是让 WSL 里的 bash 去隔层互操作。
+
+**建议选 Windows 原生 Shell 的典型任务：**
+
+- 编辑 PowerShell `$PROFILE`、设置执行策略、管理 PowerShell 模块（`Install-Module` / `pwsh` 配置）；
+- 改注册表（`reg` / `regedit`）、Windows 服务（`sc` / `Get-Service`）、计划任务、防火墙规则；
+- 用 `winget` / `choco` 安装 Windows 软件，或改系统级 / 用户级 PATH（系统属性 → 环境变量）；
+- 调试 Windows 专属工具链（IIS、MSVC、WSL 本身 `wsl --update` 等）。
+
+**为什么不建议在 WSL bash 里做这些：** WSL interop 虽然能调用 `powershell.exe` / `reg.exe`，但会叠加一层摩擦——
+
+| 摩擦点 | 表现 |
+|--------|------|
+| `.exe` 语义叠加 | 在 bash 里必须写全 `powershell.exe`、`reg.exe`；PowerShell 的参数 quoting 经过 bash → CreateProcess 两层解析，复杂命令容易出错 |
+| 路径割裂 | 同一文件在两侧有两个名字（`C:\Users\x` vs `/mnt/c/Users/x`）；部分 Windows 工具不认 `/mnt/*` 路径，部分 Linux 工具不认盘符 |
+| stdin / 管道语义 | 交互式 Windows 工具经 interop 驱动时 stdin/控制台行为不一致（进度条、密码提示、颜色输出可能异常） |
+| 启动开销 | 每次互操作调用都要跨 Windows ↔ Linux 边界，脚本里循环调用 Windows 工具时明显变慢 |
+
+**怎么切换：** 会话设置页（`/`）的「终端 Shell」选择器里选 PowerShell / cmd，或填自定义 shell 路径；选择按引擎独立持久化（`dashboard.claudeShell` 等字段，见上文「Shell 选择」）。默认值仍是 WSL——只有当任务目标是 Windows 本身时才需要手动切换。
+
+> 反方向的选型（工作目录放 `/mnt/*` 还是 WSL 内 ext4）见 [./usage.md](./usage.md) 的「工作目录选型：DrvFS(/mnt/*) 与 ext4(~/)」一节：那决定的是 I/O 性能，本节决定的是“你在管理哪个操作系统”。
+
+---
+
 ## 前端渲染
 
 xterm.js 6 是终端渲染核心。挂载逻辑在 `useTerminalEngine.ts` 的 `mountTerm` 中，所有渲染选项在创建 `Terminal` 实例时一次性确定。

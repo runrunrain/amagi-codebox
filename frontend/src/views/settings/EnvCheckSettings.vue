@@ -131,6 +131,9 @@
           class="issue-row"
         >
           <div class="issue-copy">
+            <!-- C7 混合架构预警等 warning/error 类 issue：徽标前加一枚警示图标，
+                 文案以后端字段为主，前端只做一句话 + 图标的最小展示。 -->
+            <span v-if="isNegativeSeverity(issue.severity)" class="issue-flag" :class="issueSeverityClass(issue.severity)">⚠</span>
             <span class="issue-sev" :class="issueSeverityClass(issue.severity)">{{ issueSeverityLabel(issue.severity) }}</span>
             <span class="issue-msg">{{ issue.message || '' }}</span>
           </div>
@@ -1038,6 +1041,11 @@ function issueSeverityClass(sev: string): string {
   return `sev-${sev || 'info'}`
 }
 
+// warning 及以上级别的 issue 额外展示一枚警示图标（C7：后端字段为主，前端一句话 + 图标）。
+function isNegativeSeverity(sev: string): boolean {
+  return sev === 'warning' || sev === 'error' || sev === 'critical'
+}
+
 async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, displayName: string): Promise<void> {
   // R6 manual_command：纯展示命令文案，不触发后端 action。后端在 solution
   // 的 description/command 字段承载建议命令，用户参考执行。HIG 克制：用
@@ -1663,6 +1671,22 @@ onUnmounted(() => {
 .issue-sev.sev-critical {
   color: var(--danger-strong);
   background: rgba(255, 59, 48, 0.14);
+}
+
+/* 警示图标与同级 issue-sev 徽标同色，仅作视觉锚点，不携带额外语义 */
+.issue-flag {
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.issue-flag.sev-warning {
+  color: var(--warning-strong);
+}
+
+.issue-flag.sev-error,
+.issue-flag.sev-critical {
+  color: var(--danger-strong);
 }
 
 .issue-msg {

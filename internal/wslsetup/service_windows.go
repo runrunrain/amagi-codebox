@@ -52,6 +52,17 @@ var wslExecRoot = func(distro, script string) (string, error) {
 	return string(out), err
 }
 
+// wslExecLogin runs a login-shell script inside the given distro as the
+// distro's default user WITHOUT the artificial PATH prefix, so `command -v`
+// observes the real .profile/.bashrc state — the same resolution a launched
+// session's `bash -lic` performs. It is a package var so tests can substitute
+// it.
+var wslExecLogin = func(distro, script string) (string, error) {
+	args := []string{"-d", distro, "--", "bash", "-lc", script}
+	out, err := exec.Command("wsl.exe", args...).CombinedOutput()
+	return string(out), err
+}
+
 // GetStatus reports whether WSL is usable and which managed CLIs are installed
 // natively inside the selected distro.
 func (s *Service) GetStatus() Status {
@@ -160,12 +171,21 @@ func (s *Service) ensureNode(distro string) (installed bool, log string, err err
 // shells (`wsl.exe -- bash -lc`): Ubuntu's .bashrc returns early for those, so a
 // .bashrc-only PATH line leaves `bash -lc pi` resolving to the /mnt/c Windows
 // shim. Idempotent.
+//
+// The append guard matches the EXACT standard line via `grep -qF` (fixed
+// string). A looser substring guard (`grep -q "npm-global/bin"`) is defeated
+// by dirty snapshots: a stale `export PATH=<fully expanded snapshot>` line in
+// .bashrc/.profile merely CONTAINS the substring, so the standard line was
+// never appended and login shells kept resolving CLIs to /mnt/c. Even when
+// such near-miss lines exist, the missing exact line is appended — with
+// PATH-prepend semantics the later line takes effect, which also repairs those
+// dirty snapshots.
 func (s *Service) ensureUserNpmPrefix(distro string) (string, error) {
 	script := strings.Join([]string{
 		`mkdir -p "$HOME/.npm-global"`,
 		`npm config set prefix "$HOME/.npm-global"`,
-		`grep -q "npm-global/bin" "$HOME/.bashrc" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"`,
-		`grep -q "npm-global/bin" "$HOME/.profile" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.profile"`,
+		`grep -qF 'export PATH="$HOME/.npm-global/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"`,
+		`grep -qF 'export PATH="$HOME/.npm-global/bin:$PATH"' "$HOME/.profile" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.profile"`,
 		`echo prefix-ok`,
 	}, " && ")
 	return wslExec(distro, "", script)
@@ -236,6 +256,27 @@ func (s *Service) InstallTool(tool string) (*InstallResult, error) {
 		res.Success = true
 		res.Version = v
 		res.Message = fmt.Sprintf("%s already installed in WSL (%s)", key, v)
+		// Effectiveness guard: nativeVersion resolves through our artificial
+		// probe PATH, so a dirty historical PATH snapshot (login shells never got
+		// the standard npm-global line) still reports AlreadyOK while real
+		// sessions fall through to the /mnt/c Windows shim. ensureUserNpmPrefix
+		// matches the exact standard line now, so re-running it appends the
+		// missing line and repairs such snapshots (PATH-prepend semantics: the
+		// appended line runs last and wins).
+		if diag := s.checkLoginResolution(distro, key); diag != "" {
+			if prefixLog, e := s.ensureUserNpmPrefix(distro); e != nil {
+				logB.WriteString("[npm-prefix-repair]\n" + prefixLog + "\nrepair failed: " + e.Error() + "\n")
+			} else {
+				logB.WriteString("[npm-prefix-repair]\n" + prefixLog + "\n")
+			}
+			if diag = s.checkLoginResolution(distro, key); diag != "" {
+				res.Success = false
+				res.Error = diag
+			} else {
+				res.Message += "; repaired login PATH (appended missing npm-global line)"
+			}
+		}
+		res.Log = logB.String()
 		return res, nil
 	}
 
@@ -282,12 +323,72 @@ func (s *Service) InstallTool(tool string) (*InstallResult, error) {
 				logB.WriteString("[pi-config]\n" + cfgLog + "\n")
 			}
 		}
+		// Final effectiveness check: a plain login shell (no artificial PATH)
+		// must resolve the CLI into $HOME/.npm-global/bin, otherwise launched
+		// sessions silently run the Windows-side CLI via /mnt/c interop.
+		if diag := s.checkLoginResolution(distro, key); diag != "" {
+			res.Success = false
+			res.Error = diag
+		}
 	} else {
 		res.Success = false
 		res.Error = "install completed but CLI did not resolve natively in WSL"
 	}
 	res.Log = logB.String()
 	return res, nil
+}
+
+// checkLoginResolution verifies that a plain login shell inside the distro
+// resolves the CLI into $HOME/.npm-global/bin rather than a /mnt/<drive>
+// Windows passthrough — the same resolution a launched session's `bash -lic`
+// builds on (driven by the .profile/.bashrc PATH lines). It must NOT go through
+// wslExec, whose artificial PATH prefix would mask a broken login PATH. Returns
+// "" when effective; otherwise a diagnostic suitable for InstallResult.Error /
+// the InstallResult log. A probe that itself errors is inconclusive and returns
+// "" (a diagnostic must not fail an otherwise completed install); the miss is
+// logged instead.
+func (s *Service) checkLoginResolution(distro, key string) string {
+	script := `printf '%s\n' "$HOME/.npm-global/bin"; command -v ` + bashSingleQuote(key) + ` 2>/dev/null || true`
+	out, err := wslExecLogin(distro, script)
+	if err != nil {
+		s.logInfo("wslsetup", "login-resolution probe failed (treated as inconclusive)", "tool="+key+" err="+err.Error())
+		return ""
+	}
+	userBin, resolved := splitLoginResolutionProbe(out)
+	if userBin == "" {
+		s.logInfo("wslsetup", "login-resolution probe returned no marker line (treated as inconclusive)", "tool="+key)
+		return ""
+	}
+	if strings.HasPrefix(resolved, userBin+"/") {
+		return ""
+	}
+	if resolved == "" {
+		return fmt.Sprintf("%s installed but not effective in the WSL login shell: command -v %s found nothing on PATH (expected under %s); check the npm-global PATH line in ~/.profile", key, key, userBin)
+	}
+	return fmt.Sprintf("%s installed but not effective in the WSL login shell: command -v %s resolves to %s instead of %s (Windows passthrough); WSL sessions would run the Windows-side CLI — check the npm-global PATH line in ~/.profile", key, key, resolved, userBin)
+}
+
+// splitLoginResolutionProbe parses checkLoginResolution's probe output: the
+// first non-empty line is the echoed "$HOME/.npm-global/bin" marker; the next
+// non-empty line (if any) is `command -v`'s direct stdout hit. Direct-stdout
+// parsing is used because command substitution is unreliable in this
+// non-interactive wsl.exe context (see nativeCommandPath).
+func splitLoginResolutionProbe(out string) (userBin, resolved string) {
+	seen := 0
+	for _, l := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(strings.Trim(l, "\r\x00"))
+		if t == "" {
+			continue
+		}
+		if seen == 0 {
+			userBin = t
+			seen = 1
+			continue
+		}
+		resolved = t
+		return
+	}
+	return
 }
 
 func (s *Service) logInfo(scope, msg, detail string) {
