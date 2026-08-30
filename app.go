@@ -3097,6 +3097,18 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	}
 	workDir = resolvedWorkDir
 
+	// WSL 终端模式判定（Bug B）：embedded 模式下解析器会把 WSL shell 的会话
+	// 跑在 distro 内（resolver.go 的 WSL 分支，镜像判定 platform.EmbeddedLaunchTargetsWSL）。
+	// 命中时后续把 models.json 写到 WSL 侧 agent root、剥离 Windows 路径值的
+	// PI_* 环境变量、并探测 fd/ripgrep；非 WSL 路径行为不变。
+	wslDistro := ""
+	if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
+		wslDistro = platform.DefaultWSLDistro(nil)
+		if wslDistro == "" {
+			a.Log.Warn("pi", "WSL shell 会话但无可用发行版，配置仍写 Windows 侧", "")
+		}
+	}
+
 	launchSettings := piLaunchSettings{
 		Model: strings.TrimSpace(modelName),
 	}
@@ -3143,17 +3155,37 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			// 写入的同 provider 其他预设模型挤掉。
 			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-				agentDir := defaultPiAgentDir()
-				// 保留用户 models.json 中已有的 provider 和其他顶层配置，
-				// 当次 amagi 生成的同名 provider 优先。
-				piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
-				writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
-				if writeErr == nil {
-					launchSettings.Provider = launcher.PiProviderID(providerID)
-					a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
-						launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+				// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
+				//（Windows 侧文件对 WSL 内的 pi 不可见）；非 WSL 路径行为不变。
+				wroteProvider := false
+				if wslDistro != "" {
+					// 保留 WSL 侧 models.json 中已有 provider（merge 在
+					// WriteWSLPiAgentConfig 内能对 UNC 路径完成），原子写 + chmod 补偿。
+					wslAgentDir, wErr := launcher.WriteWSLPiAgentConfig(wslDistro, piCfg)
+					if wErr == nil {
+						wroteProvider = true
+						a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
+							launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
+					} else {
+						a.Log.Warn("pi", "写入 WSL 侧 pi models.json 失败，回退内置 provider", wErr.Error())
+					}
 				} else {
-					a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
+					agentDir := defaultPiAgentDir()
+					// 保留用户 models.json 中已有的 provider 和其他顶层配置，
+					// 当次 amagi 生成的同名 provider 优先。
+					piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
+					writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
+					if writeErr == nil {
+						wroteProvider = true
+						a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
+							launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+					} else {
+						a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
+					}
+				}
+				if wroteProvider {
+					launchSettings.Provider = launcher.PiProviderID(providerID)
+				} else {
 					launchSettings.Provider, _ = piProviderMapping(*provider)
 				}
 			} else {
@@ -3220,6 +3252,15 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
+		if wslDistro != "" {
+			// WSL 模式：剥离携带 Windows 盘符路径值的 PI_* 变量（WSLENV 会转发
+			// 所有 PI_ 前缀变量，Windows 路径值在 Linux 侧非法，会让 pi 在 cwd
+			// 建垃圾目录）；必须在 resolver 的 appendWSLENVForwarding 之前完成。
+			env = launcher.StripWSLHostPathPIEnv(env)
+			// fd/ripgrep 一次探测 + WARN（PI_OFFLINE=1 保留转发，避免 pi 启动时联网
+			// 下载工具卡住；缺工具时给出安装引导）。
+			a.warnWSLSearchToolsOnce(wslDistro)
+		}
 
 		args := []string{}
 		if launchSettings.Provider != "" {
@@ -3368,6 +3409,15 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 	}
 	workDir = resolvedWorkDir
 
+	// WSL 终端模式判定（与 LaunchPiSession 对称，见其注释）。
+	wslDistro := ""
+	if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
+		wslDistro = platform.DefaultWSLDistro(nil)
+		if wslDistro == "" {
+			a.Log.Warn("omp", "WSL shell 会话但无可用发行版，配置仍写 Windows 侧", "")
+		}
+	}
+
 	launchSettings := ompLaunchSettings{
 		Model: strings.TrimSpace(modelName),
 	}
@@ -3402,17 +3452,35 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 			// provider 其他预设模型挤掉）。
 			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-				agentDir := defaultOmpAgentDir()
-				// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
-				// 当次 amagi 生成的同名 provider 优先。
-				ompCfg = launcher.MergeOmpModelsConfig(ompCfg, agentDir)
-				writeErr := launcher.WriteOmpAgentConfig(agentDir, ompCfg)
-				if writeErr == nil {
-					launchSettings.Provider = launcher.OmpProviderID(providerID)
-					a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
-						launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+				// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
+				//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
+				wroteProvider := false
+				if wslDistro != "" {
+					wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
+					if wErr == nil {
+						wroteProvider = true
+						a.Log.Info("omp", "已写入 omp models.yml (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.yml",
+							launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
+					} else {
+						a.Log.Warn("omp", "写入 WSL 侧 omp models.yml 失败，回退内置 provider", wErr.Error())
+					}
 				} else {
-					a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
+					agentDir := defaultOmpAgentDir()
+					// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
+					// 当次 amagi 生成的同名 provider 优先。
+					pompCfg := launcher.MergeOmpModelsConfig(ompCfg, agentDir)
+					writeErr := launcher.WriteOmpAgentConfig(agentDir, pompCfg)
+					if writeErr == nil {
+						wroteProvider = true
+						a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
+							launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+					} else {
+						a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
+					}
+				}
+				if wroteProvider {
+					launchSettings.Provider = launcher.OmpProviderID(providerID)
+				} else {
 					launchSettings.Provider, _ = ompProviderMapping(*provider)
 				}
 			} else {
@@ -3456,6 +3524,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
+		if wslDistro != "" {
+			// 与 LaunchPiSession 对称：剥离 Windows 路径值的 PI_* 变量 + fd/rg 探测。
+			env = launcher.StripWSLHostPathPIEnv(env)
+			a.warnWSLSearchToolsOnce(wslDistro)
+		}
 
 		args := []string{}
 		if launchSettings.Provider != "" {
@@ -4411,6 +4484,37 @@ func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
 		return "openai", "OPENAI_API_KEY"
 	}
 	return "", ""
+}
+
+// wslSearchToolsWarnOnce 保证 fd/ripgrep 缺失提示每个进程生命周期只打一次
+//（探测本身在 platform.WSLSearchToolStatus 内按 distro 缓存，不会重复 fork
+// wsl.exe）。
+var wslSearchToolsWarnOnce sync.Once
+
+// warnWSLSearchToolsOnce 在 WSL 模式启动 pi/omp 会话时探测 distro 内的
+// fd/fdfind 与 ripgrep（PI_OFFLINE=1 下 pi 不会联网自下载，缺失即文件搜索
+// 能力降级）。缺失时打 WARN 给出安装引导；不做 apt 安装（需 sudo，范围外）。
+// 无会话启动期 warning UI 通道，日志 WARN 为本仓库既有可感知手段。
+func (a *App) warnWSLSearchToolsOnce(distro string) {
+	distro = strings.TrimSpace(distro)
+	if distro == "" {
+		return
+	}
+	tools := platform.WSLSearchToolStatus(distro)
+	if tools.FD && tools.Ripgrep {
+		return
+	}
+	missing := make([]string, 0, 2)
+	if !tools.FD {
+		missing = append(missing, "fd")
+	}
+	if !tools.Ripgrep {
+		missing = append(missing, "ripgrep")
+	}
+	wslSearchToolsWarnOnce.Do(func() {
+		a.Log.Warn("wsl", "WSL 内缺少 fd/ripgrep，pi/omp 的文件搜索能力受限",
+			fmt.Sprintf("[CodeBox] distro=%s 缺少 %s。可在 WSL 内执行: sudo apt install fd-find ripgrep", distro, strings.Join(missing, "/")))
+	})
 }
 
 // resolvePiLaunchSettings 解析 Pi 会话启动参数：确定 provider / model / thinking。

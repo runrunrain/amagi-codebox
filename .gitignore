@@ -72,3 +72,6 @@ playwright-report/
 # E2E harness 本地构建产物（源码在 e2e/harness/，二进制不入库）
 /e2e/harness/remote-server/remote-server
 /remote-server
+
+# 本地测试临时产物（go-cache / codex / pty 工作目录，勿提交）
+/.tmp-tests/
