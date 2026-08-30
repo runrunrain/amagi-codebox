@@ -4,7 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
-## [Unreleased]
+## [1.3.58] - 2026-08-30
+
+### Added
+
+- **WSL 会话体验护栏**：wslsetup 安装守卫升级精确整行匹配（脏 PATH 快照不再骗过守卫）并新增生效性校验（登录 shell 探测命中须前缀 `~/.npm-global/bin`，AlreadyOK 路径自动修复脏快照）；envcheck 新增混合架构预警（WSL 内 `command -v` 命中 `/mnt/*` 时提示将运行 Windows 侧 CLI，前端徽标展示）；WSL 会话 `--cd` 至 DrvFS 工作目录时记录 I/O 性能提示；用户文档新增「何时选择 Windows 原生 Shell 会话」与「工作目录选型：DrvFS 与 ext4」两节。
+- **平台默认 Shell 与启动配置透传**：设置种子按平台区分（Windows=`wsl`、macOS=`zsh`，避免 macOS 持久化不可解析值）；SetDashboardDefaults 原样透传 pi/omp 启动模式与 Shell，不再清空会话设置页选值。
+
+### Fixed
+
+- `CodexHomeDir` 回退优先取传入 env 的 HOME/USERPROFILE（原实现读本进程环境，Windows 上无视传入的 HOME，致回退目录错误）。
+
+### 工程
+
+- `.gitattributes` 行尾契约（LF 基线 + `.bat/.cmd/.ps1` CRLF + 二进制标记）：根治 Windows git（autocrlf=true）与 WSL git 对同一工作区的行尾判定分裂。
 
 ## [1.3.57] - 2026-08-26
 

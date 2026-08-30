@@ -1,0 +1,36 @@
+# 行尾统一契约（2026-08-30 环境治理会话落地）
+# 根因：Windows 侧 git 系统配置 autocrlf=true（I:/Git/etc/gitconfig，检出 LF→CRLF、比较时归一），
+# WSL 侧 git 无任何行尾配置（字节比较）——同一工作区在两侧 status 互相矛盾（曾达 2746 文件幽灵 diff）。
+# 仓库级契约优先于两侧本地配置，根治行为分裂。
+#
+# 存量归一（择时执行，勿在含未提交实质改动时做——renormalize 会把工作区内容整体 stage）：
+#   git add --renormalize . && git commit -m "chore: normalize line endings via .gitattributes"
+
+* text=auto eol=lf
+
+# Windows 脚本保留 CRLF（cmd 解释器要求）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Go 汇编与 C 头（LF 与源码一致）
+*.s text eol=lf
+*.h text eol=lf
+
+# macOS 资源
+*.plist text eol=lf
+*.icns binary
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.dylib binary
