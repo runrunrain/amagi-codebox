@@ -150,57 +150,58 @@
           </div>
         </ConfigCard>
 
+        <!-- 图表区：趋势 / 模型占比 / 供应商占比 / 用量分布合并为单卡切换 -->
         <ConfigCard>
-          <div class="card-head trend-head">
-            <div>
-              <h2>{{ trendMode === 'cost' ? '模型成本趋势' : '模型用量趋势' }}</h2>
-              <span class="card-sub">每条曲线对应一个模型，不再混合为总数据</span>
+          <div class="card-head chart-head">
+            <div class="chart-head-title">
+              <h2 :title="chartHead.tip">{{ chartHead.title }}</h2>
+              <span class="card-sub">{{ chartHead.subtitle }}</span>
             </div>
-            <div class="trend-tabs" role="tablist" aria-label="趋势指标">
-              <button class="trend-tab" :class="{ active: trendMode === 'cost' }" @click="trendMode = 'cost'">成本</button>
-              <button class="trend-tab" :class="{ active: trendMode === 'tokens' }" @click="trendMode = 'tokens'">Token</button>
+            <div class="chart-head-actions">
+              <!-- 趋势视图下的成本 / Token 指标切换 -->
+              <div v-if="activeChartView === 'trend'" class="trend-tabs" role="tablist" aria-label="趋势指标">
+                <button class="trend-tab" :class="{ active: trendMode === 'cost' }" @click="trendMode = 'cost'">成本</button>
+                <button class="trend-tab" :class="{ active: trendMode === 'tokens' }" @click="trendMode = 'tokens'">Token</button>
+              </div>
+              <div class="chart-view-toggle" role="group" aria-label="图表视图切换">
+                <Segmented v-model="activeChartView" :options="chartViewOptions" variant="pill" />
+              </div>
             </div>
           </div>
-          <div class="trend-toolbar">
-            <label class="trend-select-label">
-              <span title="Model Curves">模型曲线</span>
-              <select v-model="selectedTrendSeries" class="filter-select">
-                <option value="all">全部模型（分别绘制，最多 8 条）</option>
-                <option v-for="series in trendSeries" :key="series.key" :value="series.key">{{ series.label }}</option>
-              </select>
-            </label>
-            <span class="trend-hint">{{ trendMode === 'cost' ? '按 USD 折算比较' : '以 m 显示（百万 Token）' }}</span>
-          </div>
-          <div v-if="visibleTrendSeries.length === 0" class="chart-empty">当前筛选下暂无趋势数据</div>
-          <div v-else class="chart-box"><Line :data="trendChartData" :options="trendChartOptions" /></div>
-        </ConfigCard>
 
-        <div class="grid-2">
-          <ConfigCard>
-            <div class="card-head">
-              <h2 title="Model Cost Share">模型成本占比</h2>
-              <span class="card-sub">USD 折算</span>
+          <!-- 趋势：多模型逐日曲线（保留模型曲线选择与空态） -->
+          <template v-if="activeChartView === 'trend'">
+            <div class="trend-toolbar">
+              <label class="trend-select-label">
+                <span title="Model Curves">模型曲线</span>
+                <select v-model="selectedTrendSeries" class="filter-select">
+                  <option value="all">全部模型（分别绘制，最多 8 条）</option>
+                  <option v-for="series in trendSeries" :key="series.key" :value="series.key">{{ series.label }}</option>
+                </select>
+              </label>
+              <span class="trend-hint">{{ trendMode === 'cost' ? '按 USD 折算比较' : '以 m 显示（百万 Token）' }}</span>
             </div>
+            <div v-if="visibleTrendSeries.length === 0" class="chart-empty">当前筛选下暂无趋势数据</div>
+            <div v-else class="chart-box"><Line :data="trendChartData" :options="trendChartOptions" /></div>
+          </template>
+
+          <!-- 模型成本占比 -->
+          <template v-else-if="activeChartView === 'model'">
             <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
-            <div v-else class="chart-box chart-box-short"><Doughnut :data="modelPieData" :options="doughnutOptions" /></div>
-          </ConfigCard>
-          <ConfigCard>
-            <div class="card-head">
-              <h2 title="Provider Comparison">供应商对比</h2>
-              <span class="card-sub">USD 折算</span>
-            </div>
-            <div v-if="providerStats.length === 0" class="chart-empty">暂无供应商数据</div>
-            <div v-else class="chart-box chart-box-short"><Bar :data="providerBarData" :options="barOptions" /></div>
-          </ConfigCard>
-        </div>
+            <div v-else class="chart-box chart-box-short"><Doughnut :data="modelPieData" :options="costDoughnutOptions" /></div>
+          </template>
 
-        <ConfigCard>
-          <div class="card-head">
-            <h2 title="Token Distribution">用量分布（按模型）</h2>
-            <span class="card-sub">以 m 显示的四维拆分</span>
-          </div>
-          <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
-          <div v-else class="chart-box"><Bar :data="tokenStackData" :options="stackedBarOptions" /></div>
+          <!-- 供应商占比（原柱状图改为饼图） -->
+          <template v-else-if="activeChartView === 'provider'">
+            <div v-if="providerStats.length === 0" class="chart-empty">暂无供应商数据</div>
+            <div v-else class="chart-box chart-box-short"><Doughnut :data="providerPieData" :options="costDoughnutOptions" /></div>
+          </template>
+
+          <!-- 用量分布（按模型，原堆叠柱状图改为总 Token 份额饼图） -->
+          <template v-else>
+            <div v-if="modelStats.length === 0" class="chart-empty">暂无模型数据</div>
+            <div v-else class="chart-box chart-box-short"><Doughnut :data="tokenPieData" :options="tokenDoughnutOptions" /></div>
+          </template>
         </ConfigCard>
 
         <ConfigCard>
@@ -279,10 +280,9 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Bar, Doughnut, Line } from 'vue-chartjs';
+import { Doughnut, Line } from 'vue-chartjs';
 import {
   ArcElement,
-  BarElement,
   CategoryScale,
   Chart as ChartJS,
   Filler,
@@ -297,6 +297,7 @@ import type { ChartData, ChartOptions, TooltipItem } from 'chart.js';
 import PageHead from '../components/ui/PageHead.vue';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
+import Segmented from '../components/ui/Segmented.vue';
 import AppButton from '../components/ui/AppButton.vue';
 import EmptyState from '../components/ui/EmptyState.vue';
 import LoadingState from '../components/ui/LoadingState.vue';
@@ -314,7 +315,6 @@ ChartJS.register(
   LinearScale,
   PointElement,
   LineElement,
-  BarElement,
   ArcElement,
   Title,
   Tooltip,
@@ -515,6 +515,32 @@ const trendChartOptions = computed<ChartOptions<'line'>>(() => ({
   },
 }));
 
+// ---- 图表视图切换：趋势 / 模型占比 / 供应商占比 / 用量分布合并为单一卡片 ----
+type ChartView = 'trend' | 'model' | 'provider' | 'tokens';
+const activeChartView = ref<ChartView>('trend');
+const chartViewOptions: { value: ChartView; label: string }[] = [
+  { value: 'trend', label: '趋势' },
+  { value: 'model', label: '模型占比' },
+  { value: 'provider', label: '供应商占比' },
+  { value: 'tokens', label: '用量分布' },
+];
+
+// 合并卡片的动态标题 / 副标题（随视图与趋势指标变化）
+const chartHead = computed(() => {
+  if (activeChartView.value === 'model') {
+    return { title: '模型成本占比', tip: 'Model Cost Share', subtitle: '按 USD 折算的成本份额' };
+  }
+  if (activeChartView.value === 'provider') {
+    return { title: '供应商占比', tip: 'Provider Cost Share', subtitle: '按 USD 折算的成本份额' };
+  }
+  if (activeChartView.value === 'tokens') {
+    return { title: '用量分布（按模型）', tip: 'Token Distribution', subtitle: '按总 Token 份额' };
+  }
+  return trendMode.value === 'cost'
+    ? { title: '模型成本趋势', tip: 'Model Cost Trend', subtitle: '每条曲线对应一个模型，不再混合为总数据' }
+    : { title: '模型用量趋势', tip: 'Model Token Trend', subtitle: '每条曲线对应一个模型，不再混合为总数据' };
+});
+
 const modelPieData = computed<ChartData<'doughnut'>>(() => {
   const stats = modelStats.value
     .map((model) => ({ name: modelSeriesLabel(model), usd: nativeMicroToUsdMicro(model.totalCost, model.currencyCode) }))
@@ -531,7 +557,8 @@ const modelPieData = computed<ChartData<'doughnut'>>(() => {
   };
 });
 
-const doughnutOptions = computed<ChartOptions<'doughnut'>>(() => ({
+// 成本类饼图（模型 / 供应商占比共用）：tooltip 按 USD 折算显示
+const costDoughnutOptions = computed<ChartOptions<'doughnut'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
   cutout: '60%',
@@ -541,60 +568,50 @@ const doughnutOptions = computed<ChartOptions<'doughnut'>>(() => ({
   },
 }));
 
-const providerBarData = computed<ChartData<'bar'>>(() => {
-  const stats = [...providerStats.value].filter((provider) => provider.totalCostUSD > 0).sort((a, b) => b.totalCostUSD - a.totalCostUSD);
-  return {
-    labels: stats.map((provider) => provider.provider || '未知'),
-    datasets: [{ label: '成本（USD）', data: stats.map((provider) => provider.totalCostUSD / 1_000_000), backgroundColor: chartTheme.value.accent, borderRadius: 4, maxBarThickness: 40 }],
-  };
-});
-
-const barOptions = computed<ChartOptions<'bar'>>(() => ({
+// 用量分布饼图：tooltip 按原始 Token 数显示
+const tokenDoughnutOptions = computed<ChartOptions<'doughnut'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
-  plugins: { legend: { display: false }, tooltip: { callbacks: { label: (context: TooltipItem<'bar'>) => `成本：${formatCost(Math.round((context.parsed.y || 0) * 1_000_000), 'USD')}` } } },
-  scales: {
-    x: { ticks: { color: chartTheme.value.text, font: { size: 11 } }, grid: { display: false } },
-    y: { ticks: { color: chartTheme.value.text, font: { size: 11 }, callback: (value) => formatCost(Math.round(Number(value) * 1_000_000), 'USD') }, grid: { color: chartTheme.value.grid } },
-  },
-}));
-
-const tokenStackData = computed<ChartData<'bar'>>(() => {
-  const top = [...modelStats.value]
-    .map((model) => ({
-      name: modelSeriesLabel(model),
-      input: model.billableInput ?? 0,
-      output: model.outputTokens ?? 0,
-      cacheRead: model.cacheRead ?? 0,
-      cacheCreation: model.cacheCreation ?? 0,
-      total: model.totalTokens ?? 0,
-    }))
-    .filter((model) => model.total > 0)
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 8);
-  return {
-    labels: top.map((model) => model.name),
-    datasets: [
-      { label: '新输入', data: top.map((model) => model.input), backgroundColor: PALETTE[0] },
-      { label: '输出', data: top.map((model) => model.output), backgroundColor: PALETTE[1] },
-      { label: '缓存读取', data: top.map((model) => model.cacheRead), backgroundColor: PALETTE[2] },
-      { label: '缓存写入', data: top.map((model) => model.cacheCreation), backgroundColor: PALETTE[3] },
-    ],
-  };
-});
-
-const stackedBarOptions = computed<ChartOptions<'bar'>>(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
+  cutout: '60%',
   plugins: {
-    legend: { position: 'top', labels: { color: chartTheme.value.text, font: { size: 11 }, boxWidth: 12, usePointStyle: true } },
-    tooltip: { callbacks: { label: (context: TooltipItem<'bar'>) => `${context.dataset.label}: ${formatTokens(context.parsed.y || 0)}` } },
-  },
-  scales: {
-    x: { stacked: true, ticks: { color: chartTheme.value.text, font: { size: 11 } }, grid: { display: false } },
-    y: { stacked: true, ticks: { color: chartTheme.value.text, font: { size: 11 }, callback: (value) => formatTokens(Number(value)) }, grid: { color: chartTheme.value.grid } },
+    legend: { position: 'right', labels: { color: chartTheme.value.text, font: { size: 11 }, boxWidth: 12, usePointStyle: true } },
+    tooltip: { callbacks: { label: (context: TooltipItem<'doughnut'>) => `${context.label}: ${formatTokens(Number(context.parsed) || 0)}` } },
   },
 }));
+
+// 供应商占比：totalCostUSD 为 micro-USD，直接作为数据；top7 之外合并为「其他」
+const providerPieData = computed<ChartData<'doughnut'>>(() => {
+  const stats = providerStats.value
+    .map((provider) => ({ name: provider.provider || '未知', usd: provider.totalCostUSD }))
+    .filter((provider) => provider.usd > 0)
+    .sort((a, b) => b.usd - a.usd);
+  const top = stats.slice(0, 7);
+  const rest = stats.slice(7).reduce((total, provider) => total + provider.usd, 0);
+  const labels = top.map((provider) => provider.name);
+  const data = top.map((provider) => provider.usd);
+  if (rest > 0) { labels.push('其他'); data.push(rest); }
+  return {
+    labels,
+    datasets: [{ data, backgroundColor: [...top.map((_, index) => PALETTE[index % PALETTE.length]), ...(rest > 0 ? [OTHER_COLOR] : [])], borderColor: readToken('--card', '#FFFFFF'), borderWidth: 2, hoverOffset: 8 }],
+  };
+});
+
+// 用量分布（按模型）：按总 Token 份额取 top7，其余合并为「其他」
+const tokenPieData = computed<ChartData<'doughnut'>>(() => {
+  const stats = modelStats.value
+    .map((model) => ({ name: modelSeriesLabel(model), tokens: model.totalTokens ?? 0 }))
+    .filter((model) => model.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens);
+  const top = stats.slice(0, 7);
+  const rest = stats.slice(7).reduce((total, model) => total + model.tokens, 0);
+  const labels = top.map((model) => model.name);
+  const data = top.map((model) => model.tokens);
+  if (rest > 0) { labels.push('其他'); data.push(rest); }
+  return {
+    labels,
+    datasets: [{ data, backgroundColor: [...top.map((_, index) => PALETTE[index % PALETTE.length]), ...(rest > 0 ? [OTHER_COLOR] : [])], borderColor: readToken('--card', '#FFFFFF'), borderWidth: 2, hoverOffset: 8 }],
+  };
+});
 
 function modelSeriesLabel(model: { displayName?: string; normalizedModel: string; provider?: string }): string {
   const name = model.displayName || model.normalizedModel;
@@ -754,13 +771,15 @@ onUnmounted(() => {
 .filter-input:focus, .filter-select:focus { background: var(--card); box-shadow: 0 0 0 2px rgba(0, 122, 255, .25); }
 .filter-warn { margin-top: 12px; border-radius: 7px; padding: 8px 10px; background: rgba(255,149,0,.08); color: var(--warning-strong); font-size: 12px; line-height: 1.5; }
 
-.trend-head { align-items: center; }
+.chart-head { align-items: center; flex-wrap: wrap; }
+.chart-head-title { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.chart-head-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.chart-view-toggle :deep(.seg) { padding: 6px 10px; font-size: 12px; }
 .trend-toolbar { justify-content: space-between; margin: 12px 0 6px; flex-wrap: wrap; }
 .trend-select-label { display: flex; align-items: center; gap: 8px; color: var(--secondary); font-size: 12px; }
 .chart-box { position: relative; width: 100%; height: 320px; }
 .chart-box-short { height: 260px; }
 .chart-empty { padding: 40px 20px; color: var(--tertiary); text-align: center; font-size: 13px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
 
 .table-wrap { max-height: 520px; overflow: auto; border: 1px solid var(--separator); border-radius: 10px; }
 .usage-table { width: 100%; min-width: 1360px; border-collapse: collapse; font-size: 13px; }
@@ -779,7 +798,6 @@ onUnmounted(() => {
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric:nth-child(3), .metric:nth-child(5), .metric:nth-child(7), .metric:nth-child(9) { border-left: 0; padding-left: 0; }
 }
-@media (max-width: 960px) { .grid-2 { grid-template-columns: 1fr; } }
 @media (max-width: 720px) {
   .view-usage { padding: 22px 18px; }
   .summary-grid { grid-template-columns: 1fr; }

@@ -13,9 +13,10 @@
         <!-- TUI ⇄ Web 切换（蓝图 T-1.6；A-4：仅 pi 会话且 webui available 才显示） -->
         <div v-if="webUIToggleVisible" class="plane-toggle" role="group" aria-label="会话显示平面切换">
           <Segmented
-            v-model="activePlane"
+            :model-value="activePlane"
             :options="planeOptions"
             variant="pill"
+            @update:modelValue="onPlaneSelect"
           />
         </div>
         <button ref="gitAnchorRef" class="btn btn-ghost" @click="gitPanelVisible = true" title="提交/推送">提交/推送</button>
@@ -50,7 +51,7 @@
         :ended="webEnded"
         @error="onWebPlaneError"
         @retry="handleWebRetry"
-        @switch-to-tui="activePlane = 'tui'"
+        @switch-to-tui="handleSwitchToTui"
       />
       <!-- TerminalContextMenu 渲染在 term-body 上方 -->
       <TerminalContextMenu
@@ -159,6 +160,9 @@ const planeOptions = [
   { value: 'web', label: '网页' },
 ]
 const activePlane = ref<'tui' | 'web'>('tui')
+// 用户显式选择 TUI 后本实例 sticky：preferWebPlane 不再自动切 Web，
+// 仅当用户切回 web（onPlaneSelect）时清除。按组件实例隔离、不持久化（TD-9）。
+const userPinnedTui = ref(false)
 const webPlaneMounted = ref(false)
 const webUrl = ref('')
 const webEnded = ref(false)
@@ -176,6 +180,31 @@ const webUIToggleVisible = computed(
     webuiState.value === 'available' &&
     session.value?.status === 'running',
 )
+
+// 用户手动切换平面：显式选 TUI 视为 pin，显式选回 web 时清除 pin。
+// 经 watch(activePlane) 驱动既有的 activateWebPlane / refit 副作用。
+function onPlaneSelect(plane: string) {
+  userPinnedTui.value = plane === 'tui'
+  activePlane.value = plane === 'web' ? 'web' : 'tui'
+}
+
+// 需求：pi 会话装有 web 插件（webui available）时，点击活动会话优先显示
+// 网页平面；用户显式切回终端后不再自动切换（sticky，切回 web 时清除）。
+// 守卫：surfaceActive 拦住后台/缓存会话，webUIToggleVisible 拦住非 pi、
+// 未 available 或已结束的会话，userPinnedTui 尊重用户显式选择。
+function preferWebPlane() {
+  if (!surfaceActive.value) return
+  if (!webUIToggleVisible.value) return
+  if (userPinnedTui.value) return
+  if (activePlane.value === 'web') return
+  activePlane.value = 'web'
+}
+
+// WebPlaneHost 结束态『切回终端』按钮：视为用户显式选择 TUI（pin）。
+function handleSwitchToTui() {
+  userPinnedTui.value = true
+  activePlane.value = 'tui'
+}
 
 async function activateWebPlane() {
   try {
@@ -212,6 +241,17 @@ watch(activePlane, (plane) => {
     refreshVisibleSurface()
   }
 })
+
+// webui 探测演进为 available（启动后轮询出结果）或挂载时已 available
+// （immediate）时，活动会话优先显示 Web 平面；surfaceActive 守卫拦住
+// 后台缓存会话，userPinnedTui 守卫尊重用户显式选择。
+watch(
+  webUIToggleVisible,
+  (visible) => {
+    if (visible) preferWebPlane()
+  },
+  { immediate: true },
+)
 
 // 会话退出 → Web 平面结束态（保留最后画面 + badge）。
 watch(
@@ -264,6 +304,7 @@ function refreshVisibleSurface() {
 onActivated(() => {
   routeSurfaceActive.value = true
   refreshVisibleSurface()
+  preferWebPlane()
 })
 
 onDeactivated(() => {
@@ -273,7 +314,10 @@ onDeactivated(() => {
 watch(
   () => props.active,
   (active) => {
-    if (active) refreshVisibleSurface()
+    if (active) {
+      refreshVisibleSurface()
+      preferWebPlane()
+    }
   },
 )
 
