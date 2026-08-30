@@ -36,7 +36,11 @@ func main() {
 	}
 
 	capabilities := platform.CurrentCapabilities()
-	if !platform.EnsureSingleInstance("amagi-codebox-single-instance-mutex", "Amagi CodeBox") {
+	// bindings 生成模式（wails build/dev 以 -tags bindings 构建的瞬态进程）只
+	// 生成前端绑定即退出，必须跳过单实例互斥——否则主应用正在运行时，绑定
+	// 生成进程会在这里静默 os.Exit(0)，wailsjs 永远不更新（表现为新增绑定
+	// 方法在前端 TS2305 缺失）。
+	if !bindingsGenerationMode && !platform.EnsureSingleInstance("amagi-codebox-single-instance-mutex", "Amagi CodeBox") {
 		os.Exit(0)
 	}
 

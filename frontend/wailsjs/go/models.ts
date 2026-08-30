@@ -2210,6 +2210,30 @@ export namespace main {
 	        this.mobileWebAvailable = source["mobileWebAvailable"];
 	    }
 	}
+	export class SystemProxyStatus {
+	    supported: boolean;
+	    enabled: boolean;
+	    host: string;
+	    port: number;
+	    reachable: boolean;
+	    configuredHost: string;
+	    configuredPort: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemProxyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supported = source["supported"];
+	        this.enabled = source["enabled"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.reachable = source["reachable"];
+	        this.configuredHost = source["configuredHost"];
+	        this.configuredPort = source["configuredPort"];
+	    }
+	}
 
 }
 
@@ -2748,6 +2772,7 @@ export namespace platform {
 	    windowActivationSupported: boolean;
 	    hideOnCloseSupported: boolean;
 	    backgroundResidentSupported: boolean;
+	    systemProxyControlSupported: boolean;
 	    closeAction: string;
 	    secureSecretStoreKind: string;
 	    pathDiagnosticsSupported: boolean;
@@ -2774,6 +2799,7 @@ export namespace platform {
 	        this.windowActivationSupported = source["windowActivationSupported"];
 	        this.hideOnCloseSupported = source["hideOnCloseSupported"];
 	        this.backgroundResidentSupported = source["backgroundResidentSupported"];
+	        this.systemProxyControlSupported = source["systemProxyControlSupported"];
 	        this.closeAction = source["closeAction"];
 	        this.secureSecretStoreKind = source["secureSecretStoreKind"];
 	        this.pathDiagnosticsSupported = source["pathDiagnosticsSupported"];
@@ -3570,6 +3596,20 @@ export namespace session {
 
 export namespace settings {
 	
+	export class SystemProxySettings {
+	    host: string;
+	    port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemProxySettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	    }
+	}
 	export class SkinSettings {
 	    enabled: boolean;
 	    imageId: string;
@@ -3718,6 +3758,7 @@ export namespace settings {
 	    githubToken: string;
 	    commitSummaryPreset?: string;
 	    skin: SkinSettings;
+	    systemProxy: SystemProxySettings;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppSettings(source);
@@ -3738,6 +3779,7 @@ export namespace settings {
 	        this.githubToken = source["githubToken"];
 	        this.commitSummaryPreset = source["commitSummaryPreset"];
 	        this.skin = this.convertValues(source["skin"], SkinSettings);
+	        this.systemProxy = this.convertValues(source["systemProxy"], SystemProxySettings);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3788,6 +3830,7 @@ export namespace settings {
 	
 	    }
 	}
+	
 	
 	
 	

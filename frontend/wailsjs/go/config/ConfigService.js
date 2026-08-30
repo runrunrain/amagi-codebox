@@ -90,6 +90,10 @@ export function RecordModalityProbe(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['config']['ConfigService']['RecordModalityProbe'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function ReexportVisionModels() {
+  return window['go']['config']['ConfigService']['ReexportVisionModels']();
+}
+
 export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['RemoveUrlFromHistory'](arg1, arg2);
 }
@@ -104,6 +108,10 @@ export function ReplaceImportedPresetSnapshots(arg1, arg2, arg3) {
 
 export function ReplaceProviders(arg1) {
   return window['go']['config']['ConfigService']['ReplaceProviders'](arg1);
+}
+
+export function ResolvePiOmpTerminalPreset(arg1) {
+  return window['go']['config']['ConfigService']['ResolvePiOmpTerminalPreset'](arg1);
 }
 
 export function ResolveTerminalPreset(arg1, arg2) {
@@ -128,6 +136,10 @@ export function SaveProvider(arg1, arg2) {
 
 export function SaveTerminalPreset(arg1, arg2, arg3) {
   return window['go']['config']['ConfigService']['SaveTerminalPreset'](arg1, arg2, arg3);
+}
+
+export function SetAPIKeyReadyProbe(arg1) {
+  return window['go']['config']['ConfigService']['SetAPIKeyReadyProbe'](arg1);
 }
 
 export function SetAPIKeyResolver(arg1) {

@@ -46,6 +46,8 @@ export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function RecordModalityProbe(arg1:string,arg2:string,arg3:config.ModelModalities,arg4:string,arg5:boolean):Promise<void>;
 
+export function ReexportVisionModels():Promise<void>;
+
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 
 export function RenameProvider(arg1:string,arg2:string):Promise<void>;
@@ -53,6 +55,8 @@ export function RenameProvider(arg1:string,arg2:string):Promise<void>;
 export function ReplaceImportedPresetSnapshots(arg1:config.TerminalPresetsConfig,arg2:Record<string, config.OpenCodePreset>,arg3:boolean):Promise<void>;
 
 export function ReplaceProviders(arg1:Record<string, config.Provider>):Promise<void>;
+
+export function ResolvePiOmpTerminalPreset(arg1:string):Promise<string>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
@@ -65,6 +69,8 @@ export function SavePreset(arg1:string,arg2:string,arg3:config.Preset):Promise<v
 export function SaveProvider(arg1:string,arg2:config.Provider):Promise<void>;
 
 export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
+
+export function SetAPIKeyReadyProbe(arg1:any):Promise<void>;
 
 export function SetAPIKeyResolver(arg1:any):Promise<void>;
 

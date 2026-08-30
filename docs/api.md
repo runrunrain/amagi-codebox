@@ -127,6 +127,11 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `GetCodexGlobalHeadroom() CodexGlobalHeadroomStatus` — Codex 全局 headroom 开关快照（enabled/target/port + 实时 running）。
 - `SetCodexGlobalHeadroom(enabled bool, target string, port int) (CodexGlobalHeadroomStatus, error)` — 切换 Codex 全局 headroom（独立 8788 实例，OpenAI 目标）。开启时启动实例并把 `openai_base_url` 标记块写入 `~/.codex/config.toml`（带备份与幂等）；关闭时先移除标记块再停实例。与会话级 headroom 完全正交。
 
+### 系统显式代理（System Proxy，仅 Windows）
+
+- `GetSystemProxyStatus() SystemProxyStatus` — 全局设备显式代理快照：`supported`（平台能力）/`enabled`/`host`/`port`（系统实时值，Windows Internet Settings）/`reachable`（启用时对端点做 TCP+HTTP 双探测，识别"活端口死代理"）/`configuredHost`/`configuredPort`（持久化端点，下次开启写入）。
+- `SetSystemProxyEnabled(enabled bool) (SystemProxyStatus, error)` — 开启/关闭系统级显式代理。开启：端点优先取持久化配置，为空回落系统现有地址（如代理客户端已写入的 ProxyServer），写入 `ProxyServer`+`ProxyEnable=1`（`ProxyOverride` 缺失时补默认回环绕行）；关闭：仅置 `ProxyEnable=0`，保留地址与例外列表。写入后广播 WinINet 刷新（InternetSetOption SETTINGS_CHANGED+REFRESH），已运行应用免重登生效。与 CLI 会话代理注入（SystemProxyEnv）互不影响。
+
 ### 远程服务器（Remote Server）
 
 - `GetRemoteToken() string` — 当前 Bearer Token。
@@ -324,6 +329,7 @@ legacy 配置面（过渡方案）：
 - `GetShellPaths() []ShellEntry` / `AddShellPath(entry ShellEntry) error` / `RemoveShellPath(path string) error` — 自定义 shell 路径。
 - `GetTerminalSettings() TerminalSettings` / `SetTerminalSettings(t TerminalSettings) error` — 终端设置。
 - `GetSkinSettings() SkinSettings` / `SetSkinSettings(sk SkinSettings) error` — 皮肤设置（enabled/imageId/dim/blur/opacity/textBoost；数值 clamp 在本层）。
+- `GetSystemProxyEndpoint() SystemProxySettings` / `SetSystemProxyEndpoint(host string, port int) error` — 系统显式代理端点持久化（host/port；Set 走 NormalizeProxyEndpoint 校验，事务式保存失败回滚）。
 - `GetRemoteEnabled() bool` / `SetRemoteEnabled(enabled bool) error` — 远程服务开关持久化。
 - `GetRemoteHost() string` / `SetRemoteHost(host string) error` / `GetRemotePort() int` / `SetRemotePort(port int) error` / `SetRemoteEndpoint(host string, port int) error` — 远程端点。
 - `GetMobileWebRoot() string` / `SetMobileWebRoot(path string) error` — 移动端 Web 资源目录。

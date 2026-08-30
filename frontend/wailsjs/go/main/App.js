@@ -294,6 +294,10 @@ export function GetStartupWarnings() {
   return window['go']['main']['App']['GetStartupWarnings']();
 }
 
+export function GetSystemProxyStatus() {
+  return window['go']['main']['App']['GetSystemProxyStatus']();
+}
+
 export function GetTerminalPresets(arg1) {
   return window['go']['main']['App']['GetTerminalPresets'](arg1);
 }
@@ -632,6 +636,10 @@ export function SetRemoteHost(arg1) {
 
 export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
+}
+
+export function SetSystemProxyEnabled(arg1) {
+  return window['go']['main']['App']['SetSystemProxyEnabled'](arg1);
 }
 
 export function StartInstallClaudeWithMethodAsync(arg1) {

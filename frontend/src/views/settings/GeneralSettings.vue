@@ -94,6 +94,41 @@
       <span class="footer-hint">选中即保存，立即生效</span>
     </div>
   </div>
+
+  <div v-if="platformCaps.systemProxyControlSupported.value" class="set-card">
+    <h2>系统显式代理</h2>
+    <p class="set-sub">控制系统级 HTTP(S) 显式代理（Windows Internet Settings）。开启后浏览器等遵循系统代理的应用经下方端点出站；关闭仅摘除开关并保留地址，重新开启免重填。CLI 会话的代理注入不受此开关影响</p>
+
+    <div class="setting-list">
+      <div class="setting-row">
+        <label>代理开关</label>
+        <div class="proxy-toggle">
+          <span v-if="proxyStatus.enabled" class="proxy-state on">
+            已开启<template v-if="proxyStatus.host"> · {{ proxyStatus.host }}:{{ proxyStatus.port }}</template><template v-if="!proxyStatus.reachable"> · 代理进程未响应</template>
+          </span>
+          <span v-else class="proxy-state">已关闭</span>
+          <Switch :model-value="proxyStatus.enabled" :disabled="proxyToggling" @update:model-value="onToggleSystemProxy" />
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <label>代理主机</label>
+        <TextInput v-model="proxyHost" placeholder="127.0.0.1" class="proxy-input" />
+      </div>
+
+      <div class="setting-row">
+        <label>代理端口</label>
+        <TextInput v-model="proxyPort" placeholder="5800" class="proxy-input port" />
+      </div>
+    </div>
+
+    <div class="card-footer">
+      <AppButton :disabled="savingProxyEndpoint" @click="saveProxyEndpoint">
+        {{ savingProxyEndpoint ? '保存中...' : '保存代理地址' }}
+      </AppButton>
+      <span class="footer-hint">开关即时生效；地址保存后于下次开启时写入</span>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -110,8 +145,15 @@ import {
 import { useProviderStore } from '../../stores/provider'
 import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
+import {
+  getSystemProxyStatus,
+  setSystemProxyEnabled,
+  setSystemProxyEndpoint,
+} from '../../api/systemProxy'
 import Segmented from '../../components/ui/Segmented.vue'
 import AppButton from '../../components/ui/AppButton.vue'
+import Switch from '../../components/ui/Switch.vue'
+import TextInput from '../../components/ui/TextInput.vue'
 
 const { showSuccess, showError } = useToast()
 const platformCaps = usePlatformCapabilities()
@@ -338,7 +380,70 @@ async function saveDefaults() {
 onMounted(async () => {
   await platformCaps.ensure()
   await loadData()
+  void loadSystemProxy()
 })
+
+// ---- 系统显式代理（Windows；capabilities 门控，卡片仅在支持时渲染）----
+const proxyStatus = reactive({
+  supported: false,
+  enabled: false,
+  host: '',
+  port: 0,
+  reachable: false,
+  configuredHost: '',
+  configuredPort: 0,
+})
+const proxyHost = ref('')
+const proxyPort = ref('')
+const proxyToggling = ref(false)
+const savingProxyEndpoint = ref(false)
+
+async function loadSystemProxy() {
+  try {
+    const status = await getSystemProxyStatus()
+    Object.assign(proxyStatus, status)
+    // 编辑框绑定持久化端点（后端已归一为非零默认）；已配置值与实时值解耦展示。
+    if (!proxyHost.value && !proxyPort.value) {
+      proxyHost.value = status.configuredHost || ''
+      proxyPort.value = status.configuredPort ? String(status.configuredPort) : ''
+    }
+  } catch (err) {
+    console.error('load system proxy status:', err)
+  }
+}
+
+async function onToggleSystemProxy(enabled: boolean) {
+  proxyToggling.value = true
+  try {
+    const status = await setSystemProxyEnabled(enabled)
+    Object.assign(proxyStatus, status)
+    showSuccess(enabled ? '系统代理已开启' : '系统代理已关闭')
+  } catch (err: any) {
+    showError('切换系统代理失败: ' + (err?.message || err))
+    // 失败时回读真实状态，避免开关停留在乐观值。
+    void loadSystemProxy()
+  } finally {
+    proxyToggling.value = false
+  }
+}
+
+async function saveProxyEndpoint() {
+  const port = parseInt(proxyPort.value, 10)
+  if (!Number.isFinite(port)) {
+    showError('代理端口必须是数字')
+    return
+  }
+  savingProxyEndpoint.value = true
+  try {
+    await setSystemProxyEndpoint(proxyHost.value.trim(), port)
+    showSuccess('代理地址已保存')
+    await loadSystemProxy()
+  } catch (err: any) {
+    showError('保存代理地址失败: ' + (err?.message || err))
+  } finally {
+    savingProxyEndpoint.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -426,5 +531,29 @@ onMounted(async () => {
 .footer-hint {
   font-size: 11px;
   color: var(--tertiary);
+}
+
+.proxy-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.proxy-state {
+  font-size: 12px;
+  color: var(--tertiary);
+}
+
+.proxy-state.on {
+  color: var(--secondary);
+}
+
+.proxy-input {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.proxy-input.port {
+  max-width: 120px;
 }
 </style>

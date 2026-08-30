@@ -19,6 +19,14 @@
 
 - `.gitattributes` 行尾契约（LF 基线 + `.bat/.cmd/.ps1` CRLF + 二进制标记）：根治 Windows git（autocrlf=true）与 WSL git 对同一工作区的行尾判定分裂。
 
+### Added
+
+- **设置页支持开关全局设备显式代理（仅 Windows）**：新增 `App.GetSystemProxyStatus`/`App.SetSystemProxyEnabled` 与 `settings.Service.GetSystemProxyEndpoint`/`SetSystemProxyEndpoint` 绑定；`internal/platform` 新增 system proxy 写入门面（开启写 `ProxyServer`+`ProxyEnable=1` 并在 `ProxyOverride` 缺失时补默认回环绕行、关闭仅摘 `ProxyEnable=0` 保留地址、写入后广播 WinINet 刷新），端点持久化到 `settings.json`（默认 `127.0.0.1:5800`），状态卡片含 TCP+HTTP 双探测可达性提示；macOS/Linux 由 `systemProxyControlSupported` 能力门控隐藏。
+
+### Fixed
+
+- **修复主应用运行时 `wails build` 不更新前端绑定**：`main.go` 的单实例互斥会把 wails 以 `-tags bindings` 构建的绑定生成进程静默 `os.Exit(0)`，导致 `frontend/wailsjs` 停滞（新绑定方法在前端 TS2305 缺失）；bindings 模式现在跳过互斥检查。
+
 ## [1.3.57] - 2026-08-26
 
 ### Added

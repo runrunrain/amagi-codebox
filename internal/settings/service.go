@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"amagi-codebox/internal/platform"
 )
 
 // ShellEntry 保存的 Shell 路径
@@ -78,6 +80,15 @@ type RemoteLaunchDefaultV1 struct {
 // TerminalSettings 终端设置
 type TerminalSettings struct {
 	Scrollback int `json:"scrollback"`
+}
+
+// SystemProxySettings 系统显式代理端点：在应用内开启「全局设备显式代理」时
+// 写入系统配置的地址（Windows Internet Settings 的 ProxyServer）。启用与否的
+// 真值始终是系统实时状态（由 App 层读取聚合），这里只持久化端点——与 skin/
+// remote 等设置一致：settings 层管持久化与校验，活状态由各域服务聚合。
+type SystemProxySettings struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 // SkinSettings 皮肤设置（本地图片皮肤：背景层 + 蒙版调光/模糊 + 内容
@@ -160,8 +171,9 @@ type AppSettings struct {
 	GitHubToken            string                           `json:"githubToken"`
 	// CommitSummaryPreset 指定 AI 提交总结使用的终端预设，格式 "provider/preset名"；
 	// 空 = 未设置（gitassist.SummarizeDiff 据此报错引导用户去设置页选择）。
-	CommitSummaryPreset string       `json:"commitSummaryPreset,omitempty"`
-	Skin                SkinSettings `json:"skin"`
+	CommitSummaryPreset string              `json:"commitSummaryPreset,omitempty"`
+	Skin                SkinSettings        `json:"skin"`
+	SystemProxy         SystemProxySettings `json:"systemProxy"`
 }
 
 func defaultSettings() *AppSettings {
@@ -202,6 +214,8 @@ func defaultSettingsForOS(osName string) *AppSettings {
 		RemotePort:            8680,
 		RemoteSecurityVersion: 1,
 		Skin:                  DefaultSkinSettings(),
+		// 默认对齐本机代理客户端常用的本地混合端口；用户可在设置页改成实际端口。
+		SystemProxy: SystemProxySettings{Host: "127.0.0.1", Port: 5800},
 	}
 }
 
@@ -258,6 +272,9 @@ func (s *Service) Load() error {
 		cfg.Terminal.Scrollback = 100000
 	}
 	cfg.Skin = normalizeSkinSettings(cfg.Skin)
+	// 老文件无 systemProxy 键时反序列化为零值，回落默认端点；显式越界端口
+	// 同样回填默认（Set 入口对用户输入才报错，Load 路径保持宽容，同 RemotePort）。
+	cfg.SystemProxy = normalizeSystemProxySettings(cfg.SystemProxy)
 	if cfg.RemotePort <= 0 {
 		cfg.RemotePort = 8680
 	}
@@ -618,6 +635,54 @@ func (s *Service) SetTerminalSettings(t TerminalSettings) error {
 	s.settings.Terminal = t
 	s.mu.Unlock()
 	return s.Save()
+}
+
+// --- System Proxy Endpoint ---
+
+// normalizeSystemProxySettings 把零值/非法端点回填为默认（127.0.0.1:5800）：
+// 老 settings.json 无 systemProxy 键时读入零值，与 RemotePort 的 Load 取舍
+// 一致（宽容回填，不报错）；host 去空白与误粘 scheme。
+func normalizeSystemProxySettings(sp SystemProxySettings) SystemProxySettings {
+	if sp.Host == "" && sp.Port == 0 {
+		return SystemProxySettings{Host: "127.0.0.1", Port: 5800}
+	}
+	host, port, err := platform.NormalizeProxyEndpoint(sp.Host, sp.Port)
+	if err != nil {
+		return SystemProxySettings{Host: "127.0.0.1", Port: 5800}
+	}
+	return SystemProxySettings{Host: host, Port: port}
+}
+
+// GetSystemProxyEndpoint 返回持久化的系统代理端点（Load 时已归一，非零值）。
+func (s *Service) GetSystemProxyEndpoint() SystemProxySettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings.SystemProxy
+}
+
+// SetSystemProxyEndpoint 校验并持久化系统代理端点。事务式（R2-Minor-02 同
+// SetRemoteEndpoint）：validate → mutate → save 单事务，保存失败回滚内存，
+// 保证 disk == memory。校验委托 platform.NormalizeProxyEndpoint（去 scheme/
+// 拆内嵌端口/范围检查），非法输入直接报错（区别于 Load 的宽容回填）。
+func (s *Service) SetSystemProxyEndpoint(host string, port int) error {
+	host, port, err := platform.NormalizeProxyEndpoint(host, port)
+	if err != nil {
+		return fmt.Errorf("invalid system proxy endpoint: %w", err)
+	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	old := s.settings.SystemProxy
+	s.settings.SystemProxy = SystemProxySettings{Host: host, Port: port}
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk (R3-Minor-02 ③).
+		s.mu.Lock()
+		s.settings.SystemProxy = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // --- Skin Settings ---
