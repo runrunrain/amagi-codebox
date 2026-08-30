@@ -40,3 +40,15 @@ func (s *Service) InstallTool(tool string) (*InstallResult, error) {
 		Error:   "WSL CLI install is only supported on Windows",
 	}, nil
 }
+
+// InstallSearchTools is unsupported off Windows (no WSL); mirrors the Windows
+// contract's failure shape so the envcheck fix dispatcher and frontend see a
+// structured failure instead of a missing method.
+func (s *Service) InstallSearchTools() (*InstallResult, error) {
+	return &InstallResult{
+		Tool:    SearchToolsKey,
+		Package: "fd-find ripgrep",
+		Success: false,
+		Error:   "WSL CLI install is only supported on Windows",
+	}, nil
+}

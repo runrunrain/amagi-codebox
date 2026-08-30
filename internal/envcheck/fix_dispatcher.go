@@ -52,14 +52,15 @@ type FixActionResult struct {
 // ---------------------------------------------------------------------------
 
 var allowedFixActions = map[SolutionType]bool{
-	SolutionFixPath:             true,
-	SolutionInstallTool:         true,
-	SolutionInstallNode:         true,
-	SolutionRetry:               true,
-	SolutionManualCommand:       true, // display-only, never executed
-	SolutionFixClaudeConfig:     true,
-	SolutionInstallClaudeMethod: true,
-	SolutionCleanClaudeInstall:  true,
+	SolutionFixPath:              true,
+	SolutionInstallTool:          true,
+	SolutionInstallNode:          true,
+	SolutionRetry:                true,
+	SolutionManualCommand:        true, // display-only, never executed
+	SolutionFixClaudeConfig:      true,
+	SolutionInstallClaudeMethod:  true,
+	SolutionCleanClaudeInstall:   true,
+	SolutionInstallWslSearchTools: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -130,9 +131,47 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 			Success: result.Success,
 			Message: result.Message,
 		}, nil
+	case SolutionInstallWslSearchTools:
+		return s.runInstallWSLSearchTools()
 	default:
 		return nil, fmt.Errorf("unimplemented fix action: %s", req.Action)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// install_wsl_search_tools: inject fd-find + ripgrep into the WSL distro
+// ---------------------------------------------------------------------------
+
+// runInstallWSLSearchTools 经注入回调（SetWSLSearchToolsInstaller → app.go 装配
+// 的 wslsetup.Service.InstallSearchTools 适配包装）在 WSL 内以 root 安装
+// fd-find 与 ripgrep。回调未注入（单测/非 Windows 装配）时返回明确失败而不
+// 是 panic。成功时置 Changed=true，App.RunEnvFixAction 会异步重跑 CheckAll，
+// 重检时 platform 侧缓存已被安装器失效，issue 即消失（缓存失效链见
+// checker_searchtools.go 文件头注释）。
+func (s *Service) runInstallWSLSearchTools() (*FixActionResult, error) {
+	s.mu.RLock()
+	install := s.wslSearchToolsInstaller
+	s.mu.RUnlock()
+	if install == nil {
+		return &FixActionResult{
+			Success: false,
+			Error:   "WSL 搜索工具安装回调未注入（仅 Windows + WSL 装配可用），请在 WSL 终端内手动执行: sudo apt-get install -y fd-find ripgrep",
+		}, nil
+	}
+	result, err := install()
+	if err != nil {
+		return nil, fmt.Errorf("install WSL search tools: %w", err)
+	}
+	action := &FixActionResult{Success: result != nil && result.Success}
+	if result != nil {
+		action.Message = result.Message
+		action.Error = result.Error
+	}
+	if action.Success {
+		action.Changed = true
+		action.NextSteps = []string{"已重新检测工具状态；若仍有提示请重启 CodeBox 后重试"}
+	}
+	return action, nil
 }
 
 // ---------------------------------------------------------------------------

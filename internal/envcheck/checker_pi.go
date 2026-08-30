@@ -52,6 +52,10 @@ func (s *Service) checkPi() (*CheckStatus, error) {
 	}
 	status.Version = version
 
+	// pi 已安装时顺带检测 fd/ripgrep 搜索工具（WSL/Windows 原生两侧，见
+	// checker_searchtools.go）。工具本体缺失时不检测，避免噪音。
+	s.appendSearchToolsIssues(status)
+
 	return status, nil
 }
 

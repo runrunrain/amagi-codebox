@@ -56,6 +56,16 @@ var wslExecRoot = func(distro, script string) (string, error) {
 	return string(out), err
 }
 
+// searchToolStatus / resetSearchToolCache wrap the platform-side cached probe
+// of fd/fdfind + ripgrep. Package vars so tests inject fakes AND assert the
+// post-install cache invalidation (without the reset, env checks and launch
+// probes keep reporting the stale pre-install state — the very bug this
+// feature exists to fix).
+var (
+	searchToolStatus     = platform.WSLSearchToolStatus
+	resetSearchToolCache = platform.ResetWSLSearchToolCache
+)
+
 // wslExecLogin runs a login-shell script inside the given distro as the
 // distro's default user WITHOUT the artificial PATH prefix, so `command -v`
 // observes the real .profile/.bashrc state — the same resolution a launched
@@ -343,6 +353,76 @@ func (s *Service) InstallTool(tool string) (*InstallResult, error) {
 	res.Log = logB.String()
 	return res, nil
 }
+
+// InstallSearchTools installs the fd-find + ripgrep pair pi/omp shell out to
+// for file search into the default WSL distro, as root via apt (Debian/Ubuntu
+// family). CodeBox injects PI_OFFLINE=1 into pi/omp sessions, so pi never
+// auto-downloads these tools; a distro without them degrades file search.
+// Idempotent: when both tools already probe present (after refreshing the
+// platform cache) it short-circuits with AlreadyOK. On success it invalidates
+// the platform-side probe cache so env checks / launch warnings observe the
+// new state immediately. Non-apt distros surface the raw apt failure plus
+// manual guidance in Error.
+func (s *Service) InstallSearchTools() (*InstallResult, error) {
+	distro := platform.DefaultWSLDistro(nil)
+	if distro == "" {
+		return &InstallResult{
+			Tool:    SearchToolsKey,
+			Package: searchToolsAptPackages,
+			Success: false,
+			Error:   "no usable WSL distro installed",
+		}, nil
+	}
+	res := &InstallResult{Tool: SearchToolsKey, Package: searchToolsAptPackages, Distro: distro}
+
+	// 先失效 platform 侧探测缓存：更早的启动探测/环境检测可能已把“缺失”
+	// 缓存住，AlreadyOK 判定与安装后验证都必须看到当前文件系统真值。
+	resetSearchToolCache(distro)
+	if tools := searchToolStatus(distro); tools.FD && tools.Ripgrep {
+		res.AlreadyOK = true
+		res.Success = true
+		res.Message = "WSL 内 fd-find 与 ripgrep 均已存在，无需安装"
+		return res, nil
+	}
+
+	s.logInfo("wslsetup", "installing fd-find + ripgrep in WSL", "distro="+distro)
+	// 与 ensureNode 同构：DEBIAN_FRONTEND 抑制交互式前端；update -qq 先刷新
+	// 索引，避免全新 distro 上 install 因空索引报 Unable to locate package。
+	script := strings.Join([]string{
+		"export DEBIAN_FRONTEND=noninteractive",
+		"apt-get update -qq",
+		"apt-get install -y " + searchToolsAptPackages,
+	}, " && ")
+	out, e := wslExecRoot(distro, script)
+	res.Log = out
+	if e != nil {
+		res.Success = false
+		res.Error = "apt 安装 fd-find/ripgrep 失败: " + e.Error()
+		// 非 apt 系发行版（Alpine/Fedora 等）在 apt-get 不存在时在这里暴露；
+		// 失败信息附上对应包管理器的手动指引。
+		if strings.Contains(out, "command not found") || strings.Contains(out, "not found") {
+			res.Error += "；该发行版可能非 Debian/Ubuntu（无 apt），请手动安装，如 Alpine: apk add fd ripgrep，Fedora: sudo dnf install fd-find ripgrep"
+		}
+		return res, nil
+	}
+
+	// 安装后失效缓存并重新探测验证（fdfind 与 rg 均须在登录 shell PATH 上）。
+	resetSearchToolCache(distro)
+	tools := searchToolStatus(distro)
+	if !tools.FD || !tools.Ripgrep {
+		res.Success = false
+		res.Error = "apt 安装已完成，但 fd/ripgrep 仍未在 WSL 登录 shell PATH 中解析到；请在 WSL 终端内手动执行: sudo apt-get install -y fd-find ripgrep"
+		return res, nil
+	}
+	res.Success = true
+	res.Message = fmt.Sprintf("已在 WSL（%s）内安装 fd-find 与 ripgrep", distro) +
+		"（CodeBox 向 pi/omp 会话注入 PI_OFFLINE=1，pi 不会自动下载搜索工具；安装后文件搜索能力恢复）"
+	return res, nil
+}
+
+// searchToolsAptPackages is the apt package pair installed by
+// InstallSearchTools (Debian/Ubuntu name the fd binary fdfind; ripgrep ships rg).
+const searchToolsAptPackages = "fd-find ripgrep"
 
 // checkLoginResolution verifies that a plain login shell inside the distro
 // resolves the CLI into $HOME/.npm-global/bin rather than a /mnt/<drive>

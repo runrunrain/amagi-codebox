@@ -235,3 +235,61 @@ func explicitFakeShell(t *testing.T, name string) string {
 	}
 	return p
 }
+
+// TestResetWSLSearchToolCache 验证定向/全量失效：安装器装完 fd/ripgrep 后必须
+// 失效对应 distro 的探测缓存，否则环境检测与启动探测继续拿到 stale 结果。
+func TestResetWSLSearchToolCache(t *testing.T) {
+	// 缓存只在 Windows GOOS 守卫内填充（wsl_home.go），非 Windows 全链路早退。
+	if runtime.GOOS != "windows" {
+		t.Skip("ResetWSLSearchToolCache 的缓存路径需要 Windows wsl.exe 守卫")
+	}
+	probes := 0
+	withFakeWSLScript(t, func(distro, script string) ([]byte, error) {
+		probes++
+		return []byte("fd:missing\nrg:missing\n"), nil
+	})
+	if got := WSLSearchToolStatus("Ubuntu"); got.FD || got.Ripgrep {
+		t.Fatalf("initial probe = %+v, want all missing", got)
+	}
+	if probes != 1 {
+		t.Fatalf("probes = %d, want 1", probes)
+	}
+	// 缓存命中：同 distro 不再 fork wsl.exe。
+	if got := WSLSearchToolStatus("Ubuntu"); got.FD || got.Ripgrep {
+		t.Fatalf("cached probe = %+v, want all missing", got)
+	}
+	if probes != 1 {
+		t.Fatalf("cached probes = %d, want 1", probes)
+	}
+	// 定向失效：仅该 distro 重新探测。
+	ResetWSLSearchToolCache("Ubuntu")
+	if got := WSLSearchToolStatus("Ubuntu"); got.FD || got.Ripgrep {
+		t.Fatalf("post-reset probe = %+v, want all missing", got)
+	}
+	if probes != 2 {
+		t.Fatalf("after targeted reset probes = %d, want 2", probes)
+	}
+	// 空 distro（含纯空白）＝清空全部。
+	ResetWSLSearchToolCache("   ")
+	if got := WSLSearchToolStatus("Ubuntu"); got.FD || got.Ripgrep {
+		t.Fatalf("post-empty-reset probe = %+v, want all missing", got)
+	}
+	if probes != 3 {
+		t.Fatalf("after empty reset probes = %d, want 3", probes)
+	}
+	ResetWSLSearchToolCache("")
+	if got := WSLSearchToolStatus("Ubuntu"); got.FD || got.Ripgrep {
+		t.Fatalf("post-clear-all probe = %+v, want all missing", got)
+	}
+	if probes != 4 {
+		t.Fatalf("after clear-all probes = %d, want 4", probes)
+	}
+	// 失效不存在的 distro 是无害 no-op（不 panic、不清别的）。
+	ResetWSLSearchToolCache("NoSuchDistro")
+	if got := WSLSearchToolStatus("Ubuntu"); got.FD || got.Ripgrep {
+		t.Fatalf("post-noop-reset probe = %+v, want all missing", got)
+	}
+	if probes != 4 {
+		t.Fatalf("noop reset must not re-probe, probes = %d, want 4", probes)
+	}
+}

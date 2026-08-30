@@ -1029,6 +1029,7 @@ function solutionLabel(type: string): string {
     case 'restart_app': return '重启应用'
     case 'install_claude_method': return '重装 Claude Code'
     case 'fix_claude_config': return '修复 Claude 配置'
+    case 'install_wsl_search_tools': return '安装搜索工具'
     default: return '解决方案'
   }
 }
@@ -1066,12 +1067,14 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
 
   // Destructive operations require confirmation (HIG: never destroy user data
   // without explicit opt-in).
-  if (sol.type === 'fix_path' || sol.type === 'install_node' || sol.type === 'clean_claude_install') {
+  if (sol.type === 'fix_path' || sol.type === 'install_node' || sol.type === 'clean_claude_install' || sol.type === 'install_wsl_search_tools') {
     const msg = sol.type === 'fix_path'
       ? '此操作将备份并修改 PATH 配置，以加入必要的工具目录。是否继续？'
       : sol.type === 'install_node'
         ? '此操作将尝试安装 Node.js。是否继续？'
-        : `此操作将清理当前 ${displayName} 安装产物（保留 versions/ 二进制可复用）。是否继续？`
+        : sol.type === 'install_wsl_search_tools'
+          ? '此操作将在 WSL 内以 root 安装 fd-find 与 ripgrep。是否继续？'
+          : `此操作将清理当前 ${displayName} 安装产物（保留 versions/ 二进制可复用）。是否继续？`
     if (!window.confirm(msg)) return
   }
 

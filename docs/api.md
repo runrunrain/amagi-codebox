@@ -106,7 +106,7 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `StartInstallToolAsync(tool string)` / `StartUpdateToolAsync(tool string)` → `(*envcheck.OperationState, error)` — 异步安装/更新，后台 goroutine 执行，立即返回操作状态。
 - `GetEnvCheckOperationState() *envcheck.OperationState` — 当前异步操作状态（id/tool/kind/status/step/progress/result 等）。
 - `GetEnvCheckSnapshot() *envcheck.EnvCheckSnapshot` — 检测快照（供远程 API 与前端复用）。
-- `RunEnvFixAction(action, tool, extraPath string) (*envcheck.FixActionResult, error)` — 执行白名单修复动作（fix_path/install_tool/install_node/retry/fix_claude_config 等，见 `internal/envcheck/fix_dispatcher.go`）。
+- `RunEnvFixAction(action, tool, extraPath string) (*envcheck.FixActionResult, error)` — 执行白名单修复动作（fix_path/install_tool/install_node/retry/fix_claude_config/install_wsl_search_tools 等，见 `internal/envcheck/fix_dispatcher.go`）。
 - `InstallClaudeWithMethod(method string)` / `StartInstallClaudeWithMethodAsync(method string)` — 按方式安装 Claude Code：`npm`（npm 全局）或 `native`（npm 全局后接 `claude install`）；后者为异步版本。
 - `CleanClaudeInstall(method string) (*envcheck.InstallResult, error)` — 清理指定安装方式（`npm`/`native`）的 Claude Code 残留。
 - `UninstallClaudeCode(method string) (*envcheck.InstallResult, error)` — 卸载已有安装；method 为空时从缓存状态自动识别安装方式。

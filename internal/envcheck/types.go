@@ -88,6 +88,12 @@ const (
 	SolutionRestartApp    SolutionType = "restart_app"
 	SolutionRetry         SolutionType = "retry"
 	SolutionManualCommand SolutionType = "manual_command"
+
+	// SolutionInstallWslSearchTools 在 WSL 发行版内以 root 执行 apt 安装
+	// fd-find 与 ripgrep（经 SetWSLSearchToolsInstaller 注入的
+	// wslsetup.InstallSearchTools 回调）。PI_OFFLINE=1 下 pi/omp 不会自动
+	// 下载这两个搜索工具，缺失即文件搜索能力降级。
+	SolutionInstallWslSearchTools SolutionType = "install_wsl_search_tools"
 )
 
 // Additional fix action types for Claude Code lifecycle management.

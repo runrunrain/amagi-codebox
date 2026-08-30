@@ -44,6 +44,11 @@ type ToolStatus struct {
 	ExecutablePath string `json:"executablePath"`
 }
 
+// SearchToolsKey is the synthetic Tool key InstallSearchTools reports in
+// InstallResult.Tool. It is not a CLI in cliPackages; it names the fd-find +
+// ripgrep pair pi/omp shell out to for file search.
+const SearchToolsKey = "search-tools"
+
 // Status is the frontend-facing snapshot for the WSL CLI environment.
 type Status struct {
 	Available        bool         `json:"available"`        // a usable WSL distro exists

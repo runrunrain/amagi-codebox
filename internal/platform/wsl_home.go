@@ -166,6 +166,23 @@ func WSLSearchToolStatus(distro string) WSLSearchTools {
 	return tools
 }
 
+// ResetWSLSearchToolCache drops the cached fd/ripgrep probe result for one
+// distro (all distros when distro is empty/whitespace), so the next
+// WSLSearchToolStatus call re-probes instead of returning the stale snapshot.
+// Callers MUST invoke this after installing or removing fd/ripgrep inside a
+// distro (wslsetup.InstallSearchTools): without the reset, launch-time
+// warnings and env checks keep reporting the pre-install state.
+func ResetWSLSearchToolCache(distro string) {
+	distro = strings.TrimSpace(distro)
+	wslToolsMu.Lock()
+	defer wslToolsMu.Unlock()
+	if distro == "" {
+		wslToolsCache = map[string]WSLSearchTools{}
+		return
+	}
+	delete(wslToolsCache, distro)
+}
+
 // WSLChmod applies a Linux chmod inside the distro. Windows os.Chmod through
 // the 9P UNC share only toggles the read-only attribute and never sets POSIX
 // mode bits, so 0600/0700 contracts on WSL-side files must be enforced by

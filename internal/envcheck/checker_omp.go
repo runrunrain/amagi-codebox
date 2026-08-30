@@ -54,6 +54,9 @@ func (s *Service) checkOmp() (*CheckStatus, error) {
 	}
 	status.Version = version
 
+	// omp 已安装时顺带检测 fd/ripgrep 搜索工具（同 checkPi 尾部挂载）。
+	s.appendSearchToolsIssues(status)
+
 	return status, nil
 }
 

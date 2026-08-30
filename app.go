@@ -513,6 +513,16 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Wired after `app` exists so the closure can reference both services.
 	envCheckSvc.SetHeadroomStopper(app.stopAllHeadroomForUninstall)
 
+	// fd/ripgrep 搜索工具安装回调（install_wsl_search_tools 修复动作）：把
+	// wslsetup.InstallSearchTools 的结果适配成 envcheck.InstallResult 形状。
+	envCheckSvc.SetWSLSearchToolsInstaller(func() (*envcheck.InstallResult, error) {
+		res, err := app.WSLSetup.InstallSearchTools()
+		if res == nil {
+			return nil, err
+		}
+		return &envcheck.InstallResult{Success: res.Success, Message: res.Message, Error: res.Error}, err
+	})
+
 	// M3-A2: control runtime + shared-service coordinator. The PTY raw port and
 	// Wails context are injected at Startup (they require the Wails ctx). The
 	// arbiter/gate/projector are ready immediately; MarkReady is called in

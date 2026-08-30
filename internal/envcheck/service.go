@@ -79,6 +79,15 @@ type Service struct {
 	// CleanHeadroom skips the stop step (backwards compatible with tests).
 	headroomStopper func() (error, func())
 
+	// wslSearchToolsInstaller, when set via SetWSLSearchToolsInstaller, is
+	// invoked by the SolutionInstallWslSearchTools fix action to install
+	// fd-find + ripgrep into the default WSL distro (app wiring adapts
+	// wslsetup.Service.InstallSearchTools into envcheck's InstallResult shape).
+	// Nil (the zero value, e.g. tests / non-Windows wiring) means no installer
+	// is wired and the fix action returns an explicit error instead of panicking.
+	// Mirrors the SetHeadroomStopper injection pattern.
+	wslSearchToolsInstaller func() (*InstallResult, error)
+
 	// Async operation state
 	opMu    sync.Mutex
 	current *OperationState
@@ -154,6 +163,17 @@ func (s *Service) SetHeadroomStopper(fn func() (error, func())) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.headroomStopper = fn
+}
+
+// SetWSLSearchToolsInstaller 注入 WSL 搜索工具（fd-find + ripgrep）安装回调，
+// 由 install_wsl_search_tools 修复动作经 runInstallWSLSearchTools 调用。app.go
+// 装配时把 wslsetup.Service.InstallSearchTools 适配成 envcheck.InstallResult
+// 形状注入；nil 安全（未注入时修复动作返回明确错误）。必须在首次
+// RunFixAction(SolutionInstallWslSearchTools) 之前调用。
+func (s *Service) SetWSLSearchToolsInstaller(fn func() (*InstallResult, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.wslSearchToolsInstaller = fn
 }
 
 // CheckAll checks every supported CLI tool and updates the in-memory cache.

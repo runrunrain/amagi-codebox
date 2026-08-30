@@ -1397,3 +1397,72 @@ func issueCodes(issues []CheckIssue) []string {
 	}
 	return codes
 }
+
+// ---------------------------------------------------------------------------
+// install_wsl_search_tools: injected installer dispatch
+// ---------------------------------------------------------------------------
+
+// TestDispatcher_InstallWSLSearchToolsNotInjected 回调未注入（单测/非 Windows
+// 装配）时必须返回明确失败而不是 panic 或静默成功。
+func TestDispatcher_InstallWSLSearchToolsNotInjected(t *testing.T) {
+	svc := newTestService()
+
+	result, err := svc.RunFixAction(FixActionRequest{Action: SolutionInstallWslSearchTools})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Fatalf("expected failure without installer, got %+v", result)
+	}
+	if !strings.Contains(result.Error, "未注入") {
+		t.Errorf("error should explain the missing injection: %q", result.Error)
+	}
+}
+
+// TestDispatcher_InstallWSLSearchTools 成功回调透传 message 并置 Changed（前端
+// 据此刷新快照）；结构化失败（Success=false）与 error 返回分别保形。
+func TestDispatcher_InstallWSLSearchTools(t *testing.T) {
+	svc := newTestService()
+	called := 0
+	svc.SetWSLSearchToolsInstaller(func() (*InstallResult, error) {
+		called++
+		return &InstallResult{Success: true, Message: "已在 WSL（Ubuntu）内安装 fd-find 与 ripgrep"}, nil
+	})
+
+	result, err := svc.RunFixAction(FixActionRequest{Action: SolutionInstallWslSearchTools})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("installer calls = %d, want 1", called)
+	}
+	if !result.Success || !result.Changed {
+		t.Fatalf("result = %+v, want success + changed", result)
+	}
+	if result.Message != "已在 WSL（Ubuntu）内安装 fd-find 与 ripgrep" {
+		t.Errorf("message = %q", result.Message)
+	}
+
+	// 结构化失败：Success=false + Error 透传，RunFixAction 本身不报错。
+	svc.SetWSLSearchToolsInstaller(func() (*InstallResult, error) {
+		return &InstallResult{Success: false, Error: "apt 安装 fd-find/ripgrep 失败"}, nil
+	})
+	result, err = svc.RunFixAction(FixActionRequest{Action: SolutionInstallWslSearchTools})
+	if err != nil {
+		t.Fatalf("structured failure must not surface as error: %v", err)
+	}
+	if result.Success || !strings.Contains(result.Error, "apt 安装") {
+		t.Fatalf("result = %+v, want structured failure", result)
+	}
+
+	// 回调返回 error：作为 RunFixAction 的 error 冒泡。
+	svc.SetWSLSearchToolsInstaller(func() (*InstallResult, error) {
+		return nil, errors.New("wsl.exe blew up")
+	})
+	if _, err = svc.RunFixAction(FixActionRequest{Action: SolutionInstallWslSearchTools}); err == nil || !strings.Contains(err.Error(), "wsl.exe blew up") {
+		t.Fatalf("expected bubbled error, got %v", err)
+	}
+}
