@@ -429,9 +429,18 @@ func resolveRequestedShell(requestedShell string, env []string, capabilities Pla
 		return buildResolvedShell(key, resolvedPath, capabilities), "explicit", warnings
 	}
 
-	defaultShell := defaultShellForCapabilities(env, capabilities)
+	// The user EXPLICITLY requested a shell that cannot be resolved (e.g. a
+	// per-engine default persisted on another platform: "zsh" on Windows, or a
+	// stale custom path). Falling back to the platform default here would
+	// silently switch the session into a completely different OS environment
+	// on Windows (the capability default is WSL), which is exactly the
+	// "selected PowerShell but landed in WSL" surprise. WSL stays the default
+	// only when NO shell was requested. So prefer the first resolvable NON-WSL
+	// shell (pwsh/powershell/cmd on Windows; identical to the platform default
+	// on macOS where the catalog has no wsl entry).
+	defaultShell := defaultNonWSLShellForCapabilities(env, capabilities)
 	if defaultShell.Path != "" {
-		warnings = append(warnings, fmt.Sprintf("requested shell %q was not found; falling back to %s", trimmed, defaultShell.Path))
+		warnings = append(warnings, fmt.Sprintf("requested shell %q was not found; falling back to %s (never WSL: an explicit request must not silently switch OS environment)", trimmed, defaultShell.Path))
 		return defaultShell, "fallback", warnings
 	}
 

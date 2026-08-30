@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -164,20 +165,32 @@ type AppSettings struct {
 }
 
 func defaultSettings() *AppSettings {
+	return defaultSettingsForOS(runtime.GOOS)
+}
+
+// defaultSettingsForOS seeds platform-appropriate dashboard shell defaults:
+// "wsl" on Windows (documented default: terminals launch in a Linux env with
+// pwsh/cmd fallback) and "zsh" elsewhere (macOS). Seeding wsl keys on macOS
+// would persist unresolvable values forever.
+func defaultSettingsForOS(osName string) *AppSettings {
+	defaultShell := "zsh"
+	if osName == "windows" {
+		defaultShell = "wsl"
+	}
 	return &AppSettings{
 		Dashboard: DashboardDefaults{
 			Mode:          "embedded",
-			Shell:         "wsl",
+			Shell:         defaultShell,
 			ClaudeMode:    "embedded",
-			ClaudeShell:   "wsl",
+			ClaudeShell:   defaultShell,
 			OpenCodeMode:  "embedded",
-			OpenCodeShell: "wsl",
+			OpenCodeShell: defaultShell,
 			CodexMode:     "embedded",
-			CodexShell:    "wsl",
+			CodexShell:    defaultShell,
 			PiMode:        "embedded",
-			PiShell:       "wsl",
+			PiShell:       defaultShell,
 			OmpMode:       "embedded",
-			OmpShell:      "wsl",
+			OmpShell:      defaultShell,
 		},
 		ShellPaths:             []ShellEntry{},
 		SavedWorkDirs:          []WorkDirEntry{},
@@ -440,6 +453,45 @@ func (s *Service) SetCodexGlobalHeadroom(enabled bool, target string, port int) 
 }
 
 func normalizeDashboardDefaults(d *DashboardDefaults) {
+	normalizeDashboardDefaultsForOS(d, runtime.GOOS)
+}
+
+// invalidShellKeysForOS lists bare catalog keys from the OTHER platform that
+// can never resolve on osName. Values containing path separators are custom
+// shell paths and are never rewritten; "pwsh" is valid on both platforms.
+func invalidShellKeysForOS(osName string) map[string]string {
+	if osName == "windows" {
+		// macOS-only keys: resolveRequestedShell would silently fall back to the
+		// WSL platform default (the "selected PowerShell but landed in WSL"
+		// bug). Rewrite them at persist time to the non-WSL Windows default.
+		return map[string]string{"zsh": "pwsh", "bash": "pwsh", "fish": "pwsh"}
+	}
+	return map[string]string{"wsl": "zsh", "powershell": "zsh", "cmd": "zsh"}
+}
+
+// sanitizeShellKeyForOS rewrites cross-platform-invalid bare shell keys to a
+// resolvable platform default. Empty values and explicit/custom paths pass
+// through unchanged (empty is filled by the caller's default logic).
+func sanitizeShellKeyForOS(value string, invalid map[string]string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || strings.ContainsAny(trimmed, "/\\") {
+		return value
+	}
+	if replacement, ok := invalid[strings.ToLower(trimmed)]; ok {
+		return replacement
+	}
+	return value
+}
+
+func normalizeDashboardDefaultsForOS(d *DashboardDefaults, osName string) {
+	invalidKeys := invalidShellKeysForOS(osName)
+	// Empty-shell fill default is platform-aware so a fresh macOS install does
+	// not persist an unresolvable "wsl" key (and vice versa).
+	fillShell := "zsh"
+	if osName == "windows" {
+		fillShell = "wsl"
+	}
+
 	if d.ClaudeMode == "" {
 		if d.Mode != "" {
 			d.ClaudeMode = d.Mode
@@ -460,32 +512,42 @@ func normalizeDashboardDefaults(d *DashboardDefaults) {
 		d.OmpMode = "embedded"
 	}
 
+	// Sanitize cross-platform-invalid bare keys BEFORE the empty-fill logic so
+	// a stale "zsh" (persisted from another platform) cannot leak into the
+	// empty-fill follow (Shell → per-engine) and resurface later.
+	d.Shell = sanitizeShellKeyForOS(d.Shell, invalidKeys)
+	d.ClaudeShell = sanitizeShellKeyForOS(d.ClaudeShell, invalidKeys)
+	d.OpenCodeShell = sanitizeShellKeyForOS(d.OpenCodeShell, invalidKeys)
+	d.CodexShell = sanitizeShellKeyForOS(d.CodexShell, invalidKeys)
+	d.PiShell = sanitizeShellKeyForOS(d.PiShell, invalidKeys)
+	d.OmpShell = sanitizeShellKeyForOS(d.OmpShell, invalidKeys)
+
 	if d.ClaudeShell == "" {
 		if d.Shell != "" {
 			d.ClaudeShell = d.Shell
 		} else {
-			d.ClaudeShell = "wsl"
+			d.ClaudeShell = fillShell
 		}
 	}
 	if d.OpenCodeShell == "" {
 		if d.Shell != "" {
 			d.OpenCodeShell = d.Shell
 		} else {
-			d.OpenCodeShell = "wsl"
+			d.OpenCodeShell = fillShell
 		}
 	}
 	if d.CodexShell == "" {
 		if d.Shell != "" {
 			d.CodexShell = d.Shell
 		} else {
-			d.CodexShell = "wsl"
+			d.CodexShell = fillShell
 		}
 	}
 	if d.PiShell == "" {
 		if d.Shell != "" {
 			d.PiShell = d.Shell
 		} else {
-			d.PiShell = "wsl"
+			d.PiShell = fillShell
 		}
 	}
 	if d.OmpShell == "" {

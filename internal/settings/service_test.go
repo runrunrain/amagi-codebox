@@ -44,11 +44,13 @@ func TestNormalizeDashboardDefaults_PreservesExplicitEngineModes(t *testing.T) {
 
 // TestNormalizeDashboardDefaults_OmpModeAndShell 验证 omp 引擎默认值与透传
 // （复刻 PiMode/PiShell 语义）：缺省时 OmpMode=embedded、OmpShell 跟随 Shell；
-// 显式设置时原样保留。
+// 显式设置时原样保留。用 darwin 语义验证（zsh/bash 是 darwin 目录里的合法 key；
+// 在 windows 上它们会被跨平台 sanitize 重写，由
+// TestNormalizeDashboardDefaults_SanitizesCrossPlatformShellKeys 覆盖）。
 func TestNormalizeDashboardDefaults_OmpModeAndShell(t *testing.T) {
 	// 缺省：embedded + 跟随全局 Shell。
 	d := DashboardDefaults{Shell: "zsh"}
-	normalizeDashboardDefaults(&d)
+	normalizeDashboardDefaultsForOS(&d, "darwin")
 	if d.OmpMode != "embedded" {
 		t.Fatalf("OmpMode = %q, want embedded", d.OmpMode)
 	}
@@ -58,16 +60,51 @@ func TestNormalizeDashboardDefaults_OmpModeAndShell(t *testing.T) {
 
 	// 无全局 Shell：回退 pwsh。
 	d2 := DashboardDefaults{}
-	normalizeDashboardDefaults(&d2)
+	normalizeDashboardDefaultsForOS(&d2, "darwin")
 	if d2.OmpShell != "pwsh" {
 		t.Fatalf("OmpShell = %q, want pwsh fallback", d2.OmpShell)
 	}
 
 	// 显式值保留。
 	d3 := DashboardDefaults{OmpMode: "terminal", OmpShell: "bash"}
-	normalizeDashboardDefaults(&d3)
+	normalizeDashboardDefaultsForOS(&d3, "darwin")
 	if d3.OmpMode != "terminal" || d3.OmpShell != "bash" {
 		t.Fatalf("explicit omp values not preserved: mode=%q shell=%q", d3.OmpMode, d3.OmpShell)
+	}
+}
+
+// TestNormalizeDashboardDefaults_SanitizesCrossPlatformShellKeys 验证跨平台
+// 无效的裸 shell key 在持久化时被重写为可解析的平台默认：
+// - Windows 上 zsh/bash/fish（macOS 目录 key）→ pwsh（非 WSL，避免
+//   “选了 PowerShell 却被静默切进 WSL”的回退链）；
+// - 非 Windows 上 wsl/powershell/cmd → zsh。
+// 含路径分隔符的自定义 shell 路径原样保留。
+func TestNormalizeDashboardDefaults_SanitizesCrossPlatformShellKeys(t *testing.T) {
+	d := DashboardDefaults{
+		ClaudeShell:   "zsh",
+		OpenCodeShell: "/bin/zsh", // 自定义路径：不重写
+		CodexShell:    "bash",
+		PiShell:       "fish",
+		OmpShell:      "pwsh", // 双平台合法：不重写
+	}
+	normalizeDashboardDefaultsForOS(&d, "windows")
+	if d.ClaudeShell != "pwsh" {
+		t.Fatalf("ClaudeShell = %q, want pwsh (zsh sanitized on windows)", d.ClaudeShell)
+	}
+	if d.OpenCodeShell != "/bin/zsh" {
+		t.Fatalf("OpenCodeShell = %q, want /bin/zsh (custom path must not be rewritten)", d.OpenCodeShell)
+	}
+	if d.CodexShell != "pwsh" || d.PiShell != "pwsh" {
+		t.Fatalf("bash/fish not sanitized on windows: codex=%q pi=%q", d.CodexShell, d.PiShell)
+	}
+	if d.OmpShell != "pwsh" {
+		t.Fatalf("OmpShell = %q, want pwsh (valid on both platforms)", d.OmpShell)
+	}
+
+	d2 := DashboardDefaults{ClaudeShell: "wsl", CodexShell: "powershell", PiShell: "cmd"}
+	normalizeDashboardDefaultsForOS(&d2, "darwin")
+	if d2.ClaudeShell != "zsh" || d2.CodexShell != "zsh" || d2.PiShell != "zsh" {
+		t.Fatalf("windows-only keys not sanitized on darwin: claude=%q codex=%q pi=%q", d2.ClaudeShell, d2.CodexShell, d2.PiShell)
 	}
 }
 
@@ -80,13 +117,15 @@ func TestDashboardDefaults_OmpModeRoundTrip(t *testing.T) {
 	}
 	d := svc.GetDashboardDefaults()
 	d.OmpMode = "terminal"
-	d.OmpShell = "fish"
+	// fish 是 darwin 目录 key，在 windows 会被 sanitize；round-trip 透传语义
+	// 用双平台合法的 pwsh 验证（跨平台重写由 SanitizesCrossPlatformShellKeys 覆盖）。
+	d.OmpShell = "pwsh"
 	if err := svc.SetDashboardDefaults(d); err != nil {
 		t.Fatalf("SetDashboardDefaults: %v", err)
 	}
 	got := svc.GetDashboardDefaults()
-	if got.OmpMode != "terminal" || got.OmpShell != "fish" {
-		t.Fatalf("round-trip omp = mode:%q shell:%q, want terminal/fish", got.OmpMode, got.OmpShell)
+	if got.OmpMode != "terminal" || got.OmpShell != "pwsh" {
+		t.Fatalf("round-trip omp = mode:%q shell:%q, want terminal/pwsh", got.OmpMode, got.OmpShell)
 	}
 }
 

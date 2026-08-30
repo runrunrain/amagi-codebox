@@ -324,3 +324,52 @@ func TestWSLDistroVersionsEmptyWhenUnsupported(t *testing.T) {
 		t.Fatalf("versions = %v, want empty on probe error", got)
 	}
 }
+
+// TestWindowsResolverUnresolvableRequestedShellStaysOutOfWSL 验证：WSL 可用的
+// Windows 机器上，用户显式请求但解析失败的 shell（如从其他平台持久化来的
+// "zsh"）回退到非 WSL shell（pwsh/cmd），而不是静默切进 WSL——"选了
+// PowerShell 7 却启动进 WSL2"的根因回归测试。WSL 仅在用户未指定 shell 时
+// 作为平台默认。
+func TestWindowsResolverUnresolvableRequestedShellStaysOutOfWSL(t *testing.T) {
+	withFakeWSLDistros(t, "Ubuntu-24.04")
+	dir := t.TempDir()
+	for _, name := range []string{"wsl.exe", "pwsh.exe", "opencode.cmd"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("stub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolver := NewCLIResolver(capabilitiesForTarget("windows", "amd64"))
+	spec, err := resolver.Resolve(ResolveRequest{
+		AppType:            "opencode",
+		LaunchMode:         "embedded",
+		RequestedShellPath: "zsh",
+		Env:                []string{"PATH=" + dir},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if spec.BootstrapMode == BootstrapWSL {
+		t.Fatalf("bootstrap = %q, must not enter WSL for an unresolvable explicit shell request", spec.BootstrapMode)
+	}
+	if spec.Shell == nil {
+		t.Fatal("expected a fallback shell")
+	}
+	if strings.EqualFold(spec.Shell.Key, "wsl") {
+		t.Fatalf("fallback shell = wsl (%q), want a non-WSL Windows shell", spec.Shell.Path)
+	}
+	if !strings.EqualFold(spec.Shell.Key, "pwsh") {
+		t.Fatalf("fallback shell key = %q, want pwsh (first non-WSL candidate)", spec.Shell.Key)
+	}
+	// 未指定 shell 时 WSL 默认保持不变（文档化的平台默认行为）。
+	specNoShell, err := resolver.Resolve(ResolveRequest{
+		AppType:    "opencode",
+		LaunchMode: "embedded",
+		Env:        []string{"PATH=" + dir},
+	})
+	if err != nil {
+		t.Fatalf("resolve (no shell): %v", err)
+	}
+	if specNoShell.BootstrapMode != BootstrapWSL {
+		t.Fatalf("no-shell bootstrap = %q, want %q (WSL stays the platform default)", specNoShell.BootstrapMode, BootstrapWSL)
+	}
+}

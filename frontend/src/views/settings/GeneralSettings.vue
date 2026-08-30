@@ -169,6 +169,13 @@ const defaults = reactive({
   openCodeShell: '',
   codexMode: 'embedded',
   codexShell: '',
+  // Pi/OMP 的启动模式与 Shell 不在本页编辑，但保存时必须原样透传，
+  // 否则 SetDashboardDefaults 整体替换会把它们清空（后端 normalize 会
+  // 用平台默认重填，导致用户在会话设置页选好的 pi/omp Shell 被抹掉）。
+  piMode: 'embedded',
+  piShell: '',
+  ompMode: 'embedded',
+  ompShell: '',
   useHeadroom: false,
 })
 
@@ -289,6 +296,10 @@ async function loadData() {
     defaults.openCodeShell = d.openCodeShell || d.shell || shellFallback
     defaults.codexMode = d.codexMode || 'embedded'
     defaults.codexShell = d.codexShell || d.shell || shellFallback
+    defaults.piMode = d.piMode || 'embedded'
+    defaults.piShell = d.piShell || d.shell || shellFallback
+    defaults.ompMode = d.ompMode || 'embedded'
+    defaults.ompShell = d.ompShell || d.shell || shellFallback
     defaults.useHeadroom = d.useHeadroom || false
   } catch (err) {
     console.error('load defaults:', err)
@@ -310,6 +321,10 @@ async function saveDefaults() {
       openCodeShell: defaults.openCodeShell,
       codexMode: defaults.codexMode,
       codexShell: defaults.codexShell,
+      piMode: defaults.piMode,
+      piShell: defaults.piShell,
+      ompMode: defaults.ompMode,
+      ompShell: defaults.ompShell,
       useHeadroom: defaults.useHeadroom,
     } as any)
     showSuccess('默认值已保存')
