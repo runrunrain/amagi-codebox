@@ -98,52 +98,62 @@ export function setRemoteEndpoint(host: string, port: number): Promise<void> {
  * ------------------------------------------------------------------------- */
 
 /** 创建配对窗口。confirmTerminalExposure 必须为用户显式勾选结果（P-02 不预勾选）。 */
-export async function createRemotePairingWindow(
+export function createRemotePairingWindow(
   confirmTerminalExposure: boolean,
 ): Promise<remote.PairingWindowInfo> {
-  return await CreateRemotePairingWindow(confirmTerminalExposure);
+  return callApi('[api.remote.createRemotePairingWindow]', () =>
+    CreateRemotePairingWindow(confirmTerminalExposure),
+  );
 }
 
 /** 查询配对窗口状态（不含一次性配对码）。 */
-export async function getRemotePairingWindow(): Promise<remote.PairingWindowStatus> {
-  return await GetRemotePairingWindow();
+export function getRemotePairingWindow(): Promise<remote.PairingWindowStatus> {
+  return callApi('[api.remote.getRemotePairingWindow]', () => GetRemotePairingWindow());
 }
 
 /** 按 generation CAS 取消配对窗口；返回是否实际取消成功。 */
-export async function cancelRemotePairingWindow(generation: number): Promise<boolean> {
-  return await CancelRemotePairingWindow(generation);
+export function cancelRemotePairingWindow(generation: number): Promise<boolean> {
+  return callApi('[api.remote.cancelRemotePairingWindow]', () =>
+    CancelRemotePairingWindow(generation),
+  );
 }
 
 /** 已配对设备列表。 */
-export async function listRemoteDevices(): Promise<remote.DeviceInfo[]> {
-  return await ListRemoteDevices();
+export function listRemoteDevices(): Promise<remote.DeviceInfo[]> {
+  return callApi('[api.remote.listRemoteDevices]', () => ListRemoteDevices());
 }
 
 /** 撤销设备。confirm 必须来自 PG-06 确认对话的显式确认。 */
-export async function revokeRemoteDevice(
+export function revokeRemoteDevice(
   deviceID: string,
   confirm: boolean,
 ): Promise<remote.RevokeDeviceResult> {
-  return await RevokeRemoteDevice(deviceID, confirm);
+  return callApi('[api.remote.revokeRemoteDevice]', () =>
+    RevokeRemoteDevice(deviceID, confirm),
+  );
 }
 
 /** 本地可见安全事件（sanitized 投影，newest-first）。limit 合法范围 1..500。 */
-export async function listRemoteSecurityEvents(
+export function listRemoteSecurityEvents(
   limit: number,
 ): Promise<remote.SecurityEventRecord[]> {
-  return await ListRemoteSecurityEvents(limit);
+  return callApi('[api.remote.listRemoteSecurityEvents]', () =>
+    ListRemoteSecurityEvents(limit),
+  );
 }
 
 /** 有界安全健康快照。 */
-export async function getRemoteSecurityHealth(): Promise<remote.SecurityHealthSnapshot> {
-  return await GetRemoteSecurityHealth();
+export function getRemoteSecurityHealth(): Promise<remote.SecurityHealthSnapshot> {
+  return callApi('[api.remote.getRemoteSecurityHealth]', () => GetRemoteSecurityHealth());
 }
 
 /** 确认一个已关闭（非 active）的健康问题码；返回最新快照。 */
-export async function acknowledgeRemoteSecurityHealth(
+export function acknowledgeRemoteSecurityHealth(
   code: string,
 ): Promise<remote.SecurityHealthSnapshot> {
-  return await AcknowledgeRemoteSecurityHealth(code);
+  return callApi('[api.remote.acknowledgeRemoteSecurityHealth]', () =>
+    AcknowledgeRemoteSecurityHealth(code),
+  );
 }
 
 /* ---------------------------------------------------------------------------
@@ -153,22 +163,26 @@ export async function acknowledgeRemoteSecurityHealth(
  * ------------------------------------------------------------------------- */
 
 /** 隐私最小恢复状态：legacy/uncertain 外部进程清理项与全局锁定标记。 */
-export async function getExternalCleanupRecoveryStatus(): Promise<remote.ExternalCleanupRecoveryStatus> {
-  return await GetExternalCleanupRecoveryStatus();
+export function getExternalCleanupRecoveryStatus(): Promise<remote.ExternalCleanupRecoveryStatus> {
+  return callApi('[api.remote.getExternalCleanupRecoveryStatus]', () =>
+    GetExternalCleanupRecoveryStatus(),
+  );
 }
 
 /**
  * 显式确认恢复。confirmed 必须来自 PG-06 确认对话的显式确认（无 force-clear）。
  * 后端会再次核验进程活性：仍在运行 / 持久化失败 / 项不存在均抛错且不释放锁定。
  */
-export async function confirmExternalCleanupRecovery(
+export function confirmExternalCleanupRecovery(
   sessionID: string,
   confirmed: boolean,
 ): Promise<remote.ExternalCleanupRecoveryResult> {
-  return await ConfirmExternalCleanupRecovery(sessionID, confirmed);
+  return callApi('[api.remote.confirmExternalCleanupRecovery]', () =>
+    ConfirmExternalCleanupRecovery(sessionID, confirmed),
+  );
 }
 
 /** 启动警告（本次启动累积；含 legacy 外部清理提示）。仅展示，不当 toast 自动消失。 */
-export async function getStartupWarnings(): Promise<string[]> {
-  return await GetStartupWarnings();
+export function getStartupWarnings(): Promise<string[]> {
+  return callApi('[api.remote.getStartupWarnings]', () => GetStartupWarnings());
 }

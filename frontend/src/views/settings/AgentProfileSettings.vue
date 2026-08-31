@@ -64,7 +64,7 @@
                   {{ name }}
                   <span v-if="name === store.lastApplied" class="ap-applied-badge">当前已应用</span>
                 </span>
-                <span class="ap-row-time">更新于 {{ formatTime(store.profiles[name].updatedAt) }}</span>
+                <span class="ap-row-time">更新于 {{ formatTime(store.profiles[name]?.updatedAt) }}</span>
               </div>
               <div class="ap-row-actions">
                 <AppButton size="small" variant="primary" :disabled="busy" @click="askApply(name)">应用</AppButton>

@@ -80,9 +80,10 @@ export function createMarkdownStreamCollector(partId: string, options: MarkdownS
       state.finalized = false
     }
     state.sourceBuffer += delta
-    if (state.sourceBuffer.length > maxBufferChars) {
-      state.sourceBuffer = state.sourceBuffer.slice(state.sourceBuffer.length - maxBufferChars)
-      state.committedSource = state.committedSource.slice(Math.max(0, state.committedSource.length - state.sourceBuffer.length))
+    const overflow = state.sourceBuffer.length - maxBufferChars
+    if (overflow > 0) {
+      state.sourceBuffer = state.sourceBuffer.slice(overflow)
+      state.committedSource = state.committedSource.slice(overflow)
     }
 
     const tableExpired = state.holdback === 'table' && now - state.lastCommitAt >= tableHoldbackMs

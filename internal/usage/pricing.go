@@ -229,7 +229,11 @@ func (p *PricingService) ReplaceSnapshot(next PricingData) error {
 	}
 	seenIDs := make(map[string]struct{}, len(next.Models))
 	seenPatterns := make(map[string]struct{}, len(next.Models))
-	for _, model := range next.Models {
+	// 匹配键统一归一化（与 Upsert 同口径），否则快照里的大写/带 vendor
+	// 前缀模式会存成永远无法命中的死行。
+	for i := range next.Models {
+		model := &next.Models[i]
+		model.ModelPattern = NormalizeModelID(model.ModelPattern)
 		if model.ID == "" || model.ModelPattern == "" {
 			return errors.New("pricing id and modelPattern are required")
 		}
@@ -275,6 +279,12 @@ func (p *PricingService) Upsert(mp ModelPricing) error {
 	}
 	if mp.CurrencyCode != "USD" && mp.CurrencyCode != "CNY" {
 		return errors.New("currencyCode must be USD or CNY")
+	}
+	// 匹配键统一归一化：Resolve 只对小写标准化键做精确/前缀匹配，而前端
+	// 输入允许大写；不归一化会存成永远无法命中的死行。
+	mp.ModelPattern = NormalizeModelID(mp.ModelPattern)
+	if mp.ModelPattern == "" {
+		return errors.New("modelPattern is required")
 	}
 	p.mu.Lock()
 	// 自动生成 ID（非内置模型且未提供）

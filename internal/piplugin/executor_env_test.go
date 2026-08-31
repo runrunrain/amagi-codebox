@@ -1,6 +1,8 @@
 package piplugin
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -20,7 +22,9 @@ func envValue(env []string, key string) (string, bool) {
 // (install/remove/update) explicitly inject PI_CODING_AGENT_DIR pointing at the
 // shared standard user agent root.
 func TestExecutePiCommandInjectsAgentDir(t *testing.T) {
-	agentDir := "/home/user/.pi/agent"
+	// 用可创建的临时目录：executePiCommand 现在会先确保 agent 根存在
+	//（Dir=agentDir 需要 cwd 可用，见 TestExecutePiCommandCreatesMissingAgentDir）。
+	agentDir := filepath.Join(t.TempDir(), ".pi", "agent")
 	runner := &testRunner{}
 	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
 
@@ -41,5 +45,27 @@ func TestExecutePiCommandInjectsAgentDir(t *testing.T) {
 	wantArgs := []string{"install", "npm:foo"}
 	if !reflect.DeepEqual(runner.specs[0].Args, wantArgs) {
 		t.Errorf("CLI args = %#v, want %#v", runner.specs[0].Args, wantArgs)
+	}
+}
+
+// TestExecutePiCommandCreatesMissingAgentDir 回归验证：executePiCommand 以
+// Dir=agentDir 运行 pi CLI，全新机器上 ~/.pi/agent 尚未创建时，必须先建目录，
+// 否则 exec 会在 pi CLI 启动前就 chdir 失败（插件面板可能先于首次 pi 会话使用）。
+func TestExecutePiCommandCreatesMissingAgentDir(t *testing.T) {
+	agentDir := filepath.Join(t.TempDir(), ".pi", "agent")
+	runner := &testRunner{}
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, runner)
+
+	if _, err := svc.InstallPackage("npm:foo"); err != nil {
+		t.Fatalf("InstallPackage: %v", err)
+	}
+	if info, err := os.Stat(agentDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected agent dir to be created before running pi CLI, err=%v", err)
+	}
+	if len(runner.specs) != 1 {
+		t.Fatalf("expected 1 CLI call, got %d", len(runner.specs))
+	}
+	if got, ok := envValue(runner.specs[0].Env, "PI_CODING_AGENT_DIR"); !ok || got != agentDir {
+		t.Errorf("PI_CODING_AGENT_DIR = %q (ok=%v), want %q", got, ok, agentDir)
 	}
 }

@@ -42,6 +42,7 @@ function classifyError(err: unknown): ScannerFailure {
 }
 
 async function start(): Promise<void> {
+  stopped = false;
   starting.value = true;
   failure.value = null;
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -52,6 +53,7 @@ async function start(): Promise<void> {
   }
   try {
     const { Html5Qrcode } = await import('html5-qrcode');
+    if (stopped) return;
     scanner = new Html5Qrcode(REGION_ID);
     await scanner.start(
       { facingMode: 'environment' },
@@ -63,8 +65,17 @@ async function start(): Promise<void> {
         // 帧级"未识别到二维码"是常态，不视为错误。
       },
     );
+    if (stopped) {
+      if (scanner.isScanning) {
+        await scanner.stop();
+      }
+      scanner.clear();
+      scanner = null;
+      return;
+    }
     starting.value = false;
   } catch (err) {
+    if (stopped) return;
     const kind = classifyError(err);
     failure.value = kind;
     starting.value = false;

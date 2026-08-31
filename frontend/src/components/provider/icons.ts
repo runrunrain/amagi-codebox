@@ -17,6 +17,7 @@
  * - permission: 盾牌+锁（权限）
  * - instructions: 文档列表（说明文件）
  * - plugin: 积木拼块（插件）
+ * - concurrency: 滑杆/分流（并发限制）
  * - experimental: 烧瓶（实验性）
  * - unknown: 三点堆叠（兜底）
  */
@@ -71,6 +72,13 @@ export const ICONS: Readonly<Record<string, string>> = {
       <path d="M9 11v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-9"/>
       <path d="M7 14H9M15 14h2"/>
     </svg>`,
+  concurrency: `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6h16M4 12h16M4 18h16"/>
+      <circle cx="8" cy="6" r="2" fill="currentColor"/>
+      <circle cx="16" cy="12" r="2" fill="currentColor"/>
+      <circle cx="10" cy="18" r="2" fill="currentColor"/>
+    </svg>`,
   experimental: `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
       <path d="M9 3h6"/>
@@ -108,6 +116,7 @@ export const ACCENTS: Readonly<Record<string, string>> = {
   permission: '#FF3B30',   // systemRed
   instructions: '#AF52DE', // systemPurple
   plugin: '#00C7BE',       // systemTeal
+  concurrency: '#32ADE6',  // systemCyan
   experimental: '#FF2D55', // systemPink
   unknown: '#8E8E93',      // systemGray
 };

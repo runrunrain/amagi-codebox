@@ -64,6 +64,10 @@ func (s *Service) SetSubItemEnabled(pluginID string, subItemRef SubItemRef, enab
 	if !detail.hasSubItem(subItemRef) {
 		return fmt.Errorf("plugin %s does not contain subitem %s", pluginID, subItemRef.Key())
 	}
+	// 读-改-写整段持锁：并发开关同一插件的不同子项时防止丢失更新
+	//（写入为 tmp+rename 原子替换，未持锁的两个交错写会让先完成的状态丢失）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	states, err := s.readSubItemStateFile()
 	if err != nil {
 		return err

@@ -429,3 +429,37 @@ func TestList_SkipsRunningAndMissingJSONL(t *testing.T) {
 		}
 	}
 }
+
+// TestPollOnce_ExitsWhenSessionEntryRemoved 回归：会话条目被删除（Remove /
+// ClearStoppedSessions）后 pollOnce 必须返回 false（= tracker goroutine 退出）。
+//
+// 根因（修复前）：pollOnce 的退出条件是 `status != "" && status != StatusRunning`，
+// 把 GetStatus 的 "" （条目已不在）当作"继续轮询"。用户流程"会话退出 → 在 tracker
+// 下一个 10s tick 之前清理已停止会话"会删除条目，tracker 此后每 tick 都拿到 ""，
+// 永久轮询 FindLatestActiveJSONL（goroutine + 周期性 jsonl 目录 IO 泄漏，直到
+// App 退出）。tracker 启动前条目必然已提交存在，任何时点的 "" 都只能意味着记录
+// 已终末，必须退出。
+func TestPollOnce_ExitsWhenSessionEntryRemoved(t *testing.T) {
+	homeDir := t.TempDir()
+	const workDir = "X:/WorkSpace/demo"
+
+	mgr := NewManager()
+	sess := mgr.Create(AppTypeClaudeCode, "p", "default", "m", ModeEmbedded, workDir)
+
+	// Running 中条目在：pollOnce 继续轮询。
+	var lastPath string
+	if !pollOnce(mgr, sess.ID, homeDir, workDir, &lastPath, nil) {
+		t.Fatal("pollOnce must keep polling while the session entry is present and running")
+	}
+
+	// 会话退出后在 tracker 下一个 tick 前条目被删除（Remove / ClearStoppedSessions）。
+	mgr.MarkExited(sess.ID)
+	if err := mgr.Remove(sess.ID); err != nil {
+		t.Fatalf("remove stopped session: %v", err)
+	}
+
+	// 条目已不在：pollOnce 必须报告停止，否则 TrackTitle goroutine 泄漏。
+	if pollOnce(mgr, sess.ID, homeDir, workDir, &lastPath, nil) {
+		t.Fatal("pollOnce must stop after the session entry is removed")
+	}
+}

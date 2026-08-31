@@ -123,7 +123,8 @@ func (s *Service) queryDailyTrends(ctx context.Context, filter TrendFilter) ([]D
 		q += " AND provider = ?"
 		args = append(args, filter.Provider)
 	}
-	q += " GROUP BY day ORDER BY day ASC"
+	// 按币种分组再在应用层合并：cost 是 micro-native-currency，USD/CNY 不可直接相加。
+	q += " GROUP BY day, currency_code ORDER BY day ASC"
 
 	rows, err := s.queryDB().QueryContext(ctx, q, args...)
 	if err != nil {

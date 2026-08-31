@@ -108,9 +108,15 @@ func TrackTitle(ctx context.Context, mgr *Manager, amagiSessionID, homeDir, work
 //
 // 状态检查放在每次 tick 开头：保证 MarkStopped/MarkExited/MarkFailed 触发后，
 // tracker 在最多一个 tick 周期内退出，不泄漏。
+//
+// GetStatus 返回 "" 表示条目已不在（Remove/ClearStoppedSessions 删除，或权威
+// 生命周期将其墓碑化）：tracker 启动前条目必然已提交存在，任何时点的 "" 都只
+// 能意味着会话记录已终末，同样必须退出——否则会话退出后、tracker 下一个 tick
+// 前破 "清理已停止" 删除条目，tracker 将永久轮询（goroutine + 每 10s 的 jsonl
+// 目录 IO 泄漏，直到 App 退出）。
 func pollOnce(mgr *Manager, amagiSessionID, homeDir, workDir string, lastPath *string, log titleLogger) bool {
 	status := mgr.GetStatus(amagiSessionID)
-	if status != "" && status != StatusRunning {
+	if status != StatusRunning {
 		return false
 	}
 

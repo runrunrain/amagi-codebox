@@ -11,20 +11,37 @@ export interface LineAccumulator {
 
 export function createLineAccumulator(): LineAccumulator {
   let activeLine = ''
+  let pendingCR = false
 
   function push(chunk: string): string[] {
     const completedLines: string[] = []
+    let i = 0
 
-    for (let i = 0; i < chunk.length; i++) {
+    if (pendingCR) {
+      pendingCR = false
+      if (chunk.length > 0 && chunk[0] === '\n') {
+        completedLines.push(activeLine)
+        activeLine = ''
+        i = 1
+      } else {
+        activeLine = ''
+      }
+    }
+
+    for (; i < chunk.length; i++) {
       const char = chunk[i]
 
       if (char === '\r') {
-        if (chunk[i + 1] === '\n') {
-          completedLines.push(activeLine)
-          activeLine = ''
-          i++
+        if (i + 1 < chunk.length) {
+          if (chunk[i + 1] === '\n') {
+            completedLines.push(activeLine)
+            activeLine = ''
+            i++
+          } else {
+            activeLine = ''
+          }
         } else {
-          activeLine = ''
+          pendingCR = true
         }
         continue
       }
@@ -42,6 +59,10 @@ export function createLineAccumulator(): LineAccumulator {
   }
 
   function flush(): string[] {
+    if (pendingCR) {
+      activeLine = ''
+      pendingCR = false
+    }
     if (!activeLine) return []
     const lines = [activeLine]
     activeLine = ''
@@ -50,6 +71,7 @@ export function createLineAccumulator(): LineAccumulator {
 
   function reset() {
     activeLine = ''
+    pendingCR = false
   }
 
   function snapshot(): LineAccumulatorSnapshot {

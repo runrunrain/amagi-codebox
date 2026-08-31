@@ -9,12 +9,18 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Service manages Claude Code plugins.
 type Service struct {
 	claudeDir string
 	log       *logging.Service
+
+	// mu 串行化本地插件子项状态文件（plugin-subitems.json）的读-改-写，
+	// 与 codex/opencode/pi/omp 四个引擎的写锁语义对齐：Wails 绑定方法
+	// 并发触发时防止后写覆盖先写丢失开关状态。
+	mu sync.Mutex
 }
 
 func NewService(claudeDir string, log *logging.Service) *Service {
@@ -50,6 +56,9 @@ func (s *Service) GetMarketplaces() ([]Marketplace, error) {
 			for _, marketplace := range cliMarketplaces {
 				merged := marketplace
 				if existing, ok := resultMap[marketplace.Name]; ok {
+					if merged.Source == "" {
+						merged.Source = existing.Source
+					}
 					if merged.Repo == "" {
 						merged.Repo = existing.Repo
 					}

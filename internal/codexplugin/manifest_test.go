@@ -262,6 +262,37 @@ developer_instructions = "Explore only."
 	}
 }
 
+func TestScanHooksToleratesWhitespaceOnlyCommand(t *testing.T) {
+	// 畸形 hooks.json（command 为全空白）不得让 scanHooks panic：
+	// uniqueHookName 曾对空白 Command 直接取 strings.Fields(...)[0] 越界。
+	dir := t.TempDir()
+	hooksDir := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatalf("mkdir hooks dir: %v", err)
+	}
+	hooksPath := filepath.Join(hooksDir, "hooks.json")
+	content := []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"   "},{"type":"command","command":"echo hi"}]}]}}`)
+	if err := os.WriteFile(hooksPath, content, 0644); err != nil {
+		t.Fatalf("write hooks file: %v", err)
+	}
+
+	s := NewServiceWithDeps(t.TempDir(), nil, nil, nil)
+	hooks, err := s.scanHooks(dir)
+	if err != nil {
+		t.Fatalf("scan hooks: %v", err)
+	}
+	if len(hooks) != 2 {
+		t.Fatalf("expected 2 hooks, got %d: %+v", len(hooks), hooks)
+	}
+	// 空白 Command 的 hook 名不带命令后缀；带命令的 hook 名包含命令 base。
+	if hooks[0].Name != "PreToolUse:command" {
+		t.Fatalf("whitespace-command hook name = %q, want %q", hooks[0].Name, "PreToolUse:command")
+	}
+	if !strings.Contains(hooks[1].Name, "echo") {
+		t.Fatalf("command hook name should include command base: %+v", hooks[1])
+	}
+}
+
 func TestReadPluginManifestPrefersCodexManifest(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".codex-plugin"), 0755); err != nil {

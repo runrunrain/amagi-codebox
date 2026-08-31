@@ -152,11 +152,11 @@ export const useProviderStore = defineStore('provider', () => {
     loadError.value = '';
     try {
       const records = await GetProviders();
-      const ids = Object.keys(records);
+      const ids = Object.keys(records ?? {});
       const statusEntries = await Promise.all(
         ids.map(async (id) => [id, await safeHasKey(id)] as const)
       );
-      providers.value = records;
+      providers.value = records ?? {};
       keyStatus.value = Object.fromEntries(statusEntries);
     } catch (err) {
       console.error('[providerStore.loadProviders]', err);
@@ -276,8 +276,8 @@ export const useProviderStore = defineStore('provider', () => {
    * 因此调用方必须先在前端按 source='user' 过滤，禁止对内置项调用此 action。
    */
   async function deletePreset(engine: PresetEngine, key: string) {
-    if (engine === 'opencode') {
-      throw new Error('opencode presets are managed via config.json, not deletable here');
+    if (engine === 'opencode' || engine === 'pi' || engine === 'omp') {
+      throw new Error(`${engine} presets are managed via dedicated configuration, not deletable here`);
     }
     const terminalType = ENGINE_TO_TERMINAL_TYPE[engine]!;
     await deleteTerminalPreset(terminalType, key);

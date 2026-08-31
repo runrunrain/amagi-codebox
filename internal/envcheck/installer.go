@@ -1926,15 +1926,10 @@ func claudeNPMPackageBinaryNames() ([]string, []string) {
 
 func (s *Service) ensureNPMAvailable() error {
 	// Fast path: if populateCanInstall already probed npm, reuse the result.
-	s.npmOnce.Do(func() {
-		// If the once block has not run yet, run the full probe.
-		s.probeNPMAvailability()
-	})
-	if s.npmAvailable {
+	if npmAvailable, npmErr := s.ensureNPMAvailabilityCached(); npmAvailable {
 		return nil
-	}
-	if s.npmResolvedErr != nil {
-		return s.npmResolvedErr
+	} else if npmErr != nil {
+		return npmErr
 	}
 
 	// Slow path: once block was initialized by populateCanInstall but npm
@@ -2117,11 +2112,8 @@ func (runtime pythonRuntime) supportsHeadroom() bool {
 // probe. The bare fallback is retained only for callers that request the path
 // before probing; installer paths always call ensurePythonAvailable first.
 func (s *Service) resolvePythonPath() string {
-	s.pythonOnce.Do(func() {
-		s.probePythonAvailability()
-	})
-	if s.pythonAvailable && strings.TrimSpace(s.pythonPath) != "" {
-		return s.pythonPath
+	if path, available, _, _ := s.cachedPythonProbeState(); available && strings.TrimSpace(path) != "" {
+		return path
 	}
 	return "python3"
 }
@@ -2130,14 +2122,10 @@ func (s *Service) resolvePythonPath() string {
 // service lifetime. Headroom's published package requires Python 3.10 or
 // newer, so merely finding a `python3` executable is not sufficient.
 func (s *Service) ensurePythonAvailable() error {
-	s.pythonOnce.Do(func() {
-		s.probePythonAvailability()
-	})
-	if s.pythonAvailable {
+	if _, available, _, resolvedErr := s.cachedPythonProbeState(); available {
 		return nil
-	}
-	if s.pythonResolvedErr != nil {
-		return s.pythonResolvedErr
+	} else if resolvedErr != nil {
+		return resolvedErr
 	}
 	return fmt.Errorf("未找到 Headroom 所需的 Python 3.10+。请安装兼容的 Python 后重新检测。")
 }

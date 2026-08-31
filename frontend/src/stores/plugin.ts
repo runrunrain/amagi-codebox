@@ -100,7 +100,8 @@ export const usePluginStore = defineStore('plugin', () => {
   const ccMarketCount = computed(() => ccMarkets.value.length);
   const cxMarketCount = computed(() => cxMarkets.value.length);
   const ccAvailableCount = computed(() => ccAvailable.value.length);
-  const cxCxAailableCount = computed(() => cxAvailable.value.length);
+  const cxAvailableCount = computed(() => cxAvailable.value.length);
+  const cxCxAailableCount = cxAvailableCount;
   const cxEnabledCount = computed(() => cxInstalled.value.filter(p => p.enabled).length);
 
   // Active plugin detail (Claude)
@@ -308,7 +309,7 @@ export const usePluginStore = defineStore('plugin', () => {
       const plugins = await pluginApi.getInstalledPlugins();
       // Analyze plugin type for each plugin
       const extendedPlugins = await Promise.all(
-        plugins.map(async (p) => {
+        (plugins || []).map(async (p) => {
           try {
             const pluginType = await pluginApi.analyzePluginType(p.id);
             return { ...p, pluginType };
@@ -330,7 +331,7 @@ export const usePluginStore = defineStore('plugin', () => {
   async function loadCcMarkets() {
     try {
       const markets = await pluginApi.getMarketplaces();
-      setCCMarkets(markets as unknown as ClaudeMarketplace[]);
+      setCCMarkets((markets || []) as unknown as ClaudeMarketplace[]);
     } catch (error) {
       console.error('[plugin.store.loadCcMarkets]', error);
       throw error;
@@ -341,7 +342,7 @@ export const usePluginStore = defineStore('plugin', () => {
   async function loadCcAvailable() {
     try {
       const plugins = await pluginApi.getAvailablePlugins();
-      setCCAvailable(plugins);
+      setCCAvailable(plugins || []);
     } catch (error) {
       console.error('[plugin.store.loadCcAvailable]', error);
       throw error;
@@ -701,6 +702,7 @@ export const usePluginStore = defineStore('plugin', () => {
     ccMarketCount,
     cxMarketCount,
     ccAvailableCount,
+    cxAvailableCount,
     cxCxAailableCount,
     activePlugin,
     activeCxPlugin,

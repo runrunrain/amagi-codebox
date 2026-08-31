@@ -395,6 +395,71 @@ func TestDailyRollupPartitionRefresh(t *testing.T) {
 	}
 }
 
+// TestDailyTrendsSplitCostByCurrency 验证同一天多币种用量在日趋势中按币种分开汇总。
+// 回归：rollup 分支的聚合查询曾只 GROUP BY day 而裸选 currency_code，
+// 把 USD/CNY 的 total_cost 混加进单一币种桶，CostByCurrency 与 TotalCostUSD 均失真
+// （主表回退分支 queryDailyTrendsFromMain 一直是 GROUP BY day, currency_code 的正确口径）。
+func TestDailyTrendsSplitCostByCurrency(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	day := time.Now().UTC().Truncate(24 * time.Hour).Add(10 * time.Hour)
+	events := []UsageEvent{
+		{
+			AppType: appOpenCode, Source: SourceSessionLog,
+			Model: "glm-5.2", Provider: "glm",
+			InputTokens: 100, OutputTokens: 10,
+			CostProvided: true, NativeCost: 1000, CurrencyCode: "USD",
+			OccurredAt: day, DedupKey: "trend-usd",
+		},
+		{
+			AppType: appOpenCode, Source: SourceSessionLog,
+			Model: "glm-5.2", Provider: "glm",
+			InputTokens: 100, OutputTokens: 10,
+			CostProvided: true, NativeCost: 2000, CurrencyCode: "CNY",
+			OccurredAt: day, DedupKey: "trend-cny",
+		},
+	}
+	for _, evt := range events {
+		if _, err := s.Record(evt); err != nil {
+			t.Fatalf("Record %s: %v", evt.DedupKey, err)
+		}
+	}
+	if err := refreshDailyRollup(context.TODO(), s.db, nil); err != nil {
+		t.Fatalf("refreshDailyRollup: %v", err)
+	}
+
+	points, err := s.queryDailyTrends(context.TODO(), TrendFilter{Days: 7})
+	if err != nil {
+		t.Fatalf("queryDailyTrends: %v", err)
+	}
+	dayKey := day.Format("2006-01-02")
+	var point *DailyTrendPoint
+	for i := range points {
+		if points[i].Day == dayKey {
+			point = &points[i]
+			break
+		}
+	}
+	if point == nil {
+		t.Fatalf("day %s not found in trends: %v", dayKey, points)
+	}
+	if got := point.CostByCurrency["USD"]; got != 1000 {
+		t.Errorf("CostByCurrency[USD] = %d, want 1000 (full map: %v)", got, point.CostByCurrency)
+	}
+	if got := point.CostByCurrency["CNY"]; got != 2000 {
+		t.Errorf("CostByCurrency[CNY] = %d, want 2000 (full map: %v)", got, point.CostByCurrency)
+	}
+	// 默认固定汇率 0.14：1000 + 2000*0.14 = 1280。
+	if point.TotalCostUSD != 1280 {
+		t.Errorf("TotalCostUSD = %d, want 1280", point.TotalCostUSD)
+	}
+}
+
 // TestRecordForceIsNewSemantic 验证 M5：RecordForce 内部能区分真正新增 vs REPLACE 更新。
 func TestRecordForceIsNewSemantic(t *testing.T) {
 	dir := t.TempDir()
@@ -535,6 +600,112 @@ func TestPricingSeedOpenAIGPT56(t *testing.T) {
 	}
 	if len(want) > 0 {
 		t.Errorf("missing OpenAI GPT-5.x models in seed: %v", want)
+	}
+}
+
+// TestUpsertModelPricingNormalizesPattern 验证 Upsert 把用户输入的
+// ModelPattern 归一化为匹配键（Resolve 只对小写标准化键做精确/前缀匹配）。
+// 回归：前端校验允许大写，旧实现原样存入，导致该价格行永远无法命中。
+func TestUpsertModelPricingNormalizesPattern(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.UpsertModelPricing(ModelPricing{
+		ID:               "user-custom-1",
+		ModelPattern:     "GLM-5.9",
+		DisplayName:      "Custom GLM",
+		Provider:         "glm",
+		CurrencyCode:     "CNY",
+		InputPerMillion:  2_000_000,
+		OutputPerMillion: 8_000_000,
+	}); err != nil {
+		t.Fatalf("UpsertModelPricing: %v", err)
+	}
+
+	// 归一化后 Resolve 必须能命中精确匹配。
+	pricing, ok := s.pricing.Resolve("glm-5.9")
+	if !ok {
+		t.Fatal("Resolve(glm-5.9) miss after upsert with raw-case pattern")
+	}
+	if pricing.InputPerMillion != 2_000_000 {
+		t.Fatalf("matched inputPerMillion = %d, want 2_000_000 (custom row)", pricing.InputPerMillion)
+	}
+	// 表内存储的也应是归一化后的键。
+	found := false
+	for _, m := range s.pricing.List() {
+		if m.ID == "user-custom-1" {
+			found = true
+			if m.ModelPattern != "glm-5.9" {
+				t.Fatalf("stored ModelPattern = %q, want normalized glm-5.9", m.ModelPattern)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("custom pricing row missing after upsert")
+	}
+
+	// 大写变体应原位更新内置行（旧行为会追加一行永远无法命中的死行）。
+	if err := s.UpsertModelPricing(ModelPricing{
+		ID:               "ignored-id",
+		ModelPattern:     "Claude-Sonnet-4",
+		DisplayName:      "Claude Sonnet 4 (edited)",
+		Provider:         "anthropic",
+		CurrencyCode:     "USD",
+		InputPerMillion:  2_500_000,
+		OutputPerMillion: 10_000_000,
+	}); err != nil {
+		t.Fatalf("UpsertModelPricing builtin: %v", err)
+	}
+	matches := 0
+	for _, m := range s.pricing.List() {
+		if m.ModelPattern == "claude-sonnet-4" {
+			matches++
+			if m.InputPerMillion != 2_500_000 {
+				t.Fatalf("builtin row not updated in place: %+v", m)
+			}
+			if !m.IsBuiltin || m.ID != "builtin-claude-sonnet-4" {
+				t.Fatalf("builtin identity lost: %+v", m)
+			}
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("pattern claude-sonnet-4 stored in %d rows, want exactly 1 (no dead duplicate)", matches)
+	}
+}
+
+// TestReplaceSnapshotNormalizesPatterns 验证快照导入路径同样把
+// ModelPattern 归一化，避免导入大写/带 vendor 前缀的表后出现死行。
+func TestReplaceSnapshotNormalizesPatterns(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir, nil)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.pricing.ReplaceSnapshot(PricingData{
+		Version: 1,
+		Models: []ModelPricing{{
+			ID:              "snap-1",
+			ModelPattern:    "GLM-5.2",
+			DisplayName:     "GLM 5.2",
+			Provider:        "glm",
+			CurrencyCode:    "CNY",
+			InputPerMillion: 1_111_111,
+		}},
+	}); err != nil {
+		t.Fatalf("ReplaceSnapshot: %v", err)
+	}
+	pricing, ok := s.pricing.Resolve("glm-5.2")
+	if !ok {
+		t.Fatal("Resolve(glm-5.2) miss after ReplaceSnapshot with raw-case pattern")
+	}
+	if pricing.InputPerMillion != 1_111_111 {
+		t.Fatalf("inputPerMillion = %d, want 1_111_111", pricing.InputPerMillion)
 	}
 }
 

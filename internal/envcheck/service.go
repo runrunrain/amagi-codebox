@@ -116,6 +116,15 @@ type Service struct {
 	wslHybridMu        sync.Mutex
 	wslHybridPaths     map[string]string
 	wslHybridFetchedAt time.Time
+
+	// probeMu 串行化 npm/python 可用性探测缓存（npmOnce/npmAvailable/...
+	// 与 pythonOnce/...）的读写。resetNPMCache 会在运行期整体替换 sync.Once
+	// 并清空结果字段，而 populateCanInstall/ensureNPMAvailable 等检测路径在
+	// 并发 goroutine 上执行 Once.Do 并读取同一批字段；无锁时这构成对
+	// sync.Once 内部状态的并发读写（数据竞争，-race 可复现）。
+	// probeMu 不在 s.mu/opMu 内层获取，探测子进程（最长数秒）期间持锁的
+	// 阻塞语义与 sync.Once.Do 本身的并发阻塞语义一致，无新增死锁面。
+	probeMu sync.Mutex
 }
 
 // NewService creates an EnvCheck service with the default platform process
@@ -292,9 +301,7 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 		return
 	}
 
-	s.npmOnce.Do(func() {
-		s.probeNPMAvailability()
-	})
+	npmAvailable, npmResolvedErr := s.ensureNPMAvailabilityCached()
 
 	// Headroom is a pip-distributed Python package; it does not depend on npm.
 	if status.Tool == ToolHeadroom {
@@ -305,15 +312,15 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 	// Compute per-method install availability for Claude Code.
 	if status.Tool == ToolClaudeCode {
 		status.CanInstallByMethod = map[string]bool{
-			"npm":    s.npmAvailable,
-			"native": s.npmAvailable,
+			"npm":    npmAvailable,
+			"native": npmAvailable,
 		}
-		status.CanInstall = s.npmAvailable
+		status.CanInstall = npmAvailable
 	} else {
 		status.CanInstallByMethod = map[string]bool{
-			"npm": s.npmAvailable,
+			"npm": npmAvailable,
 		}
-		status.CanInstall = s.npmAvailable
+		status.CanInstall = npmAvailable
 	}
 
 	if status.CanInstall {
@@ -327,8 +334,8 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 			})
 		}
 	} else {
-		if s.npmResolvedErr != nil {
-			status.InstallBlockedReason = s.npmResolvedErr.Error()
+		if npmResolvedErr != nil {
+			status.InstallBlockedReason = npmResolvedErr.Error()
 		}
 		// Only add npm_not_found issue when the tool is not installed or has errors.
 		if !status.Installed || strings.TrimSpace(status.Error) != "" {
@@ -383,14 +390,12 @@ func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 	if status == nil {
 		return
 	}
-	s.pythonOnce.Do(func() {
-		s.probePythonAvailability()
-	})
+	_, pythonAvailable, pythonVersionUnsupported, pythonResolvedErr := s.cachedPythonProbeState()
 
 	status.CanInstallByMethod = map[string]bool{
-		"venv": s.pythonAvailable,
+		"venv": pythonAvailable,
 	}
-	status.CanInstall = s.pythonAvailable
+	status.CanInstall = pythonAvailable
 
 	if status.CanInstall {
 		// For installed tools with errors, offer a reinstall/repair solution.
@@ -405,13 +410,13 @@ func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 		return
 	}
 
-	if s.pythonResolvedErr != nil {
-		status.InstallBlockedReason = s.pythonResolvedErr.Error()
+	if pythonResolvedErr != nil {
+		status.InstallBlockedReason = pythonResolvedErr.Error()
 	}
 	if !status.Installed || strings.TrimSpace(status.Error) != "" {
 		issueCode := "python_not_found"
 		message := "python3 is required to install Headroom but is not available"
-		if s.pythonVersionUnsupported {
+		if pythonVersionUnsupported {
 			issueCode = "python_version_unsupported"
 			message = "Headroom requires Python 3.10 or newer"
 		}
@@ -438,6 +443,31 @@ func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
 			IsPrimary:       true,
 		})
 	}
+}
+
+// ensureNPMAvailabilityCached 在 probeMu 保护下执行一次性 npm 探测并返回
+// 缓存结果（可用性 + 不可用原因）。所有运行期读取 npm 探测缓存的路径都必须
+// 经过本方法（或 ensureNPMAvailable 的慢路径），禁止裸读 s.npmAvailable /
+// s.npmResolvedErr：resetNPMCache 会在并发 goroutine 上重置这些字段。
+func (s *Service) ensureNPMAvailabilityCached() (bool, error) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	s.npmOnce.Do(func() {
+		s.probeNPMAvailability()
+	})
+	return s.npmAvailable, s.npmResolvedErr
+}
+
+// cachedPythonProbeState 在 probeMu 保护下执行一次性 python 探测，返回缓存的
+// （解释器路径、可用性、是否“找到但版本不支持”、不可用原因）。语义同
+// ensureNPMAvailabilityCached，见其注释。
+func (s *Service) cachedPythonProbeState() (path string, available bool, versionUnsupported bool, resolvedErr error) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	s.pythonOnce.Do(func() {
+		s.probePythonAvailability()
+	})
+	return s.pythonPath, s.pythonAvailable, s.pythonVersionUnsupported, s.pythonResolvedErr
 }
 
 func (s *Service) cacheToolStatus(status *CheckStatus) {

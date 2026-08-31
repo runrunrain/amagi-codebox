@@ -24,6 +24,14 @@ describe('createLineAccumulator', () => {
     expect(accumulator.snapshot()).toEqual({ activeLine: '' })
   })
 
+  it('handles CRLF split across chunk boundaries', () => {
+    const accumulator = createLineAccumulator()
+
+    expect(accumulator.push('alpha\r')).toEqual([])
+    expect(accumulator.push('\nbeta\n')).toEqual(['alpha', 'beta'])
+    expect(accumulator.snapshot()).toEqual({ activeLine: '' })
+  })
+
   it('treats bare carriage return as an in-place overwrite reset', () => {
     const accumulator = createLineAccumulator()
 

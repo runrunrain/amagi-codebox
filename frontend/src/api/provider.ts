@@ -21,8 +21,14 @@ import {
   GetOpenCodeConfig,
   GetOpenCodeConfigPath,
   SaveOpenCodeConfig,
-  GetConfigService,
 } from '../../wailsjs/go/main/App';
+
+import {
+  GetProvider,
+  GetPresets,
+  SavePreset,
+  DeletePreset,
+} from '../../wailsjs/go/config/ConfigService';
 
 import { config } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -31,30 +37,6 @@ import { callApi } from './internal/call';
 type Provider = config.Provider;
 type TerminalPreset = config.TerminalPreset;
 type MergedTerminalPreset = config.MergedTerminalPreset;
-
-/**
- * GetConfigService 返回的是 wails 绑定的 ConfigService 代理实例；
- * 生成的 models.ts 中 config.ConfigService 类不携带方法签名，
- * 这里按本模块实际调用的方法面显式声明句柄类型（对齐 internal/config/service.go）。
- */
-interface ConfigServiceHandle {
-  GetProvider(name: string): Promise<Provider>;
-  GetPreset(providerName: string, presetName: string): Promise<config.Preset>;
-  SavePreset(providerName: string, presetName: string, preset: config.Preset): Promise<void>;
-  DeletePreset(providerName: string, presetName: string): Promise<void>;
-}
-
-let configService: ConfigServiceHandle | null = null;
-
-/**
- * Initialize config service
- */
-async function getService(): Promise<ConfigServiceHandle> {
-  if (!configService) {
-    configService = (await GetConfigService()) as unknown as ConfigServiceHandle;
-  }
-  return configService;
-}
 
 /**
  * Get providers by type
@@ -185,9 +167,29 @@ export function resolveTerminalPreset(
   found: boolean;
 }> {
   return callApi('[api.provider.resolveTerminalPreset]', async () => {
-    const jsonStr = await ResolveTerminalPreset(terminalType, key);
-    const parsed = JSON.parse(jsonStr);
-    return parsed;
+    const raw = await ResolveTerminalPreset(terminalType, key);
+    if (!raw) {
+      return { providerName: '', model: '', openCodeCfgJSON: '', found: false };
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null) {
+        return {
+          providerName: parsed.providerName ?? parsed.provider ?? raw,
+          model: parsed.model ?? '',
+          openCodeCfgJSON: parsed.openCodeCfgJSON ?? '',
+          found: parsed.found ?? true,
+        };
+      }
+    } catch {
+      // Backend App.ResolveTerminalPreset returns provName directly on Wails v2 multi-value return truncation
+    }
+    return {
+      providerName: raw,
+      model: '',
+      openCodeCfgJSON: '',
+      found: Boolean(raw),
+    };
   });
 }
 
@@ -195,10 +197,7 @@ export function resolveTerminalPreset(
  * Get provider (via ConfigService)
  */
 export function getProvider(id: string): Promise<Provider> {
-  return callApi('[api.provider.getProvider]', async () => {
-    const service = await getService();
-    return await service.GetProvider(id);
-  });
+  return callApi('[api.provider.getProvider]', () => GetProvider(id));
 }
 
 /**
@@ -216,12 +215,19 @@ export function deleteProvider(id: string): Promise<void> {
 }
 
 /**
+ * Get presets for a provider (via ConfigService)
+ */
+export function getPresets(providerName: string): Promise<Record<string, config.Preset>> {
+  return callApi('[api.provider.getPresets]', () => GetPresets(providerName));
+}
+
+/**
  * Get preset (via ConfigService)
  */
-export function getPreset(terminalType: string, presetName: string): Promise<config.Preset> {
+export function getPreset(providerName: string, presetName: string): Promise<config.Preset | null> {
   return callApi('[api.provider.getPreset]', async () => {
-    const service = await getService();
-    return await service.GetPreset(terminalType, presetName);
+    const presets = await GetPresets(providerName);
+    return presets?.[presetName] ?? null;
   });
 }
 
@@ -229,18 +235,12 @@ export function getPreset(terminalType: string, presetName: string): Promise<con
  * Save preset (via ConfigService)
  */
 export function savePreset(terminalType: string, presetName: string, preset: config.Preset): Promise<void> {
-  return callApi('[api.provider.savePreset]', async () => {
-    const service = await getService();
-    await service.SavePreset(terminalType, presetName, preset);
-  });
+  return callApi('[api.provider.savePreset]', () => SavePreset(terminalType, presetName, preset));
 }
 
 /**
  * Delete preset (via ConfigService)
  */
 export function deletePreset(terminalType: string, presetName: string): Promise<void> {
-  return callApi('[api.provider.deletePreset]', async () => {
-    const service = await getService();
-    await service.DeletePreset(terminalType, presetName);
-  });
+  return callApi('[api.provider.deletePreset]', () => DeletePreset(terminalType, presetName));
 }

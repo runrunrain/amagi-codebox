@@ -259,6 +259,11 @@ func (s *Service) downloadAndApplyWindowsExeZip(info *UpdateInfo, onProgress fun
 	if err := extractExeFromZip(downloadPath, extractedPath); err != nil {
 		return err
 	}
+	// The zip is fully consumed by the extraction. Remove it eagerly here: the
+	// success path below ends in exitProcess(0) (os.Exit runs no defers), so the
+	// deferred removes alone would leak one multi-MB zip in the temp dir on
+	// every successful update.
+	_ = os.Remove(downloadPath)
 	defer os.Remove(extractedPath)
 
 	exePath, err := os.Executable()
@@ -328,6 +333,13 @@ func (s *Service) downloadAndApplyDarwinAppBundle(info *UpdateInfo, onProgress f
 		cleanupUpdateArtifacts(downloadPath, stagingDir)
 		return fmt.Errorf("extract update: %w", err)
 	}
+	// The zip is fully consumed by the extraction and the success path below
+	// ends in exitProcess(0) (os.Exit runs no defers, and no defer covers
+	// downloadPath on this path anyway), so remove it eagerly instead of
+	// leaking it in the temp dir on every successful update. Later failure
+	// paths' cleanupUpdateArtifacts calls become no-ops for the already-removed
+	// zip but still clean stagingDir.
+	_ = os.Remove(downloadPath)
 
 	// Locate the staged .app bundle
 	stagedAppPath := filepath.Join(stagingDir, "amagi-codebox.app")

@@ -52,14 +52,14 @@ type FixActionResult struct {
 // ---------------------------------------------------------------------------
 
 var allowedFixActions = map[SolutionType]bool{
-	SolutionFixPath:              true,
-	SolutionInstallTool:          true,
-	SolutionInstallNode:          true,
-	SolutionRetry:                true,
-	SolutionManualCommand:        true, // display-only, never executed
-	SolutionFixClaudeConfig:      true,
-	SolutionInstallClaudeMethod:  true,
-	SolutionCleanClaudeInstall:   true,
+	SolutionFixPath:               true,
+	SolutionInstallTool:           true,
+	SolutionInstallNode:           true,
+	SolutionRetry:                 true,
+	SolutionManualCommand:         true, // display-only, never executed
+	SolutionFixClaudeConfig:       true,
+	SolutionInstallClaudeMethod:   true,
+	SolutionCleanClaudeInstall:    true,
 	SolutionInstallWslSearchTools: true,
 }
 
@@ -597,11 +597,7 @@ func (s *Service) runInstallTool(req FixActionRequest) (*FixActionResult, error)
 func (s *Service) runInstallNode(req FixActionRequest) (*FixActionResult, error) {
 	// First, try npm runtime repair (enhanced PATH)
 	s.resetNPMCache()
-	s.npmOnce.Do(func() {
-		s.probeNPMAvailability()
-	})
-
-	if s.npmAvailable {
+	if npmAvailable, _ := s.ensureNPMAvailabilityCached(); npmAvailable {
 		return &FixActionResult{
 			Success:   true,
 			Message:   "npm/node 运行时在 PATH 刷新后已可用",
@@ -659,10 +655,7 @@ func (s *Service) runInstallNodeDarwin() (*FixActionResult, error) {
 
 		// Verify node is now available
 		s.resetNPMCache()
-		s.npmOnce.Do(func() {
-			s.probeNPMAvailability()
-		})
-		if s.npmAvailable {
+		if npmAvailable, _ := s.ensureNPMAvailabilityCached(); npmAvailable {
 			return &FixActionResult{
 				Success:   true,
 				Message:   "已通过 Homebrew 成功安装 Node.js",
@@ -864,7 +857,10 @@ func (s *Service) buildEnhancedEnv() []string {
 // resetNPMCache allows re-probing npm availability. It also resets the python3
 // availability cache so that Headroom install eligibility is recomputed after
 // a PATH fix (python and node commonly live in directories that the fix adds).
+// probeMu 同步并发检测路径对这些字段的读取（见 Service.probeMu 注释）。
 func (s *Service) resetNPMCache() {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
 	s.npmOnce = sync.Once{}
 	s.npmAvailable = false
 	s.npmResolvedErr = nil

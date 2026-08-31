@@ -32,6 +32,13 @@ func (s *Service) executePiCommand(ctx context.Context, args ...string) (*Comman
 	// 强制 pi CLI 在服务指定的标准用户 agentDir（~/.pi/agent）上
 	// 执行写操作，确保插件面板与普通 Pi/CodeBox Pi 共享配置。
 	env = launcher.BuildEnv(env, map[string]string{"PI_CODING_AGENT_DIR": s.agentDir})
+	// Dir=agentDir 要求目录存在：全新机器上 ~/.pi/agent 只会在 pi 会话首次
+	// 启动时由 launcher 创建（launcher/pi_config.go），插件面板可能先于任何
+	// pi 会话使用；若目录缺失，exec 会在启动 pi CLI 前就 chdir 失败。先确保
+	// agent 根存在（权限对齐 launcher 写 agent 目录的 0700）。
+	if err := os.MkdirAll(s.agentDir, 0o700); err != nil {
+		return nil, fmt.Errorf("创建 pi agent 目录失败: %w", err)
+	}
 	cli, _, err := resolver.ResolveExecutable(piExecutable, append([]string(nil), args...), env)
 	if err != nil {
 		return nil, fmt.Errorf("未找到 pi CLI，请先安装或检查 PATH: %w", err)
@@ -47,15 +54,15 @@ func (s *Service) executePiCommand(ctx context.Context, args ...string) (*Comman
 	}
 
 	processResult, err := runner.Run(runCtx, platform.CommandSpec{
-		Path:   cli.Path,
-		Args:   cli.Args,
-		Env:    env,
+		Path: cli.Path,
+		Args: cli.Args,
+		Env:  env,
 		// v1.3.23 修复：pi remove/update 对 local 源的匹配 key 输入侧按 process.cwd()
 		// 解析相对路径、settings 侧按 agentDir 解析（pi package-manager.js
 		// getSourceMatchKeyForInput vs ForSettings）。GUI 进程 cwd（通常 /）≠ agentDir
 		// 时面板传 settings 原样字符串（如 ../../maorun-workpace/amagi-pi）必失配
 		// （实战：remove/switch 报 No matching package found）。统一 cwd=agentDir 根治。
-		Dir: s.agentDir,
+		Dir:    s.agentDir,
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if processResult == nil {

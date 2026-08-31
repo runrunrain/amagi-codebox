@@ -9,6 +9,7 @@ import {
   ApplyAgentProfile,
   DeleteAgentProfile,
 } from '../../wailsjs/go/agentprofile/Service';
+import { callApi } from './internal/call';
 
 /** 单个配置档：pi 为 ~/.pi/agent/amagi.json 全文（JSON），
  *  omp 为 ~/.omp/agent/config.yml 全文（YAML，空串=不管理该侧）。 */
@@ -27,37 +28,41 @@ export interface AgentProfileStore {
 
 /** 列出全部配置档（文件缺失时返回空骨架）。 */
 export async function listAgentProfiles(): Promise<AgentProfileStore> {
-  const raw = await ListAgentProfiles();
-  const parsed = JSON.parse(raw) as Partial<AgentProfileStore>;
-  return {
-    version: parsed.version ?? 1,
-    profiles: parsed.profiles ?? {},
-    lastApplied: parsed.lastApplied ?? '',
-  };
+  return callApi('[api.agentProfile.listAgentProfiles]', async () => {
+    const raw = await ListAgentProfiles();
+    const parsed = (raw ? JSON.parse(raw) : {}) as Partial<AgentProfileStore>;
+    return {
+      version: parsed.version ?? 1,
+      profiles: parsed.profiles ?? {},
+      lastApplied: parsed.lastApplied ?? '',
+    };
+  });
 }
 
 /** 读取单个配置档（不存在时后端报错）。 */
 export async function getAgentProfile(name: string): Promise<AgentProfile> {
-  const raw = await GetAgentProfile(name);
-  return JSON.parse(raw) as AgentProfile;
+  return callApi('[api.agentProfile.getAgentProfile]', async () => {
+    const raw = await GetAgentProfile(name);
+    return (raw ? JSON.parse(raw) : {}) as AgentProfile;
+  });
 }
 
 /** 把当前 live 配置快照为命名配置档（存在同名则覆盖）。 */
 export function captureAgentProfile(name: string): Promise<void> {
-  return CaptureAgentProfile(name);
+  return callApi('[api.agentProfile.captureAgentProfile]', () => CaptureAgentProfile(name));
 }
 
 /** 显式内容保存配置档。 */
 export function saveAgentProfile(name: string, piContent: string, ompContent: string): Promise<void> {
-  return SaveAgentProfile(name, piContent, ompContent);
+  return callApi('[api.agentProfile.saveAgentProfile]', () => SaveAgentProfile(name, piContent, ompContent));
 }
 
 /** 应用配置档到 live 文件（后端自动做 .bak 备份）。 */
 export function applyAgentProfile(name: string): Promise<void> {
-  return ApplyAgentProfile(name);
+  return callApi('[api.agentProfile.applyAgentProfile]', () => ApplyAgentProfile(name));
 }
 
 /** 删除配置档。 */
 export function deleteAgentProfile(name: string): Promise<void> {
-  return DeleteAgentProfile(name);
+  return callApi('[api.agentProfile.deleteAgentProfile]', () => DeleteAgentProfile(name));
 }

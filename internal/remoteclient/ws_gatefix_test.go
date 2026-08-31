@@ -1,15 +1,16 @@
 // ws_gatefix_test.go — RC3-GATE 审核修复批次（diting MA-1/MA-2/MI-1/MI-2/MI-3）
 // 回归锚点：
-//   · MA-1：输入在途被 control.forbidden 冻结队首后，重新取得控制权的新输入
-//     必须实际发出（冻结头不阻塞 FIFO，对齐 mobile inputOutbox.ts）；
-//   · MA-2：backfill 在途断线 → 重连后孤儿登记被清理，输入门不再永久
-//     degraded；backfill 写帧失败同步撤销登记；
-//   · MI-1：rc:control-state 携带契约 deviceName（服务端事件与 attach 快照
-//     投影两处）；
-//   · MI-2：对端停滞（不读、不回）时数据帧写有界——write deadline 到期按
-//     写失败处理，outbox.mu/writeMu 不被无限拖住；
-//   · MI-3：凭据清除后（宿主视图被丢弃）孤儿会话的拨号判终态退出，不再
-//     以已清空凭据无限重连。
+//
+//	· MA-1：输入在途被 control.forbidden 冻结队首后，重新取得控制权的新输入
+//	  必须实际发出（冻结头不阻塞 FIFO，对齐 mobile inputOutbox.ts）；
+//	· MA-2：backfill 在途断线 → 重连后孤儿登记被清理，输入门不再永久
+//	  degraded；backfill 写帧失败同步撤销登记；
+//	· MI-1：rc:control-state 携带契约 deviceName（服务端事件与 attach 快照
+//	  投影两处）；
+//	· MI-2：对端停滞（不读、不回）时数据帧写有界——write deadline 到期按
+//	  写失败处理，outbox.mu/writeMu 不被无限拖住；
+//	· MI-3：凭据清除后（宿主视图被丢弃）孤儿会话的拨号判终态退出，不再
+//	  以已清空凭据无限重连。
 package remoteclient
 
 import (
@@ -215,8 +216,16 @@ func TestTerminalBackfillOrphanAcrossReconnectReopensInput(t *testing.T) {
 	}
 	// 走完 首连→断开→重连（在途孤儿）→再断开→再重连 三条连接。
 	em.waitFor(t, "third connection", func([]emittedEvent) bool { return host.connCount() >= 3 }, 6*time.Second)
-	em.waitFor(t, "gate reopened on conn3 (orphan backfill cleared)", hasConnState(string(ConnAttached)), 3*time.Second)
-
+	// 门重开判定必须看「当前状态投影」而非历史事件：历史里的 ConnAttached
+	//（首连）会立即满足谓词，而 connCount 在宿主 accept 时即 +1，conn3 的
+	// dial→attach 仍在途；负载下 SendInput 会与 attach 竞态误报（now connecting）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && s.State() != ConnAttached {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if st := s.State(); st != ConnAttached {
+		t.Fatalf("conn state after reconnect = %s, want %s (input gate must not stay degraded)", st, ConnAttached)
+	}
 	// MA-2 核心断言：重连后输入门不再永久 degraded，输入可用且到达服务端。
 	if err := s.SendInput("ok"); err != nil {
 		t.Fatalf("SendInput after reconnect = %v, want nil (input gate must not stay degraded)", err)
@@ -224,7 +233,7 @@ func TestTerminalBackfillOrphanAcrossReconnectReopensInput(t *testing.T) {
 	if n := s.tracker.InFlightBackfills(); n != 0 {
 		t.Fatalf("in-flight backfills after reconnect = %d, want 0 (orphan registration cleared)", n)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && s.outbox.PendingCount() != 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -235,7 +244,7 @@ func TestTerminalBackfillOrphanAcrossReconnectReopensInput(t *testing.T) {
 }
 
 // TestRequestBackfillUnregistersOnWriteFailure（MA-2 回归）：backfill 帧写失败
-//（连接已不可写）时同步撤销在途登记——result 不可能到达，不得残留 degraded
+// （连接已不可写）时同步撤销在途登记——result 不可能到达，不得残留 degraded
 // 投影。
 func TestRequestBackfillUnregistersOnWriteFailure(t *testing.T) {
 	s := &TerminalSession{tracker: NewReplayTracker()} // 无 ws：writeFrame 必失败
@@ -327,7 +336,7 @@ func TestTerminalControlStateCarriesDeviceName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestTerminalWriteDeadlineBoundsStalledWrite（MI-2 回归）：宿主 attach 后停滞
-//（缩小接收缓冲、永不读取）——向停滞连接持续写大帧直到 TCP 发送缓冲饱和，
+// （缩小接收缓冲、永不读取）——向停滞连接持续写大帧直到 TCP 发送缓冲饱和，
 // 阻塞的 WriteMessage 必须在 FrameWriteTimeout 内按写失败返回（而非无限
 // 拖住 writeMu）；outbox 首轮 wire attempt 同样有界。修复前该写会无限阻塞。
 func TestTerminalWriteDeadlineBoundsStalledWrite(t *testing.T) {
@@ -378,7 +387,7 @@ func TestTerminalWriteDeadlineBoundsStalledWrite(t *testing.T) {
 				t.Fatalf("write stalled %v but returned nil; want deadline failure", d)
 			}
 		case <-time.After(4 * time.Second):
-				t.Fatal("writeFrame blocked >4s on stalled peer: no write deadline applied")
+			t.Fatal("writeFrame blocked >4s on stalled peer: no write deadline applied")
 		}
 	}
 	if bounded < 150*time.Millisecond {
@@ -401,7 +410,7 @@ func TestTerminalWriteDeadlineBoundsStalledWrite(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestTerminalDialStopsWhenCredentialCleared（MI-3 回归）：宿主视图被丢弃
-//（ClearCredential + DetachAll 竞态）后孤儿化的会话，在拨号失败路径凭据
+// （ClearCredential + DetachAll 竞态）后孤儿化的会话，在拨号失败路径凭据
 // 缺失即判终态退出（广播 disconnected、停止重连），不再以已清空凭据无限
 // 重试制造 goroutine/事件噪声。
 func TestTerminalDialStopsWhenCredentialCleared(t *testing.T) {

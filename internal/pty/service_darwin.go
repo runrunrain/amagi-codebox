@@ -150,8 +150,13 @@ func (s *Service) AttachSessionObserver(sessionID string, id string, outputCB fu
 
 	history = make([]byte, len(ps.outputHistory))
 	copy(history, ps.outputHistory)
+	// currentCols/currentRows 由 Resize 在 ps.mu 下写入；读取必须持同一锁
+	// （s.mu/historyMu 不与其构成 happens-before，并发 attach+resize 会构成
+	// data race）。锁序沿用 RunningCount 已有的 s.mu → ps.mu 顺序。
+	ps.mu.RLock()
 	cols = ps.currentCols
 	rows = ps.currentRows
+	ps.mu.RUnlock()
 
 	if outputCB != nil {
 		if s.outputCBs[sessionID] == nil {

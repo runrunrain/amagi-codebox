@@ -9,26 +9,18 @@ export interface FrameBatcherOptions<T> {
 export function createFrameBatcher<T>(options: FrameBatcherOptions<T>) {
   const flushInterval = options.flushInterval ?? 50
   const now = options.now ?? (() => Date.now())
-  const schedule = options.schedule ?? ((callback) => {
-    if (typeof requestAnimationFrame === 'function') {
-      return requestAnimationFrame(callback)
-    }
-    return setTimeout(callback, flushInterval) as unknown as number
-  })
-  const cancel = options.cancel ?? ((handle) => {
-    if (typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(handle)
-    } else {
-      clearTimeout(handle as unknown as ReturnType<typeof setTimeout>)
-    }
-  })
+  const hasCustomScheduler = options.schedule !== undefined || options.cancel !== undefined
 
   let queue: T[] = []
+  let scheduledType: 'raf' | 'timeout' | 'custom' | null = null
   let scheduledHandle: number | null = null
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
   let lastFlushAt = 0
 
   function flush() {
+    scheduledType = null
     scheduledHandle = null
+    timeoutHandle = null
     if (queue.length === 0) return
     const items = queue
     queue = []
@@ -37,13 +29,42 @@ export function createFrameBatcher<T>(options: FrameBatcherOptions<T>) {
   }
 
   function scheduleFlush() {
-    if (scheduledHandle !== null) return
+    if (scheduledType !== null) return
     const elapsed = now() - lastFlushAt
-    if (elapsed >= flushInterval) {
-      scheduledHandle = schedule(flush)
+    if (hasCustomScheduler) {
+      scheduledType = 'custom'
+      const scheduleFn = options.schedule ?? ((cb) => setTimeout(cb, Math.max(0, flushInterval - elapsed)) as unknown as number)
+      scheduledHandle = scheduleFn(flush)
       return
     }
-    scheduledHandle = setTimeout(flush, flushInterval - elapsed) as unknown as number
+
+    if (elapsed >= flushInterval && typeof requestAnimationFrame === 'function') {
+      scheduledType = 'raf'
+      scheduledHandle = requestAnimationFrame(flush)
+      return
+    }
+
+    scheduledType = 'timeout'
+    timeoutHandle = setTimeout(flush, Math.max(0, flushInterval - elapsed))
+  }
+
+  function cancelScheduled() {
+    if (scheduledType === 'custom') {
+      if (options.cancel && scheduledHandle !== null) {
+        options.cancel(scheduledHandle)
+      } else if (scheduledHandle !== null) {
+        clearTimeout(scheduledHandle as unknown as ReturnType<typeof setTimeout>)
+      }
+    } else if (scheduledType === 'raf' && scheduledHandle !== null) {
+      if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(scheduledHandle)
+      }
+    } else if (scheduledType === 'timeout' && timeoutHandle !== null) {
+      clearTimeout(timeoutHandle)
+    }
+    scheduledType = null
+    scheduledHandle = null
+    timeoutHandle = null
   }
 
   function enqueue(item: T) {
@@ -52,18 +73,12 @@ export function createFrameBatcher<T>(options: FrameBatcherOptions<T>) {
   }
 
   function flushNow() {
-    if (scheduledHandle !== null) {
-      cancel(scheduledHandle)
-      scheduledHandle = null
-    }
+    cancelScheduled()
     flush()
   }
 
   function dispose() {
-    if (scheduledHandle !== null) {
-      cancel(scheduledHandle)
-      scheduledHandle = null
-    }
+    cancelScheduled()
     queue = []
   }
 

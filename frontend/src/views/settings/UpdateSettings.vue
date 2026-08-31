@@ -98,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { BrowserOpenURL, EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
 import {
   checkForUpdate,
@@ -252,6 +252,10 @@ onMounted(async () => {
     console.warn('load github token failed:', err)
   }
   await checkUpdate()
+})
+
+onUnmounted(() => {
+  cleanupProgressListener()
 })
 </script>
 

@@ -726,8 +726,10 @@ func bodyLines(content string) []string {
 
 func uniqueHookName(info HookInfo, seen map[string]int) string {
 	base := firstNonEmpty(info.Event+":"+info.Type, info.Event)
-	if info.Command != "" {
-		base = base + ":" + filepath.Base(strings.Fields(info.Command)[0])
+	// 空白字符串的 Command 不能直接取 Fields[0]：strings.Fields 对全空白输入
+	// 返回空切片，越界取值会 panic（畸形 hooks.json 可触发，插件目录内容不受控）。
+	if fields := strings.Fields(info.Command); len(fields) > 0 {
+		base = base + ":" + filepath.Base(fields[0])
 	}
 	seen[base]++
 	if seen[base] == 1 {
