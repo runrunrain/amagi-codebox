@@ -4,6 +4,18 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.61] - 2026-08-31
+
+### Added
+
+- **Pi amagi 配置支持并发限制面板**：Pi amagi 配置新增 `concurrency` 可视化编辑与快捷补全，执行 CLI 前自动确保 agent 根目录存在；`agentProfile`/`provider`/`remote`/`wslsetup` 前端 API 与类型随绑定同步适配，配套 `useModelCatalog` 单测。
+- **用量统计图表卡片合并**：用量页将趋势、模型占比、供应商占比与用量分布聚合为单卡片，支持分段控制器平滑切换；供应商对比与模型 Token 分布统一重构为环形图呈现，移除柱状图冗余依赖并优化空间占用。
+- **终端会话优先网页平面**：pi 会话且 Web 插件可用时默认优先切至网页平面，支持显式切回终端后的防打扰锁定；完善组件挂载与路由激活守卫，后台或非活动会话不触发平面抢占。
+
+### Fixed
+
+- **多模块并发与资源生命周期加固**：envcheck 引入 `probeMu` 互斥锁保护 npm/python 运行时可用性探测缓存，消除并发检测数据竞争；修复已删除会话在 `TrackTitle` 中因空状态继续轮询导致的 goroutine 与磁盘 IO 泄漏；日趋势查询按币种独立汇总防止成本混加，模型价格 Upsert 与快照导入统一归一化 Pattern；修复 macOS PTY 尺寸读取竞态、自动更新解压后即时清理临时安装包、Codex 插件防御空白命令 panic、FrameBatcher 取消调度泄漏、跨数据块 CRLF 累加解析与 QR 扫描器卸载竞态。
+
 ## [1.3.60] - 2026-08-31
 
 ### Added
