@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.62] - 2026-08-31
+
+### Changed
+
+- **Pi amagi 并发限制行键支持目录下拉选择与自定义切换**：providers/models 行键从纯文本输入改为标准下拉单选（候选项 = 模型目录 ∪ 已配置 agent 模型 provider/spec ∪ 已配置并发键，去重 localeCompare 稳定排序），支持「＋ 自定义服务商/模型…」入口与「从列表选择」双模平滑切换；行键重命名、行级稳定渲染 ID 与自定义标记联动。
+- **并发限制输入与保存收口逻辑抽取为纯函数模块**：新增 `frontend/src/components/provider/piConcurrency.ts`，`normalizeLimitInput` 统一归一化 `number|string|null|undefined` 输入（编辑中间态安全保留、不抛 TypeError、不删键不删行），`cleanConcurrencyConfig` 集中收口保存契约（空值剔除、正整数转换、空对象修剪、顶层 `concurrency` 删除），`buildProviderDropdownOptions`/`buildModelDropdownOptions` 构建下拉选项集合；配套新增 10 个单元测试用例，输入退格清空不再丢行失焦。
+
 ## [1.3.61] - 2026-08-31
 
 ### Added
