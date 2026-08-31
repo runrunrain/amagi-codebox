@@ -185,13 +185,32 @@
             <label class="pac-label">服务商并发（providers）</label>
             <p class="pac-subhint">按服务商限制并发容量，覆盖默认并发数。</p>
             <div v-if="concurrencyProviderRows.length" class="pac-concurrency-rows">
-              <div v-for="row in concurrencyProviderRows" :key="row.key" class="pac-concurrency-row">
-                <TextInput
+              <div v-for="row in concurrencyProviderRows" :key="row.id" class="pac-concurrency-row">
+                <div v-if="row.isCustom" class="pac-concurrency-custom-key">
+                  <TextInput
+                    :model-value="row.key"
+                    placeholder="服务商名（如 openrouter）"
+                    mono
+                    class="pac-concurrency-key-input"
+                    @update:model-value="renameConcurrencyProvider(row.key, $event)"
+                  />
+                  <AppButton
+                    variant="ghost"
+                    size="small"
+                    class="pac-switch-dd-btn"
+                    title="切换为列表下拉选择"
+                    @click="switchToPresetProvider(row.key)"
+                  >
+                    从列表选择
+                  </AppButton>
+                </div>
+                <Dropdown
+                  v-else
                   :model-value="row.key"
-                  placeholder="服务商名（如 openrouter）"
-                  mono
-                  class="pac-concurrency-key-input"
-                  @update:model-value="renameConcurrencyProvider(row.key, $event)"
+                  :options="providerDropdownOptions"
+                  placeholder="选择服务商"
+                  class="pac-concurrency-dd"
+                  @update:model-value="onProviderDropdownSelect(row.key, $event)"
                 />
                 <TextInput
                   :model-value="String(row.limit ?? '')"
@@ -207,16 +226,7 @@
               </div>
             </div>
             <div class="pac-actions">
-              <AppButton variant="ghost" size="small" @click="addConcurrencyProvider('')">+ 添加服务商限制</AppButton>
-              <AppButton
-                v-for="s in unconfiguredConcurrencyProviderSuggestions"
-                :key="s"
-                variant="ghost"
-                size="small"
-                @click="addConcurrencyProvider(s)"
-              >
-                + {{ s }}
-              </AppButton>
+              <AppButton variant="ghost" size="small" @click="addConcurrencyProvider()">+ 添加服务商限制</AppButton>
             </div>
           </div>
 
@@ -224,13 +234,32 @@
             <label class="pac-label">模型并发（models）</label>
             <p class="pac-subhint">按精确 provider/model 限制并发容量，优先级高于服务商限制。</p>
             <div v-if="concurrencyModelRows.length" class="pac-concurrency-rows">
-              <div v-for="row in concurrencyModelRows" :key="row.key" class="pac-concurrency-row">
-                <TextInput
+              <div v-for="row in concurrencyModelRows" :key="row.id" class="pac-concurrency-row">
+                <div v-if="row.isCustom" class="pac-concurrency-custom-key pac-concurrency-custom-model">
+                  <TextInput
+                    :model-value="row.key"
+                    placeholder="provider/model（如 anthropic/claude-3-7-sonnet）"
+                    mono
+                    class="pac-concurrency-model-input"
+                    @update:model-value="renameConcurrencyModel(row.key, $event)"
+                  />
+                  <AppButton
+                    variant="ghost"
+                    size="small"
+                    class="pac-switch-dd-btn"
+                    title="切换为列表下拉选择"
+                    @click="switchToPresetModel(row.key)"
+                  >
+                    从列表选择
+                  </AppButton>
+                </div>
+                <Dropdown
+                  v-else
                   :model-value="row.key"
-                  placeholder="provider/model（如 anthropic/claude-3-7-sonnet）"
-                  mono
-                  class="pac-concurrency-model-input"
-                  @update:model-value="renameConcurrencyModel(row.key, $event)"
+                  :options="modelDropdownOptions"
+                  placeholder="选择模型（provider/model）"
+                  class="pac-concurrency-model-dd"
+                  @update:model-value="onModelDropdownSelect(row.key, $event)"
                 />
                 <TextInput
                   :model-value="String(row.limit ?? '')"
@@ -246,16 +275,7 @@
               </div>
             </div>
             <div class="pac-actions">
-              <AppButton variant="ghost" size="small" @click="addConcurrencyModel('')">+ 添加模型限制</AppButton>
-              <AppButton
-                v-for="s in unconfiguredConcurrencyModelSuggestions"
-                :key="s"
-                variant="ghost"
-                size="small"
-                @click="addConcurrencyModel(s)"
-              >
-                + {{ s }}
-              </AppButton>
+              <AppButton variant="ghost" size="small" @click="addConcurrencyModel()">+ 添加模型限制</AppButton>
             </div>
           </div>
         </ConfigCategoryCard>
@@ -276,13 +296,19 @@ import { useToast } from '../../composables/useToast';
 import Segmented from '../ui/Segmented.vue';
 import AppButton from '../ui/AppButton.vue';
 import TextInput from '../ui/TextInput.vue';
-import Dropdown from '../ui/Dropdown.vue';
+import Dropdown, { type DropdownOption } from '../ui/Dropdown.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import ConfigCategoryCard from './ConfigCategoryCard.vue';
 import StringListEditor from './StringListEditor.vue';
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
+import {
+  normalizeLimitInput,
+  cleanConcurrencyConfig,
+  buildProviderDropdownOptions,
+  buildModelDropdownOptions,
+} from './piConcurrency';
 
 const { showSuccess, showError } = useToast();
 
@@ -316,7 +342,31 @@ const { catalog, catalogError, loadCatalog } = useModelCatalog();
 
 interface AgentRow { role: string; model: string }
 interface McpAgentRow { role: string; servers: string[] }
-interface ConcurrencyRow { key: string; limit: number | string }
+interface ConcurrencyRow { id: string; key: string; limit: number | string; isCustom: boolean }
+
+const customProviderKeys = ref<Set<string>>(new Set());
+const customModelKeys = ref<Set<string>>(new Set());
+const providerRowIds = ref<Record<string, string>>({});
+const modelRowIds = ref<Record<string, string>>({});
+
+let rowIdSeq = 0;
+function genConcurrencyRowId(prefix: string) {
+  return `${prefix}-${++rowIdSeq}-${Date.now().toString(36)}`;
+}
+
+function getProviderRowId(key: string): string {
+  if (!providerRowIds.value[key]) {
+    providerRowIds.value[key] = genConcurrencyRowId('p-row');
+  }
+  return providerRowIds.value[key];
+}
+
+function getModelRowId(key: string): string {
+  if (!modelRowIds.value[key]) {
+    modelRowIds.value[key] = genConcurrencyRowId('m-row');
+  }
+  return modelRowIds.value[key];
+}
 
 const agentRows = computed<AgentRow[]>(() => {
   const agents = configData.value.agents;
@@ -350,11 +400,32 @@ const unconfiguredRoleSuggestions = computed(() =>
   ROLE_SUGGESTIONS.filter((s) => !agentRows.value.some((r) => r.role === s)).slice(0, 5)
 );
 
+const providerDropdownOptions = computed<DropdownOption[]>(() => {
+  const agentModels = agentRows.value.map((r) => r.model).filter(Boolean);
+  return buildProviderDropdownOptions(
+    catalog.value,
+    agentModels,
+    configData.value.concurrency?.providers
+  );
+});
+
+const modelDropdownOptions = computed<DropdownOption[]>(() => {
+  const agentModels = agentRows.value.map((r) => r.model).filter(Boolean);
+  return buildModelDropdownOptions(
+    catalog.value,
+    agentModels,
+    configData.value.concurrency?.models
+  );
+});
+
 const concurrencyBadge = computed<number | null>(() => {
   const c = configData.value.concurrency;
   if (!c || typeof c !== 'object') return null;
   let count = 0;
-  if (typeof c.default === 'number' && Number.isFinite(c.default) && c.default > 0) count += 1;
+  const defRaw = String(c.default ?? '').trim();
+  const defNum = parseInt(defRaw, 10);
+  if (defRaw && !isNaN(defNum) && defNum > 0) count += 1;
+
   if (c.providers && typeof c.providers === 'object' && !Array.isArray(c.providers)) {
     count += Object.keys(c.providers).length;
   }
@@ -366,7 +437,7 @@ const concurrencyBadge = computed<number | null>(() => {
 
 const concurrencyDefault = computed<string>(() => {
   const def = configData.value.concurrency?.default;
-  if (typeof def === 'number' && Number.isFinite(def) && def > 0) {
+  if (def !== undefined && def !== null) {
     return String(def);
   }
   return '';
@@ -376,8 +447,10 @@ const concurrencyProviderRows = computed<ConcurrencyRow[]>(() => {
   const providers = configData.value.concurrency?.providers;
   if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return [];
   return Object.keys(providers).map((key) => ({
+    id: getProviderRowId(key),
     key,
     limit: providers[key] ?? '',
+    isCustom: customProviderKeys.value.has(key),
   }));
 });
 
@@ -385,81 +458,11 @@ const concurrencyModelRows = computed<ConcurrencyRow[]>(() => {
   const models = configData.value.concurrency?.models;
   if (!models || typeof models !== 'object' || Array.isArray(models)) return [];
   return Object.keys(models).map((key) => ({
+    id: getModelRowId(key),
     key,
     limit: models[key] ?? '',
+    isCustom: customModelKeys.value.has(key),
   }));
-});
-
-const unconfiguredConcurrencyProviderSuggestions = computed<string[]>(() => {
-  const existingProviders = new Set(
-    configData.value.concurrency?.providers && typeof configData.value.concurrency.providers === 'object'
-      ? Object.keys(configData.value.concurrency.providers)
-      : []
-  );
-  const suggestions: string[] = [];
-  const seen = new Set<string>();
-
-  // 1. From catalog providers
-  if (catalog.value?.providers) {
-    for (const p of catalog.value.providers) {
-      if (p.name && !existingProviders.has(p.name) && !seen.has(p.name)) {
-        seen.add(p.name);
-        suggestions.push(p.name);
-      }
-    }
-  }
-
-  // 2. From configured agent models (extract provider part before '/')
-  for (const row of agentRows.value) {
-    if (!row.model) continue;
-    const slashIdx = row.model.indexOf('/');
-    if (slashIdx > 0) {
-      const pName = row.model.slice(0, slashIdx).trim();
-      if (pName && !existingProviders.has(pName) && !seen.has(pName)) {
-        seen.add(pName);
-        suggestions.push(pName);
-      }
-    }
-  }
-
-  return suggestions.slice(0, 5);
-});
-
-const unconfiguredConcurrencyModelSuggestions = computed<string[]>(() => {
-  const existingModels = new Set(
-    configData.value.concurrency?.models && typeof configData.value.concurrency.models === 'object'
-      ? Object.keys(configData.value.concurrency.models)
-      : []
-  );
-  const suggestions: string[] = [];
-  const seen = new Set<string>();
-
-  // 1. From configured agent models (stripping :thinkingLevel; models 键必须含 /，无斜杠 spec 不进建议)
-  for (const row of agentRows.value) {
-    if (!row.model) continue;
-    const cleanSpec = (row.model.includes(':') ? row.model.slice(0, row.model.lastIndexOf(':')) : row.model).trim();
-    if (cleanSpec && cleanSpec.includes('/') && !existingModels.has(cleanSpec) && !seen.has(cleanSpec)) {
-      seen.add(cleanSpec);
-      suggestions.push(cleanSpec);
-    }
-  }
-
-  // 2. From catalog if fewer suggestions
-  if (suggestions.length < 5 && catalog.value?.providers) {
-    for (const p of catalog.value.providers) {
-      for (const m of p.models) {
-        const spec = `${p.name}/${m.id}`;
-        if (!existingModels.has(spec) && !seen.has(spec)) {
-          seen.add(spec);
-          suggestions.push(spec);
-          if (suggestions.length >= 5) break;
-        }
-      }
-      if (suggestions.length >= 5) break;
-    }
-  }
-
-  return suggestions.slice(0, 5);
 });
 
 async function initialLoad() {
@@ -591,183 +594,241 @@ function removeMcpAgent(role: string) {
   }
 }
 
+function ensureConcurrency() {
+  if (!configData.value.concurrency || typeof configData.value.concurrency !== 'object') {
+    configData.value.concurrency = {};
+  }
+  return configData.value.concurrency;
+}
+
+function ensureConcurrencyProviders() {
+  const c = ensureConcurrency();
+  if (!c.providers || typeof c.providers !== 'object' || Array.isArray(c.providers)) {
+    c.providers = {};
+  }
+  return c.providers;
+}
+
+function ensureConcurrencyModels() {
+  const c = ensureConcurrency();
+  if (!c.models || typeof c.models !== 'object' || Array.isArray(c.models)) {
+    c.models = {};
+  }
+  return c.models;
+}
+
 function cleanupConcurrency() {
-  const c = configData.value.concurrency;
-  if (!c || typeof c !== 'object') return;
-
-  if (c.providers && typeof c.providers === 'object') {
-    if (Object.keys(c.providers).length === 0) {
-      delete c.providers;
-    }
-  }
-  if (c.models && typeof c.models === 'object') {
-    if (Object.keys(c.models).length === 0) {
-      delete c.models;
-    }
-  }
-
-  const hasDefault = typeof c.default === 'number' && Number.isFinite(c.default) && c.default > 0;
-  const hasProviders = c.providers && typeof c.providers === 'object' && Object.keys(c.providers).length > 0;
-  const hasModels = c.models && typeof c.models === 'object' && Object.keys(c.models).length > 0;
-
-  if (!hasDefault && !hasProviders && !hasModels) {
+  const cleaned = cleanConcurrencyConfig(configData.value.concurrency);
+  if (cleaned) {
+    configData.value.concurrency = cleaned;
+  } else {
     delete configData.value.concurrency;
   }
 }
 
 function cleanEmptyLimits() {
-  const c = configData.value.concurrency;
-  if (!c || typeof c !== 'object') return;
-  if (c.providers && typeof c.providers === 'object') {
-    for (const k of Object.keys(c.providers)) {
-      const v = c.providers[k];
-      if (typeof v === 'string') {
-        const num = parseInt(v, 10);
-        // 清空（空串）= 删键回退 default，与 default 字段语义一致；非空非法输入才兑底 1。
-        if (v.trim() === '') {
-          delete c.providers[k];
-        } else {
-          c.providers[k] = !isNaN(num) && num > 0 ? num : 1;
-        }
-      }
-    }
-  }
-  if (c.models && typeof c.models === 'object') {
-    for (const k of Object.keys(c.models)) {
-      const v = c.models[k];
-      if (typeof v === 'string') {
-        const num = parseInt(v, 10);
-        // 同上：清空 = 删键回退，非空非法输入兑底 1。
-        if (v.trim() === '') {
-          delete c.models[k];
-        } else {
-          c.models[k] = !isNaN(num) && num > 0 ? num : 1;
-        }
-      }
-    }
+  const cleaned = cleanConcurrencyConfig(configData.value.concurrency);
+  if (cleaned) {
+    configData.value.concurrency = cleaned;
+  } else {
+    delete configData.value.concurrency;
   }
 }
 
-function updateConcurrencyDefault(v: string) {
-  const trimmed = v.trim();
-  if (!configData.value.concurrency || typeof configData.value.concurrency !== 'object') {
-    configData.value.concurrency = {};
-  }
-  if (!trimmed) {
-    delete configData.value.concurrency.default;
-  } else {
-    const num = parseInt(trimmed, 10);
-    if (!isNaN(num) && num > 0) {
-      configData.value.concurrency.default = num;
-    } else {
-      delete configData.value.concurrency.default;
-    }
-  }
-  cleanupConcurrency();
+function updateConcurrencyDefault(v: any) {
+  const c = ensureConcurrency();
+  c.default = normalizeLimitInput(v);
   serialize();
 }
 
 function addConcurrencyProvider(providerName?: string) {
-  if (!configData.value.concurrency || typeof configData.value.concurrency !== 'object') {
-    configData.value.concurrency = {};
-  }
-  if (!configData.value.concurrency.providers || typeof configData.value.concurrency.providers !== 'object') {
-    configData.value.concurrency.providers = {};
-  }
+  const providers = ensureConcurrencyProviders();
   let key = (providerName || '').trim();
+  let isCustom = false;
   if (!key) {
-    const base = 'provider';
-    let i = 1;
-    while (configData.value.concurrency.providers[`${base}${i}`] !== undefined) i++;
-    key = `${base}${i}`;
+    const standardOptions = providerDropdownOptions.value.filter((o) => o.value !== '__custom__');
+    const available = standardOptions.find((o) => providers[o.value] === undefined);
+    if (available) {
+      key = available.value;
+    } else {
+      const base = 'provider';
+      let i = 1;
+      while (providers[`${base}${i}`] !== undefined) i++;
+      key = `${base}${i}`;
+      isCustom = true;
+    }
   }
-  if (configData.value.concurrency.providers[key] === undefined) {
-    configData.value.concurrency.providers[key] = 4;
+  if (providers[key] === undefined) {
+    providers[key] = 4;
+  }
+  if (isCustom) {
+    customProviderKeys.value.add(key);
   }
   serialize();
+}
+
+function onProviderDropdownSelect(oldKey: string, newKey: string) {
+  if (newKey === '__custom__') {
+    customProviderKeys.value.add(oldKey);
+    return;
+  }
+  if (newKey === oldKey) return;
+  const providers = ensureConcurrencyProviders();
+  if (providers[newKey] !== undefined) {
+    showError(`服务商「${newKey}」已在并发限制列表中`);
+    return;
+  }
+  renameConcurrencyProvider(oldKey, newKey);
+}
+
+function switchToPresetProvider(key: string) {
+  customProviderKeys.value.delete(key);
+  const standardOptions = providerDropdownOptions.value.filter((o) => o.value !== '__custom__');
+  if (!standardOptions.some((o) => o.value === key)) {
+    const providers = ensureConcurrencyProviders();
+    const available = standardOptions.find((o) => providers[o.value] === undefined);
+    if (available) {
+      renameConcurrencyProvider(key, available.value);
+    }
+  }
 }
 
 function renameConcurrencyProvider(oldKey: string, newKey: string) {
   const trimmed = newKey.trim();
-  const providers = configData.value.concurrency?.providers;
-  if (!trimmed || trimmed === oldKey || !providers || providers[trimmed] !== undefined) return;
+  if (!trimmed || trimmed === oldKey) return;
+  const providers = ensureConcurrencyProviders();
+  if (providers[trimmed] !== undefined) {
+    showError(`服务商「${trimmed}」已存在，请换一个`);
+    return;
+  }
   const entries = Object.keys(providers).map((k) => [k === oldKey ? trimmed : k, providers[k]] as const);
   configData.value.concurrency.providers = Object.fromEntries(entries);
+  if (customProviderKeys.value.has(oldKey)) {
+    customProviderKeys.value.delete(oldKey);
+    customProviderKeys.value.add(trimmed);
+  }
+  const oldId = providerRowIds.value[oldKey];
+  if (oldId) {
+    delete providerRowIds.value[oldKey];
+    providerRowIds.value[trimmed] = oldId;
+  }
   serialize();
 }
 
-function updateConcurrencyProviderLimit(key: string, val: string) {
+function updateConcurrencyProviderLimit(key: string, val: any) {
   if (!configData.value.concurrency?.providers) return;
-  const trimmed = val.trim();
-  const num = parseInt(trimmed, 10);
-  if (!trimmed) {
-    configData.value.concurrency.providers[key] = '';
-  } else if (!isNaN(num) && num > 0) {
-    configData.value.concurrency.providers[key] = num;
-  }
-  cleanEmptyLimits();
+  configData.value.concurrency.providers[key] = normalizeLimitInput(val);
+  // 中间态输入过程中不调用 cleanEmptyLimits/cleanupConcurrency，绝不删键不删行
   serialize();
 }
 
 function removeConcurrencyProvider(key: string) {
   if (configData.value.concurrency?.providers) {
     delete configData.value.concurrency.providers[key];
+    customProviderKeys.value.delete(key);
+    delete providerRowIds.value[key];
     cleanupConcurrency();
     serialize();
   }
 }
 
 function addConcurrencyModel(modelSpec?: string) {
-  if (!configData.value.concurrency || typeof configData.value.concurrency !== 'object') {
-    configData.value.concurrency = {};
-  }
-  if (!configData.value.concurrency.models || typeof configData.value.concurrency.models !== 'object') {
-    configData.value.concurrency.models = {};
-  }
+  const models = ensureConcurrencyModels();
   let key = (modelSpec || '').trim();
+  let isCustom = false;
   if (!key) {
-    const base = 'provider/model';
-    let i = 1;
-    while (configData.value.concurrency.models[`${base}-${i}`] !== undefined) i++;
-    key = `${base}-${i}`;
+    const standardOptions = modelDropdownOptions.value.filter((o) => o.value !== '__custom__');
+    const available = standardOptions.find((o) => models[o.value] === undefined);
+    if (available) {
+      key = available.value;
+    } else {
+      const base = 'provider/model';
+      let i = 1;
+      while (models[`${base}-${i}`] !== undefined) i++;
+      key = `${base}-${i}`;
+      isCustom = true;
+    }
   }
-  if (configData.value.concurrency.models[key] === undefined) {
-    configData.value.concurrency.models[key] = 2;
+  if (models[key] === undefined) {
+    models[key] = 2;
+  }
+  if (isCustom) {
+    customModelKeys.value.add(key);
   }
   serialize();
+}
+
+function onModelDropdownSelect(oldKey: string, newKey: string) {
+  if (newKey === '__custom__') {
+    customModelKeys.value.add(oldKey);
+    return;
+  }
+  if (newKey === oldKey) return;
+  const models = ensureConcurrencyModels();
+  if (models[newKey] !== undefined) {
+    showError(`模型「${newKey}」已在并发限制列表中`);
+    return;
+  }
+  renameConcurrencyModel(oldKey, newKey);
+}
+
+function switchToPresetModel(key: string) {
+  customModelKeys.value.delete(key);
+  const standardOptions = modelDropdownOptions.value.filter((o) => o.value !== '__custom__');
+  if (!standardOptions.some((o) => o.value === key)) {
+    const models = ensureConcurrencyModels();
+    const available = standardOptions.find((o) => models[o.value] === undefined);
+    if (available) {
+      renameConcurrencyModel(key, available.value);
+    }
+  }
 }
 
 function renameConcurrencyModel(oldKey: string, newKey: string) {
   const trimmed = newKey.trim();
-  const models = configData.value.concurrency?.models;
-  if (!trimmed || trimmed === oldKey || !models || models[trimmed] !== undefined) return;
+  if (!trimmed || trimmed === oldKey) return;
+  const models = ensureConcurrencyModels();
+  if (models[trimmed] !== undefined) {
+    showError(`模型「${trimmed}」已存在，请换一个`);
+    return;
+  }
   const entries = Object.keys(models).map((k) => [k === oldKey ? trimmed : k, models[k]] as const);
   configData.value.concurrency.models = Object.fromEntries(entries);
+  if (customModelKeys.value.has(oldKey)) {
+    customModelKeys.value.delete(oldKey);
+    customModelKeys.value.add(trimmed);
+  }
+  const oldId = modelRowIds.value[oldKey];
+  if (oldId) {
+    delete modelRowIds.value[oldKey];
+    modelRowIds.value[trimmed] = oldId;
+  }
   serialize();
 }
 
-function updateConcurrencyModelLimit(key: string, val: string) {
+function updateConcurrencyModelLimit(key: string, val: any) {
   if (!configData.value.concurrency?.models) return;
-  const trimmed = val.trim();
-  const num = parseInt(trimmed, 10);
-  if (!trimmed) {
-    configData.value.concurrency.models[key] = '';
-  } else if (!isNaN(num) && num > 0) {
-    configData.value.concurrency.models[key] = num;
-  }
-  cleanEmptyLimits();
+  configData.value.concurrency.models[key] = normalizeLimitInput(val);
+  // 中间态输入过程中不调用 cleanEmptyLimits/cleanupConcurrency，绝不删键不删行
   serialize();
 }
 
 function removeConcurrencyModel(key: string) {
   if (configData.value.concurrency?.models) {
     delete configData.value.concurrency.models[key];
+    customModelKeys.value.delete(key);
+    delete modelRowIds.value[key];
     cleanupConcurrency();
     serialize();
   }
 }
 
 async function handleSave() {
+  if (mode.value === 'visual') {
+    cleanEmptyLimits();
+    cleanupConcurrency();
+    serialize();
+  }
   if (jsonError.value) {
     showError('JSON 格式错误，无法保存');
     return;
@@ -987,7 +1048,7 @@ onMounted(() => {
 }
 
 .pac-limit-input {
-  width: 120px;
+  width: 110px;
 }
 
 .pac-hint-inline {
@@ -1014,13 +1075,40 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
+.pac-concurrency-dd {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.pac-concurrency-model-dd {
+  flex: 1;
+  min-width: 260px;
+}
+
+.pac-concurrency-custom-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .pac-concurrency-key-input {
-  width: 200px;
+  width: 160px;
+}
+
+.pac-concurrency-custom-model {
+  flex: 1;
+  min-width: 260px;
 }
 
 .pac-concurrency-model-input {
   flex: 1;
-  min-width: 240px;
+  min-width: 200px;
+}
+
+.pac-switch-dd-btn {
+  font-size: 11px;
+  padding: 4px 8px;
+  white-space: nowrap;
 }
 
 .pac-json-editor {
