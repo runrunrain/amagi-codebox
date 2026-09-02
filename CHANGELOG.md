@@ -4,6 +4,15 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.63] - 2026-09-03
+
+### Added
+
+- **终端快捷功能支持工作路径快速输入**：终端工具栏新增数据驱动的快捷功能菜单，支持目录树多选并组装工作路径文本写入终端（目录级选中可直接插入工作路径）；终端引擎新增 `insertTextToTerminal` 方法，感知 bracketed paste 模式自动包裹多行避免提前执行。
+- **路径服务新增 `ListDirectories` 接口**：单层子目录只读遍历（仅目录、跳过 `.` 开头、大小写不敏感排序、上限 500 条超限截断返回 `truncated`），root 为空回退用户主目录，文件系统根的 parent 为 `null`；配套前端 api 包装层、目录选择弹窗（`PathPickerDialog`）与模型层（`pathPickerModel`）单测覆盖。
+- **多款模型定价种子补全**：用量统计扩充 Claude 5 / GPT-5.4 / DeepSeek V4 / Kimi K3 等模型官方单价种子，并在启动时重算历史成本。
+- **版本依赖同步**：frontend 1.3.50 → 1.3.57，同步更新 WSL 搜索工具与路径服务 Wails 绑定定义。
+
 ## [1.3.62] - 2026-08-31
 
 ### Changed
