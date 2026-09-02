@@ -51,6 +51,7 @@ import {
   ClipboardGetText,
 } from '../../wailsjs/runtime/runtime'
 import { usePlatformCapabilities } from './usePlatformCapabilities'
+import { wrapBracketedPaste } from '../utils/quickFunctions'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -508,6 +509,31 @@ export function useTerminalEngine() {
       }
     } catch (err) {
       console.error('paste error:', err)
+    }
+  }
+
+  /**
+   * 向终端写入一段已组装好的文本（快捷功能「输入工作路径」等）。
+   *
+   * 与粘贴路径（pasteToTerminal）的差异：文本由调用方直接提供，不读剪贴板。
+   * 与 sendInput 的差异：异步、可感知 bracketed paste——当 TUI 已协商
+   * bracketedPasteMode（\x1b[?2004h）时用 wrapBracketedPaste 包裹写入，
+   * 避免多行文本被逐行当作 Enter 提交；未协商时原文写入。
+   * 写入统一经 inst.transport（远程会话走同一适配器，天然支持）。
+   */
+  async function insertTextToTerminal(sessionId: string, text: string) {
+    const inst = terminals.get(sessionId)
+    if (!inst || !inst.canInput()) return
+    if (!text) return
+    const payload = inst.term.modes.bracketedPasteMode
+      ? wrapBracketedPaste(text)
+      : text
+    try {
+      await inst.transport.write(payload)
+      inst.term.focus()
+    } catch (err) {
+      console.error('[amagi-codebox] terminal insert write failed:', err)
+      throw err
     }
   }
 
@@ -1594,5 +1620,7 @@ export function useTerminalEngine() {
     // exposed for the right-click menu component (TerminalContextMenu)
     copySelection,
     pasteToTerminal,
+    // 快捷功能（输入工作路径等）的文本插入出口
+    insertTextToTerminal,
   }
 }

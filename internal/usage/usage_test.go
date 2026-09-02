@@ -560,6 +560,69 @@ func TestPricingSeedCNY(t *testing.T) {
 	}
 }
 
+// TestPricingSeed202609Batch 验证 2026-09 补价批次：此前落入 zero_cost 的
+// 模型族已入 seed，且 ModelPattern 与 NormalizeModelID 输出一致。
+func TestPricingSeed202609Batch(t *testing.T) {
+	data := defaultPricingData()
+	type wantRow struct {
+		in, out  int64
+		currency string
+	}
+	wants := map[string]wantRow{
+		"claude-opus-5":           {5_000_000, 25_000_000, "USD"},
+		"claude-sonnet-5":         {2_000_000, 10_000_000, "USD"},
+		"claude-fable-5":          {10_000_000, 50_000_000, "USD"},
+		"claude-sonnet-4-6":       {3_000_000, 15_000_000, "USD"},
+		"claude-3-5-haiku-latest": {800_000, 4_000_000, "USD"},
+		"gpt-5.5-pro":             {30_000_000, 180_000_000, "USD"},
+		"gpt-5.4":                 {2_500_000, 15_000_000, "USD"},
+		"gpt-5.4-mini":            {750_000, 4_500_000, "USD"},
+		"deepseek-v4-flash":       {220_000, 660_000, "USD"},
+		"glm-4.7":                 {2_000_000, 8_000_000, "CNY"},
+		"kimi-k3":                 {20_000_000, 100_000_000, "CNY"},
+		"kimi-k3-256k":            {20_000_000, 100_000_000, "CNY"},
+		"k3":                      {20_000_000, 100_000_000, "CNY"},
+		"k3-256k":                 {20_000_000, 100_000_000, "CNY"},
+		"kimi-k2.5":               {4_000_000, 16_000_000, "CNY"},
+		"kimi-k2.6":               {6_500_000, 27_000_000, "CNY"},
+		"gemini-3.8-flash":        {750_000, 3_750_000, "USD"},
+		"gemini-3.7-flash":        {750_000, 3_750_000, "USD"},
+		"grok-4.5":                {2_000_000, 6_000_000, "USD"},
+		"grok-4.6":                {2_000_000, 6_000_000, "USD"},
+		"qwen3-coder-plus":        {4_000_000, 16_000_000, "CNY"},
+		"qwen-2.5-72b-instruct":   {360_000, 400_000, "USD"},
+		"minimax-m2.7":            {2_100_000, 8_400_000, "CNY"},
+		"ox-alpha-free":           {0, 0, "USD"},
+	}
+	for _, m := range data.Models {
+		w, ok := wants[m.ModelPattern]
+		if !ok {
+			continue
+		}
+		if m.CurrencyCode != w.currency {
+			t.Errorf("%s currency = %s, want %s", m.ModelPattern, m.CurrencyCode, w.currency)
+		}
+		if !m.IsBuiltin {
+			t.Errorf("%s isBuiltin = false, want true", m.ModelPattern)
+		}
+		if m.InputPerMillion != w.in || m.OutputPerMillion != w.out {
+			t.Errorf("%s in/out = %d/%d, want %d/%d",
+				m.ModelPattern, m.InputPerMillion, m.OutputPerMillion, w.in, w.out)
+		}
+		if got := NormalizeModelID(m.ModelPattern); got != m.ModelPattern {
+			t.Errorf("NormalizeModelID(%q) = %q, want %q", m.ModelPattern, got, m.ModelPattern)
+		}
+		delete(wants, m.ModelPattern)
+	}
+	if len(wants) > 0 {
+		missing := make([]string, 0, len(wants))
+		for p := range wants {
+			missing = append(missing, p)
+		}
+		t.Errorf("seed missing patterns: %v", missing)
+	}
+}
+
 // TestPricingSeedOpenAIGPT56 验证 M2：5 个 OpenAI 新模型已补入 seed，
 // 且 ModelPattern 与 NormalizeModelID 输出一致。
 func TestPricingSeedOpenAIGPT56(t *testing.T) {

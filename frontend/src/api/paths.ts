@@ -14,6 +14,7 @@ import {
   ValidatePath,
   Load,
   Save,
+  ListDirectories,
 } from '../../wailsjs/go/paths/PathsService';
 
 import { BrowseDirectory, OpenFileInEditor } from '../../wailsjs/go/main/App';
@@ -23,6 +24,25 @@ import { callApi } from './internal/call';
 
 // Type alias
 type PathEntry = paths.PathEntry;
+
+/**
+ * ListDirectories 返回的单条子目录记录。
+ */
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+}
+
+/**
+ * ListDirectories 返回的 JSON 载荷（前端解析后形态）。
+ * parent：上级目录绝对路径；文件系统根目录时为 null。
+ */
+export interface ListDirectoriesResult {
+  root: string;
+  parent: string | null;
+  dirs: DirectoryEntry[];
+  truncated: boolean;
+}
 
 /**
  * Get paths
@@ -85,6 +105,19 @@ export function loadPaths(): Promise<void> {
  */
 export function savePaths(): Promise<void> {
   return callApi('[api.paths.savePaths]', () => Save());
+}
+
+/**
+ * List directories one level under root (directories only, dot-prefixed
+ * skipped, case-insensitive sort, capped at 500 with truncated flag).
+ * Empty root falls back to the user home directory (backend behavior).
+ * The backend returns a JSON string; parsed here before returning.
+ */
+export function listDirectories(root: string): Promise<ListDirectoriesResult> {
+  return callApi('[api.paths.listDirectories]', async () => {
+    const raw = await ListDirectories(root);
+    return JSON.parse(raw) as ListDirectoriesResult;
+  });
 }
 
 /**

@@ -129,6 +129,30 @@ func (s *Service) Load() error {
 	} else if updated > 0 {
 		s.logInfo("usage", "GLM-5.1 历史成本已重算", fmt.Sprintf("records=%d", updated))
 	}
+	// v1.3.62 seeds official/published prices for model families that
+	// previously fell back to zero_cost: Claude 5 family (Opus/Sonnet/Fable/
+	// Sonnet 4.6), GPT-5.4 family, DeepSeek V4 Flash, GLM-4.7, Kimi K3 family
+	// (incl. relay short names k3/k3-256k), Kimi K2.5/K2.6, Gemini 3.7/3.8
+	// Flash, Grok 4.5/4.6, Qwen3-Coder-Plus, MiniMax M2.7. Reprice locally
+	// estimated records per new pattern; OpenCode-supplied totals
+	// (cost_provided=1) remain untouched.
+	for _, pattern := range []string{
+		"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-sonnet-4-6",
+		"claude-3-5-haiku-latest",
+		"gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini",
+		"deepseek-v4-flash", "glm-4.7",
+		"kimi-k3", "kimi-k3-256k", "k3", "k3-256k", "kimi-k2.5", "kimi-k2.6",
+		"gemini-3.8-flash", "gemini-3.7-flash",
+		"grok-4.5", "grok-4.6",
+		"qwen3-coder-plus", "qwen-2.5-72b-instruct",
+		"minimax-m2.7",
+	} {
+		if updated, err := s.repriceEstimatedUsageForPattern(ctx, pattern); err != nil {
+			s.logWarn("usage", "历史成本重算失败", fmt.Sprintf("model=%s: %v", pattern, err))
+		} else if updated > 0 {
+			s.logInfo("usage", "历史成本已重算", fmt.Sprintf("model=%s records=%d", pattern, updated))
+		}
+	}
 	return nil
 }
 

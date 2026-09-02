@@ -19,6 +19,16 @@
             @update:modelValue="onPlaneSelect"
           />
         </div>
+        <!-- 快捷功能（锚定下拉菜单，所有内嵌终端会话通用）：Web 平面/会话未运行时禁用 -->
+        <button
+          ref="quickAnchorRef"
+          class="btn btn-ghost"
+          :disabled="quickMenuDisabled"
+          :title="quickMenuTitle"
+          :aria-expanded="quickMenuVisible"
+          aria-haspopup="menu"
+          @click="toggleQuickMenu"
+        >快捷功能</button>
         <button ref="gitAnchorRef" class="btn btn-ghost" @click="gitPanelVisible = true" title="提交/推送">提交/推送</button>
         <button
           class="btn btn-ghost danger"
@@ -73,6 +83,35 @@
       :anchor="gitAnchorRef"
       @close="gitPanelVisible = false"
     />
+
+    <!-- 快捷功能菜单（锚定「快捷功能」按钮的下拉浮层，非阻断；数据驱动，预留扩展） -->
+    <Teleport to="body">
+      <div
+        v-if="quickMenuVisible"
+        ref="quickMenuRef"
+        class="quick-menu"
+        :style="quickMenuStyle"
+        role="menu"
+        aria-label="快捷功能"
+      >
+        <button
+          v-for="item in quickMenuItems"
+          :key="item.key"
+          type="button"
+          role="menuitem"
+          class="quick-menu-item"
+          @click="onQuickMenuItem(item)"
+        >{{ item.label }}</button>
+      </div>
+    </Teleport>
+
+    <!-- 快捷功能：输入工作路径（目录多选 → 组装文本写入终端输入框） -->
+    <PathPickerDialog
+      :visible="pathPickerVisible"
+      :work-dir="session?.workDir || ''"
+      @close="pathPickerVisible = false"
+      @confirm="onPathPickerConfirm"
+    />
   </div>
 </template>
 
@@ -108,9 +147,11 @@ import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import { useTerminalEngine } from '../../composables/useTerminalEngine'
 import { basename } from '../../utils/format'
+import { buildAssociatedPathLines } from '../../utils/quickFunctions'
 import GitPanel from './GitPanel.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
 import WebPlaneHost from './WebPlaneHost.vue'
+import PathPickerDialog from './PathPickerDialog.vue'
 import Segmented from '../ui/Segmented.vue'
 import { openWebPlane } from '../../api/webui'
 
@@ -135,6 +176,111 @@ const gitAnchorRef = ref<HTMLElement | null>(null)
 const hasSelection = ref(false)
 const routeSurfaceActive = ref(true)
 const surfaceActive = computed(() => props.active && routeSurfaceActive.value)
+
+// ---- 快捷功能（输入工作路径等）：锚定下拉菜单 + 路径选择器 ----
+const quickMenuVisible = ref(false)
+const quickAnchorRef = ref<HTMLElement | null>(null)
+const quickMenuRef = ref<HTMLElement | null>(null)
+const quickMenuStyle = ref<Record<string, string>>({})
+const pathPickerVisible = ref(false)
+
+// 数据驱动菜单项：首项「输入工作路径」，后续快捷能力在此追加。
+const quickMenuItems: { key: string; label: string; action: () => void }[] = [
+  {
+    key: 'work-path',
+    label: '输入工作路径',
+    action: () => {
+      pathPickerVisible.value = true
+    },
+  },
+]
+
+// Web 平面（pi Web）内嵌页面有自己的输入通道，终端写入会落到隐藏的 xterm；
+// 会话非 running 时终端不再接受输入。两种情况都禁用入口。
+const quickMenuDisabled = computed(
+  () => activePlane.value === 'web' || session.value?.status !== 'running',
+)
+
+const quickMenuTitle = computed(() => {
+  if (activePlane.value === 'web') return 'Web 平面请使用页面内快捷功能，或切回终端平面'
+  if (session.value?.status !== 'running') return '会话未运行，无法使用快捷功能'
+  return '快捷功能'
+})
+
+// ---- 锚定定位：正下方右对齐（对齐 GitPanel 浮层模式），clamp 在视口内 ----
+const QUICK_MENU_PAD = 12
+const QUICK_MENU_WIDTH = 220
+
+function updateQuickMenuPosition() {
+  const anchor = quickAnchorRef.value
+  if (!anchor) return
+  const rect = anchor.getBoundingClientRect()
+  const width = Math.min(QUICK_MENU_WIDTH, window.innerWidth - QUICK_MENU_PAD * 2)
+  const left = Math.max(
+    QUICK_MENU_PAD,
+    Math.min(rect.right - width, window.innerWidth - width - QUICK_MENU_PAD),
+  )
+  const top = Math.min(rect.bottom + 8, window.innerHeight - QUICK_MENU_PAD)
+  quickMenuStyle.value = { left: `${left}px`, top: `${top}px`, width: `${width}px` }
+}
+
+// 非阻断关闭：菜单外按下即关闭，但不拦截事件（对齐 GitPanel）。
+function onQuickMenuOutsideDown(event: Event) {
+  const target = event.target as Node | null
+  if (!target) return
+  if (quickMenuRef.value?.contains(target)) return
+  if (quickAnchorRef.value?.contains(target)) return
+  quickMenuVisible.value = false
+}
+
+function onQuickMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && quickMenuVisible.value) quickMenuVisible.value = false
+}
+
+function toggleQuickMenu() {
+  if (quickMenuDisabled.value) return
+  quickMenuVisible.value = !quickMenuVisible.value
+}
+
+function onQuickMenuItem(item: { key: string; label: string; action: () => void }) {
+  quickMenuVisible.value = false
+  item.action()
+}
+
+watch(quickMenuVisible, (visible) => {
+  if (visible) {
+    updateQuickMenuPosition()
+    window.addEventListener('resize', updateQuickMenuPosition)
+    document.addEventListener('pointerdown', onQuickMenuOutsideDown, true)
+    document.addEventListener('mousedown', onQuickMenuOutsideDown, true)
+    document.addEventListener('keydown', onQuickMenuKeydown, true)
+  } else {
+    window.removeEventListener('resize', updateQuickMenuPosition)
+    document.removeEventListener('pointerdown', onQuickMenuOutsideDown, true)
+    document.removeEventListener('mousedown', onQuickMenuOutsideDown, true)
+    document.removeEventListener('keydown', onQuickMenuKeydown, true)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (quickMenuVisible.value) {
+    window.removeEventListener('resize', updateQuickMenuPosition)
+    document.removeEventListener('pointerdown', onQuickMenuOutsideDown, true)
+    document.removeEventListener('mousedown', onQuickMenuOutsideDown, true)
+    document.removeEventListener('keydown', onQuickMenuKeydown, true)
+  }
+})
+
+// 确认回调：组装「关联工作路径：…」文本 → 经引擎单一写入出口插入终端；
+// bracketed paste 由引擎按当前 TUI 模式自动包裹。异常走既有 toast 报错。
+async function onPathPickerConfirm(paths: string[]) {
+  pathPickerVisible.value = false
+  try {
+    await engine.insertTextToTerminal(props.sessionId, buildAssociatedPathLines(paths))
+  } catch (err) {
+    showError('工作路径写入失败: ' + err)
+  }
+}
 
 // right-click menu transient state
 const ctx = ref({ visible: false, x: 0, y: 0 })
@@ -600,6 +746,42 @@ function onCtxSelectAll() {
 
 .btn-ghost.danger {
   color: var(--danger);
+}
+
+/* 快捷功能菜单：锚定工具栏按钮的下拉浮层，视觉语言对齐 GitPanel */
+.quick-menu {
+  position: fixed;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid rgba(137, 221, 255, 0.24);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(137, 221, 255, 0.16), transparent 32%),
+    #0b1018;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: #d9e2ec;
+}
+
+.quick-menu-item {
+  border: none;
+  background: none;
+  color: #d9e2ec;
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.quick-menu-item:hover,
+.quick-menu-item:focus-visible {
+  background: rgba(137, 221, 255, 0.12);
+  color: #89ddff;
+  outline: none;
 }
 
 /* xterm host: demo term-body uses var(--termBg); xterm paints its own bg

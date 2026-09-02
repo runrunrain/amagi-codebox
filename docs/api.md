@@ -305,6 +305,7 @@ legacy 配置面（过渡方案）：
 - `ReplaceConfig(next PathsConfig) error` — 整体替换。
 - `SetDefaultPath(path string) error` / `AddPath(entry PathEntry) error` / `RemovePath(path string) error` / `UpdateLabel(path, label string) error` — 写操作。
 - `ValidatePath(path string) bool` — 校验目录是否存在。
+- `ListDirectories(root string) (string, error)` — 列出 root 下一层子目录（仅目录、跳过 `.` 开头、大小写不敏感排序、上限 500 条超限截断），返回 JSON `"{"root","parent","dirs":[{"name","path"}],"truncated"}"`；root 为空回退用户主目录，文件系统根的 parent 为 JSON `null`。
 
 ## Log（日志）
 

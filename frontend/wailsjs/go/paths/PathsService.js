@@ -18,6 +18,10 @@ export function GetPaths() {
   return window['go']['paths']['PathsService']['GetPaths']();
 }
 
+export function ListDirectories(arg1) {
+  return window['go']['paths']['PathsService']['ListDirectories'](arg1);
+}
+
 export function Load() {
   return window['go']['paths']['PathsService']['Load']();
 }
