@@ -62,8 +62,20 @@ func TestBuiltinCatalogMerge(t *testing.T) {
 	if len(p.Models) != 2 || p.Models[0].ID != "gpt-5.6-sol" {
 		t.Fatalf("openai-codex models wrong: %+v", p.Models)
 	}
-	if len(p.Models[0].ThinkingLevels) != 2 {
-		t.Fatalf("thinkingLevelMap levels not extracted: %+v", p.Models[0])
+	if len(p.Models[0].ThinkingLevels) != 6 {
+		t.Fatalf("thinkingLevels 应为 pi 支持集（标准档默认支持+max 显式，无 xhigh）: %+v", p.Models[0])
+	}
+	byLevel := map[string]bool{}
+	for _, l := range p.Models[0].ThinkingLevels {
+		byLevel[l] = true
+	}
+	for _, want := range []string{"off", "minimal", "low", "medium", "high", "max"} {
+		if !byLevel[want] {
+			t.Fatalf("档位 %s 缺席: %+v", want, p.Models[0].ThinkingLevels)
+		}
+	}
+	if byLevel["xhigh"] {
+		t.Fatal("xhigh 无显式映射不应出现（pi 语义：扩展档需显式声明）")
 	}
 
 	// 与内置重名的 relay：自定义优先，不重复出现且无 builtin 标记

@@ -391,10 +391,10 @@ func extractModelEntry(model map[string]any) (ModelCatalogEntry, bool) {
 	if cw, ok := model["contextWindow"].(float64); ok {
 		me.ContextWindow = int(cw)
 	}
-	me.ThinkingLevels = extractThinkingLevels(model["thinkingLevelMap"])
+	me.ThinkingLevels = extractThinkingLevels(me.Reasoning, model["thinkingLevelMap"])
 	if me.ThinkingLevels == nil {
 		if thinking, ok := model["thinking"].(map[string]any); ok {
-			me.ThinkingLevels = extractThinkingLevels(thinking["levels"])
+			me.ThinkingLevels = extractThinkingLevels(me.Reasoning, thinking["levels"])
 		}
 	}
 	return me, true
@@ -454,7 +454,7 @@ func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]Mode
 	return out, nil
 }
 
-// mergeFrontlineContract 把 amagi-pi 前线契约文件的追加模型合并进目录对应 provider。
+// mergeFrontlineContract 把 amagi-pi 前线契约文件的追加模型与档位补丁合并进目录对应 provider。
 // 宽容语义：文件缺失/坏 JSON/字段形态意外 → 静默跳过（展示辅助，非正确性依赖）。
 func mergeFrontlineContract(catalog *ModelCatalog) {
 	contractPath := filepath.Join(agentDir(), "amagi", "data", "codex-frontline.json")
@@ -463,21 +463,31 @@ func mergeFrontlineContract(catalog *ModelCatalog) {
 		return
 	}
 	var contract struct {
-		Provider string         `json:"provider"`
-		Models   []map[string]any `json:"models"`
+		Provider     string                `json:"provider"`
+		Models       []map[string]any      `json:"models"`
+		ModelPatches map[string]map[string]any `json:"modelPatches"`
 	}
-	if json.Unmarshal(data, &contract) != nil || contract.Provider == "" || len(contract.Models) == 0 {
+	if json.Unmarshal(data, &contract) != nil || contract.Provider == "" ||
+		(len(contract.Models) == 0 && len(contract.ModelPatches) == 0) {
 		return
 	}
-	// 目录中已有同 id 模型（官方已收录）则跳过——与 amagi-pi 退位语义一致，官方优先
+	// 目录中已有同 id 模型（官方已收录）则跳过——与 amagi-pi 退位语义一致，官方优先。
+	// modelPatches 是 amagi-pi 对基础模型的档位补全（如 gpt-5.6 补 max 档）：整体替换
+	// thinkingLevelMap 后重算档位集（展示与 pi 运行时一致）。
 	existing := map[string]bool{}
 	for i := range catalog.Providers {
 		p := &catalog.Providers[i] // 索引取址：range 值副本修改不回写（实战踩坑）
 		if p.Name != contract.Provider {
 			continue
 		}
-		for _, m := range p.Models {
+		for j := range p.Models {
+			m := &p.Models[j]
 			existing[m.ID] = true
+			if patch, ok := contract.ModelPatches[m.ID]; ok {
+				if raw, ok := patch["thinkingLevelMap"]; ok {
+					m.ThinkingLevels = extractThinkingLevels(m.Reasoning, raw)
+				}
+			}
 		}
 		for _, raw := range contract.Models {
 			if me, ok := extractModelEntry(raw); ok && !existing[me.ID] {
@@ -503,17 +513,25 @@ func mergeFrontlineContract(catalog *ModelCatalog) {
 	}
 }
 
-// extractThinkingLevels 从 thinkingLevelMap（map[输入级别]输出级别）中
-// 抽取输入级别键并排序；支持 omp 新版 thinking: {levels: []} 数组形态。
-func extractThinkingLevels(v any) []string {
+// EXTENDED_THINKING_LEVELS 与 pi pi-ai EXTENDED_THINKING_LEVELS 间序一致。
+var extendedThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// standardThinkingLevels 为 pi 语义下的「标准档」：map 缺键时默认支持
+//（provider 默认映射，透传档名）；xhigh/max 是扩展档，必须 map 显式映射才支持。
+var standardThinkingLevels = map[string]bool{
+	"off": true, "minimal": true, "low": true, "medium": true, "high": true,
+}
+
+// extractThinkingLevels 复刻 pi getSupportedThinkingLevels 语义（实战修复 2026-09-05）：
+//   - reasoning=false → 仅 off；
+//   - reasoning=true + thinkingLevelMap：map[k]===null → 不支持；标准档(≤high)缺键 → 默认支持；
+//     xhigh/max 缺键 → 不支持（需显式声明）；
+//   - reasoning=true + 无 map：标准档全支持，xhigh/max 不支持；
+//   - omp thinking: {levels: []} 数组形态：原样抽取。
+// 原实现只取 map 键：gpt-5.6 系列 map 只有 xhigh/minimal 两键 → 下拉只显示两档，
+// 与 pi 运行时真实支持集（六档，标准档默认支持）脱节。
+func extractThinkingLevels(reasoning bool, v any) []string {
 	switch t := v.(type) {
-	case map[string]any:
-		levels := make([]string, 0, len(t))
-		for k := range t {
-			levels = append(levels, k)
-		}
-		sort.Strings(levels)
-		return levels
 	case []any:
 		levels := make([]string, 0, len(t))
 		for _, item := range t {
@@ -523,7 +541,32 @@ func extractThinkingLevels(v any) []string {
 		}
 		sort.Strings(levels)
 		return levels
+	case map[string]any:
+		if !reasoning {
+			return []string{"off"}
+		}
+		levels := make([]string, 0, len(extendedThinkingLevels))
+		for _, lvl := range extendedThinkingLevels {
+			mapped, exists := t[lvl]
+			if exists && mapped == nil {
+				continue // 显式 null：不支持
+			}
+			if !exists && !standardThinkingLevels[lvl] {
+				continue // xhigh/max 缺键：不支持
+			}
+			levels = append(levels, lvl)
+		}
+		return levels
 	default:
-		return nil
+		if !reasoning {
+			return []string{"off"}
+		}
+		levels := make([]string, 0)
+		for _, lvl := range extendedThinkingLevels {
+			if standardThinkingLevels[lvl] {
+				levels = append(levels, lvl)
+			}
+		}
+		return levels
 	}
 }

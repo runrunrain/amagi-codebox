@@ -22,9 +22,11 @@ func TestFrontlineContractMerge(t *testing.T) {
 		t.Fatalf("write store fixture: %v", err)
 	}
 	// 前线契约：gpt-6-astra（新增）+ gpt-5.6-sol（已被官方收录，应跳过）
-	contractFixture := `{"provider":"openai-codex","updatedAt":"2026-09-05T00:00:00Z","models":[` +
-		`{"id":"gpt-6-astra","name":"GPT-6 Astra","reasoning":true,"thinkingLevelMap":{"high":"high"},"contextWindow":272000},` +
-		`{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","reasoning":true}]}`
+	contractFixture := `{"provider":"openai-codex","updatedAt":"2026-09-05T00:00:00Z",` +
+		`"models":[` +
+		`{"id":"gpt-6-astra","name":"GPT-6 Astra","reasoning":true,"thinkingLevelMap":{"minimal":"low","low":"low","medium":"medium","high":"high","xhigh":"xhigh","max":"xhigh"},"contextWindow":272000},` +
+		`{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","reasoning":true}],` +
+		`"modelPatches":{"gpt-5.6-sol":{"thinkingLevelMap":{"minimal":"low","low":"low","medium":"medium","high":"high","xhigh":"xhigh","max":"xhigh"}}}}`
 	contractDir := filepath.Join(dir, "amagi", "data")
 	if err := os.MkdirAll(contractDir, 0o755); err != nil {
 		t.Fatalf("mkdir contract dir: %v", err)
@@ -75,8 +77,31 @@ func TestFrontlineContractMerge(t *testing.T) {
 	for _, m := range codex.Models {
 		byID[m.ID] = true
 		if m.ID == "gpt-6-astra" {
-			if !m.Reasoning || m.ContextWindow != 272000 || len(m.ThinkingLevels) == 0 {
+			if !m.Reasoning || m.ContextWindow != 272000 {
 				t.Fatalf("gpt-6-astra 元数据不完整: %+v", m)
+			}
+			// 新语义：全档显式 map → 六档 + pi 默认 off（共 7）
+			want := map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+			got := map[string]bool{}
+			for _, l := range m.ThinkingLevels {
+				got[l] = true
+			}
+			for k := range want {
+				if !got[k] {
+					t.Fatalf("gpt-6-astra 档位 %s 缺席: %v", k, m.ThinkingLevels)
+				}
+			}
+		}
+		if m.ID == "gpt-5.6-sol" {
+			// modelPatches：store 里 map 两键（xhigh/minimal），patch 后应显式全档
+			got := map[string]bool{}
+			for _, l := range m.ThinkingLevels {
+				got[l] = true
+			}
+			for _, want := range []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"} {
+				if !got[want] {
+					t.Fatalf("gpt-5.6-sol 补丁后档位 %s 缺席: %v", want, m.ThinkingLevels)
+				}
 			}
 		}
 	}
