@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.64] - 2026-09-05
+
+### Fixed
+
+- **Provider Center 下拉目录看不到 amagi-pi 前线模型（如 gpt-6-astra）**：amagi-pi 在 pi.dev 官方目录未收录时经 refreshModels 运行时注入的新模型不落盘 models-store.json，静态目录与 pi 运行时目录脱节。新增合并 amagi-pi 前线契约文件（`~/.pi/agent/amagi/data/codex-frontline.json`，生效时落盘/官方收录后退位删除）：`GetPiModelCatalog` 宽容合并（同 id 已存在则官方优先跳过；文件缺失/坏 JSON 静默）；provider 不在目录时补 builtin 条目。测试：frontline_contract_test.go（合并去重/负例）。
+- **models.json 缺失时内置目录整体丢失（既有缺陷）**：`GetPiModelCatalog` 两处提前返回（文件不存在 / 无 providers 键）跳过 builtin 合并——纯 OAuth 用户（无 models.json）下拉里看不到 openai-codex 等内置 provider。改为空 providers 继续，builtin（models-store.json）与前线契约照常合并。
+- 修复 `mergeFrontlineContract` range 值副本修改不回写的 Go 坑（索引取址）。
+
 ## [1.3.63] - 2026-09-03
 
 ### Added
