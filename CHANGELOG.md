@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.65] - 2026-09-05
+
+### Fixed
+
+- **思考档位下拉只显示两档（thinkingLevelMap 键 ≠ pi 支持集）**：原 `extractThinkingLevels` 只取 thinkingLevelMap 键——gpt-5.6 系列 map 只有 xhigh/minimal 两键，下拉只显示两档；而 pi 运行时语义是「标准档（off/minimal/low/medium/high）默认支持 + xhigh/max 需显式映射」（clampThinkingLevel）。抽取函数复刻 pi `getSupportedThinkingLevels` 语义（reasoning=false 仅 off；标准档缺键默认支持；xhigh/max 缺键不支持；null 显式排除；omp levels 数组形态不变），所有 provider 的档位展示与 pi 运行时一致。
+- **契约文件 modelPatches 合并**：amagi-pi 对基础模型的档位补全（如 gpt-5.6 补 max→xhigh 别名）经 modelPatches 下发，codebox 整体替换 thinkingLevelMap 后重算档位集。
+
 ## [1.3.64] - 2026-09-05
 
 ### Fixed
