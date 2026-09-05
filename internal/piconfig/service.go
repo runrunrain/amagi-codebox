@@ -285,24 +285,23 @@ type ModelCatalog struct {
 func (s *Service) GetPiModelCatalog() (string, error) {
 	catalog := ModelCatalog{Providers: []ModelCatalogProvider{}}
 
+	var root map[string]any
 	data, err := os.ReadFile(modelsConfigPath())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			out, _ := json.Marshal(catalog)
-			return string(out), nil
+	if err == nil {
+		if err := json.Unmarshal(data, &root); err != nil {
+			return "", fmt.Errorf("parse pi models config: %w", err)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("read pi models config: %w", err)
 	}
-
-	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return "", fmt.Errorf("parse pi models config: %w", err)
+	// models.json 缺失不提前返回（实战修复 2026-09-05）：否则 builtin 目录
+	// （models-store.json，OAuth provider 如 openai-codex）与前线契约合并全部被
+	// 跳过——纯 OAuth 用户（无 models.json）在下拉里看不到任何内置 provider。
+	if root == nil {
+		root = map[string]any{}
 	}
-	providersRaw, ok := root["providers"].(map[string]any)
-	if !ok {
-		out, _ := json.Marshal(catalog)
-		return string(out), nil
-	}
+	providersRaw, _ := root["providers"].(map[string]any)
+	// 无 providers 键（含 models.json 缺失）不提前返回：builtin 目录与前线契约仍需合并。
 
 	names := make([]string, 0, len(providersRaw))
 	for name := range providersRaw {
@@ -360,6 +359,12 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 	if builtin, err := loadBuiltinCatalog(names, authNames); err == nil {
 		catalog.Providers = append(catalog.Providers, builtin...)
 	}
+
+	// 合并 amagi-pi 前线契约文件（~/.pi/agent/amagi/data/codex-frontline.json）：
+	// amagi-pi 在 pi.dev 官方目录未收录时运行时注入的新模型（如 gpt-6-astra）不落盘
+	// models-store.json，静态目录看不到；契约文件由 amagi-pi refreshModels 生效时落盘、
+	// 官方收录后退位删除——展示侧只需宽容合并（同 id 已存在则跳过，官方优先）。
+	mergeFrontlineContract(&catalog)
 
 	out, err := json.MarshalIndent(catalog, "", "  ")
 	if err != nil {
@@ -447,6 +452,55 @@ func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]Mode
 		out = append(out, entry)
 	}
 	return out, nil
+}
+
+// mergeFrontlineContract 把 amagi-pi 前线契约文件的追加模型合并进目录对应 provider。
+// 宽容语义：文件缺失/坏 JSON/字段形态意外 → 静默跳过（展示辅助，非正确性依赖）。
+func mergeFrontlineContract(catalog *ModelCatalog) {
+	contractPath := filepath.Join(agentDir(), "amagi", "data", "codex-frontline.json")
+	data, err := os.ReadFile(contractPath)
+	if err != nil {
+		return
+	}
+	var contract struct {
+		Provider string         `json:"provider"`
+		Models   []map[string]any `json:"models"`
+	}
+	if json.Unmarshal(data, &contract) != nil || contract.Provider == "" || len(contract.Models) == 0 {
+		return
+	}
+	// 目录中已有同 id 模型（官方已收录）则跳过——与 amagi-pi 退位语义一致，官方优先
+	existing := map[string]bool{}
+	for i := range catalog.Providers {
+		p := &catalog.Providers[i] // 索引取址：range 值副本修改不回写（实战踩坑）
+		if p.Name != contract.Provider {
+			continue
+		}
+		for _, m := range p.Models {
+			existing[m.ID] = true
+		}
+		for _, raw := range contract.Models {
+			if me, ok := extractModelEntry(raw); ok && !existing[me.ID] {
+				p.Models = append(p.Models, me)
+				existing[me.ID] = true
+			}
+		}
+		return // 只合并首个同名 provider（目录内 provider 名唯一）
+	}
+	// provider 不在目录（models-store 尚无该 OAuth provider）：作为 builtin 条目补入
+	entry := ModelCatalogProvider{
+		Name:   contract.Provider,
+		Models: []ModelCatalogEntry{},
+		Source: "builtin",
+	}
+	for _, raw := range contract.Models {
+		if me, ok := extractModelEntry(raw); ok {
+			entry.Models = append(entry.Models, me)
+		}
+	}
+	if len(entry.Models) > 0 {
+		catalog.Providers = append(catalog.Providers, entry)
+	}
 }
 
 // extractThinkingLevels 从 thinkingLevelMap（map[输入级别]输出级别）中
