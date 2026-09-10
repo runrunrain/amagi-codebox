@@ -45,9 +45,12 @@
       <button type="button" class="rc-link" @click="$emit('goto-lan-confirm')">前往确认</button>
     </p>
 
-    <div v-if="toggleError" class="rc-error" role="alert">
+    <div v-if="toggleError" class="rc-error" role="alert" data-testid="service-toggle-error">
       <span>{{ toggleError.message }}</span>
       <span class="rc-error-detail">{{ toggleError.detail }}</span>
+      <p v-if="toggleError.category === 'port-conflict'" class="svc-error-tip">
+        排查建议：其他程序正在占用该端口。请在下方将监听端口修改为其他空闲端口（如 8681、8682 等），点击『应用』后再开启服务。
+      </p>
       <button type="button" class="rc-link" @click="retryToggle">重试</button>
     </div>
 
@@ -63,6 +66,9 @@
           autocomplete="off"
           spellcheck="false"
         />
+        <span v-if="isLoopbackHost(hostDraft)" class="svc-field-warn" data-testid="host-loopback-hint">
+          ⚠️ 当前为回环地址，移动端无法通过局域网连接，建议改为 0.0.0.0
+        </span>
       </div>
       <div class="svc-field">
         <label class="svc-label" for="rc-port">监听端口</label>
@@ -112,7 +118,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { toggleRemoteServer, setRemoteEndpoint } from '../../api/remote';
-import { classifyRemoteError, type ClassifiedError } from './remoteShared';
+import { classifyRemoteError, isLoopbackHost, type ClassifiedError } from './remoteShared';
 import { useToast } from '../../composables/useToast';
 import ConfirmDialog from './ConfirmDialog.vue';
 
@@ -129,6 +135,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   (e: 'changed'): void;
   (e: 'goto-lan-confirm'): void;
+  (e: 'error', error: ClassifiedError | null): void;
 }>();
 
 const { showSuccess, showError } = useToast();
@@ -202,11 +209,13 @@ async function performToggle(next: boolean) {
   toggleError.value = null;
   try {
     await toggleRemoteServer(next);
+    emit('error', null);
     emit('changed');
     showSuccess(next ? '远程服务已开启' : '远程服务已停止');
   } catch (err) {
     const c = classifyRemoteError(err);
     toggleError.value = c;
+    emit('error', c);
     showError(c.message);
   } finally {
     toggling.value = false;
@@ -240,6 +249,11 @@ async function applyEndpoint() {
     applying.value = false;
   }
 }
+function setHost(h: string) {
+  hostDraft.value = h;
+}
+
+defineExpose({ setHost });
 </script>
 
 <style scoped>
@@ -277,6 +291,20 @@ async function applyEndpoint() {
 
 .svc-status-text {
   font-variant-numeric: tabular-nums;
+}
+
+.svc-error-tip {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--vt-text-secondary);
+  line-height: 1.5;
+}
+
+.svc-field-warn {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--vt-warning);
+  line-height: 1.4;
 }
 
 /* 开关：44px 高命中区（硬规则：按钮/控件 ≥44px） */

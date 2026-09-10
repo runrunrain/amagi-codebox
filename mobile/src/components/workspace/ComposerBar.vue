@@ -1,16 +1,18 @@
 <script setup lang="ts">
 /**
- * ComposerBar — PG-03 输入区（§6 Composer 组件契约 + CHG-20260801-05）
+ * ComposerBar — PG-03 输入区（§6 Composer 组件契约 + CHG-20260801-05 + P1-A 终端托盘协作）
  * ---------------------------------------------------------------------------
  * · 多行自动增高（上限 ~5 行）；草稿保留（store.draft，发送成功才清空）；
  * · 历史指令复用入口（≥44px；点选回填草稿，不直接发送）；
  * · 发送态防连点（sending 期间禁用；空草稿禁用）；
  * · 「停止运行」显式按钮（控制者 ≥44px，danger；点击 → ConfirmDialog）；
  * · 写操作经控制权过滤：观察者禁用输入并明示原因（writeBlockReason）。
- * · 禁模拟键盘键帽 KeyTray（CHG-20260801-05）：不提供任何键帽式快捷条。
+ * · 终端仿真协作（P1-A）：terminalMode 下显示 KeyTray 托盘，输入仍走同一控制权过滤路径；
+ *   支持快速展开/收起托盘，特殊键不扩权。
  * ---------------------------------------------------------------------------
  */
 import { nextTick, ref, watch } from 'vue';
+import KeyTray from './KeyTray.vue';
 
 /** outbox 可视投影（M3-C；store.outboxView 形状）。 */
 export interface OutboxStripView {
@@ -21,29 +23,42 @@ export interface OutboxStripView {
   exhaustedUnconfirmed: boolean;
 }
 
-const props = defineProps<{
-  draft: string;
-  sending: boolean;
-  stopping: boolean;
-  canWrite: boolean;
-  /** 控制者（停止运行按钮可见性）。 */
-  canControl: boolean;
-  /** 观察者/不可写原因（null = 可写）。 */
-  blockReason: string | null;
-  history: string[];
-  /** outbox 待确认/停发投影（可选；无 capability 时全 0 不渲染）。 */
-  outbox?: OutboxStripView;
-}>();
+const props = withDefaults(
+  defineProps<{
+    draft: string;
+    sending: boolean;
+    stopping: boolean;
+    canWrite: boolean;
+    /** 控制者（停止运行按钮可见性）。 */
+    canControl: boolean;
+    /** 观察者/不可写原因（null = 可写）。 */
+    blockReason: string | null;
+    history: string[];
+    /** outbox 待确认/停发投影（可选；无 capability 时全 0 不渲染）。 */
+    outbox?: OutboxStripView;
+    /** 终端仿真模式（开启时显示按键托盘与切换入口）。 */
+    terminalMode?: boolean;
+  }>(),
+  {
+    terminalMode: false,
+  },
+);
 
 const emit = defineEmits<{
   'update:draft': [value: string];
   send: [];
   stop: [];
   reuse: [text: string];
+  specialKey: [seq: string];
 }>();
 
 const textareaEl = ref<HTMLTextAreaElement | null>(null);
 const historyOpen = ref(false);
+const terminalKeysOpen = ref(true);
+
+function onSpecialKey(seq: string): void {
+  emit('specialKey', seq);
+}
 
 const MAX_HEIGHT_PX = 132; // ~5 行
 
@@ -116,7 +131,32 @@ function onReuse(text: string): void {
       </button>
     </div>
 
+    <!-- 终端按键快捷托盘（P1-A 终端仿真模式） -->
+    <KeyTray
+      v-if="terminalMode && terminalKeysOpen"
+      :can-write="canWrite"
+      @send-key="onSpecialKey"
+    />
+
     <div class="composer-row">
+      <!-- 终端快捷键托盘展开/收起按钮 -->
+      <button
+        v-if="terminalMode"
+        type="button"
+        class="composer-terminal-keys"
+        :class="{ 'composer-terminal-keys--active': terminalKeysOpen }"
+        :aria-expanded="terminalKeysOpen"
+        aria-label="终端快捷键"
+        data-testid="toggle-terminal-keys"
+        @click="terminalKeysOpen = !terminalKeysOpen"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+          <path d="M6 8h.001" /><path d="M10 8h.001" /><path d="M14 8h.001" /><path d="M18 8h.001" />
+          <path d="M6 12h.001" /><path d="M10 12h.001" /><path d="M14 12h.001" /><path d="M18 12h.001" />
+          <path d="M7 16h10" />
+        </svg>
+      </button>
       <button
         type="button"
         class="composer-history"
@@ -263,7 +303,36 @@ function onReuse(text: string): void {
 .composer-row {
   display: flex;
   align-items: flex-end;
+  /* M4-A（P2-C a11y:613 回归）：窄视口允许换行，所有控件完整落在视口内；
+     输入区 min-width 触发优雅换行而非挤压裁切。 */
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.composer-terminal-keys {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--VT-border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--VT-text);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.composer-terminal-keys--active {
+  background: var(--VT-surface-raised);
+  color: var(--VT-accent-strong);
+  border-color: var(--VT-accent);
+}
+
+.composer-terminal-keys:focus-visible {
+  outline: 2px solid var(--VT-accent);
+  outline-offset: 2px;
 }
 
 .composer-history {
@@ -288,7 +357,8 @@ function onReuse(text: string): void {
 
 .composer-input {
   flex: 1;
-  min-width: 0;
+  /* 窄于输入区最小宽度时整行换行（见 .composer-row flex-wrap） */
+  min-width: 120px;
   min-height: 44px;
   max-height: 132px;
   padding: 10px 12px;

@@ -1,19 +1,18 @@
 <script setup lang="ts">
 /**
- * RawTerminalView — PG-04 终端诊断视图网格（M2-D）
+ * RawTerminalView — 终端仿真网格（PG-04 诊断面 + P1-A 可交互仿真面升级）
  * ---------------------------------------------------------------------------
- * 权威依据：P5 v1.2 §PG-04 + CHG-20260801-05（原始终端降级为按需诊断视图，
- * 非默认、非并列 tab）+ §9（xterm/addon 仅在进入诊断视图时动态导入）。
- * 语义定论（如实声明）：
- *   · 网格只读（disableStdin）；输入与主阅读面完全一致——走同一个
- *     ComposerBar + store 控制权过滤路径，本组件不产生任何输入帧；
- *   · 网格渲染同一会话的原始输出流（store 回放缓冲 + subscribe 直播续写）；
- *   · xterm 几何经 fit 后由 emit('resize') 上报（与主面同一 sendResize 路径，
- *     PR-04 几何写入规则不变；诊断视图提供精确网格，替代主面近似换算）；
+ * 权威依据：P5 v1.2 §PG-04 + 素材F §6（pi 达标方案）+ P1-A 执行契约。
+ * 语义定论：
+ *   · 可交互终端仿真：支持 stdin（xterm onData → emit('data') → store.sendRaw）；
+ *   · 保留只读模式（props.readonly）：控制权被夺/观察态时自动降级只读并展示横幅；
+ *   · 网格渲染同一会话的原始输出流（subscribe 登记时原子回放当前缓冲 + 直播续写）；
+ *   · xterm 几何经 fit 后由 emit('resize') 上报（与主面同一 sendResize 路径）；
  *   · E-10：引擎加载失败时明示不可用原因 + 回落指引，不假装可用；
- *   · 软键盘：visualViewport 变化即 refit，网格让位、Composer 保持可达。
- * 性能锚点：>300ms 加载出文字提示；回放/突发输出经 createBatchedWriter
- * 分批写入（单批 64KB，批间让出事件循环）；xterm scrollback 有界。
+ *   · 软键盘：visualViewport 变化即 refit，网格让位、Composer 保持可达；
+ *   · 触屏滚动：支持单指 touchmove 滑动视口内容；
+ *   · 订阅即回放（P1-D，P1-C §7.1 缺陷①收口）：初始快照与直播订阅在 store 内
+ *     原子衔接——引擎动态加载窗口内到达的 attach 历史不会丢。
  * ---------------------------------------------------------------------------
  */
 import { onMounted, onUnmounted, ref, watch } from 'vue';
@@ -24,19 +23,32 @@ import {
   type BatchedWriter,
 } from '../../lib/rawTerminal';
 
-const props = defineProps<{
-  /** 打开时的回放快照（store.getRawTranscript()）。 */
-  initialTranscript: string;
-  /** 直播续写订阅（store.subscribeRawOutput）；返回退订函数。 */
-  subscribe: (cb: (text: string) => void) => () => void;
-  /** WS 已附着：附着完成后重 fit 并补报真实网格（挂载早于 attach 时首次
-   * 上报会丢在未连接窗口，attach 后以此补齐；重连恢复同理）。 */
-  wsAttached: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** 原始输出订阅（store.subscribeRawOutput）：登记时同步回放当前缓冲，
+     * 其后直播续写（P1-D：回放与登记原子衔接）；返回退订函数。 */
+    subscribe: (cb: (text: string) => void) => () => void;
+    /** WS 已附着：附着完成后重 fit 并补报真实网格。 */
+    wsAttached: boolean;
+    /** 是否处于只读模式（控制权被夺/观察态时为 true，禁用 stdin）。 */
+    readonly?: boolean;
+    /** 处于只读模式的原因（由 store.writeBlockReason 提供）。 */
+    readonlyReason?: string | null;
+    /** 终端字号（默认 12）。 */
+    fontSize?: number;
+  }>(),
+  {
+    readonly: false,
+    readonlyReason: null,
+    fontSize: 12,
+  },
+);
 
 const emit = defineEmits<{
   /** xterm fit 后的真实网格尺寸（cols/rows），由父级走 store.sendResize。 */
   resize: [cols: number, rows: number];
+  /** xterm 终端输入事件（键盘输入、虚拟键盘、粘贴等），由父级走 store.sendRaw。 */
+  data: [input: string];
 }>();
 
 type LoadState = 'loading' | 'ready' | 'unavailable';
@@ -53,6 +65,9 @@ interface TerminalLike {
   dispose(): void;
   cols: number;
   rows: number;
+  options?: unknown;
+  onData?(cb: (data: string) => void): { dispose(): void };
+  scrollLines?(n: number): void;
 }
 
 interface FitAddonLike {
@@ -63,10 +78,28 @@ let terminal: TerminalLike | null = null;
 let fitAddon: FitAddonLike | null = null;
 let writer: BatchedWriter | null = null;
 let unsubscribe: (() => void) | null = null;
+let dataDisposable: { dispose(): void } | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let loadingHintTimer: ReturnType<typeof setTimeout> | null = null;
 let fitDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let disposed = false;
+
+let touchStartY = 0;
+function onTouchStart(e: TouchEvent): void {
+  if (e.touches.length === 1) {
+    touchStartY = e.touches[0].clientY;
+  }
+}
+function onTouchMove(e: TouchEvent): void {
+  if (e.touches.length === 1 && terminal?.scrollLines) {
+    const deltaY = touchStartY - e.touches[0].clientY;
+    const lines = Math.trunc(deltaY / 22);
+    if (lines !== 0) {
+      terminal.scrollLines(lines);
+      touchStartY = e.touches[0].clientY;
+    }
+  }
+}
 
 function scheduleFit(): void {
   if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
@@ -93,8 +126,20 @@ onMounted(async () => {
       if (attached && terminal) scheduleFit();
     },
   );
+  // 只读态变化动态切换 stdin 与光标
+  watch(
+    () => props.readonly,
+    (ro) => {
+      const termOpts = (terminal as unknown as { options?: Record<string, unknown> })?.options;
+      if (termOpts) {
+        termOpts.disableStdin = ro;
+        termOpts.cursorBlink = !ro;
+        termOpts.cursorStyle = ro ? 'bar' : 'block';
+      }
+    },
+  );
   try {
-    // 动态导入：xterm 引擎与样式仅在进入诊断视图时加载（§9 性能预算；
+    // 动态导入：xterm 引擎与样式仅在进入诊断/终端视图时加载（§9 性能预算；
     // 字面 import() 保证 Vite 代码分割，主 bundle 不含 xterm）。
     const [xtermModule, fitModule] = await Promise.all([
       import('@xterm/xterm'),
@@ -111,27 +156,38 @@ onMounted(async () => {
     const term = new xtermModule.Terminal({
       theme: buildXtermTheme(readVtThemeTokens()),
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-      fontSize: 12,
+      fontSize: props.fontSize,
       lineHeight: 1.35,
-      // 只读诊断语义：网格不接受键盘输入（输入走 Composer 同一路径）。
-      disableStdin: true,
-      cursorBlink: false,
-      cursorStyle: 'bar',
-      // 读屏可达（R05 §9）：xterm 自带 screenReaderMode。
-      screenReaderMode: true,
+      // 输入控制：只读模式下禁用 stdin；可写模式放开 stdin
+      disableStdin: props.readonly,
+      cursorBlink: !props.readonly,
+      cursorStyle: props.readonly ? 'bar' : 'block',
+      // 读屏可达（R05 §9）：只读诊断下可用；重绘场景适度配置
+      screenReaderMode: props.readonly,
       // 原始流保真：PT 输出自带 \r\n，不做 EOL 改写。
       convertEol: false,
-      // 服务端 replay window 最多 1 MiB。最坏情况下每个字节都是换行，
-      // 因而用 1 Mi 行作为上限，避免内容已到浏览器却又被 xterm 二次裁掉。
-      // 诊断视图按需加载，常规移动端首屏不会承担这部分缓冲成本。
-      scrollback: 1024 * 1024,
-    }) as TerminalLike;
+      // 适度上限避免内存膨胀
+      scrollback: props.readonly ? 1024 * 1024 : 10_000,
+    }) as unknown as TerminalLike;
     const fit = new fitModule.FitAddon() as FitAddonLike;
     // loadAddon 为 xterm 实例方法；结构类型上未声明，运行时调用。
     (term as unknown as { loadAddon(addon: FitAddonLike): void }).loadAddon(fit);
     terminal = term;
     fitAddon = fit;
     term.open(host);
+
+    // 挂载触屏滑动手势
+    host.addEventListener('touchstart', onTouchStart, { passive: true });
+    host.addEventListener('touchmove', onTouchMove, { passive: true });
+
+    // 接通 stdin 输入通路（P1-A）：xterm onData 向上派发
+    if (typeof term.onData === 'function') {
+      dataDisposable = term.onData((data: string) => {
+        if (props.readonly) return;
+        emit('data', data);
+      });
+    }
+
     try {
       fit.fit();
       emit('resize', term.cols, term.rows);
@@ -139,8 +195,8 @@ onMounted(async () => {
       scheduleFit();
     }
     writer = createBatchedWriter((chunk) => term.write(chunk), { maxBatchChars: 65_536 });
-    // 回放 + 直播续写。
-    if (props.initialTranscript) writer.push(props.initialTranscript);
+    // 回放 + 直播续写：store.subscribeRawOutput 在登记订阅的同一同步调用内
+    // 先回放当前缓冲（P1-D 竞态修复）——引擎加载间隙到达的 attach 历史不丢。
     unsubscribe = props.subscribe((text) => writer?.push(text));
     state.value = 'ready';
     // 视口/容器变化（含软键盘弹收）即 refit。观察能力缺失属老 WebView 降级——
@@ -179,6 +235,13 @@ onUnmounted(() => {
   window.visualViewport?.removeEventListener('resize', scheduleFit);
   unsubscribe?.();
   unsubscribe = null;
+  dataDisposable?.dispose();
+  dataDisposable = null;
+  const host = hostEl.value;
+  if (host) {
+    host.removeEventListener('touchstart', onTouchStart);
+    host.removeEventListener('touchmove', onTouchMove);
+  }
   // 卸载前排空缓冲，防丢尾部输出。
   writer?.flushAll();
   writer?.dispose();
@@ -191,6 +254,20 @@ onUnmounted(() => {
 
 <template>
   <div class="raw-terminal-view">
+    <!-- 只读模式横幅提示（控制权被夺 / 观察态） -->
+    <div
+      v-if="readonly && state === 'ready'"
+      class="raw-readonly-banner"
+      role="status"
+      data-testid="terminal-readonly-indicator"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </svg>
+      <span>{{ readonlyReason || '只读模式：当前无控制权，终端仅供观察' }}</span>
+    </div>
+
     <!-- 加载态：>300ms 出文字提示（非 spinner 动画，reduced-motion 天然合规） -->
     <div v-if="state === 'loading'" class="raw-status" role="status">
       <span v-if="showLoadingHint">正在加载终端诊断引擎…</span>
@@ -203,12 +280,13 @@ onUnmounted(() => {
       <span>请返回主阅读面，原始内容可由等宽块（MonoBlock）兜底查看。</span>
     </div>
 
-    <!-- 终端网格（二维例外区；暖深墨面 + VT ANSI 映射） -->
+    <!-- 终端网格（二维仿真区；暖深墨面 + VT ANSI 映射） -->
     <div
       v-show="state === 'ready'"
       ref="hostEl"
       class="raw-terminal-host"
-      aria-label="终端原始输出（只读诊断网格）"
+      :aria-label="readonly ? '终端原始输出（只读诊断网格）' : '终端仿真网格（可交互）'"
+      data-testid="terminal-host"
     ></div>
   </div>
 </template>
@@ -220,6 +298,23 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--VT-surface-dark);
+}
+
+.raw-readonly-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--VT-surface);
+  border-bottom: 1px solid var(--VT-border);
+  color: var(--VT-warning);
+  font-size: 12px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.raw-readonly-banner > svg {
+  flex-shrink: 0;
 }
 
 .raw-status {

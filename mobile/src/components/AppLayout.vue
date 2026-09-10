@@ -54,30 +54,13 @@ watch(
     </main>
 
     <nav v-if="!isTerminalView() && !isBareView()" class="bottom-nav" aria-label="主导航">
-      <router-link to="/sessions" class="nav-item" active-class="nav-item--active">
+      <router-link to="/lobby" class="nav-item" active-class="nav-item--active">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="2" y="3" width="20" height="14" rx="2" />
           <line x1="8" y1="21" x2="16" y2="21" />
           <line x1="12" y1="17" x2="12" y2="21" />
         </svg>
         <span>Sessions</span>
-      </router-link>
-      <router-link to="/providers" class="nav-item" active-class="nav-item--active">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5z" />
-          <path d="M2 17l10 5 10-5" />
-          <path d="M2 12l10 5 10-5" />
-        </svg>
-        <span>Providers</span>
-      </router-link>
-      <router-link to="/dashboard" class="nav-item" active-class="nav-item--active">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="7" height="7" />
-          <rect x="14" y="3" width="7" height="7" />
-          <rect x="3" y="14" width="7" height="7" />
-          <rect x="14" y="14" width="7" height="7" />
-        </svg>
-        <span>Dashboard</span>
       </router-link>
       <router-link to="/settings" class="nav-item" active-class="nav-item--active">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

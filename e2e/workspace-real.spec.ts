@@ -149,16 +149,25 @@ async function freshDevicePage(browser: Browser): Promise<Page> {
   return context.newPage()
 }
 
-/** 真实配对一台浏览器设备（深链 code + expiresAt），落在大厅。 */
+/** 真实配对一台浏览器设备（深链 code + expiresAt），落在大厅。
+ * P2-D 夹具迁移：与 e2e/helpers/harness.ts 同步——深链配对码已由产品
+ * 自动完成配对（beginAutomaticPairing，v1.3.09 起），「完成配对」点击
+ * 不再发生；改为测试侧拦截 pairing/complete 改写设备名（装配缝），
+ * 配对 POST 仍全真链。 */
 async function pairBrowser(page: Page, info: HarnessInfo, deviceName: string): Promise<void> {
   const win = await ctl<PairingWindow>(info, 'POST', '/pairing-window')
+  let rewritten = false
+  await page.route('**/api/remote/v1/pairing/complete', (route) => {
+    const body = route.request().postDataJSON() as { code?: string; deviceName?: string }
+    body.deviceName = deviceName
+    rewritten = true
+    return route.continue({ postData: JSON.stringify(body) })
+  })
   await page.goto(
     `${info.origin}/#/connect?code=${encodeURIComponent(win.code)}&expiresAt=${encodeURIComponent(win.expiresAt)}`,
   )
-  await expect(page.locator('#pair-code')).toHaveValue(win.code)
-  await page.locator('#pair-device-name').fill(deviceName)
-  await page.getByRole('button', { name: '完成配对' }).click()
-  await expect(page).toHaveURL(/#\/lobby$/)
+  await expect(page).toHaveURL(/#\/lobby$/, { timeout: 15_000 })
+  expect(rewritten).toBe(true)
 }
 
 /** 七类内容转化组件的演示输出（与 workspace-pg03.spec.ts 同源脚本）。 */

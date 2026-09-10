@@ -188,6 +188,9 @@ type RemoteWebUIStatusResult struct {
 	MobileWebRootExists     bool   `json:"mobileWebRootExists"`
 	MobileWebEmbedded       bool   `json:"mobileWebEmbedded"`
 	MobileWebAvailable      bool   `json:"mobileWebAvailable"`
+	// HostSummaryDegraded 透出 v1 HostSummary 缓存最近错误态（P3-B R2，非
+	// wire 契约字段）：自检卡据此点亮降级横幅，替代桌面无法直读的探测。
+	HostSummaryDegraded bool `json:"hostSummaryDegraded"`
 }
 
 type OpenRemoteWebUIResult struct {
@@ -329,6 +332,13 @@ type App struct {
 	// startupWarnings 记录启动期间的警告信息，供前端拉取后向用户展示。
 	startupWarnings   []string
 	startupWarningsMu sync.Mutex
+
+	// lastRemoteStartError 记录最近一次 Startup 恢复路径的远程 Start 失败
+	//（P3-B③ 漂移可观察）：enabled 持久化保持开启而 running=false 的窗口由此
+	// 变得可判定。任何一次成功 Start（含重试自愈与手动 Toggle）都会清空；
+	// 经 GetRemoteStatus.lastStartError 透出供前端分类（如端口占用）。
+	lastRemoteStartErrMu sync.Mutex
+	lastRemoteStartError string
 
 	persistenceMu       sync.RWMutex
 	persistentLoadState persistentLoadState
@@ -1138,13 +1148,106 @@ func (a *App) GetRemoteToken() string {
 	return a.Remote.GetToken()
 }
 
+// ListLocalLanAddresses 枚举本机局域网 IPv4 候选地址（P3-B R1）：私网优先、
+// 含网卡名与掩码长度；过滤回环；疑似 VPN/虚拟网卡仅标注不硬滤。供配对卡
+// addressRequired 兜底单选与自检卡展示。枚举失败返回错误（前端回退手动输入）。
+func (a *App) ListLocalLanAddresses() ([]remote.LanAddressInfo, error) {
+	return remote.ListLocalLanAddresses()
+}
+
 // GetRemoteStatus 返回远程服务器状态信息。
 func (a *App) GetRemoteStatus() map[string]any {
 	return map[string]any{
-		"host":    a.Remote.GetHost(),
-		"port":    a.Remote.GetPort(),
-		"token":   a.Remote.GetToken(),
-		"running": a.Remote.IsRunning(),
+		"host":                a.Remote.GetHost(),
+		"port":                a.Remote.GetPort(),
+		"token":               a.Remote.GetToken(),
+		"running":             a.Remote.IsRunning(),
+		// enabled（持久化意图）与 running（实际监听）分离透出：Startup 恢复失败
+		// 时形成 enabled=true / running=false 的可观察漂移窗口（P3-B③），配套
+		// lastStartError 给出原因；hostSummaryDegraded 为 v1 HostSummary 缓存
+		// 最近错误态（P3-B R2，非 wire 契约字段，供自检卡降级横幅）。
+		"enabled":              a.Settings.GetRemoteEnabled(),
+		"lastStartError":       a.getLastRemoteStartError(),
+		"hostSummaryDegraded":  a.Remote.HostSummaryDegraded(),
+	}
+}
+
+// getLastRemoteStartError 返回最近一次 Startup 恢复路径的 Start 失败文本
+//（空串表示无失败记录）。只读，不触发任何重试。
+func (a *App) getLastRemoteStartError() string {
+	a.lastRemoteStartErrMu.Lock()
+	defer a.lastRemoteStartErrMu.Unlock()
+	return a.lastRemoteStartError
+}
+
+// setLastRemoteStartError 记录 Startup 恢复路径的最终 Start 失败（重试耗尽后）。
+func (a *App) setLastRemoteStartError(err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	a.lastRemoteStartErrMu.Lock()
+	a.lastRemoteStartError = msg
+	a.lastRemoteStartErrMu.Unlock()
+}
+
+// clearLastRemoteStartError 在任何一次成功 Start 后清空历史失败记录，避免
+// 陈旧错误持续点亮自检卡端口横幅。
+func (a *App) clearLastRemoteStartError() {
+	a.lastRemoteStartErrMu.Lock()
+	a.lastRemoteStartError = ""
+	a.lastRemoteStartErrMu.Unlock()
+}
+
+// remoteStartRetryDelays bounds the Startup-restore self-heal (P3-B③): after
+// the initial restore Start failed inside applyRemoteGateResult, a transient
+// listen failure — e.g. the configured port still held by a previous instance
+// mid-shutdown — is retried with a short fixed backoff via
+// remote.Server.StartWithRetry. Small by design: persistent conflicts (real
+// port occupancy) surface as an observable state (startup warning +
+// GetRemoteStatus.lastStartError) instead of blocking boot. Fixed production
+// values; the retry engine itself is schedule-parameterized and unit-tested
+// in internal/remote (StartWithRetry).
+var remoteStartRetryDelays = []time.Duration{500 * time.Millisecond, 1 * time.Second}
+
+// healRemoteStartupRestore runs the bounded Startup-restore self-heal and the
+// enabled/running drift alignment (P3-B③; 素材B ⑥)。 MUST be called by Startup
+// AFTER applyRemoteGateResult — the initial restore Start (and its
+// fail-closed gate) happens there; this step only retries an actually-failed
+// start and records the observable outcome:
+//
+//   - retry succeeds → running=true, drift self-healed, stale error cleared;
+//   - retries exhausted → enabled stays persisted-on (silently flipping the
+//     user's intent off would stop the next boot from even trying); instead
+//     the drift becomes observable: fixed startup warning + GetRemoteStatus
+//     lastStartError/enabled/running so the self-check card can classify it
+//     (e.g. port conflict) instead of the old log-only Warn.
+//
+// The post-load allowStart is reconstructed from the device-store ready latch:
+// applyRemoteGateResult may have latched allowStart=false on a
+// LoadSecurityState failure invisible from here — a not-ready store means
+// exactly that, and Start is never retried across a failed security load
+// (Major-01 fail-closed).
+func (a *App) healRemoteStartupRestore(ctx context.Context, remoteEnabled, startAllowed bool) {
+	if !remoteEnabled || !startAllowed {
+		return
+	}
+	if a.Remote.IsRunning() {
+		return // 初次恢复启动已成功，无漂移可自愈
+	}
+	if !a.Remote.GetSecurityHealth().SecurityReady {
+		return // 安全状态未就绪（load 失败/被 gate 拦截）：绝不越过 fail-closed 重试
+	}
+	if err := a.Remote.StartWithRetry(ctx, remoteStartRetryDelays, nil); err != nil {
+		a.setLastRemoteStartError(err)
+		a.addStartupWarning(fmt.Sprintf(
+			"远程服务自启动失败（含 %d 次重试）：远程开关保持开启，下次启动或手动开启时会重试；若端口被占用，请到设置 › 远程访问更换监听端口。（原因：%s）",
+			len(remoteStartRetryDelays), err.Error()))
+		a.Log.Warn("app", "远程服务器启动失败（不影响主功能；已记录到启动警告与远程状态供自检透出）", err.Error())
+	} else {
+		a.clearLastRemoteStartError()
+		a.Log.Info("app", "远程服务器启动自愈成功",
+			fmt.Sprintf("retries=%d", len(remoteStartRetryDelays)))
 	}
 }
 
@@ -1153,6 +1256,8 @@ func (a *App) GetRemoteWebUIStatus() RemoteWebUIStatusResult {
 	status := RemoteWebUIStatusResult{
 		Port:    a.Remote.GetPort(),
 		Running: a.Remote.IsRunning(),
+		// 在所有早退分支之前填充：自检卡无论 WebRoot 是否就绪都需要该降级态。
+		HostSummaryDegraded: a.Remote.HostSummaryDegraded(),
 	}
 
 	if a.ctx == nil {
@@ -1512,6 +1617,9 @@ func (a *App) ToggleRemoteServer(enabled bool) error {
 			a.Remote.Stop()
 			return fmt.Errorf("persist remote enabled state: %w", err)
 		}
+		// 手动开启成功：清空 Startup 恢复路径可能遗留的 Start 失败记录，避免
+		// 陈旧错误继续点亮自检卡端口横幅（P3-B③）。
+		a.clearLastRemoteStartError()
 		a.Log.Info("remote", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
 	} else {
 		a.Remote.Stop()
@@ -1773,6 +1881,11 @@ func (a *App) Startup(ctx context.Context) {
 	// Future/Manual/失败路径全部跳过）。Start 条件为 remoteEnabled && startAllowed；
 	// 回滚成功及一切失败路径永不 Start（design §C.4）。
 	a.applyRemoteGateResult(ctx, securityLoaded, startAllowed, remoteEnabled)
+	// P3-B③：Startup 恢复路径自愈与 enabled/running 漂移对齐（素材B ⑥）。
+	// 初次 Start 失败不再止于日志 Warn：短暂端口占用按固定退避重试自愈；
+	// 重试耗尽则保持持久化 enabled 不变，改为可观察（启动警告 + 状态绑定
+	// lastStartError/enabled/running），自检卡可据此分类提示。
+	a.healRemoteStartupRestore(ctx, remoteEnabled, startAllowed)
 
 	// 启动系统托盘（仅在平台能力允许时）
 	capabilities := a.platformCapabilities()

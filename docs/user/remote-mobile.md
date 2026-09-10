@@ -30,7 +30,7 @@
 
 ## 启用与配置
 
-设置入口："设置 → 远程控制"页（`frontend/src/views/settings/RemoteSettings.vue`），自上而下为：远程服务开关卡 → LAN 暴露确认卡 → 配对卡 → 可信设备卡 → 活动控制卡 → 本地可见记录卡。
+设置入口："设置 → 远程控制"页（`frontend/src/views/settings/RemoteSettings.vue`），自上而下为：远程服务开关卡（含**服务自检卡**：运行状态/监听地址/端口占用/安全迁移门禁告警/宿主探测降级提示）→ LAN 暴露确认卡 → 配对卡（监听通配时支持手动输入/候选局域网地址生成二维码）→ 可信设备卡 → 活动控制卡 → 本地可见记录卡。端口被占用时启动自动有界重试，耗尽后保持停机并透出告警，成功后自动清零。
 
 桌面端通过 Wails 绑定方法控制：
 
@@ -139,15 +139,26 @@ legacy REST 路由（`internal/remote/handlers.go` 的 `registerRoutes`，均需
 
 `mobile/` 是独立的 Capacitor 应用，应用 ID `com.amagi.codebox`（`mobile/capacitor.config.ts`）。同一份代码可产出两种形态：纯静态 Web 页面（`dist/`，可部署到任意 HTTP 服务器）与 Android APK。移动端是**独立构建**（`npm run build:mobile`），通过 `//go:embed all:mobile/dist` 嵌入主二进制——它不是桌面 Vue 前端的子集，是另一套 Vue 3 应用。
 
-### 主要页面（来自 `mobile/README.md`）
+### 主要页面
 
 | 页面 | 路由 | 功能 |
 |------|------|------|
 | Connect | `/#/connect` | 二维码自动配对或手动输入宿主地址、一次性配对码 |
-| Lobby | `/#/lobby` | 会话概览与启动入口 |
-| Workspace | `/#/workspace/{id}` | 历史回放、实时输出、输入与终端诊断视图 |
-| Providers | `/#/providers` | Provider 管理 |
-| Settings | `/#/settings` | 连接管理 |
+| Lobby | `/#/lobby` | 会话概览（含已停止会话，状态徽标区分）与启动入口 |
+| Workspace | `/#/workspace/{id}` | 历史回放、实时输出、输入与终端诊断视图；pi/omp 会话默认进入终端仿真面（ANSI 保真 + 按键托盘） |
+| Settings | `/#/settings` | 桌面端专属管理引导 + 连接状态/配对设备管理 |
+
+> 历史上的 Dashboard/Providers 独立页已下线（服务端仅限回环，移动端必然不可达）；旧链接重定向到 Settings 引导页。
+
+### pi/omp 终端仿真面（2026-09）
+
+pi 与 Oh My Pi（omp）是全屏 TUI 应用，行式时间线无法保真呈现；工作区对这两类会话默认切换到**终端仿真视图**（xterm）：
+
+- ANSI 转义/全屏重绘/`\r` 覆写保真渲染，重绘帧不重复堆积；
+- **按键托盘**：Esc / Tab / Ctrl+C / Ctrl+D / Ctrl+L / Enter / 方向键，及 Alt 前缀（⌥W / ⌥T / ⌥R 等 pi 快捷面板）；
+- 控制权被占时自动降级只读（可见横幅），恢复后可交互；断线回补缺口以提示行呈现，不伪造内容。
+
+其余 CLI（Claude Code / OpenCode / Codex）仍默认结构化时间线视图。
 
 ### 连接方式（配对码为主路径）
 
@@ -187,6 +198,7 @@ legacy REST 路由（`internal/remote/handlers.go` 的 `registerRoutes`，均需
 
 - **README 与代码的偏差**：`README.md` 列出的 `GET /api/status`、`POST /api/launch`、`POST /api/regenerate-token` 等端点在当前代码中不存在；本篇按实际路由描述。
 - **`PUT /api/settings` 字段有限**：当前仅支持 `remotePort`，其它字段（host、token 等）必须通过桌面端修改。
+- **宿主探测降级（2026-09）**：宿主摘要（CLI 可用性探测）失败时不再阻断会话面——`GET /api/remote/v1/host/summary` 降级返回保守摘要（全部 CLI 标记不可启动、`serverVersion: "unknown"`），会话列表/详情照常可用；配对链路仍保持失败关闭。
 - **移动端不拥有 PTY 尺寸权威**：桌面端 PTY 尺寸由桌面端会话设置决定；移动端 resize 只调整自身远程视口。
 - **Remote Client 单连接**：同时只能连接一台远程宿主，切换即断旧连。
 

@@ -4,6 +4,30 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [未发布] - 2026-09-10
+
+> 远程 Web 控制界面交付批次（调研报告见 `agent-outputs/execution-plan/20260910-remote-web-control/`）。全部变更经过 diting 阶段审核（PASS_WITH_MINOR，0 Critical/0 Major）。
+
+### Added
+
+- **移动端 pi/omp 终端仿真面（P1-A/P1-D）**：pi 与 omp 是全屏 TUI，行式时间线无法保真呈现——工作区对这两类会话默认切换 xterm 终端仿真视图：ANSI/全屏重绘/`\r` 覆写保真渲染且重绘帧不重复堆积；按键托盘（Esc/Tab/Ctrl+C/Ctrl+D/Ctrl+L/Enter/方向键 + Alt 前缀 ⌥W⌥T⌥R）全部过控制权过滤不扩权；控制权被占时自动降级只读横幅；断线回补缺口提示行不伪造内容；attach 历史采用 store 级「订阅即回放」原子衔接，任意时序不丢不重。其余 CLI 仍默认结构化时间线。
+- **远程服务自检卡（P3-A/P3-B）**：设置→远程控制新增七项自检（运行状态/监听地址端口/端口占用/安全迁移门禁告警/宿主探测降级提示等）与负例可见反馈；配对卡在监听通配时支持手动输入或候选局域网地址（新增 `App.ListLocalLanAddresses` 绑定，私网 IPv4 优先、含接口名/掩码、VPN 网卡标注不硬滤）生成二维码；移动端访问地址一键复制。
+- **远程启动自愈（P3-B）**：`Server.StartWithRetry` 有界退避重试（占用型瞬时冲突自愈）；耗尽后不翻动 enabled、固定告警并透出 enabled/lastStartError/running 漂移三元组；`GetRemoteStatus`/`GetRemoteWebUIStatus` 新增 `hostSummaryDegraded` 透出。
+
+### Changed
+
+- **大厅展示全部会话（裁定 A）**：去掉 running-only 过滤，已停止/已退出/不可用会话以状态徽标呈现（用户需看到已停止会话才能回看/重启/清理）；运行中计数独立统计。
+- **HostSummary 探测失败降级（P2-B，不动 wire）**：`GET /api/remote/v1/host/summary` provider 失败时降级返回保守摘要（全 CLI 不可启动、`serverVersion: "unknown"`）而非 503 阻断整个 v1 读面；降级方向保持失败关闭（探测不到绝不报可启动）；配对链路仍 503 fail-closed（有测试锁死）。
+
+### Removed
+
+- **移动端三死页与 legacy 通道清退（P2-A）**：Dashboard/Providers/Settings（Bearer+loopback 必死页）下线重定向到引导页；TerminalPage（2576 行，依赖已断供的 legacy `/ws/terminal`）与 `mobile/src/api/`（Bearer client/旧 WS）物理删除；Settings 轻量化为 v1 契约驱动的引导页。
+
+### Fixed
+
+- **e2e 遗留失败全量收复（P2-C/P2-D）**：HEAD 基线 44 条遗留失败清零（最终 285 绿/0 失败/1 条件跳过）——sessions-pg02 五用例夹具迁移到两步启动器、真链组夹具对齐、a11y 双契约（44px 触控/窄视口几何）修复；KeyTray 按钮提升至 44×44 触控标准、托盘与 Composer 行改 wrap 布局，窄视口不横向溢出。
+- **观察态降级用例间歇抖动**：全量并行负载下 xterm 动态 import 挂载链晚于首个 flushPromises——断言改 `vi.waitFor` 轮询（连续 4 轮 611/611 稳定）。
+
 ## [1.3.65] - 2026-09-05
 
 ### Fixed

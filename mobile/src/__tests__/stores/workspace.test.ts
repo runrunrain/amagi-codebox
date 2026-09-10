@@ -1126,6 +1126,49 @@ describe('原始输出流（PG-04 诊断视图；M2-D）', () => {
   });
 });
 
+describe('初始回放竞态（P1-D：订阅与缓冲快照原子衔接）', () => {
+  it('方向①历史先到、订阅后建：新订阅者同步回放当前缓冲，其后直播无缝续写', async () => {
+    const { store, client } = await openStore();
+    // 模拟组件仍在加载 xterm 的窗口：attach 历史与窗口期直播已入缓冲、订阅未建。
+    fireAttached(
+      client,
+      attachedEvent({
+        history: [{ type: 'output', sessionId: 'sess-1', seq: 1, chunk: b64('hist-1\r\n') }],
+        latestSeq: 1,
+      }),
+    );
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 2, chunk: b64('hist-2\r\n') });
+
+    const received: string[] = [];
+    store.subscribeRawOutput((t) => received.push(t));
+    // 回放 = 登记时刻的缓冲全量（历史 + 窗口期直播），一次性同步送达。
+    expect(received).toEqual(['hist-1\r\nhist-2\r\n']);
+
+    // 其后直播无缝续写，不重复回放。
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 3, chunk: b64('live\r\n') });
+    expect(received).toEqual(['hist-1\r\nhist-2\r\n', 'live\r\n']);
+    expect(store.getRawTranscript()).toBe('hist-1\r\nhist-2\r\nlive\r\n');
+  });
+
+  it('方向②订阅先建、历史后到：空缓冲回放不投递，历史经直播送达', async () => {
+    const { store, client } = await openStore();
+    const received: string[] = [];
+    store.subscribeRawOutput((t) => received.push(t));
+    expect(received).toEqual([]); // 空缓冲 → 登记时不投递
+
+    fireAttached(
+      client,
+      attachedEvent({
+        history: [{ type: 'output', sessionId: 'sess-1', seq: 1, chunk: b64('hist\r\n') }],
+        latestSeq: 1,
+      }),
+    );
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 2, chunk: b64('live\r\n') });
+    expect(received).toEqual(['hist\r\n', 'live\r\n']);
+    expect(store.getRawTranscript()).toBe('hist\r\nlive\r\n');
+  });
+});
+
 describe('停止运行', () => {
   it('控制者 stopRunning：REST 成功 → 会话态更新；防连点', async () => {
     const { store, client } = await openStore();
@@ -1392,3 +1435,105 @@ describe('continuitySnapshot（design §8 机器 oracle 内存 seam）', () => {
     expect(raw).not.toContain('msg-');
   });
 });
+
+describe('P1-A 终端仿真通路与通知', () => {
+  it('sendRaw: canWrite=true 时编码任意控制字节经 canonical outbox 发送', async () => {
+    const { store, client } = await openStore();
+    fireAttached(client, attachedEvent({ inputAckMode: 'session-window-v1' }));
+    expect(store.canWrite).toBe(true);
+
+    // 发送 Ctrl+C (\x03)
+    const sent = store.sendRaw('\x03');
+    expect(sent).toBe(true);
+    expect(client.sentInputFrames.length).toBe(1);
+    expect(atob(client.sentInputFrames[0].data)).toBe('\x03');
+    expect(store.outboxView.pendingCount).toBe(1);
+
+    // 模拟服务端 ACK 第一帧，队首推进后发送第二帧方向键 (\x1b[A)
+    const f0 = client.sentInputFrames[0];
+    client.opts.onEvent({
+      type: 'input.ack',
+      sessionId: 'sess-1',
+      id: f0.id,
+      requestId: f0.requestId,
+    });
+    expect(store.outboxView.pendingCount).toBe(0);
+
+    const sentArrow = store.sendRaw('\x1b[A');
+    expect(sentArrow).toBe(true);
+    expect(client.sentInputFrames.length).toBe(2);
+    expect(atob(client.sentInputFrames[1].data)).toBe('\x1b[A');
+    expect(store.outboxView.pendingCount).toBe(1);
+  });
+
+  it('sendRaw: 无控制权 (control!=you) 时禁止发送并返回 false', async () => {
+    const { store, client } = await openStore();
+    fireAttached(
+      client,
+      attachedEvent({
+        inputAckMode: 'session-window-v1',
+        snapshot: {
+          connection: { state: 'connected' },
+          auth: { state: 'authorized' },
+          session: { state: 'running' },
+          control: { state: 'desktop' },
+          history: { state: 'continuous' },
+        },
+      }),
+    );
+    expect(store.canWrite).toBe(false);
+
+    const sent = store.sendRaw('\x03');
+    expect(sent).toBe(false);
+    expect(client.sentInputFrames.length).toBe(0);
+    expect(store.outboxView.pendingCount).toBe(0);
+  });
+
+  it('restartBoundary: 在原始输出流中注入重启提示行', async () => {
+    const { store, client } = await openStore();
+    fireAttached(client);
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 1, chunk: b64('run-1\r\n') });
+    client.opts.onEvent({
+      type: 'session.state',
+      sessionId: 'sess-1',
+      state: 'running',
+      restartBoundary: true,
+      seq: 2,
+      occurredAt: '2026-08-03T01:00:00Z',
+    });
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 3, chunk: b64('run-2\r\n') });
+
+    const raw = store.getRawTranscript();
+    expect(raw).toContain('run-1\r\n');
+    expect(raw).toContain('[远程终端] 会话已进入新的运行');
+    expect(raw).toContain('run-2\r\n');
+  });
+
+  it('backfill 确认不可补齐缺口时向原始流注入历史缺口提示行', async () => {
+    const { store, client } = await openStore();
+    fireAttached(client);
+    // live reorder 越洞：seq 4 先到，产生 [1, 3] 缺口
+    client.opts.onEvent({ type: 'output', sessionId: 'sess-1', seq: 4, chunk: b64('tail\r\n') });
+    const gap = store.timelineItems.find((i) => i.kind === 'gap');
+    expect(gap).toBeDefined();
+    if (!gap || gap.kind !== 'gap') throw new Error('expected gap item');
+
+    // 发起 backfill 补齐请求
+    store.requestGapFill(gap.id);
+    expect(client.backfillRequests.length).toBe(1);
+
+    // 服务端返回 gap 变体（不可恢复）
+    client.opts.onEvent({
+      type: 'backfill.result',
+      requestId: 'req-bf-1',
+      sessionId: 'sess-1',
+      fromSeq: 1,
+      toSeq: 3,
+      gap: { fromSeq: 1, toSeq: 3, code: 'history.gap' },
+    });
+
+    const raw = store.getRawTranscript();
+    expect(raw).toContain('[远程终端] 历史缺口 seq 1–3（不可补齐）：该区间输出不可恢复');
+  });
+});
+

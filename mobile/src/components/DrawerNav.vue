@@ -1,14 +1,25 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, watch } from 'vue'
-import { useConnection } from '../stores/connection'
+import { computed, nextTick, onBeforeUnmount, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
-const { isConnected, serverUrl, disconnect } = useConnection()
+const router = useRouter()
+const auth = useAuthStore()
+
+const isConnected = computed(() => auth.isPaired)
+const serverUrl = computed(() => (typeof window !== 'undefined' ? window.location.origin : ''))
 
 function close() {
   emit('update:open', false)
+}
+
+function handleDisconnect() {
+  auth.clearLocal()
+  close()
+  router.push('/connect')
 }
 
 // M4-A 焦点管理：打开时焦点进抽屉（关闭钮），Esc 关闭，关闭后焦点回触发钮
@@ -66,7 +77,7 @@ onBeforeUnmount(() => {
           </div>
 
           <nav class="drawer-nav">
-            <router-link to="/" class="drawer-link" @click="close">
+            <router-link to="/connect" class="drawer-link" @click="close">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
                 <polyline points="10 17 15 12 10 7" />
@@ -74,30 +85,13 @@ onBeforeUnmount(() => {
               </svg>
               Connect
             </router-link>
-            <router-link to="/dashboard" class="drawer-link" @click="close">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-              </svg>
-              Dashboard
-            </router-link>
-            <router-link to="/sessions" class="drawer-link" @click="close">
+            <router-link to="/lobby" class="drawer-link" @click="close">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="2" y="3" width="20" height="14" rx="2" />
                 <line x1="8" y1="21" x2="16" y2="21" />
                 <line x1="12" y1="17" x2="12" y2="21" />
               </svg>
               Sessions
-            </router-link>
-            <router-link to="/providers" class="drawer-link" @click="close">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                <path d="M2 17l10 5 10-5" />
-                <path d="M2 12l10 5 10-5" />
-              </svg>
-              Providers
             </router-link>
             <router-link to="/settings" class="drawer-link" @click="close">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -109,7 +103,7 @@ onBeforeUnmount(() => {
           </nav>
 
           <div v-if="isConnected" class="drawer-footer">
-            <button class="disconnect-btn" @click="disconnect(); close()">
+            <button class="disconnect-btn" @click="handleDisconnect">
               Disconnect
             </button>
           </div>

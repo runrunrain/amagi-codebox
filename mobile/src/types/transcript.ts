@@ -152,3 +152,36 @@ export interface ProviderEventAdapter<TInput = unknown> {
   readonly name: string
   normalize(input: TInput): NormalizedTranscriptEvent[]
 }
+
+export type StructuredPartType = 'text' | 'markdown' | 'tool' | 'diff' | 'raw-terminal'
+export type StructuredToolState = 'pending' | 'running' | 'completed' | 'error'
+export type StructuredRawReason = 'ansi' | 'tui' | 'unsupported-pattern' | 'classifier-overflow'
+
+export interface StructuredPartFramePayload {
+  id: string
+  type: StructuredPartType
+  text?: string
+  markdown?: string
+  tool?: {
+    name: string
+    state: StructuredToolState
+    title?: string
+    inputPreview?: string
+    outputPreview?: string
+  }
+  diff?: {
+    text: string
+    language?: 'diff'
+  }
+  raw?: {
+    text: string
+    reason: StructuredRawReason
+  }
+  source: {
+    kind: 'pty'
+    seqStart: number
+    seqEnd: number
+    appType?: string
+  }
+  createdAt: string
+}

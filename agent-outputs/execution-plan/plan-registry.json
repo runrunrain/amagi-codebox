@@ -1,0 +1,56 @@
+{
+  "plans": [
+    {
+      "brief": "远程 Web 控制界面交付（移动设备可用）",
+      "createdAt": "2026-09-10",
+      "completedAt": "2026-09-10",
+      "path": "agent-outputs/execution-plan/20260910-remote-web-control/execution-plan.md",
+      "externalCopy": "/Users/maorun/maorun-workpace/Database/01-AI技术与工具/codebox优化/9月远程控制界面修复/执行交付包/execution-plan.md",
+      "mode": "authorized（发现即修复/补充迭代，契约变更与范围外回报）",
+      "status": "completed",
+      "verdict": "diting PASS_WITH_MINOR（0 Critical/0 Major/3 Minor，Minor 已全部 Leader 直修）",
+      "inputs": [
+        "../9月远程控制界面修复/调研报告/00-主报告-差距定位与优化方向.md",
+        "../9月远程控制界面修复/调研报告/素材A~F（六份切片调研）"
+      ],
+      "phases": [
+        { "id": 0, "name": "环境基线确认", "tasks": 1, "status": "done" },
+        { "id": 1, "name": "pi/omp 渲染与输入达标", "tasks": 3, "status": "done" },
+        { "id": 2, "name": "收尾清理与产物交付", "tasks": 4, "status": "done" },
+        { "id": 3, "name": "启用体验自检", "tasks": 2, "status": "done" },
+        { "id": 4, "name": "阶段审核与收口", "tasks": 2, "status": "done" }
+      ],
+      "extraTasks": [
+        "P1-D 回放竞态修复（P1-C 移交缺陷，原计划外追加）",
+        "P2-D e2e 夹具迁移与终验（P2-C 裁定项落地，原计划外追加）"
+      ],
+      "finalEvidence": {
+        "e2e": "285 passed / 0 failed / 1 conditional skipped（HEAD 基线 44 遗留全部收复）",
+        "mobileVitest": "611/611 稳定（抖动根治后连续 4 轮绿）",
+        "frontendVitest": "97/97（diting 独立复跑）",
+        "go": "vet 全仓干净；internal/remote 全绿（含 -race 专项）；root App 壳自愈测试绿",
+        "dist": "2026-09-10 终建（含全部源码改动，嵌入一致性验证过）"
+      },
+      "reports": [
+        "P0-基线确认记录.md", "P1-A-report.md", "P1-C-report.md", "P1-D-report.md",
+        "P2-A-report.md", "P2-B-report.md", "P2-C-report.md", "P2-D-report.md",
+        "P3-A-report.md", "P3-B-report.md", "P4-diting-review.md"
+      ],
+      "requirements": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"],
+      "nonGoals": [
+        "桌面 pi Web 平面修复（调研批次1，另立项）",
+        "WD-5 配置面 v1 化",
+        "remoteclient 桌面互联补缺",
+        "Capacitor 原生壳",
+        "候选 B（pi webui 远程暴露）",
+        "TLS"
+      ],
+      "pendingForMaster": [
+        "真机终验：手机浏览器配对→大厅→pi 会话终端仿真面可读可交互（主报告 §8-2 清单）",
+        "F-5 本地终端输入实弹抽查（无人值守无法覆盖）",
+        "完整 wails build 桌面打包验证（本次仅静态嵌入一致性冒烟）",
+        "提交：建议按 P1-A~P2-B / P2-C~P3-B / P4 三段或单段提交，主上裁决"
+      ]
+    }
+  ]
+}

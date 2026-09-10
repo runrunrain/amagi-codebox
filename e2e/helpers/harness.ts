@@ -163,16 +163,28 @@ export async function freshDevicePage(browser: Browser): Promise<Page> {
   return context.newPage()
 }
 
-/** 真实配对一台浏览器设备（深链 code + expiresAt），落在大厅。 */
+/** 真实配对一台浏览器设备（深链 code + expiresAt），落在大厅。
+ * P2-D 夹具迁移：产品自 v1.3.09 起对深链配对码自动完成配对（ConnectPage
+ * onMounted → beginAutomaticPairing：同步读取默认设备名后直接提交），
+ * 手动表单的「完成配对」点击不再发生（旧 helper 在此超时）。本 helper 改为
+ * 在测试侧拦截 pairing/complete 请求，把自动配对的设备名改写为用例指定名——
+ * 配对 POST 仍打到真服务器（201/Set-Cookie 全真链），仅请求体 deviceName
+ * 字段是测试装配缝；rewritten 断言保证该缝确实参与，产品流程再漂移时显式失败。 */
 export async function pairBrowser(page: Page, info: HarnessInfo, deviceName: string): Promise<void> {
   const win = await ctl<PairingWindow>(info, 'POST', '/pairing-window')
+  let rewritten = false
+  await page.route('**/api/remote/v1/pairing/complete', (route) => {
+    const body = route.request().postDataJSON() as { code?: string; deviceName?: string }
+    body.deviceName = deviceName
+    rewritten = true
+    return route.continue({ postData: JSON.stringify(body) })
+  })
   await page.goto(
     `${info.origin}/#/connect?code=${encodeURIComponent(win.code)}&expiresAt=${encodeURIComponent(win.expiresAt)}`,
   )
-  await expect(page.locator('#pair-code')).toHaveValue(win.code)
-  await page.locator('#pair-device-name').fill(deviceName)
-  await page.getByRole('button', { name: '完成配对' }).click()
-  await expect(page).toHaveURL(/#\/lobby$/)
+  // 自动配对提交 → 201 → replace 进大厅（一次性配对材料不入历史）。
+  await expect(page).toHaveURL(/#\/lobby$/, { timeout: 15_000 })
+  expect(rewritten).toBe(true)
 }
 
 /** 进入指定会话工作区并等待真 WS attach 完成。 */

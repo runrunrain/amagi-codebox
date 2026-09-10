@@ -2191,6 +2191,7 @@ export namespace main {
 	    mobileWebRootExists: boolean;
 	    mobileWebEmbedded: boolean;
 	    mobileWebAvailable: boolean;
+	    hostSummaryDegraded: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new RemoteWebUIStatusResult(source);
@@ -2208,6 +2209,7 @@ export namespace main {
 	        this.mobileWebRootExists = source["mobileWebRootExists"];
 	        this.mobileWebEmbedded = source["mobileWebEmbedded"];
 	        this.mobileWebAvailable = source["mobileWebAvailable"];
+	        this.hostSummaryDegraded = source["hostSummaryDegraded"];
 	    }
 	}
 	export class SystemProxyStatus {
@@ -3235,6 +3237,26 @@ export namespace remote {
 		    }
 		    return a;
 		}
+	}
+	export class LanAddressInfo {
+	    ip: string;
+	    interface: string;
+	    prefixLen: number;
+	    private: boolean;
+	    vpnLike: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LanAddressInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ip = source["ip"];
+	        this.interface = source["interface"];
+	        this.prefixLen = source["prefixLen"];
+	        this.private = source["private"];
+	        this.vpnLike = source["vpnLike"];
+	    }
 	}
 	export class PairingWindowInfo {
 	    generation: number;

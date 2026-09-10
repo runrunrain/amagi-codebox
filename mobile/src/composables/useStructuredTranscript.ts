@@ -3,8 +3,7 @@ import { looksLikeMarkdown } from '../utils/renderMarkdown'
 import { isReadableLegacyText, normalizeTranscriptChunk, resetTranscriptNormalizerState, type DiagnosticReason, type TranscriptDiagnosticInput, type TranscriptDiagnosticRecord } from '../utils/transcriptNormalizer'
 import { useDiagnosticStore } from './useDiagnosticStore'
 import type { AppType } from '../types/terminal'
-import type { DiagnosticRefPart, KeyedTranscriptTurn, TranscriptPart, TranscriptTurn } from '../types/transcript'
-import type { StructuredPartFramePayload } from '../api/websocket'
+import type { DiagnosticRefPart, KeyedTranscriptTurn, StructuredPartFramePayload, TranscriptPart, TranscriptTurn } from '../types/transcript'
 
 interface UseStructuredTranscriptOptions {
   sessionId: string

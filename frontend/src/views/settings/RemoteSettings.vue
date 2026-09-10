@@ -25,13 +25,28 @@
       <!-- ⓪ 外部进程清理恢复卡（M2-INT R12：legacy/uncertainty 恢复闭环入口，持久可发现） -->
       <ExternalCleanupRecoveryCard />
 
+      <!-- 🌟 远程服务自检卡（P3-A 增强：运行态、监听范围、端口冲突、安全迁移门禁与 Web UI 自检） -->
+      <RemoteSelfCheckCard
+        :running="status.running"
+        :host="status.host"
+        :port="status.port"
+        :lan-confirmed="lanConfirmed"
+        :health="health"
+        :last-service-error="lastServiceError"
+        @refresh="loadAll"
+        @goto-lan-confirm="gotoLanConfirm"
+        @set-host-wildcard="setHostWildcard"
+      />
+
       <!-- ① 远程服务开关卡 -->
       <RemoteServiceCard
+        ref="serviceCardRef"
         :running="status.running"
         :host="status.host"
         :port="status.port"
         :lan-confirmed="lanConfirmed"
         @changed="loadAll"
+        @error="onServiceError"
         @goto-lan-confirm="gotoLanConfirm"
       />
 
@@ -39,7 +54,12 @@
       <LanExposureCard ref="lanCardRef" @confirmed="onLanConfirmed" />
 
       <!-- ③ 配对卡 -->
-      <PairingCard :running="status.running" @changed="onPairingChanged" />
+      <PairingCard
+        :running="status.running"
+        :host="status.host"
+        :port="status.port"
+        @changed="onPairingChanged"
+      />
 
       <!-- ④ 可信设备卡 -->
       <TrustedDevicesCard
@@ -80,6 +100,7 @@ import {
   getRemoteSecurityHealth,
 } from '../../api/remote';
 import { classifyRemoteError, type ClassifiedError } from '../../components/remote/remoteShared';
+import RemoteSelfCheckCard from '../../components/remote/RemoteSelfCheckCard.vue';
 import RemoteServiceCard from '../../components/remote/RemoteServiceCard.vue';
 import ExternalCleanupRecoveryCard from '../../components/remote/ExternalCleanupRecoveryCard.vue';
 import LanExposureCard from '../../components/remote/LanExposureCard.vue';
@@ -103,9 +124,11 @@ const eventsLoading = ref(false);
 const eventsError = ref<ClassifiedError | null>(null);
 
 const health = ref<remote.SecurityHealthSnapshot | null>(null);
+const lastServiceError = ref<ClassifiedError | null>(null);
 
 const lanConfirmed = ref(false);
 const lanCardRef = ref<InstanceType<typeof LanExposureCard> | null>(null);
+const serviceCardRef = ref<InstanceType<typeof RemoteServiceCard> | null>(null);
 
 function readLanRecord(): boolean {
   try {
@@ -123,6 +146,14 @@ function gotoLanConfirm() {
   lanCardRef.value?.scrollIntoView();
 }
 
+function setHostWildcard() {
+  serviceCardRef.value?.setHost('0.0.0.0');
+}
+
+function onServiceError(err: ClassifiedError | null) {
+  lastServiceError.value = err;
+}
+
 async function loadStatus() {
   try {
     const s = (await getRemoteStatus()) as Record<string, unknown>;
@@ -132,6 +163,13 @@ async function loadStatus() {
       running: !!s.running,
     };
     statusError.value = null;
+    // P3-B③ 漂移可观察：Startup 恢复路径的 Start 失败经状态绑定透出，并入
+    // 自检卡错误管线点亮端口横幅（与 toggle 失败同链路）。仅在存在后端记录
+    // 时写入：用户 toggle 的即时错误（含成功后的显式清空）优先，不被覆盖。
+    const rawStartErr = typeof s.lastStartError === 'string' ? s.lastStartError : '';
+    if (rawStartErr) {
+      lastServiceError.value = classifyRemoteError(new Error(rawStartErr));
+    }
   } catch (err) {
     statusError.value = classifyRemoteError(err);
   }

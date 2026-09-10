@@ -374,6 +374,10 @@ export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function ListLocalLanAddresses() {
+  return window['go']['main']['App']['ListLocalLanAddresses']();
+}
+
 export function ListRemoteDevices() {
   return window['go']['main']['App']['ListRemoteDevices']();
 }

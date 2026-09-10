@@ -112,7 +112,7 @@ function cliIcon(meta: CliMeta): string {
         <span class="cli-label">{{ meta.label }}</span>
         <span v-if="launching === meta.cliType" class="cli-state">启动中…</span>
         <span v-else-if="!isAvailable(meta.cliType)" class="cli-state cli-state--unavailable">
-          宿主不可用：未安装或未配置
+          宿主不可用：未安装/未配置，或宿主探测降级中
         </span>
         <span v-else class="cli-state">点击启动</span>
       </button>

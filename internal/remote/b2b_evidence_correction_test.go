@@ -307,7 +307,11 @@ func TestB2BProductionCompositeHandler(t *testing.T) {
 		t.Fatalf("unknown index2 must be 404: %d", rr2.Code)
 	}
 
-	// Provider failure → 503, no LastSeen mutation. Bust the hostCache so the
+	// Provider failure → P2-B degrade: conservative 200 (all CLIs NOT
+	// launchable), never 503 — a probing failure must not block the v1 read
+	// surface for paired devices. LastSeen may legitimately advance (the
+	// degraded response is still a successful authenticated GET running
+	// RecordDeviceSeen) but must never regress. Bust the hostCache so the
 	// provider is actually called.
 	bustHostCache(srv)
 	cp.setFail(true)
@@ -315,11 +319,27 @@ func TestB2BProductionCompositeHandler(t *testing.T) {
 	rf := hsReq(ts, cookie)
 	rrf := httptest.NewRecorder()
 	h.ServeHTTP(rrf, rf)
-	if rrf.Code != http.StatusServiceUnavailable {
-		t.Fatalf("provider failure must be 503: %d", rrf.Code)
+	if rrf.Code != contract.V1RestEndpoints[1].SuccessStatus {
+		t.Fatalf("provider failure must degrade to %d, got %d body=%s",
+			contract.V1RestEndpoints[1].SuccessStatus, rrf.Code, rrf.Body.String())
 	}
-	if ls := lookupLastSeen(t, srv, deviceID); !ls.Equal(lsBefore) {
-		t.Fatal("provider failure mutated LastSeen")
+	var degraded contract.HostSummary
+	if err := json.Unmarshal(rrf.Body.Bytes(), &degraded); err != nil {
+		t.Fatalf("degraded body not a HostSummary: %v", err)
+	}
+	if degraded.APIVersion != contract.APIVersionV1 || degraded.ServerVersion == "" {
+		t.Fatalf("degraded summary invalid: %+v", degraded)
+	}
+	if len(degraded.CLIAvailability) != len(contract.KnownCLITypes) {
+		t.Fatalf("degraded availability entries: %d want %d", len(degraded.CLIAvailability), len(contract.KnownCLITypes))
+	}
+	for _, c := range degraded.CLIAvailability {
+		if c.Available {
+			t.Fatalf("degraded summary advertised %q as launchable", c.CLIType)
+		}
+	}
+	if ls := lookupLastSeen(t, srv, deviceID); ls.Before(lsBefore) {
+		t.Fatalf("degraded response regressed LastSeen: %v < %v", ls, lsBefore)
 	}
 }
 

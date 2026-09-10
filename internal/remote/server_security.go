@@ -597,6 +597,22 @@ func (s *Server) GetSecurityHealth() SecurityHealthSnapshot {
 	return s.v1sec.health.Snapshot(s.securityReady())
 }
 
+// HostSummaryDegraded reports whether the v1 HostSummary cache's most recent
+// provider outcome was a failure — i.e. the state under which a paired device's
+// GET /host/summary request received (or would receive after a retry window)
+// the conservative degraded summary (all CLIs not launchable, version
+// "unknown"). Read-only: no provider call is triggered. False when the cache
+// has no outcome yet or the security surface is absent (legacy Server).
+// Consumed by the desktop status bindings (App.GetRemoteStatus /
+// App.GetRemoteWebUIStatus, P3-B R2) for the self-check card; NOT a v1 wire
+// contract field.
+func (s *Server) HostSummaryDegraded() bool {
+	if s == nil || s.v1sec == nil || s.v1sec.hostCache == nil {
+		return false
+	}
+	return s.v1sec.hostCache.degradedSnapshot()
+}
+
 // AcknowledgeSecurityHealth acknowledges a closed code (never resolves/retries).
 // The code is trimmed and must be a known closed code; unknown/blank is rejected
 // with a fixed error and does not mutate health.

@@ -227,7 +227,7 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
   let pendingBytes = 0;
 
   // --- 原始输出流（PG-04 诊断视图消费；M2-D） ---
-  // 有界滚动缓冲：诊断视图打开时回放，其后经 subscribeRawOutput 续写。
+  // 有界滚动缓冲：订阅登记时同步回放（P1-D），其后经 subscribeRawOutput 直播续写。
   // 只存解码后原文（ANSI 原样），不做行处理；重连不清空（attach 携带 lastSeq
   // 只回补增量，流连续；open() 新会话才清空）。backfill 帧是乱序旧历史，
   // 不注入本流（缺口由状态条历史层诚实呈现，不在网格内伪造内容）。
@@ -236,6 +236,18 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
   // ASCII），并给 attach 后紧随的实时输出留出余量，避免远程诊断页二次裁剪。
   const rawTranscript = new RawTranscript({ maxChars: 4 * 1024 * 1024 });
   const rawSubscribers = new Set<(text: string) => void>();
+
+  const RESTART_BOUNDARY_NOTICE = '\r\n\x1b[90m[远程终端] 会话已进入新的运行\x1b[0m\r\n';
+
+  function formatTerminalGapNotice(fromSeq: number, toSeq: number, source?: string): string {
+    const rule = '─ ─ '.repeat(12);
+    const src = source ? `（${source}）` : '';
+    return (
+      `\r\n\x1b[90m${rule}\x1b[0m\r\n` +
+      `\x1b[90m[远程终端] 历史缺口 seq ${fromSeq}–${toSeq}${src}：该区间输出不可恢复\x1b[0m\r\n` +
+      `\x1b[90m${rule}\x1b[0m\r\n`
+    );
+  }
   // PTY read boundaries are arbitrary and may split one UTF-8 code point. Keep
   // one streaming decoder for the ordered attach/live path; decoding every
   // frame independently replaces split characters and makes output appear
@@ -252,6 +264,11 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
 
   function notifyRaw(text: string): void {
     for (const cb of rawSubscribers) cb(text);
+  }
+
+  function appendRawNotice(notice: string): void {
+    rawTranscript.append(notice);
+    notifyRaw(notice);
   }
 
   // --- Composer ---
@@ -464,6 +481,7 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
       const trailing = outputDecoder.flush();
       if (trailing) appendOutputText(frame.seq, trailing);
       resetOrderedOutputDecoder();
+      appendRawNotice(RESTART_BOUNDARY_NOTICE);
       sealAtBoundary(frame);
     }
   }
@@ -767,6 +785,7 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
               pruneFilledGaps();
             }
           }
+          appendRawNotice(formatTerminalGapNotice(event.gap.fromSeq, event.gap.toSeq, '不可补齐'));
         }
         break;
       }
@@ -1102,6 +1121,16 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
     return outbox.accept(encodeUtf8ToBase64(input)).accepted;
   }
 
+  /**
+   * 终端任意字节/控制序列发送通路（P1-A）：
+   * 支持 Esc, 方向键, Ctrl, Alt 组合键及逐键输入。
+   * 严格沿用 canWrite 与 canonical outbox 控制权过滤（对齐 P-04 语义）。
+   */
+  function sendRaw(data: string): boolean {
+    if (!canWrite.value || !outbox || data.length === 0) return false;
+    return outbox.accept(encodeUtf8ToBase64(data)).accepted;
+  }
+
   /** 历史指令复用：回填草稿（不直接发送）。 */
   function reuseCommand(text: string): void {
     draft.value = text;
@@ -1197,7 +1226,11 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
   }
 
   // -------------------------------------------------------------------------
-  // PG-04 诊断视图订阅（M2-D）：回放快照 + 直播续写；返回退订函数。
+  // PG-04 诊断视图订阅（M2-D）：订阅即原子回放 + 直播续写；返回退订函数。
+  // P1-D 竞态修复（P1-C §7.1 缺陷①）：新订阅者在登记的同一同步调用内先收到
+  // 当前缓冲快照——JS 单线程下「取快照→登记→投递」之间不可能插入 WS 事件，
+  // attach 历史落在「组件渲染」与「xterm 就绪」之间任意窗口都会进网格，
+  // 既不丢段也不重复（历史先到→经回放；直播后到→经订阅）。
   // -------------------------------------------------------------------------
 
   function getRawTranscript(): string {
@@ -1205,7 +1238,9 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
   }
 
   function subscribeRawOutput(cb: (text: string) => void): () => void {
+    const snapshot = rawTranscript.text();
     rawSubscribers.add(cb);
+    if (snapshot) cb(snapshot);
     return () => {
       rawSubscribers.delete(cb);
     };
@@ -1447,6 +1482,7 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
     close,
     sendDraft,
     sendAnswer,
+    sendRaw,
     reuseCommand,
     stopRunning,
     acquire,

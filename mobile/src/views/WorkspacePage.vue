@@ -47,12 +47,22 @@ function dismissGuide(): void {
   }
 }
 
-// --- PG-04 诊断视图（M2-D）：?view=terminal（P5 v1.2 §2.1 权威路由形态） ---
-// 菜单进入用 push（Android 返回键 = 回到结构化面，§2.2 导航规则 3）；
-// 直接深链允许（诊断场景可分享链接），页内明示诊断身份与返回入口。
-// 同一 route record 的 query 变化不重挂载组件——WS attach/时间线状态保留，
-// 诊断视图复用同一会话订阅，不重连。
-const isDiagnostic = computed(() => route.query.view === 'terminal');
+// --- 会话形态分支（P1-A）：pi/omp 为全屏 TUI，默认进入终端仿真面；其余 CLI 维持结构化时间线 ---
+const isTuiCli = computed(() => {
+  const cli = store.detail?.cliType;
+  return cli === 'pi' || cli === 'omp';
+});
+
+// 若显式带有 ?view=terminal 则进入终端面；?view=timeline 则进入时间线；
+// 缺省时：pi/omp 默认终端仿真面，其余 CLI 默认结构化时间线（R3）
+const isTerminalView = computed(() => {
+  if (route.query.view === 'terminal') return true;
+  if (route.query.view === 'timeline') return false;
+  return isTuiCli.value;
+});
+
+// 诊断视图语义：仅非 TUI CLI 主动开启终端网格时标记为「诊断视图」（PG-04 回归保持）
+const isDiagnostic = computed(() => !isTuiCli.value && isTerminalView.value);
 const menuOpen = ref(false);
 const menuBtnRef = ref<HTMLButtonElement | null>(null);
 const menuPanelRef = ref<HTMLElement | null>(null);
@@ -75,6 +85,24 @@ function onMenuKeydown(event: KeyboardEvent): void {
 }
 
 function openDiagnostic(): void {
+  menuOpen.value = false;
+  void router.push({
+    name: 'workspace',
+    params: { sessionId: sessionId.value },
+    query: { view: 'terminal' },
+  });
+}
+
+function switchToTimeline(): void {
+  menuOpen.value = false;
+  void router.push({
+    name: 'workspace',
+    params: { sessionId: sessionId.value },
+    query: { view: 'timeline' },
+  });
+}
+
+function switchToTerminal(): void {
   menuOpen.value = false;
   void router.push({
     name: 'workspace',
@@ -130,8 +158,8 @@ watch(
 let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function reportResize(): void {
-  // 诊断视图由 xterm fit 上报真实网格；主面维持近似换算，二者不重复上报。
-  if (isDiagnostic.value) return;
+  // 终端仿真面由 xterm fit 上报真实网格；主时间线面维持近似换算，二者不重复上报。
+  if (isTerminalView.value) return;
   const cols = Math.max(20, Math.round(window.innerWidth / 8.2));
   const rows = Math.max(6, Math.round(window.innerHeight / 18));
   store.sendResize(cols, rows);
@@ -174,9 +202,34 @@ function jumpToGap(): void {
 <template>
   <div class="workspace-page">
     <header class="workspace-header">
-      <!-- 结构化面：返回大厅；诊断面：返回主阅读面（P5 §PG-04 离开方式） -->
+      <!-- 页面返回按钮：
+           1. 诊断面（非 TUI CLI 临时查看终端）：返回主阅读面；
+           2. TUI 会话（pi/omp）切到时间线时：返回终端面；
+           3. 默认主面（非 TUI 在时间线，或 TUI 在终端）：返回会话大厅 -->
       <button
-        v-if="!isDiagnostic"
+        v-if="isDiagnostic"
+        type="button"
+        class="back-btn back-btn--primary"
+        @click="leaveDiagnostic"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        <span class="btn-label">返回主阅读面</span>
+      </button>
+      <button
+        v-else-if="isTuiCli && !isTerminalView"
+        type="button"
+        class="back-btn back-btn--primary"
+        @click="switchToTerminal"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        <span class="btn-label">返回终端面</span>
+      </button>
+      <button
+        v-else
         type="button"
         class="back-btn"
         aria-label="返回会话大厅"
@@ -187,20 +240,10 @@ function jumpToGap(): void {
         </svg>
         <span class="btn-label">大厅</span>
       </button>
-      <button
-        v-else
-        type="button"
-        class="back-btn back-btn--primary"
-        @click="leaveDiagnostic"
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-        <span class="btn-label">返回主阅读面</span>
-      </button>
       <h1 class="workspace-title">
         <span class="title-text">{{ title }}</span>
         <span v-if="isDiagnostic" class="diagnostic-badge">诊断视图</span>
+        <span v-else-if="isTuiCli && isTerminalView" class="tui-cli-badge">终端仿真</span>
       </h1>
       <div class="menu-wrap" @keydown="onMenuKeydown">
         <button ref="menuBtnRef" type="button" class="menu-btn" aria-label="更多操作" aria-haspopup="menu" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
@@ -209,29 +252,62 @@ function jumpToGap(): void {
           </svg>
         </button>
         <div v-if="menuOpen" ref="menuPanelRef" class="menu-panel" role="menu" aria-label="会话操作菜单">
-          <button
-            v-if="!isDiagnostic"
-            type="button"
-            class="menu-item"
-            role="menuitem"
-            @click="openDiagnostic"
-          >
-            原始终端诊断视图
-          </button>
-          <button
-            v-else
-            type="button"
-            class="menu-item"
-            role="menuitem"
-            @click="router.replace({ name: 'lobby' })"
-          >
-            返回会话大厅
-          </button>
+          <!-- TUI 会话 (pi/omp) 菜单项 -->
+          <template v-if="isTuiCli">
+            <button
+              v-if="isTerminalView"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="switchToTimeline"
+            >
+              切换至时间线视图
+            </button>
+            <button
+              v-else
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="switchToTerminal"
+            >
+              返回终端仿真视图
+            </button>
+            <button
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="router.replace({ name: 'lobby' })"
+            >
+              返回会话大厅
+            </button>
+          </template>
+
+          <!-- 常规 CLI 会话 (claudecode/opencode/codex) 保持原有菜单行为 -->
+          <template v-else>
+            <button
+              v-if="!isTerminalView"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="openDiagnostic"
+            >
+              原始终端诊断视图
+            </button>
+            <button
+              v-else
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="router.replace({ name: 'lobby' })"
+            >
+              返回会话大厅
+            </button>
+          </template>
         </div>
       </div>
     </header>
 
-    <GuideCard v-if="guideVisible && !isDiagnostic && !store.loading && !store.loadError" @dismiss="dismissGuide" @open-diagnostic="openDiagnostic" />
+    <GuideCard v-if="guideVisible && !isTerminalView && !store.loading && !store.loadError" @dismiss="dismissGuide" @open-diagnostic="openDiagnostic" />
 
     <StatusBar :layers="store.statusLayers" />
 
@@ -285,9 +361,9 @@ function jumpToGap(): void {
       <button type="button" class="banner-action" @click="router.replace({ name: 'lobby' })">返回大厅</button>
     </div>
 
-    <!-- 主阅读面：结构化内容转化时间线（唯一主形态） -->
+    <!-- 主阅读面：结构化内容转化时间线（其余 CLI 默认，或 pi/omp 切换至此） -->
     <TimelineView
-      v-if="!isDiagnostic"
+      v-if="!isTerminalView"
       ref="timelineRef"
       :items="store.timelineItems"
       :output-version="store.latestSeq"
@@ -301,16 +377,18 @@ function jumpToGap(): void {
       @open-diagnostic="openDiagnostic"
     />
 
-    <!-- PG-04 诊断面：原始输出只读网格（按需，非并列 tab；xterm 动态导入） -->
+    <!-- 终端仿真面：xterm 仿真网格（pi/omp 默认主面，其余 CLI 诊断面） -->
     <RawTerminalView
       v-else
-      :initial-transcript="store.getRawTranscript()"
       :subscribe="store.subscribeRawOutput"
       :ws-attached="store.wsState === 'attached'"
+      :readonly="!store.canWrite"
+      :readonly-reason="store.writeBlockReason"
       @resize="onTerminalGridResize"
+      @data="(data: string) => store.sendRaw(data)"
     />
 
-    <!-- Composer：两面同一组件/同一 store 过滤路径——诊断视图不扩权限（P-04） -->
+    <!-- Composer：两面同一组件/同一 store 过滤路径；terminalMode 激活 KeyTray -->
     <ComposerBar
       :draft="store.draft"
       :sending="store.sending"
@@ -320,10 +398,12 @@ function jumpToGap(): void {
       :block-reason="store.writeBlockReason"
       :history="store.commandHistory"
       :outbox="store.outboxView"
+      :terminal-mode="isTerminalView"
       @update:draft="(v: string) => (store.draft = v)"
       @send="store.sendDraft()"
       @stop="stopConfirmOpen = true"
       @reuse="(t: string) => store.reuseCommand(t)"
+      @special-key="(seq: string) => store.sendRaw(seq)"
     />
 
     <!-- 停止运行确认（PG-06 复用 M2-B ConfirmDialog） -->
@@ -560,6 +640,18 @@ function jumpToGap(): void {
   vertical-align: middle;
 }
 
+.tui-cli-badge {
+  display: inline-block;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--VT-accent-strong);
+  border-radius: 999px;
+  color: var(--VT-accent-strong);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 /* M4-R1：超窄逻辑视口（≤240px，含 200% 缩放等效 180px）header 防裁切。
    实测（谛听 M4-006 补全覆盖后浮出）：诊断面 back-btn「返回主阅读面」自然宽
    ~126px + menu-btn 44px 在 180px 下溢出右缘 18px——flex 溢出被裁不产生文档
@@ -582,7 +674,8 @@ function jumpToGap(): void {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .diagnostic-badge {
+  .diagnostic-badge,
+  .tui-cli-badge {
     display: none;
   }
 }

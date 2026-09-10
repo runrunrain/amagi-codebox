@@ -1,7 +1,6 @@
 import { normalizeTranscriptChunk, type TranscriptDiagnosticInput } from '../utils/transcriptNormalizer'
-import type { StructuredPartFramePayload } from '../api/websocket'
 import type { AppType } from '../types/terminal'
-import type { EventSourceRef, NormalizedTranscriptEvent, ProviderEventAdapter, TranscriptPart } from '../types/transcript'
+import type { EventSourceRef, NormalizedTranscriptEvent, ProviderEventAdapter, StructuredPartFramePayload, TranscriptPart } from '../types/transcript'
 
 export interface LegacyOutputFrameLike {
   sessionId: string

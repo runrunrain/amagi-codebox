@@ -286,8 +286,10 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   }
 
   const cliAvailability = computed(() => host.value?.cliAvailability ?? []);
-  const visibleSessions = computed(() => sessions.value.filter((s) => s.state === 'running'));
-  const runningCount = computed(() => visibleSessions.value.length);
+  // P2-C 裁定 A：大厅展示全部会话（含 stopped，卡片有「已停止」态），
+  // 运行中计数单独统计——用户需看到已停止会话才能回看/重启/清理。
+  const visibleSessions = computed(() => sessions.value);
+  const runningCount = computed(() => sessions.value.filter((s) => s.state === 'running').length);
   const controlledCount = computed(() => visibleSessions.value.filter((s) => s.control.state === 'you').length);
 
   function handleAuthFailure(err: ApiRequestError): boolean {
@@ -314,7 +316,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
       host.value = nextHost;
       try {
         const list = await listSessions();
-        sessions.value = list.filter((item) => item.state === 'running');
+        sessions.value = list; // P2-C 裁定 A：不过滤 stopped，卡片按状态展示
         loadError.value = null;
       } catch (rawErr) {
         const err = toApiRequestError(rawErr);
@@ -337,7 +339,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   async function refreshSessions(): Promise<void> {
     try {
       const list = await listSessions();
-      sessions.value = list.filter((item) => item.state === 'running');
+      sessions.value = list; // P2-C 裁定 A：与 load() 同语义，不过滤 stopped
       if (loadError.value !== null) loadError.value = null;
     } catch (rawErr) {
       const err = toApiRequestError(rawErr);

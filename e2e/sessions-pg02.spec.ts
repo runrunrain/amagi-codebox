@@ -10,6 +10,8 @@
 // 真实服务器 E2E 属 M2-INT（harness 装配 session adapter 后），本 spec 不伪证。
 // 契约体字段对齐 mobile/src/lib/contract（M0-03 冻结）；本文件构造的是测试夹具，
 // 不 import 前端实现（route mock 在浏览器外）。
+// P2-D 夹具迁移：CLI 启动器已是两步交互（点卡片选中 → 表单内「启动会话」提交），
+// 且 CLI 面板扩为五类（+ Oh My Pi）——卡片定位改精确标签匹配（「Pi」不再子串误中）。
 // ---------------------------------------------------------------------------
 
 import { expect, test, type Page, type Route } from '@playwright/test'
@@ -100,6 +102,11 @@ async function enterLobby(page: Page) {
   await page.getByRole('button', { name: '进入会话大厅' }).click()
   await expect(page).toHaveURL(/#\/lobby$/)
   await expect(page.locator('.lobby-title')).toHaveText('会话大厅')
+}
+
+/** 按展示标签精确定位 CLI 卡片（exact 匹配；避免「Pi」子串误中「Oh My Pi」）。 */
+function cliCard(page: Page, label: string) {
+  return page.locator('.cli-card').filter({ has: page.getByText(label, { exact: true }) })
 }
 
 function shotName(testInfo: { project: { name: string } }, name: string) {
@@ -202,7 +209,10 @@ test.describe('M2-B PG-02 会话大厅', () => {
     await enterLobby(page)
 
     for (const label of ['Claude Code', 'OpenCode', 'Codex', 'Pi']) {
-      await page.locator('.cli-card', { hasText: label }).click()
+      // 两步交互：点卡片选中（展开会话设置表单）→ 点「启动会话」才 POST。
+      await cliCard(page, label).click()
+      await expect(page.locator('.launch-settings')).toBeVisible()
+      await page.locator('.launch-submit').click()
       await expect(page.locator('.session-card', { hasText: `${label === 'Claude Code' ? 'claudecode' : label.toLowerCase()} 会话` })).toBeVisible()
     }
     expect(launches).toEqual(['claudecode', 'opencode', 'codex', 'pi'])
@@ -253,7 +263,10 @@ test.describe('M2-B PG-02 会话大厅', () => {
 
     for (let i = 0; i < failures.length; i++) {
       idx = i
-      await page.locator('.cli-card', { hasText: 'Claude Code' }).click()
+      // 两步交互：点卡片选中 → 点「启动会话」提交后才触发失败分类。
+      await cliCard(page, 'Claude Code').click()
+      await expect(page.locator('.launch-settings')).toBeVisible()
+      await page.locator('.launch-submit').click()
       const panel = page.locator('.launch-error')
       await expect(panel.locator('.launch-error-title')).toHaveText(failures[i].expectTitle)
       await expect(panel.locator('.launch-error-detail')).toHaveText(failures[i].expectDetail)
@@ -284,11 +297,13 @@ test.describe('M2-B PG-02 会话大厅', () => {
     await page.route(`${BASE}/sessions`, (route) => fulfillJson(route, 200, []))
     await enterLobby(page)
 
-    const piCard = page.locator('.cli-card', { hasText: 'Pi' })
+    const piCard = cliCard(page, 'Pi')
     await expect(piCard).toBeDisabled()
     await expect(piCard).toContainText('宿主不可用：未安装或未配置')
-    await expect(page.locator('.cli-card', { hasText: 'OpenCode' })).toBeDisabled()
-    await expect(page.locator('.cli-card', { hasText: 'Codex' })).toBeEnabled()
+    await expect(cliCard(page, 'OpenCode')).toBeDisabled()
+    await expect(cliCard(page, 'Codex')).toBeEnabled()
+    // 五类面板：availability 清单缺失的第 5 类（omp 不在 mock 内）按不可用处理。
+    await expect(cliCard(page, 'Oh My Pi')).toBeDisabled()
     await page.screenshot({ path: shotName(testInfo, 'cli-unavailable'), fullPage: true })
     expect(consoleErrors).toEqual([])
   })

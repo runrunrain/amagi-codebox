@@ -1,197 +1,198 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+/**
+ * SettingsPage — 移动伴侣端设置与桌面端管理引导页
+ * ---------------------------------------------------------------------------
+ * 权威依据：执行计划 Phase 2 (P2-A)；调研报告素材 D §2/§3。
+ *
+ * 架构说明：
+ *   · 移动端作为轻量伴侣控制界面，提供远程会话监控、启动与终端交互能力；
+ *   · 三个 legacy 页面（Dashboard / Providers / Settings）服务端要求 loopback-only
+ *     且依赖 Bearer 鉴权，在移动端功能性不可用；
+ *   · 本页下线 legacy apiClient，全面消费 v1 契约（useAuthStore / useLobbyStore），
+ *     提供清晰明确的「请在桌面端管理」静态引导与真实宿主状态展示。
+ * ---------------------------------------------------------------------------
+ */
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useConnection } from '../stores/connection'
-import { apiClient, type SettingsData, type LogEntry } from '../api/client'
+import { useAuthStore } from '../stores/auth'
+import { useLobbyStore } from '../stores/lobby'
 
 const router = useRouter()
-const { isConnected, appInfo, serverUrl } = useConnection()
+const auth = useAuthStore()
+const lobby = useLobbyStore()
 
-const settings = ref<SettingsData | null>(null)
-const logs = ref<LogEntry[]>([])
-const activeTab = ref<'settings' | 'logs' | 'about'>('settings')
-const loading = ref(false)
-const saving = ref(false)
-const logFilter = ref({ level: '', source: '', keyword: '' })
+const serverUrl = computed(() => (typeof window !== 'undefined' ? window.location.origin : ''))
+const hostVersion = computed(() => auth.host?.serverVersion ?? lobby.host?.serverVersion ?? '已连接')
+const apiVersion = computed(() => auth.host?.apiVersion ?? lobby.host?.apiVersion ?? 'v1')
 
-async function loadSettings() {
-  loading.value = true
-  try {
-    settings.value = await apiClient.getSettings()
-  } catch {
-    settings.value = null
-  } finally {
-    loading.value = false
-  }
+function goLobby() {
+  router.push('/lobby')
 }
 
-async function saveSettings() {
-  if (!settings.value) return
-  saving.value = true
-  try {
-    await apiClient.updateSettings(settings.value)
-  } catch (err) {
-    alert(err instanceof Error ? err.message : 'Save failed')
-  } finally {
-    saving.value = false
-  }
+function handleDisconnect() {
+  auth.clearLocal()
+  router.push('/connect')
 }
-
-async function loadLogs() {
-  try {
-    logs.value = await apiClient.getLogs({
-      level: logFilter.value.level || undefined,
-      source: logFilter.value.source || undefined,
-      keyword: logFilter.value.keyword || undefined,
-      limit: 200,
-    })
-  } catch {
-    logs.value = []
-  }
-}
-
-function logLevelColor(level: string): string {
-  switch (level.toLowerCase()) {
-    case 'error': return '#f85149'
-    case 'warn':
-    case 'warning': return '#d29922'
-    case 'info': return '#58a6ff'
-    case 'debug': return '#8b949e'
-    default: return '#c9d1d9'
-  }
-}
-
-onMounted(() => {
-  if (!isConnected.value) {
-    router.replace('/')
-    return
-  }
-  loadSettings()
-})
 </script>
 
 <template>
-  <div class="settings-page">
-    <div class="tabs">
+  <div class="settings-page" data-testid="settings-page">
+    <!-- 页头导航 -->
+    <header class="settings-header">
       <button
-        class="tab"
-        :class="{ 'tab--active': activeTab === 'settings' }"
-        @click="activeTab = 'settings'; loadSettings()"
-      >Settings</button>
-      <button
-        class="tab"
-        :class="{ 'tab--active': activeTab === 'logs' }"
-        @click="activeTab = 'logs'; loadLogs()"
-      >Logs</button>
-      <button
-        class="tab"
-        :class="{ 'tab--active': activeTab === 'about' }"
-        @click="activeTab = 'about'"
-      >About</button>
-    </div>
+        type="button"
+        class="header-back-btn"
+        aria-label="返回会话大厅"
+        data-testid="settings-back-btn"
+        @click="goLobby"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        <span>大厅</span>
+      </button>
+      <h1 class="header-title">设置与管理</h1>
+      <div class="header-placeholder" aria-hidden="true"></div>
+    </header>
 
-    <!-- Settings Tab -->
-    <div v-if="activeTab === 'settings'" class="tab-content">
-      <div v-if="settings" class="settings-form">
-        <div class="form-group">
-          <label class="form-label">Remote Port</label>
-          <input v-model.number="settings.remotePort" type="number" class="form-input" />
+    <main class="settings-content">
+      <!-- 桌面端专属管理提示区 -->
+      <section class="guide-section" data-testid="desktop-mgmt-section" aria-labelledby="mgmt-heading">
+        <div class="section-title-wrap">
+          <h2 id="mgmt-heading" class="section-title">桌面端专属管理</h2>
+          <span class="badge badge--desktop">桌面端操作</span>
         </div>
-        <div class="form-group">
-          <label class="form-label">Remote Token</label>
-          <input v-model="settings.remoteToken" type="password" class="form-input" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Log Level</label>
-          <select v-model="settings.logLevel" class="form-select">
-            <option value="debug">Debug</option>
-            <option value="info">Info</option>
-            <option value="warn">Warn</option>
-            <option value="error">Error</option>
-          </select>
-        </div>
-        <div class="form-group toggle-group">
-          <label class="form-label">Auto Start</label>
-          <label class="toggle">
-            <input type="checkbox" class="toggle-input" v-model="settings.autoStart" aria-label="Auto Start" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <button class="save-btn" @click="saveSettings" :disabled="saving">
-          {{ saving ? 'Saving...' : 'Save Settings' }}
-        </button>
-      </div>
-      <div v-else-if="loading" class="loading-state">Loading settings...</div>
-    </div>
+        <p class="section-intro">
+          CodeBox 移动端作为伴侣控制面，专注于远程监控与终端交互。以下配置与高级审计涉及系统安全与本地存储，仅限在桌面端 CodeBox 管理：
+        </p>
 
-    <!-- Logs Tab -->
-    <div v-if="activeTab === 'logs'" class="tab-content">
-      <div class="log-filters">
-        <select v-model="logFilter.level" class="filter-select" @change="loadLogs()">
-          <option value="">All Levels</option>
-          <option value="debug">Debug</option>
-          <option value="info">Info</option>
-          <option value="warn">Warn</option>
-          <option value="error">Error</option>
-        </select>
-        <input
-          v-model="logFilter.keyword"
-          class="filter-input"
-          placeholder="Search..."
-          @keyup.enter="loadLogs()"
-        />
-        <button class="filter-btn" @click="loadLogs()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="23 4 23 10 17 10" />
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-          </svg>
-        </button>
-      </div>
-      <div class="log-list">
-        <div v-if="logs.length === 0" class="empty-state">No logs available</div>
-        <div v-for="(log, i) in logs" :key="i" class="log-entry">
-          <span class="log-time">{{ log.timestamp }}</span>
-          <span class="log-level" :style="{ color: logLevelColor(log.level) }">{{ log.level }}</span>
-          <span class="log-msg">{{ log.message }}</span>
-        </div>
-      </div>
-    </div>
+        <div class="guide-cards">
+          <!-- Card 1: Providers -->
+          <article class="guide-card" data-testid="desktop-providers-guide">
+            <div class="card-icon card-icon--purple" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-header">
+                <h3 class="card-title">模型服务商配置 (Providers)</h3>
+                <span class="card-tag">Desktop Only</span>
+              </div>
+              <p class="card-desc">
+                添加或修改 AI 服务商、调整模型端点与参数，以及通过系统钥匙串（macOS Keychain / Windows DPAPI）加密存储 API Key，请在桌面端「服务商设置」中完成。移动端创建新会话时自动沿用已配置好的服务商与预设。
+              </p>
+            </div>
+          </article>
 
-    <!-- About Tab -->
-    <div v-if="activeTab === 'about'" class="tab-content">
-      <div class="about-card">
-        <div class="about-logo">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="1.5">
+          <!-- Card 2: Server Settings -->
+          <article class="guide-card" data-testid="desktop-server-guide">
+            <div class="card-icon card-icon--green" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-header">
+                <h3 class="card-title">服务端与网络配置 (Host Settings)</h3>
+                <span class="card-tag">Desktop Only</span>
+              </div>
+              <p class="card-desc">
+                远程控制启用开关、监听端口、LAN 网络接口绑定、日志等级及开机自启属于宿主全局系统配置，请直接在桌面端「远程控制」面板中调整。
+              </p>
+            </div>
+          </article>
+
+          <!-- Card 3: Dashboard & Usage -->
+          <article class="guide-card" data-testid="desktop-dashboard-guide">
+            <div class="card-icon card-icon--blue" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-header">
+                <h3 class="card-title">使用量与统计大盘 (Dashboard)</h3>
+                <span class="card-tag">Desktop Only</span>
+              </div>
+              <p class="card-desc">
+                各 CLI 会话详细的 Token 消耗、本地 SQLite 记账与成本分析报表已在桌面端就绪。移动端会话大厅与工作区实时提供运行中会话的状态投影与交互。
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- 移动伴侣与宿主连接信息 -->
+      <section class="status-section" data-testid="host-info-section" aria-labelledby="status-heading">
+        <h2 id="status-heading" class="section-title">系统与配对信息</h2>
+        <div class="info-table" role="table" aria-label="系统与配对信息详情">
+          <div class="info-row" role="row">
+            <span class="info-label" role="rowheader">移动端应用版本</span>
+            <span class="info-value" role="cell">v1.0.5</span>
+          </div>
+          <div class="info-row" role="row">
+            <span class="info-label" role="rowheader">宿主版本</span>
+            <span class="info-value" role="cell">{{ hostVersion }}</span>
+          </div>
+          <div class="info-row" role="row">
+            <span class="info-label" role="rowheader">契约 API 版本</span>
+            <span class="info-value" role="cell">{{ apiVersion }}</span>
+          </div>
+          <div class="info-row" role="row">
+            <span class="info-label" role="rowheader">当前配对设备</span>
+            <span class="info-value" role="cell">{{ auth.device?.name ?? '已授权伴侣设备' }}</span>
+          </div>
+          <div class="info-row" role="row">
+            <span class="info-label" role="rowheader">配对状态</span>
+            <span class="info-value highlight-success" role="cell">
+              {{ auth.isPaired ? '已配对 (Cookie 凭据受保护)' : '未配对' }}
+            </span>
+          </div>
+          <div class="info-row" role="row">
+            <span class="info-label" role="rowheader">宿主访问地址</span>
+            <span class="info-value truncate" role="cell" :title="serverUrl">{{ serverUrl }}</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 底部快捷操作 -->
+      <section class="actions-section" data-testid="settings-actions">
+        <button
+          type="button"
+          class="btn-primary"
+          data-testid="go-lobby-btn"
+          @click="goLobby"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="2" y="3" width="20" height="14" rx="2" />
             <line x1="8" y1="21" x2="16" y2="21" />
             <line x1="12" y1="17" x2="12" y2="21" />
-            <path d="M7 8l3 3-3 3" stroke-width="2" />
-            <line x1="13" y1="14" x2="17" y2="14" stroke-width="2" />
           </svg>
-        </div>
-        <h3 class="about-title">Amagi CodeBox Mobile</h3>
-        <p class="about-desc">Remote terminal controller for Amagi CodeBox</p>
+          <span>进入会话大厅</span>
+        </button>
 
-        <div class="about-info">
-          <div class="info-row">
-            <span>App Version</span>
-            <span>1.0.0</span>
-          </div>
-          <div class="info-row" v-if="appInfo">
-            <span>Server Version</span>
-            <span>{{ appInfo.version }}</span>
-          </div>
-          <div class="info-row">
-            <span>Server URL</span>
-            <span class="truncate">{{ serverUrl }}</span>
-          </div>
-          <div class="info-row" v-if="appInfo">
-            <span>Uptime</span>
-            <span>{{ appInfo.uptime }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+        <button
+          type="button"
+          class="btn-danger-outline"
+          data-testid="disconnect-btn"
+          @click="handleDisconnect"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+          <span>断开设备配对</span>
+        </button>
+      </section>
+    </main>
   </div>
 </template>
 
@@ -199,341 +200,289 @@ onMounted(() => {
 .settings-page {
   display: flex;
   flex-direction: column;
-  height: 100%;
-}
-
-.tabs {
-  display: flex;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
-  padding: 0 8px;
-  flex-shrink: 0;
-}
-
-.tab {
-  flex: 1;
-  padding: 12px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #8b949e;
-  font-size: 14px;
-  cursor: pointer;
-  /* M4-A：44px 触控目标 */
-  min-height: 44px;
-}
-
-.tab--active {
-  color: #f0f6fc;
-  border-bottom-color: #58a6ff;
-}
-
-.tab-content {
-  flex: 1;
-  padding: 16px;
-  overflow-y: auto;
-}
-
-.settings-form {
-  max-width: 400px;
-}
-
-.form-group {
-  margin-bottom: 16px;
-}
-
-.form-label {
-  display: block;
-  font-size: 13px;
-  color: #8b949e;
-  margin-bottom: 6px;
-}
-
-.form-input,
-.form-select {
-  width: 100%;
-  padding: 10px 12px;
+  min-height: 100%;
   background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
   color: #c9d1d9;
-  /* M4-A：44px 触控目标 + 16px 字号（防 iOS 聚焦自动缩放） */
-  min-height: 44px;
-  font-size: 16px;
-  outline: none;
-  box-sizing: border-box;
-  -webkit-appearance: none;
 }
 
-.form-input:focus,
-.form-select:focus {
-  border-color: #58a6ff;
-}
-
-.form-select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 36px;
-}
-
-.toggle-group {
+.settings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  height: 52px;
+  padding: 0 16px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  flex-shrink: 0;
 }
 
-.toggle-group .form-label {
-  margin-bottom: 0;
-}
-
-/* M4-R3（谛听 M4-R3-001）：44px 触控目标。视觉轨道保持 44×24，
-   但触控面扩为 44×44——原生 input 覆盖整个触控面（透明但真实可点，
-   同时是运行时测量与静态审计的真实 hit area），不再 0×0 隐藏。 */
-.toggle {
-  position: relative;
+.header-back-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 44px;
+  gap: 4px;
   min-height: 44px;
-}
-
-.toggle-input {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  margin: 0;
-  width: 100%;
-  height: 100%;
   min-width: 44px;
-  min-height: 44px;
-  opacity: 0;
+  padding: 0 8px;
+  margin-left: -8px;
+  background: transparent;
+  border: none;
+  color: #58a6ff;
+  font-size: 15px;
+  font-weight: 500;
   cursor: pointer;
+  border-radius: 6px;
 }
 
-.toggle-slider {
-  position: relative;
-  flex-shrink: 0;
-  width: 44px;
-  height: 24px;
-  cursor: pointer;
-  background: #30363d;
-  border-radius: 12px;
-  transition: 0.2s;
+.header-back-btn:hover {
+  background: rgba(88, 166, 255, 0.1);
 }
 
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background: #c9d1d9;
-  border-radius: 50%;
-  transition: 0.2s;
-}
-
-.toggle input:checked + .toggle-slider {
-  background: #238636;
-}
-
-/* M4-R3：键盘焦点可见（input 透明覆盖，焦点态映射到视觉轨道）。 */
-.toggle-input:focus-visible + .toggle-slider {
+.header-back-btn:focus-visible {
   outline: 2px solid #58a6ff;
   outline-offset: 2px;
 }
 
-.toggle input:checked + .toggle-slider::before {
-  transform: translateX(20px);
+.header-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: #f0f6fc;
 }
 
-.save-btn {
+.header-placeholder {
+  width: 44px;
+}
+
+.settings-content {
+  flex: 1;
+  padding: 20px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 640px;
+  margin: 0 auto;
   width: 100%;
-  padding: 12px;
-  background: #238636;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+.section-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.section-title {
+  margin: 0;
   font-size: 15px;
   font-weight: 600;
-  cursor: pointer;
-  /* M4-A：44px 触控目标 */
-  min-height: 44px;
-}
-
-.save-btn:active {
-  background: #2ea043;
-}
-
-.save-btn:disabled {
-  opacity: 0.5;
-}
-
-.loading-state {
-  text-align: center;
-  color: #8b949e;
-  padding: 40px;
-}
-
-/* Logs */
-.log-filters {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-  align-items: center;
-}
-
-.filter-select {
-  padding: 6px 8px;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 4px;
-  color: #c9d1d9;
-  /* M4-A：44px 触控目标 + 16px 字号（防 iOS 聚焦自动缩放） */
-  min-height: 44px;
-  font-size: 16px;
-  outline: none;
-  -webkit-appearance: none;
-}
-
-.filter-input {
-  flex: 1;
-  padding: 6px 8px;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 4px;
-  color: #c9d1d9;
-  /* M4-A：44px 触控目标 + 16px 字号 */
-  min-height: 44px;
-  font-size: 16px;
-  outline: none;
-}
-
-.filter-input:focus,
-.filter-select:focus {
-  border-color: #58a6ff;
-}
-
-.filter-btn {
-  background: #21262d;
-  border: 1px solid #30363d;
-  border-radius: 4px;
-  color: #8b949e;
-  padding: 5px 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* M4-A：44px 触控目标 */
-  min-width: 44px;
-  min-height: 44px;
-}
-
-.filter-btn:active {
-  background: #30363d;
-}
-
-.log-list {
-  font-family: "Cascadia Code", "Fira Code", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.log-entry {
-  display: flex;
-  gap: 8px;
-  padding: 2px 0;
-  border-bottom: 1px solid #21262d;
-}
-
-.log-time {
-  color: var(--VT-legacy-on-dark-muted);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.log-level {
-  font-weight: 600;
-  text-transform: uppercase;
-  min-width: 44px;
-  flex-shrink: 0;
-}
-
-.log-msg {
-  color: #c9d1d9;
-  word-break: break-all;
-}
-
-.empty-state {
-  text-align: center;
-  color: #8b949e;
-  padding: 40px;
-}
-
-/* About */
-.about-card {
-  text-align: center;
-  padding: 24px;
-}
-
-.about-logo {
-  width: 72px;
-  height: 72px;
-  background: rgba(88, 166, 255, 0.1);
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto 16px;
-}
-
-.about-title {
-  font-size: 20px;
-  font-weight: 700;
   color: #f0f6fc;
-  margin: 0 0 4px;
 }
 
-.about-desc {
-  font-size: 14px;
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge--desktop {
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+
+.section-intro {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
   color: #8b949e;
-  margin: 0 0 24px;
 }
 
-.about-info {
-  background: #0d1117;
+.guide-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.guide-card {
+  display: flex;
+  gap: 14px;
+  padding: 14px;
+  background: #161b22;
   border: 1px solid #30363d;
+  border-radius: 10px;
+}
+
+.card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
   border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.card-icon--purple {
+  background: rgba(210, 168, 255, 0.15);
+  color: #d2a8ff;
+}
+
+.card-icon--green {
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+}
+
+.card-icon--blue {
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+}
+
+.card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #f0f6fc;
+}
+
+.card-tag {
+  font-size: 11px;
+  color: #8b949e;
+  background: #21262d;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.card-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8b949e;
+}
+
+.status-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.info-table {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
   overflow: hidden;
-  text-align: left;
 }
 
 .info-row {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid #21262d;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .info-row:last-child {
   border-bottom: none;
 }
 
-.info-row span:first-child {
+.info-label {
   color: #8b949e;
+  flex-shrink: 0;
+  margin-right: 12px;
 }
 
-.info-row span:last-child {
-  color: #c9d1d9;
+.info-value {
+  color: #f0f6fc;
+  font-weight: 500;
+  text-align: right;
+}
+
+.highlight-success {
+  color: #3fb950;
 }
 
 .truncate {
-  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 220px;
+}
+
+.actions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  background: #238636;
+  color: #ffffff;
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-primary:hover {
+  background: #2ea043;
+}
+
+.btn-primary:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
+.btn-danger-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  background: transparent;
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-danger-outline:hover {
+  background: rgba(248, 81, 73, 0.1);
+  border-color: #f85149;
+}
+
+.btn-danger-outline:focus-visible {
+  outline: 2px solid #f85149;
+  outline-offset: 2px;
 }
 </style>

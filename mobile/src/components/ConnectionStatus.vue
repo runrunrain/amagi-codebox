@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { useConnection } from '../stores/connection'
+import { computed } from 'vue'
+import { useAuthStore } from '../stores/auth'
 
-const { isConnected } = useConnection()
+const auth = useAuthStore()
+const isConnected = computed(() => auth.isPaired)
 </script>
 
 <template>

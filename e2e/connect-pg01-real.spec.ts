@@ -214,17 +214,23 @@ test.describe('M1-D2 PG-01 真服务器配对 E2E（无 mock）', () => {
     expect(win.code).toMatch(/^[A-Z2-7]+$/)
     expect(Date.parse(win.expiresAt)).toBeGreaterThan(Date.now())
 
-    // 深链携带真实 code + expiresAt（真实 QR 载荷同路径）：倒计时芯片走真实过期时间。
+    // 深链携带真实 code + expiresAt（真实 QR 载荷同路径）。P2-D 夹具迁移：
+    // 产品对深链自动完成配对（beginAutomaticPairing，v1.3.09 起），手动表单
+    // 态（countdown 芯片/#pair-code 预填/「完成配对」点击）不再出现；改为
+    // 测试侧装配缝改写设备名，配对 POST 仍全真链（201/Set-Cookie/响应体
+    // 无凭据断言不变）。
+    let rewritten = false
+    await page.route('**/api/remote/v1/pairing/complete', (route) => {
+      const body = route.request().postDataJSON() as { code?: string; deviceName?: string }
+      body.deviceName = deviceName
+      rewritten = true
+      return route.continue({ postData: JSON.stringify(body) })
+    })
     await page.goto(`${origin}/#/connect?code=${encodeURIComponent(win.code)}&expiresAt=${encodeURIComponent(win.expiresAt)}`)
-    await expect(page.locator('.diagnosis-title')).toHaveText('这台设备还没有配对')
-    await expect(page.locator('.countdown-chip')).toBeVisible()
-    await expect(page.locator('#pair-code')).toHaveValue(win.code)
-    await page.locator('#pair-device-name').fill(deviceName)
-    await page.screenshot({ path: 'test-results/pg01-real-pair-form.png', fullPage: true })
 
     const pairResponsePromise = page.waitForResponse((r) => r.url().includes('/pairing/complete'))
-    await page.getByRole('button', { name: '完成配对' }).click()
     const pairRes = await pairResponsePromise
+    expect(rewritten).toBe(true)
 
     // b. 真 201。
     expect(pairRes.status()).toBe(201)

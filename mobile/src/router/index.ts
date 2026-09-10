@@ -2,9 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 
 const ConnectPage = () => import('../views/ConnectPage.vue')
 const WorkspacePage = () => import('../views/WorkspacePage.vue')
-const DashboardPage = () => import('../views/DashboardPage.vue')
 const SessionsPage = () => import('../views/SessionsPage.vue')
-const ProvidersPage = () => import('../views/ProvidersPage.vue')
 const SettingsPage = () => import('../views/SettingsPage.vue')
 
 const router = createRouter({
@@ -36,9 +34,10 @@ const router = createRouter({
       meta: { bare: true },
     },
     {
+      // P2-A：三 legacy 死页下线。Dashboard 走 Bearer 且数据由大厅接管；
+      // 重定向到 /settings 内的桌面端管理静态引导块。
       path: '/dashboard',
-      name: 'dashboard',
-      component: DashboardPage,
+      redirect: '/settings',
     },
     {
       // 旧版终端深链统一迁移到 v1 工作区诊断视图。旧 TerminalPage 使用的
@@ -52,14 +51,15 @@ const router = createRouter({
     },
     {
       // legacy #/sessions 已由 PG-02 大厅接管（P5 IA）：重定向到 #/lobby，
-      // 保留旧链接（AppLayout/DrawerNav/Dashboard）可达性。
+      // 保留旧链接（AppLayout/DrawerNav）可达性。
       path: '/sessions',
       redirect: { name: 'lobby' },
     },
     {
+      // P2-A：Providers 端点服务端 loopback-only，手机端无法修改；
+      // 重定向到 /settings 内的桌面端管理静态引导块。
       path: '/providers',
-      name: 'providers',
-      component: ProvidersPage,
+      redirect: '/settings',
     },
     {
       path: '/settings',

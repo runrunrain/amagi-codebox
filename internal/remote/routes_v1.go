@@ -124,6 +124,18 @@ func (c *hostSummaryCache) get() (contract.HostSummary, error) {
 
 var errHostSummaryUnavailable = closedTextError("security state unavailable")
 
+// degradedSnapshot reports whether the most recent provider outcome was a
+// failure — the state under which GET /host/summary serves the conservative
+// degraded summary. Read-only: it never triggers a provider call and never
+// mutates the cache. A process-fresh cache (no outcome yet) reports false —
+// no evidence of degradation. Consumed by Server.HostSummaryDegraded for the
+// desktop bindings (P3-B R2); NOT part of the v1 wire contract.
+func (c *hostSummaryCache) degradedSnapshot() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.failed
+}
+
 // v1Security is the Server-held security surface consumed by the v1 routes.
 type v1Security struct {
 	pairing    *deviceService
@@ -551,17 +563,44 @@ func (s *Server) enforceAuthPolicy(w http.ResponseWriter, r *http.Request, polic
 	return v1Principal{}, false
 }
 
+// degradedHostSummary is the conservative fallback served by GET /host/summary
+// when the HostSummary provider fails (read-surface decoupling): every known
+// CLI is reported NOT launchable, the version is honestly "unknown", and
+// LaunchSettings is omitted (an optional, additive field by contract). The
+// degrade direction keeps the fail-closed invariant — nothing unprobed is
+// ever advertised as launchable — while the session read surface (list/
+// detail, which never consulted the provider) stays usable for paired
+// devices. Pairing/complete intentionally remains fail-closed (503) on
+// provider failure.
+func degradedHostSummary() contract.HostSummary {
+	availability := make([]contract.CLIAvailability, 0, len(contract.KnownCLITypes))
+	for _, cli := range contract.KnownCLITypes {
+		availability = append(availability, contract.CLIAvailability{CLIType: cli, Available: false})
+	}
+	return contract.HostSummary{
+		APIVersion:      contract.APIVersionV1,
+		ServerVersion:   "unknown",
+		CLIAvailability: availability,
+	}
+}
+
 // handleV1HostSummary implements design §B success order: HostSummary
 // provider/cache → contract marshal (full body) → RecordDeviceSeen once → 200.
-// RecordDeviceSeen outcome/error never changes the prepared 200/status/body
-// (its health issues enter security health only). No CLI paths/provider/key/env.
+// A provider failure degrades to a conservative summary (all CLIs NOT
+// launchable) instead of 503 so a probing failure never blocks the v1 read
+// surface for already-paired devices (the mobile lobby bootstraps host/summary
+// before the session list). RecordDeviceSeen outcome/error never changes the
+// prepared 200/status/body (its health issues enter security health only). No
+// CLI paths/provider/key/env are ever reflected.
 func (s *Server) handleV1HostSummary(w http.ResponseWriter, r *http.Request, ep contract.RestEndpoint, reqID contract.RequestID, corsAllowed bool, principal v1Principal, sessionID contract.SessionID) {
 	sec := s.v1sec
 	host, herr := sec.hostCache.get()
 	if herr != nil {
-		writeV1Error(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
-			contract.ErrorLayerConnection, "security state unavailable", contract.ActionHintCheckDesktop)
-		return
+		if s.log != nil {
+			s.log.Warn("remote", "HostSummary 探测失败，降级为保守可用性（全部 CLI 不可启动，会话读面不受影响）",
+				"requestId="+string(reqID))
+		}
+		host = degradedHostSummary()
 	}
 	body, merr := contract.MarshalRESTResponse(host)
 	if merr != nil {

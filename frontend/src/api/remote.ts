@@ -24,6 +24,7 @@ import {
   GetExternalCleanupRecoveryStatus,
   ConfirmExternalCleanupRecovery,
   GetStartupWarnings,
+  ListLocalLanAddresses,
 } from '../../wailsjs/go/main/App';
 import type { main, remote } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -40,6 +41,14 @@ export function getRemoteToken(): Promise<string> {
  */
 export function getRemoteStatus(): Promise<Record<string, any>> {
   return callApi('[api.remote.getRemoteStatus]', () => GetRemoteStatus());
+}
+
+/**
+ * 本机局域网 IPv4 候选地址列表（P3-B R1）：私网优先、含网卡名与掩码长度；
+ * 过滤回环；疑似 VPN/虚拟网卡仅标注不硬滤。枚举失败抛错，调用方回退手动输入。
+ */
+export function listLocalLanAddresses(): Promise<remote.LanAddressInfo[]> {
+  return callApi('[api.remote.listLocalLanAddresses]', () => ListLocalLanAddresses());
 }
 
 /**

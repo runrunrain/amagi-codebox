@@ -76,7 +76,7 @@ describe('RawTerminalView 加载路径', () => {
     state.gate = { promise, resolve: () => resolveGate() };
     const before = state.instances.length;
     const wrapper = mount(RawTerminalView, {
-      props: { initialTranscript: '', subscribe: noopSubscribe, wsAttached: false },
+      props: { subscribe: noopSubscribe, wsAttached: false },
     });
     try {
       // 未到 300ms：无文字提示（快速加载不闪烁）。

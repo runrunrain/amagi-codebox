@@ -87,6 +87,7 @@
 Key DTO invariants:
 - `ConfirmActionRequest.confirm` MUST be literal `true`.
 - `HostSummary.launchSettings` 是可选的增量字段，仅向已配对设备暴露工作目录、Shell、provider/preset/model 的稳定引用与开关；不含 URL、环境变量或密钥。
+- `GET /host/summary` 在宿主 CLI 探测失败时返回保守降级体而非 503（2026-09 P2-B）：仍为 `200 HostSummary`，但全部已知 CLI `available:false`、`serverVersion:"unknown"`、`launchSettings` 省略——降级方向 fail-closed（探测不到的 CLI 绝不报可启动），保证已配对设备的会话读面（`/sessions*`，本就不依赖该探测）不被探测失败阻断。`pairing/complete` 在同一失败下保持 503 `service.down`（fail-closed，未配对设备无需保护的会话面）。
 - `CreateSessionRequest` 除 `cliType`/`workdir` 外可携带 `providerRef`、`presetRef`、`modelRef`、`shellRef`、`useHeadroom`，宿主必须用本地配置与密钥存储解析这些引用。
 - `ControlSnapshot` is a 4-variant union on `state`; `deviceName` present ONLY when `state="other"`.
 - `SessionDetail.earliestSeq`/`latestSeq` required even when 0.
@@ -201,4 +202,5 @@ Unified REST error body (top-level, NO `{error:{...}}` envelope):
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-09-10 | 1.3.65+ | P2-B 读面解耦：`GET /host/summary` provider/探测失败从 503 改为保守降级 200（全部 CLI `available:false`，`launchSettings` 省略；降级方向 fail-closed）。wire DTO/错误码/路径无变更；`pairing/complete` 保持 fail-closed 503；会话列表/详情端点从未依赖该探测。Go 骨架/TS 骨架/fixture 无需同步（无 wire 变更），新增 Go 回归锚 `host_summary_degrade_test.go`。 |
 | 2026-08-22 | 1.3.50 | 对照 `internal/remote/contract` 复核：协议本体（8 事件、12 错误码、关闭码、seq 不变式）无漂移；修正三处过时表述——§1 阶段表标注已全部落地、§6.3 删除「auth.go 待 M1 修复」并描述现行 v1 派发器、§7 从「M0 未接线」更新为已接线现状，`HostSummary.CLIAvailability` 从 4 个 CLI 类型更正为 5 个（补 `omp`）。 |

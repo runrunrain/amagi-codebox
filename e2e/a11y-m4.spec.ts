@@ -682,41 +682,4 @@ test.describe('M4-R3 E-09 Guide 首次态 × 窄屏（谛听 M4-006 R3）', () =
     }
     expect(consoleErrors).toEqual([])
   })
-
-  test('M4-R3 Settings 页 Auto Start 开关：真实 checkbox 触控面 ≥44px 且点击/键盘可交互（谛听 M4-R3-001 真实页面核查）', async ({ page }) => {
-    // 谛听 R3 补全枚举后浮出的真实页面 checkbox（旧实现 0×0 透明隐藏，
-    // 审计盲区内）：修复为覆盖整个 44×44 触控面的真实 hit area。
-    // 本用例为该真实控件补运行时量测与交互门禁（静态审计已纳入 --gate）。
-    await page.route('**/api/settings', (route) => {
-      if (route.request().method() === 'GET') {
-        return fulfillJson(route, 200, { remotePort: 8680, remoteToken: 'mock', autoStart: false, logLevel: 'info' })
-      }
-      return route.fallback()
-    })
-    await page.goto('/#/settings')
-    // SettingsPage 挂载时检查 legacy connection store 的 connected（模块级 ref，
-    // UI 侧无可达置位路径——DashboardPage.refresh 同样要求已连接）。经 Vite dev
-    // 模块图取同一模块实例直接置位（如实走页面自身 store，不改产品代码），
-    // 再 hash 导航回 /settings 触发重挂载。
-    await page.evaluate(async () => {
-      const mod = (await import('/src/stores/connection.ts')) as {
-        useConnection: () => { connected: { value: boolean } }
-      }
-      mod.useConnection().connected.value = true
-      window.location.hash = '#/settings'
-    })
-    const toggle = page.locator('.toggle-input')
-    await expect(toggle).toBeAttached()
-    const box = await toggle.boundingBox()
-    expect(box, 'toggle-input boundingBox 非空').not.toBeNull()
-    expect(box!.width, `toggle 触控面宽 ${box!.width} ≥ 44`).toBeGreaterThanOrEqual(44)
-    expect(box!.height, `toggle 触控面高 ${box!.height} ≥ 44`).toBeGreaterThanOrEqual(44)
-    // 点击透明 input 本身（真实 hit area）切换状态。
-    await toggle.click()
-    await expect(toggle).toBeChecked()
-    // 键盘可达：focus 落在 input 上（焦点态经 :focus-visible 映射到视觉轨道）。
-    await toggle.focus()
-    await expect(toggle).toBeFocused()
-    await page.screenshot({ path: 'test-results/m4a-settings-toggle.png', fullPage: false })
-  })
 })

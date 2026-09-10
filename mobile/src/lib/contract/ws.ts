@@ -13,7 +13,7 @@
  * have no store/network/log side effects. The WebSocket business consumer is
  * NOT wired in M0 (addendum §5.5 honest boundary).
  *
- * This module does NOT reuse the legacy TerminalFrame (mobile/src/api/websocket.ts).
+ * This module defines the canonical v1 WebSocket contract types.
  */
 import type {
   APIVersion,

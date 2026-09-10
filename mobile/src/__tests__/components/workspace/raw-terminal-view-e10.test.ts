@@ -33,7 +33,7 @@ describe('RawTerminalView E-10 回落', () => {
 
   it('引擎加载失败 → 明示不可用与回落指引，不假装可用', async () => {
     const wrapper = mount(RawTerminalView, {
-      props: { initialTranscript: '', subscribe: noopSubscribe, wsAttached: false },
+      props: { subscribe: noopSubscribe, wsAttached: false },
     });
     await vi.waitFor(
       () => {
