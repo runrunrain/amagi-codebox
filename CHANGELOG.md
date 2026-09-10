@@ -4,7 +4,7 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
-## [未发布] - 2026-09-10
+## [1.3.66] - 2026-09-10
 
 > 远程 Web 控制界面交付批次（调研报告见 `agent-outputs/execution-plan/20260910-remote-web-control/`）。全部变更经过 diting 阶段审核（PASS_WITH_MINOR，0 Critical/0 Major）。
 
