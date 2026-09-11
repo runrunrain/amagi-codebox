@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.68] - 2026-09-11
+
+### Fixed
+
+- **Web 平面插入工作路径真机全部被拒（契约 v1→v2）**：v1 接收端误用 `event.origin === 'null'` 识别宿主，但 `event.origin` 是发送方（宿主壳 `http://wails.localhost`）origin 永远非 `'null'`，导致真机上所有插入指令被拒。宿主→webui 桥升级 v2：消息携带 capability token（从 iframe URL fragment `#/t=<token>` 提取，形状与 amagi-pi webui transport `CAPABILITY_PATTERN` 一致），接收端以「token 与自身 fragment 严格相等」校验来源，与 origin 语义解耦；token 缺失/非法时宿主侧直接不投递。
+
 ## [1.3.67] - 2026-09-11
 
 ### Added
