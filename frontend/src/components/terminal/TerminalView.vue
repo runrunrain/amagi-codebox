@@ -19,12 +19,13 @@
             @update:modelValue="onPlaneSelect"
           />
         </div>
-        <!-- 快捷功能（锚定下拉菜单，所有内嵌终端会话通用）：Web 平面/会话未运行时禁用 -->
+        <!-- 快捷功能（锚定下拉菜单，所有内嵌终端会话通用）：仅会话非运行
+             时禁用；Web 平面经 WebPlaneHost.postToFrame 注入 webui 对话框 -->
         <button
           ref="quickAnchorRef"
           class="btn btn-ghost"
-          :disabled="quickMenuDisabled"
-          :title="quickMenuTitle"
+          :disabled="quickMenuState.disabled"
+          :title="quickMenuState.title"
           :aria-expanded="quickMenuVisible"
           aria-haspopup="menu"
           @click="toggleQuickMenu"
@@ -55,6 +56,7 @@
            切走后保留不销毁（交互文档 §3）；xterm 由 .web-active 类隐藏。 -->
       <WebPlaneHost
         v-if="webPlaneMounted"
+        ref="webPlaneHostRef"
         v-show="activePlane === 'web'"
         :url="webUrl"
         :session-id="sessionId"
@@ -147,10 +149,10 @@ import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
 import { useTerminalEngine } from '../../composables/useTerminalEngine'
 import { basename } from '../../utils/format'
-import { buildAssociatedPathLines } from '../../utils/quickFunctions'
 import GitPanel from './GitPanel.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
 import WebPlaneHost from './WebPlaneHost.vue'
+import { dispatchPathConfirm, quickMenuStateFor } from './quickPathInsert'
 import PathPickerDialog from './PathPickerDialog.vue'
 import Segmented from '../ui/Segmented.vue'
 import { openWebPlane } from '../../api/webui'
@@ -183,6 +185,7 @@ const quickAnchorRef = ref<HTMLElement | null>(null)
 const quickMenuRef = ref<HTMLElement | null>(null)
 const quickMenuStyle = ref<Record<string, string>>({})
 const pathPickerVisible = ref(false)
+const webPlaneHostRef = ref<InstanceType<typeof WebPlaneHost> | null>(null)
 
 // 数据驱动菜单项：首项「输入工作路径」，后续快捷能力在此追加。
 const quickMenuItems: { key: string; label: string; action: () => void }[] = [
@@ -195,17 +198,12 @@ const quickMenuItems: { key: string; label: string; action: () => void }[] = [
   },
 ]
 
-// Web 平面（pi Web）内嵌页面有自己的输入通道，终端写入会落到隐藏的 xterm；
-// 会话非 running 时终端不再接受输入。两种情况都禁用入口。
-const quickMenuDisabled = computed(
-  () => activePlane.value === 'web' || session.value?.status !== 'running',
+// 快捷功能入口可用性：仅会话非 running 时禁用（Web 平面经
+// WebPlaneHost.postToFrame 注入 webui 对话框，不再落隐藏的 xterm）。
+// 提示语与分派决策为纯函数（见文件顶部 <script> 块），便于单测覆盖。
+const quickMenuState = computed(() =>
+  quickMenuStateFor(activePlane.value, session.value?.status),
 )
-
-const quickMenuTitle = computed(() => {
-  if (activePlane.value === 'web') return 'Web 平面请使用页面内快捷功能，或切回终端平面'
-  if (session.value?.status !== 'running') return '会话未运行，无法使用快捷功能'
-  return '快捷功能'
-})
 
 // ---- 锚定定位：正下方右对齐（对齐 GitPanel 浮层模式），clamp 在视口内 ----
 const QUICK_MENU_PAD = 12
@@ -238,7 +236,7 @@ function onQuickMenuKeydown(event: KeyboardEvent) {
 }
 
 function toggleQuickMenu() {
-  if (quickMenuDisabled.value) return
+  if (quickMenuState.value.disabled) return
   quickMenuVisible.value = !quickMenuVisible.value
 }
 
@@ -271,12 +269,22 @@ onBeforeUnmount(() => {
   }
 })
 
-// 确认回调：组装「关联工作路径：…」文本 → 经引擎单一写入出口插入终端；
-// bracketed paste 由引擎按当前 TUI 模式自动包裹。异常走既有 toast 报错。
+// 确认回调：组装「关联工作路径：…」文本后按当前平面分发：
+// - Web 平面：postMessage 注入 webui 对话框（追加 + 聚焦，不自动发送）
+// - TUI 平面：经引擎单一写入出口插入终端，bracketed paste 由引擎按当前 TUI
+//   模式自动包裹（行为不变）
+// 空选择/超长文本不发任何指令；Web 平面 iframe 未就绪走失败 toast；异常走
+// 既有 toast 报错。
 async function onPathPickerConfirm(paths: string[]) {
   pathPickerVisible.value = false
   try {
-    await engine.insertTextToTerminal(props.sessionId, buildAssociatedPathLines(paths))
+    const result = await dispatchPathConfirm(activePlane.value, props.sessionId, paths, {
+      postToFrame: (payload) => webPlaneHostRef.value?.postToFrame(payload) ?? false,
+      insertTextToTerminal: (sessionId, text) =>
+        engine.insertTextToTerminal(sessionId, text),
+    })
+    if (result === 'web-inserted') showInfo('已插入网页对话框')
+    else if (result === 'web-not-ready') showError('网页平面未就绪，路径未插入')
   } catch (err) {
     showError('工作路径写入失败: ' + err)
   }

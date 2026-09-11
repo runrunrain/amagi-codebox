@@ -7,6 +7,7 @@
          事件，发送按钮静默失效——T-2.4 实证）；allow-forms 不放行
          顶层导航/弹窗，页面为第一方，风险可控。 -->
     <iframe
+      ref="frameRef"
       v-if="frameSrc"
       :key="frameKey"
       class="web-frame"
@@ -52,8 +53,11 @@
  * codebox 不拦截页面内部交互（输入/滚动/复制由页面自理）。
  */
 import { ref, watch, onBeforeUnmount } from 'vue';
+// postToWebFrame / InsertInputPayload 来自同文件 <script> 块的具名导出
+// （两个 script 块编译进同一模块，同名符号无需 import）。
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import { postToWebFrame, type InsertInputPayload } from './quickPathInsert';
 
 const props = withDefaults(
   defineProps<{ url: string; sessionId: string; ended?: boolean }>(),
@@ -71,6 +75,20 @@ type Phase = 'loading' | 'loaded' | 'error';
 const phase = ref<Phase>('loading');
 const frameSrc = ref(props.url);
 const frameKey = ref(0);
+const frameRef = ref<HTMLIFrameElement | null>(null);
+
+/**
+ * 宿主 → webui 插入指令桥（父级经模板 ref 调用）。
+ *
+ * iframe 已 loaded 且 contentWindow 可用时投递
+ * { type: 'amagi:insert-input', text } 并返回 true；否则 false（不抛错）。
+ * targetOrigin '*' 的安全边界见 postToWebFrame 注释。
+ */
+function postToFrame(payload: InsertInputPayload): boolean {
+  return postToWebFrame(frameRef.value, phase.value, payload)
+}
+
+defineExpose({ postToFrame })
 
 // 加载看门狗：iframe 对拒连/空响应不保证触发 error，超时兜底。
 const LOAD_TIMEOUT_MS = 10_000;
