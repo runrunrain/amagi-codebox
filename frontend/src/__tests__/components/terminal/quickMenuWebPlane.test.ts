@@ -4,14 +4,23 @@ import {
   MAX_INSERT_TEXT_BYTES,
   buildInsertPayload,
   dispatchPathConfirm,
+  extractCapabilityToken,
   postToWebFrame,
   quickMenuStateFor,
+  type InsertInputMessage,
   type InsertInputPayload,
   type PathConfirmDeps,
   type WebFrameLike,
 } from '../../../components/terminal/quickPathInsert'
 
 // ---- 桩工具：iframe.contentWindow / 终端引擎 ----
+
+const TOKEN = '70f099bb842115cf89448785acfe9942'
+
+/** buildInsertPayload 产物 + WebPlaneHost 注入的 token（= 实际投递消息）。 */
+function msg(payload: InsertInputPayload): InsertInputMessage {
+  return { ...payload, token: TOKEN }
+}
 
 function stubFrame() {
   const postMessage = vi.fn()
@@ -33,18 +42,19 @@ function stubDeps(overrides: Partial<PathConfirmDeps> = {}) {
 
 // ---- 跨仓契约：宿主 → webui postMessage ----
 
-describe('postToWebFrame（宿主 → webui 桥）', () => {
-  it('loaded 态投递成功：payload 为 {type, text}，targetOrigin 为 *', () => {
+describe('postToWebFrame（宿主 → webui 桥，契约 v2 带 token）', () => {
+  it('loaded 态投递成功：消息为 {type, token, text}，targetOrigin 为 *', () => {
     const { frame, postMessage } = stubFrame()
     const payload = buildInsertPayload(['/Users/me/proj'])
     expect(payload).not.toBeNull()
 
-    expect(postToWebFrame(frame, 'loaded', payload!)).toBe(true)
+    expect(postToWebFrame(frame, 'loaded', msg(payload!))).toBe(true)
 
     expect(postMessage).toHaveBeenCalledTimes(1)
     const [message, targetOrigin] = postMessage.mock.calls[0]
     expect(targetOrigin).toBe('*')
     expect(message.type).toBe(INSERT_INPUT_MESSAGE_TYPE)
+    expect(message.token).toBe(TOKEN)
     expect(message.text).toBe('关联工作路径：/Users/me/proj')
     expect(message.text).toMatch(/^关联工作路径：/)
   })
@@ -52,7 +62,7 @@ describe('postToWebFrame（宿主 → webui 桥）', () => {
   it('多路径：逐行「关联工作路径：」，保持勾选顺序', () => {
     const { frame, postMessage } = stubFrame()
     const payload = buildInsertPayload(['/w/a', '/w/b'])
-    expect(postToWebFrame(frame, 'loaded', payload!)).toBe(true)
+    expect(postToWebFrame(frame, 'loaded', msg(payload!))).toBe(true)
     expect(postMessage.mock.calls[0][0].text).toBe(
       '关联工作路径：/w/a\n关联工作路径：/w/b',
     )
@@ -60,7 +70,7 @@ describe('postToWebFrame（宿主 → webui 桥）', () => {
 
   it('loading / error 态：不投递且返回 false（与 happy-path 成对）', () => {
     const { frame, postMessage } = stubFrame()
-    const payload = buildInsertPayload(['/w/a'])!
+    const payload = msg(buildInsertPayload(['/w/a'])!)
 
     expect(postToWebFrame(frame, 'loading', payload)).toBe(false)
     expect(postToWebFrame(frame, 'error', payload)).toBe(false)
@@ -68,10 +78,47 @@ describe('postToWebFrame（宿主 → webui 桥）', () => {
   })
 
   it('iframe 未挂载 / contentWindow 缺失：返回 false 不抛错', () => {
-    const payload = buildInsertPayload(['/w/a'])!
+    const payload = msg(buildInsertPayload(['/w/a'])!)
     expect(postToWebFrame(null, 'loaded', payload)).toBe(false)
     expect(postToWebFrame(undefined, 'loaded', payload)).toBe(false)
     expect(postToWebFrame({ contentWindow: null }, 'loaded', payload)).toBe(false)
+  })
+})
+
+// ---- 凭证提取 + 注入链路（WebPlaneHost.postToFrame 的纯函数等价物） ----
+
+describe('extractCapabilityToken（iframe URL → 消息凭证）', () => {
+  it('标准契约 URL（${httpBase}/#/t=<token>）→ 提取成功', () => {
+    expect(
+      extractCapabilityToken(`http://127.0.0.1:54758/#/t=${TOKEN}`),
+    ).toBe(TOKEN)
+  })
+
+  it('带查询串 / 百分号编码 token：仍正确提取解码', () => {
+    expect(extractCapabilityToken(`http://127.0.0.1:54758/?x=1#/t=${TOKEN}`)).toBe(TOKEN)
+    expect(
+      extractCapabilityToken('http://127.0.0.1:54758/#/t=abc-ABC_123%2Ddef456ghi789jkl'),
+    ).toBe('abc-ABC_123-def456ghi789jkl')
+  })
+
+  it('无 fragment / token 过短 / 非法字符 → null（与 happy-path 成对）', () => {
+    expect(extractCapabilityToken('http://127.0.0.1:54758/')).toBeNull()
+    expect(extractCapabilityToken('http://127.0.0.1:54758/#/t=short')).toBeNull()
+    expect(extractCapabilityToken('http://127.0.0.1:54758/#/t=has%20space%20and%20too長')).toBeNull()
+  })
+
+  it('WebPlaneHost 投递等价链路：URL 提 token → 消息带 token；无 token 时不投递', () => {
+    const { frame, postMessage } = stubFrame()
+    const payload = buildInsertPayload(['/w/a'])!
+
+    const token = extractCapabilityToken(`http://127.0.0.1:54758/#/t=${TOKEN}`)
+    expect(token).not.toBeNull()
+    expect(postToWebFrame(frame, 'loaded', { ...payload, token: token! })).toBe(true)
+    expect(postMessage.mock.calls[0][0].token).toBe(TOKEN)
+
+    const badToken = extractCapabilityToken('http://127.0.0.1:54758/') // 无 fragment
+    expect(badToken).toBeNull() // 等价于 WebPlaneHost.postToFrame 提前返回 false，不投递
+    expect(postMessage).toHaveBeenCalledTimes(1)
   })
 })
 

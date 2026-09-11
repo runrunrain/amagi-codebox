@@ -57,7 +57,7 @@ import { ref, watch, onBeforeUnmount } from 'vue';
 // （两个 script 块编译进同一模块，同名符号无需 import）。
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
-import { postToWebFrame, type InsertInputPayload } from './quickPathInsert';
+import { postToWebFrame, extractCapabilityToken, type InsertInputPayload } from './quickPathInsert';
 
 const props = withDefaults(
   defineProps<{ url: string; sessionId: string; ended?: boolean }>(),
@@ -80,12 +80,15 @@ const frameRef = ref<HTMLIFrameElement | null>(null);
 /**
  * 宿主 → webui 插入指令桥（父级经模板 ref 调用）。
  *
- * iframe 已 loaded 且 contentWindow 可用时投递
- * { type: 'amagi:insert-input', text } 并返回 true；否则 false（不抛错）。
- * targetOrigin '*' 的安全边界见 postToWebFrame 注释。
+ * iframe 已 loaded、contentWindow 可用、且 props.url 携带合法 capability token 时，
+ * 投递 { type: 'amagi:insert-input', token, text } 并返回 true；否则 false（不抛错）。
+ * token = 构造 iframe URL（#/t=）时持有的凭证，接收端以「与自身 fragment 严格相等」
+ * 校验来源（origin 不参与——event.origin 是发送方自身 origin）。
  */
 function postToFrame(payload: InsertInputPayload): boolean {
-  return postToWebFrame(frameRef.value, phase.value, payload)
+  const token = extractCapabilityToken(props.url)
+  if (!token) return false
+  return postToWebFrame(frameRef.value, phase.value, { ...payload, token })
 }
 
 defineExpose({ postToFrame })

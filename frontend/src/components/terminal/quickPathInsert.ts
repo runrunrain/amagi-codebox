@@ -3,14 +3,21 @@
  *
  * 与 UI 解耦的纯函数/可注入依赖逻辑：
  * - buildInsertPayload：把选中路径组装为宿主 → webui 的插入指令 payload
+ * - extractCapabilityToken：从 webui iframe URL 提取 capability token（消息凭证）
  * - postToWebFrame：向 sandbox iframe（webui）投递插入指令
  * - quickMenuStateFor：快捷功能入口的禁用态/提示语
  * - dispatchPathConfirm：确认后的平面分流（Web → postMessage，TUI → 终端写入）
  *
- * 跨仓冻结契约（宿主侧，勿改）：
- *   iframe.contentWindow.postMessage({ type: 'amagi:insert-input', text }, '*')
- * text 为非空 string、UTF-8 ≤128KiB；接收端 webui 侧自带双重守卫
- * （仅 webui-embedded 嵌入态 + event.origin === 'null' 才接受）。
+ * 跨仓冻结契约 v2（宿主侧，勿改）：
+ *   iframe.contentWindow.postMessage({ type: 'amagi:insert-input', token, text }, '*')
+ * token = iframe URL fragment `#/t=<token>` 的 capability token（宿主构造者持有，
+ * 接收端以「token 与自身 fragment 严格相等」校验来源）；text 为非空 string、
+ * UTF-8 ≤128KiB；接收端还要求嵌入态（webui-embedded）。
+ *
+ * v1 → v2 修复（2026-09-11）：v1 消息不带 token、接收端误用
+ * `event.origin === 'null'` 识别宿主——event.origin 是发送方（宿主壳）origin，
+ * codebox 壳为 http://wails.localhost，永远非 'null'，导致真机全部消息被拒。
+ * 现改为 token 凭证，与 origin 语义解耦。
  */
 
 import { buildAssociatedPathLines } from '../../utils/quickFunctions'
@@ -21,10 +28,33 @@ export const INSERT_INPUT_MESSAGE_TYPE = 'amagi:insert-input'
 /** 插入文本的 UTF-8 字节上限（契约：≤128KiB）。超限直接不发指令。 */
 export const MAX_INSERT_TEXT_BYTES = 128 * 1024
 
-/** 宿主 → webui 的插入指令 payload。 */
+/** 宿主 → webui 的插入指令 payload（token 由 WebPlaneHost 投递时注入）。 */
 export interface InsertInputPayload {
   type: typeof INSERT_INPUT_MESSAGE_TYPE
   text: string
+}
+
+/** 实际投递消息：payload + capability token（接收端以 token 与自身 fragment 严格相等校验来源）。 */
+export interface InsertInputMessage extends InsertInputPayload {
+  token: string
+}
+
+/** capability token 形状（与 amagi-pi webui transport.ts CAPABILITY_PATTERN 一致）。 */
+const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{22,}$/
+
+/**
+ * 从 webui iframe URL（`${httpBase}/#/t=<token>`，契约 §6.5）提取 capability token。
+ * fragment 缺失/格式不合法（非 [A-Za-z0-9_-]{22,}）/解码失败 → null。
+ */
+export function extractCapabilityToken(url: string): string | null {
+  const idx = url.indexOf('#/t=')
+  if (idx < 0) return null
+  try {
+    const token = decodeURIComponent(url.slice(idx + 4))
+    return CAPABILITY_PATTERN.test(token) ? token : null
+  } catch {
+    return null
+  }
 }
 
 /** 会话显示平面。 */
@@ -73,12 +103,12 @@ export function buildInsertPayload(paths: string[]): InsertInputPayload | null {
 }
 
 /**
- * 向 webui iframe 投递插入指令。
+ * 向 webui iframe 投递插入指令（含 token 凭证）。
  *
- * targetOrigin 固定 '*' 的安全边界：iframe 为 sandbox（无 allow-same-origin），
- * 接收侧 origin 是 opaque 的 'null'，宿主无法给出具体 origin；安全由接收端
- * webui 双重守卫兜底（仅嵌入态 + event.origin === 'null' 才接受，独立浏览器
- * 访问一律忽略），且本通道只承载「插入输入框文本」单向指令、不回传数据。
+ * targetOrigin 固定 '*'：iframe 为 sandbox（无 allow-same-origin），其 opaque origin
+ * 不能被指定为 targetOrigin；安全由接收端守卫兜底（嵌入态 + token 与自身 fragment
+ * 严格相等，见 amagi-pi webui/src/host-bridge.ts），且本通道只承载「插入输入框文本」
+ * 单向指令、不回传数据。
  *
  * iframe 未挂载（null/undefined）、未处于 loaded 态或 contentWindow 不可用时
  * 返回 false，绝不抛错（由调用方 toast 兜底）。
@@ -86,7 +116,7 @@ export function buildInsertPayload(paths: string[]): InsertInputPayload | null {
 export function postToWebFrame(
   frame: WebFrameLike | null | undefined,
   phase: WebFramePhase,
-  payload: InsertInputPayload,
+  payload: InsertInputMessage,
 ): boolean {
   if (phase !== 'loaded') return false
   const win = frame?.contentWindow
