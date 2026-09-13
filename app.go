@@ -658,6 +658,37 @@ func (a *App) GetSettingsService() *settings.Service   { return a.Settings }
 func (a *App) GetPathsService() *paths.PathsService    { return a.Paths }
 func (a *App) GetConfigService() *config.ConfigService { return a.Config }
 
+// GetSessionWebUI 返回会话 webui 平面的缓存快照（remote.AppInterface 扩展，
+// remote-webui-plane 切片；供 remote server 的 /webui/{sid} 反向代理使用）。
+// WebUI 服务未接线（测试构造）时返回 unknown。
+func (a *App) GetSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
+	if a.WebUI == nil {
+		return remote.SessionWebUIInfo{State: string(webui.StateUnknown)}, false
+	}
+	return a.sessionWebUIInfo(sessionID, a.WebUI.GetWebUIStatus(sessionID)), true
+}
+
+// ProbeSessionWebUI 先执行一轮 webui 探测（与桌面端轮询同一状态机推进路径）
+// 再返回快照；remote v1 状态端点按此节奏轮询。
+func (a *App) ProbeSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
+	if a.WebUI == nil {
+		return remote.SessionWebUIInfo{State: string(webui.StateUnknown)}, false
+	}
+	return a.sessionWebUIInfo(sessionID, a.WebUI.ProbeWebUI(sessionID)), true
+}
+
+// sessionWebUIInfo 把 webui.Status 投影为 remote 侧快照；仅 available 时
+// 附带端口与 capability token（token 供代理出向覆盖式注入，不下发日志）。
+func (a *App) sessionWebUIInfo(sessionID string, st webui.Status) remote.SessionWebUIInfo {
+	info := remote.SessionWebUIInfo{State: string(st.State)}
+	if st.State == webui.StateAvailable {
+		if port, token := a.WebUI.SessionEndpoint(sessionID); port > 0 {
+			info.Port, info.Token = port, token
+		}
+	}
+	return info
+}
+
 func (a *App) platformCapabilities() platform.PlatformCapabilities {
 	if a.Capabilities.PlatformID != "" {
 		return a.Capabilities

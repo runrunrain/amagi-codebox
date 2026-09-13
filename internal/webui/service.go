@@ -122,6 +122,20 @@ func (s *Service) RegisterSession(sessionID string, pid, injectedPort int, token
 	}
 }
 
+// SessionEndpoint 返回 available 会话的回环端点（端口与 v1.0.2 capability
+// token），供 remote 反向代理出向接线（remote-webui-plane 切片）。非
+// available（或未注册）返回 (0, "")。token 是 capability 凭据：调用方
+// 不得写日志或放入 URL query/path。
+func (s *Service) SessionEndpoint(sessionID string) (port int, token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.trackers[sessionID]
+	if !ok || t.state != StateAvailable || t.port <= 0 {
+		return 0, ""
+	}
+	return t.port, t.token
+}
+
 // Invalidate 在会话退出时将状态落为 ended（app.go 退出 goroutine 调用）。
 func (s *Service) Invalidate(sessionID string) {
 	s.mu.Lock()

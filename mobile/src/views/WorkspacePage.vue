@@ -21,6 +21,8 @@ import ControlBar from '../components/workspace/ControlBar.vue';
 import ContinuityBanner from '../components/workspace/ContinuityBanner.vue';
 import GuideCard from '../components/workspace/GuideCard.vue';
 import RawTerminalView from '../components/workspace/RawTerminalView.vue';
+import WebPlaneView from '../components/workspace/WebPlaneView.vue';
+import { useSessionWebUI } from '../composables/useSessionWebUI';
 
 const GUIDE_DISMISSED_KEY = 'amagi.pg03.guide.dismissed';
 
@@ -53,13 +55,42 @@ const isTuiCli = computed(() => {
   return cli === 'pi' || cli === 'omp';
 });
 
-// 若显式带有 ?view=terminal 则进入终端面；?view=timeline 则进入时间线；
-// 缺省时：pi/omp 默认终端仿真面，其余 CLI 默认结构化时间线（R3）
-const isTerminalView = computed(() => {
-  if (route.query.view === 'terminal') return true;
-  if (route.query.view === 'timeline') return false;
-  return isTuiCli.value;
+// --- Web 会话平面探测与轮询（C2/C4）：仅针对 pi/omp 会话 ---
+const {
+  state: webuiState,
+  url: webuiUrl,
+  isAvailable: webuiAvailable,
+  refresh: refreshWebUI,
+} = useSessionWebUI(sessionId, isTuiCli);
+
+export type WorkspaceView = 'timeline' | 'terminal' | 'webplane';
+
+// 若显式带有 ?view=terminal 则进入终端面；?view=timeline 则进入时间线；?view=webplane 则进入 Web 平面；
+// 缺省时：
+//   - 非 TUI CLI（claudecode/opencode/codex）：默认结构化时间线（R3）
+//   - TUI CLI（pi/omp）：默认视图策略：
+//     - webui available → webplane
+//     - probing → webplane（显示加载态，0.5–1s 轮询）
+//     - unavailable/unknown → terminal（终端仿真，现状不回归）
+const activeView = computed<WorkspaceView>(() => {
+  const queryView = route.query.view;
+  if (queryView === 'terminal') return 'terminal';
+  if (queryView === 'timeline') return 'timeline';
+  if (queryView === 'webplane') return 'webplane';
+
+  if (!isTuiCli.value) {
+    return 'timeline';
+  }
+
+  if (webuiState.value === 'available' || webuiState.value === 'probing') {
+    return 'webplane';
+  }
+  return 'terminal';
 });
+
+const isTerminalView = computed(() => activeView.value === 'terminal');
+const isWebPlaneView = computed(() => activeView.value === 'webplane');
+const isTimelineView = computed(() => activeView.value === 'timeline');
 
 // 诊断视图语义：仅非 TUI CLI 主动开启终端网格时标记为「诊断视图」（PG-04 回归保持）
 const isDiagnostic = computed(() => !isTuiCli.value && isTerminalView.value);
@@ -90,6 +121,15 @@ function openDiagnostic(): void {
     name: 'workspace',
     params: { sessionId: sessionId.value },
     query: { view: 'terminal' },
+  });
+}
+
+function switchToWebPlane(): void {
+  menuOpen.value = false;
+  void router.push({
+    name: 'workspace',
+    params: { sessionId: sessionId.value },
+    query: { view: 'webplane' },
   });
 }
 
@@ -158,8 +198,8 @@ watch(
 let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function reportResize(): void {
-  // 终端仿真面由 xterm fit 上报真实网格；主时间线面维持近似换算，二者不重复上报。
-  if (isTerminalView.value) return;
+  // 终端仿真面由 xterm fit 上报真实网格；Web 平面自理；主时间线面维持近似换算，二者不重复上报。
+  if (isTerminalView.value || isWebPlaneView.value) return;
   const cols = Math.max(20, Math.round(window.innerWidth / 8.2));
   const rows = Math.max(6, Math.round(window.innerHeight / 18));
   store.sendResize(cols, rows);
@@ -205,7 +245,7 @@ function jumpToGap(): void {
       <!-- 页面返回按钮：
            1. 诊断面（非 TUI CLI 临时查看终端）：返回主阅读面；
            2. TUI 会话（pi/omp）切到时间线时：返回终端面；
-           3. 默认主面（非 TUI 在时间线，或 TUI 在终端）：返回会话大厅 -->
+           3. 默认主面（非 TUI 在时间线，或 TUI 在终端/Web 平面）：返回会话大厅 -->
       <button
         v-if="isDiagnostic"
         type="button"
@@ -218,7 +258,7 @@ function jumpToGap(): void {
         <span class="btn-label">返回主阅读面</span>
       </button>
       <button
-        v-else-if="isTuiCli && !isTerminalView"
+        v-else-if="isTuiCli && isTimelineView"
         type="button"
         class="back-btn back-btn--primary"
         @click="switchToTerminal"
@@ -244,6 +284,7 @@ function jumpToGap(): void {
         <span class="title-text">{{ title }}</span>
         <span v-if="isDiagnostic" class="diagnostic-badge">诊断视图</span>
         <span v-else-if="isTuiCli && isTerminalView" class="tui-cli-badge">终端仿真</span>
+        <span v-else-if="isTuiCli && isWebPlaneView" class="webplane-badge">Web 平面</span>
       </h1>
       <div class="menu-wrap" @keydown="onMenuKeydown">
         <button ref="menuBtnRef" type="button" class="menu-btn" aria-label="更多操作" aria-haspopup="menu" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
@@ -252,25 +293,34 @@ function jumpToGap(): void {
           </svg>
         </button>
         <div v-if="menuOpen" ref="menuPanelRef" class="menu-panel" role="menu" aria-label="会话操作菜单">
-          <!-- TUI 会话 (pi/omp) 菜单项 -->
+          <!-- TUI 会话 (pi/omp) 菜单项：三面切换（Web 平面/时间线/终端），webui 非 available 时隐藏 Web 平面入口 -->
           <template v-if="isTuiCli">
             <button
-              v-if="isTerminalView"
+              v-if="webuiAvailable && activeView !== 'webplane'"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="switchToWebPlane"
+            >
+              切换至 Web 平面视图
+            </button>
+            <button
+              v-if="activeView !== 'terminal'"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="switchToTerminal"
+            >
+              {{ activeView === 'webplane' ? '切换至终端仿真视图' : '返回终端仿真视图' }}
+            </button>
+            <button
+              v-if="activeView !== 'timeline'"
               type="button"
               class="menu-item"
               role="menuitem"
               @click="switchToTimeline"
             >
               切换至时间线视图
-            </button>
-            <button
-              v-else
-              type="button"
-              class="menu-item"
-              role="menuitem"
-              @click="switchToTerminal"
-            >
-              返回终端仿真视图
             </button>
             <button
               type="button"
@@ -307,7 +357,7 @@ function jumpToGap(): void {
       </div>
     </header>
 
-    <GuideCard v-if="guideVisible && !isTerminalView && !store.loading && !store.loadError" @dismiss="dismissGuide" @open-diagnostic="openDiagnostic" />
+    <GuideCard v-if="guideVisible && !isTerminalView && !isWebPlaneView && !store.loading && !store.loadError" @dismiss="dismissGuide" @open-diagnostic="openDiagnostic" />
 
     <StatusBar :layers="store.statusLayers" />
 
@@ -363,7 +413,7 @@ function jumpToGap(): void {
 
     <!-- 主阅读面：结构化内容转化时间线（其余 CLI 默认，或 pi/omp 切换至此） -->
     <TimelineView
-      v-if="!isTerminalView"
+      v-if="activeView === 'timeline'"
       ref="timelineRef"
       :items="store.timelineItems"
       :output-version="store.latestSeq"
@@ -379,7 +429,7 @@ function jumpToGap(): void {
 
     <!-- 终端仿真面：xterm 仿真网格（pi/omp 默认主面，其余 CLI 诊断面） -->
     <RawTerminalView
-      v-else
+      v-else-if="activeView === 'terminal'"
       :subscribe="store.subscribeRawOutput"
       :ws-attached="store.wsState === 'attached'"
       :readonly="!store.canWrite"
@@ -388,8 +438,47 @@ function jumpToGap(): void {
       @data="(data: string) => store.sendRaw(data)"
     />
 
-    <!-- Composer：两面同一组件/同一 store 过滤路径；terminalMode 激活 KeyTray -->
+    <!-- Web 会话平面：嵌入 pi webui（pi/omp 默认/首选，C2/C4） -->
+    <template v-else-if="activeView === 'webplane'">
+      <!-- probing 探测加载态（0.5–1s 轮询中） -->
+      <div
+        v-if="webuiState === 'probing'"
+        class="webplane-probing"
+        role="status"
+        data-testid="webplane-probing"
+      >
+        <div class="webplane-spinner" aria-hidden="true" />
+        <span>正在连接 Web 会话平面…</span>
+      </div>
+      <!-- Web 会话平面 iframe 宿主 -->
+      <WebPlaneView
+        v-else-if="webuiUrl"
+        :url="webuiUrl"
+        :session-id="sessionId"
+        :ended="webuiState === 'ended'"
+        @retry="refreshWebUI"
+        @switch-to-terminal="switchToTerminal"
+        @switch-to-timeline="switchToTimeline"
+      />
+      <!-- 显式进入 ?view=webplane 但不可用时的降级提示 -->
+      <div
+        v-else
+        class="webplane-unavailable-card"
+        role="alert"
+        data-testid="webplane-unavailable"
+      >
+        <strong>Web 会话平面当前不可用</strong>
+        <span>pi webui 服务未就绪或未安装对应插件。</span>
+        <button type="button" class="fallback-btn" @click="switchToTerminal">
+          切换至终端仿真
+        </button>
+      </div>
+    </template>
+
+    <!-- Composer：两面同一组件/同一 store 过滤路径；terminalMode 激活 KeyTray；
+         Web 会话平面内隐藏外层 ComposerBar 与 KeyTray（页面自带输入台，避免双输入台） -->
     <ComposerBar
+      v-if="activeView !== 'webplane'"
       :draft="store.draft"
       :sending="store.sending"
       :stopping="store.stopping"
@@ -398,7 +487,7 @@ function jumpToGap(): void {
       :block-reason="store.writeBlockReason"
       :history="store.commandHistory"
       :outbox="store.outboxView"
-      :terminal-mode="isTerminalView"
+      :terminal-mode="activeView === 'terminal'"
       @update:draft="(v: string) => (store.draft = v)"
       @send="store.sendDraft()"
       @stop="stopConfirmOpen = true"
@@ -652,6 +741,94 @@ function jumpToGap(): void {
   vertical-align: middle;
 }
 
+.webplane-badge {
+  display: inline-block;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--VT-control);
+  border-radius: 999px;
+  color: var(--VT-control);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.webplane-probing {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--VT-surface);
+  color: var(--VT-text-secondary);
+  font-size: 14px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.webplane-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--VT-border);
+  border-top-color: var(--VT-accent);
+  border-radius: 50%;
+  animation: plane-spin 0.8s linear infinite;
+}
+
+@keyframes plane-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.webplane-unavailable-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--VT-surface);
+  color: var(--VT-text);
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.webplane-unavailable-card > strong {
+  font-size: 16px;
+  color: var(--VT-text);
+}
+
+.webplane-unavailable-card > span {
+  font-size: 13px;
+  color: var(--VT-text-secondary);
+  max-width: 280px;
+}
+
+.fallback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid var(--VT-border-strong);
+  background: var(--VT-surface-raised);
+  color: var(--VT-text);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.fallback-btn:focus-visible {
+  outline: 2px solid var(--VT-accent);
+  outline-offset: 2px;
+}
+
 /* M4-R1：超窄逻辑视口（≤240px，含 200% 缩放等效 180px）header 防裁切。
    实测（谛听 M4-006 补全覆盖后浮出）：诊断面 back-btn「返回主阅读面」自然宽
    ~126px + menu-btn 44px 在 180px 下溢出右缘 18px——flex 溢出被裁不产生文档
@@ -675,7 +852,8 @@ function jumpToGap(): void {
     white-space: nowrap;
   }
   .diagnostic-badge,
-  .tui-cli-badge {
+  .tui-cli-badge,
+  .webplane-badge {
     display: none;
   }
 }

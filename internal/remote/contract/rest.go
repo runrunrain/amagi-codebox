@@ -478,6 +478,8 @@ func ValidateRESTResponse(r RESTResponse) error {
 		return validateSessionDetail(v)
 	case ControlSnapshot:
 		return validateControlSnapshot(v)
+	case WebUIStatus:
+		return ValidateWebUIStatus(v)
 	default:
 		return fmt.Errorf("contract: unknown RESTResponse type %T", r)
 	}

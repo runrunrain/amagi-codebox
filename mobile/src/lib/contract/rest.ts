@@ -167,3 +167,27 @@ export const V1_ENDPOINT_SESSION_RESTART: RestEndpoint = V1_REST_ENDPOINTS[6];
 export const V1_ENDPOINT_SESSION_REMOVE: RestEndpoint = V1_REST_ENDPOINTS[7];
 export const V1_ENDPOINT_CONTROL_ACQUIRE: RestEndpoint = V1_REST_ENDPOINTS[8];
 export const V1_ENDPOINT_CONTROL_RELEASE: RestEndpoint = V1_REST_ENDPOINTS[9];
+
+// ---------------------------------------------------------------------------
+// WebUI 状态契约（C2 冻结：GET /api/remote/v1/session/{id}/webui）
+// ---------------------------------------------------------------------------
+
+export type WebUIState = 'probing' | 'available' | 'unavailable' | 'ended' | 'unknown';
+
+export interface SessionWebUIStatus {
+  state: WebUIState;
+  url?: string;
+}
+
+export const V1_ENDPOINT_SESSION_WEBUI: RestEndpoint = {
+  method: 'GET',
+  path: '/session/{id}/webui',
+  successStatus: 200,
+};
+
+export const V1_ENDPOINT_SESSIONS_WEBUI: RestEndpoint = {
+  method: 'GET',
+  path: '/sessions/{id}/webui',
+  successStatus: 200,
+};
+

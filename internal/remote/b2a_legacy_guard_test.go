@@ -86,6 +86,14 @@ func (a *b2aSpyApp) GetConfigService() *config.ConfigService {
 }
 func (a *b2aSpyApp) SetRemotePort(int) error { return nil }
 
+func (a *b2aSpyApp) GetSessionWebUI(string) (SessionWebUIInfo, bool) {
+	return SessionWebUIInfo{State: "unknown"}, false
+}
+
+func (a *b2aSpyApp) ProbeSessionWebUI(string) (SessionWebUIInfo, bool) {
+	return SessionWebUIInfo{State: "unknown"}, false
+}
+
 func newB2AServer(t *testing.T, app *b2aSpyApp) *Server {
 	t.Helper()
 	return NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})

@@ -15,6 +15,7 @@ import {
   removeSession,
   acquireControl,
   releaseControl,
+  getSessionWebUI,
   ApiRequestError,
 } from './api';
 import {
@@ -30,6 +31,7 @@ import {
   V1_ENDPOINT_SESSION_REMOVE,
   V1_ENDPOINT_CONTROL_ACQUIRE,
   V1_ENDPOINT_CONTROL_RELEASE,
+  V1_ENDPOINT_SESSION_WEBUI,
 } from './contract';
 
 const hostSummaryBody = {
@@ -69,6 +71,7 @@ describe('contract 端点消费（Minor-01：不复制字符串）', () => {
     expect(V1_ENDPOINT_SESSION_REMOVE).toBe(V1_REST_ENDPOINTS[7]);
     expect(V1_ENDPOINT_CONTROL_ACQUIRE).toBe(V1_REST_ENDPOINTS[8]);
     expect(V1_ENDPOINT_CONTROL_RELEASE).toBe(V1_REST_ENDPOINTS[9]);
+    expect(V1_ENDPOINT_SESSION_WEBUI.path).toBe('/session/{id}/webui');
   });
 });
 
@@ -375,3 +378,71 @@ describe('createSession / 生命周期 / 控制权', () => {
     expect((err as ApiRequestError).layer).toBe('control');
   });
 });
+
+describe('getSessionWebUI（C2 冻结端点）', () => {
+  it('GET /session/{id}/webui 200 → 返回 available 与相对 url', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        state: 'available',
+        url: `/webui/${SESSION_ID}/#/t=secret-token`,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await getSessionWebUI(SESSION_ID);
+    const call = lastCall(fetchMock);
+    expect(call[0]).toBe(`${REST_BASE_PATH}/session/${SESSION_ID}/webui`);
+    expect(call[1].method).toBe('GET');
+    expect(call[1].credentials).toBe('same-origin');
+    expect(res.state).toBe('available');
+    expect(res.url).toBe(`/webui/${SESSION_ID}/#/t=secret-token`);
+  });
+
+  it('GET /session/{id}/webui 200 → probing 状态', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, { state: 'probing' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await getSessionWebUI(SESSION_ID);
+    expect(res.state).toBe('probing');
+    expect(res.url).toBeUndefined();
+  });
+
+  it('GET /session/{id}/webui 404 时回退请求 /sessions/{id}/webui', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        jsonResponse(404, {
+          requestId: 'req-1',
+          code: 'bad_request',
+          layer: 'connection',
+          message: 'not found',
+          actionHint: 'retry',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          state: 'available',
+          url: `/webui/${SESSION_ID}/#/t=fallback-token`,
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await getSessionWebUI(SESSION_ID);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${REST_BASE_PATH}/session/${SESSION_ID}/webui`);
+    expect(fetchMock.mock.calls[1][0]).toBe(`${REST_BASE_PATH}/sessions/${SESSION_ID}/webui`);
+    expect(res.state).toBe('available');
+    expect(res.url).toBe(`/webui/${SESSION_ID}/#/t=fallback-token`);
+  });
+
+  it('网络不可达时抛出 ApiRequestError', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('Network offline'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const err = await getSessionWebUI(SESSION_ID).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiRequestError);
+    expect((err as ApiRequestError).code).toBe('net.unreachable');
+  });
+});
+

@@ -690,6 +690,14 @@ func (s *Server) buildHandler() http.Handler {
 			return
 		}
 
+		// remote-webui-plane 切片：pi webui 反向代理（/webui/{sid}/...）。挂载点
+		// 冻结在 legacy 命名空间判定与静态 SPA fallback 之前（C1）；鉴权在
+		// handler 内部与 v1 使用同一 device cookie。
+		if strings.HasPrefix(r.URL.Path, contract.WebUIProxyPathPrefix) {
+			s.handleWebUIProxy(w, r)
+			return
+		}
+
 		legacyPath := isLegacyAPIPath(r.URL.Path)
 		// Strict query parse: url.ParseQuery decodes percent-encoding (so a
 		// percent-encoded `token` key is recognized) and surfaces parse errors. A

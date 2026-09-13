@@ -25,6 +25,8 @@ import {
   V1_ENDPOINT_SESSION_REMOVE,
   V1_ENDPOINT_CONTROL_ACQUIRE,
   V1_ENDPOINT_CONTROL_RELEASE,
+  V1_ENDPOINT_SESSION_WEBUI,
+  V1_ENDPOINT_SESSIONS_WEBUI,
   ERROR_CODE_NET_UNREACHABLE,
   ERROR_CODE_SERVICE_DOWN,
   ERROR_CODE_AUTH_UNPAIRED,
@@ -42,7 +44,11 @@ import {
   type ControlSnapshot,
   type CreateSessionRequest,
   type ConfirmActionRequest,
+  type SessionWebUIStatus,
+  type WebUIState,
 } from './contract';
+
+export type { WebUIState, SessionWebUIStatus };
 
 /** 客户端侧结构化错误：网络层失败也会被综合为契约错误形态（code=net.unreachable）。 */
 export class ApiRequestError extends Error {
@@ -242,3 +248,25 @@ export async function acquireControl(sessionId: SessionID): Promise<ControlSnaps
 export async function releaseControl(sessionId: SessionID): Promise<ControlSnapshot> {
   return request<ControlSnapshot>(V1_ENDPOINT_CONTROL_RELEASE, { sessionId });
 }
+
+// ---------------------------------------------------------------------------
+// Web 会话平面（WebUI）端点（C2 冻结契约）
+// ---------------------------------------------------------------------------
+
+/**
+ * 查询会话 WebUI 状态（C2 冻结契约）
+ * 返回 { state: 'probing' | 'available' | 'unavailable' | 'ended' | 'unknown', url?: string }
+ * available 时 url 为同源相对路径如 /webui/{sid}/#/t={token}
+ */
+export async function getSessionWebUI(sessionId: SessionID): Promise<SessionWebUIStatus> {
+  try {
+    return await request<SessionWebUIStatus>(V1_ENDPOINT_SESSION_WEBUI, { sessionId });
+  } catch (err) {
+    if (err instanceof ApiRequestError && (err.status === 404 || err.code === 'bad_request')) {
+      // 容错回退：兼容服务端挂载在 /sessions/{id}/webui 路由
+      return await request<SessionWebUIStatus>(V1_ENDPOINT_SESSIONS_WEBUI, { sessionId });
+    }
+    throw err;
+  }
+}
+

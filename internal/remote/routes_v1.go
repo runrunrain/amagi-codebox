@@ -241,6 +241,11 @@ func (s *Server) buildV1Handler() http.Handler {
 		if r.Method == http.MethodOptions {
 			m := v1SpecByPath(specs, r.URL.Path)
 			if m == nil {
+				// Additive extension route (remote-webui-plane slice): resolved
+				// through the same central gates, outside the frozen manifest.
+				if s.dispatchV1WebUIStatusRoute(w, r, reqID, corsAllowed, port) {
+					return
+				}
 				writeV1Error(w, reqID, http.StatusNotFound, contract.ErrorCodeBadRequest,
 					contract.ErrorLayerConnection, "remote endpoint not available", contract.ActionHintRetry)
 				return
@@ -277,6 +282,12 @@ func (s *Server) buildV1Handler() http.Handler {
 		// 405 while an unknown path stays 404 regardless of method/gates.
 		m := v1SpecByPath(specs, r.URL.Path)
 		if m == nil {
+			// Additive extension route (remote-webui-plane slice): a known
+			// extension path proceeds through the same gate order; anything
+			// else stays 404 regardless of method/gates (Major-04).
+			if s.dispatchV1WebUIStatusRoute(w, r, reqID, corsAllowed, port) {
+				return
+			}
 			writeV1Error(w, reqID, http.StatusNotFound, contract.ErrorCodeBadRequest,
 				contract.ErrorLayerConnection, "remote endpoint not available", contract.ActionHintRetry)
 			return

@@ -94,6 +94,14 @@ func (a *websocketTestApp) GetPathsService() *paths.PathsService    { return nil
 func (a *websocketTestApp) GetConfigService() *config.ConfigService { return nil }
 func (a *websocketTestApp) SetRemotePort(port int) error            { return nil }
 
+func (a *websocketTestApp) GetSessionWebUI(string) (SessionWebUIInfo, bool) {
+	return SessionWebUIInfo{State: "unknown"}, false
+}
+
+func (a *websocketTestApp) ProbeSessionWebUI(string) (SessionWebUIInfo, bool) {
+	return SessionWebUIInfo{State: "unknown"}, false
+}
+
 // TestWebSocketLegacyInputOnlyNoOutputBypass (M-003): the legacy /ws/terminal
 // path is INPUT-ONLY. It must NOT deliver output/history/dimensions/exit frames
 // (the naked-SessionID callback bypass is removed; all PTY output/exit flows
