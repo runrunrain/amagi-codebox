@@ -68,6 +68,16 @@ unattended（主上「使用编排模式进行修复」= 跑完再说；歧义�
 
 ## 风险、决策与修订日志
 
+### 第五轮（2026-09-13 下午·用户反馈「最新版本 web 平面必然显示会话已结束（win 设备）；终端/时间线有内容但未结构化」）
+
+**双根因定位**：
+- **#1 环境（Mac）**：运行中 app 进程（02:45 启动）映像为 Sep 11 旧二进制（lsof 确认 v1.3.68-backup 路径）——不含任何 webui 代理面，iframe `/webui/*` 全部落 SPA fallback；08:37 新构建从未运行。已重启（新进程 8680 代理面生效：未知 sid 404 非 SPA 200）。
+- **#2 真实代码 bug（真实 pi 会话复现）**：`deriveBase` 以 hostname=127.0.0.1/localhost 判定「直连」——**本机浏览器（Mac/Windows 同样）经 http://127.0.0.1:<remotePort>/ 打开远程控制时，代理页面 hostname 同为 127.0.0.1 → 误走直连分支 → API 打到远程服务根路径 `/api/info` → 必然 401 →「会话已结束」**（HAR 实证：/api/info 根路径 401）。修复：反代判定改为「**路径前缀非空**」（代理恒挂 /webui/{sid}/ 子路径，前缀必非空；桌面 WebPlaneHost 直连恒根路径，零回归）；契 v1.0.16 §6.5 同步修订；新增用例（127.0.0.1+/webui/{sid}/ → 反代分支）+ 改写旧「子路径不受 pathname 影响」锁死用例；产物重建（B9gGPxan）。
+- **#3 Windows 设备（主上报障环境）**：新代码仅存在于 Mac 两仓工作区（codebox 全部未提交；amagi-pi 除本轮 deriveBase 修复外已被主上 commit 3301254）——**Windows 上的 codebox/amagi 插件均不含新代码，Web 平面必然失败（同根因 #1 机理）**；需两仓同步到 Windows 后 build.bat 重建 + 插件更新（见收口清单）。平台代码已审查：webui env 注入/探测均平台无关，无 Windows 分叉。
+- **终端仿真/时间线「有内容但未结构化」**：非 bug——pi/omp TUI 输出是字符网格流（无语义结构），pattern-parser 无法结构化解析（Web 平面立项理由）；Web 平面可用后两视图保留为诊断/降级视图，不另修。
+
+**验证**：修复后真实 pi 会话（72107，新扩展）+ 127.0.0.1 顶层打开 →「已连接」live，完整结构化渲染（工具卡片 edit·repro.mjs ✓ 完成/edits=2 处编辑/diff 摘要/结果折叠/思考块/加载更早分页）；webui 210/210 + server 32/32 绿。
+
 - 2026-09-11 创建。决策：选「remote server 反代 + iframe」复用桌面端已验证形态（而非在 mobile 端复刻渲染）——最小改动面 + 像素级对齐期望图。
 - 风险：SameSite=Lax cookie 在同站 sandbox iframe 的可用性 → G1 真浏览器验证；WS 子协议经 ReverseProxy 透传 → T1 httptest 验证。
 - 风险：amagi-pi 为用户活跃插件仓，T3 改动向后兼容（127.0.0.1 分支行为不变），重启会话后生效，无害。

@@ -407,12 +407,16 @@ watch(
   { immediate: true },
 )
 
-// 会话退出 → Web 平面结束态（保留最后画面 + badge）。
+// 会话状态 → Web 平面结束态（保留最后画面 + badge）。
+// v2（2026-09-13 真机反馈）：status 回 running 时复位结束态——pi 会话重启/恢复后
+// ended 横条不得永久残留（此前一旦置 true 无复位分支，与 TUI 存活状态矛盾）。
 watch(
   () => session.value?.status,
   (status) => {
     if (status && status !== 'running' && status !== 'stopping') {
       webEnded.value = true
+    } else if (status === 'running') {
+      webEnded.value = false
     }
   },
 )
