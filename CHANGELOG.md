@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.70] - 2026-09-13
+
+### Fixed
+
+- **Web 平面「会话已结束」横条在会话恢复后永久残留**：桌面端 `WebPlaneHost` 结束态只置位无复位分支——pi 会话重启/恢复后 status 回 `running`，ended 横条仍永久残留，与 TUI 存活状态矛盾。现在 status 回 `running` 时复位结束态（置位语义保持：非 `running`/`stopping` 才进入结束态，最后画面与 badge 保留行为不变）。
+
 ## [1.3.69] - 2026-09-13
 
 ### Added
