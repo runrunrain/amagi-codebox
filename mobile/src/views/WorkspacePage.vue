@@ -359,7 +359,7 @@ function jumpToGap(): void {
 
     <GuideCard v-if="guideVisible && !isTerminalView && !isWebPlaneView && !store.loading && !store.loadError" @dismiss="dismissGuide" @open-diagnostic="openDiagnostic" />
 
-    <StatusBar :layers="store.statusLayers" />
+    <StatusBar :layers="store.statusLayers" :suppress-auto-expand="isWebPlaneView" />
 
     <ControlBar
       :control="store.control"

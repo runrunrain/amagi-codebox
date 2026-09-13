@@ -26,13 +26,18 @@ export interface StatusLayer {
 
 const props = defineProps<{
   layers: StatusLayer[];
+  /** 压缩视图（如 Web 平面视图）：异常层仅在胶囊行以色调提示，不自动展开明细列表
+   * ——Web 平面 iframe 自带会话状态（已连接等），外层五层明细的强制展开会挤占
+   * 大量纵向空间（远程观察场景下控制权/历史缺口为常态，异常几乎恒在）。 */
+  suppressAutoExpand?: boolean;
 }>();
 
 const hasAbnormal = computed(() => props.layers.some((l) => l.tone === 'warning' || l.tone === 'danger'));
 
-/** 用户手动折叠偏好；异常时强制展开（auto），恢复后回到手动态。 */
+/** 用户手动折叠偏好；异常时强制展开（auto），恢复后回到手动态；
+ * 压缩视图（suppressAutoExpand）下异常不强制展开——胶囊色调仍提示。 */
 const manualExpanded = ref(false);
-const expanded = computed(() => hasAbnormal.value || manualExpanded.value);
+const expanded = computed(() => (hasAbnormal.value && !props.suppressAutoExpand) || manualExpanded.value);
 
 watch(hasAbnormal, (abnormal) => {
   // 异常出现时不改手动偏好，仅由 expanded 计算属性自动展开。
