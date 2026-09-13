@@ -4,6 +4,15 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.69] - 2026-09-13
+
+### Added
+
+- **远程控制网页视图新增 pi/omp 会话「Web 会话平面」**：pi webui server 仅 bind `127.0.0.1`（移动设备物理不可达）且页面基址冻结为 127.0.0.1，远程端此前只能靠终端仿真/时间线查看 pi/omp 会话。remote server 新增顶层 `/webui/{sessionID}/...` 反向代理：出向改写 Host、剥离 Origin、覆盖式注入 `Authorization: Bearer {token}`、透传 WS upgrade（`Sec-WebSocket-Protocol`）；鉴权与 v1 一致（device cookie，SameSite=Strict），sessionID 字符白名单防路径穿越，`/api/input` 代理请求受会话控制门约束（无控制权 → 403）；capability token 仅经 URL fragment 下发（不进 query/日志），代理对未学到客户端凭证即删除。
+- **remote v1 契约扩展状态端点**：`GET /api/remote/v1/session/{id}/webui` → `{state: probing|available|unavailable|ended|unknown, url?}`（available 时 `url = /webui/{sid}/#/t={token}`）；以加性扩展路由实现，冻结的 10 端点 manifest 与 fixture 不动，扩展路径走同一中央门序（Host → 空 query → method → origin → auth）。
+- **mobile 端 Web 平面视图**：新增 `WebPlaneView`（iframe 沙箱、加载/错误/10s 看门狗/结束态状态机）与 `useSessionWebUI` 轮询 composable（probing 800ms → available 5s 监测、生命周期安全清理）；WorkspacePage 为 pi/omp（isTuiCli）会话实现默认视图策略（available → Web 平面、probing → 加载态、不可用回落终端仿真），`?view=webplane` 显式指定、菜单三面切换、Web 平面内隐藏外层输入台；非 TUI 会话与既有 `?view=terminal|timeline` 语义零回归。
+- **配套测试**：Go 侧代理头改写/鉴权/控制门/token 不外泄、契约校验、冻结清单锚测试；mobile 侧 api 封装、composable 生命周期、视图状态机与集成策略 4 个测试文件（46 用例）。
+
 ## [1.3.68] - 2026-09-11
 
 ### Fixed
