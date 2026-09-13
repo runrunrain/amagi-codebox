@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.71] - 2026-09-13
+
+### Fixed
+
+- **移动端 Web 平面视图状态栏异常层强制展开挤占会话内容**：`StatusBar` 新增 `suppressAutoExpand` 压缩视图属性——异常层仅在胶囊行以色调提示、不自动展开明细列表（远程观察场景下控制权/历史缺口为常态，强制展开几乎恒占大量纵向空间）；Web 平面视图（iframe 自带会话状态）传入该属性，手动展开/收起不受限，非 Web 平面视图既有强制展开语义零回归。附 3 个组件测试用例。
+
 ## [1.3.70] - 2026-09-13
 
 ### Fixed
