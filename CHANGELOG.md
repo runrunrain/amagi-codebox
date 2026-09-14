@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.72] - 2026-09-14
+
+### Fixed
+
+- **移动端 Web 平面浅字落浅底不可读**：pi webui 嵌入模式（`#/t=` fragment 命中）body 透明 + 浅色文字 + 半透明深色面板，依赖宿主 iframe 背后的深色底；移动端此前用 `--VT-canvas`（#FAF9F5 浅奶油）导致对比度仅约 2:1。背景改用终端深墨面令牌 `--VT-surface-dark` 对齐桌面端 `.term-body` 语义；遮罩/浮层自带实底不受影响。
+
 ## [1.3.71] - 2026-09-13
 
 ### Fixed
