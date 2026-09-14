@@ -188,7 +188,12 @@ onBeforeUnmount(() => {
   width: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--VT-canvas);
+  /* pi webui 嵌入模式（#/t= fragment 命中）body 透明 + 浅色文字
+     （--termText）+ 半透明深色面板，依赖宿主在 iframe 背后提供深色底：
+     桌面端由 .term-body 的 --termBg 深墨底承担。移动端此前用
+     --VT-canvas（#FAF9F5 浅奶油）导致浅字落浅底不可读（对比度 ~2:1），
+     改用终端深墨面令牌对齐桌面语义。遮罩/浮层自带实底不受影响。 */
+  background: var(--VT-surface-dark);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
