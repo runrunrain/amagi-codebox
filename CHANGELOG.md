@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.73] - 2026-09-14
+
+### Added
+
+- **会话 Web 平面配色方向设置（设置→外观）**：新增 `webPlaneSkin`（`dark` 缺省深底浅字 / `light` 浅底深字）——后端 `settings.Service` 持久化（空/未知值 fail-safe 归一为 dark，零值即缺省、老 settings.json 无需迁移）；桌面端新增 Pinia `appearance` store（启动加载一次 + 并发去重）与外观设置页编辑项，`light` 时向 Web 平面 iframe URL 在 fragment 前注入 `skin=light`（webui 命中后叠加 `webui-embedded-light`：浅面板+深字，`#/t=<token>` 契约 fragment 与 token 提取不受影响），非皮肤模式宿主底随方向切换浅底，皮肤模式两方向保持透皮；URL 经 computed 跟随设置即时重载。移动端宿主固定浅色，iframe 恒注入 `skin=light`（老版本 webui 自然忽略该参数，行为不劣化）。
+- **配套测试**：Go settings 归一化/持久化用例；前端 `withWebPlaneSkinParam`（fragment 前插入/合并 query/dark 原样）与 appearance store 用例；mobile WebPlaneView 浅色注入与重试/重载路径用例。
+
 ## [1.3.72] - 2026-09-14
 
 ### Fixed
