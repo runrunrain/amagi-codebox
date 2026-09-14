@@ -16,23 +16,31 @@ package remote
 //     透传回客户端）。后端无需任何改动。
 //   - GET /api/remote/v1/session/{id}/webui 状态端点（分发见 routes_v1.go
 //     dispatchV1WebUIStatusRoute）：available 时下发
-//     url=/webui/{sid}/#/t={token}（fragment 承载 capability，不进请求行/
-//     日志；token 仅下发给已通过 device cookie 鉴权的设备）。
+//     url=/webui/{sid}/#/t={plane-token}（fragment 承载代理铸造的
+//     per-(session, device) capability，不进请求行/日志；token 仅下发给
+//     已通过 device cookie 鉴权的设备，且绑定该设备——写面控制门据此
+//     评估真实控制权归属，G3 修复输入台「连接中断，消息未发送」）。
 //
-// 安全红线：capability token 视同会话权限 —— 不写日志、不进 query/path、
-// 错误体不带；代理是它唯一外露面。代理面鉴权与 v1 完全一致（device
-// cookie，经 enforceAuthPolicy 同一判定与错误映射；唯一豁免：CORS 预检
-// OPTIONS（Origin:null + 非空 ACRM）按规范不携带凭据，本地应答 204，镜像
-// v1 中央派发器 OPTIONS 纪律）；会话写面（POST /api/input、POST
-// /api/agent-interact、PUT /api/draft）要求当前控制；宁紧勿松。
+// 安全红线：capability token（plane token 与后端 token 同权对待）视同会话
+// 权限 —— 不写日志、不进 query/path、错误体不带；代理是它唯一外露面。
+// 代理面鉴权与 v1 完全一致（device cookie，经 enforceAuthPolicy 同一判定
+// 与错误映射；唯一豁免：CORS 预检 OPTIONS（Origin:null + 非空 ACRM）
+// 按规范不携带凭据，本地应答 204，镜像 v1 中央派发器 OPTIONS 纪律）；
+// 会话写面（POST /api/input、POST /api/agent-interact、PUT /api/draft）
+// 要求当前控制（plane token 解析出的绑定设备即请求者身份）；宁紧勿松。
+// 本地生成的错误响应（401/403/503）在 Origin:null 时携带 ACAO:null，
+// 确保 opaque iframe 能读到真实错误码而非被浏览器掩盖成 network_error。
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
 	"strings"
+	"sync"
 
 	"amagi-codebox/internal/remote/contract"
 )
@@ -56,6 +64,90 @@ var webuiBackendWriteFaces = map[webuiWriteFace]bool{
 type webuiWriteFace struct {
 	method string
 	path   string
+}
+
+// webuiPlaneGrantStore mints per-DEVICE plane capability tokens (G3 修复：
+// Web 平面输入台 403）。sandbox iframe 永远带不上 device cookie（Chrome 对
+// opaque origin 抑制 SameSite cookie），若 fragment 只发 raw 后端 token，
+// 数据面就是零 principal——写面控制门恒 403，输入台永远发不出去。
+// 状态端点（device cookie 鉴权后）改为下发代理铸造的 per-(session,
+// device) plane token：解析命中即得到绑定的 device principal，写面控制门
+// 因此能评估真实的控制权归属（持控制 → 放行；未持/他人持有 → 403，语义
+// 对齐 TUI 平面「先获取控制权」）。出向（Authorization 与 WS 子协议）
+// 仍统一换写为后端 token，后端零改动。
+type webuiPlaneGrantStore struct {
+	mu      sync.Mutex
+	byToken map[string]webuiPlaneGrant
+	byOwner map[string]string // sessionID + "\x00" + deviceID -> plane token
+}
+
+// webuiPlaneGrant is the binding carried by one minted plane token.
+type webuiPlaneGrant struct {
+	sessionID    string
+	deviceID     string
+	backendToken string // snapshot: rotation auto-invalidates at resolve time
+}
+
+// webuiPlaneTokenPrefix distinguishes proxy-minted plane tokens from the raw
+// backend capability token: "p"+30 hex = 31 chars. It matches the amagi-pi
+// page fragment pattern ^[A-Za-z0-9_-]{22,}$ yet can never equal a backend
+// 32-hex token (fail-closed if a plane token ever reaches the backend
+// directly — the backend rejects it).
+const webuiPlaneTokenPrefix = "p"
+
+// plane returns the stable per-(session, device) token, minting on first use
+// and re-minting only when the backend token rotated (the /resume plane move).
+func (g *webuiPlaneGrantStore) plane(sessionID, deviceID, backendToken string) (string, error) {
+	owner := sessionID + "\x00" + deviceID
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if tok, ok := g.byOwner[owner]; ok {
+		if gr, ok2 := g.byToken[tok]; ok2 && gr.backendToken == backendToken {
+			return tok, nil
+		}
+		// rotated backend token: drop the stale grant from both maps.
+		delete(g.byToken, tok)
+		delete(g.byOwner, owner)
+	}
+	buf := make([]byte, 15) // 120bit; token total 31 chars
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	tok := webuiPlaneTokenPrefix + hex.EncodeToString(buf)
+	if g.byToken == nil {
+		g.byToken = map[string]webuiPlaneGrant{}
+		g.byOwner = map[string]string{}
+	}
+	g.byToken[tok] = webuiPlaneGrant{sessionID: sessionID, deviceID: deviceID, backendToken: backendToken}
+	g.byOwner[owner] = tok
+	return tok, nil
+}
+
+// resolve maps a plane token back to its bound device when it matches the
+// session AND the current backend token snapshot (rotation auto-invalidates).
+func (g *webuiPlaneGrantStore) resolve(token, sessionID, backendToken string) (string, bool) {
+	if token == "" {
+		return "", false
+	}
+	g.mu.Lock()
+	gr, ok := g.byToken[token]
+	g.mu.Unlock()
+	if !ok || gr.sessionID != sessionID || gr.backendToken != backendToken {
+		return "", false
+	}
+	return gr.deviceID, true
+}
+
+// pruneSession drops every grant bound to a session (plane gone for good).
+func (g *webuiPlaneGrantStore) pruneSession(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for tok, gr := range g.byToken {
+		if gr.sessionID == sessionID {
+			delete(g.byToken, tok)
+			delete(g.byOwner, gr.sessionID+"\x00"+gr.deviceID)
+		}
+	}
 }
 
 // webuiProxyLoopbackHost is the fixed outbound target host (the pi webui
@@ -98,6 +190,58 @@ func webUIProxyTokenAuthed(r *http.Request, token string) bool {
 		}
 	}
 	return false
+}
+
+// webUIProxyOfferedToken extracts the capability the request itself carries:
+// the Bearer header (the plane page's fetchJson always sends one), or the WS
+// subprotocol second element (connectWs always offers the `webui, <token>`
+// pair). Empty when the request carries neither channel.
+func webUIProxyOfferedToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	parts := strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",")
+	if len(parts) == 2 && strings.TrimSpace(parts[0]) == "webui" {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+// webUIProxyGrantDeviceValid re-validates the grant-bound device against the
+// live store (revoked/expired devices must not keep their plane identity).
+// Store/gate-down fails closed: the grant channel degrades to 401 (the raw
+// backend token read channel is unaffected).
+func (s *Server) webUIProxyGrantDeviceValid(deviceID string) bool {
+	auth := s.v1sec.deviceAuth
+	if auth == nil || !auth.store.Ready() {
+		return false
+	}
+	permit, ok := auth.gate.issueNormalPermit()
+	if !ok {
+		return false
+	}
+	rec, found, lerr := auth.store.Lookup(permit, contract.DeviceID(deviceID))
+	auth.gate.returnNormalPermit(permit)
+	if lerr != nil || !found || rec.RevokedAt != nil {
+		return false
+	}
+	return auth.clock.Now().UTC().Before(rec.CredentialExpiresAt)
+}
+
+// allowOpaqueOriginRead lets the sandboxed (opaque-origin) plane iframe READ
+// locally-generated proxy errors. Without ACAO:null the browser hides the
+// response entirely — the webui's fetch then reports a generic
+// network_error (「连接中断，消息未发送」), masking the real 401/403/503.
+// Only ever set on LOCAL error paths: success responses get their CORS
+// headers from the backend (setting them here would duplicate ACAO and
+// break the response read for the opaque origin).
+func allowOpaqueOriginRead(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Origin") == "null" {
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", "null")
+		h.Set("Access-Control-Allow-Credentials", "true")
+		h.Add("Vary", "Origin")
+	}
 }
 
 // handleWebUIProxy serves /webui/{sessionID}/<backend-path>. Order:
@@ -165,19 +309,23 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Set(contract.RequestIDHeader, string(reqID))
 
-	// Data-face auth — DUAL CHANNEL (browser E2E finding, G2 follow-up):
+	// Data-face auth — DUAL CHANNEL + per-device plane tokens (G3):
 	//   1. Device cookie (the SAME credential and error mapping as v1) is the
-	//      primary channel and the ONLY channel that yields a device principal
-	//      (write faces require a control-holding device identity).
+	//      primary channel and yields the full device principal.
 	//   2. Capability-token fallback: Chrome suppresses SameSite cookies on
 	//      requests from sandboxed (opaque-origin) documents, so the plane
 	//      iframe can NEVER carry the device cookie — yet its fetchJson always
-	//      sends `Authorization: Bearer <capability>` and connectWs always sends
-	//      the `webui, <capability>` subprotocol. Holding the session capability
-	//      is equivalent to session-read permission (amagi-pi contract §6.3),
-	//      so it authenticates READ faces; the principal stays zero-valued and
-	//      the write-face control gate below rejects (403) — writes always need
-	//      a control-holding DEVICE.
+	//      sends `Authorization: Bearer <capability>` and connectWs always
+	//      offers the `webui, <capability>` subprotocol. The status endpoint
+	//      (cookie-authenticated) hands out a proxy-minted per-(session,
+	//      device) plane token; resolving it yields the BOUND device
+	//      principal, so the write-face control gate below evaluates real
+	//      control ownership (G3 fix: previously every plane write was a
+	//      zero-principal 403 — the input stand could never send).
+	//      The RAW backend capability still authenticates READ faces with a
+	//      zero-valued principal (compat for planes opened before this
+	//      rotation; writes stay 403 there — writes always need a
+	//      control-holding DEVICE).
 	// The STATIC plane (HTML entry, ./assets/*, favicon — anything outside
 	// /api/* and /ws/*) stays exempt: cross-origin CORS-mode subresource loads
 	// (module scripts are ALWAYS CORS mode) never carry cookies, and the static
@@ -197,9 +345,31 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 			if !authOK {
 				return
 			}
-		} else if info, ok := s.webUIProxyPlaneInfo(sid); ok && webUIProxyTokenAuthed(r, info.Token) {
-			// capability-token channel (read faces only; zero principal ⇒ write gate 403)
+		} else if offered := webUIProxyOfferedToken(r); offered != "" {
+			resolved := false
+			if info, ok := s.webUIProxyPlaneInfo(sid); ok {
+				if deviceID, gOK := s.webuiGrants.resolve(offered, sid, info.Token); gOK && s.webUIProxyGrantDeviceValid(deviceID) {
+					// per-device plane token → bound device principal
+					// (write faces gated by REAL control ownership).
+					principal = v1Principal{DeviceID: contract.DeviceID(deviceID)}
+					resolved = true
+				} else if webUIProxyTokenAuthed(r, info.Token) {
+					// raw backend capability: read faces only (zero principal)
+					resolved = true
+				}
+			}
+			if !resolved {
+				// Neither channel authenticates → canonical 401/503. The error
+				// must stay readable for the opaque iframe (no CORS masking).
+				allowOpaqueOriginRead(w, r)
+				var authOK bool
+				principal, authOK = s.enforceAuthPolicy(w, r, deviceCookie, reqID)
+				if !authOK {
+					return
+				}
+			}
 		} else {
+			allowOpaqueOriginRead(w, r)
 			var authOK bool
 			principal, authOK = s.enforceAuthPolicy(w, r, deviceCookie, reqID) // canonical 401/503 mapping
 			if !authOK {
@@ -212,6 +382,9 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 	//（POST /api/input、POST /api/agent-interact、PUT /api/draft）要求当前
 	// 控制（快照判定，grace 持有者视为控制者）；无控制权 → 403。
 	if webuiBackendWriteFaces[webuiWriteFace{method: r.Method, path: target}] && !s.webUIProxyControlHeld(principal.DeviceID, sid) {
+		// 本地 403 必须可被 opaque iframe 读到（无 CORS 头会被浏览器掩盖成
+		// network_error，用户看到的是误导性的「连接中断，消息未发送」）。
+		allowOpaqueOriginRead(w, r)
 		writeV1Error(w, reqID, http.StatusForbidden, contract.ErrorCodeControlForbidden,
 			contract.ErrorLayerControl, "control required for session write", contract.ActionHintRequestControl)
 		return
@@ -225,6 +398,7 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	info, _ := s.app.GetSessionWebUI(sid)
 	if info.State != string(contract.WebUIPlaneStateAvailable) || info.Port <= 0 {
+		allowOpaqueOriginRead(w, r)
 		s.writeWebUIPlaneUnavailable(w, reqID, sid, info.State)
 		return
 	}
@@ -321,6 +495,12 @@ func (s *Server) serveWebUIReverseProxy(w http.ResponseWriter, r *http.Request, 
 			if token != "" {
 				// 覆盖式注入：任何客户端自带的 Authorization 被覆盖。
 				req.Header.Set("Authorization", "Bearer "+token)
+				// WS upgrade：offered 子协议对换写为后端 token。平面页现在 offer
+				// `webui, <plane token>`（代理铸造）；后端按自身 token 校验子协议
+				// 对，且只回显 "webui"（客户端也 offer 过），浏览器侧握手不受影响。
+				if req.Header.Get("Sec-WebSocket-Protocol") != "" {
+					req.Header.Set("Sec-WebSocket-Protocol", "webui, "+token)
+				}
 			} else {
 				// Token unknown (legacy backend without capability auth):
 				// strip the client value rather than forwarding it (宁紧勿松).
@@ -336,6 +516,7 @@ func (s *Server) serveWebUIReverseProxy(w http.ResponseWriter, r *http.Request, 
 			if s.log != nil {
 				s.log.Debug("remote", "webui 代理后端不可达", "session="+sessionID)
 			}
+			allowOpaqueOriginRead(w, r)
 			writeV1Error(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
 				contract.ErrorLayerConnection, "webui plane unreachable", contract.ActionHintRetry)
 		},
@@ -431,9 +612,22 @@ func (s *Server) handleV1SessionWebUIStatus(w http.ResponseWriter, r *http.Reque
 	if state == contract.WebUIPlaneStateAvailable && info.Port > 0 {
 		resp.URL = contract.WebUIProxyPathPrefix + string(sessionID) + "/"
 		if info.Token != "" {
-			// fragment 承载 capability：不进请求行/日志/错误体。
-			resp.URL += "#/t=" + info.Token
+			// fragment 承载 capability：不进请求行/日志/错误体。G3：下发的是
+			// 代理铸造的 per-(session, device) plane token（绑定当前鉴权设备；
+			// 出向统一换写为后端 token）——sandbox iframe 带不上 device cookie，
+			// 只有设备绑定 token 才能让写面控制门评估真实控制权归属。raw
+			// 后端 token 不再直接下发。铸造失败（rand）→ 不带 token fail-closed
+			// （数据面 401，下次状态轮询恢复）。
+			if tok, err := s.webuiGrants.plane(string(sessionID), string(principal.DeviceID), info.Token); err == nil {
+				resp.URL += "#/t=" + tok
+			}
 		}
+	}
+	// 平面终态（unavailable/ended/unknown）→ 回收该会话的全部 plane token
+	// grant（探测中 probing 不回收：平面可能原 token 回来）。
+	switch state {
+	case contract.WebUIPlaneStateUnavailable, contract.WebUIPlaneStateEnded, contract.WebUIPlaneStateUnknown:
+		s.webuiGrants.pruneSession(string(sessionID))
 	}
 	body, merr := contract.MarshalRESTResponse(resp)
 	if merr != nil {

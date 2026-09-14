@@ -39,6 +39,7 @@ package remote
 import (
 	"crypto/rand"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -121,10 +122,23 @@ func TestWebUIProxyBrowserE2E(t *testing.T) {
 	// ------------------------------------------------------------------
 	// 3. Print the manual-verification recipe and hold.
 	// ------------------------------------------------------------------
-	entryURL := fmt.Sprintf("http://127.0.0.1:%d/webui/%s/", port, sid)
-	if backendToken != "" {
-		entryURL += "#/t=" + backendToken
+	// G3：入口 URL（含 per-device plane token）从状态端点获取（device cookie
+	// 鉴权，与移动端宿主页同一流程）；raw 后端 token 不再直接下发。
+	stReq, _ := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d%s", port, webuiStatusPath(sid)), nil)
+	stReq.Host = fmt.Sprintf("127.0.0.1:%d", port)
+	stReq.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", port))
+	stReq.AddCookie(cookie)
+	stResp, err := http.DefaultClient.Do(stReq)
+	if err != nil || stResp.StatusCode != http.StatusOK {
+		t.Fatalf("status endpoint: err=%v status=%v", err, stResp)
 	}
+	var st contract.WebUIStatus
+	if err := json.NewDecoder(stResp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	stResp.Body.Close()
+	entryURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, st.URL)
 	t.Logf("========== webui 平面手动端到端（G2 Critical-01 复审） ==========")
 	t.Logf("后端目标      : http://%s (token=%q)", backendHostPort, backendToken)
 	t.Logf("监听          : 0.0.0.0:%d (局域网设备用本机 LAN IP 替换 127.0.0.1)", port)
@@ -138,7 +152,7 @@ func TestWebUIProxyBrowserE2E(t *testing.T) {
 	t.Logf("    document.cookie = \"%s=%s; path=/\"", cookie.Name, cookie.Value)
 	t.Logf("    然后访问 %s", entryURL)
 	t.Logf("    （或 curl -i --cookie '%s=%s' %s）", cookie.Name, cookie.Value, entryURL)
-	t.Logf("[3] 观察者写面（预期 403 control.forbidden，未持控制权）:")
+	t.Logf("[3] 观察者写面（预期 403 control.forbidden，未持控制权；本地错误带 ACAO:null，真实错误码可读）:")
 	t.Logf("    curl -i -X POST http://127.0.0.1:%d/webui/%s/api/agent-interact \\", port, sid)
 	t.Logf("      -H 'Origin: null' --cookie '%s=%s' -d '{}'", cookie.Name, cookie.Value)
 	t.Logf("==============================================================")

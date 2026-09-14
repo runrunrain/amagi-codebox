@@ -73,6 +73,14 @@ func newWebuiFakeBackend(t *testing.T) *webuiFakeBackend {
 		if !b.assertInbound(w, r) {
 			return
 		}
+		// amagi-pi server.ts #handleUpgrade 同规（验证点）：子协议对必须恰为
+		// ["webui", <backend token>]——代理必须把客户端 offered token 换写为
+		// 后端 token（plane token 直达后端必拒）。
+		protos := websocket.Subprotocols(r)
+		if len(protos) != 2 || protos[0] != "webui" || protos[1] != webuiTestToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		b.record(r)
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -504,6 +512,160 @@ func TestWebUIProxy_TokenChannelDualAuth(t *testing.T) {
 	}
 }
 
+// planeTokenFor fetches the per-device plane token via the v1 status endpoint
+// (device-cookie authenticated), mirroring the mobile host page flow.
+func (f *webuiProxyFixture) planeTokenFor(t *testing.T, sid string) string {
+	t.Helper()
+	rr := rec(f.srv.buildV1Handler(), webuiStatusReq(f, http.MethodGet, webuiStatusPath(sid)))
+	if rr.Code != contract.WebUIStatusEndpoint.SuccessStatus {
+		t.Fatalf("status endpoint: %d %s", rr.Code, rr.Body.String())
+	}
+	var st contract.WebUIStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	const marker = "/t="
+	i := strings.LastIndex(st.URL, marker)
+	if i < 0 {
+		t.Fatalf("no plane token in url=%q", st.URL)
+	}
+	return st.URL[i+len(marker):]
+}
+
+// TestWebUIProxy_PlaneTokenWriteFaces（G3）：sandbox iframe 永远带不上 device
+// cookie（Chrome 对 opaque origin 抑制 SameSite cookie）——状态端点下发的
+// per-device plane token 是平面页唯一身份通道：
+//
+//	· 读面：plane token 放行（后端收到换写后的后端 token）；
+//	· 写面：持控制权设备的 plane token 放行；未持控制 → 403 control.forbidden
+//	  （本地错误携带 ACAO:null，真实错误码不被浏览器 CORS 掩盖成 network_error）；
+//	· raw 后端 token 写面维持 403（零 principal 兼容通道）；伪 token → 401
+//	  同样可读。
+func TestWebUIProxy_PlaneTokenWriteFaces(t *testing.T) {
+	f := newWebUIProxyFixture(t)
+	f.markAvailable("sess-hold")
+	f.holdControl(t, "sess-hold")
+	tok := f.planeTokenFor(t, "sess-hold")
+
+	do := func(method, path, auth string) (*http.Response, string) {
+		req, _ := http.NewRequest(method, f.ts.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+auth)
+		req.Header.Set("Origin", "null") // opaque iframe 形态
+		resp, err := f.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(raw)
+	}
+
+	// 读面（无 cookie + plane token）→ 200。
+	if resp, _ := do(http.MethodGet, "/webui/sess-hold/api/info", tok); resp.StatusCode != http.StatusOK {
+		t.Fatalf("read via plane token: %d", resp.StatusCode)
+	}
+	// 写面（无 cookie，持控制设备的 plane token）→ 200，后端实际收到 1 次 input。
+	if resp, raw := do(http.MethodPost, "/webui/sess-hold/api/input", tok); resp.StatusCode != http.StatusOK {
+		t.Fatalf("write via plane token (control held): %d body=%s", resp.StatusCode, raw)
+	}
+	if n := f.backend.inputCount(); n != 1 {
+		t.Fatalf("backend input calls=%d want 1", n)
+	}
+	if probe := f.backend.lastProbe(); probe.auth != "Bearer "+webuiTestToken {
+		t.Fatalf("outbound Authorization=%q want rewritten backend token", probe.auth)
+	}
+
+	// 同一 fixture：未持控制权的会话 → 403 + ACAO:null（错误可见性）。
+	f.markAvailable("sess-free")
+	freeTok := f.planeTokenFor(t, "sess-free")
+	resp, raw := do(http.MethodPost, "/webui/sess-free/api/input", freeTok)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("write without control: %d body=%s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(raw, string(contract.ErrorCodeControlForbidden)) {
+		t.Fatalf("body must carry control.forbidden: %s", raw)
+	}
+	if ao := resp.Header.Get("Access-Control-Allow-Origin"); ao != "null" {
+		t.Fatalf("local 403 must stay readable for the opaque iframe: ACAO=%q", ao)
+	}
+	// raw 后端 token（无 grant）写面 → 403（兼容通道维持只读）。
+	if resp, _ := do(http.MethodPost, "/webui/sess-hold/api/input", webuiTestToken); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("write via raw backend token must stay 403: %d", resp.StatusCode)
+	}
+	// 伪 plane token → 401，且同样携带 ACAO:null（不再被掩盖成 network_error）。
+	resp, raw = do(http.MethodGet, "/webui/sess-hold/api/info", "p00000000000000000000000000000")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bogus plane token: %d body=%s", resp.StatusCode, raw)
+	}
+	if ao := resp.Header.Get("Access-Control-Allow-Origin"); ao != "null" {
+		t.Fatalf("local 401 must stay readable for the opaque iframe: ACAO=%q", ao)
+	}
+}
+
+// TestWebUIProxy_PlaneTokenRotation：后端 token 轮换（/resume 平面迁移）后，
+// 旧 plane token 不再解析（resolve 比对当前后端 token 快照）→ 401；状态
+// 端点重取会拿到重新铸造的 plane token。
+func TestWebUIProxy_PlaneTokenRotation(t *testing.T) {
+	f := newWebUIProxyFixture(t)
+	f.markAvailable("sess-rot")
+	tok := f.planeTokenFor(t, "sess-rot")
+
+	// 平面迁移：后端 token 变化 → 旧 plane token 失效（代理层 401）。
+	f.app.setInfo("sess-rot", SessionWebUIInfo{State: "available", Port: f.backend.backendPort(), Token: "rotated-backend-token-0001"})
+	req, _ := http.NewRequest(http.MethodGet, f.ts.URL+"/webui/sess-rot/api/info", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := f.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("stale plane token after rotation: %d want 401", resp.StatusCode)
+	}
+
+	// 重取状态 → 重新铸造（backend token 快照已变 → 新 plane token）。
+	tok2 := f.planeTokenFor(t, "sess-rot")
+	if tok2 == tok {
+		t.Fatalf("plane token must re-mint after backend token rotation: %q", tok2)
+	}
+}
+
+// TestWebUIProxy_WSUpgradePlaneToken（G3）：无 cookie 的 WS upgrade 经子协议
+// plane token 鉴权；出向子协议对换写为后端 token（fake 后端按真实规则校验
+// ["webui", <backend token>]，回显仅 "webui"，浏览器侧握手不受影响）。
+func TestWebUIProxy_WSUpgradePlaneToken(t *testing.T) {
+	f := newWebUIProxyFixture(t)
+	f.markAvailable("sess-wsp")
+	tok := f.planeTokenFor(t, "sess-wsp")
+
+	wsURL := strings.Replace(f.ts.URL, "http://", "ws://", 1) + "/webui/sess-wsp/ws/events"
+	dialer := &websocket.Dialer{
+		Subprotocols:     []string{"webui", tok}, // 平面页 connectWs 同形
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, dialResp, err := dialer.Dial(wsURL, nil) // 无 cookie：唯一身份是子协议 token
+	if err != nil {
+		t.Fatalf("dial proxied ws via plane token: %v (resp=%v)", err, dialResp)
+	}
+	defer conn.Close()
+	if sub := conn.Subprotocol(); sub != "webui" {
+		t.Fatalf("client subprotocol=%q want webui", sub)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("hello-plane-token")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if string(msg) != "hello-plane-token" {
+		t.Fatalf("echo=%q", msg)
+	}
+	if upgraded, _ := f.backend.wsState(); !upgraded {
+		t.Fatal("backend must see the upgrade (rewritten subprotocol pair accepted)")
+	}
+}
+
 // TestWebUIProxy_StaticPlaneNoCookie：静态面（HTML 入口 / ./assets）豁免
 // device-cookie 鉴权（CORS-mode 子资源跨源永不携带 cookie；对齐后端 §6.3
 // 静态公开语义），数据面 /api/*、写面仍硬门。浏览器 E2E 发现（G2 追补）。
@@ -911,14 +1073,34 @@ func TestV1WebUIStatus_Shape(t *testing.T) {
 	if st.State != contract.WebUIPlaneStateAvailable {
 		t.Fatalf("state=%q", st.State)
 	}
-	if st.URL != "/webui/sess-av/#/t="+webuiTestToken {
+	// G3：fragment 下发的是代理铸造的 per-device plane token（非 raw 后端
+	// token）："p"+30hex（31 字符），同一 (sid, device) 稳定复用。
+	const wantPrefix = "/webui/sess-av/#/t="
+	if !strings.HasPrefix(st.URL, wantPrefix) {
 		t.Fatalf("url=%q", st.URL)
+	}
+	planeTok := strings.TrimPrefix(st.URL, wantPrefix)
+	if planeTok == webuiTestToken || len(planeTok) != 31 || planeTok[0] != 'p' {
+		t.Fatalf("plane token shape: %q", planeTok)
+	}
+	for _, c := range planeTok[1:] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			t.Fatalf("plane token charset: %q", planeTok)
+		}
+	}
+	rr2 := rec(h, webuiStatusReq(f, http.MethodGet, webuiStatusPath("sess-av")))
+	var st2 contract.WebUIStatus
+	if err := json.Unmarshal(rr2.Body.Bytes(), &st2); err != nil {
+		t.Fatal(err)
+	}
+	if st2.URL != st.URL {
+		t.Fatalf("plane token must be stable per (sid, device): %q vs %q", st.URL, st2.URL)
 	}
 	if err := contract.ValidateWebUIStatus(st); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if f.app.probeCalls() != 1 {
-		t.Fatalf("endpoint must probe once, got %d", f.app.probeCalls())
+	if f.app.probeCalls() != 2 {
+		t.Fatalf("endpoint must probe once per request, got %d", f.app.probeCalls())
 	}
 
 	// probing：无 url。

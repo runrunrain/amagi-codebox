@@ -41,6 +41,10 @@ type Server struct {
 	webRoot            string   // 移动端 Web 前端的 dist 目录路径，为空则不提供静态文件服务
 	mobileAssets       embed.FS // 构建时嵌入的移动端 Web 资源（mobile/dist）
 	mobileAssetsPrefix string   // mobileAssets 中的路径前缀，默认 "mobile/dist"
+	// webuiGrants 铸造/解析 webui 平面的 per-device plane token（G3：
+	// sandbox iframe 带不上 device cookie，写面控制门需要设备身份；
+	// 零值可用，内部自带锁与懒初始化 map）。
+	webuiGrants webuiPlaneGrantStore
 	// interfaceAddrs is the LAN-address discovery seam used only when the
 	// server listens on a wildcard address and needs to advertise a concrete
 	// address in the desktop pairing QR code.
