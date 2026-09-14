@@ -25,3 +25,7 @@ export function RegisterSession(arg1, arg2, arg3, arg4) {
 export function RemoveSession(arg1) {
   return window['go']['webui']['Service']['RemoveSession'](arg1);
 }
+
+export function SessionEndpoint(arg1) {
+  return window['go']['webui']['Service']['SessionEndpoint'](arg1);
+}

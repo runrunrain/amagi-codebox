@@ -70,6 +70,10 @@ export function GetTerminalSettings() {
   return window['go']['settings']['Service']['GetTerminalSettings']();
 }
 
+export function GetWebPlaneSkin() {
+  return window['go']['settings']['Service']['GetWebPlaneSkin']();
+}
+
 export function Load() {
   return window['go']['settings']['Service']['Load']();
 }
@@ -140,4 +144,8 @@ export function SetSystemProxyEndpoint(arg1, arg2) {
 
 export function SetTerminalSettings(arg1) {
   return window['go']['settings']['Service']['SetTerminalSettings'](arg1);
+}
+
+export function SetWebPlaneSkin(arg1) {
+  return window['go']['settings']['Service']['SetWebPlaneSkin'](arg1);
 }

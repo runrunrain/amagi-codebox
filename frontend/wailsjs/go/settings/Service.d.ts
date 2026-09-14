@@ -36,6 +36,8 @@ export function GetSystemProxyEndpoint():Promise<settings.SystemProxySettings>;
 
 export function GetTerminalSettings():Promise<settings.TerminalSettings>;
 
+export function GetWebPlaneSkin():Promise<string>;
+
 export function Load():Promise<void>;
 
 export function RecordRemoteLaunchDefaultV1(arg1:string,arg2:settings.RemoteLaunchDefaultV1):Promise<void>;
@@ -71,3 +73,5 @@ export function SetSkinSettings(arg1:settings.SkinSettings):Promise<void>;
 export function SetSystemProxyEndpoint(arg1:string,arg2:number):Promise<void>;
 
 export function SetTerminalSettings(arg1:settings.TerminalSettings):Promise<void>;
+
+export function SetWebPlaneSkin(arg1:string):Promise<void>;

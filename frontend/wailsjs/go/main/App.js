@@ -282,6 +282,10 @@ export function GetSession(arg1) {
   return window['go']['main']['App']['GetSession'](arg1);
 }
 
+export function GetSessionWebUI(arg1) {
+  return window['go']['main']['App']['GetSessionWebUI'](arg1);
+}
+
 export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
 }
@@ -400,6 +404,10 @@ export function OpenRemoteWebUI() {
 
 export function ProbeModelModalityNow(arg1, arg2) {
   return window['go']['main']['App']['ProbeModelModalityNow'](arg1, arg2);
+}
+
+export function ProbeSessionWebUI(arg1) {
+  return window['go']['main']['App']['ProbeSessionWebUI'](arg1);
 }
 
 export function PtyResize(arg1, arg2, arg3) {

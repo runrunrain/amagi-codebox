@@ -821,6 +821,42 @@ func TestSaveLocked_PreRenameSyncHandle_IsWritable(t *testing.T) {
 	}
 }
 
+// TestWebPlaneSkinSettings 验证缺省 dark、Set/Get 往返持久化、未知值归一 dark。
+func TestWebPlaneSkinSettings(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := svc.GetWebPlaneSkin(); got != WebPlaneSkinDark {
+		t.Fatalf("fresh default = %q, want %q", got, WebPlaneSkinDark)
+	}
+
+	if err := svc.SetWebPlaneSkin(WebPlaneSkinLight); err != nil {
+		t.Fatalf("SetWebPlaneSkin(light): %v", err)
+	}
+	if got := svc.GetWebPlaneSkin(); got != WebPlaneSkinLight {
+		t.Fatalf("after set = %q, want %q", got, WebPlaneSkinLight)
+	}
+
+	// 持久化：新建 Service 从同目录 Load 后仍读到 light。
+	fresh := NewService(dir)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("fresh Load: %v", err)
+	}
+	if got := fresh.GetWebPlaneSkin(); got != WebPlaneSkinLight {
+		t.Fatalf("reloaded = %q, want %q", got, WebPlaneSkinLight)
+	}
+
+	// 未知/空值归一 dark（fail-safe，不报错）。
+	if err := svc.SetWebPlaneSkin("blue"); err != nil {
+		t.Fatalf("SetWebPlaneSkin(garbage): %v", err)
+	}
+	if got := svc.GetWebPlaneSkin(); got != WebPlaneSkinDark {
+		t.Fatalf("after garbage = %q, want %q (normalized)", got, WebPlaneSkinDark)
+	}
+}
+
 // --- Skin Settings（本地图片皮肤，plan 后端切片 A）---
 
 // TestSkinSettings_DefaultAndRoundTrip 验证默认值（关闭、dim 35、opacity 70、

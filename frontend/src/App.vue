@@ -2,6 +2,7 @@
 import { onMounted, watch } from 'vue'
 import { usePlatformCapabilities } from './composables/usePlatformCapabilities'
 import { useSkinStore } from './stores/skin'
+import { useAppearanceStore } from './stores/appearance'
 import { currentSkinImage, requestBake, cancelBake } from './utils/skinBake'
 import AppShell from './components/layout/AppShell.vue'
 import Toast from './components/common/Toast.vue'
@@ -10,6 +11,7 @@ import UpdateReminder from './components/common/UpdateReminder.vue'
 
 const { ensure } = usePlatformCapabilities()
 const skinStore = useSkinStore()
+const appearanceStore = useAppearanceStore()
 
 // 皮肤视觉层（v1.3.38 性能修复）：模糊与调光经 skinBake 预烘焙进位图后
 // 一次性注入 --skin-image——运行期零 filter、零全窗逐帧混合，修复 GPU
@@ -67,6 +69,7 @@ function syncSkinDom() {
 onMounted(() => {
   ensure()
   skinStore.load()
+  appearanceStore.ensureLoaded()
 })
 
 watch(

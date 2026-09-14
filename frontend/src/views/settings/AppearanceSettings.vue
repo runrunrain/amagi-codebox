@@ -123,22 +123,84 @@
       @confirm="doRemove"
     />
   </div>
+
+  <!-- 会话 Web 平面配色方向（非远程控制的会话网页视图；移动端远程控制固定浅色） -->
+  <div class="set-card">
+    <div class="card-head">
+      <div>
+        <h2>会话 Web 平面</h2>
+        <p class="set-sub">pi / omp 会话的网页视图文字底色方向：深色＝深底浅字（与终端深墨底一致），浅色＝浅底深字；切换后已打开的 Web 平面立即重载生效</p>
+      </div>
+    </div>
+    <div class="dir-row" role="radiogroup" aria-label="会话 Web 平面配色方向">
+      <button
+        type="button"
+        class="dir-option"
+        :class="{ active: appearanceStore.webPlaneSkin === 'dark' }"
+        role="radio"
+        :aria-checked="appearanceStore.webPlaneSkin === 'dark'"
+        :disabled="webPlaneSaving"
+        data-testid="webplane-skin-dark"
+        @click="onSetWebPlaneSkin('dark')"
+      >
+        <span class="dir-swatch dir-swatch-dark" aria-hidden="true">Aa</span>
+        <span class="dir-meta">
+          <strong>深色方向</strong>
+          <small>深底 · 浅字</small>
+        </span>
+      </button>
+      <button
+        type="button"
+        class="dir-option"
+        :class="{ active: appearanceStore.webPlaneSkin === 'light' }"
+        role="radio"
+        :aria-checked="appearanceStore.webPlaneSkin === 'light'"
+        :disabled="webPlaneSaving"
+        data-testid="webplane-skin-light"
+        @click="onSetWebPlaneSkin('light')"
+      >
+        <span class="dir-swatch dir-swatch-light" aria-hidden="true">Aa</span>
+        <span class="dir-meta">
+          <strong>浅色方向</strong>
+          <small>浅底 · 深字</small>
+        </span>
+      </button>
+    </div>
+    <p class="sliders-hint">仅影响应用内嵌的会话网页视图（含皮肤背景模式下的面板与文字方向）；移动端远程控制固定浅色，独立浏览器访问 pi webui 不受影响</p>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useSkinStore } from '../../stores/skin'
+import { useAppearanceStore } from '../../stores/appearance'
+import type { WebPlaneSkin } from '../../api/settings'
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import EmptyState from '../../components/ui/EmptyState.vue'
 import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
 
 const skinStore = useSkinStore()
+const appearanceStore = useAppearanceStore()
 const { showSuccess, showError } = useToast()
 
 const importing = ref(false)
 const confirmOpen = ref(false)
 const pendingRemoveId = ref('')
+const webPlaneSaving = ref(false)
+
+async function onSetWebPlaneSkin(v: WebPlaneSkin) {
+  if (webPlaneSaving.value || appearanceStore.webPlaneSkin === v) return
+  webPlaneSaving.value = true
+  try {
+    await appearanceStore.setSkin(v)
+    showSuccess(v === 'light' ? '会话 Web 平面已切换为浅色方向' : '会话 Web 平面已切换为深色方向')
+  } catch (err) {
+    showError('切换失败: ' + errMsg(err))
+  } finally {
+    webPlaneSaving.value = false
+  }
+}
 
 function errMsg(err: unknown): string {
   return (err as any)?.message || String(err)
@@ -244,6 +306,7 @@ async function onReset() {
 
 onMounted(() => {
   if (!skinStore.loaded) skinStore.load()
+  void appearanceStore.ensureLoaded()
 })
 </script>
 
@@ -408,6 +471,83 @@ onMounted(() => {
 }
 
 .footer-hint {
+  font-size: 11px;
+  color: var(--tertiary);
+}
+
+/* 会话 Web 平面配色方向：双选项分段选择器（swatch 预览两种文字底色方向） */
+.dir-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dir-option {
+  flex: 1;
+  max-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card, 12px);
+  background: var(--control);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dir-option:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.dir-option.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.dir-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dir-swatch {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* 两种方向的实底预览（与实际嵌入变体同源令牌：深色＝termBg/termText，浅色＝window/label） */
+.dir-swatch-dark {
+  background: var(--termBg, #1b1b1f);
+  color: var(--termText, #e6e6e6);
+}
+
+.dir-swatch-light {
+  background: var(--window, #fbfbfd);
+  color: var(--label, #1d1d1f);
+  border: 1px solid var(--separator);
+}
+
+.dir-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dir-meta strong {
+  font-size: 13px;
+  color: var(--label);
+}
+
+.dir-meta small {
   font-size: 11px;
   color: var(--tertiary);
 }

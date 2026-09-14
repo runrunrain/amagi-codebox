@@ -57,6 +57,21 @@ export function extractCapabilityToken(url: string): string | null {
   }
 }
 
+/**
+ * 按 Web 平面配色方向注入 skin 参数：light → 在 fragment 前插入/合并 skin=light
+ * query（webui 页面命中后叠加 webui-embedded-light：浅底深字）；dark → 原样
+ * 返回（缺省深色嵌入，不带参数）。插入点在 # 前，不污染 #/t=<token> 契约
+ * fragment；token 提取（extractCapabilityToken 按 #/t= 定位）不受影响。
+ */
+export function withWebPlaneSkinParam(url: string, skin: 'dark' | 'light'): string {
+  if (skin !== 'light') return url;
+  const hashIdx = url.indexOf('#');
+  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}skin=light${hash}`;
+}
+
 /** 会话显示平面。 */
 export type SessionPlane = 'tui' | 'web'
 

@@ -7,6 +7,7 @@ import {
   extractCapabilityToken,
   postToWebFrame,
   quickMenuStateFor,
+  withWebPlaneSkinParam,
   type InsertInputMessage,
   type InsertInputPayload,
   type PathConfirmDeps,
@@ -119,6 +120,28 @@ describe('extractCapabilityToken（iframe URL → 消息凭证）', () => {
     const badToken = extractCapabilityToken('http://127.0.0.1:54758/') // 无 fragment
     expect(badToken).toBeNull() // 等价于 WebPlaneHost.postToFrame 提前返回 false，不投递
     expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('withWebPlaneSkinParam（Web 平面配色方向 → iframe URL skin 参数）', () => {
+  it('dark：原样返回，不携带任何参数（缺省深色嵌入，契约 fragment 不动）', () => {
+    const url = `http://127.0.0.1:54758/#/t=${TOKEN}`
+    expect(withWebPlaneSkinParam(url, 'dark')).toBe(url)
+  })
+
+  it('light：skin=light 插入在 fragment 前，token 提取不受影响', () => {
+    const out = withWebPlaneSkinParam(`http://127.0.0.1:54758/#/t=${TOKEN}`, 'light')
+    expect(out).toBe(`http://127.0.0.1:54758/?skin=light#/t=${TOKEN}`)
+    expect(extractCapabilityToken(out)).toBe(TOKEN)
+  })
+
+  it('已有 query 时合并不覆盖；无 fragment 的 URL 追加在尾部', () => {
+    expect(
+      withWebPlaneSkinParam(`http://127.0.0.1:54758/?x=1#/t=${TOKEN}`, 'light'),
+    ).toBe(`http://127.0.0.1:54758/?x=1&skin=light#/t=${TOKEN}`)
+    expect(withWebPlaneSkinParam('http://127.0.0.1:54758/', 'light')).toBe(
+      'http://127.0.0.1:54758/?skin=light',
+    )
   })
 })
 

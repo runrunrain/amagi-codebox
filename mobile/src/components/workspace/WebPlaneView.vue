@@ -35,7 +35,18 @@ const emit = defineEmits<{
 export type WebPlanePhase = 'loading' | 'loaded' | 'error';
 
 const phase = ref<WebPlanePhase>('loading');
-const frameSrc = ref(props.url);
+// 浅色嵌入变体：移动端是浅色应用（iframe 背后铺 --VT-canvas 浅底），向 pi webui
+// 页面 query 携带 skin=light —— 页面命中后叠加 webui-embedded-light（深色文字+
+// 浅色半透明面板）。老版本 webui（不认识该参数）自然忽略，行为不劣化；
+// fragment 契约（#/t=<token>）不动。插入点在 # 前，避免污染 fragment。
+function withLightSkin(url: string): string {
+  const hashIdx = url.indexOf('#');
+  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}skin=light${hash}`;
+}
+const frameSrc = ref(withLightSkin(props.url));
 const frameKey = ref(0);
 
 // 加载看门狗：iframe 对空响应/拒连不一定触发 @error，10s 超时兜底（对齐桌面）
@@ -72,7 +83,7 @@ function onFrameError(): void {
 
 function handleRetry(): void {
   emit('retry', props.sessionId);
-  if (frameSrc.value === props.url) {
+  if (frameSrc.value === withLightSkin(props.url)) {
     phase.value = 'loading';
     frameKey.value++;
     armWatchdog();
@@ -87,7 +98,7 @@ watch(
   () => props.url,
   (newUrl) => {
     if (!newUrl) return;
-    frameSrc.value = newUrl;
+    frameSrc.value = withLightSkin(newUrl);
     phase.value = 'loading';
     frameKey.value++;
     armWatchdog();
@@ -188,12 +199,7 @@ onBeforeUnmount(() => {
   width: 100%;
   display: flex;
   flex-direction: column;
-  /* pi webui 嵌入模式（#/t= fragment 命中）body 透明 + 浅色文字
-     （--termText）+ 半透明深色面板，依赖宿主在 iframe 背后提供深色底：
-     桌面端由 .term-body 的 --termBg 深墨底承担。移动端此前用
-     --VT-canvas（#FAF9F5 浅奶油）导致浅字落浅底不可读（对比度 ~2:1），
-     改用终端深墨面令牌对齐桌面语义。遮罩/浮层自带实底不受影响。 */
-  background: var(--VT-surface-dark);
+  background: var(--VT-canvas);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 

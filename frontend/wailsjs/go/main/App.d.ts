@@ -157,6 +157,8 @@ export function GetSavedWorkDirs():Promise<Array<settings.WorkDirEntry>>;
 
 export function GetSession(arg1:string):Promise<session.SessionInfo>;
 
+export function GetSessionWebUI(arg1:string):Promise<remote.SessionWebUIInfo|boolean>;
+
 export function GetSessions():Promise<Array<session.SessionInfo>>;
 
 export function GetSettingsService():Promise<settings.Service>;
@@ -216,6 +218,8 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
 export function ProbeModelModalityNow(arg1:string,arg2:string):Promise<main.ModalityProbeNowResult>;
+
+export function ProbeSessionWebUI(arg1:string):Promise<remote.SessionWebUIInfo|boolean>;
 
 export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 

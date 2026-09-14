@@ -14,7 +14,7 @@ describe('WebPlaneView.vue', () => {
     vi.restoreAllMocks();
   });
 
-  it('渲染 iframe 且携带冻结 sandbox 属性与相对 url', () => {
+  it('渲染 iframe 且携带冻结 sandbox 属性；url 注入 skin=light（浅色嵌入变体，fragment 前）', () => {
     const wrapper = mount(WebPlaneView, {
       props: {
         url: '/webui/sess-1/#/t=token123',
@@ -24,9 +24,21 @@ describe('WebPlaneView.vue', () => {
 
     const iframe = wrapper.find('iframe');
     expect(iframe.exists()).toBe(true);
-    expect(iframe.attributes('src')).toBe('/webui/sess-1/#/t=token123');
+    expect(iframe.attributes('src')).toBe('/webui/sess-1/?skin=light#/t=token123');
     expect(iframe.attributes('sandbox')).toBe('allow-scripts allow-forms');
     expect(iframe.attributes('title')).toBe('Web 会话平面');
+  });
+
+  it('skin=light 注入不污染已有 query 与无 fragment 的 url', () => {
+    const withQuery = mount(WebPlaneView, {
+      props: { url: '/webui/sess-1/?x=1#/t=token123', sessionId: 'sess-1' },
+    });
+    expect(withQuery.find('iframe').attributes('src')).toBe('/webui/sess-1/?x=1&skin=light#/t=token123');
+
+    const noFragment = mount(WebPlaneView, {
+      props: { url: '/webui/sess-1/', sessionId: 'sess-1' },
+    });
+    expect(noFragment.find('iframe').attributes('src')).toBe('/webui/sess-1/?skin=light');
   });
 
   it('初始处于 loading 态，iframe 触发 load 事件后进入 loaded 态', async () => {
@@ -150,7 +162,7 @@ describe('WebPlaneView.vue', () => {
 
     await wrapper.setProps({ url: '/webui/sess-1/#/t=token2' });
 
-    expect(wrapper.find('iframe').attributes('src')).toBe('/webui/sess-1/#/t=token2');
+    expect(wrapper.find('iframe').attributes('src')).toBe('/webui/sess-1/?skin=light#/t=token2');
     expect(wrapper.find('[data-testid="webplane-loading"]').exists()).toBe(true);
   });
 });

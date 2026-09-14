@@ -48,7 +48,7 @@
     <div
       ref="bodyRef"
       class="term-body"
-      :class="{ 'web-active': activePlane === 'web' }"
+      :class="{ 'web-active': activePlane === 'web', 'web-plane-light': appearanceStore.webPlaneSkin === 'light' }"
       @wheel.stop
       @contextmenu.prevent="handleContextMenu"
     >
@@ -58,7 +58,7 @@
         v-if="webPlaneMounted"
         ref="webPlaneHostRef"
         v-show="activePlane === 'web'"
-        :url="webUrl"
+        :url="webPlaneSrc"
         :session-id="sessionId"
         :ended="webEnded"
         @error="onWebPlaneError"
@@ -144,6 +144,7 @@ import {
 } from 'vue'
 import { session as sessionModels } from '../../../wailsjs/go/models'
 import { useSessionStore } from '../../stores/session'
+import { useAppearanceStore } from '../../stores/appearance'
 import { useSessionList } from '../../composables/useSessionList'
 import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
@@ -152,7 +153,7 @@ import { basename } from '../../utils/format'
 import GitPanel from './GitPanel.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
 import WebPlaneHost from './WebPlaneHost.vue'
-import { dispatchPathConfirm, quickMenuStateFor } from './quickPathInsert'
+import { dispatchPathConfirm, quickMenuStateFor, withWebPlaneSkinParam } from './quickPathInsert'
 import PathPickerDialog from './PathPickerDialog.vue'
 import Segmented from '../ui/Segmented.vue'
 import { openWebPlane } from '../../api/webui'
@@ -320,6 +321,12 @@ const userPinnedTui = ref(false)
 const webPlaneMounted = ref(false)
 const webUrl = ref('')
 const webEnded = ref(false)
+// Web 平面配色方向（设置→外观）：light 时向 iframe URL 注入 skin=light
+// （webui 叠加 webui-embedded-light：浅面板+深字），并把宿主底（非皮肤模式）
+// 切为浅底；dark 为缺省。computed 跟随设置变更，WebPlaneHost 的 url watch
+// 自动重载 iframe。token 提取不受 query 注入影响（见 withWebPlaneSkinParam）。
+const appearanceStore = useAppearanceStore()
+const webPlaneSrc = computed(() => withWebPlaneSkinParam(webUrl.value, appearanceStore.webPlaneSkin))
 
 const isPiSession = computed(() => session.value?.appType === 'pi')
 const webuiState = computed(
@@ -485,6 +492,9 @@ onMounted(async () => {
   if (isPiSession.value) {
     sessionStore.ensureWebUIProbe(props.sessionId)
   }
+
+  // Web 平面配色方向（App.vue 启动已加载一次；此处兼底：路由直达/刷新时序先行）。
+  void appearanceStore.ensureLoaded()
 
   // Platform caps must be loaded before terminal creation: otherwise
   // isDarwin/isWindows return false when the singleton cache is null (page
@@ -817,6 +827,14 @@ function onCtxSelectAll() {
    模式 body 透明）一路透出。 */
 html[data-skin='on'] .term-body.web-active {
   background: transparent;
+}
+
+/* Web 平面浅色方向（设置→外观 webPlaneSkin=light）：非皮肤模式下宿主底随方向
+   切换——浅色方向换浅底，承载 webui 浅色嵌入变体（浅色半透明面板+深色文字；
+   消息流透明区域落在浅底上保可读）。皮肤模式两方向都保持透皮（上一段规则），
+   由 webui 面板与皮肤图层共同承载可读性。 */
+html:not([data-skin='on']) .term-body.web-active.web-plane-light {
+  background: var(--window, #fbfbfd);
 }
 
 /* let xterm fill the host.

@@ -3420,6 +3420,22 @@ export namespace remote {
 		    return a;
 		}
 	}
+	export class SessionWebUIInfo {
+	    State: string;
+	    Port: number;
+	    Token: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionWebUIInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.State = source["State"];
+	        this.Port = source["Port"];
+	        this.Token = source["Token"];
+	    }
+	}
 
 }
 
@@ -3780,6 +3796,7 @@ export namespace settings {
 	    githubToken: string;
 	    commitSummaryPreset?: string;
 	    skin: SkinSettings;
+	    webPlaneSkin?: string;
 	    systemProxy: SystemProxySettings;
 	
 	    static createFrom(source: any = {}) {
@@ -3801,6 +3818,7 @@ export namespace settings {
 	        this.githubToken = source["githubToken"];
 	        this.commitSummaryPreset = source["commitSummaryPreset"];
 	        this.skin = this.convertValues(source["skin"], SkinSettings);
+	        this.webPlaneSkin = source["webPlaneSkin"];
 	        this.systemProxy = this.convertValues(source["systemProxy"], SystemProxySettings);
 	    }
 	

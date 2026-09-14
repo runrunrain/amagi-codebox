@@ -22,6 +22,8 @@ import {
   SetMobileWebRoot,
   GetCommitSummaryPreset,
   SetCommitSummaryPreset,
+  GetWebPlaneSkin,
+  SetWebPlaneSkin,
   GetSettings,
   Load,
   Save,
@@ -35,6 +37,14 @@ type DashboardDefaults = settings.DashboardDefaults;
 type ShellEntry = settings.ShellEntry;
 type TerminalSettings = settings.TerminalSettings;
 type AppSettings = settings.AppSettings;
+
+/** 会话 Web 平面配色方向（设置→外观）：dark（缺省，深底浅字）/ light（浅底深字）。 */
+export type WebPlaneSkin = 'dark' | 'light';
+
+/** 归一化：后端对空/未知值 fail-safe 回落 dark，前端同规则（双端一致）。 */
+export function normalizeWebPlaneSkin(v: string): WebPlaneSkin {
+  return v === 'light' ? 'light' : 'dark';
+}
 
 /**
  * Get dashboard defaults
@@ -174,4 +184,19 @@ export function getCommitSummaryPreset(): Promise<string> {
  */
 export function setCommitSummaryPreset(value: string): Promise<void> {
   return callApi('[api.settings.setCommitSummaryPreset]', () => SetCommitSummaryPreset(value));
+}
+
+/**
+ * Get 会话 Web 平面配色方向（后端已归一为 dark/light）
+ */
+export function getWebPlaneSkin(): Promise<WebPlaneSkin> {
+  return callApi('[api.settings.getWebPlaneSkin]', async () =>
+    normalizeWebPlaneSkin(await GetWebPlaneSkin()));
+}
+
+/**
+ * Set 会话 Web 平面配色方向（后端对未知值 fail-safe 归一 dark）
+ */
+export function setWebPlaneSkin(value: WebPlaneSkin): Promise<void> {
+  return callApi('[api.settings.setWebPlaneSkin]', () => SetWebPlaneSkin(value));
 }

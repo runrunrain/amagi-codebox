@@ -173,6 +173,11 @@ type AppSettings struct {
 	// 空 = 未设置（gitassist.SummarizeDiff 据此报错引导用户去设置页选择）。
 	CommitSummaryPreset string              `json:"commitSummaryPreset,omitempty"`
 	Skin                SkinSettings        `json:"skin"`
+	// WebPlaneSkin 会话 Web 平面（pi webui 内嵌 iframe）配色方向："dark"（缺省，
+	// 深底浅字，与终端深墨底一致）或 "light"（浅底深字）。空/未知值按 dark
+	// 处理（fail-safe；零值即默认，老 settings.json 无需迁移）。移动端（远程
+	// 控制）宿主固定浅色，不经此设置。
+	WebPlaneSkin        string              `json:"webPlaneSkin,omitempty"`
 	SystemProxy         SystemProxySettings `json:"systemProxy"`
 }
 
@@ -702,6 +707,40 @@ func (s *Service) SetSkinSettings(sk SkinSettings) error {
 	sk = normalizeSkinSettings(sk)
 	s.mu.Lock()
 	s.settings.Skin = sk
+	s.mu.Unlock()
+	return s.Save()
+}
+
+// --- Web Plane Skin（会话 Web 平面配色方向，设置→外观） ---
+
+const (
+	// WebPlaneSkinDark 深底浅字（缺省，与终端深墨底一致）。
+	WebPlaneSkinDark = "dark"
+	// WebPlaneSkinLight 浅底深字（对齐浅色界面方向）。
+	WebPlaneSkinLight = "light"
+)
+
+// normalizeWebPlaneSkin 未知/空值归一为 dark（缺省 fail-safe）。仅两个合法
+// 取值，不做前缀匹配：拼写错误一律回落缺省而非报错（与滑块 clamp 同一取舍）。
+func normalizeWebPlaneSkin(v string) string {
+	if v == WebPlaneSkinLight {
+		return WebPlaneSkinLight
+	}
+	return WebPlaneSkinDark
+}
+
+// GetWebPlaneSkin 返回会话 Web 平面配色方向（空/未知值回落 dark）。
+func (s *Service) GetWebPlaneSkin() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeWebPlaneSkin(s.settings.WebPlaneSkin)
+}
+
+// SetWebPlaneSkin 持久化会话 Web 平面配色方向（未知值归一为 dark 后落盘）。
+func (s *Service) SetWebPlaneSkin(v string) error {
+	v = normalizeWebPlaneSkin(v)
+	s.mu.Lock()
+	s.settings.WebPlaneSkin = v
 	s.mu.Unlock()
 	return s.Save()
 }

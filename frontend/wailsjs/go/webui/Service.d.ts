@@ -13,3 +13,5 @@ export function ProbeWebUI(arg1:string):Promise<webui.Status>;
 export function RegisterSession(arg1:string,arg2:number,arg3:number,arg4:string):Promise<void>;
 
 export function RemoveSession(arg1:string):Promise<void>;
+
+export function SessionEndpoint(arg1:string):Promise<number|string>;
