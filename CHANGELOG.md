@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.74] - 2026-09-15
+
+### Fixed
+
+- **远程 Web 平面输入台恒 403（「连接中断，消息未发送」）**：sandbox iframe 的 opaque origin 使 Chrome 抑制 SameSite cookie，数据面请求永远带不上 device cookie——此前 capability 兜底通道主体为零，写面控制门恒拒（403），输入台永远发不出去。remote server 新增按（会话， 设备）绑定的代理铸造 plane token（`p`+30 hex，与后端 32-hex token 形状可区分、直达后端 fail-closed）：状态端点（device cookie 鉴权后）改下发 plane token，解析命中即得绑定设备主体，写面控制门据此评估真实控制权归属（持控制放行、未持/他人持有 403，语义对齐 TUI 平面「先获取控制权」）；绑定设备经活动设备库实时复核（吊销/过期 fail-closed），后端 token 轮换自动失效旧 grant，平面终态回收全部 grant，raw 后端 token 不再直接下发（只读兼容旧平面、写面仍 403）；出向 Authorization 与 WS 子协议统一换写为后端 token，后端零改动。
+- **opaque iframe 读不到代理错误码**：本地生成的 401/403/503 响应在 `Origin: null` 时携带 `ACAO: null`，确保沙箱 iframe 能读到真实错误码，不再被浏览器掩盖成笼统 network_error（误导性的「连接中断」提示）；成功响应的 CORS 头仍由后端下发（不重复设置）。
+- **配套测试与文档**：webui 代理 plane token 铸造/解析/轮换失效/会话回收/设备复核 fail-closed、写面控制门真实主体、ACAO:null 错误可读性等用例；remote-api-v1 契约文档同步。
+
 ## [1.3.73] - 2026-09-14
 
 ### Added
