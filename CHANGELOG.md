@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.76] - 2026-09-16
+
+### Added
+
+- **视觉能力标记与识图清单导出拆为两个控制项（契约 v1.5）**：`TerminalPreset` 新增三态 `vision_export` 字段——缺省/true 保持既有行为（标记 Vision/Video 即导出到 `~/.agents/amagi-media-models.json`，向后兼容）；显式 `false` 时该预设不进 amagi-media-understanding 清单，但 Vision/Video 标记继续驱动 pi/omp 托管条目的 `input` 声明与 amagi-pi 守卫放行。预设编辑弹窗视觉能力区新增「导出到识图 / 识视频清单」开关（默认开，关闭时仅写 `vision_export: false`）。配套测试：config 导出器三态用例（nil/true 导出、显式 false 排除）+ launcher 回归用例（`vision_export=false` 不削弱能力标记）；`docs/vision-export-contract.md` 增补 v1.5 修订段，`docs/user/providers.md` / `usage.md` 同步。
+
 ## [1.3.75] - 2026-09-15
 
 ### Fixed
