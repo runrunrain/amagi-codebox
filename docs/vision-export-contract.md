@@ -11,21 +11,29 @@
 > **v1.3（2026-08-23）设备端学习层**：探测有定论结论同时回写 `~/.agents/amagi-modalities.json`（`ModalityKBFile`，key 为规范化模型 id，**跨 provider 泛化**，含否定结论；0600 原子写、`AMAGI_MODALITY_KB_PATH` 覆盖、缺失/损坏按空表自愈）。推断顺序：学习层精确命中（实证）优先于内置族规则（`LookupModelModalities` 三态：known=true 含否定，抑制重复实弹）。静态知识库 = 内置规则表（随二进制）+ 设备学习层（用户设备持久化，自学习增长）。
 >
 > **v1.4（2026-08-24）收录回归手动标记**：实战反馈——v1.1 的「手动 ∪ 自动发现」把用户从未标记视觉能力的预设（及 5 个 provider 的明文 key）全部写进导出文件，且 anthropic/openai 双桶同名预设各导一条（ID 重复），超出用户预期。修订：**导出收录与 capabilities 均仅取手动 Vision/Video 标记**（回归 v1.0 语义）；知识库/实弹探测/学习层继续存在，但仅驱动 pi/omp 托管条目 `input` 声明与前端「探测能力」提示，不再作为导出收录来源；探测落库不再触发视觉导出重写；新增跨桶同 ID 去重（openai 桶优先）。取代 v1.1/v1.2 中「导出收录三层并集」的描述，schema/优先级归一化/写盘语义不变。
+>
+> **v1.5（2026-09-16）收录开关独立化**：视觉能力标记（Vision/Video，驱动 pi/omp 托管条目 `input` 声明与守卫放行）与清单导出（`~/.agents/amagi-media-models.json` 收录）拆为两个控制项。`TerminalPreset` 新增 `vision_export` 三态字段：缺省（nil/true）= 导出，行为与 v1.4 完全一致（向后兼容）；显式 `false` = 不导出，能力标记继续驱动 pi/omp `input` 声明与守卫放行。Go 侧判定统一走 `TerminalPreset.IncludeInVisionExport()`（nil=true）；前端预设弹窗视觉能力区新增「导出到识图 / 识视频清单」开关（默认开，关闭时仅写 `vision_export: false`）。schema（VisionExportModel 条目字段）不变。
 
 ## 1. TerminalPreset 新增字段（Go + 前端 TS 同步）
 
 `internal/config/types.go` 的 `TerminalPreset` 增加：
 
 ```go
-// 视觉能力标记：可作为识图 / 识视频模型导出
-Vision         bool `json:"vision,omitempty"`
-Video          bool `json:"video,omitempty"`
+// 视觉能力标记：声明模型具备识图 / 识视频能力
+//（驱动 pi/omp 托管条目 input 声明与守卫放行）
+Vision         bool  `json:"vision,omitempty"`
+Video          bool  `json:"video,omitempty"`
 // 能力优先级，小者优先；0 视为 100
-VisionPriority int  `json:"vision_priority,omitempty"`
+VisionPriority int   `json:"vision_priority,omitempty"`
+// 清单导出开关（v1.5 三态）：nil/true = 收录进 ~/.agents/amagi-media-models.json；
+// 显式 false = 不收录（能力标记照常驱动 pi/omp input 声明与守卫放行）
+VisionExport   *bool `json:"vision_export,omitempty"`
 ```
 
 - 持久化于 models.json `terminal_presets.*`，旧版本读新文件安全（未知字段忽略）。
 - 标记独立于 preset 所在桶：anthropic 桶与 openai 桶的 preset 均可标记。
+- `vision_export` 三态（v1.5）：缺省（nil）与显式 `true` 等价（导出），显式 `false` 不导出；Go 侧统一经 `TerminalPreset.IncludeInVisionExport()` 归一，不得用 bool 零值默认（会静默清空既有清单）。
+- 前端：预设编辑弹窗视觉能力区的「导出到识图 / 识视频清单」开关（默认开；关闭时仅写 `vision_export: false`，开启不写字段）。
 
 ## 2. 导出文件 `~/.agents/amagi-media-models.json`
 
@@ -62,7 +70,7 @@ VisionPriority int  `json:"vision_priority,omitempty"`
 - `api_key`：resolver 拿到则写明文（文件已 0600）；拿不到写空串，skill fallback 读环境变量 `auth_key_env`（取 provider 的 `auth_key` 标识）。
 - `base_url`：取 provider OpenAI 格式 base_url（`EffectiveBaseURLRaw("openai")`）。
 - 跳过规则（v1 边界）：仅导出 OpenAI 兼容 provider（`type=openai`）；provider 仅有 anthropic 格式时该带标记 preset 跳过。视频标记 `video=true` 才进 `capabilities`。
-- 收录规则（v1.4，取代 v1.1 三层并集）：**仅手动标记 Vision/Video 的 preset 导出**；`capabilities` 精确等于手动标记，不做知识库/探测并集。知识库与探测结论只驱动 pi/omp 托管条目 `input` 声明与前端探测提示。
+- 收录规则（v1.5，取代 v1.1 三层并集）：**仅手动标记 Vision/Video 且 `vision_export` 未显式排除（缺省/true）的 preset 导出**；`capabilities` 精确等于手动标记，不做知识库/探测并集。知识库与探测结论只驱动 pi/omp 托管条目 `input` 声明与前端探测提示。
 - 跨桶去重（v1.4）：同一 provider/短名在 anthropic 与 openai 两桶同时标记时仅导出一条，openai 桶条目优先（与 `api_type=openai` 调用语义一致）。
 - `parameters` 透传 `reasoning_effort` / `max_tokens` / `temperature` / `top_p`。
 - `priority`：preset 的 `vision_priority`，0 归一化为 100。

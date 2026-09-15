@@ -258,13 +258,15 @@ type TerminalPreset struct {
     OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"`
 
     // 视觉能力标记（契约 docs/vision-export-contract.md §1）
-    Vision         bool `json:"vision,omitempty"`          // 识图
-    Video          bool `json:"video,omitempty"`           // 识视频
-    VisionPriority int  `json:"vision_priority,omitempty"` // 小者优先；0 视为 100
+    Vision         bool  `json:"vision,omitempty"`          // 识图
+    Video          bool  `json:"video,omitempty"`           // 识视频
+    VisionPriority int   `json:"vision_priority,omitempty"` // 小者优先；0 视为 100
+    // 清单导出开关（v1.5 三态）：nil/true = 收录；显式 false = 不收录
+    VisionExport   *bool `json:"vision_export,omitempty"`
 }
 ```
 
-**视觉能力标记**：在 Provider Center 的预设编辑弹窗中勾选"识图 Vision"/"识视频 Video"并设定优先级后，只要 Vision 或 Video 至少一个为 true，该预设就会作为视觉模型导出到 `~/.agents/amagi-media-models.json`（`internal/config/vision.go`），供 amagi-media-understanding 等外部 skill 按优先级降级调用。标记独立于所在桶，anthropic 与 openai 桶的预设均可标记。完整契约见 `docs/vision-export-contract.md`。
+**视觉能力标记**：在 Provider Center 的预设编辑弹窗中勾选"识图 Vision"/"识视频 Video"并设定优先级后，标记声明该模型具备对应能力——驱动 pi/omp 托管条目的 `input` 声明与 amagi-pi 守卫放行，并参与探测 / 知识库判定。是否写进导出清单另由同区的"导出到识图 / 识视频清单"开关控制（默认开）：开启时只要 Vision 或 Video 至少一个为 true，该预设就会作为视觉模型导出到 `~/.agents/amagi-media-models.json`（`internal/config/vision.go`），供 amagi-media-understanding 等外部 skill 按优先级降级调用；关闭后仅本地 CLI 守卫放行，不进 skill 清单（存盘写 `vision_export: false`，缺省字段等同开启）。标记独立于所在桶，anthropic 与 openai 桶的预设均可标记。完整契约见 `docs/vision-export-contract.md`。
 
 启动时（`App.LaunchSession` 等）按 CLI 所属格式查找 preset key。应用还会将旧的 `provider.presets` 幂等迁移到对应公共格式，OpenCode 目标预设迁移到 `opencode_presets`。
 
@@ -352,7 +354,7 @@ Provider Center 顶部提供两个针对整个配置集的操作：
 
 ### 标记视觉模型
 
-在预设编辑弹窗的"视觉能力"区勾选"识图 Vision"或"识视频 Video"，并按需调整优先级（数值小者优先）。保存后该模型进入 `~/.agents/amagi-media-models.json` 导出清单，可被系统里安装的 amagi-media-understanding skill 直接使用。
+在预设编辑弹窗的"视觉能力"区勾选"识图 Vision"或"识视频 Video"，并按需调整优先级（数值小者优先）。标记声明模型能力（驱动 pi/omp 托管条目的 `input` 声明与守卫放行）；同区的"导出到识图 / 识视频清单"开关（默认开）控制是否把该模型写入 `~/.agents/amagi-media-models.json` 导出清单——开启后系统里安装的 amagi-media-understanding skill 可直接使用；关闭则仅本地 CLI 守卫放行，不进 skill 清单。
 
 ---
 

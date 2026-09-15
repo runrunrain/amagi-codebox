@@ -376,6 +376,49 @@ func TestServiceVisionExportTrigger_SaveAndDelete(t *testing.T) {
 		t.Errorf("api_key/priority = %q/%d", m.APIKey, m.Priority)
 	}
 
+	// v1.5 清单开关（服务层真实入口）：显式 vision_export=false 的 preset 即使
+	// 带 Vision/Video 标记也不收录，但标记与开关字段本身照常持久化（前端
+	// 回填靠 MergedTerminalPreset 透传）。
+	noExport := false
+	localOnly := TerminalPreset{
+		Name: "gemini-local-only", Provider: "个人版API- Gemini", Model: "gemini-3.7-local",
+		Vision: true, Video: true, VisionExport: &noExport,
+	}
+	if err := svc.SaveTerminalPreset("openai", "个人版API- Gemini/gemini-local-only", localOnly); err != nil {
+		t.Fatalf("SaveTerminalPreset(local-only): %v", err)
+	}
+	f = readVisionExport(t, path)
+	if len(f.Models) != 1 {
+		t.Fatalf("models = %d, want 1 (vision_export=false excluded from export)", len(f.Models))
+	}
+	if f.Models[0].ID != "个人版API- Gemini/gemini-3.7-flash" {
+		t.Errorf("exported id = %q, want the marked-only preset", f.Models[0].ID)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	var stored AppConfig
+	if err := json.Unmarshal(b, &stored); err != nil {
+		t.Fatalf("parse models.json: %v", err)
+	}
+	storedLocal := stored.TerminalPresets.GetMap(TerminalPresetOpenAI)["个人版API- Gemini/gemini-local-only"]
+	if storedLocal.IncludeInVisionExport() {
+		t.Error("stored vision_export=false not persisted (IncludeInVisionExport = true)")
+	}
+	if !storedLocal.Vision || !storedLocal.Video {
+		t.Errorf("stored preset lost capability marks: %+v", storedLocal)
+	}
+	merged, err := svc.GetMergedTerminalPresets("openai")
+	if err != nil {
+		t.Fatalf("GetMergedTerminalPresets: %v", err)
+	}
+	for _, mp := range merged {
+		if mp.Key == "个人版API- Gemini/gemini-local-only" && (mp.VisionExport == nil || *mp.VisionExport) {
+			t.Error("MergedTerminalPreset dropped vision_export=false (frontend cannot refill the switch)")
+		}
+	}
+
 	// 删除 preset → 条目消失。
 	if err := svc.DeleteTerminalPreset("openai", "个人版API- Gemini/gemini-3.7-flash"); err != nil {
 		t.Fatalf("DeleteTerminalPreset: %v", err)
@@ -477,6 +520,60 @@ func TestExportVisionModels_UnmarkedPresetNotExported(t *testing.T) {
 	// 手动标记条目的字段完整性不变（base_url / auth_key_env / api_type）。
 	if manual.BaseURL != "http://api.maorun.top/v1" || manual.AuthKeyEnv != "OPENAI_API_KEY" || manual.APIType != "openai" {
 		t.Errorf("manual entry lost endpoint fields: %+v", manual)
+	}
+}
+
+// 5c. 收录开关三态（契约 v1.5）：vision_export 缺省（nil）保持 v1.4 行为
+// ——手动 Vision/Video 标记即导出（用户现有清单不得因升级而清空）；显式
+// true 与 nil 等价；显式 false 不收录，但能力标记本身不失真。
+func TestExportVisionModels_VisionExportTriState(t *testing.T) {
+	if !(TerminalPreset{Vision: true}).IncludeInVisionExport() {
+		t.Error("IncludeInVisionExport(nil) = false, want true")
+	}
+	explicitTrue := true
+	if !(TerminalPreset{Vision: true, VisionExport: &explicitTrue}).IncludeInVisionExport() {
+		t.Error("IncludeInVisionExport(true) = false, want true")
+	}
+	explicitFalse := false
+	if (TerminalPreset{Vision: true, VisionExport: &explicitFalse}).IncludeInVisionExport() {
+		t.Error("IncludeInVisionExport(false) = true, want false")
+	}
+
+	path := visionTestPath(t)
+	t.Setenv(VisionModelsPathEnv, path)
+
+	cfg := &AppConfig{
+		Models: map[string]Provider{"kimi": openAIProvider()},
+		TerminalPresets: &TerminalPresetsConfig{
+			OpenAI: map[string]TerminalPreset{
+				// 缺省导出（回归：v1.5 不得改变未设置 vision_export 的旧预设行为）。
+				"kimi/nil-export": {Name: "nil-export", Provider: "kimi", Model: "gemini-3.7-flash", Vision: true},
+				// 显式 true：与 nil 一致导出。
+				"kimi/explicit-true": {Name: "explicit-true", Provider: "kimi", Model: "gemini-3.7-pro", Vision: true, VisionExport: &explicitTrue},
+				// 显式 false：能力标记保留（驱动 pi/omp input 声明），仅不进清单。
+				"kimi/explicit-false": {Name: "explicit-false", Provider: "kimi", Model: "gemini-3.7-nano",
+					Vision: true, Video: true, VisionExport: &explicitFalse},
+			},
+		},
+	}
+	if err := ExportVisionModels(cfg, fakeKeyResolver("sk-test")); err != nil {
+		t.Fatalf("ExportVisionModels: %v", err)
+	}
+	f := readVisionExport(t, path)
+	if len(f.Models) != 2 {
+		t.Fatalf("models = %d, want 2 (nil/true exported, explicit false excluded): %v", len(f.Models), f.Models)
+	}
+	ids := map[string]bool{}
+	for _, m := range f.Models {
+		ids[m.ID] = true
+	}
+	if !ids["kimi/nil-export"] || !ids["kimi/explicit-true"] {
+		t.Errorf("exported ids = %v, want kimi/nil-export + kimi/explicit-true", ids)
+	}
+	for _, m := range f.Models {
+		if m.ID == "kimi/explicit-false" {
+			t.Errorf("kimi/explicit-false exported despite vision_export=false: %+v", m)
+		}
 	}
 }
 

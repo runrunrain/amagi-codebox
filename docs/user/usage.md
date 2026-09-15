@@ -96,7 +96,7 @@ Windows 上内嵌会话默认落在 WSL，工作目录的选择直接决定会�
 
 - **一级 Pill 导航**（`MAIN_TABS`）：
     - **服务提供商**：网格展示所有 provider，进入详情可编辑。
-    - **预设**：按协议格式管理公共预设，二级 Tab 为 **Anthropic 格式 / OpenAI 格式**。Claude Code 使用 Anthropic 格式；Codex、Pi、OMP 共享 OpenAI 格式。预设编辑弹窗（`PresetDialog.vue`）中含 **视觉能力标记**（识图 Vision / 识视频 Video / 优先级），被标记的预设会导出到 `~/.agents/amagi-media-models.json` 供 amagi-media-understanding 等 skill 消费（契约见 `docs/vision-export-contract.md`）。
+    - **预设**：按协议格式管理公共预设，二级 Tab 为 **Anthropic 格式 / OpenAI 格式**。Claude Code 使用 Anthropic 格式；Codex、Pi、OMP 共享 OpenAI 格式。预设编辑弹窗（`PresetDialog.vue`）中含 **视觉能力标记**（识图 Vision / 识视频 Video / 优先级）与 **「导出到识图 / 识视频清单」开关**：前者声明模型能力（驱动 pi/omp 托管条目的 `input` 声明与守卫放行），后者控制是否写入 `~/.agents/amagi-media-models.json` 供 amagi-media-understanding 等 skill 消费（默认开启；关闭后仅本地守卫放行）。完整契约见 `docs/vision-export-contract.md`。
     - **CLI 独立配置**：直接编辑各 CLI 自己的配置文件，二级 Tab 为 **Pi / OMP / OpenCode**：
         - Pi 三级 Tab：Agent 配置（`~/.pi/agent/amagi.json`）/ 模型提供商（`~/.pi/agent/models.json`）/ 认证登录（`~/.pi/agent/auth.json`）。
         - OMP 三级 Tab：Agent 配置（`~/.omp/agent/config.yml`）/ 模型提供商（`~/.omp/agent/models.yml`）。

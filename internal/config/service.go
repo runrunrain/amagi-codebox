@@ -1549,6 +1549,9 @@ type MergedTerminalPreset struct {
 	Vision         bool `json:"vision,omitempty"`
 	Video          bool `json:"video,omitempty"`
 	VisionPriority int  `json:"vision_priority,omitempty"`
+	// VisionExport 透传（契约 v1.5 清单开关三态）：nil = 默认导出，显式 false =
+	// 不写入 ~/.agents/amagi-media-models.json；编辑回填用。
+	VisionExport *bool `json:"vision_export,omitempty"`
 	// HarnessSync 透传：anthropic 桶预设加入 pi/omp 托管模型同步的 opt-in
 	//（openai 桶默认全同步，标记 no-op）；前端展示与编辑回填用。
 	HarnessSync bool `json:"harness_sync,omitempty"`
@@ -1590,6 +1593,7 @@ func (s *ConfigService) GetMergedTerminalPresets(terminalType string) ([]MergedT
 				Vision:         tp.Vision,
 				Video:          tp.Video,
 				VisionPriority: tp.VisionPriority,
+				VisionExport:   tp.VisionExport,
 				HarnessSync:    tp.HarnessSync,
 			})
 		}

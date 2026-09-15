@@ -202,6 +202,37 @@ func TestManagedPresetModelsCarriesVisionFlag(t *testing.T) {
 	}
 }
 
+func TestManagedPresetModelsVisionExportFalseStillDeclaresVision(t *testing.T) {
+	// 契约 v1.5：vision_export=false 只关「写入 amagi-media-understanding
+	// 清单」，不削弱能力标记本身——该模型仍需 pi/omp 托管条目声明
+	// input=["text","image"]，否则 amagi-pi 守卫会重新拦截 read 图片。
+	noExport := false
+	provider := config.Provider{
+		OpenAI:       &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.example.com"},
+		DefaultModel: "acme-default",
+	}
+	presets := &config.TerminalPresetsConfig{
+		OpenAI: map[string]config.TerminalPreset{
+			"kimi/local-vision": {Provider: "kimi", Model: "acme-local-v9", Vision: true, VisionExport: &noExport},
+			"kimi/local-video":  {Provider: "kimi", Model: "acme-local-vid", Video: true, VisionExport: &noExport},
+		},
+	}
+	models := ManagedPresetModels("kimi", provider, presets, nil, config.TerminalPresetOpenAI)
+	visionByID := map[string]bool{}
+	for _, m := range models {
+		visionByID[m.ID] = m.Vision
+	}
+	if !visionByID["acme-local-v9"] {
+		t.Errorf("acme-local-v9 vision = false, want true (Vision mark unaffected by vision_export=false)")
+	}
+	if !visionByID["acme-local-vid"] {
+		t.Errorf("acme-local-vid vision = false, want true (Video mark unaffected by vision_export=false)")
+	}
+	if visionByID["acme-default"] {
+		t.Errorf("acme-default vision = true, want false (unmarked and unknown family)")
+	}
+}
+
 func TestManagedPresetModelsVisionLastWins(t *testing.T) {
 	// 覆盖语义与 Parameters 一致：同 id 预设后序（键序）覆盖前序——
 	// 后序预设未标记时手动标记重置为 false，不允许前序标记残留。

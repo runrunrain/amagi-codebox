@@ -222,6 +222,12 @@
             />
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">导出到识图 / 识视频清单</label>
+            <Switch v-model="form.visionExport" :disabled="!form.vision && !form.video" />
+          </div>
+        </div>
         <div class="probe-row">
           <AppButton variant="ghost" size="small" :disabled="!form.provider || probing" @click="handleProbeModality">
             {{ probing ? '探测中…' : '实弹探测' }}
@@ -229,7 +235,7 @@
           <span v-if="probeHint" class="probe-hint" :class="probeHintTone">{{ probeHint }}</span>
         </div>
         <p class="form-hint">
-          能力判定 = 手动标记 ∪ 实弹探测 ∪ 内置知识库：已知多模态模型族自动识别，无需手动标记；「实弹探测」向 Provider 端点发送 1x1 测试图确证能力，结论写入设备知识库（~/.agents/amagi-modalities.json）。标记的预设会导出到 ~/.agents/amagi-media-models.json，供 amagi-media-understanding 等外部 CLI 消费；仅 OpenAI 兼容 Provider 会导出。
+          识图 / 识视频标记声明模型能力：驱动 pi/omp 托管条目的 input 声明与守卫放行，并参与探测 / 知识库自动判定（已知多模态模型族自动识别，无需手动标记；「实弹探测」向 Provider 端点发送 1x1 测试图确证能力，结论写入 ~/.agents/amagi-modalities.json）。「导出到识图 / 识视频清单」控制是否把该预设写入 ~/.agents/amagi-media-models.json 供 amagi-media-understanding 消费（默认开；关闭后仅本地 CLI 守卫放行，不进 skill 清单）。仅 OpenAI 兼容 Provider 会导出。
         </p>
       </div>
 
@@ -353,6 +359,7 @@ const form = reactive({
   vision: false,
   video: false,
   visionPriority: undefined as number | undefined,
+  visionExport: true,
   harnessSync: false,
 });
 
@@ -395,6 +402,8 @@ function initForm() {
     form.vision = !!p.vision;
     form.video = !!p.video;
     form.visionPriority = p.vision_priority || undefined;
+    // 三态回填：nil/true 均归一为开（只有显式 false 才是关）。
+    form.visionExport = p.vision_export !== false;
     // 同步到 CLI 独立配置
     form.harnessSync = !!p.harness_sync;
   } else {
@@ -422,6 +431,7 @@ function resetForm() {
   form.vision = false;
   form.video = false;
   form.visionPriority = undefined;
+  form.visionExport = true;
   form.harnessSync = false;
 }
 
@@ -471,6 +481,9 @@ async function handleSave() {
     if (form.visionPriority !== undefined && form.visionPriority !== 0) {
       terminalPreset.vision_priority = form.visionPriority;
     }
+    // 清单开关（契约 v1.5）：仅显式关闭时写入 vision_export=false；开启不写
+    // 字段（nil 语义等同 true，保持 models.json 干净）。
+    if (!form.visionExport) terminalPreset.vision_export = false;
     if (form.harnessSync) {
       terminalPreset.harness_sync = true;
     }

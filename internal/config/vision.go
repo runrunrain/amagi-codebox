@@ -71,10 +71,12 @@ func VisionModelsExportPath() (string, error) {
 
 // ExportVisionModels 按契约 §2 幂等全量重导出视觉模型文件：
 // 遍历 terminal_presets 的 openai 与 anthropic 两桶（标记独立于所在桶），
-// 导出「手动标记 Vision/Video」、且关联 provider 为 OpenAI 兼容
-// （EffectiveType == "openai"）的 preset；anthropic-only provider 跳过（v1
-// 边界）。收录回归手动标记（契约 v1.4）：静态知识库与实弹探测结论只驱动
-// pi/omp 托管条目的 input 声明与前端探测提示，不再作为本文件的收录来源。
+// 导出「手动 Vision/Video 标记且 VisionExport 未显式排除」、且关联 provider 为
+// OpenAI 兼容（EffectiveType == "openai"）的 preset；anthropic-only provider
+// 跳过（v1 边界）。收录回归手动标记（契约 v1.4）、清单开关独立化（契约 v1.5）：
+// 静态知识库与实弹探测结论只驱动 pi/omp 托管条目的 input 声明与前端探测提示，
+// 不再作为本文件的收录来源；显式 vision_export=false 的 preset 能力标记照常
+// 驱动 pi/omp input 声明与守卫放行，但不写入本文件。
 // 同一 provider/短名跨桶重复标记时按 ID 去重，openai 桶条目优先（与导出
 // api_type=openai 的调用语义一致）。无可导出 preset 时也写文件（models: []）。
 //
@@ -113,15 +115,21 @@ func ExportVisionModels(cfg *AppConfig, resolver func(provider string) string) e
 }
 
 // buildVisionExportModel 构建单个导出条目；返回 ok=false 表示该 preset 不导出
-// （未手动标记 / provider 缺失 / anthropic-only provider）。
+// （未手动标记 / 显式 vision_export=false / provider 缺失 / anthropic-only provider）。
 //
-// 收录规则（契约 §2 v1.4）：仅手动 Vision/Video 标记触发导出，capabilities
-// 精确等于手动标记（不做知识库/探测并集扩充）。「模型客观支持视觉」由
+// 收录规则（契约 §2 v1.5）：仅「手动 Vision/Video 标记 且 未显式排除
+// vision_export」触发导出，capabilities 精确等于手动标记（不做知识库/探测
+// 并集扩充）。「模型客观支持视觉」由
 // InferModelModalities/探测层另行服务（pi/omp input 声明、前端探测提示），
 // 与「用户希望它参与识图/识视频」分离——skill 按 priority 降级时会实际
 // 调用导出端点，收录即代表用户意愿。
 func buildVisionExportModel(cfg *AppConfig, key string, tp TerminalPreset, resolver func(provider string) string) (VisionExportModel, bool) {
 	if !tp.Vision && !tp.Video {
+		return VisionExportModel{}, false
+	}
+	// v1.5 清单开关：三态归一后显式 false 即不收录（能力标记不参与本判定，
+	// 继续驱动 pi/omp input 声明与守卫放行）。
+	if !tp.IncludeInVisionExport() {
 		return VisionExportModel{}, false
 	}
 	provider, ok := cfg.Models[tp.Provider]

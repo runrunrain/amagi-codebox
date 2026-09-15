@@ -533,6 +533,7 @@ export namespace config {
 	    vision?: boolean;
 	    video?: boolean;
 	    vision_priority?: number;
+	    vision_export?: boolean;
 	    harness_sync?: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -552,6 +553,7 @@ export namespace config {
 	        this.vision = source["vision"];
 	        this.video = source["video"];
 	        this.vision_priority = source["vision_priority"];
+	        this.vision_export = source["vision_export"];
 	        this.harness_sync = source["harness_sync"];
 	    }
 	
@@ -871,6 +873,7 @@ export namespace config {
 	    vision?: boolean;
 	    video?: boolean;
 	    vision_priority?: number;
+	    vision_export?: boolean;
 	    harness_sync?: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -891,6 +894,7 @@ export namespace config {
 	        this.vision = source["vision"];
 	        this.video = source["video"];
 	        this.vision_priority = source["vision_priority"];
+	        this.vision_export = source["vision_export"];
 	        this.harness_sync = source["harness_sync"];
 	    }
 	

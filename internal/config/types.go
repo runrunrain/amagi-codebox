@@ -199,20 +199,30 @@ type TerminalPreset struct {
 	Parameters  Parameters      `json:"parameters"`             // 模型参数
 	OpenCodeCfg json.RawMessage `json:"opencode_cfg,omitempty"` // OpenCode 运行时 overlay（仅 opencode 类型使用）
 
-	// 视觉能力标记（契约 docs/vision-export-contract.md §1）：标记后可作为
-	// 识图 / 识视频模型导出到 ~/.agents/amagi-media-models.json（契约 §2）。
-	// 标记独立于所在桶：anthropic 桶与 openai 桶的 preset 均可标记；
-	// 仅 Vision 或 Video 至少一个为 true 时才会导出。
+	// 视觉能力标记（契约 docs/vision-export-contract.md §1）：声明该模型具备
+	// 识图 / 识视频能力——驱动 pi/omp 托管条目的 input 声明与 amagi-pi 守卫
+	// 放行，并参与探测 / 知识库的能力判定。标记独立于所在桶：anthropic 桶与
+	// openai 桶的 preset 均可标记。是否写入清单另由 VisionExport 控制（v1.5）。
 	Vision bool `json:"vision,omitempty"` // 识图
 	Video  bool `json:"video,omitempty"`  // 识视频
 	// 能力优先级，小者优先；0 视为 100（导出时归一化）。
 	VisionPriority int `json:"vision_priority,omitempty"`
+	// VisionExport 控制「导出进 amagi-media-understanding 清单」（~/.agents/
+	// amagi-media-models.json）：nil = 默认导出（向后兼容，标记了 Vision/Video
+	// 即收录）；显式 false = 不导出（能力标记仅驱动 pi/omp input 声明与守卫
+	// 放行）。三态指针：bool 零值无法区分「未设置」与「排除」。
+	VisionExport *bool `json:"vision_export,omitempty"`
 
 	// 托管同步标记：该预设的模型是否加入 pi/omp 托管模型同步
 	//（CLI 独立配置 ~/.pi/agent / ~/.omp/agent 的模型提供商配置，由
 	// launcher.ManagedPresetModels 收集）。仅对 anthropic 桶有意义——
 	// openai 桶预设默认全同步，标记为 no-op。
 	HarnessSync bool `json:"harness_sync,omitempty"`
+}
+
+// IncludeInVisionExport 三态归一：nil = true（默认导出，契约 v1.5）。
+func (t TerminalPreset) IncludeInVisionExport() bool {
+	return t.VisionExport == nil || *t.VisionExport
 }
 
 // NormalizeOpenCodeCfg 确保 OpenCodeCfg 存储为原始 JSON 对象。
