@@ -539,7 +539,15 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Startup after all wiring is complete.
 	app.control = remote.NewControlRuntime(remote.NewSystemClock(), log)
 	app.sharedCoord = remote.NewSharedServiceCoordinator()
-	app.control.Projector().SetRunTerminalCleanup(app.releaseSharedLeasesExact)
+	// remote-webui-plane：run-scoped PTY 退出（remote v1 创建/重启会话的进程
+	// 退出径）先把 webui tracker 落 ended，再释放该 run 代的共享租约。桌面
+	// embedded 会话另有各自的退出 goroutine 调 Invalidate，此处幂等。
+	app.control.Projector().SetRunTerminalCleanup(func(sessionID string, runEpoch uint64) {
+		if app.WebUI != nil {
+			app.WebUI.Invalidate(sessionID)
+		}
+		app.releaseSharedLeasesExact(sessionID, runEpoch)
+	})
 	if defaults, defaultsErr := launchplan.NewDefaultStore(app.Settings); defaultsErr != nil {
 		log.Warn("session", "remote launch defaults 不可用，远程创建保持关闭", defaultsErr.Error())
 	} else {
@@ -577,7 +585,14 @@ func NewApp(mobileAssets embed.FS) *App {
 		remote.NewNoopRemoteLaunchResolver(), nil, m2aSessRaw, remote.NewSystemClock(), configDir,
 	)
 	m2aAdapter.SetSessionAuthority(app.Sessions, app.processRegistry, app.remotePlanner)
-	m2aAdapter.SetPostRemoveCleanup(app.releaseSharedLeases)
+	// remote-webui-plane：v1 remove GC 完成后同步清理 webui tracker（对齐
+	// App.RemoveSession 的 removeWebUITracker commit 点），再释放共享租约。
+	m2aAdapter.SetPostRemoveCleanup(func(sessionID string) {
+		if app.WebUI != nil {
+			app.WebUI.RemoveSession(sessionID)
+		}
+		app.releaseSharedLeases(sessionID)
+	})
 	// Production executor: applies typed Effects for remote create.
 	if _, ok := app.remotePlanner.(*appLaunchPlanner); ok {
 		exec := newAppLaunchExecutor(launchExecutorDeps{
@@ -587,6 +602,7 @@ func NewApp(mobileAssets embed.FS) *App {
 			sharedCoord:   app.sharedCoord,
 			debts:         app.compensationDebts,
 			configMu:      &app.providerSyncMu,
+			webui:         appWebUILaunchPlane{app: app},
 		})
 		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
 		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
@@ -606,6 +622,38 @@ func NewApp(mobileAssets embed.FS) *App {
 	app.initRemoteClientRegistry(configDir)
 
 	return app
+}
+
+// appWebUILaunchPlane 把 internal/webui 适配为 launch executor 的
+// webuiLaunchPlane 接线（remote-webui-plane）：remote v1 创建/重启的
+// embedded pi 会话与桌面 LaunchPiSession T-1.5 同源——注入
+// AMAGI_WEBUI_PORT/AMAGI_WEBUI_TOKEN env 并在 commit 后注册 tracker。
+type appWebUILaunchPlane struct{ app *App }
+
+// PrepareEnv 分配空闲端口与 v1.0.2 capability token。任一失败返回零值
+// 不阻断启动（与桌面口径一致：扩展自选端口写注册表，探测侧回退发现）。
+func (p appWebUILaunchPlane) PrepareEnv() (int, string) {
+	port := 0
+	if v, err := webui.AllocateFreePort(); err == nil {
+		port = v
+	} else if p.app.Log != nil {
+		p.app.Log.Warn("webui", "webui 空闲端口分配失败，走注册表回退发现", err.Error())
+	}
+	token := ""
+	if t, err := webui.GenerateToken(); err == nil {
+		token = t
+	} else if p.app.Log != nil {
+		p.app.Log.Warn("webui", "webui capability token 生成失败，探测不带 token", err.Error())
+	}
+	return port, token
+}
+
+// RegisterSession 发布 per-session webui 探测 tracker（服务未接线时静默
+// 跳过，如测试构造）。
+func (p appWebUILaunchPlane) RegisterSession(sessionID string, pid, port int, token string) {
+	if p.app.WebUI != nil {
+		p.app.WebUI.RegisterSession(sessionID, pid, port, token)
+	}
 }
 
 // GetLaunchCompensationDebts returns the conservative, secret-free projection

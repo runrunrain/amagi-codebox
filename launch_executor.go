@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -32,6 +33,7 @@ import (
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/remote"
+	"amagi-codebox/internal/session"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,6 +45,19 @@ type launchExecutorDeps struct {
 	sharedCoord   *remote.SharedServiceCoordinator
 	debts         *launchplan.CompensationDebtRegistry
 	configMu      *sync.Mutex
+	// webui 是 remote 创建/重启 embedded pi 会话的 Web 平面接线（remote-
+	// webui-plane：对齐桌面 LaunchPiSession T-1.5）。nil = 未接线（测试），
+	// pi 会话照常启动、只是不做 webui 注入与 tracker 注册。
+	webui webuiLaunchPlane
+}
+
+// webuiLaunchPlane 是 remote 启动链与 internal/webui 的窄接口切片：
+// PrepareEnv 分配 AMAGI_WEBUI_PORT / AMAGI_WEBUI_TOKEN 注入材料（失败返回
+// 零值不阻断启动——扩展自选端口写注册表，探测侧走注册表回退发现）；
+// RegisterSession 在启动 commit 后发布 per-session 探测 tracker。
+type webuiLaunchPlane interface {
+	PrepareEnv() (port int, token string)
+	RegisterSession(sessionID string, pid, port int, token string)
 }
 
 type ptyStartPort interface {
@@ -182,11 +197,36 @@ func (b *preparedEffectBuilder) buildPTYStart(proc *launchplan.ProcessStartSpec)
 	if proc.RequireRunHandle && b.runHandle == nil {
 		return nil, errors.New("process effect: run handle required but not provided")
 	}
+	spec := proc.Resolved
+	// remote-webui-plane（对齐桌面 LaunchPiSession T-1.5）：remote v1 创建/
+	// 重启的 embedded pi 会话注入 webui 端口与 v1.0.2 capability token env，
+	// 否则 /session/{id}/webui 恒为 unknown、Web 平面视图无从出现。仅 pi
+	//（与桌面口径一致，omp 不注入）；分配失败不阻断启动——扩展自选端口写
+	// 注册表，探测侧走注册表回退发现。
+	var webuiPort int
+	var webuiToken string
+	webuiPlane := b.deps.webui != nil && spec.AppType == string(session.AppTypePi)
+	if webuiPlane {
+		webuiPort, webuiToken = b.deps.webui.PrepareEnv()
+		entries := make([]string, 0, 2)
+		if webuiPort > 0 {
+			entries = append(entries, "AMAGI_WEBUI_PORT="+strconv.Itoa(webuiPort))
+		}
+		if webuiToken != "" {
+			entries = append(entries, "AMAGI_WEBUI_TOKEN="+webuiToken)
+		}
+		if len(entries) > 0 {
+			spec.Env.Variables = overrideWebUIEnv(spec.Env.Variables, entries)
+		}
+	}
 	return &ptyStartEffect{
-		deps:      b.deps,
-		sessionID: b.sessionID,
-		spec:      proc.Resolved,
-		runHandle: b.runHandle,
+		deps:       b.deps,
+		sessionID:  b.sessionID,
+		spec:       spec,
+		runHandle:  b.runHandle,
+		webuiPlane: webuiPlane,
+		webuiPort:  webuiPort,
+		webuiToken: webuiToken,
 	}, nil
 }
 
@@ -661,6 +701,12 @@ type ptyStartEffect struct {
 	start     processcap.StartEvidence
 	applied   bool
 	committed bool
+	// remote-webui-plane：embedded pi 会话的 webui 注入材料（Prepare 阶段
+	// 分配，随 spec.Env 注入进程；commit 后据此 RegisterSession）。
+	// webuiPlane=false 表示非 pi 会话或未接线。
+	webuiPlane bool
+	webuiPort  int
+	webuiToken string
 }
 
 func (e *ptyStartEffect) Kind() launchplan.EffectKind { return launchplan.EffectPTYStart }
@@ -834,6 +880,32 @@ func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 	}
 }
 
+// commitWebUIPlane 在启动 commit 后发布 webui tracker（对齐桌面
+// LaunchPiSession：PTY 启动成功后 RegisterSession，供 /session/{id}/webui
+// 探测与 /webui/{sid} 反向代理消费）。Abort 路径不会调用本方法，无残留
+// tracker；注入失败（port=0/token=""）仍注册——走注册表回退发现。
+func (e *ptyStartEffect) commitWebUIPlane() {
+	if !e.webuiPlane || e.deps.webui == nil || e.start.PID <= 0 {
+		return
+	}
+	e.deps.webui.RegisterSession(e.sessionID, e.start.PID, e.webuiPort, e.webuiToken)
+}
+
+// overrideWebUIEnv 以覆盖语义写入 AMAGI_WEBUI_* env 条目：宿主进程自身若
+// 携带残留的 AMAGI_WEBUI_*（如 CodeBox 从 pi 会话内启动时继承），merge 后
+// 直接 append 会产生重复键，改为先移除旧值再追加（与桌面 envOverrides 的
+// 覆盖语义一致）。
+func overrideWebUIEnv(vars []string, entries []string) []string {
+	out := make([]string, 0, len(vars)+len(entries))
+	for _, v := range vars {
+		if strings.HasPrefix(v, "AMAGI_WEBUI_") {
+			continue
+		}
+		out = append(out, v)
+	}
+	return append(out, entries...)
+}
+
 func (e *appPreparedExecution) MarkCommitted() {
 	e.committed = true
 	for _, eff := range e.effects {
@@ -844,6 +916,7 @@ func (e *appPreparedExecution) MarkCommitted() {
 			typed.markCommitted()
 		case *ptyStartEffect:
 			typed.committed = true
+			typed.commitWebUIPlane()
 		case *bootstrapWriteEffect:
 			typed.committed = true
 		}
