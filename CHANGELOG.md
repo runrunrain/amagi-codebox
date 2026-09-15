@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.75] - 2026-09-15
+
+### Fixed
+
+- **远程创建的 pi 会话无 Web 平面（恒 unknown）**：remote v1 创建/重启的 embedded pi 会话此前不走桌面 LaunchPiSession 的 webui 注入路径，`AMAGI_WEBUI_PORT/AMAGI_WEBUI_TOKEN` env 缺失、tracker 从未注册——`/session/{id}/webui` 恒 unknown，Web 平面视图无从出现。launch executor 新增 `webuiLaunchPlane` 窄接口接线（对齐桌面 T-1.5 同源）：pi 会话 Prepare 阶段分配空闲端口与 v1.0.2 capability token 并覆盖式注入 env（宿主残留 `AMAGI_WEBUI_*` 先移除再追加防重复键），启动 commit 后发布 per-session 探测 tracker；分配失败不阻断启动（扩展自选端口写注册表、探测侧回退发现）；omp/codex 会话与未接线（测试）路径不注入不注册。
+- **会话退出/移除的 webui tracker 清理**：run-scoped PTY 退出（remote 创建/重启会话的进程退出径）先把 tracker 落 ended 再释放该 run 代共享租约（桌面 embedded 会话各有退出 goroutine 调 Invalidate，幂等）；v1 remove GC 完成后同步 `RemoveSession` 清理 tracker（对齐桌面 RemoveSession commit 点）再释放租约。
+- **配套测试**：新增 `launch_webui_plane_test.go` 5 用例（pi 注入注册/omp codex 不注入/未接线静默/Abort 无残留/env 覆盖语义）。
+
 ## [1.3.74] - 2026-09-15
 
 ### Fixed
