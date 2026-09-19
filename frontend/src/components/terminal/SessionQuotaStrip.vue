@@ -76,7 +76,7 @@ import { useRouter } from 'vue-router';
 import QuotaCard from '../usage/QuotaCard.vue';
 import { useSessionStore } from '../../stores/session';
 import { useQuotaStore } from '../../stores/quota';
-import { familyDisplayName, quotaStripSummary } from '../usage/quotaModel';
+import { familyDisplayName, quotaStripSummary, sessionQuotaProvider } from '../usage/quotaModel';
 
 const props = defineProps<{ sessionId: string }>();
 
@@ -85,7 +85,10 @@ const sessionStore = useSessionStore();
 const quotaStore = useQuotaStore();
 
 const session = computed(() => sessionStore.sessions.find((s) => s.id === props.sessionId) || null);
-const providerName = computed(() => session.value?.provider || '');
+// v1.3.80：pi/omp/codex 会话的真实 provider 名在 Preset 字段（Provider 是
+// AppType 字面量），经 sessionQuotaProvider 解析；拿 "pi" 去探测会命中
+// 「provider 不存在」 error（不落盘不留日志），条上常显「额度获取失败」。
+const providerName = computed(() => (session.value ? sessionQuotaProvider(session.value) : ''));
 const entry = computed(() => (providerName.value ? quotaStore.quotaFor(providerName.value) : null));
 const probing = computed(() => (providerName.value ? quotaStore.probing[providerName.value] === true : false));
 const summary = computed(() => {

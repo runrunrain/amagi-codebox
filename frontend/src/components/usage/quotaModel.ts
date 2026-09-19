@@ -65,6 +65,34 @@ const SOURCE_LABELS: Record<string, string> = {
   'codex-session-file': '最近会话',
 };
 
+/**
+ * 会话 → 额度查询的 provider 名解析（v1.3.80 修复：pi 会话额度获取失败）。
+ *
+ * 字段语义（reserveLaunchSession 实测）：pi/omp/codex 会话的
+ * SessionInfo.Provider 存的是 AppType 字面量（"pi"/"omp"/"codex"），
+ * 真实 CodeBox provider 名落在 Preset 字段；claudecode/opencode 会话
+ * Provider 字段即 provider 名。用错字段拿 "pi" 去探测会命中后端
+ * 「provider 不存在」 error（不落盘不留日志），条上常显「额度获取失败」。
+ *
+ * codex 会话未选 provider（preset 空）时回落 "codex" 固定键——
+ * 订阅额度与具体 provider 无关，语义正交。
+ */
+export function sessionQuotaProvider(s: {
+  appType?: string;
+  provider?: string;
+  preset?: string;
+}): string {
+  const appType = (s.appType ?? '').toLowerCase();
+  if (appType === 'pi' || appType === 'omp') {
+    return (s.preset ?? '').trim();
+  }
+  if (appType === 'codex') {
+    const name = (s.preset ?? '').trim();
+    return name || 'codex';
+  }
+  return (s.provider ?? '').trim();
+}
+
 export function sourceLabel(source: string): string {
   return SOURCE_LABELS[source] ?? source;
 }

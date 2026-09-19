@@ -875,8 +875,11 @@ html:not([data-skin='on']) .term-body.web-active.web-plane-light {
 }
 
 /* TUI 平面额度条：term-body flex 列的流内子项，自带 30px（strip 组件
-   自身 flex:0 0 30px），此处不重复钉尺寸，仅作样式挂点 */
+   自身 flex:0 0 30px），此处不重复钉尺寸，仅作样式挂点。
+   order 沉底：xterm 元素由 JS 后 append（DOM 序在本条之后），
+   无 order 时 flex 序随 DOM 序把条顶到终端上方（v1.3.80 修复）。 */
 .term-quota-strip {
+  order: 10;
   border-top: 1px solid var(--separator);
 }
 
