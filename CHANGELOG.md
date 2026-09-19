@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.80] - 2026-09-19
+
+### Fixed
+
+- **TUI 额度条常显「额度获取失败」（双根因）**：① pi/omp/codex 会话的 `SessionInfo.Provider` 存的是 AppType 字面量（如 `"pi"`），真实 provider 名在 `Preset` 字段——额度条拿 `"pi"` 探测命中后端「provider 不存在」error（该分支不落盘不留日志，现场磁盘/日志均无痕），前端写入内存后常显失败文案；新增 `sessionQuotaProvider()` 按 appType 分流解析（codex 空 preset 回落订阅固定键），五组回归测试。② xterm 由 JS 后 append（DOM 序在额度条之后），flex 列把条顶到终端左上角；`order:10` 沉底修复。
+
 ## [1.3.79] - 2026-09-19
 
 ### Fixed
