@@ -34,6 +34,8 @@ export function GetProvider(arg1:string):Promise<config.Provider>;
 
 export function GetProviderNames():Promise<Array<string>>;
 
+export function GetProviderQuotaCache():Promise<Record<string, config.ProviderQuotaEntry>>;
+
 export function GetProviders():Promise<Record<string, config.Provider>>;
 
 export function GetTerminalPresets(arg1:string):Promise<Record<string, config.TerminalPreset>>;
@@ -45,6 +47,8 @@ export function Load():Promise<void>;
 export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function RecordModalityProbe(arg1:string,arg2:string,arg3:config.ModelModalities,arg4:string,arg5:boolean):Promise<void>;
+
+export function RecordProviderQuota(arg1:config.ProviderQuotaEntry):Promise<void>;
 
 export function ReexportVisionModels():Promise<void>;
 

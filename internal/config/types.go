@@ -422,6 +422,10 @@ type AppConfig struct {
 	// 仅记录有定论的探测结果（见 modalities_probe.go）；手动标记与静态
 	// 知识库之外的第三层能力来源。旧版本读新文件安全（未知字段忽略）。
 	ModalityProbe map[string]ModalityProbeEntry `json:"modality_probe,omitempty"`
+	// ProviderQuota 额度探测缓存：key 为 provider 名（codex 订阅为固定名
+	// "codex"）。记录 GLM/DeepSeek/Codex 三家族的额度快照（见 quota_probe.go），
+	// 值域天然不含凭据。旧版本读新文件安全（未知字段忽略）。
+	ProviderQuota map[string]ProviderQuotaEntry `json:"provider_quota,omitempty"`
 	Version       string                        `json:"version"`
 }
 
@@ -439,6 +443,59 @@ type ModalityProbeEntry struct {
 // 查询侧（trim 后 id）命中同一键。
 func ModalityProbeKey(provider, model string) string {
 	return strings.TrimSpace(provider) + "/" + normalizeKBModelID(model)
+}
+
+// 额度探测状态常量（ProviderQuotaEntry.Status 值域）。
+const (
+	// QuotaStatusOK 探测成功（或 codex 本地命中），携带 Windows/Balance 数据。
+	QuotaStatusOK = "ok"
+	// QuotaStatusNoPlan key 有效但未开通对应套餐（GLM Coding Plan 未订购）。
+	QuotaStatusNoPlan = "no_plan"
+	// QuotaStatusNoKey 未配置/解析不到 API key，或 key 被服务端拒绝。
+	QuotaStatusNoKey = "no_key"
+	// QuotaStatusUnsupported 该 provider 的 baseURL 不属于三大家族，无额度端点。
+	QuotaStatusUnsupported = "unsupported"
+	// QuotaStatusError 网络/超时/解析失败等未决故障（不覆盖已有 ok 缓存）。
+	QuotaStatusError = "error"
+)
+
+// 额度家族常量（ProviderQuotaEntry.Family 值域，由 baseURL 域特征判别）。
+const (
+	QuotaFamilyGLMBigmodel = "glm-bigmodel" // *.bigmodel.cn
+	QuotaFamilyGLMZai      = "glm-zai"      // api.z.ai
+	QuotaFamilyDeepSeek    = "deepseek"     // api.deepseek.com
+	QuotaFamilyCodexSub    = "codex-sub"    // 本地 codex 订阅会话（独立条目）
+)
+
+// ProviderQuotaEntry 单 provider 额度快照（不含任何凭据：值域只有状态、
+// 档位、窗口/余额数字与时间戳，落盘前无需 scrub）。
+type ProviderQuotaEntry struct {
+	Provider string        `json:"provider"`          // provider 名（codex 订阅固定 "codex"）
+	Family   string        `json:"family"`            // glm-bigmodel | glm-zai | deepseek | codex-sub
+	Status   string        `json:"status"`            // ok | no_plan | no_key | unsupported | error
+	Message  string        `json:"message,omitempty"` // 状态说明（无敏感信息）
+	Level    string        `json:"level,omitempty"`   // GLM level / Codex plan_type
+	Windows  []QuotaWindow `json:"windows,omitempty"` // 窗口型（GLM/Codex，1–2 条）
+	Balance  *QuotaBalance `json:"balance,omitempty"` // 余额型（DeepSeek）
+	Source   string        `json:"source"`            // glm-api | deepseek-api | codex-session-file
+	ProbedAt string        `json:"probed_at"`         // RFC3339；codex 为事件时间戳
+}
+
+// QuotaWindow 窗口型额度条目（GLM prompts 窗口 / Codex 5h+周窗口）。
+type QuotaWindow struct {
+	Kind        string  `json:"kind"`                     // primary | secondary | time_limit
+	UsedPercent float64 `json:"used_percent"`             // 已用 %
+	Remaining   float64 `json:"remaining,omitempty"`      // GLM prompts 剩余数（有则填）
+	WindowMin   int     `json:"window_minutes,omitempty"` // 300 / 10080
+	ResetsAt    int64   `json:"resets_at,omitempty"`      // unix 秒
+}
+
+// QuotaBalance 余额型额度（DeepSeek，原币种原数字，不做换算）。
+type QuotaBalance struct {
+	Currency string  `json:"currency"`            // CNY
+	Total    float64 `json:"total"`               // 总余额
+	Granted  float64 `json:"granted,omitempty"`   // 赠送
+	ToppedUp float64 `json:"topped_up,omitempty"` // 充值
 }
 
 // LookupProbed 从缓存取探测结果；缓存缺失/未命中返回零值 + false。

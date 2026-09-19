@@ -139,6 +139,8 @@ export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>
 
 export function GetProviderExportJSON(arg1:string):Promise<string>;
 
+export function GetProviderQuotas():Promise<Record<string, config.ProviderQuotaEntry>>;
+
 export function GetProvidersByType(arg1:string):Promise<Record<string, config.Provider>>;
 
 export function GetPtyDimensions(arg1:string):Promise<number>;
@@ -217,7 +219,11 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
+export function ProbeAllProviderQuotas():Promise<Record<string, config.ProviderQuotaEntry>>;
+
 export function ProbeModelModalityNow(arg1:string,arg2:string):Promise<main.ModalityProbeNowResult>;
+
+export function ProbeProviderQuota(arg1:string):Promise<config.ProviderQuotaEntry>;
 
 export function ProbeSessionWebUI(arg1:string):Promise<remote.SessionWebUIInfo|boolean>;
 

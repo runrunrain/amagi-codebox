@@ -66,6 +66,10 @@ export function GetProviderNames() {
   return window['go']['config']['ConfigService']['GetProviderNames']();
 }
 
+export function GetProviderQuotaCache() {
+  return window['go']['config']['ConfigService']['GetProviderQuotaCache']();
+}
+
 export function GetProviders() {
   return window['go']['config']['ConfigService']['GetProviders']();
 }
@@ -88,6 +92,10 @@ export function MigrateProviderPresetsToTerminal() {
 
 export function RecordModalityProbe(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['config']['ConfigService']['RecordModalityProbe'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function RecordProviderQuota(arg1) {
+  return window['go']['config']['ConfigService']['RecordProviderQuota'](arg1);
 }
 
 export function ReexportVisionModels() {

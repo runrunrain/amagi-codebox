@@ -232,6 +232,9 @@ onMounted(async () => {
 })
 
 function isActive(path: string): boolean {
+  // /usage 分页化后拆为 /usage/stats、/usage/quota 子路由：前缀命中
+  // 保持侧边栏高亮（根路径 '/' 只精确匹配，避免全部命中）
+  if (path !== '/' && route.path.startsWith(`${path}/`)) return true
   return route.path === path
 }
 

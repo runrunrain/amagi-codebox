@@ -429,6 +429,90 @@ export namespace config {
 	        this.auth_header = source["auth_header"];
 	    }
 	}
+	export class QuotaBalance {
+	    currency: string;
+	    total: number;
+	    granted?: number;
+	    topped_up?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new QuotaBalance(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currency = source["currency"];
+	        this.total = source["total"];
+	        this.granted = source["granted"];
+	        this.topped_up = source["topped_up"];
+	    }
+	}
+	export class QuotaWindow {
+	    kind: string;
+	    used_percent: number;
+	    remaining?: number;
+	    window_minutes?: number;
+	    resets_at?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new QuotaWindow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.used_percent = source["used_percent"];
+	        this.remaining = source["remaining"];
+	        this.window_minutes = source["window_minutes"];
+	        this.resets_at = source["resets_at"];
+	    }
+	}
+	export class ProviderQuotaEntry {
+	    provider: string;
+	    family: string;
+	    status: string;
+	    message?: string;
+	    level?: string;
+	    windows?: QuotaWindow[];
+	    balance?: QuotaBalance;
+	    source: string;
+	    probed_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderQuotaEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.family = source["family"];
+	        this.status = source["status"];
+	        this.message = source["message"];
+	        this.level = source["level"];
+	        this.windows = this.convertValues(source["windows"], QuotaWindow);
+	        this.balance = this.convertValues(source["balance"], QuotaBalance);
+	        this.source = source["source"];
+	        this.probed_at = source["probed_at"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ModalityProbeEntry {
 	    vision?: boolean;
 	    video?: boolean;
@@ -813,6 +897,7 @@ export namespace config {
 	    terminal_presets?: TerminalPresetsConfig;
 	    opencode_presets?: Record<string, OpenCodePreset>;
 	    modality_probe?: Record<string, ModalityProbeEntry>;
+	    provider_quota?: Record<string, ProviderQuotaEntry>;
 	    version: string;
 	
 	    static createFrom(source: any = {}) {
@@ -826,6 +911,7 @@ export namespace config {
 	        this.terminal_presets = this.convertValues(source["terminal_presets"], TerminalPresetsConfig);
 	        this.opencode_presets = this.convertValues(source["opencode_presets"], OpenCodePreset, true);
 	        this.modality_probe = this.convertValues(source["modality_probe"], ModalityProbeEntry, true);
+	        this.provider_quota = this.convertValues(source["provider_quota"], ProviderQuotaEntry, true);
 	        this.version = source["version"];
 	    }
 	
@@ -931,6 +1017,9 @@ export namespace config {
 	        this.Video = source["Video"];
 	    }
 	}
+	
+	
+	
 	
 	
 	

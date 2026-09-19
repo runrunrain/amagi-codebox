@@ -33,11 +33,19 @@
       <button class="plane-btn" @click="emit('switchToTui')">切回终端</button>
     </div>
 
-    <!-- 会话已结束：保留最后画面 + 结束 badge（交互文档 §5） -->
+    <!-- 会话已结束：保留最后画面 + 结束 badge（交互文档 §5）。
+         设计 §7 要求 ended 时与额度条「融合避免双条堆叠」：实现取舍——
+         ended-bar 是右上角浮动胶囊（非底栏），与底部 30px 常驻 strip 天然
+         不堆叠，故不把额度按钮搬进 ended-bar；保留 strip 常驻，会话结束后
+         仍可查看缓存额度（数据不随会话销毁）。 -->
     <div v-if="ended" class="plane-ended-bar" role="status">
       <span class="ended-badge">会话已结束</span>
       <button class="plane-btn" @click="emit('switchToTui')">切回终端</button>
     </div>
+
+    <!-- 设计 §7：宿主额度细工具条（iframe 输入框下侧的同容器落点），
+         常驻 30px；iframe flex:1 自适应，term-body 高度链路不变 -->
+    <WebPlaneQuotaStrip class="plane-quota-strip" :session-id="sessionId" />
   </div>
 </template>
 
@@ -57,6 +65,7 @@ import { ref, watch, onBeforeUnmount } from 'vue';
 // （两个 script 块编译进同一模块，同名符号无需 import）。
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import WebPlaneQuotaStrip from './WebPlaneQuotaStrip.vue';
 import { postToWebFrame, extractCapabilityToken, type InsertInputPayload } from './quickPathInsert';
 
 const props = withDefaults(
@@ -220,6 +229,11 @@ onBeforeUnmount(() => clearWatchdog());
 
 .plane-btn:hover {
   background: var(--controlHover);
+}
+
+/* 额度 strip 自带 30px 高度与背景，此处仅钉住 flex 尺寸防被压缩 */
+.plane-quota-strip {
+  flex: 0 0 30px;
 }
 
 @media (prefers-reduced-motion: reduce) {

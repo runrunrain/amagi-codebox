@@ -196,9 +196,10 @@ func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 // 未来新增注入面必须在此显式登记其理由，防止静默扩张。
 var configServiceAcceptedMutationSurface = map[string]string{
 	"SetAPIKeyResolver":     "组装期注入 key 解析器（契约 §2 既有先例）",
-	"SetAPIKeyReadyProbe":  "组装期注入密钥库就绪探针；未就绪时跳过导出写盘，防止空 key 覆盖（密钥面安全）",
+	"SetAPIKeyReadyProbe":   "组装期注入密钥库就绪探针；未就绪时跳过导出写盘，防止空 key 覆盖（密钥面安全）",
 	"SetModalityProber":     "组装期注入探测调度入口（契约 v1.2）",
 	"RecordModalityProbe":   "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
+	"RecordProviderQuota":   "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
 	"SetAllTerminalPresets": "预设整体导入的合法入口",
 	"SetAgentTeams":         "Agent Teams 设置的合法入口",
 }

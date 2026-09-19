@@ -246,6 +246,10 @@ export function GetProviderExportJSON(arg1) {
   return window['go']['main']['App']['GetProviderExportJSON'](arg1);
 }
 
+export function GetProviderQuotas() {
+  return window['go']['main']['App']['GetProviderQuotas']();
+}
+
 export function GetProvidersByType(arg1) {
   return window['go']['main']['App']['GetProvidersByType'](arg1);
 }
@@ -402,8 +406,16 @@ export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
 }
 
+export function ProbeAllProviderQuotas() {
+  return window['go']['main']['App']['ProbeAllProviderQuotas']();
+}
+
 export function ProbeModelModalityNow(arg1, arg2) {
   return window['go']['main']['App']['ProbeModelModalityNow'](arg1, arg2);
+}
+
+export function ProbeProviderQuota(arg1) {
+  return window['go']['main']['App']['ProbeProviderQuota'](arg1);
 }
 
 export function ProbeSessionWebUI(arg1) {

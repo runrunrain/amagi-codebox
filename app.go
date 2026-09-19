@@ -254,6 +254,14 @@ type App struct {
 	GitAssist *gitassist.Service
 	// modalityProbeInFlight 多模态探测在飞去重（key: provider/model）。
 	modalityProbeInFlight sync.Map
+	// quotaProbeFlights 额度探测单飞表（key: provider 名）。与 modality 的
+	// sync.Map 「在飞即丢弃」不同：额度探测调用方都依赖返回值，重复调用阻塞
+	// 等待首个在飞探测的结果复用（见 app_quota_probe.go）。
+	quotaProbeMu      sync.Mutex
+	quotaProbeFlights map[string]*quotaProbeFlight
+	// quotaCodexSessionsRoot codex 订阅会话根目录覆盖（空 = 运行时用
+	// os.UserHomeDir 解析 ~/.codex/sessions）；单测注入隔离真实家目录用。
+	quotaCodexSessionsRoot string
 
 	// RemoteClient 域（桌面端互联蓝图 §7）：作为 v1 契约客户端连接另一台
 	// amagi-codebox 宿主。登记簿在 NewApp 构造时从 configDir/remote-hosts.json
@@ -1931,6 +1939,11 @@ func (a *App) Startup(ctx context.Context) {
 			}()
 		}
 	}
+
+	// 额度探测（额度查询设计方案 §3）：启动 30s 后延迟自动探测一轮全部
+	// provider + codex 订阅条目（成功 10min 冷却；手动路径不受节流）。
+	// 需在 Config.Load/Secrets.Load 之后调用（探测要读 provider 表与 key）。
+	a.wireQuotaProber()
 
 	// 启动环境检测异步执行，不阻塞应用启动；检测结果由 EnvCheck 服务缓存。
 	go func() {

@@ -35,10 +35,24 @@ const router = createRouter({
       component: () => import('../views/LogsView.vue')
     },
     {
-      // 使用统计：AI 模型用量与成本 / Usage statistics: AI model usage & cost
+      // 使用统计分页化（设计 §5）：/usage 拆为「使用统计 / 额度查询」两个子页，
+      // 侧边栏 /usage 入口经重定向无破坏进入 stats；子页懒加载。
+      // Usage statistics → paginated: stats + quota sub-pages / 使用统计分页
       path: '/usage',
-      name: 'Usage',
-      component: () => import('../views/UsageView.vue')
+      component: () => import('../views/UsageView.vue'),
+      redirect: '/usage/stats',
+      children: [
+        {
+          path: 'stats',
+          name: 'UsageStats',
+          component: () => import('../components/usage/UsageStatsPanel.vue'),
+        },
+        {
+          path: 'quota',
+          name: 'UsageQuota',
+          component: () => import('../components/usage/QuotaPanel.vue'),
+        },
+      ],
     },
     {
       path: '/:pathMatch(.*)*',
