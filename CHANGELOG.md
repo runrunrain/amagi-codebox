@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.78] - 2026-09-19
+
+### Fixed
+
+- **GLM 额度解析失败（线上回归）**：真实端点 `limits[].unit` 为数字形态（zcode 侧本就按 `typeof unit=="number"` 消费），v1.3.77 的 Go `string` 声明导致整包反序列化失败（`json: cannot unmarshal number into ... limits.unit of type string`），GLM 卡片落 error 态。`Unit` 改 `flexString` 宽松类型（接受 string/number/bool/null），补三形态回归测试。
+
 ## [1.3.77] - 2026-09-19
 
 ### Added
