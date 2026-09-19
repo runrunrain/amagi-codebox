@@ -44,8 +44,9 @@
     </div>
 
     <!-- 设计 §7：宿主额度细工具条（iframe 输入框下侧的同容器落点），
-         常驻 30px；iframe flex:1 自适应，term-body 高度链路不变 -->
-    <WebPlaneQuotaStrip class="plane-quota-strip" :session-id="sessionId" />
+         常驻 30px；iframe flex:1 自适应，term-body 高度链路不变。
+         TUI 平面的同款条由 TerminalView 直接挂载（v-show 互斥） -->
+    <SessionQuotaStrip class="plane-quota-strip" :session-id="sessionId" />
   </div>
 </template>
 
@@ -65,7 +66,7 @@ import { ref, watch, onBeforeUnmount } from 'vue';
 // （两个 script 块编译进同一模块，同名符号无需 import）。
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
-import WebPlaneQuotaStrip from './WebPlaneQuotaStrip.vue';
+import SessionQuotaStrip from './SessionQuotaStrip.vue';
 import { postToWebFrame, extractCapabilityToken, type InsertInputPayload } from './quickPathInsert';
 
 const props = withDefaults(

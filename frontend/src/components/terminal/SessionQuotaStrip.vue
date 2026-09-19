@@ -57,7 +57,10 @@
 
 <script setup lang="ts">
 /**
- * WebPlaneQuotaStrip — pi Web 平面会话额度按钮（设计 §7）。
+ * SessionQuotaStrip — pi 会话额度按钮（设计 §7；v1.3.79 起双平面）：
+ * Web 平面实例挂 WebPlaneHost（iframe 输入框下侧），TUI 平面实例由
+ * TerminalView 直接挂 term-body 底部（pi CLI 输入区下侧），v-show 互斥，
+ * 两实例同源 quotaStore 状态一致。
  *
  * 数据流：sessionId → sessionStore.sessions[i].provider → quotaStore
  * （GetProviderQuotas 缓存 + ensure 后台单飞探测）。

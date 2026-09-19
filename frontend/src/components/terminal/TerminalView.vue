@@ -65,6 +65,16 @@
         @retry="handleWebRetry"
         @switch-to-tui="handleSwitchToTui"
       />
+      <!-- 额度条 · TUI 平面（仅 pi 会话）：pi CLI 输入区在 xterm 底部，
+           宿主条即「输入框下侧」的 TUI 侧等价落点；与 Web 平面的条
+           （WebPlaneHost 内）v-show 互斥，两实例同源 quotaStore 状态一致。
+           非 pi 会话不渲染，xterm 独占全高（布局不变）。 -->
+      <SessionQuotaStrip
+        v-if="isPiSession"
+        v-show="activePlane === 'tui'"
+        class="term-quota-strip"
+        :session-id="sessionId"
+      />
       <!-- TerminalContextMenu 渲染在 term-body 上方 -->
       <TerminalContextMenu
         :visible="ctx.visible"
@@ -153,6 +163,7 @@ import { basename } from '../../utils/format'
 import GitPanel from './GitPanel.vue'
 import TerminalContextMenu from './TerminalContextMenu.vue'
 import WebPlaneHost from './WebPlaneHost.vue'
+import SessionQuotaStrip from './SessionQuotaStrip.vue'
 import { dispatchPathConfirm, quickMenuStateFor, withWebPlaneSkinParam } from './quickPathInsert'
 import PathPickerDialog from './PathPickerDialog.vue'
 import Segmented from '../ui/Segmented.vue'
@@ -401,6 +412,13 @@ watch(activePlane, (plane) => {
     // 切回 TUI：xterm 平面恢复 v-show 后 refit（交互文档 §7）。
     refreshVisibleSurface()
   }
+})
+
+// TUI 额度条随 session 解析异步出现/移除（isPiSession 先于 xterm 首次 fit
+// 变化）：term-body 整体尺寸不变，其上的 ResizeObserver 不会触发，需显式
+// refit 兜底 xterm 容器高度变化，防 pi CLI 绘制溢出错行。
+watch(isPiSession, () => {
+  refreshVisibleSurface()
 })
 
 // webui 探测演进为 available（启动后轮询出结果）或挂载时已 available
@@ -814,6 +832,10 @@ function onCtxSelectAll() {
   min-height: 0;
   position: relative;
   overflow: hidden;
+  /* pi 会话 TUI 额度条（term-quota-strip）为流内子项：flex 列布局让
+     xterm（flex:1）与条（30px）分高；非 pi 会话条不渲染，xterm 独占。 */
+  display: flex;
+  flex-direction: column;
 }
 
 /* Web 平面激活时隐藏 xterm 平面（互斥 v-show 语义；xterm 元素由 JS 创建，
@@ -842,11 +864,20 @@ html:not([data-skin='on']) .term-body.web-active.web-plane-light {
    实际尺寸计算，去掉 padding 不会破坏 fit；此前 14px 18px 的留白会
    让 xterm 外圈露出一圈 --termBg #1B1B1F 黑色边框。 */
 .term-body :deep(.xterm) {
-  height: 100%;
+  /* flex 列子项：取代旧 height:100%（相对含条的父高会溢出）；
+     非 pi 会话时条不渲染，flex:1 等价旧全高行为 */
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
   padding: 0;
   box-sizing: border-box;
   text-align: left;
+}
+
+/* TUI 平面额度条：term-body flex 列的流内子项，自带 30px（strip 组件
+   自身 flex:0 0 30px），此处不重复钉尺寸，仅作样式挂点 */
+.term-quota-strip {
+  border-top: 1px solid var(--separator);
 }
 
 /* Full-screen CLIs position borders and cursors by terminal cells. Disable
