@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.79] - 2026-09-19
+
+### Fixed
+
+- **会话额度条覆盖 TUI 平面**：v1.3.78 的额度条只挂在 Web 平面（WebPlaneHost 内），而 pi 会话默认落在 TUI 平面，主用场景启动会话后看不到按钮。组件更名 `SessionQuotaStrip` 双平面复用：TUI 实例挂 term-body 底部（仅 pi 会话，pi CLI 输入区下侧），与 Web 平面实例 v-show 互斥、同源 store；term-body 转 flex 列布局（xterm `flex:1`，非 pi 会话布局不变）；`watch(isPiSession)` 显式 refit 兜底 xterm 容器高度变化（term-body 整体尺寸不变、ResizeObserver 不触发）。
+
 ## [1.3.78] - 2026-09-19
 
 ### Fixed
