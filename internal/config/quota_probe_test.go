@@ -518,3 +518,24 @@ func TestGlmFamilyForOrigin(t *testing.T) {
 		}
 	}
 }
+
+// v1.3.77 线上回归：GLM 真实端点 limits[].unit 为数字形态（zcode 侧
+// typeof unit=="number" 消费），旧 string 声明导致整包反序列化失败
+// （json: cannot unmarshal number into ... limits.unit of type string）。
+func TestProbeGLMQuota_UnitNumberForm(t *testing.T) {
+	body := `{"code":200,"msg":"success","data":{"level":"pro",` +
+		`"limits":[{"type":"TIME_LIMIT","unit":1,"number":300,"usage":180,"percentage":62.0,"remaining":114},` +
+		`{"type":"WEEK","unit":null,"number":"120","usage":30,"percentage":31.5,"remaining":80},` +
+		`{"type":"MIXED"}]}}`
+	_, srv := newGLMTestServer(t, http.StatusOK, body)
+	entry := ProbeGLMQuota(context.Background(), srv.Client(), srv.URL, "k", "glm")
+	if entry.Status != QuotaStatusOK {
+		t.Fatalf("status = %q, want ok (message=%q)", entry.Status, entry.Message)
+	}
+	if len(entry.Windows) != 2 {
+		t.Fatalf("windows = %+v, want 2（数字/null 形态 unit 不阻断解析）", entry.Windows)
+	}
+	if w := entry.Windows[0]; w.Kind != QuotaWindowPrimary || w.UsedPercent != 62.0 {
+		t.Errorf("primary = %+v, want percentage=62", w)
+	}
+}

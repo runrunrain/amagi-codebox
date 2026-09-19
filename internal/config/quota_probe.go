@@ -96,15 +96,31 @@ type glmQuotaEnvelope struct {
 	} `json:"data"`
 }
 
-// glmLimitEntry GLM data.limits 单条限额（数值字段宽松解析）。
+// glmLimitEntry GLM data.limits 单条限额（数值字段宽松解析；unit 为 flexString，
+// 真实端点返回数字形态——v1.3.77 线上实证 string 声明整体反序列化失败，
+// zcode 侧本就按 typeof unit=="number" 消费，故容忍 string/number/null）。
 type glmLimitEntry struct {
 	Type         string     `json:"type"`
-	Unit         string     `json:"unit"`
+	Unit         flexString `json:"unit"`
 	Number       flexNumber `json:"number"`
 	Usage        flexNumber `json:"usage"`
 	CurrentValue flexNumber `json:"currentValue"`
 	Remaining    flexNumber `json:"remaining"`
 	Percentage   flexNumber `json:"percentage"`
+}
+
+// flexString 宽松字符串：接受 string/number/bool/null 任一 JSON 形态，
+// 去引号后取原始字面量为字符串（number 不丢精度）；null/空为空串。
+type flexString string
+
+func (f *flexString) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		*f = ""
+		return nil
+	}
+	*f = flexString(strings.Trim(s, `"`))
+	return nil
 }
 
 // deepSeekBalanceEnvelope DeepSeek 余额接口响应（数值均为字符串数字）。
