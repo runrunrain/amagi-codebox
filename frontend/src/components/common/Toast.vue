@@ -44,8 +44,10 @@ const { toasts, removeToast } = useToast();
 
 <style scoped>
 .toast-container {
+  /* 右下角：避开页面头部/卡片右上角的操作按钮（清理、检测等），
+     也避免与 UpdateReminder（右上角 fixed 浮层）互相遮挡 */
   position: fixed;
-  top: 20px;
+  bottom: 20px;
   right: 20px;
   z-index: 9999;
   display: flex;
@@ -130,7 +132,7 @@ const { toasts, removeToast } = useToast();
   background-color: rgba(255, 255, 255, 0.1);
 }
 
-/* Transition animations */
+/* Transition animations：右下角布局 → 自底边滑入/滑出 */
 .toast-list-enter-active,
 .toast-list-leave-active {
   transition: all 0.3s ease;
@@ -138,11 +140,16 @@ const { toasts, removeToast } = useToast();
 
 .toast-list-enter-from {
   opacity: 0;
-  transform: translateX(30px);
+  transform: translateY(30px);
 }
 
 .toast-list-leave-to {
   opacity: 0;
-  transform: translateX(30px);
+  transform: translateY(30px);
+}
+
+/* 列表重排（新 toast 插入/移除时其余项平移）平滑过渡 */
+.toast-list-move {
+  transition: transform 0.3s ease;
 }
 </style>
