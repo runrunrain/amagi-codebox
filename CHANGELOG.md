@@ -4,6 +4,17 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.77] - 2026-09-19
+
+### Added
+
+- **额度查询与常显（GLM / DeepSeek / Codex 订阅三家族）**：后端新增额度探测——GLM Coding Plan 走 `{origin}/api/monitor/usage/quota/limit`（zcode 逆向实证，`authorization` 头直用已托管 key；TIME_LIMIT 为主窗口，`code=1001`→未配置、无套餐关键词→no_plan）；DeepSeek 走 `/user/balance`（CNY 余额）；Codex 订阅纯本地读 `~/.codex/sessions` 最新 rollout 尾部的 `rate_limits`（5h/周双窗口 + credits，不触碰 auth.json）。结果落 `models.json` `provider_quota` 字段（值域零凭据），App 暴露 `GetProviderQuotas`/`ProbeProviderQuota`/`ProbeAllProviderQuotas` 三绑定，启动 30s 延迟自动探测 + 10min 成功冷却 + in-flight 单飞。前端：`/usage` 分页化为「使用统计 | 额度查询」（原 808 行统计页完整迁移）；额度页四类卡（GLM 双域/DeepSeek/Codex 订阅/其他提供商聚合灰卡），窗口型双条阈值变色（70%/90%）、余额型 ¥ 排版、六态状态矩阵与重置倒计时；pi Web 平面会话窗口输入框下侧新增 30px 额度条（迷你摘要常驻 + 点击向上弹 340px Popover + 单飞刷新）。经 diting 合并审核：修复 GLM family 按 origin 推导（z.ai 卡不渲染）与首探「查询中」占位短路。
+- 设计文档：Database/01-AI技术与工具/codebox优化/正式化改造/额度管理；审核报告：agent-outputs/2026-09-19-quota-review/。
+
+### Fixed
+
+- **全局 Toast 迁移至右下角**：操作提示此前固定右上角，物理遮挡页面头与卡片右上角的按钮（清理/检测等高频操作首当其冲），且与 UpdateReminder 互相叠加；迁移后动画改自底边滑入并补充列表重排平滑过渡。
+
 ## [1.3.76] - 2026-09-16
 
 ### Added
