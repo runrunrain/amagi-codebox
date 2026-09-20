@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.82] - 2026-09-19
+
+### Fixed
+
+- **重置时刻显示不准确（大多「即将重置」）**：Codex 本地会话数据的 5h/周窗 `resets_at` 经常已过期，旧文案落「即将重置」分支误导。`formatResetCountdown` 重写为绝对时刻优先：过期 →「重置时刻已过」（诚实陈述）；未来按自然日分档「今日 HH:mm / 明日 HH:mm / 7 天内周几 HH:mm / 更远 M月d日 HH:mm」。
+- **Web 视图 / strip 常显重置时间**：新增 `formatResetShort` 短形式，会话额度条常驻摘要附主窗重置时刻（「GLM · 93% 5h · 今日 22:35」）；Popover 弹层内双条重置文案同步更新。
+
 ## [1.3.81] - 2026-09-19
 
 ### Fixed
