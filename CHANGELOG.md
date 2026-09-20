@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.83] - 2026-09-20
+
+### Fixed
+
+- **远程 Web 会话平面输入报「invalid protocol response」（三层根治）**：远程设备在 pi 会话 Web 视图输入被写面控制门拒绝（403 control.forbidden，设备未持控制权）时，代理错误体为 v1 REST 形状（无 `v:1`），amagi-pi webui 前端误判协议违规并断开 WS（「连接中断 · 重连中」），真实错误码被完全掩盖。① 代理 iframe 数据面错误统一注入 `v:1`+`error:<code>`（新增 `writeWebUIPlaneError`/`webUIProxyEnforceAuth`，v1 REST 面零污染，安全红线保持）；② 移动端 Web 平面视图新增控制权引导条（未持控制权时显示「接管控制」按钮，显式触发，无自动抢占）；③ 鉴权镜像四分支与 ErrorHandler ACAO:null 补表驱动 parity 锁。amagi-pi 侧配套（错误信封分流+真实错误码文案映射，v2.6.5）同步发布。
+
 ## [1.3.82] - 2026-09-19
 
 ### Fixed
