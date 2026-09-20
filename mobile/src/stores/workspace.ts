@@ -1168,12 +1168,21 @@ export const useWorkspaceStore = defineStore('remote-workspace', () => {
     } catch (rawErr) {
       const err = toApiRequestError(rawErr);
       // E-06 conflict（design §7）：acquire 409 在同一区域标 conflict，不改权威 state。
+      // 持有者名优先取权威 control 快照（WS control.state 事件在 state==='other' 时必带
+      // deviceName，见 contract/ws.go）；快照未及到达时回落通用文案。「稍后重试」对持续
+      // 持有者是死路——指明出路：持有端释放后再试。
       if (err.status === 409) {
+        const holder =
+          control.value.state === 'other'
+            ? (control.value as { deviceName?: string }).deviceName
+            : undefined;
         controlNotice.value = {
           kind: 'conflict',
           controlState: control.value.state,
-          deviceName: null,
-          text: '控制权冲突：另一设备刚取得控制权，请稍后重试',
+          deviceName: holder ?? null,
+          text: holder
+            ? `控制权冲突：${holder} 正持有控制权，请先在该设备释放或稍后重试`
+            : '控制权冲突：另一设备刚取得控制权，请稍后重试',
         };
       } else {
         lastError.value = { code: err.code, message: err.message, actionHint: err.actionHint };

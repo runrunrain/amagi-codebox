@@ -791,6 +791,61 @@ describe('M3-INT R2-001：takeover → 重新获权 → 新 input 可发送', ()
   });
 });
 
+// E-06 acquire 409（control.busy）：持有者名优先从权威 control 快照透出，
+// 不再笼统「另一设备」；快照未达（state 非 other）时回落通用文案。
+describe('acquire 409 conflict 文案', () => {
+  it('409 + 权威快照 other（含 deviceName）→ 文案透出持有者名与出路', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url.includes('acquire')) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ error: { code: 'control.busy', message: 'control already held' } }),
+          } as unknown as Response;
+        }
+        return { ok: true, status: 200, json: async () => DETAIL } as Response;
+      }),
+    );
+    const { store, client } = await openStore();
+    fireAttached(client, attachedEvent({ inputAckMode: 'session-window-v1' }));
+    // 另一设备持有（权威 control.state=other，必带 deviceName）。
+    client.opts.onEvent({ type: 'control.state', sessionId: 'sess-1', state: 'other', deviceName: 'iPad Pro', reason: 'acquired', occurredAt: '2026-08-03T01:00:00Z' });
+    // 冲突提示先被 takeover 文案占据，acquire 409 后应覆盖为 conflict 文案。
+    expect(await store.acquire()).toBe(false);
+    expect(store.controlNotice?.kind).toBe('conflict');
+    expect(store.controlNotice?.text).toBe('控制权冲突：iPad Pro 正持有控制权，请先在该设备释放或稍后重试');
+    expect(store.controlNotice?.deviceName).toBe('iPad Pro');
+    // 权威 state 未被 409 改写（仍 other）。
+    expect(store.control.state).toBe('other');
+  });
+
+  it('409 + 快照未达（state=none）→ 回落通用文案（不臆造持有者）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url.includes('acquire')) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ error: { code: 'control.busy', message: 'control already held' } }),
+          } as unknown as Response;
+        }
+        return { ok: true, status: 200, json: async () => DETAIL } as Response;
+      }),
+    );
+    const { store, client } = await openStore();
+    fireAttached(client, attachedEvent({ inputAckMode: 'session-window-v1' }));
+    expect(await store.acquire()).toBe(false);
+    expect(store.controlNotice?.kind).toBe('conflict');
+    expect(store.controlNotice?.text).toBe('控制权冲突：另一设备刚取得控制权，请稍后重试');
+    expect(store.controlNotice?.deviceName).toBeNull();
+  });
+});
+
 // M3-INT R3-001：you→none(connection_expired) 必须冻结 pending——断连导致失权与
 // takeover 同等语义（design §7 E-06）。旧 entry 停止自动重发，不跨失权窗口继续 retry；
 // 重新获权后旧 entry 不自动重发，只有全新 input 可发送。本地 release 同等停发但无 E-06。
