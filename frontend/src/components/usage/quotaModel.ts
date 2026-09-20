@@ -168,23 +168,51 @@ export function formatClock(iso: string): string {
 }
 
 /**
- * 重置倒计时文案（设计 §6）：24h 内相对时长（`2h14m 后重置`），
- * 超过 24h 用绝对周内时刻（`周日 08:00 重置`）。挂载时计算一次，不轮询。
+ * 重置时刻文案（v1.3.82 重写：绝对时刻优先，主上报「即将重置」不准）：
+ * - 过期（resets_at <= now）：「重置时刻已过」——Codex 本地会话数据的 5h/周窗
+ *   经常已过期，旧文案「即将重置」误导；诚实陈述而非臆造新时刻。
+ * - 未来：今日/明日给时刻，7 天内给周几，更远给日期。
+ * 挂载时计算一次，不轮询。
  */
 export function formatResetCountdown(resetsAtSec?: number, nowMs: number = Date.now()): string {
   if (!resetsAtSec || resetsAtSec <= 0) return '';
-  const diffMs = resetsAtSec * 1000 - nowMs;
-  if (diffMs <= 0) return '即将重置';
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 60) return `${minutes}m 后重置`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    const rem = minutes % 60;
-    return rem > 0 ? `${hours}h${rem}m 后重置` : `${hours}h 后重置`;
+  const target = resetsAtSec * 1000;
+  if (target <= nowMs) return '重置时刻已过';
+  const d = new Date(target);
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const now = new Date(nowMs);
+  const dayDiff = dayDiffDays(now, d);
+  if (dayDiff === 0) return `今日 ${hm} 重置`;
+  if (dayDiff === 1) return `明日 ${hm} 重置`;
+  if (dayDiff < 7) {
+    const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()] ?? '';
+    return `${weekday} ${hm} 重置`;
   }
-  const d = new Date(resetsAtSec * 1000);
-  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()] ?? '';
-  return `${weekday} ${pad2(d.getHours())}:${pad2(d.getMinutes())} 重置`;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 重置`;
+}
+
+/** 当地时区下「目标日 - 今日」的日差（按自然日切分，非 24h 段）。 */
+function dayDiffDays(from: Date, to: Date): number {
+  const f = new Date(from.getFullYear(), from.getMonth(), from.getDate()).getTime();
+  const t = new Date(to.getFullYear(), to.getMonth(), to.getDate()).getTime();
+  return Math.round((t - f) / 86400000);
+}
+
+/** 重置时刻短形式（strip 迷你摘要用）：今日 HH:mm / 明日 HH:mm / 周四 / M月d日。 */
+export function formatResetShort(resetsAtSec?: number, nowMs: number = Date.now()): string {
+  if (!resetsAtSec || resetsAtSec <= 0) return '';
+  const target = resetsAtSec * 1000;
+  if (target <= nowMs) return '已过';
+  const d = new Date(target);
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const now = new Date(nowMs);
+  const dayDiff = dayDiffDays(now, d);
+  if (dayDiff === 0) return `今日 ${hm}`;
+  if (dayDiff === 1) return `明日 ${hm}`;
+  if (dayDiff < 7) {
+    return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()] ?? '';
+  }
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 /** probed_at 距今毫秒；解析失败返回 NaN */
@@ -278,8 +306,10 @@ export function quotaStripSummary(entry: ProviderQuotaEntry | null | undefined):
     const primary = primaryWindowOf(entry);
     if (primary) {
       const remain = Math.max(0, Math.round(100 - clampPercent(primary.used_percent)));
+      // v1.3.82：常驻摘要附主窗口重置短时刻（主上报 web 视图也要看到重置时间）
+      const reset = formatResetShort(primary.resets_at);
       return {
-        text: `${familyShortName(entry.family)} · ${remain}% ${windowShortLabel(primary)}`,
+        text: `${familyShortName(entry.family)} · ${remain}% ${windowShortLabel(primary)}${reset ? ` · ${reset}` : ''}`,
         tone: 'data',
         disabled: false,
         title: '',

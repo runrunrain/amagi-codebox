@@ -120,25 +120,38 @@ describe('QuotaCard 陈旧标注（ok 且 probed_at >30min 黄点）', () => {
   });
 });
 
-describe('重置倒计时文案', () => {
-  it('24h 内相对时长（2h14m 后重置）；跨天用周内时刻；过期回落即将重置', () => {
+describe('重置时刻文案', () => {
+  it('绝对时刻优先：今日/明日时刻、7 天内周几、更远日期；过期诚实陈述', () => {
     const now = Date.now();
-    // 用 ceil 预补 now 的毫秒截断，避免 2h13m59s 落成 2h13m
     const baseSec = Math.ceil(now / 1000);
-    expect(formatResetCountdown(baseSec + (2 * 60 + 14) * 60, now)).toBe('2h14m 后重置');
-    expect(formatResetCountdown(baseSec + 45 * 60, now)).toBe('45m 后重置');
-    expect(formatResetCountdown(baseSec + 3 * 86_400, now)).toMatch(/^周[一二三四五六日] \d{2}:\d{2} 重置$/);
-    expect(formatResetCountdown(Math.floor(now / 1000) - 10, now)).toBe('即将重置');
+    // 过期（Codex 本地会话数据常见）：不再误导性「即将重置」
+    expect(formatResetCountdown(Math.floor(now / 1000) - 10, now)).toBe('重置时刻已过');
     expect(formatResetCountdown(undefined, now)).toBe('');
+    // 未来时刻按自然日分档：今日/明日/周几/日期（用固定 now 避免跨日边界抖动）
+    const fixed = new Date(2026, 8, 19, 10, 0, 0, 0).getTime(); // 2026-09-19 10:00
+    const at = (dayPlus: number, h: number, m: number) =>
+      Math.floor(new Date(2026, 8, 19 + dayPlus, h, m, 0, 0).getTime() / 1000);
+    expect(formatResetCountdown(at(0, 22, 35), fixed)).toBe('今日 22:35 重置');
+    expect(formatResetCountdown(at(1, 3, 10), fixed)).toBe('明日 03:10 重置');
+    expect(formatResetCountdown(at(3, 14, 0), fixed)).toMatch(/^周[一二三四五六日] 14:00 重置$/);
+    expect(formatResetCountdown(at(12, 9, 5), fixed)).toBe('10月1日 09:05 重置');
   });
 });
 
 describe('Web 平面 strip 摘要映射（quotaStripSummary）', () => {
-  it('窗口型 ok：家族短名 + 剩余 % + 窗口短标', () => {
+  it('窗口型 ok：家族短名 + 剩余 % + 窗口短标 + 主窗重置短时刻', () => {
     const summary = quotaStripSummary(windowEntry());
-    expect(summary.text).toBe('GLM · 38% 5h');
+    // fixture 主窗 resets_at = now+8040s（~2.2h 后，今日内）→ 摘要附「今日 HH:mm」
+    expect(summary.text).toMatch(/^GLM · 38% 5h · (今日|明日) \d{2}:\d{2}$/);
     expect(summary.tone).toBe('data');
     expect(summary.disabled).toBe(false);
+  });
+
+  it('窗口型 ok 无 resets_at：无重置后缀（向后兼容）', () => {
+    const e = windowEntry({
+      windows: [win({ kind: 'primary', used_percent: 62, window_minutes: 300 }), win({ kind: 'secondary', used_percent: 31, window_minutes: 10080 })],
+    });
+    expect(quotaStripSummary(e).text).toBe('GLM · 38% 5h');
   });
 
   it('余额型 ok：家族短名 + ¥ 值', () => {
