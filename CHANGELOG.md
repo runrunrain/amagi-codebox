@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.81] - 2026-09-19
+
+### Fixed
+
+- **GLM 窗口语义错位（max 套餐实测）**：max 套餐无周额度（仅 5h 额度 + MCP 月额度），旧解析把 `TIME_LIMIT` 首条当 primary 标「5h」、其余标「周」——MCP 月额度被当 5h、5h 被当周。带凭据实证真实响应：`TIME_LIMIT + unit=5(月) + usageDetails[MCP 工具明细]` 为 MCP 月额度、`TOKENS_LIMIT + unit=3(小时) + number=5` 为 5h 主额度。重写 `glmQuotaWindows`：primary 改 `TOKENS_LIMIT` 优先（无则首条兜底）；`QuotaWindow` 新增 `label` 字段由实证枚举推导（"5h"/"月"/"MCP·月"），前端 `windowLabel`/`windowShortLabel` 优先展示；解析 `nextResetTime`（毫秒→秒）修复重置时间一直缺失。实证样本回归测试。
+
 ## [1.3.80] - 2026-09-19
 
 ### Fixed
