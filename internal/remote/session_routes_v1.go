@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"amagi-codebox/internal/remote/contract"
@@ -240,8 +241,32 @@ func (s *Server) handleV1ControlAcquire(w http.ResponseWriter, r *http.Request, 
 	result, aerr := s.sessionAdapter.AcquireControl(r.Context(), reqID, principal, sessionID, lease)
 	if aerr != nil {
 		aerr.Rest.body.RequestID = reqID
+		// 可观测性（真机争议归因）：acquire 被拒时记录请求者与当前持有者（快照
+		// deviceName，契约 ws.go：state=other 必带；查不到则记状态）——不记 token/
+		// credential，与既有日志纪律一致。成功路径同样留痕，使控制权转移全链可审计。
+		if s.log != nil {
+			if aerr.Rest.status == http.StatusConflict && s.sessionAdapter != nil {
+				if snap, gErr := s.sessionAdapter.Gate().SnapshotForDevice(sessionID, principal.DeviceID); gErr == nil {
+					holder := ""
+					if snap.DeviceName != nil {
+						holder = *snap.DeviceName
+					}
+					if holder == "" && snap.State == contract.ControlStateDesktop {
+						holder = "desktop"
+					}
+					s.log.Info("remote", "控制权冲突", "session="+string(sessionID),
+						"requester="+principal.DeviceName, "holder="+holder, "holderState="+string(snap.State))
+				}
+			} else {
+				s.log.Info("remote", "控制权获取被拒", "session="+string(sessionID),
+					"requester="+principal.DeviceName, "status="+strconv.Itoa(aerr.Rest.status), "code="+string(aerr.Rest.body.Code))
+			}
+		}
 		aerr.Rest.write(w)
 		return
+	}
+	if s.log != nil {
+		s.log.Info("remote", "控制权已获取", "session="+string(sessionID), "device="+principal.DeviceName)
 	}
 	body, merr := contract.MarshalRESTResponse(result.Snapshot)
 	if merr != nil {
