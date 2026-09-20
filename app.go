@@ -1259,6 +1259,59 @@ func (a *App) GetRemoteStatus() map[string]any {
 	}
 }
 
+// SessionControlHoldView 是桌面「控制权管理」卡可消费的会话控制权持有投影
+//（frontend 直接消费的 JSON 形状；不透出内部类型）。仅包含 device holder 的
+//展示字段，不含任何凭据或连接内部标识。
+type SessionControlHoldView struct {
+	SessionID  string `json:"sessionID"`
+	DeviceID   string `json:"deviceID"`
+	DeviceName string `json:"deviceName"`
+	InGrace    bool   `json:"inGrace"`
+}
+
+// GetSessionControlHolds 返回当前由远程设备持有控制权的会话列表（桌面管理
+//视图）。安全边界：仅枚举 device holder（无人持有/桌面持有不列——管理目标
+//是「设备持有」）；只读，不改变任何控制权状态，不触碰远程服务开关。control
+// 运行时未就绪（启动早期/已关闭）时自然返回空列表——彼时不存在设备持有。
+func (a *App) GetSessionControlHolds() []SessionControlHoldView {
+	if a.control == nil || !a.control.IsReady() {
+		return []SessionControlHoldView{}
+	}
+	holds := a.control.Gate().ListSessionHolds()
+	views := make([]SessionControlHoldView, 0, len(holds))
+	for _, h := range holds {
+		views = append(views, SessionControlHoldView{
+			SessionID:  string(h.SessionID),
+			DeviceID:   string(h.DeviceID),
+			DeviceName: h.DeviceName,
+			InGrace:    h.InGrace,
+		})
+	}
+	return views
+}
+
+// ReleaseSessionControl 桌面端主动收回指定会话的远程设备控制权（桌面根
+// 权威：物理主机所有者收回权天然正当）。语义：进程内原子执行
+// TakeDesktop(Wails 权威) → ReleaseDesktop 组合链——设备持有者先收到
+// takeover 事件（手机端提示「桌面端取得控制权」）随即 released 事件，终态
+// 为无人持有（不停留 desktop holder，设备不会被永久 409），设备随后可重新
+// 接管。安全边界：仅桌面本地 Wails 绑定调用面，不接受远程输入；无人持有时
+// 幂等成功；会话不存在时返回明确提示。
+func (a *App) ReleaseSessionControl(sessionID string) error {
+	if a.control == nil || !a.control.IsReady() {
+		return remote.ErrControlNotReady
+	}
+	if err := a.control.Gate().ForceReleaseControl(contract.SessionID(sessionID)); err != nil {
+		// gate 透传层把 *ControlGateError 解引用为值类型返回，这里用值目标
+		// 精确匹配本调用链，避免把「会话不存在」误报成笼统失败。
+		var deny remote.ControlGateError
+		if errors.As(err, &deny) && deny.Kind == remote.DenySessionNotFound {
+			return fmt.Errorf("会话不存在或已结束：%s", sessionID)
+		}
+		return fmt.Errorf("收回控制权失败：%v", err)
+	}
+	return nil
+}
 // getLastRemoteStartError 返回最近一次 Startup 恢复路径的 Start 失败文本
 //（空串表示无失败记录）。只读，不触发任何重试。
 func (a *App) getLastRemoteStartError() string {

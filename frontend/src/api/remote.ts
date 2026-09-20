@@ -7,6 +7,8 @@ import {
   GetRemoteToken,
   GetRemoteStatus,
   GetRemoteWebUIStatus,
+  GetSessionControlHolds,
+  ReleaseSessionControl,
   OpenRemoteWebUI,
   RegenerateRemoteToken,
   ToggleRemoteServer,
@@ -194,4 +196,21 @@ export function confirmExternalCleanupRecovery(
 /** 启动警告（本次启动累积；含 legacy 外部清理提示）。仅展示，不当 toast 自动消失。 */
 export function getStartupWarnings(): Promise<string[]> {
   return callApi('[api.remote.getStartupWarnings]', () => GetStartupWarnings());
+}
+
+/* ---------------------------------------------------------------------------
+ * M3 控制权管理 API（PG-05 卡⑤ 活动控制卡接入）
+ * 绑定权威来源：frontend/wailsjs/go/main/App.d.ts + models.ts（自动生成，勿手改）
+ * 语义：桌面根权威枚举/收回远程设备持有的会话控制权（takeover→released，
+ * 终态无人持有，设备可重新接管）。
+ * ------------------------------------------------------------------------- */
+
+/** 当前由远程设备持有控制权的会话列表（device-only 投影；无人/桌面持有不列）。 */
+export function getSessionControlHolds(): Promise<main.SessionControlHoldView[]> {
+  return callApi('[api.remote.getSessionControlHolds]', () => GetSessionControlHolds());
+}
+
+/** 桌面端收回一个会话的控制权（需 PG-06 显式确认后调用；幂等：无人持有时成功 no-op）。 */
+export function releaseSessionControl(sessionID: string): Promise<void> {
+  return callApi('[api.remote.releaseSessionControl]', () => ReleaseSessionControl(sessionID));
 }

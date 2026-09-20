@@ -2,7 +2,7 @@
   PG-05 桌面远程控制中心（设置 > 远程访问）· 六卡重写
   设计权威：前端视觉交互设计 v1.2 §PG-05/§PG-06/§5/§6 + 视觉风格 v2.2 VT 令牌。
   自上而下：⓪ 外部进程清理恢复卡 → ① 远程服务开关卡 → ② LAN 暴露确认卡 → ③ 配对卡
-           → ④ 可信设备卡 → ⑤ 活动控制卡（M3 占位，诚实空态）→ ⑥ 本地可见记录卡。
+           → ④ 可信设备卡 → ⑤ 控制权管理卡（活动控制，M3 真实数据）→ ⑥ 本地可见记录卡。
   硬规则：不展示主凭据/Provider 密钥的"方便复制"入口（§4.2，本页不渲染 Token）；
   危险动作一律 PG-06 确认 + 本地记录；配对 QR 为主路径。
 -->
@@ -71,8 +71,15 @@
         @changed="onDevicesChanged"
       />
 
-      <!-- ⑤ 活动控制卡（M3 占位） -->
-      <ActivityControlCard />
+      <!-- ⑤ 活动控制 / 控制权管理卡（M3 接入真实控制：枚举 + 桌面根权威收回） -->
+      <ActivityControlCard
+        :holds="holds"
+        :loading="holdsLoading"
+        :load-error="holdsError"
+        :service-off="!status.running"
+        @refresh="loadHolds"
+        @changed="onHoldsChanged"
+      />
 
       <!-- ⑥ 本地可见记录卡 -->
       <SecurityLogCard
@@ -98,6 +105,7 @@ import {
   listRemoteDevices,
   listRemoteSecurityEvents,
   getRemoteSecurityHealth,
+  getSessionControlHolds,
 } from '../../api/remote';
 import { classifyRemoteError, type ClassifiedError } from '../../components/remote/remoteShared';
 import RemoteSelfCheckCard from '../../components/remote/RemoteSelfCheckCard.vue';
@@ -108,6 +116,7 @@ import PairingCard from '../../components/remote/PairingCard.vue';
 import TrustedDevicesCard from '../../components/remote/TrustedDevicesCard.vue';
 import ActivityControlCard from '../../components/remote/ActivityControlCard.vue';
 import SecurityLogCard from '../../components/remote/SecurityLogCard.vue';
+import type { ControlHold } from '../../components/remote/controlHoldsModel';
 
 const LAN_STORAGE_KEY = 'amagi.remote.lanExposureConfirmedAt';
 
@@ -125,6 +134,11 @@ const eventsError = ref<ClassifiedError | null>(null);
 
 const health = ref<remote.SecurityHealthSnapshot | null>(null);
 const lastServiceError = ref<ClassifiedError | null>(null);
+
+// 控制权持有（卡⑤）：device-only 投影，服务关闭时自然为空列表。
+const holds = ref<ControlHold[] | null>(null);
+const holdsLoading = ref(false);
+const holdsError = ref<ClassifiedError | null>(null);
 
 const lanConfirmed = ref(false);
 const lanCardRef = ref<InstanceType<typeof LanExposureCard> | null>(null);
@@ -211,13 +225,33 @@ async function loadHealth() {
   }
 }
 
+async function loadHolds() {
+  holdsLoading.value = true;
+  try {
+    holds.value = (await getSessionControlHolds()) as ControlHold[];
+    holdsError.value = null;
+  } catch (err) {
+    holdsError.value = classifyRemoteError(err);
+    holds.value = holds.value ?? [];
+  } finally {
+    holdsLoading.value = false;
+  }
+}
+
+function onHoldsChanged() {
+  // 收回成功：刷新持有列表（takeover/released 经 WS 实时投递给在线设备；
+  // 转移审计依赖服务日志「控制权已获取/冲突」行，无本地持久化事件流）。
+  void loadHolds();
+  void loadEvents();
+}
+
 /** Major-06：设备/事件是持久安全状态（后端 ListDevices/RevokeDevice/ListSecurityEvents
  *  只要求 security ready，不要求 server running），服务关闭时仍加载与展示；
  *  仅配对窗口与网络动作受 running 限制（配对卡自行按 running 禁用）。 */
 async function loadAll() {
   lanConfirmed.value = readLanRecord();
   await loadStatus();
-  await Promise.all([loadHealth(), loadDevices(), loadEvents()]);
+  await Promise.all([loadHealth(), loadDevices(), loadEvents(), loadHolds()]);
 }
 
 function onPairingChanged() {

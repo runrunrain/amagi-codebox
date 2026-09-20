@@ -159,6 +159,8 @@ export function GetSavedWorkDirs():Promise<Array<settings.WorkDirEntry>>;
 
 export function GetSession(arg1:string):Promise<session.SessionInfo>;
 
+export function GetSessionControlHolds():Promise<Array<main.SessionControlHoldView>>;
+
 export function GetSessionWebUI(arg1:string):Promise<remote.SessionWebUIInfo|boolean>;
 
 export function GetSessions():Promise<Array<session.SessionInfo>>;
@@ -236,6 +238,8 @@ export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function RegenerateRemoteToken():Promise<string>;
+
+export function ReleaseSessionControl(arg1:string):Promise<void>;
 
 export function RemoteClientAcquireControl(arg1:string):Promise<remoteclient.ControlView>;
 

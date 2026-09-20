@@ -72,6 +72,12 @@ type controlEntry struct {
 	sessionID    contract.SessionID
 	owner        controlOwner
 	controlEpoch uint64
+	// holderSince records the wall-clock time of the most recent wire-visible
+	// owner transition (set in commitTransition). Consumed by ListSessionHolds
+	// for the desktop management view. Zero only if no transition has ever
+	// committed for this entry (test-constructed entries aside, a device holder
+	// implies a committed acquire transition, so it is real — never fabricated).
+	holderSince time.Time
 
 	// Run identity (design §4.2, §6.4). currentRun is pointer-exact-matched;
 	// runEpoch is the monotonic run counter. Both must match for a valid permit.
@@ -316,6 +322,7 @@ func (a *ControlArbiter) commitTransition(
 	}
 	entry.owner = newOwner
 	entry.controlEpoch = newEpoch
+	entry.holderSince = now
 	if a.hub != nil {
 		a.hub.EnqueueControlTransition(t)
 	}
@@ -607,6 +614,118 @@ func (a *ControlArbiter) ReleaseDesktop(
 	}
 	if !a.commitTransition(entry, controlOwner{kind: ownerNone}, reasonReleased, now) {
 		return &ControlGateError{Kind: DenyControlUnavailable}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Desktop management: enumerate + force-release device holds (desktop root)
+// ---------------------------------------------------------------------------
+
+// SessionControlHold is the desktop-management projection of ONE session whose
+// control is currently held by a REMOTE DEVICE (connected or in grace).
+// Sessions held by none/desktop are deliberately NOT listed: the management
+// target is device holds — the desktop root has no self-management need here.
+//
+// Since is the wall-clock time of the holder's most recent wire-visible owner
+// transition (commitTransition sets it on every committed transfer). A device
+// holder always implies a committed acquire transition, so Since is real data;
+// the zero value only occurs for entries that never committed a transition
+// (not reachable for a listed device hold).
+type SessionControlHold struct {
+	SessionID  contract.SessionID
+	DeviceID   contract.DeviceID
+	DeviceName string
+	InGrace    bool
+	Since      time.Time
+}
+
+// ListSessionHolds enumerates all sessions currently held by a remote device
+// (connected or grace), in canonical SessionID order. Pure state observation:
+// no events, no raw I/O, no readiness gate (an unready/latched arbiter has no
+// device holders anyway). Tombstoned entries are skipped. Lock discipline:
+// tableMu only for pointer snapshot, then one entry's stateMu at a time.
+func (a *ControlArbiter) ListSessionHolds() []SessionControlHold {
+	a.tableMu.RLock()
+	entries := make([]*controlEntry, 0, len(a.entries))
+	for _, e := range a.entries {
+		entries = append(entries, e)
+	}
+	a.tableMu.RUnlock()
+
+	holds := make([]SessionControlHold, 0, len(entries))
+	for _, e := range entries {
+		e.stateMu.Lock()
+		if !e.removed && e.owner.kind == ownerDevice {
+			holds = append(holds, SessionControlHold{
+				SessionID:  e.sessionID,
+				DeviceID:   e.owner.deviceID,
+				DeviceName: e.owner.deviceName,
+				InGrace:    e.owner.phase == deviceGrace,
+				Since:      e.holderSince,
+			})
+		}
+		e.stateMu.Unlock()
+	}
+	sortSessionControlHolds(holds)
+	return holds
+}
+
+// sortSessionControlHolds orders holds canonically by SessionID (stable listing
+// for the desktop UI; same ordering discipline as ReleaseRevokedDevice).
+func sortSessionControlHolds(holds []SessionControlHold) {
+	for i := 0; i < len(holds); i++ {
+		for j := i + 1; j < len(holds); j++ {
+			if holds[i].SessionID > holds[j].SessionID {
+				holds[i], holds[j] = holds[j], holds[i]
+			}
+		}
+	}
+}
+
+// ForceReleaseControl is the desktop root's authoritative reclaim of one
+// session's control: it executes the in-process chain
+// TakeDesktop(Wails authority) → ReleaseDesktop(same authority).
+//
+// Semantics:
+//   - A device holder (connected or grace) is preempted: the takeover event is
+//     committed first (device viewers see "desktop/takeover" — 手机端提示
+//     「桌面端取得控制权」), then the immediate release commits the released
+//     event and lands on ownerNone, so the device may re-acquire. The final
+//     state MUST be ownerNone — never a lingering desktop holder (which would
+//     409 the device forever).
+//   - Owner already none → idempotent no-op success (zero events emitted).
+//   - Unknown/removed session → DenySessionNotFound.
+//   - A failure at any chain step (e.g. a health latch) is returned honestly —
+//     never swallowed. A mid-chain failure can only leave a desktop holder via
+//     the fail-closed health latch, which denies the whole gate anyway.
+//
+// Both steps commit through commitTransition — device-side event visibility is
+// part of the contract, not bypassed. After TakeDesktop the holder is desktop,
+// which closes the window in which a new device could acquire before the
+// release. Safety: this authority is the process-local Wails root (physical
+// host owner); it never accepts remote input and performs no raw I/O.
+func (a *ControlArbiter) ForceReleaseControl(sessionID contract.SessionID) *ControlGateError {
+	if err := a.checkReady(); err != nil {
+		return err
+	}
+	entry := a.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return &ControlGateError{Kind: DenySessionNotFound}
+	}
+	// Idempotent fast path: owner already none → no-op success (zero events).
+	entry.stateMu.Lock()
+	current := entry.owner.kind
+	entry.stateMu.Unlock()
+	if current == ownerNone {
+		return nil
+	}
+	authority := MintDesktopAuthority()
+	if gErr := a.TakeDesktop(authority, sessionID); gErr != nil {
+		return gErr
+	}
+	if gErr := a.ReleaseDesktop(authority, sessionID); gErr != nil {
+		return gErr
 	}
 	return nil
 }

@@ -53,6 +53,13 @@ type ControlGate interface {
 	SnapshotForDevice(sessionID contract.SessionID, viewer contract.DeviceID) (contract.ControlSnapshot, error)
 	TakeDesktop(ctx context.Context, authority *DesktopAuthority, sessionID contract.SessionID) error
 	ReleaseDesktop(ctx context.Context, authority *DesktopAuthority, sessionID contract.SessionID) error
+	// ListSessionHolds enumerates device-held sessions for the desktop
+	// management view (none/desktop holders are not listed).
+	ListSessionHolds() []SessionControlHold
+	// ForceReleaseControl reclaims one session from its holder via the desktop
+	// Wails authority chain (takeover → release; final owner none; the device
+	// may re-acquire). Idempotent when the owner is already none.
+	ForceReleaseControl(sessionID contract.SessionID) error
 
 	// --- Desktop PTY / lifecycle (intentional = take-first) ---
 	DoDesktopPTY(ctx context.Context, authority *DesktopAuthority, sessionID contract.SessionID, op PTYOperation, mutate RawEffect) error
@@ -166,6 +173,14 @@ func (g *controlGate) TakeDesktop(ctx context.Context, authority *DesktopAuthori
 
 func (g *controlGate) ReleaseDesktop(ctx context.Context, authority *DesktopAuthority, sessionID contract.SessionID) error {
 	return unwrapErr(g.arbiter.ReleaseDesktop(authority, sessionID))
+}
+
+func (g *controlGate) ListSessionHolds() []SessionControlHold {
+	return g.arbiter.ListSessionHolds()
+}
+
+func (g *controlGate) ForceReleaseControl(sessionID contract.SessionID) error {
+	return unwrapErr(g.arbiter.ForceReleaseControl(sessionID))
 }
 
 // ---------------------------------------------------------------------------

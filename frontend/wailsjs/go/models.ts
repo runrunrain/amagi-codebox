@@ -2307,6 +2307,24 @@ export namespace main {
 	        this.hostSummaryDegraded = source["hostSummaryDegraded"];
 	    }
 	}
+	export class SessionControlHoldView {
+	    sessionID: string;
+	    deviceID: string;
+	    deviceName: string;
+	    inGrace: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionControlHoldView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionID = source["sessionID"];
+	        this.deviceID = source["deviceID"];
+	        this.deviceName = source["deviceName"];
+	        this.inGrace = source["inGrace"];
+	    }
+	}
 	export class SystemProxyStatus {
 	    supported: boolean;
 	    enabled: boolean;

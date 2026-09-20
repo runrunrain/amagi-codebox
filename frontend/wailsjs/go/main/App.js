@@ -286,6 +286,10 @@ export function GetSession(arg1) {
   return window['go']['main']['App']['GetSession'](arg1);
 }
 
+export function GetSessionControlHolds() {
+  return window['go']['main']['App']['GetSessionControlHolds']();
+}
+
 export function GetSessionWebUI(arg1) {
   return window['go']['main']['App']['GetSessionWebUI'](arg1);
 }
@@ -440,6 +444,10 @@ export function QuickLaunch(arg1, arg2, arg3) {
 
 export function RegenerateRemoteToken() {
   return window['go']['main']['App']['RegenerateRemoteToken']();
+}
+
+export function ReleaseSessionControl(arg1) {
+  return window['go']['main']['App']['ReleaseSessionControl'](arg1);
 }
 
 export function RemoteClientAcquireControl(arg1) {
