@@ -7,6 +7,10 @@ package remote
 //     Bearer 覆盖式注入）、WS upgrade 子协议透传往返、/api/input 控制门
 //     （无控制权 403 / 持有控制权放行 / 桌面持有时 403）、probing→503 与
 //     其余非 available→404、legacy 无安全面 fail-closed 404；
+//   - 错误信封（根因修复 A）：iframe 数据面本地 JSON 错误均为协议兼容
+//     信封（v1 字段齐全 + "v":1 + "error"==code，见
+//     TestWebUIProxy_ErrorEnvelope），v1 REST 面错误体保持冻结无附加字段
+//     （TestV1WebUIStatus_ErrorBodyFrozen）；
 //   - GET /api/remote/v1/session/{id}/webui 状态端点：形状（available 携带
 //     fragment url / probing 无 url）、405/401/400/403 门、契约校验、冻结
 //     10 端点清单不受影响；
@@ -20,6 +24,7 @@ import (
 	"context"
 	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -299,6 +304,7 @@ type webuiProxyFixture struct {
 	app      *webuiProxyTestApp
 	cookie   *http.Cookie
 	deviceID string
+	clk      *secFakeClock
 }
 
 func newWebUIProxyFixture(t *testing.T) *webuiProxyFixture {
@@ -333,6 +339,7 @@ func newWebUIProxyFixture(t *testing.T) *webuiProxyFixture {
 		app:      app,
 		cookie:   rr.Result().Cookies()[0],
 		deviceID: string(resp.Device.ID),
+		clk:      clk,
 	}
 }
 
@@ -1021,6 +1028,213 @@ func TestWebUIProxy_QueryStringPassthrough(t *testing.T) {
 	}
 }
 
+// assertWebUIPlaneEnvelope asserts the protocol-compatible iframe-data-plane
+// error envelope (root cause A): the frozen v1 fields all present and non-empty,
+// plus the two additive top-level fields "v":1 and "error" == code. Token
+// red-line is re-checked here for every local error body.
+func assertWebUIPlaneEnvelope(t *testing.T, body []byte, wantCode contract.ErrorCode) {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("plane error body is not JSON: %v (%s)", err, body)
+	}
+	if v, ok := env["v"].(float64); !ok || v != 1 {
+		t.Fatalf("plane error body v=%v want 1: %s", env["v"], body)
+	}
+	if env["error"] != string(wantCode) {
+		t.Fatalf("plane error body error=%v want %q: %s", env["error"], wantCode, body)
+	}
+	if env["code"] != string(wantCode) {
+		t.Fatalf("plane error body code=%v want %q: %s", env["code"], wantCode, body)
+	}
+	// 原有 v1 字段齐全（requestId/layer/message/actionHint 均为非空字符串）。
+	for _, k := range []string{"requestId", "layer", "message", "actionHint"} {
+		if s, ok := env[k].(string); !ok || s == "" {
+			t.Fatalf("plane error body field %q missing/empty: %s", k, body)
+		}
+	}
+	if strings.Contains(string(body), webuiTestToken) {
+		t.Fatalf("token leaked in plane error body: %s", body)
+	}
+}
+
+// TestWebUIProxy_ErrorEnvelope（根因修复 A）：iframe 数据面本地 JSON 错误
+// 统一为协议兼容信封（冻结 v1 字段 + "v":1 + "error"==code）。amagi-pi
+// webui 前端对每个 fetch 响应硬校验 json.v === 1，裸 v1 错误体会被判为
+// 协议违规（"invalid protocol response"）并断开 WS，真实错误码被掩盖。
+// 覆盖全部本地错误类别：
+//   - 无鉴权 401（auth.unpaired，无 cookie / 无 token）；
+//   - raw backend token 写面 403（control.forbidden，零 principal 通道）；
+//   - plane probing 503（service.down）；
+//   - plane unavailable 404（session.not_found）；
+//   - 后端不可达 503（service.down，ReverseProxy ErrorHandler）。
+func TestWebUIProxy_ErrorEnvelope(t *testing.T) {
+	f := newWebUIProxyFixture(t)
+	f.markAvailable("sess-env-auth")
+	f.markAvailable("sess-env-raw")
+	f.app.setInfo("sess-env-probe", SessionWebUIInfo{State: "probing"})
+	f.app.setInfo("sess-env-unav", SessionWebUIInfo{State: "unavailable"})
+	f.markAvailable("sess-env-dead")
+
+	// 1) 无鉴权（无 cookie、无 token）→ 401 auth.unpaired 信封。
+	req, _ := http.NewRequest(http.MethodGet, f.ts.URL+"/webui/sess-env-auth/api/info", nil)
+	resp, err := f.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no-auth: status=%d body=%s", resp.StatusCode, raw)
+	}
+	assertWebUIPlaneEnvelope(t, raw, contract.ErrorCodeAuthUnpaired)
+
+	// 2) raw backend token 写面（零 principal 兼容通道）→ 403 control.forbidden
+	//    信封；错误面同样可被 opaque iframe 读到（ACAO:null 行为保持）。
+	req, _ = http.NewRequest(http.MethodPost, f.ts.URL+"/webui/sess-env-raw/api/input", nil)
+	req.Header.Set("Authorization", "Bearer "+webuiTestToken)
+	req.Header.Set("Origin", "null")
+	resp, err = f.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("raw-token write face: status=%d body=%s", resp.StatusCode, raw)
+	}
+	assertWebUIPlaneEnvelope(t, raw, contract.ErrorCodeControlForbidden)
+	if ao := resp.Header.Get("Access-Control-Allow-Origin"); ao != "null" {
+		t.Fatalf("local 403 must keep ACAO:null readability: %q", ao)
+	}
+
+	// 3) plane probing → 503 service.down 信封。
+	var rawS string
+	resp, rawS = f.do(http.MethodGet, "/webui/sess-env-probe/api/info", "")
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("probing: status=%v body=%s", resp, rawS)
+	}
+	assertWebUIPlaneEnvelope(t, []byte(rawS), contract.ErrorCodeServiceDown)
+
+	// 4) plane unavailable → 404 session.not_found 信封。
+	resp, rawS = f.do(http.MethodGet, "/webui/sess-env-unav/api/info", "")
+	if resp == nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unavailable: status=%v body=%s", resp, rawS)
+	}
+	assertWebUIPlaneEnvelope(t, []byte(rawS), contract.ErrorCodeSessionNotFound)
+
+	// 5) 后端不可达（连接被拒）→ ErrorHandler 503 service.down 信封。
+	//    （放在最后：关闭共享 fake backend 后该 fixture 的后端不再可用。）
+	//    diting F-2 补强：请求带 Origin:null（sandbox iframe 形态）+ raw token
+	//    读面通道，断言 ErrorHandler 路径的 allowOpaqueOriginRead 真注入 ACAO:null
+	//    ——错误必须仍可被 opaque iframe 读到，而非仅同源可见。
+	f.backend.ts.Close()
+	req, _ = http.NewRequest(http.MethodGet, f.ts.URL+"/webui/sess-env-dead/api/info", nil)
+	req.Header.Set("Authorization", "Bearer "+webuiTestToken)
+	req.Header.Set("Origin", "null")
+	resp, err = f.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("backend unreachable: status=%d body=%s", resp.StatusCode, raw)
+	}
+	assertWebUIPlaneEnvelope(t, raw, contract.ErrorCodeServiceDown)
+	if ao := resp.Header.Get("Access-Control-Allow-Origin"); ao != "null" {
+		t.Fatalf("backend-unreachable error must keep ACAO:null for opaque iframe, got %q", ao)
+	}
+}
+
+// TestWebUIProxy_AuthMirrorEnvelopes（diting F-2/F-3 补强）：webUIProxyEnforceAuth
+// 镜像 enforceAuthPolicy 的全部失败分支，逐分支锁定「错误信封形状 + 清 cookie 副作用」
+// ——镜像映射是双维护点（F-3），本表驱动作为 parity 児底：任一分支的码值/状态码/副作用
+// 回归都会在此显式失败，防止与共享 v1 面漂移。
+func TestWebUIProxy_AuthMirrorEnvelopes(t *testing.T) {
+	// 构造一个格式合法但摘要必不匹配的 cookie（id/secret 长度/编码全对）。
+	badID := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
+	badSecret := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	unpairedCookie := &http.Cookie{Name: deviceCookieName, Value: "v1." + badID + "." + badSecret}
+
+	cases := []struct {
+		name     string
+		code     contract.ErrorCode
+		status   int
+		setup    func(t *testing.T, f *webuiProxyFixture) *http.Cookie
+		wantClearedCookie bool
+	}{
+		{
+			name:               "malformed cookie shape",
+			code:               contract.ErrorCodeAuthUnpaired,
+			status:             http.StatusUnauthorized,
+			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
+				return &http.Cookie{Name: deviceCookieName, Value: "v1.not-base64!!"}
+			},
+			wantClearedCookie: true,
+		},
+		{
+			name:               "well-formed cookie unknown device",
+			code:               contract.ErrorCodeAuthUnpaired,
+			status:             http.StatusUnauthorized,
+			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
+				return unpairedCookie
+			},
+			wantClearedCookie: true,
+		},
+		{
+			name:               "credential window expired",
+			code:               contract.ErrorCodeAuthWindowExpired,
+			status:             http.StatusUnauthorized,
+			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
+				f.clk.Advance(31 * 24 * time.Hour) // CredentialTTL=30d (device.go) + 1d
+				return f.cookie
+			},
+			wantClearedCookie: true,
+		},
+		{
+			name:               "device revoked",
+			code:               contract.ErrorCodeAuthRevoked,
+			status:             http.StatusUnauthorized,
+			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
+				if _, err := f.srv.RevokeDevice(f.deviceID, true); err != nil {
+					t.Fatalf("revoke: %v", err)
+				}
+				return f.cookie
+			},
+			wantClearedCookie: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWebUIProxyFixture(t)
+			f.markAvailable("sess-auth-mirror")
+			c := tc.setup(t, f)
+			req, _ := http.NewRequest(http.MethodGet, f.ts.URL+"/webui/sess-auth-mirror/api/info", nil)
+			req.AddCookie(c)
+			resp, err := f.ts.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status=%d want %d body=%s", resp.StatusCode, tc.status, raw)
+			}
+			assertWebUIPlaneEnvelope(t, raw, tc.code)
+			var cleared bool
+			for _, sc := range resp.Cookies() {
+				if sc.Name == deviceCookieName && sc.MaxAge < 0 {
+					cleared = true
+				}
+			}
+			if cleared != tc.wantClearedCookie {
+				t.Fatalf("clear-cookie side effect: got=%v want=%v", cleared, tc.wantClearedCookie)
+			}
+		})
+	}
+}
+
 // TestWebUIProxy_LegacyServerFailClosed：无安全面（legacy NewServer）时
 // 代理面 fail-closed 404。
 func TestWebUIProxy_LegacyServerFailClosed(t *testing.T) {
@@ -1140,11 +1354,27 @@ func TestV1WebUIStatus_Gates(t *testing.T) {
 		t.Fatalf("Allow=%q", allow)
 	}
 
+	// 无 cookie 401：v1 错误体不得携带 iframe 数据面的附加字段（v/error）。
 	noAuth := webuiStatusReq(f, http.MethodGet, webuiStatusPath("sess-x"))
 	noAuth.Header.Del("Cookie")
 	rr = rec(h, noAuth)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("no cookie: %d", rr.Code)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := env["v"]; ok {
+		t.Fatalf("v1 REST error body must NOT carry \"v\" (iframe-plane-only field): %s", rr.Body.String())
+	}
+	if _, ok := env["error"]; ok {
+		t.Fatalf("v1 REST error body must NOT carry \"error\" (iframe-plane-only field): %s", rr.Body.String())
+	}
+	for _, k := range []string{"requestId", "code", "layer", "message", "actionHint"} {
+		if s, ok := env[k].(string); !ok || s == "" {
+			t.Fatalf("v1 error body field %q missing/empty: %s", k, rr.Body.String())
+		}
 	}
 
 	rq := webuiStatusReq(f, http.MethodGet, webuiStatusPath("sess-x")+"?x=1")

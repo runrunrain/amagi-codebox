@@ -17,7 +17,12 @@
  *     - 在 Web 平面视图中，菜单提供切至终端仿真和时间线选项；
  *   · 状态降级与迁移：
  *     - probing → available 变化时自动进入 Web 会话平面；
- *     - 会话 ended 时 WebPlaneView 显示结束提示，点击切回终端可切到终端面。
+ *     - 会话 ended 时 WebPlaneView 显示结束提示，点击切回终端可切到终端面；
+ *   · 控制权引导（UX 断层补齐，根因修复 B）：
+ *     - control.state !== 'you'（desktop/other/none）且 webuiUrl 存在、会话 running 时
+ *       显示「Web 平面输入需要会话控制权」引导条与「接管控制」按钮；
+ *     - 点击接管按钮调用 store.acquire；WS control.state 事件驱动变为 you 后引导条消失；
+ *     - 非 webplane 视图 / webuiUrl 为空 / 会话非 running 时引导条不出现。
  * ---------------------------------------------------------------------------
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -172,7 +177,7 @@ function mockEndpoints(options: {
   );
 }
 
-function attachedEvent() {
+function attachedEvent(control: { state: string; deviceName?: string } = { state: 'you' }) {
   return {
     type: 'session.attached',
     requestId: 'req-a',
@@ -185,14 +190,18 @@ function attachedEvent() {
       connection: { state: 'connected' },
       auth: { state: 'authorized' },
       session: { state: 'running' },
-      control: { state: 'you' },
+      control,
       history: { state: 'continuous' },
     },
     inputAckMode: 'session-window-v1',
   };
 }
 
-async function mountWithRoute(pinia: Pinia, initialQuery: Record<string, string> = {}) {
+async function mountWithRoute(
+  pinia: Pinia,
+  initialQuery: Record<string, string> = {},
+  opts: { attachedControl?: { state: string; deviceName?: string } } = {},
+) {
   const router: Router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -209,7 +218,7 @@ async function mountWithRoute(pinia: Pinia, initialQuery: Record<string, string>
   const store = useWorkspaceStore();
   const client = FakeWsClient.instances[FakeWsClient.instances.length - 1];
   if (client) {
-    client.opts.onEvent(attachedEvent());
+    client.opts.onEvent(attachedEvent(opts.attachedControl));
     client.opts.onStateChange({ state: 'attached', attempt: 0, nextDelayMs: null, terminalReason: null });
     await flushPromises();
   }
@@ -389,5 +398,144 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
     await flushPromises();
 
     expect(router.currentRoute.value.query.view).toBe('terminal');
+  });
+
+  // --- 控制权引导（UX 断层补齐，根因修复 B）：iframe 内 POST /api/input 需要会话
+  //     控制权，Web 平面视图隐藏外层 ComposerBar，视图内补显式提示 + 一键接管 ---
+
+  it('Web 平面视图 + control 非 you（desktop）时显示控制权引导条与接管按钮，副行提示桌面端正在控制', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'desktop' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'desktop' } });
+
+    expect(wrapper.find('[data-testid="webplane-host"]').exists()).toBe(true);
+    const hint = wrapper.find('[data-testid="webplane-control-hint"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain('Web 平面输入需要会话控制权');
+    expect(hint.text()).toContain('桌面端正在控制');
+    expect(wrapper.find('[data-testid="webplane-acquire-btn"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="webplane-acquire-btn"]').text()).toBe('接管控制');
+  });
+
+  it('control 为 none 态时引导条副行提示当前无人持有控制权', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'none' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'none' } });
+
+    const hint = wrapper.find('[data-testid="webplane-control-hint"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain('当前无人持有控制权');
+    expect(wrapper.find('[data-testid="webplane-acquire-btn"]').exists()).toBe(true);
+  });
+
+  it('control 为 other 态时引导条副行提示控制权所在设备名', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'other', deviceName: '客厅平板' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper } = await mountWithRoute(
+      pinia,
+      { view: 'webplane' },
+      { attachedControl: { state: 'other', deviceName: '客厅平板' } },
+    );
+
+    const hint = wrapper.find('[data-testid="webplane-control-hint"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain('控制权在 客厅平板');
+    expect(wrapper.find('[data-testid="webplane-acquire-btn"]').exists()).toBe(true);
+  });
+
+  it('点击接管控制按钮调用 store.acquire', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'none' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper, store } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'none' } });
+
+    const acquireSpy = vi.spyOn(store, 'acquire').mockResolvedValue(true);
+    await wrapper.find('[data-testid="webplane-acquire-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(acquireSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('WS control.state 事件驱动变为 you 后引导条消失', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'desktop' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'desktop' } });
+
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(true);
+
+    // acquire 成功后由 WS control.state 事件驱动 state==='you'（真实链路）
+    const client = FakeWsClient.instances[FakeWsClient.instances.length - 1];
+    client.opts.onEvent({ type: 'control.state', state: 'you' });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+  });
+
+  it('非 webplane 视图（terminal）即使 control 非 you 也不显示引导条', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'desktop' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'terminal' }, { attachedControl: { state: 'desktop' } });
+
+    expect(wrapper.find('[data-testid="terminal-host"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+  });
+
+  it('webuiUrl 为空（probing 探测中）时不显示引导条', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'desktop' } },
+      webui: { state: 'probing' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'desktop' } });
+
+    expect(wrapper.find('[data-testid="webplane-probing"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+  });
+
+  it('webui unavailable（无 URL）时不显示引导条', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'desktop' } },
+      webui: { state: 'unavailable' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'desktop' } });
+
+    expect(wrapper.find('[data-testid="webplane-unavailable"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+  });
+
+  it('会话非 running 时不显示引导条', async () => {
+    mockEndpoints({
+      detail: { cliType: 'pi', control: { state: 'desktop' } },
+      webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    });
+
+    const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'desktop' } });
+
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(true);
+
+    // WS session.state 事件驱动会话离开 running（真实链路）
+    const client = FakeWsClient.instances[FakeWsClient.instances.length - 1];
+    client.opts.onEvent({ type: 'session.state', state: 'stopped' });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
   });
 });

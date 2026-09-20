@@ -92,6 +92,26 @@ const isTerminalView = computed(() => activeView.value === 'terminal');
 const isWebPlaneView = computed(() => activeView.value === 'webplane');
 const isTimelineView = computed(() => activeView.value === 'timeline');
 
+// --- Web 平面控制权引导（UX 断层补齐）：iframe 内 POST /api/input 需要会话控制权
+// （写面控制门，设备未持权恒 403 control.forbidden），而该视图隐藏外层
+// ComposerBar（页面自带输入台）——视图内补显式提示 + 一键接管入口。 ---
+// 条件：Web 平面视图 + webui 有 URL + 会话 running + 本设备未持控制权。
+// acquire 成功后由 WS control.state 事件驱动 state==='you'，条件自然失效消失。
+const webplaneControlHintVisible = computed(
+  () =>
+    isWebPlaneView.value &&
+    !!webuiUrl.value &&
+    store.sessionState === 'running' &&
+    store.control.state !== 'you',
+);
+
+// 三态副行文案（对齐 store.writeBlockReason 既有风格：desktop/other/none 细分）
+const webplaneControlHintDetail = computed<string>(() => {
+  if (store.control.state === 'desktop') return '桌面端正在控制';
+  if (store.control.state === 'other') return `控制权在 ${store.control.deviceName}`;
+  return '当前无人持有控制权';
+});
+
 // 诊断视图语义：仅非 TUI CLI 主动开启终端网格时标记为「诊断视图」（PG-04 回归保持）
 const isDiagnostic = computed(() => !isTuiCli.value && isTerminalView.value);
 const menuOpen = ref(false);
@@ -440,6 +460,28 @@ function jumpToGap(): void {
 
     <!-- Web 会话平面：嵌入 pi webui（pi/omp 默认/首选，C2/C4） -->
     <template v-else-if="activeView === 'webplane'">
+      <!-- 控制权引导条（条幅在上、iframe 在下，不遮挡 iframe 输入台；
+           接管为显式用户动作，失败走 store 既有 controlNotice 展示） -->
+      <div
+        v-if="webplaneControlHintVisible"
+        class="banner banner--warning webplane-control-hint"
+        role="status"
+        aria-label="Web 平面控制权提示"
+        data-testid="webplane-control-hint"
+      >
+        <div class="banner-body">
+          <strong>Web 平面输入需要会话控制权</strong>
+          <span>{{ webplaneControlHintDetail }}</span>
+        </div>
+        <button
+          type="button"
+          class="banner-action"
+          data-testid="webplane-acquire-btn"
+          @click="store.acquire()"
+        >
+          接管控制
+        </button>
+      </div>
       <!-- probing 探测加载态（0.5–1s 轮询中） -->
       <div
         v-if="webuiState === 'probing'"
@@ -751,6 +793,11 @@ function jumpToGap(): void {
   font-size: 11px;
   font-weight: 600;
   vertical-align: middle;
+}
+
+.webplane-control-hint {
+  /* 引导条与 iframe 之间收紧间距，内容区让位输入台；左右沿用 banner safe-area */
+  margin-bottom: 0;
 }
 
 .webplane-probing {

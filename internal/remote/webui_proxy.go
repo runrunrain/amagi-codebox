@@ -30,6 +30,15 @@ package remote
 // 要求当前控制（plane token 解析出的绑定设备即请求者身份）；宁紧勿松。
 // 本地生成的错误响应（401/403/503）在 Origin:null 时携带 ACAO:null，
 // 确保 opaque iframe 能读到真实错误码而非被浏览器掩盖成 network_error。
+//
+// 错误信封（根因修复 A）：iframe 数据面本地 JSON 错误统一用协议兼容信封
+// writeWebUIPlaneError 写出——在冻结的 v1 REST 字段之上注入两个附加顶层
+// 字段 "v":1 与 "error":"<code>"。amagi-pi webui 前端对每个 fetch 响应
+// 硬校验 json.v === 1（含错误响应）：裸 v1 错误体会被判为协议违规
+//（"invalid protocol response"），真实错误码被完全掩盖；带上 v/error 后
+// 前端走自身的错误码映射路径。仅 iframe 数据面如此——v1 REST 面
+//（writeV1Error / contract.MarshalAPIError）保持冻结不动，故在本地包装
+// 注入而非改共享函数。
 
 import (
 	"crypto/rand"
@@ -43,6 +52,8 @@ import (
 	"sync"
 
 	"amagi-codebox/internal/remote/contract"
+
+	"github.com/tidwall/sjson"
 )
 
 // webuiBackendWriteFaces is the pi webui plane's session WRITE surface —
@@ -244,6 +255,76 @@ func allowOpaqueOriginRead(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeWebUIPlaneError writes a LOCALLY-generated proxy error for the iframe
+// data plane (/webui/{sid}/...) as the protocol-compatible envelope: the
+// frozen v1 REST fields (requestId/code/layer/message/actionHint) PLUS two
+// additive top-level fields — "v":1 and "error":"<code>".
+//
+// Root cause A: the amagi-pi webui frontend hard-checks `json.v === 1` on
+// every fetch response, error responses included. A bare v1 error body reads
+// as a protocol violation there ("invalid protocol response" + WS teardown)
+// and masks the real 401/403/503 code; with v/error present the frontend maps
+// the code through its own error path instead. Only the iframe data plane
+// uses this envelope: the v1 REST surface (and the shared writeV1Error /
+// contract.MarshalAPIError) stays frozen, so this local wrapper re-marshals
+// the validated APIError and injects the two fields surgically (repo
+// convention: tidwall gjson/sjson). Bodies never carry tokens or backend
+// internals (same red line as writeV1Error).
+func writeWebUIPlaneError(w http.ResponseWriter, reqID contract.RequestID, status int, code contract.ErrorCode, layer contract.ErrorLayer, msg string, hint contract.ActionHint) {
+	body, err := contract.MarshalAPIError(contract.APIError{
+		RequestID: reqID, Code: code, Layer: layer, Message: msg, ActionHint: hint,
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if body, err = sjson.SetBytes(body, "v", 1); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if body, err = sjson.SetBytes(body, "error", string(code)); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// webUIProxyEnforceAuth mirrors enforceAuthPolicy's device-cookie branch
+// (same AuthenticateRequest call, same failure mapping and cookie-clearing
+// side effects) but writes errors through writeWebUIPlaneError: the iframe
+// data plane needs the protocol-compatible envelope while the shared v1
+// surface keeps its frozen body shape. It never reflects raw
+// cookie/device/error material.
+func (s *Server) webUIProxyEnforceAuth(w http.ResponseWriter, r *http.Request, reqID contract.RequestID) (v1Principal, bool) {
+	principal, fail := s.v1sec.deviceAuth.AuthenticateRequest(r)
+	if fail == 0 {
+		return principal, true
+	}
+	switch fail {
+	case authMissing:
+		writeWebUIPlaneError(w, reqID, http.StatusUnauthorized, contract.ErrorCodeAuthUnpaired,
+			contract.ErrorLayerAuth, "device not paired", contract.ActionHintRePair)
+	case authExpired:
+		http.SetCookie(w, clearDeviceCookie(r))
+		writeWebUIPlaneError(w, reqID, http.StatusUnauthorized, contract.ErrorCodeAuthWindowExpired,
+			contract.ErrorLayerAuth, "device credential expired", contract.ActionHintRePair)
+	case authRevoked:
+		http.SetCookie(w, clearDeviceCookie(r))
+		writeWebUIPlaneError(w, reqID, http.StatusUnauthorized, contract.ErrorCodeAuthRevoked,
+			contract.ErrorLayerAuth, "device revoked", contract.ActionHintRePair)
+	case authMalformed, authUnpaired:
+		http.SetCookie(w, clearDeviceCookie(r))
+		writeWebUIPlaneError(w, reqID, http.StatusUnauthorized, contract.ErrorCodeAuthUnpaired,
+			contract.ErrorLayerAuth, "device not paired", contract.ActionHintRePair)
+	default: // authStoreDown
+		writeWebUIPlaneError(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
+			contract.ErrorLayerConnection, "security state unavailable", contract.ActionHintCheckDesktop)
+	}
+	return v1Principal{}, false
+}
+
 // handleWebUIProxy serves /webui/{sessionID}/<backend-path>. Order:
 // security surface → sid whitelist (404, no oracle) → CORS preflight exemption
 // (204, no auth) → static-plane exemption (no cookie auth; see below) →
@@ -301,9 +382,10 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 	reqID, idOK := resolveRequestID(r)
 	if !idOK {
 		// G2 Info-06：对齐 v1 fail-closed —— crypto/rand 失败时 503，不再
-		// fallbackRequestID 继续服务（routes_v1.go 同款语义）。
+		// fallbackRequestID 继续服务（routes_v1.go 同款语义）。错误信封走
+		// writeWebUIPlaneError（iframe 数据面协议兼容）。
 		w.Header().Set(contract.RequestIDHeader, string(fallbackRequestID))
-		writeV1Error(w, fallbackRequestID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
+		writeWebUIPlaneError(w, fallbackRequestID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
 			contract.ErrorLayerConnection, "security state unavailable", contract.ActionHintCheckDesktop)
 		return
 	}
@@ -341,7 +423,10 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		if hasDeviceCookie {
 			var authOK bool
-			principal, authOK = s.enforceAuthPolicy(w, r, deviceCookie, reqID)
+			// 协议兼容信封（根因修复 A）：webui 数据面的鉴权错误走本地镜像
+			// webUIProxyEnforceAuth（同一判定与清 cookie 副作用），错误体注入
+			// v/error；v1 REST 面不受影响。
+			principal, authOK = s.webUIProxyEnforceAuth(w, r, reqID)
 			if !authOK {
 				return
 			}
@@ -363,7 +448,7 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 				// must stay readable for the opaque iframe (no CORS masking).
 				allowOpaqueOriginRead(w, r)
 				var authOK bool
-				principal, authOK = s.enforceAuthPolicy(w, r, deviceCookie, reqID)
+				principal, authOK = s.webUIProxyEnforceAuth(w, r, reqID)
 				if !authOK {
 					return
 				}
@@ -371,7 +456,7 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 		} else {
 			allowOpaqueOriginRead(w, r)
 			var authOK bool
-			principal, authOK = s.enforceAuthPolicy(w, r, deviceCookie, reqID) // canonical 401/503 mapping
+			principal, authOK = s.webUIProxyEnforceAuth(w, r, reqID) // canonical 401/503 mapping, plane envelope
 			if !authOK {
 				return
 			}
@@ -385,7 +470,7 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 		// 本地 403 必须可被 opaque iframe 读到（无 CORS 头会被浏览器掩盖成
 		// network_error，用户看到的是误导性的「连接中断，消息未发送」）。
 		allowOpaqueOriginRead(w, r)
-		writeV1Error(w, reqID, http.StatusForbidden, contract.ErrorCodeControlForbidden,
+		writeWebUIPlaneError(w, reqID, http.StatusForbidden, contract.ErrorCodeControlForbidden,
 			contract.ErrorLayerControl, "control required for session write", contract.ActionHintRequestControl)
 		return
 	}
@@ -409,14 +494,15 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 // writeWebUIPlaneUnavailable maps non-available plane states to fixed proxy
 // responses: probing → 503 service.down (retryable — the plane may still come
 // up); unavailable/ended/unknown → 404 session.not_found (the plane for this
-// session does not exist / is gone). Bodies never carry the token.
+// session does not exist / is gone). Bodies never carry the token; both use
+// the protocol-compatible plane envelope (writeWebUIPlaneError).
 func (s *Server) writeWebUIPlaneUnavailable(w http.ResponseWriter, reqID contract.RequestID, sessionID, state string) {
 	if state == string(contract.WebUIPlaneStateProbing) {
-		writeV1Error(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
+		writeWebUIPlaneError(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
 			contract.ErrorLayerConnection, "webui plane not ready", contract.ActionHintRetry)
 		return
 	}
-	writeV1Error(w, reqID, http.StatusNotFound, contract.ErrorCodeSessionNotFound,
+	writeWebUIPlaneError(w, reqID, http.StatusNotFound, contract.ErrorCodeSessionNotFound,
 		contract.ErrorLayerSession, "webui plane not available", contract.ActionHintRetry)
 }
 
@@ -517,7 +603,7 @@ func (s *Server) serveWebUIReverseProxy(w http.ResponseWriter, r *http.Request, 
 				s.log.Debug("remote", "webui 代理后端不可达", "session="+sessionID)
 			}
 			allowOpaqueOriginRead(w, r)
-			writeV1Error(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
+			writeWebUIPlaneError(w, reqID, http.StatusServiceUnavailable, contract.ErrorCodeServiceDown,
 				contract.ErrorLayerConnection, "webui plane unreachable", contract.ActionHintRetry)
 		},
 	}

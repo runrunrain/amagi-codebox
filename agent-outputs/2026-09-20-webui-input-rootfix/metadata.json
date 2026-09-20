@@ -1,0 +1,26 @@
+{
+  "title": "webui 远程输入 invalid protocol response 三路根因修复",
+  "date": "2026-09-20",
+  "type": "fix-delivery",
+  "leader": "taibai-session",
+  "repos": {
+    "amagi-codebox": "/Users/maorun/maorun-workpace/amagi-codebox",
+    "amagi-pi": "/Users/maorun/maorun-workpace/amagi-pi"
+  },
+  "tasks": [
+    { "id": "f0e5b986", "agent": "luban", "task": "T1 代理错误信封协议兼容化", "acceptance": "accepted", "receipt": "receipt-dfa6d32b-c30c-4618-a8e0-005aefd3d630" },
+    { "id": "5830ab04", "agent": "luban", "task": "T2 amagi-pi webui 输入错误协议根治", "acceptance": "accepted", "receipt": "receipt-7ce2c777-2fbf-4395-ab2e-11a00a24d2ec" },
+    { "id": "9716721e", "agent": "luban", "task": "T3 移动端 webplane 控制权引导", "acceptance": "accepted", "receipt": "receipt-97f5446e-342b-4708-95ff-b9597ae0e215" },
+    { "id": "74499d06", "agent": "diting", "task": "集成审核（full）", "acceptance": "accepted", "verdict": "PASS_WITH_MINOR", "receipt": "receipt-a64f9d34-904-4774-91cc-c482c79362a4" }
+  ],
+  "documents": [
+    { "path": "delivery-summary.md", "role": "交付总结（含 F-1 补记 protocol.ts）" },
+    { "path": "diting-integration-review.md", "role": "diting 集成审核报告" }
+  ],
+  "verification": {
+    "amagi-codebox": "go vet ./... + go test ./internal/remote -count=1 全绿",
+    "amagi-pi": "typecheck + depcruise + npm test 2755 pass + webui vitest 223 pass",
+    "mobile": "vitest 651 用例 + vue-tsc 全绿"
+  },
+  "gitStatus": "两仓均未提交，待主上裁定提交与版本"
+}
