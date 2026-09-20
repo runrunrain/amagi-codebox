@@ -81,11 +81,15 @@ func TestProbeGLMQuota_OK(t *testing.T) {
 	if len(entry.Windows) != 2 {
 		t.Fatalf("windows = %+v, want 2 (primary + secondary)", entry.Windows)
 	}
-	if w := entry.Windows[0]; w.Kind != QuotaWindowPrimary || w.UsedPercent != 62.0 || w.Remaining != 114 {
-		t.Errorf("primary window = %+v, want TIME_LIMIT percentage=62 remaining=114", w)
+	// v1.3.81 新语义：primary 逃选 TOKENS_LIMIT 优先，无则首条可用条兑底
+	//——本 fixture 无 TOKENS_LIMIT，首条 OTHER(31.5%) 为 primary，
+	// TIME_LIMIT(62%) 归 secondary（label：unit="prompts" 非数值枚举 → 空，
+	// 前端回退 kind 映射）。
+	if w := entry.Windows[0]; w.Kind != QuotaWindowPrimary || w.UsedPercent != 31.5 || w.Remaining != 80 {
+		t.Errorf("primary window = %+v, want first-available OTHER percentage=31.5 remaining=80", w)
 	}
-	if w := entry.Windows[1]; w.Kind != QuotaWindowSecondary || w.UsedPercent != 31.5 || w.Remaining != 80 {
-		t.Errorf("secondary window = %+v, want percentage=31.5 remaining=80", w)
+	if w := entry.Windows[1]; w.Kind != QuotaWindowSecondary || w.UsedPercent != 62.0 || w.Remaining != 114 {
+		t.Errorf("secondary window = %+v, want TIME_LIMIT percentage=62 remaining=114", w)
 	}
 	if s.authHeader != "coding-plan-key" {
 		t.Errorf("Authorization header = %q, want raw key without Bearer prefix", s.authHeader)
@@ -516,6 +520,44 @@ func TestGlmFamilyForOrigin(t *testing.T) {
 		if got := glmFamilyForOrigin(c.origin); got != c.want {
 			t.Errorf("glmFamilyForOrigin(%q) = %q, want %q", c.origin, got, c.want)
 		}
+	}
+}
+
+// v1.3.81 回归：max 套餐真实响应（TIME_LIMIT=月 MCP + TOKENS_LIMIT=5h）
+// 窗口语义不得错位——旧版把 MCP 月额当 5h、把 5h 当周。
+func TestProbeGLMQuota_MaxPlanWindowSemantics(t *testing.T) {
+	body := `{"code":200,"msg":"操作成功","data":{"level":"max",` +
+		`"limits":[` +
+		`{"type":"TIME_LIMIT","unit":5,"number":1,"usage":4000,"currentValue":290,"remaining":3710,` +
+		`"percentage":7,"nextResetTime":1790015120997,` +
+		`"usageDetails":[{"modelCode":"search-prime","usage":170},{"modelCode":"zread","usage":46}]},` +
+		`{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":3,"nextResetTime":1789879726323}]}}`
+	_, srv := newGLMTestServer(t, http.StatusOK, body)
+	entry := ProbeGLMQuota(context.Background(), srv.Client(), srv.URL, "k", "glm")
+	if entry.Status != QuotaStatusOK {
+		t.Fatalf("status = %q, want ok (message=%q)", entry.Status, entry.Message)
+	}
+	if len(entry.Windows) != 2 {
+		t.Fatalf("windows = %+v, want 2", entry.Windows)
+	}
+	// primary 必须是 TOKENS_LIMIT（5h 主额度），排在首位，label=5h
+	p := entry.Windows[0]
+	if p.Kind != QuotaWindowPrimary || p.Label != "5h" || p.UsedPercent != 3 {
+		t.Errorf("primary = %+v, want TOKENS_LIMIT label=5h used=3%%", p)
+	}
+	if p.ResetsAt != 1789879726 { // 毫秒→秒
+		t.Errorf("primary ResetsAt = %d, want 1789879726", p.ResetsAt)
+	}
+	// secondary 是 TIME_LIMIT（MCP 月额度），label=MCP·月，重置时间解析
+	s2 := entry.Windows[1]
+	if s2.Kind != QuotaWindowSecondary || s2.Label != "MCP·月" || s2.UsedPercent != 7 || s2.Remaining != 3710 {
+		t.Errorf("secondary = %+v, want TIME_LIMIT label=MCP·月 used=7%% remaining=3710", s2)
+	}
+	if s2.ResetsAt != 1790015120 {
+		t.Errorf("secondary ResetsAt = %d, want 1790015120", s2.ResetsAt)
+	}
+	if entry.Level != "max" {
+		t.Errorf("level = %q, want max", entry.Level)
 	}
 }
 

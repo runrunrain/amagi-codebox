@@ -132,6 +132,9 @@ export function secondaryWindowOf(entry: ProviderQuotaEntry | null | undefined):
 /** 窗口显示名：secondary 统称「周窗口」，主窗口按 window_minutes 推导（300→5h） */
 export function windowLabel(w: QuotaWindow | null | undefined): string {
   if (!w) return '';
+  // v1.3.81：后端实证推导的语义标签优先（"5h"/"月"/"MCP·月"）；
+  // secondary 恒标「周」的旧假设在无周额度的 max 套餐上错位。
+  if (w.label) return `${w.label} 窗口`;
   if (w.kind === 'secondary') return '周窗口';
   const minutes = w.window_minutes ?? 300;
   if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440}d 窗口`;
@@ -141,6 +144,9 @@ export function windowLabel(w: QuotaWindow | null | undefined): string {
 /** strip 迷用短标签：300→5h、10080→周，其余按小时折算 */
 export function windowShortLabel(w: QuotaWindow | null | undefined): string {
   if (!w) return '';
+  // v1.3.81：GLM 后端实证推导的语义标签优先（"5h"/"月"/"MCP·月"），
+  // 修复旧版 primary=5h/secondary=周硬编码在无周额度的 max 套餐上错位。
+  if (w.label) return w.label;
   if (w.window_minutes === 10080) return '周';
   const minutes = w.window_minutes ?? 300;
   return `${Math.max(1, Math.round(minutes / 60))}h`;

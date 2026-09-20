@@ -453,6 +453,7 @@ export namespace config {
 	    remaining?: number;
 	    window_minutes?: number;
 	    resets_at?: number;
+	    label?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new QuotaWindow(source);
@@ -465,6 +466,7 @@ export namespace config {
 	        this.remaining = source["remaining"];
 	        this.window_minutes = source["window_minutes"];
 	        this.resets_at = source["resets_at"];
+	        this.label = source["label"];
 	    }
 	}
 	export class ProviderQuotaEntry {

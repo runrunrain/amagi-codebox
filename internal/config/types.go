@@ -486,8 +486,13 @@ type QuotaWindow struct {
 	Kind        string  `json:"kind"`                     // primary | secondary | time_limit
 	UsedPercent float64 `json:"used_percent"`             // 已用 %
 	Remaining   float64 `json:"remaining,omitempty"`      // GLM prompts 剩余数（有则填）
-	WindowMin   int     `json:"window_minutes,omitempty"` // 300 / 10080
+	WindowMin   int     `json:"window_minutes,omitempty"` // 300 / 10080（Codex 实证；GLM 无此语义）
 	ResetsAt    int64   `json:"resets_at,omitempty"`      // unix 秒
+	// Label 窗口语义标签（v1.3.81）：GLM 由 type/unit/number 实证推导
+	//（"5h"/"月"/"MCP·月"），前端优先展示；旧版 primary=5h/secondary=周
+	// 硬编码在 max 套餐错位（无周额度，MCP 月额度被当 5h、5h 被当周）。
+	// Codex 无 label，前端回退 window_minutes 映射。
+	Label       string  `json:"label,omitempty"`
 }
 
 // QuotaBalance 余额型额度（DeepSeek，原币种原数字，不做换算）。

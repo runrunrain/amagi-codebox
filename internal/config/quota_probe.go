@@ -99,14 +99,25 @@ type glmQuotaEnvelope struct {
 // glmLimitEntry GLM data.limits 单条限额（数值字段宽松解析；unit 为 flexString，
 // 真实端点返回数字形态——v1.3.77 线上实证 string 声明整体反序列化失败，
 // zcode 侧本就按 typeof unit=="number" 消费，故容忍 string/number/null）。
+// v1.3.81 实证补齐（max 套餐真实响应）：
+//   - TIME_LIMIT  + unit=5(月) + usageDetails[...] → MCP 月额度（非 5h！）
+//   - TOKENS_LIMIT + unit=3(小时) + number=5 → 5 小时 prompt 窗口（主额度）
+//   - nextResetTime 毫秒时间戳；usageDetails 携带 MCP 工具级明细
 type glmLimitEntry struct {
-	Type         string     `json:"type"`
-	Unit         flexString `json:"unit"`
-	Number       flexNumber `json:"number"`
-	Usage        flexNumber `json:"usage"`
-	CurrentValue flexNumber `json:"currentValue"`
-	Remaining    flexNumber `json:"remaining"`
-	Percentage   flexNumber `json:"percentage"`
+	Type          string             `json:"type"`
+	Unit          flexString         `json:"unit"`
+	Number        flexNumber         `json:"number"`
+	Usage         flexNumber         `json:"usage"`
+	CurrentValue  flexNumber         `json:"currentValue"`
+	Remaining     flexNumber         `json:"remaining"`
+	Percentage    flexNumber         `json:"percentage"`
+	NextResetTime flexNumber         `json:"nextResetTime"` // 毫秒 unix
+	UsageDetails  []glmUsageDetail   `json:"usageDetails"`
+}
+
+type glmUsageDetail struct {
+	ModelCode string     `json:"modelCode"`
+	Usage     flexNumber `json:"usage"`
 }
 
 // flexString 宽松字符串：接受 string/number/bool/null 任一 JSON 形态，
@@ -264,34 +275,84 @@ func glmFamilyForOrigin(origin string) string {
 	return QuotaFamilyGLMBigmodel
 }
 
-// glmQuotaWindows 筛选 GLM limits 条目：type==TIME_LIMIT 为主窗口
-// （kind=primary），其余携带 percentage/remaining 的条目次之（kind=secondary）。
+// glmQuotaWindows 筛选 GLM limits 条目并赋予窗口语义（v1.3.81 重写）。
+//
+// max 套餐实证响应（错误旧版假设的对照）：
+//   limits[0] = {type: TIME_LIMIT,  unit: 5(月),  usageDetails: [search-prime…]} → MCP 月额度
+//   limits[1] = {type: TOKENS_LIMIT, unit: 3(小时), number: 5}                → 5h prompt 窗口（主额度）
+// 旧版把 TIME_LIMIT 首条当 primary 标「5h」、其余标「周」——在无周额度的
+// max 套餐上 MCP 月额被当 5h、5h 被当周（主上报错错位）。
+//
+// 新规则（数据驱动，不硬编码套餐形态）：
+//   - primary：TOKENS_LIMIT（coding plan 主 prompt 窗口）优先；
+//     无 TOKENS_LIMIT 时首条可用条兜底（其他套餐防御）。
+//   - Label：由 type/unit/number 实证枚举推导（glmWindowLabel）；
+//     usageDetails 非空的 TIME_LIMIT 追加「MCP·」前缀。
+//   - ResetsAt：nextResetTime 毫秒 → unix 秒（旧版未解析，重置时间一直缺失）。
 func glmQuotaWindows(limits []glmLimitEntry) []QuotaWindow {
-	var primary *QuotaWindow
-	var secondary []QuotaWindow
+	var windows []QuotaWindow
 	for _, l := range limits {
 		if !l.Percentage.set && !l.Remaining.set {
 			continue // 数值缺省跳过
 		}
 		w := QuotaWindow{UsedPercent: l.Percentage.v, Remaining: l.Remaining.v}
-		if strings.EqualFold(strings.TrimSpace(l.Type), "TIME_LIMIT") {
-			if primary == nil {
-				w.Kind = QuotaWindowPrimary
-				primary = &w
-			}
-			continue
+		if l.NextResetTime.set && l.NextResetTime.v > 0 {
+			w.ResetsAt = int64(l.NextResetTime.v / 1000) // 毫秒 → 秒
 		}
-		w.Kind = QuotaWindowSecondary
-		secondary = append(secondary, w)
+		label := glmWindowLabel(l)
+		if strings.EqualFold(strings.TrimSpace(l.Type), "TIME_LIMIT") && len(l.UsageDetails) > 0 {
+			label = "MCP·" + label
+		}
+		w.Label = label
+		windows = append(windows, w)
 	}
-	if primary == nil && len(secondary) == 0 {
+	if len(windows) == 0 {
 		return nil
 	}
-	out := make([]QuotaWindow, 0, 1+len(secondary))
-	if primary != nil {
-		out = append(out, *primary)
+	// primary 逃选：TOKENS_LIMIT 优先；都没有时首条兜底。primary 排首位
+	//（前端 primaryWindowOf 依赖）。
+	primaryIdx := 0
+	for i := range windows {
+		if strings.EqualFold(strings.TrimSpace(limits[i].Type), "TOKENS_LIMIT") {
+			primaryIdx = i
+			break
+		}
 	}
-	return append(out, secondary...)
+	result := make([]QuotaWindow, 0, len(windows))
+	for i, w := range windows {
+		if i == primaryIdx {
+			w.Kind = QuotaWindowPrimary
+			result = append(result, w)
+		}
+	}
+	for i, w := range windows {
+		if i != primaryIdx {
+			w.Kind = QuotaWindowSecondary
+			result = append(result, w)
+		}
+	}
+	return result
+}
+
+// glmWindowLabel 由实证枚举推导窗口时长标签。
+// unit 枚举（v1.3.81 max 套餐实证）：3=小时、5=月；未验证枚举不硬造标签
+//（返回空串，前端回退 kind 映射）。unit 为 flexString（数字形态）。
+func glmWindowLabel(l glmLimitEntry) string {
+	if !l.Number.set {
+		return ""
+	}
+	u, err := strconv.ParseFloat(strings.TrimSpace(string(l.Unit)), 64)
+	if err != nil {
+		return ""
+	}
+	switch u {
+	case 3: // 小时
+		return strconv.FormatFloat(l.Number.v, 'f', -1, 64) + "h"
+	case 5: // 月（number 恒 1）
+		return "月"
+	default:
+		return ""
+	}
 }
 
 // ProbeDeepSeekQuota 探测 DeepSeek 余额：GET {origin}/user/balance，Bearer key。
