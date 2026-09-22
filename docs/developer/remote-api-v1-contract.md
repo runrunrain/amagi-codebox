@@ -79,7 +79,7 @@
 | `POST /sessions/{id}/stop` | current controller | `ConfirmActionRequest` | `200 SessionDetail` | M2 + control dep |
 | `POST /sessions/{id}/restart` | current controller | `ConfirmActionRequest` | `200 SessionDetail`; boundary via WS | M2 + control dep |
 | `DELETE /sessions/{id}` | current controller | `ConfirmActionRequest` | `204` no body; then `removed` broadcast | M2 + control dep |
-| `POST /sessions/{id}/control/acquire` | device Cookie | no body | `200 ControlSnapshot`; busy ⇒ 409 | M3 |
+| `POST /sessions/{id}/control/acquire` | device Cookie | no body | `200 ControlSnapshot`；另一设备持有 ⇒ 409 `control.busy`；桌面持有 ⇒ 对称接管成功（takeover，单写安全不变） | M3 |
 | `POST /sessions/{id}/control/release` | current controller | no body | `200 ControlSnapshot{state:"none"}` | M3 |
 
 `{id}` is a single URL path segment; clients percent-encode, server decodes to opaque SessionID. The canonical 10-endpoint enumeration lives in `contract.V1RestEndpoints`（`internal/remote/contract/version.go`）并镜像在 fixture `manifest.restEndpoints`。
@@ -223,6 +223,7 @@ Unified REST error body (top-level, NO `{error:{...}}` envelope):
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-09-22 | 1.3.85（未发布） | 控制权对称接管（无死锁修复）：`control/acquire` 对桌面持有者从 DenyBusy(409) 改为镜像 `TakeDesktop` 的对称接管（reason takeover，旧持有者事件可见，在逾桌面操作被 fence，holderGeneration/controlEpoch 照常推进）——此前桌面内嵌终端 take-first 输入（每次按键 TakeDesktop）叠加桌面持有无空闲超时，一次按键即把远程平面永久锁死（输入 403 + acquire 409 死路，仅桌面手点「收回控制」可解）。修复后最后意图方持有、两侧均可随时重取（桌面：下一次按键；设备：acquire），设备间互斥（DenyBusy）与桌面权威收回（ForceReleaseControl）不变；端点表同步更新。 |
 | 2026-09-15 | 1.3.73+（未发布） | G3 修复批（Web 平面输入台「连接中断，消息未发送」）：§3.1 修订——fragment 改发代理铸造的 per-(session, device) plane token（绑定设备；后端 token 轮换自动失效、平面终态回收）；capability 通道升级为三支（plane token → 绑定设备 principal，raw 后端 token → 只读零 principal，其它 → 401），写面控制门据此评估真实控制权（sandbox iframe 无 cookie 场景下输入台首次真正可用）；出向 WS 子协议对统一换写为后端 token；本地错误响应（401/403/503/404）在 `Origin:null` 时携带 ACAO:null+ACAC（真实错误码不再被 CORS 掩盖成 network_error）。 |
 | 2026-09-13 | 1.3.70 | G2 修复批（remote-webui-plane）：§3.1 代理面增补——CORS 预检豁免（OPTIONS+`Origin:null`+ACRM 本地应答 204+完整 CORS 头，镜像 v1 OPTIONS 纪律，不转发后端）；出向 `Origin` 语义修订为「null 透传、其余删除」（G1 实证，同步此前文档漂移）；控制门写面集合化 `POST /api/input`+`POST /api/agent-interact`+`PUT /api/draft`（快照判定，grace 持有者视为控制者），`GET /api/fs/dirs` 维持配对可读（diting 裁定）；`/api/*` 响应统一 `Cache-Control: no-store`；reqID 解析失败对齐 v1 fail-closed 503。 |
 | 2026-09-13 | 1.3.69 | remote-webui-plane 切片：新增增量面 §3.1 —— `GET /session/{id}/webui` 状态端点（`WebUIStatus{state,url?}`，5 值闭合枚举；token 只经 fragment）与 `/webui/{sid}/...` 反向代理面（device Cookie 鉴权、sid 白名单、出向 Host/Origin/Authorization 改写、WS 子协议透传、`/api/input` 控制门 403、probing→503/其余→404）。两者均在冻结 10 端点清单之外（`contract.V1RestEndpoints`/fixture manifest 不变）；Go 侧符号在 `internal/remote/contract/webui.go`。 |

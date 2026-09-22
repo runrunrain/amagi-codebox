@@ -382,12 +382,23 @@ func (a *ControlArbiter) validateSnapshotOrLatch(snap contract.ControlSnapshot) 
 }
 
 // ---------------------------------------------------------------------------
-// Acquire (design §4.5: none → device)
+// Acquire (design §4.5: none → device; device ← desktop symmetric takeover)
 // ---------------------------------------------------------------------------
 
 // Acquire attempts to grant control of sessionID to the authenticated device
 // principal via the given authoritative lease. Returns the resulting snapshot
 // relative to the principal, or a ControlGateError on denial.
+//
+// Holder cases: none → grant (reason acquired); same device → idempotent
+// rebind; other device → DenyBusy (device-vs-device mutual exclusion is
+// unchanged); DESKTOP → symmetric takeover (reason takeover). The desktop
+// input path is take-first (DoDesktopPTY runs TakeDesktop on every keystroke,
+// preempting any device holder) and desktop control has no idle expiry, so
+// denying here would let a single desktop keystroke lock the remote plane out
+// of both input and acquire indefinitely. Mirroring TakeDesktop's preemption
+// restores the no-deadlock symmetry: the last intentional actor holds control,
+// either side can always regain it (desktop: next keystroke; device: acquire),
+// and the desktop's authoritative reclaim (ForceReleaseControl) still applies.
 //
 // Linearization point: under entry.stateMu, event reservation + none→device +
 // controlEpoch increment (design §9.2).
@@ -476,8 +487,35 @@ func (a *ControlArbiter) Acquire(
 		return contract.ControlSnapshot{}, &ControlGateError{Kind: DenyBusy}
 
 	default:
-		// desktop holds → busy.
-		return contract.ControlSnapshot{}, &ControlGateError{Kind: DenyBusy}
+		// Desktop holds → SYMMETRIC TAKEOVER (previously DenyBusy). The desktop
+		// input path is take-first (DoDesktopPTY → TakeDesktop preempts any
+		// device holder on every keystroke) and desktop control has no idle
+		// expiry or auto-release, so a busy denial here let one desktop
+		// keystroke permanently lock the remote plane out of both input (403
+		// control.forbidden) and acquire (409 control.busy). Mirroring
+		// TakeDesktop's preemption keeps single-writer safety (holderGeneration/
+		// controlEpoch advance, stale ops fail closed, in-flight desktop op
+		// fenced below) while making the takeover symmetric: last intentional
+		// actor wins, neither side can lock the other out.
+		newOwner := controlOwner{
+			kind:                 ownerDevice,
+			deviceID:             principal.DeviceID,
+			deviceName:           principal.DeviceName,
+			connectionID:         lease.ConnectionID(),
+			attachmentGeneration: lease.AttachmentGeneration(),
+			phase:                deviceConnected,
+		}
+		if !a.commitTransition(entry, newOwner, reasonTakeover, now) {
+			return contract.ControlSnapshot{}, &ControlGateError{Kind: DenyControlUnavailable}
+		}
+		// Fence any in-flight desktop operation (state-only; mirrors
+		// TakeDesktop's preemption of an in-flight device op).
+		a.fenceCurrentOpLocked(entry)
+		snap := a.projector.SnapshotForViewer(entry.owner, principal.DeviceID)
+		if !a.validateSnapshotOrLatch(snap) {
+			return contract.ControlSnapshot{}, &ControlGateError{Kind: DenyControlUnavailable}
+		}
+		return snap, nil
 	}
 }
 

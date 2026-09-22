@@ -621,6 +621,72 @@ func TestControlArbiter_OtherDeviceAcquireBusy(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// T-01b: Device acquire preempts a desktop holder (symmetric takeover)
+//
+// 回归锚（2026-09-22 控制权冲突修复）：桌面输入是 take-first（每次按键
+// TakeDesktop 抢占设备持有者）且桌面持有无空闲超时/自动释放，旧实现里
+// 设备 Acquire 撞上桌面持有返回 DenyBusy（409），远程 Web 平面被永久锁
+// 死（输入 403 + acquire 409 死路，只有桌面手点「收回控制」才解锁）。
+// 修复后 Acquire 对桌面持有执行对称接管（reason takeover）：最后意图方
+// 持有，桌面下一次按键即可瞬时夺回，双方都无永久锁死；设备间互斥
+// （DenyBusy）不变。
+// ---------------------------------------------------------------------------
+
+func TestControlArbiter_DeviceAcquirePreemptsDesktop(t *testing.T) {
+	arb, _, _, dir, _ := newTestArbiter(t)
+	sid := startSessionDirect(t, arb)
+	pA := newTestDevicePrincipal("devA", "Device A")
+	leaseA, _ := dir.Attach(pA.DeviceID, pA.DeviceName, "connA", sid)
+
+	// Device A acquires from none.
+	snap, gErr := arb.Acquire(pA, leaseA, sid)
+	if gErr != nil || snap.State != contract.ControlStateYou {
+		t.Fatalf("A acquire: snap=%v err=%v", snap, gErr)
+	}
+	genAfterA := holderGen(arb, sid)
+
+	// Desktop takes (one keystroke) → A sees desktop.
+	if gErr := arb.TakeDesktop(newWailsAuthority(7), sid); gErr != nil {
+		t.Fatalf("TakeDesktop: %v", gErr)
+	}
+	if snap, _ := arb.SnapshotForDevice(sid, pA.DeviceID); snap.State != contract.ControlStateDesktop {
+		t.Fatalf("after desktop take: expected desktop, got %s", snap.State)
+	}
+
+	// A re-acquires → SYMMETRIC TAKEOVER (previously DenyBusy/409 deadlock).
+	snap, gErr = arb.Acquire(pA, leaseA, sid)
+	if gErr != nil {
+		t.Fatalf("A acquire against desktop holder: %v", gErr)
+	}
+	if snap.State != contract.ControlStateYou {
+		t.Fatalf("A after takeover: expected you, got %s", snap.State)
+	}
+	if gen := holderGen(arb, sid); gen <= genAfterA {
+		t.Fatalf("holderGeneration must advance on desktop→device takeover: %d → %d", genAfterA, gen)
+	}
+
+	// Desktop take again (next keystroke) → device sees desktop; round trip is
+	// alive — neither side is ever locked out.
+	if gErr := arb.TakeDesktop(newWailsAuthority(7), sid); gErr != nil {
+		t.Fatalf("TakeDesktop after device takeover: %v", gErr)
+	}
+	if snap, _ := arb.SnapshotForDevice(sid, pA.DeviceID); snap.State != contract.ControlStateDesktop {
+		t.Fatalf("after second desktop take: expected desktop, got %s", snap.State)
+	}
+
+	// A takes back once more, then a DIFFERENT device still gets DenyBusy:
+	// device-vs-device mutual exclusion is unchanged by the fix.
+	if _, gErr := arb.Acquire(pA, leaseA, sid); gErr != nil {
+		t.Fatalf("A final acquire: %v", gErr)
+	}
+	pB := newTestDevicePrincipal("devB", "Device B")
+	leaseB, _ := dir.Attach(pB.DeviceID, pB.DeviceName, "connB", sid)
+	if _, gErr := arb.Acquire(pB, leaseB, sid); gErr == nil || gErr.Kind != DenyBusy {
+		t.Fatalf("B vs device holder A: expected DenyBusy, got %v", gErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Passive resize blocked when device holds (design §6.2, R-06)
 // ---------------------------------------------------------------------------
 
