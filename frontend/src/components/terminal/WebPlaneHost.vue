@@ -61,13 +61,19 @@
  *
  * codebox 不拦截页面内部交互（输入/滚动/复制由页面自理）。
  */
-import { ref, watch, onBeforeUnmount } from 'vue';
+import { ref, watch, onBeforeUnmount, onMounted } from 'vue';
 // postToWebFrame / InsertInputPayload 来自同文件 <script> 块的具名导出
 // （两个 script 块编译进同一模块，同名符号无需 import）。
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import SessionQuotaStrip from './SessionQuotaStrip.vue';
-import { postToWebFrame, extractCapabilityToken, type InsertInputPayload } from './quickPathInsert';
+import {
+  postToWebFrame,
+  extractCapabilityToken,
+  parseOpenUrlMessage,
+  type InsertInputPayload,
+} from './quickPathInsert';
+import { openExternalURL } from '../../api/webui';
 
 const props = withDefaults(
   defineProps<{ url: string; sessionId: string; ended?: boolean }>(),
@@ -102,6 +108,23 @@ function postToFrame(payload: InsertInputPayload): boolean {
 }
 
 defineExpose({ postToFrame })
+
+/**
+ * webui → 宿主「打开外部链接」桥（v2.7.4）：嵌入态 sandbox 无 allow-popups，
+ * 页面内 a[target=_blank] 被静默阻断——改为消息上抛，宿主校验 token 后经
+ * Go BrowserOpenURL 走系统浏览器。守卫逻辑在 parseOpenUrlMessage（可单测）；
+ * 打开失败尽力而为（console.warn，不打断页面）。
+ */
+function onFrameMessage(event: MessageEvent): void {
+  const url = parseOpenUrlMessage(event.data, extractCapabilityToken(frameSrc.value))
+  if (url === null) return
+  openExternalURL(url).catch((err) => {
+    console.warn('[WebPlaneHost] open external url failed:', err)
+  })
+}
+
+onMounted(() => window.addEventListener('message', onFrameMessage))
+onBeforeUnmount(() => window.removeEventListener('message', onFrameMessage))
 
 // 加载看门狗：iframe 对拒连/空响应不保证触发 error，超时兜底。
 const LOAD_TIMEOUT_MS = 10_000;

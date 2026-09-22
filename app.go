@@ -1435,6 +1435,30 @@ func (a *App) GetRemoteWebUIStatus() RemoteWebUIStatusResult {
 	return status
 }
 
+// ValidateExternalURL 校验外部链接可安全交给系统浏览器打开：仅 http/https 且带 host。
+// 独立于 App 方法便于单测（web 平面 amagi:open-url 宿主桥的 Go 侧白名单）。
+func ValidateExternalURL(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid url: 仅支持带主机的 http/https 链接")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q: 仅支持 http/https", u.Scheme)
+	}
+	return nil
+}
+
+// OpenExternalURL 在系统默认浏览器打开外部链接（Web 平面 iframe 内 amagi:open-url
+// 宿主桥的消费端：sandbox 无 allow-popups，页面内 target=_blank 被阻断，改由宿主
+// 代开。前端已做 token 凭证 + http(s) 白名单校验，此处二次白名单纵深防御）。
+func (a *App) OpenExternalURL(rawURL string) error {
+	if err := ValidateExternalURL(rawURL); err != nil {
+		return err
+	}
+	wailsRuntime.BrowserOpenURL(a.ctx, strings.TrimSpace(rawURL))
+	return nil
+}
+
 // OpenRemoteWebUI 确保远程服务可用后，在默认浏览器中打开移动端 Web UI。
 func (a *App) OpenRemoteWebUI() (OpenRemoteWebUIResult, error) {
 	a.remoteLifecycleMu.Lock()

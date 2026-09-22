@@ -25,6 +25,12 @@ import { buildAssociatedPathLines } from '../../utils/quickFunctions'
 /** 宿主 → webui 插入指令的 postMessage type（跨仓冻结契约，勿改）。 */
 export const INSERT_INPUT_MESSAGE_TYPE = 'amagi:insert-input'
 
+/** webui → 宿主「打开外部链接」的 postMessage type（跨仓冻结契约 v2.7.4，勿改）。 */
+export const OPEN_URL_MESSAGE_TYPE = 'amagi:open-url'
+
+/** 上行链接长度上限（防御：异常长 URL 不投 Go 侧）。 */
+const MAX_OPEN_URL_LENGTH = 2048
+
 /** 插入文本的 UTF-8 字节上限（契约：≤128KiB）。超限直接不发指令。 */
 export const MAX_INSERT_TEXT_BYTES = 128 * 1024
 
@@ -55,6 +61,28 @@ export function extractCapabilityToken(url: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * webui → 宿主「打开外部链接」消息解析（跨仓契约 v2.7.4）。
+ *
+ * 接收端守卫（与插入指令同构）：token 须与宿主构造 iframe URL 时持有的凭证严格
+ * 相等；type 精确匹配；url 为 string、http(s) 白名单、长度 ≤2048。
+ * 全部通过 → 返回 url（调用方交 Go 侧 BrowserOpenURL，Go 侧再校一次白名单）；
+ * 任一不满足 → null（静默忽略，不报错——伪造/过期消息不是用户可威知事件）。
+ */
+export function parseOpenUrlMessage(
+  data: unknown,
+  ownToken: string | null,
+): string | null {
+  if (!ownToken) return null
+  if (typeof data !== 'object' || data === null) return null
+  const { type, token, url } = data as { type?: unknown; token?: unknown; url?: unknown }
+  if (type !== OPEN_URL_MESSAGE_TYPE) return null
+  if (typeof token !== 'string' || token !== ownToken) return null
+  if (typeof url !== 'string' || url.length === 0 || url.length > MAX_OPEN_URL_LENGTH) return null
+  if (!/^https?:\/\//i.test(url)) return null
+  return url
 }
 
 /**

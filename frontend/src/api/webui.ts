@@ -30,3 +30,20 @@ export function probeWebUI(sessionId: string): Promise<WebUIStatus> {
 export function openWebPlane(sessionId: string): Promise<string> {
   return callApi('[api.webui.openWebPlane]', () => OpenWebPlane(sessionId));
 }
+
+/**
+ * 在系统默认浏览器打开外部链接（web 平面 amagi:open-url 宿主桥的 Go 侧消费端）。
+ * 经运行时注入的 window.go 绑定直调 App.OpenExternalURL（避免依赖 wailsjs 再生
+ * 成——方法存在即可达；旧二进制无此绑定时 reject，调用方尽力而为降级）。
+ */
+export function openExternalURL(url: string): Promise<void> {
+  const binding = (
+    window as unknown as {
+      go?: { app?: { App?: { OpenExternalURL?: (u: string) => Promise<void> } } };
+    }
+  ).go?.app?.App?.OpenExternalURL;
+  if (typeof binding !== 'function') {
+    return Promise.reject(new Error('OpenExternalURL binding unavailable'));
+  }
+  return binding(url);
+}
