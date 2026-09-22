@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.85] - 2026-09-22
+
+### Fixed
+
+- **桌面与远程 Web 控制权冲突根治（对称接管）**：桌面内嵌终端输入是 take-first（每次按键部会 TakeDesktop 抢占设备持有者），且桌面持有无空闲超时/自动释放——此前在桌面终端敲任意一个键后，远程设备（终端平面与 pi Web 平面）即被永久锁死：输入 403 `control.forbidden`、acquire 409 `control.busy`，只有桌面手点「收回控制」才解锁，形成单侧死锁。修复：设备 acquire 撞上桌面持有时镜像 TakeDesktop 执行对称接管（reason takeover，旧持有者侧事件可见，在逾桌面操作被 fence，holderGeneration/controlEpoch 照常推进，stale 操作 fail-closed）——最后意图方持有，桌面下一次按键瞬时夺回、设备 acquire 随时接管，双方都无永久锁死；设备间互斥（DenyBusy）与桌面权威收回（ForceReleaseControl）/撤销/远程总开关门禁不变。契约文档端点表与变更记录同步。
+
 ## [1.3.84] - 2026-09-21
 
 ### Added
