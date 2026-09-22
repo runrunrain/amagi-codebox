@@ -379,6 +379,21 @@ func TestDetectQuotaFamily(t *testing.T) {
 		{"https://api.z.ai/v1", QuotaFamilyGLMZai, "https://api.z.ai"},
 		{"https://api.deepseek.com/v1", QuotaFamilyDeepSeek, "https://api.deepseek.com"},
 		{"https://api.deepseek.com", QuotaFamilyDeepSeek, "https://api.deepseek.com"},
+		{"https://opencode.ai/zen/go/v1", QuotaFamilyOpenCodeZen, "https://opencode.ai/zen/go/v1"},
+		{"https://opencode.ai/zen/go", QuotaFamilyOpenCodeZen, "https://opencode.ai/zen/go/v1"},
+		{"https://opencode.ai/zen/go/v1/chat/completions", QuotaFamilyOpenCodeZen, "https://opencode.ai/zen/go/v1"},
+		{"https://opencode.ai/zen/go/v1/responses", QuotaFamilyOpenCodeZen, "https://opencode.ai/zen/go/v1"},
+		{"https://OPENCODE.AI/zen/go/", QuotaFamilyOpenCodeZen, "https://opencode.ai/zen/go/v1"},
+		{"https://openrouter.ai/api/v1", QuotaFamilyOpenRouter, "https://openrouter.ai/api/v1"},
+		{"https://openrouter.ai/api/v1/chat/completions", QuotaFamilyOpenRouter, "https://openrouter.ai/api/v1"},
+		{"https://openrouter.ai/", QuotaFamilyOpenRouter, "https://openrouter.ai/api/v1"},
+		{"https://opencode.ai/models", "", ""},
+		{"https://openrouter-ai.example.com", "", ""},
+		// diting F-1 回归：内嵌官方域子串的中转/仿冒域不得误判（host 锚定）
+		{"https://openrouter.aimirror.com", "", ""},
+		{"https://opencode.ai.relay.cn/zen", "", ""},
+		{"https://openrouter.ai.cdn.example.com/api/v1", "", ""},
+		{"https://sub.bigmodel.cn.evil.tld", QuotaFamilyGLMBigmodel, "https://sub.bigmodel.cn.evil.tld"}, // 历史行为（GLM 子串匹配）follow-up 再收窄
 		{"https://api.openai.com/v1", "", ""},
 		{"https://sub.example.com", "", ""},
 		{"", "", ""},
@@ -389,6 +404,248 @@ func TestDetectQuotaFamily(t *testing.T) {
 			t.Errorf("DetectQuotaFamily(%q) = (%q, %q), want (%q, %q)", tt.baseURL, family, origin, tt.family, tt.origin)
 		}
 	}
+}
+
+// ---- OpenCode Zen（GET {base}/usage，实证形态见
+// agent-outputs/2026-09-22-quota-ext-zen-openrouter/design.md §2.1）----
+
+func newZenTestServer(t *testing.T, status int, body string) (*quotaTestServer, *httptest.Server) {
+	t.Helper()
+	s := &quotaTestServer{path: "/usage", status: status, body: body}
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+	return s, srv
+}
+
+// Zen ok：三窗口 Kind/Label/UsedPercent/ResetsAt（ISO→unix）全量断言 + Bearer 头形态。
+func TestProbeOpenCodeZenQuota_OKThreeWindows(t *testing.T) {
+	body := `{"usage":{
+		"rolling":{"status":"ok","percent":42,"resetsAt":"2026-09-22T12:00:00Z"},
+		"weekly":{"status":"ok","percent":7.5,"resetsAt":"2026-09-23T00:00:00Z"},
+		"monthly":{"status":"rate-limited","percent":100,"resetsAt":"2026-10-01T00:00:00Z"}}}`
+	s, srv := newZenTestServer(t, http.StatusOK, body)
+	entry := ProbeOpenCodeZenQuota(context.Background(), srv.Client(), srv.URL, "sk-test", "opencode-go")
+	if entry.Status != QuotaStatusOK || entry.Family != QuotaFamilyOpenCodeZen || entry.Source != QuotaSourceOpenCodeZenAPI {
+		t.Fatalf("entry meta = (%q,%q,%q), want (ok,opencode-zen,opencode-zen-api)", entry.Status, entry.Family, entry.Source)
+	}
+	if s.authHeader != "Bearer sk-test" {
+		t.Fatalf("Authorization = %q, want Bearer sk-test", s.authHeader)
+	}
+	if len(entry.Windows) != 3 {
+		t.Fatalf("windows = %d, want 3", len(entry.Windows))
+	}
+	want := []struct {
+		kind, label string
+		percent     float64
+		resetsAt    int64
+	}{
+		{QuotaWindowPrimary, "滚动", 42, time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC).Unix()},
+		{QuotaWindowSecondary, "周", 7.5, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC).Unix()},
+		{QuotaWindowTertiary, "月", 100, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC).Unix()},
+	}
+	for i, w := range want {
+		got := entry.Windows[i]
+		if got.Kind != w.kind || got.Label != w.label || got.UsedPercent != w.percent || got.ResetsAt != w.resetsAt {
+			t.Errorf("windows[%d] = %+v, want %+v", i, got, w)
+		}
+	}
+	if entry.Balance != nil {
+		t.Error("zen entry must be window-typed without balance")
+	}
+}
+
+// Zen percent 缺省的窗口跳过（不硬造）；坏 resetsAt 归 0。
+func TestProbeOpenCodeZenQuota_SkipMissingWindows(t *testing.T) {
+	body := `{"usage":{"rolling":{"status":"ok","percent":42,"resetsAt":"bad-time"},"weekly":{},"monthly":null}}`
+	_, srv := newZenTestServer(t, http.StatusOK, body)
+	entry := ProbeOpenCodeZenQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+	if entry.Status != QuotaStatusOK || len(entry.Windows) != 1 {
+		t.Fatalf("status=%q windows=%d, want ok/1", entry.Status, len(entry.Windows))
+	}
+	if w := entry.Windows[0]; w.Kind != QuotaWindowPrimary || w.UsedPercent != 42 || w.ResetsAt != 0 {
+		t.Errorf("window = %+v, want primary/42/resetsAt=0", w)
+	}
+}
+
+// Zen 状态矩阵：401→no_key、403 EntitlementError→no_plan（透传服务端 message）、
+// 500→error、坏 JSON→error、缺 usage→error。
+func TestProbeOpenCodeZenQuota_StatusMatrix(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		want      string
+		wantMsgIn string
+	}{
+		{"401 AuthError", 401, `{"type":"error","error":{"type":"AuthError","message":"Unauthorized"}}`, QuotaStatusNoKey, "Unauthorized"},
+		{"403 EntitlementError", 403, `{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}`, QuotaStatusNoPlan, "OpenCode Go subscription required."},
+		{"500", 500, `oops`, QuotaStatusError, "HTTP 500"},
+		{"200 坏 JSON", 200, `not-json`, QuotaStatusError, "响应解析失败"},
+		{"200 缺 usage", 200, `{"usage":{}}`, QuotaStatusError, "缺少 usage"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, srv := newZenTestServer(t, tc.status, tc.body)
+			entry := ProbeOpenCodeZenQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+			if entry.Status != tc.want {
+				t.Fatalf("status = %q, want %q", entry.Status, tc.want)
+			}
+			if !strings.Contains(entry.Message, tc.wantMsgIn) {
+				t.Errorf("message = %q, want contains %q", entry.Message, tc.wantMsgIn)
+			}
+		})
+	}
+}
+
+// ---- OpenRouter（GET {base}/credits 主跳 + {base}/key 降级，实证形态见
+// agent-outputs/2026-09-22-quota-ext-zen-openrouter/design.md §2.2）----
+
+// openRouterTestServer 双路径假端点，记录各跳命中次数（验证降级只在必要时发生）。
+type openRouterTestServer struct {
+	mu            sync.Mutex
+	creditsStatus int
+	creditsBody   string
+	keyStatus     int
+	keyBody       string
+	authHeader    string
+	creditsCalls  int
+	keyCalls      int
+}
+
+func (s *openRouterTestServer) handler() http.Handler {
+	mux := http.NewServeMux()
+	hit := func(code int, body string) (int, string) {
+		return code, body
+	}
+	_ = hit
+	mux.HandleFunc("/credits", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.creditsCalls++
+		s.authHeader = r.Header.Get("Authorization")
+		code, body := s.creditsStatus, s.creditsBody
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	})
+	mux.HandleFunc("/key", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.keyCalls++
+		s.authHeader = r.Header.Get("Authorization")
+		code, body := s.keyStatus, s.keyBody
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	})
+	return mux
+}
+
+func newOpenRouterTestServer(t *testing.T, creditsStatus int, creditsBody string, keyStatus int, keyBody string) (*openRouterTestServer, *httptest.Server) {
+	t.Helper()
+	s := &openRouterTestServer{creditsStatus: creditsStatus, creditsBody: creditsBody, keyStatus: keyStatus, keyBody: keyBody}
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+	return s, srv
+}
+
+// 主跳 /credits 两种形态（data 包裹/平铺）→ 余额映射（Total/Used/Remaining 差值）；
+// 主跳 ok 不得降级打 /key。
+func TestProbeOpenRouterQuota_CreditsPrimary(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{"data 包裹", `{"data":{"total_credits":100.5,"total_usage":25.75}}`},
+		{"平铺", `{"total_credits":100.5,"total_usage":25.75}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, srv := newOpenRouterTestServer(t, http.StatusOK, tc.body, http.StatusOK, `{}`)
+			entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk-or", "openrouter")
+			if entry.Status != QuotaStatusOK || entry.Family != QuotaFamilyOpenRouter || entry.Source != QuotaSourceOpenRouterAPI {
+				t.Fatalf("entry meta = (%q,%q,%q)", entry.Status, entry.Family, entry.Source)
+			}
+			b := entry.Balance
+			if b == nil || b.Currency != "USD" || b.Total != 100.5 || b.Used == nil || *b.Used != 25.75 || b.Remaining == nil || *b.Remaining != 74.75 {
+				t.Fatalf("balance = %+v, want USD/100.5/25.75/74.75", b)
+			}
+			if entry.Message != "" {
+				t.Errorf("primary hit must not carry口径 message, got %q", entry.Message)
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.keyCalls != 0 {
+				t.Errorf("fallback /key must not be called on primary ok, got %d", s.keyCalls)
+			}
+		})
+	}
+}
+
+// Remaining=0（真花光）指针不失踪。
+func TestProbeOpenRouterQuota_RemainingZeroKept(t *testing.T) {
+	_, srv := newOpenRouterTestServer(t, http.StatusOK, `{"total_credits":25.75,"total_usage":25.75}`, http.StatusOK, `{}`)
+	entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+	if entry.Balance == nil || entry.Balance.Remaining == nil || *entry.Balance.Remaining != 0 {
+		t.Fatalf("remaining must be present 0, got %+v", entry.Balance)
+	}
+}
+
+// 降级 /key：limit_remaining 非 null → per-key 口径（Total=limit、Message 标注）；
+// null → 仅 Used（Remaining 缺省，不硬造）。
+func TestProbeOpenRouterQuota_KeyFallback(t *testing.T) {
+	t.Run("per-key 上限口径", func(t *testing.T) {
+		_, srv := newOpenRouterTestServer(t, http.StatusForbidden, `{"error":{}}`,
+			http.StatusOK, `{"data":{"label":"k","limit":50,"limit_remaining":20,"usage":30}}`)
+		entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+		if entry.Status != QuotaStatusOK {
+			t.Fatalf("status = %q, want ok", entry.Status)
+		}
+		if !strings.Contains(entry.Message, "Key 额度上限口径") {
+			t.Errorf("message = %q, want口径标注", entry.Message)
+		}
+		b := entry.Balance
+		if b == nil || b.Total != 50 || b.Used == nil || *b.Used != 30 || b.Remaining == nil || *b.Remaining != 20 {
+			t.Fatalf("balance = %+v, want 50/30/20", b)
+		}
+	})
+	t.Run("无上限仅已用", func(t *testing.T) {
+		_, srv := newOpenRouterTestServer(t, http.StatusInternalServerError, `oops`,
+			http.StatusOK, `{"data":{"usage":30,"limit":null,"limit_remaining":null}}`)
+		entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+		if entry.Status != QuotaStatusOK || entry.Balance == nil {
+			t.Fatalf("entry = %+v, want ok with balance", entry)
+		}
+		if entry.Balance.Used == nil || *entry.Balance.Used != 30 || entry.Balance.Remaining != nil {
+			t.Fatalf("balance = %+v, want used=30 without remaining", entry.Balance)
+		}
+	})
+}
+
+// 两跳均鉴权失败 → no_key；两跳均失败 → error（message 含两跳概要）；
+// 200 但缺额度字段 → 降级直至 error。
+func TestProbeOpenRouterQuota_FailureMatrix(t *testing.T) {
+	t.Run("401+401 → no_key", func(t *testing.T) {
+		_, srv := newOpenRouterTestServer(t, http.StatusUnauthorized, `{}`, http.StatusUnauthorized, `{}`)
+		entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+		if entry.Status != QuotaStatusNoKey {
+			t.Fatalf("status = %q, want no_key", entry.Status)
+		}
+	})
+	t.Run("500+502 → error", func(t *testing.T) {
+		_, srv := newOpenRouterTestServer(t, http.StatusInternalServerError, `oops`, http.StatusBadGateway, `oops`)
+		entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+		if entry.Status != QuotaStatusError {
+			t.Fatalf("status = %q, want error", entry.Status)
+		}
+		if !strings.Contains(entry.Message, "/credits") || !strings.Contains(entry.Message, "/key") {
+			t.Errorf("message = %q, want both legs mentioned", entry.Message)
+		}
+	})
+	t.Run("200 缺额度字段 → error", func(t *testing.T) {
+		_, srv := newOpenRouterTestServer(t, http.StatusOK, `{"data":{}}`, http.StatusOK, `{"data":{}}`)
+		entry := ProbeOpenRouterQuota(context.Background(), srv.Client(), srv.URL, "sk", "p")
+		if entry.Status != QuotaStatusError {
+			t.Fatalf("status = %q, want error", entry.Status)
+		}
+	})
 }
 
 // models.json 往返：旧文件无 provider_quota 字段加载不报错；记录后落盘含该

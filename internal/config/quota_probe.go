@@ -38,12 +38,15 @@ const (
 	QuotaSourceGLMAPI           = "glm-api"
 	QuotaSourceDeepSeekAPI      = "deepseek-api"
 	QuotaSourceCodexSessionFile = "codex-session-file"
+	QuotaSourceOpenCodeZenAPI   = "opencode-zen-api"
+	QuotaSourceOpenRouterAPI    = "openrouter-api"
 )
 
 // 窗口 Kind 常量（QuotaWindow.Kind 值域）。
 const (
-	QuotaWindowPrimary   = "primary"   // 主显示窗口（GLM TIME_LIMIT / Codex 5h）
-	QuotaWindowSecondary = "secondary" // 次窗口（GLM 其他限额 / Codex 周）
+	QuotaWindowPrimary   = "primary"   // 主显示窗口（GLM TIME_LIMIT / Codex 5h / Zen 滚动）
+	QuotaWindowSecondary = "secondary" // 次窗口（GLM 其他限额 / Codex 周 / Zen 周）
+	QuotaWindowTertiary  = "tertiary"  // 第三窗口（Zen 月）
 )
 
 const (
@@ -104,15 +107,15 @@ type glmQuotaEnvelope struct {
 //   - TOKENS_LIMIT + unit=3(小时) + number=5 → 5 小时 prompt 窗口（主额度）
 //   - nextResetTime 毫秒时间戳；usageDetails 携带 MCP 工具级明细
 type glmLimitEntry struct {
-	Type          string             `json:"type"`
-	Unit          flexString         `json:"unit"`
-	Number        flexNumber         `json:"number"`
-	Usage         flexNumber         `json:"usage"`
-	CurrentValue  flexNumber         `json:"currentValue"`
-	Remaining     flexNumber         `json:"remaining"`
-	Percentage    flexNumber         `json:"percentage"`
-	NextResetTime flexNumber         `json:"nextResetTime"` // 毫秒 unix
-	UsageDetails  []glmUsageDetail   `json:"usageDetails"`
+	Type          string           `json:"type"`
+	Unit          flexString       `json:"unit"`
+	Number        flexNumber       `json:"number"`
+	Usage         flexNumber       `json:"usage"`
+	CurrentValue  flexNumber       `json:"currentValue"`
+	Remaining     flexNumber       `json:"remaining"`
+	Percentage    flexNumber       `json:"percentage"`
+	NextResetTime flexNumber       `json:"nextResetTime"` // 毫秒 unix
+	UsageDetails  []glmUsageDetail `json:"usageDetails"`
 }
 
 type glmUsageDetail struct {
@@ -148,12 +151,18 @@ type deepSeekBalanceEnvelope struct {
 // DetectQuotaFamily 按 baseURL 域特征判别额度家族与探测 origin（契约 §2）：
 //   - 含 bigmodel.cn → glm-bigmodel，origin 取该 URL 的 scheme://host 同域；
 //   - 含 api.z.ai → glm-zai，origin 固定 https://api.z.ai（无论配置路径）；
-//   - 含 api.deepseek.com → deepseek，origin 同域。
+//   - 含 api.deepseek.com → deepseek，origin 同域；
+//   - host==opencode.ai 且路径含 /zen → opencode-zen，origin 取归一后的 /v1
+//     段（…/zen/go → …/zen/go/v1，plan 路径随配置走，对未来非 go 档自适应）；
+//   - host==openrouter.ai → openrouter，origin 取归一后的 /api/v1 段。
 //
 // 无匹配返回 ("", "")——调用方落 Status=unsupported 缓存避免重复探测。
-// 家族判别只认 provider 自身配置的域，绝不外发第三方。
+// 家族判别只认 provider 自身配置的域，绝不外发第三方。新家族按 u.Host
+// 锚定判别（diting F-1：防 openrouter.aimirror.com 等内嵌官方域子串的
+// 中转/仿冒域误判；GLM/DeepSeek 既有子串匹配为历史行为，勿混改）。
 func DetectQuotaFamily(baseURL string) (family, origin string) {
-	lower := strings.ToLower(strings.TrimSpace(baseURL))
+	trimmed := strings.TrimSpace(baseURL)
+	lower := strings.ToLower(trimmed)
 	var matched string
 	switch {
 	case strings.Contains(lower, "bigmodel.cn"):
@@ -163,7 +172,20 @@ func DetectQuotaFamily(baseURL string) (family, origin string) {
 	case strings.Contains(lower, "api.deepseek.com"):
 		matched = QuotaFamilyDeepSeek
 	default:
-		return "", ""
+		// 新家族 host 锚定判别（diting F-1）：仅认官方域本体，防内嵌子串误判。
+		u, err := url.Parse(trimmed)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return "", ""
+		}
+		host := strings.ToLower(u.Host)
+		switch {
+		case host == "opencode.ai" && strings.Contains(strings.ToLower(u.Path), "/zen"):
+			matched = QuotaFamilyOpenCodeZen
+		case host == "openrouter.ai":
+			matched = QuotaFamilyOpenRouter
+		default:
+			return "", ""
+		}
 	}
 	if matched == QuotaFamilyGLMZai {
 		// z.ai 逆向结论：额度端点固定挂 api.z.ai 根域，不随 baseURL 路径走。
@@ -174,7 +196,46 @@ func DetectQuotaFamily(baseURL string) (family, origin string) {
 		return "", ""
 	}
 	// host 统一小写（域名大小写不敏感，归一后 origin 稳定可比较）。
-	return matched, u.Scheme + "://" + strings.ToLower(u.Host)
+	origin = u.Scheme + "://" + strings.ToLower(u.Host)
+	switch matched {
+	case QuotaFamilyOpenCodeZen:
+		// zen 额度端点挂 baseURL 的 /v1 段（plan 路径随配置走）。
+		return matched, origin + zenV1Path(u.Path)
+	case QuotaFamilyOpenRouter:
+		// openrouter 额度端点固定挂 /api/v1 段（key/credits）。
+		return matched, origin + openRouterAPIPath(u.Path)
+	}
+	return matched, origin
+}
+
+// quotaBasePath 归一 baseURL 路径：剥尾 /chat/completions 与 /responses、去尾 /
+// （勿复用 NormalizeOpenAIBaseURL：其不补 /v1、/api/v1 尾缀，语义不同）。
+func quotaBasePath(path string) string {
+	p := strings.TrimRight(strings.TrimSpace(path), "/")
+	for _, suffix := range []string{"/chat/completions", "/responses"} {
+		if strings.HasSuffix(p, suffix) {
+			p = strings.TrimRight(strings.TrimSuffix(p, suffix), "/")
+		}
+	}
+	return p
+}
+
+// zenV1Path zen 探测基路径：保证以 /v1 结尾（…/zen/go → …/zen/go/v1）。
+func zenV1Path(path string) string {
+	p := quotaBasePath(path)
+	if !strings.HasSuffix(p, "/v1") {
+		p += "/v1"
+	}
+	return p
+}
+
+// openRouterAPIPath openrouter 探测基路径：保证以 /api/v1 结尾。
+func openRouterAPIPath(path string) string {
+	p := quotaBasePath(path)
+	if !strings.HasSuffix(p, "/api/v1") {
+		p += "/api/v1"
+	}
+	return p
 }
 
 // quotaErrorEntry 构造未决 error 条目（首探落盘允许，Message 说明原因）。
@@ -278,8 +339,10 @@ func glmFamilyForOrigin(origin string) string {
 // glmQuotaWindows 筛选 GLM limits 条目并赋予窗口语义（v1.3.81 重写）。
 //
 // max 套餐实证响应（错误旧版假设的对照）：
-//   limits[0] = {type: TIME_LIMIT,  unit: 5(月),  usageDetails: [search-prime…]} → MCP 月额度
-//   limits[1] = {type: TOKENS_LIMIT, unit: 3(小时), number: 5}                → 5h prompt 窗口（主额度）
+//
+//	limits[0] = {type: TIME_LIMIT,  unit: 5(月),  usageDetails: [search-prime…]} → MCP 月额度
+//	limits[1] = {type: TOKENS_LIMIT, unit: 3(小时), number: 5}                → 5h prompt 窗口（主额度）
+//
 // 旧版把 TIME_LIMIT 首条当 primary 标「5h」、其余标「周」——在无周额度的
 // max 套餐上 MCP 月额被当 5h、5h 被当周（主上报错错位）。
 //
@@ -336,7 +399,7 @@ func glmQuotaWindows(limits []glmLimitEntry) []QuotaWindow {
 
 // glmWindowLabel 由实证枚举推导窗口时长标签。
 // unit 枚举（v1.3.81 max 套餐实证）：3=小时、5=月；未验证枚举不硬造标签
-//（返回空串，前端回退 kind 映射）。unit 为 flexString（数字形态）。
+// （返回空串，前端回退 kind 映射）。unit 为 flexString（数字形态）。
 func glmWindowLabel(l glmLimitEntry) string {
 	if !l.Number.set {
 		return ""
@@ -412,6 +475,264 @@ func parseLenientFloat(s string) float64 {
 		return 0
 	}
 	return v
+}
+
+// ---- OpenCode Zen（opencode.ai/zen，Go 等订阅档）----
+//
+// ProbeOpenCodeZenQuota 探测 Zen 订阅额度：GET {base}/usage，Bearer <key>。
+// 响应 usage.{rolling,weekly,monthly}，各 {status,percent,resetsAt}（上游
+// anomalyco/opencode 源码实证：percent=已用%（floor(min(100,usage/limit*100))）、
+// status∈{ok,rate-limited}、resetsAt=窗口重置时刻）。映射三窗口
+// primary/secondary/tertiary，Label「滚动/周/月」；服务端不下发滚动时长与
+// 绝对剩余数，WindowMin/Remaining 不硬造（零假数据）。状态分类：200→ok；
+// 401→no_key；403→no_plan（EntitlementError，key 有效未订对应套餐）；
+// 其它 HTTP/网络/解析失败→error。
+
+// zenUsageEnvelope Zen /usage 响应（字段宽松缺省）。
+type zenUsageEnvelope struct {
+	Usage zenUsageData `json:"usage"`
+}
+
+type zenUsageData struct {
+	Rolling zenUsageWindow `json:"rolling"`
+	Weekly  zenUsageWindow `json:"weekly"`
+	Monthly zenUsageWindow `json:"monthly"`
+}
+
+type zenUsageWindow struct {
+	Status   string     `json:"status"`   // ok | rate-limited（percent=100 已标红，仅展示参考）
+	Percent  flexNumber `json:"percent"`  // 已用 %
+	ResetsAt string     `json:"resetsAt"` // ISO8601 重置时刻
+}
+
+// zenErrorEnvelope Zen 错误体（{"type":"error","error":{type,message}}）。
+type zenErrorEnvelope struct {
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func ProbeOpenCodeZenQuota(ctx context.Context, client *http.Client, base, apiKey, providerName string) ProviderQuotaEntry {
+	family := QuotaFamilyOpenCodeZen
+	now := time.Now().Format(time.RFC3339)
+	if client == nil || strings.TrimSpace(base) == "" {
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenCodeZenAPI, "探测客户端或端点不可用")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/usage", nil)
+	if err != nil {
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenCodeZenAPI, "构造请求失败: "+err.Error())
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenCodeZenAPI, "请求失败: "+err.Error())
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, quotaProbeMaxBodyBytes))
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return ProviderQuotaEntry{Provider: providerName, Family: family, Status: QuotaStatusNoKey,
+			Message: briefQuotaMsg(zenStatusMessage("鉴权失败（HTTP 401）", body)), Source: QuotaSourceOpenCodeZenAPI, ProbedAt: now}
+	case resp.StatusCode == http.StatusForbidden:
+		return ProviderQuotaEntry{Provider: providerName, Family: family, Status: QuotaStatusNoPlan,
+			Message: briefQuotaMsg(zenStatusMessage("未开通对应订阅套餐（HTTP 403）", body)), Source: QuotaSourceOpenCodeZenAPI, ProbedAt: now}
+	case resp.StatusCode != http.StatusOK:
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenCodeZenAPI, fmt.Sprintf("HTTP %d", resp.StatusCode))
+	}
+	var env zenUsageEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenCodeZenAPI, "响应解析失败: "+err.Error())
+	}
+	windows := zenQuotaWindows(env.Usage)
+	if len(windows) == 0 {
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenCodeZenAPI, "响应缺少 usage 用量数据")
+	}
+	return ProviderQuotaEntry{Provider: providerName, Family: family, Status: QuotaStatusOK,
+		Windows: windows, Source: QuotaSourceOpenCodeZenAPI, ProbedAt: now}
+}
+
+// zenStatusMessage 拼接状态前缀与错误体 message（无 message 时只留前缀）。
+func zenStatusMessage(prefix string, body []byte) string {
+	var env zenErrorEnvelope
+	if err := json.Unmarshal(body, &env); err != nil || strings.TrimSpace(env.Error.Message) == "" {
+		return prefix
+	}
+	return prefix + "：" + strings.TrimSpace(env.Error.Message)
+}
+
+// zenQuotaWindows usage 三窗口映射（percent 缺省的窗口跳过，不硬造）。
+func zenQuotaWindows(u zenUsageData) []QuotaWindow {
+	type slot struct {
+		kind, label string
+		w           zenUsageWindow
+	}
+	slots := []slot{
+		{QuotaWindowPrimary, "滚动", u.Rolling},
+		{QuotaWindowSecondary, "周", u.Weekly},
+		{QuotaWindowTertiary, "月", u.Monthly},
+	}
+	var windows []QuotaWindow
+	for _, s := range slots {
+		if !s.w.Percent.set {
+			continue
+		}
+		w := QuotaWindow{Kind: s.kind, Label: s.label, UsedPercent: s.w.Percent.v}
+		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(s.w.ResetsAt)); err == nil {
+			w.ResetsAt = t.Unix()
+		}
+		windows = append(windows, w)
+	}
+	return windows
+}
+
+// ---- OpenRouter（openrouter.ai/api/v1）----
+//
+// ProbeOpenRouterQuota 探测 OpenRouter 额度：主跳 GET {base}/credits（账户级
+// total_credits=累计购入 / total_usage=累计已用，实证普通 key 可用）；主跳非 200
+// 时降级 GET {base}/key（per-key 口径：usage + limit/limit_remaining，Message
+// 标注口径差异，不冒充余额）。状态分类：任一跳 200→ok；两跳均 401/403→
+// no_key；其余→error（未决不覆盖 ok 缓存）。
+
+// openRouterCreditsEnvelope /credits 响应（兼容 data 包裹与平铺两种形态）。
+type openRouterCreditsEnvelope struct {
+	Data *struct {
+		TotalCredits flexNumber `json:"total_credits"`
+		TotalUsage   flexNumber `json:"total_usage"`
+	} `json:"data"`
+	TotalCredits flexNumber `json:"total_credits"`
+	TotalUsage   flexNumber `json:"total_usage"`
+}
+
+// openRouterKeyEnvelope /key 响应（只取额度相关字段；rate_limit 已废弃忽略）。
+type openRouterKeyEnvelope struct {
+	Data *struct {
+		Limit          *flexNumber `json:"limit"`
+		LimitRemaining *flexNumber `json:"limit_remaining"`
+		Usage          flexNumber  `json:"usage"`
+	} `json:"data"`
+}
+
+func ProbeOpenRouterQuota(ctx context.Context, client *http.Client, base, apiKey, providerName string) ProviderQuotaEntry {
+	family := QuotaFamilyOpenRouter
+	now := time.Now().Format(time.RFC3339)
+	if client == nil || strings.TrimSpace(base) == "" {
+		return quotaErrorEntry(providerName, family, QuotaSourceOpenRouterAPI, "探测客户端或端点不可用")
+	}
+	trimmed := strings.TrimRight(base, "/")
+	// 主跳 /credits（账户余额口径）。
+	pStatus, pBody, pErr := openRouterGet(ctx, client, trimmed+"/credits", apiKey)
+	if pErr == nil && pStatus == http.StatusOK {
+		if entry, ok := openRouterCreditsEntry(providerName, pBody, now); ok {
+			return entry
+		}
+		pErr = errOpenRouterParse
+	}
+	// 降级跳 /key（per-key 口径，Message 标注）。
+	sStatus, sBody, sErr := openRouterGet(ctx, client, trimmed+"/key", apiKey)
+	if sErr == nil && sStatus == http.StatusOK {
+		if entry, ok := openRouterKeyEntry(providerName, sBody, now); ok {
+			entry.Message = "余额端点不可用，按 Key 额度上限口径"
+			return entry
+		}
+		sErr = errOpenRouterParse
+	}
+	if isHTTPAuthStatus(pStatus) && isHTTPAuthStatus(sStatus) {
+		return ProviderQuotaEntry{Provider: providerName, Family: family, Status: QuotaStatusNoKey,
+			Message: briefQuotaMsg(fmt.Sprintf("鉴权失败（HTTP %d）", sStatus)), Source: QuotaSourceOpenRouterAPI, ProbedAt: now}
+	}
+	msg := "主跳 /credits 与降级 /key 均失败：credits " + openRouterLegSummary(pErr, pStatus) + "；key " + openRouterLegSummary(sErr, sStatus)
+	return quotaErrorEntry(providerName, family, QuotaSourceOpenRouterAPI, msg)
+}
+
+// errOpenRouterParse 单跳 200 但响应不可用（解析失败/缺额字段）的哨兵错误。
+var errOpenRouterParse = fmt.Errorf("响应解析失败或缺少额度字段")
+
+// openRouterGet 单跳 GET（状态码/响应体/网络错误三元组）。
+func openRouterGet(ctx context.Context, client *http.Client, endpoint, apiKey string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, quotaProbeMaxBodyBytes))
+	return resp.StatusCode, body, nil
+}
+
+func isHTTPAuthStatus(code int) bool {
+	return code == http.StatusUnauthorized || code == http.StatusForbidden
+}
+
+// openRouterLegSummary 单跳失败概要（错误或 HTTP 码，面向 Message 拼接）。
+func openRouterLegSummary(err error, status int) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("HTTP %d", status)
+}
+
+// openRouterCreditsEntry /credits → 余额条目（Remaining=Total-Used；指针保留 0 值）。
+func openRouterCreditsEntry(providerName string, body []byte, now string) (ProviderQuotaEntry, bool) {
+	var env openRouterCreditsEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ProviderQuotaEntry{}, false
+	}
+	total, usage := env.TotalCredits, env.TotalUsage
+	if env.Data != nil {
+		total, usage = env.Data.TotalCredits, env.Data.TotalUsage
+	}
+	if !total.set && !usage.set {
+		return ProviderQuotaEntry{}, false
+	}
+	totalV, usedV := total.v, usage.v
+	remaining := totalV - usedV
+	return ProviderQuotaEntry{
+		Provider: providerName,
+		Family:   QuotaFamilyOpenRouter,
+		Status:   QuotaStatusOK,
+		Balance: &QuotaBalance{
+			Currency:  "USD",
+			Total:     totalV,
+			Used:      &usedV,
+			Remaining: &remaining,
+		},
+		Source:   QuotaSourceOpenRouterAPI,
+		ProbedAt: now,
+	}, true
+}
+
+// openRouterKeyEntry /key → 降级条目（per-key 口径；limit_remaining 缺省不填）。
+func openRouterKeyEntry(providerName string, body []byte, now string) (ProviderQuotaEntry, bool) {
+	var env openRouterKeyEnvelope
+	if err := json.Unmarshal(body, &env); err != nil || env.Data == nil {
+		return ProviderQuotaEntry{}, false
+	}
+	d := env.Data
+	if !d.Usage.set && d.LimitRemaining == nil {
+		return ProviderQuotaEntry{}, false
+	}
+	usedV := d.Usage.v
+	balance := &QuotaBalance{Currency: "USD", Used: &usedV}
+	if d.LimitRemaining != nil && d.LimitRemaining.set {
+		remainV := d.LimitRemaining.v
+		balance.Remaining = &remainV
+		if d.Limit != nil && d.Limit.set {
+			balance.Total = d.Limit.v
+		}
+	}
+	return ProviderQuotaEntry{
+		Provider: providerName,
+		Family:   QuotaFamilyOpenRouter,
+		Status:   QuotaStatusOK,
+		Balance:  balance,
+		Source:   QuotaSourceOpenRouterAPI,
+		ProbedAt: now,
+	}, true
 }
 
 // codexQuotaLine rollout jsonl 单行中和额度相关的字段子集（宽松：字段可缺）。
@@ -644,6 +965,15 @@ func cloneProviderQuotaEntry(e ProviderQuotaEntry) ProviderQuotaEntry {
 	}
 	if e.Balance != nil {
 		b := *e.Balance
+		// 指针字段解引用拷贝（v1.3.86 Used/Remaining）：防并发写穿共享引用。
+		if b.Used != nil {
+			u := *b.Used
+			b.Used = &u
+		}
+		if b.Remaining != nil {
+			r := *b.Remaining
+			b.Remaining = &r
+		}
 		e.Balance = &b
 	}
 	return e

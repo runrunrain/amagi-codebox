@@ -116,8 +116,8 @@ func (a *App) ProbeProviderQuota(name string) config.ProviderQuotaEntry {
 	return entry
 }
 
-// executeQuotaProbe 执行单个 provider 的额度探测：解析 baseURL 家族 → 三选
-// 一分发。返回的 Entry 已含全部元数据；cacheable=false 表示结论不应落缓存
+// executeQuotaProbe 执行单个 provider 的额度探测：解析 baseURL 家族 → 分发
+// 对应探测器。返回的 Entry 已含全部元数据；cacheable=false 表示结论不应落缓存
 // （provider 不存在）；本函数不落盘（由调用方收尾）。
 func (a *App) executeQuotaProbe(name string) (config.ProviderQuotaEntry, bool) {
 	provider, err := a.Config.GetProvider(name)
@@ -150,17 +150,27 @@ func (a *App) executeQuotaProbe(name string) (config.ProviderQuotaEntry, bool) {
 	defer cancel()
 	// client 不设内置超时：整体时限由 ctx 控制（10s），避免双超时语义打架。
 	client := &http.Client{}
+	return probeQuotaByFamily(ctx, client, family, origin, apiKey, name), true
+}
+
+// probeQuotaByFamily 家族分发（独立成函数便于 httptest 直测分发归属；
+// unsupported 语义与旧 switch default 一致）。
+func probeQuotaByFamily(ctx context.Context, client *http.Client, family, origin, apiKey, name string) config.ProviderQuotaEntry {
 	switch family {
 	case config.QuotaFamilyGLMBigmodel, config.QuotaFamilyGLMZai:
-		return config.ProbeGLMQuota(ctx, client, origin, apiKey, name), true
+		return config.ProbeGLMQuota(ctx, client, origin, apiKey, name)
 	case config.QuotaFamilyDeepSeek:
-		return config.ProbeDeepSeekQuota(ctx, client, origin, apiKey, name), true
+		return config.ProbeDeepSeekQuota(ctx, client, origin, apiKey, name)
+	case config.QuotaFamilyOpenCodeZen:
+		return config.ProbeOpenCodeZenQuota(ctx, client, origin, apiKey, name)
+	case config.QuotaFamilyOpenRouter:
+		return config.ProbeOpenRouterQuota(ctx, client, origin, apiKey, name)
 	default:
 		return config.ProviderQuotaEntry{
 			Provider: name, Family: family, Status: config.QuotaStatusUnsupported,
 			Message:  "该服务的 baseURL 不属于支持额度查询的家族",
 			ProbedAt: time.Now().Format(time.RFC3339),
-		}, true
+		}
 	}
 }
 
@@ -171,6 +181,10 @@ func quotaSourceForFamily(family string) string {
 		return config.QuotaSourceGLMAPI
 	case config.QuotaFamilyDeepSeek:
 		return config.QuotaSourceDeepSeekAPI
+	case config.QuotaFamilyOpenCodeZen:
+		return config.QuotaSourceOpenCodeZenAPI
+	case config.QuotaFamilyOpenRouter:
+		return config.QuotaSourceOpenRouterAPI
 	default:
 		return ""
 	}

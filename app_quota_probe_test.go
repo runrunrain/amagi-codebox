@@ -6,6 +6,9 @@ package main
 // 用 httptest 覆盖；此处只验 App 组装语义，不外发真实请求。
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -139,4 +142,47 @@ func TestQuotaProbeSingleFlight(t *testing.T) {
 		t.Fatal("finished flight slot must be reusable")
 	}
 	app.finishQuotaFlight("x", f3, want)
+}
+
+// quotaSourceForFamily 全家族映射（含 v1.3.86 新家族）。
+func TestQuotaSourceForFamily(t *testing.T) {
+	cases := map[string]string{
+		config.QuotaFamilyGLMBigmodel: config.QuotaSourceGLMAPI,
+		config.QuotaFamilyGLMZai:      config.QuotaSourceGLMAPI,
+		config.QuotaFamilyDeepSeek:    config.QuotaSourceDeepSeekAPI,
+		config.QuotaFamilyOpenCodeZen: config.QuotaSourceOpenCodeZenAPI,
+		config.QuotaFamilyOpenRouter:  config.QuotaSourceOpenRouterAPI,
+		config.QuotaFamilyCodexSub:    "",
+		"":                            "",
+	}
+	for family, want := range cases {
+		if got := quotaSourceForFamily(family); got != want {
+			t.Errorf("quotaSourceForFamily(%q) = %q, want %q", family, got, want)
+		}
+	}
+}
+
+// probeQuotaByFamily 分发归属：zen→/usage、openrouter→/credits、未知家族→unsupported。
+func TestProbeQuotaByFamily_Dispatch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/usage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"rolling":{"status":"ok","percent":10,"resetsAt":"2026-09-22T12:00:00Z"}}}`))
+	})
+	mux.HandleFunc("/credits", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_credits":10,"total_usage":1}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	ctx := context.Background()
+	if e := probeQuotaByFamily(ctx, srv.Client(), config.QuotaFamilyOpenCodeZen, srv.URL, "sk", "p"); e.Status != config.QuotaStatusOK || e.Source != config.QuotaSourceOpenCodeZenAPI {
+		t.Errorf("zen dispatch = (%q,%q), want (ok,opencode-zen-api)", e.Status, e.Source)
+	}
+	if e := probeQuotaByFamily(ctx, srv.Client(), config.QuotaFamilyOpenRouter, srv.URL, "sk", "p"); e.Status != config.QuotaStatusOK || e.Source != config.QuotaSourceOpenRouterAPI {
+		t.Errorf("openrouter dispatch = (%q,%q), want (ok,openrouter-api)", e.Status, e.Source)
+	}
+	if e := probeQuotaByFamily(ctx, srv.Client(), "ghost-family", srv.URL, "sk", "p"); e.Status != config.QuotaStatusUnsupported {
+		t.Errorf("unknown family = %q, want unsupported", e.Status)
+	}
 }

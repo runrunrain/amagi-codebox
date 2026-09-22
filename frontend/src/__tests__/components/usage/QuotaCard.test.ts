@@ -84,7 +84,7 @@ describe('QuotaCard 余额型：¥ 数字排版（原币种零换算）', () => 
 
 describe('QuotaCard 灰卡文案矩阵', () => {
   it('no_plan / no_key / unsupported / error 四态文案', () => {
-    expect(grayCardText(entry({ status: 'no_plan' }))).toBe('该 Key 未开通 Coding Plan 套餐');
+    expect(grayCardText(entry({ status: 'no_plan' }))).toBe('该 Key 未开通对应套餐');
     expect(grayCardText(entry({ status: 'no_key' }))).toBe('未配置 API Key');
     expect(grayCardText(entry({ status: 'unsupported' }))).toBe('该服务暂不支持额度查询');
     expect(grayCardText(entry({ status: 'error', message: '401 Unauthorized' }))).toBe('401 Unauthorized');

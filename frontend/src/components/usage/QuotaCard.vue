@@ -32,11 +32,19 @@
         </div>
         <QuotaBar :used-percent="secondary.used_percent" :label="percentText(secondary)" />
       </div>
+      <div v-if="tertiary" class="q-window">
+        <div class="q-window-head">
+          <span class="q-window-label">{{ tertiaryLabel }}</span>
+          <span class="q-window-reset mono">{{ tertiaryCountdown }}</span>
+        </div>
+        <QuotaBar :used-percent="tertiary.used_percent" :label="percentText(tertiary)" />
+      </div>
     </template>
 
-    <!-- ok · 余额型（DeepSeek）：¥ 大数字排版，不渲染进度条（无分母不硬造） -->
+    <!-- ok · 余额型（DeepSeek / OpenRouter）：大数字排版，不渲染进度条（无分母不硬造） -->
     <div v-else-if="isOk && entry.balance" class="q-balance">
       <span class="q-balance-total mono accent">{{ balanceTotal }}</span>
+      <span v-if="balanceDetail" class="q-balance-line mono">{{ balanceDetail }}</span>
       <span v-if="entry.balance.topped_up" class="q-balance-line mono">充值 {{ balanceToppedUp }}</span>
       <span v-if="entry.balance.granted" class="q-balance-line mono">赠送 {{ balanceGranted }}</span>
     </div>
@@ -65,8 +73,8 @@
 <script setup lang="ts">
 /**
  * QuotaCard — 单服务额度卡（设计 §6 状态矩阵）。
- * 按 Family 分形态：窗口型（GLM/Codex，primary=5h、secondary=周，
- * GLM 的 time_limit 归 primary）与余额型（DeepSeek，¥ 数字排版）。
+ * 按 Family 分形态：窗口型（GLM/Codex 1–2 条 / Zen 3 条）与余额型
+ *（DeepSeek / OpenRouter，原币种排版；OpenRouter 剩余+已用明细）。
  * 灰卡态（no_plan/no_key/unsupported/error）保留 provider 名与刷新入口。
  * compact：Web 平面 strip 弹层内的精简渲染（同分支、收紧留白）。
  * 倒计时挂载时计算一次，不轮询（设计 §6）。
@@ -81,6 +89,8 @@ import {
   codexCreditsBadge,
   familySubLabel,
   formatBalanceAmount,
+  formatBalanceDetail,
+  formatBalanceHeadline,
   formatClock,
   formatResetCountdown,
   grayCardText,
@@ -88,6 +98,7 @@ import {
   primaryWindowOf,
   secondaryWindowOf,
   sourceLabel,
+  tertiaryWindowOf,
   windowLabel,
 } from './quotaModel';
 import type { ProviderQuotaEntry, QuotaWindow } from './quotaModel';
@@ -120,19 +131,23 @@ const stale = computed(() => isStaleOk(props.entry));
 // 窗口型：GLM time_limit 已在 primaryWindowOf 内归并到主窗口
 const primary = computed(() => primaryWindowOf(props.entry));
 const secondary = computed(() => secondaryWindowOf(props.entry));
+const tertiary = computed(() => tertiaryWindowOf(props.entry));
 const primaryLabel = computed(() => windowLabel(primary.value));
 const secondaryLabel = computed(() => windowLabel(secondary.value));
+const tertiaryLabel = computed(() => windowLabel(tertiary.value));
 // 倒计时挂载时计算一次（computed 依赖不变即不重算，无轮询）
 const primaryCountdown = computed(() => formatResetCountdown(primary.value?.resets_at));
 const secondaryCountdown = computed(() => formatResetCountdown(secondary.value?.resets_at));
+const tertiaryCountdown = computed(() => formatResetCountdown(tertiary.value?.resets_at));
 const hasGlmRemaining = computed(
   () =>
     (props.entry.family === QUOTA_FAMILY_GLM_BIGMODEL || props.entry.family === QUOTA_FAMILY_GLM_ZAI) &&
     typeof primary.value?.remaining === 'number',
 );
 
-// 余额排版（原币种，零换算）
-const balanceTotal = computed(() => formatBalanceAmount(props.entry.balance));
+// 余额排版（原币种，零换算；OpenRouter 口径大数字=剩余 + 已用/共明细）
+const balanceTotal = computed(() => formatBalanceHeadline(props.entry.balance));
+const balanceDetail = computed(() => formatBalanceDetail(props.entry.balance));
 const balanceToppedUp = computed(() =>
   props.entry.balance ? formatBalanceAmount({ ...props.entry.balance, total: props.entry.balance.topped_up ?? 0 }) : '',
 );

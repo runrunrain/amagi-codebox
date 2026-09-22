@@ -11,7 +11,7 @@
     <EmptyState
       v-else-if="familyCards.length === 0 && otherProviders.length === 0"
       title="暂无额度数据"
-      description="GLM Coding Plan / DeepSeek / Codex 订阅的额度尚未探测；点击下方按钮立即刷新"
+      description="GLM Coding Plan / DeepSeek / Codex 订阅 / OpenCode Zen / OpenRouter 的额度尚未探测；点击下方按钮立即刷新"
     >
       <template #action>
         <AppButton variant="primary" :disabled="quotaStore.probingAll" @click="handleProbeAll">
@@ -55,8 +55,9 @@
 <script setup lang="ts">
 /**
  * QuotaPanel — 额度查询页（设计 §6）。
- * 挂载加载 GetProviderQuotas 全量缓存；四类卡：GLM 双通道（有则渲染）、
- * DeepSeek、Codex 订阅（固定键 codex）、「其他提供商」聚合灰卡。
+ * 挂载加载 GetProviderQuotas 全量缓存；家族卡（GLM 双通道 / DeepSeek /
+ * OpenCode Zen / OpenRouter，有则渲染）、Codex 订阅（固定键 codex）、
+ * 「其他提供商」聚合灰卡。
  * 「全部刷新」按钮与数据时间在壳层 PageHead actions（UsageView 按
  * 子页切换）；本页负责网格、单卡刷新与空/错态。
  */
@@ -75,6 +76,8 @@ import {
   QUOTA_FAMILY_GLM_ZAI,
   QUOTA_FAMILY_DEEPSEEK,
   QUOTA_FAMILY_CODEX_SUB,
+  QUOTA_FAMILY_OPENCODE_ZEN,
+  QUOTA_FAMILY_OPENROUTER,
   SUPPORTED_QUOTA_FAMILIES,
   familyDisplayName,
 } from './quotaModel';
@@ -102,8 +105,14 @@ function latestOfFamily(family: string): ProviderQuotaEntry | null {
 
 const familyCards = computed<FamilyCard[]>(() => {
   const cards: FamilyCard[] = [];
-  // GLM 双通道各一卡（无对应条目则不渲染）
-  for (const family of [QUOTA_FAMILY_GLM_BIGMODEL, QUOTA_FAMILY_GLM_ZAI, QUOTA_FAMILY_DEEPSEEK]) {
+  // GLM 双通道 + DeepSeek / OpenCode Zen / OpenRouter 各一卡（无对应条目则不渲染）
+  for (const family of [
+    QUOTA_FAMILY_GLM_BIGMODEL,
+    QUOTA_FAMILY_GLM_ZAI,
+    QUOTA_FAMILY_DEEPSEEK,
+    QUOTA_FAMILY_OPENCODE_ZEN,
+    QUOTA_FAMILY_OPENROUTER,
+  ]) {
     const entry = latestOfFamily(family);
     if (entry) cards.push({ key: family, title: familyDisplayName(family), entry });
   }

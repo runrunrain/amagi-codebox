@@ -434,6 +434,8 @@ export namespace config {
 	    total: number;
 	    granted?: number;
 	    topped_up?: number;
+	    used?: number;
+	    remaining?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new QuotaBalance(source);
@@ -445,6 +447,8 @@ export namespace config {
 	        this.total = source["total"];
 	        this.granted = source["granted"];
 	        this.topped_up = source["topped_up"];
+	        this.used = source["used"];
+	        this.remaining = source["remaining"];
 	    }
 	}
 	export class QuotaWindow {

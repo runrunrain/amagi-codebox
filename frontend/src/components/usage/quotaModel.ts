@@ -18,6 +18,8 @@ export const QUOTA_FAMILY_GLM_BIGMODEL = 'glm-bigmodel';
 export const QUOTA_FAMILY_GLM_ZAI = 'glm-zai';
 export const QUOTA_FAMILY_DEEPSEEK = 'deepseek';
 export const QUOTA_FAMILY_CODEX_SUB = 'codex-sub';
+export const QUOTA_FAMILY_OPENCODE_ZEN = 'opencode-zen';
+export const QUOTA_FAMILY_OPENROUTER = 'openrouter';
 
 /** 支持额度查询的三家家族（「其他提供商」聚合卡排除判定用） */
 export const SUPPORTED_QUOTA_FAMILIES = new Set([
@@ -25,6 +27,8 @@ export const SUPPORTED_QUOTA_FAMILIES = new Set([
   QUOTA_FAMILY_GLM_ZAI,
   QUOTA_FAMILY_DEEPSEEK,
   QUOTA_FAMILY_CODEX_SUB,
+  QUOTA_FAMILY_OPENCODE_ZEN,
+  QUOTA_FAMILY_OPENROUTER,
 ]);
 
 /** 额度页卡片头家族显示名（设计 §6 线框） */
@@ -38,6 +42,10 @@ export function familyDisplayName(family: string): string {
       return 'DeepSeek';
     case QUOTA_FAMILY_CODEX_SUB:
       return 'Codex 订阅';
+    case QUOTA_FAMILY_OPENCODE_ZEN:
+      return 'OpenCode Zen';
+    case QUOTA_FAMILY_OPENROUTER:
+      return 'OpenRouter';
     default:
       return '额度';
   }
@@ -55,6 +63,8 @@ export function familyShortName(family: string): string {
   if (family === QUOTA_FAMILY_GLM_BIGMODEL || family === QUOTA_FAMILY_GLM_ZAI) return 'GLM';
   if (family === QUOTA_FAMILY_DEEPSEEK) return 'DeepSeek';
   if (family === QUOTA_FAMILY_CODEX_SUB) return 'Codex';
+  if (family === QUOTA_FAMILY_OPENCODE_ZEN) return 'Zen';
+  if (family === QUOTA_FAMILY_OPENROUTER) return 'OpenRouter';
   return family || '—';
 }
 
@@ -63,6 +73,8 @@ const SOURCE_LABELS: Record<string, string> = {
   'glm-api': 'API',
   'deepseek-api': 'API',
   'codex-session-file': '最近会话',
+  'opencode-zen-api': 'API',
+  'openrouter-api': 'API',
 };
 
 /**
@@ -127,6 +139,12 @@ export function primaryWindowOf(entry: ProviderQuotaEntry | null | undefined): Q
 export function secondaryWindowOf(entry: ProviderQuotaEntry | null | undefined): QuotaWindow | null {
   const windows = entry?.windows ?? [];
   return windows.find((w) => w?.kind === 'secondary') ?? null;
+}
+
+/** 第三窗口：tertiary（Zen 月窗口，v1.3.86 起新增） */
+export function tertiaryWindowOf(entry: ProviderQuotaEntry | null | undefined): QuotaWindow | null {
+  const windows = entry?.windows ?? [];
+  return windows.find((w) => w?.kind === 'tertiary') ?? null;
 }
 
 /** 窗口显示名：secondary 统称「周窗口」，主窗口按 window_minutes 推导（300→5h） */
@@ -240,13 +258,37 @@ export function formatBalanceAmount(balance: QuotaBalance | null | undefined): s
   return balance.currency === 'CNY' ? `¥${amount}` : `${balance.currency} ${amount}`;
 }
 
+/**
+ * 余额 headline（v1.3.86）：OpenRouter 口径（remaining 字段存在，含 0）显示
+ * 剩余金额；否则显示 total（DeepSeek 语义不变）。
+ */
+export function formatBalanceHeadline(balance: QuotaBalance | null | undefined): string {
+  if (!balance) return '—';
+  if (typeof balance.remaining === 'number') {
+    return formatBalanceAmount({ ...balance, total: balance.remaining });
+  }
+  // 降级口径（仅有 used、无上限分母）：不硬造总额，headline 留空由明细承接
+  if (typeof balance.used === 'number' && !(balance.total > 0)) return '—';
+  return formatBalanceAmount(balance);
+}
+
+/** 余额明细行（OpenRouter 口径）：「已用 X · 共 Y」；无 used 字段返回空串 */
+export function formatBalanceDetail(balance: QuotaBalance | null | undefined): string {
+  if (!balance || typeof balance.used !== 'number') return '';
+  const used = formatBalanceAmount({ ...balance, total: balance.used });
+  if (Number.isFinite(balance.total) && balance.total > 0) {
+    return `已用 ${used} · 共 ${formatBalanceAmount(balance)}`;
+  }
+  return `已用 ${used}`;
+}
+
 // === 灰卡文案矩阵 / Gray-state matrix（设计 §6 状态矩阵）===
 
 export function grayCardText(entry: ProviderQuotaEntry | null | undefined): string {
   if (!entry) return '暂无额度数据';
   switch (entry.status) {
     case 'no_plan':
-      return '该 Key 未开通 Coding Plan 套餐';
+      return '该 Key 未开通对应套餐';
     case 'no_key':
       return '未配置 API Key';
     case 'unsupported':
@@ -316,8 +358,14 @@ export function quotaStripSummary(entry: ProviderQuotaEntry | null | undefined):
       };
     }
     if (entry.balance) {
+      // diting F-2：降级仅 used 形态 headline='—' 时改拼「已用 X」，不让已有信息丢失
+      const headline = formatBalanceHeadline(entry.balance);
+      const amount =
+        headline === '—' && typeof entry.balance.used === 'number'
+          ? `已用 ${formatBalanceAmount({ ...entry.balance, total: entry.balance.used })}`
+          : headline;
       return {
-        text: `${familyShortName(entry.family)} · ${formatBalanceAmount(entry.balance)}`,
+        text: `${familyShortName(entry.family)} · ${amount}`,
         tone: 'data',
         disabled: false,
         title: '',
