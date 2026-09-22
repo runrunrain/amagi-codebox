@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.87] - 2026-09-22
+
+### Added
+
+- **Web 平面链接可点击跳转（跨仓配套 amagi-pi v2.7.4）**：pi 会话 Web 平面 iframe（sandbox 无 allow-popups）内 markdown 链接的 target=_blank 被静默阻断——新增 webui → 宿主 `amagi:open-url` 消息桥（与既有 insert-input 同构的反向通道）：WebPlaneHost 监听 message，`parseOpenUrlMessage` 纯函数守卫（token 凭证与构造 iframe URL 时严格相等 + http(s) 白名单 + 2048 长度上限），通过后经新增 App 绑定 `OpenExternalURL` 打开（Go 侧 `ValidateExternalURL` 二次白名单：仅 http/https 且带 host，纵深防御；`wailsRuntime.BrowserOpenURL` 走系统默认浏览器）。前端封装 `api/webui.openExternalURL` 经运行时注入的 window.go 绑定直调（零 wailsjs 再生成依赖，旧二进制无绑定时 reject 降级）。测试：`app_open_external_url_test.go`（正负成对 13+1 例）+ `frontend/src/__tests__/components/terminal/openUrlBridge.test.ts`（5 例：凭证/type/scheme/长度/字段类型）。
+
 ## [1.3.86] - 2026-09-22
 
 ### Added
