@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.86] - 2026-09-22
+
+### Added
+
+- **额度查询拓展：OpenCode Zen Go 与 OpenRouter 家族接入**：`DetectQuotaFamily` 新增 `opencode-zen`/`openrouter` 两家族判别（host 锚定匹配，防中转/仿冒域内嵌子串误判）。Zen Go 探测 `{base}/usage` 三窗口全量映射（滚动 primary/周 secondary/月 tertiary——`QuotaWindow.Kind` 值域新增 `tertiary`，reset 时刻统一转换）；OpenRouter 主跳 `/credits` 出总额/已用/剩余（`QuotaBalance` 新增 `Used/Remaining` 指针字段表达存在性），主跳失败降级 `/key` 口径标注不硬造总额。额度卡新增第三窗口渲染槽与余额明细行，strip 摘要余额口径走 headline、降级形态拼「已用 X」；no_plan 文案通用化「该 Key 未开通对应套餐」。设计与实现报告归档 `agent-outputs/2026-09-22-quota-ext-zen-openrouter/`（含谛听 quick 复审 PASS_WITH_MINOR 与 2 项 Minor 修复记录：判别 host 锚定回归、strip 降级口径）。
+
 ## [1.3.85] - 2026-09-22
 
 ### Fixed
