@@ -264,7 +264,7 @@ test.describe('M1-D2 PG-01 真服务器配对 E2E（无 mock）', () => {
     // 诚实降级 → M2-INT：harness 现已装配真实 session adapter，index 2-9 +
     // /ws/v1 全激活，大厅不再呈「宿主会话服务不可用」，而是真实空态
     // （尚未造会话）。这是 M2-INT harness 接线的直接证据。
-    await expect(page.locator('.empty-state')).toContainText('还没有会话')
+    await expect(page.locator('.empty-state')).toContainText('当前没有打开的会话')
     await expect(page.locator('.status-bar')).toContainText('会话：无会话')
     // 配对材料不进地址栏。
     expect(page.url()).not.toContain('code=')

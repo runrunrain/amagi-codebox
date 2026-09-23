@@ -114,3 +114,50 @@ func idsOf(snaps []AuthoritySnapshot) []string {
 	}
 	return ids
 }
+
+// TestRemoteListOrderMatchesDesktopAcrossDSTOffset 锁定 M1 修复：桌面 List()
+// 曾对 RFC3339 字符串二次排序，跨 DST 偏移（+02:00/+01:00）时字符串序与
+// 时间序相反，与远程列表分叉。两端现在同一时间序 + ID tiebreak。
+func TestRemoteListOrderMatchesDesktopAcrossDSTOffset(t *testing.T) {
+	manager := NewManager()
+	// A=00:30Z（本地 02:30+02:00），B=01:15Z（本地 02:15+01:00）：时间序 B 新，
+	// RFC3339 字符串序却是 A 在前——修复前的桌面二次排序恰好把顺序排反。
+	a := time.Date(2026, 10, 25, 2, 30, 0, 0, time.FixedZone("+02:00", 2*60*60))
+	b := time.Date(2026, 10, 25, 2, 15, 0, 0, time.FixedZone("+01:00", 60*60))
+	activateEmbeddedAt(t, manager, "sess-a", a)
+	activateEmbeddedAt(t, manager, "sess-b", b)
+
+	remote := idsOf(manager.ListRemoteSafeSnapshots())
+	if len(remote) != 2 || remote[0] != "sess-b" || remote[1] != "sess-a" {
+		t.Fatalf("remote list = %v, want [sess-b sess-a] (time order)", remote)
+	}
+	var desktop []string
+	for _, info := range manager.List() {
+		desktop = append(desktop, info.ID)
+	}
+	if len(desktop) != 2 || desktop[0] != remote[0] || desktop[1] != remote[1] {
+		t.Fatalf("desktop order %v diverges from remote %v (DST string-sort regression)", desktop, remote)
+	}
+}
+
+// TestRemoteListOrderSameSecondTiebreak 锁定同秒并列：两端均按 sessionId
+// 升序打破（桌面曾是 sort.Slice 不稳定任意序）。
+func TestRemoteListOrderSameSecondTiebreak(t *testing.T) {
+	manager := NewManager()
+	sec := time.Date(2026, 10, 25, 3, 0, 0, 0, time.UTC)
+	// 同秒不同纳秒；ID 字典序与启动先后故意相反（z 先启、a 后启）。
+	activateEmbeddedAt(t, manager, "sess-z", sec.Add(100*time.Millisecond))
+	activateEmbeddedAt(t, manager, "sess-a", sec.Add(200*time.Millisecond))
+
+	remote := idsOf(manager.ListRemoteSafeSnapshots())
+	if len(remote) != 2 || remote[0] != "sess-a" || remote[1] != "sess-z" {
+		t.Fatalf("remote tiebreak = %v, want [sess-a sess-z] (id asc)", remote)
+	}
+	var desktop []string
+	for _, info := range manager.List() {
+		desktop = append(desktop, info.ID)
+	}
+	if len(desktop) != 2 || desktop[0] != remote[0] || desktop[1] != remote[1] {
+		t.Fatalf("desktop tiebreak %v diverges from remote %v", desktop, remote)
+	}
+}

@@ -296,8 +296,8 @@ function openWorkspace(session: SessionSummary) {
               <line x1="13" y1="14" x2="17" y2="14" />
             </svg>
           </div>
-          <p class="empty-title">还没有会话</p>
-          <p class="empty-desc">从上方选择一类 CLI 启动新会话；启动后即可在这里观察与控制。</p>
+          <p class="empty-title">当前没有打开的会话</p>
+          <p class="empty-desc">列表与桌面端保持一致，仅显示打开的会话；从上方选择一类 CLI 启动新会话，启动后即可在这里观察与控制。</p>
         </div>
 
         <!-- 会话卡片列表 -->

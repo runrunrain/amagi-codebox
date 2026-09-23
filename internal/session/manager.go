@@ -263,8 +263,11 @@ type legacyListSnapshot struct {
 // entry's guard. It performs NO jsonl title backfill. Callers that only need
 // counts or IDs (RunningCount, GetRunning, ClearStopped) use this to avoid the
 // per-poll jsonl scan that List() performs for stopped claudecode sessions.
-// Results are sorted newest-first (by StartedAt) for a deterministic order
-// matching List()'s final sort.
+// Results are sorted newest-first (by StartedAt, compared as time.Time — NOT
+// the RFC3339 string, which misorders across DST offset changes) with the
+// session ID ascending as the tiebreak. List() returns entries in this exact
+// order; the remote list (ListRemoteSafeSnapshots) uses the same comparator
+// so both surfaces stay in lockstep.
 func (m *Manager) collectPresentSnapshots() []legacyListSnapshot {
 	m.indexMu.RLock()
 	entries := make([]*authorityEntry, 0, len(m.entries))
@@ -282,7 +285,10 @@ func (m *Manager) collectPresentSnapshots() []legacyListSnapshot {
 		entry.guard.Unlock()
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].session.StartedAt.After(snapshots[j].session.StartedAt)
+		if !snapshots[i].session.StartedAt.Equal(snapshots[j].session.StartedAt) {
+			return snapshots[i].session.StartedAt.After(snapshots[j].session.StartedAt)
+		}
+		return snapshots[i].session.ID < snapshots[j].session.ID
 	})
 	return snapshots
 }
@@ -322,7 +328,11 @@ func (m *Manager) List() []SessionInfo {
 		}
 		result = append(result, info)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].StartedAt > result[j].StartedAt })
+	// No re-sort here: collectPresentSnapshots already ordered entries by
+	// StartedAt (time compare) + session ID tiebreak. A former string re-sort on
+	// the RFC3339 field misordered sessions whose offsets differ (DST boundary)
+	// and left same-second ties arbitrary; both surfaces now share the same
+	// comparator as ListRemoteSafeSnapshots.
 	return result
 }
 

@@ -153,7 +153,7 @@ test.describe('M2-B PG-02 会话大厅', () => {
     await mockAuthorized(page, [])
     await enterLobby(page)
 
-    await expect(page.locator('.empty-state')).toContainText('还没有会话')
+    await expect(page.locator('.empty-state')).toContainText('当前没有打开的会话')
     await expect(page.locator('.empty-icon')).toBeVisible()
     await expect(page.locator('.cli-launcher')).toBeVisible()
     await expect(page.locator('.status-bar')).toContainText('会话：无会话')
@@ -513,7 +513,7 @@ test.describe('M2-B PG-02 会话大厅', () => {
     expect(removeCalls).toBe(1)
     await expect(page.locator('.receipt')).toContainText('已移除会话「待移除会话」')
     await expect(page.locator('.session-card')).toHaveCount(0)
-    await expect(page.locator('.empty-state')).toContainText('还没有会话')
+    await expect(page.locator('.empty-state')).toContainText('当前没有打开的会话')
     await page.screenshot({ path: shotName(testInfo, 'remove-done'), fullPage: true })
     expect(consoleErrors).toEqual([])
   })

@@ -148,7 +148,7 @@ test.describe('M1-D1 PG-01 连接与配对页', () => {
     await expect(page.locator('.lobby-title')).toHaveText('会话大厅')
     // PG-02 本体：宿主投影行 + 空态（图标+说明），不再是 M2 占位卡。
     await expect(page.locator('.lobby-host-line')).toContainText('1.0.5-mock')
-    await expect(page.locator('.empty-state')).toContainText('还没有会话')
+    await expect(page.locator('.empty-state')).toContainText('当前没有打开的会话')
     await page.screenshot({ path: 'test-results/pg01-lobby-pg02.png', fullPage: true })
     expect(consoleErrors).toEqual([])
   })

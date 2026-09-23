@@ -203,7 +203,7 @@ test.describe('M3-006 T0/T1 生产锚点（真实浏览器导航）', () => {
     await mockSessions(page, [])
     await enterLobby(page)
     await expect(page.locator('.empty-state')).toBeVisible()
-    await expect(page.locator('.empty-title')).toHaveText('还没有会话')
+    await expect(page.locator('.empty-title')).toHaveText('当前没有打开的会话')
 
     expectObservedTLane(await readLobbyTiming(page))
 
