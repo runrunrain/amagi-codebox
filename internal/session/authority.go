@@ -558,6 +558,16 @@ func (m *Manager) WithRemoteSnapshot(handle AuthorityHandle, fn func(AuthoritySn
 	return fn(snapshotLocked(entry))
 }
 
+// ListRemoteSafeSnapshots returns the remote lobby projection of OPEN
+// sessions: present, remote-eligible, embedded-mode entries whose lifecycle
+// state is still active (running/stopping). Stopped/exited/unavailable
+// entries are excluded — the remote list mirrors the desktop's open-session
+// list (the desktop sidebar shows running/stopping only, see
+// isActiveSessionStatus), so closed sessions must not linger in the remote
+// lobby. Ordering matches the desktop list (Manager.List): StartedAt desc
+// (newest first), sessionID asc tiebreak — StartedAt is immutable, so the
+// order is stable across polls (lastActivityAt ordering used to reshuffle
+// the lobby on every activity tick).
 func (m *Manager) ListRemoteSafeSnapshots() []AuthoritySnapshot {
 	m.indexMu.RLock()
 	entries := make([]*authorityEntry, 0, len(m.entries))
@@ -568,18 +578,26 @@ func (m *Manager) ListRemoteSafeSnapshots() []AuthoritySnapshot {
 	result := make([]AuthoritySnapshot, 0, len(entries))
 	for _, entry := range entries {
 		entry.guard.Lock()
-		if entry.phase == authorityPresent && entry.private.remoteEligible && entry.private.mode == launchplan.ModeEmbedded {
+		if entry.phase == authorityPresent && entry.private.remoteEligible && entry.private.mode == launchplan.ModeEmbedded &&
+			isActiveAuthorityLifecycle(entry.private.state) {
 			result = append(result, snapshotLocked(entry))
 		}
 		entry.guard.Unlock()
 	}
 	sort.Slice(result, func(i, j int) bool {
-		if !result[i].LastActivityAt.Equal(result[j].LastActivityAt) {
-			return result[i].LastActivityAt.After(result[j].LastActivityAt)
+		if !result[i].StartedAt.Equal(result[j].StartedAt) {
+			return result[i].StartedAt.After(result[j].StartedAt)
 		}
 		return result[i].Handle.sessionID < result[j].Handle.sessionID
 	})
 	return result
+}
+
+// isActiveAuthorityLifecycle reports whether an authority lifecycle state
+// still represents an open desktop session. It mirrors isActiveSessionStatus
+// (running/stopping stay visible; stopped/exited/unavailable are closed).
+func isActiveAuthorityLifecycle(state AuthorityLifecycleState) bool {
+	return state == AuthorityRunning || state == AuthorityStopping
 }
 
 // BindLegacyProcess upgrades an immediately-created local record with exact

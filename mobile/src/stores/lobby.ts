@@ -286,8 +286,10 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   }
 
   const cliAvailability = computed(() => host.value?.cliAvailability ?? []);
-  // P2-C 裁定 A：大厅展示全部会话（含 stopped，卡片有「已停止」态），
-  // 运行中计数单独统计——用户需看到已停止会话才能回看/重启/清理。
+  // 大厅列表与桌面端「打开未关闭」的会话保持一致：服务端 v1 /sessions 仅返回
+  // 运行中/停止中的会话（已停止/已退出的关闭会话不再返回），排序与桌面端一致
+  // （startedAt 降序，跨轮询稳定）。此处不做二次过滤，仅原样呈现服务端投影；
+  // 卡片组件保留 stopped/exited 渲染分支，仅为兼容旧版宿主可能残留的关闭会话。
   const visibleSessions = computed(() => sessions.value);
   const runningCount = computed(() => sessions.value.filter((s) => s.state === 'running').length);
   const controlledCount = computed(() => visibleSessions.value.filter((s) => s.control.state === 'you').length);

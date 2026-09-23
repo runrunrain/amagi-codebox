@@ -233,8 +233,11 @@ func (a *RemoteSessionAdapter) Clock() Clock { return a.clock }
 // List (design §5.2 endpoint 2, §5.3)
 // ---------------------------------------------------------------------------
 
-// ListSessions returns a sorted list of public, non-removed sessions with
-// audience-relative control projection (design §5.3).
+// ListSessions returns the open-session list (running/stopping only, mirroring
+// the desktop's open-session list) with audience-relative control projection
+// (design §5.3). Closed (stopped/exited) sessions are not listed; ordering is
+// StartedAt desc (newest first, matching the desktop list) and stable across
+// polls.
 func (a *RemoteSessionAdapter) ListSessions(ctx context.Context, viewer contract.DeviceID) (SessionListResult, *AdapterError) {
 	if a.authority != nil {
 		snapshots := a.authority.ListRemoteSafeSnapshots()

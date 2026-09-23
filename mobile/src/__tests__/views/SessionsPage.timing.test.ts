@@ -142,7 +142,7 @@ describe('M3-006 T0/T1 生产锚点（真实路由导航）', () => {
     consoleInfo.mockRestore();
   });
 
-  it('大厅展示全部会话：stopped/exited/unavailable 卡片保留并按状态呈现（P2-C 裁定 A）', async () => {
+  it('大厅卡片兼容渲染：stopped/exited 状态仍可呈现（服务端已只返回打开会话，此处仅验证 UI 容忍旧宿主残留）', async () => {
     vi.mocked(listSessions).mockResolvedValue([
       SESSION,
       { ...SESSION, id: 'sess-stopped', state: 'stopped' },
@@ -152,8 +152,8 @@ describe('M3-006 T0/T1 生产锚点（真实路由导航）', () => {
     const router = buildRouter();
     const wrapper = await enterLobby(pinia, router);
 
-    // 裁定 A：用户需看到已停止会话才能回看/重启/清理——全部卡片可见，
-    // 状态由 SessionCard 徽标（已停止/已退出/不可用）呈现，不再被 store 过滤。
+    // 服务端 v1 /sessions 现仅返回打开（running/stopping）会话；本用例验证
+    // 卡片组件对历史/旧宿主可能下发的关闭态仍能原样呈现，不被 store 二次过滤。
     expect(wrapper.findAll('.session-card')).toHaveLength(4);
     expect(useLobbyStore().sessions.map((item) => item.id)).toEqual([
       'sess-1',

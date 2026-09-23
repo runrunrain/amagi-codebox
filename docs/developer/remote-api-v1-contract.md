@@ -107,6 +107,7 @@ Embedded pi 会话的 Web 平面（结构化工具卡片/思考折叠/输入台�
 
 Key DTO invariants:
 - `ConfirmActionRequest.confirm` MUST be literal `true`.
+- `GET /sessions` 列表语义（与桌面端一致，2026-10）：仅返回「打开未关闭」的会话（lifecycle 态 running/stopping；stopped/exited/unavailable 的关闭会话不再出现在列表——关闭即从大厅消失，残留即 bug）；排序固定为 `startedAt` 降序（与桌面端会话列表一致），`sessionId` 升序作并列打破——`startedAt` 不可变，跨轮询稳定，不随活动时间重排。`GET /sessions/{id}` 详情端点不变：关闭会话在被移除（tombstone）前仍可单查。
 - `HostSummary.launchSettings` 是可选的增量字段，仅向已配对设备暴露工作目录、Shell、provider/preset/model 的稳定引用与开关；不含 URL、环境变量或密钥。
 - `GET /host/summary` 在宿主 CLI 探测失败时返回保守降级体而非 503（2026-09 P2-B）：仍为 `200 HostSummary`，但全部已知 CLI `available:false`、`serverVersion:"unknown"`、`launchSettings` 省略——降级方向 fail-closed（探测不到的 CLI 绝不报可启动），保证已配对设备的会话读面（`/sessions*`，本就不依赖该探测）不被探测失败阻断。`pairing/complete` 在同一失败下保持 503 `service.down`（fail-closed，未配对设备无需保护的会话面）。
 - `CreateSessionRequest` 除 `cliType`/`workdir` 外可携带 `providerRef`、`presetRef`、`modelRef`、`shellRef`、`useHeadroom`，宿主必须用本地配置与密钥存储解析这些引用。
