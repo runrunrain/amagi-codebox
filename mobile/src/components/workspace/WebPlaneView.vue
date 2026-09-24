@@ -11,10 +11,17 @@
  *   · Phase 状态机：loading → loaded | error；
  *   · 10s 看门狗超时兜底：移动端/网络拒连时如实进入 error 态，不无限转圈；
  *   · 会话结束态（ended）：保留最后画面 + 浮动 bar 提示「会话已结束」与切回动作；
+ *   · open-url 桥：页面内链接经 postMessage 上抛，校验 capability token 后开外链
+ *     （跨仓契约 v2.7.4；守卫纯函数在 lib/openUrlBridge，见该文件与实现报告）；
  *   · 视觉适配：VT 语义令牌、safe-area 边距、无障碍可访问名与无障碍反馈。
  * ---------------------------------------------------------------------------
  */
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  extractCapabilityToken,
+  openExternalUrl,
+  parseOpenUrlMessage,
+} from '../../lib/openUrlBridge';
 
 const props = withDefaults(
   defineProps<{
@@ -48,6 +55,18 @@ function withLightSkin(url: string): string {
 }
 const frameSrc = ref(withLightSkin(props.url));
 const frameKey = ref(0);
+
+/**
+ * webui → 宿主「打开外部链接」桥（跨仓契约 v2.7.4）：嵌入态 iframe sandbox 无
+ * allow-popups，页面内 a[target=_blank] 被静默阻断——webui 改为消息上抛，宿主校验
+ * 凭证后打开系统浏览器。ownToken 取当前 iframe src 的 fragment 凭证（严格相等判定
+ * 来源，与桌面 WebPlaneHost.onFrameMessage 同构）；解析失败静默忽略。
+ */
+function onWindowMessage(event: MessageEvent): void {
+  const url = parseOpenUrlMessage(event.data, extractCapabilityToken(frameSrc.value));
+  if (url === null) return;
+  openExternalUrl(url);
+}
 
 // 加载看门狗：iframe 对空响应/拒连不一定触发 @error，10s 超时兜底（对齐桌面）
 const LOAD_TIMEOUT_MS = 10_000;
@@ -107,8 +126,13 @@ watch(
 
 armWatchdog();
 
+onMounted(() => {
+  window.addEventListener('message', onWindowMessage);
+});
+
 onBeforeUnmount(() => {
   clearWatchdog();
+  window.removeEventListener('message', onWindowMessage);
 });
 </script>
 

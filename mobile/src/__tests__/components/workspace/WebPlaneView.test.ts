@@ -165,4 +165,68 @@ describe('WebPlaneView.vue', () => {
     expect(wrapper.find('iframe').attributes('src')).toBe('/webui/sess-1/?skin=light#/t=token2');
     expect(wrapper.find('[data-testid="webplane-loading"]').exists()).toBe(true);
   });
+
+  // -------------------------------------------------------------------------
+  // open-url 桥接线（跨仓契约 v2.7.4）：window message 监听 → 守卫 → 打开外链
+  // 守卫语义在 lib/openUrlBridge 单测；此处验证组件接线与生命周期。
+  // -------------------------------------------------------------------------
+  const OPEN_URL_TOKEN = 'AbCdEfGhIjKlMnOpQrStUv';
+
+  it('open-url 桥：token 匹配的 http(s) 消息 → 调用 window.open（_blank + noopener）', () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+    const wrapper = mount(WebPlaneView, {
+      props: { url: `/webui/sess-1/#/t=${OPEN_URL_TOKEN}`, sessionId: 'sess-1' },
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'amagi:open-url', token: OPEN_URL_TOKEN, url: 'https://example.com/docs' },
+      }),
+    );
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const [url, target, features] = openSpy.mock.calls[0] as [string, string, string];
+    expect(url).toBe('https://example.com/docs');
+    expect(target).toBe('_blank');
+    expect(features).toContain('noopener');
+
+    wrapper.unmount();
+  });
+
+  it('open-url 桥：token 不符 / 非 http(s) → 不打开；卸载后监听移除', () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+    const wrapper = mount(WebPlaneView, {
+      props: { url: `/webui/sess-1/?skin=light#/t=${OPEN_URL_TOKEN}`, sessionId: 'sess-1' },
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'amagi:open-url', token: 'WRONG'.repeat(6), url: 'https://example.com' },
+      }),
+    );
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'amagi:open-url', token: OPEN_URL_TOKEN, url: 'javascript:alert(1)' },
+      }),
+    );
+    expect(openSpy).not.toHaveBeenCalled();
+
+    // 正对照：合法消息确实可打开（证明监听在位而非因守卫全拒而“未调用”）
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'amagi:open-url', token: OPEN_URL_TOKEN, url: 'https://example.com/ok' },
+      }),
+    );
+    expect(openSpy).toHaveBeenCalledTimes(1);
+
+    // 卸载后监听移除：合法消息不再触发打开
+    wrapper.unmount();
+    openSpy.mockClear();
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'amagi:open-url', token: OPEN_URL_TOKEN, url: 'https://example.com/late' },
+      }),
+    );
+    expect(openSpy).not.toHaveBeenCalled();
+  });
 });
