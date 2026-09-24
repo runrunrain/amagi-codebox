@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.88] - 2026-09-24
+
+### Fixed
+
+- **远程会话列表对齐桌面端（仅活动会话 + 启动时间稳定排序）**：authority 投射层过滤已关闭会话，远程大厅仅呈现 running/stopping 状态（对齐桌面侧边栏语义）；排序由活动时间改为 startedAt 降序 + sessionId 升序 tiebreak，消除轮询活动跳变导致的列表乱序。移动端大厅 store 与用例同步对齐服务端列表语义，卡片渲染保留关闭态分支兼容旧版本宿主。
+- **桌面与远程会话列表排序统一为时刻比较（谛听审核 findings 全部处置）**：桌面 `List()` 去除 RFC3339 字符串二次排序，与远程 `ListRemoteSafeSnapshots` 共用同一 comparator（时刻比较 + sessionId tiebreak）——消除跨 DST 偏移两端顺序相反与同秒并列任意序（审核 M1，已复现并回归锁定）；契约钉死 GET /sessions 排序语义为时刻比较（M2）；移动端空态文案改为「当前没有打开的会话」并同步 4 个 e2e 文件 5 处断言（M3）。session 层新增 DST 分叉/同秒并列回归测试，adapter 层补 exit/stop 双路径覆盖（I2）；谛听对抗审核报告归档 `agent-outputs/audit-remote-list-2026-09-24/`（PASS_WITH_MINOR）。
+
 ## [1.3.87] - 2026-09-22
 
 ### Added
