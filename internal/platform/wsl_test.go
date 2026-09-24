@@ -103,6 +103,30 @@ func TestAppendWSLENVForwardingBuildsColonList(t *testing.T) {
 	}
 }
 
+// TestAppendWSLENVForwardingExtraKeys verifies user-configured custom env keys
+// (envvars.json: TAVILY_API_KEY etc.) cross the boundary via the extra-key
+// list: forwarded when present, absent keys never listed, reserved keys
+// (WSLENV/PATH) rejected, matching case-insensitive.
+func TestAppendWSLENVForwardingExtraKeys(t *testing.T) {
+	env := []string{
+		"PATH=/x",
+		"TAVILY_API_KEY=tk",
+		"FIRECRAWL_API_KEY=fk",
+		"USERPROFILE=C:/Users/a",
+	}
+	out := appendWSLENVForwarding(env, "tavily_api_key", "FIRECRAWL_API_KEY", "MISSING_KEY", "PATH", "WSLENV", "  ")
+	wslenv := envValue(out, "WSLENV")
+	if !strings.Contains(wslenv, "TAVILY_API_KEY") || !strings.Contains(wslenv, "FIRECRAWL_API_KEY") {
+		t.Fatalf("WSLENV missing extra custom keys: %q", wslenv)
+	}
+	if strings.Contains(wslenv, "MISSING_KEY") {
+		t.Fatalf("WSLENV must not list keys absent from env: %q", wslenv)
+	}
+	if strings.Contains(wslenv, "PATH") {
+		t.Fatalf("WSLENV must not forward reserved keys: %q", wslenv)
+	}
+}
+
 // TestWindowsResolverDefaultsToWSLWhenDistroAvailable verifies the WSL branch:
 // with a usable distro, an embedded Claude launch resolves to BootstrapWSL with
 // the bare command name and a WSLENV that carries the injected key.

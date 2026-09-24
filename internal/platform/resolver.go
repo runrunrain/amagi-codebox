@@ -73,9 +73,16 @@ type ResolveRequest struct {
 	RequestedShellPath string
 	WorkDir            string
 	Env                []string
-	CLIArgs            []string
-	PTYCols            int
-	PTYRows            int
+	// EnvForwardKeys lists extra env keys that must also cross the Windows→WSL
+	// boundary beyond the built-in prefix whitelist (appendWSLENVForwarding).
+	// Populated with user-configured custom env vars (envvars.json) so injected
+	// keys such as TAVILY_API_KEY / FIRECRAWL_API_KEY reach CLI processes
+	// running inside WSL. Consumed by the WSL branch only; Windows-side
+	// launches receive the merged env directly and ignore this field.
+	EnvForwardKeys []string
+	CLIArgs        []string
+	PTYCols        int
+	PTYRows        int
 }
 
 type CLIResolver interface {
@@ -134,7 +141,7 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		}
 		if wslShell != nil && strings.EqualFold(wslShell.Key, "wsl") {
 			cliName := cliCandidates[0]
-			wslEnv := appendWSLENVForwarding(append([]string(nil), resolvedEnv...))
+			wslEnv := appendWSLENVForwarding(append([]string(nil), resolvedEnv...), request.EnvForwardKeys...)
 			spec := ResolvedLaunchSpec{
 				AppType:       request.AppType,
 				LaunchMode:    request.LaunchMode,

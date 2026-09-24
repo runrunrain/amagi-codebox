@@ -183,6 +183,20 @@ func (s *EnvVarsService) GetAll() []EnvVar {
 	return out
 }
 
+// Keys 返回已配置自定义环境变量的键名（保持配置顺序，不含值）。
+// 供仅需键名的消费方使用（如 WSL WSLENV 转发清单），避免无关路径物化密钥值。
+func (s *EnvVarsService) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.envVars))
+	for _, ev := range s.envVars {
+		if ev.Key != "" {
+			keys = append(keys, ev.Key)
+		}
+	}
+	return keys
+}
+
 // GetPortableConfig returns the complete device-independent env configuration.
 func (s *EnvVarsService) GetPortableConfig() PortableConfig {
 	s.mu.RLock()

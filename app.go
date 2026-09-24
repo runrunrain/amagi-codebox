@@ -2245,7 +2245,7 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	if err := a.validateLaunchMode(mode); err != nil {
 		return platform.ResolvedLaunchSpec{}, err
 	}
-	return a.cliResolver().Resolve(platform.ResolveRequest{
+	req := platform.ResolveRequest{
 		AppType:            string(appType),
 		LaunchMode:         mode,
 		RequestedShellPath: shellPath,
@@ -2254,7 +2254,14 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 		CLIArgs:            args,
 		PTYCols:            120,
 		PTYRows:            40,
-	})
+	}
+	// 自定义环境变量（envvars.json）在 Windows 侧经 MergeWithSystem 直接注入；
+	// WSL 模式下 CLI 跑在发行版内，这些键必须显式进入 WSLENV 转发清单才能跨界
+	//（前缀白名单只覆盖 ANTHROPIC_/OPENAI_/CLAUDE_/CODEX_/PI_/代理）。
+	if a.EnvVars != nil {
+		req.EnvForwardKeys = a.EnvVars.Keys()
+	}
+	return a.cliResolver().Resolve(req)
 }
 
 // --- 多终端会话管理 ---

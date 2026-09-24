@@ -268,12 +268,32 @@ func shouldForwardToWSL(key string) bool {
 	return false
 }
 
+// isWSLENVReservedKey 报告不得经额外清单转发的保留键：WSLENV 自身（清单载体，
+// 转发即自引用）与 PATH 家族（Windows 值进 WSL 会整体覆盖发行版自身的 PATH
+// 解析，CLI 将无法在 distro 内定位）。
+func isWSLENVReservedKey(key string) bool {
+	switch strings.ToUpper(strings.TrimSpace(key)) {
+	case "WSLENV", "PATH", "PATHEXT":
+		return true
+	}
+	return false
+}
+
 // appendWSLENVForwarding computes the WSLENV variable from the forwardable keys
 // present in env and merges it with any existing WSLENV. The returned slice is a
 // copy with WSLENV set; env is not mutated. WSLENV uses a colon-separated list
 // of variable names (no path-translation flags: the forwarded values are keys /
 // URLs, not Windows paths).
-func appendWSLENVForwarding(env []string) []string {
+//
+// extraForwardKeys lists additional env keys to forward verbatim across the
+// Windows→WSL boundary even when they match no whitelist prefix — populated
+// with user-configured custom env vars (envvars.json, e.g. TAVILY_API_KEY /
+// FIRECRAWL_API_KEY) which are intentionally injected into CLI sessions and
+// must therefore reach CLIs running inside the distro too. Keys are matched
+// case-insensitively and only listed when actually present in env; reserved
+// names (WSLENV / PATH / PATHEXT) are always excluded — forwarding a Windows
+// PATH would clobber the distro's own PATH resolution.
+func appendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
 	names := []string{}
 	seen := map[string]struct{}{}
 	addName := func(name string) {
@@ -309,9 +329,22 @@ func appendWSLENVForwarding(env []string) []string {
 		}
 	}
 
+	extra := make(map[string]struct{}, len(extraForwardKeys))
+	for _, k := range extraForwardKeys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed == "" || isWSLENVReservedKey(trimmed) {
+			continue
+		}
+		extra[strings.ToUpper(trimmed)] = struct{}{}
+	}
+
 	for _, kv := range env {
 		k := envEntryKey(kv)
 		if shouldForwardToWSL(k) {
+			addName(k)
+			continue
+		}
+		if _, ok := extra[strings.ToUpper(k)]; ok {
 			addName(k)
 		}
 	}
