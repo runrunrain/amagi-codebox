@@ -217,6 +217,8 @@ export function ListRemoteSecurityEvents(arg1:number):Promise<Array<remote.Secur
 
 export function MigrateProviderPresetsToTerminal():Promise<number>;
 
+export function OpenExternalURL(arg1:string):Promise<void>;
+
 export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;

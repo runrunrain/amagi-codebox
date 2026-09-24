@@ -402,6 +402,10 @@ export function MigrateProviderPresetsToTerminal() {
   return window['go']['main']['App']['MigrateProviderPresetsToTerminal']();
 }
 
+export function OpenExternalURL(arg1) {
+  return window['go']['main']['App']['OpenExternalURL'](arg1);
+}
+
 export function OpenFileInEditor(arg1, arg2) {
   return window['go']['main']['App']['OpenFileInEditor'](arg1, arg2);
 }

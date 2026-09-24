@@ -8,7 +8,7 @@
 <template>
   <Dialog
     :open="open"
-    title="添加远程主机"
+    :title="dialogTitle"
     :description="stepDescription"
     @update:open="handleClose"
   >
@@ -144,15 +144,17 @@ import AppButton from '../ui/AppButton.vue';
 import Badge from '../ui/Badge.vue';
 import StatusBanner from '../ui/StatusBanner.vue';
 import { probeRemoteHost, completeRemotePairing, renameRemoteHost } from '../../api/remoteClient';
-import type { PairingResult } from '../../api/remoteClient';
+import type { HostEntry, PairingResult } from '../../api/remoteClient';
 import { copyForRemoteError, detailForRemoteError } from './remoteClientShared';
 import type { contract } from '../../../wailsjs/go/models';
 
 interface Props {
   open?: boolean;
+  /** 预填的已登记主机：进入「重新配对」模式（地址/显示名预填、标题切换）。 */
+  prefill?: HostEntry | null;
 }
 
-const props = withDefaults(defineProps<Props>(), { open: false });
+const props = withDefaults(defineProps<Props>(), { open: false, prefill: null });
 
 const emit = defineEmits<{
   'update:open': [value: boolean];
@@ -172,10 +174,14 @@ const pairedResult = ref<PairingResult | null>(null);
 const errorCopy = ref('');
 const errorDetail = ref('');
 
+const dialogTitle = computed(() => (props.prefill ? '重新配对远程主机' : '添加远程主机'));
+
 const stepDescription = computed(() => {
   switch (step.value) {
     case 'form':
-      return '第一步：输入对方 CodeBox 的地址并测试连接';
+      return props.prefill
+        ? '第一步：确认主机地址并测试连接（地址变更将重置配对状态）'
+        : '第一步：输入对方 CodeBox 的地址并测试连接';
     case 'summary':
       return '第二步：确认对方宿主信息';
     case 'code':
@@ -274,8 +280,9 @@ watch(
   (val) => {
     if (val) {
       step.value = 'form';
-      address.value = '';
-      displayName.value = '';
+      // 重新配对模式：预填已登记主机的地址与显示名；添加模式从空开始。
+      address.value = props.prefill?.hostPort ?? '';
+      displayName.value = props.prefill?.displayName ?? '';
       pairingCode.value = '';
       summary.value = null;
       pairedResult.value = null;

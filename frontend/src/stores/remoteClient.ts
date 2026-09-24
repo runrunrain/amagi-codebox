@@ -106,6 +106,8 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   // ---- 配对向导 ----
   const pairingWizardOpen = ref(false);
+  /** 配对向导预填（传入已登记主机 → 重新配对模式）。 */
+  const pairingPrefill = ref<HostEntry | null>(null);
 
   // ---- RC2-5 远程终端：attach 状态 + rc:* 事件聚合 ----
   const remoteTerminalStates = ref<Record<string, RemoteTerminalState>>({});
@@ -329,8 +331,41 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     await refreshRemoteSessions();
   }
 
-  function openPairingWizard(): void {
+  /** 打开配对向导；传入已登记主机则为「重新配对」预填模式（地址/显示名预填）。 */
+  function openPairingWizard(prefill?: HostEntry): void {
+    pairingPrefill.value = prefill ?? null;
     pairingWizardOpen.value = true;
+  }
+
+  /** 修改显示名（登记簿本机字段），成功后刷新主机列表。 */
+  async function renameHost(hostID: string, displayName: string): Promise<void> {
+    await remoteClientApi.renameRemoteHost(hostID, displayName);
+    await loadHosts();
+  }
+
+  /**
+   * 修改主机地址：域层重置配对态并清理旧 DeviceID 的本机凭据，之后需对该
+   * 地址重新配对。若改的是当前作用域主机，先回本机（后端已随地址变更断连，
+   * 前端不跟随会留下死远程视图）。成功后刷新主机列表（健康回到 probing）。
+   */
+  async function updateHostAddress(hostID: string, hostPort: string): Promise<void> {
+    if (scope.value === hostID) {
+      await switchToLocal();
+    }
+    await remoteClientApi.updateRemoteHost(hostID, hostPort);
+    await loadHosts();
+  }
+
+  /**
+   * 移除主机登记（含本机 Keychain 凭据清理，对方 CodeBox 不受影响）：
+   * 若移除的是当前作用域主机，先回本机（断连 + 清远程视图）再移除。
+   */
+  async function removeHost(hostID: string): Promise<void> {
+    if (scope.value === hostID) {
+      await switchToLocal();
+    }
+    await remoteClientApi.removeRemoteHost(hostID);
+    await loadHosts();
   }
 
   /* -------------------------------------------------------------------------
@@ -731,6 +766,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     remoteSessionsError,
     lastSyncedAt,
     pairingWizardOpen,
+    pairingPrefill,
     remoteTerminalStates,
     activeRemoteTerminalId,
     connectRevoked,
@@ -759,6 +795,9 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     restartRemoteSession,
     deleteRemoteSession,
     openPairingWizard,
+    renameHost,
+    updateHostAddress,
+    removeHost,
     openRemoteTerminal,
     attachRemoteTerminal,
     detachRemoteTerminal,

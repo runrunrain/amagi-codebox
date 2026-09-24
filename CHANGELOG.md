@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [Unreleased]
+
+### Added
+
+- **已登记远程主机管理入口（编辑/重新配对/移除）**：桌面端互联此前只在主机切换菜单提供「添加主机…」，`RemoteClientUpdateHost`/`RemoteClientRenameHost`/`RemoteClientRemoveHost` 三个绑定与 API 封装全部就位却零调用——已配对主机地址变更、换机重建、凭据丢失（登记簿 deviceId 残留但 Keychain 凭据缺失，表现为「状态灯可达却连不上」）后既无法更新配对码也无法删除重建。新增 `HostManageDialog`（主机切换菜单「管理主机…」进入）：行内编辑显示名与地址（地址变更提示重置配对态；若改的是当前连接主机先回本机避免死远程视图）、重新配对（`PairingWizardDialog` 新增 `prefill` 预填模式，`UpsertPaired` 按 hostPort/deviceID 回写原条目、显示名保留，配对完成自动连接）、移除（PG-06 危险确认，`ForgetHost` 同步清理本机 Keychain 凭据；对方 CodeBox 不受影响）。store 新增 `renameHost`/`updateHostAddress`/`removeHost` 动作与 `pairingPrefill` 状态。
+
 ## [1.3.88] - 2026-09-24
 
 ### Fixed

@@ -76,6 +76,10 @@
           <div v-else class="hs-empty">尚未登记主机</div>
 
           <div class="hs-divider" aria-hidden="true"></div>
+          <button type="button" class="hs-item hs-add" role="menuitem" @click="openManage">
+            <span class="hs-plus" aria-hidden="true">✎</span>
+            <span class="hs-item-name">管理主机…</span>
+          </button>
           <button type="button" class="hs-item hs-add" role="menuitem" @click="openWizard">
             <span class="hs-plus" aria-hidden="true">＋</span>
             <span class="hs-item-name">添加主机…</span>
@@ -84,12 +88,16 @@
       </transition>
     </Teleport>
 
-    <!-- 配对向导（Dialog 内部 Teleport 到 body） -->
+    <!-- 配对向导（Dialog 内部 Teleport 到 body；prefill 非空 = 重新配对模式） -->
     <PairingWizardDialog
       :open="store.pairingWizardOpen"
+      :prefill="store.pairingPrefill"
       @update:open="store.pairingWizardOpen = $event"
       @paired="onPaired"
     />
+
+    <!-- 已登记主机管理（编辑/重配对/移除） -->
+    <HostManageDialog v-model:open="manageOpen" @repair="onRepair" />
   </div>
 </template>
 
@@ -97,6 +105,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Badge from '../ui/Badge.vue';
 import PairingWizardDialog from './PairingWizardDialog.vue';
+import HostManageDialog from './HostManageDialog.vue';
 import { useRemoteClientStore } from '../../stores/remoteClient';
 import { useToast } from '../../composables/useToast';
 import { hostHealthLabel, hostHealthTone, copyForRemoteError } from './remoteClientShared';
@@ -176,6 +185,20 @@ async function chooseHost(h: HostEntry) {
 function openWizard() {
   open.value = false;
   store.openPairingWizard();
+}
+
+// ---- 已登记主机管理（编辑/重配对/移除） ----
+const manageOpen = ref(false);
+
+function openManage() {
+  open.value = false;
+  manageOpen.value = true;
+}
+
+/** 管理框发起的重新配对：关闭管理框，以该主机预填打开配对向导。 */
+function onRepair(h: HostEntry) {
+  manageOpen.value = false;
+  store.openPairingWizard(h);
 }
 
 /** 配对成功：刷新登记簿并自动连接新主机（app 层注释约定）。 */
