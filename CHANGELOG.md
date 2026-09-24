@@ -10,6 +10,18 @@
 
 - **已登记远程主机管理入口（编辑/重新配对/移除）**：桌面端互联此前只在主机切换菜单提供「添加主机…」，`RemoteClientUpdateHost`/`RemoteClientRenameHost`/`RemoteClientRemoveHost` 三个绑定与 API 封装全部就位却零调用——已配对主机地址变更、换机重建、凭据丢失（登记簿 deviceId 残留但 Keychain 凭据缺失，表现为「状态灯可达却连不上」）后既无法更新配对码也无法删除重建。新增 `HostManageDialog`（主机切换菜单「管理主机…」进入）：行内编辑显示名与地址（地址变更提示重置配对态；若改的是当前连接主机先回本机避免死远程视图）、重新配对（`PairingWizardDialog` 新增 `prefill` 预填模式，`UpsertPaired` 按 hostPort/deviceID 回写原条目、显示名保留，配对完成自动连接）、移除（PG-06 危险确认，`ForgetHost` 同步清理本机 Keychain 凭据；对方 CodeBox 不受影响）。store 新增 `renameHost`/`updateHostAddress`/`removeHost` 动作与 `pairingPrefill` 状态。
 
+## [1.3.90] - 2026-09-25
+
+### Fixed
+
+- **WSL 会话透传用户自定义环境变量（envvars.json）**：终端支持 WSL 后，经 WSL 启动的会话（CLI 在发行版内原生运行）读不到 CodeBox 配置的自定义环境变量（如 TAVILY_API_KEY / FIRECRAWL_API_KEY）——注入链在 Windows 侧经 `MergeWithSystem` 完成，而跨界只依赖 `appendWSLENVForwarding` 的前缀白名单（ANTHROPIC_/OPENAI_/CLAUDE_/CODEX_/PI_/代理），自定义键全部被边界拦截。修复：`ResolveRequest` 新增 `EnvForwardKeys`（app 层注入 envvars.json 键名，`EnvVarsService.Keys()` 只暴露键名不物化值），WSL 分支把清单并入 WSLENV 转发；保留键（WSLENV/PATH/PATHEXT）与缺席键不转发，Windows 侧启动路径不变。新增 wsl_test 覆盖（额外键转发/缺席键不列名/保留键拒绝/大小写归一）。
+
+## [1.3.89] - 2026-09-24
+
+### Added
+
+- **移动端 Web 平面链接跳转桥（amagi:open-url）**：pi webui 嵌入态点击消息流内 http(s) 链接时上抛的跨仓冻结契约消息（`amagi:open-url`，与桌面端 1.3.87 同源），移动端此前完全缺失 message 监听——点击无任何反应。新增 `mobile/src/lib/openUrlBridge.ts`（`extractCapabilityToken`/`parseOpenUrlMessage` 守卫纯函数：type 严格匹配、capability token 与 iframe fragment 严格相等、http(s) 白名单、URL ≤2048，常量与桌面冻结值一致）+ `WebPlaneView.vue` 接线（onMounted/onBeforeUnmount 生命周期窗口监听，含 `?skin=light` 形态提取）。外链经 `window.open(url,'_blank','noopener,noreferrer')`——Capacitor 8.2.0 Android WebView 未 `setSupportMultipleWindows`/未覆写 `onCreateWindow`，`_blank` 经 `BridgeWebViewClient.shouldOverrideUrlLoading` → `launchIntent` → `Intent.ACTION_VIEW` 交系统浏览器（零新增依赖；`@capacitor/browser` 因本仓无 Android 平台工程会 reject，不采用）。测试 14+2 例正负成对（含 2048/2049 边界、卸载后监听移除）；真机落点见报告手验清单。
+
 ## [1.3.88] - 2026-09-24
 
 ### Fixed
