@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.92] - 2026-09-25
+
+### Fixed
+
+- **Pi 配置页 mcp.leader / mcp.default 白名单编辑入口不可达（实测复现）**：配置处于「不加载」（显式空数组 []）或「全部」（未设置键）时，点三态选择器「白名单」无任何反应——`switchMcpListMode` 从 all/none 切入写入空列表 `[]`，而模式高亮与编辑器渲染都派生自数据推断 `mcpListModeOf([]) = 'none'`，高亮跳回「不加载」、`v-if="mode === 'list'"` 永不成立，名单编辑器不可达（用户面对三个按钮看不到任何服务器名单输入入口，与 mcp.agents 的直接编辑体验不一致）。修复：UI 编辑态与数据推断态解耦（`mcpLeaderUiMode`/`mcpDefaultUiMode` ref，点「白名单」立即进入编辑视图，空列表中间态不跳回；JSON 重解析两条路径同步回数据态）；名单编辑器改为常显（all/none 态也直接显示，空态引导「添加服务器即切换为白名单」，输入即切白名单模式），三态选择器保留为显式模式声明；badge/hint 跟随 UI 编辑态。
+
 ## [1.3.91] - 2026-09-25
 
 ### Added

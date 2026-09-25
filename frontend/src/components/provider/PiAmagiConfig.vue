@@ -3,6 +3,8 @@
   挂载于 Provider Center → 预设 → Pi 引擎标签。
   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
   thinking level，数据来自 ~/.pi/agent/models.json 目录）、MCP 路由编辑（含 v2.8.2 mcp.leader）。
+  mcp.leader / mcp.default：名单编辑器常显（all/none 态添加服务器即切白名单）；
+  UI 编辑态与数据推断态解耦（点「白名单」进入编辑视图，空列表中间态不跳回「不加载」）。
   源码模式：JSON 文本直接编辑。保存走后端原子写入。
 -->
 <template>
@@ -119,14 +121,13 @@
             <label class="pac-label">Leader 服务器（mcp.leader，主进程加载名单）</label>
             <div class="pac-mcp-mode-row">
               <Segmented v-model="mcpLeaderModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
-              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpLeaderMode].leader }}</span>
+              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpLeaderUiMode].leader }}</span>
             </div>
             <StringListEditor
-              v-if="mcpLeaderMode === 'list'"
               :model-value="mcpLeader"
               item-placeholder="服务器名（如 web-search-prime）"
               add-label="添加服务器"
-              empty-text="白名单为空——填入 server 名；空列表保存后即「不加载」"
+              :empty-text="MCP_EMPTY_TEXT[mcpLeaderUiMode]"
               mono
               @update:model-value="updateMcpLeader"
             />
@@ -138,14 +139,13 @@
             <label class="pac-label">默认服务器（mcp.default，所有子 Agent 基线）</label>
             <div class="pac-mcp-mode-row">
               <Segmented v-model="mcpDefaultModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
-              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpDefaultMode].default }}</span>
+              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpDefaultUiMode].default }}</span>
             </div>
             <StringListEditor
-              v-if="mcpDefaultMode === 'list'"
               :model-value="mcpDefault"
               item-placeholder="服务器名（如 web-search-prime）"
               add-label="添加服务器"
-              empty-text="白名单为空——填入 server 名；空列表保存后即「不加载」"
+              :empty-text="MCP_EMPTY_TEXT[mcpDefaultUiMode]"
               mono
               @update:model-value="updateMcpDefault"
             />
@@ -432,9 +432,18 @@ const MCP_MODE_HINTS: Record<McpListMode, { leader: string; default: string }> =
   },
 };
 
-const mcpLeaderMode = computed<McpListMode>(() => mcpListModeOf(configData.value.mcp?.leader));
+/** 名单编辑器空态引导（常显编辑器：all/none 态也可直接添加，输入即切白名单） */
+const MCP_EMPTY_TEXT: Record<McpListMode, string> = {
+  all: '当前未设置 = 加载全部；添加服务器即切换为白名单',
+  none: '当前为 [] = 不加载任何 MCP；添加服务器即切换为白名单',
+  list: '白名单为空——填入 server 名；空列表保存后即「不加载」',
+};
+
+/** UI 编辑态与数据推断态解耦：点「白名单」进入编辑视图（数据可保持 []），
+ *  避免空列表中间态把高亮跳回「不加载」、编辑器随 v-if 消失（不可达入口根因）。 */
+const mcpLeaderUiMode = ref<McpListMode>('all');
 const mcpLeaderModeModel = computed<McpListMode>({
-  get: () => mcpLeaderMode.value,
+  get: () => mcpLeaderUiMode.value,
   set: (m) => switchMcpListMode('leader', m),
 });
 
@@ -443,16 +452,16 @@ const mcpDefault = computed<string[]>(() => {
   return Array.isArray(v) ? v : [];
 });
 
-const mcpDefaultMode = computed<McpListMode>(() => mcpListModeOf(configData.value.mcp?.default));
+const mcpDefaultUiMode = ref<McpListMode>('all');
 const mcpDefaultModeModel = computed<McpListMode>({
-  get: () => mcpDefaultMode.value,
+  get: () => mcpDefaultUiMode.value,
   set: (m) => switchMcpListMode('default', m),
 });
 
-/** badge：all=0；none=1（有显式配置）；list=条数 */
+/** badge：all=0；none=1（有显式配置）；list=条数（跟随 UI 编辑态） */
 const mcpBadge = computed<number>(() =>
-  (mcpLeaderMode.value === 'all' ? 0 : mcpLeaderMode.value === 'none' ? 1 : mcpLeader.value.length) +
-  (mcpDefaultMode.value === 'all' ? 0 : mcpDefaultMode.value === 'none' ? 1 : mcpDefault.value.length)
+  (mcpLeaderUiMode.value === 'all' ? 0 : mcpLeaderUiMode.value === 'none' ? 1 : mcpLeader.value.length) +
+  (mcpDefaultUiMode.value === 'all' ? 0 : mcpDefaultUiMode.value === 'none' ? 1 : mcpDefault.value.length)
 );
 
 const mcpAgentRows = computed<McpAgentRow[]>(() => {
@@ -561,15 +570,23 @@ function parseJsonToConfig() {
   if (!trimmed) {
     configData.value = {};
     jsonError.value = '';
+    syncMcpUiModesFromConfig();
     return;
   }
   try {
     const parsed = JSON.parse(trimmed);
     configData.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
     jsonError.value = '';
+    syncMcpUiModesFromConfig();
   } catch (e) {
     jsonError.value = 'JSON 格式错误：' + (e as Error).message;
   }
+}
+
+/** configData 重新解析后同步 MCP 编辑态（initialLoad 与 JSON→可视化模式切换两条路径共用）。 */
+function syncMcpUiModesFromConfig() {
+  mcpLeaderUiMode.value = mcpListModeOf(configData.value.mcp?.leader);
+  mcpDefaultUiMode.value = mcpListModeOf(configData.value.mcp?.default);
 }
 
 function serialize() {
@@ -624,8 +641,10 @@ function updateAgentModel(role: string, spec: string) {
   serialize();
 }
 
-/** 三态切换：all 删键（= 全部）/ none 写 [] / list 保留可编辑列表（从 all/none 切入给空列表） */
+/** 三态切换：UI 态立即切换；all 删键（= 全部）/ none 写 [] / list 进入编辑视图（保留已有名单，从 all/none 切入给空列表） */
 function switchMcpListMode(field: 'leader' | 'default', mode: McpListMode) {
+  if (field === 'leader') mcpLeaderUiMode.value = mode;
+  else mcpDefaultUiMode.value = mode;
   const cur = configData.value.mcp?.[field];
   const keepList = mode === 'list' && Array.isArray(cur) && cur.length > 0 ? (cur as string[]) : [];
   applyMcpListMode(configData.value, field, mode, keepList);
@@ -633,11 +652,13 @@ function switchMcpListMode(field: 'leader' | 'default', mode: McpListMode) {
 }
 
 function updateMcpDefault(v: string[]) {
+  mcpDefaultUiMode.value = 'list';
   applyMcpListMode(configData.value, 'default', 'list', v);
   serialize();
 }
 
 function updateMcpLeader(v: string[]) {
+  mcpLeaderUiMode.value = 'list';
   applyMcpListMode(configData.value, 'leader', 'list', v);
   serialize();
 }
