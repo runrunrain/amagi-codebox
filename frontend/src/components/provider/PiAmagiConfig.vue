@@ -2,7 +2,7 @@
   PiAmagiConfig - pi (amagi-pi) amagi.json 可视化配置组件。
   挂载于 Provider Center → 预设 → Pi 引擎标签。
   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
-  thinking level，数据来自 ~/.pi/agent/models.json 目录）、MCP 路由编辑。
+  thinking level，数据来自 ~/.pi/agent/models.json 目录）、MCP 路由编辑（含 v2.8.2 mcp.leader）。
   源码模式：JSON 文本直接编辑。保存走后端原子写入。
 -->
 <template>
@@ -112,19 +112,46 @@
           title="MCP 路由"
           category="mcp"
           :expanded="expanded.mcp"
-          :badge="mcpDefault.length"
+          :badge="mcpBadge"
           @toggle="expanded.mcp = !expanded.mcp"
         >
           <div class="pac-field">
-            <label class="pac-label">默认服务器（mcp.default，* 表示全部）</label>
+            <label class="pac-label">Leader 服务器（mcp.leader，主进程加载名单）</label>
+            <div class="pac-mcp-mode-row">
+              <Segmented v-model="mcpLeaderModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
+              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpLeaderMode].leader }}</span>
+            </div>
             <StringListEditor
+              v-if="mcpLeaderMode === 'list'"
+              :model-value="mcpLeader"
+              item-placeholder="服务器名（如 web-search-prime）"
+              add-label="添加服务器"
+              empty-text="白名单为空——填入 server 名；空列表保存后即「不加载」"
+              mono
+              @update:model-value="updateMcpLeader"
+            />
+            <p class="pac-hint">
+              Leader 主进程加载哪些 MCP server（amagi-pi v2.8.2+）：装配时读一次，改动需重启 pi 生效（与子 Agent 路由不同面）。
+            </p>
+          </div>
+          <div class="pac-field">
+            <label class="pac-label">默认服务器（mcp.default，所有子 Agent 基线）</label>
+            <div class="pac-mcp-mode-row">
+              <Segmented v-model="mcpDefaultModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
+              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpDefaultMode].default }}</span>
+            </div>
+            <StringListEditor
+              v-if="mcpDefaultMode === 'list'"
               :model-value="mcpDefault"
               item-placeholder="服务器名（如 web-search-prime）"
               add-label="添加服务器"
-              empty-text="未设置（默认不启用任何 MCP）"
+              empty-text="白名单为空——填入 server 名；空列表保存后即「不加载」"
               mono
               @update:model-value="updateMcpDefault"
             />
+            <p class="pac-hint">
+              与 mcp.agents 各角色名单取并集；每次派发现读盘，改动即时生效。
+            </p>
           </div>
           <div class="pac-field">
             <label class="pac-label">角色附加服务器（mcp.agents）</label>
@@ -172,12 +199,12 @@
               <TextInput
                 :model-value="concurrencyDefault"
                 type="number"
-                placeholder="4（留空使用内置默认）"
+                placeholder="10（留空使用内置默认）"
                 mono
                 class="pac-limit-input"
                 @update:model-value="updateConcurrencyDefault"
               />
-              <span class="pac-hint-inline">未单独指定 provider 或 model 时的默认并发池大小（正整数）</span>
+              <span class="pac-hint-inline">未单独指定 provider 或 model 时的默认并发池大小（正整数；应用默认 10，清空保存则移除键、回落 amagi-pi 内置默认 4）</span>
             </div>
           </div>
 
@@ -303,6 +330,7 @@ import ConfigCategoryCard from './ConfigCategoryCard.vue';
 import StringListEditor from './StringListEditor.vue';
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
+import { applyMcpListMode, mcpListModeOf, type McpListMode } from './mcpListMode';
 import {
   normalizeLimitInput,
   cleanConcurrencyConfig,
@@ -377,10 +405,55 @@ const agentRows = computed<AgentRow[]>(() => {
   }));
 });
 
+const mcpLeader = computed<string[]>(() => {
+  const v = configData.value.mcp?.leader;
+  return Array.isArray(v) ? v : [];
+});
+
+/** mcp.leader / mcp.default 三态选项与逐模式提示（语义锚定 amagi-pi：未设置 = 全部；[] = 不加载） */
+const MCP_MODE_OPTIONS: { value: McpListMode; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'list', label: '白名单' },
+  { value: 'none', label: '不加载' },
+];
+
+const MCP_MODE_HINTS: Record<McpListMode, { leader: string; default: string }> = {
+  all: {
+    leader: '未设置该键 = 不限制，加载全部（保存时删除 mcp.leader）',
+    default: '未设置该键 = 所有子 Agent 默认加载全部（保存时删除 mcp.default）',
+  },
+  list: {
+    leader: '仅加载列表内 server（* = 全部）',
+    default: '仅加载列表内 server，作为所有子 Agent 基线（* = 全部）',
+  },
+  none: {
+    leader: '保存为空列表 [] = Leader 不加载任何 MCP',
+    default: '保存为空列表 [] = 子 Agent 默认不加载（角色 agents 条目仍生效）',
+  },
+};
+
+const mcpLeaderMode = computed<McpListMode>(() => mcpListModeOf(configData.value.mcp?.leader));
+const mcpLeaderModeModel = computed<McpListMode>({
+  get: () => mcpLeaderMode.value,
+  set: (m) => switchMcpListMode('leader', m),
+});
+
 const mcpDefault = computed<string[]>(() => {
   const v = configData.value.mcp?.default;
   return Array.isArray(v) ? v : [];
 });
+
+const mcpDefaultMode = computed<McpListMode>(() => mcpListModeOf(configData.value.mcp?.default));
+const mcpDefaultModeModel = computed<McpListMode>({
+  get: () => mcpDefaultMode.value,
+  set: (m) => switchMcpListMode('default', m),
+});
+
+/** badge：all=0；none=1（有显式配置）；list=条数 */
+const mcpBadge = computed<number>(() =>
+  (mcpLeaderMode.value === 'all' ? 0 : mcpLeaderMode.value === 'none' ? 1 : mcpLeader.value.length) +
+  (mcpDefaultMode.value === 'all' ? 0 : mcpDefaultMode.value === 'none' ? 1 : mcpDefault.value.length)
+);
 
 const mcpAgentRows = computed<McpAgentRow[]>(() => {
   const agents = configData.value.mcp?.agents;
@@ -473,6 +546,8 @@ async function initialLoad() {
     jsonContent.value = content || '';
     configPath.value = path || '';
     parseJsonToConfig();
+    // 应用级默认：并发 default 未设置时预填 10（保存落盘；用户可清空保存移除键回落 amagi-pi 内置 4）。
+    ensureConcurrencyDefault10();
     void loadCatalog(getPiModelCatalog);
   } catch (err) {
     error.value = String(err);
@@ -549,12 +624,31 @@ function updateAgentModel(role: string, spec: string) {
   serialize();
 }
 
-function updateMcpDefault(v: string[]) {
-  if (!configData.value.mcp || typeof configData.value.mcp !== 'object') {
-    configData.value.mcp = {};
-  }
-  configData.value.mcp.default = v;
+/** 三态切换：all 删键（= 全部）/ none 写 [] / list 保留可编辑列表（从 all/none 切入给空列表） */
+function switchMcpListMode(field: 'leader' | 'default', mode: McpListMode) {
+  const cur = configData.value.mcp?.[field];
+  const keepList = mode === 'list' && Array.isArray(cur) && cur.length > 0 ? (cur as string[]) : [];
+  applyMcpListMode(configData.value, field, mode, keepList);
   serialize();
+}
+
+function updateMcpDefault(v: string[]) {
+  applyMcpListMode(configData.value, 'default', 'list', v);
+  serialize();
+}
+
+function updateMcpLeader(v: string[]) {
+  applyMcpListMode(configData.value, 'leader', 'list', v);
+  serialize();
+}
+
+/** 并发 default 未设置时预填 10（仅 initialLoad 一次；JSON 模式编辑/模式切换不重复注入） */
+function ensureConcurrencyDefault10() {
+  const c = configData.value.concurrency;
+  if (!c || typeof c !== 'object' || c.default === undefined || c.default === null) {
+    ensureConcurrency().default = 10;
+    serialize();
+  }
 }
 
 function addMcpAgent() {
@@ -1078,6 +1172,19 @@ onMounted(() => {
 .pac-concurrency-dd {
   min-width: 180px;
   max-width: 260px;
+}
+
+.pac-mcp-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.pac-mcp-mode-row .pac-hint-inline {
+  flex: 1;
+  min-width: 220px;
 }
 
 .pac-concurrency-model-dd {
