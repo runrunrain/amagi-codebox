@@ -325,10 +325,19 @@ func TestParseWSLVerboseListLine(t *testing.T) {
 		{"  Ubuntu-24.04    Running", "", 0, false}, // missing VERSION column
 	}
 	for _, c := range cases {
-		name, ver, ok := parseWSLVerboseListLine(c.line)
+		name, _, ver, ok := parseWSLVerboseListLine(c.line)
 		if ok != c.wantOK || name != c.wantName || ver != c.wantVer {
 			t.Errorf("parse(%q) = (%q,%d,%v), want (%q,%d,%v)", c.line, name, ver, ok, c.wantName, c.wantVer, c.wantOK)
 		}
+	}
+}
+
+func TestWSLDistroStatesIncludesReservedDistros(t *testing.T) {
+	raw := encodeUTF16LEWithBOM("  NAME            STATE      VERSION\r\n* Ubuntu-24.04   Running    2\r\n  docker-desktop Running    2\r\n  Debian         Stopped    1\r\n")
+	withFakeWSLVerboseList(t, raw)
+	got := WSLDistroStates(nil)
+	if got["Ubuntu-24.04"] != "Running" || got["docker-desktop"] != "Running" || got["Debian"] != "Stopped" || len(got) != 3 {
+		t.Fatalf("states = %v, want {Ubuntu-24.04:Running, docker-desktop:Running, Debian:Stopped}", got)
 	}
 }
 

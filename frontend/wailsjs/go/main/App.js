@@ -114,6 +114,10 @@ export function GetConfigService() {
   return window['go']['main']['App']['GetConfigService']();
 }
 
+export function GetDockerWSLHealth() {
+  return window['go']['main']['App']['GetDockerWSLHealth']();
+}
+
 export function GetEnvCheckOperationState() {
   return window['go']['main']['App']['GetEnvCheckOperationState']();
 }
@@ -640,6 +644,10 @@ export function SaveProviderFromJSON(arg1, arg2) {
 
 export function SaveTerminalPreset(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveTerminalPreset'](arg1, arg2, arg3);
+}
+
+export function SelfHealDockerWSLIntegration() {
+  return window['go']['main']['App']['SelfHealDockerWSLIntegration']();
 }
 
 export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {

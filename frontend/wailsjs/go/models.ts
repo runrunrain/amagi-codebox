@@ -1340,6 +1340,132 @@ export namespace contract {
 
 }
 
+export namespace dockerwsl {
+	
+	export class HealthReport {
+	    available: boolean;
+	    dockerDesktopPath: string;
+	    engineExePath: string;
+	    defaultDistro: string;
+	    toolDistroPresent: boolean;
+	    toolDistroRunning: boolean;
+	    desktopProcessesRunning: number;
+	    integrationMountBytes: number;
+	    integrationMountState: string;
+	    distroDockerBinInjected: boolean;
+	    engineReady: boolean;
+	    engineVersion: string;
+	    recommendSelfHeal: boolean;
+	    issues: string[];
+	    // Go type: time
+	    checkedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new HealthReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.dockerDesktopPath = source["dockerDesktopPath"];
+	        this.engineExePath = source["engineExePath"];
+	        this.defaultDistro = source["defaultDistro"];
+	        this.toolDistroPresent = source["toolDistroPresent"];
+	        this.toolDistroRunning = source["toolDistroRunning"];
+	        this.desktopProcessesRunning = source["desktopProcessesRunning"];
+	        this.integrationMountBytes = source["integrationMountBytes"];
+	        this.integrationMountState = source["integrationMountState"];
+	        this.distroDockerBinInjected = source["distroDockerBinInjected"];
+	        this.engineReady = source["engineReady"];
+	        this.engineVersion = source["engineVersion"];
+	        this.recommendSelfHeal = source["recommendSelfHeal"];
+	        this.issues = source["issues"];
+	        this.checkedAt = this.convertValues(source["checkedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SelfHealStep {
+	    name: string;
+	    ok: boolean;
+	    detail: string;
+	    durationMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SelfHealStep(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.ok = source["ok"];
+	        this.detail = source["detail"];
+	        this.durationMs = source["durationMs"];
+	    }
+	}
+	export class SelfHealReport {
+	    success: boolean;
+	    summary: string;
+	    steps: SelfHealStep[];
+	    healthBefore: HealthReport;
+	    healthAfter: HealthReport;
+	    // Go type: time
+	    startedAt: any;
+	    // Go type: time
+	    finishedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new SelfHealReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.summary = source["summary"];
+	        this.steps = this.convertValues(source["steps"], SelfHealStep);
+	        this.healthBefore = this.convertValues(source["healthBefore"], HealthReport);
+	        this.healthAfter = this.convertValues(source["healthAfter"], HealthReport);
+	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.finishedAt = this.convertValues(source["finishedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace envcheck {
 	
 	export class ResolutionAction {

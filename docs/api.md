@@ -117,6 +117,8 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 
 - `GetWSLCLIStatus() wslsetup.Status` — WSL 内各 CLI 的安装状态。
 - `InstallCLIToWSL(tool string) (*wslsetup.InstallResult, error)` — 把指定 CLI（claude/opencode/codex）安装进 WSL 发行版：确保原生 Node 20 + 用户级 npm 前缀，再 `npm i -g` 并校验；幂等。
+- `GetDockerWSLHealth() dockerwsl.HealthReport` — Docker Desktop ↔ WSL 集成健康快照：共享挂载（docker-desktop-user-distro）字节数与状态、引擎就绪、docker-desktop 工具发行版、Desktop 进程计数、问题清单与自愈建议（2026-09-25 运维复盘 §1.2）。
+- `SelfHealDockerWSLIntegration() dockerwsl.SelfHealReport` — 一键自愈：全退 Docker Desktop → 仅 `wsl --terminate docker-desktop`（用户发行版零影响）→ 全新启动 → 等引擎就绪（300s 冷启动预算）→ 复核集成挂载；返回分步回执与前后健康对照。
 
 ### Headroom（含 Codex 全局实例）
 

@@ -5,6 +5,7 @@
     <RemoteScopeBanner subject="环境检测" />
     <EnvCheckSettings />
     <WSLCLISettings />
+    <DockerWSLHealth />
   </section>
 </template>
 
@@ -13,6 +14,7 @@ import PageHead from '../components/ui/PageHead.vue'
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue'
 import EnvCheckSettings from './settings/EnvCheckSettings.vue'
 import WSLCLISettings from './settings/WSLCLISettings.vue'
+import DockerWSLHealth from './settings/DockerWSLHealth.vue'
 </script>
 
 <style scoped>

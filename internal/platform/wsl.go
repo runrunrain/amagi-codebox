@@ -53,6 +53,7 @@ var (
 	wslDistroVersionCacheMu   sync.Mutex
 	wslDistroVersionCache     map[string]int
 	wslDistroVersionCacheDone bool
+	wslDistroStateCache       map[string]string
 )
 
 // WSLDistroVersions returns a map of distro name → WSL architecture version
@@ -62,29 +63,47 @@ var (
 func WSLDistroVersions(env []string) map[string]int {
 	wslDistroVersionCacheMu.Lock()
 	defer wslDistroVersionCacheMu.Unlock()
-	if wslDistroVersionCacheDone {
-		return wslDistroVersionCache
+	if !wslDistroVersionCacheDone {
+		wslDistroVersionCache, wslDistroStateCache = probeWSLDistroVersions(env)
+		wslDistroVersionCacheDone = true
 	}
-	wslDistroVersionCacheDone = true
-	wslDistroVersionCache = probeWSLDistroVersions(env)
 	return wslDistroVersionCache
 }
 
-func probeWSLDistroVersions(env []string) map[string]int {
+// WSLDistroStates returns a map of distro name → STATE ("Running" / "Stopped"),
+// INCLUDING reserved distros (docker-desktop): the dockerwsl integration health
+// check must observe the Docker Desktop tool distro. Shares the `wsl -l -v`
+// probe and cache with WSLDistroVersions; empty map when the probe fails.
+func WSLDistroStates(env []string) map[string]string {
+	wslDistroVersionCacheMu.Lock()
+	defer wslDistroVersionCacheMu.Unlock()
+	if !wslDistroVersionCacheDone {
+		wslDistroVersionCache, wslDistroStateCache = probeWSLDistroVersions(env)
+		wslDistroVersionCacheDone = true
+	}
+	if wslDistroStateCache == nil {
+		return map[string]string{}
+	}
+	return wslDistroStateCache
+}
+
+func probeWSLDistroVersions(env []string) (map[string]int, map[string]string) {
 	out, err := wslDistroVersionLister(env)
 	if err != nil {
-		return map[string]int{}
+		return map[string]int{}, map[string]string{}
 	}
 	decoded := decodeWSLListOutput(out)
-	result := map[string]int{}
+	versions := map[string]int{}
+	states := map[string]string{}
 	for _, line := range strings.Split(decoded, "\n") {
-		name, version, ok := parseWSLVerboseListLine(line)
+		name, state, version, ok := parseWSLVerboseListLine(line)
 		if !ok {
 			continue
 		}
-		result[name] = version
+		versions[name] = version
+		states[name] = state
 	}
-	return result
+	return versions, states
 }
 
 // parseWSLVerboseListLine parses one line of `wsl.exe -l -v` output:
@@ -98,22 +117,23 @@ func probeWSLDistroVersions(env []string) map[string]int {
 // and the SECOND-TO-LAST as STATE; everything before (minus any '*' marker)
 // joined back together is the name. The header line never ends in a digit and
 // is rejected naturally.
-func parseWSLVerboseListLine(line string) (string, int, bool) {
+func parseWSLVerboseListLine(line string) (name, state string, version int, ok bool) {
 	fields := strings.Fields(strings.Trim(line, "\r\x00"))
 	if len(fields) < 3 {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	version, err := strconv.Atoi(fields[len(fields)-1])
 	if err != nil || version < 1 {
-		return "", 0, false
+		return "", "", 0, false
 	}
+	state = fields[len(fields)-2]
 	// fields = [name-part...] STATE VERSION. Distro names may contain spaces;
 	// re-join everything before the trailing STATE column.
-	name := strings.TrimSpace(strings.TrimPrefix(strings.Join(fields[:len(fields)-2], " "), "*"))
+	name = strings.TrimSpace(strings.TrimPrefix(strings.Join(fields[:len(fields)-2], " "), "*"))
 	if name == "" {
-		return "", 0, false
+		return "", "", 0, false
 	}
-	return name, version, true
+	return name, state, version, true
 }
 
 // resetWSLDistroVersionCacheForTest clears the version-probe cache.
@@ -122,6 +142,7 @@ func resetWSLDistroVersionCacheForTest() {
 	defer wslDistroVersionCacheMu.Unlock()
 	wslDistroVersionCacheDone = false
 	wslDistroVersionCache = nil
+	wslDistroStateCache = nil
 }
 
 // availableWSLDistros returns the usable (non-reserved) WSL distributions, cached

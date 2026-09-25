@@ -8,6 +8,8 @@
 
 ### Added
 
+- **Docker Desktop ↔ WSL 集成健康检查与一键自愈（2026-09-25 运维复盘 §1.2 清偿）**：Docker Desktop 与用户发行版同时冷启动初始化期间，/mnt/wsl/docker-desktop 共享挂载可能被竞态挂坏——docker-desktop-user-distro 挂成 0 字节空文件（正常 23,219,968 字节），对空文件 exec → 集成无限弹窗 "unexpectedly stopped"；仅重启 GUI 不够（backend 不随 GUI 复活、坏挂载陈旧保留）。新增 internal/dockerwsl 包 + App 绑定（GetDockerWSLHealth / SelfHealDockerWSLIntegration）+ 环境检测页卡片：健康快照（挂载字节数/状态、引擎就绪与版本、docker-desktop 工具发行版、Desktop 进程计数、问题清单、自愈建议）；一键自愈固化实证序列（① 全量退出 Docker Desktop/com.docker.backend/com.docker.build 并轮询计数归零 → ② `wsl --terminate docker-desktop`（仅工具发行版，Ubuntu 与 CodeBox 会话零影响）→ ③ 全新启动 → ④ 等引擎就绪（300s 冷启动预算/5s 间隔，terminate 后重启 ≈5s）→ ⑤ 复核挂载字节数与 /usr/bin/docker 注入），同步返回分步回执与前后健康对照。真机冒烟（AMAGI_DOCKERWSL_SMOKE=1 门控）实测探针链全对（挂载 23,219,968 字节、engine 29.2.0、UTF-16 解码/CSV 计数均正确）。配套：platform 新增 WSLDistroStates（含 docker-desktop 保留发行版的 STATE，复用 wsl -l -v 单次探测与缓存）。
+
 - **已登记远程主机管理入口（编辑/重新配对/移除）**：桌面端互联此前只在主机切换菜单提供「添加主机…」，`RemoteClientUpdateHost`/`RemoteClientRenameHost`/`RemoteClientRemoveHost` 三个绑定与 API 封装全部就位却零调用——已配对主机地址变更、换机重建、凭据丢失（登记簿 deviceId 残留但 Keychain 凭据缺失，表现为「状态灯可达却连不上」）后既无法更新配对码也无法删除重建。新增 `HostManageDialog`（主机切换菜单「管理主机…」进入）：行内编辑显示名与地址（地址变更提示重置配对态；若改的是当前连接主机先回本机避免死远程视图）、重新配对（`PairingWizardDialog` 新增 `prefill` 预填模式，`UpsertPaired` 按 hostPort/deviceID 回写原条目、显示名保留，配对完成自动连接）、移除（PG-06 危险确认，`ForgetHost` 同步清理本机 Keychain 凭据；对方 CodeBox 不受影响）。store 新增 `renameHost`/`updateHostAddress`/`removeHost` 动作与 `pairingPrefill` 状态。
 
 ## [1.3.90] - 2026-09-25

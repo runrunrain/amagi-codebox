@@ -55,6 +55,7 @@ import (
 	"amagi-codebox/internal/usage"
 	"amagi-codebox/internal/webui"
 	"amagi-codebox/internal/wslsetup"
+	"amagi-codebox/internal/dockerwsl"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -333,6 +334,11 @@ type App struct {
 	// 非 Windows 平台为 no-op 服务，方法返回 unsupported。
 	WSLSetup *wslsetup.Service
 
+	// DockerWSL 面向 Windows：Docker Desktop ↔ WSL 集成健康检查与一键自愈
+	//（2026-09-25 运维复盘 §1.2：共享挂载竞态挂坏的实证修复序列固化）。
+	// 非 Windows 平台方法返回不支持。
+	DockerWSL *dockerwsl.Service
+
 	Capabilities platform.PlatformCapabilities
 	CLIResolver  platform.CLIResolver
 	FileOpener   platform.FileOpener
@@ -476,6 +482,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		remotePlanner:       launchplan.NewFailClosedPlanner(),
 		compensationDebts:   launchplan.NewCompensationDebtRegistry(),
 		WSLSetup:            wslsetup.NewService(log),
+		DockerWSL:           dockerwsl.NewService(log),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
@@ -810,6 +817,21 @@ func (a *App) GetWSLCLIStatus() wslsetup.Status {
 func (a *App) InstallCLIToWSL(tool string) (*wslsetup.InstallResult, error) {
 	a.Log.Info("wslsetup", "安装 CLI 到 WSL 请求", "tool="+tool)
 	return a.WSLSetup.InstallTool(tool)
+}
+
+// GetDockerWSLHealth 返回 Docker Desktop ↔ WSL 集成的健康快照（挂载字节数/状态、
+// 引擎就绪、工具发行版、进程计数、问题清单与自愈建议）。非 Windows 或未安装
+// Docker Desktop 时 Available=false。对应 2026-09-25 运维复盘 §1.2 环境面修复。
+func (a *App) GetDockerWSLHealth() dockerwsl.HealthReport {
+	return a.DockerWSL.GetHealth()
+}
+
+// SelfHealDockerWSLIntegration 执行实证自愈序列（全退 Desktop → 仅 terminate
+// docker-desktop 工具发行版 → 全新启动 → 等引擎就绪（300s 预算）→ 复核集成挂载）。
+// 同步返回步骤回执；Ubuntu 用户发行版与 CodeBox 会话零影响。
+func (a *App) SelfHealDockerWSLIntegration() dockerwsl.SelfHealReport {
+	a.Log.Info("dockerwsl", "Docker WSL 集成自愈请求")
+	return a.DockerWSL.SelfHeal(context.Background())
 }
 
 // UpdateTool 更新指定 CLI 工具。
