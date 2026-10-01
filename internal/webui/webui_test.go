@@ -203,8 +203,10 @@ func TestProbe_AvailableKeepsAliveOnTransientNotReady(t *testing.T) {
 
 func TestProbe_SessionSwitchWithPIDChangeRejected(t *testing.T) {
 	// 会话切换合法的前提是 pid 不变：sessionId 演进 + pid 也变（端口被其他
-	// pi 进程复用）→ 拒绝，failStreak 照常累积（ended 语义不变）。
+	// pi 进程复用）→ 拒绝，failStreak 照常累积（ended 语义不变：注入 pid
+	// 已死分支，不依赖真实进程时序）。
 	s := newTestService(t, time.Minute)
+	s.aliveFn = func(pid int) bool { return false }
 	stubPID := 4321
 	var port int
 	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -266,6 +268,129 @@ func trackerPiSessionID(s *Service, sessionID string) string {
 	return s.trackers[sessionID].piSessionID
 }
 
+// trackerFailStreak 读取 tracker 当前连续失败计数（测试断言用）。
+func trackerFailStreak(s *Service, sessionID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trackers[sessionID].failStreak
+}
+
+// --- ended 前的 pid 存活校验（2026-10 修复：事件循环阻塞假失联） ----------
+
+// TestProbe_FailStreakAlivePIDKeepsAvailable：available 后连续探测失败达阈值
+// 但 pi 进程存活（重负载任务阻塞扩展事件循环 → /api/info 超时）→ 不是会话
+// 结束：保持 available、failStreak 清零继续探测，恢复后无缝可用。
+func TestProbe_FailStreakAlivePIDKeepsAvailable(t *testing.T) {
+	s := newTestService(t, time.Minute)
+	s.aliveFn = func(pid int) bool { return true } // pi 进程存活
+	healthy := true
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		if !healthy {
+			// v!=1 的 503 → 不可达（见 TestProbe_503WithBadVersionIsUnreachable）。
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"v":2,"ready":false}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-heavy", 4321, port))
+	})
+	s.RegisterSession("heavy", 4321, port, "")
+	if st := s.ProbeWebUI("heavy"); st.State != StateAvailable {
+		t.Fatalf("首轮应 available，got %s", st.State)
+	}
+	healthy = false
+	for i := 0; i < endedFailThreshold; i++ {
+		if st := s.ProbeWebUI("heavy"); st.State != StateAvailable {
+			t.Fatalf("连续失败第 %d 次 + pid 存活应保持 available，got %s", i+1, st.State)
+		}
+	}
+	if fs := trackerFailStreak(s, "heavy"); fs != 0 {
+		t.Fatalf("failStreak=%d, want 0（达阈值时已清零）", fs)
+	}
+	// failStreak 已清零：阈值重新起算，再失败一次也不得 ended。
+	if st := s.ProbeWebUI("heavy"); st.State != StateAvailable {
+		t.Fatalf("清零后单次失败不应 ended，got %s", st.State)
+	}
+	if fs := trackerFailStreak(s, "heavy"); fs != 1 {
+		t.Fatalf("failStreak=%d, want 1（清零后仅累积本轮）", fs)
+	}
+	// 恢复：直接回到 available（原端口/裸 URL，token 为空），无异常。
+	healthy = true
+	st := s.ProbeWebUI("heavy")
+	if st.State != StateAvailable || st.Port != port {
+		t.Fatalf("恢复后应保持 available 于原端口，got %+v", st)
+	}
+	if wantURL := fmt.Sprintf("http://127.0.0.1:%d/", port); st.URL != wantURL {
+		t.Fatalf("url=%q, want %q（token 为空 → 裸形式）", st.URL, wantURL)
+	}
+}
+
+// TestProbe_FailStreakDeadPIDEnds：pid 已死（进程退出 → server 消亡）→ 原语义
+// 保留：连续失败达阈值落 ended 且粘性。
+func TestProbe_FailStreakDeadPIDEnds(t *testing.T) {
+	s := newTestService(t, time.Minute)
+	s.aliveFn = func(pid int) bool { return false } // pi 进程已退出
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-dead", 4321, port))
+	})
+	s.RegisterSession("dead", 4321, port, "")
+	if st := s.ProbeWebUI("dead"); st.State != StateAvailable {
+		t.Fatalf("首轮应 available，got %s", st.State)
+	}
+	// 让服务"清亡"：拒连。
+	// 注入端口已不可探 → 连续失败。
+	deadPort, err := AllocateFreePort()
+	if err != nil {
+		t.Fatalf("AllocateFreePort: %v", err)
+	}
+	s.mu.Lock()
+	s.trackers["dead"].port = deadPort // 换成拒连端口模拟 server 清亡
+	s.mu.Unlock()
+	if st := s.ProbeWebUI("dead"); st.State != StateAvailable {
+		t.Fatalf("首次失败应保持 available（failStreak=1），got %s", st.State)
+	}
+	if st := s.ProbeWebUI("dead"); st.State != StateEnded {
+		t.Fatalf("连续失败 + pid 已死应 ended，got %s", st.State)
+	}
+	if st := s.ProbeWebUI("dead"); st.State != StateEnded {
+		t.Fatalf("ended 应粘性，got %s", st.State)
+	}
+}
+
+// TestProbe_ProbingWindowExhaustionIgnoresAlivePID：pid 存活校验只作用于
+// available 后的 ended 判定；probing 阶段窗口耗尽仍按原语义落 unavailable。
+func TestProbe_ProbingWindowExhaustionIgnoresAlivePID(t *testing.T) {
+	s := newTestService(t, time.Nanosecond)
+	s.aliveFn = func(pid int) bool { return true } // 即使进程存活也不影响
+	deadPort, err := AllocateFreePort()
+	if err != nil {
+		t.Fatalf("AllocateFreePort: %v", err)
+	}
+	s.RegisterSession("pw", 4321, deadPort, "")
+	time.Sleep(time.Millisecond) // 保证超过 probingWindow
+	if st := s.ProbeWebUI("pw"); st.State != StateUnavailable {
+		t.Fatalf("state=%s, want unavailable", st.State)
+	}
+}
+
+// TestAliveFnDefaultsToPlatformProcessAlive：生产默认接线 + 自身进程真实存活
+// 正例（不依赖注入）。
+func TestAliveFnDefaultsToPlatformProcessAlive(t *testing.T) {
+	s := NewService(logging.NewService(t.TempDir()), t.TempDir())
+	if s.aliveFn == nil {
+		t.Fatal("aliveFn 应默认注入")
+	}
+	if !s.aliveFn(os.Getpid()) {
+		t.Fatal("默认 aliveFn 应判定自身进程存活")
+	}
+	if s.aliveFn(0) || s.aliveFn(-1) {
+		t.Fatal("非正 pid 应判定不存活")
+	}
+}
+
 func TestProbe_ProtocolVersionRejected(t *testing.T) {
 	s := newTestService(t, time.Minute)
 	port := startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -290,6 +415,7 @@ func TestProbe_EndedAfterAvailableLost(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(srv.Listener.Addr().String())
 	port, _ = strconv.Atoi(portStr)
 	s.RegisterSession("s6", 4321, port, "")
+	s.aliveFn = func(pid int) bool { return false } // ended 前提：pi 进程已退出
 
 	if st := s.ProbeWebUI("s6"); st.State != StateAvailable {
 		t.Fatalf("state=%s, want available", st.State)
@@ -503,6 +629,7 @@ func TestProbe_StickyRechecksPID(t *testing.T) {
 		fmt.Fprint(w, infoJSON("pi-sess-sticky", stubPID, port))
 	})
 	s.RegisterSession("m2d", 4321, port, "")
+	s.aliveFn = func(pid int) bool { return false } // ended 前提：进程已死
 	if st := s.ProbeWebUI("m2d"); st.State != StateAvailable {
 		t.Fatalf("首轮应 available，got %s", st.State)
 	}

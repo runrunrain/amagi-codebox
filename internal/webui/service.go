@@ -4,6 +4,9 @@ package webui
 //
 // 状态机（技术方案 §5）：unknown → probing → available | unavailable；
 // 会话结束（pi 进程退出 → server 消亡 → 探测持续失败，契约 §7.4）→ ended。
+// ended 落定前校验 pid 存活：重负载任务（长测试/构建）阻塞扩展进程事件
+// 循环会让 /api/info 连续超时（假失联），pid 存活只算暂时不可达——保持
+// available 继续探测，pid 已死才落 ended。
 //
 // pi TUI 内 /resume、/new、fork、reload 会在同进程内切换会话：sessionId
 // 必变而 pid 不变，故采纳粘性键为 pid——sessionId 演进视为合法会话切换，
@@ -27,6 +30,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/platform"
 )
 
 // State 是 codebox 侧 per-session webui 状态机取值。
@@ -37,7 +41,7 @@ const (
 	StateProbing     State = "probing"     // 已注册，探测中（503 或暂未连通）
 	StateAvailable   State = "available"   // /api/info 200 且强校验通过
 	StateUnavailable State = "unavailable" // 探测窗口耗尽仍未就绪（未装插件等，A-4 隐藏切换控件）
-	StateEnded       State = "ended"       // 会话已结束（进程退出 / 可用后持续失联）
+	StateEnded       State = "ended"       // 会话已结束（进程退出；可用后持续失联且 pid 已死）
 )
 
 // Status 是暴露给前端的会话 webui 状态快照。
@@ -90,6 +94,9 @@ type Service struct {
 	// 测试 seam：缩小窗口/超时以编排状态机；生产取默认值。
 	probingWindow time.Duration
 	now           func() time.Time
+	// aliveFn 判定 pid 存活（ended 落定前校验）；生产取
+	// platform.ProcessAlive，测试注入以控制存活/已死两分支。
+	aliveFn func(pid int) bool
 }
 
 // NewService 创建 webui 服务。registryDir 为契约 §7.3 注册表目录
@@ -102,6 +109,7 @@ func NewService(log *logging.Service, registryDir string) *Service {
 		trackers:      make(map[string]*tracker),
 		probingWindow: defaultProbingWindow,
 		now:           time.Now,
+		aliveFn:       platform.ProcessAlive,
 	}
 }
 
@@ -285,6 +293,17 @@ func (s *Service) probe(sessionID string, t *tracker) {
 			// §7.4 ended 判定：连续失败达阈值才落 ended（bye/WS 不作依据）。
 			t.failStreak++
 			if t.failStreak >= endedFailThreshold {
+				// pid 存活校验：重负载任务（长测试/构建/大量输出）会阻塞扩展
+				// 进程事件循环 >3s，/api/info 连续超时是"假失联"而非会话结束
+				//（ended 本意 = 进程退出 → server 消亡）。pid 存活 → 暂时不可
+				// 达：保持 available、failStreak 清零继续探测；pid 已死 → 原语义
+				// 落 ended。pid 校验是快速本地 syscall，允许锁内执行（网络 I/O
+				// 不持锁纪律不受影响）。
+				if s.aliveFn(t.pid) {
+					s.log.Info("webui", "webui 探测失败但 pi 进程存活，保持 available（事件循环阻塞等暂时不可达）", "session="+sessionID)
+					t.failStreak = 0
+					return
+				}
 				t.state = StateEnded
 				s.log.Info("webui", "webui 探测持续失败，判定 ended", "session="+sessionID)
 			}

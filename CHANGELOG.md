@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.93] - 2026-10-01
+
+### Fixed
+
+- **pi 会话运行中「终端⇄Web」切换按钮消失（webui 误判 ended 根治）**：`internal/webui` 状态机在 available 后连续 2 次探测失败（单次 1.5s 超时，约 3s 持续不可达）即单向落 ended 并停止轮询——重负载任务（长测试/构建/大量输出）阻塞 pi 扩展进程事件循环时，/api/info 连续超时是「假失联」而非会话结束，切换按钮被误判永久隐藏（codebox 日志 2026-10-01 三次误判均精确落在任务执行窗口）。修复：ended 落定前先校验 pid 存活性——`internal/platform` 新增 `ProcessAlive(pid)`（unix `Signal(0)` / windows `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)+STILL_ACTIVE`，per-OS 文件）：pid 存活则保持 available、failStreak 清零、记 INFO 日志继续探测；pid 已死才落 ended（原语义保留）。`aliveFn` 测试 seam 随 `now`/`probingWindow` 既有模式；新增三用例（存活保 available / 已死落 ended / probing 窗口回归）+ ProcessAlive 真实进程正例；`go vet` + `go test ./internal/webui/ ./internal/platform/` 全绿，`GOOS=windows` 交叉编译通过。
+
 ## [1.3.92] - 2026-09-25
 
 ### Fixed
