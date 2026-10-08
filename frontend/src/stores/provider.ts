@@ -11,6 +11,7 @@
  * 旧 API（setProviders / setTerminalPresets / setMergedPresets / loading*）保留以兼容 P3-B 预设实现。
  */
 
+import { getPiLoginProviders, type PiLoginProvider } from '../api/piLogin';
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { config } from '../../wailsjs/go/models';
@@ -29,7 +30,7 @@ type Provider = config.Provider;
 type TerminalPreset = config.TerminalPreset;
 type MergedTerminalPreset = config.MergedTerminalPreset;
 
-export type ProviderFilter = 'all' | 'anthropic' | 'openai';
+export type ProviderFilter = 'all' | 'anthropic' | 'openai' | 'login';
 
 /** 预设域：两类公共协议格式 + OpenCode 独立完整配置 + Pi/OMP 结构化配置。 */
 export type PresetEngine = 'anthropic' | 'openai' | 'opencode' | 'pi' | 'omp';
@@ -61,6 +62,9 @@ export const useProviderStore = defineStore('provider', () => {
   const providers = ref<Record<string, Provider>>({});
   // 密钥配置状态 map（id -> 是否已配置）
   const keyStatus = ref<Record<string, boolean>>({});
+  const loginProviders = ref<PiLoginProvider[]>([]);
+  const loginLoadError = ref('');
+  const activeLoginProvider = computed(() => loginProviders.value.find(p => p.id === activeProviderId.value) || null);
 
   // P3-A 新增：筛选 + 详情模式
   const filter = ref<ProviderFilter>('all');
@@ -115,6 +119,7 @@ export const useProviderStore = defineStore('provider', () => {
 
   /** 按当前 filter 过滤后的提供商列表 */
   const filteredProviders = computed<ProviderEntry[]>(() => {
+    if (filter.value === 'login') return [];
     if (filter.value === 'all') return providerEntries.value;
     return providerEntries.value.filter((entry) => {
       if (filter.value === 'anthropic') return hasAnthropic(entry.provider);
@@ -151,6 +156,7 @@ export const useProviderStore = defineStore('provider', () => {
     loadingProviders.value = true;
     loadError.value = '';
     try {
+      await loadLoginProviders();
       const records = await GetProviders();
       const ids = Object.keys(records ?? {});
       const statusEntries = await Promise.all(
@@ -167,6 +173,12 @@ export const useProviderStore = defineStore('provider', () => {
       loading.value = false;
       loadingProviders.value = false;
     }
+  }
+
+  async function loadLoginProviders() {
+    loginLoadError.value = '';
+    try { loginProviders.value = await getPiLoginProviders() || []; }
+    catch (err) { loginProviders.value = []; loginLoadError.value = String(err); }
   }
 
   /**
@@ -348,6 +360,10 @@ export const useProviderStore = defineStore('provider', () => {
 
   return {
     // State
+    loginProviders,
+    loginLoadError,
+    activeLoginProvider,
+    loadLoginProviders,
     providers,
     keyStatus,
     filter,

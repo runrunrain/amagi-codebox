@@ -897,7 +897,26 @@ export namespace config {
 		    return a;
 		}
 	}
+	export class PiLoginPreset {
+	    name: string;
+	    provider: string;
+	    model: string;
+	    thinking?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PiLoginPreset(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.provider = source["provider"];
+	        this.model = source["model"];
+	        this.thinking = source["thinking"];
+	    }
+	}
 	export class AppConfig {
+	    pi_login_presets?: Record<string, PiLoginPreset>;
 	    models: Record<string, Provider>;
 	    agent_teams: AgentTeamsConfig;
 	    terminal_presets?: TerminalPresetsConfig;
@@ -912,6 +931,7 @@ export namespace config {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pi_login_presets = this.convertValues(source["pi_login_presets"], PiLoginPreset, true);
 	        this.models = this.convertValues(source["models"], Provider, true);
 	        this.agent_teams = this.convertValues(source["agent_teams"], AgentTeamsConfig);
 	        this.terminal_presets = this.convertValues(source["terminal_presets"], TerminalPresetsConfig);
@@ -1023,6 +1043,7 @@ export namespace config {
 	        this.Video = source["Video"];
 	    }
 	}
+	
 	
 	
 	
@@ -2793,6 +2814,69 @@ export namespace paths {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	
 	    }
+	}
+
+}
+
+export namespace piconfig {
+	
+	export class ModelCatalogEntry {
+	    id: string;
+	    name?: string;
+	    reasoning: boolean;
+	    thinkingLevels?: string[];
+	    contextWindow?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelCatalogEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.reasoning = source["reasoning"];
+	        this.thinkingLevels = source["thinkingLevels"];
+	        this.contextWindow = source["contextWindow"];
+	    }
+	}
+	export class PiLoginProvider {
+	    id: string;
+	    provider: string;
+	    cli: string;
+	    source: string;
+	    models: ModelCatalogEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PiLoginProvider(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.provider = source["provider"];
+	        this.cli = source["cli"];
+	        this.source = source["source"];
+	        this.models = this.convertValues(source["models"], ModelCatalogEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

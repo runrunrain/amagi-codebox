@@ -18,6 +18,9 @@ const state = reactive({
   // Pi 独立选择（复用 amagi provider，映射到 Pi 内置 provider）
   piProvider: '',
   piModel: '',
+  // R4：Pi 登录选择失效锁（会话页 reconcile 写入，启动链读取禁启）。
+  // 瞬态运行时状态，不进 persistDefaults 载荷。
+  piLoginStale: false,
   // Omp 独立选择（复用 amagi provider，映射到 Omp 内置 provider）
   ompProvider: '',
   ompModel: '',
@@ -66,6 +69,7 @@ export function useDashboardState() {
       state.codexModel = state.codexModel || ''
       state.piProvider = state.piProvider || ''
       state.piModel = state.piModel || ''
+      state.piLoginStale = false
       state.ompProvider = state.ompProvider || ''
       state.ompModel = state.ompModel || ''
       state.claudeMode = d.claudeMode || d.mode || 'embedded'
@@ -143,6 +147,7 @@ export function useDashboardState() {
     state.codexModel = ''
     state.piProvider = ''
     state.piModel = ''
+    state.piLoginStale = false
     state.ompProvider = ''
     state.ompModel = ''
     state.workDir = ''

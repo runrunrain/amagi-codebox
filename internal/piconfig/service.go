@@ -457,14 +457,18 @@ func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]Mode
 // mergeFrontlineContract 把 amagi-pi 前线契约文件的追加模型与档位补丁合并进目录对应 provider。
 // 宽容语义：文件缺失/坏 JSON/字段形态意外 → 静默跳过（展示辅助，非正确性依赖）。
 func mergeFrontlineContract(catalog *ModelCatalog) {
-	contractPath := filepath.Join(agentDir(), "amagi", "data", "codex-frontline.json")
+	mergeFrontlineContractAt(catalog, agentDir())
+}
+
+func mergeFrontlineContractAt(catalog *ModelCatalog, dir string) {
+	contractPath := filepath.Join(dir, "amagi", "data", "codex-frontline.json")
 	data, err := os.ReadFile(contractPath)
 	if err != nil {
 		return
 	}
 	var contract struct {
-		Provider     string                `json:"provider"`
-		Models       []map[string]any      `json:"models"`
+		Provider     string                    `json:"provider"`
+		Models       []map[string]any          `json:"models"`
 		ModelPatches map[string]map[string]any `json:"modelPatches"`
 	}
 	if json.Unmarshal(data, &contract) != nil || contract.Provider == "" ||

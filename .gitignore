@@ -75,3 +75,6 @@ playwright-report/
 
 # 本地测试临时产物（go-cache / codex / pty 工作目录，勿提交）
 /.tmp-tests/
+
+# 本地运行时产物（Saved/Logs 等，勿提交）
+/Saved/

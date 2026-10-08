@@ -859,6 +859,9 @@ func (s *ConfigService) SnapshotProvider(name string) (*Provider, error) {
 }
 
 func (s *ConfigService) SaveProvider(name string, p Provider) error {
+	if _, isLoginID := ParsePiLoginProviderID(name); isLoginID {
+		return errors.New("reserved Pi login source id")
+	}
 	if name == "" {
 		return errors.New("provider name is required")
 	}
@@ -1167,6 +1170,15 @@ func (s *ConfigService) GetTerminalPresets(terminalType string) (map[string]Term
 
 // SaveTerminalPreset 保存指定终端类型的预设。
 func (s *ConfigService) SaveTerminalPreset(terminalType, presetName string, preset TerminalPreset) error {
+	// 与登录命名空间的互斥只针对真实的歧义面：key 精确撞上已存登录预设，
+	// 或 provider 字段是结构化登录来源 id。普通 provider "pi-login" 的公共
+	// 预设（如 "pi-login/Daily"）保持完全可用（R1）。
+	if _, isLoginID := ParsePiLoginProviderID(preset.Provider); isLoginID {
+		return errors.New("Pi login source ids cannot back public API presets")
+	}
+	if s.loginPresetKeyExists(presetName) {
+		return fmt.Errorf("preset key %q collides with a stored Pi login preset", presetName)
+	}
 	canonical, ok := CanonicalTerminalPresetType(terminalType)
 	if !ok {
 		return fmt.Errorf("invalid terminal preset type: %s", terminalType)

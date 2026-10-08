@@ -25,6 +25,7 @@ import (
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/dockerwsl"
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/gitassist"
@@ -55,7 +56,6 @@ import (
 	"amagi-codebox/internal/usage"
 	"amagi-codebox/internal/webui"
 	"amagi-codebox/internal/wslsetup"
-	"amagi-codebox/internal/dockerwsl"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -1267,23 +1267,23 @@ func (a *App) ListLocalLanAddresses() ([]remote.LanAddressInfo, error) {
 // GetRemoteStatus 返回远程服务器状态信息。
 func (a *App) GetRemoteStatus() map[string]any {
 	return map[string]any{
-		"host":                a.Remote.GetHost(),
-		"port":                a.Remote.GetPort(),
-		"token":               a.Remote.GetToken(),
-		"running":             a.Remote.IsRunning(),
+		"host":    a.Remote.GetHost(),
+		"port":    a.Remote.GetPort(),
+		"token":   a.Remote.GetToken(),
+		"running": a.Remote.IsRunning(),
 		// enabled（持久化意图）与 running（实际监听）分离透出：Startup 恢复失败
 		// 时形成 enabled=true / running=false 的可观察漂移窗口（P3-B③），配套
 		// lastStartError 给出原因；hostSummaryDegraded 为 v1 HostSummary 缓存
 		// 最近错误态（P3-B R2，非 wire 契约字段，供自检卡降级横幅）。
-		"enabled":              a.Settings.GetRemoteEnabled(),
-		"lastStartError":       a.getLastRemoteStartError(),
-		"hostSummaryDegraded":  a.Remote.HostSummaryDegraded(),
+		"enabled":             a.Settings.GetRemoteEnabled(),
+		"lastStartError":      a.getLastRemoteStartError(),
+		"hostSummaryDegraded": a.Remote.HostSummaryDegraded(),
 	}
 }
 
 // SessionControlHoldView 是桌面「控制权管理」卡可消费的会话控制权持有投影
-//（frontend 直接消费的 JSON 形状；不透出内部类型）。仅包含 device holder 的
-//展示字段，不含任何凭据或连接内部标识。
+// （frontend 直接消费的 JSON 形状；不透出内部类型）。仅包含 device holder 的
+// 展示字段，不含任何凭据或连接内部标识。
 type SessionControlHoldView struct {
 	SessionID  string `json:"sessionID"`
 	DeviceID   string `json:"deviceID"`
@@ -1292,8 +1292,8 @@ type SessionControlHoldView struct {
 }
 
 // GetSessionControlHolds 返回当前由远程设备持有控制权的会话列表（桌面管理
-//视图）。安全边界：仅枚举 device holder（无人持有/桌面持有不列——管理目标
-//是「设备持有」）；只读，不改变任何控制权状态，不触碰远程服务开关。control
+// 视图）。安全边界：仅枚举 device holder（无人持有/桌面持有不列——管理目标
+// 是「设备持有」）；只读，不改变任何控制权状态，不触碰远程服务开关。control
 // 运行时未就绪（启动早期/已关闭）时自然返回空列表——彼时不存在设备持有。
 func (a *App) GetSessionControlHolds() []SessionControlHoldView {
 	if a.control == nil || !a.control.IsReady() {
@@ -1334,8 +1334,9 @@ func (a *App) ReleaseSessionControl(sessionID string) error {
 	}
 	return nil
 }
+
 // getLastRemoteStartError 返回最近一次 Startup 恢复路径的 Start 失败文本
-//（空串表示无失败记录）。只读，不触发任何重试。
+// （空串表示无失败记录）。只读，不触发任何重试。
 func (a *App) getLastRemoteStartError() string {
 	a.lastRemoteStartErrMu.Lock()
 	defer a.lastRemoteStartErrMu.Unlock()
@@ -2290,6 +2291,9 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 
 // LaunchSession 启动一个新的终端会话
 func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useHeadroom bool, shellPath string) (string, error) {
+	if err := a.Config.RejectPiLoginLaunchRefs(providerName, presetName); err != nil {
+		return "", err
+	}
 	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s headroom=%v shell=%s", providerName, presetName, mode, workDir, useHeadroom, shellPath))
 
 	// ---- terminal_presets 桥接 ----
@@ -2999,6 +3003,9 @@ func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
 // modelName 非空时通过 -m 参数指定模型；providerID 非空时注入对应服务商的 API Key
 // Codex 进程直接继承用户原始环境中的 Codex home，不做任何隔离或改写。
 func (a *App) LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
+	if err := a.Config.RejectPiLoginLaunchRefs(providerID, modelName); err != nil {
+		return "", err
+	}
 	a.Log.Info("session", "启动 Codex 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
 
 	// ---- terminal_presets 桥接 ----
@@ -3362,12 +3369,24 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	return sess.ID, nil
 }
 
-// LaunchPiSession 启动一个新的 Pi coding agent 会话。
-// providerID 非空时根据 Provider 双格式映射到 Pi 内置 provider（anthropic/openai），
-// 注入对应 API Key 环境变量，并通过 --provider 参数指定；
-// modelName 非空时通过 --model 参数指定模型。
-// 与 Codex 不同，Pi 无配置文件，纯靠进程环境变量 + CLI 参数驱动。
+// LaunchPiSession 启动 Pi 会话：API 服务商写入托管 models.json；
+// pi-login 命名空间的专用预设则使用标准 auth.json 与原生 provider ID，
+// 不生成托管配置或注入认证 token。启动时再检查登录来源，退出登录不回退。
 func (a *App) LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
+	loginPresetRef := modelName
+	login, loginErr := resolvePiLoginLaunch(a.Config, modelName, providerID,
+		platform.EmbeddedLaunchTargetsWSL(string(embeddedDefaultLaunchMode(mode)), shellPath, nil))
+	if loginErr != nil {
+		return "", loginErr
+	}
+	var loginPreset *config.PiLoginPreset
+	if login != nil {
+		loginPreset = login.Preset
+	}
+	if loginPreset != nil {
+		providerID = config.PiLoginProviderID(loginPreset.Provider)
+		modelName = loginPreset.Model
+	}
 	a.Log.Info("session", "启动 Pi 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
 
 	// ---- terminal_presets 桥接 ----
@@ -3375,7 +3394,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	// 回退语义：先查 openai 桶（pi 原生桶，撞名优先），miss 后仅当 anthropic 桶
 	// 预设带 HarnessSync 标记（opt-in）才命中；unmarked anthropic 预设不解析。
 	tpProvider, tp, tpErr := a.Config.ResolvePiOmpTerminalPreset(modelName)
-	tpFound := tpErr == nil && tp != nil
+	tpFound := loginPreset == nil && tpErr == nil && tp != nil
 	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
 	// 供后续写入 pi models.json 的 model 配置与解析 --thinking 级别。
 	var presetParams config.Parameters
@@ -3390,7 +3409,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 
 	// ---- legacy provider preset fallback ----
 	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
-	if !tpFound && providerID != "" {
+	if loginPreset == nil && !tpFound && providerID != "" {
 		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
 			if preset, ok := provider.Presets[modelName]; ok {
 				resolvedModel := preset.Model
@@ -3457,7 +3476,16 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	if _, explicit := a.EnvVars.Get("PI_OFFLINE"); !explicit {
 		envOverrides["PI_OFFLINE"] = "1"
 	}
-	if providerID != "" {
+	if loginPreset != nil {
+		launchSettings = piLaunchSettings{Provider: loginPreset.Provider, Model: loginPreset.Model, Thinking: loginPreset.Thinking}
+		// R2：显式钉住 canonical agent root（而非删除 PI_CODING_AGENT_DIR），
+		// 自定义 HOME/USERPROFILE 无法再把 Pi 导向另一份 auth.json。该 overrides
+		// 同时覆盖 embedded（BuildEnv）与 external（Launcher.LaunchPi）两条路径。
+		for key, value := range piLoginEnvOverrides(login.AgentDir) {
+			envOverrides[key] = value
+		}
+	}
+	if loginPreset == nil && providerID != "" {
 		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
 		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
 		// v1.3.13 重构时此处缺失 Lock()，未加锁直接 Unlock 触发 Go fatal error
@@ -3525,6 +3553,10 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		a.providerSyncMu.Unlock()
 	}
 
+	// Preserve the login stable key for desktop restart, not just its resolved model.
+	if loginPreset != nil {
+		modelName = loginPresetRef
+	}
 	// Embedded identity stays hidden until its exact PTY run is active.
 	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir)
 	if err != nil {
@@ -3599,6 +3631,14 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			return "", err
 		}
 
+		if loginPreset != nil {
+			if spec.BootstrapMode == platform.BootstrapWSL {
+				return "", fmt.Errorf("Pi host login credentials are not available in WSL")
+			}
+			// R3：POSIX shell startup 文件在 CLI 之前运行，可能重导出覆盖变量；
+			// 在最终执行边界重新锚定 canonical root 并剥离凭据。
+			spec = piLoginReAnchorSpec(spec, login.AgentDir)
+		}
 		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
@@ -3680,6 +3720,9 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 // （BuildOmpModelsConfig + MergeOmpModelsConfig + WriteOmpAgentConfig，成功则
 // Provider=amagi-<name>，失败回退 ompProviderMapping）→ embedded/terminal 双模式。
 func (a *App) LaunchOmpSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
+	if err := a.Config.RejectPiLoginLaunchRefs(providerID, modelName); err != nil {
+		return "", err
+	}
 	a.Log.Info("session", "启动 omp 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
 
 	// ---- terminal_presets 桥接 ----
@@ -4808,7 +4851,7 @@ func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
 }
 
 // wslSearchToolsWarnOnce 保证 fd/ripgrep 缺失提示每个进程生命周期只打一次
-//（探测本身在 platform.WSLSearchToolStatus 内按 distro 缓存，不会重复 fork
+// （探测本身在 platform.WSLSearchToolStatus 内按 distro 缓存，不会重复 fork
 // wsl.exe）。
 var wslSearchToolsWarnOnce sync.Once
 
@@ -4978,6 +5021,9 @@ func (a *App) isClaudePlugin(pluginId string) bool {
 // LaunchOpenCode 启动 OpenCode 终端会话。
 // 双轨兼容：优先查 opencode_presets（新模型），回退到 terminal_presets.opencode（旧模型）。
 func (a *App) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
+	if err := a.Config.RejectPiLoginLaunchRefs(providerName, presetName); err != nil {
+		return "", err
+	}
 	a.Log.Info("session", "启动 OpenCode 会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s shell=%s", providerName, presetName, mode, workDir, shellPath))
 
 	envOverrides := map[string]string{}

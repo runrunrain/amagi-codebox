@@ -83,7 +83,7 @@ export function useSessionLaunch() {
       return !!(dashState.codexProvider && dashState.codexModel)
     }
     if (dashState.engine === 'pi') {
-      return !!(dashState.piProvider && dashState.piModel)
+      return !!(dashState.piProvider && dashState.piModel) && !dashState.piLoginStale
     }
     if (dashState.engine === 'omp') {
       return !!(dashState.ompProvider && dashState.ompModel)
@@ -191,6 +191,11 @@ export function useSessionLaunch() {
           shellPath: dashState.codexMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })
       } else if (dashState.engine === 'pi') {
+        // R4：登录选择失效时禁启并显式报错，绝不静默改用公共 API 预设。
+        if (dashState.piLoginStale) {
+          showError('所选 Pi 登录认证已失效，请刷新登录状态或显式选择其它服务提供商')
+          return
+        }
         sessionId = await sessionApi.launchPiSession({
           modelName: dashState.piModel,
           providerID: dashState.piProvider,

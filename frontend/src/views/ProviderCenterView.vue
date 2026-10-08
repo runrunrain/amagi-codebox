@@ -27,8 +27,13 @@
     </template>
 
     <!-- 详情模式：仅本机模式（远程详情由 RemoteProviderPanel 自管） -->
+    <PiLoginProviderDetail
+      v-if="!rcStore.isRemoteMode && store.activeLoginProvider"
+      :provider="store.activeLoginProvider"
+      @back="store.closeProvider"
+    />
     <ProviderDetailView
-      v-if="!rcStore.isRemoteMode && store.activeProviderId && store.activeProvider"
+      v-else-if="!rcStore.isRemoteMode && store.activeProviderId && store.activeProvider"
       @back="store.closeProvider"
       @saved="store.loadProviders"
     />
@@ -200,6 +205,7 @@ import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import AgentProfileQuickSwitch from '../components/provider/AgentProfileQuickSwitch.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
+import PiLoginProviderDetail from '../components/provider/PiLoginProviderDetail.vue';
 import RemoteProviderPanel from '../components/remote/RemoteProviderPanel.vue';
 import LegacyTokenDialog from '../components/remote/LegacyTokenDialog.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';

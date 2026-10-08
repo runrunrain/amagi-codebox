@@ -10,6 +10,10 @@ export function DeleteOpenCodePreset(arg1) {
   return window['go']['config']['ConfigService']['DeleteOpenCodePreset'](arg1);
 }
 
+export function DeletePiLoginPreset(arg1) {
+  return window['go']['config']['ConfigService']['DeletePiLoginPreset'](arg1);
+}
+
 export function DeletePreset(arg1, arg2) {
   return window['go']['config']['ConfigService']['DeletePreset'](arg1, arg2);
 }
@@ -52,6 +56,10 @@ export function GetOpenCodePreset(arg1) {
 
 export function GetOpenCodePresets() {
   return window['go']['config']['ConfigService']['GetOpenCodePresets']();
+}
+
+export function GetPiLoginPresets() {
+  return window['go']['config']['ConfigService']['GetPiLoginPresets']();
 }
 
 export function GetPresets(arg1) {
@@ -102,6 +110,10 @@ export function ReexportVisionModels() {
   return window['go']['config']['ConfigService']['ReexportVisionModels']();
 }
 
+export function RejectPiLoginLaunchRefs(arg1) {
+  return window['go']['config']['ConfigService']['RejectPiLoginLaunchRefs'](arg1);
+}
+
 export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['RemoveUrlFromHistory'](arg1, arg2);
 }
@@ -118,6 +130,14 @@ export function ReplaceProviders(arg1) {
   return window['go']['config']['ConfigService']['ReplaceProviders'](arg1);
 }
 
+export function ResolvePiLoginLaunch(arg1, arg2) {
+  return window['go']['config']['ConfigService']['ResolvePiLoginLaunch'](arg1, arg2);
+}
+
+export function ResolvePiLoginPreset(arg1) {
+  return window['go']['config']['ConfigService']['ResolvePiLoginPreset'](arg1);
+}
+
 export function ResolvePiOmpTerminalPreset(arg1) {
   return window['go']['config']['ConfigService']['ResolvePiOmpTerminalPreset'](arg1);
 }
@@ -132,6 +152,10 @@ export function Save() {
 
 export function SaveOpenCodePreset(arg1, arg2) {
   return window['go']['config']['ConfigService']['SaveOpenCodePreset'](arg1, arg2);
+}
+
+export function SavePiLoginPreset(arg1) {
+  return window['go']['config']['ConfigService']['SavePiLoginPreset'](arg1);
 }
 
 export function SavePreset(arg1, arg2, arg3) {

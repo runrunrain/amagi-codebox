@@ -41,6 +41,10 @@ type launchConfigPort interface {
 	// ResolvePiOmpTerminalPreset：pi/omp 启动链专用 resolver（openai 桶优先，
 	// marked anthropic 桶 HarnessSync 预设 opt-in 回退）。
 	ResolvePiOmpTerminalPreset(key string) (string, *config.TerminalPreset, error)
+	// ResolvePiLoginLaunch / RejectPiLoginLaunchRefs：登录引用分类与隔离拒绝
+	//（R1：与公共 stable key 不相交，仅精确命中登录存储或结构化来源 id 才算登录）。
+	ResolvePiLoginLaunch(modelRef, providerRef string) (*config.PiLoginPreset, bool, error)
+	RejectPiLoginLaunchRefs(refs ...string) error
 	GetOpenCodePreset(key string) (*config.OpenCodePreset, error)
 	GetAgentTeams() config.AgentTeamsConfig
 	GetAllTerminalPresets() *config.TerminalPresetsConfig
@@ -140,6 +144,11 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 		}
 		if refs.UseHeadroom != nil {
 			recipe.UseHeadroom = *refs.UseHeadroom
+		}
+	}
+	if req.CLIType != contract.CLITypePi {
+		if err := p.config.RejectPiLoginLaunchRefs(recipe.ProviderRef, recipe.PresetRef, recipe.ModelRef); err != nil {
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
 		}
 	}
 	// Canonical workdir：与桌面 Launch* 入口共用同一校验/回退链（launch_workdir.go）。
@@ -495,6 +504,11 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 // ---------------------------------------------------------------------------
 
 func (p *appLaunchPlanner) buildPiPlan(recipe launchplan.StableRecipe, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
+	// 登录路由与启动解析同一分类器：精确命中登录存储，或 provider ref 是
+	// 结构化登录来源 id。普通 "pi-login/Daily" 公共 key 不再被前缀劫持（R1）。
+	if _, isLogin, _ := p.config.ResolvePiLoginLaunch(recipe.ModelRef, recipe.ProviderRef); isLogin {
+		return p.buildPiLoginPlan(recipe, req)
+	}
 	providerID := recipe.ProviderRef
 	modelRef := recipe.ModelRef
 	// 回退语义：openai 桶（pi 原生桶，撞名优先）→ anthropic 桶 HarnessSync

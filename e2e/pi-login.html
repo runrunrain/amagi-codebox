@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Pi login integration fixture</title></head><body>
+<div id="app"></div>
+<script type="module">
+// Test-only transport adapter, not production code: feature RPCs delegate to
+// real Go services/desktop PTY in TestPiLoginBrowserBridge with a temporary HOME.
+import { createApp, h, ref } from 'vue';
+import { createPinia } from 'pinia';
+import ProviderCenter from '/frontend/src/views/ProviderCenterView.vue';
+import SessionSettings from '/frontend/src/views/SessionSettingsView.vue';
+import { useDashboardState } from '/frontend/src/composables/useDashboardState.ts';
+import { useSessionLaunch } from '/frontend/src/composables/useSessionLaunch.ts';
+import { usePlatformCapabilities } from '/frontend/src/composables/usePlatformCapabilities.ts';
+import { useSessionStore } from '/frontend/src/stores/session.ts';
+import '/frontend/src/styles/tokens.css';
+const bridge = new URLSearchParams(location.search).get('bridge');
+if (!bridge?.startsWith('http://127.0.0.1:')) throw new Error('Supply isolated Go test bridge URL');
+const rpc = async (method, args) => {
+ const response = await fetch(`${bridge}/rpc`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({method,args}) });
+ const data = await response.json(); if (!response.ok) throw new Error(data.error || JSON.stringify(data)); return data;
+};
+const port = new Proxy({}, {get: (_, method) => (...args) => rpc(method,args)});
+window.go = new Proxy({}, {get: () => new Proxy({}, {get: () => port})});
+window.runtime = { EventsOnMultiple: () => () => {}, EventsOff: () => {} };
+createApp({setup() {
+ const page = ref('providers'); const status = ref('');
+ const dashboard = useDashboardState(); const platform = usePlatformCapabilities(); const sessions = useSessionStore();
+ const launch = async () => useSessionLaunch().launchFromSettings(dashboard.state, {
+  platformCaps: platform, sessionStore: sessions, refresh: async () => {}, persistDefaults: dashboard.persistDefaults,
+  router: { push: value => { status.value += ` route=${value}`; } },
+  showSuccess: value => { status.value = value; }, showError: value => { status.value = value; },
+ });
+ return () => h('main', [
+  h('p', 'TEST FIXTURE: isolated HOME; Go services are real; Pi executable is synthetic.'),
+  h('button', {onClick: () => {page.value='providers';}}, '提供商页'),
+  h('button', {onClick: () => {page.value='sessions'; dashboard.state.engine='pi';}}, '会话页'),
+  page.value === 'providers' ? h(ProviderCenter) : h(SessionSettings),
+  page.value === 'sessions' ? h('button', {onClick: launch}, '启动 Pi（真实 PTY fixture）') : null,
+  h('output', {id:'launch-status'}, status.value),
+ ]);
+}}).use(createPinia()).mount('#app');
+</script></body></html>

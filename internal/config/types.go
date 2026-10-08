@@ -414,6 +414,8 @@ type AgentTeamsConfig struct {
 
 // AppConfig 应用总配置（对应 models.json 根结构）
 type AppConfig struct {
+	// PiLoginPresets are native Pi-only arguments, excluded from API sync/export.
+	PiLoginPresets  map[string]PiLoginPreset  `json:"pi_login_presets,omitempty"`
 	Models          map[string]Provider       `json:"models"`
 	AgentTeams      AgentTeamsConfig          `json:"agent_teams"`
 	TerminalPresets *TerminalPresetsConfig    `json:"terminal_presets,omitempty"`

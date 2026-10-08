@@ -6,6 +6,8 @@ export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteOpenCodePreset(arg1:string):Promise<void>;
 
+export function DeletePiLoginPreset(arg1:string):Promise<void>;
+
 export function DeletePreset(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
@@ -27,6 +29,8 @@ export function GetModalityProbeCache():Promise<Record<string, config.ModalityPr
 export function GetOpenCodePreset(arg1:string):Promise<config.OpenCodePreset>;
 
 export function GetOpenCodePresets():Promise<Record<string, config.OpenCodePreset>>;
+
+export function GetPiLoginPresets():Promise<Record<string, config.PiLoginPreset>>;
 
 export function GetPresets(arg1:string):Promise<Record<string, config.Preset>>;
 
@@ -52,6 +56,8 @@ export function RecordProviderQuota(arg1:config.ProviderQuotaEntry):Promise<void
 
 export function ReexportVisionModels():Promise<void>;
 
+export function RejectPiLoginLaunchRefs(arg1:Array<string>):Promise<void>;
+
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
 
 export function RenameProvider(arg1:string,arg2:string):Promise<void>;
@@ -60,6 +66,10 @@ export function ReplaceImportedPresetSnapshots(arg1:config.TerminalPresetsConfig
 
 export function ReplaceProviders(arg1:Record<string, config.Provider>):Promise<void>;
 
+export function ResolvePiLoginLaunch(arg1:string,arg2:string):Promise<config.PiLoginPreset>;
+
+export function ResolvePiLoginPreset(arg1:string):Promise<config.PiLoginPreset>;
+
 export function ResolvePiOmpTerminalPreset(arg1:string):Promise<string>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
@@ -67,6 +77,8 @@ export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 export function Save():Promise<void>;
 
 export function SaveOpenCodePreset(arg1:string,arg2:config.OpenCodePreset):Promise<void>;
+
+export function SavePiLoginPreset(arg1:config.PiLoginPreset):Promise<void>;
 
 export function SavePreset(arg1:string,arg2:string,arg3:config.Preset):Promise<void>;
 

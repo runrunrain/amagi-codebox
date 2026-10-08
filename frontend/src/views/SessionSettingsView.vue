@@ -9,6 +9,7 @@
     <ConfigCard>
       <div class="card-head">
         <h2>快速启动</h2>
+        <button class="btn btn-ghost" @click="refreshLaunchChoices">刷新提供商与预设</button>
       </div>
 
       <!-- 引擎选择：方块浮标 (Floating Tiles，带动态悬浮与微动效) -->
@@ -39,6 +40,8 @@
       </div>
 
       <div class="setting-list">
+        <!-- R4：登录选择失效/登录状态读取失败时显式告警，禁用启动，绝不静默改选 API -->
+        <p v-if="dashState.engine === 'pi' && piLoginNotice" class="pi-login-notice" role="alert">{{ piLoginNotice }}</p>
         <!-- 服务提供商 -->
         <div class="setting-row">
           <label>服务提供商</label>
@@ -63,8 +66,7 @@
           <select
             class="select"
             :value="currentPreset"
-            :disabled="presetOptions.length === 0"
-            @change="handlePresetChange(($event.target as HTMLSelectElement).value)"
+            :disabled="presetOptions.length === 0"            @change="handlePresetChange(($event.target as HTMLSelectElement).value)"
           >
             <option value="" disabled v-if="presetOptions.length === 0">暂无可用预设</option>
             <option
@@ -261,6 +263,8 @@ import { usePlatformCapabilities } from '../composables/usePlatformCapabilities'
 import { useToast } from '../composables/useToast'
 
 import * as providerApi from '../api/provider'
+import { getPiLoginProviders, getPiLoginPresets, piLoginSelections, type PiLoginProvider } from '../api/piLogin'
+import { reconcilePiLaunchSelection } from './piLaunchSelection'
 import { BrowseDirectory, GetSavedWorkDirs, AddSavedWorkDir, RemoveSavedWorkDir } from '../../wailsjs/go/main/App'
 import { GetOpenCodePresets } from '../../wailsjs/go/config/ConfigService'
 import { config, settings } from '../../wailsjs/go/models'
@@ -293,6 +297,11 @@ const openaiProviders = ref<Record<string, Provider>>({})
 const claudePresets = ref<MergedTerminalPreset[]>([])
 const codexPresets = ref<MergedTerminalPreset[]>([])
 const piPresets = ref<MergedTerminalPreset[]>([])
+const piLoginProviders = ref<PiLoginProvider[]>([])
+// R4：登录状态读取错误与失效提示。stale 标记同步进 dashState（见 useDashboardState），
+// 供侧栏/启动 composable 共同禁启；两者都不持久化。
+const piLoginLoadError = ref<string | null>(null)
+const piLoginNotice = ref('')
 const ompPresets = ref<MergedTerminalPreset[]>([])
 const openCodePresetList = ref<Array<{ key: string; name: string; description: string; bindingCount: number }>>([])
 
@@ -407,7 +416,9 @@ const providerOptions = computed(() => {
     for (const p of list) {
       if (p.provider) set.add(p.provider)
     }
-    return Array.from(set).sort().map(name => ({ value: name, label: name }))
+    if (dashState.engine === 'pi') for (const login of piLoginProviders.value) set.add(login.id)
+    return Array.from(set).sort().map(name => ({ value: name, label: piLoginProviders.value.find(p => p.id === name)?.provider
+      ? `${piLoginProviders.value.find(p => p.id === name)!.provider} · 登录认证 (Pi)` : name }))
   }
   return Object.keys(anthropicProviders.value).sort().map(name => ({ value: name, label: name }))
 })
@@ -490,22 +501,18 @@ function validateCodexPreset() {
 
 function validatePiPreset() {
   if (dashState.engine !== 'pi') return
-  if (dashState.piModel) {
-    const entry = piPresets.value.find(p => p.key === dashState.piModel)
-    if (entry && entry.provider === dashState.piProvider) return
-  }
-  if (piPresets.value.length > 0) {
-    const match = piPresets.value.find(p => p.provider === dashState.piProvider)
-    if (match) {
-      dashState.piModel = match.key
-    } else {
-      const first = piPresets.value[0]
-      dashState.piProvider = first.provider
-      dashState.piModel = first.key
-    }
-  } else {
-    dashState.piModel = ''
-  }
+  // R4：登录选择失效或登录状态读取失败时保留原选择并禁启，绝不自动改选
+  // 公共 API 预设；公共选择的既有自动改选行为不变（见 piLaunchSelection.ts）。
+  const result = reconcilePiLaunchSelection({
+    provider: dashState.piProvider,
+    model: dashState.piModel,
+    choices: piPresets.value.map(p => ({ key: p.key, provider: p.provider })),
+    loginError: piLoginLoadError.value,
+  })
+  dashState.piProvider = result.provider
+  dashState.piModel = result.model
+  dashState.piLoginStale = result.stale
+  piLoginNotice.value = result.message
 }
 
 function validateOmpPreset() {
@@ -543,6 +550,9 @@ function handleProviderChange(v: string) {
     dashState.piProvider = v
     const first = piPresets.value.find(p => p.provider === v)
     dashState.piModel = first ? first.key : ''
+    // 用户显式选择了新的认证来源：清除失效锁与提示
+    dashState.piLoginStale = false
+    piLoginNotice.value = ''
   } else if (dashState.engine === 'omp') {
     dashState.ompProvider = v
     const first = ompPresets.value.find(p => p.provider === v)
@@ -563,6 +573,8 @@ function handlePresetChange(v: string) {
     dashState.piModel = v
     const entry = piPresets.value.find(p => p.key === v)
     if (entry && entry.provider) dashState.piProvider = entry.provider
+    dashState.piLoginStale = false
+    piLoginNotice.value = ''
   } else if (dashState.engine === 'omp') {
     dashState.ompModel = v
     const entry = ompPresets.value.find(p => p.key === v)
@@ -720,11 +732,28 @@ async function loadTerminalPresets() {
     const sharedOpenAI = openai || []
     const markedAnthropic = (anthropic || []).filter(p => p.harness_sync)
     codexPresets.value = sharedOpenAI
-    piPresets.value = [...sharedOpenAI, ...markedAnthropic]
     ompPresets.value = [...sharedOpenAI, ...markedAnthropic]
+    let loginSelections: MergedTerminalPreset[] = []
+    try {
+      const [providers, presets] = await Promise.all([getPiLoginProviders(), getPiLoginPresets()])
+      piLoginProviders.value = providers || []
+      piLoginLoadError.value = null
+      loginSelections = piLoginSelections(piLoginProviders.value, presets || {})
+    } catch (err) {
+      // R4：读取失败不清空既有登录选择、不触发自动改选；标记错误并禁启，
+      // 由 watcher 的 reconcile 保留当前选择并提示用户显式处理。
+      piLoginProviders.value = []
+      piLoginLoadError.value = String(err)
+      showError('加载 Pi 登录状态失败: ' + String(err))
+    }
+    piPresets.value = [...sharedOpenAI, ...markedAnthropic, ...loginSelections]
   } catch (err) {
     console.error('Failed to load terminal presets:', err)
   }
+}
+
+async function refreshLaunchChoices() {
+  await Promise.all([loadProviders(), loadTerminalPresets(), loadOpenCodePresets()])
 }
 
 async function loadOpenCodePresets() {
@@ -806,6 +835,18 @@ onMounted(async () => {
 .setting-list {
   display: flex;
   flex-direction: column;
+}
+
+/* R4：登录选择失效告警（role=alert） */
+.pi-login-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 159, 10, 0.12);
+  border: 1px solid rgba(255, 159, 10, 0.45);
+  color: var(--warning, #b25000);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 .setting-row {

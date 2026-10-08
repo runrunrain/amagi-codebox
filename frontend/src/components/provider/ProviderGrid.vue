@@ -16,8 +16,8 @@
     <div class="pc-zone-label">
       <span>底层资源</span>
       <span class="zn-sep">·</span>
-      <span>API 凭证与端点</span>
-      <span class="zn-count">· {{ providerEntries.length }} 个提供商</span>
+      <span>API 凭证与登录认证</span>
+      <span class="zn-count">· {{ providerEntries.length + store.loginProviders.length }} 个提供商</span>
     </div>
 
     <!-- 工具栏：筛选 Chip + 操作按钮 -->
@@ -31,17 +31,25 @@
         >{{ opt.label }}</Chip>
       </div>
       <div class="pc-actions">
+        <AppButton variant="ghost" size="small" :disabled="storeLoading" @click="initialLoad">刷新登录状态</AppButton>
         <AppButton variant="primary" size="small" :disabled="storeLoading" @click="showAddDialog = true">添加提供商</AppButton>
       </div>
     </div>
 
+    <ErrorState v-if="store.loginLoadError" :message="store.loginLoadError" :on-retry="initialLoad" />
     <!-- 提供商卡片网格 -->
-    <div v-if="storeLoading && filteredProviders.length === 0" class="pc-empty">加载中…</div>
-    <div v-else-if="filteredProviders.length === 0" class="pc-empty">
-      <template v-if="providerEntries.length === 0">暂无服务提供商，请点击右上角添加</template>
+    <div v-if="storeLoading && filteredProviders.length + visibleLogins.length === 0" class="pc-empty">加载中…</div>
+    <div v-else-if="filteredProviders.length + visibleLogins.length === 0" class="pc-empty">
+      <template v-if="providerEntries.length + store.loginProviders.length === 0">暂无服务提供商，请添加 API 提供商或在 Pi 中登录后刷新</template>
       <template v-else>当前筛选条件下无匹配的服务提供商</template>
     </div>
     <div v-else class="prov-grid">
+      <article v-for="login in visibleLogins" :key="login.id" class="prov-card" @click="onCardClick(login.id)">
+        <header class="prov-card-head"><h3 class="prov-name">{{ login.provider }}</h3><span>登录认证 · Pi</span></header>
+        <div class="prov-row"><span class="prov-row-label">来源</span><span class="prov-row-value mono">{{ login.source }}</span></div>
+        <div class="prov-row"><span class="prov-row-label">认证</span><span class="prov-row-value">原生 OAuth（仅 Pi）</span></div>
+        <div class="prov-row"><span class="prov-row-value">点击配置模型与思考等级预设</span></div>
+      </article>
       <article
         v-for="entry in filteredProviders"
         :key="entry.id"
@@ -176,11 +184,13 @@ const FILTER_OPTIONS: { value: ProviderFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
+  { value: 'login', label: '登录认证' },
 ];
 
 const filter = computed(() => store.filter);
 const providerEntries = computed(() => store.providerEntries);
 const filteredProviders = computed(() => store.filteredProviders);
+const visibleLogins = computed(() => store.filter === 'all' || store.filter === 'login' ? store.loginProviders : []);
 const storeLoading = computed(() => store.loading);
 
 function setFilter(next: ProviderFilter) {

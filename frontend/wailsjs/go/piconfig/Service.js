@@ -26,6 +26,10 @@ export function GetModelsConfigPath() {
   return window['go']['piconfig']['Service']['GetModelsConfigPath']();
 }
 
+export function GetPiLoginProviders() {
+  return window['go']['piconfig']['Service']['GetPiLoginProviders']();
+}
+
 export function GetPiModelCatalog() {
   return window['go']['piconfig']['Service']['GetPiModelCatalog']();
 }
