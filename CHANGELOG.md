@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.94] - 2026-10-08
+
+### Added
+
+- **Pi 登录认证（OAuth）提供商支持**：从标准 `~/.pi/agent/auth.json` 发现 Pi 原生 OAuth 登录项，Provider Center 以「登录认证 · Pi」卡片展示（刷新登录状态/退出登录），点击卡片保存预设（预设名、Pi 原生模型 ID、思考等级）；会话设置 → Pi 选择「提供商名 · 登录认证 (Pi)」+ 预设，经现有新建会话入口启动终端。命名空间隔离（R1）：登录来源 id `pi-login/<base64url(provider)>` 与登录预设 key 三段结构同公共 provider/stable key 规则不相交，字面名 `pi-login` 的普通 provider 不受影响，同字符串 key 双向互斥拒绝；登录失效/预设删除按错误关闭、绝不回退普通 API 路径，前端失效保留、必须显式改选（R4）。认证目录锚定（R2）与 Shell 启动重锚（R3）：发现/启动检查钉定 CodeBox 进程 Home 的 canonical `~/.pi/agent`（忽略 `PI_CODING_AGENT_DIR` 环境覆盖），desktop embedded/external/v1 重启全部显式设回该目录——环境变量面板自定义 `HOME`/`USERPROFILE` 无法再把 Pi 导向另一份 auth。登录类型仅限 Pi：Claude Code/Codex/OpenCode/OMP 启动路径拒绝登录引用，WSL 场景拒绝。测试：Go 临时 HOME/合成 fixture 覆盖发现、隔离、持久化、重启、参数、退出登录、WSL 拒绝、R1-R3；macOS 真实桌面入口真实 PTY + 真实 zsh startup（.zshenv 重导出 agent root 与凭据）双重对抗用例；前端 `piLaunchSelection`/`useSessionLaunch` 启动闸门用例；浏览器到 Go/PTY 可重复验收 harness（`e2e/pi-login.html` + 测试专用 Wails transport bridge，认证与 CLI 均为隔离 fixture）。契约文档 `docs/developer/pi-login-providers.md`。配套：.gitignore 排除 `Saved/` 本地运行时产物。
+
 ## [1.3.93] - 2026-10-01
 
 ### Fixed
