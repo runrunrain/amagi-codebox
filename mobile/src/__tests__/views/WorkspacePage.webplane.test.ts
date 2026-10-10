@@ -461,10 +461,13 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
     const { wrapper, store } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'none' } });
 
     const acquireSpy = vi.spyOn(store, 'acquire').mockResolvedValue(true);
-    await wrapper.find('[data-testid="webplane-acquire-btn"]').trigger('click');
-    // 同套件 tui-session 用例：挂载链含动态 import，全量并行负载下事件链路可晚于
-    // 单次 flushPromises——改 waitFor 轮询断言，消除时序敏感。
+    // 慢速 runner（Windows CI）上 URL/状态经 WS 事件与 mock fetch 异步到达，
+    // find→trigger 之间组件重渲染可使按钮脱挂、点击蒸发（waitFor 救不回已丢失的点击）
+    // ——把「重新 find 当前 DOM 节点→点击→断言」整体放进 waitFor 重试，同步
+    // handler 即点即中；脱挂点击不计入，仍收敛于恰好 1 次。
     await vi.waitFor(() => {
+      const btn = wrapper.find('[data-testid="webplane-acquire-btn"]');
+      if (btn.exists()) btn.trigger('click');
       expect(acquireSpy).toHaveBeenCalledTimes(1);
     });
   });
