@@ -461,15 +461,25 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
     const { wrapper, store } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'none' } });
 
     const acquireSpy = vi.spyOn(store, 'acquire').mockResolvedValue(true);
-    // 慢速 runner（Windows CI）上 URL/状态经 WS 事件与 mock fetch 异步到达，
-    // find→trigger 之间组件重渲染可使按钮脱挂、点击蒸发（waitFor 救不回已丢失的点击）
-    // ——把「重新 find 当前 DOM 节点→点击→断言」整体放进 waitFor 重试，同步
-    // handler 即点即中；脱挂点击不计入，仍收敛于恰好 1 次。
-    await vi.waitFor(() => {
-      const btn = wrapper.find('[data-testid="webplane-acquire-btn"]');
-      if (btn.exists()) btn.trigger('click');
-      expect(acquireSpy).toHaveBeenCalledTimes(1);
-    });
+    // 引导条渲染链：webui 首轮探测（immediate watch 同步发起）+ detail 水合 +
+    // WS 快照三路异步汇合，慢速 runner 上可能晚于 mountWithRoute 内的单次
+    // flushPromises；且 find→trigger 之间重渲染可使按钮脱挂、点击蒸发。
+    // 整体重试「重新 find 当前 DOM→点击→断言」，并携带缺席诊断（Windows CI
+    // 实测曾全窗口 0 调用，需区分「按钮未渲染」与「点击丢失」）。
+    await vi.waitFor(
+      () => {
+        const btn = wrapper.find('[data-testid="webplane-acquire-btn"]');
+        if (!btn.exists()) {
+          throw new Error(
+            `acquire 按钮未渲染：hint=${wrapper.find('[data-testid="webplane-control-hint"]').exists()} ` +
+              `sessionState=${store.sessionState} control=${store.control.state} wsState=${store.wsState}`,
+          );
+        }
+        btn.trigger('click');
+        expect(acquireSpy).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 5000, interval: 50 },
+    );
   });
 
   it('WS control.state 事件驱动变为 you 后引导条消失', async () => {
