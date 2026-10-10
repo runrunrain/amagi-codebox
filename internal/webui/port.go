@@ -25,7 +25,7 @@ func AllocateFreePort() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("allocate free port: %w", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }() // 探测用途：关闭错误无意义（竞态窗口见上）
 	addr, ok := l.Addr().(*net.TCPAddr)
 	if !ok {
 		return 0, fmt.Errorf("allocate free port: unexpected addr type %T", l.Addr())

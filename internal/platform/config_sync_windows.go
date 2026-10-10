@@ -25,6 +25,6 @@ func SyncConfigDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	return windows.FlushFileBuffers(handle)
 }

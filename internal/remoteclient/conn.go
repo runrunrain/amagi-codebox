@@ -625,13 +625,11 @@ func (s *TerminalSession) refreshInputGate() {
 		s.mu.Unlock()
 		return
 	}
-	next := s.state
+	next := ConnReadonly
 	if s.tracker.InFlightBackfills() > 0 {
 		next = ConnDegraded
 	} else if s.inputModeOK && s.controlYou {
 		next = ConnAttached
-	} else {
-		next = ConnReadonly
 	}
 	changed := next != s.state
 	s.state = next

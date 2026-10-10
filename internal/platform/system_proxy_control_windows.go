@@ -30,7 +30,7 @@ func setSystemProxyEnabled(enable bool, host string, port int) error {
 	if err != nil {
 		return fmt.Errorf("open internet settings: %w", err)
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 
 	if enable {
 		if host != "" && port > 0 {

@@ -19,7 +19,7 @@ func inspectExternalProcess(pid int) (string, bool, error) {
 		}
 		return "", true, fmt.Errorf("open process %d: %w", pid, err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	return inspectWindowsProcessHandle(handle)
 }
 
@@ -48,7 +48,7 @@ func terminateRecoveredExternalProcess(pid int, expectedIdentity string) (bool, 
 		}
 		return false, fmt.Errorf("open recovered process %d: %w", pid, err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	identity, running, inspectErr := inspectWindowsProcessHandle(handle)
 	terminal, signal, err := classifyRecoveredExternalProcess(expectedIdentity, identity, running, inspectErr)
 	if err != nil {

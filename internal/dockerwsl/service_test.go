@@ -237,10 +237,8 @@ func TestSelfHealHappyPathSequence(t *testing.T) {
 	if len(f.killed) != len(desktopProcessImages) {
 		t.Fatalf("taskkill images = %v, want %v", f.killed, desktopProcessImages)
 	}
-	// ② terminate 工具发行版
-	if _, ok := f.wslOut["--terminate docker-desktop"]; !ok {
-		// fake seam 不记录调用；通过 killed/wslOut 间接覆盖即可（此处仅防御性断言 started）
-	}
+	// ② terminate 工具发行版：fake wslOut 为应答表而非调用日志，无法直接断言调用；
+	// 调用链经由同一 runSeam，由 killed/started 断言间接覆盖。
 	// ③ Desktop 分离启动
 	if f.started != 1 {
 		t.Fatalf("startDesktop calls = %d, want 1", f.started)

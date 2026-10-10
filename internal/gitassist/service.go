@@ -105,9 +105,10 @@ func (s *Service) RepoInfo(workDir string) (RepoStatus, error) {
 	if upstream, err := runGit(workDir, gitCommandTimeout, "rev-list", "--left-right", "--count", "@{upstream}...HEAD"); err == nil {
 		fields := strings.Fields(strings.TrimSpace(upstream))
 		if len(fields) == 2 {
-			// left = 仅上游有的提交（behind），right = 仅本地有的提交（ahead）。
-			fmt.Sscanf(fields[0], "%d", &status.Behind)
-			fmt.Sscanf(fields[1], "%d", &status.Ahead)
+			// left = 仅上游有的提交（behind），right = 仅本地有的提交（ahead）；
+			// rev-list --count 输出形态固定，解析失败保持零值不构成错误路径。
+			_, _ = fmt.Sscanf(fields[0], "%d", &status.Behind)
+			_, _ = fmt.Sscanf(fields[1], "%d", &status.Ahead)
 			if upstreamRef, err := runGit(workDir, gitCommandTimeout, "rev-parse", "--abbrev-ref", "@{upstream}"); err == nil {
 				status.Upstream = strings.TrimSpace(upstreamRef)
 			}

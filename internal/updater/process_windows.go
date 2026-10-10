@@ -13,7 +13,7 @@ func processExists(pid int) bool {
 	if err != nil {
 		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	var exitCode uint32
 	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
 		return true

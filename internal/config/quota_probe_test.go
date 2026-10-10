@@ -29,12 +29,6 @@ type quotaTestServer struct {
 	calls      int
 }
 
-func (s *quotaTestServer) set(status int, body string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.status, s.body = status, body
-}
-
 func (s *quotaTestServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.path, func(w http.ResponseWriter, r *http.Request) {

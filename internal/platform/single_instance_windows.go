@@ -44,9 +44,9 @@ func activateExistingWindow(windowTitle string) {
 	}
 	minimized, _, _ := procIsIconic.Call(hwnd)
 	if minimized != 0 {
-		procShowWindow.Call(hwnd, swRestore)
+		_, _, _ = procShowWindow.Call(hwnd, swRestore)
 	} else {
-		procShowWindow.Call(hwnd, swShow)
+		_, _, _ = procShowWindow.Call(hwnd, swShow)
 	}
-	procSetForegroundWindow.Call(hwnd)
+	_, _, _ = procSetForegroundWindow.Call(hwnd)
 }

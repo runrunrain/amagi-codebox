@@ -164,15 +164,12 @@ func TestOutboxPauseResumeSameIDNewRequestID(t *testing.T) {
 func TestOutboxRetryBudget(t *testing.T) {
 	clock := &fakeOutboxClock{now: time.Unix(4000, 0)}
 	send := &recordedSend{}
-	ob := newTestOutbox(clock, send)
-	cfg := DefaultInputOutboxConfig()
-	_ = cfg
 	// 构造 2 attempt 上限的 outbox。
-	cfg2 := DefaultInputOutboxConfig()
-	cfg2.MaxAttempts = 2
-	cfg2.Clock = clock.Now
-	cfg2.AttemptDelays = []time.Duration{5 * time.Millisecond}
-	ob = NewInputOutbox(send.send, cfg2)
+	cfg := DefaultInputOutboxConfig()
+	cfg.MaxAttempts = 2
+	cfg.Clock = clock.Now
+	cfg.AttemptDelays = []time.Duration{5 * time.Millisecond}
+	ob := NewInputOutbox(send.send, cfg)
 	ob.Accept(b64("budget"))
 	if n := len(send.sent()); n != 1 {
 		t.Fatalf("initial attempts = %d, want 1", n)

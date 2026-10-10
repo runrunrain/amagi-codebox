@@ -180,16 +180,6 @@ func (c *fakeWSConn) resizeFrames() []contract.ResizeFrame {
 	return out
 }
 
-func (c *fakeWSConn) backfillFrames() []contract.BackfillFrame {
-	var out []contract.BackfillFrame
-	for _, f := range c.frameList() {
-		if b, ok := f.(contract.BackfillFrame); ok {
-			out = append(out, b)
-		}
-	}
-	return out
-}
-
 // writeEvent 编码并写一个服务端事件（MarshalServerEvent 校验后出帧）。
 func (c *fakeWSConn) writeEvent(t *testing.T, ev contract.KnownServerEvent) {
 	t.Helper()

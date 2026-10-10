@@ -192,7 +192,7 @@ func (o *InputOutbox) Accept(data string) (InputRejectReason, bool) {
 		return InputRejectedOutboxFull, false
 	}
 	id, err := canonicalMessageID(o.cfg.Random)
-	if err != nil || contract.IsCanonicalMessageID(id) != true {
+	if err != nil || !contract.IsCanonicalMessageID(id) {
 		return InputRejectedSecureIDFailed, false
 	}
 	if _, dup := o.issued[id]; dup || len(o.issued) >= o.cfg.MaxIssued {
@@ -354,7 +354,7 @@ func (o *InputOutbox) retryHeadLocked() {
 // 集合（不淘汰）、计数、发送、排下一轮 timer。
 func (o *InputOutbox) fireAttemptLocked(e *inputEntry) {
 	rid, err := canonicalRequestID(o.cfg.Random)
-	if err != nil || contract.IsCanonicalRequestID(rid) != true {
+	if err != nil || !contract.IsCanonicalRequestID(rid) {
 		return // 熵失败：本轮不重试，entry 留 pending 接受迟到 ACK
 	}
 	e.attemptIDs = append(e.attemptIDs, rid)

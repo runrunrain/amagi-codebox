@@ -791,7 +791,7 @@ func (s *Service) CloseAll() {
 	s.mu.Unlock()
 
 	for _, id := range ids {
-		s.Close(id)
+		_ = s.Close(id) // 尽力关闭：单会话失败不阻断后续清理
 	}
 }
 
@@ -1155,14 +1155,6 @@ func splitStartupCommand(command string) []string {
 
 func quotePowerShellSingleQuotedToken(token string) string {
 	return "'" + strings.ReplaceAll(token, "'", "''") + "'"
-}
-
-func escapePowerShellCommand(command string) string {
-	replacer := strings.NewReplacer(
-		"`", "``",
-		"\"", "`\"",
-	)
-	return replacer.Replace(command)
 }
 
 func escapeCmdCommand(command string) string {
