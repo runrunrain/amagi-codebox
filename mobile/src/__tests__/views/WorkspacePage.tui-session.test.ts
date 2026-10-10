@@ -325,7 +325,11 @@ describe('WorkspacePage TUI 会话页面级集成（P1-C）', () => {
       }),
     );
     await flushPromises();
-    expect(store.canWrite).toBe(false);
+    // 同下文 banner 断言：全量并行负载下 store 派生态可晚于首个 flushPromises
+    // （本用例曾在 CI full-suite 间歇性抖动）——改 waitFor 轮询断言。
+    await vi.waitFor(() => {
+      expect(store.canWrite).toBe(false);
+    });
 
     // RawTerminalView/KeyTray 挂载链含 xterm 动态 import：全量并行负载下渲染
     // 可晚于首个 flushPromises（本用例曾在 full-suite 间歇性抖动）——改 waitFor

@@ -462,9 +462,11 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
 
     const acquireSpy = vi.spyOn(store, 'acquire').mockResolvedValue(true);
     await wrapper.find('[data-testid="webplane-acquire-btn"]').trigger('click');
-    await flushPromises();
-
-    expect(acquireSpy).toHaveBeenCalledTimes(1);
+    // 同套件 tui-session 用例：挂载链含动态 import，全量并行负载下事件链路可晚于
+    // 单次 flushPromises——改 waitFor 轮询断言，消除时序敏感。
+    await vi.waitFor(() => {
+      expect(acquireSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('WS control.state 事件驱动变为 you 后引导条消失', async () => {
