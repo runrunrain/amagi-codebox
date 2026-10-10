@@ -135,6 +135,148 @@ func TestDarwinEffectivePATHIncludesHomeLocalBin(t *testing.T) {
 	}
 }
 
+func TestDarwinEffectivePATHIncludesFNMDefaultAliasBeforeLocalNodeBin(t *testing.T) {
+	homeDir := t.TempDir()
+	fnmDefaultBin := filepath.Join(homeDir, ".local", "share", "fnm", "aliases", "default", "bin")
+	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
+	for _, dir := range []string{fnmDefaultBin, npmLocalNodeDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	_, effectivePATH, _, _ := buildEffectiveEnvForOS("darwin", []string{
+		"HOME=" + homeDir,
+		"PATH=",
+	})
+
+	if !pathListContains("darwin", effectivePATH, fnmDefaultBin) {
+		t.Fatalf("effective PATH %q does not include fnm default alias bin %q", effectivePATH, fnmDefaultBin)
+	}
+	aliasIdx := strings.Index(effectivePATH, fnmDefaultBin)
+	nodeIdx := strings.Index(effectivePATH, npmLocalNodeDir)
+	if aliasIdx < 0 || nodeIdx < 0 || aliasIdx > nodeIdx {
+		t.Fatalf("effective PATH %q must list fnm default alias bin before %q", effectivePATH, npmLocalNodeDir)
+	}
+}
+
+func TestDarwinResolveExecutablePrefersFNMBinOverStaleLocalNodeCopy(t *testing.T) {
+	homeDir := t.TempDir()
+	fnmDefaultBin := filepath.Join(homeDir, ".local", "share", "fnm", "aliases", "default", "bin")
+	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
+	fnmCLI := filepath.Join(fnmDefaultBin, "pi")
+	for _, dir := range []string{fnmDefaultBin, npmLocalNodeDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for _, path := range []string{fnmCLI, filepath.Join(npmLocalNodeDir, "pi")} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write fake cli %s: %v", path, err)
+		}
+	}
+
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+	cli, _, err := resolver.ResolveExecutable("pi", nil, []string{
+		"HOME=" + homeDir,
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	})
+	if err != nil {
+		t.Fatalf("ResolveExecutable: %v", err)
+	}
+	if cli.Path != fnmCLI {
+		t.Fatalf("resolved pi path = %q, want fnm-managed %q", cli.Path, fnmCLI)
+	}
+}
+
+func TestDarwinFNMCandidatesHonorFNMDirAndPreferNewestInstall(t *testing.T) {
+	fnmBase := t.TempDir()
+	newBin := filepath.Join(fnmBase, "node-versions", "v10.0.0", "installation", "bin")
+	oldBin := filepath.Join(fnmBase, "node-versions", "v9.2.1", "installation", "bin")
+	for _, dir := range []string{newBin, oldBin} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(newBin, "pi"),
+		filepath.Join(oldBin, "pi"),
+		filepath.Join(oldBin, "dsh"),
+	} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write fake cli %s: %v", path, err)
+		}
+	}
+
+	// HOME points at a fnm-free directory so the assertion proves FNM_DIR wins.
+	env := []string{
+		"FNM_DIR=" + fnmBase,
+		"HOME=" + t.TempDir(),
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	}
+	resolver := NewCLIResolver(capabilitiesForTarget("darwin", "arm64"))
+
+	newestCLI, _, err := resolver.ResolveExecutable("pi", nil, env)
+	if err != nil {
+		t.Fatalf("ResolveExecutable pi: %v", err)
+	}
+	if newestCLI.Path != filepath.Join(newBin, "pi") {
+		t.Fatalf("resolved pi path = %q, want newest install %q", newestCLI.Path, filepath.Join(newBin, "pi"))
+	}
+
+	olderOnlyCLI, _, err := resolver.ResolveExecutable("dsh", nil, env)
+	if err != nil {
+		t.Fatalf("ResolveExecutable dsh: %v", err)
+	}
+	if olderOnlyCLI.Path != filepath.Join(oldBin, "dsh") {
+		t.Fatalf("resolved dsh path = %q, want older install %q", olderOnlyCLI.Path, filepath.Join(oldBin, "dsh"))
+	}
+}
+
+func TestDarwinFNMDefaultAliasDeduplicatedAgainstPhysicalInstallDir(t *testing.T) {
+	homeDir := t.TempDir()
+	installation := filepath.Join(homeDir, ".local", "share", "fnm", "node-versions", "v24.18.0", "installation")
+	aliasParent := filepath.Join(homeDir, ".local", "share", "fnm", "aliases")
+	if err := os.MkdirAll(filepath.Join(installation, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir installation bin: %v", err)
+	}
+	if err := os.MkdirAll(aliasParent, 0o755); err != nil {
+		t.Fatalf("mkdir alias parent: %v", err)
+	}
+	if err := os.Symlink(installation, filepath.Join(aliasParent, "default")); err != nil {
+		t.Fatalf("symlink default alias: %v", err)
+	}
+
+	_, effectivePATH, _, _ := buildEffectiveEnvForOS("darwin", []string{
+		"HOME=" + homeDir,
+		"PATH=",
+	})
+
+	aliasBin := filepath.Join(aliasParent, "default", "bin")
+	physicalBin := filepath.Join(installation, "bin")
+	if !pathListContains("darwin", effectivePATH, aliasBin) {
+		t.Fatalf("effective PATH %q does not include fnm alias bin %q", effectivePATH, aliasBin)
+	}
+	if strings.Contains(effectivePATH, physicalBin) {
+		t.Fatalf("effective PATH %q must deduplicate alias target %q against the alias entry", effectivePATH, physicalBin)
+	}
+	if count := strings.Count(effectivePATH, aliasBin); count != 1 {
+		t.Fatalf("effective PATH %q lists fnm alias bin %d times, want exactly 1", effectivePATH, count)
+	}
+}
+
+func TestShouldPreferDarwinCodexAppBundleForFNMInstalls(t *testing.T) {
+	for _, path := range []string{
+		"/Users/demo/.local/share/fnm/node-versions/v24.18.0/installation/bin/codex",
+		"/Users/demo/.local/share/fnm/aliases/default/bin/codex",
+		"/Users/demo/.fnm/aliases/default/bin/codex",
+	} {
+		if !shouldPreferDarwinCodexAppBundle("codex", path) {
+			t.Fatalf("fnm install path %q should defer to the bundled Codex app", path)
+		}
+	}
+}
+
 func TestDarwinResolveExecutableFindsCodexInLocalNodeBin(t *testing.T) {
 	previousApplicationsDir := darwinSystemApplicationsDir
 	darwinSystemApplicationsDir = filepath.Join(t.TempDir(), "Applications")

@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -57,6 +59,8 @@ func shouldPreferDarwinCodexAppBundle(command, resolvedPath string) bool {
 		"/.npm-global/bin/",
 		"/.nvm/versions/node/",
 		"/.fnm/node-versions/",
+		"/.fnm/aliases/",
+		"/.local/share/fnm/",
 		"/.volta/bin/",
 		"/.asdf/installs/nodejs/",
 		"/.local/share/pnpm/",
@@ -240,15 +244,142 @@ func darwinControlledPATHCandidates(env []string) []string {
 }
 
 func userLocalBinCandidatesForOS(osName string, env []string) []string {
-	return userBinCandidatesForOS(osName, env, [][]string{
-		{".local", "bin"},
+	candidates := userBinCandidatesForOS(osName, env, [][]string{{".local", "bin"}})
+	// fnm-managed bin dirs must precede ~/.local/node/bin: a terminal
+	// `npm install -g` lands in the fnm-managed prefix, and GUI processes
+	// cannot see the per-shell multishell PATH that `fnm env` injects.
+	// Without these candidates resolution falls back to stale ad-hoc
+	// copies in ~/.local/node/bin and diverges from what a terminal runs.
+	candidates = append(candidates, fnmControlledBinCandidatesForOS(osName, env)...)
+	candidates = append(candidates, userBinCandidatesForOS(osName, env, [][]string{
 		{".local", "node", "bin"},
 		{".npm-global", "bin"},
-	})
+	})...)
+	return candidates
 }
 
 func userNativeBinCandidatesForOS(osName string, env []string) []string {
 	return userBinCandidatesForOS(osName, env, [][]string{{".local", "bin"}})
+}
+
+// fnmControlledBinCandidatesForOS returns the stable bin directories managed
+// by fnm (Fast Node Manager): the default alias first, then every installed
+// node version from newest to oldest.
+//
+// GUI-launched processes never see the per-shell multishell PATH that
+// `fnm env` injects into interactive shells, so binaries installed from a
+// terminal via `npm install -g` into the fnm-managed prefix stay invisible
+// and resolution falls back to stale ad-hoc copies such as ~/.local/node/bin.
+// Surfacing the stable fnm directories keeps detection and launch aligned
+// with what a default terminal shell would run.
+func fnmControlledBinCandidatesForOS(osName string, env []string) []string {
+	if osName != "darwin" {
+		return nil
+	}
+	base := firstExistingFNMBaseDir(env)
+	if base == "" {
+		return nil
+	}
+	candidates := []string{}
+	seen := map[string]struct{}{}
+	appendCandidate := func(dir string) {
+		dir = filepath.Clean(dir)
+		key := normalizePathKey(dir, osName)
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			key = normalizePathKey(resolved, osName)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, dir)
+	}
+	if dir := filepath.Join(base, "aliases", "default", "bin"); dirExists(dir) {
+		appendCandidate(dir)
+	}
+	installed, err := filepath.Glob(filepath.Join(base, "node-versions", "*", "installation", "bin"))
+	if err != nil {
+		return candidates
+	}
+	sort.Slice(installed, func(i, j int) bool {
+		return compareNodeVersionDir(installed[i], installed[j]) > 0
+	})
+	for _, dir := range installed {
+		appendCandidate(dir)
+	}
+	return candidates
+}
+
+// firstExistingFNMBaseDir mirrors fnm's base-dir resolution: FNM_DIR wins
+// when set, otherwise the XDG data dir, the legacy ~/.fnm and the macOS data
+// dir are probed in turn and the first existing directory wins. Home
+// resolution follows the same precedence as userBinCandidatesForOS.
+func firstExistingFNMBaseDir(env []string) string {
+	candidates := []string{}
+	if value := strings.TrimSpace(envValue(env, "FNM_DIR")); value != "" {
+		candidates = append(candidates, value)
+	}
+	homes := []string{}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if home := strings.TrimSpace(envValue(env, key)); home != "" {
+			homes = append(homes, home)
+		}
+	}
+	if home, err := pathLookupUserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		homes = append(homes, home)
+	}
+	for _, home := range homes {
+		for _, suffix := range [][]string{
+			{".local", "share", "fnm"},
+			{".fnm"},
+			{"Library", "Application Support", "fnm"},
+		} {
+			candidates = append(candidates, filepath.Join(append([]string{home}, suffix...)...))
+		}
+	}
+	for _, candidate := range candidates {
+		if dirExists(candidate) {
+			return filepath.Clean(candidate)
+		}
+	}
+	return ""
+}
+
+// compareNodeVersionDir orders fnm node-version bin dirs by semantic version
+// so that newer installs win PATH-search precedence (v10.0.0 > v9.1.0).
+func compareNodeVersionDir(a, b string) int {
+	return compareDottedVersions(fnmNodeVersionOfBinDir(a), fnmNodeVersionOfBinDir(b))
+}
+
+// fnmNodeVersionOfBinDir extracts the bare version from
+// <base>/node-versions/v24.18.0/installation/bin.
+func fnmNodeVersionOfBinDir(dir string) string {
+	version := filepath.Base(filepath.Dir(filepath.Dir(dir)))
+	return strings.TrimPrefix(version, "v")
+}
+
+func compareDottedVersions(a, b string) int {
+	if a == b {
+		return 0
+	}
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	for i := 0; i < len(aParts) || i < len(bParts); i++ {
+		var av, bv int
+		if i < len(aParts) {
+			av, _ = strconv.Atoi(aParts[i])
+		}
+		if i < len(bParts) {
+			bv, _ = strconv.Atoi(bParts[i])
+		}
+		if av != bv {
+			if av > bv {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
 }
 
 // resolveDarwinCodexAppBundle resolves the Codex binary embedded by the
