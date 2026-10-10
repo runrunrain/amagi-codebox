@@ -14,6 +14,10 @@
 
 - **CI/Release workflow actions 升级至 Node 24 运行时大版本（消除 Node 20 弃用告警）**：checkout v4→v7、setup-go v5→v7、setup-node v4→v7、upload-artifact v4→v7、download-artifact v4→v8、softprops/action-gh-release v2→v3；golangci-lint-action@v9 已是最新不动。核查各版本破坏性变更：checkout v7 的 BREAKING 仅影响 fork PR + pull_request_target 场景（本仓仅 push/workflow_dispatch 触发，无波及）；upload-artifact v7 直传为可选参数（`archive: false`），默认归档行为不变；download-artifact v8 的不解压行为仅作用于直传形态；gh-release v3 为 Node 24 运行时迁移。工具链版本基线（Go 1.25.0 / Node 20.19.0，C-001）不变。
 
+### Fixed
+
+- **mobile 测试套件跨用例 app 泄漏根治（Windows CI 间歇性抖动溯源）**：WorkspacePage/SessionsPage 页面级测试的 mountWithRoute 只挂载从不卸载，每个用例泄漏一个完整存活 app（webui 5s 轮询定时器/store/WS 回调链），叠加 `vi.stubGlobal('fetch')` 的环境全局性，旧 app 持续消费后续用例的 fetch mock 并交叉干扰——Windows CI/满负载下 webplane 接管点击与 tui-session 观察态用例间歇性假失败（实测 1/2~1/8 复现，按钮在树内 5s×100 次点击 0 命中 handler）。修复：五文件统一登记 activeWrapper、afterEach 卸载；时序敏感断言改 5s waitFor 轮询（同套件既有惯例），acquire 断言改「至少一次」语义（重试形态下 exactly-once 过度指定）。验证：本地满负载 10/10 全绿（修复前同期必现抖动）。
+
 ## [1.3.95] - 2026-10-11
 
 ### Added

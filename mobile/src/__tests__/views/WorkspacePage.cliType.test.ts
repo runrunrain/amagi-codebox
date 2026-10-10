@@ -9,10 +9,10 @@
  *   · 视图切换菜单与快捷返回文案精准适配。
  * ---------------------------------------------------------------------------
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { createRouter, createMemoryHistory, type Router } from 'vue-router';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent } from 'vue';
 
 // --- FakeWsClient ---
@@ -116,6 +116,8 @@ import WorkspacePage from '../../../src/views/WorkspacePage.vue';
 
 const Stub = defineComponent({ template: '<div />' });
 const AppShell = defineComponent({ template: '<router-view />' });
+// 跨用例卫生：登记当前已挂载 wrapper，afterEach 统一卸载（防 app 泄漏交叉干扰）。
+let activeWrapper: VueWrapper | null = null;
 
 function mockFetch(detail: Record<string, unknown>) {
   vi.stubGlobal(
@@ -155,6 +157,7 @@ async function mountWithRoute(pinia: Pinia, initialQuery: Record<string, string>
     ],
   });
   const wrapper = mount(AppShell, { global: { plugins: [pinia, router] } });
+  activeWrapper = wrapper;
   await router.push({ name: 'workspace', params: { sessionId: 'sess-1' }, query: initialQuery });
   await router.isReady();
   await flushPromises();
@@ -176,6 +179,11 @@ describe('WorkspacePage cliType 默认视图分支', () => {
     setActivePinia(pinia);
     FakeWsClient.instances = [];
     localStorage.setItem('amagi.pg03.guide.dismissed', '1');
+  });
+
+  afterEach(() => {
+    activeWrapper?.unmount();
+    activeWrapper = null;
   });
 
   it('pi 会话在缺省 query 时默认渲染终端仿真面，显示终端仿真徽标与大厅返回键', async () => {

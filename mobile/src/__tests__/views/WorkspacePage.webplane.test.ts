@@ -28,7 +28,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { createRouter, createMemoryHistory, type Router } from 'vue-router';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent } from 'vue';
 
 // --- FakeWsClient ---
@@ -132,6 +132,10 @@ import ComposerBar from '../../../src/components/workspace/ComposerBar.vue';
 
 const Stub = defineComponent({ template: '<div />' });
 const AppShell = defineComponent({ template: '<router-view />' });
+// 跨用例卫生：登记当前已挂载 wrapper，afterEach 统一卸载——否则每个用例泄漏
+// 一个完整存活 app（webui 5s 轮询定时器/store/WS 回调），与后续用例的
+// vi.stubGlobal fetch mock 交叉干扰（Windows CI/满负载间歇性抖动根源）。
+let activeWrapper: VueWrapper | null = null;
 
 function mockEndpoints(options: {
   detail?: Record<string, unknown>;
@@ -212,6 +216,7 @@ async function mountWithRoute(
     ],
   });
   const wrapper = mount(AppShell, { global: { plugins: [pinia, router] } });
+  activeWrapper = wrapper;
   await router.push({ name: 'workspace', params: { sessionId: 'sess-1' }, query: initialQuery });
   await router.isReady();
   await flushPromises();
@@ -236,6 +241,8 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
   });
 
   afterEach(() => {
+    activeWrapper?.unmount();
+    activeWrapper = null;
     vi.restoreAllMocks();
   });
 
@@ -461,26 +468,21 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
     const { wrapper, store } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'none' } });
 
     const acquireSpy = vi.spyOn(store, 'acquire').mockResolvedValue(true);
-    // 引导条渲染链：webui 首轮探测（immediate watch 同步发起）+ detail 水合 +
-    // WS 快照三路异步汇合，慢速 runner 上可能晚于 mountWithRoute 内的单次
-    // flushPromises；且 find→trigger 之间重渲染可使按钮脱挂、点击蒸发。
-    // 整体重试「重新 find 当前 DOM→点击→断言」，并携带缺席诊断（Windows CI
-    // 实测曾全窗口 0 调用，需区分「按钮未渲染」与「点击丢失」）。
+    // 引导条渲染链（webui 首轮探测 + detail 水合 + WS 快照）三路异步汇合，
+    // 慢速 runner（Windows CI 实测）上可显著晚于 mountWithRoute 内的单次
+    // flushPromises；重试窗口内整体执行「重新 find 当前 DOM→点击→断言」。
+    // 断言语义为「点击至少触发一次 acquire」：重试循环内可能多次点击落在
+    // 就绪后的按钮上，exactly-once 在重试形态下过度指定（曾致假失败）。
     await vi.waitFor(
       () => {
         const btn = wrapper.find('[data-testid="webplane-acquire-btn"]');
-        if (!btn.exists()) {
-          throw new Error(
-            `acquire 按钮未渲染：hint=${wrapper.find('[data-testid="webplane-control-hint"]').exists()} ` +
-              `sessionState=${store.sessionState} control=${store.control.state} wsState=${store.wsState}`,
-          );
-        }
+        expect(btn.exists()).toBe(true);
         btn.trigger('click');
-        expect(acquireSpy).toHaveBeenCalledTimes(1);
+        expect(acquireSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
       },
       { timeout: 5000, interval: 50 },
     );
-  });
+  }, 20000);
 
   it('WS control.state 事件驱动变为 you 后引导条消失', async () => {
     mockEndpoints({
@@ -490,14 +492,26 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
 
     const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' }, { attachedControl: { state: 'desktop' } });
 
-    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(true);
+    // 同文件 acquire 用例：webui 探测+detail 水合+WS 快照异步汇合，慢速 runner
+    // 上可晚于单次 flushPromises——改 waitFor 轮询断言。
+    await vi.waitFor(
+      () => {
+        expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(true);
+      },
+      { timeout: 5000, interval: 50 },
+    );
 
     // acquire 成功后由 WS control.state 事件驱动 state==='you'（真实链路）
     const client = FakeWsClient.instances[FakeWsClient.instances.length - 1];
     client.opts.onEvent({ type: 'control.state', state: 'you' });
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+    await vi.waitFor(
+      () => {
+        expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+      },
+      { timeout: 5000, interval: 50 },
+    );
   });
 
   it('非 webplane 视图（terminal）即使 control 非 you 也不显示引导条', async () => {

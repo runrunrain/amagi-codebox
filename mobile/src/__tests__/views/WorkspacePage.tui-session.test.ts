@@ -13,10 +13,10 @@
  * WS/xterm 均为结构替身，无真实网络。
  * ---------------------------------------------------------------------------
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { createRouter, createMemoryHistory, type Router } from 'vue-router';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent } from 'vue';
 
 // --- FakeWsClient（记录 input 帧，供 sendRaw 载荷断言） ---
@@ -137,6 +137,10 @@ import { PI_FULLSCREEN_REDRAW, allLines, countOccurrences, renderTuiStream, scre
 
 const Stub = defineComponent({ template: '<div />' });
 const AppShell = defineComponent({ template: '<router-view />' });
+// 跨用例卫生：登记当前已挂载 wrapper，afterEach 统一卸载——否则每个用例泄漏
+// 一个完整存活 app（轮询定时器/store/WS 回调），与后续用例交叉干扰
+// （满负载间歇性抖动根源，webplane 同套件已实证）。
+let activeWrapper: VueWrapper | null = null;
 
 /** 与 store 内部常量一致的契约值（P1-A §4.2：重启边界提示行）。 */
 const RESTART_NOTICE_TEXT = '[远程终端] 会话已进入新的运行';
@@ -188,6 +192,7 @@ async function mountWithRoute(pinia: Pinia, detail: Record<string, unknown>, ini
   });
   mockFetch(detail);
   const wrapper = mount(AppShell, { global: { plugins: [pinia, router] } });
+  activeWrapper = wrapper;
   await router.push({ name: 'workspace', params: { sessionId: 'sess-1' }, query: initialQuery });
   await router.isReady();
   await flushPromises();
@@ -247,6 +252,11 @@ describe('WorkspacePage TUI 会话页面级集成（P1-C）', () => {
     FakeWsClient.instances = [];
     FakeTerminal.instances.length = 0;
     localStorage.setItem('amagi.pg03.guide.dismissed', '1');
+  });
+
+  afterEach(() => {
+    activeWrapper?.unmount();
+    activeWrapper = null;
   });
 
   it('omp 会话缺省 query 时默认渲染终端仿真面（cliType 分支第二 TUI CLI）', async () => {
@@ -311,8 +321,7 @@ describe('WorkspacePage TUI 会话页面级集成（P1-C）', () => {
       pinia,
       piDetail({ control: { state: 'other', deviceName: 'iPad Pro' } }),
       {},
-    );
-    // attach 快照已是观察态
+    );    // attach 快照已是观察态
     client.opts.onEvent(
       attachedEvent({
         snapshot: {
@@ -327,19 +336,25 @@ describe('WorkspacePage TUI 会话页面级集成（P1-C）', () => {
     await flushPromises();
     // 同下文 banner 断言：全量并行负载下 store 派生态可晚于首个 flushPromises
     // （本用例曾在 CI full-suite 间歇性抖动）——改 waitFor 轮询断言。
-    await vi.waitFor(() => {
-      expect(store.canWrite).toBe(false);
-    });
+    await vi.waitFor(
+      () => {
+        expect(store.canWrite).toBe(false);
+      },
+      { timeout: 5000, interval: 50 },
+    );
 
     // RawTerminalView/KeyTray 挂载链含 xterm 动态 import：全量并行负载下渲染
     // 可晚于首个 flushPromises（本用例曾在 full-suite 间歇性抖动）——改 waitFor
     // 轮询断言，消除时序敏感。
-    await vi.waitFor(() => {
-      const banner = wrapper.find('[data-testid="terminal-readonly-indicator"]');
-      expect(banner.exists()).toBe(true);
-      expect(banner.text()).toContain('iPad Pro');
-      expect(wrapper.find('[data-testid="key-esc"]').attributes('disabled')).toBeDefined();
-    });
+    await vi.waitFor(
+      () => {
+        const banner = wrapper.find('[data-testid="terminal-readonly-indicator"]');
+        expect(banner.exists()).toBe(true);
+        expect(banner.text()).toContain('iPad Pro');
+        expect(wrapper.find('[data-testid="key-esc"]').attributes('disabled')).toBeDefined();
+      },
+      { timeout: 5000, interval: 50 },
+    );
 
     // 网格输入被只读门拦截 → 无 input 帧
     lastTerminal().emitData('\x03');
@@ -348,16 +363,24 @@ describe('WorkspacePage TUI 会话页面级集成（P1-C）', () => {
     // 控制权恢复 → 横幅消失、按键恢复、输入放行
     client.opts.onEvent({ type: 'control.state', sessionId: 'sess-1', state: 'you', reason: 'acquired', occurredAt: '2026-09-10T00:00:00Z' });
     await flushPromises();
-    expect(store.canWrite).toBe(true);
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-testid="terminal-readonly-indicator"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="key-esc"]').attributes('disabled')).toBeUndefined();
-    });
+    await vi.waitFor(
+      () => {
+        expect(store.canWrite).toBe(true);
+      },
+      { timeout: 5000, interval: 50 },
+    );
+    await vi.waitFor(
+      () => {
+        expect(wrapper.find('[data-testid="terminal-readonly-indicator"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="key-esc"]').attributes('disabled')).toBeUndefined();
+      },
+      { timeout: 5000, interval: 50 },
+    );
 
     await wrapper.find('[data-testid="key-esc"]').trigger('click');
     expect(client.sentInputFrames).toHaveLength(1);
     expect(atob(client.sentInputFrames[0].data)).toBe('\x1b');
-  });
+  }, 20000);
 
   it('合成全屏帧 + restart boundary：帧字节原样透传、提示行按序注入、重绘语义不破坏', async () => {
     const { client } = await mountWithRoute(pinia, piDetail());

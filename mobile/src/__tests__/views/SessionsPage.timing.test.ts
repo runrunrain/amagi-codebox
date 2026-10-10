@@ -13,10 +13,10 @@
  * 真实分类路径），router 为真实 vue-router（memory history），无真实网络。
  * ---------------------------------------------------------------------------
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { createRouter, createMemoryHistory, type Router } from 'vue-router';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent } from 'vue';
 
 // --- vi.mock：lib/api（提升；importOriginal 保留错误分类真实路径） ---
@@ -65,6 +65,8 @@ const MEASUREMENT_KEYS = ['budgetMs', 'budgetStatus', 'durationMs', 'invalidReas
 
 const Stub = defineComponent({ template: '<div />' });
 const AppShell = defineComponent({ template: '<router-view />' });
+// 跨用例卫生：登记当前已挂载 wrapper，afterEach 统一卸载（防 app 泄漏交叉干扰）。
+let activeWrapper: VueWrapper | null = null;
 
 function buildRouter(): Router {
   return createRouter({
@@ -80,6 +82,7 @@ function buildRouter(): Router {
 
 async function enterLobby(pinia: Pinia, router: Router) {
   const wrapper = mount(AppShell, { global: { plugins: [pinia, router] } });
+  activeWrapper = wrapper;
   await router.push({ name: 'lobby' });
   await router.isReady();
   await flushPromises();
@@ -98,6 +101,11 @@ describe('M3-006 T0/T1 生产锚点（真实路由导航）', () => {
     vi.mocked(getHostSummary).mockResolvedValue(HOST);
     useAuthStore().status = 'paired';
     consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    activeWrapper?.unmount();
+    activeWrapper = null;
   });
 
   it('正常分支（列表非空）：T lane observed，固定 schema，无 console 默认输出', async () => {
