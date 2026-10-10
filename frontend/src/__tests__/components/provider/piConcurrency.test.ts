@@ -144,6 +144,7 @@ describe('piConcurrency helpers', () => {
         'deepseek/deepseek-r1:medium',
         'invalid-spec-without-slash',
         'anthropic/claude-3-7-sonnet:high',
+        'ollama/qwen:32b:high',
       ];
       const existingModels = {
         'openai/gpt-4o': 2,
@@ -157,6 +158,7 @@ describe('piConcurrency helpers', () => {
         'anthropic/claude-3-5-sonnet',
         'anthropic/claude-3-7-sonnet',
         'deepseek/deepseek-r1',
+        'ollama/qwen:32b',
         'openai/gpt-4o',
         '__custom__',
       ]);

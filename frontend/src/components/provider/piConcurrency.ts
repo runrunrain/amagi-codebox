@@ -1,5 +1,5 @@
 import type { DropdownOption } from '../ui/Dropdown.vue';
-import type { ModelCatalog } from './useModelCatalog';
+import { parseModelSpec, buildModelSpec, type ModelCatalog } from './useModelCatalog';
 
 export interface ConcurrencyConfig {
   default?: number | string;
@@ -186,7 +186,8 @@ export function buildModelDropdownOptions(
   if (Array.isArray(agentModels)) {
     for (const model of agentModels) {
       if (!model || typeof model !== 'string') continue;
-      const cleanSpec = (model.includes(':') ? model.slice(0, model.lastIndexOf(':')) : model).trim();
+      const parsed = parseModelSpec(model);
+      const cleanSpec = parsed ? buildModelSpec(parsed.provider, parsed.model, '') : '';
       if (cleanSpec && cleanSpec.includes('/')) {
         modelsSet.add(cleanSpec);
       }

@@ -17,6 +17,19 @@
 
 注意：CI 由 `workflow_dispatch` 手动触发（C-011：stage push 不消耗 Actions），不是 push 自动跑。
 
+Pi 压缩配置的专项浏览器回归：
+
+```bash
+npx playwright test --config e2e/pi-amagi-config.playwright.config.ts
+# 本机使用已安装的 Chrome（仍为 Chromium 引擎）时：
+PI_CONFIG_BROWSER_CHANNEL=chrome npx playwright test --config e2e/pi-amagi-config.playwright.config.ts
+```
+
+此入口独立拉起 Vite（5188），挂载真实 `PiAmagiConfig.vue` 与 Wails API 包装；测试传输只读写浏览器隔离存储，不接触用户 `~/.pi`。
+六项交互测试覆盖复制 luban、三态保存/重载、空统一模型阻止保存、thinking/冒号 ID、JSON 切换保全、目录失败手动输入。
+后端实际文件读写由 `go test ./internal/piconfig` 的临时目录测试验证；不以浏览器 fixture 代替 Go 保存校验。
+该 spec 从默认移动端 E2E 入口排除，必须使用上述专项配置。
+
 ## 测试文件位置与命名规范
 
 新增测试按子项目对号入座，禁止第三处散落：

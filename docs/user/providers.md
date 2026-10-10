@@ -301,7 +301,28 @@ Provider Center 的"CLI 独立配置"一级 Tab 提供各 CLI 自有配置文件
 | OMP | `~/.omp/agent/config.yml`（Agent 配置）、`~/.omp/agent/models.yml`（模型提供商） | `internal/ompconfig` |
 | OpenCode | `~/.config/opencode/opencode.json`（全局配置，支持 JSON/JSONC） | `internal/opencodeconfig` |
 
-注意这些文件同时被"统一同步"机制管理 `amagi-*` 条目：手工编辑非 `amagi-` 部分是安全的，改动 `amagi-*` 条目会在下次对账时被覆盖。
+### Pi 统一压缩模型
+
+Pi → Agent 配置 →「上下文压缩（compaction）」管理 amagi-pi 的全局压缩模型：
+
+| 策略 | 保存内容 | 行为 |
+|------|----------|------|
+| 未指定 | 删除 `compaction.model`，空对象一并删除 | 全局未指定时由 pi 使用当前会话模型 |
+| 统一模型 | `compaction.model: "provider/model[:thinking]"` | Leader、JSON 子 Agent 与 RPC worker 共用摘要模型 |
+| pi 原生模型 | `compaction.model: null` | 显式使用各会话当前模型；项目 `null` 可禁用全局统一模型 |
+
+服务商、模型、思考档位可联动选择，也可手动输入。选择「默认（不指定档位）」会移除 thinking 后缀。
+「复制 luban 当前模型」按当时 `agents.luban.model` 的完整值复制，例如 `amagi-glm/glm-5.3:max`；
+复制后是独立配置，后续修改 luban 不会自动改变摘要模型。保存前会检查完整格式，未知的动态模型可以手动填写。
+
+该模型用于 `/compact`、阈值自动压缩和上下文溢出恢复；项目 `<cwd>/amagi.json` 优先于此全局文件，子 Agent 沿用派发者的配置目录。
+配置每次压缩重新读取；需先加载支持该字段的 amagi-pi 扩展（已有 pi 会话空闲时 `/reload`，已有子进程重新派发）。
+新增服务商环境凭据引用后也需重新派发子 Agent。模型认证由 pi 的模型注册表/认证管理，`amagi.json` 只保存选模。
+请选上下文窗口足够的已注册模型；配置、认证、摘要失败或窗口不足会取消压缩并保留历史。
+
+完整配置导入同样检查该字段；目标设备现有压缩配置若无法通过保存校验，导入会在写入前停止，以保留可恢复性。先在 JSON 模式修复该字段再导入。
+
+模型注册表中的 `amagi-*` 服务商条目由"统一同步"机制管理，手动修改会在下次对账时被覆盖。`amagi.json` 中的角色与压缩选模由此配置页独立保存。
 
 ---
 

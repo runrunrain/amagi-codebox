@@ -2,7 +2,7 @@
   PiAmagiConfig - pi (amagi-pi) amagi.json 可视化配置组件。
   挂载于 Provider Center → 预设 → Pi 引擎标签。
   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
-  thinking level，数据来自 ~/.pi/agent/models.json 目录）、MCP 路由编辑（含 v2.8.2 mcp.leader）。
+  thinking level，数据来自 pi 模型目录）、统一压缩模型、MCP 路由编辑（含 v2.8.2 mcp.leader）。
   mcp.leader / mcp.default：名单编辑器常显（all/none 态添加服务器即切白名单）；
   UI 编辑态与数据推断态解耦（点「白名单」进入编辑视图，空列表中间态不跳回「不加载」）。
   源码模式：JSON 文本直接编辑。保存走后端原子写入。
@@ -12,8 +12,8 @@
     <div class="pac-header">
       <h2 class="pac-title">Pi 配置（amagi-pi）</h2>
       <p class="pac-subtitle">
-        编辑 ~/.pi/agent/amagi.json：多 agent 角色的模型分配、MCP 路由与并发限制。
-        模型下拉来自 models.json 注册表，保存后新会话生效。
+        编辑全局 amagi.json：角色模型、统一压缩模型、MCP 路由与并发限制。
+        模型下拉来自 pi 模型目录；各项生效时间见卡片说明。
       </p>
     </div>
 
@@ -60,6 +60,43 @@
             />
             <p class="pac-hint">
               tiered：按 leader/fast/work/expert 分层套用 profiles/tiered.json；inherit：全部继承 pi 默认模型。
+            </p>
+          </div>
+        </ConfigCategoryCard>
+
+        <ConfigCategoryCard
+          title="上下文压缩（compaction）"
+          category="model"
+          :expanded="expanded.compaction"
+          :badge="compactionMode === 'unset' ? null : 1"
+          @toggle="expanded.compaction = !expanded.compaction"
+        >
+          <p class="pac-hint">
+            Leader 与 JSON/RPC 子 Agent 共用压缩模型，适用于 /compact、自动压缩与上下文溢出恢复。
+          </p>
+          <div class="pac-field">
+            <label class="pac-label">压缩模型策略（compaction.model）</label>
+            <Segmented v-model="compactionModeModel" :options="COMPACTION_MODE_OPTIONS" variant="pill" />
+            <p class="pac-hint">{{ COMPACTION_MODE_HINTS[compactionMode] }}</p>
+            <ModelSpecSelector
+              v-if="compactionMode === 'custom'"
+              :model-value="compactionModel"
+              :catalog="catalog"
+              @update:model-value="updateCompactionModel"
+            />
+            <div class="pac-actions">
+              <AppButton variant="ghost" size="small" :disabled="!lubanModel" @click="copyLubanCompactionModel">
+                复制 luban 当前模型
+              </AppButton>
+              <span class="pac-hint-inline">{{ lubanModel || '请先配置 luban 的角色模型' }}（复制后独立保存）</span>
+            </div>
+            <p v-if="compactionError" class="pac-json-error" role="alert">{{ compactionError }}</p>
+            <p class="pac-hint">
+              项目 amagi.json 优先于此全局配置；子 Agent 沿用派发者的配置目录。保存后下次压缩读取，
+              新增服务商环境凭据引用后需重新派发子 Agent。模型认证由 pi 管理。
+            </p>
+            <p class="pac-hint">
+              请选上下文窗口足够的已注册模型。配置、认证、摘要失败或窗口不足会取消本次压缩并保留历史。
             </p>
           </div>
         </ConfigCategoryCard>
@@ -332,6 +369,9 @@ import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
 import { applyMcpListMode, mcpListModeOf, type McpListMode } from './mcpListMode';
 import {
+  applyCompactionMode, compactionModeOf, compactionModelOf, validateCompactionConfig, type CompactionMode,
+} from './piCompaction';
+import {
   normalizeLimitInput,
   cleanConcurrencyConfig,
   buildProviderDropdownOptions,
@@ -350,6 +390,18 @@ const PROFILE_OPTIONS = [
   { value: 'inherit', label: 'inherit（继承 pi 默认）' },
 ];
 
+const COMPACTION_MODE_OPTIONS = [
+  { value: 'unset', label: '未指定' },
+  { value: 'custom', label: '统一模型' },
+  { value: 'native', label: 'pi 原生模型' },
+];
+
+const COMPACTION_MODE_HINTS: Record<CompactionMode, string> = {
+  unset: '删除 compaction.model；全局未指定时由 pi 使用当前会话模型，项目仍可单独指定。',
+  custom: '写入 provider/model[:thinking]；所有 Agent 使用该模型生成压缩摘要。',
+  native: '写入显式 null；使用各会话当前模型。项目设置 null 可禁用全局统一模型。',
+};
+
 /** amagi-pi agents/*.md 的角色名（建议值） */
 const ROLE_SUGGESTIONS = [
   'baize', 'cangjie', 'diting', 'diting-quick', 'fuxi', 'hongjun',
@@ -364,7 +416,7 @@ const jsonContent = ref('');
 const jsonError = ref('');
 const configPath = ref('');
 const configData = ref<Record<string, any>>({});
-const expanded = ref({ profile: true, agents: true, mcp: false, concurrency: false });
+const expanded = ref({ profile: true, agents: true, compaction: true, mcp: false, concurrency: false });
 
 const { catalog, catalogError, loadCatalog } = useModelCatalog();
 
@@ -404,6 +456,40 @@ const agentRows = computed<AgentRow[]>(() => {
     model: typeof agents[role]?.model === 'string' ? agents[role].model : '',
   }));
 });
+
+const compactionMode = computed(() => compactionModeOf(configData.value.compaction));
+const compactionModel = computed(() => compactionModelOf(configData.value.compaction));
+const compactionError = computed(() => validateCompactionConfig(configData.value));
+const lubanModel = computed(() => {
+  const model = configData.value.agents?.luban?.model;
+  return typeof model === 'string' ? model : '';
+});
+const compactionDraft = ref('');
+const compactionModeModel = computed({
+  get: () => compactionMode.value,
+  set: (mode: string) => {
+    if (compactionModel.value) compactionDraft.value = compactionModel.value;
+    updateCompaction(mode as CompactionMode, compactionDraft.value);
+  },
+});
+
+function updateCompaction(mode: CompactionMode, model = '') {
+  try {
+    applyCompactionMode(configData.value, mode, model);
+    serialize();
+  } catch (error) {
+    showError((error as Error).message);
+  }
+}
+
+function updateCompactionModel(model: string) {
+  compactionDraft.value = model;
+  updateCompaction('custom', model);
+}
+
+function copyLubanCompactionModel() {
+  if (lubanModel.value) updateCompactionModel(lubanModel.value);
+}
 
 const mcpLeader = computed<string[]>(() => {
   const v = configData.value.mcp?.leader;
@@ -556,7 +642,8 @@ async function initialLoad() {
     configPath.value = path || '';
     parseJsonToConfig();
     // 应用级默认：并发 default 未设置时预填 10（保存落盘；用户可清空保存移除键回落 amagi-pi 内置 4）。
-    ensureConcurrencyDefault10();
+    if (jsonError.value) mode.value = 'json';
+    else ensureConcurrencyDefault10();
     void loadCatalog(getPiModelCatalog);
   } catch (err) {
     error.value = String(err);
@@ -569,13 +656,19 @@ function parseJsonToConfig() {
   const trimmed = (jsonContent.value || '').trim();
   if (!trimmed) {
     configData.value = {};
+    compactionDraft.value = '';
     jsonError.value = '';
     syncMcpUiModesFromConfig();
     return;
   }
   try {
     const parsed = JSON.parse(trimmed);
-    configData.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      jsonError.value = '配置根必须是 JSON 对象';
+      return;
+    }
+    configData.value = parsed;
+    compactionDraft.value = compactionModelOf(parsed.compaction);
     jsonError.value = '';
     syncMcpUiModesFromConfig();
   } catch (e) {
@@ -939,6 +1032,14 @@ function removeConcurrencyModel(key: string) {
 }
 
 async function handleSave() {
+  if (jsonError.value) {
+    showError('JSON 格式错误，无法保存');
+    return;
+  }
+  if (compactionError.value) {
+    showError(compactionError.value);
+    return;
+  }
   if (mode.value === 'visual') {
     cleanEmptyLimits();
     cleanupConcurrency();
@@ -969,19 +1070,17 @@ async function copyPath() {
   }
 }
 
-function handleModeChange(newMode: 'visual' | 'json') {
-  if (newMode === 'visual') {
-    parseJsonToConfig();
-  } else {
-    serialize();
-  }
-}
-
 const modeModel = computed({
   get: () => mode.value,
   set: (v: string) => {
+    // 非法源码不能被旧的可视化状态序列化覆盖；允许留在 JSON 模式修复。
+    if (v === 'visual') {
+      parseJsonToConfig();
+      if (jsonError.value) return;
+    } else if (!jsonError.value) {
+      serialize();
+    }
     mode.value = v as 'visual' | 'json';
-    handleModeChange(mode.value);
   },
 });
 
@@ -1027,6 +1126,11 @@ onMounted(() => {
 
 .pac-mode-tabs {
   display: inline-flex;
+  min-width: 150px;
+}
+
+.pac-mode-tabs :deep(.seg) {
+  white-space: nowrap;
 }
 
 .pac-path-row {

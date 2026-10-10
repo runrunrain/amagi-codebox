@@ -417,7 +417,7 @@ legacy 配置面（过渡方案）：
 
 **PiConfig**（`internal/piconfig/service.go`，`~/.pi/agent/`）：
 
-- `GetAmagiConfig()` / `SaveAmagiConfig(content)` / `GetAmagiConfigPath()` — amagi.json 读写/路径。
+- `GetAmagiConfig()` / `SaveAmagiConfig(content)` / `GetAmagiConfigPath()` — amagi.json 读写/路径；保存时校验 `compaction` 为仅含 `model` 的对象，`model` 可省略、为 `null` 或完整 `provider/model[:thinking]`。校验失败不改原文件；读取仍保留无效配置供源码修复。
 - `GetModelsConfig()` / `SaveModelsConfig(content)` / `GetModelsConfigPath()` — models.json 读写/路径。
 - `GetAuthConfig()` / `SaveAuthConfig(content)` / `GetAuthConfigPath()` — auth 配置读写/路径。
 - `GetPiModelCatalog() (string, error)` — 从 models.json 抽取 provider→models 目录（只读、不含 apiKey 等敏感信息），文件缺失返回空目录。

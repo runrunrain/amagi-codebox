@@ -4,6 +4,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [Unreleased]
+
+### Added
+
+- **Pi 统一压缩模型可视化配置**：Pi 配置页新增 `compaction.model` 卡片，区分未指定（删键）、统一模型（`provider/model[:thinking]`）和 pi 原生模型（显式 `null`）；复用服务商/模型/思考档位选择器，可复制 luban 当前模型为独立配置。说明对齐 amagi-pi 的项目优先级、Leader/JSON/RPC 共用、手动/自动/溢出压缩与下次压缩读取规则。前后端验证压缩字段，拒绝不完整配置并保留原文件，兼容未设置与空对象；完整配置导入在任何写入前共用校验并检查回滚快照，覆盖模型导出/还原及写入失败回滚；不改角色模型或 pi 认证配置。
+
+### Fixed
+
+- **模型选择与源码保全**：只将已知 thinking 后缀从模型 ID 拆出，保留 `ollama/qwen:32b` 等原生 ID；选择器可清除档位、手动输入，换模型时清除不支持的档位，未收录的当前模型保持可见，目录加载失败仍可编辑。Pi 页非法 JSON/非对象根停留源码模式，阻止旧可视化状态覆盖原文。回归覆盖纯函数、Go 隔离文件保存及真实 Chromium 中的 Vue 交互（测试专用存储）。
+
 ## [1.3.94] - 2026-10-08
 
 ### Added

@@ -1,5 +1,5 @@
 // Package piconfig 管理 pi（含 amagi-pi 插件）的结构化配置文件：
-// 读写 <agentDir>/amagi.json（profile / 角色 model / MCP 路由），
+// 读写 <agentDir>/amagi.json（profile / 角色 model / 统一压缩模型 / MCP 路由），
 // 并从 <agentDir>/models.json 抽取只读的 provider→model 目录，
 // 供前端可视化配置界面的下拉关联使用。
 //
@@ -90,15 +90,15 @@ func (s *Service) GetAmagiConfig() (string, error) {
 	return string(formatted) + "\n", nil
 }
 
-// SaveAmagiConfig 校验并保存 amagi.json：必须是合法 JSON 且根为对象。
+// SaveAmagiConfig 校验并保存 amagi.json：合法对象且 compaction 与插件契约一致。
 // 通过临时文件原子写入（0600，文件包含模型配置但不含密钥，仍按私有对待）。
 func (s *Service) SaveAmagiConfig(content string) error {
-	if !json.Valid([]byte(content)) {
-		return fmt.Errorf("invalid JSON: content is not valid JSON")
+	if err := ValidateAmagiConfig(content); err != nil {
+		return err
 	}
 	var obj map[string]any
-	if err := json.Unmarshal([]byte(content), &obj); err != nil || obj == nil {
-		return errors.New("invalid config: root must be a JSON object")
+	if err := json.Unmarshal([]byte(content), &obj); err != nil {
+		return err
 	}
 	formatted, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
@@ -521,7 +521,7 @@ func mergeFrontlineContractAt(catalog *ModelCatalog, dir string) {
 var extendedThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // standardThinkingLevels 为 pi 语义下的「标准档」：map 缺键时默认支持
-//（provider 默认映射，透传档名）；xhigh/max 是扩展档，必须 map 显式映射才支持。
+// （provider 默认映射，透传档名）；xhigh/max 是扩展档，必须 map 显式映射才支持。
 var standardThinkingLevels = map[string]bool{
 	"off": true, "minimal": true, "low": true, "medium": true, "high": true,
 }
@@ -532,6 +532,7 @@ var standardThinkingLevels = map[string]bool{
 //     xhigh/max 缺键 → 不支持（需显式声明）；
 //   - reasoning=true + 无 map：标准档全支持，xhigh/max 不支持；
 //   - omp thinking: {levels: []} 数组形态：原样抽取。
+//
 // 原实现只取 map 键：gpt-5.6 系列 map 只有 xhigh/minimal 两键 → 下拉只显示两档，
 // 与 pi 运行时真实支持集（六档，标准档默认支持）脱节。
 func extractThinkingLevels(reasoning bool, v any) []string {

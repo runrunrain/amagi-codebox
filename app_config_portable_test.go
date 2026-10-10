@@ -233,7 +233,7 @@ func seedCLIConfigFiles(t *testing.T, agentDir string) {
 	writeCLITestFile(t, filepath.Join(agentDir, "auth.json"),
 		`{"auth-provider":{"type":"api_key","api_key":"pi-auth-token"}}`)
 	writeCLITestFile(t, filepath.Join(agentDir, "amagi.json"),
-		`{"profile":"tiered","agents":{"coder":{"model":"pi-model"}}}`)
+		`{"profile":"tiered","agents":{"coder":{"model":"pi-model"}},"compaction":{"model":"amagi-glm/glm-5.3:max"}}`)
 	writeCLITestFile(t, filepath.Join(agentDir, "config.yml"),
 		"modelRoles:\n  default: custom-omp-model\n")
 	writeCLITestFile(t, filepath.Join(agentDir, "models.yml"),
@@ -295,6 +295,10 @@ func TestCompleteConfigRoundTripRestoresCLIConfigs(t *testing.T) {
 	}
 	if piAmagi["profile"] != "tiered" {
 		t.Fatalf("pi amagi config not restored: %v", piAmagi)
+	}
+	compaction, ok := piAmagi["compaction"].(map[string]any)
+	if !ok || compaction["model"] != "amagi-glm/glm-5.3:max" {
+		t.Fatalf("pi compaction model not restored: %v", piAmagi)
 	}
 	ompConfig := readCLITestFile(t, filepath.Join(agentDir, "config.yml"))
 	if !strings.Contains(ompConfig, "custom-omp-model") {
@@ -444,6 +448,7 @@ func TestCompleteConfigImportCLIWriteFailureAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	portable.PiAmagiConfig = json.RawMessage(`{"profile":"inherit","compaction":{"model":"incoming/summary:low"}}`)
 
 	// Sabotage two targets so that both writes fail: a directory cannot be
 	// replaced by writePrivateFile's rename/overwrite path.
@@ -472,8 +477,63 @@ func TestCompleteConfigImportCLIWriteFailureAggregates(t *testing.T) {
 	if !strings.Contains(err.Error(), "replace omp config") {
 		t.Fatalf("error missing omp config failure: %v", err)
 	}
+	if restored := readCLITestFile(t, filepath.Join(agentDir, "amagi.json")); !strings.Contains(restored, "amagi-glm/glm-5.3:max") || strings.Contains(restored, "incoming/summary") {
+		t.Fatalf("rollback failed to restore original compaction model: %s", restored)
+	}
 	// Healthy sections that were written before the failure stay written only
 	// if rollback skipped them (their pre-import content matches the snapshot
 	// anyway); the important contract is the aggregated error and rollback of
 	// codebox-owned state, verified by other tests.
+}
+
+func TestCompleteConfigImportRejectsInvalidCompactionBeforeMutation(t *testing.T) {
+	app := newPortableConfigTestApp(t)
+	agentDir := cliTestAgentDir(t)
+	seedCLIConfigFiles(t, agentDir)
+	exported, err := app.buildCompleteExportConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	portable, err := decodePortableConfig(exported.Portable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeModels := readCLITestFile(t, filepath.Join(agentDir, "models.json"))
+	beforeAmagi := readCLITestFile(t, filepath.Join(agentDir, "amagi.json"))
+	portable.PiModelsConfig = json.RawMessage(`{"providers":{"incoming":{"models":[]}}}`)
+	portable.PiAmagiConfig = json.RawMessage(`{"compaction":{"model":false}}`)
+	err = app.applyCompleteConfig(exported, portable, true)
+	if err == nil || !strings.Contains(err.Error(), "compaction") || strings.Contains(err.Error(), "rollback imported") {
+		t.Fatalf("expected preflight failure, got %v", err)
+	}
+	if readCLITestFile(t, filepath.Join(agentDir, "models.json")) != beforeModels ||
+		readCLITestFile(t, filepath.Join(agentDir, "amagi.json")) != beforeAmagi {
+		t.Fatal("validation mutated CLI config files")
+	}
+}
+
+func TestCompleteConfigImportRejectsUnrestorableCompactionSnapshot(t *testing.T) {
+	app := newPortableConfigTestApp(t)
+	agentDir := cliTestAgentDir(t)
+	seedCLIConfigFiles(t, agentDir)
+	exported, err := app.buildCompleteExportConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	portable, err := decodePortableConfig(exported.Portable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := `{"compaction":{"model":42},"future":{"preserve":true}}`
+	writeCLITestFile(t, filepath.Join(agentDir, "amagi.json"), broken)
+	beforeModels := readCLITestFile(t, filepath.Join(agentDir, "models.json"))
+	portable.PiModelsConfig = json.RawMessage(`{"providers":{}}`)
+	err = app.applyCompleteConfig(exported, portable, true)
+	if err == nil || !strings.Contains(err.Error(), "validate rollback snapshot") || !strings.Contains(err.Error(), "compaction") {
+		t.Fatalf("expected unrestorable snapshot rejection, got %v", err)
+	}
+	if readCLITestFile(t, filepath.Join(agentDir, "models.json")) != beforeModels ||
+		readCLITestFile(t, filepath.Join(agentDir, "amagi.json")) != broken {
+		t.Fatal("unrestorable original config was changed")
+	}
 }

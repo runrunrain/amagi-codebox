@@ -2,41 +2,35 @@
   ModelSpecSelector - `provider/model[:level]` 三级下拉选择器。
   由 useModelCatalog 目录驱动：provider → model（级联过滤）→ thinking level
   （取模型 thinkingLevelMap 键，无元数据时用默认级别集）。
-  目录中不存在的 spec（如手写或目录未同步）回退为手动输入模式。
+  未知 provider / 无法拆分的 spec 回退为手动输入；目录未收录的模型保持当前值可见。
 -->
 <template>
   <div class="mss-root">
-    <template v-if="spec && !parsed">
-      <!-- 无法拆解的 spec：手动输入回退 -->
+    <template v-if="manual || !catalog.providers.length || (spec && (!parsed || !providerEntry))">
       <TextInput
         :model-value="modelValue"
-        placeholder="provider/model:level"
+        placeholder="provider/model[:thinking]"
         mono
         class="mss-input"
         @update:model-value="$emit('update:model-value', $event)"
       />
-    </template>
-    <template v-else-if="spec && !providerEntry">
-      <!-- provider 不在目录中：手动输入回退（保留原值可见） -->
-      <TextInput
-        :model-value="modelValue"
-        placeholder="provider/model:level（当前 provider 不在模型目录中）"
-        mono
-        class="mss-input"
-        @update:model-value="$emit('update:model-value', $event)"
-      />
+      <AppButton v-if="catalog.providers.length && parsed && providerEntry" variant="ghost" size="small" class="mss-mode-btn" @click="manual = false">
+        从列表选择
+      </AppButton>
     </template>
     <template v-else>
       <div class="mss-row">
         <Dropdown
           :model-value="provider"
           :options="providerOptions"
+          placeholder="选择服务商"
           class="mss-dd"
           @update:model-value="onProviderChange"
         />
         <Dropdown
           :model-value="model"
           :options="modelOptions"
+          placeholder="选择模型"
           class="mss-dd"
           @update:model-value="onModelChange"
         />
@@ -47,16 +41,20 @@
           @update:model-value="onLevelChange"
         />
       </div>
+      <AppButton variant="ghost" size="small" class="mss-mode-btn" @click="manual = true">手动输入模型</AppButton>
     </template>
+    <code v-if="spec" class="mss-spec">{{ spec }}</code>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import Dropdown, { type DropdownOption } from '../ui/Dropdown.vue';
 import TextInput from '../ui/TextInput.vue';
+import AppButton from '../ui/AppButton.vue';
 import {
-  DEFAULT_THINKING_LEVELS,
+  thinkingLevelsFor,
+  compatibleThinkingLevel,
   parseModelSpec,
   buildModelSpec,
   type ModelCatalog,
@@ -69,6 +67,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ 'update:model-value': [value: string] }>();
+const manual = ref(false);
 
 const spec = computed(() => props.modelValue || '');
 const parsed = computed(() => parseModelSpec(spec.value));
@@ -97,16 +96,24 @@ const providerOptions = computed<DropdownOption[]>(() =>
 
 const modelOptions = computed<DropdownOption[]>(() => {
   if (!providerEntry.value) return [];
-  return providerEntry.value.models.map((m) => ({
+  const options = providerEntry.value.models.map((m) => ({
     value: m.id,
     label: m.name && m.name !== m.id ? `${m.name}（${m.id}）` : m.id,
   }));
+  if (model.value && !options.some(o => o.value === model.value)) {
+    options.unshift({ value: model.value, label: `${model.value}（当前值，目录未收录）` });
+  }
+  return options;
 });
 
 const levelOptions = computed<DropdownOption[]>(() => {
   const m = providerEntry.value?.models.find((x) => x.id === model.value);
-  const levels = m?.thinkingLevels?.length ? m.thinkingLevels : DEFAULT_THINKING_LEVELS;
-  return levels.map((l) => ({ value: l, label: l }));
+  const levels = thinkingLevelsFor(m);
+  const options = [{ value: '', label: '默认（不指定档位）' }, ...levels.map(l => ({ value: l, label: l }))];
+  if (level.value && !levels.includes(level.value)) {
+    options.push({ value: level.value, label: `${level.value}（当前值，不在支持档位中）` });
+  }
+  return options;
 });
 
 function onProviderChange(p: string) {
@@ -117,13 +124,13 @@ function onProviderChange(p: string) {
     emit('update:model-value', p + '/');
     return;
   }
-  emit('update:model-value', buildModelSpec(p, first, level.value));
+  emit('update:model-value', buildModelSpec(p, first, compatibleThinkingLevel(entry?.models[0], level.value)));
 }
 
 function onModelChange(m: string) {
   if (!provider.value) return;
-  // 换模型后保留 level（若新模型元数据不含该 level，仍由后端/CLI 校验兜底）
-  emit('update:model-value', buildModelSpec(provider.value, m, level.value));
+  const target = providerEntry.value?.models.find(x => x.id === m);
+  emit('update:model-value', buildModelSpec(provider.value, m, compatibleThinkingLevel(target, level.value)));
 }
 
 function onLevelChange(l: string) {
@@ -158,5 +165,15 @@ function onLevelChange(l: string) {
 
 .mss-input {
   width: 100%;
+}
+
+.mss-mode-btn {
+  align-self: flex-start;
+}
+
+.mss-spec {
+  color: var(--secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 </style>

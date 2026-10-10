@@ -62,21 +62,21 @@ export default defineConfig({
       // network.spec.ts / timing.spec.ts 为 helper/管道语义测试，与视口无关；
       // 经 testIgnore 排除（非 runtime skip），仅 desktop 运行一次（M0-05 / M0-06 原则一致）。
       // **/perf/** 见上文 M4-B 全局排除说明。
-      testIgnore: ['**/perf/**', '**/network.spec.ts', '**/timing.spec.ts'],
+      testIgnore: ['**/perf/**', '**/network.spec.ts', '**/timing.spec.ts', '**/pi-amagi-config.spec.ts'],
       use: { viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true },
     },
     {
       name: 'mobile-320',
       // connect-pg01-real / workspace-real / workspace-m3c-relay / m3-int-* 每用例拉起真 harness，开销按设计只在 mobile-360 承担一次。
       // a11y-m4 自管理视口（含横屏/缩放模拟），按设计只在 mobile-360 跑一次（M4-A）。
-      testIgnore: ['**/perf/**', '**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts', '**/a11y-m4.spec.ts'],
+      testIgnore: ['**/perf/**', '**/network.spec.ts', '**/timing.spec.ts', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts', '**/a11y-m4.spec.ts', '**/pi-amagi-config.spec.ts'],
       use: { viewport: { width: 320, height: 800 }, isMobile: true, hasTouch: true },
     },
     {
       name: 'desktop',
       // 真服务器配对 / 真链 WS E2E 属移动 PG-01/PG-03 场景（M1-D2/M2-INT/M3-C/M3-INT），desktop 不重复跑。
       // a11y-m4 为移动适配专项（M4-A），desktop 不重复跑。
-      testIgnore: ['**/perf/**', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts', '**/a11y-m4.spec.ts'],
+      testIgnore: ['**/perf/**', '**/connect-pg01-real.spec.ts', '**/workspace-real.spec.ts', '**/workspace-m3c-relay.spec.ts', '**/workspace-m3-int-multidevice.spec.ts', '**/workspace-m3-int-relay.spec.ts', '**/a11y-m4.spec.ts', '**/pi-amagi-config.spec.ts'],
       use: { viewport: { width: 1280, height: 720 } },
     },
   ],

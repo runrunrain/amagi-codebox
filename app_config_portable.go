@@ -11,6 +11,7 @@ import (
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/paths"
+	"amagi-codebox/internal/piconfig"
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/usage"
 
@@ -254,7 +255,7 @@ func validateCLIConfigSections(portable portableConfigSnapshot) error {
 	}{
 		{"pi models config", len(portable.PiModelsConfig) > 0, string(portable.PiModelsConfig), validateJSONObjectConfig},
 		{"pi auth config", len(portable.PiAuthConfig) > 0, string(portable.PiAuthConfig), validateJSONObjectConfig},
-		{"pi amagi config", len(portable.PiAmagiConfig) > 0, string(portable.PiAmagiConfig), validateJSONObjectConfig},
+		{"pi amagi config", len(portable.PiAmagiConfig) > 0, string(portable.PiAmagiConfig), piconfig.ValidateAmagiConfig},
 		{"omp config", portable.OmpConfig != "", portable.OmpConfig, validateYAMLMappingConfig},
 		{"omp models config", portable.OmpModelsConfig != "", portable.OmpModelsConfig, validateYAMLMappingConfig},
 	}
@@ -360,6 +361,10 @@ func (a *App) applyCompleteConfig(exported config.ExportConfig, portable portabl
 	previousPortable, err := decodePortableConfig(previousExport.Portable)
 	if err != nil {
 		return fmt.Errorf("decode rollback snapshot: %w", err)
+	}
+	// 读取允许原样保留坏配置；保存校验收紧后，必须确认回滚快照仍可恢复再改任何状态。
+	if err := validateCLIConfigSections(previousPortable); err != nil {
+		return fmt.Errorf("validate rollback snapshot: %w", err)
 	}
 
 	rollbackNeeded := true

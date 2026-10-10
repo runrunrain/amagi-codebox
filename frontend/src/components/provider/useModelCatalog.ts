@@ -37,13 +37,15 @@ export interface ModelSpec {
 
 /**
  * 拆解 `provider/model[:level]` spec。
- * 非常规形态（无 provider、多斜杠等）返回 null，调用方回退手动输入。
+ * 模型 ID 可以含斜杠或冒号；只有已知 thinking 后缀参与拆分。
+ * 空白、缺 provider 或 model 时返回 null，调用方回退手动输入。
  */
 export function parseModelSpec(spec: string): ModelSpec | null {
-  if (!spec) return null;
+  if (!spec || /\s/.test(spec)) return null;
   const levelIdx = spec.lastIndexOf(':');
-  const base = levelIdx > 0 ? spec.slice(0, levelIdx) : spec;
-  const level = levelIdx > 0 ? spec.slice(levelIdx + 1) : '';
+  const suffix = levelIdx > 0 ? spec.slice(levelIdx + 1) : '';
+  const level = DEFAULT_THINKING_LEVELS.includes(suffix) ? suffix : '';
+  const base = level ? spec.slice(0, levelIdx) : spec;
   const slashIdx = base.indexOf('/');
   if (slashIdx <= 0 || slashIdx === base.length - 1) return null;
   return { provider: base.slice(0, slashIdx), model: base.slice(slashIdx + 1), level };
@@ -53,6 +55,16 @@ export function parseModelSpec(spec: string): ModelSpec | null {
 export function buildModelSpec(provider: string, model: string, level: string): string {
   const base = `${provider}/${model}`;
   return level ? `${base}:${level}` : base;
+}
+
+/** 默认档位始终可选；换模型时清除明确不支持的档位，旧值在读取时保留。 */
+export function thinkingLevelsFor(model?: CatalogModel): string[] {
+  if (!model?.reasoning) return model ? ['off'] : DEFAULT_THINKING_LEVELS;
+  return model.thinkingLevels?.length ? model.thinkingLevels : DEFAULT_THINKING_LEVELS;
+}
+
+export function compatibleThinkingLevel(model: CatalogModel | undefined, level: string): string {
+  return thinkingLevelsFor(model).includes(level) ? level : '';
 }
 
 export function useModelCatalog() {
