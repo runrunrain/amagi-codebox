@@ -1,6 +1,10 @@
 <!--
   PiAmagiConfig - pi (amagi-pi) amagi.json 可视化配置组件。
-  挂载于 Provider Center → 预设 → Pi 引擎标签。
+  挂载于 Provider Center → CLI 独立配置 → Pi → Agent 配置。
+  布局（provider-center-layout-redesign §4.3）：导航即标题——不再有 h2 / subtitle；
+  一行 EditorToolbar（路径胶囊 / 合法状态 / 模式切换 / 保存）；卡片顺序
+  角色模型（含分层策略）→ 上下文压缩 → MCP 路由 → 并发限制；常显说明只留「当前状态语义 /
+  操作后果」，其余收进 InfoTip（文案与处置见 design §5.2 T07–T29）。
   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
   thinking level，数据来自 pi 模型目录）、统一压缩模型、MCP 路由编辑（含 v2.8.2 mcp.leader）。
   mcp.leader / mcp.default：名单编辑器常显（all/none 态添加服务器即切白名单）；
@@ -8,158 +12,159 @@
   源码模式：JSON 文本直接编辑。保存走后端原子写入。
 -->
 <template>
-  <div class="pac-root">
-    <div class="pac-header">
-      <h2 class="pac-title">Pi 配置（amagi-pi）</h2>
-      <p class="pac-subtitle">
-        编辑全局 amagi.json：角色模型、统一压缩模型、MCP 路由与并发限制。
-        模型下拉来自 pi 模型目录；各项生效时间见卡片说明。
-      </p>
-    </div>
-
+  <div class="pac-root" :class="{ 'editor-local-layout': navigation === 'local' }">
+    <SectionNav v-if="navigation === 'local'" label="配置分区" :groups="localGroups" :current-id="mode === 'visual' ? activeSection : ''" controls-id="pac-editor-detail" :notice="mode !== 'visual' ? '源码模式：返回可视化后切换分区' : ''" @select="selectSection" />
+    <div id="pac-editor-detail" class="editor-detail">
     <LoadingState v-if="loading" message="加载配置中..." />
 
     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
 
     <template v-else>
-      <div class="pac-toolbar">
-        <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" class="pac-mode-tabs" />
-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
-          {{ saving ? '保存中...' : '保存配置' }}
-        </AppButton>
-      </div>
+      <!-- 工具栏：路径胶囊 + JSON 合法状态 ····· 模式切换 + 保存。导航即标题，不再有 h2 / subtitle -->
+      <EditorToolbar
+        :path="configPath"
+        path-label="配置文件"
+        :valid-label="mode === 'json' && !jsonError ? 'JSON 合法' : ''"
+        @copy-path="copyPath"
+      >
+        <template #status>
+          <button v-if="compactionError && mode === 'visual' && activeSection !== 'compaction'" type="button" class="pac-error-link" @click="selectSection('compaction')">上下文压缩待修正</button>
+          <span v-else-if="compactionError && mode !== 'visual'" class="pac-error-link">上下文压缩待修正</span>
+        </template>
+        <template #actions>
+          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
+          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+            {{ saving ? '保存中...' : '保存配置' }}
+          </AppButton>
+        </template>
+      </EditorToolbar>
 
-      <div class="pac-path-row">
-        <span class="pac-path-label">配置文件：</span>
-        <code class="pac-path-value">{{ configPath || '加载中...' }}</code>
-        <AppButton v-if="configPath" variant="ghost" size="small" class="pac-copy-btn" @click="copyPath">
-          复制路径
-        </AppButton>
-      </div>
-
-      <div v-if="jsonError" class="pac-json-error">{{ jsonError }}</div>
-      <div v-else-if="mode === 'json'" class="pac-json-valid">JSON 合法</div>
-      <div v-if="catalogError" class="pac-catalog-warn">
-        模型目录加载失败，下拉不可用：{{ catalogError }}
-      </div>
+      <StatusBanner v-if="jsonError" compact type="error" role="alert" class="pac-json-error" :message="jsonError" />
+      <StatusBanner
+        v-if="catalogError"
+        compact
+        type="warning"
+        class="pac-catalog-warn"
+        :message="`模型目录加载失败，下拉不可用：${catalogError}`"
+      />
 
       <!-- 可视化模式 -->
       <div v-if="mode === 'visual'" class="pac-visual">
-        <ConfigCategoryCard
-          title="Profile（分层策略）"
-          category="profile"
-          :expanded="expanded.profile"
-          @toggle="expanded.profile = !expanded.profile"
+        <!-- ① 角色模型（含分层策略 profile） -->
+        <EditorSection v-if="visited.agents" v-show="activeSection === 'agents'" :active="activeSection === 'agents'"
+          section-id="agents" title="角色模型" code="agents" :badge="agentRows.length"
         >
           <div class="pac-field">
-            <label class="pac-label">profile</label>
+            <FieldLabel text="分层策略" code="profile" :items="PROFILE_ITEMS" />
             <Dropdown
+              class="pac-profile-dd"
               :model-value="profileValue"
               :options="PROFILE_OPTIONS"
               @update:model-value="updateProfile"
             />
-            <p class="pac-hint">
-              tiered：按 leader/fast/work/expert 分层套用 profiles/tiered.json；inherit：全部继承 pi 默认模型。
-            </p>
           </div>
-        </ConfigCategoryCard>
-
-        <ConfigCategoryCard
-          title="上下文压缩（compaction）"
-          category="model"
-          :expanded="expanded.compaction"
-          :badge="compactionMode === 'unset' ? null : 1"
-          @toggle="expanded.compaction = !expanded.compaction"
-        >
-          <p class="pac-hint">
-            Leader 与 JSON/RPC 子 Agent 共用压缩模型，适用于 /compact、自动压缩与上下文溢出恢复。
-          </p>
           <div class="pac-field">
-            <label class="pac-label">压缩模型策略（compaction.model）</label>
-            <Segmented v-model="compactionModeModel" :options="COMPACTION_MODE_OPTIONS" variant="pill" />
-            <p class="pac-hint">{{ COMPACTION_MODE_HINTS[compactionMode] }}</p>
-            <ModelSpecSelector
-              v-if="compactionMode === 'custom'"
-              :model-value="compactionModel"
-              :catalog="catalog"
-              @update:model-value="updateCompactionModel"
-            />
+            <FieldLabel text="角色覆盖" code="agents.<角色>.model" :tip="AGENTS_TIP" />
+            <div class="pac-agent-rows">
+              <div v-for="row in agentRows" :key="row.role" class="pac-agent-row">
+                <div class="pac-agent-role">
+                  <TextInput
+                    :model-value="row.role"
+                    placeholder="角色名（如 baize）"
+                    mono
+                    class="pac-role-input"
+                    @update:model-value="renameRole(row.role, $event)"
+                  />
+                </div>
+                <ModelSpecSelector
+                  :model-value="row.model"
+                  :catalog="catalog"
+                  class="pac-agent-spec"
+                  @update:model-value="updateAgentModel(row.role, $event)"
+                />
+                <AppButton variant="icon" size="small" aria-label="删除角色" @click="removeRole(row.role)">
+                  <span class="pac-remove">×</span>
+                </AppButton>
+              </div>
+            </div>
             <div class="pac-actions">
+              <AppButton variant="ghost" size="small" @click="addRole('')">+ 添加角色</AppButton>
+              <AppButton
+                v-for="s in unconfiguredRoleSuggestions"
+                :key="s"
+                variant="ghost"
+                size="small"
+                @click="addRole(s)"
+              >
+                + {{ s }}
+              </AppButton>
+            </div>
+          </div>
+        </EditorSection>
+
+        <!--
+          ② 上下文压缩（e2e 锚点卡：标题须含「上下文压缩」；
+          卡内第一个 Dropdown 必须是 ModelSpecSelector 的，且只允许它的 1 个 input；
+          InfoTip 浮层 Teleport 出卡片且 role=tooltip，不会混入卡内 role=alert）
+        -->
+        <EditorSection v-if="visited.compaction" v-show="activeSection === 'compaction'" :active="activeSection === 'compaction'"
+          section-id="compaction" title="上下文压缩" code="compaction" meta="下次压缩生效"
+          :tip="COMPACTION_TIP" :badge="compactionMode === 'unset' ? null : 1"
+        >
+          <div class="pac-field">
+            <FieldLabel text="压缩模型" code="compaction.model" :items="COMPACTION_MODE_ITEMS" />
+            <Segmented
+              v-model="compactionModeModel"
+              :options="COMPACTION_MODE_OPTIONS"
+              variant="pill"
+              class="pac-inline-seg"
+            />
+            <p class="pac-caption">{{ COMPACTION_MODE_CAPTIONS[compactionMode] }}</p>
+            <template v-if="compactionMode === 'custom'">
+              <ModelSpecSelector
+                :model-value="compactionModel"
+                :catalog="catalog"
+                @update:model-value="updateCompactionModel"
+              />
+              <p class="pac-caption is-consequence">窗口不足或调用失败时取消本次压缩，历史保留</p>
+            </template>
+            <div class="pac-actions pac-actions-inline">
               <AppButton variant="ghost" size="small" :disabled="!lubanModel" @click="copyLubanCompactionModel">
                 复制 luban 当前模型
               </AppButton>
-              <span class="pac-hint-inline">{{ lubanModel || '请先配置 luban 的角色模型' }}（复制后独立保存）</span>
+              <span class="pac-caption" :class="{ mono: lubanModel }">
+                {{ lubanModel ? `luban：${lubanModel}` : 'luban 未配置模型' }}
+              </span>
             </div>
-            <p v-if="compactionError" class="pac-json-error" role="alert">{{ compactionError }}</p>
-            <p class="pac-hint">
-              项目 amagi.json 优先于此全局配置；子 Agent 沿用派发者的配置目录。保存后下次压缩读取，
-              新增服务商环境凭据引用后需重新派发子 Agent。模型认证由 pi 管理。
-            </p>
-            <p class="pac-hint">
-              请选上下文窗口足够的已注册模型。配置、认证、摘要失败或窗口不足会取消本次压缩并保留历史。
-            </p>
+            <StatusBanner
+              v-if="compactionError"
+              compact
+              type="error"
+              role="alert"
+              class="pac-json-error"
+              :message="compactionError"
+            />
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
 
-        <ConfigCategoryCard
-          title="角色模型（agents）"
-          category="agents"
-          :expanded="expanded.agents"
-          :badge="agentRows.length"
-          @toggle="expanded.agents = !expanded.agents"
-        >
-          <p class="pac-hint">
-            按角色覆盖模型，优先级高于 profile。角色名与 amagi-pi agents/*.md 对应。
-          </p>
-          <div class="pac-agent-rows">
-            <div v-for="row in agentRows" :key="row.role" class="pac-agent-row">
-              <div class="pac-agent-role">
-                <TextInput
-                  :model-value="row.role"
-                  placeholder="角色名（如 baize）"
-                  mono
-                  class="pac-role-input"
-                  @update:model-value="renameRole(row.role, $event)"
-                />
-              </div>
-              <ModelSpecSelector
-                :model-value="row.model"
-                :catalog="catalog"
-                class="pac-agent-spec"
-                @update:model-value="updateAgentModel(row.role, $event)"
-              />
-              <AppButton variant="icon" size="small" aria-label="删除角色" @click="removeRole(row.role)">
-                <span class="pac-remove">×</span>
-              </AppButton>
-            </div>
-          </div>
-          <div class="pac-actions">
-            <AppButton variant="ghost" size="small" @click="addRole('')">+ 添加角色</AppButton>
-            <AppButton
-              v-for="s in unconfiguredRoleSuggestions"
-              :key="s"
-              variant="ghost"
-              size="small"
-              @click="addRole(s)"
-            >
-              + {{ s }}
-            </AppButton>
-          </div>
-        </ConfigCategoryCard>
-
-        <ConfigCategoryCard
-          title="MCP 路由"
-          category="mcp"
-          :expanded="expanded.mcp"
-          :badge="mcpBadge"
-          @toggle="expanded.mcp = !expanded.mcp"
+        <!-- ③ MCP 路由 -->
+        <EditorSection v-if="visited.mcp" v-show="activeSection === 'mcp'" :active="activeSection === 'mcp'"
+          section-id="mcp" title="MCP 路由" code="mcp" :badge="mcpBadge"
         >
           <div class="pac-field">
-            <label class="pac-label">Leader 服务器（mcp.leader，主进程加载名单）</label>
-            <div class="pac-mcp-mode-row">
-              <Segmented v-model="mcpLeaderModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
-              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpLeaderUiMode].leader }}</span>
-            </div>
+            <FieldLabel
+              text="Leader 服务器"
+              code="mcp.leader"
+              effect="重启 pi 生效"
+              :tip="MCP_TIPS.leader"
+              :items="MCP_MODE_ITEMS.leader"
+            />
+            <Segmented
+              v-model="mcpLeaderModeModel"
+              :options="MCP_MODE_OPTIONS"
+              variant="pill"
+              class="pac-inline-seg"
+            />
             <StringListEditor
               :model-value="mcpLeader"
               item-placeholder="服务器名（如 web-search-prime）"
@@ -168,16 +173,21 @@
               mono
               @update:model-value="updateMcpLeader"
             />
-            <p class="pac-hint">
-              Leader 主进程加载哪些 MCP server（amagi-pi v2.8.2+）：装配时读一次，改动需重启 pi 生效（与子 Agent 路由不同面）。
-            </p>
           </div>
           <div class="pac-field">
-            <label class="pac-label">默认服务器（mcp.default，所有子 Agent 基线）</label>
-            <div class="pac-mcp-mode-row">
-              <Segmented v-model="mcpDefaultModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
-              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpDefaultUiMode].default }}</span>
-            </div>
+            <FieldLabel
+              text="默认服务器"
+              code="mcp.default"
+              effect="即时生效"
+              :tip="MCP_TIPS.default"
+              :items="MCP_MODE_ITEMS.default"
+            />
+            <Segmented
+              v-model="mcpDefaultModeModel"
+              :options="MCP_MODE_OPTIONS"
+              variant="pill"
+              class="pac-inline-seg"
+            />
             <StringListEditor
               :model-value="mcpDefault"
               item-placeholder="服务器名（如 web-search-prime）"
@@ -186,12 +196,9 @@
               mono
               @update:model-value="updateMcpDefault"
             />
-            <p class="pac-hint">
-              与 mcp.agents 各角色名单取并集；每次派发现读盘，改动即时生效。
-            </p>
           </div>
           <div class="pac-field">
-            <label class="pac-label">角色附加服务器（mcp.agents）</label>
+            <FieldLabel text="角色附加服务器" code="mcp.agents" :tip="MCP_AGENTS_TIP" />
             <div class="pac-mcp-agents">
               <div v-for="row in mcpAgentRows" :key="row.role" class="pac-mcp-agent-row">
                 <TextInput
@@ -217,37 +224,26 @@
               </div>
             </div>
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
 
-        <ConfigCategoryCard
-          title="并发限制（concurrency）"
-          category="concurrency"
-          :expanded="expanded.concurrency"
-          :badge="concurrencyBadge"
-          @toggle="expanded.concurrency = !expanded.concurrency"
+        <!-- ④ 并发限制 -->
+        <EditorSection v-if="visited.concurrency" v-show="activeSection === 'concurrency'" :active="activeSection === 'concurrency'"
+          section-id="concurrency" title="并发限制" code="concurrency" :tip="CONCURRENCY_TIP" :badge="concurrencyBadge"
         >
-          <p class="pac-hint">
-            按 provider/model 分池限制并发请求数。三项全部可选，未匹配时回退默认容量。
-          </p>
-
           <div class="pac-field">
-            <label class="pac-label">默认并发数（default）</label>
-            <div class="pac-concurrency-default-row">
-              <TextInput
-                :model-value="concurrencyDefault"
-                type="number"
-                placeholder="10（留空使用内置默认）"
-                mono
-                class="pac-limit-input"
-                @update:model-value="updateConcurrencyDefault"
-              />
-              <span class="pac-hint-inline">未单独指定 provider 或 model 时的默认并发池大小（正整数；应用默认 10，清空保存则移除键、回落 amagi-pi 内置默认 4）</span>
-            </div>
+            <FieldLabel text="默认并发" code="default" :tip="CONCURRENCY_DEFAULT_TIP" />
+            <TextInput
+              :model-value="concurrencyDefault"
+              type="number"
+              placeholder="留空 = 内置默认 4"
+              mono
+              class="pac-limit-input pac-limit-default"
+              @update:model-value="updateConcurrencyDefault"
+            />
           </div>
 
           <div class="pac-field">
-            <label class="pac-label">服务商并发（providers）</label>
-            <p class="pac-subhint">按服务商限制并发容量，覆盖默认并发数。</p>
+            <FieldLabel text="服务商并发" code="providers" />
             <div v-if="concurrencyProviderRows.length" class="pac-concurrency-rows">
               <div v-for="row in concurrencyProviderRows" :key="row.id" class="pac-concurrency-row">
                 <div v-if="row.isCustom" class="pac-concurrency-custom-key">
@@ -295,8 +291,7 @@
           </div>
 
           <div class="pac-field">
-            <label class="pac-label">模型并发（models）</label>
-            <p class="pac-subhint">按精确 provider/model 限制并发容量，优先级高于服务商限制。</p>
+            <FieldLabel text="模型并发" code="models" />
             <div v-if="concurrencyModelRows.length" class="pac-concurrency-rows">
               <div v-for="row in concurrencyModelRows" :key="row.id" class="pac-concurrency-row">
                 <div v-if="row.isCustom" class="pac-concurrency-custom-key pac-concurrency-custom-model">
@@ -342,7 +337,7 @@
               <AppButton variant="ghost" size="small" @click="addConcurrencyModel()">+ 添加模型限制</AppButton>
             </div>
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
       </div>
 
       <!-- 源码模式 -->
@@ -350,11 +345,12 @@
         <textarea v-model="jsonContent" class="pac-json-editor" spellcheck="false" @input="parseJsonToConfig" />
       </div>
     </template>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { getAmagiConfig, saveAmagiConfig, getAmagiConfigPath, getPiModelCatalog } from '../../api/piConfig';
 import { useToast } from '../../composables/useToast';
 import Segmented from '../ui/Segmented.vue';
@@ -363,7 +359,12 @@ import TextInput from '../ui/TextInput.vue';
 import Dropdown, { type DropdownOption } from '../ui/Dropdown.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
-import ConfigCategoryCard from './ConfigCategoryCard.vue';
+import StatusBanner from '../ui/StatusBanner.vue';
+import EditorToolbar from '../ui/EditorToolbar.vue';
+import FieldLabel from '../ui/FieldLabel.vue';
+import EditorSection from '../ui/EditorSection.vue';
+import SectionNav from '../ui/SectionNav.vue';
+import { PI_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
 import StringListEditor from './StringListEditor.vue';
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
@@ -396,11 +397,51 @@ const COMPACTION_MODE_OPTIONS = [
   { value: 'native', label: 'pi 原生模型' },
 ];
 
-const COMPACTION_MODE_HINTS: Record<CompactionMode, string> = {
-  unset: '删除 compaction.model；全局未指定时由 pi 使用当前会话模型，项目仍可单独指定。',
-  custom: '写入 provider/model[:thinking]；所有 Agent 使用该模型生成压缩摘要。',
-  native: '写入显式 null；使用各会话当前模型。项目设置 null 可禁用全局统一模型。',
+/** 常显短句：只显示当前态一条（P3 · 当前选项决定写入什么），全部状态的对照见 COMPACTION_MODE_ITEMS */
+const COMPACTION_MODE_CAPTIONS: Record<CompactionMode, string> = {
+  unset: '删除该键，由 pi 使用当前会话模型',
+  custom: '所有 Agent 用此模型生成压缩摘要',
+  native: '写入 null，各会话使用当前模型',
 };
+
+/** 三态对照（InfoTip）：term 与 COMPACTION_MODE_OPTIONS 的选项名一一对应 */
+const COMPACTION_MODE_ITEMS = [
+  { term: '未指定', desc: '删除 compaction.model；全局未指定时 pi 使用当前会话模型，项目仍可单独指定' },
+  { term: '统一模型', desc: '写入 provider/model[:thinking]，所有 Agent 用该模型生成压缩摘要' },
+  { term: 'pi 原生模型', desc: '写入显式 null，使用各会话当前模型；项目设为 null 可禁用全局统一模型' },
+];
+
+/** 上下文压缩卡片 InfoTip：用途 / 优先级 / 生效细节 / 后果 / luban 副本语义 */
+const COMPACTION_TIP = [
+  'Leader 与 JSON/RPC 子 Agent 共用压缩模型，用于 /compact、自动压缩与上下文溢出恢复。',
+  '项目 amagi.json 优先于此全局配置；子 Agent 沿用派发者的配置目录。',
+  '保存后下次压缩读取；新增服务商环境凭据引用后需重新派发子 Agent。模型认证由 pi 管理。',
+  '请选上下文窗口足够的已注册模型：配置、认证、摘要失败或窗口不足都会取消本次压缩并保留历史。',
+  '「复制 luban 当前模型」写入独立副本，之后修改 luban 不会联动。',
+];
+
+/** 分层策略 profile 的术语对照（选项名已在 PROFILE_OPTIONS 的 label 里） */
+const PROFILE_ITEMS = [
+  { term: 'tiered', desc: '按 leader / fast / work / expert 分层套用 profiles/tiered.json' },
+  { term: 'inherit', desc: '全部继承 pi 默认模型' },
+];
+
+const AGENTS_TIP = [
+  '按角色覆盖模型，优先于分层策略。',
+  '角色名对应 amagi-pi agents/*.md；模型候选来自 pi 模型目录。',
+];
+
+const MCP_AGENTS_TIP = '为指定角色追加服务器，与默认服务器取并集。';
+
+const CONCURRENCY_TIP = [
+  '按服务商 / 模型分池限制并发请求数；未匹配时使用默认并发。',
+  '优先级：模型 > 服务商 > 默认。',
+];
+
+const CONCURRENCY_DEFAULT_TIP = [
+  '未单独指定服务商或模型时的并发池大小，正整数。',
+  '应用预填 10；清空后保存将移除该键，回落 amagi-pi 内置默认 4。',
+];
 
 /** amagi-pi agents/*.md 的角色名（建议值） */
 const ROLE_SUGGESTIONS = [
@@ -416,7 +457,15 @@ const jsonContent = ref('');
 const jsonError = ref('');
 const configPath = ref('');
 const configData = ref<Record<string, any>>({});
-const expanded = ref({ profile: true, agents: true, compaction: true, mcp: false, concurrency: false });
+const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
+const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
+const activeSection = ref(props.sectionId || 'agents');
+const visited = ref<Record<string, boolean>>({ [activeSection.value]: true });
+function selectSection(id: string) {
+  if (!PI_SECTIONS.some(s => s.id === id) || mode.value !== 'visual') return;
+  activeSection.value = id; visited.value[id] = true;
+}
+watch(() => props.sectionId, id => { if (id) selectSection(id); });
 
 const { catalog, catalogError, loadCatalog } = useModelCatalog();
 
@@ -503,26 +552,38 @@ const MCP_MODE_OPTIONS: { value: McpListMode; label: string }[] = [
   { value: 'none', label: '不加载' },
 ];
 
-const MCP_MODE_HINTS: Record<McpListMode, { leader: string; default: string }> = {
-  all: {
-    leader: '未设置该键 = 不限制，加载全部（保存时删除 mcp.leader）',
-    default: '未设置该键 = 所有子 Agent 默认加载全部（保存时删除 mcp.default）',
-  },
-  list: {
-    leader: '仅加载列表内 server（* = 全部）',
-    default: '仅加载列表内 server，作为所有子 Agent 基线（* = 全部）',
-  },
-  none: {
-    leader: '保存为空列表 [] = Leader 不加载任何 MCP',
-    default: '保存为空列表 [] = 子 Agent 默认不加载（角色 agents 条目仍生效）',
-  },
+/** 三态对照（InfoTip）：term 与 MCP_MODE_OPTIONS 的选项名一一对应；当前态语义由 MCP_EMPTY_TEXT 常显承载 */
+const MCP_MODE_ITEMS: Record<'leader' | 'default', { term: string; desc: string }[]> = {
+  leader: [
+    { term: '全部', desc: '未设置该键，加载全部（保存时删除 mcp.leader）' },
+    { term: '白名单', desc: '仅加载列表内服务器，* 表示全部' },
+    { term: '不加载', desc: '保存为空列表 []，Leader 不加载任何 MCP' },
+  ],
+  default: [
+    { term: '全部', desc: '未设置该键，子 Agent 默认加载全部（保存时删除 mcp.default）' },
+    { term: '白名单', desc: '仅加载列表内服务器，作为子 Agent 基线，* 表示全部' },
+    { term: '不加载', desc: '保存为空列表 []，子 Agent 默认不加载（角色附加服务器仍生效）' },
+  ],
 };
 
-/** 名单编辑器空态引导（常显编辑器：all/none 态也可直接添加，输入即切白名单） */
+/** mcp.leader / mcp.default 字段 InfoTip：来源、读取时机、与其它路由的关系（生效时机已由字段标签常显） */
+const MCP_TIPS = {
+  leader: [
+    'Leader 主进程加载的 MCP 服务器名单（amagi-pi v2.8.2+）。',
+    '装配时读取一次，改动需重启 pi 生效；与子 Agent 路由相互独立。',
+  ],
+  default: [
+    '所有子 Agent 的基线名单，与 mcp.agents 各角色名单取并集。',
+    '每次派发时读盘，改动即时生效。',
+  ],
+};
+
+/** 名单编辑器空态引导（常显编辑器：all/none 态也可直接添加，输入即切白名单）。
+ *  三态下名单必然为空时才出现，因此这是「当前态语义」的常显承载（T21）。 */
 const MCP_EMPTY_TEXT: Record<McpListMode, string> = {
-  all: '当前未设置 = 加载全部；添加服务器即切换为白名单',
-  none: '当前为 [] = 不加载任何 MCP；添加服务器即切换为白名单',
-  list: '白名单为空——填入 server 名；空列表保存后即「不加载」',
+  all: '未设置 = 加载全部；添加服务器即切换为白名单',
+  none: '[] = 不加载任何 MCP；添加服务器即切换为白名单',
+  list: '名单为空，保存后等同「不加载」',
 };
 
 /** UI 编辑态与数据推断态解耦：点「白名单」进入编辑视图（数据可保持 []），
@@ -1084,6 +1145,10 @@ const modeModel = computed({
   },
 });
 
+const navigationItems = computed(() => PI_SECTIONS.map(s => ({ ...s, invalid: s.id === 'compaction' && !!compactionError.value })));
+const localGroups = computed(() => [{ id: 'pi', items: navigationItems.value.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
+const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: navigationItems.value }));
+watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });
 onMounted(() => {
   void initialLoad();
 });
@@ -1093,93 +1158,10 @@ onMounted(() => {
 .pac-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.pac-header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.pac-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-}
-
-.pac-subtitle {
-  font-size: 13px;
-  color: var(--secondary);
-  margin: 0;
-  line-height: 1.6;
-}
-
-.pac-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
-.pac-mode-tabs {
-  display: inline-flex;
-  min-width: 150px;
-}
-
-.pac-mode-tabs :deep(.seg) {
-  white-space: nowrap;
-}
-
-.pac-path-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.pac-path-label {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.pac-path-value {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--secondary);
-  background: var(--control);
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.pac-copy-btn {
-  font-size: 11px;
-  padding: 4px 10px;
-}
-
-.pac-json-error {
-  font-size: 12px;
-  color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
-
-.pac-json-valid {
-  font-size: 12px;
-  color: var(--success);
-  padding: 4px 0;
-}
-
-.pac-catalog-warn {
-  font-size: 12px;
-  color: var(--warning, #b8860b);
-  background: var(--control);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
+/* .pac-json-error / .pac-catalog-warn 仅作测试锚点：背景与内边距交给 StatusBanner compact */
 
 .pac-visual {
   display: flex;
@@ -1193,17 +1175,40 @@ onMounted(() => {
   gap: 6px;
 }
 
-.pac-label {
+.pac-field + .pac-field {
+  margin-top: 14px;
+}
+
+/* 常显微文案：状态语义用 tertiary，后果用 secondary；每块 ≤ 24 字、单行 */
+.pac-caption {
+  margin: -2px 0 0;
   font-size: 12px;
-  font-weight: 500;
+  line-height: 1.5;
+  color: var(--tertiary);
+}
+
+.pac-caption.is-consequence {
   color: var(--secondary);
 }
 
-.pac-hint {
-  font-size: 12px;
-  color: var(--tertiary);
-  margin: 4px 0 0;
-  line-height: 1.6;
+.pac-caption.mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+/* 字段内的三态 / 压缩模式 pill：收缩为内容宽（Segmented 的 class 落在其根节点上） */
+.pac-inline-seg {
+  align-self: flex-start;
+}
+
+.pac-inline-seg :deep(.seg) {
+  flex: 0 0 auto;
+  padding: 5px 14px;
+  white-space: nowrap;
+}
+
+.pac-profile-dd {
+  max-width: 280px;
 }
 
 .pac-agent-rows {
@@ -1241,6 +1246,11 @@ onMounted(() => {
   margin-top: 8px;
 }
 
+.pac-actions-inline {
+  align-items: center;
+  margin-top: 4px;
+}
+
 .pac-mcp-agents {
   display: flex;
   flex-direction: column;
@@ -1259,26 +1269,13 @@ onMounted(() => {
   min-width: 220px;
 }
 
-.pac-concurrency-default-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .pac-limit-input {
   width: 110px;
 }
 
-.pac-hint-inline {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.pac-subhint {
-  font-size: 12px;
-  color: var(--tertiary);
-  margin: 0 0 4px;
+/* 默认并发的 placeholder「留空 = 内置默认 4」比 110px 宽，单独放宽避免被截断 */
+.pac-limit-input.pac-limit-default {
+  width: 180px;
 }
 
 .pac-concurrency-rows {
@@ -1297,19 +1294,6 @@ onMounted(() => {
 .pac-concurrency-dd {
   min-width: 180px;
   max-width: 260px;
-}
-
-.pac-mcp-mode-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-
-.pac-mcp-mode-row .pac-hint-inline {
-  flex: 1;
-  min-width: 220px;
 }
 
 .pac-concurrency-model-dd {
@@ -1363,5 +1347,26 @@ onMounted(() => {
 
 .pac-json-editor:focus {
   border-color: var(--accent);
+}
+.pac-root { min-width:0; }
+.pac-root.editor-local-layout { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+.editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
+.pac-error-link { color:var(--danger-strong); background:none; border:0; font:inherit; font-size:12px; padding:0; cursor:pointer; }
+.pac-caption { overflow-wrap:anywhere; }
+@media (max-width:1199px) { .pac-root.editor-local-layout { --section-nav-width:144px; gap:12px; } }
+@media (max-width:1023px) { .pac-root.editor-local-layout { --section-nav-width:112px; } }
+@container editor-detail (max-width:479px) {
+  .pac-agent-spec, .pac-concurrency-model-dd, .pac-concurrency-custom-model, .pac-mcp-servers-input { min-width:0; flex-basis:100%; }
+  .pac-concurrency-custom-key { flex-wrap:wrap; min-width:0; }
+  :deep(input) { max-width:100%; min-width:0; }
+  :deep(.mss-row) { flex-direction:column; }
+  :deep(.mss-dd), :deep(.mss-dd-level) { width:100%; max-width:100%; min-width:0; }
+}
+@supports not (container-type: inline-size) {
+  .pac-agent-spec, .pac-concurrency-model-dd, .pac-concurrency-custom-model, .pac-mcp-servers-input { min-width:0; flex-basis:100%; }
+  .pac-concurrency-custom-key { flex-wrap:wrap; min-width:0; }
+  :deep(input) { max-width:100%; min-width:0; }
+  :deep(.mss-row) { flex-direction:column; }
+  :deep(.mss-dd), :deep(.mss-dd-level) { width:100%; max-width:100%; min-width:0; }
 }
 </style>

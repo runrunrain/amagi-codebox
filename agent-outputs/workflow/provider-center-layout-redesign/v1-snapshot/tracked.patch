@@ -1,0 +1,3719 @@
+diff --git a/frontend/src/components/provider/AuthConfigEditor.vue b/frontend/src/components/provider/AuthConfigEditor.vue
+index 21f20e1..1fecbd8 100644
+--- a/frontend/src/components/provider/AuthConfigEditor.vue
++++ b/frontend/src/components/provider/AuthConfigEditor.vue
+@@ -5,44 +5,46 @@
+   仅展示状态（accountId / 过期时间），token 不展示、保存时原样保留。
+   其余未知字段走 VisualValueEditor 递归可视化编辑（零 JSON）。
+   源码模式：JSON 文本直接编辑。保存走后端校验 + 原子写入（0600）。
++
++  布局（provider-center-layout-redesign §4.8）：导航即标题，不再有 h2 / subtitle；
++  OAuth 行常显「由 pi CLI 管理」标签 + InfoTip（只读语义不再靠一段灰字）；
++  空态把 OAuth 途径写进一句话（没有 OAuth 条目时这是唯一的承载位置）。
+ -->
+ <template>
+   <div class="ace-root">
+-    <div class="ace-header">
+-      <h2 class="ace-title">Pi 认证登录（auth.json）</h2>
+-      <p class="ace-subtitle">
+-        管理提供商凭据：API Key 可在此直接填写；OAuth 凭据由 pi CLI 登录产生，
+-        此处仅展示状态。Agent 配置下拉中以 ✓ 标注已认证的提供商。
+-      </p>
+-    </div>
+-
+     <LoadingState v-if="loading" message="加载凭据中..." />
+ 
+     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
+ 
+     <template v-else>
+-      <div class="ace-toolbar">
+-        <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" class="ace-mode-tabs" />
+-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+-          {{ saving ? '保存中...' : '保存配置' }}
+-        </AppButton>
+-      </div>
+-
+-      <div class="ace-path-row">
+-        <span class="ace-path-label">凭据文件：</span>
+-        <code class="ace-path-value">{{ configPath || '加载中...' }}</code>
+-        <AppButton v-if="configPath" variant="ghost" size="small" class="ace-copy-btn" @click="copyPath">
+-          复制路径
+-        </AppButton>
+-      </div>
+-
+-      <div v-if="parseError" class="ace-parse-error">{{ parseError }}（可视化不可用，请切到源码模式修复）</div>
+-      <div v-else-if="mode === 'source'" class="ace-parse-valid">JSON 合法</div>
++      <!-- 工具栏：路径胶囊 + JSON 合法状态 ····· 模式切换 + 保存 -->
++      <EditorToolbar
++        :path="configPath"
++        path-label="凭据文件"
++        :valid-label="mode === 'source' && !parseError ? 'JSON 合法' : ''"
++        @copy-path="copyPath"
++      >
++        <template #actions>
++          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
++          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
++            {{ saving ? '保存中...' : '保存配置' }}
++          </AppButton>
++        </template>
++      </EditorToolbar>
++
++      <StatusBanner
++        v-if="parseError"
++        compact
++        type="error"
++        role="alert"
++        class="ace-parse-error"
++        :message="`${parseError}，可视化不可用，请切换到 JSON 模式修复`"
++      />
+ 
+       <!-- 可视化模式 -->
+       <div v-if="mode === 'visual'" class="ace-visual">
+         <div v-if="entries.length === 0" class="ace-empty">
+-          <EmptyState title="暂无认证条目" description="为提供商添加 API Key，或通过 pi CLI 登录 OAuth 提供商。" />
++          <EmptyState title="暂无凭据" description="可在下方添加 API Key；OAuth 需通过 pi CLI 登录" />
+         </div>
+ 
+         <div v-for="row in entries" :key="row.name" class="ace-entry">
+@@ -54,8 +56,36 @@
+               class="ace-name"
+               @update:model-value="renameEntry(row.name, $event)"
+             />
+-            <Badge :type="row.kind === 'oauth' ? 'source' : 'tag'" :text="row.typeLabel" />
+-            <AppButton variant="icon" size="small" aria-label="删除条目" @click="removeEntry(row.name)">
++            <!-- 类型徽章统一用 source 型：原 api_key 行用的 tag 型是「白字 + 透明底」，落在白卡片上完全不可见 -->
++            <Badge type="source" :text="row.typeLabel" />
++            <!-- OAuth 只读：常显「由 pi CLI 管理」标签 + 说明 InfoTip（没有 OAuth 条目时由空态文案承载） -->
++            <template v-if="row.kind === 'oauth'">
++              <span class="ace-managed">
++                <svg
++                  viewBox="0 0 16 16"
++                  width="12"
++                  height="12"
++                  fill="none"
++                  stroke="currentColor"
++                  stroke-width="1.4"
++                  stroke-linecap="round"
++                  stroke-linejoin="round"
++                  aria-hidden="true"
++                >
++                  <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
++                  <path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" />
++                </svg>
++                由 pi CLI 管理
++              </span>
++              <InfoTip label="OAuth 凭据" :text="OAUTH_TIP" />
++            </template>
++            <AppButton
++              variant="icon"
++              size="small"
++              class="ace-remove-btn"
++              aria-label="删除条目"
++              @click="removeEntry(row.name)"
++            >
+               <span class="ace-remove">×</span>
+             </AppButton>
+           </div>
+@@ -89,7 +119,6 @@
+             <div class="ace-oauth">
+               <Badge type="ver" :text="`已登录${row.accountId ? ' · ' + row.accountId : ''}`" />
+               <span v-if="row.expiresText" class="ace-oauth-expires">过期时间：{{ row.expiresText }}</span>
+-              <span class="ace-oauth-note">OAuth 凭据由 pi CLI 管理，access/refresh 令牌保存时原样保留。</span>
+             </div>
+           </template>
+ 
+@@ -104,16 +133,16 @@
+ 
+         <!-- 添加 API Key 认证 -->
+         <div class="ace-add">
+-          <div class="ace-add-title">添加 API Key 认证</div>
++          <div class="ace-add-title">添加 API Key</div>
+           <div class="ace-add-row">
+-            <TextInput v-model="newName" mono placeholder="提供商名（与 models.json 中一致）" class="ace-name" />
++            <TextInput v-model="newName" mono placeholder="提供商名（与注册表一致）" class="ace-name" />
+             <TextInput v-model="newKey" type="password" mono placeholder="API Key" class="ace-key-input" />
+             <AppButton variant="ghost" size="small" :disabled="!newName.trim() || !newKey.trim()" @click="addApiKeyEntry">
+               + 添加
+             </AppButton>
+           </div>
+           <div v-if="unauthedProviders.length" class="ace-suggest">
+-            <span class="ace-suggest-label">注册表中未认证的提供商：</span>
++            <span class="ace-suggest-label">未认证：</span>
+             <AppButton
+               v-for="p in unauthedProviders"
+               :key="p"
+@@ -146,6 +175,9 @@ import Badge from '../ui/Badge.vue';
+ import LoadingState from '../ui/LoadingState.vue';
+ import ErrorState from '../ui/ErrorState.vue';
+ import EmptyState from '../ui/EmptyState.vue';
++import StatusBanner from '../ui/StatusBanner.vue';
++import EditorToolbar from '../ui/EditorToolbar.vue';
++import InfoTip from '../ui/InfoTip.vue';
+ import VisualValueEditor from './VisualValueEditor.vue';
+ 
+ const { showSuccess, showError } = useToast();
+@@ -155,6 +187,9 @@ const MODE_OPTIONS = [
+   { value: 'source', label: 'JSON' },
+ ];
+ 
++/** OAuth 行 InfoTip（design §5.2 T53/T55）：只读语义 + 令牌保留语义 */
++const OAUTH_TIP = 'OAuth 凭据由 pi CLI 登录产生，此处只读；access / refresh 令牌在保存时原样保留。';
++
+ const loading = ref(true);
+ const saving = ref(false);
+ const error = ref('');
+@@ -368,80 +403,10 @@ onMounted(() => {
+ .ace-root {
+   display: flex;
+   flex-direction: column;
+-  gap: 16px;
+-}
+-
+-.ace-header {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 4px;
+-}
+-
+-.ace-title {
+-  font-size: 17px;
+-  font-weight: 600;
+-  color: var(--label);
+-  margin: 0;
+-}
+-
+-.ace-subtitle {
+-  font-size: 13px;
+-  color: var(--secondary);
+-  margin: 0;
+-  line-height: 1.6;
+-}
+-
+-.ace-toolbar {
+-  display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+   gap: 12px;
+-  flex-wrap: wrap;
+-}
+-
+-.ace-mode-tabs {
+-  display: inline-flex;
+ }
+ 
+-.ace-path-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-wrap: wrap;
+-}
+-
+-.ace-path-label {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-}
+-
+-.ace-path-value {
+-  font-family: var(--mono);
+-  font-size: 11.5px;
+-  color: var(--secondary);
+-  background: var(--control);
+-  padding: 4px 8px;
+-  border-radius: 6px;
+-}
+-
+-.ace-copy-btn {
+-  font-size: 11px;
+-  padding: 4px 10px;
+-}
+-
+-.ace-parse-error {
+-  font-size: 12px;
+-  color: var(--danger);
+-  background: rgba(255, 59, 48, 0.1);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
+-
+-.ace-parse-valid {
+-  font-size: 12px;
+-  color: var(--success);
+-  padding: 4px 0;
+-}
++/* .ace-parse-error 仅作样式锚点：背景与内边距交给 StatusBanner compact */
+ 
+ .ace-visual {
+   display: flex;
+@@ -456,6 +421,16 @@ onMounted(() => {
+   padding: 8px 16px;
+ }
+ 
++/* 虚线框内的空态紧凑化（EmptyState 默认上下 44px + 48px 图标，在框里显得过高） */
++.ace-empty :deep(.empty-state) {
++  padding: 22px 16px;
++}
++
++.ace-empty :deep(.empty-icon) {
++  font-size: 34px;
++  margin-bottom: 10px;
++}
++
+ .ace-entry {
+   border: 1px solid var(--separator);
+   border-radius: 10px;
+@@ -476,12 +451,31 @@ onMounted(() => {
+   width: 200px;
+ }
+ 
++/* 删除按钮靠右，管理标签 / 说明贴在类型徽章后面 */
++.ace-remove-btn {
++  margin-left: auto;
++}
++
+ .ace-remove {
+   font-size: 16px;
+   line-height: 1;
+   color: var(--tertiary);
+ }
+ 
++/* OAuth 行常显标签：只读、由 pi CLI 管理 */
++.ace-managed {
++  display: inline-flex;
++  align-items: center;
++  gap: 4px;
++  font-size: 11px;
++  font-weight: 500;
++  color: var(--secondary);
++  background: var(--control);
++  border-radius: 999px;
++  padding: 1px 7px;
++  white-space: nowrap;
++}
++
+ .ace-field {
+   display: flex;
+   flex-direction: column;
+@@ -532,11 +526,6 @@ onMounted(() => {
+   color: var(--secondary);
+ }
+ 
+-.ace-oauth-note {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-}
+-
+ .ace-add {
+   border: 1px dashed var(--separator);
+   border-radius: 10px;
+diff --git a/frontend/src/components/provider/ConfigCategoryCard.vue b/frontend/src/components/provider/ConfigCategoryCard.vue
+index a101ec4..d7d3206 100644
+--- a/frontend/src/components/provider/ConfigCategoryCard.vue
++++ b/frontend/src/components/provider/ConfigCategoryCard.vue
+@@ -3,43 +3,57 @@
+ 
+   - 默认收起（由父组件 expanded prop 控制）
+   - 点击 header 切换展开/收起
+-  - 收起态：左侧大号语义图标 + 标题 + 计数徽章 + 右侧展开箭头
++  - 收起态：左侧大号语义图标 + 标题 + 配置键 code + 计数徽章 + 右侧 meta 标签 / ⓘ / 展开箭头
+   - 展开态：在 header 下渲染 slot 内容
+   - 苹果HIG 克制：图标作为视觉锚点，留白克制，无过度装饰
++
++  provider-center-layout-redesign（§4.0.6，向后兼容）新增可选 props：
++  - code：配置键，等宽小字，紧随标题（P5：键名代码化，不再写成「标题（key）」）
++  - meta / metaTone：header 右侧的小标签（如「下次压缩生效」「受管」），折叠时也可见
++  - tip / tipItems：卡片级说明，收进可聚焦的 InfoTip（P6）。InfoTip 是 header 按钮的兄弟
++    节点（按钮内嵌交互元素不合法），绝对定位到 header 右侧；Tab 顺序先 header 后 tip，
++    在 ⓘ 上按 Enter 不会切换折叠。
++  不传新 props 时渲染结果与改造前一致。
+ -->
+ <template>
+-  <div :class="['config-cat-card', { collapsed: !expanded }]">
+-    <button
+-      type="button"
+-      class="ccc-header"
+-      :aria-expanded="expanded"
+-      @click="$emit('toggle')"
+-    >
+-      <div class="ccc-thumb" :style="thumbStyle">
+-        <span class="ccc-thumb-icon" v-html="categoryIcon" />
+-      </div>
+-
+-      <div class="ccc-meta">
+-        <span class="ccc-title">{{ title }}</span>
+-        <span v-if="badge !== null && badge !== undefined" class="ccc-badge">
+-          {{ badge }}
+-        </span>
+-      </div>
+-
+-      <svg
+-        class="ccc-chevron"
+-        :class="{ expanded }"
+-        viewBox="0 0 12 12"
+-        fill="none"
+-        stroke="currentColor"
+-        stroke-width="1.8"
+-        stroke-linecap="round"
+-        stroke-linejoin="round"
+-        aria-hidden="true"
++  <div :class="['config-cat-card', { collapsed: !expanded, 'has-tip': hasTip }]">
++    <div class="ccc-head">
++      <button
++        type="button"
++        class="ccc-header"
++        :aria-expanded="expanded"
++        @click="$emit('toggle')"
+       >
+-        <polyline points="3 4.5 6 7.5 9 4.5" />
+-      </svg>
+-    </button>
++        <div class="ccc-thumb" :style="thumbStyle">
++          <span class="ccc-thumb-icon" v-html="categoryIcon" />
++        </div>
++
++        <div class="ccc-meta">
++          <span class="ccc-title">{{ title }}</span>
++          <code v-if="code" class="ccc-code">{{ code }}</code>
++          <span v-if="badge !== null && badge !== undefined" class="ccc-badge">
++            {{ badge }}
++          </span>
++        </div>
++
++        <span v-if="meta" :class="['ccc-tag', `tone-${metaTone}`]">{{ meta }}</span>
++
++        <svg
++          class="ccc-chevron"
++          :class="{ expanded }"
++          viewBox="0 0 12 12"
++          fill="none"
++          stroke="currentColor"
++          stroke-width="1.8"
++          stroke-linecap="round"
++          stroke-linejoin="round"
++          aria-hidden="true"
++        >
++          <polyline points="3 4.5 6 7.5 9 4.5" />
++        </svg>
++      </button>
++      <InfoTip v-if="hasTip" class="ccc-tip" :label="title" :text="tip" :items="tipItems" />
++    </div>
+ 
+     <div v-if="expanded" class="ccc-content">
+       <slot />
+@@ -50,17 +64,28 @@
+ <script setup lang="ts">
+ import { computed } from 'vue';
+ import { ICONS, ACCENTS } from './icons';
++import InfoTip, { type InfoTipItem } from '../ui/InfoTip.vue';
+ 
+ interface Props {
+   title: string;
+   expanded: boolean;
+   badge?: number | null;
+   category?: string;
++  /** 配置键（等宽小字） */
++  code?: string;
++  /** header 右侧小标签 */
++  meta?: string;
++  metaTone?: 'neutral' | 'warning';
++  /** 卡片级说明（InfoTip 段落） */
++  tip?: string | string[];
++  /** 卡片级说明的术语对照 */
++  tipItems?: InfoTipItem[];
+ }
+ 
+ const props = withDefaults(defineProps<Props>(), {
+   badge: null,
+   category: 'unknown',
++  metaTone: 'neutral',
+ });
+ 
+ defineEmits<{
+@@ -69,6 +94,12 @@ defineEmits<{
+ 
+ const categoryIcon = computed(() => ICONS[props.category] ?? ICONS.unknown);
+ 
++const hasTip = computed(() => {
++  const t = props.tip;
++  const hasText = Array.isArray(t) ? t.length > 0 : !!t;
++  return hasText || !!(props.tipItems && props.tipItems.length);
++});
++
+ const thumbStyle = computed(() => {
+   const color = ACCENTS[props.category] ?? ACCENTS.unknown;
+   // 用 rgba 派生极浅背景，与强调色协调
+@@ -101,6 +132,11 @@ const thumbStyle = computed(() => {
+   border-color: rgba(0, 122, 255, 0.25);
+ }
+ 
++/* header 行：按钮 + 绝对定位的 InfoTip 兄弟节点 */
++.ccc-head {
++  position: relative;
++}
++
+ /* Header：略缩图条带 */
+ .ccc-header {
+   width: 100%;
+@@ -154,7 +190,7 @@ const thumbStyle = computed(() => {
+   display: block;
+ }
+ 
+-/* 标题 + 计数 */
++/* 标题 + 配置键 + 计数 */
+ .ccc-meta {
+   flex: 1 1 auto;
+   display: flex;
+@@ -173,6 +209,14 @@ const thumbStyle = computed(() => {
+   text-overflow: ellipsis;
+ }
+ 
++.ccc-code {
++  flex: 0 0 auto;
++  font-family: var(--mono);
++  font-size: 11px;
++  color: var(--tertiary);
++  white-space: nowrap;
++}
++
+ .ccc-badge {
+   flex: 0 0 auto;
+   min-width: 20px;
+@@ -186,6 +230,26 @@ const thumbStyle = computed(() => {
+   line-height: 1.5;
+ }
+ 
++/* header 右侧 meta 标签：中性 / 警示 */
++.ccc-tag {
++  flex: 0 0 auto;
++  font-size: 11px;
++  font-weight: 500;
++  border-radius: 999px;
++  padding: 1px 7px;
++  white-space: nowrap;
++}
++
++.ccc-tag.tone-neutral {
++  color: var(--secondary);
++  background: var(--control);
++}
++
++.ccc-tag.tone-warning {
++  color: var(--warning-strong);
++  background: var(--warning-tint);
++}
++
+ /* 展开箭头 */
+ .ccc-chevron {
+   flex: 0 0 14px;
+@@ -209,9 +273,21 @@ const thumbStyle = computed(() => {
+   color: var(--accentHover);
+ }
+ 
+-/* 展开内容区 */
++/* InfoTip：绝对定位在箭头左侧，给它预留 28px 位置 */
++.has-tip .ccc-chevron {
++  margin-left: 28px;
++}
++
++.ccc-tip {
++  position: absolute;
++  right: 36px;
++  top: 50%;
++  transform: translateY(-50%);
++}
++
++/* 展开内容区：顶部留 10px（原 4px）——删掉卡内说明段落后首个字标签会贴着 header 分隔线 */
+ .ccc-content {
+-  padding: 4px 14px 14px;
++  padding: 10px 14px 14px;
+   border-top: 1px solid var(--separator);
+   margin-top: 0;
+ }
+diff --git a/frontend/src/components/provider/OmpGlobalConfig.vue b/frontend/src/components/provider/OmpGlobalConfig.vue
+index e7d682b..84e138f 100644
+--- a/frontend/src/components/provider/OmpGlobalConfig.vue
++++ b/frontend/src/components/provider/OmpGlobalConfig.vue
+@@ -1,58 +1,55 @@
+ <!--
+   OmpGlobalConfig - OMP (oh-my-pi) config.yml 可视化配置组件。
+-  挂载于 Provider Center → 预设 → OMP 引擎标签。
++  挂载于 Provider Center → CLI 独立配置 → OMP → Agent 配置。
++  布局（provider-center-layout-redesign §4.4）：导航即标题，不再有 h2 / subtitle；
++  EditorToolbar 常显「新会话生效」；两张卡的说明收进卡片 InfoTip。
+   可视化模式：modelRoles.{role}（provider → model → thinking level 三级下拉，
+   数据来自 ~/.omp/agent/models.yml 目录）、task.agentModelOverrides（@role
+   引用或直接 spec）。其余键原样保留。源码模式：YAML 文本直接编辑。
+ -->
+ <template>
+   <div class="ogc-root">
+-    <div class="ogc-header">
+-      <h2 class="ogc-title">OMP 配置（oh-my-pi）</h2>
+-      <p class="ogc-subtitle">
+-        编辑 ~/.omp/agent/config.yml：modelRoles 角色模型与 task 子代理覆盖。
+-        模型下拉来自 models.yml 注册表，保存后新会话生效。
+-      </p>
+-    </div>
+-
+     <LoadingState v-if="loading" message="加载配置中..." />
+ 
+     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
+ 
+     <template v-else>
+-      <div class="ogc-toolbar">
+-        <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" class="ogc-mode-tabs" />
+-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+-          {{ saving ? '保存中...' : '保存配置' }}
+-        </AppButton>
+-      </div>
+-
+-      <div class="ogc-path-row">
+-        <span class="ogc-path-label">配置文件：</span>
+-        <code class="ogc-path-value">{{ configPath || '加载中...' }}</code>
+-        <AppButton v-if="configPath" variant="ghost" size="small" class="ogc-copy-btn" @click="copyPath">
+-          复制路径
+-        </AppButton>
+-      </div>
+-
+-      <div v-if="yamlError" class="ogc-yaml-error">{{ yamlError }}</div>
+-      <div v-else-if="mode === 'source'" class="ogc-yaml-valid">YAML 合法</div>
+-      <div v-if="catalogError" class="ogc-catalog-warn">
+-        模型目录加载失败，下拉不可用：{{ catalogError }}
+-      </div>
++      <!-- 工具栏：路径胶囊 + YAML 合法状态 ····· 生效标签 + 模式切换 + 保存 -->
++      <EditorToolbar
++        :path="configPath"
++        path-label="配置文件"
++        effect="新会话生效"
++        :valid-label="mode === 'source' && !yamlError ? 'YAML 合法' : ''"
++        @copy-path="copyPath"
++      >
++        <template #actions>
++          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
++          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
++            {{ saving ? '保存中...' : '保存配置' }}
++          </AppButton>
++        </template>
++      </EditorToolbar>
++
++      <StatusBanner v-if="yamlError" compact type="error" role="alert" class="ogc-yaml-error" :message="yamlError" />
++      <StatusBanner
++        v-if="catalogError"
++        compact
++        type="warning"
++        class="ogc-catalog-warn"
++        :message="`模型目录加载失败，下拉不可用：${catalogError}`"
++      />
+ 
+       <!-- 可视化模式 -->
+       <div v-if="mode === 'visual'" class="ogc-visual">
+         <ConfigCategoryCard
+-          title="角色模型（modelRoles）"
+-          category="modelRoles"
+-          :expanded="expanded.modelRoles"
++          title="角色模型"
++          code="modelRoles"
++          category="model"
++          :tip="OMP_ROLES_TIP"
+           :badge="roleRows.length"
++          :expanded="expanded.modelRoles"
+           @toggle="expanded.modelRoles = !expanded.modelRoles"
+         >
+-          <p class="ogc-hint">
+-            每个 worker 角色绑定一个 provider/model:level spec，供 task 子代理通过 @role 引用。
+-          </p>
+           <div class="ogc-rows">
+             <div v-for="row in roleRows" :key="row.role" class="ogc-row">
+               <TextInput
+@@ -88,15 +85,14 @@
+         </ConfigCategoryCard>
+ 
+         <ConfigCategoryCard
+-          title="子代理模型覆盖（task.agentModelOverrides）"
+-          category="overrides"
+-          :expanded="expanded.overrides"
++          title="子代理覆盖"
++          code="task.agentModelOverrides"
++          category="agent"
++          :tip="OMP_OVERRIDES_TIP"
+           :badge="overrideRows.length"
++          :expanded="expanded.overrides"
+           @toggle="expanded.overrides = !expanded.overrides"
+         >
+-          <p class="ogc-hint">
+-            将子代理映射到 modelRoles 角色（@role 引用）或直接绑定模型 spec。
+-          </p>
+           <div class="ogc-rows">
+             <div v-for="row in overrideRows" :key="row.agent" class="ogc-row">
+               <TextInput
+@@ -171,6 +167,8 @@ import TextInput from '../ui/TextInput.vue';
+ import Dropdown from '../ui/Dropdown.vue';
+ import LoadingState from '../ui/LoadingState.vue';
+ import ErrorState from '../ui/ErrorState.vue';
++import StatusBanner from '../ui/StatusBanner.vue';
++import EditorToolbar from '../ui/EditorToolbar.vue';
+ import ConfigCategoryCard from './ConfigCategoryCard.vue';
+ import ModelSpecSelector from './ModelSpecSelector.vue';
+ import { useModelCatalog } from './useModelCatalog';
+@@ -182,6 +180,14 @@ const MODE_OPTIONS = [
+   { value: 'source', label: 'YAML' },
+ ];
+ 
++/** 卡片级说明（InfoTip）：用途 / 模型候选来源（design §5.2 T32、T33） */
++const OMP_ROLES_TIP = [
++  '每个 worker 角色绑定一个 provider/model:level，供 task 子代理以 @role 引用。',
++  '模型候选来自「模型提供商」中的 models.yml。',
++];
++
++const OMP_OVERRIDES_TIP = '将子代理映射到 modelRoles 角色（@role 引用），或直接绑定模型。';
++
+ /** modelRoles 常见角色建议值 */
+ const ROLE_SUGGESTIONS = [
+   'coding_worker', 'review_worker', 'research_worker',
+@@ -423,88 +429,10 @@ onMounted(() => {
+ .ogc-root {
+   display: flex;
+   flex-direction: column;
+-  gap: 16px;
+-}
+-
+-.ogc-header {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 4px;
+-}
+-
+-.ogc-title {
+-  font-size: 17px;
+-  font-weight: 600;
+-  color: var(--label);
+-  margin: 0;
+-}
+-
+-.ogc-subtitle {
+-  font-size: 13px;
+-  color: var(--secondary);
+-  margin: 0;
+-  line-height: 1.6;
+-}
+-
+-.ogc-toolbar {
+-  display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+   gap: 12px;
+-  flex-wrap: wrap;
+ }
+ 
+-.ogc-mode-tabs {
+-  display: inline-flex;
+-}
+-
+-.ogc-path-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-wrap: wrap;
+-}
+-
+-.ogc-path-label {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-}
+-
+-.ogc-path-value {
+-  font-family: var(--mono);
+-  font-size: 11.5px;
+-  color: var(--secondary);
+-  background: var(--control);
+-  padding: 4px 8px;
+-  border-radius: 6px;
+-}
+-
+-.ogc-copy-btn {
+-  font-size: 11px;
+-  padding: 4px 10px;
+-}
+-
+-.ogc-yaml-error {
+-  font-size: 12px;
+-  color: var(--danger);
+-  background: rgba(255, 59, 48, 0.1);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
+-
+-.ogc-yaml-valid {
+-  font-size: 12px;
+-  color: var(--success);
+-  padding: 4px 0;
+-}
+-
+-.ogc-catalog-warn {
+-  font-size: 12px;
+-  color: var(--warning, #b8860b);
+-  background: var(--control);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
++/* .ogc-yaml-error / .ogc-catalog-warn 仅作样式锚点：背景与内边距交给 StatusBanner compact */
+ 
+ .ogc-visual {
+   display: flex;
+@@ -512,13 +440,6 @@ onMounted(() => {
+   gap: 10px;
+ }
+ 
+-.ogc-hint {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-  margin: 4px 0 0;
+-  line-height: 1.6;
+-}
+-
+ .ogc-rows {
+   display: flex;
+   flex-direction: column;
+diff --git a/frontend/src/components/provider/OpenCodeGlobalConfig.vue b/frontend/src/components/provider/OpenCodeGlobalConfig.vue
+index f30c6f1..bf298b5 100644
+--- a/frontend/src/components/provider/OpenCodeGlobalConfig.vue
++++ b/frontend/src/components/provider/OpenCodeGlobalConfig.vue
+@@ -10,15 +10,13 @@
+   - 统一 v-model（modelValue + update:modelValue）双向绑定
+   - 类型保持：boolean/number/object/array 不退化为 string
+   - 安全：apiKey/Authorization 用 MaskedValue，env 占位符原样保留
++
++  布局（provider-center-layout-redesign §4.6）：导航即标题，不再有 h2 / subtitle；EditorToolbar 常显
++  「即时生效」；空配置不再放大块 EmptyState（下方分类卡本身就能编辑），只在工具栏保留「空文件」状态词；
++  卡片标题统一「中文标题 + code 键名」，和 Pi / OMP 一致。
+ -->
+ <template>
+   <div class="oc-global">
+-    <!-- 标题区 -->
+-    <div class="ocg-header">
+-      <h2 class="ocg-title">OpenCode 全局配置</h2>
+-      <p class="ocg-subtitle">编辑全局 opencode.json 配置文件。修改后保存立即生效。</p>
+-    </div>
+-
+     <!-- Loading state -->
+     <LoadingState v-if="loading" message="加载配置中..." />
+ 
+@@ -32,206 +30,189 @@
+ 
+     <!-- Main content -->
+     <template v-else>
+-      <!-- 工具栏：可视化/JSON 切换 + 保存按钮 -->
+-      <div class="ocg-toolbar">
+-        <Segmented
+-          v-model="modeModel"
+-          :options="MODE_OPTIONS"
+-          variant="pill"
+-          class="ocg-mode-tabs"
+-        />
+-        <AppButton
+-          variant="primary"
+-          size="small"
+-          :disabled="saving"
+-          @click="handleSave"
++      <!-- 工具栏：路径胶囊 + 合法 / 空文件状态 ····· 生效标签 + 模式切换 + 保存。导航即标题，不再有 h2 / subtitle -->
++      <EditorToolbar
++        :path="configPath"
++        path-label="配置文件"
++        effect="即时生效"
++        :valid-label="mode === 'json' && !jsonError && !saving ? 'JSON 合法' : ''"
++        @copy-path="copyPath"
++      >
++        <template #status>
++          <span v-if="mode === 'visual' && isConfigEmpty" class="ocg-note">空文件</span>
++        </template>
++        <template #actions>
++          <Segmented
++            v-model="modeModel"
++            :options="MODE_OPTIONS"
++            variant="pill"
++          />
++          <AppButton
++            variant="primary"
++            size="small"
++            :disabled="saving"
++            @click="handleSave"
++          >
++            {{ saving ? '保存中...' : '保存配置' }}
++          </AppButton>
++        </template>
++      </EditorToolbar>
++
++      <StatusBanner v-if="jsonError" compact type="error" role="alert" class="ocg-json-error" :message="jsonError" />
++
++      <!-- 可视化模式：空配置时下方分类卡本身就能编辑，不再放大块空态 -->
++      <div v-if="mode === 'visual'" class="ocg-cards">
++        <!-- 顶层模型：OpenCode 无顶层 model，仅真实存在该键时才渲染（编辑能力不变） -->
++        <ConfigCategoryCard
++          v-if="hasTopLevelModel"
++          title="顶层模型"
++          code="model"
++          category="model"
++          :tip="MODEL_TIP"
++          :badge="1"
++          :expanded="expandedCategories.model"
++          @toggle="expandedCategories.model = !expandedCategories.model"
+         >
+-          {{ saving ? '保存中...' : '保存配置' }}
+-        </AppButton>
+-      </div>
+-
+-      <!-- 配置文件路径区 -->
+-      <div class="ocg-path-row">
+-        <span class="ocg-path-label">配置文件：</span>
+-        <code class="ocg-path-value">{{ configPath || '加载中...' }}</code>
+-        <AppButton
+-          v-if="configPath"
+-          variant="ghost"
+-          size="small"
+-          @click="copyPath"
+-          class="ocg-copy-btn"
++          <TextInput
++            :model-value="String(configData.model ?? '')"
++            placeholder="未设置"
++            @update:model-value="updateField('model', $event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- Provider 配置（object map） -->
++        <ConfigCategoryCard
++          title="提供商"
++          code="provider"
++          category="provider"
++          :expanded="expandedCategories.provider"
++          :badge="providerCount"
++          @toggle="expandedCategories.provider = !expandedCategories.provider"
+         >
+-          复制路径
+-        </AppButton>
+-      </div>
+-
+-      <!-- JSON 合法性提示 -->
+-      <div v-if="jsonError" class="ocg-json-error">
+-        {{ jsonError }}
+-      </div>
+-      <div v-else-if="!saving && mode === 'json'" class="ocg-json-valid">
+-        JSON 合法
+-      </div>
+-
+-      <!-- 可视化模式 -->
+-      <div v-if="mode === 'visual'" class="ocg-visual">
+-        <!-- 空配置友好提示 -->
+-        <div v-if="isConfigEmpty" class="ocg-empty-hint">
+-          <EmptyState
+-            icon=" "
+-            title="全局配置为空"
+-            description="当前 opencode.json 暂无可视化配置项，可切换到 JSON 模式直接编辑。"
++          <ProviderMapEditor
++            :model-value="providerMap"
++            @update:model-value="updateProvider($event)"
+           />
+-        </div>
+-        <div class="ocg-cards">
+-          <!-- Model 说明卡片（OpenCode 无顶层 model，仅真实存在时才显示输入框） -->
+-          <ConfigCategoryCard
+-            title="Model（顶层）"
+-            category="model"
+-            :expanded="expandedCategories.model"
+-            :badge="hasTopLevelModel ? 1 : null"
+-            @toggle="expandedCategories.model = !expandedCategories.model"
+-          >
+-            <div class="ocg-info-text">
+-              OpenCode 模型在 agent 级配置（如 <code>agent.luban.model</code>），顶层通常无 <code>model</code> 字段。
+-            </div>
+-            <div v-if="hasTopLevelModel" class="ocg-field">
+-              <label class="ocg-label">顶层 model</label>
+-              <TextInput
+-                :model-value="String(configData.model ?? '')"
+-                placeholder="未设置"
+-                @update:model-value="updateField('model', $event)"
++        </ConfigCategoryCard>
++
++        <!-- Agent 配置（object map） -->
++        <ConfigCategoryCard
++          title="Agent"
++          code="agent"
++          category="agent"
++          :expanded="expandedCategories.agent"
++          :badge="agentCount"
++          @toggle="expandedCategories.agent = !expandedCategories.agent"
++        >
++          <AgentMapEditor
++            :model-value="agentMap"
++            @update:model-value="updateAgent($event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- MCP 配置（object map，真实键 mcp） -->
++        <ConfigCategoryCard
++          title="MCP 服务器"
++          code="mcp"
++          category="mcp"
++          :expanded="expandedCategories.mcp"
++          :badge="mcpCount"
++          @toggle="expandedCategories.mcp = !expandedCategories.mcp"
++        >
++          <McpMapEditor
++            :model-value="mcpMap"
++            @update:model-value="updateMcp($event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- Permission 配置（object map，值 enum） -->
++        <ConfigCategoryCard
++          title="权限"
++          code="permission"
++          category="permission"
++          :expanded="expandedCategories.permission"
++          :badge="permissionCount"
++          @toggle="expandedCategories.permission = !expandedCategories.permission"
++        >
++          <PermissionMapEditor
++            :model-value="permissionMap"
++            @update:model-value="updatePermission($event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- Instructions 配置（array<string>） -->
++        <ConfigCategoryCard
++          title="指令文件"
++          code="instructions"
++          category="instructions"
++          :expanded="expandedCategories.instructions"
++          :badge="instructionsCount"
++          @toggle="expandedCategories.instructions = !expandedCategories.instructions"
++        >
++          <StringListEditor
++            :model-value="instructionsArray"
++            item-placeholder="文件路径（如 resources/core/common/persona.md）"
++            add-label="添加文件"
++            empty-text="暂无 instructions"
++            mono
++            @update:model-value="updateInstructions($event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- Plugin 配置（array<string>，OpenCode v1.17+ 标准格式） -->
++        <ConfigCategoryCard
++          title="插件"
++          code="plugin"
++          category="plugin"
++          :expanded="expandedCategories.plugin"
++          :badge="pluginCount"
++          @toggle="expandedCategories.plugin = !expandedCategories.plugin"
++        >
++          <StringListEditor
++            :model-value="pluginArray"
++            item-placeholder="github:owner/repo 或本地路径"
++            add-label="添加插件"
++            empty-text="暂无 plugin"
++            mono
++            @update:model-value="updatePlugin($event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- Experimental 配置（object，类型保持 boolean/number） -->
++        <ConfigCategoryCard
++          title="实验特性"
++          code="experimental"
++          category="experimental"
++          :expanded="expandedCategories.experimental"
++          :badge="experimentalCount"
++          @toggle="expandedCategories.experimental = !expandedCategories.experimental"
++        >
++          <TypedKeyValueEditor
++            :model-value="experimentalMap"
++            empty-text="暂无 experimental"
++            @update:model-value="updateExperimental($event)"
++          />
++        </ConfigCategoryCard>
++
++        <!-- 未识别键（$schema 等，兜底 RawJsonEditor） -->
++        <ConfigCategoryCard
++          v-if="unknownKeys.length > 0"
++          title="其他键"
++          category="unknown"
++          :expanded="expandedCategories.unknown"
++          :badge="unknownKeys.length"
++          @toggle="expandedCategories.unknown = !expandedCategories.unknown"
++        >
++          <div class="ocg-unknown-list">
++            <div v-for="k in unknownKeys" :key="k" class="ocg-unknown-item">
++              <div class="ocg-unknown-key">{{ k }}</div>
++              <RawJsonEditor
++                :model-value="configData[k]"
++                @update:model-value="updateField(k, $event)"
+               />
+             </div>
+-          </ConfigCategoryCard>
+-
+-          <!-- Provider 配置（object map） -->
+-          <ConfigCategoryCard
+-            title="Provider"
+-            category="provider"
+-            :expanded="expandedCategories.provider"
+-            :badge="providerCount"
+-            @toggle="expandedCategories.provider = !expandedCategories.provider"
+-          >
+-            <ProviderMapEditor
+-              :model-value="providerMap"
+-              @update:model-value="updateProvider($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- Agent 配置（object map） -->
+-          <ConfigCategoryCard
+-            title="Agent"
+-            category="agent"
+-            :expanded="expandedCategories.agent"
+-            :badge="agentCount"
+-            @toggle="expandedCategories.agent = !expandedCategories.agent"
+-          >
+-            <AgentMapEditor
+-              :model-value="agentMap"
+-              @update:model-value="updateAgent($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- MCP 配置（object map，真实键 mcp） -->
+-          <ConfigCategoryCard
+-            title="MCP Servers"
+-            category="mcp"
+-            :expanded="expandedCategories.mcp"
+-            :badge="mcpCount"
+-            @toggle="expandedCategories.mcp = !expandedCategories.mcp"
+-          >
+-            <McpMapEditor
+-              :model-value="mcpMap"
+-              @update:model-value="updateMcp($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- Permission 配置（object map，值 enum） -->
+-          <ConfigCategoryCard
+-            title="Permission"
+-            category="permission"
+-            :expanded="expandedCategories.permission"
+-            :badge="permissionCount"
+-            @toggle="expandedCategories.permission = !expandedCategories.permission"
+-          >
+-            <PermissionMapEditor
+-              :model-value="permissionMap"
+-              @update:model-value="updatePermission($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- Instructions 配置（array<string>） -->
+-          <ConfigCategoryCard
+-            title="Instructions"
+-            category="instructions"
+-            :expanded="expandedCategories.instructions"
+-            :badge="instructionsCount"
+-            @toggle="expandedCategories.instructions = !expandedCategories.instructions"
+-          >
+-            <StringListEditor
+-              :model-value="instructionsArray"
+-              item-placeholder="文件路径（如 resources/core/common/persona.md）"
+-              add-label="添加文件"
+-              empty-text="暂无 instructions"
+-              mono
+-              @update:model-value="updateInstructions($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- Plugin 配置（array<string>，OpenCode v1.17+ 标准格式） -->
+-          <ConfigCategoryCard
+-            title="Plugin"
+-            category="plugin"
+-            :expanded="expandedCategories.plugin"
+-            :badge="pluginCount"
+-            @toggle="expandedCategories.plugin = !expandedCategories.plugin"
+-          >
+-            <StringListEditor
+-              :model-value="pluginArray"
+-              item-placeholder="github:owner/repo 或本地路径"
+-              add-label="添加插件"
+-              empty-text="暂无 plugin"
+-              mono
+-              @update:model-value="updatePlugin($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- Experimental 配置（object，类型保持 boolean/number） -->
+-          <ConfigCategoryCard
+-            title="Experimental"
+-            category="experimental"
+-            :expanded="expandedCategories.experimental"
+-            :badge="experimentalCount"
+-            @toggle="expandedCategories.experimental = !expandedCategories.experimental"
+-          >
+-            <TypedKeyValueEditor
+-              :model-value="experimentalMap"
+-              empty-text="暂无 experimental"
+-              @update:model-value="updateExperimental($event)"
+-            />
+-          </ConfigCategoryCard>
+-
+-          <!-- 未识别键（$schema 等，兜底 RawJsonEditor） -->
+-          <ConfigCategoryCard
+-            v-if="unknownKeys.length > 0"
+-            title="其他键（兜底 JSON）"
+-            category="unknown"
+-            :expanded="expandedCategories.unknown"
+-            :badge="unknownKeys.length"
+-            @toggle="expandedCategories.unknown = !expandedCategories.unknown"
+-          >
+-            <div class="ocg-unknown-list">
+-              <div v-for="k in unknownKeys" :key="k" class="ocg-unknown-item">
+-                <div class="ocg-unknown-key">{{ k }}</div>
+-                <RawJsonEditor
+-                  :model-value="configData[k]"
+-                  @update:model-value="updateField(k, $event)"
+-                />
+-              </div>
+-            </div>
+-          </ConfigCategoryCard>
+-        </div>
++          </div>
++        </ConfigCategoryCard>
+       </div>
+ 
+       <!-- JSON 模式 -->
+@@ -258,7 +239,8 @@ import AppButton from '../ui/AppButton.vue';
+ import TextInput from '../ui/TextInput.vue';
+ import LoadingState from '../ui/LoadingState.vue';
+ import ErrorState from '../ui/ErrorState.vue';
+-import EmptyState from '../ui/EmptyState.vue';
++import StatusBanner from '../ui/StatusBanner.vue';
++import EditorToolbar from '../ui/EditorToolbar.vue';
+ import ConfigCategoryCard from './ConfigCategoryCard.vue';
+ import ProviderMapEditor from './ProviderMapEditor.vue';
+ import AgentMapEditor from './AgentMapEditor.vue';
+@@ -276,6 +258,9 @@ const MODE_OPTIONS = [
+   { value: 'json', label: 'JSON' },
+ ];
+ 
++/** 顶层模型卡片 InfoTip（design §5.2 T43）：原「Model 说明卡」的正文收进这里，卡片仅在键存在时渲染 */
++const MODEL_TIP = 'OpenCode 通常在 agent 级配置模型（agent.<名称>.model），顶层 model 较少使用。';
++
+ // 真实键名常量（消除别名魔法字符串，无 fallback）
+ const CONFIG_KEYS = {
+   schema: '$schema',
+@@ -548,96 +533,16 @@ void store;
+ .oc-global {
+   display: flex;
+   flex-direction: column;
+-  gap: 16px;
+-}
+-
+-.ocg-header {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 4px;
+-}
+-
+-.ocg-title {
+-  font-size: 17px;
+-  font-weight: 600;
+-  color: var(--label);
+-  margin: 0;
+-}
+-
+-.ocg-subtitle {
+-  font-size: 13px;
+-  color: var(--secondary);
+-  margin: 0;
+-}
+-
+-.ocg-toolbar {
+-  display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+   gap: 12px;
+-  flex-wrap: wrap;
+ }
+ 
+-.ocg-mode-tabs {
+-  display: inline-flex;
+-}
+-
+-.ocg-path-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-wrap: wrap;
+-}
++/* .ocg-json-error 仅作样式锚点：背景与内边距交给 StatusBanner compact */
+ 
+-.ocg-path-label {
++/* 工具栏状态槽：空文件 */
++.ocg-note {
+   font-size: 12px;
+   color: var(--tertiary);
+-}
+-
+-.ocg-path-value {
+-  font-family: var(--mono);
+-  font-size: 11.5px;
+-  color: var(--secondary);
+-  background: var(--control);
+-  padding: 4px 8px;
+-  border-radius: 6px;
+-}
+-
+-.ocg-copy-btn {
+-  font-size: 11px;
+-  padding: 4px 10px;
+-}
+-
+-.ocg-json-error {
+-  font-size: 12px;
+-  color: var(--danger);
+-  background: rgba(255, 59, 48, 0.1);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
+-
+-.ocg-json-valid {
+-  font-size: 12px;
+-  color: var(--success);
+-  padding: 4px 0;
+-}
+-
+-.ocg-visual {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 10px;
+-}
+-
+-.ocg-empty-hint {
+-  background: var(--control);
+-  border: 1px dashed var(--separator);
+-  border-radius: 12px;
+-  padding: 8px 16px;
+-  margin-bottom: 4px;
+-}
+-
+-.ocg-empty-hint :deep(.empty-state) {
+-  padding: 28px 16px;
++  white-space: nowrap;
+ }
+ 
+ .ocg-cards {
+@@ -646,38 +551,6 @@ void store;
+   gap: 10px;
+ }
+ 
+-.ocg-info-text {
+-  font-size: 12px;
+-  color: var(--secondary);
+-  background: var(--control);
+-  border-radius: 8px;
+-  padding: 10px 12px;
+-  line-height: 1.6;
+-  margin-bottom: 10px;
+-}
+-
+-.ocg-info-text code {
+-  font-family: var(--mono);
+-  font-size: 11px;
+-  background: var(--termBg);
+-  color: var(--termText);
+-  padding: 1px 5px;
+-  border-radius: 4px;
+-}
+-
+-.ocg-field {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 6px;
+-  margin-top: 8px;
+-}
+-
+-.ocg-label {
+-  font-size: 12px;
+-  font-weight: 500;
+-  color: var(--secondary);
+-}
+-
+ .ocg-unknown-list {
+   display: flex;
+   flex-direction: column;
+diff --git a/frontend/src/components/provider/OpenCodePresets.vue b/frontend/src/components/provider/OpenCodePresets.vue
+index 7d89a73..58d7692 100644
+--- a/frontend/src/components/provider/OpenCodePresets.vue
++++ b/frontend/src/components/provider/OpenCodePresets.vue
+@@ -3,9 +3,11 @@
+   与 Claude/Codex 不同：OpenCode 管理的是 ~/.config/opencode/config.json 配置文件，
+   支持可视化/JSON 双模式。本批按钮 emit，编辑能力 P7 批次实现。
+ 
+-  - 可视化模式：从真实 config.json 解析出 provider/preset 结构渲染 oc-card；
+-    并固定渲染一个「本机默认配置」虚线卡片（与 demo 一致）。
++  - 可视化模式：从真实 config.json 解析出 preset 段，渲染为分组列表（.oc-group）；
++    「本机默认配置」行在未搜索时始终显示（不可点），用户预设行整行可点编辑。
+   - JSON 模式：深色代码块展示真实 config.json 内容（轻量语法高亮）。
++  - 布局（provider-center-layout-redesign §4.5）：搜索、路径胶囊（点击复制）、模式切换、添加预设
++    收进一行 EditorToolbar；空态 = 标题 + 动作按钮。
+ -->
+ <template>
+   <div class="oc-panel">
+@@ -21,80 +23,95 @@
+ 
+     <!-- Main content -->
+     <template v-else>
+-    <!-- 工具栏：搜索 + 可视化/JSON 双模式 Segmented + 添加预设按钮 -->
+-    <div class="pc-toolbar">
+-      <div class="pc-search">
+-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+-          <circle cx="11" cy="11" r="7" />
+-          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+-        </svg>
+-        <input
+-          v-model="searchModel"
+-          type="text"
+-          class="oc-search-input"
+-          placeholder="搜索 OpenCode 预设"
+-        />
+-      </div>
+-      <div class="pc-actions">
++    <!-- 工具栏：搜索 + 路径胶囊 ····· 可视化/JSON 双模式 + 添加预设 -->
++    <EditorToolbar :path="store.ocConfigPath" path-label="配置文件" @copy-path="copyPath">
++      <template #leading>
++        <div class="pc-search">
++          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
++            <circle cx="11" cy="11" r="7" />
++            <line x1="21" y1="21" x2="16.65" y2="16.65" />
++          </svg>
++          <input
++            v-model="searchModel"
++            type="text"
++            class="oc-search-input"
++            placeholder="搜索 OpenCode 预设"
++            aria-label="搜索 OpenCode 预设"
++          />
++        </div>
++      </template>
++      <template #actions>
+         <Segmented
+           v-model="modeModel"
+           :options="MODE_OPTIONS"
+           variant="pill"
+-          class="oc-mode-tabs"
+         />
+         <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
+-      </div>
+-    </div>
++      </template>
++    </EditorToolbar>
+ 
+     <!-- 可视化模式 -->
+     <div v-if="mode === 'visual'" class="oc-view">
+-      <div v-if="visualItems.length > 0" class="preset-list">
+-        <!-- 本机默认配置（虚线卡片，固定首位） -->
+-        <div class="oc-card default">
++      <!-- 分组列表（规格同 PresetList 的 .preset-group）：本机默认行 + 用户预设行 -->
++      <ul v-if="!searchActive || visualItems.length > 0" class="oc-group">
++        <!-- 本机默认配置：未搜索时始终显示（没有用户预设时也在，与「未指定预设即使用此项」的语义一致），不可点 -->
++        <li v-if="!searchActive" class="oc-row is-default">
+           <div class="oc-head">
+-            <div class="oc-name">
+-              本机默认配置
+-              <span class="oc-default-tag">默认</span>
+-            </div>
++            <span class="oc-name">本机默认配置</span>
++            <span class="oc-default-tag">默认</span>
+           </div>
+-          <div class="oc-key">key: (本机)</div>
+-          <div class="oc-desc">
+-            读取本地 ~/.config/opencode 配置，未启用受管预设。启动时若未指定预设即使用此项。
+-          </div>
+-        </div>
++          <div class="oc-desc">未选择预设时使用本机 ~/.config/opencode 配置</div>
++        </li>
+ 
+-        <!-- 用户预设卡片（来自真实 config.json 的 preset 段） -->
+-        <div
++        <!-- 用户预设行（来自真实 config.json 的 preset 段）：名称是真 button，::after 撑满整行作点击热区 -->
++        <li
+           v-for="item in visualItems"
+           :key="item.key"
+-          class="oc-card clickable"
+-          @click="handleEdit(item)"
++          class="oc-row"
+         >
+           <div class="oc-head">
+-            <div class="oc-name">{{ item.name }}</div>
++            <button
++              type="button"
++              class="oc-open"
++              :aria-label="`编辑预设 ${item.name}`"
++              @click="handleEdit(item)"
++            >
++              <span class="oc-name">{{ item.name }}</span>
++            </button>
++            <code class="oc-key">{{ item.key }}</code>
+           </div>
+-          <div class="oc-key">key: {{ item.key }}</div>
+-          <div class="oc-desc" v-if="item.desc">{{ item.desc }}</div>
+-          <div class="oc-meta">
++          <div v-if="item.desc" class="oc-desc" :title="item.desc">{{ item.desc }}</div>
++          <div v-if="item.bindCount || item.provider || item.model" class="oc-meta">
+             <span v-if="item.bindCount > 0" class="oc-bind">绑定 {{ item.bindCount }} 个提供商</span>
+             <span v-if="item.provider" class="oc-prov-tag">{{ item.provider }}</span>
+             <span v-if="item.model" class="oc-model-tag">{{ item.model }}</span>
+           </div>
+-        </div>
+-      </div>
++        </li>
++      </ul>
+ 
++      <!-- 空态：标题 + 动作（P7） -->
+       <EmptyState
+-        v-else
++        v-if="visualItems.length === 0"
+         icon="≡"
+-        :title="store.loadingPresets ? '正在加载 OpenCode 配置...' : '该配置下暂无 OpenCode 预设'"
+-        :description="store.loadingPresets ? '' : '在 config.json 的 preset 段中定义预设，或点击右上角「添加预设」'"
+-      />
+-
+-      <!-- 配置文件路径提示 -->
+-      <div v-if="store.ocConfigPath" class="oc-path-row">
+-        <span class="oc-path-label">配置文件：</span>
+-        <code class="oc-path-value">{{ store.ocConfigPath }}</code>
+-      </div>
++        :title="store.loadingPresets ? '正在加载 OpenCode 配置...' : (searchActive ? '无匹配预设' : '暂无 OpenCode 预设')"
++      >
++        <template #action>
++          <AppButton
++            v-if="searchActive"
++            variant="ghost"
++            size="small"
++            class="empty-action"
++            @click="searchModel = ''"
++          >清除搜索</AppButton>
++          <AppButton
++            v-else-if="!store.loadingPresets"
++            variant="primary"
++            size="small"
++            class="empty-action"
++            @click="handleAdd"
++          >添加预设</AppButton>
++        </template>
++      </EmptyState>
+     </div>
+ 
+     <!-- JSON 模式：深色代码块展示真实 config.json -->
+@@ -104,13 +121,9 @@
+         v-else
+         icon="≡"
+         title="未读取到 OpenCode 配置"
+-        description="config.json 内容为空或加载失败"
++        description="文件为空或读取失败"
+       />
+-      <div v-if="store.ocConfigPath" class="oc-path-row">
+-        <span class="oc-path-label">配置文件：</span>
+-        <code class="oc-path-value">{{ store.ocConfigPath }}</code>
+-      </div>
+-      </div>
++    </div>
+     </template>
+   </div>
+ 
+@@ -126,16 +139,19 @@
+ import { computed, ref, onMounted } from 'vue';
+ import { config } from '../../../wailsjs/go/models';
+ import { useProviderStore } from '../../stores/provider';
++import { useToast } from '../../composables/useToast';
+ import Segmented from '../ui/Segmented.vue';
+ import AppButton from '../ui/AppButton.vue';
+ import EmptyState from '../ui/EmptyState.vue';
+ import LoadingState from '../ui/LoadingState.vue';
+ import ErrorState from '../ui/ErrorState.vue';
++import EditorToolbar from '../ui/EditorToolbar.vue';
+ import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
+ 
+ defineEmits<{ (e: 'add'): void }>();
+ 
+ const store = useProviderStore();
++const { showSuccess, showError } = useToast();
+ const showPresetDialog = ref(false);
+ const editingPreset = ref<config.OpenCodePreset | null>(null);
+ 
+@@ -202,6 +218,9 @@ const allPresetItems = computed<VisualItem[]>(() => {
+   return items;
+ });
+ 
++/** 是否处于搜索态（搜索态下不显示「本机默认配置」行，空态给「清除搜索」） */
++const searchActive = computed(() => store.presetSearch.trim() !== '');
++
+ /** 应用搜索过滤后的可视化项 */
+ const visualItems = computed<VisualItem[]>(() => {
+   const q = store.presetSearch.trim().toLowerCase();
+@@ -239,6 +258,18 @@ function handleAdd() {
+   showPresetDialog.value = true;
+ }
+ 
++/** 复制 config.json 路径（路径胶囊点击，写法同其他编辑器） */
++async function copyPath() {
++  const path = store.ocConfigPath;
++  if (!path) return;
++  try {
++    await navigator.clipboard.writeText(path);
++    showSuccess('路径已复制到剪贴板');
++  } catch {
++    showError('复制失败');
++  }
++}
++
+ /**
+  * 点击用户预设卡片进入编辑：把 VisualItem 还原回 config.OpenCodePreset。
+  * 从 parsedConfig 取回该 key 的完整原始结构，整体作为可编辑 JSON 写入 preset.config；
+@@ -323,15 +354,7 @@ onMounted(() => {
+ .oc-panel {
+   display: flex;
+   flex-direction: column;
+-  gap: 14px;
+-}
+-
+-.pc-toolbar {
+-  display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+   gap: 12px;
+-  flex-wrap: wrap;
+ }
+ 
+ .pc-search {
+@@ -374,68 +397,87 @@ onMounted(() => {
+   color: var(--tertiary);
+ }
+ 
+-.pc-actions {
+-  display: flex;
+-  align-items: center;
+-  gap: 10px;
+-  flex-wrap: wrap;
+-}
+-
+-.oc-mode-tabs {
+-  display: inline-flex;
+-}
+-
+-.preset-list {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 10px;
+-}
+-
+-.oc-card {
++/* 分组列表：一个容器 + 行间分隔线（规格同 PresetList 的 .preset-group） */
++.oc-group {
++  list-style: none;
++  margin: 0;
++  padding: 0;
+   background: var(--card);
+   border: 1px solid var(--separator);
+   border-radius: 12px;
+-  padding: 14px 16px;
+-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
++  overflow: hidden;
+ }
+ 
+-.oc-card.clickable {
+-  cursor: pointer;
++.oc-row {
++  position: relative;
++  padding: 12px 16px;
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++  transition: background 0.15s ease;
+ }
+ 
+-.oc-card.clickable:hover {
+-  border-color: var(--accent, #007aff);
+-  background: var(--hover, rgba(0, 122, 255, 0.04));
++.oc-row + .oc-row {
++  border-top: 1px solid var(--separator);
+ }
+ 
+-.oc-card.clickable:active {
+-  transform: scale(0.997);
++/* hover 底色同 PresetList：不用 --control，避免与 .oc-bind 等标签同色 */
++.oc-row:not(.is-default):hover {
++  background: var(--hover, rgba(0, 122, 255, 0.04));
+ }
+ 
+-.oc-card.default {
+-  border-style: dashed;
+-  border-color: #c5c5cc;
++/* 本机默认行：不可点，无 hover */
++.oc-row.is-default {
+   background: var(--sidebar);
+ }
+ 
+ .oc-head {
+   display: flex;
+   align-items: center;
+-  justify-content: space-between;
+   gap: 10px;
+-  margin-bottom: 5px;
++}
++
++/* 名称按钮：::after 撑满整行作点击热区（.oc-row 是定位祖先，按钮自身不能定位） */
++.oc-open {
++  flex: 1 1 auto;
++  min-width: 0;
++  text-align: left;
++  background: none;
++  border: none;
++  padding: 0;
++  font: inherit;
++  cursor: pointer;
++}
++
++.oc-open::after {
++  content: '';
++  position: absolute;
++  inset: 0;
++}
++
++.oc-open:focus-visible {
++  outline: none;
++}
++
++.oc-open:focus-visible::after {
++  outline: 2px solid var(--accent);
++  outline-offset: -2px;
++  border-radius: inherit;
+ }
+ 
+ .oc-name {
++  display: block;
++  min-width: 0;
+   font-size: 14px;
+   font-weight: 600;
+   color: var(--label);
+-  display: flex;
+-  align-items: center;
+-  gap: 7px;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
+ }
+ 
+ .oc-default-tag {
++  flex: 0 0 auto;
+   font-size: 10px;
+   font-weight: 600;
+   color: var(--accent);
+@@ -445,17 +487,18 @@ onMounted(() => {
+ }
+ 
+ .oc-key {
++  flex: 0 0 auto;
+   font-family: var(--mono);
+   font-size: 11px;
+   color: var(--tertiary);
+-  margin-bottom: 8px;
+ }
+ 
+ .oc-desc {
+   font-size: 12px;
+   color: var(--secondary);
+-  line-height: 1.5;
+-  margin-bottom: 10px;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
+ }
+ 
+ .oc-meta {
+@@ -478,13 +521,16 @@ onMounted(() => {
+ 
+ .oc-prov-tag {
+   font-size: 11px;
+-  color: var(--success);
++  color: var(--success-strong);
+   background: rgba(52, 199, 89, 0.12);
+   border-radius: 5px;
+   padding: 2px 8px;
+ }
+ 
+ .oc-model-tag {
++  min-width: 0;
++  max-width: 100%;
++  overflow-wrap: anywhere;
+   font-size: 11px;
+   color: var(--accent);
+   background: rgba(0, 122, 255, 0.1);
+@@ -493,6 +539,10 @@ onMounted(() => {
+   font-family: var(--mono);
+ }
+ 
++.empty-action {
++  margin-top: 14px;
++}
++
+ .oc-json {
+   font-family: var(--mono);
+   font-size: 11.5px;
+@@ -519,24 +569,4 @@ onMounted(() => {
+   color: #6e6e73;
+   font-style: italic;
+ }
+-
+-.oc-path-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  margin-top: 10px;
+-  font-size: 12px;
+-  color: var(--tertiary);
+-}
+-
+-.oc-path-label {
+-  white-space: nowrap;
+-}
+-
+-.oc-path-value {
+-  font-family: var(--mono);
+-  font-size: 11.5px;
+-  color: var(--secondary);
+-  word-break: break-all;
+-}
+ </style>
+diff --git a/frontend/src/components/provider/PiAmagiConfig.vue b/frontend/src/components/provider/PiAmagiConfig.vue
+index d78f664..f7dce0f 100644
+--- a/frontend/src/components/provider/PiAmagiConfig.vue
++++ b/frontend/src/components/provider/PiAmagiConfig.vue
+@@ -1,6 +1,10 @@
+ <!--
+   PiAmagiConfig - pi (amagi-pi) amagi.json 可视化配置组件。
+-  挂载于 Provider Center → 预设 → Pi 引擎标签。
++  挂载于 Provider Center → CLI 独立配置 → Pi → Agent 配置。
++  布局（provider-center-layout-redesign §4.3）：导航即标题——不再有 h2 / subtitle；
++  一行 EditorToolbar（路径胶囊 / 合法状态 / 模式切换 / 保存）；卡片顺序
++  角色模型（含分层策略）→ 上下文压缩 → MCP 路由 → 并发限制；常显说明只留「当前状态语义 /
++  操作后果」，其余收进 InfoTip（文案与处置见 design §5.2 T07–T29）。
+   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
+   thinking level，数据来自 pi 模型目录）、统一压缩模型、MCP 路由编辑（含 v2.8.2 mcp.leader）。
+   mcp.leader / mcp.default：名单编辑器常显（all/none 态添加服务器即切白名单）；
+@@ -9,157 +13,168 @@
+ -->
+ <template>
+   <div class="pac-root">
+-    <div class="pac-header">
+-      <h2 class="pac-title">Pi 配置（amagi-pi）</h2>
+-      <p class="pac-subtitle">
+-        编辑全局 amagi.json：角色模型、统一压缩模型、MCP 路由与并发限制。
+-        模型下拉来自 pi 模型目录；各项生效时间见卡片说明。
+-      </p>
+-    </div>
+-
+     <LoadingState v-if="loading" message="加载配置中..." />
+ 
+     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
+ 
+     <template v-else>
+-      <div class="pac-toolbar">
+-        <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" class="pac-mode-tabs" />
+-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+-          {{ saving ? '保存中...' : '保存配置' }}
+-        </AppButton>
+-      </div>
+-
+-      <div class="pac-path-row">
+-        <span class="pac-path-label">配置文件：</span>
+-        <code class="pac-path-value">{{ configPath || '加载中...' }}</code>
+-        <AppButton v-if="configPath" variant="ghost" size="small" class="pac-copy-btn" @click="copyPath">
+-          复制路径
+-        </AppButton>
+-      </div>
+-
+-      <div v-if="jsonError" class="pac-json-error">{{ jsonError }}</div>
+-      <div v-else-if="mode === 'json'" class="pac-json-valid">JSON 合法</div>
+-      <div v-if="catalogError" class="pac-catalog-warn">
+-        模型目录加载失败，下拉不可用：{{ catalogError }}
+-      </div>
++      <!-- 工具栏：路径胶囊 + JSON 合法状态 ····· 模式切换 + 保存。导航即标题，不再有 h2 / subtitle -->
++      <EditorToolbar
++        :path="configPath"
++        path-label="配置文件"
++        :valid-label="mode === 'json' && !jsonError ? 'JSON 合法' : ''"
++        @copy-path="copyPath"
++      >
++        <template #actions>
++          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
++          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
++            {{ saving ? '保存中...' : '保存配置' }}
++          </AppButton>
++        </template>
++      </EditorToolbar>
++
++      <StatusBanner v-if="jsonError" compact type="error" role="alert" class="pac-json-error" :message="jsonError" />
++      <StatusBanner
++        v-if="catalogError"
++        compact
++        type="warning"
++        class="pac-catalog-warn"
++        :message="`模型目录加载失败，下拉不可用：${catalogError}`"
++      />
+ 
+       <!-- 可视化模式 -->
+       <div v-if="mode === 'visual'" class="pac-visual">
++        <!-- ① 角色模型（含分层策略 profile） -->
+         <ConfigCategoryCard
+-          title="Profile（分层策略）"
+-          category="profile"
+-          :expanded="expanded.profile"
+-          @toggle="expanded.profile = !expanded.profile"
++          title="角色模型"
++          code="agents"
++          category="agent"
++          :badge="agentRows.length"
++          :expanded="expanded.agents"
++          @toggle="expanded.agents = !expanded.agents"
+         >
+           <div class="pac-field">
+-            <label class="pac-label">profile</label>
++            <FieldLabel text="分层策略" code="profile" :items="PROFILE_ITEMS" />
+             <Dropdown
++              class="pac-profile-dd"
+               :model-value="profileValue"
+               :options="PROFILE_OPTIONS"
+               @update:model-value="updateProfile"
+             />
+-            <p class="pac-hint">
+-              tiered：按 leader/fast/work/expert 分层套用 profiles/tiered.json；inherit：全部继承 pi 默认模型。
+-            </p>
+           </div>
+-        </ConfigCategoryCard>
+-
+-        <ConfigCategoryCard
+-          title="上下文压缩（compaction）"
+-          category="model"
+-          :expanded="expanded.compaction"
+-          :badge="compactionMode === 'unset' ? null : 1"
+-          @toggle="expanded.compaction = !expanded.compaction"
+-        >
+-          <p class="pac-hint">
+-            Leader 与 JSON/RPC 子 Agent 共用压缩模型，适用于 /compact、自动压缩与上下文溢出恢复。
+-          </p>
+           <div class="pac-field">
+-            <label class="pac-label">压缩模型策略（compaction.model）</label>
+-            <Segmented v-model="compactionModeModel" :options="COMPACTION_MODE_OPTIONS" variant="pill" />
+-            <p class="pac-hint">{{ COMPACTION_MODE_HINTS[compactionMode] }}</p>
+-            <ModelSpecSelector
+-              v-if="compactionMode === 'custom'"
+-              :model-value="compactionModel"
+-              :catalog="catalog"
+-              @update:model-value="updateCompactionModel"
+-            />
++            <FieldLabel text="角色覆盖" code="agents.<角色>.model" :tip="AGENTS_TIP" />
++            <div class="pac-agent-rows">
++              <div v-for="row in agentRows" :key="row.role" class="pac-agent-row">
++                <div class="pac-agent-role">
++                  <TextInput
++                    :model-value="row.role"
++                    placeholder="角色名（如 baize）"
++                    mono
++                    class="pac-role-input"
++                    @update:model-value="renameRole(row.role, $event)"
++                  />
++                </div>
++                <ModelSpecSelector
++                  :model-value="row.model"
++                  :catalog="catalog"
++                  class="pac-agent-spec"
++                  @update:model-value="updateAgentModel(row.role, $event)"
++                />
++                <AppButton variant="icon" size="small" aria-label="删除角色" @click="removeRole(row.role)">
++                  <span class="pac-remove">×</span>
++                </AppButton>
++              </div>
++            </div>
+             <div class="pac-actions">
+-              <AppButton variant="ghost" size="small" :disabled="!lubanModel" @click="copyLubanCompactionModel">
+-                复制 luban 当前模型
++              <AppButton variant="ghost" size="small" @click="addRole('')">+ 添加角色</AppButton>
++              <AppButton
++                v-for="s in unconfiguredRoleSuggestions"
++                :key="s"
++                variant="ghost"
++                size="small"
++                @click="addRole(s)"
++              >
++                + {{ s }}
+               </AppButton>
+-              <span class="pac-hint-inline">{{ lubanModel || '请先配置 luban 的角色模型' }}（复制后独立保存）</span>
+             </div>
+-            <p v-if="compactionError" class="pac-json-error" role="alert">{{ compactionError }}</p>
+-            <p class="pac-hint">
+-              项目 amagi.json 优先于此全局配置；子 Agent 沿用派发者的配置目录。保存后下次压缩读取，
+-              新增服务商环境凭据引用后需重新派发子 Agent。模型认证由 pi 管理。
+-            </p>
+-            <p class="pac-hint">
+-              请选上下文窗口足够的已注册模型。配置、认证、摘要失败或窗口不足会取消本次压缩并保留历史。
+-            </p>
+           </div>
+         </ConfigCategoryCard>
+ 
++        <!--
++          ② 上下文压缩（e2e 锚点卡：标题须含「上下文压缩」；
++          卡内第一个 Dropdown 必须是 ModelSpecSelector 的，且只允许它的 1 个 input；
++          InfoTip 浮层 Teleport 出卡片且 role=tooltip，不会混入卡内 role=alert）
++        -->
+         <ConfigCategoryCard
+-          title="角色模型（agents）"
+-          category="agents"
+-          :expanded="expanded.agents"
+-          :badge="agentRows.length"
+-          @toggle="expanded.agents = !expanded.agents"
++          title="上下文压缩"
++          code="compaction"
++          category="model"
++          meta="下次压缩生效"
++          :tip="COMPACTION_TIP"
++          :badge="compactionMode === 'unset' ? null : 1"
++          :expanded="expanded.compaction"
++          @toggle="expanded.compaction = !expanded.compaction"
+         >
+-          <p class="pac-hint">
+-            按角色覆盖模型，优先级高于 profile。角色名与 amagi-pi agents/*.md 对应。
+-          </p>
+-          <div class="pac-agent-rows">
+-            <div v-for="row in agentRows" :key="row.role" class="pac-agent-row">
+-              <div class="pac-agent-role">
+-                <TextInput
+-                  :model-value="row.role"
+-                  placeholder="角色名（如 baize）"
+-                  mono
+-                  class="pac-role-input"
+-                  @update:model-value="renameRole(row.role, $event)"
+-                />
+-              </div>
++          <div class="pac-field">
++            <FieldLabel text="压缩模型" code="compaction.model" :items="COMPACTION_MODE_ITEMS" />
++            <Segmented
++              v-model="compactionModeModel"
++              :options="COMPACTION_MODE_OPTIONS"
++              variant="pill"
++              class="pac-inline-seg"
++            />
++            <p class="pac-caption">{{ COMPACTION_MODE_CAPTIONS[compactionMode] }}</p>
++            <template v-if="compactionMode === 'custom'">
+               <ModelSpecSelector
+-                :model-value="row.model"
++                :model-value="compactionModel"
+                 :catalog="catalog"
+-                class="pac-agent-spec"
+-                @update:model-value="updateAgentModel(row.role, $event)"
++                @update:model-value="updateCompactionModel"
+               />
+-              <AppButton variant="icon" size="small" aria-label="删除角色" @click="removeRole(row.role)">
+-                <span class="pac-remove">×</span>
++              <p class="pac-caption is-consequence">窗口不足或调用失败时取消本次压缩，历史保留</p>
++            </template>
++            <div class="pac-actions pac-actions-inline">
++              <AppButton variant="ghost" size="small" :disabled="!lubanModel" @click="copyLubanCompactionModel">
++                复制 luban 当前模型
+               </AppButton>
++              <span class="pac-caption" :class="{ mono: lubanModel }">
++                {{ lubanModel ? `luban：${lubanModel}` : 'luban 未配置模型' }}
++              </span>
+             </div>
+-          </div>
+-          <div class="pac-actions">
+-            <AppButton variant="ghost" size="small" @click="addRole('')">+ 添加角色</AppButton>
+-            <AppButton
+-              v-for="s in unconfiguredRoleSuggestions"
+-              :key="s"
+-              variant="ghost"
+-              size="small"
+-              @click="addRole(s)"
+-            >
+-              + {{ s }}
+-            </AppButton>
++            <StatusBanner
++              v-if="compactionError"
++              compact
++              type="error"
++              role="alert"
++              class="pac-json-error"
++              :message="compactionError"
++            />
+           </div>
+         </ConfigCategoryCard>
+ 
++        <!-- ③ MCP 路由 -->
+         <ConfigCategoryCard
+           title="MCP 路由"
++          code="mcp"
+           category="mcp"
+-          :expanded="expanded.mcp"
+           :badge="mcpBadge"
++          :expanded="expanded.mcp"
+           @toggle="expanded.mcp = !expanded.mcp"
+         >
+           <div class="pac-field">
+-            <label class="pac-label">Leader 服务器（mcp.leader，主进程加载名单）</label>
+-            <div class="pac-mcp-mode-row">
+-              <Segmented v-model="mcpLeaderModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
+-              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpLeaderUiMode].leader }}</span>
+-            </div>
++            <FieldLabel
++              text="Leader 服务器"
++              code="mcp.leader"
++              effect="重启 pi 生效"
++              :tip="MCP_TIPS.leader"
++              :items="MCP_MODE_ITEMS.leader"
++            />
++            <Segmented
++              v-model="mcpLeaderModeModel"
++              :options="MCP_MODE_OPTIONS"
++              variant="pill"
++              class="pac-inline-seg"
++            />
+             <StringListEditor
+               :model-value="mcpLeader"
+               item-placeholder="服务器名（如 web-search-prime）"
+@@ -168,16 +183,21 @@
+               mono
+               @update:model-value="updateMcpLeader"
+             />
+-            <p class="pac-hint">
+-              Leader 主进程加载哪些 MCP server（amagi-pi v2.8.2+）：装配时读一次，改动需重启 pi 生效（与子 Agent 路由不同面）。
+-            </p>
+           </div>
+           <div class="pac-field">
+-            <label class="pac-label">默认服务器（mcp.default，所有子 Agent 基线）</label>
+-            <div class="pac-mcp-mode-row">
+-              <Segmented v-model="mcpDefaultModeModel" :options="MCP_MODE_OPTIONS" variant="pill" class="pac-mcp-mode" />
+-              <span class="pac-hint-inline">{{ MCP_MODE_HINTS[mcpDefaultUiMode].default }}</span>
+-            </div>
++            <FieldLabel
++              text="默认服务器"
++              code="mcp.default"
++              effect="即时生效"
++              :tip="MCP_TIPS.default"
++              :items="MCP_MODE_ITEMS.default"
++            />
++            <Segmented
++              v-model="mcpDefaultModeModel"
++              :options="MCP_MODE_OPTIONS"
++              variant="pill"
++              class="pac-inline-seg"
++            />
+             <StringListEditor
+               :model-value="mcpDefault"
+               item-placeholder="服务器名（如 web-search-prime）"
+@@ -186,12 +206,9 @@
+               mono
+               @update:model-value="updateMcpDefault"
+             />
+-            <p class="pac-hint">
+-              与 mcp.agents 各角色名单取并集；每次派发现读盘，改动即时生效。
+-            </p>
+           </div>
+           <div class="pac-field">
+-            <label class="pac-label">角色附加服务器（mcp.agents）</label>
++            <FieldLabel text="角色附加服务器" code="mcp.agents" :tip="MCP_AGENTS_TIP" />
+             <div class="pac-mcp-agents">
+               <div v-for="row in mcpAgentRows" :key="row.role" class="pac-mcp-agent-row">
+                 <TextInput
+@@ -219,35 +236,30 @@
+           </div>
+         </ConfigCategoryCard>
+ 
++        <!-- ④ 并发限制 -->
+         <ConfigCategoryCard
+-          title="并发限制（concurrency）"
++          title="并发限制"
++          code="concurrency"
+           category="concurrency"
+-          :expanded="expanded.concurrency"
++          :tip="CONCURRENCY_TIP"
+           :badge="concurrencyBadge"
++          :expanded="expanded.concurrency"
+           @toggle="expanded.concurrency = !expanded.concurrency"
+         >
+-          <p class="pac-hint">
+-            按 provider/model 分池限制并发请求数。三项全部可选，未匹配时回退默认容量。
+-          </p>
+-
+           <div class="pac-field">
+-            <label class="pac-label">默认并发数（default）</label>
+-            <div class="pac-concurrency-default-row">
+-              <TextInput
+-                :model-value="concurrencyDefault"
+-                type="number"
+-                placeholder="10（留空使用内置默认）"
+-                mono
+-                class="pac-limit-input"
+-                @update:model-value="updateConcurrencyDefault"
+-              />
+-              <span class="pac-hint-inline">未单独指定 provider 或 model 时的默认并发池大小（正整数；应用默认 10，清空保存则移除键、回落 amagi-pi 内置默认 4）</span>
+-            </div>
++            <FieldLabel text="默认并发" code="default" :tip="CONCURRENCY_DEFAULT_TIP" />
++            <TextInput
++              :model-value="concurrencyDefault"
++              type="number"
++              placeholder="留空 = 内置默认 4"
++              mono
++              class="pac-limit-input pac-limit-default"
++              @update:model-value="updateConcurrencyDefault"
++            />
+           </div>
+ 
+           <div class="pac-field">
+-            <label class="pac-label">服务商并发（providers）</label>
+-            <p class="pac-subhint">按服务商限制并发容量，覆盖默认并发数。</p>
++            <FieldLabel text="服务商并发" code="providers" />
+             <div v-if="concurrencyProviderRows.length" class="pac-concurrency-rows">
+               <div v-for="row in concurrencyProviderRows" :key="row.id" class="pac-concurrency-row">
+                 <div v-if="row.isCustom" class="pac-concurrency-custom-key">
+@@ -295,8 +307,7 @@
+           </div>
+ 
+           <div class="pac-field">
+-            <label class="pac-label">模型并发（models）</label>
+-            <p class="pac-subhint">按精确 provider/model 限制并发容量，优先级高于服务商限制。</p>
++            <FieldLabel text="模型并发" code="models" />
+             <div v-if="concurrencyModelRows.length" class="pac-concurrency-rows">
+               <div v-for="row in concurrencyModelRows" :key="row.id" class="pac-concurrency-row">
+                 <div v-if="row.isCustom" class="pac-concurrency-custom-key pac-concurrency-custom-model">
+@@ -363,6 +374,9 @@ import TextInput from '../ui/TextInput.vue';
+ import Dropdown, { type DropdownOption } from '../ui/Dropdown.vue';
+ import LoadingState from '../ui/LoadingState.vue';
+ import ErrorState from '../ui/ErrorState.vue';
++import StatusBanner from '../ui/StatusBanner.vue';
++import EditorToolbar from '../ui/EditorToolbar.vue';
++import FieldLabel from '../ui/FieldLabel.vue';
+ import ConfigCategoryCard from './ConfigCategoryCard.vue';
+ import StringListEditor from './StringListEditor.vue';
+ import ModelSpecSelector from './ModelSpecSelector.vue';
+@@ -396,12 +410,52 @@ const COMPACTION_MODE_OPTIONS = [
+   { value: 'native', label: 'pi 原生模型' },
+ ];
+ 
+-const COMPACTION_MODE_HINTS: Record<CompactionMode, string> = {
+-  unset: '删除 compaction.model；全局未指定时由 pi 使用当前会话模型，项目仍可单独指定。',
+-  custom: '写入 provider/model[:thinking]；所有 Agent 使用该模型生成压缩摘要。',
+-  native: '写入显式 null；使用各会话当前模型。项目设置 null 可禁用全局统一模型。',
++/** 常显短句：只显示当前态一条（P3 · 当前选项决定写入什么），全部状态的对照见 COMPACTION_MODE_ITEMS */
++const COMPACTION_MODE_CAPTIONS: Record<CompactionMode, string> = {
++  unset: '删除该键，由 pi 使用当前会话模型',
++  custom: '所有 Agent 用此模型生成压缩摘要',
++  native: '写入 null，各会话使用当前模型',
+ };
+ 
++/** 三态对照（InfoTip）：term 与 COMPACTION_MODE_OPTIONS 的选项名一一对应 */
++const COMPACTION_MODE_ITEMS = [
++  { term: '未指定', desc: '删除 compaction.model；全局未指定时 pi 使用当前会话模型，项目仍可单独指定' },
++  { term: '统一模型', desc: '写入 provider/model[:thinking]，所有 Agent 用该模型生成压缩摘要' },
++  { term: 'pi 原生模型', desc: '写入显式 null，使用各会话当前模型；项目设为 null 可禁用全局统一模型' },
++];
++
++/** 上下文压缩卡片 InfoTip：用途 / 优先级 / 生效细节 / 后果 / luban 副本语义 */
++const COMPACTION_TIP = [
++  'Leader 与 JSON/RPC 子 Agent 共用压缩模型，用于 /compact、自动压缩与上下文溢出恢复。',
++  '项目 amagi.json 优先于此全局配置；子 Agent 沿用派发者的配置目录。',
++  '保存后下次压缩读取；新增服务商环境凭据引用后需重新派发子 Agent。模型认证由 pi 管理。',
++  '请选上下文窗口足够的已注册模型：配置、认证、摘要失败或窗口不足都会取消本次压缩并保留历史。',
++  '「复制 luban 当前模型」写入独立副本，之后修改 luban 不会联动。',
++];
++
++/** 分层策略 profile 的术语对照（选项名已在 PROFILE_OPTIONS 的 label 里） */
++const PROFILE_ITEMS = [
++  { term: 'tiered', desc: '按 leader / fast / work / expert 分层套用 profiles/tiered.json' },
++  { term: 'inherit', desc: '全部继承 pi 默认模型' },
++];
++
++const AGENTS_TIP = [
++  '按角色覆盖模型，优先于分层策略。',
++  '角色名对应 amagi-pi agents/*.md；模型候选来自 pi 模型目录。',
++];
++
++const MCP_AGENTS_TIP = '为指定角色追加服务器，与默认服务器取并集。';
++
++const CONCURRENCY_TIP = [
++  '按服务商 / 模型分池限制并发请求数；未匹配时使用默认并发。',
++  '优先级：模型 > 服务商 > 默认。',
++];
++
++const CONCURRENCY_DEFAULT_TIP = [
++  '未单独指定服务商或模型时的并发池大小，正整数。',
++  '应用预填 10；清空后保存将移除该键，回落 amagi-pi 内置默认 4。',
++];
++
+ /** amagi-pi agents/*.md 的角色名（建议值） */
+ const ROLE_SUGGESTIONS = [
+   'baize', 'cangjie', 'diting', 'diting-quick', 'fuxi', 'hongjun',
+@@ -416,7 +470,7 @@ const jsonContent = ref('');
+ const jsonError = ref('');
+ const configPath = ref('');
+ const configData = ref<Record<string, any>>({});
+-const expanded = ref({ profile: true, agents: true, compaction: true, mcp: false, concurrency: false });
++const expanded = ref({ agents: true, compaction: true, mcp: false, concurrency: false });
+ 
+ const { catalog, catalogError, loadCatalog } = useModelCatalog();
+ 
+@@ -503,26 +557,38 @@ const MCP_MODE_OPTIONS: { value: McpListMode; label: string }[] = [
+   { value: 'none', label: '不加载' },
+ ];
+ 
+-const MCP_MODE_HINTS: Record<McpListMode, { leader: string; default: string }> = {
+-  all: {
+-    leader: '未设置该键 = 不限制，加载全部（保存时删除 mcp.leader）',
+-    default: '未设置该键 = 所有子 Agent 默认加载全部（保存时删除 mcp.default）',
+-  },
+-  list: {
+-    leader: '仅加载列表内 server（* = 全部）',
+-    default: '仅加载列表内 server，作为所有子 Agent 基线（* = 全部）',
+-  },
+-  none: {
+-    leader: '保存为空列表 [] = Leader 不加载任何 MCP',
+-    default: '保存为空列表 [] = 子 Agent 默认不加载（角色 agents 条目仍生效）',
+-  },
++/** 三态对照（InfoTip）：term 与 MCP_MODE_OPTIONS 的选项名一一对应；当前态语义由 MCP_EMPTY_TEXT 常显承载 */
++const MCP_MODE_ITEMS: Record<'leader' | 'default', { term: string; desc: string }[]> = {
++  leader: [
++    { term: '全部', desc: '未设置该键，加载全部（保存时删除 mcp.leader）' },
++    { term: '白名单', desc: '仅加载列表内服务器，* 表示全部' },
++    { term: '不加载', desc: '保存为空列表 []，Leader 不加载任何 MCP' },
++  ],
++  default: [
++    { term: '全部', desc: '未设置该键，子 Agent 默认加载全部（保存时删除 mcp.default）' },
++    { term: '白名单', desc: '仅加载列表内服务器，作为子 Agent 基线，* 表示全部' },
++    { term: '不加载', desc: '保存为空列表 []，子 Agent 默认不加载（角色附加服务器仍生效）' },
++  ],
++};
++
++/** mcp.leader / mcp.default 字段 InfoTip：来源、读取时机、与其它路由的关系（生效时机已由字段标签常显） */
++const MCP_TIPS = {
++  leader: [
++    'Leader 主进程加载的 MCP 服务器名单（amagi-pi v2.8.2+）。',
++    '装配时读取一次，改动需重启 pi 生效；与子 Agent 路由相互独立。',
++  ],
++  default: [
++    '所有子 Agent 的基线名单，与 mcp.agents 各角色名单取并集。',
++    '每次派发时读盘，改动即时生效。',
++  ],
+ };
+ 
+-/** 名单编辑器空态引导（常显编辑器：all/none 态也可直接添加，输入即切白名单） */
++/** 名单编辑器空态引导（常显编辑器：all/none 态也可直接添加，输入即切白名单）。
++ *  三态下名单必然为空时才出现，因此这是「当前态语义」的常显承载（T21）。 */
+ const MCP_EMPTY_TEXT: Record<McpListMode, string> = {
+-  all: '当前未设置 = 加载全部；添加服务器即切换为白名单',
+-  none: '当前为 [] = 不加载任何 MCP；添加服务器即切换为白名单',
+-  list: '白名单为空——填入 server 名；空列表保存后即「不加载」',
++  all: '未设置 = 加载全部；添加服务器即切换为白名单',
++  none: '[] = 不加载任何 MCP；添加服务器即切换为白名单',
++  list: '名单为空，保存后等同「不加载」',
+ };
+ 
+ /** UI 编辑态与数据推断态解耦：点「白名单」进入编辑视图（数据可保持 []），
+@@ -1093,117 +1159,57 @@ onMounted(() => {
+ .pac-root {
+   display: flex;
+   flex-direction: column;
+-  gap: 16px;
++  gap: 12px;
+ }
+ 
+-.pac-header {
++/* .pac-json-error / .pac-catalog-warn 仅作测试锚点：背景与内边距交给 StatusBanner compact */
++
++.pac-visual {
+   display: flex;
+   flex-direction: column;
+-  gap: 4px;
+-}
+-
+-.pac-title {
+-  font-size: 17px;
+-  font-weight: 600;
+-  color: var(--label);
+-  margin: 0;
+-}
+-
+-.pac-subtitle {
+-  font-size: 13px;
+-  color: var(--secondary);
+-  margin: 0;
+-  line-height: 1.6;
++  gap: 10px;
+ }
+ 
+-.pac-toolbar {
++.pac-field {
+   display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+-  gap: 12px;
+-  flex-wrap: wrap;
+-}
+-
+-.pac-mode-tabs {
+-  display: inline-flex;
+-  min-width: 150px;
++  flex-direction: column;
++  gap: 6px;
+ }
+ 
+-.pac-mode-tabs :deep(.seg) {
+-  white-space: nowrap;
++.pac-field + .pac-field {
++  margin-top: 14px;
+ }
+ 
+-.pac-path-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-wrap: wrap;
+-}
+-
+-.pac-path-label {
++/* 常显微文案：状态语义用 tertiary，后果用 secondary；每块 ≤ 24 字、单行 */
++.pac-caption {
++  margin: -2px 0 0;
+   font-size: 12px;
++  line-height: 1.5;
+   color: var(--tertiary);
+ }
+ 
+-.pac-path-value {
+-  font-family: var(--mono);
+-  font-size: 11.5px;
++.pac-caption.is-consequence {
+   color: var(--secondary);
+-  background: var(--control);
+-  padding: 4px 8px;
+-  border-radius: 6px;
+-}
+-
+-.pac-copy-btn {
+-  font-size: 11px;
+-  padding: 4px 10px;
+ }
+ 
+-.pac-json-error {
+-  font-size: 12px;
+-  color: var(--danger);
+-  background: rgba(255, 59, 48, 0.1);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
+-
+-.pac-json-valid {
+-  font-size: 12px;
+-  color: var(--success);
+-  padding: 4px 0;
+-}
+-
+-.pac-catalog-warn {
+-  font-size: 12px;
+-  color: var(--warning, #b8860b);
+-  background: var(--control);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
+-
+-.pac-visual {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 10px;
++.pac-caption.mono {
++  font-family: var(--mono);
++  font-size: 11.5px;
+ }
+ 
+-.pac-field {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 6px;
++/* 字段内的三态 / 压缩模式 pill：收缩为内容宽（Segmented 的 class 落在其根节点上） */
++.pac-inline-seg {
++  align-self: flex-start;
+ }
+ 
+-.pac-label {
+-  font-size: 12px;
+-  font-weight: 500;
+-  color: var(--secondary);
++.pac-inline-seg :deep(.seg) {
++  flex: 0 0 auto;
++  padding: 5px 14px;
++  white-space: nowrap;
+ }
+ 
+-.pac-hint {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-  margin: 4px 0 0;
+-  line-height: 1.6;
++.pac-profile-dd {
++  max-width: 280px;
+ }
+ 
+ .pac-agent-rows {
+@@ -1241,6 +1247,11 @@ onMounted(() => {
+   margin-top: 8px;
+ }
+ 
++.pac-actions-inline {
++  align-items: center;
++  margin-top: 4px;
++}
++
+ .pac-mcp-agents {
+   display: flex;
+   flex-direction: column;
+@@ -1259,26 +1270,13 @@ onMounted(() => {
+   min-width: 220px;
+ }
+ 
+-.pac-concurrency-default-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 12px;
+-  flex-wrap: wrap;
+-}
+-
+ .pac-limit-input {
+   width: 110px;
+ }
+ 
+-.pac-hint-inline {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-}
+-
+-.pac-subhint {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-  margin: 0 0 4px;
++/* 默认并发的 placeholder「留空 = 内置默认 4」比 110px 宽，单独放宽避免被截断 */
++.pac-limit-input.pac-limit-default {
++  width: 180px;
+ }
+ 
+ .pac-concurrency-rows {
+@@ -1299,19 +1297,6 @@ onMounted(() => {
+   max-width: 260px;
+ }
+ 
+-.pac-mcp-mode-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 10px;
+-  flex-wrap: wrap;
+-  margin-bottom: 6px;
+-}
+-
+-.pac-mcp-mode-row .pac-hint-inline {
+-  flex: 1;
+-  min-width: 220px;
+-}
+-
+ .pac-concurrency-model-dd {
+   flex: 1;
+   min-width: 260px;
+diff --git a/frontend/src/components/provider/PresetList.vue b/frontend/src/components/provider/PresetList.vue
+index 2d112b0..4e01f50 100644
+--- a/frontend/src/components/provider/PresetList.vue
++++ b/frontend/src/components/provider/PresetList.vue
+@@ -1,8 +1,11 @@
+ <!--
+   PresetList - Anthropic / OpenAI 公共格式预设。
+   Claude Code 消费 Anthropic；Codex / Pi / OMP 消费 OpenAI。
+-  卡片样式 .preset-card + .param.model 高亮模型参数。
+-  「添加预设」emit('add')，弹窗在 P7 批次实现。
++  布局（provider-center-layout-redesign §4.2）：分组列表——一个容器、行间 1px 分隔线，
++  对标 macOS 设置的 inset grouped list；徽章 .param + .param.model 高亮模型参数。
++  整行可点编辑且语义正确：行内的名称是真 <button>（Tab 聚焦、Enter 编辑），
++  其 ::after 撑满整行作为点击热区；删除按钮 z-index 浮在热区之上，单独可聚焦。
++  「添加预设」打开 PresetDialog。
+ -->
+ <template>
+   <div class="preset-panel">
+@@ -35,29 +38,32 @@
+       <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
+     </div>
+ 
+-    <!-- 预设列表 -->
+-    <div v-if="filteredPresets.length > 0" class="preset-list">
+-      <div
++    <!-- 预设分组列表 -->
++    <ul v-if="filteredPresets.length > 0" class="preset-group">
++      <li
+         v-for="p in filteredPresets"
+         :key="p.key"
+-        class="preset-card clickable"
+-        @click="handleEdit(p)"
++        class="preset-row"
+       >
+         <div class="preset-head">
+-          <div class="preset-name">{{ p.label || p.key }}</div>
+-          <div class="preset-head-right">
+-            <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
+-            <!-- 删除入口：后端 GetMergedTerminalPresets 仅从 terminal_presets（用户配置）读取，
+-                 所有返回的 merged 预设都可被 DeleteTerminalPreset 删除，无"内置不可删"项，
+-                 因此对所有预设始终显示删除按钮（source 实际值为 'terminal_preset'）。 -->
+-            <button
+-              class="preset-delete"
+-              type="button"
+-              :title="`删除预设 ${p.label || p.key}`"
+-              aria-label="删除预设"
+-              @click.stop="handleDelete(p)"
+-            >删除</button>
+-          </div>
++          <button
++            type="button"
++            class="preset-open"
++            :aria-label="`编辑预设 ${p.label || p.key}`"
++            @click="handleEdit(p)"
++          >
++            <span class="preset-name">{{ p.label || p.key }}</span>
++          </button>
++          <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
++          <!-- 删除入口：后端 GetMergedTerminalPresets 仅从 terminal_presets（用户配置）读取，
++               所有返回的 merged 预设都可被 DeleteTerminalPreset 删除，无"内置不可删"项，
++               因此对所有预设始终显示删除按钮（source 实际值为 'terminal_preset'）。 -->
++          <button
++            class="preset-delete"
++            type="button"
++            :aria-label="`删除预设 ${p.label || p.key}`"
++            @click="handleDelete(p)"
++          >删除</button>
+         </div>
+         <div class="preset-badges">
+           <span v-if="p.model" class="param model">{{ p.model }}</span>
+@@ -70,28 +76,44 @@
+           <!-- 视觉能力标记（amagi-media-understanding 导出，契约 §1） -->
+           <span v-if="p.vision" class="param vision">识图</span>
+           <span v-if="p.video" class="param vision">识视频</span>
+-          <!-- 同步到 CLI 独立配置标记（仅 Anthropic 格式） -->
++          <!-- 同步到 CLI 独立配置标记（仅 Anthropic 格式）：语义直接写进徽章文字，不依赖 hover -->
+           <span
+             v-if="format === 'anthropic' && p.harness_sync"
+             class="param vision"
+-            title="已标记同步到 CLI 独立配置（Pi/OMP）"
+-          >CLI</span>
++          >同步 Pi/OMP</span>
+           <!-- 关键 Parameters（最关键的 2-4 个） -->
+           <span v-if="thinkingType(p)" class="param key">thinking·{{ thinkingType(p) }}</span>
+           <span v-if="reasoningEffort(p)" class="param key">effort·{{ reasoningEffort(p) }}</span>
+           <span v-if="tempOf(p) !== undefined" class="param">T={{ tempOf(p) }}</span>
+           <span v-if="sourceLabel(p.source)" class="param">{{ sourceLabel(p.source) }}</span>
+         </div>
+-      </div>
+-    </div>
++      </li>
++    </ul>
+ 
+-    <!-- 空态 -->
++    <!-- 空态：标题 + 动作（P7），引导靠按钮完成 -->
+     <EmptyState
+       v-else
+       icon="≡"
+       :title="emptyTitle"
+-      :description="emptyDescription"
+-    />
++      :description="store.loadingPresets ? '正在加载预设列表…' : ''"
++    >
++      <template #action>
++        <AppButton
++          v-if="isFiltered"
++          variant="ghost"
++          size="small"
++          class="empty-action"
++          @click="store.setPresetFilter('all')"
++        >显示全部</AppButton>
++        <AppButton
++          v-else-if="!store.loadingPresets"
++          variant="primary"
++          size="small"
++          class="empty-action"
++          @click="handleAdd"
++        >添加预设</AppButton>
++      </template>
++    </EmptyState>
+     </template>
+   </div>
+ 
+@@ -172,19 +194,16 @@ const filteredPresets = computed<MergedTerminalPreset[]>(() => {
+   return allPresets.value.filter((p) => p.provider === f);
+ });
+ 
++/** 当前是否处于 provider 筛选态（空态据此给出「显示全部」而不是「添加预设」） */
++const isFiltered = computed(() => !!store.presetFilter && store.presetFilter !== 'all');
++
+ const emptyTitle = computed(() => {
+-  if (store.presetFilter && store.presetFilter !== 'all') {
+-    return `该提供商下暂无 ${engineLabel.value} 预设`;
++  if (isFiltered.value) {
++    return `${store.presetFilter} 下暂无预设`;
+   }
+   return `暂无 ${engineLabel.value} 预设`;
+ });
+ 
+-const emptyDescription = computed(() =>
+-  store.loadingPresets
+-    ? '正在加载预设列表...'
+-    : '点击右上角「添加预设」创建第一个启动配置'
+-);
+-
+ function sourceLabel(source?: string): string {
+   if (!source) return '';
+   // 后端 MergedTerminalPreset.source 实际值为 'terminal_preset'（全部来自用户 terminal_presets 配置），
+@@ -303,55 +322,82 @@ onMounted(() => {
+   flex-wrap: wrap;
+ }
+ 
+-.preset-list {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 10px;
+-}
+-
+-.preset-card {
++/* 分组列表：一个容器 + 行间分隔线（inset grouped list） */
++.preset-group {
++  list-style: none;
++  margin: 0;
++  padding: 0;
+   background: var(--card);
+   border: 1px solid var(--separator);
+   border-radius: 12px;
+-  padding: 14px 16px;
+-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
++  overflow: hidden;
+ }
+ 
+-.preset-card.clickable {
+-  cursor: pointer;
++.preset-row {
++  position: relative;
++  padding: 12px 16px;
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  transition: background 0.15s ease;
+ }
+ 
+-.preset-card.clickable:hover {
+-  border-color: var(--accent, #007aff);
+-  background: var(--hover, rgba(0, 122, 255, 0.04));
++.preset-row + .preset-row {
++  border-top: 1px solid var(--separator);
+ }
+ 
+-.preset-card.clickable:active {
+-  transform: scale(0.997);
++/* hover 底色沿用改造前的 --hover 回退值：若改用 --control，会与 .param / .preset-prov 的 --control 底同色，徽章在 hover 时「消失」 */
++.preset-row:hover {
++  background: var(--hover, rgba(0, 122, 255, 0.04));
+ }
+ 
+ .preset-head {
+   display: flex;
+   align-items: center;
+-  justify-content: space-between;
+   gap: 10px;
+-  margin-bottom: 8px;
+ }
+ 
+-.preset-head-right {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-shrink: 0;
++/* 名称按钮：::after 撑满整行作为点击热区（.preset-row 是定位祖先，按钮自身不能定位） */
++.preset-open {
++  flex: 1 1 auto;
++  min-width: 0;
++  text-align: left;
++  background: none;
++  border: none;
++  padding: 0;
++  font: inherit;
++  cursor: pointer;
++}
++
++.preset-open::after {
++  content: '';
++  position: absolute;
++  inset: 0;
++}
++
++/* 焦点框画在撑满整行的伪元素上 */
++.preset-open:focus-visible {
++  outline: none;
++}
++
++.preset-open:focus-visible::after {
++  outline: 2px solid var(--accent);
++  outline-offset: -2px;
++  border-radius: inherit;
+ }
+ 
+ .preset-name {
++  display: block;
+   font-size: 14px;
+   font-weight: 600;
+   color: var(--label);
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
+ }
+ 
+ .preset-prov {
++  flex: 0 0 auto;
+   font-size: 11px;
+   color: var(--secondary);
+   background: var(--control);
+@@ -360,8 +406,11 @@ onMounted(() => {
+   white-space: nowrap;
+ }
+ 
+-/* 删除按钮：克制小巧，hover 才显危险色，避免破坏卡片视觉节奏 */
++/* 删除按钮：克制小巧，hover 才显危险色；浮在整行热区之上，单独可聚焦 */
+ .preset-delete {
++  position: relative;
++  z-index: 1;
++  flex: 0 0 auto;
+   border: none;
+   background: transparent;
+   color: var(--tertiary);
+@@ -375,8 +424,13 @@ onMounted(() => {
+ }
+ 
+ .preset-delete:hover {
+-  color: #FF3B30;
+-  background: rgba(255, 59, 48, 0.08);
++  color: var(--danger-strong);
++  background: var(--danger-tint, rgba(255, 59, 48, 0.08));
++}
++
++.preset-delete:focus-visible {
++  outline: 2px solid var(--accent);
++  outline-offset: 1px;
+ }
+ 
+ .preset-badges {
+@@ -386,6 +440,9 @@ onMounted(() => {
+ }
+ 
+ .param {
++  min-width: 0;
++  max-width: 100%;
++  overflow-wrap: anywhere;
+   font-size: 11px;
+   color: var(--secondary);
+   background: var(--control);
+@@ -413,9 +470,13 @@ onMounted(() => {
+   background: rgba(175, 82, 222, 0.08);
+ }
+ 
+-/* 视觉能力标记：绿色弱强调，一眼识别 amagi-media-understanding 可用预设 */
++/* 视觉能力 / 同步标记：绿色弱强调；文字用 success-strong 保证对比度 */
+ .param.vision {
+-  color: #34C759;
++  color: var(--success-strong);
+   background: rgba(52, 199, 89, 0.1);
+ }
++
++.empty-action {
++  margin-top: 14px;
++}
+ </style>
+diff --git a/frontend/src/components/provider/ProviderRegistryEditor.vue b/frontend/src/components/provider/ProviderRegistryEditor.vue
+index 1d22cef..0f34bcd 100644
+--- a/frontend/src/components/provider/ProviderRegistryEditor.vue
++++ b/frontend/src/components/provider/ProviderRegistryEditor.vue
+@@ -8,44 +8,48 @@
+   VisualValueEditor 递归可视化编辑（字符串/数字/布尔/列表/嵌套对象，零 JSON）。
+   源码模式完全源码：JSON/YAML 文本直接编辑。
+   注意：amagi-* 前缀的 provider 由 CodeBox 提供商中心同步管理，手工修改可能被覆盖。
++
++  布局（provider-center-layout-redesign §4.7）：导航即标题，不再有 h2 / subtitle；
++  EditorToolbar 常显「重新进入后生效」并挂 InfoTip；“amagi-*”提供商卡头常显「受管」警示标签 +
++  卡内 warning 横幅（覆盖风险保持常显）；配置键统一 code 化；双引擎差异只在 isPi 分支。
+ -->
+ <template>
+   <div class="pre-root">
+-    <div class="pre-header">
+-      <h2 class="pre-title">{{ isPi ? 'Pi 模型提供商（models.json）' : 'OMP 模型提供商（models.yml）' }}</h2>
+-      <p class="pre-subtitle">
+-        编辑模型注册表：提供商连接信息（api / baseUrl / apiKey）与模型元数据。
+-        Agent 配置中的 provider/model 下拉即来自此文件，保存后重新进入配置页生效。
+-      </p>
+-    </div>
+-
+     <LoadingState v-if="loading" message="加载注册表中..." />
+ 
+     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
+ 
+     <template v-else>
+-      <div class="pre-toolbar">
+-        <Segmented v-model="modeModel" :options="modeOptions" variant="pill" class="pre-mode-tabs" />
+-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+-          {{ saving ? '保存中...' : '保存配置' }}
+-        </AppButton>
+-      </div>
+-
+-      <div class="pre-path-row">
+-        <span class="pre-path-label">注册表文件：</span>
+-        <code class="pre-path-value">{{ configPath || '加载中...' }}</code>
+-        <AppButton v-if="configPath" variant="ghost" size="small" class="pre-copy-btn" @click="copyPath">
+-          复制路径
+-        </AppButton>
+-      </div>
+-
+-      <div v-if="parseError" class="pre-parse-error">{{ parseError }}（可视化不可用，请切到源码模式修复）</div>
+-      <div v-else-if="mode === 'source'" class="pre-parse-valid">{{ isPi ? 'JSON' : 'YAML' }} 合法</div>
++      <!-- 工具栏：路径胶囊 + 合法状态 ····· 生效标签 ⓘ + 模式切换 + 保存。双引擎差异只出现在 isPi 分支 -->
++      <EditorToolbar
++        :path="configPath"
++        path-label="注册表文件"
++        effect="重新进入后生效"
++        :effect-tip="REGISTRY_EFFECT_TIP"
++        :valid-label="mode === 'source' && !parseError ? (isPi ? 'JSON 合法' : 'YAML 合法') : ''"
++        @copy-path="copyPath"
++      >
++        <template #actions>
++          <Segmented v-model="modeModel" :options="modeOptions" variant="pill" />
++          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
++            {{ saving ? '保存中...' : '保存配置' }}
++          </AppButton>
++        </template>
++      </EditorToolbar>
++
++      <StatusBanner
++        v-if="parseError"
++        compact
++        type="error"
++        role="alert"
++        class="pre-parse-error"
++        :message="`${parseError}，可视化不可用，请切换到 ${isPi ? 'JSON' : 'YAML'} 模式修复`"
++      />
+ 
+       <!-- 可视化模式 -->
+       <div v-if="mode === 'visual'" class="pre-visual">
+         <div v-if="providerNames.length === 0" class="pre-empty">
+-          <EmptyState title="注册表为空" description="尚无提供商，添加一个开始配置模型。" />
++          <EmptyState title="暂无提供商" />
+         </div>
+ 
+         <ConfigCategoryCard
+@@ -55,14 +59,20 @@
+           :category="'provider'"
+           :expanded="expandedProviders[name] ?? false"
+           :badge="modelCount(name)"
++          :meta="name.startsWith('amagi-') ? '受管' : undefined"
++          meta-tone="warning"
+           @toggle="toggleProvider(name)"
+         >
+-          <div v-if="name.startsWith('amagi-')" class="pre-managed-warn">
+-            amagi-* 提供商由 CodeBox 提供商中心同步管理，手工修改可能在下次同步时被覆盖。
+-          </div>
+-          <div class="pre-fields">
++          <StatusBanner
++            v-if="name.startsWith('amagi-')"
++            compact
++            type="warning"
++            class="pre-managed-warn"
++            message="由 CodeBox 提供商中心同步管理，手动修改可能在下次同步时被覆盖"
++          />
++          <div class="pre-fields pre-fields-grid">
+             <div class="pre-field">
+-              <label class="pre-label">api（协议类型）</label>
++              <FieldLabel text="协议" code="api" />
+               <Dropdown
+                 v-if="!providerApiRaw(name) || API_OPTIONS.some((o) => o.value === providerApiRaw(name))"
+                 :model-value="providerApiRaw(name)"
+@@ -79,7 +89,7 @@
+               />
+             </div>
+             <div class="pre-field">
+-              <label class="pre-label">baseUrl</label>
++              <FieldLabel text="Base URL" code="baseUrl" />
+               <TextInput
+                 :model-value="providerFieldString(name, 'baseUrl')"
+                 mono
+@@ -88,21 +98,28 @@
+               />
+             </div>
+             <div class="pre-field">
+-              <label class="pre-label">apiKey（留空表示未设置）</label>
++              <FieldLabel text="API Key" code="apiKey" />
+               <TextInput
+                 :model-value="providerFieldString(name, 'apiKey')"
+                 type="password"
+                 mono
+-                placeholder="sk-..."
++                placeholder="留空表示未设置"
+                 @update:model-value="setProviderField(name, 'apiKey', $event)"
+               />
+             </div>
+           </div>
+ 
+-          <!-- provider 级其他字段（auth: none / authHeader 等），完全可视化 -->
++          <!-- provider 级其他字段（auth: none / authHeader 等），完全可视化；没有字段时不占位 -->
+           <div class="pre-unknown">
+-            <div class="pre-unknown-title">其他字段</div>
+-            <div v-if="providerUnknownKeys(name).length === 0" class="pre-unknown-empty">暂无其他字段</div>
++            <div class="pre-section-head">
++              <span class="pre-unknown-title">其他字段</span>
++              <div class="pre-actions">
++                <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
++                <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
++                <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
++                <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
++              </div>
++            </div>
+             <div v-for="k in providerUnknownKeys(name)" :key="k" class="pre-unknown-item">
+               <div class="pre-unknown-head">
+                 <span class="pre-unknown-key">{{ k }}</span>
+@@ -115,18 +132,12 @@
+                 @update:model-value="setProviderField(name, k, $event)"
+               />
+             </div>
+-            <div class="pre-actions">
+-              <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
+-              <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
+-              <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
+-              <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
+-            </div>
+           </div>
+ 
+           <!-- 模型列表 -->
+           <div class="pre-models">
+             <div class="pre-models-head">
+-              <span class="pre-label">模型（{{ modelCount(name) }}）</span>
++              <span class="pre-label">模型</span>
+             </div>
+             <div v-for="(m, idx) in providerModels(name)" :key="idx" class="pre-model">
+               <div class="pre-model-head">
+@@ -151,7 +162,7 @@
+               </div>
+               <div class="pre-model-grid">
+                 <div class="pre-field">
+-                  <label class="pre-label">显示名（name）</label>
++                  <FieldLabel text="显示名" code="name" />
+                   <TextInput
+                     :model-value="modelFieldString(name, idx, 'name')"
+                     placeholder="展示名称，可留空"
+@@ -159,7 +170,7 @@
+                   />
+                 </div>
+                 <div class="pre-field">
+-                  <label class="pre-label">上下文窗口（contextWindow）</label>
++                  <FieldLabel text="上下文窗口" code="contextWindow" />
+                   <TextInput
+                     :model-value="modelFieldString(name, idx, 'contextWindow')"
+                     type="number"
+@@ -168,7 +179,7 @@
+                   />
+                 </div>
+                 <div class="pre-field">
+-                  <label class="pre-label">最大输出（maxTokens）</label>
++                  <FieldLabel text="最大输出" code="maxTokens" />
+                   <TextInput
+                     :model-value="modelFieldString(name, idx, 'maxTokens')"
+                     type="number"
+@@ -177,20 +188,27 @@
+                   />
+                 </div>
+               </div>
+-              <!-- 模型高级字段：专用可视化编辑器，完全可视化 -->
++              <!-- 模型高级字段：专用可视化编辑器，完全可视化；没有字段时不占位，添加入口常在标题行 -->
+               <div class="pre-unknown">
+-                <div class="pre-unknown-title">高级字段</div>
+-                <div
+-                  v-if="modelAdvancedPresent(name, idx).length === 0 && modelExtraKeys(name, idx).length === 0"
+-                  class="pre-unknown-empty"
+-                >
+-                  暂无高级字段
++                <div class="pre-section-head">
++                  <span class="pre-unknown-title">高级字段</span>
++                  <div class="pre-actions">
++                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinkingLevelMap')">+ 级别映射</AppButton>
++                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinking')">+ thinking</AppButton>
++                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'input')">+ 输入能力</AppButton>
++                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'cost')">+ 费用</AppButton>
++                    <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, {})">+ 对象字段</AppButton>
++                    <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, '')">+ 字符串字段</AppButton>
++                  </div>
+                 </div>
+ 
+                 <!-- thinkingLevelMap：级别映射 -->
+                 <div v-if="hasModelField(name, idx, 'thinkingLevelMap')" class="pre-unknown-item">
+                   <div class="pre-unknown-head">
+-                    <span class="pre-unknown-key">thinkingLevelMap（级别映射）</span>
++                    <span class="pre-key-row">
++                      <span class="pre-key-name">级别映射</span>
++                      <code class="pre-key-code">thinkingLevelMap</code>
++                    </span>
+                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'thinkingLevelMap')">
+                       <span class="pre-remove">×</span>
+                     </AppButton>
+@@ -204,7 +222,10 @@
+                 <!-- thinking：mode + levels -->
+                 <div v-if="hasModelField(name, idx, 'thinking')" class="pre-unknown-item">
+                   <div class="pre-unknown-head">
+-                    <span class="pre-unknown-key">thinking（思考模式）</span>
++                    <span class="pre-key-row">
++                      <span class="pre-key-name">思考模式</span>
++                      <code class="pre-key-code">thinking</code>
++                    </span>
+                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'thinking')">
+                       <span class="pre-remove">×</span>
+                     </AppButton>
+@@ -236,7 +257,10 @@
+                 <!-- input：输入能力 -->
+                 <div v-if="hasModelField(name, idx, 'input')" class="pre-unknown-item">
+                   <div class="pre-unknown-head">
+-                    <span class="pre-unknown-key">input（输入能力）</span>
++                    <span class="pre-key-row">
++                      <span class="pre-key-name">输入能力</span>
++                      <code class="pre-key-code">input</code>
++                    </span>
+                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'input')">
+                       <span class="pre-remove">×</span>
+                     </AppButton>
+@@ -254,7 +278,11 @@
+                 <!-- cost：四项费用 -->
+                 <div v-if="hasModelField(name, idx, 'cost')" class="pre-unknown-item">
+                   <div class="pre-unknown-head">
+-                    <span class="pre-unknown-key">cost（USD / 百万 token）</span>
++                    <span class="pre-key-row">
++                      <span class="pre-key-name">费用</span>
++                      <code class="pre-key-code">cost</code>
++                      <span class="pre-unit">USD / 百万 token</span>
++                    </span>
+                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'cost')">
+                       <span class="pre-remove">×</span>
+                     </AppButton>
+@@ -285,15 +313,6 @@
+                     @update:model-value="setModelField(name, idx, k, $event)"
+                   />
+                 </div>
+-
+-                <div class="pre-actions">
+-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinkingLevelMap')">+ 级别映射</AppButton>
+-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinking')">+ thinking</AppButton>
+-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'input')">+ 输入能力</AppButton>
+-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'cost')">+ 费用</AppButton>
+-                  <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, {})">+ 对象字段</AppButton>
+-                  <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, '')">+ 字符串字段</AppButton>
+-                </div>
+               </div>
+             </div>
+             <div class="pre-actions">
+@@ -302,7 +321,7 @@
+           </div>
+ 
+           <div class="pre-actions pre-provider-actions">
+-            <AppButton variant="ghost" size="small" @click="removeProvider(name)">删除提供商 {{ name }}</AppButton>
++            <AppButton variant="danger" size="small" @click="removeProvider(name)">删除提供商 {{ name }}</AppButton>
+           </div>
+         </ConfigCategoryCard>
+ 
+@@ -369,6 +388,9 @@ import Badge from '../ui/Badge.vue';
+ import LoadingState from '../ui/LoadingState.vue';
+ import ErrorState from '../ui/ErrorState.vue';
+ import EmptyState from '../ui/EmptyState.vue';
++import StatusBanner from '../ui/StatusBanner.vue';
++import EditorToolbar from '../ui/EditorToolbar.vue';
++import FieldLabel from '../ui/FieldLabel.vue';
+ import ConfigCategoryCard from './ConfigCategoryCard.vue';
+ import StringListEditor from './StringListEditor.vue';
+ import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
+@@ -380,6 +402,10 @@ const { showSuccess, showError } = useToast();
+ 
+ const isPi = computed(() => props.engine === 'pi');
+ 
++/** 工具栏「重新进入后生效」标签的补充说明（design §5.2 T46） */
++const REGISTRY_EFFECT_TIP =
++  'Agent 配置的 provider / model 下拉读取此文件；保存后重新进入 Agent 配置页即可看到更新。';
++
+ const modeOptions = computed(() => [
+   { value: 'visual', label: '可视化' },
+   { value: 'source', label: isPi.value ? 'JSON' : 'YAML' },
+@@ -810,80 +836,10 @@ onMounted(() => {
+ .pre-root {
+   display: flex;
+   flex-direction: column;
+-  gap: 16px;
+-}
+-
+-.pre-header {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 4px;
+-}
+-
+-.pre-title {
+-  font-size: 17px;
+-  font-weight: 600;
+-  color: var(--label);
+-  margin: 0;
+-}
+-
+-.pre-subtitle {
+-  font-size: 13px;
+-  color: var(--secondary);
+-  margin: 0;
+-  line-height: 1.6;
+-}
+-
+-.pre-toolbar {
+-  display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+   gap: 12px;
+-  flex-wrap: wrap;
+-}
+-
+-.pre-mode-tabs {
+-  display: inline-flex;
+-}
+-
+-.pre-path-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-wrap: wrap;
+-}
+-
+-.pre-path-label {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-}
+-
+-.pre-path-value {
+-  font-family: var(--mono);
+-  font-size: 11.5px;
+-  color: var(--secondary);
+-  background: var(--control);
+-  padding: 4px 8px;
+-  border-radius: 6px;
+ }
+ 
+-.pre-copy-btn {
+-  font-size: 11px;
+-  padding: 4px 10px;
+-}
+-
+-.pre-parse-error {
+-  font-size: 12px;
+-  color: var(--danger);
+-  background: rgba(255, 59, 48, 0.1);
+-  padding: 8px 12px;
+-  border-radius: 8px;
+-}
+-
+-.pre-parse-valid {
+-  font-size: 12px;
+-  color: var(--success);
+-  padding: 4px 0;
+-}
++/* .pre-parse-error / .pre-managed-warn 仅作样式锚点：背景与内边距交给 StatusBanner compact */
+ 
+ .pre-visual {
+   display: flex;
+@@ -898,14 +854,18 @@ onMounted(() => {
+   padding: 8px 16px;
+ }
+ 
++/* 虚线框内的空态紧凑化（EmptyState 默认上下 44px + 48px 图标，在框里显得过高） */
++.pre-empty :deep(.empty-state) {
++  padding: 22px 16px;
++}
++
++.pre-empty :deep(.empty-icon) {
++  font-size: 34px;
++  margin-bottom: 10px;
++}
++
+ .pre-managed-warn {
+-  font-size: 12px;
+-  color: var(--warning, #b8860b);
+-  background: var(--control);
+-  border-radius: 8px;
+-  padding: 8px 12px;
+   margin-bottom: 10px;
+-  line-height: 1.6;
+ }
+ 
+ .pre-fields {
+@@ -914,10 +874,18 @@ onMounted(() => {
+   gap: 10px;
+ }
+ 
++/* 协议 / Base URL / API Key 三项并排，窗口窄时自动折行 */
++.pre-fields-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
++  gap: 10px;
++}
++
+ .pre-field {
+   display: flex;
+   flex-direction: column;
+   gap: 6px;
++  min-width: 0;
+ }
+ 
+ .pre-label {
+@@ -935,6 +903,15 @@ onMounted(() => {
+   border-top: 1px dashed var(--separator);
+ }
+ 
++/* 分区标题行：标题 + 该区的「添加」按钮同行，没有字段时不再留「暂无…」空行 */
++.pre-section-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  flex-wrap: wrap;
++}
++
+ .pre-unknown-title {
+   font-size: 11px;
+   font-weight: 600;
+@@ -942,12 +919,6 @@ onMounted(() => {
+   letter-spacing: 0.3px;
+ }
+ 
+-.pre-unknown-empty {
+-  font-size: 12px;
+-  color: var(--tertiary);
+-  padding: 2px 0;
+-}
+-
+ .pre-unknown-head {
+   display: flex;
+   align-items: center;
+@@ -974,12 +945,38 @@ onMounted(() => {
+   gap: 10px;
+ }
+ 
++/* 原始键名（用户自定义字段）：等宽 */
+ .pre-unknown-key {
+   font-family: var(--mono);
+   font-size: 11.5px;
+   color: var(--secondary);
+ }
+ 
++/* 已知高级字段键名行：中文名 + 等宽 code（规格同 FieldLabel 的 .fl-code） */
++.pre-key-row {
++  display: inline-flex;
++  align-items: baseline;
++  gap: 6px;
++  min-width: 0;
++}
++
++.pre-key-name {
++  font-size: 12px;
++  font-weight: 500;
++  color: var(--secondary);
++}
++
++.pre-key-code {
++  font-family: var(--mono);
++  font-size: 10.5px;
++  color: var(--tertiary);
++}
++
++.pre-unit {
++  font-size: 11px;
++  color: var(--tertiary);
++}
++
+ .pre-models {
+   display: flex;
+   flex-direction: column;
+@@ -1049,7 +1046,9 @@ onMounted(() => {
+   flex-wrap: wrap;
+ }
+ 
++/* flex-basis 给足宽度：不设时输入框按内容收缩，placeholder 「新提供商名（如 amagi-my-relay）」会被截断 */
+ .pre-add-input {
++  flex: 1 1 260px;
+   max-width: 320px;
+ }
+ 
+diff --git a/frontend/src/components/ui/EmptyState.vue b/frontend/src/components/ui/EmptyState.vue
+index ccd336c..de2b586 100644
+--- a/frontend/src/components/ui/EmptyState.vue
++++ b/frontend/src/components/ui/EmptyState.vue
+@@ -2,7 +2,7 @@
+   <div class="empty-state">
+     <div class="empty-icon">{{ icon }}</div>
+     <h3>{{ title }}</h3>
+-    <p>{{ description }}</p>
++    <p v-if="description">{{ description }}</p>
+     <slot name="action" />
+   </div>
+ </template>
+@@ -11,11 +11,13 @@
+ interface Props {
+   icon?: string;
+   title: string;
+-  description: string;
++  /** 可选：仅在补充「非显然事实」时才写（P7）；引导靠 action 插槽里的按钮完成 */
++  description?: string;
+ }
+ 
+ withDefaults(defineProps<Props>(), {
+   icon: '—',
++  description: '',
+ });
+ </script>
+ 
+diff --git a/frontend/src/components/ui/StatusBanner.vue b/frontend/src/components/ui/StatusBanner.vue
+index a98504b..ebc3273 100644
+--- a/frontend/src/components/ui/StatusBanner.vue
++++ b/frontend/src/components/ui/StatusBanner.vue
+@@ -14,10 +14,13 @@ interface Props {
+   type?: 'warning' | 'error';
+   message: string;
+   actionText?: string;
++  /** 紧凑模式（provider-center-layout-redesign）：编辑器内联警示用，更小的内边距与圆角 */
++  compact?: boolean;
+ }
+ 
+ const props = withDefaults(defineProps<Props>(), {
+   type: 'warning',
++  compact: false,
+ });
+ 
+ defineEmits<{
+@@ -27,6 +30,7 @@ defineEmits<{
+ const classes = computed(() => ({
+   'status-banner': true,
+   [props.type]: true,
++  compact: props.compact,
+ }));
+ </script>
+ 
+@@ -40,6 +44,13 @@ const classes = computed(() => ({
+   font-size: 12px;
+ }
+ 
++.status-banner.compact {
++  padding: 6px 10px;
++  border-radius: 8px;
++  gap: 8px;
++  font-size: 12px;
++}
++
+ .status-banner.warning {
+   background: rgba(255, 149, 0, 0.08);
+   border: 1px solid rgba(255, 149, 0, 0.3);
+diff --git a/frontend/src/styles/tokens.css b/frontend/src/styles/tokens.css
+index bd795a8..f17c597 100644
+--- a/frontend/src/styles/tokens.css
++++ b/frontend/src/styles/tokens.css
+@@ -53,4 +53,14 @@
+   /* Elevation */
+   --shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 6px 18px rgba(0, 0, 0, .05);
+   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
++
++  /*
++   * provider-center-layout-redesign（spec change，仅新增）：
++   * --popover / --shadow-pop 供浮层（InfoTip）使用，实色，skin.css 不覆盖，
++   * 因此皮肤模式下浮层仍是不透明底；--warning-tint 配合 --warning-strong
++   * 文字用于「受管」等警示 meta 标签的浅色底。
++   */
++  --popover: #FFFFFF;
++  --shadow-pop: 0 8px 24px rgba(0, 0, 0, .16);
++  --warning-tint: rgba(255, 149, 0, .12);
+ }
+diff --git a/frontend/src/views/ProviderCenterView.vue b/frontend/src/views/ProviderCenterView.vue
+index 1302e15..9ccdf18 100644
+--- a/frontend/src/views/ProviderCenterView.vue
++++ b/frontend/src/views/ProviderCenterView.vue
+@@ -1,15 +1,15 @@
+ <template>
+   <!--
+-    Provider Center - 两级导航容器（对照 demo + 交接说明 §5.3）。
+-    一级 Segmented(pill): 「服务提供商」|「预设」
+-    区域标签：服务提供商区描述「底层资源」；预设区描述「启动配置」
+-    服务提供商 tab（本批实现）：网格 + 详情模式切换
+-    预设 tab：二级导航拆两组——「格式预设」（Anthropic/OpenAI 公共协议格式）
+-    与「CLI 独立配置」（OpenCode/Pi/OMP 专属配置文件），组间视觉分隔；
++    Provider Center - 多级导航容器（对照 demo + 交接说明 §5.3）。
++    一级 Segmented(pill): 「服务提供商」|「预设」|「CLI 独立配置」
++    服务提供商 tab：网格 + 详情模式切换
++    预设 tab / CLI 独立配置 tab（provider-center-layout-redesign）：
++    二级 underline Tab 与三级紧凑 pill 合并为一行 .pc-subnav（通栏分隔线），
++    导航即标题——不再有 zone-label 行；预设页右侧用一句「用于 …」说明适用 CLI。
+     CLI 独立配置组件全部 defineAsyncComponent 懒加载，退出入口 chunk。
+   -->
+   <section class="view-provider">
+-    <PageHead title="Provider Center" description="统一管理服务提供商与可跨 CLI 复用的公共预设" />
++    <PageHead title="Provider Center" description="管理服务提供商、公共预设与各 CLI 独立配置" />
+ 
+     <!--
+       RC4-2：远程模式下 providers tab 消费远端数据（legacy）；顶部轻提示过渡语义。
+@@ -63,7 +63,7 @@
+       </div>
+ 
+       <!-- 服务提供商区：远程模式 → 远端数据源（RC4）；本机 → 本地网格 -->
+-      <div v-if="mainTab === 'providers'" class="pc-panel">
++      <div v-if="mainTab === 'providers'" class="pc-panel pc-panel-providers">
+         <RemoteProviderPanel
+           v-if="rcStore.isRemoteMode"
+           @configure-token="tokenDialogOpen = true"
+@@ -75,20 +75,17 @@
+       </div>
+ 
+       <!-- 预设区（启动配置：公共格式）-->
+-      <div v-else-if="mainTab === 'presets'" class="pc-panel pc-presets-panel">
+-        <div class="pc-zone-label">
+-          <span>格式预设</span>
+-          <span class="zn-sep">·</span>
+-          <span>跨 CLI 复用的公共协议格式</span>
++      <div v-else-if="mainTab === 'presets'" class="pc-panel">
++        <div class="pc-subnav">
++          <Segmented
++            v-model="formatModel"
++            :options="FORMAT_TABS"
++            variant="underline"
++            class="pc-subnav-tabs"
++          />
++          <span class="pc-subnav-caption">{{ formatConsumers }}</span>
+         </div>
+ 
+-        <Segmented
+-          v-model="formatModel"
+-          :options="FORMAT_TABS"
+-          variant="underline"
+-          class="pc-engine-tabs"
+-        />
+-
+         <!-- Claude Code 复用 Anthropic 格式公共预设。 -->
+         <PresetList
+           v-if="store.presetEngine === 'anthropic'"
+@@ -102,28 +99,44 @@
+       </div>
+ 
+       <!-- CLI 独立配置区（各 CLI 专属配置文件）-->
+-      <div v-else-if="mainTab === 'cliconfigs'" class="pc-panel pc-presets-panel">
+-        <div class="pc-zone-label">
+-          <span>CLI 专属配置</span>
+-          <span class="zn-sep">·</span>
+-          <span>各 CLI 专属配置文件，互不共享</span>
+-        </div>
+-
+-        <Segmented
+-          v-model="cliModel"
+-          :options="CLI_TABS"
+-          variant="underline"
+-          class="pc-engine-tabs"
+-        />
+-
+-        <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 | 认证登录 -->
+-        <template v-if="store.presetEngine === 'pi'">
++      <div v-else-if="mainTab === 'cliconfigs'" class="pc-panel">
++        <!--
++          二三级导航合并为一行：左侧二级 underline Tab（Pi / OMP / OpenCode），
++          右侧三级紧凑 pill（随二级切换）。三级留在容器里而不是下放进编辑器，
++          这样异步编辑器加载中 / 加载失败时用户仍可切换 Tab。
++        -->
++        <div class="pc-subnav">
+           <Segmented
++            v-model="cliModel"
++            :options="CLI_TABS"
++            variant="underline"
++            class="pc-subnav-tabs"
++          />
++          <Segmented
++            v-if="store.presetEngine === 'pi'"
+             v-model="piMode"
+             :options="PI_MODES"
+             variant="pill"
+-            class="oc-mode-tabs"
++            class="pc-subnav-modes"
+           />
++          <Segmented
++            v-else-if="store.presetEngine === 'omp'"
++            v-model="ompMode"
++            :options="OMP_MODES"
++            variant="pill"
++            class="pc-subnav-modes"
++          />
++          <Segmented
++            v-else-if="store.presetEngine === 'opencode'"
++            v-model="openCodeMode"
++            :options="OPENCODE_MODES"
++            variant="pill"
++            class="pc-subnav-modes"
++          />
++        </div>
++
++        <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 | 认证登录 -->
++        <template v-if="store.presetEngine === 'pi'">
+           <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" />
+           <ProviderRegistryEditor v-else-if="piMode === 'registry'" :key="presetLoadKey" engine="pi" />
+           <AuthConfigEditor v-else :key="presetLoadKey" />
+@@ -131,25 +144,12 @@
+ 
+         <!-- OMP (oh-my-pi) 结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
+         <template v-else-if="store.presetEngine === 'omp'">
+-          <Segmented
+-            v-model="ompMode"
+-            :options="OMP_MODES"
+-            variant="pill"
+-            class="oc-mode-tabs"
+-          />
+           <OmpGlobalConfig v-if="ompMode === 'agents'" :key="presetLoadKey" />
+           <ProviderRegistryEditor v-else :key="presetLoadKey" engine="omp" />
+         </template>
+ 
+         <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
+         <template v-else-if="store.presetEngine === 'opencode'">
+-          <!-- 三级 Segmented：预设管理 | 全局配置 -->
+-          <Segmented
+-            v-model="openCodeMode"
+-            :options="OPENCODE_MODES"
+-            variant="pill"
+-            class="oc-mode-tabs"
+-          />
+           <!-- OpenCode 预设管理 -->
+           <OpenCodePresets
+             v-if="openCodeMode === 'presets'"
+@@ -301,6 +301,11 @@ const cliModel = computed<string>({
+   },
+ });
+ 
++// 预设页 subnav 右侧说明：对谁有用（Claude Code 消费 Anthropic 格式；Codex / Pi / OMP 消费 OpenAI 格式）
++const formatConsumers = computed(() =>
++  store.presetEngine === 'openai' ? '用于 Codex · Pi · OMP' : '用于 Claude Code',
++);
++
+ // CLI 独立配置组件懒加载（AppShell.vue:37-43 模式）：合计约 4,100 行且非默认视图，
+ // 异步加载使其退出入口 chunk；delay 避免快速切换时 loading 闪烁。
+ // 更换 presetLoadKey 会重新挂载异步组件并重新执行 loader（动态 import 可重试）。
+@@ -432,6 +437,12 @@ function handleAdd() {
+ .pc-card {
+   /* 覆盖 ConfigCard 默认 padding，让 Segmented 顶部贴合 */
+   padding: 14px 16px 18px;
++  /*
++   * ConfigCard 默认 gap:16px 会和 .pc-panel 的 margin-top 叠加。设计意图是「一级导航→subnav = 12px」，
++   * 所以把卡片 gap 收到 12px、面板 margin 为 0；服务提供商面板用 .pc-panel-providers 补 10px，
++   * 保持原来的 22px（那一页不在本次改造范围内，视觉不变）。
++   */
++  gap: 12px;
+ }
+ 
+ .pc-main-tabs {
+@@ -464,61 +475,62 @@ function handleAdd() {
+   padding: 7px 18px;
+ }
+ 
++/* 面板容器：服务提供商面板只有一个子元素，gap 不起作用 */
+ .pc-panel {
+-  margin-top: 6px;
+-}
+-
+-.pc-presets-panel {
+   display: flex;
+   flex-direction: column;
+   gap: 14px;
+ }
+ 
+-.pc-zone-label {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  font-size: 11px;
+-  font-weight: 600;
+-  color: var(--tertiary);
+-  padding: 0 2px;
+-  letter-spacing: 0.3px;
+-}
+-
+-.pc-zone-label .zn-sep {
+-  color: var(--separator);
++.pc-panel-providers {
++  margin-top: 10px;
+ }
+ 
+-/* 二级导航两组：组标签（复用 .pc-zone-label 范式）+ underline Segmented */
+-.pc-engine-group {
++/*
++ * 二三级合并导航一行：左 underline Tab（二级），右紧凑 pill（三级）/ 预设页的「用于 …」说明，
++ * 整行底部一条通栏分隔线；最小窗口宽度下 flex-wrap 自动换行，换行后仍压在分隔线上方。
++ */
++.pc-subnav {
+   display: flex;
+-  flex-direction: column;
+-  gap: 6px;
++  align-items: flex-end;
++  justify-content: space-between;
++  gap: 8px 16px;
++  flex-wrap: wrap;
++  border-bottom: 1px solid var(--separator);
+ }
+ 
+-/* 组间视觉分隔 */
+-.pc-group-divider {
+-  height: 1px;
+-  background: var(--separator);
+-  opacity: 0.6;
++/*
++ * Segmented 的 class 落在其根节点 .segmented 上（不是后代），所以对根节点的覆写要写成
++ * .pc-subnav-tabs.underline-tabs（组合选择器特异性 > Segmented 自身的 .underline-tabs），
++ * 而不是 :deep(.segmented)。underline-seg 自带 margin-bottom:-1px，选中下划线会压在通栏分隔线上。
++ */
++.pc-subnav-tabs.underline-tabs {
++  border-bottom: none;
+ }
+ 
+-/* 二级下划线 Tab：与一级 pill 区分层级（对照 demo .pc-engine-tabs） */
+-.pc-engine-tabs {
+-  align-self: flex-start;
++.pc-subnav-caption {
++  font-size: 12px;
++  color: var(--tertiary);
++  /* 8px：与左侧 13px Tab 文字同基线（实测 10px 时偏高约 1.5px） */
++  padding-bottom: 8px;
++  white-space: nowrap;
+ }
+ 
+-.pc-engine-tabs :deep(.segmented) {
+-  display: inline-flex;
++/* 三级紧凑 pill：12px，seg padding 4px 12px，容器 padding 2 / radius 8 */
++.pc-subnav-modes {
++  margin-bottom: 6px;
+ }
+ 
+-/* OpenCode 三级 Tab */
+-.oc-mode-tabs {
+-  align-self: flex-start;
+-  margin-top: 10px;
++.pc-subnav-modes.segmented {
++  display: inline-flex;
++  padding: 2px;
++  border-radius: 8px;
+ }
+ 
+-.oc-mode-tabs :deep(.segmented) {
+-  display: inline-flex;
++.pc-subnav-modes :deep(.seg) {
++  flex: 0 0 auto;
++  padding: 4px 12px;
++  font-size: 12px;
++  white-space: nowrap;
+ }
+ </style>

@@ -1,0 +1,22 @@
+ M e2e/pi-amagi-config.html
+ M e2e/pi-amagi-config.spec.ts
+ M frontend/src/components/provider/AuthConfigEditor.vue
+ M frontend/src/components/provider/ConfigCategoryCard.vue
+ M frontend/src/components/provider/OmpGlobalConfig.vue
+ M frontend/src/components/provider/OpenCodeGlobalConfig.vue
+ M frontend/src/components/provider/OpenCodePresets.vue
+ M frontend/src/components/provider/PiAmagiConfig.vue
+ M frontend/src/components/provider/PresetList.vue
+ M frontend/src/components/provider/ProviderRegistryEditor.vue
+ M frontend/src/components/ui/Dropdown.vue
+ M frontend/src/components/ui/EmptyState.vue
+ M frontend/src/components/ui/StatusBanner.vue
+ M frontend/src/styles/tokens.css
+ M frontend/src/views/ProviderCenterView.vue
+?? frontend/src/components/provider/configNavigation.ts
+?? frontend/src/components/ui/EditorSection.vue
+?? frontend/src/components/ui/EditorToolbar.vue
+?? frontend/src/components/ui/FieldLabel.vue
+?? frontend/src/components/ui/InfoTip.vue
+?? frontend/src/components/ui/SectionNav.vue
+?? frontend/src/components/ui/sectionVisibility.ts

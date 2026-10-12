@@ -1,0 +1,4 @@
+# 视觉证据（截图 PNG）仅保留本地，不入库：仓库 agent-outputs 惯例为文本产物；
+# 截图路径由 impl-report.md / workflow.md 引用，需要复核时在本机查看。
+screenshots/
+*.png

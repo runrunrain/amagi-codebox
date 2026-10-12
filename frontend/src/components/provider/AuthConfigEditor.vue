@@ -5,47 +5,48 @@
   仅展示状态（accountId / 过期时间），token 不展示、保存时原样保留。
   其余未知字段走 VisualValueEditor 递归可视化编辑（零 JSON）。
   源码模式：JSON 文本直接编辑。保存走后端校验 + 原子写入（0600）。
+
+  布局（provider-center-layout-redesign §4.8）：导航即标题，不再有 h2 / subtitle；
+  OAuth 行常显「由 pi CLI 管理」标签 + InfoTip（只读语义不再靠一段灰字）；
+  空态把 OAuth 途径写进一句话（没有 OAuth 条目时这是唯一的承载位置）。
 -->
 <template>
-  <div class="ace-root">
-    <div class="ace-header">
-      <h2 class="ace-title">Pi 认证登录（auth.json）</h2>
-      <p class="ace-subtitle">
-        管理提供商凭据：API Key 可在此直接填写；OAuth 凭据由 pi CLI 登录产生，
-        此处仅展示状态。Agent 配置下拉中以 ✓ 标注已认证的提供商。
-      </p>
-    </div>
-
+  <div ref="editorRoot" class="ace-root" :class="{ 'editor-local-layout': navigation === 'local' }">
+    <SectionNav v-if="navigation === 'local'" label="配置分区" :groups="localGroups" :current-id="mode === 'visual' ? activeSection : ''" controls-id="ace-editor-detail" :notice="mode !== 'visual' ? '源码模式：返回可视化后切换分区' : ''" @select="selectSection" />
+    <div id="ace-editor-detail" class="editor-detail">
     <LoadingState v-if="loading" message="加载凭据中..." />
 
     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
 
     <template v-else>
-      <div class="ace-toolbar">
-        <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" class="ace-mode-tabs" />
-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
-          {{ saving ? '保存中...' : '保存配置' }}
-        </AppButton>
-      </div>
+      <!-- 工具栏：路径胶囊 + JSON 合法状态 ····· 模式切换 + 保存 -->
+      <EditorToolbar
+        :path="configPath"
+        path-label="凭据文件"
+        :valid-label="mode === 'source' && !parseError ? 'JSON 合法' : ''"
+        @copy-path="copyPath"
+      >
+        <template #actions>
+          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
+          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+            {{ saving ? '保存中...' : '保存配置' }}
+          </AppButton>
+        </template>
+      </EditorToolbar>
 
-      <div class="ace-path-row">
-        <span class="ace-path-label">凭据文件：</span>
-        <code class="ace-path-value">{{ configPath || '加载中...' }}</code>
-        <AppButton v-if="configPath" variant="ghost" size="small" class="ace-copy-btn" @click="copyPath">
-          复制路径
-        </AppButton>
-      </div>
-
-      <div v-if="parseError" class="ace-parse-error">{{ parseError }}（可视化不可用，请切到源码模式修复）</div>
-      <div v-else-if="mode === 'source'" class="ace-parse-valid">JSON 合法</div>
+      <StatusBanner
+        v-if="parseError"
+        compact
+        type="error"
+        role="alert"
+        class="ace-parse-error"
+        :message="`${parseError}，可视化不可用，请切换到 JSON 模式修复`"
+      />
 
       <!-- 可视化模式 -->
       <div v-if="mode === 'visual'" class="ace-visual">
-        <div v-if="entries.length === 0" class="ace-empty">
-          <EmptyState title="暂无认证条目" description="为提供商添加 API Key，或通过 pi CLI 登录 OAuth 提供商。" />
-        </div>
-
-        <div v-for="row in entries" :key="row.name" class="ace-entry">
+        <template v-for="row in entries" :key="row.uiId">
+        <EditorSection v-if="visited[row.uiId]" v-show="activeSection === row.uiId" :active="activeSection === row.uiId" :section-id="row.uiId" :title="row.name">
           <div class="ace-entry-head">
             <TextInput
               :model-value="row.name"
@@ -54,8 +55,36 @@
               class="ace-name"
               @update:model-value="renameEntry(row.name, $event)"
             />
-            <Badge :type="row.kind === 'oauth' ? 'source' : 'tag'" :text="row.typeLabel" />
-            <AppButton variant="icon" size="small" aria-label="删除条目" @click="removeEntry(row.name)">
+            <!-- 类型徽章统一用 source 型：原 api_key 行用的 tag 型是「白字 + 透明底」，落在白卡片上完全不可见 -->
+            <Badge type="source" :text="row.typeLabel" />
+            <!-- OAuth 只读：常显「由 pi CLI 管理」标签 + 说明 InfoTip（没有 OAuth 条目时由空态文案承载） -->
+            <template v-if="row.kind === 'oauth'">
+              <span class="ace-managed">
+                <svg
+                  viewBox="0 0 16 16"
+                  width="12"
+                  height="12"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
+                  <path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" />
+                </svg>
+                由 pi CLI 管理
+              </span>
+              <InfoTip label="OAuth 凭据" :text="OAUTH_TIP" />
+            </template>
+            <AppButton
+              variant="icon"
+              size="small"
+              class="ace-remove-btn"
+              aria-label="删除条目"
+              @click="removeEntry(row.name)"
+            >
               <span class="ace-remove">×</span>
             </AppButton>
           </div>
@@ -89,7 +118,6 @@
             <div class="ace-oauth">
               <Badge type="ver" :text="`已登录${row.accountId ? ' · ' + row.accountId : ''}`" />
               <span v-if="row.expiresText" class="ace-oauth-expires">过期时间：{{ row.expiresText }}</span>
-              <span class="ace-oauth-note">OAuth 凭据由 pi CLI 管理，access/refresh 令牌保存时原样保留。</span>
             </div>
           </template>
 
@@ -100,20 +128,20 @@
               @update:model-value="setEntry(row.name, $event)"
             />
           </template>
-        </div>
+        </EditorSection>
+        </template>
 
-        <!-- 添加 API Key 认证 -->
-        <div class="ace-add">
-          <div class="ace-add-title">添加 API Key 认证</div>
+        <EditorSection v-if="visited.add" v-show="activeSection === 'add'" :active="activeSection === 'add'" section-id="add" title="添加 API Key">
+          <EmptyState v-if="entries.length === 0" title="暂无凭据" description="可在下方添加 API Key；OAuth 需通过 pi CLI 登录" />
           <div class="ace-add-row">
-            <TextInput v-model="newName" mono placeholder="提供商名（与 models.json 中一致）" class="ace-name" />
+            <TextInput v-model="newName" mono placeholder="提供商名（与注册表一致）" class="ace-name" />
             <TextInput v-model="newKey" type="password" mono placeholder="API Key" class="ace-key-input" />
             <AppButton variant="ghost" size="small" :disabled="!newName.trim() || !newKey.trim()" @click="addApiKeyEntry">
               + 添加
             </AppButton>
           </div>
           <div v-if="unauthedProviders.length" class="ace-suggest">
-            <span class="ace-suggest-label">注册表中未认证的提供商：</span>
+            <span class="ace-suggest-label">未认证：</span>
             <AppButton
               v-for="p in unauthedProviders"
               :key="p"
@@ -124,7 +152,7 @@
               {{ p }}
             </AppButton>
           </div>
-        </div>
+        </EditorSection>
       </div>
 
       <!-- 源码模式 -->
@@ -132,11 +160,12 @@
         <textarea v-model="sourceContent" class="ace-source-editor" spellcheck="false" @input="parseSource" />
       </div>
     </template>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { getPiAuthConfig, savePiAuthConfig, getPiAuthConfigPath, getPiModelCatalog } from '../../api/piConfig';
 import { useToast } from '../../composables/useToast';
 import Segmented from '../ui/Segmented.vue';
@@ -146,7 +175,24 @@ import Badge from '../ui/Badge.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import StatusBanner from '../ui/StatusBanner.vue';
+import EditorToolbar from '../ui/EditorToolbar.vue';
+import InfoTip from '../ui/InfoTip.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
+import EditorSection from '../ui/EditorSection.vue';
+import SectionNav from '../ui/SectionNav.vue';
+import { pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
+const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
+const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
+const editorRoot = ref<HTMLElement | null>(null);
+const activeSection = ref(props.sectionId || '');
+const visited = ref<Record<string, boolean>>({});
+const entryIdByName = new Map<string, string>();
+let entrySequence = 0;
+function entryId(name: string) {
+  if (!entryIdByName.has(name)) entryIdByName.set(name, `entry:${++entrySequence}`);
+  return entryIdByName.get(name)!;
+}
 
 const { showSuccess, showError } = useToast();
 
@@ -154,6 +200,9 @@ const MODE_OPTIONS = [
   { value: 'visual', label: '可视化' },
   { value: 'source', label: 'JSON' },
 ];
+
+/** OAuth 行 InfoTip（design §5.2 T53/T55）：只读语义 + 令牌保留语义 */
+const OAUTH_TIP = 'OAuth 凭据由 pi CLI 登录产生，此处只读；access / refresh 令牌在保存时原样保留。';
 
 const loading = ref(true);
 const saving = ref(false);
@@ -168,6 +217,7 @@ const newName = ref('');
 const newKey = ref('');
 
 interface AuthRow {
+  uiId: string;
   name: string;
   kind: 'api_key' | 'oauth' | 'other';
   typeLabel: string;
@@ -193,6 +243,7 @@ const entries = computed<AuthRow[]>(() =>
       expiresText = Number.isNaN(d.getTime()) ? String(entry.expires) : d.toLocaleString();
     }
     return {
+      uiId: entryId(name),
       name,
       kind,
       typeLabel: type || '未知类型',
@@ -203,6 +254,28 @@ const entries = computed<AuthRow[]>(() =>
     };
   })
 );
+
+const navigationItems = computed(() => [...entries.value.map(row => ({ id: row.uiId, label: row.name, meta: row.typeLabel })), { id: 'add', label: '添加 API Key' }]);
+function selectSection(id: string) {
+  if (mode.value !== 'visual' || !navigationItems.value.some(s => s.id === id)) return;
+  activeSection.value = id; visited.value[id] = true;
+}
+function focusSelection(inNav = false) {
+  void nextTick(() => {
+    if (inNav) {
+      const host = editorRoot.value?.closest('.pc-workspace') || editorRoot.value;
+      const id = props.navigation === 'local' ? activeSection.value : pageSectionId('pi:auth', activeSection.value);
+      Array.from(host?.querySelectorAll<HTMLButtonElement>('.section-nav button') || []).find(b => b.dataset.navId === id)?.focus();
+    } else {
+      Array.from(editorRoot.value?.querySelectorAll<HTMLElement>('.editor-section') || []).find(s => s.dataset.section === activeSection.value)?.querySelector<HTMLElement>('h3')?.focus();
+    }
+  });
+}
+watch(() => props.sectionId, id => { if (id) selectSection(id); });
+watch([navigationItems, loading, mode], () => {
+  if (loading.value || error.value || mode.value !== 'visual') return;
+  selectSection(navigationItems.value.some(s => s.id === activeSection.value) ? activeSection.value : navigationItems.value[0].id);
+});
 
 /** 注册表中存在但尚无凭据的提供商（快捷填入名称） */
 const unauthedProviders = computed(() =>
@@ -265,6 +338,9 @@ function renameEntry(oldName: string, newNameValue: string) {
   const trimmed = newNameValue.trim();
   if (!trimmed || trimmed === oldName || trimmed in data.value) return;
   const entriesOrdered = Object.keys(data.value).map((k) => [k === oldName ? trimmed : k, data.value[k]] as const);
+  const uiId = entryId(oldName);
+  entryIdByName.delete(oldName);
+  entryIdByName.set(trimmed, uiId);
   data.value = Object.fromEntries(entriesOrdered);
   serialize();
 }
@@ -297,9 +373,16 @@ function updateApiKey(name: string, key: string) {
 
 function removeEntry(name: string) {
   if (!confirm(`确认删除 ${name} 的认证条目？`)) return;
+  const index = entries.value.findIndex(row => row.name === name);
+  const successor = entries.value[index + 1] || entries.value[index - 1];
+  const removedId = entryId(name);
+  const restoreFocus = !!editorRoot.value?.contains(document.activeElement);
   delete data.value[name];
+  entryIdByName.delete(name);
   data.value = { ...data.value };
   serialize();
+  if (activeSection.value === removedId) selectSection(successor?.uiId || 'add');
+  if (restoreFocus) focusSelection(true);
 }
 
 function addApiKeyEntry() {
@@ -315,6 +398,8 @@ function addApiKeyEntry() {
   newName.value = '';
   newKey.value = '';
   serialize();
+  selectSection(entryId(name));
+  focusSelection();
 }
 
 async function handleSave() {
@@ -359,6 +444,9 @@ const modeModel = computed({
   },
 });
 
+const localGroups = computed(() => [{ id: 'auth', items: navigationItems.value.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
+const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: loading.value ? [] : navigationItems.value }));
+watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });
 onMounted(() => {
   void initialLoad();
 });
@@ -368,80 +456,10 @@ onMounted(() => {
 .ace-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.ace-header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ace-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-}
-
-.ace-subtitle {
-  font-size: 13px;
-  color: var(--secondary);
-  margin: 0;
-  line-height: 1.6;
-}
-
-.ace-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
-.ace-mode-tabs {
-  display: inline-flex;
-}
-
-.ace-path-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ace-path-label {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.ace-path-value {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--secondary);
-  background: var(--control);
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.ace-copy-btn {
-  font-size: 11px;
-  padding: 4px 10px;
-}
-
-.ace-parse-error {
-  font-size: 12px;
-  color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
-
-.ace-parse-valid {
-  font-size: 12px;
-  color: var(--success);
-  padding: 4px 0;
-}
+/* .ace-parse-error 仅作样式锚点：背景与内边距交给 StatusBanner compact */
 
 .ace-visual {
   display: flex;
@@ -456,16 +474,27 @@ onMounted(() => {
   padding: 8px 16px;
 }
 
+/* 虚线框内的空态紧凑化（EmptyState 默认上下 44px + 48px 图标，在框里显得过高） */
+.ace-empty :deep(.empty-state) {
+  padding: 22px 16px;
+}
+
+.ace-empty :deep(.empty-icon) {
+  font-size: 34px;
+  margin-bottom: 10px;
+}
+
 .ace-entry {
-  border: 1px solid var(--separator);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .ace-entry-head {
+  margin-bottom: 10px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -476,10 +505,29 @@ onMounted(() => {
   width: 200px;
 }
 
+/* 删除按钮靠右，管理标签 / 说明贴在类型徽章后面 */
+.ace-remove-btn {
+  margin-left: auto;
+}
+
 .ace-remove {
   font-size: 16px;
   line-height: 1;
   color: var(--tertiary);
+}
+
+/* OAuth 行常显标签：只读、由 pi CLI 管理 */
+.ace-managed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--secondary);
+  background: var(--control);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
 }
 
 .ace-field {
@@ -532,15 +580,10 @@ onMounted(() => {
   color: var(--secondary);
 }
 
-.ace-oauth-note {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
 .ace-add {
-  border: 1px dashed var(--separator);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -565,6 +608,7 @@ onMounted(() => {
 }
 
 .ace-suggest {
+  margin-top: 10px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -596,5 +640,25 @@ onMounted(() => {
 
 .ace-source-editor:focus {
   border-color: var(--accent);
+}
+.ace-root { min-width:0; }
+.ace-root.editor-local-layout { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+.editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
+.ace-extra-key { overflow-wrap:anywhere; }
+@media (max-width:1199px) { .ace-root.editor-local-layout { --section-nav-width:144px; gap:12px; } }
+@media (max-width:1023px) { .ace-root.editor-local-layout { --section-nav-width:112px; } }
+@container editor-detail (max-width:479px) {
+  .ace-name, .ace-key-input { width:100%; min-width:0; max-width:100%; }
+  .ace-add-row { flex-direction:column; align-items:stretch; }
+  :deep(.vve-entry-value), :deep(.vve-item-value) { min-width:0; flex-basis:100%; }
+  :deep(.vve-key) { max-width:100%; }
+  :deep(.tlm-actions) { flex-wrap:wrap; }
+}
+@supports not (container-type: inline-size) {
+  .ace-name, .ace-key-input { width:100%; min-width:0; max-width:100%; }
+  .ace-add-row { flex-direction:column; align-items:stretch; }
+  :deep(.vve-entry-value), :deep(.vve-item-value) { min-width:0; flex-basis:100%; }
+  :deep(.vve-key) { max-width:100%; }
+  :deep(.tlm-actions) { flex-wrap:wrap; }
 }
 </style>

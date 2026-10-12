@@ -1,58 +1,51 @@
 <!--
   OmpGlobalConfig - OMP (oh-my-pi) config.yml 可视化配置组件。
-  挂载于 Provider Center → 预设 → OMP 引擎标签。
+  挂载于 Provider Center → CLI 独立配置 → OMP → Agent 配置。
+  布局（provider-center-layout-redesign §4.4）：导航即标题，不再有 h2 / subtitle；
+  EditorToolbar 常显「新会话生效」；两张卡的说明收进卡片 InfoTip。
   可视化模式：modelRoles.{role}（provider → model → thinking level 三级下拉，
   数据来自 ~/.omp/agent/models.yml 目录）、task.agentModelOverrides（@role
   引用或直接 spec）。其余键原样保留。源码模式：YAML 文本直接编辑。
 -->
 <template>
-  <div class="ogc-root">
-    <div class="ogc-header">
-      <h2 class="ogc-title">OMP 配置（oh-my-pi）</h2>
-      <p class="ogc-subtitle">
-        编辑 ~/.omp/agent/config.yml：modelRoles 角色模型与 task 子代理覆盖。
-        模型下拉来自 models.yml 注册表，保存后新会话生效。
-      </p>
-    </div>
-
+  <div class="ogc-root" :class="{ 'editor-local-layout': navigation === 'local' }">
+    <SectionNav v-if="navigation === 'local'" label="配置分区" :groups="localGroups" :current-id="mode === 'visual' ? activeSection : ''" controls-id="ogc-editor-detail" :notice="mode !== 'visual' ? '源码模式：返回可视化后切换分区' : ''" @select="selectSection" />
+    <div id="ogc-editor-detail" class="editor-detail">
     <LoadingState v-if="loading" message="加载配置中..." />
 
     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
 
     <template v-else>
-      <div class="ogc-toolbar">
-        <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" class="ogc-mode-tabs" />
-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
-          {{ saving ? '保存中...' : '保存配置' }}
-        </AppButton>
-      </div>
+      <!-- 工具栏：路径胶囊 + YAML 合法状态 ····· 生效标签 + 模式切换 + 保存 -->
+      <EditorToolbar
+        :path="configPath"
+        path-label="配置文件"
+        effect="新会话生效"
+        :valid-label="mode === 'source' && !yamlError ? 'YAML 合法' : ''"
+        @copy-path="copyPath"
+      >
+        <template #actions>
+          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
+          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+            {{ saving ? '保存中...' : '保存配置' }}
+          </AppButton>
+        </template>
+      </EditorToolbar>
 
-      <div class="ogc-path-row">
-        <span class="ogc-path-label">配置文件：</span>
-        <code class="ogc-path-value">{{ configPath || '加载中...' }}</code>
-        <AppButton v-if="configPath" variant="ghost" size="small" class="ogc-copy-btn" @click="copyPath">
-          复制路径
-        </AppButton>
-      </div>
-
-      <div v-if="yamlError" class="ogc-yaml-error">{{ yamlError }}</div>
-      <div v-else-if="mode === 'source'" class="ogc-yaml-valid">YAML 合法</div>
-      <div v-if="catalogError" class="ogc-catalog-warn">
-        模型目录加载失败，下拉不可用：{{ catalogError }}
-      </div>
+      <StatusBanner v-if="yamlError" compact type="error" role="alert" class="ogc-yaml-error" :message="yamlError" />
+      <StatusBanner
+        v-if="catalogError"
+        compact
+        type="warning"
+        class="ogc-catalog-warn"
+        :message="`模型目录加载失败，下拉不可用：${catalogError}`"
+      />
 
       <!-- 可视化模式 -->
       <div v-if="mode === 'visual'" class="ogc-visual">
-        <ConfigCategoryCard
-          title="角色模型（modelRoles）"
-          category="modelRoles"
-          :expanded="expanded.modelRoles"
-          :badge="roleRows.length"
-          @toggle="expanded.modelRoles = !expanded.modelRoles"
+        <EditorSection v-if="visited.modelRoles" v-show="activeSection === 'modelRoles'" :active="activeSection === 'modelRoles'"
+          section-id="modelRoles" title="角色模型" code="modelRoles" :tip="OMP_ROLES_TIP" :badge="roleRows.length"
         >
-          <p class="ogc-hint">
-            每个 worker 角色绑定一个 provider/model:level spec，供 task 子代理通过 @role 引用。
-          </p>
           <div class="ogc-rows">
             <div v-for="row in roleRows" :key="row.role" class="ogc-row">
               <TextInput
@@ -85,18 +78,11 @@
               + {{ s }}
             </AppButton>
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
 
-        <ConfigCategoryCard
-          title="子代理模型覆盖（task.agentModelOverrides）"
-          category="overrides"
-          :expanded="expanded.overrides"
-          :badge="overrideRows.length"
-          @toggle="expanded.overrides = !expanded.overrides"
+        <EditorSection v-if="visited.overrides" v-show="activeSection === 'overrides'" :active="activeSection === 'overrides'"
+          section-id="overrides" title="子代理覆盖" code="task.agentModelOverrides" :tip="OMP_OVERRIDES_TIP" :badge="overrideRows.length"
         >
-          <p class="ogc-hint">
-            将子代理映射到 modelRoles 角色（@role 引用）或直接绑定模型 spec。
-          </p>
           <div class="ogc-rows">
             <div v-for="row in overrideRows" :key="row.agent" class="ogc-row">
               <TextInput
@@ -149,7 +135,7 @@
               + {{ s }}
             </AppButton>
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
       </div>
 
       <!-- 源码模式 -->
@@ -157,11 +143,12 @@
         <textarea v-model="sourceContent" class="ogc-source-editor" spellcheck="false" @input="parseYamlToConfig" />
       </div>
     </template>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 import { getOmpConfig, saveOmpConfig, getOmpConfigPath, getOmpModelCatalog } from '../../api/ompConfig';
 import { useToast } from '../../composables/useToast';
@@ -171,7 +158,11 @@ import TextInput from '../ui/TextInput.vue';
 import Dropdown from '../ui/Dropdown.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
-import ConfigCategoryCard from './ConfigCategoryCard.vue';
+import StatusBanner from '../ui/StatusBanner.vue';
+import EditorToolbar from '../ui/EditorToolbar.vue';
+import EditorSection from '../ui/EditorSection.vue';
+import SectionNav from '../ui/SectionNav.vue';
+import { OMP_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
 
@@ -181,6 +172,14 @@ const MODE_OPTIONS = [
   { value: 'visual', label: '可视化' },
   { value: 'source', label: 'YAML' },
 ];
+
+/** 卡片级说明（InfoTip）：用途 / 模型候选来源（design §5.2 T32、T33） */
+const OMP_ROLES_TIP = [
+  '每个 worker 角色绑定一个 provider/model:level，供 task 子代理以 @role 引用。',
+  '模型候选来自「模型提供商」中的 models.yml。',
+];
+
+const OMP_OVERRIDES_TIP = '将子代理映射到 modelRoles 角色（@role 引用），或直接绑定模型。';
 
 /** modelRoles 常见角色建议值 */
 const ROLE_SUGGESTIONS = [
@@ -199,7 +198,15 @@ const sourceContent = ref('');
 const yamlError = ref('');
 const configPath = ref('');
 const configData = ref<Record<string, any>>({});
-const expanded = ref({ modelRoles: true, overrides: false });
+const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
+const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
+const activeSection = ref(props.sectionId || 'modelRoles');
+const visited = ref<Record<string, boolean>>({ [activeSection.value]: true });
+function selectSection(id: string) {
+  if (!OMP_SECTIONS.some(s => s.id === id) || mode.value !== 'visual') return;
+  activeSection.value = id; visited.value[id] = true;
+}
+watch(() => props.sectionId, id => { if (id) selectSection(id); });
 
 const { catalog, catalogError, loadCatalog } = useModelCatalog();
 
@@ -414,6 +421,9 @@ const modeModel = computed({
   },
 });
 
+const localGroups = computed(() => [{ id: 'omp', items: OMP_SECTIONS.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
+const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: OMP_SECTIONS }));
+watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });
 onMounted(() => {
   void initialLoad();
 });
@@ -423,100 +433,15 @@ onMounted(() => {
 .ogc-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.ogc-header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ogc-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-}
-
-.ogc-subtitle {
-  font-size: 13px;
-  color: var(--secondary);
-  margin: 0;
-  line-height: 1.6;
-}
-
-.ogc-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
-.ogc-mode-tabs {
-  display: inline-flex;
-}
-
-.ogc-path-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ogc-path-label {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.ogc-path-value {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--secondary);
-  background: var(--control);
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.ogc-copy-btn {
-  font-size: 11px;
-  padding: 4px 10px;
-}
-
-.ogc-yaml-error {
-  font-size: 12px;
-  color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
-
-.ogc-yaml-valid {
-  font-size: 12px;
-  color: var(--success);
-  padding: 4px 0;
-}
-
-.ogc-catalog-warn {
-  font-size: 12px;
-  color: var(--warning, #b8860b);
-  background: var(--control);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
+/* .ogc-yaml-error / .ogc-catalog-warn 仅作样式锚点：背景与内边距交给 StatusBanner compact */
 
 .ogc-visual {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.ogc-hint {
-  font-size: 12px;
-  color: var(--tertiary);
-  margin: 4px 0 0;
-  line-height: 1.6;
 }
 
 .ogc-rows {
@@ -588,5 +513,22 @@ onMounted(() => {
 
 .ogc-source-editor:focus {
   border-color: var(--accent);
+}
+.ogc-root { min-width:0; }
+.ogc-root.editor-local-layout { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+.editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
+@media (max-width:1199px) { .ogc-root.editor-local-layout { --section-nav-width:144px; gap:12px; } }
+@media (max-width:1023px) { .ogc-root.editor-local-layout { --section-nav-width:112px; } }
+@container editor-detail (max-width:479px) {
+  .ogc-spec { min-width:0; flex-basis:100%; }
+  .ogc-role-input, .ogc-roleref-dd { max-width:100%; min-width:0; }
+  :deep(.mss-row) { flex-direction:column; }
+  :deep(.mss-dd), :deep(.mss-dd-level) { width:100%; max-width:100%; min-width:0; }
+}
+@supports not (container-type: inline-size) {
+  .ogc-spec { min-width:0; flex-basis:100%; }
+  .ogc-role-input, .ogc-roleref-dd { max-width:100%; min-width:0; }
+  :deep(.mss-row) { flex-direction:column; }
+  :deep(.mss-dd), :deep(.mss-dd-level) { width:100%; max-width:100%; min-width:0; }
 }
 </style>

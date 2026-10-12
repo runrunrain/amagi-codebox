@@ -14,10 +14,13 @@ interface Props {
   type?: 'warning' | 'error';
   message: string;
   actionText?: string;
+  /** 紧凑模式（provider-center-layout-redesign）：编辑器内联警示用，更小的内边距与圆角 */
+  compact?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   type: 'warning',
+  compact: false,
 });
 
 defineEmits<{
@@ -27,6 +30,7 @@ defineEmits<{
 const classes = computed(() => ({
   'status-banner': true,
   [props.type]: true,
+  compact: props.compact,
 }));
 </script>
 
@@ -37,6 +41,13 @@ const classes = computed(() => ({
   gap: 12px;
   border-radius: 10px;
   padding: 10px 14px;
+  font-size: 12px;
+}
+
+.status-banner.compact {
+  padding: 6px 10px;
+  border-radius: 8px;
+  gap: 8px;
   font-size: 12px;
 }
 

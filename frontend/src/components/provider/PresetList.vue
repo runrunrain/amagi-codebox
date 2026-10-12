@@ -1,8 +1,11 @@
 <!--
   PresetList - Anthropic / OpenAI 公共格式预设。
   Claude Code 消费 Anthropic；Codex / Pi / OMP 消费 OpenAI。
-  卡片样式 .preset-card + .param.model 高亮模型参数。
-  「添加预设」emit('add')，弹窗在 P7 批次实现。
+  布局（provider-center-layout-redesign §4.2）：分组列表——一个容器、行间 1px 分隔线，
+  对标 macOS 设置的 inset grouped list；徽章 .param + .param.model 高亮模型参数。
+  整行可点编辑且语义正确：行内的名称是真 <button>（Tab 聚焦、Enter 编辑），
+  其 ::after 撑满整行作为点击热区；删除按钮 z-index 浮在热区之上，单独可聚焦。
+  「添加预设」打开 PresetDialog。
 -->
 <template>
   <div class="preset-panel">
@@ -35,29 +38,32 @@
       <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
     </div>
 
-    <!-- 预设列表 -->
-    <div v-if="filteredPresets.length > 0" class="preset-list">
-      <div
+    <!-- 预设分组列表 -->
+    <ul v-if="filteredPresets.length > 0" class="preset-group">
+      <li
         v-for="p in filteredPresets"
         :key="p.key"
-        class="preset-card clickable"
-        @click="handleEdit(p)"
+        class="preset-row"
       >
         <div class="preset-head">
-          <div class="preset-name">{{ p.label || p.key }}</div>
-          <div class="preset-head-right">
-            <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
-            <!-- 删除入口：后端 GetMergedTerminalPresets 仅从 terminal_presets（用户配置）读取，
-                 所有返回的 merged 预设都可被 DeleteTerminalPreset 删除，无"内置不可删"项，
-                 因此对所有预设始终显示删除按钮（source 实际值为 'terminal_preset'）。 -->
-            <button
-              class="preset-delete"
-              type="button"
-              :title="`删除预设 ${p.label || p.key}`"
-              aria-label="删除预设"
-              @click.stop="handleDelete(p)"
-            >删除</button>
-          </div>
+          <button
+            type="button"
+            class="preset-open"
+            :aria-label="`编辑预设 ${p.label || p.key}`"
+            @click="handleEdit(p)"
+          >
+            <span class="preset-name">{{ p.label || p.key }}</span>
+          </button>
+          <span class="preset-prov" v-if="p.provider">{{ p.provider }}</span>
+          <!-- 删除入口：后端 GetMergedTerminalPresets 仅从 terminal_presets（用户配置）读取，
+               所有返回的 merged 预设都可被 DeleteTerminalPreset 删除，无"内置不可删"项，
+               因此对所有预设始终显示删除按钮（source 实际值为 'terminal_preset'）。 -->
+          <button
+            class="preset-delete"
+            type="button"
+            :aria-label="`删除预设 ${p.label || p.key}`"
+            @click="handleDelete(p)"
+          >删除</button>
         </div>
         <div class="preset-badges">
           <span v-if="p.model" class="param model">{{ p.model }}</span>
@@ -70,28 +76,44 @@
           <!-- 视觉能力标记（amagi-media-understanding 导出，契约 §1） -->
           <span v-if="p.vision" class="param vision">识图</span>
           <span v-if="p.video" class="param vision">识视频</span>
-          <!-- 同步到 CLI 独立配置标记（仅 Anthropic 格式） -->
+          <!-- 同步到 CLI 独立配置标记（仅 Anthropic 格式）：语义直接写进徽章文字，不依赖 hover -->
           <span
             v-if="format === 'anthropic' && p.harness_sync"
             class="param vision"
-            title="已标记同步到 CLI 独立配置（Pi/OMP）"
-          >CLI</span>
+          >同步 Pi/OMP</span>
           <!-- 关键 Parameters（最关键的 2-4 个） -->
           <span v-if="thinkingType(p)" class="param key">thinking·{{ thinkingType(p) }}</span>
           <span v-if="reasoningEffort(p)" class="param key">effort·{{ reasoningEffort(p) }}</span>
           <span v-if="tempOf(p) !== undefined" class="param">T={{ tempOf(p) }}</span>
           <span v-if="sourceLabel(p.source)" class="param">{{ sourceLabel(p.source) }}</span>
         </div>
-      </div>
-    </div>
+      </li>
+    </ul>
 
-    <!-- 空态 -->
+    <!-- 空态：标题 + 动作（P7），引导靠按钮完成 -->
     <EmptyState
       v-else
       icon="≡"
       :title="emptyTitle"
-      :description="emptyDescription"
-    />
+      :description="store.loadingPresets ? '正在加载预设列表…' : ''"
+    >
+      <template #action>
+        <AppButton
+          v-if="isFiltered"
+          variant="ghost"
+          size="small"
+          class="empty-action"
+          @click="store.setPresetFilter('all')"
+        >显示全部</AppButton>
+        <AppButton
+          v-else-if="!store.loadingPresets"
+          variant="primary"
+          size="small"
+          class="empty-action"
+          @click="handleAdd"
+        >添加预设</AppButton>
+      </template>
+    </EmptyState>
     </template>
   </div>
 
@@ -172,18 +194,15 @@ const filteredPresets = computed<MergedTerminalPreset[]>(() => {
   return allPresets.value.filter((p) => p.provider === f);
 });
 
+/** 当前是否处于 provider 筛选态（空态据此给出「显示全部」而不是「添加预设」） */
+const isFiltered = computed(() => !!store.presetFilter && store.presetFilter !== 'all');
+
 const emptyTitle = computed(() => {
-  if (store.presetFilter && store.presetFilter !== 'all') {
-    return `该提供商下暂无 ${engineLabel.value} 预设`;
+  if (isFiltered.value) {
+    return `${store.presetFilter} 下暂无预设`;
   }
   return `暂无 ${engineLabel.value} 预设`;
 });
-
-const emptyDescription = computed(() =>
-  store.loadingPresets
-    ? '正在加载预设列表...'
-    : '点击右上角「添加预设」创建第一个启动配置'
-);
 
 function sourceLabel(source?: string): string {
   if (!source) return '';
@@ -226,6 +245,8 @@ async function handlePresetSaved() {
   error.value = '';
   try {
     await store.loadPresets(props.format, true);
+    // store.loadPresets 内部捕获读取错误不 rethrow，需消费 presetLoadError 呈现错误态
+    if (store.presetLoadError) error.value = store.presetLoadError;
   } catch (err) {
     error.value = String(err);
   } finally {
@@ -268,6 +289,8 @@ async function initialLoad() {
   error.value = '';
   try {
     await store.loadPresets(props.format, false);
+    // 同 handlePresetSaved：消费 store 内部捕获的错误，避免误显空态
+    if (store.presetLoadError) error.value = store.presetLoadError;
   } catch (err) {
     error.value = String(err);
   } finally {
@@ -303,65 +326,98 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.preset-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.preset-card {
+/* 分组列表：一个容器 + 行间分隔线（inset grouped list） */
+.preset-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   background: var(--card);
   border: 1px solid var(--separator);
   border-radius: 12px;
-  padding: 14px 16px;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+  overflow: hidden;
 }
 
-.preset-card.clickable {
-  cursor: pointer;
+.preset-row {
+  position: relative;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: background 0.15s ease;
 }
 
-.preset-card.clickable:hover {
-  border-color: var(--accent, #007aff);
+.preset-row + .preset-row {
+  border-top: 1px solid var(--separator);
+}
+
+/* hover 底色沿用改造前的 --hover 回退值：若改用 --control，会与 .param / .preset-prov 的 --control 底同色，徽章在 hover 时「消失」 */
+.preset-row:hover {
   background: var(--hover, rgba(0, 122, 255, 0.04));
 }
 
-.preset-card.clickable:active {
-  transform: scale(0.997);
-}
-
 .preset-head {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  margin-bottom: 8px;
 }
 
-.preset-head-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+/* 名称按钮：::after 撑满整行作为点击热区（.preset-row 是定位祖先，按钮自身不能定位） */
+.preset-open {
+  flex: 1 1 120px;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.preset-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+/* 焦点框画在撑满整行的伪元素上 */
+.preset-open:focus-visible {
+  outline: none;
+}
+
+.preset-open:focus-visible::after {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: inherit;
 }
 
 .preset-name {
+  display: block;
   font-size: 14px;
   font-weight: 600;
   color: var(--label);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .preset-prov {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  flex: 0 1 auto;
   font-size: 11px;
   color: var(--secondary);
   background: var(--control);
   border-radius: 5px;
   padding: 2px 8px;
-  white-space: nowrap;
+  white-space: normal;
 }
 
-/* 删除按钮：克制小巧，hover 才显危险色，避免破坏卡片视觉节奏 */
+/* 删除按钮：克制小巧，hover 才显危险色；浮在整行热区之上，单独可聚焦 */
 .preset-delete {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
   border: none;
   background: transparent;
   color: var(--tertiary);
@@ -375,8 +431,13 @@ onMounted(() => {
 }
 
 .preset-delete:hover {
-  color: #FF3B30;
-  background: rgba(255, 59, 48, 0.08);
+  color: var(--danger-strong);
+  background: var(--danger-tint, rgba(255, 59, 48, 0.08));
+}
+
+.preset-delete:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .preset-badges {
@@ -386,6 +447,9 @@ onMounted(() => {
 }
 
 .param {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 11px;
   color: var(--secondary);
   background: var(--control);
@@ -413,9 +477,13 @@ onMounted(() => {
   background: rgba(175, 82, 222, 0.08);
 }
 
-/* 视觉能力标记：绿色弱强调，一眼识别 amagi-media-understanding 可用预设 */
+/* 视觉能力 / 同步标记：绿色弱强调；文字用 success-strong 保证对比度 */
 .param.vision {
-  color: #34C759;
+  color: var(--success-strong);
   background: rgba(52, 199, 89, 0.1);
+}
+
+.empty-action {
+  margin-top: 14px;
 }
 </style>

@@ -1,15 +1,14 @@
 <template>
   <!--
-    Provider Center - 两级导航容器（对照 demo + 交接说明 §5.3）。
-    一级 Segmented(pill): 「服务提供商」|「预设」
-    区域标签：服务提供商区描述「底层资源」；预设区描述「启动配置」
-    服务提供商 tab（本批实现）：网格 + 详情模式切换
-    预设 tab：二级导航拆两组——「格式预设」（Anthropic/OpenAI 公共协议格式）
-    与「CLI 独立配置」（OpenCode/Pi/OMP 专属配置文件），组间视觉分隔；
+    Provider Center - 多级导航容器（对照 demo + 交接说明 §5.3）。
+    一级 Segmented(pill): 「服务提供商」|「预设」|「CLI 独立配置」
+    服务提供商 tab：网格 + 详情模式切换
+    预设 tab / CLI 独立配置 tab（provider-center-layout-redesign）：
+    统一左栏控制格式、CLI 模式与分区，右侧单显已选分区。
     CLI 独立配置组件全部 defineAsyncComponent 懒加载，退出入口 chunk。
   -->
-  <section class="view-provider">
-    <PageHead title="Provider Center" description="统一管理服务提供商与可跨 CLI 复用的公共预设" />
+  <section class="view-provider" :class="{ 'pc-workspace-view': isWorkspace }">
+    <PageHead title="Provider Center" description="管理服务提供商、公共预设与各 CLI 独立配置" />
 
     <!--
       RC4-2：远程模式下 providers tab 消费远端数据（legacy）；顶部轻提示过渡语义。
@@ -39,7 +38,7 @@
     />
 
     <!-- 列表模式 -->
-    <ConfigCard v-else class="pc-card">
+    <ConfigCard v-else class="pc-card" :class="{ 'pc-card-workspace': isWorkspace }">
       <!-- 一级 pill 导航 + center 级导出/导入（作用于整个 config，两个 tab 下均可见）-->
       <div class="pc-head">
         <Segmented
@@ -63,7 +62,7 @@
       </div>
 
       <!-- 服务提供商区：远程模式 → 远端数据源（RC4）；本机 → 本地网格 -->
-      <div v-if="mainTab === 'providers'" class="pc-panel">
+      <div v-if="mainTab === 'providers'" class="pc-panel pc-panel-providers">
         <RemoteProviderPanel
           v-if="rcStore.isRemoteMode"
           @configure-token="tokenDialogOpen = true"
@@ -74,90 +73,30 @@
         />
       </div>
 
-      <!-- 预设区（启动配置：公共格式）-->
-      <div v-else-if="mainTab === 'presets'" class="pc-panel pc-presets-panel">
-        <div class="pc-zone-label">
-          <span>格式预设</span>
-          <span class="zn-sep">·</span>
-          <span>跨 CLI 复用的公共协议格式</span>
+      <div v-else class="pc-workspace">
+        <SectionNav :groups="navGroups" :current-id="currentNavId" :branch-id="activePageId"
+          controls-id="pc-editor-detail" :label="mainTab === 'presets' ? '预设格式' : 'CLI 配置导航'"
+          :notice="navigationNotice" @select="selectNavigation" />
+        <div id="pc-editor-detail" class="pc-detail-content" :key="activePageId">
+          <template v-if="mainTab === 'presets'">
+            <p class="pc-format-caption">{{ formatConsumers }}</p>
+            <PresetList v-if="store.presetEngine === 'anthropic'" format="anthropic" />
+            <PresetList v-else-if="store.presetEngine === 'openai'" format="openai" />
+          </template>
+          <template v-else-if="store.presetEngine === 'pi'">
+            <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+            <ProviderRegistryEditor v-else-if="piMode === 'registry'" :key="presetLoadKey" engine="pi" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+            <AuthConfigEditor v-else :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+          </template>
+          <template v-else-if="store.presetEngine === 'omp'">
+            <OmpGlobalConfig v-if="ompMode === 'agents'" :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+            <ProviderRegistryEditor v-else :key="presetLoadKey" engine="omp" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+          </template>
+          <template v-else-if="store.presetEngine === 'opencode'">
+            <OpenCodePresets v-if="openCodeMode === 'presets'" :key="presetLoadKey" />
+            <OpenCodeGlobalConfig v-else :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+          </template>
         </div>
-
-        <Segmented
-          v-model="formatModel"
-          :options="FORMAT_TABS"
-          variant="underline"
-          class="pc-engine-tabs"
-        />
-
-        <!-- Claude Code 复用 Anthropic 格式公共预设。 -->
-        <PresetList
-          v-if="store.presetEngine === 'anthropic'"
-          format="anthropic"
-        />
-        <!-- Codex / Pi / OMP 及后续兼容 CLI 共用 OpenAI 格式预设。 -->
-        <PresetList
-          v-else-if="store.presetEngine === 'openai'"
-          format="openai"
-        />
-      </div>
-
-      <!-- CLI 独立配置区（各 CLI 专属配置文件）-->
-      <div v-else-if="mainTab === 'cliconfigs'" class="pc-panel pc-presets-panel">
-        <div class="pc-zone-label">
-          <span>CLI 专属配置</span>
-          <span class="zn-sep">·</span>
-          <span>各 CLI 专属配置文件，互不共享</span>
-        </div>
-
-        <Segmented
-          v-model="cliModel"
-          :options="CLI_TABS"
-          variant="underline"
-          class="pc-engine-tabs"
-        />
-
-        <!-- Pi（amagi-pi）结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 | 认证登录 -->
-        <template v-if="store.presetEngine === 'pi'">
-          <Segmented
-            v-model="piMode"
-            :options="PI_MODES"
-            variant="pill"
-            class="oc-mode-tabs"
-          />
-          <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" />
-          <ProviderRegistryEditor v-else-if="piMode === 'registry'" :key="presetLoadKey" engine="pi" />
-          <AuthConfigEditor v-else :key="presetLoadKey" />
-        </template>
-
-        <!-- OMP (oh-my-pi) 结构化配置：三级 Tab = Agent 配置 | 模型提供商注册表 -->
-        <template v-else-if="store.presetEngine === 'omp'">
-          <Segmented
-            v-model="ompMode"
-            :options="OMP_MODES"
-            variant="pill"
-            class="oc-mode-tabs"
-          />
-          <OmpGlobalConfig v-if="ompMode === 'agents'" :key="presetLoadKey" />
-          <ProviderRegistryEditor v-else :key="presetLoadKey" engine="omp" />
-        </template>
-
-        <!-- OpenCode 预设（特殊性：配置文件管理 + 可视化/JSON 双模式）-->
-        <template v-else-if="store.presetEngine === 'opencode'">
-          <!-- 三级 Segmented：预设管理 | 全局配置 -->
-          <Segmented
-            v-model="openCodeMode"
-            :options="OPENCODE_MODES"
-            variant="pill"
-            class="oc-mode-tabs"
-          />
-          <!-- OpenCode 预设管理 -->
-          <OpenCodePresets
-            v-if="openCodeMode === 'presets'"
-            :key="presetLoadKey"
-          />
-          <!-- OpenCode 全局配置 -->
-          <OpenCodeGlobalConfig v-else :key="presetLoadKey" />
-        </template>
       </div>
     </ConfigCard>
 
@@ -193,6 +132,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, defineAsyncComponent, defineComponent, h, type Component } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
+import SectionNav from '../components/ui/SectionNav.vue';
+import { CONFIG_PAGES, FORMAT_ITEMS, staticSections, pageSectionId, type ConfigPageId, type EditorNavigationSnapshot, type SectionNavGroup } from '../components/provider/configNavigation';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import StatusBanner from '../components/ui/StatusBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
@@ -221,36 +162,6 @@ const MAIN_TABS = [
   { value: 'providers', label: '服务提供商' },
   { value: 'presets', label: '预设' },
   { value: 'cliconfigs', label: 'CLI 独立配置' },
-];
-
-// 二级导航：
-// 格式预设 = 公共协议格式（terminal_presets，跨 CLI 复用）；
-// CLI 独立配置 = 各 CLI 专属配置文件编辑，内部自带三级 Tab。
-const FORMAT_TABS = [
-  { value: 'anthropic', label: 'Anthropic 格式' },
-  { value: 'openai', label: 'OpenAI 格式' },
-];
-
-const CLI_TABS = [
-  { value: 'pi', label: 'Pi' },
-  { value: 'omp', label: 'OMP' },
-  { value: 'opencode', label: 'OpenCode' },
-];
-
-const OPENCODE_MODES = [
-  { value: 'presets', label: '预设管理' },
-  { value: 'global', label: '全局配置' },
-];
-
-const PI_MODES = [
-  { value: 'agents', label: 'Agent 配置' },
-  { value: 'registry', label: '模型提供商' },
-  { value: 'auth', label: '认证登录' },
-];
-
-const OMP_MODES = [
-  { value: 'agents', label: 'Agent 配置' },
-  { value: 'registry', label: '模型提供商' },
 ];
 
 const mainTab = ref<'providers' | 'presets' | 'cliconfigs'>('providers');
@@ -301,19 +212,105 @@ const cliModel = computed<string>({
   },
 });
 
+// 预设页 subnav 右侧说明：对谁有用（Claude Code 消费 Anthropic 格式；Codex / Pi / OMP 消费 OpenAI 格式）
+const formatConsumers = computed(() =>
+  store.presetEngine === 'openai' ? '用于 Codex · Pi · OMP' : '用于 Claude Code',
+);
+
 // CLI 独立配置组件懒加载（AppShell.vue:37-43 模式）：合计约 4,100 行且非默认视图，
 // 异步加载使其退出入口 chunk；delay 避免快速切换时 loading 闪烁。
 // 更换 presetLoadKey 会重新挂载异步组件并重新执行 loader（动态 import 可重试）。
 const presetLoadKey = ref(0);
+const isWorkspace = computed(() => mainTab.value !== 'providers' && !store.activeLoginProvider && !store.activeProviderId);
+const activePageId = computed<ConfigPageId | 'format:anthropic' | 'format:openai'>(() => {
+  if (mainTab.value === 'presets') return `format:${formatModel.value}` as 'format:anthropic' | 'format:openai';
+  if (cliModel.value === 'omp') return `omp:${ompMode.value}`;
+  if (cliModel.value === 'opencode') return `opencode:${openCodeMode.value}`;
+  return `pi:${piMode.value}`;
+});
+const sectionMemory = ref<Record<string, string>>({});
+const navSnapshot = ref<EditorNavigationSnapshot | null>(null);
+const navOwner = ref('');
+let mountSequence = 0;
+watch([activePageId, presetLoadKey], () => {
+  navOwner.value = `${activePageId.value}:${presetLoadKey.value}:${++mountSequence}`;
+  navSnapshot.value = null;
+}, { immediate: true, flush: 'sync' });
+const desiredSection = computed(() => sectionMemory.value[activePageId.value] ?? CONFIG_PAGES.find(p => p.id === activePageId.value)?.defaultId ?? '');
+const editorNavigation = computed(() => ({ navigation: 'external' as const, sectionId: desiredSection.value, navOwner: navOwner.value }));
+function onNavigationChange(snapshot: EditorNavigationSnapshot) {
+  if (snapshot.owner !== navOwner.value) return;
+  navSnapshot.value = snapshot;
+  if (snapshot.phase === 'ready' && snapshot.mode === 'visual' && snapshot.activeId !== desiredSection.value) {
+    sectionMemory.value[activePageId.value] = snapshot.activeId;
+  }
+}
+const navGroups = computed<SectionNavGroup[]>(() => {
+  if (mainTab.value === 'presets') return [{ id: 'formats', label: '格式', items: FORMAT_ITEMS }];
+  return ['Pi', 'OMP', 'OpenCode'].map(cli => ({ id: cli, label: cli, items: CONFIG_PAGES.filter(p => p.cli === cli).map(p => {
+    const active = p.id === activePageId.value;
+    const snapshot = active ? navSnapshot.value : null;
+    const sections = active ? (snapshot?.items ?? staticSections(p.id)) : [];
+    return { id: p.id, label: p.label, ariaLabel: `${cli} · ${p.label}`, scrollChildren: p.dynamic,
+      children: sections.map(s => ({ ...s, id: pageSectionId(p.id, s.id), ariaLabel: `${cli} · ${p.label} · ${s.label}`,
+        disabled: snapshot?.mode === 'source' || snapshot?.phase === 'error' || (!!p.dynamic && snapshot?.phase !== 'ready') })) };
+  }) }));
+});
+const navigationTargets = computed(() => new Map(navGroups.value.flatMap(g => g.items.flatMap(p => (p.children || []).map(s => [s.id, { page: p.id, section: (navSnapshot.value?.items ?? staticSections(p.id as ConfigPageId)).find(i => pageSectionId(p.id, i.id) === s.id)?.id || '' }] as const)))));
+const currentNavId = computed(() => {
+  if (mainTab.value === 'presets') return activePageId.value;
+  if (navSnapshot.value && (navSnapshot.value.mode === 'source' || navSnapshot.value.phase !== 'ready')) return activePageId.value;
+  const id = pageSectionId(activePageId.value, desiredSection.value);
+  return navigationTargets.value.has(id) ? id : activePageId.value;
+});
+const navigationNotice = computed(() => {
+  if (mainTab.value !== 'cliconfigs') return '';
+  if (navSnapshot.value?.mode === 'source') return '源码模式：返回可视化后切换分区';
+  if (navSnapshot.value?.phase === 'error') return '分区不可用';
+  if (CONFIG_PAGES.find(p => p.id === activePageId.value)?.dynamic && navSnapshot.value?.phase !== 'ready') return '加载分区中…';
+  return '';
+});
+function selectNavigation(id: string) {
+  const target = navigationTargets.value.get(id);
+  if (target) { sectionMemory.value[target.page] = target.section; return; }
+  if (id.startsWith('format:')) { if (id !== activePageId.value) formatModel.value = id.slice(7); return; }
+  const page = CONFIG_PAGES.find(p => p.id === id);
+  if (!page || id === activePageId.value) return;
+  // One synchronous callback; section navigation never touches this engine setter.
+  const [engine, mode] = page.id.split(':');
+  if (engine === 'pi') piMode.value = mode as typeof piMode.value;
+  else if (engine === 'omp') ompMode.value = mode as typeof ompMode.value;
+  else openCodeMode.value = mode as typeof openCodeMode.value;
+  if (engine !== cliModel.value) cliModel.value = engine;
+}
 
 const PresetLoadError = defineComponent({
   name: 'PresetLoadError',
   setup() {
+    const owner = navOwner.value;
+    onMounted(() => {
+      if (owner !== navOwner.value) return;
+      navSnapshot.value = { owner, phase: 'error', mode: 'visual', activeId: desiredSection.value, items: staticSections(activePageId.value as ConfigPageId) };
+    });
     return () =>
       h(ErrorState, {
         title: '配置页加载失败',
         message: '配置界面资源加载失败，请重试。',
         onRetry: () => {
+          // Chromium 对失败的模块 URL 有负缓存（module map 记住 rejected promise）：
+          // remount 重跑 loader 也不会重新请求同一 URL。可靠恢复是整页重载——
+          // module map 随文档重建，新部署的 index 会指向新 chunk。会话级标记防循环
+          // （App.vue 启动时清除，下次故障仍可走重载恢复）。
+          const CHUNK_RELOAD_FLAG = 'amagi-codebox:chunk-reload';
+          try {
+            if (!window.sessionStorage.getItem(CHUNK_RELOAD_FLAG)) {
+              window.sessionStorage.setItem(CHUNK_RELOAD_FLAG, '1');
+              window.location.reload();
+              return;
+            }
+          } catch {
+            // sessionStorage 不可用（极端 WebView 沙箱）则退回 remount 重试
+          }
           presetLoadKey.value++;
         },
       });
@@ -432,6 +429,12 @@ function handleAdd() {
 .pc-card {
   /* 覆盖 ConfigCard 默认 padding，让 Segmented 顶部贴合 */
   padding: 14px 16px 18px;
+  /*
+   * ConfigCard 默认 gap:16px 会和 .pc-panel 的 margin-top 叠加。设计意图是「一级导航→subnav = 12px」，
+   * 所以把卡片 gap 收到 12px、面板 margin 为 0；服务提供商面板用 .pc-panel-providers 补 10px，
+   * 保持原来的 22px（那一页不在本次改造范围内，视觉不变）。
+   */
+  gap: 12px;
 }
 
 .pc-main-tabs {
@@ -464,61 +467,29 @@ function handleAdd() {
   padding: 7px 18px;
 }
 
+/* 面板容器：服务提供商面板只有一个子元素，gap 不起作用 */
 .pc-panel {
-  margin-top: 6px;
-}
-
-.pc-presets-panel {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.pc-zone-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--tertiary);
-  padding: 0 2px;
-  letter-spacing: 0.3px;
-}
-
-.pc-zone-label .zn-sep {
-  color: var(--separator);
-}
-
-/* 二级导航两组：组标签（复用 .pc-zone-label 范式）+ underline Segmented */
-.pc-engine-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* 组间视觉分隔 */
-.pc-group-divider {
-  height: 1px;
-  background: var(--separator);
-  opacity: 0.6;
-}
-
-/* 二级下划线 Tab：与一级 pill 区分层级（对照 demo .pc-engine-tabs） */
-.pc-engine-tabs {
-  align-self: flex-start;
-}
-
-.pc-engine-tabs :deep(.segmented) {
-  display: inline-flex;
-}
-
-/* OpenCode 三级 Tab */
-.oc-mode-tabs {
-  align-self: flex-start;
+.pc-panel-providers {
   margin-top: 10px;
 }
 
-.oc-mode-tabs :deep(.segmented) {
-  display: inline-flex;
+.pc-workspace { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+.pc-detail-content { min-width:0; }
+.pc-format-caption { margin:0 0 12px; font-size:12px; color:var(--tertiary); }
+.pc-card-workspace .pc-head-actions { flex-wrap:wrap; min-width:0; max-width:100%; }
+@media (max-width:1199px) {
+  .pc-workspace-view { padding-inline:24px; }
+  .pc-workspace { --section-nav-width:144px; gap:12px; }
+}
+@media (max-width:1023px) {
+  .pc-workspace-view { padding-inline:16px; }
+  .pc-card-workspace { padding-inline:12px; }
+  .pc-workspace { --section-nav-width:112px; }
+  .pc-main-tabs :deep(.seg) { padding-inline:12px; }
 }
 </style>

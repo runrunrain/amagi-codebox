@@ -3,43 +3,57 @@
 
   - 默认收起（由父组件 expanded prop 控制）
   - 点击 header 切换展开/收起
-  - 收起态：左侧大号语义图标 + 标题 + 计数徽章 + 右侧展开箭头
+  - 收起态：左侧大号语义图标 + 标题 + 配置键 code + 计数徽章 + 右侧 meta 标签 / ⓘ / 展开箭头
   - 展开态：在 header 下渲染 slot 内容
   - 苹果HIG 克制：图标作为视觉锚点，留白克制，无过度装饰
+
+  provider-center-layout-redesign（§4.0.6，向后兼容）新增可选 props：
+  - code：配置键，等宽小字，紧随标题（P5：键名代码化，不再写成「标题（key）」）
+  - meta / metaTone：header 右侧的小标签（如「下次压缩生效」「受管」），折叠时也可见
+  - tip / tipItems：卡片级说明，收进可聚焦的 InfoTip（P6）。InfoTip 是 header 按钮的兄弟
+    节点（按钮内嵌交互元素不合法），绝对定位到 header 右侧；Tab 顺序先 header 后 tip，
+    在 ⓘ 上按 Enter 不会切换折叠。
+  不传新 props 时渲染结果与改造前一致。
 -->
 <template>
-  <div :class="['config-cat-card', { collapsed: !expanded }]">
-    <button
-      type="button"
-      class="ccc-header"
-      :aria-expanded="expanded"
-      @click="$emit('toggle')"
-    >
-      <div class="ccc-thumb" :style="thumbStyle">
-        <span class="ccc-thumb-icon" v-html="categoryIcon" />
-      </div>
-
-      <div class="ccc-meta">
-        <span class="ccc-title">{{ title }}</span>
-        <span v-if="badge !== null && badge !== undefined" class="ccc-badge">
-          {{ badge }}
-        </span>
-      </div>
-
-      <svg
-        class="ccc-chevron"
-        :class="{ expanded }"
-        viewBox="0 0 12 12"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
+  <div :class="['config-cat-card', { collapsed: !expanded, 'has-tip': hasTip }]">
+    <div class="ccc-head">
+      <button
+        type="button"
+        class="ccc-header"
+        :aria-expanded="expanded"
+        @click="$emit('toggle')"
       >
-        <polyline points="3 4.5 6 7.5 9 4.5" />
-      </svg>
-    </button>
+        <div class="ccc-thumb" :style="thumbStyle">
+          <span class="ccc-thumb-icon" v-html="categoryIcon" />
+        </div>
+
+        <div class="ccc-meta">
+          <span class="ccc-title">{{ title }}</span>
+          <code v-if="code" class="ccc-code">{{ code }}</code>
+          <span v-if="badge !== null && badge !== undefined" class="ccc-badge">
+            {{ badge }}
+          </span>
+        </div>
+
+        <span v-if="meta" :class="['ccc-tag', `tone-${metaTone}`]">{{ meta }}</span>
+
+        <svg
+          class="ccc-chevron"
+          :class="{ expanded }"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="3 4.5 6 7.5 9 4.5" />
+        </svg>
+      </button>
+      <InfoTip v-if="hasTip" class="ccc-tip" :label="title" :text="tip" :items="tipItems" />
+    </div>
 
     <div v-if="expanded" class="ccc-content">
       <slot />
@@ -50,17 +64,28 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { ICONS, ACCENTS } from './icons';
+import InfoTip, { type InfoTipItem } from '../ui/InfoTip.vue';
 
 interface Props {
   title: string;
   expanded: boolean;
   badge?: number | null;
   category?: string;
+  /** 配置键（等宽小字） */
+  code?: string;
+  /** header 右侧小标签 */
+  meta?: string;
+  metaTone?: 'neutral' | 'warning';
+  /** 卡片级说明（InfoTip 段落） */
+  tip?: string | string[];
+  /** 卡片级说明的术语对照 */
+  tipItems?: InfoTipItem[];
 }
 
 const props = withDefaults(defineProps<Props>(), {
   badge: null,
   category: 'unknown',
+  metaTone: 'neutral',
 });
 
 defineEmits<{
@@ -68,6 +93,12 @@ defineEmits<{
 }>();
 
 const categoryIcon = computed(() => ICONS[props.category] ?? ICONS.unknown);
+
+const hasTip = computed(() => {
+  const t = props.tip;
+  const hasText = Array.isArray(t) ? t.length > 0 : !!t;
+  return hasText || !!(props.tipItems && props.tipItems.length);
+});
 
 const thumbStyle = computed(() => {
   const color = ACCENTS[props.category] ?? ACCENTS.unknown;
@@ -99,6 +130,11 @@ const thumbStyle = computed(() => {
 
 .config-cat-card:hover {
   border-color: rgba(0, 122, 255, 0.25);
+}
+
+/* header 行：按钮 + 绝对定位的 InfoTip 兄弟节点 */
+.ccc-head {
+  position: relative;
 }
 
 /* Header：略缩图条带 */
@@ -154,7 +190,7 @@ const thumbStyle = computed(() => {
   display: block;
 }
 
-/* 标题 + 计数 */
+/* 标题 + 配置键 + 计数 */
 .ccc-meta {
   flex: 1 1 auto;
   display: flex;
@@ -173,6 +209,14 @@ const thumbStyle = computed(() => {
   text-overflow: ellipsis;
 }
 
+.ccc-code {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tertiary);
+  white-space: nowrap;
+}
+
 .ccc-badge {
   flex: 0 0 auto;
   min-width: 20px;
@@ -184,6 +228,26 @@ const thumbStyle = computed(() => {
   border-radius: 999px;
   text-align: center;
   line-height: 1.5;
+}
+
+/* header 右侧 meta 标签：中性 / 警示 */
+.ccc-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.ccc-tag.tone-neutral {
+  color: var(--secondary);
+  background: var(--control);
+}
+
+.ccc-tag.tone-warning {
+  color: var(--warning-strong);
+  background: var(--warning-tint);
 }
 
 /* 展开箭头 */
@@ -209,9 +273,21 @@ const thumbStyle = computed(() => {
   color: var(--accentHover);
 }
 
-/* 展开内容区 */
+/* InfoTip：绝对定位在箭头左侧，给它预留 28px 位置 */
+.has-tip .ccc-chevron {
+  margin-left: 28px;
+}
+
+.ccc-tip {
+  position: absolute;
+  right: 36px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* 展开内容区：顶部留 10px（原 4px）——删掉卡内说明段落后首个字标签会贴着 header 分隔线 */
 .ccc-content {
-  padding: 4px 14px 14px;
+  padding: 10px 14px 14px;
   border-top: 1px solid var(--separator);
   margin-top: 0;
 }

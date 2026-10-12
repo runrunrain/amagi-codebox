@@ -14,7 +14,7 @@
       type="button"
       class="dropdown-trigger"
       :disabled="disabled"
-      @click="open = !open"
+      @click="open = sectionActive && !open"
     >
       <span :class="['trigger-label', { placeholder: !hasSelection }]">{{ displayLabel }}</span>
       <span class="caret">▾</span>
@@ -57,7 +57,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue';
+import { EDITOR_SECTION_ACTIVE } from './sectionVisibility';
 
 export interface DropdownOption {
   value: string;
@@ -90,6 +91,8 @@ const emit = defineEmits<{
 }>();
 
 const open = ref(false);
+const sectionActive = inject(EDITOR_SECTION_ACTIVE, computed(() => true));
+watch(sectionActive, active => { if (!active) open.value = false; });
 const rootEl = ref<HTMLElement | null>(null);
 const menuEl = ref<HTMLElement | null>(null);
 

@@ -10,15 +10,15 @@
   - 统一 v-model（modelValue + update:modelValue）双向绑定
   - 类型保持：boolean/number/object/array 不退化为 string
   - 安全：apiKey/Authorization 用 MaskedValue，env 占位符原样保留
+
+  布局（provider-center-layout-redesign §4.6）：导航即标题，不再有 h2 / subtitle；EditorToolbar 常显
+  「即时生效」；空配置不再放大块 EmptyState（下方分类卡本身就能编辑），只在工具栏保留「空文件」状态词；
+  卡片标题统一「中文标题 + code 键名」，和 Pi / OMP 一致。
 -->
 <template>
-  <div class="oc-global">
-    <!-- 标题区 -->
-    <div class="ocg-header">
-      <h2 class="ocg-title">OpenCode 全局配置</h2>
-      <p class="ocg-subtitle">编辑全局 opencode.json 配置文件。修改后保存立即生效。</p>
-    </div>
-
+  <div class="oc-global" :class="{ 'editor-local-layout': navigation === 'local' }">
+    <SectionNav v-if="navigation === 'local'" label="配置分区" :groups="localGroups" :current-id="mode === 'visual' ? activeSection : ''" controls-id="ocg-editor-detail" :notice="mode !== 'visual' ? '源码模式：返回可视化后切换分区' : ''" @select="selectSection" />
+    <div id="ocg-editor-detail" class="editor-detail">
     <!-- Loading state -->
     <LoadingState v-if="loading" message="加载配置中..." />
 
@@ -32,206 +32,133 @@
 
     <!-- Main content -->
     <template v-else>
-      <!-- 工具栏：可视化/JSON 切换 + 保存按钮 -->
-      <div class="ocg-toolbar">
-        <Segmented
-          v-model="modeModel"
-          :options="MODE_OPTIONS"
-          variant="pill"
-          class="ocg-mode-tabs"
-        />
-        <AppButton
-          variant="primary"
-          size="small"
-          :disabled="saving"
-          @click="handleSave"
-        >
-          {{ saving ? '保存中...' : '保存配置' }}
-        </AppButton>
-      </div>
-
-      <!-- 配置文件路径区 -->
-      <div class="ocg-path-row">
-        <span class="ocg-path-label">配置文件：</span>
-        <code class="ocg-path-value">{{ configPath || '加载中...' }}</code>
-        <AppButton
-          v-if="configPath"
-          variant="ghost"
-          size="small"
-          @click="copyPath"
-          class="ocg-copy-btn"
-        >
-          复制路径
-        </AppButton>
-      </div>
-
-      <!-- JSON 合法性提示 -->
-      <div v-if="jsonError" class="ocg-json-error">
-        {{ jsonError }}
-      </div>
-      <div v-else-if="!saving && mode === 'json'" class="ocg-json-valid">
-        JSON 合法
-      </div>
-
-      <!-- 可视化模式 -->
-      <div v-if="mode === 'visual'" class="ocg-visual">
-        <!-- 空配置友好提示 -->
-        <div v-if="isConfigEmpty" class="ocg-empty-hint">
-          <EmptyState
-            icon=" "
-            title="全局配置为空"
-            description="当前 opencode.json 暂无可视化配置项，可切换到 JSON 模式直接编辑。"
+      <!-- 工具栏：路径胶囊 + 合法 / 空文件状态 ····· 生效标签 + 模式切换 + 保存。导航即标题，不再有 h2 / subtitle -->
+      <EditorToolbar
+        :path="configPath"
+        path-label="配置文件"
+        effect="即时生效"
+        :valid-label="mode === 'json' && !jsonError && !saving ? 'JSON 合法' : ''"
+        @copy-path="copyPath"
+      >
+        <template #status>
+          <span v-if="mode === 'visual' && isConfigEmpty" class="ocg-note">空文件</span>
+        </template>
+        <template #actions>
+          <Segmented
+            v-model="modeModel"
+            :options="MODE_OPTIONS"
+            variant="pill"
           />
-        </div>
-        <div class="ocg-cards">
-          <!-- Model 说明卡片（OpenCode 无顶层 model，仅真实存在时才显示输入框） -->
-          <ConfigCategoryCard
-            title="Model（顶层）"
-            category="model"
-            :expanded="expandedCategories.model"
-            :badge="hasTopLevelModel ? 1 : null"
-            @toggle="expandedCategories.model = !expandedCategories.model"
+          <AppButton
+            variant="primary"
+            size="small"
+            :disabled="saving"
+            @click="handleSave"
           >
-            <div class="ocg-info-text">
-              OpenCode 模型在 agent 级配置（如 <code>agent.luban.model</code>），顶层通常无 <code>model</code> 字段。
-            </div>
-            <div v-if="hasTopLevelModel" class="ocg-field">
-              <label class="ocg-label">顶层 model</label>
-              <TextInput
-                :model-value="String(configData.model ?? '')"
-                placeholder="未设置"
-                @update:model-value="updateField('model', $event)"
+            {{ saving ? '保存中...' : '保存配置' }}
+          </AppButton>
+        </template>
+      </EditorToolbar>
+
+      <StatusBanner v-if="jsonError" compact type="error" role="alert" class="ocg-json-error" :message="jsonError" />
+
+      <!-- 可视化模式：空配置时下方分类卡本身就能编辑，不再放大块空态 -->
+      <div v-if="mode === 'visual'" class="ocg-visual">
+        <!-- 顶层模型：OpenCode 无顶层 model，仅真实存在该键时才渲染（编辑能力不变） -->
+        <EditorSection v-if="hasTopLevelModel && visited.model" v-show="activeSection === 'model'" :active="activeSection === 'model'"
+          section-id="model" title="顶层模型" code="model" :tip="MODEL_TIP" :badge="1">
+          <TextInput
+            :model-value="String(configData.model ?? '')"
+            placeholder="未设置"
+            @update:model-value="updateField('model', $event)"
+          />
+        </EditorSection>
+
+        <!-- Provider 配置（object map） -->
+        <EditorSection v-if="visited.provider" v-show="activeSection === 'provider'" :active="activeSection === 'provider'"
+          section-id="provider" title="提供商" code="provider" :badge="providerCount">
+          <ProviderMapEditor
+            :model-value="providerMap"
+            @update:model-value="updateProvider($event)"
+          />
+        </EditorSection>
+
+        <!-- Agent 配置（object map） -->
+        <EditorSection v-if="visited.agent" v-show="activeSection === 'agent'" :active="activeSection === 'agent'"
+          section-id="agent" title="Agent" code="agent" :badge="agentCount">
+          <AgentMapEditor
+            :model-value="agentMap"
+            @update:model-value="updateAgent($event)"
+          />
+        </EditorSection>
+
+        <!-- MCP 配置（object map，真实键 mcp） -->
+        <EditorSection v-if="visited.mcp" v-show="activeSection === 'mcp'" :active="activeSection === 'mcp'"
+          section-id="mcp" title="MCP 服务器" code="mcp" :badge="mcpCount">
+          <McpMapEditor
+            :model-value="mcpMap"
+            @update:model-value="updateMcp($event)"
+          />
+        </EditorSection>
+
+        <!-- Permission 配置（object map，值 enum） -->
+        <EditorSection v-if="visited.permission" v-show="activeSection === 'permission'" :active="activeSection === 'permission'"
+          section-id="permission" title="权限" code="permission" :badge="permissionCount">
+          <PermissionMapEditor
+            :model-value="permissionMap"
+            @update:model-value="updatePermission($event)"
+          />
+        </EditorSection>
+
+        <!-- Instructions 配置（array<string>） -->
+        <EditorSection v-if="visited.instructions" v-show="activeSection === 'instructions'" :active="activeSection === 'instructions'"
+          section-id="instructions" title="指令文件" code="instructions" :badge="instructionsCount">
+          <StringListEditor
+            :model-value="instructionsArray"
+            item-placeholder="文件路径（如 resources/core/common/persona.md）"
+            add-label="添加文件"
+            empty-text="暂无 instructions"
+            mono
+            @update:model-value="updateInstructions($event)"
+          />
+        </EditorSection>
+
+        <!-- Plugin 配置（array<string>，OpenCode v1.17+ 标准格式） -->
+        <EditorSection v-if="visited.plugin" v-show="activeSection === 'plugin'" :active="activeSection === 'plugin'"
+          section-id="plugin" title="插件" code="plugin" :badge="pluginCount">
+          <StringListEditor
+            :model-value="pluginArray"
+            item-placeholder="github:owner/repo 或本地路径"
+            add-label="添加插件"
+            empty-text="暂无 plugin"
+            mono
+            @update:model-value="updatePlugin($event)"
+          />
+        </EditorSection>
+
+        <!-- Experimental 配置（object，类型保持 boolean/number） -->
+        <EditorSection v-if="visited.experimental" v-show="activeSection === 'experimental'" :active="activeSection === 'experimental'"
+          section-id="experimental" title="实验特性" code="experimental" :badge="experimentalCount">
+          <TypedKeyValueEditor
+            :model-value="experimentalMap"
+            empty-text="暂无 experimental"
+            @update:model-value="updateExperimental($event)"
+          />
+        </EditorSection>
+
+        <!-- 未识别键（$schema 等，兜底 RawJsonEditor） -->
+        <EditorSection v-if="unknownKeys.length > 0 && visited.unknown" v-show="activeSection === 'unknown'" :active="activeSection === 'unknown'"
+          section-id="unknown" title="其他键" :badge="unknownKeys.length">
+          <div class="ocg-unknown-list">
+            <div v-for="k in unknownKeys" :key="k" class="ocg-unknown-item">
+              <div class="ocg-unknown-key">{{ k }}</div>
+              <RawJsonEditor
+                :model-value="configData[k]"
+                @update:model-value="updateField(k, $event)"
               />
             </div>
-          </ConfigCategoryCard>
-
-          <!-- Provider 配置（object map） -->
-          <ConfigCategoryCard
-            title="Provider"
-            category="provider"
-            :expanded="expandedCategories.provider"
-            :badge="providerCount"
-            @toggle="expandedCategories.provider = !expandedCategories.provider"
-          >
-            <ProviderMapEditor
-              :model-value="providerMap"
-              @update:model-value="updateProvider($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- Agent 配置（object map） -->
-          <ConfigCategoryCard
-            title="Agent"
-            category="agent"
-            :expanded="expandedCategories.agent"
-            :badge="agentCount"
-            @toggle="expandedCategories.agent = !expandedCategories.agent"
-          >
-            <AgentMapEditor
-              :model-value="agentMap"
-              @update:model-value="updateAgent($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- MCP 配置（object map，真实键 mcp） -->
-          <ConfigCategoryCard
-            title="MCP Servers"
-            category="mcp"
-            :expanded="expandedCategories.mcp"
-            :badge="mcpCount"
-            @toggle="expandedCategories.mcp = !expandedCategories.mcp"
-          >
-            <McpMapEditor
-              :model-value="mcpMap"
-              @update:model-value="updateMcp($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- Permission 配置（object map，值 enum） -->
-          <ConfigCategoryCard
-            title="Permission"
-            category="permission"
-            :expanded="expandedCategories.permission"
-            :badge="permissionCount"
-            @toggle="expandedCategories.permission = !expandedCategories.permission"
-          >
-            <PermissionMapEditor
-              :model-value="permissionMap"
-              @update:model-value="updatePermission($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- Instructions 配置（array<string>） -->
-          <ConfigCategoryCard
-            title="Instructions"
-            category="instructions"
-            :expanded="expandedCategories.instructions"
-            :badge="instructionsCount"
-            @toggle="expandedCategories.instructions = !expandedCategories.instructions"
-          >
-            <StringListEditor
-              :model-value="instructionsArray"
-              item-placeholder="文件路径（如 resources/core/common/persona.md）"
-              add-label="添加文件"
-              empty-text="暂无 instructions"
-              mono
-              @update:model-value="updateInstructions($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- Plugin 配置（array<string>，OpenCode v1.17+ 标准格式） -->
-          <ConfigCategoryCard
-            title="Plugin"
-            category="plugin"
-            :expanded="expandedCategories.plugin"
-            :badge="pluginCount"
-            @toggle="expandedCategories.plugin = !expandedCategories.plugin"
-          >
-            <StringListEditor
-              :model-value="pluginArray"
-              item-placeholder="github:owner/repo 或本地路径"
-              add-label="添加插件"
-              empty-text="暂无 plugin"
-              mono
-              @update:model-value="updatePlugin($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- Experimental 配置（object，类型保持 boolean/number） -->
-          <ConfigCategoryCard
-            title="Experimental"
-            category="experimental"
-            :expanded="expandedCategories.experimental"
-            :badge="experimentalCount"
-            @toggle="expandedCategories.experimental = !expandedCategories.experimental"
-          >
-            <TypedKeyValueEditor
-              :model-value="experimentalMap"
-              empty-text="暂无 experimental"
-              @update:model-value="updateExperimental($event)"
-            />
-          </ConfigCategoryCard>
-
-          <!-- 未识别键（$schema 等，兜底 RawJsonEditor） -->
-          <ConfigCategoryCard
-            v-if="unknownKeys.length > 0"
-            title="其他键（兜底 JSON）"
-            category="unknown"
-            :expanded="expandedCategories.unknown"
-            :badge="unknownKeys.length"
-            @toggle="expandedCategories.unknown = !expandedCategories.unknown"
-          >
-            <div class="ocg-unknown-list">
-              <div v-for="k in unknownKeys" :key="k" class="ocg-unknown-item">
-                <div class="ocg-unknown-key">{{ k }}</div>
-                <RawJsonEditor
-                  :model-value="configData[k]"
-                  @update:model-value="updateField(k, $event)"
-                />
-              </div>
-            </div>
-          </ConfigCategoryCard>
-        </div>
+          </div>
+        </EditorSection>
       </div>
 
       <!-- JSON 模式 -->
@@ -244,11 +171,12 @@
         />
       </div>
     </template>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { GetOpenCodeConfig, SaveOpenCodeConfig, GetOpenCodeConfigPath } from '../../../wailsjs/go/main/App';
 import { useToast } from '../../composables/useToast';
 import { useProviderStore } from '../../stores/provider';
@@ -258,8 +186,11 @@ import AppButton from '../ui/AppButton.vue';
 import TextInput from '../ui/TextInput.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
-import EmptyState from '../ui/EmptyState.vue';
-import ConfigCategoryCard from './ConfigCategoryCard.vue';
+import StatusBanner from '../ui/StatusBanner.vue';
+import EditorToolbar from '../ui/EditorToolbar.vue';
+import EditorSection from '../ui/EditorSection.vue';
+import SectionNav from '../ui/SectionNav.vue';
+import { OPENCODE_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
 import ProviderMapEditor from './ProviderMapEditor.vue';
 import AgentMapEditor from './AgentMapEditor.vue';
 import McpMapEditor from './McpMapEditor.vue';
@@ -275,6 +206,9 @@ const MODE_OPTIONS = [
   { value: 'visual', label: '可视化' },
   { value: 'json', label: 'JSON' },
 ];
+
+/** 顶层模型卡片 InfoTip（design §5.2 T43）：原「Model 说明卡」的正文收进这里，卡片仅在键存在时渲染 */
+const MODEL_TIP = 'OpenCode 通常在 agent 级配置模型（agent.<名称>.model），顶层 model 较少使用。';
 
 // 真实键名常量（消除别名魔法字符串，无 fallback）
 const CONFIG_KEYS = {
@@ -303,18 +237,10 @@ const configPath = ref('');
 // 配置数据（可视化模式使用）
 const configData = ref<Record<string, any>>({});
 
-// 展开状态：默认全部收起（主上要求"不要默认完全展开"）
-const expandedCategories = ref<Record<string, boolean>>({
-  model: false,
-  provider: false,
-  mcp: false,
-  agent: false,
-  permission: false,
-  instructions: false,
-  plugin: false,
-  experimental: false,
-  unknown: false,
-});
+const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
+const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
+const activeSection = ref(props.sectionId || 'provider');
+const visited = ref<Record<string, boolean>>({ [activeSection.value]: true });
 
 // ===== 计算属性：各顶层键的强类型视图（直接映射，无别名 fallback） =====
 
@@ -536,6 +462,19 @@ const modeModel = computed({
   },
 });
 
+const navigationItems = computed(() => OPENCODE_SECTIONS.filter(s => s.id === 'model' ? hasTopLevelModel.value : s.id === 'unknown' ? unknownKeys.value.length > 0 : true));
+function selectSection(id: string) {
+  if (mode.value !== 'visual' || !navigationItems.value.some(s => s.id === id)) return;
+  activeSection.value = id; visited.value[id] = true;
+}
+watch(() => props.sectionId, id => { if (id) selectSection(id); });
+watch([navigationItems, loading, mode], () => {
+  if (loading.value || error.value || mode.value !== 'visual') return;
+  selectSection(navigationItems.value.some(s => s.id === activeSection.value) ? activeSection.value : 'provider');
+});
+const localGroups = computed(() => [{ id: 'opencode', items: navigationItems.value.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
+const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: navigationItems.value }));
+watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });
 onMounted(() => {
   initialLoad();
 });
@@ -548,134 +487,22 @@ void store;
 .oc-global {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.ocg-header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ocg-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-}
-
-.ocg-subtitle {
-  font-size: 13px;
-  color: var(--secondary);
-  margin: 0;
-}
-
-.ocg-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
-.ocg-mode-tabs {
-  display: inline-flex;
-}
+/* .ocg-json-error 仅作样式锚点：背景与内边距交给 StatusBanner compact */
 
-.ocg-path-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ocg-path-label {
+/* 工具栏状态槽：空文件 */
+.ocg-note {
   font-size: 12px;
   color: var(--tertiary);
-}
-
-.ocg-path-value {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--secondary);
-  background: var(--control);
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.ocg-copy-btn {
-  font-size: 11px;
-  padding: 4px 10px;
-}
-
-.ocg-json-error {
-  font-size: 12px;
-  color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
-
-.ocg-json-valid {
-  font-size: 12px;
-  color: var(--success);
-  padding: 4px 0;
+  white-space: nowrap;
 }
 
 .ocg-visual {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.ocg-empty-hint {
-  background: var(--control);
-  border: 1px dashed var(--separator);
-  border-radius: 12px;
-  padding: 8px 16px;
-  margin-bottom: 4px;
-}
-
-.ocg-empty-hint :deep(.empty-state) {
-  padding: 28px 16px;
-}
-
-.ocg-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.ocg-info-text {
-  font-size: 12px;
-  color: var(--secondary);
-  background: var(--control);
-  border-radius: 8px;
-  padding: 10px 12px;
-  line-height: 1.6;
-  margin-bottom: 10px;
-}
-
-.ocg-info-text code {
-  font-family: var(--mono);
-  font-size: 11px;
-  background: var(--termBg);
-  color: var(--termText);
-  padding: 1px 5px;
-  border-radius: 4px;
-}
-
-.ocg-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.ocg-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--secondary);
 }
 
 .ocg-unknown-list {
@@ -716,5 +543,34 @@ void store;
 
 .ocg-json-editor:focus {
   border-color: var(--accent);
+}
+.oc-global { min-width:0; }
+.oc-global.editor-local-layout { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+.editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
+@media (max-width:1199px) { .oc-global.editor-local-layout { --section-nav-width:144px; gap:12px; } }
+@media (max-width:1023px) { .oc-global.editor-local-layout { --section-nav-width:112px; } }
+/* Record lists only: preserve the nested editors' field and expansion behavior. */
+:deep(.provider-editor), :deep(.agent-editor), :deep(.mcp-editor), :deep(.perm-editor) { gap:0; }
+:deep(.provider-editor > .pe-card), :deep(.agent-editor > .ae-card), :deep(.mcp-editor > .me-card), :deep(.perm-editor > .pe-card), :deep(.provider-editor .pe-model-card) {
+  background:transparent; border:0; border-radius:0; box-shadow:none;
+}
+:deep(.provider-editor > .pe-card + .pe-card), :deep(.agent-editor > .ae-card + .ae-card), :deep(.mcp-editor > .me-card + .me-card), :deep(.perm-editor > .pe-card + .pe-card), :deep(.provider-editor .pe-model-card + .pe-model-card) { border-top:1px solid var(--separator); }
+:deep(.provider-editor .pe-thumb-head), :deep(.agent-editor .ae-thumb-head), :deep(.mcp-editor .me-thumb-head), :deep(.perm-editor .pe-thumb-head), :deep(.provider-editor .pe-expanded), :deep(.agent-editor .ae-expanded), :deep(.mcp-editor .me-expanded), :deep(.perm-editor .pe-expanded) { padding-inline:0; }
+:deep(.variants-editor .vme-row) { background:transparent; border-radius:0; }
+@container editor-detail (max-width:479px) {
+  :deep(.pe-card-head), :deep(.ae-card-head), :deep(.me-card-head), :deep(.pe-row), :deep(.tke-row), :deep(.vme-row-head), :deep(.me-header-row) { flex-wrap:wrap; }
+  :deep(.tke-key), :deep(.me-header-key), :deep(.pe-key) { max-width:100%; min-width:0; }
+  :deep(.tke-value), :deep(.pe-value), :deep(.me-header-val), :deep(.pe-option-val) { flex-basis:100%; min-width:0; }
+  :deep(.masked-value .value) { min-width:0; overflow-wrap:anywhere; }
+  :deep(.masked-value .toggle-btn), :deep(.pe-reveal-btn) { flex-shrink:0; white-space:nowrap; }
+  :deep(textarea) { max-width:100%; min-width:0; }
+}
+@supports not (container-type: inline-size) {
+  :deep(.pe-card-head), :deep(.ae-card-head), :deep(.me-card-head), :deep(.pe-row), :deep(.tke-row), :deep(.vme-row-head), :deep(.me-header-row) { flex-wrap:wrap; }
+  :deep(.tke-key), :deep(.me-header-key), :deep(.pe-key) { max-width:100%; min-width:0; }
+  :deep(.tke-value), :deep(.pe-value), :deep(.me-header-val), :deep(.pe-option-val) { flex-basis:100%; min-width:0; }
+  :deep(.masked-value .value) { min-width:0; overflow-wrap:anywhere; }
+  :deep(.masked-value .toggle-btn), :deep(.pe-reveal-btn) { flex-shrink:0; white-space:nowrap; }
+  :deep(textarea) { max-width:100%; min-width:0; }
 }
 </style>

@@ -2,7 +2,7 @@
   <div class="empty-state">
     <div class="empty-icon">{{ icon }}</div>
     <h3>{{ title }}</h3>
-    <p>{{ description }}</p>
+    <p v-if="description">{{ description }}</p>
     <slot name="action" />
   </div>
 </template>
@@ -11,11 +11,13 @@
 interface Props {
   icon?: string;
   title: string;
-  description: string;
+  /** 可选：仅在补充「非显然事实」时才写（P7）；引导靠 action 插槽里的按钮完成 */
+  description?: string;
 }
 
 withDefaults(defineProps<Props>(), {
   icon: '—',
+  description: '',
 });
 </script>
 

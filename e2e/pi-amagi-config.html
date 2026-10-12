@@ -4,6 +4,7 @@
 <script type="module">
 // Browser-only isolation fixture: production Vue components and Wails API wrapper;
 // the transport saves to this browser context, never to the user's ~/.pi directory.
+// 独立挂载生产导航与分区外壳；未挂 ProviderCenterView。
 import { createApp, h } from 'vue';
 import PiAmagiConfig from '/frontend/src/components/provider/PiAmagiConfig.vue';
 import { useToast } from '/frontend/src/composables/useToast.ts';
@@ -27,6 +28,6 @@ window.go = {main: {App: {
 }}};
 createApp({setup() {
   const { toasts } = useToast();
-  return () => h('main', [h(PiAmagiConfig), h('output', {id: 'test-notifications'}, toasts.map(t => t.message).join('\n'))]);
+  return () => h('main', [h(PiAmagiConfig, { navigation: 'local' }), h('output', {id: 'test-notifications'}, toasts.map(t => t.message).join('\n'))]);
 }}).mount('#app');
 </script></body></html>

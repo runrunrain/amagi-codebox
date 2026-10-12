@@ -95,18 +95,19 @@ export function cancelBake(): void {
 }
 
 /**
- * 请求烘焙（防抖）。onDone 在烘焙完成后回调（无论结果是否变化），调用方
- * 据此原子换图。同一时刻仅最后一次请求有效（token 代际）。
+ * 请求烘焙（防抖）。onDone 仅在一次真实异步烘焙终态后回调（成功或失败），
+ * 调用方据此原子换图。同步 no-op 路径（blur<=0/不支持/缓存已命中）不回调：
+ * 调用方在同一次同步渲染里已通过 currentSkinImage 取到最终态；同步回调反而会
+ * 造成 onDone→syncSkinDom→requestBake 的同步递归（blur=0 或烘焙失败后必现栈溢出）。
+ * 同一时刻仅最后一次请求有效（token 代际）。
  */
 export function requestBake(p: SkinBakeParams, onDone: () => void): void {
   if (p.blur <= 0 || !bakeSupported()) {
     bakedResult = null
-    onDone()
     return
   }
   if (bakedResult && bakedResult.srcUrl === p.url && bakedResult.blur === p.blur && bakedResult.dim === p.dim) {
-    onDone() // 已是最新
-    return
+    return // 已是最新：currentSkinImage 已在同一次同步渲染中返回烘焙产物
   }
   const token = ++state.token
   if (debounceTimer !== null) clearTimeout(debounceTimer)

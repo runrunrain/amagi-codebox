@@ -1,0 +1,17 @@
+ M frontend/src/components/provider/AuthConfigEditor.vue
+ M frontend/src/components/provider/ConfigCategoryCard.vue
+ M frontend/src/components/provider/OmpGlobalConfig.vue
+ M frontend/src/components/provider/OpenCodeGlobalConfig.vue
+ M frontend/src/components/provider/OpenCodePresets.vue
+ M frontend/src/components/provider/PiAmagiConfig.vue
+ M frontend/src/components/provider/PresetList.vue
+ M frontend/src/components/provider/ProviderRegistryEditor.vue
+ M frontend/src/components/ui/EmptyState.vue
+ M frontend/src/components/ui/StatusBanner.vue
+ M frontend/src/styles/tokens.css
+ M frontend/src/views/ProviderCenterView.vue
+?? agent-outputs/resume-relay-c0bfcc44-ae00-4ccb-80ef-f5eab942871b.md
+?? agent-outputs/workflow/provider-center-layout-redesign/
+?? frontend/src/components/ui/EditorToolbar.vue
+?? frontend/src/components/ui/FieldLabel.vue
+?? frontend/src/components/ui/InfoTip.vue

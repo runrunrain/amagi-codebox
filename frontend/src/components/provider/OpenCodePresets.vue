@@ -3,9 +3,11 @@
   与 Claude/Codex 不同：OpenCode 管理的是 ~/.config/opencode/config.json 配置文件，
   支持可视化/JSON 双模式。本批按钮 emit，编辑能力 P7 批次实现。
 
-  - 可视化模式：从真实 config.json 解析出 provider/preset 结构渲染 oc-card；
-    并固定渲染一个「本机默认配置」虚线卡片（与 demo 一致）。
+  - 可视化模式：从真实 config.json 解析出 preset 段，渲染为分组列表（.oc-group）；
+    「本机默认配置」行在未搜索时始终显示（不可点），用户预设行整行可点编辑。
   - JSON 模式：深色代码块展示真实 config.json 内容（轻量语法高亮）。
+  - 布局（provider-center-layout-redesign §4.5）：搜索、路径胶囊（点击复制）、模式切换、添加预设
+    收进一行 EditorToolbar；空态 = 标题 + 动作按钮。
 -->
 <template>
   <div class="oc-panel">
@@ -21,80 +23,95 @@
 
     <!-- Main content -->
     <template v-else>
-    <!-- 工具栏：搜索 + 可视化/JSON 双模式 Segmented + 添加预设按钮 -->
-    <div class="pc-toolbar">
-      <div class="pc-search">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <circle cx="11" cy="11" r="7" />
-          <line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
-        <input
-          v-model="searchModel"
-          type="text"
-          class="oc-search-input"
-          placeholder="搜索 OpenCode 预设"
-        />
-      </div>
-      <div class="pc-actions">
+    <!-- 工具栏：搜索 + 路径胶囊 ····· 可视化/JSON 双模式 + 添加预设 -->
+    <EditorToolbar :path="store.ocConfigPath" path-label="配置文件" @copy-path="copyPath">
+      <template #leading>
+        <div class="pc-search">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            v-model="searchModel"
+            type="text"
+            class="oc-search-input"
+            placeholder="搜索 OpenCode 预设"
+            aria-label="搜索 OpenCode 预设"
+          />
+        </div>
+      </template>
+      <template #actions>
         <Segmented
           v-model="modeModel"
           :options="MODE_OPTIONS"
           variant="pill"
-          class="oc-mode-tabs"
         />
         <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
-      </div>
-    </div>
+      </template>
+    </EditorToolbar>
 
     <!-- 可视化模式 -->
     <div v-if="mode === 'visual'" class="oc-view">
-      <div v-if="visualItems.length > 0" class="preset-list">
-        <!-- 本机默认配置（虚线卡片，固定首位） -->
-        <div class="oc-card default">
+      <!-- 分组列表（规格同 PresetList 的 .preset-group）：本机默认行 + 用户预设行 -->
+      <ul v-if="!searchActive || visualItems.length > 0" class="oc-group">
+        <!-- 本机默认配置：未搜索时始终显示（没有用户预设时也在，与「未指定预设即使用此项」的语义一致），不可点 -->
+        <li v-if="!searchActive" class="oc-row is-default">
           <div class="oc-head">
-            <div class="oc-name">
-              本机默认配置
-              <span class="oc-default-tag">默认</span>
-            </div>
+            <span class="oc-name">本机默认配置</span>
+            <span class="oc-default-tag">默认</span>
           </div>
-          <div class="oc-key">key: (本机)</div>
-          <div class="oc-desc">
-            读取本地 ~/.config/opencode 配置，未启用受管预设。启动时若未指定预设即使用此项。
-          </div>
-        </div>
+          <div class="oc-desc">未选择预设时使用本机 ~/.config/opencode 配置</div>
+        </li>
 
-        <!-- 用户预设卡片（来自真实 config.json 的 preset 段） -->
-        <div
+        <!-- 用户预设行（来自真实 config.json 的 preset 段）：名称是真 button，::after 撑满整行作点击热区 -->
+        <li
           v-for="item in visualItems"
           :key="item.key"
-          class="oc-card clickable"
-          @click="handleEdit(item)"
+          class="oc-row"
         >
           <div class="oc-head">
-            <div class="oc-name">{{ item.name }}</div>
+            <button
+              type="button"
+              class="oc-open"
+              :aria-label="`编辑预设 ${item.name}`"
+              @click="handleEdit(item)"
+            >
+              <span class="oc-name">{{ item.name }}</span>
+            </button>
+            <code class="oc-key">{{ item.key }}</code>
           </div>
-          <div class="oc-key">key: {{ item.key }}</div>
-          <div class="oc-desc" v-if="item.desc">{{ item.desc }}</div>
-          <div class="oc-meta">
+          <div v-if="item.desc" class="oc-desc" :title="item.desc">{{ item.desc }}</div>
+          <div v-if="item.bindCount || item.provider || item.model" class="oc-meta">
             <span v-if="item.bindCount > 0" class="oc-bind">绑定 {{ item.bindCount }} 个提供商</span>
             <span v-if="item.provider" class="oc-prov-tag">{{ item.provider }}</span>
             <span v-if="item.model" class="oc-model-tag">{{ item.model }}</span>
           </div>
-        </div>
-      </div>
+        </li>
+      </ul>
 
+      <!-- 空态：标题 + 动作（P7） -->
       <EmptyState
-        v-else
+        v-if="visualItems.length === 0"
         icon="≡"
-        :title="store.loadingPresets ? '正在加载 OpenCode 配置...' : '该配置下暂无 OpenCode 预设'"
-        :description="store.loadingPresets ? '' : '在 config.json 的 preset 段中定义预设，或点击右上角「添加预设」'"
-      />
-
-      <!-- 配置文件路径提示 -->
-      <div v-if="store.ocConfigPath" class="oc-path-row">
-        <span class="oc-path-label">配置文件：</span>
-        <code class="oc-path-value">{{ store.ocConfigPath }}</code>
-      </div>
+        :title="store.loadingPresets ? '正在加载 OpenCode 配置...' : (searchActive ? '无匹配预设' : '暂无 OpenCode 预设')"
+      >
+        <template #action>
+          <AppButton
+            v-if="searchActive"
+            variant="ghost"
+            size="small"
+            class="empty-action"
+            @click="searchModel = ''"
+          >清除搜索</AppButton>
+          <AppButton
+            v-else-if="!store.loadingPresets"
+            variant="primary"
+            size="small"
+            class="empty-action"
+            @click="handleAdd"
+          >添加预设</AppButton>
+        </template>
+      </EmptyState>
     </div>
 
     <!-- JSON 模式：深色代码块展示真实 config.json -->
@@ -104,13 +121,9 @@
         v-else
         icon="≡"
         title="未读取到 OpenCode 配置"
-        description="config.json 内容为空或加载失败"
+        description="文件为空或读取失败"
       />
-      <div v-if="store.ocConfigPath" class="oc-path-row">
-        <span class="oc-path-label">配置文件：</span>
-        <code class="oc-path-value">{{ store.ocConfigPath }}</code>
-      </div>
-      </div>
+    </div>
     </template>
   </div>
 
@@ -126,16 +139,19 @@
 import { computed, ref, onMounted } from 'vue';
 import { config } from '../../../wailsjs/go/models';
 import { useProviderStore } from '../../stores/provider';
+import { useToast } from '../../composables/useToast';
 import Segmented from '../ui/Segmented.vue';
 import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import EditorToolbar from '../ui/EditorToolbar.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 
 defineEmits<{ (e: 'add'): void }>();
 
 const store = useProviderStore();
+const { showSuccess, showError } = useToast();
 const showPresetDialog = ref(false);
 const editingPreset = ref<config.OpenCodePreset | null>(null);
 
@@ -202,6 +218,9 @@ const allPresetItems = computed<VisualItem[]>(() => {
   return items;
 });
 
+/** 是否处于搜索态（搜索态下不显示「本机默认配置」行，空态给「清除搜索」） */
+const searchActive = computed(() => store.presetSearch.trim() !== '');
+
 /** 应用搜索过滤后的可视化项 */
 const visualItems = computed<VisualItem[]>(() => {
   const q = store.presetSearch.trim().toLowerCase();
@@ -237,6 +256,18 @@ const highlightedJson = computed<string>(() => {
 function handleAdd() {
   editingPreset.value = null;
   showPresetDialog.value = true;
+}
+
+/** 复制 config.json 路径（路径胶囊点击，写法同其他编辑器） */
+async function copyPath() {
+  const path = store.ocConfigPath;
+  if (!path) return;
+  try {
+    await navigator.clipboard.writeText(path);
+    showSuccess('路径已复制到剪贴板');
+  } catch {
+    showError('复制失败');
+  }
 }
 
 /**
@@ -293,6 +324,8 @@ async function handlePresetSaved() {
   error.value = '';
   try {
     await store.loadPresets('opencode', true);
+    // store.loadPresets 内部捕获读取错误不 rethrow，需消费 presetLoadError 呈现错误态
+    if (store.presetLoadError) error.value = store.presetLoadError;
   } catch (err) {
     error.value = String(err);
   } finally {
@@ -306,6 +339,8 @@ async function initialLoad() {
   error.value = '';
   try {
     await store.loadPresets('opencode', false);
+    // 同 handlePresetSaved：消费 store 内部捕获的错误，避免读取失败时误显「默认行＋暂无预设」
+    if (store.presetLoadError) error.value = store.presetLoadError;
   } catch (err) {
     error.value = String(err);
   } finally {
@@ -323,15 +358,7 @@ onMounted(() => {
 .oc-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.pc-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 .pc-search {
@@ -374,68 +401,88 @@ onMounted(() => {
   color: var(--tertiary);
 }
 
-.pc-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.oc-mode-tabs {
-  display: inline-flex;
-}
-
-.preset-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.oc-card {
+/* 分组列表：一个容器 + 行间分隔线（规格同 PresetList 的 .preset-group） */
+.oc-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   background: var(--card);
   border: 1px solid var(--separator);
   border-radius: 12px;
-  padding: 14px 16px;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+  overflow: hidden;
 }
 
-.oc-card.clickable {
-  cursor: pointer;
+.oc-row {
+  position: relative;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background 0.15s ease;
 }
 
-.oc-card.clickable:hover {
-  border-color: var(--accent, #007aff);
+.oc-row + .oc-row {
+  border-top: 1px solid var(--separator);
+}
+
+/* hover 底色同 PresetList：不用 --control，避免与 .oc-bind 等标签同色 */
+.oc-row:not(.is-default):hover {
   background: var(--hover, rgba(0, 122, 255, 0.04));
 }
 
-.oc-card.clickable:active {
-  transform: scale(0.997);
-}
-
-.oc-card.default {
-  border-style: dashed;
-  border-color: #c5c5cc;
+/* 本机默认行：不可点，无 hover */
+.oc-row.is-default {
   background: var(--sidebar);
 }
 
 .oc-head {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  margin-bottom: 5px;
+}
+
+/* 名称按钮：::after 撑满整行作点击热区（.oc-row 是定位祖先，按钮自身不能定位） */
+.oc-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.oc-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.oc-open:focus-visible {
+  outline: none;
+}
+
+.oc-open:focus-visible::after {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: inherit;
 }
 
 .oc-name {
+  display: block;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--label);
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .oc-default-tag {
+  flex: 0 0 auto;
   font-size: 10px;
   font-weight: 600;
   color: var(--accent);
@@ -445,17 +492,21 @@ onMounted(() => {
 }
 
 .oc-key {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  flex: 0 1 auto;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--tertiary);
-  margin-bottom: 8px;
 }
 
 .oc-desc {
   font-size: 12px;
   color: var(--secondary);
-  line-height: 1.5;
-  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .oc-meta {
@@ -478,19 +529,26 @@ onMounted(() => {
 
 .oc-prov-tag {
   font-size: 11px;
-  color: var(--success);
+  color: var(--success-strong);
   background: rgba(52, 199, 89, 0.12);
   border-radius: 5px;
   padding: 2px 8px;
 }
 
 .oc-model-tag {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 11px;
   color: var(--accent);
   background: rgba(0, 122, 255, 0.1);
   border-radius: 5px;
   padding: 2px 8px;
   font-family: var(--mono);
+}
+
+.empty-action {
+  margin-top: 14px;
 }
 
 .oc-json {
@@ -519,24 +577,10 @@ onMounted(() => {
   color: #6e6e73;
   font-style: italic;
 }
-
-.oc-path-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  font-size: 12px;
-  color: var(--tertiary);
+@container editor-toolbar (max-width: 639px) {
+  .pc-search { flex-basis:100%; min-width:0; max-width:none; }
 }
-
-.oc-path-label {
-  white-space: nowrap;
-}
-
-.oc-path-value {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--secondary);
-  word-break: break-all;
+@supports not (container-type: inline-size) {
+  .pc-search { flex-basis:100%; min-width:0; max-width:none; }
 }
 </style>

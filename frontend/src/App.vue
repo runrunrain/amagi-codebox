@@ -67,6 +67,13 @@ function syncSkinDom() {
 }
 
 onMounted(() => {
+  // 清除 chunk 失败重载标记（见 ProviderCenterView PresetLoadError）：标记只应跨越
+  // 一次重载存在，防止重载后仍失败时形成自动循环；用户再次点击重试仍可触发恢复重载。
+  try {
+    window.sessionStorage.removeItem('amagi-codebox:chunk-reload')
+  } catch {
+    // sessionStorage 不可用时忽略（重载恢复会退回 remount 重试）
+  }
   ensure()
   skinStore.load()
   appearanceStore.ensureLoaded()

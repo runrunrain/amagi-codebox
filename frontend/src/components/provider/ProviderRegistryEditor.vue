@@ -8,61 +8,63 @@
   VisualValueEditor 递归可视化编辑（字符串/数字/布尔/列表/嵌套对象，零 JSON）。
   源码模式完全源码：JSON/YAML 文本直接编辑。
   注意：amagi-* 前缀的 provider 由 CodeBox 提供商中心同步管理，手工修改可能被覆盖。
+
+  布局（provider-center-layout-redesign §4.7）：导航即标题，不再有 h2 / subtitle；
+  EditorToolbar 常显「重新进入后生效」并挂 InfoTip；“amagi-*”提供商卡头常显「受管」警示标签 +
+  卡内 warning 横幅（覆盖风险保持常显）；配置键统一 code 化；双引擎差异只在 isPi 分支。
 -->
 <template>
-  <div class="pre-root">
-    <div class="pre-header">
-      <h2 class="pre-title">{{ isPi ? 'Pi 模型提供商（models.json）' : 'OMP 模型提供商（models.yml）' }}</h2>
-      <p class="pre-subtitle">
-        编辑模型注册表：提供商连接信息（api / baseUrl / apiKey）与模型元数据。
-        Agent 配置中的 provider/model 下拉即来自此文件，保存后重新进入配置页生效。
-      </p>
-    </div>
-
+  <div ref="editorRoot" class="pre-root" :class="{ 'editor-local-layout': navigation === 'local' }">
+    <SectionNav v-if="navigation === 'local'" label="配置分区" :groups="localGroups" :current-id="mode === 'visual' ? activeSection : ''" controls-id="pre-editor-detail" :notice="mode !== 'visual' ? '源码模式：返回可视化后切换分区' : ''" @select="selectSection" />
+    <div id="pre-editor-detail" class="editor-detail">
     <LoadingState v-if="loading" message="加载注册表中..." />
 
     <ErrorState v-else-if="error" title="加载失败" :message="error" :on-retry="initialLoad" />
 
     <template v-else>
-      <div class="pre-toolbar">
-        <Segmented v-model="modeModel" :options="modeOptions" variant="pill" class="pre-mode-tabs" />
-        <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
-          {{ saving ? '保存中...' : '保存配置' }}
-        </AppButton>
-      </div>
+      <!-- 工具栏：路径胶囊 + 合法状态 ····· 生效标签 ⓘ + 模式切换 + 保存。双引擎差异只出现在 isPi 分支 -->
+      <EditorToolbar
+        :path="configPath"
+        path-label="注册表文件"
+        effect="重新进入后生效"
+        :effect-tip="REGISTRY_EFFECT_TIP"
+        :valid-label="mode === 'source' && !parseError ? (isPi ? 'JSON 合法' : 'YAML 合法') : ''"
+        @copy-path="copyPath"
+      >
+        <template #actions>
+          <Segmented v-model="modeModel" :options="modeOptions" variant="pill" />
+          <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
+            {{ saving ? '保存中...' : '保存配置' }}
+          </AppButton>
+        </template>
+      </EditorToolbar>
 
-      <div class="pre-path-row">
-        <span class="pre-path-label">注册表文件：</span>
-        <code class="pre-path-value">{{ configPath || '加载中...' }}</code>
-        <AppButton v-if="configPath" variant="ghost" size="small" class="pre-copy-btn" @click="copyPath">
-          复制路径
-        </AppButton>
-      </div>
-
-      <div v-if="parseError" class="pre-parse-error">{{ parseError }}（可视化不可用，请切到源码模式修复）</div>
-      <div v-else-if="mode === 'source'" class="pre-parse-valid">{{ isPi ? 'JSON' : 'YAML' }} 合法</div>
+      <StatusBanner
+        v-if="parseError"
+        compact
+        type="error"
+        role="alert"
+        class="pre-parse-error"
+        :message="`${parseError}，可视化不可用，请切换到 ${isPi ? 'JSON' : 'YAML'} 模式修复`"
+      />
 
       <!-- 可视化模式 -->
       <div v-if="mode === 'visual'" class="pre-visual">
-        <div v-if="providerNames.length === 0" class="pre-empty">
-          <EmptyState title="注册表为空" description="尚无提供商，添加一个开始配置模型。" />
-        </div>
-
-        <ConfigCategoryCard
-          v-for="name in providerNames"
-          :key="name"
-          :title="name"
-          :category="'provider'"
-          :expanded="expandedProviders[name] ?? false"
-          :badge="modelCount(name)"
-          @toggle="toggleProvider(name)"
+        <template v-for="name in providerNames" :key="name">
+        <EditorSection v-if="visited[providerSectionId(name)]" v-show="activeSection === providerSectionId(name)" :active="activeSection === providerSectionId(name)"
+          :section-id="providerSectionId(name)" :title="name" :badge="modelCount(name)"
+          :meta="name.startsWith('amagi-') ? '受管' : undefined" meta-tone="warning"
         >
-          <div v-if="name.startsWith('amagi-')" class="pre-managed-warn">
-            amagi-* 提供商由 CodeBox 提供商中心同步管理，手工修改可能在下次同步时被覆盖。
-          </div>
-          <div class="pre-fields">
+          <StatusBanner
+            v-if="name.startsWith('amagi-')"
+            compact
+            type="warning"
+            class="pre-managed-warn"
+            message="由 CodeBox 提供商中心同步管理，手动修改可能在下次同步时被覆盖"
+          />
+          <div class="pre-fields pre-fields-grid">
             <div class="pre-field">
-              <label class="pre-label">api（协议类型）</label>
+              <FieldLabel text="协议" code="api" />
               <Dropdown
                 v-if="!providerApiRaw(name) || API_OPTIONS.some((o) => o.value === providerApiRaw(name))"
                 :model-value="providerApiRaw(name)"
@@ -79,7 +81,7 @@
               />
             </div>
             <div class="pre-field">
-              <label class="pre-label">baseUrl</label>
+              <FieldLabel text="Base URL" code="baseUrl" />
               <TextInput
                 :model-value="providerFieldString(name, 'baseUrl')"
                 mono
@@ -88,21 +90,28 @@
               />
             </div>
             <div class="pre-field">
-              <label class="pre-label">apiKey（留空表示未设置）</label>
+              <FieldLabel text="API Key" code="apiKey" />
               <TextInput
                 :model-value="providerFieldString(name, 'apiKey')"
                 type="password"
                 mono
-                placeholder="sk-..."
+                placeholder="留空表示未设置"
                 @update:model-value="setProviderField(name, 'apiKey', $event)"
               />
             </div>
           </div>
 
-          <!-- provider 级其他字段（auth: none / authHeader 等），完全可视化 -->
+          <!-- provider 级其他字段（auth: none / authHeader 等），完全可视化；没有字段时不占位 -->
           <div class="pre-unknown">
-            <div class="pre-unknown-title">其他字段</div>
-            <div v-if="providerUnknownKeys(name).length === 0" class="pre-unknown-empty">暂无其他字段</div>
+            <div class="pre-section-head">
+              <span class="pre-unknown-title">其他字段</span>
+              <div class="pre-actions">
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
+              </div>
+            </div>
             <div v-for="k in providerUnknownKeys(name)" :key="k" class="pre-unknown-item">
               <div class="pre-unknown-head">
                 <span class="pre-unknown-key">{{ k }}</span>
@@ -115,18 +124,12 @@
                 @update:model-value="setProviderField(name, k, $event)"
               />
             </div>
-            <div class="pre-actions">
-              <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
-              <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
-              <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
-              <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
-            </div>
           </div>
 
           <!-- 模型列表 -->
           <div class="pre-models">
             <div class="pre-models-head">
-              <span class="pre-label">模型（{{ modelCount(name) }}）</span>
+              <span class="pre-label">模型</span>
             </div>
             <div v-for="(m, idx) in providerModels(name)" :key="idx" class="pre-model">
               <div class="pre-model-head">
@@ -151,7 +154,7 @@
               </div>
               <div class="pre-model-grid">
                 <div class="pre-field">
-                  <label class="pre-label">显示名（name）</label>
+                  <FieldLabel text="显示名" code="name" />
                   <TextInput
                     :model-value="modelFieldString(name, idx, 'name')"
                     placeholder="展示名称，可留空"
@@ -159,7 +162,7 @@
                   />
                 </div>
                 <div class="pre-field">
-                  <label class="pre-label">上下文窗口（contextWindow）</label>
+                  <FieldLabel text="上下文窗口" code="contextWindow" />
                   <TextInput
                     :model-value="modelFieldString(name, idx, 'contextWindow')"
                     type="number"
@@ -168,7 +171,7 @@
                   />
                 </div>
                 <div class="pre-field">
-                  <label class="pre-label">最大输出（maxTokens）</label>
+                  <FieldLabel text="最大输出" code="maxTokens" />
                   <TextInput
                     :model-value="modelFieldString(name, idx, 'maxTokens')"
                     type="number"
@@ -177,20 +180,27 @@
                   />
                 </div>
               </div>
-              <!-- 模型高级字段：专用可视化编辑器，完全可视化 -->
+              <!-- 模型高级字段：专用可视化编辑器，完全可视化；没有字段时不占位，添加入口常在标题行 -->
               <div class="pre-unknown">
-                <div class="pre-unknown-title">高级字段</div>
-                <div
-                  v-if="modelAdvancedPresent(name, idx).length === 0 && modelExtraKeys(name, idx).length === 0"
-                  class="pre-unknown-empty"
-                >
-                  暂无高级字段
+                <div class="pre-section-head">
+                  <span class="pre-unknown-title">高级字段</span>
+                  <div class="pre-actions">
+                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinkingLevelMap')">+ 级别映射</AppButton>
+                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinking')">+ thinking</AppButton>
+                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'input')">+ 输入能力</AppButton>
+                    <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'cost')">+ 费用</AppButton>
+                    <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, {})">+ 对象字段</AppButton>
+                    <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, '')">+ 字符串字段</AppButton>
+                  </div>
                 </div>
 
                 <!-- thinkingLevelMap：级别映射 -->
                 <div v-if="hasModelField(name, idx, 'thinkingLevelMap')" class="pre-unknown-item">
                   <div class="pre-unknown-head">
-                    <span class="pre-unknown-key">thinkingLevelMap（级别映射）</span>
+                    <span class="pre-key-row">
+                      <span class="pre-key-name">级别映射</span>
+                      <code class="pre-key-code">thinkingLevelMap</code>
+                    </span>
                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'thinkingLevelMap')">
                       <span class="pre-remove">×</span>
                     </AppButton>
@@ -204,7 +214,10 @@
                 <!-- thinking：mode + levels -->
                 <div v-if="hasModelField(name, idx, 'thinking')" class="pre-unknown-item">
                   <div class="pre-unknown-head">
-                    <span class="pre-unknown-key">thinking（思考模式）</span>
+                    <span class="pre-key-row">
+                      <span class="pre-key-name">思考模式</span>
+                      <code class="pre-key-code">thinking</code>
+                    </span>
                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'thinking')">
                       <span class="pre-remove">×</span>
                     </AppButton>
@@ -236,7 +249,10 @@
                 <!-- input：输入能力 -->
                 <div v-if="hasModelField(name, idx, 'input')" class="pre-unknown-item">
                   <div class="pre-unknown-head">
-                    <span class="pre-unknown-key">input（输入能力）</span>
+                    <span class="pre-key-row">
+                      <span class="pre-key-name">输入能力</span>
+                      <code class="pre-key-code">input</code>
+                    </span>
                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'input')">
                       <span class="pre-remove">×</span>
                     </AppButton>
@@ -254,7 +270,11 @@
                 <!-- cost：四项费用 -->
                 <div v-if="hasModelField(name, idx, 'cost')" class="pre-unknown-item">
                   <div class="pre-unknown-head">
-                    <span class="pre-unknown-key">cost（USD / 百万 token）</span>
+                    <span class="pre-key-row">
+                      <span class="pre-key-name">费用</span>
+                      <code class="pre-key-code">cost</code>
+                      <span class="pre-unit">USD / 百万 token</span>
+                    </span>
                     <AppButton variant="icon" size="small" aria-label="删除" @click="deleteModelField(name, idx, 'cost')">
                       <span class="pre-remove">×</span>
                     </AppButton>
@@ -285,15 +305,6 @@
                     @update:model-value="setModelField(name, idx, k, $event)"
                   />
                 </div>
-
-                <div class="pre-actions">
-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinkingLevelMap')">+ 级别映射</AppButton>
-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'thinking')">+ thinking</AppButton>
-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'input')">+ 输入能力</AppButton>
-                  <AppButton variant="ghost" size="small" @click="addModelAdvanced(name, idx, 'cost')">+ 费用</AppButton>
-                  <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, {})">+ 对象字段</AppButton>
-                  <AppButton variant="ghost" size="small" @click="addModelExtraField(name, idx, '')">+ 字符串字段</AppButton>
-                </div>
               </div>
             </div>
             <div class="pre-actions">
@@ -302,11 +313,13 @@
           </div>
 
           <div class="pre-actions pre-provider-actions">
-            <AppButton variant="ghost" size="small" @click="removeProvider(name)">删除提供商 {{ name }}</AppButton>
+            <AppButton variant="danger" size="small" @click="removeProvider(name)">删除提供商 {{ name }}</AppButton>
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
+        </template>
 
-        <!-- 添加提供商 -->
+        <EditorSection v-if="visited.add" v-show="activeSection === 'add'" :active="activeSection === 'add'" section-id="add" title="添加提供商">
+        <EmptyState v-if="providerNames.length === 0" title="暂无提供商" />
         <div class="pre-add-provider">
           <TextInput
             v-model="newProviderName"
@@ -319,14 +332,11 @@
           </AppButton>
         </div>
 
+        </EditorSection>
+
         <!-- 根级其他键（$schema 等），完全可视化 -->
-        <ConfigCategoryCard
-          v-if="rootUnknownKeys.length"
-          title="其他顶层键"
-          category="unknown"
-          :expanded="expandedRoot"
-          :badge="rootUnknownKeys.length"
-          @toggle="expandedRoot = !expandedRoot"
+        <EditorSection v-if="rootUnknownKeys.length && visited.root" v-show="activeSection === 'root'" :active="activeSection === 'root'"
+          section-id="root" title="其他顶层键" :badge="rootUnknownKeys.length"
         >
           <div class="pre-unknown">
             <div v-for="k in rootUnknownKeys" :key="k" class="pre-unknown-item">
@@ -339,7 +349,7 @@
               <VisualValueEditor :model-value="data[k]" @update:model-value="setRootField(k, $event)" />
             </div>
           </div>
-        </ConfigCategoryCard>
+        </EditorSection>
       </div>
 
       <!-- 源码模式 -->
@@ -347,11 +357,12 @@
         <textarea v-model="sourceContent" class="pre-source-editor" spellcheck="false" @input="parseSource" />
       </div>
     </template>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 import {
   getPiModelsConfig, savePiModelsConfig, getPiModelsConfigPath,
@@ -369,16 +380,27 @@ import Badge from '../ui/Badge.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import EmptyState from '../ui/EmptyState.vue';
-import ConfigCategoryCard from './ConfigCategoryCard.vue';
+import StatusBanner from '../ui/StatusBanner.vue';
+import EditorToolbar from '../ui/EditorToolbar.vue';
+import FieldLabel from '../ui/FieldLabel.vue';
+import EditorSection from '../ui/EditorSection.vue';
+import SectionNav from '../ui/SectionNav.vue';
+import { providerSectionId, pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot, type ConfigSectionItem } from './configNavigation';
 import StringListEditor from './StringListEditor.vue';
 import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
 
-const props = defineProps<{ engine: 'pi' | 'omp' }>();
+const props = withDefaults(defineProps<EditorNavigationProps & { engine: 'pi' | 'omp' }>(), { navigation: 'local', navOwner: '' });
+const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
+const editorRoot = ref<HTMLElement | null>(null);
 
 const { showSuccess, showError } = useToast();
 
 const isPi = computed(() => props.engine === 'pi');
+
+/** 工具栏「重新进入后生效」标签的补充说明（design §5.2 T46） */
+const REGISTRY_EFFECT_TIP =
+  'Agent 配置的 provider / model 下拉读取此文件；保存后重新进入 Agent 配置页即可看到更新。';
 
 const modeOptions = computed(() => [
   { value: 'visual', label: '可视化' },
@@ -414,8 +436,8 @@ const sourceContent = ref('');
 const parseError = ref('');
 const configPath = ref('');
 const data = ref<Record<string, any>>({});
-const expandedProviders = ref<Record<string, boolean>>({});
-const expandedRoot = ref(false);
+const activeSection = ref(props.sectionId || '');
+const visited = ref<Record<string, boolean>>({});
 const newProviderName = ref('');
 
 const providersMap = computed<Record<string, any>>(() => {
@@ -439,9 +461,32 @@ function providerModels(name: string): any[] {
   return Array.isArray(models) ? models : [];
 }
 
-function toggleProvider(name: string) {
-  expandedProviders.value = { ...expandedProviders.value, [name]: !(expandedProviders.value[name] ?? false) };
+const navigationItems = computed<ConfigSectionItem[]>(() => [
+  ...providerNames.value.map(name => ({ id: providerSectionId(name), label: name, meta: name.startsWith('amagi-') ? '受管' : undefined, metaTone: 'warning' as const })),
+  ...(rootUnknownKeys.value.length ? [{ id: 'root', label: '其他顶层键' }] : []),
+  { id: 'add', label: '添加提供商' },
+]);
+function defaultSection() { return navigationItems.value[0]?.id || 'add'; }
+function selectSection(id: string) {
+  if (mode.value !== 'visual' || !navigationItems.value.some(s => s.id === id)) return;
+  activeSection.value = id; visited.value[id] = true;
 }
+function focusSelection(inNav = false) {
+  void nextTick(() => {
+    if (inNav) {
+      const host = editorRoot.value?.closest('.pc-workspace') || editorRoot.value;
+      const id = props.navigation === 'local' ? activeSection.value : pageSectionId(`${props.engine}:registry`, activeSection.value);
+      Array.from(host?.querySelectorAll<HTMLButtonElement>('.section-nav button') || []).find(b => b.dataset.navId === id)?.focus();
+    } else {
+      Array.from(editorRoot.value?.querySelectorAll<HTMLElement>('.editor-section') || []).find(s => s.dataset.section === activeSection.value)?.querySelector<HTMLElement>('h3')?.focus();
+    }
+  });
+}
+watch(() => props.sectionId, id => { if (id) selectSection(id); });
+watch([navigationItems, loading, mode], () => {
+  if (loading.value || error.value || mode.value !== 'visual') return;
+  selectSection(navigationItems.value.some(s => s.id === activeSection.value) ? activeSection.value : defaultSection());
+});
 
 function providerUnknownKeys(name: string): string[] {
   const entry = providersMap.value[name];
@@ -589,8 +634,12 @@ function setRootField(key: string, value: any) {
 }
 
 function deleteRootField(key: string) {
+  const removedSection = activeSection.value === 'root' && rootUnknownKeys.value.length === 1;
+  const restoreFocus = removedSection && !!editorRoot.value?.contains(document.activeElement);
   delete data.value[key];
   serialize();
+  if (removedSection) selectSection(defaultSection());
+  if (restoreFocus) focusSelection(true);
 }
 
 function deleteProviderField(name: string, key: string) {
@@ -696,16 +745,22 @@ function addProvider() {
   providers[name] = { api: 'openai-completions', models: [] };
   data.value.providers = { ...providers };
   newProviderName.value = '';
-  expandedProviders.value = { ...expandedProviders.value, [name]: true };
   serialize();
+  selectSection(providerSectionId(name));
+  focusSelection();
 }
 
 function removeProvider(name: string) {
   if (!confirm(`确认删除提供商 ${name} 及其全部模型配置？`)) return;
+  const index = providerNames.value.indexOf(name);
+  const successor = providerNames.value[index + 1] || providerNames.value[index - 1];
+  const restoreFocus = !!editorRoot.value?.contains(document.activeElement);
   const providers = ensureProviders();
   delete providers[name];
   data.value.providers = { ...providers };
   serialize();
+  if (activeSection.value === providerSectionId(name)) selectSection(successor ? providerSectionId(successor) : defaultSection());
+  if (restoreFocus) focusSelection(true);
 }
 
 function providerModelsRef(name: string): any[] {
@@ -801,6 +856,9 @@ const modeModel = computed({
   },
 });
 
+const localGroups = computed(() => [{ id: 'registry', items: navigationItems.value.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
+const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: loading.value ? [] : navigationItems.value }));
+watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });
 onMounted(() => {
   void initialLoad();
 });
@@ -810,80 +868,10 @@ onMounted(() => {
 .pre-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.pre-header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.pre-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-}
-
-.pre-subtitle {
-  font-size: 13px;
-  color: var(--secondary);
-  margin: 0;
-  line-height: 1.6;
-}
-
-.pre-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
-.pre-mode-tabs {
-  display: inline-flex;
-}
-
-.pre-path-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.pre-path-label {
-  font-size: 12px;
-  color: var(--tertiary);
-}
-
-.pre-path-value {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--secondary);
-  background: var(--control);
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.pre-copy-btn {
-  font-size: 11px;
-  padding: 4px 10px;
-}
-
-.pre-parse-error {
-  font-size: 12px;
-  color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
-  padding: 8px 12px;
-  border-radius: 8px;
-}
-
-.pre-parse-valid {
-  font-size: 12px;
-  color: var(--success);
-  padding: 4px 0;
-}
+/* .pre-parse-error / .pre-managed-warn 仅作样式锚点：背景与内边距交给 StatusBanner compact */
 
 .pre-visual {
   display: flex;
@@ -898,14 +886,18 @@ onMounted(() => {
   padding: 8px 16px;
 }
 
-.pre-managed-warn {
-  font-size: 12px;
-  color: var(--warning, #b8860b);
-  background: var(--control);
-  border-radius: 8px;
-  padding: 8px 12px;
+/* 虚线框内的空态紧凑化（EmptyState 默认上下 44px + 48px 图标，在框里显得过高） */
+.pre-empty :deep(.empty-state) {
+  padding: 22px 16px;
+}
+
+.pre-empty :deep(.empty-icon) {
+  font-size: 34px;
   margin-bottom: 10px;
-  line-height: 1.6;
+}
+
+.pre-managed-warn {
+  margin-bottom: 10px;
 }
 
 .pre-fields {
@@ -914,10 +906,18 @@ onMounted(() => {
   gap: 10px;
 }
 
+/* 协议 / Base URL / API Key 三项并排，窗口窄时自动折行 */
+.pre-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
 .pre-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .pre-label {
@@ -935,17 +935,20 @@ onMounted(() => {
   border-top: 1px dashed var(--separator);
 }
 
+/* 分区标题行：标题 + 该区的「添加」按钮同行，没有字段时不再留「暂无…」空行 */
+.pre-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .pre-unknown-title {
   font-size: 11px;
   font-weight: 600;
   color: var(--tertiary);
   letter-spacing: 0.3px;
-}
-
-.pre-unknown-empty {
-  font-size: 12px;
-  color: var(--tertiary);
-  padding: 2px 0;
 }
 
 .pre-unknown-head {
@@ -974,10 +977,36 @@ onMounted(() => {
   gap: 10px;
 }
 
+/* 原始键名（用户自定义字段）：等宽 */
 .pre-unknown-key {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--secondary);
+}
+
+/* 已知高级字段键名行：中文名 + 等宽 code（规格同 FieldLabel 的 .fl-code） */
+.pre-key-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pre-key-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--secondary);
+}
+
+.pre-key-code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--tertiary);
+}
+
+.pre-unit {
+  font-size: 11px;
+  color: var(--tertiary);
 }
 
 .pre-models {
@@ -993,9 +1022,10 @@ onMounted(() => {
 }
 
 .pre-model {
-  border: 1px solid var(--separator);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1049,7 +1079,9 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
+/* flex-basis 给足宽度：不设时输入框按内容收缩，placeholder 「新提供商名（如 amagi-my-relay）」会被截断 */
 .pre-add-input {
+  flex: 1 1 260px;
   max-width: 320px;
 }
 
@@ -1073,5 +1105,27 @@ onMounted(() => {
 
 .pre-source-editor:focus {
   border-color: var(--accent);
+}
+.pre-model + .pre-model { border-top:1px solid var(--separator); }
+.pre-root { min-width:0; }
+.pre-root.editor-local-layout { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+.editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
+.pre-key-row, .pre-unknown-head { flex-wrap:wrap; }
+.pre-unknown-key, .pre-key-code { overflow-wrap:anywhere; }
+@media (max-width:1199px) { .pre-root.editor-local-layout { --section-nav-width:144px; gap:12px; } }
+@media (max-width:1023px) { .pre-root.editor-local-layout { --section-nav-width:112px; } }
+@container editor-detail (max-width:479px) {
+  .pre-fields-grid, .pre-model-grid, .pre-thinking, .pre-cost-grid { grid-template-columns:minmax(0, 1fr); }
+  .pre-model-id, .pre-add-input { min-width:0; max-width:100%; }
+  :deep(.vve-entry-value), :deep(.vve-item-value) { min-width:0; flex-basis:100%; }
+  :deep(.vve-key) { max-width:100%; }
+  :deep(.tlm-actions) { flex-wrap:wrap; }
+}
+@supports not (container-type: inline-size) {
+  .pre-fields-grid, .pre-model-grid, .pre-thinking, .pre-cost-grid { grid-template-columns:minmax(0, 1fr); }
+  .pre-model-id, .pre-add-input { min-width:0; max-width:100%; }
+  :deep(.vve-entry-value), :deep(.vve-item-value) { min-width:0; flex-basis:100%; }
+  :deep(.vve-key) { max-width:100%; }
+  :deep(.tlm-actions) { flex-wrap:wrap; }
 }
 </style>
