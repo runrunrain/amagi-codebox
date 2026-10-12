@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [1.3.96] - 2026-10-11
+
+### Added
+
+- **Provider Center 两页布局重设计（预设 / CLI 独立配置）**：两页统一为「左侧导航栏 + 右侧内容区」——二级引擎/格式、三级模式与编辑器内分区共用一条文字左栏（注册表提供商/认证条目为动态叶子，master-detail），右侧单分区无卡框显示，同文件切区保留草稿（visited + v-show）；800px 最小窗口下 112px 左栏 + ≥340px 右栏可用（容器查询分档 + 不支持时回退）。说明性文字全面降级：五个配置编辑器的 h2/subtitle 与逐字段 hint 段落清零，57 条原文按降级矩阵迁移——生效时机为常显标签、覆盖风险为警示横幅、结构性解释进键盘可达的 InfoTip、教学文案删除，关键语义（MCP 三态、并发清空回落、受管覆盖警告、OAuth 只读、压缩后果）零丢失。新增 ui 基件 SectionNav（roving tabindex 键盘导航）/EditorSection/EditorToolbar/InfoTip/FieldLabel 与纯静态 configNavigation 导航表；预设列表改分组列表行（整行键盘可编辑/删除）；懒加载、presetLoadKey 重挂载、engine 按需加载、保存链路与 api 层零改动。e2e 按新 DOM 契约适配（原 30 条业务断言逐条保留）并新增单显/草稿/键盘导航结构用例；设计/实现/审查/验收全链 artifact 归档于 `agent-outputs/workflow/provider-center-layout-redesign/`。
+
+### Fixed
+
+- **皮肤预烘焙同步回调无限递归（RangeError: Maximum call stack）**：`requestBake` 曾在同步 no-op 路径（blur=0/烘焙不可用/缓存命中）同步回调 `onDone`，而 App.vue 传入的回调是 `syncSkinDom` 本身——开启皮肤且 blur=0 或烘焙失败后必现同步递归栈溢出。修复：同步 no-op 路径不再回调（调用方已在同一同步渲染经 `currentSkinImage` 取到终态），`onDone` 仅在一次真实异步烘焙终态后触发；jsdom 回归用例覆盖三条路径与回调重入模式。
+- **配置编辑器 chunk 加载失败无法恢复（Chromium 负缓存）**：失败的模块 URL 被 Chromium module map 负缓存，重试按钮仅重挂载组件、重跑 loader 也不会重新请求同一 URL。修复：重试改为整页重载恢复（module map 随文档重建，新部署 index 指向新 chunk），会话级标记防自动循环、App 启动时清除以允许下次故障再次走重载；sessionStorage 不可用时回退原重挂载重试。
+- **预设列表读取错误被吞（误显空态）**：`provider` store 的 `loadPresets` 内部捕获读取错误不 rethrow，PresetList 与 OpenCodePresets 的本地 error 永不置位——OpenCode 预设读取失败时误显「默认行 + 暂无预设」而非错误态。修复：两组件在 await 后消费 `store.presetLoadError` 呈现 ErrorState 与重试入口（store 契约不变，其他调用方零影响）。
+- **mobile 测试套件跨用例 app 泄漏根治（Windows CI 间歇性抖动溯源）**：WorkspacePage/SessionsPage 页面级测试的 mountWithRoute 只挂载从不卸载，每个用例泄漏一个完整存活 app（webui 5s 轮询定时器/store/WS 回调链），叠加 `vi.stubGlobal('fetch')` 的环境全局性，旧 app 持续消费后续用例的 fetch mock 并交叉干扰——Windows CI/满负载下 webplane 接管点击与 tui-session 观察态用例间歇性假失败（实测 1/2~1/8 复现，按钮在树内 5s×100 次点击 0 命中 handler）。修复：五文件统一登记 activeWrapper、afterEach 卸载；时序敏感断言改 5s waitFor 轮询（同套件既有惯例），acquire 断言改「至少一次」语义（重试形态下 exactly-once 过度指定）。验证：本地满负载 10/10 全绿（修复前同期必现抖动）。
+
 ### Security
 
 - **依赖漏洞清偿（v1.3.94 推送时 GitHub 报 21 条 Dependabot 告警全部清零）**：Go `labstack/echo/v4` 4.13.3 → 4.15.3（连带 gommon/isatty/go-colorable，vendored 同步，high）；npm 侧 frontend/mobile `npm audit fix`（全部 semver 兼容内修复）：`@capacitor/android` critical（远程内容可经内部代理路径加载至应用源）、`@xmldom/xmldom`/`undici`/`@vue/server-renderer`/`vue`/`brace-expansion`/`source-map-js` high、`dompurify`/`@vitest`/`vitest`/`js-yaml`/`postcss-selector-parser` moderate/low，三套 lockfile audit 归零。验证：go build/vet + remote 包测试、frontend/mobile build + 单测全绿（mobile WorkspacePage.webplane 一例并发时序偶发 flake 与升级无关，隔离/复跑全过）。
@@ -13,10 +26,6 @@
 ### Changed
 
 - **CI/Release workflow actions 升级至 Node 24 运行时大版本（消除 Node 20 弃用告警）**：checkout v4→v7、setup-go v5→v7、setup-node v4→v7、upload-artifact v4→v7、download-artifact v4→v8、softprops/action-gh-release v2→v3；golangci-lint-action@v9 已是最新不动。核查各版本破坏性变更：checkout v7 的 BREAKING 仅影响 fork PR + pull_request_target 场景（本仓仅 push/workflow_dispatch 触发，无波及）；upload-artifact v7 直传为可选参数（`archive: false`），默认归档行为不变；download-artifact v8 的不解压行为仅作用于直传形态；gh-release v3 为 Node 24 运行时迁移。工具链版本基线（Go 1.25.0 / Node 20.19.0，C-001）不变。
-
-### Fixed
-
-- **mobile 测试套件跨用例 app 泄漏根治（Windows CI 间歇性抖动溯源）**：WorkspacePage/SessionsPage 页面级测试的 mountWithRoute 只挂载从不卸载，每个用例泄漏一个完整存活 app（webui 5s 轮询定时器/store/WS 回调链），叠加 `vi.stubGlobal('fetch')` 的环境全局性，旧 app 持续消费后续用例的 fetch mock 并交叉干扰——Windows CI/满负载下 webplane 接管点击与 tui-session 观察态用例间歇性假失败（实测 1/2~1/8 复现，按钮在树内 5s×100 次点击 0 命中 handler）。修复：五文件统一登记 activeWrapper、afterEach 卸载；时序敏感断言改 5s waitFor 轮询（同套件既有惯例），acquire 断言改「至少一次」语义（重试形态下 exactly-once 过度指定）。验证：本地满负载 10/10 全绿（修复前同期必现抖动）。
 
 ## [1.3.95] - 2026-10-11
 
