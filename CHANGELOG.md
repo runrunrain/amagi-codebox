@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.98] - 2026-10-12
+
+### Changed
+
+- **Provider Center 导航关系与内容呈现精修（v4）**：①CLI 导航改父子两行——二级 Pi/OMP/OpenCode underline 在上，其正下方固定缩进的「Pi 配置」等所属标签 + 三级紧凑 pill 在下，消除二三级同层分离显示的从属关系困惑（预设页仍单行，caption 紧邻格式页签）；②内容区选择性图标矩形归组（新增无状态 ConfigContentGroup）：Pi MCP 三组（Leader/默认/角色附加）与并发三组（默认/服务商/模型）、双引擎注册表每条模型记录获得明确边界；OpenCode provider/agent/mcp 记录恢复轻矩形图标头，permission/嵌套模型/variants 保持无框列表——简单记录仍用列表，不恢复整页卡片平铺；③左栏纯净化：SectionNav 条目可视层仅名称（受管/类型/生效/需修正等说明文字全部迁至右侧常显承载或保留在屏幕阅读器描述中），限高补偿 100vh−320px。Registry 提供商正文次序有意调整（连接字段→模型→其他字段）。验证：build/全量 vitest/未修改的 Pi e2e 7 用例/静态审计 8 项/八批浏览器 153 断言 0 findings 0 page error（含新增 content 批源码与保存值契约核对）；diting quick PASS 零 findings；生产白名单恰 6 文件，保存/解析/字段函数与基线逐字一致。
+
 ## [1.3.97] - 2026-10-12
 
 ### Fixed
