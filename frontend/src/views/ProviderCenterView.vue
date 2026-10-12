@@ -4,7 +4,8 @@
     一级 Segmented(pill): 「服务提供商」|「预设」|「CLI 独立配置」
     服务提供商 tab：网格 + 详情模式切换
     预设 tab / CLI 独立配置 tab（provider-center-layout-redesign）：
-    统一左栏控制格式、CLI 模式与分区，右侧单显已选分区。
+    二级 underline Tab 与三级紧凑 pill 合并为一行 .pc-subnav（通栏分隔线）；
+    有内部分区的编辑器在自身内部带分区导航（左栏），页面级不再有任何左栏。
     CLI 独立配置组件全部 defineAsyncComponent 懒加载，退出入口 chunk。
   -->
   <section class="view-provider" :class="{ 'pc-workspace-view': isWorkspace }">
@@ -73,28 +74,42 @@
         />
       </div>
 
-      <div v-else class="pc-workspace">
-        <SectionNav :groups="navGroups" :current-id="currentNavId" :branch-id="activePageId"
-          controls-id="pc-editor-detail" :label="mainTab === 'presets' ? '预设格式' : 'CLI 配置导航'"
-          :notice="navigationNotice" @select="selectNavigation" />
-        <div id="pc-editor-detail" class="pc-detail-content" :key="activePageId">
+      <div v-else class="pc-panel">
+        <!--
+          二三级导航合并为一行：左侧二级 underline Tab（格式 / Pi · OMP · OpenCode），
+          右侧三级紧凑 pill（随二级切换）或预设页的「用于 …」说明。
+          三级留在容器里而不下放进编辑器：异步编辑器加载中 / 加载失败时用户仍可切换。
+          有内部分区的编辑器自带分区导航（左栏），页面级没有任何左栏。
+        -->
+        <div class="pc-subnav">
           <template v-if="mainTab === 'presets'">
-            <p class="pc-format-caption">{{ formatConsumers }}</p>
+            <Segmented v-model="formatModel" :options="FORMAT_TABS" variant="underline" class="pc-subnav-tabs" />
+            <span class="pc-subnav-caption">{{ formatConsumers }}</span>
+          </template>
+          <template v-else>
+            <Segmented v-model="cliModel" :options="CLI_TABS" variant="underline" class="pc-subnav-tabs" />
+            <Segmented v-if="store.presetEngine === 'pi'" v-model="piMode" :options="PI_MODES" variant="pill" class="pc-subnav-modes" />
+            <Segmented v-else-if="store.presetEngine === 'omp'" v-model="ompMode" :options="OMP_MODES" variant="pill" class="pc-subnav-modes" />
+            <Segmented v-else-if="store.presetEngine === 'opencode'" v-model="openCodeMode" :options="OPENCODE_MODES" variant="pill" class="pc-subnav-modes" />
+          </template>
+        </div>
+        <div class="pc-detail-content" :key="activePageId">
+          <template v-if="mainTab === 'presets'">
             <PresetList v-if="store.presetEngine === 'anthropic'" format="anthropic" />
             <PresetList v-else-if="store.presetEngine === 'openai'" format="openai" />
           </template>
           <template v-else-if="store.presetEngine === 'pi'">
-            <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
-            <ProviderRegistryEditor v-else-if="piMode === 'registry'" :key="presetLoadKey" engine="pi" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
-            <AuthConfigEditor v-else :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+            <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" />
+            <ProviderRegistryEditor v-else-if="piMode === 'registry'" :key="presetLoadKey" engine="pi" />
+            <AuthConfigEditor v-else :key="presetLoadKey" />
           </template>
           <template v-else-if="store.presetEngine === 'omp'">
-            <OmpGlobalConfig v-if="ompMode === 'agents'" :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
-            <ProviderRegistryEditor v-else :key="presetLoadKey" engine="omp" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+            <OmpGlobalConfig v-if="ompMode === 'agents'" :key="presetLoadKey" />
+            <ProviderRegistryEditor v-else :key="presetLoadKey" engine="omp" />
           </template>
           <template v-else-if="store.presetEngine === 'opencode'">
             <OpenCodePresets v-if="openCodeMode === 'presets'" :key="presetLoadKey" />
-            <OpenCodeGlobalConfig v-else :key="presetLoadKey" v-bind="editorNavigation" @navigation-change="onNavigationChange" />
+            <OpenCodeGlobalConfig v-else :key="presetLoadKey" />
           </template>
         </div>
       </div>
@@ -132,8 +147,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, defineAsyncComponent, defineComponent, h, type Component } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
-import SectionNav from '../components/ui/SectionNav.vue';
-import { CONFIG_PAGES, FORMAT_ITEMS, staticSections, pageSectionId, type ConfigPageId, type EditorNavigationSnapshot, type SectionNavGroup } from '../components/provider/configNavigation';
+import { CONFIG_PAGES, FORMAT_ITEMS, type ConfigPageId } from '../components/provider/configNavigation';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import StatusBanner from '../components/ui/StatusBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
@@ -163,6 +177,18 @@ const MAIN_TABS = [
   { value: 'presets', label: '预设' },
   { value: 'cliconfigs', label: 'CLI 独立配置' },
 ];
+
+// 顶侧页签选项（二级：格式 / CLI；三级：各 CLI 内的配置文件模式）。
+// 只从纯导航表（configNavigation.ts）派生，文案单一来源，不在此复制；
+// 值与 PresetEngine 以及 piMode / ompMode / openCodeMode 的联合类型字面一致。
+const FORMAT_TABS = FORMAT_ITEMS.map(i => ({ value: i.id.slice('format:'.length), label: i.label }));
+const CLI_TABS = [...new Map(CONFIG_PAGES.map((p): [string, string] => [p.id.split(':')[0], p.cli])).entries()]
+  .map(([value, label]) => ({ value, label }));
+const modeTabs = (engine: string) => CONFIG_PAGES.filter(p => p.id.startsWith(`${engine}:`))
+  .map(p => ({ value: p.id.slice(engine.length + 1), label: p.label }));
+const PI_MODES = modeTabs('pi');
+const OMP_MODES = modeTabs('omp');
+const OPENCODE_MODES = modeTabs('opencode');
 
 const mainTab = ref<'providers' | 'presets' | 'cliconfigs'>('providers');
 const openCodeMode = ref<'presets' | 'global'>('global');
@@ -228,70 +254,10 @@ const activePageId = computed<ConfigPageId | 'format:anthropic' | 'format:openai
   if (cliModel.value === 'opencode') return `opencode:${openCodeMode.value}`;
   return `pi:${piMode.value}`;
 });
-const sectionMemory = ref<Record<string, string>>({});
-const navSnapshot = ref<EditorNavigationSnapshot | null>(null);
-const navOwner = ref('');
-let mountSequence = 0;
-watch([activePageId, presetLoadKey], () => {
-  navOwner.value = `${activePageId.value}:${presetLoadKey.value}:${++mountSequence}`;
-  navSnapshot.value = null;
-}, { immediate: true, flush: 'sync' });
-const desiredSection = computed(() => sectionMemory.value[activePageId.value] ?? CONFIG_PAGES.find(p => p.id === activePageId.value)?.defaultId ?? '');
-const editorNavigation = computed(() => ({ navigation: 'external' as const, sectionId: desiredSection.value, navOwner: navOwner.value }));
-function onNavigationChange(snapshot: EditorNavigationSnapshot) {
-  if (snapshot.owner !== navOwner.value) return;
-  navSnapshot.value = snapshot;
-  if (snapshot.phase === 'ready' && snapshot.mode === 'visual' && snapshot.activeId !== desiredSection.value) {
-    sectionMemory.value[activePageId.value] = snapshot.activeId;
-  }
-}
-const navGroups = computed<SectionNavGroup[]>(() => {
-  if (mainTab.value === 'presets') return [{ id: 'formats', label: '格式', items: FORMAT_ITEMS }];
-  return ['Pi', 'OMP', 'OpenCode'].map(cli => ({ id: cli, label: cli, items: CONFIG_PAGES.filter(p => p.cli === cli).map(p => {
-    const active = p.id === activePageId.value;
-    const snapshot = active ? navSnapshot.value : null;
-    const sections = active ? (snapshot?.items ?? staticSections(p.id)) : [];
-    return { id: p.id, label: p.label, ariaLabel: `${cli} · ${p.label}`, scrollChildren: p.dynamic,
-      children: sections.map(s => ({ ...s, id: pageSectionId(p.id, s.id), ariaLabel: `${cli} · ${p.label} · ${s.label}`,
-        disabled: snapshot?.mode === 'source' || snapshot?.phase === 'error' || (!!p.dynamic && snapshot?.phase !== 'ready') })) };
-  }) }));
-});
-const navigationTargets = computed(() => new Map(navGroups.value.flatMap(g => g.items.flatMap(p => (p.children || []).map(s => [s.id, { page: p.id, section: (navSnapshot.value?.items ?? staticSections(p.id as ConfigPageId)).find(i => pageSectionId(p.id, i.id) === s.id)?.id || '' }] as const)))));
-const currentNavId = computed(() => {
-  if (mainTab.value === 'presets') return activePageId.value;
-  if (navSnapshot.value && (navSnapshot.value.mode === 'source' || navSnapshot.value.phase !== 'ready')) return activePageId.value;
-  const id = pageSectionId(activePageId.value, desiredSection.value);
-  return navigationTargets.value.has(id) ? id : activePageId.value;
-});
-const navigationNotice = computed(() => {
-  if (mainTab.value !== 'cliconfigs') return '';
-  if (navSnapshot.value?.mode === 'source') return '源码模式：返回可视化后切换分区';
-  if (navSnapshot.value?.phase === 'error') return '分区不可用';
-  if (CONFIG_PAGES.find(p => p.id === activePageId.value)?.dynamic && navSnapshot.value?.phase !== 'ready') return '加载分区中…';
-  return '';
-});
-function selectNavigation(id: string) {
-  const target = navigationTargets.value.get(id);
-  if (target) { sectionMemory.value[target.page] = target.section; return; }
-  if (id.startsWith('format:')) { if (id !== activePageId.value) formatModel.value = id.slice(7); return; }
-  const page = CONFIG_PAGES.find(p => p.id === id);
-  if (!page || id === activePageId.value) return;
-  // One synchronous callback; section navigation never touches this engine setter.
-  const [engine, mode] = page.id.split(':');
-  if (engine === 'pi') piMode.value = mode as typeof piMode.value;
-  else if (engine === 'omp') ompMode.value = mode as typeof ompMode.value;
-  else openCodeMode.value = mode as typeof openCodeMode.value;
-  if (engine !== cliModel.value) cliModel.value = engine;
-}
 
 const PresetLoadError = defineComponent({
   name: 'PresetLoadError',
   setup() {
-    const owner = navOwner.value;
-    onMounted(() => {
-      if (owner !== navOwner.value) return;
-      navSnapshot.value = { owner, phase: 'error', mode: 'visual', activeId: desiredSection.value, items: staticSections(activePageId.value as ConfigPageId) };
-    });
     return () =>
       h(ErrorState, {
         title: '配置页加载失败',
@@ -478,18 +444,65 @@ function handleAdd() {
   margin-top: 10px;
 }
 
-.pc-workspace { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
+/*
+ * 二三级合并导航一行：左 underline Tab（二级），右紧凑 pill（三级）/ 预设页的「用于 …」说明，
+ * 整行底部一条通栏分隔线；最小窗口宽度下 flex-wrap 自动换行，换行后仍压在分隔线上方。
+ */
+.pc-subnav {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--separator);
+}
+
+/*
+ * Segmented 的 class 落在其根节点 .segmented 上（不是后代），所以对根节点的覆写要写成
+ * .pc-subnav-tabs.underline-tabs（组合选择器特异性 > Segmented 自身的 .underline-tabs），
+ * 而不是 :deep(.segmented)。underline-seg 自带 margin-bottom:-1px，选中下划线会压在通栏分隔线上。
+ */
+.pc-subnav-tabs.underline-tabs {
+  border-bottom: none;
+}
+
+.pc-subnav-caption {
+  font-size: 12px;
+  color: var(--tertiary);
+  /* 8px：与左侧 13px Tab 文字同基线（实测 10px 时偏高约 1.5px） */
+  padding-bottom: 8px;
+  white-space: nowrap;
+}
+
+/* 三级紧凑 pill：12px，seg padding 4px 12px，容器 padding 2 / radius 8 */
+.pc-subnav-modes {
+  margin-bottom: 6px;
+}
+
+.pc-subnav-modes.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+}
+
+.pc-subnav-modes :deep(.seg) {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .pc-detail-content { min-width:0; }
-.pc-format-caption { margin:0 0 12px; font-size:12px; color:var(--tertiary); }
 .pc-card-workspace .pc-head-actions { flex-wrap:wrap; min-width:0; max-width:100%; }
 @media (max-width:1199px) {
   .pc-workspace-view { padding-inline:24px; }
-  .pc-workspace { --section-nav-width:144px; gap:12px; }
 }
 @media (max-width:1023px) {
   .pc-workspace-view { padding-inline:16px; }
   .pc-card-workspace { padding-inline:12px; }
-  .pc-workspace { --section-nav-width:112px; }
   .pc-main-tabs :deep(.seg) { padding-inline:12px; }
+  /* 800 档保证 subnav 单行：underline 间距 24→16，pill 的 seg 水平 padding 12→10 */
+  .pc-subnav-tabs.underline-tabs { gap:16px; }
+  .pc-subnav-modes :deep(.seg) { padding-inline:10px; }
 }
 </style>
