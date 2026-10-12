@@ -12,7 +12,7 @@
             :aria-describedby="item.meta || item.invalid ? descriptionId(item.id) : undefined"
             @focus="focusId = item.id" @keydown="onKey($event, item.id)" @click="activate(item)">
             <span class="sn-name">{{ item.label }}</span>
-            <span v-if="item.meta || item.invalid" :id="descriptionId(item.id)" :class="['sn-meta', item.metaTone]">{{ item.meta }}{{ item.invalid ? ' · 需修正' : '' }}</span>
+            <span v-if="item.meta || item.invalid" :id="descriptionId(item.id)" class="sn-description">{{ descriptionText(item) }}</span>
           </button>
           <ul v-if="item.children?.length" :class="['sn-children', { 'sn-scroll': item.scrollChildren }]">
             <li v-for="child in item.children" :key="child.id">
@@ -23,7 +23,7 @@
                 :aria-describedby="child.meta || child.invalid ? descriptionId(child.id) : undefined"
                 @focus="focusId = child.id" @keydown="onKey($event, child.id)" @click="activate(child)">
                 <span class="sn-name">{{ child.label }}</span>
-                <span v-if="child.meta || child.invalid" :id="descriptionId(child.id)" :class="['sn-meta', child.metaTone]">{{ child.meta }}{{ child.invalid ? ' · 需修正' : '' }}</span>
+                <span v-if="child.meta || child.invalid" :id="descriptionId(child.id)" class="sn-description">{{ descriptionText(child) }}</span>
               </button>
             </li>
           </ul>
@@ -41,6 +41,7 @@ const props = defineProps<{ groups: SectionNavGroup[]; currentId: string; branch
 const emit = defineEmits<{ select: [id: string] }>();
 const instanceId = `section-nav-${++navSeq}`;
 const descriptionId = (id: string) => `${instanceId}-${encodeURIComponent(id)}`;
+const descriptionText = (item: SectionNavItem) => [item.meta, item.invalid ? '需修正' : ''].filter(Boolean).join('；');
 const nav = ref<HTMLElement | null>(null);
 const enabled = computed(() => props.groups.flatMap(g => g.items.flatMap(i => [i, ...(i.children || [])])).filter(i => !i.disabled));
 const preferred = () => enabled.value.find(i => i.id === props.currentId)?.id || enabled.value.find(i => i.id === props.branchId)?.id || enabled.value[0]?.id || '';
@@ -68,7 +69,7 @@ watch(() => [props.currentId, enabled.value.map(i => i.id).join('\n')], () => {
 });
 </script>
 <style scoped>
-.section-nav { min-width:0; padding-right:8px; border-right:1px solid var(--separator); align-self:start; position:sticky; top:12px; max-height:max(240px, calc(100vh - 280px)); overflow-y:auto; }
+.section-nav { min-width:0; padding-right:8px; border-right:1px solid var(--separator); align-self:start; position:sticky; top:12px; max-height:max(240px, calc(100vh - 320px)); overflow-y:auto; }
 ul { list-style:none; margin:0; padding:0; }
 .sn-group-title { margin:8px 8px; font-size:11px; color:var(--secondary); }
 .sn-item { display:flex; flex-direction:column; align-items:flex-start; gap:3px; width:100%; min-height:32px; padding:7px 8px; border:0; border-left:2px solid transparent; border-radius:4px; background:transparent; font:inherit; font-size:13px; font-weight:500; text-align:left; color:var(--secondary); cursor:pointer; }
@@ -82,8 +83,8 @@ ul { list-style:none; margin:0; padding:0; }
 .sn-leaf .sn-name { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .sn-children { margin-left:8px; }
 .sn-scroll { max-height:256px; overflow-y:auto; }
-.sn-meta, .sn-notice { font-size:11px; line-height:1.5; color:var(--tertiary); overflow-wrap:anywhere; }
-.sn-meta.warning { color:var(--warning-strong); }
+.sn-description { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); clip-path:inset(50%); white-space:nowrap; border:0; }
+.sn-notice { font-size:11px; line-height:1.5; color:var(--tertiary); overflow-wrap:anywhere; }
 .sn-notice { margin:8px; }
 @media (max-width:1023px) { .sn-item { font-size:12px; min-height:30px; } .sn-scroll { max-height:192px; } }
 </style>

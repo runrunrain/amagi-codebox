@@ -101,37 +101,13 @@
             </div>
           </div>
 
-          <!-- provider 级其他字段（auth: none / authHeader 等），完全可视化；没有字段时不占位 -->
-          <div class="pre-unknown">
-            <div class="pre-section-head">
-              <span class="pre-unknown-title">其他字段</span>
-              <div class="pre-actions">
-                <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
-                <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
-                <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
-                <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
-              </div>
-            </div>
-            <div v-for="k in providerUnknownKeys(name)" :key="k" class="pre-unknown-item">
-              <div class="pre-unknown-head">
-                <span class="pre-unknown-key">{{ k }}</span>
-                <AppButton variant="icon" size="small" aria-label="删除字段" @click="deleteProviderField(name, k)">
-                  <span class="pre-remove">×</span>
-                </AppButton>
-              </div>
-              <VisualValueEditor
-                :model-value="providersMap[name]?.[k]"
-                @update:model-value="setProviderField(name, k, $event)"
-              />
-            </div>
-          </div>
-
           <!-- 模型列表 -->
           <div class="pre-models">
             <div class="pre-models-head">
               <span class="pre-label">模型</span>
             </div>
-            <div v-for="(m, idx) in providerModels(name)" :key="idx" class="pre-model">
+            <ConfigContentGroup v-for="(m, idx) in providerModels(name)" :key="idx" class="pre-model" icon="model" :label="`模型 ${idx + 1}`">
+              <template #header>
               <div class="pre-model-head">
                 <TextInput
                   :model-value="modelFieldString(name, idx, 'id')"
@@ -152,6 +128,7 @@
                   <span class="pre-remove">×</span>
                 </AppButton>
               </div>
+              </template>
               <div class="pre-model-grid">
                 <div class="pre-field">
                   <FieldLabel text="显示名" code="name" />
@@ -306,9 +283,34 @@
                   />
                 </div>
               </div>
-            </div>
+            </ConfigContentGroup>
             <div class="pre-actions">
               <AppButton variant="ghost" size="small" @click="addModel(name)">+ 添加模型</AppButton>
+            </div>
+          </div>
+
+          <!-- provider 级其他字段（auth: none / authHeader 等），模型之后常开，不改变写入契约 -->
+          <div class="pre-unknown">
+            <div class="pre-section-head">
+              <span class="pre-unknown-title">其他字段</span>
+              <div class="pre-actions">
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, '')">+ 字符串字段</AppButton>
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, false)">+ 布尔字段</AppButton>
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, 0)">+ 数字字段</AppButton>
+                <AppButton variant="ghost" size="small" @click="addProviderField(name, {})">+ 对象字段</AppButton>
+              </div>
+            </div>
+            <div v-for="k in providerUnknownKeys(name)" :key="k" class="pre-unknown-item">
+              <div class="pre-unknown-head">
+                <span class="pre-unknown-key">{{ k }}</span>
+                <AppButton variant="icon" size="small" aria-label="删除字段" @click="deleteProviderField(name, k)">
+                  <span class="pre-remove">×</span>
+                </AppButton>
+              </div>
+              <VisualValueEditor
+                :model-value="providersMap[name]?.[k]"
+                @update:model-value="setProviderField(name, k, $event)"
+              />
             </div>
           </div>
 
@@ -386,6 +388,7 @@ import FieldLabel from '../ui/FieldLabel.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
 import { providerSectionId, pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot, type ConfigSectionItem } from './configNavigation';
+import ConfigContentGroup from './ConfigContentGroup.vue';
 import StringListEditor from './StringListEditor.vue';
 import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
@@ -1021,17 +1024,11 @@ onMounted(() => {
   align-items: center;
 }
 
-.pre-model {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 12px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
+.pre-model :deep(.ccg-body) { gap:10px; }
 
 .pre-model-head {
+  min-width: 0;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1061,6 +1058,7 @@ onMounted(() => {
 }
 
 .pre-actions {
+  min-width: 0;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
@@ -1106,7 +1104,6 @@ onMounted(() => {
 .pre-source-editor:focus {
   border-color: var(--accent);
 }
-.pre-model + .pre-model { border-top:1px solid var(--separator); }
 .pre-root { min-width:0; }
 .pre-root.editor-local-layout { --section-nav-width:184px; display:grid; grid-template-columns:var(--section-nav-width) minmax(0, 1fr); gap:16px; }
 .editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
@@ -1115,6 +1112,7 @@ onMounted(() => {
 @media (max-width:1199px) { .pre-root.editor-local-layout { --section-nav-width:144px; gap:12px; } }
 @media (max-width:1023px) { .pre-root.editor-local-layout { --section-nav-width:112px; } }
 @container editor-detail (max-width:479px) {
+  .pre-model-id { flex-basis:100%; }
   .pre-fields-grid, .pre-model-grid, .pre-thinking, .pre-cost-grid { grid-template-columns:minmax(0, 1fr); }
   .pre-model-id, .pre-add-input { min-width:0; max-width:100%; }
   :deep(.vve-entry-value), :deep(.vve-item-value) { min-width:0; flex-basis:100%; }
@@ -1122,6 +1120,7 @@ onMounted(() => {
   :deep(.tlm-actions) { flex-wrap:wrap; }
 }
 @supports not (container-type: inline-size) {
+  .pre-model-id { flex-basis:100%; }
   .pre-fields-grid, .pre-model-grid, .pre-thinking, .pre-cost-grid { grid-template-columns:minmax(0, 1fr); }
   .pre-model-id, .pre-add-input { min-width:0; max-width:100%; }
   :deep(.vve-entry-value), :deep(.vve-item-value) { min-width:0; flex-basis:100%; }

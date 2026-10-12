@@ -1,0 +1,50 @@
+// v4 只读审计，冻结S6基线完整SHA。包含未跟踪生产文件；不重写现场。
+import fs from 'node:fs';
+import cp from 'node:child_process';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require=createRequire(process.cwd()+'/frontend/package.json');
+const ts=require('typescript');
+const BASE='8079acb31fc00bc0896a5bf98b246cc6d2fd7eee';
+const git=(...args)=>{const r=cp.spawnSync('git',args,{encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout;};
+const read=p=>fs.readFileSync(p,'utf8'),before=p=>git('show',BASE+':'+p);
+const P='frontend/src/components/provider/',U='frontend/src/components/ui/',V='frontend/src/views/ProviderCenterView.vue';
+assert.equal(git('rev-parse','HEAD').trim(),BASE);
+const allowed=[V,U+'SectionNav.vue',P+'PiAmagiConfig.vue',P+'ProviderRegistryEditor.vue',P+'OpenCodeGlobalConfig.vue',P+'ConfigContentGroup.vue'].sort();
+const paths=git('status','--porcelain','--untracked-files=all','--','frontend','e2e').trimEnd().split('\n').filter(Boolean).map(s=>s.slice(3)).sort();
+assert.deepEqual(paths,allowed);
+console.log('PASS S7 5既有+1新增；frontend/e2e（含未跟踪）严格白名单',paths);
+const script=t=>t.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
+for(const n of ['PiAmagiConfig','ProviderRegistryEditor']){
+ const p=P+n+'.vue';assert.equal(script(read(p)).replace("import ConfigContentGroup from './ConfigContentGroup.vue';\n",''),script(before(p)));console.log('PASS S6 '+n+' 全业务/保存/解析/字段/navigation脚本逐字相同，仅新增import');
+}
+assert.equal(script(read(P+'OpenCodeGlobalConfig.vue')),script(before(P+'OpenCodeGlobalConfig.vue')));
+assert.equal(script(read(V)).replace("const currentCliLabel = computed(() => CLI_TABS.find(tab => tab.value === cliModel.value)?.label || '');\n\n",''),script(before(V)));
+const sn=read(U+'SectionNav.vue');assert.equal(script(sn).replace("const descriptionText = (item: SectionNavItem) => [item.meta, item.invalid ? '需修正' : ''].filter(Boolean).join('；');\n",''),script(before(U+'SectionNav.vue')));
+console.log('PASS S6 View/OC/Nav脚本逐字保留，仅currentCliLabel与展示helper例外；包括所有watch/loader/重试');
+const view=read(V);assert.equal((view.match(/:key="presetLoadKey"/g)||[]).length,7);assert.equal((view.match(/:key="activePageId"/g)||[]).length,1);
+const withoutComments=t=>t.replace(/<!--[\s\S]*?-->/g,'');
+const subOutside=t=>{const a=t.indexOf('<div class="pc-subnav"'),b=t.indexOf('<div class="pc-detail-content"');return withoutComments(t.slice(0,a))+t.slice(b,t.indexOf('<script setup'));};
+assert.equal(subOutside(view),subOutside(before(V)));
+assert(!view.includes('<SectionNav'));assert(view.includes('role="group" :aria-label="currentCliLabel'));
+assert(view.includes("CLI_TABS.find(tab => tab.value === cliModel.value)"));
+const unchanged=[P+'OmpGlobalConfig.vue',P+'AuthConfigEditor.vue',P+'configNavigation.ts',P+'icons.ts',P+'ConfigCategoryCard.vue',P+'PresetList.vue',P+'OpenCodePresets.vue',...['ProviderMapEditor','AgentMapEditor','McpMapEditor','PermissionMapEditor','ModelSubEditor','ThinkingLevelMapEditor','VisualValueEditor'].map(n=>P+n+'.vue'),...['Segmented','EditorSection','EditorToolbar','FieldLabel','InfoTip','Dropdown'].map(n=>U+n+'.vue'),'frontend/src/styles/tokens.css','e2e/pi-amagi-config.html','e2e/pi-amagi-config.spec.ts'];
+for(const p of unchanged)assert.equal(read(p),before(p),p+' 必须零改动');
+assert.equal(git('diff',BASE,'--','frontend/src/__tests__','frontend/src/api','frontend/src/stores','frontend/wailsjs','frontend/package.json','frontend/package-lock.json','package.json'),'');
+console.log('PASS S8/S9/C1 禁区、子编辑器、e2e、4逻辑测试/模块/依赖零diff；external保留');
+assert(!sn.includes('sn-meta'));assert.equal((sn.match(/class="sn-description"/g)||[]).length,2);assert(sn.includes('clip-path:inset(50%)'));assert(sn.includes('calc(100vh - 320px)'));assert(!/aria-hidden|display:none|visibility:hidden/.test(sn));
+console.log('PASS S14 item/child仅sn-name+裁切读屏描述；id与accessible name原样，notice保留');
+const group=read(P+'ConfigContentGroup.vue');const sf=ts.createSourceFile('group.ts',script(group),ts.ScriptTarget.Latest,true);
+assert.equal(sf.statements.filter(ts.isImportDeclaration).length,1);assert(!/ref\(|watch\(|defineEmits|provide\(|v-if|v-show|h3|role="region"|tabindex|cursor:pointer/.test(group));assert(group.includes('role="group"'));assert(group.includes('getIcon(icon)'));assert(group.includes('getAccent(icon)'));
+const pi=read(P+'PiAmagiConfig.vue');assert.equal((pi.match(/<ConfigContentGroup/g)||[]).length,6);
+for(const [label,icon] of [['Leader 服务器','mcp'],['默认服务器','mcp'],['角色附加服务器','agent'],['默认并发','concurrency'],['服务商并发','provider'],['模型并发','model']])assert(pi.includes(`icon="${icon}" label="${label}"`));
+// 未改角色/压缩模板逐字核对
+const stable=t=>t.slice(t.indexOf('        <!-- ①'),t.indexOf('        <!-- ③'));
+assert.equal(stable(pi),stable(before(P+'PiAmagiConfig.vue')));
+const pre=read(P+'ProviderRegistryEditor.vue');assert(pre.indexOf('<!-- 模型列表 -->')<pre.indexOf('<!-- provider 级其他字段'));assert(pre.includes('icon="model" :label="`模型 ${idx + 1}`"'));assert(!pre.includes('.pre-model + .pre-model'));
+for(const p of [pi,pre])assert(!p.includes('ConfigCategoryCard'));
+console.log('PASS S1/S10/S12/S13 新group无region/h3/IO/折叠，仅6字段组和模型；Pi角色/压缩逐字保留；Registry有意次序与key');
+const oc=read(P+'OpenCodeGlobalConfig.vue');assert(oc.includes('.provider-editor > .pe-card, .agent-editor > .ae-card, .mcp-editor > .me-card'));assert(oc.includes('.perm-editor > .pe-card + .pe-card'));assert(oc.includes('.provider-editor .pe-model-card) { padding:10px 0; }'));
+assert.equal(git('diff','--check',BASE,'--','frontend/src','e2e'),'');
+console.log('PASS S12 OC选择器拆分：3类轻矩形、permission/内层model/variants透明；diff-check干净');
+console.log('v4 static complete.');

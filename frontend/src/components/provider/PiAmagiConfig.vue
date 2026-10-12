@@ -151,7 +151,9 @@
         <EditorSection v-if="visited.mcp" v-show="activeSection === 'mcp'" :active="activeSection === 'mcp'"
           section-id="mcp" title="MCP 路由" code="mcp" :badge="mcpBadge"
         >
-          <div class="pac-field">
+          <div class="pac-content-groups">
+          <ConfigContentGroup icon="mcp" label="Leader 服务器">
+            <template #header>
             <FieldLabel
               text="Leader 服务器"
               code="mcp.leader"
@@ -159,6 +161,7 @@
               :tip="MCP_TIPS.leader"
               :items="MCP_MODE_ITEMS.leader"
             />
+            </template>
             <Segmented
               v-model="mcpLeaderModeModel"
               :options="MCP_MODE_OPTIONS"
@@ -173,8 +176,9 @@
               mono
               @update:model-value="updateMcpLeader"
             />
-          </div>
-          <div class="pac-field">
+          </ConfigContentGroup>
+          <ConfigContentGroup icon="mcp" label="默认服务器">
+            <template #header>
             <FieldLabel
               text="默认服务器"
               code="mcp.default"
@@ -182,6 +186,7 @@
               :tip="MCP_TIPS.default"
               :items="MCP_MODE_ITEMS.default"
             />
+            </template>
             <Segmented
               v-model="mcpDefaultModeModel"
               :options="MCP_MODE_OPTIONS"
@@ -196,9 +201,11 @@
               mono
               @update:model-value="updateMcpDefault"
             />
-          </div>
-          <div class="pac-field">
-            <FieldLabel text="角色附加服务器" code="mcp.agents" :tip="MCP_AGENTS_TIP" />
+          </ConfigContentGroup>
+          <ConfigContentGroup icon="agent" label="角色附加服务器">
+            <template #header>
+              <FieldLabel text="角色附加服务器" code="mcp.agents" :tip="MCP_AGENTS_TIP" />
+            </template>
             <div class="pac-mcp-agents">
               <div v-for="row in mcpAgentRows" :key="row.role" class="pac-mcp-agent-row">
                 <TextInput
@@ -223,6 +230,7 @@
                 <AppButton variant="ghost" size="small" @click="addMcpAgent">+ 添加角色路由</AppButton>
               </div>
             </div>
+          </ConfigContentGroup>
           </div>
         </EditorSection>
 
@@ -230,8 +238,11 @@
         <EditorSection v-if="visited.concurrency" v-show="activeSection === 'concurrency'" :active="activeSection === 'concurrency'"
           section-id="concurrency" title="并发限制" code="concurrency" :tip="CONCURRENCY_TIP" :badge="concurrencyBadge"
         >
-          <div class="pac-field">
-            <FieldLabel text="默认并发" code="default" :tip="CONCURRENCY_DEFAULT_TIP" />
+          <div class="pac-content-groups">
+          <ConfigContentGroup icon="concurrency" label="默认并发">
+            <template #header>
+              <FieldLabel text="默认并发" code="default" :tip="CONCURRENCY_DEFAULT_TIP" />
+            </template>
             <TextInput
               :model-value="concurrencyDefault"
               type="number"
@@ -240,10 +251,10 @@
               class="pac-limit-input pac-limit-default"
               @update:model-value="updateConcurrencyDefault"
             />
-          </div>
+          </ConfigContentGroup>
 
-          <div class="pac-field">
-            <FieldLabel text="服务商并发" code="providers" />
+          <ConfigContentGroup icon="provider" label="服务商并发">
+            <template #header><FieldLabel text="服务商并发" code="providers" /></template>
             <div v-if="concurrencyProviderRows.length" class="pac-concurrency-rows">
               <div v-for="row in concurrencyProviderRows" :key="row.id" class="pac-concurrency-row">
                 <div v-if="row.isCustom" class="pac-concurrency-custom-key">
@@ -288,10 +299,10 @@
             <div class="pac-actions">
               <AppButton variant="ghost" size="small" @click="addConcurrencyProvider()">+ 添加服务商限制</AppButton>
             </div>
-          </div>
+          </ConfigContentGroup>
 
-          <div class="pac-field">
-            <FieldLabel text="模型并发" code="models" />
+          <ConfigContentGroup icon="model" label="模型并发">
+            <template #header><FieldLabel text="模型并发" code="models" /></template>
             <div v-if="concurrencyModelRows.length" class="pac-concurrency-rows">
               <div v-for="row in concurrencyModelRows" :key="row.id" class="pac-concurrency-row">
                 <div v-if="row.isCustom" class="pac-concurrency-custom-key pac-concurrency-custom-model">
@@ -336,6 +347,7 @@
             <div class="pac-actions">
               <AppButton variant="ghost" size="small" @click="addConcurrencyModel()">+ 添加模型限制</AppButton>
             </div>
+          </ConfigContentGroup>
           </div>
         </EditorSection>
       </div>
@@ -365,6 +377,7 @@ import FieldLabel from '../ui/FieldLabel.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
 import { PI_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
+import ConfigContentGroup from './ConfigContentGroup.vue';
 import StringListEditor from './StringListEditor.vue';
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
@@ -1168,6 +1181,8 @@ onMounted(() => {
   flex-direction: column;
   gap: 10px;
 }
+
+.pac-content-groups { display:flex; flex-direction:column; gap:12px; min-width:0; }
 
 .pac-field {
   display: flex;

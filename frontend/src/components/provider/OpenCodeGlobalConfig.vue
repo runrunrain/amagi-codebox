@@ -549,15 +549,32 @@ void store;
 .editor-detail { min-width:0; display:flex; flex-direction:column; gap:12px; container:editor-detail / inline-size; }
 @media (max-width:1199px) { .oc-global.editor-local-layout { --section-nav-width:144px; gap:12px; } }
 @media (max-width:1023px) { .oc-global.editor-local-layout { --section-nav-width:112px; } }
-/* Record lists only: preserve the nested editors' field and expansion behavior. */
-:deep(.provider-editor), :deep(.agent-editor), :deep(.mcp-editor), :deep(.perm-editor) { gap:0; }
-:deep(.provider-editor > .pe-card), :deep(.agent-editor > .ae-card), :deep(.mcp-editor > .me-card), :deep(.perm-editor > .pe-card), :deep(.provider-editor .pe-model-card) {
-  background:transparent; border:0; border-radius:0; box-shadow:none;
+/* 仅复杂记录恢复轻矩形；权限与 provider 内层模型继续无框，原展开行为不变。 */
+.oc-global :deep(:is(.provider-editor, .agent-editor, .mcp-editor)) { gap:10px; }
+.oc-global :deep(:is(.provider-editor > .pe-card, .agent-editor > .ae-card, .mcp-editor > .me-card)) {
+  background:var(--card); border:1px solid var(--separator); border-radius:8px; box-shadow:none; min-width:0; overflow:visible;
 }
-:deep(.provider-editor > .pe-card + .pe-card), :deep(.agent-editor > .ae-card + .ae-card), :deep(.mcp-editor > .me-card + .me-card), :deep(.perm-editor > .pe-card + .pe-card), :deep(.provider-editor .pe-model-card + .pe-model-card) { border-top:1px solid var(--separator); }
-:deep(.provider-editor .pe-thumb-head), :deep(.agent-editor .ae-thumb-head), :deep(.mcp-editor .me-thumb-head), :deep(.perm-editor .pe-thumb-head), :deep(.provider-editor .pe-expanded), :deep(.agent-editor .ae-expanded), :deep(.mcp-editor .me-expanded), :deep(.perm-editor .pe-expanded) { padding-inline:0; }
-:deep(.variants-editor .vme-row) { background:transparent; border-radius:0; }
+.oc-global :deep(:is(.provider-editor > .pe-card, .agent-editor > .ae-card, .mcp-editor > .me-card):hover) { border-color:var(--separator); }
+.oc-global :deep(:is(.provider-editor .pe-card > .pe-thumb-head, .agent-editor .ae-card > .ae-thumb-head, .mcp-editor .me-card > .me-thumb-head)) { padding:8px 12px; border-radius:7px; min-width:0; }
+.oc-global :deep(:is(.provider-editor .pe-thumb-head, .agent-editor .ae-thumb-head, .mcp-editor .me-thumb-head):hover) { background:var(--controlHover); }
+.oc-global :deep(:is(.provider-editor .pe-thumb, .agent-editor .ae-thumb, .mcp-editor .me-thumb)) { flex:0 0 24px; width:24px; height:24px; border-radius:6px; transform:none; }
+.oc-global :deep(:is(.provider-editor .pe-thumb-icon, .agent-editor .ae-thumb-icon, .mcp-editor .me-thumb-icon)),
+.oc-global :deep(:is(.provider-editor .pe-thumb-icon, .agent-editor .ae-thumb-icon, .mcp-editor .me-thumb-icon) svg) { width:16px; height:16px; }
+.oc-global :deep(:is(.provider-editor .pe-expanded, .agent-editor .ae-expanded, .mcp-editor .me-expanded)) { padding:10px 12px 12px; min-width:0; }
+.oc-global :deep(:is(.provider-editor .pe-thumb-meta, .agent-editor .ae-thumb-meta, .mcp-editor .me-thumb-meta)) { flex-wrap:wrap; }
+.oc-global :deep(:is(.provider-editor .pe-thumb-name, .agent-editor .ae-thumb-name, .mcp-editor .me-thumb-name)) { white-space:normal; overflow-wrap:anywhere; }
+.oc-global :deep(.perm-editor) { gap:0; }
+.oc-global :deep(.perm-editor > .pe-card), .oc-global :deep(.provider-editor .pe-model-card) { background:transparent; border:0; border-radius:0; box-shadow:none; }
+.oc-global :deep(.perm-editor > .pe-card + .pe-card), .oc-global :deep(.provider-editor .pe-model-card + .pe-model-card) { border-top:1px solid var(--separator); }
+.oc-global :deep(.perm-editor .pe-thumb-head), .oc-global :deep(.perm-editor .pe-expanded) { padding-inline:0; }
+.oc-global :deep(.provider-editor .pe-model-card) { padding:10px 0; }
+.oc-global :deep(.variants-editor .vme-row) { background:transparent; border-radius:0; }
 @container editor-detail (max-width:479px) {
+  .oc-global :deep(:is(.provider-editor .pe-expanded, .agent-editor .ae-expanded, .mcp-editor .me-expanded)) { padding-inline:8px; }
+  .oc-global :deep(.ae-field-row) { flex-direction:column; }
+  .oc-global :deep(.ae-tool-row), .oc-global :deep(.pe-model-head) { flex-wrap:wrap; }
+  .oc-global :deep(input), .oc-global :deep(.ae-field) { min-width:0; max-width:100%; }
+  .oc-global :deep(.me-reveal-btn) { flex-shrink:0; white-space:nowrap; }
   :deep(.pe-card-head), :deep(.ae-card-head), :deep(.me-card-head), :deep(.pe-row), :deep(.tke-row), :deep(.vme-row-head), :deep(.me-header-row) { flex-wrap:wrap; }
   :deep(.tke-key), :deep(.me-header-key), :deep(.pe-key) { max-width:100%; min-width:0; }
   :deep(.tke-value), :deep(.pe-value), :deep(.me-header-val), :deep(.pe-option-val) { flex-basis:100%; min-width:0; }
@@ -566,6 +583,11 @@ void store;
   :deep(textarea) { max-width:100%; min-width:0; }
 }
 @supports not (container-type: inline-size) {
+  .oc-global :deep(:is(.provider-editor .pe-expanded, .agent-editor .ae-expanded, .mcp-editor .me-expanded)) { padding-inline:8px; }
+  .oc-global :deep(.ae-field-row) { flex-direction:column; }
+  .oc-global :deep(.ae-tool-row), .oc-global :deep(.pe-model-head) { flex-wrap:wrap; }
+  .oc-global :deep(input), .oc-global :deep(.ae-field) { min-width:0; max-width:100%; }
+  .oc-global :deep(.me-reveal-btn) { flex-shrink:0; white-space:nowrap; }
   :deep(.pe-card-head), :deep(.ae-card-head), :deep(.me-card-head), :deep(.pe-row), :deep(.tke-row), :deep(.vme-row-head), :deep(.me-header-row) { flex-wrap:wrap; }
   :deep(.tke-key), :deep(.me-header-key), :deep(.pe-key) { max-width:100%; min-width:0; }
   :deep(.tke-value), :deep(.pe-value), :deep(.me-header-val), :deep(.pe-option-val) { flex-basis:100%; min-width:0; }

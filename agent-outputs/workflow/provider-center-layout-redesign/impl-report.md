@@ -451,3 +451,147 @@ X1 在 800×600 的纵向分层（Pi Agent，实测）：main 上内边距 32 �
 **建议下一步（供 Leader 参考）**：裁决 §9.3.4 的 X1 两项口径（改阈值或另开 `.pc-head`／OpenCode 工具栏议题）→ 主上看图验收（含 Registry／Auth 归属）→ 通过后按设计 §3.2 另起 C1 清理提交，并决定 CHANGELOG 是否更正。
 
 本节任务内自检闭合；未覆盖项与超口径项均已明示，没有用构建／测试数量替代视觉或真实平台证据。
+
+---
+
+# 10. v4 轮：父子两行 CLI 导航＋图标矩形归组＋左栏纯净化
+
+**结论：任务内实现与 L2 验证通过。** CLI 父级 underline 与子级 pill 改成上下紧贴两行，子行常显所属 CLI；左栏条目可视层仅名称；Pi MCP／并发各三个常开图标组、双引擎 Registry 每模型一个常开组、OpenCode 三类复杂记录轻矩形。简单列表与单显分区保持无框。生产范围严格为 **5 个既有文件＋1 个新增组件**；保存／解析／字段业务脚本逐字保留。构建、4 文件／31 测试、未修改的 Pi e2e 7 项通过；8 批浏览器 **153 项 PASS，0 findings，0 page errors**。本结论限定 Chromium 生产前端＋隔离 transport；不代替主上审美认可或原生平台／真实后端验收。
+
+上游：同目录 `p2v4-taskbook.md`、`design-v4.md`（直接规格）、`design-v3.md`／`design-v2.md`（未覆盖处沿用）、本报告此前章节；读取相关入口、消费者、共享件、图标／token 与 v3 harness 后实施。以下日志／截图／harness 路径均相对本报告所在目录。命令 cwd 均为 `/Users/run.mao/workpace/amagi-codebox`。
+
+## 10.0 基线与范围
+
+- 开工 `git rev-parse HEAD`：**8079acb31fc00bc0896a5bf98b246cc6d2fd7eee**；`git status --porcelain -- frontend/src e2e` 为空。收尾 HEAD 相同。
+- 未提交／推送，未改用户配置或真实凭据；未安装依赖，未触碰 Go、wailsjs、API、stores、token、逻辑模块／测试、e2e。当前他方 artifact（design/taskbook/resume-relay）未触碰。
+- 生产变更：`ProviderCenterView.vue`、`SectionNav.vue`、`PiAmagiConfig.vue`、`ProviderRegistryEditor.vue`、`OpenCodeGlobalConfig.vue`，以及新建 `ConfigContentGroup.vue`；具体路径见下表。
+- 验证工具新建 `x-harness/v4-{helpers.js,ab.sh,shots.sh,runtime.mjs,static.mjs}`；复用 **未改动**的 `v2-mock-wails.js`，v2／v3 证据文件原样保留。
+- 当前 `screenshots/v4-*.png` **137 张**，含两档各九视图与状态／归组／纯净左栏／滚动条／键盘／1024 抽样。日志与截图被既有 `.gitignore` 忽略，只在本地交付；是否纳入 Git 由 Leader 决定。
+
+## 10.1 用户可见变化与规格映射
+
+| 改动位置（`frontend/src/`） | 可见变化／依据 | 复用资源与契约 |
+|---|---|---|
+| `views/ProviderCenterView.vue` | CLI 行通栏底线；下方固定缩进 12px 的所属标签＋模式组，消除父子同层且左右分离的观感。预设 caption 紧邻格式页签，仍一行 | 原 Segmented、CONFIG_PAGES／CLI_TABS 派生标签；唯一新增展示 computed 为 currentCliLabel；mode v-model／异步边界／原按钮文字不变 |
+| `components/ui/SectionNav.vue` | item／child 仅名称可视，去掉受管／类型／invalid 的目录噪音；隐藏描述保留可访问语义。限高 `max(240px,100vh−320px)` 补偿新增 36px | 原 descriptionId／aria-describedby／精确名称、roving、focus、disabled、notice；新增纯展示 descriptionText，以「；」连接 |
+| `components/provider/ConfigContentGroup.vue`（新增） | 无状态常开外壳：24px 图标块／16px SVG、1px 边框、8px 圆角，正文不沿图标缩进。无新折叠／焦点／region／h3 | 原 icons.ts 的 getIcon／getAccent；`--separator/--card/--control`；必填 icon／label，header＋默认 slot，无配置／事件／IO |
+| `components/provider/PiAmagiConfig.vue` | MCP：Leader／默认／角色附加；并发：默认／服务商／模型。分区内部单列三组，不恢复整页分类卡 | 原 FieldLabel（text/code/tip/effect）、三态／StringListEditor／Dropdown／TextInput；mcp 与 concurrency 原字段／序列化／保存契约不变 |
+| `components/provider/ProviderRegistryEditor.vue` | 每模型复合字段有明确边界；协议／URL／Key 后直接接模型，再接 provider 其他字段和删除 | 同时消费 Pi JSON／OMP YAML；原模型 idx key、id／reasoning／基础字段／高级递归编辑器；aria group「模型 N」不依赖可变 id |
+| `components/provider/OpenCodeGlobalConfig.vue` | 仅 provider／agent／mcp 顶层记录恢复轻矩形及小图标；permission／内部 model／variants 继续透明无框。窄档字段换行、敏感值动作不竖排 | 原 MapEditor 展开按钮／aria-expanded／生命周期；仅宿主 scoped deep 样式，全部子编辑器零改动 |
+
+**明确的阅读／Tab 顺序变化**：Registry provider 级「其他字段」从模型前移到模型后，模型级「高级字段」仍紧随该模型基础字段。长模型表会让 provider 扩展入口更靠下，这是 design-v4 §3.5 批准的取舍，没有隐藏／折叠／删字段。
+
+## 10.2 静态与不变量
+
+`node …/x-harness/v4-static.mjs` exit=0，8 项 PASS（`v4-static.log`）。比较对象为完整冻结 SHA，不沿用 v3 的 tag／删除集合。
+
+| 验收 | 证据与状态 |
+|---|---|
+| S6／I2/I4/I5 | Pi／Registry script 去除唯一新增组件 import 后与基线逐字一致；OpenCode script 全文相同；View 除 currentCliLabel、Nav 除 descriptionText 外保留原语句，全部 watch／loader／重试／导入导出不变。presetLoadKey **7 处**、activePageId **1 处** |
+| S7/S8/S9／C1 | tracked＋untracked 生产白名单恰六路径；e2e／4 逻辑测试／依赖／icons／ConfigCategoryCard／Auth／OMP／configNavigation／共享 UI 与子编辑器均零 diff。external／snapshot／旧卡保留，无清理 |
+| S1/S2/S3/S10／I7 | 新 group 不产生 h3/region；ready 可视态恰一个 EditorSection；visited v-show 保实例、未访问区不提前挂载。父级无 SectionNav；六个有分区视图各一个 local nav，三类列表页无 nav，工具栏消费者不变 |
+| S12／I7 | Pi 六组、Registry 每模型一组；普通分区无外框；OC 三类直接子记录选择器与 permission／嵌套 model／variants 拆分，运行时 computed 样式反例通过 |
+| S13/X11 | 原选项／caption 字符串不变；owner 派生自 CLI_TABS，Pi／OMP／OpenCode 所属文字与当前父级一致、缩进恒 12px，context 为原模式组的唯一承载 |
+| S14／I6 | item／child 可视子节点白名单仅 sn-name；描述节点脱离流、1×1px、clip-path:inset(50%)，非 display:none／aria-hidden；精确 accessible name 与 description 均实测，notice 独立保留 |
+| I1/S4/S5 | 右侧原压缩生效 meta／后果／alert／隐藏错误定位，受管 Badge＋全文警告、Auth 类型与 CLI 管理，MCP Leader 重启／默认即时、并发回落 placeholder、OMP 新会话／Registry 重进／OC 即时工具栏全部原位；没有以隐藏 aria 描述替代可视风险 |
+| I3 | Pi roles／compaction 模板逐字保留；未修改原 e2e，region/h3／分区精确名、mss-dd 次序与业务断言全部通过 |
+
+## 10.3 运行验证（真实命令与结果）
+
+dev server：`npm --prefix frontend run dev -- --port 5199 --strictPort --host 127.0.0.1`。收尾核对命令行与父子关系后，仅关闭本轮启动的npm PID92358／Vite PID92383，确认5199无监听；独立浏览器会话close exit=0。基础截图使用独立 agent-browser 会话 `p2v4-8079acb-luoshen`；细项使用 Playwright Chromium 调用生产 App，通过隔离 Wails fixture 提供测试数据，**不冒充真实用户配置／磁盘／后端保存证据**。
+
+| 验收／命令 | exit／结果 | 最终日志 |
+|---|---|---|
+| V1 `npm --prefix frontend run build` | 0，vue-tsc＋Vite 构建成功；前后两次通过 | `v4-build-final.log` |
+| V2 `npm --prefix frontend run test -- src/__tests__/components/provider` | 0，4 files／31 tests | `v4-vitest-final.log` |
+| V3 `npx playwright test -c e2e/pi-amagi-config.playwright.config.ts` | 0，7 passed；`git diff 8079acb… -- e2e` 空 | `v4-pi-e2e-final.log` |
+| `node …/x-harness/v4-static.mjs` | 0，8 静态项 PASS | `v4-static.log` |
+| `bash …/x-harness/v4-shots.sh 1280 800`／`800 600` | 两次 0，两档各九视图 | `v4-shots-{1280,800}.log` |
+
+浏览器命令统一为 `node agent-outputs/workflow/provider-center-layout-redesign/x-harness/v4-runtime.mjs <batch>`，每批 ≤3 分钟，逐项打印进度。最终批次全部 exit=0／findings=0／page errors=0：
+
+| batch | PASS 数 | 核验链路 | 最终日志 |
+|---|---:|---|---|
+| drafts（V4） | 7 | 原 Pi 草稿、同文件切区零新增请求、隐藏压缩错误定位、InfoTip／Dropdown 切区关闭；新增 MCP 组内 tip 切区关闭；OC 非法局部 RawJson 草稿仍保留 | `v4-drafts-final.log` |
+| dynamic | 10 | 双 Registry／Auth N=0/1/20；限高／End／新增聚焦／重名／取消删除／删除后继／Auth 改名焦点稳定，保存不带 uiId | `v4-dynamic.log` |
+| lifecycle（V5） | 8 | 模式记忆、配置档重挂载、Pi→OMP Registry 不复用、读取错误重试、chunk 延迟／失败两行导航可逃逸、重试整页恢复、迟到 Pi 不污染 OMP | `v4-lifecycle.log` |
+| states | 24 | 七模式 loading/error，CLI 与当前 context 可用；六空态新增动作；Pi 保存成功／失败 | `v4-states.log` |
+| interactions | 4 | 三预设键盘弹窗交易、独立删除焦点、OC JSON 只读；皮肤 InfoTip 实底 | `v4-interactions.log` |
+| narrow | 49 | 800 各分区／展开记录与新 group/head/body/input/button 外接框无横溢；九视图尺寸；8/16px 占位探针；1024 抽样；7/9 分区回退；context 放大 | `v4-narrow-final.log` |
+| coverage | 35 | 1280 九视图度量／文案、Tab 顺序／焦点环／roving、≤2/3 点击、sticky、InfoTip 键盘／Escape、后果全文 | `v4-coverage-final.log` |
+| content（V6＋X14） | 16 | 两档 Pi MCP／并发新增改值／清空回落、完整源码与保存值／未知字段；双 Registry 多模型改 id／新增高级／删除／源码往返／排序；OC 三类原展开新增改名删除、权限／内部模型无框、敏感动作；纯净目录与右侧承载／accessible descriptions | **`v4-runtime-content.log`** |
+
+总计 **153** 项。content 核对完整对象、未知字段与读取／保存调用数，零新增自动保存或按区 IO；模型序号不随 id 编辑改实例。最终 content 与 narrow 在截图定位／日志口径修正后再次通过。
+
+### 10.3.1 两档九视图高度（s=0，数值取整）
+
+`firstEditableTop` 为当前正文首次可操作 input／textarea／字段选择器或记录按钮，不包含工具栏动作；首屏紧张不能只由 h3 判断。
+
+| 视图 | 800：subnav/toolbar 行数 | 800：首内容／首操作 y | 1280：subnav/toolbar 行数 | 1280：首内容／首操作 y |
+|---|---|---|---|---|
+| Anthropic 预设 | 1/1 | 313/326 | 1/1 | 273/286 |
+| OpenAI 预设 | 1/1 | 313/326 | 1/1 | 273/286 |
+| Pi Agent | 2/2 | **385/444** | 2/1 | 312/371 |
+| Pi Registry | 2/2 | 385/504 | 2/1 | 312/413 |
+| Pi Auth | 2/2 | 385/424 | 2/1 | 312/351 |
+| OMP Agent | 2/2 | 385/424 | 2/1 | 312/351 |
+| OMP Registry | 2/2 | 385/504 | 2/1 | 312/413 |
+| OpenCode 预设 | **2/3** | **425/508** | 2/1 | 312/395 |
+| OpenCode 全局 | 2/2 | 385/419 | 2/1 | 312/346 |
+
+CLI contextRows=1、owner 正确、indent=12、underlineDelta=0；CLI subnav 高 **72px**，预设 36px。800 Pi 分层为 32＋65.5＋22＋14＋76＋12＋72＋14＋65＋12＝384.5；与 v4 385 预算吻合。全部满足 400／440／330（800）和 330／290（1280）上限。MCP 首个三态操作与并发首个180px外壳输入底边在800首屏内；默认并发外壳180／原 input160，清空后「留空 = 内置默认 4」实读完整。
+
+### 10.3.2 宽度／滚动／操作
+
+- s=0：800 `112px 356px`／矩形正文338；1280 `184px 712px`。独立非隐藏滚动条 Chromium：s=8 时800 **`112px 348px`／正文330**；s=16保守探针 **`112px 340px`／正文322**。无滚动的视图仍按s=0，不写死视图与滚动条映射；group/head/body、OC expanded及控件外接框均无横溢。
+- 1024抽样：Registry `144px 524px`，长路径导致工具栏2行、h3 y345；OC预设整宽680、工具栏1行、首内容312。仅抽样，不声称九视图全覆盖。
+- N20：双 Registry／Auth nav高280，scrollHeight分别816／816／762；真实按End后add top555.5／bottom587.5，在nav与600视口交集内，焦点环实读可见。sticky实滚：Pi@800／Registry@1280滚动300后top12。
+- 顶侧Tab先CLI后模式；owner与新常开图标组不新增Tab。15个叶子到达均2次真实点击，最坏CLI＋模式＋分区3次；新Pi／Registry组0次展开。原OC记录仍有既有折叠按钮。
+- 放大探针1–1.5×：CLI整体仍两行、context单行，无横溢。**本次未触发context实际折行态**，不能从该结果推断更大倍率也通过。
+
+## 10.4 视觉裁决与读图记录
+
+**已实际打开，不以保存截图代替读图：**
+
+1. 两档九视图基础图共18张（`v4-{presets-anthropic,presets-openai,pi-agents,pi-registry,pi-auth,omp-agents,omp-registry,opencode-presets,opencode-global}-{800x600,1280x800}.png`）。
+2. 两档新增关键内容：`v4-pi-mcp-scopes-*`、`v4-pi-concurrency-{custom,model-custom}-*`、`v4-{pi,omp}-registry-model-boundaries-*`、`v4-opencode-{provider-nested,agent-fields,mcp-sensitive,permission-list}-*`；另读800归组基准图与四张Pi scrollbar8/16图。
+3. 两档X14全套：`v4-pure-compaction-{valid,hidden-error,alert}-*`、`v4-pure-managed-long-*`、`v4-pure-auth-{api_key,oauth,weird}-*`。alert图已滚到错误全文，不把首屏截不到的alert宣称可见截图。
+4. 双Registry／Auth三张N20图、chunk延迟／失败两图、1024两抽样图、两张顶侧键盘焦点图、800底部MCP字段tip、Registry loading／empty、Pi保存成功／失败图。
+5. 实读旧版对照 `v3-pi-agents-800x600.png`、`v3-pi-registry-1280x800.png`，不凭上游评价替代本轮观察。
+
+| 观察对象 | v3 → v4 实读结论 |
+|---|---|
+| 父子导航 | 原CLI与pill左右同排 → CLI先扫父级，下一行「Pi/OMP/OpenCode 配置」＋固定缩进连接线标所属；模式不再随父级横移，800可辨识且文字完整。代价是首屏正文下移36px，已接受且实测 |
+| 左栏 | 原meta与名称上下堆叠 → 纯名称目录，Auth类型／受管说明／压缩生效时机集中在当前正文；隐藏invalid仍有右侧红色定位入口与alert，不恢复目录错误点 |
+| Pi范围组 | 橙色MCP／绿色角色、蓝青并发／蓝服务商／紫模型图标只作识别，细矩形明确不同覆盖范围；控件不向图标缩进、窄档自然换行，默认4与空名单说明完整 |
+| Registry模型 | 原细线难区分复合模型 → 每模型独立细边框容纳基础与高级字段；多个模型边界明确。连接→模型连续，provider扩展入口后移；没有在高级字段里再套框 |
+| OC复杂／简单反例 | provider／agent／mcp记录边界清楚，敏感「编辑／显示」动作窄档横排；permission与provider内部model实读透明无内卡。原展开头仍是真按钮，新Pi/Registry头不伪装可点击 |
+| 键盘／失败 | Tab焦点环及N20 End焦点清晰；tip靠底时向上翻转且全文在视口；chunk错误与loading时两行导航完整常在，可切CLI逃离 |
+
+**裁决：任务内视觉与交互可交付，未发现阻塞性布局缺陷。** 窄档复合组单列、长内容需要主区滚动；不承诺矩形减少表单长度。800的一级动作区仍折成第二行，OC预设仍三行工具栏；二者是规格批准的既有高开销。本轮没有压字、裁风险或改基件凑高度。颜色沿用既有accent/token，未宣称做过完整对比度仪器审计。
+
+## 10.5 验证工具修正与偏差
+
+无设计级偏差、无生产业务逻辑变更。失败均保留原日志并先核实成因，未降低验收门禁：
+
+- static路径末尾换行导致白名单误判，使用trimEnd；预设subnavRows由caption折行判定，不套CLI两行逻辑。
+- 并发fixture先删再添同名键会改变JSON键序；改用已有ollama／独立自定义键核对完整值，不改生产序列化。默认输入断言区分180外壳与160原input。
+- OC源码往返恢复原收起状态，删除前重新展开；没有要求既有record变成常开。
+- reveal的nowrap样式只在窄容器生效：800核对nowrap，宽档核对真实44px以上宽／32px以下高，不误要求宽档相同CSS。
+- 初次alert／内部model截图未滚到目标：补scrollIntoViewIfNeeded并重拍、实际读图。narrow继承日志误写「折行兜底通过」，改为如实记录context在1–1.5×未折行；对应两批再跑全绿。
+- 原失败／中间日志 `v4-{content-first,content-second,content-final,narrow-first,narrow-second,coverage-first}.log` 仅是调试历史；最终以§10.3指定日志为准，不混计PASS。
+
+## 10.6 未覆盖／风险／回退
+
+| 边界 | 如实状态 |
+|---|---|
+| 原生／后端 | 未测WKWebView／WebView2／原生Wails、真实磁盘／权限／密钥库。完整保存对象为隔离transport证据，不是原生集成 |
+| 状态扩展 | 七模式loading/error／六空态／源码disabled／Pi保存成功失败已测；各编辑器保存长spinner、每个字段所有值域未穷举。OC非法局部RawJson不emit及跨模式卸载仍是原边界，不扩称修复 |
+| 视口／无障碍 | 未测<800窗口、OS DPI/字体替换、200%缩放、读屏器、远程横幅、无限条目／递归性能；1024只抽样。underline页签仍无选中态aria；pill有aria-pressed，新增group只补所属，不替代tab语义 |
+| 皮肤／范围外 | 皮肤blur=8路径通过，blur=0未专测；OC预设store吞读取错误、loading目录只有禁用add等既存体验未改。风险保留，不拿fixture通过证明所有失败态产品提示完整 |
+| 读图范围 | 已读图清单见§10.4；其余137张中的普通分区／empty／loading/error／弹窗／高级字段图未逐张读，相关DOM/交互已测。模型高级区域只抽查，不声称每层递归都审图 |
+| 截图归档 | *.log与screenshots被忽略；Leader如需跨机器消费应保全这些本地证据。fixture的路径／模型／placeholder均为隔离测试内容，无真实凭据 |
+
+**回退（未执行）**：经Leader授权，按冻结SHA与当前六文件的v4归因hunk反向应用，保留共享树其他改动，不使用覆盖式restore／checkout。导航关系、SectionNav净化与限高可分开撤回；若恢复单行顶部，应同时撤回限高−40px。Pi／Registry可分别撤回归组调用与局部样式，确认两处消费者均撤完且无其他引用后才另获授权删除新组件；OC仅撤宿主deep样式。Auth／OMP／子编辑器／e2e没有代码待回退。无数据迁移；回退后重跑V1–V3及受影响批次，历史截图不当回退验证。
+
+**收尾自检**：必读材料与上游路径齐全；六生产路径白名单／逐字脚本／禁区／C1通过；命令、隔离与未覆盖边界清楚；关键图已读，无代理调度、提交／推送、用户配置写入或他方现场覆盖。建议Leader先用§10.4关键图给主上视觉验收，再决定原生平台抽测／独立C1工作。

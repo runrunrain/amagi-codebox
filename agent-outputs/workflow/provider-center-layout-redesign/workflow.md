@@ -36,6 +36,7 @@
 | P5 遗留修复+发版 | 修复皮肤递归/chunk 恢复/吞错三遗留；提交推送并 GitHub 发版 v1.3.96 | Leader（直做，主上授权范围外文件） | P2R/P3 | impl-report §8 遗留清单 | 三修复代码+验证证据；commit 1637046/3596933；tag v1.3.96；Release/CI 工作流 | 修复浏览器级验证全绿；Release 发布成功；CI 全绿 | done（Release v1.3.96 双平台资产已发布；CI 38197315699 全绿；第 4 遗留项需真机，不在本轮范围） |
 | P6 v3 布局修正 | 主上二次修正：二三级页签回顶侧，左栏收缩到编辑器内分区 | fuxi 设计（2f025895）+ luoshen 实现（ecf0cbbc）+ Leader 验收 | 主上指令 | p1v3/p2v3-taskbook | design-v3.md + impl-report §9 + v3 harness/84 截图；生产单文件 | V1–V3+静态 10 项+七批 135 断言全绿；三 FINDING 裁决为规格估算漂移非缺陷 | done（accepted；待主上看图裁决 Registry/Auth 左栏归属与 C1 清理） |
 | P7 发版 v1.3.97 | 提交推送 + tag 发版 | Leader | P6 | P6 产物 | commit 0927a77/06928f6；tag v1.3.97；Release/CI 工作流 | Release 发布成功；CI 全绿 | done（Release 38204795232 双平台资产已发布；CI 38204800426 全绿） |
+| P8 v4 布局精修 | 主上三轮反馈：内容整理+图标矩形收拢、二三级父子关系重设计、左栏纯净化 | fuxi 设计（5fa8e3ea，首派被 terminated 后 fresh 重派）+ luoshen 实现（32b88eee）+ diting quick（5213377d） | 主上指令 | p1v4/p2v4/p3v4-taskbook | design-v4.md + impl-report §10 + v4 harness/137 截图；生产 5+1 文件 | V1–V3+静态 8 项+八批 153 断言全绿；diting VERDICT；Critical/Major 回流 | running（实现完成，Leader 复验全绿；diting 审查中） |
 
 ## 跨边界链路清单
 

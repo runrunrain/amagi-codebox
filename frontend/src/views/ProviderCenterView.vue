@@ -4,7 +4,7 @@
     一级 Segmented(pill): 「服务提供商」|「预设」|「CLI 独立配置」
     服务提供商 tab：网格 + 详情模式切换
     预设 tab / CLI 独立配置 tab（provider-center-layout-redesign）：
-    二级 underline Tab 与三级紧凑 pill 合并为一行 .pc-subnav（通栏分隔线）；
+    二级 underline Tab 与带所属 CLI 标签的三级 pill 上下紧贴，构成父子两行 .pc-subnav；
     有内部分区的编辑器在自身内部带分区导航（左栏），页面级不再有任何左栏。
     CLI 独立配置组件全部 defineAsyncComponent 懒加载，退出入口 chunk。
   -->
@@ -76,21 +76,24 @@
 
       <div v-else class="pc-panel">
         <!--
-          二三级导航合并为一行：左侧二级 underline Tab（格式 / Pi · OMP · OpenCode），
-          右侧三级紧凑 pill（随二级切换）或预设页的「用于 …」说明。
+          CLI 父子导航上下紧贴：二级 underline Tab 在上，所属 CLI 与三级 pill 在下。
+          预设页仍为格式页签与紧邻的「用于 …」说明。
           三级留在容器里而不下放进编辑器：异步编辑器加载中 / 加载失败时用户仍可切换。
           有内部分区的编辑器自带分区导航（左栏），页面级没有任何左栏。
         -->
-        <div class="pc-subnav">
+        <div class="pc-subnav" :class="mainTab === 'presets' ? 'pc-subnav--presets' : 'pc-subnav--cli'">
           <template v-if="mainTab === 'presets'">
             <Segmented v-model="formatModel" :options="FORMAT_TABS" variant="underline" class="pc-subnav-tabs" />
             <span class="pc-subnav-caption">{{ formatConsumers }}</span>
           </template>
           <template v-else>
             <Segmented v-model="cliModel" :options="CLI_TABS" variant="underline" class="pc-subnav-tabs" />
-            <Segmented v-if="store.presetEngine === 'pi'" v-model="piMode" :options="PI_MODES" variant="pill" class="pc-subnav-modes" />
-            <Segmented v-else-if="store.presetEngine === 'omp'" v-model="ompMode" :options="OMP_MODES" variant="pill" class="pc-subnav-modes" />
-            <Segmented v-else-if="store.presetEngine === 'opencode'" v-model="openCodeMode" :options="OPENCODE_MODES" variant="pill" class="pc-subnav-modes" />
+            <div class="pc-subnav-context" role="group" :aria-label="currentCliLabel + ' 配置类型'">
+              <span class="pc-subnav-owner">{{ currentCliLabel }} 配置</span>
+              <Segmented v-if="store.presetEngine === 'pi'" v-model="piMode" :options="PI_MODES" variant="pill" class="pc-subnav-modes" />
+              <Segmented v-else-if="store.presetEngine === 'omp'" v-model="ompMode" :options="OMP_MODES" variant="pill" class="pc-subnav-modes" />
+              <Segmented v-else-if="store.presetEngine === 'opencode'" v-model="openCodeMode" :options="OPENCODE_MODES" variant="pill" class="pc-subnav-modes" />
+            </div>
           </template>
         </div>
         <div class="pc-detail-content" :key="activePageId">
@@ -237,6 +240,8 @@ const cliModel = computed<string>({
     if (v) store.setPresetEngine(v as PresetEngine);
   },
 });
+
+const currentCliLabel = computed(() => CLI_TABS.find(tab => tab.value === cliModel.value)?.label || '');
 
 // 预设页 subnav 右侧说明：对谁有用（Claude Code 消费 Anthropic 格式；Codex / Pi / OMP 消费 OpenAI 格式）
 const formatConsumers = computed(() =>
@@ -444,27 +449,15 @@ function handleAdd() {
   margin-top: 10px;
 }
 
-/*
- * 二三级合并导航一行：左 underline Tab（二级），右紧凑 pill（三级）/ 预设页的「用于 …」说明，
- * 整行底部一条通栏分隔线；最小窗口宽度下 flex-wrap 自动换行，换行后仍压在分隔线上方。
- */
-.pc-subnav {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 8px 16px;
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--separator);
-}
-
-/*
- * Segmented 的 class 落在其根节点 .segmented 上（不是后代），所以对根节点的覆写要写成
- * .pc-subnav-tabs.underline-tabs（组合选择器特异性 > Segmented 自身的 .underline-tabs），
- * 而不是 :deep(.segmented)。underline-seg 自带 margin-bottom:-1px，选中下划线会压在通栏分隔线上。
- */
-.pc-subnav-tabs.underline-tabs {
-  border-bottom: none;
-}
+/* CLI 两行共享一个导航容器；下划线只对齐父级行，不随 CLI 选择横移子组。 */
+.pc-subnav { display:flex; min-width:0; }
+.pc-subnav--cli { flex-direction:column; align-items:stretch; gap:6px; }
+.pc-subnav--cli .pc-subnav-tabs.underline-tabs { width:100%; border-bottom:1px solid var(--separator); }
+.pc-subnav-tabs :deep(.underline-seg) { font-size:13px; line-height:16px; padding:9px 2px; }
+.pc-subnav-context { display:flex; align-items:center; justify-content:flex-start; flex-wrap:wrap; gap:6px 8px; margin-left:12px; border-left:2px solid var(--separator); padding-left:10px; min-width:0; min-height:30px; }
+.pc-subnav-owner { font-size:12px; line-height:18px; color:var(--secondary); white-space:nowrap; }
+.pc-subnav--presets { flex-direction:row; align-items:flex-end; justify-content:flex-start; gap:8px 12px; flex-wrap:wrap; border-bottom:1px solid var(--separator); }
+.pc-subnav--presets .pc-subnav-tabs.underline-tabs { border-bottom:0; }
 
 .pc-subnav-caption {
   font-size: 12px;
@@ -476,18 +469,21 @@ function handleAdd() {
 
 /* 三级紧凑 pill：12px，seg padding 4px 12px，容器 padding 2 / radius 8 */
 .pc-subnav-modes {
-  margin-bottom: 6px;
+  margin-bottom: 0;
+  min-width: 0;
 }
 
 .pc-subnav-modes.segmented {
   display: inline-flex;
   padding: 2px;
   border-radius: 8px;
+  flex-wrap: wrap;
 }
 
 .pc-subnav-modes :deep(.seg) {
   flex: 0 0 auto;
   padding: 4px 12px;
+  line-height: 18px;
   font-size: 12px;
   white-space: nowrap;
 }
@@ -501,7 +497,7 @@ function handleAdd() {
   .pc-workspace-view { padding-inline:16px; }
   .pc-card-workspace { padding-inline:12px; }
   .pc-main-tabs :deep(.seg) { padding-inline:12px; }
-  /* 800 档保证 subnav 单行：underline 间距 24→16，pill 的 seg 水平 padding 12→10 */
+  /* 窄档收紧父级间距与子级 pill；允许极端字体下自然换行。 */
   .pc-subnav-tabs.underline-tabs { gap:16px; }
   .pc-subnav-modes :deep(.seg) { padding-inline:10px; }
 }
