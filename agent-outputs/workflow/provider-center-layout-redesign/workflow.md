@@ -33,6 +33,7 @@
 | P2R 续接实现 | 按 design-v2 增量重构 + 补齐 P2 报告 | luoshen（fresh 接力，因原会话 5.6MB 超上下文预算 resume 拒单） | P1R | design-v2.md + 现场树 | 增量改动 + V1–V5/X1–X10 证据 + impl-report（含 v1） | 同 P2 + design-v2 §8 验收清单 | done（accepted；Leader 复验 V1/V2/V3 全过） |
 | P3 审查 | 独立门控：diff 对抗检验 | diting quick | P2R | diff（v1+v2 全量）+ design.md + design-v2.md | diting-review.md | findings 分级 + VERDICT；Critical/Major 回流修复 | done（accepted；PASS_WITH_MINOR，R1 由 Leader 直修+复验 7 passed） |
 | P4 视觉验收 | 真实浏览器截图 + 读图确认 | Leader（直做） | P2（P3 findings 为 Critical/Major 时先修复） | 实现产物 | 10 张 p4-leader-*.png + a11y 树验证结论 | 两页关键状态截图且视觉确认符合设计意图 | done（结构/文本级验证过；像素级读图被视觉模型上游 503 阻断，三层证据替代，局限已记录） |
+| P5 遗留修复+发版 | 修复皮肤递归/chunk 恢复/吞错三遗留；提交推送并 GitHub 发版 v1.3.96 | Leader（直做，主上授权范围外文件） | P2R/P3 | impl-report §8 遗留清单 | 三修复代码+验证证据；commit 1637046/3596933；tag v1.3.96；Release/CI 工作流 | 修复浏览器级验证全绿；Release 发布成功；CI 全绿 | done（Release v1.3.96 双平台资产已发布；CI 38197315699 全绿；第 4 遗留项需真机，不在本轮范围） |
 
 ## 跨边界链路清单
 
@@ -70,3 +71,4 @@ interactive（默认）：设计取舍若涉及删除用户可感知语义，采
 - 2026-10 P3 收口（accepted）：diting quick PASS_WITH_MINOR；唯一 Minor R1（新结构用例 textbox 查询 number 输入致断言空转）由 Leader 按 diting 修复方向直修（先证明可见→再验证隐藏 + spinbutton 计数 0），e2e 复跑 7 passed。无 Critical/Major，未触发增量复审。
 - 2026-10 P4 收口：Leader 自拍 10 张截图（agent-browser 会话注入 mock，宽/窄两档）；视觉模型上游全挂（4 候选 × 3 轮均 503/socket hang up），像素级读图未达成——改用 a11y 树快照做文本级独立验证：左栏树（3 CLI 组/7 模式/分区子叶+meta）、单分区 region+h3+code、工具栏路径胶囊、11 项语义常显文字、无 h2/subtitle/hint 段落全部确认。视觉层由 luoshen 读图（79 张 v2 截图实读）+ diting 静态核验补足。局限：像素级间距/配色/重叠未由 Leader 独立读图确认，截图已存档待视觉链路恢复后可补。
 - 2026-10 收尾清理：luoshen 遗留 vite dev server（port 5199，pid 35887）已由 Leader 终止。最终 diff：frontend/src 20 文件（13 tracked + 7 untracked）+ e2e 2 文件；未提交，未触碰 Go/wailsjs/api/stores/manifests。
+- 2026-10 P5（主上指令）：①三遗留修复（Leader 直做，主上授权范围外文件）——skinBake 同步 no-op 路径去回调（根因：syncSkinDom 作 onDone 同步递归，jsdom 回归 3 例）；chunk 失败重试改整页重载恢复（会话标记防循环，App 启动清除）；PresetList/OpenCodePresets 消费 store.presetLoadError 呈现错误态（同型两处）；验证：build/vitest 209 例/e2e 7 例全绿 + harness interactions（皮肤 0 page error，原失败批）/states（OCP ErrorState，原基线限制）/lifecycle（chunk 重载恢复 PASS，原基线限制）三批全过，harness 断言同步更新。②发版：CHANGELOG 1.3.96（并入原 Unreleased 三条）+ wails.json bump；commit 1637046（feat，59 文件）+ 3596933（release）+ tag v1.3.96 推送；Release run 38197275402 + 手动 CI run 38197315699 监控中（仓库 C-011：CI 手动触发制；本机无 Go 工具链，Go 侧验证依赖 CI）。注：第四遗留项「原生 WebView/真实后端未测」非代码缺陷，需真机验证，不在本轮可修复范围。
