@@ -74,6 +74,11 @@ type ConfigService struct {
 	// modalityProber 多模态实弹探测调度入口（契约 §2 v1.2，SetModalityProber
 	// 注入；非阻塞契约见其注释）。未注入时（单测/嵌入式）全部探测调度静默跳过。
 	modalityProber func(providerName, model string)
+	// piLoginPresetListener 登录预设保存/删除后回调（SetPiLoginPresetChangeListener
+	// 注入，app 装配时把 contextWindow 覆写同步到 canonical root 的 models.json）。
+	// 未注入时静默跳过；在写锁释放后触发（锁序见 changePiLoginPreset），回调
+	// 不得再调 ConfigService 写路径。
+	piLoginPresetListener func(saved, removed *PiLoginPreset)
 	mu             sync.RWMutex
 }
 
@@ -128,6 +133,16 @@ func (s *ConfigService) SetModalityProber(fn func(providerName, model string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.modalityProber = fn
+}
+
+// SetPiLoginPresetChangeListener 注入登录预设保存/删除回调（app 装配时调用）。
+// 回调在 ConfigService 写锁释放后同步执行（内部会拿 app 的 providerSyncMu，
+// 与后台 sync 锁序同向，见 changePiLoginPreset 注释）；回调必须快、不得再调
+// ConfigService 写路径；异常自行容错，不影响配置保存结果。nil = 注销回调。
+func (s *ConfigService) SetPiLoginPresetChangeListener(fn func(saved, removed *PiLoginPreset)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.piLoginPresetListener = fn
 }
 
 // GetModalityProbeCache 返回探测缓存的只读快照（拷贝，读锁保护；供

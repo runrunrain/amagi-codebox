@@ -147,6 +147,11 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	if spec.BootstrapMode == platform.BootstrapWSL {
 		return fail()
 	}
+	// 登录预设 contextWindow 覆写不在 BuildPlan 写盘：remote adapter 契约要求
+	// BuildPlan 纯读零副作用（remote_session_adapter.go「BuildPlan (pure read, zero
+	// side effects)」）。覆写统一在预设保存/删除时同步写入 canonical root 的
+	// models.json（ConfigService.SetPiLoginPresetChangeListener + app 装配注入），
+	// 桌面 LaunchPiSession 另有启动兜底；本路径（remote/restart）读已落盘的目标态。
 	// Shared execution-boundary constraint: pin the canonical root after any
 	// shell startup. No ConfigMutation, secret lookup, managed provider or
 	// auth write on this path.

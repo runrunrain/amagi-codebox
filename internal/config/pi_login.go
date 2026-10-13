@@ -72,6 +72,13 @@ type PiLoginPreset struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Thinking string `json:"thinking,omitempty"`
+	// ContextWindow 是可选的上下文窗口覆写（tokens，>0 生效）。Pi 登录模型没有
+	// API 预设参数面，窗口只能经 models.json 的 modelOverrides 注入；0 = 不覆写
+	//（Pi 内置目录值）。启动链把它合并进标准 agent root 的 models.json
+	//（providers.<provider>.modelOverrides.<model>.contextWindow，见
+	// launcher.UpsertPiLoginModelOverride），对 Leader 与 amagi 子 agent 同一生效
+	//（子 agent 继承 PI_CODING_AGENT_DIR=canonical root，读同一份 models.json）。
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 func (p PiLoginPreset) Validate() error {
@@ -82,6 +89,9 @@ func (p PiLoginPreset) Validate() error {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
 		return errors.New("invalid Pi thinking level")
+	}
+	if p.ContextWindow < 0 {
+		return errors.New("invalid Pi context window; must be a positive token count or 0 for default")
 	}
 	return nil
 }
@@ -115,6 +125,23 @@ func (s *ConfigService) SavePiLoginPreset(p PiLoginPreset) error {
 	return s.changePiLoginPreset(key, &p)
 }
 
+// alignPiLoginContextWindowLocked 把同 provider+model 的其它登录预设的
+// ContextWindow 对齐到 cw（写锁内调用，next 已含自身写入）。语义：pi 的
+// modelOverrides 按 provider/model 寻址，无预设维度——窗口是模型级共享值，
+// 任一预设保存即全组生效；配置面同步对齐，保证展示与 models.json 实际生效
+// 值一致（不出现「B 显示 256000 实际共享 400000」的静默串值，diting F02）。
+func (s *ConfigService) alignPiLoginContextWindowLocked(next *AppConfig, selfKey, provider, model string, cw int) {
+	for k, other := range next.PiLoginPresets {
+		if k == selfKey || other.Provider != provider || other.Model != model {
+			continue
+		}
+		if other.ContextWindow != cw {
+			other.ContextWindow = cw
+			next.PiLoginPresets[k] = other
+		}
+	}
+}
+
 func (s *ConfigService) DeletePiLoginPreset(key string) error {
 	if _, _, ok := ParsePiLoginPresetKey(key); !ok {
 		return errors.New("invalid login preset key")
@@ -123,25 +150,56 @@ func (s *ConfigService) DeletePiLoginPreset(key string) error {
 }
 
 func (s *ConfigService) changePiLoginPreset(key string, preset *PiLoginPreset) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.config == nil {
-		return errors.New("config not loaded")
-	}
-	next := *s.config
-	next.PiLoginPresets = make(map[string]PiLoginPreset, len(s.config.PiLoginPresets)+1)
-	for k, p := range s.config.PiLoginPresets {
-		next.PiLoginPresets[k] = p
-	}
-	if preset == nil {
-		delete(next.PiLoginPresets, key)
-	} else {
-		next.PiLoginPresets[key] = *preset
-	}
-	if err := s.saveLockedConfig(&next); err != nil {
+	var (
+		removed  *PiLoginPreset
+		listener func(saved, removed *PiLoginPreset)
+		err      error
+	)
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.config == nil {
+			err = errors.New("config not loaded")
+			return
+		}
+		next := *s.config
+		next.PiLoginPresets = make(map[string]PiLoginPreset, len(s.config.PiLoginPresets)+1)
+		for k, p := range s.config.PiLoginPresets {
+			next.PiLoginPresets[k] = p
+		}
+		if preset == nil {
+			if old, exists := next.PiLoginPresets[key]; exists {
+				copyOf := old
+				removed = &copyOf
+			}
+			delete(next.PiLoginPresets, key)
+		} else {
+			next.PiLoginPresets[key] = *preset
+			// 窗口是模型级共享值：保存时同步对齐同 provider+model 的兄弟预设
+			//（锁内原子，展示与生效面一致；见 alignPiLoginContextWindowLocked）。
+			s.alignPiLoginContextWindowLocked(&next, key, preset.Provider, preset.Model, preset.ContextWindow)
+		}
+		if saveErr := s.saveLockedConfig(&next); saveErr != nil {
+			err = saveErr
+			return
+		}
+		s.config = &next
+		listener = s.piLoginPresetListener
+	}()
+	// 锁序安全：回调在 ConfigService 写锁释放后触发——回调内部会拿 app 的
+	// providerSyncMu，而既有 sync 路径是 providerSyncMu → ConfigService 读锁，
+	// 若在写锁内触发会构成锁序环（RWMutex 写等待阻塞后续读）死锁。代价是回调
+	// 与保存不再原子：写盘幂等且以最后一次为准，与启动链兑底同语义，可接受。
+	if err != nil {
 		return err
 	}
-	s.config = &next
+	if listener != nil {
+		if preset != nil {
+			listener(preset, nil)
+		} else if removed != nil {
+			listener(nil, removed)
+		}
+	}
 	return nil
 }
 

@@ -166,3 +166,116 @@ func TestPiLoginClassificationOrdinaryProviderStableKeys(t *testing.T) {
 		t.Fatal("padding segment parsed as login source id")
 	}
 }
+
+// 登录预设保存/删除回调：保存成功后以 saved 触发，删除以 removed（携带旧值）
+// 触发；保存失败不触发；回调在 ConfigService 写锁外执行（锁序见 changePiLoginPreset）。
+func TestPiLoginPresetChangeListenerSavedAndRemoved(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	type event struct{ saved, removed *PiLoginPreset }
+	var events []event
+	svc.SetPiLoginPresetChangeListener(func(saved, removed *PiLoginPreset) {
+		events = append(events, event{saved, removed})
+	})
+
+	p := PiLoginPreset{Name: "Daily", Provider: "openai-codex", Model: "native-model", Thinking: "max", ContextWindow: 400000}
+	if err := svc.SavePiLoginPreset(p); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].saved == nil || events[0].removed != nil {
+		t.Fatalf("save events = %+v, want single saved", events)
+	}
+	if events[0].saved.ContextWindow != 400000 {
+		t.Fatalf("saved contextWindow = %d, want 400000", events[0].saved.ContextWindow)
+	}
+
+	if err := svc.DeletePiLoginPreset(PiLoginPresetKey(p.Provider, p.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].saved != nil || events[1].removed == nil {
+		t.Fatalf("delete events = %+v, want single removed", events)
+	}
+	if events[1].removed.Model != "native-model" || events[1].removed.ContextWindow != 400000 {
+		t.Fatalf("removed = %+v, want old preset values", events[1].removed)
+	}
+
+	// 删除不存在的 key：无 removed 事件。
+	if err := svc.DeletePiLoginPreset(PiLoginPresetKey("native", "ghost")); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("ghost delete produced events = %+v", events)
+	}
+}
+
+// ContextWindow 持久化（json context_window）与负值校验。
+func TestPiLoginPresetContextWindowValidationAndPersistence(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	p := PiLoginPreset{Name: "Daily", Provider: "openai-codex", Model: "native-model", ContextWindow: 256000}
+	if err := svc.SavePiLoginPreset(p); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"context_window": 256000`) {
+		t.Fatalf("context_window not persisted: %s", raw)
+	}
+	loaded := NewConfigService(dir)
+	if err := loaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loaded.ResolvePiLoginPreset(PiLoginPresetKey(p.Provider, p.Name))
+	if err != nil || got.ContextWindow != 256000 {
+		t.Fatalf("reload contextWindow = %v (%v), want 256000", got, err)
+	}
+	if err := svc.SavePiLoginPreset(PiLoginPreset{Name: "Bad", Provider: "p", Model: "m", ContextWindow: -1}); err == nil {
+		t.Fatal("negative contextWindow accepted")
+	}
+}
+
+// 同 provider+model 多预设共享模型级覆写（模型级共享值语义）：保存任一预设的
+// 窗口即全组生效，兄弟预设配置面同步对齐——不出现「B 显示 256000 实际共享
+// 400000」的静默串值（diting F02），也没有「逐个保存被拒」的死锁。
+func TestPiLoginPresetContextWindowSharedAcrossPresets(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewConfigService(dir)
+	if err := svc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SavePiLoginPreset(PiLoginPreset{Name: "A", Provider: "zai", Model: "glm-5.2", ContextWindow: 256000}); err != nil {
+		t.Fatal(err)
+	}
+	// 同模型不同窗口的第二预设：允许保存，且兄弟 A 被对齐到新值（模型级共享值）。
+	if err := svc.SavePiLoginPreset(PiLoginPreset{Name: "B", Provider: "zai", Model: "glm-5.2", ContextWindow: 400000}); err != nil {
+		t.Fatalf("model-scoped window save rejected: %v", err)
+	}
+	presets, _ := svc.GetPiLoginPresets()
+	if got := presets[PiLoginPresetKey("zai", "A")].ContextWindow; got != 400000 {
+		t.Fatalf("sibling A not aligned: %d, want 400000", got)
+	}
+	// 清零同样全组生效。
+	if err := svc.SavePiLoginPreset(PiLoginPreset{Name: "B", Provider: "zai", Model: "glm-5.2"}); err != nil {
+		t.Fatal(err)
+	}
+	presets, _ = svc.GetPiLoginPresets()
+	if got := presets[PiLoginPresetKey("zai", "A")].ContextWindow; got != 0 {
+		t.Fatalf("sibling A not zeroed: %d, want 0", got)
+	}
+	// 不同 model 的预设不受影响。
+	if err := svc.SavePiLoginPreset(PiLoginPreset{Name: "D", Provider: "zai", Model: "glm-5", ContextWindow: 128000}); err != nil {
+		t.Fatal(err)
+	}
+	presets, _ = svc.GetPiLoginPresets()
+	if got := presets[PiLoginPresetKey("zai", "A")].ContextWindow; got != 0 {
+		t.Fatalf("different-model save leaked alignment: %d", got)
+	}
+}

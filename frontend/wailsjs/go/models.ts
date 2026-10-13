@@ -902,6 +902,7 @@ export namespace config {
 	    provider: string;
 	    model: string;
 	    thinking?: string;
+	    context_window?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PiLoginPreset(source);
@@ -913,6 +914,7 @@ export namespace config {
 	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.thinking = source["thinking"];
+	        this.context_window = source["context_window"];
 	    }
 	}
 	export class AppConfig {

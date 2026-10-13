@@ -4,7 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
-## [Unreleased]
+## [1.3.99] - 2026-10-13
+
+### Added
+
+- **Pi 登录预设支持上下文窗口配置（Leader 与 amagi 子 agent 双向生效）**：登录认证模型（Pi 原生 /login 的内置 provider）此前只能配置模型与思考等级，上下文窗口固定用 Pi 内置目录值。新增：①预设表单可选填上下文窗口（tokens，留空/0 = 内置默认，Vue number input 隐式转换兼容）；②窗口是模型级共享值（pi modelOverrides 按 provider/model 寻址）：保存时任一同模型预设的新窗口全组对齐，配置展示与实际生效一致，无静默串值；③保存/删除时经 ConfigService 注入回调（SetPiLoginPresetChangeListener，app 装配注入；回调在写锁外触发且为 reconcile 语义——落盘值以 config 当前权威状态为准，乱序事件自然收敛，不依赖事件接序）把 `providers.<provider>.modelOverrides.<model>.contextWindow` 深合并进 canonical root（~/.pi/agent）的 models.json——保留用户手写 overrides（如 anthropic supportsStrictTools）与兄弟键；清除时连带剪枝空键/空 modelOverrides/空 provider（pi 对空 provider overlay 报 composition error）；④桌面启动链（LaunchPiSession 登录分支，providerSyncMu 互斥）兑底重写；⑤BuildPlan 保持纯读零副作用契约（remote/restart 路径读已落盘目标态）。两级损坏保护：JSON 语法损坏与目标路径嵌套结构类型错误均报错不覆写。写入格式与 Pi 加载闭环实测：pi-1.1.0 ModelRuntime 加载 UpsertPiLoginModelOverride 产物 contextWindow 生效（zai/glm-5.2 400000 ✓）。amagi 子 agent 经 PI_CODING_AGENT_DIR 透传读同一份 models.json 同样生效。同时确认：amagi API 预设模型（amagi-* provider）的子 agent 上下文窗口机制本已支持（models.json 模型定义 + PI_ env 透传 + 全限定 --model），实测 pi 独立进程解析 amagi-glm/glm-5.3 → 400K，无需改动。（含 diting full 审 F01-F06/I02 六项修复：Vue number input 隐式转换、模型级共享值语义、reconcile 防乱序、嵌套损坏保护、空 provider 剪枝、清除路径幂等；删除测试专用探针导出）
 
 ## [1.3.98] - 2026-10-12
 

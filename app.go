@@ -519,6 +519,49 @@ func NewApp(mobileAssets embed.FS) *App {
 	// 多模态实弹探测（契约 v1.2）：预设/服务商保存与配置加载后，对静态知识库
 	// 未知的模型自动实弹探测能力并落缓存，供视觉导出与 pi/omp input 声明。
 	app.wireModalityProber()
+	// 登录预设 contextWindow 同步（pi 登录模型窗口覆写）：预设保存/删除后把
+	// providers.<provider>.modelOverrides.<model>.contextWindow 深合并进 canonical
+	// root（~/.pi/agent）的 models.json——Leader 与 amagi 子 agent（PI_CODING_AGENT_DIR
+	// =canonical root 透传）读同一份生效。**reconcile 语义（非事件值直写）**：事件
+	// 只作触发信号，落盘值以 ConfigService 当前权威状态为准——重读该 provider+model
+	// 的存活预设，无预设 → 清除覆写（恢复内置窗口），有 → 写其窗口（Save 的
+	// 全组对齐保证同模型多预设窗口一致，取首个即权威值）。锁外回调乱序落盘时自然收敛到 config 终值，
+	// 不依赖事件接序。写入与后台 provider sync 共享 providerSyncMu（同一 models.json
+	// 读改写）。失败仅告警不阻断配置保存；启动链（LaunchPiSession 登录分支）另有
+	// 兑底。锁序：回调由 ConfigService 在写锁释放后触发，内部 providerSyncMu →
+	// Config 读锁（GetPiLoginPresets）——与后台 sync 路径同序，不构成环。
+	app.Config.SetPiLoginPresetChangeListener(func(saved, removed *config.PiLoginPreset) {
+		trigger := saved
+		if trigger == nil {
+			trigger = removed
+		}
+		if trigger == nil {
+			return
+		}
+		app.providerSyncMu.Lock()
+		defer app.providerSyncMu.Unlock()
+		// 重读权威状态（不信任事件携带的旧值）：该 provider+model 当前存活预设。
+		presets, err := app.Config.GetPiLoginPresets()
+		if err != nil {
+			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（配置不可读）", err.Error())
+			return
+		}
+		cw := 0 // 无存活预设 → 清除覆写（恢复 Pi 内置目录窗口）
+		for _, p := range presets {
+			if p.Provider == trigger.Provider && p.Model == trigger.Model {
+				cw = p.ContextWindow
+				break // 全组对齐保证一致，取首个即权威值
+			}
+		}
+		agentDir, dirErr := piconfig.StandardAgentDir()
+		if dirErr != nil {
+			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（canonical root 不可用）", dirErr.Error())
+			return
+		}
+		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw); err != nil {
+			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
+		}
+	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
 	app.GitAssist = gitassist.New(app.Config, app.Settings, func(provider string) string {
@@ -3483,6 +3526,21 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// 同时覆盖 embedded（BuildEnv）与 external（Launcher.LaunchPi）两条路径。
 		for key, value := range piLoginEnvOverrides(login.AgentDir) {
 			envOverrides[key] = value
+		}
+		// 登录预设 contextWindow 覆写：Pi 登录模型没有预设参数面，窗口只能经
+		// models.json 的 modelOverrides 注入（providers.<provider>.modelOverrides
+		// .<model>.contextWindow，深合并保留兄弟配置）。写 canonical root 后，
+		// Leader 与 amagi 子 agent（PI_CODING_AGENT_DIR 透传）读同一份生效。
+		// 与后台 provider sync 互斥（同一 models.json 读改写）；失败仅告警不阻断
+		//（回退 Pi 内置目录窗口，启动语义不受影响）。
+		a.providerSyncMu.Lock()
+		overrideErr := launcher.UpsertPiLoginModelOverride(login.AgentDir, loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow)
+		a.providerSyncMu.Unlock()
+		if overrideErr != nil {
+			a.Log.Warn("pi", "写入登录预设 contextWindow 覆写失败（回退 Pi 内置窗口）", overrideErr.Error())
+		} else if loginPreset.ContextWindow > 0 {
+			a.Log.Info("pi", "登录预设 contextWindow 覆写已写入", fmt.Sprintf("provider=%s model=%s contextWindow=%d -> %s/models.json",
+				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, login.AgentDir))
 		}
 	}
 	if loginPreset == nil && providerID != "" {
