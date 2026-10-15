@@ -70,7 +70,11 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
 }
 
 // PinProxyEnvironment re-anchors proxy variables after login-shell profiles.
-// WSL's host loopback reachability is not assumed: fail before spawning there.
+// WSL sessions are only admitted under WSL2 mirrored networking: NAT (the
+// default) leaves the host loopback unreachable from the distro, so the
+// injected 127.0.0.1 entry would point at the distro itself. Under mirrored
+// mode localhost is bidirectional and the WSLENV-forwarded proxy vars reach
+// the Windows-side entry as-is.
 func PinProxyEnvironment(spec platform.ResolvedLaunchSpec) (platform.ResolvedLaunchSpec, error) {
 	active := false
 	for _, entry := range spec.Env.Variables {
@@ -83,7 +87,12 @@ func PinProxyEnvironment(spec platform.ResolvedLaunchSpec) (platform.ResolvedLau
 		return spec, nil
 	}
 	if spec.BootstrapMode == platform.BootstrapWSL {
-		return spec, errors.New("AI 代理分流暂不支持 WSL 的宿主回环转发，请停用分流后启动 WSL 会话")
+		// mirrored 下回环入口对 distro 可达，spec 照常携带统一分流入口（代理键
+		// 经 WSLENV 转发跨界）；NAT/未知模式维持拒绝（空串按 NAT 对待，fail-safe）。
+		if platform.WSLNetworkingMode(spec.Env.Variables) != "mirrored" {
+			return spec, errors.New(`AI 代理分流的统一入口监听宿主回环（127.0.0.1），当前 WSL 为 NAT 网络模式，发行版内不可达。可在 %USERPROFILE%\.wslconfig 的 [wsl2] 段设置 networkingMode=mirrored，执行 wsl --shutdown 重启 WSL 后重试；或停用 AI 代理分流后启动 WSL 会话`)
+		}
+		return spec, nil
 	}
 	if spec.Shell == nil || (spec.BootstrapMode != platform.BootstrapShellInline && spec.BootstrapMode != platform.BootstrapShellAttach) {
 		return spec, nil

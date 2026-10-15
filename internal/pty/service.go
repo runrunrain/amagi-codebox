@@ -333,8 +333,15 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 	opts := []conpty.ConPtyOption{
 		conpty.ConPtyDimensions(cols, rows),
 	}
-	if workDir != "" {
-		opts = append(opts, conpty.ConPtyWorkDir(workDir))
+	// B4（真机定谳）：ConPTY 的 CreateProcess lpCurrentDirectory 只接受
+	// Windows 形态目录；Linux 形态 workDir（~/...、/home/...、/mnt/x/...）
+	// 一律 err=267 ERROR_DIRECTORY——按文档推荐填 ext4 路径的 WSL 会话必现
+	// 启动失败（PowerShell P/Invoke CreateProcessW 直测三种 Linux 形态全
+	// 267，对照盘符路径成功）。wsl.exe --cd 本身兼容两种形态（命令拼装已
+	// 把 workDir 交给 --cd），Linux 形态时工作目录由它独自承担，不传
+	// ConPtyWorkDir。
+	if wd := conPtyWorkDirFor(spec, workDir); wd != "" {
+		opts = append(opts, conpty.ConPtyWorkDir(wd))
 	}
 	if spec.Env.Variables != nil {
 		opts = append(opts, conpty.ConPtyEnv(spec.Env.Variables))
@@ -939,6 +946,15 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 	}
 	parts = append(parts, "--", "bash", "-lic")
 
+	// A2（WSL Pi 登录）：StartupCommand 非空时它是权威 bash payload——上游
+	//（pi_login_launch.go 的 WSL 重锚）在载荷内嵌凭据惰性同步片段与
+	// env -u 前缀，替代缺省的 CLI 拼装。resolver 的 WSL 分支不产
+	// StartupCommand，该覆盖面当前只有登录重锚一个生产写入方。
+	if strings.TrimSpace(spec.StartupCommand) != "" {
+		parts = append(parts, windowsQuoteArg(spec.StartupCommand))
+		return strings.Join(parts, " ")
+	}
+
 	payload := buildWSLInnerCommand(spec.CLI.Path, spec.CLI.Args)
 	parts = append(parts, windowsQuoteArg(payload))
 	return strings.Join(parts, " ")
@@ -964,6 +980,29 @@ func buildWSLInnerCommand(cliName string, args []string) string {
 // quotes via the standard '\'' idiom. This neutralises every bash metacharacter.
 func bashSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// isLinuxStylePath 报告 workDir 是否为 Linux 形态路径：以 / 开头的绝对路径、
+// 以 ~/ 开头的 Home 相对路径，或裸 ~（m-6：wsl.exe --cd ~ 是映射 Linux
+// home 的合法形态，但 CreateProcess 同样无法把它当 lpCurrentDirectory 消费
+// ——err=267 同型）。与 workDirMapsToDrvFS 的形态判定互补：那里识别「落在
+// DrvFS 上的两类形态」，这里识别「CreateProcess 无法消费的 Linux 形态」
+// （B4：直传 lpCurrentDirectory 必得 err=267）。~user/ 别家 Home 形态为
+// 明确声明的范围外。
+func isLinuxStylePath(workDir string) bool {
+	w := strings.TrimSpace(workDir)
+	return strings.HasPrefix(w, "/") || strings.HasPrefix(w, "~/") || w == "~"
+}
+
+// conPtyWorkDirFor 返回应传给 ConPtyWorkDir 的工作目录（空串＝不传）：
+// WSL 会话 + Linux 形态 workDir 时不传——CreateProcess 的
+// lpCurrentDirectory 无法消费该形态（B4，err=267），工作目录由
+// wsl.exe --cd 独自承担；其余形态（盘符路径 / UNC）维持原语义。
+func conPtyWorkDirFor(spec platform.ResolvedLaunchSpec, workDir string) string {
+	if spec.BootstrapMode == platform.BootstrapWSL && isLinuxStylePath(workDir) {
+		return ""
+	}
+	return workDir
 }
 
 // workDirMapsToDrvFS reports whether workDir lands on a DrvFS/9P mount inside

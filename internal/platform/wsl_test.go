@@ -72,7 +72,9 @@ func TestDefaultWSLDistroReturnsFirstUsable(t *testing.T) {
 }
 
 func TestShouldForwardToWSL(t *testing.T) {
-	forward := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "CLAUDE_CODE_EFFORT_LEVEL", "PI_CODING_AGENT_DIR", "HTTPS_PROXY", "OPENCODE_CONFIG"}
+	// m-5：ALL_PROXY/all_proxy 与 HTTP(S)_PROXY/NO_PROXY 同入精确白名单
+	//（socks 类 scheme 与仅认 ALL_PROXY 的实现；aiproxy 分流注入携带两键）。
+	forward := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "CLAUDE_CODE_EFFORT_LEVEL", "PI_CODING_AGENT_DIR", "HTTPS_PROXY", "ALL_PROXY", "all_proxy", "OPENCODE_CONFIG"}
 	for _, k := range forward {
 		if !shouldForwardToWSL(k) {
 			t.Errorf("expected %q to be forwarded", k)
@@ -454,5 +456,151 @@ func TestWindowsResolverUnresolvableRequestedShellStaysOutOfWSL(t *testing.T) {
 	}
 	if specNoShell.BootstrapMode != BootstrapWSL {
 		t.Fatalf("no-shell bootstrap = %q, want %q (WSL stays the platform default)", specNoShell.BootstrapMode, BootstrapWSL)
+	}
+}
+
+// writeWSLConfig writes a .wslconfig into dir (helper for WSLNetworkingMode
+// tests; distinct temp dirs double as distinct cache keys).
+func writeWSLConfig(t *testing.T, dir, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, ".wslconfig"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseWSLConfigNetworkingMode(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"mirrored", "[wsl2]\nnetworkingMode=mirrored\n", "mirrored"},
+		{"nat", "[wsl2]\nnetworkingMode=nat\n", "nat"},
+		{"case-insensitive key and value", "[wsl2]\nNETWORKINGMODE = Mirrored\n", "mirrored"},
+		{"spaces around equals", "[wsl2]\n networkingMode = mirrored \n", "mirrored"},
+		{"hash full-line comment", "# wsl config\n[wsl2]\nnetworkingMode=mirrored\n", "mirrored"},
+		{"semicolon full-line comment", "; comment\n[wsl2]\nnetworkingMode=nat\n", "nat"},
+		{"inline trailing comment", "[wsl2]\nnetworkingMode=mirrored # loopback shared with host\n", "mirrored"},
+		{"section case-insensitive", "[WSL2]\nnetworkingMode=mirrored\n", "mirrored"},
+		{"key outside any section ignored", "networkingMode=mirrored\n[wsl2]\n", ""},
+		{"other section ignored", "[automount]\nnetworkingMode=mirrored\n", ""},
+		{"no key", "[wsl2]\nmemory=4GB\nprocessors=2\n", ""},
+		{"unknown value fails safe", "[wsl2]\nnetworkingMode=bridged\n", ""},
+		{"empty value fails safe", "[wsl2]\nnetworkingMode=\n", ""},
+		{"first key wins", "[wsl2]\nnetworkingMode=nat\nnetworkingMode=mirrored\n", "nat"},
+		{"second wsl2 section ignored after first key", "[wsl2]\nmemory=4GB\n[wsl2]\nnetworkingMode=mirrored\n", "mirrored"},
+		{"garbage lines tolerated", "[wsl2]\nnot-a-key-value\nnetworkingMode=mirrored\n", "mirrored"},
+		{"crlf line endings", "[wsl2]\r\nnetworkingMode=mirrored\r\n", "mirrored"},
+		{"empty content", "", ""},
+	}
+	for _, tc := range cases {
+		if got := parseWSLConfigNetworkingMode(tc.content); got != tc.want {
+			t.Errorf("%s: parse = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestWSLNetworkingModeFromEnv(t *testing.T) {
+	// mirrored via USERPROFILE (the key wsl.exe itself uses).
+	dir := t.TempDir()
+	writeWSLConfig(t, dir, "[wsl2]\nnetworkingMode=mirrored\n")
+	if got := WSLNetworkingMode([]string{"USERPROFILE=" + dir}); got != "mirrored" {
+		t.Fatalf("USERPROFILE probe = %q, want mirrored", got)
+	}
+
+	// HOME fallback when USERPROFILE is absent.
+	dirHome := t.TempDir()
+	writeWSLConfig(t, dirHome, "[wsl2]\nnetworkingMode=nat\n")
+	if got := WSLNetworkingMode([]string{"HOME=" + dirHome}); got != "nat" {
+		t.Fatalf("HOME probe = %q, want nat", got)
+	}
+
+	// USERPROFILE wins over HOME (faithful to wsl.exe's profile resolution).
+	if got := WSLNetworkingMode([]string{"USERPROFILE=" + dir, "HOME=" + dirHome}); got != "mirrored" {
+		t.Fatalf("USERPROFILE must take precedence: %q", got)
+	}
+
+	// Missing file: "" (fail-safe as NAT).
+	if got := WSLNetworkingMode([]string{"USERPROFILE=" + t.TempDir()}); got != "" {
+		t.Fatalf("missing .wslconfig = %q, want \"\"", got)
+	}
+
+	// UTF-16LE with BOM (Notepad legacy save): decode path must still parse.
+	dir16 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir16, ".wslconfig"), encodeUTF16LEWithBOM("[wsl2]\r\nnetworkingMode=mirrored\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := WSLNetworkingMode([]string{"USERPROFILE=" + dir16}); got != "mirrored" {
+		t.Fatalf("UTF-16 probe = %q, want mirrored", got)
+	}
+
+	// UTF-8 BOM.
+	dir8 := t.TempDir()
+	bom := append([]byte{0xEF, 0xBB, 0xBF}, []byte("[wsl2]\nnetworkingMode=nat\n")...)
+	if err := os.WriteFile(filepath.Join(dir8, ".wslconfig"), bom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := WSLNetworkingMode([]string{"USERPROFILE=" + dir8}); got != "nat" {
+		t.Fatalf("UTF-8 BOM probe = %q, want nat", got)
+	}
+}
+
+// TestWSLNetworkingModeFreshRead pins the m-4 semantics: every call reads the
+// .wslconfig directly (no process-level cache) — after the user edits the
+// file and runs `wsl --shutdown`, a retry in the SAME process must observe the
+// new mode. Distinct homes probe their own files independently.
+func TestWSLNetworkingModeFreshRead(t *testing.T) {
+	dir := t.TempDir()
+	writeWSLConfig(t, dir, "[wsl2]\nnetworkingMode=mirrored\n")
+	env := []string{"USERPROFILE=" + dir}
+	if got := WSLNetworkingMode(env); got != "mirrored" {
+		t.Fatalf("first probe = %q, want mirrored", got)
+	}
+	// Rewrite the file（用户按指引改配置 + wsl --shutdown）：下一次调用必须
+	// 读到新值——旧进程级缓存会让拒绝文案的重试指引同进程失效（m-4）。
+	writeWSLConfig(t, dir, "[wsl2]\nnetworkingMode=nat\n")
+	if got := WSLNetworkingMode(env); got != "nat" {
+		t.Fatalf("post-edit probe = %q, want nat (fresh read, no cache)", got)
+	}
+	// A different home (aiproxy/envcheck tests use distinct temp dirs) probes its own file.
+	other := t.TempDir()
+	writeWSLConfig(t, other, "[wsl2]\nnetworkingMode=mirrored\n")
+	if got := WSLNetworkingMode([]string{"USERPROFILE=" + other}); got != "mirrored" {
+		t.Fatalf("second home probe = %q, want mirrored", got)
+	}
+}
+
+// TestWSLFileMTime pins the M-1 freshness probe: `stat -c %Y` seconds inside
+// the distro, tolerant output decoding, and fail-as-false for missing paths /
+// probe failures / unparsable output (callers must treat false as
+// "indeterminable", never as 0).
+func TestWSLFileMTime(t *testing.T) {
+	orig := wslScriptRunner
+	t.Cleanup(func() { wslScriptRunner = orig })
+
+	wslScriptRunner = func(_, script string) ([]byte, error) {
+		if strings.Contains(script, "/home/u/.pi/agent/auth.json") {
+			return []byte("1792992000\r\n"), nil
+		}
+		return nil, errors.New("stat failed")
+	}
+	if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); !ok || sec != 1792992000 {
+		t.Fatalf("WSLFileMTime = (%d, %v), want (1792992000, true)", sec, ok)
+	}
+	// 路径不存在（stat 非零退出）→ ok=false。
+	if _, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/missing.json"); ok {
+		t.Fatal("missing path must report ok=false")
+	}
+	// 输出不可解析 → ok=false，不得当作 0 值。
+	wslScriptRunner = func(_, _ string) ([]byte, error) { return []byte("not-a-number"), nil }
+	if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
+		t.Fatalf("unparsable output = (%d, %v), want (0, false)", sec, ok)
+	}
+	// 非 Linux 绝对路径 / 空 distro → ok=false。
+	if _, ok := WSLFileMTime("Ubuntu", "relative/path"); ok {
+		t.Fatal("relative path must report ok=false")
+	}
+	if _, ok := WSLFileMTime("", "/home/u/x"); ok {
+		t.Fatal("empty distro must report ok=false")
 	}
 }

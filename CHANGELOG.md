@@ -4,6 +4,19 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.107] - 2026-10-16
+
+### Added
+
+- **WSL2 mirrored 网络模式下 AI 代理分流对 WSL 会话放行（摩擦治理批次二，主上裁定借 mirrored 一并解决回环跨界①组）**：新增 platform.WSLNetworkingMode 探测（每次直读 %USERPROFILE%\.wslconfig 的 [wsl2] networkingMode，INI 容错含 BOM/注释/大小写；不设进程级缓存——缓存会让拒绝文案「wsl --shutdown 后重试」同进程失效；空串按 NAT fail-safe）；mirrored 模式下 localhost 双向可达，aiproxy 闸门放行 WSL 会话（代理键经 WSLENV 原样跨界，ALL_PROXY/all_proxy 补入转发白名单）；NAT/未知维持拒绝但文案改为可操作指引（.wslconfig 路径 + networkingMode=mirrored + wsl --shutdown）；环境检测页新增网络模式三态信息条目（severity-only 不影响 AllOK）；前端提示与 ai-proxy-routing 契约同步更新。真机验证：本机 .wslconfig=mirrored，闸门实测 admitted。
+
+### Changed
+
+- **WSL 会话可用 Pi 订阅登录模型（主上裁定推翻「拒绝而非复制」旧契约）**：桌面与 remote/v1 两处 WSL 拒绝闸门解除，Pi OAuth 登录预设可启动 WSL 会话，认证目录锚定分叉——非 WSL 会话维持 canonical Windows Home 锚定，WSL 会话锚定 distro 内 ~/.pi/agent（PI_CODING_AGENT_DIR 剥离 + 载荷 env -u 重锚，R2/R3 语义保留）；启动时惰性双向凭据同步（launcher.SyncWSLPiLoginAuth）：SHA-256 内容比对 + mtime 新陈判定（2s 容差）——Windows 新→前向覆盖 distro，distro 新→回同步 Windows 侧（UNC 原子写+chmod 600，保 WSL 内轮转出的新 token 不被旧副本摧毁），秒差并列→保守取 distro 侧不动，mtime 探测失败→两侧零写入降级；remote 载荷内嵌同步片段与 Go 侧同带 2s 容差（stat 秒差 >2 才前向，歧义带不覆盖消费侧）；契约文档 pi-login-providers.md 更新为「同步凭据副本 + 新者为准」。真机 e2e：首跑 Copied（distro 陈旧副本被刷新）、二跑 Fresh（收敛幂等）。
+- **Linux 形态工作目录的 WSL 会话不再启动失败（B4，已真机定谳）**：ConPTY CreateProcess 对 Linux 形态 lpCurrentDirectory（~/、/home/...、/mnt/...）一律 err=267 ERROR_DIRECTORY——按文档推荐「仓库放 ext4、工作目录填 Linux 路径」的会话必现启动失败。修复：WSL 会话且 workDir 为 Linux 形态（/、~/ 前缀含裸 ~）时不传 ConPtyWorkDir，工作目录由 wsl.exe --cd 独自承担（其本身兼容两种形态）；盘符/UNC 形态语义不变。真机 e2e：~/ workDir 真实 ConPTY 启动+echo 回读 PASS。
+
+（批次二经 diting 两轮快审：第一轮 FIX（1 Major 双向同步方向 + 5 Minor）修复轮全落地；增量复审 PASS_WITH_MINOR，q2-1 载荷容差由 Leader 直修；证据链 agent-outputs/workflow/wsl-session-friction/）
+
 ## [1.3.106] - 2026-10-16
 
 ### Fixed

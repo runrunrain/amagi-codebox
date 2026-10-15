@@ -286,6 +286,7 @@ func (s *Service) finishToolCheck(status *CheckStatus, err error) (*CheckStatus,
 	s.populateCanInstall(status)
 	s.enrichWithLatestVersion(status)
 	s.appendWSLHybridArchWarning(status)
+	s.appendWSLNetworkingModeInfo(status)
 	s.cacheToolStatus(status)
 	return status, nil
 }

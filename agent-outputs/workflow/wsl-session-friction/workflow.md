@@ -29,8 +29,8 @@
 
 | Phase | 目标 | 切片 | Agent | 依赖 | 输入 artifact | 输出 artifact | 验收 | 状态 |
 |-------|------|------|-------|------|---------------|---------------|------|------|
-| P1 快赢止血 | T4+T12+T13+T6 | 单任务纵向切片（共享 wsl.go/wsl_agent_config.go，不拆） | luban | git 主树干净 | 两轮证据报告 | 实现+测试+变更说明 | go build+相关包 test 绿；T4 有配置落 distro 或转发面证据 | 待派 |
-| P2 已裁决项 | mirrored 放行 + A2 订阅 | P2-T1 mirrored（aiproxy/platform/envcheck/前端）；P2-T2 A2（app.go 闸门/wslsetup 同步/文档） | luban ×2 | P1 完成推送（app.go 冲突规避：P1 不碰 app.go 闸门区） | 两轮证据 | 实现+测试 | P2-T1 mirrored 放行逻辑+测试；P2-T2 闸门解除+同步+契约文档 | 待P1 |
+| P1 快赢止血 | T4+T12+T13+T6 | 单任务纵向切片（共享 wsl.go/wsl_agent_config.go，不拆） | luban | git 主树干净 | 两轮证据报告 | 实现+测试+变更说明 | go build+相关包 test 绿；T4 有配置落 distro 或转发面证据 | **完成**（commit 16f707d 已推送；验收 2026-10-16，Leader 直修一处注释引号破坏） |
+| P2 已裁决项 | mirrored 放行 + A2 订阅 + B4 小修 | P2-T1 mirrored（aiproxy/platform/envcheck/前端）；P2-T2 A2（app.go 闸门/wslsetup 同步/文档）；B4 并入（主上无异议） | luban ×2 | P1 完成推送 ✓ | 两轮证据 | 实现+测试 | P2-T1 mirrored 放行逻辑+测试；P2-T2 闸门解除+同步+契约文档；B4 Linux 形态 workDir 跳过 ConPtyWorkDir | **完成**（两轮 qreview：FIX 六条修复轮 + PASS_WITH_MINOR q2-1 Leader 直修；待提交） |
 | P3 体系工程 | 配置供给体系设计→落地 | P3-T1 fuxi 设计；P3-T2..n 按设计拆 | fuxi→luban | P2 完成推送；fuxi 设计经主上审定 | 两轮证据 T1/T2/T3/T5/T7/T8 | 设计文档→实现 | 设计文档主上审定；落地按设计验收 | 待P2 |
 | P4 实证补全 | B4 实证→T11 适配；B5 distro 可选；advisory UI 通道 | P4-T1 B4 真机实证（Leader/luban）；P4-T2 B5；P4-T3 advisory UI | luban | P4-T1 影响 T11 范围；P4-T2/T3 独立可提前 | 证据报告 B4/T11/B5/C1-C3 | 实证记录+实现 | B4 定谳记录；B5 可选+缓存刷新；advisory 通道有 UI 证据 | 待启动（P4-T2/T3 可与 P2 并行） |
 

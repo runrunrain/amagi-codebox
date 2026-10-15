@@ -132,7 +132,7 @@ func TestPiLoginBuildPlanAndStableRestart(t *testing.T) {
 }
 
 func TestPiLoginDesktopRejectsForeignCLIsAndStaleSelection(t *testing.T) {
-	isolatedHome(t)
+	home := isolatedHome(t)
 	app := newTestApp(t)
 	preset, key, auth := piLoginFixture(t, app.Config)
 	source := config.PiLoginProviderID(preset.Provider)
@@ -147,13 +147,17 @@ func TestPiLoginDesktopRejectsForeignCLIsAndStaleSelection(t *testing.T) {
 			t.Fatal("foreign CLI accepted login")
 		}
 	}
-	if login, err := resolvePiLoginLaunch(app.Config, key, source, true); err == nil || login != nil {
-		t.Fatal("WSL host credential downgrade")
+	// A2 解除（主上裁定 2026-10-16）：WSL 不再拒绝——登录解析始终对
+	// Windows 侧源校验并返回 canonical 目录（同步源/非 WSL 锚定面）。
+	if login, err := resolvePiLoginLaunch(app.Config, key, source); err != nil || login == nil {
+		t.Fatalf("WSL login selection rejected: err=%v login=%v", err, login)
+	} else if login.AgentDir != filepath.Join(home, ".pi", "agent") {
+		t.Fatalf("WSL login agent dir = %q", login.AgentDir)
 	}
-	if login, err := resolvePiLoginLaunch(app.Config, "native-model", source, false); err == nil || login != nil {
+	if login, err := resolvePiLoginLaunch(app.Config, "native-model", source); err == nil || login != nil {
 		t.Fatal("login without dedicated preset allowed")
 	}
-	if login, err := resolvePiLoginLaunch(app.Config, key, "ordinary-provider", false); err == nil || login != nil {
+	if login, err := resolvePiLoginLaunch(app.Config, key, "ordinary-provider"); err == nil || login != nil {
 		t.Fatal("mismatched source allowed")
 	}
 	if err := os.Remove(auth); err != nil {

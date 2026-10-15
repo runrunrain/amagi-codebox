@@ -1,7 +1,10 @@
 package platform
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -207,6 +210,123 @@ func resetWSLDistroCacheForTest() {
 	wslDistroCache = nil
 }
 
+// --- WSL2 网络模式探测（.wslconfig，只读） ---
+//
+// AI 代理分流、Headroom、系统代理的统一入口都监听宿主回环（127.0.0.1）。WSL2
+// 默认 NAT 模式下 distro 内的 127.0.0.1 指向发行版自身，宿主回环不可达；
+// mirrored 模式（%USERPROFILE%\.wslconfig 的 [wsl2] 段 networkingMode=mirrored）
+// 下 localhost 双向互通，回环入口对 WSL 会话自然可用。本节只读配置文件，不
+// fork wsl.exe；纯文件解析使其在任何宿主 OS 上可单测（生产调用点——aiproxy
+// 闸门与 envcheck 卡片——仅存在于 Windows 的 WSL 路径，非 Windows 宿主天然
+// 不可达）。
+
+// WSLNetworkingMode returns the WSL2 networking mode declared in the Windows
+// user's .wslconfig: "mirrored", "nat", or "" (no file, no [wsl2]
+// networkingMode key, or unparsable content). Callers must treat "" like
+// "nat" — WSL's own default — so unknown states fail safe, the same
+// assumption the AI-proxy WSL gate has always made.
+//
+// The Windows home is resolved from env (USERPROFILE first — the key wsl.exe
+// itself uses to locate .wslconfig — then HOME), falling back to this
+// process's home. 每次调用直读 .wslconfig（m-4：不设进程级缓存）——文件
+// 极小、调用频率仅为会话启动/envcheck，直读成本可忽略；而缓存会让拒绝
+// 文案「执行 wsl --shutdown 后重试」在同进程内失效（用户改完配置重试仍
+// 被旧缓存拒绝）。测试以独立临时 HOME 隔离，不依赖缓存可重置性。
+func WSLNetworkingMode(env []string) string {
+	home := strings.TrimSpace(envValue(env, "USERPROFILE"))
+	if home == "" {
+		home = strings.TrimSpace(envValue(env, "HOME"))
+	}
+	if home == "" {
+		var err error
+		if home, err = os.UserHomeDir(); err != nil {
+			return ""
+		}
+	}
+	return probeWSLNetworkingMode(home)
+}
+
+// WSLFileMTime 返回 distro 内指定绝对 Linux 路径的 mtime（epoch 秒，经
+// wsl.exe 内 `stat -c %Y`——distro 侧 ext4 时间戳的权威读法，9P/UNC stat
+// 的翻译语义不可靠）。路径不存在、非 Windows 宿主或探测失败返回
+// ok=false；调用方需按「时间戳不可判」保守处理，不得把 false 当作 0 值
+// 参与新陈比较（A2 凭据双向同步 M-1 的判据画）。
+func WSLFileMTime(distro, linuxPath string) (int64, bool) {
+	distro = strings.TrimSpace(distro)
+	if distro == "" || runtime.GOOS != "windows" || !strings.HasPrefix(linuxPath, "/") {
+		return 0, false
+	}
+	out, err := wslScriptRunner(distro, "stat -c %Y "+wslShSingleQuote(linuxPath))
+	if err != nil {
+		return 0, false
+	}
+	sec, perr := strconv.ParseInt(strings.TrimSpace(strings.Trim(decodeWSLListOutput(out), "\r\x00 ")), 10, 64)
+	if perr != nil || sec < 0 {
+		return 0, false
+	}
+	return sec, true
+}
+
+// probeWSLNetworkingMode reads <home>\.wslconfig and parses the [wsl2]
+// networkingMode key. Any read error returns "" (fail-safe as NAT).
+func probeWSLNetworkingMode(home string) string {
+	data, err := os.ReadFile(filepath.Join(home, ".wslconfig"))
+	if err != nil {
+		return ""
+	}
+	// .wslconfig 由编辑器保存，可能是带 BOM 的 UTF-8 或 UTF-16（旧版记事本）；
+	// 复用 wsl.exe 输出的宽容解码（同包、decodeWSLListOutput 已有单测覆盖）。
+	return parseWSLConfigNetworkingMode(decodeWSLListOutput(data))
+}
+
+// parseWSLConfigNetworkingMode parses .wslconfig INI content for the [wsl2]
+// section's networkingMode key:
+//   - sections match case-insensitively ([wsl2] / [WSL2]); keys before any
+//     section header or inside other sections are ignored;
+//   - full-line comments start with '#' or ';'; values may carry trailing
+//     inline '#' / ';' comments, which are stripped;
+//   - key matching is case-insensitive and tolerates spaces around '=';
+//   - only "nat" and "mirrored" (case-insensitive) are recognized — any other
+//     value (typos, experimental modes) returns "" so callers fail safe as
+//     NAT;
+//   - the first [wsl2] networkingMode key wins (INI first-wins convention;
+//     later duplicates are ignored).
+func parseWSLConfigNetworkingMode(content string) string {
+	inSection := false
+	for _, rawLine := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || line[0] == '#' || line[0] == ';' {
+			continue
+		}
+		if line[0] == '[' {
+			section := ""
+			if end := strings.IndexByte(line, ']'); end > 0 {
+				section = strings.TrimSpace(line[1:end])
+			}
+			inSection = strings.EqualFold(section, "wsl2")
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "networkingMode") {
+			continue
+		}
+		if idx := strings.IndexAny(value, "#;"); idx >= 0 {
+			value = value[:idx]
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "mirrored":
+			return "mirrored"
+		case "nat":
+			return "nat"
+		}
+		return ""
+	}
+	return ""
+}
+
 // decodeWSLListOutput decodes the `wsl.exe -l -q` output, which is UTF-16 with a
 // BOM on Windows. It handles UTF-16 LE/BE (with BOM), a UTF-8 BOM, and falls
 // back to a NUL-byte heuristic (UTF-16LE without BOM) before treating the bytes
@@ -274,6 +394,9 @@ var wslENVForwardPrefixes = []string{
 // OPENCODE_CONFIG_CONTENT). The env-content carrier OPENCODE_CONFIG_CONTENT
 // has no OPENCODE_ prefix in the whitelist and never crosses the boundary,
 // which is exactly why the path carrier exists (evidence T4).
+// ALL_PROXY/all_proxy（m-5）：socks 类 scheme 与仅认 ALL_PROXY 的实现依赖它；
+// aiproxy 分流注入同时携带两键，缺它则 distro 内只见 HTTP(S)_PROXY/NO_PROXY。
+// 其值是 URL，经 ShouldForwardToWSL 命中后路径值剥离判据自动生效。
 var wslENVForwardExact = map[string]struct{}{
 	"HTTP_PROXY":      {},
 	"HTTPS_PROXY":     {},
@@ -281,6 +404,8 @@ var wslENVForwardExact = map[string]struct{}{
 	"http_proxy":      {},
 	"https_proxy":     {},
 	"no_proxy":        {},
+	"ALL_PROXY":       {},
+	"all_proxy":       {},
 	"OPENCODE_CONFIG": {},
 }
 

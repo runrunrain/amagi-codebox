@@ -260,6 +260,9 @@ func TestProxyVariablesPinnedAfterShellProfiles(t *testing.T) {
 		t.Fatal("login shell could override chosen proxy", err)
 	}
 	spec.BootstrapMode = platform.BootstrapWSL
+	// 钉住 USERPROFILE 到无 .wslconfig 的临时目录：宿主真机可能已切 mirrored，
+	// 闸门判定必须与宿主实际配置解耦（WSLNetworkingMode 按 home 缓存，临时目录独立探针）。
+	spec.Env.Variables = append(spec.Env.Variables, "USERPROFILE="+t.TempDir())
 	if _, err = PinProxyEnvironment(spec); err == nil {
 		t.Fatal("assumed WSL host loopback reachability")
 	}

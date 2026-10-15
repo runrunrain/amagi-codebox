@@ -3463,8 +3463,7 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 // 不生成托管配置或注入认证 token。启动时再检查登录来源，退出登录不回退。
 func (a *App) LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
 	loginPresetRef := modelName
-	login, loginErr := resolvePiLoginLaunch(a.Config, modelName, providerID,
-		platform.EmbeddedLaunchTargetsWSL(string(embeddedDefaultLaunchMode(mode)), shellPath, nil))
+	login, loginErr := resolvePiLoginLaunch(a.Config, modelName, providerID)
 	if loginErr != nil {
 		return "", loginErr
 	}
@@ -3570,6 +3569,10 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// R2：显式钉住 canonical agent root（而非删除 PI_CODING_AGENT_DIR），
 		// 自定义 HOME/USERPROFILE 无法再把 Pi 导向另一份 auth.json。该 overrides
 		// 同时覆盖 embedded（BuildEnv）与 external（Launcher.LaunchPi）两条路径。
+		// A2 解除（主上裁定 2026-10-16）：WSL spec 生成后由
+		// piLoginWSLReAnchorSpec 统一剥离该钉定（Windows 路径跨界是历史垃圾
+		// 目录事故形态），不在 env 构建期分叉——保持镜像/spec 判定不一致时的
+		// 语义确定性（spec 为唯一权威）。
 		for key, value := range piLoginEnvOverrides(login.AgentDir) {
 			envOverrides[key] = value
 		}
@@ -3735,11 +3738,22 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 
 		if loginPreset != nil {
 			if spec.BootstrapMode == platform.BootstrapWSL {
-				return "", fmt.Errorf("Pi host login credentials are not available in WSL")
+				// A2 闸门解除（主上裁定 2026-10-16，推翻 docs/developer/
+				// pi-login-providers.md 「WSL 拒绝」旧契约）：WSL 会话消费 distro
+				// 内凭据副本。放行前先做惰性同步校验（Windows 侧 auth.json →
+				// distro 单文件；失败降级/报错语义见 syncWSLPiLoginAuthAtLaunch），
+				// 再以 WSL 锚定变体重锚（载荷内嵌同步片段 + env -u，remote 链路
+				// 共用同一载荷语义）。
+				if err := a.syncWSLPiLoginAuthAtLaunch(wslDistro); err != nil {
+					a.Sessions.MarkFailed(sess.ID, err.Error())
+					return "", err
+				}
+				spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
+			} else {
+				// R3：POSIX shell startup 文件在 CLI 之前运行，可能重导出覆盖变量；
+				// 在最终执行边界重新锚定 canonical root 并剥离凭据。
+				spec = piLoginReAnchorSpec(spec, login.AgentDir)
 			}
-			// R3：POSIX shell startup 文件在 CLI 之前运行，可能重导出覆盖变量；
-			// 在最终执行边界重新锚定 canonical root 并剥离凭据。
-			spec = piLoginReAnchorSpec(spec, login.AgentDir)
 		}
 		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
@@ -3807,6 +3821,56 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	}(sess.ID)
 
 	return sess.ID, nil
+}
+
+// syncWSLPiLoginAuthAtLaunch 是 WSL Pi 登录会话的启动闸门（A2 主上裁定
+// 2026-10-16）：放行前先做惰性同步校验。语义：
+//   - 同步成功（Copied/Fresh）→ 放行；
+//   - 同步失败但 distro 侧已有（可能陈旧的）auth.json 副本 → 记 WARN 降级
+//     放行（旧凭据可能仍可用）；
+//   - 同步失败且 distro 侧无副本（或状态不可探明）→ 中文报错拒绝启动
+//     （C5：保留错误路径文案中文化）；
+//   - Windows 侧 auth.json 缺失 → 登录失效语义（正常路径下
+//     resolvePiLoginLaunch→RequirePiLogin 已先行拒绝，此处只兑容启动中途
+//     退出登录的极端时序）。
+//
+// distro 为空时重深一次 DefaultWSLDistro（B6 类镜像/spec 分叉兑底）；
+// 同步经 syncWSLPiLoginAuthFn 接缝满入，单测可替换。
+func (a *App) syncWSLPiLoginAuthAtLaunch(distro string) error {
+	if strings.TrimSpace(distro) == "" {
+		distro = platform.DefaultWSLDistro(nil)
+	}
+	outcome, err := syncWSLPiLoginAuthFn(distro)
+	switch outcome {
+	case launcher.SyncWSLPiLoginAuthCopied:
+		a.Log.Info("pi", "已同步 Pi 登录凭据到 WSL", fmt.Sprintf("distro=%s", distro))
+		return nil
+	case launcher.SyncWSLPiLoginAuthFresh:
+		return nil
+	case launcher.SyncWSLPiLoginAuthDistroNewer:
+		// M-1：WSL 内 pi 轮转出的新凭据已回同步 Windows 侧。
+		a.Log.Info("pi", "已从 WSL 回同步登录凭据", fmt.Sprintf("distro=%s", distro))
+		return nil
+	case launcher.SyncWSLPiLoginAuthDistroTieKept:
+		a.Log.Warn("pi", "两侧 Pi 登录凭据时间戳不可判，保守按 WSL 侧同步", fmt.Sprintf("distro=%s", distro))
+		return nil
+	case launcher.SyncWSLPiLoginAuthDistroHasCopy:
+		a.Log.Warn("pi", "WSL Pi 登录凭据同步失败，降级使用 WSL 内既有副本", errStringForLog(err))
+		return nil
+	default: // DistroNoAuth /未知：fail closed
+		if errors.Is(err, launcher.ErrWSLPiLoginSourceMissing) {
+			return fmt.Errorf("Pi 登录已失效：Windows 侧未找到登录凭据，请刷新服务提供商并重新登录 Pi")
+		}
+		return fmt.Errorf("WSL 内没有可用的 Pi 登录凭据，且同步失败：%v；请确认 WSL 发行版状态后重试", err)
+	}
+}
+
+// errStringForLog 把 error 转为日志 detail 字符串（nil → 空串）。
+func errStringForLog(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // LaunchOmpSession 启动一个新的 Oh My Pi (omp) 会话（完整复刻 LaunchPiSession）。

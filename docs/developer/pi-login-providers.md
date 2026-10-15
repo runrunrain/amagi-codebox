@@ -24,7 +24,12 @@
 
 - 发现/启动检查始终使用 CodeBox 进程 Home 的 `~/.pi/agent`（忽略 `PI_CODING_AGENT_DIR` 环境覆盖）。检查通过后，desktop embedded、external、v1/restart 全部把 `PI_CODING_AGENT_DIR` **显式设为该 canonical 目录**（而非删除）：环境变量面板自定义 `HOME`/`USERPROFILE` 无法再把 Pi 导向另一份 `auth.json`。
 - POSIX shell（zsh/bash/sh/fish，`-ilc`/`-lc`）的 startup 文件在 CLI 之前运行，可能重导出 `PI_CODING_AGENT_DIR` 或 API 凭据。因此登录分支把这些 shell 的启动命令本身包上前缀：`env -u <凭据键…> PI_CODING_AGENT_DIR='<canonical>' <原命令>`，在 shell 初始化完成后重新钉定并剥离凭据。direct 模式与 Windows 家族 shell（pwsh `-NoProfile`、cmd `/K`，不加载用户 startup 文件）依赖已钉定的 `spec.Env`，不加 POSIX 前缀。
-- 不复制 token、不修改认证文件；继承的常见 API 凭据/端点覆盖被删除。普通 API 会话的环境语义完全不变。
+- 不修改认证文件；继承的常见 API 凭据/端点覆盖被删除。普通 API 会话的环境语义完全不变。
+
+**WSL 分叉（A2 解除，主上裁定 2026-10-16）**：WSL 会话不钉 Windows 路径——认证目录锚定切换为 distro 内 `~/.pi/agent`（pi 在会话内读自己的 HOME）：
+- `PI_CODING_AGENT_DIR` 从 WSL spec 环境中剥离（含 WSLENV 清单），工作目录由 wsl.exe 承担；登录载荷以 `env -u <凭据键…> -u PI_CODING_AGENT_DIR` 收尾，shell startup 之后的重导出同样被中和。
+- 凭据新鲜度由启动时惰性同步保障，**双向新陈判定、新者为准**（qreview M-1：唯一有效凭据可能在任一侧——WSL 会话内 pi 轮转 token 写 distro 侧后，单向覆盖会摧毁它）：内容一致 → 零拷贝；Windows 新（或 distro 缺失首次播种）→ 复制进 distro；distro 新 → 反向回同步 Windows 侧；两侧不同且 mtime 并列/容差内不可判 → 保守取 distro（会话即将消费侧）。桌面闸门先做 Go 侧同步（`launcher.SyncWSLPiLoginAuth`，SHA-256 + mtime，mtime 经 wsl.exe 内 `stat -c %Y` 取 ext4 权威值）；remote/v1 重启链路因 BuildPlan 纯读零副作用契约不能在计划期写盘，改为登录载荷内嵌双向同步片段（distro 内 cmp/-nt/cp + chmod 600，执行边界生效），两条链路消费同一载荷语义。同步失败降级为 distro 既有副本（WARN）；两侧都无凭据或宽松权限副本无法收敛时 fail closed 中文报错拒绝启动；Windows 侧未登录维持登录失效错误路径。
+- 上表 R2/R3 的 Windows Home 锚定与重锚语义仅保留给非 WSL 会话。
 
 ## 失效选择与 UI（R4）
 
@@ -45,13 +50,13 @@
 
 桌面 `LaunchPiSession` 与 v1/restart `buildPiPlan` 共享登录解析/再检查。登录预设使用 Pi 原生 `--provider <native-id> --model <model-id>`，可选 `--thinking <level>`。不创建 `amagi-*` provider，不调用 API 密钥库、不改写认证或模型配置。
 
-桌面 stable recipe 保留登录预设 key；重启重新解析预设和认证，不能静默回退到普通 API 提供商或默认账号。登录项被移除、预设不存在/损坏、来源不匹配会拒绝启动。WSL 进程无法消费宿主登录凭据，选择 WSL 时拒绝，而不是复制 token 或降级。
+桌面 stable recipe 保留登录预设 key；重启重新解析预设和认证，不能静默回退到普通 API 提供商或默认账号。登录项被移除、预设不存在/损坏、来源不匹配会拒绝启动。WSL 会话（主上裁定 2026-10-16，取代旧「拒绝而非复制 token」条款）经启动时惰性同步消费 distro 内凭据副本：同步成功/降级用 distro 既有副本即可放行，两侧都无凭据时拒绝启动并给出中文报错；Windows 侧未登录仍按登录失效关闭，绝不回退普通 API 路径。
 
 缺少认证文件正常返回空列表。坏 JSON/文件读取失败返回固定安全错误，不附认证内容或底层路径。缺少/损坏模型目录只影响模型提示，不隐藏登录卡片。发现 OAuth 类型表示有原生登录条目，不保证远端订阅有效或模型仍可用；token 刷新与推理错误由 Pi 管理。
 
 ## 回归与交互复核
 
-Go 用临时 HOME/合成认证 fixture 覆盖发现、隔离、持久化、重启、参数、退出登录、WSL 拒绝、R1 命名空间共存、R2 canonical 钉定、R3 shell 重锚。macOS 的 `TestPiLoginDesktopRealPTY` 经真实桌面入口、生产 CLI resolver、真实 PTY 启动临时 Pi 可执行 fixture；`TestPiLoginDesktopRealShellStartupReAnchor` 用真实 zsh startup（`.zshenv` 重导出 agent root 与凭据）+ 自定义 HOME 双重对抗验证最终进程环境。不访问真实账号或提供商网络。
+Go 用临时 HOME/合成认证 fixture 覆盖发现、隔离、持久化、重启、参数、退出登录、WSL 放行与同步闸门（同步调用/失败降级/两侧无凭据关闭）、R1 命名空间共存、R2 canonical 钉定、R3 shell 重锚、WSL 锚定分叉（载荷同步片段/env -u/PI_CODING_AGENT_DIR 剥离）。macOS 的 `TestPiLoginDesktopRealPTY` 经真实桌面入口、生产 CLI resolver、真实 PTY 启动临时 Pi 可执行 fixture；`TestPiLoginDesktopRealShellStartupReAnchor` 用真实 zsh startup（`.zshenv` 重导出 agent root 与凭据）+ 自定义 HOME 双重对抗验证最终进程环境。不访问真实账号或提供商网络。Windows 真机：`AMAGI_WSL_E2E=1` 下 `internal/pty` 的 `~/` 工作目录真实 ConPTY 启动冒烟（B4）与 `internal/launcher` 的真实 auth.json 同步/幂等实证（A2，快照恢复）。
 
 前端 `piLaunchSelection.test.ts` 覆盖 R4 状态协调（失效保留/错误保留/公共改选不变/显式重选），`useSessionLaunch.piLogin.test.ts` 覆盖启动闸门。
 
