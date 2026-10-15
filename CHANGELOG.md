@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.104] - 2026-10-15
+
+### Fixed
+
+- **重启后代理端口被孤儿内核占用**：应用被强杀/崩溃/更新替换等非正常退出时，sing-box 内核会残留并持续占用代理端口，导致之后每次重启都报“代理端口已被占用”。现在每次启动内核前会自动回收遗留孤儿——仅当进程存活、命令行确属本机 runtime（防误杀 v2rayN 等他人内核）且父进程已死时才回收，其他运行中实例的内核不受影响；Windows 侧另将内核绑入 kill-on-close Job Object，应用无论以何种方式退出都会连带终止内核，从源头杜绝孤儿。（配套 pidfile 生命周期与端到端回收测试）
+
 ## [1.3.103] - 2026-10-15
 
 ### Changed

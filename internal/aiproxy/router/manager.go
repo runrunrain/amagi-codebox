@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,7 @@ func (b *logBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return s
 
 type process struct {
 	cmd  *exec.Cmd
+	job  uintptr
 	done chan struct{}
 	err  error
 }
@@ -171,6 +173,12 @@ func (m *Manager) Apply(ctx context.Context, config []byte, ports []int, revisio
 	m.lastError = ""
 	return nil
 }
+
+// reapDecision 判定是否回收遗留内核：owned = 进程所有权成立（命令行/可执行文件
+// 指向本 Manager 的 runtime），parentAlive = 父进程仍存活。仅在确属本应用遗留且
+// 父进程已死（孤儿）时回收，避免误杀 v2rayN 等他人的 sing-box 或其他存活实例的内核。
+func reapDecision(owned, parentAlive bool) bool { return owned && !parentAlive }
+
 func (m *Manager) isRunning() bool {
 	if m.proc == nil {
 		return false
@@ -183,9 +191,13 @@ func (m *Manager) isRunning() bool {
 	}
 }
 func (m *Manager) Stop() error { m.mu.Lock(); defer m.mu.Unlock(); return m.stop() }
+
+// pidPath 记录当前内核 pid，供下次启动回收上次异常退出遗留的孤儿（见 reapStaleCore）。
+func (m *Manager) pidPath() string { return filepath.Join(m.dir, "core.pid") }
 func (m *Manager) stop() error {
 	if !m.isRunning() {
 		m.proc = nil
+		_ = os.Remove(m.pidPath())
 		return nil
 	}
 	p := m.proc
@@ -197,13 +209,20 @@ func (m *Manager) stop() error {
 		select {
 		case <-p.done:
 		case <-time.After(time.Second):
+			// 进程可能未死：保留 pidfile 作为下次启动回收的线索。
 			return errors.New("内核停止超时")
 		}
 	}
 	m.proc = nil
+	_ = os.Remove(m.pidPath())
 	return nil
 }
 func (m *Manager) start(config []byte, ports []int) error {
+	// 先回收上次异常退出遗留的孤儿内核（父进程已死且确属本 runtime），
+	// 否则其监听端口会让下方探测直接报“已被占用”，且每次重启复现。
+	if pid := reapStaleCore(m.core, m.pidPath()); pid != 0 {
+		_, _ = fmt.Fprintf(&m.logs, "已回收上次异常退出的代理内核（pid %d），端口恢复可用\n", pid)
+	}
 	var listeners []net.Listener
 	for _, port := range ports {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -229,8 +248,9 @@ func (m *Manager) start(config []byte, ports []int) error {
 	if err := p.cmd.Start(); err != nil {
 		return errors.New("无法启动 sing-box，请检查内核路径与执行权限")
 	}
+	p.tie()
 	m.proc = p
-	go func() { p.err = p.cmd.Wait(); close(p.done) }()
+	go func() { p.err = p.cmd.Wait(); p.release(); close(p.done) }()
 	deadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -248,6 +268,10 @@ func (m *Manager) start(config []byte, ports []int) error {
 			_ = conn.Close()
 		}
 		if ready {
+			// pidfile 仅是回收线索，写失败不影响运行。
+			if err := os.WriteFile(m.pidPath(), []byte(strconv.Itoa(p.cmd.Process.Pid)), 0o600); err != nil {
+				_, _ = fmt.Fprintf(&m.logs, "写入内核 pidfile 失败：%v\n", err)
+			}
 			return nil
 		}
 		time.Sleep(40 * time.Millisecond)
