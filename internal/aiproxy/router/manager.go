@@ -112,7 +112,7 @@ func (m *Manager) Apply(ctx context.Context, config []byte, ports []int, revisio
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.core == "" {
-		return errors.New("未发现 sing-box；请安装或使用 --core 指定路径")
+		return errors.New("未发现 sing-box；请安装或在高级设置中指定内核路径")
 	}
 	if err := os.MkdirAll(m.dir, 0700); err != nil {
 		return err
@@ -209,14 +209,14 @@ func (m *Manager) start(config []byte, ports []int) error {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			for _, l := range listeners {
-				l.Close()
+				_ = l.Close()
 			}
 			return fmt.Errorf("代理端口 %d 已被占用", port)
 		}
 		listeners = append(listeners, ln)
 	}
 	for _, ln := range listeners {
-		ln.Close()
+		_ = ln.Close()
 	}
 	path := filepath.Join(m.dir, "core.json")
 	if err := AtomicWrite(path, config); err != nil {
@@ -245,7 +245,7 @@ func (m *Manager) start(config []byte, ports []int) error {
 				ready = false
 				break
 			}
-			conn.Close()
+			_ = conn.Close()
 		}
 		if ready {
 			return nil
