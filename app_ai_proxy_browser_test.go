@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/aiproxy"
+	"amagi-codebox/internal/config"
 )
 
 // Explicit opt-in bridge for the real Vue page and real desktop facade.
@@ -23,7 +24,17 @@ func TestAIProxyBrowserBridge(t *testing.T) {
 		t.Skip("opt-in real Go / Vue browser bridge")
 	}
 	dir := t.TempDir()
+	catalog := config.NewConfigService(filepath.Join(dir, "config"))
+	if err := catalog.Load(); err != nil {
+		t.Fatal(err)
+	}
+	for name, host := range map[string]string{"Claude 团队": "claude.gateway.example", "OpenAI 团队": "openai.gateway.example", "Gemini 团队": "generativelanguage.googleapis.com", "共享网关": "openai.gateway.example"} {
+		if err := catalog.SaveProvider(name, config.Provider{Type: "openai", BaseURL: "https://" + host + "/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s := aiproxy.New(filepath.Join(dir, "ai-proxy"))
+	s.SetProviderSource(func() []aiproxy.Provider { return aiproxy.ProvidersFromConfig(catalog.GetProviders()) })
 	defer s.Close()
 	dbPath := filepath.Join(dir, "guiNDB.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -74,6 +85,14 @@ func TestAIProxyBrowserBridge(t *testing.T) {
 			default:
 			}
 			json.NewEncoder(w).Encode("finished")
+			return
+		}
+		if r.URL.Path == "/provider-update" {
+			if err := catalog.SaveProvider("OpenAI 团队", config.Provider{Type: "openai", BaseURL: "https://updated.gateway.example/v1"}); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			json.NewEncoder(w).Encode("updated")
 			return
 		}
 		var input struct {

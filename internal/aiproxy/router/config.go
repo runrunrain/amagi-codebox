@@ -16,23 +16,27 @@ import (
 
 // Rules are evaluated in order. Port optionally exposes a dedicated entrypoint.
 type Rule struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Enabled bool     `json:"enabled"`
-	Domains []string `json:"domains"`
-	Mode    string   `json:"mode"`
-	Node    string   `json:"node"`
-	Port    int      `json:"port"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Provider string   `json:"provider,omitempty"`
+	Enabled  bool     `json:"enabled"`
+	Domains  []string `json:"domains"`
+	Mode     string   `json:"mode"`
+	Node     string   `json:"node"`
+	Port     int      `json:"port"`
 }
 type Settings struct {
 	ProxyPort     int    `json:"proxy_port"`
 	Rules         []Rule `json:"rules"`
 	FallbackProxy string `json:"fallback_proxy"`
 	FetchProxy    string `json:"fetch_proxy"`
+	EgressMode    string `json:"egress_mode"`
+	BindInterface string `json:"bind_interface"`
+	DNSServer     string `json:"dns_server"`
 }
 
 func Defaults() Settings {
-	return Settings{ProxyPort: 18890, Rules: []Rule{
+	return Settings{ProxyPort: 18890, EgressMode: "auto", Rules: []Rule{
 		{ID: "claude", Name: "Claude", Enabled: true, Mode: "proxy", Port: 18892, Domains: []string{"anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com"}},
 		{ID: "openai", Name: "OpenAI", Enabled: true, Mode: "proxy", Port: 18893, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}},
 	}}
@@ -51,6 +55,9 @@ var ruleID = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var domainLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func validDomain(d string) bool {
+	if net.ParseIP(d) != nil {
+		return true
+	}
 	if len(d) == 0 || len(d) > 253 {
 		return false
 	}
@@ -62,6 +69,15 @@ func validDomain(d string) bool {
 	return true
 }
 func (s Settings) Validate() error {
+	if s.EgressMode != "" && s.EgressMode != "auto" && s.EgressMode != "interface" && s.EgressMode != "system" {
+		return errors.New("出口绑定方式无效")
+	}
+	if s.EgressMode == "interface" && strings.TrimSpace(s.BindInterface) == "" {
+		return errors.New("请选择物理出口网卡")
+	}
+	if s.DNSServer != "" && net.ParseIP(s.DNSServer) == nil {
+		return errors.New("独立 DNS 服务器应填写 IP 地址，不含协议或端口")
+	}
 	seen := map[int]bool{}
 	for _, p := range s.Ports() {
 		if p < 1024 || p > 65535 || seen[p] {
@@ -152,7 +168,7 @@ func Build(s Settings, nodes map[string]subscription.Node) ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	outbounds := []map[string]any{{"type": "direct", "tag": "direct"}}
+	outbounds := []map[string]any{{"type": "direct", "tag": "direct"}, {"type": "direct", "tag": "local-direct", "inet4_bind_address": "127.0.0.1", "inet6_bind_address": "::1", "domain_resolver": "local-hosts"}}
 	inbounds := []map[string]any{{"type": "mixed", "tag": "auto-in", "listen": "127.0.0.1", "listen_port": s.ProxyPort}}
 	dedicated, domains := []map[string]any{}, []map[string]any{}
 	for _, rule := range s.Rules {
@@ -171,6 +187,7 @@ func Build(s Settings, nodes map[string]subscription.Node) ([]byte, error) {
 				o[k] = v
 			}
 			o["tag"] = target
+			bindLocalServer(o)
 			outbounds = append(outbounds, o)
 		}
 		if rule.Port != 0 {
@@ -179,23 +196,73 @@ func Build(s Settings, nodes map[string]subscription.Node) ([]byte, error) {
 			dedicated = append(dedicated, map[string]any{"inbound": []string{tag}, "action": "route", "outbound": target})
 		}
 		if len(rule.Domains) > 0 {
-			domains = append(domains, map[string]any{"domain_suffix": rule.Domains, "action": "route", "outbound": target})
+			var hosts, ips []string
+			for _, host := range rule.Domains {
+				if ip := net.ParseIP(host); ip != nil {
+					bits := "/128"
+					if ip.To4() != nil {
+						bits = "/32"
+					}
+					ips = append(ips, host+bits)
+				} else {
+					hosts = append(hosts, host)
+				}
+			}
+			if len(hosts) > 0 {
+				domains = append(domains, map[string]any{"domain_suffix": hosts, "action": "route", "outbound": target})
+			}
+			if len(ips) > 0 {
+				domains = append(domains, map[string]any{"ip_cidr": ips, "action": "route", "outbound": target})
+			}
 		}
 	}
 	final := "direct"
 	if s.FallbackProxy != "" {
 		o, _ := ProxyOutbound(s.FallbackProxy)
 		o["tag"] = "fallback"
+		bindLocalServer(o)
 		outbounds = append(outbounds, o)
 		final = "fallback"
 	}
 	// Dedicated entrypoints precede domain rules; unified requests follow
 	// the user's rule order, including explicit direct rules.
-	rules := append(dedicated, domains...)
+	rules := []map[string]any{
+		{"domain": []string{"localhost"}, "action": "route", "outbound": "local-direct"},
+		{"ip_cidr": []string{"127.0.0.0/8", "::1/128"}, "action": "route", "outbound": "local-direct"},
+	}
+	rules = append(rules, dedicated...)
+	rules = append(rules, domains...)
+	route := map[string]any{"rules": rules, "final": final, "default_domain_resolver": "resolver"}
+	switch s.EgressMode {
+	case "", "auto":
+		route["auto_detect_interface"] = true
+	case "interface":
+		if err := ValidateInterface(s.BindInterface); err != nil {
+			return nil, err
+		}
+		route["default_interface"] = s.BindInterface
+	}
+	dns := map[string]any{"type": "local", "tag": "resolver"}
+	if s.DNSServer != "" {
+		dns = map[string]any{"type": "udp", "tag": "resolver", "server": s.DNSServer}
+		bindLocalServer(dns)
+	}
 	return json.MarshalIndent(map[string]any{
 		"log":      map[string]any{"level": "info", "timestamp": true},
-		"dns":      map[string]any{"servers": []map[string]any{{"type": "local", "tag": "local"}}},
+		"dns":      map[string]any{"servers": []map[string]any{dns, {"type": "hosts", "tag": "local-hosts", "predefined": map[string]any{"localhost": []string{"127.0.0.1", "::1"}}}}},
 		"inbounds": inbounds, "outbounds": outbounds,
-		"route": map[string]any{"rules": rules, "final": final, "default_domain_resolver": "local"},
+		"route": route,
 	}, "", "  ")
+}
+
+// A local upstream must remain reachable when the global default binds a NIC.
+func bindLocalServer(outbound map[string]any) {
+	host, _ := outbound["server"].(string)
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") || net.ParseIP(host).IsLoopback() {
+		outbound["inet4_bind_address"] = "127.0.0.1"
+		outbound["inet6_bind_address"] = "::1"
+		if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+			outbound["domain_resolver"] = "local-hosts"
+		}
+	}
 }

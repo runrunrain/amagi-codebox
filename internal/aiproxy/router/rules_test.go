@@ -60,7 +60,7 @@ func TestRuleValidationAndOptionalPorts(t *testing.T) {
 	if err = json.Unmarshal(b, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Outbounds) != 1 || len(document.Inbounds) != 2 {
+	if len(document.Outbounds) != 2 || len(document.Inbounds) != 2 {
 		t.Fatal("direct routing depended on subscription nodes")
 	}
 	s.Rules = nil

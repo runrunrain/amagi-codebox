@@ -56,13 +56,16 @@ type SourceStatus struct {
 	Error     string `json:"error"`
 }
 type State struct {
-	Enabled  bool          `json:"enabled"`
-	Pending  bool          `json:"pending"`
-	Settings Settings      `json:"settings"`
-	Groups   []Group       `json:"groups"`
-	Status   router.Status `json:"status"`
-	Source   SourceStatus  `json:"source"`
-	Error    string        `json:"error"`
+	Providers  []Provider         `json:"providers"`
+	Interfaces []router.Interface `json:"interfaces"`
+	Issues     []string           `json:"issues"`
+	Enabled    bool               `json:"enabled"`
+	Pending    bool               `json:"pending"`
+	Settings   Settings           `json:"settings"`
+	Groups     []Group            `json:"groups"`
+	Status     router.Status      `json:"status"`
+	Source     SourceStatus       `json:"source"`
+	Error      string             `json:"error"`
 }
 type storedGroup struct {
 	ID       string              `json:"id"`
@@ -80,18 +83,19 @@ type storedState struct {
 	Groups   []storedGroup `json:"groups"`
 }
 type Service struct {
-	mu      sync.Mutex
-	dir     string
-	data    storedState
-	manager *router.Manager
-	active  Settings
-	source  SourceStatus
-	loadErr string
-	closed  bool
+	providerSource func() []Provider
+	mu             sync.Mutex
+	dir            string
+	data           storedState
+	manager        *router.Manager
+	active         Settings
+	source         SourceStatus
+	loadErr        string
+	closed         bool
 }
 
 func New(dir string) *Service {
-	return &Service{dir: dir, data: storedState{Version: 2, Revision: 1, Settings: Settings{Routing: router.Defaults()}, Groups: []storedGroup{}}}
+	return &Service{dir: dir, data: storedState{Version: 3, Revision: 1, Settings: Settings{Routing: router.Defaults()}, Groups: []storedGroup{}}}
 }
 
 func (s *Service) Load(ctx context.Context) error {
@@ -153,14 +157,24 @@ func (s *Service) saveLocked() error {
 	return router.AtomicWrite(filepath.Join(s.dir, "state.json"), b)
 }
 func (s *Service) State() State {
+	providers := s.providers()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	view := State{Enabled: s.data.Enabled, Settings: s.data.Settings.clone(), Groups: []Group{}, Source: s.source, Error: s.loadErr}
+	view.Providers = providers
+	view.Interfaces = router.Interfaces()
+	view.Settings, view.Issues = resolveProviders(view.Settings, providers)
 	view.Settings.Routing.FetchProxy = maskProxy(view.Settings.Routing.FetchProxy)
 	view.Settings.Routing.FallbackProxy = maskProxy(view.Settings.Routing.FallbackProxy)
 	if s.manager != nil {
 		view.Status = s.manager.Status()
 		view.Pending = view.Status.Running && view.Status.Revision != s.data.Revision
+		if view.Status.Running {
+			resolved, issues := resolveProviders(s.active, providers)
+			before, _ := json.Marshal(s.active)
+			after, _ := json.Marshal(resolved)
+			view.Pending = view.Pending || len(issues) > 0 || string(before) != string(after)
+		}
 	} else {
 		view.Status.Core = router.FindCore(s.data.Settings.CorePath)
 	}
@@ -184,7 +198,11 @@ func maskProxy(raw string) string {
 	return raw
 }
 func (s *Service) SaveSettings(settings Settings) error {
-	settings = settings.clone()
+	var issues []string
+	settings, issues = resolveProviders(settings, s.providers())
+	if len(issues) > 0 {
+		return errors.New(strings.Join(issues, "；"))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != "" {
@@ -237,6 +255,7 @@ func (s *Service) nodesLocked() map[string]subscription.Node {
 	return nodes
 }
 func (s *Service) Start(ctx context.Context) error {
+	providers := s.providers()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -244,6 +263,21 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	if s.loadErr != "" {
 		return errors.New(s.loadErr)
+	}
+	resolved, issues := resolveProviders(s.data.Settings, providers)
+	if len(issues) > 0 {
+		return errors.New(strings.Join(issues, "；"))
+	}
+	before, _ := json.Marshal(s.data.Settings)
+	after, _ := json.Marshal(resolved)
+	if string(before) != string(after) {
+		old := s.data
+		s.data.Settings = resolved
+		s.data.Revision++
+		if err := s.saveLocked(); err != nil {
+			s.data = old
+			return err
+		}
 	}
 	config, err := router.Build(s.data.Settings.Routing, s.nodesLocked())
 	if err != nil {

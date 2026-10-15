@@ -70,7 +70,7 @@ func TestLegacyConfigurationMigration(t *testing.T) {
 	if err = s.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s.data.Version != 2 || s.data.Revision != 8 {
+	if s.data.Version != 3 || s.data.Revision != 8 {
 		t.Fatal("schema migration was not persisted exactly once")
 	}
 	got := s.data.Settings

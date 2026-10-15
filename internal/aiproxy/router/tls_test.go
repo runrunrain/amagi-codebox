@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,7 +39,8 @@ func TestHTTPSRemainsEndToEnd(t *testing.T) {
 			http.Error(w, "CONNECT required", 400)
 			return
 		}
-		upstream, err := net.DialTimeout("tcp", r.Host, time.Second)
+		// Model a remote TLS origin without making external network requests.
+		upstream, err := net.DialTimeout("tcp", strings.TrimPrefix(origin.URL, "https://"), time.Second)
 		if err != nil {
 			http.Error(w, "dial failed", 502)
 			return
@@ -85,10 +87,10 @@ func TestHTTPSRemainsEndToEnd(t *testing.T) {
 	roots := x509.NewCertPool()
 	roots.AddCert(origin.Certificate())
 	p, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", s.Rules[0].Port))
-	tr := &http.Transport{Proxy: http.ProxyURL(p), TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	tr := &http.Transport{Proxy: http.ProxyURL(p), TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12}}
 	defer tr.CloseIdleConnections()
 	client := http.Client{Transport: tr, Timeout: 5 * time.Second}
-	resp, err := client.Get(origin.URL)
+	resp, err := client.Get(strings.Replace(origin.URL, "127.0.0.1", "tls-origin.example", 1))
 	if err != nil {
 		t.Fatal(err)
 	}

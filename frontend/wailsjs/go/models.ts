@@ -57,6 +57,26 @@ export namespace aiproxy {
 		}
 	}
 	
+	export class Provider {
+	    id: string;
+	    name: string;
+	    domains: string[];
+	    formats: string[];
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Provider(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.domains = source["domains"];
+	        this.formats = source["formats"];
+	        this.warnings = source["warnings"];
+	    }
+	}
 	export class Settings {
 	    routing: router.Settings;
 	    corePath: string;
@@ -114,6 +134,9 @@ export namespace aiproxy {
 	    }
 	}
 	export class State {
+	    providers: Provider[];
+	    interfaces: router.Interface[];
+	    issues: string[];
 	    enabled: boolean;
 	    pending: boolean;
 	    settings: Settings;
@@ -128,6 +151,9 @@ export namespace aiproxy {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.providers = this.convertValues(source["providers"], Provider);
+	        this.interfaces = this.convertValues(source["interfaces"], router.Interface);
+	        this.issues = source["issues"];
 	        this.enabled = source["enabled"];
 	        this.pending = source["pending"];
 	        this.settings = this.convertValues(source["settings"], Settings);
@@ -4082,9 +4108,26 @@ export namespace remoteclient {
 
 export namespace router {
 	
+	export class Interface {
+	    name: string;
+	    up: boolean;
+	    selectable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Interface(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.up = source["up"];
+	        this.selectable = source["selectable"];
+	    }
+	}
 	export class Rule {
 	    id: string;
 	    name: string;
+	    provider?: string;
 	    enabled: boolean;
 	    domains: string[];
 	    mode: string;
@@ -4099,6 +4142,7 @@ export namespace router {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	        this.provider = source["provider"];
 	        this.enabled = source["enabled"];
 	        this.domains = source["domains"];
 	        this.mode = source["mode"];
@@ -4111,6 +4155,9 @@ export namespace router {
 	    rules: Rule[];
 	    fallback_proxy: string;
 	    fetch_proxy: string;
+	    egress_mode: string;
+	    bind_interface: string;
+	    dns_server: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -4122,6 +4169,9 @@ export namespace router {
 	        this.rules = this.convertValues(source["rules"], Rule);
 	        this.fallback_proxy = source["fallback_proxy"];
 	        this.fetch_proxy = source["fetch_proxy"];
+	        this.egress_mode = source["egress_mode"];
+	        this.bind_interface = source["bind_interface"];
+	        this.dns_server = source["dns_server"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

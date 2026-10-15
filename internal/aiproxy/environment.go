@@ -13,7 +13,7 @@ import (
 
 var proxyKeys = map[string]bool{"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true}
 
-func (s *Service) proxyURLLocked() (string, error) {
+func (s *Service) proxyURLLocked(providers []Provider) (string, error) {
 	if !s.data.Enabled {
 		return "", nil
 	}
@@ -23,6 +23,17 @@ func (s *Service) proxyURLLocked() (string, error) {
 	if s.manager == nil || !s.manager.Status().Running {
 		return "", errors.New("AI 代理分流已启用但内核未运行，请在 AI 代理分流页启动或停用")
 	}
+	// A new launch/request must not silently use an old domain after its API
+	// provider was changed or removed. Existing CLI connections need reapplying.
+	resolved, issues := resolveProviders(s.active, providers)
+	if len(issues) > 0 {
+		return "", errors.New(strings.Join(issues, "；"))
+	}
+	for i, rule := range s.active.Routing.Rules {
+		if rule.Enabled && rule.Provider != "" && strings.Join(rule.Domains, "\n") != strings.Join(resolved.Routing.Rules[i].Domains, "\n") {
+			return "", errors.New("服务提供商 API 地址已变更，请在 AI 代理分流页应用更改")
+		}
+	}
 	return fmt.Sprintf("http://127.0.0.1:%d", s.active.Routing.ProxyPort), nil
 }
 
@@ -30,9 +41,10 @@ func (s *Service) proxyURLLocked() (string, error) {
 // proxy keys so stale ALL_PROXY or NO_PROXY=* cannot defeat the chosen exits.
 // Requests to local relays and Headroom still bypass the forward proxy.
 func (s *Service) ApplyEnv(base []string) ([]string, error) {
+	providers := s.providers()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	address, err := s.proxyURLLocked()
+	address, err := s.proxyURLLocked(providers)
 	if err != nil {
 		return nil, err
 	}
@@ -92,9 +104,10 @@ func PinProxyEnvironment(spec platform.ResolvedLaunchSpec) (platform.ResolvedLau
 // ProxyForRequest adapts the same routing to CodeBox's own model requests.
 // It never changes http.DefaultTransport or the parent process environment.
 func (s *Service) ProxyForRequest(req *http.Request) (*url.URL, error) {
+	providers := s.providers()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	address, err := s.proxyURLLocked()
+	address, err := s.proxyURLLocked(providers)
 	if err != nil {
 		return nil, err
 	}

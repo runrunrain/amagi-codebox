@@ -17,7 +17,7 @@ type legacyRouting struct {
 }
 
 // Version 1 had two fixed providers. Preserve their ports, nodes and domains,
-// and all common settings/groups, before atomically saving version 2.
+// and all common settings/groups. Version 3 adds provider links and NIC binding.
 func decodeStoredState(b []byte) (storedState, bool, error) {
 	var data storedState
 	if err := json.Unmarshal(b, &data); err != nil {
@@ -37,15 +37,21 @@ func decodeStoredState(b []byte) (storedState, bool, error) {
 			{ID: "claude", Name: "Claude", Enabled: true, Mode: "proxy", Port: r.ClaudePort, Node: r.ClaudeNode, Domains: r.ClaudeDomains},
 			{ID: "openai", Name: "OpenAI", Enabled: true, Mode: "proxy", Port: r.OpenAIPort, Node: r.OpenAINode, Domains: r.OpenAIDomains},
 		}
-		data.Version = 2
-		data.Revision++
 		migrated = true
 	case 2:
+		migrated = true
+		fallthrough
+	case 3:
 		if data.Settings.Routing.Rules == nil {
 			return data, false, errors.New("missing AI proxy rules")
 		}
 	default:
 		return data, false, errors.New("unsupported AI proxy state version")
+	}
+	if migrated {
+		data.Version = 3
+		data.Revision++
+		data.Settings.Routing.EgressMode = "auto"
 	}
 	if err := data.Settings.Routing.Validate(); err != nil {
 		return data, false, err
