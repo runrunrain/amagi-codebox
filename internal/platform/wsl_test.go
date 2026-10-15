@@ -72,7 +72,7 @@ func TestDefaultWSLDistroReturnsFirstUsable(t *testing.T) {
 }
 
 func TestShouldForwardToWSL(t *testing.T) {
-	forward := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "CLAUDE_CODE_EFFORT_LEVEL", "PI_CODING_AGENT_DIR", "HTTPS_PROXY"}
+	forward := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "CLAUDE_CODE_EFFORT_LEVEL", "PI_CODING_AGENT_DIR", "HTTPS_PROXY", "OPENCODE_CONFIG"}
 	for _, k := range forward {
 		if !shouldForwardToWSL(k) {
 			t.Errorf("expected %q to be forwarded", k)
@@ -83,6 +83,56 @@ func TestShouldForwardToWSL(t *testing.T) {
 		if shouldForwardToWSL(k) {
 			t.Errorf("expected %q NOT to be forwarded", k)
 		}
+	}
+}
+
+// TestShouldForwardToWSLExtraKeys pins the exported forward-face predicate used
+// by the launcher-side pre-forwarding strip (StripWSLHostPathEnv): extra custom
+// keys (envvars.json) join the face case-insensitively, reserved keys never do,
+// and absent extras leave unknown keys out of the face.
+func TestShouldForwardToWSLExtraKeys(t *testing.T) {
+	if !ShouldForwardToWSL("tavily_api_key", "TAVILY_API_KEY") {
+		t.Error("extra key must match case-insensitively")
+	}
+	if !ShouldForwardToWSL("TAVILY_API_KEY", " tavily_api_key ") {
+		t.Error("extra key must trim whitespace before matching")
+	}
+	if ShouldForwardToWSL("MY_TOOL_HOME") {
+		t.Error("unknown key without extras must not forward")
+	}
+	for _, reserved := range []string{"PATH", "PATHEXT", "WSLENV"} {
+		if ShouldForwardToWSL(reserved, reserved) {
+			t.Errorf("reserved key %q must never forward, even when listed as extra", reserved)
+		}
+	}
+	// 与 appendWSLENVForwarding 的判据一致性是剥离正确性的前提（剥离面 ⊆ 转发面）。
+	for _, k := range []string{"ANTHROPIC_API_KEY", "CODEX_HOME", "PI_SESSION_FILE", "OPENCODE_CONFIG", "HTTPS_PROXY"} {
+		if ShouldForwardToWSL(k) != shouldForwardToWSL(k) {
+			t.Errorf("exported/internal predicate disagree on %q", k)
+		}
+	}
+}
+
+// TestAppendWSLENVForwardingOpenCodeConfig pins the T4 carrier: OPENCODE_CONFIG
+// (pointing at the distro-side amagi-codebox.json written by the launcher) is
+// listed in WSLENV so it crosses the boundary, while the content-carrier
+// OPENCODE_CONFIG_CONTENT stays out (no OPENCODE_ prefix whitelist).
+func TestAppendWSLENVForwardingOpenCodeConfig(t *testing.T) {
+	env := []string{
+		"PATH=/x",
+		"OPENCODE_CONFIG=/home/u/.config/opencode/amagi-codebox.json",
+		"OPENCODE_CONFIG_CONTENT={\"provider\":{}}",
+	}
+	out := appendWSLENVForwarding(env)
+	wslenv := envValue(out, "WSLENV")
+	if !strings.Contains(wslenv, "OPENCODE_CONFIG") {
+		t.Fatalf("WSLENV missing OPENCODE_CONFIG: %q", wslenv)
+	}
+	if strings.Contains(wslenv, "OPENCODE_CONFIG_CONTENT") {
+		t.Fatalf("WSLENV must not carry the content env var: %q", wslenv)
+	}
+	if v := envValue(out, "OPENCODE_CONFIG"); v != "/home/u/.config/opencode/amagi-codebox.json" {
+		t.Fatalf("OPENCODE_CONFIG value must be forwarded verbatim (Linux path, no translation), got %q", v)
 	}
 }
 

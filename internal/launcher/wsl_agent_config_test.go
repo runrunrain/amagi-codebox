@@ -191,27 +191,156 @@ func TestResolveWSLAgentTargetErrors(t *testing.T) {
 	}
 }
 
-func TestStripWSLHostPathPIEnv(t *testing.T) {
+func TestStripWSLHostPathEnv(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",
-		"PI_CODING_AGENT_DIR=" + `C:\Users\毛润\.pi\agent`,             // Windows 路径值 → 剥离
+		"PI_CODING_AGENT_DIR=" + `C:\Users\毛润\.pi\agent`,             // PI_ + Windows 路径 → 剥离（1.3.59 原事故面）
 		"PI_SESSION_FILE=" + `C:/Users/u/.pi/agent/sessions/x.jsonl`, // 正斜杠形态 → 剥离
 		"PI_OFFLINE=1",           // 标量值 → 保留（WSL 内有效）
 		"PI_MODEL=glm-5.3",       // 标量值 → 保留
-		"ANTHROPIC_API_KEY=sk-x", // 非 PI_ 前缀 → 保留
+		"ANTHROPIC_API_KEY=sk-x", // 标量值（在转发面但值非路径）→ 保留
 		"PI_TOOL=runc:" + `D:\x`, // 非纯路径形态（值不以盘符开头）→ 保留
+		// B3/T6 泛化面：其余四前缀 + 精确键 + 自定义键的 Windows 路径值同样剥离。
+		"CODEX_HOME=" + `C:\Users\u\.codex`,                           // T6 实例 → 剥离
+		"ANTHROPIC_CONFIG_DIR=" + `D:\cfg\claude`,                     // → 剥离
+		"CLAUDE_PROJECT_DIR=" + `E:/proj`,                             // 正斜杠 → 剥离
+		"OPENAI_LOG_DIR=" + `C:\tmp\oai`,                              // → 剥离
+		"OPENCODE_CONFIG=" + `C:\Users\u\.config\opencode.json`,       // 精确键 + Windows 路径 → 剥离
+		"MY_TOOL_HOME=" + `F:\tools`,                                  // 自定义键 + Windows 路径 → 剥离（在 extra 列表内）
+		"OPENCODE_CONFIG=/home/u/.config/opencode/amagi-codebox.json", // T4 注入的 Linux 路径值 → 保留
+		"USERPROFILE=" + `C:/Users/a`,                                 // 不在转发面 → 即使 Windows 路径也保留（根本不会跨界）
 	}
-	got := StripWSLHostPathPIEnv(env)
+	got, stripped := StripWSLHostPathEnv(env, "MY_TOOL_HOME", "OTHER_KEY")
 	joined := strings.Join(got, "\n")
-	if strings.Contains(joined, "PI_CODING_AGENT_DIR") || strings.Contains(joined, "PI_SESSION_FILE") {
-		t.Fatalf("Windows-path PI_ vars not stripped: %v", got)
+	for _, gone := range []string{"PI_CODING_AGENT_DIR", "PI_SESSION_FILE", "CODEX_HOME", "ANTHROPIC_CONFIG_DIR", "CLAUDE_PROJECT_DIR", "OPENAI_LOG_DIR"} {
+		if strings.Contains(joined, gone) {
+			t.Fatalf("forwardable Windows-path var %q not stripped: %v", gone, got)
+		}
 	}
-	for _, keep := range []string{"PI_OFFLINE=1", "PI_MODEL=glm-5.3", "ANTHROPIC_API_KEY=sk-x", "PI_TOOL="} {
+	if strings.Contains(joined, "OPENCODE_CONFIG="+`C:`) || strings.Contains(joined, "MY_TOOL_HOME") {
+		t.Fatalf("exact/custom Windows-path vars not stripped: %v", got)
+	}
+	for _, keep := range []string{
+		"PI_OFFLINE=1", "PI_MODEL=glm-5.3", "ANTHROPIC_API_KEY=sk-x", "PI_TOOL=",
+		"OPENCODE_CONFIG=/home/u/.config/opencode/amagi-codebox.json",
+		"USERPROFILE=",
+	} {
 		if !strings.Contains(joined, keep) {
 			t.Fatalf("expected %q kept, got %v", keep, got)
 		}
 	}
-	if len(got) != 5 {
-		t.Fatalf("len = %d, want 5: %v", len(got), got)
+	if len(got) != 7 {
+		t.Fatalf("len = %d, want 7: %v", len(got), got)
+	}
+	wantStripped := []string{
+		"PI_CODING_AGENT_DIR", "PI_SESSION_FILE",
+		"CODEX_HOME", "ANTHROPIC_CONFIG_DIR", "CLAUDE_PROJECT_DIR",
+		"OPENAI_LOG_DIR", "OPENCODE_CONFIG", "MY_TOOL_HOME",
+	}
+	if strings.Join(stripped, ",") != strings.Join(wantStripped, ",") {
+		t.Fatalf("stripped keys = %v, want %v", stripped, wantStripped)
+	}
+
+	// extra 列表外的自定义键：值为 Windows 路径也不剥离（不会跨界）。
+	got2, stripped2 := StripWSLHostPathEnv([]string{"MY_TOOL_HOME=" + `F:\tools`})
+	if len(got2) != 1 || len(stripped2) != 0 {
+		t.Fatalf("non-forwardable custom key must be kept: %v / %v", got2, stripped2)
+	}
+
+	// 无一命中时返回空 stripped 列表（调用方零日志）。
+	_, stripped3 := StripWSLHostPathEnv([]string{"PI_OFFLINE=1"})
+	if len(stripped3) != 0 {
+		t.Fatalf("unexpected strips: %v", stripped3)
+	}
+}
+
+func TestWriteWSLOpenCodeAgentConfigWritesAndChmod(t *testing.T) {
+	ft := installFakeWSLTarget(t)
+
+	// 预置一个旧的 amagi-codebox.json：整体覆盖语义（CodeBox 命名空间私有
+	// 文件，无 merge——与 pi/omp 的差异），旧 provider 残留不得存活。
+	uncFile := ft.uncPath("/home/wslu/.config/opencode/amagi-codebox.json")
+	if err := os.MkdirAll(filepath.Dir(uncFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(uncFile, []byte(`{"model":"stale/old","provider":{"stale":{"options":{"apiKey":"old"}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := map[string]any{
+		"model": "glm/glm-5.3",
+		"provider": map[string]any{
+			"glm": map[string]any{
+				"npm":     "@ai-sdk/openai-compatible",
+				"options": map[string]any{"apiKey": "sk-oc", "baseURL": "https://api.example/v4"},
+			},
+		},
+	}
+	linuxPath, err := WriteWSLOpenCodeAgentConfig("Ubuntu", cfg)
+	if err != nil {
+		t.Fatalf("WriteWSLOpenCodeAgentConfig: %v", err)
+	}
+	if want := "/home/wslu/.config/opencode/amagi-codebox.json"; linuxPath != want {
+		t.Fatalf("linuxPath = %q, want %q", linuxPath, want)
+	}
+
+	data, err := os.ReadFile(uncFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+	if got["model"] != "glm/glm-5.3" {
+		t.Fatalf("model = %v, want glm/glm-5.3", got["model"])
+	}
+	providers, _ := got["provider"].(map[string]any)
+	if _, ok := providers["stale"]; ok {
+		t.Fatalf("stale provider survived an overwrite write: %v", providers)
+	}
+	entry, _ := providers["glm"].(map[string]any)
+	options, _ := entry["options"].(map[string]any)
+	if options["apiKey"] != "sk-oc" {
+		t.Fatalf("apiKey = %v, want sk-oc", options)
+	}
+	if string(data[len(data)-1]) != "\n" {
+		t.Fatalf("file must end with newline, tail = %q", data[len(data)-3:])
+	}
+
+	// chmod 补偿：目录 0700 + 文件 0600（apiKey 明文落盘契约）。
+	want := []string{
+		"700 /home/wslu/.config/opencode",
+		"600 /home/wslu/.config/opencode/amagi-codebox.json",
+	}
+	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
+		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
+	}
+}
+
+func TestWriteWSLOpenCodeAgentConfigFreshDistro(t *testing.T) {
+	ft := installFakeWSLTarget(t)
+	linuxPath, err := WriteWSLOpenCodeAgentConfig("Ubuntu", map[string]any{"model": "openai/gpt-5"})
+	if err != nil {
+		t.Fatalf("fresh distro write: %v", err)
+	}
+	if _, err := os.Stat(ft.uncPath(linuxPath)); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+}
+
+func TestWriteWSLOpenCodeAgentConfigChmodFailureFailsClosed(t *testing.T) {
+	ft := installFakeWSLTarget(t)
+	origChmod := wslChmodFn
+	wslChmodFn = func(distro, mode string, paths ...string) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() { wslChmodFn = origChmod })
+	if _, err := WriteWSLOpenCodeAgentConfig("Ubuntu", map[string]any{"model": "openai/gpt-5"}); err == nil {
+		t.Fatal("chmod failure must fail the WSL write (fail closed)")
+	}
+	// fail closed：已落盘的明文 apiKey 内容必须被清理。
+	if _, err := os.Stat(ft.uncPath("/home/wslu/.config/opencode/amagi-codebox.json")); err == nil {
+		t.Fatal("plaintext config must be removed after chmod failure")
 	}
 }

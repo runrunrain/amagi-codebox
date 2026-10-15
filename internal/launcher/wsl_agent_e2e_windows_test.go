@@ -140,6 +140,84 @@ func restoreWSLFileForTest(t *testing.T, distro, linuxAgentDir string, before []
 	}
 }
 
+// TestManualRealWSLWriteOpenCodeConfig 真实 WSL 端到端实证 T4 路径载体：
+// distro 探测 → UNC 写 ~/.config/opencode/amagi-codebox.json → chmod 补偿 →
+// 读回比对。t.Cleanup 快照/恢复原文件（对齐 diting m4 策略）。
+func TestManualRealWSLWriteOpenCodeConfig(t *testing.T) {
+	if os.Getenv("AMAGI_WSL_E2E") == "" {
+		t.Skip("set AMAGI_WSL_E2E=1 to run the real-WSL end-to-end probe")
+	}
+	distro := manualWSLDistro(t)
+
+	linuxDir, uncDir := wslOpenCodeDirsForTest(t, distro)
+	before, hadBefore := readWSLFileForTest(t, filepath.Join(uncDir, openCodeWSLConfigFile))
+	t.Cleanup(func() {
+		restoreWSLOpenCodeFileForTest(t, distro, linuxDir, before, hadBefore)
+	})
+
+	cfg := map[string]any{
+		"model": "wsltest/wsltest-model",
+		"provider": map[string]any{
+			"wsltest": map[string]any{
+				"npm":     "@ai-sdk/openai-compatible",
+				"options": map[string]any{"apiKey": "sk-manual-e2e", "baseURL": "https://wsltest.example/v4"},
+			},
+		},
+	}
+	linuxPath, err := WriteWSLOpenCodeAgentConfig(distro, cfg)
+	if err != nil {
+		t.Fatalf("WriteWSLOpenCodeAgentConfig: %v", err)
+	}
+	if want := linuxDir + "/" + openCodeWSLConfigFile; linuxPath != want {
+		t.Fatalf("linuxPath = %q, want %q", linuxPath, want)
+	}
+	t.Logf("written to %s (distro %s)", linuxPath, distro)
+
+	data, err := os.ReadFile(platform.WSLToUNC(distro, linuxPath))
+	if err != nil {
+		t.Fatalf("read back via UNC: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+	providers, _ := got["provider"].(map[string]any)
+	if _, ok := providers["wsltest"]; !ok {
+		t.Fatalf("wsltest provider missing after write: %v", providers)
+	}
+	t.Logf("amagi-codebox.json content OK (%d bytes)", len(data))
+}
+
+// wslOpenCodeDirsForTest 解析 ~/.config/opencode 的 Linux/UNC 双形态（快照辅助）。
+func wslOpenCodeDirsForTest(t *testing.T, distro string) (linuxDir, uncDir string) {
+	t.Helper()
+	target, err := resolveWSLAgentTarget(distro, ".config/opencode")
+	if err != nil {
+		t.Fatalf("resolveWSLAgentTarget: %v", err)
+	}
+	return target.LinuxDir, target.UNCDir
+}
+
+// restoreWSLOpenCodeFileForTest 把快照内容写回 WSL 侧并 chmod 600；快照不
+// 存在时删除测试写入的文件（目标态 = 测试前状态）。
+func restoreWSLOpenCodeFileForTest(t *testing.T, distro, linuxDir string, before []byte, hadBefore bool) {
+	t.Helper()
+	uncPath := platform.WSLToUNC(distro, linuxDir+"/"+openCodeWSLConfigFile)
+	if !hadBefore {
+		if err := os.Remove(uncPath); err != nil && !os.IsNotExist(err) {
+			t.Logf("cleanup remove %s: %v", uncPath, err)
+		}
+		return
+	}
+	if err := os.WriteFile(uncPath, before, 0o600); err != nil {
+		t.Logf("cleanup restore %s: %v", uncPath, err)
+		return
+	}
+	if err := wslChmodFn(distro, "600", linuxDir+"/"+openCodeWSLConfigFile); err != nil {
+		t.Logf("cleanup chmod 600: %v", err)
+	}
+}
+
 func TestManualRealWSLSearchTools(t *testing.T) {
 	if os.Getenv("AMAGI_WSL_E2E") == "" {
 		t.Skip("set AMAGI_WSL_E2E=1 to run the real-WSL end-to-end probe")

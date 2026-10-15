@@ -263,17 +263,35 @@ var wslENVForwardPrefixes = []string{
 	"PI_",
 }
 
-// wslENVForwardExact are additional non-prefixed keys to forward (network proxy).
+// wslENVForwardExact are additional non-prefixed keys to forward: the network
+// proxy vars, plus OPENCODE_CONFIG — the path of an ADDITIONAL opencode config
+// file. In WSL sessions CodeBox writes the runtime provider config into the
+// distro (~/.config/opencode/amagi-codebox.json) and points this variable at
+// its Linux path (forwarded verbatim; no /p path-translation flag — the value
+// is already a distro-side path). opencode loads that file as a custom config
+// layer on top of the user's global config (verified against the installed
+// opencode v1.17.18 binary: load order global → OPENCODE_CONFIG → project →
+// OPENCODE_CONFIG_CONTENT). The env-content carrier OPENCODE_CONFIG_CONTENT
+// has no OPENCODE_ prefix in the whitelist and never crosses the boundary,
+// which is exactly why the path carrier exists (evidence T4).
 var wslENVForwardExact = map[string]struct{}{
-	"HTTP_PROXY":  {},
-	"HTTPS_PROXY": {},
-	"NO_PROXY":    {},
-	"http_proxy":  {},
-	"https_proxy": {},
-	"no_proxy":    {},
+	"HTTP_PROXY":      {},
+	"HTTPS_PROXY":     {},
+	"NO_PROXY":        {},
+	"http_proxy":      {},
+	"https_proxy":     {},
+	"no_proxy":        {},
+	"OPENCODE_CONFIG": {},
 }
 
-func shouldForwardToWSL(key string) bool {
+// ShouldForwardToWSL reports whether an env key would be listed by
+// appendWSLENVForwarding given the same extraForwardKeys (user-configured
+// envvars.json keys): whitelist prefix, exact key, or extra-key match
+// (case-insensitive; reserved keys WSLENV/PATH/PATHEXT never forward).
+// Exported so the launcher-side strip (StripWSLHostPathEnv) can identify
+// entries that are ABOUT to cross the boundary; callers must strip BEFORE
+// appendWSLENVForwarding computes the WSLENV list.
+func ShouldForwardToWSL(key string, extraForwardKeys ...string) bool {
 	if key == "" || strings.EqualFold(key, "WSLENV") {
 		return false
 	}
@@ -286,7 +304,19 @@ func shouldForwardToWSL(key string) bool {
 			return true
 		}
 	}
+	if isWSLENVReservedKey(key) {
+		return false
+	}
+	for _, k := range extraForwardKeys {
+		if strings.EqualFold(strings.TrimSpace(k), key) {
+			return true
+		}
+	}
 	return false
+}
+
+func shouldForwardToWSL(key string) bool {
+	return ShouldForwardToWSL(key)
 }
 
 // isWSLENVReservedKey 报告不得经额外清单转发的保留键：WSLENV 自身（清单载体，

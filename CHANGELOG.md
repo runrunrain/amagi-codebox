@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.106] - 2026-10-16
+
+### Fixed
+
+- **WSL 会话环境供给快赢四连（WSL 摩擦治理批次一，证据报告 agent-outputs/wsl-session-friction/）**：①opencode WSL 会话开箱零 provider（T4）——唯一载体 OPENCODE_CONFIG_CONTENT 不在 WSLENV 转发面；修复走路径载体：runtime provider config 写入 distro 内 ~/.config/opencode/amagi-codebox.json（CodeBox 命名空间私有文件，原子写+chmod 补偿+fail-closed，不碰用户全局配置），经转发面新增精确键 OPENCODE_CONFIG（Linux 路径值）指向它；opencode 以附加配置层加载（实测 v1.17.18：global → OPENCODE_CONFIG → project → CONTENT）。②DrvFS 慢速告警只认盘符形态（T12）——workDirMapsToDrvFS 扩展识别 /mnt/<单盘符>/* Linux 形态（排除 /mnt/wsl、/mnt/docker-desktop 等非盘符挂载），两种形态同告警。③WSL 会话不注入 LANG（T13）——对照 darwin 补丁补齐：无 LANG/LC_ALL/LC_CTYPE 时注入 LANG=en_US.UTF-8 并同步追加进 WSLENV 清单，任一存在不覆盖。④Windows 路径值环境变量剥离仅护 PI_*（B3/T6）——StripWSLHostPathPIEnv 泛化为 StripWSLHostPathEnv，覆盖全部转发面（五前缀+精确键+envvars.json 自定义键，判据与拼清单同源 platform.ShouldForwardToWSL），剥离点上移到 resolveEmbeddedLaunchSpec 单一漏斗覆盖五 CLI，CODEX_HOME=C:\... 类跨界非法值同防。
+
 ## [1.3.105] - 2026-10-15
 
 ### Fixed

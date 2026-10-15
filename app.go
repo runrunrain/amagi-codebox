@@ -2357,6 +2357,18 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	if a.EnvVars != nil {
 		req.EnvForwardKeys = a.EnvVars.Keys()
 	}
+	// WSL 环境变量防线（B3/T6 泛化，1.3.59 PI_* 剥离的统一收口）：会话确实落在
+	// distro 内时，剥离「将经 WSLENV 转发、值为 Windows 盘符路径」的变量（五前缀
+	// + 精确键 + envvars.json 自定义键），必须在 Resolve 内 appendWSLENVForwarding
+	// 拼清单之前完成；剥离结果记 WARN 保持可观测。此处是全部内嵌启动（五 CLI）
+	// 的单一漏斗，pi/omp 原地各一份的旧剥离已并入。
+	if platform.EmbeddedLaunchTargetsWSL(mode, shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
+		if kept, stripped := launcher.StripWSLHostPathEnv(env, req.EnvForwardKeys...); len(stripped) > 0 {
+			env = kept
+			req.Env = env
+			a.Log.Warn("session", "已剥离携带 Windows 路径值的跨界环境变量", strings.Join(stripped, ","))
+		}
+	}
 	spec, err := a.cliResolver().Resolve(req)
 	if err != nil {
 		return spec, err
@@ -3698,10 +3710,8 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 		if wslDistro != "" {
-			// WSL 模式：剥离携带 Windows 盘符路径值的 PI_* 变量（WSLENV 会转发
-			// 所有 PI_ 前缀变量，Windows 路径值在 Linux 侧非法，会让 pi 在 cwd
-			// 建垃圾目录）；必须在 resolver 的 appendWSLENVForwarding 之前完成。
-			env = launcher.StripWSLHostPathPIEnv(env)
+			// Windows 路径值变量的剥离已上移到 resolveEmbeddedLaunchSpec（全引擎
+			// 统一 WSL 防线，覆盖五前缀 + 精确键 + 自定义键）。
 			// fd/ripgrep 一次探测 + WARN（PI_OFFLINE=1 保留转发，避免 pi 启动时联网
 			// 下载工具卡住；缺工具时给出安装引导）。
 			a.warnWSLSearchToolsOnce(wslDistro)
@@ -3981,8 +3991,8 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 		if wslDistro != "" {
-			// 与 LaunchPiSession 对称：剥离 Windows 路径值的 PI_* 变量 + fd/rg 探测。
-			env = launcher.StripWSLHostPathPIEnv(env)
+			// 与 LaunchPiSession 对称：Windows 路径值剥离已上移到
+			// resolveEmbeddedLaunchSpec；此处保留 fd/rg 探测。
 			a.warnWSLSearchToolsOnce(wslDistro)
 		}
 
@@ -5267,6 +5277,34 @@ launchCommon:
 		// 内嵌终端模式：使用 ConPTY
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
+		// WSL 模式（证据 T4）：opencode 跑在 distro 内，OPENCODE_CONFIG_CONTENT
+		// 不在 WSLENV 转发面——env 载体天然缺席，会话会以无 provider 的默认配置
+		// 启动。修复：把同一份 runtime config 写入 distro 内
+		// ~/.config/opencode/amagi-codebox.json，并经 OPENCODE_CONFIG（Linux 路径值，
+		// 在转发面内，必须在 resolveEmbeddedLaunchSpec 之前进入 env 才会被拼进
+		// WSLENV 清单）指向它；opencode 以附加配置层加载该文件（实测 v1.17.18：
+		// global → OPENCODE_CONFIG → 项目级 → CONTENT，不顶替用户全局配置）。
+		// 写失败不阻断启动（回退现状＝无 provider 启动，与 pi 的 WSL 写入失败
+		// 策略一致），但显式记日志暴露。
+		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
+			wslDistro := platform.DefaultWSLDistro(nil)
+			cfgJSON := strings.TrimSpace(envOverrides["OPENCODE_CONFIG_CONTENT"])
+			if wslDistro == "" {
+				if cfgJSON != "" {
+					a.Log.Warn("session", "OpenCode WSL 会话但无可用发行版，provider 配置不可达（OPENCODE_CONFIG_CONTENT 不跨界）", "")
+				}
+			} else if cfgJSON != "" {
+				var runtimeCfg map[string]any
+				if uErr := json.Unmarshal([]byte(cfgJSON), &runtimeCfg); uErr != nil {
+					a.Log.Error("session", "解析 OpenCode 运行时配置失败，WSL 侧配置不写入", uErr.Error())
+				} else if linuxPath, wErr := launcher.WriteWSLOpenCodeAgentConfig(wslDistro, runtimeCfg); wErr != nil {
+					a.Log.Error("session", "写入 WSL 侧 OpenCode 配置失败（会话将以无 provider 配置启动）", wErr.Error())
+				} else {
+					env = launcher.BuildEnv(env, map[string]string{"OPENCODE_CONFIG": linuxPath})
+					a.Log.Info("session", "已写入 OpenCode 配置 (WSL)", fmt.Sprintf("distro=%s -> %s", wslDistro, linuxPath))
+				}
+			}
+		}
 
 		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, env, nil)
 		if err != nil {

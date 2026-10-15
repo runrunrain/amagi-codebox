@@ -199,7 +199,7 @@ const (
 Windows 宿主的 embedded 会话在终端 shell 为 WSL 时跑在 distro 内（`internal/platform/resolver.go` 的 WSL 分支：`wsl.exe -d <distro> --cd <win> -- bash -lic '<cli>...'`）。两个文件系统边界决定了以下约定（2026-08 Bug B 修复引入）：
 
 - **配置写入落 WSL 侧**：`LaunchPiSession`/`LaunchOmpSession` 在启动前用 `platform.EmbeddedLaunchTargetsWSL`（resolver 判定的镜像）探测 WSL 模式，命中时经 `launcher.WriteWSLPiAgentConfig`/`WriteWSLOmpAgentConfig` 把 models.json/models.yml 写到 **distro 内** `$HOME/.pi/agent` / `$HOME/.omp/agent`（`platform.WSLUserHome` 解析 + 缓存；UNC `\\wsl.localhost\\<distro>\\...` 直写，旧别名 `\\wsl$` 兜底），写后经 `wsl.exe -- chmod` 补偿 0700/0600（Windows `os.Chmod` 经 9P 不改 POSIX mode 位）。合并语义与 Windows 侧一致（保留已有 providers/顶层字段，amagi-* 当次条目优先）。非 WSL 模式行为不变（Windows/macOS 路径照旧）。
-- **环境变量防线**：`PI_CODING_AGENT_DIR` 在启动时被显式删除（既有行为），WSL 模式下另经 `launcher.StripWSLHostPathPIEnv` 剥离**值为 Windows 盘符路径**的 `PI_*` 变量（WSLENV 会转发所有 `PI_` 前缀变量，Windows 路径值在 Linux 侧非法，会让 pi 在 cwd 建垃圾目录）。`PI_OFFLINE=1` 保留转发。
+- **环境变量防线**：`PI_CODING_AGENT_DIR` 在启动时被显式删除（既有行为），WSL 模式下另经 `launcher.StripWSLHostPathEnv`（在 `resolveEmbeddedLaunchSpec` 漏斗统一执行，覆盖全部内嵌启动）剥离**值为 Windows 盘符路径**的转发面变量（五前缀 + 精确键 + envvars.json 自定义键；WSLENV 会转发它们，Windows 路径值在 Linux 侧非法，会让 CLI 在 cwd 建垃圾目录或解析到非法路径）。标量值（如 `PI_OFFLINE=1`）与 Linux 路径值保留转发。
 - **fd/ripgrep 检测**：WSL 模式启动时探测一次（`platform.WSLSearchToolStatus`，按 distro 缓存）`fd`/`fdfind`/`rg`；缺失时应用日志打 WARN（含 `sudo apt install fd-find ripgrep` 引导）。`PI_OFFLINE=1` 下 pi 不联网自下载，缺工具即文件搜索能力降级；CodeBox 不在启动路径做 apt 安装（需 sudo）。
 - **退化路径**：WSL 写入失败（无 distro / home 不可解析 / UNC 不可达 / chmod 失败）时回退到内置 provider 映射（`piProviderMapping`，经 WSLENV 转发的 `ANTHROPIC_API_KEY` 等环境变量兑底），不阻断启动。
 

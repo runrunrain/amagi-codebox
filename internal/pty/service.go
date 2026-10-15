@@ -323,6 +323,13 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 
 	s.log.Info("pty", "创建 ConPTY 会话", fmt.Sprintf("id=%s cmd=%s autoCmd=%s workDir=%s size=%dx%d", sessionID, commandLine, redactAutoCommandForLog(sendAutoCommand), workDir, cols, rows))
 
+	// WSL 会话：对照 darwin 的 PTY 环境补丁（buildDarwinPTYEnvironmentFromBase
+	// 的 LANG 注入）确保 distro 内 CLI 拿到 UTF-8 locale，不依赖发行版自身
+	// locale 缺省（证据 T13）。
+	if spec.BootstrapMode == platform.BootstrapWSL && spec.Env.Variables != nil {
+		spec.Env.Variables = ensureWSLUTF8LocaleEnv(spec.Env.Variables)
+	}
+
 	opts := []conpty.ConPtyOption{
 		conpty.ConPtyDimensions(cols, rows),
 	}
@@ -959,26 +966,119 @@ func bashSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// workDirMapsToDrvFS reports whether workDir is a Windows drive-letter path
-// (e.g. X:\repo): wsl.exe --cd maps those onto the /mnt/<drive> DrvFS/9P mount
-// inside the distro. Linux-style paths (~/... or /home/...) stay on ext4.
+// workDirMapsToDrvFS reports whether workDir lands on a DrvFS/9P mount inside
+// the distro, in either form: a Windows drive-letter path (X:\repo, which
+// wsl.exe --cd maps onto /mnt/<drive>) or the Linux-form mount point itself
+// (/mnt/<drive>/...). Linux-style paths that stay on ext4 (~/... or /home/...)
+// return false (evidence T12: the /mnt form used to bypass the advisory).
 func workDirMapsToDrvFS(workDir string) bool {
 	w := strings.TrimSpace(workDir)
-	return len(w) >= 2 && w[1] == ':' && isDriveLetter(w[0])
+	if len(w) >= 2 && w[1] == ':' && isDriveLetter(w[0]) {
+		return true
+	}
+	return isLinuxDrvFSMount(w)
 }
 
-// drvfsMountPath converts a Windows drive-letter path to its WSL DrvFS mount
-// point (X:\a\b → /mnt/x/a/b). Best-effort, used for log detail only.
+// isLinuxDrvFSMount reports whether p is a /mnt/<single-drive-letter> path
+// (/mnt/d, /mnt/c/repo...). Only a single-character drive segment matches:
+// /mnt/wsl, /mnt/docker-desktop and other multi-letter mounts are NOT drive
+// mounts and are not the source of the DrvFS slowdown.
+func isLinuxDrvFSMount(p string) bool {
+	const prefix = "/mnt/"
+	if !strings.HasPrefix(p, prefix) {
+		return false
+	}
+	rest := p[len(prefix):]
+	if rest == "" || !isDriveLetter(rest[0]) {
+		return false
+	}
+	return len(rest) == 1 || rest[1] == '/'
+}
+
+// drvfsMountPath converts a workdir that maps to DrvFS into its WSL mount
+// point for log detail: X:\a\b → /mnt/x/a/b; a Linux-form DrvFS path
+// (/mnt/d/...) is already at its mount point and returns unchanged.
+// Best-effort, used for log detail only.
 func drvfsMountPath(winPath string) string {
 	w := strings.TrimSpace(winPath)
 	if !workDirMapsToDrvFS(w) {
 		return ""
+	}
+	if isLinuxDrvFSMount(w) {
+		return w
 	}
 	return "/mnt/" + strings.ToLower(w[:1]) + strings.ReplaceAll(w[2:], `\`, "/")
 }
 
 func isDriveLetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// ensureWSLUTF8LocaleEnv 是 darwin buildDarwinPTYEnvironmentFromBase 的 WSL
+// 对位：无任何 LANG/LC_ALL/LC_CTYPE 时补 LANG=en_US.UTF-8，防止发行版 locale
+// 缺省（C/POSIX）让 CLI（含 opencode）输出乱码；已有 locale 变量一律不覆盖
+// （与 darwin 的注入条件逐字对齐：三者任一存在即跳过）。
+//
+// 变量跨界只经 WSLENV 白名单发生，因此注入的同时把 LANG 追加进 WSLENV 清单
+// （值是纯 locale 串，无需 /p 路径翻译标志）；已有 WSLENV 内容原样保留，
+// 清单里已有 LANG（含带 /flags 形态）时不重复追加。返回新切片，入参不变。
+func ensureWSLUTF8LocaleEnv(env []string) []string {
+	if hasEnvEntry(env, "LANG") || hasEnvEntry(env, "LC_ALL") || hasEnvEntry(env, "LC_CTYPE") {
+		return env
+	}
+	out := append(append([]string(nil), env...), "LANG=en_US.UTF-8")
+	wslenv := envEntryValue(out, "WSLENV")
+	if wslenv == "" {
+		return setEnvEntry(out, "WSLENV", "LANG")
+	}
+	for _, name := range strings.Split(wslenv, ":") {
+		base := strings.TrimSpace(name)
+		if idx := strings.Index(base, "/"); idx >= 0 {
+			base = base[:idx]
+		}
+		if strings.EqualFold(base, "LANG") {
+			return out
+		}
+	}
+	return setEnvEntry(out, "WSLENV", wslenv+":LANG")
+}
+
+// hasEnvEntry 报告 env 中是否存在键 key（Windows 环境大小写不敏感，与
+// conpty/WSLENV 的键匹配语义一致；值是否为空不影响存在性）。
+func hasEnvEntry(env []string, key string) bool {
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func envEntryValue(env []string, key string) string {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
+// setEnvEntry 设置（或替换）env 中的键值对；原切片不被修改。
+func setEnvEntry(env []string, key string, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, key) {
+			out = append(out, key+"="+value)
+			replaced = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !replaced {
+		out = append(out, key+"="+value)
+	}
+	return out
 }
 
 // windowsQuoteArg wraps a value so CommandLineToArgvW parses it as a single
