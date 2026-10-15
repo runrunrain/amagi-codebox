@@ -12,9 +12,10 @@ import (
 	"time"
 )
 
-// 真实孤儿回收端到端：构造一个父进程已死、命令行含 runtime core.json 标记的
-// 遗留进程（后台启动后外层 shell 立即退出，脚本进程被 init 收养），
-// reapStaleCore 应识别并回收；无所有权标记或父进程存活的进程不被回收。
+// 真实孤儿回收端到端：构造父进程已死、命令行含 runtime core.json 标记的遗留进程
+// （后台启动后外层 shell 立即退出，脚本进程被 init 收养），reapStaleCore 应识别
+// 并回收——含无 pidfile 的旧版本（≤1.3.103）升级场景；无所有权标记或父进程存活
+// 的进程不被回收。
 //
 // fake-core 用常驻循环而非 exec sleep：exec 会替换 argv 使命令行标记消失，
 // 无法稳定验证所有权判定。
@@ -27,7 +28,7 @@ func TestReapStaleCoreRealOrphan(t *testing.T) {
 	if err := os.MkdirAll(runtime, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// 所有权标记：与 pidfile 同目录的 core.json 路径必须出现在命令行中。
+	// 所有权标记：runtime 目录下的 core.json 路径必须出现在命令行中。
 	marker := filepath.Join(runtime, "core.json")
 	script := filepath.Join(dir, "fake-core")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
@@ -52,22 +53,37 @@ func TestReapStaleCoreRealOrphan(t *testing.T) {
 		}
 	}
 
-	t.Run("孤儿内核被回收", func(t *testing.T) {
+	t.Run("无 pidfile 的孤儿被回收（旧版升级场景）", func(t *testing.T) {
 		pid := spawnOrphan("run", "-c", marker, "--disable-color")
-		writePidfile(t, pid)
-		if got := reapStaleCore("/nonexistent/sing-box", pidfile); got != pid {
-			t.Fatalf("reapStaleCore=%d want %d", got, pid)
+		if _, err := os.Stat(pidfile); !os.IsNotExist(err) {
+			t.Fatal("前置条件：旧版不写 pidfile")
+		}
+		got := reapStaleCore("/nonexistent/sing-box", runtime)
+		if len(got) != 1 || got[0] != pid {
+			t.Fatalf("reapStaleCore=%v want [%d]", got, pid)
 		}
 		waitGone(t, pid)
+	})
+
+	t.Run("有 pidfile 的孤儿被回收", func(t *testing.T) {
+		pid := spawnOrphan("run", "-c", marker, "--disable-color")
+		writePidfile(t, pid)
+		got := reapStaleCore("/nonexistent/sing-box", runtime)
+		if len(got) != 1 || got[0] != pid {
+			t.Fatalf("reapStaleCore=%v want [%d]", got, pid)
+		}
+		waitGone(t, pid)
+		if _, err := os.Stat(pidfile); !os.IsNotExist(err) {
+			t.Fatal("回收后应清理 pidfile")
+		}
 	})
 
 	t.Run("无所有权标记不回收", func(t *testing.T) {
 		other := filepath.Join(dir, "other.json")
 		pid := spawnOrphan("run", "-c", other)
 		t.Cleanup(func() { _ = exec.Command("kill", strconv.Itoa(pid)).Run() })
-		writePidfile(t, pid)
-		if got := reapStaleCore("/nonexistent/sing-box", pidfile); got != 0 {
-			t.Fatalf("命令行不含 core.json 标记的进程不应回收，got pid %d", got)
+		if got := reapStaleCore("/nonexistent/sing-box", runtime); len(got) != 0 {
+			t.Fatalf("命令行不含 core.json 标记的进程不应回收，got %v", got)
 		}
 		if !unixSignalAlive(pid) {
 			t.Fatal("无关进程不应被杀死")
@@ -81,9 +97,8 @@ func TestReapStaleCoreRealOrphan(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill() })
-		writePidfile(t, cmd.Process.Pid)
-		if got := reapStaleCore("/nonexistent/sing-box", pidfile); got != 0 {
-			t.Fatalf("父进程存活的内核不应回收，got pid %d", got)
+		if got := reapStaleCore("/nonexistent/sing-box", runtime); len(got) != 0 {
+			t.Fatalf("父进程存活的内核不应回收，got %v", got)
 		}
 		if !unixSignalAlive(cmd.Process.Pid) {
 			t.Fatal("父进程存活的内核不应被杀死")

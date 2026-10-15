@@ -65,50 +65,61 @@ func snapshotProcesses() map[uint32]processEntryW {
 	return procs
 }
 
-// reapStaleCore 回收上次异常退出遗留的孤儿内核（Windows）。
+// reapStaleCore 回收上次异常退出遗留的孤儿内核（Windows），返回被回收的 pid 列表。
 //
-// Windows 无法低成本读取命令行，所有权证明降级为双条件：
-//  1. pidfile 记录的 pid 仍存活，且可执行文件名与当前内核路径的 basename 一致；
+// 不依赖 pidfile（覆盖旧版本升级场景）。Windows 无法低成本读取命令行，所有权
+// 证明降级为双条件：
+//  1. 可执行文件名与当前内核路径的 basename 一致（sing-box.exe）；
 //  2. 其父 pid 不在全量进程表中（父进程已死）。
 //
-// 两个条件同时命中的概率对无关进程可忽略；活着的其他 CodeBox 实例内核
-// 因父进程存活不会被回收。job object（见 process_windows.go）保证新版本
-// 不再产生孤儿，这里主要兜底升级前遗留与极端竞态。返回被回收的 pid。
-func reapStaleCore(corePath, pidPath string) int {
-	raw, err := os.ReadFile(pidPath)
-	if err != nil {
-		return 0
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		_ = os.Remove(pidPath)
-		return 0
-	}
+// 对无关进程的误判概率可忽略；v2rayN 自身崩溃遗留的孤儿内核若被顺带回收也无害
+// （父进程已死，核心已无用途，v2rayN 重启会重新拉起）。活着的其他 CodeBox 实例
+// 内核因父进程存活不会被回收。job object（process_windows.go）保证新版本不再
+// 产生孤儿，这里兜底升级前遗留与极端竞态。
+func reapStaleCore(corePath, runtimeDir string) []int {
 	procs := snapshotProcesses()
 	if procs == nil {
-		return 0
+		return nil
 	}
-	target, ok := procs[uint32(pid)]
-	if !ok {
-		_ = os.Remove(pidPath)
-		return 0
-	}
+	self := uint32(os.Getpid())
 	want := strings.ToLower(filepath.Base(corePath))
-	owned := strings.EqualFold(strings.ToLower(utf16ToString(target.ExeName[:])), want)
-	_, parentAlive := procs[target.ParentProcessID]
-	if !reapDecision(owned, parentAlive) {
-		return 0
+	var reaped []int
+	for pid, entry := range procs {
+		if pid == self || entry.ProcessID == 0 {
+			continue
+		}
+		owned := strings.EqualFold(strings.ToLower(utf16ToString(entry.ExeName[:])), want)
+		if !reapDecision(owned, parentAlive(procs, entry.ParentProcessID)) {
+			continue
+		}
+		if err := exec.Command("taskkill", "/PID", strconv.Itoa(int(pid)), "/F").Run(); err != nil {
+			continue
+		}
+		waitPidGone(pid)
+		reaped = append(reaped, int(pid))
 	}
-	if err := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/F").Run(); err != nil {
-		return 0
+	// 旧版遗留的失效 pidfile（若有）一并清理；当前实例的 pidfile 在 stop 时删除。
+	if len(reaped) > 0 {
+		_ = os.Remove(filepath.Join(runtimeDir, "core.pid"))
 	}
-	for range 40 { // ≤2s 等待端口随进程释放
-		if _, ok := snapshotProcesses()[uint32(pid)]; !ok {
-			break
+	return reaped
+}
+
+func parentAlive(procs map[uint32]processEntryW, ppid uint32) bool {
+	_, ok := procs[ppid]
+	return ok
+}
+
+// waitPidGone 有界等待 pid 从进程表消失（监听端口随进程立即释放）。
+func waitPidGone(pid uint32) {
+	for range 40 { // ≤2s
+		if procs := snapshotProcesses(); procs != nil {
+			if _, ok := procs[pid]; !ok {
+				return
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return pid
 }
 
 func utf16ToString(s []uint16) string {

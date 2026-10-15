@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.105] - 2026-10-15
+
+### Fixed
+
+- **旧版本遗留孤儿内核也能自动回收**：v1.3.104 的回收依赖 pidfile，而旧版本从不写 pidfile，升级后首次启动仍可能撞上旧孤儿占住的端口。现在改为无 pidfile 全量扫描——macOS/Linux 扫描进程表中命令行含本机 runtime 配置路径且父进程已死的内核直接回收（v2rayN 等他人内核因配置路径不同不会误伤，其他运行中实例的内核因父进程存活不会误杀）；Windows 以可执行文件名匹配加父进程已死判定回收。升级后首次启用分流即自动清理全部旧版遗留孤儿。
+
 ## [1.3.104] - 2026-10-15
 
 ### Fixed

@@ -220,7 +220,8 @@ func (m *Manager) stop() error {
 func (m *Manager) start(config []byte, ports []int) error {
 	// 先回收上次异常退出遗留的孤儿内核（父进程已死且确属本 runtime），
 	// 否则其监听端口会让下方探测直接报“已被占用”，且每次重启复现。
-	if pid := reapStaleCore(m.core, m.pidPath()); pid != 0 {
+	// 无 pidfile 的旧版孤儿（v1.3.103 及以前不写 pidfile）由全量扫描兜底。
+	for _, pid := range reapStaleCore(m.core, m.dir) {
 		_, _ = fmt.Fprintf(&m.logs, "已回收上次异常退出的代理内核（pid %d），端口恢复可用\n", pid)
 	}
 	var listeners []net.Listener

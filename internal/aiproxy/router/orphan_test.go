@@ -1,7 +1,6 @@
 package router
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -35,21 +34,10 @@ func TestPidPathLayout(t *testing.T) {
 	}
 }
 
-func TestStalePidfileIgnoredWhenMissingOrInvalid(t *testing.T) {
+// 无孤儿进程时回收为空操作：正常路径零成本、不报错。
+func TestReapStaleCoreNoopWithoutOrphans(t *testing.T) {
 	dir := t.TempDir()
-	// 无 pidfile：返回 0，不报错（正常路径零成本）。
-	if pid := reapStaleCore("/nonexistent/sing-box", filepath.Join(dir, "core.pid")); pid != 0 {
-		t.Fatalf("missing pidfile: reapStaleCore=%d want 0", pid)
-	}
-	// 非法内容：清理 pidfile 后返回 0。
-	bad := filepath.Join(dir, "core.pid")
-	if err := os.WriteFile(bad, []byte("not-a-pid\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if pid := reapStaleCore("/nonexistent/sing-box", bad); pid != 0 {
-		t.Fatalf("invalid pidfile: reapStaleCore=%d want 0", pid)
-	}
-	if _, err := os.Stat(bad); !os.IsNotExist(err) {
-		t.Fatal("invalid pidfile should be removed")
+	if got := reapStaleCore("/nonexistent/sing-box", dir); len(got) != 0 {
+		t.Fatalf("reapStaleCore=%v want empty", got)
 	}
 }
