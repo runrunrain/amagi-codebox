@@ -4082,14 +4082,33 @@ export namespace remoteclient {
 
 export namespace router {
 	
+	export class Rule {
+	    id: string;
+	    name: string;
+	    enabled: boolean;
+	    domains: string[];
+	    mode: string;
+	    node: string;
+	    port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Rule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.enabled = source["enabled"];
+	        this.domains = source["domains"];
+	        this.mode = source["mode"];
+	        this.node = source["node"];
+	        this.port = source["port"];
+	    }
+	}
 	export class Settings {
 	    proxy_port: number;
-	    claude_port: number;
-	    openai_port: number;
-	    claude_node: string;
-	    openai_node: string;
-	    claude_domains: string[];
-	    openai_domains: string[];
+	    rules: Rule[];
 	    fallback_proxy: string;
 	    fetch_proxy: string;
 	
@@ -4100,15 +4119,28 @@ export namespace router {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxy_port = source["proxy_port"];
-	        this.claude_port = source["claude_port"];
-	        this.openai_port = source["openai_port"];
-	        this.claude_node = source["claude_node"];
-	        this.openai_node = source["openai_node"];
-	        this.claude_domains = source["claude_domains"];
-	        this.openai_domains = source["openai_domains"];
+	        this.rules = this.convertValues(source["rules"], Rule);
 	        this.fallback_proxy = source["fallback_proxy"];
 	        this.fetch_proxy = source["fetch_proxy"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Status {
 	    running: boolean;

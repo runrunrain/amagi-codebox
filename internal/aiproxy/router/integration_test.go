@@ -20,11 +20,15 @@ import (
 	"amagi-codebox/internal/aiproxy/subscription"
 )
 
-func freePorts(t *testing.T) []int {
+func freePorts(t *testing.T, count ...int) []int {
 	t.Helper()
+	n := 3
+	if len(count) > 0 {
+		n = count[0]
+	}
 	var ls []net.Listener
 	var ports []int
-	for range 3 {
+	for range n {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -101,9 +105,9 @@ func TestCoreRoutesAndStreaming(t *testing.T) {
 	defer fallback.Close()
 	ports := freePorts(t)
 	s := Defaults()
-	s.ProxyPort, s.ClaudePort, s.OpenAIPort = ports[0], ports[1], ports[2]
-	s.ClaudeNode = "c"
-	s.OpenAINode = "o"
+	s.ProxyPort, s.Rules[0].Port, s.Rules[1].Port = ports[0], ports[1], ports[2]
+	s.Rules[0].Node = "c"
+	s.Rules[1].Node = "o"
 	s.FallbackProxy = fallback.URL
 	nodes := map[string]subscription.Node{"c": proxyNode(t, claude.URL, "Claude"), "o": proxyNode(t, openai.URL, "OpenAI")}
 	config, err := Build(s, nodes)
@@ -136,9 +140,9 @@ func TestCoreRoutesAndStreaming(t *testing.T) {
 		{s.ProxyPort, "http://api.openai.com/test", "OPENAI"},
 		{s.ProxyPort, "http://chatgpt.com/test", "OPENAI"},
 		{s.ProxyPort, "http://api.openai.com.evil.example/test", "FALLBACK"},
-		{s.ClaudePort, "http://same.third-party.example/test", "CLAUDE"},
-		{s.OpenAIPort, "http://same.third-party.example/test", "OPENAI"},
-		{s.ClaudePort, "http://api.openai.com/test", "CLAUDE"},
+		{s.Rules[0].Port, "http://same.third-party.example/test", "CLAUDE"},
+		{s.Rules[1].Port, "http://same.third-party.example/test", "OPENAI"},
+		{s.Rules[0].Port, "http://api.openai.com/test", "CLAUDE"},
 	}
 	for _, c := range cases {
 		got, err := request(c.port, c.target)
@@ -164,7 +168,7 @@ func TestCoreRoutesAndStreaming(t *testing.T) {
 	}
 	wg.Wait()
 	// Observe chunks as they arrive, rather than accepting a buffered response.
-	p, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", s.ClaudePort))
+	p, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", s.Rules[0].Port))
 	tr := &http.Transport{Proxy: http.ProxyURL(p)}
 	defer tr.CloseIdleConnections()
 	client := http.Client{Transport: tr, Timeout: 5 * time.Second}
@@ -200,8 +204,8 @@ func TestCoreRoutesAndStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	newSettings := s
-	newSettings.OpenAIPort = occupied.Addr().(*net.TCPAddr).Port
+	newSettings := s.Clone()
+	newSettings.Rules[1].Port = occupied.Addr().(*net.TCPAddr).Port
 	newConfig, _ := Build(newSettings, nodes)
 	if err = m.Apply(context.Background(), newConfig, newSettings.Ports(), 3); err == nil {
 		t.Fatal("occupied port accepted")
@@ -235,7 +239,7 @@ func TestCoreRoutesAndStreaming(t *testing.T) {
 	}
 }
 func TestSettingsValidation(t *testing.T) {
-	for _, change := range []func(*Settings){func(s *Settings) { s.ClaudePort = s.ProxyPort }, func(s *Settings) { s.FetchProxy = fmt.Sprintf("socks5://localhost:%d", s.ProxyPort) }, func(s *Settings) { s.OpenAIDomains = []string{"com"} }, func(s *Settings) { s.ClaudeDomains = []string{"https://anthropic.com"} }, func(s *Settings) { s.FallbackProxy = "http://127.0.0.1" }} {
+	for _, change := range []func(*Settings){func(s *Settings) { s.Rules[0].Port = s.ProxyPort }, func(s *Settings) { s.FetchProxy = fmt.Sprintf("socks5://localhost:%d", s.ProxyPort) }, func(s *Settings) { s.Rules[0].Domains = []string{"https://anthropic.com"} }, func(s *Settings) { s.FallbackProxy = "http://127.0.0.1" }} {
 		s := Defaults()
 		change(&s)
 		if err := s.Validate(); err == nil {
@@ -243,12 +247,12 @@ func TestSettingsValidation(t *testing.T) {
 		}
 	}
 	s := Defaults()
-	s.ClaudeNode = "missing"
-	s.OpenAINode = "missing"
+	s.Rules[0].Node = "missing"
+	s.Rules[1].Node = "missing"
 	if _, err := Build(s, nil); err == nil {
 		t.Fatal("missing nodes accepted")
 	}
-	b, err := Build(Settings{ProxyPort: 17001, ClaudePort: 17002, OpenAIPort: 17003, ClaudeNode: "c", OpenAINode: "o"}, map[string]subscription.Node{"c": proxyNode(t, "http://127.0.0.1:8001", "c"), "o": proxyNode(t, "http://127.0.0.1:8002", "o")})
+	b, err := Build(Settings{ProxyPort: 17001, Rules: []Rule{{ID: "c", Name: "C", Enabled: true, Mode: "proxy", Port: 17002, Node: "c"}, {ID: "o", Name: "O", Enabled: true, Mode: "proxy", Port: 17003, Node: "o"}}}, map[string]subscription.Node{"c": proxyNode(t, "http://127.0.0.1:8001", "c"), "o": proxyNode(t, "http://127.0.0.1:8002", "o")})
 	if err != nil {
 		t.Fatal(err)
 	}

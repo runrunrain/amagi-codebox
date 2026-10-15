@@ -28,6 +28,12 @@ type Settings struct {
 	CorePath       string          `json:"corePath"`
 	V2rayNDatabase string          `json:"v2raynDatabase"`
 }
+
+func (s Settings) clone() Settings {
+	s.Routing = s.Routing.Clone()
+	return s
+}
+
 type Node struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -85,7 +91,7 @@ type Service struct {
 }
 
 func New(dir string) *Service {
-	return &Service{dir: dir, data: storedState{Version: 1, Revision: 1, Settings: Settings{Routing: router.Defaults()}, Groups: []storedGroup{}}}
+	return &Service{dir: dir, data: storedState{Version: 2, Revision: 1, Settings: Settings{Routing: router.Defaults()}, Groups: []storedGroup{}}}
 }
 
 func (s *Service) Load(ctx context.Context) error {
@@ -96,13 +102,21 @@ func (s *Service) Load(ctx context.Context) error {
 	}
 	b, err := os.ReadFile(filepath.Join(s.dir, "state.json"))
 	if err == nil {
-		var data storedState
-		if json.Unmarshal(b, &data) != nil || data.Version != 1 || data.Settings.Routing.Validate() != nil {
+		data, migrated, decodeErr := decodeStoredState(b)
+		if decodeErr != nil {
 			s.loadErr = "AI 代理配置损坏或版本不兼容，请修复配置后重启"
 			s.mu.Unlock()
 			return errors.New(s.loadErr)
 		}
 		s.data = data
+		s.loadErr = ""
+		if migrated {
+			if err := s.saveLocked(); err != nil {
+				s.loadErr = "AI 代理配置迁移失败：" + err.Error()
+				s.mu.Unlock()
+				return errors.New(s.loadErr)
+			}
+		}
 	} else if !os.IsNotExist(err) {
 		s.loadErr = "无法读取 AI 代理配置"
 		s.mu.Unlock()
@@ -138,9 +152,7 @@ func (s *Service) saveLocked() error {
 func (s *Service) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	view := State{Enabled: s.data.Enabled, Settings: s.data.Settings, Groups: []Group{}, Source: s.source, Error: s.loadErr}
-	view.Settings.Routing.ClaudeDomains = append([]string{}, s.data.Settings.Routing.ClaudeDomains...)
-	view.Settings.Routing.OpenAIDomains = append([]string{}, s.data.Settings.Routing.OpenAIDomains...)
+	view := State{Enabled: s.data.Enabled, Settings: s.data.Settings.clone(), Groups: []Group{}, Source: s.source, Error: s.loadErr}
 	view.Settings.Routing.FetchProxy = maskProxy(view.Settings.Routing.FetchProxy)
 	view.Settings.Routing.FallbackProxy = maskProxy(view.Settings.Routing.FallbackProxy)
 	if s.manager != nil {
@@ -169,6 +181,7 @@ func maskProxy(raw string) string {
 	return raw
 }
 func (s *Service) SaveSettings(settings Settings) error {
+	settings = settings.clone()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != "" {
@@ -190,10 +203,10 @@ func (s *Service) SaveSettings(settings Settings) error {
 		return errors.New("更换内核路径前请先停止 AI 代理")
 	}
 	nodes := s.nodesLocked()
-	for _, id := range []string{settings.Routing.ClaudeNode, settings.Routing.OpenAINode} {
-		if id != "" {
-			if _, ok := nodes[id]; !ok {
-				return errors.New("所选节点已失效，请重新选择")
+	for _, rule := range settings.Routing.Rules {
+		if rule.Enabled && rule.Mode == "proxy" && rule.Node != "" {
+			if _, ok := nodes[rule.Node]; !ok {
+				return fmt.Errorf("规则 %q 的节点已失效，请重新选择", rule.Name)
 			}
 		}
 	}
@@ -256,7 +269,7 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 		return err
 	}
-	s.active = s.data.Settings
+	s.active = s.data.Settings.clone()
 	return nil
 }
 func (s *Service) Stop() error {
@@ -421,11 +434,11 @@ func (s *Service) Delete(id string) error {
 	}
 	s.data.Groups = next
 	s.data.Revision++
-	if strings.HasPrefix(s.data.Settings.Routing.ClaudeNode, id+":") {
-		s.data.Settings.Routing.ClaudeNode = ""
-	}
-	if strings.HasPrefix(s.data.Settings.Routing.OpenAINode, id+":") {
-		s.data.Settings.Routing.OpenAINode = ""
+	s.data.Settings = s.data.Settings.clone()
+	for i := range s.data.Settings.Routing.Rules {
+		if strings.HasPrefix(s.data.Settings.Routing.Rules[i].Node, id+":") {
+			s.data.Settings.Routing.Rules[i].Node = ""
+		}
 	}
 	if err := s.saveLocked(); err != nil {
 		s.data = old

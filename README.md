@@ -6,7 +6,7 @@
 
 **管理 Claude Code / OpenCode / Codex / Pi / Oh My Pi 多服务提供商配置的跨平台桌面应用**
 
-[![Version](https://img.shields.io/badge/version-1.3.100-blue)](https://github.com/runrunrain/amagi-codebox)
+[![Version](https://img.shields.io/badge/version-1.3.101-blue)](https://github.com/runrunrain/amagi-codebox)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)](https://go.dev)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)
@@ -23,7 +23,7 @@
 - **跨平台支持**：Windows 10/11 和 macOS 原生支持
 - **多应用管理**：Claude Code、OpenCode、Codex、Pi、Oh My Pi (omp) 五种应用统一管理
 - **多服务提供商**：Anthropic、OpenAI、GLM、MiniMax、Kimi 等，支持自定义添加
-- **AI 代理分流**：独立页面只读同步 v2rayN 节点，Claude 与 OpenAI 分别选择出口，CodeBox 新会话自动接入，其他域名默认直连（[使用说明](docs/developer/ai-proxy-routing.md)）
+- **AI 代理分流**：独立页面只读同步 v2rayN 节点，按服务编辑、添加与排序域名规则，分别选择代理节点或直连，CodeBox 新会话自动接入（[使用说明](docs/developer/ai-proxy-routing.md)）
 - **预设配置管理**：每个提供商支持多套预设，可配置模型、温度、思考模式等
 - **视觉/视频模型标记与导出**：终端预设可标记 vision / video 能力与优先级，并导出 `~/.agents/amagi-media-models.json` 供 `amagi-media-understanding` 等 Agent skill 消费（契约见 [docs/vision-export-contract.md](docs/vision-export-contract.md)）
 - **API 密钥安全存储**：Windows DPAPI / macOS Keychain 加密存储

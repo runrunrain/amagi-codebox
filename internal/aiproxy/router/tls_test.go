@@ -68,9 +68,9 @@ func TestHTTPSRemainsEndToEnd(t *testing.T) {
 	defer exit.Close()
 	s := Defaults()
 	ports := freePorts(t)
-	s.ProxyPort, s.ClaudePort, s.OpenAIPort = ports[0], ports[1], ports[2]
-	s.ClaudeNode = "c"
-	s.OpenAINode = "o"
+	s.ProxyPort, s.Rules[0].Port, s.Rules[1].Port = ports[0], ports[1], ports[2]
+	s.Rules[0].Node = "c"
+	s.Rules[1].Node = "o"
 	s.FallbackProxy = ""
 	node := proxyNode(t, exit.URL, "TLS relay")
 	config, err := Build(s, map[string]subscription.Node{"c": node, "o": node})
@@ -84,7 +84,7 @@ func TestHTTPSRemainsEndToEnd(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(origin.Certificate())
-	p, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", s.ClaudePort))
+	p, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", s.Rules[0].Port))
 	tr := &http.Transport{Proxy: http.ProxyURL(p), TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
 	defer tr.CloseIdleConnections()
 	client := http.Client{Transport: tr, Timeout: 5 * time.Second}

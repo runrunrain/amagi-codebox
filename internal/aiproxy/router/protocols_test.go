@@ -36,8 +36,8 @@ func TestImportedProtocolsPassCoreCheck(t *testing.T) {
 			t.Fatal(i, err, warnings)
 		}
 		s := Defaults()
-		s.ClaudeNode = "c"
-		s.OpenAINode = "o"
+		s.Rules[0].Node = "c"
+		s.Rules[1].Node = "o"
 		config, err := Build(s, map[string]subscription.Node{"c": nodes[0], "o": nodes[0]})
 		if err != nil {
 			t.Fatal(err)

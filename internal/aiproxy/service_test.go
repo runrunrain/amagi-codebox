@@ -156,9 +156,9 @@ func TestNativeRoutingLifecycleAndDirectFallback(t *testing.T) {
 	settings := view.Settings
 	settings.CorePath = core
 	ports := unusedPorts(t)
-	settings.Routing.ProxyPort, settings.Routing.ClaudePort, settings.Routing.OpenAIPort = ports[0], ports[1], ports[2]
-	settings.Routing.ClaudeNode = view.Groups[0].Nodes[0].ID
-	settings.Routing.OpenAINode = view.Groups[0].Nodes[1].ID
+	settings.Routing.ProxyPort, settings.Routing.Rules[0].Port, settings.Routing.Rules[1].Port = ports[0], ports[1], ports[2]
+	settings.Routing.Rules[0].Node = view.Groups[0].Nodes[0].ID
+	settings.Routing.Rules[1].Node = view.Groups[0].Nodes[1].ID
 	if err := s.SaveSettings(settings); err != nil {
 		t.Fatal(err)
 	}

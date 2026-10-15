@@ -6,50 +6,90 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"amagi-codebox/internal/aiproxy/subscription"
 )
 
+// Rules are evaluated in order. Port optionally exposes a dedicated entrypoint.
+type Rule struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Enabled bool     `json:"enabled"`
+	Domains []string `json:"domains"`
+	Mode    string   `json:"mode"`
+	Node    string   `json:"node"`
+	Port    int      `json:"port"`
+}
 type Settings struct {
-	ProxyPort     int      `json:"proxy_port"`
-	ClaudePort    int      `json:"claude_port"`
-	OpenAIPort    int      `json:"openai_port"`
-	ClaudeNode    string   `json:"claude_node"`
-	OpenAINode    string   `json:"openai_node"`
-	ClaudeDomains []string `json:"claude_domains"`
-	OpenAIDomains []string `json:"openai_domains"`
-	FallbackProxy string   `json:"fallback_proxy"`
-	FetchProxy    string   `json:"fetch_proxy"`
+	ProxyPort     int    `json:"proxy_port"`
+	Rules         []Rule `json:"rules"`
+	FallbackProxy string `json:"fallback_proxy"`
+	FetchProxy    string `json:"fetch_proxy"`
 }
 
 func Defaults() Settings {
-	return Settings{ProxyPort: 18890, ClaudePort: 18892, OpenAIPort: 18893,
-		ClaudeDomains: []string{"anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com"},
-		OpenAIDomains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"},
-		FallbackProxy: ""}
+	return Settings{ProxyPort: 18890, Rules: []Rule{
+		{ID: "claude", Name: "Claude", Enabled: true, Mode: "proxy", Port: 18892, Domains: []string{"anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com"}},
+		{ID: "openai", Name: "OpenAI", Enabled: true, Mode: "proxy", Port: 18893, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}},
+	}}
 }
 
+// Clone prevents DTOs and saved drafts from mutating active routing.
+func (s Settings) Clone() Settings {
+	s.Rules = append([]Rule{}, s.Rules...)
+	for i := range s.Rules {
+		s.Rules[i].Domains = append([]string{}, s.Rules[i].Domains...)
+	}
+	return s
+}
+
+var ruleID = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+var domainLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+func validDomain(d string) bool {
+	if len(d) == 0 || len(d) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(d, ".") {
+		if !domainLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
 func (s Settings) Validate() error {
 	seen := map[int]bool{}
 	for _, p := range s.Ports() {
 		if p < 1024 || p > 65535 || seen[p] {
-			return errors.New("代理端口应为互不相同的 1024–65535 端口")
+			return errors.New("已启用的代理入口应使用互不相同的 1024–65535 端口")
 		}
 		seen[p] = true
 	}
-	for _, ds := range [][]string{s.ClaudeDomains, s.OpenAIDomains} {
-		for _, d := range ds {
-			if d == "" || d != strings.ToLower(d) || strings.ContainsAny(d, " /:*?#@\\\t\n") || strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".") {
-				return fmt.Errorf("域名后缀 %q 无效，请填写小写域名", d)
-			}
+	ids := map[string]bool{}
+	for _, rule := range s.Rules {
+		if !ruleID.MatchString(rule.ID) || ids[rule.ID] {
+			return errors.New("规则 ID 无效或重复，请重新添加该规则")
 		}
-	}
-	for _, a := range s.ClaudeDomains {
-		for _, b := range s.OpenAIDomains {
-			if a == b || strings.HasSuffix(a, "."+b) || strings.HasSuffix(b, "."+a) {
-				return errors.New("Claude 与 OpenAI 域名规则重叠，请使用各自的专用入口")
+		ids[rule.ID] = true
+		if strings.TrimSpace(rule.Name) == "" || utf8.RuneCountInString(rule.Name) > 80 {
+			return errors.New("规则名称应为 1–80 个字符")
+		}
+		if rule.Mode != "proxy" && rule.Mode != "direct" {
+			return fmt.Errorf("规则 %q 的出口方式应为代理或直连", rule.Name)
+		}
+		if rule.Port != 0 && (rule.Port < 1024 || rule.Port > 65535) {
+			return fmt.Errorf("规则 %q 的专用端口应留空或使用 1024–65535 端口", rule.Name)
+		}
+		if rule.Enabled && len(rule.Domains) == 0 && rule.Port == 0 {
+			return fmt.Errorf("规则 %q 至少需要匹配域名或专用端口", rule.Name)
+		}
+		for _, d := range rule.Domains {
+			if !validDomain(d) {
+				return fmt.Errorf("规则 %q 的域名 %q 无效，请填写小写域名，不含协议、路径或通配符", rule.Name, d)
 			}
 		}
 	}
@@ -70,8 +110,15 @@ func (s Settings) Validate() error {
 	}
 	return nil
 }
-
-func (s Settings) Ports() []int { return []int{s.ProxyPort, s.ClaudePort, s.OpenAIPort} }
+func (s Settings) Ports() []int {
+	ports := []int{s.ProxyPort}
+	for _, rule := range s.Rules {
+		if rule.Enabled && rule.Port != 0 {
+			ports = append(ports, rule.Port)
+		}
+	}
+	return ports
+}
 
 func ProxyOutbound(raw string) (map[string]any, error) {
 	u, err := url.Parse(raw)
@@ -105,22 +152,35 @@ func Build(s Settings, nodes map[string]subscription.Node) ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	claude, ok := nodes[s.ClaudeNode]
-	if !ok {
-		return nil, errors.New("请为 Claude 选择有效节点")
-	}
-	openai, ok := nodes[s.OpenAINode]
-	if !ok {
-		return nil, errors.New("请为 OpenAI 选择有效节点")
-	}
 	outbounds := []map[string]any{{"type": "direct", "tag": "direct"}}
-	for tag, node := range map[string]subscription.Node{"claude-out": claude, "openai-out": openai} {
-		o := map[string]any{}
-		for k, v := range node.Outbound {
-			o[k] = v
+	inbounds := []map[string]any{{"type": "mixed", "tag": "auto-in", "listen": "127.0.0.1", "listen_port": s.ProxyPort}}
+	dedicated, domains := []map[string]any{}, []map[string]any{}
+	for _, rule := range s.Rules {
+		if !rule.Enabled {
+			continue
 		}
-		o["tag"] = tag
-		outbounds = append(outbounds, o)
+		target := "direct"
+		if rule.Mode == "proxy" {
+			node, ok := nodes[rule.Node]
+			if !ok {
+				return nil, fmt.Errorf("请为规则 %q 选择有效节点", rule.Name)
+			}
+			target = "rule-" + rule.ID + "-out"
+			o := map[string]any{}
+			for k, v := range node.Outbound {
+				o[k] = v
+			}
+			o["tag"] = target
+			outbounds = append(outbounds, o)
+		}
+		if rule.Port != 0 {
+			tag := "rule-" + rule.ID + "-in"
+			inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": tag, "listen": "127.0.0.1", "listen_port": rule.Port})
+			dedicated = append(dedicated, map[string]any{"inbound": []string{tag}, "action": "route", "outbound": target})
+		}
+		if len(rule.Domains) > 0 {
+			domains = append(domains, map[string]any{"domain_suffix": rule.Domains, "action": "route", "outbound": target})
+		}
 	}
 	final := "direct"
 	if s.FallbackProxy != "" {
@@ -129,24 +189,13 @@ func Build(s Settings, nodes map[string]subscription.Node) ([]byte, error) {
 		outbounds = append(outbounds, o)
 		final = "fallback"
 	}
-	rules := []map[string]any{
-		{"inbound": []string{"claude-in"}, "action": "route", "outbound": "claude-out"},
-		{"inbound": []string{"openai-in"}, "action": "route", "outbound": "openai-out"},
-	}
-	if len(s.ClaudeDomains) > 0 {
-		rules = append(rules, map[string]any{"domain_suffix": s.ClaudeDomains, "action": "route", "outbound": "claude-out"})
-	}
-	if len(s.OpenAIDomains) > 0 {
-		rules = append(rules, map[string]any{"domain_suffix": s.OpenAIDomains, "action": "route", "outbound": "openai-out"})
-	}
-	ins := []map[string]any{}
-	for i, tag := range []string{"auto-in", "claude-in", "openai-in"} {
-		ins = append(ins, map[string]any{"type": "mixed", "tag": tag, "listen": "127.0.0.1", "listen_port": s.Ports()[i]})
-	}
+	// Dedicated entrypoints precede domain rules; unified requests follow
+	// the user's rule order, including explicit direct rules.
+	rules := append(dedicated, domains...)
 	return json.MarshalIndent(map[string]any{
 		"log":      map[string]any{"level": "info", "timestamp": true},
 		"dns":      map[string]any{"servers": []map[string]any{{"type": "local", "tag": "local"}}},
-		"inbounds": ins, "outbounds": outbounds,
+		"inbounds": inbounds, "outbounds": outbounds,
 		"route": map[string]any{"rules": rules, "final": final, "default_domain_resolver": "local"},
 	}, "", "  ")
 }

@@ -52,7 +52,7 @@ func TestAIProxyBrowserBridge(t *testing.T) {
 	for _, ln := range listeners {
 		ln.Close()
 	}
-	settings.Routing.ProxyPort, settings.Routing.ClaudePort, settings.Routing.OpenAIPort = ports[0], ports[1], ports[2]
+	settings.Routing.ProxyPort, settings.Routing.Rules[0].Port, settings.Routing.Rules[1].Port = ports[0], ports[1], ports[2]
 	if err = s.SaveSettings(settings); err != nil {
 		t.Fatal(err)
 	}
