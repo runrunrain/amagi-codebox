@@ -92,6 +92,7 @@ type Service struct {
 	source         SourceStatus
 	loadErr        string
 	closed         bool
+	loaded         bool
 }
 
 func New(dir string) *Service {
@@ -104,6 +105,9 @@ func (s *Service) Load(ctx context.Context) error {
 		s.mu.Unlock()
 		return errors.New("AI 代理分流已关闭")
 	}
+	// Until the preference has been read, even a disabled default is unknown.
+	// Config.Load may schedule model probes before provider-linked restore.
+	s.loaded = true
 	b, err := os.ReadFile(filepath.Join(s.dir, "state.json"))
 	if err == nil {
 		data, migrated, decodeErr := decodeStoredState(b)

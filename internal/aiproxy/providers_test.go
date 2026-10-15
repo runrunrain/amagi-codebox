@@ -160,3 +160,27 @@ func TestVersionTwoMigrationPreservesEmptyRules(t *testing.T) {
 		t.Fatal("v2 policy migration failed", data, err)
 	}
 }
+
+func TestNetworkPolicyWaitsForInitialLoad(t *testing.T) {
+	s := New(t.TempDir())
+	defer s.Close()
+	settings := s.State().Settings
+	settings.V2rayNDatabase = filepath.Join(t.TempDir(), "missing.db")
+	if err := s.SaveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyEnv([]string{"HTTPS_PROXY=http://old-exit:5800"}); err == nil {
+		t.Fatal("startup launch used an unknown proxy preference")
+	}
+	req, _ := http.NewRequest("GET", "https://api.example", nil)
+	if _, err := s.ProxyForRequest(req); err == nil {
+		t.Fatal("startup model probe used an unknown proxy preference")
+	}
+	if err := s.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"HTTPS_PROXY=http://old-exit:5800"}
+	if got, err := s.ApplyEnv(base); err != nil || !reflect.DeepEqual(got, base) {
+		t.Fatal("loaded disabled policy did not restore existing environment", err)
+	}
+}

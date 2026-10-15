@@ -14,6 +14,9 @@ import (
 var proxyKeys = map[string]bool{"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true}
 
 func (s *Service) proxyURLLocked(providers []Provider) (string, error) {
+	if !s.loaded {
+		return "", errors.New("AI 代理策略尚未加载，请等待应用初始化完成")
+	}
 	if !s.data.Enabled {
 		return "", nil
 	}
