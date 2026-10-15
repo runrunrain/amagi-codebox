@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.103] - 2026-10-15
+
+### Changed
+
+- **服务分流规则改为小卡片与拖拽排序**：规则列表改为与提供商页一致的边框小卡片（自适应多列网格、hover 浮起），卡片头集成拖拽手柄、序号、名称、启用开关与移除入口，替代原「上移/下移」按钮。拖拽基于 Pointer Events 自绘（WKWebView 不支持 HTML5 DnD 的环境同样可用），悬停即实时让位，支持边缘自动滚动与拖拽反馈；手柄聚焦后仍可用 ↑/↓ 键盘调整顺序。排序逻辑抽为独立纯函数模块并配套单元测试。
+
 ## [1.3.102] - 2026-10-14
 
 ### Added
