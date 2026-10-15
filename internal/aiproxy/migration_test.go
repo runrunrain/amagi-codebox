@@ -29,6 +29,9 @@ func TestMissingRulesCannotSilentlyBecomeDirect(t *testing.T) {
 			if err := s.Load(context.Background()); err == nil {
 				t.Fatal("incomplete enabled policy silently became direct")
 			}
+			if _, err := s.ApplyEnv([]string{"HTTPS_PROXY=http://old-exit:5800"}); err == nil {
+				t.Fatal("invalid enabled policy allowed a different launch route")
+			}
 			after, err := os.ReadFile(path)
 			if err != nil || string(after) != string(original) {
 				t.Fatal("incomplete policy was overwritten")

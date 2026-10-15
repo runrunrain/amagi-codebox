@@ -104,6 +104,9 @@ func (s *Service) Load(ctx context.Context) error {
 	if err == nil {
 		data, migrated, decodeErr := decodeStoredState(b)
 		if decodeErr != nil {
+			// Retain an explicit enabled preference even when the routing policy
+			// is invalid, so new launches cannot silently use another exit.
+			s.data.Enabled = data.Enabled
 			s.loadErr = "AI 代理配置损坏或版本不兼容，请修复配置后重启"
 			s.mu.Unlock()
 			return errors.New(s.loadErr)

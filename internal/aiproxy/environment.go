@@ -17,6 +17,9 @@ func (s *Service) proxyURLLocked() (string, error) {
 	if !s.data.Enabled {
 		return "", nil
 	}
+	if s.loadErr != "" {
+		return "", errors.New(s.loadErr)
+	}
 	if s.manager == nil || !s.manager.Status().Running {
 		return "", errors.New("AI 代理分流已启用但内核未运行，请在 AI 代理分流页启动或停用")
 	}
