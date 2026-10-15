@@ -4,6 +4,17 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.100] - 2026-10-14
+
+### Added
+
+- **AI 代理分流独立页面**：只读同步本机 v2rayN 的订阅分组和节点，Claude 与 OpenAI 分别选择出口；也支持订阅链接、节点链接、Base64、Clash YAML 和 sing-box JSON 导入。使用独立 sing-box 进程，未匹配域名默认直连，可在页面管理端口、域名规则、节点、内核和运行日志。
+- **接入 CodeBox 会话与模型工具**：新建的 Claude Code、Codex、Pi、OMP、OpenCode 会话自动使用统一分流入口，Pi / OMP 多模型及继承环境的子 Agent 按目标域名选择出口；新启动的 Headroom、GitAssist、多模态与额度探测使用同一路由策略。已有会话需重启后接入，WSL 宿主回环转发暂不支持。
+
+### Changed
+
+- 分流配置保存与应用分开，切换页面保留未保存草稿；启动失败回滚已有内核配置，正常退出清理进程并保留启用偏好。入口只监听本机，Wails 状态不返回节点凭据或订阅 URL。详见 [使用说明](docs/developer/ai-proxy-routing.md)。
+
 ## [1.3.99] - 2026-10-13
 
 ### Added
