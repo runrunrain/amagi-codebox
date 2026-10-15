@@ -96,4 +96,6 @@ export function SetAllTerminalPresets(arg1:config.TerminalPresetsConfig):Promise
 
 export function SetModalityProber(arg1:any):Promise<void>;
 
+export function SetPiLoginPresetChangeListener(arg1:any):Promise<void>;
+
 export function SnapshotProvider(arg1:string):Promise<config.Provider>;

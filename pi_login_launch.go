@@ -137,7 +137,7 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	if preset.Thinking != "" {
 		args = append(args, "--thinking", preset.Thinking)
 	}
-	spec, err := p.resolver.Resolve(platform.ResolveRequest{
+	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(session.AppTypePi), LaunchMode: "embedded", RequestedShellPath: recipe.ShellRef,
 		WorkDir: recipe.Workdir, Env: env, CLIArgs: args, PTYCols: 120, PTYRows: 40,
 	})

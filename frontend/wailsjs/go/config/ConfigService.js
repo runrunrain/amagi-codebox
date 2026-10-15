@@ -190,6 +190,10 @@ export function SetModalityProber(arg1) {
   return window['go']['config']['ConfigService']['SetModalityProber'](arg1);
 }
 
+export function SetPiLoginPresetChangeListener(arg1) {
+  return window['go']['config']['ConfigService']['SetPiLoginPresetChangeListener'](arg1);
+}
+
 export function SnapshotProvider(arg1) {
   return window['go']['config']['ConfigService']['SnapshotProvider'](arg1);
 }

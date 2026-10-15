@@ -43,11 +43,18 @@ type Service struct {
 	cfg            *config.ConfigService
 	settings       *settings.Service
 	apiKeyResolver func(string) string
+	httpClient     *http.Client
 }
 
 // New 构造 gitassist 服务。
 func New(cfg *config.ConfigService, settings *settings.Service, apiKeyResolver func(string) string) *Service {
 	return &Service{cfg: cfg, settings: settings, apiKeyResolver: apiKeyResolver}
+}
+
+func NewWithHTTPClient(cfg *config.ConfigService, settings *settings.Service, resolver func(string) string, client *http.Client) *Service {
+	s := New(cfg, settings, resolver)
+	s.httpClient = client
+	return s
 }
 
 // RepoStatus 仓库状态快照（前端弹窗展示用）。非 git 仓库时仅 IsGitRepo=false。
@@ -341,7 +348,11 @@ func (s *Service) SummarizeDiff(workDir string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("请求提交总结模型失败（%s）: %w", url, err)
 	}

@@ -25,6 +25,12 @@ const router = createRouter({
       component: () => import('../views/ExtensionsView.vue')
     },
     {
+      path: '/ai-proxy',
+      name: 'AIProxy',
+      meta: { keepAlive: true },
+      component: () => import('../views/AIProxyView.vue')
+    },
+    {
       path: '/envcheck',
       name: 'EnvCheck',
       component: () => import('../views/EnvCheckView.vue')

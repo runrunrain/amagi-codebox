@@ -1,0 +1,12 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CodeBox AI 代理分流验证</title></head><body><div id="app"></div><script type="module">
+import { createApp, h, KeepAlive } from 'vue';
+import { createRouter, createWebHashHistory, RouterView, RouterLink } from 'vue-router';
+import AIProxyView from '/frontend/src/views/AIProxyView.vue';
+import '/frontend/src/styles/tokens.css';
+const bridge = new URLSearchParams(location.search).get('bridge');
+if (!bridge?.startsWith('http://127.0.0.1:')) throw new Error('Supply isolated Go test bridge URL');
+const rpc = async (method,args) => {const response=await fetch(`${bridge}/rpc`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({method,args})});const result=await response.json();if(!response.ok)throw new Error(result.error);return result;};
+window.go={main:{App:new Proxy({},{get:(_,method)=>(...args)=>rpc(method,args)})}};
+const router=createRouter({history:createWebHashHistory(),routes:[{path:'/',redirect:'/ai-proxy'},{path:'/ai-proxy',component:AIProxyView},{path:'/other',component:{render:()=>h('p','切换后返回，代理草稿保留。')}}]});
+createApp({render(){return h('div',{class:'fixture'},[h('nav',[h('strong','Amagi CodeBox · 功能验证'),h(RouterLink,{to:'/ai-proxy'},()=> 'AI 代理分流'),h(RouterLink,{to:'/other'},()=> '其他页面'),h('small','独立测试数据 · 真实 Go 服务')]),h(RouterView,null,{default:({Component})=>h(KeepAlive,null,Component?[h(Component)]:[])})]);}}).use(router).mount('#app');
+</script><style>body{margin:0;background:var(--window);font:13px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.fixture{display:flex;height:100vh}.fixture>nav{display:flex;flex-direction:column;gap:20px;width:200px;flex-shrink:0;padding:28px 20px;background:var(--sidebar);border-right:1px solid var(--separator);box-sizing:border-box}.fixture>nav a{color:var(--secondary);text-decoration:none}.fixture>nav a.router-link-active{color:var(--accent)}small{color:var(--tertiary)}@media(max-width:750px){.fixture>nav{display:none}}*{box-sizing:border-box}h1,h2,p{margin:0}</style></body></html>

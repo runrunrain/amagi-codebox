@@ -57,6 +57,15 @@ type HeadroomService struct {
 	// SetVenvBinDir so the proxy launch resolves the venv-installed headroom
 	// binary. When empty, resolution falls back to the platform resolver only.
 	venvBinDir string
+	networkEnv func([]string) ([]string, error)
+}
+
+// SetNetworkEnv routes new compression-proxy processes through the host's AI
+// proxy, so their upstream calls follow the same rules as CLI sessions.
+func (s *HeadroomService) SetNetworkEnv(fn func([]string) ([]string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.networkEnv = fn
 }
 
 // NewHeadroomService creates a HeadroomService backed by the given process
@@ -208,6 +217,13 @@ func (s *HeadroomService) start(realBackendURL string, kind backendKind) error {
 	// 会再次获取 s.mu 造成自死锁。
 	binPath, enhancedEnv := resolveHeadroomBinCore(s.venvBinDir)
 	env := buildChildEnvForKind(realBackendURL, port, enhancedEnv, kind)
+	if s.networkEnv != nil {
+		var err error
+		env, err = s.networkEnv(env)
+		if err != nil {
+			return err
+		}
+	}
 
 	spec := platform.CommandSpec{
 		Path:   binPath,

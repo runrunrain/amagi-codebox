@@ -75,6 +75,7 @@ type appLaunchPlanner struct {
 	paths        *paths.PathsService
 	envVars      launchEnvVarsPort
 	homeDir      string
+	networkEnv   func([]string) ([]string, error)
 }
 
 func newAppLaunchPlanner(
@@ -254,7 +255,7 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), overrides)
 
 	// Resolve CLI/shell.
-	spec, err := p.resolver.Resolve(platform.ResolveRequest{
+	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(session.AppTypeClaudeCode), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
 		PTYCols: 120, PTYRows: 40,
@@ -364,7 +365,7 @@ func (p *appLaunchPlanner) buildOpenCodePlan(recipe launchplan.StableRecipe, req
 
 resolve:
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), envOverrides)
-	spec, err := p.resolver.Resolve(platform.ResolveRequest{
+	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(session.AppTypeOpenCode), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
 		PTYCols: 120, PTYRows: 40,
@@ -460,7 +461,7 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), envOverrides)
 	args := buildCodexCLIArgs(launchSettings)
-	spec, err := p.resolver.Resolve(platform.ResolveRequest{
+	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(session.AppTypeCodex), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
 		CLIArgs: args, PTYCols: 120, PTYRows: 40,
@@ -719,7 +720,7 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 	if launchResult.Thinking != "" {
 		args = append(args, "--thinking", launchResult.Thinking)
 	}
-	spec, err := p.resolver.Resolve(platform.ResolveRequest{
+	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(appType), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
 		CLIArgs: args, PTYCols: 120, PTYRows: 40,

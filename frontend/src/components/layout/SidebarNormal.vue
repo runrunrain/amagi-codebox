@@ -147,6 +147,11 @@ const navItems = [
     icon: '<path d="M14 3v4h4"/><rect x="3" y="3" width="11" height="11" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>'
   },
   {
+    path: '/ai-proxy',
+    label: 'AI 代理分流',
+    icon: '<path d="M4 6h5l6 12h5M4 18h5l6-12h5"/><path d="m17 3 3 3-3 3m0 6 3 3-3 3"/>'
+  },
+  {
     path: '/envcheck',
     label: '环境检测',
     icon: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'

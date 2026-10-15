@@ -58,6 +58,10 @@ export function CreateRemotePairingWindow(arg1) {
   return window['go']['main']['App']['CreateRemotePairingWindow'](arg1);
 }
 
+export function DeleteAIProxySubscription(arg1) {
+  return window['go']['main']['App']['DeleteAIProxySubscription'](arg1);
+}
+
 export function DeleteEnvVar(arg1) {
   return window['go']['main']['App']['DeleteEnvVar'](arg1);
 }
@@ -92,6 +96,10 @@ export function ExportLogs() {
 
 export function FixClaudeConfig(arg1, arg2, arg3) {
   return window['go']['main']['App']['FixClaudeConfig'](arg1, arg2, arg3);
+}
+
+export function GetAIProxyState() {
+  return window['go']['main']['App']['GetAIProxyState']();
 }
 
 export function GetAmagiConfig() {
@@ -346,6 +354,10 @@ export function HeadroomStop() {
   return window['go']['main']['App']['HeadroomStop']();
 }
 
+export function ImportAIProxySubscription(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportAIProxySubscription'](arg1, arg2, arg3);
+}
+
 export function ImportConfigFromFile() {
   return window['go']['main']['App']['ImportConfigFromFile']();
 }
@@ -448,6 +460,10 @@ export function PtyWriteLarge(arg1, arg2) {
 
 export function QuickLaunch(arg1, arg2, arg3) {
   return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
+}
+
+export function RefreshAIProxySubscription(arg1) {
+  return window['go']['main']['App']['RefreshAIProxySubscription'](arg1);
 }
 
 export function RegenerateRemoteToken() {
@@ -602,6 +618,10 @@ export function RunEnvFixAction(arg1, arg2, arg3) {
   return window['go']['main']['App']['RunEnvFixAction'](arg1, arg2, arg3);
 }
 
+export function SaveAIProxySettings(arg1) {
+  return window['go']['main']['App']['SaveAIProxySettings'](arg1);
+}
+
 export function SaveAllConfig() {
   return window['go']['main']['App']['SaveAllConfig']();
 }
@@ -686,6 +706,10 @@ export function SetSystemProxyEnabled(arg1) {
   return window['go']['main']['App']['SetSystemProxyEnabled'](arg1);
 }
 
+export function StartAIProxy() {
+  return window['go']['main']['App']['StartAIProxy']();
+}
+
 export function StartInstallClaudeWithMethodAsync(arg1) {
   return window['go']['main']['App']['StartInstallClaudeWithMethodAsync'](arg1);
 }
@@ -698,8 +722,16 @@ export function StartUpdateToolAsync(arg1) {
   return window['go']['main']['App']['StartUpdateToolAsync'](arg1);
 }
 
+export function StopAIProxy() {
+  return window['go']['main']['App']['StopAIProxy']();
+}
+
 export function StopSession(arg1) {
   return window['go']['main']['App']['StopSession'](arg1);
+}
+
+export function SyncAIProxyV2rayN() {
+  return window['go']['main']['App']['SyncAIProxyV2rayN']();
 }
 
 export function ToggleRemoteServer(arg1) {

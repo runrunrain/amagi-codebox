@@ -1,3 +1,163 @@
+export namespace aiproxy {
+	
+	export class Node {
+	    id: string;
+	    name: string;
+	    type: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Node(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	    }
+	}
+	export class Group {
+	    id: string;
+	    name: string;
+	    source: string;
+	    nodes: Node[];
+	    warnings: string[];
+	    refreshable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Group(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.nodes = this.convertValues(source["nodes"], Node);
+	        this.warnings = source["warnings"];
+	        this.refreshable = source["refreshable"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class Settings {
+	    routing: router.Settings;
+	    corePath: string;
+	    v2raynDatabase: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Settings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.routing = this.convertValues(source["routing"], router.Settings);
+	        this.corePath = source["corePath"];
+	        this.v2raynDatabase = source["v2raynDatabase"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SourceStatus {
+	    available: boolean;
+	    database: string;
+	    groups: number;
+	    nodes: number;
+	    skipped: number;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SourceStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.database = source["database"];
+	        this.groups = source["groups"];
+	        this.nodes = source["nodes"];
+	        this.skipped = source["skipped"];
+	        this.error = source["error"];
+	    }
+	}
+	export class State {
+	    enabled: boolean;
+	    pending: boolean;
+	    settings: Settings;
+	    groups: Group[];
+	    status: router.Status;
+	    source: SourceStatus;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new State(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.pending = source["pending"];
+	        this.settings = this.convertValues(source["settings"], Settings);
+	        this.groups = this.convertValues(source["groups"], Group);
+	        this.status = this.convertValues(source["status"], router.Status);
+	        this.source = this.convertValues(source["source"], SourceStatus);
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace codexplugin {
 	
 	export class AddMarketplaceRequest {
@@ -3916,6 +4076,61 @@ export namespace remoteclient {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace router {
+	
+	export class Settings {
+	    proxy_port: number;
+	    claude_port: number;
+	    openai_port: number;
+	    claude_node: string;
+	    openai_node: string;
+	    claude_domains: string[];
+	    openai_domains: string[];
+	    fallback_proxy: string;
+	    fetch_proxy: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Settings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.proxy_port = source["proxy_port"];
+	        this.claude_port = source["claude_port"];
+	        this.openai_port = source["openai_port"];
+	        this.claude_node = source["claude_node"];
+	        this.openai_node = source["openai_node"];
+	        this.claude_domains = source["claude_domains"];
+	        this.openai_domains = source["openai_domains"];
+	        this.fallback_proxy = source["fallback_proxy"];
+	        this.fetch_proxy = source["fetch_proxy"];
+	    }
+	}
+	export class Status {
+	    running: boolean;
+	    pid: number;
+	    core: string;
+	    error: string;
+	    revision: number;
+	    logs: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.running = source["running"];
+	        this.pid = source["pid"];
+	        this.core = source["core"];
+	        this.error = source["error"];
+	        this.revision = source["revision"];
+	        this.logs = source["logs"];
+	    }
 	}
 
 }

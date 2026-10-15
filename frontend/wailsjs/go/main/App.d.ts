@@ -5,6 +5,7 @@ import {settings} from '../models';
 import {envcheck} from '../models';
 import {updater} from '../models';
 import {main} from '../models';
+import {aiproxy} from '../models';
 import {config} from '../models';
 import {dockerwsl} from '../models';
 import {envvars} from '../models';
@@ -46,6 +47,8 @@ export function ConfirmExternalCleanupRecovery(arg1:string,arg2:boolean):Promise
 
 export function CreateRemotePairingWindow(arg1:boolean):Promise<remote.PairingWindowInfo>;
 
+export function DeleteAIProxySubscription(arg1:string):Promise<aiproxy.State>;
+
 export function DeleteEnvVar(arg1:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
@@ -63,6 +66,8 @@ export function ExportEnvVarsToFile():Promise<void>;
 export function ExportLogs():Promise<string>;
 
 export function FixClaudeConfig(arg1:string,arg2:string,arg3:string):Promise<envcheck.ConfigFixResult>;
+
+export function GetAIProxyState():Promise<aiproxy.State>;
 
 export function GetAmagiConfig():Promise<string>;
 
@@ -190,6 +195,8 @@ export function HeadroomStart(arg1:string):Promise<void>;
 
 export function HeadroomStop():Promise<void>;
 
+export function ImportAIProxySubscription(arg1:string,arg2:string,arg3:string):Promise<aiproxy.State>;
+
 export function ImportConfigFromFile():Promise<string>;
 
 export function ImportEnvVars(arg1:string):Promise<void>;
@@ -241,6 +248,8 @@ export function PtyWrite(arg1:string,arg2:string):Promise<void>;
 export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 
 export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+
+export function RefreshAIProxySubscription(arg1:string):Promise<aiproxy.State>;
 
 export function RegenerateRemoteToken():Promise<string>;
 
@@ -318,6 +327,8 @@ export function RunEnvCheck():Promise<envcheck.OverallStatus>;
 
 export function RunEnvFixAction(arg1:string,arg2:string,arg3:string):Promise<envcheck.FixActionResult>;
 
+export function SaveAIProxySettings(arg1:aiproxy.Settings):Promise<aiproxy.State>;
+
 export function SaveAllConfig():Promise<void>;
 
 export function SaveAmagiConfig(arg1:string):Promise<void>;
@@ -360,13 +371,19 @@ export function SetRemotePort(arg1:number):Promise<void>;
 
 export function SetSystemProxyEnabled(arg1:boolean):Promise<main.SystemProxyStatus>;
 
+export function StartAIProxy():Promise<aiproxy.State>;
+
 export function StartInstallClaudeWithMethodAsync(arg1:string):Promise<envcheck.OperationState>;
 
 export function StartInstallToolAsync(arg1:string):Promise<envcheck.OperationState>;
 
 export function StartUpdateToolAsync(arg1:string):Promise<envcheck.OperationState>;
 
+export function StopAIProxy():Promise<aiproxy.State>;
+
 export function StopSession(arg1:string):Promise<void>;
+
+export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
 
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 

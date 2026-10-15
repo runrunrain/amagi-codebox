@@ -149,7 +149,7 @@ func (a *App) executeQuotaProbe(name string) (config.ProviderQuotaEntry, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), quotaProbeTimeout)
 	defer cancel()
 	// client 不设内置超时：整体时限由 ctx 控制（10s），避免双超时语义打架。
-	client := &http.Client{}
+	client := a.aiProxyHTTPClient()
 	return probeQuotaByFamily(ctx, client, family, origin, apiKey, name), true
 }
 

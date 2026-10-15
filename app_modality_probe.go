@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"net/http"
 	"time"
 
 	"amagi-codebox/internal/config"
@@ -56,7 +55,7 @@ func (a *App) executeModalityProbe(providerName, model string) (config.ModelModa
 	ctx, cancel := context.WithTimeout(context.Background(), modalityProbeTimeout)
 	defer cancel()
 	// client 不设备注超时：整体时限由 ctx 控制（30s），避免双超时语义打架。
-	mods, source, conclusive := config.ProbeModelModalities(ctx, &http.Client{}, baseURL, apiKey, model)
+	mods, source, conclusive := config.ProbeModelModalities(ctx, a.aiProxyHTTPClient(), baseURL, apiKey, model)
 	return mods, source, conclusive, nil
 }
 

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/agentprofile"
+	"amagi-codebox/internal/aiproxy"
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
@@ -211,7 +212,8 @@ type persistentLoadState struct {
 // App 主应用结构体，负责跨服务协调和生命周期管理。
 // 通过 Wails 绑定暴露给前端。
 type App struct {
-	ctx context.Context
+	ctx     context.Context
+	aiProxy *aiproxy.Service
 
 	Config   *config.ConfigService
 	Secrets  *secrets.SecretsService
@@ -446,6 +448,7 @@ func NewApp(mobileAssets embed.FS) *App {
 
 	app := &App{
 		configDir:           configDir,
+		aiProxy:             aiproxy.New(filepath.Join(configDir, "ai-proxy")),
 		Config:              config.NewConfigService(configDir),
 		Secrets:             secrets.NewSecretsService(configDir),
 		Launcher:            launcher.NewLauncherService(log, envVarsSvc),
@@ -564,13 +567,16 @@ func NewApp(mobileAssets embed.FS) *App {
 	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
-	app.GitAssist = gitassist.New(app.Config, app.Settings, func(provider string) string {
+	app.Launcher.SetNetworkEnv(app.aiProxy.ApplyEnv)
+	app.Headroom.SetNetworkEnv(app.aiProxy.ApplyEnv)
+	app.CodexHeadroom.SetNetworkEnv(app.aiProxy.ApplyEnv)
+	app.GitAssist = gitassist.NewWithHTTPClient(app.Config, app.Settings, func(provider string) string {
 		key, err := app.Secrets.GetAPIKey(provider)
 		if err != nil || key == "" {
 			return ""
 		}
 		return key
-	})
+	}, app.aiProxyHTTPClient())
 	// Inject the headroom stopper so CleanHeadroom terminates BOTH headroom
 	// proxy child processes (claude 8787 + codex-global 8788) before the shared
 	// venv directory is removed. Required on Windows where a running
@@ -621,6 +627,7 @@ func NewApp(mobileAssets embed.FS) *App {
 				app.Config, app.Secrets, app.remoteDefaults, app.CLIResolver,
 				app.Capabilities, app.Paths, app.EnvVars, homeDir,
 			)
+			app.remotePlanner.(*appLaunchPlanner).networkEnv = app.aiProxy.ApplyEnv
 		}
 	}
 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
@@ -1949,6 +1956,13 @@ func (a *App) SetRemoteEndpoint(host string, port int) error {
 // Startup Wails 生命周期钩子：应用启动时加载配置和密钥。
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	if a.aiProxy != nil {
+		proxyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		if err := a.aiProxy.Load(proxyCtx); err != nil {
+			a.addStartupWarning("AI 代理分流恢复失败：" + err.Error())
+		}
+		cancel()
+	}
 
 	// 皮肤服务依赖 Wails ctx 弹原生文件选择对话框（PickSkinImage）。
 	a.Skins.SetContext(ctx)
@@ -2188,6 +2202,11 @@ func (a *App) Shutdown(ctx context.Context) {
 	// External Launcher processes were already handled by the bounded ownership
 	// phase immediately after the authority fence. Embedded PTYs close here.
 	a.Pty.CloseAll()
+	if a.aiProxy != nil {
+		if err := a.aiProxy.Close(); err != nil {
+			a.Log.Warn("ai-proxy", "停止 AI 代理内核失败", err.Error())
+		}
+	}
 	a.Log.Info("app", "应用已关闭")
 	a.Log.Close()
 }
@@ -2311,6 +2330,13 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	if err := a.validateLaunchMode(mode); err != nil {
 		return platform.ResolvedLaunchSpec{}, err
 	}
+	if a.aiProxy != nil {
+		var err error
+		env, err = a.aiProxy.ApplyEnv(env)
+		if err != nil {
+			return platform.ResolvedLaunchSpec{}, err
+		}
+	}
 	req := platform.ResolveRequest{
 		AppType:            string(appType),
 		LaunchMode:         mode,
@@ -2327,7 +2353,11 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	if a.EnvVars != nil {
 		req.EnvForwardKeys = a.EnvVars.Keys()
 	}
-	return a.cliResolver().Resolve(req)
+	spec, err := a.cliResolver().Resolve(req)
+	if err != nil {
+		return spec, err
+	}
+	return aiproxy.PinProxyEnvironment(spec)
 }
 
 // --- 多终端会话管理 ---

@@ -45,6 +45,7 @@ type LauncherService struct {
 	log               *logging.Service
 	envVars           *envvars.EnvVarsService
 	resolver          platform.CLIResolver
+	networkEnv        func([]string) ([]string, error)
 }
 
 func NewLauncherService(log *logging.Service, envVars *envvars.EnvVarsService) *LauncherService {
@@ -73,6 +74,16 @@ func (s *LauncherService) baseEnv() []string {
 		return s.envVars.MergeWithSystem()
 	}
 	return os.Environ()
+}
+
+// SetNetworkEnv is wired once by the host; it affects future launches only.
+func (s *LauncherService) SetNetworkEnv(fn func([]string) ([]string, error)) { s.networkEnv = fn }
+func (s *LauncherService) buildEnv(overrides map[string]string) ([]string, error) {
+	env := BuildEnv(s.baseEnv(), overrides)
+	if s.networkEnv != nil {
+		return s.networkEnv(env)
+	}
+	return env, nil
 }
 
 func (s *LauncherService) SetHeadroomPort(port int) {
@@ -260,7 +271,10 @@ func (s *LauncherService) LaunchGuarded(
 	beforeRawStart func() error,
 ) (*LaunchResult, error) {
 	overrides := s.BuildOverrides(provider, presetName, apiKey, agentTeams)
-	env := BuildEnv(s.baseEnv(), overrides)
+	env, networkErr := s.buildEnv(overrides)
+	if networkErr != nil {
+		return nil, networkErr
+	}
 
 	// ============================================================
 	// 启动策略：复刻原始验证可行的方式
@@ -330,7 +344,10 @@ func (s *LauncherService) LaunchOpenCode(
 		}
 	}
 
-	env := BuildEnv(s.baseEnv(), envOverrides)
+	env, networkErr := s.buildEnv(envOverrides)
+	if networkErr != nil {
+		return nil, networkErr
+	}
 
 	cmd := s.buildOpenCodeCmd(workDir, env)
 
@@ -390,7 +407,10 @@ func (s *LauncherService) LaunchCodexArgsGuarded(
 	envOverrides map[string]string,
 	beforeRawStart func() error,
 ) (*LaunchResult, error) {
-	env := BuildEnv(s.baseEnv(), envOverrides)
+	env, networkErr := s.buildEnv(envOverrides)
+	if networkErr != nil {
+		return nil, networkErr
+	}
 
 	cmd := s.buildCodexArgsCmd(args, workDir, env)
 
@@ -439,7 +459,10 @@ func (s *LauncherService) LaunchPi(
 	workDir string,
 	envOverrides map[string]string,
 ) (*LaunchResult, error) {
-	env := BuildEnv(s.baseEnv(), envOverrides)
+	env, networkErr := s.buildEnv(envOverrides)
+	if networkErr != nil {
+		return nil, networkErr
+	}
 
 	cmd := s.buildPiCmd(providerName, modelName, thinkingLevel, workDir, env)
 
@@ -497,7 +520,10 @@ func (s *LauncherService) LaunchOmp(
 	workDir string,
 	envOverrides map[string]string,
 ) (*LaunchResult, error) {
-	env := BuildEnv(s.baseEnv(), envOverrides)
+	env, networkErr := s.buildEnv(envOverrides)
+	if networkErr != nil {
+		return nil, networkErr
+	}
 
 	cmd := s.buildOmpCmd(providerName, modelName, thinkingLevel, workDir, env)
 
