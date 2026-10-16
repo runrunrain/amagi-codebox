@@ -42,6 +42,21 @@ var mcpBareShimCommands = map[string]string{
 // 调整后的 config（浅拷贝，非 mcp 字段不动）与中文诊断行（供日志/状态页展示；
 // 不含密钥）。mcp 段缺失或非对象时原样返回。
 func AdaptWSLOpenCodeMCP(distro string, cfg map[string]any) (map[string]any, []string) {
+	return AdaptWSLOpenCodeMCPWithOptions(distro, cfg, nil, nil)
+}
+
+// AdaptWSLOpenCodeMCPWithOptions 是带选择门的全量适配（P3-S4，design §四
+// OpenCode 行「仅作用于本次显式选择的 preset/已授权导入项」）：
+//   - allowed 非空时，仅名字命中选择集的 server 进入附加层（其余丢弃并报
+//     告——未选择导入，不写入）；
+//   - 与 distro 全局 opencode.json 同名的 server 默认保留本地不写入；仅在
+//     overrideGlobal 显式勾选覆盖时才写入（S2 预览框架的显式覆盖选择）；
+//   - 形态检查与 S1 相同（裸 shim 仅验证过才映射；Windows 专属形态丢弃；
+//     HTTP/远程保留）。
+//
+// allowed == nil 表示「不过滤」（沿用 S1 全量语义，兼容既有调用方）；空
+// map 表示全不写。
+func AdaptWSLOpenCodeMCPWithOptions(distro string, cfg map[string]any, allowed, overrideGlobal map[string]bool) (map[string]any, []string) {
 	raw, has := cfg["mcp"]
 	if !has || raw == nil {
 		return cfg, nil
@@ -55,7 +70,10 @@ func AdaptWSLOpenCodeMCP(distro string, cfg map[string]any) (map[string]any, []s
 
 	// 第一遍：收集需要验证的原生命令（裸 shim 候选）。
 	need := map[string]bool{}
-	for _, value := range servers {
+	for name, value := range servers {
+		if allowed != nil && !allowed[name] {
+			continue // 未选择导入：不参与探测
+		}
 		entry, ok := value.(map[string]any)
 		if !ok {
 			continue
@@ -82,6 +100,10 @@ func AdaptWSLOpenCodeMCP(distro string, cfg map[string]any) (map[string]any, []s
 	adaptedAny := false
 	out := map[string]any{}
 	for name, value := range servers {
+		if allowed != nil && !allowed[name] {
+			report = append(report, fmt.Sprintf("MCP server %q 未写入附加层：未选择导入（在选择面勾选后生效）", name))
+			continue
+		}
 		entry, ok := value.(map[string]any)
 		if !ok {
 			out[name] = value // 非 server 对象：原样保留，不猜测
@@ -96,8 +118,8 @@ func AdaptWSLOpenCodeMCP(distro string, cfg map[string]any) (map[string]any, []s
 			entry = adapted
 			adaptedAny = true
 		}
-		if globalNames[name] {
-			report = append(report, fmt.Sprintf("MCP server %q 与 WSL 全局配置同名，保留本地不写入附加层（覆盖请用预览选择）", name))
+		if globalNames[name] && !(overrideGlobal != nil && overrideGlobal[name]) {
+			report = append(report, fmt.Sprintf("MCP server %q 与 WSL 全局配置同名，保留本地不写入附加层（覆盖请在选择面勾选）", name))
 			continue
 		}
 		out[name] = entry
@@ -116,6 +138,94 @@ func AdaptWSLOpenCodeMCP(distro string, cfg map[string]any) (map[string]any, []s
 	}
 	sort.Strings(report)
 	return next, report
+}
+
+// OpenCodeMCPPreviewEntry 是预览面上单个 preset MCP server 的脱敏分类
+// （GetWSLOpenCodeMCPPreview 消费；不含 env 值与密钥）。
+type OpenCodeMCPPreviewEntry struct {
+	// Name 是 server 名。
+	Name string
+	// Remote：远程/HTTP 形态（保留 URL）。
+	Remote bool
+	// NativeCommand：形态检查通过后目标将使用的命令（裸 shim 验证映射后）。
+	NativeCommand string
+	// NeedsAdapt：形态不可自动转换（Windows 专属/未验证 shim/盘符参数），
+	// 该 server 不会被写入附加层。
+	NeedsAdapt bool
+	// Reason 是中文原因（NeedsAdapt 时非空；不含密钥）。
+	Reason string
+	// GlobalConflict：distro 全局 opencode.json 已有同名 server（默认保留
+	// 本地；勾选覆盖才写入）。
+	GlobalConflict bool
+}
+
+// PreviewWSLOpenCodeMCP 对 runtime config 的 mcp 段做只读分类预览（不写、
+// 不改 cfg）：逐 server 给出形态结论与全局同名冲突，供选择面展示。探测与
+// S1 同源（一次批量 command -v + 全局文件读取）。
+func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPreviewEntry {
+	raw, has := cfg["mcp"]
+	if !has || raw == nil {
+		return nil
+	}
+	servers, ok := raw.(map[string]any)
+	if !ok || len(servers) == 0 {
+		return nil
+	}
+	globalNames := readWSLOpenCodeGlobalMCPServers(distro)
+	need := map[string]bool{}
+	for _, value := range servers {
+		entry, ok := value.(map[string]any)
+		if !ok || hasMCPRemoteURL(entry) {
+			continue
+		}
+		command, _ := entry["command"].(string)
+		if native, isBare := mcpBareShimCommands[strings.ToLower(strings.TrimSpace(command))]; isBare {
+			need[native] = true
+		}
+	}
+	var resolved map[string]string
+	if len(need) > 0 {
+		names := make([]string, 0, len(need))
+		for name := range need {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		resolved = wslResolveCommandsFn(distro, names...)
+	}
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]OpenCodeMCPPreviewEntry, 0, len(names))
+	for _, name := range names {
+		preview := OpenCodeMCPPreviewEntry{Name: name, GlobalConflict: globalNames[name]}
+		server, ok := servers[name].(map[string]any)
+		if !ok {
+			preview.NeedsAdapt = true
+			preview.Reason = "server 定义不是对象"
+			out = append(out, preview)
+			continue
+		}
+		if hasMCPRemoteURL(server) {
+			preview.Remote = true
+			out = append(out, preview)
+			continue
+		}
+		kept, adapted, reason := classifyWSLMCPServer(server, resolved)
+		if kept {
+			if adapted != nil {
+				preview.NativeCommand, _ = adapted["command"].(string)
+			} else {
+				preview.NativeCommand, _ = server["command"].(string)
+			}
+		} else {
+			preview.NeedsAdapt = true
+			preview.Reason = reason
+		}
+		out = append(out, preview)
+	}
+	return out
 }
 
 // classifyWSLMCPServer 判定单个 server：(kept, adaptedEntry, dropReason)。

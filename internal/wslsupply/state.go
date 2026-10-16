@@ -35,6 +35,10 @@ type StateEntry struct {
 	// 路径 / mcp server）。文件级 SourceHash/LastWrittenHash 仍作为整体可观测
 	// 字段保留；逐键判定只读 Subs。
 	Subs map[string]SubHash `json:"subs,omitempty"`
+	// SelectedKeys 是 S4 选择集（叶名 → 选中）：「仅用户选择的单元导入」的
+	// 持久面（claude/mcp server、codex server/profile）。按 generation 生命
+	// 周期存续；取消选择 = 来源删除语义（移除仍等于上次写入的托管条目）。
+	SelectedKeys map[string]bool `json:"selectedKeys,omitempty"`
 	// Detached：用户已选择「保留本地（停跟随）」——后续供给零动作，直到
 	// 显式接管解除（design §三解除冻结两操作之一）。
 	Detached bool `json:"detached,omitempty"`

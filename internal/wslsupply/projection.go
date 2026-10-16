@@ -63,6 +63,16 @@ type KeyPreview struct {
 	Key    string
 	Action string // add / update / remove / no-change / keep-frozen / conflict / unmanaged-existing
 	Reason string // 中文，不含内容差异与密钥
+	// Before/After（S4 转换前→转换后对照）：脱敏单行摘要（如 stdio 命令形态），
+	// 仅含命令与参数个数，不含 env 值/URL query/token；不可确定性转换时 After
+	// 给出转换受阻原因。S2 的 pi 单元不填（空串）。
+	Before string
+	After  string
+	// Selected 报告该键（server/profile 名）是否已在当前选择集内（selectLeaf
+	// 单元；非选择单元恒 false）。
+	Selected bool
+	// Importable 报告该键是否可勾选导入（来源存在且非不可转换形态）。
+	Importable bool
 }
 
 // ProjectionCandidate 是 Candidate 阶段的产物。SourceHash 是「规范化业务内容」

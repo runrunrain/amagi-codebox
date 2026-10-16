@@ -169,6 +169,120 @@
             </div>
           </div>
         </div>
+        <!-- P3-S4：Claude / Codex 用户配置导入（键级选择导入 + 资源目录单元） -->
+        <div v-if="cliStatus['claude'] || cliStatus['codex']" class="pi-units s4-section">
+          <h4>用户配置导入（Claude / Codex → WSL）</h4>
+          <p class="set-sub">
+            仅导入你勾选的条目：MCP 服务器（远程保留 URL；npx.cmd 等仅目标实测到原生命令才映射，
+            Windows 专属形态保持 WSL 现状并逐项报告）、设置白名单字段与 Codex profile（TOML 节，
+            非目标节与注释逐字节保留）。信任/凭据/历史/未知字段永不跨界；WSL 手改条目冻结保留。
+          </p>
+          <div v-for="cli in ['claude', 'codex']" :key="cli" class="s4-cli-block">
+            <h5>{{ cli === 'claude' ? 'Claude Code' : 'Codex' }}</h5>
+            <div v-if="!cliStatus[cli]?.available" class="supply-detail">{{ cliStatus[cli]?.reason || '未启用' }}</div>
+            <template v-else>
+              <div v-for="u in cliStatus[cli]?.units ?? []" :key="u.unit" class="pi-unit-row">
+                <label class="mono">{{ u.relPath }}</label>
+                <span class="badge" :class="unitBadgeClass(u.state)">{{ unitStateText(u.state) }}</span>
+                <span class="supply-detail">{{ u.detail }}</span>
+                <div class="unit-actions">
+                  <AppButton v-if="u.actions.includes('preview')" variant="ghost" size="small" :disabled="cliBusy" @click="previewCliUnit(cli, u.unit)">预览</AppButton>
+                  <AppButton v-if="u.actions.includes('apply')" variant="ghost" size="small" :disabled="cliBusy" @click="applyCli(cli)">应用安全更新</AppButton>
+                  <AppButton v-if="u.actions.includes('keep-local')" variant="ghost" size="small" :disabled="cliBusy" @click="keepCliUnit(cli, u.unit)">保留本地</AppButton>
+                  <AppButton
+                    v-if="u.actions.includes('takeover') && cliPreviewHash(cli, u.unit)"
+                    variant="primary" size="small" :disabled="cliBusy"
+                    @click="takeOverCliUnit(cli, u.unit)"
+                  >确认接管</AppButton>
+                </div>
+                <!-- 预览：逐键选择面（转换前→转换后对照；脱敏） -->
+                <div v-if="cliPreviewFor(cli, u.unit)" class="unit-preview">
+                  <div v-for="k in cliPreviewFor(cli, u.unit)?.keys ?? []" :key="k.key" class="key-row">
+                    <label class="mono" v-if="k.importable">
+                      <input
+                        type="checkbox"
+                        :checked="k.selected || cliKeySelected(cli, u.unit, k.key)"
+                        :disabled="cliBusy"
+                        @change="toggleCliKey(cli, u.unit, k.key)"
+                      />
+                      {{ k.key }}
+                    </label>
+                    <span v-else class="mono">{{ k.key }}</span>
+                    <span class="badge" :class="keyBadgeClass(k.action)">{{ k.action }}</span>
+                    <span v-if="k.before || k.after" class="supply-detail">{{ k.before || '—' }} → {{ k.after || '—' }}</span>
+                    <span class="supply-detail">{{ k.reason }}</span>
+                  </div>
+                  <div v-if="anyCliKeySelected(cli, u.unit)">
+                    <AppButton variant="primary" size="small" :disabled="cliBusy" @click="importCliKeys(cli, u.unit)">
+                      导入所选（{{ cliKeySelection[cli + '|' + u.unit]?.length ?? 0 }}）
+                    </AppButton>
+                  </div>
+                  <div v-if="(cliPreviewFor(cli, u.unit)?.notes ?? []).length" class="supply-detail">
+                    {{ (cliPreviewFor(cli, u.unit)?.notes ?? []).join('；') }}
+                  </div>
+                </div>
+              </div>
+              <!-- 资源目录单元（CLAUDE.md/commands/agents/skills、AGENTS.md/skills） -->
+              <div class="skills-toolbar">
+                <span v-if="cliStatus[cli]?.resources.scanRunning" class="badge badge-warn">扫描中 {{ cliStatus[cli]?.resources.scanScanned }}/{{ cliStatus[cli]?.resources.scanTotal }}</span>
+                <AppButton variant="ghost" size="small" :disabled="cliBusy" @click="checkCliResources(cli)">检查资源</AppButton>
+                <AppButton variant="ghost" size="small" :disabled="cliBusy" @click="previewCliResources(cli)">预览资源</AppButton>
+                <AppButton variant="primary" size="small" :disabled="cliBusy || !cliResSelection[cli]?.length" @click="importCliResources(cli)">
+                  导入所选资源（{{ cliResSelection[cli]?.length ?? 0 }}）
+                </AppButton>
+              </div>
+              <div v-for="s in cliStatus[cli]?.resources.skills ?? []" :key="cli + '/' + s.name" class="pi-unit-row skill-row">
+                <label class="mono">
+                  <input v-if="s.selectable" type="checkbox" :checked="cliResSelection[cli]?.includes(s.name)" :disabled="cliBusy" @change="toggleCliRes(cli, s.name)" />
+                  {{ s.name }}
+                </label>
+                <span class="badge" :class="skillBadgeClass(s.state)">{{ skillStateText(s.state) }}</span>
+                <span class="supply-detail">{{ s.detail }}<template v-if="s.files">（{{ s.files }} 个文件）</template></span>
+                <div class="unit-actions">
+                  <AppButton v-if="s.actions.includes('apply')" variant="ghost" size="small" :disabled="cliBusy" @click="applyCliResources(cli, [s.name])">应用安全更新</AppButton>
+                  <AppButton v-if="s.actions.includes('keep-local')" variant="ghost" size="small" :disabled="cliBusy" @click="keepCliResource(cli, s.name)">保留本地</AppButton>
+                  <AppButton
+                    v-if="s.actions.includes('takeover') && cliResPreviewHash(cli, s.name)"
+                    variant="primary" size="small" :disabled="cliBusy"
+                    @click="takeOverCliResource(cli, s.name)"
+                  >确认接管</AppButton>
+                </div>
+                <div v-if="s.incompatible?.length" class="unit-preview">
+                  <div v-for="it in s.incompatible" :key="it" class="key-row">
+                    <span class="badge badge-missing">不兼容</span>
+                    <span class="supply-detail">{{ it }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+        <!-- P3-S4：OpenCode 附加层 MCP 选择（全局同名冲突默认保留本地；勾选覆盖） -->
+        <div v-if="ocMcp.length" class="pi-units s4-section">
+          <h4>OpenCode 附加层 MCP（preset → WSL）</h4>
+          <p class="set-sub">
+            preset 中的 MCP 条目经形态检查后写入附加层（不碰 WSL 全局配置）；与 WSL 全局
+            opencode.json 同名的条目默认保留本地，勾选覆盖后才写入。
+          </p>
+          <div v-for="e in ocMcp" :key="e.name" class="pi-unit-row">
+            <label class="mono">{{ e.name }}</label>
+            <span v-if="e.remote" class="badge badge-ok">远程</span>
+            <span v-else-if="e.needsAdapt" class="badge badge-missing">需手动适配</span>
+            <span v-else class="badge badge-ok">stdio {{ e.nativeCommand }}</span>
+            <span v-if="e.globalConflict" class="badge badge-warn">与 WSL 全局同名</span>
+            <span v-if="e.reason" class="supply-detail">{{ e.reason }}</span>
+            <div class="unit-actions" v-if="e.globalConflict && !e.needsAdapt">
+              <label class="supply-detail">
+                <input type="checkbox" :checked="ocOverride.includes(e.name)" :disabled="cliBusy" @change="toggleOcOverride(e.name)" />
+                覆盖全局
+              </label>
+            </div>
+          </div>
+          <div class="consent-row">
+            <AppButton variant="primary" size="small" :disabled="cliBusy" @click="saveOcSelection">保存选择</AppButton>
+            <span class="supply-detail">覆盖选择保存在 Windows 侧（下次启动生效）；未勾选的同名条目继续保留 WSL 全局版本。</span>
+          </div>
+        </div>
         <p v-if="supply.pendingPush" class="set-hint">
           有保存后的变更待同步：将在 WSL 空闲时自动推送，或于下次启动会话时补齐。
         </p>
@@ -226,6 +340,8 @@ async function load() {
         .catch(() => { supply.value = null })
       // P3-S3：技能面（后台扫描单飞启动，非阻塞）。
       loadSkills()
+      // P3-S4：Claude/Codex 用户配置导入面 + OpenCode 附加层 MCP 选择面。
+      loadAllCliSupply()
     }
     // Hide the whole panel on platforms/machines where WSL is unavailable AND
     // the reason indicates it's simply not a WSL host (keep it visible with the
@@ -622,6 +738,315 @@ function skillBadgeClass(state: string): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// P3-S4：Claude / Codex 用户配置导入 + OpenCode 附加层 MCP 选择面
+// ---------------------------------------------------------------------------
+import {
+  getWSLCliSupplyStatus,
+  previewWSLCliConfigSupply,
+  importWSLCliConfigKeys,
+  applyWSLCliConfigSupply,
+  keepWSLCliConfigUnitLocal,
+  takeOverWSLCliConfigUnit,
+  checkWSLCliResourcesSupply,
+  previewWSLCliResourcesSupply,
+  applyWSLCliResourcesSupply,
+  keepWSLCliResourceLocal,
+  takeOverWSLCliResource,
+  getWSLOpenCodeMCPPreview,
+  setWSLOpenCodeMCPSelection,
+  type WSLCliSupplyStatus,
+  type WSLOpenCodeMCPEntry,
+} from '../../api/wslSupply'
+
+const cliBusy = ref(false)
+const cliStatus = ref<Record<string, WSLCliSupplyStatus | null>>({ claude: null, codex: null })
+const cliPreviews = ref<Record<string, Record<string, WSLConfigUnitPreview>>>({})
+const cliKeySelection = ref<Record<string, string[]>>({})
+const cliResSelection = ref<Record<string, string[]>>({})
+const cliResPreviews = ref<Record<string, Record<string, WSLSkillPreview>>>({})
+const ocMcp = ref<WSLOpenCodeMCPEntry[]>([])
+const ocOverride = ref<string[]>([])
+
+async function loadCliSupply(cli: string): Promise<void> {
+  try {
+    const st = await getWSLCliSupplyStatus(cli)
+    cliStatus.value = { ...cliStatus.value, [cli]: st }
+    if (st.resources.scanRunning) {
+      setTimeout(() => loadCliSupply(cli), 800)
+    }
+  } catch {
+    // 保持现状（未启用面静默缺省）
+  }
+}
+
+function loadAllCliSupply(): void {
+  loadCliSupply('claude')
+  loadCliSupply('codex')
+  loadOcMcp()
+}
+
+async function refreshCli(cli: string): Promise<void> {
+  await loadCliSupply(cli)
+}
+
+function cliPreviewFor(cli: string, unit: string): WSLConfigUnitPreview | undefined {
+  return cliPreviews.value[cli]?.[unit]
+}
+
+function cliPreviewHash(cli: string, unit: string): string {
+  return cliPreviewFor(cli, unit)?.targetHash ?? ''
+}
+
+function cliKeySelected(cli: string, unit: string, key: string): boolean {
+  return (cliKeySelection.value[cli + '|' + unit] ?? []).includes(key)
+}
+
+function anyCliKeySelected(cli: string, unit: string): boolean {
+  return (cliKeySelection.value[cli + '|' + unit] ?? []).length > 0
+}
+
+function toggleCliKey(cli: string, unit: string, key: string): void {
+  const id = cli + '|' + unit
+  const cur = cliKeySelection.value[id] ?? []
+  cliKeySelection.value = {
+    ...cliKeySelection.value,
+    [id]: cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
+  }
+}
+
+async function previewCliUnit(cli: string, unit: string): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    const rows = await previewWSLCliConfigSupply(cli)
+    const next: Record<string, WSLConfigUnitPreview> = {}
+    for (const row of rows) next[row.unit] = row
+    cliPreviews.value = { ...cliPreviews.value, [cli]: next }
+    // 初始化选择集：当前已选键 + 预览中标记 selected 的键。
+    const row = next[unit]
+    if (row) {
+      const selected = (row.keys ?? []).filter((k) => k.selected).map((k) => k.key)
+      cliKeySelection.value = { ...cliKeySelection.value, [cli + '|' + unit]: selected }
+    }
+    showInfo(`预览完成：${row?.blockedReason || row?.action || ''}`)
+  } catch (err: any) {
+    showError('预览失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function importCliKeys(cli: string, unit: string): Promise<void> {
+  const keys = cliKeySelection.value[cli + '|' + unit] ?? []
+  if (!keys.length) {
+    showInfo('请先勾选要导入的条目')
+    return
+  }
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    const outcomes = await importWSLCliConfigKeys(cli, unit, keys)
+    const failed = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
+    if (failed.length) {
+      showInfo(`导入完成：${outcomes.length - failed.length} 项成功，${failed.length} 项保持现状（详见预览）`)
+    } else {
+      showSuccess(`已导入所选（${keys.length} 项；冻结/未托管/不可转换条目保持 WSL 现状）`)
+    }
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('导入失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function applyCli(cli: string): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    const outcomes = await applyWSLCliConfigSupply(cli)
+    const failed = outcomes.filter((o) => o.outcome === 'failed' || o.outcome === 'blocked')
+    if (failed.length) {
+      showInfo(`安全更新完成：${failed.length} 个单元保持现状（详见预览）`)
+    } else {
+      showSuccess('安全更新完成（冻结/未托管条目保持 WSL 现状）')
+    }
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('应用失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function keepCliUnit(cli: string, unit: string): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    await keepWSLCliConfigUnitLocal(cli, unit)
+    showInfo('已保留 WSL 本地配置（停跟随）')
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('停跟随失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function takeOverCliUnit(cli: string, unit: string): Promise<void> {
+  const token = cliPreviewHash(cli, unit)
+  if (!token && token !== '') {
+    showError('请先预览该单元再确认接管')
+    return
+  }
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    await takeOverWSLCliConfigUnit(cli, unit, token)
+    showSuccess('已按预览确认接管（托管域已按 Windows 当前内容重建基准）')
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('接管失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function checkCliResources(cli: string): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    await checkWSLCliResourcesSupply(cli)
+    // 重拉完整状态（后台扫描分批推进，轮询至收敛）。
+    await loadCliSupply(cli)
+  } catch (err: any) {
+    showError('检查失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function previewCliResources(cli: string): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    const rows = await previewWSLCliResourcesSupply(cli)
+    const next: Record<string, WSLSkillPreview> = {}
+    for (const row of rows) next[row.name] = row
+    cliResPreviews.value = { ...cliResPreviews.value, [cli]: next }
+    showInfo(`资源预览完成：${rows.length} 项（不兼容项已逐项列出）`)
+  } catch (err: any) {
+    showError('预览失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+function cliResPreviewHash(cli: string, name: string): string {
+  return cliResPreviews.value[cli]?.[name]?.targetHash ?? ''
+}
+
+function toggleCliRes(cli: string, name: string): void {
+  const cur = cliResSelection.value[cli] ?? []
+  cliResSelection.value = {
+    ...cliResSelection.value,
+    [cli]: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name],
+  }
+}
+
+async function importCliResources(cli: string): Promise<void> {
+  await applyCliResources(cli)
+}
+
+async function applyCliResources(cli: string, only?: string[]): Promise<void> {
+  const rels = only ?? cliResSelection.value[cli] ?? []
+  if (!rels.length) {
+    showInfo('请先勾选要导入的资源')
+    return
+  }
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    const outcomes = await applyWSLCliResourcesSupply(cli, rels)
+    const failed = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
+    if (failed.length) {
+      showInfo(`导入完成：${outcomes.length - failed.length} 项成功，${failed.length} 项保持现状（不兼容/冻结项见预览）`)
+    } else {
+      showSuccess(`已导入 ${rels.length} 项资源（静态检查通过；未执行内容）`)
+    }
+    cliResSelection.value = { ...cliResSelection.value, [cli]: [] }
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('导入失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function keepCliResource(cli: string, rel: string): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    await keepWSLCliResourceLocal(cli, rel)
+    showInfo(`已保留 WSL 本地资源（停跟随）：${rel}`)
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('停跟随失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function takeOverCliResource(cli: string, rel: string): Promise<void> {
+  const token = cliResPreviewHash(cli, rel)
+  if (!token && token !== '') {
+    showError('请先预览该资源再确认接管')
+    return
+  }
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    await takeOverWSLCliResource(cli, rel, token)
+    showSuccess(`已按预览确认接管资源：${rel}`)
+    await refreshCli(cli)
+  } catch (err: any) {
+    showError('接管失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
+async function loadOcMcp(): Promise<void> {
+  try {
+    const rows = await getWSLOpenCodeMCPPreview()
+    ocMcp.value = rows
+    ocOverride.value = rows.filter((e) => e.overrideGlobal).map((e) => e.name)
+  } catch {
+    // 静默缺省
+  }
+}
+
+function toggleOcOverride(name: string): void {
+  ocOverride.value = ocOverride.value.includes(name)
+    ? ocOverride.value.filter((n) => n !== name)
+    : [...ocOverride.value, name]
+}
+
+async function saveOcSelection(): Promise<void> {
+  if (cliBusy.value) return
+  cliBusy.value = true
+  try {
+    await setWSLOpenCodeMCPSelection(ocOverride.value)
+    showSuccess('已保存 OpenCode 附加层 MCP 覆盖选择（下次启动生效）')
+    await loadOcMcp()
+  } catch (err: any) {
+    showError('保存失败: ' + (err?.message || err))
+  } finally {
+    cliBusy.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -839,5 +1264,21 @@ onMounted(load)
 }
 .skill-row input[type='checkbox'] {
   margin-right: 6px;
+}
+.s4-cli-block {
+  border-top: 1px dashed var(--separator);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.s4-cli-block h5 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label);
+  margin: 4px 0;
+}
+.s4-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--separator);
 }
 </style>

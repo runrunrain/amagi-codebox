@@ -28,14 +28,28 @@ const CLIPi CLI = "pi"
 // 视觉清单、多模态学习层）。
 const CLICommon CLI = "shared"
 
-// cliTargetRoot 返回 CLI 在 distro 用户 Home 下的目标根相对路径。
-// 未知 CLI 返回错误（SupplyRequest 拒绝 unknown CLI，design §七）。
+// CLIClaude 是 Claude Code 用户配置导入作用域（P3-S4）：目标根是 distro
+// 用户 HOME 本身——因为用户级 MCP 定义在 ~/.claude.json（HOME 根文件），
+// 其余资源在 ~/.claude/ 子树。相对路径均以「.claude*」前缀表达，绝不全树
+// 探测（只 stat 已注册单元文件）。
+const CLIClaude CLI = "claude"
+
+// CLICodex 是 Codex 用户配置导入作用域（P3-S4）：目标根 ~/.codex（config.toml
+// + AGENTS.md + skills/）。
+const CLICodex CLI = "codex"
+
+// cliTargetRoot 返回 CLI 在 distro 用户 Home 下的目标根相对路径（空串 = 根
+// 即 HOME）。未知 CLI 返回错误（SupplyRequest 拒绝 unknown CLI，design §七）。
 func cliTargetRoot(cli CLI) (string, bool) {
 	switch cli {
 	case CLIPi:
 		return ".pi/agent", true
 	case CLICommon:
 		return ".agents", true
+	case CLIClaude:
+		return "", true
+	case CLICodex:
+		return ".codex", true
 	default:
 		return "", false
 	}
@@ -63,6 +77,19 @@ const (
 	// UnitSharedModalityKB：~/.agents/amagi-modalities.json 按规范化模型 ID
 	// 补缺（不加害 distro 既有结论，不反写宿主）。
 	UnitSharedModalityKB UnitID = "shared/modality-kb"
+)
+
+// S4 用户配置导入单元（design §四 Claude Code 表与 Codex 表：server 级/字段级
+// 白名单投影，需选择 + per-target 同意，未知字段 LocalOnly）。
+const (
+	// UnitClaudeMCP：~/.claude.json 的 mcpServers/<name> server 级投影（仅用户
+	// 选择的 server；projects/trust/onboarding/账户状态/未知键绝不跨界）。
+	UnitClaudeMCP UnitID = "claude/mcp"
+	// UnitClaudeSettings：~/.claude/settings.json 字段级白名单偏好投影。
+	UnitClaudeSettings UnitID = "claude/settings"
+	// UnitCodexConfig：~/.codex/config.toml 的 mcp_servers/<name> 与选中的
+	// profiles/<name> TOML 节投影（保真编辑：非目标节与注释保留）。
+	UnitCodexConfig UnitID = "codex/config"
 )
 
 // Policy 是单元归属策略名（design §三）。

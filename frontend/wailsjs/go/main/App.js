@@ -14,6 +14,14 @@ export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
 
+export function ApplyWSLCliConfigSupply(arg1) {
+  return window['go']['main']['App']['ApplyWSLCliConfigSupply'](arg1);
+}
+
+export function ApplyWSLCliResourcesSupply(arg1, arg2) {
+  return window['go']['main']['App']['ApplyWSLCliResourcesSupply'](arg1, arg2);
+}
+
 export function ApplyWSLPiConfigSupply() {
   return window['go']['main']['App']['ApplyWSLPiConfigSupply']();
 }
@@ -40,6 +48,10 @@ export function CheckForUpdate() {
 
 export function CheckTool(arg1) {
   return window['go']['main']['App']['CheckTool'](arg1);
+}
+
+export function CheckWSLCliResourcesSupply(arg1) {
+  return window['go']['main']['App']['CheckWSLCliResourcesSupply'](arg1);
 }
 
 export function CheckWSLPiConfigSupply() {
@@ -354,8 +366,16 @@ export function GetWSLCLIStatus() {
   return window['go']['main']['App']['GetWSLCLIStatus']();
 }
 
+export function GetWSLCliSupplyStatus(arg1) {
+  return window['go']['main']['App']['GetWSLCliSupplyStatus'](arg1);
+}
+
 export function GetWSLConfigSupplyStatus() {
   return window['go']['main']['App']['GetWSLConfigSupplyStatus']();
+}
+
+export function GetWSLOpenCodeMCPPreview() {
+  return window['go']['main']['App']['GetWSLOpenCodeMCPPreview']();
 }
 
 export function GetWSLSkillsSupplyStatus() {
@@ -386,6 +406,10 @@ export function HeadroomStop() {
   return window['go']['main']['App']['HeadroomStop']();
 }
 
+export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
+}
+
 export function ImportAIProxySubscription(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportAIProxySubscription'](arg1, arg2, arg3);
 }
@@ -412,6 +436,14 @@ export function InstallClaudeWithMethod(arg1) {
 
 export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
+}
+
+export function KeepWSLCliConfigUnitLocal(arg1, arg2) {
+  return window['go']['main']['App']['KeepWSLCliConfigUnitLocal'](arg1, arg2);
+}
+
+export function KeepWSLCliResourceLocal(arg1, arg2) {
+  return window['go']['main']['App']['KeepWSLCliResourceLocal'](arg1, arg2);
 }
 
 export function KeepWSLPiConfigUnitLocal(arg1) {
@@ -468,6 +500,14 @@ export function OpenFileInEditor(arg1, arg2) {
 
 export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
+}
+
+export function PreviewWSLCliConfigSupply(arg1) {
+  return window['go']['main']['App']['PreviewWSLCliConfigSupply'](arg1);
+}
+
+export function PreviewWSLCliResourcesSupply(arg1) {
+  return window['go']['main']['App']['PreviewWSLCliResourcesSupply'](arg1);
 }
 
 export function PreviewWSLPiConfigSupply() {
@@ -754,6 +794,10 @@ export function SetSystemProxyEnabled(arg1) {
   return window['go']['main']['App']['SetSystemProxyEnabled'](arg1);
 }
 
+export function SetWSLOpenCodeMCPSelection(arg1) {
+  return window['go']['main']['App']['SetWSLOpenCodeMCPSelection'](arg1);
+}
+
 export function StartAIProxy() {
   return window['go']['main']['App']['StartAIProxy']();
 }
@@ -780,6 +824,14 @@ export function StopSession(arg1) {
 
 export function SyncAIProxyV2rayN() {
   return window['go']['main']['App']['SyncAIProxyV2rayN']();
+}
+
+export function TakeOverWSLCliConfigUnit(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TakeOverWSLCliConfigUnit'](arg1, arg2, arg3);
+}
+
+export function TakeOverWSLCliResource(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TakeOverWSLCliResource'](arg1, arg2, arg3);
 }
 
 export function TakeOverWSLPiConfigUnit(arg1, arg2) {

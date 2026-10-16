@@ -157,3 +157,121 @@ export function keepWSLSkillLocal(name: string): Promise<void> {
 export function takeOverWSLSkill(name: string, expectedTargetHash: string): Promise<void> {
   return callApi('[api.wslSupply.takeOverWSLSkill]', () => TakeOverWSLSkill(name, expectedTargetHash));
 }
+
+// ---------------------------------------------------------------------------
+// P3-S4：Claude / Codex 用户配置导入（键级选择导入 + 资源目录单元）与
+// OpenCode 附加层 MCP 全局冲突覆盖选择。
+// ---------------------------------------------------------------------------
+
+import {
+  GetWSLCliSupplyStatus,
+  PreviewWSLCliConfigSupply,
+  ImportWSLCliConfigKeys,
+  ApplyWSLCliConfigSupply,
+  KeepWSLCliConfigUnitLocal,
+  TakeOverWSLCliConfigUnit,
+  CheckWSLCliResourcesSupply,
+  PreviewWSLCliResourcesSupply,
+  ApplyWSLCliResourcesSupply,
+  KeepWSLCliResourceLocal,
+  TakeOverWSLCliResource,
+  GetWSLOpenCodeMCPPreview,
+  SetWSLOpenCodeMCPSelection,
+} from '../../wailsjs/go/main/App';
+
+export type WSLCliSupplyStatus = main.WSLCliSupplyStatus;
+export type WSLOpenCodeMCPEntry = main.WSLOpenCodeMCPEntry;
+
+/**
+ * 一个 CLI（claude/codex）的 S4 导入面状态：键级单元状态 + 资源扫描状态
+ *（读缓存；资源后台扫描单飞启动，不阻塞）。
+ */
+export function getWSLCliSupplyStatus(cli: string): Promise<WSLCliSupplyStatus> {
+  return callApi('[api.wslSupply.getWSLCliSupplyStatus]', () => GetWSLCliSupplyStatus(cli));
+}
+
+/**
+ * 键级单元「预览」：逐键动作 + 转换前→转换后对照 + 选择状态与接管 CAS 令牌。
+ */
+export function previewWSLCliConfigSupply(cli: string): Promise<WSLConfigUnitPreview[]> {
+  return callApi('[api.wslSupply.previewWSLCliConfigSupply]', () => PreviewWSLCliConfigSupply(cli));
+}
+
+/**
+ * 键级单元「导入所选」：保存选择集 → 授予 per-target 同意 → 立即安全更新。
+ */
+export function importWSLCliConfigKeys(cli: string, unit: string, keys: string[]): Promise<WSLConfigUnitOutcome[]> {
+  return callApi('[api.wslSupply.importWSLCliConfigKeys]', () => ImportWSLCliConfigKeys(cli, unit, keys));
+}
+
+/**
+ * 键级单元「应用安全更新」：按当前选择集运行（冻结/未托管/转换受阻保持现状）。
+ */
+export function applyWSLCliConfigSupply(cli: string): Promise<WSLConfigUnitOutcome[]> {
+  return callApi('[api.wslSupply.applyWSLCliConfigSupply]', () => ApplyWSLCliConfigSupply(cli));
+}
+
+/**
+ * 键级单元「保留本地（停跟随）」。
+ */
+export function keepWSLCliConfigUnitLocal(cli: string, unit: string): Promise<void> {
+  return callApi('[api.wslSupply.keepWSLCliConfigUnitLocal]', () => KeepWSLCliConfigUnitLocal(cli, unit));
+}
+
+/**
+ * 键级单元「确认接管（预览后）」：预览 hash CAS；旧预览过期则拒绝。
+ */
+export function takeOverWSLCliConfigUnit(cli: string, unit: string, expectedTargetHash: string): Promise<void> {
+  return callApi('[api.wslSupply.takeOverWSLCliConfigUnit]', () => TakeOverWSLCliConfigUnit(cli, unit, expectedTargetHash));
+}
+
+/**
+ * 资源面「检查」：触发后台重扫并返回当前状态。
+ */
+export function checkWSLCliResourcesSupply(cli: string): Promise<WSLSkillsSupplyStatus> {
+  return callApi('[api.wslSupply.checkWSLCliResourcesSupply]', () => CheckWSLCliResourcesSupply(cli));
+}
+
+/**
+ * 资源面「预览」：逐资源动作/不兼容原因/接管 CAS 令牌。
+ */
+export function previewWSLCliResourcesSupply(cli: string): Promise<WSLSkillPreview[]> {
+  return callApi('[api.wslSupply.previewWSLCliResourcesSupply]', () => PreviewWSLCliResourcesSupply(cli));
+}
+
+/**
+ * 资源「预览勾选后导入」：登记 per-target 同意并供给（S3 机制复用）。
+ */
+export function applyWSLCliResourcesSupply(cli: string, rels: string[]): Promise<WSLConfigUnitOutcome[]> {
+  return callApi('[api.wslSupply.applyWSLCliResourcesSupply]', () => ApplyWSLCliResourcesSupply(cli, rels));
+}
+
+/**
+ * 资源「保留本地（停跟随）」。
+ */
+export function keepWSLCliResourceLocal(cli: string, rel: string): Promise<void> {
+  return callApi('[api.wslSupply.keepWSLCliResourceLocal]', () => KeepWSLCliResourceLocal(cli, rel));
+}
+
+/**
+ * 资源「确认接管（预览后）」。
+ */
+export function takeOverWSLCliResource(cli: string, rel: string, expectedTargetHash: string): Promise<void> {
+  return callApi('[api.wslSupply.takeOverWSLCliResource]', () => TakeOverWSLCliResource(cli, rel, expectedTargetHash));
+}
+
+/**
+ * OpenCode 附加层 MCP 预览：全部 preset 的 mcp 条目分类（形态/全局同名冲突）
+ * 与当前覆盖选择（只读，不写）。
+ */
+export function getWSLOpenCodeMCPPreview(): Promise<WSLOpenCodeMCPEntry[]> {
+  return callApi('[api.wslSupply.getWSLOpenCodeMCPPreview]', () => GetWSLOpenCodeMCPPreview());
+}
+
+/**
+ * 保存 OpenCode 附加层 MCP 的全局同名冲突覆盖选择（默认保留本地；勾选
+ * 覆盖的 server 才写入附加层）。
+ */
+export function setWSLOpenCodeMCPSelection(overrideGlobal: string[]): Promise<void> {
+  return callApi('[api.wslSupply.setWSLOpenCodeMCPSelection]', () => SetWSLOpenCodeMCPSelection(overrideGlobal));
+}

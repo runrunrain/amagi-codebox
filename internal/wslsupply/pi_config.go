@@ -60,6 +60,10 @@ type keyedShape struct {
 	relPath     string
 	sensitive   bool
 	alwaysFacts bool // mcp：任何写入都需事实（shim 验证）；settings 按值预判
+	// selectLeaf：desired 需经用户选择集过滤（S4「仅用户选择的单元导入」）——
+	// 叶名（最后一个 "/" 段）不在 state.SelectedKeys 内的键不进入候选；
+	// 已导入后取消选择 = 来源删除语义（移除托管条目）。
+	selectLeaf bool
 	// desired 从来源对象抽取期望键集（扁平路径 → 值）与形态诊断。
 	desired func(obj map[string]any) (map[string]any, []string)
 	// convert 把一个期望值转换为目标形态；ok=false 表示该键不可转换（保持
@@ -69,48 +73,73 @@ type keyedShape struct {
 	validateTarget func(obj map[string]any) error
 	// validateCandidate 对最终候选做既有验证器校验（amagi：piconfig）。
 	validateCandidate func(content []byte) error
+	// summarizeEntry（S4 预览对照，可选）：键值的脱敏单行摘要（转换前/后）；
+	// After 传空 facts 下不可确定性转换时返回转换受阻说明。不含 env 值/密钥。
+	summarizeEntry func(key string, v any, facts TransformFacts) (before, after string)
 }
 
-// keyedProjectionAdapter 是三个 Pi 配置单元的通用适配器。
+// keyedProjectionAdapter 是键级投影单元的通用适配器（S2 Pi 三单元 + S4
+// Claude 两单元）。
 type keyedProjectionAdapter struct {
-	unitID UnitID
-	source PiConfigSource
-	facts  TransformFactsSource
-	shape  keyedShape
-	// requiresConsent：三键级单元首启前需 per-target 明确同意（F-3，S2 diting
-	// 裁定）：设计 §三「用户配置、可执行资产需导入同意」+ §四 Pi 表「（同意后）」
-	// ——Windows 用户配置（含可能内嵌明文 key 的 mcp env）未经同意不跨界。
-	// 沿用 S1 vision-export 同意门：协调器 Plan 统一拦截 awaiting-consent，
-	// GrantUnitConsent 按 generation 授权（distro 重装自动失效）。
+	unitID          UnitID
+	facts           TransformFactsSource
+	shape           keyedShape
 	requiresConsent bool
-	readSource      func(PiConfigSource) ([]byte, error)
+	readSource      func() ([]byte, error)
+	depNotes        func(desired map[string]any) []string
 }
 
 // NewPiSettingsAdapter 创建 settings.json 字段级白名单投影单元（需 per-target
 // 同意后才开始投影，见 keyedProjectionAdapter.requiresConsent）。
 func NewPiSettingsAdapter(source PiConfigSource, facts TransformFactsSource) *keyedProjectionAdapter {
 	return &keyedProjectionAdapter{
-		unitID: UnitPiSettings, source: source, facts: facts,
-		shape: piSettingsShape, requiresConsent: true,
-		readSource: PiConfigSource.SettingsJSON,
+		unitID: UnitPiSettings, facts: facts,
+		shape:           piSettingsShape,
+		requiresConsent: true,
+		readSource:      source.SettingsJSON,
 	}
 }
 
 // NewPiAmagiAdapter 创建 amagi.json 投影单元（需 per-target 同意）。
 func NewPiAmagiAdapter(source PiConfigSource, facts TransformFactsSource) *keyedProjectionAdapter {
 	return &keyedProjectionAdapter{
-		unitID: UnitPiAmagi, source: source, facts: facts,
-		shape: piAmagiShape, requiresConsent: true,
-		readSource: PiConfigSource.AmagiJSON,
+		unitID: UnitPiAmagi, facts: facts,
+		shape:           piAmagiShape,
+		requiresConsent: true,
+		readSource:      source.AmagiJSON,
+		depNotes: func(desired map[string]any) []string {
+			if source == nil {
+				return nil
+			}
+			providers := map[string]bool{}
+			if ids, err := source.KnownProviderIDs(); err == nil {
+				for _, id := range ids {
+					providers[id] = true
+				}
+			}
+			servers := map[string]bool{}
+			if mcpSrc, err := source.MCPJSON(); err == nil && len(mcpSrc) > 0 {
+				var root map[string]any
+				if json.Unmarshal(mcpSrc, &root) == nil {
+					if mcpServers, ok := root["mcpServers"].(map[string]any); ok {
+						for name := range mcpServers {
+							servers[name] = true
+						}
+					}
+				}
+			}
+			return amagiDepNotesFrom(desired, providers, servers)
+		},
 	}
 }
 
 // NewPiMCPAdapter 创建 mcp.json server 级投影单元（需 per-target 同意）。
 func NewPiMCPAdapter(source PiConfigSource, facts TransformFactsSource) *keyedProjectionAdapter {
 	return &keyedProjectionAdapter{
-		unitID: UnitPiMCP, source: source, facts: facts,
-		shape: piMCPShape, requiresConsent: true,
-		readSource: PiConfigSource.MCPJSON,
+		unitID: UnitPiMCP, facts: facts,
+		shape:           piMCPShape,
+		requiresConsent: true,
+		readSource:      source.MCPJSON,
 	}
 }
 
@@ -120,6 +149,10 @@ func (a *keyedProjectionAdapter) Sensitive() bool       { return a.shape.sensiti
 func (a *keyedProjectionAdapter) RequiresConsent() bool { return a.requiresConsent }
 func (a *keyedProjectionAdapter) Files() []string       { return []string{a.shape.relPath} }
 
+// SelectionAware 报告本单元是否接受键级导入选择（S4 selectLeaf 单元；
+// SetUnitSelection 的能力面）。
+func (a *keyedProjectionAdapter) SelectionAware() bool { return a.shape.selectLeaf }
+
 // ---------------------------------------------------------------------------
 // 读取与判定
 // ---------------------------------------------------------------------------
@@ -127,6 +160,7 @@ func (a *keyedProjectionAdapter) Files() []string       { return []string{a.shap
 // keyedAnalysis 是一次键级分析的完整产物（Plan/预览共用）。
 type keyedAnalysis struct {
 	desired    map[string]any
+	importable map[string]any // selectLeaf 单元的全量可导入键集（预览勾选面；其余为 nil）
 	depNotes   []string
 	decisions  []keyedDecision
 	subs       map[string]SubHash
@@ -153,8 +187,13 @@ func (a *keyedProjectionAdapter) analyze(snap *Snapshot, state *StateEntry) keye
 		ana.blocked = "source-corrupt"
 		return ana
 	}
-	ana.desired = desired
-	ana.depNotes = notes
+	if a.shape.selectLeaf {
+		// S4 选择门：仅用户选择的条目进入候选（叶名不在选择集 → 不导入）；
+		// 已登记条目被取消选择会走「来源删除」路径移除托管副本。全量集保留在
+		// importable 供预览勾选面展示。
+		ana.importable = desired
+		desired = a.applySelection(desired, state)
+	}
 	ana.desired = desired
 	ana.depNotes = notes
 	if state != nil {
@@ -177,10 +216,38 @@ func (a *keyedProjectionAdapter) analyze(snap *Snapshot, state *StateEntry) keye
 }
 
 func (a *keyedProjectionAdapter) readSourceSafe() ([]byte, error) {
-	if a.source == nil {
-		return nil, fmt.Errorf("pi config source unavailable")
+	if a.readSource == nil {
+		return nil, fmt.Errorf("keyed projection source unavailable")
 	}
-	return a.readSource(a.source)
+	return a.readSource()
+}
+
+// applySelection 按用户选择集过滤期望键集（叶名匹配；无登记 = 全不选）。
+func (a *keyedProjectionAdapter) applySelection(desired map[string]any, state *StateEntry) map[string]any {
+	if !a.shape.selectLeaf {
+		return desired
+	}
+	selected := map[string]bool{}
+	if state != nil {
+		for k := range state.SelectedKeys {
+			selected[k] = true
+		}
+	}
+	filtered := map[string]any{}
+	for k, v := range desired {
+		if selected[keyLeafName(k)] {
+			filtered[k] = v
+		}
+	}
+	return filtered
+}
+
+// keyLeafName 返回键路径的叶名（最后一个 "/" 段；无分隔符即整串）。
+func keyLeafName(key string) string {
+	if i := strings.LastIndexByte(key, '/'); i >= 0 {
+		return key[i+1:]
+	}
+	return key
 }
 
 // desiredFrom 解析来源字节并抽取期望键集；corrupt=true 表示来源形态不可解析。
@@ -193,8 +260,8 @@ func (a *keyedProjectionAdapter) desiredFrom(src []byte) (map[string]any, []stri
 		return nil, nil, true
 	}
 	desired, notes := a.shape.desired(obj)
-	if a.unitID == UnitPiAmagi {
-		notes = append(notes, a.amagiDepNotes(desired)...)
+	if a.depNotes != nil {
+		notes = append(notes, a.depNotes(desired)...)
 	}
 	return desired, notes, false
 }
@@ -236,22 +303,25 @@ func (a *keyedProjectionAdapter) readTargetDoc(snap *Snapshot) (map[string]any, 
 // 写入（CAS 锚 = 目标当前字节 hash）；无可写且有冻结/未托管 → 阻断 + 冻结
 // 登记；全部无变化 → 跳过。
 func (a *keyedProjectionAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *StateEntry) (PlannedUnit, error) {
-	unit := PlannedUnit{RelPath: a.shape.relPath, TransformVersion: a.transformVersion()}
 	ana := a.analyze(snap, state)
-	switch ana.blocked {
+	return planFromKeyedDecisions(ana.blocked, ana.decisions, a.shape.relPath, a.transformVersion(), ana.targetHash), nil
+}
+
+// planFromKeyedDecisions 把逐键判定聚合为单元计划（S2/S4 键级适配器共用）。
+func planFromKeyedDecisions(blocked string, decisions []keyedDecision, relPath, transformVersion, targetHash string) PlannedUnit {
+	unit := PlannedUnit{RelPath: relPath, TransformVersion: transformVersion}
+	switch blocked {
 	case "detached", "":
-	case "source-unavailable", "source-corrupt", "target-unresolved", "target-unreadable":
+	case "source-unavailable", "source-corrupt", "target-unresolved", "target-unreadable", "target-corrupt":
 		unit.Action = ActionBlocked
-		unit.BlockedReason = ana.blocked
-		return unit, nil
-	case "target-corrupt":
-		unit.Action = ActionBlocked
-		unit.BlockedReason = "target-corrupt"
-		unit.Freeze = true
-		return unit, nil
+		unit.BlockedReason = blocked
+		if blocked == "target-corrupt" {
+			unit.Freeze = true
+		}
+		return unit
 	}
 	writable, frozenKind := 0, ""
-	for _, d := range ana.decisions {
+	for _, d := range decisions {
 		if d.Kind.writable() {
 			writable++
 			continue
@@ -267,7 +337,7 @@ func (a *keyedProjectionAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *St
 	switch {
 	case writable > 0:
 		unit.Action = ActionWriteProjection
-		unit.ExpectedTargetHash = ana.targetHash
+		unit.ExpectedTargetHash = targetHash
 	case frozenKind != "":
 		unit.Action = ActionBlocked
 		unit.BlockedReason = frozenKind
@@ -275,7 +345,7 @@ func (a *keyedProjectionAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *St
 	default:
 		unit.Action = ActionNone
 	}
-	return unit, nil
+	return unit
 }
 
 func (a *keyedProjectionAdapter) transformVersion() string {
@@ -301,6 +371,8 @@ func keyedFrozenCode(kind keyedDecisionKind) string {
 }
 
 // PreviewKeys 返回逐键预览（检查/预览动作的详情面；脱敏，仅方向与原因）。
+// S4：selectLeaf 单元附选择状态；summarizeEntry 单元附转换前→转换后对照
+// （事实经显式预览动作实测——允许唤醒当前目标；探测失败时 After 给出「待实测」）。
 func (a *keyedProjectionAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]KeyPreview, string) {
 	ana := a.analyze(snap, state)
 	if ana.blocked != "" && ana.blocked != "detached" {
@@ -309,9 +381,62 @@ func (a *keyedProjectionAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) 
 	if ana.blocked == "detached" {
 		return nil, "detached"
 	}
+	selected := map[string]bool{}
+	if state != nil {
+		for k := range state.SelectedKeys {
+			selected[k] = true
+		}
+	}
+	var facts TransformFacts
+	factsOK := false
+	if a.shape.summarizeEntry != nil && a.facts != nil && snap != nil {
+		if got, err := a.facts.TransformFacts(context.Background(), snap.Target); err == nil {
+			facts, factsOK = got, true
+		}
+	}
 	out := make([]KeyPreview, 0, len(ana.decisions))
 	for _, d := range ana.decisions {
-		out = append(out, KeyPreview{Key: d.Key, Action: d.Kind.String(), Reason: d.Reason})
+		kp := KeyPreview{Key: d.Key, Action: d.Kind.String(), Reason: d.Reason}
+		if a.shape.selectLeaf {
+			kp.Selected = selected[keyLeafName(d.Key)]
+			_, srcOK := ana.desired[d.Key]
+			kp.Importable = srcOK && d.Kind != keyFrozenBothChanged
+		}
+		if a.shape.summarizeEntry != nil {
+			if srcVal, ok := ana.desired[d.Key]; ok {
+				before, after := a.shape.summarizeEntry(d.Key, srcVal, facts)
+				kp.Before = before
+				if !factsOK && after == "" {
+					kp.After = "转换需实测验证（应用时执行）"
+				} else {
+					kp.After = after
+				}
+			}
+		}
+		out = append(out, kp)
+	}
+	// 选择面：未选择且不在判定集内的来源条目以「可勾选」呈现（selectLeaf）。
+	if a.shape.selectLeaf && len(ana.importable) > 0 {
+		seen := map[string]bool{}
+		for _, kp := range out {
+			seen[kp.Key] = true
+		}
+		for _, key := range sortedDesiredKeys(ana.importable) {
+			if seen[key] {
+				continue
+			}
+			kp := KeyPreview{Key: key, Action: "add", Reason: "未选择导入；勾选后随导入写入", Importable: true}
+			if a.shape.summarizeEntry != nil {
+				before, after := a.shape.summarizeEntry(key, ana.importable[key], facts)
+				kp.Before = before
+				if !factsOK && after == "" {
+					kp.After = "转换需实测验证（应用时执行）"
+				} else {
+					kp.After = after
+				}
+			}
+			out = append(out, kp)
+		}
 	}
 	return out, ""
 }
@@ -342,6 +467,9 @@ func (a *keyedProjectionAdapter) buildCandidate(ctx context.Context, target Targ
 	desired, notes, corrupt := a.desiredFrom(src)
 	if corrupt {
 		return ProjectionCandidate{}, fmt.Errorf("windows-side %s is not valid JSON; fix the source file first", a.shape.relPath)
+	}
+	if a.shape.selectLeaf {
+		desired = a.applySelection(desired, state)
 	}
 	doc, _, terr := a.readTargetDoc(&Snapshot{Target: target})
 	switch terr {
@@ -580,27 +708,8 @@ func anyContainsWindowsPath(v any) bool {
 // amagi 引用依赖诊断（design §四 amagi 行：不伪造默认值，报告未满足依赖）
 // ---------------------------------------------------------------------------
 
-func (a *keyedProjectionAdapter) amagiDepNotes(desired map[string]any) []string {
-	if a.source == nil {
-		return nil
-	}
-	providers := map[string]bool{}
-	if ids, err := a.source.KnownProviderIDs(); err == nil {
-		for _, id := range ids {
-			providers[id] = true
-		}
-	}
-	servers := map[string]bool{}
-	if mcpSrc, err := a.source.MCPJSON(); err == nil && len(mcpSrc) > 0 {
-		var root map[string]any
-		if json.Unmarshal(mcpSrc, &root) == nil {
-			if mcpServers, ok := root["mcpServers"].(map[string]any); ok {
-				for name := range mcpServers {
-					servers[name] = true
-				}
-			}
-		}
-	}
+// amagiDepNotesFrom 从已确认的 provider/server 宇宙推导引用依赖诊断。
+func amagiDepNotesFrom(desired map[string]any, providers, servers map[string]bool) []string {
 	var notes []string
 	for _, key := range sortedDesiredKeys(desired) {
 		if !strings.HasPrefix(key, "agents/") {

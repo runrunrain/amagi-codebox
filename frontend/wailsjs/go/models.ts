@@ -2688,6 +2688,45 @@ export namespace main {
 	        this.configuredPort = source["configuredPort"];
 	    }
 	}
+	export class WSLCliSupplyStatus {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    units: WSLConfigUnitDetail[];
+	    resources: WSLSkillsSupplyStatus;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLCliSupplyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.units = this.convertValues(source["units"], WSLConfigUnitDetail);
+	        this.resources = this.convertValues(source["resources"], WSLSkillsSupplyStatus);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class WSLConfigSupplyFace {
 	    key: string;
 	    label: string;
@@ -2775,6 +2814,10 @@ export namespace main {
 	    key: string;
 	    action: string;
 	    reason: string;
+	    before?: string;
+	    after?: string;
+	    selected: boolean;
+	    importable: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new WSLConfigUnitKeyPreview(source);
@@ -2785,6 +2828,10 @@ export namespace main {
 	        this.key = source["key"];
 	        this.action = source["action"];
 	        this.reason = source["reason"];
+	        this.before = source["before"];
+	        this.after = source["after"];
+	        this.selected = source["selected"];
+	        this.importable = source["importable"];
 	    }
 	}
 	export class WSLConfigUnitOutcome {
@@ -2954,6 +3001,30 @@ export namespace main {
 		}
 	}
 
+	export class WSLOpenCodeMCPEntry {
+	    name: string;
+	    remote: boolean;
+	    nativeCommand: string;
+	    needsAdapt: boolean;
+	    reason: string;
+	    globalConflict: boolean;
+	    overrideGlobal: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLOpenCodeMCPEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.remote = source["remote"];
+	        this.nativeCommand = source["nativeCommand"];
+	        this.needsAdapt = source["needsAdapt"];
+	        this.reason = source["reason"];
+	        this.globalConflict = source["globalConflict"];
+	        this.overrideGlobal = source["overrideGlobal"];
+	    }
+	}
 }
 
 export namespace ompplugin {

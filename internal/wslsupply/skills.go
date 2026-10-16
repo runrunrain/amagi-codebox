@@ -297,6 +297,15 @@ func (c *Coordinator) planSkill(target TargetRef, name string, entry *StateEntry
 		unit.BlockedReason = "source-deleted"
 		return unit
 	}
+	return planTreeUnitCore(target, unit, m, c.skills.Limits(), entry, skillRelDir(name), scanTargetSkillDir)
+}
+
+// targetStateFn 是树单元（目录/单文件）的目标侧有界探测函数。
+type targetStateFn func(uncPath string, limits SkillsScanLimits) SkillTargetState
+
+// planTreeUnitCore 是树单元（S3 技能目录 + S4 用户资源）的共享纯判定核心。
+func planTreeUnitCore(target TargetRef, unit PlannedUnit, m *SkillManifest, limits SkillsScanLimits, entry *StateEntry, targetRel string, probe targetStateFn) PlannedUnit {
+	unit.TransformVersion = skillsTransformVersion
 	if m.Incomplete {
 		unit.Action = ActionBlocked
 		unit.BlockedReason = "scan-incomplete"
@@ -314,7 +323,7 @@ func (c *Coordinator) planSkill(target TargetRef, name string, entry *StateEntry
 		unit.BlockedReason = "oversize-skill"
 		return unit
 	}
-	tgt := scanTargetSkillDir(filepath.Join(target.UNCRoot, filepath.FromSlash(skillRelDir(name))), c.skills.Limits())
+	tgt := probe(filepath.Join(target.UNCRoot, filepath.FromSlash(targetRel)), limits)
 	if tgt.Unverifiable {
 		unit.Action = ActionBlocked
 		unit.BlockedReason = tgt.Reason
@@ -345,7 +354,6 @@ func (c *Coordinator) planSkill(target TargetRef, name string, entry *StateEntry
 		unit.ExpectedTargetHash = tgt.TreeHash
 		unit.CandidateSize = m.TotalBytes
 	}
-	unit.TransformVersion = skillsTransformVersion
 	return unit
 }
 

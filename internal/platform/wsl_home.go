@@ -31,12 +31,18 @@ import (
 	"sync"
 )
 
-// wslScriptRunner runs `wsl.exe -d <distro> -- sh -lc <script>` and returns raw
-// stdout bytes. Package var so tests can inject a fake without invoking real WSL.
-// The inner command's stdout is the Linux program's raw bytes (UTF-8), unlike
-// `wsl -l` output which is UTF-16 (see wsl.go decodeWSLListOutput).
+// wslScriptRunner runs `wsl.exe -d <distro> --exec sh -lc <script>` and returns
+// raw stdout bytes. Package var so tests can inject a fake without invoking real
+// WSL. The inner command's stdout is the Linux program's raw bytes (UTF-8),
+// unlike `wsl -l` output which is UTF-16 (see wsl.go decodeWSLListOutput).
+//
+// `--exec`（而非 `--`）是正确性必需：`--` 会把 argv 重新拼接后经中间 shell
+// 再解析，脚本文本中的 "$var"/"$(...)" 会被中间 shell 先展开（未定义变量
+// 展开为空）——WSLResolveCommands 的循环变量、WSLTranslatePaths 的 "$p/$u"
+// 均被此路径清空过（探测恒空 → 保守拒绝）；`--exec` 逐字传参给 sh -lc，
+// 登录 shell 语义不变（P3-S4 e2e 实证）。
 var wslScriptRunner = func(distro string, script string) ([]byte, error) {
-	cmd := exec.Command("wsl.exe", "-d", distro, "--", "sh", "-lc", script)
+	cmd := exec.Command("wsl.exe", "-d", distro, "--exec", "sh", "-lc", script)
 	// 后台探测 fork 的 wsl.exe 必须抑制控制台窗口（与 wsl.go 的 wslDistroLister
 	// 同策略，Bug A：GUI 父进程下 console 子系统 exe 会闪窗）。
 	SuppressConsoleWindow(cmd)

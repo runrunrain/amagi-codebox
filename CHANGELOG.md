@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.112] - 2026-10-16
+
+### Added
+
+- **WSL 配置供给体系 S4：Claude/Codex 用户配置导入 + OpenCode 附加层扩展（P3 第五批，设计 §四两表）**：①Claude 适配器——.claude.json 仅 mcpServers server 级导入（复用 S2 转换器/冲突框架）、settings.json 白名单字段级偏好、CLAUDE.md/commands/agents/skills 目录单元（复用 S3）；projects/trust/onboarding/账户状态/未知键永不跨界（负面断言字节级验证）。②Codex 适配器——config.toml TOML 保真节编辑（零编辑 round-trip 字节恒等、增删改后注释/非受管节/CRLF/多行数组/点键保留；根级点键内联表明确「不支持形态」拒绝）、可移植 profiles 白名单、AGENTS.md/skills；auth/sessions/history/cache 永不跨界。③OpenCode 附加层同名冲突显式覆盖选择（默认保留本地，勾选 overrideGlobal 才写入，写入点唯一无绕过）。④附带生产缺陷修复：wsl_home.go 探测 --exec 化（单点共享接缝，修复 S1 起真机 shim/路径探测恒空）。⑤前端两区块+wailsjs 再生+spy 实参透传测试层（补齐 vue-tsc/vitest 均不覆盖的生成层）。
+
+（diting quick 审 FIX→修复轮 4/4：F1 wailsjs 九处字面量传参改变量透传+spy 杀伤力实证；F2 TOML 自校验收敛为本轮实际写入键（冻结/保留本地键不再否决健康更新与 adopt）；F3 点键形态明确拒绝；F4 断言升级整文相等）
+
 ## [1.3.111] - 2026-10-16
 
 ### Added

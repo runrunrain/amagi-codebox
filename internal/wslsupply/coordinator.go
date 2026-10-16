@@ -37,6 +37,9 @@ type Coordinator struct {
 	// skills 是技能资源作用域（S3：shared/skill/<name> 动态单元；nil 表示
 	// 未注册——技能单元全部 unknown）。
 	skills *SkillsScope
+	// resources 是 S4 用户资源作用域（claude/codex 资源目录单元；未注册的
+	// CLI 其资源单元 unknown）。
+	resources map[CLI]*ResourceScope
 }
 
 // NewCoordinator 创建协调器。configDir 是 CodeBox 配置目录（状态清单落点）；
@@ -50,6 +53,7 @@ func NewCoordinator(configDir string, log Logger, probes Probes) *Coordinator {
 		probes:      probes,
 		state:       newStateStore(configDir),
 		projections: map[UnitID]ProjectionAdapter{},
+		resources:   map[CLI]*ResourceScope{},
 	}
 }
 
@@ -97,7 +101,10 @@ func (c *Coordinator) ResolveTarget(_ context.Context, distro string, cli CLI) (
 	if !ident.OK {
 		return TargetRef{}, fmt.Errorf("cannot resolve default user identity in WSL distro %q", distro)
 	}
-	linuxRoot := strings.TrimRight(ident.Home, "/") + "/" + rel
+	linuxRoot := strings.TrimRight(ident.Home, "/")
+	if rel != "" {
+		linuxRoot += "/" + rel
+	}
 	uncRoot := c.probes.ToUNC(distro, linuxRoot)
 	if uncRoot == "" {
 		return TargetRef{}, fmt.Errorf("WSL UNC share unreachable for distro %q", distro)
@@ -196,7 +203,7 @@ func (c *Coordinator) unitFiles(cli CLI) []string {
 	return out
 }
 
-// knownUnit 报告单元是否已注册（A2 恒 true；技能单元随 SkillsScope 注册
+// knownUnit 报告单元是否已注册（A2 恒 true；技能/资源单元随各自作用域注册
 // 动态可识别）。unknown 单元拒绝（design §七）。
 func (c *Coordinator) knownUnit(unit UnitID) bool {
 	if unit == UnitPiA2Auth {
@@ -204,6 +211,9 @@ func (c *Coordinator) knownUnit(unit UnitID) bool {
 	}
 	if _, ok := ParseSkillUnit(unit); ok {
 		return c.skills != nil
+	}
+	if cli, _, ok := ParseResourceUnit(unit); ok {
+		return c.resourceScope(cli) != nil
 	}
 	_, ok := c.projections[unit]
 	return ok
@@ -246,6 +256,19 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 			name, _ := ParseSkillUnit(unit)
 			planned := c.planSkill(req.Target, name, &entry)
 			plan.Units = append(plan.Units, planned)
+			continue
+		}
+		if resCLI, resRel, isRes := ParseResourceUnit(unit); isRes {
+			// 资源单元（S4）：与技能同一同意门（用户资产跨界导入是授权动作）。
+			entry := state.entryFor(unit, req.Target.Generation)
+			if !entry.Consented {
+				plan.Units = append(plan.Units, PlannedUnit{
+					Unit: unit, Policy: PolicyTrackedProjection, Action: ActionBlocked,
+					BlockedReason: "awaiting-consent",
+				})
+				continue
+			}
+			plan.Units = append(plan.Units, c.planResourceUnit(req.Target, unit, resCLI, resRel, &entry))
 			continue
 		}
 		switch unit {
@@ -324,6 +347,10 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 		default:
 			if isSkillUnitID(unit.Unit) {
 				result.Results = append(result.Results, c.applySkillPlanned(ctx, current, unit))
+				continue
+			}
+			if resCLI, resRel, isRes := ParseResourceUnit(unit.Unit); isRes {
+				result.Results = append(result.Results, c.applyResourcePlanned(ctx, current, unit, resCLI, resRel))
 				continue
 			}
 			adapter := c.projections[unit.Unit]
@@ -568,7 +595,7 @@ func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, polic
 			Unit: unit, Policy: policy, Generation: target.Generation,
 			SourceHash: sourceHash, LastWrittenHash: writtenHash, TransformVersion: transformVersion,
 			LastSuccess: time.Now(), LastOutcome: outcome,
-			Subs: next, Consented: prev.Consented,
+			Subs: next, Consented: prev.Consented, SelectedKeys: prev.SelectedKeys,
 		}, target.Generation)
 		st.Distro = target.Distro
 	})
@@ -578,17 +605,26 @@ func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, polic
 }
 
 // recordProjectionPendingConsent 把「待同意」态写入登记（Consented=false，
-// LastOutcome=awaiting-consent）；授权后由 GrantUnitConsent 覆写。
+// LastOutcome=awaiting-consent）；授权后由 GrantUnitConsent 覆写。基线字段
+// （Subs/SelectedKeys/hash）仅同代保留——跨代复制会把旧代键级基准泄漏到
+// 新代（重新同意后的首发布被误判 local-deletion-frozen，违背 F3 语义）。
 func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit UnitID, policy Policy) {
 	err := c.state.mutate(func(st *StateFile) {
 		prev, _ := st.entry(unit)
-		st.upsertEntry(StateEntry{
+		entry := StateEntry{
 			Unit: unit, Policy: policy, Generation: target.Generation,
-			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
-			// F-1 同类（S2 diting）：登记重建不丢键级基准/同意/停跟随标记。
-			Subs: prev.Subs, Detached: prev.Detached, Consented: prev.Consented,
 			LastOutcome: "awaiting-consent",
-		}, target.Generation)
+		}
+		if prev.Generation == target.Generation {
+			// F-1 同类（S2 diting）：登记重建不丢键级基准/同意/停跟随标记。
+			entry.SourceHash = prev.SourceHash
+			entry.LastWrittenHash = prev.LastWrittenHash
+			entry.Subs = prev.Subs
+			entry.Detached = prev.Detached
+			entry.Consented = prev.Consented
+			entry.SelectedKeys = prev.SelectedKeys
+		}
+		st.upsertEntry(entry, target.Generation)
 		st.Distro = target.Distro
 	})
 	if err != nil {
@@ -596,20 +632,28 @@ func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit Unit
 	}
 }
 
-// recordProjectionFreeze 把冻结态写入登记（保留既有 hash/同意标记/键级基准/
-// 停跟随标记，仅置 Frozen 与原因）；后续成功写入时由 recordProjectionState 的
-// 全新条目清除冻结。F-1（S2 diting）：Subs 必须保留——键级单元的部分键冻结
-// 不得摧毁其余健康键的登记（否则下轮全部沦为 unmanaged-existing，永久停跟随）。
+// recordProjectionFreeze 把冻结态写入登记（仅同代保留既有 hash/同意标记/
+// 键级基准/选择集/停跟随标记，仅置 Frozen 与原因）；后续成功写入时由
+// recordProjectionState 的全新条目清除冻结。F-1（S2 diting）：Subs 必须
+// 保留——键级单元的部分键冻结不得摧毁其余健康键的登记（否则下轮全部沦为
+// unmanaged-existing，永久停跟随）。
 func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, policy Policy, reason string) {
 	err := c.state.mutate(func(st *StateFile) {
 		prev, _ := st.entry(unit)
-		st.upsertEntry(StateEntry{
+		entry := StateEntry{
 			Unit: unit, Policy: policy, Generation: target.Generation,
-			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
-			TransformVersion: prev.TransformVersion, Consented: prev.Consented,
-			Subs: prev.Subs, Detached: prev.Detached,
 			LastOutcome: "frozen", Frozen: true, FrozenReason: reason,
-		}, target.Generation)
+		}
+		if prev.Generation == target.Generation {
+			entry.SourceHash = prev.SourceHash
+			entry.LastWrittenHash = prev.LastWrittenHash
+			entry.TransformVersion = prev.TransformVersion
+			entry.Consented = prev.Consented
+			entry.Subs = prev.Subs
+			entry.Detached = prev.Detached
+			entry.SelectedKeys = prev.SelectedKeys
+		}
+		st.upsertEntry(entry, target.Generation)
 		st.Distro = target.Distro
 	})
 	if err != nil {
@@ -716,7 +760,7 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 			TransformVersion: entry.TransformVersion, Frozen: entry.Frozen,
 			FrozenReason: entry.FrozenReason, Consented: entry.Consented,
 			Detached: entry.Detached,
-			Stale:    c.skillUnitStale(entry),
+			Stale:    c.skillUnitStale(entry) || c.resourceUnitStale(entry),
 		})
 	}
 	return status
@@ -730,6 +774,21 @@ func (c *Coordinator) skillUnitStale(entry StateEntry) bool {
 		return false
 	}
 	m := c.skills.manifest(name)
+	return m != nil && m.SourceHash != entry.SourceHash
+}
+
+// resourceUnitStale 报告资源单元（S4）登记的来源 hash 与扫描缓存是否不一致。
+// 非资源单元恒 false。
+func (c *Coordinator) resourceUnitStale(entry StateEntry) bool {
+	cli, rel, ok := ParseResourceUnit(entry.Unit)
+	if !ok || entry.SourceHash == "" {
+		return false
+	}
+	scope := c.resourceScope(cli)
+	if scope == nil {
+		return false
+	}
+	m := scope.manifest(rel)
 	return m != nil && m.SourceHash != entry.SourceHash
 }
 
@@ -788,6 +847,10 @@ func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, 
 		}
 		if name, isSkill := ParseSkillUnit(unit); isSkill {
 			out = append(out, c.previewSkillUnit(target, name, &entry))
+			continue
+		}
+		if resCLI, resRel, isRes := ParseResourceUnit(unit); isRes {
+			out = append(out, c.previewResourceUnit(target, unit, resCLI, resRel, &entry))
 			continue
 		}
 		adapter, ok := c.projections[unit]
@@ -900,6 +963,21 @@ func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) 
 			}, prev.Generation)
 		})
 	}
+	if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
+		if c.resourceScope(resCLI) == nil {
+			return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
+		}
+		return c.state.mutate(func(st *StateFile) {
+			prev, _ := st.entry(unit)
+			st.upsertEntry(StateEntry{
+				Unit: unit, Policy: PolicyTrackedProjection, Generation: prev.Generation,
+				SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+				TransformVersion: prev.TransformVersion, SelectedKeys: prev.SelectedKeys,
+				Subs: prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+				LastSuccess: time.Now(),
+			}, prev.Generation)
+		})
+	}
 	adapter, ok := c.projections[unit]
 	if !ok {
 		return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
@@ -923,6 +1001,9 @@ func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) 
 func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI, unit UnitID, expectedTargetHash string) (UnitResult, error) {
 	if name, isSkill := ParseSkillUnit(unit); isSkill {
 		return c.takeOverSkill(ctx, distro, unit, name, expectedTargetHash)
+	}
+	if resCLI, resRel, isRes := ParseResourceUnit(unit); isRes {
+		return c.takeOverResource(ctx, distro, unit, resCLI, resRel, expectedTargetHash)
 	}
 	adapter, ok := c.projections[unit]
 	if !ok {
@@ -1007,6 +1088,11 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
 			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
 		}
 		policy = PolicyTrackedProjection
+	} else if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
+		if c.resourceScope(resCLI) == nil {
+			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+		}
+		policy = PolicyTrackedProjection
 	} else {
 		adapter, ok := c.projections[unit]
 		if !ok || !adapter.RequiresConsent() {
@@ -1028,10 +1114,14 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
 		// F3（S1 diting）：仅同代才保留 hash 基线；跨代（distro 重装/换默认
 		// 用户后重新同意）时新 generation 无任何基线——旧代 SourceHash/
 		// LastWrittenHash 不继承（继承会让新 distro 首发布被误判
-		// local-deletion-frozen，重新同意即失效）。
+		// local-deletion-frozen，重新同意即失效）。S4：同代的键级基准与选择集
+		// 同样保留（幂等再授权不得摧毁 Subs/SelectedKeys——否则后续运行会把
+		// 已托管键误判为 unmanaged-existing）。
 		if prev.Generation == target.Generation {
 			entry.SourceHash = prev.SourceHash
 			entry.LastWrittenHash = prev.LastWrittenHash
+			entry.Subs = prev.Subs
+			entry.SelectedKeys = prev.SelectedKeys
 		}
 		st.upsertEntry(entry, target.Generation)
 		st.Distro = target.Distro

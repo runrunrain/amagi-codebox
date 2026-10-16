@@ -170,7 +170,7 @@ func (c *Coordinator) applySkillUnit(_ context.Context, target TargetRef, planne
 			Err:    errors.New("target skill tree changed since planning (external edit retained)")}
 	}
 	prev, prevExisted, prevSnapshot, _ := snapshotSkillPreimage(uncSkillDir, limits)
-	undo, err := c.submitSkillDir(target, name, files, writtenTreeHash)
+	undo, err := c.submitDirUnit(target, skillRelDir(name), files, writtenTreeHash)
 	if err != nil {
 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
 			Detail: "write-failed", Err: err}
@@ -212,21 +212,23 @@ func skillApplyNotes(m *SkillManifest) []string {
 	return []string{fmt.Sprintf("已排除 %d 项（.git/node_modules/缓存/凭据/会话产物）", len(m.Excluded))}
 }
 
-// submitSkillDir 经私有 staging 提交整个 skill 目录：唯一临时目录 → 写文件
-// → rename 交换 → distro chmod 批量补偿（644 文件/755 目录；失败恢复前像）
-// → 树 hash 读回校验。交换/chmod 失败均恢复原目录或清理新增。
-func (c *Coordinator) submitSkillDir(target TargetRef, name string, files []skillWriteFile, expectedTreeHash string) (*CompensationHandle, error) {
-	parent := filepath.Join(target.UNCRoot, "skills")
+// submitDirUnit 经私有 staging 提交一个目录单元（S3 技能目录与 S4 用户资源
+// 目录共用）：唯一临时目录 → 写文件 → rename 交换 → distro chmod 批量补偿
+// （644 文件/755 目录；失败恢复前像）→ 树 hash 读回校验。relDir 是目标相对
+// 目录路径（如 "skills/foo"、".claude/commands/foo"）。交换/chmod 失败均恢复
+// 原目录或清理新增。
+func (c *Coordinator) submitDirUnit(target TargetRef, relDir string, files []skillWriteFile, expectedTreeHash string) (*CompensationHandle, error) {
+	parent := filepath.Dir(filepath.Join(target.UNCRoot, filepath.FromSlash(relDir)))
 	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir skills root: %w", err)
+		return nil, fmt.Errorf("mkdir target parent dir: %w", err)
 	}
-	targetDir := filepath.Join(parent, name)
+	targetDir := filepath.Join(target.UNCRoot, filepath.FromSlash(relDir))
 	staging, err := os.MkdirTemp(parent, ".amagi-supply-skill-*")
 	if err != nil {
 		return nil, fmt.Errorf("create skill staging dir: %w", err)
 	}
 	cleanupStaging := func() { _ = os.RemoveAll(staging) }
-	dirs := map[string]bool{skillRelDir(name): true}
+	dirs := map[string]bool{relDir: true}
 	for _, f := range files {
 		unc := filepath.Join(staging, filepath.FromSlash(f.RelPath))
 		if err := os.MkdirAll(filepath.Dir(unc), 0o755); err != nil {
@@ -238,7 +240,7 @@ func (c *Coordinator) submitSkillDir(target TargetRef, name string, files []skil
 			return nil, fmt.Errorf("write skill staging file %s: %w", f.RelPath, err)
 		}
 		for d := relDirsOf(f.RelPath); d != ""; d = relDirsOf(d) {
-			dirs[skillRelDir(name)+"/"+d] = true
+			dirs[relDir+"/"+d] = true
 			if !strings.Contains(d, "/") {
 				break
 			}
@@ -281,7 +283,7 @@ func (c *Coordinator) submitSkillDir(target TargetRef, name string, files []skil
 		cleanupStaging()
 		return nil, fmt.Errorf("commit skill dir: %w", err)
 	}
-	if err := c.chmodSkillTree(target, name, files, dirs); err != nil {
+	if err := c.chmodTree(target, relDir, files, dirs); err != nil {
 		return restorePrev(fmt.Errorf("chmod skill tree in distro: %w", err))
 	}
 	// 读回校验：树 hash 必须等于预期；失败同样恢复前像。
@@ -296,9 +298,9 @@ func (c *Coordinator) submitSkillDir(target TargetRef, name string, files []skil
 	}
 	return &CompensationHandle{
 		target:      target,
-		relPath:     skillRelDir(name),
+		relPath:     relDir,
 		uncPath:     targetDir,
-		linuxPath:   target.LinuxRoot + "/" + skillRelDir(name),
+		linuxPath:   target.LinuxRoot + "/" + relDir,
 		writtenHash: expectedTreeHash,
 	}, nil
 }
@@ -362,10 +364,10 @@ func reserveHiddenName(parent, pattern string) (string, error) {
 	return d, nil
 }
 
-// chmodSkillTree 批量 distro chmod 补偿（文件 644 / 目录 755；分批防命令行
-// 超长）。
-func (c *Coordinator) chmodSkillTree(target TargetRef, name string, files []skillWriteFile, dirs map[string]bool) error {
-	base := strings.TrimRight(target.LinuxRoot, "/") + "/" + skillRelDir(name)
+// chmodTree 批量 distro chmod 补偿（文件 644 / 目录 755；分批防命令行超长）。
+// relDir 是目标相对目录（如 "skills/foo"、".claude/commands/foo"）。
+func (c *Coordinator) chmodTree(target TargetRef, relDir string, files []skillWriteFile, dirs map[string]bool) error {
+	base := strings.TrimRight(target.LinuxRoot, "/") + "/" + relDir
 	filePaths := make([]string, 0, len(files))
 	for _, f := range files {
 		filePaths = append(filePaths, base+"/"+f.RelPath)
@@ -491,7 +493,7 @@ func (c *Coordinator) restoreSkillPreimage(h *CompensationHandle) error {
 		return fmt.Errorf("restore rename: %w (preimage kept in staging %s)", err, filepath.Base(staging))
 	}
 	// F7：恢复写同样经 chmod 补偿 + 树 hash 读回校验（与主提交原语同构）。
-	if err := c.chmodSkillTree(h.target, filepath.Base(h.uncPath), preimageFiles(h.prevFiles), preimageDirs(h.prevFiles, filepath.Base(h.uncPath))); err != nil {
+	if err := c.chmodTree(h.target, h.relPath, preimageFiles(h.prevFiles), preimageDirsFor(h.relPath, h.prevFiles)); err != nil {
 		return fmt.Errorf("chmod restored skill tree in distro: %w", err)
 	}
 	got := scanTargetSkillDir(h.uncPath, c.skillLimits())
@@ -513,12 +515,12 @@ func preimageFiles(prev []skillPreimageEntry) []skillWriteFile {
 	return out
 }
 
-// preimageDirs 汇总前像目录集（skill 根 + 各父目录）供 755 补偿。
-func preimageDirs(prev []skillPreimageEntry, name string) map[string]bool {
-	dirs := map[string]bool{"skills/" + name: true}
+// preimageDirsFor 汇总前像目录集（单元根 + 各父目录）供 755 补偿。
+func preimageDirsFor(relDir string, prev []skillPreimageEntry) map[string]bool {
+	dirs := map[string]bool{relDir: true}
 	for _, e := range prev {
 		for d := relDirsOf(e.RelPath); d != ""; d = relDirsOf(d) {
-			dirs["skills/"+name+"/"+d] = true
+			dirs[relDir+"/"+d] = true
 			if !strings.Contains(d, "/") {
 				break
 			}

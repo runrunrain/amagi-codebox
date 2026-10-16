@@ -25,6 +25,9 @@ export function AddSavedWorkDir(arg1:string,arg2:string):Promise<Array<settings.
 
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
+export function ApplyWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitOutcome>>;
+export function ApplyWSLCliResourcesSupply(arg1:string,arg2:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function ApplyWSLSkillsSupply(arg1:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
@@ -38,6 +41,8 @@ export function CheckClaudeConfig():Promise<envcheck.ClaudeConfigStatus>;
 export function CheckForUpdate():Promise<updater.UpdateInfo>;
 
 export function CheckTool(arg1:string):Promise<envcheck.CheckStatus>;
+
+export function CheckWSLCliResourcesSupply(arg1:string):Promise<main.WSLSkillsSupplyStatus>;
 
 export function CheckWSLPiConfigSupply():Promise<main.WSLConfigSupplyStatus>;
 
@@ -195,7 +200,11 @@ export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 
 export function GetWSLCLIStatus():Promise<wslsetup.Status>;
 
+export function GetWSLCliSupplyStatus(arg1:string):Promise<main.WSLCliSupplyStatus>;
+
 export function GetWSLConfigSupplyStatus():Promise<main.WSLConfigSupplyStatus>;
+
+export function GetWSLOpenCodeMCPPreview():Promise<Array<main.WSLOpenCodeMCPEntry>>;
 
 export function GetWSLSkillsSupplyStatus():Promise<main.WSLSkillsSupplyStatus>;
 
@@ -211,6 +220,8 @@ export function HeadroomStart(arg1:string):Promise<void>;
 
 export function HeadroomStop():Promise<void>;
 
+export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function ImportAIProxySubscription(arg1:string,arg2:string,arg3:string):Promise<aiproxy.State>;
 
 export function ImportConfigFromFile():Promise<string>;
@@ -224,6 +235,9 @@ export function InstallCLIToWSL(arg1:string):Promise<wslsetup.InstallResult>;
 export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallResult>;
 
 export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
+
+export function KeepWSLCliConfigUnitLocal(arg1:string,arg2:string):Promise<void>;
+export function KeepWSLCliResourceLocal(arg1:string,arg2:string):Promise<void>;
 
 export function KeepWSLPiConfigUnitLocal(arg1:string):Promise<void>;
 
@@ -252,6 +266,9 @@ export function OpenExternalURL(arg1:string):Promise<void>;
 export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
+
+export function PreviewWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitPreview>>;
+export function PreviewWSLCliResourcesSupply(arg1:string):Promise<Array<main.WSLSkillPreview>>;
 
 export function PreviewWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitPreview>>;
 
@@ -395,6 +412,8 @@ export function SetRemotePort(arg1:number):Promise<void>;
 
 export function SetSystemProxyEnabled(arg1:boolean):Promise<main.SystemProxyStatus>;
 
+export function SetWSLOpenCodeMCPSelection(arg1:Array<string>):Promise<void>;
+
 export function StartAIProxy():Promise<aiproxy.State>;
 
 export function StartInstallClaudeWithMethodAsync(arg1:string):Promise<envcheck.OperationState>;
@@ -408,6 +427,9 @@ export function StopAIProxy():Promise<aiproxy.State>;
 export function StopSession(arg1:string):Promise<void>;
 
 export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
+
+export function TakeOverWSLCliConfigUnit(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function TakeOverWSLCliResource(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function TakeOverWSLPiConfigUnit(arg1:string,arg2:string):Promise<void>;
 

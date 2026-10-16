@@ -134,6 +134,8 @@ func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator 
 	coord.RegisterProjection(wslsupply.NewModalityKBAdapter(&wslSharedFileSource{app: app}))
 	piConfigSource := &wslPiConfigSource{app: app}
 	registerPiConfigAdapters(coord, piConfigSource)
+	// P3-S4：Claude/Codex 用户配置导入（键级单元 + 资源目录单元）。
+	registerS4Adapters(coord, app)
 	// P3-S3：共享技能作用域（宿主 ~/.agents/skills；扫描只在后台/显式检查时
 	// 进行，不进启动链）。
 	if root := wslSkillsHostRoot(); root != "" {
@@ -338,7 +340,9 @@ func lookupWSLOpenCodeLayer(distro string) (wslOpenCodeLayerRecord, bool) {
 // 已批准的行为变更：选中模型配置不可安全落地 → 启动失败，不再无 provider
 // 静默启动）。
 func (a *App) prepareWSLOpenCodeLayer(distro string, runtimeCfg map[string]any) (string, error) {
-	sanitized, report := launcher.AdaptWSLOpenCodeMCP(distro, runtimeCfg)
+	// P3-S4：同名冲突默认保留本地（S1 语义）；仅用户在选择面勾选的覆盖项
+	// 写入附加层（allowed=nil——本批不引入逐项导入门，preset 本身即显式选择）。
+	sanitized, report := launcher.AdaptWSLOpenCodeMCPWithOptions(distro, runtimeCfg, nil, a.wslOpenCodeMCPOverrideSet(distro))
 	for _, line := range report {
 		a.Log.Warn("opencode-wsl", "OpenCode MCP 形态检查", line)
 	}
@@ -758,6 +762,13 @@ type WSLConfigUnitKeyPreview struct {
 	Key    string `json:"key"`
 	Action string `json:"action"`
 	Reason string `json:"reason"`
+	// Before/After：S4 转换前→转换后脱敏摘要（命令形态与参数个数；不含 env
+	// 值/密钥）。S2 pi 单元为空。
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+	// Selected/Importable：S4 选择面（仅选择的条目导入；可勾选状态）。
+	Selected   bool `json:"selected"`
+	Importable bool `json:"importable"`
 }
 
 // WSLConfigUnitPreview 是一个键级单元的预览结果（含 CAS 令牌 targetHash，
