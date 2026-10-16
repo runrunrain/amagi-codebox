@@ -10,7 +10,8 @@ import (
 )
 
 // CompensationHandle 是一次已提交普通文件写入的撤销能力（不透明句柄，仅
-// Coordinator.Compensate 消费）。持有前像字节（仅内存，进程退出即弃）。
+// Coordinator.Compensate 消费）。持有前像字节（仅内存，进程退出即弃）；
+// sensitive 记录本次写入的敏感度，撤销恢复前像时沿用同一清理策略（M2）。
 type CompensationHandle struct {
 	unit        UnitID
 	target      TargetRef
@@ -20,6 +21,7 @@ type CompensationHandle struct {
 	writtenHash string
 	prev        []byte
 	prevExisted bool
+	sensitive   bool
 }
 
 // HasUndo 报告句柄是否携带可撤销写入。
@@ -46,7 +48,7 @@ type CompensationOutcome struct {
 }
 
 // newCompensationHandle 由 submitFile 构造（ coordinator 内部使用）。
-func newCompensationHandle(target TargetRef, relPath string, content, prev []byte, prevExisted bool) *CompensationHandle {
+func newCompensationHandle(target TargetRef, relPath string, content, prev []byte, prevExisted, sensitive bool) *CompensationHandle {
 	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))
 	linuxPath := target.LinuxRoot + "/" + strings.TrimPrefix(relPath, "/")
 	return &CompensationHandle{
@@ -57,5 +59,6 @@ func newCompensationHandle(target TargetRef, relPath string, content, prev []byt
 		writtenHash: hexHash(content),
 		prev:        prev,
 		prevExisted: prevExisted,
+		sensitive:   sensitive,
 	}
 }

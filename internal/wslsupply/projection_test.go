@@ -22,16 +22,20 @@ import (
 // 版本固定；归属判定按设计 §三的普通文件冲突规则实现（S1 真实分发适配器的
 // 行为模板）。
 type stubProjection struct {
-	unit   UnitID
-	rel    string
-	source func() []byte
+	unit      UnitID
+	rel       string
+	source    func() []byte
+	sensitive bool // 默认 false；敏感桩（chmod 失败删目标）显式置 true
 }
 
-func (p *stubProjection) Unit() UnitID    { return p.unit }
-func (p *stubProjection) Files() []string { return []string{p.rel} }
+func (p *stubProjection) Unit() UnitID          { return p.unit }
+func (p *stubProjection) Policy() Policy        { return PolicyTrackedProjection }
+func (p *stubProjection) Sensitive() bool       { return p.sensitive }
+func (p *stubProjection) RequiresConsent() bool { return false }
+func (p *stubProjection) Files() []string       { return []string{p.rel} }
 
-func (p *stubProjection) Candidate(_ context.Context, _ TargetRef) ([]byte, string, error) {
-	return p.source(), "stub-v1", nil
+func (p *stubProjection) Candidate(_ context.Context, _ TargetRef) (ProjectionCandidate, error) {
+	return ProjectionCandidate{Content: p.source(), SourceHash: hexHash(p.source()), TransformVersion: "stub-v1"}, nil
 }
 
 func (p *stubProjection) Plan(_ SupplyRequest, snap *Snapshot, state *StateEntry) (PlannedUnit, error) {

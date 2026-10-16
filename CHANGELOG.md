@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.109] - 2026-10-16
+
+### Added
+
+- **WSL 配置供给体系 S1：托管 provider 与共享小文件分发（P3 第二批，设计 §四/§五/§六）**：①前置门槛清偿（S0 审查遗留）：Compensate 持 applyMu 串行化、submitFile chmod 失败按敏感度分叉（敏感删除/普通恢复前像）、真并发唯一名钉死。②托管 provider 分发（pi/managed-models 单元，ManagedNamespace 策略）：Config/Secrets 快照构建 amagi-* 期望集 → 严格解析合并（两级损坏保护、非 amagi provider 保留、失败 provider 不误 prune、登录 contextWindow 窄字段补齐）；启动 lazy + 保存标脏异步推送（single-flight、活动会话暂停、停机 distro 不唤醒、重启补漏）；选中 provider 不可构建阻断启动（中文报错）。③共享小文件：vision-export per-target 同意门（密钥跨界明确授权、0600+私有 staging、规范化内容不变零动作、撤回未确认可见不虚报）；modality-kb schema 校验后补缺、冲突保留不反写。④OpenCode 附加层 MCP 确定性形态检查（npx.cmd 仅目标验证过原生命令才映射、Windows 专属形态丢弃不造假可用、全局同名保留本地）+ 已批准失败语义变更（选中模型不可安全落地→阻断启动，不再无 provider 静默启动）。⑤envcheck「WSL 内的 CLI」卡片下「配置状态」区（四面状态+最后检查时间 per-CLI+待推送标记）与视觉清单同意按钮（wails generate 再生绑定）。
+
+（diting full 审 FIX→修复轮 5/5：F1 Critical providerSyncMu 死锁（锁区间 return 无 defer）结构性修复+锁可用性测试；F2 PendingSources 累计收敛清除；F3 跨代授权 hash 归零；F4 per-CLI 检查时间；F5 consented 独立态。真机 e2e 3/3 复跑 PASS）
+
 ## [1.3.108] - 2026-10-16
 
 ### Added

@@ -24,31 +24,40 @@ const StateFileName = "wsl-config-supply.json"
 // StateEntry 是单单元登记信息。SourceHash/LastWrittenHash 仅供普通托管单元
 // （TrackedProjection 等）使用；A2 单元恒为空。
 type StateEntry struct {
-	Unit             UnitID    `json:"unit"`
-	Policy           Policy    `json:"policy"`
-	Generation       string    `json:"generation,omitempty"`
-	SourceRevision   uint64    `json:"sourceRevision,omitempty"`
-	SourceHash       string    `json:"sourceHash,omitempty"`
-	LastWrittenHash  string    `json:"lastWrittenHash,omitempty"`
-	TransformVersion string    `json:"transformVersion,omitempty"`
-	Frozen           bool      `json:"frozen,omitempty"`
-	FrozenReason     string    `json:"frozenReason,omitempty"`
-	LastSuccess      time.Time `json:"lastSuccess,omitempty"`
-	LastErrorCode    string    `json:"lastErrorCode,omitempty"`
-	LastOutcome      string    `json:"lastOutcome,omitempty"`
+	Unit             UnitID `json:"unit"`
+	Policy           Policy `json:"policy"`
+	Generation       string `json:"generation,omitempty"`
+	SourceRevision   uint64 `json:"sourceRevision,omitempty"`
+	SourceHash       string `json:"sourceHash,omitempty"`
+	LastWrittenHash  string `json:"lastWrittenHash,omitempty"`
+	TransformVersion string `json:"transformVersion,omitempty"`
+	// Consented：per-target 明确同意标记（design §四——视觉清单密钥跨界授权；
+	// 按 generation 生命周期存续，distro 重装后自动失效）。
+	Consented     bool      `json:"consented,omitempty"`
+	Frozen        bool      `json:"frozen,omitempty"`
+	FrozenReason  string    `json:"frozenReason,omitempty"`
+	LastSuccess   time.Time `json:"lastSuccess,omitempty"`
+	LastErrorCode string    `json:"lastErrorCode,omitempty"`
+	LastOutcome   string    `json:"lastOutcome,omitempty"`
 }
 
 // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与
 // revision（MarkDirty 落盘，重启可补漏；S0 不调度）。
 type StateFile struct {
-	SchemaVersion   int               `json:"schemaVersion"`
-	Generation      string            `json:"generation,omitempty"`
-	Distro          string            `json:"distro,omitempty"`
-	Home            string            `json:"home,omitempty"`
-	LastInspectedAt time.Time         `json:"lastInspectedAt,omitempty"`
-	DesiredRevision uint64            `json:"desiredRevision,omitempty"`
-	PendingSources  map[string]uint64 `json:"pendingSources,omitempty"`
-	Units           []StateEntry      `json:"units"`
+	SchemaVersion   int       `json:"schemaVersion"`
+	Generation      string    `json:"generation,omitempty"`
+	Distro          string    `json:"distro,omitempty"`
+	Home            string    `json:"home,omitempty"`
+	LastInspectedAt time.Time `json:"lastInspectedAt,omitempty"`
+	// LastInspectedAtByCLI 按 CLI 作用域记录检查时间（F4：跨 CLI 共享单值会
+	// 把 pi 作用域的探测时间错配到 shared 面板；GetStatus 只读本表）。
+	LastInspectedAtByCLI map[CLI]time.Time `json:"lastInspectedAtByCLI,omitempty"`
+	DesiredRevision      uint64            `json:"desiredRevision,omitempty"`
+	PendingSources       map[string]uint64 `json:"pendingSources,omitempty"`
+	// PendingProgress 按 pending 来源累计「标记后已成功」的单元集（F2：来源
+	// 的滋养单元跨 RunUnits 作用域，单次运行不足以判定清除；MarkDirty 重置）。
+	PendingProgress map[string][]UnitID `json:"pendingProgress,omitempty"`
+	Units           []StateEntry        `json:"units"`
 }
 
 // stateStore 持有清单的内存副本与落盘路径，串行化所有读改写。
@@ -86,6 +95,12 @@ func (s *stateStore) loadLocked() StateFile {
 	}
 	if f.Units == nil {
 		f.Units = []StateEntry{}
+	}
+	if f.LastInspectedAtByCLI == nil {
+		f.LastInspectedAtByCLI = map[CLI]time.Time{}
+	}
+	if f.PendingProgress == nil {
+		f.PendingProgress = map[string][]UnitID{}
 	}
 	if f.PendingSources == nil {
 		f.PendingSources = map[string]uint64{}

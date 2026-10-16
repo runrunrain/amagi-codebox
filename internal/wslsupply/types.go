@@ -12,16 +12,21 @@
 package wslsupply
 
 import (
+	"errors"
 	"time"
 
 	"amagi-codebox/internal/launcher"
 )
 
-// CLI 是供给目标的 CLI 标识。S0 只有 pi 存在单元。
+// CLI 是供给目标的 CLI 标识。S0 只有 pi；S1 增加共享作用域。
 type CLI string
 
-// CLIPi 是唯一带单元的 CLI（pi 登录凭据 A2）。
+// CLIPi 是 Pi（登录凭据 A2 + 托管 models.json 分发）。
 const CLIPi CLI = "pi"
+
+// CLICommon 是共享 ~/.agents 小文件的作用域（provider 无关的跨 CLI 资产：
+// 视觉清单、多模态学习层）。
+const CLICommon CLI = "shared"
 
 // cliTargetRoot 返回 CLI 在 distro 用户 Home 下的目标根相对路径。
 // 未知 CLI 返回错误（SupplyRequest 拒绝 unknown CLI，design §七）。
@@ -29,6 +34,8 @@ func cliTargetRoot(cli CLI) (string, bool) {
 	switch cli {
 	case CLIPi:
 		return ".pi/agent", true
+	case CLICommon:
+		return ".agents", true
 	default:
 		return "", false
 	}
@@ -45,6 +52,19 @@ type UnitID string
 // 「双向新者为准」对象（design §三归属策略表）。
 const UnitPiA2Auth UnitID = "pi/a2-auth"
 
+// S1 托管面单元（design §四/§八批次 S1）：
+const (
+	// UnitPiManagedModels：distro models.json 的 amagi-* provider 期望集 +
+	// 登录预设 contextWindow 窄字段托管（ManagedNamespace）。
+	UnitPiManagedModels UnitID = "pi/managed-models"
+	// UnitSharedVisionExport：~/.agents/amagi-media-models.json 单向受管导出
+	//（内嵌 api_key，per-target 首次发布须明确同意）。
+	UnitSharedVisionExport UnitID = "shared/vision-export"
+	// UnitSharedModalityKB：~/.agents/amagi-modalities.json 按规范化模型 ID
+	// 补缺（不加害 distro 既有结论，不反写宿主）。
+	UnitSharedModalityKB UnitID = "shared/modality-kb"
+)
+
 // Policy 是单元归属策略名（design §三）。
 type Policy string
 
@@ -53,7 +73,16 @@ const (
 	PolicyA2Auth Policy = "A2Auth"
 	// PolicyTrackedProjection：普通配置投影（S0 仅接缝与测试桩，S1+ 分发）。
 	PolicyTrackedProjection Policy = "TrackedProjection"
+	// PolicyManagedNamespace：CodeBox 拥有的命名空间托管（amagi-* provider、
+	// 已声明的托管文件）——从业务源生成、保留域外字段、按既有所有权更新，
+	// mtime 不决定方向（design §三归属策略表）。
+	PolicyManagedNamespace Policy = "ManagedNamespace"
 )
+
+// ErrTargetCorrupt 表示目标文件存在但未通过严格语法/schema 校验（两级损坏
+// 保护的第一手信号）：适配器在 Candidate 阶段包装本哨兵，协调器据此给出
+// target-corrupt 明细，调用方（启动闸门）可区分「损坏不覆盖」与普通写失败。
+var ErrTargetCorrupt = errors.New("wsl supply target file is corrupt")
 
 // Reason 触发供给的原因（design §三时机）。
 type Reason string
@@ -138,6 +167,10 @@ type PlannedUnit struct {
 	Action           Action
 	BlockedReason    string
 	TransformVersion string
+	// Freeze 为 true 时表示本单元因目标侧本地修改/存在而进入冻结态，Apply
+	// 阶段把冻结原因记入状态清单（GetStatus 供 UI 显示「冻结」；ManagedNamespace
+	// 单元恒 false——命名空间内不存在冻结条件）。
+	Freeze bool
 	// RelPath 是投影单元的目标相对路径（A2 单元为空，路径由适配器固定）。
 	RelPath string
 	// TrackedProjection 单元（含测试桩）的预期目标 hash（hex）与候选字节数；
@@ -256,6 +289,9 @@ type UnitStatus struct {
 	TransformVersion string
 	Frozen           bool
 	FrozenReason     string
+	// Consented 报告需要明确同意的单元（视觉清单共享）当前是否已获得
+	// per-target 授权（design §四：密钥跨界授权；非敏感单元恒 false 不展示）。
+	Consented bool
 }
 
 // TargetStatus 是 GetStatus 的脱敏快照（design §七：读缓存不触发安装或同步；

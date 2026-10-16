@@ -334,6 +334,12 @@ func readStrictJSONObject(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseStrictJSONObject(data)
+}
+
+// parseStrictJSONObject 是 readStrictJSONObject 的字节变体（P3-S1 WSL 托管
+// models.json 候选构建复用同一严格语义）。
+func parseStrictJSONObject(data []byte) (map[string]any, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return nil, errors.New("file is empty")
 	}

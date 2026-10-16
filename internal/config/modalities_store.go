@@ -51,6 +51,11 @@ func ModalityKBPath() (string, error) {
 	return filepath.Join(home, ".agents", modalityKBFileName), nil
 }
 
+// NormalizeModalityKBModelID 导出学习层键规范化（小写 + 剥离 provider/ 前缀）
+// 供 WSL 分发补缺合并复用（P3-S1：写入/读取/跨机补缺同键规则，不复制实现
+// 以免漂移）。
+func NormalizeModalityKBModelID(model string) string { return normalizeKBModelID(model) }
+
 // modalityKBState 进程内学习层缓存：按「路径 + mtime + size」指纹决定是否重读，
 // 测试切换 AMAGI_MODALITY_KB_PATH 时天然失效重载，无需显式 reset。
 var modalityKBState = struct {

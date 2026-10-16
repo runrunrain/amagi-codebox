@@ -36,6 +36,7 @@ package launcher
 // 盘符路径」的变量（PI_* 事故的泛化，证据 B3/T6）。
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -95,6 +96,10 @@ func resolveWSLAgentTarget(distro string, relAgentDir string) (WSLAgentTarget, e
 // 顶层字段，amagi-<name> 当次条目优先），原子写（WritePiAgentConfig 的
 // tmp+Rename 范式在 UNC 上同样成立）后经 WSLChmod 补偿 0700/0600。
 // 成功返回 WSL 内 Linux 路径的 agent 目录（供日志/诊断）。
+//
+// P3-S1 零写入路径：合并结果与既有文件字节一致时跳过落盘与 chmod 补偿
+// （无变化启动的第二次调用不再写目标；权限若被手动改宽，待下次内容变化时
+// 随完整写入路径重新收紧）。
 func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
 	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
 	if err != nil {
@@ -103,6 +108,12 @@ func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
 	wslAgentConfigMu.Lock()
 	defer wslAgentConfigMu.Unlock()
 	merged := MergePiAgentConfig(cfg, target.UNCDir)
+	if content, mErr := json.MarshalIndent(merged, "", "  "); mErr == nil {
+		content = append(content, '\n')
+		if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, "models.json")); rErr == nil && bytes.Equal(existing, content) {
+			return target.LinuxDir, nil // 零写入：内容一致
+		}
+	}
 	if err := WritePiAgentConfig(target.UNCDir, merged); err != nil {
 		return "", err
 	}
@@ -215,6 +226,13 @@ func WriteWSLOpenCodeAgentConfig(distro string, cfg map[string]any) (string, err
 	}
 	wslAgentConfigMu.Lock()
 	defer wslAgentConfigMu.Unlock()
+	// P3-S1 零写入路径：序列化结果与既有文件字节一致时跳过落盘与 chmod 补偿。
+	if b, mErr := json.MarshalIndent(cfg, "", "  "); mErr == nil {
+		b = append(b, '\n')
+		if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, openCodeWSLConfigFile)); rErr == nil && bytes.Equal(existing, b) {
+			return target.LinuxDir + "/" + openCodeWSLConfigFile, nil // 零写入：内容一致
+		}
+	}
 	if err := writeOpenCodeConfigFile(target.UNCDir, cfg); err != nil {
 		return "", err
 	}
@@ -230,6 +248,8 @@ func WriteWSLOpenCodeAgentConfig(distro string, cfg map[string]any) (string, err
 }
 
 // writeOpenCodeConfigFile 以全库统一原子范式把 cfg 写入 dir/amagi-codebox.json。
+// P3-S1 零写入路径：序列化结果与既有文件字节一致时跳过落盘（无变化启动的
+// 第二次调用不再写目标）。
 func writeOpenCodeConfigFile(dir string, cfg map[string]any) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir opencode config dir: %w", err)
@@ -245,6 +265,9 @@ func writeOpenCodeConfigFile(dir string, cfg map[string]any) error {
 	}
 	b = append(b, '\n')
 	path := filepath.Join(dir, openCodeWSLConfigFile)
+	if existing, rErr := os.ReadFile(path); rErr == nil && bytes.Equal(existing, b) {
+		return nil // 零写入：内容一致
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return fmt.Errorf("write opencode config tmp: %w", err)

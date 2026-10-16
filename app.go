@@ -491,9 +491,11 @@ func NewApp(mobileAssets embed.FS) *App {
 		remotePlanner:       launchplan.NewFailClosedPlanner(),
 		compensationDebts:   launchplan.NewCompensationDebtRegistry(),
 		WSLSetup:            wslsetup.NewService(log),
-		WSLSupply:           wslsupply.NewCoordinator(configDir, wslsupplySupplyLog{log: log}, wslsupply.DefaultProbes()),
 		DockerWSL:           dockerwsl.NewService(log),
 	}
+	// P3-S1：WSL 供给协调器携带托管面适配器（pi/managed-models + 共享小文件）；
+	// 业务快照源闭包引用 app，在字面量之后装配。
+	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
 	// desktop-equivalent builder 未接线，因此两条路径一致地 fail closed。
@@ -572,7 +574,7 @@ func NewApp(mobileAssets embed.FS) *App {
 			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
 		}
 		// P3-S0：配置保存事件 → WSL 供给标脏（只发布 revision，不调度；S1 接分发）。
-		app.markWSLSupplyDirty("pi-login-presets")
+		app.markWSLSupplyDirty(wslsupply.DirtySourcePiLoginPresets)
 	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
@@ -3603,72 +3605,27 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, login.AgentDir))
 		}
 	}
+	// P3-S1 启动 lazy：WSL API-provider 会话在构建/写入前先经协调器分发托管
+	// models.json（旧 distro 不重装即获得托管更新；损坏目标在此阻断，后续
+	// overlay 的宽松 merge 不再触碰损坏文件）。登录路径的托管分发并入 A2
+	// 闸门同一供给运行（defaultRunWSLLoginSupply）。
+	if wslDistro != "" && loginPreset == nil && providerID != "" {
+		if err := a.runWSLManagedModelsAtLaunch(wslDistro); err != nil {
+			a.Log.Error("pi", "WSL 托管 provider 配置分发阻断启动", err.Error())
+			return "", err
+		}
+	}
 	if loginPreset == nil && providerID != "" {
 		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
 		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
-		// v1.3.13 重构时此处缺失 Lock()，未加锁直接 Unlock 触发 Go fatal error
-		// （sync: unlock of unlocked mutex），导致带提供商启动 Pi 会话即崩溃。
-		a.providerSyncMu.Lock()
-		if provider, err := a.Config.GetProvider(providerID); err == nil {
-			launchSettings = resolvePiLaunchSettings(*provider, launchSettings.Model, presetParams)
-			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
-
-			// 合并写入 pi 标准 agent 目录的 models.json。
-			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
-			// 失败则回退到 piProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
-			// presetParams 透传 contextWindow/maxTokens/thinking 到 pi model 配置。
-			// presetModels：该 provider 在 openai 公共预设桶（pi/omp 消费的桶）下的
-			// 全部预设模型。启动写入是托管条目的整体替换语义，漏注会把统一同步
-			// 写入的同 provider 其他预设模型挤掉。
-			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
-			if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-				// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
-				//（Windows 侧文件对 WSL 内的 pi 不可见）；非 WSL 路径行为不变。
-				wroteProvider := false
-				if wslDistro != "" {
-					// 保留 WSL 侧 models.json 中已有 provider（merge 在
-					// WriteWSLPiAgentConfig 内能对 UNC 路径完成），原子写 + chmod 补偿。
-					wslAgentDir, wErr := launcher.WriteWSLPiAgentConfig(wslDistro, piCfg)
-					if wErr == nil {
-						wroteProvider = true
-						a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
-							launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
-					} else {
-						a.Log.Warn("pi", "写入 WSL 侧 pi models.json 失败，回退内置 provider", wErr.Error())
-					}
-				} else {
-					agentDir := defaultPiAgentDir()
-					// 保留用户 models.json 中已有的 provider 和其他顶层配置，
-					// 当次 amagi 生成的同名 provider 优先。
-					piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
-					writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
-					if writeErr == nil {
-						wroteProvider = true
-						a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
-							launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
-					} else {
-						a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
-					}
-				}
-				if wroteProvider {
-					launchSettings.Provider = launcher.PiProviderID(providerID)
-				} else {
-					launchSettings.Provider, _ = piProviderMapping(*provider)
-				}
-			} else {
-				a.Log.Warn("pi", "生成 pi models.json 失败，回退内置 provider", cfgErr.Error())
-				launchSettings.Provider, _ = piProviderMapping(*provider)
-			}
-
-			// 冗余兜底：注入对应 API Key env var（与 OpenCode 的双路注入一致）。
-			// pi 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
-			if apiKey != "" {
-				if _, apiKeyEnv := piProviderMapping(*provider); apiKeyEnv != "" {
-					envOverrides[apiKeyEnv] = apiKey
-				}
-			}
+		// 锁纪律（S1 diting F1）：临界区整体收进 writePiProviderModelsAtLaunch
+		//（内部 defer Unlock）——任何 return 路径（含 WSL 构建失败阻断）不再
+		// 泄漏锁；v1.3.13 事故同位置的结构性防再犯。
+		var writeErr error
+		launchSettings, writeErr = a.writePiProviderModelsAtLaunch(providerID, launchSettings, presetParams, wslDistro, envOverrides)
+		if writeErr != nil {
+			return "", writeErr
 		}
-		a.providerSyncMu.Unlock()
 	}
 
 	// Preserve the login stable key for desktop restart, not just its resolved model.
@@ -3876,7 +3833,11 @@ func (a *App) markWSLSupplyDirty(source string) {
 	}
 	if err := a.WSLSupply.MarkDirty(source, uint64(time.Now().UnixNano())); err != nil {
 		a.Log.Warn("wslsupply", "标记 WSL 供给来源变更失败（不阻塞宿主保存）", err.Error())
+		return
 	}
+	// P3-S1 真实调度：标脏后异步推送一次（仅对已运行且无活动会话的目标；
+	// 停机 distro 只保留待同步标记，不唤醒）。
+	a.scheduleWSLSupplyPush()
 }
 
 // wslsupplySupplyLog 把 logging.Service 适配为 wslsupply.Logger（三参固定形态）。
@@ -5025,6 +4986,96 @@ func buildCodexCLIArgs(settings codexLaunchSettings) []string {
 	return args
 }
 
+// writePiProviderModelsAtLaunch 承担 LaunchPiSession 的 providerSyncMu 临界区：
+// 构建 + 合并写入 models.json（WSL/Windows 两侧）+ API key env 兜底注入，返回
+// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。错误仅一
+// 种：WSL 路径选中 provider 构建失败的阻断（S1 已批准语义，调用方直接上抛）。
+//
+// 锁纪律（S1 diting F1）：本函数是临界区的唯一形态，defer Unlock 保证全部
+// return 路径释放锁——修复前 WSL 构建失败分支在 Lock/Unlock 区间内直接
+// return，providerSyncMu 永久持有，此后 provider 保存/Pi 启动/SaveOpenCodeConfig
+// 全部挂死。
+func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunchSettings, presetParams config.Parameters, wslDistro string, envOverrides map[string]string) (piLaunchSettings, error) {
+	a.providerSyncMu.Lock()
+	defer a.providerSyncMu.Unlock()
+
+	provider, err := a.Config.GetProvider(providerID)
+	if err != nil {
+		return settings, nil // provider 不可读：不改 settings、不注入 env（既有行为）
+	}
+	settings = resolvePiLaunchSettings(*provider, settings.Model, presetParams)
+	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
+
+	// 合并写入 pi 标准 agent 目录的 models.json。
+	// 仅当成功生成配置时才改写 settings.Provider 为 amagi-<name>；失败则回退到
+	// piProviderMapping 的旧兜底（保持向后兼容，不阻断启动——WSL 路径除外，
+	// 见下方阻断分支）。presetParams 透传 contextWindow/maxTokens/thinking 到 pi
+	// model 配置。presetModels：该 provider 在 openai 公共预设桶（pi/omp 消费的
+	// 桶）下的全部预设模型。启动写入是托管条目的整体替换语义，漏注会把统一
+	// 同步写入的同 provider 其他预设模型挤掉。
+	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
+	if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, settings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
+		// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
+		//（Windows 侧文件对 WSL 内的 pi 不可见）；非 WSL 路径行为不变。
+		wroteProvider := false
+		if wslDistro != "" {
+			// 保留 WSL 侧 models.json 中已有 provider（merge 在
+			// WriteWSLPiAgentConfig 内能对 UNC 路径完成），原子写 + chmod 补偿。
+			wslAgentDir, wErr := launcher.WriteWSLPiAgentConfig(wslDistro, piCfg)
+			if wErr == nil {
+				wroteProvider = true
+				a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
+					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
+			} else {
+				a.Log.Warn("pi", "写入 WSL 侧 pi models.json 失败，回退内置 provider", wErr.Error())
+			}
+		} else {
+			agentDir := defaultPiAgentDir()
+			// 保留用户 models.json 中已有的 provider 和其他顶层配置，
+			// 当次 amagi 生成的同名 provider 优先。
+			piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
+			writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
+			if writeErr == nil {
+				wroteProvider = true
+				a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
+					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+			} else {
+				a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
+			}
+		}
+		if wroteProvider {
+			settings.Provider = launcher.PiProviderID(providerID)
+		} else {
+			settings.Provider, _ = piProviderMapping(*provider)
+		}
+	} else {
+		// P3-S1（已批准的行为变更，WSL 路径）：当前选中 provider 不可构建 →
+		// 阻断该启动（中文报错，不静默换默认模型——piProviderMapping 会丢
+		// baseURL 误打官方 endpoint，非等价回退）。Windows 路径维持既有回退
+		// 语义（不在本批写面内）。
+		if wslDistro != "" {
+			return settings, wslPiProviderBuildError(providerID, cfgErr)
+		}
+		a.Log.Warn("pi", "生成 pi models.json 失败，回退内置 provider", cfgErr.Error())
+		settings.Provider, _ = piProviderMapping(*provider)
+	}
+
+	// 冗余兜底：注入对应 API Key env var（与 OpenCode 的双路注入一致）。
+	// pi 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
+	if apiKey != "" {
+		if _, apiKeyEnv := piProviderMapping(*provider); apiKeyEnv != "" {
+			envOverrides[apiKeyEnv] = apiKey
+		}
+	}
+	return settings, nil
+}
+
+// wslPiProviderBuildError 是 WSL 路径「选中 provider 不可构建 → 阻断启动」的
+// 中文报错（P3-S1 已批准语义：不静默换默认模型）。独立成函数供单测钉文案。
+func wslPiProviderBuildError(providerID string, cfgErr error) error {
+	return fmt.Errorf("无法构建 Pi 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
+}
+
 // piProviderMapping 把 amagi Provider 映射成 Pi 的内置 provider 名 + 对应 API Key env var。
 //
 // 注意：这是**回退路径**，仅当 LaunchPiSession 未能生成 pi models.json 时使用。
@@ -5377,25 +5428,32 @@ launchCommon:
 		// 在转发面内，必须在 resolveEmbeddedLaunchSpec 之前进入 env 才会被拼进
 		// WSLENV 清单）指向它；opencode 以附加配置层加载该文件（实测 v1.17.18：
 		// global → OPENCODE_CONFIG → 项目级 → CONTENT，不顶替用户全局配置）。
-		// 写失败不阻断启动（回退现状＝无 provider 启动，与 pi 的 WSL 写入失败
-		// 策略一致），但显式记日志暴露。
+		// P3-S1 失败语义变更（已批准）：选中模型配置不可安全落地 → 启动失败
+		//（不再无 provider 静默启动）；写入前对 mcp 段做确定性形态检查
+		//（npx.cmd→npx 仅验证过才映射；Windows exe/ps1/盘符参数不生成假可用
+		// 条目；HTTP/远程保留 URL；distro 全局同名默认保留本地）。
 		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
 			wslDistro := platform.DefaultWSLDistro(nil)
 			cfgJSON := strings.TrimSpace(envOverrides["OPENCODE_CONFIG_CONTENT"])
-			if wslDistro == "" {
-				if cfgJSON != "" {
-					a.Log.Warn("session", "OpenCode WSL 会话但无可用发行版，provider 配置不可达（OPENCODE_CONFIG_CONTENT 不跨界）", "")
+			if cfgJSON != "" {
+				launchErr := fmt.Errorf("OpenCode 模型配置无法写入 WSL：未找到可用发行版（OPENCODE_CONFIG_CONTENT 不跨界）；本次未启动，不再以无 provider 配置静默启动")
+				if wslDistro == "" {
+					a.Sessions.MarkFailed(sess.ID, launchErr.Error())
+					return "", launchErr
 				}
-			} else if cfgJSON != "" {
 				var runtimeCfg map[string]any
 				if uErr := json.Unmarshal([]byte(cfgJSON), &runtimeCfg); uErr != nil {
-					a.Log.Error("session", "解析 OpenCode 运行时配置失败，WSL 侧配置不写入", uErr.Error())
-				} else if linuxPath, wErr := launcher.WriteWSLOpenCodeAgentConfig(wslDistro, runtimeCfg); wErr != nil {
-					a.Log.Error("session", "写入 WSL 侧 OpenCode 配置失败（会话将以无 provider 配置启动）", wErr.Error())
-				} else {
-					env = launcher.BuildEnv(env, map[string]string{"OPENCODE_CONFIG": linuxPath})
-					a.Log.Info("session", "已写入 OpenCode 配置 (WSL)", fmt.Sprintf("distro=%s -> %s", wslDistro, linuxPath))
+					launchErr = fmt.Errorf("解析 OpenCode 运行时配置失败，无法安全写入 WSL：%v；本次未启动，不再以无 provider 配置静默启动", uErr)
+					a.Sessions.MarkFailed(sess.ID, launchErr.Error())
+					return "", launchErr
 				}
+				linuxPath, prepErr := a.prepareWSLOpenCodeLayer(wslDistro, runtimeCfg)
+				if prepErr != nil {
+					a.Sessions.MarkFailed(sess.ID, prepErr.Error())
+					return "", prepErr
+				}
+				env = launcher.BuildEnv(env, map[string]string{"OPENCODE_CONFIG": linuxPath})
+				a.Log.Info("session", "已写入 OpenCode 配置 (WSL)", fmt.Sprintf("distro=%s -> %s", wslDistro, linuxPath))
 			}
 		}
 

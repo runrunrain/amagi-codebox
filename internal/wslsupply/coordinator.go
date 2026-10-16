@@ -142,6 +142,13 @@ func (c *Coordinator) Inspect(_ context.Context, target TargetRef) (*Snapshot, e
 	}
 	if err := c.state.mutate(func(st *StateFile) {
 		st.LastInspectedAt = snap.InspectedAt
+		// F4（S1 diting）：检查时间按 CLI 作用域另记一份——GetStatus 只读本表，
+		// pi 作用域的探测不再错配到 shared 面板（全局字段保留写入仅为旧读端
+		// 兼容，不再被本包读取）。
+		if st.LastInspectedAtByCLI == nil {
+			st.LastInspectedAtByCLI = map[CLI]time.Time{}
+		}
+		st.LastInspectedAtByCLI[target.CLI] = snap.InspectedAt
 		st.Distro = target.Distro
 		st.Home = target.Home
 		st.Generation = target.Generation
@@ -226,12 +233,21 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 		default:
 			adapter := c.projections[unit]
 			entry, _ := state.entry(unit)
+			// 同意门：需要 per-target 明确同意的单元（视觉清单密钥跨界）在未授权前
+			// 恒为阻断待确认，不进入适配器归属判定（design §四）。
+			if adapter.RequiresConsent() && !entry.Consented {
+				plan.Units = append(plan.Units, PlannedUnit{
+					Unit: unit, Policy: adapter.Policy(), Action: ActionBlocked,
+					BlockedReason: "awaiting-consent",
+				})
+				continue
+			}
 			planned, err := adapter.Plan(req, snap, &entry)
 			if err != nil {
 				return nil, fmt.Errorf("plan unit %s: %w", string(unit), err)
 			}
 			planned.Unit = unit
-			planned.Policy = PolicyTrackedProjection
+			planned.Policy = adapter.Policy()
 			plan.Units = append(plan.Units, planned)
 		}
 	}
@@ -295,34 +311,138 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 			switch unit.Action {
 			case ActionNone:
 				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: PolicyTrackedProjection, Outcome: UnitFresh, Detail: "no-change",
+					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFresh, Detail: "no-change",
 				})
 			case ActionBlocked:
 				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
+					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
 					Detail: unit.BlockedReason,
 				})
+				if unit.Freeze {
+					// 冻结态持久化（GetStatus 供 UI 显示；下次成功写入时清除）。
+					c.recordProjectionFreeze(current, unit.Unit, unit.Policy, unit.BlockedReason)
+				} else if unit.BlockedReason == "awaiting-consent" {
+					// 待同意态持久化：状态面需要可见「未授权」而非「未检查」。
+					c.recordProjectionPendingConsent(current, unit.Unit, unit.Policy)
+				}
 			case ActionWriteProjection:
 				result.Results = append(result.Results, c.applyProjection(ctx, current, unit, adapter))
 			default:
 				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: PolicyTrackedProjection, Outcome: UnitFailed,
+					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
 					Detail: "planned-action-mismatch",
 					Err:    fmt.Errorf("unsupported projection action: %d", unit.Action),
 				})
 			}
 		}
 	}
+	c.clearSatisfiedDirtySources(result)
 	return result, nil
+}
+
+// DirtySource* 是保存事件来源名（App markWSLSupplyDirty 的调用方必须使用本
+// 常量——dirtySourceUnits 依此映射来源→它滋养的单元集）。
+const (
+	DirtySourceProviders      = "providers"
+	DirtySourcePiLoginPresets = "pi-login-presets"
+)
+
+// dirtySourceUnits 把保存事件的来源映射到其滋养的单元集（F2：推送/启动补漏
+// 完成后据此清除待同步标记）。provider 保存影响托管 models.json 与两份共享
+// 文件（视觉清单的 api_key/baseURL、学习层无直接关联但同批推送）；登录预设
+// 只影响托管 models.json 的 contextWindow 覆写。未知来源不映射（保守：其
+// pending 标记不因任何单元成功而清除）。
+var dirtySourceUnits = map[string][]UnitID{
+	DirtySourceProviders:      {UnitPiManagedModels, UnitSharedVisionExport, UnitSharedModalityKB},
+	DirtySourcePiLoginPresets: {UnitPiManagedModels},
+}
+
+// clearSatisfiedDirtySources 在一次 Apply 完成后推进/清除待同步来源（F2：
+// 修复前 PendingSources 只写不清，首次保存后 pendingPush 恒亮、「已同步」
+// 不可达）。一个来源的滋养单元常跨两次 RunUnits（pi 作用域 + shared 作用域），
+// 故按来源累计「标记后已成功（Applied/Fresh）」的单元集（PendingProgress，
+// MarkDirty 时重置）；累计集覆盖全部滋养单元才清除来源标记。任一单元失败/
+// 阻断则不计入，标记保留待下次补漏；重启后 pending 补漏完成同样经本路径收敛。
+func (c *Coordinator) clearSatisfiedDirtySources(result RunResult) {
+	if len(result.Results) == 0 {
+		return
+	}
+	succeeded := make([]UnitID, 0, len(result.Results))
+	for i := range result.Results {
+		if o := result.Results[i].Outcome; o == UnitApplied || o == UnitFresh || o == UnitWarnDegraded {
+			succeeded = append(succeeded, result.Results[i].Unit)
+		}
+	}
+	if len(succeeded) == 0 {
+		return
+	}
+	st := c.state.load()
+	progressDelta := map[string]map[UnitID]bool{}
+	var satisfied []string
+	for source := range st.PendingSources {
+		units, mapped := dirtySourceUnits[source]
+		if !mapped {
+			continue
+		}
+		progress := map[UnitID]bool{}
+		for _, u := range st.PendingProgress[source] {
+			progress[u] = true
+		}
+		for _, u := range succeeded {
+			progress[u] = true
+		}
+		done := true
+		for _, u := range units {
+			if !progress[u] {
+				done = false
+				break
+			}
+		}
+		if done {
+			satisfied = append(satisfied, source)
+			continue
+		}
+		progressDelta[source] = progress
+	}
+	if len(satisfied) == 0 && len(progressDelta) == 0 {
+		return
+	}
+	sort.Strings(satisfied)
+	err := c.state.mutate(func(st *StateFile) {
+		if st.PendingProgress == nil {
+			st.PendingProgress = map[string][]UnitID{}
+		}
+		for source, progress := range progressDelta {
+			units := make([]UnitID, 0, len(progress))
+			for u := range progress {
+				units = append(units, u)
+			}
+			sort.Slice(units, func(i, j int) bool { return units[i] < units[j] })
+			st.PendingProgress[source] = units
+		}
+		for _, source := range satisfied {
+			delete(st.PendingSources, source)
+			delete(st.PendingProgress, source)
+		}
+	})
+	if err != nil {
+		logWarn(c.log, "wslsupply", "清除待同步来源标记失败（下次运行重试）", strings.Join(satisfied, ","))
+	}
 }
 
 // applyProjection 执行一个投影单元：先复核当前目标仍等于计划预期值（CAS
 // 前置），再经提交原语写入并登记。候选正文只在本次调用内存中存在。
 func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, planned PlannedUnit, adapter ProjectionAdapter) UnitResult {
-	candidate, transformVersion, err := adapter.Candidate(ctx, target)
+	cand, err := adapter.Candidate(ctx, target)
 	if err != nil {
+		detail := "candidate-unavailable"
+		if errors.Is(err, ErrTargetCorrupt) {
+			// 两级损坏保护：目标存在但严格解析/嵌套形态校验失败 → 不覆盖，
+			// 以 target-corrupt 明细暴露给启动闸门（可阻断）与状态页。
+			detail = "target-corrupt"
+		}
 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
-			Detail: "candidate-unavailable", Err: err}
+			Detail: detail, Err: err}
 	}
 	// CAS 前置复核：目标若已被外部修改（不再等于计划预期值），拒绝旧计划，
 	// 保留外部编辑（设计：目标变更/用户修改则拒绝旧计划）。
@@ -344,15 +464,21 @@ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, pla
 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
 			Detail: "target-unreadable", Err: readErr}
 	}
-	undo, err := c.submitFile(target, planned.RelPath, candidate)
+	undo, err := c.submitFile(target, planned.RelPath, cand.Content, adapter.Sensitive())
 	if err != nil {
 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
 			Detail: "write-failed", Err: err}
 	}
 	undo.unit = planned.Unit
-	c.recordProjectionState(target, planned.Unit, hexHash(candidate), transformVersion)
-	return UnitResult{Unit: planned.Unit, Policy: PolicyTrackedProjection, Outcome: UnitApplied,
-		Detail: "written", Undo: undo}
+	c.recordProjectionState(target, planned.Unit, planned.Policy, cand.SourceHash, hexHash(cand.Content), cand.TransformVersion)
+	detail := "written"
+	if len(cand.Notes) > 0 {
+		// 部分构建失败/冲突保留等逐项诊断（不含密钥正文）：并入结果明细与日志。
+		detail += "; " + strings.Join(cand.Notes, "; ")
+		logWarn(c.log, "wslsupply", "供给单元部分诊断", strings.Join(cand.Notes, "; "))
+	}
+	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitApplied,
+		Detail: detail, Undo: undo}
 }
 
 // recordA2State 更新 A2 单元登记：只记录 outcome/时间戳/错误码，永不记录 hash
@@ -376,19 +502,57 @@ func (c *Coordinator) recordA2State(target TargetRef, res UnitResult, outcome la
 	}
 }
 
-// recordProjectionState 更新投影单元登记（普通单元允许记录 hash，仅私有落盘，
-// 不经状态 API 返回）。
-func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, sourceHash, transformVersion string) {
+// recordProjectionState 更新投影单元登记（普通/托管单元允许记录 hash，仅私有
+// 落盘，不经状态 API 返回）。SourceHash 是规范化业务内容基准（不含时间戳），
+// LastWrittenHash 是实际落盘字节 hash；Consented 等跨写入字段保留不丢失。
+func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string) {
 	err := c.state.mutate(func(st *StateFile) {
+		prev, _ := st.entry(unit)
 		st.upsertEntry(StateEntry{
-			Unit: unit, Policy: PolicyTrackedProjection, Generation: target.Generation,
-			SourceHash: sourceHash, LastWrittenHash: sourceHash, TransformVersion: transformVersion,
+			Unit: unit, Policy: policy, Generation: target.Generation,
+			SourceHash: sourceHash, LastWrittenHash: writtenHash, TransformVersion: transformVersion,
 			LastSuccess: time.Now(), LastOutcome: "written",
+			Consented: prev.Consented,
 		}, target.Generation)
 		st.Distro = target.Distro
 	})
 	if err != nil {
 		logWarn(c.log, "wslsupply", "投影单元状态登记失败（内容已提交，下次视为待核实）", err.Error())
+	}
+}
+
+// recordProjectionPendingConsent 把「待同意」态写入登记（Consented=false，
+// LastOutcome=awaiting-consent）；授权后由 GrantUnitConsent 覆写。
+func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit UnitID, policy Policy) {
+	err := c.state.mutate(func(st *StateFile) {
+		prev, _ := st.entry(unit)
+		st.upsertEntry(StateEntry{
+			Unit: unit, Policy: policy, Generation: target.Generation,
+			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+			LastOutcome: "awaiting-consent",
+		}, target.Generation)
+		st.Distro = target.Distro
+	})
+	if err != nil {
+		logWarn(c.log, "wslsupply", "待同意状态登记失败（不影响目标内容）", err.Error())
+	}
+}
+
+// recordProjectionFreeze 把冻结态写入登记（保留既有 hash/同意标记，仅置 Frozen
+// 与原因）；后续成功写入时由 recordProjectionState 的全新条目清除冻结。
+func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, policy Policy, reason string) {
+	err := c.state.mutate(func(st *StateFile) {
+		prev, _ := st.entry(unit)
+		st.upsertEntry(StateEntry{
+			Unit: unit, Policy: policy, Generation: target.Generation,
+			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+			TransformVersion: prev.TransformVersion, Consented: prev.Consented,
+			LastOutcome: "frozen", Frozen: true, FrozenReason: reason,
+		}, target.Generation)
+		st.Distro = target.Distro
+	})
+	if err != nil {
+		logWarn(c.log, "wslsupply", "冻结状态登记失败（不影响目标内容保留）", err.Error())
 	}
 }
 
@@ -445,6 +609,11 @@ func (c *Coordinator) MarkDirty(source string, revision uint64) error {
 		}
 		if revision > st.PendingSources[source] {
 			st.PendingSources[source] = revision
+			// F2：重新标脏即来源再次变化——该来源的单元成功进度重置，只有
+			// 标记之后的成功才计入清除条件。
+			if st.PendingProgress != nil {
+				delete(st.PendingProgress, source)
+			}
 		}
 		if revision > st.DesiredRevision {
 			st.DesiredRevision = revision
@@ -473,19 +642,57 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 	}
 	status.Generation = st.Generation
 	status.Home = st.Home
-	if !st.LastInspectedAt.IsZero() {
+	// F4：只读该 CLI 作用域的实际探测时间（旧清单无 per-CLI 记录 → 未检查，
+	// 诚实呈现而非沿用其它作用域的时间）。
+	if t, ok := st.LastInspectedAtByCLI[cli]; ok && !t.IsZero() {
 		status.Checked = true
-		status.CheckedAt = st.LastInspectedAt
+		status.CheckedAt = t
 	}
 	for _, entry := range st.Units {
 		status.Units = append(status.Units, UnitStatus{
 			Unit: entry.Unit, Policy: entry.Policy, LastOutcome: entry.LastOutcome,
 			LastSuccess: entry.LastSuccess, LastErrorCode: entry.LastErrorCode,
 			TransformVersion: entry.TransformVersion, Frozen: entry.Frozen,
-			FrozenReason: entry.FrozenReason,
+			FrozenReason: entry.FrozenReason, Consented: entry.Consented,
 		})
 	}
 	return status
+}
+
+// HasUnit 报告单元是否已在协调器注册（A2 恒 true）。启动链据此按能力适配
+// 单元清单（裸协调器缺 S1 适配器时自动降级为 A2-only，不报 unknown unit）。
+func (c *Coordinator) HasUnit(unit UnitID) bool { return c.knownUnit(unit) }
+
+// GrantUnitConsent 为目标登记一个 per-target 明确同意（S1：视觉清单密钥跨界
+// 共享，design §四）。同意按目标 generation 记录：distro 重装/换用户后旧授权
+// 不自动扩散，需重新确认。仅 RequiresConsent 单元接受本操作。
+func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli CLI, unit UnitID) error {
+	adapter, ok := c.projections[unit]
+	if !ok || !adapter.RequiresConsent() {
+		return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+	}
+	target, err := c.ResolveTarget(ctx, distro, cli)
+	if err != nil {
+		return fmt.Errorf("resolve wsl supply target: %w", err)
+	}
+	return c.state.mutate(func(st *StateFile) {
+		prev, _ := st.entry(unit)
+		entry := StateEntry{
+			Unit: unit, Policy: adapter.Policy(), Generation: target.Generation,
+			Consented: true, LastOutcome: "consented", LastSuccess: time.Now(),
+		}
+		// F3（S1 diting）：仅同代才保留 hash 基线；跨代（distro 重装/换默认
+		// 用户后重新同意）时新 generation 无任何基线——旧代 SourceHash/
+		// LastWrittenHash 不继承（继承会让新 distro 首发布被误判
+		// local-deletion-frozen，重新同意即失效）。
+		if prev.Generation == target.Generation {
+			entry.SourceHash = prev.SourceHash
+			entry.LastWrittenHash = prev.LastWrittenHash
+		}
+		st.upsertEntry(entry, target.Generation)
+		st.Distro = target.Distro
+		st.Home = target.Home
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -493,10 +700,18 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 // ---------------------------------------------------------------------------
 
 // submitFile 经目标内私有 staging 提交一个文件：唯一临时名（os.CreateTemp，
-// 并发 Apply 不撞名）→ 权限先收紧（0600）再 rename → distro 内 chmod 600 补偿
-// （9P 不落 POSIX 位；失败即清理落盘内容，fail closed）→ 读回校验。字节走 UNC，
-// 不进 wsl.exe 命令行。返回可条件撤销记录（普通文件写入专用；A2 不走本原语）。
-func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte) (*CompensationHandle, error) {
+// 并发提交不撞名）→ 权限先收紧（0600，CreateTemp 本就以 0600 创建，共享目录
+// 不落宽权限临时文件）→ rename → distro 内 chmod 600 补偿（9P 不落 POSIX 位）
+// → 读回校验。字节走 UNC，不进 wsl.exe 命令行。返回可条件撤销记录（普通文件
+// 写入专用；A2 不走本原语）。
+//
+// chmod 补偿失败的处置按单元敏感度分叉（diting M2）:
+//   - 敏感单元（内嵌密钥）：维持 fail-closed 删除——宽松权限明文不留盘；
+//   - 普通单元：不得留下半提交状态——优先恢复前像（用户旧配置保持可读，
+//     design §六「旧 WSL 配置可读且安全 → 启动继续」）；恢复也失败才整体
+//     清理（绝不落半提交新内容）。取舍：恢复写不经 chmod（原内容无密钥，
+//     umask 默认权限可接受；有密钥的单元不会走到本分支）。
+func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
 	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))
 	dir := filepath.Dir(uncPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -531,21 +746,66 @@ func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byt
 	}
 	linuxPath := target.LinuxRoot + "/" + strings.TrimPrefix(relPath, "/")
 	if err := c.probes.Chmod(target.Distro, "600", linuxPath); err != nil {
-		// fail closed：宽松权限明文不留盘（对齐 A2/WriteWSL*AgentConfig 契约）。
-		_ = os.Remove(uncPath)
-		return nil, fmt.Errorf("chmod 600 supply file in distro: %w", err)
+		if sensitive {
+			// fail closed：宽松权限明文不留盘（对齐 A2/WriteWSL*AgentConfig 契约）。
+			_ = os.Remove(uncPath)
+			return nil, fmt.Errorf("chmod 600 supply file in distro: %w", err)
+		}
+		if restoreErr := restorePreimage(uncPath, dir, prev, prevExisted); restoreErr != nil {
+			_ = os.Remove(uncPath)
+			return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restore failed: %v; target removed)", err, restoreErr)
+		}
+		return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restored)", err)
 	}
 	got, err := os.ReadFile(uncPath)
 	if err != nil || hexHash(got) != hexHash(content) {
 		return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v)", err)
 	}
-	return newCompensationHandle(target, relPath, content, prev, prevExisted), nil
+	return newCompensationHandle(target, relPath, content, prev, prevExisted, sensitive), nil
+}
+
+// restorePreimage 以唯一临时名 + rename 恢复前像（M2 普通单元 chmod 失败路径；
+// 不做 chmod 补偿——原内容无密钥，umask 默认权限可接受）。首次创建后失败的
+// 场景（无前像）删除新增目标。
+func restorePreimage(uncPath, dir string, prev []byte, prevExisted bool) error {
+	if !prevExisted {
+		if err := os.Remove(uncPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	tmp, err := os.CreateTemp(dir, ".amagi-supply-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(prev); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, uncPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // Compensate 条件撤销普通文件写入：仅当目标当前 hash 仍等于本次写入值才恢复
 // 原内容/删除新增文件；目标已被外部修改则保留外部内容（CAS，design §七）。
 // A2 凭据刷新是持久认证状态，永不参与补偿。
+//
+// M1：补偿的「读 current→CAS 判定→submitFile/Remove」全程与 Apply 共用
+// applyMu 串行化——无锁时 Abort 补偿可与并发 Apply 交错（TOCTOU：CAS 读过
+// 后另一会话已 rename 新内容，补偿会删/覆盖该新写入），违背 design §七
+// 「协调器按目标根/文件串行化」对补偿写入的声明。
 func (c *Coordinator) Compensate(ctx context.Context, handles ...*CompensationHandle) []CompensationOutcome {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
 	out := make([]CompensationOutcome, 0, len(handles))
 	for _, h := range handles {
 		if h == nil {
@@ -588,7 +848,7 @@ func (c *Coordinator) compensateOne(ctx context.Context, h *CompensationHandle) 
 		outcome.Disposition = CompensationConfirmed
 		return outcome
 	}
-	if _, err := c.submitFile(h.target, h.relPath, h.prev); err != nil {
+	if _, err := c.submitFile(h.target, h.relPath, h.prev, h.sensitive); err != nil {
 		outcome.Disposition = CompensationUnavailable
 		outcome.Message = err.Error()
 		return outcome
