@@ -78,3 +78,6 @@ playwright-report/
 
 # 本地运行时产物（Saved/Logs 等，勿提交）
 /Saved/
+
+# node compile-cache accidentally created inside the repo (frontend tooling bug, 2026-10-16)
+frontend/C:
