@@ -429,7 +429,7 @@ func ShouldForwardToWSL(key string, extraForwardKeys ...string) bool {
 			return true
 		}
 	}
-	if isWSLENVReservedKey(key) {
+	if IsWSLENVReservedKey(key) {
 		return false
 	}
 	for _, k := range extraForwardKeys {
@@ -444,10 +444,11 @@ func shouldForwardToWSL(key string) bool {
 	return ShouldForwardToWSL(key)
 }
 
-// isWSLENVReservedKey 报告不得经额外清单转发的保留键：WSLENV 自身（清单载体，
+// IsWSLENVReservedKey 报告不得经额外清单转发的保留键：WSLENV 自身（清单载体，
 // 转发即自引用）与 PATH 家族（Windows 值进 WSL 会整体覆盖发行版自身的 PATH
-// 解析，CLI 将无法在 distro 内定位）。
-func isWSLENVReservedKey(key string) bool {
+// 解析，CLI 将无法在 distro 内定位）。导出供 envvars 保存校验（P4-A2 路径值
+// 放行标记对保留键拒绝）与 launcher 剥离豁免面共用同一判据。
+func IsWSLENVReservedKey(key string) bool {
 	switch strings.ToUpper(strings.TrimSpace(key)) {
 	case "WSLENV", "PATH", "PATHEXT":
 		return true
@@ -458,8 +459,9 @@ func isWSLENVReservedKey(key string) bool {
 // appendWSLENVForwarding computes the WSLENV variable from the forwardable keys
 // present in env and merges it with any existing WSLENV. The returned slice is a
 // copy with WSLENV set; env is not mutated. WSLENV uses a colon-separated list
-// of variable names (no path-translation flags: the forwarded values are keys /
-// URLs, not Windows paths).
+// of variable names; by default no path-translation flags are attached (the
+// forwarded values are keys / URLs, not Windows paths) — the per-key /p gate
+// lives in appendWSLENVForwardingWithPaths (P4-A2).
 //
 // extraForwardKeys lists additional env keys to forward verbatim across the
 // Windows→WSL boundary even when they match no whitelist prefix — populated
@@ -476,16 +478,47 @@ func AppendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
 	return appendWSLENVForwarding(env, extraForwardKeys...)
 }
 
+// AppendWSLENVForwardingWithPaths 把额外需要跨界转发的键并入 env 的 WSLENV
+// 清单，并为 pathFlagKeys 中的键附加 /p 路径翻译标志（P4-A2 per-key 放行门）。
+// 导出供 launcher 侧链路一致性测试与潜在复用方使用；resolver 的 WSL 分支
+// 即此调用形态。
+func AppendWSLENVForwardingWithPaths(env []string, extraForwardKeys []string, pathFlagKeys []string) []string {
+	return appendWSLENVForwardingWithPaths(env, extraForwardKeys, pathFlagKeys)
+}
+
 func appendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
+	return appendWSLENVForwardingWithPaths(env, extraForwardKeys, nil)
+}
+
+// appendWSLENVForwardingWithPaths 是 appendWSLENVForwarding 的 per-key 放行扩展
+// （P4-A2 路径值放行门，主上已批）：pathFlagKeys 中的键（envvars.json
+// allowPathValue 标记，大小写不敏感）在 WSLENV 清单中获得 /p 路径翻译标志——
+// 值跨界时由 WSL 把 C:\... 译为 /mnt/c/...，放行路径值的合法需求正是 WSL 内
+// 工具要能按翻译后形态读 Windows 路径。值本身原样留在进程 env（翻译由 WSL
+// 按 /p 执行，不在进程 env 内改写）。保留键（IsWSLENVReservedKey）不参与：
+// 它们本来就不在转发面，放行标记对其无效。未列名的键行为与
+// appendWSLENVForwarding 完全一致（无标志转发，默认防泄漏基线不变——
+// StripWSLHostPathEnvWithAllow 侧对未标记的路径值键照旧剥离）。
+func appendWSLENVForwardingWithPaths(env []string, extraForwardKeys []string, pathFlagKeys []string) []string {
 	names := []string{}
 	seen := map[string]struct{}{}
-	addName := func(name string) {
+	addName := func(name, flagSuffix string) {
 		key := strings.ToUpper(name)
 		if _, ok := seen[key]; ok {
 			return
 		}
 		seen[key] = struct{}{}
-		names = append(names, name)
+		names = append(names, name+flagSuffix)
+	}
+
+	// 放行键名单提前构建（qreview F-1：保留段需要交叉判断）。
+	pathFlags := make(map[string]struct{}, len(pathFlagKeys))
+	for _, k := range pathFlagKeys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed == "" || IsWSLENVReservedKey(trimmed) {
+			continue
+		}
+		pathFlags[strings.ToUpper(trimmed)] = struct{}{}
 	}
 
 	// Preserve any pre-existing WSLENV entries first.
@@ -508,6 +541,15 @@ func appendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
 				continue
 			}
 			seen[key] = struct{}{}
+			// qreview F-1：用户自带条目命中放行键且未含 /p 时升级补齐，
+			// 防半开态（剥离豁免但无路径翻译）；已有 /p 或含 p 的 flag
+			// 组合（如 /u/p）不重写。
+			if _, pf := pathFlags[key]; pf {
+				flags := trimmed[len(base):]
+				if !strings.Contains(flags, "p") {
+					trimmed = trimmed + "/p"
+				}
+			}
 			names = append(names, trimmed)
 		}
 	}
@@ -515,7 +557,7 @@ func appendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
 	extra := make(map[string]struct{}, len(extraForwardKeys))
 	for _, k := range extraForwardKeys {
 		trimmed := strings.TrimSpace(k)
-		if trimmed == "" || isWSLENVReservedKey(trimmed) {
+		if trimmed == "" || IsWSLENVReservedKey(trimmed) {
 			continue
 		}
 		extra[strings.ToUpper(trimmed)] = struct{}{}
@@ -523,13 +565,20 @@ func appendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
 
 	for _, kv := range env {
 		k := envEntryKey(kv)
-		if shouldForwardToWSL(k) {
-			addName(k)
+		forwardable := shouldForwardToWSL(k)
+		if !forwardable {
+			if _, ok := extra[strings.ToUpper(k)]; ok {
+				forwardable = true
+			}
+		}
+		if !forwardable {
 			continue
 		}
-		if _, ok := extra[strings.ToUpper(k)]; ok {
-			addName(k)
+		if _, ok := pathFlags[strings.ToUpper(k)]; ok {
+			addName(k, "/p")
+			continue
 		}
+		addName(k, "")
 	}
 
 	if len(names) == 0 {

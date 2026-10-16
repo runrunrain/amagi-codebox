@@ -21,6 +21,13 @@
         <!-- 加载态 -->
         <div v-if="loading" class="panel-empty panel-empty--loading">正在读取仓库状态…</div>
 
+        <!-- 读取失败空态：仓库信息拉不到（含 WSL/Linux 形态 workDir 前置拦截），
+             展示后端错误文案 + DrvFS 关联提示，不再误标为「不是 Git 仓库」 -->
+        <div v-else-if="!repo && actionError" class="panel-empty panel-empty--error">
+          <span class="panel-error-text">{{ actionError }}</span>
+          <p v-if="drvfsHint" class="panel-hint">{{ drvfsHint }}</p>
+        </div>
+
         <!-- 非 git 仓库空态 -->
         <div v-else-if="!repo || !repo.isGitRepo" class="panel-empty">
           当前工作区不是 Git 仓库，无法使用提交/推送功能。
@@ -204,6 +211,8 @@ import {
 } from '../../api/gitassist'
 import { useToast } from '../../composables/useToast'
 import { useUIStore } from '../../stores/ui'
+import { getDrvFSAdvisories } from '../../api/drvfsAdvisory'
+import { drvfsHintFor } from './drvfsHint'
 
 const props = defineProps<{
   visible: boolean
@@ -226,6 +235,8 @@ const summarizing = ref(false)
 const generateError = ref('')
 const actionError = ref('')
 const pushResult = ref('')
+// DrvFS 关联提示（读取失败时按需拉取，best-effort：拉取失败不展示，不掩盖主错误）
+const drvfsHint = ref('')
 const committingAll = ref(false)
 const committingStaged = ref(false)
 const pushing = ref(false)
@@ -312,6 +323,7 @@ async function loadAll() {
   }
   loading.value = true
   actionError.value = ''
+  drvfsHint.value = ''
   try {
     const info = await getRepoInfo(props.workDir)
     repo.value = info
@@ -324,6 +336,13 @@ async function loadAll() {
     repo.value = null
     branches.value = []
     actionError.value = '读取仓库状态失败: ' + errText(err)
+    // 失败处关联提示：工作目录落在已知 DrvFS 挂载上时补充说明（含 WSL/Linux
+    // 形态拦截场景；后端在该场景已写入 advisory）。
+    try {
+      drvfsHint.value = drvfsHintFor(await getDrvFSAdvisories(), props.workDir) || ''
+    } catch {
+      drvfsHint.value = ''
+    }
   } finally {
     loading.value = false
   }
@@ -436,6 +455,7 @@ watch(
       generateError.value = ''
       actionError.value = ''
       pushResult.value = ''
+      drvfsHint.value = ''
       pendingBranch.value = ''
       statusExpanded.value = false
       branchExpanded.value = false
@@ -541,6 +561,27 @@ watch(
 .panel-empty--loading {
   border-color: rgba(137, 221, 255, 0.34);
   color: #89ddff;
+}
+
+/* 读取失败空态：展示后端错误文案（含 WSL/Linux 形态拦截的可操作文案） */
+.panel-empty--error {
+  border-color: rgba(255, 83, 112, 0.42);
+  background: rgba(255, 83, 112, 0.08);
+  color: #ff8aa0;
+}
+
+.panel-error-text {
+  overflow-wrap: anywhere;
+}
+
+/* DrvFS 关联提示（琥珀色次级行） */
+.panel-hint {
+  margin: 10px 0 0;
+  color: #ffcb6b;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 /* ---- 手风琴 ---- */

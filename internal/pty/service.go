@@ -937,11 +937,22 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 		// C8: a Windows drive-letter workdir lands on the /mnt/<drive> DrvFS/9P
 		// mount, whose I/O is dramatically slower than the distro's ext4 for
 		// small-file / git-heavy workloads. Advisory log only — the session still
-		// starts. (No session-start advisory UI mechanism exists; see
-		// docs/user/usage.md 工作目录选型 for user-facing guidance.)
-		if workDirMapsToDrvFS(spec.WorkDir) && log != nil {
-			log.Warn("pty", "DrvFS 工作区 I/O 显著慢于 ext4",
-				fmt.Sprintf("workDir=%s 挂载为 %s；建议将工作区放在 WSL ext4（如 ~/）内", spec.WorkDir, drvfsMountPath(spec.WorkDir)))
+		// starts. (User-facing guidance: docs/user/usage.md 工作目录选型.)
+		// C1/P4-A1: the same condition also feeds the shared platform advisory
+		// registry (queried via App.GetDrvFSAdvisories) so GitAssist/PathPicker
+		// failure surfaces can show a related hint; the log semantics above are
+		// unchanged.
+		if workDirMapsToDrvFS(spec.WorkDir) {
+			platform.RecordDrvFSAdvisory(platform.DrvFSAdvisory{
+				Source:    "pty",
+				WorkDir:   spec.WorkDir,
+				MountPath: drvfsMountPath(spec.WorkDir),
+				Detail:    "DrvFS 工作区 I/O 显著慢于 ext4（stat 密集/小文件写），建议将工作区放在 WSL ext4（如 ~/）内",
+			})
+			if log != nil {
+				log.Warn("pty", "DrvFS 工作区 I/O 显著慢于 ext4",
+					fmt.Sprintf("workDir=%s 挂载为 %s；建议将工作区放在 WSL ext4（如 ~/）内", spec.WorkDir, drvfsMountPath(spec.WorkDir)))
+			}
 		}
 	}
 	parts = append(parts, "--", "bash", "-lic")
@@ -978,21 +989,16 @@ func buildWSLInnerCommand(cliName string, args []string) string {
 }
 
 // bashSingleQuote wraps a token in POSIX single quotes, escaping internal single
-// quotes via the standard '\'' idiom. This neutralises every bash metacharacter.
+// quotes via the standard '\” idiom. This neutralises every bash metacharacter.
 func bashSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// isLinuxStylePath 报告 workDir 是否为 Linux 形态路径：以 / 开头的绝对路径、
-// 以 ~/ 开头的 Home 相对路径，或裸 ~（m-6：wsl.exe --cd ~ 是映射 Linux
-// home 的合法形态，但 CreateProcess 同样无法把它当 lpCurrentDirectory 消费
-// ——err=267 同型）。与 workDirMapsToDrvFS 的形态判定互补：那里识别「落在
-// DrvFS 上的两类形态」，这里识别「CreateProcess 无法消费的 Linux 形态」
-// （B4：直传 lpCurrentDirectory 必得 err=267）。~user/ 别家 Home 形态为
-// 明确声明的范围外。
+// isLinuxStylePath 报告 workDir 是否为 Linux 形态路径（/、~/、裸 ~）。
+// 判定事实源已提升为 platform.IsLinuxStylePath（P4-A1：gitassist/paths 共用
+// 同一语义），此处保留薄委托以维持包内既有调用点与回归测试锚定不变。
 func isLinuxStylePath(workDir string) bool {
-	w := strings.TrimSpace(workDir)
-	return strings.HasPrefix(w, "/") || strings.HasPrefix(w, "~/") || w == "~"
+	return platform.IsLinuxStylePath(workDir)
 }
 
 // conPtyWorkDirFor 返回应传给 ConPtyWorkDir 的工作目录（空串＝不传）：
@@ -1006,52 +1012,18 @@ func conPtyWorkDirFor(spec platform.ResolvedLaunchSpec, workDir string) string {
 	return workDir
 }
 
-// workDirMapsToDrvFS reports whether workDir lands on a DrvFS/9P mount inside
-// the distro, in either form: a Windows drive-letter path (X:\repo, which
-// wsl.exe --cd maps onto /mnt/<drive>) or the Linux-form mount point itself
-// (/mnt/<drive>/...). Linux-style paths that stay on ext4 (~/... or /home/...)
-// return false (evidence T12: the /mnt form used to bypass the advisory).
+// workDirMapsToDrvFS 报告 workDir 是否落在 DrvFS/9P 挂载上（盘符或
+// /mnt/<drive> 双形态）。判定事实源已提升为 platform.WorkDirMapsToDrvFS
+// （P4-A1），此处保留薄委托维持包内锚定不变；语义细节见 platform 侧注释。
 func workDirMapsToDrvFS(workDir string) bool {
-	w := strings.TrimSpace(workDir)
-	if len(w) >= 2 && w[1] == ':' && isDriveLetter(w[0]) {
-		return true
-	}
-	return isLinuxDrvFSMount(w)
+	return platform.WorkDirMapsToDrvFS(workDir)
 }
 
-// isLinuxDrvFSMount reports whether p is a /mnt/<single-drive-letter> path
-// (/mnt/d, /mnt/c/repo...). Only a single-character drive segment matches:
-// /mnt/wsl, /mnt/docker-desktop and other multi-letter mounts are NOT drive
-// mounts and are not the source of the DrvFS slowdown.
-func isLinuxDrvFSMount(p string) bool {
-	const prefix = "/mnt/"
-	if !strings.HasPrefix(p, prefix) {
-		return false
-	}
-	rest := p[len(prefix):]
-	if rest == "" || !isDriveLetter(rest[0]) {
-		return false
-	}
-	return len(rest) == 1 || rest[1] == '/'
-}
-
-// drvfsMountPath converts a workdir that maps to DrvFS into its WSL mount
-// point for log detail: X:\a\b → /mnt/x/a/b; a Linux-form DrvFS path
-// (/mnt/d/...) is already at its mount point and returns unchanged.
-// Best-effort, used for log detail only.
+// drvfsMountPath 把落在 DrvFS 上的 workDir 换算成 WSL 挂载点（仅用于告警
+// 日志/advisory 明细；非 DrvFS 形态返回空串）。同样提升为
+// platform.DrvFSMountPath，此处薄委托。
 func drvfsMountPath(winPath string) string {
-	w := strings.TrimSpace(winPath)
-	if !workDirMapsToDrvFS(w) {
-		return ""
-	}
-	if isLinuxDrvFSMount(w) {
-		return w
-	}
-	return "/mnt/" + strings.ToLower(w[:1]) + strings.ReplaceAll(w[2:], `\`, "/")
-}
-
-func isDriveLetter(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	return platform.DrvFSMountPath(winPath)
 }
 
 // ensureWSLUTF8LocaleEnv 是 darwin buildDarwinPTYEnvironmentFromBase 的 WSL

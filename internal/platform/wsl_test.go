@@ -604,3 +604,94 @@ func TestWSLFileMTime(t *testing.T) {
 		t.Fatal("empty distro must report ok=false")
 	}
 }
+
+// TestAppendWSLENVForwardingPathFlagKeys pins the P4-A2 per-key path gate:
+// allowPathValue-marked custom keys (envvars.json) are forwarded with the
+// WSLENV /p flag — the value crosses verbatim and WSL translates C:\... into
+// /mnt/c/... inside the distro — while unmarked keys stay flag-less (default
+// leak-safe baseline unchanged) and reserved keys never join the list even
+// when marked.
+func TestAppendWSLENVForwardingPathFlagKeys(t *testing.T) {
+	env := []string{
+		"PATH=/x",
+		"UE_ROOT=" + `C:\Program Files\Epic Games\UE_5.4`,
+		"TAVILY_API_KEY=tk",
+	}
+	out := appendWSLENVForwardingWithPaths(env, []string{"UE_ROOT", "TAVILY_API_KEY"}, []string{"UE_ROOT", "PATH", "NOPE"})
+	wslenv := envValue(out, "WSLENV")
+	// 放行键：/p 路径翻译标志。
+	if !strings.Contains(wslenv, "UE_ROOT/p") {
+		t.Fatalf("WSLENV missing /p-flagged allowed key: %q", wslenv)
+	}
+	// 未放行键：无标志转发（默认基线不变）。
+	if !strings.Contains(wslenv, "TAVILY_API_KEY") || strings.Contains(wslenv, "TAVILY_API_KEY/") {
+		t.Fatalf("unmarked key must forward without flags: %q", wslenv)
+	}
+	// 保留键：标记无效，永不入清单。
+	if strings.Contains(wslenv, "PATH") {
+		t.Fatalf("reserved key must never be listed: %q", wslenv)
+	}
+	// 不在 env 的放行键不入清单。
+	if strings.Contains(wslenv, "NOPE") {
+		t.Fatalf("absent key must not be listed: %q", wslenv)
+	}
+	// 值原样保留在进程 env：翻译由 WSL 按 /p 执行，不在进程 env 内改写。
+	if v := envValue(out, "UE_ROOT"); v != `C:\Program Files\Epic Games\UE_5.4` {
+		t.Fatalf("UE_ROOT value must stay verbatim for WSL-side /p translation, got %q", v)
+	}
+	// 大小写不敏感：标记 ue_root 同样命中 UE_ROOT。
+	out2 := appendWSLENVForwardingWithPaths(env, []string{"UE_ROOT"}, []string{"ue_root"})
+	if !strings.Contains(envValue(out2, "WSLENV"), "UE_ROOT/p") {
+		t.Fatalf("case-insensitive allow marking failed: %q", envValue(out2, "WSLENV"))
+	}
+	// 兼容包装：无放行清单时与旧行为完全一致（无任何 /p 标志）。
+	old := appendWSLENVForwarding(env, "UE_ROOT", "TAVILY_API_KEY")
+	if wslenvOld := envValue(old, "WSLENV"); !strings.Contains(wslenvOld, "UE_ROOT") || strings.Contains(wslenvOld, "/p") {
+		t.Fatalf("legacy wrapper behavior changed: %q", wslenvOld)
+	}
+	// envvars.json 键的真实链路：键在 extra 清单内 + 放行标记 → /p。
+	out3 := appendWSLENVForwardingWithPaths([]string{"UE_ROOT=D:\\eng"}, []string{"UE_ROOT"}, []string{"UE_ROOT"})
+	if !strings.Contains(envValue(out3, "WSLENV"), "UE_ROOT/p") {
+		t.Fatalf("extra-key forwarding of marked key failed: %q", envValue(out3, "WSLENV"))
+	}
+	// 白名单前缀键（不经 extra 清单即转发）同样可被放行标记加 /p（per-key 同意门覆盖整个转发面）。
+	out4 := appendWSLENVForwardingWithPaths([]string{"PI_SESSION_FILE=" + `C:\s`}, nil, []string{"PI_SESSION_FILE"})
+	if !strings.Contains(envValue(out4, "WSLENV"), "PI_SESSION_FILE/p") {
+		t.Fatalf("prefix-key /p marking failed: %q", envValue(out4, "WSLENV"))
+	}
+}
+
+// qreview F-1：用户自带 WSLENV 条目命中放行键且无 /p 时升级补齐（防半开态）。
+func TestAppendWSLENVForwardingPathFlagUpgradeExisting(t *testing.T) {
+	env := []string{
+		"UE_ROOT=C:\\Program Files\\Epic Games\\UE_5.4",
+		"WSLENV=UE_ROOT:OTHER_KEY",
+	}
+	out := appendWSLENVForwardingWithPaths(env, []string{"UE_ROOT"}, []string{"UE_ROOT"})
+	wslenv := envValue(out, "WSLENV")
+	// 自带无 /p 条目升级为 UE_ROOT/p；其余自带条目原样。
+	if !strings.Contains(wslenv, "UE_ROOT/p") {
+		t.Fatalf("existing entry not upgraded with /p: %q", wslenv)
+	}
+	if !strings.Contains(wslenv, "OTHER_KEY") {
+		t.Fatalf("unrelated existing entry lost: %q", wslenv)
+	}
+	// 已含 /p 的自带条目不重写（不出现 UE_ROOT/p/p）。
+	env2 := []string{
+		"UE_ROOT=D:\\UE",
+		"WSLENV=UE_ROOT/p",
+	}
+	out2 := appendWSLENVForwardingWithPaths(env2, []string{"UE_ROOT"}, []string{"UE_ROOT"})
+	if wslenv2 := envValue(out2, "WSLENV"); strings.Contains(wslenv2, "p/p") {
+		t.Fatalf("double /p appended: %q", wslenv2)
+	}
+	// 含 p 的 flag 组合（如 /u/p）不重写。
+	env3 := []string{
+		"UE_ROOT=D:\\UE",
+		"WSLENV=UE_ROOT/u/p",
+	}
+	out3 := appendWSLENVForwardingWithPaths(env3, []string{"UE_ROOT"}, []string{"UE_ROOT"})
+	if wslenv3 := envValue(out3, "WSLENV"); strings.Contains(wslenv3, "p/p") {
+		t.Fatalf("flag combo rewritten: %q", wslenv3)
+	}
+}

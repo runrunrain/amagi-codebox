@@ -1,10 +1,11 @@
 // app_remoteclient_test.go — App 转发层 RC2 测试：
-//   · M-4（diting Minor）：Connect 锁范围收窄——慢宿主的 Connect 验证阶段
-//     （Keychain 读取 + host/summary 网络验证）不阻塞 Disconnect / 会话域
-//     绑定 / 主机管理；
-//   · 终端绑定错误路径（未连接 / 未 attach / 空参）；
-//   · 终端绑定全链（真实 TerminalManager + fake WS 宿主形态由
-//     internal/remoteclient 包覆盖，此处验证转发层装配）。
+//
+//	· M-4（diting Minor）：Connect 锁范围收窄——慢宿主的 Connect 验证阶段
+//	  （Keychain 读取 + host/summary 网络验证）不阻塞 Disconnect / 会话域
+//	  绑定 / 主机管理；
+//	· 终端绑定错误路径（未连接 / 未 attach / 空参）；
+//	· 终端绑定全链（真实 TerminalManager + fake WS 宿主形态由
+//	  internal/remoteclient 包覆盖，此处验证转发层装配）。
 package main
 
 import (

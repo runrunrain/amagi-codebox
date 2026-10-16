@@ -80,9 +80,17 @@ type ResolveRequest struct {
 	// running inside WSL. Consumed by the WSL branch only; Windows-side
 	// launches receive the merged env directly and ignore this field.
 	EnvForwardKeys []string
-	CLIArgs        []string
-	PTYCols        int
-	PTYRows        int
+	// EnvPathFlagKeys lists extra keys whose Windows drive-path values are
+	// explicitly allowed to cross the Windows→WSL boundary (envvars.json
+	// allowPathValue markers, P4-A2 per-key gate). Each listed key gains the
+	// WSLENV /p path-translation flag (C:\... → /mnt/c/...) in the WSL branch;
+	// the launcher-side strip (StripWSLHostPathEnvWithAllow) exempts exactly
+	// these keys. Reserved keys (WSLENV/PATH/PATHEXT) never qualify. Consumed
+	// by the WSL branch only.
+	EnvPathFlagKeys []string
+	CLIArgs         []string
+	PTYCols         int
+	PTYRows         int
 }
 
 type CLIResolver interface {
@@ -141,7 +149,7 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		}
 		if wslShell != nil && strings.EqualFold(wslShell.Key, "wsl") {
 			cliName := cliCandidates[0]
-			wslEnv := appendWSLENVForwarding(append([]string(nil), resolvedEnv...), request.EnvForwardKeys...)
+			wslEnv := appendWSLENVForwardingWithPaths(append([]string(nil), resolvedEnv...), request.EnvForwardKeys, request.EnvPathFlagKeys)
 			spec := ResolvedLaunchSpec{
 				AppType:       request.AppType,
 				LaunchMode:    request.LaunchMode,

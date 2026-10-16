@@ -2372,14 +2372,22 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	//（前缀白名单只覆盖 ANTHROPIC_/OPENAI_/CLAUDE_/CODEX_/PI_/代理）。
 	if a.EnvVars != nil {
 		req.EnvForwardKeys = a.EnvVars.Keys()
+		// P4-A2 per-key 放行门：显式标记 allowPathValue 的键，其盘符路径值
+		// 不再剥离，并在 WSLENV 清单中获得 /p 路径翻译（保留键除外）。
+		req.EnvPathFlagKeys = a.EnvVars.PathAllowKeys()
 	}
 	// WSL 环境变量防线（B3/T6 泛化，1.3.59 PI_* 剥离的统一收口）：会话确实落在
 	// distro 内时，剥离「将经 WSLENV 转发、值为 Windows 盘符路径」的变量（五前缀
 	// + 精确键 + envvars.json 自定义键），必须在 Resolve 内 appendWSLENVForwarding
 	// 拼清单之前完成；剥离结果记 WARN 保持可观测。此处是全部内嵌启动（五 CLI）
-	// 的单一漏斗，pi/omp 原地各一份的旧剥离已并入。
+	// 的单一漏斗，pi/omp 原地各一份的旧剥离已并入。P4-A2：显式标记 allowPathValue
+	// 的键豁免剥离，改由转发侧加 /p 路径翻译标志；豁免键记 INFO 保持可观测。
 	if platform.EmbeddedLaunchTargetsWSL(mode, shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
-		if kept, stripped := launcher.StripWSLHostPathEnv(env, req.EnvForwardKeys...); len(stripped) > 0 {
+		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)
+		if len(allowedPath) > 0 {
+			a.Log.Info("session", "已放行跨界路径值环境变量（per-key 放行 + /p 路径翻译）", strings.Join(allowedPath, ","))
+		}
+		if len(stripped) > 0 {
 			env = kept
 			req.Env = env
 			a.Log.Warn("session", "已剥离携带 Windows 路径值的跨界环境变量", strings.Join(stripped, ","))
@@ -6356,6 +6364,14 @@ func (a *App) GetEnvVars() ([]envvars.EnvVar, error) {
 // SetEnvVar 设置单个自定义环境变量（不存在则新增，存在则更新）
 func (a *App) SetEnvVar(key, value string) error {
 	return a.EnvVars.Set(key, value)
+}
+
+// SetEnvVarPathAllow 设置/取消单个自定义环境变量的「路径值跨界放行」标记
+// （P4-A2 per-key 放行门）。开启后该键的 Windows 盘符路径值不再被 WSL 启动链
+// 剥离，并经 WSLENV /p 标志跨界翻译为 /mnt 路径；保留键（WSLENV/PATH/PATHEXT）
+// 拒绝。值本身不变，仅翻转标记并持久化到 envvars.json。
+func (a *App) SetEnvVarPathAllow(key string, allow bool) error {
+	return a.EnvVars.SetPathAllow(key, allow)
 }
 
 // DeleteEnvVar 删除指定 key 的自定义环境变量

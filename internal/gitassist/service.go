@@ -36,6 +36,32 @@ const (
 	truncationMarker = "\n...(截断)"
 )
 
+// linuxStyleWorkDirMarker 是 Linux 形态前置拦截错误消息中的稳定标记片段
+// （与 internal/paths 的 LinuxStylePathMarker 平行的契约面；前端 GitPanel 经
+// 现有错误链直接展示全文，无需依赖此标记，仅供测试锚定）。
+const linuxStyleWorkDirMarker = "WSL/Linux 形态"
+
+// validateWorkDirForWindowsGit 前置拦截 Linux 形态 workDir（P4-A1/E7：WSL
+// 会话的 ext4//mnt 工作目录 Windows 侧 git.exe 无法消费——/mnt 形态实测
+// `fatal: cannot change to '...': No such file or directory`，裸撞 fatal 无从
+// 引导）。返回带可操作文案的结构化错误，不执行任何 git.exe 调用。
+// /mnt/<drive> 形态同时写入共享 DrvFS advisory（platform.RecordDrvFSAdvisory）。
+// 非 Windows 宿主 / 形态即本机原生路径，判定恒否，行为不变。
+func validateWorkDirForWindowsGit(workDir string) error {
+	if !platform.IsLinuxStylePath(workDir) {
+		return nil
+	}
+	if platform.WorkDirMapsToDrvFS(workDir) {
+		platform.RecordDrvFSAdvisory(platform.DrvFSAdvisory{
+			Source:    "gitassist",
+			WorkDir:   workDir,
+			MountPath: platform.DrvFSMountPath(workDir),
+			Detail:    "Windows 侧 git 无法访问 Linux 形态工作目录，请在 WSL 终端内使用 git",
+		})
+	}
+	return fmt.Errorf("工作目录为 %s（%s），Windows 侧 git 无法访问；请在 WSL 终端内使用 git，或改用 Windows 盘符路径", linuxStyleWorkDirMarker, workDir)
+}
+
 // Service 是 AI 辅助 Git 提交/推送服务。cfg 与 settings 由 App 注入；
 // apiKeyResolver 把 provider 名解析为明文 API key（App 组装时由
 // SecretsService.GetAPIKey 适配注入，参照 vision 导出的 resolver 模式）。
@@ -78,7 +104,12 @@ type BranchInfo struct {
 
 // runGit 在 workDir 执行 git 子命令（args 不含 "git" 与 "-C workDir"），
 // 返回 stdout。失败时错误信息附带 stderr，便于直接展示给用户。
+// 入口先做 Linux 形态前置拦截：保证任何调用路径都零 git.exe 调用（公共方法
+// 另有更早的同一拦截，这里兜底防未来新增内部调用方绕过）。
 func runGit(workDir string, timeout time.Duration, args ...string) (string, error) {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, args...)...)
@@ -97,7 +128,12 @@ func runGit(workDir string, timeout time.Duration, args ...string) (string, erro
 }
 
 // RepoInfo 汇总 workDir 所在仓库状态。非 git 仓库返回 IsGitRepo=false 而非 error。
+// Linux 形态 workDir 前置拦截为 error（不吞成 IsGitRepo=false——那会把形态问题
+// 伪装成「不是 git 仓库」，前端拿不到可操作文案）。
 func (s *Service) RepoInfo(workDir string) (RepoStatus, error) {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return RepoStatus{}, err
+	}
 	out, err := runGit(workDir, gitCommandTimeout, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(out) != "true" {
 		return RepoStatus{IsGitRepo: false}, nil
@@ -152,6 +188,9 @@ func (s *Service) RepoInfo(workDir string) (RepoStatus, error) {
 
 // ListBranches 列出本地分支，Current 标记当前分支。
 func (s *Service) ListBranches(workDir string) ([]BranchInfo, error) {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return nil, err
+	}
 	out, err := runGit(workDir, gitCommandTimeout, "branch", "--format=%(refname:short)%00%(HEAD)")
 	if err != nil {
 		return nil, fmt.Errorf("读取分支列表失败: %w", err)
@@ -195,6 +234,9 @@ func validateBranchName(branch string) error {
 
 // SwitchBranch 切换本地分支。分支名先做非法字符校验再执行 git switch。
 func (s *Service) SwitchBranch(workDir, branch string) error {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return err
+	}
 	if err := validateBranchName(branch); err != nil {
 		return fmt.Errorf("分支名非法: %w", err)
 	}
@@ -216,6 +258,9 @@ const commitMessageSystemPrompt = `你是 Git 提交信息撰写助手。根据�
 // 总结本次变更并生成提交信息，原样返回模型输出。untracked 文件只列文件名、
 // 不读内容；完整 diff 截断到约 100KB 防止超大变更打爆上下文。
 func (s *Service) SummarizeDiff(workDir string) (string, error) {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return "", err
+	}
 	// 1. 解析 settings 中的 preset 引用。
 	ref := s.settings.GetCommitSummaryPreset()
 	if ref == "" {
@@ -437,8 +482,11 @@ func utf8RuneStart(b byte) bool {
 }
 
 // commitViaStdin 用 git commit -F - 从 stdin 读取提交信息（多行/特殊字符
-// 安全，不经命令行参数，无注入与转义问题）。
+// 安全，不经命令行参数，无注入与转义问题）。入口同样兜底 Linux 形态拦截。
 func commitViaStdin(workDir, message string) error {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "commit", "-F", "-")
@@ -458,6 +506,9 @@ func commitViaStdin(workDir, message string) error {
 
 // CommitAll 暂存全部变更（git add -A，含 untracked）后提交。
 func (s *Service) CommitAll(workDir, message string) error {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return err
+	}
 	if strings.TrimSpace(message) == "" {
 		return errors.New("提交信息不能为空")
 	}
@@ -469,6 +520,9 @@ func (s *Service) CommitAll(workDir, message string) error {
 
 // CommitStaged 仅提交已暂存变更（不执行 git add）。
 func (s *Service) CommitStaged(workDir, message string) error {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return err
+	}
 	if strings.TrimSpace(message) == "" {
 		return errors.New("提交信息不能为空")
 	}
@@ -478,7 +532,13 @@ func (s *Service) CommitStaged(workDir, message string) error {
 // Push 推送当前分支。无上游时自动 git push --set-upstream origin <branch>。
 // 返回值是 git push stderr 中的推送摘要（如 "main -> origin/main"）。
 func (s *Service) Push(workDir string) (string, error) {
+	if err := validateWorkDirForWindowsGit(workDir); err != nil {
+		return "", err
+	}
 	push := func(args ...string) (string, error) {
+		if err := validateWorkDirForWindowsGit(workDir); err != nil {
+			return "", err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir, "push"}, args...)...)

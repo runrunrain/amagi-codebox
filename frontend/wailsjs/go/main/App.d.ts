@@ -399,7 +399,8 @@ export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Pro
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
 
 export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.GlobalSyncStatus>;
-
+// P4-A2（2026-10-17）：路径值 per-key 放行门（原生 boolean 参数；下次 wails generate 再生时自动归一）。
+export function SetEnvVarPathAllow(arg1:string,arg2:boolean):Promise<void>;
 export function SetGitHubToken(arg1:string):Promise<void>;
 
 export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
@@ -457,3 +458,8 @@ export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
 export function GetPiPluginWSLStatus():Promise<any>;
 
 export function CheckPiPluginWSLStatus():Promise<any>;
+
+// P4-A1（2026-10-17）：DrvFS advisory 只读查询（本机无 wails CLI 期手工补齐；
+// 返回类型暂用 any，前端 api/drvfsAdvisory.ts 以本地 interface 承接并解析
+// JSON 字符串——下次 wails generate 再生时会按 models.ts 生成强类型并自动归一）。
+export function GetDrvFSAdvisories():Promise<any>;

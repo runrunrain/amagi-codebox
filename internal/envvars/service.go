@@ -9,12 +9,21 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"amagi-codebox/internal/platform"
 )
 
 // EnvVar 单个自定义环境变量
+// （P4-A2：AllowPathValue 为 WSL 路径值放行门标记，见字段注释）
 type EnvVar struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	// AllowPathValue 显式放行该键的 Windows 盘符路径值跨界转发到 WSL
+	//（P4-A2 per-key 放行门，主上已批）。缺省 false：WSL 启动链照旧剥离
+	// 路径值（P1 PI_* 泄漏事故泛化出的防泄漏基线不变）；置 true 后该值
+	// 跨界可见，并经 WSLENV /p 标志自动翻译为 /mnt/<drive>/... 形态。
+	// 保留键（WSLENV/PATH/PATHEXT）不适用：保存时校验拒绝，引擎侧亦无效。
+	AllowPathValue bool `json:"allowPathValue,omitempty"`
 }
 
 // GlobalEnvBackup 记录全局同步前某个 key 在 OS 中的原始状态
@@ -195,6 +204,50 @@ func (s *EnvVarsService) Keys() []string {
 		}
 	}
 	return keys
+}
+
+// PathAllowKeys 返回已显式放行路径值跨界（AllowPathValue=true）的键名，
+// 保持配置顺序。供 WSL 启动链构建 WSLENV /p 路径翻译清单与剥离豁免面
+// （P4-A2）；保留键已在保存时拒绝，此处不重复过滤（引擎侧自会忽略）。
+func (s *EnvVarsService) PathAllowKeys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.envVars))
+	for _, ev := range s.envVars {
+		if ev.Key != "" && ev.AllowPathValue {
+			keys = append(keys, ev.Key)
+		}
+	}
+	return keys
+}
+
+// SetPathAllow 设置/取消单个键的路径值跨界放行标记，并持久化（P4-A2 同意门）。
+// 开启时保留键（WSLENV/PATH/PATHEXT）拒绝：它们永不进入 WSLENV 转发面，
+// 放行无意义且会误导（Windows PATH 整体跨界会破坏 distro 自身 PATH 解析）。
+func (s *EnvVarsService) SetPathAllow(key string, allow bool) error {
+	if key == "" {
+		return errors.New("env var key is required")
+	}
+	if allow && platform.IsWSLENVReservedKey(key) {
+		return fmt.Errorf("reserved key %q cannot enable path-value forwarding (WSLENV/PATH/PATHEXT never cross the boundary)", key)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := -1
+	for i, ev := range s.envVars {
+		if keysEqual(ev.Key, key) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("env var not found: %s", key)
+	}
+	if s.envVars[idx].AllowPathValue == allow {
+		return nil
+	}
+	s.envVars[idx].AllowPathValue = allow
+	return s.save()
 }
 
 // GetPortableConfig returns the complete device-independent env configuration.
@@ -817,6 +870,10 @@ func validateEnvVars(vars []EnvVar) error {
 		}
 		if err := validateKey(ev.Key); err != nil {
 			return fmt.Errorf("invalid env var key %q: %w", ev.Key, err)
+		}
+		// P4-A2：保留键不适用路径值放行门（它们永不进入 WSLENV 转发面）。
+		if ev.AllowPathValue && platform.IsWSLENVReservedKey(ev.Key) {
+			return fmt.Errorf("env var key %q is WSLENV-reserved (WSLENV/PATH/PATHEXT) and cannot enable path-value forwarding", ev.Key)
 		}
 		nk := normalizeKey(ev.Key)
 		if orig, exists := seen[nk]; exists {

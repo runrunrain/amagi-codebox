@@ -59,6 +59,9 @@
         <AppButton variant="ghost" size="small" @click="handleExport">
           导出
         </AppButton>
+        <AppButton variant="ghost" size="small" @click="handleOpenTemplate">
+          UE5 模板
+        </AppButton>
         <AppButton variant="primary" size="small" @click="handleAddNew">
           新增
         </AppButton>
@@ -101,7 +104,23 @@
               :key="envVar.key"
               class="env-row"
             >
-              <td class="env-key">{{ envVar.key }}</td>
+              <td class="env-key">
+                {{ envVar.key }}
+                <!-- P4-A2：保留键不参与 WSL 转发；路径值键默认不转发，需显式放行（含 /p 翻译） -->
+                <div v-if="isReservedKey(envVar.key)" class="env-path-note reserved">
+                  保留键 · 不参与 WSL 转发，不可放行
+                </div>
+                <div v-else-if="showsPathGate(envVar)" class="env-path-note">
+                  <Switch
+                    :model-value="!!envVar.allowPathValue"
+                    :disabled="pathAllowSaving === envVar.key"
+                    @update:model-value="handleTogglePathAllow(envVar, $event)"
+                  />
+                  <span class="env-path-text" :class="{ allowed: envVar.allowPathValue }">
+                    {{ envVar.allowPathValue ? 'WSL：路径值已放行（自动译为 /mnt）' : 'WSL：路径值默认不转发' }}
+                  </span>
+                </div>
+              </td>
               <td class="env-value">
                 <MaskedValue
                   :value="envVar.value"
@@ -259,6 +278,46 @@
       confirm-text="删除"
       @confirm="confirmDelete"
     />
+
+    <!-- P4-A2：路径值放行确认门（风险提示 + 显式同意） -->
+    <ConfirmDialog
+      v-model:open="showPathAllowDialog"
+      title="放行路径值跨界转发"
+      :message="pathAllowTarget ? `将放行「${pathAllowTarget.key}」的路径值：该值将对 WSL 会话跨界可见，并自动翻译为 /mnt/... 路径形态（WSLENV /p）。请确认该路径不含敏感信息。` : ''"
+      danger
+      confirm-text="放行"
+      @confirm="confirmEnablePathAllow"
+    />
+
+    <!-- P4-A2：UE5 模板（纯前端静态清单，一键添加为待填键） -->
+    <Dialog
+      v-model:open="showTemplateDialog"
+      title="添加 UE5 常用变量"
+      description="以下变量将以待填形式加入（值留空由你填写），不会自动启用，也不含路径值放行标记。"
+    >
+      <ul class="tpl-list">
+        <li v-for="entry in templateEntries" :key="entry.key">
+          <label class="tpl-row">
+            <input v-model="entry.checked" type="checkbox" :disabled="existingKeys.has(entry.key)" />
+            <span class="tpl-key">{{ entry.key }}</span>
+            <span class="tpl-desc">{{ entry.description }}</span>
+            <span v-if="existingKeys.has(entry.key)" class="tpl-exists">已存在</span>
+          </label>
+        </li>
+      </ul>
+      <template #footer>
+        <AppButton variant="ghost" @click="showTemplateDialog = false">
+          取消
+        </AppButton>
+        <AppButton
+          variant="primary"
+          :disabled="templateAdding"
+          @click="handleAddTemplate"
+        >
+          {{ templateAdding ? '添加中...' : '添加所选' }}
+        </AppButton>
+      </template>
+    </Dialog>
     </template>
   </div>
 </template>
@@ -283,6 +342,9 @@ const { showSuccess, showError } = useToast();
 interface EnvVar {
   key: string;
   value: string;
+  // P4-A2：路径值跨界放行标记（envvars.json allowPathValue）。
+  // 后端 JSON 返回携带此字段；未标记时缺省（默认不转发路径值）。
+  allowPathValue?: boolean;
 }
 
 interface GlobalSyncStatus {
@@ -345,6 +407,104 @@ const editForm = ref({ key: '', value: '' });
 const importJson = ref('');
 
 const visibleValues = ref<Record<string, boolean>>({});
+
+// P4-A2：路径值放行门状态
+const pathAllowSaving = ref('');
+const showPathAllowDialog = ref(false);
+const pathAllowTarget = ref<EnvVar | null>(null);
+
+// P4-A2：UE5 模板状态
+const showTemplateDialog = ref(false);
+const templateAdding = ref(false);
+const templateEntries = ref<Array<{ key: string; description: string; pathLike: boolean; checked: boolean }>>([]);
+
+const existingKeys = computed(() => {
+  const set = new Set<string>();
+  for (const v of envVars.value) set.add(v.key.trim().toUpperCase());
+  return set;
+});
+
+/** 保留键（WSLENV/PATH/PATHEXT）：不参与转发，不可放行 */
+function isReservedKey(key: string): boolean {
+  return envvarsApi.isWSLReservedEnvKey(key);
+}
+
+/** 路径值键（或已标记键）显示放行门状态行 */
+function showsPathGate(envVar: EnvVar): boolean {
+  return envvarsApi.isWindowsDrivePathValue(envVar.value) || !!envVar.allowPathValue;
+}
+
+/** 开启需过确认门（风险提示）；关闭直接生效 */
+async function handleTogglePathAllow(envVar: EnvVar, allow: boolean) {
+  if (!allow) {
+    try {
+      pathAllowSaving.value = envVar.key;
+      await envvarsApi.setEnvVarPathAllow(envVar.key, false);
+      envVar.allowPathValue = false;
+      showSuccess('已关闭路径值放行');
+    } catch (error) {
+      console.error('[EnvVarsPanel] Failed to disable path allow:', error);
+      showError('设置失败: ' + error);
+    } finally {
+      pathAllowSaving.value = '';
+    }
+    return;
+  }
+  if (isReservedKey(envVar.key)) {
+    showError('保留键（WSLENV/PATH/PATHEXT）不适用放行门');
+    return;
+  }
+  pathAllowTarget.value = envVar;
+  showPathAllowDialog.value = true;
+}
+
+async function confirmEnablePathAllow() {
+  const target = pathAllowTarget.value;
+  if (!target) return;
+  try {
+    pathAllowSaving.value = target.key;
+    await envvarsApi.setEnvVarPathAllow(target.key, true);
+    showPathAllowDialog.value = false;
+    await Promise.all([loadEnvVars(), loadJsonContent()]);
+    showSuccess('已放行路径值跨界转发（/p 翻译）');
+  } catch (error) {
+    console.error('[EnvVarsPanel] Failed to enable path allow:', error);
+    showError('设置失败: ' + error);
+  } finally {
+    pathAllowSaving.value = '';
+    pathAllowTarget.value = null;
+  }
+}
+
+/** UE5 模板：一键添加为待填键（值留空、不自动启用、不含放行标记） */
+function handleOpenTemplate() {
+  templateEntries.value = envvarsApi.UE5_ENV_TEMPLATE.map((e) => ({ ...e, checked: true }));
+  showTemplateDialog.value = true;
+}
+
+async function handleAddTemplate() {
+  const selected = templateEntries.value.filter(
+    (e) => e.checked && !existingKeys.value.has(e.key.trim().toUpperCase()),
+  );
+  if (selected.length === 0) {
+    showTemplateDialog.value = false;
+    return;
+  }
+  try {
+    templateAdding.value = true;
+    for (const entry of selected) {
+      await envvarsApi.setEnvVar(entry.key, '');
+    }
+    await Promise.all([loadEnvVars(), loadJsonContent()]);
+    showTemplateDialog.value = false;
+    showSuccess(`已添加 ${selected.length} 个待填变量`);
+  } catch (error) {
+    console.error('[EnvVarsPanel] Failed to add template entries:', error);
+    showError('添加失败: ' + error);
+  } finally {
+    templateAdding.value = false;
+  }
+}
 
 // View mode options
 const viewModeOptions = ref([
@@ -736,6 +896,71 @@ onMounted(async () => {
   font-family: var(--mono);
   color: var(--label);
   font-weight: 500;
+}
+
+/* P4-A2：WSL 路径值放行门状态行（键名下方） */
+.env-path-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.env-path-note.reserved {
+  font-size: 11px;
+  color: var(--tertiary);
+  background: var(--control);
+  border-radius: 4px;
+  padding: 2px 6px;
+  width: fit-content;
+}
+
+.env-path-text {
+  font-size: 11px;
+  color: var(--secondary);
+}
+
+.env-path-text.allowed {
+  color: var(--success);
+}
+
+/* P4-A2：UE5 模板清单 */
+.tpl-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tpl-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.tpl-key {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label);
+  white-space: nowrap;
+}
+
+.tpl-desc {
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.tpl-exists {
+  font-size: 11px;
+  color: var(--tertiary);
+  background: var(--control);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
 }
 
 .env-value {

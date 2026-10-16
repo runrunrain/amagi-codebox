@@ -289,3 +289,90 @@ describe('PathPickerModel', () => {
     expect(model.listing?.truncated).toBe(true)
   })
 })
+
+// ---- 状态机：Linux 路径形态声明（P4-A1/E8：静默错位 → 显式声明） ----
+
+describe('PathPickerModel Linux 路径形态声明', () => {
+  const linuxErr = (root: string) =>
+    `WSL/Linux 路径形态（${root}）：Windows 侧目录树不可用；请在 WSL 终端内操作，或改用 Windows 盘符路径`
+
+  function linuxFormBackend(): PathLoader & { calls: string[] } {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      // 后端契约：Linux 形态 root 一律拒为 *LinuxStylePathError（消息含标记）
+      throw new Error(linuxErr(root))
+    }
+    return Object.assign(loader, { calls })
+  }
+
+  it('/mnt 形态：不静默降级 home（只调一次），进入形态声明态', async () => {
+    const backend = linuxFormBackend()
+    const model = new PathPickerModel(backend)
+
+    await model.resetAndLoad('/mnt/x/WorkSpace/repo')
+
+    expect(backend.calls).toEqual(['/mnt/x/WorkSpace']) // 绝无 '' 兜底调用
+    expect(model.listing).toBeNull()
+    expect(model.linuxForm).toBe(true)
+    expect(model.linuxFormRoot).toBe('/mnt/x/WorkSpace')
+    expect(model.errorMsg).toContain('WSL/Linux 路径形态')
+    expect(model.errorMsg).not.toContain('读取目录失败') // 形态声明不带通用前缀
+    expect(model.canConfirm).toBe(false)
+  })
+
+  it('~/ 形态（初始 root 推导为 ~）同样显式声明', async () => {
+    const backend = linuxFormBackend()
+    const model = new PathPickerModel(backend)
+
+    await model.resetAndLoad('~/projects')
+
+    expect(backend.calls).toEqual(['~'])
+    expect(model.linuxForm).toBe(true)
+  })
+
+  it('retry 重试原 Linux root：仍拒绝、不落入 home 兜底', async () => {
+    const backend = linuxFormBackend()
+    const model = new PathPickerModel(backend)
+    await model.resetAndLoad('/mnt/x/WorkSpace/repo')
+
+    model.retry()
+    await vi.waitFor(() => expect(backend.calls).toEqual(['/mnt/x/WorkSpace', '/mnt/x/WorkSpace']))
+    expect(model.linuxForm).toBe(true)
+    expect(model.listing).toBeNull()
+  })
+
+  it('不带标记的普通失败仍走 home 兜底（形态分支不误伤）', async () => {
+    const calls: string[] = []
+    const backend: PathLoader = async (root) => {
+      calls.push(root)
+      throw new Error('stat failed')
+    }
+    const model = new PathPickerModel(backend)
+
+    await model.resetAndLoad('/w/proj')
+
+    expect(calls).toEqual(['/w', ''])
+    expect(model.linuxForm).toBe(false)
+    expect(model.errorMsg).toContain('读取目录失败')
+  })
+
+  it('形态声明后导航到可用 Windows root：状态恢复，linuxForm 复位', async () => {
+    let linuxMode = true
+    const calls: string[] = []
+    const backend: PathLoader = async (root) => {
+      calls.push(root)
+      if (linuxMode || root.startsWith('/')) throw new Error(linuxErr(root))
+      return listingOf(root, ['a'])
+    }
+    const model = new PathPickerModel(backend)
+    await model.resetAndLoad('/mnt/x/repo')
+    expect(model.linuxForm).toBe(true)
+
+    linuxMode = false
+    model.navigate('C:\\Users\\bob')
+    await vi.waitFor(() => expect(model.listing?.root).toBe('C:\\Users\\bob'))
+    expect(model.linuxForm).toBe(false)
+    expect(model.errorMsg).toBe('')
+  })
+})

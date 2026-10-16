@@ -770,6 +770,12 @@ export function SetEnvVarsGlobalSyncEnabled(arg1) {
   return window['go']['main']['App']['SetEnvVarsGlobalSyncEnabled'](arg1);
 }
 
+// P4-A2（2026-10-17）：路径值 per-key 放行门（本机无 wails CLI 期手工补齐，
+// 原生类型即原生 boolean 参数；下次 wails generate 再生时自动归一）。
+export function SetEnvVarPathAllow(arg1, arg2) {
+  return window['go']['main']['App']['SetEnvVarPathAllow'](arg1, arg2);
+}
+
 export function SetGitHubToken(arg1) {
   return window['go']['main']['App']['SetGitHubToken'](arg1);
 }
@@ -880,4 +886,8 @@ export function GetPiPluginWSLStatus() {
 
 export function CheckPiPluginWSLStatus() {
   return window['go']['main']['App']['CheckPiPluginWSLStatus']();
+}
+
+export function GetDrvFSAdvisories() {
+  return window['go']['main']['App']['GetDrvFSAdvisories']();
 }

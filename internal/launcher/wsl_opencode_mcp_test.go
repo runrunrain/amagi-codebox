@@ -170,3 +170,75 @@ func TestAdaptWSLOpenCodeMCPNoMCPSectionNoop(t *testing.T) {
 		t.Fatal("config must be returned untouched")
 	}
 }
+
+// TestAdaptWSLOpenCodeMCPEnvDriveValue 钉 P4-A3 对称补齐：env 值携带 Windows
+// 盘符路径 → 拒配不落附加层（其余 CLI 落地面经 wslsupply.TransformMCPServer
+// 全检，opencode 启动层原独漏 env）；非盘符 env 值（标量/Linux 路径/URL）
+// 回归不受影响。
+func TestAdaptWSLOpenCodeMCPEnvDriveValue(t *testing.T) {
+	installFakeMCPResolver(t, map[string]string{"npx": "/usr/bin/npx"})
+
+	t.Run("drive value rejected with key named", func(t *testing.T) {
+		cfg := mcpConfig(map[string]any{
+			"local": map[string]any{
+				"command": "node",
+				"args":    []any{"server.js"},
+				"env":     map[string]any{"API_KEY": "secret", "TOOL_HOME": `D:\\tools\\mcp`},
+			},
+		})
+		out, report := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
+		if _, ok := out["mcp"]; ok {
+			t.Fatalf("env drive value must not produce a fake usable entry: %v", out["mcp"])
+		}
+		if len(report) != 1 || !strings.Contains(report[0], "TOOL_HOME") ||
+			!strings.Contains(report[0], "盘符") || !strings.Contains(report[0], "手动适配") {
+			t.Fatalf("drop must name the env key and reason: %v", report)
+		}
+		if strings.Contains(report[0], `D:\\tools\\mcp`) {
+			t.Fatalf("diagnostic must not echo the env value: %v", report)
+		}
+	})
+
+	t.Run("first offender deterministic by key order", func(t *testing.T) {
+		cfg := mcpConfig(map[string]any{
+			"win": map[string]any{"command": "node", "env": map[string]any{
+				"Z_DIR": `Z:\\a`, "A_DIR": `A:\\a`,
+			}},
+		})
+		_, report := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
+		if len(report) != 1 || !strings.Contains(report[0], "A_DIR") {
+			t.Fatalf("deterministic first offender expected (sorted keys): %v", report)
+		}
+	})
+
+	t.Run("non-drive env values kept untouched", func(t *testing.T) {
+		cfg := mcpConfig(map[string]any{
+			"ok": map[string]any{
+				"command": "node",
+				"args":    []any{"server.js"},
+				"env":     map[string]any{"LOG_LEVEL": "debug", "DATA_DIR": "/opt/mcp-data", "ENDPOINT": "https://internal.example/sse"},
+			},
+		})
+		out, report := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
+		if len(report) != 0 {
+			t.Fatalf("non-drive env values must not be reported: %v", report)
+		}
+		env := out["mcp"].(map[string]any)["ok"].(map[string]any)["env"].(map[string]any)
+		if env["LOG_LEVEL"] != "debug" || env["DATA_DIR"] != "/opt/mcp-data" {
+			t.Fatalf("clean env must be preserved as-is: %v", env)
+		}
+	})
+
+	t.Run("preview marks env-hit server needs adapt", func(t *testing.T) {
+		cfg := mcpConfig(map[string]any{
+			"local": map[string]any{"command": "node", "env": map[string]any{"CFG_HOME": `C:\\mcp\\cfg`}},
+		})
+		previews := PreviewWSLOpenCodeMCP("Ubuntu", cfg)
+		if len(previews) != 1 || !previews[0].NeedsAdapt || previews[0].Remote {
+			t.Fatalf("env drive value must surface as NeedsAdapt in preview: %+v", previews)
+		}
+		if !strings.Contains(previews[0].Reason, "CFG_HOME") || !strings.Contains(previews[0].Reason, "手动适配") {
+			t.Fatalf("preview reason must name the key: %+v", previews[0])
+		}
+	})
+}

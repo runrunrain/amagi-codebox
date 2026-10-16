@@ -8,8 +8,8 @@ package launcher
 //
 //   - npx.cmd/npm.cmd（裸名）→ 仅当目标登录 shell 实测解析到原生 npx/npm 时映射
 //     为原生命令；否则丢弃该 server 并报告（不生成假可用条目）。
-//   - Windows exe/ps1/bat/cmd、盘符路径 command、cmd.exe/PowerShell、参数中的
-//     盘符路径 → 丢弃该 server 并标「需手动适配」（不自动改 bash、不启用 interop）。
+//   - Windows exe/ps1/bat/cmd、盘符路径 command、cmd.exe/PowerShell、参数/env
+//     值中的盘符路径 → 丢弃该 server 并标「需手动适配」（不自动改 bash、不启用 interop）。
 //   - HTTP/远程（带 url）→ 保留 URL 与协议字段原样。
 //   - distro 全局 opencode.json 已有同名 MCP server → 默认保留本地，该 server
 //     不写入附加层并报告（覆盖选择 UI 留 S2 预览框架）。
@@ -262,6 +262,23 @@ func classifyWSLMCPServer(entry map[string]any, resolved map[string]string) (boo
 		for _, arg := range args {
 			if s, ok := arg.(string); ok && isWindowsDrivePath(strings.TrimSpace(s)) {
 				return false, nil, "启动参数携带 Windows 盘符路径（C:\\...），需手动适配为 WSL 内路径"
+			}
+		}
+	}
+	// env 值中的独立盘符路径（P4-A3 对称补齐：其余 CLI 的 WSL MCP 落地面经
+	// wslsupply.TransformMCPServer 全检，opencode 启动层原独漏 env——Windows
+	// 路径值原样落附加层后在 Linux 侧失效，用户无从归因）。启动层保持轻量：
+	// 只拒配不做映射（可信位置/已验证路径映射是 wslsupply 落地层的职责）；
+	// 键名入诊断（键名不是密钥），值不回显；键序排序保证诊断确定性。
+	if env, ok := entry["env"].(map[string]any); ok {
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if v, ok := env[k].(string); ok && isWindowsDrivePath(strings.TrimSpace(v)) {
+				return false, nil, fmt.Sprintf("环境变量 %s 的值为 Windows 盘符路径，需手动适配为 WSL 内路径", k)
 			}
 		}
 	}

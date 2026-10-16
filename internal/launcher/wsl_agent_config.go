@@ -183,19 +183,48 @@ func isWindowsDrivePath(s string) bool {
 // 标量值（PI_OFFLINE=1 等）与 Linux 路径值（OPENCODE_CONFIG 指向 distro 内
 // 文件）不受影响；不在转发面的键即使值为 Windows 路径也不动（它们根本
 // 不会跨界）。必须在 appendWSLENVForwarding 之前调用（剥离后变量缺席，
-// WSLENV 清单中也不会再出现对应名字）。
+// WSLENV 清单中也不会再出现对应名字）。P4-A2 起有 per-key 放行变体
+// StripWSLHostPathEnvWithAllow：显式标记的键豁免剥离并改走 /p 路径翻译。
 func StripWSLHostPathEnv(env []string, extraForwardKeys ...string) ([]string, []string) {
+	kept, stripped, _ := StripWSLHostPathEnvWithAllow(env, extraForwardKeys, nil)
+	return kept, stripped
+}
+
+// StripWSLHostPathEnvWithAllow 是 StripWSLHostPathEnv 的 per-key 放行扩展
+// （P4-A2 路径值放行门，主上已批）：allowPathKeys 中的键（envvars.json
+// allowPathValue 标记，大小写不敏感；保留键除外）即便值为 Windows 盘符
+// 路径也不再剥离——用户已显式同意该路径值跨界可见，转发侧
+// （appendWSLENVForwardingWithPaths）会为其加 WSLENV /p 路径翻译标志
+// （C:\... → /mnt/c/...）。第三个返回值是实际被豁免的键（在转发面 +
+// 值为盘符路径 + 已标记），供调用方记日志「per-key 放行+路径翻译」；
+// 未标记键的剥离行为与 StripWSLHostPathEnv 完全一致（默认防泄漏基线
+// 不变）。保留键不适用放行门：它们不在转发面，既不会被剥离也谈不上豁免。
+func StripWSLHostPathEnvWithAllow(env []string, extraForwardKeys []string, allowPathKeys []string) ([]string, []string, []string) {
+	allow := make(map[string]struct{}, len(allowPathKeys))
+	for _, k := range allowPathKeys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed == "" || platform.IsWSLENVReservedKey(trimmed) {
+			continue
+		}
+		allow[strings.ToUpper(trimmed)] = struct{}{}
+	}
 	out := make([]string, 0, len(env))
 	stripped := []string{}
+	allowed := []string{}
 	for _, kv := range env {
 		key, value := splitEnvKV(kv)
 		if key != "" && platform.ShouldForwardToWSL(key, extraForwardKeys...) && isWindowsDrivePath(strings.TrimSpace(value)) {
+			if _, ok := allow[strings.ToUpper(key)]; ok {
+				allowed = append(allowed, key)
+				out = append(out, kv)
+				continue
+			}
 			stripped = append(stripped, key)
 			continue
 		}
 		out = append(out, kv)
 	}
-	return out, stripped
+	return out, stripped, allowed
 }
 
 // openCodeWSLConfigFile 是 WriteWSLOpenCodeAgentConfig 在 distro 内的目标

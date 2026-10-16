@@ -44,10 +44,14 @@
             <!-- 加载态 -->
             <div v-if="model.loading" class="pp-state pp-state--loading">正在读取目录…</div>
 
-            <!-- 错误态：行内提示 + 重试 -->
+            <!-- 错误态：行内提示 + 重试；Linux 形态声明附 DrvFS 关联提示，
+                 并提供「从主目录开始」切回 Windows 盘符树（qreview m-1：
+                 形态错误态不应只剩重试/关闭） -->
             <div v-else-if="model.errorMsg" class="pp-state pp-state--error">
               <span class="pp-state-text">{{ model.errorMsg }}</span>
               <button type="button" class="pp-mini-btn" @click="model.retry()">重试</button>
+              <button type="button" class="pp-mini-btn" @click="model.goHome()">从主目录开始</button>
+              <p v-if="drvfsHint" class="pp-drvfs-hint">{{ drvfsHint }}</p>
             </div>
 
             <!-- 当前层目录列表（含展开的子层缩进行） -->
@@ -131,7 +135,9 @@
  */
 import { nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { listDirectories } from '../../api/paths'
+import { getDrvFSAdvisories } from '../../api/drvfsAdvisory'
 import { PathPickerModel, chipLabelOf } from './pathPickerModel'
+import { drvfsHintFor } from './drvfsHint'
 
 const props = defineProps<{
   visible: boolean
@@ -149,12 +155,28 @@ const dialogRef = ref<HTMLElement | null>(null)
 // reactive 包装纯模型实例：字段/Set 访问自动响应式，模板直绑。
 const model = reactive(new PathPickerModel(listDirectories))
 
+// ---- 失败处关联提示：Linux 形态声明时按需拉取 DrvFS advisory（best-effort）
+// 拉取失败静默降级为不展示，不掩盖主错误。
+const drvfsHint = ref('')
+
+async function refreshDrvFSHint(path: string): Promise<void> {
+  drvfsHint.value = ''
+  if (!path) return
+  try {
+    drvfsHint.value = drvfsHintFor(await getDrvFSAdvisories(), path) || ''
+  } catch {
+    // advisory 是提示增强面：失败不阻断主流程
+  }
+}
+
 // ---- 打开：重置状态并加载初始 root（workDir 父目录 / home 兜底） ----
 watch(
   () => props.visible,
   async (visible) => {
     if (!visible) return
+    drvfsHint.value = ''
     await model.resetAndLoad(props.workDir)
+    if (model.linuxForm) await refreshDrvFSHint(model.linuxFormRoot)
     await nextTick()
     dialogRef.value?.focus()
   },
@@ -351,6 +373,17 @@ function emitConfirm() {
 .pp-state-text {
   max-width: 380px;
   overflow-wrap: anywhere;
+}
+
+/* Linux 形态失败处的 DrvFS 关联提示（琥珀色次级行，整行换行） */
+.pp-drvfs-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: #ffcb6b;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 /* 目录列表 */

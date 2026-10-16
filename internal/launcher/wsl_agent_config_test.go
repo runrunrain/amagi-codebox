@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"amagi-codebox/internal/config"
+	"amagi-codebox/internal/platform"
 )
 
 // fakeWSLTarget 把 WSL 探测接缝指到本地临时目录，模拟 distro 内 /home：
@@ -342,5 +343,119 @@ func TestWriteWSLOpenCodeAgentConfigChmodFailureFailsClosed(t *testing.T) {
 	// fail closed：已落盘的明文 apiKey 内容必须被清理。
 	if _, err := os.Stat(ft.uncPath("/home/wslu/.config/opencode/amagi-codebox.json")); err == nil {
 		t.Fatal("plaintext config must be removed after chmod failure")
+	}
+}
+
+// TestStripWSLHostPathEnvAllowGate pins the P4-A2 per-key path gate: keys marked
+// allowPathValue (envvars.json) keep their Windows drive-path values — the
+// forward side attaches the WSLENV /p flag — while unmarked keys keep the
+// default strip behavior (P1 PI_* leak baseline unchanged), and reserved-key
+// markings are no-ops (reserved keys are not in the forward face at all).
+func TestStripWSLHostPathEnvAllowGate(t *testing.T) {
+	env := []string{
+		"UE_ROOT=" + `C:\Program Files\Epic Games\UE_5.4`, // 标记放行 → 保留
+		"MY_TOOL_HOME=" + `F:\tools`,                      // 未标记 → 照旧剥离
+		"PI_OFFLINE=1",                                    // 标量 → 保留
+	}
+	kept, stripped, allowed := StripWSLHostPathEnvWithAllow(env, []string{"UE_ROOT", "MY_TOOL_HOME"}, []string{"UE_ROOT"})
+	joined := strings.Join(kept, "\n")
+	if !strings.Contains(joined, "UE_ROOT=") {
+		t.Fatalf("allow-marked key with drive-path value must be kept: %v", kept)
+	}
+	if strings.Contains(joined, "MY_TOOL_HOME") {
+		t.Fatalf("unmarked key must still be stripped: %v", kept)
+	}
+	if strings.Join(stripped, ",") != "MY_TOOL_HOME" {
+		t.Fatalf("stripped = %v, want [MY_TOOL_HOME]", stripped)
+	}
+	if strings.Join(allowed, ",") != "UE_ROOT" {
+		t.Fatalf("allowed = %v, want [UE_ROOT]", allowed)
+	}
+	if !strings.Contains(joined, "PI_OFFLINE=1") {
+		t.Fatalf("scalar value must be kept: %v", kept)
+	}
+
+	// 保留键标记无效：PATH 不在转发面，既不剥离也谈不上豁免。
+	kept2, stripped2, allowed2 := StripWSLHostPathEnvWithAllow(
+		[]string{"PATH=" + `C:\Windows`},
+		nil, []string{"PATH"},
+	)
+	if len(kept2) != 1 || len(stripped2) != 0 || len(allowed2) != 0 {
+		t.Fatalf("reserved-key marking must be a no-op: %v / %v / %v", kept2, stripped2, allowed2)
+	}
+
+	// 放行键但值非盘符路径：不产生豁免记录（豁免面只关心路径值键）。
+	_, _, allowed3 := StripWSLHostPathEnvWithAllow([]string{"UE_ROOT=5.4"}, []string{"UE_ROOT"}, []string{"UE_ROOT"})
+	if len(allowed3) != 0 {
+		t.Fatalf("non-path value must not be reported as allowed: %v", allowed3)
+	}
+
+	// 大小写不敏感：envvars.json 记 ue_root，进程 env 键 UE_ROOT 同样豁免。
+	kept4, stripped4, allowed4 := StripWSLHostPathEnvWithAllow(
+		[]string{"UE_ROOT=" + `D:\eng`, "MY_TOOL_HOME=" + `F:\tools`},
+		[]string{"UE_ROOT", "MY_TOOL_HOME"}, []string{"ue_root"},
+	)
+	if len(allowed4) != 1 || allowed4[0] != "UE_ROOT" || strings.Join(stripped4, ",") != "MY_TOOL_HOME" {
+		t.Fatalf("case-insensitive allow failed: %v / %v", allowed4, stripped4)
+	}
+	if !strings.Contains(strings.Join(kept4, "\n"), "UE_ROOT=") {
+		t.Fatalf("case-insensitive allow must keep the var: %v", kept4)
+	}
+
+	// 旧签名回归：无放行清单时行为与默认剥离完全一致。
+	gotLegacy, strippedLegacy := StripWSLHostPathEnv(env, "UE_ROOT", "MY_TOOL_HOME")
+	legacyJoined := strings.Join(gotLegacy, "\n")
+	if strings.Contains(legacyJoined, "UE_ROOT=") || strings.Contains(legacyJoined, "MY_TOOL_HOME") {
+		t.Fatalf("legacy strip must still strip both drive-path vars: %v", gotLegacy)
+	}
+	if strings.Join(strippedLegacy, ",") != "UE_ROOT,MY_TOOL_HOME" {
+		t.Fatalf("legacy stripped = %v, want [UE_ROOT MY_TOOL_HOME]", strippedLegacy)
+	}
+}
+
+// envValueFor 返回 env 中指定键的值（不存在返回空串），链路测试用。
+func envValueFor(env []string, key string) string {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
+// TestStripThenForwardPathAllowChain pins the P4-A2 launch-funnel order
+// (app.go resolveEmbeddedLaunchSpec)：StripWSLHostPathEnvWithAllow 先行，随后
+// AppendWSLENVForwardingWithPaths 拼清单——两侧拿到的是同一份 allow 清单
+// （EnvPathFlagKeys）。放行键存活于 env 且在 WSLENV 中带 /p；未标记的路径值键
+// 在转发前已被剥离，清单中不再出现。
+func TestStripThenForwardPathAllowChain(t *testing.T) {
+	env := []string{
+		"UE_ROOT=" + `C:\Program Files\Epic Games\UE_5.4`,
+		"MY_TOOL_HOME=" + `F:\tools`,
+		"TAVILY_API_KEY=tk",
+	}
+	extra := []string{"UE_ROOT", "MY_TOOL_HOME", "TAVILY_API_KEY"}
+	allow := []string{"UE_ROOT"}
+
+	kept, stripped, allowed := StripWSLHostPathEnvWithAllow(env, extra, allow)
+	if strings.Join(stripped, ",") != "MY_TOOL_HOME" || strings.Join(allowed, ",") != "UE_ROOT" {
+		t.Fatalf("strip phase: stripped=%v allowed=%v", stripped, allowed)
+	}
+
+	// 与 resolver WSL 分支相同的转发调用形态。
+	out := platform.AppendWSLENVForwardingWithPaths(kept, extra, allow)
+	wslenv := envValueFor(out, "WSLENV")
+	if !strings.Contains(wslenv, "UE_ROOT/p") {
+		t.Fatalf("WSLENV missing /p entry for allow-marked key: %q", wslenv)
+	}
+	if strings.Contains(wslenv, "MY_TOOL_HOME") {
+		t.Fatalf("stripped key must not appear in WSLENV: %q", wslenv)
+	}
+	if !strings.Contains(wslenv, "TAVILY_API_KEY") || strings.Contains(wslenv, "TAVILY_API_KEY/") {
+		t.Fatalf("scalar custom key must forward without flags: %q", wslenv)
+	}
+	// 放行键的值原样保留（/p 翻译由 WSL 跨界时执行）。
+	if v := envValueFor(out, "UE_ROOT"); v != `C:\Program Files\Epic Games\UE_5.4` {
+		t.Fatalf("allowed key value must stay verbatim, got %q", v)
 	}
 }

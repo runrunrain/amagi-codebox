@@ -4,6 +4,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.114] - 2026-10-17
+
+### Added
+
+- **P4-A 主路径体验：「WSL 壳 × Windows 主场」定位落地（证据驱动三批，含 T11/C1-C3 落点）**：产品定位澄清——CodeBox 给模型提供非 PowerShell 环境在 Windows 中工作（UE5 开发等），工程/资产/工具链在 Windows 侧。定量证据（p4-evidence.md §8，同仓库两文件系统对照）：DrvFS 上 git status 冷 37.7s/热 3.7s vs ext4 0.19s（20~200 倍）、cp 5000 小文件 17.4s、DDC 跨界 du 42s；E9 证据盲区修正（claude/codex/pi 检测实为 wslsupply 超集，采集漏包）。①A1 形态感知族——PathPicker 五形态（/、~/、~、/mnt/*）显式声明不再静默降级错位目录树（含错误态「从主目录开始」切回入口）、GitAssist 7 公共方法+3 exec 点前置拦截（不再裸撞 fatal）且错误结构化透传前端、DrvFS advisory 从 pty 单点扩到三入口共享面（去重/环形 50 条/只读查询）、形态判定提升 platform 共享（pty 薄委托）；②A2 路径值 per-key 放行门（安全面）——envvars.json 键级 allowPathValue 标记（缺省 false=默认剥离基线不变），显式标记的键盘符路径值放行转发且 WSLENV 加 /p 翻译（C:\... → /mnt/c/...），保留键三重拒绝无绕过（含手改 envvars.json 旁路），UE5 预置模板（纯前端静态清单无夹带）+ 风险确认门 UI；③A3 opencode 启动层 env 盘符值检测对称补齐（其余 CLI 已由 wslsupply 超集覆盖）。
+
+（diting 双审：A1+A3 quick PASS_WITH_MINOR 六关注点全过；A2 full PASS_WITH_MINOR 安全基线 4/4 成立。m-1 错误态导航入口与 F-1 自带 WSLENV 无 /p 交叉半开态均 Leader 直修+测试；F-2 wailsjs 再生并入待办）
+
+（过程摩擦治理同步：p4-friction-log.md 活档建立，A1-A6/B1-B4/C1-C5 十六条三分去向；run_bg 宿主不一致/go fmt 误触两次/构造物清点门等运维结论已沉淀）
+
 ## [1.3.113] - 2026-10-16
 
 ### Added
