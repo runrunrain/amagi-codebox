@@ -334,6 +334,14 @@ export function GetWSLCLIStatus() {
   return window['go']['main']['App']['GetWSLCLIStatus']();
 }
 
+export function GetWSLConfigSupplyStatus() {
+  return window['go']['main']['App']['GetWSLConfigSupplyStatus']();
+}
+
+export function GrantWSLVisionConsent() {
+  return window['go']['main']['App']['GrantWSLVisionConsent']();
+}
+
 export function HeadroomGetPort() {
   return window['go']['main']['App']['HeadroomGetPort']();
 }

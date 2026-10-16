@@ -2688,6 +2688,64 @@ export namespace main {
 	        this.configuredPort = source["configuredPort"];
 	    }
 	}
+	export class WSLConfigSupplyFace {
+	    key: string;
+	    label: string;
+	    state: string;
+	    detail: string;
+	    lastCheck: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLConfigSupplyFace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.lastCheck = source["lastCheck"];
+	    }
+	}
+	export class WSLConfigSupplyStatus {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    faces: WSLConfigSupplyFace[];
+	    pendingPush: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLConfigSupplyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.faces = this.convertValues(source["faces"], WSLConfigSupplyFace);
+	        this.pendingPush = source["pendingPush"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

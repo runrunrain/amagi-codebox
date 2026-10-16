@@ -185,6 +185,10 @@ export function GetUrlHistory(arg1:string):Promise<Array<string>>;
 
 export function GetWSLCLIStatus():Promise<wslsetup.Status>;
 
+export function GetWSLConfigSupplyStatus():Promise<main.WSLConfigSupplyStatus>;
+
+export function GrantWSLVisionConsent():Promise<void>;
+
 export function HeadroomGetPort():Promise<number>;
 
 export function HeadroomGetStatus():Promise<headroom.HeadroomStatus>;
