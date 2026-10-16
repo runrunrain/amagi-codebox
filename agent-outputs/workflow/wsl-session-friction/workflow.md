@@ -32,7 +32,7 @@
 | P1 快赢止血 | T4+T12+T13+T6 | 单任务纵向切片（共享 wsl.go/wsl_agent_config.go，不拆） | luban | git 主树干净 | 两轮证据报告 | 实现+测试+变更说明 | go build+相关包 test 绿；T4 有配置落 distro 或转发面证据 | **完成**（commit 16f707d 已推送；验收 2026-10-16，Leader 直修一处注释引号破坏） |
 | P2 已裁决项 | mirrored 放行 + A2 订阅 + B4 小修 | P2-T1 mirrored（aiproxy/platform/envcheck/前端）；P2-T2 A2（app.go 闸门/wslsetup 同步/文档）；B4 并入（主上无异议） | luban ×2 | P1 完成推送 ✓ | 两轮证据 | 实现+测试 | P2-T1 mirrored 放行逻辑+测试；P2-T2 闸门解除+同步+契约文档；B4 Linux 形态 workDir 跳过 ConPtyWorkDir | **完成**（两轮 qreview：FIX 六条修复轮 + PASS_WITH_MINOR q2-1 Leader 直修；commit cdb8a7a 已推送 1.3.107） |
 | P3 体系工程 | 配置供给体系设计→落地 | P3-T1 fuxi 设计；S0 骨架/统一执行边界→S1 前置门槛+托管 provider→S2 键级投影→S3 skills→S4 Claude/Codex 适配器→S5 插件目标化重放 | fuxi→luban | P2 完成推送；fuxi 设计经主上审定 | 两轮证据 T1/T2/T3/T5/T7/T8 | 设计文档→S0-S5 六批实现 | 设计文档主上审定；落地按设计验收 | **完成**（fuxi 设计主上审定采纳；S0-S5 六批全部落地：0cf7591/b9bb097+8265ffc/bd93f4c/fa2cb4a+4614efd/6b015b8/1.3.113 本批；每批 diting quick/full 审 FIX 均修复轮关闭，终态 PASS/PASS_WITH_MINOR） |
-| P4 实证补全 | B4 实证→T11 适配；B5 distro 可选；advisory UI 通道 | P4-T1 B4 真机实证（已提前完成并入 P2）；P4-T2 B5；P4-T3 advisory UI | luban | P4-T1 影响 T11 范围；P4-T2/T3 独立可提前 | 证据报告 B4/T11/B5/C1-C3 | 实证记录+实现 | B4 定谳记录；B5 可选+缓存刷新；advisory 通道有 UI 证据 | 待启动（B4 已定谳并修复；T11/B5/advisory 待主上示下） |
+| P4 实证补全 | 「WSL 壳 × Windows 主场」主路径体验（定位澄清后重定义）；过程摩擦治理 | P4-A1 形态感知/advisory；P4-A2 路径值放行门；P4-A3 MCP 检测对称；P4-B 杂项（B5/wailsjs 再生/版本号）；P4-C amagi-pi evolution 批量沉淀 | luban/diting | 定位澄清 2026-10-16 晚（主上批准按计划） | p4-evidence.md（E1-E10+§8 定量）、p4-friction-log.md（A1-A6/B/C） | 实现+审报告 | 两审 PASS_WITH_MINOR；Minor 直修 | **P4-A 完成**（e2643a6 已推 1.3.114；B4 已提前定谳修复）；P4-B/C 待主上示下 |
 
 ## 跨边界链路清单
 
@@ -64,3 +64,6 @@
 - 发现（工具面）：write 工具的 POSIX 绝对路径 WSL 重定向与本会话 bash 的 /tmp 不一致（写报成功但文件不存在）——会话内跨 Windows/WSL 传文件一律走 /mnt/<盘> 相对路径，纯 WSL 内临时文件用 bash heredoc。
 - **2026-10-16 S5 收口（P3 全系列闭环）**：实施四遇 GLM API 500 中断（原任务+两轮 resume 均 4 调用即断）；修复轮改新会话全新上下文 47 调用零中断完成。判因不可定论（上下文超限假设被主上证伪——GLM 窗口 100 万 vs 累计 198k）；可观测差异仅「resume 全历史请求形态 vs 新会话轻请求」与「同期 diting 新会话正常」。运维结论：**长会话 resume 连续撞 500 时，改新会话任务书接管优于继续 resume**。diting quick 审 FIX（3 Major：ctx 不终止 wsl.exe/前端整层未接线/幽灵登记行）→修复轮 7/7→增量复审 PASS_WITH_MINOR→三 Minor Leader 直修。七任务全链 accept（四个 error 终态显式收口：产出由续任任务完整承接）。
 - 运维（S5 附带发现）：inputs 路径相对**调用者 cwd** 解析（非 workspace.cwd）——派发必读输入时写全「仓库相对路径」防拒单；models.ts 手工嵌套编辑风险高（缩进混合），wailsjs 再生前优先改 d.ts 宽松类型+App.js 变量传参。
+- **2026-10-16/17 P4-A 收口（定位澄清批）**：主上澄清产品定位「WSL 壳 × Windows 主场（UE5 等）」→ 证据采集（baize 读码 E1-E10 + Leader 直跑定量 §8：同仓库 ext4/DrvFS 对照 git status 20-200 倍差、cp 5000 文件 17.4s、DDC du 42s）→ 三批并行（A1 形态感知/A2 放行门/A3 检测对称，E9 前提失效由子 Agent 高质量 blocked 核出：wslsupply 超集盲区）→ diting 双审（quick+full）均 PASS_WITH_MINOR → m-1/F-1 直修 → accept 链 → e2643a6 推送 1.3.114。
+- **go fmt 事故二次发生（P4-A2/A3 各一次）**：`go fmt ./...` 误触全仓行尾/空白洗写——实际波及 270 文件（实施者恢复不完整，Leader 提交前 diff -w 全量分离：22 真实/248 纯空白逐一 git show HEAD 还原）。运维结论：**子任务禁用裸 go fmt，一律 gofmt -l 先满点再定点 -w**；行尾幽灵 M（269 文件 diff 空但 status M）为仓库历史行尾契约问题延续（.gitattributes 注释自述 2746 文件先例），提交流用精确 add 清单绕开，环境治理另议。
+- E9 盲区教训：证据采集覆盖清单漏 internal/wslsupply 包 → 「仅 opencode」误判。运维结论：**采集任务书必须附仓库包清单或要求采集者全包盘点声明**。
