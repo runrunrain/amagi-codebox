@@ -67,6 +67,11 @@ type StateFile struct {
 	Distro          string    `json:"distro,omitempty"`
 	Home            string    `json:"home,omitempty"`
 	LastInspectedAt time.Time `json:"lastInspectedAt,omitempty"`
+	// Plugins 是 P3-S5 插件重放登记（source 键控；重放成功且复检通过才
+	// Installed=true）。与 Units 分离：插件操作与文件同步分开授权与状态
+	//（design §四），不经 Plan/Apply 单元词汇表——启动链无法触达（结构性
+	// 保证「启动不自动安装」）。
+	Plugins []PluginStateEntry `json:"plugins,omitempty"`
 	// LastInspectedAtByCLI 按 CLI 作用域记录检查时间（F4：跨 CLI 共享单值会
 	// 把 pi 作用域的探测时间错配到 shared 面板；GetStatus 只读本表）。
 	LastInspectedAtByCLI map[CLI]time.Time `json:"lastInspectedAtByCLI,omitempty"`
@@ -77,6 +82,62 @@ type StateFile struct {
 	PendingProgress map[string][]UnitID `json:"pendingProgress,omitempty"`
 	Units           []StateEntry        `json:"units"`
 }
+
+// PluginRefKind 是重放锚定的 ref 形态（登记中的诚实标注）。
+type PluginRefKind string
+
+const (
+	// PluginRefNpmVersion：npm 确切语义化版本。
+	PluginRefNpmVersion PluginRefKind = "npm-version"
+	// PluginRefGitCommit：git 完整 commit SHA。
+	PluginRefGitCommit PluginRefKind = "git-commit"
+	// PluginRefSymbolic：未能固定为 commit 的符号 ref（tag/分支）。
+	PluginRefSymbolic PluginRefKind = "symbolic"
+)
+
+// PluginStateEntry 是 P3-S5 插件重放登记（design §四：重放记录 source、
+// 确切版本/ref、资源过滤项与操作 ID；重放成功才写「已安装」登记）。
+type PluginStateEntry struct {
+	// Source 是重放登记使用的源串（remove/update 重放用它调 pi CLI）。
+	Source string `json:"source"`
+	// Identity 是归一身份键（npm name 或 git host/path）：同包不同 ref 变体
+	// 视为同一插件（版本切换语义）。
+	Identity  string `json:"identity"`
+	SourceType string `json:"sourceType"` // npm / git
+	Generation string `json:"generation,omitempty"`
+	// PinnedRef / RefKind 是重放锚定的确切版本或 commit（含形态诚实标注）。
+	PinnedRef string        `json:"pinnedRef,omitempty"`
+	RefKind   PluginRefKind `json:"refKind,omitempty"`
+	// Filters 是 Windows 侧登记的子资源过滤清单快照（仅登记；本批不在
+	// WSL settings 重建过滤对象）。
+	Filters PluginFilters `json:"filters,omitempty"`
+	// OpID 是最近一次操作 ID。
+	OpID string `json:"opId,omitempty"`
+	// LastOp 是最近操作类型（install/update/remove）。
+	LastOp string `json:"lastOp,omitempty"`
+	// Installed：重放成功且复检（settings 登记 + 实体）通过才为 true；
+	// 失败绝不写已安装状态。
+	Installed bool `json:"installed,omitempty"`
+	// EntityVerified 是最近一次复检的实体结论（Installed 的证据位）。
+	EntityVerified bool      `json:"entityVerified,omitempty"`
+	LastSuccess    time.Time `json:"lastSuccess,omitempty"`
+	// LastErrorCode / LastDetail 是最近失败的结构化摘要（不含凭据/完整输出）。
+	LastErrorCode string `json:"lastErrorCode,omitempty"`
+	LastDetail    string `json:"lastDetail,omitempty"`
+	Frozen        bool   `json:"frozen,omitempty"`
+	FrozenReason  string `json:"frozenReason,omitempty"`
+}
+
+// PluginFilters 是登记在案的子资源过滤清单（可为空 = 全部资源）。
+type PluginFilters struct {
+	Extensions []string `json:"extensions,omitempty"`
+	Skills     []string `json:"skills,omitempty"`
+	Prompts    []string `json:"prompts,omitempty"`
+	Themes     []string `json:"themes,omitempty"`
+}
+
+// SameIdentity 报告两个登记是否同一插件（身份键相等）。
+func (p PluginStateEntry) SameIdentity(identity string) bool { return p.Identity == identity }
 
 // stateStore 持有清单的内存副本与落盘路径，串行化所有读改写。
 type stateStore struct {

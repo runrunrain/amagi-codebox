@@ -4,6 +4,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.113] - 2026-10-16
+
+### Added
+
+- **WSL 配置供给体系 S5：插件面板目标化与原生重放（P3 终批）**：①目标化操作面——pi 插件 install/update/remove 显式目标（Windows/WSL/同时），每目标独立结果（单侧失败独立显示，Windows 失败无锚点时 WSL skipped 不盲装）；npm 源带锚定版本、git 源固定 commit 在 distro 内原生重放（不复制 Windows 实体）。②登记与实体双校验——失败绝不登记已安装、复检登记+实体双面一致、单向漂移显 mismatch；未登记项 install 失败零登记残留（无幽灵行）。③冻结保护——WSL git 仓库脏时 update/版本切换一律冻结绝不 reset/clean；来源不可解析/CLI 缺失逐项冻结诊断不影响他项。④生命周期健壮性——ctx 到期/取消终止 wsl.exe（超时单次尝试无重试风暴、辅助命令超时结构化归类不误导为离线）、distro settings 损坏阻断不冒充成功、启动仅提示缺失不自动安装。⑤前端接线——PiPluginPanel 目标选择器 + WSL 区块（挂载于 v-if 链外恒显）、其他 CLI 面板静态契约占位（omp 排除为 B7 主上裁定的声明）；wailsjs 六方法手工补齐（变量传参，待 wails CLI 再生归一强类型）。真机链路冒烟：distro 内固定版本 npm 原生安装+消费验证 3s。
+
+（diting quick 审 FIX→修复轮 7/7：R1 ctx 不终止 wsl.exe→CommandContext+3min deadline；R2 前端整层未接线→面板挂载+目标选择器；R3 未登记项失败幽灵登记行→跳过写入+零残留断言；R4 损坏 settings 冒充 already-ok→三态区分；R5 版本切换旁路脏冻结→前置同款 dirty 检查；R6 注释矛盾如实化；R7 校验双源→删死导出单源化。增量复审 PASS_WITH_MINOR，三 Minor（Probe 展示腿三态一致/辅助腿超时丢错误码/头注释陈旧）Leader 直修）
+
+（实施过程四遇 GLM API 500 中断：原任务+两轮 resume 均 4 调用即断，修复轮改新会话全新上下文 47 调用零中断完成——判因不可定论，上下文超限假设已被主上证伪）
+
 ## [1.3.112] - 2026-10-16
 
 ### Added

@@ -442,3 +442,18 @@ export function UninstallClaudeCode(arg1:string):Promise<envcheck.InstallResult>
 export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;
+
+// P3-S5（2026-10-16）：插件目标化绑定（本机无 wails CLI 期手工补齐；返回类型
+// 暂用 any，前端 api/piPlugin.ts 以本地 interface 承接——下次 wails generate
+// 再生时会按 models.ts 生成强类型并自动归一）。
+export function GetWSLPluginTargetSupport():Promise<any>;
+
+export function InstallPiPackageTargeted(arg1:string,arg2:string):Promise<any>;
+
+export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
+
+export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
+
+export function GetPiPluginWSLStatus():Promise<any>;
+
+export function CheckPiPluginWSLStatus():Promise<any>;

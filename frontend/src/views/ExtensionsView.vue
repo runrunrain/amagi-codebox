@@ -35,11 +35,17 @@
               engine="claude"
               @add_market="handleAddMarket"
             />
+            <div class="wsl-target-slot">
+              <WSLPluginTargetPlaceholder cli="claude" />
+            </div>
           </div>
 
           <!-- OpenCode plugins -->
           <div v-else-if="pluginEngine === 'opencode'" class="engine-pane">
             <OpenCodePluginPanel />
+            <div class="wsl-target-slot">
+              <WSLPluginTargetPlaceholder cli="opencode" />
+            </div>
           </div>
 
           <!-- Pi packages -->
@@ -50,6 +56,9 @@
           <!-- OMP plugins -->
           <div v-else-if="pluginEngine === 'omp'" class="engine-pane">
             <OmpPluginPanel />
+            <div class="wsl-target-slot">
+              <WSLPluginTargetPlaceholder cli="omp" />
+            </div>
           </div>
 
           <!-- Codex plugins -->
@@ -58,6 +67,9 @@
               engine="codex"
               @add_market="handleAddMarket"
             />
+            <div class="wsl-target-slot">
+              <WSLPluginTargetPlaceholder cli="codex" />
+            </div>
           </div>
         </div>
       </div>
@@ -122,6 +134,7 @@ import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.
 import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';
 import PiPluginPanel from '../components/extensions/PiPluginPanel.vue';
 import OmpPluginPanel from '../components/extensions/OmpPluginPanel.vue';
+import WSLPluginTargetPlaceholder from '../components/extensions/WSLPluginTargetPlaceholder.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
@@ -229,6 +242,10 @@ async function submitAddMarket() {
 
 .engine-pane {
   animation: fadeIn 0.2s ease-out;
+}
+
+.wsl-target-slot {
+  margin-top: 14px;
 }
 
 @keyframes fadeIn {

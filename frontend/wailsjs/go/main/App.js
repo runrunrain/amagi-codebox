@@ -857,3 +857,27 @@ export function UpdateProvider(arg1, arg2, arg3) {
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
 }
+
+export function GetWSLPluginTargetSupport() {
+  return window['go']['main']['App']['GetWSLPluginTargetSupport']();
+}
+
+export function InstallPiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['InstallPiPackageTargeted'](arg1, arg2);
+}
+
+export function UpdatePiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['UpdatePiPackageTargeted'](arg1, arg2);
+}
+
+export function RemovePiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['RemovePiPackageTargeted'](arg1, arg2);
+}
+
+export function GetPiPluginWSLStatus() {
+  return window['go']['main']['App']['GetPiPluginWSLStatus']();
+}
+
+export function CheckPiPluginWSLStatus() {
+  return window['go']['main']['App']['CheckPiPluginWSLStatus']();
+}

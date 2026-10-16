@@ -37,6 +37,9 @@ type Coordinator struct {
 	// skills 是技能资源作用域（S3：shared/skill/<name> 动态单元；nil 表示
 	// 未注册——技能单元全部 unknown）。
 	skills *SkillsScope
+	// plugins 是插件重放作用域（S5：pi 插件原生重放；与单元词汇表分离，
+	// 启动链结构性无法触达）。恒非 nil；裸解析面时操作降级 blocked。
+	plugins *PluginScope
 	// resources 是 S4 用户资源作用域（claude/codex 资源目录单元；未注册的
 	// CLI 其资源单元 unknown）。
 	resources map[CLI]*ResourceScope
@@ -48,12 +51,32 @@ func NewCoordinator(configDir string, log Logger, probes Probes) *Coordinator {
 	if probes.Identity == nil || probes.ToUNC == nil || probes.Chmod == nil {
 		probes = DefaultProbes()
 	}
+	// 单一状态清单实例：文件同步单元与插件重放登记共用同一落盘面（两个
+	// stateStore 各持内存副本会互相覆盖对方写入）。
+	state := newStateStore(configDir)
 	return &Coordinator{
 		log:         log,
 		probes:      probes,
-		state:       newStateStore(configDir),
+		state:       state,
 		projections: map[UnitID]ProjectionAdapter{},
 		resources:   map[CLI]*ResourceScope{},
+		plugins:     NewPluginScope(state, nil, nil, PluginRefChecker{}),
+	}
+}
+
+// SetPluginSourceParser 注入插件重放的生产解析面（App 装配时调用；wslsupply
+// 不直接依赖 piplugin 包，解析语义经接缝注入保持单一来源）。
+func (c *Coordinator) SetPluginSourceParser(parser PluginSourceParser, refCheck PluginRefChecker) {
+	if c.plugins != nil && parser != nil {
+		c.plugins.SetSourceParser(parser, refCheck)
+	}
+}
+
+// SetPluginCommandRunner 替换插件重放执行面（测试接缝；生产默认
+// defaultPluginCommandRunner——wsl.exe --exec bash -lc）。
+func (c *Coordinator) SetPluginCommandRunner(runner PluginCommandRunner) {
+	if c.plugins != nil && runner != nil {
+		c.plugins.runner = runner
 	}
 }
 

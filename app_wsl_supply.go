@@ -26,6 +26,7 @@ import (
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/piconfig"
+	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/wslsupply"
@@ -141,6 +142,11 @@ func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator 
 	if root := wslSkillsHostRoot(); root != "" {
 		coord.RegisterSkills(wslsupply.NewSkillsScope(root, wslsupply.DefaultSkillsScanLimits()))
 	}
+	// P3-S5：插件重放解析面（piplugin 单一来源；wslsupply 经接缝注入）。
+	coord.SetPluginSourceParser(wslPluginSourceParserAdapter, wslsupply.PluginRefChecker{
+		ExactNpmVersion: piplugin.IsExactNpmVersion,
+		FullCommitSHA:   piplugin.IsFullCommitSHA,
+	})
 	return coord
 }
 
@@ -414,6 +420,7 @@ func (a *App) GetWSLConfigSupplyStatus() WSLConfigSupplyStatus {
 		wslFaceFromUnit("modality-kb", "多模态学习层", sharedStatus, wslsupply.UnitSharedModalityKB, out.PendingPush),
 		wslOpenCodeLayerFace(distro),
 		wslSkillsFace(distro, a),
+		wslPluginsFace(a),
 	)
 	// P3-S2：键级配置单元逐项详情（相对路径/策略/冻结原因/可执行动作）。
 	out.Units = piConfigUnitDetails(piStatus, out.PendingPush)
@@ -478,6 +485,37 @@ func wslVisionFace(st wslsupply.TargetStatus, pending bool) WSLConfigSupplyFace 
 			face.Detail = "密钥副本未确认撤回：WSL 侧文件已被手动修改，请处理后重新接管"
 			return face
 		}
+	}
+	return face
+}
+
+// wslPluginsFace 聚合插件重放面卡片（S5）：只读登记摘要（不唤醒；启动路径
+// 的「缺失插件」提示数据源——只提示，不自动安装）。Installed=false 的登记
+//（缺失/上次失败）以 warning 语义呈现，不冒充已同步。
+func wslPluginsFace(a *App) WSLConfigSupplyFace {
+	face := WSLConfigSupplyFace{Key: "pi-plugins", Label: "Pi 插件（WSL 重放）", State: "unchecked", Detail: "尚无本系统登记的 WSL 插件重放"}
+	coord := a.wslPluginCoordinator()
+	if coord == nil {
+		face.Detail = "插件重放未启用"
+		return face
+	}
+	s := coord.PluginRegistrationSummary()
+	if s.Managed == 0 {
+		return face
+	}
+	if s.LastOpAtRC != "" {
+		face.LastCheck = s.LastOpAtRC
+	}
+	switch {
+	case s.Missing > 0 || s.Failed > 0:
+		face.State = "failed"
+		face.Detail = fmt.Sprintf("登记 %d：已安装 %d，缺失/未完成 %d（启动不会自动安装，请在插件面板显式重放）", s.Managed, s.Installed, s.Missing+s.Failed)
+	case s.Frozen > 0:
+		face.State = "frozen"
+		face.Detail = fmt.Sprintf("登记 %d：已安装 %d，冻结 %d（WSL 侧修改保留本地）", s.Managed, s.Installed, s.Frozen)
+	default:
+		face.State = "synced"
+		face.Detail = fmt.Sprintf("登记 %d 项已重放安装（settings 登记与实体同时有效）", s.Installed)
 	}
 	return face
 }

@@ -19,6 +19,11 @@
           <p>通过官方 pi CLI 管理 settings.json 中登记的包，支持 npm、git 与本地路径源。/ Manage packages registered in settings.json via the official pi CLI.</p>
         </div>
         <div class="header-actions">
+          <Segmented
+            v-model="opTargetModel"
+            :options="targetOptions"
+            class="target-seg"
+          />
           <AppButton variant="ghost" size="small" :disabled="loading" @click="loadPackages">
             {{ loading ? '刷新中…' : '刷新' }}
           </AppButton>
@@ -211,6 +216,10 @@
       />
     </template>
 
+    <!-- P3-S5：WSL 侧插件面板（原生重放）——与 Windows 列表各自反映自己的
+         实体；目标选择器为 wsl/both 时操作会同步作用到本区。 -->
+    <PiPluginWSLSection ref="wslSection" />
+
     <Dialog
       v-model:open="showInstallDialog"
       title="安装 Pi 包"
@@ -226,6 +235,9 @@
           @keydown.enter="handleInstall"
         />
         <p>npm 包需加 npm: 前缀（如 npm:@earendil-works/pi-web-access）；git 源用 git:&lt;url&gt;；本地源直接给绝对路径。/ npm packages need the npm: prefix (e.g. npm:@earendil-works/pi-web-access); git sources use git:&lt;url&gt;; local sources are absolute paths.</p>
+        <p class="install-target-note">
+          应用目标：{{ targetLabel }}（在面板右上目标选择器切换 Windows / WSL / 同时应用；WSL 侧重放固定版本/ref）
+        </p>
       </div>
       <template #footer>
         <AppButton variant="ghost" @click="showInstallDialog = false">取消</AppButton>
@@ -242,7 +254,7 @@
     <ConfirmDialog
       v-model:open="showRemoveDialog"
       title="移除 Pi 包"
-      :message="activePackage ? `将从 Pi settings.json 移除「${activePackage.name}」。实体目录会保留，便于后续重新安装。` : ''"
+      :message="removeConfirmMessage"
       danger
       confirm-text="移除"
       @confirm="handleRemove"
@@ -254,7 +266,12 @@
 import { computed, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { usePiPluginStore } from '../../stores/piPlugin';
-import type { PiPackage, PiPackageDetail } from '../../api/piPlugin';
+import type { PiPackage, PiPackageDetail, PiPluginOpOutcome, PiPluginTarget } from '../../api/piPlugin';
+import {
+  installPiPackageTargeted,
+  removePiPackageTargeted,
+  updatePiPackageTargeted,
+} from '../../api/piPlugin';
 import AppButton from '../ui/AppButton.vue';
 import Badge from '../ui/Badge.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
@@ -262,6 +279,8 @@ import Dialog from '../ui/Dialog.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
+import Segmented from '../ui/Segmented.vue';
+import PiPluginWSLSection from './PiPluginWSLSection.vue';
 import { useToast } from '../../composables/useToast';
 import { SwitchPackageSource } from '../../../wailsjs/go/piplugin/Service';
 import { truncate } from '../../utils/format';
@@ -283,6 +302,80 @@ const mutating = ref(false);
 const showInstallDialog = ref(false);
 const showRemoveDialog = ref(false);
 const installSource = ref('');
+
+// ---- P3-S5：操作目标（Windows / WSL / 同时应用）----
+// windows（默认）走既有 store 路径；含 WSL 的目标走目标化 wrapper，每目标
+// 独立结果（Windows 成功不代 WSL 报喜，单侧失败独立提示）。
+const opTarget = ref<PiPluginTarget>('windows');
+const targetOptions = [
+  { value: 'windows', label: 'Windows' },
+  { value: 'wsl', label: 'WSL' },
+  { value: 'both', label: '同时应用' },
+];
+// Segmented 的 modelValue 是 string：经 computed 收窄回目标联合类型。
+const opTargetModel = computed({
+  get: () => opTarget.value as string,
+  set: (value: string) => {
+    if (value === 'windows' || value === 'wsl' || value === 'both') {
+      opTarget.value = value;
+    }
+  },
+});
+const targetLabel = computed(
+  () => targetOptions.find(option => option.value === opTarget.value)?.label ?? opTarget.value,
+);
+const removeConfirmMessage = computed(() => {
+  if (!activePackage.value) return '';
+  const scope = opTarget.value === 'windows'
+    ? 'Pi settings.json'
+    : opTarget.value === 'wsl'
+      ? 'WSL 侧 pi settings'
+      : 'Windows 与 WSL 两侧 pi settings';
+  return `将从 ${scope} 移除「${activePackage.value.name}」。实体目录会保留，便于后续重新安装。`;
+});
+
+const wslSection = ref<InstanceType<typeof PiPluginWSLSection> | null>(null);
+
+const outcomeTargetNames: Record<string, string> = { windows: 'Windows', wsl: 'WSL' };
+
+function describeOutcome(outcome: PiPluginOpOutcome): string {
+  const head = outcomeTargetNames[outcome.target] ?? outcome.target;
+  if (outcome.ok) {
+    return `${head}：${outcome.detail || outcome.outcome}`;
+  }
+  return `${head} 未成功（${outcome.outcome}${outcome.errCode ? `/${outcome.errCode}` : ''}）：${outcome.detail || '无详情'}`;
+}
+
+// runTargeted 执行目标化操作：每目标一条结果独立提示，完成后两侧列表各
+// 刷新自己的实体（Windows store / WSL 快照）。
+async function runTargeted(kind: 'install' | 'update' | 'remove', source: string): Promise<boolean> {
+  const fn = kind === 'install'
+    ? installPiPackageTargeted
+    : kind === 'update'
+      ? updatePiPackageTargeted
+      : removePiPackageTargeted;
+  const result = await fn(source, opTarget.value);
+  let allOk = true;
+  for (const outcome of result.results) {
+    if (outcome.ok) {
+      showSuccess(describeOutcome(outcome));
+    } else {
+      allOk = false;
+      showError(describeOutcome(outcome));
+    }
+  }
+  try {
+    if (opTarget.value !== 'wsl') {
+      await store.refresh(true);
+    }
+    if (opTarget.value !== 'windows') {
+      await wslSection.value?.refresh(true);
+    }
+  } catch {
+    /* 刷新失败不掩盖操作结果 */
+  }
+  return allOk;
+}
 
 // ---- 源类型切换（git ⇄ npm ⇄ 本地）----
 type SwitchType = 'git' | 'npm' | 'local';
@@ -430,9 +523,17 @@ async function handleInstall() {
   if (!source || mutating.value) return;
   mutating.value = true;
   try {
-    await store.install(source);
-    showInstallDialog.value = false;
-    showSuccess('Pi 包安装成功');
+    if (opTarget.value === 'windows') {
+      await store.install(source);
+      showInstallDialog.value = false;
+      showSuccess('Pi 包安装成功');
+    } else {
+      // 目标含 WSL：每目标独立结果；有失败时保留对话框便于修改重试。
+      const allOk = await runTargeted('install', source);
+      if (allOk) {
+        showInstallDialog.value = false;
+      }
+    }
   } catch (error) {
     showError(`安装失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -444,8 +545,12 @@ async function handleUpdate() {
   if (!activePackage.value || mutating.value) return;
   mutating.value = true;
   try {
-    const result = await store.update(activePackage.value.source);
-    showSuccess(result.output || 'Pi 包已更新');
+    if (opTarget.value === 'windows') {
+      const result = await store.update(activePackage.value.source);
+      showSuccess(result.output || 'Pi 包已更新');
+    } else {
+      await runTargeted('update', activePackage.value.source);
+    }
   } catch (error) {
     showError(`更新失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -458,8 +563,12 @@ async function handleRemove() {
   const source = activePackage.value.source;
   mutating.value = true;
   try {
-    await store.remove(source);
-    showSuccess('Pi 包已移除');
+    if (opTarget.value === 'windows') {
+      await store.remove(source);
+      showSuccess('Pi 包已移除');
+    } else {
+      await runTargeted('remove', source);
+    }
   } catch (error) {
     showError(`移除失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -515,6 +624,19 @@ onMounted(loadPackages);
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.target-seg {
+  font-size: 12px;
+}
+
+.install-target-note {
+  color: var(--tertiary);
 }
 
 .panel-header,
