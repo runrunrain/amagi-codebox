@@ -77,6 +77,7 @@ const (
 	EffectPTYStart
 	EffectExternalProcessStart
 	EffectBootstrapWrite
+	EffectWSLConfigSupply
 )
 
 type SecretBufferRef struct{ Index uint16 }
@@ -110,12 +111,25 @@ type BootstrapWriteSpec struct {
 	StartupCommand string // canonical startup command (e.g. "claude", "codex")
 }
 
+// WSLConfigSupplySpec 描述一次 WSL 配置供给（P3-S0）：计划只携带待供给描述，
+// 不含候选正文与副作用；实际 Inspect/Plan/Apply 在执行器的 Apply 阶段经
+// wslsupply 协调器执行，顺序在 PTY 之前。Distro 为空表示 Apply 时解析默认
+// distro（与 PTY 构建同源），保证计划纯读零 spawn。Units 为 wslsupply 单元 id
+//（S0 生产仅 "pi/a2-auth"）。
+type WSLConfigSupplySpec struct {
+	Distro string
+	CLI    string
+	Reason string
+	Units  []string
+}
+
 type EffectSpec struct {
 	Kind      EffectKind
 	Shared    *SharedStartSpec
 	Config    *ConfigMutationSpec
 	Process   *ProcessStartSpec
 	Bootstrap *BootstrapWriteSpec
+	WSLSupply *WSLConfigSupplySpec
 }
 
 type DependencyRevision struct {
@@ -211,6 +225,9 @@ func (p *Plan) Validate() error {
 		if effect.Bootstrap != nil {
 			nonNil++
 		}
+		if effect.WSLSupply != nil {
+			nonNil++
+		}
 		if nonNil != 1 || !effectMatchesUnion(effect) {
 			return ErrInvalidPlan
 		}
@@ -239,6 +256,8 @@ func effectMatchesUnion(effect EffectSpec) bool {
 		return effect.Process != nil
 	case EffectBootstrapWrite:
 		return effect.Bootstrap != nil
+	case EffectWSLConfigSupply:
+		return effect.WSLSupply != nil
 	default:
 		return false
 	}
@@ -250,6 +269,9 @@ func CanonicalEffectRank(effect EffectSpec) int {
 		return 0
 	case EffectConfigMutation:
 		return 1 + int(effect.Config.Target)
+	case EffectWSLConfigSupply:
+		// 供给在配置变更之后、PTY 之前：目标确定后先落凭据/托管配置，再启 CLI。
+		return 8
 	case EffectPTYStart, EffectExternalProcessStart:
 		return 16
 	case EffectBootstrapWrite:

@@ -43,20 +43,6 @@ func nodeVersionAtLeast(v string, major, minor int) bool {
 	return maj > major || (maj == major && min >= minor)
 }
 
-// wslPathFromWindowsHome converts an absolute Windows path (C:\Users\...) to its
-// WSL drvfs mount path (/mnt/c/Users/...). Returns "" for paths it cannot map.
-// Parsing is hand-rolled (not filepath.VolumeName) so behavior is identical on
-// every host OS — the package builds on macOS/Linux and the unit tests cover it.
-func wslPathFromWindowsHome(winPath string) string {
-	if len(winPath) < 3 || winPath[1] != ':' {
-		return ""
-	}
-	c := winPath[0]
-	isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-	if !isLetter {
-		return ""
-	}
-	drive := strings.ToLower(winPath[0:1])
-	rest := strings.ReplaceAll(winPath[2:], `\`, "/")
-	return "/mnt/" + drive + rest
-}
+// wslPathFromWindowsHome（Windows 路径→/mnt DrvFS 映射）已随 ensurePiConfig
+// 整树播种（P3-S0 停用）一并删除：仓库内不再有消费方（旧用途是把 Windows
+// ~/.pi/agent 喂给 distro 内 cp -r 播种）。

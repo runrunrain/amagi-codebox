@@ -116,6 +116,103 @@ func TestCheckLoginResolution(t *testing.T) {
 	}
 }
 
+// wslPiInstallScriptRunner fakes wslExec for the scripted pi InstallTool flow:
+// captures every script so tests can assert the retired cp -r seeding never
+// reappears, while the CLI itself resolves/installs/verifies normally.
+func wslPiInstallScriptRunner(scripts *[]string, typePPi []string) func(distro, script string) (string, error) {
+	return func(_, script string) (string, error) {
+		*scripts = append(*scripts, script)
+		switch {
+		case strings.Contains(script, "type -P 'pi'"):
+			if len(typePPi) == 0 {
+				return "\n", nil
+			}
+			out := typePPi[0]
+			typePPi = typePPi[1:]
+			return out + "\n", nil
+		case strings.Contains(script, "type -P 'node'"):
+			return "/usr/bin/node\n", nil
+		case strings.Contains(script, "node -v"):
+			return "v22.19.0\n", nil
+		case strings.Contains(script, "pi --version"):
+			return "1.1.0\n", nil
+		case strings.Contains(script, "prefix-ok"), strings.Contains(script, "npm config set prefix"):
+			return "prefix-ok\n", nil
+		case strings.Contains(script, "npm i -g"):
+			return "added 1 package\n", nil
+		default:
+			return "\n", nil
+		}
+	}
+}
+
+// assertNoAgentTreeSeeding fails when any captured wslExec script touches the
+// distro agent tree or performs a recursive copy (P3-S0：ensurePiConfig 整树
+// 播种停用；首装不得带入 sessions/auth/plugin 实体)。
+func assertNoAgentTreeSeeding(t *testing.T, scripts []string) {
+	t.Helper()
+	for _, script := range scripts {
+		if strings.Contains(script, "cp -r") || strings.Contains(script, ".pi/agent") || strings.Contains(script, ".pi\\agent") {
+			t.Fatalf("agent-tree seeding leaked into install script:\n%s", script)
+		}
+	}
+}
+
+// TestInstallToolPiDoesNotSeedAgentTree（P3-S0 验收 1）：pi 首装不再 cp -r
+// Windows ~/.pi/agent 整树——任何阶段（含验证与登录 shell 检查）的脚本都不得
+// 触碰 distro agent 目录；CLI 安装成功语义保留（Success + 版本）。
+func TestInstallToolPiDoesNotSeedAgentTree(t *testing.T) {
+	skipWithoutWSLDistro(t)
+
+	var execScripts []string
+	stubWSLExec(t,
+		wslPiInstallScriptRunner(&execScripts, []string{"", "/home/u/.npm-global/bin/pi"}),
+		func(_, _ string) (string, error) {
+			return "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/pi\n", nil
+		})
+
+	res, err := NewService(nil).InstallTool("pi")
+	if err != nil {
+		t.Fatalf("InstallTool(pi): %v", err)
+	}
+	if !res.Success || res.Version != "1.1.0" {
+		t.Fatalf("install success semantics must hold: Success=%v Version=%q Error=%q", res.Success, res.Version, res.Error)
+	}
+	if strings.Contains(res.Log, "[pi-config]") || strings.Contains(res.Log, "seed") {
+		t.Fatalf("install log still mentions config seeding:\n%s", res.Log)
+	}
+	assertNoAgentTreeSeeding(t, execScripts)
+}
+
+// TestInstallToolPiAlreadyOKIdempotent（P3-S0 验收 2）：重复 InstallTool(pi)
+// 幂等——第二次 AlreadyOK 短路成功，且两次都不触发任何播种/检查脚本副作用。
+func TestInstallToolPiAlreadyOKIdempotent(t *testing.T) {
+	skipWithoutWSLDistro(t)
+
+	var execScripts []string
+	runner := wslPiInstallScriptRunner(&execScripts, []string{"/home/u/.npm-global/bin/pi", "/home/u/.npm-global/bin/pi"})
+	stubWSLExec(t, runner, func(_, _ string) (string, error) {
+		return "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/pi\n", nil
+	})
+
+	svc := NewService(nil)
+	first, err := svc.InstallTool("pi")
+	if err != nil {
+		t.Fatalf("first InstallTool: %v", err)
+	}
+	if !first.Success {
+		t.Fatalf("first install failed: %q", first.Error)
+	}
+	second, err := svc.InstallTool("pi")
+	if err != nil {
+		t.Fatalf("second InstallTool: %v", err)
+	}
+	if !second.AlreadyOK || !second.Success {
+		t.Fatalf("second install must be AlreadyOK success, got AlreadyOK=%v Success=%v Error=%q", second.AlreadyOK, second.Success, second.Error)
+	}
+	assertNoAgentTreeSeeding(t, execScripts)
+}
+
 type fakeWSLError struct{}
 
 func (fakeWSLError) Error() string { return "fake wsl.exe failure" }

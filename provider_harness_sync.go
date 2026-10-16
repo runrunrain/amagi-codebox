@@ -18,8 +18,12 @@ func (a *App) syncProvidersToHarnesses() error {
 		return nil
 	}
 	a.providerSyncMu.Lock()
-	defer a.providerSyncMu.Unlock()
-	return a.syncProvidersToHarnessesLocked()
+	err := a.syncProvidersToHarnessesLocked()
+	a.providerSyncMu.Unlock()
+	// P3-S0：providerSync 保存事件后向 WSL 供给状态发布来源 revision（只标
+	// 脏不调度，锁外执行；宿主保存结果与 WSL 同步结果是两个结果）。
+	a.markWSLSupplyDirty("providers")
+	return err
 }
 
 func (a *App) syncProvidersToHarnessesLocked() error {

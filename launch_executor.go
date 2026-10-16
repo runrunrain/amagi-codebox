@@ -34,6 +34,7 @@ import (
 	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/session"
+	"amagi-codebox/internal/wslsupply"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,6 +50,12 @@ type launchExecutorDeps struct {
 	// webui-plane：对齐桌面 LaunchPiSession T-1.5）。nil = 未接线（测试），
 	// pi 会话照常启动、只是不做 webui 注入与 tracker 注册。
 	webui webuiLaunchPlane
+	// wslSupply 是 WSL 配置供给协调器接缝（P3-S0：EffectWSLConfigSupply 的
+	// 执行面；nil = 未接线，计划含 WSL 供给 effect 时 Prepare 失败 fail closed，
+	// 不静默降级旧 shell 载荷路径）。
+	wslSupply wslsupply.Runner
+	// supplyLog 是供给 effect 的最小日志接缝（nil 安全）。
+	supplyLog wslsupply.Logger
 }
 
 // webuiLaunchPlane 是 remote 启动链与 internal/webui 的窄接口切片：
@@ -140,6 +147,11 @@ func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.Pr
 			return nil, errors.New("config effect missing config spec")
 		}
 		return b.buildConfigMutation(spec.Config)
+	case launchplan.EffectWSLConfigSupply:
+		if spec.WSLSupply == nil {
+			return nil, errors.New("wsl supply effect missing spec")
+		}
+		return b.buildWSLConfigSupply(spec.WSLSupply)
 	case launchplan.EffectPTYStart:
 		if spec.Process == nil {
 			return nil, errors.New("process effect missing process spec")
@@ -187,6 +199,30 @@ func (b *preparedEffectBuilder) buildConfigMutation(cfg *launchplan.ConfigMutati
 		target: cfg.Target, content: owned, preimage: cfg.ExpectedPreimageDigest,
 		owner: fmt.Sprintf("%s/%d/config/%d", b.sessionID, b.runEpoch, cfg.Target),
 		debts: b.deps.debts, configMu: b.deps.configMu,
+	}, nil
+}
+
+func (b *preparedEffectBuilder) buildWSLConfigSupply(spec *launchplan.WSLConfigSupplySpec) (launchplan.PreparedEffect, error) {
+	if b.deps.wslSupply == nil {
+		return nil, errors.New("wsl supply effect: coordinator unavailable")
+	}
+	if strings.TrimSpace(spec.CLI) == "" || len(spec.Units) == 0 {
+		return nil, errors.New("wsl supply effect: cli and units are required")
+	}
+	units := make([]wslsupply.UnitID, 0, len(spec.Units))
+	for _, u := range spec.Units {
+		if strings.TrimSpace(u) == "" {
+			return nil, errors.New("wsl supply effect: empty unit id")
+		}
+		units = append(units, wslsupply.UnitID(u))
+	}
+	reason := wslsupply.Reason(spec.Reason)
+	if reason == "" {
+		reason = wslsupply.ReasonLaunch
+	}
+	return &wslConfigSupplyEffect{
+		deps: b.deps, distro: strings.TrimSpace(spec.Distro), cli: wslsupply.CLI(spec.CLI),
+		reason: reason, units: units,
 	}, nil
 }
 
@@ -690,6 +726,85 @@ func (e *configMutationEffect) disposeSensitive() {
 }
 
 // ---------------------------------------------------------------------------
+// WSL config supply effect (P3-S0: unified desktop/remote credential boundary)
+// ---------------------------------------------------------------------------
+
+// wslConfigSupplyEffect 在 PTY 之前执行 WSL 配置供给：Apply 阶段经 wslsupply
+// 协调器 Inspect/Plan/Apply（BuildPlan 只携带描述，纯读零副作用）。闸门语义
+// 与桌面 syncWSLPiLoginAuthAtLaunch 完全同源（同一 verdictForWSLLoginSupply
+// 映射）：A2 DistroHasCopy 降级放行 + WARN；NoAuth/阻断 fail closed 拒绝启动。
+// Abort/补偿：A2 凭据刷新是持久认证状态，不随 PTY 启动失败回滚成旧 token；
+// 普通文件写入（S0 无生产单元）按 CAS 条件撤销（只恢复 hash 仍匹配的写入）。
+type wslConfigSupplyEffect struct {
+	deps   launchExecutorDeps
+	distro string
+	cli    wslsupply.CLI
+	reason wslsupply.Reason
+	units  []wslsupply.UnitID
+
+	applied bool
+	results []wslsupply.UnitResult
+	undos   []*wslsupply.CompensationHandle
+}
+
+func (e *wslConfigSupplyEffect) Kind() launchplan.EffectKind { return launchplan.EffectWSLConfigSupply }
+func (e *wslConfigSupplyEffect) ArmOwnership()               {}
+
+func (e *wslConfigSupplyEffect) Apply(ctx context.Context) (launchplan.EffectEvidence, error) {
+	distro := e.distro
+	if distro == "" {
+		// 与 PTY 构建同源：Apply 时解析默认 distro，保证供给目标与实际启动
+		// 目标一致（计划期不 spawn）。
+		distro = platform.DefaultWSLDistro(nil)
+		if distro == "" {
+			return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: no usable WSL distro for launch")
+		}
+	}
+	res, err := e.deps.wslSupply.RunUnits(ctx, distro, e.cli, e.reason, e.units)
+	if err != nil {
+		return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: %w", err)
+	}
+	e.applied = true
+	e.results = res.Results
+	for i := range res.Results {
+		if res.Results[i].Undo != nil {
+			e.undos = append(e.undos, res.Results[i].Undo)
+		}
+	}
+	if verdict := verdictForWSLLoginSupply(res, nil); verdict.launchErr != nil {
+		return launchplan.EffectEvidence{}, verdict.launchErr
+	} else if verdict.warn {
+		if e.deps.supplyLog != nil {
+			e.deps.supplyLog.Warn("wslsupply", verdict.message, verdict.detail)
+		}
+	} else if verdict.info && e.deps.supplyLog != nil {
+		e.deps.supplyLog.Info("wslsupply", verdict.message, verdict.detail)
+	}
+	return launchplan.EffectEvidence{}, nil
+}
+
+// compensate 条件撤销本次产生的普通文件写入；A2 持久凭据不参与（返回 true
+// 表示无待处理债务；撤销失败返回 false 交由 Abort 报告）。
+func (e *wslConfigSupplyEffect) compensate(ctx context.Context) bool {
+	if len(e.undos) == 0 {
+		return true
+	}
+	outcomes := e.deps.wslSupply.Compensate(ctx, e.undos...)
+	e.undos = nil
+	allDone := true
+	for _, o := range outcomes {
+		if o.Disposition == wslsupply.CompensationUnavailable || o.Disposition == wslsupply.CompensationIndeterminate {
+			allDone = false
+		}
+	}
+	return allDone
+}
+
+func (e *wslConfigSupplyEffect) hasPartialOwnership() bool {
+	return len(e.undos) > 0
+}
+
+// ---------------------------------------------------------------------------
 // PTY start effect
 // ---------------------------------------------------------------------------
 
@@ -858,6 +973,10 @@ func (e *appPreparedExecution) Abort(ctx context.Context) launchplan.Compensatio
 			if !eff.compensate(ctx) {
 				report.Failed++
 			}
+		case *wslConfigSupplyEffect:
+			if !eff.compensate(ctx) {
+				report.Failed++
+			}
 		case *bootstrapWriteEffect:
 			// no compensation needed
 		default:
@@ -875,6 +994,8 @@ func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 		return typed.hasPartialOwnership()
 	case *ptyStartEffect:
 		return typed.applied
+	case *wslConfigSupplyEffect:
+		return typed.hasPartialOwnership()
 	default:
 		return false
 	}
@@ -919,6 +1040,9 @@ func (e *appPreparedExecution) MarkCommitted() {
 			typed.commitWebUIPlane()
 		case *bootstrapWriteEffect:
 			typed.committed = true
+		case *wslConfigSupplyEffect:
+			// A2 凭据刷新是持久认证状态：commit 后不再持有撤销材料。
+			typed.undos = nil
 		}
 	}
 }

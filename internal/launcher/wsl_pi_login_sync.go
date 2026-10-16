@@ -3,10 +3,10 @@ package launcher
 // wsl_pi_login_sync.go — A2 凭据新鲜度：WSL Pi 登录会话的启动时惰性同步。
 //
 // 背景（主上裁定 2026-10-16）：Pi OAuth 登录预设原契约「WSL 场景拒绝，而不
-// 是复制 token」被推翻——WSL 会话须能消费订阅登录模型。播种机制
-// （wslsetup ensurePiConfig，仅首装）只覆盖首次；此后两侧副本都可能成为
-// 新者：Windows 侧 pi 刷新 token，或 WSL 会话内 pi 原生轮转 token 写 distro
-// 侧 auth.json（OAuth refresh token 轮转通常使旧 token 失效）。
+// 是复制 token」被推翻——WSL 会话须能消费订阅登录模型。历史上首装播种
+// （wslsetup ensurePiConfig，P3-S0 起已停用整树播种）只覆盖首次；此后两侧
+// 副本都可能成为新者：Windows 侧 pi 刷新 token，或 WSL 会话内 pi 原生轮转
+// token 写 distro 侧 auth.json（OAuth refresh token 轮转通常使旧 token 失效）。
 //
 // 同步方向（qreview M-1 裁定：双向新陈判定，新者为准）：比较两侧
 // auth.json 的 SHA-256 与 mtime——内容一致 → Fresh；Windows 新 → 前向复制
@@ -16,12 +16,14 @@ package launcher
 // 探测失败 → 不动任何一侧，按 DistroHasCopy 降级。仅同步 auth.json 单文件
 // （不碰 models.json / sessions 等机器本地状态）。
 //
-// 通道选型（与 ensurePiConfig 的 wslExec/UNC 双通道对齐，写路径选 UNC 直写，
-// 与 WriteWSLPiAgentConfig 同族）：resolveWSLAgentTarget → UNC 路径上
-// MkdirAll → tmp+Rename 原子写 → WSLChmod 600 补偿（Windows os.Chmod 经 9P
-// 不落 POSIX mode 位，见 wsl_agent_config.go 证据）。distro 侧 mtime 经
+// 通道选型（写路径选 UNC 直写，与 WriteWSLPiAgentConfig 同族）：
+// resolveWSLAgentTarget → UNC 路径上 MkdirAll → 唯一临时名 tmp+Rename 原子写
+// （P3-S0 提交原语，并发供给不撞名）→ WSLChmod 600 补偿（Windows os.Chmod
+// 经 9P 不落 POSIX mode 位，见 wsl_agent_config.go 证据）。distro 侧 mtime 经
 // platform.WSLFileMTime（wsl.exe 内 stat -c %Y，ext4 时间戳权威读法）。
-//
+// P3-S0 起桌面闸门与 remote/v1 effect 经 internal/wslsupply 协调器统一接入
+// 本函数（A2Auth 策略适配器，判定语义零变化）；登录载荷内的 cmp/cp 同步
+// 片段已退役，同一算法只此一份实现。
 // 失败语义（调用方闸门消费）：同步失败不必然阻断启动——distro 侧已有
 // （哪怕是陈旧的）auth.json 副本时降级可用；两侧都无凭据（或 distro 侧
 // 状态不可探明）时 fail closed，由调用方以中文报错拒绝启动；chmod+清理
@@ -77,11 +79,14 @@ const (
 // （保守取 distro）。
 const authMTimeTolerance = 2 * time.Second
 
-// wslStatMTimeFn / wslAuthRemoveFn 是同步链的注入接缝（单测替换；生产指向
-// platform 与 os）。distro 侧 mtime 经 wsl.exe 内 stat 取 ext4 权威值。
+// wslStatMTimeFn / wslAuthRemoveFn / wslAuthCreateTempFn 是同步链的注入接缝
+// （单测替换；生产指向 platform 与 os）。distro 侧 mtime 经 wsl.exe 内 stat 取
+// ext4 权威值；staging 文件创建接缝用于注入 rename 前写入故障（唯一临时名
+// 后无法再用固定名碰撞注入）。
 var (
-	wslStatMTimeFn  = platform.WSLFileMTime
-	wslAuthRemoveFn = os.Remove
+	wslStatMTimeFn      = platform.WSLFileMTime
+	wslAuthRemoveFn     = os.Remove
+	wslAuthCreateTempFn = os.CreateTemp
 )
 
 // errWSLAuthLooseLeftover 标记 m-3 场景：chmod 600 补偿失败且清理也失败，
@@ -188,23 +193,38 @@ func classifyWriteFailure(uncAuth string, err error) (SyncWSLPiLoginAuthOutcome,
 }
 
 // writeWSLAuthAtomic 经 UNC 通道把 auth 字节原子写入 distro 侧 agent root：
-// MkdirAll（首装播种缺失 / 目录被清理的场景）→ tmp+Rename → WSLChmod 600
+// MkdirAll（首装播种缺失 / 目录被清理的场景）→ 唯一临时名 staging（P3-S0
+// 提交原语：并发供给不撞名）→ 权限先收紧（0600）再 Rename → WSLChmod 600
 // 补偿 POSIX 权限。chmod 补偿失败视为写入失败并清理已落盘内容（fail
 // closed，与 WriteWSLPiAgentConfig 的 diting m2 契约一致：auth.json 不允许
-// 以 0644 之类宽松权限留盘）。
+// 以 0644 之类宽松权限留盘）。本函数是 wslsupply A2Auth 适配器的底层写入，
+// A2 判定语义在 P3-S0 保持零变化（统一的是执行边界不是算法）。
 func writeWSLAuthAtomic(target WSLAgentTarget, auth []byte) error {
 	if err := os.MkdirAll(target.UNCDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir wsl pi agent dir: %w", err)
 	}
 	uncAuth := filepath.Join(target.UNCDir, "auth.json")
-	tmp := uncAuth + ".amagi-tmp"
-	if err := os.WriteFile(tmp, auth, 0o600); err != nil {
-		_ = os.Remove(tmp) // m-2：与 Rename 分支对称，不留部分凭据字节的 tmp 残留
-		return fmt.Errorf("write wsl pi auth.json tmp: %w", err)
+	tmp, err := wslAuthCreateTempFn(target.UNCDir, ".amagi-auth-*")
+	if err != nil {
+		return fmt.Errorf("create wsl auth staging file: %w", err)
 	}
-	if err := os.Rename(tmp, uncAuth); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace wsl pi auth.json: %w", err)
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(auth); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath) // m-2：与 Rename 分支对称，不留部分凭据字节的 tmp 残留
+		return fmt.Errorf("write wsl auth.json tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close wsl auth.json tmp: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod wsl auth.json tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, uncAuth); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace wsl auth.json: %w", err)
 	}
 	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/auth.json"); err != nil {
 		if rmErr := wslAuthRemoveFn(uncAuth); rmErr != nil && !os.IsNotExist(rmErr) {
@@ -219,42 +239,34 @@ func writeWSLAuthAtomic(target WSLAgentTarget, auth []byte) error {
 
 // writeWindowsAuthAtomic 把 distro 侧新凭据原子写回 Windows 侧 agent root
 // （M-1 反向同步）。写序列与 WritePiAgentConfig 同构（MkdirAll+Chmod 0700
-// 目录 → tmp 0600 → Chmod tmp → Rename），chmod 语义对齐 Windows 侧产物。
+// 目录 → 唯一临时名 0600 → Chmod tmp → Rename，P3-S0 起与其他供给提交原语
+// 一致使用唯一临时名），chmod 语义对齐 Windows 侧产物。
 func writeWindowsAuthAtomic(agentDir string, auth []byte) error {
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir windows pi agent dir: %w", err)
 	}
 	dst := filepath.Join(agentDir, "auth.json")
-	tmp := dst + ".amagi-tmp"
-	if err := os.WriteFile(tmp, auth, 0o600); err != nil {
-		_ = os.Remove(tmp)
+	tmp, err := os.CreateTemp(agentDir, ".amagi-auth-win-*")
+	if err != nil {
+		return fmt.Errorf("create windows auth staging file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(auth); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write windows pi auth.json tmp: %w", err)
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close windows pi auth.json tmp: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("chmod windows pi auth.json tmp: %w", err)
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("replace windows pi auth.json: %w", err)
 	}
 	return nil
-}
-
-// WSLDrvFSMountPath 把 Windows 盘符绝对路径（C:\Users\...）映射为其在
-// distro 内的 DrvFS 挂载路径（/mnt/c/Users/...），供 WSL 会话内 bash 片段
-// 读取 Windows 侧文件使用（A2：登录 payload 的惰性同步片段）。无法映射
-// （非盘符形态 / 路径过短）返回 ""。语义与 wslsetup.wslPathFromWindowsHome
-// 一致；独立实现是为了跨包复用而不打破 wslsetup 的 Windows-only 构建面。
-func WSLDrvFSMountPath(winPath string) string {
-	if len(winPath) < 3 || winPath[1] != ':' {
-		return ""
-	}
-	c := winPath[0]
-	if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-		return ""
-	}
-	drive := string(c | 0x20)
-	rest := filepath.ToSlash(winPath[2:])
-	return "/mnt/" + drive + rest
 }

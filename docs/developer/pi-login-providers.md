@@ -28,7 +28,7 @@
 
 **WSL 分叉（A2 解除，主上裁定 2026-10-16）**：WSL 会话不钉 Windows 路径——认证目录锚定切换为 distro 内 `~/.pi/agent`（pi 在会话内读自己的 HOME）：
 - `PI_CODING_AGENT_DIR` 从 WSL spec 环境中剥离（含 WSLENV 清单），工作目录由 wsl.exe 承担；登录载荷以 `env -u <凭据键…> -u PI_CODING_AGENT_DIR` 收尾，shell startup 之后的重导出同样被中和。
-- 凭据新鲜度由启动时惰性同步保障，**双向新陈判定、新者为准**（qreview M-1：唯一有效凭据可能在任一侧——WSL 会话内 pi 轮转 token 写 distro 侧后，单向覆盖会摧毁它）：内容一致 → 零拷贝；Windows 新（或 distro 缺失首次播种）→ 复制进 distro；distro 新 → 反向回同步 Windows 侧；两侧不同且 mtime 并列/容差内不可判 → 保守取 distro（会话即将消费侧）。桌面闸门先做 Go 侧同步（`launcher.SyncWSLPiLoginAuth`，SHA-256 + mtime，mtime 经 wsl.exe 内 `stat -c %Y` 取 ext4 权威值）；remote/v1 重启链路因 BuildPlan 纯读零副作用契约不能在计划期写盘，改为登录载荷内嵌双向同步片段（distro 内 cmp/-nt/cp + chmod 600，执行边界生效），两条链路消费同一载荷语义。同步失败降级为 distro 既有副本（WARN）；两侧都无凭据或宽松权限副本无法收敛时 fail closed 中文报错拒绝启动；Windows 侧未登录维持登录失效错误路径。
+- 凭据新鲜度由启动时惰性同步保障，**双向新陈判定、新者为准**（qreview M-1：唯一有效凭据可能在任一侧——WSL 会话内 pi 轮转 token 写 distro 侧后，单向覆盖会摧毁它）：内容一致 → 零拷贝；Windows 新（或 distro 缺失首次播种）→ 复制进 distro；distro 新 → 反向回同步 Windows 侧；两侧不同且 mtime 并列/容差内不可判 → 保守取 distro（会话即将消费侧）。同步算法为 `launcher.SyncWSLPiLoginAuth`（SHA-256 + mtime，mtime 经 wsl.exe 内 `stat -c %Y` 取 ext4 权威值）；P3-S0 起桌面闸门与 remote/v1 重启链路共用同一执行边界——remote 计划仍纯读零副作用，待供给描述由 `EffectWSLConfigSupply`（PTY 之前）经 wslsupply 协调器统一 Inspect/Plan/Apply，登录载荷只剩 `env -u` 凭据键重锚（cmp/cp 内嵌同步片段已退役，消除 shell/Go 双实现安全差异）。同步失败降级为 distro 既有副本（WARN）；两侧都无凭据或宽松权限副本无法收敛时 fail closed 中文报错拒绝启动；Windows 侧未登录维持登录失效错误路径。
 - 上表 R2/R3 的 Windows Home 锚定与重锚语义仅保留给非 WSL 会话。
 
 ## 失效选择与 UI（R4）

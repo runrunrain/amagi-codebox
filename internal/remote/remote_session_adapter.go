@@ -792,6 +792,10 @@ func launchEffectKindForSpec(spec launchplan.EffectSpec) LaunchEffectKind {
 		return LaunchProcessStart
 	case launchplan.EffectBootstrapWrite:
 		return LaunchBootstrapWrite
+	case launchplan.EffectWSLConfigSupply:
+		// P3-S0：WSL 配置供给（A2 凭据）在 PTY 之前经 wslsupply 协调器执行，
+		// 归入配置写入类 gate 检查点。
+		return LaunchWSLConfigSupply
 	default:
 		return LaunchPTYStart
 	}
@@ -1036,10 +1040,10 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 		newLeases         []*SharedDependencyLease
 		controlRestart    *PreparedControlRestart
 		restartActivation *PreparedCompositeRestart
-		sharedCommit   = func() {}
-		sharedFinish   func()
-		sharedAbort    = func() {}
-		sharedPrepared bool
+		sharedCommit      = func() {}
+		sharedFinish      func()
+		sharedAbort       = func() {}
+		sharedPrepared    bool
 	)
 
 	abortTransaction := func(cause error) launchplan.CompensationReport {

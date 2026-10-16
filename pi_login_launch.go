@@ -1,8 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
-	"path/filepath"
+	"fmt"
 	"strings"
 
 	"amagi-codebox/internal/config"
@@ -11,6 +12,7 @@ import (
 	"amagi-codebox/internal/piconfig"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
+	"amagi-codebox/internal/wslsupply"
 )
 
 // piLoginPresetResolver is the config-facing slice the login launch chain needs.
@@ -130,23 +132,88 @@ func piLoginReAnchorSpec(spec platform.ResolvedLaunchSpec, agentDir string) plat
 	return spec
 }
 
-// syncWSLPiLoginAuthFn 是桌面启动闸门调用的惰性同步接缝（单测替换；生产
-// 指向 launcher.SyncWSLPiLoginAuth）。
-var syncWSLPiLoginAuthFn = launcher.SyncWSLPiLoginAuth
+// runWSLLoginSupplyFn 是桌面启动闸门调用的供给执行接缝（单测替换；生产经
+// wslsupply 协调器 RunUnits 执行 pi/a2-auth 单元，A2 判定语义零变化）。
+// P3-S0 取代旧 syncWSLPiLoginAuthFn：桌面与 remote effect 共用同一入口。
+var runWSLLoginSupplyFn = defaultRunWSLLoginSupply
+
+// defaultRunWSLLoginSupply 经协调器执行 pi 登录供给（A2 单元必需；distro
+// 交由闸门上层解析后传入）。runner 缺位时 fail closed（不得静默放行无凭据
+// 会话）。
+func defaultRunWSLLoginSupply(ctx context.Context, runner wslsupply.Runner, distro string) (wslsupply.RunResult, error) {
+	if runner == nil {
+		return wslsupply.RunResult{Results: []wslsupply.UnitResult{{
+			Unit: wslsupply.UnitPiA2Auth, Policy: wslsupply.PolicyA2Auth,
+			Outcome: wslsupply.UnitFailed, Detail: "supply-runner-unavailable",
+			Err: errors.New("wsl supply coordinator unavailable"),
+		}}}, nil
+	}
+	return runner.RunUnits(ctx, distro, wslsupply.CLIPi, wslsupply.ReasonLaunch, []wslsupply.UnitID{wslsupply.UnitPiA2Auth})
+}
+
+// wslLoginSupplyVerdict 是一次 pi 登录供给结果的启动闸门判定（P3-S0 统一
+// 执行边界：桌面闸门与 remote effect 共用同一映射，保证两链路结果一致）。
+type wslLoginSupplyVerdict struct {
+	info      bool
+	warn      bool
+	message   string // 日志消息（不含凭据内容）
+	detail    string
+	launchErr error // 非 nil → 拒绝启动（中文文案，与桌面既有文案逐字一致）
+}
+
+// verdictForWSLLoginSupply 把供给结果映射为闸门判定。语义与 A2 解除后的桌面
+// 闸门一致：Copied/DistroNewer 记 INFO 放行；Fresh 静默放行；TieKept WARN 放行；
+// DistroHasCopy WARN 降级放行；DistroNoAuth/阻断 fail closed（源缺失 → 登录
+// 失效文案，其余 → 同步失败文案）。
+func verdictForWSLLoginSupply(res wslsupply.RunResult, runErr error) wslLoginSupplyVerdict {
+	failClosed := func(err error) wslLoginSupplyVerdict {
+		return wslLoginSupplyVerdict{launchErr: fmt.Errorf("WSL 内没有可用的 Pi 登录凭据，且同步失败：%v；请确认 WSL 发行版状态后重试", err)}
+	}
+	if runErr != nil {
+		return failClosed(runErr)
+	}
+	if blocked := res.LaunchBlocked(); blocked != nil && blocked.A2 == nil {
+		return failClosed(blocked.Err)
+	}
+	a2 := res.A2Unit()
+	if a2 == nil || a2.A2 == nil {
+		return failClosed(errors.New("supply produced no a2 result"))
+	}
+	distro := res.Target.Distro
+	switch a2.A2.Outcome {
+	case launcher.SyncWSLPiLoginAuthCopied:
+		return wslLoginSupplyVerdict{info: true, message: "已同步 Pi 登录凭据到 WSL", detail: fmt.Sprintf("distro=%s", distro)}
+	case launcher.SyncWSLPiLoginAuthFresh:
+		return wslLoginSupplyVerdict{}
+	case launcher.SyncWSLPiLoginAuthDistroNewer:
+		// M-1：WSL 内 pi 轮转出的新凭据已回同步 Windows 侧。
+		return wslLoginSupplyVerdict{info: true, message: "已从 WSL 回同步登录凭据", detail: fmt.Sprintf("distro=%s", distro)}
+	case launcher.SyncWSLPiLoginAuthDistroTieKept:
+		return wslLoginSupplyVerdict{warn: true, message: "两侧 Pi 登录凭据时间戳不可判，保守按 WSL 侧同步", detail: fmt.Sprintf("distro=%s", distro)}
+	case launcher.SyncWSLPiLoginAuthDistroHasCopy:
+		return wslLoginSupplyVerdict{warn: true, message: "WSL Pi 登录凭据同步失败，降级使用 WSL 内既有副本", detail: errStringForLog(a2.A2.Err)}
+	default: // DistroNoAuth/未知：fail closed
+		if a2.A2.Err != nil && errors.Is(a2.A2.Err, launcher.ErrWSLPiLoginSourceMissing) {
+			return wslLoginSupplyVerdict{launchErr: errors.New("Pi 登录已失效：Windows 侧未找到登录凭据，请刷新服务提供商并重新登录 Pi")}
+		}
+		if a2.A2.Err != nil {
+			return failClosed(a2.A2.Err)
+		}
+		return failClosed(errors.New("no usable credentials on either side"))
+	}
+}
 
 // piLoginWSLReAnchorSpec 是 R3 的 WSL 变体，也是 R2 锚定语义的 WSL/非 WSL
-// 分叉点（A2 主上裁定 2026-10-16）：
+// 分叉点（A2 主上裁定 2026-10-16；P3-S0 起凭据同步片段退役）：
 //   - 非 WSL（piLoginReAnchorSpec）：PI_CODING_AGENT_DIR 钉 CodeBox 进程
 //     Home 的 canonical 目录，shell startup 后重钉同值（R2/R3 原文不变）。
 //   - WSL（本函数）：不钉 Windows 路径，载荷以 env -u PI_CODING_AGENT_DIR
 //     收尾——pi 在 distro 内读取自己的 $HOME/.pi/agent，凭据副本由启动时
-//     同步保障。payload 同时内嵌惰性同步片段：在 distro 内以 DrvFS 视图
-//     双向比对两侧 auth.json，新者为准（M-1：Windows 新或 distro 缺失→复制
-//     进 distro + chmod 600；distro 新或并列→反向回写 Windows 侧，保住
-//     WSL 内轮转出的新凭据）。该片段是 remote/v1 重启链路的同步通道
-//     ——BuildPlan 契约要求纯读零副作用（launch_planner.go「no process
-//     spawn」），Go 侧同步不能进 BuildPlan，载荷片段在执行边界生效，
-//     不违反契约。
+//     同步保障。P3-S0 统一执行边界：凭据同步不再内嵌 bash cmp/cp 片段
+//     （旧 shell 实现无原子写、无 fail-closed 分类，设计 §一/§九点名），改由
+//     wslsupply 协调器的 EffectWSLConfigSupply 在 PTY 之前执行同一 Go 侧
+//     A2 适配器（launcher.SyncWSLPiLoginAuth，判定语义零变化）；本函数只
+//     保留 agent root 与凭据 env 重锚（env -u 剥离误用面）。
 //
 // 载荷落在 spec.StartupCommand；pty 层 buildWSLCommandLine 对非空
 // StartupCommand 的 WSL spec 以其为权威 bash payload（替代缺省 CLI 拼装）。
@@ -159,10 +226,7 @@ func piLoginWSLReAnchorSpec(spec platform.ResolvedLaunchSpec, windowsAgentDir st
 	if cli == "" {
 		return spec // 纯终端 WSL 会话：无 CLI 执行边界，无锚定面。
 	}
-	parts := make([]string, 0, 3)
-	if src := launcher.WSLDrvFSMountPath(filepath.Join(windowsAgentDir, "auth.json")); src != "" {
-		parts = append(parts, piLoginWSLAuthSyncSnippet(src))
-	}
+	_ = windowsAgentDir // 同步源不再进入载荷（凭据字节永不跨界进命令行）；参数保留以钉住调用契约。
 	envTokens := []string{"env"}
 	for _, key := range piLoginCredentialEnvKeys {
 		envTokens = append(envTokens, "-u", key)
@@ -172,32 +236,8 @@ func piLoginWSLReAnchorSpec(spec platform.ResolvedLaunchSpec, windowsAgentDir st
 	for _, arg := range spec.CLI.Args {
 		cliTokens = append(cliTokens, shellSingleQuote(arg))
 	}
-	parts = append(parts, strings.Join(cliTokens, " "))
-	parts = append(parts, "exec bash -li")
-	spec.StartupCommand = strings.Join(parts, "; ")
+	spec.StartupCommand = strings.Join(cliTokens, " ") + "; exec bash -li"
 	return spec
-}
-
-// piLoginWSLAuthSyncSnippet 组装 WSL 登录载荷内的惰性同步片段（M-1 后
-// 双向）：distro 内以 DrvFS 视图（src 为 /mnt/<drive>/... 形态的 Windows 侧
-// auth.json）比对 $HOME/.pi/agent/auth.json——
-//   - 一致：零拷贝；
-//   - Windows 新（stat 秒差 >2，含 distro 侧缺失的首次播种——q2-1：与 Go 侧
-//     DistroTieKept 同带 2s 容差，0<Δ≤2 的歧义带内不前向，避免两通道反向
-//     分叉摧毁 distro 轮转凭据）：复制进 distro 并 chmod 600；
-//   - distro 新或秒差≤2（含精确并列——与 Go 侧「并列取 distro」同向）：
-//     反向 cp 回 Windows 侧（DrvFS 写，覆盖已有文件保留其 ACL），保 distro
-//     侧轮转出的新凭据不被旧副本摧毁；
-//   - src 不存在（启动后退出的极端时序）：不动任何一侧（不复活已退出
-//     登录的凭据）。
-//
-// 任一复制失败不阻断 CLI 启动（echo 提示后继续用 distro 既有副本）；
-// 桌面会话（闸门处）已先经 Go 侧双向同步，此片段通常 cmp 即中、零拷贝。
-func piLoginWSLAuthSyncSnippet(src string) string {
-	q := shellSingleQuote(src)
-	dst := `"$HOME/.pi/agent/auth.json"`
-	return `mkdir -p -- "$HOME/.pi/agent"; if [ -e ` + q + ` ]; then if ! cmp -s -- ` + q + ` ` + dst + ` 2>/dev/null; then if [ ! -e ` + dst + ` ] || [ $(( $(stat -c %Y -- ` + q + `) - $(stat -c %Y -- ` + dst + `) )) -gt 2 ]; then cp -- ` + q + ` ` + dst + ` && chmod 600 -- ` + dst + `; else cp -- ` + dst + ` ` + q + `; fi; fi; fi` +
-		` || echo 'amagi: Pi 登录凭据同步到 WSL 失败，继续使用 WSL 内既有副本'`
 }
 
 // piLoginStripAgentDirForWSL 从 WSL spec 的进程环境里移除 PI_CODING_AGENT_DIR
@@ -278,23 +318,35 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
 	}
 	// A2 闸门解除（主上裁定 2026-10-16）：WSL spec 不再 fail，改走 WSL 锚定
-	// 变体（载荷内嵌惰性同步 + env -u 重锚，见 piLoginWSLReAnchorSpec）。
+	// 变体（P3-S0 起仅 env -u 重锚，凭据同步片段退役）+ 前置供给 effect。
 	// 登录预设 contextWindow 覆写也不在 BuildPlan 写盘：remote adapter 契约
 	// 要求 BuildPlan 纯读零副作用（remote_session_adapter.go「BuildPlan
 	// (pure read, zero side effects)」、launch_planner.go 头注 no process
-	// spawn）。覆写统一在预设保存/删除时同步写入 canonical root 的
+	// spawn）。WSL 凭据同步同样不进 BuildPlan：计划只携带待供给描述
+	//（EffectWSLConfigSupply，distro 留空到 Apply 阶段解析，与 PTY 构建同源），
+	// Inspect/Plan/Apply 全部在执行器 Apply 阶段经 wslsupply 协调器执行。
+	// 覆写统一在预设保存/删除时同步写入 canonical root 的
 	// models.json（ConfigService.SetPiLoginPresetChangeListener + app 装配注入），
 	// 桌面 LaunchPiSession 另有启动兜底；本路径（remote/restart）读已落盘的目标态。
 	// Shared execution-boundary constraint: pin the canonical root after any
 	// shell startup. No ConfigMutation, secret lookup, managed provider or
 	// auth write on this path.
+	var effects []launchplan.EffectSpec
 	if spec.BootstrapMode == platform.BootstrapWSL {
 		spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
+		effects = append(effects, launchplan.EffectSpec{
+			Kind: launchplan.EffectWSLConfigSupply,
+			WSLSupply: &launchplan.WSLConfigSupplySpec{
+				CLI:    string(wslsupply.CLIPi),
+				Reason: string(wslsupply.ReasonLaunch),
+				Units:  []string{string(wslsupply.UnitPiA2Auth)},
+			},
+		})
 	} else {
 		spec = piLoginReAnchorSpec(spec, login.AgentDir)
 	}
-	effects := []launchplan.EffectSpec{{Kind: launchplan.EffectPTYStart, Process: &launchplan.ProcessStartSpec{
+	effects = append(effects, launchplan.EffectSpec{Kind: launchplan.EffectPTYStart, Process: &launchplan.ProcessStartSpec{
 		Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,
-	}}, buildBootstrapEffect(spec)}
+	}}, buildBootstrapEffect(spec))
 	return p.finalizePlan(recipe, nil, effects)
 }

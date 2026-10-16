@@ -57,6 +57,7 @@ import (
 	"amagi-codebox/internal/usage"
 	"amagi-codebox/internal/webui"
 	"amagi-codebox/internal/wslsetup"
+	"amagi-codebox/internal/wslsupply"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -336,6 +337,11 @@ type App struct {
 	// 非 Windows 平台为 no-op 服务，方法返回 unsupported。
 	WSLSetup *wslsetup.Service
 
+	// WSLSupply 是 WSL agent 配置供给协调器（P3-S0）：桌面闸门与 remote/v1
+	// effect 的统一凭据/托管配置执行边界（判定语义零变化，只统一执行边界）。
+	// 测试可替换为假 Runner；nil 时闸门 fail closed。
+	WSLSupply wslsupply.Runner
+
 	// DockerWSL 面向 Windows：Docker Desktop ↔ WSL 集成健康检查与一键自愈
 	//（2026-09-25 运维复盘 §1.2：共享挂载竞态挂坏的实证修复序列固化）。
 	// 非 Windows 平台方法返回不支持。
@@ -485,6 +491,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		remotePlanner:       launchplan.NewFailClosedPlanner(),
 		compensationDebts:   launchplan.NewCompensationDebtRegistry(),
 		WSLSetup:            wslsetup.NewService(log),
+		WSLSupply:           wslsupply.NewCoordinator(configDir, wslsupplySupplyLog{log: log}, wslsupply.DefaultProbes()),
 		DockerWSL:           dockerwsl.NewService(log),
 	}
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
@@ -564,6 +571,8 @@ func NewApp(mobileAssets embed.FS) *App {
 		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw); err != nil {
 			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
 		}
+		// P3-S0：配置保存事件 → WSL 供给标脏（只发布 revision，不调度；S1 接分发）。
+		app.markWSLSupplyDirty("pi-login-presets")
 	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
@@ -671,6 +680,8 @@ func NewApp(mobileAssets embed.FS) *App {
 			debts:         app.compensationDebts,
 			configMu:      &app.providerSyncMu,
 			webui:         appWebUILaunchPlane{app: app},
+			wslSupply:     app.WSLSupply,
+			supplyLog:     wslsupplySupplyLog{log: log},
 		})
 		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
 		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
@@ -3740,10 +3751,10 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			if spec.BootstrapMode == platform.BootstrapWSL {
 				// A2 闸门解除（主上裁定 2026-10-16，推翻 docs/developer/
 				// pi-login-providers.md 「WSL 拒绝」旧契约）：WSL 会话消费 distro
-				// 内凭据副本。放行前先做惰性同步校验（Windows 侧 auth.json →
-				// distro 单文件；失败降级/报错语义见 syncWSLPiLoginAuthAtLaunch），
-				// 再以 WSL 锚定变体重锚（载荷内嵌同步片段 + env -u，remote 链路
-				// 共用同一载荷语义）。
+				// 内凭据副本。放行前先经 wslsupply 协调器做惰性同步校验（Windows 侧
+				// auth.json ↔ distro 双向新者为准；失败降级/报错语义见
+				// syncWSLPiLoginAuthAtLaunch），再以 WSL 锚定变体重锚（载荷只剩
+				// env -u 重锚，P3-S0 起桌面/remote 共用同一执行边界）。
 				if err := a.syncWSLPiLoginAuthAtLaunch(wslDistro); err != nil {
 					a.Sessions.MarkFailed(sess.ID, err.Error())
 					return "", err
@@ -3824,7 +3835,8 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 }
 
 // syncWSLPiLoginAuthAtLaunch 是 WSL Pi 登录会话的启动闸门（A2 主上裁定
-// 2026-10-16）：放行前先做惰性同步校验。语义：
+// 2026-10-16；P3-S0 起改经 wslsupply 协调器，判定语义与日志文案不变）：
+// 放行前先做惰性同步校验。语义：
 //   - 同步成功（Copied/Fresh）→ 放行；
 //   - 同步失败但 distro 侧已有（可能陈旧的）auth.json 副本 → 记 WARN 降级
 //     放行（旧凭据可能仍可用）；
@@ -3835,33 +3847,50 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 //     退出登录的极端时序）。
 //
 // distro 为空时重深一次 DefaultWSLDistro（B6 类镜像/spec 分叉兑底）；
-// 同步经 syncWSLPiLoginAuthFn 接缝满入，单测可替换。
+// 供给经 runWSLLoginSupplyFn 接缝满入（统一 TargetRef/Apply 原语），单测可
+// 替换；闸门判定与 remote effect 共用 verdictForWSLLoginSupply（两链路一致）。
 func (a *App) syncWSLPiLoginAuthAtLaunch(distro string) error {
 	if strings.TrimSpace(distro) == "" {
 		distro = platform.DefaultWSLDistro(nil)
 	}
-	outcome, err := syncWSLPiLoginAuthFn(distro)
-	switch outcome {
-	case launcher.SyncWSLPiLoginAuthCopied:
-		a.Log.Info("pi", "已同步 Pi 登录凭据到 WSL", fmt.Sprintf("distro=%s", distro))
-		return nil
-	case launcher.SyncWSLPiLoginAuthFresh:
-		return nil
-	case launcher.SyncWSLPiLoginAuthDistroNewer:
-		// M-1：WSL 内 pi 轮转出的新凭据已回同步 Windows 侧。
-		a.Log.Info("pi", "已从 WSL 回同步登录凭据", fmt.Sprintf("distro=%s", distro))
-		return nil
-	case launcher.SyncWSLPiLoginAuthDistroTieKept:
-		a.Log.Warn("pi", "两侧 Pi 登录凭据时间戳不可判，保守按 WSL 侧同步", fmt.Sprintf("distro=%s", distro))
-		return nil
-	case launcher.SyncWSLPiLoginAuthDistroHasCopy:
-		a.Log.Warn("pi", "WSL Pi 登录凭据同步失败，降级使用 WSL 内既有副本", errStringForLog(err))
-		return nil
-	default: // DistroNoAuth /未知：fail closed
-		if errors.Is(err, launcher.ErrWSLPiLoginSourceMissing) {
-			return fmt.Errorf("Pi 登录已失效：Windows 侧未找到登录凭据，请刷新服务提供商并重新登录 Pi")
-		}
-		return fmt.Errorf("WSL 内没有可用的 Pi 登录凭据，且同步失败：%v；请确认 WSL 发行版状态后重试", err)
+	res, err := runWSLLoginSupplyFn(context.Background(), a.WSLSupply, distro)
+	verdict := verdictForWSLLoginSupply(res, err)
+	if verdict.launchErr != nil {
+		return verdict.launchErr
+	}
+	if verdict.warn {
+		a.Log.Warn("pi", verdict.message, verdict.detail)
+	} else if verdict.info {
+		a.Log.Info("pi", verdict.message, verdict.detail)
+	}
+	return nil
+}
+
+// markWSLSupplyDirty 在 providerSync/配置保存事件后向 WSL 供给状态发布来源
+// revision（P3-S0 空实现位：只落 desired revision，不探测不调度；S1 接真实
+// 分发）。失败仅告警，绝不阻塞宿主保存——「宿主保存成功」与「WSL 已同步」
+// 是两个结果。
+func (a *App) markWSLSupplyDirty(source string) {
+	if a == nil || a.WSLSupply == nil {
+		return
+	}
+	if err := a.WSLSupply.MarkDirty(source, uint64(time.Now().UnixNano())); err != nil {
+		a.Log.Warn("wslsupply", "标记 WSL 供给来源变更失败（不阻塞宿主保存）", err.Error())
+	}
+}
+
+// wslsupplySupplyLog 把 logging.Service 适配为 wslsupply.Logger（三参固定形态）。
+type wslsupplySupplyLog struct{ log *logging.Service }
+
+func (a wslsupplySupplyLog) Info(scope, msg, detail string) {
+	if a.log != nil {
+		a.log.Info(scope, msg, detail)
+	}
+}
+
+func (a wslsupplySupplyLog) Warn(scope, msg, detail string) {
+	if a.log != nil {
+		a.log.Warn(scope, msg, detail)
 	}
 }
 

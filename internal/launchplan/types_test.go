@@ -47,6 +47,37 @@ func TestPlanRejectsProcessDuplicationAndOutOfOrderEffects(t *testing.T) {
 	}
 }
 
+// TestPlanValidateWSLConfigSupplyEffect（P3-S0）：供给 effect 必须在 PTY 之前
+//（rank 8 < 16）、必须携带 WSLSupply 描述且与其他 spec 互斥。
+func TestPlanValidateWSLConfigSupplyEffect(t *testing.T) {
+	supply := EffectSpec{Kind: EffectWSLConfigSupply, WSLSupply: &WSLConfigSupplySpec{
+		CLI: "pi", Reason: "launch", Units: []string{"pi/a2-auth"},
+	}}
+	pty := EffectSpec{Kind: EffectPTYStart, Process: &ProcessStartSpec{Mode: ModeEmbedded}}
+	plan := &Plan{Recipe: StableRecipe{CLIType: contract.CLITypePi, Workdir: "/work"}, Effects: []EffectSpec{supply, pty}}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("supply-before-PTY plan must validate: %v", err)
+	}
+	// 反序（PTY 之后）拒绝：供给必须在启动前完成。
+	plan.Effects = []EffectSpec{pty, supply}
+	if err := plan.Validate(); err != ErrInvalidEffectOrder {
+		t.Fatalf("supply after PTY must be rejected as out-of-order, got %v", err)
+	}
+	// 缺描述或多携带描述拒绝。
+	plan.Effects = []EffectSpec{{Kind: EffectWSLConfigSupply}, pty}
+	if err := plan.Validate(); err == nil {
+		t.Fatal("supply effect without spec must be rejected")
+	}
+	plan.Effects = []EffectSpec{supply, pty}
+	plan.Effects[0].Process = &ProcessStartSpec{Mode: ModeEmbedded}
+	if err := plan.Validate(); err == nil {
+		t.Fatal("supply effect carrying a second spec must be rejected")
+	}
+	if got := CanonicalEffectRank(supply); got != 8 {
+		t.Fatalf("supply rank = %d, want 8 (after config mutations, before PTY)", got)
+	}
+}
+
 func TestFailClosedPlannerNeverProducesExecutablePlan(t *testing.T) {
 	planner := NewFailClosedPlanner()
 	for _, cli := range contract.KnownCLITypes {

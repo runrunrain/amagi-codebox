@@ -4,6 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.108] - 2026-10-16
+
+### Added
+
+- **WSL 配置供给体系 S0：安全接入与目标一致性（P3 首批，设计文档 agent-outputs/workflow/wsl-session-friction/p3-config-supply-design.md 经主上审定）**：新领域包 `internal/wslsupply` 落地供给协调器骨架——TargetRef（distro+UID/Home+generation，身份拿不到按未知处理）、只读 Inspect（批量探测→Snapshot）、纯计算 Plan（不写盘不 spawn）、复核式 Apply（预期目标 hash 前置、逐项结果）、MarkDirty、脱敏 GetStatus；状态清单 `~/.amagi-codebox/wsl-config-supply.json`（schemaVersion/lastWrittenHash/冻结等，私有原子写，损坏回退未托管，敏感 hash 不出状态面）；目标内私有 staging + 唯一临时名 + 权限先收紧再 rename + 最终校验的提交原语；CAS 条件补偿（只撤销本次产生且 hash 仍匹配的写入）。
+
+### Changed
+
+- **A2 凭据同步桌面/远程统一执行边界（消除 shell/Go 双实现安全差异）**：remote/v1 重启链路的登录载荷 cmp/cp 同步片段退役（载荷只剩 env -u 凭据键重锚），新增 EffectWSLConfigSupply（PTY 启动前）经协调器走与桌面同一 `SyncWSLPiLoginAuth`——判定语义零变化（SHA-256+mtime 2s 容差/DistroNewer 回写/DistroTieKept/探测失败零写入/DistroHasCopy 降级/NoAuth 拒绝/chmod+清理双失败拒绝）；BuildPlan 保持纯读零副作用；Abort 不回滚凭据刷新（持久认证状态）。双链路 9 用例故障矩阵结果一致。
+- **停用 WSL 首装整树播种（T1 安全债清偿）**：wslsetup ensurePiConfig（cp -r 整目录，曾带入 sessions/auth/插件实体）删除，CLI 安装成功语义不变；旧已播种副本按未托管现状识别（不迁移不清除）；AlreadyOK 不再阻止后续检查。
+- App 装配接线：桌面启动链经协调器，providerSync/预设监听挂 MarkDirty 空位（S1 接真实分发）。
+
+（diting full 审 PASS_WITH_MINOR：4 Minor 中 M3 陈旧注释已修，M1 Compensate 加锁/M2 清理策略/M4 真并发测试列为 S1 前置门槛；真机只读冒烟 PASS）
+
 ## [1.3.107] - 2026-10-16
 
 ### Added

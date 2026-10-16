@@ -65,21 +65,6 @@ func TestNodeVersionAtLeast(t *testing.T) {
 	}
 }
 
-func TestWSLPathFromWindowsHome(t *testing.T) {
-	cases := map[string]string{
-		`C:\Users\毛润\.pi\agent`: `/mnt/c/Users/毛润/.pi/agent`,
-		`D:\Tools\My CLI`:         `/mnt/d/Tools/My CLI`,
-		`relative\path`:           "",
-		`nopath`:                  "",
-		`\\server\share\x`:        "",
-	}
-	for in, want := range cases {
-		if got := wslPathFromWindowsHome(in); got != want {
-			t.Errorf("wslPathFromWindowsHome(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestBashSingleQuote(t *testing.T) {
 	cases := map[string]string{
 		"opencode-ai":     `'opencode-ai'`,

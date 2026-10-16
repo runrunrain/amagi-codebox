@@ -206,6 +206,7 @@ const (
 	LaunchPTYStart
 	LaunchProcessStart
 	LaunchBootstrapWrite
+	LaunchWSLConfigSupply
 )
 
 // ControlDenyKind is the closed internal classification of gate denials. It

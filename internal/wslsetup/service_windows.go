@@ -4,9 +4,7 @@ package wslsetup
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"amagi-codebox/internal/logging"
@@ -207,33 +205,11 @@ func (s *Service) ensureUserNpmPrefix(distro string) (string, error) {
 	return wslExec(distro, "", script)
 }
 
-// ensurePiConfig seeds the distro's ~/.pi/agent (providers/auth/models plus the
-// amagi assets) from the Windows-side install, so pi launched inside WSL
-// recognizes the same providers (e.g. custom relays) without manual setup.
-// It only seeds when the distro has no ~/.pi/agent yet — WSL-local state is
-// never overwritten — and is skipped when the Windows side has no .pi. Sessions
-// history and settings backups stay machine-local and are dropped. Failures are
-// reported to the caller but must not fail the install: pi still runs, just
-// without the shared config.
-func (s *Service) ensurePiConfig(distro string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "skip: no windows home dir (" + err.Error() + ")", nil
-	}
-	src := wslPathFromWindowsHome(filepath.Join(home, ".pi", "agent"))
-	if src == "" {
-		return "skip: could not map windows .pi path", nil
-	}
-	script := strings.Join([]string{
-		`[ -d ` + bashSingleQuote(src) + ` ] || { echo 'no windows .pi to seed'; exit 0; }`,
-		`[ -e "$HOME/.pi/agent" ] && { echo 'wsl pi config already present'; exit 0; }`,
-		`mkdir -p "$HOME/.pi"`,
-		`cp -r ` + bashSingleQuote(src) + ` "$HOME/.pi/agent"`,
-		`rm -rf "$HOME/.pi/agent/sessions" "$HOME/.pi/agent"/settings.json.amagi-bak-*`,
-		`echo 'seeded pi config from windows'`,
-	}, "\n")
-	return wslExec(distro, "", script)
-}
+// ensurePiConfig（首装整树播种 ~/.pi/agent）已于 P3-S0 停用并删除：cp -r
+// 会把 sessions/凭据/插件实体带入 distro（证据 T1/T3），且 distro 侧已有
+// agent 目录时永远跳过，安装不再是唯一供给入口。替代路径：Pi 登录凭据由
+// 启动时 wslsupply A2 惰性同步保障（已就绪）；其余配置供给是 S1+ 批次。
+// 已播种的旧副本按「未托管现状」识别：不迁移、不清除、不接管。
 
 // InstallTool installs one CLI into WSL: ensure Node, ensure user npm prefix,
 // then npm i -g the package, and verify. Idempotent: a present native install
@@ -330,15 +306,8 @@ func (s *Service) InstallTool(tool string) (*InstallResult, error) {
 		res.Success = true
 		res.Version = v
 		res.Message = fmt.Sprintf("%s installed in WSL (%s)", key, v)
-		// pi keeps its providers/auth in ~/.pi/agent on the Windows side; seed
-		// the distro copy on first WSL use so the same providers resolve.
-		if key == "pi" {
-			if cfgLog, e := s.ensurePiConfig(distro); e != nil {
-				logB.WriteString("[pi-config]\n" + cfgLog + "\nseed failed (non-fatal): " + e.Error() + "\n")
-			} else {
-				logB.WriteString("[pi-config]\n" + cfgLog + "\n")
-			}
-		}
+		// P3-S0：不再 cp -r 整树播种 ~/.pi/agent（证据 T1/T3）；Pi 登录凭据
+		// 由启动时 wslsupply A2 惰性同步保障，安装成功语义与配置供给解耦。
 		// Final effectiveness check: a plain login shell (no artificial PATH)
 		// must resolve the CLI into $HOME/.npm-global/bin, otherwise launched
 		// sessions silently run the Windows-side CLI via /mnt/c interop.

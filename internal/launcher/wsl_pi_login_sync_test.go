@@ -10,9 +10,11 @@ package launcher
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -255,14 +257,16 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 	t.Run("write failure with old copy intact degrades", func(t *testing.T) {
 		fakeWindowsAuth(t, `{"openai-codex":{"type":"oauth"}}`)
 		root, _ := fakeWSLForSync(t, nil)
-		distroDir := filepath.Dir(distroAuthPath(root))
 		writeDistroAuth(t, root, `{"old":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
 		stubDistroMTime(t, time.Now().Add(-time.Hour)) // Windows 新 → 前向写
-		// 在 tmp 路径上放一个目录，让原子写第一阶段失败（rename 未发生，
-		// 旧副本必须仍在）。错误类型不重要，只要求写入失败。
-		if err := os.Mkdir(filepath.Join(distroDir, "auth.json.amagi-tmp"), 0o700); err != nil {
-			t.Fatal(err)
+		// 注入 staging 创建失败（rename 前）：旧副本必须仍在（DistroHasCopy
+		// 降级），且无 staging 残留。旧注入手段（固定名 tmp 碰撞）已随唯一
+		// 临时名提交原语失效，改经 wslAuthCreateTempFn 接缝注入。
+		origCreate := wslAuthCreateTempFn
+		wslAuthCreateTempFn = func(_, _ string) (*os.File, error) {
+			return nil, errors.New("staging create denied")
 		}
+		t.Cleanup(func() { wslAuthCreateTempFn = origCreate })
 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
 		if err == nil {
 			t.Fatal("expected write failure")
@@ -273,10 +277,6 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 		got, rerr := os.ReadFile(distroAuthPath(root))
 		if rerr != nil || string(got) != `{"old":{"type":"oauth"}}` {
 			t.Fatalf("old copy must survive a pre-rename failure: %q err=%v", got, rerr)
-		}
-		// m-2：WriteFile 失败分支清理 tmp 残留（空目录被 Remove 收走）。
-		if _, statErr := os.Stat(filepath.Join(distroDir, "auth.json.amagi-tmp")); statErr == nil {
-			t.Fatal("tmp leftover after WriteFile failure (m-2)")
 		}
 	})
 
@@ -329,19 +329,38 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 	})
 }
 
-func TestWSLDrvFSMountPath(t *testing.T) {
-	cases := map[string]string{
-		`C:\Users\u\.pi\agent\auth.json`: "/mnt/c/Users/u/.pi/agent/auth.json",
-		`x:/WorkSpace/repo`:              "/mnt/x/WorkSpace/repo",
-		`D:\a b\c`:                       "/mnt/d/a b/c",
-		`\\wsl.localhost\Ubuntu\home`:    "",
-		"/home/u":                        "",
-		"":                               "",
-		"C:":                             "",
+// TestWriteWSLAuthAtomicUniqueStagingNames：P3-S0 提交原语——staging 文件
+// 使用唯一临时名（os.CreateTemp）。生产上同目标写入由 wslsupply 协调器
+// applyMu 串行化（Windows rename 同目标并发会 Access Denied），本测按同一
+// 串行化前提验证：连续写入不残留 staging、目标字节始终是某个完整写入。
+func TestWriteWSLAuthAtomicUniqueStagingNames(t *testing.T) {
+	uncDir := t.TempDir()
+	target := WSLAgentTarget{Distro: "Ubuntu", Home: "/home/u", LinuxDir: "/home/u/.pi/agent", UNCDir: uncDir}
+	origChmod := wslChmodFn
+	wslChmodFn = func(_, _ string, _ ...string) error { return nil }
+	t.Cleanup(func() { wslChmodFn = origChmod })
+	const writers = 8
+	var mu sync.Mutex
+	for i := 0; i < writers; i++ {
+		payload := []byte(fmt.Sprintf("{\"writer\":%d}", i))
+		mu.Lock()
+		if err := writeWSLAuthAtomic(target, payload); err != nil {
+			mu.Unlock()
+			t.Fatalf("serialized writeWSLAuthAtomic #%d: %v", i, err)
+		}
+		mu.Unlock()
+		got, err := os.ReadFile(filepath.Join(uncDir, "auth.json"))
+		if err != nil || string(got) != string(payload) {
+			t.Fatalf("after write #%d auth.json = %q err=%v, want the writer's complete payload", i, got, err)
+		}
 	}
-	for in, want := range cases {
-		if got := WSLDrvFSMountPath(in); got != want {
-			t.Errorf("WSLDrvFSMountPath(%q) = %q, want %q", in, got, want)
+	entries, err := os.ReadDir(uncDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".amagi-auth") {
+			t.Fatalf("staging leftover: %s", e.Name())
 		}
 	}
 }
