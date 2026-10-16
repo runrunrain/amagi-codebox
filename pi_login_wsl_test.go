@@ -96,8 +96,20 @@ func TestPiLoginPlannerWSLGateLifted(t *testing.T) {
 			if spec.Distro != "" {
 				t.Fatalf("supply distro must stay empty for Apply-time resolution (BuildPlan purity): %q", spec.Distro)
 			}
-			if len(spec.Units) != 1 || spec.Units[0] != string(wslsupply.UnitPiA2Auth) {
-				t.Fatalf("supply units = %v, want [pi/a2-auth]", spec.Units)
+			// P3-S1：登录供给计划携带 A2 + 托管 models.json；P3-S2：三个键级配置
+			// 投影（settings/amagi/mcp）同批随登录启动补漏（执行器按协调器能力
+			// 过滤，裸协调器自动降级 A2-only）。
+			want := []string{
+				string(wslsupply.UnitPiA2Auth), string(wslsupply.UnitPiManagedModels),
+				string(wslsupply.UnitPiSettings), string(wslsupply.UnitPiAmagi), string(wslsupply.UnitPiMCP),
+			}
+			if len(spec.Units) != len(want) {
+				t.Fatalf("supply units = %v, want %v", spec.Units, want)
+			}
+			for i, u := range want {
+				if spec.Units[i] != u {
+					t.Fatalf("supply units = %v, want %v", spec.Units, want)
+				}
 			}
 		}
 		if eff.Kind == launchplan.EffectPTYStart {
@@ -304,6 +316,32 @@ func TestWSLLoginSupplyFailureMatrixBothLinks(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWSLSupplyEffectFiltersUnitsByCapability（P3-S1）：remote effect 的单元
+// 清单按协调器能力过滤——裸协调器（未注册 S1 托管面适配器）收到
+// [pi/a2-auth, pi/managed-models] 时自动降级为 A2-only，不报 unknown unit；
+// A2 判定语义不变。
+func TestWSLSupplyEffectFiltersUnitsByCapability(t *testing.T) {
+	calls := &[]string{}
+	coord := newFakeSupplyCoordinator(t, stubA2Adapter{calls: calls, outcome: launcher.SyncWSLPiLoginAuthFresh})
+	exec := newAppLaunchExecutor(launchExecutorDeps{wslSupply: coord})
+	plan := &launchplan.Plan{Recipe: launchplan.StableRecipe{CLIType: contract.CLITypePi, Workdir: "C:\\w"},
+		Effects: []launchplan.EffectSpec{{Kind: launchplan.EffectWSLConfigSupply,
+			WSLSupply: &launchplan.WSLConfigSupplySpec{Distro: "Ubuntu", CLI: string(wslsupply.CLIPi), Reason: string(wslsupply.ReasonLaunch),
+				Units: []string{string(wslsupply.UnitPiA2Auth), string(wslsupply.UnitPiManagedModels)}}}}}
+	prepared, err := exec.Prepare(context.Background(), plan, launchplan.ExecutionBinding{SessionID: "wsl-supply-filter", RunEpoch: 1})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	effect := prepared.Effect(0)
+	effect.ArmOwnership()
+	if _, applyErr := effect.Apply(context.Background()); applyErr != nil {
+		t.Fatalf("apply with unregistered unit must degrade (not fail): %v", applyErr)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("a2 adapter consulted %d times, want 1", len(*calls))
 	}
 }
 

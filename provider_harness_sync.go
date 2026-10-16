@@ -8,6 +8,7 @@ import (
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/launcher"
+	"amagi-codebox/internal/wslsupply"
 )
 
 // syncProvidersToHarnesses reconciles the CodeBox-owned provider namespace in
@@ -22,7 +23,7 @@ func (a *App) syncProvidersToHarnesses() error {
 	a.providerSyncMu.Unlock()
 	// P3-S0：providerSync 保存事件后向 WSL 供给状态发布来源 revision（只标
 	// 脏不调度，锁外执行；宿主保存结果与 WSL 同步结果是两个结果）。
-	a.markWSLSupplyDirty("providers")
+	a.markWSLSupplyDirty(wslsupply.DirtySourceProviders)
 	return err
 }
 

@@ -97,7 +97,7 @@ func (a *PiManagedModelsAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *St
 }
 
 // Candidate 读取既有 distro models.json 并生成托管候选（损坏拒绝不覆盖）。
-func (a *PiManagedModelsAdapter) Candidate(_ context.Context, target TargetRef) (ProjectionCandidate, error) {
+func (a *PiManagedModelsAdapter) Candidate(_ context.Context, target TargetRef, _ *StateEntry) (ProjectionCandidate, error) {
 	spec := a.desired()
 	existing, err := os.ReadFile(filepath.Join(target.UNCRoot, filepath.FromSlash(PiManagedModelsFile)))
 	if err != nil {

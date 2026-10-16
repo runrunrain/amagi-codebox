@@ -112,7 +112,7 @@ func (a *VisionExportAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *State
 
 // Candidate 逐字发布宿主导出字节（schema 不扩充）；SourceHash 是规范化
 // （updated_at 剥离）业务内容 hash。
-func (a *VisionExportAdapter) Candidate(_ context.Context, _ TargetRef) (ProjectionCandidate, error) {
+func (a *VisionExportAdapter) Candidate(_ context.Context, _ TargetRef, _ *StateEntry) (ProjectionCandidate, error) {
 	src, err := a.visionBytes()
 	if err != nil {
 		return ProjectionCandidate{}, err
@@ -196,7 +196,7 @@ func (a *ModalityKBAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *StateEn
 // Candidate 做 schema 校验后的补缺合并：distro 已存在的同 ID 记录保留（结论
 // 不同 → 冲突报告，不反写宿主）；仅补齐缺失 ID。损坏的 distro 文件 → 拒绝
 // 不覆盖（ErrTargetCorrupt）。
-func (a *ModalityKBAdapter) Candidate(_ context.Context, target TargetRef) (ProjectionCandidate, error) {
+func (a *ModalityKBAdapter) Candidate(_ context.Context, target TargetRef, _ *StateEntry) (ProjectionCandidate, error) {
 	src, err := a.modalityBytes()
 	if err != nil {
 		return ProjectionCandidate{}, err

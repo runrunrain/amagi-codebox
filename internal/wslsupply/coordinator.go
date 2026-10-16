@@ -232,7 +232,7 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 			})
 		default:
 			adapter := c.projections[unit]
-			entry, _ := state.entry(unit)
+			entry := state.entryFor(unit, req.Target.Generation)
 			// 同意门：需要 per-target 明确同意的单元（视觉清单密钥跨界）在未授权前
 			// 恒为阻断待确认，不进入适配器归属判定（design §四）。
 			if adapter.RequiresConsent() && !entry.Consented {
@@ -345,6 +345,9 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 const (
 	DirtySourceProviders      = "providers"
 	DirtySourcePiLoginPresets = "pi-login-presets"
+	// DirtySourcePiConfig（S2）：PiConfig 面板保存（amagi.json / models.json
+	// 手工编辑影响引用诊断宇宙）后发布；滋养三个键级投影单元。
+	DirtySourcePiConfig = "pi-config"
 )
 
 // dirtySourceUnits 把保存事件的来源映射到其滋养的单元集（F2：推送/启动补漏
@@ -355,6 +358,7 @@ const (
 var dirtySourceUnits = map[string][]UnitID{
 	DirtySourceProviders:      {UnitPiManagedModels, UnitSharedVisionExport, UnitSharedModalityKB},
 	DirtySourcePiLoginPresets: {UnitPiManagedModels},
+	DirtySourcePiConfig:       {UnitPiSettings, UnitPiAmagi, UnitPiMCP},
 }
 
 // clearSatisfiedDirtySources 在一次 Apply 完成后推进/清除待同步来源（F2：
@@ -432,9 +436,21 @@ func (c *Coordinator) clearSatisfiedDirtySources(result RunResult) {
 
 // applyProjection 执行一个投影单元：先复核当前目标仍等于计划预期值（CAS
 // 前置），再经提交原语写入并登记。候选正文只在本次调用内存中存在。
+// 键级适配器（S2）在候选中携带完整键级基准（Subs）与部分写入标记
+// （Outcome=partial）；全部键保持现状时候选返回 errKeyedNoWrite，按「受阻
+// 冻结」登记而不是写失败。
 func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, planned PlannedUnit, adapter ProjectionAdapter) UnitResult {
-	cand, err := adapter.Candidate(ctx, target)
+	st := c.state.load()
+	entry := st.entryFor(planned.Unit, target.Generation)
+	cand, err := adapter.Candidate(ctx, target, &entry)
 	if err != nil {
+		var noWrite errKeyedNoWrite
+		if errors.As(err, &noWrite) {
+			// 无可写键：保持现状（冻结/未托管/转换受阻），不产生写入。
+			c.recordProjectionFreeze(target, planned.Unit, adapter.Policy(), noWrite.reason)
+			return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
+				Detail: noWrite.reason + "; " + strings.Join(noWrite.notes, "; "), Err: err}
+		}
 		detail := "candidate-unavailable"
 		if errors.Is(err, ErrTargetCorrupt) {
 			// 两级损坏保护：目标存在但严格解析/嵌套形态校验失败 → 不覆盖，
@@ -470,8 +486,11 @@ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, pla
 			Detail: "write-failed", Err: err}
 	}
 	undo.unit = planned.Unit
-	c.recordProjectionState(target, planned.Unit, planned.Policy, cand.SourceHash, hexHash(cand.Content), cand.TransformVersion)
-	detail := "written"
+	c.recordProjectionState(target, planned.Unit, adapter.Policy(), cand.SourceHash, hexHash(cand.Content), cand.TransformVersion, cand.Subs, cand.Outcome)
+	detail := cand.Outcome
+	if detail == "" {
+		detail = "written"
+	}
 	if len(cand.Notes) > 0 {
 		// 部分构建失败/冲突保留等逐项诊断（不含密钥正文）：并入结果明细与日志。
 		detail += "; " + strings.Join(cand.Notes, "; ")
@@ -504,15 +523,25 @@ func (c *Coordinator) recordA2State(target TargetRef, res UnitResult, outcome la
 
 // recordProjectionState 更新投影单元登记（普通/托管单元允许记录 hash，仅私有
 // 落盘，不经状态 API 返回）。SourceHash 是规范化业务内容基准（不含时间戳），
-// LastWrittenHash 是实际落盘字节 hash；Consented 等跨写入字段保留不丢失。
-func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string) {
+// LastWrittenHash 是实际落盘字节 hash；键级基准（Subs）与部分写入标记
+// （Outcome）随写入更新；Consented 等跨写入字段保留不丢失。
+func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string, subs map[string]SubHash, outcome string) {
+	if outcome == "" {
+		outcome = "written"
+	}
 	err := c.state.mutate(func(st *StateFile) {
 		prev, _ := st.entry(unit)
+		next := subs
+		if next == nil && len(prev.Subs) > 0 {
+			// 非键级适配器（Candidate 未携带 Subs 面，nil）不因本调用清空既有键级
+			// 基准；键级适配器显式传空 map 是合法终态（全部键被移除）。
+			next = prev.Subs
+		}
 		st.upsertEntry(StateEntry{
 			Unit: unit, Policy: policy, Generation: target.Generation,
 			SourceHash: sourceHash, LastWrittenHash: writtenHash, TransformVersion: transformVersion,
-			LastSuccess: time.Now(), LastOutcome: "written",
-			Consented: prev.Consented,
+			LastSuccess: time.Now(), LastOutcome: outcome,
+			Subs: next, Consented: prev.Consented,
 		}, target.Generation)
 		st.Distro = target.Distro
 	})
@@ -529,6 +558,8 @@ func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit Unit
 		st.upsertEntry(StateEntry{
 			Unit: unit, Policy: policy, Generation: target.Generation,
 			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+			// F-1 同类（S2 diting）：登记重建不丢键级基准/同意/停跟随标记。
+			Subs: prev.Subs, Detached: prev.Detached, Consented: prev.Consented,
 			LastOutcome: "awaiting-consent",
 		}, target.Generation)
 		st.Distro = target.Distro
@@ -538,8 +569,10 @@ func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit Unit
 	}
 }
 
-// recordProjectionFreeze 把冻结态写入登记（保留既有 hash/同意标记，仅置 Frozen
-// 与原因）；后续成功写入时由 recordProjectionState 的全新条目清除冻结。
+// recordProjectionFreeze 把冻结态写入登记（保留既有 hash/同意标记/键级基准/
+// 停跟随标记，仅置 Frozen 与原因）；后续成功写入时由 recordProjectionState 的
+// 全新条目清除冻结。F-1（S2 diting）：Subs 必须保留——键级单元的部分键冻结
+// 不得摧毁其余健康键的登记（否则下轮全部沦为 unmanaged-existing，永久停跟随）。
 func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, policy Policy, reason string) {
 	err := c.state.mutate(func(st *StateFile) {
 		prev, _ := st.entry(unit)
@@ -547,6 +580,7 @@ func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, poli
 			Unit: unit, Policy: policy, Generation: target.Generation,
 			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
 			TransformVersion: prev.TransformVersion, Consented: prev.Consented,
+			Subs: prev.Subs, Detached: prev.Detached,
 			LastOutcome: "frozen", Frozen: true, FrozenReason: reason,
 		}, target.Generation)
 		st.Distro = target.Distro
@@ -654,6 +688,7 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 			LastSuccess: entry.LastSuccess, LastErrorCode: entry.LastErrorCode,
 			TransformVersion: entry.TransformVersion, Frozen: entry.Frozen,
 			FrozenReason: entry.FrozenReason, Consented: entry.Consented,
+			Detached: entry.Detached,
 		})
 	}
 	return status
@@ -662,6 +697,197 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 // HasUnit 报告单元是否已在协调器注册（A2 恒 true）。启动链据此按能力适配
 // 单元清单（裸协调器缺 S1 适配器时自动降级为 A2-only，不报 unknown unit）。
 func (c *Coordinator) HasUnit(unit UnitID) bool { return c.knownUnit(unit) }
+
+// ---------------------------------------------------------------------------
+// S2 操作面：预览 / 保留本地（停跟随）/ 预览后接管（design §三解除冻结两
+// 操作 + §四动作分离：没有强制覆盖全部）
+// ---------------------------------------------------------------------------
+
+// UnitPreview 是预览面上单个单元的脱敏描述（不含内容差异与密钥；TargetHash
+// 是 CAS 令牌，仅供「确认接管」回传，不属展示内容）。
+type UnitPreview struct {
+	Unit          UnitID
+	RelPath       string
+	Policy        Policy
+	Action        Action
+	BlockedReason string
+	Freeze        bool
+	TargetHash    string
+	Keys          []KeyPreview
+	Notes         []string
+}
+
+// PreviewUnits 做一次「检查 + 预览」：解析目标 → Inspect（只读探测，可唤醒
+// 当前目标）→ Plan（纯计算），不执行任何写入。键级适配器附带逐键动作与
+// 依赖诊断（design §四：amagi 引用缺 provider/server 的明确诊断）。
+func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, units []UnitID) ([]UnitPreview, error) {
+	if len(units) == 0 {
+		return nil, errors.New("preview requires at least one unit")
+	}
+	for _, unit := range units {
+		if !c.knownUnit(unit) {
+			return nil, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
+		}
+	}
+	target, err := c.ResolveTarget(ctx, distro, cli)
+	if err != nil {
+		return nil, fmt.Errorf("resolve wsl supply target: %w", err)
+	}
+	snap, err := c.Inspect(ctx, target)
+	if err != nil {
+		return nil, fmt.Errorf("inspect wsl supply target: %w", err)
+	}
+	state := c.state.load()
+	out := make([]UnitPreview, 0, len(units))
+	for _, unit := range units {
+		entry := state.entryFor(unit, target.Generation)
+		prev := UnitPreview{Unit: unit, Action: ActionNone}
+		if unit == UnitPiA2Auth {
+			prev.BlockedReason = "not-previewable"
+			out = append(out, prev)
+			continue
+		}
+		adapter, ok := c.projections[unit]
+		if !ok {
+			prev.BlockedReason = "unit-adapter-missing"
+			out = append(out, prev)
+			continue
+		}
+		prev.RelPath = firstFileOrDefault(adapter)
+		prev.Policy = adapter.Policy()
+		if meta, ok := snap.File(prev.RelPath); ok && meta.Exists {
+			prev.TargetHash = meta.Hash
+		}
+		if entry.Detached {
+			// 已停跟随：预览仍给出目标 hash 令牌（接管需要它）。
+			prev.BlockedReason = "detached"
+			out = append(out, prev)
+			continue
+		}
+		planned, pErr := adapter.Plan(SupplyRequest{Target: target, Reason: ReasonManual, SelectedUnits: []UnitID{unit}}, snap, &entry)
+		if pErr != nil {
+			prev.Action = ActionBlocked
+			prev.BlockedReason = pErr.Error()
+			out = append(out, prev)
+			continue
+		}
+		prev.Action = planned.Action
+		prev.BlockedReason = planned.BlockedReason
+		prev.Freeze = planned.Freeze
+		prev.RelPath = planned.RelPath
+		prev.Policy = adapter.Policy()
+		if meta, ok := snap.File(planned.RelPath); ok && meta.Exists {
+			prev.TargetHash = meta.Hash
+		}
+		if keyed, ok := adapter.(KeyedAdapter); ok {
+			keys, blocked := keyed.PreviewKeys(snap, &entry)
+			prev.Keys = keys
+			if blocked != "" && blocked != "detached" {
+				prev.Notes = append(prev.Notes, "单元整体不可分析："+blocked)
+			}
+		}
+		out = append(out, prev)
+	}
+	return out, nil
+}
+
+// DropUnitRegistration 执行「保留本地（停跟随）」：目标内容不动，登记
+// Detached 标记，后续供给零动作；显式接管可解除。不要求 distro 可达（停机
+// 目标上也可停跟随）。
+func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) error {
+	adapter, ok := c.projections[unit]
+	if !ok {
+		return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
+	}
+	return c.state.mutate(func(st *StateFile) {
+		prev, _ := st.entry(unit)
+		next := StateEntry{
+			Unit: unit, Policy: adapter.Policy(), Generation: prev.Generation,
+			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+			TransformVersion: prev.TransformVersion,
+			Subs:             prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+			LastSuccess: time.Now(),
+		}
+		st.upsertEntry(next, prev.Generation)
+	})
+}
+
+// TakeOverUnit 执行「预览后确认接管」：以预览时目标 hash 做 CAS（旧预览不
+// 覆盖新编辑——目标已变则拒绝并要求重新检查），随后用当前来源生成接管候选
+// 并提交，重建键级基准。仅键级适配器支持。
+func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI, unit UnitID, expectedTargetHash string) (UnitResult, error) {
+	adapter, ok := c.projections[unit]
+	if !ok {
+		return UnitResult{}, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
+	}
+	keyed, ok := adapter.(KeyedAdapter)
+	if !ok {
+		return UnitResult{}, fmt.Errorf("wsl supply unit %q does not support takeover", string(unit))
+	}
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
+	target, err := c.ResolveTarget(ctx, distro, cli)
+	if err != nil {
+		return UnitResult{}, fmt.Errorf("resolve wsl supply target: %w", err)
+	}
+	// 锁内重读登记；代际不匹配视为无登记（entryFor）。
+	st := c.state.load()
+	entry := st.entryFor(unit, target.Generation)
+	// F-3（S2 diting）：接管是显式写入动作，不得绕过 per-target 同意门——
+	// 未同意的单元先用「启用投影」授权（与首启同一门）。
+	if adapter.RequiresConsent() && !entry.Consented {
+		return UnitResult{Unit: unit, Policy: adapter.Policy(), Outcome: UnitBlocked,
+			Detail: "awaiting-consent",
+			Err:    errors.New("unit is not consented for this target; enable the projection first")}, nil
+	}
+	planned := PlannedUnit{Unit: unit, Policy: adapter.Policy(), RelPath: firstFileOrDefault(adapter)}
+	current, readErr := os.ReadFile(filepath.Join(target.UNCRoot, filepath.FromSlash(planned.RelPath)))
+	switch {
+	case readErr == nil:
+		if hexHash(current) != expectedTargetHash {
+			return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitBlocked,
+				Detail: "preview-expired",
+				Err:    errors.New("target file changed since preview; re-check before takeover")}, nil
+		}
+	case errors.Is(readErr, os.ErrNotExist):
+		if expectedTargetHash != "" {
+			return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitBlocked,
+				Detail: "preview-expired",
+				Err:    errors.New("target file disappeared since preview; re-check before takeover")}, nil
+		}
+	default:
+		return UnitResult{}, fmt.Errorf("read wsl supply target: %w", readErr)
+	}
+	cand, err := keyed.AdoptCandidate(ctx, target, &entry)
+	if err != nil {
+		detail := "adopt-unavailable"
+		if errors.Is(err, ErrTargetCorrupt) {
+			detail = "target-corrupt"
+		}
+		return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitFailed, Detail: detail, Err: err}, nil
+	}
+	undo, err := c.submitFile(target, planned.RelPath, cand.Content, adapter.Sensitive())
+	if err != nil {
+		return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitFailed, Detail: "write-failed", Err: err}, nil
+	}
+	undo.unit = unit
+	c.recordProjectionState(target, unit, adapter.Policy(), cand.SourceHash, hexHash(cand.Content), cand.TransformVersion, cand.Subs, cand.Outcome)
+	detail := "takeover-written"
+	if len(cand.Notes) > 0 {
+		detail += "; " + strings.Join(cand.Notes, "; ")
+	}
+	return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: detail, Undo: undo}, nil
+}
+
+// firstFileOrDefault 返回适配器首个目标文件（接管路径叼接用；键级适配器单文件）。
+func firstFileOrDefault(adapter ProjectionAdapter) string {
+	files := adapter.Files()
+	if len(files) > 0 {
+		return files[0]
+	}
+	return ""
+}
 
 // GrantUnitConsent 为目标登记一个 per-target 明确同意（S1：视觉清单密钥跨界
 // 共享，design §四）。同意按目标 generation 记录：distro 重装/换用户后旧授权

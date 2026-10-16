@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.110] - 2026-10-16
+
+### Added
+
+- **WSL 配置供给体系 S2：Pi 配置与 MCP 导入 + remote 计划接入（P3 第三批，设计 §三/§四/§五）**：①Pi 配置键级 TrackedProjection 三单元（settings 白名单字段/amagi.json 键集/mcp.json server 级）——冲突判定按设计冲突表逐键执行（无记录+存在=unmanaged 保留、目标=上次写入 hash 才跟随、WSL 手改即冻结、双侧同变保留 WSL、来源删除仅托管未手改才删），冻结/停跟随/预览后接管三操作面；**三单元 per-target 同意门**（首启前需明确同意，未同意只读不写，状态页「启用投影」入口，登录静默不阻断）。②形态转换器全表（纯函数，不执行命令）：npx.cmd/npm.cmd 仅目标验证过原生命令才映射、未知位置 shim/ps1/exe/未知 shell 标需手动适配不造假、args 盘符路径先匹配已部署资产否则 wslpath 验证、env 仅声明为路径的键转换、URL scheme 词首锚定不误判（https:// 等 API endpoint 放行）、%VAR%+分隔符形态点名拒绝、HTTP/远程保留 URL。③状态页逐单元详情（相对路径/归属/冻结原因/失败阶段/可执行动作，敏感项只显文件名与方向）+五动作（检查/预览/应用安全更新/保留本地/确认接管，无强制覆盖）。④remote pi API-provider 与 OpenCode WSL 计划接入 EffectWSLConfigSupply（层内容经 SecretBuffer、OPENCODE_CONFIG 晚绑定重锚、双链路同目标逐字节一致）。
+
+（diting full 审 FIX→修复轮 5/5：F-1 冻结登记丢 Subs（跨周期测试钉住）；F-2 URL 误判盘符；F-3 同意门 Leader 裁定落地+代际缺口顺带修复；F-4 注释如实化；F-5 %VAR% 漏检）
+
 ## [1.3.109] - 2026-10-16
 
 ### Added

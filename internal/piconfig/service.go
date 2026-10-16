@@ -118,6 +118,83 @@ func (s *Service) GetAmagiConfigPath() (string, error) {
 	return amagiConfigPath(), nil
 }
 
+// ---------------------------------------------------------------------------
+// 显式目标窄接口（P3-S2，design §七）：原无 target 方法保持 Windows 默认语义；
+// 以下方法接受显式 agent 目录，不做任何进程级 PI_CODING_AGENT_DIR 变更。
+// WSL 私有文件的写入不走本接口（writePrivateFile 的 rename 失败直接覆盖回退
+// 不能作为跨界 writer 复用）——必须经 wslsupply 协调器的安全提交原语。
+// ---------------------------------------------------------------------------
+
+// ReadAgentFileAt 原样读取显式目录下的一个 agent 文件（缺失返回 nil, nil）。
+// 任意本地/UNC 路径可读（供投影源与预览使用）；不解析、不改写。
+func (s *Service) ReadAgentFileAt(agentDir, name string) ([]byte, error) {
+	if strings.TrimSpace(agentDir) == "" {
+		return nil, errors.New("agent dir is required")
+	}
+	data, err := os.ReadFile(filepath.Join(agentDir, name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
+// GetAmagiConfigAt 读取显式目录的 amagi.json（缺失返回默认骨架；非法 JSON
+// 原样返回，供源码模式修复）。与 GetAmagiConfig 同语义，仅目标显式。
+func (s *Service) GetAmagiConfigAt(agentDir string) (string, error) {
+	data, err := s.ReadAgentFileAt(agentDir, "amagi.json")
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return defaultAmagiConfig, nil
+	}
+	if !json.Valid(data) {
+		return string(data), nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
+		return string(data), nil
+	}
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("format amagi config: %w", err)
+	}
+	return string(formatted) + "\n", nil
+}
+
+// SaveAmagiConfigAt 校验并保存 amagi.json 到显式目录（本地文件系统目标；
+// WSL UNC 目标拒绝——跨界私有文件写入必须经 wslsupply 安全提交原语）。
+func (s *Service) SaveAmagiConfigAt(agentDir, content string) error {
+	if err := ValidateAmagiConfig(content); err != nil {
+		return err
+	}
+	if isUNCPath(agentDir) {
+		return errors.New("refusing to write amagi.json into a WSL UNC target; use the config supply coordinator")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil {
+		return err
+	}
+	formatted, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format JSON: %w", err)
+	}
+	formatted = append(formatted, '\n')
+	path := filepath.Join(agentDir, "amagi.json")
+	if err := ensureDir(path); err != nil {
+		return err
+	}
+	return writePrivateFile(path, formatted)
+}
+
+// isUNCPath 报告路径是否为 UNC 形态（\\wsl$… / \\wsl.localhost… 等网络根）。
+func isUNCPath(p string) bool {
+	return strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, `//`)
+}
+
 // writePrivateFile 临时文件 + rename 原子写入，权限 0600；
 // rename 失败（如 Windows 文件被占用）时回退直接覆盖。
 func writePrivateFile(path string, data []byte) error {

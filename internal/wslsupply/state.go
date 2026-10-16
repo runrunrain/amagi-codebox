@@ -31,6 +31,13 @@ type StateEntry struct {
 	SourceHash       string `json:"sourceHash,omitempty"`
 	LastWrittenHash  string `json:"lastWrittenHash,omitempty"`
 	TransformVersion string `json:"transformVersion,omitempty"`
+	// Subs 是键级基准（S2 键级 TrackedProjection：settings 字段 / amagi 扁平
+	// 路径 / mcp server）。文件级 SourceHash/LastWrittenHash 仍作为整体可观测
+	// 字段保留；逐键判定只读 Subs。
+	Subs map[string]SubHash `json:"subs,omitempty"`
+	// Detached：用户已选择「保留本地（停跟随）」——后续供给零动作，直到
+	// 显式接管解除（design §三解除冻结两操作之一）。
+	Detached bool `json:"detached,omitempty"`
 	// Consented：per-target 明确同意标记（design §四——视觉清单密钥跨界授权；
 	// 按 generation 生命周期存续，distro 重装后自动失效）。
 	Consented     bool      `json:"consented,omitempty"`
@@ -39,6 +46,13 @@ type StateEntry struct {
 	LastSuccess   time.Time `json:"lastSuccess,omitempty"`
 	LastErrorCode string    `json:"lastErrorCode,omitempty"`
 	LastOutcome   string    `json:"lastOutcome,omitempty"`
+}
+
+// SubHash 是单键登记基准：Source 是来源侧原始值 hash，Written 是上次实际
+// 写入目标侧的值 hash（均为规范化 JSON hash，空白/键序差异不算修改）。
+type SubHash struct {
+	Source  string `json:"source,omitempty"`
+	Written string `json:"written,omitempty"`
 }
 
 // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与
@@ -156,6 +170,18 @@ func (s *StateFile) entry(unit UnitID) (StateEntry, bool) {
 		}
 	}
 	return StateEntry{}, false
+}
+
+// entryFor 返回单元登记，但目标代际不匹配（双方非空且不同）时视为无登记：
+// 目标身份变化（distro 重装/换默认用户）时旧登记整体失效，不自动迁移授权与
+// 键级基准（design §七「generation 变化时旧登记失效」；F-3/S2 diting：未
+// 重新同意前旧 Consented 不得放行写入门）。
+func (s *StateFile) entryFor(unit UnitID, generation string) StateEntry {
+	entry, ok := s.entry(unit)
+	if !ok || entry.Generation == "" || generation == "" || entry.Generation == generation {
+		return entry
+	}
+	return StateEntry{}
 }
 
 // upsertEntry 以目标 generation 为界更新单元登记；generation 变化（非 unknown→

@@ -31,6 +31,7 @@ import (
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
+	"amagi-codebox/internal/wslsupply"
 )
 
 // launchConfigPort is the narrow read-only interface over config.ConfigService
@@ -377,14 +378,34 @@ resolve:
 	// Update recipe provider ref for stable identification.
 	recipe.ProviderRef = sessionProvider
 
-	effects := []launchplan.EffectSpec{{
+	var effects []launchplan.EffectSpec
+	var secrets *launchplan.EphemeralSecretBundle
+	if spec.BootstrapMode == platform.BootstrapWSL && strings.TrimSpace(envOverrides["OPENCODE_CONFIG_CONTENT"]) != "" {
+		// P3-S2（remote 计划接入）：OpenCode WSL 会话需要 distro 内附加层 +
+		// OPENCODE_CONFIG（Linux 路径）；层内容含 apiKey，经计划 SecretBuffer
+		// 生命周期管理，由执行器在 Apply 阶段写入并重锄后续 PTY 的 env（与桌面
+		// prepareWSLOpenCodeLayer 同一语义：写入失败 → 启动失败）。
+		secrets = launchplan.NewEphemeralSecretBundle([]byte(envOverrides["OPENCODE_CONFIG_CONTENT"]))
+		effects = append(effects, launchplan.EffectSpec{
+			Kind: launchplan.EffectWSLConfigSupply,
+			WSLSupply: &launchplan.WSLConfigSupplySpec{
+				CLI:           "opencode",
+				Reason:        string(wslsupply.ReasonLaunch),
+				OpenCodeLayer: &launchplan.OpenCodeLayerSpec{Content: launchplan.SecretBufferRef{Index: 0}},
+			},
+		})
+	}
+	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
 		Process: &launchplan.ProcessStartSpec{
 			Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,
 		},
-	}}
+	})
 	effects = append(effects, buildBootstrapEffect(spec))
-	return p.finalizePlan(recipe, nil, effects)
+	if secrets == nil {
+		secrets = launchplan.NewEphemeralSecretBundle()
+	}
+	return p.finalizePlanWithSecrets(recipe, nil, effects, secrets)
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +752,28 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 
 	var effects []launchplan.EffectSpec
 	var secrets *launchplan.EphemeralSecretBundle
-	if hasConfigMutation {
+	wslLaunch := spec.BootstrapMode == platform.BootstrapWSL && appType == session.AppTypePi
+	if wslLaunch {
+		// P3-S2（remote 计划接入）：WSL 会话消费 distro 内 models.json，Windows
+		// 侧 ConfigMutation 不再随 remote 启动写入（Windows 文件旧由 providerSync
+		// 拥有）；选中 provider 经托管分发到达目标（与桌面 runWSLManagedModelsAtLaunch
+		// 同单元同闸门——effect 按协调器能力过滤）。选中 provider 构建失败已在
+		// 上方 BuildPlan 阶段 fail（与桌面 WSL 阻断语义一致）。
+		effects = append(effects, launchplan.EffectSpec{
+			Kind: launchplan.EffectWSLConfigSupply,
+			WSLSupply: &launchplan.WSLConfigSupplySpec{
+				CLI:    string(wslsupply.CLIPi),
+				Reason: string(wslsupply.ReasonLaunch),
+				Units: []string{
+					string(wslsupply.UnitPiManagedModels),
+					string(wslsupply.UnitPiSettings),
+					string(wslsupply.UnitPiAmagi),
+					string(wslsupply.UnitPiMCP),
+				},
+			},
+		})
+		hasConfigMutation = false
+	} else if hasConfigMutation {
 		secrets = launchplan.NewEphemeralSecretBundle(configBuf)
 		effects = append(effects, launchplan.EffectSpec{
 			Kind: launchplan.EffectConfigMutation,

@@ -14,6 +14,10 @@ export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
 
+export function ApplyWSLPiConfigSupply() {
+  return window['go']['main']['App']['ApplyWSLPiConfigSupply']();
+}
+
 export function BrowseDirectory() {
   return window['go']['main']['App']['BrowseDirectory']();
 }
@@ -32,6 +36,10 @@ export function CheckForUpdate() {
 
 export function CheckTool(arg1) {
   return window['go']['main']['App']['CheckTool'](arg1);
+}
+
+export function CheckWSLPiConfigSupply() {
+  return window['go']['main']['App']['CheckWSLPiConfigSupply']();
 }
 
 export function CleanClaudeInstall(arg1) {
@@ -76,6 +84,10 @@ export function DeleteTerminalPreset(arg1, arg2) {
 
 export function DownloadAndApplyUpdate() {
   return window['go']['main']['App']['DownloadAndApplyUpdate']();
+}
+
+export function EnableWSLPiConfigSupply() {
+  return window['go']['main']['App']['EnableWSLPiConfigSupply']();
 }
 
 export function ExportConfigToFile() {
@@ -390,6 +402,10 @@ export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
 }
 
+export function KeepWSLPiConfigUnitLocal(arg1) {
+  return window['go']['main']['App']['KeepWSLPiConfigUnitLocal'](arg1);
+}
+
 export function LaunchCodexSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchCodexSession'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -436,6 +452,10 @@ export function OpenFileInEditor(arg1, arg2) {
 
 export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
+}
+
+export function PreviewWSLPiConfigSupply() {
+  return window['go']['main']['App']['PreviewWSLPiConfigSupply']();
 }
 
 export function ProbeAllProviderQuotas() {
@@ -740,6 +760,10 @@ export function StopSession(arg1) {
 
 export function SyncAIProxyV2rayN() {
   return window['go']['main']['App']['SyncAIProxyV2rayN']();
+}
+
+export function TakeOverWSLPiConfigUnit(arg1, arg2) {
+  return window['go']['main']['App']['TakeOverWSLPiConfigUnit'](arg1, arg2);
 }
 
 export function ToggleRemoteServer(arg1) {

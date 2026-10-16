@@ -34,7 +34,7 @@ func (p *stubProjection) Sensitive() bool       { return p.sensitive }
 func (p *stubProjection) RequiresConsent() bool { return false }
 func (p *stubProjection) Files() []string       { return []string{p.rel} }
 
-func (p *stubProjection) Candidate(_ context.Context, _ TargetRef) (ProjectionCandidate, error) {
+func (p *stubProjection) Candidate(_ context.Context, _ TargetRef, _ *StateEntry) (ProjectionCandidate, error) {
 	return ProjectionCandidate{Content: p.source(), SourceHash: hexHash(p.source()), TransformVersion: "stub-v1"}, nil
 }
 

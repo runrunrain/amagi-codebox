@@ -139,7 +139,10 @@ var runWSLLoginSupplyFn = defaultRunWSLLoginSupply
 
 // defaultRunWSLLoginSupply 经协调器执行 pi 登录供给（A2 单元必需；distro
 // 交由闸门上层解析后传入）。runner 缺位时 fail closed（不得静默放行无凭据
-// 会话）。
+// 会话）。P3-S1：协调器已注册托管面适配器时一并运行 pi/managed-models（登录
+// contextWindow 补齐 + amagi-* 期望集随登录启动 lazy 兑现；裸协调器——如单
+// 测——自动降级为 A2-only）。P3-S2：三个键级配置投影（settings/amagi/mcp）
+// 同批随登录启动补漏（可选偏好面，失败仅告警）。
 func defaultRunWSLLoginSupply(ctx context.Context, runner wslsupply.Runner, distro string) (wslsupply.RunResult, error) {
 	if runner == nil {
 		return wslsupply.RunResult{Results: []wslsupply.UnitResult{{
@@ -148,7 +151,10 @@ func defaultRunWSLLoginSupply(ctx context.Context, runner wslsupply.Runner, dist
 			Err: errors.New("wsl supply coordinator unavailable"),
 		}}}, nil
 	}
-	return runner.RunUnits(ctx, distro, wslsupply.CLIPi, wslsupply.ReasonLaunch, []wslsupply.UnitID{wslsupply.UnitPiA2Auth})
+	units := wslSupplyUnitsFiltered(runner,
+		wslsupply.UnitPiA2Auth, wslsupply.UnitPiManagedModels,
+		wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
+	return runner.RunUnits(ctx, distro, wslsupply.CLIPi, wslsupply.ReasonLaunch, units)
 }
 
 // wslLoginSupplyVerdict 是一次 pi 登录供给结果的启动闸门判定（P3-S0 统一
@@ -172,8 +178,32 @@ func verdictForWSLLoginSupply(res wslsupply.RunResult, runErr error) wslLoginSup
 	if runErr != nil {
 		return failClosed(runErr)
 	}
-	if blocked := res.LaunchBlocked(); blocked != nil && blocked.A2 == nil {
-		return failClosed(blocked.Err)
+	if blocked := res.LaunchBlocked(); blocked != nil {
+		if blocked.A2 != nil {
+			// A2 结果分类交给下方 outcome 映射。
+		} else if blocked.Unit == wslsupply.UnitPiA2Auth {
+			return failClosed(blocked.Err)
+		} else if blocked.Unit == wslsupply.UnitPiManagedModels {
+			// P3-S1：托管 models.json 属可选普通托管面——失败/阻断仅告警放行
+			//（design §六「可选普通设置同步失败，旧 WSL 配置可读且安全 → 启动
+			// 继续」），A2 语义不受影响；未知单元仍 fail closed（保守）。
+			return wslLoginSupplyVerdict{warn: true,
+				message: "WSL 托管 provider 配置同步未完成，本次沿用 WSL 现有配置",
+				detail:  fmt.Sprintf("detail=%s", blocked.Detail)}
+		} else if blocked.Unit == wslsupply.UnitPiSettings || blocked.Unit == wslsupply.UnitPiAmagi || blocked.Unit == wslsupply.UnitPiMCP {
+			// P3-S2：键级配置投影同为可选偏好面（冻结/未托管/转换受阻均为
+			// 预期态）——告警放行，A2 语义不受影响。F-3（S2 diting）：未同意
+			//（awaiting-consent）是启用前的预期态，静默放行——授权入口在配置
+			// 状态页，不在每次登录刷告警。
+			if blocked.Detail == "awaiting-consent" {
+				return wslLoginSupplyVerdict{}
+			}
+			return wslLoginSupplyVerdict{warn: true,
+				message: "WSL Pi 配置投影未全部应用（保留 WSL 现状的条目见配置状态页）",
+				detail:  fmt.Sprintf("unit=%s detail=%s", blocked.Unit, blocked.Detail)}
+		} else {
+			return failClosed(blocked.Err)
+		}
 	}
 	a2 := res.A2Unit()
 	if a2 == nil || a2.A2 == nil {
@@ -334,12 +364,21 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	var effects []launchplan.EffectSpec
 	if spec.BootstrapMode == platform.BootstrapWSL {
 		spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
+		// P3-S1：登录供给一并携带 pi/managed-models（登录 contextWindow 补齐 +
+		// amagi-* 期望集；执行器按协调器能力过滤——裸协调器自动降级 A2-only）。
+		// P3-S2：三个键级配置投影同批补漏（可选偏好面，失败告警放行）。
 		effects = append(effects, launchplan.EffectSpec{
 			Kind: launchplan.EffectWSLConfigSupply,
 			WSLSupply: &launchplan.WSLConfigSupplySpec{
 				CLI:    string(wslsupply.CLIPi),
 				Reason: string(wslsupply.ReasonLaunch),
-				Units:  []string{string(wslsupply.UnitPiA2Auth)},
+				Units: []string{
+					string(wslsupply.UnitPiA2Auth),
+					string(wslsupply.UnitPiManagedModels),
+					string(wslsupply.UnitPiSettings),
+					string(wslsupply.UnitPiAmagi),
+					string(wslsupply.UnitPiMCP),
+				},
 			},
 		})
 	} else {

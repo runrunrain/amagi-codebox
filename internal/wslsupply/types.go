@@ -292,6 +292,8 @@ type UnitStatus struct {
 	// Consented 报告需要明确同意的单元（视觉清单共享）当前是否已获得
 	// per-target 授权（design §四：密钥跨界授权；非敏感单元恒 false 不展示）。
 	Consented bool
+	// Detached 报告「保留本地（停跟随）」标记（S2 动作面：零动作直到接管）。
+	Detached bool
 }
 
 // TargetStatus 是 GetStatus 的脱敏快照（design §七：读缓存不触发安装或同步；

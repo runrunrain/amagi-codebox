@@ -115,12 +115,26 @@ type BootstrapWriteSpec struct {
 // 不含候选正文与副作用；实际 Inspect/Plan/Apply 在执行器的 Apply 阶段经
 // wslsupply 协调器执行，顺序在 PTY 之前。Distro 为空表示 Apply 时解析默认
 // distro（与 PTY 构建同源），保证计划纯读零 spawn。Units 为 wslsupply 单元 id
-//（S0 生产仅 "pi/a2-auth"）。
+// （S0 生产仅 "pi/a2-auth"）。
 type WSLConfigSupplySpec struct {
 	Distro string
 	CLI    string
 	Reason string
 	Units  []string
+	// OpenCodeLayer（P3-S2）：非空时本 effect 额外在目标 distro 准备 OpenCode
+	// 附加层（MCP 形态检查 + 写入 ~/.config/opencode/amagi-codebox.json +
+	// OPENCODE_CONFIG 重锄到后续 PTY effect 的 env）。层内容含 apiKey，经计划
+	// 的 SecretBuffer 生命周期管理；Units 为层专属时可空（层即供给描述）。
+	OpenCodeLayer *OpenCodeLayerSpec
+}
+
+// OpenCodeLayerSpec 描述一次 OpenCode WSL 附加层供给（remote 与桌面同一
+// prepareWSLOpenCodeLayer 语义：写入失败 → 启动失败，不再无 provider 静默
+// 启动）。
+type OpenCodeLayerSpec struct {
+	// Content 指向计划 SecretBuffer 中的 runtime config JSON（BuildOpenCode*
+	// 产物）。
+	Content SecretBufferRef
 }
 
 type EffectSpec struct {

@@ -47,3 +47,111 @@ describe('api.wslSupply', () => {
     await expect(grantWSLVisionConsent()).rejects.toThrow('授权失败')
   })
 })
+
+// ---------------------------------------------------------------------------
+// P3-S2：Pi 配置键级投影动作面（检查/预览/应用/保留本地/接管）。
+const { checkBinding, previewBinding, applyBinding, keepBinding, takeOverBinding } = vi.hoisted(() => ({
+  checkBinding: vi.fn(),
+  previewBinding: vi.fn(),
+  applyBinding: vi.fn(),
+  keepBinding: vi.fn(),
+  takeOverBinding: vi.fn(),
+}))
+
+vi.mock('../../../wailsjs/go/main/App', () => ({
+  GetWSLConfigSupplyStatus: statusBinding,
+  GrantWSLVisionConsent: consentBinding,
+  CheckWSLPiConfigSupply: checkBinding,
+  PreviewWSLPiConfigSupply: previewBinding,
+  ApplyWSLPiConfigSupply: applyBinding,
+  KeepWSLPiConfigUnitLocal: keepBinding,
+  TakeOverWSLPiConfigUnit: takeOverBinding,
+}))
+
+import {
+  checkWSLPiConfigSupply,
+  previewWSLPiConfigSupply,
+  applyWSLPiConfigSupply,
+  keepWSLPiConfigUnitLocal,
+  takeOverWSLPiConfigUnit,
+} from '../../api/wslSupply'
+
+describe('api.wslSupply S2 动作面', () => {
+  it('checkWSLPiConfigSupply 透传检查动作（只读探测）', async () => {
+    checkBinding.mockResolvedValueOnce({ distro: 'Ubuntu', available: true, faces: [], units: [], pendingPush: false })
+    const st = await checkWSLPiConfigSupply()
+    expect(checkBinding).toHaveBeenCalledTimes(1)
+    expect(st.units).toEqual([])
+  })
+
+  it('previewWSLPiConfigSupply 透传逐键预览与接管令牌', async () => {
+    previewBinding.mockResolvedValueOnce([
+      {
+        unit: 'pi/mcp', relPath: 'mcp.json', policy: 'TrackedProjection',
+        action: 'blocked', blockedReason: 'unmanaged-existing', frozen: true,
+        targetHash: 'abc123', notes: [],
+        keys: [
+          { key: 'mcpServers/web', action: 'unmanaged-existing', reason: 'WSL 侧已有同名条目（用户自有），保留原样待确认接管' },
+        ],
+      },
+    ])
+    const rows = await previewWSLPiConfigSupply()
+    expect(rows[0].targetHash).toBe('abc123')
+    expect(rows[0].keys[0].action).toBe('unmanaged-existing')
+  })
+
+  it('apply/keepLocal/takeOver 透传单元与 CAS 令牌', async () => {
+    applyBinding.mockResolvedValueOnce([{ unit: 'pi/amagi', outcome: 'applied', detail: 'partial; ...' }])
+    keepBinding.mockResolvedValueOnce(undefined)
+    takeOverBinding.mockResolvedValueOnce(undefined)
+
+    await applyWSLPiConfigSupply()
+    await keepWSLPiConfigUnitLocal('pi/mcp')
+    await takeOverWSLPiConfigUnit('pi/mcp', 'abc123')
+
+    expect(applyBinding).toHaveBeenCalledTimes(1)
+    expect(keepBinding).toHaveBeenCalledWith('pi/mcp')
+    expect(takeOverBinding).toHaveBeenCalledWith('pi/mcp', 'abc123')
+  })
+
+  it('接管过期错误沿拒绝面透出（旧预览不覆盖新编辑）', async () => {
+    takeOverBinding.mockRejectedValueOnce(new Error('接管失败：预览已过期（WSL 侧文件已变化，旧预览不覆盖新编辑）；请重新检查后再接管'))
+    await expect(takeOverWSLPiConfigUnit('pi/mcp', 'stale')).rejects.toThrow('预览已过期')
+  })
+})
+
+// F-3（S2 diting）：启用投影（per-target 同意门）入口。
+const { enableBinding } = vi.hoisted(() => ({ enableBinding: vi.fn() }))
+
+vi.mock('../../../wailsjs/go/main/App', () => ({
+  GetWSLConfigSupplyStatus: statusBinding,
+  GrantWSLVisionConsent: consentBinding,
+  CheckWSLPiConfigSupply: checkBinding,
+  PreviewWSLPiConfigSupply: previewBinding,
+  ApplyWSLPiConfigSupply: applyBinding,
+  KeepWSLPiConfigUnitLocal: keepBinding,
+  TakeOverWSLPiConfigUnit: takeOverBinding,
+  EnableWSLPiConfigSupply: enableBinding,
+}))
+
+import { enableWSLPiConfigSupply } from '../../api/wslSupply'
+
+describe('api.wslSupply 启用投影（F-3 同意门）', () => {
+  it('enableWSLPiConfigSupply 透传三单元授权动作', async () => {
+    enableBinding.mockResolvedValueOnce(undefined)
+    await enableWSLPiConfigSupply()
+    expect(enableBinding).toHaveBeenCalledTimes(1)
+  })
+
+  it('未同意状态在 units 快照中透出（awaiting-consent）', async () => {
+    checkBinding.mockResolvedValueOnce({
+      distro: 'Ubuntu', available: true, faces: [], pendingPush: false,
+      units: [
+        { unit: 'pi/mcp', relPath: 'mcp.json', policy: 'TrackedProjection', state: 'awaiting-consent', detail: '尚未同意向 WSL 投影该配置（同意后未手改条目跟随 Windows 面板）', actions: ['consent', 'preview'] },
+      ],
+    })
+    const st = await checkWSLPiConfigSupply()
+    expect(st.units[0].state).toBe('awaiting-consent')
+    expect(st.units[0].actions).toContain('consent')
+  })
+})

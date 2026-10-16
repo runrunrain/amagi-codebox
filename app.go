@@ -684,6 +684,9 @@ func NewApp(mobileAssets embed.FS) *App {
 			webui:         appWebUILaunchPlane{app: app},
 			wslSupply:     app.WSLSupply,
 			supplyLog:     wslsupplySupplyLog{log: log},
+			openCodeLayerPrep: func(ctx context.Context, distro string, cfg map[string]any) (string, error) {
+				return app.prepareWSLOpenCodeLayer(distro, cfg)
+			},
 		})
 		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
 		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
@@ -6485,9 +6488,14 @@ func (a *App) GetAmagiConfig() (string, error) {
 	return a.PiConfig.GetAmagiConfig()
 }
 
-// SaveAmagiConfig 校验并保存 amagi.json（原子写入）。
+// SaveAmagiConfig 校验并保存 amagi.json（原子写入）。保存后向 WSL 供给发布
+// 来源变更（P3-S2：pi-config 标脏，驱动异步推送/下次启动补漏）。
 func (a *App) SaveAmagiConfig(content string) error {
-	return a.PiConfig.SaveAmagiConfig(content)
+	err := a.PiConfig.SaveAmagiConfig(content)
+	if err == nil {
+		a.markWSLSupplyDirty(wslsupply.DirtySourcePiConfig)
+	}
+	return err
 }
 
 // GetAmagiConfigPath 返回 amagi.json 的绝对路径，供前端展示。
@@ -6506,9 +6514,14 @@ func (a *App) GetPiModelsConfig() (string, error) {
 	return a.PiConfig.GetModelsConfig()
 }
 
-// SavePiModelsConfig 校验并保存 models.json（原子写入）。
+// SavePiModelsConfig 校验并保存 models.json（原子写入）。保存后向 WSL 供给
+// 发布 pi-config 来源变更（P3-S2：amagi 引用诊断的比对宇宙随之变化）。
 func (a *App) SavePiModelsConfig(content string) error {
-	return a.PiConfig.SaveModelsConfig(content)
+	err := a.PiConfig.SaveModelsConfig(content)
+	if err == nil {
+		a.markWSLSupplyDirty(wslsupply.DirtySourcePiConfig)
+	}
+	return err
 }
 
 // GetPiModelsConfigPath 返回 models.json 的绝对路径，供前端展示。

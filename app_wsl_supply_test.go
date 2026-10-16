@@ -25,6 +25,7 @@ import (
 type stubSupplyRunner struct {
 	mu      sync.Mutex
 	calls   []string // "cli:unit1,unit2"
+	dirty   []string // MarkDirty 收到的来源
 	result  wslsupply.RunResult
 	runErr  error
 	markErr error
@@ -43,7 +44,12 @@ func (s *stubSupplyRunner) RunUnits(_ context.Context, distro string, cli wslsup
 	}
 	return s.result, nil
 }
-func (s *stubSupplyRunner) MarkDirty(string, uint64) error { return nil }
+func (s *stubSupplyRunner) MarkDirty(source string, _ uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dirty = append(s.dirty, source)
+	return s.markErr
+}
 func (s *stubSupplyRunner) GetStatus(string, wslsupply.CLI) wslsupply.TargetStatus {
 	return wslsupply.TargetStatus{}
 }
@@ -54,6 +60,12 @@ func (s *stubSupplyRunner) calls_() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.calls...)
+}
+
+func (s *stubSupplyRunner) dirty_() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.dirty...)
 }
 
 // fakeSupplyCoordinatorWithUnit 构造带 S1 适配器能力的真协调器（fake 探测面）。
@@ -213,7 +225,13 @@ func TestDefaultRunWSLLoginSupplyFiltersByCapability(t *testing.T) {
 
 func TestPushWSLSupplyGuards(t *testing.T) {
 	origRunning := wslDistroRunningFn
-	t.Cleanup(func() { wslDistroRunningFn = origRunning })
+	origDefault := wslDefaultDistroFn
+	t.Cleanup(func() {
+		wslDistroRunningFn = origRunning
+		wslDefaultDistroFn = origDefault
+	})
+	// 真实探测有进程级负缓存（wsl.exe 瞬时失败即缓存空）：注入固定 distro。
+	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
 
 	t.Run("stopped distro is never pushed (no wake)", func(t *testing.T) {
 		wslDistroRunningFn = func(string) bool { return false }
@@ -269,6 +287,9 @@ func TestGrantWSLVisionConsentRequiresCapableRunner(t *testing.T) {
 }
 
 func TestGetWSLConfigSupplyStatusFaces(t *testing.T) {
+	origDefault := wslDefaultDistroFn
+	t.Cleanup(func() { wslDefaultDistroFn = origDefault })
+	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
 	app := newTestApp(t)
 	app.WSLSupply = &stubSupplyRunner{}
 	st := app.GetWSLConfigSupplyStatus()

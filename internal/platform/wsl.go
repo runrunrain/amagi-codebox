@@ -469,6 +469,13 @@ func isWSLENVReservedKey(key string) bool {
 // case-insensitively and only listed when actually present in env; reserved
 // names (WSLENV / PATH / PATHEXT) are always excluded — forwarding a Windows
 // PATH would clobber the distro's own PATH resolution.
+// AppendWSLENVForwarding 把额外需要跨界转发的键并入 env 的 WSLENV 清单
+// （仅收录通过 ShouldForwardToWSL 的键；既有 WSLENV 条目原样保留）。P3-S2：
+// remote OpenCode 层 effect 在解析器之后注入 OPENCODE_CONFIG 时复用同一语义。
+func AppendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
+	return appendWSLENVForwarding(env, extraForwardKeys...)
+}
+
 func appendWSLENVForwarding(env []string, extraForwardKeys ...string) []string {
 	names := []string{}
 	seen := map[string]struct{}{}

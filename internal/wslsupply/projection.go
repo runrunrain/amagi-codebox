@@ -41,7 +41,28 @@ type ProjectionAdapter interface {
 	// 字节数）。不写盘、不 spawn、不产出候选正文。
 	Plan(req SupplyRequest, snap *Snapshot, state *StateEntry) (PlannedUnit, error)
 	// Candidate 在 Apply 阶段生成目标候选字节与规范化来源 hash（仅内存）。
-	Candidate(ctx context.Context, target TargetRef) (ProjectionCandidate, error)
+	// state 是登记基准（键级适配器据此做逐键冲突判定；ManagedNamespace
+	// 适配器可忽略）。
+	Candidate(ctx context.Context, target TargetRef, state *StateEntry) (ProjectionCandidate, error)
+}
+
+// KeyedAdapter 是键级 TrackedProjection 适配器（S2：pi/settings、pi/amagi、
+// pi/mcp）的可选能力面：逐键预览（检查/预览动作）与预览后接管。
+type KeyedAdapter interface {
+	ProjectionAdapter
+	// PreviewKeys 返回逐键判定（脱敏：仅方向与原因）；blockedCode 非空表示
+	// 单元整体不可分析（source-corrupt / target-corrupt / detached 等）。
+	PreviewKeys(snap *Snapshot, state *StateEntry) (keys []KeyPreview, blockedCode string)
+	// AdoptCandidate 生成「确认接管」候选：托管域内键以当前来源覆写，域外
+	// 内容保留。CAS 由协调器在调用前完成。
+	AdoptCandidate(ctx context.Context, target TargetRef, state *StateEntry) (ProjectionCandidate, error)
+}
+
+// KeyPreview 是预览面上单个键的脱敏动作描述。
+type KeyPreview struct {
+	Key    string
+	Action string // add / update / remove / no-change / keep-frozen / conflict / unmanaged-existing
+	Reason string // 中文，不含内容差异与密钥
 }
 
 // ProjectionCandidate 是 Candidate 阶段的产物。SourceHash 是「规范化业务内容」
@@ -49,11 +70,16 @@ type ProjectionAdapter interface {
 // 零动作）；Content 才是实际落盘字节（可能与 SourceHash 基准不同）。Notes 是
 // 逐项诊断（部分构建失败/冲突保留等），协调器并入结果 Detail 供状态页与日志
 // 消费（不含密钥正文）。
+//
+// S2 键级适配器扩展：Subs 是合并后的完整键级基准（键级 TrackedProjection 的
+// 登记面）；Outcome 为空时按 written 登记，partial 表示存在保持现状的键。
 type ProjectionCandidate struct {
 	Content          []byte
 	SourceHash       string
 	TransformVersion string
 	Notes            []string
+	Subs             map[string]SubHash
+	Outcome          string
 }
 
 // RegisterProjection 注册一个投影单元适配器（S0 仅供测试；S1+ 由装配层注册
