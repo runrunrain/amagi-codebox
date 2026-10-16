@@ -7,9 +7,23 @@ const { statusBinding, consentBinding } = vi.hoisted(() => ({
   consentBinding: vi.fn(),
 }))
 
+// 单一 mock 工厂：全部 App 绑定集中注册（P3-S1/S2/S3 共用；多个叠加的
+// vi.mock 工厂在同模块上胜者不确定，全量跑时会让后批绑定解析失败）。
 vi.mock('../../../wailsjs/go/main/App', () => ({
   GetWSLConfigSupplyStatus: statusBinding,
   GrantWSLVisionConsent: consentBinding,
+  CheckWSLPiConfigSupply: checkBinding,
+  PreviewWSLPiConfigSupply: previewBinding,
+  ApplyWSLPiConfigSupply: applyBinding,
+  KeepWSLPiConfigUnitLocal: keepBinding,
+  TakeOverWSLPiConfigUnit: takeOverBinding,
+  EnableWSLPiConfigSupply: enableBinding,
+  GetWSLSkillsSupplyStatus: skillsStatusBinding,
+  CheckWSLSkillsSupply: skillsCheckBinding,
+  PreviewWSLSkillsSupply: skillsPreviewBinding,
+  ApplyWSLSkillsSupply: skillsApplyBinding,
+  KeepWSLSkillLocal: skillsKeepBinding,
+  TakeOverWSLSkill: skillsTakeOverBinding,
 }))
 
 import { getWSLConfigSupplyStatus, grantWSLVisionConsent } from '../../api/wslSupply'
@@ -50,22 +64,32 @@ describe('api.wslSupply', () => {
 
 // ---------------------------------------------------------------------------
 // P3-S2：Pi 配置键级投影动作面（检查/预览/应用/保留本地/接管）。
-const { checkBinding, previewBinding, applyBinding, keepBinding, takeOverBinding } = vi.hoisted(() => ({
+const {
+  checkBinding,
+  previewBinding,
+  applyBinding,
+  keepBinding,
+  takeOverBinding,
+  enableBinding,
+  skillsStatusBinding,
+  skillsCheckBinding,
+  skillsPreviewBinding,
+  skillsApplyBinding,
+  skillsKeepBinding,
+  skillsTakeOverBinding,
+} = vi.hoisted(() => ({
   checkBinding: vi.fn(),
   previewBinding: vi.fn(),
   applyBinding: vi.fn(),
   keepBinding: vi.fn(),
   takeOverBinding: vi.fn(),
-}))
-
-vi.mock('../../../wailsjs/go/main/App', () => ({
-  GetWSLConfigSupplyStatus: statusBinding,
-  GrantWSLVisionConsent: consentBinding,
-  CheckWSLPiConfigSupply: checkBinding,
-  PreviewWSLPiConfigSupply: previewBinding,
-  ApplyWSLPiConfigSupply: applyBinding,
-  KeepWSLPiConfigUnitLocal: keepBinding,
-  TakeOverWSLPiConfigUnit: takeOverBinding,
+  enableBinding: vi.fn(),
+  skillsStatusBinding: vi.fn(),
+  skillsCheckBinding: vi.fn(),
+  skillsPreviewBinding: vi.fn(),
+  skillsApplyBinding: vi.fn(),
+  skillsKeepBinding: vi.fn(),
+  skillsTakeOverBinding: vi.fn(),
 }))
 
 import {
@@ -120,19 +144,8 @@ describe('api.wslSupply S2 动作面', () => {
   })
 })
 
-// F-3（S2 diting）：启用投影（per-target 同意门）入口。
-const { enableBinding } = vi.hoisted(() => ({ enableBinding: vi.fn() }))
-
-vi.mock('../../../wailsjs/go/main/App', () => ({
-  GetWSLConfigSupplyStatus: statusBinding,
-  GrantWSLVisionConsent: consentBinding,
-  CheckWSLPiConfigSupply: checkBinding,
-  PreviewWSLPiConfigSupply: previewBinding,
-  ApplyWSLPiConfigSupply: applyBinding,
-  KeepWSLPiConfigUnitLocal: keepBinding,
-  TakeOverWSLPiConfigUnit: takeOverBinding,
-  EnableWSLPiConfigSupply: enableBinding,
-}))
+// F-3（S2 diting）：启用投影（per-target 同意门）入口（绑定已并入首部
+// 单一 mock 工厂）。
 
 import { enableWSLPiConfigSupply } from '../../api/wslSupply'
 
@@ -153,5 +166,70 @@ describe('api.wslSupply 启用投影（F-3 同意门）', () => {
     const st = await checkWSLPiConfigSupply()
     expect(st.units[0].state).toBe('awaiting-consent')
     expect(st.units[0].actions).toContain('consent')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P3-S3：共享技能面（扫描/预览/勾选导入/保留本地/接管；绑定已并入首部
+// 单一 mock 工厂）。
+
+import {
+  getWSLSkillsSupplyStatus,
+  checkWSLSkillsSupply,
+  previewWSLSkillsSupply,
+  applyWSLSkillsSupply,
+  keepWSLSkillLocal,
+  takeOverWSLSkill,
+} from '../../api/wslSupply'
+
+describe('api.wslSupply skills (P3-S3)', () => {
+  it('getWSLSkillsSupplyStatus 透传扫描进度与逐技能状态（扫描未完成不冒充）', async () => {
+    skillsStatusBinding.mockResolvedValueOnce({
+      distro: 'Ubuntu',
+      available: true,
+      scanStarted: true,
+      scanRunning: true,
+      scanScanned: 3,
+      scanTotal: 12,
+      scanIncomplete: true,
+      skills: [
+        { name: 'alpha', state: 'importable', detail: '可移植，未选择导入', selectable: true, actions: ['preview'] },
+        { name: 'win', state: 'incompatible', detail: '含 1 项不兼容内容', incompatible: ['run.ps1：Windows 专用脚本（未支持）'], selectable: false, actions: ['preview'] },
+      ],
+    })
+
+    const st = await getWSLSkillsSupplyStatus()
+
+    expect(st.scanRunning).toBe(true)
+    expect(st.scanIncomplete).toBe(true)
+    expect(st.skills[1].incompatible?.[0]).toContain('run.ps1')
+    expect(st.skills[0].selectable).toBe(true)
+  })
+
+  it('applyWSLSkillsSupply 透传勾选名单并返回逐项结果', async () => {
+    skillsApplyBinding.mockResolvedValueOnce([{ unit: 'shared/skill/alpha', outcome: 'applied', detail: 'written' }])
+    const out = await applyWSLSkillsSupply(['alpha'])
+    expect(skillsApplyBinding).toHaveBeenCalledWith(['alpha'])
+    expect(out[0].outcome).toBe('applied')
+  })
+
+  it('checkWSLSkillsSupply / previewWSLSkillsSupply 透传检查与预览动作', async () => {
+    skillsCheckBinding.mockResolvedValueOnce({ distro: 'Ubuntu', available: true, skills: [] })
+    skillsPreviewBinding.mockResolvedValueOnce([
+      { name: 'alpha', portable: true, action: 'write', targetHash: 'tok', incompatible: [], excluded: 2 },
+    ])
+    await expect(checkWSLSkillsSupply()).resolves.toMatchObject({ distro: 'Ubuntu' })
+    const rows = await previewWSLSkillsSupply()
+    expect(rows[0].portable).toBe(true)
+    expect(rows[0].excluded).toBe(2)
+  })
+
+  it('keepWSLSkillLocal / takeOverWSLSkill 透传停跟随与接管', async () => {
+    skillsKeepBinding.mockResolvedValueOnce(undefined)
+    skillsTakeOverBinding.mockResolvedValueOnce(undefined)
+    await keepWSLSkillLocal('alpha')
+    await takeOverWSLSkill('alpha', 'tok')
+    expect(skillsKeepBinding).toHaveBeenCalledWith('alpha')
+    expect(skillsTakeOverBinding).toHaveBeenCalledWith('alpha', 'tok')
   })
 })

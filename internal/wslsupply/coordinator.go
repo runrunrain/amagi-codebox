@@ -34,6 +34,9 @@ type Coordinator struct {
 
 	a2          A2Adapter
 	projections map[UnitID]ProjectionAdapter
+	// skills 是技能资源作用域（S3：shared/skill/<name> 动态单元；nil 表示
+	// 未注册——技能单元全部 unknown）。
+	skills *SkillsScope
 }
 
 // NewCoordinator 创建协调器。configDir 是 CodeBox 配置目录（状态清单落点）；
@@ -193,10 +196,14 @@ func (c *Coordinator) unitFiles(cli CLI) []string {
 	return out
 }
 
-// knownUnit 报告单元是否已注册（A2 或投影接缝）。unknown 单元拒绝（design §七）。
+// knownUnit 报告单元是否已注册（A2 恒 true；技能单元随 SkillsScope 注册
+// 动态可识别）。unknown 单元拒绝（design §七）。
 func (c *Coordinator) knownUnit(unit UnitID) bool {
 	if unit == UnitPiA2Auth {
 		return true
+	}
+	if _, ok := ParseSkillUnit(unit); ok {
+		return c.skills != nil
 	}
 	_, ok := c.projections[unit]
 	return ok
@@ -224,6 +231,22 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 	for _, unit := range req.SelectedUnits {
 		if !c.knownUnit(unit) {
 			return nil, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
+		}
+		if _, isSkill := ParseSkillUnit(unit); isSkill {
+			// 技能单元（S3）：per-target 同意门与 S1/S2 同构——未同意恒
+			// awaiting-consent，不进入归属判定（用户资产跨界导入是授权动作）。
+			entry := state.entryFor(unit, req.Target.Generation)
+			if !entry.Consented {
+				plan.Units = append(plan.Units, PlannedUnit{
+					Unit: unit, Policy: PolicyTrackedProjection, Action: ActionBlocked,
+					BlockedReason: "awaiting-consent",
+				})
+				continue
+			}
+			name, _ := ParseSkillUnit(unit)
+			planned := c.planSkill(req.Target, name, &entry)
+			plan.Units = append(plan.Units, planned)
+			continue
 		}
 		switch unit {
 		case UnitPiA2Auth:
@@ -299,6 +322,10 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 			result.Results = append(result.Results, unitResult)
 			c.recordA2State(current, unitResult, outcome)
 		default:
+			if isSkillUnitID(unit.Unit) {
+				result.Results = append(result.Results, c.applySkillPlanned(ctx, current, unit))
+				continue
+			}
 			adapter := c.projections[unit.Unit]
 			if adapter == nil {
 				result.Results = append(result.Results, UnitResult{
@@ -689,9 +716,21 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 			TransformVersion: entry.TransformVersion, Frozen: entry.Frozen,
 			FrozenReason: entry.FrozenReason, Consented: entry.Consented,
 			Detached: entry.Detached,
+			Stale:    c.skillUnitStale(entry),
 		})
 	}
 	return status
+}
+
+// skillUnitStale 报告技能单元登记的来源 hash 与当前扫描缓存是否不一致
+// （S3 陈旧判定：脱敏布尔，hash 不出包）。非技能单元恒 false。
+func (c *Coordinator) skillUnitStale(entry StateEntry) bool {
+	name, ok := ParseSkillUnit(entry.Unit)
+	if !ok || c.skills == nil || entry.SourceHash == "" {
+		return false
+	}
+	m := c.skills.manifest(name)
+	return m != nil && m.SourceHash != entry.SourceHash
 }
 
 // HasUnit 报告单元是否已在协调器注册（A2 恒 true）。启动链据此按能力适配
@@ -747,6 +786,10 @@ func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, 
 			out = append(out, prev)
 			continue
 		}
+		if name, isSkill := ParseSkillUnit(unit); isSkill {
+			out = append(out, c.previewSkillUnit(target, name, &entry))
+			continue
+		}
 		adapter, ok := c.projections[unit]
 		if !ok {
 			prev.BlockedReason = "unit-adapter-missing"
@@ -791,10 +834,72 @@ func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, 
 	return out, nil
 }
 
+// previewSkillUnit 构造单个技能单元的预览（脱敏：不兼容项逐条原因、排除物
+// 摘要、目标 hash 令牌仅供接管回传；不写盘不 spawn）。
+func (c *Coordinator) previewSkillUnit(target TargetRef, name string, entry *StateEntry) UnitPreview {
+	prev := UnitPreview{Unit: SkillUnitID(name), Policy: PolicyTrackedProjection, Action: ActionNone, RelPath: skillRelDir(name)}
+	if c.skills == nil {
+		prev.BlockedReason = "skills-scope-unavailable"
+		return prev
+	}
+	limits := c.skills.Limits()
+	tgt := scanTargetSkillDir(filepath.Join(target.UNCRoot, filepath.FromSlash(skillRelDir(name))), limits)
+	if !tgt.Unverifiable {
+		prev.TargetHash = tgt.TreeHash
+	}
+	if m := c.skills.manifest(name); m != nil {
+		for _, it := range m.Incompatible {
+			prev.Notes = append(prev.Notes, fmt.Sprintf("不兼容：%s：%s", it.RelPath, it.Reason))
+		}
+		if len(m.Excluded) > 0 {
+			prev.Notes = append(prev.Notes, fmt.Sprintf("将排除 %d 项（.git/node_modules/缓存/凭据/会话产物）", len(m.Excluded)))
+		}
+		if m.Incomplete {
+			prev.Notes = append(prev.Notes, "扫描未完成（"+m.IncompleteReason+"），不可供给")
+		}
+	}
+	if entry != nil && entry.Detached {
+		prev.BlockedReason = "detached"
+		return prev
+	}
+	if entry == nil || !entry.Consented {
+		// F6：预览镜像 Plan 的同意门——同一单元同一答案（未同意恒
+		// awaiting-consent，不显示「会写入」）；目标 hash 令牌与目标存在性
+		// 附注仍保留（接管流程需要它们）。
+		prev.Action = ActionBlocked
+		prev.BlockedReason = "awaiting-consent"
+		prev.Notes = append(prev.Notes, "尚未选择导入（未授权）；勾选导入授权后才会写入")
+		if tgt.Exists {
+			prev.Notes = append(prev.Notes, "目标已存在内容（授权后将判定为未托管，需预览后确认接管）")
+		}
+		return prev
+	}
+	planned := c.planSkill(target, name, entry)
+	prev.Action = planned.Action
+	prev.BlockedReason = planned.BlockedReason
+	prev.Freeze = planned.Freeze
+	return prev
+}
+
 // DropUnitRegistration 执行「保留本地（停跟随）」：目标内容不动，登记
 // Detached 标记，后续供给零动作；显式接管可解除。不要求 distro 可达（停机
 // 目标上也可停跟随）。
 func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) error {
+	if _, isSkill := ParseSkillUnit(unit); isSkill {
+		if c.skills == nil {
+			return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
+		}
+		return c.state.mutate(func(st *StateFile) {
+			prev, _ := st.entry(unit)
+			st.upsertEntry(StateEntry{
+				Unit: unit, Policy: PolicyTrackedProjection, Generation: prev.Generation,
+				SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+				TransformVersion: prev.TransformVersion,
+				Subs:             prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+				LastSuccess: time.Now(),
+			}, prev.Generation)
+		})
+	}
 	adapter, ok := c.projections[unit]
 	if !ok {
 		return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
@@ -816,6 +921,9 @@ func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) 
 // 覆盖新编辑——目标已变则拒绝并要求重新检查），随后用当前来源生成接管候选
 // 并提交，重建键级基准。仅键级适配器支持。
 func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI, unit UnitID, expectedTargetHash string) (UnitResult, error) {
+	if name, isSkill := ParseSkillUnit(unit); isSkill {
+		return c.takeOverSkill(ctx, distro, unit, name, expectedTargetHash)
+	}
 	adapter, ok := c.projections[unit]
 	if !ok {
 		return UnitResult{}, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
@@ -893,18 +1001,28 @@ func firstFileOrDefault(adapter ProjectionAdapter) string {
 // 共享，design §四）。同意按目标 generation 记录：distro 重装/换用户后旧授权
 // 不自动扩散，需重新确认。仅 RequiresConsent 单元接受本操作。
 func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli CLI, unit UnitID) error {
-	adapter, ok := c.projections[unit]
-	if !ok || !adapter.RequiresConsent() {
-		return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+	policy := Policy("")
+	if _, isSkill := ParseSkillUnit(unit); isSkill {
+		if c.skills == nil {
+			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+		}
+		policy = PolicyTrackedProjection
+	} else {
+		adapter, ok := c.projections[unit]
+		if !ok || !adapter.RequiresConsent() {
+			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+		}
+		policy = adapter.Policy()
 	}
 	target, err := c.ResolveTarget(ctx, distro, cli)
 	if err != nil {
 		return fmt.Errorf("resolve wsl supply target: %w", err)
 	}
+	grantPolicy := policy
 	return c.state.mutate(func(st *StateFile) {
 		prev, _ := st.entry(unit)
 		entry := StateEntry{
-			Unit: unit, Policy: adapter.Policy(), Generation: target.Generation,
+			Unit: unit, Policy: grantPolicy, Generation: target.Generation,
 			Consented: true, LastOutcome: "consented", LastSuccess: time.Now(),
 		}
 		// F3（S1 diting）：仅同代才保留 hash 基线；跨代（distro 重装/换默认
@@ -1044,6 +1162,9 @@ func (c *Coordinator) Compensate(ctx context.Context, handles ...*CompensationHa
 
 func (c *Coordinator) compensateOne(ctx context.Context, h *CompensationHandle) CompensationOutcome {
 	outcome := CompensationOutcome{Unit: h.unit, RelPath: h.relPath}
+	if h.isDir {
+		return c.compensateSkillDir(h)
+	}
 	if err := ctx.Err(); err != nil {
 		outcome.Disposition = CompensationUnavailable
 		outcome.Message = err.Error()

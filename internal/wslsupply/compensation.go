@@ -12,6 +12,9 @@ import (
 // CompensationHandle 是一次已提交普通文件写入的撤销能力（不透明句柄，仅
 // Coordinator.Compensate 消费）。持有前像字节（仅内存，进程退出即弃）；
 // sensitive 记录本次写入的敏感度，撤销恢复前像时沿用同一清理策略（M2）。
+// S3 技能目录提交扩展：isDir=true 时 writtenTreeHash 是写入树 hash、
+// prevFiles 是前像树（超限/不可核验未快照 → prevSnapshot=false，撤销按
+// unavailable 处置——诚实标注而非假装可恢复）。
 type CompensationHandle struct {
 	unit        UnitID
 	target      TargetRef
@@ -22,6 +25,12 @@ type CompensationHandle struct {
 	prev        []byte
 	prevExisted bool
 	sensitive   bool
+
+	// 技能目录专用（S3）。
+	isDir           bool
+	writtenTreeHash string
+	prevFiles       []skillPreimageEntry
+	prevSnapshot    bool
 }
 
 // HasUndo 报告句柄是否携带可撤销写入。

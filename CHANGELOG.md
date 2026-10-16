@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.111] - 2026-10-16
+
+### Added
+
+- **WSL 配置供给体系 S3：共享 skills 与用户资源同步（P3 第四批，设计 §四「共享 ~/.agents」）**：宿主侧有界扫描器（深度/数量/字节上限可配，超限如实「扫描未完成」）+ 静态兼容检查（越界/循环/绝对/目录链接逐项报因且整 skill 阻断；Windows junction 的 ModeDir|ModeSymlink 组合位先判链接绝不递归；.ps1/.cmd/.bat 明确「未支持」不原样复制；凭据排除名单链接同样套用）+ 技能单元 shared/skill/<name> 接入协调器（同意门复用跨代语义、TrackedProjection 六分支含手改/删除冻结与增量整目录重写）+ 目录级私有 staging 提交原语（唯一临时名→0644 写入→rename 交换→distro chmod 批量补偿→树 hash 读回校验；失败保留前像、候选总量 8MB 双闸）+ 目录级条件撤销 + 状态页第五面与五动作 UI。真机冒烟：agent-browser 真实技能供给 distro 临时验证位，wsl.exe test 逐文件核对 + SKILL.md 读回正确。
+
+（diting quick 审 FIX→修复轮 7/7：F1 junction 死分支三处前移+双形态测试；F2 恢复写前像保留；F3-F7 注释时序/排除名单一致性/总量封顶/预览镜像同意门/恢复写 chmod+树 hash）
+
 ## [1.3.110] - 2026-10-16
 
 ### Added

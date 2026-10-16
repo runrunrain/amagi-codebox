@@ -27,6 +27,8 @@ export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
 export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
 
+export function ApplyWSLSkillsSupply(arg1:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function BrowseDirectory():Promise<string>;
 
 export function CancelRemotePairingWindow(arg1:number):Promise<boolean>;
@@ -38,6 +40,8 @@ export function CheckForUpdate():Promise<updater.UpdateInfo>;
 export function CheckTool(arg1:string):Promise<envcheck.CheckStatus>;
 
 export function CheckWSLPiConfigSupply():Promise<main.WSLConfigSupplyStatus>;
+
+export function CheckWSLSkillsSupply():Promise<main.WSLSkillsSupplyStatus>;
 
 export function CleanClaudeInstall(arg1:string):Promise<envcheck.InstallResult>;
 
@@ -193,6 +197,8 @@ export function GetWSLCLIStatus():Promise<wslsetup.Status>;
 
 export function GetWSLConfigSupplyStatus():Promise<main.WSLConfigSupplyStatus>;
 
+export function GetWSLSkillsSupplyStatus():Promise<main.WSLSkillsSupplyStatus>;
+
 export function GrantWSLVisionConsent():Promise<void>;
 
 export function HeadroomGetPort():Promise<number>;
@@ -221,6 +227,8 @@ export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
 
 export function KeepWSLPiConfigUnitLocal(arg1:string):Promise<void>;
 
+export function KeepWSLSkillLocal(arg1:string):Promise<void>;
+
 export function LaunchCodexSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
 export function LaunchOmpSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
@@ -246,6 +254,8 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
 export function PreviewWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitPreview>>;
+
+export function PreviewWSLSkillsSupply():Promise<Array<main.WSLSkillPreview>>;
 
 export function ProbeAllProviderQuotas():Promise<Record<string, config.ProviderQuotaEntry>>;
 
@@ -400,6 +410,8 @@ export function StopSession(arg1:string):Promise<void>;
 export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
 
 export function TakeOverWSLPiConfigUnit(arg1:string,arg2:string):Promise<void>;
+
+export function TakeOverWSLSkill(arg1:string,arg2:string):Promise<void>;
 
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 

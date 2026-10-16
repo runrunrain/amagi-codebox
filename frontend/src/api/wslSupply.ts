@@ -95,3 +95,65 @@ import { EnableWSLPiConfigSupply } from '../../wailsjs/go/main/App';
 export function enableWSLPiConfigSupply(): Promise<void> {
   return callApi('[api.wslSupply.enableWSLPiConfigSupply]', () => EnableWSLPiConfigSupply());
 }
+
+// ---------------------------------------------------------------------------
+// P3-S3：共享技能（Windows ~/.agents/skills → WSL）——有界扫描、预览勾选
+// 导入（per-target 同意）、增量跟随与冻结保留（TrackedProjection）。
+// ---------------------------------------------------------------------------
+
+import {
+  CheckWSLSkillsSupply,
+  GetWSLSkillsSupplyStatus,
+  PreviewWSLSkillsSupply,
+  ApplyWSLSkillsSupply,
+  KeepWSLSkillLocal,
+  TakeOverWSLSkill,
+} from '../../wailsjs/go/main/App';
+
+export type WSLSkillsSupplyStatus = main.WSLSkillsSupplyStatus;
+export type WSLSkillSummary = main.WSLSkillSummary;
+export type WSLSkillPreview = main.WSLSkillPreview;
+
+/**
+ * 技能面状态：单飞启动后台扫描（分批推进），立即返回缓存快照——大目录
+ * 不阻塞 UI；扫描未完成的技能明确标记，不冒充完成。
+ */
+export function getWSLSkillsSupplyStatus(): Promise<WSLSkillsSupplyStatus> {
+  return callApi('[api.wslSupply.getWSLSkillsSupplyStatus]', () => GetWSLSkillsSupplyStatus());
+}
+
+/**
+ * 「检查」：触发一轮后台重扫并返回当前状态（不写任何目标内容）。
+ */
+export function checkWSLSkillsSupply(): Promise<WSLSkillsSupplyStatus> {
+  return callApi('[api.wslSupply.checkWSLSkillsSupply]', () => CheckWSLSkillsSupply());
+}
+
+/**
+ * 「预览」：逐技能动作/不兼容原因（逐项报告）/接管 CAS 令牌；不产生写入。
+ */
+export function previewWSLSkillsSupply(): Promise<WSLSkillPreview[]> {
+  return callApi('[api.wslSupply.previewWSLSkillsSupply]', () => PreviewWSLSkillsSupply());
+}
+
+/**
+ * 「预览勾选后导入」：对勾选的可移植技能登记 per-target 同意并供给
+ *（文件 0644/目录 0755；越界/绝对/循环链接与 Windows 专用脚本不复制）。
+ */
+export function applyWSLSkillsSupply(names: string[]): Promise<WSLConfigUnitOutcome[]> {
+  return callApi('[api.wslSupply.applyWSLSkillsSupply]', () => ApplyWSLSkillsSupply(names));
+}
+
+/**
+ * 「保留本地（停跟随）」：目标内容不动，后续供给零动作；接管可解除。
+ */
+export function keepWSLSkillLocal(name: string): Promise<void> {
+  return callApi('[api.wslSupply.keepWSLSkillLocal]', () => KeepWSLSkillLocal(name));
+}
+
+/**
+ * 「确认接管（预览后）」：目标树 hash 做 CAS；旧预览过期则拒绝。
+ */
+export function takeOverWSLSkill(name: string, expectedTargetHash: string): Promise<void> {
+  return callApi('[api.wslSupply.takeOverWSLSkill]', () => TakeOverWSLSkill(name, expectedTargetHash));
+}

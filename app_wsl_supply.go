@@ -134,6 +134,11 @@ func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator 
 	coord.RegisterProjection(wslsupply.NewModalityKBAdapter(&wslSharedFileSource{app: app}))
 	piConfigSource := &wslPiConfigSource{app: app}
 	registerPiConfigAdapters(coord, piConfigSource)
+	// P3-S3：共享技能作用域（宿主 ~/.agents/skills；扫描只在后台/显式检查时
+	// 进行，不进启动链）。
+	if root := wslSkillsHostRoot(); root != "" {
+		coord.RegisterSkills(wslsupply.NewSkillsScope(root, wslsupply.DefaultSkillsScanLimits()))
+	}
 	return coord
 }
 
@@ -404,6 +409,7 @@ func (a *App) GetWSLConfigSupplyStatus() WSLConfigSupplyStatus {
 		wslVisionFace(sharedStatus, out.PendingPush),
 		wslFaceFromUnit("modality-kb", "多模态学习层", sharedStatus, wslsupply.UnitSharedModalityKB, out.PendingPush),
 		wslOpenCodeLayerFace(distro),
+		wslSkillsFace(distro, a),
 	)
 	// P3-S2：键级配置单元逐项详情（相对路径/策略/冻结原因/可执行动作）。
 	out.Units = piConfigUnitDetails(piStatus, out.PendingPush)
@@ -483,6 +489,69 @@ func wslOpenCodeLayerFace(distro string) WSLConfigSupplyFace {
 			face.State = "failed"
 			face.Detail = "上次写入失败：" + rec.Detail
 		}
+	}
+	return face
+}
+
+// wslSkillsFace 聚合技能面卡片（配置状态区第五面：已供给/陈旧/冻结/不兼容/
+// 待同意/扫描中）。只读缓存快照，不触发扫描；「已供给」仅指静态检查通过。
+func wslSkillsFace(distro string, a *App) WSLConfigSupplyFace {
+	face := WSLConfigSupplyFace{Key: "skills", Label: "共享技能（Skills）", State: "unchecked", Detail: "尚未扫描（打开技能面板或点检查后后台扫描）"}
+	coord := a.wslSkillsCoordinator()
+	if coord == nil {
+		face.Detail = "技能供给未启用"
+		return face
+	}
+	snap := coord.SkillsSnapshot()
+	if !snap.Started {
+		return face
+	}
+	face.LastCheck = time.Now().Format(time.RFC3339)
+	if snap.Running {
+		face.State = "scanning"
+		face.Detail = fmt.Sprintf("后台扫描中（%d/%d 目录）；分批进行，不阻塞启动", snap.Progress.Scanned, snap.Progress.Total)
+		return face
+	}
+	incompatible := 0
+	for _, m := range snap.Skills {
+		if len(m.Incompatible) > 0 {
+			incompatible++
+		}
+	}
+	supplied, stale, frozen, awaiting := 0, 0, 0, 0
+	for _, u := range a.wslSupplyStatus(distro, wslsupply.CLICommon).Units {
+		if _, ok := wslsupply.ParseSkillUnit(u.Unit); !ok {
+			continue
+		}
+		switch {
+		case u.Frozen:
+			frozen++
+		case u.LastOutcome == "awaiting-consent":
+			awaiting++
+		case (u.LastOutcome == "written" || u.LastOutcome == "takeover-written") && u.Stale:
+			stale++
+		case u.LastOutcome == "written" || u.LastOutcome == "takeover-written":
+			supplied++
+		}
+	}
+	switch {
+	case incompatible > 0:
+		face.State = "incompatible"
+		face.Detail = fmt.Sprintf("已供给 %d · 不兼容 %d（详情见技能面板）", supplied, incompatible)
+	case frozen > 0:
+		face.State = "frozen"
+		face.Detail = fmt.Sprintf("已供给 %d · 冻结 %d（WSL 手改保留本地）", supplied, frozen)
+	case stale > 0:
+		face.State = "stale"
+		face.Detail = fmt.Sprintf("已供给 %d · 陈旧 %d（Windows 侧已变化）", supplied, stale)
+	case awaiting > 0:
+		face.State = "awaiting-consent"
+		face.Detail = "有待写入的已选技能"
+	case supplied > 0:
+		face.State = "synced"
+		face.Detail = fmt.Sprintf("已供给 %d 项技能（静态检查通过，不等于运行已验证）", supplied)
+	default:
+		face.Detail = "扫描完成，尚无已供给技能（在技能面板选择导入）"
 	}
 	return face
 }
@@ -1023,4 +1092,352 @@ func (a *App) EnableWSLPiConfigSupply() error {
 	a.Log.Info("wslsupply", "已同意向 WSL 投影 Pi 配置（settings/amagi/mcp；未手改条目将跟随 Windows 面板）", "distro="+distro)
 	a.scheduleWSLSupplyPush()
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// P3-S3：共享技能（Windows ~/.agents/skills → WSL ~/.agents/skills）。
+// 资源清单有界扫描（后台分批，不进会话启动等待）、预览同意导入（一次勾选
+// 全部可移植项）、清单增量跟随（TrackedProjection：WSL 手改即冻结）、静态
+// 兼容检查（越界/循环/绝对链接、Windows 专用脚本明确未支持——只查不执行）。
+// 状态诚实区分「已供给」（文本检查通过）与「运行已验证」（从未宣称——本批
+// 不执行任何脚本内容）。
+// ---------------------------------------------------------------------------
+
+// wslSkillsHostRoot 返回宿主技能根（Windows ~/.agents/skills；不可解析为空）。
+func wslSkillsHostRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".agents", "skills")
+}
+
+// wslSkillsCoordinator 是技能面消费的协调器能力切片（nil 表示未接线）。
+type wslSkillsCoordinator interface {
+	StartSkillsScan() bool
+	SkillsSnapshot() wslsupply.SkillsScanSnapshot
+	GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
+	PreviewUnits(ctx context.Context, distro string, cli wslsupply.CLI, units []wslsupply.UnitID) ([]wslsupply.UnitPreview, error)
+	DropUnitRegistration(distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
+	TakeOverUnit(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID, expectedTargetHash string) (wslsupply.UnitResult, error)
+}
+
+func (a *App) wslSkillsCoordinator() wslSkillsCoordinator {
+	if a == nil || a.WSLSupply == nil {
+		return nil
+	}
+	coord, _ := a.WSLSupply.(wslSkillsCoordinator)
+	return coord
+}
+
+// WSLSkillSummary 是状态页单技能摘要（脱敏：不兼容项只报相对路径与原因）。
+type WSLSkillSummary struct {
+	Name         string   `json:"name"`
+	State        string   `json:"state"` // importable / awaiting-consent / supplied / stale / frozen / incompatible / scan-incomplete / empty / detached / source-deleted / failed / unchecked
+	Detail       string   `json:"detail"`
+	Incompatible []string `json:"incompatible,omitempty"`
+	Excluded     int      `json:"excluded"`
+	Files        int      `json:"files"`
+	Bytes        int64    `json:"bytes"`
+	Selectable   bool     `json:"selectable"` // 预览勾选面：可导入（可移植且未入供给）
+	Actions      []string `json:"actions"`
+}
+
+// WSLSkillsSupplyStatus 是技能面聚合状态（含扫描进度；扫描未完成不冒充完成）。
+type WSLSkillsSupplyStatus struct {
+	Distro         string            `json:"distro"`
+	Available      bool              `json:"available"`
+	Reason         string            `json:"reason,omitempty"`
+	RootMissing    bool              `json:"rootMissing"`
+	ScanStarted    bool              `json:"scanStarted"`
+	ScanRunning    bool              `json:"scanRunning"`
+	ScanScanned    int               `json:"scanScanned"`
+	ScanTotal      int               `json:"scanTotal"`
+	ScanIncomplete bool              `json:"scanIncomplete"`
+	Skills         []WSLSkillSummary `json:"skills"`
+}
+
+// GetWSLSkillsSupplyStatus 返回技能面状态：单飞启动后台扫描（首次/停机后补漏），
+// 立即返回当前缓存快照（不等待扫描完成——大目录不阻塞 UI）。
+func (a *App) GetWSLSkillsSupplyStatus() WSLSkillsSupplyStatus {
+	out := WSLSkillsSupplyStatus{Skills: []WSLSkillSummary{}}
+	if a == nil {
+		return out
+	}
+	distro := wslDefaultDistroFn(nil)
+	out.Distro = distro
+	if distro == "" {
+		out.Reason = "未找到可用的 WSL 发行版"
+		return out
+	}
+	out.Available = true
+	coord := a.wslSkillsCoordinator()
+	if coord == nil {
+		out.Reason = "技能供给未启用"
+		return out
+	}
+	coord.StartSkillsScan() // 单飞；不等待（缓存快照随扫描分批可见）
+	return wslSkillsStatusFrom(coord, distro, a.wslSupplyStatus(distro, wslsupply.CLICommon))
+}
+
+// CheckWSLSkillsSupply 执行「检查」：触发一轮重扫（后台分批）并返回当前状态；
+// 扫描未完成时状态面明确显示进度，不冒充完成。不写任何目标内容。
+func (a *App) CheckWSLSkillsSupply() WSLSkillsSupplyStatus {
+	return a.GetWSLSkillsSupplyStatus()
+}
+
+func wslSkillsStatusFrom(coord wslSkillsCoordinator, distro string, shared wslsupply.TargetStatus) WSLSkillsSupplyStatus {
+	snap := coord.SkillsSnapshot()
+	out := WSLSkillsSupplyStatus{
+		Distro: distro, Available: true, RootMissing: snap.RootMissing,
+		ScanStarted: snap.Started, ScanRunning: snap.Running,
+		ScanScanned: snap.Progress.Scanned, ScanTotal: snap.Progress.Total,
+		ScanIncomplete: snap.Incomplete(), Skills: []WSLSkillSummary{},
+	}
+	units := map[string]wslsupply.UnitStatus{}
+	for _, u := range shared.Units {
+		if name, ok := wslsupply.ParseSkillUnit(u.Unit); ok {
+			units[name] = u
+		}
+	}
+	for _, m := range snap.Skills {
+		entry, hasEntry := units[m.Name]
+		out.Skills = append(out.Skills, wslSkillSummary(m, entry, hasEntry))
+	}
+	// 已供给但宿主侧已消失的登记：source-deleted（删除需确认，不自动删）。
+	seen := map[string]bool{}
+	for _, m := range snap.Skills {
+		seen[m.Name] = true
+	}
+	for name := range units {
+		if !seen[name] {
+			out.Skills = append(out.Skills, WSLSkillSummary{
+				Name: name, State: "source-deleted",
+				Detail:  "Windows 侧该技能目录已删除；目标删除需确认（不自动删除）",
+				Actions: []string{"keep-local"},
+			})
+		}
+	}
+	return out
+}
+
+// wslSkillSummary 从扫描清单与登记派生单技能摘要（hasEntry=false 表示从未
+// 入供给——可勾选导入）。
+func wslSkillSummary(m *wslsupply.SkillManifest, entry wslsupply.UnitStatus, hasEntry bool) WSLSkillSummary {
+	s := WSLSkillSummary{
+		Name: m.Name, Files: len(m.Files), Bytes: m.TotalBytes, Excluded: len(m.Excluded),
+		Actions: []string{"preview"},
+	}
+	for _, it := range m.Incompatible {
+		s.Incompatible = append(s.Incompatible, it.RelPath+"："+it.Reason)
+	}
+	switch {
+	case m.Incomplete:
+		s.State = "scan-incomplete"
+		s.Detail = "扫描未完成（" + m.IncompleteReason + "）：不冒充完成，暂不可供给"
+	case len(m.Incompatible) > 0:
+		s.State = "incompatible"
+		s.Detail = fmt.Sprintf("含 %d 项不兼容内容（越界/绝对/循环链接或 Windows 专用脚本），整目录未供给", len(m.Incompatible))
+	case len(m.Files) == 0:
+		s.State = "empty"
+		s.Detail = "空技能目录（无可移植内容）"
+	case !hasEntry:
+		s.State = "importable"
+		s.Selectable = true
+		s.Detail = "可移植，未选择导入；勾选后随预览导入（文件以 0644/目录 0755 写入）"
+	default:
+		s.State, s.Detail, s.Actions = wslSkillRegisteredState(entry)
+	}
+	return s
+}
+
+// wslSkillRegisteredState 派生已登记技能的状态面（TrackedProjection 语义）。
+func wslSkillRegisteredState(entry wslsupply.UnitStatus) (state, detail string, actions []string) {
+	actions = []string{"preview"}
+	switch {
+	case entry.Detached:
+		return "detached", "已保留 WSL 本地（停跟随）；确认接管可重新启用", []string{"preview", "takeover"}
+	case entry.Frozen:
+		return "frozen", wslFrozenReasonText(entry.FrozenReason), []string{"preview", "keep-local", "takeover"}
+	case entry.LastErrorCode != "":
+		return "failed", "上次同步失败：" + entry.LastErrorCode, []string{"preview", "apply"}
+	case entry.LastOutcome == "awaiting-consent" && !entry.Consented:
+		return "awaiting-consent", "已选择导入但尚未写入目标（重试应用安全更新）", []string{"preview", "apply"}
+	case entry.LastOutcome == "written" || entry.LastOutcome == "takeover-written":
+		if entry.Stale {
+			return "stale", "Windows 侧已变化（按清单增量，仅重写该目录）", []string{"preview", "apply"}
+		}
+		return "supplied", "已供给（静态检查通过；未执行内容——「已供给」不等于「运行已验证」）", []string{"preview", "apply"}
+	case entry.LastOutcome == "consented":
+		return "awaiting-consent", "已授权，待写入目标", []string{"preview", "apply"}
+	default:
+		return "unchecked", "尚未检查", []string{"preview"}
+	}
+}
+
+// WSLSkillPreview 是预览面上单技能的脱敏动作描述。
+type WSLSkillPreview struct {
+	Name         string   `json:"name"`
+	Portable     bool     `json:"portable"`
+	Action       string   `json:"action"`
+	Blocked      string   `json:"blockedReason,omitempty"`
+	Frozen       bool     `json:"frozen"`
+	TargetHash   string   `json:"targetHash"`
+	Incompatible []string `json:"incompatible,omitempty"`
+	Excluded     int      `json:"excluded"`
+	Notes        []string `json:"notes,omitempty"`
+}
+
+// PreviewWSLSkillsSupply 执行「预览」：扫描缓存 + 目标只读探测 + 纯判定；逐
+// 技能给出动作/冻结原因/不兼容清单与接管 CAS 令牌。不写任何内容。
+func (a *App) PreviewWSLSkillsSupply() []WSLSkillPreview {
+	out := []WSLSkillPreview{}
+	coord := a.wslSkillsCoordinator()
+	if coord == nil {
+		return out
+	}
+	distro := wslDefaultDistroFn(nil)
+	if distro == "" {
+		return out
+	}
+	snap := coord.SkillsSnapshot()
+	units := make([]wslsupply.UnitID, 0, len(snap.Skills))
+	manifests := map[string]*wslsupply.SkillManifest{}
+	for _, m := range snap.Skills {
+		units = append(units, wslsupply.SkillUnitID(m.Name))
+		manifests[m.Name] = m
+	}
+	if len(units) == 0 {
+		return out
+	}
+	previews, err := coord.PreviewUnits(context.Background(), distro, wslsupply.CLICommon, units)
+	if err != nil {
+		a.Log.Warn("wslsupply", "技能预览失败", err.Error())
+		return out
+	}
+	for _, pv := range previews {
+		name, ok := wslsupply.ParseSkillUnit(pv.Unit)
+		if !ok {
+			continue
+		}
+		row := WSLSkillPreview{
+			Name: name, Action: piPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
+			Frozen: pv.Freeze, TargetHash: pv.TargetHash,
+			Notes: append([]string(nil), pv.Notes...),
+		}
+		if m := manifests[name]; m != nil {
+			row.Portable = m.Portable()
+			row.Excluded = len(m.Excluded)
+			for _, it := range m.Incompatible {
+				row.Incompatible = append(row.Incompatible, it.RelPath+"："+it.Reason)
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// ApplyWSLSkillsSupply 执行「预览勾选后导入」：对勾选的可移植技能登记
+// per-target 同意（复用同意门与跨代语义），随后一次 RunUnits 供给（受 CAS
+// 与冻结保护）。不可移植/不存在的名字逐项拒绝并说明原因。
+func (a *App) ApplyWSLSkillsSupply(names []string) []WSLConfigUnitOutcome {
+	out := []WSLConfigUnitOutcome{}
+	if a == nil || a.WSLSupply == nil {
+		return out
+	}
+	distro := wslDefaultDistroFn(nil)
+	if distro == "" {
+		return out
+	}
+	coord := a.wslSkillsCoordinator()
+	if coord == nil {
+		return out
+	}
+	snap := coord.SkillsSnapshot()
+	manifests := map[string]*wslsupply.SkillManifest{}
+	for _, m := range snap.Skills {
+		manifests[m.Name] = m
+	}
+	var units []wslsupply.UnitID
+	for _, name := range names {
+		m := manifests[name]
+		if m == nil {
+			out = append(out, WSLConfigUnitOutcome{Unit: string(wslsupply.SkillUnitID(name)), Outcome: "blocked", Detail: "扫描缓存中不存在该技能（未扫描或已删除）"})
+			continue
+		}
+		if reason := m.NotPortableReason(); reason != "" {
+			out = append(out, WSLConfigUnitOutcome{Unit: string(wslsupply.SkillUnitID(name)), Outcome: "blocked", Detail: "该技能当前不可移植：" + reason})
+			continue
+		}
+		unit := wslsupply.SkillUnitID(name)
+		if err := coord.GrantUnitConsent(context.Background(), distro, wslsupply.CLICommon, unit); err != nil {
+			out = append(out, WSLConfigUnitOutcome{Unit: string(unit), Outcome: "failed", Detail: "授权失败：" + err.Error()})
+			continue
+		}
+		units = append(units, unit)
+	}
+	if len(units) == 0 {
+		return out
+	}
+	res, err := a.WSLSupply.RunUnits(context.Background(), distro, wslsupply.CLICommon, wslsupply.ReasonManual, units)
+	if err != nil {
+		a.Log.Warn("wslsupply", "技能导入失败", err.Error())
+		for _, u := range units {
+			out = append(out, WSLConfigUnitOutcome{Unit: string(u), Outcome: "failed", Detail: err.Error()})
+		}
+		return out
+	}
+	for _, r := range res.Results {
+		if _, isSkill := wslsupply.ParseSkillUnit(r.Unit); !isSkill {
+			continue
+		}
+		out = append(out, WSLConfigUnitOutcome{Unit: string(r.Unit), Outcome: r.Outcome.String(), Detail: r.Detail})
+	}
+	return out
+}
+
+// KeepWSLSkillLocal 执行技能的「保留本地（停跟随）」。
+func (a *App) KeepWSLSkillLocal(name string) error {
+	coord := a.wslSkillsCoordinator()
+	if coord == nil {
+		return fmt.Errorf("WSL 配置供给未启用")
+	}
+	distro := a.wslDefaultDistro()
+	if distro == "" {
+		return fmt.Errorf("未找到可用的 WSL 发行版")
+	}
+	if err := coord.DropUnitRegistration(distro, wslsupply.CLICommon, wslsupply.SkillUnitID(name)); err != nil {
+		return fmt.Errorf("停跟随失败：%v", err)
+	}
+	a.Log.Info("wslsupply", "已保留 WSL 本地技能（停跟随）", "skill="+name)
+	return nil
+}
+
+// TakeOverWSLSkill 执行技能的「确认接管（预览后）」：目标树 hash 做 CAS，
+// 旧预览过期则拒绝。
+func (a *App) TakeOverWSLSkill(name, expectedTargetHash string) error {
+	coord := a.wslSkillsCoordinator()
+	if coord == nil {
+		return fmt.Errorf("WSL 配置供给未启用")
+	}
+	distro := a.wslDefaultDistro()
+	if distro == "" {
+		return fmt.Errorf("未找到可用的 WSL 发行版")
+	}
+	res, err := coord.TakeOverUnit(context.Background(), distro, wslsupply.CLICommon, wslsupply.SkillUnitID(name), expectedTargetHash)
+	if err != nil {
+		return fmt.Errorf("接管失败：%v", err)
+	}
+	switch res.Outcome {
+	case wslsupply.UnitApplied:
+		a.Log.Info("wslsupply", "已按预览确认接管 WSL 技能", "skill="+name)
+		return nil
+	case wslsupply.UnitBlocked:
+		if res.Detail == "awaiting-consent" {
+			return fmt.Errorf("尚未选择导入该技能（未授权）；先在技能面板勾选导入再接管")
+		}
+		return fmt.Errorf("预览已过期（WSL 侧技能已变化，旧预览不覆盖新编辑）；请重新检查后再接管")
+	default:
+		return fmt.Errorf("接管失败：%s", res.Detail)
+	}
 }
