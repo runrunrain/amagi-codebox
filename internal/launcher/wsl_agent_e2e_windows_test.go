@@ -13,6 +13,7 @@ package launcher
 // ~/.pi/agent：测试内 t.Cleanup 自动备份/恢复原文件（diting m4），不依赖
 // 外部脚本。
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -135,7 +136,7 @@ func restoreWSLFileForTest(t *testing.T, distro, linuxAgentDir string, before []
 		t.Logf("cleanup restore %s: %v", uncPath, err)
 		return
 	}
-	if err := wslChmodFn(distro, "600", linuxAgentDir+"/models.json"); err != nil {
+	if err := wslChmodFn(context.Background(), distro, "600", linuxAgentDir+"/models.json"); err != nil {
 		t.Logf("cleanup chmod 600: %v", err)
 	}
 }
@@ -213,7 +214,7 @@ func restoreWSLOpenCodeFileForTest(t *testing.T, distro, linuxDir string, before
 		t.Logf("cleanup restore %s: %v", uncPath, err)
 		return
 	}
-	if err := wslChmodFn(distro, "600", linuxDir+"/"+openCodeWSLConfigFile); err != nil {
+	if err := wslChmodFn(context.Background(), distro, "600", linuxDir+"/"+openCodeWSLConfigFile); err != nil {
 		t.Logf("cleanup chmod 600: %v", err)
 	}
 }

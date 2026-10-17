@@ -9,6 +9,7 @@ package envvars
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,8 +92,20 @@ func TestSetPathAllow(t *testing.T) {
 	if err := s.SetPathAllow("UE_ROOT", true); err != nil {
 		t.Fatalf("SetPathAllow(UE_ROOT, true): %v", err)
 	}
-	if err := s.SetPathAllow("vsinstalldir", true); err != nil { // 大小写不敏感
-		t.Fatalf("SetPathAllow(vsinstalldir, true): %v", err)
+	// 键匹配跟随 keysEqual 的平台规则（Windows 大小写不敏感，其余平台大小写
+	// 敏感——不扩原生行为，只对齐断言）：Windows 上异体大小写命中同一键；
+	// 非 Windows 上异体大小写是未知键（报错），精确大小写才命中。
+	if runtime.GOOS == "windows" {
+		if err := s.SetPathAllow("vsinstalldir", true); err != nil {
+			t.Fatalf("SetPathAllow(vsinstalldir, true): %v", err)
+		}
+	} else {
+		if err := s.SetPathAllow("vsinstalldir", true); err == nil {
+			t.Fatal("non-Windows keys are case-sensitive; mismatched case must error")
+		}
+		if err := s.SetPathAllow("VSINSTALLDIR", true); err != nil {
+			t.Fatalf("SetPathAllow(VSINSTALLDIR, true) with exact case: %v", err)
+		}
 	}
 	if keys := s.PathAllowKeys(); strings.Join(keys, ",") != "UE_ROOT,VSINSTALLDIR" {
 		t.Fatalf("PathAllowKeys = %v, want config order [UE_ROOT VSINSTALLDIR]", keys)

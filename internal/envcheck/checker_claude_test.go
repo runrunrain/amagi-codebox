@@ -271,6 +271,11 @@ func TestCheckClaudeCodeDetectsNPMPackageBinaryFallback(t *testing.T) {
 	}
 
 	t.Setenv("PATH", "")
+	// Host-pollution guard: checkClaudeCode's resolver phase still runs on the
+	// real host OS, and an ambient FNM_DIR at a real fnm base would surface a
+	// host claude ahead of the fixture package-binary fallback, making the
+	// version probe hit the fake runner with an unexpected path. Pin it empty.
+	t.Setenv("FNM_DIR", "")
 	t.Setenv("APPDATA", appData)
 	t.Setenv("LOCALAPPDATA", "")
 	t.Setenv("USERPROFILE", homeDir)

@@ -31,12 +31,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"amagi-codebox/internal/platform"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ---------------------------------------------------------------------------
@@ -86,6 +88,9 @@ const (
 	PluginErrParserUnavailable     = "parser-unavailable"
 	PluginErrInvalidSource         = "invalid-source"
 	PluginErrRegistrationUnchanged = "registration-unchanged"
+	// PluginErrFilterApplyFailed：过滤清单按 Pi 原生语义写入 distro settings
+	// 失败（SA12：应用与复检是硬门槛，失败绝不报已安装）。
+	PluginErrFilterApplyFailed = "filter-apply-failed"
 )
 
 // PluginOperation 是一次 WSL 侧插件重放请求（design §七 RunPluginOperation：
@@ -98,8 +103,12 @@ type PluginOperation struct {
 	// AnchorRef 是宿主侧已解析的确切版本（npm）或 commit（git）——「同时
 	// 应用」模式的重放锚点；空串表示在 distro 内独立解析。
 	AnchorRef string
-	// Filters 是登记在案的子资源过滤清单（仅记录，不在 WSL settings 重建）。
-	Filters PluginFilters
+	// Filters 是登记在案的子资源过滤清单快照（SA12：重放时按 Pi 原生
+	// packages 语义写入 distro settings 过滤对象并复检）。PR08 三态指针：
+	// nil = 调用方未提供选择（沿用既有登记 reg.Filters——旧调用兼容）；
+	// 非 nil（含全字段 nil）= 显式完整期望快照——全 nil 表示「全部加载」
+	//（纯字符串登记形态），可把旧过滤集重置回全量，不再被解释为沿用。
+	Filters *PluginFilters
 }
 
 // PluginOpResult 是一次重放的结构化结果（脱敏：不含完整命令输出正文，只有
@@ -177,11 +186,14 @@ type WSLPluginSnapshot struct {
 
 // PluginRegistrationSummary 是状态页插件面（读缓存派生，不唤醒 distro）。
 type PluginRegistrationSummary struct {
-	Managed    int       `json:"managed"`
-	Installed  int       `json:"installed"`
-	Failed     int       `json:"failed"`
-	Frozen     int       `json:"frozen"`
-	Missing    int       `json:"missing"` // 登记 Installed=false（含启动提示缺失面）
+	Managed   int `json:"managed"`
+	Installed int `json:"installed"`
+	Failed    int `json:"failed"`
+	Frozen    int `json:"frozen"`
+	Missing   int `json:"missing"` // 登记 Installed=false（含启动提示缺失面）
+	// PendingOps（攻坚契约）：未决插件操作摘要数（native 副作用可能已发生，
+	// 待显式复检；优先于旧 installed 展示——不能说原生副作用已回滚）。
+	PendingOps int       `json:"pendingOps"`
 	LastOpAt   time.Time `json:"-"`
 	LastOpAtRC string    `json:"lastOpAt,omitempty"`
 }
@@ -223,10 +235,16 @@ const pluginUserBinPathPrefix = `export PATH="$HOME/.npm-global/bin:/usr/bin:/us
 
 // defaultPluginCommandRunner 生产执行面：wsl.exe --exec bash -lc（--exec 逐字
 // 传参，无中间 shell 二次解析）；SuppressConsoleWindow 抑制 GUI 闪窗；命令
-// 绑定 ctx（exec.CommandContext）——ctx 到期/取消终止 wsl.exe，错误归类为
-// 结构化 timeout/canceled（Linux 侧子进程的清理由 WSL 会话语义承担——已知
-// 边界，见 s5 报告）。非 Windows 返回错误（插件重放仅 Windows 宿主可用）。
+// 绑定 ctx（exec.CommandContext）。ctx 已取消/到期在构造命令前短路——已取
+// 消的请求不查 wsl.exe、不启动任何进程（SA16/SA18：exec.CommandContext 对
+// 已取消 ctx 的 Start 仍可能先触发 LookPath，平台 PATH 差异不得掩盖取消语
+// 义）。终止 wsl.exe 只结束 Windows 侧进程；distro 内由它启动的 Linux 子进程
+// 是否随之退出未经 Windows 真机验证——超时/取消结果按此边界如实报告，不宣
+// 称 Linux 侧进程已清理。非 Windows 返回错误（插件重放仅 Windows 宿主可用）。
 func defaultPluginCommandRunner(ctx context.Context, distro, script string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "bash", "-lc", pluginUserBinPathPrefix+script)
 	platform.SuppressConsoleWindow(cmd)
 	out, err := cmd.CombinedOutput()
@@ -251,11 +269,19 @@ type PluginScope struct {
 	runner   PluginCommandRunner
 	parser   PluginSourceParser
 	refCheck PluginRefChecker
+	// commitFileFn 是统一文件提交/恢复原语的插件内部回调（攻坚契约 PR07：
+	// filters 的最终发布复用同一提交回调，禁止另造 tmp+无条件 rename 旁路）。
+	// 由协调器装配（NewCoordinator 注入 commitPluginFile）。
+	commitFileFn PluginCommitFn
 
 	opMu   sync.Mutex
 	snapMu sync.Mutex
 	snaps  map[string]*WSLPluginSnapshot
 }
+
+// PluginCommitFn 是插件侧的内部提交回调签名：expectedBeforeHash 是构建基准
+// （发布前重读必须仍等于该值），pluginMeta 是脱敏摘要元数据。
+type PluginCommitFn = func(ctx context.Context, target TargetRef, relPath, expectedBeforeHash string, content []byte, pluginMeta map[string]string) *CommitReceipt
 
 // NewPluginScope 构造插件作用域。parser/refCheck 为空时进入降级态（一切
 // 操作 blocked parser-unavailable——裸协调器不装配生产接缝时的诚实行为）。
@@ -362,8 +388,19 @@ func truncateDetail(s string) string {
 	return s
 }
 
-// classifyRunnerError 把 runner 错误分类为结构化错误码。
-func classifyRunnerError(err error) string {
+// classifyRunnerError 把 runner 错误分类为结构化错误码。SA16：ctx 已到期/
+// 取消时优先按 ctx 归因——运行中被 CommandContext 终止的 wsl.exe 常以
+// ExitError 形态返回、不携带 ctx 错误链，runner 错误形态本身不能推翻取消/
+// 超时事实；只有 ctx 未结束时才按错误链（假 runner 直接回 ctx.Err）归类。
+func classifyRunnerError(ctx context.Context, err error) string {
+	if ctx != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				return PluginErrTimeout
+			}
+			return PluginErrCanceled
+		}
+	}
 	if err == nil {
 		return ""
 	}
@@ -377,10 +414,27 @@ func classifyRunnerError(err error) string {
 }
 
 // runScript 执行一段 distro 内登录 shell 脚本（带 opMu 串行与 ctx 透传）。
+// ctx 已取消/到期时不排队等 opMu、不启动任何 distro 命令（SA16：取消的请求
+// 不得在锁等待或执行面继续产生跨界副作用）。
 func (p *PluginScope) runScript(ctx context.Context, distro, script string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	p.opMu.Lock()
 	defer p.opMu.Unlock()
-	return p.runner(ctx, distro, script)
+	// 攻坚契约：取得 opMu 后再查 ctx——等锁期间取消的请求不执行命令。
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	out, err := p.runner(ctx, distro, script)
+	if err == nil {
+		// runner 返回 nil 但 ctx 已结束 → 取消（后继 remove/install/filter
+		// 不执行；外部命令可能已有副作用，由调用方如实归因）。
+		if cerr := ctx.Err(); cerr != nil {
+			return out, cerr
+		}
+	}
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +445,11 @@ func (p *PluginScope) runScript(ctx context.Context, distro, script string) (str
 type distroPluginEntry struct {
 	source string
 	spec   PluginSourceSpec
+	// raw 是元素的原始 JSON（字符串或对象形态）；isObject 报告形态。
+	raw      string
+	isObject bool
+	// filters 是对象形态携带的过滤清单（字符串形态为零值）。
+	filters PluginFilters
 }
 
 // settingsReadState 区分 settings.json 的读取三态：可读 / 缺失（agent 根
@@ -405,9 +464,11 @@ const (
 )
 
 // readDistroSettingsPackages 经 UNC 读 distro settings.json 的 packages[]
-// （元素为字符串源或 {source,...} 过滤对象；与 piplugin 同语义的只读子集）。
-// 文件缺失返回空清单与 settingsMissing（尚未初始化的 agent 根不算错误）；
-// 其他读取失败或 JSON 损坏返回 settingsUnreadable（调用方阻断，不猜测）。
+// （元素为字符串源或 {source,...} 过滤对象；与 piplugin 同语义的只读子集，
+// 同时携带过滤清单供 SA12 复检，并保留三态：键省略 → nil，显式空数组 []
+// → 非 nil 空切片——写入面不产生 null，手写 null 值按键省略处理）。文件缺失
+// 返回空清单与 settingsMissing（尚未初始化的 agent 根不算错误）；其他读取
+// 失败或 JSON 损坏返回 settingsUnreadable（调用方阻断，不猜测）。
 func (p *PluginScope) readDistroSettingsPackages(target TargetRef) ([]distroPluginEntry, settingsReadState) {
 	path := filepath.Join(target.UNCRoot, "settings.json")
 	data, err := os.ReadFile(path)
@@ -429,6 +490,7 @@ func (p *PluginScope) readDistroSettingsPackages(target TargetRef) ([]distroPlug
 		if trimmed == "" {
 			continue
 		}
+		entry := distroPluginEntry{raw: string(raw)}
 		var source string
 		if trimmed[0] == '"' {
 			if err := json.Unmarshal(raw, &source); err != nil {
@@ -436,19 +498,28 @@ func (p *PluginScope) readDistroSettingsPackages(target TargetRef) ([]distroPlug
 			}
 		} else {
 			var obj struct {
-				Source string `json:"source"`
+				Source     string   `json:"source"`
+				Extensions []string `json:"extensions"`
+				Skills     []string `json:"skills"`
+				Prompts    []string `json:"prompts"`
+				Themes     []string `json:"themes"`
 			}
 			if json.Unmarshal(raw, &obj) != nil || strings.TrimSpace(obj.Source) == "" {
 				continue
 			}
 			source = obj.Source
+			entry.isObject = true
+			entry.filters = PluginFilters{
+				Extensions: obj.Extensions, Skills: obj.Skills,
+				Prompts: obj.Prompts, Themes: obj.Themes,
+			}
 		}
 		source = strings.TrimSpace(source)
-		if p.parser == nil {
-			out = append(out, distroPluginEntry{source: source})
-			continue
+		entry.source = source
+		if p.parser != nil {
+			entry.spec = p.parser(source)
 		}
-		out = append(out, distroPluginEntry{source: source, spec: p.parser(source)})
+		out = append(out, entry)
 	}
 	return out, settingsReadable
 }
@@ -562,9 +633,9 @@ func pluginTrimSHA(s string) (string, bool) {
 func (p *PluginScope) resolveNpmVersion(ctx context.Context, target TargetRef, name string) (string, error) {
 	out, err := p.runScript(ctx, target.Distro, "npm view "+pluginShQuote(name)+" version 2>/dev/null | tail -1")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
 			// ctx 到期/取消优先于「离线」文案（复审 F2：超时不得误导诊断为离线）。
-			return "", errors.New(classifyRunnerError(ctxErr))
+			return "", errors.New(code)
 		}
 		return "", fmt.Errorf("npm view 失败（离线或 npm 不可用）: %s", truncateDetail(out))
 	}
@@ -585,8 +656,8 @@ func (p *PluginScope) resolveGitCommit(ctx context.Context, target TargetRef, sp
 	}
 	out, err := p.runScript(ctx, target.Distro, "git ls-remote "+pluginShQuote("https://"+repo)+" "+pluginShQuote(refArg)+" 2>/dev/null | head -1 | cut -f1")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", errors.New(classifyRunnerError(ctxErr))
+		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
+			return "", errors.New(code)
 		}
 		return "", fmt.Errorf("git ls-remote 失败（离线或 ref 失效）: %s", truncateDetail(out))
 	}
@@ -601,8 +672,8 @@ func (p *PluginScope) resolveGitCommit(ctx context.Context, target TargetRef, sp
 func (p *PluginScope) piAvailable(ctx context.Context, target TargetRef) (string, error) {
 	out, err := p.runScript(ctx, target.Distro, "command -v pi")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", errors.New(classifyRunnerError(ctxErr))
+		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
+			return "", errors.New(code)
 		}
 		return "", fmt.Errorf("distro 探测失败: %s", truncateDetail(out))
 	}
@@ -620,8 +691,8 @@ func (p *PluginScope) gitDirtyCheck(ctx context.Context, target TargetRef, spec 
 	linuxPath := strings.TrimRight(target.LinuxRoot, "/") + "/" + rel
 	out, err := p.runScript(ctx, target.Distro, "git -C "+pluginShQuote(linuxPath)+" status --porcelain 2>&1 | head -5")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, "", errors.New(classifyRunnerError(ctxErr))
+		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
+			return false, "", errors.New(code)
 		}
 		return false, "", fmt.Errorf("git status 不可用: %s", truncateDetail(out))
 	}
@@ -639,46 +710,69 @@ func (p *PluginScope) gitDirtyCheck(ctx context.Context, target TargetRef, spec 
 // 登记读写（stateStore；重放成功才写 Installed）
 // ---------------------------------------------------------------------------
 
-// pluginEntryByIdentity 返回当前代际下命中身份键的登记（generation 双方非空
-// 且不同 → 视为无登记：distro 重装后旧登记不自动扩散）。
+// pluginEntryByIdentity 返回当前目标可归属的登记。SA-02 插件面：登记必须
+// 能唯一归属到当前目标——双方 generation 都已知且相等才匹配；目标代际未知
+// （GenerationUnknown/空）或登记代际缺失/未知时不复用持久登记（无法证明登记
+// 属于这个 distro 时按未登记处理，宁可退回本地项语义也不跨目标继承管理权；
+// 无 machine-id 的最小 distro 上 update/remove 会诚实 not-managed，重复
+// install 会诚实 unmanaged-existing）。多目标并存（A/B 交替同包不互相覆盖
+// 单槽）经 identity+known generation 联合键实现：登记列表按代际分区保存/
+// 删除（见 savePluginEntry/dropPluginEntry），本函数是读侧同一键的匹配。
 func (p *PluginScope) pluginEntryByIdentity(st *StateFile, identity, generation string) (PluginStateEntry, bool) {
+	if !generationBindable(generation) {
+		return PluginStateEntry{}, false
+	}
 	for i := range st.Plugins {
 		e := st.Plugins[i]
 		if e.Identity != identity {
 			continue
 		}
-		if e.Generation != "" && generation != "" && e.Generation != generation {
-			continue
+		if generationBindable(e.Generation) && e.Generation == generation {
+			return e, true
 		}
-		return e, true
 	}
 	return PluginStateEntry{}, false
 }
 
-// savePluginEntry 写入登记（mutate 原子落盘；Identity 命中替换否则追加——
-// 调用方保证 entry 携带完整身份与 Generation，绝不以空 Identity 落盘）。
+// generationBindable 报告身份代是否可用于归属持久登记（空与 unknown 不可）。
+func generationBindable(generation string) bool {
+	return generation != "" && generation != GenerationUnknown
+}
+
+// savePluginEntry 写入登记（mutate 原子落盘；联合键 identity+known
+// generation 命中替换否则追加——调用方保证 entry 携带完整身份与 Generation，
+// 绝不以空 Identity 落盘）。SA-02 多目标并存：同包在不同代际目标上各自登记
+// 一行（A→B→A 交替不互相覆盖单槽——B 的保存不丢 A 的登记，回 A 时旧登记
+// 仍可归属）；同代际同身份才替换。身份代未知的登记无法归属目标、读侧永不
+// 匹配——不落死数据；该次安装/失败结果仍如实返回给调用方（不冒充已持久化
+// 管理）。
 func (p *PluginScope) savePluginEntry(entry PluginStateEntry) error {
+	if !generationBindable(entry.Generation) {
+		return nil
+	}
 	return p.state.mutate(func(st *StateFile) {
-		replaced := false
 		for i := range st.Plugins {
-			if st.Plugins[i].Identity == entry.Identity {
+			if st.Plugins[i].Identity == entry.Identity && st.Plugins[i].Generation == entry.Generation {
 				st.Plugins[i] = entry
-				replaced = true
-				break
+				return
 			}
 		}
-		if !replaced {
-			st.Plugins = append(st.Plugins, entry)
-		}
+		st.Plugins = append(st.Plugins, entry)
 	})
 }
 
-// dropPluginEntry 删除登记（remove 成功后）。
-func (p *PluginScope) dropPluginEntry(identity string) error {
+// dropPluginEntry 删除当前目标代际的登记（remove 成功后；SA-02 多目标并存：
+// 只删 identity+generation 联合键命中的行——B 移除同包不动 A 的登记；其它
+// 代际的旧登记留盘，换回 A 时仍可归属）。generation 必须可绑定（调用方经
+// pluginEntryByIdentity 的 hasReg 路径保证）。
+func (p *PluginScope) dropPluginEntry(identity, generation string) error {
+	if !generationBindable(generation) {
+		return nil
+	}
 	return p.state.mutate(func(st *StateFile) {
 		out := st.Plugins[:0]
 		for _, e := range st.Plugins {
-			if e.Identity != identity {
+			if e.Identity != identity || e.Generation != generation {
 				out = append(out, e)
 			}
 		}
@@ -694,6 +788,13 @@ func (p *PluginScope) dropPluginEntry(identity string) error {
 // 全部结构化结果（含阻断），错误面只承载编程性失误（非法 kind/源）。
 func (p *PluginScope) RunPluginOperation(ctx context.Context, target TargetRef, op PluginOperation) PluginOpResult {
 	opID := newPluginOpID(op.Kind)
+	if err := ctx.Err(); err != nil {
+		// SA16：已取消/到期的请求在入口立即按 ctx 归因返回——不进入探测/
+		// 解析/命令面，避免把取消误报为 cli-missing 等无关阶段。
+		code := classifyRunnerError(ctx, err)
+		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeFailed,
+			ErrCode: code, Detail: "请求开始前 ctx 已结束，未执行任何 distro 命令（" + mapLifecycleCodeDetail(code) + "）", OpID: opID}
+	}
 	blocked := func(errCode, detail string) PluginOpResult {
 		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeBlocked,
 			ErrCode: errCode, Detail: detail, OpID: opID}
@@ -713,6 +814,14 @@ func (p *PluginScope) RunPluginOperation(ctx context.Context, target TargetRef, 
 			ErrCode: PluginErrInvalidSource, Detail: "未知操作类型: " + op.Kind, OpID: opID}
 	}
 
+	// 攻坚契约：首个改变状态的命令前保存插件 pending 摘要（完整目标、
+	// source/ref/filters/OpID，不含秘密）；摘要写失败不开始命令。首次失败也
+	// 保留可能副作用事实（重启不自动重放，待显式复检）。
+	if err := p.savePluginPending(target, opID, op, spec); err != nil {
+		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeFailed,
+			ErrCode: "prepare-state-failed",
+			Detail:  "插件 pending 摘要持久化失败，未执行任何 distro 命令: " + err.Error(), OpID: opID}
+	}
 	identity := pluginIdentity(spec)
 	st := p.state.load()
 	regEntry, hasReg := p.pluginEntryByIdentity(&st, identity, target.Generation)
@@ -725,13 +834,103 @@ func (p *PluginScope) RunPluginOperation(ctx context.Context, target TargetRef, 
 	}
 	distroEntry := distroEntryForIdentity(entries, identity)
 
+	var result PluginOpResult
 	switch op.Kind {
 	case PluginOpInstall:
-		return p.runInstall(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
+		result = p.runInstall(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
 	case PluginOpUpdate:
-		return p.runUpdate(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
+		result = p.runUpdate(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
 	default:
-		return p.runRemove(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
+		result = p.runRemove(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
+	}
+	p.finishPluginPending(target, opID, op, spec, result)
+	return result
+}
+
+// savePluginPending 保存插件操作摘要（脱敏：source/ref/过滤形态；无秘密）。
+func (p *PluginScope) savePluginPending(target TargetRef, opID string, op PluginOperation, spec PluginSourceSpec) error {
+	return p.state.saveIntent(OperationIntent{
+		OpID: opID, Kind: OpKindPluginOp, TargetKey: targetKeyOf(target),
+		TargetDistro: target.Distro, TargetHome: target.Home,
+		TargetCLI: string(target.CLI),
+		PluginMeta: pluginPendingMeta(op, spec), CreatedAt: time.Now(),
+	})
+}
+
+// pluginPendingMeta 构造摘要元数据（无秘密：源串本身是用户输入的包引用；
+// identity 入摘要供成功收敛时按同插件身份结清——不能同目标全清）。
+func pluginPendingMeta(op PluginOperation, spec PluginSourceSpec) map[string]string {
+	meta := map[string]string{"kind": op.Kind, "source": op.Source, "sourceType": spec.Type, "identity": pluginIdentity(spec)}
+	if op.AnchorRef != "" {
+		meta["anchorRef"] = op.AnchorRef
+	}
+	if op.Filters != nil {
+		meta["filters"] = "explicit"
+	} else {
+		meta["filters"] = "unspecified"
+	}
+	return meta
+}
+
+// finishPluginPending 结束插件摘要：成功 → settled + 清理；失败/取消 → 保留
+// （native 副作用可能已发生，不自动重放；RegistrationSummary 优先展示）。
+// spec 携带本次操作的归一身份：同身份旧摘要收敛，跨源摘要保留。
+func (p *PluginScope) finishPluginPending(target TargetRef, opID string, op PluginOperation, spec PluginSourceSpec, result PluginOpResult) {
+	disposition := "not-applied"
+	if result.OK {
+		disposition = "committed"
+	}
+	if !result.OK {
+		// 失败/取消：摘要保留为 pending（native 副作用可能已发生，重启不自动
+		// 重放；RegistrationSummary 优先展示待确认面）。
+		return
+	}
+	err := p.state.mutate(func(st *StateFile) {
+		if st.SettledOperations == nil {
+			st.SettledOperations = map[string]SettledOperation{}
+		}
+		st.SettledOperations[opID] = SettledOperation{
+			TargetKey: targetKeyOf(target), Disposition: disposition, SettledAt: time.Now(),
+		}
+	})
+	if err != nil {
+		// settled 保存失败：摘要保留为 pending（事实不丢）。
+		return
+	}
+	_ = p.state.deleteIntent(opID)
+	_ = p.state.mutate(func(st *StateFile) {
+		delete(st.SettledOperations, opID)
+	})
+	// 同目标旧 pending 插件摘要只能按「同一插件身份」收敛清理（一致性修正
+	// plugin-cross-source-cleanup：B 源的成功不结清 A 源的未确认副作用——只
+	// 有同一 identity（同包不同 ref 是版本切换语义）的先前失败摘要才被本次
+	// 成功复检覆盖；跨源/无法归一身份的摘要一律保留可见）。
+	if intents, ierr := p.state.loadIntents(); ierr == nil {
+		key := targetKeyOf(target)
+		identity := pluginIdentity(spec)
+		for id := range intents {
+			if id == opID || intents[id].Kind != OpKindPluginOp || intents[id].TargetKey != key {
+				continue
+			}
+			oldIdentity := intents[id].PluginMeta["identity"]
+			if oldIdentity == "" {
+				// 旧格式摘要无身份标注：从 source 串归一；不可归一则不结清。
+				if raw := intents[id].PluginMeta["source"]; raw != "" {
+					if oldSpec, perr := p.parseSpec(raw); perr == nil {
+						oldIdentity = pluginIdentity(oldSpec)
+					}
+				}
+			}
+			if oldIdentity == "" || oldIdentity != identity {
+				continue // 跨源未确认副作用：保留（RegistrationSummary 仍可见）
+			}
+			_ = p.state.deleteIntent(id)
+			_ = p.state.mutate(func(st *StateFile) {
+				if st.SettledOperations != nil {
+					delete(st.SettledOperations, id)
+				}
+			})
+		}
 	}
 }
 
@@ -746,6 +945,202 @@ func (p *PluginScope) verifyInstalled(target TargetRef, spec PluginSourceSpec, i
 	return entry != nil, facts
 }
 
+// ---------------------------------------------------------------------------
+// 子资源过滤清单的应用与复检（SA12）
+// ---------------------------------------------------------------------------
+
+// stringSlicesEqual 报告两个过滤字段语义相等（三态严格：nil 与空切片不等
+// ——nil = 键省略全部加载，空切片 = 显式空数组一项都不加载；元素级相等）。
+func stringSlicesEqual(a, b []string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// pluginFiltersEqual 逐字段比较两份过滤清单（三态严格：任一字段 nil 与
+// 空切片的区别视为不一致——复检面据此把「期望空数组仍是纯字符串/省略」
+// 判为形态不符，重放射敛而非冒充等价）。
+func pluginFiltersEqual(a, b PluginFilters) bool {
+	return stringSlicesEqual(a.Extensions, b.Extensions) &&
+		stringSlicesEqual(a.Skills, b.Skills) &&
+		stringSlicesEqual(a.Prompts, b.Prompts) &&
+		stringSlicesEqual(a.Themes, b.Themes)
+}
+
+// filtersAppliedForm 报告登记的过滤形态是否与期望语义等价：期望带过滤项
+// → 登记必须是携带同清单的过滤对象；期望无过滤项 → 登记不带任何过滤项
+// （纯字符串与无过滤键的对象形态都等价于「全部加载」）。
+func filtersAppliedForm(entry *distroPluginEntry, want PluginFilters) bool {
+	if entry == nil {
+		return false
+	}
+	if hasFilters(want) {
+		return entry.isObject && pluginFiltersEqual(entry.filters, want)
+	}
+	return !hasFilters(entry.filters)
+}
+
+// canonicalPackageEntryJSON 构造 packages[] 元素的规范 JSON（过滤对象或纯
+// 字符串源）。手工构造而非 omitempty 结构体序列化：nil 字段键省略（该类型
+// 全部加载），非 nil 字段一律写键（含空数组 []——一项都不加载）。
+func canonicalPackageEntryJSON(source string, filters PluginFilters) string {
+	if !hasFilters(filters) {
+		b, _ := json.Marshal(source)
+		return string(b)
+	}
+	src, _ := json.Marshal(source)
+	var b strings.Builder
+	b.WriteString(`{"source":`)
+	b.Write(src)
+	writeFilterField(&b, "extensions", filters.Extensions)
+	writeFilterField(&b, "skills", filters.Skills)
+	writeFilterField(&b, "prompts", filters.Prompts)
+	writeFilterField(&b, "themes", filters.Themes)
+	b.WriteString("}")
+	return b.String()
+}
+
+// writeFilterField 追加一个过滤键：vals 为 nil 时省略键（全部加载）；非 nil
+// 时写数组（含空数组 []——一项都不加载，不得折叠回省略）。
+func writeFilterField(b *strings.Builder, name string, vals []string) {
+	if vals == nil {
+		return
+	}
+	b.WriteString(`,"` + name + `":[`)
+	for i, v := range vals {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		enc, _ := json.Marshal(v)
+		b.Write(enc)
+	}
+	b.WriteString("]")
+}
+
+// opFiltersOrZero 解引用操作过滤快照（nil = 未提供 → 零值全量形态；install
+// 语义：安装即定义终态，无「沿用」一说）。
+func opFiltersOrZero(op PluginOperation) PluginFilters {
+	if op.Filters == nil {
+		return PluginFilters{}
+	}
+	return *op.Filters
+}
+
+// applyDistroFilters 把 distro settings.json 中 identity 对应的登记改写为与
+// filters 等价的 Pi 原生形态（SA12）。攻坚契约 PR07：在读后、解析后、tmp 写
+// 前、tmp 完成后、最终移动/发布前检查 ctx——取消清本次 tmp，不改原 settings；
+// 若已提交才取消，返回 filter-committed/verification-pending（由调用方映射），
+// 不声称零写。最终发布使用统一文件提交/恢复原语（插件传入内部提交回调，
+// 禁止另造 tmp+无条件 rename 旁路）。
+func (p *PluginScope) applyDistroFilters(ctx context.Context, target TargetRef, identity, source string, filters PluginFilters) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("filter apply canceled: %w", err)
+	}
+	path := filepath.Join(target.UNCRoot, "settings.json")
+	data, err := os.ReadFile(path) // 读后检查
+	if err != nil {
+		return fmt.Errorf("settings.json 读取失败: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("filter apply canceled after read: %w", err)
+	}
+	items := gjson.GetBytes(data, "packages").Array()
+	idx := -1
+	for i, e := range items {
+		var src string
+		if e.Type == gjson.String {
+			src = strings.TrimSpace(e.String())
+		} else if e.IsObject() {
+			src = strings.TrimSpace(e.Get("source").String())
+		}
+		if src == "" {
+			continue
+		}
+		spec := PluginSourceSpec{}
+		if p.parser != nil {
+			spec = p.parser(src)
+		}
+		if pluginIdentity(spec) == identity {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return errors.New("登记不存在，无法应用过滤形态")
+	}
+	want := canonicalPackageEntryJSON(source, filters)
+	if items[idx].Raw == want {
+		return nil
+	}
+	next, err := sjson.SetRawBytes(data, "packages."+strconv.Itoa(idx), []byte(want))
+	if err != nil {
+		return fmt.Errorf("settings.json 过滤对象写入失败: %w", err)
+	}
+	if err := ctx.Err(); err != nil { // 解析后检查
+		return fmt.Errorf("filter apply canceled after parse: %w", err)
+	}
+	// 统一提交回调：settings.json 是普通（非敏感）文件；CAS 基准 = 本次读取
+	// 的原始字节（发布前重读仍须等于构建基准；packages 外字段保留）。
+	if p.commitFileFn == nil {
+		return errors.New("filter commit callback unavailable")
+	}
+	rcpt := p.commitFileFn(ctx, target, "settings.json", hexHash(data), next, filtersMeta(source, filters))
+	switch {
+	case rcpt == nil:
+		return errors.New("filter commit produced no receipt")
+	case rcpt.Err == nil:
+		return nil
+	case rcpt.ErrDetail == "filter-committed-verification-pending":
+		return rcpt.Err
+	default:
+		return fmt.Errorf("settings.json 提交失败: %w", rcpt.Err)
+	}
+}
+
+// filtersMeta 构造插件操作摘要的脱敏元数据。
+func filtersMeta(source string, filters PluginFilters) map[string]string {
+	meta := map[string]string{"source": source}
+	if filters.Extensions != nil {
+		meta["filters.extensions"] = "[]" // 只记形态，不展开清单
+	}
+	if filters.Skills != nil {
+		meta["filters.skills"] = "[]"
+	}
+	if filters.Prompts != nil {
+		meta["filters.prompts"] = "[]"
+	}
+	if filters.Themes != nil {
+		meta["filters.themes"] = "[]"
+	}
+	return meta
+}
+
+// verifyDistroFilters 复检 identity 对应登记的过滤形态与期望一致（SA12：
+// 复检必须覆盖过滤集——settings 里是纯字符串全量形态而期望带过滤时不算通过）。
+func (p *PluginScope) verifyDistroFilters(target TargetRef, identity string, want PluginFilters) (bool, string) {
+	entries, state := p.readDistroSettingsPackages(target)
+	if state != settingsReadable {
+		return false, "settings.json 不可读，无法复检过滤形态"
+	}
+	entry := distroEntryForIdentity(entries, identity)
+	if filtersAppliedForm(entry, want) {
+		return true, ""
+	}
+	if hasFilters(want) {
+		return false, "登记过滤对象与期望清单不一致（或仍为全量字符串形态）"
+	}
+	return false, "登记仍带过滤对象，未回到全量形态"
+}
+
 // replay 执行 pi CLI 子命令并分类结果。子命令是本包内固定字面量（install/
 // remove/update，不转义），包名/源串全部单引号转义。
 func (p *PluginScope) replay(ctx context.Context, distro string, args ...string) (string, string) {
@@ -758,7 +1153,7 @@ func (p *PluginScope) replay(ctx context.Context, distro string, args ...string)
 	}
 	out, err := p.runScript(ctx, distro, script)
 	if err != nil {
-		code := classifyRunnerError(err)
+		code := classifyRunnerError(ctx, err)
 		if code == PluginErrReplayFailed {
 			return code, "pi " + args[0] + " 失败: " + truncateDetail(out)
 		}
@@ -770,9 +1165,11 @@ func (p *PluginScope) replay(ctx context.Context, distro string, args ...string)
 func mapLifecycleCodeDetail(code string) string {
 	switch code {
 	case PluginErrTimeout:
-		return "执行超时（单次尝试，不自动重试）"
+		// SA16：如实报告进程边界——终止的是 Windows 侧 wsl.exe；distro 内
+		// 子进程是否随之退出未经真机验证，不宣称已清理。
+		return "执行超时：Windows 侧命令已终止（distro 内子进程是否随之退出未验证；单次尝试，不自动重试）"
 	case PluginErrCanceled:
-		return "已取消"
+		return "已取消：Windows 侧命令已终止（distro 内子进程是否随之退出未验证）"
 	default:
 		return "失败"
 	}
@@ -828,10 +1225,13 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
 	}
 	replaySource := pinnedSourceString(spec, pinned)
 
-	// 幂等：已登记安装且复检通过且锚点一致 → already-ok（不执行任何命令）。
+	// 幂等：已登记安装且复检通过且锚点与过滤形态一致 → already-ok（不执行
+	// 任何命令）。SA12：过滤形态纳入幂等条件——Windows 侧过滤清单变化时同版
+	// 本重放不再 already-ok，而是走重放路径重建过滤对象后复检。
 	if hasReg && reg.Installed && distroEntry != nil {
 		facts := p.probeEntity(target, spec)
-		if facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned {
+		if facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned &&
+			filtersAppliedForm(distroEntry, opFiltersOrZero(op)) {
 			return PluginOpResult{Source: op.Source, Kind: PluginOpInstall, Outcome: PluginOutcomeAlreadyOK,
 				Detail: "同版本已安装（幂等命中，未执行重放命令）", OpID: opID,
 				PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
@@ -869,10 +1269,19 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
 		return fail(code, detail)
 	}
 
+	// SA12：按 Pi 原生 packages 语义应用过滤清单（过滤对象/纯字符串形态），
+	// 应用或复检失败绝不报已安装——实体已落盘时如实报告失败阶段。
+	if err := p.applyDistroFilters(ctx, target, identity, replaySource, opFiltersOrZero(op)); err != nil {
+		return fail(PluginErrFilterApplyFailed, "过滤清单应用失败: "+err.Error())
+	}
+
 	// 复检：settings 登记 + 实体同时有效（失败绝不写已安装）。
 	settingsHit, facts := p.verifyInstalled(target, spec, identity)
 	if !settingsHit || !facts.present {
 		return fail(PluginErrVerifyFailed, "重放命令成功但复检未通过（settings 登记或实体缺失）")
+	}
+	if ok, why := p.verifyDistroFilters(target, identity, opFiltersOrZero(op)); !ok {
+		return fail(PluginErrVerifyFailed, "重放命令成功但过滤清单复检未通过（"+why+"）")
 	}
 	if spec.Type == "npm" && facts.version != "" && facts.version != pinned {
 		return fail(PluginErrVerifyFailed, fmt.Sprintf("实体版本 %q 与锚定版本 %q 不一致", facts.version, pinned))
@@ -882,7 +1291,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
 	}
 	entry := PluginStateEntry{
 		Source: replaySource, Identity: identity, SourceType: spec.Type, Generation: target.Generation,
-		PinnedRef: pinned, RefKind: PluginRefKind(refKind), Filters: op.Filters,
+		PinnedRef: pinned, RefKind: PluginRefKind(refKind), Filters: opFiltersOrZero(op),
 		OpID: opID, LastOp: PluginOpInstall, Installed: true, EntityVerified: true,
 		LastSuccess: time.Now(),
 	}
@@ -896,6 +1305,13 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
 	}
 	p.invalidateSnapshot(target.Distro)
 	detail := "已按固定 " + refKindLabel(refKind) + " " + pinned + " 原生安装并复检通过"
+	if hasFilters(opFiltersOrZero(op)) {
+		detail += "（含子资源过滤对象，已按 Pi 原生语义写入并复检）"
+	}
+	if !generationBindable(target.Generation) {
+		// SA-02 插件面：身份代未知时不落持久登记（下次操作按本地项对待）。
+		detail += "；目标身份代未知，登记未持久化"
+	}
 	if resolveNote != "" {
 		detail += "（" + resolveNote + "）"
 	}
@@ -1046,9 +1462,19 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
 		refKind = refKindFor(spec, op.AnchorRef)
 	}
 
-	// 幂等：锚点与登记/实体一致 → already-ok。
+	// 生效过滤清单（PR08）：op.Filters 为 nil（未提供）时沿用既有登记；
+	// 非 nil（含全字段 nil）是显式完整期望——可把旧过滤集重置回全量加载，
+	// 与 Windows 当前登记期望一致。
+	filters := reg.Filters
+	if op.Filters != nil {
+		filters = *op.Filters
+	}
+
+	// 幂等：锚点与登记/实体一致且过滤形态一致 → already-ok（SA12：过滤形态
+	// 纳入幂等条件，清单变化时重放重建过滤对象）。
 	facts := p.probeEntity(target, spec)
-	if reg.Installed && facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned {
+	if reg.Installed && facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned &&
+		filtersAppliedForm(distroEntry, filters) {
 		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeAlreadyOK,
 			Detail: "已处于锚定 " + pinned + "（幂等命中，未执行重放命令）", OpID: opID,
 			PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
@@ -1074,6 +1500,16 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
 			ErrCode: code, Detail: detail + "（实体保留；重试将重新安装）", OpID: opID}
 	}
 
+	// SA12：按 Pi 原生语义应用生效过滤清单并复检（失败绝不写已安装）。
+	if err := p.applyDistroFilters(ctx, target, identity, replaySource, filters); err != nil {
+		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
+			e.OpID, e.LastOp, e.Installed, e.EntityVerified = opID, PluginOpUpdate, false, false
+			e.LastErrorCode, e.LastDetail = PluginErrFilterApplyFailed, truncateDetail("过滤清单应用失败: "+err.Error())
+		}))
+		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeFailed,
+			ErrCode: PluginErrFilterApplyFailed, Detail: "过滤清单应用失败: " + err.Error() + "（实体已更新；重试将重新应用）", OpID: opID}
+	}
+
 	settingsHit, facts2 := p.verifyInstalled(target, spec, identity)
 	if !settingsHit || !facts2.present {
 		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
@@ -1091,9 +1527,13 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
 		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeFailed,
 			ErrCode: PluginErrVerifyFailed, Detail: fmt.Sprintf("实体版本 %q 与锚定版本 %q 不一致", facts2.version, pinned), OpID: opID}
 	}
-	filters := reg.Filters
-	if hasFilters(op.Filters) {
-		filters = op.Filters // 面板携带了新过滤清单时覆盖；否则保留既有登记
+	if ok, why := p.verifyDistroFilters(target, identity, filters); !ok {
+		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
+			e.OpID, e.LastOp, e.Installed, e.EntityVerified = opID, PluginOpUpdate, false, false
+			e.LastErrorCode, e.LastDetail = PluginErrVerifyFailed, "过滤清单复检未通过"
+		}))
+		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeFailed,
+			ErrCode: PluginErrVerifyFailed, Detail: "重放命令成功但过滤清单复检未通过（" + why + "）", OpID: opID}
 	}
 	entry := PluginStateEntry{
 		Source: replaySource, Identity: identity, SourceType: spec.Type, Generation: target.Generation,
@@ -1107,13 +1547,19 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
 			OpID: opID, PinnedRef: pinned, RefKind: refKind, EntityVerified: true}
 	}
 	p.invalidateSnapshot(target.Distro)
+	detail := "已更新到固定 " + refKindLabel(refKind) + " " + pinned + " 并复检通过"
+	if hasFilters(filters) {
+		detail += "（含子资源过滤对象，已按 Pi 原生语义写入并复检）"
+	}
 	return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeUpdated,
-		Detail: "已更新到固定 " + refKindLabel(refKind) + " " + pinned + " 并复检通过", OpID: opID,
+		Detail: detail, OpID: opID,
 		PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
 }
 
 func hasFilters(f PluginFilters) bool {
-	return len(f.Extensions)+len(f.Skills)+len(f.Prompts)+len(f.Themes) > 0
+	// 三态：任一字段非 nil（含空切片——显式空数组也是过滤形态）即携带
+	// 过滤；全 nil 才是「无过滤」（纯字符串全量形态）。
+	return f.Extensions != nil || f.Skills != nil || f.Prompts != nil || f.Themes != nil
 }
 
 // runRemove 移除重放（只作用于本系统登记管理的插件；本地手动项不动）：
@@ -1127,7 +1573,7 @@ func (p *PluginScope) runRemove(ctx context.Context, target TargetRef, op Plugin
 		return blocked(PluginErrNotManaged, "仅本系统登记管理的插件可移除；WSL 本地手动项不动")
 	}
 	if distroEntry == nil {
-		if err := p.dropPluginEntry(identity); err != nil {
+		if err := p.dropPluginEntry(identity, target.Generation); err != nil {
 			return PluginOpResult{Source: op.Source, Kind: PluginOpRemove, Outcome: PluginOutcomeFailed,
 				ErrCode: PluginErrRegistrationUnchanged, Detail: "登记已不存在但本地登记清理失败", OpID: opID}
 		}
@@ -1152,7 +1598,7 @@ func (p *PluginScope) runRemove(ctx context.Context, target TargetRef, op Plugin
 		return PluginOpResult{Source: op.Source, Kind: PluginOpRemove, Outcome: PluginOutcomeFailed,
 			ErrCode: PluginErrVerifyFailed, Detail: "移除命令成功但 settings 登记仍存在", OpID: opID}
 	}
-	if err := p.dropPluginEntry(identity); err != nil {
+	if err := p.dropPluginEntry(identity, target.Generation); err != nil {
 		return PluginOpResult{Source: op.Source, Kind: PluginOpRemove, Outcome: PluginOutcomeFailed,
 			ErrCode: PluginErrRegistrationUnchanged, Detail: "移除成功但本地登记清理失败", OpID: opID}
 	}
@@ -1176,6 +1622,12 @@ func (p *PluginScope) invalidateSnapshot(distro string) {
 // → 汇总登记面 → 缓存快照。允许唤醒当前目标（显式动作）；只读，不写任何
 // 目标内容。
 func (p *PluginScope) Probe(ctx context.Context, target TargetRef) WSLPluginSnapshot {
+	if err := ctx.Err(); err != nil {
+		// SA16：已取消的探测不进入命令面，如实标注取消原因。
+		code := classifyRunnerError(ctx, err)
+		return WSLPluginSnapshot{Distro: target.Distro, Available: false,
+			Reason: mapLifecycleCodeDetail(code), Items: []WSLPluginItem{}}
+	}
 	snap := WSLPluginSnapshot{Distro: target.Distro, Available: true, Items: []WSLPluginItem{}}
 	piResolve, piErr := p.piAvailable(ctx, target)
 	if piErr != nil {
@@ -1232,11 +1684,13 @@ func (p *PluginScope) Probe(ctx context.Context, target TargetRef) WSLPluginSnap
 	}
 	// 登记存在但 distro settings 已无对应项（单向漂移）。settings 不可读时
 	// 无法确认「已消失」——跳过 reg-only 环（复审 F1：读不到≠已消失，展示腿与
-	// R4 操作腿同一原则；快照 Reason 已标注不可读）。
+	// R4 操作腿同一原则；快照 Reason 已标注不可读）。SA-02：登记必须可归属到
+	// 当前目标（双方代际已知且相等）才展示为登记面漂移，身份代未知不跨目标
+	// 继承登记。
 	st := p.state.load()
 	if settingsState != settingsUnreadable {
 		for _, reg := range st.Plugins {
-			if reg.Generation != "" && target.Generation != "" && reg.Generation != target.Generation {
+			if !generationBindable(reg.Generation) || reg.Generation != target.Generation {
 				continue
 			}
 			if seenIdentity[reg.Identity] {
@@ -1320,12 +1774,30 @@ func (p *PluginScope) CachedSnapshot(distro string) WSLPluginSnapshot {
 }
 
 // RegistrationSummary 从状态清单派生登记摘要（只读缓存，不唤醒；启动路径的
-// 「缺失插件」warning 数据源——只提示，不自动安装）。
+// 「缺失插件」warning 数据源——只提示，不自动安装）。SA-02：只统计可归属到
+// 当前代际的登记（目标/登记代际未知时不跨目标继承计数，诚实归零）。
 func (p *PluginScope) RegistrationSummary(generation string) PluginRegistrationSummary {
 	st := p.state.load()
 	out := PluginRegistrationSummary{}
+	// 未决插件摘要优先面（不依赖 generation 绑定）：native 副作用可能已发生
+	//（重启不自动重放）。
+	if intents, err := p.state.loadIntents(); err == nil {
+		for id := range intents {
+			op := intents[id]
+			if op.Kind != OpKindPluginOp {
+				continue
+			}
+			if _, settled := st.SettledOperations[id]; settled {
+				continue
+			}
+			out.PendingOps++
+		}
+	}
+	if !generationBindable(generation) {
+		return out
+	}
 	for _, reg := range st.Plugins {
-		if reg.Generation != "" && generation != "" && reg.Generation != generation {
+		if !generationBindable(reg.Generation) || reg.Generation != generation {
 			continue
 		}
 		out.Managed++

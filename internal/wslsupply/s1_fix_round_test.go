@@ -9,6 +9,7 @@ package wslsupply
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,29 +135,27 @@ func TestGrantUnitConsentCrossGeneration(t *testing.T) {
 	if err != nil || string(got) != content {
 		t.Fatalf("new-generation publish must write the export verbatim: %q err=%v", got, err)
 	}
-	// 新代登记不携带旧代 hash 基线。
-	st := c.GetStatus("Ubuntu", CLICommon)
-	for _, u := range st.Units {
-		if u.Unit == UnitSharedVisionExport {
-			_ = u // UnitStatus 不含 hash（脱敏）；hash 基线由下方状态文件字节断言覆盖。
+	// 新代登记不携带旧代 hash 基线：SA-02 多分区下旧代分区保留（A→B→A 语义），
+	// 但新旧两代各自独立——当前代首次发布成功（上文 Applied + 逐字写入）
+	// 本身就是「未继承旧代 hash 误判 local-deletion-frozen」的行为证明；
+	// 这里再验证分区数量与代不同。
+	var entries []StateEntry
+	if raw, rerr := os.ReadFile(filepath.Join(c.state.path)); rerr == nil {
+		var parsed StateFile
+		if json.Unmarshal(raw, &parsed) == nil {
+			for _, e := range parsed.Units {
+				if e.Unit == UnitSharedVisionExport {
+					entries = append(entries, e)
+				}
+			}
 		}
 	}
-	raw, _ := os.ReadFile(filepath.Join(c.state.path))
-	body := string(raw)
-	if count := substringCount(body, "lastWrittenHash"); count != 1 {
-		t.Fatalf("state must carry exactly one lastWrittenHash (new-gen entry), got %d:\n%s", count, body)
+	if len(entries) != 2 {
+		t.Fatalf("state must carry two vision-export partitions (old gen + new gen), got %d", len(entries))
 	}
-}
-
-func substringCount(s, sub string) int {
-	n := 0
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			n++
-			i += len(sub) - 1
-		}
+	if entries[0].Generation == entries[1].Generation {
+		t.Fatalf("partitions must be keyed by distinct generations, got %q twice", entries[0].Generation)
 	}
-	return n
 }
 
 // TestGetStatusPerCLICheckTime（F4）：检查时间按 CLI 作用域——pi 探测不点亮

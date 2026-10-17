@@ -1038,16 +1038,61 @@ func (a *App) releaseSharedLeasesExact(sessionID string, runEpoch uint64) {
 
 // releaseSharedLeases is retained for external/legacy terminal paths that own
 // the whole SessionID. Authority-managed paths call the exact variant.
+//
+// Stop-lease completion barrier: the first caller claims the registry entries
+// and owns the full release round (durable completion attempt first, then
+// coordinator ReleaseExact). Concurrent releasers of the same session wait for
+// that round's completion gate instead of returning early off an emptied
+// registry while the owner is still between the durable write and ReleaseExact
+// — a synchronous StopSession that has proven the process terminal therefore
+// returns only after this session's lease release responsibility is discharged.
+// The gate is per-session and is NEVER held across sharedLeaseMu (the lock
+// stays short-lived; the App.sharedLeaseMu → coordinator.mu order is
+// unchanged), and after a gate closes late arrivals re-check the registry so
+// same-session leases registered during the barrier are still released.
 func (a *App) releaseSharedLeases(sessionID string) {
-	a.sharedLeaseMu.Lock()
-	leases := make([]*remote.SharedDependencyLease, 0, 3)
-	for key, lease := range a.sharedLeases {
-		if string(key.SessionID) == sessionID {
-			leases = append(leases, lease)
-			delete(a.sharedLeases, key)
+	for {
+		a.sharedLeaseMu.Lock()
+		if gate, ok := a.sharedLeaseReleases[sessionID]; ok {
+			// Another releaser owns this session's completion fact; wait for the
+			// same fact instead of no-op racing an in-flight release round.
+			a.sharedLeaseMu.Unlock()
+			<-gate
+			continue
 		}
+		leases := make([]*remote.SharedDependencyLease, 0, 3)
+		for key, lease := range a.sharedLeases {
+			if string(key.SessionID) == sessionID {
+				leases = append(leases, lease)
+				delete(a.sharedLeases, key)
+			}
+		}
+		if a.sharedLeaseReleases == nil {
+			a.sharedLeaseReleases = make(map[string]chan struct{})
+		}
+		gate := make(chan struct{})
+		a.sharedLeaseReleases[sessionID] = gate
+		a.sharedLeaseMu.Unlock()
+		a.finishSharedLeaseRelease(sessionID, gate, leases)
+		return
 	}
-	a.sharedLeaseMu.Unlock()
+}
+
+// finishSharedLeaseRelease completes one claimed whole-session release round.
+// Ordering is load-bearing: the durable completion attempt runs BEFORE the
+// coordinator release so a failed write keeps conservative stale authority for
+// restart replay (fail-closed). The gate closes last, after the registry entry
+// is dropped, so waiters waking from it never resurrect a stale round; a panic
+// anywhere above still closes the gate and can never hang waiters.
+func (a *App) finishSharedLeaseRelease(sessionID string, gate chan struct{}, leases []*remote.SharedDependencyLease) {
+	defer func() {
+		a.sharedLeaseMu.Lock()
+		if a.sharedLeaseReleases[sessionID] == gate {
+			delete(a.sharedLeaseReleases, sessionID)
+		}
+		a.sharedLeaseMu.Unlock()
+		close(gate)
+	}()
 	a.completeExternalDurableRun(sessionID)
 	if a.sharedCoord == nil {
 		return

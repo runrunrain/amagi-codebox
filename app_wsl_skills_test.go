@@ -6,10 +6,12 @@ package main
 // 宿主技能根，不触达真实 WSL。
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/wslsupply"
@@ -26,13 +28,13 @@ func newSkillsTestApp(t *testing.T) (*App, *wslsupply.SkillsScope, string) {
 	uncRoot := t.TempDir()
 	hostRoot := t.TempDir()
 	c := wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
-		Identity: func(string) platform.WSLUserIdentity {
+		Identity: func(context.Context, string) platform.WSLUserIdentity {
 			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m1", OK: true}
 		},
 		ToUNC: func(_, linuxPath string) string {
 			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 		},
-		Chmod: func(_, _ string, _ ...string) error { return nil },
+		Chmod: func(context.Context, string, string, ...string) error { return nil },
 	})
 	scope := wslsupply.NewSkillsScope(hostRoot, wslsupply.DefaultSkillsScanLimits())
 	c.RegisterSkills(scope)
@@ -190,5 +192,49 @@ func TestWSLSkillsTakeOverViaFacade(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(own, "SKILL.md"))
 	if string(got) != "# alpha\n" {
 		t.Fatalf("takeover must rewrite from source: %q", got)
+	}
+}
+
+// TestWSLSkillsGetDoesNotRestartCompletedScan（SA-17）：扫描完成后多次 Get 不
+// 重启扫描（不拾取扫描后新增内容）；显式 Check 才强制重扫并收敛。
+func TestWSLSkillsGetDoesNotRestartCompletedScan(t *testing.T) {
+	app, scope, _ := newSkillsTestApp(t)
+	writeHostSkill(t, scope.Root(), "alpha", "SKILL.md", "# alpha\n")
+	scope.Scan()
+
+	// 扫描后新增：多次 Get（状态轮询形态）不重扫——beta 不可见。
+	writeHostSkill(t, scope.Root(), "beta", "SKILL.md", "# beta\n")
+	for i := 0; i < 3; i++ {
+		st := app.GetWSLSkillsSupplyStatus()
+		if !st.Available || !st.ScanStarted {
+			t.Fatalf("status must be available/started: %+v", st)
+		}
+	}
+	st := app.GetWSLSkillsSupplyStatus()
+	for _, s := range st.Skills {
+		if s.Name == "beta" {
+			t.Fatal("Get must not restart the completed scan (beta invisible until Check)")
+		}
+	}
+	// 显式 Check：强制重扫，轮询收敛后 beta 可见。
+	if out := app.CheckWSLSkillsSupply(); !out.Available {
+		t.Fatalf("check must return available status: %+v", out)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st = app.GetWSLSkillsSupplyStatus()
+		found := false
+		for _, s := range st.Skills {
+			if s.Name == "beta" {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rescan from Check must converge (beta visible): %+v", st.Skills)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

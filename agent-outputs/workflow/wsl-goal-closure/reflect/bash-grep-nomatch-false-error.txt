@@ -1,0 +1,27 @@
+# bash 末段 grep 无匹配 exit 1 → 整条命令判错（实际 go test/真机运行 exit 0）
+
+2026-10-17T12:09:20.544Z
+CMD: L=agent-outputs/workflow/wsl-goal-closure/windows-wslsupply-concurrency-x30.log
+winpc-ssh exec --timeout 300 '$env:TEMP="C:/Users/毛润/.amagi-codebox-validation-8107310b191e/wslsupply-temp-5"; $env:TMP=$env:TEMP; Remove-Item Env:AMAGI_WSL_E2E -ErrorAction SilentlyContinue; & "C:/Users/毛润/.amagi-codebox-validation-8107310b191e/wslsupply-final-5.test.exe" "-test.count=30" "-test.run=^(TestSubmitFilePrimitiveTrueConcurrency|TestAttackExternalVersionDuringPublishKeepsBoth|TestScanSkillCompatChecks|TestScanSkillAbsoluteLikeLinkTargetForms)$" "-test.timeout=240s"; "EXIT=$LASTEXITCODE"' > $L 2>&1; echo exit=$?; tail -4 $L; grep -c 'FAIL' $L
+RESULT:
+exit=0
+PASS
+EXIT=0
+0
+
+
+Command exited with code 1
+[cwd] /Users/run.mao/workpace/amagi-codebox
+2026-10-17T12:10:33.178Z
+CMD: set -o pipefail; gofmt -l internal/wslsupply/skills_scan.go internal/wslsupply/skills_scan_test.go internal/wslsupply/commit_recovery_test.go internal/wslsupply/core_staging_e2e_windows_test.go; echo gofmt-done
+L=agent-outputs/workflow/wsl-goal-closure/winfix-integrated-full-go.log
+( env -u AMAGI_CODEBOX_AI_PROXY go vet ./... && env -u AMAGI_CODEBOX_AI_PROXY go test -count=1 ./... && GOOS=windows GOARCH=amd64 go build -o /dev/null . ) > $L 2>&1; echo full-exit=$?; grep -v '^ok\|no test files' $L | head
+RESULT:
+gofmt-done
+full-exit=0
+
+
+Command exited with code 1
+[cwd] /Users/run.mao/workpace/amagi-codebox
+
+[AMAGI Bash 诊断·软提示] 保留并阅读上方原始错误；错误尾注已明确本次 cwd=/Users/run.mao/workpace/amagi-codebox；相对路径均以该目录解析，请先核对执行基准。 本提示不阻断重试。

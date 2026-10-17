@@ -1,0 +1,563 @@
+diff --git a/app.go b/app.go
+index 5276215..fe92f45 100644
+--- a/app.go
++++ b/app.go
+@@ -2501,6 +2501,20 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
+ 	// it to an opaque external-run lifetime lease before reporting success.
+ 	var headroomAdmission *remote.SharedLaunchAdmission
+ 	if useHeadroom {
++		// D1（Headroom×WSL×NAT 启动闸门，桌面链）：launcher 会给 Headroom 会话
++		// 注入 ANTHROPIC_BASE_URL=http://localhost:8787，NAT 模式下 distro 内不可达，
++		// 会话必然静默失败——必须在 Headroom.Start、admission 获取、会话预留与
++		// PTY 启动等任何副作用之前拒绝。mirrored 遵循现有准入策略放行（与
++		// aiproxy.PinProxyEnvironment 同源判定，此处放行不构成连通声明）。
++		// remote/restart 链的对等闸门在 buildClaudePlan（planner 侧）；legacy
++		// remote（/api/sessions 直调本函数）由本闸门覆盖。
++		if err := headroomWSLNetworkAdmission(
++			platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "",
++			os.Environ(),
++		); err != nil {
++			a.Log.Warn("headroom", "已拒绝 Headroom WSL 会话启动（NAT 网络模式）", err.Error())
++			return "", err
++		}
+ 		if a.isExternalCleanupRecoveryBlocked() {
+ 			return "", remote.ErrSharedServiceInUse
+ 		}
+@@ -3182,6 +3196,14 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
+ 		codexUsesGlobalHeadroom = true
+ 	}
+ 	if codexUsesGlobalHeadroom {
++		// D6（桌面链 advisory）：codex 全局压缩的路由载体是宿主侧
++		// ~/.codex/config.toml 的 openai_base_url 标记块，WSL codex 会话读取
++		// 发行版侧独立配置，压缩不会生效——会话照常直连，但必须让「压缩未
++		// 生效」可见，不默默让用户以为 8788 在压缩。不新增 Codex Headroom
++		// 路由体系；remote 链显式选择压缩的拒绝在 buildCodexPlan。
++		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
++			a.Log.Warn("codex", "codex 全局压缩对 WSL 会话不生效", codexHeadroomWSLIneffectiveMsg())
++		}
+ 		if a.isExternalCleanupRecoveryBlocked() {
+ 			return "", remote.ErrSharedServiceInUse
+ 		}
+@@ -3970,64 +3992,14 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
+ 		envOverrides["PI_OFFLINE"] = "1"
+ 	}
+ 	if providerID != "" {
+-		a.providerSyncMu.Lock()
+-		if provider, err := a.Config.GetProvider(providerID); err == nil {
+-			launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
+-			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
+-
+-			// 合并写入 omp 标准 agent 目录的 models.yml。
+-			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
+-			// 失败则回退到 ompProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
+-			// presetModels 同 Pi：取该 provider 在 openai 公共预设桶下的全部预设
+-			// 模型（启动写入是托管条目整体替换语义，漏注会把统一同步写入的同
+-			// provider 其他预设模型挤掉）。
+-			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
+-			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
+-				// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
+-				//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
+-				wroteProvider := false
+-				if wslDistro != "" {
+-					wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
+-					if wErr == nil {
+-						wroteProvider = true
+-						a.Log.Info("omp", "已写入 omp models.yml (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.yml",
+-							launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
+-					} else {
+-						a.Log.Warn("omp", "写入 WSL 侧 omp models.yml 失败，回退内置 provider", wErr.Error())
+-					}
+-				} else {
+-					agentDir := defaultOmpAgentDir()
+-					// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
+-					// 当次 amagi 生成的同名 provider 优先。
+-					pompCfg := launcher.MergeOmpModelsConfig(ompCfg, agentDir)
+-					writeErr := launcher.WriteOmpAgentConfig(agentDir, pompCfg)
+-					if writeErr == nil {
+-						wroteProvider = true
+-						a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
+-							launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+-					} else {
+-						a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
+-					}
+-				}
+-				if wroteProvider {
+-					launchSettings.Provider = launcher.OmpProviderID(providerID)
+-				} else {
+-					launchSettings.Provider, _ = ompProviderMapping(*provider)
+-				}
+-			} else {
+-				a.Log.Warn("omp", "生成 omp models.yml 失败，回退内置 provider", cfgErr.Error())
+-				launchSettings.Provider, _ = ompProviderMapping(*provider)
+-			}
+-
+-			// 冗余兜底：注入对应 API Key env var（与 OpenCode/Pi 的双路注入一致）。
+-			// omp 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
+-			if apiKey != "" {
+-				if _, apiKeyEnv := ompProviderMapping(*provider); apiKeyEnv != "" {
+-					envOverrides[apiKeyEnv] = apiKey
+-				}
+-			}
++		// 临界区整体收进 writeOmpProviderModelsAtLaunch（与 Pi 的
++		// writePiProviderModelsAtLaunch 对称，D5）：WSL 路径构建/写入失败均阻断，
++		// 不静默回退丢自定义 baseURL 的 ompProviderMapping 兜底。
++		var ompWriteErr error
++		launchSettings, ompWriteErr = a.writeOmpProviderModelsAtLaunch(providerID, launchSettings, presetParams, wslDistro, envOverrides)
++		if ompWriteErr != nil {
++			return "", ompWriteErr
+ 		}
+-		a.providerSyncMu.Unlock()
+ 	}
+ 
+ 	// Embedded identity stays hidden until its exact PTY run is active.
+@@ -4999,8 +4971,9 @@ func buildCodexCLIArgs(settings codexLaunchSettings) []string {
+ 
+ // writePiProviderModelsAtLaunch 承担 LaunchPiSession 的 providerSyncMu 临界区：
+ // 构建 + 合并写入 models.json（WSL/Windows 两侧）+ API key env 兜底注入，返回
+-// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。错误仅一
+-// 种：WSL 路径选中 provider 构建失败的阻断（S1 已批准语义，调用方直接上抛）。
++// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。WSL 路径
++// 错误两种，均阻断启动（S1 构建失败 + D5 写入失败，调用方直接上抛）；
++// Windows 路径维持既有回退语义。
+ //
+ // 锁纪律（S1 diting F1）：本函数是临界区的唯一形态，defer Unlock 保证全部
+ // return 路径释放锁——修复前 WSL 构建失败分支在 Lock/Unlock 区间内直接
+@@ -5018,12 +4991,12 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
+ 	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
+ 
+ 	// 合并写入 pi 标准 agent 目录的 models.json。
+-	// 仅当成功生成配置时才改写 settings.Provider 为 amagi-<name>；失败则回退到
+-	// piProviderMapping 的旧兜底（保持向后兼容，不阻断启动——WSL 路径除外，
+-	// 见下方阻断分支）。presetParams 透传 contextWindow/maxTokens/thinking 到 pi
+-	// model 配置。presetModels：该 provider 在 openai 公共预设桶（pi/omp 消费的
+-	// 桶）下的全部预设模型。启动写入是托管条目的整体替换语义，漏注会把统一
+-	// 同步写入的同 provider 其他预设模型挤掉。
++	// 成功写入时改写 settings.Provider 为 amagi-<name>；Windows 路径失败则回退
++	// piProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/写入
++	// 失败均阻断（见下方分支，不静默换非等价身份）。presetParams 透传
++	// contextWindow/maxTokens/thinking 到 pi model 配置。presetModels：该 provider
++	// 在 openai 公共预设桶（pi/omp 消费的桶）下的全部预设模型。启动写入是托管
++	// 条目的整体替换语义，漏注会把统一同步写入的同 provider 其他预设模型挤掉。
+ 	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
+ 	if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, settings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
+ 		// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
+@@ -5038,7 +5011,10 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
+ 				a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
+ 					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
+ 			} else {
+-				a.Log.Warn("pi", "写入 WSL 侧 pi models.json 失败，回退内置 provider", wErr.Error())
++				// D5：WSL 路径写入失败与构建失败同判阻断——piProviderMapping
++				// 回退会丢自定义 baseURL，distro 内 pi 将以第三方 key 误打官方
++				// endpoint（401/错误计费面）。典型诱因：distro 停机 / 9P 异常。
++				return settings, wslPiProviderWriteError(providerID, wErr)
+ 			}
+ 		} else {
+ 			agentDir := defaultPiAgentDir()
+@@ -5087,6 +5063,101 @@ func wslPiProviderBuildError(providerID string, cfgErr error) error {
+ 	return fmt.Errorf("无法构建 Pi 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
+ }
+ 
++// wslPiProviderWriteError 是 WSL 路径「选中 provider 写入失败 → 阻断启动」的
++// 中文报错（D5：与构建失败同判，不静默回退会丢自定义 baseURL 的
++// piProviderMapping 兜底）。独立成函数供单测钉文案。
++func wslPiProviderWriteError(providerID string, writeErr error) error {
++	return fmt.Errorf("无法写入 Pi 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
++}
++
++// writeOmpProviderModelsAtLaunch 承担 LaunchOmpSession 的 providerSyncMu 临界区
++// （与 writePiProviderModelsAtLaunch 对称，D5）：构建 + 写入 models.yml
++// （WSL/Windows 两侧）+ API key env 兜底注入，返回可能更新的 launchSettings。
++// provider 不可读时原样返回（既有行为）。WSL 路径构建/写入失败均阻断（D5：
++// omp 与 pi 同判——ompProviderMapping 回退会丢自定义 baseURL，distro 内 omp
++// 将以第三方 key 误打官方 endpoint）；Windows 路径维持既有回退语义。
++// 锁纪律同 Pi：defer Unlock 保证全部 return 路径释放锁。
++func (a *App) writeOmpProviderModelsAtLaunch(providerID string, launchSettings ompLaunchSettings, presetParams config.Parameters, wslDistro string, envOverrides map[string]string) (ompLaunchSettings, error) {
++	a.providerSyncMu.Lock()
++	defer a.providerSyncMu.Unlock()
++
++	provider, err := a.Config.GetProvider(providerID)
++	if err != nil {
++		return launchSettings, nil // provider 不可读：不改 settings、不注入 env（既有行为）
++	}
++	launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
++	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
++
++	// 合并写入 omp 标准 agent 目录的 models.yml。成功写入时改写
++	// launchSettings.Provider 为 amagi-<name>；Windows 路径失败则回退
++	// ompProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/
++	// 写入失败均阻断（不静默换非等价身份）。presetModels 同 Pi：取该 provider
++	// 在 openai 公共预设桶下的全部预设模型（启动写入是托管条目整体替换语义，
++	// 漏注会把统一同步写入的同 provider 其他预设模型挤掉）。
++	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
++	if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
++		// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
++		//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
++		wroteProvider := false
++		if wslDistro != "" {
++			wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
++			if wErr == nil {
++				wroteProvider = true
++				a.Log.Info("omp", "已写入 omp models.yml (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.yml",
++					launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
++			} else {
++				// D5：WSL 路径写入失败阻断（与 Pi 同判），不回退丢 baseURL 的兜底。
++				return launchSettings, wslOmpProviderWriteError(providerID, wErr)
++			}
++		} else {
++			agentDir := defaultOmpAgentDir()
++			// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
++			// 当次 amagi 生成的同名 provider 优先。
++			pompCfg := launcher.MergeOmpModelsConfig(ompCfg, agentDir)
++			writeErr := launcher.WriteOmpAgentConfig(agentDir, pompCfg)
++			if writeErr == nil {
++				wroteProvider = true
++				a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
++					launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
++			} else {
++				a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
++			}
++		}
++		if wroteProvider {
++			launchSettings.Provider = launcher.OmpProviderID(providerID)
++		} else {
++			launchSettings.Provider, _ = ompProviderMapping(*provider)
++		}
++	} else {
++		// D5：WSL 路径构建失败阻断（与 Pi 的 wslPiProviderBuildError 同判）。
++		if wslDistro != "" {
++			return launchSettings, wslOmpProviderBuildError(providerID, cfgErr)
++		}
++		a.Log.Warn("omp", "生成 omp models.yml 失败，回退内置 provider", cfgErr.Error())
++		launchSettings.Provider, _ = ompProviderMapping(*provider)
++	}
++
++	// 冗余兜底：注入对应 API Key env var（与 OpenCode/Pi 的双路注入一致）。
++	// omp 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
++	if apiKey != "" {
++		if _, apiKeyEnv := ompProviderMapping(*provider); apiKeyEnv != "" {
++			envOverrides[apiKeyEnv] = apiKey
++		}
++	}
++	return launchSettings, nil
++}
++
++// wslOmpProviderBuildError / wslOmpProviderWriteError 是 WSL 路径「选中
++// provider 构建/写入失败 → 阻断启动」的中文报错（D5：与 Pi 同判，不静默回退
++// 丢自定义 baseURL 的 ompProviderMapping 兜底）。独立成函数供单测钉文案。
++func wslOmpProviderBuildError(providerID string, cfgErr error) error {
++	return fmt.Errorf("无法构建 omp 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
++}
++
++func wslOmpProviderWriteError(providerID string, writeErr error) error {
++	return fmt.Errorf("无法写入 omp 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
++}
++
+ // piProviderMapping 把 amagi Provider 映射成 Pi 的内置 provider 名 + 对应 API Key env var。
+ //
+ // 注意：这是**回退路径**，仅当 LaunchPiSession 未能生成 pi models.json 时使用。
+diff --git a/app_wsl_supply_test.go b/app_wsl_supply_test.go
+index 1c63fb8..c68efa9 100644
+--- a/app_wsl_supply_test.go
++++ b/app_wsl_supply_test.go
+@@ -389,3 +389,98 @@ func TestVisionFaceConsentedNotSynced(t *testing.T) {
+ 		t.Fatalf("published unit must map to synced, got %+v", face)
+ 	}
+ }
++
++// --- D5：Pi/OMP WSL 侧 provider 写入失败阻断（不回退丢 baseURL 的内置映射） ---
++//
++// 非 Windows 宿主上 launcher.WSLUserHome 恒返回 ""（runtime.GOOS 守卫），
++// WriteWSLPi/ompAgentConfig 在 resolveWSLAgentTarget 即失败——本组测试用
++// "FakeDistro" 真实触发 WSL 写失败分支，不需要注入点。
++
++// 可构建（有 baseURL）的 openai 兼容 provider：构建成功、WSL 写失败。
++func saveBuildableProvider(t *testing.T, app *App, id string) {
++	t.Helper()
++	if err := app.Config.SaveProvider(id, config.Provider{
++		Type: "openai", BaseURL: "https://api.example.com/v1", DefaultModel: "m",
++	}); err != nil {
++		t.Fatalf("save provider: %v", err)
++	}
++}
++
++// TestPiProviderWriteWSLFailureBlocksLaunch（D5）：WSL 路径写入失败不再回退
++// piProviderMapping（丢自定义 baseURL → 第三方 key 误打官方 endpoint），而是
++// 与构建失败同判阻断；锁在阻断 return 后可用（F1 纪律延续）。
++func TestPiProviderWriteWSLFailureBlocksLaunch(t *testing.T) {
++	app := newTestApp(t)
++	saveBuildableProvider(t, app, "wsl-write-fail")
++	env := map[string]string{}
++	_, err := app.writePiProviderModelsAtLaunch("wsl-write-fail", piLaunchSettings{Model: "m"}, config.Parameters{}, "FakeDistro", env)
++	if err == nil || !strings.Contains(err.Error(), "无法写入 Pi 供应商") || !strings.Contains(err.Error(), "未改用默认模型") {
++		t.Fatalf("expected WSL write-failure block error, got %v", err)
++	}
++	if !app.providerSyncMu.TryLock() {
++		t.Fatal("providerSyncMu leaked by the WSL write-failure return path")
++	}
++	app.providerSyncMu.Unlock()
++}
++
++// TestOmpProviderWriteWSLFailureBlocksLaunch（D5）：omp 与 pi 同判——WSL 写入
++// 失败阻断，不静默回退；锁可用。
++func TestOmpProviderWriteWSLFailureBlocksLaunch(t *testing.T) {
++	app := newTestApp(t)
++	saveBuildableProvider(t, app, "wsl-write-fail")
++	env := map[string]string{"PI_OFFLINE": "1"}
++	_, err := app.writeOmpProviderModelsAtLaunch("wsl-write-fail", ompLaunchSettings{Model: "m"}, config.Parameters{}, "FakeDistro", env)
++	if err == nil || !strings.Contains(err.Error(), "无法写入 omp 供应商") || !strings.Contains(err.Error(), "未改用默认模型") {
++		t.Fatalf("expected WSL write-failure block error, got %v", err)
++	}
++	if !app.providerSyncMu.TryLock() {
++		t.Fatal("providerSyncMu leaked by the omp WSL write-failure return path")
++	}
++	app.providerSyncMu.Unlock()
++}
++
++// TestOmpProviderBuildWSLFailureBlocksLaunch（D5）：WSL 路径构建失败从「告警
++// 回退」收紧为阻断（与 pi 的 wslPiProviderBuildError 同判）。
++func TestOmpProviderBuildWSLFailureBlocksLaunch(t *testing.T) {
++	app := newTestApp(t)
++	if err := app.Config.SaveProvider("omp-no-base", config.Provider{}); err != nil {
++		t.Fatalf("save provider: %v", err)
++	}
++	_, err := app.writeOmpProviderModelsAtLaunch("omp-no-base", ompLaunchSettings{Model: "m"}, config.Parameters{}, "FakeDistro", map[string]string{})
++	if err == nil || !strings.Contains(err.Error(), "无法构建 omp 供应商") || !strings.Contains(err.Error(), "未改用默认模型") {
++		t.Fatalf("expected WSL build-failure block error, got %v", err)
++	}
++	if !app.providerSyncMu.TryLock() {
++		t.Fatal("providerSyncMu leaked by the omp WSL build-failure return path")
++	}
++	app.providerSyncMu.Unlock()
++}
++
++// TestPiOmpWindowsPathWriteFailureKeepsFallback（D5 回归钉）：非 WSL 路径
++// 维持既有回退语义——写入失败（agent 根被同名文件占位）不阻断启动，
++// Provider 回退到内置映射。隔离 home 防止触碰真实用户目录。
++func TestPiOmpWindowsPathWriteFailureKeepsFallback(t *testing.T) {
++	home := isolatedHome(t)
++	// .pi / .omp 都被同名文件占位 → MkdirAll 失败 → 写入失败路径。
++	for _, dir := range []string{".pi", ".omp"} {
++		if err := os.WriteFile(filepath.Join(home, dir), []byte("blocked"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++	}
++	app := newTestApp(t)
++	saveBuildableProvider(t, app, "win-fallback")
++	piSettings, piErr := app.writePiProviderModelsAtLaunch("win-fallback", piLaunchSettings{Model: "m"}, config.Parameters{}, "", map[string]string{})
++	if piErr != nil {
++		t.Fatalf("Windows path must keep fallback semantics (pi): %v", piErr)
++	}
++	if piSettings.Provider == "" || strings.HasPrefix(piSettings.Provider, "amagi-") {
++		t.Fatalf("pi fallback must map to the builtin provider, got %q", piSettings.Provider)
++	}
++	ompSettings, ompErr := app.writeOmpProviderModelsAtLaunch("win-fallback", ompLaunchSettings{Model: "m"}, config.Parameters{}, "", map[string]string{})
++	if ompErr != nil {
++		t.Fatalf("Windows path must keep fallback semantics (omp): %v", ompErr)
++	}
++	if ompSettings.Provider == "" || strings.HasPrefix(ompSettings.Provider, "amagi-") {
++		t.Fatalf("omp fallback must map to the builtin provider, got %q", ompSettings.Provider)
++	}
++}
+diff --git a/internal/aiproxy/environment.go b/internal/aiproxy/environment.go
+index 92c400e..3a4fe07 100644
+--- a/internal/aiproxy/environment.go
++++ b/internal/aiproxy/environment.go
+@@ -13,6 +13,28 @@ import (
+ 
+ var proxyKeys = map[string]bool{"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true}
+ 
++// aiProxyEnvMarker 是 CodeBox 内部激活标记键：ApplyEnv 启用路径追加它，
++// PinProxyEnvironment 以「spec.Env 含该标记=1」判定代理已激活。停用路径必须
++// 剥离继承自进程环境的同名键（D4）——嵌套 CodeBox（宿主 CLI 会话本身被
++// CodeBox 代理）启动时，旧 marker 会随 MergeWithSystem 流入子 CodeBox 的
++// 会话 env，使已停用代理的 WSL 会话仍被 NAT 文案拒绝，且文案指引（「停用
++// AI 代理分流」）按提示操作无效。
++const aiProxyEnvMarker = "AMAGI_CODEBOX_AI_PROXY"
++
++// stripAIProxyEnvMarker 移除 env 中的内部激活标记，其余条目（含用户自设的
++// 普通代理变量）原样保留。
++func stripAIProxyEnvMarker(env []string) []string {
++	out := make([]string, 0, len(env))
++	for _, entry := range env {
++		key, _, _ := strings.Cut(entry, "=")
++		if key == aiProxyEnvMarker {
++			continue
++		}
++		out = append(out, entry)
++	}
++	return out
++}
++
+ func (s *Service) proxyURLLocked(providers []Provider) (string, error) {
+ 	if !s.loaded {
+ 		return "", errors.New("AI 代理策略尚未加载，请等待应用初始化完成")
+@@ -52,12 +74,17 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
+ 		return nil, err
+ 	}
+ 	if address == "" {
+-		return base, nil
++		// D4：停用路径不得继承进程环境里的内部标记（嵌套 CodeBox 场景旧
++		// marker 残留会让 PinProxyEnvironment 误判激活，WSL 会话被 NAT 文案
++		// 拒绝）；用户的普通代理变量语义保持原样透传。
++		return stripAIProxyEnvMarker(base), nil
+ 	}
+ 	out := make([]string, 0, len(base)+8)
+ 	for _, entry := range base {
+ 		key, _, _ := strings.Cut(entry, "=")
+-		if !proxyKeys[strings.ToUpper(key)] {
++		// 启用路径由本函数唯一重建 marker（先剔旧值再追加新值，D4）；代理键
++		// 由启用路由整体接管（既有语义）。
++		if !proxyKeys[strings.ToUpper(key)] && key != aiProxyEnvMarker {
+ 			out = append(out, entry)
+ 		}
+ 	}
+@@ -65,7 +92,7 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
+ 		out = append(out, key+"="+address)
+ 	}
+ 	out = append(out, "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
+-	out = append(out, "AMAGI_CODEBOX_AI_PROXY=1")
++	out = append(out, aiProxyEnvMarker+"=1")
+ 	return out, nil
+ }
+ 
+@@ -78,7 +105,7 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
+ func PinProxyEnvironment(spec platform.ResolvedLaunchSpec) (platform.ResolvedLaunchSpec, error) {
+ 	active := false
+ 	for _, entry := range spec.Env.Variables {
+-		if entry == "AMAGI_CODEBOX_AI_PROXY=1" {
++		if entry == aiProxyEnvMarker+"=1" {
+ 			active = true
+ 			break
+ 		}
+diff --git a/internal/aiproxy/environment_test.go b/internal/aiproxy/environment_test.go
+index 0c631fa..9f6dbe5 100644
+--- a/internal/aiproxy/environment_test.go
++++ b/internal/aiproxy/environment_test.go
+@@ -1,6 +1,7 @@
+ package aiproxy
+ 
+ import (
++	"context"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -88,3 +89,59 @@ func TestPinProxyEnvironmentWSLInactiveBypassesGate(t *testing.T) {
+ 		t.Fatalf("inactive session must pass through untouched: %v", err)
+ 	}
+ }
++
++// D4: the disabled ApplyEnv path must strip an inherited AMAGI_CODEBOX_AI_PROXY
++// marker. Nested CodeBox (a CodeBox-managed CLI session hosting another
++// CodeBox) inherits the parent marker through MergeWithSystem; leaving it in
++// place made PinProxyEnvironment treat the already-disabled proxy as active
++// and reject WSL sessions with NAT guidance the user cannot act on.
++func TestApplyEnvDisabledStripsInheritedMarker(t *testing.T) {
++	s := New(t.TempDir())
++	defer s.Close()
++	if err := s.Load(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	base := []string{
++		"AMAGI_CODEBOX_AI_PROXY=1", // inherited from a CodeBox-proxied parent
++		"HTTP_PROXY=http://user-proxy:8080", "HTTPS_PROXY=http://user-proxy:8080",
++		"NO_PROXY=corp.example", "HOME=/example", "API_KEY=keep",
++	}
++	got, err := s.ApplyEnv(base)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, entry := range got {
++		if strings.HasPrefix(entry, aiProxyEnvMarker+"=") {
++			t.Fatalf("disabled path leaked inherited marker: %v", got)
++		}
++	}
++	for _, keep := range []string{"HTTP_PROXY=http://user-proxy:8080", "NO_PROXY=corp.example", "API_KEY=keep"} {
++		if !containsEntry(got, keep) {
++			t.Errorf("disabled path must preserve user env as-is, missing %q: %v", keep, got)
++		}
++	}
++}
++
++// D4: no marker in the base env — the disabled path returns the user env
++// unchanged (deep-equal, no accidental reordering or filtering).
++func TestApplyEnvDisabledWithoutMarkerUnchanged(t *testing.T) {
++	s := New(t.TempDir())
++	defer s.Close()
++	if err := s.Load(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	base := []string{"HTTP_PROXY=http://user-proxy:8080", "HOME=/example"}
++	got, err := s.ApplyEnv(base)
++	if err != nil || len(got) != len(base) {
++		t.Fatalf("disabled path must not alter plain env: %v (%v)", got, err)
++	}
++}
++
++func containsEntry(env []string, want string) bool {
++	for _, e := range env {
++		if e == want {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/aiproxy/service_test.go b/internal/aiproxy/service_test.go
+index b1baee0..f08c1ef 100644
+--- a/internal/aiproxy/service_test.go
++++ b/internal/aiproxy/service_test.go
+@@ -165,11 +165,17 @@ func TestNativeRoutingLifecycleAndDirectFallback(t *testing.T) {
+ 	if err := s.Start(context.Background()); err != nil {
+ 		t.Fatal(err, s.State().Status.Logs)
+ 	}
+-	base := []string{"HTTP_PROXY=http://old:5800", "all_proxy=socks5://old:5800", "no_proxy=*", "HOME=/example", "API_KEY=keep"}
++	base := []string{"HTTP_PROXY=http://old:5800", "all_proxy=socks5://old:5800", "no_proxy=*", "HOME=/example", "API_KEY=keep",
++		// D4：携带继承 marker（嵌套 CodeBox 场景）——启用路径必须剔旧值后唯一
++		// 重建，不得出现两条 marker。
++		"AMAGI_CODEBOX_AI_PROXY=1"}
+ 	env, err := s.ApplyEnv(base)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	if c := strings.Count(strings.Join(env, "\n"), "AMAGI_CODEBOX_AI_PROXY="); c != 1 {
++		t.Fatalf("enabled path must rebuild the marker exactly once, got %d: %v", c, env)
++	}
+ 	m := map[string]string{}
+ 	for _, e := range env {
+ 		k, v, _ := strings.Cut(e, "=")
+diff --git a/launch_planner.go b/launch_planner.go
+index 21ed84a..e3a3e88 100644
+--- a/launch_planner.go
++++ b/launch_planner.go
+@@ -270,6 +270,16 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
+ 	var effects []launchplan.EffectSpec
+ 	realBackend := strings.TrimRight(provider.EffectiveBaseURL("anthropic"), "/")
+ 	if recipe.UseHeadroom {
++		// D1（remote/restart 链，与桌面 LaunchSession 同一判定与文案）：
++		// Headroom 会话落 WSL 且 NAT/未知网络模式 → 计划构建即拒绝，防止
++		// HeadroomStart effect 先启动宿主侧 8787、而 distro 内
++		// ANTHROPIC_BASE_URL=localhost:8787 不可达的静默失败。mirrored 遵循现有
++		// 准入策略放行（不宣称连通）。v1 客户端收到既有 capability 失败文案
++		//（BuildFailure 无 message 字段，不扩公开契约）；判定细节见桌面链同款
++		// 中文指引（headroomWSLNetworkAdmission 文案）。
++		if err := headroomWSLNetworkAdmission(headroomSpecTargetsWSL(spec), spec.Env.Variables); err != nil {
++			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
++		}
+ 		fp := sharedFingerprintForHeadroom("claude-headroom", realBackend, headroom.DefaultPort)
+ 		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fp})
+ 		effects = append(effects, launchplan.EffectSpec{
+@@ -497,6 +507,15 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
+ 	var admissions []launchplan.SharedAdmissionSpec
+ 	var effects []launchplan.EffectSpec
+ 	if recipe.UseHeadroom {
++		// D6（remote/restart 链）：Codex 压缩路由仅写入宿主侧 config.toml
++		//（syncCodexGlobalHeadroomConfig），WSL codex 读发行版侧配置且无同步，
++		// 任何网络模式下压缩都不生效——显式选择压缩的 WSL 会话按「无法兑现即
++		// 拒绝」处理（与 Claude D1 对称），不默默以直连冒充压缩生效；桌面链的
++		// 全局开关 advisory 在 LaunchCodexSession。v1 客户端收到既有 capability
++		// 失败文案（不扩公开契约）。
++		if headroomSpecTargetsWSL(spec) {
++			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
++		}
+ 		upstream := strings.TrimRight(provider.EffectiveBaseURL("openai"), "/")
+ 		if upstream == "" {
+ 			upstream = codexGlobalHeadroomDefaultTarget

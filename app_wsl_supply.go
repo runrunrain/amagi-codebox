@@ -129,6 +129,9 @@ func (s *wslSharedFileSource) ModalityKBBytes() ([]byte, error) {
 
 // newWSLSupplyCoordinator 构造生产协调器并注册 S1 托管面 + S2 键级投影适配器。
 func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator {
+	if appLogHook == nil && app.Log != nil {
+		appLogHook = func(scope, msg, detail string) { app.Log.Warn(scope, msg, detail) }
+	}
 	coord := wslsupply.NewCoordinator(configDir, wslsupplySupplyLog{log: app.Log}, wslsupply.DefaultProbes())
 	coord.RegisterProjection(wslsupply.NewPiManagedModelsAdapter(&wslPiManagedSource{app: app}))
 	coord.RegisterProjection(wslsupply.NewVisionExportAdapter(&wslSharedFileSource{app: app}))
@@ -189,6 +192,139 @@ func (a *App) runWSLManagedModelsAtLaunch(distro string) error {
 	return a.gateWSLPiConfigSupplyResult(res, err, distro)
 }
 
+// runWSLSharedFilesAtLaunch 是 SA-09（wsl-goal-closure）的共享小文件启动
+// 补漏/撤回闸门：会话启动前对已注册的 shared 作用域小文件（视觉清单导出
+// shared/vision-export、多模态学习层 shared/modality-kb）执行一次供给运行，
+// 覆盖「停机期间 Windows 侧关闭导出/删除 provider → 保存推送被停机守卫跳过
+// → 旧密钥副本无限留盘继续被会话内工具消费」的缺口。
+//
+// 边界（冻结接口，C1 接线五 CLI desktop/remote/restart）：
+//   - 只处理上述两个 shared 单元：不扫描 skills、不安装插件、不联网；
+//   - 普通启动不因「从未授权」阻断：无授权且状态面确认无受管副本的
+//     awaiting-consent/unmanaged 等预期态返回 nil；
+//   - 受管敏感副本（视觉清单）可能存在时，任何不能确认其安全/撤回完成的
+//     结果——RunUnits 错误、UnitFailed（含 withdrawal-remove-failed、staging
+//     unverified、写失败）、withdrawal-unconfirmed-frozen——返回明确 error
+//     阻断会话（未知不能推断旧副本安全）；
+//   - modality-kb 是布尔结论非敏感面：失败不阻断（状态页可见）；
+//   - ctx 已取消 → 返回 ctx.Err()（取消传播给启动链）。
+//
+// 调用时机：已解析 distro、PTY 启动之前。内部 Go API，不进 Wails 绑定。
+// runWSLSharedFilesForSpec is shared by desktop activation and the remote/restart
+// PTY effect. Keep this out of BuildPlan: distro probing and supply are effects.
+func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec platform.ResolvedLaunchSpec) error {
+	if spec.BootstrapMode != platform.BootstrapWSL || runner == nil {
+		return nil
+	}
+	return runWSLSharedFilesAtLaunch(ctx, runner, wslDefaultDistroFn(spec.Env.Variables))
+}
+
+func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string) error {
+	if runner == nil || strings.TrimSpace(distro) == "" {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	units := wslSupplyUnitsFiltered(runner, wslsupply.UnitSharedVisionExport, wslsupply.UnitSharedModalityKB)
+	if len(units) == 0 {
+		return nil // 裸运行器无 shared 适配器：不阻断普通启动
+	}
+	res, runErr := runner.RunUnits(ctx, distro, wslsupply.CLICommon, wslsupply.ReasonLaunch, units)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var visionResult *wslsupply.UnitResult
+	for i := range res.Results {
+		if res.Results[i].Unit == wslsupply.UnitSharedVisionExport {
+			visionResult = &res.Results[i]
+		}
+	}
+	if runErr != nil {
+		// 供给运行不可用：由资格核验按事实裁决（无副本线索 → 放行；未知/
+		// unsafe → 阻断），不按“无历史即安全”放行。
+		if err := gateWSLSharedVisionConsumption(ctx, runner, distro, units, res, nil); err != nil {
+			return fmt.Errorf("WSL 共享视觉清单供给运行失败（%v）；%v", runErr, err)
+		}
+		return nil
+	}
+	if visionResult != nil && visionResult.Outcome == wslsupply.UnitBlocked &&
+		strings.Contains(visionResult.Detail, "withdrawal-unconfirmed") {
+		return fmt.Errorf("WSL 内视觉清单密钥副本未确认撤回（%s 目标被手动修改而宿主已撤回导出）；本次启动不消费该副本，请在 WSL 内处理 ~/.agents/amagi-media-models.json 后重试", distro)
+	}
+	// 学习层（modality-kb）非敏感：失败/阻断不阻断启动。
+	return gateWSLSharedVisionConsumption(ctx, runner, distro, units, res, visionResult)
+}
+
+// wslSensitiveAssessor 是启动闸门消费的资格核验面（真实 Coordinator 提供；
+// 测试 stub 运行器通常不实现——配合单元注册面判定能力缺失）。
+type wslSensitiveAssessor interface {
+	AssessWSLSensitiveConsumption(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID, res *wslsupply.UnitResult) wslsupply.SensitiveAssessment
+	ConfirmLegacyVisionAbsent(ctx context.Context, distro string) error
+}
+
+// gateWSLSharedVisionConsumption 是共享视觉清单的启动消费资格门（攻坚契约：
+// 真实 assessment/result facts，不靠 LastOutcome 字符串或一个 bool 历史）。
+// 本次写已发生/未知、pending、unsafe/unknown 缺资格不放行；Applied/Fresh/
+// WarnDegraded 也不能跳过已知风险；请求了敏感单元却缺资格能力不是安全证据；
+// 无历史/确无当前副本的普通可选失败不误阻。
+func gateWSLSharedVisionConsumption(ctx context.Context, runner wslsupply.Runner, distro string, units []wslsupply.UnitID, res wslsupply.RunResult, visionResult *wslsupply.UnitResult) error {
+	requested := false
+	for _, u := range units {
+		if u == wslsupply.UnitSharedVisionExport {
+			requested = true
+		}
+	}
+	if !requested {
+		return nil
+	}
+	if assessor, ok := runner.(wslSensitiveAssessor); ok {
+		// 生产路径：真实协调器的逐目标资格核验（真实 assessment/result facts）。
+		assessment := assessor.AssessWSLSensitiveConsumption(ctx, distro, wslsupply.CLICommon, wslsupply.UnitSharedVisionExport, visionResult)
+		switch assessment.Consumption {
+		case wslsupply.ConsumptionSafe, wslsupply.ConsumptionAbsent, wslsupply.ConsumptionUserOwned, wslsupply.ConsumptionNotApplicable:
+			if assessment.Reason == "legacy-clue-present-copy-absent" {
+				// 手动处理后重新检查/启动即真实解除：持久记录该完整身份的 absent
+				// 处置（best-effort；失败仅告警，证据保留）。
+				if cerr := assessor.ConfirmLegacyVisionAbsent(ctx, distro); cerr != nil {
+					logWSLSharedVisionConfirmWarn(cerr)
+				}
+			}
+			return nil
+		case wslsupply.ConsumptionUnsafe:
+			if strings.HasPrefix(assessment.Reason, "legacy") {
+				return fmt.Errorf("WSL 目标 %s 存在未确认的旧版密钥副本（%s，文件 %s）；请在 WSL 内手动处理该文件后重试启动（处理后本目标将自动核验解除），或重新授权视觉清单共享完成受管接管", distro, assessment.Reason, "~/.agents/amagi-media-models.json")
+			}
+			return fmt.Errorf("WSL 内视觉清单密钥副本状态未确认（%s）；本次启动不消费该副本，请检查 WSL 内 ~/.agents/amagi-media-models.json 或重试", assessment.Reason)
+		default: // unknown / 未判定
+			return fmt.Errorf("WSL 内视觉清单密钥副本安全状态无法判定（%s）；本次启动不消费该副本，请检查 WSL 内 ~/.agents/amagi-media-models.json 或重试", assessment.Reason)
+		}
+	}
+	// 无资格核验面的运行器（测试 stub / 裸运行器）：退回持久事实谓词——已知
+	// 副本可能仍在时阻断；确无副本线索的普通可选失败不误阻（生产协调器恒走
+	// 上方真实 assessment 面）。
+	type sensitiveCopyProber interface {
+		SensitiveCopyPending(distro string, unit wslsupply.UnitID) bool
+		LegacySensitiveCopyPending(distro string) bool
+	}
+	if p, ok := runner.(sensitiveCopyProber); ok {
+		if p.SensitiveCopyPending(distro, wslsupply.UnitSharedVisionExport) || p.LegacySensitiveCopyPending(distro) {
+			return fmt.Errorf("WSL 内视觉清单密钥副本可能仍在（受管副本未确认撤回或存在迁移遗留线索）；本次启动不消费该副本，请检查 WSL 内 ~/.agents/amagi-media-models.json 或重试")
+		}
+	}
+	return nil
+}
+
+// logWSLSharedVisionConfirmWarn 记录 absent 确认落盘失败（不影响放行判定）。
+func logWSLSharedVisionConfirmWarn(err error) {
+	if appLogHook != nil {
+		appLogHook("wslsupply", "旧副本 absent 确认未持久化（下次启动重新核验）", err.Error())
+	}
+}
+
+// appLogHook 是无 App 上下文路径的日志接缝（测试注入；生产由 App 装配设置）。
+var appLogHook func(scope, msg, detail string)
+
 // gateWSLPiConfigSupplyResult 是启动闸门的统一判定（桌面闸门与 remote effect
 // 共用，保证同一目标同一结果）：仅 managed-models 的 target-corrupt 阻断；
 // 其余失败/阻断告警放行（冻结/未托管/待同意属预期态，不刷错误日志）。
@@ -207,8 +343,11 @@ func (a *App) gateWSLPiConfigSupplyResult(res wslsupply.RunResult, err error, di
 // 保存标脏 → 异步推送（已运行 distro + 无活动会话）
 // ---------------------------------------------------------------------------
 
-// wslSupplyPushState 是异步推送的 single-flight 状态：同一时刻至多一个推送在
-// 执行，期间的标脏合并为一次补推（推送风暴不放大跨界次数）。
+// wslSupplyPushState 是异步推送的 single-flight 状态：同一时刻至多一个推送
+// 工作循环在执行，期间的标脏合并为一次补推（推送风暴不放大跨界次数）。
+// SA-08（wsl-goal-closure）：改为「单 worker 循环消费 rerun」——旧实现的
+// defer 内递归调用会再次命中 running=true 而直接返回，running 永不释放，
+// 此后所有保存推送停摆直到进程重启。
 var wslSupplyPushState struct {
 	mu      sync.Mutex
 	running bool
@@ -228,11 +367,29 @@ var wslDistroRunningFn = func(distro string) bool {
 var wslDefaultDistroFn = platform.DefaultWSLDistro
 
 // scheduleWSLSupplyPush 异步调度一次保存后推送（非阻塞；失败仅告警——「宿主
-// 保存成功」与「WSL 已同步」是两个结果）。
+// 保存成功」与「WSL 已同步」是两个结果）。后台 goroutine 由包级 WaitGroup
+// 追踪（PR09：测试可确定性等待推送生命周期真正退出后再还原全局接缝，
+// 不 sleep 碰运气）。
+var wslSupplyPushWG sync.WaitGroup
+
 func (a *App) scheduleWSLSupplyPush() {
-	go a.pushWSLSupplyOnce()
+	wslSupplyPushWG.Add(1)
+	go func() {
+		defer wslSupplyPushWG.Done()
+		a.pushWSLSupplyOnce()
+	}()
 }
 
+// waitForWSLSupplyPushIdleForTest 等待全部已调度的后台推送退出（PR09：
+// 仅供测试 cleanup 使用——Add 在 schedule 内同步完成，Enable/保存调用
+// 返回后本等待即覆盖其全部后台生命周期）。
+func waitForWSLSupplyPushIdleForTest() {
+	wslSupplyPushWG.Wait()
+}
+
+// pushWSLSupplyOnce 是 single-flight 入口：已在工作时只置 rerun 标记；
+// 工作循环完成后 rerun 仍置位则就地再消费一轮，所有退出路径都释放 running
+// （SA-08：等锁期间/执行中再次标脏的保存不得永久停摆后续推送）。
 func (a *App) pushWSLSupplyOnce() {
 	wslSupplyPushState.mu.Lock()
 	if wslSupplyPushState.running {
@@ -244,16 +401,23 @@ func (a *App) pushWSLSupplyOnce() {
 	wslSupplyPushState.mu.Unlock()
 	defer func() {
 		wslSupplyPushState.mu.Lock()
-		if wslSupplyPushState.rerun {
-			wslSupplyPushState.rerun = false
-			wslSupplyPushState.mu.Unlock()
-			a.pushWSLSupplyOnce() // 合并期间又有标脏：补推一轮
-			return
-		}
 		wslSupplyPushState.running = false
 		wslSupplyPushState.mu.Unlock()
 	}()
+	for {
+		a.doPushWSLSupply()
+		wslSupplyPushState.mu.Lock()
+		if !wslSupplyPushState.rerun {
+			wslSupplyPushState.mu.Unlock()
+			return
+		}
+		wslSupplyPushState.rerun = false
+		wslSupplyPushState.mu.Unlock()
+	}
+}
 
+// doPushWSLSupply 执行一轮实际推送（守卫：停机 distro 不唤醒、活动会话暂停）。
+func (a *App) doPushWSLSupply() {
 	if a == nil || a.WSLSupply == nil {
 		return
 	}
@@ -444,6 +608,14 @@ func wslFaceFromUnit(key, label string, st wslsupply.TargetStatus, unit wslsuppl
 			continue
 		}
 		switch {
+		case u.PendingOperation != "":
+			// 攻坚契约：未决持久操作优先于旧 written/consented——不得显示
+			// 「已同步」掩盖待确认事实。
+			face.State = "pending-op"
+			face.Detail = "有未完成的写入操作待确认（" + u.LastAttemptOutcome + "）；重启后事实保留，待下次检查收敛"
+		case u.StateUnpersisted:
+			face.State = "pending-op"
+			face.Detail = "内容已写入 WSL 但登记未持久化；重启后会重新核验"
 		case u.Frozen:
 			face.State = "frozen"
 			face.Detail = wslFrozenReasonText(u.FrozenReason)
@@ -474,7 +646,18 @@ func wslFaceFromUnit(key, label string, st wslsupply.TargetStatus, unit wslsuppl
 
 func wslVisionFace(st wslsupply.TargetStatus, pending bool) WSLConfigSupplyFace {
 	face := wslFaceFromUnit("vision-export", "视觉清单共享", st, wslsupply.UnitSharedVisionExport, pending)
+	if face.State == "synced" && len(st.PendingIntents) > 0 {
+		// 未决操作摘要存在时不得宣称已同步（事实优先于旧 LastSuccess）。
+		face.State = "pending-op"
+		face.Detail = "有未完成的供给操作待确认；重启后事实保留"
+	}
 	for _, u := range st.Units {
+		if u.Unit == wslsupply.UnitSharedVisionExport && u.LastOutcome == "withdrawn" {
+			// SA-09：撤回终态——密钥副本已从 WSL 移除，不虚报「已同步」。
+			face.State = "unchecked"
+			face.Detail = "已撤回（WSL 内密钥副本已删除）；重新开启导出后会再次发布"
+			return face
+		}
 		if u.Unit == wslsupply.UnitSharedVisionExport && !u.Consented {
 			face.State = "awaiting-consent"
 			face.Detail = "尚未授权向 WSL 共享密钥副本"
@@ -491,7 +674,7 @@ func wslVisionFace(st wslsupply.TargetStatus, pending bool) WSLConfigSupplyFace 
 
 // wslPluginsFace 聚合插件重放面卡片（S5）：只读登记摘要（不唤醒；启动路径
 // 的「缺失插件」提示数据源——只提示，不自动安装）。Installed=false 的登记
-//（缺失/上次失败）以 warning 语义呈现，不冒充已同步。
+// （缺失/上次失败）以 warning 语义呈现，不冒充已同步。
 func wslPluginsFace(a *App) WSLConfigSupplyFace {
 	face := WSLConfigSupplyFace{Key: "pi-plugins", Label: "Pi 插件（WSL 重放）", State: "unchecked", Detail: "尚无本系统登记的 WSL 插件重放"}
 	coord := a.wslPluginCoordinator()
@@ -915,6 +1098,8 @@ func piPreviewActionName(action wslsupply.Action) string {
 		return "none"
 	case wslsupply.ActionWriteProjection:
 		return "write"
+	case wslsupply.ActionRemoveProjection:
+		return "remove" // SA-09：撤回（移除受管密钥副本）
 	case wslsupply.ActionBlocked:
 		return "blocked"
 	default:
@@ -1090,17 +1275,27 @@ func piConfigUnitDetails(st wslsupply.TargetStatus, pendingPush bool) []WSLConfi
 }
 
 // verdictForWSLPiConfigSupply 是纯配置供给（无 A2 单元）结果的闸门判定
-// （P3-S2）：仅 managed-models 的 target-corrupt 阻断（后续 overlay 会破坏
-// 损坏文件）；其余失败/阻断告警放行（可选偏好面，design §六）。桌面闸门与
-// remote effect 共用本函数——同一目标同一结果。
+// （P3-S2 + wsl-goal-closure steer#3 严谨分类）：
+//   - managed-models（选中 amagi-* provider 的必需模型供给）未落地
+//     （failed/blocked）→ 阻断：后续 overlay/内置回退会把会话切到未经选择的
+//     endpoint/provider，不能按可选配置告警后继续；确认内容一致的 Fresh
+//     （安全无动作）放行；
+//   - 其余键级/可选单元失败 → 告警放行（可选偏好面，design §六）；
+//   - 预期态（awaiting-consent/frozen/unmanaged/detached/conversion-blocked）
+//     状态页可见，不作为启动告警面。
+//
+// 桌面闸门与 remote effect 共用本函数——同一目标同一结果。
 func verdictForWSLPiConfigSupply(res wslsupply.RunResult, runErr error) (launchErr error, warnMsg, warnDetail string) {
 	if runErr != nil {
 		return nil, "WSL 托管配置分发失败（会话继续，按既有回退语义）", runErr.Error()
 	}
 	for i := range res.Results {
 		r := res.Results[i]
-		if r.Outcome == wslsupply.UnitFailed && r.Detail == "target-corrupt" && r.Unit == wslsupply.UnitPiManagedModels {
-			return fmt.Errorf("WSL 内 Pi models.json 已损坏，未覆盖（请手动修复 %s 后重试）；本次启动未执行", res.Target.Distro), "", ""
+		if r.Unit == wslsupply.UnitPiManagedModels && (r.Outcome == wslsupply.UnitFailed || r.Outcome == wslsupply.UnitBlocked) {
+			if r.Outcome == wslsupply.UnitFailed && r.Detail == "target-corrupt" {
+				return fmt.Errorf("WSL 内 Pi models.json 已损坏，未覆盖（请手动修复 %s 后重试）；本次启动未执行", res.Target.Distro), "", ""
+			}
+			return fmt.Errorf("WSL 托管 provider 配置（amagi-*）未落地（unit=%s detail=%s），本次启动未执行；请重试或检查 WSL 目标状态", r.Unit, r.Detail), "", ""
 		}
 		if r.Outcome != wslsupply.UnitFailed && r.Outcome != wslsupply.UnitBlocked {
 			continue
@@ -1164,6 +1359,7 @@ func wslSkillsHostRoot() string {
 // wslSkillsCoordinator 是技能面消费的协调器能力切片（nil 表示未接线）。
 type wslSkillsCoordinator interface {
 	StartSkillsScan() bool
+	RescanSkills() bool
 	SkillsSnapshot() wslsupply.SkillsScanSnapshot
 	GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
 	PreviewUnits(ctx context.Context, distro string, cli wslsupply.CLI, units []wslsupply.UnitID) ([]wslsupply.UnitPreview, error)
@@ -1206,8 +1402,9 @@ type WSLSkillsSupplyStatus struct {
 	Skills         []WSLSkillSummary `json:"skills"`
 }
 
-// GetWSLSkillsSupplyStatus 返回技能面状态：单飞启动后台扫描（首次/停机后补漏），
-// 立即返回当前缓存快照（不等待扫描完成——大目录不阻塞 UI）。
+// GetWSLSkillsSupplyStatus 返回技能面状态：首次单飞启动后台扫描（SA-17：
+// 已启动过即幂等——Get 不重启已完成的扫描，显式 Check 才重扫），立即返回
+// 当前缓存快照（不等待扫描完成——大目录不阻塞 UI）。
 func (a *App) GetWSLSkillsSupplyStatus() WSLSkillsSupplyStatus {
 	out := WSLSkillsSupplyStatus{Skills: []WSLSkillSummary{}}
 	if a == nil {
@@ -1225,13 +1422,19 @@ func (a *App) GetWSLSkillsSupplyStatus() WSLSkillsSupplyStatus {
 		out.Reason = "技能供给未启用"
 		return out
 	}
-	coord.StartSkillsScan() // 单飞；不等待（缓存快照随扫描分批可见）
+	coord.StartSkillsScan() // SA-17：仅首次启动；已启动过幂等（显式 Check 才重扫）
 	return wslSkillsStatusFrom(coord, distro, a.wslSupplyStatus(distro, wslsupply.CLICommon))
 }
 
-// CheckWSLSkillsSupply 执行「检查」：触发一轮重扫（后台分批）并返回当前状态；
-// 扫描未完成时状态面明确显示进度，不冒充完成。不写任何目标内容。
+// CheckWSLSkillsSupply 执行「检查」：强制触发一轮后台重扫（SA-17：Get 不
+// 重启扫描，重扫仅由本显式动作触发）并返回当前状态；扫描未完成时状态面
+// 明确显示进度，不冒充完成。不写任何目标内容。
 func (a *App) CheckWSLSkillsSupply() WSLSkillsSupplyStatus {
+	if a != nil {
+		if coord := a.wslSkillsCoordinator(); coord != nil {
+			coord.RescanSkills() // 已在跑则保持本轮；否则强制新扫
+		}
+	}
 	return a.GetWSLSkillsSupplyStatus()
 }
 

@@ -1,0 +1,316 @@
+diff --git a/internal/platform/ensure_private_windows.go b/internal/platform/ensure_private_windows.go
+--- a/internal/platform/ensure_private_windows.go
++++ b/internal/platform/ensure_private_windows.go
+@@ -3,6 +3,7 @@
+ package platform
+ 
+ import (
++	"errors"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
+@@ -18,7 +19,8 @@
+ // 实现：SetNamedSecurityInfo 以显式 owner-only DACL 覆盖目标
+ //（PROTECTED_DACL 阻断继承混入），随后 GetNamedSecurityInfo 读回并逐 ACE
+ // 验证——每个 allow-ACE 的 SID 必须属于允许集合 {当前用户, LOCAL SYSTEM,
+-// 内建 Administrators}，且不含 deny/其它类型 ACE；owner 必须是当前用户。
++// 内建 Administrators}，且不含 deny/其它类型 ACE；owner 必须是当前用户；
++// DACL 必须显式在场（缺失、NULL（全放行）与 defaulted 均判隔离未验证）。
+ // 验证不可证即返回错误（fail closed）。
+ //
+ // 威胁模型（明示）：允许当前用户、LOCAL SYSTEM 与内建 Administrators 完全
+@@ -103,29 +105,35 @@
+ 	return nil
+ }
+ 
+-// verifyPrivateACL 读回目标的 owner 与 DACL 并逐 ACE 验证：
+-//   - owner 必须是当前用户；
+-//   - DACL 必须存在，每个 ACE 必须是 ACCESS_ALLOWED 类型且 SID ∈ 允许集合。
+-//
+-// 任何 deny-ACE、允许集合之外的 allow-ACE、越界/无法解析的 ACE 都判为
+-// 「隔离未验证」。错误不携带 SID/DACL 内容。
++// verifyPrivateACL 读回目标的 owner 与 DACL，交 validatePrivateDescriptor
++// 按统一判据验证（见该函数）。错误不携带 SID/DACL 内容。
+ func verifyPrivateACL(path string) error {
+ 	allowed, currentUser, err := privateAllowedSIDs()
+ 	if err != nil {
+ 		return err
+ 	}
+-	isAllowed := func(sid *windows.SID) bool {
+-		for _, a := range allowed {
+-			if windows.EqualSid(a, sid) {
+-				return true
+-			}
+-		}
+-		return false
+-	}
+ 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+ 	if err != nil {
+ 		return fmt.Errorf("read back security descriptor: %w", err)
+ 	}
++	return validatePrivateDescriptor(sd, allowed, currentUser)
++}
++
++// validatePrivateDescriptor 验证（内存或读回的）安全描述符：
++//   - owner 必须是当前用户；
++//   - DACL 必须显式在场：缺失、NULL（「空 DACL」＝全放行）与 defaulted
++//     （SE_DACL_DEFAULTED，默认机制产物而非我们设置的显式 DACL）均判为
++//     「隔离未验证」；
++//   - 每个 ACE 必须是 ACCESS_ALLOWED 类型且 SID ∈ 允许集合。
++//
++// x/sys 契约（vendor security_windows.go）：SECURITY_DESCRIPTOR.DACL 的
++// 第二返回值是 defaulted（DACL 是否来自默认机制），不是 present；DACL 不
++// 在场时以 err=ERROR_OBJECT_NOT_FOUND 报告；在场但为 NULL DACL 时
++// dacl==nil 且 err==nil。修正前的实现把 defaulted 误当 present，导致
++// 显式合法 DACL（defaulted=false）被拒、默认 DACL 反而放行。
++// 任何 deny-ACE、允许集合之外的 allow-ACE、越界/无法解析的 ACE 都判为
++// 「隔离未验证」。错误不携带 SID/DACL 内容。
++func validatePrivateDescriptor(sd *windows.SECURITY_DESCRIPTOR, allowed []*windows.SID, currentUser *windows.SID) error {
+ 	owner, _, err := sd.Owner()
+ 	if err != nil {
+ 		return fmt.Errorf("read back owner: %w", err)
+@@ -133,13 +141,27 @@
+ 	if !windows.EqualSid(owner, currentUser) {
+ 		return fmt.Errorf("private path owner is not the current user (isolation unverified)")
+ 	}
+-	dacl, present, err := sd.DACL()
++	dacl, defaulted, err := sd.DACL()
+ 	if err != nil {
++		if errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND) {
++			return fmt.Errorf("private path has no DACL (isolation unverified): %w", err)
++		}
+ 		return fmt.Errorf("read back DACL: %w", err)
+ 	}
+-	if !present || dacl == nil {
+-		return fmt.Errorf("private path has no DACL (isolation unverified)")
++	if dacl == nil {
++		return fmt.Errorf("private path has a NULL DACL granting everyone access (isolation unverified)")
+ 	}
++	if defaulted {
++		return fmt.Errorf("private path DACL is defaulted, not explicit (isolation unverified)")
++	}
++	isAllowed := func(sid *windows.SID) bool {
++		for _, a := range allowed {
++			if windows.EqualSid(a, sid) {
++				return true
++			}
++		}
++		return false
++	}
+ 	// 逐 ACE 手工遍历（x/sys 的 ACL 不暴露迭代器/尺寸字段）：ACL 头 8 字节
+ 	//（revision/sbz1/aclSize/aceCount/sbz2），其后连续 ACE 结构。aclSize 未
+ 	// 导出，以同构镜像头读出。
+diff --git a/internal/platform/ensure_private_windows_test.go b/internal/platform/ensure_private_windows_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/ensure_private_windows_test.go
+@@ -0,0 +1,209 @@
++//go:build windows
++
++package platform
++
++// ensure_private_windows_test.go — Windows 专项判据回归（修正轮）：
++// x/sys SECURITY_DESCRIPTOR.DACL() 的第二返回值是 defaulted
++//（SE_DACL_DEFAULTED 标志），不是 DACL 是否在场。本套件钉住修正后的
++// 判据：显式（defaulted=false）合法 DACL 被接受——旧实现把 defaulted 误当
++// present 而拒绝它；缺失 DACL 与 NULL（「空 DACL」＝全放行）DACL 被拒绝；
++// owner 与逐 ACE 主体检查保持 fail closed。
++//
++// 判据用例以内存构造的安全描述符判定，不依赖宿主文件系统 ACL 形态；
++// 端到端用例（真实 set→读回→判据）供 Windows 真机/CI 执行。
++//
++// 运行边界：本套件仅 Windows 构建可编译运行；修正轮在 darwin 导出机上
++// 仅做交叉编译验证，未在 Windows 真机执行（见 attack-platform-correction.md）。
++
++import (
++	"errors"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"golang.org/x/sys/windows"
++)
++
++// buildDescriptorWithDACL 构造内存安全描述符：owner 固定为当前用户
++// （defaulted=false），DACL 形态由入参决定。
++func buildDescriptorWithDACL(t *testing.T, dacl *windows.ACL, present, defaulted bool) *windows.SECURITY_DESCRIPTOR {
++	t.Helper()
++	_, user, err := privateAllowedSIDs()
++	if err != nil {
++		t.Fatalf("privateAllowedSIDs: %v", err)
++	}
++	sd, err := windows.NewSecurityDescriptor()
++	if err != nil {
++		t.Fatalf("NewSecurityDescriptor: %v", err)
++	}
++	if err := sd.SetOwner(user, false); err != nil {
++		t.Fatalf("SetOwner: %v", err)
++	}
++	if err := sd.SetDACL(dacl, present, defaulted); err != nil {
++		t.Fatalf("SetDACL: %v", err)
++	}
++	return sd
++}
++
++// validateDescriptor 依生产判据验证内存描述符（allowed/当前用户与
++// verifyPrivateACL 同源现取）。
++func validateDescriptor(t *testing.T, sd *windows.SECURITY_DESCRIPTOR) error {
++	t.Helper()
++	allowed, user, err := privateAllowedSIDs()
++	if err != nil {
++		t.Fatalf("privateAllowedSIDs: %v", err)
++	}
++	return validatePrivateDescriptor(sd, allowed, user)
++}
++
++// buildSingleACEDACL 以单条显式项构造 ACL（mode/sid 由用例指定）；
++// Pinner 契约与生产 buildPrivateDACL 一致。
++func buildSingleACEDACL(t *testing.T, mode windows.ACCESS_MODE, sid *windows.SID) *windows.ACL {
++	t.Helper()
++	var pinner runtime.Pinner
++	defer pinner.Unpin()
++	pinner.Pin(sid)
++	entries := []windows.EXPLICIT_ACCESS{{
++		AccessPermissions: windows.GENERIC_ALL,
++		AccessMode:        mode,
++		Trustee: windows.TRUSTEE{
++			TrusteeForm:  windows.TRUSTEE_IS_SID,
++			TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
++			TrusteeValue: windows.TrusteeValueFromSID(sid),
++		},
++	}}
++	acl, err := windows.ACLFromEntries(entries, nil)
++	if err != nil {
++		t.Fatalf("ACLFromEntries: %v", err)
++	}
++	return acl
++}
++
++// TestValidatePrivateDescriptorExplicitDACLAccepted 是本修正的直接回归：
++// setPrivateACL 后读回的正常形态即「在场 + defaulted=false」的显式 DACL，
++// 旧实现把 defaulted 误当 present 而拒绝它（真机上 EnsurePrivate* 必失败）。
++func TestValidatePrivateDescriptorExplicitDACLAccepted(t *testing.T) {
++	dacl, err := buildPrivateDACL(false)
++	if err != nil {
++		t.Fatalf("buildPrivateDACL: %v", err)
++	}
++	sd := buildDescriptorWithDACL(t, dacl, true, false)
++	if err := validateDescriptor(t, sd); err != nil {
++		t.Fatalf("explicit DACL (defaulted=false) must be accepted, got: %v", err)
++	}
++}
++
++func TestValidatePrivateDescriptorMissingDACLRejected(t *testing.T) {
++	sd := buildDescriptorWithDACL(t, nil, false, false)
++	err := validateDescriptor(t, sd)
++	if err == nil {
++		t.Fatal("missing DACL must be rejected")
++	}
++	if !strings.Contains(err.Error(), "no DACL") {
++		t.Fatalf("err = %v, want 'no DACL' mention", err)
++	}
++	if !errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND) {
++		t.Fatalf("err = %v, want ERROR_OBJECT_NOT_FOUND in chain", err)
++	}
++}
++
++func TestValidatePrivateDescriptorNullDACLRejected(t *testing.T) {
++	// NULL DACL（在场、dacl==nil、err==nil）语义是「全放行」——最危险的
++	// 形态之一，必须与「缺失 DACL」区分开各自拒绝。
++	sd := buildDescriptorWithDACL(t, nil, true, false)
++	err := validateDescriptor(t, sd)
++	if err == nil {
++		t.Fatal("NULL DACL must be rejected")
++	}
++	if !strings.Contains(err.Error(), "NULL DACL") {
++		t.Fatalf("err = %v, want 'NULL DACL' mention", err)
++	}
++}
++
++func TestValidatePrivateDescriptorDefaultedDACLRejected(t *testing.T) {
++	dacl, err := buildPrivateDACL(false)
++	if err != nil {
++		t.Fatalf("buildPrivateDACL: %v", err)
++	}
++	// defaulted=true：DACL 来自默认机制而非我们的显式设置，fail closed。
++	sd := buildDescriptorWithDACL(t, dacl, true, true)
++	err = validateDescriptor(t, sd)
++	if err == nil {
++		t.Fatal("defaulted DACL must be rejected")
++	}
++	if !strings.Contains(err.Error(), "defaulted") {
++		t.Fatalf("err = %v, want 'defaulted' mention", err)
++	}
++}
++
++func TestValidatePrivateDescriptorOwnerMismatchRejected(t *testing.T) {
++	dacl, err := buildPrivateDACL(false)
++	if err != nil {
++		t.Fatalf("buildPrivateDACL: %v", err)
++	}
++	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
++	if err != nil {
++		t.Fatalf("CreateWellKnownSid: %v", err)
++	}
++	sd, err := windows.NewSecurityDescriptor()
++	if err != nil {
++		t.Fatalf("NewSecurityDescriptor: %v", err)
++	}
++	if err := sd.SetOwner(system, false); err != nil {
++		t.Fatalf("SetOwner: %v", err)
++	}
++	if err := sd.SetDACL(dacl, true, false); err != nil {
++		t.Fatalf("SetDACL: %v", err)
++	}
++	err = validateDescriptor(t, sd)
++	if err == nil || !strings.Contains(err.Error(), "owner") {
++		t.Fatalf("err = %v, want owner mismatch rejection", err)
++	}
++}
++
++func TestValidatePrivateDescriptorUnexpectedPrincipalRejected(t *testing.T) {
++	// allow-ACE 但主体是 Everyone（World）：ACE 类型检查放行、主体集合拒绝。
++	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
++	if err != nil {
++		t.Fatalf("CreateWellKnownSid: %v", err)
++	}
++	sd := buildDescriptorWithDACL(t, buildSingleACEDACL(t, windows.SET_ACCESS, world), true, false)
++	err = validateDescriptor(t, sd)
++	if err == nil || !strings.Contains(err.Error(), "unexpected principal") {
++		t.Fatalf("err = %v, want unexpected-principal rejection", err)
++	}
++}
++
++func TestValidatePrivateDescriptorDenyACERejected(t *testing.T) {
++	// deny-ACE：非 ACCESS_ALLOWED 类型即拒绝（即使主体在允许集合内）。
++	_, user, err := privateAllowedSIDs()
++	if err != nil {
++		t.Fatalf("privateAllowedSIDs: %v", err)
++	}
++	sd := buildDescriptorWithDACL(t, buildSingleACEDACL(t, windows.DENY_ACCESS, user), true, false)
++	err = validateDescriptor(t, sd)
++	if err == nil || !strings.Contains(err.Error(), "not an allow-ACE") {
++		t.Fatalf("err = %v, want non-allow-ACE rejection", err)
++	}
++}
++
++// TestEnsurePrivateWindowsRealACLRoundTrip 为 Windows 真实 ACL 子系统保留的
++// 端到端回归：set → 读回 → 判据。旧缺陷在真机上必失败（显式 DACL 被拒）。
++func TestEnsurePrivateWindowsRealACLRoundTrip(t *testing.T) {
++	dir := t.TempDir()
++	private := filepath.Join(dir, "private-dir")
++	if err := EnsurePrivateDir(private); err != nil {
++		t.Fatalf("EnsurePrivateDir: %v", err)
++	}
++	secret := filepath.Join(dir, "secret.json")
++	if err := EnsurePrivateFile(secret); err != nil {
++		t.Fatalf("EnsurePrivateFile: %v", err)
++	}
++	if err := verifyPrivateACL(private); err != nil {
++		t.Fatalf("verifyPrivateACL(dir): %v", err)
++	}
++	if err := verifyPrivateACL(secret); err != nil {
++		t.Fatalf("verifyPrivateACL(file): %v", err)
++	}
++}

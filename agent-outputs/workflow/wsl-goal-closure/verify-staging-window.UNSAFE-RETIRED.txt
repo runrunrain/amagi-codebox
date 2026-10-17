@@ -1,0 +1,118 @@
+# 已撤回 / UNSAFE — 仅为PR-10审计证据，禁止复制或执行下方旧脚本。
+# 原因：固定用户创建/删除、固定目录清理、误判NO-LEAK、未驱动真实Go writer。
+# 本轮从未执行；不提供未经Windows真机验证的自动替代品。
+# 实际验证要求见windows-validation.md，必须使用明确授权的隔离环境。
+# 以下为原始证据（不是当前验收步骤）：
+# verify-staging-window.ps1 — SA-06 私有 staging 提交原语的真机取证脚本
+# （wsl-goal-closure / C2 供给内核）。
+#
+# 目的：以「第二个 Linux 用户」的视角观测敏感文件写入窗口——证明秘密字节
+# 在整个提交过程中从未对其它用户可读（旧实现 rename 后才 chmod，9P 临时段
+# 以 0644 存在于 0755 目录，存在被第二用户读取的窗口；fixture 测试只能证明
+# 调用顺序，不能替代真机观测）。
+#
+# 前提（全部满足才可运行，缺一项即中止并报告缺口）：
+#   1. Windows 10+ 主机 + WSL2，默认 distro 可用（wsl.exe --status 正常）；
+#   2. distro 内存在（或可创建）第二用户 w2（非默认用户；默认用户名可从
+#      `wsl.exe -d <distro> -- whoami` 读取）；
+#   3. 以合成秘密运行——本脚本写入的 api_key 全部是 SYNTHETIC-NOT-A-KEY，
+#      绝不使用真实凭据；
+#   4. 隔离边界：全部写入落在 distro 内 /tmp/amagi-staging-verify/，
+#      不触碰真实 $HOME/.pi、~/.agents 或真实 auth.json；
+#   5. 观测器是一个无限循环 cat 探测进程（以 w2 身份），窗口观测结束后
+#      显式终止并清理。
+#
+# 运行（PowerShell，管理员不要求；脚本自身逐项回显 met/unmet）：
+#   pwsh ./verify-staging-window.ps1 [-Distro <name>]
+#
+# 判定：
+#   - PASS：第二用户在写入窗口内读不到任何秘密字节（权限拒绝），且完成后
+#     distro 内 stat 实证 staging=700、目标文件=600、混合配置前像在 chmod
+#     故障注入下原样保留；
+#   - FAIL：第二用户读到秘密字节 / 或任一权限断言失败（保留现场，勿清理）。
+#
+# 边界声明（不冒充覆盖）：
+#   - 本脚本观测的是当前构建的提交窗口，不是全时审计；
+#   - 极端调度窗口（cat 恰好落在 rename 与 stat 之间）在 PASS 时也不能证明
+#     绝无泄漏，只能证明在采样窗口内未观测到——结论按「采样观测」记录；
+#   - Windows 侧 UNC os.Chmod 的不可信行为（仓库既有实证）不在此重复取证。
+
+param(
+    [string]$Distro = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+function Say($msg) { Write-Host "[staging-verify] $msg" }
+
+if (-not $Distro) { $Distro = (wsl.exe --list --quiet | Select-Object -First 1) }
+if (-not $Distro) { Say "UNMET: no WSL distro"; exit 2 }
+$Distro = ($Distro -replace "`0", "").Trim()
+Say "distro = $Distro"
+
+# 1) 第二用户存在性（可创建则创建；已存在则复用）。
+wsl.exe -d $Distro -u root -- useradd -m w2 2>$null
+$probe = wsl.exe -d $Distro -u w2 -- id -u
+if ($LASTEXITCODE -ne 0 -or -not $probe) { Say "UNMET: second linux user w2 unavailable"; exit 2 }
+Say "second user w2 ok (uid=$probe)"
+
+# 2) 隔离根与目标目录（模拟 0755 父目录 + umask 022 的最恶劣公开形态）。
+$base = "/tmp/amagi-staging-verify"
+wsl.exe -d $Distro -- rm -rf $base
+wsl.exe -d $Distro -- mkdir -p $base/agent
+wsl.exe -d $Distro -- chmod 755 $base $base/agent
+wsl.exe -d $Distro -- sh -c "umask 022; echo '{`"providers`":{`"user-own`":{}}}' > $base/agent/models.json"
+
+# 3) 观测器：w2 循环尝试读目标文件（cat 失败=权限拒绝=好；成功且含
+#    SYNTHETIC=泄漏）。观测窗口覆盖整个写入循环。
+$observerLog = "$env:TEMP\staging-observer.log"
+$observer = Start-Process -FilePath "wsl.exe" -ArgumentList "-d","$Distro","-u","w2","--","sh","-c","""
+for i in `$(seq 1 2000); do
+  if out=`$(cat $base/agent/models.json 2>/dev/null) && echo ""`$out"" | grep -q SYNTHETIC; then
+    echo LEAK: 2>&1
+    exit 9
+  fi
+  sleep 0.01
+done
+echo NO-LEAK
+""" -RedirectStandardOutput $observerLog -PassThru -WindowStyle Hidden
+Say "observer started (pid=$($observer.Id))"
+
+# 4) 写入循环：以默认用户反复提交合成秘密（复刻提交原语序列：
+#    staging 700 验证 -> staging 内写 + chmod 600 -> rename）。
+$secret = '{"providers":{"amagi-verify":{"apiKey":"SYNTHETIC-NOT-A-KEY"}}}'
+$pass = $true
+foreach ($i in 1..50) {
+    $tmp = ".amagi-agent-$i"
+    wsl.exe -d $Distro -- mkdir -p $base/agent/.amagi-staging
+    wsl.exe -d $Distro -- chmod 700 $base/agent/.amagi-staging
+    $m = (wsl.exe -d $Distro -- stat -c %a $base/agent/.amagi-staging)
+    if ($m -ne "700") { Say "UNMET: staging verify failed ($m)"; $pass = $false; break }
+    # 模拟 9P 写入（Windows 侧 CreateTemp 后的 0644 形态）再收紧到 600。
+    wsl.exe -d $Distro -- sh -c "umask 022; printf '%s' '$secret' > $base/agent/.amagi-staging/$tmp"
+    wsl.exe -d $Distro -- chmod 600 $base/agent/.amagi-staging/$tmp
+    wsl.exe -d $Distro -- mv $base/agent/.amagi-staging/$tmp $base/agent/models.json
+    if ($LASTEXITCODE -ne 0) { Say "UNMET: rename failed at iteration $i"; $pass = $false; break }
+}
+
+# 5) 终态断言：staging 700 / 目标 600；观测器无 LEAK。
+Start-Sleep -Seconds 2
+if (-not $observer.HasExited) { Stop-Process -Id $observer.Id -Force }
+$outcome = Get-Content $observerLog -Raw
+$modeFile = (wsl.exe -d $Distro -- stat -c %a $base/agent/models.json)
+$modeStg = (wsl.exe -d $Distro -- stat -c %a $base/agent/.amagi-staging)
+
+Say "final file mode = $modeFile (want 600)"
+Say "staging dir mode = $modeStg (want 700)"
+Say "observer outcome = $($outcome.Trim())"
+
+$ok = $pass -and ($modeFile -eq "600") -and ($modeStg -eq "700") -and (-not $outcome.Contains("LEAK"))
+if ($ok) {
+    Say "PASS: second user never observed secret bytes; modes verified distro-side"
+    wsl.exe -d $Distro -- rm -rf $base
+    wsl.exe -d $Distro -u root -- userdel -r w2 2>$null
+    exit 0
+} else {
+    Say "FAIL: evidence preserved at $base (do NOT clean before recording)"
+    exit 1
+}

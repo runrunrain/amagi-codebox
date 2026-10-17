@@ -1,0 +1,65 @@
+# 会话 01a145bd：自动基线测试检查 not-run / 未探测命令 摘录（Go 仓 go.mod 存在；前端 vitest）
+
+2026-10-16T17:57:10.315Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T17:57:10.315Z | [内核视图 v1] taskId=75cce4a5 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-f22570c7-7211-48df-aada-68663e795446(incomplete/unreviewed) missing=[chk-auto-baseline-test-59abbed0] 可waive=[chk-auto-baselin
+2026-10-16T18:04:05.465Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T18:04:05.465Z | [内核视图 v1] taskId=54c5b10d stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-76c707a5-95fc-4bbb-aa0d-31ad0572529c(incomplete/unreviewed) missing=[chk-auto-baseline-test-bbcddc47] 可waive=[chk-auto-baselin
+2026-10-16T18:06:07.333Z | [内核视图 v1] taskId=7ea2f52d stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-be7d2aee-b264-4424-8268-a9ce4a813d89(incomplete/unreviewed) missing=[chk-auto-baseline-test-0b56a9fa] 可waive=[chk-auto-baselin
+2026-10-16T18:10:10.753Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T18:10:10.753Z | [内核视图 v1] taskId=a273c24b stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-146fba70-0e7f-4421-9ab7-f8a5ee534954(incomplete/unreviewed) missing=[chk-auto-baseline-test-1c8e78ab] 可waive=[chk-auto-baselin
+2026-10-16T18:11:18.428Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T18:11:18.428Z | [内核视图 v1] taskId=a715f28b stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-0acc2259-b534-4811-a792-d7e8d234015e(incomplete/unreviewed) missing=[chk-auto-baseline-test-6d5f8fc7] 可waive=[chk-auto-baselin
+2026-10-16T18:23:50.914Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T18:23:50.914Z | [内核视图 v1] taskId=61a7773c stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-2d498c2b-620a-4226-a3a0-ee17ae905936(incomplete/unreviewed) missing=[chk-auto-baseline-test-50b24f0c] 可waive=[chk-auto-baselin
+2026-10-16T18:26:02.153Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T18:26:02.153Z | [内核视图 v1] taskId=acd47281 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-3929026d-f9d2-4122-94a4-ccd3601ebe61(incomplete/unreviewed) missing=[chk-auto-baseline-test-791ec046] 可waive=[chk-auto-baselin
+2026-10-16T18:49:22.030Z | 回执: receiptId=receipt-0acc2259-b534-4811-a792-d7e8d234015e seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-6d5f8fc7]
+2026-10-16T18:49:22.030Z | 检查: id=chk-auto-baseline-test-6d5f8fc7 status=not-run（required）
+2026-10-16T18:49:22.030Z | 回执: receiptId=receipt-be7d2aee-b264-4424-8268-a9ce4a813d89 seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-0b56a9fa]
+2026-10-16T18:49:22.030Z | 回执: receiptId=receipt-76c707a5-95fc-4bbb-aa0d-31ad0572529c seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-bbcddc47]
+2026-10-16T18:49:22.030Z | 检查: id=chk-auto-baseline-test-bbcddc47 status=not-run（required）
+2026-10-16T18:49:22.030Z | 回执: receiptId=receipt-2d498c2b-620a-4226-a3a0-ee17ae905936 seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-50b24f0c]
+2026-10-16T18:49:22.030Z | 检查: id=chk-auto-baseline-test-50b24f0c status=not-run（required）
+2026-10-16T18:49:46.017Z | [内核视图 v1] taskId=a715f28b stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-b0fb1471-4c20-469e-b0bf-0a113cd135b1(incomplete/accepted) missing=[chk-auto-baseline-test-6d5f8fc7] 可waive=[chk-auto-baseline-te
+2026-10-16T18:49:46.017Z | [内核视图 v1] taskId=7ea2f52d stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-d4bc44cc-c9b2-42c4-a928-b0629ed6ded6(incomplete/accepted) missing=[chk-auto-baseline-test-0b56a9fa] 可waive=[chk-auto-baseline-te
+2026-10-16T18:49:46.017Z | [内核视图 v1] taskId=54c5b10d stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-a4e76e16-51f9-4103-afbe-1929e5dd0166(incomplete/accepted) missing=[chk-auto-baseline-test-bbcddc47] 可waive=[chk-auto-baseline-te
+2026-10-16T18:49:46.017Z | [内核视图 v1] taskId=61a7773c stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=rejected 承诺=guarded receipt=receipt-542e95fe-17fa-46d7-9e95-22806dd5b754(incomplete/rejected) missing=[chk-auto-baseline-test-50b24f0c] 可waive=[chk-auto-baseline-te
+2026-10-16T19:24:09.786Z | [内核视图 v1] taskId=9ce04747 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-ecb41b8b-3068-4f3e-8f96-40eacb8e85ac(incomplete/unreviewed) missing=[chk-auto-baseline-test-1428a768] 可waive=[chk-auto-baselin
+2026-10-16T19:24:09.806Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-16T19:24:09.806Z | [内核视图 v1] taskId=9ce04747 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-ecb41b8b-3068-4f3e-8f96-40eacb8e85ac(incomplete/unreviewed) missing=[chk-auto-baseline-test-1428a768] 可waive=[chk-auto-baselin
+2026-10-16T19:32:25.100Z | 回执: receiptId=receipt-ecb41b8b-3068-4f3e-8f96-40eacb8e85ac seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-1428a768]
+2026-10-16T19:32:25.100Z | 检查: id=chk-auto-baseline-test-1428a768 status=not-run（required）
+2026-10-16T19:32:25.100Z | 回执: receiptId=receipt-3929026d-f9d2-4122-94a4-ccd3601ebe61 seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-791ec046]
+2026-10-16T19:32:25.100Z | 检查: id=chk-auto-baseline-test-791ec046 status=not-run（required）
+2026-10-16T19:32:40.057Z | [内核视图 v1] taskId=9ce04747 stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=rejected 承诺=guarded receipt=receipt-6897602e-5a82-400d-b9e0-03856a4685f1(incomplete/rejected) missing=[chk-auto-baseline-test-1428a768] 可waive=[chk-auto-baseline-te
+2026-10-16T19:32:40.058Z | [内核视图 v1] taskId=acd47281 stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-847cd633-a5c8-45b9-b26f-6c0f14d6004a(incomplete/accepted) missing=[chk-auto-baseline-test-791ec046] 可waive=[chk-auto-baseline-te
+2026-10-17T08:08:06.824Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-17T08:08:06.824Z | [内核视图 v1] taskId=84f8a67d stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-15851d50-af72-42a6-b7f7-32b052c2787d(incomplete/unreviewed) missing=[chk-auto-baseline-test-29da1615] 可waive=[chk-auto-baselin
+2026-10-17T08:10:53.258Z | 回执: receiptId=receipt-15851d50-af72-42a6-b7f7-32b052c2787d seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-29da1615]
+2026-10-17T08:10:53.258Z | 检查: id=chk-auto-baseline-test-29da1615 status=not-run（required）
+2026-10-17T08:11:03.052Z | [内核视图 v1] taskId=84f8a67d stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-122b7ffc-7f3b-4255-88ce-c13c34399e3e(incomplete/accepted) missing=[chk-auto-baseline-test-29da1615] 可waive=[chk-auto-baseline-te
+2026-10-17T08:33:24.514Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-17T08:33:24.514Z | [内核视图 v1] taskId=75639eb2 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-d9f91f7b-524d-4228-acb1-a8399246e275(incomplete/unreviewed) missing=[chk-auto-baseline-test-02daf138] 可waive=[chk-auto-baselin
+2026-10-17T08:46:06.094Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-17T08:46:06.094Z | [内核视图 v1] taskId=03b82df8 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-e163dca3-8eab-46b6-8a0b-0855266220d0(incomplete/unreviewed) missing=[chk-auto-baseline-test-ff7c790c] 可waive=[chk-auto-baselin
+2026-10-17T08:51:24.713Z | 回执: receiptId=receipt-d9f91f7b-524d-4228-acb1-a8399246e275 seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-02daf138]
+2026-10-17T08:51:24.713Z | 检查: id=chk-auto-baseline-test-02daf138 status=not-run（required）
+2026-10-17T08:51:24.714Z | 回执: receiptId=receipt-e163dca3-8eab-46b6-8a0b-0855266220d0 seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-ff7c790c]
+2026-10-17T08:51:24.714Z | 检查: id=chk-auto-baseline-test-ff7c790c status=not-run（required）
+2026-10-17T09:11:45.719Z | [内核视图 v1] taskId=9de1b4eb stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-d1d09931-43cc-4bb8-ad5a-7628cb6f898f(incomplete/unreviewed) missing=[chk-auto-baseline-test-7abed22d] 可waive=[chk-auto-baselin
+2026-10-17T10:27:51.707Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-17T10:27:51.707Z | [内核视图 v1] taskId=a3205b58 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-e915b9c8-bb97-4a02-8ce4-e2a8bc401b9a(incomplete/unreviewed) missing=[chk-auto-baseline-test-e245e1ad] 可waive=[chk-auto-baselin
+2026-10-17T10:31:25.602Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-17T10:31:25.602Z | [内核视图 v1] taskId=e5e8f4cb stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-cfc6465c-70d3-4577-9e74-403552575943(incomplete/unreviewed) missing=[chk-auto-baseline-test-8ea8d015] 可waive=[chk-auto-baselin
+2026-10-17T10:45:29.803Z | 回执: receiptId=receipt-e915b9c8-bb97-4a02-8ce4-e2a8bc401b9a seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-e245e1ad]
+2026-10-17T10:45:29.803Z | 检查: id=chk-auto-baseline-test-e245e1ad status=not-run（required）
+2026-10-17T10:45:29.803Z | 回执: receiptId=receipt-cfc6465c-70d3-4577-9e74-403552575943 seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-8ea8d015]
+2026-10-17T10:45:29.803Z | 检查: id=chk-auto-baseline-test-8ea8d015 status=not-run（required）
+2026-10-17T10:46:16.470Z | [内核视图 v1] taskId=a3205b58 stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-31673c2c-ff4c-4e0a-8aef-e061d522e6ee(incomplete/accepted) missing=[chk-auto-baseline-test-e245e1ad] 可waive=[chk-auto-baseline-te
+2026-10-17T10:46:16.471Z | [内核视图 v1] taskId=e5e8f4cb stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-97e17879-14eb-48f2-81c1-6dad0a67698d(incomplete/accepted) missing=[chk-auto-baseline-test-8ea8d015] 可waive=[chk-auto-baseline-te
+2026-10-17T10:50:44.044Z | [内核视图 v1] taskId=2a02a779 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-387d5853-1265-41bf-a347-585637ebdec4(incomplete/unreviewed) missing=[chk-auto-baseline-test-88f2c47d] 可waive=[chk-auto-baselin
+2026-10-17T12:01:29.742Z | • 测试 项目基线 → 未探测到测试命令（0.0s）
+2026-10-17T12:01:29.742Z | [内核视图 v1] taskId=04f892b9 stateSeq=6 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-42148a45-3f1d-4341-b6bf-9cb0088eaada(incomplete/unreviewed) missing=[chk-auto-baseline-test-8e08d1f5] 可waive=[chk-auto-baselin
+2026-10-17T12:10:48.362Z | 回执: receiptId=receipt-42148a45-3f1d-4341-b6bf-9cb0088eaada seq=1 settlement=incomplete acceptance=unreviewed missing=[chk-auto-baseline-test-8e08d1f5]
+2026-10-17T12:10:48.362Z | 检查: id=chk-auto-baseline-test-8e08d1f5 status=not-run（required）
+2026-10-17T12:11:04.663Z | [内核视图 v1] taskId=04f892b9 stateSeq=7 revision=0 execution=done settlement=incomplete acceptance=accepted 承诺=guarded receipt=receipt-ddbe71ee-31cc-4cfe-afc2-589faa76a037(incomplete/accepted) missing=[chk-auto-baseline-test-8e08d1f5] 可waive=[chk-auto-baseline-te

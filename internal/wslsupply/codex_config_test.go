@@ -34,7 +34,7 @@ trust_level = "trusted"
 
 [profiles.fast]
 model = "gpt-5-mini"
-effort = "low"
+model_reasoning_effort = "low"
 
 [mcp_servers.web]
 url = "https://mcp.example/sse"
@@ -111,8 +111,9 @@ func TestCodexConfigSelectionAndTOMLFidelity(t *testing.T) {
 		t.Fatal(err)
 	}
 	// TOML 保真（验收 3，F4 整文确定性期望）：非受管内容逐字节保留 + 受管段
-	// 按判定序（键字典序）以序列化形态追加；winonly 形态被拒不落盘。
-	const afterImport = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.fetch]\ncommand = \"npx\"\nargs = [\"-y\", \"fetch-mcp\"]\n\n[mcp_servers.fetch.env]\nFETCH_TOKEN = \"secret\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\neffort = \"low\"\nmodel = \"gpt-5-mini\"\n"
+	// 按判定序（键字典序）以序列化形态追加；winonly 形态被拒不落盘；profile
+	// 按 SA-04 白名单只携带可移植字段。
+	const afterImport = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.fetch]\ncommand = \"npx\"\nargs = [\"-y\", \"fetch-mcp\"]\n\n[mcp_servers.fetch.env]\nFETCH_TOKEN = \"secret\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\nmodel = \"gpt-5-mini\"\nmodel_reasoning_effort = \"low\"\n"
 	if got := string(data); got != afterImport {
 		t.Fatalf("import result must equal the deterministic expectation; got:\n%s\nwant:\n%s", got, afterImport)
 	}
@@ -140,7 +141,7 @@ func TestCodexConfigSelectionAndTOMLFidelity(t *testing.T) {
 	}
 	data2, _ := os.ReadFile(codexFile(fp))
 	// F4：取消选择后的整文确定性期望（fetch 段及其尾随空行移除，其余逐字节不变）。
-	const afterDeselect = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\neffort = \"low\"\nmodel = \"gpt-5-mini\"\n"
+	const afterDeselect = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\nmodel = \"gpt-5-mini\"\nmodel_reasoning_effort = \"low\"\n"
 	if got2 := string(data2); got2 != afterDeselect {
 		t.Fatalf("deselect result must equal the deterministic expectation; got:\n%s\nwant:\n%s", got2, afterDeselect)
 	}
@@ -279,21 +280,29 @@ func TestCodexAdoptKeepsHandModifiedStaleSection(t *testing.T) {
 
 func TestCodexProfilesPortability(t *testing.T) {
 	c, fp, src, _ := newS4CodexCoordinator(t)
-	src.toml = []byte("[profiles.good]\nmodel = \"gpt-5-mini\"\neffort = \"low\"\n\n[profiles.badpath]\nmodel = \"gpt-5\"\ncwd = \"C:\\\\work\\\\proj\"\n")
+	// SA-04：profile 按白名单导入——未知字段（cwd 携带项目绝对路径）不导入，
+	// 白名单字段照常落地（验收 2：项目绝对路径不跨界，由白名单边界保证）。
+	src.toml = []byte("[profiles.good]\nmodel = \"gpt-5-mini\"\nmodel_reasoning_effort = \"low\"\n\n[profiles.badpath]\nmodel = \"gpt-5\"\ncwd = \"C:\\\\work\\\\proj\"\n")
 	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"good", "badpath"}); err != nil {
 		t.Fatal(err)
 	}
 	res := runCodexUnit(t, c)
 	if res.Outcome != UnitApplied || !strings.Contains(res.Detail, "partial") {
-		t.Fatalf("good profile applies, bad path profile stays, got %+v", res)
+		t.Fatalf("both profiles apply (badpath partially: cwd dropped), got %+v", res)
 	}
 	data, _ := os.ReadFile(codexFile(fp))
 	got := string(data)
 	if !strings.Contains(got, "[profiles.good]") {
 		t.Fatalf("portable profile must land:\n%s", got)
 	}
-	if strings.Contains(got, "[profiles.badpath]") {
-		t.Fatalf("windows-path profile must not land (验收 2：项目绝对路径不导入):\n%s", got)
+	if !strings.Contains(got, "[profiles.badpath]") || !strings.Contains(got, "gpt-5") {
+		t.Fatalf("badpath profile whitelist fields must land:\n%s", got)
+	}
+	if strings.Contains(got, "cwd") || strings.Contains(got, `C:\work`) {
+		t.Fatalf("unknown cwd field (project absolute path) must not cross (验收 2):\n%s", got)
+	}
+	if !strings.Contains(res.Detail, "cwd") {
+		t.Fatalf("dropped fields must be reported in detail: %s", res.Detail)
 	}
 }
 
@@ -320,5 +329,188 @@ func TestCodexCorruptManagedScopeRefuses(t *testing.T) {
 	res = runCodexUnit(t, c)
 	if res.Outcome != UnitBlocked || res.Detail != "source-corrupt" {
 		t.Fatalf("corrupt source must block, got %+v", res)
+	}
+}
+
+// TestCodexProfileWhitelistBlocksPermissionsAndUnknown（SA-04）：profile 内
+// 权限键（approval_policy/sandbox_mode）、未知字段与嵌套表不导入；白名单字段
+// 照常落地并诚实报告丢弃项；目标侧既有权限决定（其它节/顶层键）逐字节保留。
+func TestCodexProfileWhitelistBlocksPermissionsAndUnknown(t *testing.T) {
+	c, fp, src, _ := newS4CodexCoordinator(t)
+	src.toml = []byte(`[profiles.demo]
+model = "gpt-5-mini"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+unknown_host_field = "copied"
+
+[profiles.demo.experimental]
+flag = true
+`)
+	// distro 侧用户自有权限决定（顶层 approval_policy + 独立节）必须保留。
+	const distroSeed = "# user comment\napproval_policy = \"never\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n"
+	os.MkdirAll(filepath.Dir(codexFile(fp)), 0o700)
+	os.WriteFile(codexFile(fp), []byte(distroSeed), 0o600)
+	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"profiles/demo"}); err != nil {
+		t.Fatal(err)
+	}
+	res := runCodexUnit(t, c)
+	if res.Outcome != UnitApplied {
+		t.Fatalf("profile import must apply, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "partial") || !strings.Contains(res.Detail, "approval_policy") {
+		t.Fatalf("dropped permission fields must be reported: %s", res.Detail)
+	}
+	data, _ := os.ReadFile(codexFile(fp))
+	got := string(data)
+	if !strings.Contains(got, "[profiles.demo]") || !strings.Contains(got, `model = "gpt-5-mini"`) {
+		t.Fatalf("whitelist fields must land:\n%s", got)
+	}
+	for _, banned := range []string{"danger-full-access", "unknown_host_field", "experimental", "copied"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("permission/unknown/nested field %q must not cross:\n%s", banned, got)
+		}
+	}
+	// 目标侧既有权限决定逐字节保留（顶层 approval_policy 与 projects 节）。
+	if !strings.Contains(got, "# user comment") || !strings.Contains(got, `[projects."/home/linux/proj"]`) {
+		t.Fatalf("target local decisions must be preserved byte-for-byte:\n%s", got)
+	}
+	if strings.Count(got, `approval_policy = "never"`) != 1 {
+		t.Fatalf("exactly the pre-existing approval_policy must remain:\n%s", got)
+	}
+}
+
+// TestCodexProfileTakeoverPreservesTargetLocalPolicy（SA-04）：目标已有同名
+// profile（用户自有，含本地权限决定）时按未托管冻结；预览后接管仅覆盖白名单
+// 字段，本地权限决定保留。
+func TestCodexProfileTakeoverPreservesTargetLocalPolicy(t *testing.T) {
+	c, fp, src, _ := newS4CodexCoordinator(t)
+	src.toml = []byte("[profiles.demo]\nmodel = \"gpt-5-mini\"\napproval_policy = \"never\"\n")
+	os.MkdirAll(filepath.Dir(codexFile(fp)), 0o700)
+	os.WriteFile(codexFile(fp), []byte("# user\n[profiles.demo]\nmodel = \"old-model\"\napproval_policy = \"on-request\"\nnotify = true\n"), 0o600)
+	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"demo"}); err != nil {
+		t.Fatal(err)
+	}
+	res := runCodexUnit(t, c)
+	if res.Outcome != UnitBlocked || res.Detail != "unmanaged-existing" {
+		t.Fatalf("same-name target profile must freeze unmanaged, got %+v", res)
+	}
+	previews, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICodex, []UnitID{UnitCodexConfig})
+	if err != nil || len(previews) != 1 || previews[0].TargetHash == "" {
+		t.Fatalf("preview: %v %+v", err, previews)
+	}
+	takeRes, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLICodex, UnitCodexConfig, previews[0].TargetHash)
+	if err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	if takeRes.Outcome != UnitApplied {
+		t.Fatalf("takeover must apply, got %+v", takeRes)
+	}
+	data, _ := os.ReadFile(codexFile(fp))
+	got := string(data)
+	if !strings.Contains(got, `model = "gpt-5-mini"`) {
+		t.Fatalf("takeover must overwrite managed whitelist fields:\n%s", got)
+	}
+	// 源侧 approval_policy（never）不跨界；目标本地 policy/未知字段保留。
+	if strings.Contains(got, `"never"`) {
+		t.Fatalf("source approval_policy must not cross:\n%s", got)
+	}
+	if !strings.Contains(got, `approval_policy = "on-request"`) || !strings.Contains(got, "notify = true") || !strings.Contains(got, "# user") {
+		t.Fatalf("target local policy/unknown fields must be preserved on takeover:\n%s", got)
+	}
+}
+
+// TestCodexProfileUpdateKeepsLocalFields（SA-04）：接管把目标本地字段并入写入
+// 基准后，来源更新走 merge——本地权限决定/未知字段继续保留，白名单字段更新。
+func TestCodexProfileUpdateKeepsLocalFields(t *testing.T) {
+	c, fp, src, _ := newS4CodexCoordinator(t)
+	src.toml = []byte("[profiles.demo]\nmodel = \"gpt-5-mini\"\n")
+	os.MkdirAll(filepath.Dir(codexFile(fp)), 0o700)
+	os.WriteFile(codexFile(fp), []byte("# user\n[profiles.demo]\nmodel = \"old-model\"\napproval_policy = \"on-request\"\nnotify = true\n"), 0o600)
+	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := runCodexUnit(t, c); res.Outcome != UnitBlocked || res.Detail != "unmanaged-existing" {
+		t.Fatalf("same-name target profile must freeze unmanaged, got %+v", res)
+	}
+	previews, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICodex, []UnitID{UnitCodexConfig})
+	if err != nil || len(previews) != 1 {
+		t.Fatalf("preview: %v %+v", err, previews)
+	}
+	if _, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLICodex, UnitCodexConfig, previews[0].TargetHash); err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	// 来源更新 model：merge 保留本地 approval_policy/notify。
+	src.toml = []byte("[profiles.demo]\nmodel = \"gpt-5-max\"\n")
+	if res := runCodexUnit(t, c); res.Outcome != UnitApplied {
+		t.Fatalf("source update must apply, got %+v", res)
+	}
+	got, _ := os.ReadFile(codexFile(fp))
+	if !strings.Contains(string(got), `model = "gpt-5-max"`) {
+		t.Fatalf("source update must land:\n%s", got)
+	}
+	if !strings.Contains(string(got), `approval_policy = "on-request"`) || !strings.Contains(string(got), "notify = true") {
+		t.Fatalf("target local fields must survive managed update (merge):\n%s", got)
+	}
+}
+
+// TestCodexProfileOnlyPermissionsStays（SA-04）：profile 只含权限/未知字段时
+// 无可移植内容——转换受阻保持目标现状。
+func TestCodexProfileOnlyPermissionsStays(t *testing.T) {
+	c, fp, src, _ := newS4CodexCoordinator(t)
+	src.toml = []byte("[profiles.locked]\napproval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n")
+	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"locked"}); err != nil {
+		t.Fatal(err)
+	}
+	res := runCodexUnit(t, c)
+	if res.Outcome != UnitBlocked || !strings.Contains(res.Detail, "conversion-blocked") {
+		t.Fatalf("permission-only profile must stay blocked, got %+v", res)
+	}
+	if _, err := os.Stat(codexFile(fp)); !os.IsNotExist(err) {
+		t.Fatal("permission-only profile must not write the target")
+	}
+}
+
+// TestCodexDetachedExplicitTakeOverRestores（SA-11）：停跟随后，显式「预览后
+// 确认接管」必须能重建基准并解除 Detached（修复前 AdoptCandidate 无条件拒绝
+// detached，唯一声明的恢复操作必定失败）。
+func TestCodexDetachedExplicitTakeOverRestores(t *testing.T) {
+	c, fp, src, _ := newS4CodexCoordinator(t)
+	src.toml = []byte("[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n")
+	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"web"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := runCodexUnit(t, c); res.Outcome != UnitApplied {
+		t.Fatalf("initial import failed: %+v", res)
+	}
+	// 保留本地（停跟随）后，普通供给零动作（fresh no-change，不写目标）。
+	if err := c.DropUnitRegistration("Ubuntu", CLICodex, UnitCodexConfig); err != nil {
+		t.Fatalf("drop registration: %v", err)
+	}
+	if res := runCodexUnit(t, c); res.Outcome != UnitFresh || res.Detail != "no-change" {
+		t.Fatalf("detached unit must stay idle (fresh no-change), got %+v", res)
+	}
+	// 显式接管：预览携带目标 hash 令牌，TakeOver 重建并解除。
+	previews, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICodex, []UnitID{UnitCodexConfig})
+	if err != nil || len(previews) != 1 {
+		t.Fatalf("preview: %v %+v", err, previews)
+	}
+	if previews[0].BlockedReason != "detached" || previews[0].TargetHash == "" {
+		t.Fatalf("detached preview must carry takeover token: %+v", previews[0])
+	}
+	takeRes, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLICodex, UnitCodexConfig, previews[0].TargetHash)
+	if err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	if takeRes.Outcome != UnitApplied {
+		t.Fatalf("explicit takeover must restore detached unit, got %+v", takeRes)
+	}
+	// 解除后恢复跟随：来源变化能再次安全更新。
+	src.toml = []byte("[mcp_servers.web]\nurl = \"https://changed.example/sse\"\n")
+	if res := runCodexUnit(t, c); res.Outcome != UnitApplied {
+		t.Fatalf("restored unit must follow source again, got %+v", res)
+	}
+	data, _ := os.ReadFile(codexFile(fp))
+	if !strings.Contains(string(data), "changed.example") {
+		t.Fatalf("restored unit must apply source change:\n%s", data)
 	}
 }

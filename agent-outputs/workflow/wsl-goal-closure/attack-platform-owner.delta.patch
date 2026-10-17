@@ -1,0 +1,318 @@
+--- a/internal/platform/ensure_private_windows.go
++++ b/internal/platform/ensure_private_windows.go
+@@ -16,19 +16,29 @@
+ // ensure_private_windows.go — Windows 受管路径私有化：真实 DACL，而非
+ // os.Chmod（后者只拨只读属性，不构成访问隔离）。
+ //
+-// 实现：SetNamedSecurityInfo 以显式 owner-only DACL 覆盖目标
+-//（PROTECTED_DACL 阻断继承混入），随后 GetNamedSecurityInfo 读回并逐 ACE
+-// 验证——每个 allow-ACE 的 SID 必须属于允许集合 {当前用户, LOCAL SYSTEM,
+-// 内建 Administrators}，且不含 deny/其它类型 ACE；owner 必须是当前用户；
+-// DACL 必须显式在场（缺失、NULL（全放行）与 defaulted 均判隔离未验证）。
+-// 验证不可证即返回错误（fail closed）。
++// 实现：SetNamedSecurityInfo 一次性把 owner 规范化为当前用户并以显式
++// owner-only DACL 覆盖目标（PROTECTED_DACL 阻断继承混入），随后
++// GetNamedSecurityInfo 读回并逐 ACE 验证——每个 allow-ACE 的 SID 必须属于
++// 允许集合 {当前用户, LOCAL SYSTEM, 内建 Administrators}，且不含 deny/其它
++// 类型 ACE；owner 必须是当前用户；DACL 必须显式在场（缺失、NULL（全放行）
++// 与 defaulted 均判隔离未验证）。验证不可证即返回错误（fail closed）。
+ //
++// owner 规范化的依据（真机缺陷，windows-platform-real-tests-v2.log）：提升
++// 令牌（admin token）的默认 TokenOwner 是内建 Administrators 组，
++// os.MkdirAll/os.OpenFile 新建的对象以组为 owner 落盘，验证轮随即被
++// 「owner 必须是当前用户」判据 fail closed 拒绝。因此设置 DACL 的同一调用
++// 以当前用户 SID 覆写 owner——这是进程身份本就可合法持有的取值，只作用于
++// 受管路径自身，不启用 SeTakeOwnership/Restore/Backup 等额外系统特权，不
++// 触及全局 ACL/账户；无权设置 owner（如目标 owner 他人且无 WRITE_OWNER）
++// 时如实返回错误，不静默降级。
++//
+ // 威胁模型（明示）：允许当前用户、LOCAL SYSTEM 与内建 Administrators 完全
+ // 访问（SYSTEM/管理员是 Windows 文件所有权/备份语义的标准伴生主体）；其它
+ // 本机用户零访问。错误信息不携带 SID 字符串或 DACL 原始内容。
+ //
+-// 未真机验证声明：本文件经 Windows 交叉编译覆盖编译面；真实 ACL 行为
+-//（继承阻断效果、SID/ACE 形态、UNC 目标）未经 Windows 真机验证。
++// 未真机复测声明：本轮 owner 规范化修复在 darwin 导出机以目标包测试与
++// Windows 交叉编译覆盖；真实 ACL 行为（owner 覆写、继承阻断效果、SID/ACE
++// 形态、UNC 目标）由 Leader 在 Windows 真机复测。
+ 
+ // privateAllowedSIDs 返回允许完全访问的 SID 集合（当前用户 + LOCAL SYSTEM
+ // + 内建 Administrators）。每次现取当前用户 SID（进程身份变化时保持正确）。
+@@ -90,18 +100,25 @@
+ 	return dacl, nil
+ }
+ 
+-// setPrivateACL 用显式 owner-only DACL 覆盖目标的 DACL（PROTECTED 阻断
+-// 继承混入）。按名字操作会跟随符号链接，符号链接拒绝由共享入口的前后
+-// 双查承担。
+-func setPrivateACL(path string, isDir bool) error {
++// setPrivateOwnerAndDACL 一次性把目标的 owner 规范化为当前用户，并用
++// 显式 owner-only DACL 覆盖目标的 DACL（PROTECTED 阻断继承混入）：提升
++// 令牌下新建对象的默认 owner 是 Administrators 组，只设 DACL 会让验证轮
++// 因 owner 判据 fail closed。仅以当前用户 SID（进程身份可合法持有的
++// owner 取值）覆写受管路径自身，不启用额外系统特权；无权设置时如实
++// 失败。按名字操作会跟随符号链接，符号链接拒绝由共享入口的前后双查承担。
++func setPrivateOwnerAndDACL(path string, isDir bool) error {
+ 	dacl, err := buildPrivateDACL(isDir)
+ 	if err != nil {
+ 		return err
+ 	}
+-	var info windows.SECURITY_INFORMATION = windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
+-	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, nil, nil, dacl, nil); err != nil {
+-		return fmt.Errorf("apply private DACL: %w", err)
++	_, user, err := privateAllowedSIDs()
++	if err != nil {
++		return err
+ 	}
++	var info windows.SECURITY_INFORMATION = windows.OWNER_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
++	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, user, nil, dacl, nil); err != nil {
++		return fmt.Errorf("apply private owner and DACL: %w", err)
++	}
+ 	return nil
+ }
+ 
+@@ -200,7 +217,7 @@
+ 	if err := os.MkdirAll(path, 0o700); err != nil {
+ 		return fmt.Errorf("create private dir: %w", err)
+ 	}
+-	if err := setPrivateACL(path, true); err != nil {
++	if err := setPrivateOwnerAndDACL(path, true); err != nil {
+ 		return err
+ 	}
+ 	return verifyPrivateACL(path)
+@@ -221,7 +238,7 @@
+ 			return fmt.Errorf("close new private file: %w", cerr)
+ 		}
+ 	}
+-	if err := setPrivateACL(path, false); err != nil {
++	if err := setPrivateOwnerAndDACL(path, false); err != nil {
+ 		return err
+ 	}
+ 	return verifyPrivateACL(path)
+--- a/internal/platform/ensure_private_windows_test.go
++++ b/internal/platform/ensure_private_windows_test.go
+@@ -2,21 +2,26 @@
+ 
+ package platform
+ 
+-// ensure_private_windows_test.go — Windows 专项判据回归（修正轮）：
+-// x/sys SECURITY_DESCRIPTOR.DACL() 的第二返回值是 defaulted
+-//（SE_DACL_DEFAULTED 标志），不是 DACL 是否在场。本套件钉住修正后的
+-// 判据：显式（defaulted=false）合法 DACL 被接受——旧实现把 defaulted 误当
+-// present 而拒绝它；缺失 DACL 与 NULL（「空 DACL」＝全放行）DACL 被拒绝；
+-// owner 与逐 ACE 主体检查保持 fail closed。
++// ensure_private_windows_test.go — Windows 专项判据回归（修正轮 + owner
++// 规范化轮）：
++//   - 修正轮钉住 x/sys SECURITY_DESCRIPTOR.DACL() 的第二返回值是 defaulted
++//     （SE_DACL_DEFAULTED 标志），不是 DACL 是否在场：显式（defaulted=false）
++//     合法 DACL 被接受；缺失 DACL 与 NULL（「空 DACL」＝全放行）DACL 被拒
++//     绝；owner 与逐 ACE 主体检查保持 fail closed。
++//   - owner 规范化轮（windows-platform-real-tests-v2.log 真机缺陷：提升令
++//     牌默认 TokenOwner 为 Administrators，只设 DACL 时新建对象 owner 是组
++//     SID）钉住：EnsurePrivate* 把 owner 规范化回当前用户；owner 覆写与
++//     DACL 收紧不改动文件字节；owner/非法主体判据不得因规范化而放宽。
+ //
+ // 判据用例以内存构造的安全描述符判定，不依赖宿主文件系统 ACL 形态；
+ // 端到端用例（真实 set→读回→判据）供 Windows 真机/CI 执行。
+ //
+-// 运行边界：本套件仅 Windows 构建可编译运行；修正轮在 darwin 导出机上
+-// 仅做交叉编译验证，未在 Windows 真机执行（见 attack-platform-correction.md）。
++// 运行边界：本套件仅 Windows 构建可编译运行；本轮在 darwin 导出机仅做交叉
++// 编译验证，真机复测由 Leader 执行（见 attack-platform-owner.md）。
+ 
+ import (
+ 	"errors"
++	"os"
+ 	"path/filepath"
+ 	"runtime"
+ 	"strings"
+@@ -80,9 +85,10 @@
+ 	return acl
+ }
+ 
+-// TestValidatePrivateDescriptorExplicitDACLAccepted 是本修正的直接回归：
+-// setPrivateACL 后读回的正常形态即「在场 + defaulted=false」的显式 DACL，
+-// 旧实现把 defaulted 误当 present 而拒绝它（真机上 EnsurePrivate* 必失败）。
++// TestValidatePrivateDescriptorExplicitDACLAccepted 是修正轮的直接回归：
++// setPrivateOwnerAndDACL 后读回的正常形态即「在场 + defaulted=false」的显
++// 式 DACL，旧实现把 defaulted 误当 present 而拒绝它（真机上 EnsurePrivate*
++// 必失败）。
+ func TestValidatePrivateDescriptorExplicitDACLAccepted(t *testing.T) {
+ 	dacl, err := buildPrivateDACL(false)
+ 	if err != nil {
+@@ -205,5 +211,175 @@
+ 	}
+ 	if err := verifyPrivateACL(secret); err != nil {
+ 		t.Fatalf("verifyPrivateACL(file): %v", err)
++	}
++}
++
++// currentTokenElevated 报告当前进程令牌是否提升（UAC 视角）——决定
++// 「把 owner 置为 Administrators（令牌默认 owner 的合法取值）」前置是否
++// 可用：非提升令牌无权置为组 SID，属环境能力差异而非缺陷。
++func currentTokenElevated() bool {
++	return windows.GetCurrentProcessToken().IsElevated()
++}
++
++// forceOwnerTo 尽力把 path 的 owner 置为指定 SID，返回是否成功。
++// ERROR_ACCESS_DENIED/ERROR_INVALID_OWNER 表示「无权置为该 owner」：非
++// 提升环境下是预期前置不可用，交调用方降级；其它错误如实失败。
++func forceOwnerTo(t *testing.T, path string, sid *windows.SID) bool {
++	t.Helper()
++	err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, sid, nil, nil, nil)
++	if err == nil {
++		return true
++	}
++	if errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, windows.ERROR_INVALID_OWNER) {
++		return false
++	}
++	t.Fatalf("force owner on %s: %v", path, err)
++	return false
++}
++
++// ownerSIDOf 读回 path 的 owner SID（仅供测试前置/断言使用）。
++func ownerSIDOf(t *testing.T, path string) *windows.SID {
++	t.Helper()
++	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
++	if err != nil {
++		t.Fatalf("GetNamedSecurityInfo(owner) %s: %v", path, err)
++	}
++	owner, _, err := sd.Owner()
++	if err != nil {
++		t.Fatalf("sd.Owner() %s: %v", path, err)
++	}
++	return owner
++}
++
++// adminsSID 是内建 Administrators 组 SID（提升令牌的默认 owner）。
++func adminsSID(t *testing.T) *windows.SID {
++	t.Helper()
++	sid, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
++	if err != nil {
++		t.Fatalf("CreateWellKnownSid(Administrators): %v", err)
++	}
++	return sid
++}
++
++// TestEnsurePrivateWindowsNormalizesOwnerToCurrentUser 是 owner 规范化轮的
++// 直接回归（真机 v2 日志：EnsurePrivateDir/File 与 RealACLRoundTrip 全因
++// owner 为 Administrators 组而非当前用户失败）：提升令牌下新建对象默认
++// owner 是 Administrators，EnsurePrivate* 必须把它规范化回当前用户。
++// 非提升环境无法主动构造非当前用户 owner 前置，退化为断言 owner 仍为当
++// 前用户（同一验证路径）；提升令牌下前置构造失败则环境前提断裂、如实
++// 失败，不得跳过。
++func TestEnsurePrivateWindowsNormalizesOwnerToCurrentUser(t *testing.T) {
++	dir := t.TempDir()
++	admins := adminsSID(t)
++	_, user, err := privateAllowedSIDs()
++	if err != nil {
++		t.Fatalf("privateAllowedSIDs: %v", err)
++	}
++	if owner := ownerSIDOf(t, dir); windows.EqualSid(owner, user) && currentTokenElevated() {
++		// 提升令牌新建对象默认 owner 应是 Administrators；若是当前用户，
++		// 说明环境前提与真机证据不一致，仅提示不失败（不影响断言有效性：
++		// 下面会主动强制非当前用户 owner 前置）。
++		t.Logf("elevated token but temp dir already owned by current user")
++	}
++
++	t.Run("dir owner normalized", func(t *testing.T) {
++		p := filepath.Join(dir, "norm-dir")
++		if err := os.MkdirAll(p, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		forced := forceOwnerTo(t, p, admins)
++		if !forced && currentTokenElevated() {
++			t.Fatal("elevated token must be able to force owner to Administrators (default token owner)")
++		}
++		if forced && windows.EqualSid(ownerSIDOf(t, p), user) {
++			t.Fatal("precondition failed: forced owner unexpectedly equals current user")
++		}
++		if err := EnsurePrivateDir(p); err != nil {
++			t.Fatalf("EnsurePrivateDir: %v", err)
++		}
++		if !windows.EqualSid(ownerSIDOf(t, p), user) {
++			t.Fatal("owner must be normalized to the current user after EnsurePrivateDir")
++		}
++		if err := verifyPrivateACL(p); err != nil {
++			t.Fatalf("verifyPrivateACL: %v", err)
++		}
++	})
++
++	t.Run("file owner normalized", func(t *testing.T) {
++		p := filepath.Join(dir, "norm-file.json")
++		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		forced := forceOwnerTo(t, p, admins)
++		if !forced && currentTokenElevated() {
++			t.Fatal("elevated token must be able to force owner to Administrators (default token owner)")
++		}
++		if err := EnsurePrivateFile(p); err != nil {
++			t.Fatalf("EnsurePrivateFile: %v", err)
++		}
++		if !windows.EqualSid(ownerSIDOf(t, p), user) {
++			t.Fatal("owner must be normalized to the current user after EnsurePrivateFile")
++		}
++		if err := verifyPrivateACL(p); err != nil {
++			t.Fatalf("verifyPrivateACL: %v", err)
++		}
++	})
++}
++
++// TestEnsurePrivateWindowsTightenPreservesFileBytes 针对性钉住：owner 覆写
++// 与 DACL 收紧路径不得触碰文件字节（受管文件常已存有既有内容）。
++func TestEnsurePrivateWindowsTightenPreservesFileBytes(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "bytes.json")
++	content := []byte(`{"secret":"unchanged-bytes"}`)
++	if err := os.WriteFile(p, content, 0o644); err != nil {
++		t.Fatal(err)
+ 	}
++	forceOwnerTo(t, p, adminsSID(t)) // 尽力构造最严前置（owner 非当前用户）
++	if err := EnsurePrivateFile(p); err != nil {
++		t.Fatalf("EnsurePrivateFile: %v", err)
++	}
++	got, err := os.ReadFile(p)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if string(got) != string(content) {
++		t.Fatalf("bytes altered: %q", got)
++	}
+ }
++
++// TestEnsurePrivateWindowsForeignSecurityStillRejected 钉住 owner 规范化
++// 修复不得放宽 fail-closed 判据：合法 owner + 非法主体（Everyone）DACL 仍
++// 拒绝；私有 DACL + owner 被拨回 Administrators 仍拒绝。
++func TestEnsurePrivateWindowsForeignSecurityStillRejected(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "tamper.json")
++	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := EnsurePrivateFile(p); err != nil {
++		t.Fatalf("EnsurePrivateFile: %v", err)
++	}
++
++	// (a) owner 合法（当前用户）但 DACL 含 Everyone allow-ACE：仍拒绝。
++	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
++	if err != nil {
++		t.Fatalf("CreateWellKnownSid(World): %v", err)
++	}
++	if err := windows.SetNamedSecurityInfo(p, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, buildSingleACEDACL(t, windows.SET_ACCESS, world), nil); err != nil {
++		t.Fatalf("tamper DACL with Everyone ACE: %v", err)
++	}
++	if err := verifyPrivateACL(p); err == nil || !strings.Contains(err.Error(), "unexpected principal") {
++		t.Fatalf("err = %v, want unexpected-principal rejection", err)
++	}
++
++	// (b) 私有 DACL + owner 被拨回 Administrators 组：owner 判据不放宽。
++	if err := EnsurePrivateFile(p); err != nil {
++		t.Fatalf("re-tighten: %v", err)
++	}
++	if forceOwnerTo(t, p, adminsSID(t)) {
++		if err := verifyPrivateACL(p); err == nil || !strings.Contains(err.Error(), "owner") {
++			t.Fatalf("err = %v, want owner mismatch rejection", err)
++		}
++	}
++}

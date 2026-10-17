@@ -574,3 +574,128 @@ func TestR6_001_ShutdownExactReleaseClearsAppLeaseRegistry(t *testing.T) {
 		t.Fatalf("shutdown retained App lease registry entries=%d", remembered)
 	}
 }
+
+// r6GatedCleanupStore parks the FIRST durable-run Complete on a channel
+// handshake so a release round can be held deterministically between the App
+// lease registry removal and the coordinator ReleaseExact — the g1
+// interleaving that used to let a synchronous StopSession return with the
+// lease still held. Every other Store method (and later Complete calls)
+// passes through to the real FileStore untouched.
+type r6GatedCleanupStore struct {
+	cleanupstore.Store
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+}
+
+func (s *r6GatedCleanupStore) Complete(record cleanupstore.Record) error {
+	s.enteredOnce.Do(func() { close(s.entered) })
+	<-s.release
+	return s.Store.Complete(record)
+}
+
+// TestR6_001_StopSessionWaitsForInFlightSessionLeaseRelease is the
+// deterministic stop-lease regression: when the exit monitor has already
+// claimed this session's whole-release round and is parked in the durable
+// completion write, a synchronous StopSession that has proven the process
+// terminal must wait for the same completion fact instead of returning early
+// off the emptied registry. Scheduling is channel-driven (no sleep-lottery,
+// no repeated-count flakiness): the negative window only fails if the old
+// no-op behavior returns immediately while the owner is provably parked.
+func TestR6_001_StopSessionWaitsForInFlightSessionLeaseRelease(t *testing.T) {
+	app, fake, _ := newR6ExternalLeaseApp(t)
+	providerID := configureR6ClaudeProvider(t, app)
+
+	gated := &r6GatedCleanupStore{
+		Store:   app.externalCleanupStore,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	app.externalCleanupStore = gated
+	// A failed assertion must not leave the monitor parked in the fixture.
+	releaseGate := sync.OnceFunc(func() { close(gated.release) })
+	t.Cleanup(releaseGate)
+
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
+	if err != nil {
+		t.Fatalf("LaunchSession: %v", err)
+	}
+	if got := app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom); got != 1 {
+		t.Fatalf("external Claude active leases=%d want 1", got)
+	}
+
+	// Hand the release to the exit monitor: fake terminal → monitor claims the
+	// registry entries and parks inside the gated durable Complete.
+	fake.finish(id)
+	select {
+	case <-gated.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit monitor never reached the durable completion write")
+	}
+	if got := app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom); got != 1 {
+		t.Fatalf("precondition: in-flight release round lost the lease early: count=%d", got)
+	}
+
+	// Concurrent same-session releasers: the synchronous already-terminal
+	// StopSession path and a direct whole-session releaser.
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- app.StopSession(id) }()
+	directDone := make(chan struct{})
+	go func() { app.releaseSharedLeases(id); close(directDone) }()
+
+	// While the owner is parked in the durable write, neither releaser may
+	// return successfully (the old no-op path returned within microseconds).
+	select {
+	case err := <-stopErr:
+		t.Fatalf("StopSession returned before the in-flight release completed: err=%v", err)
+	case <-directDone:
+		t.Fatal("direct releaseSharedLeases returned before the in-flight release completed")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if got := app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom); got != 1 {
+		t.Fatalf("lease released before the in-flight round completed: count=%d", got)
+	}
+
+	// Release the durable write: the owner finishes Complete, releases the
+	// coordinator lease and closes the completion gate; both waiters then
+	// return with the release responsibility fully discharged.
+	releaseGate()
+	select {
+	case err := <-stopErr:
+		if err != nil {
+			t.Fatalf("StopSession after in-flight release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopSession did not return after the in-flight release completed")
+	}
+	select {
+	case <-directDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("direct releaseSharedLeases did not return after the in-flight release completed")
+	}
+	if got := app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom); got != 0 {
+		t.Fatalf("lease retained after StopSession returned: count=%d", got)
+	}
+	if status := app.Sessions.GetStatus(id); status != session.StatusStopped {
+		t.Fatalf("session status=%q want stopped", status)
+	}
+
+	// Later releasers are idempotent and prompt: no re-blocking on the durable
+	// store, no state regression.
+	idempotentDone := make(chan struct{})
+	go func() {
+		app.releaseSharedLeases(id)
+		if err := app.StopSession(id); err != nil {
+			t.Errorf("idempotent StopSession: %v", err)
+		}
+		close(idempotentDone)
+	}()
+	select {
+	case <-idempotentDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-completion releasers blocked instead of returning idempotently")
+	}
+	if got := app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom); got != 0 {
+		t.Fatalf("idempotent release re-acquired or retained lease: count=%d", got)
+	}
+}

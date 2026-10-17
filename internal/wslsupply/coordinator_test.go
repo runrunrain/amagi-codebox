@@ -8,10 +8,12 @@ package wslsupply
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -20,31 +22,93 @@ import (
 )
 
 // fakeProbes 构造注入本地 temp dir 的探测面；identityCalls 计数身份探测次数
-// （Plan 纯读断言消费）。
+// （Plan 纯读断言消费）。modes 追踪 Chmod 落下的权限位（StatMode 读回，
+// SA-06 staging 验证的假探测面）。PR09：modes/chmodErr 由互斥锁保护——
+// 并发原语测试（TestSubmitFilePrimitiveTrueConcurrency 等）从多个 goroutine
+// 同时写读；PR02：未显式记录 chmod 的路径回退读真实文件权限（已提交副本
+// 携带 0600，敏感零写入路径的权限复核需要可信探测面）。
 type fakeProbes struct {
 	uncRoot       string
 	identity      platform.WSLUserIdentity
 	identityCalls int32
 	chmodErr      error
 	chmodCalls    int32
+
+	mu    sync.Mutex
+	modes map[string]string
 }
 
 func (f *fakeProbes) probes() Probes {
 	return Probes{
-		Identity: func(string) platform.WSLUserIdentity {
+		Identity: func(context.Context, string) platform.WSLUserIdentity {
 			atomic.AddInt32(&f.identityCalls, 1)
 			return f.identity
 		},
 		ToUNC: func(_, linuxPath string) string {
 			return filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 		},
-		Chmod: func(_, _ string, _ ...string) error {
+		Chmod: func(_ context.Context, _, mode string, paths ...string) error {
 			atomic.AddInt32(&f.chmodCalls, 1)
-			return f.chmodErr
+			f.mu.Lock()
+			if f.chmodErr != nil {
+				err := f.chmodErr
+				f.mu.Unlock()
+				return err
+			}
+			if f.modes == nil {
+				f.modes = map[string]string{}
+			}
+			// chmod 不对不存在的文件无条件成功（一致性修正 backup-path 的夹具
+			// 面）：路径经真实临时文件状态校验——生产 chmod 对不存在路径必失败，
+			// 假探测面不得掩盖错位路径。
+			for _, p := range paths {
+				unc := filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(p, "/")))
+				if _, serr := os.Lstat(unc); serr != nil {
+					f.mu.Unlock()
+					return fmt.Errorf("synthetic chmod: ENOENT %s", p)
+				}
+			}
+			for _, p := range paths {
+				f.modes[p] = mode
+			}
+			f.mu.Unlock()
+			return nil
+		},
+		StatMode: func(_ context.Context, _, linuxPath string) (string, bool) {
+			f.mu.Lock()
+			m, ok := f.modes[linuxPath]
+			f.mu.Unlock()
+			if ok {
+				return m, true
+			}
+			info, err := os.Stat(filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/"))))
+			if err != nil || !info.Mode().IsRegular() {
+				return "", false
+			}
+			return fmt.Sprintf("%o", info.Mode().Perm()), true
 		},
 	}
 }
 
+// setChmodError 注入/清除 chmod 失败（锁内写；供运行中途翻转的故障注入）。
+func (f *fakeProbes) setChmodError(err error) {
+	f.mu.Lock()
+	f.chmodErr = err
+	f.mu.Unlock()
+}
+
+// setMode 显式登记一个 linuxPath 的 distro 侧权限位。夹具的权威语义面：
+// Windows 宿主 os.Stat 无 POSIX 位（恒 0666/0444），「副本为 0600/0644」这类
+// 事实必须写入 mode 表表达，不得借用宿主位（生产权限真值面是 distro 内
+// stat 探测，从不读宿主 os.Stat）。
+func (f *fakeProbes) setMode(linuxPath, mode string) {
+	f.mu.Lock()
+	if f.modes == nil {
+		f.modes = map[string]string{}
+	}
+	f.modes[linuxPath] = mode
+	f.mu.Unlock()
+}
 func newFakeProbes(t *testing.T) *fakeProbes {
 	t.Helper()
 	return &fakeProbes{
@@ -62,7 +126,7 @@ type stubA2 struct {
 
 func (s *stubA2) Files() []string { return []string{"auth.json"} }
 
-func (s *stubA2) Sync(string) (launcher.SyncWSLPiLoginAuthOutcome, error) {
+func (s *stubA2) Sync(context.Context, TargetRef) (launcher.SyncWSLPiLoginAuthOutcome, error) {
 	atomic.AddInt32(&s.calls, 1)
 	return s.outcome, s.err
 }
@@ -344,16 +408,36 @@ func TestRunUnitsValidatesUnits(t *testing.T) {
 func TestCorruptStateFileFallsBackToUnmanaged(t *testing.T) {
 	fp := newFakeProbes(t)
 	c := newCoordinatorWith(t, fp, nil)
-	if err := os.WriteFile(filepath.Join(c.state.path), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(c.state.path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// 损坏清单退回未托管空清单，不得 panic，也不得重置目标文件。
+	// 攻坚契约：main 损坏 → store-health 错误、停止新写、不把空默认值覆盖
+	// 原文件；目标文件不被重置。修复存储后重新读入再操作。
 	a2 := &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh}
 	c.SetA2Adapter(a2)
-	if _, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth}); err != nil {
+	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
+	if err != nil {
 		t.Fatal(err)
 	}
-	st := c.GetStatus("Ubuntu", CLIPi)
+	if res.Results[0].Outcome != UnitBlocked || res.Results[0].Detail != "store-unhealthy" {
+		t.Fatalf("corrupt manifest must stop new writes, got %+v", res.Results[0])
+	}
+	if h := c.state.Health(); h.Main != StoreCorrupt {
+		t.Fatalf("store health must report corrupt main, got %+v", h)
+	}
+	// 原损坏文件未被空清单覆盖。
+	if b, rerr := os.ReadFile(c.state.path); rerr != nil || string(b) != "{not json" {
+		t.Fatalf("corrupt manifest must not be overwritten by an empty one, got %q err=%v", b, rerr)
+	}
+	// 修复存储后重新读入再操作（新协调器进程）。
+	if err := os.Remove(c.state.path); err != nil {
+		t.Fatal(err)
+	}
+	c2 := newCoordinatorWith(t, fp, a2)
+	if _, err := c2.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth}); err != nil {
+		t.Fatal(err)
+	}
+	st := c2.GetStatus("Ubuntu", CLIPi)
 	if len(st.Units) != 1 {
 		t.Fatalf("re-run after corrupt state must re-record unit: %+v", st.Units)
 	}

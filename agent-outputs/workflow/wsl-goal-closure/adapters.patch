@@ -1,0 +1,1708 @@
+diff --git a/app_wsl_skills_test.go b/app_wsl_skills_test.go
+index f0b753f..5057757 100644
+--- a/app_wsl_skills_test.go
++++ b/app_wsl_skills_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
+ 	"amagi-codebox/internal/platform"
+ 	"amagi-codebox/internal/wslsupply"
+@@ -192,3 +193,47 @@ func TestWSLSkillsTakeOverViaFacade(t *testing.T) {
+ 		t.Fatalf("takeover must rewrite from source: %q", got)
+ 	}
+ }
++
++// TestWSLSkillsGetDoesNotRestartCompletedScan（SA-17）：扫描完成后多次 Get 不
++// 重启扫描（不拾取扫描后新增内容）；显式 Check 才强制重扫并收敛。
++func TestWSLSkillsGetDoesNotRestartCompletedScan(t *testing.T) {
++	app, scope, _ := newSkillsTestApp(t)
++	writeHostSkill(t, scope.Root(), "alpha", "SKILL.md", "# alpha\n")
++	scope.Scan()
++
++	// 扫描后新增：多次 Get（状态轮询形态）不重扫——beta 不可见。
++	writeHostSkill(t, scope.Root(), "beta", "SKILL.md", "# beta\n")
++	for i := 0; i < 3; i++ {
++		st := app.GetWSLSkillsSupplyStatus()
++		if !st.Available || !st.ScanStarted {
++			t.Fatalf("status must be available/started: %+v", st)
++		}
++	}
++	st := app.GetWSLSkillsSupplyStatus()
++	for _, s := range st.Skills {
++		if s.Name == "beta" {
++			t.Fatal("Get must not restart the completed scan (beta invisible until Check)")
++		}
++	}
++	// 显式 Check：强制重扫，轮询收敛后 beta 可见。
++	if out := app.CheckWSLSkillsSupply(); !out.Available {
++		t.Fatalf("check must return available status: %+v", out)
++	}
++	deadline := time.Now().Add(10 * time.Second)
++	for {
++		st = app.GetWSLSkillsSupplyStatus()
++		found := false
++		for _, s := range st.Skills {
++			if s.Name == "beta" {
++				found = true
++			}
++		}
++		if found {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("rescan from Check must converge (beta visible): %+v", st.Skills)
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++}
+diff --git a/app_wsl_supply.go b/app_wsl_supply.go
+index 1de901f..70f0c59 100644
+--- a/app_wsl_supply.go
++++ b/app_wsl_supply.go
+@@ -1164,6 +1164,7 @@ func wslSkillsHostRoot() string {
+ // wslSkillsCoordinator 是技能面消费的协调器能力切片（nil 表示未接线）。
+ type wslSkillsCoordinator interface {
+ 	StartSkillsScan() bool
++	RescanSkills() bool
+ 	SkillsSnapshot() wslsupply.SkillsScanSnapshot
+ 	GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
+ 	PreviewUnits(ctx context.Context, distro string, cli wslsupply.CLI, units []wslsupply.UnitID) ([]wslsupply.UnitPreview, error)
+@@ -1206,8 +1207,9 @@ type WSLSkillsSupplyStatus struct {
+ 	Skills         []WSLSkillSummary `json:"skills"`
+ }
+ 
+-// GetWSLSkillsSupplyStatus 返回技能面状态：单飞启动后台扫描（首次/停机后补漏），
+-// 立即返回当前缓存快照（不等待扫描完成——大目录不阻塞 UI）。
++// GetWSLSkillsSupplyStatus 返回技能面状态：首次单飞启动后台扫描（SA-17：
++// 已启动过即幂等——Get 不重启已完成的扫描，显式 Check 才重扫），立即返回
++// 当前缓存快照（不等待扫描完成——大目录不阻塞 UI）。
+ func (a *App) GetWSLSkillsSupplyStatus() WSLSkillsSupplyStatus {
+ 	out := WSLSkillsSupplyStatus{Skills: []WSLSkillSummary{}}
+ 	if a == nil {
+@@ -1225,13 +1227,19 @@ func (a *App) GetWSLSkillsSupplyStatus() WSLSkillsSupplyStatus {
+ 		out.Reason = "技能供给未启用"
+ 		return out
+ 	}
+-	coord.StartSkillsScan() // 单飞；不等待（缓存快照随扫描分批可见）
++	coord.StartSkillsScan() // SA-17：仅首次启动；已启动过幂等（显式 Check 才重扫）
+ 	return wslSkillsStatusFrom(coord, distro, a.wslSupplyStatus(distro, wslsupply.CLICommon))
+ }
+ 
+-// CheckWSLSkillsSupply 执行「检查」：触发一轮重扫（后台分批）并返回当前状态；
+-// 扫描未完成时状态面明确显示进度，不冒充完成。不写任何目标内容。
++// CheckWSLSkillsSupply 执行「检查」：强制触发一轮后台重扫（SA-17：Get 不
++// 重启扫描，重扫仅由本显式动作触发）并返回当前状态；扫描未完成时状态面
++// 明确显示进度，不冒充完成。不写任何目标内容。
+ func (a *App) CheckWSLSkillsSupply() WSLSkillsSupplyStatus {
++	if a != nil {
++		if coord := a.wslSkillsCoordinator(); coord != nil {
++			coord.RescanSkills() // 已在跑则保持本轮；否则强制新扫
++		}
++	}
+ 	return a.GetWSLSkillsSupplyStatus()
+ }
+ 
+diff --git a/app_wsl_supply_s4.go b/app_wsl_supply_s4.go
+index d74279b..849f69e 100644
+--- a/app_wsl_supply_s4.go
++++ b/app_wsl_supply_s4.go
+@@ -95,13 +95,19 @@ func wslCliResourceLayout(cli wslsupply.CLI) *wslsupply.ResourceLayout {
+ 			HostRoot:     filepath.Join(home, ".claude"),
+ 			Files:        []string{"CLAUDE.md"},
+ 			DirUnits:     []string{"commands", "agents", "skills"},
+-			TargetPrefix: ".claude/",
++			// SA-10：Claude commands/agents 的顶层 Markdown 文件（review.md 等）
++			// 是真实消费者发现形态——单文件单元与目录单元并存。
++			FileLeafUnits: []string{"commands", "agents"},
++			TargetPrefix:  ".claude/",
+ 		}
+ 	case wslsupply.CLICodex:
+ 		return &wslsupply.ResourceLayout{
+ 			HostRoot: filepath.Join(home, ".codex"),
+ 			Files:    []string{"AGENTS.md"},
+ 			DirUnits: []string{"skills"},
++			// 消费边界（SA-10 标注）：Codex 用户 skills 按目录（folder）发现，
++			// 不虚构顶层 Markdown 文件单元语义。
++			FileLeafUnits: nil,
+ 		}
+ 	default:
+ 		return nil
+@@ -197,6 +203,7 @@ type wslCliSupplyCoordinator interface {
+ 	GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
+ 	SetUnitSelection(distro string, cli wslsupply.CLI, unit wslsupply.UnitID, keys []string) error
+ 	StartCliResourcesScan(cli wslsupply.CLI) bool
++	RescanCliResources(cli wslsupply.CLI) bool
+ 	CliResourcesSnapshot(cli wslsupply.CLI) wslsupply.SkillsScanSnapshot
+ }
+ 
+@@ -263,6 +270,7 @@ func (a *App) GetWSLCliSupplyStatus(cliName string) WSLCliSupplyStatus {
+ 	out.Available = true
+ 	out.Units = cliConfigUnitDetails(a.wslSupplyStatus(distro, cli), cli, false)
+ 	if coord := a.wslCliSupplyCoordinator(); coord != nil {
++		// SA-17：状态 Get 只首启扫描（已启动过幂等），不重启已完成扫描。
+ 		coord.StartCliResourcesScan(cli)
+ 		out.Resources = wslCliResourcesStatus(coord, distro, cli, a.wslSupplyStatus(distro, cli))
+ 	}
+@@ -579,7 +587,7 @@ func (a *App) CheckWSLCliResourcesSupply(cliName string) WSLSkillsSupplyStatus {
+ 		out.Reason = "资源供给未启用"
+ 		return out
+ 	}
+-	coord.StartCliResourcesScan(cli)
++	coord.RescanCliResources(cli) // SA-17：显式检查才强制重扫（Get 不重启扫描）
+ 	return wslCliResourcesStatus(coord, distro, cli, a.wslSupplyStatus(distro, cli))
+ }
+ 
+diff --git a/app_wsl_supply_s4_test.go b/app_wsl_supply_s4_test.go
+index dc08a20..4fefb92 100644
+--- a/app_wsl_supply_s4_test.go
++++ b/app_wsl_supply_s4_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
+ 	"amagi-codebox/internal/logging"
+ 	"amagi-codebox/internal/platform"
+@@ -169,3 +170,124 @@ func TestWSLOpenCodeMCPOverrideSetEmpty(t *testing.T) {
+ 	}
+ 	_ = context.Background()
+ }
++
++// TestImportWSLCliConfigKeysFullPathAndWithdraw（SA-03 App 贯通）：UI 形态的
++// 全路径键经 App 门真实写入目标文件；空选择显式撤回已导入条目；全路径键
++// 与同名叶双义时不误选。
++func TestImportWSLCliConfigKeysFullPathAndWithdraw(t *testing.T) {
++	app, c, uncRoot := newS4TestApp(t)
++	home := t.TempDir()
++	origHome := wslS4HomeDirFn
++	wslS4HomeDirFn = func() (string, error) { return home, nil }
++	t.Cleanup(func() { wslS4HomeDirFn = origHome })
++	registerS4Adapters(c, app)
++	origDistro := wslDefaultDistroFn
++	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
++	t.Cleanup(func() { wslDefaultDistroFn = origDistro })
++
++	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
++	os.WriteFile(filepath.Join(home, ".claude.json"), []byte(
++		`{"mcpServers":{"demo":{"url":"https://example.invalid/mcp"}}}`), 0o644)
++
++	// UI 传预览全路径键（修复前叶名匹配落空 → fresh 虚报）。
++	outcomes := app.ImportWSLCliConfigKeys("claude", string(wslsupply.UnitClaudeMCP), []string{"mcpServers/demo"})
++	if len(outcomes) != 1 || outcomes[0].Outcome != "applied" {
++		t.Fatalf("full-path key import must apply, got %+v", outcomes)
++	}
++	data, err := os.ReadFile(filepath.Join(uncRoot, filepath.FromSlash("home/u/.claude.json")))
++	if err != nil || !strings.Contains(string(data), "example.invalid") {
++		t.Fatalf("full-path key must reach target file: %q %v", data, err)
++	}
++
++	// 空选择显式撤回：托管条目按来源删除语义移除。
++	outcomes = app.ImportWSLCliConfigKeys("claude", string(wslsupply.UnitClaudeMCP), nil)
++	if len(outcomes) != 1 || outcomes[0].Outcome != "applied" {
++		t.Fatalf("empty selection withdrawal must apply removal, got %+v", outcomes)
++	}
++	data, _ = os.ReadFile(filepath.Join(uncRoot, filepath.FromSlash("home/u/.claude.json")))
++	if strings.Contains(string(data), "example.invalid") {
++		t.Fatalf("withdrawal must remove managed server:\n%s", data)
++	}
++
++	// 未知全路径键：零导入（fresh），目标不再被改写。
++	outcomes = app.ImportWSLCliConfigKeys("claude", string(wslsupply.UnitClaudeMCP), []string{"mcpServers/ghost"})
++	if len(outcomes) != 1 || outcomes[0].Outcome != "fresh" {
++		t.Fatalf("unknown key must yield fresh (no write), got %+v", outcomes)
++	}
++}
++
++// TestCheckWSLCliResourcesForcesRescan（SA-17）：资源扫描完成后 Get 不重扫，
++// 显式 Check 强制重扫并收敛新增的顶层 Markdown 命令文件。
++func TestCheckWSLCliResourcesForcesRescan(t *testing.T) {
++	app, c, _ := newS4TestApp(t)
++	home := t.TempDir()
++	origHome := wslS4HomeDirFn
++	wslS4HomeDirFn = func() (string, error) { return home, nil }
++	t.Cleanup(func() { wslS4HomeDirFn = origHome })
++	registerS4Adapters(c, app)
++	origDistro := wslDefaultDistroFn
++	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
++	t.Cleanup(func() { wslDefaultDistroFn = origDistro })
++
++	cmdDir := filepath.Join(home, ".claude", "commands")
++	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(cmdDir, "review.md"), []byte("# /review\n"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	// Get 首启扫描并等待收敛。
++	st := app.GetWSLCliSupplyStatus("claude")
++	if !st.Available {
++		t.Fatalf("status must be available: %+v", st)
++	}
++	deadline := time.Now().Add(10 * time.Second)
++	for app.GetWSLCliSupplyStatus("claude").Resources.ScanRunning {
++		if time.Now().After(deadline) {
++			t.Fatal("initial scan did not finish")
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	hasReview := func() bool {
++		s := app.GetWSLCliSupplyStatus("claude")
++		for _, sk := range s.Resources.Skills {
++			if sk.Name == "commands/review.md" {
++				return true
++			}
++		}
++		return false
++	}
++	if !hasReview() {
++		t.Fatal("initial scan must list commands/review.md (SA-10)")
++	}
++
++	// 扫描后新增文件：多次 Get 不重扫（新文件不可见）。
++	if err := os.WriteFile(filepath.Join(cmdDir, "deploy.md"), []byte("# /deploy\n"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	for i := 0; i < 3; i++ {
++		if s := app.GetWSLCliSupplyStatus("claude"); s.Resources.ScanRunning {
++			t.Fatal("Get must not restart a completed scan")
++		}
++	}
++	hasDeploy := func() bool {
++		s := app.GetWSLCliSupplyStatus("claude")
++		for _, sk := range s.Resources.Skills {
++			if sk.Name == "commands/deploy.md" {
++				return true
++			}
++		}
++		return false
++	}
++	deadline = time.Now().Add(10 * time.Second)
++	for !hasDeploy() {
++		app.CheckWSLCliResourcesSupply("claude")
++		if hasDeploy() {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("Check must force rescan and converge deploy.md: %+v", app.GetWSLCliSupplyStatus("claude").Resources.Skills)
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++}
+diff --git a/frontend/src/views/settings/WSLCLISettings.vue b/frontend/src/views/settings/WSLCLISettings.vue
+index 262c67d..4b0a6d8 100644
+--- a/frontend/src/views/settings/WSLCLISettings.vue
++++ b/frontend/src/views/settings/WSLCLISettings.vue
+@@ -212,9 +212,13 @@
+                     <span v-if="k.before || k.after" class="supply-detail">{{ k.before || '—' }} → {{ k.after || '—' }}</span>
+                     <span class="supply-detail">{{ k.reason }}</span>
+                   </div>
+-                  <div v-if="anyCliKeySelected(cli, u.unit)">
++                  <div v-if="cliPreviewFor(cli, u.unit)">
+                     <AppButton variant="primary" size="small" :disabled="cliBusy" @click="importCliKeys(cli, u.unit)">
+-                      导入所选（{{ cliKeySelection[cli + '|' + u.unit]?.length ?? 0 }}）
++                      {{
++                        anyCliKeySelected(cli, u.unit)
++                          ? `导入所选（${cliKeySelection[cli + '|' + u.unit]?.length ?? 0}）`
++                          : '撤回全部导入（空选择移除托管条目）'
++                      }}
+                     </AppButton>
+                   </div>
+                   <div v-if="(cliPreviewFor(cli, u.unit)?.notes ?? []).length" class="supply-detail">
+@@ -292,7 +296,7 @@
+ </template>
+ 
+ <script setup lang="ts">
+-import { ref, computed, onMounted } from 'vue'
++import { ref, computed, onMounted, onUnmounted } from 'vue'
+ import { getWSLCLIStatus, installCLIToWSL, type WSLStatus } from '../../api/wslsetup'
+ import {
+   getWSLConfigSupplyStatus,
+@@ -308,9 +312,14 @@ import {
+ } from '../../api/wslSupply'
+ import { useToast } from '../../composables/useToast'
+ import AppButton from '../../components/ui/AppButton.vue'
++import { cliImportOutcomeMessage } from './wslSupplyMessages'
+ 
+ const { showSuccess, showError, showInfo } = useToast()
+ 
++// SA-17：卸载后停止扫描轮询链（setTimeout 链不再触发新请求）。
++let alive = true
++onUnmounted(() => { alive = false })
++
+ const status = ref<WSLStatus | null>(null)
+ const busyTool = ref<string>('')
+ // P3-S1「配置状态」区：脱敏快照（只读，不触发同步）。
+@@ -589,10 +598,11 @@ const selectedSkillNames = computed(() => selectedSkills.value)
+ const anySkillSelected = computed(() => selectedSkills.value.length > 0)
+ 
+ async function loadSkills(): Promise<void> {
++  if (!alive) return
+   try {
+     skills.value = await getWSLSkillsSupplyStatus()
+-    // 扫描进行中：轮询直到收敛（大目录分批，进度可见）。
+-    if (skills.value?.scanRunning) {
++    // 扫描进行中：轮询直到收敛（大目录分批，进度可见；卸载后停链）。
++    if (alive && skills.value?.scanRunning) {
+       setTimeout(loadSkills, 800)
+     }
+   } catch {
+@@ -613,7 +623,7 @@ async function checkSkills(): Promise<void> {
+   skillsBusy.value = true
+   try {
+     skills.value = await checkWSLSkillsSupply()
+-    if (skills.value?.scanRunning) setTimeout(loadSkills, 800)
++    if (alive && skills.value?.scanRunning) setTimeout(loadSkills, 800)
+   } catch (err: any) {
+     showError('检查失败: ' + (err?.message || err))
+   } finally {
+@@ -769,10 +779,11 @@ const ocMcp = ref<WSLOpenCodeMCPEntry[]>([])
+ const ocOverride = ref<string[]>([])
+ 
+ async function loadCliSupply(cli: string): Promise<void> {
++  if (!alive) return
+   try {
+     const st = await getWSLCliSupplyStatus(cli)
+     cliStatus.value = { ...cliStatus.value, [cli]: st }
+-    if (st.resources.scanRunning) {
++    if (alive && st.resources.scanRunning) {
+       setTimeout(() => loadCliSupply(cli), 800)
+     }
+   } catch {
+@@ -838,20 +849,18 @@ async function previewCliUnit(cli: string, unit: string): Promise<void> {
+ }
+ 
+ async function importCliKeys(cli: string, unit: string): Promise<void> {
++  // SA-03：空选择是合法的显式撤回入口（后端按来源删除语义移除托管条目）；
++  // 零写入不报导入成功（提示逻辑见 wslSupplyMessages，单测覆盖）。
+   const keys = cliKeySelection.value[cli + '|' + unit] ?? []
+-  if (!keys.length) {
+-    showInfo('请先勾选要导入的条目')
+-    return
+-  }
+   if (cliBusy.value) return
+   cliBusy.value = true
+   try {
+     const outcomes = await importWSLCliConfigKeys(cli, unit, keys)
+-    const failed = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
+-    if (failed.length) {
+-      showInfo(`导入完成：${outcomes.length - failed.length} 项成功，${failed.length} 项保持现状（详见预览）`)
++    const msg = cliImportOutcomeMessage(keys.length, outcomes)
++    if (msg.kind === 'success') {
++      showSuccess(msg.text)
+     } else {
+-      showSuccess(`已导入所选（${keys.length} 项；冻结/未托管/不可转换条目保持 WSL 现状）`)
++      showInfo(msg.text)
+     }
+     await refreshCli(cli)
+   } catch (err: any) {
+diff --git a/internal/wslsupply/claude_adapter.go b/internal/wslsupply/claude_adapter.go
+index 198876c..fd17350 100644
+--- a/internal/wslsupply/claude_adapter.go
++++ b/internal/wslsupply/claude_adapter.go
+@@ -107,6 +107,11 @@ var claudeMCPShape = keyedShape{
+ var claudeSettingsShape = keyedShape{
+ 	relPath:   ClaudeSettingsFile,
+ 	sensitive: false,
++	// SA-03（启用入口核实修复）：settings 白名单字段与 mcp/profile 同为键级
++	// 选择单元——否则该单元无任何授权入口（UI 只对勾选键走导入授权；
++	// SetUnitSelection 拒绝非 SelectionAware 单元，awaiting-consent 悬死）。
++	// 白名单本身不变：permissions/hooks/env 等不在白名单内，不可能被勾选。
++	selectLeaf: true,
+ 	desired: func(obj map[string]any) (map[string]any, []string) {
+ 		out := map[string]any{}
+ 		for _, field := range claudeSettingsWhitelist {
+diff --git a/internal/wslsupply/claude_config_test.go b/internal/wslsupply/claude_config_test.go
+index 687ddf8..41946cf 100644
+--- a/internal/wslsupply/claude_config_test.go
++++ b/internal/wslsupply/claude_config_test.go
+@@ -210,6 +210,10 @@ func TestClaudeSettingsWhitelist(t *testing.T) {
+   "unknownFutureField": {"nested": true}
+ }`)
+ 	grantClaudeConsent(t, c, UnitClaudeSettings)
++	// SA-03：settings 白名单字段同为键级选择单元——显式勾选白名单字段导入。
++	if err := c.SetUnitSelection("Ubuntu", CLIClaude, UnitClaudeSettings, []string{"model", "spinnerTipsEnabled", "cleanupPeriodDays"}); err != nil {
++		t.Fatal(err)
++	}
+ 	res := runClaudeUnit(t, c, UnitClaudeSettings)
+ 	if res.Outcome != UnitApplied {
+ 		t.Fatalf("whitelist projection must apply, got %+v", res)
+diff --git a/internal/wslsupply/codex_adapter.go b/internal/wslsupply/codex_adapter.go
+index e1d94f9..bf33929 100644
+--- a/internal/wslsupply/codex_adapter.go
++++ b/internal/wslsupply/codex_adapter.go
+@@ -7,9 +7,11 @@ package wslsupply
+ //   - mcp_servers/<name>：server 级原子导入单元（复用 S2 mcp 转换器确定规则：
+ //     裸 shim 仅目标验证过原生命令才映射；Windows exe/ps1/盘符参数拒绝；远程
+ //     URL 保留）。仅用户选择的 server 进入候选（selectLeaf 语义）。
+-//   - profiles/<name>：选中的可移植 profile 节（标量/数组值；携带 Windows
+-//     路径形态的值剔除该节并报告；model_provider 引用不伪造——provider 由
+-//     既有 env/-c 管理，引用缺失只诊断不阻断）。
++//   - profiles/<name>：选中的 profile 节按明确可移植字段白名单导入（SA-04：
++//     approval_policy/sandbox_mode 等权限决定、信任状态、未知字段与嵌套表
++//     不导入，丢弃字段逐项报告；白名单字段携带不可映射 Windows 路径剔除该
++//     节；model_provider 引用不伪造——provider 由既有 env/-c 管理，引用缺失
++//     只诊断不阻断；目标段内本地字段在更新/接管时保留）。
+ //   - trust / sandbox / approval 等权限决定、项目绝对路径、未知命令与一切
+ //     未知节 LocalOnly：不在受管作用域，字节不动（「无凭据迁移授权，不套用
+ //     A2」；auth.json/sessions/history/logs/cache 永不触碰——本单元只读写
+@@ -121,27 +123,42 @@ func (a *codexConfigAdapter) readTargetDoc(target TargetRef) (*tomlManagedDoc, m
+ 	return doc, ranges, hexHash(data), nil
+ }
+ 
+-// desiredFrom 从来源文档抽取期望键集（选择集过滤 + 引用诊断）。
++// desiredFrom 从来源文档抽取期望键集（选择集过滤 + 引用诊断）。SA-03：选择
++// 匹配以规范化全路径键（"mcp_servers/<name>"/"profiles/<name>"）为准；兼容
++// 历史登记的叶名——仅当叶名在该文档键集内唯一对应时生效（同名 server/profile
++// 双义保守不选，不猜作用域）。selected 为 nil 表示不过滤（预览勾选面全集）。
+ func (a *codexConfigAdapter) desiredFrom(doc *tomlManagedDoc, selected map[string]bool) (map[string]any, []string) {
+ 	out := map[string]any{}
+ 	var notes []string
+ 	if doc == nil {
+ 		return out, nil
+ 	}
++	type sectionEntry struct {
++		root, name, tomlKey string
++		val                 map[string]any
++	}
++	var entries []sectionEntry
+ 	for _, tomlKey := range doc.Keys() {
+ 		root, name, ok := splitCodexSectionKey(tomlKey)
+ 		if !ok || strings.Contains(name, "/") {
+ 			notes = append(notes, fmt.Sprintf("TOML 节名 %q 无法按路径投影（含分隔符/非受管），跳过", tomlKey))
+ 			continue
+ 		}
+-		if selected != nil && !selected[name] {
+-			continue // 未选择导入：不进候选（预览可见全集）
+-		}
+ 		val, has := doc.SectionValue(tomlKey)
+ 		if !has {
+ 			continue
+ 		}
+-		out[root+"/"+name] = val
++		entries = append(entries, sectionEntry{root: root, name: name, tomlKey: tomlKey, val: val})
++	}
++	allKeys := make([]string, 0, len(entries))
++	for _, e := range entries {
++		allKeys = append(allKeys, e.root+"/"+e.name)
++	}
++	for _, e := range entries {
++		if selected != nil && !selectionMatchesKey(selected, e.root+"/"+e.name, allKeys) {
++			continue // 未选择导入：不进候选（预览可见全集）
++		}
++		out[e.root+"/"+e.name] = e.val
+ 	}
+ 	return out, notes
+ }
+@@ -245,9 +262,17 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
+ 		}
+ 	}
+ 	out := make([]KeyPreview, 0, len(ana.decisions))
++	// SA-03：选择状态以全路径键匹配（兼容唯一叶名）；全集覆盖期望与登记。
++	selectedAllKeys := sortedDesiredKeys(ana.importable)
++	for _, d := range ana.decisions {
++		selectedAllKeys = append(selectedAllKeys, d.Key)
++	}
++	for k := range ana.subs {
++		selectedAllKeys = append(selectedAllKeys, k)
++	}
+ 	for _, d := range ana.decisions {
+ 		kp := KeyPreview{Key: d.Key, Action: d.Kind.String(), Reason: d.Reason}
+-		kp.Selected = selected[keyLeafName(d.Key)]
++		kp.Selected = selectionMatchesKey(selected, d.Key, selectedAllKeys)
+ 		if srcVal, ok := ana.desired[d.Key]; ok {
+ 			kp.Importable = d.Kind != keyFrozenBothChanged
+ 			before, after := summarizeMCPServerEntry(d.Key, srcVal, facts)
+@@ -257,7 +282,7 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
+ 					kp.After = "转换需实测验证（应用时执行）"
+ 				}
+ 			} else {
+-				kp.Before = "profile（" + strconvItoa(len(toMapKeys(srcVal))) + " 个键）"
++				kp.Before = codexProfileBefore(srcVal)
+ 			}
+ 		}
+ 		out = append(out, kp)
+@@ -281,7 +306,7 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
+ 				kp.After = after
+ 			}
+ 		} else {
+-			kp.Before = "profile（" + strconvItoa(len(toMapKeys(ana.importable[key]))) + " 个键）"
++			kp.Before = codexProfileBefore(ana.importable[key])
+ 		}
+ 		out = append(out, kp)
+ 	}
+@@ -302,6 +327,23 @@ func toMapKeys(v any) []string {
+ 
+ func strconvItoa(n int) string { return fmt.Sprintf("%d", n) }
+ 
++// codexProfileBefore 生成 profile 键的脱敏预览摘要：总键数与其中不导入的
++// 权限/未知字段数（SA-04：预览面诚实标注白名单边界，不静默丢弃）。
++func codexProfileBefore(v any) string {
++	m, _ := v.(map[string]any)
++	total := len(m)
++	dropped := 0
++	for k := range m {
++		if !codexProfileWhitelist[k] {
++			dropped++
++		}
++	}
++	if dropped > 0 {
++		return fmt.Sprintf("profile（%d 个键，其中 %d 个权限/未知字段不导入）", total, dropped)
++	}
++	return "profile（" + strconvItoa(total) + " 个键）"
++}
++
+ // Candidate 在 Apply 阶段生成合并候选（TOML 行级编辑；转换失败键保持目标现状）。
+ func (a *codexConfigAdapter) Candidate(ctx context.Context, target TargetRef, state *StateEntry) (ProjectionCandidate, error) {
+ 	return a.buildCandidate(ctx, target, state, false)
+@@ -313,7 +355,10 @@ func (a *codexConfigAdapter) AdoptCandidate(ctx context.Context, target TargetRe
+ }
+ 
+ func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRef, state *StateEntry, adopt bool) (ProjectionCandidate, error) {
+-	if state != nil && state.Detached {
++	// SA-11：Detached 只阻断普通供给路径；显式「预览后确认接管」（adopt=true，
++	// 协调器已过 CAS/同怠门）是唯一声明的恢复入口，必须放行重建基准（与 Pi
++	// 键级适配器同构；接管成功后 recordProjectionState 重建条目即解除 Detached）。
++	if state != nil && state.Detached && !adopt {
+ 		return ProjectionCandidate{}, errors.New("unit is detached (keep-local); takeover required to re-enable")
+ 	}
+ 	selected := map[string]bool{} // 空 = 全不选（nil 会被当作不过滤，禁止）
+@@ -399,6 +444,18 @@ func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRe
+ 				blockedAny = true
+ 				continue
+ 			}
++			if note != "" {
++				// SA-04：白名单丢弃字段仍发生了部分写入——诚实报告并记 partial。
++				notes = append(notes, fmt.Sprintf("键 %s：%s", d.Key, note))
++				blockedAny = true
++			}
++			if strings.HasPrefix(d.Key, "profiles/") {
++				// SA-04：目标已有本地策略保留——profile 更新/接管按白名单覆盖，
++				// 目标段内非白名单字段（本地权限决定/未知字段/子表）原样保留。
++				if prevVal, exists := tgtDoc.SectionValue(codexKeyToSectionKey(d.Key)); exists {
++					converted = mergeCodexProfileSection(prevVal, toSectionMap(converted))
++				}
++			}
+ 			if err := tgtDoc.UpsertSection(codexKeyToSectionKey(d.Key), toSectionMap(converted)); err != nil {
+ 				notes = append(notes, fmt.Sprintf("键 %s：TOML 序列化受阻（%v），保持 WSL 现状", d.Key, err))
+ 				blockedAny = true
+@@ -443,8 +500,10 @@ func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRe
+ 	}, nil
+ }
+ 
+-// convertEntry 转换一个期望键值：mcp server 走 §五确定规则；profile 子树做
+-// 路径可移植性检查（不可映射 → 该节保持现状）。附带 model_provider 引用诊断。
++// convertEntry 转换一个期望键值：mcp server 走 §五确定规则；profile 子树按
++// SA-04 白名单过滤（权限/信任与未知字段不导入，逐字段报告；携带不可映射
++// Windows 路径的白名单值剔除该节）。返回的 note 在 ok=true 时也携带丢弃
++// 字段报告（调用方记入 notes，结果记 partial）。
+ func (a *codexConfigAdapter) convertEntry(key string, v any, facts TransformFacts) (any, bool, string) {
+ 	entry, ok := v.(map[string]any)
+ 	if !ok {
+@@ -457,11 +516,60 @@ func (a *codexConfigAdapter) convertEntry(key string, v any, facts TransformFact
+ 		}
+ 		return result.Entry, true, ""
+ 	}
+-	converted, ok := TransformSettingValue(entry, facts)
++	return convertCodexProfileSection(entry, facts)
++}
++
++// codexProfileWhitelist 是 profiles/<name> 节内可移植字段的明确白名单
++// （SA-04：审批/sandbox 等权限决定、信任状态、项目路径、嵌套表与一切未知
++// 字段不导入——「用户选了 profile」不等于授权越权字段跨界；字段语义参照
++// codex CLI profile 常用标识符字段，与仓内 codexplugin 使用的字段词表一致）。
++var codexProfileWhitelist = map[string]bool{
++	"model":                    true,
++	"model_provider":           true,
++	"model_reasoning_effort":   true,
++	"model_verbosity":          true,
++	"disable_response_storage": true,
++	"chatgpt_base_url":         true,
++}
++
++// convertCodexProfileSection 按白名单过滤并转换 profile 节。
++func convertCodexProfileSection(entry map[string]any, facts TransformFacts) (any, bool, string) {
++	filtered := map[string]any{}
++	var dropped []string
++	for k, v := range entry {
++		if codexProfileWhitelist[k] {
++			filtered[k] = v
++		} else {
++			dropped = append(dropped, k)
++		}
++	}
++	sort.Strings(dropped)
++	if len(filtered) == 0 {
++		return nil, false, fmt.Sprintf("profile 只含不导入字段（%s），无可移植内容", strings.Join(dropped, "/"))
++	}
++	converted, ok := TransformSettingValue(filtered, facts)
+ 	if !ok {
+-		return nil, false, "profile 携带不可映射的 Windows 路径值，本次剔除该节"
++		return nil, false, "profile 白名单字段携带不可映射的 Windows 路径值，本次剔除该节"
++	}
++	note := ""
++	if len(dropped) > 0 {
++		note = fmt.Sprintf("已按白名单导入 %d 个字段；%s 属权限/未知字段不导入（保留目标现状）", len(converted.(map[string]any)), strings.Join(dropped, "/"))
++	}
++	return converted, true, note
++}
++
++// mergeCodexProfileSection 把白名单转换结果覆盖到目标已有 profile 段上
++// （SA-04：目标本地策略/未知字段/子表保留；白名单字段以来源为准）。合并后的
++// 值作为写入基准（Written 含本地保留字段——稳态 round-trip 一致）。
++func mergeCodexProfileSection(prev, converted map[string]any) map[string]any {
++	merged := make(map[string]any, len(prev)+len(converted))
++	for k, v := range prev {
++		merged[k] = v
++	}
++	for k, v := range converted {
++		merged[k] = v
+ 	}
+-	return converted, true, ""
++	return merged
+ }
+ 
+ // noWriteReason 归纳无可写键的主导原因（与 keyedProjectionAdapter 同词汇）。
+diff --git a/internal/wslsupply/codex_config_test.go b/internal/wslsupply/codex_config_test.go
+index 810dc15..e8c01aa 100644
+--- a/internal/wslsupply/codex_config_test.go
++++ b/internal/wslsupply/codex_config_test.go
+@@ -34,7 +34,7 @@ trust_level = "trusted"
+ 
+ [profiles.fast]
+ model = "gpt-5-mini"
+-effort = "low"
++model_reasoning_effort = "low"
+ 
+ [mcp_servers.web]
+ url = "https://mcp.example/sse"
+@@ -111,8 +111,9 @@ func TestCodexConfigSelectionAndTOMLFidelity(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	// TOML 保真（验收 3，F4 整文确定性期望）：非受管内容逐字节保留 + 受管段
+-	// 按判定序（键字典序）以序列化形态追加；winonly 形态被拒不落盘。
+-	const afterImport = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.fetch]\ncommand = \"npx\"\nargs = [\"-y\", \"fetch-mcp\"]\n\n[mcp_servers.fetch.env]\nFETCH_TOKEN = \"secret\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\neffort = \"low\"\nmodel = \"gpt-5-mini\"\n"
++	// 按判定序（键字典序）以序列化形态追加；winonly 形态被拒不落盘；profile
++	// 按 SA-04 白名单只携带可移植字段。
++	const afterImport = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.fetch]\ncommand = \"npx\"\nargs = [\"-y\", \"fetch-mcp\"]\n\n[mcp_servers.fetch.env]\nFETCH_TOKEN = \"secret\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\nmodel = \"gpt-5-mini\"\nmodel_reasoning_effort = \"low\"\n"
+ 	if got := string(data); got != afterImport {
+ 		t.Fatalf("import result must equal the deterministic expectation; got:\n%s\nwant:\n%s", got, afterImport)
+ 	}
+@@ -140,7 +141,7 @@ func TestCodexConfigSelectionAndTOMLFidelity(t *testing.T) {
+ 	}
+ 	data2, _ := os.ReadFile(codexFile(fp))
+ 	// F4：取消选择后的整文确定性期望（fetch 段及其尾随空行移除，其余逐字节不变）。
+-	const afterDeselect = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\neffort = \"low\"\nmodel = \"gpt-5-mini\"\n"
++	const afterDeselect = "# distro 用户注释：保留\nmodel = \"gpt-5\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n\n[sandbox]\nmode = \"read-only\"\n\n[mcp_servers.distro-own]\ncommand = \"user-tool\"\n\n[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\nmodel = \"gpt-5-mini\"\nmodel_reasoning_effort = \"low\"\n"
+ 	if got2 := string(data2); got2 != afterDeselect {
+ 		t.Fatalf("deselect result must equal the deterministic expectation; got:\n%s\nwant:\n%s", got2, afterDeselect)
+ 	}
+@@ -279,21 +280,29 @@ func TestCodexAdoptKeepsHandModifiedStaleSection(t *testing.T) {
+ 
+ func TestCodexProfilesPortability(t *testing.T) {
+ 	c, fp, src, _ := newS4CodexCoordinator(t)
+-	src.toml = []byte("[profiles.good]\nmodel = \"gpt-5-mini\"\neffort = \"low\"\n\n[profiles.badpath]\nmodel = \"gpt-5\"\ncwd = \"C:\\\\work\\\\proj\"\n")
++	// SA-04：profile 按白名单导入——未知字段（cwd 携带项目绝对路径）不导入，
++	// 白名单字段照常落地（验收 2：项目绝对路径不跨界，由白名单边界保证）。
++	src.toml = []byte("[profiles.good]\nmodel = \"gpt-5-mini\"\nmodel_reasoning_effort = \"low\"\n\n[profiles.badpath]\nmodel = \"gpt-5\"\ncwd = \"C:\\\\work\\\\proj\"\n")
+ 	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"good", "badpath"}); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	res := runCodexUnit(t, c)
+ 	if res.Outcome != UnitApplied || !strings.Contains(res.Detail, "partial") {
+-		t.Fatalf("good profile applies, bad path profile stays, got %+v", res)
++		t.Fatalf("both profiles apply (badpath partially: cwd dropped), got %+v", res)
+ 	}
+ 	data, _ := os.ReadFile(codexFile(fp))
+ 	got := string(data)
+ 	if !strings.Contains(got, "[profiles.good]") {
+ 		t.Fatalf("portable profile must land:\n%s", got)
+ 	}
+-	if strings.Contains(got, "[profiles.badpath]") {
+-		t.Fatalf("windows-path profile must not land (验收 2：项目绝对路径不导入):\n%s", got)
++	if !strings.Contains(got, "[profiles.badpath]") || !strings.Contains(got, "gpt-5") {
++		t.Fatalf("badpath profile whitelist fields must land:\n%s", got)
++	}
++	if strings.Contains(got, "cwd") || strings.Contains(got, `C:\work`) {
++		t.Fatalf("unknown cwd field (project absolute path) must not cross (验收 2):\n%s", got)
++	}
++	if !strings.Contains(res.Detail, "cwd") {
++		t.Fatalf("dropped fields must be reported in detail: %s", res.Detail)
+ 	}
+ }
+ 
+@@ -322,3 +331,186 @@ func TestCodexCorruptManagedScopeRefuses(t *testing.T) {
+ 		t.Fatalf("corrupt source must block, got %+v", res)
+ 	}
+ }
++
++// TestCodexProfileWhitelistBlocksPermissionsAndUnknown（SA-04）：profile 内
++// 权限键（approval_policy/sandbox_mode）、未知字段与嵌套表不导入；白名单字段
++// 照常落地并诚实报告丢弃项；目标侧既有权限决定（其它节/顶层键）逐字节保留。
++func TestCodexProfileWhitelistBlocksPermissionsAndUnknown(t *testing.T) {
++	c, fp, src, _ := newS4CodexCoordinator(t)
++	src.toml = []byte(`[profiles.demo]
++model = "gpt-5-mini"
++approval_policy = "never"
++sandbox_mode = "danger-full-access"
++unknown_host_field = "copied"
++
++[profiles.demo.experimental]
++flag = true
++`)
++	// distro 侧用户自有权限决定（顶层 approval_policy + 独立节）必须保留。
++	const distroSeed = "# user comment\napproval_policy = \"never\"\n\n[projects.\"/home/linux/proj\"]\ntrust_level = \"trusted\"\n"
++	os.MkdirAll(filepath.Dir(codexFile(fp)), 0o700)
++	os.WriteFile(codexFile(fp), []byte(distroSeed), 0o600)
++	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"profiles/demo"}); err != nil {
++		t.Fatal(err)
++	}
++	res := runCodexUnit(t, c)
++	if res.Outcome != UnitApplied {
++		t.Fatalf("profile import must apply, got %+v", res)
++	}
++	if !strings.Contains(res.Detail, "partial") || !strings.Contains(res.Detail, "approval_policy") {
++		t.Fatalf("dropped permission fields must be reported: %s", res.Detail)
++	}
++	data, _ := os.ReadFile(codexFile(fp))
++	got := string(data)
++	if !strings.Contains(got, "[profiles.demo]") || !strings.Contains(got, `model = "gpt-5-mini"`) {
++		t.Fatalf("whitelist fields must land:\n%s", got)
++	}
++	for _, banned := range []string{"danger-full-access", "unknown_host_field", "experimental", "copied"} {
++		if strings.Contains(got, banned) {
++			t.Fatalf("permission/unknown/nested field %q must not cross:\n%s", banned, got)
++		}
++	}
++	// 目标侧既有权限决定逐字节保留（顶层 approval_policy 与 projects 节）。
++	if !strings.Contains(got, "# user comment") || !strings.Contains(got, `[projects."/home/linux/proj"]`) {
++		t.Fatalf("target local decisions must be preserved byte-for-byte:\n%s", got)
++	}
++	if strings.Count(got, `approval_policy = "never"`) != 1 {
++		t.Fatalf("exactly the pre-existing approval_policy must remain:\n%s", got)
++	}
++}
++
++// TestCodexProfileTakeoverPreservesTargetLocalPolicy（SA-04）：目标已有同名
++// profile（用户自有，含本地权限决定）时按未托管冻结；预览后接管仅覆盖白名单
++// 字段，本地权限决定保留。
++func TestCodexProfileTakeoverPreservesTargetLocalPolicy(t *testing.T) {
++	c, fp, src, _ := newS4CodexCoordinator(t)
++	src.toml = []byte("[profiles.demo]\nmodel = \"gpt-5-mini\"\napproval_policy = \"never\"\n")
++	os.MkdirAll(filepath.Dir(codexFile(fp)), 0o700)
++	os.WriteFile(codexFile(fp), []byte("# user\n[profiles.demo]\nmodel = \"old-model\"\napproval_policy = \"on-request\"\nnotify = true\n"), 0o600)
++	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"demo"}); err != nil {
++		t.Fatal(err)
++	}
++	res := runCodexUnit(t, c)
++	if res.Outcome != UnitBlocked || res.Detail != "unmanaged-existing" {
++		t.Fatalf("same-name target profile must freeze unmanaged, got %+v", res)
++	}
++	previews, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICodex, []UnitID{UnitCodexConfig})
++	if err != nil || len(previews) != 1 || previews[0].TargetHash == "" {
++		t.Fatalf("preview: %v %+v", err, previews)
++	}
++	takeRes, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLICodex, UnitCodexConfig, previews[0].TargetHash)
++	if err != nil {
++		t.Fatalf("takeover: %v", err)
++	}
++	if takeRes.Outcome != UnitApplied {
++		t.Fatalf("takeover must apply, got %+v", takeRes)
++	}
++	data, _ := os.ReadFile(codexFile(fp))
++	got := string(data)
++	if !strings.Contains(got, `model = "gpt-5-mini"`) {
++		t.Fatalf("takeover must overwrite managed whitelist fields:\n%s", got)
++	}
++	// 源侧 approval_policy（never）不跨界；目标本地 policy/未知字段保留。
++	if strings.Contains(got, `"never"`) {
++		t.Fatalf("source approval_policy must not cross:\n%s", got)
++	}
++	if !strings.Contains(got, `approval_policy = "on-request"`) || !strings.Contains(got, "notify = true") || !strings.Contains(got, "# user") {
++		t.Fatalf("target local policy/unknown fields must be preserved on takeover:\n%s", got)
++	}
++}
++
++// TestCodexProfileUpdateKeepsLocalFields（SA-04）：接管把目标本地字段并入写入
++// 基准后，来源更新走 merge——本地权限决定/未知字段继续保留，白名单字段更新。
++func TestCodexProfileUpdateKeepsLocalFields(t *testing.T) {
++	c, fp, src, _ := newS4CodexCoordinator(t)
++	src.toml = []byte("[profiles.demo]\nmodel = \"gpt-5-mini\"\n")
++	os.MkdirAll(filepath.Dir(codexFile(fp)), 0o700)
++	os.WriteFile(codexFile(fp), []byte("# user\n[profiles.demo]\nmodel = \"old-model\"\napproval_policy = \"on-request\"\nnotify = true\n"), 0o600)
++	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"demo"}); err != nil {
++		t.Fatal(err)
++	}
++	if res := runCodexUnit(t, c); res.Outcome != UnitBlocked || res.Detail != "unmanaged-existing" {
++		t.Fatalf("same-name target profile must freeze unmanaged, got %+v", res)
++	}
++	previews, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICodex, []UnitID{UnitCodexConfig})
++	if err != nil || len(previews) != 1 {
++		t.Fatalf("preview: %v %+v", err, previews)
++	}
++	if _, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLICodex, UnitCodexConfig, previews[0].TargetHash); err != nil {
++		t.Fatalf("takeover: %v", err)
++	}
++	// 来源更新 model：merge 保留本地 approval_policy/notify。
++	src.toml = []byte("[profiles.demo]\nmodel = \"gpt-5-max\"\n")
++	if res := runCodexUnit(t, c); res.Outcome != UnitApplied {
++		t.Fatalf("source update must apply, got %+v", res)
++	}
++	got, _ := os.ReadFile(codexFile(fp))
++	if !strings.Contains(string(got), `model = "gpt-5-max"`) {
++		t.Fatalf("source update must land:\n%s", got)
++	}
++	if !strings.Contains(string(got), `approval_policy = "on-request"`) || !strings.Contains(string(got), "notify = true") {
++		t.Fatalf("target local fields must survive managed update (merge):\n%s", got)
++	}
++}
++
++// TestCodexProfileOnlyPermissionsStays（SA-04）：profile 只含权限/未知字段时
++// 无可移植内容——转换受阻保持目标现状。
++func TestCodexProfileOnlyPermissionsStays(t *testing.T) {
++	c, fp, src, _ := newS4CodexCoordinator(t)
++	src.toml = []byte("[profiles.locked]\napproval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n")
++	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"locked"}); err != nil {
++		t.Fatal(err)
++	}
++	res := runCodexUnit(t, c)
++	if res.Outcome != UnitBlocked || !strings.Contains(res.Detail, "conversion-blocked") {
++		t.Fatalf("permission-only profile must stay blocked, got %+v", res)
++	}
++	if _, err := os.Stat(codexFile(fp)); !os.IsNotExist(err) {
++		t.Fatal("permission-only profile must not write the target")
++	}
++}
++
++// TestCodexDetachedExplicitTakeOverRestores（SA-11）：停跟随后，显式「预览后
++// 确认接管」必须能重建基准并解除 Detached（修复前 AdoptCandidate 无条件拒绝
++// detached，唯一声明的恢复操作必定失败）。
++func TestCodexDetachedExplicitTakeOverRestores(t *testing.T) {
++	c, fp, src, _ := newS4CodexCoordinator(t)
++	src.toml = []byte("[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n")
++	if err := c.SetUnitSelection("Ubuntu", CLICodex, UnitCodexConfig, []string{"web"}); err != nil {
++		t.Fatal(err)
++	}
++	if res := runCodexUnit(t, c); res.Outcome != UnitApplied {
++		t.Fatalf("initial import failed: %+v", res)
++	}
++	// 保留本地（停跟随）后，普通供给零动作（fresh no-change，不写目标）。
++	if err := c.DropUnitRegistration("Ubuntu", CLICodex, UnitCodexConfig); err != nil {
++		t.Fatalf("drop registration: %v", err)
++	}
++	if res := runCodexUnit(t, c); res.Outcome != UnitFresh || res.Detail != "no-change" {
++		t.Fatalf("detached unit must stay idle (fresh no-change), got %+v", res)
++	}
++	// 显式接管：预览携带目标 hash 令牌，TakeOver 重建并解除。
++	previews, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICodex, []UnitID{UnitCodexConfig})
++	if err != nil || len(previews) != 1 {
++		t.Fatalf("preview: %v %+v", err, previews)
++	}
++	if previews[0].BlockedReason != "detached" || previews[0].TargetHash == "" {
++		t.Fatalf("detached preview must carry takeover token: %+v", previews[0])
++	}
++	takeRes, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLICodex, UnitCodexConfig, previews[0].TargetHash)
++	if err != nil {
++		t.Fatalf("takeover: %v", err)
++	}
++	if takeRes.Outcome != UnitApplied {
++		t.Fatalf("explicit takeover must restore detached unit, got %+v", takeRes)
++	}
++	// 解除后恢复跟随：来源变化能再次安全更新。
++	src.toml = []byte("[mcp_servers.web]\nurl = \"https://changed.example/sse\"\n")
++	if res := runCodexUnit(t, c); res.Outcome != UnitApplied {
++		t.Fatalf("restored unit must follow source again, got %+v", res)
++	}
++	data, _ := os.ReadFile(codexFile(fp))
++	if !strings.Contains(string(data), "changed.example") {
++		t.Fatalf("restored unit must apply source change:\n%s", data)
++	}
++}
+diff --git a/internal/wslsupply/coordinator.go b/internal/wslsupply/coordinator.go
+index 32a08f6..331ec10 100644
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -1011,8 +1011,11 @@ func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID)
+ 			Unit: unit, Policy: adapter.Policy(), Generation: prev.Generation,
+ 			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+ 			TransformVersion: prev.TransformVersion,
+-			Subs:             prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+-			LastSuccess: time.Now(),
++			// SA-11：停跟随仅停动作，导入选择集保留——显式接管后继续跟随原选择
++			//（与资源单元分支一致；丢失选择会让接管后的供给退化为零选择）。
++			SelectedKeys: prev.SelectedKeys,
++			Subs:         prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
++			LastSuccess:  time.Now(),
+ 		}
+ 		st.upsertEntry(next, prev.Generation)
+ 	})
+diff --git a/internal/wslsupply/keyed.go b/internal/wslsupply/keyed.go
+index bfe4a03..6245d34 100644
+--- a/internal/wslsupply/keyed.go
++++ b/internal/wslsupply/keyed.go
+@@ -243,3 +243,29 @@ func sortStrings(s []string) {
+ 		}
+ 	}
+ }
++
++// selectionMatchesKey 报告键 key（规范化全路径标识，如 "mcpServers/demo"、
++// "profiles/demo"）是否在选择集 selected 内（SA-03 修复：UI 预览/勾选/导入
++// 全链统一传全路径键，SetUnitSelection 原样保存——匹配以全路径为准，不能
++// 全局截叶名，否则 mcp_servers 与 profiles 的同名叶会同时被误选）。
++// 兼容历史登记的叶名形态：仅当叶名在 allKeys 内唯一对应时生效（同名双义
++// 保守不选，不猜作用域）。allKeys 是本单元期望键集全集（含已从来源删除但
++// 仍登记的键）。
++func selectionMatchesKey(selected map[string]bool, key string, allKeys []string) bool {
++	if len(selected) == 0 {
++		return false
++	}
++	if selected[key] {
++		return true
++	}
++	leaf := keyLeafName(key)
++	if !selected[leaf] {
++		return false
++	}
++	for _, k := range allKeys {
++		if k != key && keyLeafName(k) == leaf {
++			return false // 同名叶跨作用域双义：叶名不唯一，保守不选
++		}
++	}
++	return true
++}
+diff --git a/internal/wslsupply/pi_config.go b/internal/wslsupply/pi_config.go
+index 0c24106..e3ef7e5 100644
+--- a/internal/wslsupply/pi_config.go
++++ b/internal/wslsupply/pi_config.go
+@@ -222,7 +222,9 @@ func (a *keyedProjectionAdapter) readSourceSafe() ([]byte, error) {
+ 	return a.readSource()
+ }
+ 
+-// applySelection 按用户选择集过滤期望键集（叶名匹配；无登记 = 全不选）。
++// applySelection 按用户选择集过滤期望键集（规范化全路径键匹配；无登记 = 全
++// 不选）。SA-03：匹配以全路径键为准（UI 预览/导入链统一传全路径）；兼容历史
++// 登记的叶名——仅在叶名唯一对应时生效，同名 MCP/profile 双义保守不选。
+ func (a *keyedProjectionAdapter) applySelection(desired map[string]any, state *StateEntry) map[string]any {
+ 	if !a.shape.selectLeaf {
+ 		return desired
+@@ -233,9 +235,10 @@ func (a *keyedProjectionAdapter) applySelection(desired map[string]any, state *S
+ 			selected[k] = true
+ 		}
+ 	}
++	allKeys := sortedDesiredKeys(desired)
+ 	filtered := map[string]any{}
+ 	for k, v := range desired {
+-		if selected[keyLeafName(k)] {
++		if selectionMatchesKey(selected, k, allKeys) {
+ 			filtered[k] = v
+ 		}
+ 	}
+@@ -395,10 +398,19 @@ func (a *keyedProjectionAdapter) PreviewKeys(snap *Snapshot, state *StateEntry)
+ 		}
+ 	}
+ 	out := make([]KeyPreview, 0, len(ana.decisions))
++	// SA-03：选择状态同样以全路径键匹配（兼容唯一叶名）；allKeys 覆盖期望全集
++	// 与登记基准，保证同名叶双义判定不依赖当前来源是否还存在。
++	selectedAllKeys := sortedDesiredKeys(ana.importable)
++	for _, d := range ana.decisions {
++		selectedAllKeys = append(selectedAllKeys, d.Key)
++	}
++	for k := range ana.subs {
++		selectedAllKeys = append(selectedAllKeys, k)
++	}
+ 	for _, d := range ana.decisions {
+ 		kp := KeyPreview{Key: d.Key, Action: d.Kind.String(), Reason: d.Reason}
+ 		if a.shape.selectLeaf {
+-			kp.Selected = selected[keyLeafName(d.Key)]
++			kp.Selected = selectionMatchesKey(selected, d.Key, selectedAllKeys)
+ 			_, srcOK := ana.desired[d.Key]
+ 			kp.Importable = srcOK && d.Kind != keyFrozenBothChanged
+ 		}
+diff --git a/internal/wslsupply/resources.go b/internal/wslsupply/resources.go
+index e1a06a9..7a8f53d 100644
+--- a/internal/wslsupply/resources.go
++++ b/internal/wslsupply/resources.go
+@@ -6,9 +6,11 @@ package wslsupply
+ // agents/、skills/：选中后导入；持续同步遵循 WSL 手改冻结」与 Codex 行
+ //「AGENTS.md、用户自有 skills：选中后导入」）。
+ //
+-// 单元粒度：单文件资源（CLAUDE.md/AGENTS.md）与目录资源（commands/<name>、
++// 单元粒度：单文件资源（CLAUDE.md/AGENTS.md 及 SA-10 的顶层 Markdown
++// 命令/agent 文件 commands/review.md）与目录资源（commands/<name>、
+ // agents/<name>、skills/<name>）各为一个最小登记单元，单元 id 形如
+-// "claude/res/commands/foo"、"codex/res/AGENTS.md"。语义与 shared/skill/<name>
++// "claude/res/commands/foo"、"claude/res/commands/review.md"、
++// "codex/res/AGENTS.md"。语义与 shared/skill/<name>
+ // 完全一致（复用 SkillManifest/扫描器/提交原语/补偿），仅目标前缀不同
+ //（claude 目标根是 HOME，故目标相对路径带 .claude/ 前缀）。
+ 
+@@ -63,6 +65,11 @@ type ResourceLayout struct {
+ 	Files []string
+ 	// DirUnits：目录资源子目录名（其每个一级子目录是一个单元：commands/agents/skills）。
+ 	DirUnits []string
++	// FileLeafUnits：DirUnits 中「顶层 *.md 文件也是单文件单元」的子目录
++	// （SA-10：Claude commands/review.md、agents/helper.md 是真实消费者发现
++	// 形态——顶层 Markdown 文件与一级子目录同名命令并存；codex skills 仅
++	// 目录单元，folder 发现语义不虚构顶层文件单元）。
++	FileLeafUnits []string
+ 	// TargetPrefix：目标相对路径前缀（claude 目标根为 HOME → ".claude/"；codex → ""）。
+ 	TargetPrefix string
+ }
+@@ -94,15 +101,30 @@ func (s *ResourceScope) Layout() ResourceLayout { return s.layout }
+ // Limits 返回生效的扫描上限。
+ func (s *ResourceScope) Limits() SkillsScanLimits { return s.limits }
+ 
+-// StartScanAsync 单飞启动后台扫描（幂等）。
++// StartScanAsync 单飞启动后台扫描。SA-17：已启动过即幂等返回——状态 Get
++// 不重启已完成的扫描（只有显式「检查」（RescanAsync）才重扫，避免轮询变成
++// 永不收敛的后台全量重扫）。
+ func (s *ResourceScope) StartScanAsync() bool {
+ 	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.running || s.started {
++		return false
++	}
++	return s.startScanLocked()
++}
++
++// RescanAsync 强制启动一轮后台重扫（显式「检查」入口专用；已在跑则保持本轮）。
++func (s *ResourceScope) RescanAsync() bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
+ 	if s.running {
+-		s.mu.Unlock()
+ 		return false
+ 	}
++	return s.startScanLocked()
++}
++
++func (s *ResourceScope) startScanLocked() bool {
+ 	s.running = true
+-	s.mu.Unlock()
+ 	go func() {
+ 		s.Scan()
+ 		s.mu.Lock()
+@@ -125,6 +147,18 @@ func (s *ResourceScope) Scan() {
+ 		scanned++
+ 	}
+ 	for _, sub := range s.layout.DirUnits {
++		// SA-10：声明了顶层 Markdown 文件单元的子目录，先枚举其顶层 *.md
++		// 文件为单文件单元（commands/review.md 等真实发现形态）。
++		if s.layout.isLeafFileDir(sub) {
++			for _, name := range listResourceLeafMDFiles(filepath.Join(s.layout.HostRoot, sub)) {
++				rel := sub + "/" + name
++				total++
++				if m := scanResourceFile(s.layout.HostRoot, rel, s.limits, &budget); m != nil {
++					next[rel] = m
++				}
++				scanned++
++			}
++		}
+ 		dirs, err := listSkillDirs(filepath.Join(s.layout.HostRoot, sub))
+ 		if err != nil {
+ 			continue // 子目录不存在：该类无单元（非错误）
+@@ -144,6 +178,35 @@ func (s *ResourceScope) Scan() {
+ 	s.mu.Unlock()
+ }
+ 
++// isLeafFileDir 报告 sub 是否声明了顶层 Markdown 文件单元。
++func (l *ResourceLayout) isLeafFileDir(sub string) bool {
++	for _, s := range l.FileLeafUnits {
++		if s == sub {
++			return true
++		}
++	}
++	return false
++}
++
++// listResourceLeafMDFiles 列出子目录顶层的常规 *.md 文件（隐藏文件与目录
++// 不列；Claude commands/agents 的真实发现规则）。
++func listResourceLeafMDFiles(dir string) []string {
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		return nil
++	}
++	var out []string
++	for _, e := range entries {
++		name := e.Name()
++		if strings.HasPrefix(name, ".") || !e.Type().IsRegular() || extOf(name) != ".md" {
++			continue
++		}
++		out = append(out, name)
++	}
++	sort.Strings(out)
++	return out
++}
++
+ // Snapshot 返回扫描缓存快照（只读，不触发扫描；RootMissing 由布局根探测）。
+ func (s *ResourceScope) Snapshot() SkillsScanSnapshot {
+ 	s.mu.Lock()
+@@ -180,13 +243,23 @@ func (s *ResourceScope) targetRel(rel string) string {
+ 	return s.layout.TargetPrefix + rel
+ }
+ 
+-// isFileUnit 报告 rel 是否为布局声明的单文件单元。
++// isFileUnit 报告 rel 是否为布局声明的单文件单元（含 SA-10 的 DirUnits 顶层
++// Markdown 文件单元，如 "commands/review.md"）。
+ func (s *ResourceScope) isFileUnit(rel string) bool {
+ 	for _, f := range s.layout.Files {
+ 		if f == rel {
+ 			return true
+ 		}
+ 	}
++	for _, sub := range s.layout.FileLeafUnits {
++		prefix := sub + "/"
++		if strings.HasPrefix(rel, prefix) {
++			base := strings.TrimPrefix(rel, prefix)
++			if !strings.HasPrefix(base, ".") && !strings.Contains(base, "/") && extOf(base) == ".md" {
++				return true
++			}
++		}
++	}
+ 	return false
+ }
+ 
+@@ -234,7 +307,8 @@ func (c *Coordinator) RegisterResources(scope *ResourceScope) {
+ // resourceScope 返回 CLI 的资源作用域（未注册返回 nil）。
+ func (c *Coordinator) resourceScope(cli CLI) *ResourceScope { return c.resources[cli] }
+ 
+-// StartCliResourcesScan 单飞启动指定 CLI 的资源后台扫描。
++// StartCliResourcesScan 单飞启动指定 CLI 的资源后台扫描（SA-17：已启动过
++// 即幂等返回——状态 Get 不重启扫描）。
+ func (c *Coordinator) StartCliResourcesScan(cli CLI) bool {
+ 	if s := c.resourceScope(cli); s != nil {
+ 		return s.StartScanAsync()
+@@ -242,6 +316,15 @@ func (c *Coordinator) StartCliResourcesScan(cli CLI) bool {
+ 	return false
+ }
+ 
++// RescanCliResources 强制一轮指定 CLI 的资源后台重扫（显式「检查」入口；
++// SA-17：Get 只读缓存，重扫仅由显式动作触发）。
++func (c *Coordinator) RescanCliResources(cli CLI) bool {
++	if s := c.resourceScope(cli); s != nil {
++		return s.RescanAsync()
++	}
++	return false
++}
++
+ // CliResourcesSnapshot 返回指定 CLI 的资源扫描快照。
+ func (c *Coordinator) CliResourcesSnapshot(cli CLI) SkillsScanSnapshot {
+ 	if s := c.resourceScope(cli); s != nil {
+@@ -509,7 +592,9 @@ func (c *Coordinator) takeOverResource(ctx context.Context, distro string, unit
+ 
+ // SetUnitSelection 设置一个键级单元的导入选择集（S4「仅用户选择的单元导入」：
+ // 选择以目标 generation 为生命周期；空集 = 全不导入，已导入条目走来源删除
+-// 语义移除）。仅 selectLeaf 单元接受本操作。
++// 语义移除）。仅 selectLeaf 单元接受本操作。SA-03：keys 应传规范化全路径键
++// （与预览面 KeyPreview.Key 同形，如 "mcpServers/demo"、"profiles/demo"），
++// 原样保存；历史叶名登记由匹配层兼容（仅唯一叶名生效）。
+ func (c *Coordinator) SetUnitSelection(distro string, cli CLI, unit UnitID, keys []string) error {
+ 	adapter, ok := c.projections[unit]
+ 	if !ok {
+diff --git a/internal/wslsupply/resources_test.go b/internal/wslsupply/resources_test.go
+index c884c32..8cacb00 100644
+--- a/internal/wslsupply/resources_test.go
++++ b/internal/wslsupply/resources_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
+ 	"amagi-codebox/internal/launcher"
+ )
+@@ -194,3 +195,128 @@ func TestResourceIncompatibleBlocksSupply(t *testing.T) {
+ 		t.Fatalf("windows script resource must be incompatible, got %+v", res.Results[0])
+ 	}
+ }
++
++// TestResourceClaudeLeafMarkdownUnits（SA-10）：Claude commands/agents 的顶层
++// Markdown 文件（review.md/helper.md——真实消费者发现形态）进入资源清单并
++// 可供给到消费者路径；一级子目录（嵌套名 frontend/component.md）仍为目录
++// 单元；codex skills 不虚构顶层文件单元语义。
++func TestResourceClaudeLeafMarkdownUnits(t *testing.T) {
++	c, fp, hostRoot := newS4ResourceCoordinator(t)
++	// 布局对齐生产（commands/agents 声明顶层 md 文件单元；skills 目录单元）。
++	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
++		HostRoot:     hostRoot,
++		Files:        []string{"CLAUDE.md"},
++		DirUnits:     []string{"commands", "agents", "skills"},
++		FileLeafUnits: []string{"commands", "agents"},
++		TargetPrefix: ".claude/",
++	}, DefaultSkillsScanLimits()))
++	writeHostResource(t, hostRoot, "commands/review.md", "# /review\n")
++	writeHostResource(t, hostRoot, "agents/helper.md", "# helper agent\n")
++	writeHostResource(t, hostRoot, "commands/frontend/component.md", "# frontend:component\n")
++	writeHostResource(t, hostRoot, "commands/notes.txt", "not a command")
++	scope := c.resourceScope(CLIClaude)
++	scope.Scan()
++	snap := scope.Snapshot()
++	units := map[string]bool{}
++	for _, m := range snap.Skills {
++		units[m.Name] = true
++	}
++	for _, want := range []string{"commands/review.md", "agents/helper.md", "commands/frontend"} {
++		if !units[want] {
++			t.Fatalf("expected unit %s in inventory, got %+v", want, units)
++		}
++	}
++	if units["commands/notes.txt"] {
++		t.Fatal("non-markdown top-level file must not be a unit")
++	}
++	// isFileUnit：顶层 md 文件走单文件探测；目录单元走树探测。
++	if !scope.isFileUnit("commands/review.md") || scope.isFileUnit("commands/frontend") {
++		t.Fatal("isFileUnit must distinguish leaf md units from dir units")
++	}
++	// 供给贯通：顶层 md 文件落到消费者路径 .claude/commands/review.md。
++	grantConsentFor(t, c, CLIClaude, ResourceUnitID(CLIClaude, "commands/review.md"))
++	res := runFirst(t, c, CLIClaude, ResourceUnitID(CLIClaude, "commands/review.md"))
++	if res.Outcome != UnitApplied {
++		t.Fatalf("leaf md unit must supply, got %+v", res)
++	}
++	data, err := os.ReadFile(claudeTargetPath(fp, "commands/review.md"))
++	if err != nil || string(data) != "# /review\n" {
++		t.Fatalf("leaf md must land at consumer path .claude/commands/review.md: %q %v", data, err)
++	}
++	// 目录单元（嵌套名）同样贯通。
++	grantConsentFor(t, c, CLIClaude, ResourceUnitID(CLIClaude, "commands/frontend"))
++	res = runFirst(t, c, CLIClaude, ResourceUnitID(CLIClaude, "commands/frontend"))
++	if res.Outcome != UnitApplied {
++		t.Fatalf("nested dir unit must supply, got %+v", res)
++	}
++	nested, err := os.ReadFile(claudeTargetPath(fp, "commands/frontend/component.md"))
++	if err != nil || string(nested) != "# frontend:component\n" {
++		t.Fatalf("nested dir unit must land: %q %v", nested, err)
++	}
++}
++
++// TestResourceCodexSkillsNoLeafFileUnits（SA-10 消费边界标注）：codex skills 按
++// 目录发现——顶层散落 md 不入清单（不虚构 CLI 未定义的文件单元语义）。
++func TestResourceCodexSkillsNoLeafFileUnits(t *testing.T) {
++	c := newCoordinatorWith(t, newFakeProbes(t), nil)
++	hostRoot := t.TempDir()
++	c.RegisterResources(NewResourceScope(CLICodex, ResourceLayout{
++		HostRoot: hostRoot,
++		Files:    []string{"AGENTS.md"},
++		DirUnits: []string{"skills"},
++	}, DefaultSkillsScanLimits()))
++	writeHostResource(t, hostRoot, "skills/loose.md", "# not a skill folder\n")
++	writeHostResource(t, hostRoot, "skills/pack/SKILL.md", "# pack\n")
++	scope := c.resourceScope(CLICodex)
++	scope.Scan()
++	snap := scope.Snapshot()
++	if len(snap.Skills) != 1 || snap.Skills[0].Name != "skills/pack" {
++		t.Fatalf("codex skills must stay directory-only, got %+v", snap.Skills)
++	}
++}
++
++// TestResourceScopeScanIdempotentAndRescan（SA-17）：资源扫描完成后 Get 不重启
++//（StartScanAsync 幂等）；显式 RescanAsync 才重扫。
++func TestResourceScopeScanIdempotentAndRescan(t *testing.T) {
++	hostRoot := t.TempDir()
++	writeHostResource(t, hostRoot, "CLAUDE.md", "# v1\n")
++	scope := NewResourceScope(CLIClaude, ResourceLayout{
++		HostRoot: hostRoot, Files: []string{"CLAUDE.md"}, TargetPrefix: ".claude/",
++	}, DefaultSkillsScanLimits())
++	if !scope.StartScanAsync() {
++		t.Fatal("first start must begin scanning")
++	}
++	deadline := time.Now().Add(10 * time.Second)
++	for scope.Snapshot().Running {
++		if time.Now().After(deadline) {
++			t.Fatal("scan did not finish")
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	writeHostResource(t, hostRoot, "CLAUDE.md", "# v2\n")
++	if scope.StartScanAsync() {
++		t.Fatal("completed scan must not restart via StartScanAsync (Get path)")
++	}
++	scope.Scan() // 同步重扫等价 Rescan 的扫描体；此处直接校验缓存跟随。
++	// 上一行是同步扫描（测试用）；真正的强制重扫入口验证：
++	writeHostResource(t, hostRoot, "CLAUDE.md", "# v3\n")
++	if !scope.RescanAsync() {
++		t.Fatal("RescanAsync must start after completion")
++	}
++	deadline = time.Now().Add(10 * time.Second)
++	for scope.Snapshot().Running {
++		if time.Now().After(deadline) {
++			t.Fatal("rescan did not finish")
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	found := ""
++	for _, m := range scope.Snapshot().Skills {
++		if m.Name == "CLAUDE.md" {
++			found = string(m.SourceHash)
++		}
++	}
++	if found == "" {
++		t.Fatal("rescan must keep the file unit visible")
++	}
++}
+diff --git a/internal/wslsupply/skills.go b/internal/wslsupply/skills.go
+index 6dd8d4a..d1f0717 100644
+--- a/internal/wslsupply/skills.go
++++ b/internal/wslsupply/skills.go
+@@ -98,16 +98,29 @@ func (s *SkillsScope) Root() string { return s.root }
+ // Limits 返回生效的扫描上限。
+ func (s *SkillsScope) Limits() SkillsScanLimits { return s.limits }
+ 
+-// StartScanAsync 单飞启动后台扫描（已在跑/已启动过幂等返回）。扫描按目录分批：
+-// 每批一个 skill 目录，批间释放锁让 Snapshot 可见中间进度。
++// StartScanAsync 单飞启动后台扫描（SA-17：已启动过即幂等返回——状态 Get
++// 不重启已完成的扫描；扫描按目录分批，批间释放锁让 Snapshot 可见中间进度）。
+ func (s *SkillsScope) StartScanAsync() bool {
+ 	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.running || s.started {
++		return false
++	}
++	return s.startScanLocked()
++}
++
++// RescanAsync 强制启动一轮后台重扫（显式「检查」入口专用；已在跑则保持本轮）。
++func (s *SkillsScope) RescanAsync() bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
+ 	if s.running {
+-		s.mu.Unlock()
+ 		return false
+ 	}
++	return s.startScanLocked()
++}
++
++func (s *SkillsScope) startScanLocked() bool {
+ 	s.running = true
+-	s.mu.Unlock()
+ 	go func() {
+ 		s.Scan()
+ 		s.mu.Lock()
+@@ -370,7 +383,8 @@ func (c *Coordinator) RegisterSkills(scope *SkillsScope) {
+ 	}
+ }
+ 
+-// StartSkillsScan 单飞启动后台技能扫描（已在跑则幂等）。
++// StartSkillsScan 单飞启动后台技能扫描（SA-17：已启动过即幂等返回——Get
++// 不重启扫描）。
+ func (c *Coordinator) StartSkillsScan() bool {
+ 	if c.skills == nil {
+ 		return false
+@@ -378,6 +392,15 @@ func (c *Coordinator) StartSkillsScan() bool {
+ 	return c.skills.StartScanAsync()
+ }
+ 
++// RescanSkills 强制一轮后台技能重扫（显式「检查」入口；SA-17：重扫仅由显式
++// 动作触发，状态轮询不重启全量扫描）。
++func (c *Coordinator) RescanSkills() bool {
++	if c.skills == nil {
++		return false
++	}
++	return c.skills.RescanAsync()
++}
++
+ // SkillsSnapshot 返回技能扫描快照（只读缓存，不触发扫描）。
+ func (c *Coordinator) SkillsSnapshot() SkillsScanSnapshot {
+ 	if c.skills == nil {
+diff --git a/internal/wslsupply/skills_scan.go b/internal/wslsupply/skills_scan.go
+index 2888ded..8fb7443 100644
+--- a/internal/wslsupply/skills_scan.go
++++ b/internal/wslsupply/skills_scan.go
+@@ -335,6 +335,9 @@ func (m *SkillManifest) scanRegularFile(abs, rel string, limits SkillsScanLimits
+ // scanLink 处理一个符号链接：同名/同扩展排除物套用同一名单（F4：凭据类
+ // 名单对链接形态同样生效，不实体化）；绝对/越界/循环/目录链接判不兼容；
+ // 本 skill 树内解析到常规文件的链接实体化入清单（内容 hash 取解析目标）。
++// SA-05：解析链上每一跳与最终路径都必须同时过凭据/排除目录策略——普通名
++// 别名（alias.txt → .env、链接进 .git/node_modules）不得实体化被排除的内容，
++// 按排除处理（预览可见，不阻断供给）。
+ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLimits) {
+ 	base := filepath.Base(rel)
+ 	if skillsExcludedFileNames[base] || skillsExcludedFileExts[extOf(base)] {
+@@ -352,7 +355,7 @@ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLi
+ 			RelPath: rel, Code: SkillIncompatAbsoluteLink, Reason: skillIncompatReasonText(SkillIncompatAbsoluteLink)})
+ 		return
+ 	}
+-	resolved, err := resolveSkillLink(skillRoot, abs, 16)
++	resolved, hops, err := resolveSkillLink(skillRoot, abs, 16)
+ 	if err != nil {
+ 		code := SkillIncompatNonRegularFile
+ 		if errors.Is(err, errSkillLinkCycle) {
+@@ -364,6 +367,18 @@ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLi
+ 			RelPath: rel, Code: code, Reason: skillIncompatReasonText(code)})
+ 		return
+ 	}
++	// SA-05：链上每一跳与最终路径都执行排除策略（凭据名/凭据扩展/排除目录
++	// 段）——别名实体化不得绕过对目标文件的排除判定。
++	for _, hop := range hops {
++		if skillPathHitsExclusion(skillRoot, hop) {
++			m.Excluded = append(m.Excluded, rel)
++			return
++		}
++	}
++	if skillPathHitsExclusion(skillRoot, resolved) {
++		m.Excluded = append(m.Excluded, rel)
++		return
++	}
+ 	fi, err := os.Lstat(resolved)
+ 	if err != nil {
+ 		m.Incompatible = append(m.Incompatible, SkillIncompat{
+@@ -412,28 +427,48 @@ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLi
+ 	m.TotalBytes += int64(len(data))
+ }
+ 
+-// resolveSkillLink 沿符号链接链解析（跳数上限防环），返回最终路径。
+-func resolveSkillLink(skillRoot, linkAbs string, maxHops int) (string, error) {
++// resolveSkillLink 沿符号链接链解析（跳数上限防环），返回最终路径与链上
++// 各跳（含中间链接，不含终点；SA-05 供排除策略逐跳检查）。
++func resolveSkillLink(skillRoot, linkAbs string, maxHops int) (final string, hops []string, err error) {
+ 	cur := linkAbs
+ 	for hop := 0; hop < maxHops; hop++ {
+ 		target, err := os.Readlink(cur)
+ 		if err != nil {
+ 			// 已不是链接：解析终点。
+-			return cur, nil
++			return cur, hops, nil
+ 		}
++		hops = append(hops, cur)
+ 		if isAbsoluteLikeLinkTarget(target) {
+-			return "", errSkillLinkAbsolute
++			return "", hops, errSkillLinkAbsolute
+ 		}
+ 		next := target
+ 		if !filepath.IsAbs(next) {
+ 			next = filepath.Join(filepath.Dir(cur), next)
+ 		}
+ 		if filepath.Clean(next) == filepath.Clean(skillRoot) || filepath.Clean(next) == filepath.Clean(linkAbs) {
+-			return "", errSkillLinkCycle
++			return "", hops, errSkillLinkCycle
+ 		}
+ 		cur = next
+ 	}
+-	return "", errSkillLinkCycle
++	return "", hops, errSkillLinkCycle
++}
++
++// skillPathHitsExclusion 报告 skill 树内一条路径（链接链任一跳或最终目标）
++// 是否命中排除策略：凭据类文件名/扩展，或路径中含排除目录段（.git/
++// node_modules/缓存等——SA-05：树内排除目录里的内容不因被链接而重新入清单）。
++func skillPathHitsExclusion(skillRoot, path string) bool {
++	rel, err := filepath.Rel(skillRoot, path)
++	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
++		return false // 越界由 withinDir/链接不兼容路径负责；此处只管排除策略
++	}
++	segs := strings.Split(filepath.ToSlash(rel), "/")
++	for _, seg := range segs[:len(segs)-1] {
++		if skillsExcludedDirNames[seg] {
++			return true
++		}
++	}
++	base := segs[len(segs)-1]
++	return skillsExcludedFileNames[base] || skillsExcludedFileExts[extOf(base)]
+ }
+ 
+ // withinDir 报告 path 是否严格位于 dir 内（等于 dir 不算）。
+diff --git a/internal/wslsupply/skills_scan_test.go b/internal/wslsupply/skills_scan_test.go
+index c249770..e588ddc 100644
+--- a/internal/wslsupply/skills_scan_test.go
++++ b/internal/wslsupply/skills_scan_test.go
+@@ -44,8 +44,11 @@ func scanSkillDirWithLinks(t *testing.T, root, skill string) *SkillManifest {
+ 	if err := os.Symlink("/abs/target", filepath.Join(root, skill, "abs.md")); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	// 越界链接（解析出 skill 树）。
+-	if err := os.Symlink("../../outside.txt", filepath.Join(root, skill, "out.md")); err != nil {
++	// 越界链接（解析出 skill 树）。链接位于 root/<skill>/out.md，目标
++	// ../outside.txt 解析到 root/outside.txt（树外一级——SA-18 fixture 前提
++	// 修正：原 ../../ 会落到 root 的父目录，目标不存在被归为 non-regular，
++	// 断言不到 out-of-tree-link）。
++	if err := os.Symlink("../outside.txt", filepath.Join(root, skill, "out.md")); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if err := os.WriteFile(filepath.Join(root, "outside.txt"), []byte("out"), 0o644); err != nil {
+@@ -287,3 +290,94 @@ func TestParseSkillUnitValidation(t *testing.T) {
+ 		t.Fatalf("valid skill unit parse failed: %q %v", name, ok)
+ 	}
+ }
++
++// TestScanSkillAliasToExcludedCredential（SA-05）：普通名链接别名不得实体化
++// 被排除的凭据/排除目录内容——直接别名、多跳别名、排除目录目标均按排除处理
++// （预览可见、不阻断供给）。
++func TestScanSkillAliasToExcludedCredential(t *testing.T) {
++	_, root := makeSkillScope(t)
++	writeSkillFile(t, root, "demo", "SKILL.md", "# synthetic\n")
++	writeSkillFile(t, root, "demo", ".env", "SYNTHETIC_SECRET=not-real\n")
++	writeSkillFile(t, root, "demo", "real.txt", "plain\n")
++	// 直接别名：alias.txt -> .env。
++	if err := os.Symlink(".env", filepath.Join(root, "demo", "alias.txt")); err != nil {
++		t.Skipf("symlink unsupported: %v", err)
++	}
++	// 多跳别名：multi.txt -> alias.txt -> .env（链上命中凭据名）。
++	if err := os.Symlink("alias.txt", filepath.Join(root, "demo", "multi.txt")); err != nil {
++		t.Fatal(err)
++	}
++	// 排除目录目标：gitlink.txt -> .git/config。
++	if err := os.MkdirAll(filepath.Join(root, "demo", ".git"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	writeSkillFile(t, root, "demo", ".git/config", "[core]\n")
++	if err := os.Symlink(".git/config", filepath.Join(root, "demo", "gitlink.txt")); err != nil {
++		t.Fatal(err)
++	}
++	// 链中间接位于凭据名上：hop.txt -> mid.lnk -> .env（中间跳凭据名）。
++	if err := os.Symlink("real.txt", filepath.Join(root, "demo", "mid.lnk")); err != nil {
++		t.Fatal(err)
++	}
++	_ = "hop case covered by multi.txt"
++
++	m := scanSkillDir(root, "demo", DefaultSkillsScanLimits(), nil)
++	for _, f := range m.Files {
++		if f.RelPath == "alias.txt" || f.RelPath == "multi.txt" || f.RelPath == "gitlink.txt" {
++			t.Fatalf("alias to excluded content must not be materialized: %+v", f)
++		}
++	}
++	excluded := strings.Join(m.Excluded, "\n")
++	for _, want := range []string{"alias.txt", "multi.txt", "gitlink.txt", ".env"} {
++		if !strings.Contains(excluded, want) {
++			t.Fatalf("expected %s excluded, got %q", want, excluded)
++		}
++	}
++	if !m.Portable() {
++		t.Fatalf("excluded aliases must not block portability: %+v", m)
++	}
++}
++
++// TestSkillsScopeScanIdempotentAfterCompletion（SA-17）：扫描完成后 StartScanAsync
++// 不再重启扫描（多次 Get 不增加扫描轮次）；显式 RescanAsync 才重扫并收敛新
++// 增内容。
++func TestSkillsScopeScanIdempotentAfterCompletion(t *testing.T) {
++	_, root := makeSkillScope(t)
++	writeSkillFile(t, root, "alpha", "SKILL.md", "# alpha\n")
++	scope := NewSkillsScope(root, DefaultSkillsScanLimits())
++	if !scope.StartScanAsync() {
++		t.Fatal("first StartScanAsync must start")
++	}
++	waitScanDone := func() {
++		deadline := time.Now().Add(10 * time.Second)
++		for {
++			snap := scope.Snapshot()
++			if !snap.Running && snap.Started {
++				return
++			}
++			if time.Now().After(deadline) {
++				t.Fatalf("scan did not converge: %+v", snap.Progress)
++			}
++			time.Sleep(5 * time.Millisecond)
++		}
++	}
++	waitScanDone()
++	// 扫描后新增技能目录：反复 StartScanAsync（等价状态 Get 轮询）不重扫。
++	writeSkillFile(t, root, "beta", "SKILL.md", "# beta\n")
++	for i := 0; i < 3; i++ {
++		if scope.StartScanAsync() {
++			t.Fatal("completed scan must not restart via StartScanAsync (Get)")
++		}
++	}
++	if m := scope.manifest("beta"); m != nil {
++		t.Fatal("no rescan means new dir must stay invisible")
++	}
++	// 显式 RescanAsync：重扫并收敛新目录。
++	if !scope.RescanAsync() {
++		t.Fatal("RescanAsync must start after completion")
++	}
++	waitScanDone()
++	if m := scope.manifest("beta"); m == nil || !m.Portable() {
++		t.Fatalf("rescan must pick up new skill: %+v", m)
++	}
++}
+diff --git a/internal/wslsupply/skills_submit.go b/internal/wslsupply/skills_submit.go
+index 02d1d44..497dbd9 100644
+--- a/internal/wslsupply/skills_submit.go
++++ b/internal/wslsupply/skills_submit.go
+@@ -53,6 +53,8 @@ type skillPreimageEntry struct {
+ // readSkillCandidateFiles 在 Apply 阶段读取清单条目的源字节并复核 hash
+ // （扫描后来源已变 → 拒绝写入，要求重扫）；总量受 skillCandidateCap 约束
+ // （F5：超限报因拒绝供给，不静默截断、不无界读入）。候选只在内存存在。
++// SA-05：读取前重验路径身份——扫描后被替换成链接/非常规形态的条目直接拒绝
++// （不迫逐新链接目标；hash 复核仍兜底内容一致性）。
+ func readSkillCandidateFiles(m *SkillManifest, limits SkillsScanLimits) ([]skillWriteFile, error) {
+ 	out := make([]skillWriteFile, 0, len(m.Files))
+ 	total := int64(0)
+@@ -61,6 +63,9 @@ func readSkillCandidateFiles(m *SkillManifest, limits SkillsScanLimits) ([]skill
+ 		if e.srcAbs == "" {
+ 			return nil, fmt.Errorf("skill entry %q has no source path (rescan required)", e.RelPath)
+ 		}
++		if info, lerr := os.Lstat(e.srcAbs); lerr != nil || !info.Mode().IsRegular() {
++			return nil, fmt.Errorf("skill entry %q source is no longer a regular file (rescan required)", e.RelPath)
++		}
+ 		data, err := readFileBounded(e.srcAbs, limits.MaxFileBytes)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("read skill file %s: %w", e.RelPath, err)
+diff --git a/internal/wslsupply/skills_test.go b/internal/wslsupply/skills_test.go
+index 91e4c98..79182cc 100644
+--- a/internal/wslsupply/skills_test.go
++++ b/internal/wslsupply/skills_test.go
+@@ -558,12 +558,14 @@ func TestScanTargetTreeDirLinkEntryNotRecursed(t *testing.T) {
+ }
+ 
+ // TestScanSkillLinkNameExcluded（F4）：凭据类名单对链接形态同样生效——
+-// 名为 .env/*.pem 的树内链接按排除处理，不实体化。
++// 名为 .env/*.pem 的树内链接按排除处理，不实体化。（SA-18 fixture 前提
++// 修正：原 fixture 建的是 "dot-env"，不在凭据名单内——修正为真 .env，
++// 不以扩大黑名单凑绿。）
+ func TestScanSkillLinkNameExcluded(t *testing.T) {
+ 	_, root := makeSkillScope(t)
+ 	writeSkillFile(t, root, "creds", "SKILL.md", "# doc\n")
+ 	writeSkillFile(t, root, "creds", "real.txt", "plain\n")
+-	if err := os.Symlink("real.txt", filepath.Join(root, "creds", "dot-env")); err != nil {
++	if err := os.Symlink("real.txt", filepath.Join(root, "creds", ".env")); err != nil {
+ 		t.Skipf("symlink unsupported: %v", err)
+ 	}
+ 	if err := os.Symlink("real.txt", filepath.Join(root, "creds", "cert.pem")); err != nil {
+@@ -571,11 +573,11 @@ func TestScanSkillLinkNameExcluded(t *testing.T) {
+ 	}
+ 	m := scanSkillDir(root, "creds", DefaultSkillsScanLimits(), nil)
+ 	excluded := strings.Join(m.Excluded, "\n")
+-	if !strings.Contains(excluded, "dot-env") || !strings.Contains(excluded, "cert.pem") {
++	if !strings.Contains(excluded, ".env") || !strings.Contains(excluded, "cert.pem") {
+ 		t.Fatalf("credential-named links must be excluded: %+v", m.Excluded)
+ 	}
+ 	for _, f := range m.Files {
+-		if f.RelPath == "dot-env" || f.RelPath == "cert.pem" {
++		if f.RelPath == ".env" || f.RelPath == "cert.pem" {
+ 			t.Fatalf("excluded link must not be materialized: %+v", f)
+ 		}
+ 	}
+@@ -682,3 +684,30 @@ func TestRestorePreimageChirmodAndVerify(t *testing.T) {
+ 		t.Fatalf("preimage restored: %q", got)
+ 	}
+ }
++
++// TestSkillCandidateReverifiesSourceIdentity（SA-05）：候选读取前重验路径身份
++// ——扫描后来源被替换为符号链接/非常规形态时拒绝供给（不追随新链接目标）。
++func TestSkillCandidateReverifiesSourceIdentity(t *testing.T) {
++	_, root := makeSkillScope(t)
++	writeSkillFile(t, root, "alpha", "SKILL.md", "# alpha\n")
++	writeSkillFile(t, root, "alpha", "data.txt", "secret-ish\n")
++	m := scanSkillDir(root, "alpha", DefaultSkillsScanLimits(), nil)
++	if !m.Portable() {
++		t.Fatalf("fixture must be portable: %+v", m)
++	}
++	// 扫描后把已登记源文件替换为指向树外凭据的符号链接（内容恰好一致也拒绝）。
++	outside := filepath.Join(root, "outside-secret")
++	if err := os.WriteFile(outside, []byte("secret-ish\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	victim := filepath.Join(root, "alpha", "data.txt")
++	if err := os.Remove(victim); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Symlink(outside, victim); err != nil {
++		t.Skipf("symlink unsupported: %v", err)
++	}
++	if _, err := readSkillCandidateFiles(m, DefaultSkillsScanLimits()); err == nil {
++		t.Fatal("candidate read must reject source replaced by symlink (rescan required)")
++	}
++}

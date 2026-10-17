@@ -1,0 +1,1915 @@
+--- a/internal/wslsupply/operation.go
++++ b/internal/wslsupply/operation.go
+@@ -7,6 +7,7 @@
+ 
+ import (
+ 	"path/filepath"
++	"strings"
+ 	"time"
+ )
+ 
+@@ -97,9 +98,14 @@
+ 	Version     int       `json:"version"`
+ 	OpID        string    `json:"opId"`
+ 	Kind        OpKind    `json:"kind"`
+-	TargetKey   string    `json:"targetKey"` // 完整身份（generation；unknown 代带 distro 前缀）
++	TargetKey   string    `json:"targetKey"` // 完整身份（generation+CLI 作用域；unknown 代带 distro 前缀）
+ 	TargetDistro string   `json:"targetDistro"`
+ 	TargetHome  string    `json:"targetHome,omitempty"`
++	// TargetCLI 是目标 CLI 作用域（pi/shared/claude/codex）。同一 distro 身份的
++	// 多个 CLI 目标根（如 .pi/agent 与 .agents）共享 generation 但 RelPath 各自
++	// 相对各自根解释——reconcile/清理由它（或 Unit 前缀派生）验证落点归属，
++	// 不得拿当前调用者的目标根解释其它作用域的 RelPath。
++	TargetCLI   string    `json:"targetCli,omitempty"`
+ 	Unit        UnitID    `json:"unit,omitempty"`
+ 	RelPath     string    `json:"relPath,omitempty"`
+ 	Sensitive   bool      `json:"sensitive,omitempty"`
+@@ -207,14 +213,43 @@
+ }
+ 
+ // targetKeyOf 构造完整目标身份键：可验证代用 generation；unknown 代拼
+-// distro（避免所有 unknown 目标共享一个键位互相误伤）。
++// distro（避免所有 unknown 目标共享一个键位互相误伤）。CLI 作用域入键：
++// 同一 distro 身份的多个 CLI 目标根（pi/.pi/agent、shared/.agents 等）共享
++// generation——不带作用域的键会把 shared 的未决操作错投给 pi 的目标根解释
++//（RelPath 各自相对各自根），已证实会造成「pi reconcile 把 shared intent 判
++// not-applied 并清未决」的错位。
+ func targetKeyOf(t TargetRef) string {
++	scope := string(t.CLI)
+ 	if t.Generation != "" && t.Generation != GenerationUnknown {
+-		return t.Generation
++		return t.Generation + "|" + scope
+ 	}
+-	return "unknown:" + t.Distro
++	return "unknown:" + t.Distro + "|" + scope
+ }
+ 
++// cliScopeOfUnit 从单元前缀派生 CLI 作用域（旧/不完整 intent 的归属验证
++// 兜底；TargetCLI 字段优先）。
++func cliScopeOfUnit(u UnitID) CLI {
++	switch {
++	case strings.HasPrefix(string(u), "pi/"):
++		return CLIPi
++	case strings.HasPrefix(string(u), "shared/"):
++		return CLICommon
++	case strings.HasPrefix(string(u), "claude/"):
++		return CLIClaude
++	case strings.HasPrefix(string(u), "codex/"):
++		return CLICodex
++	}
++	return ""
++}
++
++// intentScope 返回 intent 声明或可派生的 CLI 作用域（空 = 不可判）。
++func intentScope(op OperationIntent) CLI {
++	if op.TargetCLI != "" {
++		return CLI(op.TargetCLI)
++	}
++	return cliScopeOfUnit(op.Unit)
++}
++
+ // newOpID 生成唯一操作 ID（时间有序 + 随机后缀）。
+ func newOpID() string {
+ 	return formatOpID(time.Now())
+--- a/internal/wslsupply/commit.go
++++ b/internal/wslsupply/commit.go
+@@ -185,6 +185,7 @@
+ 	intent := OperationIntent{
+ 		OpID: opID, Kind: req.Kind, TargetKey: targetKey,
+ 		TargetDistro: req.Target.Distro, TargetHome: req.Target.Home,
++		TargetCLI: string(req.Target.CLI),
+ 		Unit: req.Unit, RelPath: req.RelPath, Sensitive: req.Sensitive,
+ 		BeforeExists: rc.BeforeExists, BeforeHash: rc.BeforeHash, AfterHash: hexHash(req.Candidate),
+ 		BackupRel: rc.BackupRel, StagingRel: rc.StagingRel, DisplacedRel: displacedRel,
+@@ -293,10 +294,14 @@
+ 		rc.Registration = OpRegistrationPending
+ 		c.recordObservation(targetKey, opID, req.Unit, OpEffectCommitted, OpRegistrationPending, rc.Recovery, rc.ErrDetail, stageFinalize)
+ 		rc.UndoLease = c.newUndoLease(req, rc, before)
++		c.setLeaseActive(opID, true) // 同上：租用跟随句柄，不等补偿才生效
+ 		return rc
+ 	}
+ 	rc.Registration = OpRegistrationConfirmed
+ 	rc.UndoLease = c.newUndoLease(req, rc, before)
++	// 撤销租用自提交起生效：活跃句柄期间 Reconcile/新写不清理本操作材料
++	//（契约：保留撤销租用直到调用方确认生命周期）。
++	c.setLeaseActive(opID, true)
+ 	c.cleanupMaterial(req.Target, rc, stageCleanup) // 备份/displaced/staging；intent 留给租约 Release
+ 	c.recordObservation(targetKey, opID, req.Unit, OpEffectCommitted, OpRegistrationConfirmed, OpRecoveryNone, "committed", stageCleanup)
+ 	return rc
+@@ -394,8 +399,16 @@
+ 	if err := writeVerifiedFile(finalPath, before, 0o600); err != nil {
+ 		return "", fmt.Errorf("persist preimage backup: %w", err)
+ 	}
++	finalRel := relPathOf(target, finalPath)
++	if finalRel == "" {
++		_ = os.Remove(finalPath)
++		return "", errors.New("derive preimage backup rel path")
++	}
+ 	if sensitive {
+-		linuxPath := strings.TrimSuffix(target.LinuxRoot, "/") + "/" + rel
++		// chmod/验证路径必须与实际落盘路径同源派生（relPathOf）——此前用调用方
++		// 拼的 rel（缺 recovery- 前缀）导致 chmod 指向不存在的路径，正常更新被
++		// 误判 backup-unavailable（已证实的错位缺陷）。
++		linuxPath := strings.TrimSuffix(target.LinuxRoot, "/") + "/" + finalRel
+ 		if err := c.probes.Chmod(ctx, target.Distro, "600", linuxPath); err != nil {
+ 			_ = os.Remove(finalPath)
+ 			return "", fmt.Errorf("chmod 600 preimage backup in distro: %w", err)
+@@ -411,7 +424,7 @@
+ 		_ = os.Remove(finalPath)
+ 		return "", fmt.Errorf("verify preimage backup readback (err=%v, equal=%v)", err, hexHash(got) == hexHash(before))
+ 	}
+-	return relPathOf(target, finalPath), nil
++	return finalRel, nil
+ }
+ 
+ // persistCandidateStaging 准备并预验证候选 staging（字节/类型/权限）。
+@@ -428,8 +441,14 @@
+ 	if err := writeVerifiedFile(finalPath, candidate, 0o600); err != nil {
+ 		return "", fmt.Errorf("persist candidate staging: %w", err)
+ 	}
++	finalRel := relPathOf(target, finalPath)
++	if finalRel == "" {
++		_ = os.Remove(finalPath)
++		return "", errors.New("derive candidate staging rel path")
++	}
+ 	if sensitive {
+-		linuxPath := strings.TrimSuffix(target.LinuxRoot, "/") + "/" + rel
++		// 与 backup 同源派生（chmod 验证路径 == 实际落盘路径）。
++		linuxPath := strings.TrimSuffix(target.LinuxRoot, "/") + "/" + finalRel
+ 		if err := c.probes.Chmod(ctx, target.Distro, "600", linuxPath); err != nil {
+ 			_ = os.Remove(finalPath)
+ 			return "", fmt.Errorf("chmod 600 candidate staging in distro: %w", err)
+@@ -444,7 +463,7 @@
+ 		_ = os.Remove(finalPath)
+ 		return "", fmt.Errorf("verify candidate staging readback (err=%v)", err)
+ 	}
+-	return relPathOf(target, finalPath), nil
++	return finalRel, nil
+ }
+ 
+ // stagingDir 返回 .amagi-staging 目录：敏感单元走 ensurePrivateStaging 的
+--- a/internal/wslsupply/state.go
++++ b/internal/wslsupply/state.go
+@@ -361,11 +361,11 @@
+ 	return h
+ }
+ 
+-// migrateLegacyState 把 v1/v2 清单保守升级到 v3（内存视图；下次落盘写 v3）：
+-// v1 的 generation 指纹不含 distro 名，无法归属到 v2/v3 身份指纹——全部隔离
+-// 为 legacy 前缀（永不与新代匹配，保留原文供诊断，不删除任何记录）。顶层
+-// Generation 同步隔离，避免它充当「当前目标」匹配链。插件登记同样隔离
+-// （v1 代无法验证属于哪个目标；重新重放/重授权后自然重建）。
++// migrateLegacyState 把 v1/v2 清单保守升级到 v3（内存视图；下次落盘写 v3）。
++// v1（schema 1）的 generation 指纹不含 distro 名，无法归属到 v2/v3 身份指纹
++// ——全部隔离为 legacy 前缀（永不与新代匹配，保留原文供诊断，不删除任何记
++// 录）。顶层 Generation 同步隔离，避免它充当「当前目标」匹配链。插件登记同
++// 样隔离（v1 代无法验证属于哪个目标；重新重放/重授权后自然重建）。
+ //
+ // PR01 攻坚重做：v1 原 entry 与顶层线索保真保存为 LegacyEvidence（不再把
+ // 风险盲绑到最后检查的顶层 Distro）。entry 的旧 generation 就是从前代指纹
+@@ -374,7 +374,16 @@
+ // （detached/确切 withdrawn/从未授权且从未发布）不重建受管风险。v2 的
+ // LegacySensitiveRisk map 是旧修复派生字段（可能误归属）——转低可信证据
+ // 保留，不继续盲信，也不直接丢弃。
++//
++// 一致性修正（v2-migration）：v2（schema 2）的 Units/Targets 已用新公式指纹
++// （sha256(distro|machine-id|uid|home)，与 v3 同构）逐条登记并可经 Targets 索
++// 引归属——已受管记录迁移后必须继续受管，不得隔离成 legacy、不得遗忘成
++// user-owned/never-managed。v2 只转换派生风险面；v1 才走整体隔离。
+ func migrateLegacyState(f *StateFile) {
++	if f.SchemaVersion >= 2 {
++		migrateV2ToV3(f)
++		return
++	}
+ 	for i := range f.Units {
+ 		if g := f.Units[i].Generation; g != "" && !strings.HasPrefix(g, legacyGenerationPrefix) {
+ 			f.Units[i].Generation = legacyGenerationPrefix + g
+@@ -385,7 +394,7 @@
+ 			f.Plugins[i].Generation = legacyGenerationPrefix + g
+ 		}
+ 	}
+-	// v1/v2 敏感 entry → LegacyEvidence（保真 + 隔离授权；不盲绑 distro）。
++	// v1 敏感 entry → LegacyEvidence（保真 + 隔离授权；不盲绑 distro）。
+ 	for i := range f.Units {
+ 		u := f.Units[i].Unit
+ 		if !legacySensitiveUnits[u] {
+@@ -423,6 +432,44 @@
+ 	f.SchemaVersion = stateSchemaVersion
+ }
+ 
++// migrateV2ToV3 把 v2 清单升级到 v3：Units/Targets 保持原样（新公式指纹可归
++// 属，entryFor 继续命中）；v2 从 v1 升级时已隔离的 legacy:- 前缀敏感 entry 提
++// 取 v1 指纹证据（保真）；LegacySensitiveRisk 派生 map 转低可信证据。
++func migrateV2ToV3(f *StateFile) {
++	for i := range f.Units {
++		u := f.Units[i].Unit
++		if !legacySensitiveUnits[u] {
++			continue
++		}
++		e := f.Units[i]
++		if !strings.HasPrefix(e.Generation, legacyGenerationPrefix) {
++			continue // 可归属的受管记录：保持受管，不建证据
++		}
++		if !e.Consented && e.LastWrittenHash == "" {
++			continue
++		}
++		f.LegacyEvidence = appendLegacyEvidence(f.LegacyEvidence, LegacyEvidenceEntry{
++			ID: legacyEvidenceID("v1", u, e.Generation), Source: "v1", Unit: u,
++			SchemaVersion: 1,
++			EntryGeneration: e.Generation, EntryLastHash: e.LastWrittenHash,
++			EntryOutcome: e.LastOutcome, EntryConsented: e.Consented, EntryDetached: e.Detached,
++			Fingerprint:  strings.TrimPrefix(e.Generation, legacyGenerationPrefix),
++			TopDistro:     strings.TrimSpace(f.Distro),
++			TopGeneration: strings.TrimPrefix(f.Generation, legacyGenerationPrefix),
++			TopHome:       f.Home,
++		})
++	}
++	for distro, units := range f.LegacySensitiveRisk {
++		for u := range units {
++			f.LegacyEvidence = appendLegacyEvidence(f.LegacyEvidence, LegacyEvidenceEntry{
++				ID: legacyEvidenceID("v2", u, distro), Source: "v2-derived", Unit: u,
++				SchemaVersion: f.SchemaVersion, LowTrust: true,
++				TopDistro: strings.TrimSpace(distro),
++			})
++		}
++	}
++	f.SchemaVersion = stateSchemaVersion
++}
+ // appendLegacyEvidence 幂等追加（同 ID 不重复）。
+ func appendLegacyEvidence(list []LegacyEvidenceEntry, e LegacyEvidenceEntry) []LegacyEvidenceEntry {
+ 	for i := range list {
+--- a/internal/wslsupply/legacy_assess.go
++++ b/internal/wslsupply/legacy_assess.go
+@@ -13,6 +13,7 @@
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ )
+ 
+ // legacyGenerationOf 用旧公式（sha256(machine-id + "|" + uid + "|" + home)，无
+@@ -71,8 +72,11 @@
+ 	}
+ 	visionPath := filepath.Join(target.UNCRoot, VisionExportFile)
+ 	data, err := os.ReadFile(visionPath)
+-	_ = data
+ 	fileAbsent := errors.Is(err, os.ErrNotExist)
++	fileHash := ""
++	if err == nil {
++		fileHash = hexHash(data)
++	}
+ 	st := stCopy
+ 	entry := st.entryFor(unit, target.Generation)
+ 	// 3) 当前代受管登记。
+@@ -118,6 +122,10 @@
+ 		}
+ 		fingerprintMatch := ev.Fingerprint != "" && legacyGen != GenerationUnknown && legacyGen != "" && ev.Fingerprint == legacyGen
+ 		topClueMatch := ev.TopDistro != "" && ev.TopDistro == target.Distro
++		// 内容正证据：当前文件字节与历史写入 hash 一致——当前路径存在旧发布
++		// 副本（不证明是原 owner，只关联本目标风险；指纹是弱证据，内容是正证
++		// 据，两者独立）。指纹 unknown/不匹配不得因此解除待确认。
++		contentMatch := ev.EntryLastHash != "" && fileHash != "" && fileHash == ev.EntryLastHash
+ 		switch {
+ 		case fileAbsent:
+ 			// 本次无该消费副本：放行本目标，仍保留全局 unresolved evidence。
+@@ -132,6 +140,13 @@
+ 			out.RiskPending = true
+ 			out.Reason = "legacy-fingerprint-match"
+ 			out.Path = VisionExportFile
++		case contentMatch:
++			// 契约矩阵「旧指纹不同、文件 hash 匹配」：当前路径有旧发布字节，阻
++			// 未授权消费；不自动写/删，不证明原 owner。
++			out.Consumption = ConsumptionUnsafe
++			out.RiskPending = true
++			out.Reason = "legacy-content-hash-match"
++			out.Path = VisionExportFile
+ 		case topClueMatch && ev.LowTrust:
+ 			// v2 派生低可信线索 + 文件在：要求确认，不自动写/删。
+ 			out.Consumption = ConsumptionUnknown
+@@ -224,6 +239,11 @@
+ 				ev.Resolved[targetKey] = "absent-confirmed"
+ 				changed = true
+ 			}
++			// 键位双写（与 resolveLegacyEvidenceIn 同族：裸 generation 键供按代际
++			// 迭代的消费面收敛）。
++			if gen, _, found := strings.Cut(targetKey, "|"); found && gen != "" {
++				ev.Resolved[gen] = "absent-confirmed"
++			}
+ 		}
+ 		_ = changed
+ 	})
+--- a/internal/wslsupply/reconcile.go
++++ b/internal/wslsupply/reconcile.go
+@@ -74,6 +74,11 @@
+ 		if op.TargetKey != targetKey {
+ 			continue
+ 		}
++		if scope := intentScope(op); scope != "" && scope != target.CLI {
++			// 键位碰撞/旧格式 intent：不得拿当前调用者的目标根解释其它作用域的
++			// RelPath（保留待其所属作用域处理；不清未决、不臆断 absent）。
++			continue
++		}
+ 		disp, detail := c.reconcileIntent(ctx, target, op)
+ 		report.Dispositions = append(report.Dispositions, struct {
+ 			OpID        string
+@@ -101,6 +106,11 @@
+ 	if err != nil {
+ 		return pathReconcileResult{blocked: true, reason: "pending-store-unreadable"}
+ 	}
++	// 健康门先完成本次扫描再决策：损坏材料保留、禁止新写（不靠上一轮缓存
++	// 健康值；loadIntents 刚刷新）。
++	if h := c.state.Health(); h.Pending == StoreUnreadable || h.Pending == StoreCorrupt {
++		return pathReconcileResult{blocked: true, reason: "pending-store-" + string(h.Pending)}
++	}
+ 	ids := make([]string, 0, len(intents))
+ 	for id := range intents {
+ 		ids = append(ids, id)
+@@ -111,6 +121,9 @@
+ 		if op.TargetKey != targetKey || op.RelPath == "" || op.RelPath != relPath {
+ 			continue
+ 		}
++		if scope := intentScope(op); scope != "" && scope != target.CLI {
++			continue // 其它作用域的未决：不属于本路径，保留
++		}
+ 		if _, settled := c.settledOf(op.OpID); settled {
+ 			// 已终结但清理未完：本进程无租用时收尾。
+ 			c.reconcileIntent(ctx, target, op)
+@@ -141,7 +154,9 @@
+ 	return c.activeLeases[opID]
+ }
+ 
+-// reconcileIntent 处理单个 intent（D/T 矩阵）。
++// reconcileIntent 处理单个 intent（D/T 矩阵）。目录交换按树形态验证（typed
++// fingerprint：dir-swap 的 AfterHash/PrevTreeHash 是树 hash；通用文件 ReadFile
++// 读目录恒 EISDIR，不得据此判 unreadable 卡死或误清材料）。
+ func (c *Coordinator) reconcileIntent(ctx context.Context, target TargetRef, op OperationIntent) (ReconcileDisposition, string) {
+ 	if c.leaseActive(op.OpID) {
+ 		return ReconcileLeased, "active undo lease in this process"
+@@ -150,11 +165,14 @@
+ 	if op.Kind == OpKindRemove || op.Kind == OpKindA2Sync || op.Kind == OpKindPluginOp {
+ 		return c.reconcileNonWriteIntent(ctx, target, op, uncPath)
+ 	}
+-	// write / dir-swap / compensate。
+-	cur, curErr := os.ReadFile(uncPath)
+-	if op.Kind != OpKindWrite && op.Kind != OpKindDirSwap && op.Kind != OpKindCompensate {
++	if op.Kind == OpKindDirSwap {
++		return c.reconcileDirIntent(ctx, target, op, uncPath)
++	}
++	// write / compensate。
++	if op.Kind != OpKindWrite && op.Kind != OpKindCompensate {
+ 		return ReconcileSkipped, "unknown kind " + string(op.Kind)
+ 	}
++	cur, curErr := os.ReadFile(uncPath)
+ 	if curErr != nil && !errors.Is(curErr, os.ErrNotExist) {
+ 		return ReconcileUnconfirmed, "target unreadable"
+ 	}
+@@ -203,6 +221,75 @@
+ 	}
+ }
+ 
++// reconcileDirIntent 按 Kind=dir-swap 的树形态验证处置：目标树 hash ==
++// AfterHash → committed-unregistered 补基准；== PrevTreeHash → restored/
++// not-applied；目标缺失且 prev 材料在 → no-replace 放回复验；其它 → 冲突/
++// 不可判（保留材料；不得猜 absent）。
++func (c *Coordinator) reconcileDirIntent(ctx context.Context, target TargetRef, op OperationIntent, uncPath string) (ReconcileDisposition, string) {
++	if settled, ok := c.settledOf(op.OpID); ok {
++		_ = settled
++		c.finishMaterials(target, op)
++		return ReconcileCleanupResent, "settled already recorded; materials cleaned"
++	}
++	tgt := scanTargetSkillDir(uncPath, c.skillLimits())
++	if tgt.Unverifiable {
++		return ReconcileUnconfirmed, "target tree unreadable"
++	}
++	switch {
++	case tgt.Exists && op.AfterHash != "" && tgt.TreeHash == op.AfterHash:
++		// committed-unregistered：核实 after → 补登记基准字段（不伪造授权）。
++		if err := c.settleReconciled(op, "committed", func(st *StateFile) {
++			c.applyIntentBaseline(st, op, target)
++		}); err != nil {
++			return ReconcileSaveFailed, err.Error()
++		}
++		c.recordObservation(op.TargetKey, op.OpID, op.Unit, OpEffectCommitted, OpRegistrationConfirmed, OpRecoveryNone, "committed-unregistered-registered", "reconcile")
++		c.finishMaterials(target, op)
++		return ReconcileCommitted, "verified target tree equals intent after-hash; baseline registered"
++	case tgt.Exists && op.PrevTreeHash != "" && tgt.TreeHash == op.PrevTreeHash:
++		// T==before：未应用或已恢复 → restored 终结。
++		if err := c.settleReconciled(op, "restored", nil); err != nil {
++			return ReconcileSaveFailed, err.Error()
++		}
++		c.recordObservation(op.TargetKey, op.OpID, op.Unit, OpEffectRestored, OpRegistrationConfirmed, OpRecoveryNone, "restored-confirmed", "reconcile")
++		c.finishMaterials(target, op)
++		return ReconcileNotApplied, "target tree equals preimage; op not applied"
++	case !tgt.Exists && !op.BeforeExists:
++		// 首建 intent 且目标树缺失：未应用（或已被清理）。
++		if err := c.settleReconciled(op, "not-applied", nil); err != nil {
++			return ReconcileSaveFailed, err.Error()
++		}
++		c.finishMaterials(target, op)
++		return ReconcileNotApplied, "target tree absent and intent created nothing"
++	case !tgt.Exists && op.DisplacedRel != "":
++		// 目标缺失且本次移走了旧树：no-replace 放回 prev（外部新目标拒绝保留
++		// 两处）；放回后按树 hash 复验。
++		prevPath := absOf(target, op.DisplacedRel)
++		if _, perr := os.Lstat(prevPath); perr != nil {
++			return ReconcileUnconfirmed, "target tree absent and prev material missing; not guessing"
++		}
++		if rbErr := publishNoReplaceFn(prevPath, uncPath); rbErr != nil {
++			return ReconcileUnconfirmed, "restore prev (no-replace) failed: " + rbErr.Error()
++		}
++		pv := scanTargetSkillDir(uncPath, c.skillLimits())
++		if pv.Unverifiable || (op.PrevTreeHash != "" && pv.TreeHash != op.PrevTreeHash) {
++			return ReconcileUnconfirmed, "prev put back but tree hash mismatch/unverifiable"
++		}
++		if err := c.settleReconciled(op, "restored", nil); err != nil {
++			return ReconcileSaveFailed, err.Error()
++		}
++		c.recordObservation(op.TargetKey, op.OpID, op.Unit, OpEffectRestored, OpRegistrationConfirmed, OpRecoveryNone, "restored-confirmed", "reconcile")
++		c.finishMaterials(target, op)
++		return ReconcileNotApplied, "prev tree restored to target"
++	default:
++		// 树存在但 hash 不匹配 after/before：不自动重写/删除；保留 prev/材料。
++		if !tgt.Exists {
++			return ReconcileUnconfirmed, "commit state unconfirmed; materials retained"
++		}
++		return ReconcileConflicted, "target tree changed to unknown content; explicit new preview required"
++	}
++}
++
+ // reconcileNonWriteIntent 处理 remove / a2 / plugin 摘要 intent。
+ func (c *Coordinator) reconcileNonWriteIntent(ctx context.Context, target TargetRef, op OperationIntent, uncPath string) (ReconcileDisposition, string) {
+ 	if _, ok := c.settledOf(op.OpID); ok {
+@@ -320,7 +407,7 @@
+ 			rc.Err = fmt.Errorf("absent confirmed but state persist failed (remove intent kept; rerun re-confirms): %w", err)
+ 			rc.ErrDetail = "removed-state-unpersisted"
+ 			_ = c.state.saveIntent(OperationIntent{OpID: opID, Kind: OpKindRemove, TargetKey: targetKey,
+-				TargetDistro: target.Distro, TargetHome: target.Home, Unit: unit, RelPath: relPath, CreatedAt: time.Now()})
++				TargetDistro: target.Distro, TargetHome: target.Home, TargetCLI: string(target.CLI), Unit: unit, RelPath: relPath, CreatedAt: time.Now()})
+ 			c.recordObservation(targetKey, opID, unit, OpEffectRemoved, OpRegistrationPending, OpRecoveryNone, rc.ErrDetail, "withdraw")
+ 		}
+ 		return rc
+@@ -345,7 +432,7 @@
+ 	displacedRel := relPathOf(target, filepath.Join(filepath.Dir(uncPath), ".amagi-supply-displaced-"+opID))
+ 	if err := c.state.saveIntent(OperationIntent{
+ 		OpID: opID, Kind: OpKindRemove, TargetKey: targetKey, TargetDistro: target.Distro,
+-		TargetHome: target.Home, Unit: unit, RelPath: relPath, Sensitive: true,
++		TargetHome: target.Home, TargetCLI: string(target.CLI), Unit: unit, RelPath: relPath, Sensitive: true,
+ 		BeforeExists: true, BeforeHash: rc.BeforeHash, DisplacedRel: displacedRel, CreatedAt: time.Now(),
+ 	}); err != nil {
+ 		rc.Err = fmt.Errorf("save remove intent: %w", err)
+--- a/internal/wslsupply/skills_submit.go
++++ b/internal/wslsupply/skills_submit.go
+@@ -43,10 +43,12 @@
+ 	Bytes   []byte
+ }
+ 
+-// skillPreimageEntry 是前像树条目（含用户手改可能留下的符号链接）。
++// skillPreimageEntry 是前像树条目（含用户手改可能留下的符号链接与空目录
++// ——空目录不入树 hash 但必须保真：结构丢失不是「内容一致」）。
+ type skillPreimageEntry struct {
+ 	RelPath    string
+ 	IsLink     bool
++	IsDir      bool
+ 	LinkTarget string
+ 	Bytes      []byte
+ }
+@@ -112,9 +114,14 @@
+ 				}
+ 				entries = append(entries, skillPreimageEntry{RelPath: rel, IsLink: true, LinkTarget: t})
+ 			case e.IsDir():
++				before := len(entries)
+ 				if depth+1 > limits.MaxDepth || !walk(abs, rel+"/", depth+1) {
+ 					return false
+ 				}
++				if len(entries) == before {
++					// 空目录：结构保真（不入树 hash；恢复时重建目录本体）。
++					entries = append(entries, skillPreimageEntry{RelPath: rel, IsDir: true})
++				}
+ 			default:
+ 				data, err := readFileBounded(abs, limits.MaxFileBytes)
+ 				if err != nil {
+@@ -287,16 +294,33 @@
+ 	}
+ 	// 2) prev/displaced 命名 + intent（含 target/prev/staging/displaced）。
+ 	prevDir := ""
++	beforeTreeHash := ""
+ 	if _, statErr := os.Lstat(targetDir); statErr == nil {
+ 		prevDir = filepath.Join(parent, ".amagi-supply-prev-"+opID)
+ 		rc.DisplacedRel = relPathOf(req.Target, prevDir)
+ 		rc.BeforeExists = true
++		// 不可逆移动前对构建基准复验（一致性修正 dir-cas）：staging 构建期间目标
++		// 树可能被外部改动——基准不符则拒绝发布，未授权变更不覆盖。
++		if !req.SkipBeforeCAS && req.ExpectedBefore != "" {
++			tgt := scanTargetSkillDir(targetDir, c.skillLimits())
++			if tgt.Unverifiable {
++				_ = os.RemoveAll(staging)
++				return fail(stagePrepare, errors.New("cannot verify target skill tree before move"), "target-unreadable")
++			}
++			if tgt.TreeHash != req.ExpectedBefore {
++				_ = os.RemoveAll(staging)
++				return fail(stageMove, errors.New("target skill tree changed since planning (external edit retained)"), "target-changed-before-move")
++			}
++			beforeTreeHash = tgt.TreeHash
++		}
+ 	}
+ 	intent := OperationIntent{
+ 		OpID: opID, Kind: OpKindDirSwap, TargetKey: targetKey,
+ 		TargetDistro: req.Target.Distro, TargetHome: req.Target.Home,
++		TargetCLI: string(req.Target.CLI),
+ 		Unit: req.Unit, RelPath: relDir, BeforeExists: rc.BeforeExists,
+ 		StagingRel: rc.StagingRel, DisplacedRel: rc.DisplacedRel,
++		PrevTreeHash: beforeTreeHash,
+ 		AfterHash: req.DirTreeHash, CreatedAt: time.Now(),
+ 	}
+ 	if err := c.state.saveIntent(intent); err != nil {
+@@ -318,19 +342,22 @@
+ 			_ = os.RemoveAll(staging)
+ 			return fail(stageMove, fmt.Errorf("move aside existing dir: %w", err), "move-failed")
+ 		}
+-		// 复验 prev（真实旧目录保留为 prev，结构验证；空目录/链接不丢）。
+-		if pv := scanTargetSkillDir(prevDir, c.skillLimits()); pv.Unverifiable {
++		// 复验 prev（真实旧目录保留为 prev，结构与构建基准双验证；空目录/链接
++		// 不丢）。搬移后验证不符 → 外部版本在扫描与搬移之间落进旧树：保全外部
++		// 版本（no-replace 放回），不发布候选。
++		pv := scanTargetSkillDir(prevDir, c.skillLimits())
++		if pv.Unverifiable || (beforeTreeHash != "" && pv.TreeHash != beforeTreeHash) {
+ 			rc.Effect = OpEffectUnknown
+ 			// 移动后失败：把 prev 放回（no-replace；外部新目标拒绝保留两处）。
+ 			if rbErr := publishNoReplaceFn(prevDir, targetDir); rbErr != nil {
+ 				rc.Recovery = OpRecoveryConflict
+-				rc.Err = fmt.Errorf("verify prev dir failed (%v); rollback failed: %v; backup kept at %s", pv.Reason, rbErr, filepath.Base(prevDir))
++				rc.Err = fmt.Errorf("verify prev dir failed (unverifiable=%v); rollback failed: %v; backup kept at %s", pv.Unverifiable, rbErr, filepath.Base(prevDir))
+ 				rc.ErrDetail = "move-verify-failed"
+ 				c.recordObservation(targetKey, opID, req.Unit, rc.Effect, rc.Registration, rc.Recovery, rc.ErrDetail, stageMove)
+ 				return rc
+ 			}
+ 			_ = os.RemoveAll(staging)
+-			return fail(stageMove, fmt.Errorf("verify prev dir: %s", pv.Reason), "restored-after-failed-move")
++			return fail(stageMove, fmt.Errorf("verify prev dir: mismatch after move (unverifiable=%v)", pv.Unverifiable), "restored-after-failed-move")
+ 		}
+ 	}
+ 	// 4) ctx 检查（第二次不可逆动作前）→ no-replace 发布 staging。
+@@ -382,18 +409,19 @@
+ 		rc.Err = fmt.Errorf("wsl supply state persist failed after dir commit (tree kept; intent %s retained): %w", opID, serr)
+ 		rc.ErrDetail = "content-committed-state-unpersisted"
+ 		rc.Registration = OpRegistrationPending
+-		rc.UndoLease = c.newDirUndoLease(req, rc)
++		rc.UndoLease = c.newDirUndoLease(req, rc, beforeTreeHash)
++		c.setLeaseActive(opID, true) // 同上：租用跟随句柄生效
+ 		c.recordObservation(targetKey, opID, req.Unit, OpEffectCommitted, OpRegistrationPending, rc.Recovery, rc.ErrDetail, stageFinalize)
+ 		return rc
+ 	}
+ 	rc.Registration = OpRegistrationConfirmed
+-	rc.UndoLease = c.newDirUndoLease(req, rc)
+-	if prevDir != "" {
+-		if rmErr := os.RemoveAll(prevDir); rmErr != nil {
+-			logWarn(c.log, "wslsupply", "目录交换后清理旧副本失败（隐藏残留，不影响使用）", filepath.Base(prevDir))
+-		}
+-	}
+-	c.recordObservation(targetKey, opID, req.Unit, OpEffectCommitted, OpRegistrationConfirmed, OpRecoveryNone, "committed", stageCleanup)
++	rc.UndoLease = c.newDirUndoLease(req, rc, beforeTreeHash)
++	// 一致性修正（resource-abort）：真实旧树（prev）保留至 Release/补偿终结
++	// ——提交成功即删 prev 会让后续 Compensate 只剩内存快照（资源路径无快
++	// 照 → unavailable 且旧内容已不在）。材料清理由撤销租约生命周期承担
++	//（ReleaseCompensations / 无租约后的 reconcile finishMaterials）。
++	c.setLeaseActive(opID, true)
++	c.recordObservation(targetKey, opID, req.Unit, OpEffectCommitted, OpRegistrationConfirmed, OpRecoveryAvailable, "committed", stageCleanup)
+ 	return rc
+ }
+ 
+@@ -453,8 +481,10 @@
+ 	c.recordObservation(rc.TargetKey, rc.OpID, req.Unit, rc.Effect, rc.Registration, rc.Recovery, rc.ErrDetail, stagePublish)
+ }
+ 
+-// newDirUndoLease 构造目录提交的撤销租用（保留内存前像快照供 CAS 补偿）。
+-func (c *Coordinator) newDirUndoLease(req CommitRequest, rc *CommitReceipt) *CompensationHandle {
++// newDirUndoLease 构造目录提交的撤销租用（携带持久 prev 树位置与基准树
++// hash：补偿优先用真实 prev 树 no-replace 放回，内存快照仅作 prev 丢失时
++// 的有界兜底）。
++func (c *Coordinator) newDirUndoLease(req CommitRequest, rc *CommitReceipt, beforeTreeHash string) *CompensationHandle {
+ 	h := &CompensationHandle{
+ 		target: req.Target, relPath: req.RelPath,
+ 		uncPath: filepath.Join(req.Target.UNCRoot, filepath.FromSlash(req.RelPath)),
+@@ -463,7 +493,7 @@
+ 		backupRel: rc.BackupRel, stagingRel: rc.StagingRel, displacedRel: rc.DisplacedRel,
+ 		unit: req.Unit,
+ 		isDir: true, writtenTreeHash: req.DirTreeHash,
+-		prevExisted: rc.BeforeExists,
++		prevExisted: rc.BeforeExists, prevTreeHash: beforeTreeHash,
+ 	}
+ 	return h
+ }
+@@ -578,49 +608,151 @@
+ 	return DefaultSkillsScanLimits()
+ }
+ 
+-// compensateSkillDir 撤销一次技能目录写入（CAS：目标树 hash 仍等于本次写入
+-// 才恢复前像/删除新增；外部修改保留）。
++// compensateSkillDir 撤销一次目录写入（skills 与 resources 同一生命周期；调
++// 用方 Compensate 持 applyMu）。CAS：目标树仍等于本次写入才恢复。恢复优先
++// 用持久 prev 树（真实前像，保留至 Release/补偿终结：结构/空目录/链接/外部
++// 后改均保全）——displace 本次写入 → 复验 → no-replace 放回 prev → 树复验；
++// prev 材料丢失时退回内存快照（有界）重建；两者皆失 → unavailable（如实报
++// 告，不臆造恢复）。先保存 compensation intent（ParentOpID）再恢复，不递归。
+ func (c *Coordinator) compensateSkillDir(h *CompensationHandle) CompensationOutcome {
+-	outcome := CompensationOutcome{Unit: h.unit, RelPath: h.relPath}
++	out := CompensationOutcome{Unit: h.unit, RelPath: h.relPath}
++	// 撤销租用仍在：新写/reconcile 不得清理本操作材料。
++	if h.opID != "" {
++		c.setLeaseActive(h.opID, true)
++	}
++	compOpID := newOpID()
++	if h.opID != "" {
++		if err := c.state.saveIntent(OperationIntent{
++			OpID: compOpID, Kind: OpKindCompensate, TargetKey: h.targetKey,
++			TargetDistro: h.target.Distro, TargetHome: h.target.Home,
++			TargetCLI: string(h.target.CLI),
++			Unit: h.unit, RelPath: h.relPath,
++			BeforeExists: h.prevExisted, AfterHash: h.writtenTreeHash,
++			PrevTreeHash: h.prevTreeHash,
++			ParentOpID: h.opID, CreatedAt: time.Now(),
++		}); err != nil {
++			// 补偿 intent 保存失败：不开始恢复写，如实报 pending。
++			out.Disposition = CompensationUnavailable
++			out.Message = "compensation intent persist failed: " + err.Error()
++			return out
++		}
++	}
++	settle := func(disposition string) CompensationOutcome {
++		out.Disposition = CompensationConfirmed
++		if h.opID != "" {
++			c.finishCompensation(h, compOpID, disposition)
++		}
++		return out
++	}
+ 	current := scanTargetSkillDir(h.uncPath, c.skillLimits())
+ 	if current.Unverifiable {
+-		outcome.Disposition = CompensationIndeterminate
+-		outcome.Message = current.Reason
+-		return outcome
++		out.Disposition = CompensationIndeterminate
++		out.Message = current.Reason
++		return out
+ 	}
+ 	if !current.Exists {
+ 		// 目标已不在（可能被用户删除）：视为已撤销。
+-		outcome.Disposition = CompensationConfirmed
+-		return outcome
++		return settle("restored")
+ 	}
+ 	if current.TreeHash != h.writtenTreeHash {
+-		outcome.Disposition = CompensationSkipped
+-		outcome.Message = "target changed after write; external content retained"
+-		return outcome
++		out.Disposition = CompensationSkipped
++		out.Message = "target changed after write; external content retained"
++		if h.opID != "" {
++			c.finishCompensation(h, compOpID, "not-applied")
++		}
++		return out
+ 	}
+ 	if !h.prevExisted {
+ 		if err := os.RemoveAll(h.uncPath); err != nil && !os.IsNotExist(err) {
+-			outcome.Disposition = CompensationUnavailable
+-			outcome.Message = err.Error()
+-			return outcome
++			out.Disposition = CompensationUnavailable
++			out.Message = err.Error()
++			return out
+ 		}
+-		outcome.Disposition = CompensationConfirmed
+-		return outcome
++		return settle("restored")
+ 	}
++	// 优先：持久 prev 树（真实前像）no-replace 恢复。
++	if restored, msg := c.restoreDirFromPersistedPrev(h); restored {
++		return settle("restored")
++	} else if msg != "" {
++		// prev 材料在但恢复失败（冲突/不可验证）：如实报 unavailable，不删目标。
++		out.Disposition = CompensationUnavailable
++		out.Message = msg
++		c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryAvailable, "compensation-pending", "compensate")
++		return out
++	}
++	// 兜底：内存快照重建（有界；prev 树丢失时）。空目录/链接同样保真。
+ 	if !h.prevSnapshot {
+-		outcome.Disposition = CompensationUnavailable
+-		outcome.Message = "preimage snapshot unavailable (oversized or unverifiable tree)"
+-		return outcome
++		out.Disposition = CompensationUnavailable
++		out.Message = "preimage unavailable (persistent prev tree missing and in-memory snapshot unavailable/oversized)"
++		c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryUnavailable, "compensation-pending", "compensate")
++		return out
+ 	}
+ 	if err := c.restoreSkillPreimage(h); err != nil {
+-		outcome.Disposition = CompensationUnavailable
+-		outcome.Message = err.Error()
+-		return outcome
++		out.Disposition = CompensationUnavailable
++		out.Message = err.Error()
++		c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryAvailable, "compensation-pending", "compensate")
++		return out
+ 	}
+-	outcome.Disposition = CompensationConfirmed
+-	return outcome
++	return settle("restored")
+ }
+ 
++// restoreDirFromPersistedPrev 用持久 prev 树恢复目录前像：displace 本次写入
++// 到唯一 compensated 名 → 复验 displaced 是本次写入 → no-replace 发布 prev →
++// 树 hash 复验 → 清理 displaced。prev 材料不存在时返回 (false, "")（调用方
++// 退回快照兜底）；恢复失败返回 (false, message)（两处均保留，不删任何一处）。
++func (c *Coordinator) restoreDirFromPersistedPrev(h *CompensationHandle) (bool, string) {
++	if h.displacedRel == "" {
++		return false, ""
++	}
++	prevPath := absOf(h.target, h.displacedRel)
++	pinfo, perr := os.Lstat(prevPath)
++	if perr != nil {
++		if errors.Is(perr, os.ErrNotExist) {
++			return false, "" // prev 材料已不在：退回快照兜底
++		}
++		return false, "prev material unreadable: " + perr.Error()
++	}
++	if !pinfo.IsDir() {
++		return false, "prev material is not a directory"
++	}
++	pv := scanTargetSkillDir(prevPath, c.skillLimits())
++	if pv.Unverifiable {
++		return false, "prev tree unverifiable: " + pv.Reason
++	}
++	if h.prevTreeHash != "" && pv.TreeHash != h.prevTreeHash {
++		return false, fmt.Sprintf("prev tree hash mismatch (expected baseline); prev kept at %s", filepath.Base(prevPath))
++	}
++	// displace 本次写入（目标已 CAS 验证 == writtenTreeHash）到唯一名。
++	displaced := h.uncPath + ".compensated-" + h.opID
++	if _, derr := os.Lstat(displaced); derr == nil {
++		return false, "compensated displaced slot occupied: " + filepath.Base(displaced)
++	}
++	if err := os.Rename(h.uncPath, displaced); err != nil {
++		return false, "displace current tree: " + err.Error()
++	}
++	dv := scanTargetSkillDir(displaced, c.skillLimits())
++	if dv.Unverifiable || dv.TreeHash != h.writtenTreeHash {
++		// 移走的不是本次写入：no-replace 放回，保留两处。
++		if rbErr := publishNoReplaceFn(displaced, h.uncPath); rbErr != nil {
++			return false, fmt.Sprintf("displaced tree mismatch; put-back failed (%v); both retained", rbErr)
++		}
++		return false, "displaced tree no longer matches this write; external version retained"
++	}
++	if err := publishNoReplaceFn(prevPath, h.uncPath); err != nil {
++		if errors.Is(err, errNoReplaceExists) {
++			return false, fmt.Sprintf("external target appeared during restore; both retained (prev at %s, displaced at %s)", filepath.Base(prevPath), filepath.Base(displaced))
++		}
++		return false, fmt.Sprintf("publish prev tree (no-replace): %v (prev kept at %s, displaced at %s)", err, filepath.Base(prevPath), filepath.Base(displaced))
++	}
++	got := scanTargetSkillDir(h.uncPath, c.skillLimits())
++	if got.Unverifiable || (h.prevTreeHash != "" && got.TreeHash != h.prevTreeHash) {
++		// 已放回但复验不符：材料保留，如实报告（不回滚成删目标）。
++		return false, fmt.Sprintf("restored tree hash mismatch/unverifiable; prev kept at %s, displaced at %s", filepath.Base(prevPath), filepath.Base(displaced))
++	}
++	_ = os.RemoveAll(displaced)
++	return true, ""
++}
++
+ // skillPreimageRenameFn 是恢复写最后一步 rename 的接缝（生产 os.Rename；
+ // 测试注入失败钉住 F2：rename 失败时唯一持久前像必须保留在 staging）。
+ var skillPreimageRenameFn = os.Rename
+@@ -643,6 +775,14 @@
+ 		}
+ 	}()
+ 	for _, e := range h.prevFiles {
++		if e.IsDir {
++			// 空目录：结构保真重建（不入树 hash，但恢复时不得丢）。
++			unc := filepath.Join(staging, filepath.FromSlash(e.RelPath))
++			if err := os.MkdirAll(unc, 0o755); err != nil {
++				return err
++			}
++			continue
++		}
+ 		unc := filepath.Join(staging, filepath.FromSlash(e.RelPath))
+ 		if err := os.MkdirAll(filepath.Dir(unc), 0o755); err != nil {
+ 			return err
+@@ -702,11 +842,15 @@
+ }
+ 
+ // preimageTreeHash 计算前像的规范化树 hash（与 scanTargetSkillDir 同构：链接
+-// 条目 hash("link:"+target)，文件条目 size+hash(bytes)）——恢复后读回比对
+-// 的期望值。
++// 条目 hash("link:"+target)，文件条目 size+hash(bytes)；目录条目不入 hash——
++// 与扫描面一致，空目录只作结构保真不参与字节比对）——恢复后读回比对的
++// 期望值。
+ func preimageTreeHash(prev []skillPreimageEntry) string {
+ 	entries := make([]SkillFileEntry, 0, len(prev))
+ 	for _, e := range prev {
++		if e.IsDir {
++			continue
++		}
+ 		if e.IsLink {
+ 			entries = append(entries, SkillFileEntry{RelPath: e.RelPath, Hash: hexHash([]byte("link:" + e.LinkTarget))})
+ 			continue
+--- a/internal/wslsupply/compensation.go
++++ b/internal/wslsupply/compensation.go
+@@ -26,9 +26,10 @@
+ 	prevExisted bool
+ 	sensitive   bool
+ 
+-	// 技能目录专用（S3）。
++	// 技能/资源目录专用（S3；一致性修正：与资源统一真实持久前像生命周期）。
+ 	isDir           bool
+ 	writtenTreeHash string
++	prevTreeHash    string // 提交时验证过的基准树 hash（恢复后复验用）
+ 	prevFiles       []skillPreimageEntry
+ 	prevSnapshot    bool
+ 
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -456,12 +456,22 @@
+ 			outcome, syncErr := c.a2Adapter().Sync(ctx, current)
+ 			unitResult := classifyA2(ctx, unit.Unit, outcome, syncErr)
+ 			unitResult.OperationID = a2OpID
+-			if syncErr == nil && outcome == launcher.SyncWSLPiLoginAuthCopied || syncErr == nil && outcome == launcher.SyncWSLPiLoginAuthDistroNewer || syncErr == nil && outcome == launcher.SyncWSLPiLoginAuthDistroTieKept {
++			committedOutcome := syncErr == nil && (outcome == launcher.SyncWSLPiLoginAuthCopied || outcome == launcher.SyncWSLPiLoginAuthDistroNewer || outcome == launcher.SyncWSLPiLoginAuthDistroTieKept)
++			// 一致性修正（a2-final-save）：登记确认只在真正持久化后才声明——
++			// 结果、observation、状态页与磁盘摘要同事实；state save 持续失败时
++			// Registration=pending（PendingOperationFact=true，dirty/聚合不误计成
++			// 功）；内容事实保留（不回滚新 token；不存 auth 正文/hash）。
++			if serr := c.finishA2Summary(current, a2OpID, unitResult, outcome); serr != nil {
++				unitResult.Registration = OpRegistrationPending
++				unitResult.Detail = "a2-state-unpersisted"
++				if committedOutcome {
++					unitResult.Effect = OpEffectCommitted
++				}
++			} else if committedOutcome {
+ 				unitResult.Effect = OpEffectCommitted
+ 				unitResult.Consumption = ConsumptionNotApplicable // A2 资格由 outcome+权限门表达
+ 				unitResult.Registration = OpRegistrationConfirmed
+ 			}
+-			c.finishA2Summary(current, a2OpID, unitResult, outcome)
+ 			result.Results = append(result.Results, unitResult)
+ 		default:
+ 			if isSkillUnitID(unit.Unit) {
+@@ -911,6 +921,9 @@
+ }
+ 
+ // resolveLegacyEvidenceIn 在一次 mutate 内把证据条目标记为该完整目标已处置。
++// 键位双写（完整 targetKey + 裸 generation）：消费面有两族键——逐目标 assessment
++// 用完整键（targetKeyOf，v3 一致性修正后含 CLI 作用域），LegacySensitiveCopyPending
++// 按 distro 的代际迭代用裸 generation 键；两键并存保证两族消费面同时收敛。
+ func resolveLegacyEvidenceIn(st *StateFile, unit UnitID, targetKey, disposition string) {
+ 	for i := range st.LegacyEvidence {
+ 		ev := &st.LegacyEvidence[i]
+@@ -921,6 +934,9 @@
+ 			ev.Resolved = map[string]string{}
+ 		}
+ 		ev.Resolved[targetKey] = disposition
++		if gen, _, found := strings.Cut(targetKey, "|"); found && gen != "" {
++			ev.Resolved[gen] = disposition
++		}
+ 	}
+ }
+ 
+@@ -1032,6 +1048,12 @@
+ 	}
+ 	// 攻坚契约 PR05：Plan 前持 applyMu 对请求目标运行 ReconcilePending（只处理
+ 	// 请求目标的登记路径；存储不可读停止新写）。
++	// 一致性修正（corrupt-pending）：健康门先完成本次读取/扫描再决策——先扫
++	// pending（刷新健康值），后判门；不靠上一轮缓存（首轮健康值是构造默认值，
++	// 会把损坏目录当 ok 放行新写）。
++	if _, ierr := c.state.loadIntents(); ierr != nil {
++		return blocked("pending-store-unreadable", ierr)
++	}
+ 	if h := c.state.Health(); h.Main != StoreOK && h.Main != StoreFresh || h.Pending == StoreUnreadable || h.Pending == StoreCorrupt {
+ 		return blocked("store-unhealthy", fmt.Errorf("wsl supply state store unhealthy (main=%s pending=%s)", h.Main, h.Pending))
+ 	}
+@@ -1089,6 +1111,11 @@
+ 		}
+ 	}
+ 	gen, rec, found := latestTargetRecord(&st, distro)
++	// 一致性修正（status-without-target）：未检查（Checked=false）可以，但现有
++	// 待确认事实（pending intents）与健康错误必须展示——read-only 状态查询不
++	// 能靠先执行一次写入才看见风险。
++	status.StoreHealth = c.state.Health()
++	status.PendingIntents = c.pendingIntentsForDistro(st, distro)
+ 	if !found {
+ 		return status
+ 	}
+@@ -1101,8 +1128,6 @@
+ 	}
+ 	// 攻坚契约：合并 durable、intent、当前 observation——pending/失败优先于旧
+ 	// written/consented/awaiting-consent；旧 LastSuccess 保留但明确是历史时间。
+-	status.StoreHealth = c.state.Health()
+-	status.PendingIntents = c.pendingIntentsForDistro(st, distro)
+ 	for _, entry := range st.Units {
+ 		if entry.Generation != gen {
+ 			continue // 其它身份分区的登记不串入本目标（SA-02）。
+@@ -1796,6 +1821,7 @@
+ 		if err := c.state.saveIntent(OperationIntent{
+ 			OpID: compOpID, Kind: OpKindCompensate, TargetKey: h.targetKey,
+ 			TargetDistro: h.target.Distro, TargetHome: h.target.Home,
++			TargetCLI: string(h.target.CLI),
+ 			Unit: h.unit, RelPath: h.relPath, Sensitive: h.sensitive,
+ 			BeforeExists: h.prevExisted, BeforeHash: hexHash(h.prev), AfterHash: h.writtenHash,
+ 			ParentOpID: h.opID, CreatedAt: time.Now(),
+--- a/internal/wslsupply/a2.go
++++ b/internal/wslsupply/a2.go
+@@ -124,6 +124,7 @@
+ 	return c.state.saveIntent(OperationIntent{
+ 		OpID: opID, Kind: OpKindA2Sync, TargetKey: targetKeyOf(target),
+ 		TargetDistro: target.Distro, TargetHome: target.Home,
++		TargetCLI: string(target.CLI),
+ 		Unit: UnitPiA2Auth, RelPath: "auth.json", Sensitive: true,
+ 		PluginMeta: map[string]string{"phase": "sync"},
+ 		CreatedAt:  time.Now(),
+@@ -131,8 +132,10 @@
+ }
+ 
+ // finishA2Summary 结束 A2 摘要：保存结构化结果及 settled（无 hash/token）；
+-// 失败保留摘要为 pending（observation 同步登记，不只 log）。
+-func (c *Coordinator) finishA2Summary(target TargetRef, opID string, unitResult UnitResult, outcome launcher.SyncWSLPiLoginAuthOutcome) {
++// 失败保留摘要为 pending（observation 同步登记，不只 log）。返回 settle 错误
++// ——调用方必须据此把单元结果回退为未确认事实（此前只改值副本，返回面仍
++// applied+confirmed，已证实的「结果与磁盘摘要不同事实」缺陷）。
++func (c *Coordinator) finishA2Summary(target TargetRef, opID string, unitResult UnitResult, outcome launcher.SyncWSLPiLoginAuthOutcome) error {
+ 	settleErr := c.state.mutate(func(st *StateFile) {
+ 		if st.SettledOperations == nil {
+ 			st.SettledOperations = map[string]SettledOperation{}
+@@ -154,7 +157,7 @@
+ 	})
+ 	if settleErr != nil {
+ 		c.recordObservation(targetKeyOf(target), opID, UnitPiA2Auth, OpEffectUnknown, OpRegistrationPending, OpRecoveryNone, "a2-state-unpersisted", "a2")
+-		return
++		return settleErr
+ 	}
+ 	_ = c.state.deleteIntent(opID)
+ 	_ = c.state.mutate(func(st *StateFile) {
+@@ -163,6 +166,7 @@
+ 		}
+ 	})
+ 	c.recordObservation(targetKeyOf(target), opID, UnitPiA2Auth, OpEffectCommitted, OpRegistrationConfirmed, OpRecoveryNone, a2OutcomeName(outcome), "a2")
++	return nil
+ }
+ 
+ // sanitizeA2Err 截断 A2 错误为状态码短串（不含凭据内容）。
+--- a/internal/wslsupply/plugins.go
++++ b/internal/wslsupply/plugins.go
+@@ -843,7 +843,7 @@
+ 	default:
+ 		result = p.runRemove(ctx, target, op, spec, identity, regEntry, hasReg, distroEntry, settingsState, opID)
+ 	}
+-	p.finishPluginPending(target, opID, op, result)
++	p.finishPluginPending(target, opID, op, spec, result)
+ 	return result
+ }
+ 
+@@ -852,13 +852,15 @@
+ 	return p.state.saveIntent(OperationIntent{
+ 		OpID: opID, Kind: OpKindPluginOp, TargetKey: targetKeyOf(target),
+ 		TargetDistro: target.Distro, TargetHome: target.Home,
++		TargetCLI: string(target.CLI),
+ 		PluginMeta: pluginPendingMeta(op, spec), CreatedAt: time.Now(),
+ 	})
+ }
+ 
+-// pluginPendingMeta 构造摘要元数据（无秘密：源串本身是用户输入的包引用）。
++// pluginPendingMeta 构造摘要元数据（无秘密：源串本身是用户输入的包引用；
++// identity 入摘要供成功收敛时按同插件身份结清——不能同目标全清）。
+ func pluginPendingMeta(op PluginOperation, spec PluginSourceSpec) map[string]string {
+-	meta := map[string]string{"kind": op.Kind, "source": op.Source, "sourceType": spec.Type}
++	meta := map[string]string{"kind": op.Kind, "source": op.Source, "sourceType": spec.Type, "identity": pluginIdentity(spec)}
+ 	if op.AnchorRef != "" {
+ 		meta["anchorRef"] = op.AnchorRef
+ 	}
+@@ -872,7 +874,8 @@
+ 
+ // finishPluginPending 结束插件摘要：成功 → settled + 清理；失败/取消 → 保留
+ // （native 副作用可能已发生，不自动重放；RegistrationSummary 优先展示）。
+-func (p *PluginScope) finishPluginPending(target TargetRef, opID string, op PluginOperation, result PluginOpResult) {
++// spec 携带本次操作的归一身份：同身份旧摘要收敛，跨源摘要保留。
++func (p *PluginScope) finishPluginPending(target TargetRef, opID string, op PluginOperation, spec PluginSourceSpec, result PluginOpResult) {
+ 	disposition := "not-applied"
+ 	if result.OK {
+ 		disposition = "committed"
+@@ -898,12 +901,28 @@
+ 	_ = p.state.mutate(func(st *StateFile) {
+ 		delete(st.SettledOperations, opID)
+ 	})
+-	// 同目标旧 pending 插件摘要（先前失败操作）由本次成功复检收敛清理。
++	// 同目标旧 pending 插件摘要只能按「同一插件身份」收敛清理（一致性修正
++	// plugin-cross-source-cleanup：B 源的成功不结清 A 源的未确认副作用——只
++	// 有同一 identity（同包不同 ref 是版本切换语义）的先前失败摘要才被本次
++	// 成功复检覆盖；跨源/无法归一身份的摘要一律保留可见）。
+ 	if intents, ierr := p.state.loadIntents(); ierr == nil {
+ 		key := targetKeyOf(target)
++		identity := pluginIdentity(spec)
+ 		for id := range intents {
+ 			if id == opID || intents[id].Kind != OpKindPluginOp || intents[id].TargetKey != key {
+ 				continue
++			}
++			oldIdentity := intents[id].PluginMeta["identity"]
++			if oldIdentity == "" {
++				// 旧格式摘要无身份标注：从 source 串归一；不可归一则不结清。
++				if raw := intents[id].PluginMeta["source"]; raw != "" {
++					if oldSpec, perr := p.parseSpec(raw); perr == nil {
++						oldIdentity = pluginIdentity(oldSpec)
++					}
++				}
++			}
++			if oldIdentity == "" || oldIdentity != identity {
++				continue // 跨源未确认副作用：保留（RegistrationSummary 仍可见）
+ 			}
+ 			_ = p.state.deleteIntent(id)
+ 			_ = p.state.mutate(func(st *StateFile) {
+--- a/internal/wslsupply/coordinator_test.go
++++ b/internal/wslsupply/coordinator_test.go
+@@ -57,6 +57,16 @@
+ 			}
+ 			if f.modes == nil {
+ 				f.modes = map[string]string{}
++			}
++			// chmod 不对不存在的文件无条件成功（一致性修正 backup-path 的夹具
++			// 面）：路径经真实临时文件状态校验——生产 chmod 对不存在路径必失败，
++			// 假探测面不得掩盖错位路径。
++			for _, p := range paths {
++				unc := filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(p, "/")))
++				if _, serr := os.Lstat(unc); serr != nil {
++					f.mu.Unlock()
++					return fmt.Errorf("synthetic chmod: ENOENT %s", p)
++				}
+ 			}
+ 			for _, p := range paths {
+ 				f.modes[p] = mode
+--- a/internal/wslsupply/a2_consumption_test.go
++++ b/internal/wslsupply/a2_consumption_test.go
+@@ -101,11 +101,17 @@
+ 		inner:  &stubA2{outcome: launcher.SyncWSLPiLoginAuthCopied},
+ 		called: &calls,
+ 	})
+-	// pending 目录不可用（换成文件）：saveIntent 恒失败。
++	// pending 目录不可写（保存恒失败）但可读可扫描（存储面健康）：隔离「摘要写
++	// 失败」与「pending 存储不可读」（后者首轮即被健康门阻断，不足证 A2 专
++	// 门语义）。POSIX 非 root 下 0500 目录 CreateTemp 必败、ReadDir 仍可。
+ 	pendingDir := filepath.Join(filepath.Dir(c.state.path), pendingDirName)
+-	if err := os.WriteFile(pendingDir, []byte("not a dir"), 0o600); err != nil {
++	if err := os.MkdirAll(pendingDir, 0o700); err != nil {
+ 		t.Fatal(err)
+ 	}
++	if err := os.Chmod(pendingDir, 0o500); err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = os.Chmod(pendingDir, 0o700) }()
+ 	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
+ 	if err != nil {
+ 		t.Fatal(err)
+--- a/internal/wslsupply/skills_test.go
++++ b/internal/wslsupply/skills_test.go
+@@ -627,6 +627,12 @@
+ 	orig := skillPreimageRenameFn
+ 	skillPreimageRenameFn = func(string, string) error { return errors.New("9P transient failure") }
+ 	defer func() { skillPreimageRenameFn = orig }()
++	// 一致性修正（resource-abort）后补偿优先用持久 prev 树（不经 rename 接
++	// 缝）；本测试钉住的是内存快照恢复路径的 F2 语义——先移除 prev 材料（模拟
++	// 外部丢失）退回快照兜底。
++	if err := os.RemoveAll(absOf(r.Undo.target, r.Undo.displacedRel)); err != nil && !os.IsNotExist(err) {
++		t.Fatal(err)
++	}
+ 	parent := filepath.Dir(r.Undo.uncPath)
+ 	out := c.Compensate(context.Background(), r.Undo)
+ 	if len(out) != 1 || out[0].Disposition != CompensationUnavailable {
+@@ -672,6 +678,11 @@
+ 		t.Fatalf("update: %+v", r)
+ 	}
+ 	before := atomic.LoadInt32(&fp.chmodCalls)
++	// 同 F2 测试：持久 prev 树优先（不经重写路径）；F7 钉的是快照重建路径的
++	// chmod 补偿语义——移除 prev 材料后退回快照兜底。
++	if err := os.RemoveAll(absOf(r.Undo.target, r.Undo.displacedRel)); err != nil && !os.IsNotExist(err) {
++		t.Fatal(err)
++	}
+ 	out := c.Compensate(context.Background(), r.Undo)
+ 	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {
+ 		t.Fatalf("compensation must confirm: %+v", out)
+diff --git a/internal/wslsupply/consistency_fixes_test.go b/internal/wslsupply/consistency_fixes_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/wslsupply/consistency_fixes_test.go
+@@ -0,0 +1,820 @@
++package wslsupply
++
++// consistency_fixes_test.go — 一致性修正回归（G1 后独立审核中途观测转正）。
++// 每条观测对应一个强期望断言：合法正向 + 失败/恢复反向。全部合成夹具
++//（t.TempDir + fake probes），不读真实配置/凭据，不执行网络/SSH/真实 CLI。
++// 观测来源：agent-outputs/workflow/wsl-goal-closure/attack-stage-review-*。
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"amagi-codebox/internal/launcher"
++)
++
++// cfWrite 写一个合成夹具文件（MkdirAll 父目录）。
++func cfWrite(t *testing.T, path, content string, perm os.FileMode) {
++	t.Helper()
++	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(path, []byte(content), perm); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func cfExists(p string) bool { _, err := os.Lstat(p); return err == nil }
++
++// ---------------------------------------------------------------------------
++// 1. backup-path：chmod 目标与实际备份落盘路径同源
++// ---------------------------------------------------------------------------
++
++// TestConsistencyBackupPathSensitiveUpdateSucceeds：已存在文件的敏感更新必须
++// 成功；持久前像落在 .amagi-staging/recovery-<opID>/before（真实路径），字节
++// 等于旧内容，敏感 mode 600 在正确路径上可验证。此前 chmod 路径缺 recovery-
++// 前缀导致正常更新误报 backup-unavailable。
++func TestConsistencyBackupPathSensitiveUpdateSucceeds(t *testing.T) {
++	oldBody := []byte(`{"user":"ORIGINAL"}`)
++	e := newCommitTestEnv(t, true, oldBody)
++	rcpt := e.c.commitFile(context.Background(), CommitRequest{
++		Target: e.target, Unit: "pi/audit", RelPath: e.rel,
++		ExpectedBefore: hexHash(oldBody), Candidate: []byte(`{"v":2}`),
++		Sensitive: true, Kind: OpKindWrite,
++	})
++	if rcpt.Err != nil {
++		t.Fatalf("sensitive update on existing file must succeed, got detail=%s err=%v", rcpt.ErrDetail, rcpt.Err)
++	}
++	if rcpt.BackupRel == "" {
++		t.Fatal("preimage backup must be recorded")
++	}
++	want := ".amagi-staging/recovery-" + rcpt.OpID + "/before"
++	if rcpt.BackupRel != want {
++		t.Fatalf("backup rel must be %s (actual staging path), got %s", want, rcpt.BackupRel)
++	}
++	if rcpt.Recovery != OpRecoveryAvailable {
++		t.Fatalf("verified preimage must be reported available, got %s", rcpt.Recovery)
++	}
++	// 成功提交后备份按终结顺序清理（不再断言在盘）；正确路径的证据是敏感
++	// chmod/StatMode 落在真实备份路径上——fake 探测面按真实文件校验，错位
++	// 路径（缺 recovery- 前缀）会 ENOENT 失败使提交失败，因此 mode 记录在
++	// 正确路径上 == chmod 确实打在真实备份文件上。
++	linuxBackup := strings.TrimSuffix(e.target.LinuxRoot, "/") + "/" + want
++	e.fp.mu.Lock()
++	mode, modeOK := e.fp.modes[linuxBackup]
++	e.fp.mu.Unlock()
++	if !modeOK || mode != "600" {
++		t.Fatalf("sensitive chmod must target the real backup path %s, got mode=%q ok=%v", linuxBackup, mode, modeOK)
++	}
++	// 目标已是新内容（正向成功）。
++	cur, _ := os.ReadFile(e.uncPath)
++	if string(cur) != `{"v":2}` {
++		t.Fatalf("target must hold candidate, got %q", cur)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 2. legacy-unknown-and-hash：指纹弱证据 × 内容正证据
++// ---------------------------------------------------------------------------
++
++// TestConsistencyLegacyUnknownFingerprintHashMatchKeepsRisk：当前文件内容与
++// 历史记录 hash 一致但指纹 unknown/不匹配 → 待确认不得解除（unsafe+pending，
++// reason=legacy-content-hash-match）；内容与指纹都不匹配的用户自有文件 →
++// user-owned（不误阻）。B 目标（文件不在）不受 A 的线索影响（不全局误阻）。
++func TestConsistencyLegacyUnknownFingerprintHashMatchKeepsRisk(t *testing.T) {
++	for _, finger := range []string{GenerationUnknown, legacyGenerationOf("OTHER", "1000", "/home/u")} {
++		e := newLegacyABEnv(t)
++		e.writeLegacyV1TopB(t, "written", true)
++		st := e.c.state.load()
++		st.LegacyEvidence[0].Fingerprint = finger
++		if err := e.c.state.mutate(func(s *StateFile) { s.LegacyEvidence = st.LegacyEvidence }); err != nil {
++			t.Fatal(err)
++		}
++		cfWrite(t, e.visionFn("A"), legacyCloneCopy, 0o600)
++		a := e.c.AssessWSLSensitiveConsumption(context.Background(), "A", CLICommon, UnitSharedVisionExport, nil)
++		if a.Consumption != ConsumptionUnsafe || !a.RiskPending || a.Reason != "legacy-content-hash-match" {
++			t.Fatalf("finger=%s: content-hash match must stay risk-pending (unsafe), got %+v", finger, a)
++		}
++		// B：文件不在 → 本目标放行（A 的内容线索不全局误阻其它发行版）。
++		b := e.c.AssessWSLSensitiveConsumption(context.Background(), "B", CLICommon, UnitSharedVisionExport, nil)
++		if b.Consumption != ConsumptionAbsent || b.RiskPending {
++			t.Fatalf("finger=%s: B (copy absent) must stay released, got %+v", finger, b)
++		}
++		// 对照：内容与指纹都不匹配 → 用户自有文件，解除待确认。
++		cfWrite(t, e.visionFn("A"), `{"user":"OWN"}`, 0o600)
++		a2 := e.c.AssessWSLSensitiveConsumption(context.Background(), "A", CLICommon, UnitSharedVisionExport, nil)
++		if a2.Consumption != ConsumptionUserOwned || a2.RiskPending {
++			t.Fatalf("finger=%s: unrelated user file must be user-owned, got %+v", finger, a2)
++		}
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 3. v2-migration：真实 v2 生产形态迁移不遗忘受管记录
++// ---------------------------------------------------------------------------
++
++// TestConsistencyV2MigrationKeepsManagedRecords：真实 v2 生产形态（schema 2 +
++// Targets 索引 + 新公式 generation 的受管 Units + v1 遗留 legacy: 隔离区 +
++// LegacySensitiveRisk 派生 map）迁移到 v3：受管记录继续可归属（entryFor 命
++// 中；副本在且 0600 → safe，不是 user-owned/never-managed）；v1 遗留隔离区转
++// 证据保真。v1（schema 1）仍整体隔离。
++func TestConsistencyV2MigrationKeepsManagedRecords(t *testing.T) {
++	fp := newFakeProbes(t)
++	dir := t.TempDir()
++	c := NewCoordinator(dir, nil, fp.probes())
++	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
++	if err != nil {
++		t.Fatal(err)
++	}
++	body := "SYNTHETIC V2 SECRET"
++	cfWrite(t, filepath.Join(tr.UNCRoot, VisionExportFile), body, 0o600)
++	legacyGen := legacyGenerationOf("m-old", "1000", "/home/u")
++	v2 := StateFile{
++		SchemaVersion: 2, Generation: tr.Generation, Distro: "Ubuntu", Home: tr.Home,
++		Targets: map[string]TargetRecord{tr.Generation: {Distro: "Ubuntu", UID: tr.UID, Home: tr.Home, LegacyGeneration: legacyGen}},
++		Units: []StateEntry{
++			// 受管视觉单元：新公式 generation（可归属），Consented + 已写。
++			{Unit: UnitSharedVisionExport, Policy: PolicyManagedNamespace, Generation: tr.Generation,
++				Consented: true, LastWrittenHash: hexHash([]byte(body)), LastOutcome: "written"},
++			// v2 从 v1 升级时隔离的敏感 entry（legacy: 前缀）。
++			{Unit: UnitSharedVisionExport, Policy: PolicyManagedNamespace, Generation: legacyGenerationPrefix + legacyGen,
++				Consented: true, LastWrittenHash: hexHash([]byte("OLD-V1")), LastOutcome: "written"},
++			// 普通受管单元同样不得被隔离。
++			{Unit: UnitSharedModalityKB, Policy: PolicyManagedNamespace, Generation: tr.Generation, LastOutcome: "written"},
++		},
++		LegacySensitiveRisk: map[string]map[UnitID]bool{"Ubuntu": {UnitSharedVisionExport: true}},
++	}
++	b, err := json.Marshal(v2)
++	if err != nil {
++		t.Fatal(err)
++	}
++	cfWrite(t, filepath.Join(dir, StateFileName), string(b), 0o600)
++
++	c2 := NewCoordinator(dir, nil, fp.probes())
++	st := c2.state.load()
++	// 受管记录仍在（未隔离、未遗忘）。
++	if got := st.entryFor(UnitSharedVisionExport, tr.Generation); got.LastWrittenHash != hexHash([]byte(body)) || !got.Consented {
++		t.Fatalf("v2 managed entry must stay attributable after migration, got %+v", got)
++	}
++	if got := st.entryFor(UnitSharedModalityKB, tr.Generation); got.LastOutcome != "written" {
++		t.Fatalf("v2 non-sensitive managed entry must stay attributable, got %+v", got)
++	}
++	if strings.HasPrefix(st.entryFor(UnitSharedVisionExport, tr.Generation).Generation, legacyGenerationPrefix) {
++		t.Fatal("attributable v2 entry must not be quarantined as legacy")
++	}
++	// 副本在且 0600 → safe（此前误判 user-owned/unrelated-file-user-owned 或
++	// never-managed）。
++	a := c2.AssessWSLSensitiveConsumption(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport, nil)
++	if a.Consumption != ConsumptionSafe || a.RiskPending {
++		t.Fatalf("v2 migrated managed copy (present, 0600) must be safe, got %+v", a)
++	}
++	// v1 遗留隔离区 + v2 派生风险 map 都转证据保真。
++	ev := c2.LegacyEvidenceSnapshot()
++	var v1Keep, v2Derived bool
++	for _, e := range ev {
++		if e.Source == "v1" && e.Fingerprint == legacyGen {
++			v1Keep = true
++		}
++		if e.Source == "v2-derived" && e.LowTrust && e.TopDistro == "Ubuntu" {
++			v2Derived = true
++		}
++	}
++	if !v1Keep || !v2Derived {
++		t.Fatalf("legacy quarantine evidence must be preserved (v1=%v v2derived=%v): %+v", v1Keep, v2Derived, ev)
++	}
++}
++
++// TestConsistencyV1MigrationStillQuarantines：v1（schema 1）不受 v2 修正影响
++// ——整体隔离 + 证据保真（既有语义回归钉）。
++func TestConsistencyV1MigrationStillQuarantines(t *testing.T) {
++	e := newLegacyABEnv(t)
++	e.writeLegacyV1TopB(t, "written", true)
++	st := e.c.state.load()
++	if st.SchemaVersion != stateSchemaVersion {
++		t.Fatalf("migration must bump schema, got %d", st.SchemaVersion)
++	}
++	for _, u := range st.Units {
++		if u.Unit == UnitSharedVisionExport && !strings.HasPrefix(u.Generation, legacyGenerationPrefix) {
++			t.Fatalf("v1 entry must stay quarantined, got %+v", u)
++		}
++	}
++	if len(st.LegacyEvidence) == 0 {
++		t.Fatal("v1 evidence must exist")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 4. wrong-root-reconcile：shared intent 不得被 pi 目标根解释
++// ---------------------------------------------------------------------------
++
++// TestConsistencyWrongRootReconcileKeepsSharedPending：shared 与 pi 的
++// targetKey 相同身份基础（同 distro/home）——pi TargetRef 的 reconcile 不得把
++// shared 的未决 intent 判 not-applied 并清未决（文件仍在 shared 根）；shared
++// 自己的 reconcile 正常按落点收敛（committed）。新 Coordinator 同样不误清。
++func TestConsistencyWrongRootReconcileKeepsSharedPending(t *testing.T) {
++	e := newCommitTestEnv(t, false, nil) // pi 目标
++	shared, err := e.c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
++	if err != nil {
++		t.Fatal(err)
++	}
++	secret := filepath.Join(shared.UNCRoot, VisionExportFile)
++	cfWrite(t, secret, "SYNTHETIC-SECRET", 0o600)
++	id := newOpID()
++	intent := OperationIntent{
++		OpID: id, Kind: OpKindWrite, TargetKey: targetKeyOf(shared),
++		TargetDistro: "Ubuntu", TargetHome: shared.Home, TargetCLI: string(CLICommon),
++		Unit: UnitSharedVisionExport, RelPath: VisionExportFile,
++		AfterHash: hexHash([]byte("SYNTHETIC-SECRET")),
++	}
++	if err := e.c.state.saveIntent(intent); err != nil {
++		t.Fatal(err)
++	}
++	// pi 的 reconcile：不属本作用域 → 不处置（不猜 absent、不清未决）。
++	c2 := NewCoordinator(filepath.Dir(e.c.state.path), nil, e.fp.probes())
++	rep := c2.ReconcilePending(context.Background(), e.target)
++	for _, d := range rep.Dispositions {
++		if d.OpID == id {
++			t.Fatalf("pi reconcile must not dispose shared intent, got %+v", d)
++		}
++	}
++	if _, pending := c2.PendingSensitiveOperation("Ubuntu", UnitSharedVisionExport); !pending {
++		t.Fatal("shared pending operation must stay visible after pi reconcile")
++	}
++	if _, ok, _ := c2.state.readIntent(id); !ok {
++		t.Fatal("shared intent must be retained after pi reconcile")
++	}
++	if data, err := os.ReadFile(secret); err != nil || string(data) != "SYNTHETIC-SECRET" {
++		t.Fatalf("secret must remain in shared root, got %q err=%v", data, err)
++	}
++	// shared 的 assessment：文件在 + 内容匹配 after → 不能报 absent。
++	a := c2.AssessSensitiveConsumption(context.Background(), shared, UnitSharedVisionExport, nil)
++	if a.Consumption == ConsumptionAbsent {
++		t.Fatalf("shared assessment must not report absent while secret present, got %+v", a)
++	}
++	// shared 自己的 reconcile 正常收敛：target == after → committed（正向对照）。
++	repShared := c2.ReconcilePending(context.Background(), shared)
++	found := false
++	for _, d := range repShared.Dispositions {
++		if d.OpID == id && d.Disposition == ReconcileCommitted {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatalf("shared reconcile must settle its own intent as committed, got %+v", repShared.Dispositions)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 5. dir-cas-and-structure：不可逆移动前对构建基准复验
++// ---------------------------------------------------------------------------
++
++// cfSkillEnv 构造一个已同意的技能单元环境（host 源 demo/SKILL.md=# NEW；目标
++// 已有 # OLD），返回协调器/探测/单元/目标目录。
++func cfSkillEnv(t *testing.T) (*Coordinator, *fakeProbes, UnitID, string) {
++	t.Helper()
++	fp := newFakeProbes(t)
++	c := newCoordinatorWith(t, fp, nil)
++	host := t.TempDir()
++	cfWrite(t, filepath.Join(host, "demo", "SKILL.md"), "# NEW", 0o644)
++	scope := NewSkillsScope(host, DefaultSkillsScanLimits())
++	scope.Scan()
++	c.RegisterSkills(scope)
++	u := SkillUnitID("demo")
++	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, u); err != nil {
++		t.Fatal(err)
++	}
++	dst := filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo")
++	cfWrite(t, filepath.Join(dst, "SKILL.md"), "# OLD", 0o644)
++	return c, fp, u, dst
++}
++
++func cfTakeOver(t *testing.T, c *Coordinator, u UnitID, ctx context.Context) UnitResult {
++	t.Helper()
++	p, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICommon, []UnitID{u})
++	if err != nil {
++		t.Fatal(err)
++	}
++	r, err := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, u, p[0].TargetHash)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return r
++}
++
++// TestConsistencyDirCASExternalEditDuringStagingRetained：candidate staging
++// 后、move-aside 前注入外部文件 → 提交必须失败（target-changed-before-move），
++// 外部文件在原路径保留，不得 applied 且外部文件消失（原缺陷：外部文件被搬走
++// 的旧树带走并消失）。
++func TestConsistencyDirCASExternalEditDuringStagingRetained(t *testing.T) {
++	c, _, u, dst := cfSkillEnv(t)
++	edited := false
++	base, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	ctx := boundaryCtx{Context: base, cancel: cancel, when: func() bool {
++		// staging 已建且目标仍在（第一次 ctx 检查点=move 前）→ 外部编辑落进目标树。
++		ps, _ := filepath.Glob(filepath.Join(filepath.Dir(dst), ".amagi-supply-skill-*"))
++		if !edited && len(ps) > 0 && cfExists(dst) {
++			edited = true
++			cfWrite(t, filepath.Join(dst, "EXTERNAL"), "UNIQUE EDIT", 0o644)
++		}
++		return false
++	}}
++	r := cfTakeOver(t, c, u, ctx)
++	if !edited {
++		t.Fatal("fixture must inject the external edit before move-aside")
++	}
++	if r.Outcome == UnitApplied {
++		t.Fatalf("commit must fail when target changed during staging (detail=%s)", r.Detail)
++	}
++	if !cfExists(filepath.Join(dst, "EXTERNAL")) {
++		t.Fatal("external edit must be retained at the target dir (not moved away/destroyed)")
++	}
++	if data, err := os.ReadFile(filepath.Join(dst, "EXTERNAL")); err != nil || string(data) != "UNIQUE EDIT" {
++		t.Fatalf("external bytes must be intact, got %q err=%v", data, err)
++	}
++	if data, err := os.ReadFile(filepath.Join(dst, "SKILL.md")); err != nil || string(data) != "# OLD" {
++		t.Fatalf("original tree must be intact, got %q err=%v", data, err)
++	}
++	if r.Undo != nil {
++		t.Fatal("failed dir commit must not carry undo")
++	}
++}
++
++// TestConsistencyDirCASExternalNewTargetDuringPublishKeepsBoth：move-aside 后、
++// no-replace 发布前外部在原路径新建目录 → publish-conflict：两处保留（外部版
++// 本 + prev 旧树），不覆盖。
++func TestConsistencyDirCASExternalNewTargetDuringPublishKeepsBoth(t *testing.T) {
++	c, _, u, dst := cfSkillEnv(t)
++	injected := false
++	base, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	ctx := boundaryCtx{Context: base, cancel: cancel, when: func() bool {
++		// prev 已出现且目标已被移走（第二次 ctx 检查点=发布前）→ 外部新建目标。
++		ps, _ := filepath.Glob(filepath.Join(filepath.Dir(dst), ".amagi-supply-prev-*"))
++		if !injected && len(ps) > 0 && !cfExists(dst) {
++			injected = true
++			cfWrite(t, filepath.Join(dst, "EXT", "keep.txt"), "EXTERNAL TREE", 0o644)
++		}
++		return false
++	}}
++	r := cfTakeOver(t, c, u, ctx)
++	if !injected {
++		t.Fatal("fixture must inject the external target before publish")
++	}
++	if r.Outcome == UnitApplied {
++		t.Fatalf("publish over external target must conflict, got %+v", r)
++	}
++	if !cfExists(filepath.Join(dst, "EXT", "keep.txt")) {
++		t.Fatal("external new target must be retained (never overwritten)")
++	}
++	// prev（旧树）也必须保留（两处）。
++	ps, _ := filepath.Glob(filepath.Join(filepath.Dir(dst), ".amagi-supply-prev-*"))
++	kept := false
++	for _, p := range ps {
++		if data, err := os.ReadFile(filepath.Join(p, "SKILL.md")); err == nil && string(data) == "# OLD" {
++			kept = true
++		}
++	}
++	if !kept {
++		t.Fatal("prev preimage must be retained alongside the external target")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 6. 目录 Abort 不丢空目录/嵌套结构
++// ---------------------------------------------------------------------------
++
++// TestConsistencyDirAbortPreservesFullTreeStructure：目录补偿必须保全完整树
++// 结构——空目录/嵌套目录与文件字节一并恢复（不只 SKILL.md 字节）。
++func TestConsistencyDirAbortPreservesFullTreeStructure(t *testing.T) {
++	c, _, u, dst := cfSkillEnv(t)
++	if err := os.MkdirAll(filepath.Join(dst, "empty", "nested"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.MkdirAll(filepath.Join(dst, "sub"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	cfWrite(t, filepath.Join(dst, "sub", "deep.txt"), "DEEP", 0o644)
++	r := cfTakeOver(t, c, u, context.Background())
++	if r.Undo == nil {
++		t.Fatalf("takeover must commit with undo, got %+v", r)
++	}
++	out := c.Compensate(context.Background(), r.Undo)
++	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {
++		t.Fatalf("dir abort must confirm, got %+v", out)
++	}
++	if !cfExists(filepath.Join(dst, "empty", "nested")) {
++		t.Fatal("empty/nested dirs must survive dir abort")
++	}
++	if !cfExists(filepath.Join(dst, "sub", "deep.txt")) {
++		t.Fatal("nested file must survive dir abort")
++	}
++	if data, err := os.ReadFile(filepath.Join(dst, "SKILL.md")); err != nil || string(data) != "# OLD" {
++		t.Fatalf("original bytes must be restored, got %q err=%v", data, err)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 7. resource-abort：资源目录统一持久前像/恢复生命周期
++// ---------------------------------------------------------------------------
++
++// TestConsistencyResourceAbortRestoresFromPersistedPrev：资源目录更新后
++// Compensate 必须可用真实持久 prev 树恢复旧内容（此前 unavailable 且 prev 已
++// 被删）。恢复后 prev 材料按终结顺序清理。
++func TestConsistencyResourceAbortRestoresFromPersistedPrev(t *testing.T) {
++	c, fp, host := newS4ResourceCoordinator(t)
++	writeHostResource(t, host, filepath.Join("commands", "demo", "a.md"), "NEW")
++	c.resourceScope(CLIClaude).Scan()
++	u := ResourceUnitID(CLIClaude, "commands/demo")
++	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, u); err != nil {
++		t.Fatal(err)
++	}
++	dst := claudeTargetPath(fp, filepath.Join("commands", "demo"))
++	cfWrite(t, filepath.Join(dst, "a.md"), "OLD", 0o644)
++	pv, err := c.PreviewUnits(context.Background(), "Ubuntu", CLIClaude, []UnitID{u})
++	if err != nil {
++		t.Fatal(err)
++	}
++	r, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLIClaude, u, pv[0].TargetHash)
++	if err != nil || r.Undo == nil {
++		t.Fatalf("setup: %+v %v", r, err)
++	}
++	if !cfExists(absOf(r.Undo.target, r.Undo.displacedRel)) {
++		t.Fatal("persistent prev tree must exist after resource dir commit")
++	}
++	out := c.Compensate(context.Background(), r.Undo)
++	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {
++		t.Fatalf("resource abort must restore from persisted prev, got %+v", out)
++	}
++	data, err := os.ReadFile(filepath.Join(dst, "a.md"))
++	if err != nil || string(data) != "OLD" {
++		t.Fatalf("old content must be restored, got %q err=%v", data, err)
++	}
++	if cfExists(absOf(r.Undo.target, r.Undo.displacedRel)) {
++		t.Fatal("prev material must be cleaned after successful compensation")
++	}
++}
++
++// TestConsistencyResourceAbortLargeUserTree：接管大目录（内存快照超限=不可
++// 用）时补偿仍可用持久 prev 树保全用户内容（不得仅依赖内存快照）。
++func TestConsistencyResourceAbortLargeUserTree(t *testing.T) {
++	c, fp, host := newS4ResourceCoordinator(t)
++	writeHostResource(t, host, filepath.Join("commands", "big", "SKILL.md"), "NEW")
++	c.resourceScope(CLIClaude).Scan()
++	u := ResourceUnitID(CLIClaude, "commands/big")
++	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, u); err != nil {
++		t.Fatal(err)
++	}
++	dst := claudeTargetPath(fp, filepath.Join("commands", "big"))
++	// 用户大树：两份 4.5MB（> 8MB 前像快照封顶；候选源仍小）。
++	big := strings.Repeat("u", 4500000)
++	cfWrite(t, filepath.Join(dst, "p1.bin"), big, 0o644)
++	cfWrite(t, filepath.Join(dst, "p2.bin"), big, 0o644)
++	pv, err := c.PreviewUnits(context.Background(), "Ubuntu", CLIClaude, []UnitID{u})
++	if err != nil {
++		t.Fatal(err)
++	}
++	r, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLIClaude, u, pv[0].TargetHash)
++	if err != nil || r.Undo == nil {
++		t.Fatalf("setup: %+v %v", r, err)
++	}
++	if r.Undo.prevSnapshot {
++		t.Fatal("fixture must exceed the in-memory snapshot cap")
++	}
++	out := c.Compensate(context.Background(), r.Undo)
++	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {
++		t.Fatalf("large-tree abort must restore from persisted prev (not unavailable), got %+v", out)
++	}
++	for _, name := range []string{"p1.bin", "p2.bin"} {
++		data, rerr := os.ReadFile(filepath.Join(dst, name))
++		if rerr != nil || len(data) != len(big) || !strings.HasPrefix(string(data[:64]), "u") {
++			t.Fatalf("user tree %s must be restored intact, err=%v", name, rerr)
++		}
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 8. directory-restart：按 Kind 区分文件/树验证与恢复
++// ---------------------------------------------------------------------------
++
++// TestConsistencyDirectoryRestartReconcileConverges：已提交目录重建
++// Coordinator 后 reconcile 必须收敛（此前通用文件 ReadFile 读目录恒 EISDIR →
++// commit-unconfirmed 永久卡死）。三态：settled → cleanup-residual（prev 材料
++// 收敛清理）；未 settled 且树==after → committed（补基准）；树==基准/后改 →
++// restored/conflicted（不清材料、不猜 absent）。
++func TestConsistencyDirectoryRestartReconcileConverges(t *testing.T) {
++	cfgDir := t.TempDir()
++	fp := &fakeProbes{uncRoot: filepath.Join(cfgDir, "target"), identity: platformUserIdentityFixture()}
++	probes := fp.probes()
++	c := NewCoordinator(cfgDir, nil, probes)
++	host := t.TempDir()
++	cfWrite(t, filepath.Join(host, "demo", "SKILL.md"), "# NEW", 0o644)
++	scope := NewSkillsScope(host, DefaultSkillsScanLimits())
++	scope.Scan()
++	c.RegisterSkills(scope)
++	u := SkillUnitID("demo")
++	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, u); err != nil {
++		t.Fatal(err)
++	}
++	dst := filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo")
++	cfWrite(t, filepath.Join(dst, "SKILL.md"), "# OLD", 0o644)
++	r := cfTakeOver(t, c, u, context.Background())
++	if r.Outcome != UnitApplied {
++		t.Fatalf("setup: %+v", r)
++	}
++	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
++	if err != nil {
++		t.Fatal(err)
++	}
++	// 语义 1：进程退出（租约消失）后重启——settled 在、intent 在 → 收敛清理
++	// 材料（prev 树删除），不再 commit-unconfirmed。
++	c2 := NewCoordinator(cfgDir, nil, probes)
++	rep := c2.ReconcilePending(context.Background(), tr)
++	ok := false
++	for _, d := range rep.Dispositions {
++		if d.OpID == r.OperationID {
++			if d.Disposition != ReconcileCleanupResent {
++				t.Fatalf("restart reconcile of settled dir op must converge to cleanup, got %+v", d)
++			}
++			ok = true
++		}
++	}
++	if !ok {
++		t.Fatalf("restart reconcile must process the dir op, got %+v", rep.Dispositions)
++	}
++	if _, still, _ := c2.state.readIntent(r.OperationID); still {
++		t.Fatal("settled intent must be cleaned by restart reconcile")
++	}
++	ps, _ := filepath.Glob(filepath.Join(filepath.Dir(dst), ".amagi-supply-prev-*"))
++	if len(ps) != 0 {
++		t.Fatalf("prev material must be cleaned by restart reconcile, got %v", ps)
++	}
++
++	// 语义 2：committed-unregistered（intent 在、settled 不在、树==after）→
++	// 补登记基准。
++	c3 := NewCoordinator(cfgDir, nil, probes)
++	treeHash := scanTargetSkillDir(dst, DefaultSkillsScanLimits()).TreeHash
++	intent := OperationIntent{
++		OpID: newOpID(), Kind: OpKindDirSwap, TargetKey: targetKeyOf(tr),
++		TargetDistro: "Ubuntu", TargetHome: tr.Home, TargetCLI: string(CLICommon),
++		Unit: u, RelPath: "skills/demo", BeforeExists: true, AfterHash: treeHash,
++	}
++	if err := c3.state.saveIntent(intent); err != nil {
++		t.Fatal(err)
++	}
++	rep3 := c3.ReconcilePending(context.Background(), tr)
++	ok3 := false
++	for _, d := range rep3.Dispositions {
++		if d.OpID == intent.OpID {
++			if d.Disposition != ReconcileCommitted {
++				t.Fatalf("dir tree==after must reconcile to committed, got %+v", d)
++			}
++			ok3 = true
++		}
++	}
++	if !ok3 {
++		t.Fatalf("reconcile must process dir intent, got %+v", rep3.Dispositions)
++	}
++	st := c3.state.load()
++	if e := st.entryFor(u, tr.Generation); e.LastWrittenHash != intent.AfterHash {
++		t.Fatalf("reconcile must register the dir tree baseline, got %+v", e)
++	}
++}
++
++// TestConsistencyDirReconcileMismatchConflicted：dir intent 树后改（既非 after
++// 也非 before）→ conflicted（保留材料；不得当 not-applied 清掉）。
++func TestConsistencyDirReconcileMismatchConflicted(t *testing.T) {
++	cfgDir := t.TempDir()
++	fp := &fakeProbes{uncRoot: filepath.Join(cfgDir, "target"), identity: platformUserIdentityFixture()}
++	probes := fp.probes()
++	c := NewCoordinator(cfgDir, nil, probes)
++	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dst := filepath.Join(tr.UNCRoot, "skills", "demo")
++	cfWrite(t, filepath.Join(dst, "SKILL.md"), "# STRANGER", 0o644)
++	id := newOpID()
++	intent := OperationIntent{
++		OpID: id, Kind: OpKindDirSwap, TargetKey: targetKeyOf(tr),
++		TargetDistro: "Ubuntu", TargetHome: tr.Home, TargetCLI: string(CLICommon),
++		Unit: SkillUnitID("demo"), RelPath: "skills/demo", BeforeExists: true,
++		AfterHash: hexHash([]byte("not-the-tree")), PrevTreeHash: hexHash([]byte("not-the-either")),
++	}
++	if err := c.state.saveIntent(intent); err != nil {
++		t.Fatal(err)
++	}
++	rep := c.ReconcilePending(context.Background(), tr)
++	found := false
++	for _, d := range rep.Dispositions {
++		if d.OpID == id {
++			found = true
++			if d.Disposition != ReconcileConflicted {
++				t.Fatalf("changed tree must conflict, got %+v", d)
++			}
++		}
++	}
++	if !found {
++		t.Fatalf("reconcile must inspect the dir intent, got %+v", rep.Dispositions)
++	}
++	if _, still, _ := c.state.readIntent(id); !still {
++		t.Fatal("conflicted dir intent materials must be retained")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 9. corrupt-pending：健康门先完成本次扫描再决策
++// ---------------------------------------------------------------------------
++
++// TestConsistencyCorruptPendingBlocksFirstRun：首轮 RunUnits 在 pending 目录
++// 有损坏 json 时必须阻断（store-unhealthy），不 applied；损坏材料保留；健康
++// 路径（无损坏）继续工作；移除损坏文件后恢复。
++func TestConsistencyCorruptPendingBlocksFirstRun(t *testing.T) {
++	e := newCommitTestEnv(t, false, nil)
++	adapter := &reviewAdapter{rel: e.rel, source: func() []byte { return []byte("NEW") }}
++	e.c.RegisterProjection(adapter)
++	broken := filepath.Join(filepath.Dir(e.c.state.path), pendingDirName, "broken.json")
++	cfWrite(t, broken, "{broken", 0o600)
++	res, err := e.c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonManual, []UnitID{adapter.Unit()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.Results[0].Outcome != UnitBlocked || res.Results[0].Detail != "store-unhealthy" {
++		t.Fatalf("corrupt pending must block the first run, got %+v", res.Results[0])
++	}
++	if _, rerr := os.ReadFile(e.uncPath); !os.IsNotExist(rerr) {
++		t.Fatal("corrupt pending must prevent new writes (target untouched)")
++	}
++	if _, serr := os.Stat(broken); serr != nil {
++		t.Fatal("corrupt material must be kept in place (never auto-deleted)")
++	}
++	if h := e.c.state.Health(); h.Pending != StoreCorrupt {
++		t.Fatalf("health must reflect this run's scan, got %+v", h)
++	}
++	// 修复存储后同协调器恢复（健康/fresh 正确路径继续工作）。
++	if err := os.Remove(broken); err != nil {
++		t.Fatal(err)
++	}
++	res2, err := e.c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonManual, []UnitID{adapter.Unit()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res2.Results[0].Outcome != UnitApplied {
++		t.Fatalf("healthy pending path must keep working after repair, got %+v", res2.Results[0])
++	}
++	if data, _ := os.ReadFile(e.uncPath); string(data) != "NEW" {
++		t.Fatalf("repaired run must write the candidate, got %q", data)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 10. plugin-cross-source-cleanup：只结清同一 source+anchor 责任
++// ---------------------------------------------------------------------------
++
++// TestConsistencyPluginCrossSourcePendingKept：A 源未决记录不被 B 源成功清掉；
++// 同一插件身份（同包不同 ref）的旧未决才被成功收敛。
++func TestConsistencyPluginCrossSourcePendingKept(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, target := newPluginTestCoordinator(t, d)
++	idA := newOpID()
++	if err := c.plugins.savePluginPending(target, idA, PluginOperation{Kind: PluginOpInstall, Source: "npm:UNCONFIRMED-A@1"}, PluginSourceSpec{Type: "npm", Name: "UNCONFIRMED-A", Ref: "1"}); err != nil {
++		t.Fatal(err)
++	}
++	r := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{Kind: PluginOpInstall, Source: "npm:demo@1.0.0", AnchorRef: "1.0.0"})
++	if !r.OK {
++		t.Fatalf("B-source install must succeed: %+v", r)
++	}
++	if _, still, err := c.state.readIntent(idA); err != nil || !still {
++		t.Fatalf("A-source pending must survive B-source success, still=%v err=%v", still, err)
++	}
++	// 同身份旧未决（先前失败的同包操作）被本次成功收敛。
++	idOld := newOpID()
++	if err := c.plugins.savePluginPending(target, idOld, PluginOperation{Kind: PluginOpInstall, Source: "npm:demo@0.9.0"}, PluginSourceSpec{Type: "npm", Name: "demo", Ref: "0.9.0"}); err != nil {
++		t.Fatal(err)
++	}
++	r2 := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{Kind: PluginOpInstall, Source: "npm:demo@1.0.0", AnchorRef: "1.0.0"})
++	if !r2.OK {
++		t.Fatalf("same-identity reinstall must succeed: %+v", r2)
++	}
++	if _, still, _ := c.state.readIntent(idOld); still {
++		t.Fatal("same-identity old pending must be converged by success")
++	}
++	if _, still, _ := c.state.readIntent(idA); !still {
++		t.Fatal("cross-source pending must still be visible")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 11. a2-final-save：结果、observation、状态页与磁盘摘要同事实
++// ---------------------------------------------------------------------------
++
++type consistencyA2Sabotage struct{ c *Coordinator }
++
++func (a consistencyA2Sabotage) Files() []string { return []string{"auth.json"} }
++func (a consistencyA2Sabotage) Sync(ctx context.Context, tr TargetRef) (launcher.SyncWSLPiLoginAuthOutcome, error) {
++	// 同步成功后破坏 state 保存（持久失败：路径换成目录）。
++	if err := os.Remove(a.c.state.path); err != nil && !os.IsNotExist(err) {
++		return launcher.SyncWSLPiLoginAuthDistroNoAuth, err
++	}
++	if err := os.Mkdir(a.c.state.path, 0o700); err != nil {
++		return launcher.SyncWSLPiLoginAuthDistroNoAuth, err
++	}
++	return launcher.SyncWSLPiLoginAuthCopied, nil
++}
++
++// TestConsistencyA2FinalSaveFailureReportsUnconfirmed：state save 持续失败 →
++// 内容事实保留（applied，token 不回滚），但 Registration=pending（不得
++// confirmed）、PendingOperationFact=true、observation 记 a2-state-unpersisted、
++// pending 摘要 intent 在盘（状态页可见）。摘要无 auth 正文/hash。
++func TestConsistencyA2FinalSaveFailureReportsUnconfirmed(t *testing.T) {
++	fp := newFakeProbes(t)
++	c := newCoordinatorWith(t, fp, nil)
++	c.SetA2Adapter(consistencyA2Sabotage{c: c})
++	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
++	if err != nil {
++		t.Fatal(err)
++	}
++	r := res.Results[0]
++	if r.Outcome != UnitApplied {
++		t.Fatalf("content fact must stay applied (token not rolled back), got %+v", r)
++	}
++	if r.Registration != OpRegistrationPending {
++		t.Fatalf("registration must be pending when state save fails, got %q", r.Registration)
++	}
++	if r.Detail != "a2-state-unpersisted" {
++		t.Fatalf("detail must be a2-state-unpersisted, got %q", r.Detail)
++	}
++	if !r.PendingOperationFact() {
++		t.Fatal("result must carry the pending-operation fact (dirty must not count success)")
++	}
++	if ob, ok := c.observations.forOp(r.OperationID); !ok || ob.ErrorCode != "a2-state-unpersisted" {
++		t.Fatalf("observation must record the unpersisted fact, got %+v ok=%v", ob, ok)
++	}
++	// 磁盘摘要（pending intent）在盘且无秘密：重建 Coordinator 的状态页可见。
++	cfgDir := filepath.Dir(c.state.path)
++	if err := os.RemoveAll(c.state.path); err != nil { // 恢复存储可读
++		t.Fatal(err)
++	}
++	c2 := NewCoordinator(cfgDir, nil, fp.probes())
++	s := c2.GetStatus("Ubuntu", CLIPi)
++	found := false
++	for _, pi := range s.PendingIntents {
++		if pi.Kind == OpKindA2Sync {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatalf("pending a2 summary must be visible in status (no write needed first), got %+v", s.PendingIntents)
++	}
++	if _, still, _ := c2.state.readIntent(r.OperationID); !still {
++		t.Fatal("a2 summary intent must survive on disk")
++	}
++	data, rerr := os.ReadFile(pendingIntentPath(cfgDir, r.OperationID))
++	if rerr != nil || strings.Contains(string(data), "sk-") || strings.Contains(string(data), "beforeHash") {
++		t.Fatalf("a2 summary must carry no secret material, err=%v", rerr)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// 12. status-without-target：只读状态查询必须展示待确认事实与健康错误
++// ---------------------------------------------------------------------------
++
++// TestConsistencyStatusWithoutTargetShowsPendingAndHealth：新 Coordinator 仅
++// 有 pending、尚无 TargetRecord 时 GetStatus 可以未检查（Checked=false），但
++// 不得丢失 PendingIntents/StoreHealth——read-only 查询不靠先写一次才看见风险。
++func TestConsistencyStatusWithoutTargetShowsPendingAndHealth(t *testing.T) {
++	fp := newFakeProbes(t)
++	dir := t.TempDir()
++	c := NewCoordinator(dir, nil, fp.probes())
++	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := c.saveA2PendingSummary(tr, newOpID()); err != nil {
++		t.Fatal(err)
++	}
++	c2 := NewCoordinator(dir, nil, fp.probes())
++	s := c2.GetStatus("Ubuntu", CLICommon)
++	if s.Checked {
++		t.Fatal("fresh target without TargetRecord may report unchecked")
++	}
++	if len(s.PendingIntents) != 1 || s.PendingIntents[0].Kind != OpKindA2Sync {
++		t.Fatalf("pending intents must be visible without a prior write, got %+v", s.PendingIntents)
++	}
++	if s.StoreHealth.Main == "" || s.StoreHealth.Pending == "" {
++		t.Fatalf("store health must be populated even without target record, got %+v", s.StoreHealth)
++	}
++	// 健康错误同样可见：主清单损坏时状态页必须展示（不得静默）。
++	cfWrite(t, filepath.Join(dir, StateFileName), "{corrupt", 0o600)
++	c3 := NewCoordinator(dir, nil, fp.probes())
++	s3 := c3.GetStatus("Ubuntu", CLICommon)
++	if s3.StoreHealth.Main != StoreCorrupt {
++		t.Fatalf("corrupt main store must surface in status, got %+v", s3.StoreHealth)
++	}
++	if len(s3.PendingIntents) != 1 {
++		t.Fatalf("pending intents must stay visible alongside health errors, got %+v", s3.PendingIntents)
++	}
++}

@@ -68,18 +68,29 @@ func (s *stubSupplyRunner) dirty_() []string {
 	return append([]string(nil), s.dirty...)
 }
 
-// fakeSupplyCoordinatorWithUnit 构造带 S1 适配器能力的真协调器（fake 探测面）。
+// fakeSupplyCoordinatorWithUnit 构造带 S1 适配器能力的真协调器（fake 探测面；
+// StatMode 从 Chmod 记录读回——SA-06 staging 验证的假探测面）。
 func fakeSupplyCoordinatorWithUnit(t *testing.T) *wslsupply.Coordinator {
 	t.Helper()
 	uncRoot := t.TempDir()
+	modes := map[string]string{}
 	c := wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
-		Identity: func(string) platform.WSLUserIdentity {
+		Identity: func(context.Context, string) platform.WSLUserIdentity {
 			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m1", OK: true}
 		},
 		ToUNC: func(_, linuxPath string) string {
 			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 		},
-		Chmod: func(_, _ string, _ ...string) error { return nil },
+		Chmod: func(_ context.Context, _, mode string, paths ...string) error {
+			for _, p := range paths {
+				modes[p] = mode
+			}
+			return nil
+		},
+		StatMode: func(_ context.Context, _, linuxPath string) (string, bool) {
+			m, ok := modes[linuxPath]
+			return m, ok
+		},
 	})
 	return c
 }
@@ -102,18 +113,31 @@ func TestRunWSLManagedModelsAtLaunchVerdicts(t *testing.T) {
 			t.Fatalf("corrupt target must block with chinese error, got %v", err)
 		}
 	})
-	t.Run("other failures warn and pass", func(t *testing.T) {
-		runner := &stubSupplyRunner{result: wslsupply.RunResult{Results: []wslsupply.UnitResult{{
-			Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFailed, Detail: "write-failed",
-			Err: errors.New("unc unreachable"),
-		}}}}
+	t.Run("required supply failure blocks, keyed units warn", func(t *testing.T) {
+		// steer#3（wsl-goal-closure）：amagi-* 必需模型供给未落地不得按可选
+		// 配置告警后继续——阻断；键级可选单元失败仍告警放行。
+		runner := &stubSupplyRunner{result: wslsupply.RunResult{Results: []wslsupply.UnitResult{
+			{Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFailed, Detail: "write-failed",
+				Err: errors.New("unc unreachable")},
+			{Unit: wslsupply.UnitPiMCP, Outcome: wslsupply.UnitFailed, Detail: "write-failed"},
+		}}}
 		app := newTestApp(t)
 		app.WSLSupply = runner
-		if err := app.runWSLManagedModelsAtLaunch("Ubuntu"); err != nil {
-			t.Fatalf("non-corrupt failure must warn not block: %v", err)
+		err := app.runWSLManagedModelsAtLaunch("Ubuntu")
+		if err == nil || !strings.Contains(err.Error(), "未落地") {
+			t.Fatalf("required managed-models failure must block, got %v", err)
 		}
 		if len(runner.calls_()) != 1 {
 			t.Fatalf("expected one supply run, got %v", runner.calls_())
+		}
+		runner2 := &stubSupplyRunner{result: wslsupply.RunResult{Results: []wslsupply.UnitResult{
+			{Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitApplied, Detail: "written"},
+			{Unit: wslsupply.UnitPiMCP, Outcome: wslsupply.UnitFailed, Detail: "write-failed"},
+		}}}
+		app2 := newTestApp(t)
+		app2.WSLSupply = runner2
+		if err := app2.runWSLManagedModelsAtLaunch("Ubuntu"); err != nil {
+			t.Fatalf("optional keyed-unit failure must warn not block: %v", err)
 		}
 	})
 	t.Run("nil runner or empty distro is a no-op", func(t *testing.T) {
@@ -387,5 +411,100 @@ func TestVisionFaceConsentedNotSynced(t *testing.T) {
 	}, false)
 	if face.State != "synced" {
 		t.Fatalf("published unit must map to synced, got %+v", face)
+	}
+}
+
+// --- D5：Pi/OMP WSL 侧 provider 写入失败阻断（不回退丢 baseURL 的内置映射） ---
+//
+// 非 Windows 宿主上 launcher.WSLUserHome 恒返回 ""（runtime.GOOS 守卫），
+// WriteWSLPi/ompAgentConfig 在 resolveWSLAgentTarget 即失败——本组测试用
+// "FakeDistro" 真实触发 WSL 写失败分支，不需要注入点。
+
+// 可构建（有 baseURL）的 openai 兼容 provider：构建成功、WSL 写失败。
+func saveBuildableProvider(t *testing.T, app *App, id string) {
+	t.Helper()
+	if err := app.Config.SaveProvider(id, config.Provider{
+		Type: "openai", BaseURL: "https://api.example.com/v1", DefaultModel: "m",
+	}); err != nil {
+		t.Fatalf("save provider: %v", err)
+	}
+}
+
+// TestPiProviderWriteWSLFailureBlocksLaunch（D5）：WSL 路径写入失败不再回退
+// piProviderMapping（丢自定义 baseURL → 第三方 key 误打官方 endpoint），而是
+// 与构建失败同判阻断；锁在阻断 return 后可用（F1 纪律延续）。
+func TestPiProviderWriteWSLFailureBlocksLaunch(t *testing.T) {
+	app := newTestApp(t)
+	saveBuildableProvider(t, app, "wsl-write-fail")
+	env := map[string]string{}
+	_, err := app.writePiProviderModelsAtLaunch("wsl-write-fail", piLaunchSettings{Model: "m"}, config.Parameters{}, "FakeDistro", env)
+	if err == nil || !strings.Contains(err.Error(), "无法写入 Pi 供应商") || !strings.Contains(err.Error(), "未改用默认模型") {
+		t.Fatalf("expected WSL write-failure block error, got %v", err)
+	}
+	if !app.providerSyncMu.TryLock() {
+		t.Fatal("providerSyncMu leaked by the WSL write-failure return path")
+	}
+	app.providerSyncMu.Unlock()
+}
+
+// TestOmpProviderWriteWSLFailureBlocksLaunch（D5）：omp 与 pi 同判——WSL 写入
+// 失败阻断，不静默回退；锁可用。
+func TestOmpProviderWriteWSLFailureBlocksLaunch(t *testing.T) {
+	app := newTestApp(t)
+	saveBuildableProvider(t, app, "wsl-write-fail")
+	env := map[string]string{"PI_OFFLINE": "1"}
+	_, err := app.writeOmpProviderModelsAtLaunch("wsl-write-fail", ompLaunchSettings{Model: "m"}, config.Parameters{}, "FakeDistro", env)
+	if err == nil || !strings.Contains(err.Error(), "无法写入 omp 供应商") || !strings.Contains(err.Error(), "未改用默认模型") {
+		t.Fatalf("expected WSL write-failure block error, got %v", err)
+	}
+	if !app.providerSyncMu.TryLock() {
+		t.Fatal("providerSyncMu leaked by the omp WSL write-failure return path")
+	}
+	app.providerSyncMu.Unlock()
+}
+
+// TestOmpProviderBuildWSLFailureBlocksLaunch（D5）：WSL 路径构建失败从「告警
+// 回退」收紧为阻断（与 pi 的 wslPiProviderBuildError 同判）。
+func TestOmpProviderBuildWSLFailureBlocksLaunch(t *testing.T) {
+	app := newTestApp(t)
+	if err := app.Config.SaveProvider("omp-no-base", config.Provider{}); err != nil {
+		t.Fatalf("save provider: %v", err)
+	}
+	_, err := app.writeOmpProviderModelsAtLaunch("omp-no-base", ompLaunchSettings{Model: "m"}, config.Parameters{}, "FakeDistro", map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "无法构建 omp 供应商") || !strings.Contains(err.Error(), "未改用默认模型") {
+		t.Fatalf("expected WSL build-failure block error, got %v", err)
+	}
+	if !app.providerSyncMu.TryLock() {
+		t.Fatal("providerSyncMu leaked by the omp WSL build-failure return path")
+	}
+	app.providerSyncMu.Unlock()
+}
+
+// TestPiOmpWindowsPathWriteFailureKeepsFallback（D5 回归钉）：非 WSL 路径
+// 维持既有回退语义——写入失败（agent 根被同名文件占位）不阻断启动，
+// Provider 回退到内置映射。隔离 home 防止触碰真实用户目录。
+func TestPiOmpWindowsPathWriteFailureKeepsFallback(t *testing.T) {
+	home := isolatedHome(t)
+	// .pi / .omp 都被同名文件占位 → MkdirAll 失败 → 写入失败路径。
+	for _, dir := range []string{".pi", ".omp"} {
+		if err := os.WriteFile(filepath.Join(home, dir), []byte("blocked"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app := newTestApp(t)
+	saveBuildableProvider(t, app, "win-fallback")
+	piSettings, piErr := app.writePiProviderModelsAtLaunch("win-fallback", piLaunchSettings{Model: "m"}, config.Parameters{}, "", map[string]string{})
+	if piErr != nil {
+		t.Fatalf("Windows path must keep fallback semantics (pi): %v", piErr)
+	}
+	if piSettings.Provider == "" || strings.HasPrefix(piSettings.Provider, "amagi-") {
+		t.Fatalf("pi fallback must map to the builtin provider, got %q", piSettings.Provider)
+	}
+	ompSettings, ompErr := app.writeOmpProviderModelsAtLaunch("win-fallback", ompLaunchSettings{Model: "m"}, config.Parameters{}, "", map[string]string{})
+	if ompErr != nil {
+		t.Fatalf("Windows path must keep fallback semantics (omp): %v", ompErr)
+	}
+	if ompSettings.Provider == "" || strings.HasPrefix(ompSettings.Provider, "amagi-") {
+		t.Fatalf("omp fallback must map to the builtin provider, got %q", ompSettings.Provider)
 	}
 }

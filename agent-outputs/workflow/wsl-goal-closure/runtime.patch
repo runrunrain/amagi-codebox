@@ -1,0 +1,696 @@
+diff --git a/app.go b/app.go
+index 5276215..4cd2f5b 100644
+--- a/app.go
++++ b/app.go
+@@ -642,6 +642,16 @@ func NewApp(mobileAssets embed.FS) *App {
+ 				app.Capabilities, app.Paths, app.EnvVars, homeDir,
+ 			)
+ 			app.remotePlanner.(*appLaunchPlanner).networkEnv = app.aiProxy.ApplyEnv
++			// remote/restart 计划链的 WSL 环境防线可观测性：与桌面
++			// resolveEmbeddedLaunchSpec 同文案记 WARN/INFO（判定在
++			// appLaunchPlanner.resolveLaunch，此处只接日志面）。
++			app.remotePlanner.(*appLaunchPlanner).envObserver = func(level, message, detail string) {
++				if level == "WARN" {
++					app.Log.Warn("session", message, detail)
++					return
++				}
++				app.Log.Info("session", message, detail)
++			}
+ 		}
+ 	}
+ 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
+@@ -2346,7 +2356,7 @@ func embeddedDefaultLaunchMode(mode string) session.LaunchMode {
+ 	return launchMode
+ }
+ 
+-func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
++func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, requestedWorkDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
+ 	if err := a.validateLaunchMode(mode); err != nil {
+ 		return platform.ResolvedLaunchSpec{}, err
+ 	}
+@@ -2382,7 +2392,9 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
+ 	// 拼清单之前完成；剥离结果记 WARN 保持可观测。此处是全部内嵌启动（五 CLI）
+ 	// 的单一漏斗，pi/omp 原地各一份的旧剥离已并入。P4-A2：显式标记 allowPathValue
+ 	// 的键豁免剥离，改由转发侧加 /p 路径翻译标志；豁免键记 INFO 保持可观测。
+-	if platform.EmbeddedLaunchTargetsWSL(mode, shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
++	// 门条件经 launchTargetsWSLFn（launch_workdir.go）：与 planner.resolveLaunch
++	// 共用同一谓词/接缝，两入口判定永不分叉。
++	if launchTargetsWSLFn(mode, shellPath) {
+ 		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)
+ 		if len(allowedPath) > 0 {
+ 			a.Log.Info("session", "已放行跨界路径值环境变量（per-key 放行 + /p 路径翻译）", strings.Join(allowedPath, ","))
+@@ -2397,6 +2409,24 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
+ 	if err != nil {
+ 		return spec, err
+ 	}
++	// 工作目录定谳（纯目标判据：以解析产出的 spec.BootstrapMode 为准，
++	// 本层零探测）。WSL 目标：Linux 形态请求/默认目录原样保留（wsl.exe
++	// --cd 在目标侧消费），显式非空宿主形态校验失败直接拒绝启动（不静默
++	// 换工程）；非 WSL 目标维持入口宿主链产物（原生回退语义不变）。
++	finalWorkDir, wdErr := resolveLaunchWorkDirForSpec(
++		spec.BootstrapMode == platform.BootstrapWSL, requestedWorkDir, workDir,
++		a.Paths.GetDefaultPath(),
++		func(preserved string) {
++			a.Log.Info("session", "WSL 会话保留请求的 Linux 工作目录（由 wsl.exe --cd 在目标侧消费）", preserved)
++		},
++	)
++	if wdErr != nil {
++		return platform.ResolvedLaunchSpec{}, wdErr
++	}
++	// 解析后定谳的最终目录随 spec 返回；调用方入口用 spec.WorkDir 同步后续
++	// recipe/记录（reserveLaunchSession 在解析前已记录宿主链值，仅展示层
++	// 差异，见实现报告）。
++	spec.WorkDir = finalWorkDir
+ 	return aiproxy.PinProxyEnvironment(spec)
+ }
+ 
+@@ -2487,7 +2517,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
+ 	}
+ 
+ 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
++	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
++	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
++	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
++	//（纯目标判据，零探测）。
++	requestedWorkDir := workDir
+ 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+ 	if wdErr != nil {
+ 		return "", wdErr
+@@ -2594,11 +2628,12 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
+ 		a.Sessions.SetClaudeSessionID(sess.ID, claudeSID)
+ 		a.Log.Info("session", "注入 Claude session-id", fmt.Sprintf("id=%s sid=%s", sess.ID, claudeSID))
+ 
+-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, env, []string{"--session-id", claudeSID})
++		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, requestedWorkDir, env, []string{"--session-id", claudeSID})
+ 		if err != nil {
+ 			a.Sessions.MarkFailed(sess.ID, err.Error())
+ 			return "", err
+ 		}
++		workDir = spec.WorkDir
+ 
+ 		// M-006: acquire the shared Headroom lease so the
+ 		// coordinator guard is non-empty while this run is active.
+@@ -3161,7 +3196,11 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
+ 	}
+ 
+ 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
++	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
++	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
++	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
++	//（纯目标判据，零探测）。
++	requestedWorkDir := workDir
+ 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+ 	if wdErr != nil {
+ 		return "", wdErr
+@@ -3277,11 +3316,12 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
+ 		env := launcher.BuildEnv(baseEnv, envOverrides)
+ 
+ 		args := buildCodexCLIArgs(launchSettings)
+-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, env, args)
++		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
+ 		if err != nil {
+ 			a.Sessions.MarkFailed(sess.ID, err.Error())
+ 			return "", err
+ 		}
++		workDir = spec.WorkDir
+ 
+ 		// M-006: a Codex session that routes through the global headroom (8788)
+ 		// depends on it; acquire a lease so the toggle/uninstall coordinator guard is
+@@ -3542,7 +3582,11 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string,
+ 	}
+ 
+ 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
++	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
++	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
++	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
++	//（纯目标判据，零探测）。
++	requestedWorkDir := workDir
+ 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+ 	if wdErr != nil {
+ 		return "", wdErr
+@@ -3709,11 +3753,12 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string,
+ 		if launchSettings.Thinking != "" {
+ 			args = append(args, "--thinking", launchSettings.Thinking)
+ 		}
+-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, env, args)
++		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
+ 		if err != nil {
+ 			a.Sessions.MarkFailed(sess.ID, err.Error())
+ 			return "", err
+ 		}
++		workDir = spec.WorkDir
+ 
+ 		if loginPreset != nil {
+ 			if spec.BootstrapMode == platform.BootstrapWSL {
+@@ -3933,7 +3978,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
+ 	}
+ 
+ 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
++	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
++	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
++	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
++	//（纯目标判据，零探测）。
++	requestedWorkDir := workDir
+ 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+ 	if wdErr != nil {
+ 		return "", wdErr
+@@ -4071,11 +4120,12 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
+ 		if launchSettings.Thinking != "" {
+ 			args = append(args, "--thinking", launchSettings.Thinking)
+ 		}
+-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOhMyPi, string(launchMode), shellPath, workDir, env, args)
++		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOhMyPi, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
+ 		if err != nil {
+ 			a.Sessions.MarkFailed(sess.ID, err.Error())
+ 			return "", err
+ 		}
++		workDir = spec.WorkDir
+ 
+ 		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
+ 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
+@@ -5402,7 +5452,11 @@ launchCommon:
+ 	}
+ 
+ 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
+-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
++	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
++	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
++	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
++	//（纯目标判据，零探测）。
++	requestedWorkDir := workDir
+ 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
+ 	if wdErr != nil {
+ 		return "", wdErr
+@@ -5468,11 +5522,12 @@ launchCommon:
+ 			}
+ 		}
+ 
+-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, env, nil)
++		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, requestedWorkDir, env, nil)
+ 		if err != nil {
+ 			a.Sessions.MarkFailed(sess.ID, err.Error())
+ 			return "", err
+ 		}
++		workDir = spec.WorkDir
+ 
+ 		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
+ 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
+diff --git a/app_ai_proxy.go b/app_ai_proxy.go
+index 6cf7158..e54b606 100644
+--- a/app_ai_proxy.go
++++ b/app_ai_proxy.go
+@@ -4,9 +4,11 @@ import (
+ 	"context"
+ 	"errors"
+ 	"net/http"
++	"strings"
+ 	"time"
+ 
+ 	"amagi-codebox/internal/aiproxy"
++	"amagi-codebox/internal/launcher"
+ 	"amagi-codebox/internal/platform"
+ )
+ 
+@@ -92,6 +94,34 @@ func (p *appLaunchPlanner) resolveLaunch(req platform.ResolveRequest) (platform.
+ 			return platform.ResolvedLaunchSpec{}, err
+ 		}
+ 	}
++	// 环境转发规则与桌面 resolveEmbeddedLaunchSpec 对齐（remote create /
++	// restart 与五 CLI 桌面启动消费同一选择）：envvars.json 自定义键进入
++	// WSLENV 转发面，allowPathValue 键获得 /p 路径翻译与剥离豁免；会话落在
++	// WSL 内时先剥离携带宿主盘符路径值的跨界变量（判定面/豁免面与桌面同一
++	// 谓词 launcher.StripWSLHostPathEnvWithAllow，必须在解析器拼 WSLENV 清单
++	// 之前完成），路径值不经 WSLENV 泄漏到 distro。
++	// 探测披露：launchTargetsWSLFn 内含 distro 探测（wsl.exe -l -q，进程内
++	// 缓存）——剥离必须在 Resolve 前发生，无法等解析后定谳；该探测与本
++	// 计划内解析器的既有必要探测共享同一缓存，不额外增加次数。工作目录的
++	// 目标判定不经此门（见 finalizeWorkdir，纯 spec.BootstrapMode 判据）。
++	if p.envVars != nil {
++		req.EnvForwardKeys = p.envVars.Keys()
++		req.EnvPathFlagKeys = p.envVars.PathAllowKeys()
++	}
++	if launchTargetsWSLFn(req.LaunchMode, req.RequestedShellPath) {
++		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(req.Env, req.EnvForwardKeys, req.EnvPathFlagKeys)
++		if p.envObserver != nil {
++			if len(allowedPath) > 0 {
++				p.envObserver("INFO", "已放行跨界路径值环境变量（per-key 放行 + /p 路径翻译）", strings.Join(allowedPath, ","))
++			}
++			if len(stripped) > 0 {
++				p.envObserver("WARN", "已剥离携带 Windows 路径值的跨界环境变量", strings.Join(stripped, ","))
++			}
++		}
++		if len(stripped) > 0 {
++			req.Env = kept
++		}
++	}
+ 	spec, err := p.resolver.Resolve(req)
+ 	if err != nil {
+ 		return spec, err
+diff --git a/internal/envvars/wsl_path_allow_test.go b/internal/envvars/wsl_path_allow_test.go
+index 414169b..2f356e1 100644
+--- a/internal/envvars/wsl_path_allow_test.go
++++ b/internal/envvars/wsl_path_allow_test.go
+@@ -9,6 +9,7 @@ package envvars
+ import (
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"testing"
+ )
+@@ -91,8 +92,20 @@ func TestSetPathAllow(t *testing.T) {
+ 	if err := s.SetPathAllow("UE_ROOT", true); err != nil {
+ 		t.Fatalf("SetPathAllow(UE_ROOT, true): %v", err)
+ 	}
+-	if err := s.SetPathAllow("vsinstalldir", true); err != nil { // 大小写不敏感
+-		t.Fatalf("SetPathAllow(vsinstalldir, true): %v", err)
++	// 键匹配跟随 keysEqual 的平台规则（Windows 大小写不敏感，其余平台大小写
++	// 敏感——不扩原生行为，只对齐断言）：Windows 上异体大小写命中同一键；
++	// 非 Windows 上异体大小写是未知键（报错），精确大小写才命中。
++	if runtime.GOOS == "windows" {
++		if err := s.SetPathAllow("vsinstalldir", true); err != nil {
++			t.Fatalf("SetPathAllow(vsinstalldir, true): %v", err)
++		}
++	} else {
++		if err := s.SetPathAllow("vsinstalldir", true); err == nil {
++			t.Fatal("non-Windows keys are case-sensitive; mismatched case must error")
++		}
++		if err := s.SetPathAllow("VSINSTALLDIR", true); err != nil {
++			t.Fatalf("SetPathAllow(VSINSTALLDIR, true) with exact case: %v", err)
++		}
+ 	}
+ 	if keys := s.PathAllowKeys(); strings.Join(keys, ",") != "UE_ROOT,VSINSTALLDIR" {
+ 		t.Fatalf("PathAllowKeys = %v, want config order [UE_ROOT VSINSTALLDIR]", keys)
+diff --git a/internal/platform/wsl.go b/internal/platform/wsl.go
+index 711dc91..d888d2b 100644
+--- a/internal/platform/wsl.go
++++ b/internal/platform/wsl.go
+@@ -252,8 +252,15 @@ func WSLNetworkingMode(env []string) string {
+ // ok=false；调用方需按「时间戳不可判」保守处理，不得把 false 当作 0 值
+ // 参与新陈比较（A2 凭据双向同步 M-1 的判据画）。
+ func WSLFileMTime(distro, linuxPath string) (int64, bool) {
++	return wslFileMTimeForOS(runtime.GOOS, distro, linuxPath)
++}
++
++// wslFileMTimeForOS 是 WSLFileMTime 的可测核心：osName 以参数区分宿主门
++// （原生行为不变——非 windows 恒 (0,false)，注入 runner 的矩阵可在任意
++// 宿主上验证解析/失败语义）。
++func wslFileMTimeForOS(osName, distro, linuxPath string) (int64, bool) {
+ 	distro = strings.TrimSpace(distro)
+-	if distro == "" || runtime.GOOS != "windows" || !strings.HasPrefix(linuxPath, "/") {
++	if distro == "" || osName != "windows" || !strings.HasPrefix(linuxPath, "/") {
+ 		return 0, false
+ 	}
+ 	out, err := wslScriptRunner(distro, "stat -c %Y "+wslShSingleQuote(linuxPath))
+diff --git a/internal/platform/wsl_test.go b/internal/platform/wsl_test.go
+index 9d1cc2b..34312da 100644
+--- a/internal/platform/wsl_test.go
++++ b/internal/platform/wsl_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"errors"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"testing"
+ )
+@@ -573,7 +574,9 @@ func TestWSLNetworkingModeFreshRead(t *testing.T) {
+ // TestWSLFileMTime pins the M-1 freshness probe: `stat -c %Y` seconds inside
+ // the distro, tolerant output decoding, and fail-as-false for missing paths /
+ // probe failures / unparsable output (callers must treat false as
+-// "indeterminable", never as 0).
++// "indeterminable", never as 0). 经 wslFileMTimeForOS 可测核心验证（原生
++// WSLFileMTime 在非 Windows 宿主提前返回，注入 runner 不可达；原生门行为
++// 另行钉住）。
+ func TestWSLFileMTime(t *testing.T) {
+ 	orig := wslScriptRunner
+ 	t.Cleanup(func() { wslScriptRunner = orig })
+@@ -584,25 +587,41 @@ func TestWSLFileMTime(t *testing.T) {
+ 		}
+ 		return nil, errors.New("stat failed")
+ 	}
+-	if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); !ok || sec != 1792992000 {
+-		t.Fatalf("WSLFileMTime = (%d, %v), want (1792992000, true)", sec, ok)
++	if sec, ok := wslFileMTimeForOS("windows", "Ubuntu", "/home/u/.pi/agent/auth.json"); !ok || sec != 1792992000 {
++		t.Fatalf("wslFileMTimeForOS = (%d, %v), want (1792992000, true)", sec, ok)
+ 	}
+ 	// 路径不存在（stat 非零退出）→ ok=false。
+-	if _, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/missing.json"); ok {
++	if _, ok := wslFileMTimeForOS("windows", "Ubuntu", "/home/u/.pi/agent/missing.json"); ok {
+ 		t.Fatal("missing path must report ok=false")
+ 	}
+ 	// 输出不可解析 → ok=false，不得当作 0 值。
+ 	wslScriptRunner = func(_, _ string) ([]byte, error) { return []byte("not-a-number"), nil }
+-	if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
++	if sec, ok := wslFileMTimeForOS("windows", "Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
+ 		t.Fatalf("unparsable output = (%d, %v), want (0, false)", sec, ok)
+ 	}
+-	// 非 Linux 绝对路径 / 空 distro → ok=false。
+-	if _, ok := WSLFileMTime("Ubuntu", "relative/path"); ok {
++	// 非 Linux 绝对路径 / 空 distro → ok=false（runner 不被触达）。
++	probeCalls := 0
++	wslScriptRunner = func(_, _ string) ([]byte, error) { probeCalls++; return []byte("1"), nil }
++	if _, ok := wslFileMTimeForOS("windows", "Ubuntu", "relative/path"); ok {
+ 		t.Fatal("relative path must report ok=false")
+ 	}
+-	if _, ok := WSLFileMTime("", "/home/u/x"); ok {
++	if _, ok := wslFileMTimeForOS("windows", "", "/home/u/x"); ok {
+ 		t.Fatal("empty distro must report ok=false")
+ 	}
++	// 非 Windows 宿主门：runner 可用也恒 (0,false)（原生行为，不扩大）。
++	if sec, ok := wslFileMTimeForOS("darwin", "Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
++		t.Fatal("non-windows host must fail closed")
++	}
++	if probeCalls != 0 {
++		t.Fatalf("gated calls must not reach the runner, got %d calls", probeCalls)
++	}
++	// 包装层与核心同门：非 Windows 宿主上原生入口不可达（Windows 宿主上此
++	// 断言天然跳过，交由 wsl_pi_login_sync_e2e_windows_test 真机覆盖）。
++	if runtime.GOOS != "windows" {
++		if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
++			t.Fatal("WSLFileMTime must stay gated off on non-windows hosts")
++		}
++	}
+ }
+ 
+ // TestAppendWSLENVForwardingPathFlagKeys pins the P4-A2 per-key path gate:
+diff --git a/launch_planner.go b/launch_planner.go
+index 21ed84a..8b4d708 100644
+--- a/launch_planner.go
++++ b/launch_planner.go
+@@ -59,8 +59,12 @@ type launchSecretsPort interface {
+ }
+ 
+ // launchEnvVarsPort is the narrow read-only interface over envvars.EnvVarsService.
++// Keys/PathAllowKeys 与桌面 resolveEmbeddedLaunchSpec 同源：自定义键必须进入
++// WSLENV 转发清单，allowPathValue 标记键获得 /p 路径翻译与剥离豁免。
+ type launchEnvVarsPort interface {
+ 	MergeWithSystem() []string
++	Keys() []string
++	PathAllowKeys() []string
+ }
+ 
+ // appLaunchPlanner is the production launchplan.Planner. It reads stored
+@@ -77,6 +81,10 @@ type appLaunchPlanner struct {
+ 	envVars      launchEnvVarsPort
+ 	homeDir      string
+ 	networkEnv   func([]string) ([]string, error)
++	// envObserver 是 WSL 环境防线（剥离/放行）的可观测接缝（nil 安全）：
++	// 桌面 resolveEmbeddedLaunchSpec 对应动作记 WARN/INFO，remote/restart
++	// 计划链经 App 装配注入同一日志面，不改变任何判定语义。
++	envObserver func(level, message, detail string)
+ }
+ 
+ func newAppLaunchPlanner(
+@@ -153,9 +161,12 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
+ 			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+ 		}
+ 	}
+-	// Canonical workdir：与桌面 Launch* 入口共用同一校验/回退链（launch_workdir.go）。
+-	// 无效的远程 workdir 不再作为不可用的 lpCurrentDirectory 击穿到 ConPTY，
+-	// 先回退默认目录→Home；全部不可用才报 FailureWorkdir。
++	// Canonical workdir：与桌面 Launch* 入口共用同一校验/回退链
++	// （launch_workdir.go）。无效的远程 workdir 不再作为不可用的
++	// lpCurrentDirectory 击穿到 ConPTY，先回退默认目录→Home；全部不可用才报
++	// FailureWorkdir。这里产出的是宿主侧权威值（原生目标/会话记录）；WSL
++	// 目标的最终目录在计划构建后由 finalizeWorkdir 以解析产出的
++	// spec.BootstrapMode 定谳（纯目标判据，零额外探测）。
+ 	workdir, workdirErr := resolveLaunchWorkDirChain(strings.TrimSpace(req.Workdir), p.canonicalWorkdir(), nil)
+ 	if workdirErr != nil {
+ 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureWorkdir, CLIType: req.CLIType}
+@@ -165,20 +176,57 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
+ 	}
+ 	recipe.Workdir = workdir
+ 
++	var plan *launchplan.Plan
++	var failure *launchplan.BuildFailure
+ 	switch req.CLIType {
+ 	case contract.CLITypeClaudeCode:
+-		return p.buildClaudePlan(recipe, req)
++		plan, failure = p.buildClaudePlan(recipe, req)
+ 	case contract.CLITypeOpenCode:
+-		return p.buildOpenCodePlan(recipe, req)
++		plan, failure = p.buildOpenCodePlan(recipe, req)
+ 	case contract.CLITypeCodex:
+-		return p.buildCodexPlan(recipe, req)
++		plan, failure = p.buildCodexPlan(recipe, req)
+ 	case contract.CLITypePi:
+-		return p.buildPiPlan(recipe, req)
++		plan, failure = p.buildPiPlan(recipe, req)
+ 	case contract.CLITypeOmp:
+-		return p.buildOmpPlan(recipe, req)
++		plan, failure = p.buildOmpPlan(recipe, req)
+ 	default:
+ 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+ 	}
++	return p.finalizeWorkdir(plan, failure, req)
++}
++
++// finalizeWorkdir 在计划构建完成后定谳工作目录（纯目标判据：以解析产出的
++// spec.BootstrapMode 为准，零额外探测；与桌面 resolveEmbeddedLaunchSpec 的
++// 后置定谳同一语义/同一函数）。remote/restart 恒 embedded：
++//   - WSL 目标 + 显式非空请求：Linux 形态原样保留给 wsl.exe --cd（存在性
++//     由目标 distro 判定）；宿主形态校验失败直接 FailureWorkdir（明确请求
++//     的 WSL 工程不得被静默换掉）；
++//   - WSL 目标 + 空请求：默认目录为 Linux 形态时同样保留（用户配置的
++//     ~/project 不被宿主校验吞掉）；
++//   - 非 WSL 目标：维持宿主链产物，原生回退语义不变。
++//
++// 定谳后的目录同时写回 Recipe.Workdir（会话记录/restart 快照的忠实值）。
++func (p *appLaunchPlanner) finalizeWorkdir(plan *launchplan.Plan, failure *launchplan.BuildFailure, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
++	if failure != nil {
++		return plan, failure
++	}
++	for i := range plan.Effects {
++		eff := &plan.Effects[i]
++		if eff.Kind != launchplan.EffectPTYStart || eff.Process == nil {
++			continue
++		}
++		spec := &eff.Process.Resolved
++		wd, err := resolveLaunchWorkDirForSpec(
++			spec.BootstrapMode == platform.BootstrapWSL, req.Workdir, spec.WorkDir,
++			p.canonicalWorkdir(), nil)
++		if err != nil {
++			plan.Secrets.Dispose()
++			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureWorkdir, CLIType: req.CLIType}
++		}
++		spec.WorkDir = wd
++		plan.Recipe.Workdir = wd
++	}
++	return plan, nil
+ }
+ 
+ func (p *appLaunchPlanner) Probe(ctx context.Context, cli contract.CLIType) (contract.CLIAvailability, *launchplan.BuildFailure) {
+diff --git a/launch_workdir.go b/launch_workdir.go
+index 5cca12e..f9d0322 100644
+--- a/launch_workdir.go
++++ b/launch_workdir.go
+@@ -5,6 +5,8 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
++
++	"amagi-codebox/internal/platform"
+ )
+ 
+ // launch_workdir.go 是所有嵌入式终端启动的"工作目录"单一校验/回退 choke point。
+@@ -26,10 +28,32 @@ type launchWorkDirRejection struct {
+ 	reason string // 淘汰原因
+ }
+ 
++// launchTargetsWSLFn 仅供 env 防线的预先介入判定（WSL 会话需在解析器拼
++// WSLENV 清单之前完成宿主盘符路径值剥离，无法等解析后定谳）。生产实现
++// 与桌面 resolveEmbeddedLaunchSpec 的 WSL 防线门同源（EmbeddedLaunchTargetsWSL
++// 谓词 + DefaultWSLDistro 双条件；内部含 distro 探测，探测结果进程内缓存）。
++// 包级 var 是测试接缝。注意：工作目录的目标判定不经本接缝——见
++// resolveLaunchWorkDirForSpec（纯目标判据，零探测）。
++var launchTargetsWSLFn = func(launchMode, requestedShellPath string) bool {
++	return platform.EmbeddedLaunchTargetsWSL(launchMode, requestedShellPath, nil) &&
++		platform.DefaultWSLDistro(nil) != ""
++}
++
++// isLinuxStyleWorkDirFn 报告目录字符串是否为 Linux 形态路径（/…、~、~/…）。
++// 生产实现 = platform.IsLinuxStylePath（Windows 宿主实现；非 Windows 宿主恒
++// false）。包级 var 是测试接缝：macOS CI 上注入镜像 Windows 语义的假实现
++// 驱动同一条纯逻辑，不触达真实 wsl.exe。
++var isLinuxStyleWorkDirFn = platform.IsLinuxStylePath
++
+ // resolveLaunchWorkDir 归一化并校验启动工作目录，是全部 App.Launch* 入口
+ // （LaunchSession/LaunchCodexSession/LaunchPiSession/LaunchOmpSession/LaunchOpenCode）
+-// 的统一入口。规则见 resolveLaunchWorkDirChain；回退发生时记录 Warn
+-// （含原始无效路径、原因与回退目标）。全部候选无效时才返回错误。
++// 的统一宿主侧入口（原生目标/会话记录/外部终端模式的权威值）。规则见
++// resolveLaunchWorkDirChain；回退发生时记录 Warn（含原始无效路径、原因与
++// 回退目标）。全部候选无效时才返回错误。
++//
++// WSL 目标的最终工作目录不在这里定谳：入口把宿主链产物与本函数的原始
++// 请求一并交给 resolveEmbeddedLaunchSpec，由解析产出的 spec.BootstrapMode
++// 后置定谳（见 resolveLaunchWorkDirForSpec，纯目标判据、零探测）。
+ func (a *App) resolveLaunchWorkDir(workDir string) (string, error) {
+ 	return resolveLaunchWorkDirChain(workDir, a.Paths.GetDefaultPath(), func(requested, fallback, reason string) {
+ 		a.Log.Warn("session", "启动工作目录不可用，已回退",
+@@ -37,6 +61,50 @@ func (a *App) resolveLaunchWorkDir(workDir string) (string, error) {
+ 	})
+ }
+ 
++// resolveLaunchWorkDirForSpec 在解析完成后定谳启动工作目录（纯目标判据：
++// 以 resolver 产出的 spec.BootstrapMode 为准，本函数不做任何 WSL 探测）。
++//
++//   - 非 WSL 目标：返回 hostResolved（入口宿主链产物），原生 Windows/macOS
++//     回退语义与修复前完全一致；
++//   - WSL 目标 + 显式非空请求：Linux 形态（/home/…、~、~/…）原样保留
++//     （TrimSpace 后交给 wsl.exe --cd，存在性由目标 distro 判定）；其余
++//     形态（Windows 盘符/UNC/相对路径）仍由宿主校验，校验失败直接报错
++//     ——任务契约：WSL 明确请求的目录不得静默换工程；空请求才走回退；
++//   - WSL 目标 + 空请求：defaultPath 为 Linux 形态时同样保留（用户配置的
++//     默认 ~/project 不得被宿主校验吞掉）；否则维持 hostResolved（默认
++//     目录→Home 的既有回退链）。
++//
++// onWSLPreserve（可为 nil）在保留 Linux 形态目录时回调一次，供入口记
++// INFO（与宿主链的回退 WARN 互补，拼出完整可观测叙事）。
++func resolveLaunchWorkDirForSpec(bootstrapWSL bool, requested, hostResolved, defaultPath string, onWSLPreserve func(preserved string)) (string, error) {
++	if !bootstrapWSL {
++		return hostResolved, nil
++	}
++	trimmed := strings.TrimSpace(requested)
++	if trimmed != "" {
++		if isLinuxStyleWorkDirFn(trimmed) {
++			if onWSLPreserve != nil {
++				onWSLPreserve(trimmed)
++			}
++			return trimmed, nil
++		}
++		// 显式非空的非 Linux 形态：宿主可判其存在性（ConPtyWorkDir 亦消费
++		// 该形态）；失败即拒绝启动，不回退换目录。
++		abs, reason, ok := validateLaunchWorkDir(trimmed)
++		if !ok {
++			return "", fmt.Errorf("WSL 会话请求的工作目录不可用: %q: %s；已拒绝启动（不回退换目录）", trimmed, reason)
++		}
++		return abs, nil
++	}
++	if def := strings.TrimSpace(defaultPath); def != "" && isLinuxStyleWorkDirFn(def) {
++		if onWSLPreserve != nil {
++			onWSLPreserve(def)
++		}
++		return def, nil
++	}
++	return hostResolved, nil
++}
++
+ // resolveLaunchWorkDirChain 执行 候选链：requested → defaultPath → 用户 Home。
+ //
+ //   - requested 先 filepath.Clean + filepath.Abs：相对路径（如 "." 或项目名）
+diff --git a/launch_workdir_test.go b/launch_workdir_test.go
+index d584484..b93065d 100644
+--- a/launch_workdir_test.go
++++ b/launch_workdir_test.go
+@@ -176,3 +176,65 @@ func TestAppResolveLaunchWorkDirFallsBackToDefaultPath(t *testing.T) {
+ 		t.Fatalf("resolved = %q, want %q", got, want)
+ 	}
+ }
++
++// TestResolveLaunchWorkDirForSpec：解析后定谳（纯目标判据 bootstrapWSL，
++// 零探测）。isLinuxStyleWorkDirFn 注入镜像 platform wsl_form_windows.go 语义
++// 的假实现（生产默认在非 Windows 宿主恒 false，无法在本机驱动该分支）。
++func TestResolveLaunchWorkDirForSpec(t *testing.T) {
++	base := t.TempDir()
++	defaultDir := filepath.Join(base, "default")
++	mustMkdir(t, defaultDir)
++	winProj := filepath.Join(base, `C:\工程 空格`)
++	mustMkdir(t, winProj)
++
++	origPath := isLinuxStyleWorkDirFn
++	isLinuxStyleWorkDirFn = func(p string) bool {
++		w := strings.TrimSpace(p)
++		return strings.HasPrefix(w, "/") || w == "~" || strings.HasPrefix(w, "~/")
++	}
++	t.Cleanup(func() { isLinuxStyleWorkDirFn = origPath })
++
++	noPreserve := func(string) {}
++
++	// WSL 目标 + 显式 Linux 形态：原样保留（TrimSpace），不触发宿主校验。
++	for in, want := range map[string]string{
++		"/home/u/我的 工程": "/home/u/我的 工程",
++		"~":             "~",
++		"~/proj":        "~/proj",
++		"  /home/u/x  ": "/home/u/x",
++	} {
++		got, err := resolveLaunchWorkDirForSpec(true, in, defaultDir, "", noPreserve)
++		if err != nil || got != want {
++			t.Fatalf("resolveLaunchWorkDirForSpec(true, %q) = (%q, %v), want (%q, nil)", in, got, err, want)
++		}
++	}
++	var preserved []string
++	if _, err := resolveLaunchWorkDirForSpec(true, "~/proj", defaultDir, "", func(p string) { preserved = append(preserved, p) }); err != nil || len(preserved) != 1 || preserved[0] != "~/proj" {
++		t.Fatalf("preserve callback = %v, err = %v", preserved, err)
++	}
++
++	// WSL 目标 + 显式 Windows 形态：存在→Clean+Abs 保留；不存在→拒绝启动
++	//（不静默换工程）。
++	if got, err := resolveLaunchWorkDirForSpec(true, winProj, defaultDir, "", noPreserve); err != nil || got != winProj {
++		t.Fatalf("explicit valid windows form: got (%q, %v), want (%q, nil)", got, err, winProj)
++	}
++	if _, err := resolveLaunchWorkDirForSpec(true, `C:\missing\目录`, defaultDir, "", noPreserve); err == nil || !strings.Contains(err.Error(), "拒绝启动") {
++		t.Fatalf("explicit invalid windows form must fail the launch, got %v", err)
++	}
++
++	// WSL 目标 + 空请求：默认目录为 Linux 形态时同样保留，否则维持宿主链值。
++	if got, err := resolveLaunchWorkDirForSpec(true, "", defaultDir, "~/默认 工程", noPreserve); err != nil || got != "~/默认 工程" {
++		t.Fatalf("linux-form default must be preserved, got (%q, %v)", got, err)
++	}
++	if got, err := resolveLaunchWorkDirForSpec(true, "", defaultDir, defaultDir, noPreserve); err != nil || got != defaultDir {
++		t.Fatalf("windows-form default keeps host chain value, got (%q, %v)", got, err)
++	}
++
++	// 非 WSL 目标：一律返回宿主链产物（原生回退语义不变；即便请求是
++	// Linux 形态/无效路径也不在上层拦截）。
++	for _, raw := range []string{"/home/u/proj", `C:\missing`, ""} {
++		if got, err := resolveLaunchWorkDirForSpec(false, raw, defaultDir, "~/默认 工程", noPreserve); err != nil || got != defaultDir {
++			t.Fatalf("native target raw=%q: got (%q, %v), want host resolved", raw, got, err)
++		}
++	}
++}
+diff --git a/pi_login_wsl_test.go b/pi_login_wsl_test.go
+index 70beb02..733943a 100644
+--- a/pi_login_wsl_test.go
++++ b/pi_login_wsl_test.go
+@@ -52,6 +52,7 @@ func (*piLoginWSLShellResolver) ResolveExecutable(cmd string, args []string, env
+ // 字节永不进入命令行），并在 PTY 之前携带 EffectWSLConfigSupply（计划只带
+ // 待供给描述：distro 留空、Apply 时解析，BuildPlan 保持纯读零 spawn）。
+ func TestPiLoginPlannerWSLGateLifted(t *testing.T) {
++	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
+ 	home := isolatedHome(t)
+ 	dir := t.TempDir()
+ 	cfg := config.NewConfigService(dir)
+@@ -371,6 +372,7 @@ func TestWSLLoginSupplyDistroFallbackAndUnresolved(t *testing.T) {
+ // 并按 verdict 分叉：失败且 distro 无副本 → 中文报错拒绝；降级/成功 → 放行
+ // 到 PTY 层（后续 control 未接线自然失败，不触达 PTY spawn）。
+ func TestPiLoginDesktopWSLGateSync(t *testing.T) {
++	unsetInheritedProxyEnv(t) // 桌面链 env 合入宿主环境；隔离代理 marker，保留产品门语义
+ 	stubRun := func(outcome launcher.SyncWSLPiLoginAuthOutcome, err error) *[]string {
+ 		calls := &[]string{}
+ 		runWSLLoginSupplyFn = func(_ context.Context, _ wslsupply.Runner, distro string) (wslsupply.RunResult, error) {
+diff --git a/wsl_s2_remote_test.go b/wsl_s2_remote_test.go
+index 2c84c3d..1862411 100644
+--- a/wsl_s2_remote_test.go
++++ b/wsl_s2_remote_test.go
+@@ -33,6 +33,7 @@ import (
+ // ---------------------------------------------------------------------------
+ 
+ func TestRemotePiAPIProviderWSLPlanCarriesSupply(t *testing.T) {
++	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
+ 	home := isolatedHome(t)
+ 	dir := t.TempDir()
+ 	cfgSvc := config.NewConfigService(dir)
+@@ -125,6 +126,7 @@ func TestRemotePiAPIProviderWSLPlanCarriesSupply(t *testing.T) {
+ // ---------------------------------------------------------------------------
+ 
+ func TestRemoteOpenCodeWSLPlanCarriesLayer(t *testing.T) {
++	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
+ 	home := isolatedHome(t)
+ 	dir := t.TempDir()
+ 	cfgSvc := config.NewConfigService(dir)

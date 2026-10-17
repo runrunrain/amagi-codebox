@@ -52,6 +52,7 @@ func (*piLoginWSLShellResolver) ResolveExecutable(cmd string, args []string, env
 // 字节永不进入命令行），并在 PTY 之前携带 EffectWSLConfigSupply（计划只带
 // 待供给描述：distro 留空、Apply 时解析，BuildPlan 保持纯读零 spawn）。
 func TestPiLoginPlannerWSLGateLifted(t *testing.T) {
+	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
 	home := isolatedHome(t)
 	dir := t.TempDir()
 	cfg := config.NewConfigService(dir)
@@ -214,13 +215,13 @@ func newFakeSupplyCoordinator(t *testing.T, a2 wslsupply.A2Adapter) *wslsupply.C
 	t.Helper()
 	uncRoot := t.TempDir()
 	c := wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
-		Identity: func(string) platform.WSLUserIdentity {
+		Identity: func(context.Context, string) platform.WSLUserIdentity {
 			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "test-machine-id", OK: true}
 		},
 		ToUNC: func(_, linuxPath string) string {
 			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 		},
-		Chmod: func(_, _ string, _ ...string) error { return nil },
+		Chmod: func(context.Context, string, string, ...string) error { return nil },
 	})
 	if a2 != nil {
 		c.SetA2Adapter(a2)
@@ -237,8 +238,8 @@ type stubA2Adapter struct {
 
 func (s stubA2Adapter) Files() []string { return []string{"auth.json"} }
 
-func (s stubA2Adapter) Sync(distro string) (launcher.SyncWSLPiLoginAuthOutcome, error) {
-	*s.calls = append(*s.calls, distro)
+func (s stubA2Adapter) Sync(_ context.Context, target wslsupply.TargetRef) (launcher.SyncWSLPiLoginAuthOutcome, error) {
+	*s.calls = append(*s.calls, target.Distro)
 	return s.outcome, s.err
 }
 
@@ -356,9 +357,9 @@ func TestWSLLoginSupplyDistroFallbackAndUnresolved(t *testing.T) {
 	}
 	// 身份探测失败（协调器真身 + Identity 恒失败）→ 目标不可解析 → 同判。
 	coord := wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
-		Identity: func(string) platform.WSLUserIdentity { return platform.WSLUserIdentity{} },
+		Identity: func(context.Context, string) platform.WSLUserIdentity { return platform.WSLUserIdentity{} },
 		ToUNC:    func(_, _ string) string { return "" },
-		Chmod:    func(_, _ string, _ ...string) error { return nil },
+		Chmod:    func(context.Context, string, string, ...string) error { return nil },
 	})
 	app.WSLSupply = coord
 	err = app.syncWSLPiLoginAuthAtLaunch("Ubuntu")
@@ -371,6 +372,7 @@ func TestWSLLoginSupplyDistroFallbackAndUnresolved(t *testing.T) {
 // 并按 verdict 分叉：失败且 distro 无副本 → 中文报错拒绝；降级/成功 → 放行
 // 到 PTY 层（后续 control 未接线自然失败，不触达 PTY spawn）。
 func TestPiLoginDesktopWSLGateSync(t *testing.T) {
+	unsetInheritedProxyEnv(t) // 桌面链 env 合入宿主环境；隔离代理 marker，保留产品门语义
 	stubRun := func(outcome launcher.SyncWSLPiLoginAuthOutcome, err error) *[]string {
 		calls := &[]string{}
 		runWSLLoginSupplyFn = func(_ context.Context, _ wslsupply.Runner, distro string) (wslsupply.RunResult, error) {
@@ -487,5 +489,39 @@ func TestPiLoginStripAgentDirForWSL(t *testing.T) {
 	}
 	if all := piLoginStripAgentDirForWSL([]string{"WSLENV=PI_CODING_AGENT_DIR/u"}); len(all) != 0 {
 		t.Fatalf("empty WSLENV list must drop the variable entirely: %v", all)
+	}
+}
+
+// TestAttackLoginVerdictOptionalFailureDoesNotSkipA2：攻坚契约（启动聚合）——
+// 可选单元失败/待同意不得提前 return 跳过 A2 安全资格：A2 NoAuth 时整批仍
+// fail closed；A2 健康时可选失败仅告警放行。
+func TestAttackLoginVerdictOptionalFailureDoesNotSkipA2(t *testing.T) {
+	a2Failed := wslsupply.UnitResult{
+		Unit: wslsupply.UnitPiA2Auth, Policy: wslsupply.PolicyA2Auth, Outcome: wslsupply.UnitFailed,
+		Detail: "distro-no-auth", A2: &wslsupply.A2Result{Outcome: launcher.SyncWSLPiLoginAuthDistroNoAuth},
+	}
+	optionalBlocked := wslsupply.UnitResult{
+		Unit: wslsupply.UnitPiSettings, Policy: wslsupply.PolicyTrackedProjection, Outcome: wslsupply.UnitBlocked,
+		Detail: "awaiting-consent",
+	}
+	// 可选 awaiting-consent 排在 A2 失败前面：旧实现的早退序会把它当放行条件
+	// 跳过 A2 资格——重排后必须仍 fail closed。
+	res := wslsupply.RunResult{Results: []wslsupply.UnitResult{optionalBlocked, a2Failed}}
+	if v := verdictForWSLLoginSupply(res, nil); v.launchErr == nil {
+		t.Fatal("optional awaiting-consent must not mask a failing A2 eligibility")
+	}
+	// A2 健康 + 可选失败 → 告警放行（A2 资格先确认，可选项不阻断）。
+	a2Fresh := wslsupply.UnitResult{
+		Unit: wslsupply.UnitPiA2Auth, Policy: wslsupply.PolicyA2Auth, Outcome: wslsupply.UnitFresh,
+		A2: &wslsupply.A2Result{Outcome: launcher.SyncWSLPiLoginAuthFresh},
+	}
+	optionalFailed := wslsupply.UnitResult{
+		Unit: wslsupply.UnitPiManagedModels, Policy: wslsupply.PolicyManagedNamespace, Outcome: wslsupply.UnitBlocked,
+		Detail: "source-unavailable",
+	}
+	res2 := wslsupply.RunResult{Results: []wslsupply.UnitResult{optionalFailed, a2Fresh}}
+	v2 := verdictForWSLLoginSupply(res2, nil)
+	if v2.launchErr != nil || !v2.warn {
+		t.Fatalf("healthy A2 + optional failure must warn-pass, got %+v", v2)
 	}
 }

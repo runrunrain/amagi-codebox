@@ -107,6 +107,14 @@ func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, mod
 	}
 }
 
+// resolvedDesktopSession publishes the resolved cwd, not the host-side fallback
+// used while the reservation was still hidden. The same session projection feeds
+// desktop panels and remote snapshots, so a stale cwd is not merely cosmetic.
+func resolvedDesktopSession(reserved session.Session, spec platform.ResolvedLaunchSpec) session.Session {
+	reserved.WorkDir = spec.WorkDir
+	return reserved
+}
+
 // launchEmbeddedPTY starts one hidden Authority + Control run. Process, shared
 // leases, Control and H1 are fully prepared before Authority becomes the sole
 // public membership bit.
@@ -122,6 +130,9 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := runWSLSharedFilesForSpec(ctx, a.WSLSupply, spec); err != nil {
+		return 0, fmt.Errorf("WSL shared supply: %w", err)
 	}
 	launchPermit, runPermit, obsPermit, err := a.control.BeginDesktopRun(ctx, contract.SessionID(sessionID))
 	if err != nil {
@@ -179,7 +190,7 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 	}
 
 	values := session.PreparedAuthorityActivation{
-		Session: reservation.Session(), Recipe: recipe, BindingID: registryKey.BindingID,
+		Session: resolvedDesktopSession(reservation.Session(), spec), Recipe: recipe, BindingID: registryKey.BindingID,
 		PID: start.PID, RunRevision: obsPermit.RunEpoch(), StartedAt: reservation.Session().StartedAt,
 		LastActivityAt: time.Now(),
 	}

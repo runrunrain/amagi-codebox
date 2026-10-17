@@ -1,0 +1,2824 @@
+diff --git a/app_wsl_plugins.go b/app_wsl_plugins.go
+index a3fce90..fd93c84 100644
+--- a/app_wsl_plugins.go
++++ b/app_wsl_plugins.go
+@@ -173,11 +173,12 @@ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargeted
+ 	}
+ 
+ 	op := wslsupply.PluginOperation{Source: source, Kind: kind}
+-	// SA12 补全：过滤快照取三态读面（EntryFiltersFor），显式空数组 []
+-	//（该类型一项都不加载）与非 nil 空切片一同透传，不折叠回省略（省略 =
+-	// 启用整类资源，会扩大 WSL 侧启用面）；Windows 未声明任何过滤键时
+-	// 全 nil，等价零值（纯字符串全量形态）。
+-	op.Filters = piPluginOpFilters(piplugin.EntryFiltersFor(a.PiPlugins, source))
++	// SA12 补全 + PR08：过滤快照取三态读面（EntryFiltersFor），显式空数组 []
++	//（该类型一项都不加载）与非 nil 空切片一同透传，不折叠回省略；Windows
++	// 未声明任何过滤键时全 nil——以**非 nil 指针**传入 = 显式完整期望快照
++	//（全部加载，纯字符串登记形态），可把 WSL 侧旧过滤集重置回全量；未
++	// 登记/读取失败同样传全 nil 期望（重放按登记门另行拦截，不误安装）。
++	op.Filters = piPluginOpFiltersPtr(piplugin.EntryFiltersFor(a.PiPlugins, source))
+ 
+ 	// 重放锚点门禁（SA13，仅 install/update）：wsl 单目标无锚点语义，distro
+ 	// 内独立解析；both 要求 Windows Success=true 且锚点可读（判定经
+@@ -288,6 +289,13 @@ func piPluginOpFilters(f piplugin.EntryFilters) wslsupply.PluginFilters {
+ 	}
+ }
+ 
++// piPluginOpFiltersPtr 返回非 nil 指针的完整期望快照（PR08：App 调用统一
++// 携带完整期望——nil 指针保留给「调用方未提供选择」的旧调用语义）。
++func piPluginOpFiltersPtr(f piplugin.EntryFilters) *wslsupply.PluginFilters {
++	out := piPluginOpFilters(f)
++	return &out
++}
++
+ func truncateForPanel(s string) string {
+ 	s = strings.TrimSpace(s)
+ 	if len(s) > 500 {
+diff --git a/app_wsl_supply.go b/app_wsl_supply.go
+index f699467..9d753c4 100644
+--- a/app_wsl_supply.go
++++ b/app_wsl_supply.go
+@@ -232,7 +232,8 @@ func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, dis
+ 		return ctx.Err()
+ 	}
+ 	if runErr != nil {
+-		// 供给运行不可用：仅当状态面能证明本目标从未持有受管敏感副本时放行。
++		// 供给运行不可用：仅当状态面能证明本目标从未持有（且无 v1 迁移遗留
++		// 的）受管敏感副本时放行（PR01：未知不能推导旧副本安全）。
+ 		if !visionManagedCopyPossible(runner, distro) {
+ 			return nil
+ 		}
+@@ -250,10 +251,17 @@ func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, dis
+ 			if strings.Contains(r.Detail, "withdrawal-unconfirmed") {
+ 				return fmt.Errorf("WSL 内视觉清单密钥副本未确认撤回（%s 目标被手动修改而宿主已撤回导出）；本次启动不消费该副本，请在 WSL 内处理 ~/.agents/amagi-media-models.json 后重试", distro)
+ 			}
+-			// awaiting-consent / unmanaged-existing / frozen（非撤回类）：
+-			// 从未授权或副本不归本目标受管——不阻断普通启动。
++			// PR01：其余阻断（source-unavailable / target-unresolved /
++			// inspect-failed / 计划后目标变化等）区分「证明无受管副本」与
++			// 「可能残留」：副本可能仍在（曾发布且未确认撤回，或 v1 迁移遗留
++			// 风险）时阻断并给出可处理指引；确无副本历史时不阻断普通启动。
++			if visionManagedCopyPossible(runner, distro) {
++				return fmt.Errorf("WSL 视觉清单密钥供给受阻（unit=%s detail=%s，目标 %s）：受管密钥副本可能仍在 WSL 内，无法确认其安全状态，本次启动不消费该副本；请在设置的 WSL 供给面板重新启用/处理视觉清单投影（完成一次同步或撤回），或检查 WSL 内 ~/.agents/amagi-media-models.json 后重试", r.Unit, r.Detail, distro)
++			}
++			// awaiting-consent / unmanaged-existing / frozen（非撤回类）且无
++			// 受管副本历史：从未授权或副本不归本目标受管——不阻断普通启动。
+ 			continue
+-		default: // UnitFailed：写失败 / withdrawal-remove-failed / staging unverified 等
++		default: // UnitFailed：写失败 / withdrawal-remove-failed / staging unverified / 权限不可证等
+ 			if !visionManagedCopyPossible(runner, distro) {
+ 				return nil
+ 			}
+@@ -264,18 +272,18 @@ func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, dis
+ }
+ 
+ // visionManagedCopyPossible 报告本目标是否可能仍持有 CodeBox 受管的视觉
+-// 清单密钥副本（曾授权且未确认撤回）。状态面无该单元登记（从未授权/从未
+-// 发布）或已撤回（withdrawn*）时为 false——此时普通启动可安全继续。
++// 清单密钥副本（曾授权且未确认撤回），或存在 v1 迁移遗留的待确认风险
++// （PR01）。优先用协调器的完整登记判定（GetStatus 脱敏面不含写入基准）：
++// 无登记/从未写入 → false；已确认撤回 → false；用户显式保留本地 → false；
++// 目标已被外部删除 → false；其余曾写入状态 → true。无能力面（测试 stub
++// 运行器）时按无副本历史处理。
+ func visionManagedCopyPossible(runner wslsupply.Runner, distro string) bool {
+-	st := runner.GetStatus(distro, wslsupply.CLICommon)
+-	for _, u := range st.Units {
+-		if u.Unit != wslsupply.UnitSharedVisionExport {
+-			continue
+-		}
+-		if strings.HasPrefix(u.LastOutcome, "withdrawn") {
+-			return false
+-		}
+-		return u.Consented
++	type sensitiveCopyProber interface {
++		SensitiveCopyPending(distro string, unit wslsupply.UnitID) bool
++		LegacySensitiveCopyPending(distro string) bool
++	}
++	if p, ok := runner.(sensitiveCopyProber); ok {
++		return p.SensitiveCopyPending(distro, wslsupply.UnitSharedVisionExport) || p.LegacySensitiveCopyPending(distro)
+ 	}
+ 	return false
+ }
+@@ -322,9 +330,24 @@ var wslDistroRunningFn = func(distro string) bool {
+ var wslDefaultDistroFn = platform.DefaultWSLDistro
+ 
+ // scheduleWSLSupplyPush 异步调度一次保存后推送（非阻塞；失败仅告警——「宿主
+-// 保存成功」与「WSL 已同步」是两个结果）。
++// 保存成功」与「WSL 已同步」是两个结果）。后台 goroutine 由包级 WaitGroup
++// 追踪（PR09：测试可确定性等待推送生命周期真正退出后再还原全局接缝，
++// 不 sleep 碰运气）。
++var wslSupplyPushWG sync.WaitGroup
++
+ func (a *App) scheduleWSLSupplyPush() {
+-	go a.pushWSLSupplyOnce()
++	wslSupplyPushWG.Add(1)
++	go func() {
++		defer wslSupplyPushWG.Done()
++		a.pushWSLSupplyOnce()
++	}()
++}
++
++// waitForWSLSupplyPushIdleForTest 等待全部已调度的后台推送退出（PR09：
++// 仅供测试 cleanup 使用——Add 在 schedule 内同步完成，Enable/保存调用
++// 返回后本等待即覆盖其全部后台生命周期）。
++func waitForWSLSupplyPushIdleForTest() {
++	wslSupplyPushWG.Wait()
+ }
+ 
+ // pushWSLSupplyOnce 是 single-flight 入口：已在工作时只置 rerun 标记；
+diff --git a/app_wsl_supply_core_test.go b/app_wsl_supply_core_test.go
+index 8b002d8..ea85a65 100644
+--- a/app_wsl_supply_core_test.go
++++ b/app_wsl_supply_core_test.go
+@@ -124,6 +124,26 @@ func (s *gateStubRunner) MarkDirty(string, uint64) error { return nil }
+ func (s *gateStubRunner) GetStatus(string, wslsupply.CLI) wslsupply.TargetStatus {
+ 	return s.status
+ }
++
++// SensitiveCopyPending 实现 PR01 的协调器能力面：status 携带 vision 单元
++// 登记且未撤回时视为副本可能存在（与真实协调器判定同向）。
++func (s *gateStubRunner) SensitiveCopyPending(_ string, unit wslsupply.UnitID) bool {
++	if unit != wslsupply.UnitSharedVisionExport {
++		return false
++	}
++	for _, u := range s.status.Units {
++		if u.Unit != wslsupply.UnitSharedVisionExport {
++			continue
++		}
++		if strings.HasPrefix(u.LastOutcome, "withdrawn") {
++			return false
++		}
++		return u.Consented
++	}
++	return false
++}
++
++func (s *gateStubRunner) LegacySensitiveCopyPending(string) bool { return false }
+ func (s *gateStubRunner) Compensate(context.Context, ...*wslsupply.CompensationHandle) []wslsupply.CompensationOutcome {
+ 	return nil
+ }
+diff --git a/internal/launcher/wsl_agent_config.go b/internal/launcher/wsl_agent_config.go
+index 1260406..c209b5c 100644
+--- a/internal/launcher/wsl_agent_config.go
++++ b/internal/launcher/wsl_agent_config.go
+@@ -174,18 +174,19 @@ func writeWSLAgentFileStaged(target WSLAgentTarget, fileName string, content []b
+ }
+ 
+ // wslRetighten600 复核字节未变化的秘密文件权限（零写入路径的 SA-06 补丁：
+-// 已存在但权限被改宽也要安全修复或阻断）：探测到确切非 600 时重收紧并复验；
+-// 探测不可用（ok=false）不视为不安全（无新字节落盘），保持零写入语义。
++// 已存在但权限被改宽也要安全修复或阻断；PR02：探测不可用（ok=false）不
++// 再视为安全——unknown 不等于安全，先收紧后复验，仍不可证则返回错误交由
++// 调用方阻断消费）：探测到确切非 600 或探测不可用时统一重收紧并复验。
+ func wslRetighten600(distro, linuxFile string) error {
+ 	mode, ok := wslStatModeFn(distro, linuxFile)
+-	if !ok || mode == "600" {
+-		return nil
++	if ok && mode == "600" {
++		return nil // 健康路径：零字节重写保持
+ 	}
+ 	if err := wslChmodFn(distro, "600", linuxFile); err != nil {
+-		return fmt.Errorf("re-tighten loose wsl secret file (%s, was %s): %w", linuxFile, mode, err)
++		return fmt.Errorf("re-tighten wsl secret file (%s, was mode=%q ok=%v): %w", linuxFile, mode, ok, err)
+ 	}
+-	if m2, ok := wslStatModeFn(distro, linuxFile); !ok || m2 != "600" {
+-		return fmt.Errorf("re-tighten loose wsl secret file (%s) unverified: mode=%q ok=%v", linuxFile, m2, ok)
++	if m2, ok2 := wslStatModeFn(distro, linuxFile); !ok2 || m2 != "600" {
++		return fmt.Errorf("re-tighten wsl secret file (%s) unverified: mode=%q ok=%v", linuxFile, m2, ok2)
+ 	}
+ 	return nil
+ }
+diff --git a/internal/launcher/wsl_agent_config_idempotent_test.go b/internal/launcher/wsl_agent_config_idempotent_test.go
+index 38bbc70..8d09ea5 100644
+--- a/internal/launcher/wsl_agent_config_idempotent_test.go
++++ b/internal/launcher/wsl_agent_config_idempotent_test.go
+@@ -32,7 +32,10 @@ func TestWriteWSLPiAgentConfigSkipsIdenticalContent(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	// 第二次写入完全相同配置：跳过落盘与 chmod（零写入路径）。
++	// 第二次写入完全相同配置：跳过落盘与 chmod（零写入路径）。首写后文件
++	// 已是 0600（staging 收紧后 rename），回填 fake 探测面反映该健康事实
++	//（PR02：零写入路径的权限复核在健康 0600 下零 chmod）。
++	ft.modes["/home/wslu/.pi/agent/models.json"] = "600"
+ 	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err != nil {
+ 		t.Fatalf("second write: %v", err)
+ 	}
+@@ -56,6 +59,7 @@ func TestWriteWSLOpenCodeAgentConfigSkipsIdenticalContent(t *testing.T) {
+ 	}
+ 	first := ft.chmodCalls
+ 	target := filepath.Join(ft.uncPath("/home/wslu/.config/opencode"), openCodeWSLConfigFile)
++	ft.modes["/home/wslu/.config/opencode/"+openCodeWSLConfigFile] = "600"
+ 	before, err := os.ReadFile(target)
+ 	if err != nil {
+ 		t.Fatal(err)
+diff --git a/internal/launcher/wsl_pi_login_sync.go b/internal/launcher/wsl_pi_login_sync.go
+index a076250..489c803 100644
+--- a/internal/launcher/wsl_pi_login_sync.go
++++ b/internal/launcher/wsl_pi_login_sync.go
+@@ -89,6 +89,17 @@ var wslStatMTimeFn = platform.WSLFileMTime
+ // DistroHasCopy 降级放行宽松权限凭据。
+ var errWSLAuthLooseLeftover = errors.New("wsl pi auth.json left with loose permissions")
+ 
++// retightenDistroAuthOrFailClosed 复核即将被降级消费的 distro 侧凭据副本
++// 权限（PR02：A2 各 fallback——mtime 不可判/回写 Windows 失败等降级路径上
++// 副本仍将被会话消费，权限必须可证 600；不可证则 fail closed，返回携带
++// errWSLAuthLooseLeftover 的错误供 classifyWriteFailure 归为 NoAuth）。
++func retightenDistroAuthOrFailClosed(target WSLAgentTarget) error {
++	if err := wslRetighten600(target.Distro, target.LinuxDir+"/auth.json"); err != nil {
++		return fmt.Errorf("%w: %v", errWSLAuthLooseLeftover, err)
++	}
++	return nil
++}
++
+ // SyncWSLPiLoginAuth 惰性同步两侧 ~/.pi/agent/auth.json（M-1：双向新陈
+ // 判定，新者为准）。成功（Copied/Fresh/DistroNewer/DistroTieKept）时 err
+ // 为 nil；失败时 outcome 给出降级判定依据（DistroHasCopy/DistroNoAuth），
+@@ -150,7 +161,11 @@ func SyncWSLPiLoginAuth(distro string) (SyncWSLPiLoginAuthOutcome, error) {
+ 	dstMTime, ok := wslStatMTimeFn(target.Distro, target.LinuxDir+"/auth.json")
+ 	if !ok {
+ 		// distro 侧时间戳不可判：不动任何一侧（两侧副本各自保全），
+-		// 按「distro 已有副本」降级，会话消费 distro 现状。
++		// 按「distro 已有副本」降级，会话消费 distro 现状。PR02：降级消费
++		// 前复核副本权限——不可证 600 则 fail closed。
++		if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
++			return classifyWriteFailure(uncAuth, rerr)
++		}
+ 		return SyncWSLPiLoginAuthDistroHasCopy, errors.New("probe distro pi auth.json mtime: unavailable")
+ 	}
+ 	srcMTime := srcStat.ModTime()
+@@ -159,19 +174,31 @@ func SyncWSLPiLoginAuth(distro string) (SyncWSLPiLoginAuthOutcome, error) {
+ 	case srcMTime.After(dstTime.Add(authMTimeTolerance)):
+ 		// Windows 新 → 前向复制。
+ 		if err := writeWSLAuthAtomic(target, srcData); err != nil {
++			// 前写失败时旧副本可能仍在（将被降级消费）。PR02：降级消费前复核
++			// 副本权限——不可证 600 则 fail closed。
++			if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
++				return classifyWriteFailure(uncAuth, rerr)
++			}
+ 			return classifyWriteFailure(uncAuth, err)
+ 		}
+ 		return SyncWSLPiLoginAuthCopied, nil
+ 	case dstTime.After(srcMTime.Add(authMTimeTolerance)):
+ 		// distro 新（如 WSL 内 pi 轮转 token）→ 反向同步回 Windows 侧。
+ 		if err := writeWindowsAuthAtomic(srcDir, dstData); err != nil {
+-			// 回写失败不碰 distro 侧（会话即将消费它），降级放行。
++			// 回写失败不碰 distro 侧（会话即将消费它），降级放行。PR02：降级
++			// 消费前复核副本权限——不可证 600 则 fail closed。
++			if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
++				return classifyWriteFailure(uncAuth, rerr)
++			}
+ 			return SyncWSLPiLoginAuthDistroHasCopy, err
+ 		}
+ 		return SyncWSLPiLoginAuthDistroNewer, nil
+ 	default:
+ 		// 并列/容差内：保守取 distro（会话即将消费侧），回同步使两侧收敛。
+ 		if err := writeWindowsAuthAtomic(srcDir, dstData); err != nil {
++			if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
++				return classifyWriteFailure(uncAuth, rerr)
++			}
+ 			return SyncWSLPiLoginAuthDistroHasCopy, err
+ 		}
+ 		return SyncWSLPiLoginAuthDistroTieKept, nil
+@@ -191,7 +218,6 @@ func classifyWriteFailure(uncAuth string, err error) (SyncWSLPiLoginAuthOutcome,
+ 	}
+ 	return SyncWSLPiLoginAuthDistroNoAuth, err
+ }
+-
+ // writeWSLAuthAtomic 经提交原语把 auth 字节原子写入 distro 侧 agent root
+ // （SA-06，wsl-goal-closure）：先建立并验证 distro 内 0700 私有 staging
+ // （chmod 700 + StatMode 探测确认，UNC/宿主 stat 不可信），秘密字节只写入
+diff --git a/internal/launcher/wsl_pi_login_sync_test.go b/internal/launcher/wsl_pi_login_sync_test.go
+index 5714b01..3b4edd5 100644
+--- a/internal/launcher/wsl_pi_login_sync_test.go
++++ b/internal/launcher/wsl_pi_login_sync_test.go
+@@ -41,8 +41,16 @@ func fakeWSLForSync(t *testing.T, chmodErr error) (root string, chmodCalls *[]st
+ 		return chmodErr
+ 	}
+ 	wslStatModeFn = func(_, linuxPath string) (string, bool) {
+-		m, ok := modes[linuxPath]
+-		return m, ok
++		if m, ok := modes[linuxPath]; ok {
++			return m, true
++		}
++		// PR02：未显式记录 chmod 的路径回退读真实文件权限（模拟健康 0600
++		// 副本——降级消费前的权限复核需要可信探测面）。
++		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/"))))
++		if err != nil || !info.Mode().IsRegular() {
++			return "", false
++		}
++		return fmt.Sprintf("%o", info.Mode().Perm()), true
+ 	}
+ 	wslStatMTimeFn = func(_, _ string) (int64, bool) { return 0, false }
+ 	t.Cleanup(func() {
+@@ -276,9 +284,16 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
+ 		writeDistroAuth(t, root, `{"old":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
+ 		stubDistroMTime(t, time.Now().Add(-time.Hour)) // Windows 新 → 前向写
+ 		// 注入 staging 验证失败（rename 前）：旧副本必须仍在（DistroHasCopy
+-		// 降级），且无 staging 残留（SA-06 接缝）。
++		// 降级）；auth.json 本体保持可探测 0600——降级消费前的权限复核
++		//（PR02）必须能证明副本安全，否则降级会被正确拒绌。
+ 		origStatMode := wslStatModeFn
+-		wslStatModeFn = func(_, _ string) (string, bool) { return "", false }
++		prevStatMode := wslStatModeFn
++		wslStatModeFn = func(d, linuxPath string) (string, bool) {
++			if strings.Contains(linuxPath, ".amagi-staging") {
++				return "", false // 仅 staging 验证失败（rename 前，未提交字节）
++			}
++			return prevStatMode(d, linuxPath)
++		}
+ 		t.Cleanup(func() { wslStatModeFn = origStatMode })
+ 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+ 		if err == nil {
+diff --git a/internal/launcher/wsl_review_fixes_test.go b/internal/launcher/wsl_review_fixes_test.go
+new file mode 100644
+index 0000000..9e36feb
+--- /dev/null
++++ b/internal/launcher/wsl_review_fixes_test.go
+@@ -0,0 +1,160 @@
++package launcher
++
++// wsl_review_fixes_test.go — wsl-goal-closure 审核 PR02 修复的 launcher 侧
++// 回归：零写入路径权限探测不可用（ok=false）不再视为安全（先收紧后复验，
++// 仍不可证则 fail closed）；A2 各降级消费 fallback（mtime 不可判/回写失败）
++// 统一复核 distro 副本权限，不可证 600 不得降级放行。
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++// TestReviewFixPR02RetightenUnknownModeFailsClosed：权限探测不可用时零写入
++// 路径不再静默放行——chmod 后复验仍不可证 → 报错（此前 !ok 直接 return nil）。
++func TestReviewFixPR02RetightenUnknownModeFailsClosed(t *testing.T) {
++	ft := installFakeWSLTarget(t)
++	agentDir := "/home/wslu/.pi/agent"
++	if err := os.MkdirAll(ft.uncPath(agentDir), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	cfg := map[string]any{"providers": map[string]any{"amagi-glm": map[string]any{"baseUrl": "https://x.example", "apiKey": "sk"}}}
++	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err != nil {
++		t.Fatalf("first write: %v", err)
++	}
++	before, err := os.ReadFile(ft.uncPath(agentDir + "/models.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	// 探测面整体不可用（wsl.exe stat 故障形态）：零写入路径必须 fail closed。
++	origStatMode := wslStatModeFn
++	wslStatModeFn = func(_, _ string) (string, bool) { return "", false }
++	t.Cleanup(func() { wslStatModeFn = origStatMode })
++	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err == nil {
++		t.Fatal("unknown permission state must not pass the zero-write path")
++	}
++	after, err := os.ReadFile(ft.uncPath(agentDir + "/models.json"))
++	if err != nil || string(before) != string(after) {
++		t.Fatalf("identical bytes must not be rewritten, got %q err=%v", after, err)
++	}
++}
++
++// TestReviewFixPR02RetightenLooseModeVerified：改宽副本被收紧并复验（探测面
++// 记录到 600），零字节重写保持。
++func TestReviewFixPR02RetightenLooseModeVerified(t *testing.T) {
++	ft := installFakeWSLTarget(t)
++	agentDir := "/home/wslu/.pi/agent"
++	if err := os.MkdirAll(ft.uncPath(agentDir), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	cfg := map[string]any{"providers": map[string]any{"amagi-glm": map[string]any{"baseUrl": "https://x.example", "apiKey": "sk"}}}
++	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err != nil {
++		t.Fatalf("first write: %v", err)
++	}
++	// 副本被改宽（仅探测面形态——真实文件位由 9P 语义决定，这里钉复核链）。
++	ft.modes[agentDir+"/models.json"] = "644"
++	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err != nil {
++		t.Fatalf("retighten must recover the loose copy: %v", err)
++	}
++	if m, ok := ft.modes[agentDir+"/models.json"]; !ok || m != "600" {
++		t.Fatalf("loose copy must be re-tightened and verified, got %q ok=%v", m, ok)
++	}
++}
++
++// TestReviewFixPR02A2FallbackVerifiesCopyPerms：A2 降级消费（mtime 不可判 →
++// DistroHasCopy）前复核 distro 副本权限：健康 0600 → 降级放行；宽松且收紧
++// 失败 → fail closed（NoAuth + errWSLAuthLooseLeftover）。
++func TestReviewFixPR02A2FallbackVerifiesCopyPerms(t *testing.T) {
++	t.Run("healthy 600 copy degrades", func(t *testing.T) {
++		fakeWindowsAuth(t, `{"newer":{"type":"oauth"}}`)
++		root, _ := fakeWSLForSync(t, nil)
++		writeDistroAuth(t, root, `{"old":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
++		// fakeWSLForSync 默认 mtime 探测 (0,false)：内容不同 → mtime 不可判分支。
++		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++		if err == nil {
++			t.Fatal("indeterminable mtime must report an error")
++		}
++		if outcome != SyncWSLPiLoginAuthDistroHasCopy {
++			t.Fatalf("healthy 600 copy must degrade to DistroHasCopy, got %v (err=%v)", outcome, err)
++		}
++	})
++	t.Run("loose copy with failing retighten fails closed", func(t *testing.T) {
++		fakeWindowsAuth(t, `{"newer":{"type":"oauth"}}`)
++		root, _ := fakeWSLForSync(t, errors.New("chmod dead"))
++		writeDistroAuth(t, root, `{"old":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
++		if err := os.Chmod(distroAuthPath(root), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++		if err == nil || !errors.Is(err, errWSLAuthLooseLeftover) {
++			t.Fatalf("loose-perm copy with broken retighten must fail closed, got err=%v", err)
++		}
++		if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++			t.Fatalf("loose-perm copy must not degrade-pass, got %v", outcome)
++		}
++	})
++	t.Run("reverse-sync failure with loose copy fails closed", func(t *testing.T) {
++		fakeWindowsAuth(t, `{"older":{"type":"oauth"}}`)
++		root, _ := fakeWSLForSync(t, nil)
++		writeDistroAuth(t, root, `{"newer":{"type":"oauth"}}`, time.Now())
++		stubDistroMTime(t, time.Now().Add(time.Hour)) // distro 新 → 回写 Windows
++		if err := os.Chmod(distroAuthPath(root), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		// 使 Windows 侧 agent 目录不可写：回写失败 → 降级分支 → 副本权限复核。
++		home, _ := os.UserHomeDir()
++		agentDir := filepath.Join(home, ".pi", "agent")
++		if err := os.Chmod(agentDir, 0o500); err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() { _ = os.Chmod(agentDir, 0o700) })
++		// 探测面不认识该副本（modes 为空、回退真实位 0644）→ 收紧动作可执行
++		// 且复验成功 → 允许降级（权限已修复为可证安全）。
++		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++		if err == nil {
++			t.Fatal("reverse-sync failure must surface an error")
++		}
++		if outcome != SyncWSLPiLoginAuthDistroHasCopy {
++			t.Fatalf("retightened copy must allow degradation, got %v (err=%v)", outcome, err)
++		}
++		if m, ok := wslStatModeFn("Ubuntu", "/home/wslu/.pi/agent/auth.json"); !ok || m != "600" {
++			t.Fatalf("loose copy must be retightened before degradation, got %q ok=%v", m, ok)
++		}
++	})
++}
++
++// TestReviewFixPR02A2FallbackLooseAndUnfixableFailsClosed：回写失败 + 副本
++// 宽松 + 收紧不可复验 → fail closed（不降级）。
++func TestReviewFixPR02A2FallbackLooseAndUnfixableFailsClosed(t *testing.T) {
++	fakeWindowsAuth(t, `{"older":{"type":"oauth"}}`)
++	root, _ := fakeWSLForSync(t, nil)
++	writeDistroAuth(t, root, `{"newer":{"type":"oauth"}}`, time.Now())
++	stubDistroMTime(t, time.Now().Add(time.Hour))
++	if err := os.Chmod(distroAuthPath(root), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	home, _ := os.UserHomeDir()
++	agentDir := filepath.Join(home, ".pi", "agent")
++	if err := os.Chmod(agentDir, 0o500); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = os.Chmod(agentDir, 0o700) })
++	// chmod 永远失败 → 收紧不可复验。
++	origChmod := wslChmodFn
++	wslChmodFn = func(string, string, ...string) error { return errors.New("chmod dead") }
++	t.Cleanup(func() { wslChmodFn = origChmod })
++	outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++	if err == nil || !errors.Is(err, errWSLAuthLooseLeftover) {
++		t.Fatalf("unfixable loose copy must fail closed on degradation, got err=%v", err)
++	}
++	if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++		t.Fatalf("unfixable loose copy must not degrade, got %v", outcome)
++	}
++	if !strings.Contains(err.Error(), "auth.json") {
++		t.Fatalf("error must identify the affected secret file, got %v", err)
++	}
++}
+diff --git a/internal/wslsupply/coordinator.go b/internal/wslsupply/coordinator.go
+index f138493..375fc3d 100644
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -119,7 +119,11 @@ func generationFor(distro string, id platform.WSLUserIdentity) string {
+ // ResolveTarget 解析 distro 上的 CLI 目标（初版默认 distro，无新增选择器）。
+ // distro 为空、身份探测失败、目标根不可映射均返回错误——目标不可解析时调用方
+ // fail closed，不得把失败当空目标继续。
+-func (c *Coordinator) ResolveTarget(_ context.Context, distro string, cli CLI) (TargetRef, error) {
++func (c *Coordinator) ResolveTarget(ctx context.Context, distro string, cli CLI) (TargetRef, error) {
++	// PR07：取消的请求不进入探测面（ctx 不再只是被忽略的形参）。
++	if err := ctx.Err(); err != nil {
++		return TargetRef{}, fmt.Errorf("resolve wsl supply target: %w", err)
++	}
+ 	distro = strings.TrimSpace(distro)
+ 	if distro == "" {
+ 		return TargetRef{}, errors.New("wsl distro is required")
+@@ -154,7 +158,11 @@ func (c *Coordinator) ResolveTarget(_ context.Context, distro string, cli CLI) (
+ // spawn）。快照 mtime 是 UNC 视图值；A2 权威 mtime 判定在适配器内。普通
+ // （TrackedProjection）单元文件额外计算内容 hash（仅内存快照，供冲突判定）；
+ // A2 凭据文件不计算 hash。
+-func (c *Coordinator) Inspect(_ context.Context, target TargetRef) (*Snapshot, error) {
++func (c *Coordinator) Inspect(ctx context.Context, target TargetRef) (*Snapshot, error) {
++	// PR07：取消的请求不做探测（与写入门同一生命周期）。
++	if err := ctx.Err(); err != nil {
++		return nil, fmt.Errorf("inspect wsl supply target: %w", err)
++	}
+ 	if strings.TrimSpace(target.Distro) == "" || target.LinuxRoot == "" || target.UNCRoot == "" {
+ 		return nil, errors.New("inspect requires a resolved target")
+ 	}
+@@ -424,8 +432,20 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
+ 			}
+ 			switch unit.Action {
+ 			case ActionNone:
++				if adapter.Sensitive() {
++					// PR02：被选择消费的敏感既有副本（Fresh 零写入路径）统一验证
++					// 目标权限——unknown 不等于安全；先收紧后复验，仍不可证则以
++					// 失败上报（启动闸门据此阻断消费）；健康 0600 保持零字节重写。
++					if perr := c.ensureSensitiveTargetPerms(ctx, current, unit.RelPath); perr != nil {
++						result.Results = append(result.Results, UnitResult{
++							Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
++							Detail: "sensitive-permissions-unsafe", Err: perr,
++						})
++						continue
++					}
++				}
+ 				result.Results = append(result.Results, UnitResult{
+-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFresh, Detail: "no-change",
++						Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFresh, Detail: "no-change",
+ 				})
+ 			case ActionBlocked:
+ 				result.Results = append(result.Results, UnitResult{
+@@ -639,7 +659,14 @@ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, pla
+ 			Detail: "write-failed", Err: err}
+ 	}
+ 	undo.unit = planned.Unit
+-	c.recordProjectionState(target, planned.Unit, adapter.Policy(), cand.SourceHash, hexHash(cand.Content), cand.TransformVersion, cand.Subs, cand.Outcome)
++	if serr := c.recordProjectionState(target, planned.Unit, adapter.Policy(), cand.SourceHash, hexHash(cand.Content), cand.TransformVersion, cand.Subs, cand.Outcome); serr != nil {
++		// PR05：内容已提交但清单未持久化——不得报 applied/synced；写入的
++		// 用户混合文件保留（不用删除凑一致），撤销句柄仍返回供启动中止补偿。
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "content-committed-state-unpersisted",
++			Err: fmt.Errorf("wsl supply state persist failed after commit (content kept on target; next run treats it as unmanaged until re-synced/takeover): %w", serr),
++			Undo: undo}
++	}
+ 	detail := cand.Outcome
+ 	if detail == "" {
+ 		detail = "written"
+@@ -667,7 +694,9 @@ func (c *Coordinator) applyWithdrawal(ctx context.Context, target TargetRef, pla
+ 	switch {
+ 	case errors.Is(readErr, os.ErrNotExist):
+ 		// 目标已不在（外部删除/前次撤回）：直接登记撤回终态。
+-		c.recordProjectionWithdrawn(target, planned.Unit, adapter.Policy())
++		if werr := c.recordProjectionWithdrawn(target, planned.Unit, adapter.Policy()); werr != nil {
++			return c.withdrawnUnpersistedResult(planned, werr)
++		}
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: "withdrawn-already-absent"}
+ 	case readErr != nil:
+ 		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "target-unreadable", readErr)
+@@ -692,13 +721,25 @@ func (c *Coordinator) applyWithdrawal(ctx context.Context, target TargetRef, pla
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 			Detail: "withdrawal-remove-failed", Err: err}
+ 	}
+-	c.recordProjectionWithdrawn(target, planned.Unit, adapter.Policy())
++	if werr := c.recordProjectionWithdrawn(target, planned.Unit, adapter.Policy()); werr != nil {
++		return c.withdrawnUnpersistedResult(planned, werr)
++	}
+ 	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: "withdrawn"}
+ }
+ 
++// withdrawnUnpersistedResult 构造「副本已处理但登记未落盘」的降级结果
++// （PR05）：撤回的用户可见目标（密钥副本移除）已达成，但清单未持久化——
++// 不报 applied 成功；下次运行会幂等重确认（already-absent / 重新撤回）。
++func (c *Coordinator) withdrawnUnpersistedResult(planned PlannedUnit, werr error) UnitResult {
++	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitWarnDegraded,
++		Detail: "withdrawn-state-unpersisted",
++		Err: fmt.Errorf("target copy withdrawn but state registration failed to persist (re-runs re-confirm idempotently): %w", werr)}
++}
++
+ // recordProjectionWithdrawn 登记撤回终态：清空写入基准（下次发布按首次发布
+-// 判定），保留同意/选择集/停跟随等跨写入字段。
+-func (c *Coordinator) recordProjectionWithdrawn(target TargetRef, unit UnitID, policy Policy) {
++// 判定），保留同意/选择集/停跟随等跨写入字段。PR05：返回持久化错误。
++// PR01：撤回确认副本已移除——同时清除该 distro 的 v1 迁移遗留风险标记。
++func (c *Coordinator) recordProjectionWithdrawn(target TargetRef, unit UnitID, policy Policy) error {
+ 	err := c.state.mutate(func(st *StateFile) {
+ 		prev, _ := st.entry(unit)
+ 		st.upsertEntry(StateEntry{
+@@ -707,10 +748,14 @@ func (c *Coordinator) recordProjectionWithdrawn(target TargetRef, unit UnitID, p
+ 			Consented: prev.Consented, SelectedKeys: prev.SelectedKeys, Detached: prev.Detached,
+ 		}, target.Generation)
+ 		st.Distro = target.Distro
++		if legacySensitiveUnits[unit] {
++			clearLegacySensitiveRisk(st, target.Distro, unit)
++		}
+ 	})
+ 	if err != nil {
+ 		logWarn(c.log, "wslsupply", "撤回状态登记失败（目标副本已处理）", err.Error())
+ 	}
++	return err
+ }
+ 
+ // recordProjectionBlocked 登记非冻结阻断态（source-unavailable 等）：保留同代
+@@ -801,7 +846,7 @@ func (c *Coordinator) recordA2State(target TargetRef, res UnitResult, outcome la
+ // 落盘，不经状态 API 返回）。SourceHash 是规范化业务内容基准（不含时间戳），
+ // LastWrittenHash 是实际落盘字节 hash；键级基准（Subs）与部分写入标记
+ // （Outcome）随写入更新；Consented 等跨写入字段保留不丢失。
+-func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string, subs map[string]SubHash, outcome string) {
++func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string, subs map[string]SubHash, outcome string) error {
+ 	if outcome == "" {
+ 		outcome = "written"
+ 	}
+@@ -820,10 +865,16 @@ func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, polic
+ 			Subs: next, Consented: prev.Consented, SelectedKeys: prev.SelectedKeys,
+ 		}, target.Generation)
+ 		st.Distro = target.Distro
++		// PR01：本代成功写入（或接管）后，该 distro 的 v1 迁移遗留风险由当前
++		// 受管状态接管（副本重新受管，后续撤回/状态面可如实判定）。
++		if legacySensitiveUnits[unit] {
++			clearLegacySensitiveRisk(st, target.Distro, unit)
++		}
+ 	})
+ 	if err != nil {
+ 		logWarn(c.log, "wslsupply", "投影单元状态登记失败（内容已提交，下次视为待核实）", err.Error())
+ 	}
++	return err
+ }
+ 
+ // recordProjectionPendingConsent 把「待同意」态写入登记（Consented=false，
+@@ -1014,6 +1065,48 @@ func latestTargetRecord(st *StateFile, distro string) (string, *TargetRecord, bo
+ 	return bestGen, best, best != nil
+ }
+ 
++// SensitiveCopyPending 报告该 distro 当前展示代上某敏感单元是否可能仍存在
++// CodeBox 受管副本（PR01：启动闸门据此区分「证明无受管副本」与「可能残留」）。
++// 判定基于完整登记（GetStatus 的脱敏面不够）：无登记/从未写入 → false；已确认
++// 撤回（withdrawn*）→ false；用户显式保留本地（Detached，副本归用户）→ false；
++// 目标已被外部删除（local-deletion-frozen）→ false；其余曾写入状态 → true。
++// 只看当前展示代：其它 distro / 旧代 / legacy 隔离区的登记不计入（严格区分
++// 目标，v1 迁移风险另由 LegacySensitiveCopyPending 覆盖）。
++func (c *Coordinator) SensitiveCopyPending(distro string, unit UnitID) bool {
++	st := c.state.load()
++	gen, _, found := latestTargetRecord(&st, distro)
++	if !found {
++		// 兼容线索：身份索引尚未记录时用顶层 Distro/Generation。
++		if st.Distro != distro || st.Generation == "" || st.Generation == GenerationUnknown || strings.HasPrefix(st.Generation, legacyGenerationPrefix) {
++			return false
++		}
++		gen = st.Generation
++	}
++	return entrySensitiveCopyPossible(st.entryFor(unit, gen))
++}
++
++// LegacySensitiveCopyPending 报告该 distro 是否存在 v1→v2 迁移遗留的敏感副本
++// 待确认风险（PR01）：升级前曾发布且未确认撤回；新代成功写入或确认撤回后清除。
++// 无身份线索（v1 清单无 Distro）的记录不归属到任何 distro。
++func (c *Coordinator) LegacySensitiveCopyPending(distro string) bool {
++	st := c.state.load()
++	return len(st.LegacySensitiveRisk[distro]) > 0
++}
++
++// entrySensitiveCopyPending 判定单条登记是否意味着受管敏感副本可能仍在。
++func entrySensitiveCopyPossible(e StateEntry) bool {
++	if e.Detached {
++		return false // 用户显式保留本地：副本归属用户，不再是受管副本风险
++	}
++	if strings.HasPrefix(e.LastOutcome, "withdrawn") {
++		return false // 已确认撤回（副本已移除或从未存在）
++	}
++	if e.Frozen && e.FrozenReason == "local-deletion-frozen" {
++		return false // 目标副本已被外部删除
++	}
++	return e.LastWrittenHash != ""
++}
++
+ // skillUnitStale 报告技能单元登记的来源 hash 与当前扫描缓存是否不一致
+ // （S3 陈旧判定：脱敏布尔，hash 不出包）。非技能单元恒 false。
+ func (c *Coordinator) skillUnitStale(entry StateEntry) bool {
+@@ -1194,62 +1287,76 @@ func (c *Coordinator) previewSkillUnit(target TargetRef, name string, entry *Sta
+ 
+ // DropUnitRegistration 执行「保留本地（停跟随）」：目标内容不动，登记
+ // Detached 标记，后续供给零动作；显式接管可解除。不要求 distro 可达（停机
+-// 目标上也可停跟随）。
++// 目标上也可停跟随——PR04：经身份索引解析明确目标 generation，不取全局
++// 最近代；同名 distro 多代并存时拒绝歧义而不改别人）。
+ func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) error {
+ 	if _, isSkill := ParseSkillUnit(unit); isSkill {
+ 		if c.skills == nil {
+ 			return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
+ 		}
+-		return c.state.mutate(func(st *StateFile) {
+-			prev, _ := st.entry(unit)
+-			st.upsertEntry(StateEntry{
+-				Unit: unit, Policy: PolicyTrackedProjection, Generation: prev.Generation,
+-				SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+-				TransformVersion: prev.TransformVersion,
+-				Subs:             prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+-				LastSuccess: time.Now(),
+-			}, prev.Generation)
++		return c.detachUnitOnDistro(distro, unit, func(prev StateEntry) StateEntry {
++			prev.Detached = true
++			prev.LastOutcome = "detached"
++			prev.LastSuccess = time.Now()
++			return prev
+ 		})
+ 	}
+ 	if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
+ 		if c.resourceScope(resCLI) == nil {
+ 			return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
+ 		}
+-		return c.state.mutate(func(st *StateFile) {
+-			prev, _ := st.entry(unit)
+-			st.upsertEntry(StateEntry{
+-				Unit: unit, Policy: PolicyTrackedProjection, Generation: prev.Generation,
+-				SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+-				TransformVersion: prev.TransformVersion, SelectedKeys: prev.SelectedKeys,
+-				Subs: prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+-				LastSuccess: time.Now(),
+-			}, prev.Generation)
++		return c.detachUnitOnDistro(distro, unit, func(prev StateEntry) StateEntry {
++			prev.Detached = true
++			prev.LastOutcome = "detached"
++			prev.LastSuccess = time.Now()
++			return prev
+ 		})
+ 	}
+ 	adapter, ok := c.projections[unit]
+ 	if !ok {
+ 		return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
+ 	}
+-	return c.state.mutate(func(st *StateFile) {
+-		prev, _ := st.entry(unit)
+-		next := StateEntry{
+-			Unit: unit, Policy: adapter.Policy(), Generation: prev.Generation,
+-			SourceHash: prev.SourceHash, LastWrittenHash: prev.LastWrittenHash,
+-			TransformVersion: prev.TransformVersion,
+-			// SA-11：停跟随仅停动作，导入选择集保留——显式接管后继续跟随原选择
+-			//（与资源单元分支一致；丢失选择会让接管后的供给退化为零选择）。
+-			SelectedKeys: prev.SelectedKeys,
+-			Subs:         prev.Subs, Detached: true, Consented: prev.Consented, LastOutcome: "detached",
+-			LastSuccess:  time.Now(),
+-		}
+-		st.upsertEntry(next, prev.Generation)
++	_ = adapter
++	return c.detachUnitOnDistro(distro, unit, func(prev StateEntry) StateEntry {
++		prev.Detached = true
++		prev.LastOutcome = "detached"
++		prev.LastSuccess = time.Now()
++		return prev
+ 	})
+ }
+ 
++// detachUnitOnDistro 在解析出的目标 generation 上对登记应用变更（PR04）：
++// 零值 entry（未登记）报错而非静默追加空代登记；变更不搬动其它目标的
++// 授权与基准（entryFor 同代命中才拿到 prev）。
++func (c *Coordinator) detachUnitOnDistro(distro string, unit UnitID, mutate func(prev StateEntry) StateEntry) error {
++	var resolveErr error
++	err := c.state.mutate(func(st *StateFile) {
++		gen, rerr := resolveDistroGeneration(st, distro)
++		if rerr != nil {
++			resolveErr = rerr
++			return
++		}
++		prev := st.entryFor(unit, gen)
++		if prev.Generation != gen {
++			resolveErr = fmt.Errorf("wsl supply unit %q has no registration on target %q", string(unit), distro)
++			return
++		}
++		st.upsertEntry(mutate(prev), gen)
++	})
++	if err != nil {
++		return err
++	}
++	return resolveErr
++}
++
+ // TakeOverUnit 执行「预览后确认接管」：以预览时目标 hash 做 CAS（旧预览不
+ // 覆盖新编辑——目标已变则拒绝并要求重新检查），随后用当前来源生成接管候选
+-// 并提交，重建键级基准。仅键级适配器支持。
++// 并提交，重建键级基准。仅键级适配器支持。PR07：入口与等锁后检查取消——
++// 已取消的请求不得进入任何接管写入。
+ func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI, unit UnitID, expectedTargetHash string) (UnitResult, error) {
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: unit, Outcome: UnitBlocked, Detail: "context-canceled", Err: err}, nil
++	}
+ 	if name, isSkill := ParseSkillUnit(unit); isSkill {
+ 		return c.takeOverSkill(ctx, distro, unit, name, expectedTargetHash)
+ 	}
+@@ -1266,6 +1373,11 @@ func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI,
+ 	}
+ 	c.applyMu.Lock()
+ 	defer c.applyMu.Unlock()
++	// PR07：等锁期间取消的请求不得进入接管写入。
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: unit, Policy: adapter.Policy(), Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}, nil
++	}
+ 
+ 	target, err := c.ResolveTarget(ctx, distro, cli)
+ 	if err != nil {
+@@ -1312,12 +1424,18 @@ func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI,
+ 		return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitFailed, Detail: "write-failed", Err: err}, nil
+ 	}
+ 	undo.unit = unit
+-	c.recordProjectionState(target, unit, adapter.Policy(), cand.SourceHash, hexHash(cand.Content), cand.TransformVersion, cand.Subs, cand.Outcome)
+-	detail := "takeover-written"
++	takeoverDetail := "takeover-written"
+ 	if len(cand.Notes) > 0 {
+-		detail += "; " + strings.Join(cand.Notes, "; ")
++		takeoverDetail += "; " + strings.Join(cand.Notes, "; ")
++	}
++	if serr := c.recordProjectionState(target, unit, adapter.Policy(), cand.SourceHash, hexHash(cand.Content), cand.TransformVersion, cand.Subs, cand.Outcome); serr != nil {
++		// PR05：接管内容已提交但清单未持久化——不得报 applied；写入保留。
++		return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "content-committed-state-unpersisted; " + takeoverDetail,
++			Err:  fmt.Errorf("wsl supply state persist failed after takeover commit (content kept; re-takeover after fixing state storage): %w", serr),
++			Undo: undo}, nil
+ 	}
+-	return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: detail, Undo: undo}, nil
++	return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: takeoverDetail, Undo: undo}, nil
+ }
+ 
+ // firstFileOrDefault 返回适配器首个目标文件（接管路径叼接用；键级适配器单文件）。
+@@ -1458,8 +1576,15 @@ func (c *Coordinator) submitFileCtx(ctx context.Context, target TargetRef, relPa
+ 	linuxPath := target.LinuxRoot + "/" + strings.TrimPrefix(relPath, "/")
+ 	if err := c.probes.Chmod(target.Distro, "600", linuxPath); err != nil {
+ 		if restoreErr := restorePreimage(uncPath, dir, prev, prevExisted); restoreErr != nil {
+-			_ = os.Remove(uncPath)
+-			return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restore failed: %v; target removed)", err, restoreErr)
++			// PR03：恢复失败时只在目标仍等于本次提交字节时才删除（可证明是
++			// 本次写入）；否则保留未知现状并如实报告（不无条件删现存目标）。
++			if cur, rerr := os.ReadFile(uncPath); rerr == nil && hexHash(cur) == hexHash(content) {
++				if rmErr := os.Remove(uncPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
++					return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restore failed: %v; target removal failed: %v; target state indeterminate)", err, restoreErr, rmErr)
++				}
++				return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restore failed: %v; target removed)", err, restoreErr)
++			}
++			return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restore failed: %v; target no longer matches this commit — left intact for manual recovery)", err, restoreErr)
+ 		}
+ 		return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restored)", err)
+ 	}
+@@ -1470,8 +1595,8 @@ func (c *Coordinator) submitFileCtx(ctx context.Context, target TargetRef, relPa
+ 	return newCompensationHandle(target, relPath, content, prev, prevExisted, sensitive), nil
+ }
+ 
+-// submitFile 是无 ctx 接线的兼容入口（资源/技能等旧调用面）：取消保护由
+-// Apply 循环的逐单元检查承担；新调用面一律用 submitFileCtx。
++// submitFile 是无 ctx 接线的兼容入口（保留同壳面：测试桩/未来调用方使用；
++// 生产路径一律用 submitFileCtx——取消保护由 ctx 棺查承担）。
+ func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
+ 	return c.submitFileCtx(context.Background(), target, relPath, content, sensitive)
+ }
+@@ -1520,29 +1645,118 @@ func (c *Coordinator) submitSensitive(ctx context.Context, target TargetRef, rel
+ 	}
+ 	got, err := os.ReadFile(uncPath)
+ 	if err != nil || hexHash(got) != hexHash(content) {
+-		// 提交后校验失败（罕见：rename 后即刻内容不符）：先安全恢复前像
+-		//（前像可能同样含密钥，走同一敏感原语），恢复也失败才移除并双报告
+-		//（SA-07：不静默、不以删整文件充当回滚的唯一手段）。
+-		if restoreErr := c.submitSensitiveRestore(ctx, target, relPath, prev, prevExisted); restoreErr != nil {
+-			_ = os.Remove(uncPath)
+-			return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; preimage restore failed: %v; target removed)", err, restoreErr)
+-		}
+-		return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; preimage restored)", err)
++		// PR03：读回失配的有界、非递归恢复——不再重新提交（旧实现
++		// restore→submitSensitive→restore 无限递归，且每层无条件删目标）。
++		return c.recoverSensitiveCommitMismatch(ctx, target, relPath, content, prev, prevExisted, err)
+ 	}
+ 	return newCompensationHandle(target, relPath, content, prev, prevExisted, true), nil
+ }
+ 
+-// submitSensitiveRestore 以同一敏感原语恢复前像（读回校验失败路径专用；
+-// 前像不存在时移除新增文件）。
+-func (c *Coordinator) submitSensitiveRestore(ctx context.Context, target TargetRef, relPath string, prev []byte, prevExisted bool) error {
+-	if !prevExisted {
+-		if err := os.Remove(filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))); err != nil && !errors.Is(err, os.ErrNotExist) {
+-			return err
+-		}
+-		return nil
++// recoverSensitiveCommitMismatch 处理敏感提交读回失配（PR03）：单次复验、
++// 零递归、不删未知现状、保全用户前像。判定表：
++//   - 复验目标仍等于本次提交字节 → 瞬时读毛刺，提交有效（返回撤销句柄）；
++//   - 复验目标等于前像 → 本次提交未真正落地，目标即用户原状（无写入面
++//     需要恢复，如实报未证实）；
++//   - 其余（后改/损坏/不可读/已消失）→ 绝不删除或覆盖；有前像时先把它
++//     保全到 0700 staging 内收紧 0600 的恢复备份（备份是秘密，同样私有），
++//     返回需人工恢复错误并给出备份位置。
++func (c *Coordinator) recoverSensitiveCommitMismatch(ctx context.Context, target TargetRef, relPath string, content, prev []byte, prevExisted bool, firstErr error) (*CompensationHandle, error) {
++	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))
++	cur, curErr := os.ReadFile(uncPath)
++	switch {
++	case curErr == nil && hexHash(cur) == hexHash(content):
++		// 瞬时读毛刺：提交实际完好。
++		return newCompensationHandle(target, relPath, content, prev, prevExisted, true), nil
++	case curErr == nil && prevExisted && hexHash(cur) == hexHash(prev):
++		return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v); target still equals preimage — commit unverified, no managed change applied", firstErr)
++	}
++	backupNote := ""
++	if prevExisted {
++		// PR07：备份是写面动作——已取消的请求不做任何新写（前像随错误链丢失，
++		// 但目标现状不被触碰；错误如实说明边界）。
++		if cerr := ctx.Err(); cerr != nil {
++			return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; target read: %v); target left intact (not deleted); recovery canceled before preimage backup: %v", firstErr, curErr, cerr)
++		}
++		backup, berr := c.preserveSensitivePreimageBackup(target, relPath, prev)
++		if berr != nil {
++			return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; target read: %v); target left intact (unknown state, not deleted); preimage backup failed: %v", firstErr, curErr, berr)
++		}
++		backupNote = "; user preimage preserved at " + filepath.Base(backup) + " (mode 600) for manual recovery"
++	}
++	return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; target read: %v); target content no longer matches this commit — left intact, not deleted%s", firstErr, curErr, backupNote)
++}
++
++// preserveSensitivePreimageBackup 把用户前像保全为可恢复备份（PR03）：写入
++// 已验证 0700 的私有 staging，distro 内收紧 0600 并复验后 rename 到目标
++// 目录的隐藏备份名（秘密备份同样 0700/0600，不落在宽权限位置）。ctx 已
++// 取消时不做任何写（取消优先，前像随错误链丢失但目标现状不被触碰）。
++func (c *Coordinator) preserveSensitivePreimageBackup(target TargetRef, relPath string, prev []byte) (string, error) {
++	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))
++	dir := filepath.Dir(uncPath)
++	stagingUNC, stagingLinux, err := c.ensurePrivateStaging(target)
++	if err != nil {
++		return "", err
+ 	}
+-	_, err := c.submitSensitive(ctx, target, relPath, prev, prev, true)
+-	return err
++	tmp, err := os.CreateTemp(stagingUNC, ".amagi-recover-*")
++	if err != nil {
++		return "", fmt.Errorf("create recovery backup staging file: %w", err)
++	}
++	tmpPath := tmp.Name()
++	tmpLinux := stagingLinux + "/" + filepath.Base(tmpPath)
++	if _, err := tmp.Write(prev); err != nil {
++		_ = tmp.Close()
++		_ = os.Remove(tmpPath)
++		return "", fmt.Errorf("write recovery backup staging file: %w", err)
++	}
++	if err := tmp.Close(); err != nil {
++		_ = os.Remove(tmpPath)
++		return "", fmt.Errorf("close recovery backup staging file: %w", err)
++	}
++	_ = os.Chmod(tmpPath, 0o600) // 宿主侧尽力；权威位由 distro 内 chmod 落实
++	if err := c.probes.Chmod(target.Distro, "600", tmpLinux); err != nil {
++		_ = os.Remove(tmpPath)
++		return "", fmt.Errorf("chmod 600 recovery backup in distro: %w", err)
++	}
++	if mode, ok := c.probes.StatMode(target.Distro, tmpLinux); !ok || mode != "600" {
++		_ = os.Remove(tmpPath)
++		return "", fmt.Errorf("verify recovery backup mode: got %q ok=%v (expected 600)", mode, ok)
++	}
++	backupPath, err := reserveHiddenName(dir, ".amagi-supply-recover-*")
++	if err != nil {
++		_ = os.Remove(tmpPath)
++		return "", fmt.Errorf("reserve recovery backup slot: %w", err)
++	}
++	if err := os.Rename(tmpPath, backupPath); err != nil {
++		_ = os.Remove(tmpPath)
++		_ = os.Remove(backupPath)
++		return "", fmt.Errorf("commit recovery backup: %w", err)
++	}
++	return backupPath, nil
++}
++
++// ensureSensitiveTargetPerms 验证并（必要时）收紧敏感单元既有副本的目标
++// 权限（PR02）：健康 0600 → 零字节重写保持；未知（探测不可用）或非 0600
++// → 先 chmod 600 再复验，仍不可证 → 返回错误（调用方以失败上报，启动闸门
++// 阻断消费）。不删除任何文件。
++func (c *Coordinator) ensureSensitiveTargetPerms(ctx context.Context, target TargetRef, relPath string) error {
++	if c.probes.StatMode == nil {
++		return fmt.Errorf("sensitive supply file %s permissions unverifiable (stat-mode probe unavailable)", relPath)
++	}
++	linuxPath := target.LinuxRoot + "/" + strings.TrimPrefix(relPath, "/")
++	if mode, ok := c.probes.StatMode(target.Distro, linuxPath); ok && mode == "600" {
++		return nil // 健康 0600：保持零字节重写
++	}
++	// PR07：收紧是写面动作——已取消的请求不做任何权限改写。
++	if err := ctx.Err(); err != nil {
++		return fmt.Errorf("sensitive supply file %s permission re-tighten canceled: %w", relPath, err)
++	}
++	if err := c.probes.Chmod(target.Distro, "600", linuxPath); err != nil {
++		return fmt.Errorf("re-tighten sensitive supply file %s (unknown or loose mode): %w", relPath, err)
++	}
++	if mode, ok := c.probes.StatMode(target.Distro, linuxPath); !ok || mode != "600" {
++		return fmt.Errorf("sensitive supply file %s permissions unverified after re-tighten: mode=%q ok=%v (expected 600)", relPath, mode, ok)
++	}
++	return nil
+ }
+ 
+ // ensurePrivateStaging 建立/验证目标根下的 .amagi-staging：MkdirAll → distro
+diff --git a/internal/wslsupply/coordinator_test.go b/internal/wslsupply/coordinator_test.go
+index f7ab2cb..fa6a04f 100644
+--- a/internal/wslsupply/coordinator_test.go
++++ b/internal/wslsupply/coordinator_test.go
+@@ -8,10 +8,12 @@ package wslsupply
+ import (
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
+ 	"strings"
++	"sync"
+ 	"sync/atomic"
+ 	"testing"
+ 
+@@ -21,14 +23,19 @@ import (
+ 
+ // fakeProbes 构造注入本地 temp dir 的探测面；identityCalls 计数身份探测次数
+ // （Plan 纯读断言消费）。modes 追踪 Chmod 落下的权限位（StatMode 读回，
+-// SA-06 staging 验证的假探测面）。
++// SA-06 staging 验证的假探测面）。PR09：modes/chmodErr 由互斥锁保护——
++// 并发原语测试（TestSubmitFilePrimitiveTrueConcurrency 等）从多个 goroutine
++// 同时写读；PR02：未显式记录 chmod 的路径回退读真实文件权限（已提交副本
++// 携带 0600，敏感零写入路径的权限复核需要可信探测面）。
+ type fakeProbes struct {
+ 	uncRoot       string
+ 	identity      platform.WSLUserIdentity
+ 	identityCalls int32
+ 	chmodErr      error
+ 	chmodCalls    int32
+-	modes         map[string]string
++
++	mu    sync.Mutex
++	modes map[string]string
+ }
+ 
+ func (f *fakeProbes) probes() Probes {
+@@ -42,8 +49,11 @@ func (f *fakeProbes) probes() Probes {
+ 		},
+ 		Chmod: func(_, mode string, paths ...string) error {
+ 			atomic.AddInt32(&f.chmodCalls, 1)
++			f.mu.Lock()
+ 			if f.chmodErr != nil {
+-				return f.chmodErr
++				err := f.chmodErr
++				f.mu.Unlock()
++				return err
+ 			}
+ 			if f.modes == nil {
+ 				f.modes = map[string]string{}
+@@ -51,18 +61,31 @@ func (f *fakeProbes) probes() Probes {
+ 			for _, p := range paths {
+ 				f.modes[p] = mode
+ 			}
++			f.mu.Unlock()
+ 			return nil
+ 		},
+ 		StatMode: func(_, linuxPath string) (string, bool) {
+-			if f.modes == nil {
++			f.mu.Lock()
++			m, ok := f.modes[linuxPath]
++			f.mu.Unlock()
++			if ok {
++				return m, true
++			}
++			info, err := os.Stat(filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/"))))
++			if err != nil || !info.Mode().IsRegular() {
+ 				return "", false
+ 			}
+-			m, ok := f.modes[linuxPath]
+-			return m, ok
++			return fmt.Sprintf("%o", info.Mode().Perm()), true
+ 		},
+ 	}
+ }
+ 
++// setChmodError 注入/清除 chmod 失败（锁内写；供运行中途翻转的故障注入）。
++func (f *fakeProbes) setChmodError(err error) {
++	f.mu.Lock()
++	f.chmodErr = err
++	f.mu.Unlock()
++}
+ func newFakeProbes(t *testing.T) *fakeProbes {
+ 	t.Helper()
+ 	return &fakeProbes{
+diff --git a/internal/wslsupply/plugins.go b/internal/wslsupply/plugins.go
+index eb7dafa..cb0e62f 100644
+--- a/internal/wslsupply/plugins.go
++++ b/internal/wslsupply/plugins.go
+@@ -103,9 +103,12 @@ type PluginOperation struct {
+ 	// AnchorRef 是宿主侧已解析的确切版本（npm）或 commit（git）——「同时
+ 	// 应用」模式的重放锚点；空串表示在 distro 内独立解析。
+ 	AnchorRef string
+-	// Filters 是登记在案的子资源过滤清单（SA12：重放时按 Pi 原生 packages
+-	// 语义写入 distro settings 过滤对象并复检；nil/空 = 该类型不受限）。
+-	Filters PluginFilters
++	// Filters 是登记在案的子资源过滤清单快照（SA12：重放时按 Pi 原生
++	// packages 语义写入 distro settings 过滤对象并复检）。PR08 三态指针：
++	// nil = 调用方未提供选择（沿用既有登记 reg.Filters——旧调用兼容）；
++	// 非 nil（含全字段 nil）= 显式完整期望快照——全 nil 表示「全部加载」
++	//（纯字符串登记形态），可把旧过滤集重置回全量，不再被解释为沿用。
++	Filters *PluginFilters
+ }
+ 
+ // PluginOpResult 是一次重放的结构化结果（脱敏：不含完整命令输出正文，只有
+@@ -902,13 +905,27 @@ func writeFilterField(b *strings.Builder, name string, vals []string) {
+ 	b.WriteString("]")
+ }
+ 
++// opFiltersOrZero 解引用操作过滤快照（nil = 未提供 → 零值全量形态；install
++// 语义：安装即定义终态，无「沿用」一说）。
++func opFiltersOrZero(op PluginOperation) PluginFilters {
++	if op.Filters == nil {
++		return PluginFilters{}
++	}
++	return *op.Filters
++}
++
+ // applyDistroFilters 把 distro settings.json 中 identity 对应的登记改写为与
+ // filters 等价的 Pi 原生形态（SA12：过滤不能只记录在 CodeBox 清单——WSL 消
+ // 费的是 distro settings 的原生登记，只 pi install 字符串源会启用整包资源）。
+ // 有过滤项 → 过滤对象；无过滤项 → 纯字符串源（全部加载，含从旧过滤对象归一
+ // 回全量形态）。已是规范形态则零写入（幂等）。经 sjson 定点替换，packages
+ // 之外的其余内容字节不动；同目录 tmp+rename 原子落盘。
+-func (p *PluginScope) applyDistroFilters(target TargetRef, identity, source string, filters PluginFilters) error {
++func (p *PluginScope) applyDistroFilters(ctx context.Context, target TargetRef, identity, source string, filters PluginFilters) error {
++	// PR07：重放成功后的后继本地写同样受取消生命周期约束——已取消的请求
++	// 不再改写 settings（实体已落盘时按既有 filter-apply-failed 语义重试收敛）。
++	if err := ctx.Err(); err != nil {
++		return fmt.Errorf("filter apply canceled: %w", err)
++	}
+ 	path := filepath.Join(target.UNCRoot, "settings.json")
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+@@ -1079,7 +1096,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 	if hasReg && reg.Installed && distroEntry != nil {
+ 		facts := p.probeEntity(target, spec)
+ 		if facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned &&
+-			filtersAppliedForm(distroEntry, op.Filters) {
++			filtersAppliedForm(distroEntry, opFiltersOrZero(op)) {
+ 			return PluginOpResult{Source: op.Source, Kind: PluginOpInstall, Outcome: PluginOutcomeAlreadyOK,
+ 				Detail: "同版本已安装（幂等命中，未执行重放命令）", OpID: opID,
+ 				PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
+@@ -1119,7 +1136,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 
+ 	// SA12：按 Pi 原生 packages 语义应用过滤清单（过滤对象/纯字符串形态），
+ 	// 应用或复检失败绝不报已安装——实体已落盘时如实报告失败阶段。
+-	if err := p.applyDistroFilters(target, identity, replaySource, op.Filters); err != nil {
++	if err := p.applyDistroFilters(ctx, target, identity, replaySource, opFiltersOrZero(op)); err != nil {
+ 		return fail(PluginErrFilterApplyFailed, "过滤清单应用失败: "+err.Error())
+ 	}
+ 
+@@ -1128,7 +1145,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 	if !settingsHit || !facts.present {
+ 		return fail(PluginErrVerifyFailed, "重放命令成功但复检未通过（settings 登记或实体缺失）")
+ 	}
+-	if ok, why := p.verifyDistroFilters(target, identity, op.Filters); !ok {
++	if ok, why := p.verifyDistroFilters(target, identity, opFiltersOrZero(op)); !ok {
+ 		return fail(PluginErrVerifyFailed, "重放命令成功但过滤清单复检未通过（"+why+"）")
+ 	}
+ 	if spec.Type == "npm" && facts.version != "" && facts.version != pinned {
+@@ -1139,7 +1156,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 	}
+ 	entry := PluginStateEntry{
+ 		Source: replaySource, Identity: identity, SourceType: spec.Type, Generation: target.Generation,
+-		PinnedRef: pinned, RefKind: PluginRefKind(refKind), Filters: op.Filters,
++		PinnedRef: pinned, RefKind: PluginRefKind(refKind), Filters: opFiltersOrZero(op),
+ 		OpID: opID, LastOp: PluginOpInstall, Installed: true, EntityVerified: true,
+ 		LastSuccess: time.Now(),
+ 	}
+@@ -1153,7 +1170,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 	}
+ 	p.invalidateSnapshot(target.Distro)
+ 	detail := "已按固定 " + refKindLabel(refKind) + " " + pinned + " 原生安装并复检通过"
+-	if hasFilters(op.Filters) {
++	if hasFilters(opFiltersOrZero(op)) {
+ 		detail += "（含子资源过滤对象，已按 Pi 原生语义写入并复检）"
+ 	}
+ 	if !generationBindable(target.Generation) {
+@@ -1310,11 +1327,12 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
+ 		refKind = refKindFor(spec, op.AnchorRef)
+ 	}
+ 
+-	// 生效过滤清单：面板携带新清单时覆盖，否则保留既有登记（重放后按同一
+-	// 清单应用与复检——SA12）。
++	// 生效过滤清单（PR08）：op.Filters 为 nil（未提供）时沿用既有登记；
++	// 非 nil（含全字段 nil）是显式完整期望——可把旧过滤集重置回全量加载，
++	// 与 Windows 当前登记期望一致。
+ 	filters := reg.Filters
+-	if hasFilters(op.Filters) {
+-		filters = op.Filters
++	if op.Filters != nil {
++		filters = *op.Filters
+ 	}
+ 
+ 	// 幂等：锚点与登记/实体一致且过滤形态一致 → already-ok（SA12：过滤形态
+@@ -1348,7 +1366,7 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
+ 	}
+ 
+ 	// SA12：按 Pi 原生语义应用生效过滤清单并复检（失败绝不写已安装）。
+-	if err := p.applyDistroFilters(target, identity, replaySource, filters); err != nil {
++	if err := p.applyDistroFilters(ctx, target, identity, replaySource, filters); err != nil {
+ 		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
+ 			e.OpID, e.LastOp, e.Installed, e.EntityVerified = opID, PluginOpUpdate, false, false
+ 			e.LastErrorCode, e.LastDetail = PluginErrFilterApplyFailed, truncateDetail("过滤清单应用失败: "+err.Error())
+diff --git a/internal/wslsupply/plugins_test.go b/internal/wslsupply/plugins_test.go
+index 16d32c0..685f848 100644
+--- a/internal/wslsupply/plugins_test.go
++++ b/internal/wslsupply/plugins_test.go
+@@ -1125,7 +1125,7 @@ func TestPluginInstallAppliesFiltersAsNativeObject(t *testing.T) {
+ 		Prompts:    []string{"prompts/review.md"},
+ 	}
+ 	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
+-		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: filters,
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: &filters,
+ 	})
+ 	if res.Outcome != PluginOutcomeInstalled || !res.OK {
+ 		t.Fatalf("filtered install must succeed: %+v", res)
+@@ -1192,7 +1192,7 @@ func TestPluginInstallFiltersConvergeFromDrift(t *testing.T) {
+ 	})
+ 	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
+ 		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
+-		Filters: PluginFilters{Skills: []string{"skills/core"}},
++		Filters: &PluginFilters{Skills: []string{"skills/core"}},
+ 	})
+ 	if res.Outcome != PluginOutcomeInstalled {
+ 		t.Fatalf("filter drift must converge via replay (not already-ok): %+v", res)
+@@ -1300,7 +1300,7 @@ func TestPluginFiltersKeepSiblingEntriesUntouched(t *testing.T) {
+ 	if err := os.WriteFile(d.settingsPath(), []byte(raw), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if err := c.plugins.applyDistroFilters(target, "npm:foo", "npm:foo@1.3.0",
++	if err := c.plugins.applyDistroFilters(context.Background(), target, "npm:foo", "npm:foo@1.3.0",
+ 		PluginFilters{Extensions: []string{"extensions/a.ts"}}); err != nil {
+ 		t.Fatalf("applyDistroFilters: %v", err)
+ 	}
+@@ -1568,7 +1568,7 @@ func TestPluginInstallExplicitEmptyArrayFilter(t *testing.T) {
+ 	c := newCoord()
+ 	filters := PluginFilters{Extensions: []string{}, Skills: []string{"skills/core"}}
+ 	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
+-		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: filters,
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: &filters,
+ 	})
+ 	if res.Outcome != PluginOutcomeInstalled || !res.OK {
+ 		t.Fatalf("explicit-empty-array install must succeed: %+v", res)
+@@ -1602,7 +1602,7 @@ func TestPluginInstallExplicitEmptyArrayFilter(t *testing.T) {
+ 	}
+ 	// 幂等：过滤形态一致 → already-ok。
+ 	res2 := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
+-		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: filters,
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: &filters,
+ 	})
+ 	if res2.Outcome != PluginOutcomeAlreadyOK {
+ 		t.Fatalf("matching empty-array form must be idempotent already-ok: %+v", res2)
+@@ -1623,7 +1623,7 @@ func TestPluginEmptyArrayFilterDriftNotAlreadyOK(t *testing.T) {
+ 	})
+ 	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
+ 		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
+-		Filters: PluginFilters{Extensions: []string{}},
++		Filters: &PluginFilters{Extensions: []string{}},
+ 	})
+ 	if res.Outcome != PluginOutcomeInstalled {
+ 		t.Fatalf("plain-string drift against expected [] must converge via replay, got %+v", res)
+diff --git a/internal/wslsupply/resources.go b/internal/wslsupply/resources.go
+index 7a8f53d..f8d916b 100644
+--- a/internal/wslsupply/resources.go
++++ b/internal/wslsupply/resources.go
+@@ -434,8 +434,14 @@ func (c *Coordinator) applyResourcePlanned(ctx context.Context, target TargetRef
+ }
+ 
+ // applyResourceUnit 执行资源单元写入（文件单元走 submitFile 原语；目录单元
+-// 走 submitDirUnit staging 原语）。
+-func (c *Coordinator) applyResourceUnit(_ context.Context, target TargetRef, planned PlannedUnit, cli CLI, rel string, adopt bool) UnitResult {
++// 走 submitDirUnit staging 原语）。PR07：ctx 贯通——入口检查取消，文件单元
++// 改用 submitFileCtx（取消保护），目录单元在 submitDirUnit 内于不可逆交换前
++// 再检查。
++func (c *Coordinator) applyResourceUnit(ctx context.Context, target TargetRef, planned PlannedUnit, cli CLI, rel string, adopt bool) UnitResult {
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}
++	}
+ 	scope := c.resourceScope(cli)
+ 	if scope == nil {
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
+@@ -478,9 +484,9 @@ func (c *Coordinator) applyResourceUnit(_ context.Context, target TargetRef, pla
+ 	var undo *CompensationHandle
+ 	if scope.isFileUnit(rel) {
+ 		// 单文件：私有 staging 提交原语（0600；普通单元 chmod 失败恢复前像）。
+-		undo, err = c.submitFile(target, targetRel, files[0].Bytes, false)
++		undo, err = c.submitFileCtx(ctx, target, targetRel, files[0].Bytes, false)
+ 	} else {
+-		undo, err = c.submitDirUnit(target, targetRel, files, writtenTreeHash)
++		undo, err = c.submitDirUnit(ctx, target, targetRel, files, writtenTreeHash)
+ 	}
+ 	if err != nil {
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+@@ -492,7 +498,13 @@ func (c *Coordinator) applyResourceUnit(_ context.Context, target TargetRef, pla
+ 		outcome = "takeover-written"
+ 	}
+ 	notes := skillApplyNotes(m)
+-	c.recordProjectionState(target, planned.Unit, PolicyTrackedProjection, m.SourceHash, writtenTreeHash, skillsTransformVersion, nil, outcome)
++	if serr := c.recordProjectionState(target, planned.Unit, PolicyTrackedProjection, m.SourceHash, writtenTreeHash, skillsTransformVersion, nil, outcome); serr != nil {
++		// PR05：内容已提交但清单未持久化——不得报 applied；写入保留。
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "content-committed-state-unpersisted; " + outcome,
++			Err:  fmt.Errorf("wsl supply state persist failed after resource commit (content kept): %w", serr),
++			Undo: undo}
++	}
+ 	detail := outcome
+ 	if len(notes) > 0 {
+ 		detail += "; " + strings.Join(notes, "; ")
+@@ -552,12 +564,21 @@ func (c *Coordinator) previewResourceUnit(target TargetRef, unit UnitID, cli CLI
+ 
+ // takeOverResource 资源单元的预览后接管（CAS；未同意仍拦截）。
+ func (c *Coordinator) takeOverResource(ctx context.Context, distro string, unit UnitID, cli CLI, rel, expectedTargetHash string) (UnitResult, error) {
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}, nil
++	}
+ 	scope := c.resourceScope(cli)
+ 	if scope == nil {
+ 		return UnitResult{}, fmt.Errorf("resources scope unavailable")
+ 	}
+ 	c.applyMu.Lock()
+ 	defer c.applyMu.Unlock()
++	// PR07：等锁期间取消的请求不得进入接管写入。
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}, nil
++	}
+ 	target, err := c.ResolveTarget(ctx, distro, cli)
+ 	if err != nil {
+ 		return UnitResult{}, fmt.Errorf("resolve wsl supply target: %w", err)
+@@ -617,7 +638,10 @@ func (c *Coordinator) SetUnitSelection(distro string, cli CLI, unit UnitID, keys
+ 		}
+ 	}
+ 	return c.state.mutate(func(st *StateFile) {
+-		prev, _ := st.entry(unit)
++		// PR04：选择集写入必须作用于解析到的目标 generation——不能取全局
++		// 最近代（A→B→操作A 时会改 B 的登记）。unknown/legacy 代经 entryFor
++		// 拒绝匹配：不搬运其它目标的授权与基准。
++		prev := st.entryFor(unit, target.Generation)
+ 		next := StateEntry{
+ 			Unit: unit, Policy: adapter.Policy(), Generation: target.Generation,
+ 			SelectedKeys: selected, Consented: prev.Consented,
+@@ -626,11 +650,7 @@ func (c *Coordinator) SetUnitSelection(distro string, cli CLI, unit UnitID, keys
+ 			Frozen: prev.Frozen, FrozenReason: prev.FrozenReason,
+ 			LastSuccess: prev.LastSuccess, LastOutcome: prev.LastOutcome,
+ 		}
+-		if prev.Generation == target.Generation || prev.Generation == "" {
+-			st.upsertEntry(next, target.Generation)
+-		} else {
+-			st.upsertEntry(next, target.Generation)
+-		}
++		st.upsertEntry(next, target.Generation)
+ 		st.Distro = target.Distro
+ 	})
+ }
+diff --git a/internal/wslsupply/review_fixes_test.go b/internal/wslsupply/review_fixes_test.go
+new file mode 100644
+index 0000000..01226bc
+--- /dev/null
++++ b/internal/wslsupply/review_fixes_test.go
+@@ -0,0 +1,844 @@
++package wslsupply
++
++// review_fixes_test.go — wsl-goal-closure 集成审核 PR01–PR08 修复的正式回归
++// （phase-review.md 2026-10 复现脚本转正）：每条先在修复前以反例形式失败，
++// 修复后钉住目标行为。证据脚本（phase-review-*-repro.go）保留在报告目录，
++// 不进包内。锚点：PR01 遗留敏感副本风险/受管副本谓词；PR02 敏感零写入路径
++// 权限验证；PR03 读回失配有界恢复；PR04 目标性 mutate 的明确 generation；
++// PR05 状态未持久化不虚报成功；PR06 读快照深复制隔离；PR07 取消零新写；
++// PR08 插件 update 过滤集重置。
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"amagi-codebox/internal/launcher"
++	"amagi-codebox/internal/platform"
++)
++
++// ---------------------------------------------------------------------------
++// PR01：v1 迁移遗留的敏感副本风险 + 受管副本谓词
++// ---------------------------------------------------------------------------
++
++// writeLegacyV1State 直接落一份 v1 形态清单（无 distro 指纹的旧 generation）。
++func writeLegacyV1State(t *testing.T, cfgDir, distro string, visionWritten, consented bool) {
++	t.Helper()
++	entry := StateEntry{
++		Unit: UnitSharedVisionExport, Policy: PolicyManagedNamespace,
++		Generation: "old-generation", Consented: consented,
++		LastOutcome: "written",
++	}
++	if visionWritten {
++		entry.LastWrittenHash = "legacy-hash"
++	}
++	legacy := StateFile{
++		SchemaVersion: 1, Generation: "old-generation",
++		Distro: distro, Home: "/home/u",
++		Units: []StateEntry{entry},
++	}
++	b, err := json.Marshal(legacy)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(cfgDir, StateFileName), b, 0o600); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func newVisionCoordinator(t *testing.T, vision func() ([]byte, error)) (*Coordinator, *fakeProbes) {
++	t.Helper()
++	fp := newFakeProbes(t)
++	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
++	c.RegisterProjection(NewVisionExportAdapter(&stubSharedSource{vision: vision, modality: func() ([]byte, error) { return nil, nil }}))
++	return c, fp
++}
++
++// TestReviewFixPR01LegacySensitiveRiskPending（反例：phase-review-repro.go
++// LEGACY_WITHDRAWAL）：v1 曾发布 → 升级隔离后旧授权不可用（awaiting-consent），
++// 但旧副本风险不能随迁移消失——按 v1 顶层 Distro 归属为待确认状态；其它
++// distro 不被误算；新代成功写入/确认撤回后清除。
++func TestReviewFixPR01LegacySensitiveRiskPending(t *testing.T) {
++	t.Run("v1 written keeps pending risk keyed by distro", func(t *testing.T) {
++		c, fp := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		// 旧副本仍在目标上（升级前发布过）。
++		if err := os.MkdirAll(filepath.Dir(visionFile(fp)), 0o700); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(visionFile(fp), []byte(`{"api_key":"SYNTHETIC"}`), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		writeLegacyV1State(t, filepath.Dir(c.state.path), "Ubuntu", true, true)
++		c2, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		c2.state.path = c.state.path // 重新加载同一份 v1 清单
++		res := runUnit(t, c2, CLICommon, UnitSharedVisionExport)
++		if res.Results[0].Outcome != UnitBlocked || res.Results[0].Detail != "awaiting-consent" {
++			t.Fatalf("legacy must not inherit authorization, got %+v", res.Results[0])
++		}
++		if !c2.LegacySensitiveCopyPending("Ubuntu") {
++			t.Fatal("legacy risk must stay pending for the recorded distro after migration")
++		}
++		if c2.LegacySensitiveCopyPending("Other") {
++			t.Fatal("risk must not leak to other distros")
++		}
++		// 新代从未写入：当前代谓词为 false（legacy 风险由迁移标记承载）。
++		if c2.SensitiveCopyPending("Ubuntu", UnitSharedVisionExport) {
++			t.Fatal("current-generation predicate must stay false before any new-generation write")
++		}
++	})
++
++	t.Run("v1 without distro attribution records no risk", func(t *testing.T) {
++		c, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		writeLegacyV1State(t, filepath.Dir(c.state.path), "", true, true)
++		c2, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		c2.state.path = c.state.path
++		runUnit(t, c2, CLICommon, UnitSharedVisionExport)
++		if c2.LegacySensitiveCopyPending("Ubuntu") || c2.LegacySensitiveCopyPending("") {
++			t.Fatal("unattributable legacy records must not create pending risk for any distro")
++		}
++	})
++
++	t.Run("successful new-generation write clears legacy risk", func(t *testing.T) {
++		content := `{"version":1,"updated_at":"t","models":[{"id":"p/m","api_key":"sk"}]}`
++		c, _ := newVisionCoordinator(t, func() ([]byte, error) { return []byte(content), nil })
++		writeLegacyV1State(t, filepath.Dir(c.state.path), "Ubuntu", true, true)
++		c2, _ := newVisionCoordinator(t, func() ([]byte, error) { return []byte(content), nil })
++		c2.state.path = c.state.path
++		if err := c2.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
++			t.Fatal(err)
++		}
++		res := runUnit(t, c2, CLICommon, UnitSharedVisionExport)
++		if res.Results[0].Outcome != UnitApplied {
++			t.Fatalf("republished copy must apply: %+v", res.Results[0])
++		}
++		if c2.LegacySensitiveCopyPending("Ubuntu") {
++			t.Fatal("successful new-generation write must take over the legacy risk marker")
++		}
++		if !c2.SensitiveCopyPending("Ubuntu", UnitSharedVisionExport) {
++			t.Fatal("written copy must be visible via the current-generation predicate")
++		}
++	})
++
++	t.Run("confirmed withdrawal clears legacy risk", func(t *testing.T) {
++		content := `{"version":1,"updated_at":"t","models":[{"id":"p/m","api_key":"sk"}]}`
++		c, _ := newVisionCoordinator(t, func() ([]byte, error) { return []byte(content), nil })
++		writeLegacyV1State(t, filepath.Dir(c.state.path), "Ubuntu", true, true)
++		c2, _ := newVisionCoordinator(t, func() ([]byte, error) { return []byte(content), nil })
++		c2.state.path = c.state.path
++		if err := c2.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
++			t.Fatal(err)
++		}
++		if res := runUnit(t, c2, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
++			t.Fatalf("publish: %+v", res.Results[0])
++		}
++		if !c2.LegacySensitiveCopyPending("Ubuntu") {
++			// 发布后风险已由当前受管状态接管（标记清除是合法终态）。
++		}
++		// 关闭宿主导出 → 撤回确认副本移除 → 无任何遗留风险。
++		c3, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		c3.state.path = c.state.path
++		res := runUnit(t, c3, CLICommon, UnitSharedVisionExport)
++		if res.Results[0].Outcome != UnitApplied || !strings.HasPrefix(res.Results[0].Detail, "withdrawn") {
++			t.Fatalf("closed export must withdraw the copy: %+v", res.Results[0])
++		}
++		if c3.LegacySensitiveCopyPending("Ubuntu") {
++			t.Fatal("confirmed withdrawal must clear the legacy risk marker")
++		}
++		if c3.SensitiveCopyPending("Ubuntu", UnitSharedVisionExport) {
++			t.Fatal("withdrawn copy must not report pending")
++		}
++	})
++}
++
++// TestReviewFixPR01SensitiveCopyPendingMatrix 钉住「证明无受管副本」与
++// 「可能残留」的判定矩阵（PR01 核心）：供启动闸门区分放行/阻断。
++func TestReviewFixPR01SensitiveCopyPendingMatrix(t *testing.T) {
++	seed := func(t *testing.T, entry StateEntry) *Coordinator {
++		c, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		if err := c.state.mutate(func(st *StateFile) {
++			st.Targets = map[string]TargetRecord{"gen-1": {Distro: "Ubuntu", LastSeen: time.Now()}}
++			st.Generation = "gen-1"
++			st.Distro = "Ubuntu"
++			entry.Generation = "gen-1"
++			st.Units = []StateEntry{entry}
++		}); err != nil {
++			t.Fatal(err)
++		}
++		return c
++	}
++	cases := []struct {
++		name  string
++		entry StateEntry
++		want  bool
++	}{
++		{"never written stays false", StateEntry{Unit: UnitSharedVisionExport, LastOutcome: "awaiting-consent"}, false},
++		{"written copy is pending", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", LastOutcome: "written"}, true},
++		{"failed write keeps pending", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", LastOutcome: "failed"}, true},
++		{"withdrawn clears pending", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", LastOutcome: "withdrawn"}, false},
++		{"withdrawn-already-absent clears pending", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", LastOutcome: "withdrawn-already-absent"}, false},
++		{"detached copy belongs to user", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", Detached: true, LastOutcome: "detached"}, false},
++		{"externally deleted copy is gone", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", Frozen: true, FrozenReason: "local-deletion-frozen"}, false},
++		{"hand-modified copy still pending", StateEntry{Unit: UnitSharedVisionExport, LastWrittenHash: "h", Frozen: true, FrozenReason: "local-modification-frozen"}, true},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			c := seed(t, tc.entry)
++			if got := c.SensitiveCopyPending("Ubuntu", UnitSharedVisionExport); got != tc.want {
++				t.Fatalf("SensitiveCopyPending = %v, want %v", got, tc.want)
++			}
++		})
++	}
++	t.Run("no registration at all is false", func(t *testing.T) {
++		c, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++		if c.SensitiveCopyPending("Ubuntu", UnitSharedVisionExport) {
++			t.Fatal("never-managed target must not report pending copy")
++		}
++	})
++}
++
++// ---------------------------------------------------------------------------
++// PR02：敏感零写入路径（Fresh/既有副本被选择消费）统一验证目标权限
++// ---------------------------------------------------------------------------
++
++// TestReviewFixPR02UnchangedSensitiveVerifiesPerms（反例：phase-review-mode-repro.go）。
++func TestReviewFixPR02UnchangedSensitiveVerifiesPerms(t *testing.T) {
++	publish := func(t *testing.T) (*Coordinator, *fakeProbes) {
++		content := `{"version":1,"updated_at":"t","models":[{"id":"p/m","api_key":"sk"}]}`
++		c, fp := newVisionCoordinator(t, func() ([]byte, error) { return []byte(content), nil })
++		if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
++			t.Fatal(err)
++		}
++		if res := runUnit(t, c, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
++			t.Fatalf("setup publish: %+v", res.Results[0])
++		}
++		return c, fp
++	}
++	t.Run("loose 0644 copy is retightened and stays fresh", func(t *testing.T) {
++		c, fp := publish(t)
++		if err := os.Chmod(visionFile(fp), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
++		if res.Results[0].Outcome != UnitFresh {
++			t.Fatalf("retightened copy must stay fresh (zero-byte rewrite), got %+v", res.Results[0])
++		}
++		// 探测面必须验证到收紧后的 0600（fake chmod 记录位，真实文件位由
++		// launcher 侧回归覆盖）。
++		fp.mu.Lock()
++		mode, ok := fp.modes["/home/u/.agents/"+VisionExportFile]
++		fp.mu.Unlock()
++		if !ok || mode != "600" {
++			t.Fatalf("loose copy must be re-tightened and verified 0600 via probe, got %q ok=%v", mode, ok)
++		}
++	})
++	t.Run("chmod failure fails the unit instead of passing", func(t *testing.T) {
++		c, fp := publish(t)
++		if err := os.Chmod(visionFile(fp), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		fp.setChmodError(errors.New("wsl.exe dead"))
++		res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
++		if res.Results[0].Outcome != UnitFailed || res.Results[0].Detail != "sensitive-permissions-unsafe" {
++			t.Fatalf("unverifiable permissions must fail the sensitive unit, got %+v", res.Results[0])
++		}
++	})
++	t.Run("healthy 0600 copy keeps zero-byte rewrite", func(t *testing.T) {
++		c, fp := publish(t)
++		before, err := os.Stat(visionFile(fp))
++		if err != nil {
++			t.Fatal(err)
++		}
++		res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
++		if res.Results[0].Outcome != UnitFresh {
++			t.Fatalf("healthy copy must stay fresh, got %+v", res.Results[0])
++		}
++		after, err := os.Stat(visionFile(fp))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !after.ModTime().Equal(before.ModTime()) {
++			t.Fatal("healthy 0600 copy must not be rewritten")
++		}
++	})
++}
++
++// ---------------------------------------------------------------------------
++// PR03：敏感提交读回失配的有界、非递归恢复
++// ---------------------------------------------------------------------------
++
++// stagingSabotage 在 StatMode 接缝对 staging 内临时名注入改写（提交字节被
++// 换掉 → rename 后读回失配）。仅作用于 .amagi-staging 内路径。
++type stagingSabotage struct {
++	uncRoot string
++	writes  int
++	payload func(attempt int) []byte
++}
++
++func (s *stagingSabotage) install(t *testing.T, c *Coordinator) {
++	t.Helper()
++	c.probes.StatMode = func(distro, linuxPath string) (string, bool) {
++		if strings.HasSuffix(linuxPath, ".amagi-staging") {
++			return "700", true // staging 目录验证保持健康
++		}
++		if !strings.Contains(linuxPath, ".amagi-staging/") {
++			return "600", true
++		}
++		s.writes++
++		if s.writes == 1 && s.payload != nil {
++			// 只污染首次提交的临时字节（后续恢复/备份的 staging 写不再改写——
++		// 故障是单发注入）。
++			_ = os.WriteFile(filepath.Join(s.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/"))), s.payload(s.writes), 0o600)
++		}
++		return "600", true
++	}
++}
++
++// publishVisionForRecovery 建立受管副本后返回可注入故障的协调器面。
++func publishVisionForRecovery(t *testing.T) (*Coordinator, *fakeProbes) {
++	t.Helper()
++	content := `{"version":1,"updated_at":"t1","models":[{"id":"p/m","api_key":"sk"}]}`
++	c, fp := newVisionCoordinator(t, func() ([]byte, error) { return []byte(content), nil })
++	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
++		t.Fatal(err)
++	}
++	if res := runUnit(t, c, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
++		t.Fatalf("setup publish: %+v", res.Results[0])
++	}
++	return c, fp
++}
++
++// TestReviewFixPR03ReadbackMismatchBoundedRecovery（反例：phase-review-restore-repro.go）：
++// 持续读回失配时恢复有界（不再递归重提交）、目标现状不被删除、前像被
++// 保全为 0600 恢复备份、错误如实报告恢复路径。
++func TestReviewFixPR03ReadbackMismatchBoundedRecovery(t *testing.T) {
++	c, fp := publishVisionForRecovery(t)
++	prevBytes, err := os.ReadFile(visionFile(fp))
++	if err != nil {
++		t.Fatal(err)
++	}
++	// 来源变化触发一次更新写入；staging 临时名内容被接缝改写 → rename 后
++	// 读回失配（目标既非本次提交也非前像）。
++	c2content := `{"version":1,"updated_at":"t2","models":[{"id":"p/m2","api_key":"sk2"}]}`
++	shared := &stubSharedSource{vision: func() ([]byte, error) { return []byte(c2content), nil }, modality: func() ([]byte, error) { return nil, nil }}
++	c.projections[UnitSharedVisionExport] = NewVisionExportAdapter(shared)
++	sab := &stagingSabotage{uncRoot: fp.uncRoot, payload: func(attempt int) []byte {
++		return []byte(fmt.Sprintf("sabotaged staging bytes %d", attempt))
++	}}
++	sab.install(t, c)
++	res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
++	if res.Results[0].Outcome != UnitFailed || res.Results[0].Detail != "write-failed" {
++		t.Fatalf("persistent read-back mismatch must fail the unit, got %+v", res.Results[0])
++	}
++	if sab.writes > 2 {
++		t.Fatalf("recovery must be bounded and non-recursive, staging writes = %d", sab.writes)
++	}
++	got, err := os.ReadFile(visionFile(fp))
++	if err != nil || len(got) == 0 {
++		t.Fatalf("unknown target content must be left intact, got %q err=%v", got, err)
++	}
++	if res.Results[0].Err == nil || !strings.Contains(res.Results[0].Err.Error(), "manual recovery") {
++		t.Fatalf("error must point at manual recovery, got %v", res.Results[0].Err)
++	}
++	// 前像保全：目标目录下存在 .amagi-supply-recover-* 备份，内容等于提交前
++	// 前像且 0600（秘密备份同样私有落盘）。
++	entries, derr := os.ReadDir(filepath.Dir(visionFile(fp)))
++	if derr != nil {
++		t.Fatal(derr)
++	}
++	var backups []string
++	for _, e := range entries {
++		if strings.HasPrefix(e.Name(), ".amagi-supply-recover-") {
++			backups = append(backups, filepath.Join(filepath.Dir(visionFile(fp)), e.Name()))
++		}
++	}
++	if len(backups) == 0 {
++		t.Fatalf("user preimage must be preserved as a recovery backup, dir=%v", entries)
++	}
++	b, berr := os.ReadFile(backups[0])
++	if berr != nil || string(b) != string(prevBytes) {
++		t.Fatalf("backup must hold the preimage verbatim, got %q err=%v", b, berr)
++	}
++	if info, serr := os.Stat(backups[0]); serr != nil || info.Mode().Perm() != 0o600 {
++		t.Fatalf("secret backup must be 0600, got %v err=%v", info.Mode().Perm(), serr)
++	}
++	// 注：恢复备份是设计内残留（错误链指引人工恢复）；staging 内无半提交
++	// 临时名（备份本身不在 .amagi-staging 内）。
++	if entries, serr := os.ReadDir(filepath.Join(filepath.Dir(visionFile(fp)), ".amagi-staging")); serr == nil && len(entries) != 0 {
++		t.Fatalf("staging must hold no half-committed temp names: %v", entries)
++	}
++}
++
++// TestReviewFixPR03RecoveryWhenTargetEqualsPreimage：读回失配但复验目标仍
++// 等于前像（提交未真正落地）——不写备份、不删目标，如实报未证实。
++func TestReviewFixPR03RecoveryWhenTargetEqualsPreimage(t *testing.T) {
++	c, fp := publishVisionForRecovery(t)
++	prevBytes, err := os.ReadFile(visionFile(fp))
++	if err != nil {
++		t.Fatal(err)
++	}
++	c2content := `{"version":1,"updated_at":"t2","models":[{"id":"p/m2","api_key":"sk2"}]}`
++	shared := &stubSharedSource{vision: func() ([]byte, error) { return []byte(c2content), nil }, modality: func() ([]byte, error) { return nil, nil }}
++	c.projections[UnitSharedVisionExport] = NewVisionExportAdapter(shared)
++	// staging 临时名被换成前像字节：rename 后目标 == 前像（提交未落地）。
++	sab := &stagingSabotage{uncRoot: fp.uncRoot, payload: func(int) []byte { return prevBytes }}
++	sab.install(t, c)
++	res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
++	if res.Results[0].Outcome != UnitFailed || !strings.Contains(res.Results[0].Err.Error(), "still equals preimage") {
++		t.Fatalf("preimage-intact mismatch must be reported as unverified commit, got %+v err=%v", res.Results[0], res.Results[0].Err)
++	}
++	if entries, err := os.ReadDir(filepath.Dir(visionFile(fp))); err == nil {
++		for _, e := range entries {
++			if strings.HasPrefix(e.Name(), ".amagi-supply-recover-") {
++				t.Fatalf("no backup must be written when the target equals the preimage: %v", e.Name())
++			}
++		}
++	}
++	if got, err := os.ReadFile(visionFile(fp)); err != nil || string(got) != string(prevBytes) {
++		t.Fatalf("preimage must stay intact, got %q err=%v", got, err)
++	}
++}
++
++// TestReviewFixPR03RecoveryCanceledSkipsBackupWrites：恢复期间取消 → 零新写
++//（不写备份、不碰目标现状），错误如实说明前像随链丢失但目标未被删除。
++func TestReviewFixPR03RecoveryCanceledSkipsBackupWrites(t *testing.T) {
++	c, fp := publishVisionForRecovery(t)
++	prevBytes, err := os.ReadFile(visionFile(fp))
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	// 目标已变成未知内容（模拟 rename 后被外部改写）——不等于提交也不等于前像。
++	if err := os.WriteFile(visionFile(fp), []byte("post-rename unknown bytes"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	_, rerr := c.recoverSensitiveCommitMismatch(ctx, mustResolve(t, c, "Ubuntu", CLICommon), VisionExportFile,
++		[]byte(`{"new":"commit"}`), prevBytes, true, errors.New("synthetic first mismatch"))
++	if rerr == nil || !strings.Contains(rerr.Error(), "recovery canceled") {
++		t.Fatalf("canceled recovery must report the boundary, got %v", rerr)
++	}
++	if entries, derr := os.ReadDir(filepath.Dir(visionFile(fp))); derr == nil {
++		for _, e := range entries {
++			if strings.HasPrefix(e.Name(), ".amagi-supply-recover-") {
++				t.Fatalf("canceled recovery must not write a backup: %v", e.Name())
++			}
++		}
++	}
++	if got, gerr := os.ReadFile(visionFile(fp)); gerr != nil || string(got) != "post-rename unknown bytes" {
++		t.Fatalf("target must stay untouched, got %q err=%v", got, gerr)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// PR04：目标性 mutate 使用明确目标 generation
++// ---------------------------------------------------------------------------
++
++type reviewAdapter struct {
++	rel    string
++	source func() []byte
++}
++
++func (a *reviewAdapter) Unit() UnitID            { return UnitID("pi/review") }
++func (a *reviewAdapter) Policy() Policy          { return PolicyTrackedProjection }
++func (a *reviewAdapter) Sensitive() bool         { return false }
++func (a *reviewAdapter) RequiresConsent() bool   { return false }
++func (a *reviewAdapter) Files() []string         { return []string{a.rel} }
++func (a *reviewAdapter) Plan(_ SupplyRequest, s *Snapshot, _ *StateEntry) (PlannedUnit, error) {
++	m, _ := s.File(a.rel)
++	return PlannedUnit{Action: ActionWriteProjection, RelPath: a.rel, ExpectedTargetHash: m.Hash}, nil
++}
++func (a *reviewAdapter) Candidate(context.Context, TargetRef, *StateEntry) (ProjectionCandidate, error) {
++	return ProjectionCandidate{Content: a.source(), SourceHash: "synthetic"}, nil
++}
++
++// multiTargetHome 按distro 区分 Home 的探测面（A/B 两个独立目标根；
++// generation 指纹含 distro+machine-id+uid+home，因此 A/B 天然不同代）。
++func multiTargetProbes(t *testing.T) (root string, p Probes) {
++	t.Helper()
++	root = t.TempDir()
++	p = Probes{
++		Identity: func(distro string) platform.WSLUserIdentity {
++			return platform.WSLUserIdentity{UID: "1000", Home: "/home/" + strings.ToLower(distro), MachineID: "fixture", OK: true}
++		},
++		ToUNC: func(_, linuxPath string) string {
++			return filepath.Join(root, "targets", filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++		},
++		Chmod:    func(string, string, ...string) error { return nil },
++		StatMode: func(_, _ string) (string, bool) { return "600", true },
++	}
++	return root, p
++}
++
++// TestReviewFixPR04KeepLocalTargetsRequestedDistro（反例：phase-review-repro.go
++// KEEP_LOCAL_REQUEST_A）：A→B→对 A 停跟随时全局最近代是 B——必须改 A 不动 B。
++func TestReviewFixPR04KeepLocalTargetsRequestedDistro(t *testing.T) {
++	root, p := multiTargetProbes(t)
++	c := NewCoordinator(filepath.Join(root, "state"), nil, p)
++	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte { return []byte(`{"v":1}`) }})
++	var genA, genB string
++	for _, d := range []string{"A", "B"} {
++		res, err := c.RunUnits(context.Background(), d, CLIPi, ReasonManual, []UnitID{"pi/review"})
++		if err != nil {
++			t.Fatalf("run %s: %v", d, err)
++		}
++		if d == "A" {
++			genA = res.Target.Generation
++		} else {
++			genB = res.Target.Generation
++		}
++	}
++	if err := c.DropUnitRegistration("A", CLIPi, "pi/review"); err != nil {
++		t.Fatalf("keep-local A: %v", err)
++	}
++	st := c.state.load()
++	for _, e := range st.Units {
++		if e.Unit != "pi/review" {
++			continue
++		}
++		switch e.Generation {
++		case genA:
++			if !e.Detached {
++				t.Fatal("requested target A must be detached")
++			}
++		case genB:
++			if e.Detached {
++				t.Fatal("B must stay managed (global latest generation must not be mutated)")
++			}
++		}
++	}
++}
++
++// TestReviewFixPR04AmbiguousGenerationRejected：同名 distro 多代并存 → 拒绝
++// 歧义（不改别人）；未知 distro 无登记 → 明确报错。
++func TestReviewFixPR04AmbiguousGenerationRejected(t *testing.T) {
++	c, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++	if err := c.state.mutate(func(st *StateFile) {
++		st.Targets = map[string]TargetRecord{
++			"gen-old": {Distro: "Ubuntu", LastSeen: time.Now().Add(-time.Hour)},
++			"gen-new": {Distro: "Ubuntu", LastSeen: time.Now()},
++		}
++		st.Units = []StateEntry{{Unit: UnitSharedVisionExport, Generation: "gen-new", Consented: true}}
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := c.DropUnitRegistration("Ubuntu", CLICommon, UnitSharedVisionExport); err == nil || !strings.Contains(err.Error(), "多代") {
++		t.Fatalf("ambiguous distro generations must be rejected explicitly, got %v", err)
++	}
++	if err := c.DropUnitRegistration("Unknown", CLICommon, UnitSharedVisionExport); err == nil || !strings.Contains(err.Error(), "没有可归属") {
++		t.Fatalf("unknown distro must be rejected explicitly, got %v", err)
++	}
++}
++
++// TestReviewFixPR04SetUnitSelectionTargetsResolvedGeneration：A→B→对 A 设
++// 选择集时落在 A 的分区（复制 B 的登记是旧 bug 形态）。
++func TestReviewFixPR04SetUnitSelectionTargetsResolvedGeneration(t *testing.T) {
++	root, p := multiTargetProbes(t)
++	c := NewCoordinator(filepath.Join(root, "state"), nil, p)
++	shape := keyedShape{relPath: "settings.json", sensitive: false, selectLeaf: true,
++		desired: func(obj map[string]any) (map[string]any, []string) { return map[string]any{}, nil },
++		convert: func(string, any, TransformFacts) (any, bool, string) { return nil, false, "stub" }}
++	c.RegisterProjection(&keyedProjectionAdapter{unitID: "pi/revsel", shape: shape, requiresConsent: true})
++	var genA, genB string
++	for _, d := range []string{"A", "B"} {
++		if err := c.GrantUnitConsent(context.Background(), d, CLIPi, "pi/revsel"); err != nil {
++			t.Fatalf("consent %s: %v", d, err)
++		}
++		target, err := c.ResolveTarget(context.Background(), d, CLIPi)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if d == "A" {
++			genA = target.Generation
++		} else {
++			genB = target.Generation
++		}
++	}
++	if err := c.SetUnitSelection("A", CLIPi, "pi/revsel", []string{"model"}); err != nil {
++		t.Fatal(err)
++	}
++	st := c.state.load()
++	for _, e := range st.Units {
++		if e.Unit != "pi/revsel" {
++			continue
++		}
++		switch e.Generation {
++		case genA:
++			if len(e.SelectedKeys) != 1 || !e.SelectedKeys["model"] {
++				t.Fatalf("A's entry must carry the selection, got %+v", e.SelectedKeys)
++			}
++		case genB:
++			if len(e.SelectedKeys) != 0 {
++				t.Fatalf("B's entry must not receive A's selection, got %+v", e.SelectedKeys)
++			}
++		}
++	}
++}
++
++// ---------------------------------------------------------------------------
++// PR05：状态持久化失败不得虚报 applied/synced
++// ---------------------------------------------------------------------------
++
++// TestReviewFixPR05StateSaveFailureNotApplied（反例：phase-review-repro.go
++// STATE_SAVE_FAILURE）：内容已提交、清单写失败 → UnitFailed
++// content-committed-state-unpersisted；内存不冒充已持久化；写入内容保留。
++func TestReviewFixPR05StateSaveFailureNotApplied(t *testing.T) {
++	fp := newFakeProbes(t)
++	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
++	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte {
++		// 候选生成（提交前）后、登记落盘前把清单路径换成目录（rename 确定失败）。
++		_ = os.Remove(c.state.path)
++		_ = os.Mkdir(c.state.path, 0o700)
++		return []byte(`{"v":1}`)
++	}})
++	res := runUnit(t, c, CLIPi, "pi/review")
++	if res.Results[0].Outcome != UnitFailed || !strings.HasPrefix(res.Results[0].Detail, "content-committed-state-unpersisted") {
++		t.Fatalf("state persist failure must not report applied, got %+v", res.Results[0])
++	}
++	if res.Results[0].Err == nil {
++		t.Fatal("structured error must be surfaced")
++	}
++	// 内容确实已提交（不能用删除凑一致）。
++	targetPath := filepath.Join(fp.uncRoot, "home/u/.pi/agent/review.json")
++	if got, err := os.ReadFile(targetPath); err != nil || string(got) != `{"v":1}` {
++		t.Fatalf("committed content must be kept, got %q err=%v", got, err)
++	}
++	// 内存态不得冒充已持久化：GetStatus 无 written 声明。
++	st := c.GetStatus("Ubuntu", CLIPi)
++	for _, u := range st.Units {
++		if u.Unit == "pi/review" && (u.LastOutcome == "written" || !u.LastSuccess.IsZero()) {
++			t.Fatalf("memory must not claim persisted write after save failure: %+v", u)
++		}
++	}
++	// 撤销句柄仍返回（启动中止补偿可用）。
++	if res.Results[0].Undo == nil {
++		t.Fatal("undo handle must survive state-persist failure")
++	}
++	_ = os.RemoveAll(c.state.path)
++}
++
++// ---------------------------------------------------------------------------
++// PR06：读快照深复制隔离（生产 race 消除 + 不可变/不别名）
++// ---------------------------------------------------------------------------
++
++// TestReviewFixPR06SnapshotDeepCopyIsolation：load 返回的快照与后续 mutate
++// 完全隔离——顶层 slice、嵌套 map（Subs/SelectedKeys/Targets.InspectedAt/
++// Plugins filters）都不别名。
++func TestReviewFixPR06SnapshotDeepCopyIsolation(t *testing.T) {
++	c, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
++	if err := c.state.mutate(func(st *StateFile) {
++		st.Targets = map[string]TargetRecord{"gen-1": {Distro: "Ubuntu", InspectedAt: map[CLI]time.Time{CLIPi: time.Now()}}}
++		st.Generation = "gen-1"
++		st.Units = []StateEntry{{Unit: UnitSharedVisionExport, Generation: "gen-1",
++			Subs: map[string]SubHash{"k": {Source: "a"}}, SelectedKeys: map[string]bool{"k": true}}}
++		st.Plugins = []PluginStateEntry{{Identity: "npm:foo", Filters: PluginFilters{Skills: []string{"s1"}}}}
++	}); err != nil {
++		t.Fatal(err)
++	}
++	snap := c.state.load()
++	if err := c.state.mutate(func(st *StateFile) {
++		st.Units[0].Subs["k"] = SubHash{Source: "mutated"}
++		st.Units[0].SelectedKeys["k"] = false
++		st.Targets["gen-1"].InspectedAt[CLIPi] = time.Time{}
++		st.Plugins[0].Filters.Skills[0] = "mutated"
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if snap.Units[0].Subs["k"].Source != "a" || !snap.Units[0].SelectedKeys["k"] {
++		t.Fatalf("unit snapshot must be isolated from later mutations: %+v", snap.Units[0])
++	}
++	if !snap.Targets["gen-1"].InspectedAt[CLIPi].IsZero() == false && snap.Targets["gen-1"].InspectedAt[CLIPi].IsZero() {
++		t.Fatalf("targets snapshot must be isolated: %+v", snap.Targets["gen-1"])
++	}
++	if snap.Plugins[0].Filters.Skills[0] != "s1" {
++		t.Fatalf("plugin filters snapshot must be isolated: %+v", snap.Plugins[0].Filters)
++	}
++}
++
++// TestReviewFixPR06ConcurrentPlanApplyNoRace：并发 Plan（读快照）与 Apply
++//（写状态）——修复前 TestCompensateApplySerialized 报真实数据竞争（write
++// upsertEntry vs read entryFor）；此处再钉一个直接读写对，配合 -race。
++func TestReviewFixPR06ConcurrentPlanApplyNoRace(t *testing.T) {
++	fp := newFakeProbes(t)
++	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
++	var content atomicValue
++	content.Store([]byte(`{"rev":1}`))
++	c.RegisterProjection(&reviewAdapter{rel: "prefs.json", source: func() []byte {
++		b, _ := content.Load().([]byte)
++		return b
++	}})
++	if _, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{"pi/review"}); err != nil {
++		t.Fatal(err)
++	}
++	var wg sync.WaitGroup
++	for i := 0; i < 4; i++ {
++		wg.Add(2)
++		go func(i int) {
++			defer wg.Done()
++			content.Store([]byte(fmt.Sprintf(`{"rev":%d}`, i+2)))
++			_, _ = c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{"pi/review"})
++		}(i)
++		go func() {
++			defer wg.Done()
++			snap, err := c.Inspect(context.Background(), mustResolve(t, c, "Ubuntu", CLIPi))
++			if err == nil {
++				_, _ = c.Plan(SupplyRequest{Target: snap.Target, SelectedUnits: []UnitID{"pi/review"}}, snap)
++			}
++			_ = c.GetStatus("Ubuntu", CLIPi)
++		}()
++	}
++	wg.Wait()
++}
++
++func mustResolve(t *testing.T, c *Coordinator, distro string, cli CLI) TargetRef {
++	t.Helper()
++	target, err := c.ResolveTarget(context.Background(), distro, cli)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return target
++}
++
++type atomicValue struct {
++	mu sync.Mutex
++	v  any
++}
++
++func (a *atomicValue) Store(v any) {
++	a.mu.Lock()
++	a.v = v
++	a.mu.Unlock()
++}
++
++func (a *atomicValue) Load() any {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	return a.v
++}
++
++// ---------------------------------------------------------------------------
++// PR07：取消贯通 skill/resource takeover 与目录提交
++// ---------------------------------------------------------------------------
++
++// TestReviewFixPR07CanceledSkillTakeoverZeroWrites（反例：phase-review-cancel-repro.go）。
++func TestReviewFixPR07CanceledSkillTakeoverZeroWrites(t *testing.T) {
++	root := t.TempDir()
++	src := filepath.Join(root, "host")
++	if err := os.MkdirAll(filepath.Join(src, "demo"), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(src, "demo", "SKILL.md"), []byte("# synthetic skill\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	scope := NewSkillsScope(src, DefaultSkillsScanLimits())
++	scope.Scan()
++	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
++		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "fixture", OK: true}}
++	c := newCoordinatorWith(t, fp, nil)
++	c.RegisterSkills(scope)
++	unit := SkillUnitID("demo")
++	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	res, err := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, unit, "")
++	if err != nil {
++		t.Fatalf("TakeOverUnit: %v", err)
++	}
++	if res.Outcome != UnitBlocked || res.Detail != "context-canceled" {
++		t.Fatalf("canceled takeover must be blocked, got %+v", res)
++	}
++	if _, serr := os.Lstat(filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo/SKILL.md")); serr == nil {
++		t.Fatal("canceled takeover must not write the target tree")
++	}
++}
++
++// TestReviewFixPR07CanceledResourceTakeoverAndUnits：资源接管与常规单元同样
++// 受取消门约束（等锁后检查覆盖；RunUnits 主循环既有 SA16 逐单元检查）。
++func TestReviewFixPR07CanceledResourceTakeoverAndUnits(t *testing.T) {
++	fp := newFakeProbes(t)
++	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
++	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte { return []byte(`{"v":1}`) }})
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	res, err := c.RunUnits(ctx, "Ubuntu", CLIPi, ReasonLaunch, []UnitID{"pi/review"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.Results[0].Outcome != UnitBlocked || res.Results[0].Detail != "context-canceled" {
++		t.Fatalf("canceled run must block every unit before writes, got %+v", res.Results[0])
++	}
++	if _, serr := os.Lstat(filepath.Join(fp.uncRoot, "home/u/.pi/agent/review.json")); serr == nil {
++		t.Fatal("canceled run must not create the target file")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// PR08：插件 update 支持从有过滤/显式 [] 重置到完整加载
++// ---------------------------------------------------------------------------
++
++// TestReviewFixPR08UpdateResetsFiltersToFullLoad（反例：phase-review-filters-repro.go）。
++func TestReviewFixPR08UpdateResetsFiltersToFullLoad(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, _ := newPluginTestCoordinator(t, d)
++	filters := PluginFilters{Skills: []string{}}
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:demo@1.0.0", Kind: PluginOpInstall, AnchorRef: "1.0.0", Filters: &filters,
++	})
++	if res.Outcome != PluginOutcomeInstalled || !res.OK {
++		t.Fatalf("filtered install must succeed: %+v", res)
++	}
++	// 显式全 nil 期望 = 全部加载（纯字符串登记形态）——不再被解释为沿用旧清单。
++	next := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:demo@1.0.0", Kind: PluginOpUpdate, AnchorRef: "1.0.0", Filters: &PluginFilters{},
++	})
++	if next.Outcome != PluginOutcomeUpdated || !next.OK {
++		t.Fatalf("reset update must replay and converge (not already-ok), got %+v", next)
++	}
++	settings := mustReadSettings(t, d)
++	if strings.Contains(settings, "skills") {
++		t.Fatalf("reset update must remove the filter object (full load string form), got %s", settings)
++	}
++	if !strings.Contains(settings, `"npm:demo@1.0.0"`) {
++		t.Fatalf("registration must stay as plain source string, got %s", settings)
++	}
++	// 收敛后再次显式全 nil：幂等 already-ok。
++	again := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:demo@1.0.0", Kind: PluginOpUpdate, AnchorRef: "1.0.0", Filters: &PluginFilters{},
++	})
++	if again.Outcome != PluginOutcomeAlreadyOK {
++		t.Fatalf("converged full-load form must be idempotent already-ok, got %+v", again)
++	}
++}
++
++// TestReviewFixPR08UpdateNilFiltersKeepsRegistration：nil（未提供选择）保留
++// 旧调用兼容——沿用既有登记清单。
++func TestReviewFixPR08UpdateNilFiltersKeepsRegistration(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, _ := newPluginTestCoordinator(t, d)
++	filters := PluginFilters{Skills: []string{}}
++	if res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:demo@1.0.0", Kind: PluginOpInstall, AnchorRef: "1.0.0", Filters: &filters,
++	}); res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("setup: %+v", res)
++	}
++	next := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:demo@1.0.0", Kind: PluginOpUpdate, AnchorRef: "1.0.0", // Filters == nil
++	})
++	if next.Outcome != PluginOutcomeAlreadyOK {
++		t.Fatalf("nil filters must keep the registered filter set (compat), got %+v", next)
++	}
++	if !strings.Contains(mustReadSettings(t, d), `"skills":[]`) {
++		t.Fatalf("registered filter form must be untouched by nil-filter update, got %s", mustReadSettings(t, d))
++	}
++}
+diff --git a/internal/wslsupply/skills_submit.go b/internal/wslsupply/skills_submit.go
+index 497dbd9..eaad070 100644
+--- a/internal/wslsupply/skills_submit.go
++++ b/internal/wslsupply/skills_submit.go
+@@ -136,8 +136,13 @@ func snapshotSkillPreimage(uncSkillDir string, limits SkillsScanLimits) (entries
+ 
+ // applySkillUnit 执行一个技能单元的写入（Apply 阶段，applyMu 已持有）：
+ // 复核扫描缓存仍便携 → 读取并复核候选字节 → CAS 目标树 hash → 前像快照 →
+-// staging 提交 → 登记。部分失败逐项返回，不虚报成功。
+-func (c *Coordinator) applySkillUnit(_ context.Context, target TargetRef, planned PlannedUnit, adopt bool) UnitResult {
++// staging 提交 → 登记。部分失败逐项返回，不虚报成功。PR07：入口与不可逆
++// 交换前检查 ctx——已取消的接管/供给请求零新写。
++func (c *Coordinator) applySkillUnit(ctx context.Context, target TargetRef, planned PlannedUnit, adopt bool) UnitResult {
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}
++	}
+ 	name, ok := ParseSkillUnit(planned.Unit)
+ 	if !ok || c.skills == nil {
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
+@@ -175,7 +180,12 @@ func (c *Coordinator) applySkillUnit(_ context.Context, target TargetRef, planne
+ 			Err:    errors.New("target skill tree changed since planning (external edit retained)")}
+ 	}
+ 	prev, prevExisted, prevSnapshot, _ := snapshotSkillPreimage(uncSkillDir, limits)
+-	undo, err := c.submitDirUnit(target, skillRelDir(name), files, writtenTreeHash)
++	// PR07：不可逆交换前最后一次检查——取消不得触发目标树替换。
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}
++	}
++	undo, err := c.submitDirUnit(ctx, target, skillRelDir(name), files, writtenTreeHash)
+ 	if err != nil {
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 			Detail: "write-failed", Err: err}
+@@ -191,7 +201,13 @@ func (c *Coordinator) applySkillUnit(_ context.Context, target TargetRef, planne
+ 		outcome = "takeover-written"
+ 	}
+ 	notes := skillApplyNotes(m)
+-	c.recordProjectionState(target, planned.Unit, PolicyTrackedProjection, m.SourceHash, writtenTreeHash, skillsTransformVersion, nil, outcome)
++	if serr := c.recordProjectionState(target, planned.Unit, PolicyTrackedProjection, m.SourceHash, writtenTreeHash, skillsTransformVersion, nil, outcome); serr != nil {
++		// PR05：目录已提交但清单未持久化——不得报 applied；写入保留。
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "content-committed-state-unpersisted; " + outcome,
++			Err:  fmt.Errorf("wsl supply state persist failed after skill commit (content kept): %w", serr),
++			Undo: undo}
++	}
+ 	if len(notes) > 0 {
+ 		logWarn(c.log, "wslsupply", "技能供给附带诊断", strings.Join(notes, "; "))
+ 	}
+@@ -221,8 +237,12 @@ func skillApplyNotes(m *SkillManifest) []string {
+ // 目录共用）：唯一临时目录 → 写文件 → rename 交换 → distro chmod 批量补偿
+ // （644 文件/755 目录；失败恢复前像）→ 树 hash 读回校验。relDir 是目标相对
+ // 目录路径（如 "skills/foo"、".claude/commands/foo"）。交换/chmod 失败均恢复
+-// 原目录或清理新增。
+-func (c *Coordinator) submitDirUnit(target TargetRef, relDir string, files []skillWriteFile, expectedTreeHash string) (*CompensationHandle, error) {
++// 原目录或清理新增。PR07：入口与不可逆交换前检查 ctx——已取消的请求零新写
++//（不创建 staging、不交换目标树）。
++func (c *Coordinator) submitDirUnit(ctx context.Context, target TargetRef, relDir string, files []skillWriteFile, expectedTreeHash string) (*CompensationHandle, error) {
++	if err := ctx.Err(); err != nil {
++		return nil, fmt.Errorf("submit dir unit canceled: %w", err)
++	}
+ 	parent := filepath.Dir(filepath.Join(target.UNCRoot, filepath.FromSlash(relDir)))
+ 	if err := os.MkdirAll(parent, 0o700); err != nil {
+ 		return nil, fmt.Errorf("mkdir target parent dir: %w", err)
+@@ -278,6 +298,13 @@ func (c *Coordinator) submitDirUnit(target TargetRef, relDir string, files []ski
+ 		}
+ 		return nil, cause
+ 	}
++	// PR07：不可逆交换前检查——已取消的请求不得替换目标树（staging 清理，
++	// 现状保留）。
++	if err := ctx.Err(); err != nil {
++		cleanupStaging()
++		_ = os.Remove(prevDir)
++		return nil, fmt.Errorf("commit skill dir canceled before swap: %w", err)
++	}
+ 	if err := os.Rename(staging, targetDir); err != nil {
+ 		if prevDir != "" {
+ 			if rbErr := os.Rename(prevDir, targetDir); rbErr != nil {
+@@ -317,8 +344,17 @@ func (c *Coordinator) takeOverSkill(ctx context.Context, distro string, unit Uni
+ 	if c.skills == nil {
+ 		return UnitResult{}, fmt.Errorf("skills scope unavailable")
+ 	}
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}, nil
++	}
+ 	c.applyMu.Lock()
+ 	defer c.applyMu.Unlock()
++	// PR07：等锁期间取消的请求不得进入接管写入。
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}, nil
++	}
+ 
+ 	target, err := c.ResolveTarget(ctx, distro, CLICommon)
+ 	if err != nil {
+diff --git a/internal/wslsupply/state.go b/internal/wslsupply/state.go
+index b9b2cbc..bd9e805 100644
+--- a/internal/wslsupply/state.go
++++ b/internal/wslsupply/state.go
+@@ -18,6 +18,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"sort"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -85,7 +86,9 @@ type TargetRecord struct {
+ 
+ // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与
+ // revision（MarkDirty 落盘，重启可补漏；S0 不调度）。Targets 是身份索引
+-// （SA-02）；Units 允许同一 unit 多代分区共存。
++// （SA-02）；Units 允许同一 unit 多代分区共存。LegacySensitiveRisk（PR01）
++// 是 v1→v2 迁移遗留的敏感副本待确认记录：旧授权不继承，但曾发布的密钥
++// 副本不因迁移消失——按 v1 清单顶层 Distro（唯一身份线索）按 distro 归属。
+ type StateFile struct {
+ 	SchemaVersion   int       `json:"schemaVersion"`
+ 	Generation      string    `json:"generation,omitempty"`
+@@ -94,6 +97,9 @@ type StateFile struct {
+ 	LastInspectedAt time.Time `json:"lastInspectedAt,omitempty"`
+ 	// Targets 按 generation 指纹索引目标身份（SA-02）。
+ 	Targets map[string]TargetRecord `json:"targets,omitempty"`
++	// LegacySensitiveRisk（PR01）：distro → 曾发布且未确认撤回的敏感单元集。
++	// 新代成功写入（副本重新受管）或确认撤回（副本已移除）时清除。
++	LegacySensitiveRisk map[string]map[UnitID]bool `json:"legacySensitiveRisk,omitempty"`
+ 	// Plugins 是 P3-S5 插件重放登记（source 键控；重放成功且复检通过才
+ 	// Installed=true）。与 Units 分离：插件操作与文件同步分开授权与状态
+ 	//（design §四），不经 Plan/Apply 单元词汇表——启动链无法触达（结构性
+@@ -182,8 +188,15 @@ func newStateStore(configDir string) *stateStore {
+ 	return &stateStore{path: filepath.Join(configDir, StateFileName)}
+ }
+ 
++// legacySensitiveUnits 是迁移遗留风险需要跟踪的敏感单元集（PR01）：当前
++// 只有视觉清单导出（内嵌 api_key 且 per-target 授权）。
++var legacySensitiveUnits = map[UnitID]bool{UnitSharedVisionExport: true}
++
+ // load 读取清单（不存在时视为空清单；损坏时退回空清单并保留损坏文件不动——
+ // 「登记信息损坏/丢失时退回未托管」，不因状态库丢失重置 WSL 配置，design §三）。
++// PR06：返回锁内深复制的一致快照——调用方在锁外持有/修改副本都不会与
++// 并发 mutate 共享任何 slice/map 底层（浅拷贝会让 Plan 的 entryFor 读与
++// Apply 的 upsertEntry 写发生真实数据竞争）。
+ func (s *stateStore) load() StateFile {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+@@ -192,16 +205,16 @@ func (s *stateStore) load() StateFile {
+ 
+ func (s *stateStore) loadLocked() StateFile {
+ 	if s.loaded {
+-		return s.current
++		return cloneStateFile(s.current)
+ 	}
+ 	s.loaded = true
+ 	data, err := os.ReadFile(s.path)
+ 	if err != nil {
+-		return s.current // 未初始化的零值清单（schemaVersion 落盘时补）
++		return cloneStateFile(s.current) // 未初始化的零值清单（schemaVersion 落盘时补）
+ 	}
+ 	var f StateFile
+ 	if json.Unmarshal(data, &f) != nil || f.SchemaVersion > stateSchemaVersion {
+-		return s.current
++		return cloneStateFile(s.current)
+ 	}
+ 	if f.SchemaVersion < stateSchemaVersion {
+ 		migrateLegacyState(&f)
+@@ -222,7 +235,7 @@ func (s *stateStore) loadLocked() StateFile {
+ 		f.Targets = map[string]TargetRecord{}
+ 	}
+ 	s.current = f
+-	return s.current
++	return cloneStateFile(f)
+ }
+ 
+ // migrateLegacyState 把 v1 清单保守升级到 v2（内存视图；下次落盘写 v2）：
+@@ -230,11 +243,34 @@ func (s *stateStore) loadLocked() StateFile {
+ // legacy 前缀（永不与新代匹配，保留原文供诊断，不删除任何记录）。顶层
+ // Generation 同步隔离，避免它充当「当前目标」匹配链。插件登记同样隔离
+ // （v1 代无法验证属于哪个目标；重新重放/重授权后自然重建）。
++//
++// PR01：曾发布过的敏感单元（视觉清单）同时按 v1 顶层 Distro 登记遗留风险
++// ——迁移隔离旧授权是正确的，但旧副本不会因此消失；新代无授权时启动闸门
++// 需要能区分「证明无受管副本」与「可能残留」。Distro 缺失无法归属时不登记
++// （不能把别的 distro 的副本误算进任何当前目标）。
+ func migrateLegacyState(f *StateFile) {
+ 	for i := range f.Units {
+ 		if g := f.Units[i].Generation; g != "" && !strings.HasPrefix(g, legacyGenerationPrefix) {
+ 			f.Units[i].Generation = legacyGenerationPrefix + g
+ 		}
++		u := f.Units[i].Unit
++		if !legacySensitiveUnits[u] {
++			continue
++		}
++		if !f.Units[i].Consented && f.Units[i].LastWrittenHash == "" {
++			continue // 从未授权且从未发布：无副本风险
++		}
++		distro := strings.TrimSpace(f.Distro)
++		if distro == "" {
++			continue // 无法归属：不登记（宁缺勿滥）
++		}
++		if f.LegacySensitiveRisk == nil {
++			f.LegacySensitiveRisk = map[string]map[UnitID]bool{}
++		}
++		if f.LegacySensitiveRisk[distro] == nil {
++			f.LegacySensitiveRisk[distro] = map[UnitID]bool{}
++		}
++		f.LegacySensitiveRisk[distro][u] = true
+ 	}
+ 	for i := range f.Plugins {
+ 		if g := f.Plugins[i].Generation; g != "" && !strings.HasPrefix(g, legacyGenerationPrefix) {
+@@ -247,11 +283,31 @@ func migrateLegacyState(f *StateFile) {
+ 	f.SchemaVersion = stateSchemaVersion
+ }
+ 
+-// saveLocked 持久化当前清单（私有原子写：MkdirAll → tmp 0600 → rename →
++// clearLegacySensitiveRisk 清除某 distro 上一个敏感单元的迁移遗留风险标记
++// （新代成功写入=副本重新受管；确认撤回=副本已移除——两者都让当前状态面
++// 可以如实判定，不再需要 v1 线索兜底）。
++func clearLegacySensitiveRisk(st *StateFile, distro string, unit UnitID) {
++	if st.LegacySensitiveRisk == nil {
++		return
++	}
++	units, ok := st.LegacySensitiveRisk[distro]
++	if !ok {
++		return
++	}
++	delete(units, unit)
++	if len(units) == 0 {
++		delete(st.LegacySensitiveRisk, distro)
++	}
++	if len(st.LegacySensitiveRisk) == 0 {
++		st.LegacySensitiveRisk = nil
++	}
++}
++
++// saveLocked 持久化指定清单（私有原子写：MkdirAll → tmp 0600 → rename →
+ // chmod 0600）。调用方必须持有 s.mu。
+-func (s *stateStore) saveLocked() error {
+-	s.current.SchemaVersion = stateSchemaVersion
+-	b, err := json.MarshalIndent(s.current, "", "  ")
++func (s *stateStore) saveLocked(st StateFile) error {
++	st.SchemaVersion = stateSchemaVersion
++	b, err := json.MarshalIndent(st, "", "  ")
+ 	if err != nil {
+ 		return fmt.Errorf("marshal wsl supply state: %w", err)
+ 	}
+@@ -336,15 +392,138 @@ func (s *StateFile) upsertEntry(entry StateEntry, generation string) {
+ 	s.Units = append(s.Units, entry)
+ }
+ 
+-// mutate 在清单锁内完成一次读改写：fn 拿到当前清单指针，修改后原子落盘
+-// （失败时内存态保留修改、返回错误，由调用方决定是否告警——下次写盘会带上
+-// 同样的状态，不会丢失）。所有清单变更必须经 mutate，禁止在 load 返回的
+-// 副本上修改后漏存。
++// mutate 在清单锁内完成一次读改写：fn 拿到当前清单的**深复制**指针，修改
++// 后原子落盘。PR05/PR06 语义：落盘失败时内存态保持修改前状态（内存不得
++// 冒充已持久化——GetStatus/重启不可误判归属），并返回错误由调用方把结果
++// 区分为 content-committed/state-unpersisted；成功时才把副本发布为当前态。
++// 所有清单变更必须经 mutate，禁止在 load 返回的副本上修改后漏存。
+ func (s *stateStore) mutate(fn func(*StateFile)) error {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+-	st := s.loadLocked()
++	st := s.loadLocked() // 深复制：fn 的修改与并发读者完全隔离
+ 	fn(&st)
++	if err := s.saveLocked(st); err != nil {
++		return err // s.current 保持修改前状态
++	}
+ 	s.current = st
+-	return s.saveLocked()
++	return nil
++}
++
++// cloneStateFile 深复制清单（PR06）：Units/Targets/Plugins/Pending* 等全部
++// slice 与 map（含嵌套 map/slice）都复制底层数据，锁外读快照与锁内写互不
++// 别名。清单规模为个位数到几十条单元，复制成本可忽略。
++func cloneStateFile(f StateFile) StateFile {
++	out := f // 值字段（时间戳/标量）直接复制
++	if f.Targets != nil {
++		out.Targets = make(map[string]TargetRecord, len(f.Targets))
++		for gen, rec := range f.Targets {
++			if rec.InspectedAt != nil {
++				inspected := make(map[CLI]time.Time, len(rec.InspectedAt))
++				for cli, at := range rec.InspectedAt {
++					inspected[cli] = at
++				}
++				rec.InspectedAt = inspected
++			}
++			out.Targets[gen] = rec
++		}
++	}
++	if f.LegacySensitiveRisk != nil {
++		out.LegacySensitiveRisk = make(map[string]map[UnitID]bool, len(f.LegacySensitiveRisk))
++		for distro, units := range f.LegacySensitiveRisk {
++			cp := make(map[UnitID]bool, len(units))
++			for u, v := range units {
++				cp[u] = v
++			}
++			out.LegacySensitiveRisk[distro] = cp
++		}
++	}
++	if f.Plugins != nil {
++		out.Plugins = make([]PluginStateEntry, len(f.Plugins))
++		for i, e := range f.Plugins {
++			// 三态保全：nil 与空切片必须区分（空数组 = 一项都不加载），
++			// 用非 nil 底座 append 避免空切片折叠回 nil。
++			if e.Filters.Extensions != nil {
++				e.Filters.Extensions = append([]string{}, e.Filters.Extensions...)
++			}
++			if e.Filters.Skills != nil {
++				e.Filters.Skills = append([]string{}, e.Filters.Skills...)
++			}
++			if e.Filters.Prompts != nil {
++				e.Filters.Prompts = append([]string{}, e.Filters.Prompts...)
++			}
++			if e.Filters.Themes != nil {
++				e.Filters.Themes = append([]string{}, e.Filters.Themes...)
++			}
++			out.Plugins[i] = e
++		}
++	}
++	if f.LastInspectedAtByCLI != nil {
++		out.LastInspectedAtByCLI = make(map[CLI]time.Time, len(f.LastInspectedAtByCLI))
++		for cli, at := range f.LastInspectedAtByCLI {
++			out.LastInspectedAtByCLI[cli] = at
++		}
++	}
++	if f.PendingSources != nil {
++		out.PendingSources = make(map[string]uint64, len(f.PendingSources))
++		for k, v := range f.PendingSources {
++			out.PendingSources[k] = v
++		}
++	}
++	if f.PendingProgress != nil {
++		out.PendingProgress = make(map[string][]UnitID, len(f.PendingProgress))
++		for k, units := range f.PendingProgress {
++			out.PendingProgress[k] = append([]UnitID(nil), units...)
++		}
++	}
++	if f.Units != nil {
++		out.Units = make([]StateEntry, len(f.Units))
++		for i, e := range f.Units {
++			if e.Subs != nil {
++				subs := make(map[string]SubHash, len(e.Subs))
++				for k, v := range e.Subs {
++					subs[k] = v
++				}
++				e.Subs = subs
++			}
++			if e.SelectedKeys != nil {
++				selected := make(map[string]bool, len(e.SelectedKeys))
++				for k, v := range e.SelectedKeys {
++					selected[k] = v
++				}
++				e.SelectedKeys = selected
++			}
++			out.Units[i] = e
++		}
++	}
++	return out
++}
++
++// resolveDistroGeneration 从身份索引解析「该 distro 唯一可归属的一代」
++// （PR04）：目标性 mutate（停跟随/选择集）必须作用于明确目标 generation，
++// 不能取全局最近代（st.Generation 指向最后一次接触的目标——A→B→操作A 时
++// 会误改 B）。停机目标可用：只读索引不探测。同名 distro 多代并存（重装后
++// 新旧代同在）无法唯一归属 → 拒绝（歧义不改别人）；legacy/unknown 永不
++// 命中。顶层 Distro/Generation 作为索引缺失时的兼容线索（v2 早期清单）。
++func resolveDistroGeneration(st *StateFile, distro string) (string, error) {
++	valid := func(gen string) bool {
++		return gen != "" && gen != GenerationUnknown && !strings.HasPrefix(gen, legacyGenerationPrefix)
++	}
++	var gens []string
++	for gen, rec := range st.Targets {
++		if rec.Distro == distro && valid(gen) {
++			gens = append(gens, gen)
++		}
++	}
++	if len(gens) == 0 && st.Distro == distro && valid(st.Generation) {
++		gens = []string{st.Generation}
++	}
++	sort.Strings(gens)
++	switch len(gens) {
++	case 1:
++		return gens[0], nil
++	case 0:
++		return "", fmt.Errorf("WSL 目标 %q 没有可归属的供给登记（先检查/供给该目标后再操作）", distro)
++	default:
++		return "", fmt.Errorf("WSL 目标 %q 存在多代身份登记（%d 代），无法唯一归属；请先对该目标执行一次检查收敛后代际", distro, len(gens))
++	}
+ }
+diff --git a/launch_wsl_review_fixes_test.go b/launch_wsl_review_fixes_test.go
+new file mode 100644
+index 0000000..52753df
+--- /dev/null
++++ b/launch_wsl_review_fixes_test.go
+@@ -0,0 +1,181 @@
++package main
++
++// launch_wsl_review_fixes_test.go — wsl-goal-closure 审核 PR01 修复的启动
++// 闸门端到端回归（真实协调器 + runWSLSharedFilesAtLaunch）：
++//   - v1 迁移遗留的敏感副本风险（awaiting-consent + legacy 标记）阻断启动；
++//   - 受管副本在场 + 来源读失败（source-unavailable）阻断启动；
++//   - 受管副本在场 + 目标身份探测失败（target-unresolved）阻断启动；
++//   - 无受管副本历史的普通可选失败不阻断（PR01 反向边界）。
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"amagi-codebox/internal/platform"
++	"amagi-codebox/internal/wslsupply"
++)
++
++// reviewFixVisionSource 是可切换的宿主导出源（关闭 = os.ErrNotExist；瞬时
++// 故障 = 非 ErrNotExist 错误；正常 = 固定字节）。
++type reviewFixVisionSource struct {
++	mode    string // "ok" / "closed" / "error"
++	content []byte
++}
++
++func (s *reviewFixVisionSource) VisionExportBytes() ([]byte, error) {
++	switch s.mode {
++	case "closed":
++		return nil, os.ErrNotExist
++	case "error":
++		return nil, errors.New("synthetic transient source failure")
++	default:
++		return s.content, nil
++	}
++}
++
++func (s *reviewFixVisionSource) ModalityKBBytes() ([]byte, error) { return nil, nil }
++
++// reviewFixGateEnv 持有可翻转身份/源的真实协调器环境。
++type reviewFixGateEnv struct {
++	c         *wslsupply.Coordinator
++	src       *reviewFixVisionSource
++	identity  *bool
++	statePath string
++}
++
++func newReviewFixGateEnv(t *testing.T, identityOK bool) *reviewFixGateEnv {
++	t.Helper()
++	uncRoot := t.TempDir()
++	cfgDir := t.TempDir()
++	modes := map[string]string{}
++	identityOKFlag := identityOK
++	src := &reviewFixVisionSource{mode: "ok", content: []byte(`{"version":1,"updated_at":"t","models":[{"id":"p/m","api_key":"sk"}]}`)}
++	c := wslsupply.NewCoordinator(cfgDir, nil, wslsupply.Probes{
++		Identity: func(string) platform.WSLUserIdentity {
++			if !identityOKFlag {
++				return platform.WSLUserIdentity{}
++			}
++			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m-review", OK: true}
++		},
++		ToUNC: func(_, linuxPath string) string {
++			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++		},
++		Chmod: func(_, mode string, paths ...string) error {
++			for _, p := range paths {
++				modes[p] = mode
++			}
++			return nil
++		},
++		StatMode: func(_, linuxPath string) (string, bool) {
++			m, ok := modes[linuxPath]
++			return m, ok
++		},
++	})
++	c.RegisterProjection(wslsupply.NewVisionExportAdapter(src))
++	c.RegisterProjection(wslsupply.NewModalityKBAdapter(src))
++	return &reviewFixGateEnv{c: c, src: src, identity: &identityOKFlag, statePath: filepath.Join(cfgDir, wslsupply.StateFileName)}
++}
++
++func (e *reviewFixGateEnv) publish(t *testing.T) {
++	t.Helper()
++	if err := e.c.GrantUnitConsent(context.Background(), "Ubuntu", wslsupply.CLICommon, wslsupply.UnitSharedVisionExport); err != nil {
++		t.Fatal(err)
++	}
++	res, err := e.c.RunUnits(context.Background(), "Ubuntu", wslsupply.CLICommon, wslsupply.ReasonLaunch,
++		[]wslsupply.UnitID{wslsupply.UnitSharedVisionExport})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.Results[0].Outcome != wslsupply.UnitApplied {
++		t.Fatalf("setup publish: %+v", res.Results[0])
++	}
++}
++
++// TestWSLSharedGateReviewFixPR01LegacyRiskBlocks：v1 曾发布 → 升级 → 宿主
++// 关闭导出：新代 awaiting-consent + 旧副本可能在 → 阻断并给出中文可处理
++// 指引（反例：phase-review-repro.go LEGACY_WITHDRAWAL）。
++func TestWSLSharedGateReviewFixPR01LegacyRiskBlocks(t *testing.T) {
++	env := newReviewFixGateEnv(t, true)
++	legacy := wslsupply.StateFile{
++		SchemaVersion: 1, Generation: "old-gen", Distro: "Ubuntu", Home: "/home/u",
++		Units: []wslsupply.StateEntry{{
++			Unit: wslsupply.UnitSharedVisionExport, Policy: wslsupply.PolicyManagedNamespace,
++			Generation: "old-gen", Consented: true, LastWrittenHash: "legacy-hash", LastOutcome: "written",
++		}},
++	}
++	b, err := json.Marshal(legacy)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(env.statePath, b, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	// 宿主关闭导出（升级后用户停用视觉清单导出）。
++	env.src.mode = "closed"
++	gateErr := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
++	if gateErr == nil {
++		t.Fatal("legacy sensitive copy risk must block the launch gate")
++	}
++	if !strings.Contains(gateErr.Error(), "视觉清单") || !strings.Contains(gateErr.Error(), "处理") {
++		t.Fatalf("block must carry an actionable Chinese error, got %v", gateErr)
++	}
++	// 其它 distro 不被误算（无该 distro 的遗留风险）。
++	if err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Other"); err != nil {
++		t.Fatalf("other distro must not inherit the legacy risk: %v", err)
++	}
++}
++
++// TestWSLSharedGateReviewFixPR01ManagedSourceErrorBlocks：受管副本在场 +
++// 来源读失败（blocked source-unavailable）→ 阻断（反例：MANAGED_SOURCE_ERROR）。
++func TestWSLSharedGateReviewFixPR01ManagedSourceErrorBlocks(t *testing.T) {
++	env := newReviewFixGateEnv(t, true)
++	env.publish(t)
++	env.src.mode = "error"
++	err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
++	if err == nil {
++		t.Fatal("managed copy + source failure must block the launch gate")
++	}
++	if !strings.Contains(err.Error(), "视觉清单") {
++		t.Fatalf("block must identify the vision export copy, got %v", err)
++	}
++}
++
++// TestWSLSharedGateReviewFixPR01IdentityFailureBlocks：受管副本在场 + 目标
++// 身份探测失败（blocked target-unresolved）→ 阻断；无副本历史时同型失败
++// 不阻断普通启动。
++func TestWSLSharedGateReviewFixPR01IdentityFailureBlocks(t *testing.T) {
++	t.Run("with managed copy blocks", func(t *testing.T) {
++		env := newReviewFixGateEnv(t, true)
++		env.publish(t)
++		*env.identity = false // 身份探测失败（machine-id 不可得等）
++		err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
++		if err == nil {
++			t.Fatal("identity failure with a possible managed copy must block the launch gate")
++		}
++		if !strings.Contains(err.Error(), "视觉清单") {
++			t.Fatalf("block must identify the vision export copy, got %v", err)
++		}
++	})
++	t.Run("without managed copy passes", func(t *testing.T) {
++		env := newReviewFixGateEnv(t, false)
++		err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
++		if err != nil {
++			t.Fatalf("identity failure without any copy history must not block normal launch: %v", err)
++		}
++	})
++}
++
++// TestWSLSharedGateReviewFixPR01NoHistoryPasses：从未授权/从未发布的目标上
++// awaiting-consent / unmanaged-existing 等预期态不阻断普通启动。
++func TestWSLSharedGateReviewFixPR01NoHistoryPasses(t *testing.T) {
++	env := newReviewFixGateEnv(t, true)
++	env.src.mode = "closed" // 宿主无导出 + 本目标从未发布 → ActionNone/Fresh
++	if err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu"); err != nil {
++		t.Fatalf("no-history optional state must not block launch: %v", err)
++	}
++}
+diff --git a/wsl_s2_remote_test.go b/wsl_s2_remote_test.go
+index 1862411..cf61208 100644
+--- a/wsl_s2_remote_test.go
++++ b/wsl_s2_remote_test.go
+@@ -424,6 +424,9 @@ func TestSaveAmagiConfigMarksPiConfigDirty(t *testing.T) {
+ 	app := newTestApp(t)
+ 	runner := &stubSupplyRunner{}
+ 	app.WSLSupply = runner
++	// PR09：保存触发异步推送——cleanup 必须等推送生命周期退出，避免泄入
++	// 下一个测试与其全局接缝写入竞争。
++	t.Cleanup(waitForWSLSupplyPushIdleForTest)
+ 	if err := app.SaveAmagiConfig(`{"profile": "tiered"}`); err != nil {
+ 		t.Fatalf("SaveAmagiConfig: %v", err)
+ 	}
+@@ -456,7 +459,14 @@ func TestEnableWSLPiConfigSupply(t *testing.T) {
+ 	c.RegisterProjection(wslsupply.NewPiMCPAdapter(src, stubFactsForDualLink{}))
+ 	app.WSLSupply = c
+ 	origDefault := wslDefaultDistroFn
+-	t.Cleanup(func() { wslDefaultDistroFn = origDefault })
++	t.Cleanup(func() {
++		// PR09：先等异步推送生命周期真正退出再还原全局接缝（不 sleep 碰运气；
++		// 否则下一个测试与后台 goroutine 竞争 wslDefaultDistroFn/wslDistroRunningFn）。
++		waitForWSLSupplyPushIdleForTest()
++		wslDefaultDistroFn = origDefault
++	})
++	// 防御：前置排水——等任何先前测试泄漏的推送退出后再写接缝。
++	waitForWSLSupplyPushIdleForTest()
+ 	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
+ 	if err := app.EnableWSLPiConfigSupply(); err != nil {
+ 		t.Fatalf("enable with capable coordinator: %v", err)

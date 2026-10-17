@@ -44,8 +44,11 @@ func scanSkillDirWithLinks(t *testing.T, root, skill string) *SkillManifest {
 	if err := os.Symlink("/abs/target", filepath.Join(root, skill, "abs.md")); err != nil {
 		t.Fatal(err)
 	}
-	// 越界链接（解析出 skill 树）。
-	if err := os.Symlink("../../outside.txt", filepath.Join(root, skill, "out.md")); err != nil {
+	// 越界链接（解析出 skill 树）。链接位于 root/<skill>/out.md，目标
+	// ../outside.txt 解析到 root/outside.txt（树外一级——SA-18 fixture 前提
+	// 修正：原 ../../ 会落到 root 的父目录，目标不存在被归为 non-regular，
+	// 断言不到 out-of-tree-link）。
+	if err := os.Symlink("../outside.txt", filepath.Join(root, skill, "out.md")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "outside.txt"), []byte("out"), 0o644); err != nil {
@@ -78,6 +81,32 @@ func incompatCodes(m *SkillManifest) map[string]string {
 		out[it.Code] = it.RelPath
 	}
 	return out
+}
+
+// TestScanSkillAbsoluteLikeLinkTargetForms 钉住绝对形态判定谓词（Windows
+// 盘根相对目标的修复回归：`\abs\target` 在 Windows 宿主上由
+// CreateSymbolicLink 规范化产生，是宿主原生绝对路径；此前漏判致该形态链
+// 接被误归 non-regular-entry）。谓词语义随宿主原生 filepath.IsAbs 走，本
+// 测试同样逐宿主钉住，不做平台分歧断言。
+func TestScanSkillAbsoluteLikeLinkTargetForms(t *testing.T) {
+	for _, s := range []string{"", "docs/guide.md", "cycle-b.md", "../outside.txt", `weird\name`} {
+		if isAbsoluteLikeLinkTarget(s) {
+			t.Fatalf("relative target %q misclassified as absolute", s)
+		}
+	}
+	for _, s := range []string{"/abs/target", "//server/share", `\\server\share`, "C:\\x", "c:/x", "D:data"} {
+		if !isAbsoluteLikeLinkTarget(s) {
+			t.Fatalf("absolute-form target %q not classified", s)
+		}
+	}
+	// 宿主原生根起始形态：Windows 上 "/abs" 形链接被存为盘根相对 \abs（真机
+	// 实测 Readlink 返回该形态，filepath.IsAbs 为 false）——必须归为绝对形态；
+	// POSIX 宿主上同字符串是合法相对文件名（'\\' 非分隔符）。谓词与宿主
+	// os.IsPathSeparator 同判，两个平台各自钉住正确语义。
+	driveRooted := `\abs\target`
+	if got, want := isAbsoluteLikeLinkTarget(driveRooted), os.IsPathSeparator('\\'); got != want {
+		t.Fatalf("drive-rooted target %q = %v, want host-native rooted = %v", driveRooted, got, want)
+	}
 }
 
 func TestScanSkillCompatChecks(t *testing.T) {
@@ -285,5 +314,96 @@ func TestParseSkillUnitValidation(t *testing.T) {
 	}
 	if name, ok := ParseSkillUnit("shared/skill/my-skill"); !ok || name != "my-skill" {
 		t.Fatalf("valid skill unit parse failed: %q %v", name, ok)
+	}
+}
+
+// TestScanSkillAliasToExcludedCredential（SA-05）：普通名链接别名不得实体化
+// 被排除的凭据/排除目录内容——直接别名、多跳别名、排除目录目标均按排除处理
+// （预览可见、不阻断供给）。
+func TestScanSkillAliasToExcludedCredential(t *testing.T) {
+	_, root := makeSkillScope(t)
+	writeSkillFile(t, root, "demo", "SKILL.md", "# synthetic\n")
+	writeSkillFile(t, root, "demo", ".env", "SYNTHETIC_SECRET=not-real\n")
+	writeSkillFile(t, root, "demo", "real.txt", "plain\n")
+	// 直接别名：alias.txt -> .env。
+	if err := os.Symlink(".env", filepath.Join(root, "demo", "alias.txt")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	// 多跳别名：multi.txt -> alias.txt -> .env（链上命中凭据名）。
+	if err := os.Symlink("alias.txt", filepath.Join(root, "demo", "multi.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// 排除目录目标：gitlink.txt -> .git/config。
+	if err := os.MkdirAll(filepath.Join(root, "demo", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFile(t, root, "demo", ".git/config", "[core]\n")
+	if err := os.Symlink(".git/config", filepath.Join(root, "demo", "gitlink.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// 链中间接位于凭据名上：hop.txt -> mid.lnk -> .env（中间跳凭据名）。
+	if err := os.Symlink("real.txt", filepath.Join(root, "demo", "mid.lnk")); err != nil {
+		t.Fatal(err)
+	}
+	_ = "hop case covered by multi.txt"
+
+	m := scanSkillDir(root, "demo", DefaultSkillsScanLimits(), nil)
+	for _, f := range m.Files {
+		if f.RelPath == "alias.txt" || f.RelPath == "multi.txt" || f.RelPath == "gitlink.txt" {
+			t.Fatalf("alias to excluded content must not be materialized: %+v", f)
+		}
+	}
+	excluded := strings.Join(m.Excluded, "\n")
+	for _, want := range []string{"alias.txt", "multi.txt", "gitlink.txt", ".env"} {
+		if !strings.Contains(excluded, want) {
+			t.Fatalf("expected %s excluded, got %q", want, excluded)
+		}
+	}
+	if !m.Portable() {
+		t.Fatalf("excluded aliases must not block portability: %+v", m)
+	}
+}
+
+// TestSkillsScopeScanIdempotentAfterCompletion（SA-17）：扫描完成后 StartScanAsync
+// 不再重启扫描（多次 Get 不增加扫描轮次）；显式 RescanAsync 才重扫并收敛新
+// 增内容。
+func TestSkillsScopeScanIdempotentAfterCompletion(t *testing.T) {
+	_, root := makeSkillScope(t)
+	writeSkillFile(t, root, "alpha", "SKILL.md", "# alpha\n")
+	scope := NewSkillsScope(root, DefaultSkillsScanLimits())
+	if !scope.StartScanAsync() {
+		t.Fatal("first StartScanAsync must start")
+	}
+	waitScanDone := func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			snap := scope.Snapshot()
+			if !snap.Running && snap.Started {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("scan did not converge: %+v", snap.Progress)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitScanDone()
+	// 扫描后新增技能目录：反复 StartScanAsync（等价状态 Get 轮询）不重扫。
+	writeSkillFile(t, root, "beta", "SKILL.md", "# beta\n")
+	for i := 0; i < 3; i++ {
+		if scope.StartScanAsync() {
+			t.Fatal("completed scan must not restart via StartScanAsync (Get)")
+		}
+	}
+	if m := scope.manifest("beta"); m != nil {
+		t.Fatal("no rescan means new dir must stay invisible")
+	}
+	// 显式 RescanAsync：重扫并收敛新目录。
+	if !scope.RescanAsync() {
+		t.Fatal("RescanAsync must start after completion")
+	}
+	waitScanDone()
+	if m := scope.manifest("beta"); m == nil || !m.Portable() {
+		t.Fatalf("rescan must pick up new skill: %+v", m)
 	}
 }

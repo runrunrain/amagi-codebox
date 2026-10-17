@@ -1,0 +1,51 @@
+{
+  "taskId": "20261016-193450-wsl-goal-closure",
+  "timestamp": "2026-10-16T19:34:50Z",
+  "agent": "coder",
+  "projectId": "amagi-codebox",
+  "taskBrief": "WSL目标续行：平台真机验证、会话释放竞态与持久一致性修正；产品仍未通过验收",
+  "status": "in-progress",
+  "auditDelivery": "interrupted",
+  "implementationAcceptance": "unreviewed",
+  "previousStage": {"verdict":"FIX","implementationAcceptance":"rejected","report":"closure.md"},
+  "finalVerdict": "FIX",
+  "openMajorIds": ["PR01", "PR02", "PR03", "PR05", "PR07"],
+  "closedReviewIds": ["PR04", "PR06", "PR08", "PR09", "PR10"],
+  "upstreamArtifactReferences": [
+    "/Users/run.mao/workpace/amagi-codebox/agent-outputs/workflow/wsl-goal-closure/direction.md",
+    "/Users/run.mao/workpace/amagi-codebox/agent-outputs/workflow/wsl-goal-closure/supply-audit.md",
+    "/Users/run.mao/workpace/amagi-codebox/agent-outputs/workflow/wsl-goal-closure/runtime-audit.md",
+    "/Users/run.mao/workpace/amagi-codebox/agent-outputs/workflow/wsl-goal-closure/phase-review.md",
+    "/Users/run.mao/workpace/amagi-codebox/agent-outputs/workflow/wsl-goal-closure/phase-rereview.md"
+  ],
+  "validationEvidence": {
+    "buildStatus": "passed",
+    "testStatus": "failed",
+    "browserVerification": "not_applicable",
+    "windowsRuntimeVerification": "partial-failed",
+    "currentEvidence": {
+      "ownerNormalization": "windows-platform-real-tests-v3.log: pass except explicitly skipped symlink case",
+      "fullGoAfterStopLease": "stop-lease-integrated-full-go.log: exit 0",
+      "stopLeaseRace": "stop-lease-integrated-race.log: exit 0, count=5",
+      "windowsInterop": "windows-interop-real.log: Unicode Windows project IO, cmd.exe interop, UNC/stat/chmod/cancel-preflight passed; UNC concurrent no-replace failed with AccessDenied; fixtures cleaned",
+      "independentReview": "44954ee3 provider-policy error; no formal report; partial reproduction logs retained, not acceptance",
+      "activeConsistencyFix": "2a02a779 in isolated wsl-goal-transaction worktree"
+    },
+    "commands": [
+      {"command": "go test . ./internal/wslsupply ./internal/launcher ./internal/piplugin -count=1", "exitCode": 0, "summary": "最终主树目标四包普通测试通过"},
+      {"command": "go test -race . ./internal/wslsupply ./internal/launcher ./internal/piplugin -count=1", "exitCode": 0, "summary": "最终主树目标四包race通过；不证明失败语义闭合"},
+      {"command": "npm --prefix frontend test && npm --prefix frontend run build", "exitCode": 0, "summary": "31文件/277测试与构建通过；最后Go delta无前端变化"},
+      {"command": "go vet ./...", "exitCode": 0, "summary": "最终主树全仓vet通过"},
+      {"command": "GOOS=windows GOARCH=amd64 go test ./... -run '^$' -exec /usr/bin/true", "exitCode": 0, "summary": "仅Windows交叉编译，不是Windows执行"},
+      {"command": "env -u AMAGI_CODEBOX_AI_PROXY go test ./... -count=1", "exitCode": 1, "summary": "历史阶段E失败（envcheck8+platform1）；84f8a67d已修测试隔离，续行最新全仓结果见currentEvidence"},
+      {"command": "git diff --check", "exitCode": 0, "summary": "最终格式检查通过"}
+    ]
+  },
+  "tags": ["wsl", "windows-interop", "security", "review-fix-required", "uncommitted"],
+  "relatedFiles": ["closure.md", "workflow.md", "verification.md", "windows-validation.md", "phase-rereview.md", "consistency-fixes-assignment.md", "stop-lease-diagnosis.md", "stop-lease-fix.md", "attack-platform-owner.md", "windows-interop-probe.go"],
+  "nextSteps": {
+    "suggestedAgent": "leader",
+    "suggestedAction": "主上已授权继续；接收2a02a779一致性修正，完成UNC差异复测与剩余真实入口验证；独立审核中断仍是验收缺口，不发布当前补丁"
+  },
+  "notes": "无commit/push；既有resume-relay未改；危险PS1已撤回为禁执行文本证据；脏worktree保留。沿cwd祖先未发现project-memory registry，按本任务明确项目内workflow路径归档。"
+}

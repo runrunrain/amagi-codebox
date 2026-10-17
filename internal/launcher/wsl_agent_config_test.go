@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -18,31 +19,66 @@ import (
 // 并记录 chmod 补偿调用。跨平台可跑（Linux CI / Windows 本地均通过）。
 type fakeWSLTarget struct {
 	root       string
-	chmodCalls []string // "<mode> <path>" 记录
+	chmodCalls []string          // "<mode> <path>" 记录
+	modes      map[string]string // linuxPath -> mode（Chmod 落下，StatMode 读回）
 }
 
 func installFakeWSLTarget(t *testing.T) *fakeWSLTarget {
 	t.Helper()
-	ft := &fakeWSLTarget{root: t.TempDir()}
-	origHome, origUNC, origChmod := wslUserHomeFn, wslToUNCFn, wslChmodFn
+	ft := &fakeWSLTarget{root: t.TempDir(), modes: map[string]string{}}
+	origHome, origUNC, origChmod, origStatMode := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatModeFn
 	wslUserHomeFn = func(distro string) string { return "/home/wslu" }
 	wslToUNCFn = func(distro, linuxPath string) string {
 		return filepath.Join(ft.root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 	}
-	wslChmodFn = func(distro, mode string, paths ...string) error {
+	wslChmodFn = func(_ context.Context, distro, mode string, paths ...string) error {
 		for _, p := range paths {
 			ft.chmodCalls = append(ft.chmodCalls, mode+" "+p)
+			ft.modes[p] = mode
 		}
 		return nil
 	}
+	wslStatModeFn = func(_ context.Context, _, linuxPath string) (string, bool) {
+		m, ok := ft.modes[linuxPath]
+		return m, ok
+	}
 	t.Cleanup(func() {
-		wslUserHomeFn, wslToUNCFn, wslChmodFn = origHome, origUNC, origChmod
+		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatModeFn = origHome, origUNC, origChmod, origStatMode
 	})
 	return ft
 }
 
 func (ft *fakeWSLTarget) uncPath(linuxPath string) string {
 	return filepath.Join(ft.root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+}
+
+// assertStagedChmodCalls 钉住 SA-06 staging 提交序列：agent 目录 0700 →
+// staging 目录 0700（并经 StatMode 验证）→ 秘密文件 0600 收紧在 staging 内
+// （rename 之前）；最终文件携带收紧后的宿主侧 0600 位。
+func (ft *fakeWSLTarget) assertStagedChmodCalls(t *testing.T, agentDir, fileName string) {
+	t.Helper()
+	staging := agentDir + "/.amagi-staging"
+	if len(ft.chmodCalls) != 3 {
+		t.Fatalf("chmod calls = %v, want staged sequence", ft.chmodCalls)
+	}
+	if ft.chmodCalls[0] != "700 "+agentDir {
+		t.Fatalf("first chmod = %q, want 700 %s", ft.chmodCalls[0], agentDir)
+	}
+	if ft.chmodCalls[1] != "700 "+staging {
+		t.Fatalf("second chmod = %q, want 700 %s", ft.chmodCalls[1], staging)
+	}
+	if !strings.HasPrefix(ft.chmodCalls[2], "600 "+staging+"/") {
+		t.Fatalf("third chmod = %q, want 600 on the staged file before rename", ft.chmodCalls[2])
+	}
+	if mode, ok := ft.modes[staging]; !ok || mode != "700" {
+		t.Fatalf("staging dir mode = %q ok=%v, want verified 700", mode, ok)
+	}
+	if info, statErr := os.Stat(ft.uncPath(agentDir + "/" + fileName)); statErr != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("final file must carry pre-rename 0600, got %v err=%v", info.Mode().Perm(), statErr)
+	}
+	if entries, readErr := os.ReadDir(ft.uncPath(staging)); readErr != nil || len(entries) != 0 {
+		t.Fatalf("staging must be empty after commit: %v err=%v", entries, readErr)
+	}
 }
 
 func TestWriteWSLPiAgentConfigMergeAndChmod(t *testing.T) {
@@ -105,14 +141,9 @@ func TestWriteWSLPiAgentConfigMergeAndChmod(t *testing.T) {
 		t.Fatalf("amagi-glm entry wrong: %v", entry)
 	}
 
-	// chmod 补偿：目录 0700 + 文件 0600（Windows 侧写 UNC 不带 POSIX 位）。
-	want := []string{
-		"700 /home/wslu/.pi/agent",
-		"600 /home/wslu/.pi/agent/models.json",
-	}
-	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
-		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
-	}
+	// chmod 序列（SA-06）：agent 目录 0700 → staging 0700（验证）→ 秘密文件
+	// 0600 在 staging 内 rename 前收紧。
+	ft.assertStagedChmodCalls(t, "/home/wslu/.pi/agent", "models.json")
 }
 
 func TestWriteWSLPiAgentConfigFreshDistro(t *testing.T) {
@@ -152,19 +183,13 @@ func TestWriteWSLOmpAgentConfigMergeAndChmod(t *testing.T) {
 	if !strings.Contains(string(data), "amagi-glm") || !strings.Contains(string(data), "sk-omp") {
 		t.Fatalf("models.yml content wrong:\n%s", data)
 	}
-	want := []string{
-		"700 /home/wslu/.omp/agent",
-		"600 /home/wslu/.omp/agent/models.yml",
-	}
-	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
-		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
-	}
+	ft.assertStagedChmodCalls(t, "/home/wslu/.omp/agent", "models.yml")
 }
 
 func TestWriteWSLPiAgentConfigChmodFailureFailsClosed(t *testing.T) {
 	_ = installFakeWSLTarget(t)
 	origChmod := wslChmodFn
-	wslChmodFn = func(distro, mode string, paths ...string) error {
+	wslChmodFn = func(context.Context, string, string, ...string) error {
 		return os.ErrPermission
 	}
 	t.Cleanup(func() { wslChmodFn = origChmod })
@@ -309,14 +334,8 @@ func TestWriteWSLOpenCodeAgentConfigWritesAndChmod(t *testing.T) {
 		t.Fatalf("file must end with newline, tail = %q", data[len(data)-3:])
 	}
 
-	// chmod 补偿：目录 0700 + 文件 0600（apiKey 明文落盘契约）。
-	want := []string{
-		"700 /home/wslu/.config/opencode",
-		"600 /home/wslu/.config/opencode/amagi-codebox.json",
-	}
-	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
-		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
-	}
+	// chmod 序列（SA-06）：同 pi/omp——staging 内收紧 0600 后 rename。
+	ft.assertStagedChmodCalls(t, "/home/wslu/.config/opencode", "amagi-codebox.json")
 }
 
 func TestWriteWSLOpenCodeAgentConfigFreshDistro(t *testing.T) {
@@ -333,16 +352,17 @@ func TestWriteWSLOpenCodeAgentConfigFreshDistro(t *testing.T) {
 func TestWriteWSLOpenCodeAgentConfigChmodFailureFailsClosed(t *testing.T) {
 	ft := installFakeWSLTarget(t)
 	origChmod := wslChmodFn
-	wslChmodFn = func(distro, mode string, paths ...string) error {
+	wslChmodFn = func(context.Context, string, string, ...string) error {
 		return os.ErrPermission
 	}
 	t.Cleanup(func() { wslChmodFn = origChmod })
 	if _, err := WriteWSLOpenCodeAgentConfig("Ubuntu", map[string]any{"model": "openai/gpt-5"}); err == nil {
 		t.Fatal("chmod failure must fail the WSL write (fail closed)")
 	}
-	// fail closed：已落盘的明文 apiKey 内容必须被清理。
+	// SA-06/07：chmod 失败发生在 rename 之前——无字节提交到最终路径，
+	// 不存在「已落盘明文需要回滚清理」的状态。
 	if _, err := os.Stat(ft.uncPath("/home/wslu/.config/opencode/amagi-codebox.json")); err == nil {
-		t.Fatal("plaintext config must be removed after chmod failure")
+		t.Fatal("no plaintext config may be committed when chmod hardening fails")
 	}
 }
 

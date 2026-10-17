@@ -558,12 +558,14 @@ func TestScanTargetTreeDirLinkEntryNotRecursed(t *testing.T) {
 }
 
 // TestScanSkillLinkNameExcluded（F4）：凭据类名单对链接形态同样生效——
-// 名为 .env/*.pem 的树内链接按排除处理，不实体化。
+// 名为 .env/*.pem 的树内链接按排除处理，不实体化。（SA-18 fixture 前提
+// 修正：原 fixture 建的是 "dot-env"，不在凭据名单内——修正为真 .env，
+// 不以扩大黑名单凑绿。）
 func TestScanSkillLinkNameExcluded(t *testing.T) {
 	_, root := makeSkillScope(t)
 	writeSkillFile(t, root, "creds", "SKILL.md", "# doc\n")
 	writeSkillFile(t, root, "creds", "real.txt", "plain\n")
-	if err := os.Symlink("real.txt", filepath.Join(root, "creds", "dot-env")); err != nil {
+	if err := os.Symlink("real.txt", filepath.Join(root, "creds", ".env")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 	if err := os.Symlink("real.txt", filepath.Join(root, "creds", "cert.pem")); err != nil {
@@ -571,11 +573,11 @@ func TestScanSkillLinkNameExcluded(t *testing.T) {
 	}
 	m := scanSkillDir(root, "creds", DefaultSkillsScanLimits(), nil)
 	excluded := strings.Join(m.Excluded, "\n")
-	if !strings.Contains(excluded, "dot-env") || !strings.Contains(excluded, "cert.pem") {
+	if !strings.Contains(excluded, ".env") || !strings.Contains(excluded, "cert.pem") {
 		t.Fatalf("credential-named links must be excluded: %+v", m.Excluded)
 	}
 	for _, f := range m.Files {
-		if f.RelPath == "dot-env" || f.RelPath == "cert.pem" {
+		if f.RelPath == ".env" || f.RelPath == "cert.pem" {
 			t.Fatalf("excluded link must not be materialized: %+v", f)
 		}
 	}
@@ -625,6 +627,12 @@ func TestRestorePreimageRenameFailureKeepsStaging(t *testing.T) {
 	orig := skillPreimageRenameFn
 	skillPreimageRenameFn = func(string, string) error { return errors.New("9P transient failure") }
 	defer func() { skillPreimageRenameFn = orig }()
+	// 一致性修正（resource-abort）后补偿优先用持久 prev 树（不经 rename 接
+	// 缝）；本测试钉住的是内存快照恢复路径的 F2 语义——先移除 prev 材料（模拟
+	// 外部丢失）退回快照兜底。
+	if err := os.RemoveAll(absOf(r.Undo.target, r.Undo.displacedRel)); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	parent := filepath.Dir(r.Undo.uncPath)
 	out := c.Compensate(context.Background(), r.Undo)
 	if len(out) != 1 || out[0].Disposition != CompensationUnavailable {
@@ -670,6 +678,11 @@ func TestRestorePreimageChirmodAndVerify(t *testing.T) {
 		t.Fatalf("update: %+v", r)
 	}
 	before := atomic.LoadInt32(&fp.chmodCalls)
+	// 同 F2 测试：持久 prev 树优先（不经重写路径）；F7 钉的是快照重建路径的
+	// chmod 补偿语义——移除 prev 材料后退回快照兜底。
+	if err := os.RemoveAll(absOf(r.Undo.target, r.Undo.displacedRel)); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	out := c.Compensate(context.Background(), r.Undo)
 	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {
 		t.Fatalf("compensation must confirm: %+v", out)
@@ -680,5 +693,32 @@ func TestRestorePreimageChirmodAndVerify(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(targetSkillPath(fp.uncRoot, "alpha"), "SKILL.md"))
 	if string(got) != "# alpha v1\n" {
 		t.Fatalf("preimage restored: %q", got)
+	}
+}
+
+// TestSkillCandidateReverifiesSourceIdentity（SA-05）：候选读取前重验路径身份
+// ——扫描后来源被替换为符号链接/非常规形态时拒绝供给（不追随新链接目标）。
+func TestSkillCandidateReverifiesSourceIdentity(t *testing.T) {
+	_, root := makeSkillScope(t)
+	writeSkillFile(t, root, "alpha", "SKILL.md", "# alpha\n")
+	writeSkillFile(t, root, "alpha", "data.txt", "secret-ish\n")
+	m := scanSkillDir(root, "alpha", DefaultSkillsScanLimits(), nil)
+	if !m.Portable() {
+		t.Fatalf("fixture must be portable: %+v", m)
+	}
+	// 扫描后把已登记源文件替换为指向树外凭据的符号链接（内容恰好一致也拒绝）。
+	outside := filepath.Join(root, "outside-secret")
+	if err := os.WriteFile(outside, []byte("secret-ish\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(root, "alpha", "data.txt")
+	if err := os.Remove(victim); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, victim); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := readSkillCandidateFiles(m, DefaultSkillsScanLimits()); err == nil {
+		t.Fatal("candidate read must reject source replaced by symlink (rescan required)")
 	}
 }

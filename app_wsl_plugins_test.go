@@ -160,8 +160,10 @@ func TestInstallPiPackageTargetedWindowsOnly(t *testing.T) {
 }
 
 func TestInstallPiPackageTargetedIndependentResults(t *testing.T) {
-	// 单侧失败独立显示：Windows ok + WSL 失败。
-	app, _, supply, _ := newPluginTargetedTestApp(t, true)
+	// 单侧失败独立显示：Windows ok + WSL 失败（both 需实体锚点可读——SA13
+	// 门禁下预置实体，让 WSL 侧重放真正执行）。
+	app, _, supply, agentDir := newPluginTargetedTestApp(t, true)
+	writeEntityInService(t, agentDir, "foo", "1.4.2")
 	supply.pluginRes = wslsupply.PluginOpResult{
 		Source: "npm:foo", Kind: wslsupply.PluginOpInstall, Outcome: wslsupply.PluginOutcomeFailed,
 		ErrCode: wslsupply.PluginErrReplayFailed, Detail: "pi install 失败",
@@ -342,5 +344,158 @@ func TestGetPiPluginWSLStatusNoWake(t *testing.T) {
 	checked := app.CheckPiPluginWSLStatus()
 	if !checked.Snapshot.Checked {
 		t.Fatalf("explicit check must return checked snapshot")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SA13：both 的 WSL 门禁——Windows Success=false / 锚点不可读都不得放行
+// ---------------------------------------------------------------------------
+
+// TestInstallPiPackageTargetedSuccessFalseSkipsWSL：Windows 命令返回非 nil
+// CommandResult 且 Success=false（error 为 nil——两通道独立）时，WSL 不得
+// 继续独立解析追 latest。piplugin 当前执行面不产生该组合，钉住编排层门禁
+// 的判据本身（经 wslReplayAnchorGate 纯函数直测）。
+func TestInstallPiPackageTargetedSuccessFalseSkipsWSL(t *testing.T) {
+	cases := []struct {
+		name        string
+		windowsRes  *piplugin.CommandResult
+		anchor      string
+		wantSkip    bool
+		wantErrCode string
+	}{
+		{
+			name:        "go error (nil result) skips",
+			windowsRes:  nil,
+			wantSkip:    true,
+			wantErrCode: "windows-anchor-missing",
+		},
+		{
+			name:        "success=false with nil error skips",
+			windowsRes:  &piplugin.CommandResult{Success: false, Error: "exit 1"},
+			wantSkip:    true,
+			wantErrCode: "windows-failed",
+		},
+		{
+			name:        "success=true but anchor unreadable skips",
+			windowsRes:  &piplugin.CommandResult{Success: true},
+			anchor:      "",
+			wantSkip:    true,
+			wantErrCode: "windows-anchor-missing",
+		},
+		{
+			name:       "success=true with anchor passes",
+			windowsRes: &piplugin.CommandResult{Success: true},
+			anchor:     "1.4.2",
+			wantSkip:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			anchor, skipCode, _ := wslReplayAnchorGate(tc.windowsRes, tc.anchor)
+			if tc.wantSkip {
+				if skipCode == "" || anchor != "" {
+					t.Fatalf("must skip with empty anchor, got anchor=%q skip=%q", anchor, skipCode)
+				}
+				if skipCode != tc.wantErrCode {
+					t.Fatalf("skip code=%q, want %q", skipCode, tc.wantErrCode)
+				}
+				return
+			}
+			if skipCode != "" || anchor != tc.anchor {
+				t.Fatalf("must pass anchor through, got anchor=%q skip=%q", anchor, skipCode)
+			}
+		})
+	}
+}
+
+// TestInstallPiPackageTargetedAnchorUnreadableSkipsWSL：Windows 命令成功但
+// 实体锚点不可读（未建实体）→ WSL skipped，不回退 distro 内独立解析。
+func TestInstallPiPackageTargetedAnchorUnreadableSkipsWSL(t *testing.T) {
+	app, _, supply, _ := newPluginTargetedTestApp(t, true) // 成功，但不建实体
+	res, err := app.InstallPiPackageTargeted("npm:foo", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Results) != 2 {
+		t.Fatalf("both must report both targets: %+v", res.Results)
+	}
+	wsl := res.Results[1]
+	if wsl.Target != "wsl" || wsl.Outcome != "skipped" || wsl.ErrCode != "windows-anchor-missing" {
+		t.Fatalf("wsl must be skipped when anchor unreadable: %+v", wsl)
+	}
+	if ops := supply.pluginOps_(); len(ops) != 0 {
+		t.Fatalf("no wsl replay without verifiable anchor: %+v", ops)
+	}
+}
+
+// TestUpdatePiPackageTargetedSuccessFalseSkipsWSL：update 同受 SA13 门禁
+// （git 源锚点不可读 → skipped；不追 distro 内 latest ref）。
+func TestUpdatePiPackageTargetedSuccessFalseSkipsWSL(t *testing.T) {
+	app, cli, supply, agentDir := newPluginTargetedTestApp(t, true)
+	writeAgentSettings(t, agentDir, []string{"git:github.com/u/repo@v1"})
+	// Windows 侧命令成功（exit 0），但实体未建 → commit 锚点不可读。
+	if got := cli.recorded(); len(got) != 0 {
+		t.Fatalf("precondition: no windows run yet")
+	}
+	res, err := app.UpdatePiPackageTargeted("git:github.com/u/repo@v1", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsl := res.Results[1]
+	if wsl.Target != "wsl" || wsl.Outcome != "skipped" || wsl.ErrCode != "windows-anchor-missing" {
+		t.Fatalf("update both must skip wsl without anchor: %+v", wsl)
+	}
+	if ops := supply.pluginOps_(); len(ops) != 0 {
+		t.Fatalf("no wsl replay: %+v", ops)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SA12 补全：显式空数组 [] 过滤（该类型一项都不加载）在 App 编排层不得
+// 折叠回省略（省略 = WSL 侧启用整类资源）
+// ---------------------------------------------------------------------------
+
+// TestPiPluginOpFiltersKeepsNilVersusEmpty：三态转换纯函数钉子——nil 透传
+// nil（全开）、空切片透传空切片（全关）。
+func TestPiPluginOpFiltersKeepsNilVersusEmpty(t *testing.T) {
+	got := piPluginOpFilters(piplugin.EntryFilters{Extensions: []string{}, Skills: []string{"s"}})
+	if got.Extensions == nil || len(got.Extensions) != 0 {
+		t.Fatalf("explicit [] must stay a non-nil empty slice: %#v", got.Extensions)
+	}
+	if got.Skills == nil || len(got.Skills) != 1 || got.Skills[0] != "s" {
+		t.Fatalf("non-empty filter must pass through: %#v", got.Skills)
+	}
+	plain := piPluginOpFilters(piplugin.EntryFilters{})
+	if plain.Extensions != nil || plain.Skills != nil || plain.Prompts != nil || plain.Themes != nil {
+		t.Fatalf("all-omitted entry must yield all-nil filters: %+v", plain)
+	}
+}
+
+// TestPiPluginTargetedOpFiltersCarryExplicitEmptyArray：经真实目标化入口
+// （Windows settings.json 携带 {"source","extensions":[]} 过滤对象）触发 WSL
+// 重放，协调器收到的 PluginOperation.Filters 必须保留空切片——旧实现按
+// len(...)>0 折叠会把它当「无过滤」全开重放。
+func TestPiPluginTargetedOpFiltersCarryExplicitEmptyArray(t *testing.T) {
+	app, _, supply, agentDir := newPluginTargetedTestApp(t, true)
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"packages":[{"source":"npm:foo","extensions":[],"skills":["skills/core"]}]}`
+	if err := os.WriteFile(filepath.Join(agentDir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.InstallPiPackageTargeted("npm:foo", "wsl"); err != nil {
+		t.Fatalf("targeted install: %v", err)
+	}
+	ops := supply.pluginOps_()
+	if len(ops) != 1 {
+		t.Fatalf("one WSL replay op expected, got %d", len(ops))
+	}
+	f := ops[0].Filters
+	if f.Extensions == nil || len(f.Extensions) != 0 {
+		t.Fatalf("explicit [] must reach the replay op as a non-nil empty slice: %#v", f.Extensions)
+	}
+	if f.Skills == nil || len(f.Skills) != 1 || f.Skills[0] != "skills/core" {
+		t.Fatalf("skills filter must reach the replay op: %#v", f.Skills)
 	}
 }

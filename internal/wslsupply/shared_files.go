@@ -16,6 +16,7 @@ package wslsupply
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,14 +66,43 @@ func (a *VisionExportAdapter) Sensitive() bool       { return true } // 条目�
 func (a *VisionExportAdapter) RequiresConsent() bool { return true } // 密钥跨界授权
 func (a *VisionExportAdapter) Files() []string       { return []string{VisionExportFile} }
 
-// Plan（同意门已在协调器统一拦截）：来源不可读 → blocked；目标存在但无登记
-// （用户自有文件）→ 冻结；有登记但目标被手改/删除 → 冻结；目标被手改且来源已
-// 变化（可能含撤回）→ withdrawal-unconfirmed（密钥副本未确认撤回）；来源与目标
-// 均未变 → 跳过；其余（首次发布/来源变化含撤回）→ 写入。
+// Plan（同意门已在协调器统一拦截）：来源不可读 → blocked（source-unavailable
+// 或区分 SA-09 撤回语义）；目标存在但无登记（用户自有文件）→ 冻结；有登记但
+// 目标被手改/删除 → 冻结；目标被手改且来源已变化（可能含撤回）→
+// withdrawal-unconfirmed（密钥副本未确认撤回）；来源与目标均未变 → 跳过；
+// 其余（首次发布/来源变化含撤回）→ 写入。
+//
+// SA-09 撤回判定：宿主导出文件被删除（os.ErrNotExist）且本目标曾发布过 →
+// 撤回——目标副本仍等于上次写入时移除（ActionRemoveProjection）；被手改 →
+// withdrawal-unconfirmed-frozen（不静默沿用旧密钥，也不静默删除用户改动）；
+// 未曾发布（无登记）→ 无事可做（ActionNone）。瞬时读错误（非删除）不足以
+// 判定撤回意图，维持 source-unavailable 阻断，不动副本。
 func (a *VisionExportAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *StateEntry) (PlannedUnit, error) {
 	src, err := a.visionBytes()
 	if err != nil {
-		return PlannedUnit{Action: ActionBlocked, BlockedReason: "source-unavailable", Policy: PolicyManagedNamespace}, nil
+		unit := PlannedUnit{Action: ActionBlocked, BlockedReason: "source-unavailable", Policy: PolicyManagedNamespace, RelPath: VisionExportFile}
+		recorded := state != nil && state.LastWrittenHash != ""
+		if !errors.Is(err, os.ErrNotExist) {
+			return unit, nil // 瞬时读错误：不是撤回，副本不动
+		}
+		if !recorded {
+			unit.Action = ActionNone // 从未发布且宿主无导出：无事可做
+			unit.BlockedReason = ""
+			return unit, nil
+		}
+		// 宿主撤回（导出文件已删除）且本目标持有受管副本。
+		meta, _ := snap.File(VisionExportFile)
+		if meta.Exists && meta.Hash != state.LastWrittenHash {
+			unit.BlockedReason = "withdrawal-unconfirmed-frozen"
+			unit.Freeze = true
+			return unit, nil
+		}
+		unit.Action = ActionRemoveProjection
+		unit.BlockedReason = ""
+		if meta.Exists {
+			unit.ExpectedTargetHash = meta.Hash
+		}
+		return unit, nil
 	}
 	sourceHash := hexHash(normalizedStripUpdatedAt(src))
 	unit := PlannedUnit{RelPath: VisionExportFile, TransformVersion: visionExportTransform, Policy: PolicyManagedNamespace}

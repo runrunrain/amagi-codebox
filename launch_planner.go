@@ -59,8 +59,12 @@ type launchSecretsPort interface {
 }
 
 // launchEnvVarsPort is the narrow read-only interface over envvars.EnvVarsService.
+// Keys/PathAllowKeys 与桌面 resolveEmbeddedLaunchSpec 同源：自定义键必须进入
+// WSLENV 转发清单，allowPathValue 标记键获得 /p 路径翻译与剥离豁免。
 type launchEnvVarsPort interface {
 	MergeWithSystem() []string
+	Keys() []string
+	PathAllowKeys() []string
 }
 
 // appLaunchPlanner is the production launchplan.Planner. It reads stored
@@ -77,6 +81,10 @@ type appLaunchPlanner struct {
 	envVars      launchEnvVarsPort
 	homeDir      string
 	networkEnv   func([]string) ([]string, error)
+	// envObserver 是 WSL 环境防线（剥离/放行）的可观测接缝（nil 安全）：
+	// 桌面 resolveEmbeddedLaunchSpec 对应动作记 WARN/INFO，remote/restart
+	// 计划链经 App 装配注入同一日志面，不改变任何判定语义。
+	envObserver func(level, message, detail string)
 }
 
 func newAppLaunchPlanner(
@@ -153,9 +161,12 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
 		}
 	}
-	// Canonical workdir：与桌面 Launch* 入口共用同一校验/回退链（launch_workdir.go）。
-	// 无效的远程 workdir 不再作为不可用的 lpCurrentDirectory 击穿到 ConPTY，
-	// 先回退默认目录→Home；全部不可用才报 FailureWorkdir。
+	// Canonical workdir：与桌面 Launch* 入口共用同一校验/回退链
+	// （launch_workdir.go）。无效的远程 workdir 不再作为不可用的
+	// lpCurrentDirectory 击穿到 ConPTY，先回退默认目录→Home；全部不可用才报
+	// FailureWorkdir。这里产出的是宿主侧权威值（原生目标/会话记录）；WSL
+	// 目标的最终目录在计划构建后由 finalizeWorkdir 以解析产出的
+	// spec.BootstrapMode 定谳（纯目标判据，零额外探测）。
 	workdir, workdirErr := resolveLaunchWorkDirChain(strings.TrimSpace(req.Workdir), p.canonicalWorkdir(), nil)
 	if workdirErr != nil {
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureWorkdir, CLIType: req.CLIType}
@@ -165,20 +176,57 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 	}
 	recipe.Workdir = workdir
 
+	var plan *launchplan.Plan
+	var failure *launchplan.BuildFailure
 	switch req.CLIType {
 	case contract.CLITypeClaudeCode:
-		return p.buildClaudePlan(recipe, req)
+		plan, failure = p.buildClaudePlan(recipe, req)
 	case contract.CLITypeOpenCode:
-		return p.buildOpenCodePlan(recipe, req)
+		plan, failure = p.buildOpenCodePlan(recipe, req)
 	case contract.CLITypeCodex:
-		return p.buildCodexPlan(recipe, req)
+		plan, failure = p.buildCodexPlan(recipe, req)
 	case contract.CLITypePi:
-		return p.buildPiPlan(recipe, req)
+		plan, failure = p.buildPiPlan(recipe, req)
 	case contract.CLITypeOmp:
-		return p.buildOmpPlan(recipe, req)
+		plan, failure = p.buildOmpPlan(recipe, req)
 	default:
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
 	}
+	return p.finalizeWorkdir(plan, failure, req)
+}
+
+// finalizeWorkdir 在计划构建完成后定谳工作目录（纯目标判据：以解析产出的
+// spec.BootstrapMode 为准，零额外探测；与桌面 resolveEmbeddedLaunchSpec 的
+// 后置定谳同一语义/同一函数）。remote/restart 恒 embedded：
+//   - WSL 目标 + 显式非空请求：Linux 形态原样保留给 wsl.exe --cd（存在性
+//     由目标 distro 判定）；宿主形态校验失败直接 FailureWorkdir（明确请求
+//     的 WSL 工程不得被静默换掉）；
+//   - WSL 目标 + 空请求：默认目录为 Linux 形态时同样保留（用户配置的
+//     ~/project 不被宿主校验吞掉）；
+//   - 非 WSL 目标：维持宿主链产物，原生回退语义不变。
+//
+// 定谳后的目录同时写回 Recipe.Workdir（会话记录/restart 快照的忠实值）。
+func (p *appLaunchPlanner) finalizeWorkdir(plan *launchplan.Plan, failure *launchplan.BuildFailure, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
+	if failure != nil {
+		return plan, failure
+	}
+	for i := range plan.Effects {
+		eff := &plan.Effects[i]
+		if eff.Kind != launchplan.EffectPTYStart || eff.Process == nil {
+			continue
+		}
+		spec := &eff.Process.Resolved
+		wd, err := resolveLaunchWorkDirForSpec(
+			spec.BootstrapMode == platform.BootstrapWSL, req.Workdir, spec.WorkDir,
+			p.canonicalWorkdir(), nil)
+		if err != nil {
+			plan.Secrets.Dispose()
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureWorkdir, CLIType: req.CLIType}
+		}
+		spec.WorkDir = wd
+		plan.Recipe.Workdir = wd
+	}
+	return plan, nil
 }
 
 func (p *appLaunchPlanner) Probe(ctx context.Context, cli contract.CLIType) (contract.CLIAvailability, *launchplan.BuildFailure) {
@@ -270,6 +318,16 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 	var effects []launchplan.EffectSpec
 	realBackend := strings.TrimRight(provider.EffectiveBaseURL("anthropic"), "/")
 	if recipe.UseHeadroom {
+		// D1（remote/restart 链，与桌面 LaunchSession 同一判定与文案）：
+		// Headroom 会话落 WSL 且 NAT/未知网络模式 → 计划构建即拒绝，防止
+		// HeadroomStart effect 先启动宿主侧 8787、而 distro 内
+		// ANTHROPIC_BASE_URL=localhost:8787 不可达的静默失败。mirrored 遵循现有
+		// 准入策略放行（不宣称连通）。v1 客户端收到既有 capability 失败文案
+		//（BuildFailure 无 message 字段，不扩公开契约）；判定细节见桌面链同款
+		// 中文指引（headroomWSLNetworkAdmission 文案）。
+		if err := headroomWSLNetworkAdmission(headroomSpecTargetsWSL(spec), spec.Env.Variables); err != nil {
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
+		}
 		fp := sharedFingerprintForHeadroom("claude-headroom", realBackend, headroom.DefaultPort)
 		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fp})
 		effects = append(effects, launchplan.EffectSpec{
@@ -497,6 +555,15 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 	var admissions []launchplan.SharedAdmissionSpec
 	var effects []launchplan.EffectSpec
 	if recipe.UseHeadroom {
+		// D6（remote/restart 链）：Codex 压缩路由仅写入宿主侧 config.toml
+		//（syncCodexGlobalHeadroomConfig），WSL codex 读发行版侧配置且无同步，
+		// 任何网络模式下压缩都不生效——显式选择压缩的 WSL 会话按「无法兑现即
+		// 拒绝」处理（与 Claude D1 对称），不默默以直连冒充压缩生效；桌面链的
+		// 全局开关 advisory 在 LaunchCodexSession。v1 客户端收到既有 capability
+		// 失败文案（不扩公开契约）。
+		if headroomSpecTargetsWSL(spec) {
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
+		}
 		upstream := strings.TrimRight(provider.EffectiveBaseURL("openai"), "/")
 		if upstream == "" {
 			upstream = codexGlobalHeadroomDefaultTarget

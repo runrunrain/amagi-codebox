@@ -51,6 +51,21 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: go test ./... -run '^$' -count=1
 
+      # Execute deterministic WSL regressions on Windows as well as compiling.
+      # These use isolated fixtures; real distro/credential probes remain opt-in.
+      - name: Windows WSL supply regressions
+        if: matrix.os == 'windows-latest'
+        env:
+          AMAGI_WSL_E2E: ''
+        run: go test ./internal/wslsupply ./internal/envvars -count=1
+
+      - name: Windows WSL launch regressions
+        if: matrix.os == 'windows-latest'
+        env:
+          AMAGI_WSL_E2E: ''
+          AMAGI_CODEBOX_AI_PROXY: ''
+        run: go test . ./internal/platform ./internal/launcher -run 'Test(WSL|BuildPlanPreservesWSL|Desktop.*WSL|PlannerResolveLaunch|BuildClaudePlanHeadroom|BuildCodexPlanHeadroom|PiProviderWriteWSL|OmpProvider.*WSL|PiOmpWindowsPath|AppendWSL|StripWSL)' -count=1
+
   frontend-mobile:
     name: Frontend and mobile
     runs-on: windows-latest

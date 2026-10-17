@@ -165,10 +165,16 @@ func TestNativeRoutingLifecycleAndDirectFallback(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err, s.State().Status.Logs)
 	}
-	base := []string{"HTTP_PROXY=http://old:5800", "all_proxy=socks5://old:5800", "no_proxy=*", "HOME=/example", "API_KEY=keep"}
+	base := []string{"HTTP_PROXY=http://old:5800", "all_proxy=socks5://old:5800", "no_proxy=*", "HOME=/example", "API_KEY=keep",
+		// D4：携带继承 marker（嵌套 CodeBox 场景）——启用路径必须剔旧值后唯一
+		// 重建，不得出现两条 marker。
+		"AMAGI_CODEBOX_AI_PROXY=1"}
 	env, err := s.ApplyEnv(base)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if c := strings.Count(strings.Join(env, "\n"), "AMAGI_CODEBOX_AI_PROXY="); c != 1 {
+		t.Fatalf("enabled path must rebuild the marker exactly once, got %d: %v", c, env)
 	}
 	m := map[string]string{}
 	for _, e := range env {

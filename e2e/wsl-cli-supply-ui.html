@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CodeBox WSL CLI 供给 UI 交互验证（SA-03/SA-17）</title>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+// WSLCLISettings.vue 交互验证 harness（agent-browser 驱动）：
+// - 真实组件 + 真实路由（hash），仅以页面内 stub 替代 Wails 绑定层；
+// - 所有绑定调用记录到 window.__wslCalls（名称 + 实参），供交互断言：
+//   1. 预览 → 勾选 → 导入所选：ImportWSLCliConfigKeys 收到的键必须是预览
+//      全路径键原样（SA-03）；
+//   2. 全不勾选时按钮变「撤回全部导入」，点击提交空选择（显式撤回入口）；
+//   3. 离开页面后轮询链停止（GetWSLCliSupplyStatus 计数收敛，SA-17）。
+import { createApp, h, KeepAlive } from 'vue';
+import { createRouter, createWebHashHistory, RouterView, RouterLink } from 'vue-router';
+import WSLCLISettings from '/frontend/src/views/settings/WSLCLISettings.vue';
+import '/frontend/src/styles/tokens.css';
+
+const calls = [];
+const rec = (name, impl) => (...args) => {
+  calls.push({ name, args, t: Date.now() });
+  return Promise.resolve(impl(...args));
+};
+
+const cliUnits = (cli) => [{
+  unit: cli === 'claude' ? 'claude/mcp' : 'codex/config',
+  relPath: cli === 'claude' ? '~/.claude.json' : '~/.codex/config.toml',
+  policy: 'tracked-projection', state: 'unchecked', detail: '尚未检查', actions: ['preview'],
+}];
+const resStatus = { distro: 'Ubuntu', available: true, rootMissing: false, scanStarted: true, scanRunning: false, scanScanned: 0, scanTotal: 0, scanIncomplete: false, skills: [] };
+const impls = {
+  GetWSLCLIStatus: () => ({ available: true, distro: 'Ubuntu', distroWSLVersion: 2, nodeVersion: 'v20.19.0', tools: [{ tool: 'claude', installed: true, version: '2.0.0' }] }),
+  GetWSLConfigSupplyStatus: () => ({ distro: 'Ubuntu', pendingPush: false, faces: [], units: [] }),
+  GrantWSLVisionConsent: () => null,
+  GetWSLSkillsSupplyStatus: () => ({ ...resStatus }),
+  CheckWSLSkillsSupply: () => ({ ...resStatus }),
+  PreviewWSLSkillsSupply: () => [],
+  ApplyWSLSkillsSupply: () => [],
+  KeepWSLSkillLocal: () => null,
+  TakeOverWSLSkill: () => null,
+  GetWSLCliSupplyStatus: (cli) => ({ distro: 'Ubuntu', available: true, units: cliUnits(cli), resources: { ...resStatus, scanRunning: cli === 'claude' } }),
+  PreviewWSLCliConfigSupply: (cli) => [{
+    unit: cli === 'claude' ? 'claude/mcp' : 'codex/config',
+    relPath: cli === 'claude' ? '~/.claude.json' : '~/.codex/config.toml',
+    policy: 'tracked-projection', action: 'blocked', blockedReason: 'awaiting-consent',
+    frozen: false, targetHash: 'tok-' + cli, notes: [],
+    keys: [
+      { key: 'mcpServers/demo', action: 'add', reason: '未选择导入；勾选后随导入写入', before: '远程 https://example.invalid/mcp', after: '远程 https://example.invalid/mcp', selected: false, importable: true },
+      { key: 'mcpServers/other', action: 'add', reason: '未选择导入；勾选后随导入写入', before: '远程 https://other.invalid/mcp', after: '远程 https://other.invalid/mcp', selected: false, importable: true },
+    ],
+  }],
+  ImportWSLCliConfigKeys: (_cli, unit, keys) => [{ unit, outcome: keys.length ? 'applied' : 'fresh', detail: keys.length ? 'written' : 'no-change' }],
+  ApplyWSLCliConfigSupply: () => [],
+  KeepWSLCliConfigUnitLocal: () => null,
+  TakeOverWSLCliConfigUnit: () => null,
+  CheckWSLCliResourcesSupply: (cli) => ({ ...resStatus, distro: 'Ubuntu' }),
+  PreviewWSLCliResourcesSupply: () => [],
+  ApplyWSLCliResourcesSupply: () => [],
+  KeepWSLCliResourceLocal: () => null,
+  TakeOverWSLCliResource: () => null,
+  GetWSLOpenCodeMCPPreview: () => [],
+  SetWSLOpenCodeMCPSelection: () => null,
+};
+const app = {};
+for (const name of Object.keys(impls)) app[name] = rec(name, impls[name]);
+window.__wslCalls = calls;
+window.go = { main: { App: app } };
+
+const router = createRouter({
+  history: createWebHashHistory(),
+  routes: [
+    { path: '/', redirect: '/wsl' },
+    { path: '/wsl', component: WSLCLISettings },
+    { path: '/other', component: { render: () => h('p', '已离开 WSL 页面') } },
+  ],
+});
+createApp({ render() { return h('div', { class: 'fixture' }, [
+  h('nav', [h('strong', 'WSL 供给 UI 验证'), h(RouterLink, { to: '/wsl' }, () => 'WSL 页'), h(RouterLink, { to: '/other' }, () => '其他页面')]),
+  h('main', [h(KeepAlive, null, { default: () => [h(RouterView)] })]),
+]); } }).use(router).mount('#app');
+</script>
+<style>
+body { margin: 0; background: var(--window); font: 13px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.fixture { display: flex; }
+.fixture > nav { display: flex; flex-direction: column; gap: 16px; width: 180px; flex-shrink: 0; padding: 24px 16px; background: var(--sidebar); border-right: 1px solid var(--separator); box-sizing: border-box; }
+.fixture > nav a { color: var(--secondary); text-decoration: none; }
+.fixture > nav a.router-link-active { color: var(--accent); }
+.fixture > main { flex: 1; padding: 16px; overflow: auto; }
+* { box-sizing: border-box; }
+</style>
+</body>
+</html>

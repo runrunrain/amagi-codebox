@@ -1,0 +1,202 @@
+--- a/internal/wslsupply/a2_consumption_test.go
++++ b/internal/wslsupply/a2_consumption_test.go
+@@ -10,7 +10,6 @@
+ 	"encoding/json"
+ 	"errors"
+ 	"os"
+-	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 
+@@ -101,17 +100,11 @@
+ 		inner:  &stubA2{outcome: launcher.SyncWSLPiLoginAuthCopied},
+ 		called: &calls,
+ 	})
+-	// pending 目录不可写（保存恒失败）但可读可扫描（存储面健康）：隔离「摘要写
+-	// 失败」与「pending 存储不可读」（后者首轮即被健康门阻断，不足证 A2 专
+-	// 门语义）。POSIX 非 root 下 0500 目录 CreateTemp 必败、ReadDir 仍可。
+-	pendingDir := filepath.Join(filepath.Dir(c.state.path), pendingDirName)
+-	if err := os.MkdirAll(pendingDir, 0o700); err != nil {
+-		t.Fatal(err)
+-	}
+-	if err := os.Chmod(pendingDir, 0o500); err != nil {
+-		t.Fatal(err)
+-	}
+-	defer func() { _ = os.Chmod(pendingDir, 0o700) }()
++	// 摘要持久化故障经确定性故障接缝注入（跨平台同一语义：POSIX chmod 0500
++	// 目录在 Windows 宿主不阻止写入，不能作为故障注入）：pending 存储面保持
++	// 可读可扫描（存储面健康），saveIntent 恒失败——隔离「摘要写失败」与
++	// 「pending 存储不可读」（后者首轮即被健康门阻断，不足证 A2 专门语义）。
++	c.faults.add(stageIntent, 0, errors.New("a2 summary persist fault"))
+ 	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
+ 	if err != nil {
+ 		t.Fatal(err)
+--- a/internal/wslsupply/a2.go
++++ b/internal/wslsupply/a2.go
+@@ -121,6 +121,12 @@
+ // （OpID、完整目标、方向/阶段；不含 hash/token/正文）。复用 pending 存储，
+ // 单独 Kind。摘要不自动授予管理权，不自动重放。
+ func (c *Coordinator) saveA2PendingSummary(target TargetRef, opID string) error {
++	// 确定性故障接缝（测试注入；生产 faults 恒空）：模拟「摘要持久化失败」。
++	// 旧夹具用 POSIX 目录 chmod 0500 注入写失败，Windows 宿主上 chmod 不阻止
++	// 写入、表达不了同一语义；接缝与 commitFile 的 stageIntent 同族。
++	if err := c.faults.fail(stageIntent); err != nil {
++		return err
++	}
+ 	return c.state.saveIntent(OperationIntent{
+ 		OpID: opID, Kind: OpKindA2Sync, TargetKey: targetKeyOf(target),
+ 		TargetDistro: target.Distro, TargetHome: target.Home,
+--- a/internal/wslsupply/consistency_fixes_test.go
++++ b/internal/wslsupply/consistency_fixes_test.go
+@@ -131,6 +131,10 @@
+ 	}
+ 	body := "SYNTHETIC V2 SECRET"
+ 	cfWrite(t, filepath.Join(tr.UNCRoot, VisionExportFile), body, 0o600)
++	// 副本权限经 fake 探测面的 mode 表显式表达（0600）：生产权限真值面是
++	// distro 内 stat 探测；宿主 os.Stat 的 POSIX 位在 Windows 上不存在，
++	// 不得作为夹具事实源（借用宿主位曾令 Windows 误报 perms-unverified）。
++	fp.setMode(tr.LinuxRoot+"/"+VisionExportFile, "600")
+ 	legacyGen := legacyGenerationOf("m-old", "1000", "/home/u")
+ 	v2 := StateFile{
+ 		SchemaVersion: 2, Generation: tr.Generation, Distro: "Ubuntu", Home: tr.Home,
+--- a/internal/wslsupply/coordinator_test.go
++++ b/internal/wslsupply/coordinator_test.go
+@@ -96,6 +96,19 @@
+ 	f.chmodErr = err
+ 	f.mu.Unlock()
+ }
++
++// setMode 显式登记一个 linuxPath 的 distro 侧权限位。夹具的权威语义面：
++// Windows 宿主 os.Stat 无 POSIX 位（恒 0666/0444），「副本为 0600/0644」这类
++// 事实必须写入 mode 表表达，不得借用宿主位（生产权限真值面是 distro 内
++// stat 探测，从不读宿主 os.Stat）。
++func (f *fakeProbes) setMode(linuxPath, mode string) {
++	f.mu.Lock()
++	if f.modes == nil {
++		f.modes = map[string]string{}
++	}
++	f.modes[linuxPath] = mode
++	f.mu.Unlock()
++}
+ func newFakeProbes(t *testing.T) *fakeProbes {
+ 	t.Helper()
+ 	return &fakeProbes{
+--- a/internal/wslsupply/core_security_regression_test.go
++++ b/internal/wslsupply/core_security_regression_test.go
+@@ -12,6 +12,7 @@
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+@@ -329,10 +330,19 @@
+ 	if mode, ok := fp.statMode("/home/u/.pi/agent/.amagi-staging"); !ok || mode != "700" {
+ 		t.Fatalf("staging dir must be 700 in distro, got %q ok=%v", mode, ok)
+ 	}
+-	// rename 保留文件权限位：宿主侧 stat（本地目录）应见 0600（staging 内已收紧）。
+-	if info, statErr := os.Stat(coreTargetFile(fp)); statErr != nil || info.Mode().Perm() != 0o600 {
+-		t.Fatalf("final file must carry the pre-rename 0600 mode, got %v err=%v", info.Mode().Perm(), statErr)
++	// rename 保留文件权限位：distro 侧探测（权威验证面）证明目标副本提交后
++	// 为 600（verifyPublished 复验收紧）。宿主 POSIX 位仅在能表达它的平台断言
++	//（Windows os.Chmod 只翻只读位、os.Stat 恒 0666/0444，无 0600 语义）。
++	if mode, ok := fp.statMode("/home/u/.pi/agent/core-stub.json"); !ok || mode != "600" {
++		t.Fatalf("final file must be verified private (600) via the distro probe surface, got %q ok=%v", mode, ok)
+ 	}
++	if runtime.GOOS != "windows" {
++		if info, statErr := os.Stat(coreTargetFile(fp)); statErr != nil || info.Mode().Perm() != 0o600 {
++			t.Fatalf("final file must carry the pre-rename 0600 mode, got %v err=%v", info.Mode().Perm(), statErr)
++		}
++	} else if _, statErr := os.Stat(coreTargetFile(fp)); statErr != nil {
++		t.Fatalf("final file must exist after commit, err=%v", statErr)
++	}
+ 	// staging 目录中不得残留提交后的临时文件。
+ 	if entries, readErr := os.ReadDir(filepath.Join(fp.uncRoot, "Ubuntu/home/u/.pi/agent/.amagi-staging")); readErr != nil || len(entries) != 0 {
+ 		t.Fatalf("staging must be empty after commit, got %v err=%v", entries, readErr)
+--- a/internal/wslsupply/review_fixes_test.go
++++ b/internal/wslsupply/review_fixes_test.go
+@@ -267,9 +267,10 @@
+ 	}
+ 	t.Run("loose 0644 copy is retightened and stays fresh", func(t *testing.T) {
+ 		c, fp := publish(t)
+-		if err := os.Chmod(visionFile(fp), 0o644); err != nil {
+-			t.Fatal(err)
+-		}
++		// 松弛形态经探测面 mode 表表达（权威面优先于宿主位）：Windows 宿主
++		// chmod/stat 表达不了 POSIX 0644，且 publish 后 mode 表已持有 600——
++		// 宿主位 chmod 在任何平台都不可见，必须从权威面注入。
++		fp.setMode("/home/u/.agents/"+VisionExportFile, "644")
+ 		res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
+ 		if res.Results[0].Outcome != UnitFresh {
+ 			t.Fatalf("retightened copy must stay fresh (zero-byte rewrite), got %+v", res.Results[0])
+@@ -285,9 +286,7 @@
+ 	})
+ 	t.Run("chmod failure fails the unit instead of passing", func(t *testing.T) {
+ 		c, fp := publish(t)
+-		if err := os.Chmod(visionFile(fp), 0o644); err != nil {
+-			t.Fatal(err)
+-		}
++		fp.setMode("/home/u/.agents/"+VisionExportFile, "644")
+ 		fp.setChmodError(errors.New("wsl.exe dead"))
+ 		res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
+ 		if res.Results[0].Outcome != UnitFailed || res.Results[0].Detail != "sensitive-permissions-unsafe" {
+--- a/internal/wslsupply/skills_scan_test.go
++++ b/internal/wslsupply/skills_scan_test.go
+@@ -83,6 +83,31 @@
+ 	return out
+ }
+ 
++// TestScanSkillAbsoluteLikeLinkTargetForms 钉住绝对形态判定谓词（Windows
++// 盘根相对目标的修复回归：`\abs\target` 在 Windows 宿主上由
++// CreateSymbolicLink 规范化产生，是宿主原生绝对路径；此前漏判致该形态链
++// 接被误归 non-regular-entry）。谓词语义随宿主原生 filepath.IsAbs 走，本
++// 测试同样逐宿主钉住，不做平台分歧断言。
++func TestScanSkillAbsoluteLikeLinkTargetForms(t *testing.T) {
++	for _, s := range []string{"", "docs/guide.md", "cycle-b.md", "../outside.txt", `weird\name`} {
++		if isAbsoluteLikeLinkTarget(s) {
++			t.Fatalf("relative target %q misclassified as absolute", s)
++		}
++	}
++	for _, s := range []string{"/abs/target", "//server/share", `\\server\share`, "C:\\x", "c:/x", "D:data"} {
++		if !isAbsoluteLikeLinkTarget(s) {
++			t.Fatalf("absolute-form target %q not classified", s)
++		}
++	}
++	// 宿主原生绝对形态：Windows 盘根相对（\abs）在 Windows 宿主是绝对路径；
++	// POSIX 宿主上同字符串是合法相对文件名（非绝对）。谓词必须与宿主原生
++	// filepath.IsAbs 同判，两个平台各自钉住正确语义。
++	driveRooted := `\abs\target`
++	if got := isAbsoluteLikeLinkTarget(driveRooted); got != filepath.IsAbs(driveRooted) {
++		t.Fatalf("drive-rooted target %q = %v, want host-native filepath.IsAbs = %v", driveRooted, got, filepath.IsAbs(driveRooted))
++	}
++}
++
+ func TestScanSkillCompatChecks(t *testing.T) {
+ 	scope, root := makeSkillScope(t)
+ 	// 可移植基线 + 各类不兼容/排除形态。
+--- a/internal/wslsupply/skills_scan.go
++++ b/internal/wslsupply/skills_scan.go
+@@ -202,7 +202,7 @@
+ )
+ 
+ // isAbsoluteLikeLinkTarget 报告链接目标是否为绝对形态（Unix 绝对 / Windows
+-// 盘符 / UNC 前缀）。
++// 盘符 / UNC 前缀 / 宿主原生绝对形态）。
+ func isAbsoluteLikeLinkTarget(t string) bool {
+ 	if t == "" {
+ 		return false
+@@ -215,7 +215,12 @@
+ 		c := t[0]
+ 		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+ 	}
+-	return false
++	// 宿主原生绝对形态：Windows 上单反斜杠开头的盘根相对目标（如 \abs，由
++	// CreateSymbolicLink 对 "/abs" 形目标的规范化产生）是绝对路径——此前漏判
++	// 致 resolve 落到盘根后 ENOENT，被误归为 non-regular-entry。POSIX 上同形
++	// 字符串只是普通相对文件名，filepath.IsAbs 按宿主原生语义精确区分（POSIX
++	// 的 IsAbs ⟺ "/" 前缀，已被上面覆盖，POSIX 行为零变化）。
++	return filepath.IsAbs(t)
+ }
+ 
+ // extOf 返回小写扩展名（含点）。

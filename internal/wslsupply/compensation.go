@@ -26,11 +26,20 @@ type CompensationHandle struct {
 	prevExisted bool
 	sensitive   bool
 
-	// 技能目录专用（S3）。
+	// 技能/资源目录专用（S3；一致性修正：与资源统一真实持久前像生命周期）。
 	isDir           bool
 	writtenTreeHash string
+	prevTreeHash    string // 提交时验证过的基准树 hash（恢复后复验用）
 	prevFiles       []skillPreimageEntry
 	prevSnapshot    bool
+
+	// 持久操作事实（攻坚契约）：OpID 关联 intent/settled；backup/staging/
+	// displaced 是目标根下相对路径（恢复材料持久位置）。内存正文仅缓存。
+	opID        string
+	targetKey   string
+	backupRel   string
+	stagingRel  string
+	displacedRel string
 }
 
 // HasUndo 报告句柄是否携带可撤销写入。

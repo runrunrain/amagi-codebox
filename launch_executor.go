@@ -967,6 +967,9 @@ func (e *ptyStartEffect) Apply(ctx context.Context) (launchplan.EffectEvidence, 
 	if e.deps.pty == nil {
 		return launchplan.EffectEvidence{}, errors.New("PTY service unavailable")
 	}
+	if err := runWSLSharedFilesForSpec(ctx, e.deps.wslSupply, e.spec); err != nil {
+		return launchplan.EffectEvidence{}, fmt.Errorf("WSL shared supply: %w", err)
+	}
 	start, err := e.deps.pty.StartResolvedWithRunEvidence(e.sessionID, e.spec, e.runHandle)
 	if err != nil {
 		return launchplan.EffectEvidence{}, fmt.Errorf("start pty: %w", err)
@@ -1177,7 +1180,16 @@ func (e *appPreparedExecution) MarkCommitted() {
 		case *bootstrapWriteEffect:
 			typed.committed = true
 		case *wslConfigSupplyEffect:
-			// A2 凭据刷新是持久认证状态：commit 后不再持有撤销材料。
+			// 攻坚契约（补偿与释放）：Commit→Release——解除已终结操作的撤销
+			// 租用并清理材料；未确认操作的材料保留（责任不丢）。A2 凭据刷新是
+			// 持久认证状态，本就不在 undos 内。
+			if len(typed.undos) > 0 {
+				if releaser, ok := typed.deps.wslSupply.(interface {
+					ReleaseCompensations(ctx context.Context, handles ...*wslsupply.CompensationHandle) []wslsupply.CompensationOutcome
+				}); ok {
+					_ = releaser.ReleaseCompensations(context.Background(), typed.undos...)
+				}
+			}
 			typed.undos = nil
 		}
 	}

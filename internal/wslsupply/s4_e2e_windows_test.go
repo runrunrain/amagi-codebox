@@ -29,13 +29,15 @@ const s4E2EHome = "/tmp/amagi-wslsupply-s4-e2e"
 
 func s4E2EProbes(distro string) Probes {
 	return Probes{
-		Identity: func(string) platform.WSLUserIdentity {
+		Identity: func(context.Context, string) platform.WSLUserIdentity {
 			id := platform.WSLTargetIdentity(distro)
 			id.Home = s4E2EHome // 重锚：绝不触碰真实用户树
 			return id
 		},
 		ToUNC: platform.WSLToUNC,
-		Chmod: platform.WSLChmod,
+		Chmod: func(ctx context.Context, distro, mode string, paths ...string) error {
+			return platform.WSLChmod(distro, mode, paths...)
+		},
 	}
 }
 

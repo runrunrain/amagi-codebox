@@ -300,6 +300,12 @@ type App struct {
 	// updated inside the coordinator's composite transfer critical section.
 	sharedLeaseMu sync.Mutex
 	sharedLeases  map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease
+	// sharedLeaseReleases is the per-session whole-release completion barrier
+	// (stop-lease fix): the gate channel of the in-flight releaseSharedLeases
+	// round for a SessionID, closed only after that round's durable completion
+	// attempt AND coordinator ReleaseExact have finished. Guarded by sharedLeaseMu;
+	// never held across the durable write so no global lock waits on disk.
+	sharedLeaseReleases map[string]chan struct{}
 
 	// externalLauncher is a narrow test seam; nil selects the production
 	// LauncherService. externalRunPollInterval is zero in production (1s).
@@ -642,6 +648,16 @@ func NewApp(mobileAssets embed.FS) *App {
 				app.Capabilities, app.Paths, app.EnvVars, homeDir,
 			)
 			app.remotePlanner.(*appLaunchPlanner).networkEnv = app.aiProxy.ApplyEnv
+			// remote/restart 计划链的 WSL 环境防线可观测性：与桌面
+			// resolveEmbeddedLaunchSpec 同文案记 WARN/INFO（判定在
+			// appLaunchPlanner.resolveLaunch，此处只接日志面）。
+			app.remotePlanner.(*appLaunchPlanner).envObserver = func(level, message, detail string) {
+				if level == "WARN" {
+					app.Log.Warn("session", message, detail)
+					return
+				}
+				app.Log.Info("session", message, detail)
+			}
 		}
 	}
 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
@@ -2346,7 +2362,7 @@ func embeddedDefaultLaunchMode(mode string) session.LaunchMode {
 	return launchMode
 }
 
-func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
+func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, requestedWorkDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
 	if err := a.validateLaunchMode(mode); err != nil {
 		return platform.ResolvedLaunchSpec{}, err
 	}
@@ -2382,7 +2398,9 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	// 拼清单之前完成；剥离结果记 WARN 保持可观测。此处是全部内嵌启动（五 CLI）
 	// 的单一漏斗，pi/omp 原地各一份的旧剥离已并入。P4-A2：显式标记 allowPathValue
 	// 的键豁免剥离，改由转发侧加 /p 路径翻译标志；豁免键记 INFO 保持可观测。
-	if platform.EmbeddedLaunchTargetsWSL(mode, shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
+	// 门条件经 launchTargetsWSLFn（launch_workdir.go）：与 planner.resolveLaunch
+	// 共用同一谓词/接缝，两入口判定永不分叉。
+	if launchTargetsWSLFn(mode, shellPath) {
 		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)
 		if len(allowedPath) > 0 {
 			a.Log.Info("session", "已放行跨界路径值环境变量（per-key 放行 + /p 路径翻译）", strings.Join(allowedPath, ","))
@@ -2397,6 +2415,23 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	if err != nil {
 		return spec, err
 	}
+	// 工作目录定谳（纯目标判据：以解析产出的 spec.BootstrapMode 为准，
+	// 本层零探测）。WSL 目标：Linux 形态请求/默认目录原样保留（wsl.exe
+	// --cd 在目标侧消费），显式非空宿主形态校验失败直接拒绝启动（不静默
+	// 换工程）；非 WSL 目标维持入口宿主链产物（原生回退语义不变）。
+	finalWorkDir, wdErr := resolveLaunchWorkDirForSpec(
+		spec.BootstrapMode == platform.BootstrapWSL, requestedWorkDir, workDir,
+		a.Paths.GetDefaultPath(),
+		func(preserved string) {
+			a.Log.Info("session", "WSL 会话保留请求的 Linux 工作目录（由 wsl.exe --cd 在目标侧消费）", preserved)
+		},
+	)
+	if wdErr != nil {
+		return platform.ResolvedLaunchSpec{}, wdErr
+	}
+	// 最终目录随 spec 返回；调用方同步 recipe，统一激活入口再以该目录
+	// 发布会话记录，避免桌面面板/remote 快照仍指向预留时的宿主回退目录。
+	spec.WorkDir = finalWorkDir
 	return aiproxy.PinProxyEnvironment(spec)
 }
 
@@ -2487,7 +2522,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	}
 
 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
+	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
+	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
+	//（纯目标判据，零探测）。
+	requestedWorkDir := workDir
 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
 	if wdErr != nil {
 		return "", wdErr
@@ -2501,6 +2540,20 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	// it to an opaque external-run lifetime lease before reporting success.
 	var headroomAdmission *remote.SharedLaunchAdmission
 	if useHeadroom {
+		// D1（Headroom×WSL×NAT 启动闸门，桌面链）：launcher 会给 Headroom 会话
+		// 注入 ANTHROPIC_BASE_URL=http://localhost:8787，NAT 模式下 distro 内不可达，
+		// 会话必然静默失败——必须在 Headroom.Start、admission 获取、会话预留与
+		// PTY 启动等任何副作用之前拒绝。mirrored 遵循现有准入策略放行（与
+		// aiproxy.PinProxyEnvironment 同源判定，此处放行不构成连通声明）。
+		// remote/restart 链的对等闸门在 buildClaudePlan（planner 侧）；legacy
+		// remote（/api/sessions 直调本函数）由本闸门覆盖。
+		if err := headroomWSLNetworkAdmission(
+			platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "",
+			os.Environ(),
+		); err != nil {
+			a.Log.Warn("headroom", "已拒绝 Headroom WSL 会话启动（NAT 网络模式）", err.Error())
+			return "", err
+		}
 		if a.isExternalCleanupRecoveryBlocked() {
 			return "", remote.ErrSharedServiceInUse
 		}
@@ -2594,11 +2647,12 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Sessions.SetClaudeSessionID(sess.ID, claudeSID)
 		a.Log.Info("session", "注入 Claude session-id", fmt.Sprintf("id=%s sid=%s", sess.ID, claudeSID))
 
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, env, []string{"--session-id", claudeSID})
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, requestedWorkDir, env, []string{"--session-id", claudeSID})
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", err
 		}
+		workDir = spec.WorkDir
 
 		// M-006: acquire the shared Headroom lease so the
 		// coordinator guard is non-empty while this run is active.
@@ -3161,7 +3215,11 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 
 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
+	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
+	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
+	//（纯目标判据，零探测）。
+	requestedWorkDir := workDir
 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
 	if wdErr != nil {
 		return "", wdErr
@@ -3182,6 +3240,14 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		codexUsesGlobalHeadroom = true
 	}
 	if codexUsesGlobalHeadroom {
+		// D6（桌面链 advisory）：codex 全局压缩的路由载体是宿主侧
+		// ~/.codex/config.toml 的 openai_base_url 标记块，WSL codex 会话读取
+		// 发行版侧独立配置，压缩不会生效——会话照常直连，但必须让「压缩未
+		// 生效」可见，不默默让用户以为 8788 在压缩。不新增 Codex Headroom
+		// 路由体系；remote 链显式选择压缩的拒绝在 buildCodexPlan。
+		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
+			a.Log.Warn("codex", "codex 全局压缩对 WSL 会话不生效", codexHeadroomWSLIneffectiveMsg())
+		}
 		if a.isExternalCleanupRecoveryBlocked() {
 			return "", remote.ErrSharedServiceInUse
 		}
@@ -3277,11 +3343,12 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		env := launcher.BuildEnv(baseEnv, envOverrides)
 
 		args := buildCodexCLIArgs(launchSettings)
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, env, args)
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", err
 		}
+		workDir = spec.WorkDir
 
 		// M-006: a Codex session that routes through the global headroom (8788)
 		// depends on it; acquire a lease so the toggle/uninstall coordinator guard is
@@ -3542,7 +3609,11 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	}
 
 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
+	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
+	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
+	//（纯目标判据，零探测）。
+	requestedWorkDir := workDir
 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
 	if wdErr != nil {
 		return "", wdErr
@@ -3709,11 +3780,12 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		if launchSettings.Thinking != "" {
 			args = append(args, "--thinking", launchSettings.Thinking)
 		}
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, env, args)
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", err
 		}
+		workDir = spec.WorkDir
 
 		if loginPreset != nil {
 			if spec.BootstrapMode == platform.BootstrapWSL {
@@ -3933,7 +4005,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 	}
 
 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
+	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
+	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
+	//（纯目标判据，零探测）。
+	requestedWorkDir := workDir
 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
 	if wdErr != nil {
 		return "", wdErr
@@ -3970,64 +4046,14 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		envOverrides["PI_OFFLINE"] = "1"
 	}
 	if providerID != "" {
-		a.providerSyncMu.Lock()
-		if provider, err := a.Config.GetProvider(providerID); err == nil {
-			launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
-			apiKey, _ := a.getProviderAPIKey(providerID, *provider)
-
-			// 合并写入 omp 标准 agent 目录的 models.yml。
-			// 仅当成功生成配置时才改写 launchSettings.Provider 为 amagi-<name>；
-			// 失败则回退到 ompProviderMapping 的旧兜底（保持向后兼容，不阻断启动）。
-			// presetModels 同 Pi：取该 provider 在 openai 公共预设桶下的全部预设
-			// 模型（启动写入是托管条目整体替换语义，漏注会把统一同步写入的同
-			// provider 其他预设模型挤掉）。
-			presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
-			if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-				// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
-				//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
-				wroteProvider := false
-				if wslDistro != "" {
-					wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
-					if wErr == nil {
-						wroteProvider = true
-						a.Log.Info("omp", "已写入 omp models.yml (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.yml",
-							launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
-					} else {
-						a.Log.Warn("omp", "写入 WSL 侧 omp models.yml 失败，回退内置 provider", wErr.Error())
-					}
-				} else {
-					agentDir := defaultOmpAgentDir()
-					// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
-					// 当次 amagi 生成的同名 provider 优先。
-					pompCfg := launcher.MergeOmpModelsConfig(ompCfg, agentDir)
-					writeErr := launcher.WriteOmpAgentConfig(agentDir, pompCfg)
-					if writeErr == nil {
-						wroteProvider = true
-						a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
-							launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
-					} else {
-						a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
-					}
-				}
-				if wroteProvider {
-					launchSettings.Provider = launcher.OmpProviderID(providerID)
-				} else {
-					launchSettings.Provider, _ = ompProviderMapping(*provider)
-				}
-			} else {
-				a.Log.Warn("omp", "生成 omp models.yml 失败，回退内置 provider", cfgErr.Error())
-				launchSettings.Provider, _ = ompProviderMapping(*provider)
-			}
-
-			// 冗余兜底：注入对应 API Key env var（与 OpenCode/Pi 的双路注入一致）。
-			// omp 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
-			if apiKey != "" {
-				if _, apiKeyEnv := ompProviderMapping(*provider); apiKeyEnv != "" {
-					envOverrides[apiKeyEnv] = apiKey
-				}
-			}
+		// 临界区整体收进 writeOmpProviderModelsAtLaunch（与 Pi 的
+		// writePiProviderModelsAtLaunch 对称，D5）：WSL 路径构建/写入失败均阻断，
+		// 不静默回退丢自定义 baseURL 的 ompProviderMapping 兜底。
+		var ompWriteErr error
+		launchSettings, ompWriteErr = a.writeOmpProviderModelsAtLaunch(providerID, launchSettings, presetParams, wslDistro, envOverrides)
+		if ompWriteErr != nil {
+			return "", ompWriteErr
 		}
-		a.providerSyncMu.Unlock()
 	}
 
 	// Embedded identity stays hidden until its exact PTY run is active.
@@ -4071,11 +4097,12 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		if launchSettings.Thinking != "" {
 			args = append(args, "--thinking", launchSettings.Thinking)
 		}
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOhMyPi, string(launchMode), shellPath, workDir, env, args)
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOhMyPi, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", err
 		}
+		workDir = spec.WorkDir
 
 		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
@@ -4999,8 +5026,9 @@ func buildCodexCLIArgs(settings codexLaunchSettings) []string {
 
 // writePiProviderModelsAtLaunch 承担 LaunchPiSession 的 providerSyncMu 临界区：
 // 构建 + 合并写入 models.json（WSL/Windows 两侧）+ API key env 兜底注入，返回
-// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。错误仅一
-// 种：WSL 路径选中 provider 构建失败的阻断（S1 已批准语义，调用方直接上抛）。
+// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。WSL 路径
+// 错误两种，均阻断启动（S1 构建失败 + D5 写入失败，调用方直接上抛）；
+// Windows 路径维持既有回退语义。
 //
 // 锁纪律（S1 diting F1）：本函数是临界区的唯一形态，defer Unlock 保证全部
 // return 路径释放锁——修复前 WSL 构建失败分支在 Lock/Unlock 区间内直接
@@ -5018,12 +5046,12 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
 
 	// 合并写入 pi 标准 agent 目录的 models.json。
-	// 仅当成功生成配置时才改写 settings.Provider 为 amagi-<name>；失败则回退到
-	// piProviderMapping 的旧兜底（保持向后兼容，不阻断启动——WSL 路径除外，
-	// 见下方阻断分支）。presetParams 透传 contextWindow/maxTokens/thinking 到 pi
-	// model 配置。presetModels：该 provider 在 openai 公共预设桶（pi/omp 消费的
-	// 桶）下的全部预设模型。启动写入是托管条目的整体替换语义，漏注会把统一
-	// 同步写入的同 provider 其他预设模型挤掉。
+	// 成功写入时改写 settings.Provider 为 amagi-<name>；Windows 路径失败则回退
+	// piProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/写入
+	// 失败均阻断（见下方分支，不静默换非等价身份）。presetParams 透传
+	// contextWindow/maxTokens/thinking 到 pi model 配置。presetModels：该 provider
+	// 在 openai 公共预设桶（pi/omp 消费的桶）下的全部预设模型。启动写入是托管
+	// 条目的整体替换语义，漏注会把统一同步写入的同 provider 其他预设模型挤掉。
 	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 	if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, settings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
 		// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
@@ -5038,7 +5066,10 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 				a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
 					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
 			} else {
-				a.Log.Warn("pi", "写入 WSL 侧 pi models.json 失败，回退内置 provider", wErr.Error())
+				// D5：WSL 路径写入失败与构建失败同判阻断——piProviderMapping
+				// 回退会丢自定义 baseURL，distro 内 pi 将以第三方 key 误打官方
+				// endpoint（401/错误计费面）。典型诱因：distro 停机 / 9P 异常。
+				return settings, wslPiProviderWriteError(providerID, wErr)
 			}
 		} else {
 			agentDir := defaultPiAgentDir()
@@ -5085,6 +5116,101 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 // 中文报错（P3-S1 已批准语义：不静默换默认模型）。独立成函数供单测钉文案。
 func wslPiProviderBuildError(providerID string, cfgErr error) error {
 	return fmt.Errorf("无法构建 Pi 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
+}
+
+// wslPiProviderWriteError 是 WSL 路径「选中 provider 写入失败 → 阻断启动」的
+// 中文报错（D5：与构建失败同判，不静默回退会丢自定义 baseURL 的
+// piProviderMapping 兜底）。独立成函数供单测钉文案。
+func wslPiProviderWriteError(providerID string, writeErr error) error {
+	return fmt.Errorf("无法写入 Pi 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
+}
+
+// writeOmpProviderModelsAtLaunch 承担 LaunchOmpSession 的 providerSyncMu 临界区
+// （与 writePiProviderModelsAtLaunch 对称，D5）：构建 + 写入 models.yml
+// （WSL/Windows 两侧）+ API key env 兜底注入，返回可能更新的 launchSettings。
+// provider 不可读时原样返回（既有行为）。WSL 路径构建/写入失败均阻断（D5：
+// omp 与 pi 同判——ompProviderMapping 回退会丢自定义 baseURL，distro 内 omp
+// 将以第三方 key 误打官方 endpoint）；Windows 路径维持既有回退语义。
+// 锁纪律同 Pi：defer Unlock 保证全部 return 路径释放锁。
+func (a *App) writeOmpProviderModelsAtLaunch(providerID string, launchSettings ompLaunchSettings, presetParams config.Parameters, wslDistro string, envOverrides map[string]string) (ompLaunchSettings, error) {
+	a.providerSyncMu.Lock()
+	defer a.providerSyncMu.Unlock()
+
+	provider, err := a.Config.GetProvider(providerID)
+	if err != nil {
+		return launchSettings, nil // provider 不可读：不改 settings、不注入 env（既有行为）
+	}
+	launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
+	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
+
+	// 合并写入 omp 标准 agent 目录的 models.yml。成功写入时改写
+	// launchSettings.Provider 为 amagi-<name>；Windows 路径失败则回退
+	// ompProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/
+	// 写入失败均阻断（不静默换非等价身份）。presetModels 同 Pi：取该 provider
+	// 在 openai 公共预设桶下的全部预设模型（启动写入是托管条目整体替换语义，
+	// 漏注会把统一同步写入的同 provider 其他预设模型挤掉）。
+	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
+	if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
+		// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
+		//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
+		wroteProvider := false
+		if wslDistro != "" {
+			wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
+			if wErr == nil {
+				wroteProvider = true
+				a.Log.Info("omp", "已写入 omp models.yml (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.yml",
+					launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
+			} else {
+				// D5：WSL 路径写入失败阻断（与 Pi 同判），不回退丢 baseURL 的兜底。
+				return launchSettings, wslOmpProviderWriteError(providerID, wErr)
+			}
+		} else {
+			agentDir := defaultOmpAgentDir()
+			// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
+			// 当次 amagi 生成的同名 provider 优先。
+			pompCfg := launcher.MergeOmpModelsConfig(ompCfg, agentDir)
+			writeErr := launcher.WriteOmpAgentConfig(agentDir, pompCfg)
+			if writeErr == nil {
+				wroteProvider = true
+				a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
+					launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
+			} else {
+				a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
+			}
+		}
+		if wroteProvider {
+			launchSettings.Provider = launcher.OmpProviderID(providerID)
+		} else {
+			launchSettings.Provider, _ = ompProviderMapping(*provider)
+		}
+	} else {
+		// D5：WSL 路径构建失败阻断（与 Pi 的 wslPiProviderBuildError 同判）。
+		if wslDistro != "" {
+			return launchSettings, wslOmpProviderBuildError(providerID, cfgErr)
+		}
+		a.Log.Warn("omp", "生成 omp models.yml 失败，回退内置 provider", cfgErr.Error())
+		launchSettings.Provider, _ = ompProviderMapping(*provider)
+	}
+
+	// 冗余兜底：注入对应 API Key env var（与 OpenCode/Pi 的双路注入一致）。
+	// omp 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
+	if apiKey != "" {
+		if _, apiKeyEnv := ompProviderMapping(*provider); apiKeyEnv != "" {
+			envOverrides[apiKeyEnv] = apiKey
+		}
+	}
+	return launchSettings, nil
+}
+
+// wslOmpProviderBuildError / wslOmpProviderWriteError 是 WSL 路径「选中
+// provider 构建/写入失败 → 阻断启动」的中文报错（D5：与 Pi 同判，不静默回退
+// 丢自定义 baseURL 的 ompProviderMapping 兜底）。独立成函数供单测钉文案。
+func wslOmpProviderBuildError(providerID string, cfgErr error) error {
+	return fmt.Errorf("无法构建 omp 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
+}
+
+func wslOmpProviderWriteError(providerID string, writeErr error) error {
+	return fmt.Errorf("无法写入 omp 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
 }
 
 // piProviderMapping 把 amagi Provider 映射成 Pi 的内置 provider 名 + 对应 API Key env var。
@@ -5402,7 +5528,11 @@ launchCommon:
 	}
 
 	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home。
+	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
+	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
+	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
+	//（纯目标判据，零探测）。
+	requestedWorkDir := workDir
 	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
 	if wdErr != nil {
 		return "", wdErr
@@ -5468,11 +5598,12 @@ launchCommon:
 			}
 		}
 
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, env, nil)
+		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, requestedWorkDir, env, nil)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", err
 		}
+		workDir = spec.WorkDir
 
 		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)

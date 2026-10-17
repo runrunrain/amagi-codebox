@@ -13,6 +13,28 @@ import (
 
 var proxyKeys = map[string]bool{"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true}
 
+// aiProxyEnvMarker 是 CodeBox 内部激活标记键：ApplyEnv 启用路径追加它，
+// PinProxyEnvironment 以「spec.Env 含该标记=1」判定代理已激活。停用路径必须
+// 剥离继承自进程环境的同名键（D4）——嵌套 CodeBox（宿主 CLI 会话本身被
+// CodeBox 代理）启动时，旧 marker 会随 MergeWithSystem 流入子 CodeBox 的
+// 会话 env，使已停用代理的 WSL 会话仍被 NAT 文案拒绝，且文案指引（「停用
+// AI 代理分流」）按提示操作无效。
+const aiProxyEnvMarker = "AMAGI_CODEBOX_AI_PROXY"
+
+// stripAIProxyEnvMarker 移除 env 中的内部激活标记，其余条目（含用户自设的
+// 普通代理变量）原样保留。
+func stripAIProxyEnvMarker(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == aiProxyEnvMarker {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func (s *Service) proxyURLLocked(providers []Provider) (string, error) {
 	if !s.loaded {
 		return "", errors.New("AI 代理策略尚未加载，请等待应用初始化完成")
@@ -52,12 +74,17 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
 		return nil, err
 	}
 	if address == "" {
-		return base, nil
+		// D4：停用路径不得继承进程环境里的内部标记（嵌套 CodeBox 场景旧
+		// marker 残留会让 PinProxyEnvironment 误判激活，WSL 会话被 NAT 文案
+		// 拒绝）；用户的普通代理变量语义保持原样透传。
+		return stripAIProxyEnvMarker(base), nil
 	}
 	out := make([]string, 0, len(base)+8)
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
-		if !proxyKeys[strings.ToUpper(key)] {
+		// 启用路径由本函数唯一重建 marker（先剔旧值再追加新值，D4）；代理键
+		// 由启用路由整体接管（既有语义）。
+		if !proxyKeys[strings.ToUpper(key)] && key != aiProxyEnvMarker {
 			out = append(out, entry)
 		}
 	}
@@ -65,7 +92,7 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
 		out = append(out, key+"="+address)
 	}
 	out = append(out, "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
-	out = append(out, "AMAGI_CODEBOX_AI_PROXY=1")
+	out = append(out, aiProxyEnvMarker+"=1")
 	return out, nil
 }
 
@@ -78,7 +105,7 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
 func PinProxyEnvironment(spec platform.ResolvedLaunchSpec) (platform.ResolvedLaunchSpec, error) {
 	active := false
 	for _, entry := range spec.Env.Variables {
-		if entry == "AMAGI_CODEBOX_AI_PROXY=1" {
+		if entry == aiProxyEnvMarker+"=1" {
 			active = true
 			break
 		}

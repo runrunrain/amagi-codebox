@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -573,7 +574,9 @@ func TestWSLNetworkingModeFreshRead(t *testing.T) {
 // TestWSLFileMTime pins the M-1 freshness probe: `stat -c %Y` seconds inside
 // the distro, tolerant output decoding, and fail-as-false for missing paths /
 // probe failures / unparsable output (callers must treat false as
-// "indeterminable", never as 0).
+// "indeterminable", never as 0). 经 wslFileMTimeForOS 可测核心验证（原生
+// WSLFileMTime 在非 Windows 宿主提前返回，注入 runner 不可达；原生门行为
+// 另行钉住）。
 func TestWSLFileMTime(t *testing.T) {
 	orig := wslScriptRunner
 	t.Cleanup(func() { wslScriptRunner = orig })
@@ -584,24 +587,40 @@ func TestWSLFileMTime(t *testing.T) {
 		}
 		return nil, errors.New("stat failed")
 	}
-	if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); !ok || sec != 1792992000 {
-		t.Fatalf("WSLFileMTime = (%d, %v), want (1792992000, true)", sec, ok)
+	if sec, ok := wslFileMTimeForOS("windows", "Ubuntu", "/home/u/.pi/agent/auth.json"); !ok || sec != 1792992000 {
+		t.Fatalf("wslFileMTimeForOS = (%d, %v), want (1792992000, true)", sec, ok)
 	}
 	// 路径不存在（stat 非零退出）→ ok=false。
-	if _, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/missing.json"); ok {
+	if _, ok := wslFileMTimeForOS("windows", "Ubuntu", "/home/u/.pi/agent/missing.json"); ok {
 		t.Fatal("missing path must report ok=false")
 	}
 	// 输出不可解析 → ok=false，不得当作 0 值。
 	wslScriptRunner = func(_, _ string) ([]byte, error) { return []byte("not-a-number"), nil }
-	if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
+	if sec, ok := wslFileMTimeForOS("windows", "Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
 		t.Fatalf("unparsable output = (%d, %v), want (0, false)", sec, ok)
 	}
-	// 非 Linux 绝对路径 / 空 distro → ok=false。
-	if _, ok := WSLFileMTime("Ubuntu", "relative/path"); ok {
+	// 非 Linux 绝对路径 / 空 distro → ok=false（runner 不被触达）。
+	probeCalls := 0
+	wslScriptRunner = func(_, _ string) ([]byte, error) { probeCalls++; return []byte("1"), nil }
+	if _, ok := wslFileMTimeForOS("windows", "Ubuntu", "relative/path"); ok {
 		t.Fatal("relative path must report ok=false")
 	}
-	if _, ok := WSLFileMTime("", "/home/u/x"); ok {
+	if _, ok := wslFileMTimeForOS("windows", "", "/home/u/x"); ok {
 		t.Fatal("empty distro must report ok=false")
+	}
+	// 非 Windows 宿主门：runner 可用也恒 (0,false)（原生行为，不扩大）。
+	if sec, ok := wslFileMTimeForOS("darwin", "Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
+		t.Fatal("non-windows host must fail closed")
+	}
+	if probeCalls != 0 {
+		t.Fatalf("gated calls must not reach the runner, got %d calls", probeCalls)
+	}
+	// 包装层与核心同门：非 Windows 宿主上原生入口不可达（Windows 宿主上此
+	// 断言天然跳过，交由 wsl_pi_login_sync_e2e_windows_test 真机覆盖）。
+	if runtime.GOOS != "windows" {
+		if sec, ok := WSLFileMTime("Ubuntu", "/home/u/.pi/agent/auth.json"); ok || sec != 0 {
+			t.Fatal("WSLFileMTime must stay gated off on non-windows hosts")
+		}
 	}
 }
 
@@ -693,5 +712,34 @@ func TestAppendWSLENVForwardingPathFlagUpgradeExisting(t *testing.T) {
 	out3 := appendWSLENVForwardingWithPaths(env3, []string{"UE_ROOT"}, []string{"UE_ROOT"})
 	if wslenv3 := envValue(out3, "WSLENV"); strings.Contains(wslenv3, "p/p") {
 		t.Fatalf("flag combo rewritten: %q", wslenv3)
+	}
+}
+
+// TestParseWSLStatModeOutput pins the SA-06 staging-verification probe parser:
+// octal modes 1-4 digits parse; CR/NUL/blank noise is tolerated; anything else
+// (empty, non-octal, overlong) reports ok=false — callers must treat false as
+// "isolation unverified" and fail closed, never as any concrete mode.
+func TestParseWSLStatModeOutput(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"700", "700", true},
+		{"600\r\n", "600", true},
+		{" 644\x00", "644", true},
+		{"0", "0", true},
+		{"1777", "1777", true},
+		{"", "", false},
+		{"\r\n", "", false},
+		{"abc", "", false},
+		{"6a0", "", false},
+		{"17777", "", false},
+		{"-rw-------", "", false},
+	} {
+		got, ok := parseWSLStatModeOutput(tc.in)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("parseWSLStatModeOutput(%q) = (%q,%v), want (%q,%v)", tc.in, got, ok, tc.want, tc.ok)
+		}
 	}
 }

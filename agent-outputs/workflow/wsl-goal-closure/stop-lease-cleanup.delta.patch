@@ -1,0 +1,21 @@
+--- a/external_headroom_lease_test.go
++++ b/external_headroom_lease_test.go
+@@ -612,6 +612,9 @@
+ 		release: make(chan struct{}),
+ 	}
+ 	app.externalCleanupStore = gated
++	// A failed assertion must not leave the monitor parked in the fixture.
++	releaseGate := sync.OnceFunc(func() { close(gated.release) })
++	t.Cleanup(releaseGate)
+ 
+ 	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
+ 	if err != nil {
+@@ -656,7 +659,7 @@
+ 	// Release the durable write: the owner finishes Complete, releases the
+ 	// coordinator lease and closes the completion gate; both waiters then
+ 	// return with the release responsibility fully discharged.
+-	close(gated.release)
++	releaseGate()
+ 	select {
+ 	case err := <-stopErr:
+ 		if err != nil {

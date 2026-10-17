@@ -164,6 +164,14 @@ func prepareNativeBootstrapTest(t *testing.T, runner *nativeBootstrapTestRunner)
 	t.Setenv("APPDATA", filepath.Join(tmpDir, "AppData", "Roaming"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "AppData", "Local"))
 	t.Setenv("NPM_CONFIG_PREFIX", npmPrefix)
+	// Host-pollution guard: the platform resolver honors an ambient FNM_DIR
+	// before HOME-derived fnm bases. On machines where the user's shell exports
+	// FNM_DIR at a real fnm base containing claude/node/npm shims, detection and
+	// the native bootstrap would resolve those REAL binaries (conflict cleanup,
+	// "npm uninstall" against the fake runner) and the tests would depend on
+	// which CLIs are installed on the host. Pin FNM_DIR to empty so fnm
+	// candidates are derived from the fixture HOME only.
+	t.Setenv("FNM_DIR", "")
 	t.Setenv("PATH", binDir)
 	t.Setenv("Path", binDir)
 	previousHomeDir := claudeUserHomeDir
@@ -304,6 +312,11 @@ func TestClaudeNativeBootstrapResolverFallbackKeepsDarwinShimInsteadOfExeRealpat
 	}
 	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
 	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
+	// Host-pollution guard: keep the resolver fallback scoped to the fixture.
+	// An ambient FNM_DIR pointing at a real fnm base would prepend real
+	// claude/node/npm bin dirs to the enhanced PATH ahead of the fixture shim
+	// and the bootstrap would resolve the host's claude instead.
+	t.Setenv("FNM_DIR", "")
 	t.Setenv("PATH", shimDir)
 	t.Setenv("Path", shimDir)
 	runner := &nativeBootstrapTestRunner{npmPrefix: prefix}
@@ -563,6 +576,11 @@ func TestClaudeCheckOneFindsNPMGlobalWhenProcessPATHMissing(t *testing.T) {
 	}
 	t.Setenv("USERPROFILE", homeDir)
 	t.Setenv("HOME", homeDir)
+	// Host-pollution guard: this test asserts the npm-global-prefix fallback
+	// fires when the PATH miss. An ambient FNM_DIR would surface a host fnm
+	// claude through the resolver's controlled candidates instead, and the
+	// assertion outcome would depend on how that host binary classifies.
+	t.Setenv("FNM_DIR", "")
 	t.Setenv("PATH", binDir)
 	t.Setenv("Path", binDir)
 	runner := &nativeBootstrapTestRunner{npmPrefix: npmPrefix, npmClaude: npmClaude}

@@ -1,0 +1,143 @@
+diff --git a/internal/wslsupply/commit.go b/internal/wslsupply/commit.go
+index 6af34fc..badcb6d 100644
+--- a/internal/wslsupply/commit.go
++++ b/internal/wslsupply/commit.go
+@@ -84,6 +84,16 @@ func (f *commitFaults) fail(stage string) error {
+ // 绝不覆盖）。
+ var errNoReplaceExists = errors.New("no-replace destination already exists")
+ 
++// isNoReplaceExists 判定 no-replace 发布/放回是否因目标已存在而被拒。生产原语
++// platform.MoveNoReplace 按契约返回 os.ErrExist 族（Windows 9P 上的
++// ACCESS_DENIED 仅在双方实体可观察时以 errors.Join(os.ErrExist, …) 归类）；
++// errNoReplaceExists 保留给注入接缝。此前只认哨兵，生产冲突从不命中
++// publish-conflict 分支（Windows 真机并发用例暴露）。
++// 归类只决定「保留两处」的报告形态，绝不授权覆盖。
++func isNoReplaceExists(err error) bool {
++	return errors.Is(err, errNoReplaceExists) || errors.Is(err, os.ErrExist)
++}
++
+ // errVerifyReadback 标记「读回字节失配」类验证失败（区别于 chmod/权限失败：
+ // 字节相符时的读回失配可能是瞬时读毛刺；权限失败永不视为瞬时成功）。
+ var errVerifyReadback = errors.New("read-back mismatch")
+@@ -256,7 +266,7 @@ func (c *Coordinator) commitFile(ctx context.Context, req CommitRequest) *Commit
+ 		return c.classifyAfterMoveError(ctx, req, rc, before, err)
+ 	}
+ 	if err := publishNoReplaceFn(absOf(req.Target, candidateRel), uncPath); err != nil {
+-		if errors.Is(err, errNoReplaceExists) {
++		if isNoReplaceExists(err) {
+ 			// 外部版本出现：保留两处，不覆盖（候选留在 staging）。
+ 			rc.Effect = OpEffectUnknown
+ 			rc.Recovery = OpRecoveryConflict
+diff --git a/internal/wslsupply/coordinator.go b/internal/wslsupply/coordinator.go
+index eca3506..cfd8870 100644
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -1904,7 +1904,7 @@ func (c *Coordinator) restoreWrittenToPreimage(rctx context.Context, h *Compensa
+ 		return errors.New("target changed to unknown content; external version retained")
+ 	}
+ 	if err := publishNoReplaceFn(absOf(h.target, stagingRel), h.uncPath); err != nil {
+-		if errors.Is(err, errNoReplaceExists) {
++		if isNoReplaceExists(err) {
+ 			// 原路径出现新目标：保留两处并报冲突，绝不删任何一处。
+ 			return fmt.Errorf("external target appeared during restore; both retained (preimage staged at %s, displaced at %s)", stagingRel, filepath.Base(displaced))
+ 		}
+diff --git a/internal/wslsupply/skills_submit.go b/internal/wslsupply/skills_submit.go
+index 690ce7e..c892f5f 100644
+--- a/internal/wslsupply/skills_submit.go
++++ b/internal/wslsupply/skills_submit.go
+@@ -379,7 +379,7 @@ func (c *Coordinator) submitDirUnit(ctx context.Context, req CommitRequest) *Com
+ 		return rc
+ 	}
+ 	if err := publishNoReplaceFn(staging, targetDir); err != nil {
+-		if errors.Is(err, errNoReplaceExists) {
++		if isNoReplaceExists(err) {
+ 			rc.Effect = OpEffectUnknown
+ 			rc.Recovery = OpRecoveryConflict
+ 			return fail(stagePublish, fmt.Errorf("external target appeared during dir publish; both retained (staging %s, prev %s): %w", rc.StagingRel, rc.DisplacedRel, err), "publish-conflict")
+@@ -739,7 +739,7 @@ func (c *Coordinator) restoreDirFromPersistedPrev(h *CompensationHandle) (bool,
+ 		return false, "displaced tree no longer matches this write; external version retained"
+ 	}
+ 	if err := publishNoReplaceFn(prevPath, h.uncPath); err != nil {
+-		if errors.Is(err, errNoReplaceExists) {
++		if isNoReplaceExists(err) {
+ 			return false, fmt.Sprintf("external target appeared during restore; both retained (prev at %s, displaced at %s)", filepath.Base(prevPath), filepath.Base(displaced))
+ 		}
+ 		return false, fmt.Sprintf("publish prev tree (no-replace): %v (prev kept at %s, displaced at %s)", err, filepath.Base(prevPath), filepath.Base(displaced))
+diff --git a/internal/wslsupply/commit_recovery_test.go b/internal/wslsupply/commit_recovery_test.go
+index 1a44435..f3e7640 100644
+--- a/internal/wslsupply/commit_recovery_test.go
++++ b/internal/wslsupply/commit_recovery_test.go
+@@ -218,6 +218,11 @@ func TestAttackExternalVersionDuringPublishKeepsBoth(t *testing.T) {
+ 	if rcpt.Err == nil || rcpt.Recovery != OpRecoveryConflict {
+ 		t.Fatalf("external version during publish must yield conflict, got %+v", rcpt)
+ 	}
++	// 真实原语（os.ErrExist 族）必须命中 publish-conflict 分类，不得落入通用
++	// commit-move-unknown 兜底（后者同样给 conflict，曾掩盖哨兵死分支）。
++	if rcpt.ErrDetail != "publish-conflict" {
++		t.Fatalf("real no-replace conflict must classify as publish-conflict, got %q (%v)", rcpt.ErrDetail, rcpt.Err)
++	}
+ 	// 外部版本在原路径原样保留（未被覆盖）。
+ 	if got, err := os.ReadFile(env.uncPath); err != nil || string(got) != string(external) {
+ 		t.Fatalf("external version must be retained verbatim, got %q err=%v", got, err)
+diff --git a/internal/wslsupply/skills_scan.go b/internal/wslsupply/skills_scan.go
+index 1dbffe1..ba81ff9 100644
+--- a/internal/wslsupply/skills_scan.go
++++ b/internal/wslsupply/skills_scan.go
+@@ -215,12 +215,14 @@ func isAbsoluteLikeLinkTarget(t string) bool {
+ 		c := t[0]
+ 		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+ 	}
+-	// 宿主原生绝对形态：Windows 上单反斜杠开头的盘根相对目标（如 \abs，由
+-	// CreateSymbolicLink 对 "/abs" 形目标的规范化产生）是绝对路径——此前漏判
+-	// 致 resolve 落到盘根后 ENOENT，被误归为 non-regular-entry。POSIX 上同形
+-	// 字符串只是普通相对文件名，filepath.IsAbs 按宿主原生语义精确区分（POSIX
+-	// 的 IsAbs ⟺ "/" 前缀，已被上面覆盖，POSIX 行为零变化）。
+-	return filepath.IsAbs(t)
++	// 宿主原生根起始形态：Windows 上 CreateSymbolicLink 把 "/abs" 形目标存为
++	// 盘根相对的 \abs（Windows 真机实测 Readlink 返回 `\abs\target`，且
++	// filepath.IsAbs 对其为 false——无卷名不算「绝对」，故不能用 IsAbs 判定）。
++	// 该形态逃出 skill 树、不可移植，必须归为绝对形态；否则 resolve 会把它当
++	// 相对路径拼到链接目录下 ENOENT，被误归为 non-regular-entry。
++	// os.IsPathSeparator 按宿主原生语义区分：Windows 上 '\' 为分隔符；POSIX
++	// 上 '\' 只是普通文件名字符（"/" 前缀已被上面覆盖，POSIX 行为零变化）。
++	return os.IsPathSeparator(t[0])
+ }
+ 
+ // extOf 返回小写扩展名（含点）。
+diff --git a/internal/wslsupply/skills_scan_test.go b/internal/wslsupply/skills_scan_test.go
+index 9290bda..fd311db 100644
+--- a/internal/wslsupply/skills_scan_test.go
++++ b/internal/wslsupply/skills_scan_test.go
+@@ -99,12 +99,13 @@ func TestScanSkillAbsoluteLikeLinkTargetForms(t *testing.T) {
+ 			t.Fatalf("absolute-form target %q not classified", s)
+ 		}
+ 	}
+-	// 宿主原生绝对形态：Windows 盘根相对（\abs）在 Windows 宿主是绝对路径；
+-	// POSIX 宿主上同字符串是合法相对文件名（非绝对）。谓词必须与宿主原生
+-	// filepath.IsAbs 同判，两个平台各自钉住正确语义。
++	// 宿主原生根起始形态：Windows 上 "/abs" 形链接被存为盘根相对 \abs（真机
++	// 实测 Readlink 返回该形态，filepath.IsAbs 为 false）——必须归为绝对形态；
++	// POSIX 宿主上同字符串是合法相对文件名（'\\' 非分隔符）。谓词与宿主
++	// os.IsPathSeparator 同判，两个平台各自钉住正确语义。
+ 	driveRooted := `\abs\target`
+-	if got := isAbsoluteLikeLinkTarget(driveRooted); got != filepath.IsAbs(driveRooted) {
+-		t.Fatalf("drive-rooted target %q = %v, want host-native filepath.IsAbs = %v", driveRooted, got, filepath.IsAbs(driveRooted))
++	if got, want := isAbsoluteLikeLinkTarget(driveRooted), os.IsPathSeparator('\\'); got != want {
++		t.Fatalf("drive-rooted target %q = %v, want host-native rooted = %v", driveRooted, got, want)
+ 	}
+ }
+ 
+diff --git a/internal/wslsupply/core_staging_e2e_windows_test.go b/internal/wslsupply/core_staging_e2e_windows_test.go
+index f0b3bff..25aae59 100644
+--- a/internal/wslsupply/core_staging_e2e_windows_test.go
++++ b/internal/wslsupply/core_staging_e2e_windows_test.go
+@@ -36,6 +36,9 @@ func TestManualRealWSLStagingIsolation(t *testing.T) {
+ 		t.Skip("no usable WSL distro on this machine")
+ 	}
+ 	_ = exec.Command("wsl.exe", "-d", distro, "--", "rm", "-rf", "/tmp/amagi-wslsupply-e2e").Run()
++	t.Cleanup(func() {
++		_ = exec.Command("wsl.exe", "-d", distro, "--", "rm", "-rf", "/tmp/amagi-wslsupply-e2e").Run()
++	})
+ 
+ 	probes := e2eIsolatedProbes(distro)
+ 	c := NewCoordinator(t.TempDir(), nil, probes)

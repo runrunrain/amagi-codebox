@@ -28,17 +28,22 @@ import (
 	"amagi-codebox/internal/platform"
 )
 
-// e2eIsolatedProbes 返回真实身份/chmod + fake home（/tmp/amagi-wslsupply-e2e）
-// 的探测面：写入只落 distro 内临时目录。
+// e2eIsolatedProbes 返回真实身份/chmod/statmode + fake home
+// （/tmp/amagi-wslsupply-e2e）的探测面：写入只落 distro 内临时目录。
 func e2eIsolatedProbes(distro string) Probes {
 	return Probes{
-		Identity: func(string) platform.WSLUserIdentity {
+		Identity: func(context.Context, string) platform.WSLUserIdentity {
 			id := platform.WSLTargetIdentity(distro)
 			id.Home = "/tmp/amagi-wslsupply-e2e" // 重锚：绝不触碰真实用户树
 			return id
 		},
 		ToUNC: platform.WSLToUNC,
-		Chmod: platform.WSLChmod,
+		Chmod: func(ctx context.Context, distro, mode string, paths ...string) error {
+			return platform.WSLChmod(distro, mode, paths...)
+		},
+		StatMode: func(ctx context.Context, distro, linuxPath string) (string, bool) {
+			return platform.WSLFileMode(distro, linuxPath)
+		},
 	}
 }
 

@@ -252,8 +252,15 @@ func WSLNetworkingMode(env []string) string {
 // ok=false；调用方需按「时间戳不可判」保守处理，不得把 false 当作 0 值
 // 参与新陈比较（A2 凭据双向同步 M-1 的判据画）。
 func WSLFileMTime(distro, linuxPath string) (int64, bool) {
+	return wslFileMTimeForOS(runtime.GOOS, distro, linuxPath)
+}
+
+// wslFileMTimeForOS 是 WSLFileMTime 的可测核心：osName 以参数区分宿主门
+// （原生行为不变——非 windows 恒 (0,false)，注入 runner 的矩阵可在任意
+// 宿主上验证解析/失败语义）。
+func wslFileMTimeForOS(osName, distro, linuxPath string) (int64, bool) {
 	distro = strings.TrimSpace(distro)
-	if distro == "" || runtime.GOOS != "windows" || !strings.HasPrefix(linuxPath, "/") {
+	if distro == "" || osName != "windows" || !strings.HasPrefix(linuxPath, "/") {
 		return 0, false
 	}
 	out, err := wslScriptRunner(distro, "stat -c %Y "+wslShSingleQuote(linuxPath))
@@ -265,6 +272,39 @@ func WSLFileMTime(distro, linuxPath string) (int64, bool) {
 		return 0, false
 	}
 	return sec, true
+}
+
+// WSLFileMode 返回 distro 内指定绝对 Linux 路径的八进制权限位字符串（如
+// "700"/"600"，经 wsl.exe 内 `stat -c %a`——distro 侧 ext4 权限的权威读法；
+// UNC/宿主 stat 呈现的 mode 位经 9P 翻译不可信）。路径不存在、非 Windows 宿主
+// 或探测失败返回 ok=false；调用方（敏感供给的私有 staging 验证）必须按
+// 「隔离未验证」fail closed，不得把 false 当作任何具体权限值。
+func WSLFileMode(distro, linuxPath string) (string, bool) {
+	distro = strings.TrimSpace(distro)
+	if distro == "" || runtime.GOOS != "windows" || !strings.HasPrefix(linuxPath, "/") {
+		return "", false
+	}
+	out, err := wslScriptRunner(distro, "stat -c %a "+wslShSingleQuote(linuxPath))
+	if err != nil {
+		return "", false
+	}
+	return parseWSLStatModeOutput(decodeWSLListOutput(out))
+}
+
+// parseWSLStatModeOutput 解析 stat -c %a 的八进制输出：1-4 位、仅 0-7；
+// 其它任何输出（空/带噪声/过长/非法字符）返回 false，调用方必须按
+// 「隔离未验证」fail closed，不得把 false 当作任何具体权限值。
+func parseWSLStatModeOutput(out string) (string, bool) {
+	mode := strings.TrimSpace(strings.Trim(out, "\r\x00 "))
+	if mode == "" || len(mode) > 4 {
+		return "", false
+	}
+	for _, c := range mode {
+		if c < '0' || c > '7' {
+			return "", false
+		}
+	}
+	return mode, true
 }
 
 // probeWSLNetworkingMode reads <home>\.wslconfig and parses the [wsl2]

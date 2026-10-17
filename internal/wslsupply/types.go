@@ -132,13 +132,22 @@ type TargetRef struct {
 	LinuxRoot  string // 目标根（Linux 路径，如 /home/u/.pi/agent）
 	UNCRoot    string // 目标根（Windows UNC，字节提交通道）
 	Generation string // 身份代；GenerationUnknown 表示未知
+	// MachineID 是 distro 稳定身份标识（构造 launcher 完整目标用；探测不可得为空）。
+	MachineID string
+	// LegacyGeneration 是同一次 Identity 探测导出的旧公式指纹
+	//（sha256(machine-id|uid|home)，无 distro）：v1 逐目标核验用；不重新走
+	// cached Home 探测；machine-id 缺失时为 GenerationUnknown。
+	LegacyGeneration string
 }
 
-// SameIdentity 报告两个目标是否指向同一身份面（distro+uid+home+root）。
-// Apply 前用它复核目标未被替换（拒绝旧计划）。
+// SameIdentity 报告两个目标是否指向同一身份面（distro+uid+home+root+代）。
+// Apply 前用它复核目标未被替换（拒绝旧计划）。Generation 是完整身份指纹
+// （含 distro 名与 machine-id/uid/home，见 generationFor）：计划后同名 distro
+// 被重装/克隆/换默认用户，即使 uid/home/根路径全同，代不同也必须拒绝旧计划
+// （SA-01：旧环境的授权不得把用户设置/敏感 MCP 导入新身份）。
 func (t TargetRef) SameIdentity(other TargetRef) bool {
 	return t.Distro == other.Distro && t.UID == other.UID && t.Home == other.Home &&
-		t.LinuxRoot == other.LinuxRoot && t.CLI == other.CLI
+		t.LinuxRoot == other.LinuxRoot && t.CLI == other.CLI && t.Generation == other.Generation
 }
 
 // FileMeta 是 Inspect 批量探测得到的单文件元数据。ModTime 为 UNC 视图呈现值，
@@ -184,6 +193,9 @@ const (
 	ActionWriteProjection
 	// ActionBlocked：阻断项，原因见 BlockedReason。
 	ActionBlocked
+	// ActionRemoveProjection：撤回——移除上次受管写入（SA-09：宿主侧已删除
+	// 敏感导出源且目标副本仍等于上次写入时，删除目标副本而不是留着旧密钥）。
+	ActionRemoveProjection
 )
 
 // PlannedUnit 是计划内单个单元的动作描述。计划不携带候选正文（敏感候选仅在
@@ -276,6 +288,23 @@ type UnitResult struct {
 	// Undo 非 nil 时表示本次产生了可条件撤销的普通文件写入（hash 仍匹配才
 	// 撤销）；A2 凭据刷新是持久认证状态，永不携带 Undo（design §七）。
 	Undo *CompensationHandle
+	// OperationID/Effect/Registration/Recovery 是本次操作的持久事实回执
+	//（攻坚契约：错误路径 receipt 不丢；启动门消费事实而不是字符串）。
+	OperationID  string
+	Effect       OpEffect
+	Registration OpRegistration
+	Recovery     OpRecovery
+	// Consumption 是敏感单元的启动消费资格（默认空串 = 未判定，不得当 safe）。
+	Consumption Consumption
+}
+
+// PendingOperationFact 报告本结果是否携带未确认操作事实（内容已写但登记
+// 未持久化/恢复未确认——dirty 进度不得计成功）。
+func (r UnitResult) PendingOperationFact() bool {
+	if r.OperationID == "" {
+		return false
+	}
+	return r.Registration == OpRegistrationPending || r.Recovery == OpRecoveryUnavailable || r.Recovery == OpRecoveryConflict
 }
 
 // RunResult 是一次 Apply/RunUnits 的整批结果。
@@ -324,6 +353,16 @@ type UnitStatus struct {
 	// Stale 报告来源已变化待更新（S3 技能面：登记的来源清单 hash 与当前扫描
 	// 缓存不一致；脱敏——hash 本体不出包）。
 	Stale bool
+	// PendingOperation（v3）：目标+单元存在未决（未 settled）操作时给出
+	// OpID（空 = 无）；写/撤回已发生但未登记完成的事实必须可见。
+	PendingOperation string
+	// StateUnpersisted（v3）：内容已提交但主清单登记未持久化。
+	StateUnpersisted bool
+	// RecoveryPending（v3）：存在待确认的恢复材料（backup/displaced）。
+	RecoveryPending bool
+	// LastAttemptOutcome（v3）：最近一次尝试的结构化结论（含失败/待确认；
+	// 与历史 LastSuccess 区分）。
+	LastAttemptOutcome string
 }
 
 // TargetStatus 是 GetStatus 的脱敏快照（design §七：读缓存不触发安装或同步；
@@ -338,4 +377,16 @@ type TargetStatus struct {
 	DesiredRevision uint64
 	PendingSources  map[string]uint64
 	Units           []UnitStatus
+	// StoreHealth（v3）：main/pending 存储面健康（展示用；不触发探测）。
+	StoreHealth StoreHealth `json:"-"`
+	// PendingIntents（v3）：该 distro 的未决操作摘要（脱敏）。
+	PendingIntents []PendingIntentSummary `json:"-"`
+}
+
+// PendingIntentSummary 是未决操作的脱敏摘要（不含正文/hash/秘密）。
+type PendingIntentSummary struct {
+	OpID    string `json:"opId"`
+	Kind    OpKind `json:"kind"`
+	Unit    UnitID `json:"unit,omitempty"`
+	RelPath string `json:"relPath,omitempty"`
 }

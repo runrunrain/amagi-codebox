@@ -243,3 +243,29 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// selectionMatchesKey 报告键 key（规范化全路径标识，如 "mcpServers/demo"、
+// "profiles/demo"）是否在选择集 selected 内（SA-03 修复：UI 预览/勾选/导入
+// 全链统一传全路径键，SetUnitSelection 原样保存——匹配以全路径为准，不能
+// 全局截叶名，否则 mcp_servers 与 profiles 的同名叶会同时被误选）。
+// 兼容历史登记的叶名形态：仅当叶名在 allKeys 内唯一对应时生效（同名双义
+// 保守不选，不猜作用域）。allKeys 是本单元期望键集全集（含已从来源删除但
+// 仍登记的键）。
+func selectionMatchesKey(selected map[string]bool, key string, allKeys []string) bool {
+	if len(selected) == 0 {
+		return false
+	}
+	if selected[key] {
+		return true
+	}
+	leaf := keyLeafName(key)
+	if !selected[leaf] {
+		return false
+	}
+	for _, k := range allKeys {
+		if k != key && keyLeafName(k) == leaf {
+			return false // 同名叶跨作用域双义：叶名不唯一，保守不选
+		}
+	}
+	return true
+}

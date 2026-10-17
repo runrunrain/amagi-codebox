@@ -210,6 +210,10 @@ func TestClaudeSettingsWhitelist(t *testing.T) {
   "unknownFutureField": {"nested": true}
 }`)
 	grantClaudeConsent(t, c, UnitClaudeSettings)
+	// SA-03：settings 白名单字段同为键级选择单元——显式勾选白名单字段导入。
+	if err := c.SetUnitSelection("Ubuntu", CLIClaude, UnitClaudeSettings, []string{"model", "spinnerTipsEnabled", "cleanupPeriodDays"}); err != nil {
+		t.Fatal(err)
+	}
 	res := runClaudeUnit(t, c, UnitClaudeSettings)
 	if res.Outcome != UnitApplied {
 		t.Fatalf("whitelist projection must apply, got %+v", res)

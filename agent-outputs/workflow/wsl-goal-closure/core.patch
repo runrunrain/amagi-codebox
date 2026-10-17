@@ -1,0 +1,2180 @@
+diff --git a/app_wsl_supply.go b/app_wsl_supply.go
+index 1de901f..90790b1 100644
+--- a/app_wsl_supply.go
++++ b/app_wsl_supply.go
+@@ -189,6 +189,88 @@ func (a *App) runWSLManagedModelsAtLaunch(distro string) error {
+ 	return a.gateWSLPiConfigSupplyResult(res, err, distro)
+ }
+ 
++// runWSLSharedFilesAtLaunch 是 SA-09（wsl-goal-closure）的共享小文件启动
++// 补漏/撤回闸门：会话启动前对已注册的 shared 作用域小文件（视觉清单导出
++// shared/vision-export、多模态学习层 shared/modality-kb）执行一次供给运行，
++// 覆盖「停机期间 Windows 侧关闭导出/删除 provider → 保存推送被停机守卫跳过
++// → 旧密钥副本无限留盘继续被会话内工具消费」的缺口。
++//
++// 边界（冻结接口，C1 接线五 CLI desktop/remote/restart）：
++//   - 只处理上述两个 shared 单元：不扫描 skills、不安装插件、不联网；
++//   - 普通启动不因「从未授权」阻断：无授权且状态面确认无受管副本的
++//     awaiting-consent/unmanaged 等预期态返回 nil；
++//   - 受管敏感副本（视觉清单）可能存在时，任何不能确认其安全/撤回完成的
++//     结果——RunUnits 错误、UnitFailed（含 withdrawal-remove-failed、staging
++//     unverified、写失败）、withdrawal-unconfirmed-frozen——返回明确 error
++//     阻断会话（未知不能推断旧副本安全）；
++//   - modality-kb 是布尔结论非敏感面：失败不阻断（状态页可见）；
++//   - ctx 已取消 → 返回 ctx.Err()（取消传播给启动链）。
++//
++// 调用时机：已解析 distro、PTY 启动之前。内部 Go API，不进 Wails 绑定。
++func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string) error {
++	if runner == nil || strings.TrimSpace(distro) == "" {
++		return nil
++	}
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	units := wslSupplyUnitsFiltered(runner, wslsupply.UnitSharedVisionExport, wslsupply.UnitSharedModalityKB)
++	if len(units) == 0 {
++		return nil // 裸运行器无 shared 适配器：不阻断普通启动
++	}
++	res, runErr := runner.RunUnits(ctx, distro, wslsupply.CLICommon, wslsupply.ReasonLaunch, units)
++	if ctx.Err() != nil {
++		return ctx.Err()
++	}
++	if runErr != nil {
++		// 供给运行不可用：仅当状态面能证明本目标从未持有受管敏感副本时放行。
++		if !visionManagedCopyPossible(runner, distro) {
++			return nil
++		}
++		return fmt.Errorf("WSL 共享视觉清单供给运行失败（%v）；无法确认 WSL 内受管密钥副本的安全状态，本次启动不消费该副本", runErr)
++	}
++	for i := range res.Results {
++		r := res.Results[i]
++		if r.Unit != wslsupply.UnitSharedVisionExport {
++			continue // 学习层非敏感：失败/阻断不阻断启动
++		}
++		switch r.Outcome {
++		case wslsupply.UnitApplied, wslsupply.UnitFresh, wslsupply.UnitWarnDegraded:
++			continue // 已落地 / 已确认无需动作
++		case wslsupply.UnitBlocked:
++			if strings.Contains(r.Detail, "withdrawal-unconfirmed") {
++				return fmt.Errorf("WSL 内视觉清单密钥副本未确认撤回（%s 目标被手动修改而宿主已撤回导出）；本次启动不消费该副本，请在 WSL 内处理 ~/.agents/amagi-media-models.json 后重试", distro)
++			}
++			// awaiting-consent / unmanaged-existing / frozen（非撤回类）：
++			// 从未授权或副本不归本目标受管——不阻断普通启动。
++			continue
++		default: // UnitFailed：写失败 / withdrawal-remove-failed / staging unverified 等
++			if !visionManagedCopyPossible(runner, distro) {
++				return nil
++			}
++			return fmt.Errorf("WSL 内视觉清单密钥副本状态未确认（unit=%s detail=%s）；本次启动不消费该副本，请检查 WSL 内 ~/.agents/amagi-media-models.json 或重试", r.Unit, r.Detail)
++		}
++	}
++	return nil
++}
++
++// visionManagedCopyPossible 报告本目标是否可能仍持有 CodeBox 受管的视觉
++// 清单密钥副本（曾授权且未确认撤回）。状态面无该单元登记（从未授权/从未
++// 发布）或已撤回（withdrawn*）时为 false——此时普通启动可安全继续。
++func visionManagedCopyPossible(runner wslsupply.Runner, distro string) bool {
++	st := runner.GetStatus(distro, wslsupply.CLICommon)
++	for _, u := range st.Units {
++		if u.Unit != wslsupply.UnitSharedVisionExport {
++			continue
++		}
++		if strings.HasPrefix(u.LastOutcome, "withdrawn") {
++			return false
++		}
++		return u.Consented
++	}
++	return false
++}
++
+ // gateWSLPiConfigSupplyResult 是启动闸门的统一判定（桌面闸门与 remote effect
+ // 共用，保证同一目标同一结果）：仅 managed-models 的 target-corrupt 阻断；
+ // 其余失败/阻断告警放行（冻结/未托管/待同意属预期态，不刷错误日志）。
+@@ -207,8 +289,11 @@ func (a *App) gateWSLPiConfigSupplyResult(res wslsupply.RunResult, err error, di
+ // 保存标脏 → 异步推送（已运行 distro + 无活动会话）
+ // ---------------------------------------------------------------------------
+ 
+-// wslSupplyPushState 是异步推送的 single-flight 状态：同一时刻至多一个推送在
+-// 执行，期间的标脏合并为一次补推（推送风暴不放大跨界次数）。
++// wslSupplyPushState 是异步推送的 single-flight 状态：同一时刻至多一个推送
++// 工作循环在执行，期间的标脏合并为一次补推（推送风暴不放大跨界次数）。
++// SA-08（wsl-goal-closure）：改为「单 worker 循环消费 rerun」——旧实现的
++// defer 内递归调用会再次命中 running=true 而直接返回，running 永不释放，
++// 此后所有保存推送停摆直到进程重启。
+ var wslSupplyPushState struct {
+ 	mu      sync.Mutex
+ 	running bool
+@@ -233,6 +318,9 @@ func (a *App) scheduleWSLSupplyPush() {
+ 	go a.pushWSLSupplyOnce()
+ }
+ 
++// pushWSLSupplyOnce 是 single-flight 入口：已在工作时只置 rerun 标记；
++// 工作循环完成后 rerun 仍置位则就地再消费一轮，所有退出路径都释放 running
++// （SA-08：等锁期间/执行中再次标脏的保存不得永久停摆后续推送）。
+ func (a *App) pushWSLSupplyOnce() {
+ 	wslSupplyPushState.mu.Lock()
+ 	if wslSupplyPushState.running {
+@@ -244,16 +332,23 @@ func (a *App) pushWSLSupplyOnce() {
+ 	wslSupplyPushState.mu.Unlock()
+ 	defer func() {
+ 		wslSupplyPushState.mu.Lock()
+-		if wslSupplyPushState.rerun {
+-			wslSupplyPushState.rerun = false
++		wslSupplyPushState.running = false
++		wslSupplyPushState.mu.Unlock()
++	}()
++	for {
++		a.doPushWSLSupply()
++		wslSupplyPushState.mu.Lock()
++		if !wslSupplyPushState.rerun {
+ 			wslSupplyPushState.mu.Unlock()
+-			a.pushWSLSupplyOnce() // 合并期间又有标脏：补推一轮
+ 			return
+ 		}
+-		wslSupplyPushState.running = false
++		wslSupplyPushState.rerun = false
+ 		wslSupplyPushState.mu.Unlock()
+-	}()
++	}
++}
+ 
++// doPushWSLSupply 执行一轮实际推送（守卫：停机 distro 不唤醒、活动会话暂停）。
++func (a *App) doPushWSLSupply() {
+ 	if a == nil || a.WSLSupply == nil {
+ 		return
+ 	}
+@@ -475,6 +570,12 @@ func wslFaceFromUnit(key, label string, st wslsupply.TargetStatus, unit wslsuppl
+ func wslVisionFace(st wslsupply.TargetStatus, pending bool) WSLConfigSupplyFace {
+ 	face := wslFaceFromUnit("vision-export", "视觉清单共享", st, wslsupply.UnitSharedVisionExport, pending)
+ 	for _, u := range st.Units {
++		if u.Unit == wslsupply.UnitSharedVisionExport && u.LastOutcome == "withdrawn" {
++			// SA-09：撤回终态——密钥副本已从 WSL 移除，不虚报「已同步」。
++			face.State = "unchecked"
++			face.Detail = "已撤回（WSL 内密钥副本已删除）；重新开启导出后会再次发布"
++			return face
++		}
+ 		if u.Unit == wslsupply.UnitSharedVisionExport && !u.Consented {
+ 			face.State = "awaiting-consent"
+ 			face.Detail = "尚未授权向 WSL 共享密钥副本"
+@@ -491,7 +592,7 @@ func wslVisionFace(st wslsupply.TargetStatus, pending bool) WSLConfigSupplyFace
+ 
+ // wslPluginsFace 聚合插件重放面卡片（S5）：只读登记摘要（不唤醒；启动路径
+ // 的「缺失插件」提示数据源——只提示，不自动安装）。Installed=false 的登记
+-//（缺失/上次失败）以 warning 语义呈现，不冒充已同步。
++// （缺失/上次失败）以 warning 语义呈现，不冒充已同步。
+ func wslPluginsFace(a *App) WSLConfigSupplyFace {
+ 	face := WSLConfigSupplyFace{Key: "pi-plugins", Label: "Pi 插件（WSL 重放）", State: "unchecked", Detail: "尚无本系统登记的 WSL 插件重放"}
+ 	coord := a.wslPluginCoordinator()
+@@ -915,6 +1016,8 @@ func piPreviewActionName(action wslsupply.Action) string {
+ 		return "none"
+ 	case wslsupply.ActionWriteProjection:
+ 		return "write"
++	case wslsupply.ActionRemoveProjection:
++		return "remove" // SA-09：撤回（移除受管密钥副本）
+ 	case wslsupply.ActionBlocked:
+ 		return "blocked"
+ 	default:
+@@ -1090,17 +1193,27 @@ func piConfigUnitDetails(st wslsupply.TargetStatus, pendingPush bool) []WSLConfi
+ }
+ 
+ // verdictForWSLPiConfigSupply 是纯配置供给（无 A2 单元）结果的闸门判定
+-// （P3-S2）：仅 managed-models 的 target-corrupt 阻断（后续 overlay 会破坏
+-// 损坏文件）；其余失败/阻断告警放行（可选偏好面，design §六）。桌面闸门与
+-// remote effect 共用本函数——同一目标同一结果。
++// （P3-S2 + wsl-goal-closure steer#3 严谨分类）：
++//   - managed-models（选中 amagi-* provider 的必需模型供给）未落地
++//     （failed/blocked）→ 阻断：后续 overlay/内置回退会把会话切到未经选择的
++//     endpoint/provider，不能按可选配置告警后继续；确认内容一致的 Fresh
++//     （安全无动作）放行；
++//   - 其余键级/可选单元失败 → 告警放行（可选偏好面，design §六）；
++//   - 预期态（awaiting-consent/frozen/unmanaged/detached/conversion-blocked）
++//     状态页可见，不作为启动告警面。
++//
++// 桌面闸门与 remote effect 共用本函数——同一目标同一结果。
+ func verdictForWSLPiConfigSupply(res wslsupply.RunResult, runErr error) (launchErr error, warnMsg, warnDetail string) {
+ 	if runErr != nil {
+ 		return nil, "WSL 托管配置分发失败（会话继续，按既有回退语义）", runErr.Error()
+ 	}
+ 	for i := range res.Results {
+ 		r := res.Results[i]
+-		if r.Outcome == wslsupply.UnitFailed && r.Detail == "target-corrupt" && r.Unit == wslsupply.UnitPiManagedModels {
+-			return fmt.Errorf("WSL 内 Pi models.json 已损坏，未覆盖（请手动修复 %s 后重试）；本次启动未执行", res.Target.Distro), "", ""
++		if r.Unit == wslsupply.UnitPiManagedModels && (r.Outcome == wslsupply.UnitFailed || r.Outcome == wslsupply.UnitBlocked) {
++			if r.Outcome == wslsupply.UnitFailed && r.Detail == "target-corrupt" {
++				return fmt.Errorf("WSL 内 Pi models.json 已损坏，未覆盖（请手动修复 %s 后重试）；本次启动未执行", res.Target.Distro), "", ""
++			}
++			return fmt.Errorf("WSL 托管 provider 配置（amagi-*）未落地（unit=%s detail=%s），本次启动未执行；请重试或检查 WSL 目标状态", r.Unit, r.Detail), "", ""
+ 		}
+ 		if r.Outcome != wslsupply.UnitFailed && r.Outcome != wslsupply.UnitBlocked {
+ 			continue
+diff --git a/app_wsl_supply_test.go b/app_wsl_supply_test.go
+index 1c63fb8..b26f791 100644
+--- a/app_wsl_supply_test.go
++++ b/app_wsl_supply_test.go
+@@ -68,10 +68,12 @@ func (s *stubSupplyRunner) dirty_() []string {
+ 	return append([]string(nil), s.dirty...)
+ }
+ 
+-// fakeSupplyCoordinatorWithUnit 构造带 S1 适配器能力的真协调器（fake 探测面）。
++// fakeSupplyCoordinatorWithUnit 构造带 S1 适配器能力的真协调器（fake 探测面；
++// StatMode 从 Chmod 记录读回——SA-06 staging 验证的假探测面）。
+ func fakeSupplyCoordinatorWithUnit(t *testing.T) *wslsupply.Coordinator {
+ 	t.Helper()
+ 	uncRoot := t.TempDir()
++	modes := map[string]string{}
+ 	c := wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
+ 		Identity: func(string) platform.WSLUserIdentity {
+ 			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m1", OK: true}
+@@ -79,7 +81,16 @@ func fakeSupplyCoordinatorWithUnit(t *testing.T) *wslsupply.Coordinator {
+ 		ToUNC: func(_, linuxPath string) string {
+ 			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ 		},
+-		Chmod: func(_, _ string, _ ...string) error { return nil },
++		Chmod: func(_, mode string, paths ...string) error {
++			for _, p := range paths {
++				modes[p] = mode
++			}
++			return nil
++		},
++		StatMode: func(_, linuxPath string) (string, bool) {
++			m, ok := modes[linuxPath]
++			return m, ok
++		},
+ 	})
+ 	return c
+ }
+@@ -102,19 +113,32 @@ func TestRunWSLManagedModelsAtLaunchVerdicts(t *testing.T) {
+ 			t.Fatalf("corrupt target must block with chinese error, got %v", err)
+ 		}
+ 	})
+-	t.Run("other failures warn and pass", func(t *testing.T) {
+-		runner := &stubSupplyRunner{result: wslsupply.RunResult{Results: []wslsupply.UnitResult{{
+-			Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFailed, Detail: "write-failed",
+-			Err: errors.New("unc unreachable"),
+-		}}}}
++	t.Run("required supply failure blocks, keyed units warn", func(t *testing.T) {
++		// steer#3（wsl-goal-closure）：amagi-* 必需模型供给未落地不得按可选
++		// 配置告警后继续——阻断；键级可选单元失败仍告警放行。
++		runner := &stubSupplyRunner{result: wslsupply.RunResult{Results: []wslsupply.UnitResult{
++			{Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFailed, Detail: "write-failed",
++				Err: errors.New("unc unreachable")},
++			{Unit: wslsupply.UnitPiMCP, Outcome: wslsupply.UnitFailed, Detail: "write-failed"},
++		}}}
+ 		app := newTestApp(t)
+ 		app.WSLSupply = runner
+-		if err := app.runWSLManagedModelsAtLaunch("Ubuntu"); err != nil {
+-			t.Fatalf("non-corrupt failure must warn not block: %v", err)
++		err := app.runWSLManagedModelsAtLaunch("Ubuntu")
++		if err == nil || !strings.Contains(err.Error(), "未落地") {
++			t.Fatalf("required managed-models failure must block, got %v", err)
+ 		}
+ 		if len(runner.calls_()) != 1 {
+ 			t.Fatalf("expected one supply run, got %v", runner.calls_())
+ 		}
++		runner2 := &stubSupplyRunner{result: wslsupply.RunResult{Results: []wslsupply.UnitResult{
++			{Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitApplied, Detail: "written"},
++			{Unit: wslsupply.UnitPiMCP, Outcome: wslsupply.UnitFailed, Detail: "write-failed"},
++		}}}
++		app2 := newTestApp(t)
++		app2.WSLSupply = runner2
++		if err := app2.runWSLManagedModelsAtLaunch("Ubuntu"); err != nil {
++			t.Fatalf("optional keyed-unit failure must warn not block: %v", err)
++		}
+ 	})
+ 	t.Run("nil runner or empty distro is a no-op", func(t *testing.T) {
+ 		app := newTestApp(t)
+diff --git a/internal/launcher/wsl_agent_config.go b/internal/launcher/wsl_agent_config.go
+index 2d4464d..1260406 100644
+--- a/internal/launcher/wsl_agent_config.go
++++ b/internal/launcher/wsl_agent_config.go
+@@ -45,14 +45,17 @@ import (
+ 	"sync"
+ 
+ 	"amagi-codebox/internal/platform"
++	"gopkg.in/yaml.v3"
+ )
+ 
+ // WSL 探测接缝：生产实现指向 platform 包，单测可在 launcher 包内替换
+-// （platform 的探测 var 未导出，跨包不可注入）。
++// （platform 的探测 var 未导出，跨包不可注入）。wslStatModeFn 是敏感提交
++// 的隔离验证探测（SA-06，wsl-goal-closure）。
+ var (
+ 	wslUserHomeFn = platform.WSLUserHome
+ 	wslToUNCFn    = platform.WSLToUNC
+ 	wslChmodFn    = platform.WSLChmod
++	wslStatModeFn = platform.WSLFileMode
+ )
+ 
+ // wslAgentConfigMu 串行化 WSL 侧 merge→write→chmod 全序列（diting m1）：
+@@ -91,15 +94,112 @@ func resolveWSLAgentTarget(distro string, relAgentDir string) (WSLAgentTarget, e
+ 	return WSLAgentTarget{Distro: distro, Home: home, LinuxDir: linuxDir, UNCDir: uncDir}, nil
+ }
+ 
++// wslStagingDirName 是 WSL 侧私有 staging 目录名（位于 agent 根下）。
++const wslStagingDirName = ".amagi-staging"
++
++// wslEnsurePrivateStaging 建立/验证 agent 根下的私有 staging 目录：MkdirAll
++// → distro 内 chmod 700 → StatMode 验证（UNC/宿主 stat 的 9P 翻译不可信）。
++// 验证不可用或不等于 700 都拒绝（SA-06：隔离未验证 = 未隔离，fail closed——
++// 任何秘密字节都不得写入未验证隔离的目录）。返回 UNC 与 Linux 路径。
++func wslEnsurePrivateStaging(target WSLAgentTarget) (uncDir, linuxDir string, err error) {
++	uncDir = filepath.Join(target.UNCDir, wslStagingDirName)
++	linuxDir = target.LinuxDir + "/" + wslStagingDirName
++	if err := os.MkdirAll(uncDir, 0o700); err != nil {
++		return "", "", fmt.Errorf("mkdir wsl staging dir: %w", err)
++	}
++	if err := wslChmodFn(target.Distro, "700", linuxDir); err != nil {
++		return "", "", fmt.Errorf("chmod 700 wsl staging dir in distro: %w", err)
++	}
++	mode, ok := wslStatModeFn(target.Distro, linuxDir)
++	if !ok || mode != "700" {
++		return "", "", fmt.Errorf("wsl staging isolation unverified: mode=%q ok=%v (expected 700); refusing to write secrets", mode, ok)
++	}
++	return uncDir, linuxDir, nil
++}
++
++// writeWSLAgentFileStaged 是 WSL 侧敏感配置文件的提交原语（SA-06/07，
++// wsl-goal-closure）：
++//  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；
++//  2. 秘密字节只写入已验证 0700 的 .amagi-staging 内唯一临时名；
++//  3. distro 内 chmod 600 并验证后才 rename 到最终路径——最终目录即使
++//     0755，文件也从未以宽权限可见（旧实现 rename 后才 chmod，9P 临时段
++//     是 0644，存在泄漏窗口）；
++//  4. 任何阶段失败都发生在 rename 之前：既有文件（含用户自有 provider 等
++//     混合内容）原样保留，不再以删整文件充当 fail-closed（SA-07）。
++func writeWSLAgentFileStaged(target WSLAgentTarget, fileName string, content []byte) error {
++	if err := os.MkdirAll(target.UNCDir, 0o700); err != nil {
++		return fmt.Errorf("mkdir wsl agent dir: %w", err)
++	}
++	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
++		return fmt.Errorf("chmod 700 wsl agent dir in distro: %w", err)
++	}
++	stagingUNC, stagingLinux, err := wslEnsurePrivateStaging(target)
++	if err != nil {
++		return err
++	}
++	tmp, err := os.CreateTemp(stagingUNC, ".amagi-agent-*")
++	if err != nil {
++		return fmt.Errorf("create wsl staging file: %w", err)
++	}
++	tmpPath := tmp.Name()
++	defer func() {
++		if _, statErr := os.Stat(tmpPath); statErr == nil {
++			_ = os.Remove(tmpPath)
++		}
++	}()
++	if _, err := tmp.Write(content); err != nil {
++		_ = tmp.Close()
++		return fmt.Errorf("write wsl staging file: %w", err)
++	}
++	if err := tmp.Close(); err != nil {
++		return fmt.Errorf("close wsl staging file: %w", err)
++	}
++	_ = os.Chmod(tmpPath, 0o600) // 宿主侧尽力；权威位由 distro 内 chmod 落实
++	tmpLinux := stagingLinux + "/" + filepath.Base(tmpPath)
++	if err := wslChmodFn(target.Distro, "600", tmpLinux); err != nil {
++		return fmt.Errorf("chmod 600 wsl staging file in distro (target untouched): %w", err)
++	}
++	if mode, ok := wslStatModeFn(target.Distro, tmpLinux); !ok || mode != "600" {
++		return fmt.Errorf("verify wsl staging file mode: got %q ok=%v (expected 600; target untouched, no secret bytes committed)", mode, ok)
++	}
++	finalUNC := filepath.Join(target.UNCDir, fileName)
++	if err := os.Rename(tmpPath, finalUNC); err != nil {
++		return fmt.Errorf("commit wsl agent file: %w", err)
++	}
++	got, err := os.ReadFile(finalUNC)
++	if err != nil || !bytes.Equal(got, content) {
++		return fmt.Errorf("verify wsl agent file after commit: read-back mismatch (err=%v)", err)
++	}
++	return nil
++}
++
++// wslRetighten600 复核字节未变化的秘密文件权限（零写入路径的 SA-06 补丁：
++// 已存在但权限被改宽也要安全修复或阻断）：探测到确切非 600 时重收紧并复验；
++// 探测不可用（ok=false）不视为不安全（无新字节落盘），保持零写入语义。
++func wslRetighten600(distro, linuxFile string) error {
++	mode, ok := wslStatModeFn(distro, linuxFile)
++	if !ok || mode == "600" {
++		return nil
++	}
++	if err := wslChmodFn(distro, "600", linuxFile); err != nil {
++		return fmt.Errorf("re-tighten loose wsl secret file (%s, was %s): %w", linuxFile, mode, err)
++	}
++	if m2, ok := wslStatModeFn(distro, linuxFile); !ok || m2 != "600" {
++		return fmt.Errorf("re-tighten loose wsl secret file (%s) unverified: mode=%q ok=%v", linuxFile, m2, ok)
++	}
++	return nil
++}
++
+ // WriteWSLPiAgentConfig 把 pi models.json 合并写入 WSL 侧 agent root。
+ // 合并语义与 Windows 侧一致（MergePiAgentConfig：保留已有 providers 与
+ // 顶层字段，amagi-<name> 当次条目优先），原子写（WritePiAgentConfig 的
+ // tmp+Rename 范式在 UNC 上同样成立）后经 WSLChmod 补偿 0700/0600。
+ // 成功返回 WSL 内 Linux 路径的 agent 目录（供日志/诊断）。
+ //
+-// P3-S1 零写入路径：合并结果与既有文件字节一致时跳过落盘与 chmod 补偿
+-// （无变化启动的第二次调用不再写目标；权限若被手动改宽，待下次内容变化时
+-// 随完整写入路径重新收紧）。
++// P3-S1 零写入路径：合并结果与既有文件字节一致时跳过落盘；但已存在副本
++// 的权限被改宽时也要安全修复或阻断（SA-06：无变化路径不得绕过权限检查）。
++// 敏感提交走 SA-06 staging 原语：0600 在 rename 前落位，chmod 失败发生在
++// 任何既有混合内容被替换之前（不再删整文件，SA-07）。
+ func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
+ 	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
+ 	if err != nil {
+@@ -108,30 +208,26 @@ func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
+ 	wslAgentConfigMu.Lock()
+ 	defer wslAgentConfigMu.Unlock()
+ 	merged := MergePiAgentConfig(cfg, target.UNCDir)
+-	if content, mErr := json.MarshalIndent(merged, "", "  "); mErr == nil {
+-		content = append(content, '\n')
+-		if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, "models.json")); rErr == nil && bytes.Equal(existing, content) {
+-			return target.LinuxDir, nil // 零写入：内容一致
++	content, mErr := json.MarshalIndent(merged, "", "  ")
++	if mErr != nil {
++		return "", fmt.Errorf("marshal pi agent config: %w", mErr)
++	}
++	content = append(content, '\n')
++	if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, "models.json")); rErr == nil && bytes.Equal(existing, content) {
++		if err := wslRetighten600(target.Distro, target.LinuxDir+"/models.json"); err != nil {
++			return "", err
+ 		}
++		return target.LinuxDir, nil // 零写入：内容一致且权限安全
+ 	}
+-	if err := WritePiAgentConfig(target.UNCDir, merged); err != nil {
++	if err := writeWSLAgentFileStaged(target, "models.json", content); err != nil {
+ 		return "", err
+ 	}
+-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
+-		// diting m2：chmod 补偿失败时 WSL 侧文件以 umask 默认 0644 留盘，
+-		// 携带明文 apiKey，视为写入失败并尽力清理已落盘内容（fail closed）。
+-		_ = os.Remove(filepath.Join(target.UNCDir, "models.json"))
+-		return "", fmt.Errorf("chmod 700 WSL pi agent dir: %w", err)
+-	}
+-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/models.json"); err != nil {
+-		_ = os.Remove(filepath.Join(target.UNCDir, "models.json"))
+-		return "", fmt.Errorf("chmod 600 WSL pi models.json: %w", err)
+-	}
+ 	return target.LinuxDir, nil
+ }
+ 
+ // WriteWSLOmpAgentConfig 是 WriteWSLPiAgentConfig 的 omp 对称实现
+-// （.omp/agent/models.yml，YAML 序列化与合并沿用 omp_config.go）。
++// （.omp/agent/models.yml，YAML 序列化与合并沿用 omp_config.go；提交走同一
++// SA-06 staging 原语）。
+ func WriteWSLOmpAgentConfig(distro string, cfg map[string]any) (string, error) {
+ 	target, err := resolveWSLAgentTarget(distro, ".omp/agent")
+ 	if err != nil {
+@@ -140,18 +236,12 @@ func WriteWSLOmpAgentConfig(distro string, cfg map[string]any) (string, error) {
+ 	wslAgentConfigMu.Lock()
+ 	defer wslAgentConfigMu.Unlock()
+ 	merged := MergeOmpModelsConfig(cfg, target.UNCDir)
+-	if err := WriteOmpAgentConfig(target.UNCDir, merged); err != nil {
+-		return "", err
++	content, mErr := yaml.Marshal(merged)
++	if mErr != nil {
++		return "", fmt.Errorf("marshal omp models.yml: %w", mErr)
+ 	}
+-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
+-		// 同 WriteWSLPiAgentConfig（diting m2）：chmod 补偿失败即清理已落盘
+-		// 明文内容，fail closed。
+-		_ = os.Remove(filepath.Join(target.UNCDir, "models.yml"))
+-		return "", fmt.Errorf("chmod 700 WSL omp agent dir: %w", err)
+-	}
+-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/models.yml"); err != nil {
+-		_ = os.Remove(filepath.Join(target.UNCDir, "models.yml"))
+-		return "", fmt.Errorf("chmod 600 WSL omp models.yml: %w", err)
++	if err := writeWSLAgentFileStaged(target, "models.yml", content); err != nil {
++		return "", err
+ 	}
+ 	return target.LinuxDir, nil
+ }
+@@ -246,8 +336,9 @@ const openCodeWSLConfigFile = "amagi-codebox.json"
+ //     错误），但调用方对写失败不阻断启动（回退现状＝无 provider 启动，
+ //     与 pi 的 WSL 写入失败策略一致），仅记日志。
+ //
+-// 原子写沿用 WritePiAgentConfig 的 MkdirAll -> MarshalIndent -> tmp -> Rename
+-// 范式；0700/0600 经 platform.WSLChmod 在 distro 内补偿（9P 不透传 POSIX 位）。
++// 原子写（SA-06 staging 原语：0700 staging 验证 + rename 前 0600 收紧，
++// 9P 不透传 POSIX 位的问题在秘密字节落盘前解决）；零写入路径同样复核
++// 权限（改宽则安全修复或阻断，SA-06）。
+ func WriteWSLOpenCodeAgentConfig(distro string, cfg map[string]any) (string, error) {
+ 	target, err := resolveWSLAgentTarget(distro, ".config/opencode")
+ 	if err != nil {
+@@ -255,62 +346,21 @@ func WriteWSLOpenCodeAgentConfig(distro string, cfg map[string]any) (string, err
+ 	}
+ 	wslAgentConfigMu.Lock()
+ 	defer wslAgentConfigMu.Unlock()
+-	// P3-S1 零写入路径：序列化结果与既有文件字节一致时跳过落盘与 chmod 补偿。
+-	if b, mErr := json.MarshalIndent(cfg, "", "  "); mErr == nil {
+-		b = append(b, '\n')
+-		if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, openCodeWSLConfigFile)); rErr == nil && bytes.Equal(existing, b) {
+-			return target.LinuxDir + "/" + openCodeWSLConfigFile, nil // 零写入：内容一致
+-		}
+-	}
+-	if err := writeOpenCodeConfigFile(target.UNCDir, cfg); err != nil {
+-		return "", err
+-	}
+-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
+-		_ = os.Remove(filepath.Join(target.UNCDir, openCodeWSLConfigFile))
+-		return "", fmt.Errorf("chmod 700 WSL opencode config dir: %w", err)
+-	}
+-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/"+openCodeWSLConfigFile); err != nil {
+-		_ = os.Remove(filepath.Join(target.UNCDir, openCodeWSLConfigFile))
+-		return "", fmt.Errorf("chmod 600 WSL opencode config: %w", err)
+-	}
+-	return target.LinuxDir + "/" + openCodeWSLConfigFile, nil
+-}
+-
+-// writeOpenCodeConfigFile 以全库统一原子范式把 cfg 写入 dir/amagi-codebox.json。
+-// P3-S1 零写入路径：序列化结果与既有文件字节一致时跳过落盘（无变化启动的
+-// 第二次调用不再写目标）。
+-func writeOpenCodeConfigFile(dir string, cfg map[string]any) error {
+-	if err := os.MkdirAll(dir, 0o700); err != nil {
+-		return fmt.Errorf("mkdir opencode config dir: %w", err)
+-	}
+-	// MkdirAll 不会收紧已存在目录的权限（.config 层级可能已由其他工具以
+-	// 0755 建立），显式 Chmod 覆盖升级场景（对齐 WritePiAgentConfig）。
+-	if err := os.Chmod(dir, 0o700); err != nil {
+-		return fmt.Errorf("chmod opencode config dir: %w", err)
+-	}
+-	b, err := json.MarshalIndent(cfg, "", "  ")
+-	if err != nil {
+-		return fmt.Errorf("marshal opencode config: %w", err)
++	b, mErr := json.MarshalIndent(cfg, "", "  ")
++	if mErr != nil {
++		return "", fmt.Errorf("marshal opencode config: %w", mErr)
+ 	}
+ 	b = append(b, '\n')
+-	path := filepath.Join(dir, openCodeWSLConfigFile)
+-	if existing, rErr := os.ReadFile(path); rErr == nil && bytes.Equal(existing, b) {
+-		return nil // 零写入：内容一致
+-	}
+-	tmp := path + ".tmp"
+-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+-		return fmt.Errorf("write opencode config tmp: %w", err)
+-	}
+-	if err := os.Chmod(tmp, 0o600); err != nil {
+-		_ = os.Remove(tmp)
+-		return fmt.Errorf("chmod opencode config tmp: %w", err)
+-	}
+-	if err := os.Rename(tmp, path); err != nil {
+-		_ = os.Remove(tmp)
+-		return fmt.Errorf("replace opencode config: %w", err)
++	linuxFile := target.LinuxDir + "/" + openCodeWSLConfigFile
++	if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, openCodeWSLConfigFile)); rErr == nil && bytes.Equal(existing, b) {
++		// 零写入：内容一致，但已存在副本权限被改宽时也要安全修复或阻断。
++		if err := wslRetighten600(target.Distro, linuxFile); err != nil {
++			return "", err
++		}
++		return linuxFile, nil
+ 	}
+-	if err := os.Chmod(path, 0o600); err != nil {
+-		return fmt.Errorf("chmod opencode config: %w", err)
++	if err := writeWSLAgentFileStaged(target, openCodeWSLConfigFile, b); err != nil {
++		return "", err
+ 	}
+-	return nil
++	return linuxFile, nil
+ }
+diff --git a/internal/launcher/wsl_agent_config_test.go b/internal/launcher/wsl_agent_config_test.go
+index 5dc1ea7..aefe2e2 100644
+--- a/internal/launcher/wsl_agent_config_test.go
++++ b/internal/launcher/wsl_agent_config_test.go
+@@ -18,13 +18,14 @@ import (
+ // 并记录 chmod 补偿调用。跨平台可跑（Linux CI / Windows 本地均通过）。
+ type fakeWSLTarget struct {
+ 	root       string
+-	chmodCalls []string // "<mode> <path>" 记录
++	chmodCalls []string          // "<mode> <path>" 记录
++	modes      map[string]string // linuxPath -> mode（Chmod 落下，StatMode 读回）
+ }
+ 
+ func installFakeWSLTarget(t *testing.T) *fakeWSLTarget {
+ 	t.Helper()
+-	ft := &fakeWSLTarget{root: t.TempDir()}
+-	origHome, origUNC, origChmod := wslUserHomeFn, wslToUNCFn, wslChmodFn
++	ft := &fakeWSLTarget{root: t.TempDir(), modes: map[string]string{}}
++	origHome, origUNC, origChmod, origStatMode := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatModeFn
+ 	wslUserHomeFn = func(distro string) string { return "/home/wslu" }
+ 	wslToUNCFn = func(distro, linuxPath string) string {
+ 		return filepath.Join(ft.root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+@@ -32,11 +33,16 @@ func installFakeWSLTarget(t *testing.T) *fakeWSLTarget {
+ 	wslChmodFn = func(distro, mode string, paths ...string) error {
+ 		for _, p := range paths {
+ 			ft.chmodCalls = append(ft.chmodCalls, mode+" "+p)
++			ft.modes[p] = mode
+ 		}
+ 		return nil
+ 	}
++	wslStatModeFn = func(_, linuxPath string) (string, bool) {
++		m, ok := ft.modes[linuxPath]
++		return m, ok
++	}
+ 	t.Cleanup(func() {
+-		wslUserHomeFn, wslToUNCFn, wslChmodFn = origHome, origUNC, origChmod
++		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatModeFn = origHome, origUNC, origChmod, origStatMode
+ 	})
+ 	return ft
+ }
+@@ -45,6 +51,35 @@ func (ft *fakeWSLTarget) uncPath(linuxPath string) string {
+ 	return filepath.Join(ft.root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ }
+ 
++// assertStagedChmodCalls 钉住 SA-06 staging 提交序列：agent 目录 0700 →
++// staging 目录 0700（并经 StatMode 验证）→ 秘密文件 0600 收紧在 staging 内
++// （rename 之前）；最终文件携带收紧后的宿主侧 0600 位。
++func (ft *fakeWSLTarget) assertStagedChmodCalls(t *testing.T, agentDir, fileName string) {
++	t.Helper()
++	staging := agentDir + "/.amagi-staging"
++	if len(ft.chmodCalls) != 3 {
++		t.Fatalf("chmod calls = %v, want staged sequence", ft.chmodCalls)
++	}
++	if ft.chmodCalls[0] != "700 "+agentDir {
++		t.Fatalf("first chmod = %q, want 700 %s", ft.chmodCalls[0], agentDir)
++	}
++	if ft.chmodCalls[1] != "700 "+staging {
++		t.Fatalf("second chmod = %q, want 700 %s", ft.chmodCalls[1], staging)
++	}
++	if !strings.HasPrefix(ft.chmodCalls[2], "600 "+staging+"/") {
++		t.Fatalf("third chmod = %q, want 600 on the staged file before rename", ft.chmodCalls[2])
++	}
++	if mode, ok := ft.modes[staging]; !ok || mode != "700" {
++		t.Fatalf("staging dir mode = %q ok=%v, want verified 700", mode, ok)
++	}
++	if info, statErr := os.Stat(ft.uncPath(agentDir + "/" + fileName)); statErr != nil || info.Mode().Perm() != 0o600 {
++		t.Fatalf("final file must carry pre-rename 0600, got %v err=%v", info.Mode().Perm(), statErr)
++	}
++	if entries, readErr := os.ReadDir(ft.uncPath(staging)); readErr != nil || len(entries) != 0 {
++		t.Fatalf("staging must be empty after commit: %v err=%v", entries, readErr)
++	}
++}
++
+ func TestWriteWSLPiAgentConfigMergeAndChmod(t *testing.T) {
+ 	ft := installFakeWSLTarget(t)
+ 
+@@ -105,14 +140,9 @@ func TestWriteWSLPiAgentConfigMergeAndChmod(t *testing.T) {
+ 		t.Fatalf("amagi-glm entry wrong: %v", entry)
+ 	}
+ 
+-	// chmod 补偿：目录 0700 + 文件 0600（Windows 侧写 UNC 不带 POSIX 位）。
+-	want := []string{
+-		"700 /home/wslu/.pi/agent",
+-		"600 /home/wslu/.pi/agent/models.json",
+-	}
+-	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
+-		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
+-	}
++	// chmod 序列（SA-06）：agent 目录 0700 → staging 0700（验证）→ 秘密文件
++	// 0600 在 staging 内 rename 前收紧。
++	ft.assertStagedChmodCalls(t, "/home/wslu/.pi/agent", "models.json")
+ }
+ 
+ func TestWriteWSLPiAgentConfigFreshDistro(t *testing.T) {
+@@ -152,13 +182,7 @@ func TestWriteWSLOmpAgentConfigMergeAndChmod(t *testing.T) {
+ 	if !strings.Contains(string(data), "amagi-glm") || !strings.Contains(string(data), "sk-omp") {
+ 		t.Fatalf("models.yml content wrong:\n%s", data)
+ 	}
+-	want := []string{
+-		"700 /home/wslu/.omp/agent",
+-		"600 /home/wslu/.omp/agent/models.yml",
+-	}
+-	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
+-		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
+-	}
++	ft.assertStagedChmodCalls(t, "/home/wslu/.omp/agent", "models.yml")
+ }
+ 
+ func TestWriteWSLPiAgentConfigChmodFailureFailsClosed(t *testing.T) {
+@@ -309,14 +333,8 @@ func TestWriteWSLOpenCodeAgentConfigWritesAndChmod(t *testing.T) {
+ 		t.Fatalf("file must end with newline, tail = %q", data[len(data)-3:])
+ 	}
+ 
+-	// chmod 补偿：目录 0700 + 文件 0600（apiKey 明文落盘契约）。
+-	want := []string{
+-		"700 /home/wslu/.config/opencode",
+-		"600 /home/wslu/.config/opencode/amagi-codebox.json",
+-	}
+-	if strings.Join(ft.chmodCalls, "|") != strings.Join(want, "|") {
+-		t.Fatalf("chmod calls = %v, want %v", ft.chmodCalls, want)
+-	}
++	// chmod 序列（SA-06）：同 pi/omp——staging 内收紧 0600 后 rename。
++	ft.assertStagedChmodCalls(t, "/home/wslu/.config/opencode", "amagi-codebox.json")
+ }
+ 
+ func TestWriteWSLOpenCodeAgentConfigFreshDistro(t *testing.T) {
+@@ -340,9 +358,10 @@ func TestWriteWSLOpenCodeAgentConfigChmodFailureFailsClosed(t *testing.T) {
+ 	if _, err := WriteWSLOpenCodeAgentConfig("Ubuntu", map[string]any{"model": "openai/gpt-5"}); err == nil {
+ 		t.Fatal("chmod failure must fail the WSL write (fail closed)")
+ 	}
+-	// fail closed：已落盘的明文 apiKey 内容必须被清理。
++	// SA-06/07：chmod 失败发生在 rename 之前——无字节提交到最终路径，
++	// 不存在「已落盘明文需要回滚清理」的状态。
+ 	if _, err := os.Stat(ft.uncPath("/home/wslu/.config/opencode/amagi-codebox.json")); err == nil {
+-		t.Fatal("plaintext config must be removed after chmod failure")
++		t.Fatal("no plaintext config may be committed when chmod hardening fails")
+ 	}
+ }
+ 
+diff --git a/internal/launcher/wsl_pi_login_sync.go b/internal/launcher/wsl_pi_login_sync.go
+index ff29cf9..a076250 100644
+--- a/internal/launcher/wsl_pi_login_sync.go
++++ b/internal/launcher/wsl_pi_login_sync.go
+@@ -79,15 +79,10 @@ const (
+ // （保守取 distro）。
+ const authMTimeTolerance = 2 * time.Second
+ 
+-// wslStatMTimeFn / wslAuthRemoveFn / wslAuthCreateTempFn 是同步链的注入接缝
+-// （单测替换；生产指向 platform 与 os）。distro 侧 mtime 经 wsl.exe 内 stat 取
+-// ext4 权威值；staging 文件创建接缝用于注入 rename 前写入故障（唯一临时名
+-// 后无法再用固定名碰撞注入）。
+-var (
+-	wslStatMTimeFn      = platform.WSLFileMTime
+-	wslAuthRemoveFn     = os.Remove
+-	wslAuthCreateTempFn = os.CreateTemp
+-)
++// wslStatMTimeFn 是同步链的注入接缝（单测替换；生产指向 platform）。
++// distro 侧 mtime 经 wsl.exe 内 stat 取 ext4 权威值；staging 提交原语与
++// 权限验证接缝（wslChmodFn/wslStatModeFn）在 wsl_agent_config.go 统一声明。
++var wslStatMTimeFn = platform.WSLFileMTime
+ 
+ // errWSLAuthLooseLeftover 标记 m-3 场景：chmod 600 补偿失败且清理也失败，
+ // distro 侧留下了非 600 权限的凭据副本——调用方必须 fail closed，不得按
+@@ -135,6 +130,11 @@ func SyncWSLPiLoginAuth(distro string) (SyncWSLPiLoginAuthOutcome, error) {
+ 		return SyncWSLPiLoginAuthDistroNoAuth, fmt.Errorf("read distro pi auth.json: %w", readErr)
+ 	}
+ 	if readErr == nil && sha256.Sum256(dstData) == sha256.Sum256(srcData) {
++		// Fresh：字节一致，零写入路径同样复核权限（SA-06：已存在副本被改宽
++		// 时安全修复；无法重收紧 → fail closed，不得放行宽松权限凭据）。
++		if err := wslRetighten600(target.Distro, target.LinuxDir+"/auth.json"); err != nil {
++			return classifyWriteFailure(uncAuth, fmt.Errorf("%w: %v", errWSLAuthLooseLeftover, err))
++		}
+ 		return SyncWSLPiLoginAuthFresh, nil
+ 	}
+ 
+@@ -192,49 +192,16 @@ func classifyWriteFailure(uncAuth string, err error) (SyncWSLPiLoginAuthOutcome,
+ 	return SyncWSLPiLoginAuthDistroNoAuth, err
+ }
+ 
+-// writeWSLAuthAtomic 经 UNC 通道把 auth 字节原子写入 distro 侧 agent root：
+-// MkdirAll（首装播种缺失 / 目录被清理的场景）→ 唯一临时名 staging（P3-S0
+-// 提交原语：并发供给不撞名）→ 权限先收紧（0600）再 Rename → WSLChmod 600
+-// 补偿 POSIX 权限。chmod 补偿失败视为写入失败并清理已落盘内容（fail
+-// closed，与 WriteWSLPiAgentConfig 的 diting m2 契约一致：auth.json 不允许
+-// 以 0644 之类宽松权限留盘）。本函数是 wslsupply A2Auth 适配器的底层写入，
+-// A2 判定语义在 P3-S0 保持零变化（统一的是执行边界不是算法）。
++// writeWSLAuthAtomic 经提交原语把 auth 字节原子写入 distro 侧 agent root
++// （SA-06，wsl-goal-closure）：先建立并验证 distro 内 0700 私有 staging
++// （chmod 700 + StatMode 探测确认，UNC/宿主 stat 不可信），秘密字节只写入
++// staging 内唯一临时名，distro 内 chmod 600 并验证后才 rename——旧实现
++// rename 后才补偿 chmod，9P 临时段以 umask 默认 0644 存在于共享目录，存在
++// 被其他 Linux 用户读取的窗口。任何阶段失败都发生在 rename 之前：distro
++// 侧既有副本（哪怕是旧凭据）原样保留，不再删除。本函数是 wslsupply A2Auth
++// 适配器的底层写入，A2 判定语义保持零变化。
+ func writeWSLAuthAtomic(target WSLAgentTarget, auth []byte) error {
+-	if err := os.MkdirAll(target.UNCDir, 0o700); err != nil {
+-		return fmt.Errorf("mkdir wsl pi agent dir: %w", err)
+-	}
+-	uncAuth := filepath.Join(target.UNCDir, "auth.json")
+-	tmp, err := wslAuthCreateTempFn(target.UNCDir, ".amagi-auth-*")
+-	if err != nil {
+-		return fmt.Errorf("create wsl auth staging file: %w", err)
+-	}
+-	tmpPath := tmp.Name()
+-	if _, err := tmp.Write(auth); err != nil {
+-		_ = tmp.Close()
+-		_ = os.Remove(tmpPath) // m-2：与 Rename 分支对称，不留部分凭据字节的 tmp 残留
+-		return fmt.Errorf("write wsl auth.json tmp: %w", err)
+-	}
+-	if err := tmp.Close(); err != nil {
+-		_ = os.Remove(tmpPath)
+-		return fmt.Errorf("close wsl auth.json tmp: %w", err)
+-	}
+-	if err := os.Chmod(tmpPath, 0o600); err != nil {
+-		_ = os.Remove(tmpPath)
+-		return fmt.Errorf("chmod wsl auth.json tmp: %w", err)
+-	}
+-	if err := os.Rename(tmpPath, uncAuth); err != nil {
+-		_ = os.Remove(tmpPath)
+-		return fmt.Errorf("replace wsl auth.json: %w", err)
+-	}
+-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/auth.json"); err != nil {
+-		if rmErr := wslAuthRemoveFn(uncAuth); rmErr != nil && !os.IsNotExist(rmErr) {
+-			// m-3：chmod 失败且清理失败——宽松权限凭据留在盘上，必须 fail
+-			// closed（调用方不得按 DistroHasCopy 降级放行）。
+-			return fmt.Errorf("chmod 600 wsl pi auth.json: %v (cleanup failed: %v): %w", err, rmErr, errWSLAuthLooseLeftover)
+-		}
+-		return fmt.Errorf("chmod 600 wsl pi auth.json: %w", err)
+-	}
+-	return nil
++	return writeWSLAgentFileStaged(target, "auth.json", auth)
+ }
+ 
+ // writeWindowsAuthAtomic 把 distro 侧新凭据原子写回 Windows 侧 agent root
+diff --git a/internal/launcher/wsl_pi_login_sync_test.go b/internal/launcher/wsl_pi_login_sync_test.go
+index 33bd6e6..5714b01 100644
+--- a/internal/launcher/wsl_pi_login_sync_test.go
++++ b/internal/launcher/wsl_pi_login_sync_test.go
+@@ -21,12 +21,14 @@ import (
+ 
+ // fakeWSLForSync 把 WSL 探测接缝指向本地目录：distro 的 $HOME=/home/wslu，
+ // UNC 映射落到 root 下同名相对路径；distro 侧 mtime 接缝默认 ok=false
+-// （子测试按需覆盖）。返回 root 与 chmod 记录器。
++// （子测试按需覆盖）；StatMode 从 Chmod 记录读回（staging 验证探测）。
++// 返回 root 与 chmod 记录器。
+ func fakeWSLForSync(t *testing.T, chmodErr error) (root string, chmodCalls *[]string) {
+ 	t.Helper()
+ 	root = t.TempDir()
+ 	chmodCalls = &[]string{}
+-	origHome, origUNC, origChmod, origStat, origRemove := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslAuthRemoveFn
++	modes := map[string]string{}
++	origHome, origUNC, origChmod, origStat, origStatMode := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn
+ 	wslUserHomeFn = func(string) string { return "/home/wslu" }
+ 	wslToUNCFn = func(_, linuxPath string) string {
+ 		return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+@@ -34,13 +36,17 @@ func fakeWSLForSync(t *testing.T, chmodErr error) (root string, chmodCalls *[]st
+ 	wslChmodFn = func(_, mode string, paths ...string) error {
+ 		for _, p := range paths {
+ 			*chmodCalls = append(*chmodCalls, mode+" "+p)
++			modes[p] = mode
+ 		}
+ 		return chmodErr
+ 	}
++	wslStatModeFn = func(_, linuxPath string) (string, bool) {
++		m, ok := modes[linuxPath]
++		return m, ok
++	}
+ 	wslStatMTimeFn = func(_, _ string) (int64, bool) { return 0, false }
+-	wslAuthRemoveFn = os.Remove
+ 	t.Cleanup(func() {
+-		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslAuthRemoveFn = origHome, origUNC, origChmod, origStat, origRemove
++		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn = origHome, origUNC, origChmod, origStat, origStatMode
+ 	})
+ 	return root, chmodCalls
+ }
+@@ -129,8 +135,18 @@ func TestSyncWSLPiLoginAuthSeedsAndRefreshes(t *testing.T) {
+ 		if rerr != nil || string(got) != auth {
+ 			t.Fatalf("distro copy = %q err=%v, want source bytes", got, rerr)
+ 		}
+-		if len(*chmodCalls) == 0 || !strings.HasPrefix((*chmodCalls)[0], "600 /home/wslu/.pi/agent/auth.json") {
+-			t.Fatalf("chmod 600 compensation missing: %v", *chmodCalls)
++		if len(*chmodCalls) == 0 || !strings.HasPrefix((*chmodCalls)[0], "700 /home/wslu/.pi/agent") {
++			t.Fatalf("staged hardening chmod missing: %v", *chmodCalls)
++		}
++		// SA-06：秘密字节在 staging 内 rename 前收紧 0600（而非 rename 后补偿）。
++		var staged600 bool
++		for _, c := range *chmodCalls {
++			if strings.HasPrefix(c, "600 /home/wslu/.pi/agent/.amagi-staging/") {
++				staged600 = true
++			}
++		}
++		if !staged600 {
++			t.Fatalf("chmod 600 must tighten the staged secret before rename: %v", *chmodCalls)
+ 		}
+ 	})
+ 
+@@ -259,14 +275,11 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
+ 		root, _ := fakeWSLForSync(t, nil)
+ 		writeDistroAuth(t, root, `{"old":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
+ 		stubDistroMTime(t, time.Now().Add(-time.Hour)) // Windows 新 → 前向写
+-		// 注入 staging 创建失败（rename 前）：旧副本必须仍在（DistroHasCopy
+-		// 降级），且无 staging 残留。旧注入手段（固定名 tmp 碰撞）已随唯一
+-		// 临时名提交原语失效，改经 wslAuthCreateTempFn 接缝注入。
+-		origCreate := wslAuthCreateTempFn
+-		wslAuthCreateTempFn = func(_, _ string) (*os.File, error) {
+-			return nil, errors.New("staging create denied")
+-		}
+-		t.Cleanup(func() { wslAuthCreateTempFn = origCreate })
++		// 注入 staging 验证失败（rename 前）：旧副本必须仍在（DistroHasCopy
++		// 降级），且无 staging 残留（SA-06 接缝）。
++		origStatMode := wslStatModeFn
++		wslStatModeFn = func(_, _ string) (string, bool) { return "", false }
++		t.Cleanup(func() { wslStatModeFn = origStatMode })
+ 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+ 		if err == nil {
+ 			t.Fatal("expected write failure")
+@@ -280,7 +293,7 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
+ 		}
+ 	})
+ 
+-	t.Run("chmod failure cleans and fails closed", func(t *testing.T) {
++	t.Run("chmod failure never commits half-written auth", func(t *testing.T) {
+ 		fakeWindowsAuth(t, `{"openai-codex":{"type":"oauth"}}`)
+ 		root, _ := fakeWSLForSync(t, errors.New("chmod boom"))
+ 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+@@ -290,28 +303,33 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
+ 		if outcome != SyncWSLPiLoginAuthDistroNoAuth {
+ 			t.Fatalf("outcome = %v, want DistroNoAuth", outcome)
+ 		}
+-		// fail closed：chmod 补偿失败时清理已落盘内容，不留半写/宽松权限状态。
++		// SA-06/07：chmod 失败发生在 rename 之前——无半写状态可清理，目标
++		// 不存在即未提交任何字节。
+ 		if _, statErr := os.Stat(distroAuthPath(root)); !os.IsNotExist(statErr) {
+-			t.Fatal("half-written auth must be cleaned on chmod failure")
++			t.Fatal("no auth bytes may be committed when chmod hardening fails")
+ 		}
+ 	})
+ 
+-	t.Run("chmod plus cleanup double failure fails closed even with file present", func(t *testing.T) {
++	t.Run("fresh copy with provably loose mode fails closed on retighten failure", func(t *testing.T) {
++		// m-3 语义在 SA-06 后的新性：宽松权限副本只能出现在「已存在但被
++		// 改宽」的零写入路径——重收紧失败时必须 fail closed，不得降级放行
++		//（errWSLAuthLooseLeftover → NoAuth）。
+ 		fakeWindowsAuth(t, `{"openai-codex":{"type":"oauth"}}`)
+ 		root, _ := fakeWSLForSync(t, errors.New("chmod boom"))
+-		// 清理失败注入：Remove 恒错 → rename 后的新文件留在盘上（宽松权限）。
+-		origRemove := wslAuthRemoveFn
+-		wslAuthRemoveFn = func(string) error { return errors.New("9p stuck") }
+-		t.Cleanup(func() { wslAuthRemoveFn = origRemove })
++		writeDistroAuth(t, root, `{"openai-codex":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
++		modes := map[string]string{"/home/wslu/.pi/agent/auth.json": "644"}
++		origStatMode := wslStatModeFn
++		wslStatModeFn = func(_, p string) (string, bool) {
++			m, ok := modes[p]
++			return m, ok
++		}
++		t.Cleanup(func() { wslStatModeFn = origStatMode })
+ 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+ 		if err == nil || !errors.Is(err, errWSLAuthLooseLeftover) {
+ 			t.Fatalf("err = %v, want errWSLAuthLooseLeftover", err)
+ 		}
+ 		if outcome != SyncWSLPiLoginAuthDistroNoAuth {
+-			t.Fatalf("outcome = %v, want DistroNoAuth (m-3: loose-perm copy must not degrade-pass)", outcome)
+-		}
+-		if _, statErr := os.Stat(distroAuthPath(root)); statErr != nil {
+-			t.Fatal("precondition: the loose leftover file should still be present in this fault mode")
++			t.Fatalf("outcome = %v, want DistroNoAuth (loose-perm copy must not degrade-pass)", outcome)
+ 		}
+ 	})
+ 
+@@ -336,9 +354,19 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
+ func TestWriteWSLAuthAtomicUniqueStagingNames(t *testing.T) {
+ 	uncDir := t.TempDir()
+ 	target := WSLAgentTarget{Distro: "Ubuntu", Home: "/home/u", LinuxDir: "/home/u/.pi/agent", UNCDir: uncDir}
+-	origChmod := wslChmodFn
+-	wslChmodFn = func(_, _ string, _ ...string) error { return nil }
+-	t.Cleanup(func() { wslChmodFn = origChmod })
++	modes := map[string]string{}
++	origChmod, origStatMode := wslChmodFn, wslStatModeFn
++	wslChmodFn = func(_, mode string, paths ...string) error {
++		for _, p := range paths {
++			modes[p] = mode
++		}
++		return nil
++	}
++	wslStatModeFn = func(_, p string) (string, bool) {
++		m, ok := modes[p]
++		return m, ok
++	}
++	t.Cleanup(func() { wslChmodFn, wslStatModeFn = origChmod, origStatMode })
+ 	const writers = 8
+ 	var mu sync.Mutex
+ 	for i := 0; i < writers; i++ {
+diff --git a/internal/platform/wsl.go b/internal/platform/wsl.go
+index 711dc91..246be00 100644
+--- a/internal/platform/wsl.go
++++ b/internal/platform/wsl.go
+@@ -267,6 +267,39 @@ func WSLFileMTime(distro, linuxPath string) (int64, bool) {
+ 	return sec, true
+ }
+ 
++// WSLFileMode 返回 distro 内指定绝对 Linux 路径的八进制权限位字符串（如
++// "700"/"600"，经 wsl.exe 内 `stat -c %a`——distro 侧 ext4 权限的权威读法；
++// UNC/宿主 stat 呈现的 mode 位经 9P 翻译不可信）。路径不存在、非 Windows 宿主
++// 或探测失败返回 ok=false；调用方（敏感供给的私有 staging 验证）必须按
++// 「隔离未验证」fail closed，不得把 false 当作任何具体权限值。
++func WSLFileMode(distro, linuxPath string) (string, bool) {
++	distro = strings.TrimSpace(distro)
++	if distro == "" || runtime.GOOS != "windows" || !strings.HasPrefix(linuxPath, "/") {
++		return "", false
++	}
++	out, err := wslScriptRunner(distro, "stat -c %a "+wslShSingleQuote(linuxPath))
++	if err != nil {
++		return "", false
++	}
++	return parseWSLStatModeOutput(decodeWSLListOutput(out))
++}
++
++// parseWSLStatModeOutput 解析 stat -c %a 的八进制输出：1-4 位、仅 0-7；
++// 其它任何输出（空/带噪声/过长/非法字符）返回 false，调用方必须按
++// 「隔离未验证」fail closed，不得把 false 当作任何具体权限值。
++func parseWSLStatModeOutput(out string) (string, bool) {
++	mode := strings.TrimSpace(strings.Trim(out, "\r\x00 "))
++	if mode == "" || len(mode) > 4 {
++		return "", false
++	}
++	for _, c := range mode {
++		if c < '0' || c > '7' {
++			return "", false
++		}
++	}
++	return mode, true
++}
++
+ // probeWSLNetworkingMode reads <home>\.wslconfig and parses the [wsl2]
+ // networkingMode key. Any read error returns "" (fail-safe as NAT).
+ func probeWSLNetworkingMode(home string) string {
+diff --git a/internal/platform/wsl_test.go b/internal/platform/wsl_test.go
+index 9d1cc2b..85c8ede 100644
+--- a/internal/platform/wsl_test.go
++++ b/internal/platform/wsl_test.go
+@@ -695,3 +695,32 @@ func TestAppendWSLENVForwardingPathFlagUpgradeExisting(t *testing.T) {
+ 		t.Fatalf("flag combo rewritten: %q", wslenv3)
+ 	}
+ }
++
++// TestParseWSLStatModeOutput pins the SA-06 staging-verification probe parser:
++// octal modes 1-4 digits parse; CR/NUL/blank noise is tolerated; anything else
++// (empty, non-octal, overlong) reports ok=false — callers must treat false as
++// "isolation unverified" and fail closed, never as any concrete mode.
++func TestParseWSLStatModeOutput(t *testing.T) {
++	for _, tc := range []struct {
++		in   string
++		want string
++		ok   bool
++	}{
++		{"700", "700", true},
++		{"600\r\n", "600", true},
++		{" 644\x00", "644", true},
++		{"0", "0", true},
++		{"1777", "1777", true},
++		{"", "", false},
++		{"\r\n", "", false},
++		{"abc", "", false},
++		{"6a0", "", false},
++		{"17777", "", false},
++		{"-rw-------", "", false},
++	} {
++		got, ok := parseWSLStatModeOutput(tc.in)
++		if ok != tc.ok || got != tc.want {
++			t.Fatalf("parseWSLStatModeOutput(%q) = (%q,%v), want (%q,%v)", tc.in, got, ok, tc.want, tc.ok)
++		}
++	}
++}
+diff --git a/internal/wslsupply/coordinator.go b/internal/wslsupply/coordinator.go
+index 32a08f6..449b611 100644
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -51,6 +51,11 @@ func NewCoordinator(configDir string, log Logger, probes Probes) *Coordinator {
+ 	if probes.Identity == nil || probes.ToUNC == nil || probes.Chmod == nil {
+ 		probes = DefaultProbes()
+ 	}
++	// SA-06：隔离验证探测缺省时单独补齐（部分注入的探测面只关心身份/UNC/
++	// chmod；敏感提交没有它一律 fail closed，不静默降级）。
++	if probes.StatMode == nil {
++		probes.StatMode = DefaultProbes().StatMode
++	}
+ 	// 单一状态清单实例：文件同步单元与插件重放登记共用同一落盘面（两个
+ 	// stateStore 各持内存副本会互相覆盖对方写入）。
+ 	state := newStateStore(configDir)
+@@ -98,13 +103,16 @@ func (c *Coordinator) a2Adapter() A2Adapter {
+ // TargetRef
+ // ---------------------------------------------------------------------------
+ 
+-// generationFor 由可取得的 distro 身份标识与 UID/Home 组成目标 generation；
+-// machine-id 拿不到（稳定身份不可得）时按 GenerationUnknown 处理，不猜测继承。
+-func generationFor(id platform.WSLUserIdentity) string {
++// generationFor 由 distro 名与可取得的 distro 身份标识组成目标 generation 指纹：
++// sha256(distro|machine-id|uid|home)。distro 入指纹（SA-02）：克隆/导出的
++// distro 保留 machine-id/uid/home，名字却不同——不含 distro 的指纹会让克隆体
++// 继承原体的授权与基准。machine-id 拿不到（稳定身份不可得）时按
++// GenerationUnknown 处理，不猜测继承。
++func generationFor(distro string, id platform.WSLUserIdentity) string {
+ 	if !id.OK || id.MachineID == "" {
+ 		return GenerationUnknown
+ 	}
+-	sum := sha256.Sum256([]byte(id.MachineID + "|" + id.UID + "|" + id.Home))
++	sum := sha256.Sum256([]byte(distro + "|" + id.MachineID + "|" + id.UID + "|" + id.Home))
+ 	return hexEncode(sum[:])
+ }
+ 
+@@ -134,7 +142,7 @@ func (c *Coordinator) ResolveTarget(_ context.Context, distro string, cli CLI) (
+ 	}
+ 	return TargetRef{
+ 		Distro: distro, CLI: cli, UID: ident.UID, Home: ident.Home,
+-		LinuxRoot: linuxRoot, UNCRoot: uncRoot, Generation: generationFor(ident),
++		LinuxRoot: linuxRoot, UNCRoot: uncRoot, Generation: generationFor(distro, ident),
+ 	}, nil
+ }
+ 
+@@ -175,13 +183,26 @@ func (c *Coordinator) Inspect(_ context.Context, target TargetRef) (*Snapshot, e
+ 	}
+ 	if err := c.state.mutate(func(st *StateFile) {
+ 		st.LastInspectedAt = snap.InspectedAt
+-		// F4（S1 diting）：检查时间按 CLI 作用域另记一份——GetStatus 只读本表，
+-		// pi 作用域的探测不再错配到 shared 面板（全局字段保留写入仅为旧读端
+-		// 兼容，不再被本包读取）。
++		// F4（S1 diting）：检查时间按 CLI 作用域另记一份（兼容写入；v2 读取
++		// 改走 Targets 内的 per-target per-CLI 时间）。
+ 		if st.LastInspectedAtByCLI == nil {
+ 			st.LastInspectedAtByCLI = map[CLI]time.Time{}
+ 		}
+ 		st.LastInspectedAtByCLI[target.CLI] = snap.InspectedAt
++		// SA-02：身份索引——GetStatus 据此把分区归属到请求的 distro。
++		if st.Targets == nil {
++			st.Targets = map[string]TargetRecord{}
++		}
++		rec := st.Targets[target.Generation]
++		rec.Distro = target.Distro
++		rec.UID = target.UID
++		rec.Home = target.Home
++		rec.LastSeen = snap.InspectedAt
++		if rec.InspectedAt == nil {
++			rec.InspectedAt = map[CLI]time.Time{}
++		}
++		rec.InspectedAt[target.CLI] = snap.InspectedAt
++		st.Targets[target.Generation] = rec
+ 		st.Distro = target.Distro
+ 		st.Home = target.Home
+ 		st.Generation = target.Generation
+@@ -334,8 +355,16 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
+ 	if plan == nil || len(plan.Units) == 0 {
+ 		return RunResult{}, errors.New("apply requires a non-empty plan")
+ 	}
++	// SA-16：等待锁前检查——已取消的请求不得排队进入写路径。
++	if err := ctx.Err(); err != nil {
++		return canceledResult(plan), nil
++	}
+ 	c.applyMu.Lock()
+ 	defer c.applyMu.Unlock()
++	// SA-16：取得锁后再次检查——等锁期间取消的请求不得继续写。
++	if err := ctx.Err(); err != nil {
++		return canceledResult(plan), nil
++	}
+ 
+ 	result := RunResult{Target: plan.Request.Target}
+ 
+@@ -353,6 +382,14 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
+ 	}
+ 
+ 	for _, unit := range plan.Units {
++		// SA-16：每个单元提交前检查——批量中途取消时，后续单元不再写。
++		if err := ctx.Err(); err != nil {
++			result.Results = append(result.Results, UnitResult{
++				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
++				Detail: "context-canceled", Err: err,
++			})
++			continue
++		}
+ 		switch unit.Unit {
+ 		case UnitPiA2Auth:
+ 			if unit.Action != ActionSyncA2 {
+@@ -401,9 +438,15 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
+ 				} else if unit.BlockedReason == "awaiting-consent" {
+ 					// 待同意态持久化：状态面需要可见「未授权」而非「未检查」。
+ 					c.recordProjectionPendingConsent(current, unit.Unit, unit.Policy)
++				} else {
++					// SA-15：非冻结阻断（如 source-unavailable）也逐单元登记——
++					// 状态页不得沿用上次「已同步」。
++					c.recordProjectionBlocked(current, unit.Unit, unit.Policy, unit.BlockedReason)
+ 				}
+ 			case ActionWriteProjection:
+ 				result.Results = append(result.Results, c.applyProjection(ctx, current, unit, adapter))
++			case ActionRemoveProjection:
++				result.Results = append(result.Results, c.applyWithdrawal(ctx, current, unit, adapter))
+ 			default:
+ 				result.Results = append(result.Results, UnitResult{
+ 					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
+@@ -417,6 +460,18 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
+ 	return result, nil
+ }
+ 
++// canceledResult 构造整批取消结果（SA-16：已取消请求不进入任何写路径）。
++func canceledResult(plan *SupplyPlan) RunResult {
++	res := RunResult{Target: plan.Request.Target, Results: make([]UnitResult, 0, len(plan.Units))}
++	for _, unit := range plan.Units {
++		res.Results = append(res.Results, UnitResult{
++			Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: context.Canceled,
++		})
++	}
++	return res
++}
++
+ // DirtySource* 是保存事件来源名（App markWSLSupplyDirty 的调用方必须使用本
+ // 常量——dirtySourceUnits 依此映射来源→它滋养的单元集）。
+ const (
+@@ -519,6 +574,20 @@ func (c *Coordinator) clearSatisfiedDirtySources(result RunResult) {
+ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, planned PlannedUnit, adapter ProjectionAdapter) UnitResult {
+ 	st := c.state.load()
+ 	entry := st.entryFor(planned.Unit, target.Generation)
++	// SA-01/SA-16：提交前重验授权——计划后授权被撤销/停跟随的单元不得写入
++	//（Plan 时的同意门不足以覆盖计划→提交窗口内的状态变化）。
++	if adapter.RequiresConsent() && !entry.Consented {
++		c.recordProjectionBlocked(target, planned.Unit, adapter.Policy(), "awaiting-consent")
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "awaiting-consent",
++			Err:    errors.New("unit consent was revoked between planning and apply; enable the projection again")}
++	}
++	if entry.Detached {
++		c.recordProjectionBlocked(target, planned.Unit, adapter.Policy(), "detached")
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "detached",
++			Err:    errors.New("unit was set to keep-local between planning and apply; take over to re-enable")}
++	}
+ 	cand, err := adapter.Candidate(ctx, target, &entry)
+ 	if err != nil {
+ 		var noWrite errKeyedNoWrite
+@@ -534,6 +603,7 @@ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, pla
+ 			// 以 target-corrupt 明细暴露给启动闸门（可阻断）与状态页。
+ 			detail = "target-corrupt"
+ 		}
++		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), detail, err)
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 			Detail: detail, Err: err}
+ 	}
+@@ -543,22 +613,28 @@ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, pla
+ 	switch {
+ 	case readErr == nil:
+ 		if hexHash(current) != planned.ExpectedTargetHash {
++			c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "target-changed-since-planning",
++				errors.New("target file changed since planning (external edit retained)"))
+ 			return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 				Detail: "target-changed-since-planning",
+ 				Err:    errors.New("target file changed since planning (external edit retained)")}
+ 		}
+ 	case errors.Is(readErr, os.ErrNotExist):
+ 		if planned.ExpectedTargetHash != "" {
++			c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "target-changed-since-planning",
++				errors.New("target file disappeared since planning (local deletion retained)"))
+ 			return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 				Detail: "target-changed-since-planning",
+ 				Err:    errors.New("target file disappeared since planning (local deletion retained)")}
+ 		}
+ 	default:
++		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "target-unreadable", readErr)
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 			Detail: "target-unreadable", Err: readErr}
+ 	}
+-	undo, err := c.submitFile(target, planned.RelPath, cand.Content, adapter.Sensitive())
++	undo, err := c.submitFileCtx(ctx, target, planned.RelPath, cand.Content, adapter.Sensitive())
+ 	if err != nil {
++		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "write-failed", err)
+ 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
+ 			Detail: "write-failed", Err: err}
+ 	}
+@@ -577,6 +653,129 @@ func (c *Coordinator) applyProjection(ctx context.Context, target TargetRef, pla
+ 		Detail: detail, Undo: undo}
+ }
+ 
++// applyWithdrawal 执行 SA-09 撤回：宿主侧敏感导出源已删除且目标副本仍
++// 等于上次受管写入时，删除目标副本（密钥不再留盘）。CAS：目标仍等于计划
++// 时的预期 hash 才删；已被手改 → withdrawal-unconfirmed-frozen（保留本地，
++// 不静默沿用也不静默删除）。撤回不产生 Undo（撤销会重新物化已撤回的密钥）。
++func (c *Coordinator) applyWithdrawal(ctx context.Context, target TargetRef, planned PlannedUnit, adapter ProjectionAdapter) UnitResult {
++	if err := ctx.Err(); err != nil {
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "context-canceled", Err: err}
++	}
++	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(planned.RelPath))
++	current, readErr := os.ReadFile(uncPath)
++	switch {
++	case errors.Is(readErr, os.ErrNotExist):
++		// 目标已不在（外部删除/前次撤回）：直接登记撤回终态。
++		c.recordProjectionWithdrawn(target, planned.Unit, adapter.Policy())
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: "withdrawn-already-absent"}
++	case readErr != nil:
++		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "target-unreadable", readErr)
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "target-unreadable", Err: readErr}
++	}
++	if planned.ExpectedTargetHash != "" && hexHash(current) != planned.ExpectedTargetHash {
++		// 目标被手改：不能确认撤回（副本内容已不是受管字节）。
++		c.recordProjectionFreeze(target, planned.Unit, adapter.Policy(), "withdrawal-unconfirmed-frozen")
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
++			Detail: "withdrawal-unconfirmed-frozen",
++			Err:    errors.New("withdrawn key copy was hand-modified; resolve the local edit to retire the copy")}
++	}
++	if err := os.Remove(uncPath); err != nil && !errors.Is(err, os.ErrNotExist) {
++		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "withdrawal-remove-failed", err)
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "withdrawal-remove-failed", Err: err}
++	}
++	if _, statErr := os.Stat(uncPath); statErr == nil {
++		err := errors.New("withdrawn key copy still present after removal")
++		c.recordProjectionFailure(target, planned.Unit, adapter.Policy(), "withdrawal-remove-failed", err)
++		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
++			Detail: "withdrawal-remove-failed", Err: err}
++	}
++	c.recordProjectionWithdrawn(target, planned.Unit, adapter.Policy())
++	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: "withdrawn"}
++}
++
++// recordProjectionWithdrawn 登记撤回终态：清空写入基准（下次发布按首次发布
++// 判定），保留同意/选择集/停跟随等跨写入字段。
++func (c *Coordinator) recordProjectionWithdrawn(target TargetRef, unit UnitID, policy Policy) {
++	err := c.state.mutate(func(st *StateFile) {
++		prev, _ := st.entry(unit)
++		st.upsertEntry(StateEntry{
++			Unit: unit, Policy: policy, Generation: target.Generation,
++			LastOutcome: "withdrawn", LastSuccess: time.Now(),
++			Consented: prev.Consented, SelectedKeys: prev.SelectedKeys, Detached: prev.Detached,
++		}, target.Generation)
++		st.Distro = target.Distro
++	})
++	if err != nil {
++		logWarn(c.log, "wslsupply", "撤回状态登记失败（目标副本已处理）", err.Error())
++	}
++}
++
++// recordProjectionBlocked 登记非冻结阻断态（source-unavailable 等）：保留同代
++// 基准字段，LastOutcome 更新为阻断原因（SA-15：状态页不得沿用上次已同步）。
++func (c *Coordinator) recordProjectionBlocked(target TargetRef, unit UnitID, policy Policy, reason string) {
++	err := c.state.mutate(func(st *StateFile) {
++		prev, _ := st.entry(unit)
++		entry := StateEntry{
++			Unit: unit, Policy: policy, Generation: target.Generation,
++			LastOutcome: reason,
++		}
++		if prev.Generation == target.Generation {
++			entry.SourceHash = prev.SourceHash
++			entry.LastWrittenHash = prev.LastWrittenHash
++			entry.TransformVersion = prev.TransformVersion
++			entry.Subs = prev.Subs
++			entry.Detached = prev.Detached
++			entry.Consented = prev.Consented
++			entry.SelectedKeys = prev.SelectedKeys
++			entry.Frozen = prev.Frozen
++			entry.FrozenReason = prev.FrozenReason
++			entry.LastSuccess = prev.LastSuccess
++		}
++		st.upsertEntry(entry, target.Generation)
++		st.Distro = target.Distro
++	})
++	if err != nil {
++		logWarn(c.log, "wslsupply", "阻断状态登记失败（不影响目标内容）", err.Error())
++	}
++}
++
++// recordProjectionFailure 登记一次失败尝试（SA-15：新一次供给失败必须反映到
++// 状态页，LastSuccess 保留为上次成功时间但 LastOutcome/LastErrorCode 区分
++// 当前失败；同代基准字段保留——下次成功重建，不因失败清空）。
++func (c *Coordinator) recordProjectionFailure(target TargetRef, unit UnitID, policy Policy, detail string, err error) {
++	errCode := detail
++	if err != nil {
++		errCode = detail + ": " + sanitizeErrorCode(err)
++	}
++	werr := c.state.mutate(func(st *StateFile) {
++		prev, _ := st.entry(unit)
++		entry := StateEntry{
++			Unit: unit, Policy: policy, Generation: target.Generation,
++			LastOutcome: "failed", LastErrorCode: sanitizeErrorCode(errors.New(errCode)),
++		}
++		if prev.Generation == target.Generation {
++			entry.SourceHash = prev.SourceHash
++			entry.LastWrittenHash = prev.LastWrittenHash
++			entry.TransformVersion = prev.TransformVersion
++			entry.Subs = prev.Subs
++			entry.Detached = prev.Detached
++			entry.Consented = prev.Consented
++			entry.SelectedKeys = prev.SelectedKeys
++			entry.Frozen = prev.Frozen
++			entry.FrozenReason = prev.FrozenReason
++			entry.LastSuccess = prev.LastSuccess
++		}
++		st.upsertEntry(entry, target.Generation)
++		st.Distro = target.Distro
++	})
++	if werr != nil {
++		logWarn(c.log, "wslsupply", "失败状态登记失败（下次运行重试）", werr.Error())
++	}
++}
++
+ // recordA2State 更新 A2 单元登记：只记录 outcome/时间戳/错误码，永不记录 hash
+ // （凭据 hash 不落盘、不出状态 API）。
+ func (c *Coordinator) recordA2State(target TargetRef, res UnitResult, outcome launcher.SyncWSLPiLoginAuthOutcome) {
+@@ -704,6 +903,10 @@ func (c *Coordinator) RunUnits(ctx context.Context, distro string, cli CLI, reas
+ 	if len(units) == 0 {
+ 		return RunResult{}, errors.New("run requires at least one unit")
+ 	}
++	// SA-16：入口检查——已取消的请求不得解析目标/探测/写任何配置。
++	if err := ctx.Err(); err != nil {
++		return blocked("context-canceled", err)
++	}
+ 	for _, unit := range units {
+ 		if !c.knownUnit(unit) {
+ 			return RunResult{}, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
+@@ -751,13 +954,14 @@ func (c *Coordinator) MarkDirty(source string, revision uint64) error {
+ 
+ // GetStatus 返回脱敏目标状态：只读状态清单与缓存，不触发安装/同步/探测；
+ // 无缓存返回未检查（Checked=false）。敏感 hash（sourceHash/lastWrittenHash）
+-// 不出本接口；A2 单元从不持有 hash。
++// 不出本接口；A2 单元从不持有 hash。SA-02：分区归属——按身份索引把请求
++// distro 的最近一代分区呈现出来；其它 distro 的登记（包括 legacy 隔离区与
++// unknown 槽）不串入本目标的展示。
+ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
+ 	distro = strings.TrimSpace(distro)
+ 	st := c.state.load()
+ 	status := TargetStatus{Distro: distro, CLI: cli}
+-	// 待同步来源与 desired revision 是宿主侧状态，不随目标分发；其余字段
+-	//（检查时间/身份/单元登记）只在清单属于该目标时返回。
++	// 待同步来源与 desired revision 是宿主侧状态，不随目标分发。
+ 	status.DesiredRevision = st.DesiredRevision
+ 	if len(st.PendingSources) > 0 {
+ 		status.PendingSources = make(map[string]uint64, len(st.PendingSources))
+@@ -765,18 +969,21 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
+ 			status.PendingSources[k] = v
+ 		}
+ 	}
+-	if st.Distro != distro {
++	gen, rec, found := latestTargetRecord(&st, distro)
++	if !found {
+ 		return status
+ 	}
+-	status.Generation = st.Generation
+-	status.Home = st.Home
+-	// F4：只读该 CLI 作用域的实际探测时间（旧清单无 per-CLI 记录 → 未检查，
+-	// 诚实呈现而非沿用其它作用域的时间）。
+-	if t, ok := st.LastInspectedAtByCLI[cli]; ok && !t.IsZero() {
++	status.Generation = gen
++	status.Home = rec.Home
++	// 只读该 CLI 作用域在该目标上的实际探测时间（无记录 → 未检查）。
++	if t, ok := rec.InspectedAt[cli]; ok && !t.IsZero() {
+ 		status.Checked = true
+ 		status.CheckedAt = t
+ 	}
+ 	for _, entry := range st.Units {
++		if entry.Generation != gen {
++			continue // 其它身份分区的登记不串入本目标（SA-02）。
++		}
+ 		status.Units = append(status.Units, UnitStatus{
+ 			Unit: entry.Unit, Policy: entry.Policy, LastOutcome: entry.LastOutcome,
+ 			LastSuccess: entry.LastSuccess, LastErrorCode: entry.LastErrorCode,
+@@ -789,6 +996,24 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
+ 	return status
+ }
+ 
++// latestTargetRecord 返回请求 distro 最近接触的一代（generation、记录、是否
++// 命中）。legacy 隔离代与 unknown 槽永不命中（无法归属到具体 distro/身份）。
++func latestTargetRecord(st *StateFile, distro string) (string, *TargetRecord, bool) {
++	var bestGen string
++	var best *TargetRecord
++	for gen, rec := range st.Targets {
++		if rec.Distro != distro || gen == GenerationUnknown || strings.HasPrefix(gen, legacyGenerationPrefix) {
++			continue
++		}
++		r := rec
++		if best == nil || r.LastSeen.After(best.LastSeen) {
++			best = &r
++			bestGen = gen
++		}
++	}
++	return bestGen, best, best != nil
++}
++
+ // skillUnitStale 报告技能单元登记的来源 hash 与当前扫描缓存是否不一致
+ // （S3 陈旧判定：脱敏布尔，hash 不出包）。非技能单元恒 false。
+ func (c *Coordinator) skillUnitStale(entry StateEntry) bool {
+@@ -1079,7 +1304,7 @@ func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI,
+ 		}
+ 		return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitFailed, Detail: detail, Err: err}, nil
+ 	}
+-	undo, err := c.submitFile(target, planned.RelPath, cand.Content, adapter.Sensitive())
++	undo, err := c.submitFileCtx(ctx, target, planned.RelPath, cand.Content, adapter.Sensitive())
+ 	if err != nil {
+ 		return UnitResult{Unit: unit, Policy: planned.Policy, Outcome: UnitFailed, Detail: "write-failed", Err: err}, nil
+ 	}
+@@ -1127,6 +1352,12 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
+ 	if err != nil {
+ 		return fmt.Errorf("resolve wsl supply target: %w", err)
+ 	}
++	// SA-02：无法验证稳定身份的目标（unknown 代）不得持久化跨界授权——密钥
++	// 跨界授权必须绑在可验证的身份指纹上，拒绝并说明修复方向，而不是存一个
++	// 任何 unknown 目标都能继承的同意标记。
++	if target.Generation == GenerationUnknown {
++		return fmt.Errorf("无法验证 WSL 目标身份（distro %q 拿不到 machine-id）：跨界授权需要可验证的目标身份；请在 WSL 内恢复 /etc/machine-id 后重试", distro)
++	}
+ 	grantPolicy := policy
+ 	return c.state.mutate(func(st *StateFile) {
+ 		prev, _ := st.entry(unit)
+@@ -1149,6 +1380,16 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
+ 		st.upsertEntry(entry, target.Generation)
+ 		st.Distro = target.Distro
+ 		st.Home = target.Home
++		// SA-02：授权也记入身份索引（授权后首次 Inspect 前，状态页能归属分区）。
++		if st.Targets == nil {
++			st.Targets = map[string]TargetRecord{}
++		}
++		rec := st.Targets[target.Generation]
++		rec.Distro = target.Distro
++		rec.UID = target.UID
++		rec.Home = target.Home
++		rec.LastSeen = time.Now()
++		st.Targets[target.Generation] = rec
+ 	})
+ }
+ 
+@@ -1156,19 +1397,22 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
+ // 提交原语（design §七「状态落点与提交」全段）
+ // ---------------------------------------------------------------------------
+ 
+-// submitFile 经目标内私有 staging 提交一个文件：唯一临时名（os.CreateTemp，
+-// 并发提交不撞名）→ 权限先收紧（0600，CreateTemp 本就以 0600 创建，共享目录
+-// 不落宽权限临时文件）→ rename → distro 内 chmod 600 补偿（9P 不落 POSIX 位）
+-// → 读回校验。字节走 UNC，不进 wsl.exe 命令行。返回可条件撤销记录（普通文件
+-// 写入专用；A2 不走本原语）。
++// submitFile 经目标内提交原语提交一个文件，返回可条件撤销记录（普通文件
++// 写入专用；A2 不走本原语）。字节走 UNC，不进 wsl.exe 命令行。
+ //
+-// chmod 补偿失败的处置按单元敏感度分叉（diting M2）:
+-//   - 敏感单元（内嵌密钥）：维持 fail-closed 删除——宽松权限明文不留盘；
+-//   - 普通单元：不得留下半提交状态——优先恢复前像（用户旧配置保持可读，
+-//     design §六「旧 WSL 配置可读且安全 → 启动继续」）；恢复也失败才整体
+-//     清理（绝不落半提交新内容）。取舍：恢复写不经 chmod（原内容无密钥，
+-//     umask 默认权限可接受；有密钥的单元不会走到本分支）。
+-func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
++// 敏感单元（内嵌密钥，SA-06/07）：
++//  1. 先在 distro 内建立目标根下的 .amagi-staging 私有目录，distro 内
++//     chmod 700 并经 StatMode 探测验证真实权限位（UNC/宿主 stat 的 9P 翻译
++//     不可信）——验证失败时在任何秘密字节落盘前失败；
++//  2. 秘密字节只写入 staging 内唯一临时名，distro 内 chmod 600 并验证后才
++//     rename 到最终路径——最终目录即使 0755，文件也从未以宽权限可见；
++//  3. 任何阶段失败都发生在 rename 之前：原有混合配置（含用户自有内容）
++//     原样保留，绝不以删整文件充当回滚（SA-07）；rename 后的读回校验失败
++//     则先安全恢复前像，恢复也失败才移除并明确报告两种结果。
++//
++// 普通单元沿用 M2 语义：同目录唯一临时名 → 宿主 chmod 0600 → rename →
++// distro 内 chmod 600 补偿；补偿失败优先恢复前像（用户旧配置保持可读）。
++func (c *Coordinator) submitFileCtx(ctx context.Context, target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
+ 	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))
+ 	dir := filepath.Dir(uncPath)
+ 	if err := os.MkdirAll(dir, 0o700); err != nil {
+@@ -1179,6 +1423,13 @@ func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byt
+ 	if prevErr != nil && !errors.Is(prevErr, os.ErrNotExist) {
+ 		return nil, fmt.Errorf("read supply target preimage: %w", prevErr)
+ 	}
++	// SA-16：提交前检查——已取消的请求不得写入任何字节。
++	if err := ctx.Err(); err != nil {
++		return nil, fmt.Errorf("submit canceled before write: %w", err)
++	}
++	if sensitive {
++		return c.submitSensitive(ctx, target, relPath, content, prev, prevExisted)
++	}
+ 	tmp, err := os.CreateTemp(dir, ".amagi-supply-*")
+ 	if err != nil {
+ 		return nil, fmt.Errorf("create supply staging file: %w", err)
+@@ -1203,11 +1454,6 @@ func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byt
+ 	}
+ 	linuxPath := target.LinuxRoot + "/" + strings.TrimPrefix(relPath, "/")
+ 	if err := c.probes.Chmod(target.Distro, "600", linuxPath); err != nil {
+-		if sensitive {
+-			// fail closed：宽松权限明文不留盘（对齐 A2/WriteWSL*AgentConfig 契约）。
+-			_ = os.Remove(uncPath)
+-			return nil, fmt.Errorf("chmod 600 supply file in distro: %w", err)
+-		}
+ 		if restoreErr := restorePreimage(uncPath, dir, prev, prevExisted); restoreErr != nil {
+ 			_ = os.Remove(uncPath)
+ 			return nil, fmt.Errorf("chmod 600 supply file in distro: %w (preimage restore failed: %v; target removed)", err, restoreErr)
+@@ -1221,6 +1467,103 @@ func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byt
+ 	return newCompensationHandle(target, relPath, content, prev, prevExisted, sensitive), nil
+ }
+ 
++// submitFile 是无 ctx 接线的兼容入口（资源/技能等旧调用面）：取消保护由
++// Apply 循环的逐单元检查承担；新调用面一律用 submitFileCtx。
++func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
++	return c.submitFileCtx(context.Background(), target, relPath, content, sensitive)
++}
++
++// submitSensitive 是敏感单元的提交路径（SA-06/07）：验证过的 0700 staging
++// 中收紧到 0600 再 rename，失败永远发生在 rename 之前。
++func (c *Coordinator) submitSensitive(ctx context.Context, target TargetRef, relPath string, content, prev []byte, prevExisted bool) (*CompensationHandle, error) {
++	uncPath := filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))
++	stagingUNC, stagingLinux, err := c.ensurePrivateStaging(target)
++	if err != nil {
++		return nil, err
++	}
++	tmp, err := os.CreateTemp(stagingUNC, ".amagi-supply-*")
++	if err != nil {
++		return nil, fmt.Errorf("create supply staging file: %w", err)
++	}
++	tmpPath := tmp.Name()
++	tmpLinux := stagingLinux + "/" + filepath.Base(tmpPath)
++	if _, err := tmp.Write(content); err != nil {
++		_ = tmp.Close()
++		_ = os.Remove(tmpPath)
++		return nil, fmt.Errorf("write supply staging file: %w", err)
++	}
++	if err := tmp.Close(); err != nil {
++		_ = os.Remove(tmpPath)
++		return nil, fmt.Errorf("close supply staging file: %w", err)
++	}
++	_ = os.Chmod(tmpPath, 0o600) // 宿主侧尽力而为；权威位由 distro 内 chmod 落实
++	// distro 内收紧到 0600 并验证（此时文件仍在 0700 staging 内，双量隔离）。
++	if err := c.probes.Chmod(target.Distro, "600", tmpLinux); err != nil {
++		_ = os.Remove(tmpPath)
++		return nil, fmt.Errorf("chmod 600 supply staging file in distro (target untouched): %w", err)
++	}
++	if mode, ok := c.probes.StatMode(target.Distro, tmpLinux); !ok || mode != "600" {
++		_ = os.Remove(tmpPath)
++		return nil, fmt.Errorf("verify supply staging file mode: got %q ok=%v (expected 600; target untouched, no secret bytes committed)", mode, ok)
++	}
++	// SA-16：rename 前最后一次检查——取消不得提交已收紧的字节。
++	if err := ctx.Err(); err != nil {
++		_ = os.Remove(tmpPath)
++		return nil, fmt.Errorf("submit canceled before commit: %w", err)
++	}
++	if err := os.Rename(tmpPath, uncPath); err != nil {
++		_ = os.Remove(tmpPath)
++		return nil, fmt.Errorf("commit supply file: %w", err)
++	}
++	got, err := os.ReadFile(uncPath)
++	if err != nil || hexHash(got) != hexHash(content) {
++		// 提交后校验失败（罕见：rename 后即刻内容不符）：先安全恢复前像
++		//（前像可能同样含密钥，走同一敏感原语），恢复也失败才移除并双报告
++		//（SA-07：不静默、不以删整文件充当回滚的唯一手段）。
++		if restoreErr := c.submitSensitiveRestore(ctx, target, relPath, prev, prevExisted); restoreErr != nil {
++			_ = os.Remove(uncPath)
++			return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; preimage restore failed: %v; target removed)", err, restoreErr)
++		}
++		return nil, fmt.Errorf("verify supply file after commit: read-back mismatch (err=%v; preimage restored)", err)
++	}
++	return newCompensationHandle(target, relPath, content, prev, prevExisted, true), nil
++}
++
++// submitSensitiveRestore 以同一敏感原语恢复前像（读回校验失败路径专用；
++// 前像不存在时移除新增文件）。
++func (c *Coordinator) submitSensitiveRestore(ctx context.Context, target TargetRef, relPath string, prev []byte, prevExisted bool) error {
++	if !prevExisted {
++		if err := os.Remove(filepath.Join(target.UNCRoot, filepath.FromSlash(relPath))); err != nil && !errors.Is(err, os.ErrNotExist) {
++			return err
++		}
++		return nil
++	}
++	_, err := c.submitSensitive(ctx, target, relPath, prev, prev, true)
++	return err
++}
++
++// ensurePrivateStaging 建立/验证目标根下的 .amagi-staging：MkdirAll → distro
++// 内 chmod 700 → StatMode 验证。验证不可用或不等于 700 都拒绝（SA-06：隔离
++// 未验证 = 未隔离，fail closed，不得把探测失败当作已验证）。
++func (c *Coordinator) ensurePrivateStaging(target TargetRef) (uncDir, linuxDir string, err error) {
++	uncDir = filepath.Join(target.UNCRoot, ".amagi-staging")
++	linuxDir = strings.TrimSuffix(target.LinuxRoot, "/") + "/.amagi-staging"
++	if err := os.MkdirAll(uncDir, 0o700); err != nil {
++		return "", "", fmt.Errorf("mkdir supply staging dir: %w", err)
++	}
++	if err := c.probes.Chmod(target.Distro, "700", linuxDir); err != nil {
++		return "", "", fmt.Errorf("chmod 700 supply staging dir in distro: %w", err)
++	}
++	if c.probes.StatMode == nil {
++		return "", "", errors.New("supply staging isolation cannot be verified (stat-mode probe unavailable); refusing to write secrets")
++	}
++	mode, ok := c.probes.StatMode(target.Distro, linuxDir)
++	if !ok || mode != "700" {
++		return "", "", fmt.Errorf("supply staging isolation unverified: mode=%q ok=%v (expected 700); refusing to write secrets", mode, ok)
++	}
++	return uncDir, linuxDir, nil
++}
++
+ // restorePreimage 以唯一临时名 + rename 恢复前像（M2 普通单元 chmod 失败路径；
+ // 不做 chmod 补偿——原内容无密钥，umask 默认权限可接受）。首次创建后失败的
+ // 场景（无前像）删除新增目标。
+@@ -1308,7 +1651,7 @@ func (c *Coordinator) compensateOne(ctx context.Context, h *CompensationHandle)
+ 		outcome.Disposition = CompensationConfirmed
+ 		return outcome
+ 	}
+-	if _, err := c.submitFile(h.target, h.relPath, h.prev, h.sensitive); err != nil {
++	if _, err := c.submitFileCtx(ctx, h.target, h.relPath, h.prev, h.sensitive); err != nil {
+ 		outcome.Disposition = CompensationUnavailable
+ 		outcome.Message = err.Error()
+ 		return outcome
+diff --git a/internal/wslsupply/coordinator_test.go b/internal/wslsupply/coordinator_test.go
+index c1b922b..f7ab2cb 100644
+--- a/internal/wslsupply/coordinator_test.go
++++ b/internal/wslsupply/coordinator_test.go
+@@ -20,13 +20,15 @@ import (
+ )
+ 
+ // fakeProbes 构造注入本地 temp dir 的探测面；identityCalls 计数身份探测次数
+-// （Plan 纯读断言消费）。
++// （Plan 纯读断言消费）。modes 追踪 Chmod 落下的权限位（StatMode 读回，
++// SA-06 staging 验证的假探测面）。
+ type fakeProbes struct {
+ 	uncRoot       string
+ 	identity      platform.WSLUserIdentity
+ 	identityCalls int32
+ 	chmodErr      error
+ 	chmodCalls    int32
++	modes         map[string]string
+ }
+ 
+ func (f *fakeProbes) probes() Probes {
+@@ -38,9 +40,25 @@ func (f *fakeProbes) probes() Probes {
+ 		ToUNC: func(_, linuxPath string) string {
+ 			return filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ 		},
+-		Chmod: func(_, _ string, _ ...string) error {
++		Chmod: func(_, mode string, paths ...string) error {
+ 			atomic.AddInt32(&f.chmodCalls, 1)
+-			return f.chmodErr
++			if f.chmodErr != nil {
++				return f.chmodErr
++			}
++			if f.modes == nil {
++				f.modes = map[string]string{}
++			}
++			for _, p := range paths {
++				f.modes[p] = mode
++			}
++			return nil
++		},
++		StatMode: func(_, linuxPath string) (string, bool) {
++			if f.modes == nil {
++				return "", false
++			}
++			m, ok := f.modes[linuxPath]
++			return m, ok
+ 		},
+ 	}
+ }
+diff --git a/internal/wslsupply/probes.go b/internal/wslsupply/probes.go
+index dff4b58..5250201 100644
+--- a/internal/wslsupply/probes.go
++++ b/internal/wslsupply/probes.go
+@@ -26,11 +26,20 @@ type UNCMapper = func(distro, linuxPath string) string
+ // mode 位，0600/0700 契约必须经 distro 内 chmod 达成）。
+ type ChmodProbe = func(distro, mode string, linuxPaths ...string) error
+ 
++// StatModeProbe 在 distro 内读取一个绝对 Linux 路径的八进制权限位（如 "600"）。
++// 这是「私有 staging 已隔离」的唯一权威验证面：UNC/宿主侧 stat 呈现的 mode
++// 位经 9P 翻译不可信。探测失败返回 ok=false，调用方必须按「隔离未验证」
++// fail closed，不得把失败当作已验证（SA-06）。
++type StatModeProbe = func(distro, linuxPath string) (mode string, ok bool)
++
+ // Probes 是协调器的平台探测面。
+ type Probes struct {
+ 	Identity IdentityProbe
+ 	ToUNC    UNCMapper
+ 	Chmod    ChmodProbe
++	// StatMode 是敏感提交原语的隔离验证探测（SA-06：秘密字节落盘前确认
++	// 0700 staging 真实生效）。nil 时由 NewCoordinator 从 DefaultProbes 补齐。
++	StatMode StatModeProbe
+ }
+ 
+ // DefaultProbes 返回指向 internal/platform 的生产探测面。
+@@ -39,6 +48,7 @@ func DefaultProbes() Probes {
+ 		Identity: platform.WSLTargetIdentity,
+ 		ToUNC:    platform.WSLToUNC,
+ 		Chmod:    platform.WSLChmod,
++		StatMode: platform.WSLFileMode,
+ 	}
+ }
+ 
+diff --git a/internal/wslsupply/s1_e2e_windows_test.go b/internal/wslsupply/s1_e2e_windows_test.go
+index 03c8362..74a694d 100644
+--- a/internal/wslsupply/s1_e2e_windows_test.go
++++ b/internal/wslsupply/s1_e2e_windows_test.go
+@@ -28,8 +28,8 @@ import (
+ 	"amagi-codebox/internal/platform"
+ )
+ 
+-// e2eIsolatedProbes 返回真实身份/chmod + fake home（/tmp/amagi-wslsupply-e2e）
+-// 的探测面：写入只落 distro 内临时目录。
++// e2eIsolatedProbes 返回真实身份/chmod/statmode + fake home
++// （/tmp/amagi-wslsupply-e2e）的探测面：写入只落 distro 内临时目录。
+ func e2eIsolatedProbes(distro string) Probes {
+ 	return Probes{
+ 		Identity: func(string) platform.WSLUserIdentity {
+@@ -37,8 +37,9 @@ func e2eIsolatedProbes(distro string) Probes {
+ 			id.Home = "/tmp/amagi-wslsupply-e2e" // 重锚：绝不触碰真实用户树
+ 			return id
+ 		},
+-		ToUNC: platform.WSLToUNC,
+-		Chmod: platform.WSLChmod,
++		ToUNC:    platform.WSLToUNC,
++		Chmod:    platform.WSLChmod,
++		StatMode: platform.WSLFileMode,
+ 	}
+ }
+ 
+diff --git a/internal/wslsupply/s1_fix_round_test.go b/internal/wslsupply/s1_fix_round_test.go
+index 2eaf85a..d189b65 100644
+--- a/internal/wslsupply/s1_fix_round_test.go
++++ b/internal/wslsupply/s1_fix_round_test.go
+@@ -9,6 +9,7 @@ package wslsupply
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -134,29 +135,27 @@ func TestGrantUnitConsentCrossGeneration(t *testing.T) {
+ 	if err != nil || string(got) != content {
+ 		t.Fatalf("new-generation publish must write the export verbatim: %q err=%v", got, err)
+ 	}
+-	// 新代登记不携带旧代 hash 基线。
+-	st := c.GetStatus("Ubuntu", CLICommon)
+-	for _, u := range st.Units {
+-		if u.Unit == UnitSharedVisionExport {
+-			_ = u // UnitStatus 不含 hash（脱敏）；hash 基线由下方状态文件字节断言覆盖。
++	// 新代登记不携带旧代 hash 基线：SA-02 多分区下旧代分区保留（A→B→A 语义），
++	// 但新旧两代各自独立——当前代首次发布成功（上文 Applied + 逐字写入）
++	// 本身就是「未继承旧代 hash 误判 local-deletion-frozen」的行为证明；
++	// 这里再验证分区数量与代不同。
++	var entries []StateEntry
++	if raw, rerr := os.ReadFile(filepath.Join(c.state.path)); rerr == nil {
++		var parsed StateFile
++		if json.Unmarshal(raw, &parsed) == nil {
++			for _, e := range parsed.Units {
++				if e.Unit == UnitSharedVisionExport {
++					entries = append(entries, e)
++				}
++			}
+ 		}
+ 	}
+-	raw, _ := os.ReadFile(filepath.Join(c.state.path))
+-	body := string(raw)
+-	if count := substringCount(body, "lastWrittenHash"); count != 1 {
+-		t.Fatalf("state must carry exactly one lastWrittenHash (new-gen entry), got %d:\n%s", count, body)
++	if len(entries) != 2 {
++		t.Fatalf("state must carry two vision-export partitions (old gen + new gen), got %d", len(entries))
+ 	}
+-}
+-
+-func substringCount(s, sub string) int {
+-	n := 0
+-	for i := 0; i+len(sub) <= len(s); i++ {
+-		if s[i:i+len(sub)] == sub {
+-			n++
+-			i += len(sub) - 1
+-		}
++	if entries[0].Generation == entries[1].Generation {
++		t.Fatalf("partitions must be keyed by distinct generations, got %q twice", entries[0].Generation)
+ 	}
+-	return n
+ }
+ 
+ // TestGetStatusPerCLICheckTime（F4）：检查时间按 CLI 作用域——pi 探测不点亮
+diff --git a/internal/wslsupply/shared_files.go b/internal/wslsupply/shared_files.go
+index 2a26d56..a41c6ac 100644
+--- a/internal/wslsupply/shared_files.go
++++ b/internal/wslsupply/shared_files.go
+@@ -16,6 +16,7 @@ package wslsupply
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
+@@ -65,14 +66,43 @@ func (a *VisionExportAdapter) Sensitive() bool       { return true } // 条目
+ func (a *VisionExportAdapter) RequiresConsent() bool { return true } // 密钥跨界授权
+ func (a *VisionExportAdapter) Files() []string       { return []string{VisionExportFile} }
+ 
+-// Plan（同意门已在协调器统一拦截）：来源不可读 → blocked；目标存在但无登记
+-// （用户自有文件）→ 冻结；有登记但目标被手改/删除 → 冻结；目标被手改且来源已
+-// 变化（可能含撤回）→ withdrawal-unconfirmed（密钥副本未确认撤回）；来源与目标
+-// 均未变 → 跳过；其余（首次发布/来源变化含撤回）→ 写入。
++// Plan（同意门已在协调器统一拦截）：来源不可读 → blocked（source-unavailable
++// 或区分 SA-09 撤回语义）；目标存在但无登记（用户自有文件）→ 冻结；有登记但
++// 目标被手改/删除 → 冻结；目标被手改且来源已变化（可能含撤回）→
++// withdrawal-unconfirmed（密钥副本未确认撤回）；来源与目标均未变 → 跳过；
++// 其余（首次发布/来源变化含撤回）→ 写入。
++//
++// SA-09 撤回判定：宿主导出文件被删除（os.ErrNotExist）且本目标曾发布过 →
++// 撤回——目标副本仍等于上次写入时移除（ActionRemoveProjection）；被手改 →
++// withdrawal-unconfirmed-frozen（不静默沿用旧密钥，也不静默删除用户改动）；
++// 未曾发布（无登记）→ 无事可做（ActionNone）。瞬时读错误（非删除）不足以
++// 判定撤回意图，维持 source-unavailable 阻断，不动副本。
+ func (a *VisionExportAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *StateEntry) (PlannedUnit, error) {
+ 	src, err := a.visionBytes()
+ 	if err != nil {
+-		return PlannedUnit{Action: ActionBlocked, BlockedReason: "source-unavailable", Policy: PolicyManagedNamespace}, nil
++		unit := PlannedUnit{Action: ActionBlocked, BlockedReason: "source-unavailable", Policy: PolicyManagedNamespace, RelPath: VisionExportFile}
++		recorded := state != nil && state.LastWrittenHash != ""
++		if !errors.Is(err, os.ErrNotExist) {
++			return unit, nil // 瞬时读错误：不是撤回，副本不动
++		}
++		if !recorded {
++			unit.Action = ActionNone // 从未发布且宿主无导出：无事可做
++			unit.BlockedReason = ""
++			return unit, nil
++		}
++		// 宿主撤回（导出文件已删除）且本目标持有受管副本。
++		meta, _ := snap.File(VisionExportFile)
++		if meta.Exists && meta.Hash != state.LastWrittenHash {
++			unit.BlockedReason = "withdrawal-unconfirmed-frozen"
++			unit.Freeze = true
++			return unit, nil
++		}
++		unit.Action = ActionRemoveProjection
++		unit.BlockedReason = ""
++		if meta.Exists {
++			unit.ExpectedTargetHash = meta.Hash
++		}
++		return unit, nil
+ 	}
+ 	sourceHash := hexHash(normalizedStripUpdatedAt(src))
+ 	unit := PlannedUnit{RelPath: VisionExportFile, TransformVersion: visionExportTransform, Policy: PolicyManagedNamespace}
+diff --git a/internal/wslsupply/state.go b/internal/wslsupply/state.go
+index a6f8eac..eb47e31 100644
+--- a/internal/wslsupply/state.go
++++ b/internal/wslsupply/state.go
+@@ -5,22 +5,35 @@ package wslsupply
+ // 不由前端解析。敏感 hash 仅私有本地存储且不通过状态 API 返回；A2 凭据单元
+ // 永不持久化任何 hash（凭据 hash 不落盘）。目标身份不能只用 distro 名称：
+ // generation 变化时旧登记失效（不自动迁移授权，退回未托管/重新确认）。
++//
++// SA-02（wsl-goal-closure）：登记按「完整身份 generation（含 distro/uid/home/
++// machine-id）+ unit」多分区保存——A→B→A 交替不覆盖，克隆 distro（同
++// machine-id）互不继承；unknown 代不参与持久授权匹配（无法验证身份的目标
++// 不得复用任何历史授权）；v1 旧清单（generation 无法归属到新身份指纹）保守
++// 隔离为 legacy——保留在盘上供诊断，但不再被任何新目标匹配（重新同意后继续，
++// 不自动扩大旧授权，direction.md 迁移裁定）。
+ 
+ import (
+ 	"encoding/json"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"sync"
+ 	"time"
+ )
+ 
+-// stateSchemaVersion 是清单 schema 版本（S0 = 1）。
+-const stateSchemaVersion = 1
++// stateSchemaVersion 是清单 schema 版本。v2：身份多分区（Targets 索引 +
++// per-entry generation 隔离 + v1 记录隔离）。
++const stateSchemaVersion = 2
+ 
+ // StateFileName 是清单文件名（落在 CodeBox 配置目录）。
+ const StateFileName = "wsl-config-supply.json"
+ 
++// legacyGenerationPrefix 是 v1 清单隔离前缀：v1 的 generation 指纹不含
++// distro，无法归属到 v2 指纹——隔离后永不与新代匹配，但保留原文供诊断。
++const legacyGenerationPrefix = "legacy:"
++
+ // StateEntry 是单单元登记信息。SourceHash/LastWrittenHash 仅供普通托管单元
+ // （TrackedProjection 等）使用；A2 单元恒为空。
+ type StateEntry struct {
+@@ -59,21 +72,36 @@ type SubHash struct {
+ 	Written string `json:"written,omitempty"`
+ }
+ 
++// TargetRecord 是 Targets 索引的单条目标身份记录（SA-02：generation 指纹 →
++// distro/uid/home/最近接触时间）。GetStatus 据此把清单中的分区归属到请求的
++// distro（不探测；同一 distro 多代共存时取最近接触的一代展示）。
++type TargetRecord struct {
++	Distro      string            `json:"distro"`
++	UID         string            `json:"uid,omitempty"`
++	Home        string            `json:"home,omitempty"`
++	LastSeen    time.Time         `json:"lastSeen"`
++	InspectedAt map[CLI]time.Time `json:"inspectedAt,omitempty"`
++}
++
+ // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与
+-// revision（MarkDirty 落盘，重启可补漏；S0 不调度）。
++// revision（MarkDirty 落盘，重启可补漏；S0 不调度）。Targets 是身份索引
++// （SA-02）；Units 允许同一 unit 多代分区共存。
+ type StateFile struct {
+ 	SchemaVersion   int       `json:"schemaVersion"`
+ 	Generation      string    `json:"generation,omitempty"`
+ 	Distro          string    `json:"distro,omitempty"`
+ 	Home            string    `json:"home,omitempty"`
+ 	LastInspectedAt time.Time `json:"lastInspectedAt,omitempty"`
++	// Targets 按 generation 指纹索引目标身份（SA-02）。
++	Targets map[string]TargetRecord `json:"targets,omitempty"`
+ 	// Plugins 是 P3-S5 插件重放登记（source 键控；重放成功且复检通过才
+ 	// Installed=true）。与 Units 分离：插件操作与文件同步分开授权与状态
+ 	//（design §四），不经 Plan/Apply 单元词汇表——启动链无法触达（结构性
+ 	// 保证「启动不自动安装」）。
+ 	Plugins []PluginStateEntry `json:"plugins,omitempty"`
+ 	// LastInspectedAtByCLI 按 CLI 作用域记录检查时间（F4：跨 CLI 共享单值会
+-	// 把 pi 作用域的探测时间错配到 shared 面板；GetStatus 只读本表）。
++	// 把 pi 作用域的探测时间错配到 shared 面板；v2 起读取改走 Targets 内的
++	// per-target per-CLI 时间，本表仅兼容写入）。
+ 	LastInspectedAtByCLI map[CLI]time.Time `json:"lastInspectedAtByCLI,omitempty"`
+ 	DesiredRevision      uint64            `json:"desiredRevision,omitempty"`
+ 	PendingSources       map[string]uint64 `json:"pendingSources,omitempty"`
+@@ -102,7 +130,7 @@ type PluginStateEntry struct {
+ 	Source string `json:"source"`
+ 	// Identity 是归一身份键（npm name 或 git host/path）：同包不同 ref 变体
+ 	// 视为同一插件（版本切换语义）。
+-	Identity  string `json:"identity"`
++	Identity   string `json:"identity"`
+ 	SourceType string `json:"sourceType"` // npm / git
+ 	Generation string `json:"generation,omitempty"`
+ 	// PinnedRef / RefKind 是重放锚定的确切版本或 commit（含形态诚实标注）。
+@@ -172,6 +200,9 @@ func (s *stateStore) loadLocked() StateFile {
+ 	if json.Unmarshal(data, &f) != nil || f.SchemaVersion > stateSchemaVersion {
+ 		return s.current
+ 	}
++	if f.SchemaVersion < stateSchemaVersion {
++		migrateLegacyState(&f)
++	}
+ 	if f.Units == nil {
+ 		f.Units = []StateEntry{}
+ 	}
+@@ -184,10 +215,35 @@ func (s *stateStore) loadLocked() StateFile {
+ 	if f.PendingSources == nil {
+ 		f.PendingSources = map[string]uint64{}
+ 	}
++	if f.Targets == nil {
++		f.Targets = map[string]TargetRecord{}
++	}
+ 	s.current = f
+ 	return s.current
+ }
+ 
++// migrateLegacyState 把 v1 清单保守升级到 v2（内存视图；下次落盘写 v2）：
++// v1 的 generation 指纹不含 distro 名，无法归属到 v2 身份指纹——全部隔离为
++// legacy 前缀（永不与新代匹配，保留原文供诊断，不删除任何记录）。顶层
++// Generation 同步隔离，避免它充当「当前目标」匹配链。插件登记同样隔离
++// （v1 代无法验证属于哪个目标；重新重放/重授权后自然重建）。
++func migrateLegacyState(f *StateFile) {
++	for i := range f.Units {
++		if g := f.Units[i].Generation; g != "" && !strings.HasPrefix(g, legacyGenerationPrefix) {
++			f.Units[i].Generation = legacyGenerationPrefix + g
++		}
++	}
++	for i := range f.Plugins {
++		if g := f.Plugins[i].Generation; g != "" && !strings.HasPrefix(g, legacyGenerationPrefix) {
++			f.Plugins[i].Generation = legacyGenerationPrefix + g
++		}
++	}
++	if f.Generation != "" {
++		f.Generation = legacyGenerationPrefix + f.Generation
++	}
++	f.SchemaVersion = stateSchemaVersion
++}
++
+ // saveLocked 持久化当前清单（私有原子写：MkdirAll → tmp 0600 → rename →
+ // chmod 0600）。调用方必须持有 s.mu。
+ func (s *stateStore) saveLocked() error {
+@@ -227,44 +283,49 @@ func (s *stateStore) saveLocked() error {
+ 	return nil
+ }
+ 
+-// entry 返回单元登记（无登记返回零值与 false）。
++// entry 返回「当前目标」（清单记录的当前代，st.Generation）的单元登记：
++// 同一 unit 可能存在多个身份分区，只取属于当前代的那一条；无匹配返回零值
++// （SA-02：跨目标的登记互不串读——包括 legacy 隔离区与 unknown 槽）。
+ func (s *StateFile) entry(unit UnitID) (StateEntry, bool) {
++	if s.Generation == "" {
++		return StateEntry{}, false
++	}
+ 	for i := range s.Units {
+-		if s.Units[i].Unit == unit {
++		if s.Units[i].Unit == unit && s.Units[i].Generation == s.Generation {
+ 			return s.Units[i], true
+ 		}
+ 	}
+ 	return StateEntry{}, false
+ }
+ 
+-// entryFor 返回单元登记，但目标代际不匹配（双方非空且不同）时视为无登记：
+-// 目标身份变化（distro 重装/换默认用户）时旧登记整体失效，不自动迁移授权与
+-// 键级基准（design §七「generation 变化时旧登记失效」；F-3/S2 diting：未
+-// 重新同意前旧 Consented 不得放行写入门）。
++// entryFor 返回请求代（完整身份指纹）的单元登记。匹配规则（SA-02）：
++//   - 请求代为空或 unknown：永不匹配持久登记（无法验证身份的目标不复用任何
++//     历史授权/基准；敏感授权在 GrantUnitConsent 处直接拒绝持久化）；
++//   - legacy 隔离代：永不匹配（v1 记录无法归属，重新同意后继续）；
++//   - 其余：unit+generation 同时相等才命中——不同 distro（克隆）或不同代
++//     （重装/换用户）各自独立分区。
+ func (s *StateFile) entryFor(unit UnitID, generation string) StateEntry {
+-	entry, ok := s.entry(unit)
+-	if !ok || entry.Generation == "" || generation == "" || entry.Generation == generation {
+-		return entry
++	if generation == "" || generation == GenerationUnknown || strings.HasPrefix(generation, legacyGenerationPrefix) {
++		return StateEntry{}
++	}
++	for i := range s.Units {
++		if s.Units[i].Unit == unit && s.Units[i].Generation == generation {
++			return s.Units[i]
++		}
+ 	}
+ 	return StateEntry{}
+ }
+ 
+-// upsertEntry 以目标 generation 为界更新单元登记；generation 变化（非 unknown→
+-// 同值）时先作废旧登记再写入新值（旧授权不自动扩散）。
++// upsertEntry 按身份分区写入单元登记：同 unit 同代原位替换；同 unit 异代
++// 追加为独立分区（不清除其它目标的登记——A→B→A 交替各自保全，SA-02）。
++// 写入同时把清单的「当前代」指向本次目标（entry() 的匹配锚）。unknown 代
++// 单槽复用（状态展示面；entryFor 永不匹配它，授权面无风险）。
+ func (s *StateFile) upsertEntry(entry StateEntry, generation string) {
+-	if existing, ok := s.entry(entry.Unit); ok && existing.Generation != "" &&
+-		generation != "" && existing.Generation != generation {
+-		// 目标代际变化：旧登记整体失效，按新代重记（不带任何旧 hash 继承）。
+-		for i := range s.Units {
+-			if s.Units[i].Unit == entry.Unit {
+-				s.Units[i] = entry
+-				s.Generation = generation
+-				return
+-			}
+-		}
++	if generation != "" {
++		s.Generation = generation
+ 	}
+ 	for i := range s.Units {
+-		if s.Units[i].Unit == entry.Unit {
++		if s.Units[i].Unit == entry.Unit && s.Units[i].Generation == entry.Generation {
+ 			s.Units[i] = entry
+ 			return
+ 		}
+diff --git a/internal/wslsupply/submit_primitive_test.go b/internal/wslsupply/submit_primitive_test.go
+index 73a9347..a88ab55 100644
+--- a/internal/wslsupply/submit_primitive_test.go
++++ b/internal/wslsupply/submit_primitive_test.go
+@@ -163,7 +163,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
+ 		}
+ 	})
+ 
+-	t.Run("sensitive unit stays fail-closed delete", func(t *testing.T) {
++	t.Run("sensitive unit fails before rename keeps preimage", func(t *testing.T) {
+ 		fp := newFakeProbes(t)
+ 		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+ 		src := `{"rev":1}`
+@@ -178,9 +178,14 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
+ 		if res.Results[0].Outcome != UnitFailed {
+ 			t.Fatalf("sensitive chmod failure must fail: %+v", res.Results)
+ 		}
+-		if _, statErr := os.Stat(prefsPath(fp)); !os.IsNotExist(statErr) {
+-			t.Fatal("sensitive chmod failure must delete the loose-permission plaintext")
++		// SA-07（wsl-goal-closure）：敏感 chmod 失败发生在 rename 之前（staging
++		// 内收紧 0600 失败即中止）——原有内容（含用户自有字段）原样保留，
++		// 不再以删整文件充当 fail-closed；新内容不得落盘。
++		got, readErr := os.ReadFile(prefsPath(fp))
++		if readErr != nil || string(got) != `{"rev":1}` {
++			t.Fatalf("sensitive chmod failure must preserve the preimage untouched, got %q err=%v", got, readErr)
+ 		}
++		assertNoStagingLeftover(t, filepath.Join(fp.uncRoot, "home"))
+ 	})
+ }
+ 
+diff --git a/internal/wslsupply/types.go b/internal/wslsupply/types.go
+index 56c3909..c8939f2 100644
+--- a/internal/wslsupply/types.go
++++ b/internal/wslsupply/types.go
+@@ -134,11 +134,14 @@ type TargetRef struct {
+ 	Generation string // 身份代；GenerationUnknown 表示未知
+ }
+ 
+-// SameIdentity 报告两个目标是否指向同一身份面（distro+uid+home+root）。
+-// Apply 前用它复核目标未被替换（拒绝旧计划）。
++// SameIdentity 报告两个目标是否指向同一身份面（distro+uid+home+root+代）。
++// Apply 前用它复核目标未被替换（拒绝旧计划）。Generation 是完整身份指纹
++// （含 distro 名与 machine-id/uid/home，见 generationFor）：计划后同名 distro
++// 被重装/克隆/换默认用户，即使 uid/home/根路径全同，代不同也必须拒绝旧计划
++// （SA-01：旧环境的授权不得把用户设置/敏感 MCP 导入新身份）。
+ func (t TargetRef) SameIdentity(other TargetRef) bool {
+ 	return t.Distro == other.Distro && t.UID == other.UID && t.Home == other.Home &&
+-		t.LinuxRoot == other.LinuxRoot && t.CLI == other.CLI
++		t.LinuxRoot == other.LinuxRoot && t.CLI == other.CLI && t.Generation == other.Generation
+ }
+ 
+ // FileMeta 是 Inspect 批量探测得到的单文件元数据。ModTime 为 UNC 视图呈现值，
+@@ -184,6 +187,9 @@ const (
+ 	ActionWriteProjection
+ 	// ActionBlocked：阻断项，原因见 BlockedReason。
+ 	ActionBlocked
++	// ActionRemoveProjection：撤回——移除上次受管写入（SA-09：宿主侧已删除
++	// 敏感导出源且目标副本仍等于上次写入时，删除目标副本而不是留着旧密钥）。
++	ActionRemoveProjection
+ )
+ 
+ // PlannedUnit 是计划内单个单元的动作描述。计划不携带候选正文（敏感候选仅在

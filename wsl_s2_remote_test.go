@@ -33,6 +33,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestRemotePiAPIProviderWSLPlanCarriesSupply(t *testing.T) {
+	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
 	home := isolatedHome(t)
 	dir := t.TempDir()
 	cfgSvc := config.NewConfigService(dir)
@@ -125,6 +126,7 @@ func TestRemotePiAPIProviderWSLPlanCarriesSupply(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemoteOpenCodeWSLPlanCarriesLayer(t *testing.T) {
+	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
 	home := isolatedHome(t)
 	dir := t.TempDir()
 	cfgSvc := config.NewConfigService(dir)
@@ -422,6 +424,9 @@ func TestSaveAmagiConfigMarksPiConfigDirty(t *testing.T) {
 	app := newTestApp(t)
 	runner := &stubSupplyRunner{}
 	app.WSLSupply = runner
+	// PR09：保存触发异步推送——cleanup 必须等推送生命周期退出，避免泄入
+	// 下一个测试与其全局接缝写入竞争。
+	t.Cleanup(waitForWSLSupplyPushIdleForTest)
 	if err := app.SaveAmagiConfig(`{"profile": "tiered"}`); err != nil {
 		t.Fatalf("SaveAmagiConfig: %v", err)
 	}
@@ -454,7 +459,14 @@ func TestEnableWSLPiConfigSupply(t *testing.T) {
 	c.RegisterProjection(wslsupply.NewPiMCPAdapter(src, stubFactsForDualLink{}))
 	app.WSLSupply = c
 	origDefault := wslDefaultDistroFn
-	t.Cleanup(func() { wslDefaultDistroFn = origDefault })
+	t.Cleanup(func() {
+		// PR09：先等异步推送生命周期真正退出再还原全局接缝（不 sleep 碰运气；
+		// 否则下一个测试与后台 goroutine 竞争 wslDefaultDistroFn/wslDistroRunningFn）。
+		waitForWSLSupplyPushIdleForTest()
+		wslDefaultDistroFn = origDefault
+	})
+	// 防御：前置排水——等任何先前测试泄漏的推送退出后再写接缝。
+	waitForWSLSupplyPushIdleForTest()
 	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
 	if err := app.EnableWSLPiConfigSupply(); err != nil {
 		t.Fatalf("enable with capable coordinator: %v", err)

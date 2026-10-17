@@ -14,6 +14,7 @@ package launcher
 // 测试后 Windows 侧恢复原字节、distro 侧恢复原字节（不存在则删除）。
 // 本机无 Windows 侧登录时跳过。
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,7 +70,7 @@ func TestManualRealWSLPiLoginSync(t *testing.T) {
 			t.Logf("cleanup restore %s: %v", uncAuth, err)
 			return
 		}
-		if err := wslChmodFn(distro, "600", linuxAuth); err != nil {
+		if err := wslChmodFn(context.Background(), distro, "600", linuxAuth); err != nil {
 			t.Logf("cleanup chmod 600: %v", err)
 		}
 	})

@@ -283,6 +283,16 @@ func TestDarwinResolveExecutableFindsCodexInLocalNodeBin(t *testing.T) {
 	t.Cleanup(func() { darwinSystemApplicationsDir = previousApplicationsDir })
 
 	homeDir := t.TempDir()
+	// Host-pollution guard: without this stub the resolver's user-home
+	// fallback (pathLookupUserHomeDir → os.UserHomeDir → process $HOME)
+	// appends the REAL user bin candidates — a host ~/.local/bin/codex or a
+	// real fnm base — ahead of this fixture's ~/.local/node/bin, so the
+	// resolved path depends on which CLIs happen to be installed on the
+	// machine instead of on the fixture.
+	previousHomeDir := pathLookupUserHomeDir
+	pathLookupUserHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { pathLookupUserHomeDir = previousHomeDir })
+
 	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
 	codexPath := filepath.Join(npmLocalNodeDir, "codex")
 	if err := os.MkdirAll(npmLocalNodeDir, 0o755); err != nil {

@@ -106,8 +106,10 @@ func (s *Service) ResolvedEntityCommit(source string) string {
 }
 
 // WindowsEntryFilters 返回 Windows settings.json 中该源登记的子资源过滤清单
-// （packages[] 元素为过滤对象时携带）。重放登记把它记录在案（本批不在 WSL
-// settings 中重建过滤对象——如实登记，不冒充已同步）。
+// （packages[] 元素为过滤对象时携带）。返回的 []string 无法区分「键省略」
+// 与「显式空数组 []」——本方法为既有 Wails 绑定面保留原签名/原语义；需要
+// 三态语义（nil=全部加载、空切片=一项都不加载）的调用方改用包级函数
+// EntryFiltersFor（不进 Wails 绑定面）。
 func (s *Service) WindowsEntryFilters(source string) (extensions, skills, prompts, themes []string) {
 	configured, err := s.readConfiguredPackages()
 	if err != nil {
@@ -123,6 +125,50 @@ func (s *Service) WindowsEntryFilters(source string) (extensions, skills, prompt
 		}
 	}
 	return nil, nil, nil, nil
+}
+
+// EntryFilters 是 Windows 侧登记的子资源过滤清单三态快照（SA12 补全）：
+// 每个字段 nil = 该键省略（此类型加载全部）；非 nil 空切片 = 显式空数组
+// []（此类型一项都不加载）；非空 = 按清单过滤（模式串原样由 pi 解释）。
+// 未登记/读取失败时四字段全 nil。
+type EntryFilters struct {
+	Extensions []string
+	Skills     []string
+	Prompts    []string
+	Themes     []string
+}
+
+// Any 报告是否任一类型显式声明了过滤键（含空数组——空数组也是过滤形态，
+// 不是「无过滤」）。
+func (f EntryFilters) Any() bool {
+	return f.Extensions != nil || f.Skills != nil || f.Prompts != nil || f.Themes != nil
+}
+
+// EntryFiltersFor 返回该源登记的子资源过滤清单（三态保留）。包级函数而
+// 非 Service 方法：不进入 Wails 绑定面（wailsjs 生成物不因本函数变化），
+// 供 App 编排层在 WSL 重放时构建保留 nil/空切片区别的过滤快照。
+func EntryFiltersFor(s *Service, source string) EntryFilters {
+	var out EntryFilters
+	if s == nil {
+		return out
+	}
+	configured, err := s.readConfiguredPackages()
+	if err != nil {
+		return out
+	}
+	registered := s.findRegistered(source, configured)
+	if registered == "" {
+		return out
+	}
+	for _, cfg := range configured {
+		if cfg.source == registered {
+			return EntryFilters{
+				Extensions: cfg.extensions, Skills: cfg.skills,
+				Prompts: cfg.prompts, Themes: cfg.themes,
+			}
+		}
+	}
+	return out
 }
 
 // readGitHeadCommit 只读解析 git 仓库 HEAD： detached（HEAD 直接是 SHA）或

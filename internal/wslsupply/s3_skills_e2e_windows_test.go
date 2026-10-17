@@ -214,13 +214,15 @@ func TestManualRealWSLSkillsSupply(t *testing.T) {
 	c2 := NewCoordinator(t.TempDir(), nil, Probes{
 		// 重锚到临时验证位：Identity 把 Home 指向 /tmp 验证位，ResolveTarget/
 		// Apply 复核自然落在同一重锚目标上——绝不写入真实 ~/.agents。
-		Identity: func(d string) platform.WSLUserIdentity {
+		Identity: func(ctx context.Context, d string) platform.WSLUserIdentity {
 			id := platform.WSLTargetIdentity(d)
 			id.Home = verifyDir
 			return id
 		},
 		ToUNC: platform.WSLToUNC,
-		Chmod: platform.WSLChmod,
+		Chmod: func(ctx context.Context, distro, mode string, paths ...string) error {
+			return platform.WSLChmod(distro, mode, paths...)
+		},
 	})
 	c2.RegisterSkills(realScope)
 	if err := c2.GrantUnitConsent(ctx, distro, CLICommon, SkillUnitID(picked.Name)); err != nil {

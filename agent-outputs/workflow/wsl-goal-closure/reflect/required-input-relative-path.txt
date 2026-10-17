@@ -1,0 +1,13 @@
+# task_submit inputPaths 相对路径被拒、绝对路径同文件 13s 后成功（同 worktree 名）；失败轮已建 worktree 并留现场。后续核验：日志为主树未跟踪文件，新 worktree(base HEAD) 中不存在
+
+2026-10-17T11:47:55.722Z
+ARGS(inputPaths/workspace/taskFile): {"taskFile": "agent-outputs/workflow/wsl-goal-closure/windows-wslsupply-fixes-assignment.md", "inputPaths": ["agent-outputs/workflow/wsl-goal-closure/windows-wslsupply-real-tests-3.log"], "workspace": {"mode": "worktree", "worktreeName": "wsl-goal-winfix", "dependencyVisibility": "main-tree"}}
+RESULT:
+[ContractError code=required-input-missing effects=unknown]
+message: inputs.required 声明的路径冻结时不存在（缺失即拒单——此刻不存在，子 Agent 运行中必 ENOENT）：agent-outputs/workflow/wsl-goal-closure/windows-wslsupply-real-tests-3.log
+fields: inputs
+repairExamples:
+  - {"hint":"核对路径逐层完整性（实战高发：深层中文路径漏写一层或含不可见字符差异——等价路径/近邻候选见正文，同名即疑似修正位置）"}
+  - {"hint":"输入尚未产出：先等前置任务完成再派发；确属可缺输入改 required:false（附存在性说明）"}
+
+[worktree 现场保留] /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/wsl-goal-winfix；本轮 lease 已释放，不自动删目录/分支，请核对副作用后重提。

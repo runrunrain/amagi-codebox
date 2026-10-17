@@ -1,0 +1,79 @@
+diff --git a/internal/platform/wsl_context.go b/internal/platform/wsl_context.go
+--- a/internal/platform/wsl_context.go
++++ b/internal/platform/wsl_context.go
+@@ -17,7 +17,6 @@
+ import (
+ 	"context"
+ 	"os/exec"
+-	"runtime"
+ 	"strconv"
+ 	"strings"
+ )
+@@ -52,12 +51,7 @@
+ 	return parseWSLUserIdentity(decodeWSLListOutput(out))
+ }
+ 
+-// WSLFileMTimeContext 是 WSLFileMTime 的可取消变体。osName 以参数区分宿主门
+-// 的可测核心与原生入口（与 wslFileMTimeForOS 同型：非 windows 恒 (0,false)）。
+-func WSLFileMTimeContext(ctx context.Context, distro, linuxPath string) (int64, bool) {
+-	return wslFileMTimeContextForOS(ctx, runtime.GOOS, distro, linuxPath)
+-}
+-
++// stat 的生产入口按 build tags 分文件；此核心保留显式 OS 参数供离线测试。
+ func wslFileMTimeContextForOS(ctx context.Context, osName, distro, linuxPath string) (int64, bool) {
+ 	distro = strings.TrimSpace(distro)
+ 	if distro == "" || osName != "windows" || !strings.HasPrefix(linuxPath, "/") {
+@@ -75,13 +69,6 @@
+ 		return 0, false
+ 	}
+ 	return sec, true
+-}
+-
+-// WSLFileModeContext 是 WSLFileMode 的可取消变体（stat -c %a 权威读法，
+-// 解析与 fail-closed 语义复用 parseWSLStatModeOutput）。osName 可测核心
+-// 与 WSLFileMTimeContext 同型（非 windows 恒 false，不触 runner）。
+-func WSLFileModeContext(ctx context.Context, distro, linuxPath string) (string, bool) {
+-	return wslFileModeContextForOS(ctx, runtime.GOOS, distro, linuxPath)
+ }
+ 
+ func wslFileModeContextForOS(ctx context.Context, osName, distro, linuxPath string) (string, bool) {
+diff --git a/internal/platform/wsl_context_stat_windows.go b/internal/platform/wsl_context_stat_windows.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/wsl_context_stat_windows.go
+@@ -0,0 +1,15 @@
++//go:build windows
++
++package platform
++
++import "context"
++
++// WSLFileMTimeContext 以可取消的 wsl.exe stat 探测 Linux 文件时间。
++func WSLFileMTimeContext(ctx context.Context, distro, linuxPath string) (int64, bool) {
++	return wslFileMTimeContextForOS(ctx, "windows", distro, linuxPath)
++}
++
++// WSLFileModeContext 以可取消的 wsl.exe stat 探测 Linux 权限位。
++func WSLFileModeContext(ctx context.Context, distro, linuxPath string) (string, bool) {
++	return wslFileModeContextForOS(ctx, "windows", distro, linuxPath)
++}
+diff --git a/internal/platform/wsl_context_stat_nonwindows.go b/internal/platform/wsl_context_stat_nonwindows.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/wsl_context_stat_nonwindows.go
+@@ -0,0 +1,15 @@
++//go:build !windows
++
++package platform
++
++import "context"
++
++// WSLFileMTimeContext 在非 Windows 宿主不探测 WSL。
++func WSLFileMTimeContext(ctx context.Context, distro, linuxPath string) (int64, bool) {
++	return 0, false
++}
++
++// WSLFileModeContext 在非 Windows 宿主不探测 WSL。
++func WSLFileModeContext(ctx context.Context, distro, linuxPath string) (string, bool) {
++	return "", false
++}

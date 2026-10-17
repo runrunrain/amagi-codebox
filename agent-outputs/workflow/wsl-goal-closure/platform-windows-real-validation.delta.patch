@@ -1,0 +1,248 @@
+--- a/internal/platform/move_no_replace.go
++++ b/internal/platform/move_no_replace.go
+@@ -19,8 +19,9 @@
+ //     移动（目标存在 → ERROR_ALREADY_EXISTS）。
+ //   - 其它 OS：显式不支持错误。
+ //
+-// Windows/UNC 真实行为（含 9P 共享上的目录移动与并发语义）未经真机验证；
+-// 交叉编译通过只证明可编译，不证明原子性/错误码形态。
++// Windows 本地与 WSL 9P 的文件/目录/并发用例已有隔离真机证据（见
++// agent-outputs/workflow/wsl-goal-closure/windows-interop-real-v2.log）。
++// 该结果不覆盖其它 UNC 服务端；交叉编译本身不证明原子性或错误码形态。
+ //
+ // 注意：原子 no-replace 不等于原子内容 CAS——目标在调用前后被外部进程改写
+ // 不在本原语保证内；调用方须自行复验移动后的实体（契约「外部后改」流程）。
+--- a/internal/platform/move_no_replace_windows.go
++++ b/internal/platform/move_no_replace_windows.go
+@@ -3,7 +3,9 @@
+ package platform
+ 
+ import (
++	"errors"
+ 	"fmt"
++	"os"
+ 
+ 	"golang.org/x/sys/windows"
+ )
+@@ -14,8 +16,9 @@
+ // 不带 COPY_ALLOWED 时跨卷移动不被静默降级为复制（跨卷返回错误，符合
+ // 「不支持就 error，不降级」）。
+ //
+-// UNC（\\\\wsl.localhost\\... 等 9P 共享）上的真实行为——目录移动、错误码形态、
+-// 并发窗口——未经 Windows 真机验证；交叉编译通过不证明上述行为。
++// UNC（\\\\wsl.localhost\\... 等 9P 共享）的错误码形态依赖服务端；已观测到
++// 并发冲突返回 ACCESS_DENIED，见下方只读后验分类。真实目录/并发覆盖见
++// windows-interop-real-v2.log，不将单一环境结果泛化到所有共享服务端。
+ func moveNoReplaceOS(source, destination string) error {
+ 	src16, err := windows.UTF16PtrFromString(source)
+ 	if err != nil {
+@@ -27,5 +30,22 @@
+ 	}
+ 	// flags=0：无 MOVEFILE_REPLACE_EXISTING（不替换目标）、无
+ 	// MOVEFILE_COPY_ALLOWED（跨卷不降级复制）、无 MOVEFILE_DELAY_UNTIL_REBOOT。
+-	return windows.MoveFileEx(src16, dst16, 0)
++	return classifyMoveNoReplaceError(source, destination, windows.MoveFileEx(src16, dst16, 0))
+ }
++
++// A WSL 9P collision can report ACCESS_DENIED instead of ALREADY_EXISTS.
++// Classify only AFTER the native no-replace operation has failed, and only
++// when both entries are observable. This never authorizes a retry or overwrite.
++// Keep the original denial as well: existence does not prove why the OS refused.
++func classifyMoveNoReplaceError(source, destination string, err error) error {
++	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
++		return err
++	}
++	if _, sourceErr := os.Lstat(source); sourceErr != nil {
++		return err
++	}
++	if _, targetErr := os.Lstat(destination); targetErr != nil {
++		return err
++	}
++	return errors.Join(os.ErrExist, err)
++}
+--- a/internal/platform/move_no_replace_test.go
++++ b/internal/platform/move_no_replace_test.go
+@@ -176,14 +176,15 @@
+ 		}(src)
+ 	}
+ 	wg.Wait()
++	t.Logf("writers=%d wins=%d conflicts=%d", writers, wins, conflics)
+ 	if firstErr != nil {
+-		t.Fatalf("unexpected non-conflict error: %v", firstErr)
++		t.Errorf("unexpected non-conflict error: %v", firstErr)
+ 	}
+ 	if wins != 1 {
+-		t.Fatalf("exactly one winner expected, got %d (conflicts=%d)", wins, conflics)
++		t.Errorf("exactly one winner expected, got %d (conflicts=%d)", wins, conflics)
+ 	}
+ 	if wins+conflics != writers {
+-		t.Fatalf("some writers' outcome lost: wins=%d conflicts=%d writers=%d", wins, conflics, writers)
++		t.Errorf("some writers' outcome lost: wins=%d conflicts=%d writers=%d", wins, conflics, writers)
+ 	}
+ 	got, rerr := os.ReadFile(dst)
+ 	if rerr != nil {
+@@ -200,9 +201,18 @@
+ 	}
+ 	// 失败者的 source 必须仍在（不丢任何一方）。
+ 	remaining := 0
+-	for _, src := range sources {
+-		if _, err := os.Lstat(src); err == nil {
++	for i, src := range sources {
++		body, err := os.ReadFile(src)
++		expected := fmt.Sprintf("winner-%02d", i)
++		if err == nil {
+ 			remaining++
++			if string(body) != expected {
++				t.Fatalf("losing source bytes changed: index=%d", i)
++			}
++		} else if !errors.Is(err, os.ErrNotExist) {
++			t.Fatalf("source unreadable: index=%d err=%v", i, err)
++		} else if string(got) != expected {
++			t.Fatalf("non-winning source disappeared: index=%d", i)
+ 		}
+ 	}
+ 	if remaining != writers-1 {
+--- /dev/null
++++ b/internal/platform/move_no_replace_windows_test.go
+@@ -0,0 +1,67 @@
++//go:build windows
++
++package platform
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"golang.org/x/sys/windows"
++)
++
++func TestMoveNoReplaceWindowsDeniedClassification(t *testing.T) {
++	for _, tc := range []struct {
++		name                     string
++		source, target, conflict bool
++	}{
++		{"both-present", true, true, true},
++		{"target-absent", true, false, false},
++		{"source-absent", false, true, false},
++		{"both-absent", false, false, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			root := t.TempDir()
++			src := filepath.Join(root, "source")
++			dst := filepath.Join(root, "target")
++			if tc.source {
++				writeMoveFixture(t, src, "source-bytes")
++			}
++			if tc.target {
++				writeMoveFixture(t, dst, "target-bytes")
++			}
++			err := classifyMoveNoReplaceError(src, dst, windows.ERROR_ACCESS_DENIED)
++			if errors.Is(err, os.ErrExist) != tc.conflict {
++				t.Fatalf("conflict=%v want %v: %v", errors.Is(err, os.ErrExist), tc.conflict, err)
++			}
++			if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || !errors.Is(err, os.ErrPermission) {
++				t.Fatalf("original denial lost: %v", err)
++			}
++			for p, want := range map[string]struct {
++				present bool
++				body    string
++			}{src: {tc.source, "source-bytes"}, dst: {tc.target, "target-bytes"}} {
++				b, e := os.ReadFile(p)
++				if want.present {
++					if e != nil || string(b) != want.body {
++						t.Fatalf("classification modified fixture: %q %v", b, e)
++					}
++				} else if !errors.Is(e, os.ErrNotExist) {
++					t.Fatalf("classification created fixture: %v", e)
++				}
++			}
++		})
++	}
++	root := t.TempDir()
++	src := filepath.Join(root, "source")
++	dst := filepath.Join(root, "target")
++	writeMoveFixture(t, src, "source")
++	writeMoveFixture(t, dst, "target")
++	if got := classifyMoveNoReplaceError(src, dst, nil); got != nil {
++		t.Fatalf("success changed: %v", got)
++	}
++	if got := classifyMoveNoReplaceError(src, dst, windows.ERROR_SHARING_VIOLATION); got != windows.ERROR_SHARING_VIOLATION {
++		t.Fatalf("unrelated error normalized: %v", got)
++	}
++}
+--- a/internal/platform/ensure_private_test.go
++++ b/internal/platform/ensure_private_test.go
+@@ -2,13 +2,14 @@
+ 
+ // ensure_private_test.go — 宿主本地私有化原语的语义回归（G0）：建立/收紧/
+ // 验证 0700/0600、拒绝符号链接、类型不符拒绝。POSIX 权限位断言仅在非
+-// Windows 宿主验证（Windows 真实 ACL 行为未真机验证，仅覆盖编译面）。
++// Windows 宿主验证；Windows ACL 由 ensure_private_windows_test.go 专项验证。
+ 
+ import (
+ 	"errors"
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
++	"syscall"
+ 	"testing"
+ )
+ 
+@@ -126,10 +127,19 @@
+ 	})
+ }
+ 
++func privateSymlinkFixture(t *testing.T, target, link string) {
++	t.Helper()
++	if err := os.Symlink(target, link); err != nil {
++		// Windows ERROR_PRIVILEGE_NOT_HELD. Do not skip merely because this
++		// is Windows, or conceal unrelated fixture/ACL errors as a privilege gap.
++		if runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(1314)) {
++			t.Skip("symlink fixture creation denied: Windows ERROR_PRIVILEGE_NOT_HELD")
++		}
++		t.Fatal(err)
++	}
++}
++
+ func TestEnsurePrivateRejectsSymlink(t *testing.T) {
+-	if runtime.GOOS == "windows" {
+-		t.Skip("symlink creation requires privileges on Windows; Windows ACL behavior is compile-covered only (not verified on a real machine)")
+-	}
+ 	dir := t.TempDir()
+ 	real := filepath.Join(dir, "real")
+ 	if err := os.MkdirAll(real, 0o755); err != nil {
+@@ -141,9 +151,7 @@
+ 
+ 	t.Run("dir symlink", func(t *testing.T) {
+ 		link := filepath.Join(dir, "dir-link")
+-		if err := os.Symlink(real, link); err != nil {
+-			t.Fatal(err)
+-		}
++		privateSymlinkFixture(t, real, link)
+ 		if err := EnsurePrivateDir(link); !errors.Is(err, ErrPrivatePathSymlink) {
+ 			t.Fatalf("err = %v, want ErrPrivatePathSymlink", err)
+ 		}
+@@ -151,9 +159,7 @@
+ 
+ 	t.Run("file symlink", func(t *testing.T) {
+ 		link := filepath.Join(dir, "file-link")
+-		if err := os.Symlink(filepath.Join(real, "secret"), link); err != nil {
+-			t.Fatal(err)
+-		}
++		privateSymlinkFixture(t, filepath.Join(real, "secret"), link)
+ 		if err := EnsurePrivateFile(link); !errors.Is(err, ErrPrivatePathSymlink) {
+ 			t.Fatalf("err = %v, want ErrPrivatePathSymlink", err)
+ 		}
+@@ -166,9 +172,7 @@
+ 
+ 	t.Run("dangling symlink also rejected", func(t *testing.T) {
+ 		link := filepath.Join(dir, "dangling-link")
+-		if err := os.Symlink(filepath.Join(dir, "no-such-target"), link); err != nil {
+-			t.Fatal(err)
+-		}
++		privateSymlinkFixture(t, filepath.Join(dir, "no-such-target"), link)
+ 		if err := EnsurePrivateFile(link); !errors.Is(err, ErrPrivatePathSymlink) {
+ 			t.Fatalf("err = %v, want ErrPrivatePathSymlink", err)
+ 		}

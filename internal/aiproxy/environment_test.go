@@ -1,6 +1,7 @@
 package aiproxy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,4 +88,60 @@ func TestPinProxyEnvironmentWSLInactiveBypassesGate(t *testing.T) {
 	if err != nil || spec.StartupCommand != "claude" {
 		t.Fatalf("inactive session must pass through untouched: %v", err)
 	}
+}
+
+// D4: the disabled ApplyEnv path must strip an inherited AMAGI_CODEBOX_AI_PROXY
+// marker. Nested CodeBox (a CodeBox-managed CLI session hosting another
+// CodeBox) inherits the parent marker through MergeWithSystem; leaving it in
+// place made PinProxyEnvironment treat the already-disabled proxy as active
+// and reject WSL sessions with NAT guidance the user cannot act on.
+func TestApplyEnvDisabledStripsInheritedMarker(t *testing.T) {
+	s := New(t.TempDir())
+	defer s.Close()
+	if err := s.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{
+		"AMAGI_CODEBOX_AI_PROXY=1", // inherited from a CodeBox-proxied parent
+		"HTTP_PROXY=http://user-proxy:8080", "HTTPS_PROXY=http://user-proxy:8080",
+		"NO_PROXY=corp.example", "HOME=/example", "API_KEY=keep",
+	}
+	got, err := s.ApplyEnv(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range got {
+		if strings.HasPrefix(entry, aiProxyEnvMarker+"=") {
+			t.Fatalf("disabled path leaked inherited marker: %v", got)
+		}
+	}
+	for _, keep := range []string{"HTTP_PROXY=http://user-proxy:8080", "NO_PROXY=corp.example", "API_KEY=keep"} {
+		if !containsEntry(got, keep) {
+			t.Errorf("disabled path must preserve user env as-is, missing %q: %v", keep, got)
+		}
+	}
+}
+
+// D4: no marker in the base env — the disabled path returns the user env
+// unchanged (deep-equal, no accidental reordering or filtering).
+func TestApplyEnvDisabledWithoutMarkerUnchanged(t *testing.T) {
+	s := New(t.TempDir())
+	defer s.Close()
+	if err := s.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"HTTP_PROXY=http://user-proxy:8080", "HOME=/example"}
+	got, err := s.ApplyEnv(base)
+	if err != nil || len(got) != len(base) {
+		t.Fatalf("disabled path must not alter plain env: %v (%v)", got, err)
+	}
+}
+
+func containsEntry(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
 }

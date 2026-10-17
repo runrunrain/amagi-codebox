@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,13 +96,19 @@ func wslCliResourceLayout(cli wslsupply.CLI) *wslsupply.ResourceLayout {
 			HostRoot:     filepath.Join(home, ".claude"),
 			Files:        []string{"CLAUDE.md"},
 			DirUnits:     []string{"commands", "agents", "skills"},
-			TargetPrefix: ".claude/",
+			// SA-10：Claude commands/agents 的顶层 Markdown 文件（review.md 等）
+			// 是真实消费者发现形态——单文件单元与目录单元并存。
+			FileLeafUnits: []string{"commands", "agents"},
+			TargetPrefix:  ".claude/",
 		}
 	case wslsupply.CLICodex:
 		return &wslsupply.ResourceLayout{
 			HostRoot: filepath.Join(home, ".codex"),
 			Files:    []string{"AGENTS.md"},
 			DirUnits: []string{"skills"},
+			// 消费边界（SA-10 标注）：Codex 用户 skills 按目录（folder）发现，
+			// 不虚构顶层 Markdown 文件单元语义。
+			FileLeafUnits: nil,
 		}
 	default:
 		return nil
@@ -197,6 +204,7 @@ type wslCliSupplyCoordinator interface {
 	GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
 	SetUnitSelection(distro string, cli wslsupply.CLI, unit wslsupply.UnitID, keys []string) error
 	StartCliResourcesScan(cli wslsupply.CLI) bool
+	RescanCliResources(cli wslsupply.CLI) bool
 	CliResourcesSnapshot(cli wslsupply.CLI) wslsupply.SkillsScanSnapshot
 }
 
@@ -263,6 +271,7 @@ func (a *App) GetWSLCliSupplyStatus(cliName string) WSLCliSupplyStatus {
 	out.Available = true
 	out.Units = cliConfigUnitDetails(a.wslSupplyStatus(distro, cli), cli, false)
 	if coord := a.wslCliSupplyCoordinator(); coord != nil {
+		// SA-17：状态 Get 只首启扫描（已启动过幂等），不重启已完成扫描。
 		coord.StartCliResourcesScan(cli)
 		out.Resources = wslCliResourcesStatus(coord, distro, cli, a.wslSupplyStatus(distro, cli))
 	}
@@ -579,7 +588,7 @@ func (a *App) CheckWSLCliResourcesSupply(cliName string) WSLSkillsSupplyStatus {
 		out.Reason = "资源供给未启用"
 		return out
 	}
-	coord.StartCliResourcesScan(cli)
+	coord.RescanCliResources(cli) // SA-17：显式检查才强制重扫（Get 不重启扫描）
 	return wslCliResourcesStatus(coord, distro, cli, a.wslSupplyStatus(distro, cli))
 }
 
@@ -764,9 +773,13 @@ const wslOpenCodeMCPSelectionFile = "wsl-opencode-mcp.json"
 
 // wslOpenCodeMCPSelectionEntry 是单 distro 的选择（全局冲突覆盖名单）。
 type wslOpenCodeMCPSelectionEntry struct {
-	// OverrideGlobal：与 distro 全局 opencode.json 同名时仍写入附加层的
-	// server 名（默认保留本地——S1 语义不变，勾选才覆盖）。
+	// OverrideGlobal：与 distro 全局 opencode.json/jsonc 同名时仍写入附加层
+	// 的 server 名（默认保留本地——S1 语义不变，勾选才覆盖）。
 	OverrideGlobal []string `json:"overrideGlobal,omitempty"`
+	// Generation 是保存选择时绑定的目标身份代（SA14：覆盖许可绑定目标身份
+	// 与 generation——同名 distro 重装换代后旧覆盖许可不继承，需重新勾选；
+	// 生效要求保存时与当前的代际都已知且一致）。
+	Generation string `json:"generation,omitempty"`
 	// SavedAt：上次保存时间（展示用）。
 	SavedAt time.Time `json:"savedAt,omitempty"`
 }
@@ -846,6 +859,47 @@ type WSLOpenCodeMCPEntry struct {
 	OverrideGlobal bool `json:"overrideGlobal"`
 }
 
+// wslOverrideGenerationBindable 报告身份代是否可绑定覆盖许可（空与
+// unknown 不可——SA-02/SA14 同一原则：未知身份不复用持久许可）。
+func wslOverrideGenerationBindable(gen string) bool {
+	return gen != "" && gen != wslsupply.GenerationUnknown
+}
+
+// wslTargetResolver 是覆盖许可面消费的协调器能力切片（SA14 补全：保存/
+// 消费覆盖许可时实时解析当前目标身份——不新造探测体系，复用既有
+// Coordinator.ResolveTarget；nil 表示未接线）。窄接口不进 Wails 绑定面
+// （App 编排层内部类型），避免修改根启动链——启动路径仍经既有
+// prepareWSLOpenCodeLayer → wslOpenCodeMCPOverrideSet 接缝。
+type wslTargetResolver interface {
+	ResolveTarget(ctx context.Context, distro string, cli wslsupply.CLI) (wslsupply.TargetRef, error)
+}
+
+// wslOverrideIdentityTimeout 是覆盖许可面单次实时身份解析的预算（探测是
+// spawn wsl.exe 的短命令；超预算按「身份不可解析」拒绝/返回空覆盖，不阻塞
+// 启动）。
+const wslOverrideIdentityTimeout = 30 * time.Second
+
+// wslOpenCodeMCPResolveCurrentGeneration 实时解析 distro 的当前身份代
+// （SA14 补全：不再读状态清单缓存——旧缓存可保持旧代而真实身份已变，旧许
+// 可不得凭缓存生效）。读取不写配置：ResolveTarget 只做身份探测与 UNC 映射。
+// 探测失败返回错误；身份代未知（无 machine-id 的最小 distro）返回空串。
+func (a *App) wslOpenCodeMCPResolveCurrentGeneration(distro string) (string, error) {
+	if a == nil || a.WSLSupply == nil {
+		return "", errors.New("WSL 配置供给未启用")
+	}
+	resolver, ok := a.WSLSupply.(wslTargetResolver)
+	if !ok {
+		return "", errors.New("WSL 供给协调器不支持目标解析")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wslOverrideIdentityTimeout)
+	defer cancel()
+	ref, err := resolver.ResolveTarget(ctx, strings.TrimSpace(distro), wslsupply.CLIPi)
+	if err != nil {
+		return "", fmt.Errorf("WSL 目标身份解析失败: %w", err)
+	}
+	return ref.Generation, nil
+}
+
 // GetWSLOpenCodeMCPPreview 返回全部 OpenCode preset 的 MCP 条目分类预览
 // （合并去重；形态检查与全局同名冲突只读判定，不写任何内容）。
 func (a *App) GetWSLOpenCodeMCPPreview() []WSLOpenCodeMCPEntry {
@@ -884,24 +938,48 @@ func (a *App) GetWSLOpenCodeMCPPreview() []WSLOpenCodeMCPEntry {
 	}
 	cfg := map[string]any{"mcp": merged}
 	entries := launcher.PreviewWSLOpenCodeMCP(distro, cfg)
-	override := map[string]bool{}
-	if entry, ok := a.loadWSLOpenCodeMCPSelection().Distros[distro]; ok {
-		for _, name := range entry.OverrideGlobal {
-			override[name] = true
-		}
-	}
+	// 覆盖勾选态与生效面同源（SA14：预览/启动两侧都经 wslOpenCodeMCPOverrideSet
+	// 的代际绑定判定，不各自实现）。
+	override := a.wslOpenCodeMCPOverrideSet(distro)
 	for _, e := range entries {
-		out = append(out, WSLOpenCodeMCPEntry{
-			Name: e.Name, Remote: e.Remote, NativeCommand: e.NativeCommand,
-			NeedsAdapt: e.NeedsAdapt, Reason: e.Reason,
-			GlobalConflict: e.GlobalConflict, OverrideGlobal: override[e.Name],
-		})
+		out = append(out, wslOpenCodeMCPPreviewRow(e, override[e.Name]))
 	}
 	return out
 }
 
+// wslOpenCodeMCPPreviewRow 把 launcher 预览分类映射为选择面 DTO（纯函数）。
+// SA14：全局配置不可读（冲突未知）时该条目不会写入附加层——经现有
+// needsAdapt+reason 通道呈现（不扩 Wails DTO——wailsjs 生成物未随本切片再
+// 生）；覆盖勾选随 needsAdapt 隐藏。
+func wslOpenCodeMCPPreviewRow(e launcher.OpenCodeMCPPreviewEntry, override bool) WSLOpenCodeMCPEntry {
+	row := WSLOpenCodeMCPEntry{
+		Name: e.Name, Remote: e.Remote, NativeCommand: e.NativeCommand,
+		NeedsAdapt: e.NeedsAdapt, Reason: e.Reason,
+		GlobalConflict: e.GlobalConflict, OverrideGlobal: override,
+	}
+	if e.GlobalConflictUnknown {
+		row.NeedsAdapt = true
+		row.Reason = joinWSLOpenCodeReason(row.Reason, "WSL 全局 opencode 配置不可读，同名冲突无法确认，不会写入附加层")
+	}
+	return row
+}
+
+// joinWSLOpenCodeReason 拼接预览原因（空段跳过）。
+func joinWSLOpenCodeReason(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "；" + b
+	}
+}
+
 // SetWSLOpenCodeMCPSelection 保存当前 distro 的全局同名冲突覆盖选择（显式
-// 覆盖名单；默认保留本地的项不在名单内）。
+// 覆盖名单；默认保留本地的项不在名单内）。SA14 补全：保存时实时解析当前
+// 目标身份（不经状态清单缓存）——解析失败或身份代未知（无 machine-id 的
+// 最小 distro）时拒绝保存，不落无法归属的许可。
 func (a *App) SetWSLOpenCodeMCPSelection(overrideGlobal []string) error {
 	if a == nil || a.configDir == "" {
 		return fmt.Errorf("WSL 配置供给未启用")
@@ -909,6 +987,13 @@ func (a *App) SetWSLOpenCodeMCPSelection(overrideGlobal []string) error {
 	distro := a.wslDefaultDistro()
 	if distro == "" {
 		return fmt.Errorf("未找到可用的 WSL 发行版")
+	}
+	gen, rerr := a.wslOpenCodeMCPResolveCurrentGeneration(distro)
+	if rerr != nil {
+		return fmt.Errorf("无法确认当前 WSL 目标身份（%v），覆盖选择未保存；请确认 WSL 可用后重试", rerr)
+	}
+	if !wslOverrideGenerationBindable(gen) {
+		return fmt.Errorf("未能取得可绑定的当前身份代（generation 未知，如无 machine-id 的最小发行版），覆盖选择无法绑定目标身份，未保存")
 	}
 	sel := a.loadWSLOpenCodeMCPSelection()
 	names := make([]string, 0, len(overrideGlobal))
@@ -921,20 +1006,31 @@ func (a *App) SetWSLOpenCodeMCPSelection(overrideGlobal []string) error {
 	sort.Strings(names)
 	entry := sel.Distros[distro]
 	entry.OverrideGlobal = names
+	entry.Generation = gen
 	entry.SavedAt = time.Now()
 	sel.Distros[distro] = entry
 	if err := a.saveWSLOpenCodeMCPSelection(sel); err != nil {
 		return fmt.Errorf("保存选择失败：%v", err)
 	}
 	a.Log.Info("opencode-wsl", "已保存 OpenCode 附加层 MCP 覆盖选择",
-		fmt.Sprintf("distro=%s override=%d 项", distro, len(names)))
+		fmt.Sprintf("distro=%s generation=%s override=%d 项", distro, gen, len(names)))
 	return nil
 }
 
-// wslOpenCodeMCPOverrideSet 返回 distro 的覆盖名单（prepareWSLOpenCodeLayer 消费）。
+// wslOpenCodeMCPOverrideSet 返回 distro 的覆盖名单（prepareWSLOpenCodeLayer
+// 消费）。SA14 补全：生效前实时解析当前身份代——旧状态缓存保持旧代但真实
+// 身份已变（重装/换默认用户）时旧许可不生效；解析失败或身份代未知时返回
+// nil（空覆盖 = 保守保留本地，不写附加层覆盖同名项）；保存时与当前的代际
+// 都已知且一致才生效。旧条目留盘供诊断，仅不再生效，需重新勾选。
 func (a *App) wslOpenCodeMCPOverrideSet(distro string) map[string]bool {
 	entry, ok := a.loadWSLOpenCodeMCPSelection().Distros[distro]
 	if !ok || len(entry.OverrideGlobal) == 0 {
+		return nil
+	}
+	current, rerr := a.wslOpenCodeMCPResolveCurrentGeneration(distro)
+	if rerr != nil ||
+		!wslOverrideGenerationBindable(current) ||
+		!wslOverrideGenerationBindable(entry.Generation) || entry.Generation != current {
 		return nil
 	}
 	out := map[string]bool{}

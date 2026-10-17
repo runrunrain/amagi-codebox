@@ -202,7 +202,7 @@ var (
 )
 
 // isAbsoluteLikeLinkTarget 报告链接目标是否为绝对形态（Unix 绝对 / Windows
-// 盘符 / UNC 前缀）。
+// 盘符 / UNC 前缀 / 宿主原生绝对形态）。
 func isAbsoluteLikeLinkTarget(t string) bool {
 	if t == "" {
 		return false
@@ -215,7 +215,14 @@ func isAbsoluteLikeLinkTarget(t string) bool {
 		c := t[0]
 		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 	}
-	return false
+	// 宿主原生根起始形态：Windows 上 CreateSymbolicLink 把 "/abs" 形目标存为
+	// 盘根相对的 \abs（Windows 真机实测 Readlink 返回 `\abs\target`，且
+	// filepath.IsAbs 对其为 false——无卷名不算「绝对」，故不能用 IsAbs 判定）。
+	// 该形态逃出 skill 树、不可移植，必须归为绝对形态；否则 resolve 会把它当
+	// 相对路径拼到链接目录下 ENOENT，被误归为 non-regular-entry。
+	// os.IsPathSeparator 按宿主原生语义区分：Windows 上 '\' 为分隔符；POSIX
+	// 上 '\' 只是普通文件名字符（"/" 前缀已被上面覆盖，POSIX 行为零变化）。
+	return os.IsPathSeparator(t[0])
 }
 
 // extOf 返回小写扩展名（含点）。
@@ -335,6 +342,9 @@ func (m *SkillManifest) scanRegularFile(abs, rel string, limits SkillsScanLimits
 // scanLink 处理一个符号链接：同名/同扩展排除物套用同一名单（F4：凭据类
 // 名单对链接形态同样生效，不实体化）；绝对/越界/循环/目录链接判不兼容；
 // 本 skill 树内解析到常规文件的链接实体化入清单（内容 hash 取解析目标）。
+// SA-05：解析链上每一跳与最终路径都必须同时过凭据/排除目录策略——普通名
+// 别名（alias.txt → .env、链接进 .git/node_modules）不得实体化被排除的内容，
+// 按排除处理（预览可见，不阻断供给）。
 func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLimits) {
 	base := filepath.Base(rel)
 	if skillsExcludedFileNames[base] || skillsExcludedFileExts[extOf(base)] {
@@ -352,7 +362,7 @@ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLi
 			RelPath: rel, Code: SkillIncompatAbsoluteLink, Reason: skillIncompatReasonText(SkillIncompatAbsoluteLink)})
 		return
 	}
-	resolved, err := resolveSkillLink(skillRoot, abs, 16)
+	resolved, hops, err := resolveSkillLink(skillRoot, abs, 16)
 	if err != nil {
 		code := SkillIncompatNonRegularFile
 		if errors.Is(err, errSkillLinkCycle) {
@@ -362,6 +372,18 @@ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLi
 		}
 		m.Incompatible = append(m.Incompatible, SkillIncompat{
 			RelPath: rel, Code: code, Reason: skillIncompatReasonText(code)})
+		return
+	}
+	// SA-05：链上每一跳与最终路径都执行排除策略（凭据名/凭据扩展/排除目录
+	// 段）——别名实体化不得绕过对目标文件的排除判定。
+	for _, hop := range hops {
+		if skillPathHitsExclusion(skillRoot, hop) {
+			m.Excluded = append(m.Excluded, rel)
+			return
+		}
+	}
+	if skillPathHitsExclusion(skillRoot, resolved) {
+		m.Excluded = append(m.Excluded, rel)
 		return
 	}
 	fi, err := os.Lstat(resolved)
@@ -412,28 +434,48 @@ func (m *SkillManifest) scanLink(skillRoot, abs, rel string, limits SkillsScanLi
 	m.TotalBytes += int64(len(data))
 }
 
-// resolveSkillLink 沿符号链接链解析（跳数上限防环），返回最终路径。
-func resolveSkillLink(skillRoot, linkAbs string, maxHops int) (string, error) {
+// resolveSkillLink 沿符号链接链解析（跳数上限防环），返回最终路径与链上
+// 各跳（含中间链接，不含终点；SA-05 供排除策略逐跳检查）。
+func resolveSkillLink(skillRoot, linkAbs string, maxHops int) (final string, hops []string, err error) {
 	cur := linkAbs
 	for hop := 0; hop < maxHops; hop++ {
 		target, err := os.Readlink(cur)
 		if err != nil {
 			// 已不是链接：解析终点。
-			return cur, nil
+			return cur, hops, nil
 		}
+		hops = append(hops, cur)
 		if isAbsoluteLikeLinkTarget(target) {
-			return "", errSkillLinkAbsolute
+			return "", hops, errSkillLinkAbsolute
 		}
 		next := target
 		if !filepath.IsAbs(next) {
 			next = filepath.Join(filepath.Dir(cur), next)
 		}
 		if filepath.Clean(next) == filepath.Clean(skillRoot) || filepath.Clean(next) == filepath.Clean(linkAbs) {
-			return "", errSkillLinkCycle
+			return "", hops, errSkillLinkCycle
 		}
 		cur = next
 	}
-	return "", errSkillLinkCycle
+	return "", hops, errSkillLinkCycle
+}
+
+// skillPathHitsExclusion 报告 skill 树内一条路径（链接链任一跳或最终目标）
+// 是否命中排除策略：凭据类文件名/扩展，或路径中含排除目录段（.git/
+// node_modules/缓存等——SA-05：树内排除目录里的内容不因被链接而重新入清单）。
+func skillPathHitsExclusion(skillRoot, path string) bool {
+	rel, err := filepath.Rel(skillRoot, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false // 越界由 withinDir/链接不兼容路径负责；此处只管排除策略
+	}
+	segs := strings.Split(filepath.ToSlash(rel), "/")
+	for _, seg := range segs[:len(segs)-1] {
+		if skillsExcludedDirNames[seg] {
+			return true
+		}
+	}
+	base := segs[len(segs)-1]
+	return skillsExcludedFileNames[base] || skillsExcludedFileExts[extOf(base)]
 }
 
 // withinDir 报告 path 是否严格位于 dir 内（等于 dir 不算）。

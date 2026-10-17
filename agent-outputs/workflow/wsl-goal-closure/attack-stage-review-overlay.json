@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "/Users/run.mao/workpace/amagi-codebox/internal/wslsupply/attack_stage_audit_test.go": "/Users/run.mao/workpace/amagi-codebox/agent-outputs/workflow/wsl-goal-closure/attack-stage-review-repro_test.go"
+  }
+}

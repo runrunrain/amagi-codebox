@@ -98,16 +98,29 @@ func (s *SkillsScope) Root() string { return s.root }
 // Limits 返回生效的扫描上限。
 func (s *SkillsScope) Limits() SkillsScanLimits { return s.limits }
 
-// StartScanAsync 单飞启动后台扫描（已在跑/已启动过幂等返回）。扫描按目录分批：
-// 每批一个 skill 目录，批间释放锁让 Snapshot 可见中间进度。
+// StartScanAsync 单飞启动后台扫描（SA-17：已启动过即幂等返回——状态 Get
+// 不重启已完成的扫描；扫描按目录分批，批间释放锁让 Snapshot 可见中间进度）。
 func (s *SkillsScope) StartScanAsync() bool {
 	s.mu.Lock()
-	if s.running {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.running || s.started {
 		return false
 	}
+	return s.startScanLocked()
+}
+
+// RescanAsync 强制启动一轮后台重扫（显式「检查」入口专用；已在跑则保持本轮）。
+func (s *SkillsScope) RescanAsync() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return false
+	}
+	return s.startScanLocked()
+}
+
+func (s *SkillsScope) startScanLocked() bool {
 	s.running = true
-	s.mu.Unlock()
 	go func() {
 		s.Scan()
 		s.mu.Lock()
@@ -370,12 +383,22 @@ func (c *Coordinator) RegisterSkills(scope *SkillsScope) {
 	}
 }
 
-// StartSkillsScan 单飞启动后台技能扫描（已在跑则幂等）。
+// StartSkillsScan 单飞启动后台技能扫描（SA-17：已启动过即幂等返回——Get
+// 不重启扫描）。
 func (c *Coordinator) StartSkillsScan() bool {
 	if c.skills == nil {
 		return false
 	}
 	return c.skills.StartScanAsync()
+}
+
+// RescanSkills 强制一轮后台技能重扫（显式「检查」入口；SA-17：重扫仅由显式
+// 动作触发，状态轮询不重启全量扫描）。
+func (c *Coordinator) RescanSkills() bool {
+	if c.skills == nil {
+		return false
+	}
+	return c.skills.RescanAsync()
 }
 
 // SkillsSnapshot 返回技能扫描快照（只读缓存，不触发扫描）。

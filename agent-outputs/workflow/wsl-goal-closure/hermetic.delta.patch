@@ -1,0 +1,74 @@
+--- a/internal/envcheck/native_bootstrap_fallback_test.go
++++ b/internal/envcheck/native_bootstrap_fallback_test.go
+@@ -164,6 +164,14 @@
+ 	t.Setenv("APPDATA", filepath.Join(tmpDir, "AppData", "Roaming"))
+ 	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "AppData", "Local"))
+ 	t.Setenv("NPM_CONFIG_PREFIX", npmPrefix)
++	// Host-pollution guard: the platform resolver honors an ambient FNM_DIR
++	// before HOME-derived fnm bases. On machines where the user's shell exports
++	// FNM_DIR at a real fnm base containing claude/node/npm shims, detection and
++	// the native bootstrap would resolve those REAL binaries (conflict cleanup,
++	// "npm uninstall" against the fake runner) and the tests would depend on
++	// which CLIs are installed on the host. Pin FNM_DIR to empty so fnm
++	// candidates are derived from the fixture HOME only.
++	t.Setenv("FNM_DIR", "")
+ 	t.Setenv("PATH", binDir)
+ 	t.Setenv("Path", binDir)
+ 	previousHomeDir := claudeUserHomeDir
+@@ -304,6 +312,11 @@
+ 	}
+ 	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+ 	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "home"))
++	// Host-pollution guard: keep the resolver fallback scoped to the fixture.
++	// An ambient FNM_DIR pointing at a real fnm base would prepend real
++	// claude/node/npm bin dirs to the enhanced PATH ahead of the fixture shim
++	// and the bootstrap would resolve the host's claude instead.
++	t.Setenv("FNM_DIR", "")
+ 	t.Setenv("PATH", shimDir)
+ 	t.Setenv("Path", shimDir)
+ 	runner := &nativeBootstrapTestRunner{npmPrefix: prefix}
+@@ -563,6 +576,11 @@
+ 	}
+ 	t.Setenv("USERPROFILE", homeDir)
+ 	t.Setenv("HOME", homeDir)
++	// Host-pollution guard: this test asserts the npm-global-prefix fallback
++	// fires when the PATH miss. An ambient FNM_DIR would surface a host fnm
++	// claude through the resolver's controlled candidates instead, and the
++	// assertion outcome would depend on how that host binary classifies.
++	t.Setenv("FNM_DIR", "")
+ 	t.Setenv("PATH", binDir)
+ 	t.Setenv("Path", binDir)
+ 	runner := &nativeBootstrapTestRunner{npmPrefix: npmPrefix, npmClaude: npmClaude}
+--- a/internal/envcheck/checker_claude_test.go
++++ b/internal/envcheck/checker_claude_test.go
+@@ -271,6 +271,11 @@
+ 	}
+ 
+ 	t.Setenv("PATH", "")
++	// Host-pollution guard: checkClaudeCode's resolver phase still runs on the
++	// real host OS, and an ambient FNM_DIR at a real fnm base would surface a
++	// host claude ahead of the fixture package-binary fallback, making the
++	// version probe hit the fake runner with an unexpected path. Pin it empty.
++	t.Setenv("FNM_DIR", "")
+ 	t.Setenv("APPDATA", appData)
+ 	t.Setenv("LOCALAPPDATA", "")
+ 	t.Setenv("USERPROFILE", homeDir)
+--- a/internal/platform/resolver_test.go
++++ b/internal/platform/resolver_test.go
+@@ -283,6 +283,16 @@
+ 	t.Cleanup(func() { darwinSystemApplicationsDir = previousApplicationsDir })
+ 
+ 	homeDir := t.TempDir()
++	// Host-pollution guard: without this stub the resolver's user-home
++	// fallback (pathLookupUserHomeDir → os.UserHomeDir → process $HOME)
++	// appends the REAL user bin candidates — a host ~/.local/bin/codex or a
++	// real fnm base — ahead of this fixture's ~/.local/node/bin, so the
++	// resolved path depends on which CLIs happen to be installed on the
++	// machine instead of on the fixture.
++	previousHomeDir := pathLookupUserHomeDir
++	pathLookupUserHomeDir = func() (string, error) { return homeDir, nil }
++	t.Cleanup(func() { pathLookupUserHomeDir = previousHomeDir })
++
+ 	npmLocalNodeDir := filepath.Join(homeDir, ".local", "node", "bin")
+ 	codexPath := filepath.Join(npmLocalNodeDir, "codex")
+ 	if err := os.MkdirAll(npmLocalNodeDir, 0o755); err != nil {

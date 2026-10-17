@@ -141,3 +141,66 @@ func TestWindowsEntryFilters(t *testing.T) {
 		t.Fatalf("plain entry has no filters: %v", ext)
 	}
 }
+
+// TestEntryFiltersForDistinguishesEmptyArrayFromOmitted：SA12 补全——三态
+// 读面必须保留「显式空数组 []（该类型一项都不加载）」与「键省略（全部加载）」
+// 的区别（旧 WindowsEntryFilters/toStringSlice 把两者都折叠为 nil，重放侧会
+// 把全关错当全开）。
+func TestEntryFiltersForDistinguishesEmptyArrayFromOmitted(t *testing.T) {
+	agentDir := t.TempDir()
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+	writeTargetFixture(t, agentDir, []any{
+		"npm:plain",
+		map[string]any{
+			"source":     "npm:filtered",
+			"extensions": []string{},              // 显式空数组：extensions 一项都不加载
+			"skills":     []string{"skills/core"}, // 非空清单
+			// prompts/themes 键省略：全部加载
+		},
+	})
+	f := EntryFiltersFor(svc, "npm:filtered")
+	if f.Extensions == nil || len(f.Extensions) != 0 {
+		t.Fatalf("explicit [] must stay a non-nil empty slice, got %#v", f.Extensions)
+	}
+	if f.Skills == nil || len(f.Skills) != 1 || f.Skills[0] != "skills/core" {
+		t.Fatalf("non-empty filter must be preserved: %#v", f.Skills)
+	}
+	if f.Prompts != nil || f.Themes != nil {
+		t.Fatalf("omitted keys must stay nil: prompts=%#v themes=%#v", f.Prompts, f.Themes)
+	}
+	if !f.Any() {
+		t.Fatal("explicit [] counts as a declared filter (Any must be true)")
+	}
+	// 纯字符串登记：无任何过滤键。
+	p := EntryFiltersFor(svc, "npm:plain")
+	if p.Extensions != nil || p.Skills != nil || p.Prompts != nil || p.Themes != nil || p.Any() {
+		t.Fatalf("plain string entry must yield all-nil filters: %+v", p)
+	}
+	// 未登记源：全 nil。
+	u := EntryFiltersFor(svc, "npm:missing")
+	if u.Any() {
+		t.Fatalf("unregistered source must yield all-nil filters: %+v", u)
+	}
+	// nil 服务：全 nil（不 panic）。
+	if n := EntryFiltersFor(nil, "npm:foo"); n.Any() {
+		t.Fatalf("nil service must yield all-nil filters: %+v", n)
+	}
+}
+
+// TestEntryFiltersForNonArrayValueTreatedAsDeclaredEmpty：过滤键存在但值非
+// 数组（用户手写异常形态，无 pi 官方语义）按收紧面处理：视为已声明且清单为
+// 空（全关），不折叠回省略而扩大启用面。
+func TestEntryFiltersForNonArrayValueTreatedAsDeclaredEmpty(t *testing.T) {
+	agentDir := t.TempDir()
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+	writeTargetFixture(t, agentDir, []any{
+		map[string]any{"source": "npm:odd", "extensions": "not-an-array"},
+	})
+	f := EntryFiltersFor(svc, "npm:odd")
+	if f.Extensions == nil || len(f.Extensions) != 0 {
+		t.Fatalf("non-array value must be treated as declared-empty (deny-all), got %#v", f.Extensions)
+	}
+	if !f.Any() {
+		t.Fatal("declared-but-malformed key must count as a filter")
+	}
+}

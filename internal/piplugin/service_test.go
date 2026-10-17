@@ -186,9 +186,11 @@ func TestListInstalledPluginsSupportsFilterObject(t *testing.T) {
 	if !reflect.DeepEqual(obj.Prompts, []string{"prompts/review.md"}) {
 		t.Fatalf("unexpected prompts filter: %#v", obj.Prompts)
 	}
-	// skills: [] 显式空数组 → nil（toStringSlice 对空数组返回 nil，表示"加载全部"语义由 pi 解释）。
-	if obj.Skills != nil {
-		t.Fatalf("expected nil skills for empty array, got %#v", obj.Skills)
+	// skills: [] 显式空数组 → 非 nil 空切片（三态保留：一项都不加载；
+	// SA12 补全——旧 toStringSlice 把 [] 折叠为 nil 会把「全关」错当「全开」）。
+	// 展示面零差异：Package.Skills 带 omitempty，空切片与 nil 都不序列化。
+	if obj.Skills == nil || len(obj.Skills) != 0 {
+		t.Fatalf("expected non-nil empty skills for explicit [], got %#v", obj.Skills)
 	}
 }
 

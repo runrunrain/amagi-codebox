@@ -136,8 +136,11 @@ func wslOutcome(res wslsupply.PluginOpResult) PiPluginOpOutcome {
 
 // runPiPluginTargeted 是三类操作的统一编排：Windows 侧（既有 pi CLI 路径）
 // 与 WSL 侧重放按目标组合；「同时应用」的 update/install 以 Windows 实体
-// 解析结果为重放锚点，Windows 失败则 WSL skipped（无锚点不盲装）；remove
-// 无锚点语义，两侧独立执行。
+// 解析结果为重放锚点，且 SA13 收紧门禁：both 要求 Windows 侧 Go error=nil、
+// CommandResult.Success=true 且能从实体解析出锚点，任一不满足 WSL 侧
+// skipped——不盲装另一个 latest/ref（「同时应用到同版本」承诺不冒充，单次
+// 尝试不重试，用户可显式以 wsl 目标单侧重试）；remove 无锚点语义，两侧
+// 独立执行（一侧失败不牵连另一侧）。
 func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargetedResult, error) {
 	t, err := validatePiPluginTarget(target)
 	if err != nil {
@@ -168,6 +171,29 @@ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargeted
 	if t != piPluginTargetWSL && t != piPluginTargetBoth {
 		return out, nil
 	}
+
+	op := wslsupply.PluginOperation{Source: source, Kind: kind}
+	// SA12 补全 + PR08：过滤快照取三态读面（EntryFiltersFor），显式空数组 []
+	//（该类型一项都不加载）与非 nil 空切片一同透传，不折叠回省略；Windows
+	// 未声明任何过滤键时全 nil——以**非 nil 指针**传入 = 显式完整期望快照
+	//（全部加载，纯字符串登记形态），可把 WSL 侧旧过滤集重置回全量；未
+	// 登记/读取失败同样传全 nil 期望（重放按登记门另行拦截，不误安装）。
+	op.Filters = piPluginOpFiltersPtr(piplugin.EntryFiltersFor(a.PiPlugins, source))
+
+	// 重放锚点门禁（SA13，仅 install/update）：wsl 单目标无锚点语义，distro
+	// 内独立解析；both 要求 Windows Success=true 且锚点可读（判定经
+	// wslReplayAnchorGate 纯函数，钉子直测各分支）。
+	if (kind == wslsupply.PluginOpInstall || kind == wslsupply.PluginOpUpdate) && runWindows {
+		anchor, skipCode, skipDetail := wslReplayAnchorGate(windowsRes, a.piPluginHostAnchor(source))
+		if skipCode != "" {
+			out.Results = append(out.Results, PiPluginOpOutcome{
+				Target: piPluginTargetWSL, Outcome: "skipped", ErrCode: skipCode, Detail: skipDetail,
+			})
+			return out, nil
+		}
+		op.AnchorRef = anchor
+	}
+
 	coord := a.wslPluginCoordinator()
 	if coord == nil {
 		out.Results = append(out.Results, PiPluginOpOutcome{
@@ -185,31 +211,29 @@ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargeted
 		return out, nil
 	}
 
-	op := wslsupply.PluginOperation{Source: source, Kind: kind}
-	if ext, sk, pr, th := a.PiPlugins.WindowsEntryFilters(source); len(ext)+len(sk)+len(pr)+len(th) > 0 {
-		op.Filters = wslsupply.PluginFilters{Extensions: ext, Skills: sk, Prompts: pr, Themes: th}
-	}
-	// 重放锚点：install/update 的「同时应用」以 Windows 实体解析结果为准
-	//（remove 无锚点语义）。Windows 侧未运行（仅 wsl 目标）→ distro 内独立
-	// 解析；Windows 侧失败 → WSL skipped（无锚点不盲装，单侧失败独立显示）。
-	if kind == wslsupply.PluginOpInstall || kind == wslsupply.PluginOpUpdate {
-		if windowsRes != nil && windowsRes.Success {
-			op.AnchorRef = a.piPluginHostAnchor(source)
-		} else if runWindows && windowsRes == nil {
-			// Windows 执行返回错误（结果已记录 failed）：WSL 侧 skipped——
-			// 无锚点不盲装；单侧失败独立显示，不合并报喜。
-			out.Results = append(out.Results, PiPluginOpOutcome{
-				Target: piPluginTargetWSL, Outcome: "skipped", ErrCode: "windows-anchor-missing",
-				Detail: "Windows 侧操作失败，无重放锚点；WSL 侧未执行（可单独以 wsl 目标重试）",
-			})
-			return out, nil
-		}
-	}
 	opCtx, cancel := context.WithTimeout(context.Background(), piPluginReplayTimeout)
 	defer cancel()
 	res := coord.RunPluginOperation(opCtx, distro, op)
 	out.Results = append(out.Results, wslOutcome(res))
 	return out, nil
+}
+
+// wslReplayAnchorGate 是 SA13 的 both 模式锚点门禁（纯函数，钉子直测）：
+// Windows 执行返回错误（res==nil，结果已按 failed 记录）/命令执行但
+// Success=false（与 Go error 是独立结果通道）/成功但实体锚点不可读，任一
+// 不满足返回非空 skipCode——WSL 侧 skipped，不盲装另一个 latest/ref；用户
+// 可显式以 wsl 目标单侧重试。全部满足时返回锚点。
+func wslReplayAnchorGate(windowsRes *piplugin.CommandResult, anchor string) (useAnchor, skipCode, skipDetail string) {
+	switch {
+	case windowsRes == nil:
+		return "", "windows-anchor-missing", "Windows 侧操作执行失败，无重放锚点；WSL 侧未执行（可单独以 wsl 目标重试）"
+	case !windowsRes.Success:
+		return "", "windows-failed", "Windows 侧命令未成功（Success=false），无重放锚点；WSL 侧未执行，不盲装另一版本（可单独以 wsl 目标重试）"
+	case anchor == "":
+		return "", "windows-anchor-missing", "Windows 侧成功但未能从实体解析版本/commit 锚点，无法固定同版本；WSL 侧未执行（可单独以 wsl 目标重试）"
+	default:
+		return anchor, "", ""
+	}
 }
 
 // runPiPluginWindowsOp 执行 Windows 侧既有路径。
@@ -253,6 +277,23 @@ func (a *App) piPluginHostAnchor(source string) string {
 	default:
 		return ""
 	}
+}
+
+// piPluginOpFilters 把 piplugin 三态过滤快照透传为 WSL 重放的过滤清单
+// （纯值拷贝，保留 nil=全部加载 / 空切片=一项都不加载的区别；纯函数，
+// 钉子直测）。
+func piPluginOpFilters(f piplugin.EntryFilters) wslsupply.PluginFilters {
+	return wslsupply.PluginFilters{
+		Extensions: f.Extensions, Skills: f.Skills,
+		Prompts: f.Prompts, Themes: f.Themes,
+	}
+}
+
+// piPluginOpFiltersPtr 返回非 nil 指针的完整期望快照（PR08：App 调用统一
+// 携带完整期望——nil 指针保留给「调用方未提供选择」的旧调用语义）。
+func piPluginOpFiltersPtr(f piplugin.EntryFilters) *wslsupply.PluginFilters {
+	out := piPluginOpFilters(f)
+	return &out
 }
 
 func truncateForPanel(s string) string {

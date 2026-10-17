@@ -222,7 +222,9 @@ func (a *keyedProjectionAdapter) readSourceSafe() ([]byte, error) {
 	return a.readSource()
 }
 
-// applySelection 按用户选择集过滤期望键集（叶名匹配；无登记 = 全不选）。
+// applySelection 按用户选择集过滤期望键集（规范化全路径键匹配；无登记 = 全
+// 不选）。SA-03：匹配以全路径键为准（UI 预览/导入链统一传全路径）；兼容历史
+// 登记的叶名——仅在叶名唯一对应时生效，同名 MCP/profile 双义保守不选。
 func (a *keyedProjectionAdapter) applySelection(desired map[string]any, state *StateEntry) map[string]any {
 	if !a.shape.selectLeaf {
 		return desired
@@ -233,9 +235,10 @@ func (a *keyedProjectionAdapter) applySelection(desired map[string]any, state *S
 			selected[k] = true
 		}
 	}
+	allKeys := sortedDesiredKeys(desired)
 	filtered := map[string]any{}
 	for k, v := range desired {
-		if selected[keyLeafName(k)] {
+		if selectionMatchesKey(selected, k, allKeys) {
 			filtered[k] = v
 		}
 	}
@@ -395,10 +398,19 @@ func (a *keyedProjectionAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) 
 		}
 	}
 	out := make([]KeyPreview, 0, len(ana.decisions))
+	// SA-03：选择状态同样以全路径键匹配（兼容唯一叶名）；allKeys 覆盖期望全集
+	// 与登记基准，保证同名叶双义判定不依赖当前来源是否还存在。
+	selectedAllKeys := sortedDesiredKeys(ana.importable)
+	for _, d := range ana.decisions {
+		selectedAllKeys = append(selectedAllKeys, d.Key)
+	}
+	for k := range ana.subs {
+		selectedAllKeys = append(selectedAllKeys, k)
+	}
 	for _, d := range ana.decisions {
 		kp := KeyPreview{Key: d.Key, Action: d.Kind.String(), Reason: d.Reason}
 		if a.shape.selectLeaf {
-			kp.Selected = selected[keyLeafName(d.Key)]
+			kp.Selected = selectionMatchesKey(selected, d.Key, selectedAllKeys)
 			_, srcOK := ana.desired[d.Key]
 			kp.Importable = srcOK && d.Kind != keyFrozenBothChanged
 		}

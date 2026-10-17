@@ -43,7 +43,7 @@ func (op *overlapProbes) probes() Probes {
 	return Probes{
 		Identity: inner.Identity,
 		ToUNC:    inner.ToUNC,
-		Chmod: func(_, _ string, _ ...string) error {
+		Chmod: func(_ context.Context, _, _ string, _ ...string) error {
 			n := atomic.AddInt32(&op.active, 1)
 			if n > 1 {
 				atomic.StoreInt32(&op.overlap, 1)
@@ -163,7 +163,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 		}
 	})
 
-	t.Run("sensitive unit stays fail-closed delete", func(t *testing.T) {
+	t.Run("sensitive unit fails before rename keeps preimage", func(t *testing.T) {
 		fp := newFakeProbes(t)
 		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
 		src := `{"rev":1}`
@@ -178,9 +178,14 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 		if res.Results[0].Outcome != UnitFailed {
 			t.Fatalf("sensitive chmod failure must fail: %+v", res.Results)
 		}
-		if _, statErr := os.Stat(prefsPath(fp)); !os.IsNotExist(statErr) {
-			t.Fatal("sensitive chmod failure must delete the loose-permission plaintext")
+		// SA-07（wsl-goal-closure）：敏感 chmod 失败发生在 rename 之前（staging
+		// 内收紧 0600 失败即中止）——原有内容（含用户自有字段）原样保留，
+		// 不再以删整文件充当 fail-closed；新内容不得落盘。
+		got, readErr := os.ReadFile(prefsPath(fp))
+		if readErr != nil || string(got) != `{"rev":1}` {
+			t.Fatalf("sensitive chmod failure must preserve the preimage untouched, got %q err=%v", got, readErr)
 		}
+		assertNoStagingLeftover(t, filepath.Join(fp.uncRoot, "home"))
 	})
 }
 

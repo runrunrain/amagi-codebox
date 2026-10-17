@@ -9,6 +9,7 @@ package launcher
 // distro，跨平台可跑。
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,30 +18,51 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"amagi-codebox/internal/platform"
 )
 
 // fakeWSLForSync 把 WSL 探测接缝指向本地目录：distro 的 $HOME=/home/wslu，
 // UNC 映射落到 root 下同名相对路径；distro 侧 mtime 接缝默认 ok=false
-// （子测试按需覆盖）。返回 root 与 chmod 记录器。
+// （子测试按需覆盖）；StatMode 从 Chmod 记录读回（staging 验证探测）；身份
+// 接缝固定返回与 /home/wslu 一致的 uid/machine-id（G0：Context 入口当次
+// 身份核对）。
+// 返回 root 与 chmod 记录器。
 func fakeWSLForSync(t *testing.T, chmodErr error) (root string, chmodCalls *[]string) {
 	t.Helper()
 	root = t.TempDir()
 	chmodCalls = &[]string{}
-	origHome, origUNC, origChmod, origStat, origRemove := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslAuthRemoveFn
+	modes := map[string]string{}
+	origHome, origUNC, origChmod, origStat, origStatMode, origIdentity := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn, wslTargetIdentityContextFn
 	wslUserHomeFn = func(string) string { return "/home/wslu" }
 	wslToUNCFn = func(_, linuxPath string) string {
 		return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 	}
-	wslChmodFn = func(_, mode string, paths ...string) error {
+	wslChmodFn = func(_ context.Context, _, mode string, paths ...string) error {
 		for _, p := range paths {
 			*chmodCalls = append(*chmodCalls, mode+" "+p)
+			modes[p] = mode
 		}
 		return chmodErr
 	}
-	wslStatMTimeFn = func(_, _ string) (int64, bool) { return 0, false }
-	wslAuthRemoveFn = os.Remove
+	wslStatModeFn = func(_ context.Context, _, linuxPath string) (string, bool) {
+		if m, ok := modes[linuxPath]; ok {
+			return m, true
+		}
+		// PR02：未显式记录 chmod 的路径回退读真实文件权限（模拟健康 0600
+		// 副本——降级消费前的权限复核需要可信探测面）。
+		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/"))))
+		if err != nil || !info.Mode().IsRegular() {
+			return "", false
+		}
+		return fmt.Sprintf("%o", info.Mode().Perm()), true
+	}
+	wslStatMTimeFn = func(context.Context, string, string) (int64, bool) { return 0, false }
+	wslTargetIdentityContextFn = func(context.Context, string) platform.WSLUserIdentity {
+		return platform.WSLUserIdentity{UID: "1000", Home: "/home/wslu", MachineID: "test-machine", OK: true}
+	}
 	t.Cleanup(func() {
-		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslAuthRemoveFn = origHome, origUNC, origChmod, origStat, origRemove
+		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn, wslTargetIdentityContextFn = origHome, origUNC, origChmod, origStat, origStatMode, origIdentity
 	})
 	return root, chmodCalls
 }
@@ -49,7 +71,7 @@ func fakeWSLForSync(t *testing.T, chmodErr error) (root string, chmodCalls *[]st
 func stubDistroMTime(t *testing.T, mtime time.Time) {
 	t.Helper()
 	orig := wslStatMTimeFn
-	wslStatMTimeFn = func(_, path string) (int64, bool) {
+	wslStatMTimeFn = func(_ context.Context, _, path string) (int64, bool) {
 		if strings.HasSuffix(path, "/auth.json") {
 			return mtime.Unix(), true
 		}
@@ -129,8 +151,18 @@ func TestSyncWSLPiLoginAuthSeedsAndRefreshes(t *testing.T) {
 		if rerr != nil || string(got) != auth {
 			t.Fatalf("distro copy = %q err=%v, want source bytes", got, rerr)
 		}
-		if len(*chmodCalls) == 0 || !strings.HasPrefix((*chmodCalls)[0], "600 /home/wslu/.pi/agent/auth.json") {
-			t.Fatalf("chmod 600 compensation missing: %v", *chmodCalls)
+		if len(*chmodCalls) == 0 || !strings.HasPrefix((*chmodCalls)[0], "700 /home/wslu/.pi/agent") {
+			t.Fatalf("staged hardening chmod missing: %v", *chmodCalls)
+		}
+		// SA-06：秘密字节在 staging 内 rename 前收紧 0600（而非 rename 后补偿）。
+		var staged600 bool
+		for _, c := range *chmodCalls {
+			if strings.HasPrefix(c, "600 /home/wslu/.pi/agent/.amagi-staging/") {
+				staged600 = true
+			}
+		}
+		if !staged600 {
+			t.Fatalf("chmod 600 must tighten the staged secret before rename: %v", *chmodCalls)
 		}
 	})
 
@@ -259,14 +291,18 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 		root, _ := fakeWSLForSync(t, nil)
 		writeDistroAuth(t, root, `{"old":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
 		stubDistroMTime(t, time.Now().Add(-time.Hour)) // Windows 新 → 前向写
-		// 注入 staging 创建失败（rename 前）：旧副本必须仍在（DistroHasCopy
-		// 降级），且无 staging 残留。旧注入手段（固定名 tmp 碰撞）已随唯一
-		// 临时名提交原语失效，改经 wslAuthCreateTempFn 接缝注入。
-		origCreate := wslAuthCreateTempFn
-		wslAuthCreateTempFn = func(_, _ string) (*os.File, error) {
-			return nil, errors.New("staging create denied")
+		// 注入 staging 验证失败（rename 前）：旧副本必须仍在（DistroHasCopy
+		// 降级）；auth.json 本体保持可探测 0600——降级消费前的权限复核
+		//（PR02）必须能证明副本安全，否则降级会被正确拒绌。
+		origStatMode := wslStatModeFn
+		prevStatMode := wslStatModeFn
+		wslStatModeFn = func(ctx context.Context, d, linuxPath string) (string, bool) {
+			if strings.Contains(linuxPath, ".amagi-staging") {
+				return "", false // 仅 staging 验证失败（rename 前，未提交字节）
+			}
+			return prevStatMode(ctx, d, linuxPath)
 		}
-		t.Cleanup(func() { wslAuthCreateTempFn = origCreate })
+		t.Cleanup(func() { wslStatModeFn = origStatMode })
 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
 		if err == nil {
 			t.Fatal("expected write failure")
@@ -280,7 +316,7 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 		}
 	})
 
-	t.Run("chmod failure cleans and fails closed", func(t *testing.T) {
+	t.Run("chmod failure never commits half-written auth", func(t *testing.T) {
 		fakeWindowsAuth(t, `{"openai-codex":{"type":"oauth"}}`)
 		root, _ := fakeWSLForSync(t, errors.New("chmod boom"))
 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
@@ -290,28 +326,33 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 		if outcome != SyncWSLPiLoginAuthDistroNoAuth {
 			t.Fatalf("outcome = %v, want DistroNoAuth", outcome)
 		}
-		// fail closed：chmod 补偿失败时清理已落盘内容，不留半写/宽松权限状态。
+		// SA-06/07：chmod 失败发生在 rename 之前——无半写状态可清理，目标
+		// 不存在即未提交任何字节。
 		if _, statErr := os.Stat(distroAuthPath(root)); !os.IsNotExist(statErr) {
-			t.Fatal("half-written auth must be cleaned on chmod failure")
+			t.Fatal("no auth bytes may be committed when chmod hardening fails")
 		}
 	})
 
-	t.Run("chmod plus cleanup double failure fails closed even with file present", func(t *testing.T) {
+	t.Run("fresh copy with provably loose mode fails closed on retighten failure", func(t *testing.T) {
+		// m-3 语义在 SA-06 后的新性：宽松权限副本只能出现在「已存在但被
+		// 改宽」的零写入路径——重收紧失败时必须 fail closed，不得降级放行
+		//（errWSLAuthLooseLeftover → NoAuth）。
 		fakeWindowsAuth(t, `{"openai-codex":{"type":"oauth"}}`)
 		root, _ := fakeWSLForSync(t, errors.New("chmod boom"))
-		// 清理失败注入：Remove 恒错 → rename 后的新文件留在盘上（宽松权限）。
-		origRemove := wslAuthRemoveFn
-		wslAuthRemoveFn = func(string) error { return errors.New("9p stuck") }
-		t.Cleanup(func() { wslAuthRemoveFn = origRemove })
+		writeDistroAuth(t, root, `{"openai-codex":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
+		modes := map[string]string{"/home/wslu/.pi/agent/auth.json": "644"}
+		origStatMode := wslStatModeFn
+		wslStatModeFn = func(_ context.Context, _, p string) (string, bool) {
+			m, ok := modes[p]
+			return m, ok
+		}
+		t.Cleanup(func() { wslStatModeFn = origStatMode })
 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
 		if err == nil || !errors.Is(err, errWSLAuthLooseLeftover) {
 			t.Fatalf("err = %v, want errWSLAuthLooseLeftover", err)
 		}
 		if outcome != SyncWSLPiLoginAuthDistroNoAuth {
-			t.Fatalf("outcome = %v, want DistroNoAuth (m-3: loose-perm copy must not degrade-pass)", outcome)
-		}
-		if _, statErr := os.Stat(distroAuthPath(root)); statErr != nil {
-			t.Fatal("precondition: the loose leftover file should still be present in this fault mode")
+			t.Fatalf("outcome = %v, want DistroNoAuth (loose-perm copy must not degrade-pass)", outcome)
 		}
 	})
 
@@ -336,15 +377,25 @@ func TestSyncWSLPiLoginAuthFailureClassification(t *testing.T) {
 func TestWriteWSLAuthAtomicUniqueStagingNames(t *testing.T) {
 	uncDir := t.TempDir()
 	target := WSLAgentTarget{Distro: "Ubuntu", Home: "/home/u", LinuxDir: "/home/u/.pi/agent", UNCDir: uncDir}
-	origChmod := wslChmodFn
-	wslChmodFn = func(_, _ string, _ ...string) error { return nil }
-	t.Cleanup(func() { wslChmodFn = origChmod })
+	modes := map[string]string{}
+	origChmod, origStatMode := wslChmodFn, wslStatModeFn
+	wslChmodFn = func(_ context.Context, _, mode string, paths ...string) error {
+		for _, p := range paths {
+			modes[p] = mode
+		}
+		return nil
+	}
+	wslStatModeFn = func(_ context.Context, _, p string) (string, bool) {
+		m, ok := modes[p]
+		return m, ok
+	}
+	t.Cleanup(func() { wslChmodFn, wslStatModeFn = origChmod, origStatMode })
 	const writers = 8
 	var mu sync.Mutex
 	for i := 0; i < writers; i++ {
 		payload := []byte(fmt.Sprintf("{\"writer\":%d}", i))
 		mu.Lock()
-		if err := writeWSLAuthAtomic(target, payload); err != nil {
+		if err := writeWSLAuthAtomicContext(context.Background(), target, payload); err != nil {
 			mu.Unlock()
 			t.Fatalf("serialized writeWSLAuthAtomic #%d: %v", i, err)
 		}

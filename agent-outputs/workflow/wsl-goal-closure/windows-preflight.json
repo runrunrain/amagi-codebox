@@ -1,0 +1,63 @@
+{
+    "schema":  1,
+    "user":  "DESKTOP-NAALPFC\\毛润",
+    "adminToken":  true,
+    "home":  "C:\\Users\\毛润",
+    "temp":  "C:\\Users\\毛润\\AppData\\Local\\Temp",
+    "cwd":  "C:\\Users\\毛润",
+    "os":  "Microsoft Windows NT 10.0.26200.0",
+    "is64BitOS":  true,
+    "powershell":  "5.1.26100.9711",
+    "tools":  [
+                  {
+                      "name":  "go",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Program Files\\Go\\bin\\go.exe"
+                  },
+                  {
+                      "name":  "git",
+                      "foundOnPATH":  true,
+                      "path":  "I:\\Git\\cmd\\git.exe"
+                  },
+                  {
+                      "name":  "node",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Program Files\\nodejs\\node.exe"
+                  },
+                  {
+                      "name":  "npm",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Program Files\\nodejs\\npm.ps1"
+                  },
+                  {
+                      "name":  "wsl",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\WINDOWS\\system32\\wsl.exe"
+                  },
+                  {
+                      "name":  "pi",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Users\\毛润\\AppData\\Roaming\\npm\\pi.ps1"
+                  },
+                  {
+                      "name":  "codex",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Users\\毛润\\AppData\\Roaming\\npm\\codex.ps1"
+                  },
+                  {
+                      "name":  "claude",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Users\\毛润\\AppData\\Roaming\\npm\\claude.ps1"
+                  },
+                  {
+                      "name":  "opencode",
+                      "foundOnPATH":  true,
+                      "path":  "C:\\Users\\毛润\\AppData\\Roaming\\npm\\opencode.ps1"
+                  },
+                  {
+                      "name":  "omp",
+                      "foundOnPATH":  false,
+                      "path":  null
+                  }
+              ]
+}

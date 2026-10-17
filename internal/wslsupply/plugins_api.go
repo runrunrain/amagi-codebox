@@ -13,9 +13,15 @@ import (
 
 // RunPluginOperation 在指定 distro 上执行一次插件重放（显式目标动作，允许
 // 唤醒当前目标；单次尝试不重试）。目标不可解析时返回结构化 blocked 结果
-// 而不是 error（与 RunUnits 的 fail-closed 消费面一致）。
+// 而不是 error（与 RunUnits 的 fail-closed 消费面一致）。SA16：已取消/到期
+// 的请求在目标解析前立即按 ctx 归因返回——不触发任何身份探测/命令面。
 func (c *Coordinator) RunPluginOperation(ctx context.Context, distro string, op PluginOperation) PluginOpResult {
 	opID := newPluginOpID(op.Kind)
+	if err := ctx.Err(); err != nil {
+		code := classifyRunnerError(ctx, err)
+		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeFailed,
+			ErrCode: code, Detail: "请求开始前 ctx 已结束，未解析目标、未执行任何 distro 命令（" + mapLifecycleCodeDetail(code) + "）", OpID: opID}
+	}
 	target, err := c.ResolveTarget(ctx, strings.TrimSpace(distro), CLIPi)
 	if err != nil {
 		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeBlocked,
@@ -26,12 +32,28 @@ func (c *Coordinator) RunPluginOperation(ctx context.Context, distro string, op 
 		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeBlocked,
 			ErrCode: PluginErrParserUnavailable, Detail: "插件重放作用域未装配", OpID: opID}
 	}
+	// 攻坚契约 PR07：一次插件操作与身份复核持 applyMu（filters 与 pi/settings
+	// 投影共用实际写锁；锁序 applyMu→opMu→短 state.mu，state 锁不跨网络/UNC
+	// I/O——接受显式安装暂时阻塞供给的代价）。
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		code := classifyRunnerError(ctx, err)
+		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeFailed,
+			ErrCode: code, Detail: "等锁后请求已结束，未执行任何 distro 命令（" + mapLifecycleCodeDetail(code) + "）", OpID: opID}
+	}
 	return c.plugins.RunPluginOperation(ctx, target, op)
 }
 
 // ProbeWSLPlugins 显式检查 WSL 侧插件面（允许唤醒当前目标；只读不写）：
-// pi 可用性 + distro settings/实体（UNC 读）+ 登记面汇总，缓存快照。
+// pi 可用性 + distro settings/实体（UNC 读）+ 登记面汇总，缓存快照。SA16：
+// 已取消/到期的检查不唤醒目标，如实返回取消原因。
 func (c *Coordinator) ProbeWSLPlugins(ctx context.Context, distro string) (WSLPluginSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		code := classifyRunnerError(ctx, err)
+		return WSLPluginSnapshot{Distro: strings.TrimSpace(distro), Available: false,
+			Reason: mapLifecycleCodeDetail(code), Items: []WSLPluginItem{}}, nil
+	}
 	target, err := c.ResolveTarget(ctx, strings.TrimSpace(distro), CLIPi)
 	if err != nil {
 		return WSLPluginSnapshot{}, fmt.Errorf("resolve wsl supply target: %w", err)

@@ -18,6 +18,7 @@ package launcher
 // 确认」处理（保守丢弃 + 报告），不把失败当作已验证。
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -66,7 +67,7 @@ func AdaptWSLOpenCodeMCPWithOptions(distro string, cfg map[string]any, allowed, 
 		return cfg, nil // 形态未知：留给 opencode 自行处理，不猜测
 	}
 
-	globalNames := readWSLOpenCodeGlobalMCPServers(distro)
+	globalNames, globalState, globalReason := readWSLOpenCodeGlobalMCPServers(distro)
 
 	// 第一遍：收集需要验证的原生命令（裸 shim 候选）。
 	need := map[string]bool{}
@@ -118,6 +119,13 @@ func AdaptWSLOpenCodeMCPWithOptions(distro string, cfg map[string]any, allowed, 
 			entry = adapted
 			adaptedAny = true
 		}
+		if globalState == wslGlobalUnknown {
+			// SA14：全局配置不可读/不可解析——同名冲突无法确认，「未知」≠「不
+			// 冲突」，任何名字都可能覆盖本地选择；一律不写入，启动继续（可选
+			// 配置失败可见不阻断），修复全局文件后恢复。
+			report = append(report, fmt.Sprintf("MCP server %q 未写入附加层：WSL 全局 opencode 配置不可读（%s），同名冲突无法确认，为不覆盖本地选择未写入", name, globalReason))
+			continue
+		}
 		if globalNames[name] && !(overrideGlobal != nil && overrideGlobal[name]) {
 			report = append(report, fmt.Sprintf("MCP server %q 与 WSL 全局配置同名，保留本地不写入附加层（覆盖请在选择面勾选）", name))
 			continue
@@ -154,9 +162,13 @@ type OpenCodeMCPPreviewEntry struct {
 	NeedsAdapt bool
 	// Reason 是中文原因（NeedsAdapt 时非空；不含密钥）。
 	Reason string
-	// GlobalConflict：distro 全局 opencode.json 已有同名 server（默认保留
-	// 本地；勾选覆盖才写入）。
+	// GlobalConflict：distro 全局 opencode.json/jsonc 已有同名 server（默认
+	// 保留本地；勾选覆盖才写入）。
 	GlobalConflict bool
+	// GlobalConflictUnknown：全局配置存在但不可读/不可解析（或目标探测失
+	// 敗）——同名冲突无法确认（SA14）。该状态下所有 preset MCP 都不会写入
+	// 附加层，也不提供覆盖勾选（先修复全局配置）。
+	GlobalConflictUnknown bool
 }
 
 // PreviewWSLOpenCodeMCP 对 runtime config 的 mcp 段做只读分类预览（不写、
@@ -171,7 +183,7 @@ func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPrevi
 	if !ok || len(servers) == 0 {
 		return nil
 	}
-	globalNames := readWSLOpenCodeGlobalMCPServers(distro)
+	globalNames, globalState, globalReason := readWSLOpenCodeGlobalMCPServers(distro)
 	need := map[string]bool{}
 	for _, value := range servers {
 		entry, ok := value.(map[string]any)
@@ -199,11 +211,14 @@ func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPrevi
 	sort.Strings(names)
 	out := make([]OpenCodeMCPPreviewEntry, 0, len(names))
 	for _, name := range names {
-		preview := OpenCodeMCPPreviewEntry{Name: name, GlobalConflict: globalNames[name]}
+		preview := OpenCodeMCPPreviewEntry{Name: name, GlobalConflict: globalNames[name], GlobalConflictUnknown: globalState == wslGlobalUnknown}
+		if preview.GlobalConflictUnknown {
+			preview.Reason = "WSL 全局 opencode 配置不可读（" + globalReason + "），同名冲突无法确认；不会写入附加层"
+		}
 		server, ok := servers[name].(map[string]any)
 		if !ok {
 			preview.NeedsAdapt = true
-			preview.Reason = "server 定义不是对象"
+			preview.Reason = joinPreviewReason(preview.Reason, "server 定义不是对象")
 			out = append(out, preview)
 			continue
 		}
@@ -221,11 +236,23 @@ func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPrevi
 			}
 		} else {
 			preview.NeedsAdapt = true
-			preview.Reason = reason
+			preview.Reason = joinPreviewReason(preview.Reason, reason)
 		}
 		out = append(out, preview)
 	}
 	return out
+}
+
+// joinPreviewReason 拼接预览原因（空段跳过）。
+func joinPreviewReason(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "；" + b
+	}
 }
 
 // classifyWSLMCPServer 判定单个 server：(kept, adaptedEntry, dropReason)。
@@ -300,41 +327,74 @@ func shallowCopyMCPServer(entry map[string]any) map[string]any {
 	return out
 }
 
-// readWSLOpenCodeGlobalMCPServers 读取 distro 全局 ~/.config/opencode/opencode.json
-// 的 mcp server 名集合（冲突检查用）。文件缺失/不可读/不可解析（含 JSONC 注释
-// 剥离后仍失败）一律返回空集合——冲突不可确认时不因读取失败丢弃 server。
-func readWSLOpenCodeGlobalMCPServers(distro string) map[string]bool {
+// wslGlobalReadState 是 distro 全局 OpenCode 配置的读取三态（SA14）。
+type wslGlobalReadState int
+
+const (
+	// wslGlobalAbsent：opencode.json 与 opencode.jsonc 都不存在 → 无同名冲
+	// 突可能（正常空集）。
+	wslGlobalAbsent wslGlobalReadState = iota
+	// wslGlobalReadable：存在且全部可解析 → 冲突名集可信。
+	wslGlobalReadable
+	// wslGlobalUnknown：存在但不可读/不可解析，或目标探测失败 → 冲突不可确
+	// 认（「未知」≠「不冲突」，调用方保守处理）。
+	wslGlobalUnknown
+)
+
+// readWSLOpenCodeGlobalMCPServers 读取 distro 全局 OpenCode 配置的 mcp
+// server 名集合（冲突检查用）。SA14：
+//   - 同时探测 ~/.config/opencode/opencode.json 与 opencode.jsonc（两个入口
+//     都可能被 CLI 消费；并集对「保留本地」判定保守）；
+//   - 完整 JSONC 解析（行/块注释与合法尾逗号都接受）；
+//   - 读取/解析失败不再回退空集合冒充「无冲突」——返回 wslGlobalUnknown，
+//     调用方按未知保守处理（默认不写入附加层）。
+func readWSLOpenCodeGlobalMCPServers(distro string) (map[string]bool, wslGlobalReadState, string) {
 	names := map[string]bool{}
 	if strings.TrimSpace(distro) == "" {
-		return names
+		return names, wslGlobalUnknown, "WSL 发行版未知"
 	}
 	home := wslUserHomeFn(distro)
 	if home == "" {
-		return names
+		return names, wslGlobalUnknown, "无法探测 distro 默认用户 HOME"
 	}
-	unc := wslToUNCFn(distro, strings.TrimRight(home, "/")+"/.config/opencode/opencode.json")
-	if unc == "" {
-		return names
-	}
-	data, err := os.ReadFile(unc)
-	if err != nil || len(data) == 0 {
-		return names
-	}
-	var parsed map[string]any
-	if json.Unmarshal(data, &parsed) != nil {
-		if json.Unmarshal(stripJSONCComments(data), &parsed) != nil {
-			return names
+	base := strings.TrimRight(home, "/") + "/.config/opencode"
+	foundAny := false
+	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
+		unc := wslToUNCFn(distro, base+"/"+name)
+		if unc == "" {
+			return names, wslGlobalUnknown, name + " 的 WSL UNC 路径不可映射"
+		}
+		data, err := os.ReadFile(unc)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return names, wslGlobalUnknown, name + " 读取失败（" + err.Error() + "）"
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
+			continue // 空白文件不携带任何登记（与缺失同权重）
+		}
+		foundAny = true
+		var parsed map[string]any
+		if json.Unmarshal(data, &parsed) != nil {
+			if json.Unmarshal(stripJSONCTrailingCommas(stripJSONCComments(data)), &parsed) != nil {
+				return names, wslGlobalUnknown, name + " 不是可解析的 JSON/JSONC（注释与尾逗号剥离后仍失败）"
+			}
+		}
+		mcp, _ := parsed["mcp"].(map[string]any)
+		for n := range mcp {
+			names[n] = true
 		}
 	}
-	mcp, _ := parsed["mcp"].(map[string]any)
-	for name := range mcp {
-		names[name] = true
+	if !foundAny {
+		return names, wslGlobalAbsent, ""
 	}
-	return names
+	return names, wslGlobalReadable, ""
 }
 
 // stripJSONCComments 剥离 // 行注释与 /* */ 块注释（字符串字面量外的启发式
-// 处理：逐字符扫描跟踪是否在字符串内；足以服务冲突名提取，不追求完整 JSONC）。
+// 处理：逐字符扫描跟踪是否在字符串内；与 stripJSONCTrailingCommas 配合服务
+// 冲突名提取，不追求完整 JSONC）。
 func stripJSONCComments(data []byte) []byte {
 	var out []byte
 	inString := false
@@ -369,6 +429,51 @@ func stripJSONCComments(data []byte) []byte {
 				i++
 			}
 			i++
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// stripJSONCTrailingCommas 删除字符串字面量外的尾逗号（其后第一个非空白字
+// 符为 } 或 ] 的逗号）——JSONC 合法形态（SA14：旧实现只剥注释，尾逗号使
+// 解析失败回退空集，同名冲突被当「无冲突」）。
+func stripJSONCTrailingCommas(data []byte) []byte {
+	var out []byte
+	out = make([]byte, 0, len(data))
+	inString, escaped := false, false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			out = append(out, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case c == '"':
+			inString = true
+			out = append(out, c)
+		case c == ',':
+			j := i + 1
+			for j < len(data) {
+				switch data[j] {
+				case ' ', '\t', '\n', '\r':
+					j++
+					continue
+				}
+				break
+			}
+			if j < len(data) && (data[j] == '}' || data[j] == ']') {
+				continue // 尾逗号丢弃
+			}
+			out = append(out, c)
 		default:
 			out = append(out, c)
 		}

@@ -37,6 +37,7 @@ package launcher
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -45,14 +46,29 @@ import (
 	"sync"
 
 	"amagi-codebox/internal/platform"
+	"gopkg.in/yaml.v3"
 )
 
 // WSL 探测接缝：生产实现指向 platform 包，单测可在 launcher 包内替换
-// （platform 的探测 var 未导出，跨包不可注入）。
+// （platform 的探测 var 未导出，跨包不可注入）。探测接缝一律为 ctx 形态
+// （G0：ctx 必须贯通到真实 exec.CommandContext；旧无 ctx 入口以
+// context.Background() 包装，语义不变）；wslUserHomeFn/wslToUNCFn 仅服务
+// 旧 resolveWSLAgentTarget（cachedHome）路径，A2 的 Context 入口不再使用。
+// wslStatModeFn 是敏感提交的隔离验证探测（SA-06，wsl-goal-closure）。
 var (
-	wslUserHomeFn = platform.WSLUserHome
-	wslToUNCFn    = platform.WSLToUNC
-	wslChmodFn    = platform.WSLChmod
+	wslUserHomeFn              = platform.WSLUserHome
+	wslToUNCFn                 = platform.WSLToUNC
+	wslChmodFn                 = platform.WSLChmodContext
+	wslStatModeFn              = platform.WSLFileModeContext
+	wslTargetIdentityContextFn = platform.WSLTargetIdentityContext
+)
+
+// 宿主本地私有化接缝（G0）：生产指向 platform.EnsurePrivateDir/File
+// （真实 0700/0600 语义，Windows 为 owner-only DACL）；测试可注入故障
+// 形态（如目录不可写、私有化不可验证）。
+var (
+	hostEnsurePrivateDirFn  = platform.EnsurePrivateDir
+	hostEnsurePrivateFileFn = platform.EnsurePrivateFile
 )
 
 // wslAgentConfigMu 串行化 WSL 侧 merge→write→chmod 全序列（diting m1）：
@@ -64,10 +80,12 @@ var wslAgentConfigMu sync.Mutex
 
 // WSLAgentTarget 描述一个 WSL distro 内的 agent 目录落点。
 type WSLAgentTarget struct {
-	Distro   string // wsl.exe -d 目标（如 Ubuntu）
-	Home     string // distro 默认用户 $HOME（Linux 路径，如 /home/u）
-	LinuxDir string // agent 根（Linux 路径，如 /home/u/.pi/agent）
-	UNCDir   string // agent 根（Windows UNC，如 \\wsl.localhost\Ubuntu\home\u\.pi\agent）
+	Distro    string // wsl.exe -d 目标（如 Ubuntu）
+	Home      string // distro 默认用户 $HOME（Linux 路径，如 /home/u）
+	LinuxDir  string // agent 根（Linux 路径，如 /home/u/.pi/agent）
+	UNCDir    string // agent 根（Windows UNC，如 \\wsl.localhost\Ubuntu\home\u\.pi\agent）
+	UID       string // distro 默认用户 uid（A2 目标身份复核用；同步时必须与当次探测一致）
+	MachineID string // /etc/machine-id（可为空＝发行版无此文件；非空时必须与当次探测一致）
 }
 
 // resolveWSLAgentTarget 解析 distro 内 <home>/<relAgentDir> 的落点。
@@ -91,15 +109,185 @@ func resolveWSLAgentTarget(distro string, relAgentDir string) (WSLAgentTarget, e
 	return WSLAgentTarget{Distro: distro, Home: home, LinuxDir: linuxDir, UNCDir: uncDir}, nil
 }
 
+// wslStagingDirName 是 WSL 侧私有 staging 目录名（位于 agent 根下）。
+const wslStagingDirName = ".amagi-staging"
+
+// wslEnsurePrivateStagingContext 建立/验证 agent 根下的私有 staging 目录：
+// MkdirAll → distro 内 chmod 700 → StatMode 验证（UNC/宿主 stat 的 9P 翻译
+// 不可信），每个同步 I/O 后检查 ctx。验证不可用或不等于 700 都拒绝
+// （SA-06：隔离未验证 = 未隔离，fail closed——任何秘密字节都不得写入未验证
+// 隔离的目录）。返回 UNC 与 Linux 路径。
+func wslEnsurePrivateStagingContext(ctx context.Context, target WSLAgentTarget) (uncDir, linuxDir string, err error) {
+	uncDir = filepath.Join(target.UNCDir, wslStagingDirName)
+	linuxDir = target.LinuxDir + "/" + wslStagingDirName
+	if err := os.MkdirAll(uncDir, 0o700); err != nil {
+		return "", "", fmt.Errorf("mkdir wsl staging dir: %w", err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return "", "", fmt.Errorf("canceled after mkdir wsl staging dir: %w", cerr)
+	}
+	if err := wslChmodFn(ctx, target.Distro, "700", linuxDir); err != nil {
+		return "", "", fmt.Errorf("chmod 700 wsl staging dir in distro: %w", err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return "", "", fmt.Errorf("canceled after chmod 700 wsl staging dir: %w", cerr)
+	}
+	mode, ok := wslStatModeFn(ctx, target.Distro, linuxDir)
+	if cerr := ctx.Err(); cerr != nil {
+		return "", "", fmt.Errorf("canceled after staging isolation probe: %w", cerr)
+	}
+	if !ok || mode != "700" {
+		return "", "", fmt.Errorf("wsl staging isolation unverified: mode=%q ok=%v (expected 700); refusing to write secrets", mode, ok)
+	}
+	return uncDir, linuxDir, nil
+}
+
+// wslEnsurePrivateStaging（旧无 ctx 入口）以 Background 包装 ctx 核心。
+func wslEnsurePrivateStaging(target WSLAgentTarget) (uncDir, linuxDir string, err error) {
+	return wslEnsurePrivateStagingContext(context.Background(), target)
+}
+
+// writeWSLAgentFileStaged 是 WSL 侧敏感配置文件的提交原语（SA-06/07，
+// wsl-goal-closure）：
+//  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；
+//  2. 秘密字节只写入已验证 0700 的 .amagi-staging 内唯一临时名；
+//  3. distro 内 chmod 600 并验证后才 rename 到最终路径——最终目录即使
+//     0755，文件也从未以宽权限可见（旧实现 rename 后才 chmod，9P 临时段
+//     是 0644，存在泄漏窗口）；
+//  4. 任何阶段失败都发生在 rename 之前：既有文件（含用户自有 provider 等
+//     混合内容）原样保留，不再以删整文件充当 fail-closed（SA-07）。
+//
+// writeWSLAgentFileStagedContext 是 WSL 侧敏感配置文件的 ctx 提交原语
+// （SA-06/07，wsl-goal-closure；G0 攻坚把 ctx 贯通到实际 rename 前）：
+//  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；
+//  2. 秘密字节只写入已验证 0700 的 .amagi-staging 内唯一临时名；
+//  3. distro 内 chmod 600 并验证后才允许提交；
+//  4. G0：rename 前读回候选字节比对（持续污染/半写污染不得进入 rename，
+//     原目标内容不变）+ 最后一次 ctx 检查（取消时未提交侧原样，仅清理
+//     本次 staging 临时文件）；
+//  5. rename 后读回最终路径字节复验；
+//  6. 任何阶段失败都发生在 rename 之前（除 rename 自身失败，该错误如实
+//     上抛，由调用方重新分类落盘现状）：既有文件（含用户自有 provider 等
+//     混合内容）原样保留，不再以删整文件充当 fail-closed（SA-07）。
+func writeWSLAgentFileStagedContext(ctx context.Context, target WSLAgentTarget, fileName string, content []byte) error {
+	if err := os.MkdirAll(target.UNCDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir wsl agent dir: %w", err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled before tightening wsl agent dir: %w", cerr)
+	}
+	if err := wslChmodFn(ctx, target.Distro, "700", target.LinuxDir); err != nil {
+		return fmt.Errorf("chmod 700 wsl agent dir in distro: %w", err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled after chmod 700 wsl agent dir: %w", cerr)
+	}
+	stagingUNC, stagingLinux, err := wslEnsurePrivateStagingContext(ctx, target)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(stagingUNC, ".amagi-agent-*")
+	if err != nil {
+		return fmt.Errorf("create wsl staging file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if _, statErr := os.Stat(tmpPath); statErr == nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write wsl staging file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close wsl staging file: %w", err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled after writing wsl staging file: %w", cerr)
+	}
+	_ = os.Chmod(tmpPath, 0o600) // 宿主侧尽力；权威位由 distro 内 chmod 落实
+	tmpLinux := stagingLinux + "/" + filepath.Base(tmpPath)
+	if err := wslChmodFn(ctx, target.Distro, "600", tmpLinux); err != nil {
+		return fmt.Errorf("chmod 600 wsl staging file in distro (target untouched): %w", err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled after chmod 600 wsl staging file: %w", cerr)
+	}
+	if mode, ok := wslStatModeFn(ctx, target.Distro, tmpLinux); !ok || mode != "600" {
+		return fmt.Errorf("verify wsl staging file mode: got %q ok=%v (expected 600; target untouched, no secret bytes committed)", mode, ok)
+	}
+	// G0：候选字节读回预验——staging 写入面持续污染时（半写/字节翻转），
+	// 污染字节不得进入 rename，原 auth/config 原样保留。
+	candidate, rerr := os.ReadFile(tmpPath)
+	if rerr != nil {
+		return fmt.Errorf("read back wsl staging candidate: %w", rerr)
+	}
+	if !bytes.Equal(candidate, content) {
+		return fmt.Errorf("wsl staging candidate bytes mismatch after write (target untouched, no secret bytes committed)")
+	}
+	// 实际 rename 前最后一次 ctx 检查：取消时未提交侧原样。
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled before committing wsl agent file rename: %w", cerr)
+	}
+	finalUNC := filepath.Join(target.UNCDir, fileName)
+	if err := os.Rename(tmpPath, finalUNC); err != nil {
+		return fmt.Errorf("commit wsl agent file: %w", err)
+	}
+	got, err := os.ReadFile(finalUNC)
+	if err != nil || !bytes.Equal(got, content) {
+		return fmt.Errorf("verify wsl agent file after commit: read-back mismatch (err=%v)", err)
+	}
+	return nil
+}
+
+// writeWSLAgentFileStaged（旧无 ctx 入口）以 Background 包装 ctx 核心，供
+// pi/omp/opencode 既有 API 复用同一提交原语。
+func writeWSLAgentFileStaged(target WSLAgentTarget, fileName string, content []byte) error {
+	return writeWSLAgentFileStagedContext(context.Background(), target, fileName, content)
+}
+
+// wslRetighten600Context 复核字节未变化的秘密文件权限（零写入路径的
+// SA-06 补丁：已存在但权限被改宽也要安全修复或阻断；PR02：探测不可用
+// （ok=false）不再视为安全——unknown 不等于安全，先收紧后复验，仍不可证
+// 则返回错误交由调用方阻断消费）：探测到确切非 600 或探测不可用时统一
+// 重收紧并复验。探测/收紧均经 ctx 接缝（取消时按未验证处理）。
+func wslRetighten600Context(ctx context.Context, distro, linuxFile string) error {
+	mode, ok := wslStatModeFn(ctx, distro, linuxFile)
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled during permission re-check: %w", cerr)
+	}
+	if ok && mode == "600" {
+		return nil // 健康路径：零字节重写保持
+	}
+	if err := wslChmodFn(ctx, distro, "600", linuxFile); err != nil {
+		return fmt.Errorf("re-tighten wsl secret file (%s, was mode=%q ok=%v): %w", linuxFile, mode, ok, err)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("canceled after re-tighten chmod: %w", cerr)
+	}
+	if m2, ok2 := wslStatModeFn(ctx, distro, linuxFile); !ok2 || m2 != "600" {
+		return fmt.Errorf("re-tighten wsl secret file (%s) unverified: mode=%q ok=%v", linuxFile, m2, ok2)
+	}
+	return nil
+}
+
+// wslRetighten600（旧无 ctx 入口）以 Background 包装 ctx 核心，供
+// pi/omp/opencode 零写入路径复用。
+func wslRetighten600(distro, linuxFile string) error {
+	return wslRetighten600Context(context.Background(), distro, linuxFile)
+}
+
 // WriteWSLPiAgentConfig 把 pi models.json 合并写入 WSL 侧 agent root。
 // 合并语义与 Windows 侧一致（MergePiAgentConfig：保留已有 providers 与
 // 顶层字段，amagi-<name> 当次条目优先），原子写（WritePiAgentConfig 的
 // tmp+Rename 范式在 UNC 上同样成立）后经 WSLChmod 补偿 0700/0600。
 // 成功返回 WSL 内 Linux 路径的 agent 目录（供日志/诊断）。
 //
-// P3-S1 零写入路径：合并结果与既有文件字节一致时跳过落盘与 chmod 补偿
-// （无变化启动的第二次调用不再写目标；权限若被手动改宽，待下次内容变化时
-// 随完整写入路径重新收紧）。
+// P3-S1 零写入路径：合并结果与既有文件字节一致时跳过落盘；但已存在副本
+// 的权限被改宽时也要安全修复或阻断（SA-06：无变化路径不得绕过权限检查）。
+// 敏感提交走 SA-06 staging 原语：0600 在 rename 前落位，chmod 失败发生在
+// 任何既有混合内容被替换之前（不再删整文件，SA-07）。
 func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
 	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
 	if err != nil {
@@ -108,30 +296,26 @@ func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
 	wslAgentConfigMu.Lock()
 	defer wslAgentConfigMu.Unlock()
 	merged := MergePiAgentConfig(cfg, target.UNCDir)
-	if content, mErr := json.MarshalIndent(merged, "", "  "); mErr == nil {
-		content = append(content, '\n')
-		if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, "models.json")); rErr == nil && bytes.Equal(existing, content) {
-			return target.LinuxDir, nil // 零写入：内容一致
+	content, mErr := json.MarshalIndent(merged, "", "  ")
+	if mErr != nil {
+		return "", fmt.Errorf("marshal pi agent config: %w", mErr)
+	}
+	content = append(content, '\n')
+	if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, "models.json")); rErr == nil && bytes.Equal(existing, content) {
+		if err := wslRetighten600(target.Distro, target.LinuxDir+"/models.json"); err != nil {
+			return "", err
 		}
+		return target.LinuxDir, nil // 零写入：内容一致且权限安全
 	}
-	if err := WritePiAgentConfig(target.UNCDir, merged); err != nil {
+	if err := writeWSLAgentFileStaged(target, "models.json", content); err != nil {
 		return "", err
-	}
-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
-		// diting m2：chmod 补偿失败时 WSL 侧文件以 umask 默认 0644 留盘，
-		// 携带明文 apiKey，视为写入失败并尽力清理已落盘内容（fail closed）。
-		_ = os.Remove(filepath.Join(target.UNCDir, "models.json"))
-		return "", fmt.Errorf("chmod 700 WSL pi agent dir: %w", err)
-	}
-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/models.json"); err != nil {
-		_ = os.Remove(filepath.Join(target.UNCDir, "models.json"))
-		return "", fmt.Errorf("chmod 600 WSL pi models.json: %w", err)
 	}
 	return target.LinuxDir, nil
 }
 
 // WriteWSLOmpAgentConfig 是 WriteWSLPiAgentConfig 的 omp 对称实现
-// （.omp/agent/models.yml，YAML 序列化与合并沿用 omp_config.go）。
+// （.omp/agent/models.yml，YAML 序列化与合并沿用 omp_config.go；提交走同一
+// SA-06 staging 原语）。
 func WriteWSLOmpAgentConfig(distro string, cfg map[string]any) (string, error) {
 	target, err := resolveWSLAgentTarget(distro, ".omp/agent")
 	if err != nil {
@@ -140,18 +324,12 @@ func WriteWSLOmpAgentConfig(distro string, cfg map[string]any) (string, error) {
 	wslAgentConfigMu.Lock()
 	defer wslAgentConfigMu.Unlock()
 	merged := MergeOmpModelsConfig(cfg, target.UNCDir)
-	if err := WriteOmpAgentConfig(target.UNCDir, merged); err != nil {
+	content, mErr := yaml.Marshal(merged)
+	if mErr != nil {
+		return "", fmt.Errorf("marshal omp models.yml: %w", mErr)
+	}
+	if err := writeWSLAgentFileStaged(target, "models.yml", content); err != nil {
 		return "", err
-	}
-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
-		// 同 WriteWSLPiAgentConfig（diting m2）：chmod 补偿失败即清理已落盘
-		// 明文内容，fail closed。
-		_ = os.Remove(filepath.Join(target.UNCDir, "models.yml"))
-		return "", fmt.Errorf("chmod 700 WSL omp agent dir: %w", err)
-	}
-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/models.yml"); err != nil {
-		_ = os.Remove(filepath.Join(target.UNCDir, "models.yml"))
-		return "", fmt.Errorf("chmod 600 WSL omp models.yml: %w", err)
 	}
 	return target.LinuxDir, nil
 }
@@ -246,8 +424,9 @@ const openCodeWSLConfigFile = "amagi-codebox.json"
 //     错误），但调用方对写失败不阻断启动（回退现状＝无 provider 启动，
 //     与 pi 的 WSL 写入失败策略一致），仅记日志。
 //
-// 原子写沿用 WritePiAgentConfig 的 MkdirAll -> MarshalIndent -> tmp -> Rename
-// 范式；0700/0600 经 platform.WSLChmod 在 distro 内补偿（9P 不透传 POSIX 位）。
+// 原子写（SA-06 staging 原语：0700 staging 验证 + rename 前 0600 收紧，
+// 9P 不透传 POSIX 位的问题在秘密字节落盘前解决）；零写入路径同样复核
+// 权限（改宽则安全修复或阻断，SA-06）。
 func WriteWSLOpenCodeAgentConfig(distro string, cfg map[string]any) (string, error) {
 	target, err := resolveWSLAgentTarget(distro, ".config/opencode")
 	if err != nil {
@@ -255,62 +434,21 @@ func WriteWSLOpenCodeAgentConfig(distro string, cfg map[string]any) (string, err
 	}
 	wslAgentConfigMu.Lock()
 	defer wslAgentConfigMu.Unlock()
-	// P3-S1 零写入路径：序列化结果与既有文件字节一致时跳过落盘与 chmod 补偿。
-	if b, mErr := json.MarshalIndent(cfg, "", "  "); mErr == nil {
-		b = append(b, '\n')
-		if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, openCodeWSLConfigFile)); rErr == nil && bytes.Equal(existing, b) {
-			return target.LinuxDir + "/" + openCodeWSLConfigFile, nil // 零写入：内容一致
-		}
-	}
-	if err := writeOpenCodeConfigFile(target.UNCDir, cfg); err != nil {
-		return "", err
-	}
-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
-		_ = os.Remove(filepath.Join(target.UNCDir, openCodeWSLConfigFile))
-		return "", fmt.Errorf("chmod 700 WSL opencode config dir: %w", err)
-	}
-	if err := wslChmodFn(target.Distro, "600", target.LinuxDir+"/"+openCodeWSLConfigFile); err != nil {
-		_ = os.Remove(filepath.Join(target.UNCDir, openCodeWSLConfigFile))
-		return "", fmt.Errorf("chmod 600 WSL opencode config: %w", err)
-	}
-	return target.LinuxDir + "/" + openCodeWSLConfigFile, nil
-}
-
-// writeOpenCodeConfigFile 以全库统一原子范式把 cfg 写入 dir/amagi-codebox.json。
-// P3-S1 零写入路径：序列化结果与既有文件字节一致时跳过落盘（无变化启动的
-// 第二次调用不再写目标）。
-func writeOpenCodeConfigFile(dir string, cfg map[string]any) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir opencode config dir: %w", err)
-	}
-	// MkdirAll 不会收紧已存在目录的权限（.config 层级可能已由其他工具以
-	// 0755 建立），显式 Chmod 覆盖升级场景（对齐 WritePiAgentConfig）。
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("chmod opencode config dir: %w", err)
-	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal opencode config: %w", err)
+	b, mErr := json.MarshalIndent(cfg, "", "  ")
+	if mErr != nil {
+		return "", fmt.Errorf("marshal opencode config: %w", mErr)
 	}
 	b = append(b, '\n')
-	path := filepath.Join(dir, openCodeWSLConfigFile)
-	if existing, rErr := os.ReadFile(path); rErr == nil && bytes.Equal(existing, b) {
-		return nil // 零写入：内容一致
+	linuxFile := target.LinuxDir + "/" + openCodeWSLConfigFile
+	if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, openCodeWSLConfigFile)); rErr == nil && bytes.Equal(existing, b) {
+		// 零写入：内容一致，但已存在副本权限被改宽时也要安全修复或阻断。
+		if err := wslRetighten600(target.Distro, linuxFile); err != nil {
+			return "", err
+		}
+		return linuxFile, nil
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("write opencode config tmp: %w", err)
+	if err := writeWSLAgentFileStaged(target, openCodeWSLConfigFile, b); err != nil {
+		return "", err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("chmod opencode config tmp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace opencode config: %w", err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("chmod opencode config: %w", err)
-	}
-	return nil
+	return linuxFile, nil
 }

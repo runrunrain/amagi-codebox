@@ -32,7 +32,10 @@ func TestWriteWSLPiAgentConfigSkipsIdenticalContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 第二次写入完全相同配置：跳过落盘与 chmod（零写入路径）。
+	// 第二次写入完全相同配置：跳过落盘与 chmod（零写入路径）。首写后文件
+	// 已是 0600（staging 收紧后 rename），回填 fake 探测面反映该健康事实
+	//（PR02：零写入路径的权限复核在健康 0600 下零 chmod）。
+	ft.modes["/home/wslu/.pi/agent/models.json"] = "600"
 	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
@@ -56,6 +59,7 @@ func TestWriteWSLOpenCodeAgentConfigSkipsIdenticalContent(t *testing.T) {
 	}
 	first := ft.chmodCalls
 	target := filepath.Join(ft.uncPath("/home/wslu/.config/opencode"), openCodeWSLConfigFile)
+	ft.modes["/home/wslu/.config/opencode/"+openCodeWSLConfigFile] = "600"
 	before, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatal(err)

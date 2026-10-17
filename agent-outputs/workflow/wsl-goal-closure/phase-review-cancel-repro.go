@@ -1,0 +1,7 @@
+//go:build ignore
+
+// Review-only synthetic fixture: canceled public takeover still commits a skill.
+package main
+import("context";"fmt";"os";"path/filepath";"strings";"amagi-codebox/internal/platform";w "amagi-codebox/internal/wslsupply")
+func must(err error){if err!=nil{panic(err)}}
+func main(){root,e:=os.MkdirTemp("","review-cancel-");must(e);defer os.RemoveAll(root);src:=filepath.Join(root,"host");must(os.MkdirAll(filepath.Join(src,"demo"),0700));must(os.WriteFile(filepath.Join(src,"demo","SKILL.md"),[]byte("# synthetic skill\n"),0600));scope:=w.NewSkillsScope(src,w.DefaultSkillsScanLimits());scope.Scan();p:=w.Probes{Identity:func(string)platform.WSLUserIdentity{return platform.WSLUserIdentity{UID:"1000",Home:"/home/u",MachineID:"fixture",OK:true}},ToUNC:func(_,p string)string{return filepath.Join(root,"target",filepath.FromSlash(strings.TrimPrefix(p,"/")))},Chmod:func(string,string,...string)error{return nil}};c:=w.NewCoordinator(filepath.Join(root,"state"),nil,p);c.RegisterSkills(scope);unit:=w.SkillUnitID("demo");must(c.GrantUnitConsent(context.Background(),"A",w.CLICommon,unit));ctx,cancel:=context.WithCancel(context.Background());cancel();r,e:=c.TakeOverUnit(ctx,"A",w.CLICommon,unit,"");must(e);_,e=os.Stat(filepath.Join(root,"target/home/u/.agents/skills/demo/SKILL.md"));fmt.Printf("CANCELED_TAKEOVER ctx=%v outcome=%s detail=%s target_written=%v\n",ctx.Err(),r.Outcome,r.Detail,e==nil)}

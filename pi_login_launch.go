@@ -171,18 +171,29 @@ type wslLoginSupplyVerdict struct {
 // 闸门一致：Copied/DistroNewer 记 INFO 放行；Fresh 静默放行；TieKept WARN 放行；
 // DistroHasCopy WARN 降级放行；DistroNoAuth/阻断 fail closed（源缺失 → 登录
 // 失效文案，其余 → 同步失败文案）。
+// verdictForWSLLoginSupply 把供给结果映射为闸门判定。语义与 A2 解除后的桌面
+// 闸门一致：Copied/DistroNewer 记 INFO 放行；Fresh 静默放行；TieKept WARN 放行；
+// DistroHasCopy WARN 降级放行；DistroNoAuth/阻断 fail closed（源缺失 → 登录
+// 失效文案，其余 → 同步失败文案）。攻坚契约（启动聚合）：先确认本次 A2 资格，
+// 再处理可选项——不能因前面的可选 Failed/awaiting-consent 提前 return 跳过
+// A2 安全资格。
 func verdictForWSLLoginSupply(res wslsupply.RunResult, runErr error) wslLoginSupplyVerdict {
-	failClosed := func(err error) wslLoginSupplyVerdict {
-		return wslLoginSupplyVerdict{launchErr: fmt.Errorf("WSL 内没有可用的 Pi 登录凭据，且同步失败：%v；请确认 WSL 发行版状态后重试", err)}
-	}
 	if runErr != nil {
-		return failClosed(runErr)
+		return wslLoginFailClosed(runErr)
 	}
-	if blocked := res.LaunchBlocked(); blocked != nil {
-		if blocked.A2 != nil {
-			// A2 结果分类交给下方 outcome 映射。
-		} else if blocked.Unit == wslsupply.UnitPiA2Auth {
-			return failClosed(blocked.Err)
+	// 1) A2 资格优先。
+	a2 := res.A2Unit()
+	if a2 == nil || a2.A2 == nil {
+		return wslLoginFailClosed(errors.New("supply produced no a2 result"))
+	}
+	a2Verdict := wslLoginA2Verdict(a2, res.Target.Distro)
+	if a2Verdict.launchErr != nil {
+		return a2Verdict
+	}
+	// 2) A2 资格确认后再处理可选单元（首个非 A2 阻断/失败项）。
+	if blocked := res.LaunchBlocked(); blocked != nil && blocked.A2 == nil {
+		if blocked.Unit == wslsupply.UnitPiA2Auth {
+			return wslLoginFailClosed(blocked.Err)
 		} else if blocked.Unit == wslsupply.UnitPiManagedModels {
 			// P3-S1：托管 models.json 属可选普通托管面——失败/阻断仅告警放行
 			//（design §六「可选普通设置同步失败，旧 WSL 配置可读且安全 → 启动
@@ -202,14 +213,21 @@ func verdictForWSLLoginSupply(res wslsupply.RunResult, runErr error) wslLoginSup
 				message: "WSL Pi 配置投影未全部应用（保留 WSL 现状的条目见配置状态页）",
 				detail:  fmt.Sprintf("unit=%s detail=%s", blocked.Unit, blocked.Detail)}
 		} else {
-			return failClosed(blocked.Err)
+			return wslLoginFailClosed(blocked.Err)
 		}
 	}
-	a2 := res.A2Unit()
-	if a2 == nil || a2.A2 == nil {
-		return failClosed(errors.New("supply produced no a2 result"))
-	}
-	distro := res.Target.Distro
+	return a2Verdict
+}
+
+// wslLoginFailClosed 构造登录供给的 fail-closed 判定（统一中文文案）。
+func wslLoginFailClosed(err error) wslLoginSupplyVerdict {
+	return wslLoginSupplyVerdict{launchErr: fmt.Errorf("WSL 内没有可用的 Pi 登录凭据，且同步失败：%v；请确认 WSL 发行版状态后重试", err)}
+}
+
+// wslLoginA2Verdict 把 A2 结果映射为闸门判定（Copied/DistroNewer 记 INFO
+// 放行；Fresh 静默放行；TieKept WARN 放行；HasCopy WARN 降级放行；
+// NoAuth/未知 fail closed——源缺失 → 登录失效文案）。
+func wslLoginA2Verdict(a2 *wslsupply.UnitResult, distro string) wslLoginSupplyVerdict {
 	switch a2.A2.Outcome {
 	case launcher.SyncWSLPiLoginAuthCopied:
 		return wslLoginSupplyVerdict{info: true, message: "已同步 Pi 登录凭据到 WSL", detail: fmt.Sprintf("distro=%s", distro)}
@@ -227,9 +245,9 @@ func verdictForWSLLoginSupply(res wslsupply.RunResult, runErr error) wslLoginSup
 			return wslLoginSupplyVerdict{launchErr: errors.New("Pi 登录已失效：Windows 侧未找到登录凭据，请刷新服务提供商并重新登录 Pi")}
 		}
 		if a2.A2.Err != nil {
-			return failClosed(a2.A2.Err)
+			return wslLoginFailClosed(a2.A2.Err)
 		}
-		return failClosed(errors.New("no usable credentials on either side"))
+		return wslLoginFailClosed(errors.New("no usable credentials on either side"))
 	}
 }
 

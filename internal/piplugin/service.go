@@ -173,31 +173,36 @@ func packageEntryFromJSON(item gjson.Result) (configuredPackage, bool) {
 		}
 		return configuredPackage{
 			source:     src,
-			extensions: toStringSlice(item.Get("extensions")),
-			skills:     toStringSlice(item.Get("skills")),
-			prompts:    toStringSlice(item.Get("prompts")),
-			themes:     toStringSlice(item.Get("themes")),
+			extensions: filterSlice(item.Get("extensions")),
+			skills:     filterSlice(item.Get("skills")),
+			prompts:    filterSlice(item.Get("prompts")),
+			themes:     filterSlice(item.Get("themes")),
 		}, true
 	}
 	return configuredPackage{}, false
 }
 
-// toStringSlice 把 gjson 数组转为 []string（非数组返回 nil）。
-func toStringSlice(result gjson.Result) []string {
-	if !result.IsArray() {
+// filterSlice 把过滤键的 gjson 值转为 []string，保留 Pi 原生三态语义
+// （SA12 补全）：键省略 → nil（该类型加载全部）；显式空数组 [] → 非 nil
+// 空切片（该类型一项都不加载）；数组元素 trim 后逐项保留。键存在但值非
+// 数组（pi 原生 schema 该键应为字符串数组，此为用户手写的异常形态）没有
+// 官方语义可证——按收紧面处理：视为已声明且清单为空（全关），不折叠回
+// 省略而扩大启用面。
+func filterSlice(result gjson.Result) []string {
+	if !result.Exists() {
 		return nil
 	}
+	if !result.IsArray() {
+		return []string{}
+	}
 	arr := result.Array()
-	out := make([]string, 0, len(arr))
+	out := make([]string, 0, len(arr)) // make 恒非 nil：空数组保持「已声明、清单为空」
 	for _, v := range arr {
 		if v.Type == gjson.String {
 			if s := strings.TrimSpace(v.String()); s != "" {
 				out = append(out, s)
 			}
 		}
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }

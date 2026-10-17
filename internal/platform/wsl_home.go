@@ -199,9 +199,26 @@ func WSLChmod(distro string, mode string, linuxPaths ...string) error {
 	if distro == "" || len(linuxPaths) == 0 {
 		return nil
 	}
+	script, err := buildWSLChmodScript(mode, linuxPaths)
+	if err != nil {
+		return err
+	}
+	if script == "" {
+		return nil
+	}
+	if _, err := wslScriptRunner(distro, script); err != nil {
+		return err
+	}
+	return nil
+}
+
+// buildWSLChmodScript 构造 distro 内 chmod 脚本（mode 硬校验 + 路径单引号
+// 转义），供无 ctx 与 ctx 变体共用同一语义。无可转义路径时返回 ("", nil)，
+// 调用方跳过 runner（与旧 WSLChmod 的空路径语义一致）。
+func buildWSLChmodScript(mode string, linuxPaths []string) (string, error) {
 	if mode == "" || strings.ContainsAny(mode, " \t'\";&|`$") {
 		// 防御：mode 由本包调用方内联常量传入，此处只做硬校验。
-		return errWSLChmodInvalidMode(mode)
+		return "", errWSLChmodInvalidMode(mode)
 	}
 	quoted := make([]string, 0, len(linuxPaths))
 	for _, p := range linuxPaths {
@@ -212,13 +229,9 @@ func WSLChmod(distro string, mode string, linuxPaths ...string) error {
 		quoted = append(quoted, wslShSingleQuote(p))
 	}
 	if len(quoted) == 0 {
-		return nil
+		return "", nil
 	}
-	script := "chmod " + mode + " " + strings.Join(quoted, " ")
-	if _, err := wslScriptRunner(distro, script); err != nil {
-		return err
-	}
-	return nil
+	return "chmod " + mode + " " + strings.Join(quoted, " "), nil
 }
 
 type wslChmodError struct{ mode string }

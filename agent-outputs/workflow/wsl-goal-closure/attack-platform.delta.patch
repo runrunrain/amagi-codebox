@@ -1,0 +1,3100 @@
+diff --git a/internal/launcher/wsl_agent_config.go b/internal/launcher/wsl_agent_config.go
+--- a/internal/launcher/wsl_agent_config.go
++++ b/internal/launcher/wsl_agent_config.go
+@@ -37,6 +37,7 @@
+ 
+ import (
+ 	"bytes"
++	"context"
+ 	"encoding/json"
+ 	"fmt"
+ 	"os"
+@@ -49,15 +50,27 @@
+ )
+ 
+ // WSL 探测接缝：生产实现指向 platform 包，单测可在 launcher 包内替换
+-// （platform 的探测 var 未导出，跨包不可注入）。wslStatModeFn 是敏感提交
+-// 的隔离验证探测（SA-06，wsl-goal-closure）。
++// （platform 的探测 var 未导出，跨包不可注入）。探测接缝一律为 ctx 形态
++// （G0：ctx 必须贯通到真实 exec.CommandContext；旧无 ctx 入口以
++// context.Background() 包装，语义不变）；wslUserHomeFn/wslToUNCFn 仅服务
++// 旧 resolveWSLAgentTarget（cachedHome）路径，A2 的 Context 入口不再使用。
++// wslStatModeFn 是敏感提交的隔离验证探测（SA-06，wsl-goal-closure）。
+ var (
+-	wslUserHomeFn = platform.WSLUserHome
+-	wslToUNCFn    = platform.WSLToUNC
+-	wslChmodFn    = platform.WSLChmod
+-	wslStatModeFn = platform.WSLFileMode
++	wslUserHomeFn              = platform.WSLUserHome
++	wslToUNCFn                 = platform.WSLToUNC
++	wslChmodFn                 = platform.WSLChmodContext
++	wslStatModeFn              = platform.WSLFileModeContext
++	wslTargetIdentityContextFn = platform.WSLTargetIdentityContext
+ )
+ 
++// 宿主本地私有化接缝（G0）：生产指向 platform.EnsurePrivateDir/File
++// （真实 0700/0600 语义，Windows 为 owner-only DACL）；测试可注入故障
++// 形态（如目录不可写、私有化不可验证）。
++var (
++	hostEnsurePrivateDirFn  = platform.EnsurePrivateDir
++	hostEnsurePrivateFileFn = platform.EnsurePrivateFile
++)
++
+ // wslAgentConfigMu 串行化 WSL 侧 merge→write→chmod 全序列（diting m1）：
+ // 同一进程内并发启动两个会话（如同 distro 的不同 provider）时，无锁的
+ // merge（读旧）→ write（覆盖新）会互相丢失对方刚写入的 provider 条目。
+@@ -67,10 +80,12 @@
+ 
+ // WSLAgentTarget 描述一个 WSL distro 内的 agent 目录落点。
+ type WSLAgentTarget struct {
+-	Distro   string // wsl.exe -d 目标（如 Ubuntu）
+-	Home     string // distro 默认用户 $HOME（Linux 路径，如 /home/u）
+-	LinuxDir string // agent 根（Linux 路径，如 /home/u/.pi/agent）
+-	UNCDir   string // agent 根（Windows UNC，如 \\wsl.localhost\Ubuntu\home\u\.pi\agent）
++	Distro    string // wsl.exe -d 目标（如 Ubuntu）
++	Home      string // distro 默认用户 $HOME（Linux 路径，如 /home/u）
++	LinuxDir  string // agent 根（Linux 路径，如 /home/u/.pi/agent）
++	UNCDir    string // agent 根（Windows UNC，如 \\wsl.localhost\Ubuntu\home\u\.pi\agent）
++	UID       string // distro 默认用户 uid（A2 目标身份复核用；同步时必须与当次探测一致）
++	MachineID string // /etc/machine-id（可为空＝发行版无此文件；非空时必须与当次探测一致）
+ }
+ 
+ // resolveWSLAgentTarget 解析 distro 内 <home>/<relAgentDir> 的落点。
+@@ -97,26 +112,41 @@
+ // wslStagingDirName 是 WSL 侧私有 staging 目录名（位于 agent 根下）。
+ const wslStagingDirName = ".amagi-staging"
+ 
+-// wslEnsurePrivateStaging 建立/验证 agent 根下的私有 staging 目录：MkdirAll
+-// → distro 内 chmod 700 → StatMode 验证（UNC/宿主 stat 的 9P 翻译不可信）。
+-// 验证不可用或不等于 700 都拒绝（SA-06：隔离未验证 = 未隔离，fail closed——
+-// 任何秘密字节都不得写入未验证隔离的目录）。返回 UNC 与 Linux 路径。
+-func wslEnsurePrivateStaging(target WSLAgentTarget) (uncDir, linuxDir string, err error) {
++// wslEnsurePrivateStagingContext 建立/验证 agent 根下的私有 staging 目录：
++// MkdirAll → distro 内 chmod 700 → StatMode 验证（UNC/宿主 stat 的 9P 翻译
++// 不可信），每个同步 I/O 后检查 ctx。验证不可用或不等于 700 都拒绝
++// （SA-06：隔离未验证 = 未隔离，fail closed——任何秘密字节都不得写入未验证
++// 隔离的目录）。返回 UNC 与 Linux 路径。
++func wslEnsurePrivateStagingContext(ctx context.Context, target WSLAgentTarget) (uncDir, linuxDir string, err error) {
+ 	uncDir = filepath.Join(target.UNCDir, wslStagingDirName)
+ 	linuxDir = target.LinuxDir + "/" + wslStagingDirName
+ 	if err := os.MkdirAll(uncDir, 0o700); err != nil {
+ 		return "", "", fmt.Errorf("mkdir wsl staging dir: %w", err)
+ 	}
+-	if err := wslChmodFn(target.Distro, "700", linuxDir); err != nil {
++	if cerr := ctx.Err(); cerr != nil {
++		return "", "", fmt.Errorf("canceled after mkdir wsl staging dir: %w", cerr)
++	}
++	if err := wslChmodFn(ctx, target.Distro, "700", linuxDir); err != nil {
+ 		return "", "", fmt.Errorf("chmod 700 wsl staging dir in distro: %w", err)
+ 	}
+-	mode, ok := wslStatModeFn(target.Distro, linuxDir)
++	if cerr := ctx.Err(); cerr != nil {
++		return "", "", fmt.Errorf("canceled after chmod 700 wsl staging dir: %w", cerr)
++	}
++	mode, ok := wslStatModeFn(ctx, target.Distro, linuxDir)
++	if cerr := ctx.Err(); cerr != nil {
++		return "", "", fmt.Errorf("canceled after staging isolation probe: %w", cerr)
++	}
+ 	if !ok || mode != "700" {
+ 		return "", "", fmt.Errorf("wsl staging isolation unverified: mode=%q ok=%v (expected 700); refusing to write secrets", mode, ok)
+ 	}
+ 	return uncDir, linuxDir, nil
+ }
+ 
++// wslEnsurePrivateStaging（旧无 ctx 入口）以 Background 包装 ctx 核心。
++func wslEnsurePrivateStaging(target WSLAgentTarget) (uncDir, linuxDir string, err error) {
++	return wslEnsurePrivateStagingContext(context.Background(), target)
++}
++
+ // writeWSLAgentFileStaged 是 WSL 侧敏感配置文件的提交原语（SA-06/07，
+ // wsl-goal-closure）：
+ //  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；
+@@ -126,14 +156,33 @@
+ //     是 0644，存在泄漏窗口）；
+ //  4. 任何阶段失败都发生在 rename 之前：既有文件（含用户自有 provider 等
+ //     混合内容）原样保留，不再以删整文件充当 fail-closed（SA-07）。
+-func writeWSLAgentFileStaged(target WSLAgentTarget, fileName string, content []byte) error {
++//
++// writeWSLAgentFileStagedContext 是 WSL 侧敏感配置文件的 ctx 提交原语
++// （SA-06/07，wsl-goal-closure；G0 攻坚把 ctx 贯通到实际 rename 前）：
++//  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；
++//  2. 秘密字节只写入已验证 0700 的 .amagi-staging 内唯一临时名；
++//  3. distro 内 chmod 600 并验证后才允许提交；
++//  4. G0：rename 前读回候选字节比对（持续污染/半写污染不得进入 rename，
++//     原目标内容不变）+ 最后一次 ctx 检查（取消时未提交侧原样，仅清理
++//     本次 staging 临时文件）；
++//  5. rename 后读回最终路径字节复验；
++//  6. 任何阶段失败都发生在 rename 之前（除 rename 自身失败，该错误如实
++//     上抛，由调用方重新分类落盘现状）：既有文件（含用户自有 provider 等
++//     混合内容）原样保留，不再以删整文件充当 fail-closed（SA-07）。
++func writeWSLAgentFileStagedContext(ctx context.Context, target WSLAgentTarget, fileName string, content []byte) error {
+ 	if err := os.MkdirAll(target.UNCDir, 0o700); err != nil {
+ 		return fmt.Errorf("mkdir wsl agent dir: %w", err)
+ 	}
+-	if err := wslChmodFn(target.Distro, "700", target.LinuxDir); err != nil {
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled before tightening wsl agent dir: %w", cerr)
++	}
++	if err := wslChmodFn(ctx, target.Distro, "700", target.LinuxDir); err != nil {
+ 		return fmt.Errorf("chmod 700 wsl agent dir in distro: %w", err)
+ 	}
+-	stagingUNC, stagingLinux, err := wslEnsurePrivateStaging(target)
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled after chmod 700 wsl agent dir: %w", cerr)
++	}
++	stagingUNC, stagingLinux, err := wslEnsurePrivateStagingContext(ctx, target)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -154,13 +203,32 @@
+ 	if err := tmp.Close(); err != nil {
+ 		return fmt.Errorf("close wsl staging file: %w", err)
+ 	}
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled after writing wsl staging file: %w", cerr)
++	}
+ 	_ = os.Chmod(tmpPath, 0o600) // 宿主侧尽力；权威位由 distro 内 chmod 落实
+ 	tmpLinux := stagingLinux + "/" + filepath.Base(tmpPath)
+-	if err := wslChmodFn(target.Distro, "600", tmpLinux); err != nil {
++	if err := wslChmodFn(ctx, target.Distro, "600", tmpLinux); err != nil {
+ 		return fmt.Errorf("chmod 600 wsl staging file in distro (target untouched): %w", err)
+ 	}
+-	if mode, ok := wslStatModeFn(target.Distro, tmpLinux); !ok || mode != "600" {
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled after chmod 600 wsl staging file: %w", cerr)
++	}
++	if mode, ok := wslStatModeFn(ctx, target.Distro, tmpLinux); !ok || mode != "600" {
+ 		return fmt.Errorf("verify wsl staging file mode: got %q ok=%v (expected 600; target untouched, no secret bytes committed)", mode, ok)
++	}
++	// G0：候选字节读回预验——staging 写入面持续污染时（半写/字节翻转），
++	// 污染字节不得进入 rename，原 auth/config 原样保留。
++	candidate, rerr := os.ReadFile(tmpPath)
++	if rerr != nil {
++		return fmt.Errorf("read back wsl staging candidate: %w", rerr)
++	}
++	if !bytes.Equal(candidate, content) {
++		return fmt.Errorf("wsl staging candidate bytes mismatch after write (target untouched, no secret bytes committed)")
++	}
++	// 实际 rename 前最后一次 ctx 检查：取消时未提交侧原样。
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled before committing wsl agent file rename: %w", cerr)
+ 	}
+ 	finalUNC := filepath.Join(target.UNCDir, fileName)
+ 	if err := os.Rename(tmpPath, finalUNC); err != nil {
+@@ -173,24 +241,43 @@
+ 	return nil
+ }
+ 
+-// wslRetighten600 复核字节未变化的秘密文件权限（零写入路径的 SA-06 补丁：
+-// 已存在但权限被改宽也要安全修复或阻断；PR02：探测不可用（ok=false）不
+-// 再视为安全——unknown 不等于安全，先收紧后复验，仍不可证则返回错误交由
+-// 调用方阻断消费）：探测到确切非 600 或探测不可用时统一重收紧并复验。
+-func wslRetighten600(distro, linuxFile string) error {
+-	mode, ok := wslStatModeFn(distro, linuxFile)
++// writeWSLAgentFileStaged（旧无 ctx 入口）以 Background 包装 ctx 核心，供
++// pi/omp/opencode 既有 API 复用同一提交原语。
++func writeWSLAgentFileStaged(target WSLAgentTarget, fileName string, content []byte) error {
++	return writeWSLAgentFileStagedContext(context.Background(), target, fileName, content)
++}
++
++// wslRetighten600Context 复核字节未变化的秘密文件权限（零写入路径的
++// SA-06 补丁：已存在但权限被改宽也要安全修复或阻断；PR02：探测不可用
++// （ok=false）不再视为安全——unknown 不等于安全，先收紧后复验，仍不可证
++// 则返回错误交由调用方阻断消费）：探测到确切非 600 或探测不可用时统一
++// 重收紧并复验。探测/收紧均经 ctx 接缝（取消时按未验证处理）。
++func wslRetighten600Context(ctx context.Context, distro, linuxFile string) error {
++	mode, ok := wslStatModeFn(ctx, distro, linuxFile)
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled during permission re-check: %w", cerr)
++	}
+ 	if ok && mode == "600" {
+ 		return nil // 健康路径：零字节重写保持
+ 	}
+-	if err := wslChmodFn(distro, "600", linuxFile); err != nil {
++	if err := wslChmodFn(ctx, distro, "600", linuxFile); err != nil {
+ 		return fmt.Errorf("re-tighten wsl secret file (%s, was mode=%q ok=%v): %w", linuxFile, mode, ok, err)
+ 	}
+-	if m2, ok2 := wslStatModeFn(distro, linuxFile); !ok2 || m2 != "600" {
++	if cerr := ctx.Err(); cerr != nil {
++		return fmt.Errorf("canceled after re-tighten chmod: %w", cerr)
++	}
++	if m2, ok2 := wslStatModeFn(ctx, distro, linuxFile); !ok2 || m2 != "600" {
+ 		return fmt.Errorf("re-tighten wsl secret file (%s) unverified: mode=%q ok=%v", linuxFile, m2, ok2)
+ 	}
+ 	return nil
+ }
+ 
++// wslRetighten600（旧无 ctx 入口）以 Background 包装 ctx 核心，供
++// pi/omp/opencode 零写入路径复用。
++func wslRetighten600(distro, linuxFile string) error {
++	return wslRetighten600Context(context.Background(), distro, linuxFile)
++}
++
+ // WriteWSLPiAgentConfig 把 pi models.json 合并写入 WSL 侧 agent root。
+ // 合并语义与 Windows 侧一致（MergePiAgentConfig：保留已有 providers 与
+ // 顶层字段，amagi-<name> 当次条目优先），原子写（WritePiAgentConfig 的
+diff --git a/internal/launcher/wsl_pi_login_sync.go b/internal/launcher/wsl_pi_login_sync.go
+--- a/internal/launcher/wsl_pi_login_sync.go
++++ b/internal/launcher/wsl_pi_login_sync.go
+@@ -16,18 +16,30 @@
+ // 探测失败 → 不动任何一侧，按 DistroHasCopy 降级。仅同步 auth.json 单文件
+ // （不碰 models.json / sessions 等机器本地状态）。
+ //
++// G0 攻坚（wsl-goal-closure attack-contract PR02/PR07）后的结构约束：
++//   - 算法主体只产生 provisional result；全部可消费出口
++//     （Copied/Fresh/DistroNewer/DistroTieKept/DistroHasCopy）统一经
++//     finishA2Consumption 消费门收口——成功回写 Windows 不再绕过权限门；
++//   - 门语义：ctx 取消一律 NoAuth（不按「目标存在」降为 HasCopy）；distro
++//     侧 auth 必须可读常规文件；权限必须可证 600（unknown/宽权限先收紧后
++//     复验，仍不可证 → NoAuth）；同步原因与权限原因 errors.Join 并存；
++//   - Context 入口 SyncWSLPiLoginAuthContext 使用已解析 target（不重新用
++//     cachedHome 选目标），并用当次真实身份探测核对传入 UID/Home/MachineID；
++//     旧 SyncWSLPiLoginAuth(distro) 保留为兼容包装（同样过最终消费门）；
++//   - ctx 贯通 identity/mtime/stat/chmod 真实 runner 与两个方向 writer 的
++//     实际 rename 前；每个同步 I/O 后复查；已经发生的写入只记事实（提交后
++//     取消如实 NoAuth，不回滚新 token）；取消前未提交侧原样；
++//   - A2 不做普通旧 token 备份回滚链，不往状态/日志落 token 或 auth hash。
++//
+ // 通道选型（写路径选 UNC 直写，与 WriteWSLPiAgentConfig 同族）：
+ // resolveWSLAgentTarget → UNC 路径上 MkdirAll → 唯一临时名 tmp+Rename 原子写
+ // （P3-S0 提交原语，并发供给不撞名）→ WSLChmod 600 补偿（Windows os.Chmod
+ // 经 9P 不落 POSIX mode 位，见 wsl_agent_config.go 证据）。distro 侧 mtime 经
+ // platform.WSLFileMTime（wsl.exe 内 stat -c %Y，ext4 时间戳权威读法）。
+-// P3-S0 起桌面闸门与 remote/v1 effect 经 internal/wslsupply 协调器统一接入
+-// 本函数（A2Auth 策略适配器，判定语义零变化）；登录载荷内的 cmp/cp 同步
+-// 片段已退役，同一算法只此一份实现。
+ // 失败语义（调用方闸门消费）：同步失败不必然阻断启动——distro 侧已有
+-// （哪怕是陈旧的）auth.json 副本时降级可用；两侧都无凭据（或 distro 侧
+-// 状态不可探明）时 fail closed，由调用方以中文报错拒绝启动；chmod+清理
+-// 双失败留下的宽松权限副本同样 fail closed（m-3，不得按降级放行）。
++// （哪怕是陈旧的）auth.json 副本且权限可证 600 时降级可用；两侧都无凭据
++// （或 distro 侧状态不可探明）时 fail closed，由调用方以中文报错拒绝启动；
++// 宽松权限副本不可证 600 同样 fail closed（m-3，不得按降级放行）。
+ // Windows 侧 auth.json 缺失返回 ErrWSLPiLoginSourceMissing（登录失效语义，
+ // 维持 RequirePiLogin 的关闭路径，不复制任何东西）。
+ //
+@@ -35,11 +47,14 @@
+ // 永不解码字段、永不把内容写进日志或错误信息。
+ 
+ import (
++	"bytes"
++	"context"
+ 	"crypto/sha256"
+ 	"errors"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"time"
+ 
+ 	"amagi-codebox/internal/piconfig"
+@@ -66,11 +81,13 @@
+ 	// SyncWSLPiLoginAuthDistroTieKept：两侧都在且内容不同，但 mtime 并列/
+ 	// 容差内不可判——保守取 distro（会话即将消费侧）并回同步（M-1）。
+ 	SyncWSLPiLoginAuthDistroTieKept
+-	// SyncWSLPiLoginAuthDistroHasCopy：同步失败，但 distro 侧已有 auth.json
+-	// （可能是旧凭据）——调用方可降级放行并记 WARN。
++	// SyncWSLPiLoginAuthDistroHasCopy：同步失败，但 distro 侧已有权限可证
++	// 600 的 auth.json（可能是旧凭据）——调用方可降级放行并记 WARN。
++	// G0 起 HasCopy 由统一消费门产生：副本存在但权限不可证时不再是 HasCopy。
+ 	SyncWSLPiLoginAuthDistroHasCopy
+ 	// SyncWSLPiLoginAuthDistroNoAuth：同步失败，且 distro 侧没有（或无法
+-	// 确认有）auth.json——启动后 Pi 必然无法认证，调用方应报错拒绝。
++	// 确认有 / 权限不可证 600 的）auth.json——启动后 Pi 必然无法认证或副本
++	// 不安全，调用方应报错拒绝。
+ 	SyncWSLPiLoginAuthDistroNoAuth
+ )
+ 
+@@ -79,37 +96,116 @@
+ // （保守取 distro）。
+ const authMTimeTolerance = 2 * time.Second
+ 
+-// wslStatMTimeFn 是同步链的注入接缝（单测替换；生产指向 platform）。
+-// distro 侧 mtime 经 wsl.exe 内 stat 取 ext4 权威值；staging 提交原语与
+-// 权限验证接缝（wslChmodFn/wslStatModeFn）在 wsl_agent_config.go 统一声明。
+-var wslStatMTimeFn = platform.WSLFileMTime
++// wslStatMTimeFn 是同步链的注入接缝（单测替换；生产指向 platform 的 ctx
++// 变体——真实 exec.CommandContext，取消即停止后续探测）。distro 侧 mtime
++// 经 wsl.exe 内 stat 取 ext4 权威值；staging 提交原语与权限验证接缝
++// （wslChmodFn/wslStatModeFn）在 wsl_agent_config.go 统一声明。
++var wslStatMTimeFn = platform.WSLFileMTimeContext
+ 
+-// errWSLAuthLooseLeftover 标记 m-3 场景：chmod 600 补偿失败且清理也失败，
+-// distro 侧留下了非 600 权限的凭据副本——调用方必须 fail closed，不得按
+-// DistroHasCopy 降级放行宽松权限凭据。
+-var errWSLAuthLooseLeftover = errors.New("wsl pi auth.json left with loose permissions")
++// errWSLAuthLooseLeftover 标记 m-3/PR02 语义：即将被消费（或降级消费）的
++// distro 侧凭据副本权限无法证明 600——fail closed，不得降级放行宽松权限
++// 凭据。G0 起由统一消费门产生（errors.Join 链中保留）。
++var errWSLAuthLooseLeftover = errors.New("wsl pi auth.json left with unprovable permissions")
+ 
+-// retightenDistroAuthOrFailClosed 复核即将被降级消费的 distro 侧凭据副本
+-// 权限（PR02：A2 各 fallback——mtime 不可判/回写 Windows 失败等降级路径上
+-// 副本仍将被会话消费，权限必须可证 600；不可证则 fail closed，返回携带
+-// errWSLAuthLooseLeftover 的错误供 classifyWriteFailure 归为 NoAuth）。
+-func retightenDistroAuthOrFailClosed(target WSLAgentTarget) error {
+-	if err := wslRetighten600(target.Distro, target.LinuxDir+"/auth.json"); err != nil {
+-		return fmt.Errorf("%w: %v", errWSLAuthLooseLeftover, err)
++// a2CtxStepErr 在每个同步 I/O 之后复查 ctx：已取消时返回携带阶段说明的
++// 错误（调用方一律按 NoAuth/失败处理，不开展后继业务）。
++func a2CtxStepErr(ctx context.Context, step string) error {
++	if err := ctx.Err(); err != nil {
++		return fmt.Errorf("a2 %s: %w", step, err)
+ 	}
+ 	return nil
+ }
+ 
+-// SyncWSLPiLoginAuth 惰性同步两侧 ~/.pi/agent/auth.json（M-1：双向新陈
+-// 判定，新者为准）。成功（Copied/Fresh/DistroNewer/DistroTieKept）时 err
+-// 为 nil；失败时 outcome 给出降级判定依据（DistroHasCopy/DistroNoAuth），
+-// err 携带原始失败原因（不含凭据内容）。
+-//
+-// 内容比对 SHA-256；新陈比对 mtime（Windows 侧本机 stat，distro 侧
+-// wsl.exe 内 stat -c %Y）。并发安全：tmp+Rename 原子替换使并发调用收敛；
+-// 与 WriteWSLPiAgentConfig 操作的是不同文件（auth.json vs models.json），
+-// 无 merge 竞态。
+-func SyncWSLPiLoginAuth(distro string) (SyncWSLPiLoginAuthOutcome, error) {
++// verifyA2Target 核对传入 target 的完整性与当前身份（G0 A2 必闭合 #2）：
++// 不重新用 cachedHome 选目标——Home/LinuxDir/UNC 均来自已解析 target，这里
++// 只做结构一致性检查，并以当次真实身份探测核对 UID/Home/MachineID（同名
++// distro 重装/换默认用户/换 Home 时旧 target 不得继续作为同步目标）。
++func verifyA2Target(ctx context.Context, target WSLAgentTarget) error {
++	distro := strings.TrimSpace(target.Distro)
++	if distro == "" {
++		return fmt.Errorf("a2 target: distro is required")
++	}
++	if target.UID == "" || !strings.HasPrefix(target.Home, "/") {
++		return fmt.Errorf("a2 target incomplete for distro %q: uid=%q home=%q (caller must pass a resolved target)", distro, target.UID, target.Home)
++	}
++	wantLinuxDir := strings.TrimRight(target.Home, "/") + "/.pi/agent"
++	if target.LinuxDir != wantLinuxDir {
++		return fmt.Errorf("a2 target linux dir %q does not match home-relative pi agent dir %q", target.LinuxDir, wantLinuxDir)
++	}
++	if mapped := wslToUNCFn(distro, target.LinuxDir); mapped == "" || mapped != target.UNCDir {
++		return fmt.Errorf("a2 target UNC dir mismatch for distro %q (mapping=%q)", distro, mapped)
++	}
++	identity := wslTargetIdentityContextFn(ctx, distro)
++	if err := ctx.Err(); err != nil {
++		return fmt.Errorf("a2 identity probe canceled: %w", err)
++	}
++	if !identity.OK {
++		return fmt.Errorf("a2 identity probe failed for distro %q (uid/home unresolvable)", distro)
++	}
++	if identity.UID != target.UID || identity.Home != target.Home || identity.MachineID != target.MachineID {
++		return fmt.Errorf("a2 target identity mismatch for distro %q: uid-changed=%v home-changed=%v machine-id-changed=%v (resolve the target again)",
++			distro, identity.UID != target.UID, identity.Home != target.Home, identity.MachineID != target.MachineID)
++	}
++	return nil
++}
++
++// finishA2Consumption 是全部可消费出口的统一 finish 消费门（G0/PR02）：
++// Copied/Fresh/DistroNewer/DistroTieKept/DistroHasCopy 的 provisional 结果
++// 必须经本门放行；成功回写 Windows 后同样不得跳过。门检查顺序：
++// ctx → distro auth 可读常规文件 → 权限可证 600（unknown/宽权限先收紧后
++// 复验）。committedNote 非空时表示门检查前已有方向性实际写入（新 token
++// 已落位），门失败时在错误链中如实报告且绝不回滚新 token；cause 是本次
++// 同步的原始原因（可为 nil），与权限原因 errors.Join 并存、互不吞并。
++// 门失败与取消一律返回 NoAuth——不得按「目标存在」降为 HasCopy。
++func finishA2Consumption(ctx context.Context, target WSLAgentTarget, outcome SyncWSLPiLoginAuthOutcome, cause error, committedNote string) (SyncWSLPiLoginAuthOutcome, error) {
++	linuxAuth := target.LinuxDir + "/auth.json"
++	uncAuth := filepath.Join(target.UNCDir, "auth.json")
++	joinCauses := func(gateErr error) (SyncWSLPiLoginAuthOutcome, error) {
++		errs := make([]error, 0, 3)
++		if cause != nil {
++			errs = append(errs, cause)
++		}
++		if committedNote != "" {
++			errs = append(errs, fmt.Errorf("a2 %s (new token preserved, not rolled back)", committedNote))
++		}
++		errs = append(errs, gateErr)
++		return SyncWSLPiLoginAuthDistroNoAuth, errors.Join(errs...)
++	}
++	if err := ctx.Err(); err != nil {
++		return joinCauses(fmt.Errorf("a2 consumption gate canceled: %w", err))
++	}
++	info, statErr := os.Lstat(uncAuth)
++	if statErr != nil {
++		return joinCauses(fmt.Errorf("a2 consumption gate: distro auth not present: %w", statErr))
++	}
++	if !info.Mode().IsRegular() {
++		return joinCauses(fmt.Errorf("a2 consumption gate: distro auth is not a regular file"))
++	}
++	if _, readErr := os.ReadFile(uncAuth); readErr != nil {
++		return joinCauses(fmt.Errorf("a2 consumption gate: distro auth unreadable: %w", readErr))
++	}
++	// 权限门核心：健康 600 零重写；unknown/宽权限收紧后复验；仍不可证 →
++	// NoAuth（errWSLAuthLooseLeftover 语义，以 %w 保留底层原因——含取消）。
++	if err := wslRetighten600Context(ctx, target.Distro, linuxAuth); err != nil {
++		return joinCauses(fmt.Errorf("%w: %w", errWSLAuthLooseLeftover, err))
++	}
++	if err := ctx.Err(); err != nil {
++		return joinCauses(fmt.Errorf("a2 consumption gate canceled after permission verification: %w", err))
++	}
++	return outcome, cause
++}
++
++// SyncWSLPiLoginAuthContext 以已解析 target 惰性同步两侧
++// ~/.pi/agent/auth.json（M-1 双向新陈判定 + G0 统一消费门）。成功
++// （Copied/Fresh/DistroNewer/DistroTieKept）时 err 为 nil 且已过权限门；
++// 失败时 outcome 给出降级判定依据（DistroHasCopy/DistroNoAuth），err 携带
++// 原始失败原因（不含凭据内容）。ctx 取消/超时一律 NoAuth；已经发生的写入
++// 在错误链中如实报告方向（不回滚新 token）。内容比对 SHA-256；新陈比对
++// mtime（Windows 侧本机 stat，distro 侧 wsl.exe 内 stat -c %Y）。
++func SyncWSLPiLoginAuthContext(ctx context.Context, target WSLAgentTarget) (SyncWSLPiLoginAuthOutcome, error) {
++	if err := verifyA2Target(ctx, target); err != nil {
++		return SyncWSLPiLoginAuthDistroNoAuth, err
++	}
+ 	srcDir, err := piconfig.StandardAgentDir()
+ 	if err != nil {
+ 		return SyncWSLPiLoginAuthDistroNoAuth, fmt.Errorf("resolve windows pi agent dir: %w", err)
+@@ -128,87 +224,110 @@
+ 		return SyncWSLPiLoginAuthDistroNoAuth, fmt.Errorf("stat windows pi auth.json: %w", err)
+ 	}
+ 
+-	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
+-	if err != nil {
+-		// distro/home/UNC 任一不可解析 ⇒ distro 侧凭据状态不可探明，fail closed。
+-		return SyncWSLPiLoginAuthDistroNoAuth, err
+-	}
+ 	uncAuth := filepath.Join(target.UNCDir, "auth.json")
+-
+ 	dstData, readErr := os.ReadFile(uncAuth)
+ 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+ 		// 读不出来的故障形态（权限/共享断开）：无法确认 distro 侧状态。
+ 		return SyncWSLPiLoginAuthDistroNoAuth, fmt.Errorf("read distro pi auth.json: %w", readErr)
+ 	}
+ 	if readErr == nil && sha256.Sum256(dstData) == sha256.Sum256(srcData) {
+-		// Fresh：字节一致，零写入路径同样复核权限（SA-06：已存在副本被改宽
+-		// 时安全修复；无法重收紧 → fail closed，不得放行宽松权限凭据）。
+-		if err := wslRetighten600(target.Distro, target.LinuxDir+"/auth.json"); err != nil {
+-			return classifyWriteFailure(uncAuth, fmt.Errorf("%w: %v", errWSLAuthLooseLeftover, err))
+-		}
+-		return SyncWSLPiLoginAuthFresh, nil
++		// Fresh（零写入路径）：同样过统一消费门（PR02：成功/无写路径不得
++		// 绕过权限复核；健康 600 保持零字节重写）。
++		return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthFresh, nil, "")
+ 	}
+ 
+ 	if readErr != nil {
+ 		// distro 侧缺失（首次播种）：无新陈可言，前向复制。
+-		if err := writeWSLAuthAtomic(target, srcData); err != nil {
+-			return classifyWriteFailure(uncAuth, err)
++		if werr := writeWSLAuthAtomicContext(ctx, target, srcData); werr != nil {
++			if cerr := a2CtxStepErr(ctx, "canceled after forward write failure"); cerr != nil {
++				return SyncWSLPiLoginAuthDistroNoAuth, errors.Join(werr, cerr)
++			}
++			out, perr := classifyWriteFailure(uncAuth, werr)
++			if out == SyncWSLPiLoginAuthDistroNoAuth {
++				return out, perr
++			}
++			return finishA2Consumption(ctx, target, out, perr, "")
+ 		}
+-		return SyncWSLPiLoginAuthCopied, nil
++		return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthCopied, nil, "forward copy to distro committed")
+ 	}
+ 
+ 	// 两侧都在且内容不同：按 mtime 新陈判定，新者为准（M-1）。
+-	dstMTime, ok := wslStatMTimeFn(target.Distro, target.LinuxDir+"/auth.json")
++	dstMTime, ok := wslStatMTimeFn(ctx, target.Distro, target.LinuxDir+"/auth.json")
++	if cerr := a2CtxStepErr(ctx, "canceled during distro mtime probe"); cerr != nil {
++		return SyncWSLPiLoginAuthDistroNoAuth, cerr
++	}
+ 	if !ok {
+-		// distro 侧时间戳不可判：不动任何一侧（两侧副本各自保全），
+-		// 按「distro 已有副本」降级，会话消费 distro 现状。PR02：降级消费
+-		// 前复核副本权限——不可证 600 则 fail closed。
+-		if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
+-			return classifyWriteFailure(uncAuth, rerr)
+-		}
+-		return SyncWSLPiLoginAuthDistroHasCopy, errors.New("probe distro pi auth.json mtime: unavailable")
++		// distro 侧时间戳不可判：不动任何一侧（两侧副本各自保全），按
++		// 「distro 已有副本」provisional 降级，经统一消费门核权限后才能
++		// 以 HasCopy 放行。
++		return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthDistroHasCopy, errors.New("probe distro pi auth.json mtime: unavailable"), "")
+ 	}
+ 	srcMTime := srcStat.ModTime()
+ 	dstTime := time.Unix(dstMTime, 0)
+ 	switch {
+ 	case srcMTime.After(dstTime.Add(authMTimeTolerance)):
+ 		// Windows 新 → 前向复制。
+-		if err := writeWSLAuthAtomic(target, srcData); err != nil {
+-			// 前写失败时旧副本可能仍在（将被降级消费）。PR02：降级消费前复核
+-			// 副本权限——不可证 600 则 fail closed。
+-			if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
+-				return classifyWriteFailure(uncAuth, rerr)
++		if werr := writeWSLAuthAtomicContext(ctx, target, srcData); werr != nil {
++			if cerr := a2CtxStepErr(ctx, "canceled after forward write failure"); cerr != nil {
++				return SyncWSLPiLoginAuthDistroNoAuth, errors.Join(werr, cerr)
+ 			}
+-			return classifyWriteFailure(uncAuth, err)
++			out, perr := classifyWriteFailure(uncAuth, werr)
++			if out == SyncWSLPiLoginAuthDistroNoAuth {
++				return out, perr
++			}
++			return finishA2Consumption(ctx, target, out, perr, "")
+ 		}
+-		return SyncWSLPiLoginAuthCopied, nil
++		return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthCopied, nil, "forward copy to distro committed")
+ 	case dstTime.After(srcMTime.Add(authMTimeTolerance)):
+ 		// distro 新（如 WSL 内 pi 轮转 token）→ 反向同步回 Windows 侧。
+-		if err := writeWindowsAuthAtomic(srcDir, dstData); err != nil {
+-			// 回写失败不碰 distro 侧（会话即将消费它），降级放行。PR02：降级
+-			// 消费前复核副本权限——不可证 600 则 fail closed。
+-			if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
+-				return classifyWriteFailure(uncAuth, rerr)
++		if werr := writeWindowsAuthAtomicContext(ctx, srcDir, dstData); werr != nil {
++			if cerr := a2CtxStepErr(ctx, "canceled after windows writeback failure"); cerr != nil {
++				return SyncWSLPiLoginAuthDistroNoAuth, errors.Join(werr, cerr)
+ 			}
+-			return SyncWSLPiLoginAuthDistroHasCopy, err
++			// 回写失败不碰 distro 侧（会话即将消费它），provisional 降级
++			// 经门核权限（PR02：旧副本不可证 600 时不得降级放行）。
++			return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthDistroHasCopy, werr, "")
+ 		}
+-		return SyncWSLPiLoginAuthDistroNewer, nil
++		// 回写成功同样过门：成功出口不再绕过权限复核（PR02 根因）。
++		return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthDistroNewer, nil, "windows-side writeback committed")
+ 	default:
+ 		// 并列/容差内：保守取 distro（会话即将消费侧），回同步使两侧收敛。
+-		if err := writeWindowsAuthAtomic(srcDir, dstData); err != nil {
+-			if rerr := retightenDistroAuthOrFailClosed(target); rerr != nil {
+-				return classifyWriteFailure(uncAuth, rerr)
++		if werr := writeWindowsAuthAtomicContext(ctx, srcDir, dstData); werr != nil {
++			if cerr := a2CtxStepErr(ctx, "canceled after windows writeback failure"); cerr != nil {
++				return SyncWSLPiLoginAuthDistroNoAuth, errors.Join(werr, cerr)
+ 			}
+-			return SyncWSLPiLoginAuthDistroHasCopy, err
++			return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthDistroHasCopy, werr, "")
+ 		}
+-		return SyncWSLPiLoginAuthDistroTieKept, nil
++		return finishA2Consumption(ctx, target, SyncWSLPiLoginAuthDistroTieKept, nil, "windows-side writeback committed")
+ 	}
+ }
+ 
+-// classifyWriteFailure 按落盘现状分类前向写失败：tmp/rename 阶段失败时旧
+-// 副本仍在（DistroHasCopy，降级可用）；chmod 补偿失败已清理（stat 落空 →
+-// NoAuth）；chmod+清理双失败（errWSLAuthLooseLeftover）留下宽松权限副本
+-// ——fail closed，绝不得按降级放行（m-3）。
++// SyncWSLPiLoginAuth 是旧入口的兼容包装：以 cachedHome 解析（resolveWSL-
++// AgentTarget）+ 当次身份探测补齐 UID/MachineID 后调用 Context 入口，同样
++// 经过统一消费门（不保留旧权限旁路）。生产协调器应使用 Context 入口传入
++// 已解析 target；本包装仅供旧调用方与测试适配。
++func SyncWSLPiLoginAuth(distro string) (SyncWSLPiLoginAuthOutcome, error) {
++	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
++	if err != nil {
++		// distro/home/UNC 任一不可解析 ⇒ distro 侧凭据状态不可探明，fail closed。
++		return SyncWSLPiLoginAuthDistroNoAuth, err
++	}
++	identity := wslTargetIdentityContextFn(context.Background(), target.Distro)
++	if !identity.OK {
++		return SyncWSLPiLoginAuthDistroNoAuth, fmt.Errorf("probe WSL identity for distro %q: uid/home unresolvable", target.Distro)
++	}
++	if identity.Home != target.Home {
++		return SyncWSLPiLoginAuthDistroNoAuth, fmt.Errorf("WSL home changed for distro %q: cached %q vs current %q", target.Distro, target.Home, identity.Home)
++	}
++	target.UID = identity.UID
++	target.MachineID = identity.MachineID
++	return SyncWSLPiLoginAuthContext(context.Background(), target)
++}
++
++// classifyWriteFailure 按落盘现状把前向写失败分类为 provisional 结果：
++// tmp/rename 阶段失败时旧副本仍在（DistroHasCopy，待消费门核权限后才可
++// 降级）；chmod 补偿失败已清理（stat 落空 → NoAuth）。G0 起 cancellation
++// 不经本函数（取消一律在调用点直接 NoAuth，不得按「存在」转 HasCopy）。
+ func classifyWriteFailure(uncAuth string, err error) (SyncWSLPiLoginAuthOutcome, error) {
+ 	if errors.Is(err, errWSLAuthLooseLeftover) {
+ 		return SyncWSLPiLoginAuthDistroNoAuth, err
+@@ -218,48 +337,67 @@
+ 	}
+ 	return SyncWSLPiLoginAuthDistroNoAuth, err
+ }
+-// writeWSLAuthAtomic 经提交原语把 auth 字节原子写入 distro 侧 agent root
+-// （SA-06，wsl-goal-closure）：先建立并验证 distro 内 0700 私有 staging
+-// （chmod 700 + StatMode 探测确认，UNC/宿主 stat 不可信），秘密字节只写入
+-// staging 内唯一临时名，distro 内 chmod 600 并验证后才 rename——旧实现
+-// rename 后才补偿 chmod，9P 临时段以 umask 默认 0644 存在于共享目录，存在
+-// 被其他 Linux 用户读取的窗口。任何阶段失败都发生在 rename 之前：distro
+-// 侧既有副本（哪怕是旧凭据）原样保留，不再删除。本函数是 wslsupply A2Auth
+-// 适配器的底层写入，A2 判定语义保持零变化。
+-func writeWSLAuthAtomic(target WSLAgentTarget, auth []byte) error {
+-	return writeWSLAgentFileStaged(target, "auth.json", auth)
++
++// writeWSLAuthAtomicContext 经提交原语把 auth 字节原子写入 distro 侧 agent
++// root（SA-06，wsl-goal-closure；G0 加 ctx 与候选字节预验）：先建立并验证
++// distro 内 0700 私有 staging，秘密字节只写入 staging 内唯一临时名，distro
++// 内 chmod 600 并验证、候选字节读回比对后才 rename（持续污染时不替换旧
++// auth）；实际 rename 前最后一次 ctx 检查（取消时未提交侧原样）。
++// 本函数是 wslsupply A2Auth 适配器的底层写入。
++func writeWSLAuthAtomicContext(ctx context.Context, target WSLAgentTarget, auth []byte) error {
++	return writeWSLAgentFileStagedContext(ctx, target, "auth.json", auth)
+ }
+ 
+-// writeWindowsAuthAtomic 把 distro 侧新凭据原子写回 Windows 侧 agent root
+-// （M-1 反向同步）。写序列与 WritePiAgentConfig 同构（MkdirAll+Chmod 0700
+-// 目录 → 唯一临时名 0600 → Chmod tmp → Rename，P3-S0 起与其他供给提交原语
+-// 一致使用唯一临时名），chmod 语义对齐 Windows 侧产物。
+-func writeWindowsAuthAtomic(agentDir string, auth []byte) error {
+-	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+-		return fmt.Errorf("mkdir windows pi agent dir: %w", err)
++// writeWindowsAuthAtomicContext 把 distro 侧新凭据原子写回 Windows 侧 agent
++// root（M-1 反向同步；G0 加 ctx 与私有化验证）。写序列：EnsurePrivateDir
++// （宿主真实 0700/ACL 语义）→ 唯一临时名 → 候选字节读回比对 → 实际 rename
++// 前 ctx 检查 → rename（Windows 侧旧 auth 被新 token 替换是本方向的预期
++// 语义；A2 不做普通旧 token 备份回滚链）→ EnsurePrivateFile 验证 0600/ACL。
++func writeWindowsAuthAtomicContext(ctx context.Context, agentDir string, auth []byte) error {
++	if err := hostEnsurePrivateDirFn(agentDir); err != nil {
++		return fmt.Errorf("ensure private windows pi agent dir: %w", err)
+ 	}
+-	dst := filepath.Join(agentDir, "auth.json")
++	if cerr := a2CtxStepErr(ctx, "canceled before staging windows auth"); cerr != nil {
++		return cerr
++	}
+ 	tmp, err := os.CreateTemp(agentDir, ".amagi-auth-win-*")
+ 	if err != nil {
+ 		return fmt.Errorf("create windows auth staging file: %w", err)
+ 	}
+ 	tmpPath := tmp.Name()
++	defer func() {
++		if _, statErr := os.Stat(tmpPath); statErr == nil {
++			_ = os.Remove(tmpPath)
++		}
++	}()
+ 	if _, err := tmp.Write(auth); err != nil {
+ 		_ = tmp.Close()
+-		_ = os.Remove(tmpPath)
+ 		return fmt.Errorf("write windows pi auth.json tmp: %w", err)
+ 	}
+ 	if err := tmp.Close(); err != nil {
+-		_ = os.Remove(tmpPath)
+ 		return fmt.Errorf("close windows pi auth.json tmp: %w", err)
+ 	}
+-	if err := os.Chmod(tmpPath, 0o600); err != nil {
+-		_ = os.Remove(tmpPath)
+-		return fmt.Errorf("chmod windows pi auth.json tmp: %w", err)
++	if cerr := a2CtxStepErr(ctx, "canceled after writing windows auth staging"); cerr != nil {
++		return cerr
+ 	}
++	// 候选字节读回预验（G0）：持续污染不得进入 rename，旧 auth 原样保留。
++	got, rerr := os.ReadFile(tmpPath)
++	if rerr != nil {
++		return fmt.Errorf("read back windows auth staging candidate: %w", rerr)
++	}
++	if !bytes.Equal(got, auth) {
++		return fmt.Errorf("windows auth staging candidate bytes mismatch (old windows auth untouched)")
++	}
++	// 实际 rename 前最后一次 ctx 检查。
++	if cerr := a2CtxStepErr(ctx, "canceled before committing windows auth rename"); cerr != nil {
++		return cerr
++	}
++	dst := filepath.Join(agentDir, "auth.json")
+ 	if err := os.Rename(tmpPath, dst); err != nil {
+-		_ = os.Remove(tmpPath)
+ 		return fmt.Errorf("replace windows pi auth.json: %w", err)
+ 	}
++	if err := hostEnsurePrivateFileFn(dst); err != nil {
++		return fmt.Errorf("verify private windows pi auth.json: %w", err)
++	}
+ 	return nil
+ }
+diff --git a/internal/launcher/wsl_agent_config_test.go b/internal/launcher/wsl_agent_config_test.go
+--- a/internal/launcher/wsl_agent_config_test.go
++++ b/internal/launcher/wsl_agent_config_test.go
+@@ -1,6 +1,7 @@
+ package launcher
+ 
+ import (
++	"context"
+ 	"encoding/json"
+ 	"os"
+ 	"path/filepath"
+@@ -30,14 +31,14 @@
+ 	wslToUNCFn = func(distro, linuxPath string) string {
+ 		return filepath.Join(ft.root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ 	}
+-	wslChmodFn = func(distro, mode string, paths ...string) error {
++	wslChmodFn = func(_ context.Context, distro, mode string, paths ...string) error {
+ 		for _, p := range paths {
+ 			ft.chmodCalls = append(ft.chmodCalls, mode+" "+p)
+ 			ft.modes[p] = mode
+ 		}
+ 		return nil
+ 	}
+-	wslStatModeFn = func(_, linuxPath string) (string, bool) {
++	wslStatModeFn = func(_ context.Context, _, linuxPath string) (string, bool) {
+ 		m, ok := ft.modes[linuxPath]
+ 		return m, ok
+ 	}
+@@ -188,7 +189,7 @@
+ func TestWriteWSLPiAgentConfigChmodFailureFailsClosed(t *testing.T) {
+ 	_ = installFakeWSLTarget(t)
+ 	origChmod := wslChmodFn
+-	wslChmodFn = func(distro, mode string, paths ...string) error {
++	wslChmodFn = func(context.Context, string, string, ...string) error {
+ 		return os.ErrPermission
+ 	}
+ 	t.Cleanup(func() { wslChmodFn = origChmod })
+@@ -351,7 +352,7 @@
+ func TestWriteWSLOpenCodeAgentConfigChmodFailureFailsClosed(t *testing.T) {
+ 	ft := installFakeWSLTarget(t)
+ 	origChmod := wslChmodFn
+-	wslChmodFn = func(distro, mode string, paths ...string) error {
++	wslChmodFn = func(context.Context, string, string, ...string) error {
+ 		return os.ErrPermission
+ 	}
+ 	t.Cleanup(func() { wslChmodFn = origChmod })
+diff --git a/internal/launcher/wsl_pi_login_sync_test.go b/internal/launcher/wsl_pi_login_sync_test.go
+--- a/internal/launcher/wsl_pi_login_sync_test.go
++++ b/internal/launcher/wsl_pi_login_sync_test.go
+@@ -9,6 +9,7 @@
+ // distro，跨平台可跑。
+ 
+ import (
++	"context"
+ 	"errors"
+ 	"fmt"
+ 	"os"
+@@ -17,30 +18,34 @@
+ 	"sync"
+ 	"testing"
+ 	"time"
++
++	"amagi-codebox/internal/platform"
+ )
+ 
+ // fakeWSLForSync 把 WSL 探测接缝指向本地目录：distro 的 $HOME=/home/wslu，
+ // UNC 映射落到 root 下同名相对路径；distro 侧 mtime 接缝默认 ok=false
+-// （子测试按需覆盖）；StatMode 从 Chmod 记录读回（staging 验证探测）。
++// （子测试按需覆盖）；StatMode 从 Chmod 记录读回（staging 验证探测）；身份
++// 接缝固定返回与 /home/wslu 一致的 uid/machine-id（G0：Context 入口当次
++// 身份核对）。
+ // 返回 root 与 chmod 记录器。
+ func fakeWSLForSync(t *testing.T, chmodErr error) (root string, chmodCalls *[]string) {
+ 	t.Helper()
+ 	root = t.TempDir()
+ 	chmodCalls = &[]string{}
+ 	modes := map[string]string{}
+-	origHome, origUNC, origChmod, origStat, origStatMode := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn
++	origHome, origUNC, origChmod, origStat, origStatMode, origIdentity := wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn, wslTargetIdentityContextFn
+ 	wslUserHomeFn = func(string) string { return "/home/wslu" }
+ 	wslToUNCFn = func(_, linuxPath string) string {
+ 		return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ 	}
+-	wslChmodFn = func(_, mode string, paths ...string) error {
++	wslChmodFn = func(_ context.Context, _, mode string, paths ...string) error {
+ 		for _, p := range paths {
+ 			*chmodCalls = append(*chmodCalls, mode+" "+p)
+ 			modes[p] = mode
+ 		}
+ 		return chmodErr
+ 	}
+-	wslStatModeFn = func(_, linuxPath string) (string, bool) {
++	wslStatModeFn = func(_ context.Context, _, linuxPath string) (string, bool) {
+ 		if m, ok := modes[linuxPath]; ok {
+ 			return m, true
+ 		}
+@@ -52,9 +57,12 @@
+ 		}
+ 		return fmt.Sprintf("%o", info.Mode().Perm()), true
+ 	}
+-	wslStatMTimeFn = func(_, _ string) (int64, bool) { return 0, false }
++	wslStatMTimeFn = func(context.Context, string, string) (int64, bool) { return 0, false }
++	wslTargetIdentityContextFn = func(context.Context, string) platform.WSLUserIdentity {
++		return platform.WSLUserIdentity{UID: "1000", Home: "/home/wslu", MachineID: "test-machine", OK: true}
++	}
+ 	t.Cleanup(func() {
+-		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn = origHome, origUNC, origChmod, origStat, origStatMode
++		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatMTimeFn, wslStatModeFn, wslTargetIdentityContextFn = origHome, origUNC, origChmod, origStat, origStatMode, origIdentity
+ 	})
+ 	return root, chmodCalls
+ }
+@@ -63,7 +71,7 @@
+ func stubDistroMTime(t *testing.T, mtime time.Time) {
+ 	t.Helper()
+ 	orig := wslStatMTimeFn
+-	wslStatMTimeFn = func(_, path string) (int64, bool) {
++	wslStatMTimeFn = func(_ context.Context, _, path string) (int64, bool) {
+ 		if strings.HasSuffix(path, "/auth.json") {
+ 			return mtime.Unix(), true
+ 		}
+@@ -288,11 +296,11 @@
+ 		//（PR02）必须能证明副本安全，否则降级会被正确拒绌。
+ 		origStatMode := wslStatModeFn
+ 		prevStatMode := wslStatModeFn
+-		wslStatModeFn = func(d, linuxPath string) (string, bool) {
++		wslStatModeFn = func(ctx context.Context, d, linuxPath string) (string, bool) {
+ 			if strings.Contains(linuxPath, ".amagi-staging") {
+ 				return "", false // 仅 staging 验证失败（rename 前，未提交字节）
+ 			}
+-			return prevStatMode(d, linuxPath)
++			return prevStatMode(ctx, d, linuxPath)
+ 		}
+ 		t.Cleanup(func() { wslStatModeFn = origStatMode })
+ 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+@@ -334,7 +342,7 @@
+ 		writeDistroAuth(t, root, `{"openai-codex":{"type":"oauth"}}`, time.Now().Add(-time.Hour))
+ 		modes := map[string]string{"/home/wslu/.pi/agent/auth.json": "644"}
+ 		origStatMode := wslStatModeFn
+-		wslStatModeFn = func(_, p string) (string, bool) {
++		wslStatModeFn = func(_ context.Context, _, p string) (string, bool) {
+ 			m, ok := modes[p]
+ 			return m, ok
+ 		}
+@@ -371,13 +379,13 @@
+ 	target := WSLAgentTarget{Distro: "Ubuntu", Home: "/home/u", LinuxDir: "/home/u/.pi/agent", UNCDir: uncDir}
+ 	modes := map[string]string{}
+ 	origChmod, origStatMode := wslChmodFn, wslStatModeFn
+-	wslChmodFn = func(_, mode string, paths ...string) error {
++	wslChmodFn = func(_ context.Context, _, mode string, paths ...string) error {
+ 		for _, p := range paths {
+ 			modes[p] = mode
+ 		}
+ 		return nil
+ 	}
+-	wslStatModeFn = func(_, p string) (string, bool) {
++	wslStatModeFn = func(_ context.Context, _, p string) (string, bool) {
+ 		m, ok := modes[p]
+ 		return m, ok
+ 	}
+@@ -387,7 +395,7 @@
+ 	for i := 0; i < writers; i++ {
+ 		payload := []byte(fmt.Sprintf("{\"writer\":%d}", i))
+ 		mu.Lock()
+-		if err := writeWSLAuthAtomic(target, payload); err != nil {
++		if err := writeWSLAuthAtomicContext(context.Background(), target, payload); err != nil {
+ 			mu.Unlock()
+ 			t.Fatalf("serialized writeWSLAuthAtomic #%d: %v", i, err)
+ 		}
+diff --git a/internal/launcher/wsl_agent_e2e_windows_test.go b/internal/launcher/wsl_agent_e2e_windows_test.go
+--- a/internal/launcher/wsl_agent_e2e_windows_test.go
++++ b/internal/launcher/wsl_agent_e2e_windows_test.go
+@@ -13,6 +13,7 @@
+ // ~/.pi/agent：测试内 t.Cleanup 自动备份/恢复原文件（diting m4），不依赖
+ // 外部脚本。
+ import (
++	"context"
+ 	"encoding/json"
+ 	"os"
+ 	"path/filepath"
+@@ -135,7 +136,7 @@
+ 		t.Logf("cleanup restore %s: %v", uncPath, err)
+ 		return
+ 	}
+-	if err := wslChmodFn(distro, "600", linuxAgentDir+"/models.json"); err != nil {
++	if err := wslChmodFn(context.Background(), distro, "600", linuxAgentDir+"/models.json"); err != nil {
+ 		t.Logf("cleanup chmod 600: %v", err)
+ 	}
+ }
+@@ -213,7 +214,7 @@
+ 		t.Logf("cleanup restore %s: %v", uncPath, err)
+ 		return
+ 	}
+-	if err := wslChmodFn(distro, "600", linuxDir+"/"+openCodeWSLConfigFile); err != nil {
++	if err := wslChmodFn(context.Background(), distro, "600", linuxDir+"/"+openCodeWSLConfigFile); err != nil {
+ 		t.Logf("cleanup chmod 600: %v", err)
+ 	}
+ }
+diff --git a/internal/launcher/wsl_pi_login_sync_e2e_windows_test.go b/internal/launcher/wsl_pi_login_sync_e2e_windows_test.go
+--- a/internal/launcher/wsl_pi_login_sync_e2e_windows_test.go
++++ b/internal/launcher/wsl_pi_login_sync_e2e_windows_test.go
+@@ -14,6 +14,7 @@
+ // 测试后 Windows 侧恢复原字节、distro 侧恢复原字节（不存在则删除）。
+ // 本机无 Windows 侧登录时跳过。
+ import (
++	"context"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -69,7 +70,7 @@
+ 			t.Logf("cleanup restore %s: %v", uncAuth, err)
+ 			return
+ 		}
+-		if err := wslChmodFn(distro, "600", linuxAuth); err != nil {
++		if err := wslChmodFn(context.Background(), distro, "600", linuxAuth); err != nil {
+ 			t.Logf("cleanup chmod 600: %v", err)
+ 		}
+ 	})
+diff --git a/internal/platform/wsl_home.go b/internal/platform/wsl_home.go
+--- a/internal/platform/wsl_home.go
++++ b/internal/platform/wsl_home.go
+@@ -199,9 +199,26 @@
+ 	if distro == "" || len(linuxPaths) == 0 {
+ 		return nil
+ 	}
++	script, err := buildWSLChmodScript(mode, linuxPaths)
++	if err != nil {
++		return err
++	}
++	if script == "" {
++		return nil
++	}
++	if _, err := wslScriptRunner(distro, script); err != nil {
++		return err
++	}
++	return nil
++}
++
++// buildWSLChmodScript 构造 distro 内 chmod 脚本（mode 硬校验 + 路径单引号
++// 转义），供无 ctx 与 ctx 变体共用同一语义。无可转义路径时返回 ("", nil)，
++// 调用方跳过 runner（与旧 WSLChmod 的空路径语义一致）。
++func buildWSLChmodScript(mode string, linuxPaths []string) (string, error) {
+ 	if mode == "" || strings.ContainsAny(mode, " \t'\";&|`$") {
+ 		// 防御：mode 由本包调用方内联常量传入，此处只做硬校验。
+-		return errWSLChmodInvalidMode(mode)
++		return "", errWSLChmodInvalidMode(mode)
+ 	}
+ 	quoted := make([]string, 0, len(linuxPaths))
+ 	for _, p := range linuxPaths {
+@@ -212,13 +229,9 @@
+ 		quoted = append(quoted, wslShSingleQuote(p))
+ 	}
+ 	if len(quoted) == 0 {
+-		return nil
++		return "", nil
+ 	}
+-	script := "chmod " + mode + " " + strings.Join(quoted, " ")
+-	if _, err := wslScriptRunner(distro, script); err != nil {
+-		return err
+-	}
+-	return nil
++	return "chmod " + mode + " " + strings.Join(quoted, " "), nil
+ }
+ 
+ type wslChmodError struct{ mode string }
+diff --git a/internal/launcher/a2_consumption_test.go b/internal/launcher/a2_consumption_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/launcher/a2_consumption_test.go
+@@ -0,0 +1,686 @@
++package launcher
++
++// a2_consumption_test.go — A2 统一消费门与真实 ctx 接缝的正式回归
++//（wsl-goal-closure 攻坚 G0，attack-contract PR02/PR07 矩阵）：
++//   - 5 个可消费出口 × 权限形态（600 健康 / 644 可收紧 / 收紧失败 /
++//     unknown / 复验失败）——全部经 finishA2Consumption，成功回写 Windows
++//     不再绕门；
++//   - 成功反向/并列回写后门失败：新 token 保留（不回滚），NoAuth；
++//   - 各真实 ctx 接缝取消（身份探测中、mtime 探测中、distro 侧候选后
++//     rename 前、Windows 侧候选后 rename 前、提交后门内）：未提交侧原样、
++//     提交后取消如实 NoAuth；
++//   - 持续候选污染（staging 字节损坏）：原 auth 不变；
++//   - 目标身份失配（UID/Home/MachineID）拒绝。
++// 全部断言落到文件字节与返回 outcome，不以「helper 被调用」代替。auth 均
++// 为临时目录合成 fixture，不触真实 WSL/用户凭据。
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"amagi-codebox/internal/platform"
++)
++
++// a2AuthModeSeq 塑造 gate 对 distro auth.json 的探测面：每次探测弹出下一
++// 个元素（最后一个重复）；oks 控制探测是否可用（unknown 形态）。
++type a2AuthModeSeq struct {
++	mu    sync.Mutex
++	modes []string
++	oks   []bool
++	calls int
++}
++
++func (s *a2AuthModeSeq) probe() (string, bool) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	idx := s.calls
++	s.calls++
++	if idx >= len(s.modes) {
++		idx = len(s.modes) - 1
++	}
++	if idx < 0 {
++		return "", false
++	}
++	ok := true
++	if idx < len(s.oks) {
++		ok = s.oks[idx]
++	}
++	return s.modes[idx], ok
++}
++
++func (s *a2AuthModeSeq) probeCalls() int {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return s.calls
++}
++
++// a2Fake 组装矩阵所需的可注入行为。
++type a2Fake struct {
++	root       string // distro 侧 UNC 映射根
++	winHome    string // Windows 侧 HOME
++	chmodCalls *[]string
++
++	authModes []string
++	authOKs   []bool
++	chmodErr  error
++	mtime     time.Time
++	mtimeOK   bool
++
++	identity      platform.WSLUserIdentity
++	onIdentity    func()                 // 身份探测钩子（取消注入）
++	onMTime       func()                 // mtime 探测钩子
++	onStagingMode func(linuxPath string) // staging 探测钩子（污染/取消注入）
++	onGateMode    func()                 // gate 首次 auth 探测钩子（提交后取消注入）
++}
++
++func installA2Fake(t *testing.T, f *a2Fake) {
++	t.Helper()
++	f.root = t.TempDir()
++	f.winHome = t.TempDir()
++	f.chmodCalls = &[]string{}
++	if f.identity.Home == "" {
++		f.identity = platform.WSLUserIdentity{UID: "1000", Home: "/home/wslu", MachineID: "test-machine", OK: true}
++	}
++	t.Setenv("HOME", f.winHome)
++	t.Setenv("USERPROFILE", f.winHome)
++
++	origHome, origUNC, origChmod, origStatMode, origStatMTime, origIdentity :=
++		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatModeFn, wslStatMTimeFn, wslTargetIdentityContextFn
++	wslUserHomeFn = func(string) string { return "/home/wslu" }
++	wslToUNCFn = func(_, linuxPath string) string {
++		return filepath.Join(f.root, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++	}
++	wslChmodFn = func(_ context.Context, _, mode string, paths ...string) error {
++		for _, p := range paths {
++			*f.chmodCalls = append(*f.chmodCalls, mode+" "+p)
++		}
++		// chmodErr 仅作用于 auth.json 的 600 收紧（gate 面）；staging/目录
++		// chmod 恒成功——矩阵聚焦门内收紧失败形态。
++		if f.chmodErr != nil && mode == "600" && len(paths) > 0 && strings.HasSuffix(paths[0], "/auth.json") {
++			return f.chmodErr
++		}
++		return nil
++	}
++	seq := &a2AuthModeSeq{modes: f.authModes, oks: f.authOKs}
++	wslStatModeFn = func(_ context.Context, _, linuxPath string) (string, bool) {
++		if strings.HasSuffix(linuxPath, "/auth.json") {
++			if seq.probeCalls() == 0 && f.onGateMode != nil {
++				f.onGateMode()
++			}
++			return seq.probe()
++		}
++		if strings.HasSuffix(linuxPath, "/.amagi-staging") {
++			return "700", true
++		}
++		if strings.Contains(linuxPath, "/.amagi-staging/") {
++			if f.onStagingMode != nil {
++				f.onStagingMode(linuxPath)
++			}
++			return "600", true
++		}
++		return "700", true
++	}
++	wslStatMTimeFn = func(_ context.Context, _, _ string) (int64, bool) {
++		if f.onMTime != nil {
++			f.onMTime()
++		}
++		if !f.mtimeOK {
++			return 0, false
++		}
++		return f.mtime.Unix(), true
++	}
++	wslTargetIdentityContextFn = func(context.Context, string) platform.WSLUserIdentity {
++		if f.onIdentity != nil {
++			f.onIdentity()
++		}
++		return f.identity
++	}
++	t.Cleanup(func() {
++		wslUserHomeFn, wslToUNCFn, wslChmodFn, wslStatModeFn, wslStatMTimeFn, wslTargetIdentityContextFn =
++			origHome, origUNC, origChmod, origStatMode, origStatMTime, origIdentity
++	})
++}
++
++func (f *a2Fake) distroAuthPath() string {
++	return filepath.Join(f.root, "home", "wslu", ".pi", "agent", "auth.json")
++}
++
++func (f *a2Fake) windowsAuthPath() string {
++	return filepath.Join(f.winHome, ".pi", "agent", "auth.json")
++}
++
++func (f *a2Fake) writeWindowsAuth(t *testing.T, content string, mtime time.Time) {
++	t.Helper()
++	if err := os.MkdirAll(filepath.Dir(f.windowsAuthPath()), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(f.windowsAuthPath(), []byte(content), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Chtimes(f.windowsAuthPath(), mtime, mtime); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func (f *a2Fake) writeDistroAuth(t *testing.T, content string, mtime time.Time) {
++	t.Helper()
++	if err := os.MkdirAll(filepath.Dir(f.distroAuthPath()), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(f.distroAuthPath(), []byte(content), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Chtimes(f.distroAuthPath(), mtime, mtime); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func (f *a2Fake) resolvedTarget() WSLAgentTarget {
++	return WSLAgentTarget{
++		Distro:    "Ubuntu",
++		Home:      "/home/wslu",
++		LinuxDir:  "/home/wslu/.pi/agent",
++		UNCDir:    filepath.Join(f.root, "home", "wslu", ".pi", "agent"),
++		UID:       f.identity.UID,
++		MachineID: f.identity.MachineID,
++	}
++}
++
++func mustReadAuth(t *testing.T, path string) string {
++	t.Helper()
++	b, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatalf("read %s: %v", path, err)
++	}
++	return string(b)
++}
++
++func authChmodCount(calls []string) int {
++	n := 0
++	for _, c := range calls {
++		if c == "600 /home/wslu/.pi/agent/auth.json" {
++			n++
++		}
++	}
++	return n
++}
++
++// runA2Sync 执行一次 Context 入口同步（矩阵统一入口）。
++func runA2Sync(f *a2Fake) (SyncWSLPiLoginAuthOutcome, error) {
++	return SyncWSLPiLoginAuthContext(context.Background(), f.resolvedTarget())
++}
++
++// --- 矩阵一：5 出口 × 5 权限形态 ---
++
++type a2Direction int
++
++const (
++	dirCopied a2Direction = iota
++	dirFresh
++	dirDistroNewer
++	dirTieKept
++	dirHasCopy
++)
++
++func (d a2Direction) name() string {
++	switch d {
++	case dirCopied:
++		return "copied"
++	case dirFresh:
++		return "fresh"
++	case dirDistroNewer:
++		return "distro-newer"
++	case dirTieKept:
++		return "tie-kept"
++	default:
++		return "has-copy"
++	}
++}
++
++// setupDirection 按方向布置两侧 auth 状态与 mtime 形态，返回期望的
++// （门通过时）outcome、distro 侧期望字节与 windows 侧期望字节。
++func setupDirection(t *testing.T, d a2Direction, f *a2Fake) (wantPass SyncWSLPiLoginAuthOutcome, wantDistro, wantWindows string) {
++	t.Helper()
++	const winAuth = `{"win":{"type":"oauth"}}`
++	const distroAuth = `{"distro":{"type":"oauth","rotated":true}}`
++	now := time.Now()
++	switch d {
++	case dirCopied:
++		f.writeWindowsAuth(t, winAuth, now)
++		// distro 侧缺失；mtime 不参与。
++		return SyncWSLPiLoginAuthCopied, winAuth, winAuth
++	case dirFresh:
++		f.writeWindowsAuth(t, winAuth, now)
++		f.writeDistroAuth(t, winAuth, now)
++		return SyncWSLPiLoginAuthFresh, winAuth, winAuth
++	case dirDistroNewer:
++		f.writeWindowsAuth(t, winAuth, now)
++		f.writeDistroAuth(t, distroAuth, now)
++		f.mtime, f.mtimeOK = now.Add(time.Hour), true
++		return SyncWSLPiLoginAuthDistroNewer, distroAuth, distroAuth
++	case dirTieKept:
++		tie := now.Add(-time.Minute)
++		f.writeWindowsAuth(t, winAuth, tie)
++		f.writeDistroAuth(t, distroAuth, tie)
++		f.mtime, f.mtimeOK = tie, true
++		return SyncWSLPiLoginAuthDistroTieKept, distroAuth, distroAuth
++	default: // dirHasCopy：内容不同 + mtime 不可判
++		f.writeWindowsAuth(t, winAuth, now)
++		f.writeDistroAuth(t, distroAuth, now)
++		return SyncWSLPiLoginAuthDistroHasCopy, distroAuth, winAuth
++	}
++}
++
++// TestA2ConsumptionGateMatrix：全部出口 × 权限形态统一过门。
++func TestA2ConsumptionGateMatrix(t *testing.T) {
++	type permCase struct {
++		name        string
++		authModes   []string
++		authOKs     []bool
++		chmodErr    error
++		wantGateOK  bool
++		wantTighten bool
++	}
++	permCases := []permCase{
++		{name: "mode600-healthy", authModes: []string{"600"}, wantGateOK: true},
++		{name: "mode644-tightened", authModes: []string{"644", "600"}, wantGateOK: true, wantTighten: true},
++		{name: "mode644-chmod-fails", authModes: []string{"644"}, chmodErr: errors.New("chmod denied"), wantTighten: true},
++		{name: "mode-unknown-reverify-fails", authModes: []string{""}, authOKs: []bool{false, false}, wantTighten: true},
++		{name: "mode644-reverify-still-644", authModes: []string{"644", "644"}, wantTighten: true},
++	}
++	directions := []a2Direction{dirCopied, dirFresh, dirDistroNewer, dirTieKept, dirHasCopy}
++
++	for _, d := range directions {
++		for _, pc := range permCases {
++			t.Run(d.name()+"/"+pc.name, func(t *testing.T) {
++				f := &a2Fake{authModes: pc.authModes, authOKs: pc.authOKs, chmodErr: pc.chmodErr}
++				installA2Fake(t, f)
++				wantOutcome, wantDistroBytes, wantWindowsBytes := setupDirection(t, d, f)
++
++				outcome, err := runA2Sync(f)
++
++				if pc.wantGateOK {
++					if outcome != wantOutcome {
++						t.Fatalf("outcome = %v, want %v", outcome, wantOutcome)
++					}
++					// HasCopy 方向的 err 是 mtime 不可判降级原因（保留）；其余门通过时不得有 err。
++					if err != nil && d != dirHasCopy {
++						t.Fatalf("gate-passed %v must not carry err, got %v", wantOutcome, err)
++					}
++					if err == nil && d == dirHasCopy {
++						t.Fatal("has-copy degradation must keep its mtime-unavailable cause")
++					}
++					if got := mustReadAuth(t, f.distroAuthPath()); got != wantDistroBytes {
++						t.Fatalf("distro auth bytes = %q, want %q", got, wantDistroBytes)
++					}
++					if got := mustReadAuth(t, f.windowsAuthPath()); got != wantWindowsBytes {
++						t.Fatalf("windows auth bytes = %q, want %q", got, wantWindowsBytes)
++					}
++					if n := authChmodCount(*f.chmodCalls); (n == 1) != pc.wantTighten {
++						t.Fatalf("auth tighten chmod calls = %d (wantTighten=%v), calls=%v", n, pc.wantTighten, *f.chmodCalls)
++					}
++					return
++				}
++
++				// 门失败：一律 NoAuth，双 cause 保留（权限 cause + 同步 cause），
++				// 且方向性已提交写不回滚。
++				if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++					t.Fatalf("outcome = %v, want DistroNoAuth when gate cannot prove 600", outcome)
++				}
++				if err == nil {
++					t.Fatal("gate failure must surface an error")
++				}
++				if !errors.Is(err, errWSLAuthLooseLeftover) {
++					t.Fatalf("err = %v, want errWSLAuthLooseLeftover in chain", err)
++				}
++				if !strings.Contains(err.Error(), "auth.json") {
++					t.Fatalf("error must identify the affected secret file: %v", err)
++				}
++				if got := mustReadAuth(t, f.distroAuthPath()); got != wantDistroBytes {
++					t.Fatalf("distro auth bytes after gate failure = %q, want %q", got, wantDistroBytes)
++				}
++				if got := mustReadAuth(t, f.windowsAuthPath()); got != wantWindowsBytes {
++					t.Fatalf("windows auth bytes after gate failure = %q, want %q (committed writeback must not be rolled back)", got, wantWindowsBytes)
++				}
++				if n := authChmodCount(*f.chmodCalls); n != 1 {
++					t.Fatalf("tighten attempt count = %d, want 1, calls=%v", n, *f.chmodCalls)
++				}
++				// 成功回写后的门失败必须在错误链中报告方向性实际写入。
++				if d == dirDistroNewer || d == dirTieKept {
++					if !strings.Contains(err.Error(), "windows-side writeback committed") {
++						t.Fatalf("gate failure after writeback must report the committed direction: %v", err)
++					}
++				}
++			})
++		}
++	}
++}
++
++// --- 矩阵二：ctx 真实接缝取消 ---
++
++// TestA2CancelDuringIdentityProbe：身份探测中取消——目标未选定、零写入、
++// NoAuth。
++func TestA2CancelDuringIdentityProbe(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	f.writeWindowsAuth(t, `{"win":1}`, time.Now())
++	ctx, cancel := context.WithCancel(context.Background())
++	f.onIdentity = cancel
++	outcome, err := SyncWSLPiLoginAuthContext(ctx, f.resolvedTarget())
++	if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++		t.Fatalf("outcome = %v, want DistroNoAuth", outcome)
++	}
++	if err == nil || !errors.Is(err, context.Canceled) {
++		t.Fatalf("err = %v, want context.Canceled", err)
++	}
++	if _, statErr := os.Stat(f.distroAuthPath()); !os.IsNotExist(statErr) {
++		t.Fatal("canceled during identity probe must not write the distro side")
++	}
++	if got := mustReadAuth(t, f.windowsAuthPath()); got != `{"win":1}` {
++		t.Fatalf("windows side altered: %q", got)
++	}
++}
++
++// TestA2CancelDuringMTimeProbe：mtime 探测中取消——两侧原样、NoAuth（不按
++// 存在降为 HasCopy）。
++func TestA2CancelDuringMTimeProbe(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	f.writeWindowsAuth(t, `{"win":1}`, time.Now())
++	f.writeDistroAuth(t, `{"distro":1}`, time.Now())
++	ctx, cancel := context.WithCancel(context.Background())
++	f.onMTime = cancel
++	outcome, err := SyncWSLPiLoginAuthContext(ctx, f.resolvedTarget())
++	if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++		t.Fatalf("outcome = %v, want DistroNoAuth (cancellation must not degrade to HasCopy)", outcome)
++	}
++	if err == nil || !errors.Is(err, context.Canceled) {
++		t.Fatalf("err = %v, want context.Canceled", err)
++	}
++	if got := mustReadAuth(t, f.distroAuthPath()); got != `{"distro":1}` {
++		t.Fatalf("distro side altered: %q", got)
++	}
++	if got := mustReadAuth(t, f.windowsAuthPath()); got != `{"win":1}` {
++		t.Fatalf("windows side altered: %q", got)
++	}
++}
++
++// TestA2CancelAfterDistroCandidateBeforeRename：distro 侧候选已写入 staging、
++// chmod 已收紧，rename 前取消——原 auth 不变（未提交侧原样），staging 临时
++// 文件清理。
++func TestA2CancelAfterDistroCandidateBeforeRename(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	f.writeWindowsAuth(t, `{"win":1}`, time.Now())
++	f.writeDistroAuth(t, `{"old":1}`, time.Now().Add(-time.Hour)) // Windows 新 → 前向写
++	f.mtime, f.mtimeOK = time.Now().Add(-time.Hour), true
++
++	ctx, cancel := context.WithCancel(context.Background())
++	stagingDir := filepath.Join(f.root, "home", "wslu", ".pi", "agent", ".amagi-staging")
++	f.onStagingMode = func(string) { cancel() }
++	outcome, err := SyncWSLPiLoginAuthContext(ctx, f.resolvedTarget())
++	if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++		t.Fatalf("outcome = %v, want DistroNoAuth (cancel must not degrade to HasCopy)", outcome)
++	}
++	if err == nil || !errors.Is(err, context.Canceled) {
++		t.Fatalf("err = %v, want context.Canceled", err)
++	}
++	if got := mustReadAuth(t, f.distroAuthPath()); got != `{"old":1}` {
++		t.Fatalf("pre-rename cancel must leave original auth untouched, got %q", got)
++	}
++	if got := mustReadAuth(t, f.windowsAuthPath()); got != `{"win":1}` {
++		t.Fatalf("windows side altered: %q", got)
++	}
++	entries, rerr := os.ReadDir(stagingDir)
++	if rerr == nil && len(entries) != 0 {
++		t.Fatalf("staging must be cleaned after pre-rename cancel: %v", entries)
++	}
++}
++
++// countingCtx 在第 n 次 Err() 调用时取消自身（确定性钉住「候选写入后、
++// rename 前」的取消窗口）。
++type countingCtx struct {
++	context.Context
++	mu       sync.Mutex
++	cancelAt int
++	calls    int
++	canceled bool
++}
++
++func (c *countingCtx) Err() error {
++	c.mu.Lock()
++	c.calls++
++	trigger := c.calls >= c.cancelAt
++	c.mu.Unlock()
++	if trigger && !c.canceled {
++		c.canceled = true
++	}
++	if c.canceled {
++		return context.Canceled
++	}
++	return nil
++}
++
++// TestA2WindowsWriterCancelBeforeRename：Windows 侧 writer 候选写入后、实际
++// rename 前取消（第 2 次 ctx 检查点 = 候选写完成之后）——旧 Windows auth
++// 原样、tmp 清理、distro 不动。
++func TestA2WindowsWriterCancelBeforeRename(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	agentDir := filepath.Join(f.winHome, ".pi", "agent")
++	if err := os.MkdirAll(agentDir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(agentDir, "auth.json"), []byte(`{"old-win":1}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	ctx := &countingCtx{Context: context.Background(), cancelAt: 2}
++	err := writeWindowsAuthAtomicContext(ctx, agentDir, []byte(`{"new":1}`))
++	if err == nil || !errors.Is(err, context.Canceled) {
++		t.Fatalf("err = %v, want context.Canceled", err)
++	}
++	if got := mustReadAuth(t, filepath.Join(agentDir, "auth.json")); got != `{"old-win":1}` {
++		t.Fatalf("pre-rename cancel must keep old windows auth, got %q", got)
++	}
++	entries, rerr := os.ReadDir(agentDir)
++	if rerr != nil {
++		t.Fatal(rerr)
++	}
++	for _, e := range entries {
++		if strings.HasPrefix(e.Name(), ".amagi-auth-win-") {
++			t.Fatalf("windows staging leftover: %s", e.Name())
++		}
++	}
++}
++
++// TestA2CancelAfterCommitGateFails：提交后（前向复制完成）取消——门如实
++// NoAuth，新 token 保留在 distro 侧（不回滚）、错误链报告方向性写入。
++func TestA2CancelAfterCommitGateFails(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	f.writeWindowsAuth(t, `{"win":1}`, time.Now())
++	ctx, cancel := context.WithCancel(context.Background())
++	f.onGateMode = cancel
++	outcome, err := SyncWSLPiLoginAuthContext(ctx, f.resolvedTarget())
++	if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++		t.Fatalf("outcome = %v, want DistroNoAuth (post-commit cancel)", outcome)
++	}
++	if err == nil || !errors.Is(err, context.Canceled) {
++		t.Fatalf("err = %v, want context.Canceled", err)
++	}
++	if !strings.Contains(err.Error(), "forward copy to distro committed") {
++		t.Fatalf("post-commit cancel must report the committed direction: %v", err)
++	}
++	if got := mustReadAuth(t, f.distroAuthPath()); got != `{"win":1}` {
++		t.Fatalf("committed new token must be preserved (not rolled back), got %q", got)
++	}
++	if got := mustReadAuth(t, f.windowsAuthPath()); got != `{"win":1}` {
++		t.Fatalf("windows side altered: %q", got)
++	}
++}
++
++// TestA2CancelAfterWritebackGateFails：反向回写成功后取消——Windows 侧保留
++// 新 token（不回滚），distro 侧原样，NoAuth + 方向性报告。
++func TestA2CancelAfterWritebackGateFails(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	now := time.Now()
++	f.writeWindowsAuth(t, `{"win":1}`, now)
++	f.writeDistroAuth(t, `{"distro":1}`, now)
++	f.mtime, f.mtimeOK = now.Add(time.Hour), true
++	ctx, cancel := context.WithCancel(context.Background())
++	f.onGateMode = cancel
++	outcome, err := SyncWSLPiLoginAuthContext(ctx, f.resolvedTarget())
++	if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++		t.Fatalf("outcome = %v, want DistroNoAuth (post-writeback cancel)", outcome)
++	}
++	if err == nil || !errors.Is(err, context.Canceled) {
++		t.Fatalf("err = %v, want context.Canceled", err)
++	}
++	if !strings.Contains(err.Error(), "windows-side writeback committed") {
++		t.Fatalf("post-writeback cancel must report the committed direction: %v", err)
++	}
++	if got := mustReadAuth(t, f.windowsAuthPath()); got != `{"distro":1}` {
++		t.Fatalf("committed writeback must be preserved (not rolled back), got %q", got)
++	}
++	if got := mustReadAuth(t, f.distroAuthPath()); got != `{"distro":1}` {
++		t.Fatalf("distro side altered: %q", got)
++	}
++}
++
++// --- 矩阵三：持续候选污染与身份失配 ---
++
++// TestA2ContinuousStagingPollution：staging 字节持续被污染——候选读回预验
++// 拦截，原 auth 原样；按前向写失败分类（旧副本在场 → HasCopy 过门）。
++func TestA2ContinuousStagingPollution(t *testing.T) {
++	f := &a2Fake{authModes: []string{"600"}}
++	installA2Fake(t, f)
++	now := time.Now()
++	f.writeWindowsAuth(t, `{"win":1}`, now)
++	f.writeDistroAuth(t, `{"old":1}`, now.Add(-time.Hour))
++	f.mtime, f.mtimeOK = now.Add(-time.Hour), true
++
++	stagingDir := filepath.Join(f.root, "home", "wslu", ".pi", "agent", ".amagi-staging")
++	f.onStagingMode = func(string) {
++		// 每次 staging 文件探测时把所有 staging 候选污染掉（模拟持续写坏）。
++		entries, rerr := os.ReadDir(stagingDir)
++		if rerr != nil {
++			return
++		}
++		for _, e := range entries {
++			p := filepath.Join(stagingDir, e.Name())
++			_ = os.WriteFile(p, []byte(`{"polluted":true}`), 0o600)
++		}
++	}
++	outcome, err := runA2Sync(f)
++	if outcome != SyncWSLPiLoginAuthDistroHasCopy {
++		t.Fatalf("outcome = %v, want DistroHasCopy (old copy intact, gate-passed 600)", outcome)
++	}
++	if err == nil || !strings.Contains(err.Error(), "mismatch") {
++		t.Fatalf("err = %v, want candidate mismatch error", err)
++	}
++	if got := mustReadAuth(t, f.distroAuthPath()); got != `{"old":1}` {
++		t.Fatalf("polluted candidate must never replace original auth, got %q", got)
++	}
++}
++
++// TestA2TargetIdentityMismatch：传入 target 与当次身份探测失配（UID/Home/
++// MachineID）或结构不完整——NoAuth 且零写入。
++func TestA2TargetIdentityMismatch(t *testing.T) {
++	base := func(t *testing.T) *a2Fake {
++		f := &a2Fake{authModes: []string{"600"}}
++		installA2Fake(t, f)
++		f.writeWindowsAuth(t, `{"win":1}`, time.Now())
++		f.writeDistroAuth(t, `{"distro":1}`, time.Now())
++		return f
++	}
++	cases := []struct {
++		name   string
++		mutate func(f *a2Fake, target *WSLAgentTarget)
++	}{
++		{"uid-changed", func(f *a2Fake, target *WSLAgentTarget) { target.UID = "4242" }},
++		{"home-changed", func(f *a2Fake, target *WSLAgentTarget) {
++			target.Home = "/home/other"
++			target.LinuxDir = "/home/other/.pi/agent"
++			target.UNCDir = filepath.Join(f.root, "home", "other", ".pi", "agent")
++		}},
++		{"machine-id-changed", func(f *a2Fake, target *WSLAgentTarget) { target.MachineID = "different-machine" }},
++		{"uid-missing", func(f *a2Fake, target *WSLAgentTarget) { target.UID = "" }},
++		{"linux-dir-mismatch", func(f *a2Fake, target *WSLAgentTarget) { target.LinuxDir = "/home/wslu/.pi/elsewhere" }},
++		{"unc-dir-mismatch", func(f *a2Fake, target *WSLAgentTarget) { target.UNCDir = filepath.Join(f.root, "elsewhere") }},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			f := base(t)
++			target := f.resolvedTarget()
++			tc.mutate(f, &target)
++			outcome, err := SyncWSLPiLoginAuthContext(context.Background(), target)
++			if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++				t.Fatalf("outcome = %v, want DistroNoAuth", outcome)
++			}
++			if err == nil {
++				t.Fatal("identity/structure mismatch must error")
++			}
++			if got := mustReadAuth(t, f.distroAuthPath()); got != `{"distro":1}` {
++				t.Fatalf("distro side altered on mismatch: %q", got)
++			}
++			if got := mustReadAuth(t, f.windowsAuthPath()); got != `{"win":1}` {
++				t.Fatalf("windows side altered on mismatch: %q", got)
++			}
++		})
++	}
++}
++
++// TestA2CompatWrapperPassesGate：旧入口 SyncWSLPiLoginAuth 同样过门——
++// 不可证 600 的副本不得经兼容包装降级放行（无旧权限旁路）。
++func TestA2CompatWrapperPassesGate(t *testing.T) {
++	t.Run("healthy 600 degrades via gate", func(t *testing.T) {
++		f := &a2Fake{authModes: []string{"600"}}
++		installA2Fake(t, f)
++		now := time.Now()
++		f.writeWindowsAuth(t, `{"win":1}`, now)
++		f.writeDistroAuth(t, `{"distro":1}`, now)
++		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++		if outcome != SyncWSLPiLoginAuthDistroHasCopy {
++			t.Fatalf("outcome = %v, want DistroHasCopy (mtime unavailable, gate-passed)", outcome)
++		}
++		if err == nil {
++			t.Fatal("mtime-unavailable degradation must keep its cause")
++		}
++	})
++	t.Run("unprovable mode fails closed via wrapper", func(t *testing.T) {
++		f := &a2Fake{authModes: []string{"644"}, chmodErr: errors.New("chmod denied")}
++		installA2Fake(t, f)
++		now := time.Now()
++		f.writeWindowsAuth(t, `{"win":1}`, now)
++		f.writeDistroAuth(t, `{"distro":1}`, now)
++		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++		if outcome != SyncWSLPiLoginAuthDistroNoAuth {
++			t.Fatalf("outcome = %v, want DistroNoAuth (compat wrapper must not bypass the gate)", outcome)
++		}
++		if err == nil || !errors.Is(err, errWSLAuthLooseLeftover) {
++			t.Fatalf("err = %v, want errWSLAuthLooseLeftover", err)
++		}
++	})
++	t.Run("wrapper success path", func(t *testing.T) {
++		f := &a2Fake{authModes: []string{"600"}}
++		installA2Fake(t, f)
++		now := time.Now()
++		f.writeWindowsAuth(t, `{"win":1}`, now.Add(time.Hour))
++		f.writeDistroAuth(t, `{"old":1}`, now)
++		f.mtime, f.mtimeOK = now, true // distro 旧 → 前向复制
++		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
++		if err != nil || outcome != SyncWSLPiLoginAuthCopied {
++			t.Fatalf("outcome=%v err=%v, want Copied", outcome, err)
++		}
++		if got := mustReadAuth(t, f.distroAuthPath()); got != `{"win":1}` {
++			t.Fatalf("distro bytes = %q, want forward-copied windows bytes", got)
++		}
++	})
++}
+diff --git a/internal/platform/wsl_context.go b/internal/platform/wsl_context.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/wsl_context.go
+@@ -0,0 +1,121 @@
++package platform
++
++// wsl_context.go — WSL 探测原语的 context 变体（wsl-goal-closure 攻坚 G0）。
++//
++// 旧无 ctx 函数（WSLTargetIdentity/WSLFileMTime/WSLFileMode/WSLChmod，经
++// wslScriptRunner）保留供既有消费者兼容；本文件提供真实可取消的 Context
++// 变体，供 A2 凭据同步等需要「每个同步 I/O 后可查取消」的链路使用。
++//
++// 真实性约束：Context 变体一律经 wslScriptRunnerContext（exec.CommandContext
++// 构造），不做 goroutine 包旧函数的假取消；调用方在取消后必须按失败处理，
++// 不得把「wsl.exe 已被杀」当作「distro 内 Linux 子进程已退出」——Linux 侧
++// 后继写是否发生需 Windows 真机验证（本仓恒标注未真机验证）。
++//
++// 脚本语义与旧函数逐字一致（--exec / quoting / 输出解码 / fail-closed 解析），
++// 差异仅在：入口先查 ctx.Err()，探测经可取消 runner 执行。
++
++import (
++	"context"
++	"os/exec"
++	"runtime"
++	"strconv"
++	"strings"
++)
++
++// wslScriptRunnerContext runs `wsl.exe -d <distro> --exec sh -lc <script>` with
++// a real context (exec.CommandContext). Package var so tests can inject a fake
++// and assert the context actually flows to the runner; the default
++// implementation honors ctx cancellation at Start and kills wsl.exe when the
++// context is done while the process runs.
++var wslScriptRunnerContext = func(ctx context.Context, distro string, script string) ([]byte, error) {
++	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "sh", "-lc", script)
++	// 与无 ctx 版本同策略：GUI 父进程下抑制 console 子系统 exe 闪窗。
++	SuppressConsoleWindow(cmd)
++	return cmd.Output()
++}
++
++// WSLTargetIdentityContext 是 WSLTargetIdentity 的可取消变体：批量探测 distro
++// 默认用户 uid/$HOME/machine-id。ctx 取消时返回 OK=false；语义（不缓存、
++// 解析 fail-closed）与无 ctx 版本一致。
++func WSLTargetIdentityContext(ctx context.Context, distro string) WSLUserIdentity {
++	distro = strings.TrimSpace(distro)
++	if distro == "" {
++		return WSLUserIdentity{}
++	}
++	if err := ctx.Err(); err != nil {
++		return WSLUserIdentity{}
++	}
++	out, err := wslScriptRunnerContext(ctx, distro, wslIdentityScript)
++	if err != nil {
++		return WSLUserIdentity{}
++	}
++	return parseWSLUserIdentity(decodeWSLListOutput(out))
++}
++
++// WSLFileMTimeContext 是 WSLFileMTime 的可取消变体。osName 以参数区分宿主门
++// 的可测核心与原生入口（与 wslFileMTimeForOS 同型：非 windows 恒 (0,false)）。
++func WSLFileMTimeContext(ctx context.Context, distro, linuxPath string) (int64, bool) {
++	return wslFileMTimeContextForOS(ctx, runtime.GOOS, distro, linuxPath)
++}
++
++func wslFileMTimeContextForOS(ctx context.Context, osName, distro, linuxPath string) (int64, bool) {
++	distro = strings.TrimSpace(distro)
++	if distro == "" || osName != "windows" || !strings.HasPrefix(linuxPath, "/") {
++		return 0, false
++	}
++	if err := ctx.Err(); err != nil {
++		return 0, false
++	}
++	out, err := wslScriptRunnerContext(ctx, distro, "stat -c %Y "+wslShSingleQuote(linuxPath))
++	if err != nil {
++		return 0, false
++	}
++	sec, perr := strconv.ParseInt(strings.TrimSpace(strings.Trim(decodeWSLListOutput(out), "\r\x00 ")), 10, 64)
++	if perr != nil || sec < 0 {
++		return 0, false
++	}
++	return sec, true
++}
++
++// WSLFileModeContext 是 WSLFileMode 的可取消变体（stat -c %a 权威读法，
++// 解析与 fail-closed 语义复用 parseWSLStatModeOutput）。osName 可测核心
++// 与 WSLFileMTimeContext 同型（非 windows 恒 false，不触 runner）。
++func WSLFileModeContext(ctx context.Context, distro, linuxPath string) (string, bool) {
++	return wslFileModeContextForOS(ctx, runtime.GOOS, distro, linuxPath)
++}
++
++func wslFileModeContextForOS(ctx context.Context, osName, distro, linuxPath string) (string, bool) {
++	distro = strings.TrimSpace(distro)
++	if distro == "" || osName != "windows" || !strings.HasPrefix(linuxPath, "/") {
++		return "", false
++	}
++	if err := ctx.Err(); err != nil {
++		return "", false
++	}
++	out, err := wslScriptRunnerContext(ctx, distro, "stat -c %a "+wslShSingleQuote(linuxPath))
++	if err != nil {
++		return "", false
++	}
++	return parseWSLStatModeOutput(decodeWSLListOutput(out))
++}
++
++// WSLChmodContext 是 WSLChmod 的可取消变体（distro 内 chmod；mode 校验与
++// 路径转义复用同一 buildWSLChmodScript）。ctx 取消时返回 ctx 错误且不执行
++// 任何 chmod。
++func WSLChmodContext(ctx context.Context, distro string, mode string, linuxPaths ...string) error {
++	distro = strings.TrimSpace(distro)
++	if distro == "" || len(linuxPaths) == 0 {
++		return nil
++	}
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	script, err := buildWSLChmodScript(mode, linuxPaths)
++	if err != nil {
++		return err
++	}
++	if _, err := wslScriptRunnerContext(ctx, distro, script); err != nil {
++		return err
++	}
++	return nil
++}
+diff --git a/internal/platform/wsl_context_test.go b/internal/platform/wsl_context_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/wsl_context_test.go
+@@ -0,0 +1,173 @@
++package platform
++
++// wsl_context_test.go — WSL 探测原语 ctx 变体的语义回归（G0）：
++//   - ctx 真实贯通：默认 runner 为 exec.CommandContext，已取消的 ctx 在
++//     Start 前即失败（不执行任何 wsl.exe）；
++//   - 入口 ctx 检查：已取消的 ctx 不触发 runner（各探测面零调用）；
++//   - 解析语义与旧无 ctx 函数一致（fail-closed：输出异常 → 零值/false）。
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestWSLContextRunnerHonorsCanceledContext(t *testing.T) {
++	// 默认生产 runner 必须是 exec.CommandContext：PATH 上放一个真实可执行
++	// 的 wsl.exe 替身（LookPath 必须命中，否则 macOS 上路径错误先于 ctx 检
++	// 查，无法证明取消语义），已取消 ctx 下 Start 直接返回 ctx 错误——
++	// Go 运行时保证不会真正执行替身。
++	fakeBin := t.TempDir()
++	script := filepath.Join(fakeBin, "wsl.exe")
++	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	_, err := wslScriptRunnerContext(ctx, "Ubuntu", "id -u")
++	if err == nil {
++		t.Fatal("canceled context must fail the runner")
++	}
++	if !strings.Contains(err.Error(), "context canceled") {
++		t.Fatalf("err = %v, want context cancellation error", err)
++	}
++}
++
++func TestWSLContextProbesCheckCtxBeforeRunner(t *testing.T) {
++	// 已取消 ctx 下各探测入口必须在调用 runner 前短路（runner 计数为零）。
++	orig := wslScriptRunnerContext
++	runnerCalls := 0
++	wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++		runnerCalls++
++		return []byte("1000\n/home/u\nmachine\n"), nil
++	}
++	t.Cleanup(func() { wslScriptRunnerContext = orig })
++
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++
++	if id := WSLTargetIdentityContext(ctx, "Ubuntu"); id.OK {
++		t.Fatal("canceled ctx must yield not-OK identity")
++	}
++	if _, ok := wslFileMTimeContextForOS(ctx, "windows", "Ubuntu", "/home/u/x"); ok {
++		t.Fatal("canceled ctx must yield mtime ok=false")
++	}
++	if _, ok := WSLFileModeContext(ctx, "Ubuntu", "/home/u/x"); ok {
++		t.Fatal("canceled ctx must yield mode ok=false")
++	}
++	if err := WSLChmodContext(ctx, "Ubuntu", "600", "/home/u/x"); err == nil {
++		t.Fatal("canceled ctx must fail chmod")
++	}
++	if runnerCalls != 0 {
++		t.Fatalf("canceled ctx must not invoke the runner, calls=%d", runnerCalls)
++	}
++}
++
++func TestWSLContextProbesParseLikeLegacy(t *testing.T) {
++	orig := wslScriptRunnerContext
++	t.Cleanup(func() { wslScriptRunnerContext = orig })
++	ctx := context.Background()
++
++	t.Run("identity parses uid/home/machine-id", func(t *testing.T) {
++		wslScriptRunnerContext = func(_ context.Context, distro, script string) ([]byte, error) {
++			if distro != "Ubuntu" || !strings.Contains(script, "machine-id") {
++				t.Errorf("unexpected probe: distro=%q script=%q", distro, script)
++			}
++			return []byte("1000\n/home/wslu\nb0bb\n"), nil
++		}
++		id := WSLTargetIdentityContext(ctx, "Ubuntu")
++		if !id.OK || id.UID != "1000" || id.Home != "/home/wslu" || id.MachineID != "b0bb" {
++			t.Fatalf("identity = %+v", id)
++		}
++	})
++
++	t.Run("identity fails closed on malformed output", func(t *testing.T) {
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			return []byte("not-a-uid\nrelative\n"), nil
++		}
++		if id := WSLTargetIdentityContext(ctx, "Ubuntu"); id.OK {
++			t.Fatalf("malformed output must not be OK: %+v", id)
++		}
++	})
++
++	t.Run("mtime parses epoch seconds", func(t *testing.T) {
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			return []byte("1792992000\r\n"), nil
++		}
++		sec, ok := wslFileMTimeContextForOS(ctx, "windows", "Ubuntu", "/home/u/auth.json")
++		if !ok || sec != 1792992000 {
++			t.Fatalf("mtime = (%d, %v)", sec, ok)
++		}
++	})
++
++	t.Run("mtime non-windows host stays false without runner", func(t *testing.T) {
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			t.Fatal("runner must not be called for non-windows host core")
++			return nil, nil
++		}
++		if _, ok := wslFileMTimeContextForOS(ctx, "darwin", "Ubuntu", "/home/u/auth.json"); ok {
++			t.Fatal("non-windows host must yield ok=false")
++		}
++	})
++
++	t.Run("mode parses octal and fails on noise", func(t *testing.T) {
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			return []byte("600\n"), nil
++		}
++		if m, ok := wslFileModeContextForOS(ctx, "windows", "Ubuntu", "/home/u/auth.json"); !ok || m != "600" {
++			t.Fatalf("mode = (%q, %v)", m, ok)
++		}
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			return []byte("rw-r--r--"), nil
++		}
++		if _, ok := wslFileModeContextForOS(ctx, "windows", "Ubuntu", "/home/u/auth.json"); ok {
++			t.Fatal("symbolic mode noise must fail closed")
++		}
++	})
++
++	t.Run("chmod builds same script as legacy", func(t *testing.T) {
++		var gotScript string
++		wslScriptRunnerContext = func(_ context.Context, distro, script string) ([]byte, error) {
++			if distro != "Ubuntu" {
++				t.Errorf("distro = %q", distro)
++			}
++			gotScript = script
++			return nil, nil
++		}
++		if err := WSLChmodContext(ctx, "Ubuntu", "600", "/home/u/a b/'quote'.json"); err != nil {
++			t.Fatal(err)
++		}
++		if gotScript != "chmod 600 '/home/u/a b/'\\''quote'\\''.json'" {
++			t.Fatalf("script = %q, want legacy-identical quoting", gotScript)
++		}
++	})
++
++	t.Run("chmod rejects invalid mode without runner", func(t *testing.T) {
++		runnerHit := false
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			runnerHit = true
++			return nil, nil
++		}
++		if err := WSLChmodContext(ctx, "Ubuntu", "600; rm -rf /", "/home/u/x"); err == nil {
++			t.Fatal("invalid mode must error")
++		}
++		if runnerHit {
++			t.Fatal("invalid mode must not reach the runner")
++		}
++	})
++
++	t.Run("runner error propagates", func(t *testing.T) {
++		wslScriptRunnerContext = func(context.Context, string, string) ([]byte, error) {
++			return nil, context.DeadlineExceeded
++		}
++		ctxDeadline, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
++		defer cancel()
++		if err := WSLChmodContext(ctxDeadline, "Ubuntu", "600", "/home/u/x"); err == nil {
++			t.Fatal("runner error must propagate")
++		}
++	})
++}
+diff --git a/internal/platform/move_no_replace.go b/internal/platform/move_no_replace.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/move_no_replace.go
+@@ -0,0 +1,83 @@
++package platform
++
++// move_no_replace.go — 原子不替换移动原语（wsl-goal-closure 攻坚 G0）。
++//
++// 语义（attack-contract「统一文件原语/新增窄 MoveNoReplace」）：
++//   - 同文件系统内把 source 原子移动到 destination；
++//   - destination 已存在（文件/目录/空目录）绝不替换，返回 os.ErrExist；
++//     source 与 destination 双方内容/实体均不丢失；
++//   - 文件与目录均支持；不支持（跨设备、OS/文件系统无该原语）返回错误，
++//     绝不降级为「先删目标再 Rename」或「Lstat 后普通 Rename」等危险路径
++//     （Lstat+Rename 存在 TOCTOU 竞态窗口，禁止冒充 no-replace）；
++//   - 成功后 source 不存在、destination 存在——本入口做廉价的落位后验，
++//     后验不成立按错误报告，不虚报成功。
++//
++// 分 OS 实现（build tags，不用 runtime.GOOS 分支）：
++//   - darwin:  unix.RenamexNp(..., RENAME_EXCL)；
++//   - linux:   unix.Renameat2(..., RENAME_NOREPLACE)；
++//   - windows: windows.MoveFileEx 不带 MOVEFILE_REPLACE_EXISTING 标志的原生
++//     移动（目标存在 → ERROR_ALREADY_EXISTS）。
++//   - 其它 OS：显式不支持错误。
++//
++// Windows/UNC 真实行为（含 9P 共享上的目录移动与并发语义）未经真机验证；
++// 交叉编译通过只证明可编译，不证明原子性/错误码形态。
++//
++// 注意：原子 no-replace 不等于原子内容 CAS——目标在调用前后被外部进程改写
++// 不在本原语保证内；调用方须自行复验移动后的实体（契约「外部后改」流程）。
++
++import (
++	"errors"
++	"fmt"
++	"os"
++)
++
++// fmtMoveNoReplaceUnsupported 把底层「无此原语」errno 包装为不支持错误
++// （保留原始 errno 供诊断）。
++func fmtMoveNoReplaceUnsupported(err error) error {
++	return fmt.Errorf("%w: %w", ErrMoveNoReplaceUnsupported, err)
++}
++
++// ErrMoveNoReplaceUnsupported 报告当前 GOOS/文件系统不支持原子 no-replace
++// 移动。调用方必须按「能力不可用」处理：保留 source 与既有目标，不得退化
++// 为覆盖式移动。
++var ErrMoveNoReplaceUnsupported = errors.New("atomic no-replace move unsupported on this GOOS")
++
++// MoveNoReplace 把 source 原子移动到 destination（同文件系统、不替换既有
++// 目标、文件与目录均支持）。destination 已存在时返回可被 errors.Is 判定的
++// os.ErrExist，且双方实体保持原样。
++func MoveNoReplace(source, destination string) error {
++	if source == "" || destination == "" {
++		return fmt.Errorf("move-no-replace requires non-empty paths (source=%q destination=%q)", source, destination)
++	}
++	if source == destination {
++		return fmt.Errorf("move-no-replace source and destination are identical: %q", source)
++	}
++	err := moveNoReplaceOS(source, destination)
++	if err == nil {
++		// 落位后验：成功移动后 source 必须消失、destination 必须存在。
++		if _, serr := os.Lstat(source); serr == nil {
++			return fmt.Errorf("move-no-replace reported success but source still exists: %q", source)
++		} else if !errors.Is(serr, os.ErrNotExist) {
++			return fmt.Errorf("move-no-replace post-check source %q: %w", source, serr)
++		}
++		if _, derr := os.Lstat(destination); derr != nil {
++			return fmt.Errorf("move-no-replace post-check destination %q: %w", destination, derr)
++		}
++		return nil
++	}
++	if errors.Is(err, os.ErrExist) {
++		// no-replace 冲突后验：双方实体必须在场（任何一方丢失都是深度异常，
++		// 不得静默当作普通冲突）。
++		if _, serr := os.Lstat(source); serr != nil {
++			return fmt.Errorf("move-no-replace conflict post-check source %q: %w", source, serr)
++		}
++		if _, derr := os.Lstat(destination); derr != nil {
++			return fmt.Errorf("move-no-replace conflict post-check destination %q: %w", destination, derr)
++		}
++		return err
++	}
++	if errors.Is(err, os.ErrNotExist) {
++		return fmt.Errorf("move-no-replace source missing: %w", err)
++	}
++	return err
++}
+diff --git a/internal/platform/move_no_replace_darwin.go b/internal/platform/move_no_replace_darwin.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/move_no_replace_darwin.go
+@@ -0,0 +1,14 @@
++//go:build darwin
++
++package platform
++
++import (
++	"golang.org/x/sys/unix"
++)
++
++// moveNoReplaceOS：macOS 以 renamex_np(RENAME_EXCL) 提供同文件系统原子
++// no-replace rename（文件与目录均支持）。目标存在返回 EEXIST（syscall.Errno
++// 的 Is 面即可被 errors.Is(err, os.ErrExist) 判定）。
++func moveNoReplaceOS(source, destination string) error {
++	return unix.RenamexNp(source, destination, unix.RENAME_EXCL)
++}
+diff --git a/internal/platform/move_no_replace_linux.go b/internal/platform/move_no_replace_linux.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/move_no_replace_linux.go
+@@ -0,0 +1,19 @@
++//go:build linux
++
++package platform
++
++import (
++	"golang.org/x/sys/unix"
++)
++
++// moveNoReplaceOS：Linux 以 renameat2(RENAME_NOREPLACE) 提供同文件系统原子
++// no-replace rename（文件与目录均支持）。目标存在返回 EEXIST；内核不支持
++// renameat2 时返回 ENOSYS/EINVAL——按不支持错误上抛，调用方保留双方实体，
++// 不降级覆盖。
++func moveNoReplaceOS(source, destination string) error {
++	err := unix.Renameat2(unix.AT_FDCWD, source, unix.AT_FDCWD, destination, unix.RENAME_NOREPLACE)
++	if err == unix.ENOSYS || err == unix.EINVAL || err == unix.ENOTTY {
++		return fmtMoveNoReplaceUnsupported(err)
++	}
++	return err
++}
+diff --git a/internal/platform/move_no_replace_other.go b/internal/platform/move_no_replace_other.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/move_no_replace_other.go
+@@ -0,0 +1,11 @@
++//go:build !darwin && !linux && !windows
++
++package platform
++
++import "errors"
++
++// moveNoReplaceOS：其余平台无既定原子 no-replace 原语，显式不支持
++// （fail closed；调用方不得借覆盖式移动凑功能）。
++func moveNoReplaceOS(source, destination string) error {
++	return ErrMoveNoReplaceUnsupported
++}
+diff --git a/internal/platform/move_no_replace_windows.go b/internal/platform/move_no_replace_windows.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/move_no_replace_windows.go
+@@ -0,0 +1,31 @@
++//go:build windows
++
++package platform
++
++import (
++	"fmt"
++
++	"golang.org/x/sys/windows"
++)
++
++// moveNoReplaceOS：Windows 用原生 MoveFileExW 且不带 MOVEFILE_REPLACE_EXISTING
++// /COPY_ALLOWED 标志——不带替换标志时目标已存在即失败（ERROR_ALREADY_EXISTS，
++// Errno 的 Is 面可被 errors.Is(err, os.ErrExist) 判定），同卷内为原子重命名；
++// 不带 COPY_ALLOWED 时跨卷移动不被静默降级为复制（跨卷返回错误，符合
++// 「不支持就 error，不降级」）。
++//
++// UNC（\\\\wsl.localhost\\... 等 9P 共享）上的真实行为——目录移动、错误码形态、
++// 并发窗口——未经 Windows 真机验证；交叉编译通过不证明上述行为。
++func moveNoReplaceOS(source, destination string) error {
++	src16, err := windows.UTF16PtrFromString(source)
++	if err != nil {
++		return fmt.Errorf("move-no-replace encode source: %w", err)
++	}
++	dst16, err := windows.UTF16PtrFromString(destination)
++	if err != nil {
++		return fmt.Errorf("move-no-replace encode destination: %w", err)
++	}
++	// flags=0：无 MOVEFILE_REPLACE_EXISTING（不替换目标）、无
++	// MOVEFILE_COPY_ALLOWED（跨卷不降级复制）、无 MOVEFILE_DELAY_UNTIL_REBOOT。
++	return windows.MoveFileEx(src16, dst16, 0)
++}
+diff --git a/internal/platform/move_no_replace_test.go b/internal/platform/move_no_replace_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/move_no_replace_test.go
+@@ -0,0 +1,241 @@
++package platform
++
++// move_no_replace_test.go — 原子不替换移动原语的语义回归（G0）：
++// 目标已存在（文件/目录/空目录）绝不替换且双方保留；目标不存在原子移动
++// 成功；并发竞争创建目标失败不丢任何一方；source 缺失等文件系统错误如实
++// 上抛、不触发任何回退路径。全部使用临时目录合成数据。
++
++import (
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"sync"
++	"testing"
++)
++
++func writeMoveFixture(t *testing.T, path, content string) {
++	t.Helper()
++	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestMoveNoReplaceTargetExistsNeverReplaced(t *testing.T) {
++	dir := t.TempDir()
++
++	t.Run("existing file target", func(t *testing.T) {
++		src := filepath.Join(dir, "src-file.txt")
++		dst := filepath.Join(dir, "dst-file.txt")
++		writeMoveFixture(t, src, "source-bytes")
++		writeMoveFixture(t, dst, "destination-bytes")
++		err := MoveNoReplace(src, dst)
++		if !errors.Is(err, os.ErrExist) {
++			t.Fatalf("err = %v, want os.ErrExist", err)
++		}
++		gotSrc, rerr := os.ReadFile(src)
++		if rerr != nil || string(gotSrc) != "source-bytes" {
++			t.Fatalf("source lost/altered: %q err=%v", gotSrc, rerr)
++		}
++		gotDst, rerr := os.ReadFile(dst)
++		if rerr != nil || string(gotDst) != "destination-bytes" {
++			t.Fatalf("destination replaced: %q err=%v", gotDst, rerr)
++		}
++	})
++
++	t.Run("existing non-empty dir target", func(t *testing.T) {
++		src := filepath.Join(dir, "srcdir")
++		if err := os.MkdirAll(filepath.Join(src, "inner"), 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(filepath.Join(src, "inner", "f.txt"), []byte("src"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		dst := filepath.Join(dir, "dstdir")
++		if err := os.MkdirAll(dst, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(filepath.Join(dst, "occupant.txt"), []byte("occupant"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		if err := MoveNoReplace(src, dst); !errors.Is(err, os.ErrExist) {
++			t.Fatalf("err = %v, want os.ErrExist", err)
++		}
++		if _, err := os.Stat(filepath.Join(src, "inner", "f.txt")); err != nil {
++			t.Fatalf("source tree lost: %v", err)
++		}
++		got, rerr := os.ReadFile(filepath.Join(dst, "occupant.txt"))
++		if rerr != nil || string(got) != "occupant" {
++			t.Fatalf("existing dir target replaced: %q err=%v", got, rerr)
++		}
++	})
++
++	t.Run("existing empty dir target", func(t *testing.T) {
++		src := filepath.Join(dir, "srcdir2")
++		if err := os.MkdirAll(src, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		dst := filepath.Join(dir, "dstdir2")
++		if err := os.MkdirAll(dst, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := MoveNoReplace(src, dst); !errors.Is(err, os.ErrExist) {
++			t.Fatalf("err = %v, want os.ErrExist (empty dir must not be replaced either)", err)
++		}
++		if info, err := os.Stat(src); err != nil || !info.IsDir() {
++			t.Fatalf("source dir lost: info=%v err=%v", info, err)
++		}
++		if info, err := os.Stat(dst); err != nil || !info.IsDir() {
++			t.Fatalf("empty target dir lost: info=%v err=%v", info, err)
++		}
++	})
++}
++
++func TestMoveNoReplaceTargetAbsentMoves(t *testing.T) {
++	dir := t.TempDir()
++
++	t.Run("file", func(t *testing.T) {
++		src := filepath.Join(dir, "m-src.txt")
++		dst := filepath.Join(dir, "m-dst.txt")
++		writeMoveFixture(t, src, "atomic-bytes")
++		if err := MoveNoReplace(src, dst); err != nil {
++			t.Fatalf("move: %v", err)
++		}
++		if _, err := os.Lstat(src); !errors.Is(err, os.ErrNotExist) {
++			t.Fatalf("source must be gone, err=%v", err)
++		}
++		got, rerr := os.ReadFile(dst)
++		if rerr != nil || string(got) != "atomic-bytes" {
++			t.Fatalf("destination bytes = %q err=%v", got, rerr)
++		}
++	})
++
++	t.Run("non-empty dir", func(t *testing.T) {
++		src := filepath.Join(dir, "m-srcdir")
++		if err := os.MkdirAll(filepath.Join(src, "a", "b"), 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(filepath.Join(src, "a", "b", "deep.txt"), []byte("deep"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		dst := filepath.Join(dir, "m-dstdir")
++		if err := MoveNoReplace(src, dst); err != nil {
++			t.Fatalf("move dir: %v", err)
++		}
++		got, rerr := os.ReadFile(filepath.Join(dst, "a", "b", "deep.txt"))
++		if rerr != nil || string(got) != "deep" {
++			t.Fatalf("dir tree bytes lost: %q err=%v", got, rerr)
++		}
++		if _, err := os.Lstat(src); !errors.Is(err, os.ErrNotExist) {
++			t.Fatalf("source dir must be gone, err=%v", err)
++		}
++	})
++}
++
++// TestMoveNoReplaceConcurrentSingleWinner：N 个并发写者竞争同一目标——
++// 原子 no-replace 语义下恰好一个成功，其余得到 os.ErrExist；任何一方的
++// 字节都不丢（失败者 source 在场，目标内容恰为某一个完整写者字节）。
++func TestMoveNoReplaceConcurrentSingleWinner(t *testing.T) {
++	dir := t.TempDir()
++	dst := filepath.Join(dir, "race-target")
++	const writers = 16
++	sources := make([]string, writers)
++	for i := range sources {
++		sources[i] = filepath.Join(dir, "race-src", fmt.Sprintf("%02d", i))
++	}
++	for i, src := range sources {
++		writeMoveFixture(t, src, fmt.Sprintf("winner-%02d", i))
++	}
++	var (
++		mu       sync.Mutex
++		wins     int
++		conflics int
++		firstErr error
++	)
++	var wg sync.WaitGroup
++	for _, src := range sources {
++		wg.Add(1)
++		go func(src string) {
++			defer wg.Done()
++			err := MoveNoReplace(src, dst)
++			mu.Lock()
++			defer mu.Unlock()
++			switch {
++			case err == nil:
++				wins++
++			case errors.Is(err, os.ErrExist):
++				conflics++
++			default:
++				if firstErr == nil {
++					firstErr = err
++				}
++			}
++		}(src)
++	}
++	wg.Wait()
++	if firstErr != nil {
++		t.Fatalf("unexpected non-conflict error: %v", firstErr)
++	}
++	if wins != 1 {
++		t.Fatalf("exactly one winner expected, got %d (conflicts=%d)", wins, conflics)
++	}
++	if wins+conflics != writers {
++		t.Fatalf("some writers' outcome lost: wins=%d conflicts=%d writers=%d", wins, conflics, writers)
++	}
++	got, rerr := os.ReadFile(dst)
++	if rerr != nil {
++		t.Fatalf("destination missing after race: %v", rerr)
++	}
++	found := false
++	for i := range sources {
++		if string(got) == fmt.Sprintf("winner-%02d", i) {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatalf("destination bytes %q do not match any complete writer", got)
++	}
++	// 失败者的 source 必须仍在（不丢任何一方）。
++	remaining := 0
++	for _, src := range sources {
++		if _, err := os.Lstat(src); err == nil {
++			remaining++
++		}
++	}
++	if remaining != writers-1 {
++		t.Fatalf("failed movers' sources must remain, got %d of %d", remaining, writers-1)
++	}
++}
++
++func TestMoveNoReplaceErrorPaths(t *testing.T) {
++	dir := t.TempDir()
++	t.Run("missing source does not create destination", func(t *testing.T) {
++		src := filepath.Join(dir, "no-such-source")
++		dst := filepath.Join(dir, "dst-should-not-exist")
++		err := MoveNoReplace(src, dst)
++		if err == nil || !errors.Is(err, os.ErrNotExist) {
++			t.Fatalf("err = %v, want os.ErrNotExist", err)
++		}
++		if _, derr := os.Lstat(dst); !errors.Is(derr, os.ErrNotExist) {
++			t.Fatalf("destination must not be created by a failed move, err=%v", derr)
++		}
++	})
++	t.Run("empty paths rejected", func(t *testing.T) {
++		if err := MoveNoReplace("", filepath.Join(dir, "d")); err == nil {
++			t.Fatal("empty source must error")
++		}
++		if err := MoveNoReplace(filepath.Join(dir, "s"), ""); err == nil {
++			t.Fatal("empty destination must error")
++		}
++	})
++	t.Run("same path rejected", func(t *testing.T) {
++		p := filepath.Join(dir, "same.txt")
++		writeMoveFixture(t, p, "x")
++		if err := MoveNoReplace(p, p); err == nil {
++			t.Fatal("identical source/destination must error")
++		}
++	})
++}
+diff --git a/internal/platform/ensure_private.go b/internal/platform/ensure_private.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/ensure_private.go
+@@ -0,0 +1,135 @@
++package platform
++
++// ensure_private.go — 宿主本地受管路径的私有化原语（wsl-goal-closure 攻坚 G0）。
++//
++// 用途边界：服务宿主本地配置/状态/pending 目录（如 ~/.amagi-codebox/ 下
++// wsl-config-supply-pending/）的「当前用户私有」语义——目录 0700 / 文件 0600。
++// 它不冒充 WSL POSIX 权限：distro 内文件的 mode 位必须走 WSLChmod/
++// WSLFileMode（9P 语义见 wsl_home.go 实证注释）。
++//
++// 语义（attack-contract「私有目录/文件」）：
++//   - 建立（不存在则创建）并收紧（已存在则收窄）到当前用户私有；
++//   - 验证而非只设置：设置后必须重新读回权限/ACL 证明隔离成立，验证不可
++//     证即返回错误（fail closed，调用方不得当作已私有化）；
++//   - 拒绝符号链接：入口与收尾各做一次 Lstat 符号链接检查（chmod/ACL 按
++//     名字操作会跟随链接打到别处；首尾双查把竞态窗口压到最小并如实报错）；
++//   - 仅修改传入的受管路径本身，不改系统/全局配置。
++//
++// 威胁模型（明示）：允许的访问主体只有当前用户、LOCAL SYSTEM 与内建
++// Administrators 组（SYSTEM/管理员是 Windows 上文件所有权与备份语义的
++// 标准伴生主体）；其它本机用户不得读/写。POSIX 侧以 owner-only mode 位
++// 表达同一语义。错误信息不携带 SID/ACL 原始内容（不含任何凭据性材料）。
++//
++// Windows 分文件实现真实 DACL（SetNamedSecurityInfo + 读回验证），不以
++// os.Chmod(0600) 冒充（os.Chmod 在 Windows 只拨只读属性）；Windows 实际
++// ACL 行为未真机验证，交叉编译通过只证明可编译。
++
++import (
++	"errors"
++	"fmt"
++	"io/fs"
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++// ErrPrivatePathNotRegular / ErrPrivatePathNotDir 报告受管路径类型不符。
++var (
++	ErrPrivatePathNotDir     = errors.New("managed private path is not a directory")
++	ErrPrivatePathNotRegular = errors.New("managed private path is not a regular file")
++	ErrPrivatePathSymlink    = errors.New("managed private path is or became a symlink")
++)
++
++// validatePrivatePath 检查受管路径形态：非空、绝对路径（相对路径随进程
++// cwd 漂移，不作为受管锚点）。
++func validatePrivatePath(path string) error {
++	if strings.TrimSpace(path) == "" {
++		return fmt.Errorf("private path is empty")
++	}
++	if !filepath.IsAbs(path) {
++		return fmt.Errorf("private path must be absolute: %q", path)
++	}
++	return nil
++}
++
++// rejectPrivateSymlink 在检查点拒绝符号链接（含 junction/其它 reparse 形态：
++// os.Lstat 在 Windows 对 symlink 与 mount point 均报 ModeSymlink）。
++func rejectPrivateSymlink(path string, info os.FileInfo, err error) error {
++	if err != nil {
++		if errors.Is(err, fs.ErrNotExist) {
++			return nil // 不存在是「建立」分支的合法状态
++		}
++		return err
++	}
++	if info.Mode()&os.ModeSymlink != 0 {
++		return fmt.Errorf("%w: %s", ErrPrivatePathSymlink, path)
++	}
++	return nil
++}
++
++// EnsurePrivateDir 建立/收紧并验证当前用户私有目录（0700 语义，Windows 为
++// 等价 owner-only DACL）。目录不存在时逐级创建（新建级按私有语义落位）；
++// 已存在时收紧并复验；任何一步验证不可证即失败，不虚报已私有化。
++func EnsurePrivateDir(path string) error {
++	if err := validatePrivatePath(path); err != nil {
++		return err
++	}
++	if info, err := os.Lstat(path); err != nil {
++		if !errors.Is(err, fs.ErrNotExist) {
++			return err
++		}
++	} else if err := rejectPrivateSymlink(path, info, nil); err != nil {
++		return err
++	} else if !info.IsDir() {
++		return fmt.Errorf("%w: %s", ErrPrivatePathNotDir, path)
++	}
++	if err := ensurePrivateDirOS(path); err != nil {
++		return err
++	}
++	// 收尾复验：类型仍为目录且未被换成符号链接（类型/权限细节由 per-OS
++	// ensurePrivateDirOS 内部验证，这里只做跨竞态的类型复检）。
++	info, err := os.Lstat(path)
++	if err != nil {
++		return fmt.Errorf("verify private dir %s: %w", path, err)
++	}
++	if info.Mode()&os.ModeSymlink != 0 {
++		return fmt.Errorf("%w: %s", ErrPrivatePathSymlink, path)
++	}
++	if !info.IsDir() {
++		return fmt.Errorf("%w: %s", ErrPrivatePathNotDir, path)
++	}
++	return nil
++}
++
++// EnsurePrivateFile 建立/收紧并验证当前用户私有文件（0600 语义，Windows 为
++// 等价 owner-only DACL）。文件不存在时以私有语义创建（空文件，调用方后续
++// 以原子写填充）；已存在时收紧并复验；既有的非普通文件（目录/符号链接/
++// 设备等）一律拒绝。
++func EnsurePrivateFile(path string) error {
++	if err := validatePrivatePath(path); err != nil {
++		return err
++	}
++	if info, err := os.Lstat(path); err != nil {
++		if !errors.Is(err, fs.ErrNotExist) {
++			return err
++		}
++	} else if err := rejectPrivateSymlink(path, info, nil); err != nil {
++		return err
++	} else if !info.Mode().IsRegular() {
++		return fmt.Errorf("%w: %s", ErrPrivatePathNotRegular, path)
++	}
++	if err := ensurePrivateFileOS(path); err != nil {
++		return err
++	}
++	info, err := os.Lstat(path)
++	if err != nil {
++		return fmt.Errorf("verify private file %s: %w", path, err)
++	}
++	if info.Mode()&os.ModeSymlink != 0 {
++		return fmt.Errorf("%w: %s", ErrPrivatePathSymlink, path)
++	}
++	if !info.Mode().IsRegular() {
++		return fmt.Errorf("%w: %s", ErrPrivatePathNotRegular, path)
++	}
++	return nil
++}
+diff --git a/internal/platform/ensure_private_unix.go b/internal/platform/ensure_private_unix.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/ensure_private_unix.go
+@@ -0,0 +1,68 @@
++//go:build !windows
++
++package platform
++
++import (
++	"errors"
++	"fmt"
++	"io/fs"
++	"os"
++	"path/filepath"
++)
++
++// ensurePrivateDirOS（POSIX）：逐级创建目录（新建级 0700），随后对目标目录
++// 本身收紧 0700 并读回复验——验证而非只设置（umask 可能宽于请求位）。
++func ensurePrivateDirOS(path string) error {
++	if err := os.MkdirAll(path, 0o700); err != nil {
++		return fmt.Errorf("create private dir: %w", err)
++	}
++	if err := os.Chmod(path, 0o700); err != nil {
++		return fmt.Errorf("tighten private dir 0700: %w", err)
++	}
++	info, err := os.Lstat(path)
++	if err != nil {
++		return fmt.Errorf("verify private dir: %w", err)
++	}
++	if !info.IsDir() {
++		return fmt.Errorf("%w: %s", ErrPrivatePathNotDir, path)
++	}
++	if got := info.Mode().Perm(); got != 0o700 {
++		return fmt.Errorf("private dir %s mode = %o, want 700 (isolation unverified)", path, got)
++	}
++	return nil
++}
++
++// ensurePrivateFileOS（POSIX）：不存在则以 O_CREATE|O_EXCL 0600 创建（EXCL
++// 使并发创建竞争失败者拿到明确错误而非复用他人文件）；已存在则收紧 0600
++// 并读回复验。符号链接在共享入口前后双查，此处 chmod 落到的即是受管文件
++// 本体（若在窗口内被换成链接，收尾 Lstat 复检会拒绝）。
++func ensurePrivateFileOS(path string) error {
++	if _, err := os.Lstat(path); err != nil && errors.Is(err, fs.ErrNotExist) {
++		// 父目录缺失时按私有目录语义建立（0700），私有文件不落在未验证的
++		// 父级里；父级已存在则顺带收紧验证。
++		if err := ensurePrivateDirOS(filepath.Dir(path)); err != nil {
++			return err
++		}
++		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
++		if err != nil {
++			return fmt.Errorf("create private file: %w", err)
++		}
++		if err := f.Close(); err != nil {
++			return fmt.Errorf("close new private file: %w", err)
++		}
++	}
++	if err := os.Chmod(path, 0o600); err != nil {
++		return fmt.Errorf("tighten private file 0600: %w", err)
++	}
++	info, err := os.Lstat(path)
++	if err != nil {
++		return fmt.Errorf("verify private file: %w", err)
++	}
++	if !info.Mode().IsRegular() {
++		return fmt.Errorf("%w: %s", ErrPrivatePathNotRegular, path)
++	}
++	if got := info.Mode().Perm(); got != 0o600 {
++		return fmt.Errorf("private file %s mode = %o, want 600 (isolation unverified)", path, got)
++	}
++	return nil
++}
+diff --git a/internal/platform/ensure_private_windows.go b/internal/platform/ensure_private_windows.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/ensure_private_windows.go
+@@ -0,0 +1,206 @@
++//go:build windows
++
++package platform
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"runtime"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++// ensure_private_windows.go — Windows 受管路径私有化：真实 DACL，而非
++// os.Chmod（后者只拨只读属性，不构成访问隔离）。
++//
++// 实现：SetNamedSecurityInfo 以显式 owner-only DACL 覆盖目标
++//（PROTECTED_DACL 阻断继承混入），随后 GetNamedSecurityInfo 读回并逐 ACE
++// 验证——每个 allow-ACE 的 SID 必须属于允许集合 {当前用户, LOCAL SYSTEM,
++// 内建 Administrators}，且不含 deny/其它类型 ACE；owner 必须是当前用户。
++// 验证不可证即返回错误（fail closed）。
++//
++// 威胁模型（明示）：允许当前用户、LOCAL SYSTEM 与内建 Administrators 完全
++// 访问（SYSTEM/管理员是 Windows 文件所有权/备份语义的标准伴生主体）；其它
++// 本机用户零访问。错误信息不携带 SID 字符串或 DACL 原始内容。
++//
++// 未真机验证声明：本文件经 Windows 交叉编译覆盖编译面；真实 ACL 行为
++//（继承阻断效果、SID/ACE 形态、UNC 目标）未经 Windows 真机验证。
++
++// privateAllowedSIDs 返回允许完全访问的 SID 集合（当前用户 + LOCAL SYSTEM
++// + 内建 Administrators）。每次现取当前用户 SID（进程身份变化时保持正确）。
++func privateAllowedSIDs() ([]*windows.SID, *windows.SID, error) {
++	token := windows.GetCurrentProcessToken()
++	tu, err := token.GetTokenUser()
++	if err != nil {
++		return nil, nil, fmt.Errorf("resolve current user: %w", err)
++	}
++	user := tu.User.Sid
++	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
++	if err != nil {
++		return nil, nil, fmt.Errorf("resolve LOCAL SYSTEM SID: %w", err)
++	}
++	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
++	if err != nil {
++		return nil, nil, fmt.Errorf("resolve Administrators SID: %w", err)
++	}
++	return []*windows.SID{user, system, admins}, user, nil
++}
++
++// buildPrivateDACL 构造显式 owner-only DACL：三个允许主体各一条 SET_ACCESS
++// GENERIC_ALL 显式项（目录附子对象继承位，作用于目录内后续新建对象）。
++// runtime.Pinner 固定 SID 以满足 x/sys 的 TrusteeValueFromSID 安全契约
++// （BuildSecurityDescriptor 调用期间保持固定，函数返回即解除）。
++func buildPrivateDACL(isDir bool) (*windows.ACL, error) {
++	sids, _, err := privateAllowedSIDs()
++	if err != nil {
++		return nil, err
++	}
++	inheritance := uint32(0)
++	if isDir {
++		inheritance = windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT
++	}
++	entries := make([]windows.EXPLICIT_ACCESS, 0, len(sids))
++	var pinner runtime.Pinner
++	defer pinner.Unpin()
++	for _, sid := range sids {
++		pinner.Pin(sid)
++		entries = append(entries, windows.EXPLICIT_ACCESS{
++			AccessPermissions: windows.GENERIC_ALL,
++			AccessMode:        windows.SET_ACCESS,
++			Inheritance:       inheritance,
++			Trustee: windows.TRUSTEE{
++				TrusteeForm:  windows.TRUSTEE_IS_SID,
++				TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
++				TrusteeValue: windows.TrusteeValueFromSID(sid),
++			},
++		})
++	}
++	sd, err := windows.BuildSecurityDescriptor(nil, nil, entries, nil, nil)
++	if err != nil {
++		return nil, fmt.Errorf("build private DACL: %w", err)
++	}
++	dacl, _, err := sd.DACL()
++	if err != nil {
++		return nil, fmt.Errorf("extract private DACL: %w", err)
++	}
++	return dacl, nil
++}
++
++// setPrivateACL 用显式 owner-only DACL 覆盖目标的 DACL（PROTECTED 阻断
++// 继承混入）。按名字操作会跟随符号链接，符号链接拒绝由共享入口的前后
++// 双查承担。
++func setPrivateACL(path string, isDir bool) error {
++	dacl, err := buildPrivateDACL(isDir)
++	if err != nil {
++		return err
++	}
++	var info windows.SECURITY_INFORMATION = windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
++	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, nil, nil, dacl, nil); err != nil {
++		return fmt.Errorf("apply private DACL: %w", err)
++	}
++	return nil
++}
++
++// verifyPrivateACL 读回目标的 owner 与 DACL 并逐 ACE 验证：
++//   - owner 必须是当前用户；
++//   - DACL 必须存在，每个 ACE 必须是 ACCESS_ALLOWED 类型且 SID ∈ 允许集合。
++//
++// 任何 deny-ACE、允许集合之外的 allow-ACE、越界/无法解析的 ACE 都判为
++// 「隔离未验证」。错误不携带 SID/DACL 内容。
++func verifyPrivateACL(path string) error {
++	allowed, currentUser, err := privateAllowedSIDs()
++	if err != nil {
++		return err
++	}
++	isAllowed := func(sid *windows.SID) bool {
++		for _, a := range allowed {
++			if windows.EqualSid(a, sid) {
++				return true
++			}
++		}
++		return false
++	}
++	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
++	if err != nil {
++		return fmt.Errorf("read back security descriptor: %w", err)
++	}
++	owner, _, err := sd.Owner()
++	if err != nil {
++		return fmt.Errorf("read back owner: %w", err)
++	}
++	if !windows.EqualSid(owner, currentUser) {
++		return fmt.Errorf("private path owner is not the current user (isolation unverified)")
++	}
++	dacl, present, err := sd.DACL()
++	if err != nil {
++		return fmt.Errorf("read back DACL: %w", err)
++	}
++	if !present || dacl == nil {
++		return fmt.Errorf("private path has no DACL (isolation unverified)")
++	}
++	// 逐 ACE 手工遍历（x/sys 的 ACL 不暴露迭代器/尺寸字段）：ACL 头 8 字节
++	//（revision/sbz1/aclSize/aceCount/sbz2），其后连续 ACE 结构。aclSize 未
++	// 导出，以同构镜像头读出。
++	header := (*windowsACLHeader)(unsafe.Pointer(dacl))
++	aclSize := uintptr(header.AclSize)
++	aclBase := unsafe.Pointer(dacl)
++	offset := uintptr(8)
++	for i := uint16(0); i < dacl.AceCount; i++ {
++		if offset+uintptr(unsafe.Sizeof(windows.ACCESS_ALLOWED_ACE{})) > aclSize {
++			return fmt.Errorf("private DACL ACE #%d out of bounds (isolation unverified)", i)
++		}
++		ace := (*windows.ACCESS_ALLOWED_ACE)(unsafe.Pointer(uintptr(aclBase) + offset))
++		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
++			return fmt.Errorf("private DACL ACE #%d is not an allow-ACE (isolation unverified)", i)
++		}
++		aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
++		if !isAllowed(aceSID) {
++			return fmt.Errorf("private DACL ACE #%d grants an unexpected principal (isolation unverified)", i)
++		}
++		offset += uintptr(ace.Header.AceSize)
++	}
++	return nil
++}
++
++// windowsACLHeader 是 x/sys windows.ACL 头的同构镜像（读出未导出的 aclSize
++// 供 ACE 遍历起界；布局由 winnt.h ACL 定义钉住）。
++type windowsACLHeader struct {
++	Revision byte
++	Sbz1     byte
++	AclSize  uint16
++	AceCount uint16
++	Sbz2     uint16
++}
++
++func ensurePrivateDirOS(path string) error {
++	if err := os.MkdirAll(path, 0o700); err != nil {
++		return fmt.Errorf("create private dir: %w", err)
++	}
++	if err := setPrivateACL(path, true); err != nil {
++		return err
++	}
++	return verifyPrivateACL(path)
++}
++
++func ensurePrivateFileOS(path string) error {
++	if _, err := os.Lstat(path); err != nil && os.IsNotExist(err) {
++		// 父目录缺失时按私有目录语义建立（owner-only DACL），私有文件不落
++		// 在未验证的父级里；父级已存在则顺带收紧验证。
++		if perr := ensurePrivateDirOS(filepath.Dir(path)); perr != nil {
++			return perr
++		}
++		f, cerr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
++		if cerr != nil {
++			return fmt.Errorf("create private file: %w", cerr)
++		}
++		if cerr := f.Close(); cerr != nil {
++			return fmt.Errorf("close new private file: %w", cerr)
++		}
++	}
++	if err := setPrivateACL(path, false); err != nil {
++		return err
++	}
++	return verifyPrivateACL(path)
++}
+diff --git a/internal/platform/ensure_private_test.go b/internal/platform/ensure_private_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/platform/ensure_private_test.go
+@@ -0,0 +1,176 @@
++package platform
++
++// ensure_private_test.go — 宿主本地私有化原语的语义回归（G0）：建立/收紧/
++// 验证 0700/0600、拒绝符号链接、类型不符拒绝。POSIX 权限位断言仅在非
++// Windows 宿主验证（Windows 真实 ACL 行为未真机验证，仅覆盖编译面）。
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"runtime"
++	"testing"
++)
++
++func TestEnsurePrivateDirEstablishesAndTightens(t *testing.T) {
++	dir := t.TempDir()
++
++	t.Run("creates with private mode", func(t *testing.T) {
++		p := filepath.Join(dir, "fresh", "nested", "private")
++		if err := EnsurePrivateDir(p); err != nil {
++			t.Fatalf("EnsurePrivateDir: %v", err)
++		}
++		info, err := os.Lstat(p)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !info.IsDir() {
++			t.Fatal("expected directory")
++		}
++		if runtime.GOOS != "windows" {
++			if got := info.Mode().Perm(); got != 0o700 {
++				t.Fatalf("mode = %o, want 700", got)
++			}
++		}
++	})
++
++	t.Run("tightens existing wide dir", func(t *testing.T) {
++		p := filepath.Join(dir, "wide-dir")
++		if err := os.MkdirAll(p, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateDir(p); err != nil {
++			t.Fatalf("EnsurePrivateDir: %v", err)
++		}
++		if runtime.GOOS != "windows" {
++			info, err := os.Lstat(p)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if got := info.Mode().Perm(); got != 0o700 {
++				t.Fatalf("mode = %o, want tightened 700", got)
++			}
++		}
++	})
++
++	t.Run("rejects existing file as dir target", func(t *testing.T) {
++		p := filepath.Join(dir, "not-a-dir")
++		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateDir(p); !errors.Is(err, ErrPrivatePathNotDir) {
++			t.Fatalf("err = %v, want ErrPrivatePathNotDir", err)
++		}
++	})
++
++	t.Run("rejects relative path", func(t *testing.T) {
++		if err := EnsurePrivateDir("relative/dir"); err == nil {
++			t.Fatal("relative path must be rejected")
++		}
++	})
++}
++
++func TestEnsurePrivateFileEstablishesAndTightens(t *testing.T) {
++	dir := t.TempDir()
++
++	t.Run("creates new private file", func(t *testing.T) {
++		p := filepath.Join(dir, "fresh-file", "secret.json")
++		if err := EnsurePrivateFile(p); err != nil {
++			t.Fatalf("EnsurePrivateFile: %v", err)
++		}
++		info, err := os.Lstat(p)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !info.Mode().IsRegular() {
++			t.Fatal("expected regular file")
++		}
++		if runtime.GOOS != "windows" {
++			if got := info.Mode().Perm(); got != 0o600 {
++				t.Fatalf("mode = %o, want 600", got)
++			}
++		}
++	})
++
++	t.Run("tightens existing wide file without touching bytes", func(t *testing.T) {
++		p := filepath.Join(dir, "wide-file.json")
++		if err := os.WriteFile(p, []byte(`{"k":"v"}`), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateFile(p); err != nil {
++			t.Fatalf("EnsurePrivateFile: %v", err)
++		}
++		got, rerr := os.ReadFile(p)
++		if rerr != nil || string(got) != `{"k":"v"}` {
++			t.Fatalf("bytes altered: %q err=%v", got, rerr)
++		}
++		if runtime.GOOS != "windows" {
++			info, err := os.Lstat(p)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if perm := info.Mode().Perm(); perm != 0o600 {
++				t.Fatalf("mode = %o, want tightened 600", perm)
++			}
++		}
++	})
++
++	t.Run("rejects directory as file target", func(t *testing.T) {
++		p := filepath.Join(dir, "a-dir")
++		if err := os.MkdirAll(p, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateFile(p); !errors.Is(err, ErrPrivatePathNotRegular) {
++			t.Fatalf("err = %v, want ErrPrivatePathNotRegular", err)
++		}
++	})
++}
++
++func TestEnsurePrivateRejectsSymlink(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("symlink creation requires privileges on Windows; Windows ACL behavior is compile-covered only (not verified on a real machine)")
++	}
++	dir := t.TempDir()
++	real := filepath.Join(dir, "real")
++	if err := os.MkdirAll(real, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(real, "secret"), []byte("s"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	t.Run("dir symlink", func(t *testing.T) {
++		link := filepath.Join(dir, "dir-link")
++		if err := os.Symlink(real, link); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateDir(link); !errors.Is(err, ErrPrivatePathSymlink) {
++			t.Fatalf("err = %v, want ErrPrivatePathSymlink", err)
++		}
++	})
++
++	t.Run("file symlink", func(t *testing.T) {
++		link := filepath.Join(dir, "file-link")
++		if err := os.Symlink(filepath.Join(real, "secret"), link); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateFile(link); !errors.Is(err, ErrPrivatePathSymlink) {
++			t.Fatalf("err = %v, want ErrPrivatePathSymlink", err)
++		}
++		// 真实目标不得被跟随收紧（仍是 600，且未被替换/删除）。
++		got, rerr := os.ReadFile(filepath.Join(real, "secret"))
++		if rerr != nil || string(got) != "s" {
++			t.Fatalf("link target unexpectedly altered: %q err=%v", got, rerr)
++		}
++	})
++
++	t.Run("dangling symlink also rejected", func(t *testing.T) {
++		link := filepath.Join(dir, "dangling-link")
++		if err := os.Symlink(filepath.Join(dir, "no-such-target"), link); err != nil {
++			t.Fatal(err)
++		}
++		if err := EnsurePrivateFile(link); !errors.Is(err, ErrPrivatePathSymlink) {
++			t.Fatalf("err = %v, want ErrPrivatePathSymlink", err)
++		}
++	})
++}
+diff --git a/internal/launcher/wsl_review_fixes_test.go b/internal/launcher/wsl_review_fixes_test.go
+--- a/internal/launcher/wsl_review_fixes_test.go
++++ b/internal/launcher/wsl_review_fixes_test.go
+@@ -6,9 +6,9 @@
+ // 统一复核 distro 副本权限，不可证 600 不得降级放行。
+ 
+ import (
++	"context"
+ 	"errors"
+ 	"os"
+-	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -32,7 +32,7 @@
+ 	}
+ 	// 探测面整体不可用（wsl.exe stat 故障形态）：零写入路径必须 fail closed。
+ 	origStatMode := wslStatModeFn
+-	wslStatModeFn = func(_, _ string) (string, bool) { return "", false }
++	wslStatModeFn = func(context.Context, string, string) (string, bool) { return "", false }
+ 	t.Cleanup(func() { wslStatModeFn = origStatMode })
+ 	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err == nil {
+ 		t.Fatal("unknown permission state must not pass the zero-write path")
+@@ -105,13 +105,10 @@
+ 		if err := os.Chmod(distroAuthPath(root), 0o644); err != nil {
+ 			t.Fatal(err)
+ 		}
+-		// 使 Windows 侧 agent 目录不可写：回写失败 → 降级分支 → 副本权限复核。
+-		home, _ := os.UserHomeDir()
+-		agentDir := filepath.Join(home, ".pi", "agent")
+-		if err := os.Chmod(agentDir, 0o500); err != nil {
+-			t.Fatal(err)
+-		}
+-		t.Cleanup(func() { _ = os.Chmod(agentDir, 0o700) })
++		// 使 Windows 侧回写失败（G0：宿主私有化接缝注入故障）→ 降级分支 → 副本权限复核。
++		origEnsureDir := hostEnsurePrivateDirFn
++		hostEnsurePrivateDirFn = func(string) error { return os.ErrPermission }
++		t.Cleanup(func() { hostEnsurePrivateDirFn = origEnsureDir })
+ 		// 探测面不认识该副本（modes 为空、回退真实位 0644）→ 收紧动作可执行
+ 		// 且复验成功 → 允许降级（权限已修复为可证安全）。
+ 		outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+@@ -121,7 +118,7 @@
+ 		if outcome != SyncWSLPiLoginAuthDistroHasCopy {
+ 			t.Fatalf("retightened copy must allow degradation, got %v (err=%v)", outcome, err)
+ 		}
+-		if m, ok := wslStatModeFn("Ubuntu", "/home/wslu/.pi/agent/auth.json"); !ok || m != "600" {
++		if m, ok := wslStatModeFn(context.Background(), "Ubuntu", "/home/wslu/.pi/agent/auth.json"); !ok || m != "600" {
+ 			t.Fatalf("loose copy must be retightened before degradation, got %q ok=%v", m, ok)
+ 		}
+ 	})
+@@ -137,15 +134,13 @@
+ 	if err := os.Chmod(distroAuthPath(root), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	home, _ := os.UserHomeDir()
+-	agentDir := filepath.Join(home, ".pi", "agent")
+-	if err := os.Chmod(agentDir, 0o500); err != nil {
+-		t.Fatal(err)
+-	}
+-	t.Cleanup(func() { _ = os.Chmod(agentDir, 0o700) })
++	// 使 Windows 侧回写失败（G0：宿主私有化接缝注入故障）。
++	origEnsureDir := hostEnsurePrivateDirFn
++	hostEnsurePrivateDirFn = func(string) error { return os.ErrPermission }
++	t.Cleanup(func() { hostEnsurePrivateDirFn = origEnsureDir })
+ 	// chmod 永远失败 → 收紧不可复验。
+ 	origChmod := wslChmodFn
+-	wslChmodFn = func(string, string, ...string) error { return errors.New("chmod dead") }
++	wslChmodFn = func(context.Context, string, string, ...string) error { return errors.New("chmod dead") }
+ 	t.Cleanup(func() { wslChmodFn = origChmod })
+ 	outcome, err := SyncWSLPiLoginAuth("Ubuntu")
+ 	if err == nil || !errors.Is(err, errWSLAuthLooseLeftover) {
+diff --git a/internal/launcher/wsl_supply_core_regression_test.go b/internal/launcher/wsl_supply_core_regression_test.go
+--- a/internal/launcher/wsl_supply_core_regression_test.go
++++ b/internal/launcher/wsl_supply_core_regression_test.go
+@@ -6,6 +6,7 @@
+ // 不读取真实凭据；真机取证脚本见 agent-outputs/workflow/wsl-goal-closure/。
+ 
+ import (
++	"context"
+ 	"encoding/json"
+ 	"os"
+ 	"path/filepath"
+@@ -36,7 +37,7 @@
+ 		t.Fatal(err)
+ 	}
+ 	origChmod := wslChmodFn
+-	wslChmodFn = func(string, string, ...string) error { return os.ErrPermission }
++	wslChmodFn = func(context.Context, string, string, ...string) error { return os.ErrPermission }
+ 	t.Cleanup(func() { wslChmodFn = origChmod })
+ 
+ 	cfg := map[string]any{"providers": map[string]any{"amagi-glm": map[string]any{"baseUrl": "https://x.example", "apiKey": "sk"}}}
+@@ -106,7 +107,7 @@
+ 
+ 	// 重收紧失败（chmod 报错但仅限该路径）→ 必须报错而不是静默放行。
+ 	origChmod := wslChmodFn
+-	wslChmodFn = func(_, mode string, paths ...string) error {
++	wslChmodFn = func(_ context.Context, _, mode string, paths ...string) error {
+ 		for _, p := range paths {
+ 			if p == "/home/wslu/.pi/agent/models.json" && mode == "600" {
+ 				return os.ErrPermission
+@@ -126,7 +127,7 @@
+ func TestWriteWSLPiAgentConfigFailsWhenStagingUnverifiable(t *testing.T) {
+ 	ft := installFakeWSLTarget(t)
+ 	origStatMode := wslStatModeFn
+-	wslStatModeFn = func(_, _ string) (string, bool) { return "", false }
++	wslStatModeFn = func(context.Context, string, string) (string, bool) { return "", false }
+ 	t.Cleanup(func() { wslStatModeFn = origStatMode })
+ 	cfg := map[string]any{"providers": map[string]any{"amagi-glm": map[string]any{"baseUrl": "https://x.example", "apiKey": "sk"}}}
+ 	_, err := WriteWSLPiAgentConfig("Ubuntu", cfg)

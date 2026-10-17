@@ -7,9 +7,11 @@ package wslsupply
 //   - mcp_servers/<name>：server 级原子导入单元（复用 S2 mcp 转换器确定规则：
 //     裸 shim 仅目标验证过原生命令才映射；Windows exe/ps1/盘符参数拒绝；远程
 //     URL 保留）。仅用户选择的 server 进入候选（selectLeaf 语义）。
-//   - profiles/<name>：选中的可移植 profile 节（标量/数组值；携带 Windows
-//     路径形态的值剔除该节并报告；model_provider 引用不伪造——provider 由
-//     既有 env/-c 管理，引用缺失只诊断不阻断）。
+//   - profiles/<name>：选中的 profile 节按明确可移植字段白名单导入（SA-04：
+//     approval_policy/sandbox_mode 等权限决定、信任状态、未知字段与嵌套表
+//     不导入，丢弃字段逐项报告；白名单字段携带不可映射 Windows 路径剔除该
+//     节；model_provider 引用不伪造——provider 由既有 env/-c 管理，引用缺失
+//     只诊断不阻断；目标段内本地字段在更新/接管时保留）。
 //   - trust / sandbox / approval 等权限决定、项目绝对路径、未知命令与一切
 //     未知节 LocalOnly：不在受管作用域，字节不动（「无凭据迁移授权，不套用
 //     A2」；auth.json/sessions/history/logs/cache 永不触碰——本单元只读写
@@ -121,27 +123,42 @@ func (a *codexConfigAdapter) readTargetDoc(target TargetRef) (*tomlManagedDoc, m
 	return doc, ranges, hexHash(data), nil
 }
 
-// desiredFrom 从来源文档抽取期望键集（选择集过滤 + 引用诊断）。
+// desiredFrom 从来源文档抽取期望键集（选择集过滤 + 引用诊断）。SA-03：选择
+// 匹配以规范化全路径键（"mcp_servers/<name>"/"profiles/<name>"）为准；兼容
+// 历史登记的叶名——仅当叶名在该文档键集内唯一对应时生效（同名 server/profile
+// 双义保守不选，不猜作用域）。selected 为 nil 表示不过滤（预览勾选面全集）。
 func (a *codexConfigAdapter) desiredFrom(doc *tomlManagedDoc, selected map[string]bool) (map[string]any, []string) {
 	out := map[string]any{}
 	var notes []string
 	if doc == nil {
 		return out, nil
 	}
+	type sectionEntry struct {
+		root, name, tomlKey string
+		val                 map[string]any
+	}
+	var entries []sectionEntry
 	for _, tomlKey := range doc.Keys() {
 		root, name, ok := splitCodexSectionKey(tomlKey)
 		if !ok || strings.Contains(name, "/") {
 			notes = append(notes, fmt.Sprintf("TOML 节名 %q 无法按路径投影（含分隔符/非受管），跳过", tomlKey))
 			continue
 		}
-		if selected != nil && !selected[name] {
-			continue // 未选择导入：不进候选（预览可见全集）
-		}
 		val, has := doc.SectionValue(tomlKey)
 		if !has {
 			continue
 		}
-		out[root+"/"+name] = val
+		entries = append(entries, sectionEntry{root: root, name: name, tomlKey: tomlKey, val: val})
+	}
+	allKeys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		allKeys = append(allKeys, e.root+"/"+e.name)
+	}
+	for _, e := range entries {
+		if selected != nil && !selectionMatchesKey(selected, e.root+"/"+e.name, allKeys) {
+			continue // 未选择导入：不进候选（预览可见全集）
+		}
+		out[e.root+"/"+e.name] = e.val
 	}
 	return out, notes
 }
@@ -245,9 +262,17 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
 		}
 	}
 	out := make([]KeyPreview, 0, len(ana.decisions))
+	// SA-03：选择状态以全路径键匹配（兼容唯一叶名）；全集覆盖期望与登记。
+	selectedAllKeys := sortedDesiredKeys(ana.importable)
+	for _, d := range ana.decisions {
+		selectedAllKeys = append(selectedAllKeys, d.Key)
+	}
+	for k := range ana.subs {
+		selectedAllKeys = append(selectedAllKeys, k)
+	}
 	for _, d := range ana.decisions {
 		kp := KeyPreview{Key: d.Key, Action: d.Kind.String(), Reason: d.Reason}
-		kp.Selected = selected[keyLeafName(d.Key)]
+		kp.Selected = selectionMatchesKey(selected, d.Key, selectedAllKeys)
 		if srcVal, ok := ana.desired[d.Key]; ok {
 			kp.Importable = d.Kind != keyFrozenBothChanged
 			before, after := summarizeMCPServerEntry(d.Key, srcVal, facts)
@@ -257,7 +282,7 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
 					kp.After = "转换需实测验证（应用时执行）"
 				}
 			} else {
-				kp.Before = "profile（" + strconvItoa(len(toMapKeys(srcVal))) + " 个键）"
+				kp.Before = codexProfileBefore(srcVal)
 			}
 		}
 		out = append(out, kp)
@@ -281,7 +306,7 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
 				kp.After = after
 			}
 		} else {
-			kp.Before = "profile（" + strconvItoa(len(toMapKeys(ana.importable[key]))) + " 个键）"
+			kp.Before = codexProfileBefore(ana.importable[key])
 		}
 		out = append(out, kp)
 	}
@@ -302,6 +327,23 @@ func toMapKeys(v any) []string {
 
 func strconvItoa(n int) string { return fmt.Sprintf("%d", n) }
 
+// codexProfileBefore 生成 profile 键的脱敏预览摘要：总键数与其中不导入的
+// 权限/未知字段数（SA-04：预览面诚实标注白名单边界，不静默丢弃）。
+func codexProfileBefore(v any) string {
+	m, _ := v.(map[string]any)
+	total := len(m)
+	dropped := 0
+	for k := range m {
+		if !codexProfileWhitelist[k] {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		return fmt.Sprintf("profile（%d 个键，其中 %d 个权限/未知字段不导入）", total, dropped)
+	}
+	return "profile（" + strconvItoa(total) + " 个键）"
+}
+
 // Candidate 在 Apply 阶段生成合并候选（TOML 行级编辑；转换失败键保持目标现状）。
 func (a *codexConfigAdapter) Candidate(ctx context.Context, target TargetRef, state *StateEntry) (ProjectionCandidate, error) {
 	return a.buildCandidate(ctx, target, state, false)
@@ -313,7 +355,10 @@ func (a *codexConfigAdapter) AdoptCandidate(ctx context.Context, target TargetRe
 }
 
 func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRef, state *StateEntry, adopt bool) (ProjectionCandidate, error) {
-	if state != nil && state.Detached {
+	// SA-11：Detached 只阻断普通供给路径；显式「预览后确认接管」（adopt=true，
+	// 协调器已过 CAS/同怠门）是唯一声明的恢复入口，必须放行重建基准（与 Pi
+	// 键级适配器同构；接管成功后 recordProjectionState 重建条目即解除 Detached）。
+	if state != nil && state.Detached && !adopt {
 		return ProjectionCandidate{}, errors.New("unit is detached (keep-local); takeover required to re-enable")
 	}
 	selected := map[string]bool{} // 空 = 全不选（nil 会被当作不过滤，禁止）
@@ -399,6 +444,18 @@ func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRe
 				blockedAny = true
 				continue
 			}
+			if note != "" {
+				// SA-04：白名单丢弃字段仍发生了部分写入——诚实报告并记 partial。
+				notes = append(notes, fmt.Sprintf("键 %s：%s", d.Key, note))
+				blockedAny = true
+			}
+			if strings.HasPrefix(d.Key, "profiles/") {
+				// SA-04：目标已有本地策略保留——profile 更新/接管按白名单覆盖，
+				// 目标段内非白名单字段（本地权限决定/未知字段/子表）原样保留。
+				if prevVal, exists := tgtDoc.SectionValue(codexKeyToSectionKey(d.Key)); exists {
+					converted = mergeCodexProfileSection(prevVal, toSectionMap(converted))
+				}
+			}
 			if err := tgtDoc.UpsertSection(codexKeyToSectionKey(d.Key), toSectionMap(converted)); err != nil {
 				notes = append(notes, fmt.Sprintf("键 %s：TOML 序列化受阻（%v），保持 WSL 现状", d.Key, err))
 				blockedAny = true
@@ -443,8 +500,10 @@ func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRe
 	}, nil
 }
 
-// convertEntry 转换一个期望键值：mcp server 走 §五确定规则；profile 子树做
-// 路径可移植性检查（不可映射 → 该节保持现状）。附带 model_provider 引用诊断。
+// convertEntry 转换一个期望键值：mcp server 走 §五确定规则；profile 子树按
+// SA-04 白名单过滤（权限/信任与未知字段不导入，逐字段报告；携带不可映射
+// Windows 路径的白名单值剔除该节）。返回的 note 在 ok=true 时也携带丢弃
+// 字段报告（调用方记入 notes，结果记 partial）。
 func (a *codexConfigAdapter) convertEntry(key string, v any, facts TransformFacts) (any, bool, string) {
 	entry, ok := v.(map[string]any)
 	if !ok {
@@ -457,11 +516,60 @@ func (a *codexConfigAdapter) convertEntry(key string, v any, facts TransformFact
 		}
 		return result.Entry, true, ""
 	}
-	converted, ok := TransformSettingValue(entry, facts)
-	if !ok {
-		return nil, false, "profile 携带不可映射的 Windows 路径值，本次剔除该节"
+	return convertCodexProfileSection(entry, facts)
+}
+
+// codexProfileWhitelist 是 profiles/<name> 节内可移植字段的明确白名单
+// （SA-04：审批/sandbox 等权限决定、信任状态、项目路径、嵌套表与一切未知
+// 字段不导入——「用户选了 profile」不等于授权越权字段跨界；字段语义参照
+// codex CLI profile 常用标识符字段，与仓内 codexplugin 使用的字段词表一致）。
+var codexProfileWhitelist = map[string]bool{
+	"model":                    true,
+	"model_provider":           true,
+	"model_reasoning_effort":   true,
+	"model_verbosity":          true,
+	"disable_response_storage": true,
+	"chatgpt_base_url":         true,
+}
+
+// convertCodexProfileSection 按白名单过滤并转换 profile 节。
+func convertCodexProfileSection(entry map[string]any, facts TransformFacts) (any, bool, string) {
+	filtered := map[string]any{}
+	var dropped []string
+	for k, v := range entry {
+		if codexProfileWhitelist[k] {
+			filtered[k] = v
+		} else {
+			dropped = append(dropped, k)
+		}
 	}
-	return converted, true, ""
+	sort.Strings(dropped)
+	if len(filtered) == 0 {
+		return nil, false, fmt.Sprintf("profile 只含不导入字段（%s），无可移植内容", strings.Join(dropped, "/"))
+	}
+	converted, ok := TransformSettingValue(filtered, facts)
+	if !ok {
+		return nil, false, "profile 白名单字段携带不可映射的 Windows 路径值，本次剔除该节"
+	}
+	note := ""
+	if len(dropped) > 0 {
+		note = fmt.Sprintf("已按白名单导入 %d 个字段；%s 属权限/未知字段不导入（保留目标现状）", len(converted.(map[string]any)), strings.Join(dropped, "/"))
+	}
+	return converted, true, note
+}
+
+// mergeCodexProfileSection 把白名单转换结果覆盖到目标已有 profile 段上
+// （SA-04：目标本地策略/未知字段/子表保留；白名单字段以来源为准）。合并后的
+// 值作为写入基准（Written 含本地保留字段——稳态 round-trip 一致）。
+func mergeCodexProfileSection(prev, converted map[string]any) map[string]any {
+	merged := make(map[string]any, len(prev)+len(converted))
+	for k, v := range prev {
+		merged[k] = v
+	}
+	for k, v := range converted {
+		merged[k] = v
+	}
+	return merged
 }
 
 // noWriteReason 归纳无可写键的主导原因（与 keyedProjectionAdapter 同词汇）。

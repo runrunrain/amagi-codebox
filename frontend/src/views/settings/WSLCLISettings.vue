@@ -212,9 +212,13 @@
                     <span v-if="k.before || k.after" class="supply-detail">{{ k.before || '—' }} → {{ k.after || '—' }}</span>
                     <span class="supply-detail">{{ k.reason }}</span>
                   </div>
-                  <div v-if="anyCliKeySelected(cli, u.unit)">
+                  <div v-if="cliPreviewFor(cli, u.unit)">
                     <AppButton variant="primary" size="small" :disabled="cliBusy" @click="importCliKeys(cli, u.unit)">
-                      导入所选（{{ cliKeySelection[cli + '|' + u.unit]?.length ?? 0 }}）
+                      {{
+                        anyCliKeySelected(cli, u.unit)
+                          ? `导入所选（${cliKeySelection[cli + '|' + u.unit]?.length ?? 0}）`
+                          : '撤回全部导入（空选择移除托管条目）'
+                      }}
                     </AppButton>
                   </div>
                   <div v-if="(cliPreviewFor(cli, u.unit)?.notes ?? []).length" class="supply-detail">
@@ -292,7 +296,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getWSLCLIStatus, installCLIToWSL, type WSLStatus } from '../../api/wslsetup'
 import {
   getWSLConfigSupplyStatus,
@@ -308,8 +312,13 @@ import {
 } from '../../api/wslSupply'
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
+import { cliImportOutcomeMessage } from './wslSupplyMessages'
 
 const { showSuccess, showError, showInfo } = useToast()
+
+// SA-17：卸载后停止扫描轮询链（setTimeout 链不再触发新请求）。
+let alive = true
+onUnmounted(() => { alive = false })
 
 const status = ref<WSLStatus | null>(null)
 const busyTool = ref<string>('')
@@ -392,6 +401,7 @@ function faceStateText(state: string): string {
     case 'consented': return '已授权，待发布'
     case 'scanning': return '扫描中'
     case 'incompatible': return '有不兼容项'
+    case 'pending-op': return '待确认'
     default: return '未检查'
   }
 }
@@ -399,7 +409,7 @@ function faceBadgeClass(state: string): string {
   switch (state) {
     case 'synced': return 'badge-ok'
     case 'failed': case 'incompatible': return 'badge-missing'
-    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': return 'badge-warn'
+    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': case 'pending-op': return 'badge-warn'
     default: return ''
   }
 }
@@ -589,10 +599,11 @@ const selectedSkillNames = computed(() => selectedSkills.value)
 const anySkillSelected = computed(() => selectedSkills.value.length > 0)
 
 async function loadSkills(): Promise<void> {
+  if (!alive) return
   try {
     skills.value = await getWSLSkillsSupplyStatus()
-    // 扫描进行中：轮询直到收敛（大目录分批，进度可见）。
-    if (skills.value?.scanRunning) {
+    // 扫描进行中：轮询直到收敛（大目录分批，进度可见；卸载后停链）。
+    if (alive && skills.value?.scanRunning) {
       setTimeout(loadSkills, 800)
     }
   } catch {
@@ -613,7 +624,7 @@ async function checkSkills(): Promise<void> {
   skillsBusy.value = true
   try {
     skills.value = await checkWSLSkillsSupply()
-    if (skills.value?.scanRunning) setTimeout(loadSkills, 800)
+    if (alive && skills.value?.scanRunning) setTimeout(loadSkills, 800)
   } catch (err: any) {
     showError('检查失败: ' + (err?.message || err))
   } finally {
@@ -769,10 +780,11 @@ const ocMcp = ref<WSLOpenCodeMCPEntry[]>([])
 const ocOverride = ref<string[]>([])
 
 async function loadCliSupply(cli: string): Promise<void> {
+  if (!alive) return
   try {
     const st = await getWSLCliSupplyStatus(cli)
     cliStatus.value = { ...cliStatus.value, [cli]: st }
-    if (st.resources.scanRunning) {
+    if (alive && st.resources.scanRunning) {
       setTimeout(() => loadCliSupply(cli), 800)
     }
   } catch {
@@ -838,20 +850,18 @@ async function previewCliUnit(cli: string, unit: string): Promise<void> {
 }
 
 async function importCliKeys(cli: string, unit: string): Promise<void> {
+  // SA-03：空选择是合法的显式撤回入口（后端按来源删除语义移除托管条目）；
+  // 零写入不报导入成功（提示逻辑见 wslSupplyMessages，单测覆盖）。
   const keys = cliKeySelection.value[cli + '|' + unit] ?? []
-  if (!keys.length) {
-    showInfo('请先勾选要导入的条目')
-    return
-  }
   if (cliBusy.value) return
   cliBusy.value = true
   try {
     const outcomes = await importWSLCliConfigKeys(cli, unit, keys)
-    const failed = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
-    if (failed.length) {
-      showInfo(`导入完成：${outcomes.length - failed.length} 项成功，${failed.length} 项保持现状（详见预览）`)
+    const msg = cliImportOutcomeMessage(keys.length, outcomes)
+    if (msg.kind === 'success') {
+      showSuccess(msg.text)
     } else {
-      showSuccess(`已导入所选（${keys.length} 项；冻结/未托管/不可转换条目保持 WSL 现状）`)
+      showInfo(msg.text)
     }
     await refreshCli(cli)
   } catch (err: any) {

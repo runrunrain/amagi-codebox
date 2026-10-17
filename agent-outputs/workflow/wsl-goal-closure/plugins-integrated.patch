@@ -1,0 +1,2883 @@
+diff --git a/app_wsl_plugins.go b/app_wsl_plugins.go
+index 579f62e..a3fce90 100644
+--- a/app_wsl_plugins.go
++++ b/app_wsl_plugins.go
+@@ -136,8 +136,11 @@ func wslOutcome(res wslsupply.PluginOpResult) PiPluginOpOutcome {
+ 
+ // runPiPluginTargeted 是三类操作的统一编排：Windows 侧（既有 pi CLI 路径）
+ // 与 WSL 侧重放按目标组合；「同时应用」的 update/install 以 Windows 实体
+-// 解析结果为重放锚点，Windows 失败则 WSL skipped（无锚点不盲装）；remove
+-// 无锚点语义，两侧独立执行。
++// 解析结果为重放锚点，且 SA13 收紧门禁：both 要求 Windows 侧 Go error=nil、
++// CommandResult.Success=true 且能从实体解析出锚点，任一不满足 WSL 侧
++// skipped——不盲装另一个 latest/ref（「同时应用到同版本」承诺不冒充，单次
++// 尝试不重试，用户可显式以 wsl 目标单侧重试）；remove 无锚点语义，两侧
++// 独立执行（一侧失败不牵连另一侧）。
+ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargetedResult, error) {
+ 	t, err := validatePiPluginTarget(target)
+ 	if err != nil {
+@@ -168,6 +171,28 @@ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargeted
+ 	if t != piPluginTargetWSL && t != piPluginTargetBoth {
+ 		return out, nil
+ 	}
++
++	op := wslsupply.PluginOperation{Source: source, Kind: kind}
++	// SA12 补全：过滤快照取三态读面（EntryFiltersFor），显式空数组 []
++	//（该类型一项都不加载）与非 nil 空切片一同透传，不折叠回省略（省略 =
++	// 启用整类资源，会扩大 WSL 侧启用面）；Windows 未声明任何过滤键时
++	// 全 nil，等价零值（纯字符串全量形态）。
++	op.Filters = piPluginOpFilters(piplugin.EntryFiltersFor(a.PiPlugins, source))
++
++	// 重放锚点门禁（SA13，仅 install/update）：wsl 单目标无锚点语义，distro
++	// 内独立解析；both 要求 Windows Success=true 且锚点可读（判定经
++	// wslReplayAnchorGate 纯函数，钉子直测各分支）。
++	if (kind == wslsupply.PluginOpInstall || kind == wslsupply.PluginOpUpdate) && runWindows {
++		anchor, skipCode, skipDetail := wslReplayAnchorGate(windowsRes, a.piPluginHostAnchor(source))
++		if skipCode != "" {
++			out.Results = append(out.Results, PiPluginOpOutcome{
++				Target: piPluginTargetWSL, Outcome: "skipped", ErrCode: skipCode, Detail: skipDetail,
++			})
++			return out, nil
++		}
++		op.AnchorRef = anchor
++	}
++
+ 	coord := a.wslPluginCoordinator()
+ 	if coord == nil {
+ 		out.Results = append(out.Results, PiPluginOpOutcome{
+@@ -185,26 +210,6 @@ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargeted
+ 		return out, nil
+ 	}
+ 
+-	op := wslsupply.PluginOperation{Source: source, Kind: kind}
+-	if ext, sk, pr, th := a.PiPlugins.WindowsEntryFilters(source); len(ext)+len(sk)+len(pr)+len(th) > 0 {
+-		op.Filters = wslsupply.PluginFilters{Extensions: ext, Skills: sk, Prompts: pr, Themes: th}
+-	}
+-	// 重放锚点：install/update 的「同时应用」以 Windows 实体解析结果为准
+-	//（remove 无锚点语义）。Windows 侧未运行（仅 wsl 目标）→ distro 内独立
+-	// 解析；Windows 侧失败 → WSL skipped（无锚点不盲装，单侧失败独立显示）。
+-	if kind == wslsupply.PluginOpInstall || kind == wslsupply.PluginOpUpdate {
+-		if windowsRes != nil && windowsRes.Success {
+-			op.AnchorRef = a.piPluginHostAnchor(source)
+-		} else if runWindows && windowsRes == nil {
+-			// Windows 执行返回错误（结果已记录 failed）：WSL 侧 skipped——
+-			// 无锚点不盲装；单侧失败独立显示，不合并报喜。
+-			out.Results = append(out.Results, PiPluginOpOutcome{
+-				Target: piPluginTargetWSL, Outcome: "skipped", ErrCode: "windows-anchor-missing",
+-				Detail: "Windows 侧操作失败，无重放锚点；WSL 侧未执行（可单独以 wsl 目标重试）",
+-			})
+-			return out, nil
+-		}
+-	}
+ 	opCtx, cancel := context.WithTimeout(context.Background(), piPluginReplayTimeout)
+ 	defer cancel()
+ 	res := coord.RunPluginOperation(opCtx, distro, op)
+@@ -212,6 +217,24 @@ func (a *App) runPiPluginTargeted(kind, source, target string) (PiPluginTargeted
+ 	return out, nil
+ }
+ 
++// wslReplayAnchorGate 是 SA13 的 both 模式锚点门禁（纯函数，钉子直测）：
++// Windows 执行返回错误（res==nil，结果已按 failed 记录）/命令执行但
++// Success=false（与 Go error 是独立结果通道）/成功但实体锚点不可读，任一
++// 不满足返回非空 skipCode——WSL 侧 skipped，不盲装另一个 latest/ref；用户
++// 可显式以 wsl 目标单侧重试。全部满足时返回锚点。
++func wslReplayAnchorGate(windowsRes *piplugin.CommandResult, anchor string) (useAnchor, skipCode, skipDetail string) {
++	switch {
++	case windowsRes == nil:
++		return "", "windows-anchor-missing", "Windows 侧操作执行失败，无重放锚点；WSL 侧未执行（可单独以 wsl 目标重试）"
++	case !windowsRes.Success:
++		return "", "windows-failed", "Windows 侧命令未成功（Success=false），无重放锚点；WSL 侧未执行，不盲装另一版本（可单独以 wsl 目标重试）"
++	case anchor == "":
++		return "", "windows-anchor-missing", "Windows 侧成功但未能从实体解析版本/commit 锚点，无法固定同版本；WSL 侧未执行（可单独以 wsl 目标重试）"
++	default:
++		return anchor, "", ""
++	}
++}
++
+ // runPiPluginWindowsOp 执行 Windows 侧既有路径。
+ func (a *App) runPiPluginWindowsOp(kind, source string) (*piplugin.CommandResult, error) {
+ 	switch kind {
+@@ -255,6 +278,16 @@ func (a *App) piPluginHostAnchor(source string) string {
+ 	}
+ }
+ 
++// piPluginOpFilters 把 piplugin 三态过滤快照透传为 WSL 重放的过滤清单
++// （纯值拷贝，保留 nil=全部加载 / 空切片=一项都不加载的区别；纯函数，
++// 钉子直测）。
++func piPluginOpFilters(f piplugin.EntryFilters) wslsupply.PluginFilters {
++	return wslsupply.PluginFilters{
++		Extensions: f.Extensions, Skills: f.Skills,
++		Prompts: f.Prompts, Themes: f.Themes,
++	}
++}
++
+ func truncateForPanel(s string) string {
+ 	s = strings.TrimSpace(s)
+ 	if len(s) > 500 {
+diff --git a/app_wsl_plugins_test.go b/app_wsl_plugins_test.go
+index 558b193..14f3858 100644
+--- a/app_wsl_plugins_test.go
++++ b/app_wsl_plugins_test.go
+@@ -160,8 +160,10 @@ func TestInstallPiPackageTargetedWindowsOnly(t *testing.T) {
+ }
+ 
+ func TestInstallPiPackageTargetedIndependentResults(t *testing.T) {
+-	// 单侧失败独立显示：Windows ok + WSL 失败。
+-	app, _, supply, _ := newPluginTargetedTestApp(t, true)
++	// 单侧失败独立显示：Windows ok + WSL 失败（both 需实体锚点可读——SA13
++	// 门禁下预置实体，让 WSL 侧重放真正执行）。
++	app, _, supply, agentDir := newPluginTargetedTestApp(t, true)
++	writeEntityInService(t, agentDir, "foo", "1.4.2")
+ 	supply.pluginRes = wslsupply.PluginOpResult{
+ 		Source: "npm:foo", Kind: wslsupply.PluginOpInstall, Outcome: wslsupply.PluginOutcomeFailed,
+ 		ErrCode: wslsupply.PluginErrReplayFailed, Detail: "pi install 失败",
+@@ -344,3 +346,156 @@ func TestGetPiPluginWSLStatusNoWake(t *testing.T) {
+ 		t.Fatalf("explicit check must return checked snapshot")
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// SA13：both 的 WSL 门禁——Windows Success=false / 锚点不可读都不得放行
++// ---------------------------------------------------------------------------
++
++// TestInstallPiPackageTargetedSuccessFalseSkipsWSL：Windows 命令返回非 nil
++// CommandResult 且 Success=false（error 为 nil——两通道独立）时，WSL 不得
++// 继续独立解析追 latest。piplugin 当前执行面不产生该组合，钉住编排层门禁
++// 的判据本身（经 wslReplayAnchorGate 纯函数直测）。
++func TestInstallPiPackageTargetedSuccessFalseSkipsWSL(t *testing.T) {
++	cases := []struct {
++		name        string
++		windowsRes  *piplugin.CommandResult
++		anchor      string
++		wantSkip    bool
++		wantErrCode string
++	}{
++		{
++			name:        "go error (nil result) skips",
++			windowsRes:  nil,
++			wantSkip:    true,
++			wantErrCode: "windows-anchor-missing",
++		},
++		{
++			name:        "success=false with nil error skips",
++			windowsRes:  &piplugin.CommandResult{Success: false, Error: "exit 1"},
++			wantSkip:    true,
++			wantErrCode: "windows-failed",
++		},
++		{
++			name:        "success=true but anchor unreadable skips",
++			windowsRes:  &piplugin.CommandResult{Success: true},
++			anchor:      "",
++			wantSkip:    true,
++			wantErrCode: "windows-anchor-missing",
++		},
++		{
++			name:       "success=true with anchor passes",
++			windowsRes: &piplugin.CommandResult{Success: true},
++			anchor:     "1.4.2",
++			wantSkip:   false,
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			anchor, skipCode, _ := wslReplayAnchorGate(tc.windowsRes, tc.anchor)
++			if tc.wantSkip {
++				if skipCode == "" || anchor != "" {
++					t.Fatalf("must skip with empty anchor, got anchor=%q skip=%q", anchor, skipCode)
++				}
++				if skipCode != tc.wantErrCode {
++					t.Fatalf("skip code=%q, want %q", skipCode, tc.wantErrCode)
++				}
++				return
++			}
++			if skipCode != "" || anchor != tc.anchor {
++				t.Fatalf("must pass anchor through, got anchor=%q skip=%q", anchor, skipCode)
++			}
++		})
++	}
++}
++
++// TestInstallPiPackageTargetedAnchorUnreadableSkipsWSL：Windows 命令成功但
++// 实体锚点不可读（未建实体）→ WSL skipped，不回退 distro 内独立解析。
++func TestInstallPiPackageTargetedAnchorUnreadableSkipsWSL(t *testing.T) {
++	app, _, supply, _ := newPluginTargetedTestApp(t, true) // 成功，但不建实体
++	res, err := app.InstallPiPackageTargeted("npm:foo", "both")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(res.Results) != 2 {
++		t.Fatalf("both must report both targets: %+v", res.Results)
++	}
++	wsl := res.Results[1]
++	if wsl.Target != "wsl" || wsl.Outcome != "skipped" || wsl.ErrCode != "windows-anchor-missing" {
++		t.Fatalf("wsl must be skipped when anchor unreadable: %+v", wsl)
++	}
++	if ops := supply.pluginOps_(); len(ops) != 0 {
++		t.Fatalf("no wsl replay without verifiable anchor: %+v", ops)
++	}
++}
++
++// TestUpdatePiPackageTargetedSuccessFalseSkipsWSL：update 同受 SA13 门禁
++// （git 源锚点不可读 → skipped；不追 distro 内 latest ref）。
++func TestUpdatePiPackageTargetedSuccessFalseSkipsWSL(t *testing.T) {
++	app, cli, supply, agentDir := newPluginTargetedTestApp(t, true)
++	writeAgentSettings(t, agentDir, []string{"git:github.com/u/repo@v1"})
++	// Windows 侧命令成功（exit 0），但实体未建 → commit 锚点不可读。
++	if got := cli.recorded(); len(got) != 0 {
++		t.Fatalf("precondition: no windows run yet")
++	}
++	res, err := app.UpdatePiPackageTargeted("git:github.com/u/repo@v1", "both")
++	if err != nil {
++		t.Fatal(err)
++	}
++	wsl := res.Results[1]
++	if wsl.Target != "wsl" || wsl.Outcome != "skipped" || wsl.ErrCode != "windows-anchor-missing" {
++		t.Fatalf("update both must skip wsl without anchor: %+v", wsl)
++	}
++	if ops := supply.pluginOps_(); len(ops) != 0 {
++		t.Fatalf("no wsl replay: %+v", ops)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// SA12 补全：显式空数组 [] 过滤（该类型一项都不加载）在 App 编排层不得
++// 折叠回省略（省略 = WSL 侧启用整类资源）
++// ---------------------------------------------------------------------------
++
++// TestPiPluginOpFiltersKeepsNilVersusEmpty：三态转换纯函数钉子——nil 透传
++// nil（全开）、空切片透传空切片（全关）。
++func TestPiPluginOpFiltersKeepsNilVersusEmpty(t *testing.T) {
++	got := piPluginOpFilters(piplugin.EntryFilters{Extensions: []string{}, Skills: []string{"s"}})
++	if got.Extensions == nil || len(got.Extensions) != 0 {
++		t.Fatalf("explicit [] must stay a non-nil empty slice: %#v", got.Extensions)
++	}
++	if got.Skills == nil || len(got.Skills) != 1 || got.Skills[0] != "s" {
++		t.Fatalf("non-empty filter must pass through: %#v", got.Skills)
++	}
++	plain := piPluginOpFilters(piplugin.EntryFilters{})
++	if plain.Extensions != nil || plain.Skills != nil || plain.Prompts != nil || plain.Themes != nil {
++		t.Fatalf("all-omitted entry must yield all-nil filters: %+v", plain)
++	}
++}
++
++// TestPiPluginTargetedOpFiltersCarryExplicitEmptyArray：经真实目标化入口
++// （Windows settings.json 携带 {"source","extensions":[]} 过滤对象）触发 WSL
++// 重放，协调器收到的 PluginOperation.Filters 必须保留空切片——旧实现按
++// len(...)>0 折叠会把它当「无过滤」全开重放。
++func TestPiPluginTargetedOpFiltersCarryExplicitEmptyArray(t *testing.T) {
++	app, _, supply, agentDir := newPluginTargetedTestApp(t, true)
++	if err := os.MkdirAll(agentDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	settings := `{"packages":[{"source":"npm:foo","extensions":[],"skills":["skills/core"]}]}`
++	if err := os.WriteFile(filepath.Join(agentDir, "settings.json"), []byte(settings), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := app.InstallPiPackageTargeted("npm:foo", "wsl"); err != nil {
++		t.Fatalf("targeted install: %v", err)
++	}
++	ops := supply.pluginOps_()
++	if len(ops) != 1 {
++		t.Fatalf("one WSL replay op expected, got %d", len(ops))
++	}
++	f := ops[0].Filters
++	if f.Extensions == nil || len(f.Extensions) != 0 {
++		t.Fatalf("explicit [] must reach the replay op as a non-nil empty slice: %#v", f.Extensions)
++	}
++	if f.Skills == nil || len(f.Skills) != 1 || f.Skills[0] != "skills/core" {
++		t.Fatalf("skills filter must reach the replay op: %#v", f.Skills)
++	}
++}
+diff --git a/app_wsl_supply_s4.go b/app_wsl_supply_s4.go
+index d74279b..0c838c6 100644
+--- a/app_wsl_supply_s4.go
++++ b/app_wsl_supply_s4.go
+@@ -20,6 +20,7 @@ package main
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
+@@ -764,9 +765,13 @@ const wslOpenCodeMCPSelectionFile = "wsl-opencode-mcp.json"
+ 
+ // wslOpenCodeMCPSelectionEntry 是单 distro 的选择（全局冲突覆盖名单）。
+ type wslOpenCodeMCPSelectionEntry struct {
+-	// OverrideGlobal：与 distro 全局 opencode.json 同名时仍写入附加层的
+-	// server 名（默认保留本地——S1 语义不变，勾选才覆盖）。
++	// OverrideGlobal：与 distro 全局 opencode.json/jsonc 同名时仍写入附加层
++	// 的 server 名（默认保留本地——S1 语义不变，勾选才覆盖）。
+ 	OverrideGlobal []string `json:"overrideGlobal,omitempty"`
++	// Generation 是保存选择时绑定的目标身份代（SA14：覆盖许可绑定目标身份
++	// 与 generation——同名 distro 重装换代后旧覆盖许可不继承，需重新勾选；
++	// 生效要求保存时与当前的代际都已知且一致）。
++	Generation string `json:"generation,omitempty"`
+ 	// SavedAt：上次保存时间（展示用）。
+ 	SavedAt time.Time `json:"savedAt,omitempty"`
+ }
+@@ -846,6 +851,47 @@ type WSLOpenCodeMCPEntry struct {
+ 	OverrideGlobal bool `json:"overrideGlobal"`
+ }
+ 
++// wslOverrideGenerationBindable 报告身份代是否可绑定覆盖许可（空与
++// unknown 不可——SA-02/SA14 同一原则：未知身份不复用持久许可）。
++func wslOverrideGenerationBindable(gen string) bool {
++	return gen != "" && gen != wslsupply.GenerationUnknown
++}
++
++// wslTargetResolver 是覆盖许可面消费的协调器能力切片（SA14 补全：保存/
++// 消费覆盖许可时实时解析当前目标身份——不新造探测体系，复用既有
++// Coordinator.ResolveTarget；nil 表示未接线）。窄接口不进 Wails 绑定面
++// （App 编排层内部类型），避免修改根启动链——启动路径仍经既有
++// prepareWSLOpenCodeLayer → wslOpenCodeMCPOverrideSet 接缝。
++type wslTargetResolver interface {
++	ResolveTarget(ctx context.Context, distro string, cli wslsupply.CLI) (wslsupply.TargetRef, error)
++}
++
++// wslOverrideIdentityTimeout 是覆盖许可面单次实时身份解析的预算（探测是
++// spawn wsl.exe 的短命令；超预算按「身份不可解析」拒绝/返回空覆盖，不阻塞
++// 启动）。
++const wslOverrideIdentityTimeout = 30 * time.Second
++
++// wslOpenCodeMCPResolveCurrentGeneration 实时解析 distro 的当前身份代
++// （SA14 补全：不再读状态清单缓存——旧缓存可保持旧代而真实身份已变，旧许
++// 可不得凭缓存生效）。读取不写配置：ResolveTarget 只做身份探测与 UNC 映射。
++// 探测失败返回错误；身份代未知（无 machine-id 的最小 distro）返回空串。
++func (a *App) wslOpenCodeMCPResolveCurrentGeneration(distro string) (string, error) {
++	if a == nil || a.WSLSupply == nil {
++		return "", errors.New("WSL 配置供给未启用")
++	}
++	resolver, ok := a.WSLSupply.(wslTargetResolver)
++	if !ok {
++		return "", errors.New("WSL 供给协调器不支持目标解析")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), wslOverrideIdentityTimeout)
++	defer cancel()
++	ref, err := resolver.ResolveTarget(ctx, strings.TrimSpace(distro), wslsupply.CLIPi)
++	if err != nil {
++		return "", fmt.Errorf("WSL 目标身份解析失败: %w", err)
++	}
++	return ref.Generation, nil
++}
++
+ // GetWSLOpenCodeMCPPreview 返回全部 OpenCode preset 的 MCP 条目分类预览
+ // （合并去重；形态检查与全局同名冲突只读判定，不写任何内容）。
+ func (a *App) GetWSLOpenCodeMCPPreview() []WSLOpenCodeMCPEntry {
+@@ -884,24 +930,48 @@ func (a *App) GetWSLOpenCodeMCPPreview() []WSLOpenCodeMCPEntry {
+ 	}
+ 	cfg := map[string]any{"mcp": merged}
+ 	entries := launcher.PreviewWSLOpenCodeMCP(distro, cfg)
+-	override := map[string]bool{}
+-	if entry, ok := a.loadWSLOpenCodeMCPSelection().Distros[distro]; ok {
+-		for _, name := range entry.OverrideGlobal {
+-			override[name] = true
+-		}
+-	}
++	// 覆盖勾选态与生效面同源（SA14：预览/启动两侧都经 wslOpenCodeMCPOverrideSet
++	// 的代际绑定判定，不各自实现）。
++	override := a.wslOpenCodeMCPOverrideSet(distro)
+ 	for _, e := range entries {
+-		out = append(out, WSLOpenCodeMCPEntry{
+-			Name: e.Name, Remote: e.Remote, NativeCommand: e.NativeCommand,
+-			NeedsAdapt: e.NeedsAdapt, Reason: e.Reason,
+-			GlobalConflict: e.GlobalConflict, OverrideGlobal: override[e.Name],
+-		})
++		out = append(out, wslOpenCodeMCPPreviewRow(e, override[e.Name]))
+ 	}
+ 	return out
+ }
+ 
++// wslOpenCodeMCPPreviewRow 把 launcher 预览分类映射为选择面 DTO（纯函数）。
++// SA14：全局配置不可读（冲突未知）时该条目不会写入附加层——经现有
++// needsAdapt+reason 通道呈现（不扩 Wails DTO——wailsjs 生成物未随本切片再
++// 生）；覆盖勾选随 needsAdapt 隐藏。
++func wslOpenCodeMCPPreviewRow(e launcher.OpenCodeMCPPreviewEntry, override bool) WSLOpenCodeMCPEntry {
++	row := WSLOpenCodeMCPEntry{
++		Name: e.Name, Remote: e.Remote, NativeCommand: e.NativeCommand,
++		NeedsAdapt: e.NeedsAdapt, Reason: e.Reason,
++		GlobalConflict: e.GlobalConflict, OverrideGlobal: override,
++	}
++	if e.GlobalConflictUnknown {
++		row.NeedsAdapt = true
++		row.Reason = joinWSLOpenCodeReason(row.Reason, "WSL 全局 opencode 配置不可读，同名冲突无法确认，不会写入附加层")
++	}
++	return row
++}
++
++// joinWSLOpenCodeReason 拼接预览原因（空段跳过）。
++func joinWSLOpenCodeReason(a, b string) string {
++	switch {
++	case a == "":
++		return b
++	case b == "":
++		return a
++	default:
++		return a + "；" + b
++	}
++}
++
+ // SetWSLOpenCodeMCPSelection 保存当前 distro 的全局同名冲突覆盖选择（显式
+-// 覆盖名单；默认保留本地的项不在名单内）。
++// 覆盖名单；默认保留本地的项不在名单内）。SA14 补全：保存时实时解析当前
++// 目标身份（不经状态清单缓存）——解析失败或身份代未知（无 machine-id 的
++// 最小 distro）时拒绝保存，不落无法归属的许可。
+ func (a *App) SetWSLOpenCodeMCPSelection(overrideGlobal []string) error {
+ 	if a == nil || a.configDir == "" {
+ 		return fmt.Errorf("WSL 配置供给未启用")
+@@ -910,6 +980,13 @@ func (a *App) SetWSLOpenCodeMCPSelection(overrideGlobal []string) error {
+ 	if distro == "" {
+ 		return fmt.Errorf("未找到可用的 WSL 发行版")
+ 	}
++	gen, rerr := a.wslOpenCodeMCPResolveCurrentGeneration(distro)
++	if rerr != nil {
++		return fmt.Errorf("无法确认当前 WSL 目标身份（%v），覆盖选择未保存；请确认 WSL 可用后重试", rerr)
++	}
++	if !wslOverrideGenerationBindable(gen) {
++		return fmt.Errorf("未能取得可绑定的当前身份代（generation 未知，如无 machine-id 的最小发行版），覆盖选择无法绑定目标身份，未保存")
++	}
+ 	sel := a.loadWSLOpenCodeMCPSelection()
+ 	names := make([]string, 0, len(overrideGlobal))
+ 	for _, name := range overrideGlobal {
+@@ -921,22 +998,33 @@ func (a *App) SetWSLOpenCodeMCPSelection(overrideGlobal []string) error {
+ 	sort.Strings(names)
+ 	entry := sel.Distros[distro]
+ 	entry.OverrideGlobal = names
++	entry.Generation = gen
+ 	entry.SavedAt = time.Now()
+ 	sel.Distros[distro] = entry
+ 	if err := a.saveWSLOpenCodeMCPSelection(sel); err != nil {
+ 		return fmt.Errorf("保存选择失败：%v", err)
+ 	}
+ 	a.Log.Info("opencode-wsl", "已保存 OpenCode 附加层 MCP 覆盖选择",
+-		fmt.Sprintf("distro=%s override=%d 项", distro, len(names)))
++		fmt.Sprintf("distro=%s generation=%s override=%d 项", distro, gen, len(names)))
+ 	return nil
+ }
+ 
+-// wslOpenCodeMCPOverrideSet 返回 distro 的覆盖名单（prepareWSLOpenCodeLayer 消费）。
++// wslOpenCodeMCPOverrideSet 返回 distro 的覆盖名单（prepareWSLOpenCodeLayer
++// 消费）。SA14 补全：生效前实时解析当前身份代——旧状态缓存保持旧代但真实
++// 身份已变（重装/换默认用户）时旧许可不生效；解析失败或身份代未知时返回
++// nil（空覆盖 = 保守保留本地，不写附加层覆盖同名项）；保存时与当前的代际
++// 都已知且一致才生效。旧条目留盘供诊断，仅不再生效，需重新勾选。
+ func (a *App) wslOpenCodeMCPOverrideSet(distro string) map[string]bool {
+ 	entry, ok := a.loadWSLOpenCodeMCPSelection().Distros[distro]
+ 	if !ok || len(entry.OverrideGlobal) == 0 {
+ 		return nil
+ 	}
++	current, rerr := a.wslOpenCodeMCPResolveCurrentGeneration(distro)
++	if rerr != nil ||
++		!wslOverrideGenerationBindable(current) ||
++		!wslOverrideGenerationBindable(entry.Generation) || entry.Generation != current {
++		return nil
++	}
+ 	out := map[string]bool{}
+ 	for _, name := range entry.OverrideGlobal {
+ 		out[name] = true
+diff --git a/app_wsl_supply_s4_test.go b/app_wsl_supply_s4_test.go
+index dc08a20..d5da508 100644
+--- a/app_wsl_supply_s4_test.go
++++ b/app_wsl_supply_s4_test.go
+@@ -51,11 +52,14 @@ func TestWSLCliFromNameValidation(t *testing.T) {
+ }
+ 
+ func TestWSLOpenCodeMCPSelectionStoreRoundTrip(t *testing.T) {
+-	app, _, _ := newS4TestApp(t)
++	app, c, _ := newS4TestApp(t)
+ 	// 固定默认 distro（真机探测在并发测试负载下有负缓存，不可依赖）。
+ 	origDistro := wslDefaultDistroFn
+ 	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
+ 	t.Cleanup(func() { wslDefaultDistroFn = origDistro })
++	// SA14：先把目标身份代写入状态清单（生产路径中检查/供给都会写入），
++	// 覆盖许可才能绑定目标。
++	seedS4Generation(t, c)
+ 	if err := app.SetWSLOpenCodeMCPSelection([]string{" b ", "a", ""}); err != nil {
+ 		t.Fatalf("save: %v", err)
+ 	}
+@@ -64,6 +68,9 @@ func TestWSLOpenCodeMCPSelectionStoreRoundTrip(t *testing.T) {
+ 	if !ok || len(entry.OverrideGlobal) != 2 || entry.OverrideGlobal[0] != "a" || entry.OverrideGlobal[1] != "b" {
+ 		t.Fatalf("selection not round-tripped: %+v", entry)
+ 	}
++	if entry.Generation == "" {
++		t.Fatalf("selection must record the bound generation: %+v", entry)
++	}
+ 	if got := app.wslOpenCodeMCPOverrideSet("Ubuntu"); !got["a"] || !got["b"] || len(got) != 2 {
+ 		t.Fatalf("override set wrong: %v", got)
+ 	}
+@@ -73,6 +80,19 @@ func TestWSLOpenCodeMCPSelectionStoreRoundTrip(t *testing.T) {
+ 	}
+ }
+ 
++// seedS4Generation 经真实 Inspect 把当前目标身份代写入状态清单。
++func seedS4Generation(t *testing.T, c *wslsupply.Coordinator) string {
++	t.Helper()
++	target, err := c.ResolveTarget(context.Background(), "Ubuntu", wslsupply.CLIPi)
++	if err != nil {
++		t.Fatalf("resolve: %v", err)
++	}
++	if _, err := c.Inspect(context.Background(), target); err != nil {
++		t.Fatalf("inspect: %v", err)
++	}
++	return target.Generation
++}
++
+ func TestRegisterS4AdaptersWiresUnitsAndResources(t *testing.T) {
+ 	app, c, _ := newS4TestApp(t)
+ 	home := t.TempDir()
+@@ -167,5 +187,127 @@ func TestWSLOpenCodeMCPOverrideSetEmpty(t *testing.T) {
+ 	if got := app.wslOpenCodeMCPOverrideSet("Ubuntu"); got != nil {
+ 		t.Fatalf("empty store must return nil, got %v", got)
+ 	}
+-	_ = context.Background()
++}
++
++// ---------------------------------------------------------------------------
++// SA14：覆盖许可绑定目标身份代（同名重装不继承）与未知身份拒绝
++// ---------------------------------------------------------------------------
++
++// TestWSLOpenCodeMCPSelectionSaveRefusedWhenIdentityUnresolvable：SA14 补全
++// ——保存改经实时身份解析：解析失败（探测不可用）或身份代未知（无
++// machine-id 的最小发行版）时拒绝保存，不落无法归属的覆盖许可；不依赖
++// 状态清单是否已 seed（旧缓存语义已废弃）。
++func TestWSLOpenCodeMCPSelectionSaveRefusedWhenIdentityUnresolvable(t *testing.T) {
++	uncRoot := t.TempDir()
++	makeApp := func(ident platform.WSLUserIdentity) *App {
++		app := &App{configDir: t.TempDir(), WSLSupply: wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
++			Identity: func(string) platform.WSLUserIdentity { return ident },
++			ToUNC: func(_, linuxPath string) string {
++				return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++			},
++			Chmod: func(_, _ string, _ ...string) error { return nil },
++		})}
++		if logDir, lerr := os.MkdirTemp("", "amagi-s4-sa14-refuse-*"); lerr == nil {
++			app.Log = logging.NewService(logDir)
++		}
++		origDistro := wslDefaultDistroFn
++		wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
++		t.Cleanup(func() { wslDefaultDistroFn = origDistro })
++		return app
++	}
++	// 身份探测失败（Identity !OK）→ 拒绝保存。
++	appFail := makeApp(platform.WSLUserIdentity{UID: "1000", Home: "/home/u", OK: false})
++	if err := appFail.SetWSLOpenCodeMCPSelection([]string{"a"}); err == nil {
++		t.Fatal("save with an unresolvable identity must be refused")
++	} else if !strings.Contains(err.Error(), "身份") {
++		t.Fatalf("refusal must explain the identity resolution failure: %v", err)
++	}
++	// 探测成功但无 machine-id（身份代 unknown）→ 同样拒绝。
++	appUnknown := makeApp(platform.WSLUserIdentity{UID: "1000", Home: "/home/u", OK: true})
++	if err := appUnknown.SetWSLOpenCodeMCPSelection([]string{"a"}); err == nil {
++		t.Fatal("save with an unknown generation must be refused")
++	} else if !strings.Contains(err.Error(), "身份代") {
++		t.Fatalf("refusal must explain the generation binding: %v", err)
++	}
++	for _, app := range []*App{appFail, appUnknown} {
++		if sel := app.loadWSLOpenCodeMCPSelection(); len(sel.Distros) != 0 {
++			t.Fatalf("refused save must not persist anything: %+v", sel.Distros)
++		}
++	}
++}
++
++// TestWSLOpenCodeMCPOverrideNotInheritedAfterReinstall：同名 distro 重装
++// 换代（machine-id 变化）后，旧覆盖许可不再生效（需重新勾选）。
++func TestWSLOpenCodeMCPOverrideNotInheritedAfterReinstall(t *testing.T) {
++	uncRoot := t.TempDir()
++	stateDir := t.TempDir()
++	makeCoordinator := func(machineID string) *wslsupply.Coordinator {
++		return wslsupply.NewCoordinator(stateDir, nil, wslsupply.Probes{
++			Identity: func(string) platform.WSLUserIdentity {
++				return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: machineID, OK: true}
++			},
++			ToUNC: func(_, linuxPath string) string {
++				return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++			},
++			Chmod: func(_, _ string, _ ...string) error { return nil },
++		})
++	}
++	app := &App{configDir: t.TempDir(), WSLSupply: makeCoordinator("m-original")}
++	if logDir, lerr := os.MkdirTemp("", "amagi-s4-sa14-logs-*"); lerr == nil {
++		app.Log = logging.NewService(logDir)
++	}
++	origDistro := wslDefaultDistroFn
++	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
++	t.Cleanup(func() { wslDefaultDistroFn = origDistro })
++
++	seedS4Generation(t, app.WSLSupply.(*wslsupply.Coordinator))
++	if err := app.SetWSLOpenCodeMCPSelection([]string{"fetch"}); err != nil {
++		t.Fatalf("save with bound generation: %v", err)
++	}
++	if got := app.wslOpenCodeMCPOverrideSet("Ubuntu"); !got["fetch"] {
++		t.Fatalf("override must apply on the same generation: %v", got)
++	}
++
++	// 同名 distro 重装：machine-id 变化 → 真实身份已换代。SA14 补全：
++	// 生效面实时解析当前身份——旧状态缓存仍记旧代（未再检查）也不得让旧
++	// 许可继续生效（这正是旧缓存语义的回归钉子）；条目留盘仅供诊断。
++	app.WSLSupply = makeCoordinator("m-reinstalled")
++	if got := app.wslOpenCodeMCPOverrideSet("Ubuntu"); got != nil {
++		t.Fatalf("override grant must not survive a same-name reinstall even before re-inspection: %v", got)
++	}
++	// 身份解析彻底不可用（探测失败）同样返回空覆盖（保守保留本地）。
++	app.WSLSupply = wslsupply.NewCoordinator(stateDir, nil, wslsupply.Probes{
++		Identity: func(string) platform.WSLUserIdentity {
++			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", OK: false}
++		},
++		ToUNC: func(_, linuxPath string) string {
++			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++		},
++		Chmod: func(_, _ string, _ ...string) error { return nil },
++	})
++	if got := app.wslOpenCodeMCPOverrideSet("Ubuntu"); got != nil {
++		t.Fatalf("unresolvable identity must yield an empty override set: %v", got)
++	}
++	// 存储里的旧条目仍在（诊断面保留），只是不再生效。
++	if entry, ok := app.loadWSLOpenCodeMCPSelection().Distros["Ubuntu"]; !ok || len(entry.OverrideGlobal) != 1 {
++		t.Fatalf("stale entry must stay on disk for diagnosis: %+v", entry)
++	}
++}
++
++// TestWSLOpenCodeMCPPreviewRowUnknownConflict：全局配置不可读（冲突未知）
++// 映射为「不写入附加层」的可见行（needsAdapt + reason；不扩 Wails DTO）。
++func TestWSLOpenCodeMCPPreviewRowUnknownConflict(t *testing.T) {
++	row := wslOpenCodeMCPPreviewRow(launcher.OpenCodeMCPPreviewEntry{
++		Name: "fetch", NativeCommand: "npx", GlobalConflictUnknown: true,
++	}, false)
++	if !row.NeedsAdapt || row.Reason == "" || !strings.Contains(row.Reason, "同名冲突无法确认") {
++		t.Fatalf("unknown conflict must surface as needs-adapt with reason: %+v", row)
++	}
++	// 形态不可逆（NeedsAdapt）+ 未知冲突叠加时两条原因都保留。
++	row2 := wslOpenCodeMCPPreviewRow(launcher.OpenCodeMCPPreviewEntry{
++		Name: "win", NeedsAdapt: true, Reason: "命令为 Windows 专属形态", GlobalConflictUnknown: true,
++	}, true)
++	if !row2.NeedsAdapt || !strings.Contains(row2.Reason, "Windows 专属") || !strings.Contains(row2.Reason, "同名冲突无法确认") {
++		t.Fatalf("both reasons must be preserved: %+v", row2)
++	}
+ }
+diff --git a/internal/launcher/wsl_opencode_mcp.go b/internal/launcher/wsl_opencode_mcp.go
+index 59b1565..69a2c56 100644
+--- a/internal/launcher/wsl_opencode_mcp.go
++++ b/internal/launcher/wsl_opencode_mcp.go
+@@ -18,6 +18,7 @@ package launcher
+ // 确认」处理（保守丢弃 + 报告），不把失败当作已验证。
+ 
+ import (
++	"bytes"
+ 	"encoding/json"
+ 	"fmt"
+ 	"os"
+@@ -66,7 +67,7 @@ func AdaptWSLOpenCodeMCPWithOptions(distro string, cfg map[string]any, allowed,
+ 		return cfg, nil // 形态未知：留给 opencode 自行处理，不猜测
+ 	}
+ 
+-	globalNames := readWSLOpenCodeGlobalMCPServers(distro)
++	globalNames, globalState, globalReason := readWSLOpenCodeGlobalMCPServers(distro)
+ 
+ 	// 第一遍：收集需要验证的原生命令（裸 shim 候选）。
+ 	need := map[string]bool{}
+@@ -118,6 +119,13 @@ func AdaptWSLOpenCodeMCPWithOptions(distro string, cfg map[string]any, allowed,
+ 			entry = adapted
+ 			adaptedAny = true
+ 		}
++		if globalState == wslGlobalUnknown {
++			// SA14：全局配置不可读/不可解析——同名冲突无法确认，「未知」≠「不
++			// 冲突」，任何名字都可能覆盖本地选择；一律不写入，启动继续（可选
++			// 配置失败可见不阻断），修复全局文件后恢复。
++			report = append(report, fmt.Sprintf("MCP server %q 未写入附加层：WSL 全局 opencode 配置不可读（%s），同名冲突无法确认，为不覆盖本地选择未写入", name, globalReason))
++			continue
++		}
+ 		if globalNames[name] && !(overrideGlobal != nil && overrideGlobal[name]) {
+ 			report = append(report, fmt.Sprintf("MCP server %q 与 WSL 全局配置同名，保留本地不写入附加层（覆盖请在选择面勾选）", name))
+ 			continue
+@@ -154,9 +162,13 @@ type OpenCodeMCPPreviewEntry struct {
+ 	NeedsAdapt bool
+ 	// Reason 是中文原因（NeedsAdapt 时非空；不含密钥）。
+ 	Reason string
+-	// GlobalConflict：distro 全局 opencode.json 已有同名 server（默认保留
+-	// 本地；勾选覆盖才写入）。
++	// GlobalConflict：distro 全局 opencode.json/jsonc 已有同名 server（默认
++	// 保留本地；勾选覆盖才写入）。
+ 	GlobalConflict bool
++	// GlobalConflictUnknown：全局配置存在但不可读/不可解析（或目标探测失
++	// 敗）——同名冲突无法确认（SA14）。该状态下所有 preset MCP 都不会写入
++	// 附加层，也不提供覆盖勾选（先修复全局配置）。
++	GlobalConflictUnknown bool
+ }
+ 
+ // PreviewWSLOpenCodeMCP 对 runtime config 的 mcp 段做只读分类预览（不写、
+@@ -171,7 +183,7 @@ func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPrevi
+ 	if !ok || len(servers) == 0 {
+ 		return nil
+ 	}
+-	globalNames := readWSLOpenCodeGlobalMCPServers(distro)
++	globalNames, globalState, globalReason := readWSLOpenCodeGlobalMCPServers(distro)
+ 	need := map[string]bool{}
+ 	for _, value := range servers {
+ 		entry, ok := value.(map[string]any)
+@@ -199,11 +211,14 @@ func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPrevi
+ 	sort.Strings(names)
+ 	out := make([]OpenCodeMCPPreviewEntry, 0, len(names))
+ 	for _, name := range names {
+-		preview := OpenCodeMCPPreviewEntry{Name: name, GlobalConflict: globalNames[name]}
++		preview := OpenCodeMCPPreviewEntry{Name: name, GlobalConflict: globalNames[name], GlobalConflictUnknown: globalState == wslGlobalUnknown}
++		if preview.GlobalConflictUnknown {
++			preview.Reason = "WSL 全局 opencode 配置不可读（" + globalReason + "），同名冲突无法确认；不会写入附加层"
++		}
+ 		server, ok := servers[name].(map[string]any)
+ 		if !ok {
+ 			preview.NeedsAdapt = true
+-			preview.Reason = "server 定义不是对象"
++			preview.Reason = joinPreviewReason(preview.Reason, "server 定义不是对象")
+ 			out = append(out, preview)
+ 			continue
+ 		}
+@@ -221,13 +236,25 @@ func PreviewWSLOpenCodeMCP(distro string, cfg map[string]any) []OpenCodeMCPPrevi
+ 			}
+ 		} else {
+ 			preview.NeedsAdapt = true
+-			preview.Reason = reason
++			preview.Reason = joinPreviewReason(preview.Reason, reason)
+ 		}
+ 		out = append(out, preview)
+ 	}
+ 	return out
+ }
+ 
++// joinPreviewReason 拼接预览原因（空段跳过）。
++func joinPreviewReason(a, b string) string {
++	switch {
++	case a == "":
++		return b
++	case b == "":
++		return a
++	default:
++		return a + "；" + b
++	}
++}
++
+ // classifyWSLMCPServer 判定单个 server：(kept, adaptedEntry, dropReason)。
+ func classifyWSLMCPServer(entry map[string]any, resolved map[string]string) (bool, map[string]any, string) {
+ 	if hasMCPRemoteURL(entry) {
+@@ -300,41 +327,74 @@ func shallowCopyMCPServer(entry map[string]any) map[string]any {
+ 	return out
+ }
+ 
+-// readWSLOpenCodeGlobalMCPServers 读取 distro 全局 ~/.config/opencode/opencode.json
+-// 的 mcp server 名集合（冲突检查用）。文件缺失/不可读/不可解析（含 JSONC 注释
+-// 剥离后仍失败）一律返回空集合——冲突不可确认时不因读取失败丢弃 server。
+-func readWSLOpenCodeGlobalMCPServers(distro string) map[string]bool {
++// wslGlobalReadState 是 distro 全局 OpenCode 配置的读取三态（SA14）。
++type wslGlobalReadState int
++
++const (
++	// wslGlobalAbsent：opencode.json 与 opencode.jsonc 都不存在 → 无同名冲
++	// 突可能（正常空集）。
++	wslGlobalAbsent wslGlobalReadState = iota
++	// wslGlobalReadable：存在且全部可解析 → 冲突名集可信。
++	wslGlobalReadable
++	// wslGlobalUnknown：存在但不可读/不可解析，或目标探测失败 → 冲突不可确
++	// 认（「未知」≠「不冲突」，调用方保守处理）。
++	wslGlobalUnknown
++)
++
++// readWSLOpenCodeGlobalMCPServers 读取 distro 全局 OpenCode 配置的 mcp
++// server 名集合（冲突检查用）。SA14：
++//   - 同时探测 ~/.config/opencode/opencode.json 与 opencode.jsonc（两个入口
++//     都可能被 CLI 消费；并集对「保留本地」判定保守）；
++//   - 完整 JSONC 解析（行/块注释与合法尾逗号都接受）；
++//   - 读取/解析失败不再回退空集合冒充「无冲突」——返回 wslGlobalUnknown，
++//     调用方按未知保守处理（默认不写入附加层）。
++func readWSLOpenCodeGlobalMCPServers(distro string) (map[string]bool, wslGlobalReadState, string) {
+ 	names := map[string]bool{}
+ 	if strings.TrimSpace(distro) == "" {
+-		return names
++		return names, wslGlobalUnknown, "WSL 发行版未知"
+ 	}
+ 	home := wslUserHomeFn(distro)
+ 	if home == "" {
+-		return names
++		return names, wslGlobalUnknown, "无法探测 distro 默认用户 HOME"
+ 	}
+-	unc := wslToUNCFn(distro, strings.TrimRight(home, "/")+"/.config/opencode/opencode.json")
+-	if unc == "" {
+-		return names
+-	}
+-	data, err := os.ReadFile(unc)
+-	if err != nil || len(data) == 0 {
+-		return names
+-	}
+-	var parsed map[string]any
+-	if json.Unmarshal(data, &parsed) != nil {
+-		if json.Unmarshal(stripJSONCComments(data), &parsed) != nil {
+-			return names
++	base := strings.TrimRight(home, "/") + "/.config/opencode"
++	foundAny := false
++	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
++		unc := wslToUNCFn(distro, base+"/"+name)
++		if unc == "" {
++			return names, wslGlobalUnknown, name + " 的 WSL UNC 路径不可映射"
++		}
++		data, err := os.ReadFile(unc)
++		if err != nil {
++			if os.IsNotExist(err) {
++				continue
++			}
++			return names, wslGlobalUnknown, name + " 读取失败（" + err.Error() + "）"
++		}
++		if len(bytes.TrimSpace(data)) == 0 {
++			continue // 空白文件不携带任何登记（与缺失同权重）
++		}
++		foundAny = true
++		var parsed map[string]any
++		if json.Unmarshal(data, &parsed) != nil {
++			if json.Unmarshal(stripJSONCTrailingCommas(stripJSONCComments(data)), &parsed) != nil {
++				return names, wslGlobalUnknown, name + " 不是可解析的 JSON/JSONC（注释与尾逗号剥离后仍失败）"
++			}
++		}
++		mcp, _ := parsed["mcp"].(map[string]any)
++		for n := range mcp {
++			names[n] = true
+ 		}
+ 	}
+-	mcp, _ := parsed["mcp"].(map[string]any)
+-	for name := range mcp {
+-		names[name] = true
++	if !foundAny {
++		return names, wslGlobalAbsent, ""
+ 	}
+-	return names
++	return names, wslGlobalReadable, ""
+ }
+ 
+ // stripJSONCComments 剥离 // 行注释与 /* */ 块注释（字符串字面量外的启发式
+-// 处理：逐字符扫描跟踪是否在字符串内；足以服务冲突名提取，不追求完整 JSONC）。
++// 处理：逐字符扫描跟踪是否在字符串内；与 stripJSONCTrailingCommas 配合服务
++// 冲突名提取，不追求完整 JSONC）。
+ func stripJSONCComments(data []byte) []byte {
+ 	var out []byte
+ 	inString := false
+@@ -375,3 +435,48 @@ func stripJSONCComments(data []byte) []byte {
+ 	}
+ 	return out
+ }
++
++// stripJSONCTrailingCommas 删除字符串字面量外的尾逗号（其后第一个非空白字
++// 符为 } 或 ] 的逗号）——JSONC 合法形态（SA14：旧实现只剥注释，尾逗号使
++// 解析失败回退空集，同名冲突被当「无冲突」）。
++func stripJSONCTrailingCommas(data []byte) []byte {
++	var out []byte
++	out = make([]byte, 0, len(data))
++	inString, escaped := false, false
++	for i := 0; i < len(data); i++ {
++		c := data[i]
++		if inString {
++			out = append(out, c)
++			if escaped {
++				escaped = false
++			} else if c == '\\' {
++				escaped = true
++			} else if c == '"' {
++				inString = false
++			}
++			continue
++		}
++		switch {
++		case c == '"':
++			inString = true
++			out = append(out, c)
++		case c == ',':
++			j := i + 1
++			for j < len(data) {
++				switch data[j] {
++				case ' ', '\t', '\n', '\r':
++					j++
++					continue
++				}
++				break
++			}
++			if j < len(data) && (data[j] == '}' || data[j] == ']') {
++				continue // 尾逗号丢弃
++			}
++			out = append(out, c)
++		default:
++			out = append(out, c)
++		}
++	}
++	return out
++}
+diff --git a/internal/launcher/wsl_opencode_mcp_s4_test.go b/internal/launcher/wsl_opencode_mcp_s4_test.go
+index ee92603..89ff257 100644
+--- a/internal/launcher/wsl_opencode_mcp_s4_test.go
++++ b/internal/launcher/wsl_opencode_mcp_s4_test.go
+@@ -120,3 +120,162 @@ func TestPreviewWSLOpenCodeMCPClassifies(t *testing.T) {
+ 		t.Fatal("preview must not mutate the config")
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// SA14：全局配置读取边界——jsonc、尾逗号、不可读不当空、双入口并集
++// ---------------------------------------------------------------------------
++
++// writeWSLOpenCodeGlobal 写 distro 全局配置文件（name 相对 ~/.config/opencode）。
++func writeWSLOpenCodeGlobal(t *testing.T, ft *fakeWSLTarget, name, content string) {
++	t.Helper()
++	dir := ft.uncPath("/home/wslu/.config/opencode")
++	if err := os.MkdirAll(dir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestAdaptWSLOpenCodeMCPJSONCAndTrailingCommas(t *testing.T) {
++	installFakeMCPResolver(t, map[string]string{"npx": "/usr/bin/npx"})
++	ft := installFakeWSLTarget(t)
++	// 合法 JSONC：行注释 + 块注释 + 尾逗号（旧实现解析失败回退空集 → 同名
++	// preset 覆盖本地选择）。
++	writeWSLOpenCodeGlobal(t, ft, "opencode.jsonc", `{
++		// my global servers
++		"mcp": {
++			"fetch": {"command": "npx", "args": ["-y", "other"],}, /* block */
++		},
++	}`)
++	cfg := mcpConfig(map[string]any{
++		"fetch":  map[string]any{"command": "npx.cmd", "args": []any{"-y", "pkg"}},
++		"other2": map[string]any{"command": "npx", "args": []any{"pkg2"}},
++	})
++	out, report := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
++	mcp := out["mcp"].(map[string]any)
++	if _, ok := mcp["fetch"]; ok {
++		t.Fatal("jsonc trailing-comma global conflict must keep local (not written)")
++	}
++	if _, ok := mcp["other2"]; !ok {
++		t.Fatal("non-conflicting server must be kept")
++	}
++	found := false
++	for _, line := range report {
++		if strings.Contains(line, "fetch") && strings.Contains(line, "全局") {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatalf("conflict must be reported: %v", report)
++	}
++}
++
++func TestAdaptWSLOpenCodeMCPJSONAndJSONCUnion(t *testing.T) {
++	installFakeMCPResolver(t, map[string]string{"npx": "/usr/bin/npx"})
++	ft := installFakeWSLTarget(t)
++	// 两个入口都可能被 CLI 消费：并集判定冲突（保守）。
++	writeWSLOpenCodeGlobal(t, ft, "opencode.json", `{"mcp": {"a": {"command": "npx"}}}`)
++	writeWSLOpenCodeGlobal(t, ft, "opencode.jsonc", `{"mcp": {"b": {"command": "npx"}}}`)
++	cfg := mcpConfig(map[string]any{
++		"a": map[string]any{"command": "npx"},
++		"b": map[string]any{"command": "npx"},
++		"c": map[string]any{"command": "npx"},
++	})
++	out, _ := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
++	mcp := out["mcp"].(map[string]any)
++	if _, ok := mcp["a"]; ok {
++		t.Fatal("json-file conflict must keep local")
++	}
++	if _, ok := mcp["b"]; ok {
++		t.Fatal("jsonc-file conflict must keep local")
++	}
++	if _, ok := mcp["c"]; !ok {
++		t.Fatal("unconflicted server must be written")
++	}
++}
++
++// TestAdaptWSLOpenCodeMCPUnreadableGlobalDropsAdditiveWrites：全局文件存在
++// 但不可解析 → 「未知」≠「不冲突」：任何 preset MCP 都不写入附加层（默认
++// 保留本地选择；启动继续，逐条报告可见）。旧实现回退空集把同名 server 写入
++// 高优先级附加层覆盖本地。
++func TestAdaptWSLOpenCodeMCPUnreadableGlobalDropsAdditiveWrites(t *testing.T) {
++	installFakeMCPResolver(t, map[string]string{"npx": "/usr/bin/npx"})
++	ft := installFakeWSLTarget(t)
++	writeWSLOpenCodeGlobal(t, ft, "opencode.json", `{"mcp": {broken`)
++	cfg := mcpConfig(map[string]any{
++		"fetch":  map[string]any{"command": "npx.cmd", "args": []any{"-y", "pkg"}},
++		"other2": map[string]any{"command": "npx", "args": []any{"pkg2"}},
++	})
++	out, report := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
++	if _, ok := out["mcp"]; ok {
++		t.Fatalf("unknown conflict state must not write any additive-layer mcp: %v", out["mcp"])
++	}
++	if len(report) != 2 {
++		t.Fatalf("every dropped server must be reported: %v", report)
++	}
++	for _, line := range report {
++		if !strings.Contains(line, "不可读") || !strings.Contains(line, "同名冲突无法确认") {
++			t.Fatalf("report must state the unknown-conflict reason: %v", line)
++		}
++	}
++	// 覆盖勾选也不能越过「未知」状态（不知道本地是否有同名项）。
++	out2, report2 := AdaptWSLOpenCodeMCPWithOptions("Ubuntu", cfg, nil, map[string]bool{"fetch": true})
++	if _, ok := out2["mcp"]; ok {
++		t.Fatalf("override must not bypass unknown conflict state: %v", out2["mcp"])
++	}
++	if len(report2) != 2 {
++		t.Fatalf("override attempt must still report drops: %v", report2)
++	}
++}
++
++// TestAdaptWSLOpenCodeMCPHomeProbeFailureIsUnknown：目标探测失败（HOME 不可
++// 得）不再回退「无冲突」空集——同样按未知处理。
++func TestAdaptWSLOpenCodeMCPHomeProbeFailureIsUnknown(t *testing.T) {
++	installFakeMCPResolver(t, map[string]string{"npx": "/usr/bin/npx"})
++	installFakeWSLTarget(t)
++	origHome := wslUserHomeFn
++	wslUserHomeFn = func(string) string { return "" }
++	t.Cleanup(func() { wslUserHomeFn = origHome })
++	cfg := mcpConfig(map[string]any{
++		"fetch": map[string]any{"command": "npx", "args": []any{"pkg"}},
++	})
++	out, report := AdaptWSLOpenCodeMCP("Ubuntu", cfg)
++	if _, ok := out["mcp"]; ok {
++		t.Fatalf("probe failure must not write additive-layer mcp: %v", out["mcp"])
++	}
++	if len(report) != 1 || !strings.Contains(report[0], "无法探测") {
++		t.Fatalf("probe failure must be reported as unknown: %v", report)
++	}
++}
++
++// TestPreviewWSLOpenCodeMCPUnknownConflictFlag：预览面携带结构化的「冲突未
++// 知」标记与原因（s4 选择面据此隐藏覆盖勾选并展示不写入原因）。
++func TestPreviewWSLOpenCodeMCPUnknownConflictFlag(t *testing.T) {
++	installFakeMCPResolver(t, map[string]string{"npx": "/usr/bin/npx"})
++	ft := installFakeWSLTarget(t)
++	writeWSLOpenCodeGlobal(t, ft, "opencode.jsonc", `{"mcp": [`)
++	cfg := mcpConfig(map[string]any{
++		"fetch": map[string]any{"command": "npx.cmd", "args": []any{"-y", "pkg"}},
++	})
++	previews := PreviewWSLOpenCodeMCP("Ubuntu", cfg)
++	if len(previews) != 1 {
++		t.Fatalf("one preview entry expected: %+v", previews)
++	}
++	if !previews[0].GlobalConflictUnknown || previews[0].GlobalConflict {
++		t.Fatalf("unknown state must be flagged structurally: %+v", previews[0])
++	}
++	if !strings.Contains(previews[0].Reason, "同名冲突无法确认") {
++		t.Fatalf("reason must explain unknown conflict: %+v", previews[0])
++	}
++}
++
++// TestStripJSONCTrailingCommas：尾逗号剥离的确定性钉子（字符串字面量内的
++// 逗号/花括号不受影响）。
++func TestStripJSONCTrailingCommas(t *testing.T) {
++	in := `{"a": [1, 2, ], "b": {"c": "x,y}", }, "s": "not,a}bracket"}`
++	want := `{"a": [1, 2 ], "b": {"c": "x,y}" }, "s": "not,a}bracket"}`
++	if got := string(stripJSONCTrailingCommas([]byte(in))); got != want {
++		t.Fatalf("strip mismatch:\n got %s\nwant %s", got, want)
++	}
++}
+diff --git a/internal/piplugin/service.go b/internal/piplugin/service.go
+index 24ab391..aa0f5ab 100644
+--- a/internal/piplugin/service.go
++++ b/internal/piplugin/service.go
+@@ -173,22 +173,30 @@ func packageEntryFromJSON(item gjson.Result) (configuredPackage, bool) {
+ 		}
+ 		return configuredPackage{
+ 			source:     src,
+-			extensions: toStringSlice(item.Get("extensions")),
+-			skills:     toStringSlice(item.Get("skills")),
+-			prompts:    toStringSlice(item.Get("prompts")),
+-			themes:     toStringSlice(item.Get("themes")),
++			extensions: filterSlice(item.Get("extensions")),
++			skills:     filterSlice(item.Get("skills")),
++			prompts:    filterSlice(item.Get("prompts")),
++			themes:     filterSlice(item.Get("themes")),
+ 		}, true
+ 	}
+ 	return configuredPackage{}, false
+ }
+ 
+-// toStringSlice 把 gjson 数组转为 []string（非数组返回 nil）。
+-func toStringSlice(result gjson.Result) []string {
+-	if !result.IsArray() {
++// filterSlice 把过滤键的 gjson 值转为 []string，保留 Pi 原生三态语义
++// （SA12 补全）：键省略 → nil（该类型加载全部）；显式空数组 [] → 非 nil
++// 空切片（该类型一项都不加载）；数组元素 trim 后逐项保留。键存在但值非
++// 数组（pi 原生 schema 该键应为字符串数组，此为用户手写的异常形态）没有
++// 官方语义可证——按收紧面处理：视为已声明且清单为空（全关），不折叠回
++// 省略而扩大启用面。
++func filterSlice(result gjson.Result) []string {
++	if !result.Exists() {
+ 		return nil
+ 	}
++	if !result.IsArray() {
++		return []string{}
++	}
+ 	arr := result.Array()
+-	out := make([]string, 0, len(arr))
++	out := make([]string, 0, len(arr)) // make 恒非 nil：空数组保持「已声明、清单为空」
+ 	for _, v := range arr {
+ 		if v.Type == gjson.String {
+ 			if s := strings.TrimSpace(v.String()); s != "" {
+@@ -196,9 +204,6 @@ func toStringSlice(result gjson.Result) []string {
+ 			}
+ 		}
+ 	}
+-	if len(out) == 0 {
+-		return nil
+-	}
+ 	return out
+ }
+ 
+diff --git a/internal/piplugin/service_test.go b/internal/piplugin/service_test.go
+index f8a5b0f..65a41e5 100644
+--- a/internal/piplugin/service_test.go
++++ b/internal/piplugin/service_test.go
+@@ -186,9 +186,11 @@ func TestListInstalledPluginsSupportsFilterObject(t *testing.T) {
+ 	if !reflect.DeepEqual(obj.Prompts, []string{"prompts/review.md"}) {
+ 		t.Fatalf("unexpected prompts filter: %#v", obj.Prompts)
+ 	}
+-	// skills: [] 显式空数组 → nil（toStringSlice 对空数组返回 nil，表示"加载全部"语义由 pi 解释）。
+-	if obj.Skills != nil {
+-		t.Fatalf("expected nil skills for empty array, got %#v", obj.Skills)
++	// skills: [] 显式空数组 → 非 nil 空切片（三态保留：一项都不加载；
++	// SA12 补全——旧 toStringSlice 把 [] 折叠为 nil 会把「全关」错当「全开」）。
++	// 展示面零差异：Package.Skills 带 omitempty，空切片与 nil 都不序列化。
++	if obj.Skills == nil || len(obj.Skills) != 0 {
++		t.Fatalf("expected non-nil empty skills for explicit [], got %#v", obj.Skills)
+ 	}
+ }
+ 
+diff --git a/internal/piplugin/target.go b/internal/piplugin/target.go
+index 0259386..71bc656 100644
+--- a/internal/piplugin/target.go
++++ b/internal/piplugin/target.go
+@@ -106,8 +106,10 @@ func (s *Service) ResolvedEntityCommit(source string) string {
+ }
+ 
+ // WindowsEntryFilters 返回 Windows settings.json 中该源登记的子资源过滤清单
+-// （packages[] 元素为过滤对象时携带）。重放登记把它记录在案（本批不在 WSL
+-// settings 中重建过滤对象——如实登记，不冒充已同步）。
++// （packages[] 元素为过滤对象时携带）。返回的 []string 无法区分「键省略」
++// 与「显式空数组 []」——本方法为既有 Wails 绑定面保留原签名/原语义；需要
++// 三态语义（nil=全部加载、空切片=一项都不加载）的调用方改用包级函数
++// EntryFiltersFor（不进 Wails 绑定面）。
+ func (s *Service) WindowsEntryFilters(source string) (extensions, skills, prompts, themes []string) {
+ 	configured, err := s.readConfiguredPackages()
+ 	if err != nil {
+@@ -125,6 +127,50 @@ func (s *Service) WindowsEntryFilters(source string) (extensions, skills, prompt
+ 	return nil, nil, nil, nil
+ }
+ 
++// EntryFilters 是 Windows 侧登记的子资源过滤清单三态快照（SA12 补全）：
++// 每个字段 nil = 该键省略（此类型加载全部）；非 nil 空切片 = 显式空数组
++// []（此类型一项都不加载）；非空 = 按清单过滤（模式串原样由 pi 解释）。
++// 未登记/读取失败时四字段全 nil。
++type EntryFilters struct {
++	Extensions []string
++	Skills     []string
++	Prompts    []string
++	Themes     []string
++}
++
++// Any 报告是否任一类型显式声明了过滤键（含空数组——空数组也是过滤形态，
++// 不是「无过滤」）。
++func (f EntryFilters) Any() bool {
++	return f.Extensions != nil || f.Skills != nil || f.Prompts != nil || f.Themes != nil
++}
++
++// EntryFiltersFor 返回该源登记的子资源过滤清单（三态保留）。包级函数而
++// 非 Service 方法：不进入 Wails 绑定面（wailsjs 生成物不因本函数变化），
++// 供 App 编排层在 WSL 重放时构建保留 nil/空切片区别的过滤快照。
++func EntryFiltersFor(s *Service, source string) EntryFilters {
++	var out EntryFilters
++	if s == nil {
++		return out
++	}
++	configured, err := s.readConfiguredPackages()
++	if err != nil {
++		return out
++	}
++	registered := s.findRegistered(source, configured)
++	if registered == "" {
++		return out
++	}
++	for _, cfg := range configured {
++		if cfg.source == registered {
++			return EntryFilters{
++				Extensions: cfg.extensions, Skills: cfg.skills,
++				Prompts: cfg.prompts, Themes: cfg.themes,
++			}
++		}
++	}
++	return out
++}
++
+ // readGitHeadCommit 只读解析 git 仓库 HEAD： detached（HEAD 直接是 SHA）或
+ // symbolic ref（ref: refs/heads/x → .git/refs/heads/x，缺失时查 packed-refs）。
+ func readGitHeadCommit(dotGit string) string {
+diff --git a/internal/piplugin/target_test.go b/internal/piplugin/target_test.go
+index 5bb0b19..b7212ff 100644
+--- a/internal/piplugin/target_test.go
++++ b/internal/piplugin/target_test.go
+@@ -141,3 +141,66 @@ func TestWindowsEntryFilters(t *testing.T) {
+ 		t.Fatalf("plain entry has no filters: %v", ext)
+ 	}
+ }
++
++// TestEntryFiltersForDistinguishesEmptyArrayFromOmitted：SA12 补全——三态
++// 读面必须保留「显式空数组 []（该类型一项都不加载）」与「键省略（全部加载）」
++// 的区别（旧 WindowsEntryFilters/toStringSlice 把两者都折叠为 nil，重放侧会
++// 把全关错当全开）。
++func TestEntryFiltersForDistinguishesEmptyArrayFromOmitted(t *testing.T) {
++	agentDir := t.TempDir()
++	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
++	writeTargetFixture(t, agentDir, []any{
++		"npm:plain",
++		map[string]any{
++			"source":     "npm:filtered",
++			"extensions": []string{},              // 显式空数组：extensions 一项都不加载
++			"skills":     []string{"skills/core"}, // 非空清单
++			// prompts/themes 键省略：全部加载
++		},
++	})
++	f := EntryFiltersFor(svc, "npm:filtered")
++	if f.Extensions == nil || len(f.Extensions) != 0 {
++		t.Fatalf("explicit [] must stay a non-nil empty slice, got %#v", f.Extensions)
++	}
++	if f.Skills == nil || len(f.Skills) != 1 || f.Skills[0] != "skills/core" {
++		t.Fatalf("non-empty filter must be preserved: %#v", f.Skills)
++	}
++	if f.Prompts != nil || f.Themes != nil {
++		t.Fatalf("omitted keys must stay nil: prompts=%#v themes=%#v", f.Prompts, f.Themes)
++	}
++	if !f.Any() {
++		t.Fatal("explicit [] counts as a declared filter (Any must be true)")
++	}
++	// 纯字符串登记：无任何过滤键。
++	p := EntryFiltersFor(svc, "npm:plain")
++	if p.Extensions != nil || p.Skills != nil || p.Prompts != nil || p.Themes != nil || p.Any() {
++		t.Fatalf("plain string entry must yield all-nil filters: %+v", p)
++	}
++	// 未登记源：全 nil。
++	u := EntryFiltersFor(svc, "npm:missing")
++	if u.Any() {
++		t.Fatalf("unregistered source must yield all-nil filters: %+v", u)
++	}
++	// nil 服务：全 nil（不 panic）。
++	if n := EntryFiltersFor(nil, "npm:foo"); n.Any() {
++		t.Fatalf("nil service must yield all-nil filters: %+v", n)
++	}
++}
++
++// TestEntryFiltersForNonArrayValueTreatedAsDeclaredEmpty：过滤键存在但值非
++// 数组（用户手写异常形态，无 pi 官方语义）按收紧面处理：视为已声明且清单为
++// 空（全关），不折叠回省略而扩大启用面。
++func TestEntryFiltersForNonArrayValueTreatedAsDeclaredEmpty(t *testing.T) {
++	agentDir := t.TempDir()
++	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
++	writeTargetFixture(t, agentDir, []any{
++		map[string]any{"source": "npm:odd", "extensions": "not-an-array"},
++	})
++	f := EntryFiltersFor(svc, "npm:odd")
++	if f.Extensions == nil || len(f.Extensions) != 0 {
++		t.Fatalf("non-array value must be treated as declared-empty (deny-all), got %#v", f.Extensions)
++	}
++	if !f.Any() {
++		t.Fatal("declared-but-malformed key must count as a filter")
++	}
++}
+diff --git a/internal/wslsupply/plugins.go b/internal/wslsupply/plugins.go
+index 8ac8881..eb7dafa 100644
+--- a/internal/wslsupply/plugins.go
++++ b/internal/wslsupply/plugins.go
+@@ -31,12 +31,14 @@ import (
+ 	"path/filepath"
+ 	"regexp"
+ 	"sort"
++	"strconv"
+ 	"strings"
+ 	"sync"
+ 	"time"
+ 
+ 	"amagi-codebox/internal/platform"
+ 	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
+ )
+ 
+ // ---------------------------------------------------------------------------
+@@ -86,6 +88,9 @@ const (
+ 	PluginErrParserUnavailable     = "parser-unavailable"
+ 	PluginErrInvalidSource         = "invalid-source"
+ 	PluginErrRegistrationUnchanged = "registration-unchanged"
++	// PluginErrFilterApplyFailed：过滤清单按 Pi 原生语义写入 distro settings
++	// 失败（SA12：应用与复检是硬门槛，失败绝不报已安装）。
++	PluginErrFilterApplyFailed = "filter-apply-failed"
+ )
+ 
+ // PluginOperation 是一次 WSL 侧插件重放请求（design §七 RunPluginOperation：
+@@ -98,7 +103,8 @@ type PluginOperation struct {
+ 	// AnchorRef 是宿主侧已解析的确切版本（npm）或 commit（git）——「同时
+ 	// 应用」模式的重放锚点；空串表示在 distro 内独立解析。
+ 	AnchorRef string
+-	// Filters 是登记在案的子资源过滤清单（仅记录，不在 WSL settings 重建）。
++	// Filters 是登记在案的子资源过滤清单（SA12：重放时按 Pi 原生 packages
++	// 语义写入 distro settings 过滤对象并复检；nil/空 = 该类型不受限）。
+ 	Filters PluginFilters
+ }
+ 
+@@ -223,10 +229,16 @@ const pluginUserBinPathPrefix = `export PATH="$HOME/.npm-global/bin:/usr/bin:/us
+ 
+ // defaultPluginCommandRunner 生产执行面：wsl.exe --exec bash -lc（--exec 逐字
+ // 传参，无中间 shell 二次解析）；SuppressConsoleWindow 抑制 GUI 闪窗；命令
+-// 绑定 ctx（exec.CommandContext）——ctx 到期/取消终止 wsl.exe，错误归类为
+-// 结构化 timeout/canceled（Linux 侧子进程的清理由 WSL 会话语义承担——已知
+-// 边界，见 s5 报告）。非 Windows 返回错误（插件重放仅 Windows 宿主可用）。
++// 绑定 ctx（exec.CommandContext）。ctx 已取消/到期在构造命令前短路——已取
++// 消的请求不查 wsl.exe、不启动任何进程（SA16/SA18：exec.CommandContext 对
++// 已取消 ctx 的 Start 仍可能先触发 LookPath，平台 PATH 差异不得掩盖取消语
++// 义）。终止 wsl.exe 只结束 Windows 侧进程；distro 内由它启动的 Linux 子进程
++// 是否随之退出未经 Windows 真机验证——超时/取消结果按此边界如实报告，不宣
++// 称 Linux 侧进程已清理。非 Windows 返回错误（插件重放仅 Windows 宿主可用）。
+ func defaultPluginCommandRunner(ctx context.Context, distro, script string) (string, error) {
++	if err := ctx.Err(); err != nil {
++		return "", err
++	}
+ 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "bash", "-lc", pluginUserBinPathPrefix+script)
+ 	platform.SuppressConsoleWindow(cmd)
+ 	out, err := cmd.CombinedOutput()
+@@ -362,8 +374,19 @@ func truncateDetail(s string) string {
+ 	return s
+ }
+ 
+-// classifyRunnerError 把 runner 错误分类为结构化错误码。
+-func classifyRunnerError(err error) string {
++// classifyRunnerError 把 runner 错误分类为结构化错误码。SA16：ctx 已到期/
++// 取消时优先按 ctx 归因——运行中被 CommandContext 终止的 wsl.exe 常以
++// ExitError 形态返回、不携带 ctx 错误链，runner 错误形态本身不能推翻取消/
++// 超时事实；只有 ctx 未结束时才按错误链（假 runner 直接回 ctx.Err）归类。
++func classifyRunnerError(ctx context.Context, err error) string {
++	if ctx != nil {
++		if ctxErr := ctx.Err(); ctxErr != nil {
++			if errors.Is(ctxErr, context.DeadlineExceeded) {
++				return PluginErrTimeout
++			}
++			return PluginErrCanceled
++		}
++	}
+ 	if err == nil {
+ 		return ""
+ 	}
+@@ -377,7 +400,12 @@ func classifyRunnerError(err error) string {
+ }
+ 
+ // runScript 执行一段 distro 内登录 shell 脚本（带 opMu 串行与 ctx 透传）。
++// ctx 已取消/到期时不排队等 opMu、不启动任何 distro 命令（SA16：取消的请求
++// 不得在锁等待或执行面继续产生跨界副作用）。
+ func (p *PluginScope) runScript(ctx context.Context, distro, script string) (string, error) {
++	if err := ctx.Err(); err != nil {
++		return "", err
++	}
+ 	p.opMu.Lock()
+ 	defer p.opMu.Unlock()
+ 	return p.runner(ctx, distro, script)
+@@ -391,6 +419,11 @@ func (p *PluginScope) runScript(ctx context.Context, distro, script string) (str
+ type distroPluginEntry struct {
+ 	source string
+ 	spec   PluginSourceSpec
++	// raw 是元素的原始 JSON（字符串或对象形态）；isObject 报告形态。
++	raw      string
++	isObject bool
++	// filters 是对象形态携带的过滤清单（字符串形态为零值）。
++	filters PluginFilters
+ }
+ 
+ // settingsReadState 区分 settings.json 的读取三态：可读 / 缺失（agent 根
+@@ -405,9 +438,11 @@ const (
+ )
+ 
+ // readDistroSettingsPackages 经 UNC 读 distro settings.json 的 packages[]
+-// （元素为字符串源或 {source,...} 过滤对象；与 piplugin 同语义的只读子集）。
+-// 文件缺失返回空清单与 settingsMissing（尚未初始化的 agent 根不算错误）；
+-// 其他读取失败或 JSON 损坏返回 settingsUnreadable（调用方阻断，不猜测）。
++// （元素为字符串源或 {source,...} 过滤对象；与 piplugin 同语义的只读子集，
++// 同时携带过滤清单供 SA12 复检，并保留三态：键省略 → nil，显式空数组 []
++// → 非 nil 空切片——写入面不产生 null，手写 null 值按键省略处理）。文件缺失
++// 返回空清单与 settingsMissing（尚未初始化的 agent 根不算错误）；其他读取
++// 失败或 JSON 损坏返回 settingsUnreadable（调用方阻断，不猜测）。
+ func (p *PluginScope) readDistroSettingsPackages(target TargetRef) ([]distroPluginEntry, settingsReadState) {
+ 	path := filepath.Join(target.UNCRoot, "settings.json")
+ 	data, err := os.ReadFile(path)
+@@ -429,6 +464,7 @@ func (p *PluginScope) readDistroSettingsPackages(target TargetRef) ([]distroPlug
+ 		if trimmed == "" {
+ 			continue
+ 		}
++		entry := distroPluginEntry{raw: string(raw)}
+ 		var source string
+ 		if trimmed[0] == '"' {
+ 			if err := json.Unmarshal(raw, &source); err != nil {
+@@ -436,19 +472,28 @@ func (p *PluginScope) readDistroSettingsPackages(target TargetRef) ([]distroPlug
+ 			}
+ 		} else {
+ 			var obj struct {
+-				Source string `json:"source"`
++				Source     string   `json:"source"`
++				Extensions []string `json:"extensions"`
++				Skills     []string `json:"skills"`
++				Prompts    []string `json:"prompts"`
++				Themes     []string `json:"themes"`
+ 			}
+ 			if json.Unmarshal(raw, &obj) != nil || strings.TrimSpace(obj.Source) == "" {
+ 				continue
+ 			}
+ 			source = obj.Source
++			entry.isObject = true
++			entry.filters = PluginFilters{
++				Extensions: obj.Extensions, Skills: obj.Skills,
++				Prompts: obj.Prompts, Themes: obj.Themes,
++			}
+ 		}
+ 		source = strings.TrimSpace(source)
+-		if p.parser == nil {
+-			out = append(out, distroPluginEntry{source: source})
+-			continue
++		entry.source = source
++		if p.parser != nil {
++			entry.spec = p.parser(source)
+ 		}
+-		out = append(out, distroPluginEntry{source: source, spec: p.parser(source)})
++		out = append(out, entry)
+ 	}
+ 	return out, settingsReadable
+ }
+@@ -562,9 +607,9 @@ func pluginTrimSHA(s string) (string, bool) {
+ func (p *PluginScope) resolveNpmVersion(ctx context.Context, target TargetRef, name string) (string, error) {
+ 	out, err := p.runScript(ctx, target.Distro, "npm view "+pluginShQuote(name)+" version 2>/dev/null | tail -1")
+ 	if err != nil {
+-		if ctxErr := ctx.Err(); ctxErr != nil {
++		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
+ 			// ctx 到期/取消优先于「离线」文案（复审 F2：超时不得误导诊断为离线）。
+-			return "", errors.New(classifyRunnerError(ctxErr))
++			return "", errors.New(code)
+ 		}
+ 		return "", fmt.Errorf("npm view 失败（离线或 npm 不可用）: %s", truncateDetail(out))
+ 	}
+@@ -585,8 +630,8 @@ func (p *PluginScope) resolveGitCommit(ctx context.Context, target TargetRef, sp
+ 	}
+ 	out, err := p.runScript(ctx, target.Distro, "git ls-remote "+pluginShQuote("https://"+repo)+" "+pluginShQuote(refArg)+" 2>/dev/null | head -1 | cut -f1")
+ 	if err != nil {
+-		if ctxErr := ctx.Err(); ctxErr != nil {
+-			return "", errors.New(classifyRunnerError(ctxErr))
++		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
++			return "", errors.New(code)
+ 		}
+ 		return "", fmt.Errorf("git ls-remote 失败（离线或 ref 失效）: %s", truncateDetail(out))
+ 	}
+@@ -601,8 +646,8 @@ func (p *PluginScope) resolveGitCommit(ctx context.Context, target TargetRef, sp
+ func (p *PluginScope) piAvailable(ctx context.Context, target TargetRef) (string, error) {
+ 	out, err := p.runScript(ctx, target.Distro, "command -v pi")
+ 	if err != nil {
+-		if ctxErr := ctx.Err(); ctxErr != nil {
+-			return "", errors.New(classifyRunnerError(ctxErr))
++		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
++			return "", errors.New(code)
+ 		}
+ 		return "", fmt.Errorf("distro 探测失败: %s", truncateDetail(out))
+ 	}
+@@ -620,8 +665,8 @@ func (p *PluginScope) gitDirtyCheck(ctx context.Context, target TargetRef, spec
+ 	linuxPath := strings.TrimRight(target.LinuxRoot, "/") + "/" + rel
+ 	out, err := p.runScript(ctx, target.Distro, "git -C "+pluginShQuote(linuxPath)+" status --porcelain 2>&1 | head -5")
+ 	if err != nil {
+-		if ctxErr := ctx.Err(); ctxErr != nil {
+-			return false, "", errors.New(classifyRunnerError(ctxErr))
++		if code := classifyRunnerError(ctx, err); code != PluginErrReplayFailed {
++			return false, "", errors.New(code)
+ 		}
+ 		return false, "", fmt.Errorf("git status 不可用: %s", truncateDetail(out))
+ 	}
+@@ -639,46 +684,69 @@ func (p *PluginScope) gitDirtyCheck(ctx context.Context, target TargetRef, spec
+ // 登记读写（stateStore；重放成功才写 Installed）
+ // ---------------------------------------------------------------------------
+ 
+-// pluginEntryByIdentity 返回当前代际下命中身份键的登记（generation 双方非空
+-// 且不同 → 视为无登记：distro 重装后旧登记不自动扩散）。
++// pluginEntryByIdentity 返回当前目标可归属的登记。SA-02 插件面：登记必须
++// 能唯一归属到当前目标——双方 generation 都已知且相等才匹配；目标代际未知
++// （GenerationUnknown/空）或登记代际缺失/未知时不复用持久登记（无法证明登记
++// 属于这个 distro 时按未登记处理，宁可退回本地项语义也不跨目标继承管理权；
++// 无 machine-id 的最小 distro 上 update/remove 会诚实 not-managed，重复
++// install 会诚实 unmanaged-existing）。多目标并存（A/B 交替同包不互相覆盖
++// 单槽）经 identity+known generation 联合键实现：登记列表按代际分区保存/
++// 删除（见 savePluginEntry/dropPluginEntry），本函数是读侧同一键的匹配。
+ func (p *PluginScope) pluginEntryByIdentity(st *StateFile, identity, generation string) (PluginStateEntry, bool) {
++	if !generationBindable(generation) {
++		return PluginStateEntry{}, false
++	}
+ 	for i := range st.Plugins {
+ 		e := st.Plugins[i]
+ 		if e.Identity != identity {
+ 			continue
+ 		}
+-		if e.Generation != "" && generation != "" && e.Generation != generation {
+-			continue
++		if generationBindable(e.Generation) && e.Generation == generation {
++			return e, true
+ 		}
+-		return e, true
+ 	}
+ 	return PluginStateEntry{}, false
+ }
+ 
+-// savePluginEntry 写入登记（mutate 原子落盘；Identity 命中替换否则追加——
+-// 调用方保证 entry 携带完整身份与 Generation，绝不以空 Identity 落盘）。
++// generationBindable 报告身份代是否可用于归属持久登记（空与 unknown 不可）。
++func generationBindable(generation string) bool {
++	return generation != "" && generation != GenerationUnknown
++}
++
++// savePluginEntry 写入登记（mutate 原子落盘；联合键 identity+known
++// generation 命中替换否则追加——调用方保证 entry 携带完整身份与 Generation，
++// 绝不以空 Identity 落盘）。SA-02 多目标并存：同包在不同代际目标上各自登记
++// 一行（A→B→A 交替不互相覆盖单槽——B 的保存不丢 A 的登记，回 A 时旧登记
++// 仍可归属）；同代际同身份才替换。身份代未知的登记无法归属目标、读侧永不
++// 匹配——不落死数据；该次安装/失败结果仍如实返回给调用方（不冒充已持久化
++// 管理）。
+ func (p *PluginScope) savePluginEntry(entry PluginStateEntry) error {
++	if !generationBindable(entry.Generation) {
++		return nil
++	}
+ 	return p.state.mutate(func(st *StateFile) {
+-		replaced := false
+ 		for i := range st.Plugins {
+-			if st.Plugins[i].Identity == entry.Identity {
++			if st.Plugins[i].Identity == entry.Identity && st.Plugins[i].Generation == entry.Generation {
+ 				st.Plugins[i] = entry
+-				replaced = true
+-				break
++				return
+ 			}
+ 		}
+-		if !replaced {
+-			st.Plugins = append(st.Plugins, entry)
+-		}
++		st.Plugins = append(st.Plugins, entry)
+ 	})
+ }
+ 
+-// dropPluginEntry 删除登记（remove 成功后）。
+-func (p *PluginScope) dropPluginEntry(identity string) error {
++// dropPluginEntry 删除当前目标代际的登记（remove 成功后；SA-02 多目标并存：
++// 只删 identity+generation 联合键命中的行——B 移除同包不动 A 的登记；其它
++// 代际的旧登记留盘，换回 A 时仍可归属）。generation 必须可绑定（调用方经
++// pluginEntryByIdentity 的 hasReg 路径保证）。
++func (p *PluginScope) dropPluginEntry(identity, generation string) error {
++	if !generationBindable(generation) {
++		return nil
++	}
+ 	return p.state.mutate(func(st *StateFile) {
+ 		out := st.Plugins[:0]
+ 		for _, e := range st.Plugins {
+-			if e.Identity != identity {
++			if e.Identity != identity || e.Generation != generation {
+ 				out = append(out, e)
+ 			}
+ 		}
+@@ -694,6 +762,13 @@ func (p *PluginScope) dropPluginEntry(identity string) error {
+ // 全部结构化结果（含阻断），错误面只承载编程性失误（非法 kind/源）。
+ func (p *PluginScope) RunPluginOperation(ctx context.Context, target TargetRef, op PluginOperation) PluginOpResult {
+ 	opID := newPluginOpID(op.Kind)
++	if err := ctx.Err(); err != nil {
++		// SA16：已取消/到期的请求在入口立即按 ctx 归因返回——不进入探测/
++		// 解析/命令面，避免把取消误报为 cli-missing 等无关阶段。
++		code := classifyRunnerError(ctx, err)
++		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeFailed,
++			ErrCode: code, Detail: "请求开始前 ctx 已结束，未执行任何 distro 命令（" + mapLifecycleCodeDetail(code) + "）", OpID: opID}
++	}
+ 	blocked := func(errCode, detail string) PluginOpResult {
+ 		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeBlocked,
+ 			ErrCode: errCode, Detail: detail, OpID: opID}
+@@ -746,6 +821,174 @@ func (p *PluginScope) verifyInstalled(target TargetRef, spec PluginSourceSpec, i
+ 	return entry != nil, facts
+ }
+ 
++// ---------------------------------------------------------------------------
++// 子资源过滤清单的应用与复检（SA12）
++// ---------------------------------------------------------------------------
++
++// stringSlicesEqual 报告两个过滤字段语义相等（三态严格：nil 与空切片不等
++// ——nil = 键省略全部加载，空切片 = 显式空数组一项都不加载；元素级相等）。
++func stringSlicesEqual(a, b []string) bool {
++	if (a == nil) != (b == nil) {
++		return false
++	}
++	if len(a) != len(b) {
++		return false
++	}
++	for i := range a {
++		if a[i] != b[i] {
++			return false
++		}
++	}
++	return true
++}
++
++// pluginFiltersEqual 逐字段比较两份过滤清单（三态严格：任一字段 nil 与
++// 空切片的区别视为不一致——复检面据此把「期望空数组仍是纯字符串/省略」
++// 判为形态不符，重放射敛而非冒充等价）。
++func pluginFiltersEqual(a, b PluginFilters) bool {
++	return stringSlicesEqual(a.Extensions, b.Extensions) &&
++		stringSlicesEqual(a.Skills, b.Skills) &&
++		stringSlicesEqual(a.Prompts, b.Prompts) &&
++		stringSlicesEqual(a.Themes, b.Themes)
++}
++
++// filtersAppliedForm 报告登记的过滤形态是否与期望语义等价：期望带过滤项
++// → 登记必须是携带同清单的过滤对象；期望无过滤项 → 登记不带任何过滤项
++// （纯字符串与无过滤键的对象形态都等价于「全部加载」）。
++func filtersAppliedForm(entry *distroPluginEntry, want PluginFilters) bool {
++	if entry == nil {
++		return false
++	}
++	if hasFilters(want) {
++		return entry.isObject && pluginFiltersEqual(entry.filters, want)
++	}
++	return !hasFilters(entry.filters)
++}
++
++// canonicalPackageEntryJSON 构造 packages[] 元素的规范 JSON（过滤对象或纯
++// 字符串源）。手工构造而非 omitempty 结构体序列化：nil 字段键省略（该类型
++// 全部加载），非 nil 字段一律写键（含空数组 []——一项都不加载）。
++func canonicalPackageEntryJSON(source string, filters PluginFilters) string {
++	if !hasFilters(filters) {
++		b, _ := json.Marshal(source)
++		return string(b)
++	}
++	src, _ := json.Marshal(source)
++	var b strings.Builder
++	b.WriteString(`{"source":`)
++	b.Write(src)
++	writeFilterField(&b, "extensions", filters.Extensions)
++	writeFilterField(&b, "skills", filters.Skills)
++	writeFilterField(&b, "prompts", filters.Prompts)
++	writeFilterField(&b, "themes", filters.Themes)
++	b.WriteString("}")
++	return b.String()
++}
++
++// writeFilterField 追加一个过滤键：vals 为 nil 时省略键（全部加载）；非 nil
++// 时写数组（含空数组 []——一项都不加载，不得折叠回省略）。
++func writeFilterField(b *strings.Builder, name string, vals []string) {
++	if vals == nil {
++		return
++	}
++	b.WriteString(`,"` + name + `":[`)
++	for i, v := range vals {
++		if i > 0 {
++			b.WriteString(",")
++		}
++		enc, _ := json.Marshal(v)
++		b.Write(enc)
++	}
++	b.WriteString("]")
++}
++
++// applyDistroFilters 把 distro settings.json 中 identity 对应的登记改写为与
++// filters 等价的 Pi 原生形态（SA12：过滤不能只记录在 CodeBox 清单——WSL 消
++// 费的是 distro settings 的原生登记，只 pi install 字符串源会启用整包资源）。
++// 有过滤项 → 过滤对象；无过滤项 → 纯字符串源（全部加载，含从旧过滤对象归一
++// 回全量形态）。已是规范形态则零写入（幂等）。经 sjson 定点替换，packages
++// 之外的其余内容字节不动；同目录 tmp+rename 原子落盘。
++func (p *PluginScope) applyDistroFilters(target TargetRef, identity, source string, filters PluginFilters) error {
++	path := filepath.Join(target.UNCRoot, "settings.json")
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return fmt.Errorf("settings.json 读取失败: %w", err)
++	}
++	items := gjson.GetBytes(data, "packages").Array()
++	idx := -1
++	for i, e := range items {
++		var src string
++		if e.Type == gjson.String {
++			src = strings.TrimSpace(e.String())
++		} else if e.IsObject() {
++			src = strings.TrimSpace(e.Get("source").String())
++		}
++		if src == "" {
++			continue
++		}
++		spec := PluginSourceSpec{}
++		if p.parser != nil {
++			spec = p.parser(src)
++		}
++		if pluginIdentity(spec) == identity {
++			idx = i
++			break
++		}
++	}
++	if idx < 0 {
++		return errors.New("登记不存在，无法应用过滤形态")
++	}
++	want := canonicalPackageEntryJSON(source, filters)
++	if items[idx].Raw == want {
++		return nil
++	}
++	next, err := sjson.SetRawBytes(data, "packages."+strconv.Itoa(idx), []byte(want))
++	if err != nil {
++		return fmt.Errorf("settings.json 过滤对象写入失败: %w", err)
++	}
++	dir := filepath.Dir(path)
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return fmt.Errorf("agent 根目录不可用: %w", err)
++	}
++	tmp, err := os.CreateTemp(dir, ".amagi-pkg-filters-*")
++	if err != nil {
++		return fmt.Errorf("临时文件创建失败: %w", err)
++	}
++	tmpPath := tmp.Name()
++	if _, werr := tmp.Write(next); werr != nil {
++		_ = tmp.Close()
++		_ = os.Remove(tmpPath)
++		return fmt.Errorf("临时文件写入失败: %w", werr)
++	}
++	if cerr := tmp.Close(); cerr != nil {
++		_ = os.Remove(tmpPath)
++		return fmt.Errorf("临时文件关闭失败: %w", cerr)
++	}
++	_ = os.Chmod(tmpPath, 0o644)
++	if rerr := os.Rename(tmpPath, path); rerr != nil {
++		_ = os.Remove(tmpPath)
++		return fmt.Errorf("settings.json 原子替换失败: %w", rerr)
++	}
++	return nil
++}
++
++// verifyDistroFilters 复检 identity 对应登记的过滤形态与期望一致（SA12：
++// 复检必须覆盖过滤集——settings 里是纯字符串全量形态而期望带过滤时不算通过）。
++func (p *PluginScope) verifyDistroFilters(target TargetRef, identity string, want PluginFilters) (bool, string) {
++	entries, state := p.readDistroSettingsPackages(target)
++	if state != settingsReadable {
++		return false, "settings.json 不可读，无法复检过滤形态"
++	}
++	entry := distroEntryForIdentity(entries, identity)
++	if filtersAppliedForm(entry, want) {
++		return true, ""
++	}
++	if hasFilters(want) {
++		return false, "登记过滤对象与期望清单不一致（或仍为全量字符串形态）"
++	}
++	return false, "登记仍带过滤对象，未回到全量形态"
++}
++
+ // replay 执行 pi CLI 子命令并分类结果。子命令是本包内固定字面量（install/
+ // remove/update，不转义），包名/源串全部单引号转义。
+ func (p *PluginScope) replay(ctx context.Context, distro string, args ...string) (string, string) {
+@@ -758,7 +1001,7 @@ func (p *PluginScope) replay(ctx context.Context, distro string, args ...string)
+ 	}
+ 	out, err := p.runScript(ctx, distro, script)
+ 	if err != nil {
+-		code := classifyRunnerError(err)
++		code := classifyRunnerError(ctx, err)
+ 		if code == PluginErrReplayFailed {
+ 			return code, "pi " + args[0] + " 失败: " + truncateDetail(out)
+ 		}
+@@ -770,9 +1013,11 @@ func (p *PluginScope) replay(ctx context.Context, distro string, args ...string)
+ func mapLifecycleCodeDetail(code string) string {
+ 	switch code {
+ 	case PluginErrTimeout:
+-		return "执行超时（单次尝试，不自动重试）"
++		// SA16：如实报告进程边界——终止的是 Windows 侧 wsl.exe；distro 内
++		// 子进程是否随之退出未经真机验证，不宣称已清理。
++		return "执行超时：Windows 侧命令已终止（distro 内子进程是否随之退出未验证；单次尝试，不自动重试）"
+ 	case PluginErrCanceled:
+-		return "已取消"
++		return "已取消：Windows 侧命令已终止（distro 内子进程是否随之退出未验证）"
+ 	default:
+ 		return "失败"
+ 	}
+@@ -828,10 +1073,13 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 	}
+ 	replaySource := pinnedSourceString(spec, pinned)
+ 
+-	// 幂等：已登记安装且复检通过且锚点一致 → already-ok（不执行任何命令）。
++	// 幂等：已登记安装且复检通过且锚点与过滤形态一致 → already-ok（不执行
++	// 任何命令）。SA12：过滤形态纳入幂等条件——Windows 侧过滤清单变化时同版
++	// 本重放不再 already-ok，而是走重放路径重建过滤对象后复检。
+ 	if hasReg && reg.Installed && distroEntry != nil {
+ 		facts := p.probeEntity(target, spec)
+-		if facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned {
++		if facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned &&
++			filtersAppliedForm(distroEntry, op.Filters) {
+ 			return PluginOpResult{Source: op.Source, Kind: PluginOpInstall, Outcome: PluginOutcomeAlreadyOK,
+ 				Detail: "同版本已安装（幂等命中，未执行重放命令）", OpID: opID,
+ 				PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
+@@ -869,11 +1117,20 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 		return fail(code, detail)
+ 	}
+ 
++	// SA12：按 Pi 原生 packages 语义应用过滤清单（过滤对象/纯字符串形态），
++	// 应用或复检失败绝不报已安装——实体已落盘时如实报告失败阶段。
++	if err := p.applyDistroFilters(target, identity, replaySource, op.Filters); err != nil {
++		return fail(PluginErrFilterApplyFailed, "过滤清单应用失败: "+err.Error())
++	}
++
+ 	// 复检：settings 登记 + 实体同时有效（失败绝不写已安装）。
+ 	settingsHit, facts := p.verifyInstalled(target, spec, identity)
+ 	if !settingsHit || !facts.present {
+ 		return fail(PluginErrVerifyFailed, "重放命令成功但复检未通过（settings 登记或实体缺失）")
+ 	}
++	if ok, why := p.verifyDistroFilters(target, identity, op.Filters); !ok {
++		return fail(PluginErrVerifyFailed, "重放命令成功但过滤清单复检未通过（"+why+"）")
++	}
+ 	if spec.Type == "npm" && facts.version != "" && facts.version != pinned {
+ 		return fail(PluginErrVerifyFailed, fmt.Sprintf("实体版本 %q 与锚定版本 %q 不一致", facts.version, pinned))
+ 	}
+@@ -896,6 +1153,13 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 	}
+ 	p.invalidateSnapshot(target.Distro)
+ 	detail := "已按固定 " + refKindLabel(refKind) + " " + pinned + " 原生安装并复检通过"
++	if hasFilters(op.Filters) {
++		detail += "（含子资源过滤对象，已按 Pi 原生语义写入并复检）"
++	}
++	if !generationBindable(target.Generation) {
++		// SA-02 插件面：身份代未知时不落持久登记（下次操作按本地项对待）。
++		detail += "；目标身份代未知，登记未持久化"
++	}
+ 	if resolveNote != "" {
+ 		detail += "（" + resolveNote + "）"
+ 	}
+@@ -1046,9 +1310,18 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
+ 		refKind = refKindFor(spec, op.AnchorRef)
+ 	}
+ 
+-	// 幂等：锚点与登记/实体一致 → already-ok。
++	// 生效过滤清单：面板携带新清单时覆盖，否则保留既有登记（重放后按同一
++	// 清单应用与复检——SA12）。
++	filters := reg.Filters
++	if hasFilters(op.Filters) {
++		filters = op.Filters
++	}
++
++	// 幂等：锚点与登记/实体一致且过滤形态一致 → already-ok（SA12：过滤形态
++	// 纳入幂等条件，清单变化时重放重建过滤对象）。
+ 	facts := p.probeEntity(target, spec)
+-	if reg.Installed && facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned {
++	if reg.Installed && facts.present && p.refMatches(spec, facts, pinned) && reg.PinnedRef == pinned &&
++		filtersAppliedForm(distroEntry, filters) {
+ 		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeAlreadyOK,
+ 			Detail: "已处于锚定 " + pinned + "（幂等命中，未执行重放命令）", OpID: opID,
+ 			PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
+@@ -1074,6 +1347,16 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
+ 			ErrCode: code, Detail: detail + "（实体保留；重试将重新安装）", OpID: opID}
+ 	}
+ 
++	// SA12：按 Pi 原生语义应用生效过滤清单并复检（失败绝不写已安装）。
++	if err := p.applyDistroFilters(target, identity, replaySource, filters); err != nil {
++		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
++			e.OpID, e.LastOp, e.Installed, e.EntityVerified = opID, PluginOpUpdate, false, false
++			e.LastErrorCode, e.LastDetail = PluginErrFilterApplyFailed, truncateDetail("过滤清单应用失败: "+err.Error())
++		}))
++		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeFailed,
++			ErrCode: PluginErrFilterApplyFailed, Detail: "过滤清单应用失败: " + err.Error() + "（实体已更新；重试将重新应用）", OpID: opID}
++	}
++
+ 	settingsHit, facts2 := p.verifyInstalled(target, spec, identity)
+ 	if !settingsHit || !facts2.present {
+ 		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
+@@ -1091,9 +1374,13 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
+ 		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeFailed,
+ 			ErrCode: PluginErrVerifyFailed, Detail: fmt.Sprintf("实体版本 %q 与锚定版本 %q 不一致", facts2.version, pinned), OpID: opID}
+ 	}
+-	filters := reg.Filters
+-	if hasFilters(op.Filters) {
+-		filters = op.Filters // 面板携带了新过滤清单时覆盖；否则保留既有登记
++	if ok, why := p.verifyDistroFilters(target, identity, filters); !ok {
++		_ = p.savePluginEntry(p.mutateEntry(reg, func(e *PluginStateEntry) {
++			e.OpID, e.LastOp, e.Installed, e.EntityVerified = opID, PluginOpUpdate, false, false
++			e.LastErrorCode, e.LastDetail = PluginErrVerifyFailed, "过滤清单复检未通过"
++		}))
++		return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeFailed,
++			ErrCode: PluginErrVerifyFailed, Detail: "重放命令成功但过滤清单复检未通过（" + why + "）", OpID: opID}
+ 	}
+ 	entry := PluginStateEntry{
+ 		Source: replaySource, Identity: identity, SourceType: spec.Type, Generation: target.Generation,
+@@ -1107,13 +1394,19 @@ func (p *PluginScope) runUpdate(ctx context.Context, target TargetRef, op Plugin
+ 			OpID: opID, PinnedRef: pinned, RefKind: refKind, EntityVerified: true}
+ 	}
+ 	p.invalidateSnapshot(target.Distro)
++	detail := "已更新到固定 " + refKindLabel(refKind) + " " + pinned + " 并复检通过"
++	if hasFilters(filters) {
++		detail += "（含子资源过滤对象，已按 Pi 原生语义写入并复检）"
++	}
+ 	return PluginOpResult{Source: op.Source, Kind: PluginOpUpdate, Outcome: PluginOutcomeUpdated,
+-		Detail: "已更新到固定 " + refKindLabel(refKind) + " " + pinned + " 并复检通过", OpID: opID,
++		Detail: detail, OpID: opID,
+ 		PinnedRef: pinned, RefKind: refKind, EntityVerified: true, OK: true}
+ }
+ 
+ func hasFilters(f PluginFilters) bool {
+-	return len(f.Extensions)+len(f.Skills)+len(f.Prompts)+len(f.Themes) > 0
++	// 三态：任一字段非 nil（含空切片——显式空数组也是过滤形态）即携带
++	// 过滤；全 nil 才是「无过滤」（纯字符串全量形态）。
++	return f.Extensions != nil || f.Skills != nil || f.Prompts != nil || f.Themes != nil
+ }
+ 
+ // runRemove 移除重放（只作用于本系统登记管理的插件；本地手动项不动）：
+@@ -1127,7 +1420,7 @@ func (p *PluginScope) runRemove(ctx context.Context, target TargetRef, op Plugin
+ 		return blocked(PluginErrNotManaged, "仅本系统登记管理的插件可移除；WSL 本地手动项不动")
+ 	}
+ 	if distroEntry == nil {
+-		if err := p.dropPluginEntry(identity); err != nil {
++		if err := p.dropPluginEntry(identity, target.Generation); err != nil {
+ 			return PluginOpResult{Source: op.Source, Kind: PluginOpRemove, Outcome: PluginOutcomeFailed,
+ 				ErrCode: PluginErrRegistrationUnchanged, Detail: "登记已不存在但本地登记清理失败", OpID: opID}
+ 		}
+@@ -1152,7 +1445,7 @@ func (p *PluginScope) runRemove(ctx context.Context, target TargetRef, op Plugin
+ 		return PluginOpResult{Source: op.Source, Kind: PluginOpRemove, Outcome: PluginOutcomeFailed,
+ 			ErrCode: PluginErrVerifyFailed, Detail: "移除命令成功但 settings 登记仍存在", OpID: opID}
+ 	}
+-	if err := p.dropPluginEntry(identity); err != nil {
++	if err := p.dropPluginEntry(identity, target.Generation); err != nil {
+ 		return PluginOpResult{Source: op.Source, Kind: PluginOpRemove, Outcome: PluginOutcomeFailed,
+ 			ErrCode: PluginErrRegistrationUnchanged, Detail: "移除成功但本地登记清理失败", OpID: opID}
+ 	}
+@@ -1176,6 +1469,12 @@ func (p *PluginScope) invalidateSnapshot(distro string) {
+ // → 汇总登记面 → 缓存快照。允许唤醒当前目标（显式动作）；只读，不写任何
+ // 目标内容。
+ func (p *PluginScope) Probe(ctx context.Context, target TargetRef) WSLPluginSnapshot {
++	if err := ctx.Err(); err != nil {
++		// SA16：已取消的探测不进入命令面，如实标注取消原因。
++		code := classifyRunnerError(ctx, err)
++		return WSLPluginSnapshot{Distro: target.Distro, Available: false,
++			Reason: mapLifecycleCodeDetail(code), Items: []WSLPluginItem{}}
++	}
+ 	snap := WSLPluginSnapshot{Distro: target.Distro, Available: true, Items: []WSLPluginItem{}}
+ 	piResolve, piErr := p.piAvailable(ctx, target)
+ 	if piErr != nil {
+@@ -1232,11 +1531,13 @@ func (p *PluginScope) Probe(ctx context.Context, target TargetRef) WSLPluginSnap
+ 	}
+ 	// 登记存在但 distro settings 已无对应项（单向漂移）。settings 不可读时
+ 	// 无法确认「已消失」——跳过 reg-only 环（复审 F1：读不到≠已消失，展示腿与
+-	// R4 操作腿同一原则；快照 Reason 已标注不可读）。
++	// R4 操作腿同一原则；快照 Reason 已标注不可读）。SA-02：登记必须可归属到
++	// 当前目标（双方代际已知且相等）才展示为登记面漂移，身份代未知不跨目标
++	// 继承登记。
+ 	st := p.state.load()
+ 	if settingsState != settingsUnreadable {
+ 		for _, reg := range st.Plugins {
+-			if reg.Generation != "" && target.Generation != "" && reg.Generation != target.Generation {
++			if !generationBindable(reg.Generation) || reg.Generation != target.Generation {
+ 				continue
+ 			}
+ 			if seenIdentity[reg.Identity] {
+@@ -1320,12 +1621,16 @@ func (p *PluginScope) CachedSnapshot(distro string) WSLPluginSnapshot {
+ }
+ 
+ // RegistrationSummary 从状态清单派生登记摘要（只读缓存，不唤醒；启动路径的
+-// 「缺失插件」warning 数据源——只提示，不自动安装）。
++// 「缺失插件」warning 数据源——只提示，不自动安装）。SA-02：只统计可归属到
++// 当前代际的登记（目标/登记代际未知时不跨目标继承计数，诚实归零）。
+ func (p *PluginScope) RegistrationSummary(generation string) PluginRegistrationSummary {
+ 	st := p.state.load()
+ 	out := PluginRegistrationSummary{}
++	if !generationBindable(generation) {
++		return out
++	}
+ 	for _, reg := range st.Plugins {
+-		if reg.Generation != "" && generation != "" && reg.Generation != generation {
++		if !generationBindable(reg.Generation) || reg.Generation != generation {
+ 			continue
+ 		}
+ 		out.Managed++
+diff --git a/internal/wslsupply/plugins_api.go b/internal/wslsupply/plugins_api.go
+index 10fbeec..a6743f2 100644
+--- a/internal/wslsupply/plugins_api.go
++++ b/internal/wslsupply/plugins_api.go
+@@ -13,9 +13,15 @@ import (
+ 
+ // RunPluginOperation 在指定 distro 上执行一次插件重放（显式目标动作，允许
+ // 唤醒当前目标；单次尝试不重试）。目标不可解析时返回结构化 blocked 结果
+-// 而不是 error（与 RunUnits 的 fail-closed 消费面一致）。
++// 而不是 error（与 RunUnits 的 fail-closed 消费面一致）。SA16：已取消/到期
++// 的请求在目标解析前立即按 ctx 归因返回——不触发任何身份探测/命令面。
+ func (c *Coordinator) RunPluginOperation(ctx context.Context, distro string, op PluginOperation) PluginOpResult {
+ 	opID := newPluginOpID(op.Kind)
++	if err := ctx.Err(); err != nil {
++		code := classifyRunnerError(ctx, err)
++		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeFailed,
++			ErrCode: code, Detail: "请求开始前 ctx 已结束，未解析目标、未执行任何 distro 命令（" + mapLifecycleCodeDetail(code) + "）", OpID: opID}
++	}
+ 	target, err := c.ResolveTarget(ctx, strings.TrimSpace(distro), CLIPi)
+ 	if err != nil {
+ 		return PluginOpResult{Source: op.Source, Kind: op.Kind, Outcome: PluginOutcomeBlocked,
+@@ -30,8 +36,14 @@ func (c *Coordinator) RunPluginOperation(ctx context.Context, distro string, op
+ }
+ 
+ // ProbeWSLPlugins 显式检查 WSL 侧插件面（允许唤醒当前目标；只读不写）：
+-// pi 可用性 + distro settings/实体（UNC 读）+ 登记面汇总，缓存快照。
++// pi 可用性 + distro settings/实体（UNC 读）+ 登记面汇总，缓存快照。SA16：
++// 已取消/到期的检查不唤醒目标，如实返回取消原因。
+ func (c *Coordinator) ProbeWSLPlugins(ctx context.Context, distro string) (WSLPluginSnapshot, error) {
++	if err := ctx.Err(); err != nil {
++		code := classifyRunnerError(ctx, err)
++		return WSLPluginSnapshot{Distro: strings.TrimSpace(distro), Available: false,
++			Reason: mapLifecycleCodeDetail(code), Items: []WSLPluginItem{}}, nil
++	}
+ 	target, err := c.ResolveTarget(ctx, strings.TrimSpace(distro), CLIPi)
+ 	if err != nil {
+ 		return WSLPluginSnapshot{}, fmt.Errorf("resolve wsl supply target: %w", err)
+diff --git a/internal/wslsupply/plugins_test.go b/internal/wslsupply/plugins_test.go
+index 4792099..16d32c0 100644
+--- a/internal/wslsupply/plugins_test.go
++++ b/internal/wslsupply/plugins_test.go
+@@ -130,6 +130,23 @@ func (d *fakePluginDistro) writeSettingsLocked(sources []string) {
+ 	_ = os.WriteFile(d.settingsPath(), data, 0o644)
+ }
+ 
++// readSettingsEntries 返回 packages[] 的原始元素（字符串或对象）；对象元素
++// 以 json.RawMessage 形式返回，供过滤形态断言（SA12）。
++func (d *fakePluginDistro) readSettingsEntries(t *testing.T) []json.RawMessage {
++	t.Helper()
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	data, err := os.ReadFile(d.settingsPath())
++	if err != nil {
++		return nil
++	}
++	var root struct {
++		Packages []json.RawMessage `json:"packages"`
++	}
++	_ = json.Unmarshal(data, &root)
++	return root.Packages
++}
++
+ func (d *fakePluginDistro) readSettingsSources(t *testing.T) []string {
+ 	t.Helper()
+ 	d.mu.Lock()
+@@ -137,18 +154,80 @@ func (d *fakePluginDistro) readSettingsSources(t *testing.T) []string {
+ 	return d.readSettingsSourcesLocked()
+ }
+ 
++// readSettingsSourcesLocked 返回字符串源形态的登记（对象元素也取其 source
++// 字段——SA12 后 distro 侧可能携带过滤对象）。
+ func (d *fakePluginDistro) readSettingsSourcesLocked() []string {
+ 	data, err := os.ReadFile(d.settingsPath())
+ 	if err != nil {
+ 		return nil
+ 	}
+ 	var root struct {
+-		Packages []string `json:"packages"`
++		Packages []json.RawMessage `json:"packages"`
++	}
++	if json.Unmarshal(data, &root) != nil {
++		return nil
++	}
++	out := []string{}
++	for _, raw := range root.Packages {
++		if s := rawEntrySource(raw); s != "" {
++			out = append(out, s)
++		}
++	}
++	return out
++}
++
++// rawEntrySource 返回单个 packages[] 元素的源串（字符串或对象形态；无效返回空）。
++func rawEntrySource(raw json.RawMessage) string {
++	trimmed := strings.TrimSpace(string(raw))
++	if trimmed == "" {
++		return ""
++	}
++	if trimmed[0] == '"' {
++		var s string
++		if json.Unmarshal(raw, &s) == nil {
++			return s
++		}
++		return ""
++	}
++	var obj struct {
++		Source string `json:"source"`
++	}
++	if json.Unmarshal(raw, &obj) == nil {
++		return strings.TrimSpace(obj.Source)
++	}
++	return ""
++}
++
++// writeSettingsRaw 写入原始（字符串/对象混合）packages 元素，供过滤
++// 对象用例预置 distro 侧状态（SA12）。
++func (d *fakePluginDistro) writeSettingsRaw(t *testing.T, entries []any) {
++	t.Helper()
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	d.writeSettingsRawLocked(entries)
++}
++
++// rawPackagesLocked 返回 settings.json 的原始 packages 元素。
++func (d *fakePluginDistro) rawPackagesLocked() []json.RawMessage {
++	data, err := os.ReadFile(d.settingsPath())
++	if err != nil {
++		return nil
++	}
++	var root struct {
++		Packages []json.RawMessage `json:"packages"`
+ 	}
+ 	_ = json.Unmarshal(data, &root)
+ 	return root.Packages
+ }
+ 
++// writeSettingsRawLocked 写入原始（字符串/对象混合）packages 元素：pi
++// install/remove 模拟里未触碰的元素保留原形态（对象不被扁平化——SA12）。
++func (d *fakePluginDistro) writeSettingsRawLocked(entries []any) {
++	data, _ := json.Marshal(map[string]any{"packages": entries})
++	_ = os.MkdirAll(d.agentRoot(), 0o755)
++	_ = os.WriteFile(d.settingsPath(), data, 0o644)
++}
++
+ // writeNpmEntity 建 npm 实体（package.json version）。
+ func (d *fakePluginDistro) writeNpmEntity(t *testing.T, name, version string) {
+ 	t.Helper()
+@@ -210,18 +289,23 @@ func (d *fakePluginDistro) run(_ context.Context, _, script string) (string, err
+ 		src := unquoteTail(trim, "pi install ")
+ 		spec := testPluginParser(src)
+ 		identity := pluginIdentity(spec)
+-		next := d.readSettingsSourcesLocked()
++		// 未命中元素保留原形态（对象不被扁平化）；命中元素替换为新字符串源
++		//（pi install 写纯字符串，对象形态由 applyDistroFilters 后续重建）。
++		next := []any{}
+ 		replaced := false
+-		for i, s := range next {
+-			if pluginIdentity(testPluginParser(s)) == identity {
+-				next[i] = src
++		for _, raw := range d.rawPackagesLocked() {
++			s := rawEntrySource(raw)
++			if s != "" && pluginIdentity(testPluginParser(s)) == identity {
++				next = append(next, src)
+ 				replaced = true
++				continue
+ 			}
++			next = append(next, raw)
+ 		}
+ 		if !replaced {
+ 			next = append(next, src)
+ 		}
+-		d.writeSettingsLocked(next)
++		d.writeSettingsRawLocked(next)
+ 		switch spec.Type {
+ 		case "npm":
+ 			d.writeNpmEntityLocked(spec.Name, spec.Ref)
+@@ -236,13 +320,15 @@ func (d *fakePluginDistro) run(_ context.Context, _, script string) (string, err
+ 		src := unquoteTail(trim, "pi remove ")
+ 		spec := testPluginParser(src)
+ 		identity := pluginIdentity(spec)
+-		next := []string{}
+-		for _, s := range d.readSettingsSourcesLocked() {
+-			if pluginIdentity(testPluginParser(s)) != identity {
+-				next = append(next, s)
++		next := []any{}
++		for _, raw := range d.rawPackagesLocked() {
++			s := rawEntrySource(raw)
++			if s != "" && pluginIdentity(testPluginParser(s)) == identity {
++				continue
+ 			}
++			next = append(next, raw)
+ 		}
+-		d.writeSettingsLocked(next) // 实体保留（pi 语义）
++		d.writeSettingsRawLocked(next) // 实体保留（pi 语义）
+ 		return "removed " + src, nil
+ 	default:
+ 		return "", errors.New("unexpected script: " + trim)
+@@ -929,6 +1015,16 @@ func TestPluginProbeStates(t *testing.T) {
+ 	if err != nil || snap.Distro != "Ubuntu" || !snap.Checked {
+ 		t.Fatalf("probe must return checked snapshot: err=%v snap=%+v", err, snap)
+ 	}
++	// 登记摘要（状态页数据源）：纯状态清单视角——distro 侧真实漂移
++	//（gone 登记实为 registered-missing）只有 Probe 能发现，摘要不冒充。
++	// SA-02：摘要只统计可归属到当前代际的登记——先 Inspect 把目标代际写入
++	// 状态清单（生产路径中保存/检查/供给均会写入）。
++	if _, ierr := c.Inspect(context.Background(), target); ierr != nil {
++		t.Fatalf("inspect: %v", ierr)
++	}
++	if s := c.PluginRegistrationSummary(); s.Managed != 2 {
++		t.Fatalf("summary: %+v", s)
++	}
+ 	byIdent := map[string]WSLPluginItem{}
+ 	for _, it := range snap.Items {
+ 		byIdent[it.Identity] = it
+@@ -949,11 +1045,6 @@ func TestPluginProbeStates(t *testing.T) {
+ 	if cached := c.WSLPluginsCachedSnapshot("Ubuntu"); !cached.Checked {
+ 		t.Fatalf("cached snapshot must survive")
+ 	}
+-	// 登记摘要（状态页数据源）：纯状态清单视角——distro 侧真实漂移
+-	//（gone 登记实为 registered-missing）只有 Probe 能发现，摘要不冒充。
+-	if s := c.PluginRegistrationSummary(); s.Managed != 2 {
+-		t.Fatalf("summary: %+v", s)
+-	}
+ }
+ 
+ func TestPluginEntityMismatchAfterUserRemovesEntity(t *testing.T) {
+@@ -1004,3 +1095,645 @@ func TestRunUnitsRejectsPluginShapedUnits(t *testing.T) {
+ 		t.Fatalf("plugin-shaped unit must not be a known unit")
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// SA12：子资源过滤清单按 Pi 原生 packages 语义应用与复检
++// ---------------------------------------------------------------------------
++
++// filterEntryObject 解析 packages[] 中某源的对象形态（非对象返回 nil）。
++func filterEntryObject(t *testing.T, entries []json.RawMessage, source string) map[string]any {
++	t.Helper()
++	for _, raw := range entries {
++		var probe any
++		if json.Unmarshal(raw, &probe) != nil {
++			continue
++		}
++		if obj, ok := probe.(map[string]any); ok {
++			if s, _ := obj["source"].(string); s == source {
++				return obj
++			}
++		}
++	}
++	return nil
++}
++
++func TestPluginInstallAppliesFiltersAsNativeObject(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, target := newPluginTestCoordinator(t, d)
++	filters := PluginFilters{
++		Extensions: []string{"extensions/*.ts", "!extensions/legacy.ts"},
++		Prompts:    []string{"prompts/review.md"},
++	}
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: filters,
++	})
++	if res.Outcome != PluginOutcomeInstalled || !res.OK {
++		t.Fatalf("filtered install must succeed: %+v", res)
++	}
++	// distro settings 必须携带 Pi 原生过滤对象（不是只记录在 CodeBox 清单的
++	// 纯字符串全量形态）。
++	obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0")
++	if obj == nil {
++		t.Fatalf("distro settings must carry filter object for npm:foo@1.3.0: %s", mustReadSettings(t, d))
++	}
++	if ext, _ := obj["extensions"].([]any); len(ext) != 2 || ext[0] != "extensions/*.ts" || ext[1] != "!extensions/legacy.ts" {
++		t.Fatalf("extensions filter must be preserved verbatim (allow/deny): %+v", obj)
++	}
++	if pr, _ := obj["prompts"].([]any); len(pr) != 1 || pr[0] != "prompts/review.md" {
++		t.Fatalf("prompts filter must be preserved: %+v", obj)
++	}
++	if _, has := obj["skills"]; has {
++		t.Fatalf("unfiltered type must be omitted (Pi: 加载全部), got %+v", obj)
++	}
++	// 登记快照同步携带清单。
++	st := c.state.load()
++	entry, ok := c.plugins.pluginEntryByIdentity(&st, "npm:foo", target.Generation)
++	if !ok || !pluginFiltersEqual(entry.Filters, filters) {
++		t.Fatalf("registration must record filters: %+v ok=%v", entry, ok)
++	}
++}
++
++func mustReadSettings(t *testing.T, d *fakePluginDistro) string {
++	t.Helper()
++	entries := d.readSettingsEntries(t)
++	parts := make([]string, 0, len(entries))
++	for _, e := range entries {
++		parts = append(parts, string(e))
++	}
++	return strings.Join(parts, ", ")
++}
++
++func TestPluginInstallNoFiltersWritesPlainStringForm(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, _ := newPluginTestCoordinator(t, d)
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	})
++	if res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("plain install must succeed: %+v", res)
++	}
++	if obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0"); obj != nil {
++		t.Fatalf("filterless install must stay plain string form: %+v", obj)
++	}
++}
++
++// TestPluginInstallFiltersConvergeFromDrift：同版本但过滤清单变化（旧登记
++// 对象/字符串形态与期望不一致）不得 already-ok——重放重建过滤对象后复检。
++func TestPluginInstallFiltersConvergeFromDrift(t *testing.T) {
++	d := newFakePluginDistro(t)
++	// distro 侧已有旧字符串登记 + 实体；本系统登记称已安装同版本。
++	d.writeSettings(t, []string{"npm:foo@1.3.0"})
++	d.writeNpmEntity(t, "foo", "1.3.0")
++	c, target := newPluginTestCoordinator(t, d)
++	registerInstalled(t, c, target, PluginStateEntry{
++		Source: "npm:foo@1.3.0", Identity: "npm:foo", SourceType: "npm",
++		Generation: target.Generation, PinnedRef: "1.3.0", RefKind: PluginRefNpmVersion,
++		Installed: true, EntityVerified: true, LastOp: PluginOpInstall,
++	})
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++		Filters: PluginFilters{Skills: []string{"skills/core"}},
++	})
++	if res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("filter drift must converge via replay (not already-ok): %+v", res)
++	}
++	obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0")
++	if obj == nil {
++		t.Fatalf("settings must now carry the filter object: %s", mustReadSettings(t, d))
++	}
++	if sk, _ := obj["skills"].([]any); len(sk) != 1 || sk[0] != "skills/core" {
++		t.Fatalf("skills filter must be applied: %+v", obj)
++	}
++}
++
++// TestPluginInstallFiltersRemovedConvergesToPlainForm：Windows 侧移除过滤
++// （面板空清单）后重放，distro 侧过滤对象归一回纯字符串全量形态。
++func TestPluginInstallFiltersRemovedConvergesToPlainForm(t *testing.T) {
++	d := newFakePluginDistro(t)
++	d.writeSettingsRaw(t, []any{map[string]any{
++		"source": "npm:foo@1.3.0", "extensions": []string{"extensions/a.ts"},
++	}})
++	d.writeNpmEntity(t, "foo", "1.3.0")
++	c, target := newPluginTestCoordinator(t, d)
++	registerInstalled(t, c, target, PluginStateEntry{
++		Source: "npm:foo@1.3.0", Identity: "npm:foo", SourceType: "npm",
++		Generation: target.Generation, PinnedRef: "1.3.0", RefKind: PluginRefNpmVersion,
++		Installed: true, EntityVerified: true, LastOp: PluginOpInstall,
++		Filters: PluginFilters{Extensions: []string{"extensions/a.ts"}},
++	})
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	})
++	if res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("filter removal must converge: %+v", res)
++	}
++	if obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0"); obj != nil {
++		t.Fatalf("settings must return to plain string form: %+v", obj)
++	}
++}
++
++// TestPluginUpdateReappliesRegistrationFilters：update 未携带新清单时按既有
++// 登记清单重建过滤对象（remove 旧登记串 + install 新源后形态不丢）。
++func TestPluginUpdateReappliesRegistrationFilters(t *testing.T) {
++	d := newFakePluginDistro(t)
++	d.writeSettingsRaw(t, []any{map[string]any{
++		"source": "npm:foo@1.3.0", "themes": []string{"themes/dark.json"},
++	}})
++	d.writeNpmEntity(t, "foo", "1.3.0")
++	c, target := newPluginTestCoordinator(t, d)
++	registerInstalled(t, c, target, PluginStateEntry{
++		Source: "npm:foo@1.3.0", Identity: "npm:foo", SourceType: "npm",
++		Generation: target.Generation, PinnedRef: "1.3.0", RefKind: PluginRefNpmVersion,
++		Installed: true, EntityVerified: true,
++		Filters: PluginFilters{Themes: []string{"themes/dark.json"}},
++	})
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpUpdate, AnchorRef: "1.5.0",
++	})
++	if res.Outcome != PluginOutcomeUpdated {
++		t.Fatalf("update must succeed: %+v", res)
++	}
++	obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.5.0")
++	if obj == nil {
++		t.Fatalf("update must rebuild filter object on the new source: %s", mustReadSettings(t, d))
++	}
++	if th, _ := obj["themes"].([]any); len(th) != 1 || th[0] != "themes/dark.json" {
++		t.Fatalf("registration filters must be reapplied: %+v", obj)
++	}
++}
++
++// TestPluginUpdateFilterDriftNotAlreadyOK：锚点一致但 distro 过滤形态漂移
++// （用户在 WSL 内手改成全量字符串）→ 不 already-ok，重建登记清单。
++func TestPluginUpdateFilterDriftNotAlreadyOK(t *testing.T) {
++	d := newFakePluginDistro(t)
++	d.writeSettings(t, []string{"npm:foo@1.3.0"}) // 全量字符串（漂移）
++	d.writeNpmEntity(t, "foo", "1.3.0")
++	c, target := newPluginTestCoordinator(t, d)
++	registerInstalled(t, c, target, PluginStateEntry{
++		Source: "npm:foo@1.3.0", Identity: "npm:foo", SourceType: "npm",
++		Generation: target.Generation, PinnedRef: "1.3.0", RefKind: PluginRefNpmVersion,
++		Installed: true, EntityVerified: true,
++		Filters: PluginFilters{Extensions: []string{"extensions/safe.ts"}},
++	})
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpUpdate, AnchorRef: "1.3.0",
++	})
++	if res.Outcome != PluginOutcomeUpdated {
++		t.Fatalf("filter drift must not be already-ok: %+v", res)
++	}
++	obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0")
++	if obj == nil {
++		t.Fatalf("filter object must be rebuilt: %s", mustReadSettings(t, d))
++	}
++}
++
++// TestPluginFiltersKeepSiblingEntriesUntouched：applyDistroFilters 的 sjson
++// 定点替换不得破坏 packages[] 中其它登记与 settings 其它顶层键（pi install
++// 本身会重写文件，故直接钉写入原语——安装链的其余行为由上游用例覆盖）。
++func TestPluginFiltersKeepSiblingEntriesUntouched(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, target := newPluginTestCoordinator(t, d)
++	if err := os.MkdirAll(d.agentRoot(), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	raw := `{"packages": ["npm:local@1.0.0", "npm:foo@1.3.0"], "theme": {"name": "user-theme"}}`
++	if err := os.WriteFile(d.settingsPath(), []byte(raw), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if err := c.plugins.applyDistroFilters(target, "npm:foo", "npm:foo@1.3.0",
++		PluginFilters{Extensions: []string{"extensions/a.ts"}}); err != nil {
++		t.Fatalf("applyDistroFilters: %v", err)
++	}
++	data, err := os.ReadFile(d.settingsPath())
++	if err != nil {
++		t.Fatal(err)
++	}
++	var root map[string]any
++	if json.Unmarshal(data, &root) != nil {
++		t.Fatalf("settings must stay valid JSON: %s", data)
++	}
++	if theme, ok := root["theme"].(map[string]any); !ok || theme["name"] != "user-theme" {
++		t.Fatalf("sibling top-level keys must be preserved: %s", data)
++	}
++	pkgs, _ := root["packages"].([]any)
++	if len(pkgs) != 2 {
++		t.Fatalf("both entries must exist: %s", data)
++	}
++	if pkgs[0] != "npm:local@1.0.0" {
++		t.Fatalf("sibling entry must stay first & untouched: %s", data)
++	}
++	obj, ok := pkgs[1].(map[string]any)
++	if !ok || obj["source"] != "npm:foo@1.3.0" {
++		t.Fatalf("target entry must become filter object: %s", data)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// SA-02 插件面：身份代未知不落/不读持久登记（保守过渡，等待 C2 状态分区）
++// ---------------------------------------------------------------------------
++
++func TestPluginUnknownGenerationNeverPersistsOrMatches(t *testing.T) {
++	d := newFakePluginDistro(t)
++	uncRoot := d.uncRoot
++	c := NewCoordinator(t.TempDir(), nil, Probes{
++		Identity: func(string) platform.WSLUserIdentity {
++			// 无 machine-id：generation = GenerationUnknown（最小 distro 形态）。
++			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", OK: true}
++		},
++		ToUNC: func(_, linuxPath string) string {
++			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++		},
++		Chmod: func(_, _ string, _ ...string) error { return nil },
++	})
++	c.SetPluginCommandRunner(d.run)
++	c.SetPluginSourceParser(testPluginParser, testRefCheck)
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	})
++	if res.Outcome != PluginOutcomeInstalled || !res.OK {
++		t.Fatalf("install itself must still succeed and verify: %+v", res)
++	}
++	// 不落持久登记（读侧永不匹配 → 无死数据）。
++	st := c.state.load()
++	if len(st.Plugins) != 0 {
++		t.Fatalf("unknown-generation target must not persist registration: %+v", st.Plugins)
++	}
++	// 二次操作按未登记处理（诚实 unmanaged-existing，不跨目标继承管理权）。
++	res2 := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	})
++	if res2.Outcome != PluginOutcomeBlocked || res2.ErrCode != PluginErrUnmanagedExisting {
++		t.Fatalf("second op on unknown-generation target must be honestly blocked: %+v", res2)
++	}
++}
++
++// TestPluginRegistrationsDontCrossDistros：两个已知不同代际的 distro 交替
++// 使用时，登记不跨代际继承（读侧已保证）；写侧单槽覆盖的完整多目标分区
++// 需要 C2 状态结构（state.go），此处钉住读侧边界。
++func TestPluginRegistrationsDontCrossDistros(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, target := newPluginTestCoordinator(t, d)
++	registerInstalled(t, c, target, PluginStateEntry{
++		Source: "npm:foo@1.3.0", Identity: "npm:foo", SourceType: "npm",
++		Generation: "gen-distro-a", Installed: true, EntityVerified: true,
++	})
++	// 目标 B（不同代际）：不得继承 A 的管理权。
++	st := c.state.load()
++	if _, ok := c.plugins.pluginEntryByIdentity(&st, "npm:foo", "gen-distro-b"); ok {
++		t.Fatalf("registration must not cross generations")
++	}
++	// 目标身份代未知：同样不继承。
++	if _, ok := c.plugins.pluginEntryByIdentity(&st, "npm:foo", GenerationUnknown); ok {
++		t.Fatalf("unknown generation must not inherit registrations")
++	}
++	if _, ok := c.plugins.pluginEntryByIdentity(&st, "npm:foo", ""); ok {
++		t.Fatalf("empty generation must not inherit registrations")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// SA16：取消/超时优先按 ctx 归因（ExitError 形态不推翻取消事实）
++// ---------------------------------------------------------------------------
++
++// TestPluginTimeoutAttributedViaCtxOverExitError：真实 wsl.exe 被
++// CommandContext 终止时错误常为 ExitError（不携带 ctx 错误链）——归因必须以
++// ctx 为准（旧实现会把超时误报为 replay-failed）。假 runner 直接回 ctx.Err
++// 的既有用例（TestPluginContextDeadlineYieldsStructuredTimeout）不足以证明
++// 此路径。
++func TestPluginTimeoutAttributedViaCtxOverExitError(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, _ := newPluginTestCoordinator(t, d)
++	installRan := false
++	c.SetPluginCommandRunner(func(ctx context.Context, _, script string) (string, error) {
++		if strings.HasPrefix(strings.TrimSpace(script), "pi install ") {
++			installRan = true
++			<-ctx.Done()
++			// 模拟被杀进程的非零退出：错误不包装 ctx.Err。
++			return "killed output", errors.New("exit status 1")
++		}
++		return d.run(ctx, "", script)
++	})
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++	res := c.RunPluginOperation(ctx, "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	})
++	if res.Outcome != PluginOutcomeFailed || res.ErrCode != PluginErrTimeout {
++		t.Fatalf("ctx deadline must win attribution over exit-error form: %+v", res)
++	}
++	if !installRan {
++		t.Fatalf("install must have been attempted once")
++	}
++	if !strings.Contains(res.Detail, "Windows 侧命令已终止") {
++		t.Fatalf("detail must state the honest process boundary: %+v", res)
++	}
++}
++
++// TestPluginCanceledContextNeverQueuesOrRuns：已取消的请求不排队等 opMu、
++// 不启动任何 distro 命令（含另一操作持锁期间取消的场景）。
++func TestPluginCanceledContextNeverQueuesOrRuns(t *testing.T) {
++	d := newFakePluginDistro(t)
++	c, _ := newPluginTestCoordinator(t, d)
++	release := make(chan struct{})
++	held := make(chan struct{})
++	c.SetPluginCommandRunner(func(ctx context.Context, _, script string) (string, error) {
++		if strings.Contains(script, "npm view") {
++			close(held)
++			<-release
++		}
++		return d.run(ctx, "", script)
++	})
++	// 占用 opMu 的在途操作（未带锚点 install 走 distro 内解析）。
++	bgDone := make(chan struct{})
++	go func() {
++		defer close(bgDone)
++		_ = c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++			Source: "npm:foo", Kind: PluginOpInstall,
++		})
++	}()
++	<-held
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	res := c.RunPluginOperation(ctx, "Ubuntu", PluginOperation{
++		Source: "npm:bar", Kind: PluginOpInstall, AnchorRef: "2.0.0",
++	})
++	if res.Outcome != PluginOutcomeFailed || res.ErrCode != PluginErrCanceled {
++		t.Fatalf("canceled request must fail fast as canceled: %+v", res)
++	}
++	close(release)
++	<-bgDone // 等在途操作结束后再清理临时目录，避免后台写入与 cleanup 竞争。
++	for _, s := range d.recorded() {
++		if strings.Contains(s, "npm:bar") {
++			t.Fatalf("canceled request must not run any command: %v", d.recorded())
++		}
++	}
++}
++
++// TestPluginFacadeCanceledBeforeResolve：协调器门面在目标解析前拦截已取消
++// 请求（SA16：不触发任何身份探测/命令面——不产生 wsl.exe 进程）。
++func TestPluginFacadeCanceledBeforeResolve(t *testing.T) {
++	d := newFakePluginDistro(t)
++	probeRan := false
++	c := NewCoordinator(t.TempDir(), nil, Probes{
++		Identity: func(string) platform.WSLUserIdentity {
++			probeRan = true
++			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m", OK: true}
++		},
++		ToUNC: func(_, p string) string {
++			return filepath.Join(d.uncRoot, filepath.FromSlash(strings.TrimPrefix(p, "/")))
++		},
++		Chmod: func(_, _ string, _ ...string) error { return nil },
++	})
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	res := c.RunPluginOperation(ctx, "Ubuntu", PluginOperation{Source: "npm:foo", Kind: PluginOpInstall})
++	if res.Outcome != PluginOutcomeFailed || res.ErrCode != PluginErrCanceled {
++		t.Fatalf("canceled facade call must be structured canceled: %+v", res)
++	}
++	if probeRan {
++		t.Fatalf("canceled request must not trigger identity probe")
++	}
++	if len(d.recorded()) != 0 {
++		t.Fatalf("canceled request must not run any distro command: %v", d.recorded())
++	}
++	if _, err := c.ProbeWSLPlugins(ctx, "Ubuntu"); err != nil {
++		t.Fatalf("canceled probe returns snapshot, not error: %v", err)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// SA12 补全：显式空数组 []（该类型一项都不加载）与键省略（全部加载）的
++// 三态全链保留
++// ---------------------------------------------------------------------------
++
++// TestPluginFiltersNilVersusEmptyStrictlyDistinct：过滤清单的三态语义在
++// 比较、规范写入与 JSON 持久化三处都严格区分 nil 与空切片——折叠会把
++// 「全关」错当「全开」，扩大 WSL 侧启用面。
++func TestPluginFiltersNilVersusEmptyStrictlyDistinct(t *testing.T) {
++	empty := PluginFilters{Extensions: []string{}}
++	omitted := PluginFilters{}
++	if pluginFiltersEqual(omitted, empty) {
++		t.Fatal("nil (omitted key = load all) must differ from explicit [] (load none)")
++	}
++	if pluginFiltersEqual(empty, PluginFilters{Extensions: []string{}}) {
++		// 同为空切片应相等（此处不可能为 false，仅钉住正向等价）。
++	} else {
++		t.Fatal("two explicit empty slices must be equal")
++	}
++	// 规范写入：空数组键必须写 []，不得省略；未声明键省略。
++	if got := canonicalPackageEntryJSON("npm:foo@1.0.0", empty); !strings.Contains(got, `"extensions":[]`) {
++		t.Fatalf("explicit [] must be written as an empty array, got %s", got)
++	}
++	if got := canonicalPackageEntryJSON("npm:foo@1.0.0", omitted); strings.Contains(got, "extensions") {
++		t.Fatalf("omitted key must stay omitted (plain/all-load form), got %s", got)
++	}
++	// JSON 持久化 round-trip：空切片落 []、读回仍非 nil（state.go 不用
++	// omitempty——省略会与 null/缺失混淆丢三态）。
++	b, err := json.Marshal(map[string]PluginFilters{"f": empty})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(b), `"extensions":[]`) {
++		t.Fatalf("state JSON must preserve empty array: %s", b)
++	}
++	var back struct {
++		F PluginFilters `json:"f"`
++	}
++	if json.Unmarshal(b, &back) != nil || back.F.Extensions == nil || len(back.F.Extensions) != 0 {
++		t.Fatalf("empty array must round-trip as non-nil empty slice: %#v", back.F.Extensions)
++	}
++}
++
++// TestPluginInstallExplicitEmptyArrayFilter：Windows 侧显式空数组（该类型
++// 一项都不加载）经重放写入 distro settings 时保持 [] 形态并复检通过；幂等
++// 重放 already-ok；登记快照经磁盘 round-trip 后仍保留空切片三态。
++func TestPluginInstallExplicitEmptyArrayFilter(t *testing.T) {
++	d := newFakePluginDistro(t)
++	stateDir := t.TempDir()
++	uncRoot := d.uncRoot
++	newCoord := func() *Coordinator {
++		c := NewCoordinator(stateDir, nil, Probes{
++			Identity: func(string) platform.WSLUserIdentity {
++				return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m-s5", OK: true}
++			},
++			ToUNC: func(_, linuxPath string) string {
++				return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++			},
++			Chmod: func(_, _ string, _ ...string) error { return nil },
++		})
++		c.SetPluginCommandRunner(d.run)
++		c.SetPluginSourceParser(testPluginParser, testRefCheck)
++		return c
++	}
++	c := newCoord()
++	filters := PluginFilters{Extensions: []string{}, Skills: []string{"skills/core"}}
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: filters,
++	})
++	if res.Outcome != PluginOutcomeInstalled || !res.OK {
++		t.Fatalf("explicit-empty-array install must succeed: %+v", res)
++	}
++	obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0")
++	if obj == nil {
++		t.Fatalf("settings must carry the filter object: %s", mustReadSettings(t, d))
++	}
++	ext, _ := obj["extensions"].([]any)
++	if ext == nil || len(ext) != 0 {
++		t.Fatalf("extensions must be written as an explicit empty array (load none), got %#v", obj["extensions"])
++	}
++	if sk, _ := obj["skills"].([]any); len(sk) != 1 || sk[0] != "skills/core" {
++		t.Fatalf("skills filter must be preserved: %+v", obj)
++	}
++	if _, has := obj["prompts"]; has {
++		t.Fatalf("omitted type must stay omitted (load all), got %+v", obj)
++	}
++	// 登记快照磁盘 round-trip：新协调器实例（独立 stateStore 缓存）从磁盘
++	// 读回，空切片仍非 nil。
++	c2 := newCoord()
++	st := c2.state.load()
++	var entry *PluginStateEntry
++	for i := range st.Plugins {
++		if st.Plugins[i].Identity == "npm:foo" {
++			entry = &st.Plugins[i]
++		}
++	}
++	if entry == nil || entry.Filters.Extensions == nil || len(entry.Filters.Extensions) != 0 {
++		t.Fatalf("registration must round-trip the explicit empty array: %+v", entry)
++	}
++	// 幂等：过滤形态一致 → already-ok。
++	res2 := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0", Filters: filters,
++	})
++	if res2.Outcome != PluginOutcomeAlreadyOK {
++		t.Fatalf("matching empty-array form must be idempotent already-ok: %+v", res2)
++	}
++}
++
++// TestPluginEmptyArrayFilterDriftNotAlreadyOK：期望显式空数组而 distro 侧
++// 仍是纯字符串（或键省略）时不得 already-ok——重放射敛为带 [] 的过滤对象。
++func TestPluginEmptyArrayFilterDriftNotAlreadyOK(t *testing.T) {
++	d := newFakePluginDistro(t)
++	d.writeSettings(t, []string{"npm:foo@1.3.0"})
++	d.writeNpmEntity(t, "foo", "1.3.0")
++	c, target := newPluginTestCoordinator(t, d)
++	registerInstalled(t, c, target, PluginStateEntry{
++		Source: "npm:foo@1.3.0", Identity: "npm:foo", SourceType: "npm",
++		Generation: target.Generation, PinnedRef: "1.3.0", RefKind: PluginRefNpmVersion,
++		Installed: true, EntityVerified: true, LastOp: PluginOpInstall,
++	})
++	res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++		Filters: PluginFilters{Extensions: []string{}},
++	})
++	if res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("plain-string drift against expected [] must converge via replay, got %+v", res)
++	}
++	obj := filterEntryObject(t, d.readSettingsEntries(t), "npm:foo@1.3.0")
++	if obj == nil {
++		t.Fatalf("settings must converge to the filter object: %s", mustReadSettings(t, d))
++	}
++	if ext, _ := obj["extensions"].([]any); ext == nil || len(ext) != 0 {
++		t.Fatalf("extensions must converge to explicit [], got %#v", obj["extensions"])
++	}
++}
++
++// ---------------------------------------------------------------------------
++// SA-02 补全：identity+known generation 联合键的多目标保存/删除隔离
++// ---------------------------------------------------------------------------
++
++// TestPluginMultiTargetSamePackageCoexistsByGeneration：两个不同代际目标
++// 交替使用同一包——B 的保存不覆盖 A 的登记（A→B→A 同包）、B 移除不删 A、
++// 回 A 时旧登记仍可归属（already-ok 幂等继续工作）。
++func TestPluginMultiTargetSamePackageCoexistsByGeneration(t *testing.T) {
++	stateDir := t.TempDir()
++	dA, dB := newFakePluginDistro(t), newFakePluginDistro(t)
++	cur := dA
++	machineID := "m-distro-a"
++	probes := Probes{
++		Identity: func(string) platform.WSLUserIdentity {
++			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: machineID, OK: true}
++		},
++		ToUNC: func(_, linuxPath string) string {
++			return filepath.Join(cur.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
++		},
++		Chmod: func(_, _ string, _ ...string) error { return nil },
++	}
++	newCoord := func() *Coordinator {
++		c := NewCoordinator(stateDir, nil, probes)
++		c.SetPluginCommandRunner(func(ctx context.Context, _, script string) (string, error) {
++			return cur.run(ctx, "", script)
++		})
++		c.SetPluginSourceParser(testPluginParser, testRefCheck)
++		return c
++	}
++	countRows := func(c *Coordinator, identity string) map[string]string {
++		st := c.state.load()
++		out := map[string]string{}
++		for _, e := range st.Plugins {
++			if e.Identity == identity {
++				out[e.Generation] = e.PinnedRef
++			}
++		}
++		return out
++	}
++	genOf := func(c *Coordinator) string {
++		target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
++		if err != nil {
++			t.Fatalf("resolve: %v", err)
++		}
++		return target.Generation
++	}
++
++	// A 安装 npm:foo @1.3.0 → A 代登记一行。
++	c := newCoord()
++	genA := genOf(c)
++	if res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	}); res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("install on A: %+v", res)
++	}
++	// B 安装同包 @1.4.0 → 追加 B 代登记；A 行不被覆盖（单槽覆盖回归钉子）。
++	machineID, cur = "m-distro-b", dB
++	if res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo", Kind: PluginOpInstall, AnchorRef: "1.4.0",
++	}); res.Outcome != PluginOutcomeInstalled {
++		t.Fatalf("install on B: %+v", res)
++	}
++	rows := countRows(c, "npm:foo")
++	if len(rows) != 2 {
++		t.Fatalf("A and B registrations must coexist, got %+v", rows)
++	}
++	if rows[genA] != "1.3.0" {
++		t.Fatalf("A's row must keep its own pinned ref (no single-slot overwrite): %+v", rows)
++	}
++	// 回 A：同锚点重放 → already-ok（A 登记仍可归属；distro A 侧形态未变）。
++	machineID, cur = "m-distro-a", dA
++	if res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	}); res.Outcome != PluginOutcomeAlreadyOK {
++		t.Fatalf("return to A must hit its own registration (already-ok), got %+v", res)
++	}
++	// B 移除 → 只删 B 行；A 行保留。
++	machineID, cur = "m-distro-b", dB
++	if res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.4.0", Kind: PluginOpRemove,
++	}); res.Outcome != PluginOutcomeRemoved {
++		t.Fatalf("remove on B: %+v", res)
++	}
++	rows = countRows(c, "npm:foo")
++	if len(rows) != 1 || rows[genA] != "1.3.0" {
++		t.Fatalf("removing on B must not delete A's registration: %+v", rows)
++	}
++	// 回 A 后 A 行仍归属可用（幂等继续工作）。
++	machineID, cur = "m-distro-a", dA
++	if res := c.RunPluginOperation(context.Background(), "Ubuntu", PluginOperation{
++		Source: "npm:foo@1.3.0", Kind: PluginOpInstall, AnchorRef: "1.3.0",
++	}); res.Outcome != PluginOutcomeAlreadyOK {
++		t.Fatalf("A must still be managed after B's removal, got %+v", res)
++	}
++	// 未知代际的删除是 no-op（不可归属的删除请求不动任何行）。
++	c.plugins.dropPluginEntry("npm:foo", GenerationUnknown)
++	if rows = countRows(c, "npm:foo"); len(rows) != 1 {
++		t.Fatalf("unknown-generation drop must be a no-op: %+v", rows)
++	}
++}
+diff --git a/internal/wslsupply/state.go b/internal/wslsupply/state.go
+index a6f8eac..7260042 100644
+--- a/internal/wslsupply/state.go
++++ b/internal/wslsupply/state.go
+@@ -128,12 +128,15 @@ type PluginStateEntry struct {
+ 	FrozenReason  string `json:"frozenReason,omitempty"`
+ }
+ 
+-// PluginFilters 是登记在案的子资源过滤清单（可为空 = 全部资源）。
++// PluginFilters 是登记在案的子资源过滤清单（三态表达，SA12 补全）：字段
++// nil = 该类型未声明过滤（加载全部）；非 nil 空切片 = 显式空数组 []
++// （一项都不加载）。JSON 标签不用 omitempty——空切片必须序列化为 [] 而非
++// 省略（省略会与 nil 混淆，落盘后丢三态）；nil 序列化为 null，读回仍为 nil。
+ type PluginFilters struct {
+-	Extensions []string `json:"extensions,omitempty"`
+-	Skills     []string `json:"skills,omitempty"`
+-	Prompts    []string `json:"prompts,omitempty"`
+-	Themes     []string `json:"themes,omitempty"`
++	Extensions []string `json:"extensions"`
++	Skills     []string `json:"skills"`
++	Prompts    []string `json:"prompts"`
++	Themes     []string `json:"themes"`
+ }
+ 
+ // SameIdentity 报告两个登记是否同一插件（身份键相等）。

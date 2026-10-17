@@ -107,6 +107,11 @@ var claudeMCPShape = keyedShape{
 var claudeSettingsShape = keyedShape{
 	relPath:   ClaudeSettingsFile,
 	sensitive: false,
+	// SA-03（启用入口核实修复）：settings 白名单字段与 mcp/profile 同为键级
+	// 选择单元——否则该单元无任何授权入口（UI 只对勾选键走导入授权；
+	// SetUnitSelection 拒绝非 SelectionAware 单元，awaiting-consent 悬死）。
+	// 白名单本身不变：permissions/hooks/env 等不在白名单内，不可能被勾选。
+	selectLeaf: true,
 	desired: func(obj map[string]any) (map[string]any, []string) {
 		out := map[string]any{}
 		for _, field := range claudeSettingsWhitelist {

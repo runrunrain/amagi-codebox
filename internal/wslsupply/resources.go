@@ -6,9 +6,11 @@ package wslsupply
 // agents/、skills/：选中后导入；持续同步遵循 WSL 手改冻结」与 Codex 行
 //「AGENTS.md、用户自有 skills：选中后导入」）。
 //
-// 单元粒度：单文件资源（CLAUDE.md/AGENTS.md）与目录资源（commands/<name>、
+// 单元粒度：单文件资源（CLAUDE.md/AGENTS.md 及 SA-10 的顶层 Markdown
+// 命令/agent 文件 commands/review.md）与目录资源（commands/<name>、
 // agents/<name>、skills/<name>）各为一个最小登记单元，单元 id 形如
-// "claude/res/commands/foo"、"codex/res/AGENTS.md"。语义与 shared/skill/<name>
+// "claude/res/commands/foo"、"claude/res/commands/review.md"、
+// "codex/res/AGENTS.md"。语义与 shared/skill/<name>
 // 完全一致（复用 SkillManifest/扫描器/提交原语/补偿），仅目标前缀不同
 //（claude 目标根是 HOME，故目标相对路径带 .claude/ 前缀）。
 
@@ -63,6 +65,11 @@ type ResourceLayout struct {
 	Files []string
 	// DirUnits：目录资源子目录名（其每个一级子目录是一个单元：commands/agents/skills）。
 	DirUnits []string
+	// FileLeafUnits：DirUnits 中「顶层 *.md 文件也是单文件单元」的子目录
+	// （SA-10：Claude commands/review.md、agents/helper.md 是真实消费者发现
+	// 形态——顶层 Markdown 文件与一级子目录同名命令并存；codex skills 仅
+	// 目录单元，folder 发现语义不虚构顶层文件单元）。
+	FileLeafUnits []string
 	// TargetPrefix：目标相对路径前缀（claude 目标根为 HOME → ".claude/"；codex → ""）。
 	TargetPrefix string
 }
@@ -94,15 +101,30 @@ func (s *ResourceScope) Layout() ResourceLayout { return s.layout }
 // Limits 返回生效的扫描上限。
 func (s *ResourceScope) Limits() SkillsScanLimits { return s.limits }
 
-// StartScanAsync 单飞启动后台扫描（幂等）。
+// StartScanAsync 单飞启动后台扫描。SA-17：已启动过即幂等返回——状态 Get
+// 不重启已完成的扫描（只有显式「检查」（RescanAsync）才重扫，避免轮询变成
+// 永不收敛的后台全量重扫）。
 func (s *ResourceScope) StartScanAsync() bool {
 	s.mu.Lock()
-	if s.running {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.running || s.started {
 		return false
 	}
+	return s.startScanLocked()
+}
+
+// RescanAsync 强制启动一轮后台重扫（显式「检查」入口专用；已在跑则保持本轮）。
+func (s *ResourceScope) RescanAsync() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return false
+	}
+	return s.startScanLocked()
+}
+
+func (s *ResourceScope) startScanLocked() bool {
 	s.running = true
-	s.mu.Unlock()
 	go func() {
 		s.Scan()
 		s.mu.Lock()
@@ -125,6 +147,18 @@ func (s *ResourceScope) Scan() {
 		scanned++
 	}
 	for _, sub := range s.layout.DirUnits {
+		// SA-10：声明了顶层 Markdown 文件单元的子目录，先枚举其顶层 *.md
+		// 文件为单文件单元（commands/review.md 等真实发现形态）。
+		if s.layout.isLeafFileDir(sub) {
+			for _, name := range listResourceLeafMDFiles(filepath.Join(s.layout.HostRoot, sub)) {
+				rel := sub + "/" + name
+				total++
+				if m := scanResourceFile(s.layout.HostRoot, rel, s.limits, &budget); m != nil {
+					next[rel] = m
+				}
+				scanned++
+			}
+		}
 		dirs, err := listSkillDirs(filepath.Join(s.layout.HostRoot, sub))
 		if err != nil {
 			continue // 子目录不存在：该类无单元（非错误）
@@ -142,6 +176,35 @@ func (s *ResourceScope) Scan() {
 	s.manifests = next
 	s.progress = SkillsScanProgress{Scanned: scanned, Total: total}
 	s.mu.Unlock()
+}
+
+// isLeafFileDir 报告 sub 是否声明了顶层 Markdown 文件单元。
+func (l *ResourceLayout) isLeafFileDir(sub string) bool {
+	for _, s := range l.FileLeafUnits {
+		if s == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// listResourceLeafMDFiles 列出子目录顶层的常规 *.md 文件（隐藏文件与目录
+// 不列；Claude commands/agents 的真实发现规则）。
+func listResourceLeafMDFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || !e.Type().IsRegular() || extOf(name) != ".md" {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Snapshot 返回扫描缓存快照（只读，不触发扫描；RootMissing 由布局根探测）。
@@ -180,11 +243,21 @@ func (s *ResourceScope) targetRel(rel string) string {
 	return s.layout.TargetPrefix + rel
 }
 
-// isFileUnit 报告 rel 是否为布局声明的单文件单元。
+// isFileUnit 报告 rel 是否为布局声明的单文件单元（含 SA-10 的 DirUnits 顶层
+// Markdown 文件单元，如 "commands/review.md"）。
 func (s *ResourceScope) isFileUnit(rel string) bool {
 	for _, f := range s.layout.Files {
 		if f == rel {
 			return true
+		}
+	}
+	for _, sub := range s.layout.FileLeafUnits {
+		prefix := sub + "/"
+		if strings.HasPrefix(rel, prefix) {
+			base := strings.TrimPrefix(rel, prefix)
+			if !strings.HasPrefix(base, ".") && !strings.Contains(base, "/") && extOf(base) == ".md" {
+				return true
+			}
 		}
 	}
 	return false
@@ -234,10 +307,20 @@ func (c *Coordinator) RegisterResources(scope *ResourceScope) {
 // resourceScope 返回 CLI 的资源作用域（未注册返回 nil）。
 func (c *Coordinator) resourceScope(cli CLI) *ResourceScope { return c.resources[cli] }
 
-// StartCliResourcesScan 单飞启动指定 CLI 的资源后台扫描。
+// StartCliResourcesScan 单飞启动指定 CLI 的资源后台扫描（SA-17：已启动过
+// 即幂等返回——状态 Get 不重启扫描）。
 func (c *Coordinator) StartCliResourcesScan(cli CLI) bool {
 	if s := c.resourceScope(cli); s != nil {
 		return s.StartScanAsync()
+	}
+	return false
+}
+
+// RescanCliResources 强制一轮指定 CLI 的资源后台重扫（显式「检查」入口；
+// SA-17：Get 只读缓存，重扫仅由显式动作触发）。
+func (c *Coordinator) RescanCliResources(cli CLI) bool {
+	if s := c.resourceScope(cli); s != nil {
+		return s.RescanAsync()
 	}
 	return false
 }
@@ -351,8 +434,14 @@ func (c *Coordinator) applyResourcePlanned(ctx context.Context, target TargetRef
 }
 
 // applyResourceUnit 执行资源单元写入（文件单元走 submitFile 原语；目录单元
-// 走 submitDirUnit staging 原语）。
-func (c *Coordinator) applyResourceUnit(_ context.Context, target TargetRef, planned PlannedUnit, cli CLI, rel string, adopt bool) UnitResult {
+// 走 submitDirUnit staging 原语）。PR07：ctx 贯通——入口检查取消，文件单元
+// 改用 submitFileCtx（取消保护），目录单元在 submitDirUnit 内于不可逆交换前
+// 再检查。
+func (c *Coordinator) applyResourceUnit(ctx context.Context, target TargetRef, planned PlannedUnit, cli CLI, rel string, adopt bool) UnitResult {
+	if err := ctx.Err(); err != nil {
+		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
+			Detail: "context-canceled", Err: err}
+	}
 	scope := c.resourceScope(cli)
 	if scope == nil {
 		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
@@ -392,29 +481,40 @@ func (c *Coordinator) applyResourceUnit(_ context.Context, target TargetRef, pla
 			Detail: "target-changed-since-planning",
 			Err:    fmt.Errorf("target resource changed since planning (external edit retained)")}
 	}
-	var undo *CompensationHandle
-	if scope.isFileUnit(rel) {
-		// 单文件：私有 staging 提交原语（0600；普通单元 chmod 失败恢复前像）。
-		undo, err = c.submitFile(target, targetRel, files[0].Bytes, false)
-	} else {
-		undo, err = c.submitDirUnit(target, targetRel, files, writtenTreeHash)
-	}
-	if err != nil {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
-			Detail: "write-failed", Err: err}
-	}
-	undo.unit = planned.Unit
 	outcome := "written"
 	if adopt {
 		outcome = "takeover-written"
 	}
-	notes := skillApplyNotes(m)
-	c.recordProjectionState(target, planned.Unit, PolicyTrackedProjection, m.SourceHash, writtenTreeHash, skillsTransformVersion, nil, outcome)
-	detail := outcome
-	if len(notes) > 0 {
-		detail += "; " + strings.Join(notes, "; ")
+	register := func(st *StateFile) {
+		registerProjectionEntryIn(st, target, planned.Unit, PolicyTrackedProjection, m.SourceHash,
+			writtenTreeHash, skillsTransformVersion, nil, outcome)
 	}
-	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitApplied, Detail: detail, Undo: undo}
+	var rcpt *CommitReceipt
+	if scope.isFileUnit(rel) {
+		// 单文件：统一文件提交生命周期（0600；备份/intent/no-replace）。
+		rcpt = c.commitFile(ctx, CommitRequest{
+			Target: target, Unit: planned.Unit, RelPath: targetRel,
+			// CAS 已在上方用树 hash 形态复核（scanTargetFileState）。
+			SkipBeforeCAS: true, Candidate: files[0].Bytes,
+			Kind: OpKindWrite, Register: register,
+		})
+	} else {
+		rcpt = c.submitDirUnit(ctx, CommitRequest{
+			Target: target, Unit: planned.Unit, RelPath: targetRel,
+			ExpectedBefore: planned.ExpectedTargetHash, Kind: OpKindDirSwap,
+			Dir: true, DirFiles: files, DirTreeHash: writtenTreeHash, Register: register,
+		})
+	}
+	res := unitResultFromReceipt(planned.Unit, planned.Policy, rcpt, "write-failed")
+	if rcpt.Err == nil {
+		notes := skillApplyNotes(m)
+		res.Outcome = UnitApplied
+		res.Detail = outcome
+		if len(notes) > 0 {
+			res.Detail += "; " + strings.Join(notes, "; ")
+		}
+	}
+	return res
 }
 
 // previewResourceUnit 构造资源单元预览（脱敏）。
@@ -469,12 +569,21 @@ func (c *Coordinator) previewResourceUnit(target TargetRef, unit UnitID, cli CLI
 
 // takeOverResource 资源单元的预览后接管（CAS；未同意仍拦截）。
 func (c *Coordinator) takeOverResource(ctx context.Context, distro string, unit UnitID, cli CLI, rel, expectedTargetHash string) (UnitResult, error) {
+	if err := ctx.Err(); err != nil {
+		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
+			Detail: "context-canceled", Err: err}, nil
+	}
 	scope := c.resourceScope(cli)
 	if scope == nil {
 		return UnitResult{}, fmt.Errorf("resources scope unavailable")
 	}
 	c.applyMu.Lock()
 	defer c.applyMu.Unlock()
+	// PR07：等锁期间取消的请求不得进入接管写入。
+	if err := ctx.Err(); err != nil {
+		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
+			Detail: "context-canceled", Err: err}, nil
+	}
 	target, err := c.ResolveTarget(ctx, distro, cli)
 	if err != nil {
 		return UnitResult{}, fmt.Errorf("resolve wsl supply target: %w", err)
@@ -509,7 +618,9 @@ func (c *Coordinator) takeOverResource(ctx context.Context, distro string, unit 
 
 // SetUnitSelection 设置一个键级单元的导入选择集（S4「仅用户选择的单元导入」：
 // 选择以目标 generation 为生命周期；空集 = 全不导入，已导入条目走来源删除
-// 语义移除）。仅 selectLeaf 单元接受本操作。
+// 语义移除）。仅 selectLeaf 单元接受本操作。SA-03：keys 应传规范化全路径键
+// （与预览面 KeyPreview.Key 同形，如 "mcpServers/demo"、"profiles/demo"），
+// 原样保存；历史叶名登记由匹配层兼容（仅唯一叶名生效）。
 func (c *Coordinator) SetUnitSelection(distro string, cli CLI, unit UnitID, keys []string) error {
 	adapter, ok := c.projections[unit]
 	if !ok {
@@ -532,7 +643,10 @@ func (c *Coordinator) SetUnitSelection(distro string, cli CLI, unit UnitID, keys
 		}
 	}
 	return c.state.mutate(func(st *StateFile) {
-		prev, _ := st.entry(unit)
+		// PR04：选择集写入必须作用于解析到的目标 generation——不能取全局
+		// 最近代（A→B→操作A 时会改 B 的登记）。unknown/legacy 代经 entryFor
+		// 拒绝匹配：不搬运其它目标的授权与基准。
+		prev := st.entryFor(unit, target.Generation)
 		next := StateEntry{
 			Unit: unit, Policy: adapter.Policy(), Generation: target.Generation,
 			SelectedKeys: selected, Consented: prev.Consented,
@@ -541,11 +655,7 @@ func (c *Coordinator) SetUnitSelection(distro string, cli CLI, unit UnitID, keys
 			Frozen: prev.Frozen, FrozenReason: prev.FrozenReason,
 			LastSuccess: prev.LastSuccess, LastOutcome: prev.LastOutcome,
 		}
-		if prev.Generation == target.Generation || prev.Generation == "" {
-			st.upsertEntry(next, target.Generation)
-		} else {
-			st.upsertEntry(next, target.Generation)
-		}
+		st.upsertEntry(next, target.Generation)
 		st.Distro = target.Distro
 	})
 }
