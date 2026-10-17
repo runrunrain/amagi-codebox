@@ -4,6 +4,18 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.115] - 2026-10-17
+
+### Added
+
+- **WSL 供给事务闭环与全链路安全收口（G0 平台原语 + G1 供给事务 + Windows 真机验证）**：①G0 平台私有化/原子原语——EnsurePrivateFile/EnsurePrivateDir（POSIX chmod 0600/0700；Windows owner-only DACL，真机 ACL round-trip/owner 规范化/收紧保字节验证）、MoveNoReplace 文件/目录 no-replace 原子发布（分 OS 原生实现；9P UNC 冲突归类保留原始错误，单环境结论不泛化）；②G1 供给事务核心——意图日志（intent）+ 目标内私有暂存 + no-replace 发布 + 前像 CAS + 备份/补偿 + 中断自愈 reconcile（目录单元四态收敛、A2 摘要 pending 持久化、TargetCLI 作用域键、submitDirUnit move 前复验）；③敏感凭据遗留评估与撤回确认（legacy assess + managed-copy 权限探测 fail-closed，状态未确认严格拦截共享视觉清单消费）；④launcher WSL 路径模型配置构建/写入失败硬阻断启动、会话工作目录按目标形态定谳；headroom NAT 网络模式启动闸门；piplugin 两侧操作重放宿主锚点校验门禁；opencode 附加层 MCP 覆盖许可与目标发行版代际强绑定（同名重装或代际未知拒绝生效）；⑤Windows 真机实证——platform 45 用例（symlink 特权真实创建非跳过、UNC 16 写者并发 10 轮仅 1 成功且源与字节保留）、wslsupply 230 用例、真实 WSL E2E 6/6（staging 隔离/models/skills/S4 导入/目标解析，distro 内 stat 验证 700/600，无 /tmp 残留）。
+
+### Fixed
+
+- intent 私有位校验在 Windows 宿主恒失败（Mode().Perm() 恒 0666）→ 改走平台原语；no-replace 冲突分类死分支（生产 os.ErrExist 从未命中 publish-conflict，commit/skills_submit/coordinator 4 处统一判定，真实并发用例暴露）；Windows 盘根相对链接目标（\abs 形态）误归 non-regular-entry → 按宿主原生分隔符判定归 absolute-link；4 处测试夹具 POSIX 权限假设改为探测权威面表达（断言强度不降，无 skip）。
+
+（验证记录：agent-outputs/workflow/wsl-goal-closure/windows-*-real-*.log；一致性修正 12 项先红后绿；发布门禁全仓 vet/test + Windows 交叉编译 + 前端构建 exit 0）
+
 ## [1.3.114] - 2026-10-17
 
 ### Added
