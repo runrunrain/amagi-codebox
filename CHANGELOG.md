@@ -4,6 +4,19 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.116] - 2026-10-18
+
+### Added
+
+- **环境检测与五 Agent 管理链路修复（检测/安装/卸载/依赖/PATH 全闭环）**：①PATH 修复可验证且幂等——写入 shell 配置（Windows 为用户 PATH）排除 resolver 诊断标签、规范化目录去重，成功后同步 CodeBox 当前进程并自动复检，外部终端重启要求独立说明；②OpenCode/Codex/Pi/OMP 通用异步卸载——复用 `RunEnvFixAction` 新增 `uninstall_tool` 动作（无新增 Wails 绑定），npm 包/前缀归属（shim 只认普通小文件中的 npm 执行行+完整包路径边界、64KiB 读取上限）与 Homebrew formula 映射（以已验证 prefix 提取 Cellar/opt 相对段）核实后才执行，未知来源/另一 Node 前缀/自定义安装拒绝自动删除并说明；③检测语义修正——checker npm fallback 候选存在但版本探测失败时保留 Installed/路径/错误不再改判 missing（PATH 未命中≠未安装），检测失败与版本未知分开、安装健康与确知最新分开、查询失败不等于最新。
+
+### Fixed
+
+- **管理操作结果语义与 UI 状态**：依赖安装失败/未确认不再伪成功；安装/卸载以实际复检终态而非受理结果或 exit=0 定谳（卸载经 Lstat 确认原入口不存在，空路径/I/O 错误/残留入口不作成功证据）；UI 顶层与问题内修复入口、正确传 Claude method、尊重 canInstall、提示类动作本地处理不提交后台；全局写忙碌防重入、变更后确定性复检；异步受理状态独立于快照观察——无 ID 卸载受理按请求时间匹配并排除容错窗内旧槽、容错预算改为连续失配窗口（长安装不消耗）、过期快照不覆盖后到新状态、组件卸载后不再重建轮询、异步横幅仅由匹配 tracker 事件发布（旧成功槽不冒充他工具终态）、快照短时失败继续轮询持续无法确认显示「状态未知」。
+- **前序改动并入本版**：通用设置五引擎默认设置重构为 `useDefaultEngineSettings` composable（引擎选项补齐 Pi/OMP）；usage 定价种子按 2026-10-17 官方页核对——新增 Claude 5.5/5.1 家族（Opus/Sonnet/Haiku/Fable/Mythos）、Sonnet 5 原定 9 月涨价已取消注记、全部条目带来源标注；用量统计图表默认视图改为「用量分布（按模型）」。
+
+（验证记录：agent-outputs/workflow/20261017-envcheck-repair/；全仓 go test/vet、envcheck+platform -race、Windows 目标交叉编译、前端 34 文件 327 测试+构建、15 场景真实组件 smoke 全部通过；diting full 首审 2 Major 红绿关闭，增量复审 PASS）
+
 ## [1.3.115] - 2026-10-17
 
 ### Added
