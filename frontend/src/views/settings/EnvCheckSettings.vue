@@ -13,7 +13,7 @@
       <AppButton
         variant="primary"
         size="small"
-        :disabled="checking || !!runningOperation"
+        :disabled="checking || !!runningOperation || writeBusy"
         @click="runFullCheck"
       >
         {{ checking ? '检测中...' : '全部检测' }}
@@ -140,14 +140,14 @@
           <div v-if="issue.detail" class="issue-detail">{{ issue.detail }}</div>
           <div v-if="issue.solutions && issue.solutions.length" class="issue-solutions">
             <AppButton
-              v-for="(sol, sIdx) in issue.solutions"
-              :key="solutionKey(sol, activeCard.key, sIdx)"
+              v-for="sol in issue.solutions"
+              :key="solutionActionKey(sol, activeCard.key)"
               variant="ghost"
               size="small"
-              :disabled="activeCard.isOperating || checking || !!runningOperation || fixLoadingKey === solutionKey(sol, activeCard.key, sIdx)"
+              :disabled="activeCard.isOperating || checking || !!runningOperation || (writeBusy && isWriteSolution(sol.type)) || fixLoadingKey === solutionActionKey(sol, activeCard.key)"
               @click="executeSolution(sol, activeCard.key, activeCard.displayName)"
             >
-              {{ fixLoadingKey === solutionKey(sol, activeCard.key, sIdx) ? '处理中...' : solutionLabel(sol.type) }}
+              {{ fixLoadingKey === solutionActionKey(sol, activeCard.key) ? '处理中...' : solutionLabel(sol.type) }}
             </AppButton>
           </div>
         </div>
@@ -198,8 +198,8 @@
                 v-if="!item.configured"
                 variant="primary"
                 size="small"
-                :disabled="!!configFixing[item.key] || activeCard.isOperating || checking || !!runningOperation"
-                @click="handleFixClaudeConfig(activeCard.key, item)"
+                :disabled="!!configFixing[item.key] || activeCard.isOperating || checking || !!runningOperation || writeBusy"
+                @click="onFixClaudeConfigClick(activeCard.key, item)"
               >
                 {{ configFixing[item.key] ? '写入中...' : '一键配置' }}
               </AppButton>
@@ -213,7 +213,7 @@
       <AppButton
         variant="ghost"
         size="small"
-        :disabled="activeCard.isOperating || checking || !!runningOperation"
+        :disabled="activeCard.isOperating || checking || !!runningOperation || writeBusy"
         @click="runSingleCheck(activeCard.key)"
       >
         检测
@@ -229,7 +229,7 @@
         <select
           class="method-select"
           :value="claudeInstallMethod"
-          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || writeBusy"
           @change="onClaudeMethodChange(($event.target as HTMLSelectElement).value)"
         >
           <option value="" disabled>选择安装方式</option>
@@ -245,8 +245,8 @@
           v-if="!activeCard.status?.installed"
           variant="primary"
           size="small"
-          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
-          @click="startClaudeInstallWithMethod(activeCard.displayName, false)"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || writeBusy || !claudeInstallMethod"
+          @click="onClaudeInstallClick(activeCard.displayName, false)"
         >
           {{ activeCard.isInstalling || claudeInstalling ? '安装中...' : '安装' }}
         </AppButton>
@@ -259,16 +259,16 @@
             v-if="activeCard.status?.hasUpdate"
             variant="primary"
             size="small"
-            :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy"
-            @click="startUpdate(activeCard.key, activeCard.displayName, activeCard.status?.latestVersion || '')"
+            :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || writeBusy"
+            @click="onUpdateClick(activeCard)"
           >
             {{ activeCard.isUpdating ? '更新中...' : '更新' }}
           </AppButton>
           <AppButton
             variant="ghost"
             size="small"
-            :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || !claudeInstallMethod"
-            @click="startClaudeInstallWithMethod(activeCard.displayName, true)"
+            :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || writeBusy || !claudeInstallMethod"
+            @click="onClaudeInstallClick(activeCard.displayName, true)"
           >
             {{ activeCard.isInstalling || claudeInstalling ? '重装中...' : '重装' }}
           </AppButton>
@@ -277,8 +277,8 @@
           v-if="activeCard.status?.installed"
           variant="ghost"
           size="small"
-          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy"
-          @click="handleUninstallClaude(activeCard.status)"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || claudeBusy || writeBusy"
+          @click="onUninstallClaudeClick(activeCard.status)"
         >
           {{ claudeUninstalling ? '卸载中...' : '卸载' }}
         </AppButton>
@@ -286,12 +286,18 @@
 
       <!-- Non-Claude tools: keep the generic install / update flow. -->
       <template v-else>
+        <!--
+          canInstall gating：npm 不可用（node/npm 缺失）时后端 StartInstallTool
+          必然拒绝，按钮不再可点，title 展示 installBlockedReason；阻断原因
+          另在下方 hint 行完整展示。canInstall 字段缺失（异常快照）不阻断。
+        -->
         <AppButton
           v-if="!activeCard.status?.installed"
           variant="primary"
           size="small"
-          :disabled="activeCard.isOperating || checking || !!runningOperation"
-          @click="startInstall(activeCard.key, activeCard.displayName)"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || writeBusy || !!activeCard.installBlockedReason"
+          :title="activeCard.installBlockedReason || undefined"
+          @click="onInstallClick(activeCard)"
         >
           {{ activeCard.isInstalling ? '安装中...' : '安装' }}
         </AppButton>
@@ -299,27 +305,83 @@
           v-else-if="activeCard.status?.hasUpdate"
           variant="primary"
           size="small"
-          :disabled="activeCard.isOperating || checking || !!runningOperation"
-          @click="startUpdate(activeCard.key, activeCard.displayName, activeCard.status?.latestVersion || '')"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || writeBusy || !!activeCard.installBlockedReason"
+          :title="activeCard.installBlockedReason || undefined"
+          @click="onUpdateClick(activeCard)"
         >
           {{ activeCard.isUpdating ? '更新中...' : '更新' }}
         </AppButton>
         <!--
+          Four agent CLIs (opencode/codex/pi/omp): generic uninstall via
+          RunEnvFixAction('uninstall_tool', tool, '') (E1 shared contract).
+          The returned FixActionResult.success only means ACCEPTED — the real
+          outcome comes from snapshot.operation (kind=uninstall) terminal
+          state, tracked by polling + watch; we never render "uninstalled"
+          on acceptance. Claude keeps its per-method uninstall; headroom
+          keeps the lease-guarded CleanHeadroom path below.
+        -->
+        <AppButton
+          v-if="isAgentCLITool(activeCard.key) && activeCard.status?.installed"
+          variant="ghost"
+          size="small"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || writeBusy"
+          @click="handleUninstallAgentCLI(activeCard)"
+        >
+          {{ activeCard.isUninstalling ? '卸载中...' : '卸载' }}
+        </AppButton>
+        <!--
           Headroom: installed into a CodeBox-managed venv; uninstall via
           envcheck.Service.CleanHeadroom (no App-level wrapper), which removes
-          the venv directory. Gated to headroom only; other non-Claude tools
-          have no managed uninstall path.
+          the venv directory. Gated to headroom only; other tools use the
+          uninstall_tool action above.
         -->
         <AppButton
           v-if="activeCard.key === 'headroom' && activeCard.status?.installed"
           variant="ghost"
           size="small"
-          :disabled="activeCard.isOperating || checking || !!runningOperation || headroomUninstalling"
-          @click="handleUninstallHeadroom"
+          :disabled="activeCard.isOperating || checking || !!runningOperation || headroomUninstalling || writeBusy"
+          @click="onUninstallHeadroomClick"
         >
           {{ headroomUninstalling ? '卸载中...' : '卸载' }}
         </AppButton>
       </template>
+
+      <!-- 安装阻断原因：canInstall=false 时完整展示后端 installBlockedReason，
+           避免用户对着置灰按钮猜原因。 -->
+      <div v-if="activeCard.installBlockedReason" class="install-blocked-hint">
+        {{ activeCard.installBlockedReason }}
+      </div>
+    </div>
+
+    <!--
+      顶层 solutions（CheckStatus.Solutions）：后端在 issue.solutions 之外
+      会把可用动作再挂一份到顶层（populateCanInstall / checker_common），
+      「issue 无 solutions、仅顶层有动作」的场景不渲染顶层就会完全没有
+      依赖按钮（Leader dependency 夹具已证实）。与 issue.solutions 去重后
+      渲染（visibleTopLevelSolutions），入口与 issue 按钮同一套执行链。
+    -->
+    <div
+      v-if="visibleTopLevelSolutions(activeCard.status, activeCard.key).length > 0"
+      class="issue-list tool-solutions"
+    >
+      <div class="issue-row">
+        <div class="issue-copy">
+          <span class="issue-sev sev-info">操作</span>
+          <span class="issue-msg">可用操作</span>
+        </div>
+        <div class="issue-solutions">
+          <AppButton
+            v-for="sol in visibleTopLevelSolutions(activeCard.status, activeCard.key)"
+            :key="solutionActionKey(sol, activeCard.key)"
+            variant="ghost"
+            size="small"
+            :disabled="activeCard.isOperating || checking || !!runningOperation || (writeBusy && isWriteSolution(sol.type)) || fixLoadingKey === solutionActionKey(sol, activeCard.key)"
+            @click="executeSolution(sol, activeCard.key, activeCard.displayName)"
+          >
+            {{ fixLoadingKey === solutionActionKey(sol, activeCard.key) ? '处理中...' : solutionLabel(sol.type) }}
+          </AppButton>
+        </div>
+      </div>
     </div>
   </div>
   </div>
@@ -346,6 +408,27 @@ import {
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
+import {
+  planSolutionExecution,
+  solutionConfirmMessage,
+  solutionLabel,
+  buildFixResultBanner,
+  planPostFixRefresh,
+  operationCompletionBanner,
+  operationKindLabel,
+  isAgentCLITool,
+  visibleTopLevelSolutions,
+  installBlockedReason,
+  solutionActionKey,
+  isWriteSolution,
+} from './envcheckSolutions'
+import {
+  beginOperation,
+  observeOperation,
+  isEffectivelyRunning,
+  type OperationTrackerState,
+  type OperationObs,
+} from './envcheckOperationTracking'
 
 const { showSuccess, showError, showInfo, showWarn } = useToast()
 
@@ -371,6 +454,8 @@ interface CardView {
   isOperating: boolean
   isInstalling: boolean
   isUpdating: boolean
+  isUninstalling: boolean
+  installBlockedReason: string
   cardClass: string
   tagClass: string
   tagLabel: string
@@ -417,16 +502,49 @@ const initialLoadingStartedAt = ref(0)
 const initialLoadingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 const runningOperation = computed<envcheck.OperationState | null>(() => {
+  // 集成批次 Major 1：受理回执（本地 pending）是操作身份的起点，快照只是
+  // 观察窗口。服务端 running 态优先（信息更全）；已终结的操作不因乱序快照
+  // 回退成 running（resolvedOpIds）；受理后快照还没出现 running（或拉取
+  // 失败）时由 tracked 视图接管，保证「安装中/卸载中」状态不断档。
   const op = snapshot.value?.operation
-  if (op && op.status === 'running') return op
+  if (op && isEffectivelyRunning(op, resolvedOpIds)) return op
+  const p = opTracker.value.pending
+  if (p) {
+    return envcheck.OperationState.createFrom({
+      id: p.id,
+      tool: p.tool as any,
+      kind: p.kind as any,
+      status: 'running',
+      step: '',
+      message: p.lastMessage,
+      progress: p.lastProgress,
+      startedAt: new Date(p.acceptedAt).toISOString() as any,
+      updatedAt: new Date().toISOString() as any,
+      finishedAt: null,
+      result: null,
+      error: '',
+      cacheRefreshed: false,
+    })
+  }
   return null
 })
 
-function operationKindLabel(kind: string): string {
-  if (kind === 'install') return '安装'
-  if (kind === 'update') return '更新'
-  if (kind === 'uninstall') return '卸载'
-  return kind || '操作'
+// 集成批次 Major 1：受理跟踪器 + 已终结 operation id（乱序防护）。
+const opTracker = ref<OperationTrackerState>({ pending: null })
+const resolvedOpIds = new Set<string>()
+
+// 集成批次 Major 2：全局本地写忙 —— 受理窗口内（后端 running 快照尚未到达）
+// 拒绝重复提交；受理后由 pending/runningOperation 接管忙碌态。成功/失败都在
+// finally 释放；纯展示类（manual_command/restart_app）不占用。
+const writeBusy = ref(false)
+async function withWriteGuard(fn: () => Promise<void>): Promise<void> {
+  if (writeBusy.value) return
+  writeBusy.value = true
+  try {
+    await fn()
+  } finally {
+    writeBusy.value = false
+  }
 }
 
 const operationLabel = computed(() => {
@@ -489,6 +607,7 @@ const cardList = computed<CardView[]>(() => {
     const isOperatingThis = op != null && op.tool === meta.key
     const isInstalling = isOperatingThis && op?.kind === 'install'
     const isUpdating = isOperatingThis && op?.kind === 'update'
+    const isUninstalling = isOperatingThis && op?.kind === 'uninstall'
 
     let cardClass = ''
     let tagClass = 'tag-info'
@@ -527,6 +646,8 @@ const cardList = computed<CardView[]>(() => {
       isOperating: isOperatingThis,
       isInstalling,
       isUpdating,
+      isUninstalling,
+      installBlockedReason: installBlockedReason(status),
       cardClass,
       tagClass,
       tagLabel,
@@ -644,9 +765,16 @@ function startInitialLoadingTimer(): void {
   }, INITIAL_LOADING_TICK_MS)
 }
 
+let snapshotRequestSeq = 0
+let snapshotAppliedSeq = 0
 async function fetchSnapshot(): Promise<void> {
+  const requestSeq = ++snapshotRequestSeq
+  let observed: envcheck.OperationState | null = null
   try {
     const s = await getEnvCheckSnapshot()
+    if (!mounted.value || requestSeq < snapshotAppliedSeq) return
+    snapshotAppliedSeq = requestSeq
+    observed = s?.operation || null
     if (mounted.value) {
       snapshot.value = s
       // R5：首次 CheckAll 完成（status.checking===false 或旧后端 checkedAt 出现）
@@ -658,12 +786,42 @@ async function fetchSnapshot(): Promise<void> {
       }
     }
   } catch (err: any) {
+    if (!mounted.value || requestSeq < snapshotAppliedSeq) return
     console.warn('[EnvCheck] fetchSnapshot failed:', err?.message || err)
     // 拉取失败时不能让用户卡在 loading；切到正常视图让其看到错误态/重试按钮。
     if (initialLoading.value) {
       initialLoading.value = false
       stopInitialLoadingTimer()
     }
+  }
+  // 集成批次 Major 1：无论快照成败都喂跟踪器 —— 失败观察（null）不清 pending，
+  // 轮询由 ensurePollingState 的 pending 条件维持，直到终态或有界超时。
+  applyTrackerObservation(observed)
+}
+
+/** 把一次快照观察（含失败=null）喂给受理跟踪器并落地事件。 */
+function applyTrackerObservation(op: OperationObs | null): void {
+  if (!opTracker.value.pending) return
+  const { state, outcome } = observeOperation(opTracker.value, op, Date.now())
+  opTracker.value = state
+  if (outcome.event.type === 'terminal') {
+    surfaceTerminalOperation(outcome.event.op)
+  } else if (outcome.event.type === 'unknown') {
+    // 有界超时：不确定就不假装成功；自动单检兜底 + 用户可见复检入口。
+    // 不让失联前缓存的 running 槽在 pending 超时后继续锁死按钮/无限轮询。
+    const cachedOp = snapshot.value?.operation
+    if (snapshot.value && cachedOp?.tool === outcome.event.tool && cachedOp.kind === outcome.event.kind) {
+      snapshot.value = { ...snapshot.value, operation: undefined } as envcheck.EnvCheckSnapshot
+    }
+    const name = toolDisplayName(outcome.event.tool)
+    const kind = operationKindLabel(outcome.event.kind)
+    showWarn(`${name} ${kind}状态未知，正在重新检测实际状态…`)
+    lastResult.value = {
+      title: `${name} ${kind}状态未知`,
+      description: '快照持续不可用或操作槽被顶替，未能确认操作结果。已自动重新检测该工具；如仍有疑问请点击「检测」核实。',
+      type: 'warning',
+    }
+    void runSingleCheck(outcome.event.tool).catch(() => {})
   }
 }
 
@@ -682,14 +840,73 @@ function stopPolling(): void {
   }
 }
 
+// 后端 CheckAll 是否进行中（OverallStatus.checking，F-4 字段）。修复动作成功后
+// App.RunEnvFixAction 会 go CheckAll() 异步重检；不把该标志纳入轮询条件，
+// 前端就会在检测完成前停止轮询，界面停留在旧状态（陈旧状态根因之一）。
+function isBackendChecking(s: envcheck.EnvCheckSnapshot | null): boolean {
+  return (s?.status as any)?.checking === true
+}
+
 function ensurePollingState(): void {
-  if (runningOperation.value || checking.value || initialLoading.value) {
+  if (!mounted.value) {
+    stopPolling()
+    return
+  }
+  // pending 是受理跟踪的硬条件：快照拉取失败（operation 观察缺失）期间也不能
+  // 停轮询（集成批次 Major 1 的 snapshot-error 场景）；有界超时由跟踪器兑底。
+  if (
+    runningOperation.value ||
+    checking.value ||
+    initialLoading.value ||
+    isBackendChecking(snapshot.value) ||
+    opTracker.value.pending !== null
+  ) {
     if (pollTimer.value === null) {
       startPolling()
     }
   } else {
     stopPolling()
   }
+}
+
+function toolDisplayName(tool: string): string {
+  return TOOL_METAS.find((m) => m.key === tool)?.displayName || tool
+}
+
+// 已出过终态横幅的 operation：防止 watch 与启动路径双报，也防止旧终态
+// operation 槽（snapshot.operation 会保留最后一次操作）被反复弹出。
+const surfacedOpIds = new Set<string>()
+
+/**
+ * 把一个已确认的终态 operation 转成结果横幅（去重）并登记 resolved 集合。
+ * resolvedOpIds 同时供 isEffectivelyRunning 使用：乱序快照里的旧 running 态
+// 不得把已终结操作回退成「进行中」。
+ */
+function surfaceTerminalOperation(op: OperationObs): void {
+  const key = op.id || `${op.tool || ''}|${op.kind || ''}|${op.status}`
+  if (surfacedOpIds.has(key)) return
+  surfacedOpIds.add(key)
+  if (op.id) resolvedOpIds.add(op.id)
+  const banner = operationCompletionBanner(op as envcheck.OperationState, toolDisplayName)
+  if (banner) lastResult.value = banner
+}
+
+/**
+ * 启动异步操作并接管后续：受理回执登记 pending（Major 1：受理即跟踪起点），
+ * fetch 最新快照观察、维持轮询；快操作首观察即终态也由跟踪器出横幅。
+ */
+async function startTrackedOperation(
+  ident: { tool: string; kind: string },
+  start: () => Promise<envcheck.OperationState>,
+): Promise<void> {
+  const started = await start()
+  opTracker.value = beginOperation(
+    opTracker.value,
+    { id: started?.id || '', tool: ident.tool, kind: ident.kind },
+    Date.now(),
+  )
+  await fetchSnapshot()
+  ensurePollingState()
 }
 
 // ---------- Actions ----------
@@ -748,9 +965,7 @@ async function runSingleCheck(key: string): Promise<void> {
 
 async function startInstall(key: string, displayName: string): Promise<void> {
   try {
-    await startInstallToolAsync(key)
-    await fetchSnapshot()
-    ensurePollingState()
+    await startTrackedOperation({ tool: key, kind: 'install' }, () => startInstallToolAsync(key))
   } catch (err: any) {
     lastResult.value = {
       title: `安装 ${displayName} 失败`,
@@ -763,9 +978,7 @@ async function startInstall(key: string, displayName: string): Promise<void> {
 async function startUpdate(key: string, displayName: string, latestVersion: string): Promise<void> {
   const verLabel = latestVersion ? 'v' + latestVersion : '最新版本'
   try {
-    await startUpdateToolAsync(key)
-    await fetchSnapshot()
-    ensurePollingState()
+    await startTrackedOperation({ tool: key, kind: 'update' }, () => startUpdateToolAsync(key))
   } catch (err: any) {
     lastResult.value = {
       title: `更新 ${displayName} 到 ${verLabel} 失败`,
@@ -838,9 +1051,10 @@ async function startClaudeInstallWithMethod(displayName: string, reinstall: bool
   }
   claudeInstalling.value = true
   try {
-    await startInstallClaudeWithMethodAsync(method)
-    await fetchSnapshot()
-    ensurePollingState()
+    await startTrackedOperation(
+      { tool: 'claude_code', kind: 'install' },
+      () => startInstallClaudeWithMethodAsync(method),
+    )
   } catch (err: any) {
     lastResult.value = {
       title: `${reinstall ? '重装' : '安装'} ${displayName} 失败`,
@@ -1014,24 +1228,32 @@ async function handleFixClaudeConfig(_cardKey: string, item: envcheck.ClaudeConf
 
 // ---------- Generic issue / solution runner ----------
 
-function solutionKey(sol: envcheck.ResolutionAction, cardKey: string, idx: number): string {
-  return `${cardKey}-${sol.type}-${idx}`
+// 集成批次 Major 2：模板直连的写操作入口统一过全局写 guard（受理窗口内拒绝
+// 重复提交；后续忙碌态由 pending/runningOperation 接管）。executeSolution 内部
+// 自带同一 guard，无需包一层。
+
+function onInstallClick(card: CardView): void {
+  void withWriteGuard(() => startInstall(card.key, card.displayName))
 }
 
-function solutionLabel(type: string): string {
-  switch (type) {
-    case 'fix_path': return '修复 PATH'
-    case 'install_tool': return '安装工具'
-    case 'install_node': return '安装 Node.js'
-    case 'retry': return '重新检测'
-    case 'clean_claude_install': return '清理 Claude 安装'
-    case 'manual_command': return '查看手动命令'
-    case 'restart_app': return '重启应用'
-    case 'install_claude_method': return '重装 Claude Code'
-    case 'fix_claude_config': return '修复 Claude 配置'
-    case 'install_wsl_search_tools': return '安装搜索工具'
-    default: return '解决方案'
-  }
+function onUpdateClick(card: CardView): void {
+  void withWriteGuard(() => startUpdate(card.key, card.displayName, card.status?.latestVersion || ''))
+}
+
+function onClaudeInstallClick(displayName: string, reinstall: boolean): void {
+  void withWriteGuard(() => startClaudeInstallWithMethod(displayName, reinstall))
+}
+
+function onUninstallClaudeClick(status: envcheck.CheckStatus): void {
+  void withWriteGuard(() => handleUninstallClaude(status))
+}
+
+function onUninstallHeadroomClick(): void {
+  void withWriteGuard(() => handleUninstallHeadroom())
+}
+
+function onFixClaudeConfigClick(cardKey: string, item: envcheck.ClaudeConfigItem): void {
+  void withWriteGuard(() => handleFixClaudeConfig(cardKey, item))
 }
 
 function issueSeverityLabel(sev: string): string {
@@ -1048,10 +1270,24 @@ function isNegativeSeverity(sev: string): boolean {
 }
 
 async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, displayName: string): Promise<void> {
+  // 执行策略全部由纯决策层 envcheckSolutions.ts 给出（镜像单测覆盖），
+  // 组件层只负责确认交互、绑定调用与状态落地。20261017 E2 根因修复：
+  //   - restart_app：后端 RunFixAction 白名单不受理，透传必报错 → 本地提示重启；
+  //   - install_claude_method：RunEnvFixAction 三参签名带不了 method 且无进度/
+  //     刷新 → 改走 StartInstallClaudeWithMethodAsync 异步链路；
+  //   - uninstall_tool（E1 共享契约）：success=已受理，终态以 operation 为准；
+  //   - 修复成功后一律刷新并按后端 checking 状态维持轮询，消除陈旧状态。
+  const plan = planSolutionExecution(sol, {
+    cardKey,
+    claudePickerMethod: claudeInstallMethod.value || '',
+    claudeStatusInstallMethod:
+      (snapshot.value?.status?.items?.claude_code?.installMethod as string) || '',
+  })
+
   // R6 manual_command：纯展示命令文案，不触发后端 action。后端在 solution
   // 的 description/command 字段承载建议命令，用户参考执行。HIG 克制：用
   // toast 展示而非弹窗，避免打断流程。
-  if (sol.type === 'manual_command') {
+  if (plan.kind === 'display_only') {
     const cmd = sol.command || sol.description || ''
     const desc = sol.description && sol.command && sol.description !== sol.command
       ? `${sol.description}\n命令：${sol.command}`
@@ -1065,91 +1301,182 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
     return
   }
 
-  // Destructive operations require confirmation (HIG: never destroy user data
-  // without explicit opt-in).
-  if (sol.type === 'fix_path' || sol.type === 'install_node' || sol.type === 'clean_claude_install' || sol.type === 'install_wsl_search_tools') {
-    const msg = sol.type === 'fix_path'
-      ? '此操作将备份并修改 PATH 配置，以加入必要的工具目录。是否继续？'
-      : sol.type === 'install_node'
-        ? '此操作将尝试安装 Node.js。是否继续？'
-        : sol.type === 'install_wsl_search_tools'
-          ? '此操作将在 WSL 内以 root 安装 fd-find 与 ripgrep。是否继续？'
-          : `此操作将清理当前 ${displayName} 安装产物（保留 versions/ 二进制可复用）。是否继续？`
-    if (!window.confirm(msg)) return
+  // restart_app：后端没有重启绑定，也没有 RunFixAction 白名单项；本地提示
+  // 用户重启，避免「重启应用」按钮永远报 unsupported fix action。措辞按 E1
+  // 契约校准：后端会同步刷新当前进程 PATH，只在「仍看到旧环境」时才建议重启。
+  if (plan.kind === 'restart_notice') {
+    const desc = '若 CodeBox 内仍显示旧 PATH 或外部终端未生效，请完全退出并重新打开 CodeBox（外部终端也可先执行 source 配置文件），再回到本页重新检测。'
+    showInfo('请重启 CodeBox 后重新检测')
+    lastResult.value = {
+      title: '请重启 CodeBox',
+      description: desc,
+      type: 'info',
+    }
+    return
   }
 
-  const key = solutionKey(sol, cardKey, 0)
+  // Destructive operations require confirmation (HIG: never destroy user data
+  // without explicit opt-in). 决策层给出文案；requiresConfirm 的其余动作
+  // （如 npm shim 修复重装）也有确认。无需确认的动作返回 null。
+  const confirmMsg = solutionConfirmMessage(sol, displayName)
+  if (confirmMsg && !window.confirm(confirmMsg)) return
+
+  // 集成批次 Major 2：稳定 key（无位置下标）—— 模板 issue/顶层按钮与
+  // executeSolution 用同一 identity，处理中禁用与 loading 文案不再错位。
+  const key = solutionActionKey(sol, cardKey)
   fixLoadingKey.value = key
   try {
-    if (sol.type === 'retry') {
-      await runFullCheck()
-      return
-    }
-    if (sol.type === 'install_tool') {
-      await startInstall(cardKey, displayName)
-      return
-    }
-    // R6 clean_claude_install：直接走 CleanClaudeInstall binding（已有 API），
-    // 避免 RunEnvFixAction 后端分支不识别该 type。
-    if (sol.type === 'clean_claude_install') {
-      // F-1: 优先读后端在 issue.solution 上挂的显式 method（消除 installMethod
-      // 缺失时 fallback 'native' 误清 npm 的理论风险）。缺失时按顺序回退到
-      // snapshot.installMethod 和 'native'，保留防御。
-      const method = (sol.method as string)
-        || (snapshot.value?.status?.items?.claude_code?.installMethod as string)
-        || 'native'
-      const result: any = await cleanClaudeInstall(method)
-      const ok = !!result?.success
-      // F-2: 即使 success=true 也可能含"versions/ 仍保留"段落（部分卸载语义）；
-      // success=false 时不一定是真失败，而是"shim 已卸载 + native 保留"。
-      // 用 info/warning 态让用户读到双段语义，避免误显"卸载失败"。
-      const nativeKept = parseNativeKeptSegments(result?.message || result?.error || '')
-      const title = ok
-        ? result.message || `${displayName} 安装已清理`
-        : result.error || result.message || `${displayName} 清理失败`
-      lastResult.value = {
-        title,
-        description: nativeKept.preservedLine || result?.message || undefined,
-        type: nativeKept.preserved ? (ok ? 'info' : 'warning') : (ok ? 'success' : 'error'),
+    // 全局写 guard：受理窗口内拒绝重复提交；后续忙碌态由 pending/runningOperation
+    // 接管。成功/失败都在 finally 释放。
+    await withWriteGuard(async () => {
+      if (plan.kind === 'full_check') {
+        await runFullCheck()
+        return
       }
-      if (ok && !nativeKept.preserved) {
-        showSuccess(title)
-      } else if (nativeKept.preserved) {
-        // 双段语义：shim 已卸载（成功）+ native 二进制保留可复用（信息）。
-        showInfo(nativeKept.preservedLine || title)
-      } else {
-        showError(title)
+      if (plan.kind === 'async_install') {
+        await startInstall(sol.tool || cardKey, displayName)
+        return
       }
-      if (ok) await runSingleCheck('claude_code')
-      return
-    }
-    const result: any = await runEnvFixAction(sol.type, sol.tool || cardKey, '')
-    const ok = !!result?.success
-    const title = ok
-      ? result.message || '修复操作已完成'
-      : result.error || result.message || '修复操作失败'
-    const parts: string[] = []
-    if (result?.backupPath) parts.push(`备份文件：${result.backupPath}`)
-    if (result?.profilePath) parts.push(`配置文件：${result.profilePath}`)
-    if (Array.isArray(result?.addedPaths) && result.addedPaths.length) {
-      parts.push('已加入路径：' + result.addedPaths.join(', '))
-    }
-    if (Array.isArray(result?.nextSteps) && result.nextSteps.length) {
-      parts.push(result.nextSteps.join('. '))
-    }
-    lastResult.value = {
-      title,
-      description: parts.join('\n') || undefined,
-      type: ok ? 'success' : 'error',
-    }
-    if (ok) showSuccess(title)
-    else showError(title)
-    if (ok && result?.changed) await fetchSnapshot()
+      if (plan.kind === 'claude_method_install') {
+        // 按决策层给出的 method（solution.method > 选择器 > snapshot > native）
+        // 走异步安装：有进度、有终态横幅、自动轮询刷新；不经过无法携带
+        // method 的 RunEnvFixAction。
+        claudeInstalling.value = true
+        try {
+          await startTrackedOperation(
+            { tool: 'claude_code', kind: 'install' },
+            () => startInstallClaudeWithMethodAsync(plan.method),
+          )
+        } catch (err: any) {
+          lastResult.value = {
+            title: `重装 ${displayName} 失败`,
+            description: err?.message || String(err),
+            type: 'error',
+          }
+        } finally {
+          claudeInstalling.value = false
+        }
+        return
+      }
+      if (plan.kind === 'uninstall_tool') {
+        await runUninstallTool(sol.tool || cardKey, displayName)
+        return
+      }
+      // R6 clean_claude_install：直接走 CleanClaudeInstall binding（已有 API），
+      // 避免 RunEnvFixAction 后端分支不识别该 type。
+      if (plan.kind === 'clean_claude') {
+        // F-1: method 由决策层给出（solution.method > snapshot.installMethod >
+        // 'native'），消除 installMethod 缺失时 fallback 误清另一渠道的风险。
+        const method = plan.method
+        const result: any = await cleanClaudeInstall(method)
+        const ok = !!result?.success
+        // F-2: 即使 success=true 也可能含"versions/ 仍保留"段落（部分卸载语义）；
+        // success=false 时不一定是真失败，而是"shim 已卸载 + native 保留"。
+        // 用 info/warning 态让用户读到双段语义，避免误显"卸载失败"。
+        const nativeKept = parseNativeKeptSegments(result?.message || result?.error || '')
+        const title = ok
+          ? result.message || `${displayName} 安装已清理`
+          : result.error || result.message || `${displayName} 清理失败`
+        lastResult.value = {
+          title,
+          description: nativeKept.preservedLine || result?.message || undefined,
+          type: nativeKept.preserved ? (ok ? 'info' : 'warning') : (ok ? 'success' : 'error'),
+        }
+        if (ok && !nativeKept.preserved) {
+          showSuccess(title)
+        } else if (nativeKept.preserved) {
+          // 双段语义：shim 已卸载（成功）+ native 二进制保留可复用（信息）。
+          showInfo(nativeKept.preservedLine || title)
+        } else {
+          showError(title)
+        }
+        if (ok) await runSingleCheck('claude_code')
+        return
+      }
+      // 剩余白名单动作（fix_path / install_node / install_wsl_search_tools 等）
+      // 透传 RunEnvFixAction。
+      const result: any = await runEnvFixAction(sol.type, sol.tool || cardKey, '')
+      const banner = buildFixResultBanner(result)
+      lastResult.value = banner
+      if (banner.type === 'success') showSuccess(banner.title)
+      else showError(banner.title)
+      // 集成批次 Major 3：确定性复检取代「碰运气轮询」—— changed=true 时后端
+      // 异步 go CheckAll() 与本端拉取存在竞态，改为本端同步 runEnvCheck() 一次
+      // 拿到确定结果；changed=false（后端分支内已同步重检）拉一次快照即可。
+      // 复检失败时保留成功横幅并提示手动「检测」作为重试入口，绝不无限轮询。
+      const refresh = planPostFixRefresh(result)
+      if (refresh.recheck === 'snapshot') {
+        await fetchSnapshot()
+        ensurePollingState()
+      } else if (refresh.recheck === 'full') {
+        await runDeterministicRecheck()
+      }
+    })
   } catch (err: any) {
     showError('修复操作失败: ' + (err?.message || String(err)))
   } finally {
     fixLoadingKey.value = ''
   }
+}
+
+/**
+ * 确定性复检（集成批次 Major 3）：直接 await runEnvCheck() 同步全量重检，
+ * 不依赖后端异步 goroutine 与本端拉取的时序。失败时提示用户手动重试。
+ */
+async function runDeterministicRecheck(): Promise<void> {
+  try {
+    const status = await runEnvCheck()
+    if (mounted.value) {
+      snapshot.value = {
+        status,
+        operation: snapshot.value?.operation || null,
+      } as envcheck.EnvCheckSnapshot
+    }
+  } catch (err: any) {
+    showError('自动复检失败，请点击「检测」手动核实: ' + (err?.message || String(err)))
+  }
+}
+
+/**
+ * 四个 Agent CLI 卡片上的「卸载」按钮入口：包装成 uninstall_tool solution
+ * 走统一的 executeSolution 链路（同一套确认文案与受理/终态跟踪）。
+ */
+async function handleUninstallAgentCLI(card: CardView): Promise<void> {
+  await executeSolution(
+    { type: 'uninstall_tool', tool: card.key } as envcheck.ResolutionAction,
+    card.key,
+    card.displayName,
+  )
+}
+
+/**
+ * 四个 Agent CLI（opencode/codex/pi/omp）的通用卸载入口（E1 共享契约）。
+ * RunEnvFixAction('uninstall_tool', tool, '') 的 FixActionResult.success 只
+ * 表示「已受理」：绝不能据此显示卸载成功；真实结果以 snapshot.operation
+ * （kind=uninstall）的终态为准，由轮询 + watch 出终态横幅并刷新。
+ */
+async function runUninstallTool(tool: string, displayName: string): Promise<void> {
+  const previousId = snapshot.value?.operation?.id
+  const requestedAt = Date.now()
+  const result: any = await runEnvFixAction('uninstall_tool', tool, '')
+  if (!result?.success) {
+    const banner = buildFixResultBanner(result)
+    lastResult.value = banner
+    showError(banner.title)
+    return
+  }
+  showInfo(`${displayName} 卸载已开始`)
+  lastResult.value = {
+    title: `${displayName} 卸载进行中`,
+    description: result.message || '卸载已受理，完成后将展示结果并自动刷新检测状态。',
+    type: 'info',
+  }
+  // 集成批次 Major 1：受理即登记 pending（无 OperationState 回执，id=''，
+  // 以 tool+kind+时间界匹配后终操作），后续终态/超时由跟踪器接管；快照失败
+  // 期间轮询不中断。
+  opTracker.value = beginOperation(opTracker.value, { id: '', tool, kind: 'uninstall', previousId, requestedAt }, Date.now())
+  await fetchSnapshot()
+  ensurePollingState()
 }
 
 // Keep the method picker in sync once backend snapshot arrives.
@@ -1161,37 +1488,10 @@ watch(
   { immediate: true },
 )
 
-// Watch runningOperation to detect completion and surface a result banner.
-watch(runningOperation, async (newVal, oldVal) => {
-  if (oldVal && !newVal) {
-    await fetchSnapshot()
-    const completedOp = snapshot.value?.operation
-    if (completedOp && completedOp.status !== 'running') {
-      const toolName =
-        TOOL_METAS.find((m) => m.key === completedOp.tool)?.displayName || completedOp.tool
-      const kind = operationKindLabel(completedOp.kind)
-      if (completedOp.status === 'succeeded') {
-        const ver = completedOp.result?.version ? ` (v${completedOp.result.version})` : ''
-        const msg = completedOp.result?.message || completedOp.message || ''
-        lastResult.value = {
-          title: `${toolName} ${kind}成功${ver}`,
-          description: msg || undefined,
-          type: 'success',
-        }
-      } else if (completedOp.status === 'failed' || completedOp.status === 'timeout') {
-        const errMsg = completedOp.error || completedOp.result?.error || ''
-        const msg = completedOp.message || ''
-        const parts = [errMsg, msg].filter(Boolean)
-        lastResult.value = {
-          title: `${toolName} ${kind}失败`,
-          description: parts.join(' - ') || undefined,
-          type: 'error',
-        }
-      }
-    }
-  }
-  ensurePollingState()
-})
+// Only a matched tracker terminal event may publish an async result banner.
+// A running→null transition can also mean observation timeout/slot replacement;
+// it must never claim the arbitrary terminal currently stored in the slot.
+watch(runningOperation, ensurePollingState)
 
 onMounted(async () => {
   mounted.value = true
@@ -1637,6 +1937,20 @@ onUnmounted(() => {
   margin-top: 4px;
   padding-top: 8px;
   border-top: 1px dashed var(--separator);
+}
+
+/* 顶层 solutions 渲染行（复用 issue-list 结构，靠顶部分隔线区分） */
+.tool-solutions {
+  margin-top: 12px;
+}
+
+/* canInstall=false 时的阻断原因提示（置灰按钮的完整解释） */
+.install-blocked-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--warning);
+  word-break: break-all;
 }
 
 .issue-row {

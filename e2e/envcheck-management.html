@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>环境检测管理 · 隔离测试</title></head>
+<body>
+<div id="app"></div>
+<script type="module">
+// 真实设置组件 + 明确的 Wails 替身。所有操作仅修改本页内存，绝不管理本机软件。
+// URL ?scenario=installed|dependency|manual|path|fast|failure|snapshot-error|uninstall-snapshot-error|uninstall-fast|slow-accept|empty
+// window.__envCalls 记录绑定调用，window.__envFixture 供自动化断言。
+import { createApp, h } from 'vue';
+import EnvCheckSettings from '/frontend/src/views/settings/EnvCheckSettings.vue';
+import { useToast } from '/frontend/src/composables/useToast.ts';
+import '/frontend/src/styles/tokens.css';
+
+const scenario = new URLSearchParams(location.search).get('scenario') || 'installed';
+const calls = [];
+const tools = ['claude_code', 'opencode', 'codex', 'pi', 'omp', 'headroom'];
+const copy = value => JSON.parse(JSON.stringify(value));
+const now = () => new Date().toISOString();
+const items = Object.fromEntries(tools.map(tool => [tool, {
+  tool, installed: true, installMethod: tool === 'headroom' ? 'codebox-venv' : 'npm',
+  version: '1.0.0', latestVersion: '1.0.0', hasUpdate: false,
+  pathOk: true, systemPathOk: true, pathState: 'system_path', pathSource: 'test-fixture',
+  executablePath: `/test-only/node/bin/${tool}`, error: '', checkedAt: now(),
+  canInstall: true, canInstallByMethod: { npm: true, native: true }, installBlockedReason: '', issues: [], solutions: [],
+}]));
+const timeoutScenario = ['uninstall-stale-timeout', 'uninstall-replaced-timeout'].includes(scenario);
+const realDateNow = Date.now.bind(Date);
+let clockOffset = 0;
+Date.now = () => realDateNow() + clockOffset;
+let operation = timeoutScenario ? { id: 'old-success', tool: 'pi', kind: 'uninstall', status: 'succeeded', startedAt: now(), result: { success: true, message: '旧操作成功' } } : null;
+let seq = 0;
+let snapshotFailures = 0;
+let dependencyInstalled = false;
+let confirmAllowed = true;
+// 仅测试页替身确认框；调用与文案留证，可将confirmAllowed置false验证取消。
+window.confirm = message => { calls.push({ name: 'confirm', args: [message], at: Date.now() }); return confirmAllowed; };
+const installNode = { type: 'install_node', tool: 'pi', description: '安装 Node.js 依赖', requiresConfirm: true };
+const manual = { type: 'manual_command', tool: 'pi', description: '手动安装依赖', command: 'echo TEST_ONLY_MANUAL_GUIDANCE' };
+const fixPath = { type: 'fix_path', tool: 'pi', description: '修复 Pi PATH', requiresConfirm: true };
+if (scenario === 'dependency') Object.assign(items.pi, {
+  installed: false, canInstall: false, executablePath: '', pathOk: false, pathState: 'missing',
+  installBlockedReason: '测试夹具：缺少 Node.js/npm', solutions: [installNode],
+  issues: [{ code: 'missing_node', severity: 'error', message: '测试夹具：缺少 Node.js/npm', solutions: [] }],
+});
+if (scenario === 'manual') Object.assign(items.pi, {
+  installed: false, canInstall: false, installBlockedReason: '测试夹具：仅支持手动安装',
+  issues: [{ severity: 'warning', code: 'manual_dependency', message: '手动操作指引', solutions: [manual] }], solutions: [manual],
+});
+if (scenario === 'path') Object.assign(items.pi, {
+  pathOk: false, systemPathOk: false, pathState: 'outside_path', solutions: [fixPath],
+  issues: [{ severity: 'warning', code: 'path_missing', message: '测试夹具：需要修复 PATH', solutions: [fixPath] }],
+});
+if (['fast', 'failure', 'snapshot-error', 'slow-accept'].includes(scenario)) Object.assign(items.pi, {
+  installed: false, executablePath: '', pathOk: false, pathState: 'missing',
+});
+const status = () => ({
+  items: scenario === 'empty' ? {} : copy(items),
+  allOk: Object.values(items).every(item => item.installed && !item.error && item.pathOk),
+  issues: [], checkedAt: scenario === 'empty' ? '0001-01-01T00:00:00Z' : now(), checking: false,
+});
+function start(tool, kind) {
+  if (operation?.status === 'running') throw new Error('测试夹具：操作仍在运行');
+  operation = { id: `fixture-${++seq}`, tool, kind, status: 'running', step: 'run_command', progress: 20, message: '仅测试内存状态', startedAt: now() };
+  const accepted = copy(operation);
+  if (['snapshot-error', 'uninstall-snapshot-error'].includes(scenario)) snapshotFailures = 1;
+  const finish = () => {
+    const success = scenario !== 'failure';
+    if (success) Object.assign(items[tool], {
+      installed: kind !== 'uninstall', version: kind === 'uninstall' ? '' : '1.0.0',
+      pathOk: kind !== 'uninstall', pathState: kind === 'uninstall' ? 'missing' : 'system_path',
+      executablePath: kind === 'uninstall' ? '' : `/test-only/node/bin/${tool}`,
+    });
+    operation = { ...operation, status: success ? 'succeeded' : 'failed', progress: 100, completedAt: now(),
+      error: success ? '' : '测试夹具：安装进程失败，退出码 1',
+      result: { success, tool, message: success ? '测试夹具操作完成' : '测试夹具操作失败', error: success ? '' : 'exit 1' },
+    };
+  };
+  if (['fast', 'uninstall-fast'].includes(scenario)) finish();
+  else setTimeout(finish, 350);
+  return accepted;
+}
+const implementations = {
+  GetEnvCheckSnapshot: () => {
+    if (snapshotFailures > 0) { snapshotFailures--; throw new Error('测试夹具：一次快照获取失败'); }
+    return { status: status(), operation: copy(operation) };
+  },
+  RunEnvCheck: status,
+  CheckTool: tool => copy(items[tool]),
+  StartInstallToolAsync: async tool => {
+    if (scenario === 'slow-accept') await new Promise(resolve => setTimeout(resolve, 1200));
+    return start(tool, 'install');
+  },
+  StartUpdateToolAsync: tool => start(tool, 'update'),
+  StartInstallClaudeWithMethodAsync: () => start('claude_code', 'install'),
+  RunEnvFixAction: async (action, tool) => {
+    if (action === 'uninstall_tool') {
+      if (scenario === 'uninstall-replaced-timeout') operation = { id: 'other-success', tool: 'codex', kind: 'install', status: 'succeeded', startedAt: now(), result: { success: true } };
+      if (!timeoutScenario) start(tool, 'uninstall');
+      return { success: true, changed: false, message: '已受理卸载，请等待完成' };
+    }
+    if (action === 'install_node') {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      dependencyInstalled = true;
+      Object.assign(items[tool], { canInstall: true, installBlockedReason: '', issues: [], solutions: [] });
+      return { success: true, changed: true, message: '测试夹具：Node.js 依赖已就绪' };
+    }
+    if (action === 'fix_path') {
+      Object.assign(items[tool], { pathOk: true, systemPathOk: true, pathState: 'system_path', issues: [], solutions: [] });
+      return { success: true, changed: true, message: '测试夹具：PATH 已修复', profilePath: '/test-only/.zprofile', addedPaths: ['/test-only/node/bin'] };
+    }
+    if (action === 'retry') return { success: true, changed: false, message: '测试夹具重检完成' };
+    throw new Error(`测试夹具不支持动作：${action}`);
+  },
+  CleanClaudeInstall: () => ({ success: true, tool: 'claude_code', message: '测试夹具清理完成' }),
+  UninstallClaudeCode: () => ({ success: true, tool: 'claude_code', message: '测试夹具卸载完成' }),
+};
+const app = Object.fromEntries(Object.entries(implementations).map(([name, impl]) => [name, async (...args) => {
+  calls.push({ name, args, at: Date.now() });
+  return impl(...args);
+}]));
+window.go = { main: { App: app }, envcheck: { Service: { CleanHeadroom: async () => ({ success: true, tool: 'headroom' }) } } };
+window.__envCalls = calls;
+window.__envFixture = { scenario, status, advanceTime(ms) { clockOffset += ms; }, get operation() { return copy(operation); }, get dependencyInstalled() { return dependencyInstalled; }, set confirmAllowed(value) { confirmAllowed = value; } };
+const { toasts } = useToast();
+createApp({ render: () => h('main', [
+  h('p', { class: 'fixture-notice' }, `隔离测试：${scenario}。操作仅改页面内存，不调用真实系统。`),
+  h(EnvCheckSettings),
+  h('aside', { 'aria-label': '操作通知' }, toasts.map(toast => h('p', { role: 'status', key: toast.id }, toast.message))),
+]) }).mount('#app');
+</script>
+<style>
+body { margin: 0; background: var(--window); color: var(--label); font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
+main { max-width: 1200px; margin: auto; padding: 24px; display: grid; gap: 16px; }
+.fixture-notice { color: var(--secondary); }
+* { box-sizing: border-box; }
+</style>
+</body></html>

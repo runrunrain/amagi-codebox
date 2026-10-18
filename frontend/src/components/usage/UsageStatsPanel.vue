@@ -503,7 +503,7 @@ const trendChartOptions = computed<ChartOptions<'line'>>(() => ({
 
 // ---- 图表视图切换：趋势 / 模型占比 / 供应商占比 / 用量分布合并为单一卡片 ----
 type ChartView = 'trend' | 'model' | 'provider' | 'tokens';
-const activeChartView = ref<ChartView>('trend');
+const activeChartView = ref<ChartView>('tokens');
 const chartViewOptions: { value: ChartView; label: string }[] = [
   { value: 'trend', label: '趋势' },
   { value: 'model', label: '模型占比' },

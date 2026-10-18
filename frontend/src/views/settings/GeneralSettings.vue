@@ -145,6 +145,7 @@ import {
 import { useProviderStore } from '../../stores/provider'
 import { useToast } from '../../composables/useToast'
 import { usePlatformCapabilities } from '../../composables/usePlatformCapabilities'
+import { defaultEngineOptions as engineOptions, useDefaultEngineSettings } from '../../composables/useDefaultEngineSettings'
 import {
   getSystemProxyStatus,
   setSystemProxyEnabled,
@@ -194,13 +195,6 @@ async function saveCommitSummaryPreset() {
   }
 }
 
-const activeEngineTab = ref<string>('claude')
-const engineOptions = [
-  { value: 'claude', label: 'ClaudeCode' },
-  { value: 'opencode', label: 'OpenCode' },
-  { value: 'codex', label: 'Codex' },
-]
-
 const defaults = reactive({
   provider: '',
   preset: '',
@@ -211,9 +205,6 @@ const defaults = reactive({
   openCodeShell: '',
   codexMode: 'embedded',
   codexShell: '',
-  // Pi/OMP 的启动模式与 Shell 不在本页编辑，但保存时必须原样透传，
-  // 否则 SetDashboardDefaults 整体替换会把它们清空（后端 normalize 会
-  // 用平台默认重填，导致用户在会话设置页选好的 pi/omp Shell 被抹掉）。
   piMode: 'embedded',
   piShell: '',
   ompMode: 'embedded',
@@ -253,31 +244,7 @@ const shellOptions = computed(() => [
   ...platformCaps.builtinShellOptions.value.map((s: any) => ({ value: s.value, label: s.label })),
 ])
 
-const currentEngineMode = computed<string>({
-  get: () => {
-    if (activeEngineTab.value === 'claude') return defaults.claudeMode
-    if (activeEngineTab.value === 'opencode') return defaults.openCodeMode
-    return defaults.codexMode
-  },
-  set: (val: string) => {
-    if (activeEngineTab.value === 'claude') defaults.claudeMode = val
-    else if (activeEngineTab.value === 'opencode') defaults.openCodeMode = val
-    else defaults.codexMode = val
-  },
-})
-
-const currentEngineShell = computed<string>({
-  get: () => {
-    if (activeEngineTab.value === 'claude') return defaults.claudeShell
-    if (activeEngineTab.value === 'opencode') return defaults.openCodeShell
-    return defaults.codexShell
-  },
-  set: (val: string) => {
-    if (activeEngineTab.value === 'claude') defaults.claudeShell = val
-    else if (activeEngineTab.value === 'opencode') defaults.openCodeShell = val
-    else defaults.codexShell = val
-  },
-})
+const { activeEngineTab, currentEngineMode, currentEngineShell } = useDefaultEngineSettings(defaults)
 
 watch(() => defaults.provider, (newVal) => {
   if (newVal) {

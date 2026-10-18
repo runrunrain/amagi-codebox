@@ -1001,9 +1001,14 @@ func (s *Service) runOperation(op *OperationState, method ClaudeInstallMethod) {
 	// Run the install/update logic with progress reporting.
 	var result *InstallResult
 	var err error
-	if op.Tool == ToolClaudeCode && op.Kind == OperationKindInstall && method != ClaudeInstallAuto {
+	switch {
+	case op.Kind == OperationKindUninstall:
+		// Generic ownership-checked uninstall for the non-Claude agents;
+		// Claude/Headroom keep their dedicated sync flows.
+		result, err = s.uninstallToolWithProgress(op.Tool, reporter)
+	case op.Tool == ToolClaudeCode && op.Kind == OperationKindInstall && method != ClaudeInstallAuto:
 		result, err = s.installClaudeCodeWithMethodProgress(method, reporter)
-	} else {
+	default:
 		result, err = s.installOrUpdateWithProgress(op.Tool, installOperation(op.Kind), reporter, ClaudeInstallAuto)
 	}
 

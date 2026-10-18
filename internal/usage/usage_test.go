@@ -2,7 +2,10 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -577,7 +580,7 @@ func TestPricingSeed202609Batch(t *testing.T) {
 		"gpt-5.5-pro":             {30_000_000, 180_000_000, "USD"},
 		"gpt-5.4":                 {2_500_000, 15_000_000, "USD"},
 		"gpt-5.4-mini":            {750_000, 4_500_000, "USD"},
-		"deepseek-v4-flash":       {220_000, 660_000, "USD"},
+		"deepseek-v4-flash":       {150_000, 600_000, "USD"}, // 已退役，按 Flash 错峰价计费（2026-10-17）
 		"glm-4.7":                 {2_000_000, 8_000_000, "CNY"},
 		"kimi-k3":                 {20_000_000, 100_000_000, "CNY"},
 		"kimi-k3-256k":            {20_000_000, 100_000_000, "CNY"},
@@ -629,9 +632,10 @@ func TestPricingSeedOpenAIGPT56(t *testing.T) {
 	data := defaultPricingData()
 	want := map[string]int64{
 		// ModelPattern → InputPerMillion（用于断言价格落位 + NormalizeModelID 自洽）。
-		"gpt-5.6-sol":   5_000_000,
-		"gpt-5.6-terra": 2_500_000,
-		"gpt-5.6-luna":  1_000_000,
+		// gpt-5.6 三档 2026-10-17 官方复核后价格已下调（sol 4/terra 2/luna 0.2 USD）。
+		"gpt-5.6-sol":   4_000_000,
+		"gpt-5.6-terra": 2_000_000,
+		"gpt-5.6-luna":  200_000,
 		"gpt-5.5":       5_000_000,
 		"gpt-5.3-codex": 1_750_000,
 	}
@@ -784,8 +788,8 @@ func TestDeepSeekV4ProCachePricingAndMetrics(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek-v4-pro should be a built-in price")
 	}
-	if pricing.CurrencyCode != "USD" || pricing.InputPerMillion != 435_000 ||
-		pricing.OutputPerMillion != 870_000 || pricing.CacheReadPerMillion != 3_625 {
+	if pricing.CurrencyCode != "USD" || pricing.InputPerMillion != 660_000 ||
+		pricing.OutputPerMillion != 1_980_000 || pricing.CacheReadPerMillion != 22_000 {
 		t.Fatalf("unexpected DeepSeek V4 Pro pricing: %#v", pricing)
 	}
 
@@ -800,8 +804,8 @@ func TestDeepSeekV4ProCachePricingAndMetrics(t *testing.T) {
 		DedupKey:             "test:deepseek-v4-pro-cache",
 	}
 	record := s.eventToRecord(event)
-	if record.TotalCost != 438_625 || record.CacheReadCost != 3_625 || record.CurrencyCode != "USD" {
-		t.Fatalf("DeepSeek V4 Pro cost = total=%d cache=%d currency=%s, want 438625/3625/USD", record.TotalCost, record.CacheReadCost, record.CurrencyCode)
+	if record.TotalCost != 682_000 || record.CacheReadCost != 22_000 || record.CurrencyCode != "USD" {
+		t.Fatalf("DeepSeek V4 Pro cost = total=%d cache=%d currency=%s, want 682000/22000/USD", record.TotalCost, record.CacheReadCost, record.CurrencyCode)
 	}
 	if _, err := s.Record(event); err != nil {
 		t.Fatalf("Record: %v", err)
@@ -818,7 +822,7 @@ func TestDeepSeekV4ProCachePricingAndMetrics(t *testing.T) {
 		if stat.TotalTokens != 2_000_000 || stat.CacheHitRate != 0.5 {
 			t.Fatalf("cache totals = tokens=%d hitRate=%f, want 2000000/0.5", stat.TotalTokens, stat.CacheHitRate)
 		}
-		if stat.CacheAdjustedTokens != 1_008_333 || stat.CacheReadEstimatedCost != 3_625 || stat.CacheHitSavings != 431_375 {
+		if stat.CacheAdjustedTokens != 1_033_333 || stat.CacheReadEstimatedCost != 22_000 || stat.CacheHitSavings != 638_000 {
 			t.Fatalf("cache economics = adjusted=%d cost=%d savings=%d", stat.CacheAdjustedTokens, stat.CacheReadEstimatedCost, stat.CacheHitSavings)
 		}
 		return
@@ -863,8 +867,8 @@ func TestRepriceEstimatedUsagePreservesSourceProvidedCosts(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT total_cost, currency_code FROM usage_records WHERE dedup_key=?`, event.DedupKey).Scan(&total, &currency); err != nil {
 		t.Fatalf("query repriced record: %v", err)
 	}
-	if total != 438_625 || currency != "USD" {
-		t.Fatalf("repriced record = total=%d currency=%s, want 438625/USD", total, currency)
+	if total != 682_000 || currency != "USD" {
+		t.Fatalf("repriced record = total=%d currency=%s, want 682000/USD", total, currency)
 	}
 
 	provided := UsageEvent{
@@ -975,6 +979,170 @@ func TestResolveTrendRangeWithOneSidedDate(t *testing.T) {
 	start, end = resolveTrendRange(TrendFilter{SummaryFilter: SummaryFilter{EndDate: "2026-07-10"}, Days: 7}, now)
 	if start != "2026-07-04" || end != "2026-07-10" {
 		t.Fatalf("end-only range = %s..%s, want 2026-07-04..2026-07-10", start, end)
+	}
+}
+
+// TestPricingSeed202610Refresh 验证 2026-10-17 官方价复核批次：新增模型按官方价
+// 落位，官方已调价/已取消涨价断言的旧型号同步修正，且 ModelPattern 与
+// NormalizeModelID 输出一致。来源 URL 见 pricing_seed.go 各段注释。
+func TestPricingSeed202610Refresh(t *testing.T) {
+	data := defaultPricingData()
+	type row struct {
+		in, out, cr, cc int64
+		currency        string
+	}
+	wants := map[string]row{
+		// Anthropic 当前主线（docs.anthropic.com/en/docs/about-claude/pricing）。
+		"claude-fable-5-1":  {10_000_000, 50_000_000, 250_000, 12_500_000, "USD"},
+		"claude-opus-5-5":   {4_000_000, 20_000_000, 200_000, 5_000_000, "USD"},
+		"claude-sonnet-5-5": {2_000_000, 10_000_000, 100_000, 2_500_000, "USD"},
+		"claude-haiku-5-5":  {100_000, 500_000, 10_000, 125_000, "USD"},
+		"claude-haiku-4-5":  {1_000_000, 5_000_000, 100_000, 1_250_000, "USD"},
+		"claude-mythos-5-1": {10_000_000, 50_000_000, 250_000, 12_500_000, "USD"},
+		// Sonnet 5 官方确认为标准价（原定 9 月涨价已取消）。
+		"claude-sonnet-5": {2_000_000, 10_000_000, 200_000, 2_500_000, "USD"},
+		// OpenAI GPT-6 家族（platform.openai.com/docs/pricing）。
+		"gpt-6-astra": {10_000_000, 50_000_000, 1_000_000, 12_500_000, "USD"},
+		"gpt-6.1-sol": {2_000_000, 10_000_000, 100_000, 2_500_000, "USD"},
+		"gpt-6-sol":   {2_000_000, 10_000_000, 200_000, 2_500_000, "USD"},
+		"gpt-6-luna":  {100_000, 500_000, 10_000, 125_000, "USD"},
+		"gpt-5.6-sol": {4_000_000, 20_000_000, 400_000, 5_000_000, "USD"},
+		"o3":          {2_000_000, 8_000_000, 500_000, 0, "USD"},
+		"o3-mini":     {1_100_000, 4_400_000, 550_000, 0, "USD"},
+		// DeepSeek 现行两款（api-docs.deepseek.com/quick_start/pricing，错峰价）。
+		"deepseek-flash":    {150_000, 600_000, 3_000, 0, "USD"},
+		"deepseek-v4-pro":   {660_000, 1_980_000, 22_000, 0, "USD"},
+		"deepseek-v4-flash": {150_000, 600_000, 3_000, 0, "USD"},
+		// GLM 官方正式价（docs.bigmodel.cn/cn/guide/start/pricing）。
+		"glm-5.3":       {8_000_000, 28_000_000, 2_000_000, 0, "CNY"},
+		"glm-5.3-flash": {800_000, 2_800_000, 230_000, 0, "CNY"},
+		"glm-5.2":       {8_000_000, 28_000_000, 2_000_000, 0, "CNY"},
+		"glm-5":         {4_000_000, 18_000_000, 1_000_000, 0, "CNY"},
+		"glm-5-turbo":   {5_000_000, 22_000_000, 1_200_000, 0, "CNY"},
+		"glm-4-plus":    {5_000_000, 5_000_000, 2_500_000, 0, "CNY"},
+		// Kimi（platform.kimi.com/docs/pricing/chat）。
+		"kimi-k2.7-code":           {6_500_000, 27_000_000, 1_300_000, 0, "CNY"},
+		"kimi-k2.7-code-highspeed": {13_000_000, 54_000_000, 2_600_000, 0, "CNY"},
+		"kimi-k3":                  {20_000_000, 100_000_000, 2_000_000, 20_000_000, "CNY"},
+		// 中转短名：官方定价页未单列，沿用 kimi-k3 token 价，缓存写入
+		// 无官方依据不同步（cc=0），备注不得声明同费率。
+		"k3":           {20_000_000, 100_000_000, 2_000_000, 0, "CNY"},
+		"k3-256k":      {20_000_000, 100_000_000, 2_000_000, 0, "CNY"},
+		"kimi-k3-256k": {20_000_000, 100_000_000, 2_000_000, 0, "CNY"},
+		// MiniMax（platform.minimaxi.com/docs/pricing/overview）。
+		"minimax-m3":             {2_100_000, 8_400_000, 420_000, 0, "CNY"},
+		"minimax-m2.7-highspeed": {4_200_000, 16_800_000, 420_000, 2_625_000, "CNY"},
+		// Qwen（help.aliyun.com/zh/model-studio/model-pricing）。
+		"qwen3.8-max":       {12_000_000, 36_000_000, 2_400_000, 0, "CNY"},
+		"qwen3.7-plus":      {2_000_000, 8_000_000, 400_000, 0, "CNY"},
+		"qwen3.8-flash":     {800_000, 2_700_000, 160_000, 0, "CNY"},
+		"qwen3-coder-flash": {1_500_000, 6_000_000, 300_000, 0, "CNY"},
+		"qwen-max":          {2_400_000, 9_600_000, 0, 0, "CNY"},
+	}
+	for _, m := range data.Models {
+		w, ok := wants[m.ModelPattern]
+		if !ok {
+			continue
+		}
+		if m.CurrencyCode != w.currency {
+			t.Errorf("%s currency = %s, want %s", m.ModelPattern, m.CurrencyCode, w.currency)
+		}
+		if !m.IsBuiltin {
+			t.Errorf("%s isBuiltin = false, want true", m.ModelPattern)
+		}
+		if m.InputPerMillion != w.in || m.OutputPerMillion != w.out ||
+			m.CacheReadPerMillion != w.cr || m.CacheCreationPerMillion != w.cc {
+			t.Errorf("%s in/out/cr/cc = %d/%d/%d/%d, want %d/%d/%d/%d",
+				m.ModelPattern, m.InputPerMillion, m.OutputPerMillion,
+				m.CacheReadPerMillion, m.CacheCreationPerMillion, w.in, w.out, w.cr, w.cc)
+		}
+		if got := NormalizeModelID(m.ModelPattern); got != m.ModelPattern {
+			t.Errorf("NormalizeModelID(%q) = %q, want %q", m.ModelPattern, got, m.ModelPattern)
+		}
+		delete(wants, m.ModelPattern)
+	}
+	if len(wants) > 0 {
+		missing := make([]string, 0, len(wants))
+		for p := range wants {
+			missing = append(missing, p)
+		}
+		t.Errorf("seed missing refreshed patterns: %v", missing)
+	}
+	// 中转短名行必须诚实标注（官方定价页未单列），不得声明与 kimi-k3 同费率。
+	for _, m := range data.Models {
+		if m.ModelPattern == "k3" || m.ModelPattern == "k3-256k" || m.ModelPattern == "kimi-k3-256k" {
+			if !strings.Contains(m.Notes, "未单列") {
+				t.Errorf("%s notes should state 官方未单列, got %q", m.ModelPattern, m.Notes)
+			}
+			if strings.Contains(m.Notes, "同费率") || strings.Contains(m.Notes, "同价") {
+				t.Errorf("%s notes must not claim same-rate without official basis: %q", m.ModelPattern, m.Notes)
+			}
+		}
+	}
+}
+
+// TestLoadMergesNewBuiltinWithoutOverwritingUserRows 验证已有价格文件 Load 时
+// 的合并路径：新增内置模型补入，用户自定义行与用户改过价的内置行原样保留，
+// 不因内置 seed 调价而被覆盖；版本号随内置 seed 抬升。
+func TestLoadMergesNewBuiltinWithoutOverwritingUserRows(t *testing.T) {
+	dir := t.TempDir()
+
+	// 模拟旧版落盘文件：只有两行（一行内置旧价，一行用户自定义），
+	// 且缺少本轮新增的 claude-sonnet-5-5 / gpt-6-astra 等内置模式。
+	old := &PricingData{
+		Version: 2,
+		Models: []ModelPricing{
+			{
+				ID: "builtin-glm-5.2", ModelPattern: "glm-5.2", DisplayName: "GLM-5.2",
+				Provider: "glm", CurrencyCode: "CNY",
+				InputPerMillion: 2_000_000, OutputPerMillion: 8_000_000, IsBuiltin: true,
+			},
+			{
+				ID: "user-my-model", ModelPattern: "my-private-model", DisplayName: "Mine",
+				Provider: "custom", CurrencyCode: "CNY",
+				InputPerMillion: 1_000_000, OutputPerMillion: 2_000_000,
+			},
+		},
+	}
+	b, err := json.Marshal(old)
+	if err != nil {
+		t.Fatalf("marshal old pricing: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "usage-pricing.json"), b, 0o644); err != nil {
+		t.Fatalf("write old pricing: %v", err)
+	}
+
+	p := NewPricingService(dir)
+	if err := p.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// 用户自定义行必须原样保留。
+	custom, ok := p.Resolve("my-private-model")
+	if !ok || custom.InputPerMillion != 1_000_000 || custom.OutputPerMillion != 2_000_000 {
+		t.Fatalf("user custom row lost or altered: %#v", custom)
+	}
+	// 用户文件里的旧内置价（glm-5.2 旧 2/8）不得被新内置 8/28 覆盖。
+	glm, ok := p.Resolve("glm-5.2")
+	if !ok || glm.InputPerMillion != 2_000_000 || glm.OutputPerMillion != 8_000_000 {
+		t.Fatalf("existing builtin row overwritten by seed: %#v", glm)
+	}
+	// 新增内置模式必须补入并可命中。
+	for _, pattern := range []string{"claude-sonnet-5-5", "gpt-6-astra", "deepseek-flash", "minimax-m3", "qwen3.8-max"} {
+		if mp, found := p.Resolve(pattern); !found || !mp.IsBuiltin {
+			t.Errorf("new builtin pattern %s missing after Load merge", pattern)
+		}
+	}
+	// 版本号抬升且落盘（Load 内部已触发 Save）。
+	if snap := p.Snapshot(); snap.Version < 3 {
+		t.Errorf("merged version = %d, want >= 3", snap.Version)
+	}
+	persisted := NewPricingService(dir)
+	if err := persisted.Load(); err != nil {
+		t.Fatalf("re-Load: %v", err)
+	}
+	if mp, found := persisted.Resolve("claude-sonnet-5-5"); !found {
+		t.Fatalf("merged rows not persisted: %#v", mp)
 	}
 }
 

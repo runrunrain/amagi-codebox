@@ -61,6 +61,7 @@ var allowedFixActions = map[SolutionType]bool{
 	SolutionInstallClaudeMethod:   true,
 	SolutionCleanClaudeInstall:    true,
 	SolutionInstallWslSearchTools: true,
+	SolutionUninstallTool:         true,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,8 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 		}, nil
 	case SolutionInstallWslSearchTools:
 		return s.runInstallWSLSearchTools()
+	case SolutionUninstallTool:
+		return s.runUninstallTool(req)
 	default:
 		return nil, fmt.Errorf("unimplemented fix action: %s", req.Action)
 	}
@@ -172,6 +175,37 @@ func (s *Service) runInstallWSLSearchTools() (*FixActionResult, error) {
 		action.NextSteps = []string{"已重新检测工具状态；若仍有提示请重启 CodeBox 后重试"}
 	}
 	return action, nil
+}
+
+// ---------------------------------------------------------------------------
+// uninstall_tool: async generic uninstall for the non-Claude agents
+// ---------------------------------------------------------------------------
+
+// runUninstallTool accepts an uninstall_tool fix action for opencode/codex/
+// pi/omp and starts it on the shared async operation slot. Per the shared
+// operation contract, FixActionResult.Success only means the operation was
+// ACCEPTED; the terminal outcome (kind=uninstall, succeeded/failed/timeout)
+// must be read from the operation snapshot. Claude Code and Headroom keep
+// their dedicated uninstall flows and are rejected here.
+func (s *Service) runUninstallTool(req FixActionRequest) (*FixActionResult, error) {
+	if !IsValidCLITool(req.Tool) {
+		return nil, fmt.Errorf("unsupported tool for uninstall: %s", req.Tool)
+	}
+	if !canUninstallTool(req.Tool) {
+		return nil, fmt.Errorf("%s 使用专用卸载链路（Claude Code 按来源卸载 / Headroom 租约保护卸载），不支持 uninstall_tool", req.Tool)
+	}
+	state, err := s.startUninstallTool(req.Tool)
+	if err != nil {
+		return &FixActionResult{
+			Success: false,
+			Error:   fmt.Sprintf("启动卸载失败: %v", err),
+		}, nil
+	}
+	return &FixActionResult{
+		Success:   true,
+		Message:   fmt.Sprintf("已开始卸载 %s（操作 ID %s），请以操作状态为准", displayToolName(req.Tool), state.ID),
+		NextSteps: []string{"请轮询环境检测快照的 operation 终态（kind=uninstall），终态后刷新实际检测状态"},
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -250,9 +284,12 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	if strings.Contains(existing, amagiMarkerBegin) {
 		// Extract existing block and compare
 		if strings.Contains(existing, newBlock) {
-			// Even when the profile is already up to date, refresh the resolver-side
-			// state synchronously. This avoids the UI continuing to display a stale
-			// "not in available PATH" status immediately after a successful fix_path.
+			// Even when the profile is already up to date, the CURRENT PROCESS
+			// environment may still lack the directories (GUI-launched processes
+			// never re-read .zprofile). Sync the live session PATH so phase-1
+			// detection (exec.LookPath) agrees with the persisted profile,
+			// otherwise the "not in system PATH" hint can never clear.
+			applyPATHDirsToProcessEnv(safeDirs)
 			s.resetNPMCache()
 			_, _ = s.CheckAll()
 			return &FixActionResult{
@@ -262,7 +299,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 				AddedPaths:      safeDirs,
 				Changed:         false,
 				RequiresRestart: true,
-				NextSteps:       []string{"已重新检测工具状态；外部终端如仍未生效，请重启终端或运行: source " + profilePath},
+				NextSteps:       []string{"已同步当前进程环境并重新检测；外部终端如仍未生效，请重启终端或运行: source " + profilePath},
 			}, nil
 		}
 	}
@@ -311,6 +348,12 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 	// because the GUI process PATH lacked /opt/homebrew/bin. After writing
 	// the profile, a re-check through the resolver (which uses shell/login
 	// fallback) may find node, flipping npmAvailable to true.
+	//
+	// Keep the persisted profile and the CURRENT process environment
+	// consistent: the GUI process never re-reads .zprofile, so without the
+	// os.Setenv sync below SystemPATHOk stays false for the whole session and
+	// the path_not_in_system_path hint never clears ("PATH 修复无效").
+	applyPATHDirsToProcessEnv(safeDirs)
 	s.resetNPMCache()
 
 	// Synchronously re-check all tools so the cached status is fresh when
@@ -325,7 +368,7 @@ func (s *Service) runFixPath(req FixActionRequest) (*FixActionResult, error) {
 		AddedPaths:      safeDirs,
 		Changed:         true,
 		RequiresRestart: true,
-		NextSteps:       []string{"已重新检测工具状态；外部终端如仍未生效，请重启终端或运行: source " + profilePath},
+		NextSteps:       []string{"已同步当前进程环境并重新检测；外部终端如仍未生效，请重启终端或运行: source " + profilePath},
 	}, nil
 }
 
@@ -334,15 +377,37 @@ func (s *Service) collectPathDirs(req FixActionRequest) []string {
 	var dirs []string
 	seen := map[string]bool{}
 
+	// pathDedupKey returns a canonical dedup key for a directory. Raw-string
+	// comparison is not enough on macOS: /var/folders/... and its EvalSymlinks
+	// form /private/var/folders/... are the same directory, and mixing cached
+	// (symlink-resolved) executable paths with unresolved resolver output made
+	// fix_path rewrite the profile with duplicate entries on every invocation.
+	pathDedupKey := func(dir string) string {
+		key := filepath.Clean(dir)
+		if resolved, err := filepath.EvalSymlinks(key); err == nil && strings.TrimSpace(resolved) != "" {
+			key = resolved
+		}
+		if isWindows() {
+			key = strings.ToLower(key)
+		}
+		return key
+	}
+
 	addIfNew := func(dir string) {
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return
 		}
-		if seen[abs] {
+		// Canonicalize to the symlink-resolved form so the profile block is
+		// stable across runs (idempotency) and survives /var vs /private/var.
+		if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil && strings.TrimSpace(resolved) != "" {
+			abs = resolved
+		}
+		key := pathDedupKey(abs)
+		if seen[key] {
 			return
 		}
-		seen[abs] = true
+		seen[key] = true
 		dirs = append(dirs, abs)
 	}
 
@@ -374,14 +439,17 @@ func (s *Service) collectPathDirs(req FixActionRequest) []string {
 		}
 	}
 
-	// Check what resolver's augmented PATH provides vs system PATH
+	// Check what resolver's augmented PATH provides vs system PATH.
+	// NOTE: LaunchDiagnostics.PATHSources holds source LABELS ("merged-env",
+	// "app-env", ...) — they are not directories and must never be collected,
+	// even when a directory with such a name happens to exist under cwd.
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
 	for _, tool := range SupportedTools() {
 		if req.Tool != "" && req.Tool != tool {
 			continue
 		}
 		for _, commandName := range cliCommandNamesForTool(tool) {
-			resolved, diags, err := resolver.ResolveExecutable(commandName, nil, os.Environ())
+			resolved, _, err := resolver.ResolveExecutable(commandName, nil, os.Environ())
 			if err != nil || resolved.Path == "" {
 				continue
 			}
@@ -390,10 +458,6 @@ func (s *Service) collectPathDirs(req FixActionRequest) []string {
 			toolDir := filepath.Dir(resolved.Path)
 			if toolDir != "" && toolDir != "." {
 				addIfNew(toolDir)
-			}
-			// Also add absolute directories from resolver diagnostics when present.
-			for _, entry := range diags.PATHSources {
-				addIfNew(entry)
 			}
 		}
 	}
@@ -627,9 +691,11 @@ func (s *Service) runInstallNodeDarwin() (*FixActionResult, error) {
 	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
 	resolved, _, err := resolver.ResolveExecutable("brew", nil, os.Environ())
 	if err == nil && resolved.Path != "" {
-		// Attempt brew install node with enhanced env
+		// Attempt brew install node with enhanced env. Timeout matches the
+		// npm/winget global-install budget (10min): 120s killed slow-network
+		// installs mid-extract and left broken Cellar state behind.
 		env := s.buildEnhancedEnv()
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), npmCLIToolInstallTimeout)
 		defer cancel()
 
 		result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
@@ -687,8 +753,10 @@ func (s *Service) runInstallNodeDarwin() (*FixActionResult, error) {
 
 // runInstallNodeWindows installs Node.js on Windows using winget.
 func (s *Service) runInstallNodeWindows() (*FixActionResult, error) {
-	// 优先尝试 winget
-	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
+	// 优先尝试 winget。静默安装 LTS 需要 MSI 落盘 + 环境变量写入，120s
+	// （installCommandTimeout）在慢盘/慢网络下会中断安装进程，这里放宽到
+	// 与 npm 全局安装同级的 10 分钟预算。
+	ctx, cancel := context.WithTimeout(context.Background(), npmCLIToolInstallTimeout)
 	defer cancel()
 
 	_, err := s.processRunner.Run(ctx, platform.CommandSpec{
@@ -697,39 +765,54 @@ func (s *Service) runInstallNodeWindows() (*FixActionResult, error) {
 		Policy: platform.DefaultProcessPolicy(),
 	})
 	if err == nil {
+		// winget 把 nodejs 目录写进注册表 PATH，但当前进程看不到；复检一次
+		// npm 可用性并据实报告（integration finding #5：依赖未确认不得报安装
+		// 成功，只说明"已执行、未确认、需重启复检"）。
+		s.resetNPMCache()
+		if npmAvailable, _ := s.ensureNPMAvailabilityCached(); npmAvailable {
+			return &FixActionResult{
+				Success:   true,
+				Message:   "已通过 winget 安装 Node.js LTS，npm 已可用",
+				Changed:   true,
+				NextSteps: []string{"可以直接重试工具安装"},
+			}, nil
+		}
 		return &FixActionResult{
-			Success:         true,
-			Message:         "正在通过 winget 安装 Node.js LTS，安装完成后请重启终端",
+			Success:         false,
+			Message:         "winget 安装命令已执行，但 npm 可用性未获确认（新 PATH 需重启进程生效）",
+			Error:           "Node.js 依赖未确认可用：请重启 CodeBox 后重新检测，再重试工具安装",
 			RequiresRestart: true,
-			NextSteps:       []string{"安装完成后请重启终端，然后重新检测环境"},
+			NextSteps:       []string{"请重启 CodeBox 后重新检测环境，确认 npm 可用后再重试工具安装"},
 		}, nil
 	}
 
-	// winget 失败，降级为手动指引
+	// winget 失败（缺失/超时/网络）不是成功：如实报告失败并给手动指引，
+	// 避免界面把未完成的依赖安装显示成“已处理”。
 	return &FixActionResult{
-		Success: true,
-		Message: "请手动安装 Node.js",
+		Success: false,
+		Error:   fmt.Sprintf("winget 自动安装 Node.js 失败: %v", err),
 		NextSteps: []string{
 			"1. 访问 https://nodejs.org/ 下载 LTS 版本安装包",
 			"2. 运行安装程序，确保勾选「Add to PATH」",
 			"3. 安装完成后重启终端",
 			"4. 回到环境检测页面点击「重新检测」",
 		},
-		Changed: false,
 	}, nil
 }
 
 // runInstallNodeLinux provides manual installation guidance for Linux.
+// integration finding #5：依赖未安装也未确认时不得报成功，只给手动指引。
 func (s *Service) runInstallNodeLinux() (*FixActionResult, error) {
 	return &FixActionResult{
-		Success: true,
+		Success: false,
+		Error:   "Linux 暂不支持自动安装 Node.js，依赖未确认可用",
 		Message: "请手动安装 Node.js",
 		NextSteps: []string{
 			"1. 使用包管理器安装: sudo apt-get install nodejs npm (Debian/Ubuntu)",
 			"2. 或: sudo dnf install nodejs (Fedora)",
 			"3. 安装完成后重启终端",
+			"4. 回到环境检测页面点击「重新检测」确认依赖可用",
 		},
-		Changed: false,
 	}, nil
 }
 
@@ -852,6 +935,51 @@ func (s *Service) buildEnhancedEnv() []string {
 	}
 
 	return env
+}
+
+// applyPATHDirsToProcessEnv prepends dirs that are missing from the CURRENT
+// process PATH via os.Setenv. The persisted shell profile only affects NEW
+// terminals: a GUI-launched CodeBox never re-reads .zprofile, so without this
+// sync exec.LookPath (phase-1 detection) keeps reporting SystemPATHOk=false
+// for the rest of the session even after a successful fix_path. The change is
+// process-local (children inherit it) and disappears when CodeBox exits; it
+// never touches the user's shell configuration.
+func applyPATHDirsToProcessEnv(dirs []string) {
+	if len(dirs) == 0 {
+		return
+	}
+	current := os.Getenv("PATH")
+	entries := filepath.SplitList(current)
+	key := func(p string) string {
+		p = strings.TrimSpace(p)
+		if isWindows() {
+			return strings.ToLower(p)
+		}
+		return p
+	}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		if k := key(entry); k != "" {
+			seen[k] = true
+		}
+	}
+	toAdd := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		k := key(dir)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		toAdd = append(toAdd, dir)
+	}
+	if len(toAdd) == 0 {
+		return
+	}
+	merged := strings.Join(toAdd, string(os.PathListSeparator))
+	if strings.TrimSpace(current) != "" {
+		merged += string(os.PathListSeparator) + current
+	}
+	_ = os.Setenv("PATH", merged)
 }
 
 // resetNPMCache allows re-probing npm availability. It also resets the python3
@@ -981,6 +1109,11 @@ func (s *Service) runFixPathWindows(req FixActionRequest) (*FixActionResult, err
 	}
 
 	if len(newDirs) == 0 {
+		// 注册表已包含全部目录，但当前进程可能仍看不到（GUI 进程不重读
+		// 注册表 PATH）：同步本进程环境并复检，保证落盘与当前环境一致。
+		applyPATHDirsToProcessEnv(safeDirs)
+		s.resetNPMCache()
+		_, _ = s.CheckAll()
 		return &FixActionResult{
 			Success: true,
 			Message: "PATH 已包含所有必要的目录，无需修改",
@@ -1051,13 +1184,21 @@ func (s *Service) runFixPathWindows(req FixActionRequest) (*FixActionResult, err
 	}
 	_, _ = s.processRunner.Run(context.Background(), broadcastCmd) // 忽略广播错误
 
+	// 10. 同步当前进程环境（与 POSIX 分支一致：落盘 + 当前进程一致），
+	// 失效 npm/python 探测缓存并同步复检，避免界面继续显示陈旧状态。
+	applyPATHDirsToProcessEnv(safeDirs)
+	s.resetNPMCache()
+	_, _ = s.CheckAll()
+
 	return &FixActionResult{
 		Success:         true,
 		Message:         fmt.Sprintf("已将 %d 个目录添加到用户 PATH", len(newDirs)),
 		Changed:         true,
 		RequiresRestart: true,
-		NextSteps:       []string{"请重启终端或重新登录以使 PATH 修改生效"},
-		BackupPath:      fmt.Sprintf("注册表值 HKCU\\Environment\\%s", backupName),
+		// 当前进程 PATH 已同步（applyPATHDirsToProcessEnv）；需重启/重开的是
+		// 外部终端与新进程（integration finding #5 措辞校准）。
+		NextSteps:  []string{"已同步当前进程环境并重新检测；外部终端如需生效，请新开终端或重新登录"},
+		BackupPath: fmt.Sprintf("注册表值 HKCU\\Environment\\%s", backupName),
 	}, nil
 }
 

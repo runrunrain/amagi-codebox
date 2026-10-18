@@ -151,18 +151,29 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		return installFailure(tool, fmt.Sprintf("%s前检查失败", operationDisplayName(operation)), checkErr), checkErr
 	}
 
-	if operation == installOperationInstall && isHealthyAndCurrent(before) && !shouldReinstallHealthyUnknownClaude(tool, before) {
+	if operation == installOperationInstall && isHealthy(before) && !shouldReinstallHealthyUnknownClaude(tool, before) {
+		// steer #5 / integration finding #4：安装 no-op 允许（无需重装），但
+		// “最新版本”必须是已验证的非空 LatestVersion，未知时不得冒充最新。
+		message := fmt.Sprintf("%s 已安装（最新版本未知）", displayToolName(tool))
+		if isHealthyAndCurrent(before) {
+			message = fmt.Sprintf("%s 已安装且为最新版本（%s）", displayToolName(tool), before.Version)
+		} else if before.HasUpdate {
+			message = fmt.Sprintf("%s 已安装（%s）；可使用更新操作升级至 %s", displayToolName(tool), before.Version, before.LatestVersion)
+		}
 		return &InstallResult{
 			Success: true,
-			Message: fmt.Sprintf("%s 已安装且为最新版本", displayToolName(tool)),
+			Message: message,
 			Tool:    tool,
 			Version: before.Version,
 		}, nil
 	}
+	// steer #5 / integration finding #4：Update 的 no-op 必须以“非空已验证
+	// LatestVersion 且比较结果为无更新”为前提；未知最新版本时继续执行更新
+	// 命令，不直接跳过并声称已是最新。
 	if operation == installOperationUpdate && isHealthyAndCurrent(before) {
 		return &InstallResult{
 			Success: true,
-			Message: fmt.Sprintf("%s 已是最新版本", displayToolName(tool)),
+			Message: fmt.Sprintf("%s 已是最新版本（%s，与 registry 一致）", displayToolName(tool), before.Version),
 			Tool:    tool,
 			Version: before.Version,
 		}, nil
@@ -293,7 +304,13 @@ func (s *Service) installOrUpdateWithProgress(tool CLITool, operation installOpe
 		// Command ran but verification failed. Build a descriptive reason.
 		verifyReason := verificationErrorMessage(after)
 		if verifyOk && !versionChanged {
-			verifyReason = fmt.Sprintf("version unchanged after %s (%s)", command.description, beforeVersion)
+			// steer #5：版本未变时如实说明，不假造升级；最新版本未知时
+			// 点明“可能已是最新但未获证实”，避免误读为安装损坏。
+			latestNote := ""
+			if after != nil && strings.TrimSpace(after.LatestVersion) == "" {
+				latestNote = "，最新版本号未知（可能已是最新但未获证实）"
+			}
+			verifyReason = fmt.Sprintf("version unchanged after %s (%s)%s", command.description, beforeVersion, latestNote)
 		}
 		if verifyErr != nil {
 			verifyReason = fmt.Sprintf("verification call failed: %v", verifyErr)
@@ -2515,12 +2532,26 @@ func redactInstallerSensitiveValues(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func isHealthyAndCurrent(status *CheckStatus) bool {
+// isHealthy reports whether the tool is installed, launchable by CodeBox and
+// free of binary-level errors. It says NOTHING about being current: with an
+// unknown LatestVersion a tool can be healthy while update information is
+// missing (steer #5 / integration finding #4).
+func isHealthy(status *CheckStatus) bool {
 	return status != nil &&
 		status.Installed &&
 		status.PATHOk &&
-		!status.HasUpdate &&
 		strings.TrimSpace(status.Error) == ""
+}
+
+// isHealthyAndCurrent reports whether the tool is healthy AND we have a
+// verified (non-empty) latest version that the installed version matches.
+// An empty LatestVersion makes !HasUpdate meaningless — callers must not
+// treat that as "current" (steer #5 / integration finding #4).
+func isHealthyAndCurrent(status *CheckStatus) bool {
+	return isHealthy(status) &&
+		strings.TrimSpace(status.Version) != "" &&
+		strings.TrimSpace(status.LatestVersion) != "" &&
+		!status.HasUpdate && compareVersionStrings(status.Version, status.LatestVersion) >= 0
 }
 
 func shouldReinstallHealthyUnknownClaude(tool CLITool, status *CheckStatus) bool {

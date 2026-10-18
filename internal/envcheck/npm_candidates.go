@@ -5,7 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// A failed version probe does not erase an existing installation. Preserve
+// its path so management operations and the UI can distinguish broken from
+// missing, while allowing the caller to prefer another healthy candidate.
+func failedNPMCandidateStatus(tool CLITool, candidate string, err error) *CheckStatus {
+	return &CheckStatus{
+		Tool: tool, Installed: true, InstallMethod: InstallMethodNPM,
+		ExecutablePath: resolveRealExecutablePath(candidate),
+		Error:          sanitizeInstallerOutput(err.Error()), CheckedAt: time.Now(),
+		PATHOk: false, SystemPATHOk: pathDirInProcessPATH(filepath.Dir(candidate)),
+		PathState: PathStateCodeboxPATH, PathSource: "npm global prefix",
+	}
+}
 
 // npmGlobalCommandCandidates returns the executable locations npm may expose
 // for a globally installed package. npm prefix and npm root are deliberately

@@ -24,7 +24,7 @@
 | `installed` | 是否已安装 |
 | `installMethod` | 安装方式：`native` / `npm` / `pip` / `homebrew` / `codebox-venv` / `unknown` |
 | `version` / `latestVersion` / `hasUpdate` | 当前版本、最新版本、是否有更新 |
-| `pathOk` / `systemPathOk` | Amagi CodeBox 能否启动该工具 / 系统 shell 能否直接调用 |
+| `pathOk` / `systemPathOk` | CodeBox 增强环境能否启动该工具 / CodeBox 当前进程 PATH 能否找到命令 |
 | `pathState` | 路径来源：`missing` / `system_path` / `codebox_path` / `shell_fallback` / `outside_path` |
 | `issues` | 结构化问题列表（含 severity / code / message / solutions） |
 | `solutions` | 可执行的修复动作 |
@@ -41,15 +41,17 @@
 
 `pathOk` 表示 Amagi CodeBox 内部能否启动该工具——平台解析器在系统 PATH 之上叠加了 baseline + caller 路径，因此即使系统 shell 看不到某 CLI，Amagi CodeBox 仍可能启动它（此时 `pathState == codebox_path`）。
 
-`systemPathOk` 反映系统 shell 的可见性，等价于 `exec.LookPath` 在原始进程继承的 PATH 下能否找到命令。`pathState` 进一步区分：`missing`（任何地方都找不到）、`system_path`（系统 PATH 可找到）、`codebox_path`（仅 CodeBox 增强 PATH 可找到）、`shell_fallback`（通过 shell 登录探针找到）、`outside_path`（找到可执行文件但不属于上述任何来源）。
+`systemPathOk` 表示 `exec.LookPath` 在 CodeBox 当前进程 PATH 下能否找到命令，不代表所有外部终端都已同步。修复 PATH 会写入 shell 配置（Windows 为用户 PATH），并同步 CodeBox 当前进程后重新检测；已经打开的外部终端仍可能需要重开。`pathState` 进一步区分：`missing`（任何地方都找不到）、`system_path`（系统 PATH 可找到）、`codebox_path`（仅 CodeBox 增强 PATH 可找到）、`shell_fallback`（通过 shell 登录探针找到）、`outside_path`（找到可执行文件但不属于上述任何来源）。
 
 典型场景：用 nvm / homebrew 安装 CLI 后，shell 启动时才注入 PATH，GUI 启动的 Amagi CodeBox 进程看不到 → `pathOk=true / systemPathOk=false`。这通常不影响使用，但若希望系统终端也能直接调用，需要修复 PATH。
 
 ### 一键修复都能做什么？
 
-修复动作由 `App.RunEnvFixAction(action, tool, extraPath)` 触发，`action` 取自 `SolutionType` 白名单：`install_tool`（安装指定工具）、`install_node`（安装 Node.js）、`fix_path`（修复 PATH）、`restart_app`（提示重启）、`retry`（重试检测）、`manual_command`（给出需手动执行的命令）、`install_claude_method`（按 method 安装 Claude Code）、`clean_claude_install`（清理 Claude Code 安装）、`fix_claude_config`（修复 Claude Code 单个配置项）。
+页面会按动作选择调用入口：安装/更新使用异步接口，Claude Code 按所选安装方式调用专用接口，`fix_path`、`install_node` 等修复使用 `App.RunEnvFixAction(action, tool, extraPath)`。`restart_app` 只展示重启提示，`manual_command` 只展示待手动执行的命令，不将这些提示提交给后台执行。
 
-修复结果（`FixActionResult`）会报告是否成功、是否真的发生变更（`Changed`）；变更成功后后台自动触发一次 `CheckAll` 刷新缓存。
+OpenCode、Codex、Pi、OMP 的卸载使用 `uninstall_tool` 动作。只自动处理能够核实归属的安装；无法确认来源、命中另一 Node 版本的安装或自定义路径时拒绝自动卸载并给出说明，不直接删除文件。Claude Code 与 Headroom 保留各自专用卸载入口。
+
+修复结果（`FixActionResult`）会报告结果、是否发生变更（`Changed`）及是否需要重启。页面在变更后重新检测。`uninstall_tool` 的 `success=true` 仅表示已受理，必须等快照中的 `operation` 到达终态才显示卸载结果；快照暂时失败时继续跟踪，持续无法确认则显示「状态未知」，不冒充成功。
 
 ### 工具能否自动安装？
 
@@ -63,7 +65,7 @@
 
 可能原因（按 `PathState` 与 `PathSource` 排查）：
 
-1. **PATH 未注入 GUI 进程**：从 Finder / Dock 启动时不会执行 shell 启动脚本，nvm / homebrew 的 PATH 注入失效。修复：`fix_path` 动作会把已知 CLI 路径写入 CodeBox 的 baseline PATH。
+1. **PATH 未注入 GUI 进程**：从 Finder / Dock 启动时不会执行 shell 启动脚本，nvm / homebrew 的 PATH 注入失效。修复：`fix_path` 动作会将校验过的目录写入 shell 配置（Windows 为用户 PATH），同步当前进程并复检；不会重新安装已找到的 CLI。
 2. **Shell fallback**：macOS 上检测器会额外用 `zsh -ilc "command -v claude"` 探针兜底；命中后 `pathState=shell_fallback`，工具可用但系统终端需另行配置。
 3. **安装方式与 PATH 不匹配**：用 npm 安装但 npm 全局目录不在 PATH 中；或 native 安装路径不在 PATH 中。
 4. **配置项缺失**：Claude Code 自身的配置文件缺少必要项；`config.missingRequired` 标识必要项缺失，`fix_claude_config` 动作可单项修复。

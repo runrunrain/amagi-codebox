@@ -34,8 +34,8 @@ func (s *Service) checkOmp() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolOmp)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
-		if npmStatus, _, npmErr := s.checkOmpFromNPMGlobalPrefix(); npmErr == nil {
-			return npmStatus, nil
+		if npmStatus, _, npmErr := s.checkOmpFromNPMGlobalPrefix(); npmStatus != nil {
+			return npmStatus, npmErr
 		}
 		status.Error = "omp executable was not found in PATH"
 		addMissingToolIssue(status, ToolOmp)
@@ -77,6 +77,7 @@ func (s *Service) checkOmpFromNPMGlobalPrefix() (*CheckStatus, []string, error) 
 	}
 
 	diagnostics := make([]string, 0, len(candidates))
+	failedCandidate := ""
 	for _, candidate := range candidates {
 		if !fileExists(candidate) {
 			continue
@@ -86,6 +87,9 @@ func (s *Service) checkOmpFromNPMGlobalPrefix() (*CheckStatus, []string, error) 
 		version, err := s.ompVersion(invocationPath)
 		if err != nil {
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
+			if failedCandidate == "" {
+				failedCandidate = invocationPath
+			}
 			continue
 		}
 		status := &CheckStatus{
@@ -107,7 +111,8 @@ func (s *Service) checkOmpFromNPMGlobalPrefix() (*CheckStatus, []string, error) 
 	}
 
 	if len(diagnostics) > 0 {
-		return nil, candidates, fmt.Errorf("omp npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+		err := fmt.Errorf("omp npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+		return failedNPMCandidateStatus(ToolOmp, failedCandidate, err), candidates, err
 	}
 	return nil, candidates, fmt.Errorf("omp executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }

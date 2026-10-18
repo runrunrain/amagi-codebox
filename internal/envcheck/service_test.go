@@ -888,7 +888,11 @@ func TestIsHealthyAndCurrent(t *testing.T) {
 		{"not in PATH", &CheckStatus{Installed: true, PATHOk: false}, false},
 		{"has update", &CheckStatus{Installed: true, PATHOk: true, HasUpdate: true}, false},
 		{"has error", &CheckStatus{Installed: true, PATHOk: true, Error: "bad"}, false},
-		{"healthy", &CheckStatus{Installed: true, PATHOk: true}, true},
+		// steer #5：LatestVersion 未知时 !HasUpdate 无意义，不得当作 current。
+		{"healthy but latest unknown", &CheckStatus{Installed: true, PATHOk: true}, false},
+		{"current version unknown", &CheckStatus{Installed: true, PATHOk: true, LatestVersion: "1.0.0"}, false},
+		{"healthy and verified current", &CheckStatus{Installed: true, PATHOk: true, Version: "1.0.0", LatestVersion: "1.0.0"}, true},
+		{"inconsistent update flag", &CheckStatus{Installed: true, PATHOk: true, Version: "1.0.0", LatestVersion: "2.0.0"}, false},
 	}
 
 	for _, tc := range tests {

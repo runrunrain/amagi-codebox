@@ -32,8 +32,8 @@ func (s *Service) checkPi() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolPi)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
-		if npmStatus, _, npmErr := s.checkPiFromNPMGlobalPrefix(); npmErr == nil {
-			return npmStatus, nil
+		if npmStatus, _, npmErr := s.checkPiFromNPMGlobalPrefix(); npmStatus != nil {
+			return npmStatus, npmErr
 		}
 		status.Error = "Pi executable was not found in PATH"
 		addMissingToolIssue(status, ToolPi)
@@ -74,6 +74,7 @@ func (s *Service) checkPiFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
 	}
 
 	diagnostics := make([]string, 0, len(candidates))
+	failedCandidate := ""
 	for _, candidate := range candidates {
 		if !fileExists(candidate) {
 			continue
@@ -83,6 +84,9 @@ func (s *Service) checkPiFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
 		version, err := s.piVersion(invocationPath)
 		if err != nil {
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
+			if failedCandidate == "" {
+				failedCandidate = invocationPath
+			}
 			continue
 		}
 		status := &CheckStatus{
@@ -104,7 +108,8 @@ func (s *Service) checkPiFromNPMGlobalPrefix() (*CheckStatus, []string, error) {
 	}
 
 	if len(diagnostics) > 0 {
-		return nil, candidates, fmt.Errorf("Pi npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+		err := fmt.Errorf("Pi npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+		return failedNPMCandidateStatus(ToolPi, failedCandidate, err), candidates, err
 	}
 	return nil, candidates, fmt.Errorf("Pi executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }

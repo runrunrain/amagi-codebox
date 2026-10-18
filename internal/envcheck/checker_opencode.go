@@ -34,8 +34,8 @@ func (s *Service) checkOpenCode() (*CheckStatus, error) {
 	applyPathStateToStatus(status, rr, ToolOpenCode)
 
 	if strings.TrimSpace(rr.executablePath) == "" {
-		if npmStatus, _, npmErr := s.checkOpenCodeFromNPMGlobalPrefix(); npmErr == nil {
-			return npmStatus, nil
+		if npmStatus, _, npmErr := s.checkOpenCodeFromNPMGlobalPrefix(); npmStatus != nil {
+			return npmStatus, npmErr
 		}
 		status.Error = "OpenCode executable was not found in PATH"
 		addMissingToolIssue(status, ToolOpenCode)
@@ -73,6 +73,7 @@ func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, er
 	}
 
 	diagnostics := make([]string, 0, len(candidates))
+	failedCandidate := ""
 	for _, candidate := range candidates {
 		if !fileExists(candidate) {
 			continue
@@ -82,6 +83,9 @@ func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, er
 		version, issues, err := s.openCodeVersionWithDiagnostics(invocationPath)
 		if err != nil {
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", invocationPath, sanitizeInstallerOutput(err.Error())))
+			if failedCandidate == "" {
+				failedCandidate = invocationPath
+			}
 			continue
 		}
 		status := &CheckStatus{
@@ -101,7 +105,8 @@ func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, er
 	}
 
 	if len(diagnostics) > 0 {
-		return nil, candidates, fmt.Errorf("OpenCode npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+		err := fmt.Errorf("OpenCode npm global prefix candidates were found but unusable: %s", strings.Join(diagnostics, "; "))
+		return failedNPMCandidateStatus(ToolOpenCode, failedCandidate, err), candidates, err
 	}
 	return nil, candidates, fmt.Errorf("OpenCode executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }

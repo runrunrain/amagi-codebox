@@ -101,6 +101,14 @@ const (
 	SolutionInstallClaudeMethod SolutionType = "install_claude_method" // install Claude Code via user-selected method
 	SolutionCleanClaudeInstall  SolutionType = "clean_claude_install"  // remove Claude Code installation
 	SolutionFixClaudeConfig     SolutionType = "fix_claude_config"     // fix a Claude Code configuration item
+
+	// SolutionUninstallTool removes a non-Claude managed CLI (opencode/codex/
+	// pi/omp) through the shared operation slot. Ownership-checked: only npm
+	// and Homebrew channels with a verifiable install prefix are uninstalled;
+	// unknown or foreign-prefix installs are refused with manual guidance.
+	// Claude Code keeps its dedicated per-source uninstall (CleanClaudeCode)
+	// and Headroom keeps its lease-guarded CleanHeadroom flow.
+	SolutionUninstallTool SolutionType = "uninstall_tool"
 )
 
 // CheckIssue describes a single detected problem with a CLI tool environment.
