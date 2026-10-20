@@ -102,6 +102,13 @@ type installCommand struct {
 	path        string
 	args        []string
 	timeout     time.Duration
+	// pathPrefixDirs，非空时在执行命令前把这些目录前置到子进程 PATH 最前。
+	// 用于 npm 通道：npm-cli.js 靠 `#!/usr/bin/env node` shebang 找 node，而
+	// npm 的全局前缀由 process.execPath 所在目录推导。若 PATH 上另一个
+	// node 抢先（如 ~/.local/bin/node v22 遮蔽 fnm node），npm -g 会装进
+	// 那个 node 的平行前缀，导致更新后验证“版本未变”而误报失败。
+	// 把 npm 所属前缀的 bin 目录前置，保证 shebang 拿到同前缀的 node。
+	pathPrefixDirs []string
 }
 
 // progressReporter is a callback invoked by installOrUpdate to report
@@ -1224,7 +1231,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			if err := s.ensureNPMAvailable(); err != nil {
 				return nil, err
 			}
-			cmd = s.resolveCommandNPMPath(cmd)
+			cmd = s.resolveCommandNPMPathForTool(cmd, current)
 			return []installCommand{cmd}, nil
 		}
 		// claudeInstallCommands chooses the installed source for updates. Native
@@ -1246,9 +1253,11 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 				return nil, err
 			}
 		}
-		// Resolve all bare "npm" paths to absolute paths.
+		// Resolve all bare "npm" paths to absolute paths, preferring the npm
+		// that owns the currently detected installation (see
+		// resolveCommandNPMPathForTool).
 		for i := range baseCmds {
-			baseCmds[i] = s.resolveCommandNPMPath(baseCmds[i])
+			baseCmds[i] = s.resolveCommandNPMPathForTool(baseCmds[i], current)
 		}
 		return baseCmds, nil
 	case ToolOpenCode:
@@ -1258,7 +1267,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{s.resolveCommandNPMPath(npmOpenCodeCommand(operation))}, nil
+		return []installCommand{s.resolveCommandNPMPathForTool(npmOpenCodeCommand(operation), current)}, nil
 	case ToolCodex:
 		if operation == installOperationUpdate && isExternalManagedInstall(current) {
 			return []installCommand{codexSelfUpdateCommand(current)}, nil
@@ -1266,7 +1275,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{s.resolveCommandNPMPath(npmCodexCommand(operation))}, nil
+		return []installCommand{s.resolveCommandNPMPathForTool(npmCodexCommand(operation), current)}, nil
 	case ToolPi:
 		if operation == installOperationUpdate && isExternalManagedInstall(current) {
 			return []installCommand{piSelfUpdateCommand(current)}, nil
@@ -1274,7 +1283,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{s.resolveCommandNPMPath(npmPiCommand(operation))}, nil
+		return []installCommand{s.resolveCommandNPMPathForTool(npmPiCommand(operation), current)}, nil
 	case ToolOmp:
 		// Update + 外部托管（Homebrew/native）时保持原安装来源，不走 npm 平行安装。
 		if operation == installOperationUpdate && isExternalManagedInstall(current) {
@@ -1287,7 +1296,7 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 		if err := s.ensureNPMAvailable(); err != nil {
 			return nil, err
 		}
-		return []installCommand{s.resolveCommandNPMPath(npmOmpCommand(operation))}, nil
+		return []installCommand{s.resolveCommandNPMPathForTool(npmOmpCommand(operation), current)}, nil
 	case ToolHeadroom:
 		// Headroom is installed into a CodeBox-managed venv to avoid PEP 668
 		// (externally-managed-environment) which blocks bare `pip install` on
@@ -1481,12 +1490,146 @@ func sourceSelfUpdateCommand(tool string, current *CheckStatus, args []string, t
 // absolute path to npm, ensuring install commands work even when the GUI
 // process has a minimal PATH.
 func (s *Service) resolveCommandNPMPath(cmd installCommand) installCommand {
+	return s.resolveCommandNPMPathForTool(cmd, nil)
+}
+
+// resolveCommandNPMPathForTool replaces bare "npm" command paths with the
+// npm executable that owns the currently detected installation (when known),
+// falling back to generic PATH resolution. This keeps the update channel on
+// the same npm global prefix the checker observed: on hosts with multiple
+// node installs (fnm + ~/.local/node), the generic resolver can pick a
+// DIFFERENT npm whose `install -g` lands in a parallel prefix, leaving the
+// detected executable at its old version and failing update verification
+// with "version unchanged" on every attempt.
+func (s *Service) resolveCommandNPMPathForTool(cmd installCommand, current *CheckStatus) installCommand {
 	if cmd.path == "npm" {
-		if resolved := s.resolveNPMPath(); resolved != "" && resolved != "npm" {
+		if resolved := s.npmExecutableForInstall(current); resolved != "" && resolved != "npm" {
 			cmd.path = resolved
+			// npm 前缀对齐时同步前置该前缀的 bin 目录，让 npm-cli.js 的
+		// `#!/usr/bin/env node` 拿到同前缀的 node，npm -g 才会写回同一前缀。
+			if current != nil && current.Installed {
+				if prefix, ok := npmPrefixFromInstalledPath(current.ExecutablePath); ok {
+					cmd.pathPrefixDirs = []string{npmBinDirInsidePrefix(prefix)}
+				}
+			}
 		}
 	}
 	return cmd
+}
+
+// npmExecutableForInstall returns the npm executable to use for install/update
+// commands. When current points at an existing npm-managed installation
+// (InstallMethod npm, path under a node_modules layout), prefer the npm
+// binary inside that installation's own prefix (e.g. the fnm-managed
+// <prefix>/bin/npm); otherwise fall back to generic resolution.
+func (s *Service) npmExecutableForInstall(current *CheckStatus) string {
+	if current != nil && current.Installed &&
+		(current.InstallMethod == InstallMethodNPM || current.InstallMethod == InstallMethodUnknown) {
+		if prefix, ok := npmPrefixFromInstalledPath(current.ExecutablePath); ok {
+			npmBin := npmExecutableInsidePrefix(prefix)
+			if npmBin != "" && fileExists(npmBin) {
+				return npmBin
+			}
+		}
+	}
+	return s.resolveNPMPath()
+}
+
+// npmPrefixFromInstalledPath derives the npm global prefix from a tool
+// executable installed under the standard npm layouts:
+//   - Unix:    <prefix>/lib/node_modules/<pkg>/...
+//   - Windows: <prefix>/node_modules/<pkg>/...
+//
+// Matching is case-insensitive on the needle while the returned prefix keeps
+// the original casing. The FIRST (outermost) occurrence wins — mirroring
+// codexStaleNPMPackageRootAndPrefix — so package-internal nested
+// node_modules directories (e.g. <prefix>/node_modules/@scope/pkg/node_modules/dep)
+// still resolve to the global prefix where `npm install -g` would place the
+// reinstall.
+func npmPrefixFromInstalledPath(path string) (string, bool) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", false
+	}
+	slashPath := strings.ReplaceAll(filepath.ToSlash(filepath.Clean(trimmed)), `\`, "/")
+	normalized := strings.ToLower(slashPath)
+	for _, needle := range []string{"/lib/node_modules/", "/node_modules/"} {
+		if idx := strings.Index(normalized, needle); idx >= 0 {
+			prefix := strings.TrimSuffix(slashPath[:idx], "/lib")
+			if prefix == "" {
+				return "", false
+			}
+			return filepath.FromSlash(prefix), true
+		}
+	}
+	return "", false
+}
+
+// npmExecutableInsidePrefix returns the expected npm executable path for an
+// npm global prefix: <prefix>/bin/npm on Unix, <prefix>/npm.cmd on Windows.
+// Returns "" for an empty prefix. Existence is checked by the caller so this
+// stays a pure path helper.
+func npmExecutableInsidePrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return ""
+	}
+	if isWindows() {
+		return filepath.Join(prefix, "npm.cmd")
+	}
+	return filepath.Join(prefix, "bin", "npm")
+}
+
+// npmBinDirInsidePrefix returns the directory holding both node and the npm
+// shim for an npm global prefix: <prefix>/bin on Unix, <prefix> on Windows.
+func npmBinDirInsidePrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return ""
+	}
+	if isWindows() {
+		return prefix
+	}
+	return filepath.Join(prefix, "bin")
+}
+
+// prependPATHEntries returns a copy of env with the given directories
+// prepended to the PATH entry (deduplicated against the existing PATH so the
+// same directory is not searched twice). Env entries other than PATH are
+// passed through unchanged.
+func prependPATHEntries(env []string, dirs []string) []string {
+	var valid []string
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		valid = append(valid, dir)
+	}
+	if len(valid) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "PATH=") {
+			out = append(out, entry)
+			continue
+		}
+		existing := strings.TrimPrefix(entry, "PATH=")
+		existingDirs := filepath.SplitList(existing)
+		validSet := map[string]bool{}
+		for _, d := range valid {
+			validSet[d] = true
+		}
+		merged := append([]string{}, valid...)
+		for _, d := range existingDirs {
+			if !validSet[d] {
+				merged = append(merged, d)
+			}
+		}
+		out = append(out, "PATH="+strings.Join(merged, string(os.PathListSeparator)))
+	}
+	return out
 }
 
 // claudeInstallCommandsForMethod returns the npm command for the user-specified
@@ -2329,6 +2472,9 @@ func (s *Service) runInstallCommandResult(command installCommand) (*platform.Pro
 
 	// Use enhanced env for npm commands so /usr/bin/env node can find node
 	env := s.buildEnhancedEnv()
+	if len(command.pathPrefixDirs) > 0 {
+		env = prependPATHEntries(env, command.pathPrefixDirs)
+	}
 
 	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
 		Path:   command.path,
