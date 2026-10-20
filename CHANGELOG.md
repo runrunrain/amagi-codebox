@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.118] - 2026-10-20
+
+### Fixed
+
+- **OpenCode 会话启动配置校验失败**：托管模型只配置上下文窗口或最大输出 token 时，不再生成缺少必填字段的 `limit` 对象；仅在两项均有效时输出完整限制，否则交由 OpenCode 使用模型默认值，显式 `maxTokens` 选项仍保留。新版启动时会重新同步托管提供商，修正历史版本生成的不完整配置。
+- 新增回归测试，覆盖上下文单独设置、输出单独设置、完整设置、均未设置及非正值边界。
+
 ## [1.3.117] - 2026-10-20
 
 ### Fixed

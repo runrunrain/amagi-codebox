@@ -239,15 +239,15 @@ func BuildOpenCodeManagedProviderEntry(
 			continue
 		}
 		modelEntry := map[string]any{"name": modelID}
-		limit := map[string]any{}
-		if model.Parameters.ContextWindow != nil && model.Parameters.ContextWindow.ModelContextWindow > 0 {
-			limit["context"] = model.Parameters.ContextWindow.ModelContextWindow
-		}
-		if model.Parameters.MaxTokens > 0 {
-			limit["output"] = model.Parameters.MaxTokens
-		}
-		if len(limit) > 0 {
-			modelEntry["limit"] = limit
+		// OpenCode's v1 config makes limit optional, but requires both context
+		// and output when it is present. Never emit a partial limit or invent
+		// a missing model capacity: leave incomplete overrides to OpenCode's
+		// model defaults. Explicit maxTokens still travels via model options.
+		if model.Parameters.ContextWindow != nil && model.Parameters.ContextWindow.ModelContextWindow > 0 && model.Parameters.MaxTokens > 0 {
+			modelEntry["limit"] = map[string]any{
+				"context": model.Parameters.ContextWindow.ModelContextWindow,
+				"output":  model.Parameters.MaxTokens,
+			}
 		}
 		if modelOptions := buildOpenCodeModelOptions(config.Preset{Parameters: model.Parameters}); len(modelOptions) > 0 {
 			modelEntry["options"] = modelOptions
