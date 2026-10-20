@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.117] - 2026-10-20
+
+### Fixed
+
+- **环境检测 npm 通道前缀对齐（多 node 环境下 Pi 等工具“更新多次失败”修复）**：多 node 并存（fnm + ~/.local/node 平行副本）时，npm 全局安装/更新命令可能与检测到的工具分属不同前缀——resolver controlled candidates 把 ~/.local/bin 排首位解析到平行 node 的 npm，且 npm-cli.js 的 `#!/usr/bin/env node` shebang 在增强 PATH 上被平行 node 抢先，npm 按 process.execPath 推导全局前缀后 `install -g` 落入平行前缀，检测侧版本不变导致更新复检 "version unchanged" 恒失败（实测：Pi 1.1.0→1.3.0 更新每次都装进 ~/.local/node，fnm 侧永远 1.1.0）。修复三件套：①`npmPrefixFromInstalledPath` 从检测到的工具路径推导所属 npm 全局前缀（Unix `<prefix>/lib/node_modules`、Windows `<prefix>/node_modules`，取最外层，嵌套包内 node_modules 不干扰）；②`resolveCommandNPMPathForTool` 让 OpenCode/Codex/Pi/OMP/Claude 的 npm 安装/更新命令优先使用工具所在前缀自己的 npm（Homebrew/Native 安装不受影响，仍走自更新通道）；③`installCommand.pathPrefixDirs` + `prependPATHEntries` 在执行 npm 命令时把前缀 bin 目录前置子进程 PATH，保证 shebang node 与 npm 同前缀、`npm -g` 写回同一位置。
+
+（验证记录：GUI 模拟 PATH 端到端复现 Pi 1.1.0→1.3.0 更新成功且入口路径不变（修复前同场景恒失败）；新增单测覆盖前缀推导/前缀对齐/Homebrew 守卫/PATH 注入；envcheck 包回归除 2 个预存环境穿透失败（干净 HEAD 基线同样失败，与本修复无关）外全过；app 层 envcheck 测试全过；清理误装平行副本）
+
 ## [1.3.116] - 2026-10-18
 
 ### Added
