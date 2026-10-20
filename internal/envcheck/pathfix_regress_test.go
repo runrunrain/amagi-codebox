@@ -62,13 +62,19 @@ func (r *specRunner) sawCall(pathContains string, args ...string) bool {
 }
 
 // guiEnvIsolation points HOME/PATH at an isolated fixture layout that mimics a
-// GUI-launched process (minimal PATH, no fnm/npm tooling visible).
+// GUI-launched process (minimal PATH, no fnm/npm tooling visible). It also
+// neutralizes the two host-leak channels that pierce HOME/PATH isolation on
+// real machines: the darwin controlled baseline PATH entries (/opt/homebrew/bin
+// etc. may contain REAL Homebrew binaries like omp) and the login-shell
+// fallback (zsh -ilc inherits /etc/paths.d/* via path_helper).
 func guiEnvIsolation(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 	t.Setenv("FNM_DIR", "")
+	t.Cleanup(platform.ControlDarwinBaselinePATH(nil))
+	t.Cleanup(platform.ControlDarwinShellFallback(false))
 	return home
 }
 

@@ -12,6 +12,19 @@ import (
 
 var darwinBaselinePATH = []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
+// ControlDarwinBaselinePATH swaps the darwin controlled baseline PATH
+// directories (defaults: /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin,
+// /usr/sbin, /sbin) for the remainder of the current process and returns a
+// restore function. It exists so tests OUTSIDE this package can isolate
+// resolution from real host binaries living under those directories (e.g.
+// a Homebrew-installed omp under /opt/homebrew/bin on the test machine);
+// production code must not call it. Not safe for concurrent use.
+func ControlDarwinBaselinePATH(dirs []string) (restore func()) {
+	previous := darwinBaselinePATH
+	darwinBaselinePATH = append([]string(nil), dirs...)
+	return func() { darwinBaselinePATH = previous }
+}
+
 var pathLookupUserHomeDir = os.UserHomeDir
 var darwinSystemApplicationsDir = "/Applications"
 
@@ -632,7 +645,25 @@ func normalizePathKey(path string, osName string) string {
 	return path
 }
 
+// darwinShellFallbackEnabled gates the shell-assisted fallback (zsh -ilc
+// 'command -v ...') used by darwin resolution when PATH search fails. Tests
+// outside the package disable it to isolate resolution from host login-shell
+// PATH injections (e.g. /etc/paths.d/homebrew on the test machine).
+var darwinShellFallbackEnabled = true
+
+// ControlDarwinShellFallback enables or disables the darwin shell-assisted
+// fallback for the remainder of the current process and returns a restore
+// function. Production code must not call it; not safe for concurrent use.
+func ControlDarwinShellFallback(enabled bool) (restore func()) {
+	previous := darwinShellFallbackEnabled
+	darwinShellFallbackEnabled = enabled
+	return func() { darwinShellFallbackEnabled = previous }
+}
+
 func resolveCommandViaShellFallback(command string, env []string, selectedShell *ResolvedShell) string {
+	if !darwinShellFallbackEnabled {
+		return ""
+	}
 	for _, shell := range shellResolutionOrder(selectedShell) {
 		if !fileExists(shell.Path) {
 			continue
