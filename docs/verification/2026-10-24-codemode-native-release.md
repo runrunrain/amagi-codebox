@@ -35,17 +35,50 @@ CodeBox 的 macOS arm64 与 Windows amd64 [发行工作流](https://github.com/r
 
 ![原生 CodeMode 与任务验收](2026-10-24-codemode-native-agents.png)
 
-验证会话已关闭，原生历史保留；启动选择恢复为原有提供商、预设及工作目录，原先两个会话继续运行。全局 amagi.json 与验证前一致。
+这轮验证会话已关闭，原生历史保留；启动选择恢复为原有提供商、预设及工作目录，未关闭原先两个会话。当时全局 amagi.json 与验证前一致；后续配置验收见下节。
 
-## 新版配置界面验收：系统钥匙串提示阻塞
+## 新版配置界面保存与回读：通过
+
+用户处理系统钥匙串提示后，重新核验旧进程已退出。CUA 成功打开已安装的原生 CodeBox，侧栏版本明确显示 `v1.3.120`，没有活动会话。未使用源码注入、模拟 Wails 桥或直接写配置文件代替 UI 保存。
+
+验收入口为 Provider Center → CLI 独立配置 → Pi → Agent 配置 → CodeMode。每轮均点击原生“保存配置”，确认“配置已保存”，离开至“会话设置”后重新进入完整配置入口，核对重新加载的值，并独立读取磁盘 JSON。
+
+| 轮次 | 原生界面输入 | 离开后回读与磁盘结果 |
+|---|---|---|
+| 临时覆盖 | 适用时优先考虑（`prefer`）、3000 tokens、30000 毫秒 | 三项一致，保存成功；相对保存前配置只有 `codemode` 顶层字段变化 |
+| 最终配置 | 模型自行选择（`auto`）、2000 tokens、60000 毫秒 | 三项一致，保存成功；相对保存前配置仍只有 `codemode` 顶层字段变化，其他字段语义完全一致 |
+
+最终磁盘值为：
+
+```json
+{
+  "codemode": {
+    "preference": "auto",
+    "budget": {
+      "maxOutputTokensPerScript": 2000,
+      "maxTimeoutMsPerScript": 60000
+    }
+  }
+}
+```
+
+界面同时明确这些是模型可覆盖的默认值，CodeMode 无需单独授权，嵌套调用继续遵循原任务权限。验证前私有备份未进入仓库；[脱敏验收数据](2026-10-24-codemode-native-results.json) 仅记录 CodeMode 值、差异字段和散列。最终配置文件 SHA-256 为 `5cc9cfb346faa634662dff6c039f1adefe89f9c56406d0986eb97d4e35e0d2da`。
+
+![CodeBox 1.3.120 原生 auto 配置回读](2026-10-24-codemode-native-config-auto.jpg)
+
+[临时 prefer 配置的原生回读截图](2026-10-24-codemode-native-config-prefer.jpg)。该截图保留首次启动时的代理端口占用提示；系统提示处理后旧进程退出，复查 18890 已无监听。最终截图前仅关闭本次已读启动提示，没有修改代理配置，也没有将代理恢复记为本项验收。
+
+本轮未创建新测试会话或额外进程；此前 Leader/子 agent 原生执行证据继续有效。原生历史保留，安装 executable 散列和已发布 tag 未变。配置保存回读收尾完成，停止当前聊天的跟进心跳。
+
+## 重启期间的系统提示记录（已解除）
 
 2026-10-25 09:11 UTC，只读确认原 Leader 原生会话最后一条为 `assistant / stop`，并在两个原有 CodeBox 会话中分别确认“可在页面继续输入”、最终回复和可编辑输入框。此前执行中的任务均未被停止、取消、打断或发送消息。
 
 09:12 UTC 在原生窗口执行 Cmd+Q。窗口关闭，日志进入“应用关闭中”，但旧进程没有退出。只读进程采样将主线程定位到 `amagi_set_generic_password → SecKeychainFindGenericPassword → SecurityServer decrypt`，系统同时运行 SecurityAgent。对已经关闭窗口且空闲的旧进程发送一次 SIGTERM 后，进程仍在该调用中等待；未使用 SIGKILL。原生会话 JSONL 保留。
 
-已正常启动安装的 1.3.120；窗口控制仍受旧实例与系统提示阻塞。CUA 对系统提示返回 `Computer Use is not allowed to use the app 'com.apple.SecurityAgent' for safety reasons.`，因此停止操作该提示，通知用户手动处理。此时全局 `amagi.json` 仍与验证前备份完全一致，未把 CodeMode 保存/回读记为通过，也未用直接改文件替代 UI 操作。
+正常启动安装的 1.3.120 后，窗口控制当时仍受旧实例与系统提示阻塞。CUA 对系统提示返回 `Computer Use is not allowed to use the app 'com.apple.SecurityAgent' for safety reasons.`，因此停止操作该提示，通知用户手动处理。阻塞期间全局 `amagi.json` 与验证前备份完全一致，未提前把保存回读记为通过。
 
-静默跟进已更新为等待系统提示处理；同一阻塞不重复通知、不重复发信号或创建实例。解除后仍需在真实 1.3.120 完成 CodeMode 偏好及默认值保存、离开回读、磁盘字段比较，保留其他配置并最终使用 auto。完成后回填本节并停止跟进。
+用户确认处理后，只读检查旧进程已结束、新版窗口可控，再完成上节真实 UI 验收。同一阻塞等待期间未重复通知、发信号或创建实例。
 
 ## 检查结果与已知基线
 
