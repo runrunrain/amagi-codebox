@@ -26,7 +26,7 @@ export const CONFIG_PAGES: { id: ConfigPageId; cli: string; label: string; defau
   { id: 'opencode:global', cli: 'OpenCode', label: '全局配置', defaultId: 'provider' },
 ];
 export const PI_SECTIONS: ConfigSectionItem[] = [
-  { id: 'agents', label: '角色模型' }, { id: 'advisor', label: '执行中咨询' }, { id: 'compaction', label: '上下文压缩', meta: '下次压缩生效' },
+  { id: 'agents', label: '角色模型' }, { id: 'advisor', label: '执行中咨询' }, { id: 'codemode', label: 'CodeMode' }, { id: 'compaction', label: '上下文压缩', meta: '下次压缩生效' },
   { id: 'mcp', label: 'MCP 路由' }, { id: 'concurrency', label: '并发限制' },
 ];
 export const OMP_SECTIONS: ConfigSectionItem[] = [

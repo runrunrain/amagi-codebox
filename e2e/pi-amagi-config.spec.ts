@@ -207,3 +207,15 @@ test('Advisor switches pi/desktop chat, detects connection, persists target and 
   expect(await page.evaluate(()=>localStorage.getItem('save-count'))).toBe(count);
   await expect(card.getByRole('alert')).toContainText('maxCalls');
 });
+
+test('CodeMode saves model preference and overridable defaults without authorization controls', async ({ page }) => {
+  await open(page, fixture, '', {section:null});
+  const nav=page.getByRole('navigation',{name:'配置分区',exact:true});await nav.getByRole('button',{name:'CodeMode',exact:true}).click();
+  const card=page.locator('.editor-section[data-section="codemode"]');await expect(card).toContainText('无需单独授权');await expect(card.getByRole('button',{name:'允许只读',exact:true})).toHaveCount(0);
+  await card.getByRole('button',{name:'适用时优先考虑',exact:true}).click();await card.getByLabel('默认输出 tokens',{exact:true}).fill('3000');await save(page);
+  const config=await saved(page);expect(config.codemode).toEqual({preference:'prefer',budget:{maxOutputTokensPerScript:3000}});expect(config.future).toEqual(fixture.future);expect(config.agents).toEqual(fixture.agents);
+  await page.reload();await nav.getByRole('button',{name:'CodeMode',exact:true}).click();await expect(card.getByRole('button',{name:'适用时优先考虑',exact:true})).toHaveAttribute('aria-pressed','true');
+  const count=await page.evaluate(()=>localStorage.getItem('save-count'));await card.getByLabel('默认时限（毫秒）',{exact:true}).fill('0');await page.getByRole('button',{name:'保存配置',exact:true}).click();expect(await page.evaluate(()=>localStorage.getItem('save-count'))).toBe(count);await expect(card.getByRole('alert')).toContainText('maxTimeoutMsPerScript');
+  await nav.getByRole('button',{name:'角色模型',exact:true}).click();await page.getByRole('button',{name:'CodeMode 待修正',exact:true}).click();await expect(card).toBeVisible();
+  await card.getByLabel('默认时限（毫秒）',{exact:true}).fill('30000');await page.locator('#test-notifications').evaluate(el=>{el.textContent='';});await save(page);await page.screenshot({path:test.info().outputPath('codemode-config.png'),fullPage:true});
+});

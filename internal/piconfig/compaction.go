@@ -19,7 +19,10 @@ func ValidateAmagiConfig(content string) error {
 	if err := validateCompaction(obj); err != nil {
 		return err
 	}
-	return validateAdvisor(obj)
+	if err := validateAdvisor(obj); err != nil {
+		return err
+	}
+	return validateCodemode(obj)
 }
 
 // 只验证新增压缩配置的形态，不以静态目录限制 pi 的动态模型注册。

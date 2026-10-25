@@ -30,6 +30,7 @@
         <template #status>
           <button v-if="compactionError && mode === 'visual' && activeSection !== 'compaction'" type="button" class="pac-error-link" @click="selectSection('compaction')">上下文压缩待修正</button>
           <span v-else-if="compactionError && mode !== 'visual'" class="pac-error-link">上下文压缩待修正</span>
+          <button v-if="codemodeError && mode === 'visual' && activeSection !== 'codemode'" type="button" class="pac-error-link" @click="selectSection('codemode')">CodeMode 待修正</button>
         </template>
         <template #actions>
           <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
@@ -104,6 +105,10 @@
 
         <EditorSection v-if="visited.advisor" v-show="activeSection === 'advisor'" :active="activeSection === 'advisor'" section-id="advisor" title="执行中咨询" code="advisor" meta="异步建议返回原会话">
           <PiAdvisorConfig :value="configData.advisor" :catalog="catalog" @change="updateAdvisor" />
+        </EditorSection>
+
+        <EditorSection v-if="visited.codemode" v-show="activeSection === 'codemode'" :active="activeSection === 'codemode'" section-id="codemode" title="CodeMode" code="codemode" meta="工具组合与默认值">
+          <PiCodemodeConfig :value="configData.codemode" @change="updateCodemode" />
         </EditorSection>
 
         <!--
@@ -366,6 +371,8 @@
 </template>
 
 <script setup lang="ts">
+import PiCodemodeConfig from './PiCodemodeConfig.vue';
+import { validateCodemodeConfig } from './piCodemode';
 import { ref, computed, onMounted, watch } from 'vue';
 import { getAmagiConfig, saveAmagiConfig, getAmagiConfigPath, getPiModelCatalog } from '../../api/piConfig';
 import { useToast } from '../../composables/useToast';
@@ -527,6 +534,7 @@ const agentRows = computed<AgentRow[]>(() => {
 
 const compactionMode = computed(() => compactionModeOf(configData.value.compaction));
 const compactionModel = computed(() => compactionModelOf(configData.value.compaction));
+const codemodeError = computed(() => validateCodemodeConfig(configData.value));
 const compactionError = computed(() => validateCompactionConfig(configData.value));
 const lubanModel = computed(() => {
   const model = configData.value.agents?.luban?.model;
@@ -1113,7 +1121,11 @@ function removeConcurrencyModel(key: string) {
 
 function updateAdvisor(value: any) { if (value === undefined) delete configData.value.advisor; else configData.value.advisor = value; serialize(); }
 
+function updateCodemode(value: any) { if (value === undefined) delete configData.value.codemode; else configData.value.codemode = value; serialize(); }
+
 async function handleSave() {
+  const codemodeError = validateCodemodeConfig(configData.value);
+  if (codemodeError) { showError(codemodeError); return; }
   const advisorError = validateAdvisorConfig(configData.value);
   if (advisorError) { showError(advisorError); return; }
 
@@ -1169,7 +1181,7 @@ const modeModel = computed({
   },
 });
 
-const navigationItems = computed(() => PI_SECTIONS.map(s => ({ ...s, invalid: s.id === 'compaction' && !!compactionError.value })));
+const navigationItems = computed(() => PI_SECTIONS.map(s => ({ ...s, invalid: (s.id === 'compaction' && !!compactionError.value) || (s.id === 'codemode' && !!codemodeError.value) })));
 const localGroups = computed(() => [{ id: 'pi', items: navigationItems.value.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
 const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: navigationItems.value }));
 watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });
