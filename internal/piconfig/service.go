@@ -90,7 +90,7 @@ func (s *Service) GetAmagiConfig() (string, error) {
 	return string(formatted) + "\n", nil
 }
 
-// SaveAmagiConfig 校验并保存 amagi.json：合法对象且 compaction 与插件契约一致。
+// SaveAmagiConfig 校验并保存 amagi.json：合法对象且 compaction/advisor 与插件契约一致。
 // 通过临时文件原子写入（0600，文件包含模型配置但不含密钥，仍按私有对待）。
 func (s *Service) SaveAmagiConfig(content string) error {
 	if err := ValidateAmagiConfig(content); err != nil {

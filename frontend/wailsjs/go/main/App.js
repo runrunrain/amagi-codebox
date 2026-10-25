@@ -891,3 +891,7 @@ export function CheckPiPluginWSLStatus() {
 export function GetDrvFSAdvisories() {
   return window['go']['main']['App']['GetDrvFSAdvisories']();
 }
+
+export function ListCodexAdvisorChats(arg1) {
+  return window['go']['main']['App']['ListCodexAdvisorChats'](arg1);
+}

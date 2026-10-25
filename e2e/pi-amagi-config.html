@@ -16,6 +16,10 @@ const catalog = { providers: [
 ]};
 window.go = {main: {App: {
   GetAmagiConfig: async () => localStorage.getItem('pi-config') || '{}',
+  ListCodexAdvisorChats: async socket => {
+    if (socket !== '/fixture/desktop.sock') throw new Error('Codex desktop shared connection unavailable');
+    return JSON.stringify({data:[{id:'advisor-chat-123',name:'Advisor 验证聊天',status:{type:'idle'}}]});
+  },
   GetAmagiConfigPath: async () => '/isolated-fixture/.pi/agent/amagi.json',
   GetPiModelCatalog: async () => {
     if (new URLSearchParams(location.search).has('catalog-error')) throw new Error('fixture catalog unavailable');

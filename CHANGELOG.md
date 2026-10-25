@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [Unreleased]
+
+## [1.3.119] - 2026-10-24
+
+### Added
+- Pi Agent 配置新增「执行中咨询」：可选 pi 内模型或本机 Codex；默认新建并自动续接自有咨询会话，另可指定已有聊天及只读检测共享连接。接通角色、Leader 开关、预算、前后端校验及保存回读；保留其他配置字段。
+
 ## [1.3.118] - 2026-10-20
 
 ### Fixed

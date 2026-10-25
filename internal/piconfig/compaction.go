@@ -16,7 +16,10 @@ func ValidateAmagiConfig(content string) error {
 	if err := json.Unmarshal([]byte(content), &obj); err != nil || obj == nil {
 		return errors.New("invalid config: root must be a JSON object")
 	}
-	return validateCompaction(obj)
+	if err := validateCompaction(obj); err != nil {
+		return err
+	}
+	return validateAdvisor(obj)
 }
 
 // 只验证新增压缩配置的形态，不以静态目录限制 pi 的动态模型注册。

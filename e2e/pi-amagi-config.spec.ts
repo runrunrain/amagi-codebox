@@ -174,3 +174,36 @@ test('single section preserves drafts, hidden errors and roving keyboard navigat
   await page.keyboard.press('Tab');
   expect(await page.evaluate(() => !!document.activeElement?.closest('.editor-detail'))).toBe(true);
 });
+
+test('Advisor switches pi/desktop chat, detects connection, persists target and rejects invalid budget', async ({ page }) => {
+  await open(page, { ...fixture, advisor: { model: 'amagi-glm/glm-5.3:max', roles: ['luban'], maxCalls: 5 } }, '', { section: null });
+  await page.getByRole('navigation', {name:'配置分区',exact:true}).getByRole('button', {name:'执行中咨询',exact:true}).click();
+  const card = page.locator('.editor-section[data-section="advisor"]');
+  await expect(card.getByRole('button', {name:'pi 内模型',exact:true})).toHaveAttribute('aria-pressed','true');
+  await card.getByRole('button', {name:'Codex 桌面聊天',exact:true}).click();
+  await expect(card.getByRole('button', {name:'新建并自动续接',exact:true})).toHaveAttribute('aria-pressed','true');
+  await save(page);
+  expect((await saved(page)).advisor.codex).toEqual({mode:'managed'});
+  await page.screenshot({path:test.info().outputPath('advisor-managed-config.png'),fullPage:true});
+  await card.getByRole('button', {name:'指定已有聊天',exact:true}).click();
+  await card.getByPlaceholder('桌面端同一 app-server 的本机 socket 绝对路径').fill('/fixture/unavailable.sock');
+  await card.getByRole('button', {name:'检测连接并读取最近 50 个聊天'}).click();
+  await expect(card.getByRole('alert').filter({hasText:'unavailable'})).toBeVisible();
+  await card.getByPlaceholder('桌面端同一 app-server 的本机 socket 绝对路径').fill('/fixture/desktop.sock');
+  await card.getByRole('button', {name:'检测连接并读取最近 50 个聊天'}).click();
+  await expect(card.getByRole('status')).toContainText('没有发送消息');
+  await card.locator('.dropdown-trigger').click();
+  await page.getByRole('option', {name:'Advisor 验证聊天 · idle',exact:true}).click();
+  await save(page);
+  expect((await saved(page)).advisor).toMatchObject({backend:'codex-chat',codex:{socketPath:'/fixture/desktop.sock',threadId:'advisor-chat-123'},roles:['luban'],maxCalls:5});
+  expect((await saved(page)).future).toEqual(fixture.future);
+  await page.screenshot({path:test.info().outputPath('advisor-desktop-config.png'),fullPage:true});
+  await page.reload();
+  await page.getByRole('navigation', {name:'配置分区',exact:true}).getByRole('button', {name:'执行中咨询',exact:true}).click();
+  await expect(card.getByPlaceholder('目标聊天 ID（可粘贴或从上方选择）')).toHaveValue('advisor-chat-123');
+  const count = await page.evaluate(()=>localStorage.getItem('save-count'));
+  await card.locator('.advisor-budgets input').first().fill('0');
+  await page.getByRole('button', {name:'保存配置',exact:true}).click();
+  expect(await page.evaluate(()=>localStorage.getItem('save-count'))).toBe(count);
+  await expect(card.getByRole('alert')).toContainText('maxCalls');
+});

@@ -49,3 +49,9 @@ export function savePiAuthConfig(content: string): Promise<void> {
 export function getPiAuthConfigPath(): Promise<string> {
   return GetPiAuthConfigPath();
 }
+
+/** 只读连接检测；不发消息、不启动新服务。 */
+export async function listCodexAdvisorChats(socketPath: string): Promise<{ data: Array<{ id: string; name?: string; status?: { type: string } }> }> {
+  const { ListCodexAdvisorChats } = await import('../../wailsjs/go/main/App');
+  return JSON.parse(await ListCodexAdvisorChats(socketPath));
+}

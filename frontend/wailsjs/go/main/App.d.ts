@@ -463,3 +463,5 @@ export function CheckPiPluginWSLStatus():Promise<any>;
 // 返回类型暂用 any，前端 api/drvfsAdvisory.ts 以本地 interface 承接并解析
 // JSON 字符串——下次 wails generate 再生时会按 models.ts 生成强类型并自动归一）。
 export function GetDrvFSAdvisories():Promise<any>;
+
+export function ListCodexAdvisorChats(arg1:string):Promise<string>;

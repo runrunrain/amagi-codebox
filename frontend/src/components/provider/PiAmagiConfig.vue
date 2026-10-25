@@ -3,7 +3,7 @@
   挂载于 Provider Center → CLI 独立配置 → Pi → Agent 配置。
   布局（provider-center-layout-redesign §4.3）：导航即标题——不再有 h2 / subtitle；
   一行 EditorToolbar（路径胶囊 / 合法状态 / 模式切换 / 保存）；卡片顺序
-  角色模型（含分层策略）→ 上下文压缩 → MCP 路由 → 并发限制；常显说明只留「当前状态语义 /
+  角色模型（含分层策略）→ 执行中咨询 → 上下文压缩 → MCP 路由 → 并发限制；常显说明只留「当前状态语义 /
   操作后果」，其余收进 InfoTip（文案与处置见 design §5.2 T07–T29）。
   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
   thinking level，数据来自 pi 模型目录）、统一压缩模型、MCP 路由编辑（含 v2.8.2 mcp.leader）。
@@ -100,6 +100,10 @@
               </AppButton>
             </div>
           </div>
+        </EditorSection>
+
+        <EditorSection v-if="visited.advisor" v-show="activeSection === 'advisor'" :active="activeSection === 'advisor'" section-id="advisor" title="执行中咨询" code="advisor" meta="异步建议返回原会话">
+          <PiAdvisorConfig :value="configData.advisor" :catalog="catalog" @change="updateAdvisor" />
         </EditorSection>
 
         <!--
@@ -380,6 +384,8 @@ import { PI_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot 
 import ConfigContentGroup from './ConfigContentGroup.vue';
 import StringListEditor from './StringListEditor.vue';
 import ModelSpecSelector from './ModelSpecSelector.vue';
+import PiAdvisorConfig from './PiAdvisorConfig.vue';
+import { validateAdvisorConfig } from './piAdvisor';
 import { useModelCatalog } from './useModelCatalog';
 import { applyMcpListMode, mcpListModeOf, type McpListMode } from './mcpListMode';
 import {
@@ -1105,7 +1111,12 @@ function removeConcurrencyModel(key: string) {
   }
 }
 
+function updateAdvisor(value: any) { if (value === undefined) delete configData.value.advisor; else configData.value.advisor = value; serialize(); }
+
 async function handleSave() {
+  const advisorError = validateAdvisorConfig(configData.value);
+  if (advisorError) { showError(advisorError); return; }
+
   if (jsonError.value) {
     showError('JSON 格式错误，无法保存');
     return;
