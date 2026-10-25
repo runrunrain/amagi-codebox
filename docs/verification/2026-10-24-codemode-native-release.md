@@ -37,11 +37,15 @@ CodeBox 的 macOS arm64 与 Windows amd64 [发行工作流](https://github.com/r
 
 验证会话已关闭，原生历史保留；启动选择恢复为原有提供商、预设及工作目录，原先两个会话继续运行。全局 amagi.json 与验证前一致。
 
-## 待原任务结束后完成
+## 新版配置界面验收：系统钥匙串提示阻塞
 
-CodeBox 1.3.120 已安装并启动独立进程，但窗口控制仍绑定旧实例。用户明确选择“保留现有任务，结束后再重启”，因此尚未退出旧实例，也尚未把新版 CodeMode 卡片保存/重新加载记为通过。
+2026-10-25 09:11 UTC，只读确认原 Leader 原生会话最后一条为 `assistant / stop`，并在两个原有 CodeBox 会话中分别确认“可在页面继续输入”、最终回复和可编辑输入框。此前执行中的任务均未被停止、取消、打断或发送消息。
 
-已在当前聊天设置每 5 分钟的静默跟进：只读确认原有任务和 Leader 均空闲后，正常重启，再在真实 1.3.120 中完成 CodeMode 偏好及默认值保存、离开回读、磁盘字段比较；保留其他配置并最终使用 auto。完成后回填本节并停止跟进。
+09:12 UTC 在原生窗口执行 Cmd+Q。窗口关闭，日志进入“应用关闭中”，但旧进程没有退出。只读进程采样将主线程定位到 `amagi_set_generic_password → SecKeychainFindGenericPassword → SecurityServer decrypt`，系统同时运行 SecurityAgent。对已经关闭窗口且空闲的旧进程发送一次 SIGTERM 后，进程仍在该调用中等待；未使用 SIGKILL。原生会话 JSONL 保留。
+
+已正常启动安装的 1.3.120；窗口控制仍受旧实例与系统提示阻塞。CUA 对系统提示返回 `Computer Use is not allowed to use the app 'com.apple.SecurityAgent' for safety reasons.`，因此停止操作该提示，通知用户手动处理。此时全局 `amagi.json` 仍与验证前备份完全一致，未把 CodeMode 保存/回读记为通过，也未用直接改文件替代 UI 操作。
+
+静默跟进已更新为等待系统提示处理；同一阻塞不重复通知、不重复发信号或创建实例。解除后仍需在真实 1.3.120 完成 CodeMode 偏好及默认值保存、离开回读、磁盘字段比较，保留其他配置并最终使用 auto。完成后回填本节并停止跟进。
 
 ## 检查结果与已知基线
 
