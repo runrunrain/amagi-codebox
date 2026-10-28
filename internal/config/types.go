@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"amagi-codebox/internal/claudeaccounts"
 )
 
 // ThinkingConfig 思考模式配置
@@ -428,7 +430,11 @@ type AppConfig struct {
 	// "codex"）。记录 GLM/DeepSeek/Codex 三家族的额度快照（见 quota_probe.go），
 	// 值域天然不含凭据。旧版本读新文件安全（未知字段忽略）。
 	ProviderQuota map[string]ProviderQuotaEntry `json:"provider_quota,omitempty"`
-	Version       string                        `json:"version"`
+	// ClaudeAccountRotation 是 Claude 订阅账号轮换的非敏感配置（design §3.2）。
+	// 零值/缺字段 = 关闭；导入导出不携带（本机账号设置不迁移）。旧版本读
+	// 新文件安全（未知字段忽略）。
+	ClaudeAccountRotation *claudeaccounts.ClaudeAccountRotationConfig `json:"claude_account_rotation,omitempty"`
+	Version               string                                      `json:"version"`
 }
 
 // ModalityProbeEntry 一次有定论的多模态探测结果。

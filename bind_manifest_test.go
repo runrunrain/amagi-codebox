@@ -106,6 +106,18 @@ var appClassifiedNonSessionMutations = map[string]string{
 	// Mutates global codex headroom; gated by coordinator admission (R4-002) and the
 	// corrupt-store recovery fence (R9-002).
 	"SetCodexGlobalHeadroom": "coordinator admission + recovery fence",
+	// Claude 订阅账号轮换 facade（design §7.2）：入口在 App，raw 服务不入
+	// Bind；所有 mutation 经 1a 领域服务的 MutationGate（SharedClaudeCredentials
+	// mutation admission）+ operation 注册表；事件只发 operationId/stage/
+	// state/generation。
+	"BeginClaudeAccountEnrollment":  "credentials mutation admission + quiescence",
+	"CaptureClaudeAccount":          "credentials mutation admission + quiescence + background operation",
+	"CancelClaudeAccountEnrollment": "credentials mutation admission",
+	"SwitchClaudeAccount":           "credentials mutation admission + quiescence + requestId 幂等 background operation",
+	"SetClaudeAccountRotation":      "能力/池 revision/riskAck 校验 + ConfigService 写入",
+	"ReconcileClaudeAccounts":       "inspect 零写；其余走 mutation 门 + background operation",
+	"RemoveClaudeAccount":           "1a 移除限制（活动账号先切/停管）+ mutation admission",
+	"RenameClaudeAccount":           "别名长度 1..64 + revision 校验",
 }
 
 func TestBindManifest_ClassifiedNonSessionMutations(t *testing.T) {
@@ -195,14 +207,15 @@ func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 // 予以清单化接受——本测试冻结该注入面：Set*/Record* 方法集合必须恰好等于清单，
 // 未来新增注入面必须在此显式登记其理由，防止静默扩张。
 var configServiceAcceptedMutationSurface = map[string]string{
-	"SetAPIKeyResolver":     "组装期注入 key 解析器（契约 §2 既有先例）",
-	"SetAPIKeyReadyProbe":   "组装期注入密钥库就绪探针；未就绪时跳过导出写盘，防止空 key 覆盖（密钥面安全）",
-	"SetModalityProber":     "组装期注入探测调度入口（契约 v1.2）",
+	"SetAPIKeyResolver":              "组装期注入 key 解析器（契约 §2 既有先例）",
+	"SetAPIKeyReadyProbe":            "组装期注入密钥库就绪探针；未就绪时跳过导出写盘，防止空 key 覆盖（密钥面安全）",
+	"SetModalityProber":              "组装期注入探测调度入口（契约 v1.2）",
 	"SetPiLoginPresetChangeListener": "组装期注入登录预设保存/删除回调；把 contextWindow 覆写同步到 canonical root 的 models.json（锁外触发，不进 ConfigService 写路径）；webview 伪造仅写本机窗口覆写，无凭据面",
-	"RecordModalityProbe":   "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
-	"RecordProviderQuota":   "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
-	"SetAllTerminalPresets": "预设整体导入的合法入口",
-	"SetAgentTeams":         "Agent Teams 设置的合法入口",
+	"RecordModalityProbe":            "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
+	"RecordProviderQuota":            "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
+	"SetAllTerminalPresets":          "预设整体导入的合法入口",
+	"SetAgentTeams":                  "Agent Teams 设置的合法入口",
+	"SetClaudeAccountRotation":       "Claude 订阅账号轮换配置唯一写入口（design §3.2：账号服务不自行写 models.json；严格 Validate 拒绝未知 strategy）",
 }
 
 func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {

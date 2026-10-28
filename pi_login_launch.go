@@ -76,9 +76,12 @@ var piLoginCredentialEnvKeys = []string{
 // for child processes, and Pi falls back to homedir() when the variable is
 // unset (R2). Inherited API credentials are dropped (BuildEnv deletes on empty).
 // No OAuth token is ever injected — Pi reads its own auth.json under AgentDir.
-func piLoginEnvOverrides(agentDir string) map[string]string {
+func piLoginEnvOverrides(agentDir string, extraKeys ...string) map[string]string {
 	out := map[string]string{"PI_CODING_AGENT_DIR": agentDir}
 	for _, key := range piLoginCredentialEnvKeys {
+		out[key] = ""
+	}
+	for _, key := range extraKeys {
 		out[key] = ""
 	}
 	return out
@@ -115,7 +118,7 @@ func shellSingleQuote(value string) string {
 // 因此把启动命令本身包上 env 前缀，在 shell 初始化之后重新钉住 canonical
 // agent root 并剥离会被登录会话误用的凭据变量。direct/Windows shell 无
 // startup 干预，spec.Env 已生效，保持原样。不改普通 API 会话的任何语义。
-func piLoginReAnchorSpec(spec platform.ResolvedLaunchSpec, agentDir string) platform.ResolvedLaunchSpec {
+func piLoginReAnchorSpec(spec platform.ResolvedLaunchSpec, agentDir string, extraUnsetKeys ...string) platform.ResolvedLaunchSpec {
 	if spec.BootstrapMode != platform.BootstrapShellInline && spec.BootstrapMode != platform.BootstrapShellAttach {
 		return spec
 	}
@@ -124,6 +127,9 @@ func piLoginReAnchorSpec(spec platform.ResolvedLaunchSpec, agentDir string) plat
 	}
 	parts := []string{"env"}
 	for _, key := range piLoginCredentialEnvKeys {
+		parts = append(parts, "-u", key)
+	}
+	for _, key := range extraUnsetKeys {
 		parts = append(parts, "-u", key)
 	}
 	parts = append(parts, "PI_CODING_AGENT_DIR="+shellSingleQuote(agentDir))
@@ -380,6 +386,19 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	// shell startup. No ConfigMutation, secret lookup, managed provider or
 	// auth write on this path.
 	var effects []launchplan.EffectSpec
+	var loginAdmissions []launchplan.SharedAdmissionSpec
+	// Claude 订阅账号轮换（design §6.3 + 任务 F）：先取凭据 admission 描述
+	//（blocked → 计划构建失败，入口关闭）；受管状态下 WSL 登录会话消费
+	// canonical 凭据的 distro 副本，v1 不支持——明确拒绝，不动现有 WSL
+	// 同步逻辑。非 WSL 登录会话消费 canonical auth.json，携带 admission。
+	if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
+		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+	} else if ok {
+		if spec.BootstrapMode == platform.BootstrapWSL {
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+		}
+		loginAdmissions = append(loginAdmissions, credSpec)
+	}
 	if spec.BootstrapMode == platform.BootstrapWSL {
 		spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
 		// P3-S1：登录供给一并携带 pi/managed-models（登录 contextWindow 补齐 +
@@ -405,5 +424,5 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	effects = append(effects, launchplan.EffectSpec{Kind: launchplan.EffectPTYStart, Process: &launchplan.ProcessStartSpec{
 		Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,
 	}}, buildBootstrapEffect(spec))
-	return p.finalizePlan(recipe, nil, effects)
+	return p.finalizePlan(recipe, loginAdmissions, effects)
 }

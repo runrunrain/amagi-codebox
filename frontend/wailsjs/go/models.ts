@@ -2514,6 +2514,246 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ClaudeAccountDTO {
+	    id: string;
+	    alias: string;
+	    createdAt: string;
+	    updatedAt: string;
+	    emailMasked?: string;
+	    seatTier?: string;
+	    active: boolean;
+	    health: ClaudeAccountHealthDTO;
+	    claudeExpiresAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.alias = source["alias"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.emailMasked = source["emailMasked"];
+	        this.seatTier = source["seatTier"];
+	        this.active = source["active"];
+	        this.health = this.convertValues(source["health"], ClaudeAccountHealthDTO);
+	        this.claudeExpiresAt = source["claudeExpiresAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ClaudeAccountHealthDTO {
+	    claudeGrant: string;
+	    piGrant: string;
+	    identityStatus?: string;
+	    reasonCode?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountHealthDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.claudeGrant = source["claudeGrant"];
+	        this.piGrant = source["piGrant"];
+	        this.identityStatus = source["identityStatus"];
+	        this.reasonCode = source["reasonCode"];
+	    }
+	}
+	export class ClaudeAccountNativeStateDTO {
+	    hasJournal: boolean;
+	    journalPhase?: string;
+	    classifications?: Record<string, string>;
+	    matchesActiveSnapshot: boolean;
+	    externalChangeSuspected: boolean;
+	    activeId?: string;
+	    generation: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountNativeStateDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasJournal = source["hasJournal"];
+	        this.journalPhase = source["journalPhase"];
+	        this.classifications = source["classifications"];
+	        this.matchesActiveSnapshot = source["matchesActiveSnapshot"];
+	        this.externalChangeSuspected = source["externalChangeSuspected"];
+	        this.activeId = source["activeId"];
+	        this.generation = source["generation"];
+	    }
+	}
+	export class ClaudeAccountOperationDTO {
+	    id: string;
+	    kind: string;
+	    stage: string;
+	    state: string;
+	    changed: boolean;
+	    activeGeneration: number;
+	    code?: string;
+	    warnings?: string[];
+	    inspect?: ClaudeAccountNativeStateDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountOperationDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.kind = source["kind"];
+	        this.stage = source["stage"];
+	        this.state = source["state"];
+	        this.changed = source["changed"];
+	        this.activeGeneration = source["activeGeneration"];
+	        this.code = source["code"];
+	        this.warnings = source["warnings"];
+	        this.inspect = this.convertValues(source["inspect"], ClaudeAccountNativeStateDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ClaudeAccountReconcileResultDTO {
+	    operationId?: string;
+	    inspect?: ClaudeAccountNativeStateDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountReconcileResultDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.operationId = source["operationId"];
+	        this.inspect = this.convertValues(source["inspect"], ClaudeAccountNativeStateDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ClaudeAccountRotationConfigDTO {
+	    schema_version: number;
+	    enabled: boolean;
+	    strategy: string;
+	    threshold_percent: number;
+	    cooldown_seconds: number;
+	    hysteresis_points: number;
+	    manual_respect_seconds: number;
+	    acknowledged_risk_version?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountRotationConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema_version = source["schema_version"];
+	        this.enabled = source["enabled"];
+	        this.strategy = source["strategy"];
+	        this.threshold_percent = source["threshold_percent"];
+	        this.cooldown_seconds = source["cooldown_seconds"];
+	        this.hysteresis_points = source["hysteresis_points"];
+	        this.manual_respect_seconds = source["manual_respect_seconds"];
+	        this.acknowledged_risk_version = source["acknowledged_risk_version"];
+	    }
+	}
+	export class ClaudeAccountsPoolDTO {
+	    capability: string;
+	    state: string;
+	    revision: number;
+	    activeGeneration: number;
+	    activeId?: string;
+	    accounts: ClaudeAccountDTO[];
+	    operation?: ClaudeAccountOperationDTO;
+	    pauseReason?: string;
+	    rotationEnabled: boolean;
+	    rotationConfig?: ClaudeAccountRotationConfigDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountsPoolDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.capability = source["capability"];
+	        this.state = source["state"];
+	        this.revision = source["revision"];
+	        this.activeGeneration = source["activeGeneration"];
+	        this.activeId = source["activeId"];
+	        this.accounts = this.convertValues(source["accounts"], ClaudeAccountDTO);
+	        this.operation = this.convertValues(source["operation"], ClaudeAccountOperationDTO);
+	        this.pauseReason = source["pauseReason"];
+	        this.rotationEnabled = source["rotationEnabled"];
+	        this.rotationConfig = this.convertValues(source["rotationConfig"], ClaudeAccountRotationConfigDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CodexGlobalHeadroomStatus {
 	    enabled: boolean;
 	    target: string;

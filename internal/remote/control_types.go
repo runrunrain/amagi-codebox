@@ -383,6 +383,11 @@ type SharedServiceKind uint8
 const (
 	SharedServiceClaudeHeadroom SharedServiceKind = iota + 1
 	SharedServiceCodexHeadroom
+	// SharedServiceClaudeCredentials 是本机 canonical 认证槽位组合（CC
+	// Keychain OAuth 投影 + .claude.json 身份字段 + ~/.pi/agent/auth.json 的
+	// anthropic 键）的共享凭据 lease kind（design §6.3）。指纹由 canonical 路径
+	// 标识 + activeGeneration 生成，不含 token；活动 grant 刷新不改变指纹。
+	SharedServiceClaudeCredentials
 )
 
 // SharedLeaseOwnerKey is the exact shared singleton owner identity. Kind is

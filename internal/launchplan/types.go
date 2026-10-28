@@ -58,6 +58,9 @@ type SharedServiceKind uint8
 const (
 	SharedClaudeHeadroom SharedServiceKind = iota + 1
 	SharedCodexHeadroom
+	// SharedClaudeCredentials 对应 remote.SharedServiceClaudeCredentials：
+	// canonical Claude/Pi 凭据槽位组合的共享 admission（design §6.3）。
+	SharedClaudeCredentials
 )
 
 type ConfigTarget uint8

@@ -23,6 +23,7 @@ import (
 
 	"amagi-codebox/internal/agentprofile"
 	"amagi-codebox/internal/aiproxy"
+	"amagi-codebox/internal/claudeaccounts"
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
@@ -415,6 +416,23 @@ type App struct {
 	// (HeadroomService.mu / settings.Service.mu) are always acquired AFTER this
 	// one, so lock ordering stays codexGlobalMu -> inner.
 	codexGlobalMu sync.Mutex
+
+	// Claude 订阅账号轮换（design §2/§6.3/§7.2）：未导出领域服务 + 启动门禁
+	// 缓存。claudeAccountsPool 为池快照（nil = 无池，未启用）；loadErr 非空 =
+	// 池不可用（blocked）；recovered 在 Startup 恢复完成后置位（§4.5 时序）。
+	claudeAccounts            *claudeaccounts.Service
+	claudeAccountsMu          sync.RWMutex
+	claudeAccountsPool        *claudeaccounts.AccountPool
+	claudeAccountsLoadErr     error
+	claudeAccountsUnsupported bool
+	claudeAccountsRecovered   bool
+	// claudeAccountsQuiescenceLister 是进程观察器枚举接缝（nil = 生产 ps）。
+	claudeAccountsQuiescenceLister claudeProcessLister
+	// operation 注册表（有界缓存 + requestId 幂等，见 claude_accounts_facade.go）。
+	claudeAccountsOpsMu    sync.Mutex
+	claudeAccountsOps      map[string]*claudeAccountOperation
+	claudeAccountsOpsOrder []string
+	claudeAccountsRequests map[string]string
 }
 
 func NewApp(mobileAssets embed.FS) *App {
@@ -502,6 +520,10 @@ func NewApp(mobileAssets embed.FS) *App {
 	// P3-S1：WSL 供给协调器携带托管面适配器（pi/managed-models + 共享小文件）；
 	// 业务快照源闭包引用 app，在字面量之后装配。
 	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
+	// Claude 订阅账号轮换（design §6.3/§7.2）：装配 1a 领域服务（Keychain 池
+	// 后端、canonical 原生适配器、MutationGate/Quiescence 生产实现）。启动
+	// 恢复在 Startup（§4.5 时序：池加载 → RecoverAtStartup → 开放受影响启动）。
+	app.claudeAccounts = newClaudeAccountsService(app)
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
 	// desktop-equivalent builder 未接线，因此两条路径一致地 fail closed。
@@ -658,6 +680,10 @@ func NewApp(mobileAssets embed.FS) *App {
 				}
 				app.Log.Info("session", message, detail)
 			}
+			// 凭据 admission 计划接缝（design §6.3）：纯读计划携带凭据 admission
+			// 描述；池 blocked（needs-reconcile/损坏/未结事务）时计划构建失败，
+			// remote create/restart 的受影响入口同步关闭。
+			app.remotePlanner.(*appLaunchPlanner).claudeCredentialAdmission = app.claudeCredentialsPlanAdmission
 		}
 	}
 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
@@ -706,6 +732,9 @@ func NewApp(mobileAssets embed.FS) *App {
 		})
 		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
 		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
+		// 凭据计划新鲜度复核（design §6.3）：启动前代际变更 → 返回重新规划，
+		// 不带旧计划放行。
+		m2aAdapter.SetClaudeCredentialsPlanCheck(app.claudeCredentialsPlanCheck)
 		m2aAdapter.SetRestartPtyStart(func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error) {
 			resolved, ok := spec.(platform.ResolvedLaunchSpec)
 			if !ok {
@@ -2094,6 +2123,10 @@ func (a *App) Startup(ctx context.Context) {
 	// 桌面端互联 RC1-5：密钥库就绪后补齐远程客户端域（凭据存储 + 配对服务）。
 	// 不阻断启动：失败置 nil，相关绑定返回明确错误。
 	a.initRemoteClientServices()
+	// Claude 订阅账号轮换启动时序（design §4.5/§6.1）：Config/Keychain/池
+	// 加载 → RecoverAtStartup → 才开放受影响启动入口。失败只关闭受影响
+	// 启动入口并记警告，其他 API 工作流不停用。
+	a.startupRecoverClaudeAccounts()
 	if loadState.configLoaded && loadState.secretsLoaded {
 		if err := a.syncProvidersToHarnesses(); err != nil {
 			a.Log.Warn("provider-sync", "启动时同步 OpenCode/Pi/OMP 提供商失败", err.Error())
@@ -2533,6 +2566,31 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	}
 	workDir = resolvedWorkDir
 
+	// Claude 订阅账号轮换（design §6.3）：在认证读取/配置写入与进程副作用
+	// 之前取得共享凭据 admission。未启用（无池/平台不支持）返回 nil 零行为
+	// 变化；blocked（needs-reconcile/未结事务/池损坏/启动恢复未完成）拒绝
+	// 受管启动；HOME 重定向到独立根的会话不持 lease（可证明不读 canonical
+	// 身份文件）；受管 OAuth 登录启动要求 canonical 身份路径可证明。
+	claudeCredentials, credErr := a.beginClaudeCredentialsClaim("launch-claude")
+	if credErr != nil {
+		return "", credErr
+	}
+	defer func() { claudeCredentials.release(a) }()
+	if claudeCredentials != nil {
+		if override := managedHomeOverride(a.EnvVars.MergeWithSystem()); override != "" {
+			if provider.IsOAuthMode() {
+				// design §6.3：自定义 HOME 使 canonical 身份路径不可证明 → 拒绝
+				// 受管启动并给出具体变量名，不修改用户全局 shell 文件。
+				return "", fmt.Errorf("REVISION_CONFLICT: 受管 OAuth 启动拒绝：环境变量 %s 重定向了身份根目录，无法证明 canonical 凭据路径", override)
+			}
+			// API 模式 + HOME 重定向：独立根，不持凭据 lease（只阻塞换号的
+			// 保守计入不适用于可证明独立根的进程）。
+			a.Log.Info("claude-accounts", "HOME 重定向会话不持有凭据 lease（独立根）", override)
+			claudeCredentials.release(a)
+			claudeCredentials = nil
+		}
+	}
+
 	// R5-002/R6-001: every Headroom-dependent launch crosses the uninstall
 	// admission barrier before Headroom.Start, session creation, resolution, or
 	// PTY/external startup. Embedded launches promote before PTY start; external
@@ -2654,14 +2712,34 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		}
 		workDir = spec.WorkDir
 
+		// Claude 订阅账号轮换（design §6.3）：WSL 目标（distro 独立根，宿主
+		// Keychain 不可达）不持有凭据 lease；受管 OAuth 登录在最终 shell 后
+		// 边界清除身份/认证覆盖变量（不删模型参数）。
+		if spec.BootstrapMode == platform.BootstrapWSL && claudeCredentials != nil {
+			a.Log.Info("claude-accounts", "WSL Claude 会话不持有凭据 lease（distro 独立根）", "id="+sess.ID)
+			claudeCredentials.release(a)
+			claudeCredentials = nil
+		}
+		if claudeCredentials != nil && provider.IsOAuthMode() {
+			spec = managedClaudeIdentityBoundarySpec(spec)
+		}
+
 		// M-006: acquire the shared Headroom lease so the
 		// coordinator guard is non-empty while this run is active.
 		var sharedKinds []remote.SharedServiceKind
 		if useHeadroom {
 			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeHeadroom)
 		}
+		var launchClaims []*remote.SharedLaunchAdmission
+		if headroomAdmission != nil {
+			launchClaims = append(launchClaims, headroomAdmission)
+		}
+		if claudeCredentials != nil {
+			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeCredentials)
+			launchClaims = append(launchClaims, claudeCredentials.admission)
+		}
 		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
-		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, headroomAdmission, sharedKinds...)
+		pid, err := a.launchEmbeddedPTYWithClaims(authorityReservation, recipe, spec, launchClaims, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -2703,16 +2781,24 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		return "", err
 	}
 	var externalRun *remote.ExternalRunIdentity
-	if headroomAdmission != nil {
-		if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
-			a.Sessions.MarkFailed(sess.ID, storeErr.Error())
-			return "", fmt.Errorf("prepare durable external Claude cleanup: %w", storeErr)
+	if headroomAdmission != nil || claudeCredentials != nil {
+		if headroomAdmission != nil {
+			if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
+				a.Sessions.MarkFailed(sess.ID, storeErr.Error())
+				return "", fmt.Errorf("prepare durable external Claude cleanup: %w", storeErr)
+			}
 		}
 		externalRun, err = a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			return "", fmt.Errorf("prepare external Claude run: %w", err)
 		}
+	}
+	// Claude 订阅账号轮换（design §6.3）：真正进程启动前复核 admission 指纹
+	// 与当前池代际一致；不一致拒绝启动（重新发起即重新规划）。
+	if credRecheckErr := a.recheckClaudeCredentialsClaim(claudeCredentials); credRecheckErr != nil {
+		a.Sessions.MarkFailed(sess.ID, credRecheckErr.Error())
+		return "", credRecheckErr
 	}
 	startGeneration, startErr := a.captureExternalProcessStartGeneration()
 	if startErr != nil {
@@ -2826,6 +2912,24 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			return "", activationErr
 		}
 		a.rememberExternalDurableRun(durableRecord)
+	}
+
+	// Claude 订阅账号轮换（design §6.3）：外部会话成功启动后原子提升凭据
+	// admission 为运行 lease（与 headroom 同一记账惯例；凭据无 durable
+	// cleanup 需求——CodeBox 外存活进程的静止门禁由进程观察器兑底）。提升
+	// 失败 → 刚启动的进程持有 canonical 凭据但租约未成立：保守停止进程。
+	if claudeCredentials != nil {
+		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceClaudeCredentials, claudeCredentials.admission); leaseErr != nil {
+			stopErr := external.Stop(sess.ID)
+			claudeCredentials.release(a)
+			activationErr := fmt.Errorf("activate external Claude credentials lease: %w", leaseErr)
+			if stopErr != nil {
+				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
+			}
+			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
+			return "", activationErr
+		}
+		claudeCredentials.release(a)
 	}
 
 	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
@@ -3632,6 +3736,20 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		}
 	}
 
+	// Claude 订阅账号轮换（design §6.3 + 任务 F）：Pi 会话使用 canonical
+	// ~/.pi/agent 根（启动时 provider 无关，运行中可 /login），受管时在认证
+	// 读取/配置写入与进程副作用之前取得共享凭据 admission（不阻塞运行，
+	// 只阻塞换号）。WSL Pi 登录会话消费 canonical 凭据的 distro 副本，v1
+	// 不支持：返回明确错误，不动现有 WSL 同步逻辑。
+	claudeCredentials, credErr := a.beginClaudeCredentialsClaim("launch-pi")
+	if credErr != nil {
+		return "", credErr
+	}
+	defer func() { claudeCredentials.release(a) }()
+	if claudeCredentials != nil && loginPreset != nil && wslDistro != "" {
+		return "", errors.New("UNSUPPORTED_PLATFORM: 已启用 Claude 订阅账号管理，WSL Pi 登录会话暂不支持（v1），请使用宿主侧 Pi 登录")
+	}
+
 	launchSettings := piLaunchSettings{
 		Model: strings.TrimSpace(modelName),
 	}
@@ -3668,7 +3786,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// piLoginWSLReAnchorSpec 统一剥离该钉定（Windows 路径跨界是历史垃圾
 		// 目录事故形态），不在 env 构建期分叉——保持镜像/spec 判定不一致时的
 		// 语义确定性（spec 为唯一权威）。
-		for key, value := range piLoginEnvOverrides(login.AgentDir) {
+		for key, value := range piLoginEnvOverrides(login.AgentDir, claudeLoginManagedExtraKeys(claudeCredentials)...) {
 			envOverrides[key] = value
 		}
 		// 登录预设 contextWindow 覆写：Pi 登录模型没有预设参数面，窗口只能经
@@ -3787,6 +3905,19 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		}
 		workDir = spec.WorkDir
 
+		// Claude 订阅账号轮换：spec 定谳后的目标判据——WSL（distro 独立根）
+		// 不持有凭据 lease；WSL 登录在入口已拒绝，此处兑底不可达分支。
+		if spec.BootstrapMode == platform.BootstrapWSL && claudeCredentials != nil {
+			if loginPreset != nil {
+				err := errors.New("UNSUPPORTED_PLATFORM: 已启用 Claude 订阅账号管理，WSL Pi 登录会话暂不支持（v1）")
+				a.Sessions.MarkFailed(sess.ID, err.Error())
+				return "", err
+			}
+			a.Log.Info("claude-accounts", "WSL Pi 会话不持有凭据 lease（distro 独立根）", "id="+sess.ID)
+			claudeCredentials.release(a)
+			claudeCredentials = nil
+		}
+
 		if loginPreset != nil {
 			if spec.BootstrapMode == platform.BootstrapWSL {
 				// A2 闸门解除（主上裁定 2026-10-16，推翻 docs/developer/
@@ -3802,17 +3933,25 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
 			} else {
 				// R3：POSIX shell startup 文件在 CLI 之前运行，可能重导出覆盖变量；
-				// 在最终执行边界重新锚定 canonical root 并剥离凭据。
-				spec = piLoginReAnchorSpec(spec, login.AgentDir)
+				// 在最终执行边界重新锚定 canonical root 并剥离凭据。受管时追加
+				// 剥离 Claude 身份/认证覆盖变量（design §6.3）。
+				spec = piLoginReAnchorSpec(spec, login.AgentDir, claudeLoginManagedExtraKeys(claudeCredentials)...)
 			}
 		}
 		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
-		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
+		var piClaims []*remote.SharedLaunchAdmission
+		var piSharedKinds []remote.SharedServiceKind
+		if claudeCredentials != nil {
+			piSharedKinds = append(piSharedKinds, remote.SharedServiceClaudeCredentials)
+			piClaims = append(piClaims, claudeCredentials.admission)
+		}
+		pid, err := a.launchEmbeddedPTYWithClaims(authorityReservation, recipe, spec, piClaims, piSharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Pi PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
 			return "", fmt.Errorf("start pi pty: %w", err)
 		}
+		claudeCredentials.release(a)
 		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
@@ -3830,6 +3969,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			}
 			a.Sessions.MarkExited(id)
 			a.WebUI.Invalidate(id)
+			a.releaseSharedLeases(id) // 凭据/headroom lease 随进程树结束释放
 			a.Log.Info("session", "Pi PTY进程已退出", "id="+id)
 		}(sess.ID)
 
@@ -3837,6 +3977,21 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	}
 
 	// 外部终端/VSCode/Zed 模式：使用 Launcher
+	// Claude 订阅账号轮换（design §6.3）：真正进程启动前复核代际；凭据租约
+	// 需要外部运行身份（无 Control 写权限）。提升失败 → 保守停止进程。
+	var piExternalRun *remote.ExternalRunIdentity
+	if claudeCredentials != nil {
+		if recheckErr := a.recheckClaudeCredentialsClaim(claudeCredentials); recheckErr != nil {
+			a.Sessions.MarkFailed(sess.ID, recheckErr.Error())
+			return "", recheckErr
+		}
+		run, mintErr := a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
+		if mintErr != nil {
+			a.Sessions.MarkFailed(sess.ID, mintErr.Error())
+			return "", fmt.Errorf("prepare external Pi run: %w", mintErr)
+		}
+		piExternalRun = run
+	}
 	result, err := a.Launcher.LaunchPi(sess.ID, launchSettings.Provider, launchSettings.Model, launchSettings.Thinking, launchMode, workDir, envOverrides)
 	if err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -3848,6 +4003,20 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		closeUnregisteredExternalEvidence(context.Background(), result)
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
+	}
+	if claudeCredentials != nil {
+		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, piExternalRun, remote.SharedServiceClaudeCredentials, claudeCredentials.admission); leaseErr != nil {
+			stopErr := a.Launcher.Stop(sess.ID)
+			claudeCredentials.release(a)
+			closeUnregisteredExternalEvidence(context.Background(), result)
+			launchErr := fmt.Errorf("activate external Pi credentials lease: %w", leaseErr)
+			if stopErr != nil {
+				launchErr = errors.Join(launchErr, fmt.Errorf("compensate external Pi process: %w", stopErr))
+			}
+			a.Sessions.MarkFailed(sess.ID, launchErr.Error())
+			return "", launchErr
+		}
+		claudeCredentials.release(a)
 	}
 	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
@@ -3868,6 +4037,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			}
 		}
 		a.Sessions.MarkExited(id)
+		a.releaseSharedLeases(id) // 凭据 lease 随进程树结束释放
 		a.Log.Info("session", "Pi 进程已退出", "id="+id)
 	}(sess.ID)
 

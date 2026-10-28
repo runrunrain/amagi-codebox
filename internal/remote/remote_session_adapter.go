@@ -94,6 +94,11 @@ type RemoteSessionAdapter struct {
 	prepareSharedLeaseTransfer func(string, uint64, uint64, []*SharedDependencyLease) (func(), func(), func(), error)
 	releaseSharedExact         func(string, uint64)
 
+	// credentialPlanCheck（design §6.3）：凭据 admission 获取后、进程启动前
+	// 复核计划指纹与当前池代际一致。不一致返回错误 → create/restart 以失败
+	//结束（客户端重新发起即重新规划），不带旧计划放行。nil = 未接线（测试）。
+	credentialPlanCheck func([32]byte) error
+
 	// configDir is the host config root (for workdir default etc.).
 	configDir string
 
@@ -190,6 +195,21 @@ func (a *RemoteSessionAdapter) SetSharedLeaseTransfer(
 ) {
 	a.prepareSharedLeaseTransfer = prepare
 	a.releaseSharedExact = releaseExact
+}
+
+// SetClaudeCredentialsPlanCheck 注入凭据计划指纹的新鲜度复核（design
+// §6.3：启动前代际变更 → 重新规划，不带旧计划放行）。
+func (a *RemoteSessionAdapter) SetClaudeCredentialsPlanCheck(check func([32]byte) error) {
+	a.credentialPlanCheck = check
+}
+
+// verifyCredentialPlanFreshness 在 admission 获取后立即复核代际；失败时由
+// 调用方走既有失败路径（释放已取 admission + abort）。返回 true 表示通过。
+func (a *RemoteSessionAdapter) verifyCredentialPlanFreshness(kind SharedServiceKind, fingerprint [32]byte) bool {
+	if kind != SharedServiceClaudeCredentials || a.credentialPlanCheck == nil {
+		return true
+	}
+	return a.credentialPlanCheck(fingerprint) == nil
 }
 
 // restartPtyStartFunc starts a new PTY for a restart operation. The spec is
@@ -550,6 +570,15 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 			abortReservation()
 			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 		}
+		// 凭据 kind：计划指纹必须仍与当前池代际一致（design §6.3）。
+		if !a.verifyCredentialPlanFreshness(remoteKind, planAdm.ConfigFingerprint) {
+			a.sharedCoord.ReleaseLaunchAdmission(adm)
+			releaseAdmissions()
+			plan.Secrets.Dispose()
+			a.gate.AbortLaunch(ctx, launchPermit, errSharedCredentialPlanStale)
+			abortReservation()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
 		admissions = append(admissions, adm)
 		sharedAdmissions[planAdm.Service] = adm
 	}
@@ -774,6 +803,8 @@ func sharedKindFromPlan(planKind launchplan.SharedServiceKind) (SharedServiceKin
 		return SharedServiceClaudeHeadroom, true
 	case launchplan.SharedCodexHeadroom:
 		return SharedServiceCodexHeadroom, true
+	case launchplan.SharedClaudeCredentials:
+		return SharedServiceClaudeCredentials, true
 	default:
 		return 0, false
 	}
@@ -1018,6 +1049,14 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 		}
 		admission, admissionErr := a.sharedCoord.AcquireLaunchAdmissionForConfig(kind, spec.ConfigFingerprint)
 		if admissionErr != nil {
+			releaseAdmissions()
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
+		// 凭据 kind：restart 同样在进程副作用前复核代际（design §6.3）。
+		if !a.verifyCredentialPlanFreshness(kind, spec.ConfigFingerprint) {
+			a.sharedCoord.ReleaseLaunchAdmission(admission)
 			releaseAdmissions()
 			a.authority.AbortPreparedLifecycle(lifecycleToken)
 			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
@@ -1615,6 +1654,11 @@ func (a *RemoteSessionAdapter) reconcileClosedRunWithoutCommit(sessionID contrac
 }
 
 var errExactCloseIndeterminate = errors.New("remote: exact close indeterminate")
+
+// errSharedCredentialPlanStale 是凭据计划指纹与当前池代际不一致时的内部
+// 错误：create/restart 以失败结束，客户端重新发起即重新规划，不带旧计划
+// 放行（design §6.3）。
+var errSharedCredentialPlanStale = errors.New("remote: claude credential plan is stale")
 
 // restartRawEffect performs a REAL three-phase restart (M-004/R4-001): seal old
 // segment → checkpoint+stop old process → re-resolve → reserve/mint a hidden run
