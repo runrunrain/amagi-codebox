@@ -107,6 +107,9 @@
       v-model:open="showAddDialog"
       @saved="handleProviderSaved"
     />
+
+    <!-- Claude 订阅账号区（Phase 1c，design §7.1）：独立于 API/登录卡片，平台不支持时自隐藏 -->
+    <ClaudeAccountsSection />
     </template>
 
     <!-- 删除服务商确认弹窗 -->
@@ -131,6 +134,7 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import AddProviderDialog from './AddProviderDialog.vue';
+import ClaudeAccountsSection from './ClaudeAccountsSection.vue';
 import { useProviderStore, type ProviderFilter, type ProviderEntry } from '../../stores/provider';
 import { useToast } from '../../composables/useToast';
 
