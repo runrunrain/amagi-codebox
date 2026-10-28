@@ -140,32 +140,47 @@ func TestCrossProcessLockMutualExclusion(t *testing.T) {
 	second.release()
 }
 
-// TestCrossProcessLockConcurrentSingleWinner：并发竞争只有一个赢家。
+// TestCrossProcessLockConcurrentSingleWinner：并发竞争只有一个赢家——真实
+// 双持锁互斥断言（F 测试有效性修复：此前只断言 total≥1，无法支撑「并发
+// 只有一个赢家」）。持锁期间记录重叠：任一时刻活跃持锁者必须 ≤1。
 func TestCrossProcessLockConcurrentSingleWinner(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "claude-accounts.lock")
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	winners := 0
 	var wg sync.WaitGroup
-	winners := make(chan int, 8)
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
 			lock, err := acquireFileLock(lockPath)
 			if err != nil {
-				return
+				return // 竞争失败者：正常路径
 			}
-			winners <- idx
+			mu.Lock()
+			winners++
+			active++
+			if active > maxActive {
+				maxActive = active
+			}
+			mu.Unlock()
 			time.Sleep(5 * time.Millisecond)
+			mu.Lock()
+			active--
+			mu.Unlock()
 			lock.release()
-		}(i)
+		}()
 	}
 	wg.Wait()
-	close(winners)
-	total := 0
-	for range winners {
-		total++
-	}
-	if total < 1 {
+	if winners == 0 {
 		t.Fatal("至少应有一个持锁者成功")
+	}
+	if maxActive > 1 {
+		t.Fatalf("flock 互斥被违反：同时存在 %d 个持锁者", maxActive)
+	}
+	if winners < 8 {
+		t.Logf("竞争赢家 %d/8（未全部拿到锁但互斥成立）", winners)
 	}
 }
 

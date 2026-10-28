@@ -350,6 +350,12 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
 		} else if ok {
 			admissions = append(admissions, credSpec)
+			// F07（design §6.3 R3）：受管 OAuth 启动在最终 shell 后边界清除身份/
+			// 认证覆盖变量（与桌面 embedded 同一 managedClaudeIdentityBoundarySpec；
+			// remote create/restart 消费同一 spec，不能只修桌面路径）。
+			if provider.IsOAuthMode() {
+				spec = managedClaudeIdentityBoundarySpec(spec)
+			}
 		}
 	}
 	effects = append(effects, launchplan.EffectSpec{

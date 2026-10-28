@@ -60,6 +60,21 @@ func (f *fakeNativeStore) ReadStable(_ context.Context) (*claudeaccounts.NativeP
 	defer f.mu.Unlock()
 	f.reads++
 	proj := f.proj
+	// 与真实 FileCredentialStore 契约一致：三处 revision 恒非 nil（内容
+	// hash 稳定，连续读一致；F03 终复核依赖此不变量）。
+	if proj.Revisions.ClaudeKeychain == nil {
+		proj.Revisions.ClaudeKeychain = &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(proj.ClaudeOAuth)}
+	}
+	if proj.Revisions.ClaudeJSON == nil {
+		var data []byte
+		if proj.ClaudeIdentity != nil {
+			data = append(append([]byte(nil), proj.ClaudeIdentity.OauthAccount...), []byte(proj.ClaudeIdentity.UserID)...)
+		}
+		proj.Revisions.ClaudeJSON = &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(data)}
+	}
+	if proj.Revisions.PiAuth == nil {
+		proj.Revisions.PiAuth = &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(proj.PiAnthropic)}
+	}
 	return &proj, nil
 }
 
@@ -68,7 +83,9 @@ func (f *fakeNativeStore) PatchClaudeKeychainOAuth(_ context.Context, oauth json
 	defer f.mu.Unlock()
 	f.proj.ClaudeOAuth = append([]byte(nil), oauth...)
 	f.proj.ClaudeOAuthRaw = append([]byte(nil), oauth...)
-	return &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(oauth)}, nil
+	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(oauth)}
+	f.proj.Revisions.ClaudeKeychain = rev
+	return rev, nil
 }
 
 func (f *fakeNativeStore) PatchClaudeIdentity(_ context.Context, fields claudeaccounts.ClaudeIdentityFields) (*claudeaccounts.FileRevision, error) {
@@ -78,26 +95,35 @@ func (f *fakeNativeStore) PatchClaudeIdentity(_ context.Context, fields claudeac
 		OauthAccount: append([]byte(nil), fields.OauthAccount...), UserID: fields.UserID,
 	}
 	data := append(fields.OauthAccount, []byte(fields.UserID)...)
-	return &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(data)}, nil
+	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(data)}
+	f.proj.Revisions.ClaudeJSON = rev
+	return rev, nil
 }
 
 func (f *fakeNativeStore) PatchPiAnthropic(_ context.Context, anthropic json.RawMessage) (*claudeaccounts.FileRevision, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.proj.PiAnthropic = append([]byte(nil), anthropic...)
-	return &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(anthropic)}, nil
+	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(anthropic)}
+	f.proj.Revisions.PiAuth = rev
+	return rev, nil
 }
 
 func (f *fakeNativeStore) Kind() string { return "fake" }
 
 // newRotationTestService 构造 fake 后端的 1a 服务（Gate/Quiescence 用生产
-// 实现接线到 app，路径注入临时目录，绝不触碰真实凭据）。
-func newRotationTestService(t *testing.T, app *App, pool *claudeaccounts.AccountPool, native *claudeaccounts.NativeProjections) (*claudeaccounts.Service, *fakePoolStore, *fakeNativeStore) {
+// 实现接线到 app，路径注入临时目录，绝不触碰真实凭据）。可选注入 fake
+// 身份提供者（F05：换入前目标双 grant 现场验证需要可控身份响应）。
+func newRotationTestService(t *testing.T, app *App, pool *claudeaccounts.AccountPool, native *claudeaccounts.NativeProjections, identity ...claudeaccounts.IdentityProvider) (*claudeaccounts.Service, *fakePoolStore, *fakeNativeStore) {
 	t.Helper()
 	dir := t.TempDir()
 	poolStore := &fakePoolStore{pool: pool}
 	nativeStore := &fakeNativeStore{proj: *native}
 	client := claudeaccounts.NewConstrainedHTTPClient(nil)
+	identityProvider := claudeaccounts.IdentityProvider(claudeaccounts.NewHTTPIdentityProvider(client))
+	if len(identity) > 0 && identity[0] != nil {
+		identityProvider = identity[0]
+	}
 	svc, err := claudeaccounts.NewService(claudeaccounts.Deps{
 		Pool:       poolStore,
 		Native:     nativeStore,
@@ -109,7 +135,7 @@ func newRotationTestService(t *testing.T, app *App, pool *claudeaccounts.Account
 			lister:      app.claudeAccountsProcessSamples,
 			attribution: app.claudeQuiescenceAttribution,
 		},
-		Identity:   claudeaccounts.NewHTTPIdentityProvider(client),
+		Identity:   identityProvider,
 		HTTPClient: client,
 	})
 	if err != nil {

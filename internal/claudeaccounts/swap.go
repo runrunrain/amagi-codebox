@@ -56,18 +56,6 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 		return SwapResult{}, NewErr(ReasonRevisionConflict, "活动代际期望 %d，实际 %d", req.ExpectedGeneration, pool.ActiveGeneration)
 	}
 
-	// 同目标且三处确实匹配 → no-op（不能绕过漂移检查，design §4.4）。
-	if req.TargetID == pool.ActiveAccountID {
-		current, rerr := s.readStableAll(ctx)
-		if rerr != nil {
-			return SwapResult{}, rerr
-		}
-		if s.nativeMatchesOwned(current, pool.Active().OwnedProjectionsOf()) {
-			return SwapResult{TxnID: "", Generation: pool.ActiveGeneration, ActiveID: pool.ActiveAccountID, NoOp: true}, nil
-		}
-		// 不匹配：存在漂移，继续走完整流程（内部 harvest 完成身份校验）。
-	}
-
 	// 取得共享凭据 mutation admission（design §6.3：凭据 admission）。
 	gateRelease, err := s.acquireGate(ctx, "swap")
 	if err != nil {
@@ -84,6 +72,21 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 	}
 	if pool.ActiveAccountID == "" {
 		return SwapResult{}, NewErr(ReasonNeedsReconcile, "事务恢复后池处于异常状态")
+	}
+
+	// 同目标且三处确实匹配 → no-op（不能绕过漂移检查，design §4.4）。
+	// F06：no-op 判定必须在未结事务处理之后——restore-source 场景 target==source
+	// 且原生全 before 时，先由 reconcile 清 journal，再进入 no-op，不能带着
+	// journal 提前返回 done。
+	if req.TargetID == pool.ActiveAccountID {
+		current, rerr := s.readStableAll(ctx)
+		if rerr != nil {
+			return SwapResult{}, rerr
+		}
+		if s.nativeMatchesOwned(current, pool.Active().OwnedProjectionsOf()) {
+			return SwapResult{TxnID: "", Generation: pool.ActiveGeneration, ActiveID: pool.ActiveAccountID, NoOp: true}, nil
+		}
+		// 不匹配：存在漂移，继续走完整流程（内部 harvest 完成身份校验）。
 	}
 
 	journalPersisted := false
@@ -115,19 +118,27 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 	}
 
 	// 重新读取 source，若有刷新则重新 harvest；若变成别的账号则拒绝
-	// （design §4.4）。
+	// （design §4.4）。F03-B：第二次 harvest 的返回值必须同步替换
+	// sourceOwned/sourceRevs——journal 的 before 与 expected 必须来自同一次
+	// 快照，否则刷新后的 A′ 对 before/after 均不可分类，会把可恢复事务卡死。
 	current2, rerr := s.readStableAll(ctx)
 	if rerr != nil {
 		return SwapResult{}, rerr
 	}
 	if !sameRevisions(current2.Revisions, sourceRevs) {
-		_, sourceRevs, herr = s.harvestLocked(ctx, pool, pool.ActiveAccountID)
+		sourceOwned, sourceRevs, herr = s.harvestLocked(ctx, pool, pool.ActiveAccountID)
 		if herr != nil {
 			return SwapResult{}, herr
 		}
 		current2, rerr = s.readStableAll(ctx)
 		if rerr != nil {
 			return SwapResult{}, rerr
+		}
+		// F03-B：before 与 expected 必须来自同一次快照——重新 harvest 后若仍在
+		// 变化（存在活跃外部写入者），静止条件已失效，fail closed 而非带着
+		// 分裂快照进事务。
+		if !sameRevisions(current2.Revisions, sourceRevs) {
+			return SwapResult{}, NewErr(ReasonExternalSessionUncertain, "源账号回收期间原生槽位持续变化，已中止切换")
 		}
 	}
 
@@ -178,6 +189,19 @@ func (s *Service) applyAndCommitLocked(ctx context.Context, pool *AccountPool, j
 			s.logf("[claudeaccounts] 原生写锁释放异常（原因码=%s）", ReasonOf(rerr))
 		}
 	}()
+
+	// F03-A：短提交锁内最终复核整文件/受管 revision——最终一次 source 读取
+	// 与取得原生锁之间若发生外部刷新（比较、rename、Keychain update 都不是
+	// 跨进程 CAS，design §4.3），当前值已不是 journal 记录的期望基线，直接
+	// 写会覆盖未回收的新 token；漂移则拒绝写入并交由 reconcile 分类（任一
+	// 投影既非 before 也非 after → needs-reconcile，保全当前值），不盲覆盖。
+	verify, verr := s.readStableAll(ctx)
+	if verr != nil {
+		return verr
+	}
+	if !sameRevisions(verify.Revisions, journal.ExpectedRevisions) {
+		return NewErr(ReasonNeedsReconcile, "原生槽位在提交前发生意外变化（revision 漂移），已停止写入待恢复")
+	}
 
 	for _, key := range keys {
 		if err := ctxShort(ctx); err != nil {

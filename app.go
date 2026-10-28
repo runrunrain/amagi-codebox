@@ -80,7 +80,7 @@ type codexLaunchSettings struct {
 // Claude/Codex sessions. Production uses LauncherService; tests inject a
 // deterministic process lifecycle without changing the exported App surface.
 type externalLauncherPort interface {
-	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error) (*launcher.LaunchResult, error)
+	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error, []string) (*launcher.LaunchResult, error)
 	LaunchCodexGuarded(string, string, session.LaunchMode, string, map[string]string, func() error) (*launcher.LaunchResult, error)
 	CaptureProcessIdentity(string) (string, error)
 	RecoverProcess(string, int, string) (bool, error)
@@ -426,6 +426,12 @@ type App struct {
 	claudeAccountsLoadErr     error
 	claudeAccountsUnsupported bool
 	claudeAccountsRecovered   bool
+	// claudeAccountsPoolStore 是池存储直接引用（F01：mutation 释放前发布权威
+	// 状态不经 Service 串行锁；F10：「曾初始化」标记判定）。
+	claudeAccountsPoolStore claudeaccounts.PoolStore
+	// claudeAccountsPoolMarkerPath 是不含秘密的「池曾初始化」标记文件路径
+	//（F10；测试可注入）。
+	claudeAccountsPoolMarkerPath string
 	// claudeAccountsQuiescenceLister 是进程观察器枚举接缝（nil = 生产 ps）。
 	claudeAccountsQuiescenceLister claudeProcessLister
 	// operation 注册表（有界缓存 + requestId 幂等，见 claude_accounts_facade.go）。
@@ -735,6 +741,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		// 凭据计划新鲜度复核（design §6.3）：启动前代际变更 → 返回重新规划，
 		// 不带旧计划放行。
 		m2aAdapter.SetClaudeCredentialsPlanCheck(app.claudeCredentialsPlanCheck)
+		m2aAdapter.SetClaudeCredentialsAbsenceCheck(app.claudeCredentialsAbsenceCheck)
 		m2aAdapter.SetRestartPtyStart(func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error) {
 			resolved, ok := spec.(platform.ResolvedLaunchSpec)
 			if !ok {
@@ -2834,9 +2841,18 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		a.Sessions.MarkFailed(sess.ID, startErr.Error())
 		return "", startErr
 	}
+	// F07（design §6.3 R3）：受管 OAuth 外部终端启动同样在最终执行边界清除
+	// 身份/认证覆盖变量（与 embedded 的 managedClaudeIdentityBoundarySpec 同
+	// 一键集）；旧 ComputeEnvOverrides 只清 ANTHROPIC_API_KEY/AUTH_TOKEN/
+	// BASE_URL，不清 CLAUDE_CODE_* 身份变量。
+	externalIdentityStrip := []string(nil)
+	if claudeCredentials != nil && provider.IsOAuthMode() {
+		externalIdentityStrip = managedClaudeIdentityEnvKeys
+	}
 	result, err := external.LaunchGuarded(
 		sess.ID, *provider, presetName, apiKey, agentTeams, launchMode, workDir,
 		func() error { return a.authorizeExternalRawStart(attempt, startGeneration) },
+		externalIdentityStrip,
 	)
 	if err != nil {
 		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {

@@ -124,7 +124,9 @@ func ownedFromNative(current *NativeProjections) OwnedProjections {
 }
 
 // ensureTargetReadyLocked 准备目标：独占刷新过期的 standby grants；验证
-// 目标双端身份（design §4.4）。调用方持锁与 admission。
+// 目标双端身份（design §4.4「验证目标双端身份」；F05：不能只信 capture 时的
+// 身份证据与存储健康度，写入原生前必须用当前 token 现场验证）。调用方持锁
+// 与 admission；网络身份探测在拿原生写锁之前完成（design §4.3）。
 func (s *Service) ensureTargetReadyLocked(ctx context.Context, pool *AccountPool, targetID string) error {
 	if pool.ActiveAccountID == targetID {
 		return nil // 切到自身无需准备
@@ -171,6 +173,42 @@ func (s *Service) ensureTargetReadyLocked(ctx context.Context, pool *AccountPool
 		if err := grantHealthGate(snap.Health.ClaudeGrant, "claude"); err != nil {
 			return err
 		}
+	}
+	// F05：写入原生前用目标当前两份 grant 现场验证身份——刷新后的新 token
+	// 必须仍可证明属于目标账号（与目标身份/组织及双端配对一致）；未过期但
+	// 已撤销的 token 同样在此暴露（identity 查询失败/不一致 → 不写原生）。
+	return s.verifyTargetGrantsLocked(ctx, pool, targetID)
+}
+
+// verifyTargetGrantsLocked 用目标快照内当前两份 access token 分别查询身份，
+// 并与目标身份/组织及双端配对比较（design §4.4；F05）。
+func (s *Service) verifyTargetGrantsLocked(ctx context.Context, pool *AccountPool, targetID string) error {
+	snap := pool.Account(targetID)
+	if snap == nil {
+		return NewErr(ReasonRevisionConflict, "目标账号不存在")
+	}
+	ccToken := ccProjectionAccessToken(snap.Claude.OauthProjection)
+	piToken := piAnthropicAccessToken(snap.Pi.Anthropic)
+	if ccToken == "" || piToken == "" {
+		return NewErr(ReasonIdentityUnverified, "目标 grant 缺少可用的 access token")
+	}
+	ccID, err := s.identity.FetchProfile(ctx, ccToken)
+	if err != nil {
+		return NewErr(ReasonIdentityUnverified, "目标 Claude grant 身份验证失败：%s", ReasonOf(err))
+	}
+	piID, err := s.identity.FetchProfile(ctx, piToken)
+	if err != nil {
+		return NewErr(ReasonIdentityUnverified, "目标 Pi grant 身份验证失败：%s", ReasonOf(err))
+	}
+	if ccID.AccountUUID != snap.Identity.AccountUUID || piID.AccountUUID != snap.Identity.AccountUUID {
+		return NewErr(ReasonIdentityMismatch, "目标 grant 身份与账号身份不符，拒绝写入原生槽位")
+	}
+	if ccID.AccountUUID != piID.AccountUUID {
+		return NewErr(ReasonIdentityMismatch, "目标两份 grant 不属于同一账号，拒绝写入原生槽位")
+	}
+	if ccID.OrganizationUUID != "" && snap.Identity.OrganizationUUID != "" &&
+		ccID.OrganizationUUID != snap.Identity.OrganizationUUID {
+		return NewErr(ReasonIdentityMismatch, "目标 Claude grant 组织与账号记录不符，拒绝写入原生槽位")
 	}
 	return nil
 }
@@ -325,7 +363,9 @@ func (s *Service) applyRefreshResultLocked(pool *AccountPool, snap *AccountSnaps
 	nowT := s.now()
 	switch kind {
 	case GrantPi:
-		entry, err := BuildPiAnthropicEntry(result)
+		// F13：在既有 anthropic JSON 上字段级更新 token/expiry，保留未知
+		// 扩展字段（design §3.1 未知字段保留契约），不从零重建条目。
+		entry, err := MergePiAnthropicRefresh(snap.Pi.Anthropic, result)
 		if err != nil {
 			return err
 		}
@@ -375,6 +415,11 @@ func (s *Service) RemoveAccount(ctx context.Context, id string, expectedRevision
 	}
 	if pool.RefreshIntent != nil && pool.RefreshIntent.AccountID == id {
 		return NewErr(ReasonRefreshUncertain, "该账号存在未结刷新意图，禁止移除")
+	}
+	// F14：与 Rename/Capture 同源的乐观锁——stale revision 携带的删除请求
+	// 必须拒绝，不基于旧列表快照改写池（design §7.2 接口一致性）。
+	if pool.Revision != expectedRevision {
+		return NewErr(ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
 	}
 	delete(pool.Accounts, id)
 	pool.Revision++

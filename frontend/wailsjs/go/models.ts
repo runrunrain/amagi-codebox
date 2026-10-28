@@ -2717,6 +2717,8 @@ export namespace main {
 	    pauseReason?: string;
 	    rotationEnabled: boolean;
 	    rotationConfig?: ClaudeAccountRotationConfigDTO;
+	    /** 持久化 enrollment 的可续接 ID（F09；不含池秘密）。 */
+	    enrollmentId?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ClaudeAccountsPoolDTO(source);
@@ -2734,6 +2736,7 @@ export namespace main {
 	        this.pauseReason = source["pauseReason"];
 	        this.rotationEnabled = source["rotationEnabled"];
 	        this.rotationConfig = this.convertValues(source["rotationConfig"], ClaudeAccountRotationConfigDTO);
+	        this.enrollmentId = source["enrollmentId"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

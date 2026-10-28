@@ -143,6 +143,10 @@ type EnrollmentJournal struct {
 	TxnID     string    `json:"txnId"`
 	Harvested bool      `json:"harvested"`
 	StartedAt time.Time `json:"startedAt"`
+	// DriftedReason 非空表示取消录入时检测到原生槽位已偏离活动源账号
+	//（F04/design §4.1）：不清除 journal、进入 needs-reconcile，由主上选择
+	// 完成录入保存当前配对，或在原生客户端重新登录原账号后再次取消。
+	DriftedReason string `json:"driftedReason,omitempty"`
 }
 
 // TransactionKind 区分池上未结事务类型。

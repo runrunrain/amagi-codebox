@@ -245,3 +245,41 @@ func TestCredentialsKind_EarlyReleaseIsIdempotent(t *testing.T) {
 	}
 	c.ReleaseMutationAdmission(mut)
 }
+
+// TestCredentialPlanAbsenceBoundary：F01——受影响 CLI（claude/pi）的计划未
+// 携带凭据 admission（absent 时构建的旧计划）时，执行边界必须确认权威状态
+// 仍为 absent；首次 capture 后（check 返回错误）旧计划不得继续执行。
+func TestCredentialPlanAbsenceBoundary(t *testing.T) {
+	if !cliConsumesClaudeCredentials(contract.CLITypeClaudeCode) || !cliConsumesClaudeCredentials(contract.CLITypePi) {
+		t.Fatal("claude/pi must consume claude credentials")
+	}
+	if cliConsumesClaudeCredentials(contract.CLITypeCodex) || cliConsumesClaudeCredentials(contract.CLITypeOmp) {
+		t.Fatal("codex/omp must not consume claude credentials")
+	}
+
+	// 未接线（nil check）→ 通过（测试环境兼容）。
+	adapter := &RemoteSessionAdapter{}
+	if !adapter.verifyCredentialPlanAbsence(contract.CLITypeClaudeCode, false) {
+		t.Fatal("nil absence check must pass (not wired)")
+	}
+	// 计划已携带凭据 admission → 不做 absent 校验（admission 循环内的
+	// freshness 检查负责）。
+	adapter.credentialAbsenceCheck = func() error { return errors.New("pool became managed") }
+	if !adapter.verifyCredentialPlanAbsence(contract.CLITypeClaudeCode, true) {
+		t.Fatal("plans carrying credential admission skip absence check")
+	}
+	// absent 仍成立 → 通过。
+	adapter.credentialAbsenceCheck = func() error { return nil }
+	if !adapter.verifyCredentialPlanAbsence(contract.CLITypePi, false) {
+		t.Fatal("absent must pass")
+	}
+	// absent→managed（首次 capture 后）→ 旧计划拒绝执行。
+	adapter.credentialAbsenceCheck = func() error { return errSharedCredentialPlanStale }
+	if adapter.verifyCredentialPlanAbsence(contract.CLITypePi, false) {
+		t.Fatal("absent-era stale plan must be rejected after pool became managed")
+	}
+	// 非受影响 CLI（codex）无凭据 admission → 不校验。
+	if !adapter.verifyCredentialPlanAbsence(contract.CLITypeCodex, false) {
+		t.Fatal("unaffected CLI plans skip the credential boundary")
+	}
+}

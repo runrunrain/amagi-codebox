@@ -359,7 +359,22 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	preset := login.Preset
 	recipe.ProviderRef = config.PiLoginProviderID(preset.Provider)
 	recipe.PresetRef = recipe.ModelRef
-	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), piLoginEnvOverrides(login.AgentDir))
+	// Claude 订阅账号轮换（design §6.3 + 任务 F，F07 提前到 env 构建前）：先取
+	// 凭据 admission 描述（blocked → 计划构建失败，入口关闭）。受管状态下
+	// WSL 登录会话消费 canonical 凭据的 distro 副本，v1 不支持——spec 解析后
+	// 明确拒绝，不动现有 WSL 同步逻辑；非 WSL 登录会话消费 canonical
+	// auth.json，携带 admission，并在 env 构建与最终执行边界同步剥离身份/
+	// 认证覆盖变量（与桌面 LaunchPiSession 同一键集，remote create/restart
+	// 不能漏）。
+	managedExtra := []string(nil)
+	credSpec, credManaged, credErr := p.claudeCredentialAdmissionSpec()
+	if credErr != nil {
+		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+	}
+	if credManaged {
+		managedExtra = managedClaudeIdentityEnvKeys
+	}
+	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), piLoginEnvOverrides(login.AgentDir, managedExtra...))
 	args := []string{"--provider", preset.Provider, "--model", preset.Model}
 	if preset.Thinking != "" {
 		args = append(args, "--thinking", preset.Thinking)
@@ -387,13 +402,7 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	// auth write on this path.
 	var effects []launchplan.EffectSpec
 	var loginAdmissions []launchplan.SharedAdmissionSpec
-	// Claude 订阅账号轮换（design §6.3 + 任务 F）：先取凭据 admission 描述
-	//（blocked → 计划构建失败，入口关闭）；受管状态下 WSL 登录会话消费
-	// canonical 凭据的 distro 副本，v1 不支持——明确拒绝，不动现有 WSL
-	// 同步逻辑。非 WSL 登录会话消费 canonical auth.json，携带 admission。
-	if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
-		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
-	} else if ok {
+	if credManaged {
 		if spec.BootstrapMode == platform.BootstrapWSL {
 			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
 		}
@@ -419,7 +428,7 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 			},
 		})
 	} else {
-		spec = piLoginReAnchorSpec(spec, login.AgentDir)
+		spec = piLoginReAnchorSpec(spec, login.AgentDir, managedExtra...)
 	}
 	effects = append(effects, launchplan.EffectSpec{Kind: launchplan.EffectPTYStart, Process: &launchplan.ProcessStartSpec{
 		Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,

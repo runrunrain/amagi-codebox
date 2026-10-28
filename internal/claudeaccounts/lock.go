@@ -16,6 +16,17 @@ func DefaultPoolLockPath() (string, error) {
 	return filepath.Join(home, ".amagi-codebox", "claude-accounts.lock"), nil
 }
 
+// DefaultPoolMarkerPath 返回不含秘密的「池曾初始化」标记文件路径（F10：
+// 区分「从未创建池」与「已创建后被外部删除」；后者 fail closed 为
+// POOL_MISSING，不自动重建空池覆盖原生认证）。
+func DefaultPoolMarkerPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".amagi-codebox", "claude-accounts.pool-initialized"), nil
+}
+
 // crossProcessLock 是进程间互斥锁句柄；获取/释放的平台实现见 lock_unix.go
 // 与 lock_windows.go。
 type crossProcessLock struct {

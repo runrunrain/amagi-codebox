@@ -171,7 +171,9 @@ describe('stores/claudeAccounts（状态机 + 幂等 + pending + 防重）', () 
       await store.refresh();
       expect(store.sectionState).toBe('managed');
 
-      // ④ 添加另一个账号：begin（harvest A）→ 向导
+      // ④ 添加另一个账号：begin（harvest A）→ 向导（F09：池 DTO 回报
+      // enrollmentId，begin 内部的 silent refresh 凭它续接/保持向导状态）
+      getAccounts.mockResolvedValue(pool({ state: 'enrolling', revision: 1, activeGeneration: 1, accounts: [acc()], enrollmentId: 'enr-1' }));
       begin.mockResolvedValueOnce('enr-1');
       await store.beginEnrollment();
       expect(store.enrollment).toEqual({ enrollmentId: 'enr-1', step: 'login' });

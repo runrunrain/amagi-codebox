@@ -237,11 +237,12 @@
           </footer>
         </article>
       </div>
-
-      <!-- operation 反馈 -->
-      <div v-if="operationRunning" class="ca-opbanner" data-testid="ca-operation-running">{{ operationText }}</div>
-      <div v-else-if="errorText" class="ca-opbanner error" data-testid="ca-operation-error">{{ errorText }}</div>
     </template>
+
+    <!-- operation 反馈（F08：提到各状态共用区域——absent/enrolling/needs-reconcile
+         分支同样能看见异步 operation 的进行/失败，不再只藏在 managed/error 分支） -->
+    <div v-if="operationRunning" class="ca-opbanner" data-testid="ca-operation-running">{{ operationText }}</div>
+    <div v-else-if="errorText" class="ca-opbanner error" data-testid="ca-operation-error">{{ errorText }}</div>
 
     <!-- 重命名弹窗 -->
     <Dialog :open="renameOpen" title="重命名账号" @update:open="renameOpen = $event">

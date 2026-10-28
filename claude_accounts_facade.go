@@ -33,6 +33,10 @@ const claudeAccountsRiskAckVersion = "claude-rotation-v1"
 // claudeAccountOperationCacheLimit 是进程内已完成 operation 结果缓存上限。
 const claudeAccountOperationCacheLimit = 128
 
+// errClaudeAccountOpBlocked 是 work 内部约定：operation 已被置为 blocked 终态
+// （等待外部条件，如 roll-forward 需会话退出），runner 不得再改写状态（F06）。
+var errClaudeAccountOpBlocked = errors.New("claude-accounts: operation blocked")
+
 // ---------------------------------------------------------------------------
 // DTO（credential-free）
 // ---------------------------------------------------------------------------
@@ -99,6 +103,9 @@ type ClaudeAccountsPoolDTO struct {
 	PauseReason      string                          `json:"pauseReason,omitempty"`
 	RotationEnabled  bool                            `json:"rotationEnabled"`
 	RotationConfig   *ClaudeAccountRotationConfigDTO `json:"rotationConfig,omitempty"`
+	// EnrollmentID：持久化 enrollment 的可续接 ID（F09/design §7.2 安全文案：
+	// 不含池秘密；刷新/重启后前端凭此重建向导，保存仍需精确 TxnID+revision）。
+	EnrollmentID string `json:"enrollmentId,omitempty"`
 }
 
 // ClaudeAccountNativeStateDTO 是 inspect 的零写分类投影。
@@ -164,24 +171,39 @@ func (a *App) claudeOpBegin(kind, requestID, paramsDigest string, generation uin
 	}
 	a.claudeAccountsOps[id] = op
 	a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder, id)
-	// 有界缓存：淘汰最旧的已完成 operation（进行中的不淘汰）。
+	// 有界缓存（F15）：仅淘汰「已完成」的最旧 victim；运行中项不淘汰（同
+	// requestId 幂等与在途查询依赖它），改试次旧者；全部在途时允许临时超过
+	// 上限（在途操作数本身有界，不会无限增长），不无限循环。
 	for len(a.claudeAccountsOpsOrder) > claudeAccountOperationCacheLimit {
-		oldest := a.claudeAccountsOpsOrder[0]
-		a.claudeAccountsOpsOrder = a.claudeAccountsOpsOrder[1:]
-		if victim := a.claudeAccountsOps[oldest]; victim != nil {
+		evicted := false
+		for i, oldest := range a.claudeAccountsOpsOrder {
+			victim := a.claudeAccountsOps[oldest]
+			if victim == nil {
+				// 陈旧索引（防御）：直接移除队列项。
+				a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder[:i], a.claudeAccountsOpsOrder[i+1:]...)
+				evicted = true
+				break
+			}
 			select {
 			case <-victim.done:
+				a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder[:i], a.claudeAccountsOpsOrder[i+1:]...)
+				delete(a.claudeAccountsOps, oldest)
+				for req, target := range a.claudeAccountsRequests {
+					if target == oldest {
+						delete(a.claudeAccountsRequests, req)
+					}
+				}
+				evicted = true
+				break
 			default:
-				// 进行中：放回队尾，改试下一个（避免活操作被逐出后 request 索引悬空）。
-				a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder, oldest)
+				// 运行中：跳过，试次旧者（不放回队尾避免死循环）。
+			}
+			if evicted {
 				break
 			}
 		}
-		delete(a.claudeAccountsOps, oldest)
-		for req, target := range a.claudeAccountsRequests {
-			if target == oldest {
-				delete(a.claudeAccountsRequests, req)
-			}
+		if !evicted {
+			break // 全部在途：本轮不淘汰
 		}
 	}
 	if requestID != "" {
@@ -239,6 +261,14 @@ func (a *App) runClaudeAccountOperation(kind, requestID, paramsDigest string, ge
 		defer cancel()
 		err := work(ctx, op)
 		a.refreshClaudeAccountsCache(context.Background())
+		if errors.Is(err, errClaudeAccountOpBlocked) {
+			// F06：work 已把 operation 置为 blocked 终态（如恢复遇到占用 lease /
+			// needs-reconcile），不是 done——不能宣告成功后丢弃 outcome。
+			if a.Log != nil {
+				a.Log.Info("claude-accounts", "operation 等待外部条件", fmt.Sprintf("kind=%s", kind))
+			}
+			return
+		}
 		if err != nil {
 			code := claudeaccounts.ReasonOf(err)
 			a.claudeOpUpdate(op, func(d *ClaudeAccountOperationDTO) {
@@ -259,6 +289,18 @@ func (a *App) runClaudeAccountOperation(kind, requestID, paramsDigest string, ge
 		})
 	}()
 	return opID, nil
+}
+
+// claudeOpMarkBlocked 在 work 内把 operation 置为 blocked 终态并返回哨兵错误
+// （F06：未完成的恢复不是 done；调用方返回该错误使 runner 停止改写）。
+func (a *App) claudeOpMarkBlocked(op *claudeAccountOperation, code, detail string) error {
+	a.claudeOpUpdate(op, func(d *ClaudeAccountOperationDTO) {
+		d.State = "blocked"
+		d.Stage = "waiting"
+		d.Code = code
+		d.Warnings = append(d.Warnings, detail)
+	})
+	return errClaudeAccountOpBlocked
 }
 
 // claudeAccountsGeneration 读取缓存池代际（无池为 0）。
@@ -315,8 +357,10 @@ func (a *App) GetClaudeAccounts() (*ClaudeAccountsPoolDTO, error) {
 	if pool == nil {
 		dto.State = "disabled"
 	} else if txn := pool.Transaction; txn != nil {
-		if txn.Kind == claudeaccounts.TransactionEnrollment {
+		if txn.Kind == claudeaccounts.TransactionEnrollment && txn.Enrollment != nil && txn.Enrollment.DriftedReason == "" {
 			dto.State = "enrolling"
+			// F09：持久化 enrollment 可续接——DTO 返回 TxnID（安全：不含凭据）。
+			dto.EnrollmentID = txn.Enrollment.TxnID
 		} else {
 			dto.State = "needs-reconcile"
 		}
@@ -407,10 +451,20 @@ func (a *App) BeginClaudeAccountEnrollment(expectedRevision uint64) (string, err
 // CaptureClaudeAccount 采集当前双端登录（后端读取秘密，前端不传 token）：
 // enrollmentID 为空表示首次录入（CaptureFirstAccount），否则完成 enrollment
 // 的第二账号采集（CaptureEnrolledAccount）。长 I/O 走后台 operation。
+// F10：曾初始化的池已消失（POOL_MISSING）时拒绝首次录入——不能按空池
+// 重建并丢失对旧池/事务的认知；恢复/重建须显式确认，v1 fail closed。
 func (a *App) CaptureClaudeAccount(enrollmentID, alias string, expectedRevision uint64) (string, error) {
 	svc, err := a.claudeAccountsServiceOrErr()
 	if err != nil {
 		return "", err
+	}
+	if enrollmentID == "" {
+		a.claudeAccountsMu.RLock()
+		loadErr := a.claudeAccountsLoadErr
+		a.claudeAccountsMu.RUnlock()
+		if domain, ok := claudeaccounts.AsError(loadErr); ok && domain.Reason == claudeaccounts.ReasonPoolMissing {
+			return "", claudeAccountsPoolMissingErr()
+		}
 	}
 	digest := "capture|" + enrollmentID + "|" + alias + "|" + strconv.FormatUint(expectedRevision, 10)
 	return a.runClaudeAccountOperation("capture", "", digest, a.claudeAccountsGeneration(), func(ctx context.Context, op *claudeAccountOperation) error {
@@ -541,8 +595,37 @@ func (a *App) ReconcileClaudeAccounts(action string, expectedRevision uint64) (*
 	case "complete-target":
 		opDigest := "reconcile|complete-target|" + strconv.FormatUint(expectedRevision, 10)
 		id, err := a.runClaudeAccountOperation("reconcile-complete-target", "", opDigest, a.claudeAccountsGeneration(), func(ctx context.Context, op *claudeAccountOperation) error {
-			_, err := svc.RecoverAtStartup(ctx)
-			return err
+			// F06：恢复动作在同一锁语义内校验 expectedRevision——陈旧恢复命令
+			// 不得作用于已变化的事务。
+			pool, perr := svc.LoadPool(ctx)
+			if perr != nil {
+				return perr
+			}
+			if pool != nil && pool.Revision != expectedRevision {
+				return claudeaccounts.NewErr(claudeaccounts.ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
+			}
+			outcome, cerr := svc.RecoverAtStartup(ctx)
+			if cerr != nil {
+				return cerr
+			}
+			// F06：消费 outcome——未完成（roll-forward-pending/needs-reconcile/
+			// blocked）是 blocked 不是 done；done 必须以 journal 已清为依据。
+			switch outcome.Action {
+			case claudeaccounts.ReconcileRollForwardPending:
+				return a.claudeOpMarkBlocked(op, outcome.ReasonCode, "恢复等待会话退出/外部条件，未完成")
+			case claudeaccounts.ReconcileNeedsReconcile:
+				return a.claudeOpMarkBlocked(op, string(claudeaccounts.ReasonNeedsReconcile), "存在无法自动分类的投影，需人工恢复")
+			case claudeaccounts.ReconcileBlocked:
+				return a.claudeOpMarkBlocked(op, outcome.ReasonCode, "原生槽位不可读，恢复被阻塞")
+			}
+			fresh, ferr := svc.LoadPool(ctx)
+			if ferr != nil {
+				return ferr
+			}
+			if fresh != nil && fresh.Transaction != nil {
+				return a.claudeOpMarkBlocked(op, string(claudeaccounts.ReasonNeedsReconcile), "恢复后仍存在未结事务")
+			}
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -565,6 +648,10 @@ func (a *App) ReconcileClaudeAccounts(action string, expectedRevision uint64) (*
 			if err != nil {
 				return err
 			}
+			// F06：陈旧恢复命令（stale expectedRevision）不得作用于已变化事务。
+			if pool != nil && pool.Revision != expectedRevision {
+				return claudeaccounts.NewErr(claudeaccounts.ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
+			}
 			if pool == nil || pool.Transaction == nil || pool.Transaction.Kind != claudeaccounts.TransactionSwap || pool.Transaction.Swap == nil {
 				return claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "无未结 swap 事务，无源账号可恢复")
 			}
@@ -572,12 +659,25 @@ func (a *App) ReconcileClaudeAccounts(action string, expectedRevision uint64) (*
 			if sourceID == "" || pool.Account(sourceID) == nil {
 				return claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "journal 源账号不在池中")
 			}
-			_, err = svc.Swap(ctx, claudeaccounts.SwapRequest{
+			res, serr := svc.Swap(ctx, claudeaccounts.SwapRequest{
 				TargetID:           sourceID,
 				Reason:             claudeaccounts.SwapReasonManual,
 				ExpectedGeneration: pool.ActiveGeneration,
 			})
-			return err
+			if serr != nil {
+				return serr
+			}
+			// F06：Swap 内部已先处理未结事务（含全 before 清 journal）再 no-op；
+			// done 以 journal 已清为依据复核。
+			fresh, ferr := svc.LoadPool(ctx)
+			if ferr != nil {
+				return ferr
+			}
+			if fresh != nil && fresh.Transaction != nil {
+				return a.claudeOpMarkBlocked(op, string(claudeaccounts.ReasonNeedsReconcile), "恢复后仍存在未结事务")
+			}
+			_ = res
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -659,9 +759,21 @@ func newClaudeAccountsService(app *App) *claudeaccounts.Service {
 		}
 		return nil
 	}
+	markerPath, err := claudeaccounts.DefaultPoolMarkerPath()
+	if err != nil {
+		if app.Log != nil {
+			app.Log.Warn("claude-accounts", "解析账号池标记路径失败，标记不生效", err.Error())
+		}
+		markerPath = ""
+	}
+	app.claudeAccountsPoolMarkerPath = markerPath
+	poolStore := claudeaccounts.NewKeychainPoolStore()
+	// F01：mutation 释放前发布权威状态需直接读池存储（不经 Service 串行锁）；
+	// F10：标记判定同源。
+	app.claudeAccountsPoolStore = poolStore
 	client := claudeaccounts.NewConstrainedHTTPClient(nil)
 	svc, err := claudeaccounts.NewService(claudeaccounts.Deps{
-		Pool: claudeaccounts.NewKeychainPoolStore(),
+		Pool: poolStore,
 		Native: claudeaccounts.NewCombinedNativeStore(
 			claudeaccounts.NewFileCredentialStore(paths, nil),
 			claudeaccounts.NewClaudeKeychainAccess(),

@@ -120,10 +120,18 @@ func TestReadStableRejectsSymlink(t *testing.T) {
 	assertReason(t, err, ReasonNeedsReconcile)
 }
 
-// TestReadStableRejectsDirectory：拒绝目录替代文件。
+// TestReadStableRejectsDirectory：拒绝目录替代文件（F 测试有效性修复：此前
+// 用尚不存在的子路径，实际测的是 missing，不是目录）。先真实创建目录。
 func TestReadStableRejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
-	_, _, err := readStableFile(filepath.Join(dir, "subdir"))
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if fi, err := os.Stat(subdir); err != nil || !fi.IsDir() {
+		t.Fatalf("前置失败：%v isDir=%v", err, fi != nil && fi.IsDir())
+	}
+	_, _, err := readStableFile(subdir)
 	assertReason(t, err, ReasonNeedsReconcile)
 }
 

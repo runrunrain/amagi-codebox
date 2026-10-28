@@ -99,6 +99,11 @@ type RemoteSessionAdapter struct {
 	//结束（客户端重新发起即重新规划），不带旧计划放行。nil = 未接线（测试）。
 	credentialPlanCheck func([32]byte) error
 
+	// credentialAbsenceCheck（F01）：计划未携带凭据 admission（池 absent 时
+	// 构建的旧计划）时，执行边界必须确认权威状态仍为 absent——首次 capture
+	// 后旧计划会绕过仅存在于 admission 循环内的新鲜度检查。nil = 未接线。
+	credentialAbsenceCheck func() error
+
 	// configDir is the host config root (for workdir default etc.).
 	configDir string
 
@@ -201,6 +206,27 @@ func (a *RemoteSessionAdapter) SetSharedLeaseTransfer(
 // §6.3：启动前代际变更 → 重新规划，不带旧计划放行）。
 func (a *RemoteSessionAdapter) SetClaudeCredentialsPlanCheck(check func([32]byte) error) {
 	a.credentialPlanCheck = check
+}
+
+// SetClaudeCredentialsAbsenceCheck 注入无凭据计划的边界复核（F01：absent
+// 时构建的旧计划在首次 capture 后不得继续执行）。
+func (a *RemoteSessionAdapter) SetClaudeCredentialsAbsenceCheck(check func() error) {
+	a.credentialAbsenceCheck = check
+}
+
+// cliConsumesClaudeCredentials 报告该 CLI 是否消费 canonical Claude 凭据
+// 槽位（design §6.3：Claude Code 与宿主根 Pi；omp 独立根不计）。
+func cliConsumesClaudeCredentials(cli contract.CLIType) bool {
+	return cli == contract.CLITypeClaudeCode || cli == contract.CLITypePi
+}
+
+// verifyCredentialPlanAbsence 在受影响 CLI 的计划不携带凭据 admission 时，
+// 确认权威状态仍为 absent（F01）。返回 true 表示可继续执行。
+func (a *RemoteSessionAdapter) verifyCredentialPlanAbsence(cli contract.CLIType, hasCredentialAdmission bool) bool {
+	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
+		return true
+	}
+	return a.credentialAbsenceCheck() == nil
 }
 
 // verifyCredentialPlanFreshness 在 admission 获取后立即复核代际；失败时由
@@ -546,6 +572,7 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 	// 5. Acquire launch admissions before Executor preparation or any shared
 	// side effect. The exact admissions are bound into their prepared effects.
 	var admissions []*SharedLaunchAdmission
+	hasCredentialAdmission := false
 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
 	releaseAdmissions := func() {
 		for _, adm := range admissions {
@@ -561,6 +588,9 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 		remoteKind, ok := sharedKindFromPlan(planAdm.Service)
 		if !ok {
 			continue
+		}
+		if remoteKind == SharedServiceClaudeCredentials {
+			hasCredentialAdmission = true
 		}
 		adm, acqErr := a.sharedCoord.AcquireLaunchAdmissionForConfig(remoteKind, planAdm.ConfigFingerprint)
 		if acqErr != nil {
@@ -581,6 +611,15 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 		}
 		admissions = append(admissions, adm)
 		sharedAdmissions[planAdm.Service] = adm
+	}
+	// F01：absent 时构建的旧计划（无凭据 admission）在首次 capture 后不得
+	// 继续执行——执行边界确认权威状态仍为 absent，不只检查已有 kind。
+	if !a.verifyCredentialPlanAbsence(contract.CLIType(plan.Recipe.CLIType), hasCredentialAdmission) {
+		releaseAdmissions()
+		plan.Secrets.Dispose()
+		a.gate.AbortLaunch(ctx, launchPermit, errSharedCredentialPlanStale)
+		abortReservation()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 	}
 
 	// 6. Executor Prepare (all effect allocations; opaque exact run handle).
@@ -1033,6 +1072,7 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 	}
 
 	var admissions []*SharedLaunchAdmission
+	hasCredentialAdmission := false
 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
 	releaseAdmissions := func() {
 		for _, admission := range admissions {
@@ -1054,6 +1094,9 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
 			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 		}
+		if kind == SharedServiceClaudeCredentials {
+			hasCredentialAdmission = true
+		}
 		// 凭据 kind：restart 同样在进程副作用前复核代际（design §6.3）。
 		if !a.verifyCredentialPlanFreshness(kind, spec.ConfigFingerprint) {
 			a.sharedCoord.ReleaseLaunchAdmission(admission)
@@ -1064,6 +1107,14 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 		}
 		admissions = append(admissions, admission)
 		sharedAdmissions[spec.Service] = admission
+	}
+	// F01：restart 链同样校验无凭据计划的 absent 边界（absent 旧计划 →
+	// 首次 capture → restart 执行）。
+	if !a.verifyCredentialPlanAbsence(contract.CLIType(snapshot.CLIType), hasCredentialAdmission) {
+		releaseAdmissions()
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 	}
 
 	var (

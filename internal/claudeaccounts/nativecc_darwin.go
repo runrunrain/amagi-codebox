@@ -65,7 +65,10 @@ void amagi_cc_free(void* data) {
 }
 
 // amagi_cc_update 按 service+account 原位更新项内容（保留既有 ACL；
-// design §4.4：使用更新现有 item 的 API，不 delete+add）。
+// design §3.1/§4.4：使用更新现有 item 的 API，不 delete+add）。
+// 项缺失（errSecItemNotFound）只返回稳定错误：原生登录项被外部登出/删除
+// 后静默重建会丢失原项 ACL 并复活已消失的登录，违背缺项停止契约——
+// 池 envelope 首建（amagi_ca_set_pool）与原生凭据更新不是同一权限语义。
 OSStatus amagi_cc_update(const char* service, const char* account, const void* data, UInt32 length) {
 	SecKeychainItemRef item = NULL;
 	UInt32 existingLength = 0;
@@ -78,10 +81,7 @@ OSStatus amagi_cc_update(const char* service, const char* account, const void* d
 		return updateStatus;
 	}
 	if (item != NULL) { CFRelease(item); }
-	if (status == errSecItemNotFound) {
-		return SecKeychainAddGenericPassword(NULL, (UInt32)strlen(service), service, (UInt32)strlen(account), account, length, data, NULL);
-	}
-	return status;
+	return status; // 含 errSecItemNotFound：缺项不 Add 重建（F11）
 }
 */
 import "C"
@@ -168,6 +168,9 @@ func (DarwinClaudeKeychain) UpdateItem(ctx context.Context, loc *KeychainLocator
 	cPayload := C.CBytes(item)
 	defer C.free(cPayload)
 	status := C.amagi_cc_update(service, account, cPayload, C.UInt32(len(item)))
+	if status == C.errSecItemNotFound {
+		return NewErr(ReasonNeedsReconcile, "Claude Code Keychain 凭据项已消失，禁止删后重建（需在原生客户端重新登录）")
+	}
 	if status != C.errSecSuccess {
 		return NewErr(ReasonNeedsReconcile, "Claude Code Keychain 更新被拒（osstatus=%d）", int(status))
 	}

@@ -131,6 +131,16 @@ export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
       if (res.operation && (!operation.value || operation.value.id !== res.operation.id)) {
         operation.value = res.operation;
       }
+      // F09：持久化 enrollment 续接——重启/刷新后凭后端 enrollmentId 重建向导
+      //（保存仍需精确 TxnID+revision，后端强校验）；后端不再报告 enrollment
+      //（含 drifted 转入 needs-reconcile）时清掉本地向导状态。
+      if (res.enrollmentId) {
+        if (!enrollment.value) {
+          enrollment.value = { enrollmentId: res.enrollmentId, step: 'login' };
+        }
+      } else if (enrollment.value) {
+        enrollment.value = null;
+      }
     } catch (err) {
       const { code } = api.parseClaudeAccountError(err);
       if (code === 'UNSUPPORTED_PLATFORM') {

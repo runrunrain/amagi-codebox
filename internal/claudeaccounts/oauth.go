@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Pi OAuth 刷新协议常量（design §5.1 已核实；与 pi-ai 安装源码
@@ -118,6 +121,39 @@ func BuildPiAnthropicEntry(result GrantRefreshResult) (json.RawMessage, error) {
 		return nil, err
 	}
 	return mustMarshalEntry(entry), nil
+}
+
+// MergePiAnthropicRefresh 在既有 anthropic JSON 上字段级更新本事务拥有的
+// token/expiry 字段，保留其余未知字段（design §3.1 未知字段保留契约；F13：
+// 刷新不得从零重建条目丢失扩展字段）。既有条目缺失/非对象时可退回全新
+// 构造（首次写入语义）；存在但非法 JSON 则拒绝（无法证明字段归属）。
+func MergePiAnthropicRefresh(existing json.RawMessage, result GrantRefreshResult) (json.RawMessage, error) {
+	base := json.RawMessage(existing)
+	if len(bytes.TrimSpace(base)) == 0 || string(bytes.TrimSpace(base)) == "null" {
+		return BuildPiAnthropicEntry(result)
+	}
+	if !gjson.ValidBytes(base) {
+		return nil, NewErr(ReasonUnsupportedCredentialSchema, "既有 anthropic 条目非法，无法字段级合并刷新结果")
+	}
+	out := append(json.RawMessage(nil), base...)
+	var err error
+	set := func(key string, value any) {
+		if err != nil {
+			return
+		}
+		out, err = sjson.SetBytes(out, key, value)
+	}
+	set("type", "oauth")
+	set("access", result.AccessToken)
+	set("refresh", result.RefreshToken)
+	set("expires", float64(result.ExpiresAt.UnixMilli()))
+	if err != nil {
+		return nil, NewErr(ReasonPoolCorrupt, "anthropic 条目字段级更新失败")
+	}
+	if err := ValidatePiAnthropicEntry(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func mustMarshalEntry(entry PiAnthropicEntry) json.RawMessage {

@@ -429,9 +429,12 @@ func (s *Service) CaptureEnrolledAccount(ctx context.Context, enrollmentID, alia
 	return snap.ToDTO(pool.ActiveAccountID), nil
 }
 
-// CancelEnrollment 取消录入（design §4.1 末段）：只清 enrollment journal；
-// 若原生槽位在录入期间被登录进程改变，不恢复旧 token 覆盖新值，保持
-// needs-reconcile 由 reconcile 分类。
+// CancelEnrollment 取消录入（design §4.1 末段 + F04）：取消本身是 mutation，
+// 必须走共享凭据 admission 与写入者静止门；随后读取并分类当前投影——仅
+// 当原生槽位仍与活动源账号一致时才清除 enrollment；原生已变化（录入期间
+// 登录了新账号/CC/Pi 混对）或无法验证时，不清除 journal，标记 drifted 进入
+// needs-reconcile，保留可人工恢复的状态与证据：完成录入保存当前配对，或在
+// 原生客户端重新登录原账号后再次取消。
 func (s *Service) CancelEnrollment(ctx context.Context, expectedRevision uint64) error {
 	release, err := s.withLocks(ctx, "cancel-enrollment")
 	if err != nil {
@@ -448,15 +451,47 @@ func (s *Service) CancelEnrollment(ctx context.Context, expectedRevision uint64)
 	if pool.Revision != expectedRevision {
 		return NewErr(ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
 	}
+	gateRelease, err := s.acquireGate(ctx, "cancel-enrollment")
+	if err != nil {
+		return err
+	}
+	defer gateRelease()
+	if err := s.checkQuiescence(ctx); err != nil {
+		return err
+	}
 	txnID := pool.Transaction.Enrollment.TxnID
-	pool.Transaction = nil
+	// 读取并分类当前投影：与活动源账号一致才允许静默取消。
+	current, rerr := s.readStableAll(ctx)
+	if rerr != nil {
+		// 无法验证：保留 journal 供人工恢复，不盲清。
+		pool.Transaction.Enrollment.DriftedReason = string(ReasonOf(rerr))
+		pool.Revision++
+		if serr := s.savePoolLocked(ctx, pool); serr != nil {
+			return serr
+		}
+		return NewErr(ReasonNeedsReconcile, "无法验证原生槽位状态，已保留录入事务待人工恢复（%s）", ReasonOf(rerr))
+	}
+	if active := pool.Account(pool.ActiveAccountID); active != nil &&
+		s.nativeMatchesOwned(current, active.OwnedProjectionsOf()) {
+		pool.Transaction = nil
+		pool.Revision++
+		if err := s.savePoolLocked(ctx, pool); err != nil {
+			return err
+		}
+		s.logStep("enrollment-cleared", txnID, pool.ActiveAccountID)
+		s.emitEvent(Event{Kind: EventEnrollmentCleared, TxnID: txnID})
+		return nil
+	}
+	// 原生槽位已偏离活动源：不清除 journal，标记 drifted → needs-reconcile
+	//（不恢复旧 token 覆盖新值，design §4.1）。
+	pool.Transaction.Enrollment.DriftedReason = string(ReasonExternalAccountChange)
 	pool.Revision++
 	if err := s.savePoolLocked(ctx, pool); err != nil {
 		return err
 	}
-	s.logStep("enrollment-cleared", txnID, pool.ActiveAccountID)
-	s.emitEvent(Event{Kind: EventEnrollmentCleared, TxnID: txnID})
-	return nil
+	s.logf("[claudeaccounts] 取消录入发现原生槽位已变化，保留事务待人工恢复（txn=%s）", txnID)
+	return NewErr(ReasonNeedsReconcile,
+		"原生登录已变化，未自动取消：可完成录入保存当前配对，或在原生客户端重新登录原账号后再次取消")
 }
 
 // captureLocked 是 capture 伪码（design §4.4）：调用方持锁；任何错误均不

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,14 +50,38 @@ func nativeMatchingA() *claudeaccounts.NativeProjections {
 	}
 }
 
-func newFacadeTestApp(t *testing.T) (*App, *fakePoolStore, *fakeNativeStore) {
+func newFacadeTestApp(t *testing.T) (*App, *fakePoolStore, *fakeNativeStore, *fakeIdentityProvider) {
 	t.Helper()
 	app := newGateTestApp(t)
 	pool := twoAccountPool()
-	svc, poolStore, nativeStore := newRotationTestService(t, app, pool, nativeMatchingA())
+	native := nativeMatchingA()
+	// F05：换入前目标双 grant 现场验证需要可控身份响应（真实网络不可用）。
+	identity := &fakeIdentityProvider{responses: map[string]claudeaccounts.ProfileIdentity{
+		"SECRET-CC-A": {AccountUUID: "uuid-a", OrganizationUUID: "org-a"},
+		"SECRET-PI-A": {AccountUUID: "uuid-a", OrganizationUUID: "org-a"},
+		"SECRET-CC-B": {AccountUUID: "uuid-b", OrganizationUUID: "org-b"},
+		"SECRET-PI-B": {AccountUUID: "uuid-b", OrganizationUUID: "org-b"},
+	}}
+	svc, poolStore, nativeStore := newRotationTestService(t, app, pool, native, identity)
 	app.claudeAccounts = svc
 	setClaudeAccountsCache(app, pool, nil, true)
-	return app, poolStore, nativeStore
+	return app, poolStore, nativeStore, identity
+}
+
+// fakeIdentityProvider 是根色 facade 测试的身份注入 fake（token → 身份；
+// 未知 token → IDENTITY_UNVERIFIED）。
+type fakeIdentityProvider struct {
+	mu        sync.Mutex
+	responses map[string]claudeaccounts.ProfileIdentity
+}
+
+func (f *fakeIdentityProvider) FetchProfile(_ context.Context, accessToken string) (claudeaccounts.ProfileIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id, ok := f.responses[accessToken]; ok {
+		return id, nil
+	}
+	return claudeaccounts.ProfileIdentity{}, claudeaccounts.NewErr(claudeaccounts.ReasonIdentityUnverified, "注入：token 无已知身份")
 }
 
 func waitClaudeOpDone(t *testing.T, app *App, opID string, timeout time.Duration) *ClaudeAccountOperationDTO {
@@ -77,7 +102,7 @@ func waitClaudeOpDone(t *testing.T, app *App, opID string, timeout time.Duration
 }
 
 func TestFacade_GetClaudeAccounts_States(t *testing.T) {
-	app, _, _ := newFacadeTestApp(t)
+	app, _, _, _ := newFacadeTestApp(t)
 
 	dto, err := app.GetClaudeAccounts()
 	if err != nil {
@@ -142,7 +167,7 @@ func refreshFacadePool(t *testing.T, app *App, poolStore *fakePoolStore) {
 }
 
 func TestFacade_SwitchOperation_RequestIdIdempotencyAndLeaseConflict(t *testing.T) {
-	app, _, native := newFacadeTestApp(t)
+	app, _, native, _ := newFacadeTestApp(t)
 
 	// requestId 幂等：同参数两次提交返回同一 operation。
 	opA, err := app.SwitchClaudeAccount("acc-b", 4, "req-1")
@@ -185,7 +210,7 @@ func TestFacade_SwitchOperation_RequestIdIdempotencyAndLeaseConflict(t *testing.
 }
 
 func TestFacade_SwitchBlockedByCredentialLease(t *testing.T) {
-	app, _, _ := newFacadeTestApp(t)
+	app, _, _, _ := newFacadeTestApp(t)
 	// 持有凭据运行 lease（模拟受管会话在跑）→ swap 拒绝 SESSIONS_ACTIVE。
 	claim, err := app.beginClaudeCredentialsClaim("lease-test")
 	if err != nil {
@@ -210,7 +235,7 @@ func TestFacade_SwitchBlockedByCredentialLease(t *testing.T) {
 }
 
 func TestFacade_SetClaudeAccountRotation(t *testing.T) {
-	app, _, _ := newFacadeTestApp(t)
+	app, _, _, _ := newFacadeTestApp(t)
 
 	// 无风险确认 → 拒绝。
 	if err := app.SetClaudeAccountRotation(true, 2, "wrong"); err == nil {
@@ -242,7 +267,7 @@ func TestFacade_SetClaudeAccountRotation(t *testing.T) {
 }
 
 func TestFacade_ReconcileInspectIsZeroWrite(t *testing.T) {
-	app, poolStore, native := newFacadeTestApp(t)
+	app, poolStore, native, _ := newFacadeTestApp(t)
 	nativeBefore := native.proj
 	result, err := app.ReconcileClaudeAccounts("inspect", 0)
 	if err != nil {
@@ -272,7 +297,7 @@ func TestFacade_ReconcileInspectIsZeroWrite(t *testing.T) {
 }
 
 func TestFacade_RemoveRenamePassthrough(t *testing.T) {
-	app, _, _ := newFacadeTestApp(t)
+	app, _, _, _ := newFacadeTestApp(t)
 	// 活动账号移除被 1a 拒绝（须先切换/停止管理）。
 	if err := app.RemoveClaudeAccount("acc-a", 2); err == nil || !strings.Contains(err.Error(), "REVISION_CONFLICT") {
 		t.Fatalf("remove active account must fail, got %v", err)
@@ -290,7 +315,7 @@ func TestFacade_RemoveRenamePassthrough(t *testing.T) {
 }
 
 func TestFacade_SensitiveFieldsNeverLeaveDTO(t *testing.T) {
-	app, _, _ := newFacadeTestApp(t)
+	app, _, _, _ := newFacadeTestApp(t)
 	opID, err := app.SwitchClaudeAccount("acc-b", 4, "req-sensitive")
 	if err != nil {
 		t.Fatalf("switch: %v", err)
@@ -320,7 +345,7 @@ func TestFacade_SensitiveFieldsNeverLeaveDTO(t *testing.T) {
 }
 
 func TestFacade_BeginEnrollmentAndCaptureFlow(t *testing.T) {
-	app, poolStore, native := newFacadeTestApp(t)
+	app, poolStore, native, identity := newFacadeTestApp(t)
 	enrollmentID, err := app.BeginClaudeAccountEnrollment(2)
 	if err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
@@ -344,8 +369,12 @@ func TestFacade_BeginEnrollmentAndCaptureFlow(t *testing.T) {
 	if _, err := native.PatchPiAnthropic(context.Background(), []byte(`{"type":"oauth","access":"SECRET-PI-B"}`)); err != nil {
 		t.Fatalf("patch pi: %v", err)
 	}
-	// capture 走网络身份校验（fake 无 identity 注入）→ 预期 IDENTITY_UNVERIFIED
-	// 失败而非崩溃；此处验证 operation 错误路径与码位透传。
+	// capture 走网络身份校验：删除 B 的 Pi 身份映射，模拟 fake 身份后端不
+	// 认识该 token → 预期 IDENTITY_UNVERIFIED 失败而非崩溃；验证 operation
+	// 错误路径与码位透传。
+	identity.mu.Lock()
+	delete(identity.responses, "SECRET-PI-B")
+	identity.mu.Unlock()
 	opID, err := app.CaptureClaudeAccount(enrollmentID, "B-second", 3)
 	if err != nil {
 		t.Fatalf("CaptureClaudeAccount submit: %v", err)
@@ -354,22 +383,55 @@ func TestFacade_BeginEnrollmentAndCaptureFlow(t *testing.T) {
 	if dto.State != "error" {
 		t.Fatalf("capture against fake identity backend should fail with typed error, got %+v", dto)
 	}
-	// 取消录入：入口恢复（BeginEnrollment 已把 revision 2→3；失败的 capture
-	// 未落盘，revision 仍为 3）。
-	if err := app.CancelClaudeAccountEnrollment(3); err != nil {
-		t.Fatalf("CancelEnrollment: %v", err)
+
+	// F04（修正后的语义）：原生槽位已漂移到 B，取消录入不得无条件清 journal
+	// 重开启动入口——取消本身走 mutation/静止门并分类当前投影；漂移时保留
+	// enrollment（标记 drifted → needs-reconcile），返回稳定错误。
+	err = app.CancelClaudeAccountEnrollment(3)
+	if err == nil || !strings.Contains(err.Error(), "NEEDS_RECONCILE") {
+		t.Fatalf("cancel with drifted native must refuse with NEEDS_RECONCILE, got %v", err)
 	}
 	pool, _ := poolStore.Load(context.Background())
+	if pool.Transaction == nil || pool.Transaction.Enrollment == nil ||
+		pool.Transaction.Enrollment.TxnID != enrollmentID ||
+		pool.Transaction.Enrollment.DriftedReason == "" {
+		t.Fatalf("drifted enrollment journal must be retained with drift marker, got %+v", pool.Transaction)
+	}
+	// 门禁与 DTO 状态：保留事务 → blocked / needs-reconcile（不是 managed）。
+	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsBlocked {
+		t.Fatalf("policy after drifted cancel = %v, want blocked", got)
+	}
+	if state, _ := app.GetClaudeAccounts(); state.State != "needs-reconcile" {
+		t.Fatalf("pool state after drifted cancel = %s, want needs-reconcile", state.State)
+	}
+
+	// 人工恢复路径 A：在原生客户端重新登录原账号（换回 A 投影）→ 再次取消
+	//（revision 已被 drifted 标记递增到 4）→ 原生与活动源一致 → 清除成功。
+	if _, err := native.PatchClaudeKeychainOAuth(context.Background(), []byte(`{"accessToken":"SECRET-CC-A"}`)); err != nil {
+		t.Fatalf("restore cc: %v", err)
+	}
+	if _, err := native.PatchClaudeIdentity(context.Background(), claudeaccounts.ClaudeIdentityFields{
+		OauthAccount: []byte(`{"accountUuid":"uuid-a"}`), UserID: "user-a",
+	}); err != nil {
+		t.Fatalf("restore cj: %v", err)
+	}
+	if _, err := native.PatchPiAnthropic(context.Background(), []byte(`{"type":"oauth","access":"SECRET-PI-A"}`)); err != nil {
+		t.Fatalf("restore pi: %v", err)
+	}
+	if err := app.CancelClaudeAccountEnrollment(4); err != nil {
+		t.Fatalf("cancel after native restored to source: %v", err)
+	}
+	pool, _ = poolStore.Load(context.Background())
 	if pool.Transaction != nil {
-		t.Fatal("enrollment journal must be cleared after cancel")
+		t.Fatal("enrollment journal must be cleared after clean cancel")
 	}
 	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsManaged {
-		t.Fatalf("policy after cancel = %v, want managed", got)
+		t.Fatalf("policy after clean cancel = %v, want managed", got)
 	}
 }
 
 func TestFacade_OperationNotFoundAdvisesReread(t *testing.T) {
-	app, _, _ := newFacadeTestApp(t)
+	app, _, _, _ := newFacadeTestApp(t)
 	if _, err := app.GetClaudeAccountOperation("ca-nonexistent"); err == nil || !strings.Contains(err.Error(), "OPERATION_NOT_FOUND") {
 		t.Fatalf("unknown operation must advise re-read, got %v", err)
 	}

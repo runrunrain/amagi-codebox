@@ -75,6 +75,45 @@ func (a *App) claudeAccountsUnsupportedPlatform() bool {
 	return claudeaccounts.NewKeychainPoolStore().Kind() == "unsupported"
 }
 
+// claudeAccountsPoolMissingErr 返回「曾初始化的池已消失」的稳定错误（F10：
+// 与从未创建区分，fail closed 不当未启用）。
+func claudeAccountsPoolMissingErr() error {
+	return claudeaccounts.NewErr(claudeaccounts.ReasonPoolMissing,
+		"账号池曾被创建但现已缺失（可能被外部删除）；不会自动重建空池或覆盖原生登录，请到 Provider Center 恢复")
+}
+
+// claudeAccountsMarkerExists 报告「曾初始化」标记是否存在（不含秘密；F10）。
+func (a *App) claudeAccountsMarkerExists() bool {
+	if a == nil || a.claudeAccountsPoolMarkerPath == "" {
+		return false
+	}
+	_, err := os.Stat(a.claudeAccountsPoolMarkerPath)
+	return err == nil
+}
+
+// writeClaudeAccountsMarker 幂等写入「曾初始化」标记（池首次创建后调用；
+// F10：用于区分「从未创建」与「已创建后被外部删除」）。
+func (a *App) writeClaudeAccountsMarker() {
+	if a == nil || a.claudeAccountsPoolMarkerPath == "" {
+		return
+	}
+	if a.claudeAccountsMarkerExists() {
+		return
+	}
+	content := fmt.Sprintf("claude-accounts-pool-initialized\ncreated=%s\n", time.Now().Format(time.RFC3339))
+	if err := os.MkdirAll(filepath.Dir(a.claudeAccountsPoolMarkerPath), 0o700); err != nil {
+		if a.Log != nil {
+			a.Log.Warn("claude-accounts", "写入池初始化标记失败", err.Error())
+		}
+		return
+	}
+	if err := os.WriteFile(a.claudeAccountsPoolMarkerPath, []byte(content), 0o644); err != nil {
+		if a.Log != nil {
+			a.Log.Warn("claude-accounts", "写入池初始化标记失败", err.Error())
+		}
+	}
+}
+
 // claudeCredentialsPolicy 汇总缓存状态得出启动门禁结论。
 func (a *App) claudeCredentialsPolicy() claudeCredentialsLaunchPolicy {
 	if a == nil || a.claudeAccounts == nil || a.sharedCoord == nil {
@@ -220,6 +259,14 @@ func (a *App) beginClaudeCredentialsClaim(why string) (*claudeCredentialsClaim, 
 		//（design §9 Phase 3 验收），启动以稳定错误结束。
 		return nil, fmt.Errorf("SESSIONS_ACTIVE: 共享凭据切换/录入进行中，请稍后重试（%w）", err)
 	}
+	// F01：取得 claim 后再次校验同一权威状态——mutation 可能在 policy 读取与
+	// admission 获取之间完成（失败事务留 journal → blocked；代际通常不变，
+	// 仅比代际不能发现）。mutation 在释放 admission 前已发布权威状态，此处
+	// 重读必见最新结论；blocked 则释放 claim 拒绝启动，不放行混合认证。
+	if a.claudeCredentialsPolicy() == claudeCredentialsBlocked {
+		a.sharedCoord.ReleaseLaunchAdmission(admission)
+		return nil, a.claudeCredentialsBlockedError()
+	}
 	if a.Log != nil {
 		a.Log.Info("claude-accounts", "启动已取得共享凭据 admission", why)
 	}
@@ -228,9 +275,14 @@ func (a *App) beginClaudeCredentialsClaim(why string) (*claudeCredentialsClaim, 
 
 // recheckClaudeCredentialsClaim 在真正进程启动前复核 admission 指纹与当前池
 // 代际一致（外部终端路径；embedded 路径的复核由 lease 提升时指纹重算承担）。
+// F01：失败事务通常不增加代际，仅比指纹放不开混合认证——同时复核权威
+// policy，blocked（needs-reconcile/journal 残留）一律拒绝。
 func (a *App) recheckClaudeCredentialsClaim(claim *claudeCredentialsClaim) error {
 	if claim == nil {
 		return nil
+	}
+	if a.claudeCredentialsPolicy() == claudeCredentialsBlocked {
+		return a.claudeCredentialsBlockedError()
 	}
 	fingerprint, err := a.claudeCredentialsFingerprint()
 	if err != nil {
@@ -262,6 +314,17 @@ func (a *App) claudeCredentialsPlanCheck(planFingerprint [32]byte) error {
 	return nil
 }
 
+// claudeCredentialsAbsenceCheck 是 remote adapter 的无凭据计划边界接缝（F01：
+// absent 时构建的旧计划不含凭据 admission，首次 capture 后执行会绕过仅
+// 存在于 admission 循环内的新鲜度检查）。计划未携带凭据 admission 时，
+// 执行边界必须确认权威状态仍为 absent；managed/blocked → 拒绝执行。
+func (a *App) claudeCredentialsAbsenceCheck() error {
+	if a.claudeCredentialsPolicy() == claudeCredentialsAbsent {
+		return nil
+	}
+	return errClaudeCredentialsGenerationChanged
+}
+
 // ---------------------------------------------------------------------------
 // MutationGate / QuiescenceChecker 生产实现
 // ---------------------------------------------------------------------------
@@ -286,8 +349,37 @@ func (g claudeCredentialsMutationGate) Acquire(_ context.Context, _ string) (fun
 			return
 		}
 		released = true
+		// F01：在释放 mutation admission 之前发布权威 ready/blocked/generation。
+		// 否则「Service 返回（可能已留 journal）→ 释放 admission → App 刷新缓存」
+		// 之间存在交接窗口，桌面 launch/remote admission 检查可读到旧缓存放行
+		// 半切换会话。注意：release 在 Service 持有串行锁期间破调，不能用
+		// svc.LoadPool（非重入死锁），直接读 PoolStore。
+		app.publishClaudeAccountsAuthoritativeState()
 		app.sharedCoord.ReleaseMutationAdmission(admission)
 	}, nil
+}
+
+// publishClaudeAccountsAuthoritativeState 直接从 PoolStore 重读并更新门禁
+// 缓存（不经过 Service 串行锁；F01）。仅在「池已落盘、无并发写者」的边界
+// 调用（mutation admission 仍持有时只可能是刚完成写入的 mutation）。
+func (a *App) publishClaudeAccountsAuthoritativeState() {
+	if a == nil || a.claudeAccountsPoolStore == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := a.claudeAccountsPoolStore.Load(ctx)
+	a.claudeAccountsMu.Lock()
+	a.claudeAccountsPool = pool
+	a.claudeAccountsLoadErr = err
+	a.claudeAccountsMu.Unlock()
+	if pool != nil {
+		a.writeClaudeAccountsMarker()
+	} else if err == nil && a.claudeAccountsMarkerExists() {
+		a.claudeAccountsMu.Lock()
+		a.claudeAccountsLoadErr = claudeAccountsPoolMissingErr()
+		a.claudeAccountsMu.Unlock()
+	}
 }
 
 // claudeProcessSample 是进程观察器的一行样本（credential-free）。
@@ -330,14 +422,24 @@ func newProductionClaudeProcessLister() claudeProcessLister {
 	}
 }
 
-// claudeCredentialProcessNames 是保守匹配的可执行名（含 .exe 变体）。
+// claudeCredentialProcessNames 是保守匹配的可执行名（含 .exe 变体；F12：
+// 含官方 RPC 入口进程标题 pi-rpc——pi 安装源码 dist/rpc-entry.js 设置
+// process.title = APP_NAME + '-rpc'，逐字段 basename 精确 pi/claude 会漏掉）。
 var claudeCredentialProcessNames = map[string]bool{
 	"claude": true, "claude.exe": true, // Claude Code
 	"pi": true, "pi.exe": true, // Pi（canonical ~/.pi/agent）
+	"pi-rpc": true, "pi-rpc.exe": true, // Pi 官方 RPC 入口（--mode rpc 改标题）
+}
+
+// claudeCredentialProcessArgFragments 是参数级路径片段（F12：node 直跑官方
+// 包入口等启动形式可执行名不命中，按可验证包路径保守计入，宁可误报）。
+var claudeCredentialProcessArgFragments = []string{
+	"pi-coding-agent",
 }
 
 // claudeProcessArgsMatch 报告样本是否像 Claude Code / Pi 进程：可执行路径或
-// 任一参数的 basename 精确命中（保守：宁可误报阻塞切换，不漏报）。
+// 任一参数的 basename 精确命中，或任一字段含官方包路径片段（保守：宁可
+// 误报阻塞切换，不漏报）。
 func claudeProcessArgsMatch(args string) bool {
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
@@ -348,6 +450,11 @@ func claudeProcessArgsMatch(args string) bool {
 		if claudeCredentialProcessNames[strings.ToLower(base)] {
 			return true
 		}
+		for _, fragment := range claudeCredentialProcessArgFragments {
+			if strings.Contains(field, fragment) {
+				return true
+		}
+	}
 	}
 	return false
 }
@@ -412,16 +519,30 @@ func (q claudeProcessQuiescence) Check(_ context.Context) error {
 	return nil
 }
 
-// claudeQuiescenceAttribution 汇总 CodeBox 已知会话 PID（embedded PTY 与外部
-// Launcher 会话）作为观察器归因集合；归因只用于跳过自己的会话，不扩大放行
-// 面（匹配仍要求 claude/pi 可执行名）。
+// claudeQuiescenceAttribution 汇总「持有凭据 lease 的会话」PID 作为观察器
+// 归因集合（F02：静止检查不能仅凭「属于 CodeBox」豁免——absent 状态下启动
+// 的会话从未持有凭据 lease，首次启用前它们仍是活动消费者，必须计入静止
+// 条件；启用后正常会话持有 SharedServiceClaudeCredentials lease，其进程树
+// 由 coordinator 的 mutation 门保护，观察器跳过）。归因只用于跳过自己持
+// lease 的会话，不扩大放行面（匹配仍要求 claude/pi 形态）。
 func (a *App) claudeQuiescenceAttribution() map[int]bool {
 	out := map[int]bool{}
-	if a == nil || a.Sessions == nil {
+	if a == nil {
+		return out
+	}
+	holders := map[string]bool{}
+	a.sharedLeaseMu.Lock()
+	for key := range a.sharedLeases {
+		if key.Kind == remote.SharedServiceClaudeCredentials {
+			holders[string(key.SessionID)] = true
+		}
+	}
+	a.sharedLeaseMu.Unlock()
+	if len(holders) == 0 || a.Sessions == nil {
 		return out
 	}
 	for _, s := range a.Sessions.List() {
-		if s.PID > 0 {
+		if s.PID > 0 && holders[s.ID] {
 			out[s.PID] = true
 		}
 	}
@@ -541,12 +662,29 @@ func managedClaudeIdentityBoundarySpec(spec platform.ResolvedLaunchSpec) platfor
 // ---------------------------------------------------------------------------
 
 // refreshClaudeAccountsCache 重读池并更新启动门禁缓存（任何 service mutation
-// 与 Startup 恢复后调用）。 UNSUPPORTED_PLATFORM 平台保持 absent。
+// 与 Startup 恢复后调用）。 UNSUPPORTED_PLATFORM 平台保持 absent。F10：直接
+// 读 PoolStore（不经 Service 串行锁，与 publishClaudeAccountsAuthoritativeState
+// 同源），并维护「曾初始化」标记——已有池缺失时 fail closed 为 POOL_MISSING，
+// 不当从未启用。
 func (a *App) refreshClaudeAccountsCache(ctx context.Context) {
-	if a.claudeAccounts == nil {
+	if a.claudeAccountsPoolStore == nil {
+		// 测试/未装配场景回退 Service 路径。
+		if a.claudeAccounts == nil {
+			return
+		}
+		pool, err := a.claudeAccounts.LoadPool(ctx)
+		a.claudeAccountsMu.Lock()
+		a.claudeAccountsPool = pool
+		a.claudeAccountsLoadErr = err
+		a.claudeAccountsMu.Unlock()
 		return
 	}
-	pool, err := a.claudeAccounts.LoadPool(ctx)
+	pool, err := a.claudeAccountsPoolStore.Load(ctx)
+	if pool != nil {
+		a.writeClaudeAccountsMarker()
+	} else if err == nil && a.claudeAccountsMarkerExists() {
+		err = claudeAccountsPoolMissingErr()
+	}
 	a.claudeAccountsMu.Lock()
 	a.claudeAccountsPool = pool
 	a.claudeAccountsLoadErr = err

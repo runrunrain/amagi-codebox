@@ -117,6 +117,9 @@ type fakeKeychain struct {
 	readErr      error
 	updateErrAt  int // 第 N 次 UpdateItem 失败；0=不失败
 	updateCalls  int
+	// onRead 在每次 ReadItem 读取前回调（锁外；F03 测试：在指定读取处模拟
+	// 外部写入者刷新，覆盖「source 读后→提交前」窗口）。
+	onRead func()
 }
 
 func (f *fakeKeychain) LocateItem(ctx context.Context) (*KeychainLocator, error) {
@@ -145,6 +148,9 @@ func (f *fakeKeychain) find(account string) *fakeKCItem {
 }
 
 func (f *fakeKeychain) ReadItem(ctx context.Context, loc *KeychainLocator) ([]byte, error) {
+	if hook := f.onRead; hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.readErr != nil {

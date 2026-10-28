@@ -173,6 +173,9 @@ func TestSwapRefreshesExpiredStandbyPiGrant(t *testing.T) {
 	env.pool.mu.Unlock()
 
 	// 刷新端点返回新 token。
+	// F05：换入前必须现场验证刷新后新 token 的身份——给新 token 建立属于 A
+	// 的身份映射，验证通过才允许写入原生。
+	env.identityFake.responses["pi-a-fresh"] = ProfileIdentity{AccountUUID: syntheticUUIDA, OrganizationUUID: syntheticOrgA}
 	env.transport.handler = func(req *http.Request) (*http.Response, error) {
 		return httpResponse(200, `{"access_token":"pi-a-fresh","refresh_token":"pir-a-fresh","expires_in":3600}`), nil
 	}
