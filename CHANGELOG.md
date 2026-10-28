@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Claude 订阅账号轮换领域包（Phase 1a）**：新增 `internal/claudeaccounts`，实现双账号池 Keychain envelope 存储（专用 service `amagi-codebox.claude-accounts`，含 revision 回读验证与跨进程 flock）、Claude Code/Pi 三处原生凭据的字段级读写适配（ReadStable、原子写、locator 唯一匹配）、capture/enrollment/harvest/swap/reconcile 事务（journal 恢复决策表：before/after/混合 roll-forward/未知 needs-reconcile）、standby grant 受控 OAuth 刷新（Pi 协议常量已核实、Claude Code 协议留 adapterVersion 门待真机验证）、双 grant 身份配对校验与自动轮换配置值对象；含 62 项隔离测试（fake Keychain + tempdir 注入，不触真实凭据），接线（lease/facade/前端）待后续阶段。
+
 ## [1.3.120] - 2026-10-24
 
 ### Added
