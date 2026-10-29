@@ -47,7 +47,7 @@ func validateAdvisor(obj map[string]any) error {
 			}
 		}
 		for key := range target {
-			if key != "mode" && key != "socketPath" && key != "threadId" && key != "model" {
+			if key != "mode" && key != "socketPath" && key != "threadId" && key != "model" && key != "reasoningEffort" {
 				return errors.New("advisor.codex 含未知字段")
 			}
 		}
@@ -72,6 +72,12 @@ func validateAdvisor(obj map[string]any) error {
 					return errors.New("advisor.codex.model 无效")
 				}
 			}
+			if raw, exists := target["reasoningEffort"]; exists {
+				effort, ok := raw.(string)
+				if !ok || (effort != "low" && effort != "medium" && effort != "high" && effort != "xhigh" && effort != "max") {
+					return errors.New("advisor.codex.reasoningEffort 无效")
+				}
+			}
 		} else if mode == "existing" {
 			socket, ok := target["socketPath"].(string)
 			if !ok || !(socket == "auto" || strings.HasPrefix(socket, "/") || strings.HasPrefix(socket, `\\`) || regexp.MustCompile(`^[A-Za-z]:[\\/]`).MatchString(socket)) {
@@ -80,6 +86,9 @@ func validateAdvisor(obj map[string]any) error {
 			id, ok := target["threadId"].(string)
 			if !ok || !regexp.MustCompile(`^[a-zA-Z0-9-]{8,128}$`).MatchString(id) {
 				return errors.New("advisor.codex.threadId 无效")
+			}
+			if _, exists := target["reasoningEffort"]; exists {
+				return errors.New("既有聊天不接受思考档位覆盖")
 			}
 			if _, exists := target["model"]; exists {
 				return errors.New("既有聊天不接受模型覆盖")

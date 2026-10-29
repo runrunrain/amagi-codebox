@@ -83,7 +83,8 @@ set GO_VER=
 for /f "delims=" %%g in ('go env GOVERSION 2^>nul') do set GO_VER=%%g
 if not defined GO_VER set GO_VER=unknown
 echo [提示] 构建版本: %GIT_VERSION% (commit %GIT_COMMIT%, go: %GO_VER%)
-wails build -ldflags "-X main.Version=%GIT_VERSION% -X main.GitCommit=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME% -X main.GoVersion=%GO_VER%"
+rem -trimpath：路径归一化，多 worktree 共享 go-build 缓存，避免每棵树各缓存一套依赖
+wails build -trimpath -ldflags "-X main.Version=%GIT_VERSION% -X main.GitCommit=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME% -X main.GoVersion=%GO_VER%"
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [错误] 构建失败!

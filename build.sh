@@ -59,7 +59,9 @@ GO_VER="${GO_VER:-unknown}"
 
 echo "[提示] 构建版本: ${GIT_VERSION} (commit ${GIT_COMMIT}, go: ${GO_VER})"
 
-wails build -ldflags "-X main.Version=${GIT_VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.GoVersion=${GO_VER}"
+# -trimpath：路径归一化。多 worktree（.amagi-worktrees/*）共享同一份 go-build 编译缓存，
+# 避免每棵树因绝对路径不同各缓存一套依赖（曾致 ~/Library/Caches/go-build 膨胀至 14GB）。
+wails build -trimpath -ldflags "-X main.Version=${GIT_VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.GoVersion=${GO_VER}"
 
 if [ $? -eq 0 ]; then
     echo

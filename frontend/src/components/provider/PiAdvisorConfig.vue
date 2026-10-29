@@ -11,9 +11,11 @@
         <FieldLabel text="咨询会话" code="advisor.codex.mode" />
         <Segmented :model-value="target.mode || (target.threadId ? 'existing' : 'managed')" :options="[{value:'managed',label:'新建并自动续接'},{value:'existing',label:'指定已有聊天'}]" @update:model-value="changeSessionMode" />
         <template v-if="(target.mode || (target.threadId ? 'existing' : 'managed')) === 'managed'">
-          <p class="advisor-note">首次创建专用 Codex 咨询会话，后续自动续接。不同调用者及授权分别保存，保留本机 Codex 登录和咨询上下文。</p>
+          <p class="advisor-note">首次创建专用 Codex Work 咨询会话（不是普通 ChatGPT Chat），后续自动续接。不同调用者及授权分别保存，保留本机 Codex 登录和咨询上下文。</p>
           <FieldLabel text="Codex 模型（可选）" code="advisor.codex.model" />
-          <TextInput :model-value="target.model || ''" placeholder="留空使用本机 Codex 默认模型" mono @update:model-value="patchTarget({ model: $event || undefined })" />
+          <TextInput :model-value="target.model || ''" placeholder="默认 gpt-6-astra" mono @update:model-value="patchTarget({ model: $event || undefined })" />
+          <FieldLabel text="思考档位" code="advisor.codex.reasoningEffort" />
+          <Dropdown :model-value="target.reasoningEffort || 'high'" :options="['low','medium','high','xhigh','max'].map(v => ({value:v,label:v}))" @update:model-value="patchTarget({ reasoningEffort: $event })" />
         </template>
         <template v-else>
         <FieldLabel text="Codex 桌面共享连接" code="advisor.codex.socketPath" />
@@ -60,14 +62,14 @@ const emit = defineEmits<{ change: [value: any] }>();
 const mode = computed(() => advisorMode(props.value));
 const target = computed(() => props.value?.codex || {});
 const error = computed(() => validateAdvisorConfig({ advisor: props.value }));
-const modes = [{value:'unset',label:'未配置'},{value:'off',label:'关闭'},{value:'pi',label:'pi 内模型'},{value:'codex-chat',label:'Codex 桌面聊天'}];
+const modes = [{value:'unset',label:'未配置'},{value:'off',label:'关闭'},{value:'pi',label:'pi 内模型'},{value:'codex-chat',label:'Codex Work 咨询'}];
 function patch(value: Record<string, unknown>) { emit('change', { ...props.value, ...value }); }
 function patchTarget(value: Record<string, unknown>) { patch({ codex: { ...target.value, ...value } }); connected.value = false; probeError.value = ''; }
-function changeSessionMode(mode: string) { patch({ codex: mode === 'managed' ? { mode: 'managed' } : { mode: 'existing', socketPath: 'auto', threadId: '' } }); chats.value = []; connected.value = false; probeError.value = ''; }
+function changeSessionMode(mode: string) { patch({ codex: mode === 'managed' ? { mode: 'managed', model: 'gpt-6-astra', reasoningEffort: 'high' } : { mode: 'existing', socketPath: 'auto', threadId: '' } }); chats.value = []; connected.value = false; probeError.value = ''; }
 function changeMode(value: string) {
   if (value === 'unset') { emit('change', undefined); return; }
   const next = { ...props.value, backend: value === 'codex-chat' ? 'codex-chat' : 'pi' };
-  if (value === 'codex-chat') next.codex = Object.keys(target.value).length ? { ...target.value } : { mode: 'managed' };
+  if (value === 'codex-chat') next.codex = Object.keys(target.value).length ? { ...target.value } : { mode: 'managed', model: 'gpt-6-astra', reasoningEffort: 'high' };
   else { delete next.codex; next.model = value === 'off' ? null : typeof next.model === 'string' ? next.model : ''; }
   emit('change', next);
 }

@@ -11,12 +11,12 @@ import (
 )
 
 func TestAdvisorConfigValidation(t *testing.T) {
-	for _, good := range []string{`{"advisor":{"model":"openai-codex/strong:high","roles":["luban"],"leader":true,"maxCalls":5}}`, `{"advisor":{"model":null}}`, `{"advisor":{"backend":"codex-chat","codex":{"mode":"managed"}}}`, `{"advisor":{"backend":"codex-chat","codex":{"socketPath":"/tmp/desktop.sock","threadId":"test-thread-123"},"timeoutMs":1000}}`} {
+	for _, good := range []string{`{"advisor":{"backend":"codex-chat","codex":{"mode":"managed","model":"gpt-6-astra","reasoningEffort":"high"}}}`, `{"advisor":{"model":"openai-codex/strong:high","roles":["luban"],"leader":true,"maxCalls":5}}`, `{"advisor":{"model":null}}`, `{"advisor":{"backend":"codex-chat","codex":{"mode":"managed"}}}`, `{"advisor":{"backend":"codex-chat","codex":{"socketPath":"/tmp/desktop.sock","threadId":"test-thread-123"},"timeoutMs":1000}}`} {
 		if err := ValidateAmagiConfig(good); err != nil {
 			t.Fatalf("valid advisor: %v", err)
 		}
 	}
-	for _, bad := range []string{`{"advisor":{"model":"plain"}}`, `{"advisor":{"model":"a/b","maxCalls":0}}`, `{"advisor":{"model":"a/b","roles":[true]}}`, `{"advisor":{"backend":"other"}}`, `{"advisor":{"backend":"codex-chat","codex":{"socketPath":"relative","threadId":"test-thread-123"}}}`, `{"advisor":{"backend":"codex-chat","codex":{"socketPath":"/tmp/desktop.sock","threadId":""}}}`, `{"advisor":{"model":"a/b","secret":"PRIVATE"}}`} {
+	for _, bad := range []string{`{"advisor":{"backend":"codex-chat","codex":{"mode":"managed","reasoningEffort":"extreme"}}}`, `{"advisor":{"backend":"codex-chat","codex":{"mode":"existing","socketPath":"auto","threadId":"test-thread-123","reasoningEffort":"high"}}}`, `{"advisor":{"model":"plain"}}`, `{"advisor":{"model":"a/b","maxCalls":0}}`, `{"advisor":{"model":"a/b","roles":[true]}}`, `{"advisor":{"backend":"other"}}`, `{"advisor":{"backend":"codex-chat","codex":{"socketPath":"relative","threadId":"test-thread-123"}}}`, `{"advisor":{"backend":"codex-chat","codex":{"socketPath":"/tmp/desktop.sock","threadId":""}}}`, `{"advisor":{"model":"a/b","secret":"PRIVATE"}}`} {
 		err := ValidateAmagiConfig(bad)
 		if err == nil {
 			t.Fatal("invalid advisor accepted")

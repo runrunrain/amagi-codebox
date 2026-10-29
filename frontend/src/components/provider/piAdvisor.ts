@@ -13,15 +13,16 @@ export function validateAdvisorConfig(config: Record<string, any>): string {
   if (c.backend !== undefined && !['pi', 'codex-chat'].includes(c.backend)) return 'advisor.backend 只允许 pi/codex-chat';
   if (c.backend === 'codex-chat') {
     const t = c.codex === undefined ? { mode: 'managed' } : c.codex;
-    if (!t || typeof t !== 'object' || Array.isArray(t) || Object.keys(t).some(k => !['mode', 'socketPath', 'threadId', 'model'].includes(k))) return 'Codex 配置字段无效';
+    if (!t || typeof t !== 'object' || Array.isArray(t) || Object.keys(t).some(k => !['mode', 'socketPath', 'threadId', 'model', 'reasoningEffort'].includes(k))) return 'Codex 配置字段无效';
     const mode = t.mode ?? (t.threadId ? 'existing' : 'managed');
     if (mode === 'managed') {
       if (t.threadId !== undefined || t.socketPath !== undefined) return '自有咨询会话不接受其他聊天 ID 或共享连接';
       if (t.model !== undefined && (typeof t.model !== 'string' || !/^\S+$/.test(t.model))) return 'Codex 模型 ID 无效';
+      if (t.reasoningEffort !== undefined && !['low','medium','high','xhigh','max'].includes(t.reasoningEffort)) return 'Codex 思考档位无效';
     } else if (mode === 'existing') {
       if (typeof t.socketPath !== 'string' || (t.socketPath !== 'auto' && !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(t.socketPath))) return '请填写 Codex 桌面共享 socket 的本机绝对路径或 auto';
       if (typeof t.threadId !== 'string' || !/^[a-zA-Z0-9-]{8,128}$/.test(t.threadId)) return '请选择或填写 Codex 目标聊天 ID';
-      if (t.model !== undefined) return '既有聊天不接受模型覆盖';
+      if (t.model !== undefined || t.reasoningEffort !== undefined) return '既有聊天不接受模型或思考档位覆盖';
     } else return 'Codex 会话方式无效';
 
   } else {
