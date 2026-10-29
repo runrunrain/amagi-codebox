@@ -275,6 +275,12 @@ func claudeJSONAccountUUID(oauthAccount json.RawMessage) string {
 	return gjson.GetBytes(oauthAccount, "accountUuid").String()
 }
 
+// claudeJSONOrganizationUUID 从 oauthAccount 取 organizationUuid（缺失返回空串；F05
+// 目标本地 identity 组织配对用）。
+func claudeJSONOrganizationUUID(oauthAccount json.RawMessage) string {
+	return gjson.GetBytes(oauthAccount, "organizationUuid").String()
+}
+
 // claudeJSONEmail 从 oauthAccount 取展示邮箱（仅展示用，design §4.2）。
 func claudeJSONEmail(oauthAccount json.RawMessage) string {
 	return gjson.GetBytes(oauthAccount, "emailAddress").String()

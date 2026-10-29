@@ -91,18 +91,38 @@ func TestSwapSecondHarvestReplacesJournalBefore(t *testing.T) {
 
 	// B′ 属于账号 B（harvest 的身份校验需要）。
 	env.identityFake.responses["cc-b-2"] = ProfileIdentity{AccountUUID: syntheticUUIDB, OrganizationUUID: syntheticOrgB}
-	// Swap 读序：1=harvest（B）、2=current2——在第 2 次读取前外部刷新为 B′。
-	countKeychainReads(env, 2, func() {
-		env.keychain.mu.Lock()
-		env.keychain.items[0].data = syntheticKeychainItem("cc-b-2")
-		env.keychain.mu.Unlock()
-	})
+	// Swap 读序（每次 ReadStable = 探测+实读两次 ReadItem，见 F03-A）：
+	// 1-2=第一次 harvest（必须看到 B）、3-4=current2。第 3 读前外部刷新为
+	// B′——第一次 harvest 完整读到 B，current2 稳定读到 B′，才真正覆盖
+	//「两次 harvest 之间源刷新」窗口（此前注入在第 2 读，落在第一次
+	// harvest 内部，两次 harvest 都看到 B′，测试不覆盖目标缺陷）。
+	firstHarvestSawB := false
+	reads := 0
+	env.keychain.onRead = func() {
+		reads++
+		if reads == 2 {
+			env.keychain.mu.Lock()
+			firstHarvestSawB = strings.Contains(string(env.keychain.items[0].data), "cc-b-1")
+			env.keychain.mu.Unlock()
+		}
+		if reads == 3 {
+			env.keychain.mu.Lock()
+			env.keychain.items[0].data = syntheticKeychainItem("cc-b-2")
+			env.keychain.mu.Unlock()
+		}
+	}
 	// 首次原生写入（CC patch）失败：崩溃于 prepared 后第一写。
 	env.keychain.updateErrAt = 1
 
 	_, err := env.svc.Swap(context.Background(), SwapRequest{TargetID: idA, Reason: SwapReasonManual, ExpectedGeneration: pool.ActiveGeneration})
 	if err == nil {
 		t.Fatal("注入的写入失败必须上抛")
+	}
+	if !firstHarvestSawB {
+		t.Fatal("测试前提失效：第一次 harvest 必须读到 B（注入点落在第一次 harvest 之后）")
+	}
+	if reads < 4 {
+		t.Fatalf("测试前提失效：current2 未发生（ReadItem 次数=%d）", reads)
 	}
 	// F03-B 核心：before 与 expected 来自同一次（第二次 harvest 后的）快照——
 	// 全 before 分类成立 → journal 清除、源仍活动，且快照已回收 B′。

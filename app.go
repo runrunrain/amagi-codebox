@@ -420,12 +420,17 @@ type App struct {
 	// Claude 订阅账号轮换（design §2/§6.3/§7.2）：未导出领域服务 + 启动门禁
 	// 缓存。claudeAccountsPool 为池快照（nil = 无池，未启用）；loadErr 非空 =
 	// 池不可用（blocked）；recovered 在 Startup 恢复完成后置位（§4.5 时序）。
-	claudeAccounts            *claudeaccounts.Service
-	claudeAccountsMu          sync.RWMutex
-	claudeAccountsPool        *claudeaccounts.AccountPool
-	claudeAccountsLoadErr     error
-	claudeAccountsUnsupported bool
-	claudeAccountsRecovered   bool
+	claudeAccounts   *claudeaccounts.Service
+	claudeAccountsMu sync.RWMutex
+	// 发布序列锁只覆盖 PoolStore.Load→标记→缓存发布；不得在此锁内取 Service 锁。
+	claudeAccountsPublishMu sync.Mutex
+	// 隔离测试的语义屏障：claim 已取得、认证/进程副作用尚未发生。
+	claudeCredentialsLaunchCheckpoint func() error
+	claudeAccountsRecoveryCheckpoint  func()
+	claudeAccountsPool                *claudeaccounts.AccountPool
+	claudeAccountsLoadErr             error
+	claudeAccountsUnsupported         bool
+	claudeAccountsRecovered           bool
 	// claudeAccountsPoolStore 是池存储直接引用（F01：mutation 释放前发布权威
 	// 状态不经 Service 串行锁；F10：「曾初始化」标记判定）。
 	claudeAccountsPoolStore claudeaccounts.PoolStore
@@ -2574,8 +2579,8 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	workDir = resolvedWorkDir
 
 	// Claude 订阅账号轮换（design §6.3）：在认证读取/配置写入与进程副作用
-	// 之前取得共享凭据 admission。未启用（无池/平台不支持）返回 nil 零行为
-	// 变化；blocked（needs-reconcile/未结事务/池损坏/启动恢复未完成）拒绝
+	// 之前取得共享凭据 admission。无池时也取过渡 reservation，但不改身份
+	// 环境；无后端/平台不支持返回 nil。blocked（needs-reconcile/未结事务/池损坏/启动恢复未完成）拒绝
 	// 受管启动；HOME 重定向到独立根的会话不持 lease（可证明不读 canonical
 	// 身份文件）；受管 OAuth 登录启动要求 canonical 身份路径可证明。
 	claudeCredentials, credErr := a.beginClaudeCredentialsClaim("launch-claude")
@@ -2583,9 +2588,14 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		return "", credErr
 	}
 	defer func() { claudeCredentials.release(a) }()
+	if a.claudeCredentialsLaunchCheckpoint != nil {
+		if err := a.claudeCredentialsLaunchCheckpoint(); err != nil {
+			return "", err
+		}
+	}
 	if claudeCredentials != nil {
 		if override := managedHomeOverride(a.EnvVars.MergeWithSystem()); override != "" {
-			if provider.IsOAuthMode() {
+			if provider.IsOAuthMode() && !claudeCredentials.absent {
 				// design §6.3：自定义 HOME 使 canonical 身份路径不可证明 → 拒绝
 				// 受管启动并给出具体变量名，不修改用户全局 shell 文件。
 				return "", fmt.Errorf("REVISION_CONFLICT: 受管 OAuth 启动拒绝：环境变量 %s 重定向了身份根目录，无法证明 canonical 凭据路径", override)
@@ -2727,7 +2737,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			claudeCredentials.release(a)
 			claudeCredentials = nil
 		}
-		if claudeCredentials != nil && provider.IsOAuthMode() {
+		if claudeCredentials != nil && !claudeCredentials.absent && provider.IsOAuthMode() {
 			spec = managedClaudeIdentityBoundarySpec(spec)
 		}
 
@@ -2846,7 +2856,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	// 一键集）；旧 ComputeEnvOverrides 只清 ANTHROPIC_API_KEY/AUTH_TOKEN/
 	// BASE_URL，不清 CLAUDE_CODE_* 身份变量。
 	externalIdentityStrip := []string(nil)
-	if claudeCredentials != nil && provider.IsOAuthMode() {
+	if claudeCredentials != nil && !claudeCredentials.absent && provider.IsOAuthMode() {
 		externalIdentityStrip = managedClaudeIdentityEnvKeys
 	}
 	result, err := external.LaunchGuarded(
@@ -3762,7 +3772,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		return "", credErr
 	}
 	defer func() { claudeCredentials.release(a) }()
-	if claudeCredentials != nil && loginPreset != nil && wslDistro != "" {
+	if claudeCredentials != nil && !claudeCredentials.absent && loginPreset != nil && wslDistro != "" {
 		return "", errors.New("UNSUPPORTED_PLATFORM: 已启用 Claude 订阅账号管理，WSL Pi 登录会话暂不支持（v1），请使用宿主侧 Pi 登录")
 	}
 
@@ -3924,7 +3934,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// Claude 订阅账号轮换：spec 定谳后的目标判据——WSL（distro 独立根）
 		// 不持有凭据 lease；WSL 登录在入口已拒绝，此处兑底不可达分支。
 		if spec.BootstrapMode == platform.BootstrapWSL && claudeCredentials != nil {
-			if loginPreset != nil {
+			if loginPreset != nil && !claudeCredentials.absent {
 				err := errors.New("UNSUPPORTED_PLATFORM: 已启用 Claude 订阅账号管理，WSL Pi 登录会话暂不支持（v1）")
 				a.Sessions.MarkFailed(sess.ID, err.Error())
 				return "", err

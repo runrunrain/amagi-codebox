@@ -120,6 +120,9 @@ type fakeKeychain struct {
 	// onRead 在每次 ReadItem 读取前回调（锁外；F03 测试：在指定读取处模拟
 	// 外部写入者刷新，覆盖「source 读后→提交前」窗口）。
 	onRead func()
+	// afterUpdate 在每次成功 UpdateItem 后回调（持 keychain 锁；只能触碰
+	// 其他 fake。R02 测试：Patch 成功后令下一次池进度 Save 失败）。
+	afterUpdate func()
 }
 
 func (f *fakeKeychain) LocateItem(ctx context.Context) (*KeychainLocator, error) {
@@ -175,6 +178,9 @@ func (f *fakeKeychain) UpdateItem(ctx context.Context, loc *KeychainLocator, ite
 		return NewErr(ReasonNeedsLogin, "Claude Code Keychain 凭据项不存在")
 	}
 	target.data = append([]byte(nil), item...)
+	if hook := f.afterUpdate; hook != nil {
+		hook()
+	}
 	return nil
 }
 

@@ -166,7 +166,7 @@ func (s *Service) reconcileLocked(ctx context.Context, pool *AccountPool, gateRe
 				pending = append(pending, key)
 			}
 		}
-		if err := s.applyAndCommitLocked(ctx, pool, journal, SwapReasonRecovered, 0, pending); err != nil {
+		if err := s.applyAndCommitLocked(ctx, pool, journal, SwapReasonRecovered, 0, pending, current); err != nil {
 			return ReconcileOutcome{Action: ReconcileNeedsReconcile, TxnID: journal.TxnID, ReasonCode: string(ReasonOf(err))}, err
 		}
 		return ReconcileOutcome{Action: ReconcileRolledForward, TxnID: journal.TxnID, ActiveID: journal.TargetID, Generation: journal.FromGeneration + 1}, nil
@@ -210,13 +210,13 @@ func generationOf(pool *AccountPool) uint64 {
 // NativeStateReport 是 InspectNativeState 的只读分类报告（零写入，
 // design §7.2 action=inspect 语义）。
 type NativeStateReport struct {
-	HasJournal          bool                  `json:"hasJournal"`
-	JournalPhase        SwapPhase             `json:"journalPhase,omitempty"`
-	Classifications     map[ProjectionKey]string `json:"classifications,omitempty"`
-	MatchesActiveSnapshot bool                `json:"matchesActiveSnapshot"`
-	ExternalChangeSuspected bool              `json:"externalChangeSuspected"`
-	ActiveID            string                `json:"activeId,omitempty"`
-	Generation          uint64                `json:"generation"`
+	HasJournal              bool                     `json:"hasJournal"`
+	JournalPhase            SwapPhase                `json:"journalPhase,omitempty"`
+	Classifications         map[ProjectionKey]string `json:"classifications,omitempty"`
+	MatchesActiveSnapshot   bool                     `json:"matchesActiveSnapshot"`
+	ExternalChangeSuspected bool                     `json:"externalChangeSuspected"`
+	ActiveID                string                   `json:"activeId,omitempty"`
+	Generation              uint64                   `json:"generation"`
 }
 
 // InspectNativeState 零写入地分类当前原生槽位与池/事务的关系。
@@ -318,13 +318,28 @@ func (s *Service) AdoptCurrentLogin(ctx context.Context, expectedRevision uint64
 // 1) 未结 RefreshIntent → 对应 grant 标 refresh-uncertain（退出自动候选）；
 // 2) 未结 swap 事务 → 在取得 admission 后按恢复决策表处理。
 func (s *Service) RecoverAtStartup(ctx context.Context) (ReconcileOutcome, error) {
-	release, err := s.withLocks(ctx, "recover-startup")
+	return s.recover(ctx, "recover-startup", nil)
+}
+
+// RecoverTransaction 是人工恢复命令（facade complete-target）的领域入口
+// （F06）：与 RecoverAtStartup 相同的恢复语义，但在同一 withLocks 区间内、
+// 任何写入前校验 guard（expectedRevision / 所选 journal）——检查与执行
+// 不再分属不同锁区间。
+func (s *Service) RecoverTransaction(ctx context.Context, guard RecoveryGuard) (ReconcileOutcome, error) {
+	return s.recover(ctx, "recover-transaction", &guard)
+}
+
+func (s *Service) recover(ctx context.Context, step string, guard *RecoveryGuard) (ReconcileOutcome, error) {
+	release, err := s.withLocks(ctx, step)
 	if err != nil {
 		return ReconcileOutcome{}, err
 	}
 	defer release()
 	pool, err := s.loadPoolLocked(ctx)
 	if err != nil {
+		return ReconcileOutcome{}, err
+	}
+	if err := guard.checkLocked(pool); err != nil {
 		return ReconcileOutcome{}, err
 	}
 	if pool == nil {
@@ -349,7 +364,7 @@ func (s *Service) RecoverAtStartup(ctx context.Context) (ReconcileOutcome, error
 	}
 	// swap 事务：取得 admission 后恢复；admission 被拒时保留事务并返回
 	// pending（等待会话退出后重试）。
-	gateRelease, gerr := s.acquireGate(ctx, "recover-startup")
+	gateRelease, gerr := s.acquireGate(ctx, step)
 	if gerr != nil {
 		return ReconcileOutcome{Action: ReconcileRollForwardPending, TxnID: pool.Transaction.Swap.TxnID, ActiveID: pool.ActiveAccountID, Generation: pool.ActiveGeneration, ReasonCode: string(ReasonOf(gerr))}, nil
 	}

@@ -220,8 +220,29 @@ func cliConsumesClaudeCredentials(cli contract.CLIType) bool {
 	return cli == contract.CLITypeClaudeCode || cli == contract.CLITypePi
 }
 
-// verifyCredentialPlanAbsence 在受影响 CLI 的计划不携带凭据 admission 时，
-// 确认权威状态仍为 absent（F01）。返回 true 表示可继续执行。
+// reserveCredentialPlanAbsence closes the check→Prepare→Start window. The
+// reservation is not an identity/config admission: absent plans remain unchanged.
+func (a *RemoteSessionAdapter) reserveCredentialPlanAbsence(cli contract.CLIType, hasCredentialAdmission bool) (func(), error) {
+	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
+		return func() {}, nil
+	}
+	if a.sharedCoord == nil {
+		return nil, errSharedCredentialPlanStale
+	}
+	reservation, err := a.sharedCoord.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, [32]byte{})
+	if err != nil {
+		return nil, err
+	}
+	release := func() { a.sharedCoord.ReleaseLaunchAdmission(reservation) }
+	if err := a.credentialAbsenceCheck(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// verifyCredentialPlanAbsence 是早期拒绝检查；执行互斥由上面的 reservation
+// 保证，不能把本次瞬时检查当作启动屏障。
 func (a *RemoteSessionAdapter) verifyCredentialPlanAbsence(cli contract.CLIType, hasCredentialAdmission bool) bool {
 	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
 		return true
@@ -621,6 +642,18 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 		abortReservation()
 		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 	}
+
+	// absent 也持过渡 reservation 至 Prepare/全部启动副作用结束；获取后再
+	// 检查状态。mutation 与 reservation 在同一个 coordinator 中原子互斥。
+	absenceRelease, absenceErr := a.reserveCredentialPlanAbsence(contract.CLIType(plan.Recipe.CLIType), hasCredentialAdmission)
+	if absenceErr != nil {
+		releaseAdmissions()
+		plan.Secrets.Dispose()
+		a.gate.AbortLaunch(ctx, launchPermit, absenceErr)
+		abortReservation()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	defer absenceRelease()
 
 	// 6. Executor Prepare (all effect allocations; opaque exact run handle).
 	execution, err := a.executor.Prepare(ctx, plan, launchplan.ExecutionBinding{
@@ -1116,6 +1149,15 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
 		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 	}
+
+	absenceRelease, absenceErr := a.reserveCredentialPlanAbsence(contract.CLIType(snapshot.CLIType), hasCredentialAdmission)
+	if absenceErr != nil {
+		releaseAdmissions()
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	defer absenceRelease()
 
 	var (
 		restartPermit     *operationPermit

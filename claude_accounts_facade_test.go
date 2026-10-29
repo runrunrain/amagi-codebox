@@ -53,6 +53,7 @@ func nativeMatchingA() *claudeaccounts.NativeProjections {
 func newFacadeTestApp(t *testing.T) (*App, *fakePoolStore, *fakeNativeStore, *fakeIdentityProvider) {
 	t.Helper()
 	app := newGateTestApp(t)
+	app.claudeAccountsPoolMarkerPath = t.TempDir() + "/pool-initialized"
 	pool := twoAccountPool()
 	native := nativeMatchingA()
 	// F05：换入前目标双 grant 现场验证需要可控身份响应（真实网络不可用）。
@@ -64,6 +65,7 @@ func newFacadeTestApp(t *testing.T) (*App, *fakePoolStore, *fakeNativeStore, *fa
 	}}
 	svc, poolStore, nativeStore := newRotationTestService(t, app, pool, native, identity)
 	app.claudeAccounts = svc
+	app.claudeAccountsPoolStore = poolStore
 	setClaudeAccountsCache(app, pool, nil, true)
 	return app, poolStore, nativeStore, identity
 }
@@ -163,6 +165,8 @@ func refreshFacadePool(t *testing.T, app *App, poolStore *fakePoolStore) {
 		t.Fatalf("NewService: %v", err)
 	}
 	app.claudeAccounts = svc
+	app.claudeAccountsPoolStore = poolStore
+	app.claudeAccountsPoolMarkerPath = dir + "/pool-initialized"
 	app.refreshClaudeAccountsCache(context.Background())
 }
 

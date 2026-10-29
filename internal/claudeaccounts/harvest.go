@@ -206,11 +206,37 @@ func (s *Service) verifyTargetGrantsLocked(ctx context.Context, pool *AccountPoo
 	if ccID.AccountUUID != piID.AccountUUID {
 		return NewErr(ReasonIdentityMismatch, "目标两份 grant 不属于同一账号，拒绝写入原生槽位")
 	}
-	if ccID.OrganizationUUID != "" && snap.Identity.OrganizationUUID != "" &&
-		ccID.OrganizationUUID != snap.Identity.OrganizationUUID {
-		return NewErr(ReasonIdentityMismatch, "目标 Claude grant 组织与账号记录不符，拒绝写入原生槽位")
+	// F05 残留：组织配对是三方全等契约——目标记录、CC grant、Pi grant 的组织
+	// 必须已知且完全一致。任一端组织与其他端
+	// 不同，或只有一端报告组织（未知语义不能静默当作通过），一律拒绝；不把
+	// 单端检查称为双端组织验证。
+	if err := verifyOrganizationTriple(snap.Identity.OrganizationUUID, ccID.OrganizationUUID, piID.OrganizationUUID); err != nil {
+		return err
+	}
+	// 目标本地 identity 配对：将写入 .claude.json 的 oauthAccount 必须属于
+	// 同一账号（accountUuid 一致；如带 organizationUuid 也须与记录一致）。
+	if snap.ClaudeIdentity.OauthAccount == nil {
+		return NewErr(ReasonIdentityUnverified, "目标账号缺少本地 identity 投影")
+	}
+	if local := claudeJSONAccountUUID(snap.ClaudeIdentity.OauthAccount); local != snap.Identity.AccountUUID {
+		return NewErr(ReasonIdentityMismatch, "目标本地 identity 与账号身份不符，拒绝写入原生槽位")
+	}
+	if localOrg := claudeJSONOrganizationUUID(snap.ClaudeIdentity.OauthAccount); localOrg != "" && localOrg != snap.Identity.OrganizationUUID {
+		return NewErr(ReasonIdentityMismatch, "目标本地 identity 组织与账号记录不符，拒绝写入原生槽位")
 	}
 	return nil
+}
+
+// verifyOrganizationTriple 校验目标记录/CC/Pi 三方组织已知且全等（F05）。
+// 全部为空也不能证明组织配对，显式拒绝。
+func verifyOrganizationTriple(recorded, cc, pi string) error {
+	if recorded == "" || cc == "" || pi == "" {
+		return NewErr(ReasonIdentityUnverified, "目标组织身份无法在记录与两份 grant 间完整配对（存在未报告组织的一端），拒绝写入原生槽位")
+	}
+	if recorded == cc && cc == pi {
+		return nil
+	}
+	return NewErr(ReasonIdentityMismatch, "目标组织与账号记录或另一端 grant 不符，拒绝写入原生槽位")
 }
 
 func grantHealthGate(health GrantHealth, kind string) error {

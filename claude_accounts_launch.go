@@ -82,36 +82,50 @@ func claudeAccountsPoolMissingErr() error {
 		"账号池曾被创建但现已缺失（可能被外部删除）；不会自动重建空池或覆盖原生登录，请到 Provider Center 恢复")
 }
 
-// claudeAccountsMarkerExists 报告「曾初始化」标记是否存在（不含秘密；F10）。
-func (a *App) claudeAccountsMarkerExists() bool {
-	if a == nil || a.claudeAccountsPoolMarkerPath == "" {
-		return false
+// claudeAccountsMarkerStatus 仅把 ENOENT 判为未启用，其他错误必须阻塞。
+func (a *App) claudeAccountsMarkerStatus() (bool, error) {
+	if a.claudeAccountsPoolMarkerPath == "" {
+		return false, fmt.Errorf("池存在性标记路径不可用")
 	}
-	_, err := os.Stat(a.claudeAccountsPoolMarkerPath)
-	return err == nil
+	info, err := os.Stat(a.claudeAccountsPoolMarkerPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("池存在性标记不是普通文件")
+	}
+	return true, nil
 }
 
 // writeClaudeAccountsMarker 幂等写入「曾初始化」标记（池首次创建后调用；
 // F10：用于区分「从未创建」与「已创建后被外部删除」）。
-func (a *App) writeClaudeAccountsMarker() {
-	if a == nil || a.claudeAccountsPoolMarkerPath == "" {
-		return
+func (a *App) writeClaudeAccountsMarker() error {
+	exists, err := a.claudeAccountsMarkerStatus()
+	if err != nil || exists {
+		return err
 	}
-	if a.claudeAccountsMarkerExists() {
-		return
-	}
-	content := fmt.Sprintf("claude-accounts-pool-initialized\ncreated=%s\n", time.Now().Format(time.RFC3339))
 	if err := os.MkdirAll(filepath.Dir(a.claudeAccountsPoolMarkerPath), 0o700); err != nil {
-		if a.Log != nil {
-			a.Log.Warn("claude-accounts", "写入池初始化标记失败", err.Error())
-		}
-		return
+		return err
 	}
-	if err := os.WriteFile(a.claudeAccountsPoolMarkerPath, []byte(content), 0o644); err != nil {
-		if a.Log != nil {
-			a.Log.Warn("claude-accounts", "写入池初始化标记失败", err.Error())
-		}
+	// 内容无秘密。先同步文件再同步目录；失败不得宣布 managed。
+	f, err := os.OpenFile(a.claudeAccountsPoolMarkerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
 	}
+	_, writeErr := f.WriteString("claude-accounts-pool-initialized\n")
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(a.claudeAccountsPoolMarkerPath))
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
 }
 
 // claudeCredentialsPolicy 汇总缓存状态得出启动门禁结论。
@@ -225,6 +239,8 @@ type claudeCredentialsClaim struct {
 	admission   *remote.SharedLaunchAdmission
 	fingerprint [32]byte
 	released    bool
+	// absent reservation 与 managed claim 共用 admission，但不改变身份环境。
+	absent bool
 }
 
 // release 幂等释放未提升的 admission（提升成功后释放是 no-op，coordinator
@@ -240,13 +256,14 @@ func (c *claudeCredentialsClaim) release(a *App) {
 }
 
 // beginClaudeCredentialsClaim 在认证读取/配置写入/进程副作用之前取得凭据
-// admission（design §6.3）。返回 nil 表示未启用/平台不支持（零行为变化）；
-// blocked 状态返回稳定错误关闭受影响启动入口。
+// admission（design §6.3）。无池也持有 reservation 直到启动/退出交接，但
+// 不改身份环境；nil 仅表示无后端/平台不支持。blocked 返回稳定错误。
 func (a *App) beginClaudeCredentialsClaim(why string) (*claudeCredentialsClaim, error) {
-	switch a.claudeCredentialsPolicy() {
-	case claudeCredentialsAbsent:
+	if a == nil || a.claudeAccounts == nil || a.sharedCoord == nil || a.claudeAccountsUnsupported {
 		return nil, nil
-	case claudeCredentialsBlocked:
+	}
+	policy := a.claudeCredentialsPolicy()
+	if policy == claudeCredentialsBlocked {
 		return nil, a.claudeCredentialsBlockedError()
 	}
 	fingerprint, err := a.claudeCredentialsFingerprint()
@@ -263,14 +280,17 @@ func (a *App) beginClaudeCredentialsClaim(why string) (*claudeCredentialsClaim, 
 	// admission 获取之间完成（失败事务留 journal → blocked；代际通常不变，
 	// 仅比代际不能发现）。mutation 在释放 admission 前已发布权威状态，此处
 	// 重读必见最新结论；blocked 则释放 claim 拒绝启动，不放行混合认证。
-	if a.claudeCredentialsPolicy() == claudeCredentialsBlocked {
+	if current := a.claudeCredentialsPolicy(); current != policy {
 		a.sharedCoord.ReleaseLaunchAdmission(admission)
-		return nil, a.claudeCredentialsBlockedError()
+		if current == claudeCredentialsBlocked {
+			return nil, a.claudeCredentialsBlockedError()
+		}
+		return nil, errClaudeCredentialsGenerationChanged
 	}
 	if a.Log != nil {
 		a.Log.Info("claude-accounts", "启动已取得共享凭据 admission", why)
 	}
-	return &claudeCredentialsClaim{admission: admission, fingerprint: fingerprint}, nil
+	return &claudeCredentialsClaim{admission: admission, fingerprint: fingerprint, absent: policy == claudeCredentialsAbsent}, nil
 }
 
 // recheckClaudeCredentialsClaim 在真正进程启动前复核 admission 指纹与当前池
@@ -368,18 +388,7 @@ func (a *App) publishClaudeAccountsAuthoritativeState() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pool, err := a.claudeAccountsPoolStore.Load(ctx)
-	a.claudeAccountsMu.Lock()
-	a.claudeAccountsPool = pool
-	a.claudeAccountsLoadErr = err
-	a.claudeAccountsMu.Unlock()
-	if pool != nil {
-		a.writeClaudeAccountsMarker()
-	} else if err == nil && a.claudeAccountsMarkerExists() {
-		a.claudeAccountsMu.Lock()
-		a.claudeAccountsLoadErr = claudeAccountsPoolMissingErr()
-		a.claudeAccountsMu.Unlock()
-	}
+	a.refreshClaudeAccountsCache(ctx)
 }
 
 // claudeProcessSample 是进程观察器的一行样本（credential-free）。
@@ -453,8 +462,8 @@ func claudeProcessArgsMatch(args string) bool {
 		for _, fragment := range claudeCredentialProcessArgFragments {
 			if strings.Contains(field, fragment) {
 				return true
+			}
 		}
-	}
 	}
 	return false
 }
@@ -624,10 +633,10 @@ func stripEnvKeys(env []string, keys []string) []string {
 	return out
 }
 
-// claudeLoginManagedExtraKeys 返回受管登录启动额外剥离的键（claim 为 nil
-// 时返回 nil，保持非受管路径行为零变化；design §6.3 R3）。
+// claudeLoginManagedExtraKeys 返回受管登录启动额外剥离的键（nil/absent
+// reservation 返回 nil，保持非受管身份环境不变；design §6.3 R3）。
 func claudeLoginManagedExtraKeys(claim *claudeCredentialsClaim) []string {
-	if claim == nil {
+	if claim == nil || claim.absent {
 		return nil
 	}
 	return managedClaudeIdentityEnvKeys
@@ -666,28 +675,39 @@ func managedClaudeIdentityBoundarySpec(spec platform.ResolvedLaunchSpec) platfor
 // 读 PoolStore（不经 Service 串行锁，与 publishClaudeAccountsAuthoritativeState
 // 同源），并维护「曾初始化」标记——已有池缺失时 fail closed 为 POOL_MISSING，
 // 不当从未启用。
-func (a *App) refreshClaudeAccountsCache(ctx context.Context) {
+func (a *App) refreshClaudeAccountsCache(ctx context.Context, recovered ...bool) {
+	// 唯一读发布序列：Load 返回到发布之间仍持有此锁。mutation release
+	// 也走此路径，故旧 Load 的发布只能在新 blocked 发布之前，不能倒灌。
+	a.claudeAccountsPublishMu.Lock()
+	defer a.claudeAccountsPublishMu.Unlock()
+	var pool *claudeaccounts.AccountPool
+	var err error
 	if a.claudeAccountsPoolStore == nil {
 		// 测试/未装配场景回退 Service 路径。
 		if a.claudeAccounts == nil {
 			return
 		}
-		pool, err := a.claudeAccounts.LoadPool(ctx)
-		a.claudeAccountsMu.Lock()
-		a.claudeAccountsPool = pool
-		a.claudeAccountsLoadErr = err
-		a.claudeAccountsMu.Unlock()
-		return
+		pool, err = a.claudeAccounts.LoadPool(ctx)
+	} else {
+		pool, err = a.claudeAccountsPoolStore.Load(ctx)
 	}
-	pool, err := a.claudeAccountsPoolStore.Load(ctx)
-	if pool != nil {
-		a.writeClaudeAccountsMarker()
-	} else if err == nil && a.claudeAccountsMarkerExists() {
-		err = claudeAccountsPoolMissingErr()
+	if err == nil && a.claudeAccountsPoolStore != nil {
+		if pool != nil {
+			if markerErr := a.writeClaudeAccountsMarker(); markerErr != nil {
+				err = claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "池存在性标记无法持久化，启动保持关闭")
+			}
+		} else if exists, markerErr := a.claudeAccountsMarkerStatus(); markerErr != nil {
+			err = claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "池存在性标记无法读取，启动保持关闭")
+		} else if exists {
+			err = claudeAccountsPoolMissingErr()
+		}
 	}
 	a.claudeAccountsMu.Lock()
 	a.claudeAccountsPool = pool
 	a.claudeAccountsLoadErr = err
+	if len(recovered) > 0 {
+		a.claudeAccountsRecovered = recovered[0]
+	}
 	a.claudeAccountsMu.Unlock()
 }
 
@@ -706,9 +726,7 @@ func (a *App) startupRecoverClaudeAccounts() {
 	a.claudeAccountsMu.RUnlock()
 	if pool == nil {
 		// 从未创建过池：正常未启用，无恢复面。
-		a.claudeAccountsMu.Lock()
-		a.claudeAccountsRecovered = true
-		a.claudeAccountsMu.Unlock()
+		a.refreshClaudeAccountsCache(ctx, true)
 		return
 	}
 	outcome, err := a.claudeAccounts.RecoverAtStartup(ctx)
@@ -728,10 +746,7 @@ func (a *App) startupRecoverClaudeAccounts() {
 	// 恢复尝试完成后刷新缓存；recovered 置位由池是否可判定决定：恢复后仍
 	// needs-reconcile（Transaction 残留）保持 blocked（policy 里判定），但不
 	// 再阻止后续 refresh/重试。
-	a.refreshClaudeAccountsCache(ctx)
-	a.claudeAccountsMu.Lock()
-	a.claudeAccountsRecovered = true
-	a.claudeAccountsMu.Unlock()
+	a.refreshClaudeAccountsCache(ctx, true)
 }
 
 // claudeAccountsProcessSamples 是观察器的动态枚举入口：优先测试注入的

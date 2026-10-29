@@ -237,7 +237,15 @@ const RECONCILE_ACTIONS: Record<string, ReconcileActionView> = {
  * inspect 显示存在 swap journal 时优先 complete-target/restore-source；
  * externalChangeSuspected（无 journal 的外部换号）优先 adopt-current。
  */
-export function reconcileActionOptions(inspect: ClaudeAccountNativeState | null): ReconcileActionView[] {
+export function reconcileActionOptions(
+  inspect: ClaudeAccountNativeState | null,
+  allowed?: string[] | null,
+): ReconcileActionView[] {
+  // R03：后端安全 DTO 给出当前事务适用的恢复动作白名单时以其为准（swap →
+  // complete-target/restore-source；adopt-current 在事务存在时后端拒绝，不再展示）。
+  if (allowed) {
+    return reconcileActionOptions(inspect).filter((a) => allowed.includes(a.action));
+  }
   const all = [
     RECONCILE_ACTIONS['complete-target'],
     RECONCILE_ACTIONS['adopt-current'],
@@ -366,5 +374,29 @@ export function accountCardActions(
     canUpdateCurrent: isActive && !busy,
     canRemove: !isActive && !busy,
     removeHint: isActive ? '当前活动账号：请先切换到另一账号后再移除（停止管理将于后续版本提供）' : '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 漂移录入恢复（R03：needs-reconcile + transactionKind=enrollment）
+// ---------------------------------------------------------------------------
+
+/** 池 DTO 是否为漂移的录入事务（需显示录入恢复出口而非 swap 三选一）。 */
+export function isDriftedEnrollment(pool: ClaudeAccountsPool | null): boolean {
+  return !!pool && pool.transactionKind === 'enrollment' && !!pool.enrollmentDrifted && !!pool.enrollmentId;
+}
+
+/** 漂移录入的两个显式出口（按后端 recoveryActions 白名单过滤）。 */
+export interface EnrollmentRecoveryView {
+  canCapture: boolean;
+  canCancel: boolean;
+}
+
+export function driftedEnrollmentRecovery(pool: ClaudeAccountsPool | null): EnrollmentRecoveryView {
+  if (!isDriftedEnrollment(pool)) return { canCapture: false, canCancel: false };
+  const actions = pool?.recoveryActions ?? [];
+  return {
+    canCapture: actions.includes('capture-enrollment'),
+    canCancel: actions.includes('cancel-enrollment'),
   };
 }

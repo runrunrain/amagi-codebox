@@ -12,6 +12,39 @@ type SwapRequest struct {
 	Reason               string
 	ExpectedGeneration   uint64
 	ManualRespectSeconds int
+	// Guard（F06）：恢复类调用（restore-source）携带的锁内校验条件——在同一
+	// withLocks 区间内、任何写入前比对池 revision 与所选 journal，陈旧命令
+	// 不得作用于已变化的事务。nil = 普通切换（仅比代际）。
+	Guard *RecoveryGuard
+}
+
+// RecoveryGuard 是恢复命令的锁内前置条件（F06）：ExpectedRevision 必须等于
+// 当前池 revision；ExpectedTxnID 非空时当前未结 swap journal 的 TxnID 必须
+// 一致。检查与执行处于同一 withLocks 区间，不存在预读→执行的 TOCTOU。
+type RecoveryGuard struct {
+	ExpectedRevision uint64
+	ExpectedTxnID    string
+}
+
+// checkLocked 在持锁状态下校验 guard（调用方已 loadPoolLocked）。
+func (g *RecoveryGuard) checkLocked(pool *AccountPool) error {
+	if g == nil {
+		return nil
+	}
+	var revision uint64
+	if pool != nil {
+		revision = pool.Revision
+	}
+	if revision != g.ExpectedRevision {
+		return NewErr(ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", g.ExpectedRevision, revision)
+	}
+	if g.ExpectedTxnID != "" {
+		if pool == nil || pool.Transaction == nil || pool.Transaction.Kind != TransactionSwap ||
+			pool.Transaction.Swap == nil || pool.Transaction.Swap.TxnID != g.ExpectedTxnID {
+			return NewErr(ReasonRevisionConflict, "所选恢复事务已不是当前未结事务")
+		}
+	}
+	return nil
 }
 
 // SwapResult 是切换结果。
@@ -43,6 +76,9 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 
 	pool, err := s.loadPoolLocked(ctx)
 	if err != nil {
+		return SwapResult{}, err
+	}
+	if err := req.Guard.checkLocked(pool); err != nil {
 		return SwapResult{}, err
 	}
 	if pool == nil || pool.ActiveAccountID == "" {
@@ -152,15 +188,15 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 		return SwapResult{}, err
 	}
 	journal := &SwapJournal{
-		TxnID:            txnID,
-		SourceID:         pool.ActiveAccountID,
-		TargetID:         req.TargetID,
-		FromGeneration:   pool.ActiveGeneration,
-		Phase:            SwapPrepared,
-		Before:           sourceOwned,
-		After:            after,
+		TxnID:             txnID,
+		SourceID:          pool.ActiveAccountID,
+		TargetID:          req.TargetID,
+		FromGeneration:    pool.ActiveGeneration,
+		Phase:             SwapPrepared,
+		Before:            sourceOwned,
+		After:             after,
 		ExpectedRevisions: current2.Revisions,
-		StartedAt:        s.now(),
+		StartedAt:         s.now(),
 	}
 	pool.Transaction = &PoolTransaction{Kind: TransactionSwap, Swap: journal}
 	pool.Revision++
@@ -170,7 +206,7 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 	journalPersisted = true
 	s.logStep("swap-prepared", txnID, req.TargetID)
 
-	if cerr := s.applyAndCommitLocked(ctx, pool, journal, req.Reason, respect, AllProjections); cerr != nil {
+	if cerr := s.applyAndCommitLocked(ctx, pool, journal, req.Reason, respect, AllProjections, nil); cerr != nil {
 		return SwapResult{}, cerr
 	}
 	return SwapResult{TxnID: txnID, Generation: pool.ActiveGeneration, ActiveID: pool.ActiveAccountID}, nil
@@ -178,7 +214,9 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
 
 // applyAndCommitLocked 执行受管投影写入序列、最终验证与池提交（design
 // §4.4 后半段）。keys 指定要写的投影（roll-forward 只补未完成的）。
-func (s *Service) applyAndCommitLocked(ctx context.Context, pool *AccountPool, journal *SwapJournal, reason string, respectSeconds int, keys []ProjectionKey) error {
+// recovery 非 nil 表示恢复 roll-forward，携带本轮分类快照：短锁内按当前值重新分类并冻结新的
+// 恢复基线（R02），而非要求崩溃前的写入进度必然已落盘。
+func (s *Service) applyAndCommitLocked(ctx context.Context, pool *AccountPool, journal *SwapJournal, reason string, respectSeconds int, keys []ProjectionKey, recovery *NativeProjections) error {
 	// 获取可用的原生短写锁（Pi proper-lockfile 兼容锁，design §4.3）。
 	piLock, err := AcquireProperLock(s.piAuthPath, s.now())
 	if err != nil {
@@ -199,7 +237,21 @@ func (s *Service) applyAndCommitLocked(ctx context.Context, pool *AccountPool, j
 	if verr != nil {
 		return verr
 	}
-	if !sameRevisions(verify.Revisions, journal.ExpectedRevisions) {
+	if recovery != nil {
+		if !sameRevisions(verify.Revisions, recovery.Revisions) {
+			return NewErr(ReasonNeedsReconcile, "恢复分类后原生槽位再次漂移，停止写入")
+		}
+		// R02：原生 Patch 与池进度 Save 是两个独立提交——「Patch 成功→进度
+		// Save 前终止」是合法崩溃窗口，持久化 journal 的 ExpectedRevisions
+		// 仍是旧值。恢复在短锁内对当前三处重新分类：任一 unknown（或在
+		// reconcile 分类后再次漂移成不可分类值）→ 拒绝；全部可分类 → 以当前
+		// revision 冻结新恢复基线并持久化，只补仍为 before 的投影。
+		pending, ferr := s.freezeRecoveryBaselineLocked(ctx, pool, journal, verify)
+		if ferr != nil {
+			return ferr
+		}
+		keys = pending
+	} else if !sameRevisions(verify.Revisions, journal.ExpectedRevisions) {
 		return NewErr(ReasonNeedsReconcile, "原生槽位在提交前发生意外变化（revision 漂移），已停止写入待恢复")
 	}
 
@@ -243,6 +295,31 @@ func (s *Service) applyAndCommitLocked(ctx context.Context, pool *AccountPool, j
 	s.logStep("swap-committed", journal.TxnID, journal.TargetID)
 	s.emitEvent(Event{Kind: EventSwapCompleted, TxnID: journal.TxnID, AccountID: journal.TargetID, Generation: pool.ActiveGeneration})
 	return nil
+}
+
+// freezeRecoveryBaselineLocked 在恢复短锁内重新分类当前投影并冻结恢复
+// 基线（R02）：拒绝 unknown；ExpectedRevisions 改为本次短锁读取的当前值并
+// 先持久化（再次崩溃仍可按同一规则恢复）；返回仍为 before 的待补投影。
+func (s *Service) freezeRecoveryBaselineLocked(ctx context.Context, pool *AccountPool, journal *SwapJournal, current *NativeProjections) ([]ProjectionKey, error) {
+	pending := []ProjectionKey{}
+	for _, key := range AllProjections {
+		switch classifyProjection(current, journal, key) {
+		case classBefore:
+			pending = append(pending, key)
+		case classAfter:
+		default:
+			return nil, NewErr(ReasonNeedsReconcile, "恢复提交前投影 %s 既非 before 也非 after，已停止写入待人工恢复", string(key))
+		}
+	}
+	if !sameRevisions(current.Revisions, journal.ExpectedRevisions) {
+		journal.ExpectedRevisions = current.Revisions
+		pool.Revision++
+		if err := s.savePoolLocked(ctx, pool); err != nil {
+			return nil, err
+		}
+		s.logStep("reconcile-baseline-frozen", journal.TxnID, journal.TargetID)
+	}
+	return pending, nil
 }
 
 // applyProjectionLocked 写入单个投影并持久化进度（design §4.4：每个写入点

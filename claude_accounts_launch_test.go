@@ -50,9 +50,10 @@ func (f *fakePoolStore) Save(_ context.Context, pool *claudeaccounts.AccountPool
 func (f *fakePoolStore) Kind() string { return "fake" }
 
 type fakeNativeStore struct {
-	mu    sync.Mutex
-	proj  claudeaccounts.NativeProjections
-	reads int
+	mu          sync.Mutex
+	proj        claudeaccounts.NativeProjections
+	reads       int
+	failPiPatch bool // 第三轮：部分写入后恢复仍失败，保留真实 journal。
 }
 
 func (f *fakeNativeStore) ReadStable(_ context.Context) (*claudeaccounts.NativeProjections, error) {
@@ -103,6 +104,9 @@ func (f *fakeNativeStore) PatchClaudeIdentity(_ context.Context, fields claudeac
 func (f *fakeNativeStore) PatchPiAnthropic(_ context.Context, anthropic json.RawMessage) (*claudeaccounts.FileRevision, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failPiPatch {
+		return nil, claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "fixture: Pi patch unavailable")
+	}
 	f.proj.PiAnthropic = append([]byte(nil), anthropic...)
 	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(anthropic)}
 	f.proj.Revisions.PiAuth = rev

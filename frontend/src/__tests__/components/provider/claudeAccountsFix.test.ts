@@ -14,9 +14,12 @@ import { createSSRApp, h, nextTick, ref } from 'vue';
 import { renderToString } from 'vue/server-renderer';
 
 // 在 api 边界打桩（真实类型与错误码表保留）。
-const { getAccounts, capture } = vi.hoisted(() => ({
+const { getAccounts, capture, cancelEnroll, reconcile, beginEnroll } = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   capture: vi.fn(),
+  cancelEnroll: vi.fn(),
+  reconcile: vi.fn(),
+  beginEnroll: vi.fn(),
 }));
 
 vi.mock('../../../api/claudeAccounts', async (importOriginal) => {
@@ -25,6 +28,9 @@ vi.mock('../../../api/claudeAccounts', async (importOriginal) => {
     ...actual,
     getClaudeAccounts: getAccounts,
     captureClaudeAccount: capture,
+    cancelClaudeAccountEnrollment: cancelEnroll,
+    reconcileClaudeAccounts: reconcile,
+    beginClaudeAccountEnrollment: beginEnroll,
   };
 });
 
@@ -104,7 +110,8 @@ describe('F08: 异步 operation 失败在 absent/enrolling/needs-reconcile 分�
     const html = await renderSection();
     expect(html).toContain('ca-operation-error');
     expect(html).toContain('Claude Code 与 Pi 当前登录的不是同一账号');
-    expect(html).toContain('ca-operation-section-marker-absent'.slice(0, 0)); // absent 分支主体仍在
+    expect(html).toContain('ca-absent'); // absent 分支主体仍在（替换此前恒真的空串断言）
+    expect(html).not.toContain('ca-enroll'); // 未误入其他分支
     expect(html).toContain('保存当前双端登录'); // absent 引导未消失
   });
 
@@ -188,6 +195,94 @@ describe('F09: 重启/刷新后续接 enrollment', () => {
     getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-3' }));
     await store.refresh();
     expect(store.enrollment?.step).toBe('capture');
+  });
+});
+
+describe('R03: 漂移 enrollment 在 UI 上有可执行的恢复出口', () => {
+  const drifted = () =>
+    poolOf({
+      state: 'needs-reconcile',
+      pauseReason: '存在未结事务（enrollment）',
+      transactionKind: 'enrollment',
+      enrollmentDrifted: true,
+      enrollmentId: 'enroll-drift-1',
+      recoveryActions: ['capture-enrollment', 'cancel-enrollment'],
+    } as Partial<ClaudeAccountsPool>);
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    getAccounts.mockReset();
+    capture.mockReset();
+    cancelEnroll.mockReset();
+    reconcile.mockReset();
+    beginEnroll.mockReset();
+  });
+
+  it('录入→取消漂移→刷新后 SSR 仍有保存/取消出口，而非 swap 三选一', async () => {
+    getAccounts.mockResolvedValue(poolOf());
+    const store = useClaudeAccountsStore();
+    await store.refresh();
+    beginEnroll.mockResolvedValue('enroll-drift-1');
+    getAccounts.mockResolvedValue(poolOf({
+      state: 'enrolling', enrollmentId: 'enroll-drift-1', transactionKind: 'enrollment',
+    } as Partial<ClaudeAccountsPool>));
+    await store.beginEnrollment();
+    expect(beginEnroll).toHaveBeenCalledWith(7);
+    cancelEnroll.mockRejectedValueOnce(new Error('NEEDS_RECONCILE: 原生登录已变化'));
+    await expect(store.cancelEnrollment()).rejects.toThrow('NEEDS_RECONCILE');
+    getAccounts.mockResolvedValue(drifted());
+    await store.refresh();
+    expect(store.sectionState).toBe('needs-reconcile');
+    // 漂移 enrollment 仍可续接：store 凭后端 ID 重建
+    expect(store.enrollment?.enrollmentId).toBe('enroll-drift-1');
+    const html = await renderSection();
+    expect(html).toContain('ca-drifted-enrollment');
+    expect(html).toContain('ca-drifted-capture');
+    expect(html).toContain('ca-drifted-cancel');
+    expect(html).not.toContain('完成切换到目标账号');
+    expect(html).not.toContain('恢复到切换前账号');
+  });
+
+  it('保存出口以持久化 enrollmentId + 当前 revision 调后端 capture', async () => {
+    getAccounts.mockResolvedValue(drifted());
+    const store = useClaudeAccountsStore();
+    await store.refresh();
+    capture.mockResolvedValue('ca-op-drift');
+    await expect(store.captureEnrolled('个人号')).resolves.toBe('ca-op-drift');
+    expect(capture).toHaveBeenCalledWith('enroll-drift-1', '个人号', 7);
+  });
+
+  it('取消出口调用后端 CancelEnrollment（后端仍漂移时报错且事务保留）', async () => {
+    getAccounts.mockResolvedValue(drifted());
+    const store = useClaudeAccountsStore();
+    await store.refresh();
+    cancelEnroll.mockRejectedValueOnce(new Error('NEEDS_RECONCILE: 原生登录已变化，未自动取消'));
+    await expect(store.cancelEnrollment()).rejects.toThrow('NEEDS_RECONCILE');
+    expect(cancelEnroll).toHaveBeenCalledWith(7);
+    expect(store.enrollment).not.toBeNull(); // 失败不清本地续接状态
+
+    cancelEnroll.mockResolvedValueOnce(undefined);
+    getAccounts.mockResolvedValue(poolOf());
+    await store.cancelEnrollment();
+    expect(store.enrollment).toBeNull();
+    expect(store.sectionState).toBe('managed');
+  });
+
+  it('swap 事务按后端 recoveryActions 只展示 complete-target / restore-source', async () => {
+    getAccounts.mockResolvedValue(
+      poolOf({
+        state: 'needs-reconcile',
+        transactionKind: 'swap',
+        recoveryActions: ['complete-target', 'restore-source'],
+      } as Partial<ClaudeAccountsPool>),
+    );
+    const store = useClaudeAccountsStore();
+    await store.refresh();
+    const html = await renderSection();
+    expect(html).toContain('完成切换到目标账号');
+    expect(html).toContain('恢复到切换前账号');
+    expect(html).not.toContain('采用当前原生登录');
+    expect(html).not.toContain('ca-drifted-enrollment');
   });
 });
 

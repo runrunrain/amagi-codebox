@@ -34,7 +34,7 @@ func TestF01_LaunchBlockedImmediatelyAfterFailedMutation(t *testing.T) {
 	app, poolStore, _, _ := newFacadeTestApp(t)
 	// 接线池存储直接引用：gate release 的权威发布路径生效（F01）。
 	app.claudeAccountsPoolStore = poolStore
-	app.claudeAccountsPoolMarkerPath = "" // F10 标记不参与本测试
+	app.claudeAccountsPoolMarkerPath = t.TempDir() + "/pool-initialized"
 
 	pool, _ := poolStore.Load(context.Background())
 	pool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionSwap,
@@ -284,7 +284,7 @@ func TestF07_ClaudePlanStripsManagedIdentityEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := cfgSvc.SaveProvider("oauth-provider", config.Provider{
-		Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com", AuthKey: config.AuthTypeOAuth},
+		Anthropic:    &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com", AuthKey: config.AuthTypeOAuth},
 		DefaultModel: "claude-x",
 		Presets:      map[string]config.Preset{"oauth-preset": {Name: "oauth-preset", Model: "claude-x"}},
 	}); err != nil {
@@ -364,7 +364,7 @@ func TestF07_ClaudePlanStripsManagedIdentityEnv(t *testing.T) {
 }
 
 // TestF07_PiLoginBoundaryHelpersCarryManagedKeys：受管 Pi 登录：env 构建
-//（piLoginEnvOverrides）与最终重锚（piLoginReAnchorSpec）同步剥离身份变量。
+// （piLoginEnvOverrides）与最终重锚（piLoginReAnchorSpec）同步剥离身份变量。
 func TestF07_PiLoginBoundaryHelpersCarryManagedKeys(t *testing.T) {
 	env := piLoginEnvOverrides("/canonical/.pi/agent", managedClaudeIdentityEnvKeys...)
 	for _, key := range managedClaudeIdentityEnvKeys {
@@ -438,13 +438,91 @@ func TestF09_PoolDTOCarriesEnrollmentId(t *testing.T) {
 	}
 	setClaudeAccountsCache(app, pool2, nil, true)
 	dto2, _ := app.GetClaudeAccounts()
-	if dto2.State != "needs-reconcile" || dto2.EnrollmentID != "" {
-		t.Fatalf("drifted enrollment must be needs-reconcile without resume id, got state=%s id=%q", dto2.State, dto2.EnrollmentID)
+	// R03：漂移 enrollment 仍是 needs-reconcile（启动入口保持关闭），但必须
+	// 给出续接 ID 与显式出口，否则 UI 无路可走（此前刻意隐藏 ID）。
+	if dto2.State != "needs-reconcile" || dto2.EnrollmentID != "enroll-resume" ||
+		!dto2.EnrollmentDrifted || dto2.TransactionKind != "enrollment" {
+		t.Fatalf("drifted enrollment DTO = state=%s id=%q drifted=%v kind=%q", dto2.State, dto2.EnrollmentID, dto2.EnrollmentDrifted, dto2.TransactionKind)
+	}
+	if strings.Join(dto2.RecoveryActions, ",") != "capture-enrollment,cancel-enrollment" {
+		t.Fatalf("drifted enrollment recovery actions = %v", dto2.RecoveryActions)
+	}
+}
+
+// TestR03_DriftedEnrollmentRecoverableThroughFacade：开始录入 → 原生换成 B →
+// 取消（锁内分类为漂移，NEEDS_RECONCILE，journal 保留）→ 重建缓存后 DTO 给出
+// ID+出口 → 凭该 ID 保存当前配对成功、事务清除；另一路：原生恢复原账号后
+// 再取消成功。全部走真实 facade→Service 链（fake 后端）。
+func TestR03_DriftedEnrollmentRecoverableThroughFacade(t *testing.T) {
+	for _, path := range []string{"capture", "cancel"} {
+		t.Run(path, func(t *testing.T) {
+			app, poolStore, native, _ := newFacadeTestApp(t)
+			app.claudeAccountsPoolStore = poolStore
+			enrollmentID, err := app.BeginClaudeAccountEnrollment(2)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			srcCC, _ := native.ReadStable(context.Background())
+			ccA, piA, idA := srcCC.ClaudeOAuth, srcCC.PiAnthropic, *srcCC.ClaudeIdentity
+			patchNative(t, native, []byte(`{"accessToken":"SECRET-CC-B"}`),
+				claudeaccounts.ClaudeIdentityFields{OauthAccount: []byte(`{"accountUuid":"uuid-b"}`), UserID: "user-b"},
+				[]byte(`{"type":"oauth","access":"SECRET-PI-B"}`))
+
+			pool, _ := poolStore.Load(context.Background())
+			if err := app.CancelClaudeAccountEnrollment(pool.Revision); err == nil || !strings.Contains(err.Error(), "NEEDS_RECONCILE") {
+				t.Fatalf("drifted cancel must be NEEDS_RECONCILE, got %v", err)
+			}
+			setClaudeAccountsCache(app, nil, nil, false)
+			app.refreshClaudeAccountsCache(context.Background())
+			dto, _ := app.GetClaudeAccounts()
+			if dto.State != "needs-reconcile" || dto.EnrollmentID != enrollmentID || len(dto.RecoveryActions) != 2 {
+				t.Fatalf("drifted DTO = %+v", dto)
+			}
+			if got := app.claudeCredentialsPolicy(); got != claudeCredentialsBlocked {
+				t.Fatalf("drifted enrollment must keep launch blocked, got %v", got)
+			}
+
+			if path == "capture" {
+				opID, err := app.CaptureClaudeAccount(dto.EnrollmentID, "B-recovered", dto.Revision)
+				if err != nil {
+					t.Fatalf("capture submit: %v", err)
+				}
+				if op := waitClaudeOpDone(t, app, opID, 10*time.Second); op.State != "done" {
+					t.Fatalf("drifted capture must succeed, got %+v", op)
+				}
+			} else {
+				patchNative(t, native, ccA, idA, piA)
+				if err := app.CancelClaudeAccountEnrollment(dto.Revision); err != nil {
+					t.Fatalf("cancel after restoring source: %v", err)
+				}
+			}
+			final, _ := poolStore.Load(context.Background())
+			if final.Transaction != nil {
+				t.Fatalf("%s path must clear the enrollment transaction", path)
+			}
+			dtoAfter, _ := app.GetClaudeAccounts()
+			if dtoAfter.State != "enabled" || dtoAfter.EnrollmentID != "" || len(dtoAfter.RecoveryActions) != 0 {
+				t.Fatalf("after recovery DTO = %+v", dtoAfter)
+			}
+		})
+	}
+}
+
+func patchNative(t *testing.T, native *fakeNativeStore, cc []byte, id claudeaccounts.ClaudeIdentityFields, pi []byte) {
+	t.Helper()
+	if _, err := native.PatchClaudeKeychainOAuth(context.Background(), cc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.PatchClaudeIdentity(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.PatchPiAnthropic(context.Background(), pi); err != nil {
+		t.Fatal(err)
 	}
 }
 
 // TestF09_EnrollmentSurvivesBackendRebuild：开始录入 → 重建 App/service 读取
-//（模拟重启/刷新）→ 凭 DTO enrollmentId 续接保存成功。
+// （模拟重启/刷新）→ 凭 DTO enrollmentId 续接保存成功。
 func TestF09_EnrollmentSurvivesBackendRebuild(t *testing.T) {
 	app, poolStore, native, identity := newFacadeTestApp(t)
 	app.claudeAccountsPoolStore = poolStore
@@ -502,8 +580,8 @@ func TestF10_PoolMissingAfterExternalDeletionFailsClosed(t *testing.T) {
 	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsManaged {
 		t.Fatalf("policy with pool = %v, want managed", got)
 	}
-	if !app.claudeAccountsMarkerExists() {
-		t.Fatal("marker must be written once pool exists")
+	if exists, err := app.claudeAccountsMarkerStatus(); !exists || err != nil {
+		t.Fatalf("marker must be written once pool exists: %v", err)
 	}
 
 	// 外部删除池项 → 刷新后 POOL_MISSING blocked。
@@ -581,17 +659,17 @@ func TestF15_CacheEvictionKeepsRunningOperations(t *testing.T) {
 	app.claudeAccountsRequests = map[string]string{}
 
 	running := &claudeAccountOperation{
-		dto: ClaudeAccountOperationDTO{ID: "ca-running", Kind: "switch", State: "running"},
+		dto:       ClaudeAccountOperationDTO{ID: "ca-running", Kind: "switch", State: "running"},
 		requestID: "req-running", paramsDigest: "d", started: true,
 		done: make(chan struct{}),
 	}
 	app.claudeAccountsOps["ca-running"] = running
 	app.claudeAccountsOpsOrder = append(app.claudeAccountsOpsOrder, "ca-running")
 	app.claudeAccountsRequests["req-running"] = "ca-running"
-	for i := 0; i < claudeAccountOperationCacheLimit; i++ {
+	for i := 0; i <= claudeAccountOperationCacheLimit; i++ {
 		id := "ca-done-" + string(rune('A'+i%26)) + string(rune('a'+i/26))
 		op := &claudeAccountOperation{
-			dto: ClaudeAccountOperationDTO{ID: id, Kind: "switch", State: "done"},
+			dto:          ClaudeAccountOperationDTO{ID: id, Kind: "switch", State: "done"},
 			paramsDigest: "d", done: closedChan(),
 		}
 		app.claudeAccountsOps[id] = op
@@ -609,6 +687,12 @@ func TestF15_CacheEvictionKeepsRunningOperations(t *testing.T) {
 	app.claudeAccountsOpsMu.Unlock()
 	if !stillThere || !reqStillMapped {
 		t.Fatalf("running operation must survive eviction (op=%v req=%v)", stillThere, reqStillMapped)
+	}
+	if len(app.claudeAccountsOpsOrder) != claudeAccountOperationCacheLimit+2 {
+		t.Fatalf("完成缓存应独立淘汰至上限，含两项在途总数=%d", len(app.claudeAccountsOpsOrder))
+	}
+	if app.claudeAccountsOps["ca-done-Aa"] != nil {
+		t.Fatal("最旧完成结果必须淘汰")
 	}
 	if _, err := app.GetClaudeAccountOperation("ca-running"); err != nil {
 		t.Fatalf("running op query after eviction: %v", err)

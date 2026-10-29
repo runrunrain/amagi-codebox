@@ -99,6 +99,41 @@
         type="warning"
         :message="`存在未完成的事务（${store.pool?.pauseReason || '未结切换事务'}），恢复完成前受影响的 Claude/Pi 启动入口保持关闭。`"
       />
+      <!-- R03：漂移录入恢复出口（录入期间原生登录已变化）。两种出路都由
+           后端锁内校验 TxnID+revision；不盲清事务。 -->
+      <div v-if="driftedEnroll" class="ca-enroll-recover" data-testid="ca-drifted-enrollment">
+        <p class="ca-absent-tip">
+          录入期间原生登录已变化，未能自动取消。请二选一：保存当前双端登录为新账号（两端须是同一账号），
+          或先在原生 Claude Code 与 Pi 中重新登录原活动账号，再取消录入。
+        </p>
+        <div v-if="enrollRecovery.canCapture" class="ca-form">
+          <TextInput
+            v-model="enrollAlias"
+            class="ca-alias-input"
+            placeholder="新账号别名（如：个人号）"
+            :disabled="busy"
+          />
+          <AppButton
+            variant="primary"
+            size="small"
+            data-testid="ca-drifted-capture"
+            :disabled="busy || !!enrollAliasError"
+            :title="busyText"
+            @click="captureEnrolled"
+          >保存当前登录为新账号</AppButton>
+        </div>
+        <p v-if="enrollRecovery.canCapture && enrollAliasError" class="ca-error">{{ enrollAliasError }}</p>
+        <div v-if="enrollRecovery.canCancel" class="ca-actions">
+          <AppButton
+            variant="ghost"
+            size="small"
+            data-testid="ca-drifted-cancel"
+            :disabled="busy"
+            @click="cancelAskOpen = true"
+          >已恢复原账号，取消录入</AppButton>
+        </div>
+      </div>
+      <template v-else>
       <div class="ca-actions">
         <AppButton variant="ghost" size="small" :disabled="busy" @click="runInspect">重新检查</AppButton>
       </div>
@@ -118,6 +153,7 @@
           @click="applyReconcile(opt.action)"
         >执行</AppButton>
       </div>
+      </template>
     </div>
 
     <!-- 已管理（managed）／读取失败但保留上次值（error） -->
@@ -337,6 +373,8 @@ import {
   grantHealthView,
   identityStatusView,
   inspectSummary,
+  isDriftedEnrollment,
+  driftedEnrollmentRecovery,
   operationStatusText,
   pendingSwitchText,
   reconcileActionOptions,
@@ -629,7 +667,11 @@ async function retryPending() {
 // ---- 恢复（needs-reconcile） ----
 
 const inspectLines = computed(() => inspectSummary(store.lastInspect));
-const reconcileOptions = computed(() => reconcileActionOptions(store.lastInspect));
+const reconcileOptions = computed(() =>
+  reconcileActionOptions(store.lastInspect, store.pool?.recoveryActions ?? null));
+// R03：漂移录入（needs-reconcile + enrollment）走录入恢复出口，不走 swap 三选一。
+const driftedEnroll = computed(() => isDriftedEnrollment(store.pool));
+const enrollRecovery = computed(() => driftedEnrollmentRecovery(store.pool));
 
 async function runInspect() {
   resetActionError();
@@ -714,7 +756,7 @@ watch(
 watch(
   state,
   (s) => {
-    if (s === 'needs-reconcile') void runInspect();
+    if (s === 'needs-reconcile' && !isDriftedEnrollment(store.pool)) void runInspect();
   },
   { immediate: false },
 );
@@ -722,7 +764,7 @@ watch(
 onMounted(() => {
   store.ensureEventBridge();
   void store.refresh().then(() => {
-    if (state.value === 'needs-reconcile') void runInspect();
+    if (state.value === 'needs-reconcile' && !isDriftedEnrollment(store.pool)) void runInspect();
   });
 });
 
