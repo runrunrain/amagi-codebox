@@ -79,6 +79,8 @@ type PiLoginPreset struct {
 	// launcher.UpsertPiLoginModelOverride），对 Leader 与 amagi 子 agent 同一生效
 	//（子 agent 继承 PI_CODING_AGENT_DIR=canonical root，读同一份 models.json）。
 	ContextWindow int `json:"context_window,omitempty"`
+	// MaxTokens 覆写模型最大输出额度；0 恢复目录默认值，与窗口一样按模型共享。
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 func (p PiLoginPreset) Validate() error {
@@ -89,6 +91,9 @@ func (p PiLoginPreset) Validate() error {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
 		return errors.New("invalid Pi thinking level")
+	}
+	if p.MaxTokens < 0 {
+		return errors.New("invalid Pi output limit; must be a positive token count or 0 for default")
 	}
 	if p.ContextWindow < 0 {
 		return errors.New("invalid Pi context window; must be a positive token count or 0 for default")
@@ -130,13 +135,14 @@ func (s *ConfigService) SavePiLoginPreset(p PiLoginPreset) error {
 // modelOverrides 按 provider/model 寻址，无预设维度——窗口是模型级共享值，
 // 任一预设保存即全组生效；配置面同步对齐，保证展示与 models.json 实际生效
 // 值一致（不出现「B 显示 256000 实际共享 400000」的静默串值，diting F02）。
-func (s *ConfigService) alignPiLoginContextWindowLocked(next *AppConfig, selfKey, provider, model string, cw int) {
+func (s *ConfigService) alignPiLoginContextWindowLocked(next *AppConfig, selfKey, provider, model string, cw, maxTokens int) {
 	for k, other := range next.PiLoginPresets {
 		if k == selfKey || other.Provider != provider || other.Model != model {
 			continue
 		}
-		if other.ContextWindow != cw {
+		if other.ContextWindow != cw || other.MaxTokens != maxTokens {
 			other.ContextWindow = cw
+			other.MaxTokens = maxTokens
 			next.PiLoginPresets[k] = other
 		}
 	}
@@ -174,10 +180,14 @@ func (s *ConfigService) changePiLoginPreset(key string, preset *PiLoginPreset) e
 			}
 			delete(next.PiLoginPresets, key)
 		} else {
+			if old, exists := next.PiLoginPresets[key]; exists && (old.Provider != preset.Provider || old.Model != preset.Model) {
+				copyOf := old
+				removed = &copyOf // 模型切换后也要对账旧模型，清除不再引用的额度。
+			}
 			next.PiLoginPresets[key] = *preset
 			// 窗口是模型级共享值：保存时同步对齐同 provider+model 的兄弟预设
 			//（锁内原子，展示与生效面一致；见 alignPiLoginContextWindowLocked）。
-			s.alignPiLoginContextWindowLocked(&next, key, preset.Provider, preset.Model, preset.ContextWindow)
+			s.alignPiLoginContextWindowLocked(&next, key, preset.Provider, preset.Model, preset.ContextWindow, preset.MaxTokens)
 		}
 		if saveErr := s.saveLockedConfig(&next); saveErr != nil {
 			err = saveErr
@@ -194,10 +204,11 @@ func (s *ConfigService) changePiLoginPreset(key string, preset *PiLoginPreset) e
 		return err
 	}
 	if listener != nil {
+		if removed != nil {
+			listener(nil, removed)
+		}
 		if preset != nil {
 			listener(preset, nil)
-		} else if removed != nil {
-			listener(nil, removed)
 		}
 	}
 	return nil

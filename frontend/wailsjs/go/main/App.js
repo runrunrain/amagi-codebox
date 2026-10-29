@@ -58,6 +58,10 @@ export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
 
+export function CheckPiPluginWSLStatus() {
+  return window['go']['main']['App']['CheckPiPluginWSLStatus']();
+}
+
 export function CheckTool(arg1) {
   return window['go']['main']['App']['CheckTool'](arg1);
 }
@@ -176,6 +180,10 @@ export function GetConfigService() {
 
 export function GetDockerWSLHealth() {
   return window['go']['main']['App']['GetDockerWSLHealth']();
+}
+
+export function GetDrvFSAdvisories() {
+  return window['go']['main']['App']['GetDrvFSAdvisories']();
 }
 
 export function GetEnvCheckOperationState() {
@@ -302,6 +310,10 @@ export function GetPiModelsConfigPath() {
   return window['go']['main']['App']['GetPiModelsConfigPath']();
 }
 
+export function GetPiPluginWSLStatus() {
+  return window['go']['main']['App']['GetPiPluginWSLStatus']();
+}
+
 export function GetPlatformCapabilities() {
   return window['go']['main']['App']['GetPlatformCapabilities']();
 }
@@ -398,6 +410,10 @@ export function GetWSLOpenCodeMCPPreview() {
   return window['go']['main']['App']['GetWSLOpenCodeMCPPreview']();
 }
 
+export function GetWSLPluginTargetSupport() {
+  return window['go']['main']['App']['GetWSLPluginTargetSupport']();
+}
+
 export function GetWSLSkillsSupplyStatus() {
   return window['go']['main']['App']['GetWSLSkillsSupplyStatus']();
 }
@@ -426,10 +442,6 @@ export function HeadroomStop() {
   return window['go']['main']['App']['HeadroomStop']();
 }
 
-export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
-}
-
 export function ImportAIProxySubscription(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportAIProxySubscription'](arg1, arg2, arg3);
 }
@@ -446,12 +458,20 @@ export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
 }
 
+export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
+}
+
 export function InstallCLIToWSL(arg1) {
   return window['go']['main']['App']['InstallCLIToWSL'](arg1);
 }
 
 export function InstallClaudeWithMethod(arg1) {
   return window['go']['main']['App']['InstallClaudeWithMethod'](arg1);
+}
+
+export function InstallPiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['InstallPiPackageTargeted'](arg1, arg2);
 }
 
 export function InstallTool(arg1) {
@@ -492,6 +512,10 @@ export function LaunchPiSession(arg1, arg2, arg3, arg4, arg5) {
 
 export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function ListCodexAdvisorChats(arg1) {
+  return window['go']['main']['App']['ListCodexAdvisorChats'](arg1);
 }
 
 export function ListLocalLanAddresses() {
@@ -702,6 +726,10 @@ export function RemoveClaudeAccount(arg1, arg2) {
   return window['go']['main']['App']['RemoveClaudeAccount'](arg1, arg2);
 }
 
+export function RemovePiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['RemovePiPackageTargeted'](arg1, arg2);
+}
+
 export function RemoveSavedWorkDir(arg1) {
   return window['go']['main']['App']['RemoveSavedWorkDir'](arg1);
 }
@@ -802,14 +830,12 @@ export function SetEnvVar(arg1, arg2) {
   return window['go']['main']['App']['SetEnvVar'](arg1, arg2);
 }
 
-export function SetEnvVarsGlobalSyncEnabled(arg1) {
-  return window['go']['main']['App']['SetEnvVarsGlobalSyncEnabled'](arg1);
-}
-
-// P4-A2（2026-10-17）：路径值 per-key 放行门（本机无 wails CLI 期手工补齐，
-// 原生类型即原生 boolean 参数；下次 wails generate 再生时自动归一）。
 export function SetEnvVarPathAllow(arg1, arg2) {
   return window['go']['main']['App']['SetEnvVarPathAllow'](arg1, arg2);
+}
+
+export function SetEnvVarsGlobalSyncEnabled(arg1) {
+  return window['go']['main']['App']['SetEnvVarsGlobalSyncEnabled'](arg1);
 }
 
 export function SetGitHubToken(arg1) {
@@ -896,42 +922,14 @@ export function UninstallClaudeCode(arg1) {
   return window['go']['main']['App']['UninstallClaudeCode'](arg1);
 }
 
+export function UpdatePiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['UpdatePiPackageTargeted'](arg1, arg2);
+}
+
 export function UpdateProvider(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateProvider'](arg1, arg2, arg3);
 }
 
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
-}
-
-export function GetWSLPluginTargetSupport() {
-  return window['go']['main']['App']['GetWSLPluginTargetSupport']();
-}
-
-export function InstallPiPackageTargeted(arg1, arg2) {
-  return window['go']['main']['App']['InstallPiPackageTargeted'](arg1, arg2);
-}
-
-export function UpdatePiPackageTargeted(arg1, arg2) {
-  return window['go']['main']['App']['UpdatePiPackageTargeted'](arg1, arg2);
-}
-
-export function RemovePiPackageTargeted(arg1, arg2) {
-  return window['go']['main']['App']['RemovePiPackageTargeted'](arg1, arg2);
-}
-
-export function GetPiPluginWSLStatus() {
-  return window['go']['main']['App']['GetPiPluginWSLStatus']();
-}
-
-export function CheckPiPluginWSLStatus() {
-  return window['go']['main']['App']['CheckPiPluginWSLStatus']();
-}
-
-export function GetDrvFSAdvisories() {
-  return window['go']['main']['App']['GetDrvFSAdvisories']();
-}
-
-export function ListCodexAdvisorChats(arg1) {
-  return window['go']['main']['App']['ListCodexAdvisorChats'](arg1);
 }

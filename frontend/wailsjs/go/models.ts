@@ -184,6 +184,37 @@ export namespace aiproxy {
 
 }
 
+export namespace claudeaccounts {
+	
+	export class ClaudeAccountRotationConfig {
+	    schema_version: number;
+	    enabled: boolean;
+	    strategy: string;
+	    threshold_percent: number;
+	    cooldown_seconds: number;
+	    hysteresis_points: number;
+	    manual_respect_seconds: number;
+	    acknowledged_risk_version?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeAccountRotationConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema_version = source["schema_version"];
+	        this.enabled = source["enabled"];
+	        this.strategy = source["strategy"];
+	        this.threshold_percent = source["threshold_percent"];
+	        this.cooldown_seconds = source["cooldown_seconds"];
+	        this.hysteresis_points = source["hysteresis_points"];
+	        this.manual_respect_seconds = source["manual_respect_seconds"];
+	        this.acknowledged_risk_version = source["acknowledged_risk_version"];
+	    }
+	}
+
+}
+
 export namespace codexplugin {
 	
 	export class AddMarketplaceRequest {
@@ -1089,6 +1120,7 @@ export namespace config {
 	    model: string;
 	    thinking?: string;
 	    context_window?: number;
+	    max_tokens?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PiLoginPreset(source);
@@ -1101,6 +1133,7 @@ export namespace config {
 	        this.model = source["model"];
 	        this.thinking = source["thinking"];
 	        this.context_window = source["context_window"];
+	        this.max_tokens = source["max_tokens"];
 	    }
 	}
 	export class AppConfig {
@@ -1111,6 +1144,7 @@ export namespace config {
 	    opencode_presets?: Record<string, OpenCodePreset>;
 	    modality_probe?: Record<string, ModalityProbeEntry>;
 	    provider_quota?: Record<string, ProviderQuotaEntry>;
+	    claude_account_rotation?: claudeaccounts.ClaudeAccountRotationConfig;
 	    version: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1126,6 +1160,7 @@ export namespace config {
 	        this.opencode_presets = this.convertValues(source["opencode_presets"], OpenCodePreset, true);
 	        this.modality_probe = this.convertValues(source["modality_probe"], ModalityProbeEntry, true);
 	        this.provider_quota = this.convertValues(source["provider_quota"], ProviderQuotaEntry, true);
+	        this.claude_account_rotation = this.convertValues(source["claude_account_rotation"], claudeaccounts.ClaudeAccountRotationConfig);
 	        this.version = source["version"];
 	    }
 	
@@ -2121,6 +2156,7 @@ export namespace envvars {
 	export class EnvVar {
 	    key: string;
 	    value: string;
+	    allowPathValue?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EnvVar(source);
@@ -2130,6 +2166,7 @@ export namespace envvars {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
 	        this.value = source["value"];
+	        this.allowPathValue = source["allowPathValue"];
 	    }
 	}
 	export class GlobalSyncStatus {
@@ -2464,55 +2501,23 @@ export namespace logging {
 
 export namespace main {
 	
-	export class ClearStoppedSessionFailure {
-	    id: string;
-	    reason: string;
+	export class ClaudeAccountHealthDTO {
+	    claudeGrant: string;
+	    piGrant: string;
+	    identityStatus?: string;
+	    reasonCode?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new ClearStoppedSessionFailure(source);
+	        return new ClaudeAccountHealthDTO(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.reason = source["reason"];
+	        this.claudeGrant = source["claudeGrant"];
+	        this.piGrant = source["piGrant"];
+	        this.identityStatus = source["identityStatus"];
+	        this.reasonCode = source["reasonCode"];
 	    }
-	}
-	export class ClearStoppedSessionsResult {
-	    cleared: number;
-	    clearedIds: string[];
-	    retainedIds: string[];
-	    failed: ClearStoppedSessionFailure[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ClearStoppedSessionsResult(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.cleared = source["cleared"];
-	        this.clearedIds = source["clearedIds"];
-	        this.retainedIds = source["retainedIds"];
-	        this.failed = this.convertValues(source["failed"], ClearStoppedSessionFailure);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class ClaudeAccountDTO {
 	    id: string;
@@ -2560,24 +2565,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class ClaudeAccountHealthDTO {
-	    claudeGrant: string;
-	    piGrant: string;
-	    identityStatus?: string;
-	    reasonCode?: string;
 	
-	    static createFrom(source: any = {}) {
-	        return new ClaudeAccountHealthDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.claudeGrant = source["claudeGrant"];
-	        this.piGrant = source["piGrant"];
-	        this.identityStatus = source["identityStatus"];
-	        this.reasonCode = source["reasonCode"];
-	    }
-	}
 	export class ClaudeAccountNativeStateDTO {
 	    hasJournal: boolean;
 	    journalPhase?: string;
@@ -2762,6 +2750,56 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ClearStoppedSessionFailure {
+	    id: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClearStoppedSessionFailure(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class ClearStoppedSessionsResult {
+	    cleared: number;
+	    clearedIds: string[];
+	    retainedIds: string[];
+	    failed: ClearStoppedSessionFailure[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ClearStoppedSessionsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cleared = source["cleared"];
+	        this.clearedIds = source["clearedIds"];
+	        this.retainedIds = source["retainedIds"];
+	        this.failed = this.convertValues(source["failed"], ClearStoppedSessionFailure);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CodexGlobalHeadroomStatus {
 	    enabled: boolean;
 	    target: string;
@@ -2815,6 +2853,102 @@ export namespace main {
 	        this.port = source["port"];
 	        this.running = source["running"];
 	    }
+	}
+	export class PiPluginOpOutcome {
+	    target: string;
+	    ok: boolean;
+	    outcome: string;
+	    errCode?: string;
+	    detail?: string;
+	    output?: string;
+	    pinnedRef?: string;
+	    refKind?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PiPluginOpOutcome(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.target = source["target"];
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.errCode = source["errCode"];
+	        this.detail = source["detail"];
+	        this.output = source["output"];
+	        this.pinnedRef = source["pinnedRef"];
+	        this.refKind = source["refKind"];
+	    }
+	}
+	export class PiPluginTargetedResult {
+	    target: string;
+	    results: PiPluginOpOutcome[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PiPluginTargetedResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.target = source["target"];
+	        this.results = this.convertValues(source["results"], PiPluginOpOutcome);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PiPluginWSLStatus {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    snapshot: wslsupply.WSLPluginSnapshot;
+	    summary: wslsupply.PluginRegistrationSummary;
+	
+	    static createFrom(source: any = {}) {
+	        return new PiPluginWSLStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.snapshot = this.convertValues(source["snapshot"], wslsupply.WSLPluginSnapshot);
+	        this.summary = this.convertValues(source["summary"], wslsupply.PluginRegistrationSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class RemoteClientConnectResult {
 	    host: remoteclient.HostEntry;
@@ -2936,6 +3070,104 @@ export namespace main {
 	        this.configuredPort = source["configuredPort"];
 	    }
 	}
+	export class WSLSkillSummary {
+	    name: string;
+	    state: string;
+	    detail: string;
+	    incompatible?: string[];
+	    excluded: number;
+	    files: number;
+	    bytes: number;
+	    selectable: boolean;
+	    actions: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSkillSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.incompatible = source["incompatible"];
+	        this.excluded = source["excluded"];
+	        this.files = source["files"];
+	        this.bytes = source["bytes"];
+	        this.selectable = source["selectable"];
+	        this.actions = source["actions"];
+	    }
+	}
+	export class WSLSkillsSupplyStatus {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    rootMissing: boolean;
+	    scanStarted: boolean;
+	    scanRunning: boolean;
+	    scanScanned: number;
+	    scanTotal: number;
+	    scanIncomplete: boolean;
+	    skills: WSLSkillSummary[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSkillsSupplyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.rootMissing = source["rootMissing"];
+	        this.scanStarted = source["scanStarted"];
+	        this.scanRunning = source["scanRunning"];
+	        this.scanScanned = source["scanScanned"];
+	        this.scanTotal = source["scanTotal"];
+	        this.scanIncomplete = source["scanIncomplete"];
+	        this.skills = this.convertValues(source["skills"], WSLSkillSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WSLConfigUnitDetail {
+	    unit: string;
+	    relPath: string;
+	    policy: string;
+	    state: string;
+	    detail: string;
+	    actions: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLConfigUnitDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.unit = source["unit"];
+	        this.relPath = source["relPath"];
+	        this.policy = source["policy"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.actions = source["actions"];
+	    }
+	}
 	export class WSLCliSupplyStatus {
 	    distro: string;
 	    available: boolean;
@@ -2974,7 +3206,6 @@ export namespace main {
 		    return a;
 		}
 	}
-
 	export class WSLConfigSupplyFace {
 	    key: string;
 	    label: string;
@@ -2993,28 +3224,6 @@ export namespace main {
 	        this.state = source["state"];
 	        this.detail = source["detail"];
 	        this.lastCheck = source["lastCheck"];
-	    }
-	}
-	export class WSLConfigUnitDetail {
-	    unit: string;
-	    relPath: string;
-	    policy: string;
-	    state: string;
-	    detail: string;
-	    actions: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLConfigUnitDetail(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.unit = source["unit"];
-	        this.relPath = source["relPath"];
-	        this.policy = source["policy"];
-	        this.state = source["state"];
-	        this.detail = source["detail"];
-	        this.actions = source["actions"];
 	    }
 	}
 	export class WSLConfigSupplyStatus {
@@ -3144,6 +3353,46 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class WSLOpenCodeMCPEntry {
+	    name: string;
+	    remote: boolean;
+	    nativeCommand: string;
+	    needsAdapt: boolean;
+	    reason: string;
+	    globalConflict: boolean;
+	    overrideGlobal: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLOpenCodeMCPEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.remote = source["remote"];
+	        this.nativeCommand = source["nativeCommand"];
+	        this.needsAdapt = source["needsAdapt"];
+	        this.reason = source["reason"];
+	        this.globalConflict = source["globalConflict"];
+	        this.overrideGlobal = source["overrideGlobal"];
+	    }
+	}
+	export class WSLPluginTargetEntry {
+	    cli: string;
+	    support: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLPluginTargetEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cli = source["cli"];
+	        this.support = source["support"];
+	        this.detail = source["detail"];
+	    }
+	}
 	export class WSLSkillPreview {
 	    name: string;
 	    portable: boolean;
@@ -3172,107 +3421,8 @@ export namespace main {
 	        this.notes = source["notes"];
 	    }
 	}
-	export class WSLSkillSummary {
-	    name: string;
-	    state: string;
-	    detail: string;
-	    incompatible?: string[];
-	    excluded: number;
-	    files: number;
-	    bytes: number;
-	    selectable: boolean;
-	    actions: string[];
 	
-	    static createFrom(source: any = {}) {
-	        return new WSLSkillSummary(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.state = source["state"];
-	        this.detail = source["detail"];
-	        this.incompatible = source["incompatible"];
-	        this.excluded = source["excluded"];
-	        this.files = source["files"];
-	        this.bytes = source["bytes"];
-	        this.selectable = source["selectable"];
-	        this.actions = source["actions"];
-	    }
-	}
-	export class WSLSkillsSupplyStatus {
-	    distro: string;
-	    available: boolean;
-	    reason?: string;
-	    rootMissing: boolean;
-	    scanStarted: boolean;
-	    scanRunning: boolean;
-	    scanScanned: number;
-	    scanTotal: number;
-	    scanIncomplete: boolean;
-	    skills: WSLSkillSummary[];
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLSkillsSupplyStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.distro = source["distro"];
-	        this.available = source["available"];
-	        this.reason = source["reason"];
-	        this.rootMissing = source["rootMissing"];
-	        this.scanStarted = source["scanStarted"];
-	        this.scanRunning = source["scanRunning"];
-	        this.scanScanned = source["scanScanned"];
-	        this.scanTotal = source["scanTotal"];
-	        this.scanIncomplete = source["scanIncomplete"];
-	        this.skills = this.convertValues(source["skills"], WSLSkillSummary);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 
-	export class WSLOpenCodeMCPEntry {
-	    name: string;
-	    remote: boolean;
-	    nativeCommand: string;
-	    needsAdapt: boolean;
-	    reason: string;
-	    globalConflict: boolean;
-	    overrideGlobal: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLOpenCodeMCPEntry(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.remote = source["remote"];
-	        this.nativeCommand = source["nativeCommand"];
-	        this.needsAdapt = source["needsAdapt"];
-	        this.reason = source["reason"];
-	        this.globalConflict = source["globalConflict"];
-	        this.overrideGlobal = source["overrideGlobal"];
-	    }
-	}
 }
 
 export namespace ompplugin {
@@ -3598,6 +3748,7 @@ export namespace piconfig {
 	    reasoning: boolean;
 	    thinkingLevels?: string[];
 	    contextWindow?: number;
+	    maxTokens?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ModelCatalogEntry(source);
@@ -3610,6 +3761,7 @@ export namespace piconfig {
 	        this.reasoning = source["reasoning"];
 	        this.thinkingLevels = source["thinkingLevels"];
 	        this.contextWindow = source["contextWindow"];
+	        this.maxTokens = source["maxTokens"];
 	    }
 	}
 	export class PiLoginProvider {
@@ -5859,6 +6011,131 @@ export namespace wslsetup {
 	        this.nodeVersion = source["nodeVersion"];
 	        this.tools = this.convertValues(source["tools"], ToolStatus);
 	        this.reason = source["reason"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace wslsupply {
+	
+	export class PluginRegistrationSummary {
+	    managed: number;
+	    installed: number;
+	    failed: number;
+	    frozen: number;
+	    missing: number;
+	    pendingOps: number;
+	    lastOpAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginRegistrationSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.managed = source["managed"];
+	        this.installed = source["installed"];
+	        this.failed = source["failed"];
+	        this.frozen = source["frozen"];
+	        this.missing = source["missing"];
+	        this.pendingOps = source["pendingOps"];
+	        this.lastOpAt = source["lastOpAt"];
+	    }
+	}
+	export class WSLPluginItem {
+	    source: string;
+	    identity: string;
+	    sourceType: string;
+	    name?: string;
+	    version?: string;
+	    commit?: string;
+	    managed: boolean;
+	    state: string;
+	    detail?: string;
+	    entityPresent: boolean;
+	    settingsPresent: boolean;
+	    entityPath?: string;
+	    pinnedRef?: string;
+	    refKind?: string;
+	    frozen?: boolean;
+	    frozenReason?: string;
+	    lastOp?: string;
+	    lastErrorCode?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLPluginItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.identity = source["identity"];
+	        this.sourceType = source["sourceType"];
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.commit = source["commit"];
+	        this.managed = source["managed"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.entityPresent = source["entityPresent"];
+	        this.settingsPresent = source["settingsPresent"];
+	        this.entityPath = source["entityPath"];
+	        this.pinnedRef = source["pinnedRef"];
+	        this.refKind = source["refKind"];
+	        this.frozen = source["frozen"];
+	        this.frozenReason = source["frozenReason"];
+	        this.lastOp = source["lastOp"];
+	        this.lastErrorCode = source["lastErrorCode"];
+	    }
+	}
+	export class WSLPluginSnapshot {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    checked: boolean;
+	    checkedAt?: string;
+	    piResolve?: string;
+	    items: WSLPluginItem[];
+	    managed: number;
+	    installed: number;
+	    mismatched: number;
+	    local: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLPluginSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.checked = source["checked"];
+	        this.checkedAt = source["checkedAt"];
+	        this.piResolve = source["piResolve"];
+	        this.items = this.convertValues(source["items"], WSLPluginItem);
+	        this.managed = source["managed"];
+	        this.installed = source["installed"];
+	        this.mismatched = source["mismatched"];
+	        this.local = source["local"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -599,10 +599,10 @@ func NewApp(mobileAssets embed.FS) *App {
 			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（配置不可读）", err.Error())
 			return
 		}
-		cw := 0 // 无存活预设 → 清除覆写（恢复 Pi 内置目录窗口）
+		cw, maxTokens := 0, 0 // 无存活预设 → 清除窗口与输出覆写
 		for _, p := range presets {
 			if p.Provider == trigger.Provider && p.Model == trigger.Model {
-				cw = p.ContextWindow
+				cw, maxTokens = p.ContextWindow, p.MaxTokens
 				break // 全组对齐保证一致，取首个即权威值
 			}
 		}
@@ -611,7 +611,7 @@ func NewApp(mobileAssets embed.FS) *App {
 			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（canonical root 不可用）", dirErr.Error())
 			return
 		}
-		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw); err != nil {
+		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw, maxTokens); err != nil {
 			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
 		}
 		// P3-S0：配置保存事件 → WSL 供给标脏（只发布 revision，不调度；S1 接分发）。
@@ -3825,13 +3825,13 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// 与后台 provider sync 互斥（同一 models.json 读改写）；失败仅告警不阻断
 		//（回退 Pi 内置目录窗口，启动语义不受影响）。
 		a.providerSyncMu.Lock()
-		overrideErr := launcher.UpsertPiLoginModelOverride(login.AgentDir, loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow)
+		overrideErr := launcher.UpsertPiLoginModelOverride(login.AgentDir, loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, loginPreset.MaxTokens)
 		a.providerSyncMu.Unlock()
 		if overrideErr != nil {
 			a.Log.Warn("pi", "写入登录预设 contextWindow 覆写失败（回退 Pi 内置窗口）", overrideErr.Error())
-		} else if loginPreset.ContextWindow > 0 {
-			a.Log.Info("pi", "登录预设 contextWindow 覆写已写入", fmt.Sprintf("provider=%s model=%s contextWindow=%d -> %s/models.json",
-				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, login.AgentDir))
+		} else if loginPreset.ContextWindow > 0 || loginPreset.MaxTokens > 0 {
+			a.Log.Info("pi", "登录预设模型额度覆写已写入", fmt.Sprintf("provider=%s model=%s contextWindow=%d maxTokens=%d -> %s/models.json",
+				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, loginPreset.MaxTokens, login.AgentDir))
 		}
 	}
 	// P3-S1 启动 lazy：WSL API-provider 会话在构建/写入前先经协调器分发托管

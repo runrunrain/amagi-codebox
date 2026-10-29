@@ -38,6 +38,10 @@ export function GetPiModelCatalog() {
   return window['go']['piconfig']['Service']['GetPiModelCatalog']();
 }
 
+export function ListCodexAdvisorChats(arg1) {
+  return window['go']['piconfig']['Service']['ListCodexAdvisorChats'](arg1);
+}
+
 export function ReadAgentFileAt(arg1, arg2) {
   return window['go']['piconfig']['Service']['ReadAgentFileAt'](arg1, arg2);
 }

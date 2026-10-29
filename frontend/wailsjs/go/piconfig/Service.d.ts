@@ -20,6 +20,8 @@ export function GetPiLoginProviders():Promise<Array<piconfig.PiLoginProvider>>;
 
 export function GetPiModelCatalog():Promise<string>;
 
+export function ListCodexAdvisorChats(arg1:string):Promise<string>;
+
 export function ReadAgentFileAt(arg1:string,arg2:string):Promise<Array<number>>;
 
 export function SaveAmagiConfig(arg1:string):Promise<void>;

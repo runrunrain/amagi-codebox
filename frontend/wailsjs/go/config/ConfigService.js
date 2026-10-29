@@ -38,6 +38,10 @@ export function GetAllTerminalPresets() {
   return window['go']['config']['ConfigService']['GetAllTerminalPresets']();
 }
 
+export function GetClaudeAccountRotation() {
+  return window['go']['config']['ConfigService']['GetClaudeAccountRotation']();
+}
+
 export function GetConfig() {
   return window['go']['config']['ConfigService']['GetConfig']();
 }
@@ -184,6 +188,10 @@ export function SetAgentTeams(arg1) {
 
 export function SetAllTerminalPresets(arg1) {
   return window['go']['config']['ConfigService']['SetAllTerminalPresets'](arg1);
+}
+
+export function SetClaudeAccountRotation(arg1) {
+  return window['go']['config']['ConfigService']['SetClaudeAccountRotation'](arg1);
 }
 
 export function SetModalityProber(arg1) {

@@ -26,6 +26,7 @@ export function AddSavedWorkDir(arg1:string,arg2:string):Promise<Array<settings.
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
 export function ApplyWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function ApplyWSLCliResourcesSupply(arg1:string,arg2:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
@@ -45,6 +46,8 @@ export function CaptureClaudeAccount(arg1:string,arg2:string,arg3:number):Promis
 export function CheckClaudeConfig():Promise<envcheck.ClaudeConfigStatus>;
 
 export function CheckForUpdate():Promise<updater.UpdateInfo>;
+
+export function CheckPiPluginWSLStatus():Promise<main.PiPluginWSLStatus>;
 
 export function CheckTool(arg1:string):Promise<envcheck.CheckStatus>;
 
@@ -105,6 +108,8 @@ export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>
 export function GetConfigService():Promise<config.ConfigService>;
 
 export function GetDockerWSLHealth():Promise<dockerwsl.HealthReport>;
+
+export function GetDrvFSAdvisories():Promise<string>;
 
 export function GetEnvCheckOperationState():Promise<envcheck.OperationState>;
 
@@ -168,6 +173,8 @@ export function GetPiModelsConfig():Promise<string>;
 
 export function GetPiModelsConfigPath():Promise<string>;
 
+export function GetPiPluginWSLStatus():Promise<main.PiPluginWSLStatus>;
+
 export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;
 
 export function GetProviderExportJSON(arg1:string):Promise<string>;
@@ -216,6 +223,8 @@ export function GetWSLConfigSupplyStatus():Promise<main.WSLConfigSupplyStatus>;
 
 export function GetWSLOpenCodeMCPPreview():Promise<Array<main.WSLOpenCodeMCPEntry>>;
 
+export function GetWSLPluginTargetSupport():Promise<Array<main.WSLPluginTargetEntry>>;
+
 export function GetWSLSkillsSupplyStatus():Promise<main.WSLSkillsSupplyStatus>;
 
 export function GrantWSLVisionConsent():Promise<void>;
@@ -230,8 +239,6 @@ export function HeadroomStart(arg1:string):Promise<void>;
 
 export function HeadroomStop():Promise<void>;
 
-export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
-
 export function ImportAIProxySubscription(arg1:string,arg2:string,arg3:string):Promise<aiproxy.State>;
 
 export function ImportConfigFromFile():Promise<string>;
@@ -240,13 +247,18 @@ export function ImportEnvVars(arg1:string):Promise<void>;
 
 export function ImportEnvVarsFromFile():Promise<void>;
 
+export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function InstallCLIToWSL(arg1:string):Promise<wslsetup.InstallResult>;
 
 export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallResult>;
 
+export function InstallPiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
+
 export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
 
 export function KeepWSLCliConfigUnitLocal(arg1:string,arg2:string):Promise<void>;
+
 export function KeepWSLCliResourceLocal(arg1:string,arg2:string):Promise<void>;
 
 export function KeepWSLPiConfigUnitLocal(arg1:string):Promise<void>;
@@ -263,6 +275,8 @@ export function LaunchPiSession(arg1:string,arg2:string,arg3:string,arg4:string,
 
 export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<string>;
 
+export function ListCodexAdvisorChats(arg1:string):Promise<string>;
+
 export function ListLocalLanAddresses():Promise<Array<remote.LanAddressInfo>>;
 
 export function ListRemoteDevices():Promise<Array<remote.DeviceInfo>>;
@@ -278,6 +292,7 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
 export function PreviewWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitPreview>>;
+
 export function PreviewWSLCliResourcesSupply(arg1:string):Promise<Array<main.WSLSkillPreview>>;
 
 export function PreviewWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitPreview>>;
@@ -366,6 +381,8 @@ export function RemoteClientUpdateHost(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveClaudeAccount(arg1:string,arg2:number):Promise<void>;
 
+export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
+
 export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;
 
 export function RemoveSession(arg1:string):Promise<void>;
@@ -416,9 +433,10 @@ export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Pro
 
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
 
-export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.GlobalSyncStatus>;
-// P4-A2（2026-10-17）：路径值 per-key 放行门（原生 boolean 参数；下次 wails generate 再生时自动归一）。
 export function SetEnvVarPathAllow(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.GlobalSyncStatus>;
+
 export function SetGitHubToken(arg1:string):Promise<void>;
 
 export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
@@ -450,6 +468,7 @@ export function SwitchClaudeAccount(arg1:string,arg2:number,arg3:string):Promise
 export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
 
 export function TakeOverWSLCliConfigUnit(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function TakeOverWSLCliResource(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function TakeOverWSLPiConfigUnit(arg1:string,arg2:string):Promise<void>;
@@ -460,28 +479,8 @@ export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 
 export function UninstallClaudeCode(arg1:string):Promise<envcheck.InstallResult>;
 
+export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
+
 export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;
-
-// P3-S5（2026-10-16）：插件目标化绑定（本机无 wails CLI 期手工补齐；返回类型
-// 暂用 any，前端 api/piPlugin.ts 以本地 interface 承接——下次 wails generate
-// 再生时会按 models.ts 生成强类型并自动归一）。
-export function GetWSLPluginTargetSupport():Promise<any>;
-
-export function InstallPiPackageTargeted(arg1:string,arg2:string):Promise<any>;
-
-export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
-
-export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
-
-export function GetPiPluginWSLStatus():Promise<any>;
-
-export function CheckPiPluginWSLStatus():Promise<any>;
-
-// P4-A1（2026-10-17）：DrvFS advisory 只读查询（本机无 wails CLI 期手工补齐；
-// 返回类型暂用 any，前端 api/drvfsAdvisory.ts 以本地 interface 承接并解析
-// JSON 字符串——下次 wails generate 再生时会按 models.ts 生成强类型并自动归一）。
-export function GetDrvFSAdvisories():Promise<any>;
-
-export function ListCodexAdvisorChats(arg1:string):Promise<string>;

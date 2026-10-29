@@ -22,10 +22,22 @@ export function RemovePackage(arg1) {
   return window['go']['piplugin']['Service']['RemovePackage'](arg1);
 }
 
+export function ResolvedEntityCommit(arg1) {
+  return window['go']['piplugin']['Service']['ResolvedEntityCommit'](arg1);
+}
+
+export function ResolvedEntityVersion(arg1) {
+  return window['go']['piplugin']['Service']['ResolvedEntityVersion'](arg1);
+}
+
 export function SwitchPackageSource(arg1, arg2) {
   return window['go']['piplugin']['Service']['SwitchPackageSource'](arg1, arg2);
 }
 
 export function UpdatePackage(arg1) {
   return window['go']['piplugin']['Service']['UpdatePackage'](arg1);
+}
+
+export function WindowsEntryFilters(arg1) {
+  return window['go']['piplugin']['Service']['WindowsEntryFilters'](arg1);
 }

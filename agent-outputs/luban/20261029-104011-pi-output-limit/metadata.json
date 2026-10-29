@@ -1,0 +1,23 @@
+{
+  "taskId": "20261029-104011-pi-output-limit",
+  "timestamp": "2026-10-29T10:40:11+08:00",
+  "agent": "luban",
+  "projectId": "amagi-codebox",
+  "taskBrief": "Pi 登录预设输出上限与目录最大值按钮（Leader 直接实现）",
+  "status": "completed",
+  "upstreamArtifactReferences": [],
+  "validationEvidence": {
+    "buildStatus": "passed",
+    "testStatus": "passed",
+    "browserVerification": "verified",
+    "commands": [
+      {"command": "go test ./... -count=1", "exitCode": 0, "summary": "全部 Go 包通过，含生产保存回调、模型切换与删除清理"},
+      {"command": "npm --prefix frontend test", "exitCode": 0, "summary": "41 文件、404 测试通过"},
+      {"command": "npm --prefix frontend run build", "exitCode": 0, "summary": "vue-tsc 与 Vite 构建通过"},
+      {"command": "PI_LOGIN_BROWSER_BRIDGE=1 go test . -run '^TestPiLoginBrowserBridge$' -v -count=1", "exitCode": 0, "summary": "隔离 HOME 的真实 Go bridge 与 agent-browser 表单操作验证通过"}
+    ]
+  },
+  "tags": ["pi", "output-limit", "provider-center", "native-host-only"],
+  "relatedFiles": ["frontend/src/components/provider/PiLoginProviderDetail.vue", "frontend/src/components/provider/piLoginOutputLimit.ts", "internal/config/pi_login.go", "internal/launcher/pi_login_override.go", "internal/piconfig/service.go", "app.go", "output-limit.png"],
+  "nextSteps": {"suggestedAgent": "luban", "suggestedAction": "按需打包安装 CodeBox；现有 Pi 会话重新加载模型或重启后使用新额度。WSL 输出覆写不在本次交付范围。"}
+}

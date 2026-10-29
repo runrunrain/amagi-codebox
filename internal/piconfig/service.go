@@ -335,6 +335,8 @@ type ModelCatalogEntry struct {
 	Reasoning      bool     `json:"reasoning"`
 	ThinkingLevels []string `json:"thinkingLevels,omitempty"`
 	ContextWindow  int      `json:"contextWindow,omitempty"`
+	// MaxTokens 是模型目录声明值，不应用 modelOverrides，供恢复最大输出额度。
+	MaxTokens int `json:"maxTokens,omitempty"`
 }
 
 // ModelCatalogProvider 是单个 provider 及其模型列表。
@@ -464,6 +466,9 @@ func extractModelEntry(model map[string]any) (ModelCatalogEntry, bool) {
 	}
 	if cw, ok := model["contextWindow"].(float64); ok {
 		me.ContextWindow = int(cw)
+	}
+	if max, ok := model["maxTokens"].(float64); ok && max > 0 && max <= 9007199254740991 && max == float64(int(max)) {
+		me.MaxTokens = int(max)
 	}
 	me.ThinkingLevels = extractThinkingLevels(me.Reasoning, model["thinkingLevelMap"])
 	if me.ThinkingLevels == nil {
