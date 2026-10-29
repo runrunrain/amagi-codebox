@@ -38,6 +38,61 @@ async function save(page: Page) {
   await expect(page.locator('#test-notifications')).toContainText('配置已保存');
 }
 
+test('role model selector recovers provider/ drafts and selects authenticated models', async ({ page }) => {
+  await open(page, { agents: { luban: { model: 'anthropic/' } } }, '?login-catalog', { section: null });
+  const selector = page.locator('.pac-agent-spec');
+  await expect(selector.locator('.mss-input')).toHaveCount(0);
+  await expect(selector.locator('.dropdown-trigger')).toHaveCount(3);
+  await selector.locator('.dropdown-trigger').nth(1).click();
+  await page.getByRole('option', { name: 'claude-fixture', exact: true }).click();
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('anthropic/claude-fixture');
+  await selector.locator('.dropdown-trigger').first().click();
+  await page.getByRole('option', { name: 'openai-codex ✓', exact: true }).click();
+  await expect(selector.locator('.mss-spec')).toHaveText('openai-codex/codex-fixture');
+  await selector.locator('.dropdown-trigger').nth(2).click();
+  await page.getByRole('option', { name: 'max', exact: true }).click();
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('openai-codex/codex-fixture:max');
+  await page.reload();
+  await expect(selector.locator('.dropdown-trigger')).toHaveCount(3);
+  await expect(selector.locator('.mss-spec')).toHaveText('openai-codex/codex-fixture:max');
+});
+
+test('empty login catalog stays selectable, supports switching away and explicit manual input', async ({ page }) => {
+  await open(page, { agents: { luban: { model: 'amagi-glm/glm-5.3' } } }, '?login-catalog&empty-cache', { section: null });
+  const selector = page.locator('.pac-agent-spec');
+  for (const provider of ['anthropic', 'openai-codex']) {
+    await selector.locator('.dropdown-trigger').first().click();
+    await page.getByRole('option', { name: `${provider} ✓`, exact: true }).click();
+    await expect(selector.locator('.mss-spec')).toHaveText(`${provider}/`);
+    await expect(selector.locator('.mss-input')).toHaveCount(0);
+    await expect(selector.getByRole('status')).toContainText('暂无模型目录');
+    await expect(selector.locator('.dropdown-trigger').nth(1)).toBeDisabled();
+    await expect(selector.locator('.dropdown-trigger').nth(2)).toBeDisabled();
+  }
+  await selector.locator('.dropdown-trigger').first().click();
+  await page.getByRole('option', { name: 'amagi-glm ✓', exact: true }).click();
+  await expect(selector.locator('.mss-spec')).toHaveText('amagi-glm/glm-5.3');
+  await selector.getByRole('button', { name: '手动输入模型', exact: true }).click();
+  await selector.locator('input').fill('dynamic/vendor/model:high');
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('dynamic/vendor/model:high');
+  await page.reload();
+  await expect(selector.locator('input')).toHaveValue('dynamic/vendor/model:high');
+});
+
+test('known provider with an uncatalogued model preserves the current complete spec', async ({ page }) => {
+  await open(page, { agents: { luban: { model: 'anthropic/unlisted:max' } } }, '?login-catalog', { section: null });
+  const selector = page.locator('.pac-agent-spec');
+  await expect(selector.locator('.mss-input')).toHaveCount(0);
+  await selector.locator('.dropdown-trigger').nth(1).click();
+  await expect(page.getByRole('option', { name: 'unlisted（当前值，目录未收录）', exact: true })).toBeVisible();
+  await page.getByRole('option', { name: 'unlisted（当前值，目录未收录）', exact: true }).click();
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('anthropic/unlisted:max');
+});
+
 test('copies luban, persists the exact spec and preserves all unrelated fields on reload', async ({ page }) => {
   await open(page);
   await expect(compaction(page).locator('.mss-spec')).toHaveText('ollama/qwen:32b:high');

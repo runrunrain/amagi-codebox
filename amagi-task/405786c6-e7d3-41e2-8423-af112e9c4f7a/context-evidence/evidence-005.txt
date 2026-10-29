@@ -1,0 +1,93 @@
+{"id":"63548c47","role":"toolResult","toolCallId":"call_c5f8c09a06644913bb7f85b6b1850c4c|fc_0510e45f8daa1c0f016ae363a69748819b8ef89ed48bec67ec","paths":["/Users/run.mao/workpace/amagi-codebox/frontend/src/components/provider/useModelCatalog.ts"],"sourceDigest":"dc47d56f02de4c1f5e9eb4dd47b38b785138690aa335c38d7a0beba3c72fabc2"}
+工具 read {"path":"frontend/src/components/provider/useModelCatalog.ts"}
+// useModelCatalog - provider→model 目录的加载与 spec 拆装逻辑。
+// pi 与 omp 的目录 JSON 形态一致（providers[].{name,api,models[]}），
+// 两端的可视化配置组件共用本 composable 实现「provider → model →
+// thinking level」三级下拉关联，避免手写 provider/model:level spec 出错。
+import { ref } from 'vue';
+
+export interface CatalogModel {
+  id: string;
+  name?: string;
+  reasoning: boolean;
+  thinkingLevels?: string[];
+  contextWindow?: number;
+}
+
+export interface CatalogProvider {
+  name: string;
+  api?: string;
+  models: CatalogModel[];
+  /** 该提供商是否已有可用凭据（auth.json 条目或注册表内联 apiKey） */
+  hasAuth?: boolean;
+  /** 来源：custom = 注册表（可编辑，省略该字段）；builtin = 内置目录（OAuth 登录提供商如 openai-codex） */
+  source?: 'custom' | 'builtin';
+}
+
+export interface ModelCatalog {
+  providers: CatalogProvider[];
+}
+
+/** 无 thinkingLevelMap 元数据时的兜底级别集合（与 amagi-pi 校验集一致） */
+export const DEFAULT_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+export interface ModelSpec {
+  provider: string;
+  model: string;
+  level: string;
+}
+
+/**
+ * 拆解 `provider/model[:level]` spec。
+ * 模型 ID 可以含斜杠或冒号；只有已知 thinking 后缀参与拆分。
+ * 空白、缺 provider 或 model 时返回 null，调用方回退手动输入。
+ */
+export function parseModelSpec(spec: string): ModelSpec | null {
+  if (!spec || /\s/.test(spec)) return null;
+  const levelIdx = spec.lastIndexOf(':');
+  const suffix = levelIdx > 0 ? spec.slice(levelIdx + 1) : '';
+  const level = DEFAULT_THINKING_LEVELS.includes(suffix) ? suffix : '';
+  const base = level ? spec.slice(0, levelIdx) : spec;
+  const slashIdx = base.indexOf('/');
+  if (slashIdx <= 0 || slashIdx === base.length - 1) return null;
+  return { provider: base.slice(0, slashIdx), model: base.slice(slashIdx + 1), level };
+}
+
+/** 拼装 `provider/model[:level]` spec（level 为空时不带冒号段） */
+export function buildModelSpec(provider: string, model: string, level: string): string {
+  const base = `${provider}/${model}`;
+  return level ? `${base}:${level}` : base;
+}
+
+/** 默认档位始终可选；换模型时清除明确不支持的档位，旧值在读取时保留。 */
+export function thinkingLevelsFor(model?: CatalogModel): string[] {
+  if (!model?.reasoning) return model ? ['off'] : DEFAULT_THINKING_LEVELS;
+  return model.thinkingLevels?.length ? model.thinkingLevels : DEFAULT_THINKING_LEVELS;
+}
+
+export function compatibleThinkingLevel(model: CatalogModel | undefined, level: string): string {
+  return thinkingLevelsFor(model).includes(level) ? level : '';
+}
+
+export function useModelCatalog() {
+  const catalog = ref<ModelCatalog>({ providers: [] });
+  const catalogLoading = ref(false);
+  const catalogError = ref('');
+
+  async function loadCatalog(loader: () => Promise<string>) {
+    catalogLoading.value = true;
+    catalogError.value = '';
+    try {
+      const raw = await loader();
+      const parsed = JSON.parse(raw || '{}') as ModelCatalog;
+      catalog.value = parsed && Array.isArray(parsed.providers) ? parsed : { providers: [] };
+    } catch (err) {
+      catalogError.value = String(err);
+      catalog.value = { providers: [] };
+    } finally {
+      catalogLoading.value = false;
+    }
+  }
+
+  return { catalog, catalogLoading, catalogError, loadCatalog };
+}

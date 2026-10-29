@@ -1,0 +1,2 @@
+{"id":"817d7d79","role":"assistant","paths":[],"sourceDigest":"c44b83d29f99425f9d50e011944f3c52f190de9ad9f502f08d34c8e1a06d3e11"}
+主上，我会先排查认证提供商的模型列表和 Agent 配置下拉框之间的数据链路，修复后补上回归测试。

@@ -24,9 +24,19 @@ describe('useModelCatalog spec utils', () => {
     expect(parseModelSpec('')).toBeNull();
     expect(parseModelSpec('invalid')).toBeNull();
     expect(parseModelSpec('/invalid')).toBeNull();
+    expect(parseModelSpec('p/')).toBeNull();
     expect(parseModelSpec('p/:high')).toBeNull();
     expect(parseModelSpec(' p/m')).toBeNull();
     expect(parseModelSpec('p/m\u3000')).toBeNull();
+  });
+
+  it('allows provider-only drafts only when the selector explicitly opts in', () => {
+    expect(parseModelSpec('anthropic/', { allowEmptyModel: true })).toEqual({ provider: 'anthropic', model: '', level: '' });
+    expect(parseModelSpec('openai-codex/', { allowEmptyModel: true })).toEqual({ provider: 'openai-codex', model: '', level: '' });
+    for (const invalid of ['', 'p', '/', '/m', 'p/:high', ' p/', 'p/\u3000']) {
+      expect(parseModelSpec(invalid, { allowEmptyModel: true })).toBeNull();
+    }
+    expect(parseModelSpec('dynamic/vendor/model:high', { allowEmptyModel: true })).toEqual({ provider: 'dynamic', model: 'vendor/model', level: 'high' });
   });
 
   it('preserves colon model IDs and strips only recognised thinking suffixes', () => {

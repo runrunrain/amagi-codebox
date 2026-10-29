@@ -23,6 +23,15 @@ window.go = {main: {App: {
   GetAmagiConfigPath: async () => '/isolated-fixture/.pi/agent/amagi.json',
   GetPiModelCatalog: async () => {
     if (new URLSearchParams(location.search).has('catalog-error')) throw new Error('fixture catalog unavailable');
+    // Synthetic metadata fixtures only: no auth.json or real credentials are read.
+    if (new URLSearchParams(location.search).has('login-catalog')) {
+      const empty = new URLSearchParams(location.search).has('empty-cache');
+      return JSON.stringify({providers: [
+        {name: 'anthropic', hasAuth: true, models: empty ? [] : [{id: 'claude-fixture', reasoning: true, thinkingLevels: ['off', 'high']}]},
+        {name: 'openai-codex', hasAuth: true, models: empty ? [] : [{id: 'codex-fixture', reasoning: true, thinkingLevels: ['off', 'high', 'max']}]},
+        ...catalog.providers,
+      ]});
+    }
     return JSON.stringify(catalog);
   },
   SaveAmagiConfig: async content => {

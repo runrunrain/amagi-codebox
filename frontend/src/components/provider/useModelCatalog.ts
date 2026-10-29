@@ -39,15 +39,17 @@ export interface ModelSpec {
  * 拆解 `provider/model[:level]` spec。
  * 模型 ID 可以含斜杠或冒号；只有已知 thinking 后缀参与拆分。
  * 空白、缺 provider 或 model 时返回 null，调用方回退手动输入。
+ * 选择器可显式允许 `provider/` 草稿；默认仍要求完整 spec，供保存校验使用。
  */
-export function parseModelSpec(spec: string): ModelSpec | null {
+export function parseModelSpec(spec: string, options: { allowEmptyModel?: boolean } = {}): ModelSpec | null {
   if (!spec || /\s/.test(spec)) return null;
   const levelIdx = spec.lastIndexOf(':');
   const suffix = levelIdx > 0 ? spec.slice(levelIdx + 1) : '';
   const level = DEFAULT_THINKING_LEVELS.includes(suffix) ? suffix : '';
   const base = level ? spec.slice(0, levelIdx) : spec;
   const slashIdx = base.indexOf('/');
-  if (slashIdx <= 0 || slashIdx === base.length - 1) return null;
+  if (slashIdx <= 0) return null;
+  if (slashIdx === base.length - 1 && (!options.allowEmptyModel || level)) return null;
   return { provider: base.slice(0, slashIdx), model: base.slice(slashIdx + 1), level };
 }
 

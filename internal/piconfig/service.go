@@ -357,8 +357,8 @@ type ModelCatalog struct {
 	Providers []ModelCatalogProvider `json:"providers"`
 }
 
-// GetPiModelCatalog 读取 models.json，抽取 provider→models 目录（只读，
-// 不含 apiKey 等敏感信息），序列化为 JSON 返回。文件缺失时返回空目录。
+// GetPiModelCatalog 合并内置缓存与 models.json 的逐模型定义/覆盖（只读，
+// 不返回 apiKey 等敏感信息），序列化为 JSON 返回。
 func (s *Service) GetPiModelCatalog() (string, error) {
 	catalog := ModelCatalog{Providers: []ModelCatalogProvider{}}
 
@@ -380,11 +380,22 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 	providersRaw, _ := root["providers"].(map[string]any)
 	// 无 providers 键（含 models.json 缺失）不提前返回：builtin 目录与前线契约仍需合并。
 
+	// models.json 是内置目录的覆盖层，不是整组 provider 的替换。
+	// 缓存缺失/损坏时仍展示自定义模型；绝不从认证条目猜测模型 ID。
+	builtin, _ := loadBuiltinProviders()
 	names := make([]string, 0, len(providersRaw))
 	for name := range providersRaw {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	builtinNames := make([]string, 0, len(builtin))
+	for name := range builtin {
+		if _, custom := providersRaw[name]; !custom {
+			builtinNames = append(builtinNames, name)
+		}
+	}
+	sort.Strings(builtinNames)
+	names = append(names, builtinNames...)
 
 	// auth.json 中的提供商名集合（不读取凭据内容，仅判断有无有效条目）
 	authNames := map[string]bool{}
@@ -405,8 +416,13 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 	}
 
 	for _, name := range names {
-		entry := ModelCatalogProvider{Name: name, Models: []ModelCatalogEntry{}}
+		entry := ModelCatalogProvider{Name: name, HasAuth: authNames[name]}
+		base, _ := builtin[name].(map[string]any)
 		provider, _ := providersRaw[name].(map[string]any)
+		if _, custom := providersRaw[name]; !custom {
+			entry.Source = "builtin"
+		}
+		entry.Models = mergeCatalogModels(base, provider)
 		if provider != nil {
 			if api, ok := provider["api"].(string); ok {
 				entry.API = api
@@ -414,27 +430,8 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 			if key, ok := provider["apiKey"].(string); ok && key != "" {
 				entry.HasAuth = true
 			}
-			entry.HasAuth = entry.HasAuth || authNames[name]
-			if models, ok := provider["models"].([]any); ok {
-				for _, m := range models {
-					model, ok := m.(map[string]any)
-					if !ok {
-						continue
-					}
-					if me, ok := extractModelEntry(model); ok {
-						entry.Models = append(entry.Models, me)
-					}
-				}
-			}
 		}
 		catalog.Providers = append(catalog.Providers, entry)
-	}
-
-	// 追加内置目录（models-store.json，根层为 providers 映射）：补齐仅存在于
-	// 内置目录/仅通过 OAuth 登录的提供商（如 openai-codex）。models.json 中
-	// 已有的自定义条目优先，不被内置版本覆盖。
-	if builtin, err := loadBuiltinCatalog(names, authNames); err == nil {
-		catalog.Providers = append(catalog.Providers, builtin...)
 	}
 
 	// 合并 amagi-pi 前线契约文件（~/.pi/agent/amagi/data/codex-frontline.json）：
@@ -477,9 +474,9 @@ func extractModelEntry(model map[string]any) (ModelCatalogEntry, bool) {
 	return me, true
 }
 
-// loadBuiltinCatalog 读取 models-store.json（pi 内置模型目录缓存）并返回
-// 不在自定义注册表中的 providers。authNames 用于标注 OAuth/api_key 登录状态。
-func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]ModelCatalogProvider, error) {
+// loadBuiltinProviders 读取 models-store.json（根层为 provider 映射）。
+// 保留原始模型元数据，等 models.json 合并完后再抽取下拉所需字段。
+func loadBuiltinProviders() (map[string]any, error) {
 	storePath := filepath.Join(agentDir(), "models-store.json")
 	data, err := os.ReadFile(storePath)
 	if err != nil {
@@ -489,46 +486,61 @@ func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]Mode
 	if err := json.Unmarshal(data, &store); err != nil {
 		return nil, err
 	}
+	return store, nil
+}
 
-	custom := map[string]bool{}
-	for _, n := range customNames {
-		custom[n] = true
-	}
-
-	names := make([]string, 0, len(store))
-	for name := range store {
-		if custom[name] {
-			continue
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var out []ModelCatalogProvider
-	for _, name := range names {
-		entry := ModelCatalogProvider{
-			Name:    name,
-			Models:  []ModelCatalogEntry{},
-			Source:  "builtin",
-			HasAuth: authNames[name],
-		}
-		provider, _ := store[name].(map[string]any)
-		if provider != nil {
-			if models, ok := provider["models"].([]any); ok {
-				for _, m := range models {
-					model, ok := m.(map[string]any)
-					if !ok {
-						continue
-					}
-					if me, ok := extractModelEntry(model); ok {
-						entry.Models = append(entry.Models, me)
-					}
-				}
+// mergeCatalogModels 复刻 Pi models.json 语义：models 按 id 添加/替换，
+// 最后应用 modelOverrides（未知 id 忽略；thinkingLevelMap 逐键合并，含 null）。
+func mergeCatalogModels(base, custom map[string]any) []ModelCatalogEntry {
+	models := []map[string]any{}
+	indices := map[string]int{}
+	for _, provider := range []map[string]any{base, custom} {
+		rawModels, _ := provider["models"].([]any)
+		for _, raw := range rawModels {
+			model, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := model["id"].(string)
+			if id == "" {
+				continue
+			}
+			if i, exists := indices[id]; exists {
+				models[i] = model
+			} else {
+				indices[id] = len(models)
+				models = append(models, model)
 			}
 		}
-		out = append(out, entry)
 	}
-	return out, nil
+	overrides, _ := custom["modelOverrides"].(map[string]any)
+	out := make([]ModelCatalogEntry, 0, len(models))
+	for _, model := range models {
+		id, _ := model["id"].(string)
+		if override, ok := overrides[id].(map[string]any); ok {
+			// 仅应用目录消费的字段；id 不可覆盖，敏感字段不进入输出。
+			for _, key := range []string{"name", "reasoning", "contextWindow"} {
+				if value, exists := override[key]; exists && value != nil {
+					model[key] = value
+				}
+			}
+			if patch, ok := override["thinkingLevelMap"].(map[string]any); ok {
+				levels, _ := model["thinkingLevelMap"].(map[string]any)
+				merged := map[string]any{}
+				for key, value := range levels {
+					merged[key] = value
+				}
+				for key, value := range patch {
+					merged[key] = value
+				}
+				model["thinkingLevelMap"] = merged
+			}
+		}
+		if entry, ok := extractModelEntry(model); ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // mergeFrontlineContract 把 amagi-pi 前线契约文件的追加模型与档位补丁合并进目录对应 provider。

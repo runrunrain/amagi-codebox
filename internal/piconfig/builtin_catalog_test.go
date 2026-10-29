@@ -17,7 +17,7 @@ func TestBuiltinCatalogMerge(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(modelsFixture), 0o600); err != nil {
 		t.Fatalf("write models fixture: %v", err)
 	}
-	// 内置目录：openai-codex（OAuth 登录）+ relay（与自定义重名，应被自定义覆盖）
+	// 内置目录：openai-codex（OAuth 登录）+ relay（同 provider 按模型 id 合并）
 	storeFixture := `{"openai-codex":{"models":[{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","reasoning":true,"thinkingLevelMap":{"high":"high","max":"max"}},{"id":"gpt-5.3-codex-spark","reasoning":true}]},"relay":{"models":[{"id":"builtin-only-model"}]}}`
 	if err := os.WriteFile(filepath.Join(dir, "models-store.json"), []byte(storeFixture), 0o600); err != nil {
 		t.Fatalf("write store fixture: %v", err)
@@ -78,13 +78,13 @@ func TestBuiltinCatalogMerge(t *testing.T) {
 		t.Fatal("xhigh 无显式映射不应出现（pi 语义：扩展档需显式声明）")
 	}
 
-	// 与内置重名的 relay：自定义优先，不重复出现且无 builtin 标记
+	// 与内置重名的 relay：保留其他内置模型，不重复出现且无 builtin 标记
 	relayCount := 0
 	for _, pp := range cat.Providers {
 		if pp.Name == "relay" {
 			relayCount++
-			if pp.Source == "builtin" || len(pp.Models) != 1 || pp.Models[0].ID != "m1" {
-				t.Fatalf("relay should stay custom-only: %+v", pp)
+			if pp.Source == "builtin" || len(pp.Models) != 2 || pp.Models[0].ID != "builtin-only-model" || pp.Models[1].ID != "m1" {
+				t.Fatalf("relay should merge builtin and custom models: %+v", pp)
 			}
 		}
 	}

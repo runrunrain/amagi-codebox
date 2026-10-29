@@ -1,0 +1,34 @@
+{"id":"a0422d64","role":"toolResult","toolCallId":"call_c8f7ae62b92c49d5831a8a3ed5f6a641|fc_0510e45f8daa1c0f016ae3639df780819bb0b3ba9d9309886e","paths":[],"sourceDigest":"ef80fdf3152c40010bea3b09a4ac97bdb633c48bd66de303c4ddbe17bbedb1ae"}
+工具 bash {"command":"git status --short; rg -n '手动输入模型|目录未|当前值' frontend/src; rg -n 'OAuth|oauth|Get.*Models' internal/piconfig | head -60"}
+frontend/src/views/settings/envcheckSolutions.ts:43:  /** Claude 安装方式选择器当前值（''/native/npm）。 */
+frontend/src/views/settings/EnvCheckSettings.vue:191:                当前值：<span class="mono">{{ item.currentValue }}</span>
+frontend/src/components/provider/ModelSpecSelector.vue:5:  未知 provider / 无法拆分的 spec 回退为手动输入；目录未收录的模型保持当前值可见。
+frontend/src/components/provider/ModelSpecSelector.vue:44:      <AppButton variant="ghost" size="small" class="mss-mode-btn" @click="manual = true">手动输入模型</AppButton>
+frontend/src/components/provider/ModelSpecSelector.vue:104:    options.unshift({ value: model.value, label: `${model.value}（当前值，目录未收录）` });
+frontend/src/components/provider/ModelSpecSelector.vue:114:    options.push({ value: level.value, label: `${level.value}（当前值，不在支持档位中）` });
+internal/piconfig/login.go:60:		if name != "" && strings.TrimSpace(name) == name && !strings.ContainsAny(name, "\x00\r\n") && json.Unmarshal(raw, &entry) == nil && entry.Type == "oauth" {
+internal/piconfig/auth_config_test.go:27:	authFixture := `{"relay":{"type":"api_key","key":"sk-abc"},"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":1755000000000,"accountId":"acc1"}}`
+internal/piconfig/builtin_catalog_test.go:20:	// 内置目录：openai-codex（OAuth 登录）+ relay（与自定义重名，应被自定义覆盖）
+internal/piconfig/builtin_catalog_test.go:25:	authFixture := `{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":1}}`
+internal/piconfig/builtin_catalog_test.go:53:	// 内置 openai-codex：source=builtin、带 OAuth 认证状态、模型列表完整
+internal/piconfig/login_test.go:36:	fixture := `{"openai-codex":{"type":"oauth","access":"fixture-access-sentinel","refresh":"fixture-refresh-sentinel","expires":1},"key-only":{"type":"api_key","key":"fixture-api-sentinel"},"wrong":null,"amagi-copy":{"type":"api_key"}}`
+internal/piconfig/login_test.go:38:	writeLoginFixture(t, filepath.Join(override, "auth.json"), `{"wrong-home":{"type":"oauth"}}`)
+internal/piconfig/login_test.go:83:	for _, fixture := range []string{`{}`, `{"openai":{"type":"api_key","key":"fixture-key"}}`, `{"a":"oauth","b":{"type":4},"c":{"type":"other"}}`} {
+internal/piconfig/login_test.go:110:	writeLoginFixture(t, filepath.Join(dir, "auth.json"), `{"extension:org/provider":{"type":"oauth"}}`)
+internal/piconfig/login_test.go:113:		t.Fatalf("custom OAuth id: %+v %v", got, err)
+internal/piconfig/login_test.go:119:	writeLoginFixture(t, filepath.Join(dir, "auth.json"), `{"openai-codex":{"type":"oauth"}}`)
+internal/piconfig/models_config_test.go:17:	content, err := s.GetModelsConfig()
+internal/piconfig/models_config_test.go:19:		t.Fatalf("GetModelsConfig default: %v", err)
+internal/piconfig/models_config_test.go:41:	got, err := s.GetModelsConfig()
+internal/piconfig/models_config_test.go:43:		t.Fatalf("GetModelsConfig: %v", err)
+internal/piconfig/service.go:219:// GetModelsConfig 读取 models.json（provider 注册表）内容。
+internal/piconfig/service.go:222:func (s *Service) GetModelsConfig() (string, error) {
+internal/piconfig/service.go:267:// GetModelsConfigPath 返回 models.json 的绝对路径，供前端展示。
+internal/piconfig/service.go:268:func (s *Service) GetModelsConfigPath() (string, error) {
+internal/piconfig/service.go:349:	// 内置模型目录（models-store.json 缓存，如 openai-codex 等 OAuth 登录
+internal/piconfig/service.go:375:	// （models-store.json，OAuth provider 如 openai-codex）与前线契约合并全部被
+internal/piconfig/service.go:376:	// 跳过——纯 OAuth 用户（无 models.json）在下拉里看不到任何内置 provider。
+internal/piconfig/service.go:400:				case "api_key", "oauth":
+internal/piconfig/service.go:434:	// 内置目录/仅通过 OAuth 登录的提供商（如 openai-codex）。models.json 中
+internal/piconfig/service.go:481:// 不在自定义注册表中的 providers。authNames 用于标注 OAuth/api_key 登录状态。
+internal/piconfig/service.go:581:	// provider 不在目录（models-store 尚无该 OAuth provider）：作为 builtin 条目补入

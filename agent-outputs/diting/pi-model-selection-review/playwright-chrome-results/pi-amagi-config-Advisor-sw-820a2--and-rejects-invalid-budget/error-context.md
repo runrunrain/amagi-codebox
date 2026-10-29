@@ -1,0 +1,96 @@
+# Page snapshot
+
+```yaml
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - navigation "配置分区" [ref=e5]:
+      - list [ref=e7]:
+        - listitem [ref=e8]:
+          - button "角色模型" [ref=e9] [cursor=pointer]:
+            - generic [ref=e10]: 角色模型
+        - listitem [ref=e11]:
+          - button "执行中咨询" [active] [ref=e12] [cursor=pointer]:
+            - generic [ref=e13]: 执行中咨询
+        - listitem [ref=e14]:
+          - button "CodeMode" [ref=e15] [cursor=pointer]:
+            - generic [ref=e16]: CodeMode
+        - listitem [ref=e17]:
+          - button "上下文压缩" [ref=e18] [cursor=pointer]:
+            - generic [ref=e19]: 上下文压缩
+            - generic [ref=e20]: 下次压缩生效
+        - listitem [ref=e21]:
+          - button "MCP 路由" [ref=e22] [cursor=pointer]:
+            - generic [ref=e23]: MCP 路由
+        - listitem [ref=e24]:
+          - button "并发限制" [ref=e25] [cursor=pointer]:
+            - generic [ref=e26]: 并发限制
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - button "复制配置文件路径：/isolated-fixture/.pi/agent/amagi.json" [ref=e30] [cursor=pointer]:
+          - img [ref=e31]
+          - generic [ref=e34]:
+            - generic [ref=e35]: /isolated-fixture/.pi/agent/
+            - generic [ref=e36]: amagi.json
+          - img [ref=e37]
+        - generic [ref=e40]:
+          - generic [ref=e41]:
+            - button "可视化" [pressed] [ref=e42] [cursor=pointer]
+            - button "JSON" [ref=e43] [cursor=pointer]
+          - button "保存配置" [ref=e44] [cursor=pointer]
+      - region "执行中咨询" [ref=e46]:
+        - generic [ref=e47]:
+          - heading "执行中咨询" [level=3] [ref=e48]
+          - code [ref=e49]: advisor
+          - generic [ref=e50]: 异步建议返回原会话
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - button "未配置" [ref=e54] [cursor=pointer]
+            - button "关闭" [ref=e55] [cursor=pointer]
+            - button "pi 内模型" [pressed] [ref=e56] [cursor=pointer]
+            - button "Codex Work 咨询" [ref=e57] [cursor=pointer]
+          - paragraph [ref=e58]: 默认异步咨询，原 Agent 继续执行；建议完成后回到原会话。首次启用后重载 Leader，新子任务按派发时配置授权。
+          - generic [ref=e59]:
+            - generic [ref=e60]: 咨询模型
+            - code [ref=e61]: advisor.model
+          - generic [ref=e62]:
+            - generic [ref=e63]:
+              - button "amagi-glm ✓ ▾" [ref=e65] [cursor=pointer]:
+                - generic [ref=e66]: amagi-glm ✓
+                - generic [ref=e67]: ▾
+              - button "glm-5.3 ▾" [ref=e69] [cursor=pointer]:
+                - generic [ref=e70]: glm-5.3
+                - generic [ref=e71]: ▾
+              - button "max ▾" [ref=e73] [cursor=pointer]:
+                - generic [ref=e74]: max
+                - generic [ref=e75]: ▾
+            - button "手动输入模型" [ref=e76] [cursor=pointer]
+            - code [ref=e77]: amagi-glm/glm-5.3:max
+          - generic [ref=e78]:
+            - generic [ref=e79]: Leader 咨询
+            - code [ref=e80]: advisor.leader
+          - generic [ref=e81]:
+            - button "允许" [pressed] [ref=e82] [cursor=pointer]
+            - button "关闭" [ref=e83] [cursor=pointer]
+          - generic [ref=e84]:
+            - generic [ref=e85]: 可申请咨询的子角色
+            - code [ref=e86]: advisor.roles
+          - generic [ref=e87]:
+            - generic [ref=e88]:
+              - generic [ref=e89]: "1"
+              - textbox "请输入字符串" [ref=e91]: luban
+              - button "删除" [ref=e92] [cursor=pointer]:
+                - generic [ref=e93]: ×
+            - button "+ 添加项" [ref=e95] [cursor=pointer]
+          - paragraph [ref=e96]: 角色配置仅给出上限；每次派发仍须显式 scope.advisor=consult。已有任务不自动扩权。
+          - generic [ref=e97]:
+            - generic [ref=e98]:
+              - text: 会话尝试次数
+              - spinbutton "会话尝试次数" [ref=e100]: "5"
+            - generic [ref=e101]:
+              - text: 单次输出 tokens
+              - spinbutton "单次输出 tokens" [ref=e103]: "4096"
+            - generic [ref=e104]:
+              - text: 单次时限（毫秒）
+              - spinbutton "单次时限（毫秒）" [ref=e106]: "120000"
+  - status
+```
