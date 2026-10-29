@@ -85,6 +85,11 @@ type appLaunchPlanner struct {
 	// 桌面 resolveEmbeddedLaunchSpec 对应动作记 WARN/INFO，remote/restart
 	// 计划链经 App 装配注入同一日志面，不改变任何判定语义。
 	envObserver func(level, message, detail string)
+	// claudeCredentialAdmission 是凭据 admission 的纯读计划接缝（design
+	// §6.3）：返回计划应携带的 SharedAdmissionSpec（false = 不携带）；错误
+	// 表示池 blocked（needs-reconcile/未结事务）→ 计划构建失败，remote
+	// create/restart 受影响入口关闭。nil = 未接线（测试，不携带）。
+	claudeCredentialAdmission func() (launchplan.SharedAdmissionSpec, bool, error)
 }
 
 func newAppLaunchPlanner(
@@ -337,6 +342,21 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 				UpstreamURL: realBackend, ListenPort: headroom.DefaultPort,
 			},
 		})
+	}
+	// Claude 订阅账号轮换（design §6.3）：canonical 凭据 admission 描述。
+	// WSL 目标（distro 独立根）不携带；blocked 状态计划构建失败。
+	if spec.BootstrapMode != platform.BootstrapWSL {
+		if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+		} else if ok {
+			admissions = append(admissions, credSpec)
+			// F07（design §6.3 R3）：受管 OAuth 启动在最终 shell 后边界清除身份/
+			// 认证覆盖变量（与桌面 embedded 同一 managedClaudeIdentityBoundarySpec；
+			// remote create/restart 消费同一 spec，不能只修桌面路径）。
+			if provider.IsOAuthMode() {
+				spec = managedClaudeIdentityBoundarySpec(spec)
+			}
+		}
 	}
 	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
@@ -850,6 +870,20 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 			},
 		})
 	}
+	// Claude 订阅账号轮换（design §6.3）：Pi 会话使用 canonical ~/.pi/agent
+	// 根（启动时 provider 无关，运行中可 /login），受管时保守持有凭据
+	// admission；OMP（~/.omp 独立根）不携带。WSL 目标（distro 独立根）不携带。
+	var piAdmissions []launchplan.SharedAdmissionSpec
+	if appType == session.AppTypePi && !wslLaunch {
+		if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
+			if secrets != nil {
+				secrets.Dispose()
+			}
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+		} else if ok {
+			piAdmissions = append(piAdmissions, credSpec)
+		}
+	}
 	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
 		Process: &launchplan.ProcessStartSpec{
@@ -860,7 +894,16 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 	if secrets == nil {
 		secrets = launchplan.NewEphemeralSecretBundle()
 	}
-	return p.finalizePlanWithSecrets(recipe, nil, effects, secrets)
+	return p.finalizePlanWithSecrets(recipe, piAdmissions, effects, secrets)
+}
+
+// claudeCredentialAdmissionSpec 是凭据 admission 接缝的安全包装（nil 接缝
+// = 未接线，不携带；design §6.3）。
+func (p *appLaunchPlanner) claudeCredentialAdmissionSpec() (launchplan.SharedAdmissionSpec, bool, error) {
+	if p.claudeCredentialAdmission == nil {
+		return launchplan.SharedAdmissionSpec{}, false, nil
+	}
+	return p.claudeCredentialAdmission()
 }
 
 // ---------------------------------------------------------------------------

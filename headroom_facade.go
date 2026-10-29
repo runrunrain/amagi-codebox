@@ -56,6 +56,15 @@ func (a *App) sharedFingerprint(kind remote.SharedServiceKind) [32]byte {
 			st := a.CodexHeadroom.GetStatus()
 			return sharedFingerprintForHeadroom("codex-headroom", st.BackendURL, st.Port)
 		}
+	case remote.SharedServiceClaudeCredentials:
+		// 凭据指纹在 lease 提升时重算：canonical 路径 + 当前池代际（design
+		// §6.3）。与 admission 指纹不一致 → 提升失败（代际已变化，重新规划）。
+		// 路径解析失败返回零指纹：configBound admission 与零指纹不匹配 →
+		// fail closed，不会建立错误代际的 lease。
+		fp, err := a.claudeCredentialsFingerprint()
+		if err == nil {
+			return fp
+		}
 	}
 	return [32]byte{}
 }

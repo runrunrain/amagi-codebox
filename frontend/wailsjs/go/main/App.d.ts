@@ -32,9 +32,15 @@ export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome
 
 export function ApplyWSLSkillsSupply(arg1:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
+export function BeginClaudeAccountEnrollment(arg1:number):Promise<string>;
+
 export function BrowseDirectory():Promise<string>;
 
+export function CancelClaudeAccountEnrollment(arg1:number):Promise<void>;
+
 export function CancelRemotePairingWindow(arg1:number):Promise<boolean>;
+
+export function CaptureClaudeAccount(arg1:string,arg2:string,arg3:number):Promise<string>;
 
 export function CheckClaudeConfig():Promise<envcheck.ClaudeConfigStatus>;
 
@@ -89,6 +95,10 @@ export function GetAmagiConfig():Promise<string>;
 export function GetAmagiConfigPath():Promise<string>;
 
 export function GetAppInfo():Promise<Record<string, any>>;
+
+export function GetClaudeAccountOperation(arg1:string):Promise<main.ClaudeAccountOperationDTO>;
+
+export function GetClaudeAccounts():Promise<main.ClaudeAccountsPoolDTO>;
 
 export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>;
 
@@ -290,6 +300,8 @@ export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 
 export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
+export function ReconcileClaudeAccounts(arg1:string,arg2:number):Promise<main.ClaudeAccountReconcileResultDTO>;
+
 export function RefreshAIProxySubscription(arg1:string):Promise<aiproxy.State>;
 
 export function RegenerateRemoteToken():Promise<string>;
@@ -352,11 +364,15 @@ export function RemoteClientTerminalSendInput(arg1:string,arg2:string):Promise<v
 
 export function RemoteClientUpdateHost(arg1:string,arg2:string):Promise<void>;
 
+export function RemoveClaudeAccount(arg1:string,arg2:number):Promise<void>;
+
 export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;
 
 export function RemoveSession(arg1:string):Promise<void>;
 
 export function RemoveUrlFromHistory(arg1:string,arg2:string):Promise<void>;
+
+export function RenameClaudeAccount(arg1:string,arg2:string,arg3:number):Promise<void>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
@@ -394,6 +410,8 @@ export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalP
 
 export function SelfHealDockerWSLIntegration():Promise<dockerwsl.SelfHealReport>;
 
+export function SetClaudeAccountRotation(arg1:boolean,arg2:number,arg3:string):Promise<void>;
+
 export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<main.CodexGlobalHeadroomStatus>;
 
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
@@ -426,6 +444,8 @@ export function StartUpdateToolAsync(arg1:string):Promise<envcheck.OperationStat
 export function StopAIProxy():Promise<aiproxy.State>;
 
 export function StopSession(arg1:string):Promise<void>;
+
+export function SwitchClaudeAccount(arg1:string,arg2:number,arg3:string):Promise<string>;
 
 export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
 

@@ -38,6 +38,17 @@ func isHeadroomKind(kind SharedServiceKind) bool {
 	return kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom
 }
 
+// isKnownSharedKind reports whether the kind belongs to the closed shared-kind
+// set. 卸载 drain（headroomDraining）仍只限定 Headroom：凭据 kind 不参与
+// Headroom 卸载闸门，反之凭据 mutation 也不阻塞 Headroom 卸载（design §6.3）。
+func isKnownSharedKind(kind SharedServiceKind) bool {
+	switch kind {
+	case SharedServiceClaudeHeadroom, SharedServiceCodexHeadroom, SharedServiceClaudeCredentials:
+		return true
+	}
+	return false
+}
+
 // SharedServiceMutationKind enumerates the manual facade mutations that are
 // lease-guarded (design §6.7.2 method-family table).
 type SharedServiceMutationKind uint8
@@ -169,8 +180,13 @@ func (c *SharedServiceCoordinator) AcquireLaunchAdmissionForConfig(kind SharedSe
 }
 
 func (c *SharedServiceCoordinator) acquireLaunchAdmission(kind SharedServiceKind, fingerprint [32]byte, configBound bool) (*SharedLaunchAdmission, error) {
-	if kind != SharedServiceClaudeHeadroom && kind != SharedServiceCodexHeadroom {
-		return nil, errors.New("control: launch admission is only valid for headroom dependencies")
+	if !isKnownSharedKind(kind) {
+		return nil, errors.New("control: launch admission is only valid for known shared kinds")
+	}
+	// 凭据 kind 必须绑定 config 指纹（canonical 路径 + activeGeneration）：无指纹
+	// 的 admission 无法表达代际互斥，也不允许与不同代际共存（design §6.3）。
+	if kind == SharedServiceClaudeCredentials && !configBound {
+		return nil, errors.New("control: credential launch admission requires a config fingerprint")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

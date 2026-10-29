@@ -30,12 +30,24 @@ export function ApplyWSLSkillsSupply(arg1) {
   return window['go']['main']['App']['ApplyWSLSkillsSupply'](arg1);
 }
 
+export function BeginClaudeAccountEnrollment(arg1) {
+  return window['go']['main']['App']['BeginClaudeAccountEnrollment'](arg1);
+}
+
 export function BrowseDirectory() {
   return window['go']['main']['App']['BrowseDirectory']();
 }
 
+export function CancelClaudeAccountEnrollment(arg1) {
+  return window['go']['main']['App']['CancelClaudeAccountEnrollment'](arg1);
+}
+
 export function CancelRemotePairingWindow(arg1) {
   return window['go']['main']['App']['CancelRemotePairingWindow'](arg1);
+}
+
+export function CaptureClaudeAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CaptureClaudeAccount'](arg1, arg2, arg3);
 }
 
 export function CheckClaudeConfig() {
@@ -144,6 +156,14 @@ export function GetAmagiConfigPath() {
 
 export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
+}
+
+export function GetClaudeAccountOperation(arg1) {
+  return window['go']['main']['App']['GetClaudeAccountOperation'](arg1);
+}
+
+export function GetClaudeAccounts() {
+  return window['go']['main']['App']['GetClaudeAccounts']();
 }
 
 export function GetCodexGlobalHeadroom() {
@@ -550,6 +570,10 @@ export function QuickLaunch(arg1, arg2, arg3) {
   return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
 }
 
+export function ReconcileClaudeAccounts(arg1, arg2) {
+  return window['go']['main']['App']['ReconcileClaudeAccounts'](arg1, arg2);
+}
+
 export function RefreshAIProxySubscription(arg1) {
   return window['go']['main']['App']['RefreshAIProxySubscription'](arg1);
 }
@@ -674,6 +698,10 @@ export function RemoteClientUpdateHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientUpdateHost'](arg1, arg2);
 }
 
+export function RemoveClaudeAccount(arg1, arg2) {
+  return window['go']['main']['App']['RemoveClaudeAccount'](arg1, arg2);
+}
+
 export function RemoveSavedWorkDir(arg1) {
   return window['go']['main']['App']['RemoveSavedWorkDir'](arg1);
 }
@@ -684,6 +712,10 @@ export function RemoveSession(arg1) {
 
 export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['main']['App']['RemoveUrlFromHistory'](arg1, arg2);
+}
+
+export function RenameClaudeAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RenameClaudeAccount'](arg1, arg2, arg3);
 }
 
 export function ResolveTerminalPreset(arg1, arg2) {
@@ -758,6 +790,10 @@ export function SelfHealDockerWSLIntegration() {
   return window['go']['main']['App']['SelfHealDockerWSLIntegration']();
 }
 
+export function SetClaudeAccountRotation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetClaudeAccountRotation'](arg1, arg2, arg3);
+}
+
 export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
 }
@@ -826,6 +862,10 @@ export function StopAIProxy() {
 
 export function StopSession(arg1) {
   return window['go']['main']['App']['StopSession'](arg1);
+}
+
+export function SwitchClaudeAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SwitchClaudeAccount'](arg1, arg2, arg3);
 }
 
 export function SyncAIProxyV2rayN() {

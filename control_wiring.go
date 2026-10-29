@@ -123,6 +123,19 @@ func (a *App) launchEmbeddedPTY(reservation *session.CreateReservation, recipe l
 }
 
 func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, admission *remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
+	var claims []*remote.SharedLaunchAdmission
+	if admission != nil {
+		claims = append(claims, admission)
+	}
+	return a.launchEmbeddedPTYWithClaims(reservation, recipe, spec, claims, sharedKinds...)
+}
+
+// launchEmbeddedPTYWithClaims 按 kind 匹配多笔启动 admission（Headroom 与
+// 凭据可以同时持有，design §6.3）：匹配的 admission 原子提升为运行 lease，
+// 未匹配的 kind 走无 admission 获取（提升前无中间副作用时不适用此路径）。
+// 凭据 kind 的指纹在提升时重算（canonical 路径 + 当前池代际），代际变化
+// → 提升失败 → 启动以重新规划语义失败（不带旧代际放行）。
+func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, claims []*remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
 	if reservation == nil || reservation.SessionID() == "" || a.control == nil || a.processRegistry == nil {
 		return 0, remote.ErrControlNotReady
 	}
@@ -150,14 +163,27 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 			return 0, remote.ErrSharedServiceInUse
 		}
 		for _, kind := range sharedKinds {
+			var admission *remote.SharedLaunchAdmission
+			for _, claim := range claims {
+				if claim != nil && claim.Kind() == kind {
+					admission = claim
+					break
+				}
+			}
 			var lease *remote.SharedDependencyLease
 			var acqErr error
-			if admission != nil && admission.Kind() == kind {
+			if admission != nil {
 				lease, acqErr = a.sharedCoord.AcquireForRunWithAdmission(ctx, runPermit, kind, a.sharedFingerprint(kind), admission)
 			} else {
 				lease, acqErr = a.sharedCoord.AcquireForRun(ctx, runPermit, kind, a.sharedFingerprint(kind))
 			}
 			if acqErr != nil {
+				if kind == remote.SharedServiceClaudeCredentials {
+					// 代际变化/协调器关闭：返回重新规划语义错误（design §6.3：
+					// 启动前代际变更 → 重新规划，不带旧代际放行）。
+					abortHidden(errClaudeCredentialsGenerationChanged)
+					return 0, fmt.Errorf("acquire shared credential lease: %w", errClaudeCredentialsGenerationChanged)
+				}
 				abortHidden(acqErr)
 				return 0, fmt.Errorf("acquire shared lease: %w", acqErr)
 			}

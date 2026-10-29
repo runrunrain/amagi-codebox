@@ -80,6 +80,7 @@ func (l *r6ExternalLauncher) LaunchGuarded(
 	mode session.LaunchMode,
 	workDir string,
 	beforeRawStart func() error,
+	_ []string,
 ) (*launcher.LaunchResult, error) {
 	if beforeRawStart != nil {
 		if err := beforeRawStart(); err != nil {

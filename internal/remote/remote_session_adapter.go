@@ -94,6 +94,18 @@ type RemoteSessionAdapter struct {
 	prepareSharedLeaseTransfer func(string, uint64, uint64, []*SharedDependencyLease) (func(), func(), func(), error)
 	releaseSharedExact         func(string, uint64)
 
+	// credentialPlanCheck（design §6.3）：凭据 admission 获取后、进程启动前
+	// 复核计划指纹与当前池代际一致。不一致返回错误 → create/restart 以失败
+	//结束（客户端重新发起即重新规划），不带旧计划放行。nil = 未接线（测试）。
+	credentialPlanCheck func([32]byte) error
+
+	// credentialAbsenceCheck（F01）：计划未携带凭据 admission（池 absent 时
+	// 构建的旧计划）时，执行边界必须确认权威状态仍为 absent——首次 capture
+	// 后旧计划会绕过仅存在于 admission 循环内的新鲜度检查。nil = 未接线。
+	credentialAbsenceCheck func() error
+	// absent reservation 与桌面从同一 canonical 路径/代际函数取指纹（R04）。
+	credentialFingerprint func() ([32]byte, error)
+
 	// configDir is the host config root (for workdir default etc.).
 	configDir string
 
@@ -190,6 +202,73 @@ func (a *RemoteSessionAdapter) SetSharedLeaseTransfer(
 ) {
 	a.prepareSharedLeaseTransfer = prepare
 	a.releaseSharedExact = releaseExact
+}
+
+// SetClaudeCredentialsPlanCheck 注入凭据计划指纹的新鲜度复核（design
+// §6.3：启动前代际变更 → 重新规划，不带旧计划放行）。
+func (a *RemoteSessionAdapter) SetClaudeCredentialsPlanCheck(check func([32]byte) error) {
+	a.credentialPlanCheck = check
+}
+
+// SetClaudeCredentialsAbsenceCheck 注入无凭据计划的边界复核（F01：absent
+// 时构建的旧计划在首次 capture 后不得继续执行）。
+func (a *RemoteSessionAdapter) SetClaudeCredentialsAbsenceCheck(check func() error) {
+	a.credentialAbsenceCheck = check
+}
+
+// SetClaudeCredentialsFingerprint 注入与桌面启动同源的指纹计算；不可用时
+// 受影响 absent 计划 fail closed，不使用与桌面不兼容的零指纹。
+func (a *RemoteSessionAdapter) SetClaudeCredentialsFingerprint(fingerprint func() ([32]byte, error)) {
+	a.credentialFingerprint = fingerprint
+}
+
+// cliConsumesClaudeCredentials 报告该 CLI 是否消费 canonical Claude 凭据
+// 槽位（design §6.3：Claude Code 与宿主根 Pi；omp 独立根不计）。
+func cliConsumesClaudeCredentials(cli contract.CLIType) bool {
+	return cli == contract.CLITypeClaudeCode || cli == contract.CLITypePi
+}
+
+// reserveCredentialPlanAbsence closes the check→Prepare→Start window. The
+// reservation is not an identity/config admission: absent plans remain unchanged.
+func (a *RemoteSessionAdapter) reserveCredentialPlanAbsence(cli contract.CLIType, hasCredentialAdmission bool) (func(), error) {
+	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
+		return func() {}, nil
+	}
+	if a.sharedCoord == nil || a.credentialFingerprint == nil {
+		return nil, errSharedCredentialPlanStale
+	}
+	fingerprint, err := a.credentialFingerprint()
+	if err != nil {
+		return nil, err
+	}
+	reservation, err := a.sharedCoord.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	release := func() { a.sharedCoord.ReleaseLaunchAdmission(reservation) }
+	if err := a.credentialAbsenceCheck(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// verifyCredentialPlanAbsence 是早期拒绝检查；执行互斥由上面的 reservation
+// 保证，不能把本次瞬时检查当作启动屏障。
+func (a *RemoteSessionAdapter) verifyCredentialPlanAbsence(cli contract.CLIType, hasCredentialAdmission bool) bool {
+	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
+		return true
+	}
+	return a.credentialAbsenceCheck() == nil
+}
+
+// verifyCredentialPlanFreshness 在 admission 获取后立即复核代际；失败时由
+// 调用方走既有失败路径（释放已取 admission + abort）。返回 true 表示通过。
+func (a *RemoteSessionAdapter) verifyCredentialPlanFreshness(kind SharedServiceKind, fingerprint [32]byte) bool {
+	if kind != SharedServiceClaudeCredentials || a.credentialPlanCheck == nil {
+		return true
+	}
+	return a.credentialPlanCheck(fingerprint) == nil
 }
 
 // restartPtyStartFunc starts a new PTY for a restart operation. The spec is
@@ -526,6 +605,7 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 	// 5. Acquire launch admissions before Executor preparation or any shared
 	// side effect. The exact admissions are bound into their prepared effects.
 	var admissions []*SharedLaunchAdmission
+	hasCredentialAdmission := false
 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
 	releaseAdmissions := func() {
 		for _, adm := range admissions {
@@ -542,6 +622,9 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 		if !ok {
 			continue
 		}
+		if remoteKind == SharedServiceClaudeCredentials {
+			hasCredentialAdmission = true
+		}
 		adm, acqErr := a.sharedCoord.AcquireLaunchAdmissionForConfig(remoteKind, planAdm.ConfigFingerprint)
 		if acqErr != nil {
 			releaseAdmissions()
@@ -550,9 +633,39 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 			abortReservation()
 			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 		}
+		// 凭据 kind：计划指纹必须仍与当前池代际一致（design §6.3）。
+		if !a.verifyCredentialPlanFreshness(remoteKind, planAdm.ConfigFingerprint) {
+			a.sharedCoord.ReleaseLaunchAdmission(adm)
+			releaseAdmissions()
+			plan.Secrets.Dispose()
+			a.gate.AbortLaunch(ctx, launchPermit, errSharedCredentialPlanStale)
+			abortReservation()
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
 		admissions = append(admissions, adm)
 		sharedAdmissions[planAdm.Service] = adm
 	}
+	// F01：absent 时构建的旧计划（无凭据 admission）在首次 capture 后不得
+	// 继续执行——执行边界确认权威状态仍为 absent，不只检查已有 kind。
+	if !a.verifyCredentialPlanAbsence(contract.CLIType(plan.Recipe.CLIType), hasCredentialAdmission) {
+		releaseAdmissions()
+		plan.Secrets.Dispose()
+		a.gate.AbortLaunch(ctx, launchPermit, errSharedCredentialPlanStale)
+		abortReservation()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	// absent 也持过渡 reservation 至 Prepare/全部启动副作用结束；获取后再
+	// 检查状态。mutation 与 reservation 在同一个 coordinator 中原子互斥。
+	absenceRelease, absenceErr := a.reserveCredentialPlanAbsence(contract.CLIType(plan.Recipe.CLIType), hasCredentialAdmission)
+	if absenceErr != nil {
+		releaseAdmissions()
+		plan.Secrets.Dispose()
+		a.gate.AbortLaunch(ctx, launchPermit, absenceErr)
+		abortReservation()
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	defer absenceRelease()
 
 	// 6. Executor Prepare (all effect allocations; opaque exact run handle).
 	execution, err := a.executor.Prepare(ctx, plan, launchplan.ExecutionBinding{
@@ -774,6 +887,8 @@ func sharedKindFromPlan(planKind launchplan.SharedServiceKind) (SharedServiceKin
 		return SharedServiceClaudeHeadroom, true
 	case launchplan.SharedCodexHeadroom:
 		return SharedServiceCodexHeadroom, true
+	case launchplan.SharedClaudeCredentials:
+		return SharedServiceClaudeCredentials, true
 	default:
 		return 0, false
 	}
@@ -1002,6 +1117,7 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 	}
 
 	var admissions []*SharedLaunchAdmission
+	hasCredentialAdmission := false
 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
 	releaseAdmissions := func() {
 		for _, admission := range admissions {
@@ -1023,9 +1139,37 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
 			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
 			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
 		}
+		if kind == SharedServiceClaudeCredentials {
+			hasCredentialAdmission = true
+		}
+		// 凭据 kind：restart 同样在进程副作用前复核代际（design §6.3）。
+		if !a.verifyCredentialPlanFreshness(kind, spec.ConfigFingerprint) {
+			a.sharedCoord.ReleaseLaunchAdmission(admission)
+			releaseAdmissions()
+			a.authority.AbortPreparedLifecycle(lifecycleToken)
+			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+		}
 		admissions = append(admissions, admission)
 		sharedAdmissions[spec.Service] = admission
 	}
+	// F01：restart 链同样校验无凭据计划的 absent 边界（absent 旧计划 →
+	// 首次 capture → restart 执行）。
+	if !a.verifyCredentialPlanAbsence(contract.CLIType(snapshot.CLIType), hasCredentialAdmission) {
+		releaseAdmissions()
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+
+	absenceRelease, absenceErr := a.reserveCredentialPlanAbsence(contract.CLIType(snapshot.CLIType), hasCredentialAdmission)
+	if absenceErr != nil {
+		releaseAdmissions()
+		a.authority.AbortPreparedLifecycle(lifecycleToken)
+		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+	}
+	defer absenceRelease()
 
 	var (
 		restartPermit     *operationPermit
@@ -1615,6 +1759,11 @@ func (a *RemoteSessionAdapter) reconcileClosedRunWithoutCommit(sessionID contrac
 }
 
 var errExactCloseIndeterminate = errors.New("remote: exact close indeterminate")
+
+// errSharedCredentialPlanStale 是凭据计划指纹与当前池代际不一致时的内部
+// 错误：create/restart 以失败结束，客户端重新发起即重新规划，不带旧计划
+// 放行（design §6.3）。
+var errSharedCredentialPlanStale = errors.New("remote: claude credential plan is stale")
 
 // restartRawEffect performs a REAL three-phase restart (M-004/R4-001): seal old
 // segment → checkpoint+stop old process → re-resolve → reserve/mint a hidden run
